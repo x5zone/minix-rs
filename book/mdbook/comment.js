@@ -1,62 +1,43 @@
 (function() {
     'use strict';
 
-    var GISCUS_CONFIG = {
-        repo: 'x5zone/minix-rs',
-        repoId: 'R_kgDORVTPGQ',
-        category: 'General',
-        categoryId: 'DIC_kwDORVTPGc4C2_PK',
-        mapping: 'pathname',
-        term: '',
-        strict: '0',
-        reactionsEnabled: '1',
-        emitMetadata: '0',
-        inputPosition: 'bottom',
-        theme: 'preferred_color_scheme',
-        lang: 'zh-CN',
-        loading: 'lazy'
-    };
-
     function insertGiscus() {
-        var pageWrapper = document.querySelector('.page-wrapper');
-        if (!pageWrapper) return;
-
-        var existingGiscus = document.getElementById('giscus-container');
+        var existingGiscus = document.querySelector('.giscus');
         if (existingGiscus) return;
 
         var isPrintMode = window.location.search.includes('print');
         if (isPrintMode) return;
 
+        var content = document.querySelector('.content');
+        if (!content) return;
+
         var giscusContainer = document.createElement('div');
-        giscusContainer.id = 'giscus-container';
+        giscusContainer.setAttribute('class', 'giscus');
         giscusContainer.style.cssText = 'margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);';
 
-        var giscusFrame = document.createElement('iframe');
-        giscusFrame.src = 'https://giscus.app/' + buildQueryString(GISCUS_CONFIG);
-        giscusFrame.setAttribute('width', '100%');
-        giscusFrame.setAttribute('height', '400');
-        giscusFrame.style.cssText = 'border: none; background-color: transparent;';
-        giscusFrame.title = 'Comments (Giscus)';
+        var script = document.createElement('script');
+        script.src = 'https://giscus.app/client.js';
+        script.setAttribute('data-repo', 'x5zone/minix-rs');
+        script.setAttribute('data-repo-id', 'R_kgDORVTPGQ');
+        script.setAttribute('data-category', 'General');
+        script.setAttribute('data-category-id', 'DIC_kwDORVTPGc4C2_PK');
+        script.setAttribute('data-mapping', 'pathname');
+        script.setAttribute('data-strict', '0');
+        script.setAttribute('data-reactions-enabled', '1');
+        script.setAttribute('data-emit-metadata', '0');
+        script.setAttribute('data-input-position', 'bottom');
+        script.setAttribute('data-theme', 'preferred_color_scheme');
+        script.setAttribute('data-lang', 'zh-CN');
+        script.setAttribute('crossorigin', 'anonymous');
+        script.async = true;
 
-        giscusContainer.appendChild(giscusFrame);
-
-        var content = document.querySelector('.content');
-        if (content) {
-            content.appendChild(giscusContainer);
-        }
+        giscusContainer.appendChild(script);
+        content.appendChild(giscusContainer);
     }
 
-    function buildQueryString(config) {
-        var params = [];
-        for (var key in config) {
-            if (config.hasOwnProperty(key) && config[key] !== '') {
-                params.push(encodeURIComponent(key) + '=' + encodeURIComponent(config[key]));
-            }
-        }
-        return '?' + params.join('&');
-    }
-
-    function init() {
+    if (typeof mdbook !== 'undefined' && mdbook.onPageLoad) {
+        mdbook.onPageLoad(insertGiscus);
+    } else {
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', insertGiscus);
         } else {
@@ -64,13 +45,12 @@
         }
     }
 
-    if (typeof mdbook !== 'undefined' && mdbook.onPageLoad) {
-        mdbook.onPageLoad(insertGiscus);
-    } else {
-        init();
-    }
-
     window.addEventListener('hashchange', function() {
-        setTimeout(insertGiscus, 100);
+        setTimeout(function() {
+            var existingGiscus = document.querySelector('.giscus');
+            if (!existingGiscus) {
+                insertGiscus();
+            }
+        }, 100);
     });
 })();
