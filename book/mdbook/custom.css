@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+
+:root {
+    --content-max-width: 50rem;
+    --font-family-base: 'Source Serif 4', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-family-code: 'JetBrains Mono', 'Fira Code', Consolas, 'Monaco', 'Andale Mono', monospace;
+    --font-family-heading: 'JetBrains Mono', 'Inter', sans-serif;
+}
+
+html {
+    font-family: var(--font-family-base);
+}
+
+body {
+    font-family: var(--font-family-base);
+    font-size: 1rem;
+    line-height: 1.7;
+}
+
+.content {
+    max-width: var(--content-max-width);
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-family-heading);
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+h1 {
+    font-size: 2rem;
+    border-bottom: 2px solid var(--sidebar-active);
+    padding-bottom: 0.5rem;
+}
+
+h2 {
+    font-size: 1.5rem;
+    margin-top: 2rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+}
+
+code {
+    font-family: var(--font-family-code);
+    font-size: 0.9em;
+    padding: 0.15em 0.4em;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+pre {
+    font-family: var(--font-family-code);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+}
+
+pre code {
+    padding: 0;
+    background-color: transparent;
+}
+
+.theme-navy .content a {
+    color: #8abeb7;
+    text-decoration: none;
+    transition: color 0.2s ease, text-decoration 0.2s ease;
+}
+
+.theme-navy .content a:hover {
+    color: #a8d4cf;
+    text-decoration: underline;
+}
+
+.theme-navy .content a:visited {
+    color: #7ab8b0;
+}
+
+.theme-navy {
+    --bg: #161a22;
+    --fg: #c5c8c6;
+    --sidebar-bg: #0d1117;
+    --sidebar-fg: #c5c8c6;
+    --sidebar-active: #8abeb7;
+    --sidebar-non-existant: #4a5568;
+    --sidebar-spacer: #2d3748;
+    --scrollbar: #2d3748;
+    --icons: #8abeb7;
+    --icons-hover: #a8d4cf;
+    --links: #8abeb7;
+    --inline-code-color: #c5c8c6;
+    --theme-popup-bg: #1a1f29;
+    --theme-popup-border: #2d3748;
+    --theme-hover: #2d3748;
+    --quote-bg: #1a1f29;
+    --quote-border: #8abeb7;
+    --table-border: #2d3748;
+    --table-header-bg: #1a1f29;
+    --table-alternate-bg: #0d1117;
+    --searchbar-border: #2d3748;
+    --searchbar-bg: #0d1117;
+    --searchbar-fg: #c5c8c6;
+    --searchbar-shadow-color: #0d1117;
+    --searchresults-header-fg: #8abeb7;
+    --searchresults-border: #2d3748;
+    --searchresults-li-bg: #1a1f29;
+    --search-mark-bg: #2d3748;
+}
+
+blockquote {
+    border-left: 4px solid var(--quote-border);
+    margin: 1rem 0;
+    padding: 0.5rem 1rem;
+    background-color: var(--quote-bg);
+    border-radius: 0 4px 4px 0;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+th, td {
+    border: 1px solid var(--table-border);
+    padding: 0.75rem 1rem;
+    text-align: left;
+}
+
+th {
+    background-color: var(--table-header-bg);
+    font-weight: 600;
+}
+
+tr:nth-child(even) {
+    background-color: var(--table-alternate-bg);
+}
+
+.menu-title {
+    font-family: var(--font-family-heading);
+    font-weight: 600;
+}
+
+.sidebar .sidebar-scrollbox {
+    font-size: 0.9rem;
+}
+
+.sidebar .chapter {
+    padding: 0.5rem 0;
+}
+
+.sidebar .chapter li a {
+    padding: 0.5rem 1rem;
+    transition: background-color 0.2s ease;
+}
+
+.sidebar .chapter li.active > a {
+    color: var(--sidebar-active);
+    font-weight: 500;
+}
+
+.giscus {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--table-border);
+}
+
+@media (max-width: 1080px) {
+    :root {
+        --content-max-width: 100%;
+    }
+    
+    .content {
+        padding: 0 1rem;
+    }
+}
+
+@media print {
+    .giscus,
+    #giscus-container {
+        display: none !important;
+    }
+}

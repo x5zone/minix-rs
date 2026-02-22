@@ -1,0 +1,25 @@
+[book]
+title = "MINIX-RS Kernel Book"
+authors = ["轩小绝"]
+language = "zh-CN"
+src = "."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["mdbook/custom.css"]
+additional-js = ["mdbook/mathjax.js", "mdbook/comment.js"]
+git-repository-url = "https://github.com/your-username/minix-rs"
+edit-url-template = "https://github.com/your-username/minix-rs/edit/main/book/{path}"
+
+[output.html.print]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 0
+

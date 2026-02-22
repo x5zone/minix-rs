@@ -1,3 +1,11 @@
+
+## Project Structure
+
+- `rust/` contains the Rust code for the kernel.
+- `book/` contains the source code for the kernel book.
+- `notes/` contains personal notes and drafts.
+- `minix3/` contains the unmodified source code from the official MINIX 3 project.
+
 ## License
 
 - All original code in `rust/`, documentation in `book/`, and notes in `notes/`
