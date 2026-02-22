@@ -2,17 +2,17 @@
     'use strict';
 
     var GISCUS_CONFIG = {
-        repo: 'YOUR_USERNAME/YOUR_REPO',
-        repoId: 'YOUR_REPO_ID',
-        category: 'Announcements',
-        categoryId: 'YOUR_CATEGORY_ID',
+        repo: 'x5zone/minix-rs',
+        repoId: 'R_kgDORVTPGQ',
+        category: 'General',
+        categoryId: 'DIC_kwDORVTPGc4C2_PK',
         mapping: 'pathname',
         term: '',
         strict: '0',
         reactionsEnabled: '1',
         emitMetadata: '0',
-        inputPosition: 'top',
-        theme: 'navy_dimmed',
+        inputPosition: 'bottom',
+        theme: 'preferred_color_scheme',
         lang: 'zh-CN',
         loading: 'lazy'
     };
