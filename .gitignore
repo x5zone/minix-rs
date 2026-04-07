@@ -25,6 +25,8 @@ Cargo.lock
 
 .idea/
 .vscode/
+.lingma/
+
 *.sublime-workspace
 *.sublime-project
 .fleet/

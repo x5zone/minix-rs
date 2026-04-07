@@ -17,6 +17,7 @@ members = [
     "servers/mib",
     
     # 共享库
+    "libs/minix-types",
     "libs/minix-ipc",
     "libs/minix-sys",
     "libs/minix-rt",
@@ -56,6 +57,7 @@ repository = "https://github.com/minix-rs/os"
 
 [workspace.dependencies]
 # 核心库
+minix-types = { path = "libs/minix-types" }
 minix-ipc = { path = "libs/minix-ipc" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }

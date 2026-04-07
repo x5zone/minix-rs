@@ -1,0 +1,13 @@
+[package]
+name = "minix-types"
+version = "0.1.0"
+edition = "2024"
+description = "Minix3 process management types for no_std environment"
+license = "MIT"
+
+[dependencies]
+bitflags = "2.4"
+
+[features]
+default = []
+std = []

@@ -10,3 +10,4 @@ name = "minix_ipc"
 path = "src/lib.rs"
 
 [dependencies]
+minix-types = { workspace = true }

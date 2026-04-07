@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 minix-ipc = { workspace = true }
+minix-types = { workspace = true }
 minix-mock = { workspace = true, optional = true }
 
 [features]

@@ -11,3 +11,4 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-ipc = { workspace = true }
+minix-types = { workspace = true }

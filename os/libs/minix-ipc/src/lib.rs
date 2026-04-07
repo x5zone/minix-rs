@@ -4,13 +4,7 @@
 
 #![no_std]
 
-/// 消息结构
-#[derive(Debug, Clone, Copy)]
-pub struct Message {
-    pub source: Endpoint,
-    pub mtype: MessageType,
-    pub payload: [u64; 6],
-}
+pub use minix_types::{Endpoint, Message};
 
 /// 消息类型
 #[derive(Debug, Clone, Copy)]
@@ -53,43 +47,13 @@ pub enum NotifyType {
     SysEvent = 3,
 }
 
-/// 端点标识
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Endpoint(pub u32);
-
-impl Endpoint {
-    pub const NONE: Endpoint = Endpoint(0);
-    pub const KERNEL: Endpoint = Endpoint(1);
-    pub const PM: Endpoint = Endpoint(2);
-    pub const VFS: Endpoint = Endpoint(3);
-    pub const VM: Endpoint = Endpoint(4);
-    pub const RS: Endpoint = Endpoint(5);
-    
-    /// 创建进程端点
-    pub fn process(pid: u32) -> Self {
-        Endpoint(pid)
-    }
-    
-    /// 获取进程 ID
-    pub fn pid(&self) -> u32 {
-        self.0
-    }
-    
-    /// 是否有效
-    pub fn is_valid(&self) -> bool {
-        self.0 != 0
-    }
-}
-
 /// 发送消息
 pub fn send(dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
-    // TODO: 实现 IPC 发送
     todo!("send implementation")
 }
 
 /// 接收消息
 pub fn receive(src: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
-    // TODO: 实现 IPC 接收
     todo!("receive implementation")
 }
 
@@ -101,7 +65,6 @@ pub fn sendrec(dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
 
 /// 通知
 pub fn notify(dest: Endpoint, type_: NotifyType) -> Result<(), IpcError> {
-    // TODO: 实现通知
     todo!("notify implementation")
 }
 

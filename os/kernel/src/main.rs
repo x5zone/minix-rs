@@ -10,7 +10,7 @@ use minix_kernel::run;
 use minix_kernel::PanicInfo;
 
 /// 内核入口
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     init();
     run();
