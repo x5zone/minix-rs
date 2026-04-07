@@ -1,0 +1,17 @@
+[package]
+name = "minix-rt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_rt"
+path = "src/lib.rs"
+
+[dependencies]
+minix-sys = { workspace = true }
+
+[features]
+default = ["std"]
+std = []

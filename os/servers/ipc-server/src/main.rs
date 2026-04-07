@@ -1,0 +1,1 @@
+fn main() { minix_ipc_server::init(); loop {} }

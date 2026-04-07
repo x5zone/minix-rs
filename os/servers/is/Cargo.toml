@@ -1,0 +1,19 @@
+[package]
+name = "minix-is"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-is"
+path = "src/main.rs"
+
+[dependencies]
+minix-ipc = { workspace = true }
+minix-sys = { workspace = true }
+minix-mock = { workspace = true }
+
+[lib]
+name = "minix_is"
+path = "src/lib.rs"

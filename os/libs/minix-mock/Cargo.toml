@@ -1,0 +1,13 @@
+[package]
+name = "minix-mock"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_mock"
+path = "src/lib.rs"
+
+[dependencies]
+log = { workspace = true }

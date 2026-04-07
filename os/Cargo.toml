@@ -1,0 +1,80 @@
+[workspace]
+members = [
+    # 内核
+    "kernel",
+    
+    # 系统服务器（9个核心）
+    "servers/pm",
+    "servers/vfs",
+    "servers/vm",
+    "servers/rs",
+    "servers/ds",
+    "servers/ipc-server",
+    "servers/sched",
+    "servers/is",
+    "servers/devman",
+    "servers/input",
+    "servers/mib",
+    
+    # 共享库
+    "libs/minix-ipc",
+    "libs/minix-sys",
+    "libs/minix-rt",
+    "libs/minix-mock",
+    
+    # 用户态命令 - bin
+    "commands/bin/cat",
+    "commands/bin/cp",
+    "commands/bin/echo",
+    "commands/bin/ls",
+    "commands/bin/mv",
+    "commands/bin/rm",
+    "commands/bin/sh",
+    
+    # 用户态命令 - sbin
+    "commands/sbin/init",
+    "commands/sbin/fsck",
+    "commands/sbin/mkfs",
+    "commands/sbin/reboot",
+    
+    # 用户态命令 - games
+    "commands/games/tetris",
+    "commands/games/snake",
+    "commands/games/rogue",
+    
+    # 构建系统
+    "xtask",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["zx5zone"]
+license = "MIT"
+repository = "https://github.com/minix-rs/os"
+
+[workspace.dependencies]
+# 核心库
+minix-ipc = { path = "libs/minix-ipc" }
+minix-sys = { path = "libs/minix-sys" }
+minix-rt = { path = "libs/minix-rt" }
+minix-mock = { path = "libs/minix-mock" }
+
+# 构建工具
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+
+# 测试
+log = "0.4"
+
+[workspace.metadata.xtask]
+kernel-target = "x86_64-minix.json"
+user-target = "x86_64-unknown-linux-musl"
+
+# 内核 profile 设置
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

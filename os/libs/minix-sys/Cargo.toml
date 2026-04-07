@@ -1,0 +1,13 @@
+[package]
+name = "minix-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_sys"
+path = "src/lib.rs"
+
+[dependencies]
+minix-ipc = { workspace = true }
