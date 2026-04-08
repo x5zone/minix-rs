@@ -5,6 +5,9 @@ edition = "2024"
 description = "Minix3 process management types for no_std environment"
 license = "MIT"
 
+[lib]
+doctest = false
+
 [dependencies]
 bitflags = "2.4"
 

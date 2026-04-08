@@ -20,8 +20,8 @@
 //! 2. **不变量保护**: fork 逻辑绑定了 PM 内部状态
 //! 3. **微内核原则**: 其他服务不需要了解 PM 的 fork 实现
 
-use minix_types::{Pid, Endpoint, ProcIndex, NR_PROCS, LAST_FEW};
-use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable};
+use minix_types::{Pid, Endpoint, ProcIndex, NR_PROCS, LAST_FEW, Clock};
+use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags};
 
 /// fork 错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,16 +165,29 @@ impl<'a> PmContext<'a> {
     pub fn fork_child_from_parent(&mut self, child_index: usize, child_pid: Pid, child_endpoint: Endpoint) {
         let parent = self.current_proc().clone();
         
-        let child = Process::fork_from(&parent, child_pid, child_endpoint, self.current);
+        let child = Process::fork_from(&parent, child_index, child_pid, child_endpoint, self.current);
         
         self.table.procs[child_index] = child;
     }
 }
 
+/// 获取当前时钟滴答数
+///
+/// 对应 Minix3 的 `getticks()` 函数
+///
+/// # TODO
+/// 当前返回 0，后续需要实现真正的时钟获取：
+/// - 通过 IPC 向 CLOCK 任务请求时间
+/// - 或使用内核提供的时钟接口
+fn getticks() -> Clock {
+    0
+}
+
 impl Process {
-    /// 从父进程创建子进程
+    /// Fork 语义：从父进程创建子进程
     ///
-    /// 强迫检查每一个字段：哪些该留，哪些该清
+    /// 策略：显式构造（Explicit Construction）
+    /// 优势：编译器强制检查新增字段，无隐式行为
     ///
     /// # Minix3 映射
     /// | Minix3 行为 | Rust 行为 |
@@ -183,40 +196,81 @@ impl Process {
     /// | `rmc->mp_pid = next_pid` | `identity.id.pid = child_pid` |
     /// | `rmc->mp_flags &= ~TRACE_EXIT` | `trace.stopped = false` |
     /// | `rmc->mp_child_utime = 0` | `resources.child_utime = 0` |
-    pub fn fork_from(parent: &Process, child_pid: Pid, child_endpoint: Endpoint, parent_index: usize) -> Self {
-        Self {
-            identity: ProcessIdentity {
-                id: ProcessId {
-                    index: parent.identity.id.index,
-                    pid: child_pid,
-                },
-                endpoint: child_endpoint,
-                procgrp: parent.identity.procgrp,
-                name: parent.identity.name,
+    /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` 只保留 TAINTED |
+    /// | `rmc->mp_started = getticks()` | `started = getticks()` |
+    /// | 特权进程 scheduler | `Endpoint::RS` |
+    pub fn fork_from(
+        parent: &Process, 
+        child_index: usize, 
+        child_pid: Pid, 
+        child_endpoint: Endpoint,
+        parent_index: usize,
+    ) -> Self {
+        
+        // --- 1. IDENTITY：继承 + 覆盖 ---
+        // 语义：我是谁（PID变了，其他继承）
+        let identity = ProcessIdentity {
+            id: ProcessId { 
+                index: ProcIndex::new(child_index), // 显式传入新索引
+                pid: child_pid,                     // 显式传入新 PID
             },
-            state: ProcessState {
-                lifecycle: Lifecycle::Running,
-                block: BlockState::default(),
-                wait: WaitState::default(),
-                guardianship: Guardianship::Normal { 
-                    parent: ProcIndex::new(parent_index) 
-                },
-                trace: TraceState::default(),
+            endpoint: child_endpoint,
+            // 继承：进程组和名字（值拷贝，安全）
+            procgrp: parent.identity.procgrp, 
+            name: parent.identity.name,
+        };
+
+        // --- 2. STATE：重置 + 关系 ---
+        // 语义：我的状态（我是新进程，我是谁的孩子）
+        let state = ProcessState {
+            lifecycle: Lifecycle::Running,      // 刚出生的进程总是就绪/运行态
+            block: BlockState::default(),       // 重置阻塞状态
+            wait: WaitState::default(),         // 重置等待状态
+            guardianship: Guardianship::Normal { 
+                parent: ProcIndex::new(parent_index), // 认祖归宗：父进程索引
             },
-            resources: ProcessResources {
-                privilege: parent.resources.privilege.clone(),
-                signals: parent.resources.signals.clone(),
-                child_utime: 0,
-                child_stime: 0,
-                started: parent.resources.started,
-                timer: None,
-                intervals: parent.resources.intervals,
-                nice: parent.resources.nice,
-                scheduler: parent.resources.scheduler,
-                flags: parent.resources.flags,
+            trace: TraceState::default(),       // 清除追踪器（除非 TO_TRACEFORK）
+        };
+
+        // --- 3. RESOURCES：混合策略 ---
+        // 语义：我的资源（权限继承，统计清零）
+        let resources = ProcessResources {
+            // --- 深度继承区 ---
+            // ⚠️ 确保是 Deep Clone，不是浅拷贝
+            privilege: parent.resources.privilege.clone(),
+            signals: parent.resources.signals.clone(),
+            
+            // --- 重置区 ---
+            child_utime: 0,
+            child_stime: 0,
+            started: getticks(),  // ⚠️ 确保时钟源正确
+            timer: None,
+            intervals: [0; NR_ITIMERS],
+            nice: parent.resources.nice,
+            
+            // --- 特权逻辑区 ---
+            // ⚠️ 这里不封装进 Resources，因为依赖了外部的 Endpoint::RS
+            scheduler: if parent.resources.privilege.is_kernel() {
+                Endpoint::RS  // 特权进程强制绑定 RS
+            } else {
+                parent.resources.scheduler  // 普通进程继承
             },
-            ipc: ProcessIpc::default(),
-        }
+            
+            // --- 标志位过滤区 ---
+            flags: {
+                let mut flags = RemainingFlags::empty();
+                // 只继承 TAINTED 标志
+                if parent.resources.flags.contains(RemainingFlags::TAINTED) {
+                    flags |= RemainingFlags::TAINTED;
+                }
+                flags
+            },
+        };
+
+        // --- 4. IPC：默认 ---
+        let ipc = ProcessIpc::default();
+
+        Self { identity, state, resources, ipc }
     }
 }
 
@@ -295,5 +349,105 @@ mod tests {
         assert_eq!(ForkError::ReservedForRoot.to_errno(), 11);
         assert_eq!(ForkError::ResourceExhausted.to_errno(), 12);
         assert_eq!(ForkError::InternalError.to_errno(), 22);
+    }
+    
+    #[test]
+    fn test_fork_child_index_correct() {
+        let parent = Process::new(0, 100);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert_eq!(child.identity.id.index, ProcIndex::new(5));
+        assert_eq!(child.identity.id.pid, 200);
+        assert_eq!(child.identity.endpoint, Endpoint::new(50));
+    }
+    
+    #[test]
+    fn test_fork_inherited_fields() {
+        let mut parent = Process::new(0, 100);
+        parent.identity.procgrp = 500;
+        parent.resources.nice = 10;
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert_eq!(child.identity.procgrp, 500);
+        assert_eq!(child.resources.nice, 10);
+    }
+    
+    #[test]
+    fn test_fork_cleared_fields() {
+        let mut parent = Process::new(0, 100);
+        parent.resources.child_utime = 1000;
+        parent.resources.child_stime = 2000;
+        parent.resources.intervals = [100, 200, 300];
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert_eq!(child.resources.child_utime, 0);
+        assert_eq!(child.resources.child_stime, 0);
+        assert_eq!(child.resources.intervals, [0; NR_ITIMERS]);
+    }
+    
+    #[test]
+    fn test_fork_flags_only_tainted() {
+        let mut parent = Process::new(0, 100);
+        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert!(child.resources.flags.contains(RemainingFlags::TAINTED));
+        assert!(!child.resources.flags.contains(RemainingFlags::ALARM_ON));
+        assert!(!child.resources.flags.contains(RemainingFlags::NEW_PARENT));
+    }
+    
+    #[test]
+    fn test_fork_flags_no_tainted() {
+        let mut parent = Process::new(0, 100);
+        parent.resources.flags = RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert!(child.resources.flags.is_empty());
+    }
+    
+    #[test]
+    fn test_fork_privilege_scheduler() {
+        let mut parent = Process::new(0, 100);
+        parent.resources.privilege = Privilege::Kernel;
+        parent.resources.scheduler = Endpoint::NONE;
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert_eq!(child.resources.scheduler, Endpoint::RS);
+    }
+    
+    #[test]
+    fn test_fork_normal_scheduler() {
+        let mut parent = Process::new(0, 100);
+        parent.resources.privilege = Privilege::User(Credentials::new(1000, 100));
+        parent.resources.scheduler = Endpoint::PM;
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert_eq!(child.resources.scheduler, Endpoint::PM);
+    }
+    
+    #[test]
+    fn test_fork_parent_relationship() {
+        let parent = Process::new(10, 100);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 10);
+        
+        assert_eq!(child.state.guardianship.parent(), ProcIndex::new(10));
+    }
+    
+    #[test]
+    fn test_fork_ipc_reset() {
+        let mut parent = Process::new(0, 100);
+        parent.ipc.reply = Some(minix_ipc::Message::default());
+        parent.ipc.event_subscriber = Some(ProcIndex::new(5));
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        
+        assert!(child.ipc.reply.is_none());
+        assert!(child.ipc.event_subscriber.is_none());
     }
 }

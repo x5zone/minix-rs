@@ -12,6 +12,9 @@ path = "src/lib.rs"
 [[bin]]
 name = "minix-kernel"
 path = "src/main.rs"
+test = false
+doctest = false
+bench = false
 
 [dependencies]
 minix-ipc = { workspace = true }
