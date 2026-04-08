@@ -37,7 +37,7 @@
 
 use core::cell::Cell;
 use minix_types::{Endpoint, NR_PROCS, LAST_FEW};
-use crate::mproc::{Process, Lifecycle};
+use crate::mproc::{Process, Lifecycle, PidGenerator};
 
 /// Endpoint generation 位移
 ///
@@ -54,6 +54,7 @@ pub const ENDPOINT_GENERATION_SHIFT: u32 = 15;
 ///     procs: [Process; 256],      // ~22.5 KB
 ///     procs_in_use: Cell<usize>,  // 8 bytes
 ///     next_child: Cell<usize>,    // 8 bytes
+///     pid_generator: PidGenerator, // 4 bytes
 /// }
 /// ```
 ///
@@ -69,6 +70,11 @@ pub struct ProcTable {
     pub procs_in_use: Cell<usize>,
     /// 下一个子进程槽位（轮询算法）
     pub next_child: Cell<usize>,
+    /// PID 生成器
+    ///
+    /// 采用单调递增 + 冲突检测策略
+    /// 对应 Minix3 的 `static pid_t next_pid`
+    pub pid_generator: PidGenerator,
 }
 
 impl ProcTable {
@@ -80,6 +86,7 @@ impl ProcTable {
             procs: core::array::from_fn(|_| Process::default()),
             procs_in_use: Cell::new(0),
             next_child: Cell::new(0),
+            pid_generator: PidGenerator::new(),
         }
     }
     
@@ -109,6 +116,23 @@ impl ProcTable {
     /// 检查进程表是否已满
     pub fn is_full(&self) -> bool {
         self.procs_in_use.get() >= NR_PROCS
+    }
+    
+    /// 迭代所有活跃进程
+    ///
+    /// 返回一个迭代器，只包含处于使用中状态的进程。
+    ///
+    /// # 用途
+    ///
+    /// 主要用于 PID 冲突检测，遍历所有活跃进程检查 PID 和进程组 ID 冲突。
+    ///
+    /// # 性能
+    ///
+    /// 使用 Rust 迭代器的惰性求值和短路求值特性：
+    /// - **惰性求值**：只有在实际需要时才访问进程
+    /// - **短路求值**：配合 `Iterator::any` 等方法，一旦找到匹配就停止
+    pub fn iter_active(&self) -> impl Iterator<Item = &Process> {
+        self.procs.iter().filter(|p| p.is_in_use())
     }
     
     /// 检查非 root 用户是否可以分配槽位

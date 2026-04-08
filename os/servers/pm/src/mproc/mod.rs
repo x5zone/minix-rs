@@ -20,6 +20,8 @@
 //!
 //! # 模块结构
 //!
+//! - `constants`: PM 私有常量（NR_PIDS, INIT_PID 等）
+//! - `pid_gen`: PID 生成器
 //! - `mproc`: PM 进程结构体定义
 //! - `table`: PM 进程表管理
 //! - `lifecycle`: 进程生命周期状态机
@@ -32,6 +34,8 @@
 //! - `context`: PM 上下文
 //! - `fork`: fork 实现
 
+mod constants;
+mod pid_gen;
 mod mproc;
 mod table;
 mod lifecycle;
@@ -44,6 +48,8 @@ mod credentials;
 mod context;
 mod fork;
 
+pub use constants::*;
+pub use pid_gen::*;
 pub use mproc::*;
 pub use table::*;
 pub use lifecycle::*;

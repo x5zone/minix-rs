@@ -322,6 +322,11 @@ impl Process {
         self.identity.endpoint
     }
     
+    /// 获取进程组 ID
+    pub fn procgrp(&self) -> Pid {
+        self.identity.procgrp
+    }
+    
     /// 获取父进程索引
     pub fn parent(&self) -> ProcIndex {
         self.state.guardianship.parent()

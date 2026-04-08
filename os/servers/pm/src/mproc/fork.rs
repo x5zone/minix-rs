@@ -120,11 +120,38 @@ impl<'a> PmContext<'a> {
     
     /// 生成子进程 PID
     ///
-    /// 简化实现：使用索引 + 时间戳
+    /// 使用 PidGenerator 生成唯一的 PID。
+    ///
+    /// # Minix3 映射
+    ///
+    /// 对应 Minix3 的 `get_free_pid()` 函数：
+    /// ```c
+    /// pid_t get_free_pid()
+    /// {
+    ///   static pid_t next_pid = INIT_PID + 1;
+    ///   register struct mproc *rmp;
+    ///   int t;
+    ///
+    ///   do {
+    ///     t = 0;
+    ///     next_pid = (next_pid < NR_PIDS ? next_pid + 1 : INIT_PID + 1);
+    ///     for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++)
+    ///       if (rmp->mp_pid == next_pid || rmp->mp_procgrp == next_pid) {
+    ///         t = 1;
+    ///         break;
+    ///       }
+    ///   } while (t);
+    ///
+    ///   return(next_pid);
+    /// }
+    /// ```
+    ///
+    /// # 复杂度
+    ///
+    /// - 期望: O(1) (因为冲突概率极低，约 0.8%)
+    /// - 最坏: O(N) (极罕见)
     fn generate_child_pid(&self) -> Pid {
-        let parent = self.current_proc();
-        let base = parent.pid().max(1);
-        base + self.table.count() as i32 + 1
+        self.table.pid_generator.get_free_pid(self.table)
     }
     
     /// 从父进程创建子进程
