@@ -4,6 +4,16 @@
 
 use core::fmt;
 
+/// 最大进程数
+///
+/// 对应 Minix3 的 `NR_PROCS`
+pub const NR_PROCS: usize = 256;
+
+/// 保留给 root 的槽位数
+///
+/// 对应 Minix3 的 `LAST_FEW`
+pub const LAST_FEW: usize = 5;
+
 /// 进程 ID（32 位有符号整数）
 ///
 /// 对应 C 的 `pid_t`，在 32 位和 64 位系统中都是 4 字节

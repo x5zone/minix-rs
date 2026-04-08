@@ -2,7 +2,7 @@
 //!
 //! 提供进程的 UID/GID 凭证管理
 
-use crate::types::{Uid, Gid, IdSet};
+use minix_types::{Uid, Gid, IdSet};
 
 /// 最大补充组数量
 pub const NGROUPS_MAX: usize = 16;

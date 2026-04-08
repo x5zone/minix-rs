@@ -63,6 +63,9 @@ minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-mock = { path = "libs/minix-mock" }
 
+# 外部依赖
+bitflags = "2.4"
+
 # 构建工具
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"

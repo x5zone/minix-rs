@@ -2,7 +2,7 @@
 //!
 //! 提供进程的信号掩码、待处理信号等管理
 
-use crate::types::VirBytes;
+use minix_types::VirBytes;
 
 /// 信号集（64 位无符号整数）
 ///

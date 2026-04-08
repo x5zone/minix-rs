@@ -26,3 +26,21 @@ impl TraceState {
         self.stopped
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_default_not_stopped() {
+        let state = TraceState::default();
+        assert!(!state.is_stopped());
+    }
+    
+    #[test]
+    fn test_stopped() {
+        let mut state = TraceState::default();
+        state.stopped = true;
+        assert!(state.is_stopped());
+    }
+}

@@ -5,7 +5,7 @@
 //! # 设计改进
 //! 在 `Normal` 状态下没有 `tracer` 字段，防止误操作
 
-use crate::types::ProcIndex;
+use minix_types::ProcIndex;
 use bitflags::bitflags;
 
 /// 监护关系
@@ -29,7 +29,7 @@ pub enum Guardianship {
     /// 调试状态：被 tracer 劫持
     ///
     /// tracer 可能不等于 parent
-    Traced {
+    Traced{
         /// 父进程索引
         parent: ProcIndex,
         /// 追踪者索引

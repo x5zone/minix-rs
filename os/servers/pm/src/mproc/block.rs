@@ -107,3 +107,39 @@ impl fmt::Display for BlockState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_default_not_blocked() {
+        let state = BlockState::default();
+        assert!(!state.is_blocked());
+    }
+    
+    #[test]
+    fn test_stopped() {
+        let mut state = BlockState::default();
+        state.stopped = true;
+        assert!(state.is_blocked());
+    }
+    
+    #[test]
+    fn test_vfs_blocked() {
+        let mut state = BlockState::default();
+        state.ipc_blocked = Some(IpcBlockReason::VfsCall);
+        assert!(state.is_blocked());
+        assert!(state.is_vfs_blocked());
+        assert!(!state.is_event_blocked());
+    }
+    
+    #[test]
+    fn test_combined_state() {
+        let mut state = BlockState::default();
+        state.stopped = true;
+        state.ipc_blocked = Some(IpcBlockReason::VfsCall);
+        state.unpaused = true;
+        assert!(state.is_blocked());
+    }
+}

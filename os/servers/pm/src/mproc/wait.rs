@@ -4,8 +4,7 @@
 //!
 //! 当父进程调用 `wait()` 或 `waitpid()` 时，父进程的 `WaitState` 会被设置
 
-use crate::types::Pid;
-use crate::types::VirBytes;
+use minix_types::{Pid, VirBytes};
 
 /// 父进程等待状态
 ///
@@ -75,5 +74,46 @@ impl WaitState {
             WaitTarget::SpecificChild(pid) => child_pid == pid,
             WaitTarget::Group(pgrp) => child_procgrp == -pgrp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_default_not_waiting() {
+        let state = WaitState::default();
+        assert!(!state.waiting);
+    }
+    
+    #[test]
+    fn test_waiting_for_any_child() {
+        let mut state = WaitState::default();
+        state.waiting = true;
+        state.target = WaitTarget::AnyChild;
+        
+        assert!(state.is_waiting_for(1234, 100));
+        assert!(state.is_waiting_for(5678, 200));
+    }
+    
+    #[test]
+    fn test_waiting_for_specific_child() {
+        let mut state = WaitState::default();
+        state.waiting = true;
+        state.target = WaitTarget::SpecificChild(1234);
+        
+        assert!(state.is_waiting_for(1234, 100));
+        assert!(!state.is_waiting_for(5678, 100));
+    }
+    
+    #[test]
+    fn test_waiting_for_group() {
+        let mut state = WaitState::default();
+        state.waiting = true;
+        state.target = WaitTarget::Group(-100);
+        
+        assert!(state.is_waiting_for(1234, 100));
+        assert!(!state.is_waiting_for(5678, 200));
     }
 }
