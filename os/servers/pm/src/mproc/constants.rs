@@ -47,6 +47,6 @@ pub const NO_PID: Pid = 0;
 /// 注意：Minix3 中 NO_TRACER = 0，因为进程表索引 0 是 INIT 进程，
 /// INIT 进程永远不会被追踪（它是系统第一个进程）。
 ///
-/// 这与 minix-types 中的 NO_TRACER = ProcIndex(usize::MAX) 不同，
+/// 这与 minix-types 中的 NO_TRACER = UserSlot(usize::MAX) 不同，
 /// 但语义一致：表示"没有追踪者"。
 pub const NO_TRACER_INDEX: usize = 0;

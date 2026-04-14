@@ -1,0 +1,16 @@
+[package]
+name = "minix-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+minix-types = { path = "../libs/minix-types" }
+minix-ipc = { path = "../libs/minix-ipc" }
+minix-pm = { path = "../servers/pm" }
+minix-vm = { path = "../servers/vm" }
+
+[dev-dependencies]
+
+[[test]]
+name = "pm_vm_fork"
+path = "pm_vm_fork.rs"

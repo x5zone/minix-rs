@@ -28,7 +28,7 @@
 |------|------|
 | `Pid` | 进程 ID（32 位有符号整数） |
 | `Endpoint` | 端点标识（用于 IPC） |
-| `ProcIndex` | 进程表索引 |
+| `UserSlot` | 进程表索引 |
 
 ### 用户/组标识
 
@@ -87,7 +87,7 @@
 │           ▼                    ▼                    ▼                ▼      │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                    minix-types (核心协议层)                              ││
-│  │                    Endpoint, Pid, ProcIndex, Uid, Gid...               ││
+│  │                    Endpoint, Pid, UserSlot, Uid, Gid...               ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -98,7 +98,7 @@
 
 ```rust
 // 在 PM crate 中
-use minix_types::{Pid, Endpoint, ProcIndex};
+use minix_types::{Pid, Endpoint, UserSlot};
 
 // PM 私有的进程结构体
 pub struct Process {

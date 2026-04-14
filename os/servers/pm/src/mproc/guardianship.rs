@@ -5,7 +5,7 @@
 //! # 设计改进
 //! 在 `Normal` 状态下没有 `tracer` 字段，防止误操作
 
-use minix_types::ProcIndex;
+use minix_types::UserSlot;
 use bitflags::bitflags;
 
 /// 监护关系
@@ -23,7 +23,7 @@ pub enum Guardianship {
     /// 正常状态：只有一个父进程
     Normal { 
         /// 父进程索引
-        parent: ProcIndex 
+        parent: UserSlot 
     },
     
     /// 调试状态：被 tracer 劫持
@@ -31,9 +31,9 @@ pub enum Guardianship {
     /// tracer 可能不等于 parent
     Traced{
         /// 父进程索引
-        parent: ProcIndex,
+        parent: UserSlot,
         /// 追踪者索引
-        tracer: ProcIndex,
+        tracer: UserSlot,
         /// TRACE_EXIT flag：tracer 正在强制进程退出
         trace_exit: bool,
         /// 追踪选项（mp_trace_flags）
@@ -44,7 +44,7 @@ pub enum Guardianship {
 impl Default for Guardianship {
     fn default() -> Self {
         Self::Normal {
-            parent: ProcIndex::new(0),
+            parent: UserSlot::new(0),
         }
     }
 }
@@ -68,7 +68,7 @@ impl Guardianship {
     /// 获取父进程索引
     ///
     /// 无论是否被追踪，父进程始终存在
-    pub fn parent(&self) -> ProcIndex {
+    pub fn parent(&self) -> UserSlot {
         match self {
             Self::Normal { parent } => *parent,
             Self::Traced { parent, .. } => *parent,
@@ -78,7 +78,7 @@ impl Guardianship {
     /// 获取追踪者索引
     ///
     /// 如果进程没有被追踪，返回 `None`
-    pub fn tracer(&self) -> Option<ProcIndex> {
+    pub fn tracer(&self) -> Option<UserSlot> {
         match self {
             Self::Normal { .. } => None,
             Self::Traced { tracer, .. } => Some(*tracer),
@@ -115,8 +115,8 @@ mod tests {
     
     #[test]
     fn test_normal_parent() {
-        let g = Guardianship::Normal { parent: ProcIndex::new(5) };
-        assert_eq!(g.parent(), ProcIndex::new(5));
+        let g = Guardianship::Normal { parent: UserSlot::new(5) };
+        assert_eq!(g.parent(), UserSlot::new(5));
         assert!(!g.is_traced());
         assert!(g.tracer().is_none());
         assert!(!g.trace_exit());
@@ -125,22 +125,22 @@ mod tests {
     #[test]
     fn test_traced_state() {
         let g = Guardianship::Traced {
-            parent: ProcIndex::new(1),
-            tracer: ProcIndex::new(2),
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
             trace_exit: false,
             trace_options: TraceOptions::empty(),
         };
         assert!(g.is_traced());
-        assert_eq!(g.parent(), ProcIndex::new(1));
-        assert_eq!(g.tracer(), Some(ProcIndex::new(2)));
+        assert_eq!(g.parent(), UserSlot::new(1));
+        assert_eq!(g.tracer(), Some(UserSlot::new(2)));
         assert!(!g.trace_exit());
     }
     
     #[test]
     fn test_trace_exit_flag() {
         let g = Guardianship::Traced {
-            parent: ProcIndex::new(1),
-            tracer: ProcIndex::new(2),
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
             trace_exit: true,
             trace_options: TraceOptions::empty(),
         };

@@ -20,7 +20,7 @@
 //! 2. **不变量保护**: 上下文管理绑定了 PM 内部状态
 //! 3. **微内核原则**: 其他服务不需要了解 PM 的上下文实现
 
-use minix_types::ProcIndex;
+use minix_types::UserSlot;
 use crate::mproc::{ProcTable, Process, Privilege, Credentials};
 
 /// PM 上下文
@@ -92,7 +92,7 @@ impl<'a> PmContext<'a> {
     }
     
     /// 获取父进程索引
-    pub fn parent_index(&self) -> ProcIndex {
+    pub fn parent_index(&self) -> UserSlot {
         self.current_proc().state.guardianship.parent()
     }
 }

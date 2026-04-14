@@ -82,8 +82,8 @@ mod tests {
 
     #[test]
     fn test_endpoint() {
-        let ep = Endpoint::process(42);
-        assert_eq!(ep.pid(), 42);
+        let ep = Endpoint(42);
+        assert_eq!(ep.get(), 42);
         assert!(ep.is_valid());
     }
 }

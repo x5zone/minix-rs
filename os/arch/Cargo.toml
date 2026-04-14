@@ -1,0 +1,17 @@
+[package]
+name = "minix-arch"
+version = "0.1.0"
+edition = "2021"
+authors = ["Minix-Rust Contributors"]
+description = "Hardware abstraction layer for Minix-Rust"
+license = "MIT"
+
+[dependencies]
+minix-types = { path = "../libs/minix-types" }
+
+[features]
+default = ["mock"]
+mock = []
+x86_64 = []
+arm64 = []
+riscv64 = []

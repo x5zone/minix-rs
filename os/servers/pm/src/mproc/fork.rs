@@ -20,8 +20,50 @@
 //! 2. **不变量保护**: fork 逻辑绑定了 PM 内部状态
 //! 3. **微内核原则**: 其他服务不需要了解 PM 的 fork 实现
 
-use minix_types::{Pid, Endpoint, ProcIndex, NR_PROCS, LAST_FEW, Clock};
+use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid};
 use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags};
+
+/// PM -> VM: Fork 请求消息
+#[derive(Debug, Clone, Copy)]
+pub struct VmForkRequest {
+    /// 父进程Endpoint
+    pub parent_endpoint: Endpoint,
+    /// 子进程槽位索引
+    pub child_index: usize,
+}
+
+/// VM -> PM: Fork 响应消息
+#[derive(Debug, Clone, Copy)]
+pub struct VmForkResponse {
+    /// 子进程Endpoint
+    pub child_endpoint: Endpoint,
+    /// 是否成功
+    pub success: bool,
+}
+
+/// PM -> VFS: Fork 请求消息
+#[derive(Debug, Clone, Copy)]
+pub struct VfsPmForkRequest {
+    /// 子进程Endpoint
+    pub child_endpoint: Endpoint,
+    /// 父进程Endpoint
+    pub parent_endpoint: Endpoint,
+    /// 子进程PID
+    pub child_pid: Pid,
+    /// 真实UID
+    pub real_uid: Uid,
+    /// 真实GID
+    pub real_gid: Gid,
+}
+
+/// VFS -> PM: Fork 响应消息
+#[derive(Debug, Clone, Copy)]
+pub struct VfsPmForkResponse {
+    /// 子进程Endpoint
+    pub child_endpoint: Endpoint,
+    /// 是否成功
+    pub success: bool,
+}
 
 /// fork 错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +74,8 @@ pub enum ForkError {
     ReservedForRoot,
     /// 系统资源不足
     ResourceExhausted,
+    /// VM调用失败
+    VmError,
     /// 内部错误（不应该发生）
     InternalError,
 }
@@ -45,6 +89,7 @@ impl ForkError {
             Self::TableFull => 11,        // EAGAIN
             Self::ReservedForRoot => 11,  // EAGAIN
             Self::ResourceExhausted => 12, // ENOMEM
+            Self::VmError => 12,          // ENOMEM
             Self::InternalError => 22,    // EINVAL
         }
     }
@@ -109,7 +154,8 @@ impl<'a> PmContext<'a> {
         let child_index = self.table.alloc_slot().ok_or(ForkError::TableFull)?;
         
         let child_pid = self.generate_child_pid();
-        let child_endpoint = ProcTable::calculate_endpoint(child_index);
+        // 直接使用槽位中已有的带generation的endpoint（release_slot时已更新）
+        let child_endpoint = self.table.procs[child_index].endpoint();
         
         Ok(ForkResult {
             child_index,
@@ -211,7 +257,7 @@ impl Process {
         // 语义：我是谁（PID变了，其他继承）
         let identity = ProcessIdentity {
             id: ProcessId { 
-                index: ProcIndex::new(child_index), // 显式传入新索引
+                index: UserSlot::new(child_index), // 显式传入新索引
                 pid: child_pid,                     // 显式传入新 PID
             },
             endpoint: child_endpoint,
@@ -227,7 +273,7 @@ impl Process {
             block: BlockState::default(),       // 重置阻塞状态
             wait: WaitState::default(),         // 重置等待状态
             guardianship: Guardianship::Normal { 
-                parent: ProcIndex::new(parent_index), // 认祖归宗：父进程索引
+                parent: UserSlot::new(parent_index), // 认祖归宗：父进程索引
             },
             trace: TraceState::default(),       // 清除追踪器（除非 TO_TRACEFORK）
         };
@@ -259,9 +305,13 @@ impl Process {
             // --- 标志位过滤区 ---
             flags: {
                 let mut flags = RemainingFlags::empty();
-                // 只继承 TAINTED 标志
+                // 继承 TAINTED 和 DELAY_CALL 标志，对应 Minix3 逻辑：
+                // rmc->mp_flags &= (IN_USE|DELAY_CALL|TAINTED)
                 if parent.resources.flags.contains(RemainingFlags::TAINTED) {
                     flags |= RemainingFlags::TAINTED;
+                }
+                if parent.resources.flags.contains(RemainingFlags::DELAY_CALL) {
+                    flags |= RemainingFlags::DELAY_CALL;
                 }
                 flags
             },
@@ -340,7 +390,7 @@ mod tests {
         let child = ctx.table.get(fork_result.child_index).unwrap();
         assert!(child.is_in_use());
         assert_eq!(child.pid(), fork_result.child_pid);
-        assert_eq!(child.state.guardianship.parent(), ProcIndex::new(0));
+        assert_eq!(child.state.guardianship.parent(), UserSlot::new(0));
     }
     
     #[test]
@@ -354,11 +404,11 @@ mod tests {
     #[test]
     fn test_fork_child_index_correct() {
         let parent = Process::new(0, 100);
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
-        assert_eq!(child.identity.id.index, ProcIndex::new(5));
+        assert_eq!(child.identity.id.index, UserSlot::new(5));
         assert_eq!(child.identity.id.pid, 200);
-        assert_eq!(child.identity.endpoint, Endpoint::new(50));
+        assert_eq!(child.identity.endpoint, Endpoint(50));
     }
     
     #[test]
@@ -367,7 +417,7 @@ mod tests {
         parent.identity.procgrp = 500;
         parent.resources.nice = 10;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert_eq!(child.identity.procgrp, 500);
         assert_eq!(child.resources.nice, 10);
@@ -380,7 +430,7 @@ mod tests {
         parent.resources.child_stime = 2000;
         parent.resources.intervals = [100, 200, 300];
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert_eq!(child.resources.child_utime, 0);
         assert_eq!(child.resources.child_stime, 0);
@@ -388,13 +438,14 @@ mod tests {
     }
     
     #[test]
-    fn test_fork_flags_only_tainted() {
+    fn test_fork_flags_inheritance() {
         let mut parent = Process::new(0, 100);
-        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
+        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::DELAY_CALL | RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert!(child.resources.flags.contains(RemainingFlags::TAINTED));
+        assert!(child.resources.flags.contains(RemainingFlags::DELAY_CALL));
         assert!(!child.resources.flags.contains(RemainingFlags::ALARM_ON));
         assert!(!child.resources.flags.contains(RemainingFlags::NEW_PARENT));
     }
@@ -404,7 +455,7 @@ mod tests {
         let mut parent = Process::new(0, 100);
         parent.resources.flags = RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert!(child.resources.flags.is_empty());
     }
@@ -415,7 +466,7 @@ mod tests {
         parent.resources.privilege = Privilege::Kernel;
         parent.resources.scheduler = Endpoint::NONE;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert_eq!(child.resources.scheduler, Endpoint::RS);
     }
@@ -426,7 +477,7 @@ mod tests {
         parent.resources.privilege = Privilege::User(Credentials::new(1000, 100));
         parent.resources.scheduler = Endpoint::PM;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert_eq!(child.resources.scheduler, Endpoint::PM);
     }
@@ -434,18 +485,18 @@ mod tests {
     #[test]
     fn test_fork_parent_relationship() {
         let parent = Process::new(10, 100);
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 10);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 10);
         
-        assert_eq!(child.state.guardianship.parent(), ProcIndex::new(10));
+        assert_eq!(child.state.guardianship.parent(), UserSlot::new(10));
     }
     
     #[test]
     fn test_fork_ipc_reset() {
         let mut parent = Process::new(0, 100);
         parent.ipc.reply = Some(minix_ipc::Message::default());
-        parent.ipc.event_subscriber = Some(ProcIndex::new(5));
+        parent.ipc.event_subscriber = Some(UserSlot::new(5));
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint::new(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert!(child.ipc.reply.is_none());
         assert!(child.ipc.event_subscriber.is_none());

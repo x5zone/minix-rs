@@ -16,7 +16,7 @@
 //!
 //! - `Endpoint`: 端点标识（用于 IPC）
 //! - `Pid`: 进程 ID
-//! - `ProcIndex`: 进程表索引
+//! - `UserSlot`: 进程表索引
 //! - `Uid`/`Gid`: 用户/组 ID
 //! - `Message`: IPC 消息
 //!

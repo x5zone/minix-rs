@@ -3,6 +3,9 @@ members = [
     # 内核
     "kernel",
     
+    # 硬件抽象层
+    "arch",
+    
     # 系统服务器（9个核心）
     "servers/pm",
     "servers/vfs",
@@ -22,6 +25,9 @@ members = [
     "libs/minix-sys",
     "libs/minix-rt",
     "libs/minix-mock",
+    
+    # 集成测试
+    "tests",
     
     # 用户态命令 - bin
     "commands/bin/cat",
@@ -62,6 +68,7 @@ minix-ipc = { path = "libs/minix-ipc" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-mock = { path = "libs/minix-mock" }
+minix-arch = { path = "arch" }
 
 # 外部依赖
 bitflags = "2.4"

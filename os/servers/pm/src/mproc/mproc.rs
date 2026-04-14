@@ -22,7 +22,7 @@
 //! 2. **不变量保护**: 状态转换逻辑绑定了 PM 内部复杂逻辑，放在公共库会破坏不变量
 //! 3. **微内核原则**: 遵循"知识最小化"原则，其他服务不需要了解 PM 的内部实现
 
-use minix_types::{Pid, Endpoint, ProcIndex, Clock, VirBytes};
+use minix_types::{Pid, Endpoint, UserSlot, Clock, VirBytes};
 use minix_ipc::Message;
 use crate::mproc::{Lifecycle, BlockState, WaitState, Guardianship, TraceState, TraceOptions, Credentials, SignalState};
 
@@ -38,7 +38,7 @@ pub const NR_ITIMERS: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProcessId {
     /// 进程表索引
-    pub index: ProcIndex,
+    pub index: UserSlot,
     /// 进程 ID
     pub pid: Pid,
 }
@@ -62,7 +62,7 @@ impl Default for ProcessIdentity {
     fn default() -> Self {
         Self {
             id: ProcessId {
-                index: ProcIndex::new(0),
+                index: UserSlot::new(0),
                 pid: 0,
             },
             endpoint: Endpoint::default(),
@@ -154,6 +154,10 @@ bitflags::bitflags! {
     pub struct RemainingFlags: u32 {
         /// 定时器已启动
         const ALARM_ON = 0x00010;
+        /// 延迟调用
+        const DELAY_CALL = 0x00040;
+        /// VFS调用中
+        const VFS_CALL = 0x00200;
         /// 父进程已变更
         const NEW_PARENT = 0x00800;
         /// 部分执行
@@ -215,7 +219,7 @@ pub struct ProcessIpc {
     /// IPC 回复消息（延迟加载）
     pub reply: Option<Message>,
     /// 事件订阅者
-    pub event_subscriber: Option<ProcIndex>,
+    pub event_subscriber: Option<UserSlot>,
     /// 栈帧地址
     pub frame_addr: VirBytes,
     /// 栈帧长度
@@ -227,7 +231,7 @@ impl Default for ProcessIpc {
         Self {
             reply: None,
             event_subscriber: None,
-            frame_addr: 0,
+            frame_addr: VirBytes(0),
             frame_len: 0,
         }
     }
@@ -293,7 +297,7 @@ impl Process {
         Self {
             identity: ProcessIdentity {
                 id: ProcessId {
-                    index: ProcIndex::new(index),
+                    index: UserSlot::new(index),
                     pid,
                 },
                 ..Default::default()
@@ -313,7 +317,7 @@ impl Process {
     }
     
     /// 获取进程索引
-    pub fn index(&self) -> ProcIndex {
+    pub fn index(&self) -> UserSlot {
         self.identity.id.index
     }
     
@@ -328,12 +332,12 @@ impl Process {
     }
     
     /// 获取父进程索引
-    pub fn parent(&self) -> ProcIndex {
+    pub fn parent(&self) -> UserSlot {
         self.state.guardianship.parent()
     }
     
     /// 获取追踪者索引
-    pub fn tracer(&self) -> Option<ProcIndex> {
+    pub fn tracer(&self) -> Option<UserSlot> {
         self.state.guardianship.tracer()
     }
     
@@ -374,7 +378,7 @@ mod tests {
     #[test]
     fn test_process_new() {
         let proc = Process::new(5, 100);
-        assert_eq!(proc.index(), ProcIndex::new(5));
+        assert_eq!(proc.index(), UserSlot::new(5));
         assert_eq!(proc.pid(), 100);
         assert!(!proc.is_in_use());
     }
@@ -396,17 +400,17 @@ mod tests {
     #[test]
     fn test_process_guardianship() {
         let mut proc = Process::default();
-        proc.state.guardianship = Guardianship::Normal { parent: ProcIndex::new(10) };
-        assert_eq!(proc.parent(), ProcIndex::new(10));
+        proc.state.guardianship = Guardianship::Normal { parent: UserSlot::new(10) };
+        assert_eq!(proc.parent(), UserSlot::new(10));
         assert!(proc.tracer().is_none());
         
         proc.state.guardianship = Guardianship::Traced {
-            parent: ProcIndex::new(10),
-            tracer: ProcIndex::new(5),
+            parent: UserSlot::new(10),
+            tracer: UserSlot::new(5),
             trace_exit: false,
             trace_options: TraceOptions::empty(),
         };
-        assert_eq!(proc.tracer(), Some(ProcIndex::new(5)));
+        assert_eq!(proc.tracer(), Some(UserSlot::new(5)));
     }
     
     #[test]

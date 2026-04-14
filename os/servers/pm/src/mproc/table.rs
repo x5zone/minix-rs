@@ -217,26 +217,26 @@ impl ProcTable {
     pub fn calculate_endpoint(index: usize) -> Endpoint {
         if index < NR_PROCS {
             // 初始 generation = 0
-            Endpoint::new(index as i32)
+            Endpoint(index as i32)
         } else {
             Endpoint::NONE
         }
     }
-    
+
     /// 从 Endpoint 解析索引
     ///
-    /// Minix3 公式：`proc_nr = endpoint & 0x7FFF`
+    /// 使用 Endpoint::slot() 方法
     pub fn endpoint_to_index(endpoint: Endpoint) -> usize {
-        (endpoint.get() & 0x7FFF) as usize
+        endpoint.slot() as usize
     }
-    
+
     /// 从 Endpoint 解析代数
     ///
-    /// Minix3 公式：`generation = endpoint >> 15`
+    /// 使用 Endpoint::generation() 方法
     pub fn endpoint_to_generation(endpoint: Endpoint) -> u32 {
-        (endpoint.get() >> ENDPOINT_GENERATION_SHIFT) as u32
+        endpoint.generation() as u32
     }
-    
+
     /// 增加 Endpoint 的 generation
     ///
     /// 用于槽位释放时，防止过时消息发送到新进程
@@ -244,10 +244,9 @@ impl ProcTable {
         let generation = Self::endpoint_to_generation(endpoint);
         let index = Self::endpoint_to_index(endpoint);
         let new_gen = generation + 1;
-        
+
         // 新 endpoint = (new_generation << 15) + index
-        let new_value = ((new_gen as i32) << ENDPOINT_GENERATION_SHIFT) + (index as i32);
-        Endpoint::new(new_value)
+        Endpoint::from_generation_slot(new_gen as i32, index as i32)
     }
     
     /// 验证 Endpoint 是否有效
