@@ -2,6 +2,14 @@
 
 > **一句话**: 带版本号的进程标识符，解决微内核中服务重启后的身份识别问题。
 
+> **核心约束**: endpoint 是**"协议字段"**，不是普通数据结构。它必须满足：
+> - 能放进 message struct
+> - 能走 IPC（copy）
+> - 能走 syscall（寄存器）
+> - 能被不同编译器编译的代码理解
+>
+> 这意味着 endpoint 的 ABI 要**"跨编译器 + 跨模块 + 跨语言"**兼容。
+
 ---
 
 ## 1. 协议概述
@@ -224,8 +232,11 @@ Minix3 Rust 重构采用 **newtype 模式**（`struct Type(pub Inner)`）提供�
 
 ```rust
 // minix-types crate
+#[repr(transparent)]
 pub struct Endpoint(pub i32);       // 进程端点标识符（包含 generation + slot）
+#[repr(transparent)]
 pub struct KernelSlot(pub usize);   // 内核进程表索引（0 ~ NR_TASKS+NR_PROCS-1）
+#[repr(transparent)]
 pub struct UserSlot(pub usize);     // 服务器本地进程表索引（0 ~ NR_PROCS-1，仅用户进程）
 ```
 
@@ -313,6 +324,7 @@ find_proc(slot);  // OK
 当前为 **Rewrite 阶段**，目标是忠实复刻 Minix3 的 endpoint 设计：
 
 ```rust
+#[repr(transparent)]
 pub struct Endpoint(pub i32);
 
 impl Endpoint {

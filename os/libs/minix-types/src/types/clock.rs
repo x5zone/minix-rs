@@ -11,6 +11,7 @@ pub type Clock = i64;
 ///
 /// 在 64 位系统中，指针和 `size_t` 都是 8 字节
 /// 被 PM、VM、VFS、Kernel 共用
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
 
@@ -83,6 +84,7 @@ impl PartialEq<u64> for VirBytes {
 /// 物理地址（64 位无符号整数）
 ///
 /// 被 VM、Kernel 使用
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysBytes(pub u64);
 

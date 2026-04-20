@@ -3,6 +3,7 @@
 //! 提供虚拟内存管理器中单个进程的元数据结构。
 
 use minix_types::{Endpoint, UserSlot, VirBytes};
+use minix_arch::{CurrentPaging, paging::Paging};
 use super::VmFlags;
 use crate::region::RegionAvl;
 
@@ -10,6 +11,7 @@ use crate::region::RegionAvl;
 ///
 /// VM 私有的 ACL 机制。`vm_acl` 字段和 `acl_mask[][]` 表仅在 VM 内部使用，
 /// 其他服务（包括 RS）有自己的权限控制机制（如 RS 的 pci_acl）。
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AclIndex(pub i32);
 
@@ -25,36 +27,11 @@ impl AclIndex {
     }
 }
 
-/// 页表引用（Mock 版本）
+/// 页表类型
 ///
-/// 使用 minix-arch crate 的 Paging trait 抽象，不直接操作硬件。
-/// 当前为 Mock 实现，用于用户态测试。
-#[derive(Debug, Clone)]
-pub struct PageTableRef {
-    /// 页表根物理地址（用于激活页表）
-    pub root_phys: u64,
-    /// 页表条目数（统计用）
-    pub entry_count: usize,
-}
-
-impl Default for PageTableRef {
-    fn default() -> Self {
-        Self {
-            root_phys: 0,
-            entry_count: 0,
-        }
-    }
-}
-
-impl PageTableRef {
-    /// 创建新的空页表引用
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-// 保留旧名称作为类型别名，便于迁移
-pub type PageTable = PageTableRef;
+/// 使用 minix-arch crate 提供的当前架构页表实现。
+/// 编译时通过 feature 确定具体类型（mock/x86_64/arm64/riscv64）。
+pub type PageTable = CurrentPaging;
 
 /// 启动镜像信息
 ///
@@ -163,14 +140,14 @@ impl VmProc {
     /// 创建新的空进程槽位
     ///
     /// 返回一个未初始化的进程结构体，调用者需要设置正确的值。
-    pub fn empty(slot: UserSlot) -> Self {
-        Self {
+    pub fn empty(slot: UserSlot) -> Result<Self, minix_arch::paging::PageTableError> {
+        Ok(Self {
             slot,
             endpoint: Endpoint::NONE,
             flags: VmFlags::empty(),
             acl: AclIndex::default(),
             vm_boot: None,
-            page_table: PageTable::new(),
+            page_table: PageTable::new()?,
             regions: RegionAvl::new(),
             region_top: VirBytes::default(),
             total: VirBytes::default(),
@@ -179,7 +156,7 @@ impl VmProc {
             major_fault: 0,
             #[cfg(feature = "vmstats")]
             byte_copies: 0,
-        }
+        })
     }
 
     /// 检查进程是否在使用中
@@ -213,7 +190,8 @@ impl VmProc {
 
 impl Default for VmProc {
     fn default() -> Self {
-        Self::empty(UserSlot::new(0))
+        // 使用 expect 是因为在测试和默认情况下，页表创建不应该失败
+        Self::empty(UserSlot::new(0)).expect("Failed to create default VmProc")
     }
 }
 
@@ -257,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_vmproc_empty() {
-        let proc = VmProc::empty(UserSlot::new(5));
+        let proc = VmProc::empty(UserSlot::new(5)).unwrap();
         assert_eq!(proc.slot.get(), 5);
         assert!(proc.endpoint.is_none());
         assert!(!proc.is_in_use());
@@ -266,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_vmproc_flags() {
-        let mut proc = VmProc::empty(UserSlot::new(0));
+        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
         assert!(!proc.is_in_use());
 
         proc.flags |= VmFlags::IN_USE;
@@ -278,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_vmproc_endpoint() {
-        let mut proc = VmProc::empty(UserSlot::new(0));
+        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
         proc.endpoint = Endpoint::PM;
         proc.flags |= VmFlags::IN_USE;
 
@@ -294,9 +272,9 @@ mod tests {
 
     #[test]
     fn test_page_table() {
-        let pt = PageTable::new();
-        assert_eq!(pt.root_phys, 0);
-        assert_eq!(pt.entry_count, 0);
+        let pt = PageTable::new().unwrap();
+        // MockPaging 的根物理地址是动态分配的，不为 0
+        assert!(pt.root_paddr().0 > 0);
     }
 
     // === check_endpoint_slot 测试 ===
@@ -340,7 +318,7 @@ mod tests {
     fn test_slot_endpoint_consistency() {
         // 验证 slot 与 endpoint 的一致性
         let slot = UserSlot::new(5);
-        let mut proc = VmProc::empty(slot);
+        let mut proc = VmProc::empty(slot).unwrap();
         proc.endpoint = Endpoint::from_generation_slot(1, 5);
         proc.flags |= VmFlags::IN_USE;
 
@@ -351,7 +329,7 @@ mod tests {
     #[test]
     fn test_slot_endpoint_inconsistency() {
         // slot 与 endpoint 不匹配的情况
-        let mut proc = VmProc::empty(UserSlot::new(5));
+        let mut proc = VmProc::empty(UserSlot::new(5)).unwrap();
         proc.endpoint = Endpoint::from_generation_slot(1, 3); // slot 3，不是 5
         proc.flags |= VmFlags::IN_USE;
 
@@ -361,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_vmproc_memory_limit() {
-        let mut proc = VmProc::empty(UserSlot::new(1));
+        let mut proc = VmProc::empty(UserSlot::new(1)).unwrap();
         proc.total_max = VirBytes(1024 * 1024); // 1MB 限制
         proc.total = VirBytes(512 * 1024); // 当前使用 512KB
 
@@ -370,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_vmproc_stats() {
-        let mut proc = VmProc::empty(UserSlot::new(0));
+        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
 
         // 初始统计为 0
         assert_eq!(proc.minor_fault, 0);
@@ -387,7 +365,7 @@ mod tests {
     #[cfg(feature = "vmstats")]
     #[test]
     fn test_vmproc_byte_copies() {
-        let mut proc = VmProc::empty(UserSlot::new(0));
+        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
         proc.byte_copies = 1000;
 
         assert_eq!(proc.byte_copies, 1000);

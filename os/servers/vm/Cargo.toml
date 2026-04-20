@@ -14,6 +14,7 @@ minix-ipc = { workspace = true }
 minix-sys = { workspace = true }
 minix-mock = { workspace = true }
 minix-types = { workspace = true }
+minix-arch = { path = "../../arch" }
 bitflags = { workspace = true }
 
 [lib]

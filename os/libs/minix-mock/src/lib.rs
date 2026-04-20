@@ -99,14 +99,17 @@ impl MockSerial {
 }
 
 /// 虚拟地址
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct VirtAddr(pub u64);
 
 /// 物理地址
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct PhysAddr(pub u64);
 
 /// 页标志
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct PageFlags(pub u64);
 

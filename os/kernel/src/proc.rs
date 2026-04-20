@@ -485,6 +485,7 @@ impl core::fmt::Display for ProcName {
 
 /// 信号集类型（位图）
 /// 对应 C 的 sigset_t，用 64 位表示 64 个信号
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SigSet(pub u64);
 

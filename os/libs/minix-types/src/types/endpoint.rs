@@ -40,6 +40,7 @@ pub const ENDPOINT_SLOT_TOP: i32 = ENDPOINT_GENERATION_SIZE - (MAX_NR_TASKS as i
 /// - `NONE`: 无效端点
 /// - `ANY`: 任意进程
 /// - `SELF`: 自身进程
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Endpoint(pub i32);
 
@@ -158,6 +159,7 @@ impl Default for Endpoint {
 
 /// 用户进程槽位索引（0 ~ NR_PROCS-1）
 /// 用于访问 mproc/fproc/vmproc，**不含内核任务**
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserSlot(pub usize);
 
@@ -175,6 +177,7 @@ impl UserSlot {
 
 /// 内核进程表槽位索引（0 ~ NR_TASKS+NR_PROCS-1）
 /// 用于访问内核 proc_tab：0~NR_TASKS-1 是内核任务，NR_TASKS~ 是用户进程
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelSlot(pub usize);
 
