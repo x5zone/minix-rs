@@ -1,30 +1,33 @@
-//! Minix-RS Process Manager (PM)
+//! Minix-RS Process Manager (PM).
 //!
-//! 进程管理器，负责：
-//! - 进程创建与销毁 (fork, exec, exit)
-//! - 进程状态管理
-//! - 信号处理 (signal)
-//! - 等待子进程 (wait)
+//! Responsible for:
+//! - Process creation and destruction (fork, exec, exit)
+//! - Process state management
+//! - Signal handling
+//! - Waiting for child processes (wait)
 //!
-//! # 架构说明
+//! # Architecture
 //!
-//! 根据 Minix3 微内核设计，PM 拥有私有的进程表 (`mproc`)，
-//! 与 VM、VFS、Kernel 的进程表通过 `endpoint` 关联。
+//! Following Minix3 microkernel design, PM has its own process table (`mproc`),
+//! linked to VM, VFS, and Kernel process tables via `endpoint`.
 //!
-//! # 为什么 MProc 放在 PM crate 而不是 minix-types？
+//! # Why MProc is in PM crate, not minix-types?
 //!
-//! 1. **职责隔离**: MProc 包含大量仅 PM 关心的私有逻辑（信号处理、父子进程树等）
-//! 2. **不变量保护**: 状态转换逻辑绑定了 PM 内部复杂逻辑，放在公共库会破坏不变量
-//! 3. **微内核原则**: 遵循"知识最小化"原则，其他服务不需要了解 PM 的内部实现
+//! 1. **Separation of concerns**: MProc contains private logic only PM cares about (signal handling, parent-child tree, etc.)
+//! 2. **Invariant protection**: State transition logic binds PM internal complex logic, putting in public library would break invariants
+//! 3. **Microkernel principle**: Follows "minimum knowledge" principle, other services don't need to know PM's internal implementation
 //!
-//! # 模块结构
+//! # Module Structure
 //!
-//! - `mproc`: PM 进程表模块（私有）
-//! - `fork`: fork 系统调用入口
-//! - `exec`: exec 系统调用
-//! - `exit`: exit 系统调用
-//! - `signal`: 信号处理
-//! - `wait`: 等待子进程
+//! - `mproc`: PM process table module (private)
+//! - `fork`: fork system call entry
+//! - `exec`: exec system call
+//! - `exit`: exit system call
+//! - `signal`: signal handling
+//! - `wait`: wait for child process
+//! - `ipc`: IPC message handling
+
+extern crate alloc;
 
 pub mod mproc;
 pub mod fork;
@@ -32,17 +35,15 @@ pub mod exec;
 pub mod exit;
 pub mod signal;
 pub mod wait;
+pub mod ipc;
 
 pub use mproc::*;
+pub use ipc::*;
 
-/// PM 初始化
 pub fn init() {
-    // TODO: 初始化进程表
 }
 
-/// PM 主循环
 pub fn run() -> ! {
     loop {
-        // TODO: 处理消息
     }
 }

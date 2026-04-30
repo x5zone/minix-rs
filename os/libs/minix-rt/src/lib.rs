@@ -1,28 +1,27 @@
-//! Minix-RS Runtime Library
+//! Minix-RS Runtime Library.
 //!
-//! 用户态运行时支持
+//! User-space runtime support.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// 如果使用 std，直接使用 std 的 panic_handler
 #[cfg(not(feature = "std"))]
 use core::panic::PanicInfo;
 
 #[cfg(feature = "std")]
 use std::process::exit;
 
-/// 运行时初始化
+/// Runtime initialization.
 pub fn init() {
-    // TODO: 初始化运行时
+    // TODO: Initialize runtime
 }
 
-/// 程序入口包装（仅在 no_std 模式下使用）
+/// Program entry wrapper (only used in no_std mode).
 #[cfg(all(not(test), not(feature = "std")))]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     init();
 
-    // TODO: 调用 main 函数
+    // TODO: Call main function
     // let argc = ...;
     // let argv = ...;
     // let ret = main(argc, argv);
@@ -30,21 +29,21 @@ pub extern "C" fn _start() -> ! {
     exit(0);
 }
 
-/// 分配内存
+/// Allocates memory.
 pub fn alloc(size: usize) -> *mut u8 {
-    // TODO: 实现内存分配
+    // TODO: Implement memory allocation
     core::ptr::null_mut()
 }
 
-/// 释放内存
+/// Frees memory.
 pub fn free(ptr: *mut u8) {
-    // TODO: 实现内存释放
+    // TODO: Implement memory deallocation
 }
 
-/// panic 处理（仅在 no_std 模式下使用）
+/// Panic handler (only used in no_std mode).
 #[cfg(all(not(test), not(feature = "std")))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    // TODO: 输出 panic 信息
+    // TODO: Output panic information
     exit(1);
 }

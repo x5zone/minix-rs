@@ -1,12 +1,12 @@
-//! Minix-RS Mock Library
+//! Minix-RS Mock Library.
 //!
-//! 硬件 mock 实现，用于开发期测试
+//! Hardware mock implementation for development testing.
 
 #![no_std]
 
 use core::marker::PhantomData;
 
-/// Mock 内存管理单元
+/// Mock memory management unit.
 pub struct MockMMU {
     _phantom: PhantomData<()>,
 }
@@ -18,23 +18,23 @@ impl MockMMU {
         }
     }
 
-    /// Mock 页表分配
+    /// Mock page table allocation.
     pub fn alloc_page_table(&self) -> MockPageTable {
         MockPageTable::new()
     }
 
-    /// Mock 地址映射
+    /// Mock address mapping.
     pub fn map(&self, vaddr: VirtAddr, paddr: PhysAddr, flags: PageFlags) {
         log::debug!("mock map: {:?} -> {:?}, flags={:?}", vaddr, paddr, flags);
     }
 
-    /// Mock 地址解映射
+    /// Mock address unmapping.
     pub fn unmap(&self, vaddr: VirtAddr) {
         log::debug!("mock unmap: {:?}", vaddr);
     }
 }
 
-/// Mock 页表
+/// Mock page table.
 pub struct MockPageTable;
 
 impl MockPageTable {
@@ -43,7 +43,7 @@ impl MockPageTable {
     }
 }
 
-/// Mock 中断控制器
+/// Mock interrupt controller.
 pub struct MockPIC;
 
 impl MockPIC {
@@ -64,7 +64,7 @@ impl MockPIC {
     }
 }
 
-/// Mock 时钟
+/// Mock timer.
 pub struct MockTimer;
 
 impl MockTimer {
@@ -77,11 +77,11 @@ impl MockTimer {
     }
 
     pub fn get_ticks(&self) -> u64 {
-        0 // Mock 值
+        0 // Mock value
     }
 }
 
-/// Mock 串口
+/// Mock serial port.
 pub struct MockSerial;
 
 impl MockSerial {
@@ -94,21 +94,21 @@ impl MockSerial {
     }
 
     pub fn read(&self) -> Option<u8> {
-        None // Mock 无输入
+        None // Mock no input
     }
 }
 
-/// 虚拟地址
+/// Virtual address.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct VirtAddr(pub u64);
 
-/// 物理地址
+/// Physical address.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct PhysAddr(pub u64);
 
-/// 页标志
+/// Page flags.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct PageFlags(pub u64);

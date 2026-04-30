@@ -1,373 +1,306 @@
-//! VM 进程结构体
-//!
-//! 提供虚拟内存管理器中单个进程的元数据结构。
+//! VM process structure.
 
-use minix_types::{Endpoint, UserSlot, VirBytes};
-use minix_arch::{CurrentPaging, paging::Paging};
+use core::mem::MaybeUninit;
+use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
+use minix_arch::paging::Paging;
 use super::VmFlags;
+use crate::acl::AclState;
 use crate::region::RegionAvl;
+use crate::pagetable::PageTable;
 
-/// ACL 权限索引
+/// VM process structure.
 ///
-/// VM 私有的 ACL 机制。`vm_acl` 字段和 `acl_mask[][]` 表仅在 VM 内部使用，
-/// 其他服务（包括 RS）有自己的权限控制机制（如 RS 的 pci_acl）。
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AclIndex(pub i32);
-
-impl AclIndex {
-    /// 创建新 ACL 索引
-    pub const fn new(value: i32) -> Self {
-        Self(value)
-    }
-
-    /// 获取值
-    pub const fn get(self) -> i32 {
-        self.0
-    }
-}
-
-/// 页表类型
+/// Design principles:
+/// - All fields always exist (no Option)
+/// - State expressed via flags
+/// - Allows temporary inconsistency (e.g., during fork)
+/// - `vm_pt` and `vm_regions_avl` are MaybeUninit - only valid when IN_USE
 ///
-/// 使用 minix-arch crate 提供的当前架构页表实现。
-/// 编译时通过 feature 确定具体类型（mock/x86_64/arm64/riscv64）。
-pub type PageTable = CurrentPaging;
-
-/// 启动镜像信息
+/// Corresponds to Minix3's `struct vmproc`.
 ///
-/// 仅对启动时进程（boot time process）有效。
-/// 对应 Minix3: [`type.h#L148-154`](../../../../minix3/minix/include/minix/type.h#L148-L154)
-#[derive(Debug, Clone)]
-pub struct BootImage {
-    /// 进程号
-    pub proc_nr: i32,
-    /// 进程名称
-    pub proc_name: [u8; 16],
-    /// 端点号
-    pub endpoint: Endpoint,
-    /// 内存起始地址
-    pub start_addr: u64,
-    /// 内存长度
-    pub len: u64,
-}
-
-impl BootImage {
-    /// 创建新的启动镜像信息
-    pub const fn new(proc_nr: i32, endpoint: Endpoint) -> Self {
-        Self {
-            proc_nr,
-            proc_name: [0; 16],
-            endpoint,
-            start_addr: 0,
-            len: 0,
-        }
-    }
-}
-
-/// VM 进程结构体
-///
-/// 设计原则：
-/// - 所有字段始终存在（无 Option）
-/// - 用 flags 表达状态
-/// - 允许"暂时不一致"（如 fork 中间态）
-///
-/// # 为什么不用 Option<Endpoint>？
-///
-/// - fork 时 endpoint 还没生成，但这是"极短暂的中间态"
-/// - 用 `Option` 会让 100% 的代码都处理 `None` 分支
-/// - 正确做法：`endpoint: Endpoint` + `flags.contains(IN_USE)` 判断有效性
-///
-/// # 对应 Minix3 源码
-///
-/// [`vmproc.h`](../../../../minix3/minix/servers/vm/vmproc.h) 中的 `struct vmproc`
+/// # Visibility Design
+/// `VmProc` is NOT exported from the `vmproc` module. External code must use
+/// typestate views (`EmptySlot`, `ActiveProc`, `ExitingProc`) to access
+/// process data. Fields are `pub(crate)` for internal use within the vmproc
+/// module tree.
 #[derive(Debug)]
-pub struct VmProc {
-    // === 标识层 ===
-    /// 进程表槽位索引
-    pub slot: UserSlot,
+pub(crate) struct VmProc {
+    pub(crate) vm_slot: UserSlot,
+    pub(crate) vm_endpoint: Endpoint,
+    pub(crate) vm_flags: VmFlags,
+    pub(crate) vm_acl: AclState,
+    /// Boot image info (only valid for boot-time processes).
+    pub(crate) vm_boot: Option<BootImage>,
 
-    /// 端点标识
-    pub endpoint: Endpoint,
+    /// Page table - uninitialized until `init_page_table()` is called.
+    /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
+    /// that provides safe in-place initialization/cleanup without move-out.
+    pub(crate) vm_pt: MaybeUninit<PageTable>,
+    /// Virtual memory regions AVL tree - uninitialized until `init_regions()` is called.
+    /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
+    /// that provides safe in-place initialization/cleanup without move-out.
+    pub(crate) vm_regions_avl: MaybeUninit<RegionAvl>,
+    /// Whether vm_pt has been initialized (must check before assume_init).
+    pub(crate) vm_pt_initialized: bool,
+    /// Whether vm_regions_avl has been initialized (must check before assume_init).
+    pub(crate) vm_regions_avl_initialized: bool,
+    pub(crate) vm_region_top: VirBytes,
 
-    /// 进程状态标志
-    pub flags: VmFlags,
+    pub(crate) vm_total: VirBytes,
+    pub(crate) vm_total_max: VirBytes,
 
-    /// ACL 权限索引
-    pub acl: AclIndex,
+    pub(crate) vm_minor_page_fault: u64,
+    pub(crate) vm_major_page_fault: u64,
 
-    /// 启动镜像信息（仅对启动时进程有效）
-    ///
-    /// TODO：代码组织或许应该在别的地方
-    /// 对应 Minix3: [`vmproc.h#L18`](../../../../minix3/minix/servers/vm/vmproc.h#L18)
-    pub vm_boot: Option<BootImage>,
-
-    // === 内存层 ===
-    /// 页表
-    pub page_table: PageTable,
-
-    /// 内存区域 AVL 树
-    ///
-    /// 管理进程的虚拟地址空间区域。
-    /// 对应 Minix3: `vm_regions_avl`
-    pub regions: RegionAvl,
-
-    /// 区域顶部地址
-    pub region_top: VirBytes,
-
-    // === 资源限制 ===
-    /// 当前内存使用量
-    pub total: VirBytes,
-
-    /// 最大内存使用量
-    pub total_max: VirBytes,
-
-    // === 统计数据 ===
-    /// 次要页错误数
-    pub minor_fault: u64,
-
-    /// 主要页错误数
-    pub major_fault: u64,
-
-    // === 调试统计（条件编译）===
-    /// 字节复制计数（仅当 VMSTATS 启用时）
-    ///
-    /// 对应 Minix3: [`vmproc.h#L25-28`](../../../../minix3/minix/servers/vm/vmproc.h#L25-L28)
+    /// Byte copy count (only when vmstats feature is enabled).
     #[cfg(feature = "vmstats")]
-    pub byte_copies: u64,
+    pub(crate) vm_bytecopies: u64,
 }
 
 impl VmProc {
-    /// 创建新的空进程槽位
+    /// Creates a vacant (unoccupied) process slot.
     ///
-    /// 返回一个未初始化的进程结构体，调用者需要设置正确的值。
-    pub fn empty(slot: UserSlot) -> Result<Self, minix_arch::paging::PageTableError> {
-        Ok(Self {
-            slot,
-            endpoint: Endpoint::NONE,
-            flags: VmFlags::empty(),
-            acl: AclIndex::default(),
+    /// Corresponds to Minix3's `memset(vmproc, 0, sizeof(vmproc))`.
+    /// `vm_pt` and `vm_regions_avl` are uninitialized - only access when IN_USE.
+    pub(crate) const fn vacant() -> Self {
+        Self {
+            vm_slot: UserSlot(0),
+            vm_endpoint: Endpoint::NONE,
+            vm_flags: VmFlags::empty(),
+            vm_acl: AclState::Uninitialized,
             vm_boot: None,
-            page_table: PageTable::new()?,
-            regions: RegionAvl::new(),
-            region_top: VirBytes::default(),
-            total: VirBytes::default(),
-            total_max: VirBytes::default(),
-            minor_fault: 0,
-            major_fault: 0,
+            vm_pt: MaybeUninit::uninit(),
+            vm_regions_avl: MaybeUninit::uninit(),
+            vm_pt_initialized: false,
+            vm_regions_avl_initialized: false,
+            vm_region_top: VirBytes::new(0),
+            vm_total: VirBytes::new(0),
+            vm_total_max: VirBytes::new(0),
+            vm_minor_page_fault: 0,
+            vm_major_page_fault: 0,
             #[cfg(feature = "vmstats")]
-            byte_copies: 0,
-        })
+            vm_bytecopies: 0,
+        }
     }
 
-    /// 检查进程是否在使用中
-    #[inline]
-    pub fn is_in_use(&self) -> bool {
-        self.flags.contains(VmFlags::IN_USE)
-    }
-
-    /// 检查进程是否正在退出
-    #[inline]
-    pub fn is_exiting(&self) -> bool {
-        self.flags.contains(VmFlags::EXITING)
-    }
-
-    /// 检查是否为 VM 实例
-    #[inline]
-    pub fn is_vm_instance(&self) -> bool {
-        self.flags.contains(VmFlags::VM_INSTANCE)
-    }
-
-    /// Debug invariant（运行时检查）
+    /// Creates a vacant slot with the given slot number.
     ///
-    /// 替代 enum 的方式：运行时保证，而不是类型系统强制
+    /// This creates a vacant slot and sets the vm_slot field.
+    /// The vm_pt and vm_regions_avl remain uninitialized.
+    pub(crate) const fn vacant_with_slot(vm_slot: UserSlot) -> Self {
+        let mut proc = Self::vacant();
+        proc.vm_slot = vm_slot;
+        proc
+    }
+
+    /// Checks if the process is in use.
+    #[inline]
+    pub(crate) fn is_in_use(&self) -> bool {
+        self.vm_flags.contains(VmFlags::IN_USE)
+    }
+
+    /// Checks if the process is exiting.
+    #[inline]
+    pub(crate) fn is_exiting(&self) -> bool {
+        self.vm_flags.contains(VmFlags::EXITING)
+    }
+
+    /// Checks if this is a VM instance.
+    #[inline]
+    pub(crate) fn is_vm_instance(&self) -> bool {
+        self.vm_flags.contains(VmFlags::VM_INSTANCE)
+    }
+
+    /// Debug invariant check (runtime assertion).
     #[cfg(debug_assertions)]
-    pub fn check(&self) {
-        if self.flags.contains(VmFlags::IN_USE) {
-            debug_assert!(!self.endpoint.is_none(), "IN_USE but endpoint is NONE");
+    pub(crate) fn check(&self) {
+        if self.vm_flags.contains(VmFlags::IN_USE) {
+            debug_assert!(!self.vm_endpoint.is_none(), "IN_USE but vm_endpoint is NONE");
+        }
+    }
+
+    /// Explicitly clears process resources.
+    ///
+    /// Core of explicit resource management - called from typestate transitions
+    /// (`ExitingProc::reap()`, `ActiveProc::force_clear()`).
+    /// Does not rely on Drop.
+    ///
+    /// Only clears `vm_pt` and `vm_regions_avl` if they were previously initialized
+    /// (tracked by `vm_pt_initialized` / `vm_regions_avl_initialized` flags). This makes it
+    /// safe to call on slots that were activated but never had vm_pt/vm_regions_avl
+    /// initialized (e.g., fork intermediate state).
+    ///
+    /// Corresponds to Minix3's `acl_clear()` + `free_proc()` + `clear_proc()`, combined:
+    /// - Resets ACL state to `Uninitialized` (Minix3's `do_exit()` calls `acl_clear()` before
+    ///   `clear_proc()`, we combine both into one operation)
+    /// - Resets `vm_endpoint` to `NONE` and `vm_boot` to `None` (Minix3's `clear_proc()`
+    ///   does not reset these, but Rust is more thorough)
+    /// - Handles `VM_INSTANCE` flag counter: if `VM_INSTANCE` is set, decrements
+    ///   the global counter (corresponds to Minix3's `do_exit()` handling before
+    ///   calling `free_proc()` + `clear_proc()`)
+    ///
+    /// # Safety
+    /// Caller must ensure this process's page table is no longer in use by hardware.
+    pub(crate) unsafe fn clear(&mut self) {
+        if self.vm_regions_avl_initialized {
+            unsafe { self.vm_regions_avl.assume_init_mut().clear(); }
+        }
+        if self.vm_pt_initialized {
+            unsafe { self.vm_pt.assume_init_mut().destroy(); }
+        }
+
+        if self.vm_flags.contains(VmFlags::VM_INSTANCE) {
+            crate::global::dec_vm_instance();
+        }
+
+        self.vm_flags = VmFlags::empty();
+        self.vm_endpoint = Endpoint::NONE;
+        self.vm_boot = None;
+        self.vm_acl = AclState::Uninitialized;
+        self.vm_pt_initialized = false;
+        self.vm_regions_avl_initialized = false;
+
+        self.vm_region_top = VirBytes::new(0);
+        self.vm_total = VirBytes::default();
+        self.vm_total_max = VirBytes::default();
+        self.vm_minor_page_fault = 0;
+        self.vm_major_page_fault = 0;
+
+        #[cfg(feature = "vmstats")]
+        {
+            self.vm_bytecopies = 0;
         }
     }
 }
 
 impl Default for VmProc {
     fn default() -> Self {
-        // 使用 expect 是因为在测试和默认情况下，页表创建不应该失败
-        Self::empty(UserSlot::new(0)).expect("Failed to create default VmProc")
+        Self::vacant()
     }
 }
 
-/// 从 endpoint 提取 slot 并验证是否匹配
+/// VmProc is always in-place in the process table and must never be dropped.
 ///
-/// 这是一个辅助函数，仅检查 endpoint 的 slot 部分是否与给定的 slot 匹配。
-/// 注意：这不是完整的 `vm_isokendpt` 实现，完整的验证需要使用 `VmProcTable::vm_isokendpt()`。
+/// # Design Note
+/// In production, the process table is a static variable that never gets dropped
+/// (program exits without calling destructors). Any Drop call indicates a bug
+/// in process table management (e.g., moving a VmProc out of its slot).
 ///
-/// # 参数
-/// - `endpoint`: 要检查的端点
-/// - `slot`: 预期的槽位号
-///
-/// # 返回值
-/// - `true`: endpoint 的 slot 部分与给定的 slot 匹配
-/// - `false`: 不匹配或 endpoint 无效
-///
-/// # 示例
-/// ```
-/// use minix_vm::vmproc::check_endpoint_slot;
-/// use minix_types::{Endpoint, UserSlot};
-///
-/// let slot = UserSlot::new(5);
-/// let endpoint = Endpoint::from_generation_slot(1, 5);
-///
-/// assert!(check_endpoint_slot(endpoint, slot));
-/// assert!(!check_endpoint_slot(endpoint, UserSlot::new(3)));
-/// ```
-pub fn check_endpoint_slot(endpoint: Endpoint, slot: UserSlot) -> bool {
-    // 特殊端点（NONE/ANY/SELF）不参与验证
-    if !endpoint.is_valid() {
-        return false;
+/// In tests, vacant slots may be dropped during cleanup, which is acceptable.
+/// Only dropping an IN_USE slot is a bug.
+impl Drop for VmProc {
+    fn drop(&mut self) {
+        #[cfg(not(test))]
+        {
+            panic!(
+                "VmProc should never be dropped in production — use in-place cleanup via clear()"
+            );
+        }
+
+        #[cfg(test)]
+        if self.vm_flags.contains(VmFlags::IN_USE) {
+            panic!(
+                "VmProc dropped while IN_USE — process table management bug. \
+                 Use in-place cleanup via VmProc::clear() or typestate transitions."
+            );
+        }
     }
-    
-    // 提取 endpoint 中的 slot 部分并与给定的 slot 比较
-    endpoint.slot() as usize == slot.get()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vmproc::VmProcTable;
+
+    /// Gets a mutable reference to a VmProc from the global table.
+    /// The slot is reset to vacant state before returning.
+    fn get_vmproc(vm_slot: UserSlot) -> &'static mut VmProc {
+        let table = VmProcTable::get_global();
+        unsafe {
+            table.reset_slot(vm_slot);
+            table.get_slot_mut(vm_slot).unwrap()
+        }
+    }
 
     #[test]
     fn test_vmproc_empty() {
-        let proc = VmProc::empty(UserSlot::new(5)).unwrap();
-        assert_eq!(proc.slot.get(), 5);
-        assert!(proc.endpoint.is_none());
+        let slot = UserSlot::new(5);
+        let proc = get_vmproc(slot);
+        // Note: global table slots are initialized with vm_slot = 0,
+        // actual slot number is set when activating via get_empty()
+        assert!(proc.vm_endpoint.is_none());
         assert!(!proc.is_in_use());
         assert!(!proc.is_exiting());
     }
 
     #[test]
     fn test_vmproc_flags() {
-        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
+        let proc = get_vmproc(UserSlot::new(1));
         assert!(!proc.is_in_use());
 
-        proc.flags |= VmFlags::IN_USE;
+        proc.vm_flags |= VmFlags::IN_USE;
         assert!(proc.is_in_use());
 
-        proc.flags |= VmFlags::EXITING;
+        proc.vm_flags |= VmFlags::EXITING;
         assert!(proc.is_exiting());
     }
 
     #[test]
     fn test_vmproc_endpoint() {
-        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
-        proc.endpoint = Endpoint::PM;
-        proc.flags |= VmFlags::IN_USE;
+        let proc = get_vmproc(UserSlot::new(2));
+        proc.vm_endpoint = Endpoint::from_generation_slot(1, 2);
+        proc.vm_flags |= VmFlags::IN_USE;
 
-        assert!(proc.endpoint.is_valid());
+        assert!(proc.vm_endpoint.is_valid());
         assert!(proc.is_in_use());
     }
 
     #[test]
-    fn test_acl_index() {
-        let acl = AclIndex::new(42);
-        assert_eq!(acl.get(), 42);
-    }
-
-    #[test]
-    fn test_page_table() {
-        let pt = PageTable::new().unwrap();
-        // MockPaging 的根物理地址是动态分配的，不为 0
-        assert!(pt.root_paddr().0 > 0);
-    }
-
-    // === check_endpoint_slot 测试 ===
-
-    #[test]
-    fn test_check_endpoint_slot_matching() {
-        let slot = UserSlot::new(5);
-        let endpoint = Endpoint::from_generation_slot(1, 5);
-
-        assert!(check_endpoint_slot(endpoint, slot));
-    }
-
-    #[test]
-    fn test_check_endpoint_slot_mismatch() {
-        let slot = UserSlot::new(5);
-        let endpoint = Endpoint::from_generation_slot(1, 3); // 不同的 slot
-
-        assert!(!check_endpoint_slot(endpoint, slot));
-    }
-
-    #[test]
-    fn test_check_endpoint_slot_invalid_endpoint() {
-        // NONE, ANY, SELF 应该返回 false
-        assert!(!check_endpoint_slot(Endpoint::NONE, UserSlot::new(0)));
-        assert!(!check_endpoint_slot(Endpoint::ANY, UserSlot::new(0)));
-        assert!(!check_endpoint_slot(Endpoint::SELF, UserSlot::new(0)));
-    }
-
-    #[test]
-    fn test_check_endpoint_slot_with_generation() {
-        // 不同 generation 但相同 slot 应该匹配
-        let slot = UserSlot::new(10);
-        let endpoint = Endpoint::from_generation_slot(5, 10);
-
-        assert!(check_endpoint_slot(endpoint, slot));
-    }
-
-    // === 边界条件测试 ===
-
-    #[test]
     fn test_slot_endpoint_consistency() {
-        // 验证 slot 与 endpoint 的一致性
-        let slot = UserSlot::new(5);
-        let mut proc = VmProc::empty(slot).unwrap();
-        proc.endpoint = Endpoint::from_generation_slot(1, 5);
-        proc.flags |= VmFlags::IN_USE;
+        let proc = get_vmproc(UserSlot::new(5));
+        proc.vm_endpoint = Endpoint::from_generation_slot(1, 5);
+        proc.vm_flags |= VmFlags::IN_USE;
 
-        // 验证一致性
-        assert!(check_endpoint_slot(proc.endpoint, proc.slot));
+        assert!(proc.vm_slot.matches(proc.vm_endpoint));
     }
 
     #[test]
     fn test_slot_endpoint_inconsistency() {
-        // slot 与 endpoint 不匹配的情况
-        let mut proc = VmProc::empty(UserSlot::new(5)).unwrap();
-        proc.endpoint = Endpoint::from_generation_slot(1, 3); // slot 3，不是 5
-        proc.flags |= VmFlags::IN_USE;
+        let proc = get_vmproc(UserSlot::new(6));
+        proc.vm_endpoint = Endpoint::from_generation_slot(1, 3);
+        proc.vm_flags |= VmFlags::IN_USE;
 
-        // 应该不匹配
-        assert!(!check_endpoint_slot(proc.endpoint, proc.slot));
+        assert!(!proc.vm_slot.matches(proc.vm_endpoint));
     }
 
     #[test]
     fn test_vmproc_memory_limit() {
-        let mut proc = VmProc::empty(UserSlot::new(1)).unwrap();
-        proc.total_max = VirBytes(1024 * 1024); // 1MB 限制
-        proc.total = VirBytes(512 * 1024); // 当前使用 512KB
+        let proc = get_vmproc(UserSlot::new(7));
+        proc.vm_total_max = VirBytes(1024 * 1024);
+        proc.vm_total = VirBytes(512 * 1024);
 
-        assert!(proc.total.0 <= proc.total_max.0);
+        assert!(proc.vm_total.0 <= proc.vm_total_max.0);
     }
 
     #[test]
     fn test_vmproc_stats() {
-        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
+        let proc = get_vmproc(UserSlot::new(8));
+        assert_eq!(proc.vm_minor_page_fault, 0);
+        assert_eq!(proc.vm_major_page_fault, 0);
 
-        // 初始统计为 0
-        assert_eq!(proc.minor_fault, 0);
-        assert_eq!(proc.major_fault, 0);
+        proc.vm_minor_page_fault += 1;
+        proc.vm_major_page_fault += 1;
 
-        // 模拟页错误
-        proc.minor_fault += 1;
-        proc.major_fault += 1;
-
-        assert_eq!(proc.minor_fault, 1);
-        assert_eq!(proc.major_fault, 1);
+        assert_eq!(proc.vm_minor_page_fault, 1);
+        assert_eq!(proc.vm_major_page_fault, 1);
     }
 
     #[cfg(feature = "vmstats")]
     #[test]
     fn test_vmproc_byte_copies() {
-        let mut proc = VmProc::empty(UserSlot::new(0)).unwrap();
-        proc.byte_copies = 1000;
+        let proc = get_vmproc(UserSlot::new(9));
+        proc.vm_bytecopies = 1000;
 
-        assert_eq!(proc.byte_copies, 1000);
+        assert_eq!(proc.vm_bytecopies, 1000);
     }
 }

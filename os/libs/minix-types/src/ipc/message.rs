@@ -1,53 +1,53 @@
-//! IPC 消息结构定义
+//! IPC message structure definitions.
 //!
-//! Minix3 使用固定大小的消息进行进程间通信
+//! Minix3 uses fixed-size messages for inter-process communication.
 
 use crate::types::Endpoint;
 
-/// 消息大小（字节）
+/// Message size (bytes).
 pub const MESSAGE_SIZE: usize = 56;
 
-/// IPC 消息
+/// IPC message.
 ///
-/// Minix3 中所有进程间通信都通过此消息结构
+/// All inter-process communication in Minix3 uses this message structure.
 ///
-/// # 内存布局
+/// # Memory Layout
 /// ```text
-/// | 字段      | 大小    | 偏移 |
-/// |-----------|---------|------|
-/// | m_source  | 4 bytes | 0    |
-/// | m_type    | 4 bytes | 4    |
-/// | m_u       | 48 bytes| 8    |
-/// | 总计      | 56 bytes|      |
+/// | Field     | Size    | Offset |
+/// |-----------|---------|--------|
+/// | m_source  | 4 bytes | 0      |
+/// | m_type    | 4 bytes | 4      |
+/// | m_u       | 48 bytes| 8      |
+/// | Total     | 56 bytes|        |
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct Message {
-    /// 消息发送者端点
+    /// Message sender endpoint.
     pub m_source: Endpoint,
-    /// 消息类型（正数=请求，负数=响应/错误）
+    /// Message type (positive=request, negative=response/error).
     pub m_type: i32,
-    /// 消息负载
+    /// Message payload.
     pub m_u: MessageUnion,
 }
 
-/// 消息负载联合体
+/// Message payload union.
 ///
-/// 包含多种消息格式，根据 `m_type` 选择合适的格式
+/// Contains multiple message formats, select the appropriate format based on `m_type`.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub union MessageUnion {
-    /// 格式 1：混合类型（int + pointer）
+    /// Format 1: Mixed types (int + pointer).
     pub m_m1: MessageM1,
-    /// 格式 2：混合类型（int + long）
+    /// Format 2: Mixed types (int + long).
     pub m_m2: MessageM2,
-    /// 格式 3：混合类型（int + char array）
+    /// Format 3: Mixed types (int + char array).
     pub m_m3: MessageM3,
-    /// 格式 4：纯 long 类型
+    /// Format 4: Pure long types.
     pub m_m4: MessageM4,
-    /// 格式 5：混合类型（char + int + long）
+    /// Format 5: Mixed types (char + int + long).
     pub m_m5: MessageM5,
-    /// 原始字节
+    /// Raw bytes.
     pub raw: [u8; 48],
 }
 
@@ -63,94 +63,94 @@ impl core::fmt::Debug for MessageUnion {
     }
 }
 
-/// 消息格式 1：混合类型
+/// Message format 1: Mixed types.
 ///
-/// 用于需要传递指针的系统调用（如 read/write）
+/// Used for syscalls that need to pass pointers (e.g. read/write).
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessageM1 {
-    /// 整数参数 1
+    /// Integer argument 1.
     pub m1i1: i32,
-    /// 整数参数 2
+    /// Integer argument 2.
     pub m1i2: i32,
-    /// 整数参数 3
+    /// Integer argument 3.
     pub m1i3: i32,
-    /// 指针参数 1（64 位）
+    /// Pointer argument 1 (64-bit).
     pub m1p1: u64,
-    /// 指针参数 2（64 位）
+    /// Pointer argument 2 (64-bit).
     pub m1p2: u64,
-    /// 指针参数 3（64 位）
+    /// Pointer argument 3 (64-bit).
     pub m1p3: u64,
 }
 
-/// 消息格式 2：混合类型
+/// Message format 2: Mixed types.
 ///
-/// 用于需要传递 long 类型参数的系统调用
+/// Used for syscalls that need to pass long type arguments.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessageM2 {
-    /// 整数参数 1
+    /// Integer argument 1.
     pub m2i1: i32,
-    /// 整数参数 2
+    /// Integer argument 2.
     pub m2i2: i32,
-    /// 整数参数 3
+    /// Integer argument 3.
     pub m2i3: i32,
-    /// long 参数 1
+    /// Long argument 1.
     pub m2l1: i64,
-    /// long 参数 2
+    /// Long argument 2.
     pub m2l2: i64,
 }
 
-/// 消息格式 3：混合类型
+/// Message format 3: Mixed types.
 ///
-/// 用于需要传递字符串/路径的系统调用（如 open）
+/// Used for syscalls that need to pass strings/paths (e.g. open).
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessageM3 {
-    /// 整数参数 1
+    /// Integer argument 1.
     pub m3i1: i32,
-    /// 整数参数 2
+    /// Integer argument 2.
     pub m3i2: i32,
-    /// 整数参数 3
+    /// Integer argument 3.
     pub m3i3: i32,
-    /// 字符数组（路径名等）
+    /// Character array (pathname, etc.).
     pub m3ca1: [u8; 24],
 }
 
-/// 消息格式 4：纯 long 类型
+/// Message format 4: Pure long types.
 ///
-/// 用于只需要传递 long 类型参数的系统调用
+/// Used for syscalls that only need to pass long type arguments.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessageM4 {
-    /// long 参数 1
+    /// Long argument 1.
     pub m4l1: i64,
-    /// long 参数 2
+    /// Long argument 2.
     pub m4l2: i64,
-    /// long 参数 3
+    /// Long argument 3.
     pub m4l3: i64,
-    /// long 参数 4
+    /// Long argument 4.
     pub m4l4: i64,
-    /// long 参数 5
+    /// Long argument 5.
     pub m4l5: i64,
 }
 
-/// 消息格式 5：混合类型
+/// Message format 5: Mixed types.
 ///
-/// 用于需要传递多个类型参数的系统调用
+/// Used for syscalls that need to pass multiple type arguments.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessageM5 {
-    /// 字符数组
+    /// Character array.
     pub m5c1: [u8; 8],
-    /// 整数参数 1
+    /// Integer argument 1.
     pub m5i1: i32,
-    /// 整数参数 2
+    /// Integer argument 2.
     pub m5i2: i32,
-    /// 整数参数 3
+    /// Integer argument 3.
     pub m5i3: i32,
-    /// 整数参数 4
+    /// Integer argument 4.
     pub m5i4: i32,
-    /// long 参数 1
+    /// Long argument 1.
     pub m5l1: i64,
 }

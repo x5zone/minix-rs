@@ -1,21 +1,21 @@
-//! 用户和组 ID 类型定义
+//! User and group ID type definitions.
 //!
-//! 提供 UID/GID 及其三元组（real/effective/saved）类型
+//! Provides UID/GID and their triplets (real/effective/saved) types.
 
 use core::fmt;
 
-/// 用户 ID（32 位无符号整数）
+/// User ID (32-bit unsigned integer).
 pub type Uid = u32;
 
-/// 组 ID（32 位无符号整数）
+/// Group ID (32-bit unsigned integer).
 pub type Gid = u32;
 
-/// ID 三元组（real / effective / saved）
+/// ID triplet (real / effective / saved).
 ///
-/// 用于存储 UID 或 GID 的三种状态：
-/// - `real`: 真实 ID，标识进程的实际所有者
-/// - `effective`: 有效 ID，用于权限检查
-/// - `saved`: 保存的 ID，用于 setuid/setgid 恢复
+/// Stores three states of UID or GID:
+/// - `real`: Real ID, identifies the actual owner of the process.
+/// - `effective`: Effective ID, used for permission checks.
+/// - `saved`: Saved ID, used for setuid/setgid restoration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct IdSet<T> {
@@ -44,8 +44,8 @@ impl<T: fmt::Display> fmt::Display for IdSet<T> {
     }
 }
 
-/// 用户 ID 三元组
+/// User ID triplet.
 pub type UidSet = IdSet<Uid>;
 
-/// 组 ID 三元组
+/// Group ID triplet.
 pub type GidSet = IdSet<Gid>;

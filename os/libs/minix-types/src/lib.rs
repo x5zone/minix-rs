@@ -1,37 +1,37 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
-//! # Minix3 核心协议类型库
+//! Minix3 core protocol types.
 //!
-//! 本 crate 提供 Minix3 跨服务通讯必须知道的最小类型集合，
-//! 相当于 C 语言里的 `include/minix/`。
+//! This crate provides the minimal set of types required for cross-service
+//! communication in Minix3, equivalent to `include/minix/` in C.
 //!
-//! # 设计原则
+//! # Design Principles
 //!
-//! 1. **最小化**: 只放跨服务通讯必须知道的最小集合
-//! 2. **稳定性**: 这些类型是各服务之间的"协议"，变更需要谨慎
-//! 3. **无业务逻辑**: 不包含任何服务的私有实现细节
+//! 1. **Minimalism**: Only the minimal set required for cross-service communication.
+//! 2. **Stability**: These types are the "protocol" between services; changes require care.
+//! 3. **No Business Logic**: No private implementation details of any service.
 //!
-//! # 核心类型
+//! # Core Types
 //!
-//! - `Endpoint`: 端点标识（用于 IPC）
-//! - `Pid`: 进程 ID
-//! - `UserSlot`: 进程表索引
-//! - `Uid`/`Gid`: 用户/组 ID
-//! - `Message`: IPC 消息
+//! - `Endpoint`: Endpoint identifier (for IPC).
+//! - `Pid`: Process ID.
+//! - `UserSlot`: Process table index.
+//! - `Uid`/`Gid`: User/Group ID.
+//! - `Message`: IPC message.
 //!
-//! # 为什么不包含 MProc 等进程表结构？
+//! # Why Not Include MProc and Other Process Table Structures?
 //!
-//! 根据 Minix3 微内核设计，各服务拥有私有的进程表：
-//! - **PM/mproc**: 进程管理、信号、权限 → 在 `minix-pm` crate 中
-//! - **VM/vmproc**: 虚拟内存、页表 → 在 `minix-vm` crate 中
-//! - **VFS/fproc**: 文件描述符、目录 → 在 `minix-vfs` crate 中
-//! - **Kernel/proc**: 调度、IPC、寄存器 → 在 `minix-kernel` crate 中
+//! Per Minix3 microkernel design, each service has its own private process table:
+//! - **PM/mproc**: Process management, signals, permissions → in `minix-pm` crate.
+//! - **VM/vmproc**: Virtual memory, page tables → in `minix-vm` crate.
+//! - **VFS/fproc**: File descriptors, directories → in `minix-vfs` crate.
+//! - **Kernel/proc**: Scheduling, IPC, registers → in `minix-kernel` crate.
 //!
-//! 这样设计的原因：
-//! 1. **职责隔离**: 各服务的进程表包含大量私有逻辑
-//! 2. **不变量保护**: 状态转换逻辑绑定了服务内部复杂逻辑
-//! 3. **微内核原则**: 遵循"知识最小化"原则
+//! Reasons for this design:
+//! 1. **Responsibility Isolation**: Each service's process table contains extensive private logic.
+//! 2. **Invariant Protection**: State transition logic is bound to complex internal service logic.
+//! 3. **Microkernel Principle**: Follows the "minimum knowledge" principle.
 
 pub mod types;
 pub mod ipc;

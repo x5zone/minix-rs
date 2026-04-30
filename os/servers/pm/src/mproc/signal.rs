@@ -1,22 +1,23 @@
-//! 信号处理状态定义
+//! Signal handling state definition.
 //!
-//! 提供进程的信号掩码、待处理信号等管理
+//! Provides process signal mask, pending signals, and other management.
 
+use alloc::boxed::Box;
 use minix_types::VirBytes;
 
-/// 信号集（64 位无符号整数）
+/// Signal set (64-bit unsigned integer).
 ///
-/// 在 64 位系统中，支持最多 64 个信号
+/// In 64-bit systems, supports up to 64 signals.
 pub type SigSet = u64;
 
-/// 信号数量
+/// Number of signals.
 pub const _NSIG: usize = 64;
 
-/// 信号处理状态
+/// Signal handling state.
 ///
-/// 存储进程的信号相关信息
+/// Stores process signal-related information.
 ///
-/// # Minix3 映射
+/// # Minix3 Mapping
 /// - `mp_sigmask` → `mask`
 /// - `mp_sigmask2` → `mask_saved`
 /// - `mp_sigpending` → `pending`
@@ -24,60 +25,90 @@ pub const _NSIG: usize = 64;
 /// - `mp_sigtrace` → `trace_mask`
 /// - `SIGSUSPENDED` → `suspended`
 /// - `mp_sigreturn` → `sigreturn_addr`
-#[derive(Debug, Clone, Default)]
+/// - `mp_sigact[]` → `actions`
+#[derive(Debug, Clone)]
 pub struct SignalState {
-    /// 信号掩码（阻塞的信号）
+    /// Signal mask (blocked signals).
     pub mask: SigSet,
-    /// 保存的信号掩码（用于 sigsuspend 恢复）
+    /// Saved signal mask (for sigsuspend restore).
     pub mask_saved: SigSet,
-    /// 待处理的信号
+    /// Pending signals.
     pub pending: SigSet,
-    /// 内核待处理的信号
+    /// Kernel pending signals.
     pub kernel_pending: SigSet,
-    /// 追踪信号掩码
+    /// Trace signal mask.
     pub trace_mask: SigSet,
-    /// 是否处于 sigsuspend 状态（SIGSUSPENDED）
+    /// Whether in sigsuspend state (SIGSUSPENDED).
     pub suspended: bool,
-    /// sigreturn 函数地址
+    /// sigreturn function address.
     pub sigreturn_addr: VirBytes,
+    /// Signal actions (corresponds to Minix3's `mp_sigact[]`).
+    ///
+    /// Stored on heap to avoid large stack allocations.
+    pub actions: Box<[SigAction; _NSIG]>,
 }
 
-/// 信号处理动作
+impl Default for SignalState {
+    fn default() -> Self {
+        Self {
+            mask: 0,
+            mask_saved: 0,
+            pending: 0,
+            kernel_pending: 0,
+            trace_mask: 0,
+            suspended: false,
+            sigreturn_addr: VirBytes(0),
+            actions: Box::new([SigAction::default(); _NSIG]),
+        }
+    }
+}
+
+/// Signal handling action.
 ///
-/// 对应 C 的 `struct sigaction`
+/// Corresponds to C's `struct sigaction`.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct SigAction {
-    /// 信号处理函数地址或特殊值
+    /// Signal handler address or special value.
     ///
-    /// - `0` (SIG_DFL): 默认处理
-    /// - `1` (SIG_IGN): 忽略
-    /// - 其他: 用户定义的处理函数地址
+    /// - `0` (SIG_DFL): Default handling
+    /// - `1` (SIG_IGN): Ignore
+    /// - Other: User-defined handler address
     pub sa_handler: usize,
-    /// 处理期间阻塞的信号
+    /// Signals blocked during handling.
     pub sa_mask: SigSet,
-    /// 信号处理标志
+    /// Signal handling flags.
     pub sa_flags: i32,
 }
 
+impl Default for SigAction {
+    fn default() -> Self {
+        Self {
+            sa_handler: 0,
+            sa_mask: 0,
+            sa_flags: 0,
+        }
+    }
+}
+
 impl SignalState {
-    /// 创建新的信号状态（默认无阻塞信号）
+    /// Creates new signal state (default: no blocked signals).
     pub fn new() -> Self {
         Self::default()
     }
     
-    /// 检查是否有待处理的信号
+    /// Checks if there are pending signals.
     pub fn has_pending(&self) -> bool {
         self.pending != 0 || self.kernel_pending != 0
     }
     
-    /// 检查信号是否被阻塞
+    /// Checks if signal is blocked.
     ///
-    /// # 参数
-    /// - `signo`: 信号编号（1-64）
+    /// # Parameters
+    /// - `signo`: Signal number (1-64)
     ///
-    /// # 返回
-    /// 如果信号被阻塞，返回 `true`
+    /// # Returns
+    /// Returns `true` if signal is blocked.
     pub fn is_blocked(&self, signo: u32) -> bool {
         if signo == 0 || signo > 64 {
             return false;
@@ -85,11 +116,11 @@ impl SignalState {
         (self.mask & (1u64 << (signo - 1))) != 0
     }
     
-    /// 添加待处理信号
+    /// Adds pending signal.
     ///
-    /// # 参数
-    /// - `signo`: 信号编号（1-64）
-    /// - `from_kernel`: 是否来自内核
+    /// # Parameters
+    /// - `signo`: Signal number (1-64)
+    /// - `from_kernel`: Whether from kernel
     pub fn add_pending(&mut self, signo: u32, from_kernel: bool) {
         if signo == 0 || signo > 64 {
             return;

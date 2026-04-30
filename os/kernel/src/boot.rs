@@ -1,6 +1,6 @@
-//! Boot code (mock)
+//! Boot code (mock).
 
-/// 启动入口
+/// Boot entry.
 pub fn boot() {
-    // TODO: 启动初始化
+    // TODO: Boot initialization
 }

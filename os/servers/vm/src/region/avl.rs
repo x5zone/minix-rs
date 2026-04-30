@@ -1,33 +1,23 @@
-//! AVL 树实现 - 用于管理虚拟区域
-//!
-//! AVL 树是一种自平衡二叉搜索树，用于高效地查找、插入和删除虚拟区域。
-//! 按键（虚拟地址）排序，支持 O(log n) 的操作复杂度。
-//!
-//! 对应 Minix3: `region.c` 中的 AVL 树操作
+//! AVL tree implementation for managing virtual regions.
 
 use super::vir_region::VirRegion;
 use minix_types::VirBytes;
-use std::cmp::Ordering;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::marker::PhantomData;
 
-/// AVL 搜索类型
-///
-/// 对应 Minix3: `avl_search_type` 枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SearchType(u8);
+pub(crate) struct SearchType(u8);
 
 impl SearchType {
-    /// 精确匹配键值
-    pub const EQUAL: Self = Self(1);
-    /// 小于指定键
-    pub const LESS: Self = Self(2);
-    /// 大于指定键
-    pub const GREATER: Self = Self(4);
-    /// 小于等于
-    pub const LESS_EQUAL: Self = Self(3);
-    /// 大于等于
-    pub const GREATER_EQUAL: Self = Self(5);
+    pub(crate) const EQUAL: Self = Self(1);
+    pub(crate) const LESS: Self = Self(2);
+    pub(crate) const GREATER: Self = Self(4);
+    pub(crate) const LESS_EQUAL: Self = Self(3);
+    pub(crate) const GREATER_EQUAL: Self = Self(5);
 
-    pub fn contains(&self, other: Self) -> bool {
+    pub(crate) fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) != 0
     }
 }
@@ -38,44 +28,29 @@ impl Default for SearchType {
     }
 }
 
-/// AVL 树结构
-///
-/// 管理进程的虚拟区域集合，按虚拟地址排序。
 #[derive(Debug, Default)]
-pub struct RegionAvl {
-    /// 树根节点
+pub(crate) struct RegionAvl {
     root: Option<Box<VirRegion>>,
-    /// 节点数量
     count: usize,
 }
 
 impl RegionAvl {
-    /// 创建新的空 AVL 树
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             root: None,
             count: 0,
         }
     }
 
-    /// 获取节点数量
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.count
     }
 
-    /// 检查是否为空
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
 
-    /// 查找包含指定地址的区域
-    ///
-    /// 这是最常用的查找操作，用于：
-    /// - 缺页处理：查找发生缺页的区域
-    /// - 内存访问：验证地址是否在有效区域内
-    ///
-    /// 时间复杂度: O(log n)
-    pub fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
         Self::find_containing(&self.root, addr)
     }
 
@@ -91,8 +66,7 @@ impl RegionAvl {
         }
     }
 
-    /// 查找指定地址的区域（可变）
-    pub fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {
+    pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {
         Self::find_containing_mut(&mut self.root, addr)
     }
 
@@ -111,10 +85,7 @@ impl RegionAvl {
         }
     }
 
-    /// 通用搜索函数
-    ///
-    /// 支持多种搜索类型，对应 Minix3 的 `region_search`
-    pub fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
+    pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
         Self::search_node(self.root.as_ref(), key, st)
     }
 
@@ -162,33 +133,23 @@ impl RegionAvl {
         match_h
     }
 
-    /// 查找小于指定键的最大区域
-    pub fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::LESS)
     }
 
-    /// 查找大于指定键的最小区域
-    pub fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::GREATER)
     }
 
-    /// 查找小于等于指定键的最大区域
-    pub fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::LESS_EQUAL)
     }
 
-    /// 查找大于等于指定键的最小区域
-    pub fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::GREATER_EQUAL)
     }
 
-    /// 查找与指定范围重叠的任意区域
-    ///
-    /// 用于 mmap 检查新区域是否与现有区域冲突。
-    /// 重叠条件: region.vaddr < end && region.end_addr() > start
-    ///
-    /// 时间复杂度: O(log n) 平均
-    pub fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
         Self::find_overlap_node(self.root.as_ref(), start, end)
     }
 
@@ -212,8 +173,7 @@ impl RegionAvl {
         }
     }
 
-    /// 查找所有与指定范围重叠的区域
-    pub fn find_all_overlaps<'a>(
+    pub(crate) fn find_all_overlaps<'a>(
         &'a self,
         start: VirBytes,
         end: VirBytes,
@@ -221,17 +181,7 @@ impl RegionAvl {
         self.iter().filter(move |r| r.overlaps(start, end))
     }
 
-    /// 在指定范围内查找足够大的空闲槽位
-    ///
-    /// 对应 Minix3: `region_find_slot_range`
-    ///
-    /// 参数:
-    /// - minv: 最小起始地址
-    /// - maxv: 最大结束地址（0 表示使用 minv + length）
-    /// - length: 需要的空间大小
-    ///
-    /// 返回: 可用起始地址，或 None 表示无合适空间
-    pub fn find_slot(
+    pub(crate) fn find_slot(
         &self,
         minv: VirBytes,
         maxv: VirBytes,
@@ -278,8 +228,7 @@ impl RegionAvl {
         None
     }
 
-    /// 插入区域
-    pub fn insert(&mut self, region: VirRegion) {
+    pub(crate) fn insert(&mut self, region: VirRegion) {
         let was_inserted = Self::insert_node(&mut self.root, region);
         if was_inserted {
             self.count += 1;
@@ -308,8 +257,7 @@ impl RegionAvl {
         }
     }
 
-    /// 删除指定地址的区域
-    pub fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
+    pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
         Self::remove_node(&mut self.root, addr).map(|region| {
             self.count -= 1;
             *region
@@ -349,8 +297,7 @@ impl RegionAvl {
         }
     }
 
-    /// 遍历所有区域（中序遍历，按地址排序）
-    pub fn traverse<F>(&self, mut f: F)
+    pub(crate) fn traverse<F>(&self, mut f: F)
     where
         F: FnMut(&VirRegion),
     {
@@ -368,8 +315,7 @@ impl RegionAvl {
         }
     }
 
-    /// 创建中序迭代器
-    pub fn iter(&self) -> RegionIter<'_> {
+    pub(crate) fn iter(&self) -> RegionIter<'_> {
         let mut stack = Vec::new();
         let mut node = self.root.as_ref();
         while let Some(n) = node {
@@ -379,23 +325,34 @@ impl RegionAvl {
         RegionIter { stack }
     }
 
-    /// 创建可变迭代器
-    pub fn iter_mut(&mut self) -> RegionIterMut<'_> {
+    pub(crate) fn iter_mut(&mut self) -> RegionIterMut<'_> {
         let mut stack = Vec::new();
         let mut node = self.root.as_mut();
         while let Some(n) = node {
             stack.push(n.as_mut() as *mut VirRegion);
             node = n.lower.as_mut();
         }
-        RegionIterMut { stack, _marker: std::marker::PhantomData }
+        RegionIterMut { stack, _marker: PhantomData }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if let Some(root) = self.root.take() {
+            Self::clear_recursive(root);
+        }
+        self.count = 0;
+    }
+
+    fn clear_recursive(node: Box<VirRegion>) {
+        if let Some(lower) = node.lower {
+            Self::clear_recursive(lower);
+        }
+        if let Some(higher) = node.higher {
+            Self::clear_recursive(higher);
+        }
     }
 }
 
-/// AVL 树中序迭代器
-///
-/// 按虚拟地址升序遍历所有区域。
-/// 对应 Minix3: `region_iter` 结构体
-pub struct RegionIter<'a> {
+pub(crate) struct RegionIter<'a> {
     stack: Vec<&'a VirRegion>,
 }
 
@@ -415,10 +372,9 @@ impl<'a> Iterator for RegionIter<'a> {
     }
 }
 
-/// 可变迭代器
-pub struct RegionIterMut<'a> {
+pub(crate) struct RegionIterMut<'a> {
     stack: Vec<*mut VirRegion>,
-    _marker: std::marker::PhantomData<&'a mut VirRegion>,
+    _marker: PhantomData<&'a mut VirRegion>,
 }
 
 impl<'a> Iterator for RegionIterMut<'a> {
@@ -451,6 +407,7 @@ impl<'a> IntoIterator for &'a RegionAvl {
 mod tests {
     use super::*;
     use super::super::vir_region::{VrFlags, VirRegion};
+    use alloc::vec;
 
     fn make_region(vaddr: u64, length: u64) -> VirRegion {
         VirRegion::new(VirBytes(vaddr), VirBytes(length), VrFlags::empty())

@@ -1,81 +1,40 @@
-//! 保留页队列 (Reserved Page Queue)
+//! Reserved page queue for critical memory allocations.
 //!
-//! 为系统关键路径预留的内存池，确保在内存紧张时仍能分配小块内存。
-//! 用于 fork、exec 等不能失败的操作。
-//!
-//! 对应 Minix3: `alloc.c` 中的 `reservedqueues` 机制
+//! Memory pool reserved for critical paths, ensuring small allocations succeed even under memory pressure.
+//! Used for fork, exec, and other operations that cannot fail.
 
+use alloc::vec::Vec;
 use super::{AllocFlags, PhysAddr};
 
-/// 保留页队列魔数
-///
-/// 用于检测内存损坏
 const RESERVED_MAGIC: u32 = 0x6e4c74d5;
-
-/// 最大保留页数
-///
-/// 单个队列最多保留的页槽数量
 const MAX_RESERVED_PAGES: usize = 300;
-
-/// 最大保留队列数
-///
-/// 系统最多支持的保留队列数量
 const MAX_RESERVED_QUEUES: usize = 15;
 
-/// 保留页槽
-///
-/// 存储单个预留页的物理地址和虚拟地址
 #[derive(Debug, Clone, Copy)]
 struct ReservedSlot {
-    /// 物理地址
     phys: PhysAddr,
-    /// 虚拟地址（如果已映射）
     vir: Option<usize>,
 }
 
 impl ReservedSlot {
-    /// 创建空槽
     const fn empty() -> Self {
-        Self {
-            phys: PhysAddr(0),
-            vir: None,
-        }
+        Self { phys: PhysAddr(0), vir: None }
     }
 }
 
-/// 保留页队列
-///
-/// 管理一组预留的物理页，用于紧急内存分配。
-/// 对应 Minix3: `struct reserved_pages`
 #[derive(Debug)]
-pub struct ReservedQueue {
-    /// 下一个在使用的队列（链表）
+pub(crate) struct ReservedQueue {
     next: Option<usize>,
-
-    /// 队列深度（最大可用槽数）
     max_available: usize,
-
-    /// 每次分配的连续页数
     npages: usize,
-
-    /// 是否需要映射到虚拟地址
     mapped: bool,
-
-    /// 当前可用槽数
     n_available: usize,
-
-    /// 分配标志
     alloc_flags: AllocFlags,
-
-    /// 页槽数组
     slots: [ReservedSlot; MAX_RESERVED_PAGES],
-
-    /// 魔数（用于检测内存损坏）
     magic: u32,
 }
 
 impl ReservedQueue {
-    /// 创建新的空队列
     const fn new() -> Self {
         Self {
             next: None,
@@ -89,39 +48,26 @@ impl ReservedQueue {
         }
     }
 
-    /// 检查队列是否有效
     fn sanity_check(&self) {
         assert_eq!(self.magic, RESERVED_MAGIC, "ReservedQueue magic mismatch");
         assert!(self.n_available <= MAX_RESERVED_PAGES);
         assert!(self.n_available <= self.max_available);
     }
 
-    /// 检查是否是有效的队列引用
     fn is_valid(&self) -> bool {
         self.magic == RESERVED_MAGIC && self.max_available > 0
     }
 }
 
-/// 保留页队列管理器
-///
-/// 管理所有保留页队列，提供紧急内存分配功能。
 #[derive(Debug)]
-pub struct ReservedQueueManager {
-    /// 队列数组
+pub(crate) struct ReservedQueueManager {
     queues: [ReservedQueue; MAX_RESERVED_QUEUES],
-
-    /// 第一个在使用的队列索引
     first_in_use: Option<usize>,
-
-    /// 缺少的备用页数
-    ///
-    /// 需要补充的页槽数量，用于触发补充分配
     missing_spares: usize,
 }
 
 impl ReservedQueueManager {
-    /// 创建新的保留页队列管理器
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             queues: [const { ReservedQueue::new() }; MAX_RESERVED_QUEUES],
             first_in_use: None,
@@ -129,20 +75,7 @@ impl ReservedQueueManager {
         }
     }
 
-    /// 创建新的保留页队列
-    ///
-    /// # 参数
-    /// - `max_available`: 队列深度（最大可用槽数）
-    /// - `npages`: 每次分配的连续页数
-    /// - `mapped`: 是否需要映射到虚拟地址
-    /// - `alloc_flags`: 分配标志
-    ///
-    /// # 返回值
-    /// - `Some(queue_id)`: 队列ID
-    /// - `None`: 队列槽位已满
-    ///
-    /// 对应 Minix3: `reservedqueue_new()`
-    pub fn create_queue(
+    pub(crate) fn create_queue(
         &mut self,
         max_available: usize,
         npages: usize,
@@ -152,13 +85,9 @@ impl ReservedQueueManager {
         assert!(max_available > 0 && max_available < MAX_RESERVED_PAGES);
         assert!(npages > 0 && npages < 10);
 
-        // 查找空闲队列槽位
-        let queue_id = (0..MAX_RESERVED_QUEUES)
-            .find(|&i| self.queues[i].max_available == 0)?;
-
+        let queue_id = (0..MAX_RESERVED_QUEUES).find(|&i| self.queues[i].max_available == 0)?;
         let queue = &mut self.queues[queue_id];
 
-        // 初始化队列
         queue.next = self.first_in_use;
         self.first_in_use = Some(queue_id);
 
@@ -169,21 +98,10 @@ impl ReservedQueueManager {
         queue.magic = RESERVED_MAGIC;
 
         self.missing_spares += max_available;
-
         Some(queue_id)
     }
 
-    /// 从保留队列分配页
-    ///
-    /// # 参数
-    /// - `queue_id`: 队列ID
-    ///
-    /// # 返回值
-    /// - `Some((phys, vir))`: 物理地址和虚拟地址
-    /// - `None`: 队列已空
-    ///
-    /// 对应 Minix3: `reservedqueue_alloc()`
-    pub fn alloc(&mut self, queue_id: usize) -> Option<(PhysAddr, Option<usize>)> {
+    pub(crate) fn alloc(&mut self, queue_id: usize) -> Option<(PhysAddr, Option<usize>)> {
         if queue_id >= MAX_RESERVED_QUEUES {
             return None;
         }
@@ -205,12 +123,6 @@ impl ReservedQueueManager {
         Some(result)
     }
 
-    /// 填充队列槽位
-    ///
-    /// 从物理内存分配器获取页填充队列。
-    /// 通常在内存分配周期中调用。
-    ///
-    /// 对应 Minix3: `reservedqueue_fill()`
     fn fill_queue(&mut self, queue_id: usize, phys: PhysAddr, vir: Option<usize>) -> bool {
         if queue_id >= MAX_RESERVED_QUEUES {
             return false;
@@ -231,19 +143,12 @@ impl ReservedQueueManager {
         true
     }
 
-    /// 执行分配周期
-    ///
-    /// 尝试填充所有需要补充的队列槽位。
-    /// 通常在内存释放后调用。
-    ///
-    /// 对应 Minix3: `alloc_cycle()`
-    pub fn alloc_cycle<F>(&mut self, mut alloc_fn: F)
+    pub(crate) fn alloc_cycle<F>(&mut self, mut alloc_fn: F)
     where
         F: FnMut(usize, AllocFlags) -> Option<(PhysAddr, Option<usize>)>,
     {
         self.sanity_check_queues();
 
-        // 收集所有需要填充的队列信息
         let mut to_fill: Vec<(usize, usize, AllocFlags)> = Vec::new();
         let mut queue_id = self.first_in_use;
         while let Some(id) = queue_id {
@@ -257,7 +162,6 @@ impl ReservedQueueManager {
             queue_id = queue.next;
         }
 
-        // 填充队列
         for (id, npages, alloc_flags) in to_fill {
             if self.missing_spares == 0 {
                 break;
@@ -284,7 +188,6 @@ impl ReservedQueueManager {
         self.sanity_check_queues();
     }
 
-    /// 检查队列完整性
     fn sanity_check_queues(&self) {
         let mut count = 0;
         let mut queue_id = self.first_in_use;
@@ -300,13 +203,11 @@ impl ReservedQueueManager {
         assert_eq!(count, self.missing_spares);
     }
 
-    /// 获取缺少的备用页数
-    pub fn missing_spares(&self) -> usize {
+    pub(crate) fn missing_spares(&self) -> usize {
         self.missing_spares
     }
 
-    /// 获取队列信息（用于调试）
-    pub fn get_queue_info(&self, queue_id: usize) -> Option<QueueInfo> {
+    pub(crate) fn get_queue_info(&self, queue_id: usize) -> Option<QueueInfo> {
         if queue_id >= MAX_RESERVED_QUEUES {
             return None;
         }
@@ -325,16 +226,11 @@ impl ReservedQueueManager {
     }
 }
 
-/// 队列信息（用于调试和监控）
 #[derive(Debug, Clone, Copy)]
-pub struct QueueInfo {
-    /// 最大可用槽数
+pub(crate) struct QueueInfo {
     pub max_available: usize,
-    /// 当前可用槽数
     pub n_available: usize,
-    /// 每次分配的页数
     pub npages: usize,
-    /// 是否需要映射
     pub mapped: bool,
 }
 
@@ -345,7 +241,6 @@ mod tests {
     #[test]
     fn test_create_queue() {
         let mut manager = ReservedQueueManager::new();
-
         let queue_id = manager.create_queue(10, 1, false, AllocFlags::empty());
         assert!(queue_id.is_some());
 
@@ -360,18 +255,15 @@ mod tests {
         let mut manager = ReservedQueueManager::new();
         let queue_id = manager.create_queue(5, 1, false, AllocFlags::empty()).unwrap();
 
-        // 填充队列
         for i in 0..5 {
             assert!(manager.fill_queue(queue_id, PhysAddr(i as u64 * 0x1000), None));
         }
 
-        // 验证状态
         let info = manager.get_queue_info(queue_id).unwrap();
         assert_eq!(info.n_available, 5);
 
-        // 分配页
         let (phys, _) = manager.alloc(queue_id).unwrap();
-        assert_eq!(phys, PhysAddr(4 * 0x1000)); // LIFO
+        assert_eq!(phys, PhysAddr(4 * 0x1000));
 
         let info = manager.get_queue_info(queue_id).unwrap();
         assert_eq!(info.n_available, 4);
@@ -381,8 +273,6 @@ mod tests {
     fn test_alloc_empty_queue() {
         let mut manager = ReservedQueueManager::new();
         let queue_id = manager.create_queue(5, 1, false, AllocFlags::empty()).unwrap();
-
-        // 空队列分配应该失败
         assert!(manager.alloc(queue_id).is_none());
     }
 
@@ -391,17 +281,14 @@ mod tests {
         let mut manager = ReservedQueueManager::new();
         let queue_id = manager.create_queue(3, 1, false, AllocFlags::empty()).unwrap();
 
-        // 初始状态：缺少3个备用页
         assert_eq!(manager.missing_spares(), 3);
 
-        // 执行分配周期
         let mut alloc_count = 0;
-        manager.alloc_cycle(|npages, _flags| {
+        manager.alloc_cycle(|_npages, _flags| {
             alloc_count += 1;
             Some((PhysAddr(alloc_count as u64 * 0x1000), None))
         });
 
-        // 应该填充所有槽位
         assert_eq!(manager.missing_spares(), 0);
         let info = manager.get_queue_info(queue_id).unwrap();
         assert_eq!(info.n_available, 3);

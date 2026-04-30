@@ -1,42 +1,42 @@
-//! 监护关系定义
+//! Guardianship relationship definition.
 //!
-//! 解决 Minix3 中 `mp_parent` 和 `mp_tracer` 的杂糅问题
+//! Resolves the coupling issue of `mp_parent` and `mp_tracer` in Minix3.
 //!
-//! # 设计改进
-//! 在 `Normal` 状态下没有 `tracer` 字段，防止误操作
+//! # Design Improvement
+//! In `Normal` state there's no `tracer` field, preventing misuse.
 
 use minix_types::UserSlot;
 use bitflags::bitflags;
 
-/// 监护关系
+/// Guardianship.
 ///
-/// 描述进程的父进程和追踪者关系
+/// Describes the parent and tracer relationship of a process.
 ///
-/// # Minix3 映射
-/// - `mp_parent` → `Normal { parent }` 或 `Traced { parent, .. }`
+/// # Minix3 Mapping
+/// - `mp_parent` → `Normal { parent }` or `Traced { parent, .. }`
 /// - `mp_tracer` → `Traced { tracer, .. }`
 /// - `TRACE_EXIT` → `Traced { trace_exit: true, .. }`
 /// - `mp_trace_flags` → `Traced { trace_options, .. }`
 /// - `NO_TRACER (-1)` → `Normal`
 #[derive(Debug, Clone)]
 pub enum Guardianship {
-    /// 正常状态：只有一个父进程
+    /// Normal state: only has a parent.
     Normal { 
-        /// 父进程索引
+        /// Parent process index.
         parent: UserSlot 
     },
     
-    /// 调试状态：被 tracer 劫持
+    /// Debug state: hijacked by tracer.
     ///
-    /// tracer 可能不等于 parent
+    /// Tracer may not equal parent.
     Traced{
-        /// 父进程索引
+        /// Parent process index.
         parent: UserSlot,
-        /// 追踪者索引
+        /// Tracer process index.
         tracer: UserSlot,
-        /// TRACE_EXIT flag：tracer 正在强制进程退出
+        /// TRACE_EXIT flag: tracer is forcing process exit.
         trace_exit: bool,
-        /// 追踪选项（mp_trace_flags）
+        /// Trace options (mp_trace_flags).
         trace_options: TraceOptions,
     },
 }
@@ -50,24 +50,24 @@ impl Default for Guardianship {
 }
 
 bitflags! {
-    /// 追踪选项
+    /// Trace options.
     ///
-    /// 对应 Minix3 的 `mp_trace_flags` 字段
+    /// Corresponds to Minix3's `mp_trace_flags` field.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TraceOptions: u32 {
-        /// TO_TRACEFORK: 自动 attach 到 fork 的子进程
+        /// TO_TRACEFORK: Auto attach to forked child process.
         const TRACEFORK = 0x1;
-        /// TO_ALTEXEC: exec 成功时发送 SIGSTOP
+        /// TO_ALTEXEC: Send SIGSTOP on successful exec.
         const ALTEXEC = 0x2;
-        /// TO_NOEXEC: exec 成功时不发送信号
+        /// TO_NOEXEC: Don't send signal on successful exec.
         const NOEXEC = 0x4;
     }
 }
 
 impl Guardianship {
-    /// 获取父进程索引
+    /// Gets parent process index.
     ///
-    /// 无论是否被追踪，父进程始终存在
+    /// Parent always exists regardless of being traced.
     pub fn parent(&self) -> UserSlot {
         match self {
             Self::Normal { parent } => *parent,
@@ -75,9 +75,9 @@ impl Guardianship {
         }
     }
     
-    /// 获取追踪者索引
+    /// Gets tracer process index.
     ///
-    /// 如果进程没有被追踪，返回 `None`
+    /// Returns `None` if process is not being traced.
     pub fn tracer(&self) -> Option<UserSlot> {
         match self {
             Self::Normal { .. } => None,
@@ -85,14 +85,14 @@ impl Guardianship {
         }
     }
     
-    /// 检查进程是否被追踪
+    /// Checks if process is being traced.
     pub fn is_traced(&self) -> bool {
         matches!(self, Self::Traced { .. })
     }
     
-    /// 获取 TRACE_EXIT 标志
+    /// Gets TRACE_EXIT flag.
     ///
-    /// 如果进程没有被追踪，返回 `false`
+    /// Returns `false` if process is not being traced.
     pub fn trace_exit(&self) -> bool {
         match self {
             Self::Normal { .. } => false,

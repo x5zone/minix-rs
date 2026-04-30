@@ -1,12 +1,15 @@
-//! 类型定义模块
+//! Type definitions module.
 //!
-//! 提供 Minix3 核心类型定义，包括：
-//! - `com`: 系统级常量（MAX_NR_TASKS, NR_PROCS 等）
-//! - `pid`: 进程 ID、进程索引
-//! - `endpoint`: 端点标识（IPC 核心概念）
-//! - `id`: 用户 ID、组 ID
-//! - `clock`: 时钟滴答、虚拟地址
-//! - `bitmap`: 泛型位图
+//! Provides Minix3 core type definitions:
+//! - `com`: System-level constants (MAX_NR_TASKS, NR_PROCS, etc.)
+//! - `pid`: Process ID, process index
+//! - `endpoint`: Endpoint identifier (core IPC concept)
+//! - `id`: User ID, Group ID
+//! - `clock`: Clock ticks, virtual address
+//! - `bitmap`: Generic bitmap
+//! - `boot`: Boot image types
+//! - `cell`: Single-threaded interior mutability primitives
+//! - `errno`: POSIX errno constants
 
 mod com;
 mod pid;
@@ -14,6 +17,9 @@ mod endpoint;
 mod id;
 mod clock;
 mod bitmap;
+mod boot;
+mod cell;
+mod errno;
 
 pub use com::*;
 pub use pid::*;
@@ -21,3 +27,6 @@ pub use endpoint::*;
 pub use id::*;
 pub use clock::*;
 pub use bitmap::*;
+pub use boot::*;
+pub use cell::*;
+pub use errno::*;

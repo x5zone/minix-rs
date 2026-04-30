@@ -1,41 +1,41 @@
-//! Signal 切片
+//! Signal slice.
 //!
-//! 实现 signal 系统调用的核心逻辑
+//! Implements core logic of signal system calls.
 
 use minix_ipc::Endpoint;
 
-/// 发送信号
+/// Sends a signal.
 ///
 /// # Arguments
-/// * `target` - 目标进程 endpoint
-/// * `sig` - 信号编号
+/// * `target` - Target process endpoint
+/// * `sig` - Signal number
 pub fn sys_kill(target: Endpoint, sig: i32) -> Result<(), SignalError> {
-    // TODO: 实现 kill 逻辑
-    // 1. 验证权限
-    // 2. 将信号加入目标进程的 pending 集合
-    // 3. 如果目标进程在睡眠，唤醒它
+    // TODO: Implement kill logic
+    // 1. Validate permissions
+    // 2. Add signal to target process's pending set
+    // 3. If target process is sleeping, wake it up
     todo!("kill implementation")
 }
 
-/// 设置信号处理函数
+/// Sets signal handler.
 ///
 /// # Arguments
-/// * `proc` - 进程 endpoint
-/// * `sig` - 信号编号
-/// * `handler` - 处理函数
+/// * `proc` - Process endpoint
+/// * `sig` - Signal number
+/// * `handler` - Handler function
 pub fn sys_sigaction(
     proc: Endpoint,
     sig: i32,
     handler: SignalHandler,
 ) -> Result<(), SignalError> {
-    // TODO: 实现 sigaction 逻辑
+    // TODO: Implement sigaction logic
     todo!("sigaction implementation")
 }
 
 pub enum SignalHandler {
     Default,
     Ignore,
-    Custom(usize), // 函数指针地址
+    Custom(usize),
 }
 
 #[derive(Debug)]
@@ -51,6 +51,6 @@ mod tests {
 
     #[test]
     fn test_signal_basic() {
-        // TODO: 基础 signal 测试
+        // TODO: Basic signal test
     }
 }

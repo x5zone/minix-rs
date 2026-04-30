@@ -1,75 +1,75 @@
-//! 进程阻塞状态定义
+//! Process block state definition.
 //!
-//! 阻塞状态可以和生命周期状态组合
+//! Block states can be combined with lifecycle states.
 //!
-//! # 关键约束
-//! - `PROC_STOPPED` 可以和 `Running` 或 `Exiting` 组合
-//! - `VFS_CALL` 可以和 `Exiting` 组合
+//! # Key Constraints
+//! - `PROC_STOPPED` can combine with `Running` or `Exiting`
+//! - `VFS_CALL` can combine with `Exiting`
 
 use core::fmt;
 
-/// 进程阻塞状态
+/// Process block state.
 ///
-/// 对应 Minix3 的 `mp_flags` 中的阻塞相关位：
+/// Corresponds to block-related bits in Minix3's `mp_flags`:
 /// - `PROC_STOPPED` → `stopped`
 /// - `VFS_CALL` / `EVENT_CALL` / `DELAY_CALL` → `ipc_blocked`
 /// - `UNPAUSED` → `unpaused`
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BlockState {
-    /// 是否在内核中停止（PROC_STOPPED）
+    /// Whether stopped in kernel (PROC_STOPPED).
     ///
-    /// 可以和 `Running` / `Exiting` 组合
+    /// Can combine with `Running` / `Exiting`.
     pub stopped: bool,
     
-    /// IPC 阻塞原因
+    /// IPC block reason.
     ///
-    /// 进程正在等待 IPC 响应
+    /// Process is waiting for IPC response.
     pub ipc_blocked: Option<IpcBlockReason>,
     
-    /// VFS 已回复 unpause 请求（UNPAUSED）
+    /// VFS has replied to unpause request (UNPAUSED).
     pub unpaused: bool,
 }
 
-/// IPC 阻塞原因（互斥）
+/// IPC block reason (mutually exclusive).
 ///
-/// 对应 Minix3 的三种 IPC 阻塞状态
+/// Corresponds to three IPC block states in Minix3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcBlockReason {
-    /// 等待 VFS 回复（VFS_CALL）
+    /// Waiting for VFS reply (VFS_CALL).
     ///
-    /// 进程正在等待文件系统操作完成
+    /// Process is waiting for file system operation to complete.
     VfsCall,
     
-    /// 等待进程事件订阅者（EVENT_CALL）
+    /// Waiting for process event subscriber (EVENT_CALL).
     ///
-    /// 进程正在等待事件通知
+    /// Process is waiting for event notification.
     EventCall,
     
-    /// 等待调用完成后再发送信号（DELAY_CALL）
+    /// Waiting for call completion before sending signal (DELAY_CALL).
     ///
-    /// 信号需要延迟到 IPC 完成后发送
+    /// Signal needs to be delayed until IPC completes.
     DelayedSignal,
 }
 
 impl BlockState {
-    /// 创建新的阻塞状态（默认无阻塞）
+    /// Creates new block state (default: no block).
     pub fn new() -> Self {
         Self::default()
     }
     
-    /// 检查进程是否被阻塞
+    /// Checks if process is blocked.
     ///
-    /// 包括被停止或等待 IPC
+    /// Includes being stopped or waiting for IPC.
     pub fn is_blocked(&self) -> bool {
         self.stopped || self.ipc_blocked.is_some()
     }
     
-    /// 检查是否在等待 VFS
+    /// Checks if waiting for VFS.
     pub fn is_vfs_blocked(&self) -> bool {
         matches!(self.ipc_blocked, Some(IpcBlockReason::VfsCall))
     }
     
-    /// 检查是否在等待事件
+    /// Checks if waiting for event.
     pub fn is_event_blocked(&self) -> bool {
         matches!(self.ipc_blocked, Some(IpcBlockReason::EventCall))
     }

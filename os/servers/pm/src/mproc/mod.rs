@@ -1,38 +1,38 @@
-//! PM 进程表模块 (mproc)
+//! PM process table module (mproc).
 //!
-//! 这是 Minix3 `mproc` 结构体的 Rust 实现，包含 PM 私有的进程管理逻辑。
+//! This is the Rust implementation of Minix3 `mproc` structure, containing PM's private process management logic.
 //!
-//! # 架构说明
+//! # Architecture
 //!
-//! 根据 Minix3 微内核设计，进程表分布在多个服务中：
-//! - **PM/mproc**: 进程管理、信号、权限（本模块）
-//! - **VM/vmproc**: 虚拟内存、页表
-//! - **VFS/fproc**: 文件描述符、目录
-//! - **Kernel/proc**: 调度、IPC、寄存器保存
+//! Following Minix3 microkernel design, process tables are distributed across multiple services:
+//! - **PM/mproc**: Process management, signals, permissions (this module)
+//! - **VM/vmproc**: Virtual memory, page tables
+//! - **VFS/fproc**: File descriptors, directories
+//! - **Kernel/proc**: Scheduling, IPC, register saving
 //!
-//! 各进程表通过 `endpoint` 关联。
+//! Each process table is linked via `endpoint`.
 //!
-//! # 为什么放在 PM crate 而不是 minix-types？
+//! # Why in PM crate, not minix-types?
 //!
-//! 1. **职责隔离**: MProc 包含大量仅 PM 关心的私有逻辑（信号处理、父子进程树等）
-//! 2. **不变量保护**: 状态转换逻辑绑定了 PM 内部复杂逻辑，放在公共库会破坏不变量
-//! 3. **微内核原则**: 遵循"知识最小化"原则，其他服务不需要了解 PM 的内部实现
+//! 1. **Separation of concerns**: MProc contains private logic only PM cares about (signal handling, parent-child tree, etc.)
+//! 2. **Invariant protection**: State transition logic binds PM internal complex logic, putting in public library would break invariants
+//! 3. **Microkernel principle**: Follows "minimum knowledge" principle, other services don't need to know PM's internal implementation
 //!
-//! # 模块结构
+//! # Module Structure
 //!
-//! - `constants`: PM 私有常量（NR_PIDS, INIT_PID 等）
-//! - `pid_gen`: PID 生成器
-//! - `mproc`: PM 进程结构体定义
-//! - `table`: PM 进程表管理
-//! - `lifecycle`: 进程生命周期状态机
-//! - `block`: 阻塞状态
-//! - `wait`: 父进程等待状态
-//! - `guardianship`: 监护关系（父进程/tracer）
-//! - `trace`: 追踪状态
-//! - `signal`: 信号处理状态
-//! - `credentials`: 凭证
-//! - `context`: PM 上下文
-//! - `fork`: fork 实现
+//! - `constants`: PM private constants (NR_PIDS, INIT_PID, etc.)
+//! - `pid_gen`: PID generator
+//! - `mproc`: PM process structure definition
+//! - `table`: PM process table management
+//! - `lifecycle`: Process lifecycle state machine
+//! - `block`: Block state
+//! - `wait`: Parent wait state
+//! - `guardianship`: Guardianship relationship (parent/tracer)
+//! - `trace`: Trace state
+//! - `signal`: Signal handling state
+//! - `credentials`: Credentials
+//! - `context`: PM context
+//! - `fork`: fork implementation
 
 mod constants;
 mod pid_gen;

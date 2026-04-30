@@ -1,364 +1,314 @@
-//! VM 访问控制列表 (ACL)
+//! VM Access Control List (ACL).
 //!
-//! 控制进程可以调用哪些 VM 系统调用。
-//! 对应 Minix3: `minix3/minix/servers/vm/acl.c`
+//! Implements per-process ACL for VM call permissions.
+//!
+//! # Design
+//!
+//! Uses `AclState` enum to express three states from Minix3:
+//! - `Uninitialized` → Minix3 `NO_ACL (-1)`: process not yet managed by RS
+//! - `Default` → Minix3 `USER_ACL (0)`: shared default permissions for user processes
+//! - `System(mask)` → Minix3 `vm_acl >= FIRST_SYS_ACL`: per-system-service permissions
+//!
+//! The `AclMask` bitflags type uses call numbers from `minix_types::ipc::vm`
+//! as bit positions, eliminating duplicate definitions.
 
-use minix_types::{Bitmap, Endpoint};
-use crate::vmproc::{AclIndex, VmProc};
+use minix_types::{Endpoint, VmError};
+use crate::vmproc::ActiveProc;
 
-/// ACL 常量定义
-///
-/// 对应 Minix3 acl.c 中的宏定义
-pub const NO_ACL: i32 = -1;
-pub const USER_ACL: i32 = 0;
-pub const FIRST_SYS_ACL: i32 = 1;
+use minix_types::{
+    VM_RQ_BASE, VM_EXIT, VM_FORK, VM_BRK, VM_EXEC_NEWMEM, VM_WILLEXIT,
+    VM_MMAP, VM_ADDDMA, VM_DELDMA, VM_GETDMA, VM_MAP_PHYS, VM_UNMAP_PHYS,
+    VM_MUNMAP, VM_MAPCACHEPAGE, VM_SETCACHEPAGE, VM_FORGETCACHEPAGE,
+    VM_CLEARCACHE, VM_VFS_REPLY, VM_REMAP, VM_SHM_UNMAP, VM_GETPHYS,
+    VM_GETREF, VM_RS_SET_PRIV, VM_INFO, VM_RS_UPDATE, VM_RS_MEMCTL,
+    VM_REMAP_RO, VM_PROCCTL, VM_VFS_MMAP, VM_GETRUSAGE, VM_RS_PREPARE,
+};
 
-/// 系统进程 ACL 数量
-///
-/// 对应 Minix3: `NR_SYS_PROCS`
-/// 预留足够的槽位给系统进程（RS、DS、VM 等）
-pub const NR_SYS_PROCS: usize = 32;
-
-/// VM 调用掩码大小（位图块数）
-///
-/// 假设最多支持 64 个不同的 VM 调用
-pub const VM_CALL_MASK_SIZE: usize = 2; // 2 * 32 = 64 bits
-
-/// ACL 管理器
-///
-/// 管理所有进程的 VM 调用权限
-pub struct AclManager {
-    /// 权限位图表
-    ///
-    /// acl_mask[acl_index][chunk] 表示某个 ACL 索引的权限位
-    /// 每个位对应一个 VM 调用号
-    masks: [[u32; VM_CALL_MASK_SIZE]; NR_SYS_PROCS],
-
-    /// ACL 使用状态位图
-    ///
-    /// 标记哪些系统 ACL 槽位已被占用
-    in_use: Bitmap,
-}
-
-impl AclManager {
-    /// 创建新的 ACL 管理器
-    pub fn new() -> Self {
-        Self {
-            masks: [[0; VM_CALL_MASK_SIZE]; NR_SYS_PROCS],
-            in_use: Bitmap::new(NR_SYS_PROCS),
-        }
-    }
-
-    /// 初始化 ACL 系统
-    ///
-    /// 将所有进程的 ACL 设置为 NO_ACL
-    /// 清空所有权限位图
-    ///
-    /// 对应 Minix3: `acl_init()`
-    pub fn init(&mut self) {
-        // 清空权限位图
-        for i in 0..NR_SYS_PROCS {
-            for j in 0..VM_CALL_MASK_SIZE {
-                self.masks[i][j] = 0;
-            }
-        }
-
-        // 清空使用状态
-        self.in_use.clear();
-
-        // 标记 USER_ACL 为已使用（所有普通进程共享）
-        self.in_use.set(USER_ACL as usize, true);
-    }
-
-    /// 检查进程是否有权限执行指定 VM 调用
-    ///
-    /// # 参数
-    /// - `proc`: 要检查的进程
-    /// - `call`: VM 调用号（从 0 开始）
-    ///
-    /// # 返回值
-    /// - `Ok(())`: 有权限
-    /// - `Err(())`: 无权限 (EPERM)
-    ///
-    /// 对应 Minix3: `acl_check()`
-    pub fn check(&self, proc: &VmProc, call: u32) -> Result<(), ()> {
-        // VM 进程自身的调用总是允许
-        if proc.endpoint == Endpoint::VM {
-            return Ok(());
-        }
-
-        let acl = proc.acl.get();
-
-        // NO_ACL: 目前暂时允许所有调用（兼容现有行为）
-        if acl == NO_ACL {
-            return Ok(());
-        }
-
-        // 检查权限位
-        if !self.get_bit(acl, call) {
-            return Err(()); // EPERM
-        }
-
-        Ok(())
-    }
-
-    /// 为进程设置 ACL
-    ///
-    /// # 参数
-    /// - `proc`: 目标进程
-    /// - `mask`: 权限位图（可选）
-    /// - `is_sys_proc`: 是否为系统进程
-    ///
-    /// 对应 Minix3: `acl_set()`
-    pub fn set(&mut self, proc: &mut VmProc, mask: Option<&[u32; VM_CALL_MASK_SIZE]>, is_sys_proc: bool) {
-        // 先清除现有的 ACL
-        self.clear(proc);
-
-        // 分配 ACL 索引
-        let acl_idx = if is_sys_proc {
-            // 系统进程：分配独立的 ACL 槽位
-            self.alloc_sys_acl()
-        } else {
-            // 普通进程：使用共享的 USER_ACL
-            USER_ACL
-        };
-
-        if acl_idx == NO_ACL {
-            // 没有可用的系统 ACL 槽位
-            // 在实际实现中应该记录错误或 panic
-            return;
-        }
-
-        // 设置 ACL 索引
-        proc.acl = AclIndex::new(acl_idx);
-
-        // 如果提供了权限掩码，复制它
-        if let Some(m) = mask {
-            let idx = acl_idx as usize;
-            self.masks[idx].copy_from_slice(m);
-        }
-
-        // 标记为已使用
-        if acl_idx >= FIRST_SYS_ACL {
-            self.in_use.set(acl_idx as usize, true);
-        }
-    }
-
-    /// fork 时处理 ACL 继承
-    ///
-    /// # 规则
-    /// - USER_ACL: 子进程继承 USER_ACL
-    /// - 其他 ACL: 子进程获得 NO_ACL
-    ///
-    /// 对应 Minix3: `acl_fork()`
-    pub fn fork(&self, parent: &VmProc, child: &mut VmProc) {
-        if parent.acl.get() == USER_ACL {
-            child.acl = AclIndex::new(USER_ACL);
-        } else {
-            child.acl = AclIndex::new(NO_ACL);
-        }
-    }
-
-    /// 清除进程的 ACL
-    ///
-    /// 进程退出时调用，释放系统 ACL 槽位
-    ///
-    /// 对应 Minix3: `acl_clear()`
-    pub fn clear(&mut self, proc: &mut VmProc) {
-        let acl = proc.acl.get();
-
-        if acl != NO_ACL && acl != USER_ACL {
-            // 释放系统 ACL 槽位
-            self.in_use.set(acl as usize, false);
-        }
-
-        proc.acl = AclIndex::new(NO_ACL);
-    }
-
-    /// 设置指定 ACL 的权限位
-    ///
-    /// # 参数
-    /// - `acl`: ACL 索引
-    /// - `call`: VM 调用号
-    /// - `allowed`: 是否允许
-    pub fn set_permission(&mut self, acl: i32, call: u32, allowed: bool) {
-        if acl < 0 || acl as usize >= NR_SYS_PROCS {
-            return;
-        }
-
-        let idx = (call / 32) as usize;
-        let bit = (call % 32) as usize;
-
-        if idx >= VM_CALL_MASK_SIZE {
-            return;
-        }
-
-        if allowed {
-            self.masks[acl as usize][idx] |= 1 << bit;
-        } else {
-            self.masks[acl as usize][idx] &= !(1 << bit);
-        }
-    }
-
-    /// 获取指定 ACL 的权限位
-    fn get_bit(&self, acl: i32, call: u32) -> bool {
-        if acl < 0 || acl as usize >= NR_SYS_PROCS {
-            return false;
-        }
-
-        let idx = (call / 32) as usize;
-        let bit = (call % 32) as usize;
-
-        if idx >= VM_CALL_MASK_SIZE {
-            return false;
-        }
-
-        (self.masks[acl as usize][idx] >> bit) & 1 != 0
-    }
-
-    /// 分配系统进程 ACL 槽位
-    ///
-    /// 返回分配的 ACL 索引，如果没有可用槽位返回 NO_ACL
-    fn alloc_sys_acl(&self) -> i32 {
-        for i in FIRST_SYS_ACL..NR_SYS_PROCS as i32 {
-            if !self.in_use.get(i as usize) {
-                return i;
-            }
-        }
-        NO_ACL
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct AclMask: u64 {
+        const VM_EXIT = 1 << (VM_EXIT - VM_RQ_BASE);
+        const VM_FORK = 1 << (VM_FORK - VM_RQ_BASE);
+        const VM_BRK = 1 << (VM_BRK - VM_RQ_BASE);
+        const VM_EXEC_NEWMEM = 1 << (VM_EXEC_NEWMEM - VM_RQ_BASE);
+        const VM_WILLEXIT = 1 << (VM_WILLEXIT - VM_RQ_BASE);
+        const VM_MMAP = 1 << (VM_MMAP - VM_RQ_BASE);
+        const VM_ADDDMA = 1 << (VM_ADDDMA - VM_RQ_BASE);
+        const VM_DELDMA = 1 << (VM_DELDMA - VM_RQ_BASE);
+        const VM_GETDMA = 1 << (VM_GETDMA - VM_RQ_BASE);
+        const VM_MAP_PHYS = 1 << (VM_MAP_PHYS - VM_RQ_BASE);
+        const VM_UNMAP_PHYS = 1 << (VM_UNMAP_PHYS - VM_RQ_BASE);
+        const VM_MUNMAP = 1 << (VM_MUNMAP - VM_RQ_BASE);
+        const VM_MAPCACHEPAGE = 1 << (VM_MAPCACHEPAGE - VM_RQ_BASE);
+        const VM_SETCACHEPAGE = 1 << (VM_SETCACHEPAGE - VM_RQ_BASE);
+        const VM_FORGETCACHEPAGE = 1 << (VM_FORGETCACHEPAGE - VM_RQ_BASE);
+        const VM_CLEARCACHE = 1 << (VM_CLEARCACHE - VM_RQ_BASE);
+        const VM_VFS_REPLY = 1 << (VM_VFS_REPLY - VM_RQ_BASE);
+        const VM_REMAP = 1 << (VM_REMAP - VM_RQ_BASE);
+        const VM_SHM_UNMAP = 1 << (VM_SHM_UNMAP - VM_RQ_BASE);
+        const VM_GETPHYS = 1 << (VM_GETPHYS - VM_RQ_BASE);
+        const VM_GETREF = 1 << (VM_GETREF - VM_RQ_BASE);
+        const VM_RS_SET_PRIV = 1 << (VM_RS_SET_PRIV - VM_RQ_BASE);
+        const VM_INFO = 1 << (VM_INFO - VM_RQ_BASE);
+        const VM_RS_UPDATE = 1 << (VM_RS_UPDATE - VM_RQ_BASE);
+        const VM_RS_MEMCTL = 1 << (VM_RS_MEMCTL - VM_RQ_BASE);
+        const VM_REMAP_RO = 1 << (VM_REMAP_RO - VM_RQ_BASE);
+        const VM_PROCCTL = 1 << (VM_PROCCTL - VM_RQ_BASE);
+        const VM_VFS_MMAP = 1 << (VM_VFS_MMAP - VM_RQ_BASE);
+        const VM_GETRUSAGE = 1 << (VM_GETRUSAGE - VM_RQ_BASE);
+        const VM_RS_PREPARE = 1 << (VM_RS_PREPARE - VM_RQ_BASE);
     }
 }
 
-impl Default for AclManager {
+impl AclMask {
+    pub(crate) const DEFAULT: Self = Self::from_bits_truncate(
+        Self::VM_EXIT.bits() |
+        Self::VM_FORK.bits() |
+        Self::VM_BRK.bits() |
+        Self::VM_EXEC_NEWMEM.bits() |
+        Self::VM_WILLEXIT.bits() |
+        Self::VM_MMAP.bits() |
+        Self::VM_MUNMAP.bits()
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AclState {
+    Uninitialized,
+    Default,
+    System(AclMask),
+}
+
+impl Default for AclState {
     fn default() -> Self {
-        Self::new()
+        Self::Uninitialized
+    }
+}
+
+impl AclState {
+    /// Check whether a process is allowed to make a certain (zero-based) call.
+    ///
+    /// Corresponds to Minix3's `acl_check()`.
+    /// Returns `Ok(())` if allowed, `Err(VmError::PermissionDenied)` if not.
+    pub(crate) fn acl_check(&self, proc: &ActiveProc<'_>, call: u32) -> Result<(), VmError> {
+        if proc.endpoint() == Endpoint::VM {
+            return Ok(());
+        }
+
+        match self {
+            AclState::Uninitialized => {
+                if proc.endpoint() != Endpoint::RS {
+                    // TODO: no_std 环境暂无日志方案，后续补充。
+                    // Minix3: printf("VM: calling process %u has no ACL!\n", vmp->vm_endpoint);
+                }
+                Ok(())
+            }
+            AclState::Default => {
+                let call_flag = AclMask::from_bits_truncate(1u64 << call);
+                if AclMask::DEFAULT.contains(call_flag) {
+                    Ok(())
+                } else {
+                    Err(VmError::PermissionDenied)
+                }
+            }
+            AclState::System(mask) => {
+                let call_flag = AclMask::from_bits_truncate(1u64 << call);
+                if mask.contains(call_flag) {
+                    Ok(())
+                } else {
+                    Err(VmError::PermissionDenied)
+                }
+            }
+        }
+    }
+
+    /// Assign a call mask to a process.
+    ///
+    /// Corresponds to Minix3's `acl_set()`.
+    /// - User processes (`sys_proc == false`) get `Default` (shared user ACL).
+    /// - System processes (`sys_proc == true`) get `System(mask)`.
+    ///
+    /// Unlike Minix3, there is no shared slot table (`acl_mask[][]` + `acl_inuse`).
+    /// Each `System(AclMask)` carries its own mask inline, so:
+    /// - Slot allocation is unnecessary (no `acl_inuse` bitmap to search)
+    /// - Slot exhaustion is impossible (no `NR_SYS_PROCS` limit on ACL entries)
+    /// - Minix3's `printf("VM: no ACL entries available!")` cannot occur
+    pub(crate) fn acl_set(sys_proc: bool, mask: Option<AclMask>) -> Self {
+        if sys_proc {
+            match mask {
+                Some(m) => AclState::System(m),
+                None => {
+                    // Minix3: "WARNING: inheriting uninitialized ACL mask"
+                    // In our design, no shared slots to inherit from.
+                    AclState::System(AclMask::empty())
+                }
+            }
+        } else {
+            AclState::Default
+        }
+    }
+
+    /// A process has forked. User processes inherit their parent's ACL.
+    /// System processes do not inherit an ACL.
+    ///
+    /// Corresponds to Minix3's `acl_fork()`.
+    pub(crate) fn acl_fork(&self) -> Self {
+        match self {
+            AclState::Uninitialized => AclState::Uninitialized,
+            AclState::Default => AclState::Default,
+            AclState::System(_) => AclState::Uninitialized,
+        }
+    }
+
+    /// A process has exited. Mark it as having no ACL.
+    ///
+    /// Corresponds to Minix3's `acl_clear()`.
+    /// Unlike Minix3, there is no shared slot table to free,
+    /// so simply returning `Uninitialized` is sufficient.
+    pub(crate) fn acl_clear(&self) -> Self {
+        AclState::Uninitialized
+    }
+
+    pub(crate) fn mask(&self) -> Option<AclMask> {
+        match self {
+            AclState::Uninitialized => None,
+            AclState::Default => Some(AclMask::DEFAULT),
+            AclState::System(m) => Some(*m),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vmproc::{VmProc, VmFlags};
     use minix_types::UserSlot;
 
-    #[test]
-    fn test_acl_manager_new() {
-        let manager = AclManager::new();
-        assert!(!manager.in_use.get(USER_ACL as usize));
+    fn get_active_proc(slot: UserSlot) -> crate::vmproc::ActiveProc<'static> {
+        crate::vmproc::test_utils::get_active_vmproc(slot)
     }
 
     #[test]
-    fn test_acl_init() {
-        let mut manager = AclManager::new();
-        manager.init();
-        assert!(manager.in_use.get(USER_ACL as usize));
+    fn test_acl_state_default() {
+        assert_eq!(AclState::default(), AclState::Uninitialized);
     }
 
     #[test]
-    fn test_acl_check_no_acl() {
-        let manager = AclManager::new();
-        let mut proc = VmProc::empty(UserSlot::new(0));
-        proc.acl = AclIndex::new(NO_ACL);  // 显式设置为 NO_ACL
+    fn test_acl_check_uninitialized() {
+        let state = AclState::Uninitialized;
+        let proc = get_active_proc(UserSlot::new(20));
 
-        // NO_ACL 应该允许所有调用（兼容行为）
-        assert!(manager.check(&proc, 0).is_ok());
-        assert!(manager.check(&proc, 5).is_ok());
+        assert!(state.acl_check(&proc, 0).is_ok());
+        assert!(state.acl_check(&proc, 5).is_ok());
+        assert!(state.acl_check(&proc, 100).is_ok());
     }
 
     #[test]
     fn test_acl_check_vm_proc() {
-        let manager = AclManager::new();
-        let mut proc = VmProc::empty(UserSlot::new(0));
-        proc.endpoint = Endpoint::VM;
+        let state = AclState::Default;
+        let mut proc = get_active_proc(UserSlot::new(21));
+        proc.set_endpoint(Endpoint::VM);
 
-        // VM 进程自身总是允许
-        assert!(manager.check(&proc, 0).is_ok());
+        assert!(state.acl_check(&proc, 0).is_ok());
+        assert!(state.acl_check(&proc, 100).is_ok());
     }
 
     #[test]
-    fn test_acl_set_and_check() {
-        let mut manager = AclManager::new();
-        manager.init();
+    fn test_acl_check_default() {
+        let state = AclState::Default;
+        let proc = get_active_proc(UserSlot::new(22));
 
-        let mut proc = VmProc::empty(UserSlot::new(0));
-        let mut mask = [0u32; VM_CALL_MASK_SIZE];
-        mask[0] = 0b1010; // 允许调用 1 和 3
+        assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_BRK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_MUNMAP - VM_RQ_BASE).is_ok());
 
-        // 设置为普通进程
-        manager.set(&mut proc, Some(&mask), false);
-
-        assert_eq!(proc.acl.get(), USER_ACL);
-
-        // 检查权限
-        assert!(manager.check(&proc, 1).is_ok());
-        assert!(manager.check(&proc, 3).is_ok());
-        assert!(manager.check(&proc, 0).is_err());
-        assert!(manager.check(&proc, 2).is_err());
+        assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_err());
     }
 
     #[test]
-    fn test_acl_fork_user() {
-        let mut manager = AclManager::new();
-        manager.init();
+    fn test_acl_check_system() {
+        let mask = AclMask::VM_MMAP | AclMask::VM_MAP_PHYS | AclMask::VM_RS_PREPARE;
+        let state = AclState::System(mask);
+        let proc = get_active_proc(UserSlot::new(23));
 
-        let mut parent = VmProc::empty(UserSlot::new(0));
-        let mut child = VmProc::empty(UserSlot::new(1));
+        assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_ok());
 
-        // 设置父进程为 USER_ACL
-        manager.set(&mut parent, None, false);
-        assert_eq!(parent.acl.get(), USER_ACL);
-
-        // fork
-        manager.fork(&parent, &mut child);
-        assert_eq!(child.acl.get(), USER_ACL);
+        assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_err());
     }
 
     #[test]
-    fn test_acl_fork_sys() {
-        let manager = AclManager::new();
+    fn test_acl_fork_default() {
+        let state = AclState::Default;
+        assert_eq!(state.acl_fork(), AclState::Default);
+    }
 
-        let mut parent = VmProc::empty(UserSlot::new(0));
-        let mut child = VmProc::empty(UserSlot::new(1));
+    #[test]
+    fn test_acl_fork_uninitialized() {
+        let state = AclState::Uninitialized;
+        assert_eq!(state.acl_fork(), AclState::Uninitialized);
+    }
 
-        // 设置父进程为系统 ACL
-        parent.acl = AclIndex::new(5);
+    #[test]
+    fn test_acl_fork_system() {
+        let mask = AclMask::VM_MMAP | AclMask::VM_MAP_PHYS;
+        let state = AclState::System(mask);
+        assert_eq!(state.acl_fork(), AclState::Uninitialized);
+    }
 
-        // fork
-        manager.fork(&parent, &mut child);
-        assert_eq!(child.acl.get(), NO_ACL);
+    #[test]
+    fn test_acl_set_user() {
+        let state = AclState::acl_set(false, None);
+        assert_eq!(state, AclState::Default);
+
+        let state = AclState::acl_set(false, Some(AclMask::VM_EXIT));
+        assert_eq!(state, AclState::Default);
+    }
+
+    #[test]
+    fn test_acl_set_system() {
+        let mask = AclMask::VM_MMAP | AclMask::VM_MAP_PHYS;
+        let state = AclState::acl_set(true, Some(mask));
+        assert_eq!(state, AclState::System(mask));
+
+        let state = AclState::acl_set(true, None);
+        assert_eq!(state, AclState::System(AclMask::empty()));
     }
 
     #[test]
     fn test_acl_clear() {
-        let mut manager = AclManager::new();
-        manager.init();
+        let state = AclState::Default;
+        assert_eq!(state.acl_clear(), AclState::Uninitialized);
 
-        let mut proc = VmProc::empty(UserSlot::new(0));
+        let mask = AclMask::VM_MMAP;
+        let state = AclState::System(mask);
+        assert_eq!(state.acl_clear(), AclState::Uninitialized);
 
-        // 设置为系统进程
-        manager.set(&mut proc, None, true);
-        let acl_before = proc.acl.get();
-        assert!(acl_before >= FIRST_SYS_ACL);
-
-        // 清除 ACL
-        manager.clear(&mut proc);
-        assert_eq!(proc.acl.get(), NO_ACL);
+        let state = AclState::Uninitialized;
+        assert_eq!(state.acl_clear(), AclState::Uninitialized);
     }
 
     #[test]
-    fn test_set_permission() {
-        let mut manager = AclManager::new();
-        manager.init();
+    fn test_acl_mask_default() {
+        let mask = AclMask::DEFAULT;
+        assert!(mask.contains(AclMask::VM_EXIT));
+        assert!(mask.contains(AclMask::VM_FORK));
+        assert!(mask.contains(AclMask::VM_BRK));
+        assert!(mask.contains(AclMask::VM_MMAP));
+        assert!(mask.contains(AclMask::VM_MUNMAP));
+        assert!(!mask.contains(AclMask::VM_MAP_PHYS));
+        assert!(!mask.contains(AclMask::VM_RS_PREPARE));
+    }
 
-        // 设置 USER_ACL 的权限
-        manager.set_permission(USER_ACL, 5, true);
-        manager.set_permission(USER_ACL, 10, true);
-
-        let mut proc = VmProc::empty(UserSlot::new(0));
-        proc.acl = AclIndex::new(USER_ACL);
-
-        assert!(manager.check(&proc, 5).is_ok());
-        assert!(manager.check(&proc, 10).is_ok());
-        assert!(manager.check(&proc, 0).is_err());
+    #[test]
+    fn test_acl_state_mask() {
+        assert_eq!(AclState::Uninitialized.mask(), None);
+        assert_eq!(AclState::Default.mask(), Some(AclMask::DEFAULT));
+        let custom = AclMask::VM_MMAP | AclMask::VM_BRK;
+        assert_eq!(AclState::System(custom).mask(), Some(custom));
     }
 }

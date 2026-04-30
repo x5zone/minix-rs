@@ -1,23 +1,23 @@
-//! Minix-RS IPC Library
+//! Minix-RS IPC Library.
 //!
-//! 进程间通信协议定义
+//! Inter-process communication protocol definitions.
 
 #![no_std]
 
 pub use minix_types::{Endpoint, Message};
 
-/// 消息类型
+/// Message type.
 #[derive(Debug, Clone, Copy)]
 pub enum MessageType {
-    /// 系统调用请求
+    /// Syscall request.
     Syscall(SyscallNum),
-    /// 通知
+    /// Notification.
     Notify(NotifyType),
-    /// 自定义消息
+    /// Custom message.
     Custom(u32),
 }
 
-/// 系统调用号
+/// Syscall number.
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum SyscallNum {
@@ -35,35 +35,35 @@ pub enum SyscallNum {
     Munmap = 21,
 }
 
-/// 通知类型
+/// Notification type.
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum NotifyType {
-    /// 硬件中断
+    /// Hardware interrupt.
     HardInt = 1,
-    /// 时钟滴答
+    /// Clock tick.
     ClockTick = 2,
-    /// 系统事件
+    /// System event.
     SysEvent = 3,
 }
 
-/// 发送消息
+/// Sends a message.
 pub fn send(dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
     todo!("send implementation")
 }
 
-/// 接收消息
+/// Receives a message.
 pub fn receive(src: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
     todo!("receive implementation")
 }
 
-/// 发送并接收（同步调用）
+/// Sends and receives (synchronous call).
 pub fn sendrec(dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
     send(dest, msg)?;
     receive(dest, msg)
 }
 
-/// 通知
+/// Sends a notification.
 pub fn notify(dest: Endpoint, type_: NotifyType) -> Result<(), IpcError> {
     todo!("notify implementation")
 }

@@ -1,20 +1,21 @@
-//! 位图实现
+//! Bitmap implementation.
 //!
-//! 提供固定大小的位图数据结构，用于进程表槽位管理等场景。
+//! Provides fixed-size bitmap data structures for process table slot management, etc.
 //!
-//! # 特点
+//! # Features
 //!
-//! - 固定大小，编译期确定
-//! - 零依赖，`no_std` 兼容
-//! - 高效的位运算实现
-//! - 单 cache line 优化（对于 256 位位图）
+//! - Fixed size, determined at compile time.
+//! - Zero dependencies, `no_std` compatible.
+//! - Efficient bit operation implementation.
+//! - Single cache line optimization (for 256-bit bitmap).
 //!
-//! # 关于泛型大小
+//! # About Generic Size
 //!
-//! 当前实现使用固定最大容量（512 位）+ 运行时大小的方案，原因是 **Stable Rust**
-//! 不支持在数组大小中使用泛型参数。
+//! Current implementation uses fixed maximum capacity (512 bits) + runtime size,
+//! because **Stable Rust** does not support using generic parameters in array sizes.
 //!
-//! 如果需要真正的编译期泛型大小，可以使用 **Nightly Rust** 的 `generic_const_exprs` feature：
+//! If you need true compile-time generic size, you can use **Nightly Rust**'s
+//! `generic_const_exprs` feature:
 //!
 //! ```rust,ignore
 //! #![feature(generic_const_exprs)]
@@ -27,41 +28,42 @@
 //! }
 //! ```
 //!
-//! 但考虑到内核开发对稳定性的要求，当前方案（固定最大容量）是更实用的选择。
+//! However, considering the stability requirements of kernel development,
+//! the current approach (fixed maximum capacity) is a more practical choice.
 
-/// 最大位图大小（位数）
+/// Maximum bitmap size (bits).
 pub const MAX_BITMAP_BITS: usize = 512;
-/// 最大位图字节数
+/// Maximum bitmap bytes.
 pub const MAX_BITMAP_BYTES: usize = (MAX_BITMAP_BITS + 7) / 8;
 
-/// 泛型位图
+/// Generic bitmap.
 ///
-/// 使用固定大小的内部数组，在编译期确定最大容量。
+/// Uses a fixed-size internal array, with maximum capacity determined at compile time.
 ///
-/// # 示例
+/// # Examples
 ///
 /// ```
 /// use minix_types::{Bitmap, Bitmap256};
 ///
-/// // 256 位位图，32 字节（VM/PM 默认）
+/// // 256-bit bitmap, 32 bytes (VM/PM default)
 /// let mut bm256: Bitmap256 = Bitmap::new(256);
 ///
-/// // 设置和获取
+/// // Set and get
 /// bm256.set(5, true);
 /// assert!(bm256.get(5));
 ///
-/// // 查找第一个零位
+/// // Find first zero bit
 /// assert_eq!(bm256.find_first_zero(), Some(0));
 /// bm256.set(0, true);
 /// assert_eq!(bm256.find_first_zero(), Some(1));
 /// ```
 ///
-/// # 内存布局
+/// # Memory Layout
 ///
-/// | 大小 | 位数 | 字节数 | Cache Line (64B) |
-/// |------|------|--------|------------------|
-/// | `Bitmap256` | 256 | 32 | **1 行** |
-/// | `Bitmap512` | 512 | 64 | 1 行 |
+/// | Size | Bits | Bytes | Cache Line (64B) |
+/// |------|------|-------|------------------|
+/// | `Bitmap256` | 256 | 32 | **1 line** |
+/// | `Bitmap512` | 512 | 64 | 1 line |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bitmap {
     bits: [u8; MAX_BITMAP_BYTES],
@@ -69,13 +71,13 @@ pub struct Bitmap {
 }
 
 impl Bitmap {
-    /// 创建新的空位图（所有位为 0）
+    /// Creates a new empty bitmap (all bits are 0).
     ///
     /// # Panics
     ///
-    /// 如果 `size > MAX_BITMAP_BITS`，会触发 panic
+    /// Panics if `size > MAX_BITMAP_BITS`.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -91,9 +93,9 @@ impl Bitmap {
         }
     }
 
-    /// 获取位图大小（位数）
+    /// Gets the bitmap size (bits).
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -105,9 +107,9 @@ impl Bitmap {
         self.size
     }
 
-    /// 获取位图字节数
+    /// Gets the bitmap byte count.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -119,13 +121,13 @@ impl Bitmap {
         (self.size + 7) / 8
     }
 
-    /// 获取指定位置的位值
+    /// Gets the bit value at the specified position.
     ///
     /// # Panics
     ///
-    /// 如果 `index >= size`，会触发 panic
+    /// Panics if `index >= size`.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -141,13 +143,13 @@ impl Bitmap {
         (self.bits[index / 8] >> (index % 8)) & 1 != 0
     }
 
-    /// 设置指定位置的位值
+    /// Sets the bit value at the specified position.
     ///
     /// # Panics
     ///
-    /// 如果 `index >= size`，会触发 panic
+    /// Panics if `index >= size`.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -168,15 +170,15 @@ impl Bitmap {
         }
     }
 
-    /// 查找第一个为零的位
+    /// Finds the first zero bit.
     ///
-    /// 返回第一个值为 `false` 的位的索引，如果所有位都为 `true` 则返回 `None`。
+    /// Returns the index of the first bit with value `false`, or `None` if all bits are `true`.
     ///
-    /// # 性能
+    /// # Performance
     ///
-    /// 使用 `trailing_ones()` 优化，每个字节只需 1 次操作。
+    /// Uses `trailing_ones()` optimization, only 1 operation per byte.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -187,7 +189,7 @@ impl Bitmap {
     /// bm.set(0, true);
     /// assert_eq!(bm.find_first_zero(), Some(1));
     ///
-    /// // 填满前 8 位
+    /// // Fill first 8 bits
     /// for i in 0..8 {
     ///     bm.set(i, true);
     /// }
@@ -209,11 +211,11 @@ impl Bitmap {
         None
     }
 
-    /// 查找第一个为一的位
+    /// Finds the first one bit.
     ///
-    /// 返回第一个值为 `true` 的位的索引，如果所有位都为 `false` 则返回 `None`。
+    /// Returns the index of the first bit with value `true`, or `None` if all bits are `false`.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -240,9 +242,9 @@ impl Bitmap {
         None
     }
 
-    /// 统计值为 1 的位数
+    /// Counts the number of bits set to 1.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -262,9 +264,9 @@ impl Bitmap {
             .sum()
     }
 
-    /// 统计值为 0 的位数
+    /// Counts the number of bits set to 0.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -278,9 +280,9 @@ impl Bitmap {
         self.size - self.count_ones()
     }
 
-    /// 清空所有位
+    /// Clears all bits.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -295,9 +297,9 @@ impl Bitmap {
         self.bits[..byte_count].fill(0);
     }
 
-    /// 填充所有位为 1
+    /// Fills all bits with 1.
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -311,9 +313,9 @@ impl Bitmap {
         self.bits[..byte_count].fill(0xFF);
     }
 
-    /// 检查位图是否为空（所有位为 0）
+    /// Checks if the bitmap is empty (all bits are 0).
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -329,9 +331,9 @@ impl Bitmap {
         self.bits[..byte_count].iter().all(|&b| b == 0)
     }
 
-    /// 检查位图是否已满（所有位为 1）
+    /// Checks if the bitmap is full (all bits are 1).
     ///
-    /// # 示例
+    /// # Examples
     ///
     /// ```
     /// use minix_types::Bitmap;
@@ -354,14 +356,14 @@ impl Default for Bitmap {
     }
 }
 
-/// 256 位位图类型别名
+/// 256-bit bitmap type alias.
 ///
-/// 适用于 NR_PROCS = 256 的进程表管理
+/// Suitable for NR_PROCS = 256 process table management.
 pub type Bitmap256 = Bitmap;
 
-/// 512 位位图类型别名
+/// 512-bit bitmap type alias.
 ///
-/// 适用于更大的进程表
+/// Suitable for larger process tables.
 pub type Bitmap512 = Bitmap;
 
 #[cfg(test)]

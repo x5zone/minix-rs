@@ -1,46 +1,46 @@
-//! 父进程等待状态定义
+//! Parent wait state definition.
 //!
-//! ⚠️ **重要**：`WAITING` 是父进程的状态，不是子进程的状态！
+//! **Important**: `WAITING` is the parent process's state, not the child's!
 //!
-//! 当父进程调用 `wait()` 或 `waitpid()` 时，父进程的 `WaitState` 会被设置
+//! When parent calls `wait()` or `waitpid()`, the parent's `WaitState` is set.
 
 use minix_types::{Pid, VirBytes};
 
-/// 父进程等待状态
+/// Parent wait state.
 ///
-/// 对应 Minix3 的 `WAITING` flag 和 `mp_wpid`、`mp_waddr` 字段
+/// Corresponds to Minix3's `WAITING` flag and `mp_wpid`, `mp_waddr` fields.
 #[derive(Debug, Clone, Default)]
 pub struct WaitState {
-    /// 是否正在等待子进程（WAITING）
+    /// Whether waiting for child process (WAITING).
     pub waiting: bool,
     
-    /// 等待目标（mp_wpid）
+    /// Wait target (mp_wpid).
     pub target: WaitTarget,
     
-    /// rusage 地址（mp_waddr）
+    /// rusage address (mp_waddr).
     ///
-    /// 用于存储子进程的资源使用情况
+    /// Used to store child process resource usage.
     pub rusage_addr: VirBytes,
 }
 
-/// 等待目标（互斥）
+/// Wait target (mutually exclusive).
 ///
-/// 对应 `waitpid()` 的第一个参数
+/// Corresponds to the first parameter of `waitpid()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitTarget {
-    /// `wait()` - 等待任意子进程
+    /// `wait()` - wait for any child.
     ///
-    /// 对应 `pid == -1`
+    /// Corresponds to `pid == -1`.
     AnyChild,
     
-    /// `waitpid(pid)` - 等待特定子进程
+    /// `waitpid(pid)` - wait for specific child.
     ///
-    /// 对应 `pid > 0`
+    /// Corresponds to `pid > 0`.
     SpecificChild(Pid),
     
-    /// `waitpid(-pgrp)` - 等待进程组
+    /// `waitpid(-pgrp)` - wait for process group.
     ///
-    /// 对应 `pid < -1`，等待进程组 `-pid` 中的任意子进程
+    /// Corresponds to `pid < -1`, wait for any child in process group `-pid`.
     Group(Pid),
 }
 
@@ -51,19 +51,19 @@ impl Default for WaitTarget {
 }
 
 impl WaitState {
-    /// 创建新的等待状态（默认不等待）
+    /// Creates new wait state (default: not waiting).
     pub fn new() -> Self {
         Self::default()
     }
     
-    /// 检查是否在等待指定的子进程
+    /// Checks if waiting for specified child.
     ///
-    /// # 参数
-    /// - `child_pid`: 子进程 PID
-    /// - `child_procgrp`: 子进程的进程组
+    /// # Parameters
+    /// - `child_pid`: Child process PID
+    /// - `child_procgrp`: Child process's process group
     ///
-    /// # 返回
-    /// 如果父进程正在等待该子进程，返回 `true`
+    /// # Returns
+    /// Returns `true` if parent is waiting for this child.
     pub fn is_waiting_for(&self, child_pid: Pid, child_procgrp: Pid) -> bool {
         if !self.waiting {
             return false;

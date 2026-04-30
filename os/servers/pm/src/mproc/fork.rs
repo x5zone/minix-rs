@@ -1,89 +1,89 @@
-//! fork 系统调用实现
+//! Fork system call implementation.
 //!
-//! 这是 Minix3 `do_fork` 函数的 Rust 实现，包含 PM 私有的 fork 逻辑。
+//! This is the Rust implementation of Minix3's `do_fork` function, containing PM's private fork logic.
 //!
-//! # Minix3 多进程表架构
-//! Minix3 采用分布式进程表设计，共有 4 份进程表：
-//! - **PM/mproc**: 进程管理、信号、权限（本模块）
-//! - **VM/vmproc**: 虚拟内存、页表
-//! - **VFS/fproc**: 文件描述符、目录
-//! - **Kernel/proc**: 调度、IPC、寄存器保存
+//! # Minix3 Multi-Process Table Architecture
+//! Minix3 uses a distributed process table design with 4 copies:
+//! - **PM/mproc**: Process management, signals, permissions (this module)
+//! - **VM/vmproc**: Virtual memory, page tables
+//! - **VFS/fproc**: File descriptors, directories
+//! - **Kernel/proc**: Scheduling, IPC, register saving
 //!
-//! # 阶段划分
-//! - 阶段 2a：参数检查与槽位分配（本文件）
-//! - 阶段 2b：VM fork 调用
-//! - 阶段 2c：进程结构初始化
+//! # Phases
+//! - Phase 2a: Parameter check and slot allocation (this file)
+//! - Phase 2b: VM fork call
+//! - Phase 2c: Process structure initialization
 //!
-//! # 为什么放在 PM crate 而不是 minix-types？
+//! # Why in PM crate, not minix-types?
 //!
-//! 1. **职责隔离**: fork 是 PM 的核心系统调用
-//! 2. **不变量保护**: fork 逻辑绑定了 PM 内部状态
-//! 3. **微内核原则**: 其他服务不需要了解 PM 的 fork 实现
+//! 1. **Separation of concerns**: fork is PM's core system call
+//! 2. **Invariant protection**: fork logic binds PM internal state
+//! 3. **Microkernel principle**: Other services don't need to know PM's fork implementation
 
 use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid};
 use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags};
 
-/// PM -> VM: Fork 请求消息
+/// PM -> VM: Fork request message.
 #[derive(Debug, Clone, Copy)]
 pub struct VmForkRequest {
-    /// 父进程Endpoint
+    /// Parent process Endpoint.
     pub parent_endpoint: Endpoint,
-    /// 子进程槽位索引
+    /// Child process slot index.
     pub child_index: usize,
 }
 
-/// VM -> PM: Fork 响应消息
+/// VM -> PM: Fork response message.
 #[derive(Debug, Clone, Copy)]
 pub struct VmForkResponse {
-    /// 子进程Endpoint
+    /// Child process Endpoint.
     pub child_endpoint: Endpoint,
-    /// 是否成功
+    /// Whether successful.
     pub success: bool,
 }
 
-/// PM -> VFS: Fork 请求消息
+/// PM -> VFS: Fork request message.
 #[derive(Debug, Clone, Copy)]
 pub struct VfsPmForkRequest {
-    /// 子进程Endpoint
+    /// Child process Endpoint.
     pub child_endpoint: Endpoint,
-    /// 父进程Endpoint
+    /// Parent process Endpoint.
     pub parent_endpoint: Endpoint,
-    /// 子进程PID
+    /// Child process PID.
     pub child_pid: Pid,
-    /// 真实UID
+    /// Real UID.
     pub real_uid: Uid,
-    /// 真实GID
+    /// Real GID.
     pub real_gid: Gid,
 }
 
-/// VFS -> PM: Fork 响应消息
+/// VFS -> PM: Fork response message.
 #[derive(Debug, Clone, Copy)]
 pub struct VfsPmForkResponse {
-    /// 子进程Endpoint
+    /// Child process Endpoint.
     pub child_endpoint: Endpoint,
-    /// 是否成功
+    /// Whether successful.
     pub success: bool,
 }
 
-/// fork 错误类型
+/// Fork error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkError {
-    /// 进程表已满
+    /// Process table full.
     TableFull,
-    /// 非 root 用户槽位不足（LAST_FEW 保留）
+    /// Non-root user slot insufficient (LAST_FEW reserved).
     ReservedForRoot,
-    /// 系统资源不足
+    /// System resource exhausted.
     ResourceExhausted,
-    /// VM调用失败
+    /// VM call failed.
     VmError,
-    /// 内部错误（不应该发生）
+    /// Internal error (should not happen).
     InternalError,
 }
 
 impl ForkError {
-    /// 转换为错误码
+    /// Converts to error code.
     ///
-    /// 对应 Minix3 的 `errno` 值
+    /// Corresponds to Minix3's `errno` values.
     pub fn to_errno(&self) -> i32 {
         match self {
             Self::TableFull => 11,        // EAGAIN
@@ -95,38 +95,38 @@ impl ForkError {
     }
 }
 
-/// fork 结果
+/// Fork result.
 #[derive(Debug, Clone, Copy)]
 pub struct ForkResult {
-    /// 子进程索引
+    /// Child process index.
     pub child_index: usize,
-    /// 子进程 PID
+    /// Child process PID.
     pub child_pid: Pid,
-    /// 子进程 Endpoint
+    /// Child process Endpoint.
     pub child_endpoint: Endpoint,
 }
 
 impl<'a> PmContext<'a> {
-    /// fork 系统调用（前半部分）
+    /// fork system call (first half).
     ///
-    /// 对应 Minix3 的 `do_fork` 函数开头部分：
+    /// Corresponds to the beginning of Minix3's `do_fork` function:
     /// ```c
     /// int do_fork(void) {
-    ///   register struct mproc *rmp;   // 父进程指针
-    ///   register struct mproc *rmc;   // 子进程指针
+    ///   register struct mproc *rmp;   // Parent process pointer
+    ///   register struct mproc *rmc;   // Child process pointer
     ///   static unsigned int next_child = 0;
     ///   int n = 0;
     ///
-    ///   rmp = mp;  // 当前进程
+    ///   rmp = mp;  // Current process
     ///   
-    ///   // 1. 检查进程表是否已满
+    ///   // 1. Check if process table is full
     ///   if ((procs_in_use == NR_PROCS) ||
     ///       (procs_in_use >= NR_PROCS-LAST_FEW && rmp->mp_effuid != 0)) {
     ///     printf("PM: warning, process table is full!\n");
     ///     return(EAGAIN);
     ///   }
     ///
-    ///   // 2. 查找空闲槽位
+    ///   // 2. Find free slot
     ///   do {
     ///     next_child = (next_child+1) % NR_PROCS;
     ///     n++;
@@ -135,13 +135,13 @@ impl<'a> PmContext<'a> {
     ///   if(n > NR_PROCS)
     ///     panic("do_fork can't find child slot");
     ///   
-    ///   // ... 后续处理
+    ///   // ... subsequent processing
     /// }
     /// ```
     ///
-    /// # 返回值
-    /// - `Ok(ForkResult)`: 成功分配槽位
-    /// - `Err(ForkError)`: 分配失败
+    /// # Returns
+    /// - `Ok(ForkResult)`: Successfully allocated slot
+    /// - `Err(ForkError)`: Allocation failed
     pub fn do_fork_prepare(&mut self) -> Result<ForkResult, ForkError> {
         if self.table.is_full() {
             return Err(ForkError::TableFull);
@@ -154,7 +154,6 @@ impl<'a> PmContext<'a> {
         let child_index = self.table.alloc_slot().ok_or(ForkError::TableFull)?;
         
         let child_pid = self.generate_child_pid();
-        // 直接使用槽位中已有的带generation的endpoint（release_slot时已更新）
         let child_endpoint = self.table.procs[child_index].endpoint();
         
         Ok(ForkResult {
@@ -164,13 +163,13 @@ impl<'a> PmContext<'a> {
         })
     }
     
-    /// 生成子进程 PID
+    /// Generates child process PID.
     ///
-    /// 使用 PidGenerator 生成唯一的 PID。
+    /// Uses PidGenerator to generate unique PID.
     ///
-    /// # Minix3 映射
+    /// # Minix3 Mapping
     ///
-    /// 对应 Minix3 的 `get_free_pid()` 函数：
+    /// Corresponds to Minix3's `get_free_pid()` function:
     /// ```c
     /// pid_t get_free_pid()
     /// {
@@ -192,22 +191,22 @@ impl<'a> PmContext<'a> {
     /// }
     /// ```
     ///
-    /// # 复杂度
+    /// # Complexity
     ///
-    /// - 期望: O(1) (因为冲突概率极低，约 0.8%)
-    /// - 最坏: O(N) (极罕见)
+    /// - Expected: O(1) (because conflict probability is extremely low, ~0.8%)
+    /// - Worst-case: O(N) (extremely rare)
     fn generate_child_pid(&self) -> Pid {
         self.table.pid_generator.get_free_pid(self.table)
     }
     
-    /// 从父进程创建子进程
+    /// Creates child process from parent.
     ///
-    /// 对应 Minix3 的进程结构复制：
+    /// Corresponds to Minix3's process structure copy:
     /// ```c
-    /// *rmc = *rmp;  // 复制整个结构体
+    /// *rmc = *rmp;  // Copy entire structure
     /// ```
     ///
-    /// 但我们使用显式的 `fork_from` 方法，强迫检查每一个字段
+    /// But we use explicit `fork_from` method, forcing check of every field.
     pub fn fork_child_from_parent(&mut self, child_index: usize, child_pid: Pid, child_endpoint: Endpoint) {
         let parent = self.current_proc().clone();
         
@@ -217,34 +216,34 @@ impl<'a> PmContext<'a> {
     }
 }
 
-/// 获取当前时钟滴答数
+/// Gets current clock ticks.
 ///
-/// 对应 Minix3 的 `getticks()` 函数
+/// Corresponds to Minix3's `getticks()` function.
 ///
 /// # TODO
-/// 当前返回 0，后续需要实现真正的时钟获取：
-/// - 通过 IPC 向 CLOCK 任务请求时间
-/// - 或使用内核提供的时钟接口
+/// Currently returns 0, need to implement real clock acquisition later:
+/// - Request time from CLOCK task via IPC
+/// - Or use kernel-provided clock interface
 fn getticks() -> Clock {
     0
 }
 
 impl Process {
-    /// Fork 语义：从父进程创建子进程
+    /// Fork semantics: create child process from parent.
     ///
-    /// 策略：显式构造（Explicit Construction）
-    /// 优势：编译器强制检查新增字段，无隐式行为
+    /// Strategy: Explicit Construction
+    /// Advantage: Compiler forces checking of new fields, no implicit behavior
     ///
-    /// # Minix3 映射
-    /// | Minix3 行为 | Rust 行为 |
+    /// # Minix3 Mapping
+    /// | Minix3 Behavior | Rust Behavior |
     /// |------------|----------|
-    /// | `*rmc = *rmp` | 显式复制每个字段 |
+    /// | `*rmc = *rmp` | Explicitly copy each field |
     /// | `rmc->mp_pid = next_pid` | `identity.id.pid = child_pid` |
     /// | `rmc->mp_flags &= ~TRACE_EXIT` | `trace.stopped = false` |
     /// | `rmc->mp_child_utime = 0` | `resources.child_utime = 0` |
-    /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` 只保留 TAINTED |
+    /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` only keeps TAINTED |
     /// | `rmc->mp_started = getticks()` | `started = getticks()` |
-    /// | 特权进程 scheduler | `Endpoint::RS` |
+    /// | Privileged process scheduler | `Endpoint::RS` |
     pub fn fork_from(
         parent: &Process, 
         child_index: usize, 
@@ -253,60 +252,45 @@ impl Process {
         parent_index: usize,
     ) -> Self {
         
-        // --- 1. IDENTITY：继承 + 覆盖 ---
-        // 语义：我是谁（PID变了，其他继承）
         let identity = ProcessIdentity {
             id: ProcessId { 
-                index: UserSlot::new(child_index), // 显式传入新索引
-                pid: child_pid,                     // 显式传入新 PID
+                index: UserSlot::new(child_index),
+                pid: child_pid,
             },
             endpoint: child_endpoint,
-            // 继承：进程组和名字（值拷贝，安全）
             procgrp: parent.identity.procgrp, 
             name: parent.identity.name,
         };
 
-        // --- 2. STATE：重置 + 关系 ---
-        // 语义：我的状态（我是新进程，我是谁的孩子）
         let state = ProcessState {
-            lifecycle: Lifecycle::Running,      // 刚出生的进程总是就绪/运行态
-            block: BlockState::default(),       // 重置阻塞状态
-            wait: WaitState::default(),         // 重置等待状态
+            lifecycle: Lifecycle::Running,
+            block: BlockState::default(),
+            wait: WaitState::default(),
             guardianship: Guardianship::Normal { 
-                parent: UserSlot::new(parent_index), // 认祖归宗：父进程索引
+                parent: UserSlot::new(parent_index),
             },
-            trace: TraceState::default(),       // 清除追踪器（除非 TO_TRACEFORK）
+            trace: TraceState::default(),
         };
 
-        // --- 3. RESOURCES：混合策略 ---
-        // 语义：我的资源（权限继承，统计清零）
         let resources = ProcessResources {
-            // --- 深度继承区 ---
-            // ⚠️ 确保是 Deep Clone，不是浅拷贝
             privilege: parent.resources.privilege.clone(),
             signals: parent.resources.signals.clone(),
             
-            // --- 重置区 ---
             child_utime: 0,
             child_stime: 0,
-            started: getticks(),  // ⚠️ 确保时钟源正确
+            started: getticks(),
             timer: None,
             intervals: [0; NR_ITIMERS],
             nice: parent.resources.nice,
             
-            // --- 特权逻辑区 ---
-            // ⚠️ 这里不封装进 Resources，因为依赖了外部的 Endpoint::RS
             scheduler: if parent.resources.privilege.is_kernel() {
-                Endpoint::RS  // 特权进程强制绑定 RS
+                Endpoint::RS
             } else {
-                parent.resources.scheduler  // 普通进程继承
+                parent.resources.scheduler
             },
             
-            // --- 标志位过滤区 ---
             flags: {
                 let mut flags = RemainingFlags::empty();
-                // 继承 TAINTED 和 DELAY_CALL 标志，对应 Minix3 逻辑：
-                // rmc->mp_flags &= (IN_USE|DELAY_CALL|TAINTED)
                 if parent.resources.flags.contains(RemainingFlags::TAINTED) {
                     flags |= RemainingFlags::TAINTED;
                 }
@@ -317,7 +301,6 @@ impl Process {
             },
         };
 
-        // --- 4. IPC：默认 ---
         let ipc = ProcessIpc::default();
 
         Self { identity, state, resources, ipc }

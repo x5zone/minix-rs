@@ -1,6 +1,6 @@
-//! Kernel virtual memory module
+//! Kernel virtual memory module.
 
-/// 地址空间
+/// Address space.
 pub struct AddressSpace;
 
 impl AddressSpace {
@@ -9,8 +9,8 @@ impl AddressSpace {
     }
 }
 
-/// 复制地址空间
+/// Copies address space.
 pub fn copy_address_space(_as: &AddressSpace) -> AddressSpace {
-    // TODO: 实现地址空间复制
+    // TODO: Implement address space copy
     AddressSpace::new()
 }

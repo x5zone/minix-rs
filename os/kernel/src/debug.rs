@@ -1,6 +1,6 @@
-//! Debug utilities (mock)
+//! Debug utilities (mock).
 
-/// 输出调试信息
+/// Outputs debug information.
 pub fn print(msg: &str) {
-    // TODO: 输出调试信息
+    // TODO: Output debug information
 }

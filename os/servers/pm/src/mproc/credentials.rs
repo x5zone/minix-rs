@@ -1,41 +1,41 @@
-//! 权限凭证定义
+//! Credentials definition.
 //!
-//! 提供进程的 UID/GID 凭证管理
+//! Provides process UID/GID credential management.
 
 use minix_types::{Uid, Gid, IdSet};
 
-/// 最大补充组数量
+/// Maximum number of supplemental groups.
 pub const NGROUPS_MAX: usize = 16;
 
-/// 权限凭证
+/// Credentials.
 ///
-/// 存储进程的用户和组身份信息
+/// Stores process user and group identity information.
 ///
-/// # Minix3 映射
+/// # Minix3 Mapping
 /// - `mp_realuid, mp_effuid, mp_svuid` → `user: IdSet<Uid>`
 /// - `mp_realgid, mp_effgid, mp_svgid` → `group: IdSet<Gid>`
 /// - `mp_supgroups` → `supplemental_groups`
 /// - `mp_ngroups` → `ngroups`
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
-    /// 用户 ID 三元组
+    /// User ID triplet.
     pub user: IdSet<Uid>,
-    /// 组 ID 三元组
+    /// Group ID triplet.
     pub group: IdSet<Gid>,
-    /// 补充组列表
+    /// Supplemental group list.
     pub supplemental_groups: [Gid; NGROUPS_MAX],
-    /// 补充组数量
+    /// Number of supplemental groups.
     pub ngroups: usize,
 }
 
 impl Credentials {
-    /// 创建新的凭证
+    /// Creates new credentials.
     ///
-    /// # 参数
-    /// - `real_uid`: 真实用户 ID
-    /// - `real_gid`: 真实组 ID
+    /// # Parameters
+    /// - `real_uid`: Real user ID
+    /// - `real_gid`: Real group ID
     ///
-    /// effective 和 saved ID 会被设置为相同的值
+    /// Effective and saved IDs will be set to the same values.
     pub fn new(real_uid: Uid, real_gid: Gid) -> Self {
         Self {
             user: IdSet {
@@ -53,9 +53,9 @@ impl Credentials {
         }
     }
     
-    /// 检查是否是超级用户
+    /// Checks if superuser.
     ///
-    /// 超级用户的 effective UID 为 0
+    /// Superuser's effective UID is 0.
     pub fn is_superuser(&self) -> bool {
         self.user.effective == 0
     }

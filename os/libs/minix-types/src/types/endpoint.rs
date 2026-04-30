@@ -1,138 +1,137 @@
-//! 端点标识类型定义
+//! Endpoint identifier type definitions.
 //!
-//! 提供进程端点（Endpoint）类型，用于 IPC 通信中的进程标识。
+//! Provides process endpoint (Endpoint) type for process identification in IPC.
 //!
-//! # 槽位类型区分
+//! # Slot Type Distinction
 //!
-//! - `UserSlot`: 服务器本地进程表索引（0 ~ NR_PROCS-1），用于访问 mproc/fproc/vmproc
-//! - `KernelSlot`: 内核进程表索引（0 ~ NR_TASKS+NR_PROCS-1），用于访问 kernel proc table
+//! - `UserSlot`: Server-local process table index (0 ~ NR_PROCS-1), used to access mproc/fproc/vmproc.
+//! - `KernelSlot`: Kernel process table index (0 ~ NR_TASKS+NR_PROCS-1), used to access kernel proc table.
 //!
-//! 注意：内核任务（负数 slot）不在 mproc/fproc/vmproc 中，只能通过 KernelSlot 访问
+//! Note: Kernel tasks (negative slot) are not in mproc/fproc/vmproc, can only be accessed via KernelSlot.
 
-// 从 com 模块导入共享常量
 pub use super::com::MAX_NR_TASKS;
 
-/// Endpoint 代数位移位数
+/// Endpoint generation shift bits.
 ///
-/// 对应 Minix3 的 `_ENDPOINT_GENERATION_SHIFT`
+/// Corresponds to Minix3's `_ENDPOINT_GENERATION_SHIFT`.
 pub const ENDPOINT_GENERATION_SHIFT: i32 = 15;
 
-/// Endpoint 代数大小
+/// Endpoint generation size.
 ///
-/// 对应 Minix3 的 `_ENDPOINT_GENERATION_SIZE`
+/// Corresponds to Minix3's `_ENDPOINT_GENERATION_SIZE`.
 pub const ENDPOINT_GENERATION_SIZE: i32 = 1 << ENDPOINT_GENERATION_SHIFT;
 
-/// Endpoint 槽位上限
+/// Endpoint slot upper limit.
 ///
-/// 对应 Minix3 的 `_ENDPOINT_SLOT_TOP`
+/// Corresponds to Minix3's `_ENDPOINT_SLOT_TOP`.
 pub const ENDPOINT_SLOT_TOP: i32 = ENDPOINT_GENERATION_SIZE - (MAX_NR_TASKS as i32);
 
-/// 端点标识
+/// Endpoint identifier.
 ///
-/// Minix3 中用于标识进程的唯一标识符，用于 IPC 通信。
-/// 由两部分组成：进程槽位号（slot）和代数（generation）。
+/// Unique identifier for processes in Minix3, used for IPC communication.
+/// Composed of two parts: process slot number and generation.
 ///
-/// # 结构
-/// - 低 15 位：进程槽位号（0 ~ NR_PROCS-1 为用户进程，负数为内核任务）
-/// - 高位：代数（generation），每次槽位重用时递增
+/// # Structure
+/// - Lower 15 bits: Process slot number (0 ~ NR_PROCS-1 for user processes, negative for kernel tasks).
+/// - Higher bits: Generation, incremented each time a slot is reused.
 ///
-/// # 特殊端点
-/// - `NONE`: 无效端点
-/// - `ANY`: 任意进程
-/// - `SELF`: 自身进程
+/// # Special Endpoints
+/// - `NONE`: Invalid endpoint.
+/// - `ANY`: Any process.
+/// - `SELF`: Self process.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Endpoint(pub i32);
 
 impl Endpoint {
-    // 特殊端点
-    pub const NONE: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 2); // 无效端点
-    pub const ANY: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 1);  // 任意进程
-    pub const SELF: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 3); // 自身进程
+    // Special endpoints
+    pub const NONE: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 2); // Invalid endpoint
+    pub const ANY: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 1);  // Any process
+    pub const SELF: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 3); // Self process
 
-    // 内核任务 (-5 ~ -1)
-    pub const ASYNCM: Endpoint = Endpoint(-5);   // 异步消息通知
-    pub const IDLE: Endpoint = Endpoint(-4);     // 空闲任务
-    pub const CLOCK: Endpoint = Endpoint(-3);    // 时钟任务
-    pub const SYSTEM: Endpoint = Endpoint(-2);   // 系统任务
-    pub const KERNEL: Endpoint = Endpoint(-1);   // 内核/硬件中断
-    pub const HARDWARE: Endpoint = Self::KERNEL; // 硬件中断别名
+    // Kernel tasks (-5 ~ -1)
+    pub const ASYNCM: Endpoint = Endpoint(-5);   // Async message notification
+    pub const IDLE: Endpoint = Endpoint(-4);     // Idle task
+    pub const CLOCK: Endpoint = Endpoint(-3);    // Clock task
+    pub const SYSTEM: Endpoint = Endpoint(-2);   // System task
+    pub const KERNEL: Endpoint = Endpoint(-1);   // Kernel/hardware interrupt
+    pub const HARDWARE: Endpoint = Self::KERNEL; // Hardware interrupt alias
 
-    // 用户空间进程 (0 ~ 11)
-    pub const PM: Endpoint = Endpoint(0);    // 进程管理器
-    pub const VFS: Endpoint = Endpoint(1);   // 虚拟文件系统
-    pub const RS: Endpoint = Endpoint(2);    // 重启服务器
-    pub const MEM: Endpoint = Endpoint(3);   // 内存驱动
-    pub const SCHED: Endpoint = Endpoint(4); // 调度器
-    pub const TTY: Endpoint = Endpoint(5);   // TTY 驱动
-    pub const DS: Endpoint = Endpoint(6);    // 数据存储服务
-    pub const MIB: Endpoint = Endpoint(7);   // 管理信息库服务
-    pub const VM: Endpoint = Endpoint(8);    // 虚拟内存管理器
-    pub const PFS: Endpoint = Endpoint(9);   // Pipe 文件系统
-    pub const MFS: Endpoint = Endpoint(10);  // Minix 根文件系统
-    pub const INIT: Endpoint = Endpoint(11); // Init 进程
+    // User space processes (0 ~ 11)
+    pub const PM: Endpoint = Endpoint(0);    // Process manager
+    pub const VFS: Endpoint = Endpoint(1);   // Virtual file system
+    pub const RS: Endpoint = Endpoint(2);    // Restart server
+    pub const MEM: Endpoint = Endpoint(3);   // Memory driver
+    pub const SCHED: Endpoint = Endpoint(4); // Scheduler
+    pub const TTY: Endpoint = Endpoint(5);   // TTY driver
+    pub const DS: Endpoint = Endpoint(6);    // Data store service
+    pub const MIB: Endpoint = Endpoint(7);   // Management information base service
+    pub const VM: Endpoint = Endpoint(8);    // Virtual memory manager
+    pub const PFS: Endpoint = Endpoint(9);   // Pipe file system
+    pub const MFS: Endpoint = Endpoint(10);  // Minix root file system
+    pub const INIT: Endpoint = Endpoint(11); // Init process
 
-    /// 获取原始值（调试用）
+    /// Gets the raw value (for debugging).
     #[inline(always)]
     pub const fn get(self) -> i32 {
         self.0
     }
 
-    /// 从代数和槽位构造端点（`_ENDPOINT(g, p)`）
+    /// Constructs endpoint from generation and slot (`_ENDPOINT(g, p)`).
     #[inline(always)]
     pub const fn from_generation_slot(generation: i32, slot: i32) -> Self {
         Self((generation << ENDPOINT_GENERATION_SHIFT) + slot)
     }
 
-    /// 提取槽位号（`_ENDPOINT_P(e)`）
+    /// Extracts slot number (`_ENDPOINT_P(e)`).
     #[inline(always)]
     pub const fn slot(self) -> i32 {
         ((self.0 + MAX_NR_TASKS as i32) & (ENDPOINT_GENERATION_SIZE - 1)) - MAX_NR_TASKS as i32
     }
 
-    /// 提取代数（`_ENDPOINT_G(e)`）
+    /// Extracts generation (`_ENDPOINT_G(e)`).
     #[inline(always)]
     pub const fn generation(self) -> i32 {
         (self.0 + MAX_NR_TASKS as i32) >> ENDPOINT_GENERATION_SHIFT
     }
 
-    /// 是否为 NONE
+    /// Checks if this is NONE.
     #[inline(always)]
     pub const fn is_none(self) -> bool {
         self.0 == Self::NONE.0
     }
 
-    /// 是否为 ANY
+    /// Checks if this is ANY.
     #[inline(always)]
     pub const fn is_any(self) -> bool {
         self.0 == Self::ANY.0
     }
 
-    /// 是否为 SELF
+    /// Checks if this is SELF.
     #[inline(always)]
     pub const fn is_self(self) -> bool {
         self.0 == Self::SELF.0
     }
 
-    /// 是否有效（非 NONE/ANY/SELF）
+    /// Checks if valid (not NONE/ANY/SELF).
     #[inline(always)]
     pub const fn is_valid(self) -> bool {
         self.0 != Self::NONE.0 && self.0 != Self::ANY.0 && self.0 != Self::SELF.0
     }
 
-    /// 检查是否为内核任务（槽位号为负）
+    /// Checks if this is a kernel task (slot is negative).
     #[inline(always)]
     pub const fn is_kernel_task(self) -> bool {
         self.slot() < 0
     }
 
-    /// 是否为用户进程（槽位 >= 0）
+    /// Checks if this is a user process (slot >= 0).
     #[inline(always)]
     pub const fn is_user_proc(self) -> bool {
         self.slot() >= 0
     }
 
-    /// 转为 UserSlot（用户进程）
+    /// Converts to UserSlot (user process).
     #[inline(always)]
     pub const fn to_user_slot(self) -> Option<UserSlot> {
         if self.is_user_proc() {
@@ -142,12 +141,46 @@ impl Endpoint {
         }
     }
 
-    /// 转为 KernelSlot
+    /// Converts to KernelSlot.
     #[inline(always)]
     pub const fn to_kernel_slot(self) -> KernelSlot {
-        // 内核任务: slot 为负，位置是 MAX_NR_TASKS + slot（如 -1 -> MAX_NR_TASKS-1）
-        // 用户进程: slot 为正，位置是 MAX_NR_TASKS + slot
+        // Kernel task: slot is negative, position is MAX_NR_TASKS + slot (e.g. -1 -> MAX_NR_TASKS-1)
+        // User process: slot is positive, position is MAX_NR_TASKS + slot
         KernelSlot((MAX_NR_TASKS as i32 + self.slot()) as usize)
+    }
+
+    /// Maximum endpoint generation value.
+    ///
+    /// Corresponds to Minix3's `_ENDPOINT_MAX_GENERATION = INT_MAX / _ENDPOINT_GENERATION_SIZE - 1`.
+    pub const ENDPOINT_MAX_GENERATION: i32 = i32::MAX / ENDPOINT_GENERATION_SIZE - 1;
+
+    /// Generates a new endpoint for child process during fork.
+    ///
+    /// Corresponds to the generation increment and endpoint generation logic in Minix3 do_fork.c:
+    /// ```c
+    /// gen = _ENDPOINT_G(rpc->p_endpoint);
+    /// if(++gen >= _ENDPOINT_MAX_GENERATION) gen = 1;
+    /// rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);
+    /// ```
+    ///
+    /// Extracts generation from the child slot's current endpoint, increments it,
+    /// and combines with child process number to form a new endpoint.
+    /// Generation wraps to 1 when exceeding max (0 is not used to avoid conflicts with hardcoded endpoints).
+    ///
+    /// # Parameters
+    /// - `current_endpoint`: Current endpoint of the child slot (for extracting old generation).
+    /// - `child_slot`: Child process number.
+    ///
+    /// # Returns
+    /// New endpoint with generation incremented from old generation.
+    #[inline]
+    pub const fn fork_new_endpoint(current_endpoint: Endpoint, child_slot: i32) -> Endpoint {
+        let mut generation = current_endpoint.generation();
+        generation += 1;
+        if generation >= Self::ENDPOINT_MAX_GENERATION {
+            generation = 1;
+        }
+        Endpoint::from_generation_slot(generation, child_slot)
     }
 }
 
@@ -157,8 +190,8 @@ impl Default for Endpoint {
     }
 }
 
-/// 用户进程槽位索引（0 ~ NR_PROCS-1）
-/// 用于访问 mproc/fproc/vmproc，**不含内核任务**
+/// User process slot index (0 ~ NR_PROCS-1).
+/// Used to access mproc/fproc/vmproc, **does not include kernel tasks**.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserSlot(pub usize);
@@ -173,10 +206,40 @@ impl UserSlot {
     pub const fn get(self) -> usize {
         self.0
     }
+
+    /// Checks if the endpoint's slot part matches this user slot.
+    ///
+    /// Returns `false` for kernel tasks (negative slot numbers) as they
+    /// don't have a corresponding UserSlot.
+    ///
+    /// # Examples
+    /// ```
+    /// use minix_types::{Endpoint, UserSlot};
+    ///
+    /// let slot = UserSlot::new(5);
+    /// let endpoint = Endpoint::from_generation_slot(1, 5);
+    ///
+    /// assert!(slot.matches(endpoint));
+    /// assert!(!UserSlot::new(3).matches(endpoint));
+    ///
+    /// // Kernel tasks don't match any UserSlot
+    /// assert!(!slot.matches(Endpoint::KERNEL));
+    /// ```
+    pub fn matches(self, endpoint: Endpoint) -> bool {
+        if !endpoint.is_valid() {
+            return false;
+        }
+        let ep_slot = endpoint.slot();
+        // Kernel tasks have negative slot numbers, they don't match UserSlot
+        if ep_slot < 0 {
+            return false;
+        }
+        ep_slot as usize == self.get()
+    }
 }
 
-/// 内核进程表槽位索引（0 ~ NR_TASKS+NR_PROCS-1）
-/// 用于访问内核 proc_tab：0~NR_TASKS-1 是内核任务，NR_TASKS~ 是用户进程
+/// Kernel process table slot index (0 ~ NR_TASKS+NR_PROCS-1).
+/// Used to access kernel proc_tab: 0~NR_TASKS-1 are kernel tasks, NR_TASKS~ are user processes.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelSlot(pub usize);
@@ -192,10 +255,45 @@ impl KernelSlot {
         self.0
     }
 
-    /// 从 UserSlot 转换
+    /// Converts from UserSlot.
     #[inline(always)]
     pub const fn from_user_slot(user_slot: UserSlot) -> Self {
         Self(user_slot.0 + MAX_NR_TASKS as usize)
+    }
+
+    /// Checks if the endpoint's slot part matches this kernel slot.
+    ///
+    /// KernelSlot is the index into the kernel's process table (proc_tab).
+    /// It includes both kernel tasks (0 ~ MAX_NR_TASKS-1) and user processes (MAX_NR_TASKS ~).
+    ///
+    /// # Mapping
+    /// - Kernel tasks: negative endpoint slot -> KernelSlot = MAX_NR_TASKS + slot
+    ///   - e.g., KERNEL = -1 -> KernelSlot = MAX_NR_TASKS - 1
+    /// - User processes: non-negative endpoint slot -> KernelSlot = MAX_NR_TASKS + slot
+    ///   - e.g., PM = 0 -> KernelSlot = MAX_NR_TASKS + 0 = MAX_NR_TASKS
+    ///
+    /// # Examples
+    /// ```
+    /// use minix_types::{Endpoint, KernelSlot, UserSlot};
+    ///
+    /// // Kernel task: KERNEL has endpoint slot -1
+    /// // In kernel's proc_tab, it's at index MAX_NR_TASKS - 1
+    /// let kernel_ep = Endpoint::KERNEL;
+    /// assert!(KernelSlot::new(MAX_NR_TASKS - 1).matches(kernel_ep));
+    ///
+    /// // User process: PM has endpoint slot 0
+    /// // In kernel's proc_tab, it's at index MAX_NR_TASKS (after all kernel tasks)
+    /// let user_ep = Endpoint::PM;
+    /// let pm_kernel_slot = KernelSlot::from_user_slot(UserSlot::new(0));
+    /// assert!(pm_kernel_slot.matches(user_ep));
+    /// ```
+    pub fn matches(self, endpoint: Endpoint) -> bool {
+        if !endpoint.is_valid() {
+            return false;
+        }
+        // Use the same logic as to_kernel_slot()
+        let kernel_idx = (MAX_NR_TASKS as i32 + endpoint.slot()) as usize;
+        kernel_idx == self.get()
     }
 }
 
@@ -295,5 +393,66 @@ mod tests {
         // 内核任务的内核槽位
         let kernel_ep = Endpoint::from_generation_slot(0, -1);
         assert_eq!(kernel_ep.to_kernel_slot().get(), (MAX_NR_TASKS - 1) as usize);
+    }
+
+    #[test]
+    fn test_fork_new_endpoint_increment() {
+        let current = Endpoint::from_generation_slot(5, 10);
+        let new = Endpoint::fork_new_endpoint(current, 10);
+        assert_eq!(new.generation(), 6);
+        assert_eq!(new.slot(), 10);
+    }
+
+    #[test]
+    fn test_fork_new_endpoint_wraparound() {
+        let max_gen = Endpoint::ENDPOINT_MAX_GENERATION;
+        let current = Endpoint::from_generation_slot(max_gen, 10);
+        let new = Endpoint::fork_new_endpoint(current, 10);
+        assert_eq!(new.generation(), 1);
+        assert_eq!(new.slot(), 10);
+    }
+
+    #[test]
+    fn test_fork_new_endpoint_different_slot() {
+        let current = Endpoint::from_generation_slot(3, 5);
+        let new = Endpoint::fork_new_endpoint(current, 20);
+        assert_eq!(new.generation(), 4);
+        assert_eq!(new.slot(), 20);
+    }
+
+    #[test]
+    fn test_fork_new_endpoint_max_generation_value() {
+        assert_eq!(Endpoint::ENDPOINT_MAX_GENERATION, 65534);
+    }
+
+    #[test]
+    fn test_user_slot_matches_matching() {
+        let slot = UserSlot::new(5);
+        let endpoint = Endpoint::from_generation_slot(1, 5);
+
+        assert!(slot.matches(endpoint));
+    }
+
+    #[test]
+    fn test_user_slot_matches_mismatch() {
+        let slot = UserSlot::new(5);
+        let endpoint = Endpoint::from_generation_slot(1, 3);
+
+        assert!(!slot.matches(endpoint));
+    }
+
+    #[test]
+    fn test_user_slot_matches_invalid_endpoint() {
+        assert!(!UserSlot::new(0).matches(Endpoint::NONE));
+        assert!(!UserSlot::new(0).matches(Endpoint::ANY));
+        assert!(!UserSlot::new(0).matches(Endpoint::SELF));
+    }
+
+    #[test]
+    fn test_user_slot_matches_with_generation() {
+        let slot = UserSlot::new(10);
+        let endpoint = Endpoint::from_generation_slot(5, 10);
+
+        assert!(slot.matches(endpoint));
     }
 }

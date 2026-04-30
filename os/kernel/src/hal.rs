@@ -1,6 +1,6 @@
-//! Hardware Abstraction Layer (mock)
+//! Hardware Abstraction Layer (mock).
 
-/// HAL 初始化
+/// HAL initialization.
 pub fn init() {
-    // TODO: 初始化 HAL
+    // TODO: Initialize HAL
 }

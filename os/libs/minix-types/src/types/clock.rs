@@ -1,27 +1,30 @@
-//! 时间和地址类型定义
+//! Time and address type definitions.
 //!
-//! 64 位系统专用类型映射
+//! 64-bit system specific type mappings.
 
-/// 时钟滴答数（64 位有符号整数）
+/// Clock tick count (64-bit signed integer).
 ///
-/// 在 64 位系统中，`clock_t` 是 8 字节
+/// On 64-bit systems, `clock_t` is 8 bytes.
 pub type Clock = i64;
 
-/// 虚拟地址/字节数（64 位无符号整数）
+/// Virtual address/byte count (64-bit unsigned integer).
 ///
-/// 在 64 位系统中，指针和 `size_t` 都是 8 字节
-/// 被 PM、VM、VFS、Kernel 共用
+/// On 64-bit systems, pointers and `size_t` are both 8 bytes.
+/// Shared by PM, VM, VFS, Kernel.
+// TODO(XZHAO): Add overflow checking for address arithmetic on 64-bit systems.
+// Current implementations use wrapping arithmetic which may silently overflow.
+// This should be addressed when focusing on memory/address related modules.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
 
 impl VirBytes {
-    /// 创建新虚拟字节数
+    /// Creates a new virtual byte count.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
-    /// 获取值
+    /// Gets the value.
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -81,27 +84,27 @@ impl PartialEq<u64> for VirBytes {
     }
 }
 
-/// 物理地址（64 位无符号整数）
+/// Physical address (64-bit unsigned integer).
 ///
-/// 被 VM、Kernel 使用
+/// Used by VM, Kernel.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysBytes(pub u64);
 
 impl PhysBytes {
-    /// 创建新物理字节数
+    /// Creates a new physical byte count.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
-    /// 获取值
+    /// Gets the value.
     pub const fn get(self) -> u64 {
         self.0
     }
 }
 
-/// 时间戳（64 位有符号整数）
+/// Timestamp (64-bit signed integer).
 pub type Time = i64;
 
-/// 文件偏移（64 位有符号整数）
+/// File offset (64-bit signed integer).
 pub type Off = i64;

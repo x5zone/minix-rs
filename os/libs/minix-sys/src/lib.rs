@@ -1,61 +1,61 @@
-//! Minix-RS System Call Library
+//! Minix-RS System Call Library.
 //!
-//! 系统调用封装，供用户态程序使用
+//! System call wrappers for user-space programs.
 
 #![no_std]
 
 use minix_ipc::{Endpoint, Message, SyscallNum};
 pub use minix_types::{Gid, Pid, Uid};
 
-/// 文件描述符
+/// File descriptor.
 pub type Fd = i32;
 
-/// 创建子进程
+/// Creates a child process.
 pub fn fork() -> Result<Pid, Errno> {
     todo!("fork syscall")
 }
 
-/// 执行新程序
+/// Executes a new program.
 pub fn exec(path: &str, argv: &[&str]) -> Result<(), Errno> {
     todo!("exec syscall")
 }
 
-/// 进程退出
+/// Process exit.
 pub fn exit(status: i32) -> ! {
     loop {}
 }
 
-/// 等待子进程
+/// Waits for child process.
 pub fn waitpid(pid: Pid, status: &mut i32, options: i32) -> Result<Pid, Errno> {
     todo!("waitpid syscall")
 }
 
-/// 发送信号
+/// Sends a signal.
 pub fn kill(pid: Pid, sig: i32) -> Result<(), Errno> {
     todo!("kill syscall")
 }
 
-/// 打开文件
+/// Opens a file.
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
     todo!("open syscall")
 }
 
-/// 关闭文件
+/// Closes a file.
 pub fn close(fd: Fd) -> Result<(), Errno> {
     todo!("close syscall")
 }
 
-/// 读取文件
+/// Reads from a file.
 pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
     todo!("read syscall")
 }
 
-/// 写入文件
+/// Writes to a file.
 pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
     todo!("write syscall")
 }
 
-/// 内存映射
+/// Memory mapping.
 pub fn mmap(
     addr: *mut u8,
     len: usize,
@@ -67,7 +67,7 @@ pub fn mmap(
     todo!("mmap syscall")
 }
 
-/// 错误码
+/// Error number.
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
 pub enum Errno {

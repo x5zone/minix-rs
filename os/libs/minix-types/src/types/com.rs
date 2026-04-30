@@ -1,62 +1,62 @@
-//! 系统级常量定义
+//! System-level constant definitions.
 //!
-//! 对应 Minix3 的 `<minix/com.h>`
+//! Corresponds to Minix3's `<minix/com.h>`.
 //!
-//! # 说明
+//! # Notes
 //!
-//! 这些常量是系统级的全局配置，被多个模块共享：
-//! - `MAX_NR_TASKS`: 最大任务数（内核任务）
-//! - `NR_PROCS`: 最大进程数
-//! - `LAST_FEW`: 保留给 root 的槽位数
+//! These constants are system-level global configuration, shared by multiple modules:
+//! - `MAX_NR_TASKS`: Maximum number of tasks (kernel tasks).
+//! - `NR_PROCS`: Maximum number of processes.
+//! - `LAST_FEW`: Slots reserved for root.
 //!
-//! 这些常量放在独立的 `com` 模块中，因为它们：
-//! 1. 是系统级配置，不属于某个特定类型
-//! 2. 被多个模块共享（pid, endpoint 等）
-//! 3. 对应 Minix3 的 `com.h` 头文件
+//! These constants are placed in a separate `com` module because they:
+//! 1. Are system-level configuration, not belonging to a specific type.
+//! 2. Are shared by multiple modules (pid, endpoint, etc.).
+//! 3. Correspond to Minix3's `com.h` header file.
 
-/// 最大任务数（内核任务）
+/// Maximum number of tasks (kernel tasks).
 ///
-/// 对应 Minix3 的 `MAX_NR_TASKS` (在 `com.h` 中定义)
+/// Corresponds to Minix3's `MAX_NR_TASKS` (defined in `com.h`).
 ///
-/// # 说明
+/// # Notes
 ///
-/// 这是系统支持的最大任务数（内核任务），值为 1023。
-/// 用户进程数由 `NR_PROCS` 定义。
+/// This is the maximum number of tasks (kernel tasks) supported by the system, value is 1023.
+/// User process count is defined by `NR_PROCS`.
 pub const MAX_NR_TASKS: usize = 1023;
 
-/// 最大进程数
+/// Maximum number of processes.
 ///
-/// 对应 Minix3 的 `NR_PROCS` (在 `config.h` 中定义)
+/// Corresponds to Minix3's `NR_PROCS` (defined in `config.h`).
 ///
-/// # 说明
+/// # Notes
 ///
-/// 这是系统支持的最大用户进程数。
-/// 注意：实际可用的进程槽位还受 `MAX_NR_PROCS` 限制
-/// （由端点生成机制决定）。
+/// This is the maximum number of user processes supported by the system.
+/// Note: Actual available process slots are also limited by `MAX_NR_PROCS`
+/// (determined by endpoint generation mechanism).
 pub const NR_PROCS: usize = 256;
 
-/// 保留给 root 的槽位数
+/// Slots reserved for root.
 ///
-/// 对应 Minix3 的 `LAST_FEW`
+/// Corresponds to Minix3's `LAST_FEW`.
 ///
-/// # 说明
+/// # Notes
 ///
-/// 最后几个进程槽位保留给 root 用户，
-/// 防止普通用户耗尽所有进程槽位。
+/// The last few process slots are reserved for the root user,
+/// preventing regular users from exhausting all process slots.
 pub const LAST_FEW: usize = 5;
 
-/// 实际任务数（引导时初始化的任务）
+/// Actual number of tasks (tasks initialized at boot).
 ///
-/// 对应 Minix3 的 `NR_TASKS`
+/// Corresponds to Minix3's `NR_TASKS`.
 pub const NR_TASKS: usize = 5;
 
-/// 最后一个特殊进程号
+/// Last special process number.
 ///
-/// 对应 Minix3 的 `LAST_SPECIAL_PROC_NR` (init 进程)
+/// Corresponds to Minix3's `LAST_SPECIAL_PROC_NR` (init process).
 pub const LAST_SPECIAL_PROC_NR: usize = 11;
 
-/// 引导模块数
+/// Number of boot modules.
 ///
-/// 对应 Minix3 的 `NR_BOOT_MODULES` = `INIT_PROC_NR + 1`
+/// Corresponds to Minix3's `NR_BOOT_MODULES` = `INIT_PROC_NR + 1`.
 pub const NR_BOOT_MODULES: usize = LAST_SPECIAL_PROC_NR + 1;
 

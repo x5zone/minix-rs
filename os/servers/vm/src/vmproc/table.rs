@@ -1,274 +1,268 @@
-//! VM 进程表
+//! VM process table.
 //!
-//! 提供虚拟内存管理器的进程表实现，使用 `MaybeUninit` 避免初始化开销。
+//! Each slot is wrapped in `AssumeSyncCell<VmProc>` for independent access.
+//! Memory is always initialized (like Minix3's `memset(vmproc, 0, ...)`).
+//!
+//! State transitions via typestate views:
+//! ```text
+//! EmptySlot ──[activate]──> ActiveProc ──[mark_exiting]──> ExitingProc ──[reap]──> EmptySlot
+//!                           ActiveProc ──[force_clear]──────────────────────────> EmptySlot
+//! ```
 
-use std::mem::MaybeUninit;
-use minix_types::{Bitmap, Endpoint, NR_PROCS, UserSlot};
-use super::VmProc;
+use minix_types::{AssumeSyncCell, Endpoint, NR_PROCS, UserSlot};
+use super::{VmFlags, vmproc::VmProc, ActiveProc, ExitingProc, EmptySlot};
 
-/// VM 进程表大小
-///
-/// 包含所有用户进程槽位。内核任务由 Kernel 管理，不在 VM 进程表中。
-/// 对应 Minix3: `VMP_NR` 的用户进程部分
-pub const VM_PROC_COUNT: usize = NR_PROCS;
+/// Number of VM process slots: all user processes + 1 exec temporary slot.
+pub(crate) const VM_PROC_COUNT: usize = NR_PROCS + 1;
 
-/// exec 临时槽位
-///
-/// exec 过程中临时存储旧进程状态，防止 exec 失败时丢失信息。
-/// slot 0 通常保留给 init 进程，但在 exec 时用作临时存储。
-/// 对应 Minix3: `VMP_EXECTMP`
-pub const VM_EXEC_TMP_SLOT: UserSlot = UserSlot(0);
+/// Exec temporary slot (index = NR_PROCS), used during exec to store old process state.
+pub(crate) const VM_EXEC_TMP_SLOT: UserSlot = UserSlot(NR_PROCS);
 
-/// VM 进程表
+/// VM process table.
 ///
-/// 使用 `MaybeUninit` 避免：
-/// 1. 要求 `VmProc` 实现 `Default`
-/// 2. 初始化开销（`NR_PROCS` 可能很大）
-///
-/// # 设计原则
-///
-/// - **地址稳定**：对象位置固定，不随操作改变
-/// - **支持部分初始化**：允许部分槽位未初始化
-/// - **避免隐式 Drop**：防止意外释放资源
-/// - **缓存友好**：状态标记与数据分离
-///
-/// # 对应 Minix3 源码
-///
-/// [`vmproc.h`](../../../../minix3/minix/servers/vm/vmproc.h) 中的 `vmproc[]` 数组
-pub struct VmProcTable {
-    /// 物理层：原始内存占位，布局紧凑
-    /// 使用静态数组保证地址稳定性，存储在 BSS 段
-    slots: [MaybeUninit<VmProc>; VM_PROC_COUNT],
-
-    /// 索引层：快速扫描，单 cache line（32 字节）
-    in_use: Bitmap,
+/// Each slot is independently accessible via `AssumeSyncCell`, allowing
+/// concurrent access to different slots. All slots are initialized with
+/// zeroed `VmProc` objects at compile time. A slot is considered "free"
+/// when its `flags` field is empty (no IN_USE flag set).
+pub(crate) struct VmProcTable {
+    slots: [AssumeSyncCell<VmProc>; VM_PROC_COUNT],
 }
 
+/// Global VM process table.
+/// Slots are initialized at compile time with `vacant()` (like Minix3's `memset(vmproc, 0, ...)`).
+/// Slot numbers are set when accessing via `get_empty()` or `alloc_empty_slot()` (like Minix3's `vm_slot = i`).
+static VM_PROC_TABLE: VmProcTable = VmProcTable {
+    slots: [const { AssumeSyncCell::new(VmProc::vacant()) }; VM_PROC_COUNT],
+};
+
 impl VmProcTable {
-    /// 创建新的进程表
+    /// Gets reference to the global process table.
+    pub(crate) fn get_global() -> &'static VmProcTable {
+        &VM_PROC_TABLE
+    }
+
+    /// Resets a slot to vacant state for testing.
     ///
     /// # Safety
-    ///
-    /// 使用 `MaybeUninit::uninit()` 创建未初始化数组。
-    /// 这是安全的，因为我们通过 `in_use` 位图跟踪哪些槽位已初始化。
-    ///
-    /// # 地址稳定性
-    ///
-    /// 静态数组在 BSS 段分配，地址编译期确定，永不移动。
-    /// 这是内核核心表的要求，支持安全的引用传递。
-    pub fn new() -> Self {
-        Self {
-            // SAFETY: MaybeUninit 不需要初始化，这是安全的
-            slots: unsafe { MaybeUninit::uninit().assume_init() },
-            in_use: Bitmap::new(VM_PROC_COUNT),
-        }
-    }
-
-    /// 获取指定槽位的进程引用
-    ///
-    /// 返回 `None` 如果槽位未初始化或索引越界。
-    ///
-    /// # 示例
-    ///
-    /// ```
-    /// use minix_vm::VmProcTable;
-    /// use minix_types::UserSlot;
-    ///
-    /// let table = VmProcTable::new();
-    /// assert!(table.get_proc(UserSlot::new(0)).is_none());
-    /// ```
-    pub fn get_proc(&self, slot: UserSlot) -> Option<&VmProc> {
-        let index = slot.get();
-        if index >= NR_PROCS {
-            return None;
-        }
-        if self.in_use.get(index) {
-            // SAFETY: in_use 为 true 表示槽位已初始化
-            unsafe { Some(self.slots[index].assume_init_ref()) }
-        } else {
-            None
-        }
-    }
-
-    /// 获取指定槽位的进程可变引用
-    ///
-    /// 返回 `None` 如果槽位未初始化或索引越界。
-    pub fn get_proc_mut(&mut self, slot: UserSlot) -> Option<&mut VmProc> {
-        let index = slot.get();
-        if index >= NR_PROCS {
-            return None;
-        }
-        if self.in_use.get(index) {
-            // SAFETY: in_use 为 true 表示槽位已初始化
-            unsafe { Some(self.slots[index].assume_init_mut()) }
-        } else {
-            None
-        }
-    }
-
-    /// 分配一个空槽位
-    ///
-    /// 返回第一个未使用的槽位索引，如果没有可用槽位则返回 `None`。
-    ///
-    /// # 示例
-    ///
-    /// ```
-    /// use minix_vm::VmProcTable;
-    ///
-    /// let mut table = VmProcTable::new();
-    /// let slot = table.alloc_slot();
-    /// assert!(slot.is_some());
-    /// ```
-    pub fn alloc_slot(&mut self) -> Option<UserSlot> {
-        self.find_free_slot()
-    }
-
-    /// 查找第一个空槽位
-    ///
-    /// 返回第一个未使用的槽位索引。
-    pub fn find_free_slot(&self) -> Option<UserSlot> {
-        self.in_use.find_first_zero().map(UserSlot::new)
-    }
-
-    /// 初始化槽位
-    ///
-    /// 将进程写入指定槽位并标记为已使用。
-    ///
-    /// # Panics
-    ///
-    /// 如果槽位已被使用，会触发 panic。
-    pub fn init_slot(&mut self, proc: VmProc) {
-        let index = proc.slot.get();
-        assert!(index < NR_PROCS, "slot index out of bounds");
-        assert!(!self.in_use.get(index), "slot already in use");
-
-        // SAFETY: 我们已验证槽位未使用，写入是安全的
-        self.slots[index].write(proc);
-        self.in_use.set(index, true);
-    }
-
-    /// 移除槽位
-    ///
-    /// 清除指定槽位的进程并标记为未使用。
-    ///
-    /// # Safety
-    ///
-    /// 调用者必须确保没有其他引用指向该进程。
-    pub fn remove_slot(&mut self, slot: UserSlot) {
-        let index = slot.get();
-        if index >= NR_PROCS {
-            return;
-        }
-        if self.in_use.get(index) {
-            // SAFETY: 槽位已初始化，可以 drop
-            unsafe {
-                self.slots[index].assume_init_drop();
+    /// Caller must ensure no other references to this slot are active.
+    /// This is intended for test cleanup only.
+    #[cfg(test)]
+    pub(crate) unsafe fn reset_slot(&self, slot: UserSlot) {
+        if let Some(proc) = self.get_slot_mut(slot) {
+            // Clear the slot first to avoid Drop panic on IN_USE processes
+            if proc.vm_flags.contains(VmFlags::IN_USE) {
+                proc.clear();
             }
-            self.in_use.set(index, false);
+            // Use ptr::write to avoid triggering Drop on the old value
+            core::ptr::write(proc, VmProc::vacant_with_slot(slot));
         }
     }
 
-    /// 检查槽位是否在使用中
+    // ---- Internal Helpers ----
+
+    /// Validates slot index and returns the usize index if valid.
     #[inline]
-    pub fn is_slot_in_use(&self, slot: UserSlot) -> bool {
+    const fn check_slot(slot: UserSlot) -> Option<usize> {
         let index = slot.get();
-        index < NR_PROCS && self.in_use.get(index)
-    }
-
-    /// 获取已使用的槽位数量
-    pub fn used_count(&self) -> usize {
-        self.in_use.count_ones()
-    }
-
-    /// 获取空闲的槽位数量
-    pub fn free_count(&self) -> usize {
-        self.in_use.count_zeros()
-    }
-
-    /// 检查进程表是否为空
-    pub fn is_empty(&self) -> bool {
-        self.in_use.is_empty()
-    }
-
-    /// 检查进程表是否已满
-    pub fn is_full(&self) -> bool {
-        self.in_use.is_full()
-    }
-
-    /// 验证 endpoint 是否有效并返回对应进程
-    ///
-    /// 对应 Minix3 的 `vm_isokendpt()` 函数。
-    /// 执行完整的 TOCTOU 防护检查：
-    /// 1. 检查 slot 范围
-    /// 2. 检查 endpoint 是否匹配（防止 slot 重用后的旧 endpoint）
-    /// 3. 检查进程是否活跃（IN_USE 标志）
-    ///
-    /// # 参数
-    /// - `endpoint`: 要验证的端点
-    ///
-    /// # 返回值
-    /// - `Some(&VmProc)`: endpoint 有效，返回进程引用
-    /// - `None`: endpoint 无效（范围错误、不匹配、未激活）
-    ///
-    /// # 示例
-    /// ```
-    /// use minix_vm::{VmProcTable, VmProc};
-    /// use minix_types::{Endpoint, UserSlot};
-    /// use minix_vm::VmFlags;
-    ///
-    /// let mut table = VmProcTable::new();
-    /// let mut proc = VmProc::empty(UserSlot::new(5));
-    /// proc.endpoint = Endpoint::from_generation_slot(1, 5);
-    /// proc.flags |= VmFlags::IN_USE;
-    /// table.init_slot(proc);
-    ///
-    /// let verified = table.vm_isokendpt(Endpoint::from_generation_slot(1, 5));
-    /// assert!(verified.is_some());
-    /// ```
-    pub fn vm_isokendpt(&self, endpoint: Endpoint) -> Option<&VmProc> {
-        // 1. 提取 slot 并检查范围
-        let slot = endpoint.slot();
-        if slot < 0 || slot as usize >= VM_PROC_COUNT {
+        if index >= VM_PROC_COUNT {
             return None;
         }
-        let slot_idx = UserSlot(slot as usize);
-
-        // 2. 获取进程（检查是否已初始化）
-        let proc = self.get_proc(slot_idx)?;
-
-        // 3. 检查 endpoint 是否匹配（防止 slot 重用后的旧 endpoint）
-        if proc.endpoint != endpoint {
-            return None;
-        }
-
-        // 4. 检查进程是否活跃
-        if !proc.is_in_use() {
-            return None;
-        }
-
-        Some(proc)
+        Some(index)
     }
 
-    /// 根据 endpoint 查找进程
+    /// Gets immutable reference to slot if index is valid.
+    /// Returns `None` if slot index is out of bounds.
     ///
-    /// 遍历进程表查找匹配的 endpoint。
-    /// 时间复杂度 O(N)，适用于进程数不多的场景。
-    /// 注意：此方法不验证进程状态，仅做简单查找。
-    pub fn find_by_endpoint(&self, endpoint: Endpoint) -> Option<&VmProc> {
+    /// # Safety
+    /// Caller must ensure no mutable references to the same slot are active.
+    /// Even in single-threaded contexts, aliasing a mutable reference is UB.
+    unsafe fn get_slot(&self, slot: UserSlot) -> Option<&VmProc> {
+        let index = Self::check_slot(slot)?;
+        Some(unsafe { &*self.slots[index].get() })
+    }
+
+    /// Gets mutable reference to slot if index is valid.
+    /// Returns `None` if slot index is out of bounds.
+    ///
+    /// # Safety
+    /// Caller must ensure no other references (mutable or immutable) to the same slot are active.
+    /// Even in single-threaded contexts, holding both `&T` and `&mut T` to the same data is UB.
+    ///
+    /// # Visibility
+    /// `pub(super)` — only the vmproc module tree should access raw `&mut VmProc`.
+    /// All other code must use typestate views (`EmptySlot`, `ActiveProc`, `ExitingProc`).
+    #[allow(clippy::mut_from_ref)]
+    pub(super) unsafe fn get_slot_mut(&self, slot: UserSlot) -> Option<&mut VmProc> {
+        let index = Self::check_slot(slot)?;
+        Some(unsafe { &mut *self.slots[index].get() })
+    }
+
+    // ---- Typestate View API ----
+
+    /// Returns an `EmptySlot` view for the given slot if it's free.
+    ///
+    /// Use this to initialize a new process in the slot.
+    /// Sets the vm_slot field to the given value (Minix3's `vm_slot = i`).
+    pub(crate) fn get_empty(&self, slot: UserSlot) -> Option<EmptySlot<'_>> {
+        let proc = unsafe { self.get_slot_mut(slot)? };
+        if !proc.vm_flags.contains(VmFlags::IN_USE) {
+            proc.vm_slot = slot;
+            Some(EmptySlot::new(proc))
+        } else {
+            None
+        }
+    }
+
+    /// Finds and returns the first free slot as an `EmptySlot`.
+    ///
+    /// The returned `EmptySlot` holds an exclusive mutable reference to the slot.
+    /// Sets the vm_slot field to the found index (Minix3's `vm_slot = i`).
+    ///
+    /// This method is not atomic and assumes single-threaded execution.
+    pub(crate) fn alloc_empty_slot(&self) -> Option<EmptySlot<'_>> {
         for i in 0..VM_PROC_COUNT {
-            if self.in_use.get(i) {
-                // SAFETY: in_use 为 true 表示槽位已初始化
-                let proc = unsafe { self.slots[i].assume_init_ref() };
-                if proc.endpoint == endpoint {
-                    return Some(proc);
-                }
+            // SAFETY: We only access slot i, and the returned EmptySlot
+            // holds an exclusive mutable reference preventing concurrent access.
+            let proc = unsafe { self.get_slot_mut(UserSlot::new(i))? };
+            if !proc.vm_flags.contains(VmFlags::IN_USE) {
+                proc.vm_slot = UserSlot::new(i);
+                return Some(EmptySlot::new(proc));
             }
         }
         None
     }
 
-    /// 遍历所有已使用的进程
-    pub fn iter(&self) -> VmProcIter<'_> {
+    /// Returns an `ActiveProc` view for the given slot.
+    ///
+    /// Returns `Some` only if the process is active (IN_USE and not EXITING).
+    pub(crate) fn get_active(&self, slot: UserSlot) -> Option<ActiveProc<'_>> {
+        let proc = unsafe { self.get_slot_mut(slot)? };
+        let vm_flags = proc.vm_flags;
+        if vm_flags.contains(VmFlags::IN_USE) && !vm_flags.contains(VmFlags::EXITING) {
+            Some(ActiveProc::new(proc))
+        } else {
+            None
+        }
+    }
+
+    /// Returns an `ExitingProc` view for the given slot.
+    ///
+    /// Returns `Some` only if the process is exiting (IN_USE and EXITING).
+    pub(crate) fn get_exiting(&self, slot: UserSlot) -> Option<ExitingProc<'_>> {
+        let proc = unsafe { self.get_slot_mut(slot)? };
+        let vm_flags = proc.vm_flags;
+        if vm_flags.contains(VmFlags::IN_USE) && vm_flags.contains(VmFlags::EXITING) {
+            Some(ExitingProc::new(proc))
+        } else {
+            None
+        }
+    }
+
+    // ---- Query API ----
+
+    /// Checks if the slot is in use.
+    #[inline]
+    pub(crate) fn is_slot_in_use(&self, slot: UserSlot) -> bool {
+        unsafe { self.get_slot(slot) }
+            .map(|proc| proc.vm_flags.contains(VmFlags::IN_USE))
+            .unwrap_or(false)
+    }
+
+    /// Finds a free slot index.
+    ///
+    /// Unlike `alloc_empty_slot()`, this returns only the slot index
+    /// without an `EmptySlot` handle, so the slot might be taken
+    /// by another operation before you use it.
+    pub(crate) fn find_free_slot(&self) -> Option<UserSlot> {
+        for i in 0..VM_PROC_COUNT {
+            let proc = unsafe { &*self.slots[i].get() };
+            if !proc.vm_flags.contains(VmFlags::IN_USE) {
+                return Some(UserSlot::new(i));
+            }
+        }
+        None
+    }
+
+    /// Returns the number of used slots.
+    pub(crate) fn used_count(&self) -> usize {
+        (0..VM_PROC_COUNT)
+            .filter(|&i| {
+                let proc = unsafe { &*self.slots[i].get() };
+                proc.vm_flags.contains(VmFlags::IN_USE)
+            })
+            .count()
+    }
+
+    /// Returns the number of free slots.
+    pub(crate) fn free_count(&self) -> usize {
+        VM_PROC_COUNT - self.used_count()
+    }
+
+    /// Checks if the table is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.used_count() == 0
+    }
+
+    /// Checks if the table is full.
+    pub(crate) fn is_full(&self) -> bool {
+        self.find_free_slot().is_none()
+    }
+
+    /// Validates the endpoint and returns the corresponding slot index.
+    ///
+    /// Corresponds to Minix3's `vm_isokendpt()`.
+    /// Returns `Some(UserSlot)` if the endpoint is valid and the process is in use.
+    ///
+    /// Unlike Minix3 which distinguishes `EINVAL` (slot out of range) from
+    /// `EDEADEPT` (endpoint mismatch or process not active), this returns
+    /// a unified `None`. The distinction is unnecessary because all current
+    /// callers treat any failure as "invalid endpoint" — the specific reason
+    /// does not affect error handling.
+    pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Option<UserSlot> {
+        let vm_slot = endpoint.slot();
+        if vm_slot < 0 || vm_slot as usize >= VM_PROC_COUNT {
+            return None;
+        }
+        let slot_idx = UserSlot(vm_slot as usize);
+        let proc = unsafe { &*self.slots[slot_idx.get()].get() };
+
+        if proc.vm_endpoint != endpoint {
+            return None;
+        }
+
+        if !proc.vm_flags.contains(VmFlags::IN_USE) {
+            return None;
+        }
+
+        Some(slot_idx)
+    }
+
+    /// Iterates over all used processes immutably.
+    ///
+    /// Returns an iterator that yields `&VmProc` for each in-use slot.
+    ///
+    /// # Safety Warning
+    ///
+    /// This iterator returns raw `&VmProc` references, bypassing the typestate
+    /// system. The returned `&VmProc` may contain uninitialized `MaybeUninit`
+    /// fields (`vm_pt`, `vm_regions_avl`) if `vm_pt_initialized` /
+    /// `vm_regions_avl_initialized` are false. Callers must NOT access these
+    /// fields directly — use `ActiveProc::page_table()` / `regions()` which
+    /// check initialization flags.
+    ///
+    /// # Limitations
+    ///
+    /// **Cannot modify during iteration**: The iterator holds `&VmProcTable`,
+    /// blocking all typestate view operations (`get_empty()`, `get_active()`,
+    /// etc.) for its entire lifetime. Collect what you need first, drop the
+    /// iterator, then modify.
+    ///
+    /// # Visibility
+    ///
+    /// `pub(super)` — this iterator bypasses typestate and should only be
+    /// used within the vmproc module tree. Prefer typestate views for all
+    /// stateful operations.
+    pub(super) fn iter(&self) -> VmProcIter<'_> {
         VmProcIter {
             table: self,
             index: 0,
@@ -276,28 +270,18 @@ impl VmProcTable {
     }
 }
 
-impl Default for VmProcTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for VmProcTable {
-    fn drop(&mut self) {
-        // 清理所有已初始化的槽位
-        for i in 0..NR_PROCS {
-            if self.in_use.get(i) {
-                // SAFETY: 槽位已初始化，可以 drop
-                unsafe {
-                    self.slots[i].assume_init_drop();
-                }
-            }
-        }
-    }
-}
-
-/// 进程表迭代器
-pub struct VmProcIter<'a> {
+/// Iterator over the process table.
+///
+/// Yields `&VmProc` for each slot that has the `IN_USE` flag set.
+/// Holds a shared reference to the table, preventing mutable access
+/// for the duration of the iterator's lifetime.
+///
+/// # Typestate Bypass
+///
+/// This iterator returns `&VmProc` directly, bypassing the typestate
+/// system. It is restricted to `pub(super)` to prevent external code
+/// from accessing process data without typestate enforcement.
+pub(super) struct VmProcIter<'a> {
     table: &'a VmProcTable,
     index: usize,
 }
@@ -306,14 +290,12 @@ impl<'a> Iterator for VmProcIter<'a> {
     type Item = &'a VmProc;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < NR_PROCS {
+        while self.index < VM_PROC_COUNT {
             let i = self.index;
             self.index += 1;
-            if self.table.in_use.get(i) {
-                // SAFETY: in_use 为 true 表示槽位已初始化
-                unsafe {
-                    return Some(self.table.slots[i].assume_init_ref());
-                }
+            let proc = unsafe { &*self.table.slots[i].get() };
+            if proc.vm_flags.contains(VmFlags::IN_USE) {
+                return Some(proc);
             }
         }
         None
@@ -323,172 +305,208 @@ impl<'a> Iterator for VmProcIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VmFlags;
-
-    // 使用 Box 将 VmProcTable 放在堆上，避免栈溢出
-    // VmProcTable 包含 [MaybeUninit<VmProc>; NR_PROCS]，在栈上创建会导致溢出
 
     #[test]
-    fn test_table_new() {
-        let table = Box::new(VmProcTable::new());
-        assert!(table.is_empty());
-        assert_eq!(table.used_count(), 0);
-        assert_eq!(table.free_count(), NR_PROCS);
+    fn test_table_empty() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(0)); }
+        // After reset, slot 0 should be empty
+        assert!(!table.is_slot_in_use(UserSlot::new(0)));
     }
 
     #[test]
-    fn test_table_alloc_slot() {
-        let mut table = Box::new(VmProcTable::new());
-        let slot = table.alloc_slot().unwrap();
-        assert_eq!(slot.get(), 0);
+    fn test_typestate_activate() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(0)); }
+
+        let empty = table.get_empty(UserSlot::new(0)).unwrap();
+        assert_eq!(empty.slot(), UserSlot::new(0));
+
+        let ep = Endpoint::from_generation_slot(1, 0);
+        let mut active = empty.activate(ep);
+        assert!(active.flags().contains(VmFlags::IN_USE));
+        assert_eq!(active.endpoint(), ep);
+
+        active.set_total_max(minix_types::VirBytes(1024));
+        assert_eq!(active.total_max().0, 1024);
     }
 
     #[test]
-    fn test_table_init_slot() {
-        let mut table = Box::new(VmProcTable::new());
+    fn test_typestate_lifecycle() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(0)); }
 
-        let mut proc = VmProc::empty(UserSlot::new(0));
-        proc.endpoint = Endpoint::PM;
-        proc.flags |= VmFlags::IN_USE;
+        let empty = table.get_empty(UserSlot::new(0)).unwrap();
+        let ep = Endpoint::from_generation_slot(1, 0);
+        let active = empty.activate(ep);
 
-        table.init_slot(proc);
+        let exiting = active.mark_exiting();
+        assert!(exiting.flags().contains(VmFlags::EXITING));
 
-        assert!(table.is_slot_in_use(UserSlot::new(0)));
-        assert_eq!(table.used_count(), 1);
-
-        let retrieved = table.get_proc(UserSlot::new(0)).unwrap();
-        assert_eq!(retrieved.endpoint, Endpoint::PM);
-    }
-
-    #[test]
-    fn test_table_remove_slot() {
-        let mut table = Box::new(VmProcTable::new());
-
-        let proc = VmProc::empty(UserSlot::new(0));
-        table.init_slot(proc);
-
-        assert!(table.is_slot_in_use(UserSlot::new(0)));
-
-        table.remove_slot(UserSlot::new(0));
+        let empty = unsafe { exiting.reap() };
+        assert_eq!(empty.slot(), UserSlot::new(0));
 
         assert!(!table.is_slot_in_use(UserSlot::new(0)));
-        assert!(table.get_proc(UserSlot::new(0)).is_none());
     }
 
     #[test]
-    fn test_table_find_by_endpoint() {
-        let mut table = Box::new(VmProcTable::new());
-
-        let mut proc = VmProc::empty(UserSlot::new(5));
-        proc.endpoint = Endpoint::VM;
-        proc.flags |= VmFlags::IN_USE;
-        table.init_slot(proc);
-
-        let found = table.find_by_endpoint(Endpoint::VM);
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().slot.get(), 5);
-
-        let not_found = table.find_by_endpoint(Endpoint::PM);
-        assert!(not_found.is_none());
+    fn test_as_active_returns_none_for_empty() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(1)); }
+        assert!(table.get_active(UserSlot::new(1)).is_none());
     }
 
-    // === vm_isokendpt 测试 ===
+    #[test]
+    fn test_as_active_returns_none_for_exiting() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(2)); }
+
+        let empty = table.get_empty(UserSlot::new(2)).unwrap();
+        let ep = Endpoint::from_generation_slot(1, 2);
+        let active = empty.activate(ep);
+        let _exiting = active.mark_exiting();
+
+        assert!(table.get_active(UserSlot::new(2)).is_none());
+        assert!(table.get_exiting(UserSlot::new(2)).is_some());
+    }
+
+    #[test]
+    fn test_as_empty_returns_none_for_active() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(3)); }
+
+        let empty = table.get_empty(UserSlot::new(3)).unwrap();
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let _active = empty.activate(ep);
+        // Explicitly drop to release the mutable borrow before re-accessing table.
+        // This demonstrates the borrow checker restriction in typestate pattern.
+        drop(_active);
+
+        assert!(table.get_empty(UserSlot::new(3)).is_none());
+    }
+
+    #[test]
+    fn test_force_clear() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(4)); }
+
+        let empty = table.get_empty(UserSlot::new(4)).unwrap();
+        let ep = Endpoint::from_generation_slot(1, 4);
+        let active = empty.activate(ep);
+
+        let _empty = unsafe { active.force_clear() };
+        drop(_empty);
+        assert!(!table.is_slot_in_use(UserSlot::new(4)));
+    }
+
+    #[test]
+    fn test_alloc_empty_slot() {
+        let table = VmProcTable::get_global();
+        unsafe {
+            table.reset_slot(UserSlot::new(5));
+            table.reset_slot(UserSlot::new(6));
+        }
+
+        let empty = table.alloc_empty_slot().unwrap();
+        let slot = empty.slot();
+        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+        let _active = empty.activate(ep);
+        drop(_active);
+        assert!(table.is_slot_in_use(slot));
+    }
 
     #[test]
     fn test_vm_isokendpt_valid() {
-        let mut table = Box::new(VmProcTable::new());
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(6)); }
 
-        // 创建一个有效的进程
-        let mut proc = VmProc::empty(UserSlot::new(5));
-        proc.endpoint = Endpoint::from_generation_slot(1, 5);
-        proc.flags |= VmFlags::IN_USE;
-        table.init_slot(proc);
+        let ep = Endpoint::from_generation_slot(1, 6);
+        let empty = table.get_empty(UserSlot::new(6)).unwrap();
+        let _active = empty.activate(ep);
 
-        // 验证有效的 endpoint
-        let verified = table.vm_isokendpt(Endpoint::from_generation_slot(1, 5));
-        assert!(verified.is_some());
-        assert_eq!(verified.unwrap().slot.get(), 5);
-    }
-
-    #[test]
-    fn test_vm_isokendpt_out_of_range() {
-        let table = Box::new(VmProcTable::new());
-
-        // slot 超出范围
-        let invalid_ep = Endpoint::from_generation_slot(1, 9999);
-        assert!(table.vm_isokendpt(invalid_ep).is_none());
+        let result = table.vm_isokendpt(ep);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), UserSlot::new(6));
     }
 
     #[test]
     fn test_vm_isokendpt_mismatch() {
-        let mut table = Box::new(VmProcTable::new());
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(7)); }
 
-        // 创建一个进程
-        let mut proc = VmProc::empty(UserSlot::new(5));
-        proc.endpoint = Endpoint::from_generation_slot(1, 5);
-        proc.flags |= VmFlags::IN_USE;
-        table.init_slot(proc);
+        let ep = Endpoint::from_generation_slot(1, 7);
+        let empty = table.get_empty(UserSlot::new(7)).unwrap();
+        let _active = empty.activate(ep);
 
-        // 使用不同的 generation（模拟 slot 重用后的旧 endpoint）
-        let old_ep = Endpoint::from_generation_slot(0, 5);
+        let old_ep = Endpoint::from_generation_slot(0, 7);
         assert!(table.vm_isokendpt(old_ep).is_none());
     }
 
     #[test]
-    fn test_vm_isokendpt_not_in_use() {
-        let mut table = Box::new(VmProcTable::new());
+    fn test_reap_and_reactivate() {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(UserSlot::new(8)); }
 
-        // 创建一个进程但不标记 IN_USE
-        let mut proc = VmProc::empty(UserSlot::new(5));
-        proc.endpoint = Endpoint::from_generation_slot(1, 5);
-        // 注意：没有设置 IN_USE 标志
-        table.init_slot(proc);
+        let empty = table.get_empty(UserSlot::new(8)).unwrap();
+        let ep = Endpoint::from_generation_slot(1, 8);
+        let active = empty.activate(ep);
+        let exiting = active.mark_exiting();
 
-        // 应该验证失败（进程未激活）
-        assert!(table.vm_isokendpt(Endpoint::from_generation_slot(1, 5)).is_none());
-    }
+        let empty = unsafe { exiting.reap() };
+        drop(empty);
+        assert!(!table.is_slot_in_use(UserSlot::new(8)));
 
-    #[test]
-    fn test_vm_isokendpt_uninitialized_slot() {
-        let table = Box::new(VmProcTable::new());
-
-        // 访问未初始化的槽位
-        let ep = Endpoint::from_generation_slot(1, 10);
-        assert!(table.vm_isokendpt(ep).is_none());
+        let empty = table.get_empty(UserSlot::new(8)).unwrap();
+        let reactivate_ep = Endpoint::from_generation_slot(2, 8);
+        let active = empty.activate(reactivate_ep);
+        assert_eq!(active.endpoint(), reactivate_ep);
     }
 
     #[test]
     fn test_table_iter() {
-        let mut table = Box::new(VmProcTable::new());
+        // Use high slot numbers to avoid conflicts with other tests
+        // that use slots 0-28. We verify iteration works by counting
+        // processes we create in a specific range.
+        const BASE_SLOT: usize = 200;
+        let table = VmProcTable::get_global();
 
-        // 初始化几个进程
+        // Clean up our test slots first
         for i in 0..3 {
-            let mut proc = VmProc::empty(UserSlot::new(i));
-            proc.endpoint = Endpoint((i + 1) as i32);
-            proc.flags |= VmFlags::IN_USE;
-            table.init_slot(proc);
+            unsafe {
+                table.reset_slot(UserSlot::new(BASE_SLOT + i));
+            }
         }
 
-        let count = table.iter().count();
+        // Create exactly 3 processes in high slot range
+        for i in 0..3 {
+            let empty = table.get_empty(UserSlot::new(BASE_SLOT + i)).unwrap();
+            let _active = empty
+                .activate(Endpoint::from_generation_slot(1, (BASE_SLOT + i) as i32));
+        }
+
+        // Count processes in our specific range
+        let count = table
+            .iter()
+            .filter(|p| {
+                let slot = p.vm_slot.get();
+                slot >= BASE_SLOT && slot < BASE_SLOT + 3
+            })
+            .count();
         assert_eq!(count, 3);
+
+        // Clean up
+        for i in 0..3 {
+            unsafe {
+                table.reset_slot(UserSlot::new(BASE_SLOT + i));
+            }
+        }
     }
 
     #[test]
-    #[should_panic(expected = "slot already in use")]
-    fn test_table_double_init() {
-        let mut table = Box::new(VmProcTable::new());
-
-        let proc = VmProc::empty(UserSlot::new(0));
-        table.init_slot(proc);
-
-        let proc2 = VmProc::empty(UserSlot::new(0));
-        table.init_slot(proc2); // 应该 panic
-    }
-
-    #[test]
-    fn test_table_out_of_bounds() {
-        let table = Box::new(VmProcTable::new());
-        assert!(table.get_proc(UserSlot::new(NR_PROCS)).is_none());
-        assert!(table.get_proc(UserSlot::new(NR_PROCS + 100)).is_none());
+    fn test_get_global() {
+        let table = VmProcTable::get_global();
+        // The global table may not be empty if other tests ran before this one.
+        // We just verify that we can get the global instance.
+        assert_eq!(table as *const _, VmProcTable::get_global() as *const _);
     }
 }

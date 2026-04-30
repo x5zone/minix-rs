@@ -206,6 +206,29 @@ pub trait Paging {
     /// # Safety
     /// 特权操作
     unsafe fn flush_tlb_addr(&self, vaddr: VirBytes);
+
+    /// 将页表绑定到指定进程
+    ///
+    /// 通知内核将此页表作为指定进程的地址空间。
+    /// 对应Minix3的 `pt_bind()`。
+    ///
+    /// # 参数
+    /// - `endpoint`: 进程endpoint
+    ///
+    /// # 返回值
+    /// - `Ok(())`: 绑定成功
+    /// - `Err(_)`: 绑定失败
+    fn bind_to_process(&self, endpoint: minix_types::Endpoint) -> Result<(), PageTableError>;
+
+    /// 映射内核地址空间到页表
+    ///
+    /// 所有用户进程页表都需要包含内核映射。
+    /// 对应Minix3的 `pt_mapkernel()`。
+    ///
+    /// # 返回值
+    /// - `Ok(())`: 映射成功
+    /// - `Err(_)`: 映射失败
+    fn map_kernel(&mut self) -> Result<(), PageTableError>;
 }
 
 /// 页表统计信息
@@ -370,6 +393,31 @@ pub mod mock {
 
         unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {
             // Mock实现：无操作
+        }
+
+        fn bind_to_process(&self, _endpoint: minix_types::Endpoint) -> Result<(), PageTableError> {
+            // Mock实现：记录绑定关系即可
+            Ok(())
+        }
+
+        fn map_kernel(&mut self) -> Result<(), PageTableError> {
+            // Mock实现：模拟映射内核空间
+            // 内核通常映射在高地址区域，这里用固定的模拟地址
+            let kernel_start = 0xFFFF_8000_0000_0000u64;
+            for i in 0..16 {
+                let vaddr = VirBytes(kernel_start + i * Self::PAGE_SIZE as u64);
+                let paddr = PhysBytes(0x100_0000 + i * Self::PAGE_SIZE as u64);
+                let flags = PageFlags {
+                    present: true,
+                    writable: true,
+                    user_accessible: false,
+                    executable: false,
+                    global: true,
+                    ..PageFlags::empty()
+                };
+                let _ = self.map(vaddr, paddr, flags);
+            }
+            Ok(())
         }
     }
 

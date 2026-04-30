@@ -1,8 +1,8 @@
-//! 进程标识类型定义
+//! Process identifier type definitions.
 //!
-//! 提供进程 ID（Pid）类型
+//! Provides Process ID (Pid) type.
 
-/// 进程 ID（32 位有符号整数）
+/// Process ID (32-bit signed integer).
 ///
-/// 对应 C 的 `pid_t`，在 32 位和 64 位系统中都是 4 字节
+/// Corresponds to C's `pid_t`, 4 bytes on both 32-bit and 64-bit systems.
 pub type Pid = i32;

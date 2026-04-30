@@ -1,6 +1,6 @@
 //! Minix-RS Kernel Entry Point
 //!
-//! 内核启动入口
+//! Kernel boot entry.
 
 #![no_std]
 #![no_main]
@@ -9,17 +9,17 @@ use minix_kernel::init;
 use minix_kernel::run;
 use minix_kernel::PanicInfo;
 
-/// 内核入口
+/// Kernel entry point.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     init();
     run();
 }
 
-/// Panic 处理
+/// Panic handler.
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // TODO: 输出 panic 信息
+    // TODO: Output panic information
     loop {}
 }

@@ -1,37 +1,39 @@
-//! Kernel process management module
+//! Kernel process management module.
 //!
-//! 这是 Minix3 `proc` 结构体的 Rust 实现基本字段和调度字段。
+//! This is the Rust implementation of Minix3's `proc` structure with basic and scheduling fields.
 //!
-//! # Minix3 多进程表架构
+//! # Minix3 Multi-Process Table Architecture
 //!
-//! Minix3 采用分布式进程表设计，共有 4 份进程表：
-//! - **Kernel/proc**: 调度、IPC、寄存器保存（本模块）
-//! - **PM/mproc**: 进程管理、信号、权限 → 在 `minix-pm` crate 中
-//! - **VM/vmproc**: 虚拟内存、页表 → 在 `minix-vm` crate 中
-//! - **VFS/fproc**: 文件描述符、目录 → 在 `minix-vfs` crate 中
+//! Minix3 uses a distributed process table design with 4 copies:
+//! - **Kernel/proc**: Scheduling, IPC, register saving (this module)
+//! - **PM/mproc**: Process management, signals, permissions (in `minix-pm` crate)
+//! - **VM/vmproc**: Virtual memory, page tables (in `minix-vm` crate)
+//! - **VFS/fproc**: File descriptors, directories (in `minix-vfs` crate)
 //!
-//! 各进程表通过 `endpoint` 关联。
+//! Each process table is linked via `endpoint`.
 
 use minix_types::{Endpoint, Message, VirBytes};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI8, Ordering};
 
-/// 进程号类型（对应 C 的 `proc_nr_t`）
+use crate::arch::ExtRegState;
+
+/// Process number type (corresponds to C's `proc_nr_t`).
 pub type ProcNr = i32;
 
-/// 时钟滴答类型
+/// Clock ticks type.
 pub type ClockTicks = u64;
 
-/// CPU 周期类型
+/// CPU cycles type.
 pub type CpuCycles = u64;
 
-/// 进程号常量
+/// Process number constants.
 pub mod proc_nr {
     use super::ProcNr;
     pub const NONE: ProcNr = -1;
     pub const KERNEL: ProcNr = -2;
 }
 
-/// 运行时状态标志位
+/// Runtime status flags.
 pub mod rts {
     pub const SLOT_FREE: u32 = 0x01;
     pub const PROC_STOP: u32 = 0x02;
@@ -51,7 +53,7 @@ pub mod rts {
     pub const BOOTINHIBIT: u32 = 0x10000;
 }
 
-/// 杂项标志位
+/// Miscellaneous flags.
 pub mod mf {
     pub const REPLY_PEND: u32 = 0x001;
     pub const VIRT_TIMER: u32 = 0x002;
@@ -62,7 +64,7 @@ pub mod mf {
     pub const SC_ACTIVE: u32 = 0x100;
     pub const SC_DEFER: u32 = 0x200;
     pub const SC_TRACE: u32 = 0x400;
-    pub const FPU_INITIALIZED: u32 = 0x1000;
+    pub const EXT_REG_INITIALIZED: u32 = 0x1000;
     pub const SENDING_FROM_KERNEL: u32 = 0x2000;
     pub const CONTEXT_SET: u32 = 0x4000;
     pub const SPROF_SEEN: u32 = 0x8000;
@@ -73,7 +75,7 @@ pub mod mf {
     pub const NICED: u32 = 0x100000;
 }
 
-/// 优先级范围常量
+/// Priority range constants.
 pub mod priority {
     pub const TASK_Q: i8 = 0;
     pub const MAX_USER_Q: i8 = 0;
@@ -82,15 +84,15 @@ pub mod priority {
     pub const NR_SCHED_QUEUES: usize = 16;
 }
 
-/// 运行时状态标志（封装原子操作）
+/// Runtime status flags (wraps atomic operations).
 #[derive(Debug)]
 pub struct RtsFlags(AtomicU32);
 
-/// 杂项标志（封装原子操作）
+/// Miscellaneous flags (wraps atomic operations).
 #[derive(Debug)]
 pub struct MiscFlags(AtomicU32);
 
-/// 优先级新类型（封装有效性检查）
+/// Priority newtype (wraps validity check).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Priority(i8);
 
@@ -118,7 +120,7 @@ impl Default for Priority {
     }
 }
 
-/// 时间片管理
+/// Time slice management.
 #[derive(Debug)]
 pub struct Quantum {
     pub cpu_time_left: AtomicU64,
@@ -150,10 +152,10 @@ impl Quantum {
     }
 }
 
-/// CPU ID
+/// CPU ID.
 pub type CpuId = u32;
 
-/// 调度字段扩展
+/// Scheduling fields extension.
 #[derive(Debug)]
 pub struct SchedFields {
     pub priority: AtomicI8,
@@ -185,7 +187,7 @@ impl Default for SchedFields {
     }
 }
 
-/// 调度统计结构体
+/// Scheduling statistics structure.
 #[derive(Debug)]
 pub struct Accounting {
     pub enter_queue: AtomicU64,
@@ -250,7 +252,7 @@ impl Default for Accounting {
     }
 }
 
-/// 时间统计结构体
+/// Time statistics structure.
 #[derive(Debug)]
 pub struct TimeStats {
     pub user_time: AtomicU64,
@@ -304,7 +306,7 @@ impl Default for TimeStats {
     }
 }
 
-/// CPU 周期统计结构体
+/// CPU cycles statistics structure.
 #[derive(Debug)]
 pub struct CyclesStats {
     pub total: AtomicU64,
@@ -342,124 +344,129 @@ impl Default for CyclesStats {
     }
 }
 
-/// Kernel 进程结构体
+/// Kernel process structure.
 #[derive(Debug)]
 pub struct KProcess {
-    /// 进程号（槽位索引）
+    /// Process number (slot index).
     pub p_nr: ProcNr,
-    /// 端点标识符
+    /// Endpoint identifier.
     pub p_endpoint: Endpoint,
-    /// 运行时状态标志
+    /// Runtime status flags.
     pub p_rts_flags: RtsFlags,
-    /// 杂项标志
+    /// Miscellaneous flags.
     pub p_misc_flags: MiscFlags,
-    /// 调度字段
+    /// Scheduling fields.
     pub p_sched: SchedFields,
-    /// 调度统计
+    /// Scheduling statistics.
     pub p_accounting: Accounting,
-    /// 时间统计
+    /// Time statistics.
     pub p_time: TimeStats,
-    /// 周期统计
+    /// Cycles statistics.
     pub p_cycles: CyclesStats,
 
-    // IPC 队列指针
-    /// 就绪队列中的下一个进程指针
-    /// 用于调度器管理同一优先级的就绪进程链表
+    // IPC queue pointers
+    /// Next process pointer in ready queue.
+    /// Used by scheduler to manage ready process list at same priority.
     pub p_nextready: Option<ProcNr>,
 
-    /// 发送者队列头部指针
-    /// 指向等待向本进程发送消息的进程队列的头部
+    /// Sender queue head pointer.
+    /// Points to head of process queue waiting to send message to this process.
     pub p_caller_q: Option<ProcNr>,
 
-    /// 发送者队列链接指针
-    /// 链接同一发送者队列中的下一个进程
+    /// Sender queue link pointer.
+    /// Links to next process in same sender queue.
     pub p_q_link: Option<ProcNr>,
 
-    // IPC 端点字段
-    /// 接收消息的来源端点
-    /// 进程调用 receive() 时期望接收消息的来源
+    // IPC endpoint fields
+    /// Source endpoint for receiving message.
+    /// The source from which process expects to receive when calling receive().
     pub p_getfrom_e: Endpoint,
 
-    /// 发送消息的目标端点
-    /// 进程调用 send() 或 sendrec() 时的目标端点
+    /// Target endpoint for sending message.
+    /// The target endpoint when process calls send() or sendrec().
     pub p_sendto_e: Endpoint,
 
-    // 信号字段
-    /// 待处理的内核信号位图
-    /// 记录该进程有哪些信号正在等待处理
+    // Signal fields
+    /// Pending kernel signal bitmap.
+    /// Records which signals are pending for this process.
     pub p_pending: SigSet,
 
-    // 进程名称字段
-    /// 进程名称，用于调试和日志
-    /// 最大长度 PROC_NAME_LEN (16字节，包含结尾的\0)
+    // Process name fields
+    /// Process name, for debugging and logging.
+    /// Maximum length PROC_NAME_LEN (16 bytes including trailing \0).
     pub p_name: ProcName,
 
-    // 消息字段
-    /// 发送消息缓冲区
-    /// 当进程调用 send() 被阻塞时，存储要发送的消息内容
+    // Message fields
+    /// Send message buffer.
+    /// Stores message content to send when process is blocked on send().
     pub p_sendmsg: Message,
 
-    /// 消息投递缓冲区
-    /// 存储准备投递给本进程的消息内容
+    /// Message delivery buffer.
+    /// Stores message content ready to deliver to this process.
     pub p_delivermsg: Message,
 
-    /// 消息投递虚拟地址
-    /// 用户空间消息缓冲区的虚拟地址
+    /// Message delivery virtual address.
+    /// Virtual address of user-space message buffer.
     pub p_delivermsg_vir: VirBytes,
+
+    /// Extended register state (XSAVE area on x86-64, VFP/NEON on ARM64, F/D on RISC-V).
+    ///
+    /// Modern 64-bit architectures do not have a separate FPU. Instead, floating-point
+    /// and SIMD operations use extended registers that are part of the general context.
+    /// This field stores the architecture-specific extended register save area.
+    ///
+    /// Only valid when `MF_EXT_REG_INITIALIZED` flag is set.
+    pub p_ext_reg_state: ExtRegState,
 }
 
-/// 进程名称最大长度（包含结尾的\0）
+/// Maximum process name length (including trailing \0).
 pub const PROC_NAME_LEN: usize = 16;
 
-/// 进程名称类型
-/// 固定大小的字节数组，对应 C 的 char[PROC_NAME_LEN]
+/// Process name type.
+/// Fixed-size byte array, corresponds to C's char[PROC_NAME_LEN].
 #[derive(Clone, Copy)]
 pub struct ProcName {
     data: [u8; PROC_NAME_LEN],
 }
 
 impl ProcName {
-    /// 创建空的进程名称
+    /// Creates empty process name.
     pub const fn new() -> Self {
         Self { data: [0; PROC_NAME_LEN] }
     }
 
-    /// 从字符串创建进程名称
-    /// 如果字符串超过最大长度，会被截断
+    /// Creates process name from string.
+    /// If string exceeds max length, it will be truncated.
     pub fn from_str(s: &str) -> Self {
         let mut name = Self::new();
         let bytes = s.as_bytes();
         let len = bytes.len().min(PROC_NAME_LEN - 1);
         name.data[..len].copy_from_slice(&bytes[..len]);
-        // 确保以\0结尾（数组已初始化为0）
         name
     }
 
-    /// 获取名称字符串（去除结尾的\0）
+    /// Gets name string (without trailing \0).
     pub fn as_str(&self) -> &str {
         let len = self.data.iter().position(|&b| b == 0).unwrap_or(PROC_NAME_LEN);
         core::str::from_utf8(&self.data[..len]).unwrap_or("<invalid>")
     }
 
-    /// 添加后缀到名称
-    /// 如果添加后超过最大长度，会被截断
+    /// Adds suffix to name.
+    /// If adding would exceed max length, it will be truncated.
     pub fn push_suffix(&mut self, suffix: &str) {
         let current_len = self.data.iter().position(|&b| b == 0).unwrap_or(PROC_NAME_LEN);
         let suffix_bytes = suffix.as_bytes();
         let suffix_len = suffix_bytes.len();
         
-        // 计算可以复制多少字节（保留1字节给\0）
         let available = PROC_NAME_LEN.saturating_sub(current_len + 1);
         let copy_len = suffix_len.min(available);
         
-        // 复制后缀
         if copy_len > 0 {
             self.data[current_len..current_len + copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
         }
-        // 确保以\0结尾（数组已初始化为0，新复制的位置后面已经是0）
     }
 
-    /// 获取原始字节数组
+    /// Gets raw byte array.
     pub fn as_bytes(&self) -> &[u8; PROC_NAME_LEN] {
         &self.data
     }
@@ -483,19 +490,19 @@ impl core::fmt::Display for ProcName {
     }
 }
 
-/// 信号集类型（位图）
-/// 对应 C 的 sigset_t，用 64 位表示 64 个信号
+/// Signal set type (bitmap).
+/// Corresponds to C's sigset_t, using 64 bits for 64 signals.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SigSet(pub u64);
 
 impl SigSet {
-    /// 创建空的信号集
+    /// Creates empty signal set.
     pub const fn empty() -> Self {
         Self(0)
     }
 
-    /// 检查信号是否在集合中
+    /// Checks if signal is in set.
     pub fn contains(self, sig: u8) -> bool {
         if sig == 0 || sig > 64 {
             return false;
@@ -503,7 +510,7 @@ impl SigSet {
         (self.0 >> (sig - 1)) & 1 == 1
     }
 
-    /// 添加信号到集合
+    /// Adds signal to set.
     pub fn add(&mut self, sig: u8) {
         if sig == 0 || sig > 64 {
             return;
@@ -511,7 +518,7 @@ impl SigSet {
         self.0 |= 1 << (sig - 1);
     }
 
-    /// 从集合中移除信号
+    /// Removes signal from set.
     pub fn remove(&mut self, sig: u8) {
         if sig == 0 || sig > 64 {
             return;
@@ -519,12 +526,12 @@ impl SigSet {
         self.0 &= !(1 << (sig - 1));
     }
 
-    /// 清空信号集
+    /// Clears signal set.
     pub fn clear(&mut self) {
         self.0 = 0;
     }
 
-    /// 检查信号集是否为空
+    /// Checks if signal set is empty.
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -593,21 +600,17 @@ impl KProcess {
             p_accounting: Accounting::new(),
             p_time: TimeStats::new(),
             p_cycles: CyclesStats::new(),
-            // IPC 队列指针初始化为 None
             p_nextready: None,
             p_caller_q: None,
             p_q_link: None,
-            // IPC 端点字段初始化为 NONE
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
-            // 信号字段初始化为空
             p_pending: SigSet::empty(),
-            // 进程名称初始化为空
             p_name: ProcName::new(),
-            // 消息字段初始化为空
             p_sendmsg: Message::default(),
             p_delivermsg: Message::default(),
             p_delivermsg_vir: VirBytes::new(0),
+            p_ext_reg_state: ExtRegState::new(),
         }
     }
 
@@ -626,18 +629,112 @@ impl KProcess {
     pub fn reset_accounting(&self) {
         self.p_accounting.reset();
     }
+
+    /// Creates child process from parent (fork).
+    ///
+    /// Corresponds to `*rpc = *rpp` copy in Minix3's do_fork.c with subsequent field corrections.
+    /// Does not copy p_nr and p_endpoint, specified by caller via parameters.
+    /// Time stats, accounting info, signal set start from zero, IPC queue pointers cleared.
+    ///
+    /// # Parameters
+    /// - `parent`: Reference to parent process
+    /// - `child_nr`: Child process number (slot number)
+    /// - `child_endpoint`: Child's new endpoint
+    pub fn fork_from(parent: &KProcess, child_nr: ProcNr, child_endpoint: Endpoint) -> Self {
+        let mut child = Self {
+            p_nr: child_nr,
+            p_endpoint: child_endpoint,
+            p_rts_flags: RtsFlags::new(parent.p_rts_flags.load()),
+            p_misc_flags: MiscFlags::new(parent.p_misc_flags.load()),
+            p_sched: SchedFields {
+                priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
+                quantum: Quantum::new(parent.p_sched.quantum.size_ms.load(Ordering::Acquire)),
+                cpu: AtomicU32::new(parent.p_sched.cpu.load(Ordering::Acquire)),
+            },
+            p_accounting: Accounting::new(),
+            p_time: TimeStats::new(),
+            p_cycles: CyclesStats::new(),
+            p_nextready: None,
+            p_caller_q: None,
+            p_q_link: None,
+            p_getfrom_e: parent.p_getfrom_e,
+            p_sendto_e: parent.p_sendto_e,
+            p_pending: SigSet::empty(),
+            p_name: parent.p_name,
+            p_sendmsg: parent.p_sendmsg.clone(),
+            p_delivermsg: parent.p_delivermsg.clone(),
+            p_delivermsg_vir: parent.p_delivermsg_vir,
+            p_ext_reg_state: ExtRegState::new(),
+        };
+
+        // Copy extended register state if parent has initialized it
+        // Modern 64-bit architectures use extended registers (SSE/AVX/NEON/SVE)
+        // instead of a separate FPU. Corresponds to Minix3's FPU copy logic
+        // but adapted for modern hardware.
+        if parent.p_misc_flags.is_set(mf::EXT_REG_INITIALIZED) {
+            child.p_ext_reg_state = parent.p_ext_reg_state.clone();
+            child.p_misc_flags.set(mf::EXT_REG_INITIALIZED);
+        }
+
+        child
+    }
 }
 
-/// 创建进程
+/// Creates a process.
 pub fn create_process() -> KProcess {
     KProcess::new(0, Endpoint::default())
 }
 
-/// 复制进程（fork）
+/// Copies a process (fork).
 pub fn copy_process(proc: &KProcess) -> KProcess {
     let new_proc = KProcess::new(proc.p_nr, proc.p_endpoint);
     new_proc.set_priority(proc.get_priority());
     new_proc
+}
+
+/// Fork flags (corresponds to Minix3's PFF_* flags).
+pub mod fork_flags {
+    /// VM inhibit flag - child starts with VM inhibit set.
+    pub const VMINHIBIT: u32 = 0x01;
+}
+
+/// Completes fork setup with privilege handling and flags.
+///
+/// Corresponds to Minix3's do_fork.c privilege handling:
+/// - System processes get downgraded to user privilege
+/// - VMINHIBIT flag is set if requested
+/// - Process name gets "*F" suffix
+///
+/// # Parameters
+/// - `child`: Mutable reference to child process
+/// - `parent_is_sys_proc`: Whether parent is a system process
+/// - `flags`: Fork flags (PFF_*)
+pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags: u32) {
+    // If parent is a system process, child gets user privilege
+    // Corresponds to Minix3's:
+    //   if (priv(rpp)->s_flags & SYS_PROC) {
+    //       rpc->p_priv = priv_addr(USER_PRIV_ID);
+    //       rpc->p_rts_flags |= RTS_NO_PRIV;
+    //   }
+    if parent_is_sys_proc {
+        child.p_rts_flags.set(rts::NO_PRIV);
+    }
+
+    // Set VMINHIBIT if requested
+    // Corresponds to Minix3's:
+    //   if(m_ptr->m_lsys_krn_sys_fork.flags & PFF_VMINHIBIT) {
+    //       RTS_SET(rpc, RTS_VMINHIBIT);
+    //   }
+    if flags & fork_flags::VMINHIBIT != 0 {
+        child.p_rts_flags.set(rts::VMINHIBIT);
+    }
+
+    // Add "*F" suffix to process name
+    // Corresponds to Minix3's:
+    //   namelen = strlen(rpc->p_name);
+    //   if(namelen+strlen(FORKSTR) < sizeof(rpc->p_name))
+    //       strcat(rpc->p_name, "*F");
+    child.p_name.push_suffix("*F");
 }
 
 #[cfg(test)]
@@ -722,12 +819,12 @@ mod tests {
     #[test]
     fn test_quantum_consume() {
         let q = Quantum::new(200);
-        q.allocate(1);  // cpu_time_left = 200 * 1 = 200
+        q.allocate(1);
 
-        assert!(!q.consume(50));  // 200 - 50 = 150
+        assert!(!q.consume(50));
         assert_eq!(q.cpu_time_left.load(Ordering::Relaxed), 150);
 
-        assert!(q.consume(200));  // 150 < 200, 用完
+        assert!(q.consume(200));
         assert_eq!(q.cpu_time_left.load(Ordering::Relaxed), 0);
     }
 
@@ -827,5 +924,72 @@ mod tests {
 
         proc.reset_accounting();
         assert_eq!(proc.p_accounting.ipc_sync.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_fork_from_basic() {
+        let parent = KProcess::new(5, Endpoint::from_generation_slot(3, 5));
+        parent.p_rts_flags.clear(rts::SLOT_FREE);
+        parent.set_priority(priority::USER_Q);
+
+        let child_endpoint = Endpoint::fork_new_endpoint(
+            Endpoint::from_generation_slot(0, 10), 10
+        );
+        let child = KProcess::fork_from(&parent, 10, child_endpoint);
+
+        assert_eq!(child.p_nr, 10);
+        assert_eq!(child.p_endpoint, child_endpoint);
+        assert_eq!(child.get_priority(), parent.get_priority());
+        assert_eq!(child.p_time.user_time.load(Ordering::Relaxed), 0);
+        assert_eq!(child.p_time.sys_time.load(Ordering::Relaxed), 0);
+        assert!(child.p_pending.is_empty());
+    }
+
+    #[test]
+    fn test_fork_from_accounting_reset() {
+        let parent = KProcess::new(5, Endpoint(5));
+        parent.p_accounting.record_ipc_sync();
+        parent.p_accounting.record_ipc_sync();
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        assert_eq!(child.p_accounting.ipc_sync.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_fork_from_independent_queues() {
+        let mut parent = KProcess::new(5, Endpoint(5));
+        parent.p_nextready = Some(3);
+        parent.p_caller_q = Some(7);
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        assert_eq!(child.p_nextready, None);
+        assert_eq!(child.p_caller_q, None);
+        assert_eq!(child.p_q_link, None);
+    }
+
+    #[test]
+    fn test_fork_from_inherits_ipc_endpoints() {
+        let mut parent = KProcess::new(5, Endpoint(5));
+        parent.p_getfrom_e = Endpoint::PM;
+        parent.p_sendto_e = Endpoint::VFS;
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        assert_eq!(child.p_getfrom_e, Endpoint::PM);
+        assert_eq!(child.p_sendto_e, Endpoint::VFS);
+    }
+
+    #[test]
+    fn test_fork_from_cycles_reset() {
+        let parent = KProcess::new(5, Endpoint(5));
+        parent.p_cycles.add_cycles(1000);
+        parent.p_cycles.add_kcall_cycles(200);
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        assert_eq!(child.p_cycles.total.load(Ordering::Relaxed), 0);
+        assert_eq!(child.p_cycles.kcall.load(Ordering::Relaxed), 0);
     }
 }

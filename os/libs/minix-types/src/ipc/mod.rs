@@ -1,7 +1,15 @@
-//! IPC 消息定义模块
+//! IPC message definitions module.
 //!
-//! 提供 Minix3 IPC 消息结构定义
+//! Provides Minix3 IPC message structure definitions.
 
 mod message;
+mod vm;
+mod pm;
+mod kernel;
+mod vfs;
 
 pub use message::*;
+pub use vm::*;
+pub use pm::*;
+pub use kernel::*;
+pub use vfs::*;

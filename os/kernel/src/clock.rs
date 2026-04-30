@@ -1,12 +1,12 @@
-//! Clock module (mock)
+//! Clock module (mock).
 
-/// 时钟初始化
+/// Clock initialization.
 pub fn init() {
-    // TODO: 初始化时钟
+    // TODO: Initialize clock
 }
 
-/// 获取当前时间
+/// Gets current time.
 pub fn get_time() -> u64 {
-    // TODO: 返回当前时间
+    // TODO: Return current time
     0
 }

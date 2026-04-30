@@ -1,29 +1,29 @@
-//! PID 生成器实现
+//! PID generator implementation.
 //!
-//! 这是 Minix3 `get_free_pid` 函数的 Rust 重写版本。
+//! This is the Rust rewrite of Minix3's `get_free_pid` function.
 //!
-//! # 设计方案
+//! # Design Approach
 //!
-//! 采用**方案五：单调递增 + 局部验证**，这是结合 Minix 原版精神和 Rust 现代语法的最优方案。
+//! Uses **Approach 5: Monotonic increment + local validation**, combining Minix's original spirit with modern Rust syntax.
 //!
-//! # 核心思想
+//! # Core Idea
 //!
 //! ```text
 //! next_pid += 1
-//! 只在冲突时 scan mproc
+//! Only scan mproc on conflict
 //! ```
 //!
-//! # 复杂度分析
+//! # Complexity Analysis
 //!
-//! - **期望复杂度**: O(1)
-//!   - 冲突概率 = NR_PROCS / NR_PIDS ≈ 256 / 30000 ≈ 0.8%
-//!   - 99.2% 的情况下，第一个候选 PID 就没有冲突
-//! - **最坏复杂度**: O(N)（极罕见）
+//! - **Expected complexity**: O(1)
+//!   - Conflict probability = NR_PROCS / NR_PIDS ≈ 256 / 30000 ≈ 0.8%
+//!   - In 99.2% of cases, the first candidate PID has no conflict
+//! - **Worst-case complexity**: O(N) (extremely rare)
 //!
-//! # Minix3 源码映射
+//! # Minix3 Source Mapping
 //!
 //! ```c
-//! // minix3/minix/servers/pm/utility.c (第 32-52 行)
+//! // minix3/minix/servers/pm/utility.c (lines 32-52)
 //! pid_t get_free_pid()
 //! {
 //!   static pid_t next_pid = INIT_PID + 1;
@@ -44,72 +44,72 @@
 //! }
 //! ```
 //!
-//! # 单一真理来源原则
+//! # Single Source of Truth Principle
 //!
-//! 此实现遵循**单一真理来源（Single Source of Truth）**原则：
-//! - 没有位图，所有状态都在 `mproc` 表中
-//! - 避免了状态同步的复杂性
-//! - 永远不会出现"位图说空闲但进程表说占用"的不一致问题
+//! This implementation follows the **Single Source of Truth** principle:
+//! - No bitmap, all state is in the `mproc` table
+//! - Avoids complexity of state synchronization
+//! - Never has inconsistency like "bitmap says free but process table says occupied"
 
 use core::cell::Cell;
 use minix_types::Pid;
 use crate::mproc::{ProcTable, NR_PIDS, INIT_PID};
 
-/// PID 生成器
+/// PID generator.
 ///
-/// 采用单调递增 + 冲突检测的策略。
+/// Uses monotonic increment + conflict detection strategy.
 ///
-/// # 设计哲学
+/// # Design Philosophy
 ///
-/// 利用 `NR_PIDS >> NR_PROCS` 的特性，保证期望复杂度 O(1)。
-/// 无需位图，避免了状态同步的复杂性（Single Source of Truth）。
+/// Leverages `NR_PIDS >> NR_PROCS` characteristic to guarantee expected complexity O(1).
+/// No bitmap needed, avoids state synchronization complexity (Single Source of Truth).
 ///
-/// # 线程安全
+/// # Thread Safety
 ///
-/// 使用 `Cell<Pid>` 实现内部可变性。在 PM 单线程环境中是安全的。
-/// 如果未来 PM 变成多线程，需要改用 `AtomicI32`。
+/// Uses `Cell<Pid>` for interior mutability. Safe in PM's single-threaded environment.
+/// If PM becomes multi-threaded in the future, need to switch to `AtomicI32`.
 #[derive(Debug)]
 pub struct PidGenerator {
-    /// 下一个候选 PID
+    /// Next candidate PID.
     ///
-    /// 初始值为 `INIT_PID + 1 = 2`
+    /// Initial value is `INIT_PID + 1 = 2`
     next_pid: Cell<Pid>,
 }
 
 impl PidGenerator {
-    /// 创建新的 PID 生成器
+    /// Creates a new PID generator.
     ///
-    /// 初始 `next_pid` 为 `INIT_PID + 1 = 2`
+    /// Initial `next_pid` is `INIT_PID + 1 = 2`
     pub const fn new() -> Self {
         Self {
             next_pid: Cell::new(INIT_PID + 1),
         }
     }
 
-    /// 获取一个空闲的 PID
+    /// Gets a free PID.
     ///
-    /// # 算法逻辑
+    /// # Algorithm
     ///
-    /// 1. 候选 PID = next_pid++ （单调递增，循环复用）
-    /// 2. 检查候选 PID 是否与任何进程的 PID 或进程组 ID 冲突
-    /// 3. 无冲突则返回；有冲突则回到第 1 步
+    /// 1. Candidate PID = next_pid++ (monotonic increment, wrap around)
+    /// 2. Check if candidate PID conflicts with any process's PID or process group ID
+    /// 3. If no conflict, return; if conflict, go back to step 1
     ///
-    /// # 冲突检测规则
+    /// # Conflict Detection Rules
     ///
-    /// Minix3 规则：PID 不能与任何进程的 `mp_pid` 或 `mp_procgrp` 相同。
+    /// Minix3 rule: PID cannot be the same as any process's `mp_pid` or `mp_procgrp`.
     ///
-    /// 为什么需要检查 `mp_procgrp`？
-    /// - `mp_procgrp` 是进程组 ID，通常等于进程组组长的 PID
-    /// - 如果一个进程是进程组组长，它的 `mp_procgrp == mp_pid`
-    /// - 如果一个进程加入了某个进程组，它的 `mp_procgrp` 等于组长的 PID
-    /// - 因此，PID 不能与任何进程的 `mp_pid` 或 `mp_procgrp` 冲突
+    /// Why check `mp_procgrp`?
+    /// - `mp_procgrp` is the process group ID, usually equals the process group leader's PID
+    /// - If a process is a process group leader, its `mp_procgrp == mp_pid`
+    /// - If a process joins a process group, its `mp_procgrp` equals the leader's PID
+    /// - Therefore, PID cannot conflict with any process's `mp_pid` or `mp_procgrp`
     ///
-    /// # 复杂度
+    /// # Complexity
     ///
-    /// - 期望: O(1) (因为冲突概率极低，约 0.8%)
-    /// - 最坏: O(N) (极罕见)
+    /// - Expected: O(1) (because conflict probability is extremely low, ~0.8%)
+    /// - Worst-case: O(N) (extremely rare)
     ///
-    /// # Minix3 映射
+    /// # Minix3 Mapping
     ///
     /// ```c
     /// do {
@@ -139,23 +139,23 @@ impl PidGenerator {
         }
     }
 
-    /// 检查候选 PID 是否与现有进程冲突
+    /// Checks if candidate PID conflicts with existing processes.
     ///
-    /// Minix3 规则：PID 不能与任何进程的 `mp_pid` 或 `mp_procgrp` 相同。
+    /// Minix3 rule: PID cannot be the same as any process's `mp_pid` or `mp_procgrp`.
     ///
-    /// # 实现细节
+    /// # Implementation Details
     ///
-    /// 使用 Rust 迭代器的 `any` 方法，具有以下优势：
-    /// - **惰性求值**：在 99.2% 的情况下，循环根本不会执行
-    /// - **短路求值**：一旦发现冲突，立刻返回
-    /// - **语义清晰**：代码直接表达了"检查是否有冲突"的意图
+    /// Uses Rust iterator's `any` method with these advantages:
+    /// - **Lazy evaluation**: In 99.2% of cases, the loop won't execute at all
+    /// - **Short-circuit evaluation**: Returns immediately upon finding a conflict
+    /// - **Clear semantics**: Code directly expresses "check for conflicts" intent
     fn any_conflict(&self, candidate: Pid, table: &ProcTable) -> bool {
         table.iter_active().any(|proc| {
             proc.pid() == candidate || proc.procgrp() == candidate
         })
     }
 
-    /// 重置 PID 生成器（仅用于测试）
+    /// Resets PID generator (test only).
     #[cfg(test)]
     pub fn reset(&self) {
         self.next_pid.set(INIT_PID + 1);

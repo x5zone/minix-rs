@@ -1,6 +1,6 @@
-//! Kernel scheduler module
+//! Kernel scheduler module.
 
-/// 调度器
+/// Scheduler.
 pub struct Scheduler;
 
 impl Scheduler {
@@ -8,8 +8,8 @@ impl Scheduler {
         Self
     }
 
-    /// 调度下一个进程
+    /// Schedules next process.
     pub fn schedule(&self) {
-        // TODO: 实现调度
+        // TODO: Implement scheduling
     }
 }

@@ -768,7 +768,7 @@ struct VmProc<State> {
 // 定义状态类型
 struct Empty;
 struct Active;
-struct Zombie;
+struct Exiting;
 
 // 状态转换方法
 impl VmProc<Empty> {
@@ -962,7 +962,7 @@ impl VmProcTable {
 // 槽位状态类型
 pub struct Empty;
 pub struct Active { endpoint: Endpoint }
-pub struct Zombie;
+pub struct Exiting;
 
 // 带状态的槽位
 pub struct Slot<State> {
@@ -1145,7 +1145,7 @@ Rust 的自动化特性（Drop、自动解引用、自动类型推导）在用�
 ┌─────────────────────────────────────┐
 │ vmproc[0] │ vmproc[1] │ vmproc[2]   │
 │ 物理存在  │ 物理存在  │ 物理存在     │  ← 槽位永存
-│ 状态:Empty│ 状态:Active│ 状态:Zombie │  ← 仅逻辑状态变化
+│ 状态:Empty│ 状态:Active│ 状态:Exiting│  ← 仅逻辑状态变化
 └─────────────────────────────────────┘
 ```
 
@@ -1487,7 +1487,7 @@ use std::marker::PhantomData;
 // 状态类型
 pub struct Empty;
 pub struct Active { endpoint: Endpoint };
-pub struct Zombie;
+pub struct Exiting;
 
 // 带状态的槽位
 pub struct Slot<State> {

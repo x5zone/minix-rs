@@ -1,23 +1,23 @@
-//! Wait 切片
+//! Wait slice.
 //!
-//! 实现 wait/waitpid 系统调用的核心逻辑
+//! Implements core logic of wait/waitpid system calls.
 
 use minix_ipc::Endpoint;
 
-/// 等待子进程
+/// Waits for child process.
 ///
 /// # Arguments
-/// * `parent` - 父进程 endpoint
-/// * `pid` - 指定子进程 PID，-1 表示任意子进程
-/// * `options` - 等待选项
+/// * `parent` - Parent process endpoint
+/// * `pid` - Target child PID, -1 for any child
+/// * `options` - Wait options
 ///
 /// # Returns
-/// * `Ok((pid, status))` - 子进程 PID 和退出状态
+/// * `Ok((pid, status))` - Child PID and exit status
 pub fn sys_wait(parent: Endpoint, pid: i32, options: u32) -> Result<(i32, i32), WaitError> {
-    // TODO: 实现 wait 逻辑
-    // 1. 查找符合条件的子进程
-    // 2. 如果有 zombie 子进程，立即返回
-    // 3. 否则阻塞父进程，等待子进程退出
+    // TODO: Implement wait logic
+    // 1. Find matching child process
+    // 2. If zombie child exists, return immediately
+    // 3. Otherwise block parent, wait for child to exit
     todo!("wait implementation")
 }
 
@@ -34,6 +34,6 @@ mod tests {
 
     #[test]
     fn test_wait_basic() {
-        // TODO: 基础 wait 测试
+        // TODO: Basic wait test
     }
 }

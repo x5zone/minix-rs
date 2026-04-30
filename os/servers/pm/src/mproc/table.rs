@@ -1,54 +1,54 @@
-//! PM 进程表结构体定义
+//! PM process table structure definition.
 //!
-//! 这是 Minix3 `mproc[NR_PROCS]` 的 Rust 实现，包含 PM 私有的进程表管理逻辑。
+//! This is the Rust implementation of Minix3's `mproc[NR_PROCS]`, containing PM's private process table management logic.
 //!
-//! # Minix3 多进程表架构
-//! Minix3 采用分布式进程表设计，共有 4 份进程表：
-//! - **PM/mproc**: 进程管理、信号、权限（本模块）
-//! - **VM/vmproc**: 虚拟内存、页表
-//! - **VFS/fproc**: 文件描述符、目录
-//! - **Kernel/proc**: 调度、IPC、寄存器保存
+//! # Minix3 Multi-Process Table Architecture
+//! Minix3 uses a distributed process table design with 4 copies:
+//! - **PM/mproc**: Process management, signals, permissions (this module)
+//! - **VM/vmproc**: Virtual memory, page tables
+//! - **VFS/fproc**: File descriptors, directories
+//! - **Kernel/proc**: Scheduling, IPC, register saving
 //!
-//! # 设计决策
-//! - 使用静态数组 `[Process; NR_PROCS]` 保证地址稳定
-//! - 使用 `Cell<usize>` 实现内部可变性（单线程安全）
-//! - 保留 `IN_USE` 语义（`Lifecycle::Unused`）
+//! # Design Decisions
+//! - Uses static array `[Process; NR_PROCS]` to guarantee stable addresses
+//! - Uses `Cell<usize>` for interior mutability (single-threaded safe)
+//! - Preserves `IN_USE` semantics (`Lifecycle::Unused`)
 //!
-//! # Endpoint 与 Generation
+//! # Endpoint and Generation
 //!
-//! Minix3 的 Endpoint 格式：
+//! Minix3's Endpoint format:
 //! ```text
 //! endpoint = (generation << 15) + proc_nr
 //! ```
 //!
-//! - **低 15 位**：process slot number（进程槽位号）
-//! - **高 17 位**：generation（代数）
+//! - **Low 15 bits**: process slot number
+//! - **High 17 bits**: generation
 //!
-//! Generation 的作用：
-//! - 防止"过时的消息发给新进程"
-//! - 每次槽位释放时 generation +1
-//! - 嵌入在 endpoint 中，**不需要单独存储**
+//! Generation's purpose:
+//! - Prevents "stale messages sent to new processes"
+//! - Each time a slot is released, generation +1
+//! - Embedded in endpoint, **no separate storage needed**
 //!
-//! # 为什么放在 PM crate 而不是 minix-types？
+//! # Why in PM crate, not minix-types?
 //!
-//! 1. **职责隔离**: 进程表槽位分配是 PM 的私有逻辑
-//! 2. **不变量保护**: 槽位分配/释放逻辑绑定了 PM 内部状态
-//! 3. **微内核原则**: 其他服务不需要了解 PM 的进程表实现
+//! 1. **Separation of concerns**: Process table slot allocation is PM's private logic
+//! 2. **Invariant protection**: Slot allocation/release logic binds PM internal state
+//! 3. **Microkernel principle**: Other services don't need to know PM's process table implementation
 
 use core::cell::Cell;
 use minix_types::{Endpoint, NR_PROCS, LAST_FEW};
 use crate::mproc::{Process, Lifecycle, PidGenerator};
 
-/// Endpoint generation 位移
+/// Endpoint generation shift.
 ///
-/// Minix3 定义：`#define _ENDPOINT_GENERATION_SHIFT 15`
+/// Minix3 definition: `#define _ENDPOINT_GENERATION_SHIFT 15`
 pub const ENDPOINT_GENERATION_SHIFT: u32 = 15;
 
-/// PM 进程表
+/// PM process table.
 ///
-/// 存储所有 PM 进程结构体，提供槽位分配功能
+/// Stores all PM process structures, provides slot allocation functionality.
 ///
-/// # 内存布局
+/// # Memory Layout
 /// ```text
 /// ProcTable {
 ///     procs: [Process; 256],      // ~22.5 KB
@@ -58,29 +58,29 @@ pub const ENDPOINT_GENERATION_SHIFT: u32 = 15;
 /// }
 /// ```
 ///
-/// # 注意
+/// # Note
 ///
-/// Generation 嵌入在 `Process.endpoint` 中，不需要单独存储。
-/// 这符合 Minix3 的设计原则：**唯一 truth**。
+/// Generation is embedded in `Process.endpoint`, no separate storage needed.
+/// This follows Minix3's design principle: **single truth**.
 #[derive(Debug)]
 pub struct ProcTable {
-    /// 进程数组
+    /// Process array.
     pub procs: [Process; NR_PROCS],
-    /// 当前使用的进程数
+    /// Number of processes currently in use.
     pub procs_in_use: Cell<usize>,
-    /// 下一个子进程槽位（轮询算法）
+    /// Next child slot (round-robin algorithm).
     pub next_child: Cell<usize>,
-    /// PID 生成器
+    /// PID generator.
     ///
-    /// 采用单调递增 + 冲突检测策略
-    /// 对应 Minix3 的 `static pid_t next_pid`
+    /// Uses monotonic increment + conflict detection strategy.
+    /// Corresponds to Minix3's `static pid_t next_pid`.
     pub pid_generator: PidGenerator,
 }
 
 impl ProcTable {
-    /// 创建新的进程表
+    /// Creates a new process table.
     ///
-    /// 所有槽位初始化为 `Lifecycle::Unused`
+    /// All slots are initialized to `Lifecycle::Unused`.
     pub fn new() -> Self {
         Self {
             procs: core::array::from_fn(|_| Process::default()),
@@ -90,7 +90,7 @@ impl ProcTable {
         }
     }
     
-    /// 获取进程引用
+    /// Gets a process reference.
     pub fn get(&self, index: usize) -> Option<&Process> {
         if index < NR_PROCS {
             Some(&self.procs[index])
@@ -99,7 +99,7 @@ impl ProcTable {
         }
     }
     
-    /// 获取进程可变引用
+    /// Gets a mutable process reference.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Process> {
         if index < NR_PROCS {
             Some(&mut self.procs[index])
@@ -108,36 +108,36 @@ impl ProcTable {
         }
     }
     
-    /// 获取当前使用的进程数
+    /// Gets the number of processes currently in use.
     pub fn count(&self) -> usize {
         self.procs_in_use.get()
     }
     
-    /// 检查进程表是否已满
+    /// Checks if the process table is full.
     pub fn is_full(&self) -> bool {
         self.procs_in_use.get() >= NR_PROCS
     }
     
-    /// 迭代所有活跃进程
+    /// Iterates over all active processes.
     ///
-    /// 返回一个迭代器，只包含处于使用中状态的进程。
+    /// Returns an iterator containing only processes in use.
     ///
-    /// # 用途
+    /// # Usage
     ///
-    /// 主要用于 PID 冲突检测，遍历所有活跃进程检查 PID 和进程组 ID 冲突。
+    /// Mainly used for PID conflict detection, iterating all active processes to check PID and process group ID conflicts.
     ///
-    /// # 性能
+    /// # Performance
     ///
-    /// 使用 Rust 迭代器的惰性求值和短路求值特性：
-    /// - **惰性求值**：只有在实际需要时才访问进程
-    /// - **短路求值**：配合 `Iterator::any` 等方法，一旦找到匹配就停止
+    /// Uses Rust iterator's lazy evaluation and short-circuit evaluation:
+    /// - **Lazy evaluation**: Only accesses processes when actually needed
+    /// - **Short-circuit evaluation**: With `Iterator::any` etc., stops as soon as a match is found
     pub fn iter_active(&self) -> impl Iterator<Item = &Process> {
         self.procs.iter().filter(|p| p.is_in_use())
     }
     
-    /// 检查非 root 用户是否可以分配槽位
+    /// Checks if a non-root user can allocate a slot.
     ///
-    /// 对应 Minix3 的检查：
+    /// Corresponds to Minix3's check:
     /// ```c
     /// if (procs_in_use >= NR_PROCS-LAST_FEW && rmp->mp_effuid != 0)
     /// ```
@@ -152,9 +152,9 @@ impl ProcTable {
         true
     }
     
-    /// 查找空闲槽位（轮询算法）
+    /// Finds a free slot (round-robin algorithm).
     ///
-    /// 对应 Minix3 的 `do_fork` 中的轮询查找：
+    /// Corresponds to the round-robin search in Minix3's `do_fork`:
     /// ```c
     /// do {
     ///     next_child = (next_child+1) % NR_PROCS;
@@ -162,9 +162,9 @@ impl ProcTable {
     /// } while((mproc[next_child].mp_flags & IN_USE) && n <= NR_PROCS);
     /// ```
     ///
-    /// # 返回值
-    /// - `Some(usize)`: 找到的空闲槽位索引
-    /// - `None`: 进程表已满
+    /// # Returns
+    /// - `Some(usize)`: Found free slot index
+    /// - `None`: Process table is full
     pub fn find_free_slot(&self) -> Option<usize> {
         let start = self.next_child.get();
         
@@ -179,79 +179,76 @@ impl ProcTable {
         None
     }
     
-    /// 分配槽位
+    /// Allocates a slot.
     ///
-    /// 查找空闲槽位并标记为使用中
+    /// Finds a free slot and marks it as in use.
     ///
-    /// # 返回值
-    /// - `Some(usize)`: 分配的槽位索引
-    /// - `None`: 进程表已满
+    /// # Returns
+    /// - `Some(usize)`: Allocated slot index
+    /// - `None`: Process table is full
     pub fn alloc_slot(&self) -> Option<usize> {
         let slot = self.find_free_slot()?;
         self.procs_in_use.set(self.procs_in_use.get() + 1);
         Some(slot)
     }
     
-    /// 释放槽位
+    /// Releases a slot.
     ///
-    /// 将槽位标记为未使用，增加 generation
+    /// Marks the slot as unused, increments generation.
     ///
-    /// 注意：此方法不检查进程状态，只减少计数器
-    /// 调用者负责确保进程状态已正确重置
+    /// Note: This method doesn't check process state, only decrements the counter.
+    /// Caller is responsible for ensuring process state has been properly reset.
     pub fn release_slot(&mut self, index: usize) {
         if index < NR_PROCS && self.procs_in_use.get() > 0 {
             self.procs_in_use.set(self.procs_in_use.get() - 1);
             
-            // 增加 generation，嵌入到 endpoint 中
             let old_endpoint = self.procs[index].endpoint();
             let new_endpoint = Self::increment_endpoint_generation(old_endpoint);
             self.procs[index].identity.endpoint = new_endpoint;
         }
     }
     
-    /// 计算 Endpoint
+    /// Calculates Endpoint.
     ///
-    /// Minix3 公式：`endpoint = (generation << 15) + proc_nr`
+    /// Minix3 formula: `endpoint = (generation << 15) + proc_nr`
     ///
-    /// 注意：这是为新进程计算初始 endpoint（generation = 0）
+    /// Note: This calculates the initial endpoint for a new process (generation = 0)
     pub fn calculate_endpoint(index: usize) -> Endpoint {
         if index < NR_PROCS {
-            // 初始 generation = 0
             Endpoint(index as i32)
         } else {
             Endpoint::NONE
         }
     }
 
-    /// 从 Endpoint 解析索引
+    /// Parses index from Endpoint.
     ///
-    /// 使用 Endpoint::slot() 方法
+    /// Uses Endpoint::slot() method.
     pub fn endpoint_to_index(endpoint: Endpoint) -> usize {
         endpoint.slot() as usize
     }
 
-    /// 从 Endpoint 解析代数
+    /// Parses generation from Endpoint.
     ///
-    /// 使用 Endpoint::generation() 方法
+    /// Uses Endpoint::generation() method.
     pub fn endpoint_to_generation(endpoint: Endpoint) -> u32 {
         endpoint.generation() as u32
     }
 
-    /// 增加 Endpoint 的 generation
+    /// Increments Endpoint's generation.
     ///
-    /// 用于槽位释放时，防止过时消息发送到新进程
+    /// Used when releasing a slot, prevents stale messages from being sent to new processes.
     fn increment_endpoint_generation(endpoint: Endpoint) -> Endpoint {
         let generation = Self::endpoint_to_generation(endpoint);
         let index = Self::endpoint_to_index(endpoint);
         let new_gen = generation + 1;
 
-        // 新 endpoint = (new_generation << 15) + index
         Endpoint::from_generation_slot(new_gen as i32, index as i32)
     }
     
-    /// 验证 Endpoint 是否有效
+    /// Validates if an Endpoint is valid.
     ///
-    /// 检查 endpoint 的 generation 是否与进程表中的匹配
+    /// Checks if the endpoint's generation matches what's in the process table.
     pub fn validate_endpoint(&self, endpoint: Endpoint) -> bool {
         let index = Self::endpoint_to_index(endpoint);
         
@@ -259,7 +256,6 @@ impl ProcTable {
             return false;
         }
         
-        // 检查 endpoint 是否匹配
         self.procs[index].endpoint() == endpoint
     }
 }
@@ -303,7 +299,6 @@ mod tests {
         let slot = table.alloc_slot().unwrap();
         assert_eq!(table.count(), 1);
         
-        // 设置进程的 endpoint
         table.procs[slot].identity.endpoint = ProcTable::calculate_endpoint(slot);
         let gen_before = ProcTable::endpoint_to_generation(table.procs[slot].endpoint());
         
@@ -360,9 +355,7 @@ mod tests {
         let endpoint_after = table.procs[slot].endpoint();
         assert_ne!(endpoint_before, endpoint_after);
         
-        // 旧的 endpoint 不再有效
         assert!(!table.validate_endpoint(endpoint_before));
-        // 新的 endpoint 有效
         assert!(table.validate_endpoint(endpoint_after));
     }
 }

@@ -1,52 +1,52 @@
-//! PM 私有常量定义
+//! PM private constant definitions.
 //!
-//! 这些常量是 PM 服务私有的，不应放在 minix-types 中。
+//! These constants are private to the PM service and should not be in minix-types.
 //!
-//! # 为什么放在 PM crate？
+//! # Why in PM crate?
 //!
-//! 1. **职责隔离**: PID 范围是 PM 的私有逻辑
-//! 2. **微内核原则**: 其他服务不需要了解 PM 的 PID 生成规则
+//! 1. **Separation of concerns**: PID range is PM's private logic
+//! 2. **Microkernel principle**: Other services don't need to know PM's PID generation rules
 //!
-//! # Minix3 源码映射
+//! # Minix3 Source Mapping
 //!
 //! ```c
 //! // minix3/minix/servers/pm/const.h
-//! #define NR_PIDS    30000    // PID 最大值
-//! #define INIT_PID   1        // init 进程的 PID
-//! #define NO_PID     0        // 无效 PID
-//! #define NO_TRACER  0        // 无追踪者（进程表索引 0 是 INIT，不会被追踪）
+//! #define NR_PIDS    30000    // Maximum PID
+//! #define INIT_PID   1        // init process PID
+//! #define NO_PID     0        // Invalid PID
+//! #define NO_TRACER  0        // No tracer (process table index 0 is INIT, won't be traced)
 //! ```
 
 use minix_types::Pid;
 
-/// PID 最大值
+/// Maximum PID.
 ///
-/// Minix3 定义：`#define NR_PIDS 30000`
+/// Minix3 definition: `#define NR_PIDS 30000`
 ///
-/// PID 范围：2 ~ 30000（INIT_PID+1 到 NR_PIDS）
+/// PID range: 2 ~ 30000 (INIT_PID+1 to NR_PIDS)
 pub const NR_PIDS: Pid = 30000;
 
-/// init 进程的 PID
+/// init process PID.
 ///
-/// Minix3 定义：`#define INIT_PID 1`
+/// Minix3 definition: `#define INIT_PID 1`
 ///
-/// PID 1 是 init 进程，不会被重新分配
+/// PID 1 is the init process, will not be reallocated
 pub const INIT_PID: Pid = 1;
 
-/// 无效 PID
+/// Invalid PID.
 ///
-/// Minix3 定义：`#define NO_PID 0`
+/// Minix3 definition: `#define NO_PID 0`
 ///
-/// 用于表示无效或未设置的 PID
+/// Used to indicate invalid or unset PID
 pub const NO_PID: Pid = 0;
 
-/// 无追踪者索引
+/// No tracer index.
 ///
-/// Minix3 定义：`#define NO_TRACER 0`
+/// Minix3 definition: `#define NO_TRACER 0`
 ///
-/// 注意：Minix3 中 NO_TRACER = 0，因为进程表索引 0 是 INIT 进程，
-/// INIT 进程永远不会被追踪（它是系统第一个进程）。
+/// Note: In Minix3, NO_TRACER = 0 because process table index 0 is the INIT process,
+/// which will never be traced (it's the system's first process).
 ///
-/// 这与 minix-types 中的 NO_TRACER = UserSlot(usize::MAX) 不同，
-/// 但语义一致：表示"没有追踪者"。
+/// This differs from minix-types' NO_TRACER = UserSlot(usize::MAX),
+/// but the semantics are the same: "no tracer".
 pub const NO_TRACER_INDEX: usize = 0;

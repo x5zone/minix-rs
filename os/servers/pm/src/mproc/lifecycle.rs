@@ -1,8 +1,8 @@
-//! 进程生命周期状态定义
+//! Process lifecycle state definition.
 //!
-//! 生命周期状态是互斥的，一个进程在同一时刻只能处于一种生命周期状态
+//! Lifecycle states are mutually exclusive - a process can only be in one lifecycle state at a time.
 //!
-//! # 状态转换图
+//! # State Transition Diagram
 //! ```text
 //! Unused ──────→ Running ──────→ Exiting ──────→ TraceZombie ──┐
 //!                  │                │                  │       │
@@ -15,9 +15,9 @@
 
 use core::fmt;
 
-/// 进程生命周期状态（互斥）
+/// Process lifecycle state (mutually exclusive).
 ///
-/// 对应 Minix3 的 `mp_flags` 中的生命周期相关位：
+/// Corresponds to lifecycle-related bits in Minix3's `mp_flags`:
 /// - `IN_USE` → `!Unused`
 /// - `EXITING` → `Exiting`
 /// - `TRACE_ZOMBIE` → `TraceZombie`
@@ -25,51 +25,51 @@ use core::fmt;
 /// - `TOLD_PARENT` → `ToldParent`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
-    /// 槽位未使用
+    /// Slot not in use.
     ///
-    /// 进程表槽位空闲，可以被分配
+    /// Process table slot is free and can be allocated.
     Unused,
     
-    /// 正常运行中
+    /// Running normally.
     ///
-    /// 进程正在执行，可能同时有 `BlockState::stopped = true`
+    /// Process is executing, may have `BlockState::stopped = true` simultaneously.
     Running,
     
-    /// 正在退出
+    /// Exiting.
     ///
-    /// 进程正在执行退出流程，可能同时有：
-    /// - `VFS_CALL`: 等待 VFS 清理
-    /// - `PROC_STOPPED`: 被信号停止
-    /// - `TRACE_EXIT`: 追踪者强制退出
+    /// Process is in exit flow, may simultaneously have:
+    /// - `VFS_CALL`: waiting for VFS cleanup
+    /// - `PROC_STOPPED`: stopped by signal
+    /// - `TRACE_EXIT`: tracer forced exit
     Exiting {
-        /// 退出状态码
+        /// Exit status code.
         exit_code: i8,
-        /// 信号状态（如果是被信号杀死）
+        /// Signal status (if killed by signal).
         sig_status: i8,
     },
     
-    /// 追踪僵尸状态
+    /// Trace zombie state.
     ///
-    /// 进程已退出，等待 tracer 收尸（当 tracer != parent 时）
-    /// 对应 `TRACE_ZOMBIE` flag
+    /// Process has exited, waiting for tracer to reap (when tracer != parent).
+    /// Corresponds to `TRACE_ZOMBIE` flag.
     TraceZombie {
         exit_code: i8,
         sig_status: i8,
     },
     
-    /// 僵尸状态
+    /// Zombie state.
     ///
-    /// 进程已退出，等待父进程收尸
-    /// 对应 `ZOMBIE` flag
+    /// Process has exited, waiting for parent to reap.
+    /// Corresponds to `ZOMBIE` flag.
     Zombie {
         exit_code: i8,
         sig_status: i8,
     },
     
-    /// 已通知父进程
+    /// Parent notified.
     ///
-    /// 父进程已被通知子进程退出，等待清理
-    /// 对应 `TOLD_PARENT` flag
+    /// Parent has been notified of child exit, waiting for cleanup.
+    /// Corresponds to `TOLD_PARENT` flag.
     ToldParent {
         exit_code: i8,
         sig_status: i8,
@@ -83,16 +83,16 @@ impl Default for Lifecycle {
 }
 
 impl Lifecycle {
-    /// 检查槽位是否在使用中
+    /// Checks if slot is in use.
     ///
-    /// 对应 `IN_USE` flag
+    /// Corresponds to `IN_USE` flag.
     pub fn is_in_use(&self) -> bool {
         !matches!(self, Self::Unused)
     }
     
-    /// 获取退出状态码
+    /// Gets exit status code.
     ///
-    /// 返回 `(exit_code, sig_status)`，如果不是退出相关状态则返回 `None`
+    /// Returns `(exit_code, sig_status)`, or `None` if not an exit-related state.
     pub fn exit_code(&self) -> Option<(i8, i8)> {
         match self {
             Self::Exiting { exit_code, sig_status } 
@@ -105,14 +105,14 @@ impl Lifecycle {
         }
     }
     
-    /// 检查是否是僵尸状态
+    /// Checks if in zombie state.
     ///
-    /// 包括 `Zombie` 和 `TraceZombie`
+    /// Includes `Zombie` and `TraceZombie`.
     pub fn is_zombie(&self) -> bool {
         matches!(self, Self::Zombie { .. } | Self::TraceZombie { .. })
     }
     
-    /// 检查是否正在退出
+    /// Checks if exiting.
     pub fn is_exiting(&self) -> bool {
         matches!(self, Self::Exiting { .. })
     }

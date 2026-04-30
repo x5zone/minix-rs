@@ -1,57 +1,45 @@
-//! 虚拟区域 (vir_region) 实现
+//! Virtual region (vir_region) implementation.
 //!
-//! 管理进程的虚拟地址空间布局，使用 AVL 树组织。
-//! 对应 Minix3: `region.h` 中的 `vir_region` 结构体
+//! Manages process virtual address space layout using an AVL tree.
+//! Corresponds to Minix3's `vir_region` struct in `region.h`.
 
 use super::phys_region::{PhysBlock, PhysRegion};
-use minix_types::VirBytes;
-use std::ptr::NonNull;
+use minix_types::{VirBytes, UserSlot};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::ptr::NonNull;
 use crate::memtype::MemType;
 
-/// 虚拟区域标志
+/// Virtual region flags.
 ///
-/// 对应 Minix3: `VR_*` 宏定义
+/// Corresponds to Minix3's `VR_*` macros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VrFlags(pub u16);
+pub(crate) struct VrFlags(pub u16);
 
 impl VrFlags {
-    /// 可写
-    pub const WRITABLE: u16 = 0x001;
-    /// 物理内存必须 64K 对齐
-    pub const PHYS64K: u16 = 0x004;
-    /// 低端内存 (<16MB，用于 DMA)
-    pub const LOWER16MB: u16 = 0x008;
-    /// 低端内存 (<1MB，用于 BIOS)
-    pub const LOWER1MB: u16 = 0x010;
-    /// 共享内存
-    pub const SHARED: u16 = 0x040;
-    /// 不清零（分配后不初始化）
-    pub const UNINITIALIZED: u16 = 0x080;
+    pub(crate) const WRITABLE: u16 = 0x001;
+    pub(crate) const PHYS64K: u16 = 0x004;
+    pub(crate) const LOWER16MB: u16 = 0x008;
+    pub(crate) const LOWER1MB: u16 = 0x010;
+    pub(crate) const SHARED: u16 = 0x040;
+    pub(crate) const UNINITIALIZED: u16 = 0x080;
+    pub(crate) const ANON: u16 = 0x100;
+    pub(crate) const DIRECT: u16 = 0x200;
+    pub(crate) const PREALLOC_MAP: u16 = 0x400;
 
-    /// 匿名内存（需要清零和分配）
-    pub const ANON: u16 = 0x100;
-    /// 直接映射（不由 VM 管理）
-    pub const DIRECT: u16 = 0x200;
-    /// 预分配映射
-    pub const PREALLOC_MAP: u16 = 0x400;
-
-    /// 创建空标志
-    pub const fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self(0)
     }
 
-    /// 检查是否包含指定标志
-    pub const fn contains(&self, flag: u16) -> bool {
+    pub(crate) const fn contains(&self, flag: u16) -> bool {
         (self.0 & flag) != 0
     }
 
-    /// 添加标志
-    pub fn insert(&mut self, flag: u16) {
+    pub(crate) fn insert(&mut self, flag: u16) {
         self.0 |= flag;
     }
 
-    /// 移除标志
-    pub fn remove(&mut self, flag: u16) {
+    pub(crate) fn remove(&mut self, flag: u16) {
         self.0 &= !flag;
     }
 }
@@ -62,30 +50,15 @@ impl Default for VrFlags {
     }
 }
 
-/// 虚拟区域参数（联合体）
+/// Virtual region parameters (union equivalent).
 ///
-/// 对应 Minix3: `vir_region` 中的 `param` 联合体
+/// Corresponds to Minix3's `param` union in `vir_region`.
 #[derive(Debug, Clone)]
-pub enum VrParam {
-    /// 直接物理映射（VR_DIRECT）
+pub(crate) enum VrParam {
     Direct { phys: u64 },
-
-    /// 共享内存
-    Shared {
-        ep: i32,
-        vaddr: VirBytes,
-        id: i32,
-    },
-
-    /// 物理块缓存
+    Shared { ep: i32, vaddr: VirBytes, id: i32 },
     PbCache { pb: Option<NonNull<PhysBlock>> },
-
-    /// 文件映射
-    File {
-        inited: bool,
-        offset: u64,
-        clearend: u16,
-    },
+    File { inited: bool, offset: u64, clearend: u16 },
 }
 
 impl Default for VrParam {
@@ -94,63 +67,38 @@ impl Default for VrParam {
     }
 }
 
-/// 虚拟区域 (vir_region)
+/// Virtual region (vir_region).
 ///
-/// 代表进程虚拟地址空间中的一段连续区域，具有相同的属性。
-/// 对应 Minix3: `struct vir_region` (typedef 为 `region_t`)
-pub struct VirRegion {
-    /// 虚拟地址（页表偏移）
+/// Represents a contiguous range in the process's virtual address space
+/// with uniform properties. Corresponds to Minix3's `struct vir_region`.
+pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
-
-    /// 长度（字节）
     pub length: VirBytes,
-
-    /// 物理块指针数组
-    ///
-    /// 每个元素指向一个 phys_region，表示该虚拟区域的物理映射。
-    /// 数组大小 = length / PAGE_SIZE
+    /// Physical block pointer array. Size = length / PAGE_SIZE.
     pub physblocks: Vec<Option<Box<PhysRegion>>>,
-
-    /// 区域标志
     pub flags: VrFlags,
-
-    /// 拥有此区域的进程
-    pub parent: Option<NonNull<crate::vmproc::VmProc>>,
-
-    /// 默认内存类型
-    ///
-    /// 此区域内新分配的物理区域默认使用此内存类型。
-    /// 对应 Minix3: `vr->def_memtype`
-    ///
-    /// TODO: 完整实现（待 10-memtype.md 文档完善）
+    /// Parent process slot (if any).
+    pub parent_slot: Option<UserSlot>,
+    /// Default memory type for new allocations in this region.
     pub def_memtype: Option<&'static dyn MemType>,
-
-    /// 重映射计数
     pub remaps: i32,
-
-    /// 唯一 ID
     pub id: i32,
-
-    /// 参数（联合体）
     pub param: VrParam,
 
-    // AVL 树字段
-    /// 左子树（低地址）
+    // AVL tree fields
     pub lower: Option<Box<VirRegion>>,
-    /// 右子树（高地址）
     pub higher: Option<Box<VirRegion>>,
-    /// 平衡因子
     pub factor: i8,
 }
 
-impl std::fmt::Debug for VirRegion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for VirRegion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("VirRegion")
             .field("vaddr", &self.vaddr)
             .field("length", &self.length)
             .field("physblocks_len", &self.physblocks.len())
             .field("flags", &self.flags)
-            .field("parent", &self.parent)
+            .field("parent_slot", &self.parent_slot)
             .field("def_memtype", &self.def_memtype.map(|m| m.name()))
             .field("remaps", &self.remaps)
             .field("id", &self.id)
@@ -161,9 +109,8 @@ impl std::fmt::Debug for VirRegion {
 }
 
 impl VirRegion {
-    /// 创建新的虚拟区域
-    pub fn new(vaddr: VirBytes, length: VirBytes, flags: VrFlags) -> Self {
-        let pages = ((length.get() + 4095) / 4096) as usize; // 假设 4KB 页
+    pub(crate) fn new(vaddr: VirBytes, length: VirBytes, flags: VrFlags) -> Self {
+        let pages = ((length.get() + 4095) / 4096) as usize;
         let mut physblocks = Vec::with_capacity(pages);
         for _ in 0..pages {
             physblocks.push(None);
@@ -173,7 +120,7 @@ impl VirRegion {
             length,
             physblocks,
             flags,
-            parent: None,
+            parent_slot: None,
             def_memtype: None,
             remaps: 0,
             id: 0,
@@ -184,8 +131,7 @@ impl VirRegion {
         }
     }
 
-    /// 创建带有内存类型的虚拟区域
-    pub fn with_memtype(
+    pub(crate) fn with_memtype(
         vaddr: VirBytes,
         length: VirBytes,
         flags: VrFlags,
@@ -196,42 +142,34 @@ impl VirRegion {
         region
     }
 
-    /// 获取结束地址（不包含）
-    pub fn end_addr(&self) -> VirBytes {
+    /// Returns the end address (exclusive).
+    pub(crate) fn end_addr(&self) -> VirBytes {
         self.vaddr + self.length
     }
 
-    /// 检查地址是否在区域内
-    pub fn contains(&self, addr: VirBytes) -> bool {
+    /// Checks if the address is within this region.
+    pub(crate) fn contains(&self, addr: VirBytes) -> bool {
         addr >= self.vaddr && addr < self.end_addr()
     }
 
-    /// 检查是否与指定范围重叠
-    ///
-    /// 重叠条件: self.vaddr < end && self.end_addr() > start
-    pub fn overlaps(&self, start: VirBytes, end: VirBytes) -> bool {
+    /// Checks if this region overlaps with the given range.
+    pub(crate) fn overlaps(&self, start: VirBytes, end: VirBytes) -> bool {
         self.vaddr < end && self.end_addr() > start
     }
 
-    /// 检查是否可写
-    pub fn is_writable(&self) -> bool {
+    pub(crate) fn is_writable(&self) -> bool {
         self.flags.contains(VrFlags::WRITABLE)
     }
 
-    /// 检查是否是匿名内存
-    pub fn is_anon(&self) -> bool {
+    pub(crate) fn is_anon(&self) -> bool {
         self.flags.contains(VrFlags::ANON)
     }
 
-    /// 检查是否是直接映射
-    pub fn is_direct(&self) -> bool {
+    pub(crate) fn is_direct(&self) -> bool {
         self.flags.contains(VrFlags::DIRECT)
     }
 
-    /// 设置区域可写性
-    ///
-    /// 对应 Minix3: 设置/清除 `VR_WRITABLE` 标志
-    pub fn set_writable(&mut self, writable: bool) {
+    pub(crate) fn set_writable(&mut self, writable: bool) {
         if writable {
             self.flags.insert(VrFlags::WRITABLE);
         } else {
@@ -239,19 +177,16 @@ impl VirRegion {
         }
     }
 
-    /// 准备 CoW: 设置共享页面为只读
+    /// Prepares for CoW: sets shared pages to read-only.
     ///
-    /// 遍历所有物理区域，将共享页面（refcount > 1）设置为只读，
-    /// 以触发写时复制机制。
+    /// Iterates all physical regions, setting shared pages (refcount > 1) to read-only
+    /// to trigger copy-on-write.
     ///
-    /// 对应 Minix3: `map_writept()` 中的 CoW 准备逻辑
+    /// Corresponds to Minix3's CoW preparation logic in `map_writept()`.
     ///
     /// # Safety
-    ///
-    /// 调用者必须确保:
-    /// - 所有 PhysRegion 都已正确初始化
-    /// - 页表操作是安全的
-    pub unsafe fn prepare_cow(&mut self) {
+    /// Caller must ensure all PhysRegions are properly initialized and page table operations are safe.
+    pub(crate) unsafe fn prepare_cow(&mut self) {
         use super::phys_region::{MockPageTable, PtFlags};
         const PAGE_SIZE: u64 = 4096;
         let num_pages = (self.length.get() / PAGE_SIZE) as usize;
@@ -278,33 +213,29 @@ impl VirRegion {
         }
     }
 
-    /// 获取指定偏移的物理区域
-    pub fn get_phys_region(&self, offset: VirBytes) -> Option<&PhysRegion> {
+    pub(crate) fn get_phys_region(&self, offset: VirBytes) -> Option<&PhysRegion> {
         let page = (offset.get() / 4096) as usize;
         self.physblocks.get(page).and_then(|opt| opt.as_ref().map(|b| b.as_ref()))
     }
 
-    /// 获取指定偏移的物理区域（可变）
-    pub fn get_phys_region_mut(&mut self, offset: VirBytes) -> Option<&mut PhysRegion> {
+    pub(crate) fn get_phys_region_mut(&mut self, offset: VirBytes) -> Option<&mut PhysRegion> {
         let page = (offset.get() / 4096) as usize;
         self.physblocks.get_mut(page).and_then(|opt| opt.as_mut().map(|b| b.as_mut()))
     }
 
-    /// 设置指定偏移的物理区域
-    pub fn set_phys_region(&mut self, offset: VirBytes, region: PhysRegion) {
+    pub(crate) fn set_phys_region(&mut self, offset: VirBytes, region: PhysRegion) {
         let page = (offset.get() / 4096) as usize;
         if page < self.physblocks.len() {
             self.physblocks[page] = Some(Box::new(region));
         }
     }
 
-    /// 分割区域
+    /// Splits the region at the given position.
     ///
-    /// 将当前区域在指定位置分割成两个区域。
-    /// 返回 (左区域, 右区域)，左区域保留原起始地址。
+    /// Returns (left, right) where left retains the original start address.
     ///
-    /// 对应 Minix3: `split_region()`
-    pub fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
+    /// Corresponds to Minix3's `split_region()`.
+    pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
         let page_size: u64 = 4096;
 
         if split_len.get() % page_size != 0 {
@@ -343,13 +274,13 @@ impl VirRegion {
         Ok((left, right))
     }
 
-    /// 从指定偏移开始释放区域
+    /// Frees the region from the given offset.
     ///
-    /// 释放 [offset, offset+len) 范围内的物理页。
-    /// 返回释放的页数。
+    /// Frees physical pages in the range [offset, offset+len).
+    /// Returns the number of pages freed.
     ///
-    /// 对应 Minix3: `map_subfree()`
-    pub fn free_range(&mut self, offset: VirBytes, len: VirBytes) -> usize {
+    /// Corresponds to Minix3's `map_subfree()`.
+    pub(crate) fn free_range(&mut self, offset: VirBytes, len: VirBytes) -> usize {
         let page_size: u64 = 4096;
         let start_page = (offset.get() / page_size) as usize;
         let end_page = ((offset.get() + len.get() + page_size - 1) / page_size) as usize;
@@ -365,14 +296,11 @@ impl VirRegion {
     }
 }
 
-/// VM 错误类型
+/// VM error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VmError {
-    /// 无效参数
+pub(crate) enum VmError {
     InvalidParam,
-    /// 内存不足
     NoMemory,
-    /// 区域未找到
     NotFound,
 }
 

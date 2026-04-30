@@ -1,60 +1,60 @@
-//! PM 进程结构体定义
+//! PM process structure definition.
 //!
-//! 这是 Minix3 `mproc` 结构体的 Rust 实现，包含 PM 私有的进程管理逻辑。
+//! This is the Rust implementation of Minix3's `mproc` structure, containing PM's private process management logic.
 //!
-//! # Minix3 多进程表架构
-//! Minix3 采用分布式进程表设计，共有 4 份进程表：
-//! - **PM/mproc**: 进程管理、信号、权限（本模块）
-//! - **VM/vmproc**: 虚拟内存、页表
-//! - **VFS/fproc**: 文件描述符、目录
-//! - **Kernel/proc**: 调度、IPC、寄存器保存
+//! # Minix3 Multi-Process Table Architecture
+//! Minix3 uses a distributed process table design with 4 copies:
+//! - **PM/mproc**: Process management, signals, permissions (this module)
+//! - **VM/vmproc**: Virtual memory, page tables
+//! - **VFS/fproc**: File descriptors, directories
+//! - **Kernel/proc**: Scheduling, IPC, register saving
 //!
-//! # 分层设计
-//! 采用方案三的分层抽象，将进程字段分为四层：
-//! 1. 身份信息：PID、端点、进程组、名称
-//! 2. 状态机：生命周期、阻塞、等待、监护、追踪
-//! 3. 资源：权限、信号、定时器、调度、时间统计
-//! 4. IPC：消息回复、事件订阅
+//! # Layered Design
+//! Uses layered abstraction, dividing process fields into four layers:
+//! 1. Identity: PID, endpoint, process group, name
+//! 2. State machine: lifecycle, block, wait, guardianship, trace
+//! 3. Resources: privilege, signals, timers, scheduling, time stats
+//! 4. IPC: message reply, event subscription
 //!
-//! # 为什么放在 PM crate 而不是 minix-types？
+//! # Why in PM crate, not minix-types?
 //!
-//! 1. **职责隔离**: MProc 包含大量仅 PM 关心的私有逻辑（信号处理、父子进程树等）
-//! 2. **不变量保护**: 状态转换逻辑绑定了 PM 内部复杂逻辑，放在公共库会破坏不变量
-//! 3. **微内核原则**: 遵循"知识最小化"原则，其他服务不需要了解 PM 的内部实现
+//! 1. **Separation of concerns**: MProc contains private logic only PM cares about (signal handling, parent-child tree, etc.)
+//! 2. **Invariant protection**: State transition logic binds PM internal complex logic, putting in public library would break invariants
+//! 3. **Microkernel principle**: Follows "minimum knowledge" principle, other services don't need to know PM's internal implementation
 
 use minix_types::{Pid, Endpoint, UserSlot, Clock, VirBytes};
 use minix_ipc::Message;
 use crate::mproc::{Lifecycle, BlockState, WaitState, Guardianship, TraceState, TraceOptions, Credentials, SignalState};
 
-/// 进程名最大长度
+/// Maximum process name length.
 pub const PROC_NAME_LEN: usize = 16;
 
-/// 定时器数量
+/// Number of timers.
 pub const NR_ITIMERS: usize = 3;
 
-/// 进程标识
+/// Process identifier.
 ///
-/// 包含进程表索引和 PID
+/// Contains process table index and PID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProcessId {
-    /// 进程表索引
+    /// Process table index.
     pub index: UserSlot,
-    /// 进程 ID
+    /// Process ID.
     pub pid: Pid,
 }
 
-/// 身份信息
+/// Process identity.
 ///
-/// 进程的基本标识信息
+/// Basic identification information for a process.
 #[derive(Debug, Clone)]
 pub struct ProcessIdentity {
-    /// 进程标识（索引 + PID）
+    /// Process identifier (index + PID).
     pub id: ProcessId,
-    /// 端点标识（用于 IPC）
+    /// Endpoint identifier (for IPC).
     pub endpoint: Endpoint,
-    /// 进程组 ID
+    /// Process group ID.
     pub procgrp: Pid,
-    /// 进程名
+    /// Process name.
     pub name: [u8; PROC_NAME_LEN],
 }
 
@@ -72,20 +72,20 @@ impl Default for ProcessIdentity {
     }
 }
 
-/// 状态机
+/// Process state machine.
 ///
-/// 进程的所有状态信息
+/// All state information for a process.
 #[derive(Debug, Clone)]
 pub struct ProcessState {
-    /// 生命周期状态（互斥）
+    /// Lifecycle state (mutually exclusive).
     pub lifecycle: Lifecycle,
-    /// 阻塞状态（可与生命周期组合）
+    /// Block state (can combine with lifecycle).
     pub block: BlockState,
-    /// 父进程等待状态（⚠️ 放在父进程）
+    /// Parent wait state (stored in parent process).
     pub wait: WaitState,
-    /// 监护关系
+    /// Guardianship relationship.
     pub guardianship: Guardianship,
-    /// 追踪状态
+    /// Trace state.
     pub trace: TraceState,
 }
 
@@ -101,25 +101,25 @@ impl Default for ProcessState {
     }
 }
 
-/// Minix 定时器
+/// Minix timer.
 #[derive(Debug, Clone, Copy)]
 pub struct MinixTimer {
-    /// 过期时间
+    /// Expiration time.
     pub expire_time: Clock,
-    /// 重载时间（用于周期性定时器）
+    /// Reload time (for periodic timers).
     pub reload_time: Clock,
 }
 
-/// 特权级别
+/// Privilege level.
 ///
-/// 对应 Minix3 的 `PRIV_PROC` flag
+/// Corresponds to Minix3's `PRIV_PROC` flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Privilege {
-    /// 普通用户进程
+    /// Regular user process.
     User(Credentials),
-    /// 系统进程（PRIV_PROC）
+    /// System process (PRIV_PROC).
     ///
-    /// 系统进程有特殊权限，退出时不需要等待 VFS
+    /// System processes have special privileges and don't need to wait for VFS on exit.
     Kernel,
 }
 
@@ -130,14 +130,14 @@ impl Default for Privilege {
 }
 
 impl Privilege {
-    /// 检查是否是系统进程
+    /// Checks if this is a system process.
     pub fn is_kernel(&self) -> bool {
         matches!(self, Self::Kernel)
     }
     
-    /// 获取权限凭证
+    /// Gets credentials.
     ///
-    /// 如果是系统进程，返回 `None`
+    /// Returns `None` if this is a system process.
     pub fn credentials(&self) -> Option<&Credentials> {
         match self {
             Self::User(creds) => Some(creds),
@@ -147,50 +147,50 @@ impl Privilege {
 }
 
 bitflags::bitflags! {
-    /// 剩余标志位
+    /// Remaining flags.
     ///
-    /// 这些标志位尚未归类到具体的状态机中
+    /// These flags have not yet been categorized into specific state machines.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct RemainingFlags: u32 {
-        /// 定时器已启动
+        /// Timer started.
         const ALARM_ON = 0x00010;
-        /// 延迟调用
+        /// Deferred call.
         const DELAY_CALL = 0x00040;
-        /// VFS调用中
+        /// VFS call in progress.
         const VFS_CALL = 0x00200;
-        /// 父进程已变更
+        /// Parent changed.
         const NEW_PARENT = 0x00800;
-        /// 部分执行
+        /// Partial exec.
         const PARTIAL_EXEC = 0x04000;
-        /// 污染标记
+        /// Tainted flag.
         const TAINTED = 0x40000;
     }
 }
 
-/// 资源
+/// Process resources.
 ///
-/// 进程的资源管理信息
+/// Resource management information for a process.
 #[derive(Debug, Clone)]
 pub struct ProcessResources {
-    /// 特权级别
+    /// Privilege level.
     pub privilege: Privilege,
-    /// 信号处理状态
+    /// Signal handling state.
     pub signals: SignalState,
-    /// 子进程用户时间累计
+    /// Child process user time accumulator.
     pub child_utime: Clock,
-    /// 子进程系统时间累计
+    /// Child process system time accumulator.
     pub child_stime: Clock,
-    /// 进程启动时间
+    /// Process start time.
     pub started: Clock,
-    /// 进程定时器
+    /// Process timer.
     pub timer: Option<MinixTimer>,
-    /// 间隔定时器
+    /// Interval timers.
     pub intervals: [Clock; NR_ITIMERS],
-    /// nice 值
+    /// Nice value.
     pub nice: i32,
-    /// 调度器端点
+    /// Scheduler endpoint.
     pub scheduler: Endpoint,
-    /// 未归类的标志位
+    /// Uncategorized flags.
     pub flags: RemainingFlags,
 }
 
@@ -211,18 +211,18 @@ impl Default for ProcessResources {
     }
 }
 
-/// IPC 上下文
+/// IPC context.
 ///
-/// 进程间通信相关信息
+/// Inter-process communication related information.
 #[derive(Debug, Clone)]
 pub struct ProcessIpc {
-    /// IPC 回复消息（延迟加载）
+    /// IPC reply message (lazy loaded).
     pub reply: Option<Message>,
-    /// 事件订阅者
+    /// Event subscriber.
     pub event_subscriber: Option<UserSlot>,
-    /// 栈帧地址
+    /// Stack frame address.
     pub frame_addr: VirBytes,
-    /// 栈帧长度
+    /// Stack frame length.
     pub frame_len: usize,
 }
 
@@ -237,42 +237,42 @@ impl Default for ProcessIpc {
     }
 }
 
-/// PM 进程结构体
+/// PM process structure.
 ///
-/// 这是 Minix3 `mproc` 结构体的 Rust 重写版本
+/// This is the Rust rewrite of Minix3's `mproc` structure.
 ///
-/// # Minix3 多进程表架构
-/// 本结构体对应 PM 的 `mproc` 表，与 VM 的 `vmproc`、VFS 的 `fproc`、
-/// Kernel 的 `proc` 通过 `endpoint` 关联。
+/// # Minix3 Multi-Process Table Architecture
+/// This structure corresponds to PM's `mproc` table, linked to VM's `vmproc`,
+/// VFS's `fproc`, and Kernel's `proc` via `endpoint`.
 ///
-/// # 分层设计
-/// 采用方案三的分层抽象，提高代码组织性：
+/// # Layered Design
+/// Uses layered abstraction for better code organization:
 ///
 /// ```text
 /// Process
-/// ├── identity: ProcessIdentity   // 身份信息
-/// ├── state: ProcessState         // 状态机
-/// ├── resources: ProcessResources // 资源
-/// └── ipc: ProcessIpc             // IPC 上下文
+/// ├── identity: ProcessIdentity   // Identity
+/// ├── state: ProcessState         // State machine
+/// ├── resources: ProcessResources // Resources
+/// └── ipc: ProcessIpc             // IPC context
 /// ```
 ///
-/// # Minix3 映射
-/// | Minix3 字段 | Rust 字段 |
-/// |------------|-----------|
+/// # Minix3 Mapping
+/// | Minix3 field | Rust field |
+/// |--------------|------------|
 /// | mp_pid, mp_endpoint | identity.id, identity.endpoint |
-/// | mp_flags (状态相关) | state.lifecycle, state.block |
+/// | mp_flags (state) | state.lifecycle, state.block |
 /// | mp_realuid, mp_effuid | resources.privilege |
 /// | mp_reply | ipc.reply |
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct Process {
-    /// 身份信息
+    /// Identity information.
     pub identity: ProcessIdentity,
-    /// 状态机
+    /// State machine.
     pub state: ProcessState,
-    /// 资源
+    /// Resources.
     pub resources: ProcessResources,
-    /// IPC 上下文
+    /// IPC context.
     pub ipc: ProcessIpc,
 }
 
@@ -288,11 +288,11 @@ impl Default for Process {
 }
 
 impl Process {
-    /// 创建新进程
+    /// Creates a new process.
     ///
-    /// # 参数
-    /// - `index`: 进程表索引
-    /// - `pid`: 进程 ID
+    /// # Parameters
+    /// - `index`: Process table index
+    /// - `pid`: Process ID
     pub fn new(index: usize, pid: Pid) -> Self {
         Self {
             identity: ProcessIdentity {
@@ -306,57 +306,57 @@ impl Process {
         }
     }
     
-    /// 检查槽位是否在使用中
+    /// Checks if slot is in use.
     pub fn is_in_use(&self) -> bool {
         self.state.lifecycle.is_in_use()
     }
     
-    /// 获取进程 PID
+    /// Gets process PID.
     pub fn pid(&self) -> Pid {
         self.identity.id.pid
     }
     
-    /// 获取进程索引
+    /// Gets process index.
     pub fn index(&self) -> UserSlot {
         self.identity.id.index
     }
     
-    /// 获取端点
+    /// Gets endpoint.
     pub fn endpoint(&self) -> Endpoint {
         self.identity.endpoint
     }
     
-    /// 获取进程组 ID
+    /// Gets process group ID.
     pub fn procgrp(&self) -> Pid {
         self.identity.procgrp
     }
     
-    /// 获取父进程索引
+    /// Gets parent process index.
     pub fn parent(&self) -> UserSlot {
         self.state.guardianship.parent()
     }
     
-    /// 获取追踪者索引
+    /// Gets tracer index.
     pub fn tracer(&self) -> Option<UserSlot> {
         self.state.guardianship.tracer()
     }
     
-    /// 检查是否是系统进程
+    /// Checks if this is a system process.
     pub fn is_kernel_process(&self) -> bool {
         self.resources.privilege.is_kernel()
     }
     
-    /// 检查是否是僵尸进程
+    /// Checks if this is a zombie process.
     pub fn is_zombie(&self) -> bool {
         self.state.lifecycle.is_zombie()
     }
     
-    /// 检查是否正在退出
+    /// Checks if process is exiting.
     pub fn is_exiting(&self) -> bool {
         self.state.lifecycle.is_exiting()
     }
     
-    /// 检查是否被停止
+    /// Checks if process is stopped.
     pub fn is_stopped(&self) -> bool {
         self.state.block.stopped || self.state.trace.stopped
     }
