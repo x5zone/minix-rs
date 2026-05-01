@@ -22,5 +22,8 @@ name = "minix_vm"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["bitmap-alloc"]
+bitmap-alloc = []
+segment-tree-alloc = []
+buddy-alloc = []
 vmstats = []

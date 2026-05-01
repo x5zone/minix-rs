@@ -248,7 +248,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 2. 复制父进程页表映射（共享物理页，只读标记）
 3. 绑定页表到子进程（`pt_bind`）
 
-> **详见**: [06-pagetable-struct.md](06-pagetable-struct.md)
+> **详见**: [05-pagetable-struct.md](05-pagetable-struct.md)
 
 #### 3.2.4 vm\_regions\_avl - 虚拟区域 AVL 树
 
@@ -262,7 +262,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 2. 遍历父进程区域，复制到子进程
 3. 增加物理页引用计数（CoW 机制）
 
-> **详见**: [08-vir-region.md](08-vir-region.md) 和 [11-region-avl.md](11-region-avl.md)
+> **详见**: [07-vir-region.md](07-vir-region.md) 和 [11-region-avl.md](11-region-avl.md)
 
 #### 3.2.5 vm\_acl - ACL 访问控制列表索引
 
@@ -387,7 +387,7 @@ Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootI
 
 **fork 时的处理**: 直接复制父进程的值，子进程的地址空间布局与父进程一致。
 
-> **详见**: [08-vir-region.md](08-vir-region.md) 的区域管理。
+> **详见**: [07-vir-region.md](07-vir-region.md) 的区域管理。
 
 ##### vm\_total / vm\_total\_max - 虚拟内存大小
 
@@ -407,7 +407,7 @@ Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootI
 
 **fork 时的处理**: 子进程继承父进程的 `vm_total` 和 `vm_total_max`，因为子进程初始时与父进程占用相同的虚拟内存。
 
-> **详见**: [05-physical-memory.md](05-physical-memory.md) 的物理内存管理。
+> **详见**: [04-physical-memory.md](04-physical-memory.md) 的物理内存管理。
 
 ##### vm\_bytecopies - 字节复制计数
 
@@ -744,8 +744,8 @@ active.set_endpoint(child_ep); // 设置真实 endpoint
 | 类型          | VmProc 字段                                | 定义位置                                  | 说明                                                                                                           | 专属文档                                             |
 | ----------- | ---------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `BootImage` | `vm_boot: Option<BootImage>`             | `minix-types` crate (`types/boot.rs`) | 启动时进程的引导映像信息，跨服务共享类型                                                                                         | [00-vm-overview.md](00-vm-overview.md)           |
-| `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [06-pagetable-struct.md](06-pagetable-struct.md) |
-| `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [08-vir-region.md](08-vir-region.md)             |
+| `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [05-pagetable-struct.md](05-pagetable-struct.md) |
+| `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [07-vir-region.md](07-vir-region.md)             |
 | `AclState`  | `vm_acl: AclState`                       | `vm/src/acl.rs`                       | ACL 状态，控制进程对 VM 系统调用的访问。三态 enum：`Uninitialized`/`Default`/`System(AclMask)` | [03-acl.md](03-acl.md)       |
 
 **与 VmProc 的关系**: 这些类型通过 `VmProc` 的字段被组合使用，但各自有独立的生命周期管理和 API。在 vmproc 模块中，通过 typestate view（`ActiveProc`）的方法访问它们，例如 `ActiveProc::page_table()`、`ActiveProc::regions()`、`ActiveProc::init_page_table()` 等。
@@ -1556,8 +1556,8 @@ VmProc 测试覆盖
 - [00-vm-overview.md](00-vm-overview.md) - VM 整体架构（地址稳定性等全局原则）
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
 - [03-acl.md](03-acl.md) - 访问控制
-- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
-- [08-vir-region.md](08-vir-region.md) - 虚拟区域
+- [05-pagetable-struct.md](05-pagetable-struct.md) - 页表结构
+- [07-vir-region.md](07-vir-region.md) - 虚拟区域
 
 ***
 

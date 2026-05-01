@@ -40,7 +40,10 @@ pub(crate) use vmproc::*;
 pub(crate) use acl::{AclState, AclMask};
 pub(crate) use fork::{VmForkRequest, VmForkResponse, VmForkError, ForkContext, handle_fork};
 pub(crate) use slab::{SlabCache, SlabStats, LeakReport, MockPageAllocator};
-pub(crate) use phys_mem::{PhysMemAllocator, AllocFlags, PhysAddr, MemStats, CLICK_SIZE, CLICK_SHIFT};
+pub(crate) use phys_mem::{
+    PhysMemAlloc, PageAllocFlags, PhysAddr, AllocError, AllocParams,
+    CLICK_SIZE, CLICK_SHIFT,
+};
 pub(crate) use region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
 pub(crate) use pagetable::{PageTable, PtFlags, PageTableError, PAGE_SIZE, PT_ENTRIES, PD_ENTRIES};
 pub(crate) use memtype::{

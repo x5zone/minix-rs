@@ -1,101 +1,91 @@
 //! Physical memory statistics module.
+//!
+//! # Single-threaded Assumption
+//!
+//! All fields are plain `usize`. The VM server is single-threaded;
+//! atomic operations are unnecessary and misleading.
 
 use alloc::format;
 use alloc::string::String;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub(crate) struct MemStats {
-    total_allocations: AtomicUsize,
-    total_deallocations: AtomicUsize,
-    active_allocations: AtomicUsize,
-    allocation_failures: AtomicUsize,
-    total_allocated_bytes: AtomicUsize,
-    total_freed_bytes: AtomicUsize,
-    current_allocated_bytes: AtomicUsize,
-    peak_allocated_bytes: AtomicUsize,
+    total_allocations: usize,
+    total_deallocations: usize,
+    active_allocations: usize,
+    allocation_failures: usize,
+    total_allocated_bytes: usize,
+    total_freed_bytes: usize,
+    current_allocated_bytes: usize,
+    peak_allocated_bytes: usize,
 }
 
 impl MemStats {
     pub(crate) const fn new() -> Self {
         Self {
-            total_allocations: AtomicUsize::new(0),
-            total_deallocations: AtomicUsize::new(0),
-            active_allocations: AtomicUsize::new(0),
-            allocation_failures: AtomicUsize::new(0),
-            total_allocated_bytes: AtomicUsize::new(0),
-            total_freed_bytes: AtomicUsize::new(0),
-            current_allocated_bytes: AtomicUsize::new(0),
-            peak_allocated_bytes: AtomicUsize::new(0),
+            total_allocations: 0,
+            total_deallocations: 0,
+            active_allocations: 0,
+            allocation_failures: 0,
+            total_allocated_bytes: 0,
+            total_freed_bytes: 0,
+            current_allocated_bytes: 0,
+            peak_allocated_bytes: 0,
         }
     }
 
-    pub(crate) fn record_alloc(&self, bytes: usize) {
-        self.total_allocations.fetch_add(1, Ordering::Relaxed);
-        self.active_allocations.fetch_add(1, Ordering::Relaxed);
-        self.total_allocated_bytes.fetch_add(bytes, Ordering::Relaxed);
+    pub(crate) fn record_alloc(&mut self, bytes: usize) {
+        self.total_allocations += 1;
+        self.active_allocations += 1;
+        self.total_allocated_bytes += bytes;
+        self.current_allocated_bytes += bytes;
 
-        let current = self.current_allocated_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-
-        let mut peak = self.peak_allocated_bytes.load(Ordering::Relaxed);
-        while current > peak {
-            match self.peak_allocated_bytes.compare_exchange_weak(
-                peak,
-                current,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => peak = actual,
-            }
+        if self.current_allocated_bytes > self.peak_allocated_bytes {
+            self.peak_allocated_bytes = self.current_allocated_bytes;
         }
     }
 
-    pub(crate) fn record_free(&self, bytes: usize) {
-        self.total_deallocations.fetch_add(1, Ordering::Relaxed);
-        self.active_allocations.fetch_sub(1, Ordering::Relaxed);
-        self.total_freed_bytes.fetch_add(bytes, Ordering::Relaxed);
-        self.current_allocated_bytes.fetch_sub(bytes, Ordering::Relaxed);
+    pub(crate) fn record_free(&mut self, bytes: usize) {
+        self.total_deallocations += 1;
+        self.active_allocations -= 1;
+        self.total_freed_bytes += bytes;
+        self.current_allocated_bytes -= bytes;
     }
 
-    pub(crate) fn record_failure(&self) {
-        self.allocation_failures.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn record_failure(&mut self) {
+        self.allocation_failures += 1;
     }
 
     pub(crate) fn total_allocations(&self) -> usize {
-        self.total_allocations.load(Ordering::Relaxed)
+        self.total_allocations
     }
 
     pub(crate) fn total_deallocations(&self) -> usize {
-        self.total_deallocations.load(Ordering::Relaxed)
+        self.total_deallocations
     }
 
     pub(crate) fn active_allocations(&self) -> usize {
-        self.active_allocations.load(Ordering::Relaxed)
+        self.active_allocations
     }
 
     pub(crate) fn allocation_failures(&self) -> usize {
-        self.allocation_failures.load(Ordering::Relaxed)
+        self.allocation_failures
     }
 
     pub(crate) fn total_allocated_bytes(&self) -> usize {
-        self.total_allocated_bytes.load(Ordering::Relaxed)
+        self.total_allocated_bytes
     }
 
     pub(crate) fn total_freed_bytes(&self) -> usize {
-        self.total_freed_bytes.load(Ordering::Relaxed)
+        self.total_freed_bytes
     }
 
     pub(crate) fn current_allocated_bytes(&self) -> usize {
-        self.current_allocated_bytes.load(Ordering::Relaxed)
+        self.current_allocated_bytes
     }
 
     pub(crate) fn peak_allocated_bytes(&self) -> usize {
-        self.peak_allocated_bytes.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn total_allocated(&self) -> usize {
-        self.current_allocated_bytes()
+        self.peak_allocated_bytes
     }
 
     pub(crate) fn generate_report(&self) -> String {
@@ -127,29 +117,13 @@ impl Default for MemStats {
     }
 }
 
-pub(crate) struct MemStatsReporter {
-    stats: MemStats,
-    #[allow(dead_code)]
-    name: String,
-}
-
-impl MemStatsReporter {
-    pub(crate) fn new(name: impl Into<String>) -> Self {
-        Self { stats: MemStats::new(), name: name.into() }
-    }
-
-    pub(crate) fn stats(&self) -> &MemStats {
-        &self.stats
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_stats_basic() {
-        let stats = MemStats::new();
+        let mut stats = MemStats::new();
 
         stats.record_alloc(4096);
         assert_eq!(stats.total_allocations(), 1);
@@ -164,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_peak_tracking() {
-        let stats = MemStats::new();
+        let mut stats = MemStats::new();
 
         stats.record_alloc(1000);
         assert_eq!(stats.peak_allocated_bytes(), 1000);
@@ -178,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_failure_tracking() {
-        let stats = MemStats::new();
+        let mut stats = MemStats::new();
         stats.record_failure();
         stats.record_failure();
         assert_eq!(stats.allocation_failures(), 2);

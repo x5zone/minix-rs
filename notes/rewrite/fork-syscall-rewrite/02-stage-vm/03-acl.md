@@ -707,8 +707,8 @@ Minix3 中 `acl_clear` 在 `acl_set` 内部被调用（先清后设），也在�
 | 权限位图 | `acl_mask[][]` 全局数组 | `AclMask` bitflags 内联 |
 | 槽位管理 | `acl_inuse` 位图 + `AclManager` | 不需要（权限内联） |
 | VmProc.acl 大小 | 4 bytes (i32) | ~16 bytes (enum + u64) |
-| 全局 ACL 表 | 32 × 2 × 4 = 256 bytes | 0 |
-| in_use 位图 | 4 bytes | 0 |
+| 全局 ACL 表 | 64 × 2 × 4 = 512 bytes | 0 |
+| in_use 位图 | 8 bytes | 0 |
 | 权限检查 | `manager.check(&proc, call)` | `proc.acl().acl_check(&proc, call)` |
 | Fork | `manager.fork(&parent, &mut child)` | `parent.acl().acl_fork()` |
 

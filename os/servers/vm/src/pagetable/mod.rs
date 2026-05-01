@@ -86,11 +86,11 @@ pub(crate) fn page_offset(vaddr: VirBytes) -> usize {
 }
 
 pub(crate) fn phys_to_pfn(phys: PhysAddr) -> u32 {
-    (phys.0 >> PAGE_SHIFT) as u32
+    (phys.as_u64() >> PAGE_SHIFT) as u32
 }
 
 pub(crate) fn pfn_to_phys(pfn: u32) -> PhysAddr {
-    PhysAddr((pfn as u64) << PAGE_SHIFT)
+    PhysAddr::new((pfn as u64) << PAGE_SHIFT)
 }
 
 pub(crate) fn make_pte(phys: PhysAddr, flags: PtFlags) -> u32 {
@@ -102,7 +102,7 @@ pub(crate) fn make_pde(pt_phys: PhysAddr, flags: PtFlags) -> u32 {
 }
 
 pub(crate) fn pte_phys(pte: u32) -> PhysAddr {
-    PhysAddr(((pte as u64) & !0xFFF) as u64)
+    PhysAddr::new(((pte as u64) & !0xFFF) as u64)
 }
 
 pub(crate) fn pte_flags(pte: u32) -> PtFlags {
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_pte_operations() {
-        let phys = PhysAddr(0x12345000);
+        let phys = PhysAddr::new(0x12345000);
         let flags = PtFlags::new(PtFlags::PRESENT | PtFlags::WRITE);
 
         let pte = make_pte(phys, flags);
