@@ -6,26 +6,7 @@ use alloc::vec::Vec;
 use super::vir_region::VirRegion;
 use minix_types::VirBytes;
 use crate::memtype::MemType;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PtFlags {
-    ReadOnly,
-    Writable,
-    Executable,
-    User,
-    Present,
-}
-
-pub(crate) struct MockPageTable;
-
-impl MockPageTable {
-    pub(crate) fn set_page_flags(_vaddr: u64, _paddr: u64, _flags: &[PtFlags]) {
-    }
-
-    pub(crate) fn get_page_flags(_vaddr: u64) -> Vec<PtFlags> {
-        Vec::new()
-    }
-}
+use crate::pagetable::PageFlags;
 
 #[derive(Debug)]
 pub(crate) struct PhysBlock {
@@ -530,23 +511,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pt_flags() {
-        let flags = vec![PtFlags::ReadOnly, PtFlags::Present, PtFlags::User];
-        assert_eq!(flags.len(), 3);
-        assert!(flags.contains(&PtFlags::ReadOnly));
-        assert!(flags.contains(&PtFlags::Present));
-        assert!(flags.contains(&PtFlags::User));
-    }
+    fn test_page_flags() {
+        let flags = PageFlags::read_only();
+        assert!(flags.present());
+        assert!(!flags.writable());
+        assert!(flags.user_accessible());
 
-    #[test]
-    fn test_mock_page_table() {
-        MockPageTable::set_page_flags(
-            0x1000,
-            0x2000,
-            &[PtFlags::ReadOnly, PtFlags::Present],
-        );
-
-        let flags = MockPageTable::get_page_flags(0x1000);
-        assert!(flags.is_empty());
+        let flags = PageFlags::read_write();
+        assert!(flags.writable());
     }
 }

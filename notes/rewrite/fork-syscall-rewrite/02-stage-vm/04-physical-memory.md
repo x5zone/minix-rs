@@ -1,10 +1,10 @@
 # 04-physical-memory: 物理内存分配
 
-> **分类**: VM库  
-> **源码**: `minix3/minix/servers/vm/alloc.c`  
+> **分类**: VM库\
+> **源码**: `minix3/minix/servers/vm/alloc.c`\
 > **说明**: VM 提供的物理内存分配接口，其他服务通过 IPC 调用
 
----
+***
 
 ## 1. 概述
 
@@ -47,9 +47,9 @@ Bootloader (GRUB) → Multiboot info → Kernel pre_init()
 
 **图解**：
 
-- **上半部分**：PM 处理 `fork()` 系统调用时，需要为子进程分配内存，因此通过 IPC 向 VM 发送 `alloc_mem` 请求（不是让 VM 执行 fork，fork 的逻辑由 PM 协调）
-- **下半部分**：进程退出时，VM 回收其占用的物理页
-- **底部**：其他系统服务（RS、驱动等）也可能请求物理内存，用于共享内存、DMA 等场景
+- **上半部分**：PM 处理 `fork()` 系统调用时，通过 IPC 向 VM 发送 `VM_FORK` 请求。VM 收到请求后，内部分配页表和物理内存（调用 `pt_new()` → `alloc_mem()`），并复制父进程的内存映射。fork 的整体逻辑由 PM 协调。（注意：`alloc_mem()` 是 VM 内部函数，不是 IPC 接口）
+- **下半部分**：进程退出时，PM 发送 `VM_EXIT` 请求，VM 调用 `free_proc()` 回收其占用的物理页和页表
+- **底部**：其他系统服务（RS、驱动等）通过 `VM_MMAP`、`VM_MAP_PHYS`、`VM_ADDDMA` 等 IPC 接口请求内存，VM 内部调用 `alloc_mem()` 完成分配
 
 **为什么需要 VM 管理物理内存？**
 
@@ -78,11 +78,11 @@ Click 是 Minix3 中的内存分配基本单位，类似于 Linux 的 Page：
 
 **Click vs Page**
 
-| 特性 | Click | Page |
-|------|-------|------|
-| **大小** | 4096 bytes (固定) | 通常 4096 bytes |
-| **用途** | 逻辑分配单位 | 硬件内存管理单位 |
-| **历史** | Minix 传统 | 现代操作系统通用 |
+| 特性      | Click               | Page                 |
+| ------- | ------------------- | -------------------- |
+| **大小**  | 4096 bytes (固定)     | 通常 4096 bytes        |
+| **用途**  | 逻辑分配单位              | 硬件内存管理单位             |
+| **历史**  | Minix 传统            | 现代操作系统通用             |
 | **API** | `alloc_mem(clicks)` | `alloc_pages(order)` |
 
 **为什么 Minix3 使用 Click？**
@@ -98,35 +98,43 @@ Click 是 Minix3 中的内存分配基本单位，类似于 Linux 的 Page：
 ```c
 // minix3/minix/servers/vm/proto.h
 
-/* 分配物理内存 */
-phys_bytes alloc_mem(phys_bytes clicks, int flags);
+/* 分配物理内存（返回 click 编号，非字节地址） */
+phys_clicks alloc_mem(phys_clicks clicks, u32_t flags);
 
 /* 释放物理内存 */
-void free_mem(phys_bytes addr, phys_bytes clicks);
+void free_mem(phys_clicks base, phys_clicks clicks);
 
 /* 查询内存统计 */
-int memstats(struct vm_stats *stats);
+void memstats(int *nodes, int *pages, int *largest);
 ```
+
+> **类型说明**：
+>
+> - `phys_clicks`: 物理 click 编号（1 click = 4KB），用于分配/释放
+> - `phys_bytes`: 物理字节地址，用于实际内存访问
+> - 转换：`CLICK2ABS(clicks)` → 字节地址，`ABS2CLICK(bytes)` → click 编号
 
 **分配标志 (flags)**
 
 ```c
-// minix3/minix/servers/vm/alloc.c
+// minix3/minix/servers/vm/vm.h
 
-#define AF_CONTIG   0x01    /* 要求连续物理内存 */
-#define AF_ALIGN4K  0x02    /* 4KB 对齐 */
-#define AF_ZERO     0x04    /* 清零内存 */
-#define AF_LOW      0x08    /* 低端内存 (<16MB，用于 DMA) */
+#define PAF_CLEAR       0x01    /* 清零物理内存 */
+#define PAF_CONTIG      0x02    /* 要求物理连续（定义但未使用） */
+#define PAF_ALIGN64K    0x04    /* 64KB 对齐 */
+#define PAF_LOWER16MB   0x08    /* 低端内存 (<16MB，用于 DMA) */
+#define PAF_LOWER1MB    0x10    /* 1MB 以下内存 */
+#define PAF_ALIGN16K    0x40    /* 16KB 对齐 */
 ```
 
 **使用场景**
 
-| 调用者 | 用途 | 典型大小 |
-|--------|------|----------|
-| **PM** | fork 时分配新进程的页表和栈 | 几 clicks |
-| **VM** | 页表、缓存、内部结构 | 按需 |
-| **Kernel** | DMA 缓冲区 | 连续、低端内存 |
-| **Drivers** | 设备缓冲区 | 连续内存 |
+| 调用者         | 用途               | 典型大小     |
+| ----------- | ---------------- | -------- |
+| **PM**      | fork 时分配新进程的页表和栈 | 几 clicks |
+| **VM**      | 页表、缓存、内部结构       | 按需       |
+| **Kernel**  | DMA 缓冲区          | 连续、低端内存  |
+| **Drivers** | 设备缓冲区            | 连续内存     |
 
 ### 1.4 物理内存管理架构
 
@@ -153,9 +161,11 @@ int memstats(struct vm_stats *stats);
 **图解**：
 
 - **空闲页位图**：核心数据结构，1 bit 表示 1 个物理页的空闲/占用状态
-- **保留页队列**：内核占用的物理内存区域，不会被分配给用户进程
+- **保留页队列**：预分配备用页（spare pages），用于页表操作等关键路径，确保内存紧张时也能成功分配。
 - **内存统计**：记录总页数、空闲页数、最低可用地址等信息
 - **物理页分配器**：基于位图进行分配，支持分配连续物理页（DMA 等场景需要）
+
+> **Rust 实现状态**：保留页队列在 Rust 版本中暂未实现，这是待补充的重要功能（见 §3.7）。 TODO
 
 **注意**：普通进程内存不需要物理连续（通过页表映射即可），只有 DMA、大页等特殊场景才需要连续物理页。
 
@@ -202,6 +212,7 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages) {
 ```
 
 **调用链**：
+
 ```
 PM.do_fork() 
     └── vm_fork() [IPC]
@@ -213,11 +224,12 @@ VM.do_fork()
 ```
 
 **关键点**：
+
 - PM **不直接调用** `alloc_mem`，只通过 IPC 请求 VM
 - PM **看不到物理地址**，物理内存管理完全由 VM 负责
 - `alloc_mem()` 是 VM 内部函数，定义在 `vm/alloc.c`
 
----
+***
 
 ## 2. C 源码分析
 
@@ -243,9 +255,10 @@ static int free_page_cache_size = 0;
 static phys_bytes mem_low, mem_high;
 ```
 
-#### 2.0.1 空闲页位图 (free_pages_bitmap)
+#### 2.0.1 空闲页位图 (free\_pages\_bitmap)
 
 **结构**：
+
 ```
 bitchunk_t = uint32_t（32 位）
 每个 chunk 管理 32 个物理页
@@ -254,12 +267,14 @@ bitchunk_t = uint32_t（32 位）
 ```
 
 **含义**：
-| 位值 | 含义 |
-|------|------|
-| 1 | 物理页空闲，可分配 |
-| 0 | 物理页已用，不可分配 |
+
+| 位值 | 含义         |
+| -- | ---------- |
+| 1  | 物理页空闲，可分配  |
+| 0  | 物理页已用，不可分配 |
 
 **操作宏**：
+
 ```c
 #define page_isfree(i) GET_BIT(free_pages_bitmap, i)   // 检查页 i 是否空闲
 SET_BIT(free_pages_bitmap, i)   // 标记为空闲
@@ -267,15 +282,17 @@ UNSET_BIT(free_pages_bitmap, i) // 标记为已用
 ```
 
 **位图示例**：
+
 ```
 物理页号:    0    1    2    3    4    5    6    7    ...
 位图位:      1    1    0    0    0    1    1    1   ...
 含义:       空闲 空闲 已用 已用 已用 空闲 空闲 空闲
 ```
 
-#### 2.0.2 单页缓存 (free_page_cache)
+#### 2.0.2 单页缓存 (free\_page\_cache)
 
 **结构**：
+
 ```c
 static int free_page_cache[PAGE_CACHE_MAX];  // 页号数组
 static int free_page_cache_size = 0;          // 当前缓存数量
@@ -284,6 +301,7 @@ static int free_page_cache_size = 0;          // 当前缓存数量
 **目的**：加速单页分配，避免频繁扫描位图。
 
 **工作原理**：
+
 ```c
 // 释放单页时:
   if (free_page_cache_size < PAGE_CACHE_MAX) {
@@ -327,7 +345,7 @@ static int free_page_cache_size = 0;          // 当前缓存数量
 
 ### 2.1 物理内存分配
 
-#### 2.1.1 alloc_mem - 分配物理内存
+#### 2.1.1 alloc\_mem - 分配物理内存
 
 **函数签名**
 
@@ -338,7 +356,7 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags);
 
 **功能说明**
 
-`alloc_mem` 是 VM 提供的核心物理内存分配函数，使用**首次适应（First Fit）**算法从空闲内存列表中分配连续的物理内存块。
+`alloc_mem` 是 VM 提供的核心物理内存分配函数，使用\*\*首次适应（First Fit）\*\*算法从空闲内存列表中分配连续的物理内存块。
 
 - **输入**: `clicks` - 请求的内存大小（以 click 为单位，1 click = 4KB）
 - **输入**: `memflags` - 分配标志（见下方）
@@ -357,11 +375,13 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags);
 ```
 
 > **历史注记**：Minix3 的 `alloc_mem()` **总是分配物理连续内存**。这是历史遗留设计：
+>
 > - Minix 1/2 运行在 8086/80286 上，没有分页 MMU，必须物理连续
 > - Minix3 虽然运行在 386+ 有 MMU，但 `alloc_mem` 保留了连续分配语义以简化实现
 > - `PAF_CONTIG` 定义了但在 `alloc_mem` 层是 no-op，说明曾有计划在分配器层区分"连续"和"非连续"
 >
 > **但实际上 Minix3 在上层 region 系统实现了非连续分配**：
+>
 > - `mem_type_anon`（默认路径）：**按需分配（lazy）**，没有 `ev_new` handler，region 创建时不预分配物理内存。进程首次访问某页时触发 pagefault → `map_pf()` → `anon_pagefault()` → `alloc_mem(1, ...)` 分配 1 页并映射。N 页虚拟区域经过 N 次独立 pagefault 后得到 N 个物理上不连续的页——因为每次分配的是当时空闲的任意一页，自然不会连续。heap、stack、普通 mmap 都走这条路。若指定 `MAP_PREALLOC`（不含 `MAP_CONTIG`），则 region 创建后立即逐页触发 pagefault 预分配，物理页仍然不连续。
 > - `mem_type_anon_contig`（特殊路径）：**预分配（eager）**，有 `ev_new` handler，在 region 创建时（`map_page_region` → `ev_new` → `anon_contig_new`）一次调 `alloc_mem(N, ...)` 分配 N 页连续物理内存并全部映射。仅在 `mmap` 时指定 `MAP_CONTIG | MAP_PREALLOC` 才使用（单独 `MAP_CONTIG` 会被拒绝，返回 EINVAL）。且不能 fork、不能 resize、不能 pagefault。
 >   - 不能 fork：`ev_reference` handler 返回 ENOMEM（打印 "cannot fork with physically contig memory"），但 `map_copy_region` 未检查该返回值，因此 fork 实际上仍会继续，只是 contig 区域在子进程中引用关系不正确——Minix3 的已知限制
@@ -373,11 +393,12 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags);
 **实现逻辑**
 
 ```c
+// alloc_mem() - 对齐处理 + 调用 alloc_pages()
 phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 {
     phys_clicks mem = NO_MEM, align_clicks = 0;
 
-    // 1. 处理对齐要求
+    // 1. 处理对齐要求：预分配额外空间
     if(memflags & PAF_ALIGN64K) {
         align_clicks = (64 * 1024) / CLICK_SIZE;  // 16 clicks
         clicks += align_clicks;
@@ -394,7 +415,7 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
     if(mem == NO_MEM)
         return mem;
 
-    // 3. 调整对齐（如果请求了对齐）
+    // 3. 调整对齐：释放前缀部分
     if(align_clicks) {
         phys_clicks o = mem % align_clicks;
         if(o > 0) {
@@ -404,10 +425,26 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
         }
     }
 
-    // 4. 清零内存（如果请求）
+    // 注意：PAF_CLEAR 在 alloc_pages() 中处理，不在这里
+    return mem;
+}
+
+// alloc_pages() - 实际分配 + 清零处理
+static phys_bytes alloc_pages(int pages, int memflags)
+{
+    // ... 位图扫描和分配 ...
+
+    // 标记页为已用
+    for(i = mem; i < mem + pages; i++) {
+        UNSET_BIT(free_pages_bitmap, i);
+    }
+
+    // PAF_CLEAR 在这里处理
     if(memflags & PAF_CLEAR) {
-        // 使用 sys_memset 清零物理内存
-        sys_memset(CLICK2ABS(mem), 0, CLICK_SIZE * clicks);
+        int s;
+        if ((s= sys_memset(NONE, 0, CLICK_SIZE*mem,
+            VM_PAGE_SIZE*pages)) != OK) 
+            panic("alloc_mem: sys_memset failed: %d", s);
     }
 
     return mem;
@@ -419,7 +456,8 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 1. **首次适应算法**: 从空闲列表中找到第一个足够大的块
 2. **对齐处理**: 先分配额外空间，再释放前缀以达到对齐要求
 3. **缓存回收**: 分配失败时尝试回收页缓存后重试
-4. **物理地址**: 返回的是 click 编号，需要 `CLICK2ABS()` 转换为字节地址
+4. **清零处理**: 在 `alloc_pages()` 中通过 `sys_memset()` 实现
+5. **物理地址**: 返回的是 click 编号，需要 `CLICK2ABS()` 转换为字节地址
 
 **使用示例**
 
@@ -460,7 +498,7 @@ Minix3 使用首次适应算法从空闲页位图中分配物理内存：
 分配 4 页：找到第一个足够大的块（页 7-11），分配页 7-10
 ```
 
-**核心实现：alloc_pages**
+**核心实现：alloc\_pages**
 
 ```c
 // minix3/minix/servers/vm/alloc.c
@@ -515,6 +553,14 @@ static phys_bytes alloc_pages(int pages, int memflags)
         UNSET_BIT(free_pages_bitmap, i);
     }
 
+    // 7. 清零内存（如果请求 PAF_CLEAR）
+    if(memflags & PAF_CLEAR) {
+        int s;
+        if ((s= sys_memset(NONE, 0, CLICK_SIZE*mem,
+            VM_PAGE_SIZE*pages)) != OK) 
+            panic("alloc_mem: sys_memset failed: %d", s);
+    }
+
     return mem;
 }
 ```
@@ -561,12 +607,12 @@ static int findbit(int low, int startscan, int pages, int memflags, int *len)
 
 **内存碎片管理**
 
-| 策略 | 说明 |
-|------|------|
-| **页缓存** | 单页分配优先从缓存获取，减少位图扫描 |
-| **循环扫描** | `lastscan` 记住上次位置，避免每次都从高位扫描 |
-| **块跳过优化** | `findbit` 中跳过整个空位图块，加速扫描 |
-| **连续分配优先** | 尽量从上次位置附近分配，保持大块连续 |
+| 策略         | 说明                           |
+| ---------- | ---------------------------- |
+| **页缓存**    | 单页分配优先从缓存获取，减少位图扫描           |
+| **循环扫描**   | `lastscan` 记住上次位置，避免每次都从高位扫描 |
+| **块跳过优化**  | `findbit` 中跳过整个空位图块，加速扫描     |
+| **连续分配优先** | 尽量从上次位置附近分配，保持大块连续           |
 
 **碎片问题**
 
@@ -587,15 +633,15 @@ static int findbit(int low, int startscan, int pages, int memflags, int *len)
 
 **性能特征**
 
-| 操作 | 时间复杂度 | 说明 |
-|------|-----------|------|
-| 单页分配 | O(1) | 优先从缓存获取 |
-| 多页分配 | O(n) | n = 物理页数，最坏情况扫描整个位图 |
-| 释放 | O(1) | 标记位图位，可能加入缓存 |
+| 操作   | 时间复杂度 | 说明                  |
+| ---- | ----- | ------------------- |
+| 单页分配 | O(1)  | 优先从缓存获取             |
+| 多页分配 | O(n)  | n = 物理页数，最坏情况扫描整个位图 |
+| 释放   | O(1)  | 标记位图位，可能加入缓存        |
 
 ### 2.2 物理内存释放
 
-#### 2.2.1 free_mem - 释放物理内存
+#### 2.2.1 free\_mem - 释放物理内存
 
 **函数签名**
 
@@ -628,7 +674,7 @@ void free_mem(phys_clicks base, phys_clicks clicks)
 }
 ```
 
-**核心实现：free_pages**
+**核心实现：free\_pages**
 
 ```c
 static void free_pages(phys_bytes pageno, int npages)
@@ -691,30 +737,150 @@ free_mem(mem, 4);
 3. **重复释放**: 系统不检测重复释放，可能导致位图不一致
 4. **无效地址**: 释放未分配的地址可能导致位图损坏
 
-### 2.3 内存统计与资源限制
+### 2.3 保留页队列（Reserved Queue）
 
-#### 2.3.1 系统级内存统计
+> **核心目的**：预分配备用页，确保页表操作等关键路径在内存紧张时也能成功。
 
-**total_pages**: 系统总物理内存页数
+#### 2.3.1 为什么需要保留页队列？
+
+**问题场景**：
+
+```
+fork() 系统调用
+    ↓
+需要为新进程分配页表
+    ↓
+调用 alloc_mem() 分配物理页
+    ↓
+如果系统内存不足，alloc_mem() 返回 NO_MEM
+    ↓
+fork() 失败 → 进程无法创建
+```
+
+**关键问题**：页表操作是系统关键路径，不能因为内存不足而失败。否则可能导致：
+
+- 进程无法创建
+- 缺页处理失败
+- 系统死锁
+
+**解决方案**：预先保留一部分物理页（spare pages），专门用于这些关键操作。
+
+#### 2.3.2 数据结构
+
+```c
+// minix3/minix/servers/vm/alloc.c
+
+#define MAXRESERVEDPAGES  300   // 每个队列最大页数
+#define MAXRESERVEDQUEUES  15   // 最大队列数
+
+static struct reserved_pages {
+    struct reserved_pages *next;   // 链表连接
+    int max_available;             // 队列容量
+    int npages;                    // 每槽页数（通常为1）
+    int mappedin;                  // 是否需要映射到内核地址空间
+    int n_available;               // 当前可用槽数
+    int allocflags;                // 分配标志
+    struct reserved_pageslot {
+        phys_bytes phys;           // 物理地址
+        void *vir;                 // 虚拟地址（如果 mappedin）
+    } slots[MAXRESERVEDPAGES];
+    u32_t magic;                   // 魔数用于验证
+} reservedqueues[MAXRESERVEDQUEUES];
+```
+
+#### 2.3.3 API
+
+| 函数                                              | 说明                      |
+| ----------------------------------------------- | ----------------------- |
+| `reservedqueue_new(max, npages, mapped, flags)` | 创建保留队列                  |
+| `reservedqueue_alloc(queue, &phys, &vir)`       | 从队列分配一槽                 |
+| `reservedqueue_add(queue, vir, phys)`           | 向队列添加一槽                 |
+| `reservedqueue_fill(queue)`                     | 自动填充队列（内部调用 alloc\_mem） |
+
+#### 2.3.4 使用场景：spare pages
+
+**初始化**（`pagetable.c:pt_init()`）：
+
+```c
+#define SPAREPAGES 200        // i386: 200 个备用页
+#define STATIC_SPAREPAGES 190 // 静态预分配 190 个
+
+// 创建保留队列
+spare_pagequeue = reservedqueue_new(SPAREPAGES, 1, 1, 0);
+
+// 添加静态预分配的页
+for(s = 0; s < STATIC_SPAREPAGES; s++) {
+    void *v = (void *) (sparepages_mem + s*VM_PAGE_SIZE);
+    phys_bytes ph;
+    sys_umap(SELF, VM_D, (vir_bytes)v, VM_PAGE_SIZE, &ph);
+    reservedqueue_add(spare_pagequeue, v, ph);
+}
+```
+
+**使用**（`pagetable.c:vm_getsparepage()`）：
+
+```c
+static void *vm_getsparepage(phys_bytes *phys)
+{
+    void *ptr;
+    if(reservedqueue_alloc(spare_pagequeue, phys, &ptr) != OK) {
+        return NULL;  // 保留页也用完了，系统处于极端状态
+    }
+    return ptr;
+}
+```
+
+**补充机制**：
+
+当保留页被消耗后，系统会在后台自动补充：
+
+```c
+// alloc.c: 检查并补充缺失的 spare pages
+for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
+    reservedqueue_fill(rq);  // 调用 alloc_mem 补充
+}
+```
+
+#### 2.3.5 设计要点
+
+| 要点       | 说明                         |
+| -------- | -------------------------- |
+| **预分配**  | 启动时分配，避免运行时竞争              |
+| **映射**   | 页表操作需要虚拟地址，所以 `mappedin=1` |
+| **容量**   | 200 页（约 800KB），足够应对突发需求    |
+| **自动补充** | 后台任务补充消耗的备用页               |
+
+> **Rust 实现状态**：当前 Rust 版本未实现保留页队列。这是待补充的重要功能，否则在内存紧张时页表操作可能失败。
+
+### 2.4 内存统计与资源限制
+
+#### 2.4.1 系统级内存统计
+
+**total\_pages**: 系统总物理内存页数
+
 - 在 VM 初始化时从内核获取
 - 用于计算内存使用率和内存压力
 
 **内存压力检测**:
+
 - 当空闲内存低于阈值时，触发内存回收
 - 可能涉及交换（swapping）或 OOM 处理
 
-#### 2.3.2 进程级内存统计 (vm_total / vm_total_max)
+#### 2.4.2 进程级内存统计 (vm\_total / vm\_total\_max)
 
-**vm_total**: 当前进程已分配的虚拟内存总量
+**vm\_total**: 当前进程已分配的虚拟内存总量
+
 - 单位: bytes
 - 更新时机: 分配/释放虚拟区域时
 
-**vm_total_max**: 历史最大虚拟内存使用量（high water mark）
+**vm\_total\_max**: 历史最大虚拟内存使用量（high water mark）
+
 - 记录进程运行期间 `vm_total` 达到的最大值
 - 用于 `getrusage()` 系统调用的 `ru_maxrss` 字段
 - **不是资源限制**，只是统计信息
 
 **更新逻辑**（见 `region.c`）:
+
 ```c
 // 分配新页时
 proc->vm_total += VM_PAGE_SIZE;
@@ -727,16 +893,18 @@ proc->vm_total -= VM_PAGE_SIZE;
 ```
 
 **getrusage 返回**:
+
 ```c
 r_usage.ru_maxrss = vmp->vm_total_max / 1024L;  // 单位 KB
 ```
 
 **fork 时的处理**:
+
 - 子进程继承父进程的 `vm_total`
 - `vm_total_max` 初始化为 `vm_total`（因为子进程初始内存就是当前值）
 - 子进程后续独立维护自己的统计
 
----
+***
 
 ## 3. Rust 设计决策
 
@@ -755,430 +923,941 @@ r_usage.ru_maxrss = vmp->vm_total_max / 1024L;  // 单位 KB
   - 剩余空闲区间更新
 ```
 
-**核心操作只有两个**（与 Minix3 API 精确对应）：
+**核心操作**（与 Minix3 alloc.c API 精确对应）：
 
-| 操作 | Minix3 C | 语义 |
-|------|----------|------|
-| 分配 | `alloc_mem(clicks, flags)` | 找到 k 个连续空闲页，标记为已用 |
-| 释放 | `free_mem(base, clicks)` | 将 k 个连续页标记为空闲 |
+| 操作 | Minix3 C                   | 语义                    | trait              |
+| -- | -------------------------- | --------------------- | ------------------ |
+| 分配 | `alloc_mem(clicks, flags)` | 找到 k 个连续空闲页，标记为已用     | `PhysAllocator`    |
+| 释放 | `free_mem(base, clicks)`   | 将 k 个连续页标记为空闲         | `PhysAllocator`    |
+| 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `PhysAllocatorStats` |
+| 总量 | `total_pages` 全局变量        | 系统物理页总数（初始化时设定，不再变化）  | `PhysAllocator`    |
+
+> **设计说明**：Minix3 的 `memstats()` 通过 3 个指针参数隐式返回结果，这是 C 语言常见的多返回值模式。Rust 中用命名结构体 `PhysMemStats` 替代，字段语义一目了然。分配/释放是核心路径（高频调用），查询是诊断路径（低频调用），因此拆分为两个 trait，职责清晰。
 
 **约束条件**（通过 `flags` 参数传递）：
 
-| 约束 | flag | 说明 |
-|------|------|------|
-| 对齐 | `ALIGN64K` / `ALIGN16K` | 起始地址必须对齐到指定边界 |
-| 地址范围 | `LOWER16MB` / `LOWER1MB` | 限制在低端内存（DMA 需求） |
-| 清零 | `CLEAR` | 分配后清零物理页 |
-| 连续 | `CONTIG` | 要求物理连续（bitmap 默认行为） |
+| 约束   | flag                     | 说明                  |
+| ---- | ------------------------ | ------------------- |
+| 对齐   | `ALIGN64K` / `ALIGN16K`  | 起始地址必须对齐到指定边界       |
+| 地址范围 | `LOWER16MB` / `LOWER1MB` | 限制在低端内存（DMA 需求）     |
+| 清零   | `CLEAR`                  | 分配后清零物理页            |
+| 连续   | `CONTIG`                 | 要求物理连续（bitmap 默认行为） |
 
 **抽象为 trait**：
 
 ```rust
-pub(crate) trait PhysMemAlloc {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysAddr, AllocError>;
-    fn free_mem(&mut self, base: PhysAddr, clicks: usize);
+pub trait PhysAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError>;
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize);
+    fn total_count(&self) -> usize;
+}
+
+pub trait PhysAllocatorStats {
+    fn memstats(&self) -> PhysMemStats;
 }
 ```
 
-这个 trait 与 Minix3 的 `alloc_mem()` / `free_mem()` 精确对应，不添加额外方法。三种实现（Bitmap / SegmentTree / Buddy）共享同一接口，可以互换。
+### 3.1 为什么需要 Early Heap？
 
-### 3.1 PhysAddr — 物理地址 newtype
+#### 3.1.1 问题建模需要元数据存储
 
-**设计目标**: 类型安全地区分物理地址和虚拟地址，防止混用。
+要实现上述问题建模，需要数据结构来跟踪空闲区间：
+
+| 分配器        | 元数据                                                               |
+| ---------- | ----------------------------------------------------------------- |
+| **Bitmap** | `bitmap: [u64]` — 1 bit = 1 页                                     |
+| **Buddy**  | `free_list_heads: [u32]`, `page_next: [u32]`, `page_orders: [u8]` |
+| **线段树**    | `nodes: [SegmentNode]` — 每节点记录区间信息                                |
+
+**核心问题**：这些元数据存储在哪？
+
+#### 3.1.2 Minix3 的方案：静态 BSS 数组
+
+Minix3 使用静态 BSS 数组存储 bitmap：
+
+```c
+// minix3/minix/servers/vm/alloc.c
+#define NUMBER_PHYSICAL_PAGES (int)(0x100000000ULL/VM_PAGE_SIZE)  // 4GB / 4KB = 1M 页
+static bitchunk_t free_pages_bitmap[PAGE_BITMAP_CHUNKS];          // ~128KB
+```
+
+**为什么可行？**
+
+| 维度        | Minix3 (32位)   | 说明         |
+| --------- | -------------- | ---------- |
+| 物理内存上限    | 4GB            | 32 位地址空间限制 |
+| Bitmap 大小 | 128KB          | 固定，可接受     |
+| BSS 段     | 启动时由 kernel 清零 | 无需动态分配     |
+
+**Minix3 的技巧**：直接按**虚拟地址空间大小**（4GB）分配 bitmap，而非实际物理内存大小。因为 32 位系统物理内存不可能超过 4GB（虚拟地址空间限制），所以无论实际物理内存是 512MB 还是 4GB，bitmap 统一 128KB 都能覆盖。
+
+#### 3.1.3 64 位系统的困境
+
+| 维度        | 64 位系统        | 问题           |
+| --------- | ------------- | ------------ |
+| 物理内存      | 8GB \~ 256GB+ | 变化范围大，无法静态预留 |
+| Bitmap 大小 | 256KB \~ 8MB+ | 随物理内存线性增长    |
+| BSS 段     | 大小固定          | 无法适应不同硬件     |
+
+**示例**：
+
+| 物理内存   | Bitmap 大小 | Buddy 元数据 |
+| ------ | --------- | --------- |
+| 4 GB   | 128 KB    | 5 MB      |
+| 64 GB  | 2 MB      | 80 MB     |
+| 256 GB | 8 MB      | 320 MB    |
+
+**结论**：无法预先确定静态数组大小，必须动态分配。
+
+#### 3.1.4 循环依赖问题
+
+动态分配需要堆，但：
+
+```
+物理分配器 → 管理所有物理页
+    ↓
+堆分配器 (GlobalAlloc) → 需要物理页
+    ↓
+物理分配器 → 需要元数据
+    ↓
+堆分配器 → 需要堆来分配元数据
+    ↓
+循环依赖！
+```
+
+> 💡 **为什么不能直接用 `Vec` 或 `Box`？** 见 [附录 A：为什么物理分配器不能使用堆](#附录-a为什么物理分配器不能使用堆)。
+
+#### 3.1.5 解决方案：Early Heap
+
+**核心思想**：在物理内存管理初始化**之前**，预留一块物理页，专门用于存储元数据。
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    初始化流程                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  阶段 1: 获取物理内存信息（从 kernel IPC）                   │
+│  阶段 2: 计算元数据大小                                      │
+│  阶段 3: 切出 early_heap 物理页  ← 预留，不被物理分配器管理   │
+│  阶段 4: 初始化 early_heap (bump allocator)                 │
+│  阶段 5: 初始化物理分配器（元数据在 early_heap）             │
+│  阶段 6: 创建永久堆                                          │
+│  阶段 7: 切换到永久堆                                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键设计**：
+
+- Early heap 是 bump allocator，极简实现
+- 物理分配器**不管理** early heap 的物理页
+- 元数据类型为 `&'static mut [T]`，生命周期为 `'static`
+
+**Early heap 存在的意义**：
+
+1. **为什么需要它**：预留物理页后，完全可以手写指针运算构建元数据，但这需要 unsafe、手动对齐、容易出错
+2. **它是什么**：一个封装好的 bump allocator，提供 `alloc_slice::<T>()` 方法，类型安全、自动对齐
+3. **生命周期**：初始化完成后不再增长，但分配出去的内存（`&'static mut [T]`）由物理分配器持有，继续使用
+
+| 方式 | 代码 | 难度 |
+|------|------|------|
+| **手写低级** | `let ptr = phys as *mut u64; ptr.write_bytes(0, n);` | unsafe、手动对齐、易错 |
+| **Early heap** | `let slice: &'static mut [u64] = early_heap.alloc_slice(n);` | 类型安全、自动对齐 |
+
+简言之：Early heap 不提供"新能力"，只是让低级编程更简单、更不容易出错。
+
+***
+
+## 4. Early Heap 设计
+
+### 4.1 设计目标
+
+| 目标        | 说明                       |
+| --------- | ------------------------ |
+| **极简实现**  | Bump allocator，只分配不释放    |
+| **无循环依赖** | 物理分配器不管理 early heap      |
+| **一次性使用** | 初始化完成后，early heap 不再增长   |
+| **类型安全**  | 提供 `alloc_slice<T>()` 方法 |
+
+### 4.2 EarlyHeap 实现
+
+**本质**：预留物理页 + 简单的 bump 指针运算 + 类型安全封装。
+
+```rust
+pub struct EarlyHeap {
+    start: *mut u8,
+    current: *mut u8,
+    end: *mut u8,
+}
+
+impl EarlyHeap {
+    pub fn init(&mut self, start: *mut u8, size: usize) {
+        self.start = start;
+        self.current = start;
+        self.end = unsafe { start.add(size) };
+    }
+    
+    pub fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        let size = count * core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        
+        let ptr = self.alloc_aligned(size, align);
+        unsafe {
+            core::slice::from_raw_parts_mut(ptr as *mut T, count)
+        }
+    }
+    
+    fn alloc_aligned(&mut self, size: usize, align: usize) -> *mut u8 {
+        let aligned = (self.current as usize + align - 1) & !(align - 1);
+        let new_current = aligned + size;
+        
+        if new_current > self.end as usize {
+            panic!("early heap exhausted");
+        }
+        
+        self.current = new_current as *mut u8;
+        aligned as *mut u8
+    }
+}
+```
+
+### 4.3 使用示例
+
+```rust
+// 初始化
+let mut early_heap = EarlyHeap::empty();
+early_heap.init(phys_addr, size);
+
+// 分配元数据
+let bitmap: &'static mut [u64] = early_heap.alloc_slice(1024);
+let heads: &'static mut [u32] = early_heap.alloc_slice(64);
+```
+
+### 4.4 Early Heap 物理页来源
+
+> **TODO**: 本节为设计草案，待内核启动流程实现后完善。
+
+#### 问题：物理内存大小不可预知
+
+64 位系统物理内存大小动态变化（16GB ~ 256GB+），元数据大小也随之变化：
+- 16GB 物理内存，Buddy 元数据约 19MB
+- 256GB 物理内存，Buddy 元数据约 305MB
+
+内核无法预知最终需要的元数据大小，因此无法一次性预留足够的 early heap。
+
+#### 解决方案：两阶段初始化 + 搬迁
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    VM 初始化流程                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  阶段 1: 内核加载 VM                                                         │
+│  ├── 分配 VM 代码/数据/BSS/栈                                               │
+│  └── 额外预留 early_heap（2MB，足够管理 ~512MB 物理内存）                     │
+│                                                                             │
+│  阶段 2: VM 启动                                                             │
+│  ├── early_heap 已被内核映射到 VM 地址空间                                   │
+│  └── early_heap 不在 memmap 中（不属于物理分配器管理范围）                    │
+│                                                                             │
+│  阶段 3: 初始化物理分配器（临时）                                             │
+│  ├── 从 memmap 获取可用内存信息                                             │
+│  ├── 使用 early_heap 分配临时元数据                                         │
+│  └── 物理分配器管理 memmap 中的内存                                         │
+│                                                                             │
+│  阶段 4: 搬迁元数据                                                          │
+│  ├── 计算最终元数据大小（PhysAllocType::metadata_size）                      │
+│  ├── 从物理分配器分配新空间                                                  │
+│  ├── 复制元数据到新空间                                                      │
+│  ├── 更新分配器内部指针                                                      │
+│  └── early_heap 物理页归还给物理分配器                                       │
+│                                                                             │
+│  阶段 5: VM 完全初始化，管理所有物理内存                                       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Minix3 对比
+
+| 方面 | Minix3 | rs 版本 |
+|------|--------|---------|
+| **元数据存储** | 静态 BSS（固定 4GB 上限） | 动态分配 + 搬迁 |
+| **物理页来源** | 内核从 memmap 末尾分配，不在 memmap 中 | 同样由内核预留 |
+| **是否搬迁** | 否（BSS 生命周期 = 进程生命周期） | 是（适应动态内存大小） |
+
+#### 搬迁实现要点
+
+搬迁需要更新元数据指针，因此分配器内部使用**裸指针**而非 `&'static mut [T]`：
+
+```rust
+pub struct BuddyAllocator {
+    free_lists: *mut u32,     // 裸指针，支持搬迁时更新
+    page_next: *mut u32,
+    page_orders: *mut u8,
+    // ...
+}
+
+impl BuddyAllocator {
+    pub fn relocate(&mut self, new_base: *mut u8, new_size: usize) -> Result<()> {
+        // 复制数据到新位置
+        // 更新内部指针
+        // 返回旧内存给物理分配器
+    }
+}
+```
+
+**搬迁安全性**：VM 初始化期间持有 Big Kernel Lock，相当于 stop the world，搬迁风险可控。
+
+***
+
+## 5. 物理分配器实现
+
+### 5.1 Trait 定义
+
+trait 定义见 §3 核心操作。此处补充 `PhysMemStats` 和 `PageAllocFlags` 的完整定义：
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysMemStats {
+    pub free_nodes: usize,    // memstats.nodes: number of free blocks
+    pub free_pages: usize,    // memstats.pages: total free pages
+    pub largest_free: usize,  // memstats.largest: largest contiguous free block
+}
+
+bitflags::bitflags! {
+    pub struct PageAllocFlags: u32 {
+        const CLEAR = 0x01;       // 清零物理内存
+        const CONTIG = 0x02;      // 要求物理连续
+        const ALIGN64K = 0x04;    // 64KB 对齐
+        const LOWER16MB = 0x08;   // 低端内存
+        const LOWER1MB = 0x10;    // 1MB 以下
+        const ALIGN16K = 0x40;    // 16KB 对齐
+    }
+}
+```
+
+### 5.2 三种实现方案
+
+如 §3.0 所述，物理内存分配的本质是**连续区间分配问题**——在空闲区间集合中找到满足约束的连续区间，标记为已用；释放时合并相邻空闲区间。对这个问题的求解，从朴素到精巧，有三种思路：
+
+| | 本质 | 与问题域的关系 |
+| -- | ---- | ---------- |
+| **Bitmap** | 朴素解法 | 对问题域无任何假设，暴力扫描 |
+| **线段树** | 标准解法 | 对问题域无约束，理论最优 O(log n) |
+| **Buddy** | 特化解法 | 对问题域施加约束（块大小必须 2^n），换取更好的性质 |
+
+Buddy 的约束——所有块大小必须是 2^n 且 2^n 对齐——让问题大幅简化：
+
+1. **合并规则极简**：线段树需维护 `left_free`/`right_free`/`max_free` 来判断任意区间能否合并；buddy 只需检查 `page ^ (1 << order)` 这一个地址的 buddy 是否空闲
+2. **空间复杂度降低**：线段树每节点 4 个 usize（32 字节），buddy 每页只需 1 字节（order + flag）
+3. **天然抗碎片**：2^n 约束 + buddy 合并保证外部碎片不可能累积——任何释放的块最终都能合并回大块
+
+代价是**内部碎片**：分配 3 页实际占用 4 页。这是特化的典型 trade-off：用精度换性质。严格来说，buddy 不是线段树的"特化"——它们的数据结构完全不同。更准确的说法是：**buddy 是对问题域施加约束后得到的特化算法**。约束让问题变简单了，所以不需要线段树那么重的数据结构，用轻得多的 SoA 数组就够了。线段树是**无约束区间分配**的标准解；buddy 是**2^n 约束区间分配**的最优解。这正是 buddy 成为内核广泛采用的物理内存算法的原因：**用精度换性质，用约束换简洁**。
+
+默认使用 **BitmapAllocator**（与 Minix3 一致），BuddyAllocator 作为替代方案，线段树仅作教学/实验用途。
+
+### 5.3 BitmapAllocator
+
+> 源码：`os/servers/vm/src/phys_mem/bitmap_alloc.rs`
+
+**核心设计**：使用位图管理物理页状态，与 Minix3 `alloc.c` 一致。每个 bit 代表一页，1 = 空闲，0 = 已用。
+
+```rust
+pub struct BitmapAllocator {
+    bitmap: &'static mut [u64],    // 1 bit = 1 页，1 = 空闲
+    total_pages: usize,
+    free_pages: usize,
+}
+```
+
+**初始化**：
+
+```rust
+pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    // 从 early heap 分配 bitmap，然后将 boot memory regions 标记为空闲
+}
+```
+
+**核心方法**：
+
+```rust
+fn alloc_pages(&mut self, pages: usize) -> Option<usize> {
+    // 首次适应，从高地址向低地址扫描（与 Minix3 一致）
+    // 内部调用 find_bit + mark_allocated
+}
+
+fn find_bit(&self, low: usize, start_scan: usize, pages: usize) -> Option<usize> {
+    // 反向扫描 bitmap，找连续 pages 个空闲位
+    // 利用 chunk 全零快速跳过已分配区域
+}
+
+fn free_pages_internal(&mut self, start_page: usize, num_pages: usize) {
+    // 逐位设置 bitmap = 1，更新 free_pages 计数
+}
+
+fn mark_allocated(&mut self, start_page: usize, num_pages: usize) {
+    // 逐位清除 bitmap = 0，更新 free_pages 计数
+}
+
+pub fn page_is_free(&self, page: usize) -> bool {
+    // 查询单页状态，对应 Minix3 GET_BIT(free_pages_bitmap, i)
+}
+
+fn memstats_internal(&self) -> (usize, usize, usize) {
+    // 扫描 bitmap 统计：(空闲块数, 空闲页数, 最大连续空闲块)
+}
+```
+
+**PhysAllocator / PhysAllocatorStats 实现**：
+
+```rust
+impl PhysAllocator for BitmapAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+        // 页缓存：单页分配且无地址限制时，优先从 page_cache 弹出（LIFO）
+        // 对齐：ALIGN64K/ALIGN16K → 多分配 align_clicks 页，释放前缀未对齐部分
+        // 低内存：LOWER16MB/LOWER1MB → 限制搜索范围 max_page（此时不用 page_cache）
+        // 重试：分配失败时调用 cache_freepages() 回收文件缓存页，再重试
+        // 清零：CLEAR → TODO（VM 仅拥有物理内存描述数据，无物理内存直接访问权，需内核 IPC sys_memset）
+        // 连续：CONTIG → no-op（bitmap 总是连续分配，与 Minix3 一致）
+    }
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+        // 将 PhysBytes 转为页号，调用 free_pages_internal
+        // free_pages_internal 同时将每页压入 page_cache（LIFO）
+    }
+    fn total_count(&self) -> usize;
+}
+
+impl PhysAllocatorStats for BitmapAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        // 内部调用 memstats_internal()
+    }
+}
+```
+
+**与 Minix3 的关键差异**：
+
+| 项目 | Minix3 C | Rust |
+| -- | -------- | ---- |
+| 存储位置 | 静态 BSS 数组 `free_pages_bitmap[]` | Early heap 分配的 `&'static mut [u64]` |
+| 大小 | 固定 128KB（4GB 地址空间） | 按需计算 `compute_memory_bounds()` |
+| chunk 类型 | `bitchunk_t` (u32) | `u64`（64-bit 更高效） |
+| 初始化 | `mem_init()` 写 BSS | `init()` 从 early heap 分配 |
+| page cache | `free_page_cache[]` + `cache_freepages()` | `page_cache: &'static mut [usize]` + `cache_freepages()` placeholder |
+| PAF_CLEAR | `sys_memset()` 清零 | TODO（需内核 IPC） |
+
+**辅助方法**：
+
+```rust
+pub fn total_memory(&self) -> usize       // total_pages * CLICK_SIZE
+pub fn free_memory(&self) -> usize        // free_pages * CLICK_SIZE
+pub fn is_under_pressure(&self) -> bool   // free_pages * 10 < total_pages
+```
+
+### 5.4 BuddyAllocator (SoA 结构)
+
+> 源码：`os/servers/vm/src/phys_mem/buddy_alloc.rs`
+
+**Buddy 系统简介**：Buddy 分配器是经典物理内存管理算法，Linux 内核亦采用此方案。核心思想是将内存按 2^n 划分：每个块大小为 2^order 页，两个大小相同、地址相邻的块互为"buddy"。分配时从匹配的 order 链表取块，不足则向上分裂大块（一分为二）；释放时检查 buddy 是否空闲，若空闲则自动合并，如此递归。优势是 O(log n) 分配/释放且天然抗外部碎片，代价是内部碎片（向上取整到 2^n）。
+
+**SoA 设计选择**：传统 buddy 实现使用指针链表（如 Linux 的 `struct free_area`），但指针在 Rust 中引入所有权和生命周期问题，且对 early heap 分配不友好。本实现采用 SoA（Structure of Arrays）结构——三个平行的数组替代指针链表，更 cache 友好，也更适合从 early heap 一次性分配。
+
+```rust
+const FLAG_ALLOCATED: u8 = 0x80;
+const ORDER_MASK: u8 = 0x7F;
+const ORDER_INVALID: u8 = 0xFF;
+
+pub struct BuddyAllocator {
+    free_list_heads: &'static mut [u32],  // 每个 order 的空闲链表头
+    page_next: &'static mut [u32],        // 每个页的 next 指针
+    page_orders: &'static mut [u8],       // 每个页的 order + 分配标志
+    total_pages: usize,
+    max_order: usize,
+    free_pages: usize,
+}
+```
+
+**初始化**：
+
+```rust
+pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    // 从 early heap 分配三个数组
+    // 将 boot memory regions 按 2^n 对齐切分后加入空闲链表
+}
+```
+
+**核心方法**：
+
+```rust
+fn alloc_block(&mut self, order: usize) -> Option<usize> {
+    // 从指定 order 的空闲链表分配；不足则向上分裂大块
+}
+
+fn add_free_region(&mut self, start: usize, count: usize) {
+    // 按 2^n 对齐切分后逐块调用 free_block_internal
+}
+
+fn free_block_internal(&mut self, page: usize, order: usize) {
+    // 释放单块，加入空闲链表，然后调用 try_merge 尝试合并
+}
+
+fn try_merge(&mut self, page: usize, mut order: usize) {
+    // 释放时严格检查五条件后合并 buddy：
+    //   1. buddy 在有效范围内
+    //   2. buddy 已进入 buddy 系统（非 ORDER_INVALID）
+    //   3. buddy 未被分配（无 FLAG_ALLOCATED）
+    //   4. buddy 的 order 匹配
+    //   5. buddy 在空闲链表中（remove_from_free_list 成功）
+}
+
+fn buddy_of(page: usize, order: usize) -> usize {
+    // 计算 buddy 地址：page ^ (1 << order)
+}
+
+fn push_free(&mut self, order: usize, page: usize) {
+    // 空闲链表头插法
+}
+
+fn pop_free(&mut self, order: usize) -> Option<usize> {
+    // 空闲链表弹出头部
+}
+
+fn remove_from_free_list(&mut self, order: usize, target: usize) -> bool {
+    // 从链表中移除指定节点（用于合并时摘除 buddy）
+}
+
+fn order_for_pages(pages: usize) -> usize {
+    // 计算所需最小 order（向上取整到 2^n）
+}
+
+pub fn largest_free(&self) -> usize {
+    // 从高 order 向低扫描，返回最大空闲块大小
+}
+```
+
+**PhysAllocator / PhysAllocatorStats 实现**：
+
+```rust
+impl PhysAllocator for BuddyAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+        // 对齐：ALIGN64K/ALIGN16K → 多分配后释放前缀未对齐部分
+        // 低内存：LOWER16MB/LOWER1MB → 分配后检查是否超出 max_page，超出则释放返回 Err
+        // 清零：CLEAR → TODO（需内核 IPC sys_memset）
+        // 连续：CONTIG → no-op（buddy 总是连续分配）
+        // 注意：buddy 向上取整到 2^n 页，可能浪费内存
+    }
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+        // 将 PhysBytes 转为页号，调用 add_free_region
+    }
+    fn total_count(&self) -> usize;
+}
+
+impl PhysAllocatorStats for BuddyAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        // free_nodes = 0（buddy 无此概念），largest_free 调用 self.largest_free()
+    }
+}
+```
+
+> **注意**：Buddy 分配器无法精确分配任意大小，总是向上取整到 2^n 页。`free_nodes` 填 0，因为 buddy 系统的"空闲块"概念与 bitmap 不同。
+
+**辅助方法**：
+
+```rust
+pub fn total_memory(&self) -> usize       // total_pages * CLICK_SIZE
+pub fn free_memory(&self) -> usize        // free_pages * CLICK_SIZE
+pub fn is_under_pressure(&self) -> bool   // free_pages * 10 < total_pages
+```
+
+### 5.5 SegmentTreeAllocator (实验性)
+
+> 源码：`os/servers/vm/src/phys_mem/segment_tree_alloc.rs`
+
+**线段树简介**：区间分配问题的标准数据结构。将 n 个页组织为完全二叉树，每个节点维护其区间的聚合信息（最大连续空闲、左端连续空闲、右端连续空闲），分配时从根向叶 O(log n) 定位，释放时自底向上 O(log n) 更新，实现精确的任意大小分配。本实现采用静态线段树（一次性分配全部节点），4GB 物理内存需约 64MB 元数据——是 bitmap 的 500 倍。若改用动态开点线段树（按需创建节点），初始仅一个区间时开销极小，但 early heap 要求按最坏情况预分配，动态方案无法适用。
+
+> **警告**：本分配器仅用于教学示意，不推荐生产使用，需启用 `segment_tree_alloc` feature。
+
+```rust
+#[cfg(feature = "segment_tree_alloc")]
+#[derive(Debug, Clone, Copy)]
+struct SegmentNode {
+    max_free: usize,    // 区间内最大连续空闲
+    left_free: usize,   // 左端连续空闲
+    right_free: usize,  // 右端连续空闲
+    len: usize,         // 区间长度
+}
+
+#[cfg(feature = "segment_tree_alloc")]
+pub struct SegmentTreeAllocator {
+    n: usize,
+    offset: usize,
+    tree: &'static mut [SegmentNode],
+    total_pages: usize,
+    free_pages: usize,
+}
+```
+
+**初始化**：
+
+```rust
+pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    // 从 early heap 分配 2 * next_power_of_two(n) 个节点
+    // 叶节点初始化后自底向上 merge()
+}
+```
+
+**核心方法**：
+
+```rust
+fn find_first_fit(&self, k: usize) -> Option<usize> {
+    // 从根节点向下查找 k 连续空闲页
+}
+
+fn find_in_subtree(&self, node: usize, k: usize) -> Option<usize> {
+    // 递归搜索：左子树 → 跨越中间 → 右子树
+}
+
+fn set_range(&mut self, start: usize, count: usize, free: bool) {
+    // 批量设置叶节点，然后 pull_up 更新祖先
+}
+
+fn pull_up(&mut self, mut idx: usize) {
+    // 自底向上重新 merge() 祖先节点
+}
+
+fn merge(left: SegmentNode, right: SegmentNode) -> SegmentNode {
+    // 合并两个子节点信息（关键操作）
+    // 计算跨越中间的连续空闲：left.right_free + right.left_free
+}
+
+pub fn page_is_free(&self, page: usize) -> bool {
+    // 查询单页状态
+}
+
+pub fn largest_free(&self) -> usize {
+    // 直接读 tree[1].max_free，O(1)
+}
+```
+
+**PhysAllocator / PhysAllocatorStats 实现**：
+
+```rust
+impl PhysAllocator for SegmentTreeAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+        // 对齐：ALIGN64K/ALIGN16K → 多分配后 set_range 释放前缀未对齐部分
+        // 低内存：LOWER16MB/LOWER1MB → 分配后检查是否超出 max_page
+        // 清零：CLEAR → TODO（需内核 IPC sys_memset）
+        // 连续：CONTIG → no-op（线段树总是连续分配）
+    }
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+        // 将 PhysBytes 转为页号，调用 set_range(..., true)
+    }
+    fn total_count(&self) -> usize;
+}
+
+impl PhysAllocatorStats for SegmentTreeAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        // free_nodes = 0, largest_free = tree[1].max_free
+    }
+}
+```
+
+**特点**：
+
+| 维度 | 说明 |
+| -- | -- |
+| 时间复杂度 | O(log n) 分配/释放 |
+| 精确分配 | ✅ 任意大小（优于 buddy） |
+| 内存开销 | ~8x（每节点 4 个 usize，树大小 2n） |
+| 推荐度 | ❌ 不推荐生产使用 |
+
+### 5.6 三种实现对比
+
+| 维度 | Bitmap | Buddy | 线段树 |
+| -- | ------ | ----- | ------ |
+| **数据结构** | 位图（1 bit/页） | 阶数分组 + 空闲链表 | 完全二叉树 |
+| **时间复杂度** | O(n) 扫描 | O(log n) | O(log n) |
+| **精确分配** | ✅ 任意大小 | ❌ 向上取整到 2^n | ✅ 任意大小 |
+| **抗碎片** | ❌ 无自动合并 | ✅ buddy 自动合并 | ❌ 无自动合并 |
+| **内存开销** | 1x | ~2x | ~8x |
+| **实现复杂度** | ⭐ 低 | ⭐⭐ 中 | ⭐⭐⭐⭐ 高 |
+| **Minix3 对应** | ✅ 原始实现 | ❌ 新增 | ❌ 新增 |
+| **推荐场景** | 小内存系统 | 通用场景 | 教学示意 |
+
+### 5.7 元数据大小计算
+
+根据内核传递的物理内存大小（`total_pages`），各分配器需计算元数据所需空间，以便从 early heap 中一次性分配。`PhysAllocType` 枚举提供了 `metadata_size` / `metadata_size_exact` 方法，在初始化 early heap 前即可预知所需空间：
+
+| 分配器        | 计算策略      | 原因                 |
+| ---------- | --------- | ------------------ |
+| **Bitmap** | 精确计算      | 1 bit = 1 页 + page_cache |
+| **Buddy**  | 精确计算 | 每页固定 5 字节（page_next × 4 + page_orders × 1）+ 链表头 |
+| **线段树** | 精确计算 | 静态线段树已按最坏情况展开，大小完全确定 |
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhysAllocType {
+    Bitmap,
+    Buddy,
+    SegmentTree,
+}
+
+impl PhysAllocType {
+    pub fn metadata_size(&self, total_pages: usize) -> usize {
+        let exact = self.metadata_size_exact(total_pages);
+        (exact + CLICK_SIZE - 1) & !(CLICK_SIZE - 1)  // page-align
+    }
+
+    pub fn metadata_size_exact(&self, total_pages: usize) -> usize {
+        match self {
+            PhysAllocType::Bitmap => {
+                let bitmap_chunks = (total_pages + 63) / 64;
+                bitmap_chunks * size_of::<u64>()       // 1 bit per page
+                    + 10000 * size_of::<usize>()       // page_cache
+            }
+            PhysAllocType::Buddy => {
+                let max_order = if total_pages == 0 { 0 }
+                    else { total_pages.next_power_of_two().trailing_zeros() as usize };
+                (max_order + 1) * size_of::<u32>()   // free_list_heads
+                + total_pages * size_of::<u32>()      // page_next
+                + total_pages * size_of::<u8>()       // page_orders
+            }
+            PhysAllocType::SegmentTree => {
+                let offset = if total_pages == 0 { 1 }
+                    else { total_pages.next_power_of_two() };
+                let tree_size = if total_pages > 0 { 2 * offset } else { 2 };
+                tree_size * size_of::<SegmentNode>()
+            }
+        }
+    }
+}
+```
+
+**元数据大小对比**（64 位系统，含 page_cache）：
+
+| 物理内存 | total_pages | Bitmap | Buddy | 线段树 | Buddy 占比 |
+| -- | ----------- | ------ | ----- | ------ | ---------- |
+| 4 GB | 1M | ~206 KB | ~4.8 MB | ~64 MB | 0.12% |
+| 16 GB | 4M | ~590 KB | ~19 MB | ~256 MB | 0.12% |
+| 64 GB | 16M | ~2.1 MB | ~76 MB | ~1 GB | 0.12% |
+| 256 GB | 64M | ~8.1 MB | ~305 MB | ~4 GB | 0.12% |
+
+**结论**：
+
+- Bitmap：每页 1 bit + 固定 80 KB page_cache，开销最小
+- Buddy：每页 5 字节（page_next × 4 + page_orders × 1）+ 链表头，占比约 0.12%
+- 线段树：每页约 64 字节（SegmentNode × 2 节点），开销过大，仅教学示意
+
+***
+
+## 6. 辅助类型
+
+### 6.1 PhysBytes — 物理地址 newtype
+
+对应 Minix3 的 `phys_bytes` 类型（`typedef u32`），Rust 版本扩展为 `u64` 以支持 64 位地址空间：
 
 ```rust
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct PhysAddr(u64);
+pub struct PhysBytes(u64);
 
-impl PhysAddr {
-    pub(crate) const fn new(addr: u64) -> Self { PhysAddr(addr) }
-    pub(crate) const fn as_u64(&self) -> u64 { self.0 }
-    pub(crate) const fn as_usize(&self) -> usize { self.0 as usize }
-    pub(crate) fn from_page_index(idx: usize) -> Self {
-        PhysAddr((idx as u64) * CLICK_SIZE as u64)
+impl PhysBytes {
+    pub const fn new(addr: u64) -> Self { PhysBytes(addr) }
+    pub const fn as_u64(&self) -> u64 { self.0 }
+    pub fn from_page_index(idx: usize) -> Self {
+        PhysBytes((idx as u64) * PAGE_SIZE as u64)
     }
-    pub(crate) fn page_index(&self) -> usize {
-        (self.0 as usize) / CLICK_SIZE
-    }
-    pub(crate) const fn add(&self, offset: usize) -> Self {
-        PhysAddr(self.0 + offset as u64)
+    pub fn page_index(&self) -> usize {
+        (self.0 as usize) / PAGE_SIZE
     }
 }
 ```
 
-**与 Minix3 C 的对比**:
+**与 Minix3 C 的对比**：
 
-| Minix3 C | Rust |
-|----------|------|
-| `phys_bytes` (typedef u32) | `PhysAddr(u64)` newtype |
-| `NO_MEM` sentinel (0) | `Option<PhysAddr>` (None = 分配失败) |
-| `CLICK2ABS(v)` 宏 | `PhysAddr::from_page_index(idx)` |
-| `ABS2CLICK(a)` 宏 | `addr.page_index()` |
+| Minix3 C                   | Rust                             |
+| -------------------------- | -------------------------------- |
+| `phys_bytes` (typedef u32) | `PhysBytes(u64)` newtype          |
+| `NO_MEM` sentinel (0)      | `Result<PhysBytes, AllocError>`    |
+| `CLICK2ABS(v)` 宏           | `PhysBytes::from_page_index(idx)` |
+| `ABS2CLICK(a)` 宏           | `addr.page_index()`              |
 
-**关键改进**:
-- 移除 `NO_MEM` 哨兵值：物理地址 0 是合法地址（实模式 IVT），用 `Option<PhysAddr>` 替代
-- 字段私有：`PhysAddr(u64)` 而非 `PhysAddr(pub u64)`，通过方法访问
-- 64 位：Minix3 用 `u32` 表示物理地址，Rust 用 `u64`
-
-### 3.2 PageAllocFlags — PAF_* 的 bitflags 表达
+### 6.2 PageAllocFlags — 分配标志
 
 ```rust
 bitflags::bitflags! {
-    pub(crate) struct PageAllocFlags: u32 {
-        const CLEAR = 0x01;       // PAF_CLEAR: 清零物理内存
-        const CONTIG = 0x02;      // PAF_CONTIG: 要求物理连续
-        const ALIGN64K = 0x04;    // PAF_ALIGN64K: 64KB 对齐
-        const LOWER16MB = 0x08;   // PAF_LOWER16MB: 低端内存
-        const LOWER1MB = 0x10;    // PAF_LOWER1MB: 1MB 以下
-        const ALIGN16K = 0x40;    // PAF_ALIGN16K: 16KB 对齐
+    pub struct PageAllocFlags: u32 {
+        const CLEAR = 0x01;       // 清零物理内存
+        const CONTIG = 0x02;      // 要求物理连续
+        const ALIGN64K = 0x04;    // 64KB 对齐
+        const LOWER16MB = 0x08;   // 低端内存
+        const LOWER1MB = 0x10;    // 1MB 以下
+        const ALIGN16K = 0x40;    // 16KB 对齐
     }
 }
 ```
 
-**与 Minix3 C 的对比**:
-
-| Minix3 C | Rust | 值 |
-|----------|------|----|
-| `#define PAF_CLEAR 0x01` | `PageAllocFlags::CLEAR` | 0x01 |
-| `#define PAF_CONTIG 0x02` | `PageAllocFlags::CONTIG` | 0x02 |
-| `#define PAF_ALIGN64K 0x04` | `PageAllocFlags::ALIGN64K` | 0x04 |
-| `#define PAF_LOWER16MB 0x08` | `PageAllocFlags::LOWER16MB` | 0x08 |
-| `#define PAF_LOWER1MB 0x10` | `PageAllocFlags::LOWER1MB` | 0x10 |
-| `#define PAF_ALIGN16K 0x40` | `PageAllocFlags::ALIGN16K` | 0x40 |
-
-**PAF_CLEAR 的处理**: Minix3 中 `PAF_CLEAR` 调用 `sys_memset()` 让 kernel 清零物理页。VM 不直接操作物理内存，因此此 flag 仅记录在分配请求中，由调用方通过 kernel IPC 执行清零。
-
-### 3.3 BitmapAllocator — bitmap 分配器（默认实现）
-
-**核心设计**: 与 Minix3 的 `alloc.c` 一致，使用位图管理物理页状态。实现 `PhysMemAlloc` trait。
-
-```rust
-pub(crate) struct BitmapAllocator {
-    bitmap: Vec<u64>,          // free_pages_bitmap: 1 bit = 1 page
-    total_pages: usize,        // 系统总物理页数
-    free_pages: usize,         // 当前空闲页数
-    page_cache: Vec<usize>,    // 单页缓存（LIFO）
-    last_scan: Option<usize>,  // 循环分配：上次扫描位置
-    stats: MemStats,           // 内存统计
-    mem_low: usize,            // 最低物理地址
-    mem_high: usize,           // 最高物理地址
-}
-```
-
-**与 Minix3 C 的对比**:
-
-| Minix3 C | Rust |
-|----------|------|
-| `bitchunk_t free_pages_bitmap[]` | `Vec<u64>` bitmap |
-| `int free_page_cache[]` | `Vec<usize>` page_cache |
-| `static int total_pages` | `total_pages: usize` |
-| `static int lastscan` | `last_scan: Option<usize>` |
-| `phys_clicks alloc_mem()` | `fn alloc_mem() -> Result<PhysAddr, AllocError>` |
-| `void free_mem()` | `fn free_mem()` |
-| `void mem_init()` | `fn init(regions: &[BootMemRegion])` |
-
-**初始化入口**: `PhysMemAllocator::init(regions: &[BootMemRegion])` 对应 Minix3 的 `mem_init(struct memory *chunks)`，从 kernel 传入的内存区域初始化位图。
-
-**64 位系统的 bitmap 大小**：
-
-Minix3 预分配整个 32 位地址空间的 bitmap（128KB），但 64 位系统不能这样做：
-```
-64 位地址空间 = 2^64 bytes → bitmap 需要 512 PB（不可行）
-```
-
-实际做法：只管理**实际存在的物理内存**。从 `BootMemRegion` 计算最高物理地址 `mem_high`，按需分配 bitmap：
-```
-max_page = mem_high / 4KB
-bitmap 大小 = max_page / 64 个 u64
-
-例如 16GB 物理内存：
-  max_page = 16GB / 4KB = 4M 页
-  bitmap = 4M / 64 = 62500 个 u64 = 500KB
-```
-
-**算法**: 首次适应 + 从高地址向低地址扫描 + 单页缓存，与 Minix3 `alloc_pages()` / `findbit()` 一致。
-
-### 3.4 AllocError — 区分失败原因
+### 6.3 AllocError — 错误类型
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AllocError {
+pub enum AllocError {
     OutOfMemory,        // 总内存不足
     LowMemoryExhausted, // 低端内存耗尽
-    // ContiguityFailed — Minix3 定义了 PAF_CONTIG 标志，说明曾考虑过非连续物理分配，
-    // 但最终 alloc_pages 始终返回连续物理页，PAF_CONTIG 实际上是 no-op。
-    // 事实上只有 DMA 等少数硬件需要连续物理地址，普通进程通过页表映射后
-    // 虚拟地址连续即可，物理地址是否连续无关紧要。
-    // 若未来实现非连续物理分配（scatter-gather），可恢复此变体：
-    // ContiguityFailed,
 }
 ```
 
-**与 Minix3 C 的对比**: Minix3 只返回 `NO_MEM`，不区分失败原因。`AllocError` enum 是合格的 Rewrite——外部语义不变（分配失败），内部表达更精确。`AlignmentFailed` 已移除：对齐分配通过多分配 + 释放 excess 实现，对齐失败等价于内存不足，用 `OutOfMemory` 即可。`ContiguityFailed` 保留为注释：当前只实现连续分配，若未来支持 scatter-gather 可恢复。
+***
 
-### 3.5 PhysMemAlloc trait — 可替换的分配器接口
+## 7. 与 Minix3 的对比
 
-```rust
-pub(crate) trait PhysMemAlloc {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysAddr, AllocError>;
-    fn free_mem(&mut self, base: PhysAddr, clicks: usize);
-}
-```
+| 维度            | Minix3 (32位)  | Rust (64位)                      |
+| ------------- | ------------- | ------------------------------- |
+| **元数据存储**     | 静态 BSS 数组     | Early heap + `&'static mut [T]` |
+| **Bitmap 大小** | 固定 128KB（4GB） | 按需计算                            |
+| **堆就绪时机**     | `pt_init()` 后 | `mem_init()` 前就需要 early heap    |
+| **分配器选择**     | 仅 Bitmap      | Bitmap / Buddy / 线段树            |
+| **Buddy 安全性** | N/A           | 状态标志 + 严格检查                     |
 
-trait 只包含两个方法，与 Minix3 的 `alloc_mem()` / `free_mem()` 精确对应。各实现可自行提供额外查询方法（如 `largest_free()`、`stats()`），但这些不属于 trait 接口。
+**关键差异**：
 
-三种实现均实现此 trait，可通过 `dyn PhysMemAlloc` 动态派发互换：
+1. **64 位系统无法使用静态 BSS**
+   - 物理内存无上限，bitmap 大小不确定
+   - 必须动态分配 → 需要 early heap
+2. **初始化顺序不同**
+   - Minix3：`mem_init()` 不需要堆
+   - Rust：`mem_init()` 前必须初始化 early heap
+3. **Buddy 安全性增强**
+   - 使用 `FLAG_ALLOCATED` 防止误判已分配页
+   - 使用 `ORDER_INVALID` 防止误判未初始化页
 
-```rust
-let mut alloc: &mut dyn PhysMemAlloc = &mut BitmapAllocator::init(&regions);
-let addr = alloc.alloc_mem(4, PageAllocFlags::empty())?;
-alloc.free_mem(addr, 4);
-```
+***
 
-### 3.6 MemStats — 非 atomic 统计
-
-```rust
-pub(crate) struct MemStats {
-    total_allocations: usize,
-    total_deallocations: usize,
-    active_allocations: usize,
-    allocation_failures: usize,
-    total_allocated_bytes: usize,
-    total_freed_bytes: usize,
-    current_allocated_bytes: usize,
-    peak_allocated_bytes: usize,
-}
-```
-
-**关键设计**: 所有字段为普通 `usize`，不使用 `AtomicUsize`。VM 是单线程服务，原子操作是不必要的性能开销和误导。
-
-### 3.7 删除的设计
-
-以下设计在 review 后被删除：
-
-| 删除项 | 原因 |
-|--------|------|
-| `PhysFrame` (Rc/RefCell/Weak) | VM 是 no_std 单线程服务，不应使用 std 堆分配智能指针。Minix3 用显式 `free_mem()` 管理 |
-| `PhysMemGlobalAlloc` | VM 是 no_std 服务，不应实现 `GlobalAlloc`。物理内存分配 ≠ 堆分配 |
-| `AllocFlags` (旧值) | 与 Minix3 PAF_* 值不对应，已修正为 `PageAllocFlags` |
-| `NO_MEM` 哨兵值 | 物理地址 0 是合法地址，改用 `Option<PhysAddr>` |
-| `ReservedQueue` (magic number) | 使用 `0x6e4c74d5` 验证状态是 C 式设计，待后续用 `Option` 重新实现 |
-
-### 3.8 三种实现方案对比
-
-三种分配器均实现 `PhysMemAlloc` trait，共享相同接口，但内部算法和性能特征截然不同：
-
-| 维度 | BitmapAllocator | SegmentTreeAllocator | BuddyAllocator |
-|------|----------------|---------------------|----------------|
-| **时间复杂度** | O(n) 扫描 | O(log n) 查询 | O(log n) 分裂/合并 |
-| **精确分配** | ✅ 任意大小 | ✅ 任意大小 | ❌ 向上取整到 2^n |
-| **抗碎片** | ❌ 无自动合并 | ❌ 无自动合并 | ✅ buddy 自动合并 |
-| **内存开销** | 1x (1 bit/page) | ~8x (4 usize/node) | ~2x (order+free per page) |
-| **实现复杂度** | ⭐ 低 | ⭐⭐⭐⭐ 高 | ⭐⭐ 中 |
-| **cache 友好** | ⭐⭐⭐⭐ 顺序访问 | ⭐ 树跳跃 | ⭐⭐⭐ 链表遍历 |
-| **Minix3 对应** | ✅ 原始实现 | ❌ 新增 | ❌ 新增 |
-
-**BitmapAllocator** — Minix3 的原始方案，简单可靠：
+## 8. 文件结构
 
 ```
-位图：[1][1][0][0][0][1][1][1][0]...
-         ↑  连续3页空闲
-
-分配：线性扫描找连续 k 个 1
-释放：将对应位设为 1
+phys_mem/
+├── mod.rs                    # 模块入口
+├── early_heap.rs             # Bump allocator
+├── alloc_trait.rs            # PhysAllocator + PhysAllocatorStats traits, PhysMemStats
+├── types.rs                  # PhysBytes, PageAllocFlags, AllocError
+├── bitmap_alloc.rs           # Bitmap 分配器
+├── buddy_alloc.rs            # Buddy 分配器 (SoA)
+├── segment_tree_alloc.rs     # 线段树分配器 (实验性)
+├── stats.rs                  # 运维统计 (alloc/free 计数)
+└── allocator_tests.rs        # 统一测试套件
 ```
 
-- 优点：实现简单，内存开销最小，cache 友好（顺序扫描）
-- 缺点：O(n) 扫描，大内存时性能下降；释放后不自动合并相邻空闲区
+***
 
-**SegmentTreeAllocator** — 算法最优解，工程上少用：
-
-```
-线段树节点：[max_free, left_free, right_free, len]
-
-        [7,0,7,8]           ← 根节点：最大连续7页
-       /          \
-   [3,0,3,4]    [4,4,4,4]   ← 左子树最大3页，右子树4页
-   /      \      /      \
- [1,0,1,2][2,2,2,2] ...    ← 叶节点：每页状态
-
-分配：O(log n) 沿树查找
-释放：O(log n) 自底向上 merge
-```
-
-- 优点：O(log n) 分配/释放，精确分配任意大小，可查询 `largest_free()`
-- 缺点：内存开销大（每节点 4 个 usize），实现复杂（跨边界匹配、merge 逻辑），cache 不友好
-- 关键实现细节：`merge(left, right)` 计算 `left_free`、`right_free`、`max_free`（含跨边界连续空闲），`find_in_subtree` 优先查左子树，再查跨边界，最后查右子树
-
-**BuddyAllocator** — Linux 内核方案，工程最佳实践：
-
-```
-阶数  free_list
- 3    [0]           ← 1 个 8 页块
- 2    []            
- 1    []            
- 0    []            
-
-分配 3 页 → order=2 (4页块) → 分裂 order3 → 得到 [0-3]，剩余 [4-7] 进 order2
-释放 [0-3] → 检查 buddy [4-7] 是否空闲 → 合并为 order3
-```
-
-- 优点：O(log n) 分配/释放，buddy 自动合并抗碎片，实现复杂度适中
-- 缺点：内部碎片（分配 3 页实际占 4 页），只支持 2^n 大小块
-- 关键实现细节：`buddy_of(page, order) = page ^ (1 << order)`，`try_merge` 循环合并直到无法合并
-
-### 3.9 设计哲学：为什么 Linux 选 Buddy 而非 Segment Tree？
-
-三种方案代表三种不同的设计哲学：
-
-**Bitmap = 暴力搜索**
-- 不做任何优化，直接遍历
-- 适合小规模（Minix3 面向小系统，内存通常 < 4GB）
-- Minix3 的设计哲学：简单至上
-
-**Segment Tree = 更强算法**
-- 用更复杂的数据结构解决同一个问题
-- 理论最优，但工程代价高（内存开销、实现复杂度、cache 不友好）
-- "用更锋利的刀切同一块肉"
-
-**Buddy = 改变问题**
-- 不是用更强算法解决"连续区间分配"，而是**改变问题本身**
-- 将"任意大小连续分配"改为"2 的幂次大小分配"
-- 通过结构约束（只允许 2^n 块）换取自动抗碎片
-- "换一块更好切的肉"
-
-**OS 设计的核心洞察**：
-
-> 不是"更强算法"，而是"更匹配 workload"。
-
-物理内存分配的典型 workload 特征：
-1. **请求大小分布**：大部分请求是 1 页或少量页，大块连续请求罕见
-2. **生命周期**：分配-释放频繁交替，需要快速合并
-3. **碎片危害**：外部碎片导致大块连续分配失败，远比内部碎片（多占几页）严重
-
-Buddy 的 2^n 约束带来的内部碎片（平均浪费 25%）远小于 bitmap/segment tree 的外部碎片风险。这是 OS 设计中"**用确定性代价换不确定性风险**"的典型模式。
-
-**Minix3 选择 Bitmap 的原因**：
-- 系统规模小，O(n) 扫描可接受
-- 实现简单，代码量少
-- Minix3 的设计目标是教学和简洁，而非极致性能
-
-**如果 minix-rs 要追求工程最优**：BuddyAllocator 是更好的选择，但当前默认使用 BitmapAllocator 以保持与 Minix3 一致。
-
----
-
-## 4. 实现详解
-
-> 实际代码位于 `os/servers/vm/src/phys_mem/`。
-> 核心实现在 `bitmap_alloc.rs` / `segment_tree_alloc.rs` / `buddy_alloc.rs`，测试在各文件内联 `#[cfg(test)]` 模块和 `allocator_tests.rs`。
-
-### 4.1 文件结构
-
-| 文件 | 职责 |
-|------|------|
-| `mod.rs` | 模块入口，导出类型，Click 单位转换工具函数，三种分配器对比文档 |
-| `types.rs` | `PhysAddr` newtype，`PageAllocFlags` bitflags，`AllocError` enum |
-| `alloc_trait.rs` | `PhysMemAlloc` trait 定义 |
-| `bitmap_alloc.rs` | `BitmapAllocator` — bitmap 分配器（默认，与 Minix3 一致） |
-| `segment_tree_alloc.rs` | `SegmentTreeAllocator` — 线段树分配器（O(log n)，精确分配） |
-| `buddy_alloc.rs` | `BuddyAllocator` — buddy 分配器（O(log n)，抗碎片） |
-| `stats.rs` | `MemStats` 非 atomic 内存统计 |
-| `allocator_tests.rs` | 统一测试套件（三种分配器共享测试用例） |
-
-### 4.2 核心算法（与 Minix3 对应关系）
-
-| Minix3 函数 | Rust 方法 | 说明 |
-|-------------|-----------|------|
-| `mem_init(chunks)` | `BitmapAllocator::init(regions)` | 从 kernel 传入的内存区域初始化位图 |
-| `alloc_mem(clicks, flags)` | `alloc_mem(clicks, flags)` | bitmap 首次适应分配（trait 方法） |
-| `alloc_pages(pages, flags)` | `alloc_pages(pages, flags)` | 内部分配，含页缓存和循环扫描 |
-| `findbit(low, startscan, pages)` | `find_bit(low, start_scan, pages)` | 从高地址向低地址扫描连续空闲页 |
-| `free_mem(base, clicks)` | `free_mem(base, clicks)` | 位图标记 + 页缓存更新（trait 方法） |
-| `free_pages(pageno, npages)` | `free_pages_internal(start, num)` | 内部释放，逐页 SET_BIT |
-| `cache_freepages(needed)` | `cache_freepages(needed)` | 保留页回收（当前为 stub） |
-| `memstats(nodes, pages, largest)` | `memstats()` | 遍历位图统计空闲区域 |
-
-### 4.3 位图操作
-
-Rust 使用 `Vec<u64>` 替代 C 的 `bitchunk_t[]`：
-
-| Minix3 C | Rust | 说明 |
-|----------|------|------|
-| `bitchunk_t` (uint32_t) | `u64` | 64 位，每个 chunk 管理 64 页 |
-| `BITCHUNK_BITS = 32` | `BITS_PER_CHUNK = 64` | 位数翻倍 |
-| `GET_BIT/SET_BIT/UNSET_BIT` 宏 | 内联方法 | 类型安全 |
-
-```rust
-fn is_free(&self, page: usize) -> bool {
-    let chunk = page / 64;
-    let bit = page % 64;
-    (self.bitmap[chunk] >> bit) & 1 == 1
-}
-
-fn set_free(&mut self, page: usize) {
-    let chunk = page / 64;
-    let bit = page % 64;
-    self.bitmap[chunk] |= 1 << bit;
-}
-
-fn set_used(&mut self, page: usize) {
-    let chunk = page / 64;
-    let bit = page % 64;
-    self.bitmap[chunk] &= !(1 << bit);
-}
-```
-
-### 4.4 单页缓存
-
-Rust 实现与 Minix3 一致，使用 `Vec<usize>` 作为 LIFO 栈：
-
-```rust
-const PAGE_CACHE_MAX: usize = 10000;
-
-page_cache: Vec<usize>,      // LIFO 栈
-```
-
-**差异**：Rust 版本在分配时会验证缓存中的页是否仍空闲（与 Minix3 一致）。
-
----
-
-## 5. IPC 接口与权限控制
-
-> IPC 消息处理和 ACL 权限检查不属于物理内存分配模块。
-> 详见 [03-acl.md](03-acl.md) 和 [ipc 模块](../../)。
-
----
-
-## 6. 测试与验证
+## 9. 测试与验证
 
 > 测试代码位于 `os/servers/vm/src/phys_mem/allocator_tests.rs`。
-> 运行: `cargo test -p minix-vm -- phys_mem`
 
-统一测试套件覆盖三种分配器，测试模块包括：
+统一测试套件覆盖三种分配器：
 
-| 模块 | 测试内容 |
-|------|----------|
-| `basic` | 基本分配/释放、零页分配、单页分配 |
-| `exhaustion` | 内存耗尽、全部分配后全部释放 |
-| `free_realloc` | 释放后重新分配、合并验证 |
-| `flags` | ALIGN16K/ALIGN64K 对齐、LOWER16MB/LOWER1MB 地址限制、CONTIG 连续性 |
-| `fragmentation` | 碎片场景、largest_free 追踪 |
-| `multi_region` | 多内存区域、间隔区域 |
-| `stress` | 随机分配/释放压力测试 |
-| `trait_object` | `dyn PhysMemAlloc` 动态派发、实现互换 |
-| `buddy_internal_frag` | Buddy 内部碎片特性 |
+| 模块              | 测试内容              |
+| --------------- | ----------------- |
+| `basic`         | 基本分配/释放、零页分配、单页分配 |
+| `exhaustion`    | 内存耗尽、全部分配后全部释放    |
+| `free_realloc`  | 释放后重新分配、合并验证      |
+| `flags`         | 对齐、地址限制           |
+| `fragmentation` | 碎片场景              |
+| `stress`        | 随机分配/释放压力测试       |
+| `buddy_safety`  | Buddy 状态标志、合并安全   |
 
----
+***
 
-## 7. 参见
+## 10. 参见
 
 - [00-vm-overview.md §2.3](00-vm-overview.md) - 启动阶段物理内存初始化链路
+- [heap-bootstrap.md](heap-bootstrap.md) - Early Heap 详细设计
 - [03-acl.md](03-acl.md) - ACL 权限控制
 - [08-slab-allocator.md](08-slab-allocator.md) - VM 内部使用 Slab
 - [15-vm-fork.md](15-vm-fork.md) - fork 时的内存分配
-- [17-vm-map.md](17-vm-map.md) - VM_MAP 服务中的内存分配
+- [17-vm-map.md](17-vm-map.md) - VM\_MAP 服务中的内存分配
+
+***
+
+*分类: VM库 | 接口性质: 其他服务通过 IPC 调用*
 
 ---
 
-*分类: VM库 | 接口性质: 其他服务通过 IPC 调用*
+## 附录 A：为什么物理分配器不能使用堆
+
+### A.1 Rust 的 GlobalAlloc 机制
+
+Rust 的 `alloc` crate 提供堆分配能力（`Vec`, `Box`, `String` 等）。使用前需要：
+
+1. **实现 `GlobalAlloc` trait**：
+   ```rust
+   unsafe trait GlobalAlloc {
+       unsafe fn alloc(&self, layout: Layout) -> *mut u8;
+       unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout);
+   }
+   ```
+
+2. **注册为全局分配器**：
+   ```rust
+   #[global_allocator]
+   static ALLOC: MyAllocator = MyAllocator;
+   ```
+
+3. **填充 stub 后即可使用**：
+   ```rust
+   let v: Vec<u64> = Vec::new();  // 调用 GlobalAlloc::alloc
+   let b: Box<[u8]> = Box::new([0; 1024]);
+   ```
+
+### A.2 循环依赖问题
+
+物理分配器**不能**使用 `GlobalAlloc`，因为：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    循环依赖链                                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  GlobalAlloc::alloc()                                               │
+│      ↓ 需要物理页                                                    │
+│  PhysAllocator::alloc_mem()                                       │
+│      ↓ 需要元数据存储                                                │
+│  元数据: Vec<u64> / Box<[T]>                                        │
+│      ↓ 调用 GlobalAlloc::alloc()                                    │
+│  GlobalAlloc::alloc()  ←─────────────── 循环！                      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**关键点**：
+- `GlobalAlloc` 需要物理页才能工作
+- 物理分配器管理物理页
+- 物理分配器的元数据如果用 `Vec`，就需要 `GlobalAlloc`
+- 但 `GlobalAlloc` 还没初始化（没有物理页可用）
+
+### A.3 解决方案
+
+**物理分配器元数据必须存储在"自己不管理"的内存中**：
+
+| 方案 | 存储 | 优点 | 缺点 |
+|------|------|------|------|
+| **Early Heap** | 预留物理页 | 灵活，适配任意内存大小 | 需要额外初始化步骤 |
+| **静态 BSS** | 编译时固定 | 简单 | 64 位系统不可行 |
+| **保留页池** | 启动时预留 | Minix3 使用 | 需要预估大小 |
+
+**Rust 实现**：使用 `&'static mut [T]` 而非 `Vec<T>`：
+
+```rust
+// ❌ 错误：Vec 需要 GlobalAlloc
+pub struct BitmapAllocator {
+    bitmap: Vec<u64>,  // 循环依赖！
+}
+
+// ✅ 正确：静态切片，从 early heap 分配
+pub struct BitmapAllocator {
+    bitmap: &'static mut [u64],  // 不依赖 GlobalAlloc
+}
+```
+
+### A.4 详细设计
+
+完整方案见 [heap-bootstrap.md](heap-bootstrap.md)。

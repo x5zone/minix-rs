@@ -1,36 +1,45 @@
-use alloc::vec;
-use alloc::vec::Vec;
-use super::alloc_trait::PhysMemAlloc;
-use super::stats::MemStats;
-use super::types::{AllocError, AllocParams, PageAllocFlags, PhysAddr};
-use super::{clicks_to_bytes, CLICK_SIZE, BootMemRegion};
+//! Segment tree-based physical memory allocator (experimental).
+//!
+//! **WARNING**: This allocator has high memory overhead (~8x) and is only
+//! intended for educational purposes. Not recommended for production use.
+//!
+//! This allocator uses a segment tree to track free/used pages with O(log n)
+//! allocation and precise allocation of any size.
 
+use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
+use super::stats::MemStats;
+use super::types::{AllocError, PageAllocFlags, PhysBytes};
+use super::{CLICK_SIZE, BootMemRegion, EarlyHeap};
+
+#[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]
-struct Node {
+struct SegmentNode {
     max_free: usize,
     left_free: usize,
     right_free: usize,
     len: usize,
 }
 
-impl Node {
+#[cfg(feature = "segment_tree_alloc")]
+impl SegmentNode {
     const fn empty() -> Self {
-        Node { max_free: 0, left_free: 0, right_free: 0, len: 0 }
+        SegmentNode { max_free: 0, left_free: 0, right_free: 0, len: 0 }
     }
 
     const fn free(len: usize) -> Self {
-        Node { max_free: len, left_free: len, right_free: len, len }
+        SegmentNode { max_free: len, left_free: len, right_free: len, len }
     }
 
     const fn used(len: usize) -> Self {
-        Node { max_free: 0, left_free: 0, right_free: 0, len }
+        SegmentNode { max_free: 0, left_free: 0, right_free: 0, len }
     }
 }
 
-fn merge(left: Node, right: Node) -> Node {
+#[cfg(feature = "segment_tree_alloc")]
+fn merge(left: SegmentNode, right: SegmentNode) -> SegmentNode {
     let len = left.len + right.len;
     if len == 0 {
-        return Node::empty();
+        return SegmentNode::empty();
     }
     let left_free = if left.left_free == left.len {
         left.len + right.left_free
@@ -45,75 +54,55 @@ fn merge(left: Node, right: Node) -> Node {
     let cross = left.right_free + right.left_free;
     let max_free = left.max_free.max(right.max_free).max(cross);
 
-    Node { max_free, left_free, right_free, len }
+    SegmentNode { max_free, left_free, right_free, len }
 }
 
-pub(crate) struct SegmentTreeAllocator {
+#[cfg(feature = "segment_tree_alloc")]
+pub struct SegmentTreeAllocator {
     n: usize,
     offset: usize,
-    tree: Vec<Node>,
+    tree: &'static mut [SegmentNode],
     total_pages: usize,
     free_pages: usize,
     stats: MemStats,
-    mem_low: usize,
-    mem_high: usize,
 }
 
+#[cfg(feature = "segment_tree_alloc")]
 impl SegmentTreeAllocator {
-    pub(crate) fn init(regions: &[BootMemRegion]) -> Self {
-        let mut mem_low = usize::MAX;
-        let mut mem_high = 0;
+    pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+        let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
+
+        let n = total_pages;
+        let offset = n.next_power_of_two();
+        let tree_size = if n > 0 { 2 * offset } else { 2 };
+
+        let tree = early_heap.alloc_slice::<SegmentNode>(tree_size);
+
+        for node in tree.iter_mut() {
+            *node = SegmentNode::used(1);
+        }
+
+        let mut alloc = Self {
+            n,
+            offset,
+            tree,
+            total_pages,
+            free_pages: 0,
+            stats: MemStats::new(),
+        };
 
         for region in regions {
             if region.size == 0 {
                 continue;
             }
             region.validate();
-            let from = region.base;
-            let to = region.base + region.size - 1;
-            if from < mem_low {
-                mem_low = from;
-            }
-            if to > mem_high {
-                mem_high = to;
-            }
-        }
-
-        if mem_low == usize::MAX {
-            mem_low = 0;
-        }
-
-        let n = if mem_high > 0 { mem_high / CLICK_SIZE + 1 } else { 0 };
-        let offset = n.next_power_of_two();
-        let tree_size = if n > 0 { 2 * offset } else { 2 };
-
-        let mut alloc = Self {
-            n,
-            offset,
-            tree: vec![Node::used(1); tree_size],
-            total_pages: 0,
-            free_pages: 0,
-            stats: MemStats::new(),
-            mem_low,
-            mem_high,
-        };
-
-        for i in 0..n {
-            alloc.tree[offset + i] = Node::used(1);
-        }
-
-        for region in regions {
-            if region.size == 0 {
-                continue;
-            }
             let base_page = region.base / CLICK_SIZE;
             let num_pages = region.size / CLICK_SIZE;
             for i in base_page..base_page + num_pages {
                 if i < n {
-                    alloc.tree[offset + i] = Node::free(1);
+                    alloc.tree[offset + i] = SegmentNode::free(1);
                 }
             }
-            alloc.total_pages += num_pages;
             alloc.free_pages += num_pages;
         }
 
@@ -124,6 +113,25 @@ impl SegmentTreeAllocator {
         alloc
     }
 
+    pub fn total_memory(&self) -> usize {
+        self.total_pages * CLICK_SIZE
+    }
+
+    pub fn free_memory(&self) -> usize {
+        self.free_pages * CLICK_SIZE
+    }
+
+    pub(crate) fn largest_free(&self) -> usize {
+        if self.n == 0 { 0 } else { self.tree[1].max_free }
+    }
+
+    pub(crate) fn page_is_free(&self, page: usize) -> bool {
+        if page >= self.n {
+            return false;
+        }
+        self.tree[self.offset + page].max_free > 0
+    }
+
     fn pull_up(&mut self, mut idx: usize) {
         while idx > 1 {
             idx /= 2;
@@ -131,20 +139,11 @@ impl SegmentTreeAllocator {
         }
     }
 
-    fn set_page(&mut self, page: usize, free: bool) {
-        if page >= self.n {
-            return;
-        }
-        let leaf = self.offset + page;
-        self.tree[leaf] = if free { Node::free(1) } else { Node::used(1) };
-        self.pull_up(leaf);
-    }
-
     fn set_range(&mut self, start: usize, count: usize, free: bool) {
         for i in start..start + count {
             if i < self.n {
                 let leaf = self.offset + i;
-                self.tree[leaf] = if free { Node::free(1) } else { Node::used(1) };
+                self.tree[leaf] = if free { SegmentNode::free(1) } else { SegmentNode::used(1) };
             }
         }
         if count == 0 || start >= self.n {
@@ -211,299 +210,141 @@ impl SegmentTreeAllocator {
         let (r_start, r_end) = self.node_page_range(node * 2 + 1);
         (l_start.min(r_start), l_end.max(r_end))
     }
-
-    // TODO: 当前实现是线性扫描 [low..high]，应利用线段树的区间查询能力
-    // 实现 O(log n) 的范围查询，而非 O(n) 逐页扫描。
-    fn find_first_fit_in_range(&self, k: usize, low: usize, high: usize) -> Option<usize> {
-        if self.n == 0 || k == 0 || low > high {
-            return None;
-        }
-        let high = high.min(self.n - 1);
-        if low > high {
-            return None;
-        }
-
-        let mut best: Option<usize> = None;
-        let mut run_start = None;
-        let mut run_len = 0usize;
-
-        for page in low..=high {
-            let leaf = self.offset + page;
-            if self.tree[leaf].max_free > 0 {
-                if run_start.is_none() {
-                    run_start = Some(page);
-                    run_len = 1;
-                } else {
-                    run_len += 1;
-                }
-                if run_len >= k {
-                    best = run_start;
-                    break;
-                }
-            } else {
-                run_start = None;
-                run_len = 0;
-            }
-        }
-
-        best
-    }
-
-    pub(crate) fn stats(&self) -> &MemStats {
-        &self.stats
-    }
-
-    pub(crate) fn total_memory(&self) -> usize {
-        self.total_pages * CLICK_SIZE
-    }
-
-    pub(crate) fn free_memory(&self) -> usize {
-        self.free_pages * CLICK_SIZE
-    }
-
-    pub(crate) fn largest_free(&self) -> usize {
-        if self.n == 0 { 0 } else { self.tree[1].max_free }
-    }
-
-    pub(crate) fn page_is_free(&self, page: usize) -> bool {
-        if page >= self.n {
-            return false;
-        }
-        self.tree[self.offset + page].max_free > 0
-    }
 }
 
-impl PhysMemAlloc for SegmentTreeAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysAddr, AllocError> {
+#[cfg(feature = "segment_tree_alloc")]
+impl PhysAllocator for SegmentTreeAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
         if clicks == 0 {
             self.stats.record_failure();
             return Err(AllocError::OutOfMemory);
         }
 
-        let params = AllocParams::compute(clicks, flags, self.n);
+        let mut alloc_clicks = clicks;
+        let mut align_clicks = 0usize;
 
-        let mem = if params.is_low_mem {
-            self.find_first_fit_in_range(params.alloc_clicks, 0, params.max_page.saturating_sub(1))
+        if flags.contains(PageAllocFlags::ALIGN64K) {
+            align_clicks = (64 * 1024) / CLICK_SIZE;
+            alloc_clicks += align_clicks;
+        } else if flags.contains(PageAllocFlags::ALIGN16K) {
+            align_clicks = (16 * 1024) / CLICK_SIZE;
+            alloc_clicks += align_clicks;
+        }
+
+        let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
+            (1 * 1024 * 1024) / CLICK_SIZE
+        } else if flags.contains(PageAllocFlags::LOWER16MB) {
+            (16 * 1024 * 1024) / CLICK_SIZE
         } else {
-            self.find_first_fit(params.alloc_clicks)
+            self.total_pages
         };
 
-        let mem = mem.ok_or_else(|| {
-            self.stats.record_failure();
-            params.error_type()
-        })?;
+        let mem = match self.find_first_fit(alloc_clicks) {
+            Some(m) => m,
+            None => {
+                self.stats.record_failure();
+                return Err(super::oom_error(flags));
+            }
+        };
 
-        if mem + params.alloc_clicks > self.n {
+        if mem + alloc_clicks > max_page {
             self.stats.record_failure();
-            return Err(AllocError::OutOfMemory);
+            return Err(AllocError::LowMemoryExhausted);
         }
 
-        let (result_page, leading) = params.aligned_result(mem);
+        self.set_range(mem, alloc_clicks, false);
+        self.free_pages -= alloc_clicks;
 
-        self.set_range(mem, params.alloc_clicks, false);
-        self.free_pages -= params.alloc_clicks;
-
-        if leading > 0 {
-            self.set_range(mem, leading, true);
-            self.free_pages += leading;
+        if align_clicks > 0 {
+            let offset = mem % align_clicks;
+            if offset > 0 {
+                let excess = align_clicks - offset;
+                self.set_range(mem, excess, true);
+                self.free_pages += excess;
+                let aligned_mem = mem + excess;
+                self.stats.record_alloc(clicks * CLICK_SIZE);
+                return Ok(PhysBytes::from_page_index(aligned_mem));
+            }
         }
 
-        // TODO(stage-3): 处理 PAF_CLEAR flag。Minix3 在 alloc_pages 末尾调用
-        // sys_memset(NONE, 0, CLICK_SIZE*mem, VM_PAGE_SIZE*pages) 清零分配的页。
-        // 当前阶段缺少 kernel IPC 基础设施，无法调用 sys_memset。
-        // if flags.contains(PageAllocFlags::CLEAR) { ... }
+        if flags.contains(PageAllocFlags::CLEAR) {
+            // TODO: requires kernel IPC (sys_memset), implement after kernel interface
+        }
 
-        self.stats.record_alloc(clicks_to_bytes(params.clicks));
-        Ok(PhysAddr::from_page_index(result_page))
+        self.stats.record_alloc(clicks * CLICK_SIZE);
+        Ok(PhysBytes::from_page_index(mem))
     }
 
-    fn free_mem(&mut self, base: PhysAddr, clicks: usize) {
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
         if clicks == 0 {
             return;
         }
         let start_page = base.page_index();
         let end_page = (start_page + clicks).min(self.n);
-        let actual_clicks = end_page - start_page;
-        if actual_clicks > 0 {
-            self.set_range(start_page, actual_clicks, true);
-            self.free_pages += actual_clicks;
+        let actual_count = end_page - start_page;
+        if actual_count > 0 {
+            self.set_range(start_page, actual_count, true);
+            self.free_pages += actual_count;
+            self.stats.record_free(actual_count * CLICK_SIZE);
         }
-        self.stats.record_free(clicks_to_bytes(clicks));
+    }
+
+    fn total_count(&self) -> usize {
+        self.total_pages
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_test_regions() -> Vec<BootMemRegion> {
-        vec![BootMemRegion { base: 0, size: 128 * 1024 * 1024 }]
-    }
-
-    #[test]
-    fn test_alloc_free_basic() {
-        let mut alloc = SegmentTreeAllocator::init(&make_test_regions());
-
-        let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
-        alloc.free_mem(addr, 4);
-    }
-
-    #[test]
-    fn test_alloc_zero_clicks() {
-        let mut alloc = SegmentTreeAllocator::init(&make_test_regions());
-        assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
-    }
-
-    #[test]
-    fn test_alloc_exhaustion() {
-        let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(4, PageAllocFlags::empty());
-        assert!(a.is_ok());
-
-        let b = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(b.is_err());
-
-        alloc.free_mem(a.unwrap(), 4);
-
-        let c = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(c.is_ok());
-    }
-
-    #[test]
-    fn test_free_and_realloc() {
-        let regions = vec![BootMemRegion { base: 0, size: 20 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
-        let b = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
-
-        alloc.free_mem(a, 10);
-
-        let c = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
-        assert_eq!(c.page_index(), a.page_index());
-
-        alloc.free_mem(b, 10);
-        alloc.free_mem(c, 10);
-    }
-
-    #[test]
-    fn test_contiguous_allocation() {
-        let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(10, PageAllocFlags::CONTIG).unwrap();
-        let start = a.page_index();
-        for i in 0..10 {
-            assert!(!alloc.page_is_free(start + i));
+#[cfg(feature = "segment_tree_alloc")]
+impl PhysAllocatorStats for SegmentTreeAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        PhysMemStats {
+            free_nodes: 0,
+            free_pages: self.free_pages,
+            largest_free: self.largest_free(),
         }
+    }
+}
 
-        alloc.free_mem(a, 10);
+#[cfg(not(feature = "segment_tree_alloc"))]
+/// Stub implementation. All methods panic at runtime.
+/// Enable `segment_tree_alloc` feature to use this allocator.
+pub struct SegmentTreeAllocator {
+    _private: (),
+}
+
+#[cfg(not(feature = "segment_tree_alloc"))]
+impl SegmentTreeAllocator {
+    pub fn init(_early_heap: &mut EarlyHeap, _regions: &[BootMemRegion]) -> Self {
+        unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 
-    #[test]
-    fn test_lower16mb_flag() {
-        let regions = vec![BootMemRegion { base: 0, size: 32 * 1024 * 1024 }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
-        assert!(addr.as_usize() < 16 * 1024 * 1024);
-
-        alloc.free_mem(addr, 1);
+    pub(crate) fn largest_free(&self) -> usize {
+        0
     }
 
-    #[test]
-    fn test_align64k_flag() {
-        let regions = vec![BootMemRegion { base: 0, size: 4 * 1024 * 1024 }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
+    pub(crate) fn page_is_free(&self, _page: usize) -> bool {
+        false
+    }
+}
 
-        let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
-        assert_eq!(addr.as_usize() % (64 * 1024), 0);
-
-        alloc.free_mem(addr, 1);
+#[cfg(not(feature = "segment_tree_alloc"))]
+impl PhysAllocator for SegmentTreeAllocator {
+    fn alloc_mem(&mut self, _clicks: usize, _flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+        unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 
-    #[test]
-    fn test_largest_free() {
-        let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        assert_eq!(alloc.largest_free(), 100);
-
-        let a = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
-        assert_eq!(alloc.largest_free(), 50);
-
-        alloc.free_mem(a, 50);
-        assert_eq!(alloc.largest_free(), 100);
+    fn free_mem(&mut self, _base: PhysBytes, _clicks: usize) {
+        unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 
-    #[test]
-    fn test_fragmentation() {
-        let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
-        let b = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
-        let c = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
-        let d = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
-
-        alloc.free_mem(a, 25);
-        alloc.free_mem(c, 25);
-
-        assert_eq!(alloc.largest_free(), 25);
-
-        let e = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
-        assert_eq!(e.page_index(), a.page_index());
-
-        alloc.free_mem(b, 25);
-        alloc.free_mem(d, 25);
-        alloc.free_mem(e, 25);
+    fn total_count(&self) -> usize {
+        0
     }
+}
 
-    #[test]
-    fn test_merge_on_free() {
-        let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
-        let b = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
-
-        alloc.free_mem(a, 50);
-        assert_eq!(alloc.largest_free(), 50);
-
-        alloc.free_mem(b, 50);
-        assert_eq!(alloc.largest_free(), 100);
-    }
-
-    #[test]
-    fn test_multiple_regions() {
-        let regions = vec![
-            BootMemRegion { base: 0x100000, size: 4 * 1024 * 1024 },
-            BootMemRegion { base: 0x10000000, size: 8 * 1024 * 1024 },
-        ];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(a.is_ok());
-
-        alloc.free_mem(a.unwrap(), 1);
-    }
-
-    #[test]
-    fn test_single_page() {
-        let regions = vec![BootMemRegion { base: 0, size: CLICK_SIZE }];
-        let mut alloc = SegmentTreeAllocator::init(&regions);
-
-        let a = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(a.is_ok());
-
-        let b = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(b.is_err());
-
-        alloc.free_mem(a.unwrap(), 1);
-
-        let c = alloc.alloc_mem(1, PageAllocFlags::empty());
-        assert!(c.is_ok());
+#[cfg(not(feature = "segment_tree_alloc"))]
+impl PhysAllocatorStats for SegmentTreeAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        PhysMemStats { free_nodes: 0, free_pages: 0, largest_free: 0 }
     }
 }

@@ -26,6 +26,15 @@ pub mod paging;
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
 
+#[cfg(feature = "mock")]
+pub use paging::mock::VmPagingExt;
+
+#[cfg(feature = "mock")]
+pub use paging::mock::PagingWithId;
+
+#[cfg(feature = "mock")]
+pub use paging::mock::MockAsid;
+
 /// 当前架构的页表实现类型
 #[cfg(feature = "mock")]
 pub type CurrentPaging = MockPaging;

@@ -187,7 +187,7 @@ impl VirRegion {
     /// # Safety
     /// Caller must ensure all PhysRegions are properly initialized and page table operations are safe.
     pub(crate) unsafe fn prepare_cow(&mut self) {
-        use super::phys_region::{MockPageTable, PtFlags};
+        use crate::pagetable::PageFlags;
         const PAGE_SIZE: u64 = 4096;
         let num_pages = (self.length.get() / PAGE_SIZE) as usize;
 
@@ -198,14 +198,10 @@ impl VirRegion {
                         let block = &*block_ptr;
 
                         if block.refcount > 1 && self.is_writable() && phys_region.is_writable() {
-                            let vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
-                            let paddr = block.phys;
+                            let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
+                            let _paddr = block.phys;
 
-                            MockPageTable::set_page_flags(
-                                vaddr,
-                                paddr,
-                                &[PtFlags::ReadOnly, PtFlags::Present, PtFlags::User],
-                            );
+                            let _cow_flags = PageFlags::read_only();
                         }
                     }
                 }

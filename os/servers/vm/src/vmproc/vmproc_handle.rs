@@ -11,6 +11,7 @@
 
 use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 use minix_arch::paging::Paging;
+use minix_arch::VmPagingExt;
 use super::{VmFlags, vmproc::VmProc};
 use crate::pagetable::PageTable;
 use crate::region::RegionAvl;
@@ -364,15 +365,13 @@ impl<'a> ActiveProc<'a> {
                         unsafe {
                             let block = &*block_ptr;
                             let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
-                            let paddr = PhysBytes(block.phys);
+                            let paddr = PhysBytes::new(block.phys);
 
-                            let flags = PageFlags {
-                                present: true,
-                                writable: region.is_writable() && block.refcount == 1,
-                                user_accessible: true,
-                                executable: false,
-                                global: false,
-                                ..PageFlags::empty()
+                            let writable = region.is_writable() && block.refcount == 1;
+                            let flags = if writable {
+                                PageFlags::read_write()
+                            } else {
+                                PageFlags::read_only()
                             };
 
                             mappings.push((vaddr, paddr, flags));

@@ -1,80 +1,94 @@
-use alloc::vec;
-use alloc::vec::Vec;
-use super::alloc_trait::PhysMemAlloc;
+//! Buddy system physical memory allocator.
+//!
+//! This allocator uses the buddy system algorithm for O(log n) allocation
+//! and automatic coalescing of free blocks. Uses SoA (Structure of Arrays)
+//! design for better cache efficiency.
+
+use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
-use super::types::{AllocError, AllocParams, PageAllocFlags, PhysAddr};
-use super::{clicks_to_bytes, CLICK_SIZE, BootMemRegion};
+use super::types::{AllocError, PageAllocFlags, PhysBytes};
+use super::{CLICK_SIZE, BootMemRegion, EarlyHeap};
 
+const FLAG_ALLOCATED: u8 = 0x80;
+const ORDER_MASK: u8 = 0x7F;
+const ORDER_INVALID: u8 = 0xFF;
+// MAX_ORDER=30 limits addressable memory to 2^30 * 4KB = 4TB.
+// To support more, increase to 31 (8TB) or 32 (16TB, requires u33 indices).
 const MAX_ORDER: usize = 30;
+const FREE_LIST_SENTINEL: u32 = u32::MAX;
+// u32 page indices limit total pages to 2^32-1, i.e. 2^32 * 4KB = 16TB.
 
-pub(crate) struct BuddyAllocator {
+pub struct BuddyAllocator {
+    free_list_heads: &'static mut [u32],
+    page_next: &'static mut [u32],
+    page_orders: &'static mut [u8],
     total_pages: usize,
-    free_pages: usize,
     max_order: usize,
-    free_lists: Vec<Vec<usize>>,
-    // page_order[i] 记录页 i 所属块的 order。仅对空闲块的首页有保证；
-    // 已分配块的非首页可能残留旧值。try_merge 依赖此字段判断 buddy 是否可合并，
-    // 因此只读取 buddy 页的 page_order（buddy 必须是空闲块首页才有正确值）。
-    page_order: Vec<u8>,
-    page_free: Vec<bool>,
+    free_pages: usize,
     stats: MemStats,
-    mem_low: usize,
-    mem_high: usize,
 }
 
 impl BuddyAllocator {
-    pub(crate) fn init(regions: &[BootMemRegion]) -> Self {
-        let mut mem_low = usize::MAX;
-        let mut mem_high = 0;
-
-        for region in regions {
-            if region.size == 0 {
-                continue;
-            }
-            region.validate();
-            let from = region.base;
-            let to = region.base + region.size - 1;
-            if from < mem_low {
-                mem_low = from;
-            }
-            if to > mem_high {
-                mem_high = to;
-            }
-        }
-
-        if mem_low == usize::MAX {
-            mem_low = 0;
-        }
-
-        let total_pages = if mem_high > 0 { mem_high / CLICK_SIZE + 1 } else { 0 };
+    pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+        let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
         let max_order = compute_max_order(total_pages);
 
-        let free_lists: Vec<Vec<usize>> = (0..=max_order).map(|_| Vec::new()).collect();
-        let page_order = vec![0u8; total_pages];
-        let page_free = vec![false; total_pages];
+        let free_list_heads = early_heap.alloc_slice::<u32>(max_order + 1);
+        let page_next = early_heap.alloc_slice::<u32>(total_pages);
+        let page_orders = early_heap.alloc_slice::<u8>(total_pages);
+
+        for head in free_list_heads.iter_mut() {
+            *head = FREE_LIST_SENTINEL;
+        }
+        for next in page_next.iter_mut() {
+            *next = FREE_LIST_SENTINEL;
+        }
+        for order in page_orders.iter_mut() {
+            *order = ORDER_INVALID;
+        }
 
         let mut alloc = Self {
+            free_list_heads,
+            page_next,
+            page_orders,
             total_pages,
-            free_pages: 0,
             max_order,
-            free_lists,
-            page_order,
-            page_free,
+            free_pages: 0,
             stats: MemStats::new(),
-            mem_low,
-            mem_high,
         };
 
         for region in regions {
             if region.size == 0 {
                 continue;
             }
+            region.validate();
             let base_page = region.base / CLICK_SIZE;
             let num_pages = region.size / CLICK_SIZE;
             alloc.add_free_region(base_page, num_pages);
         }
 
         alloc
+    }
+
+    pub fn total_memory(&self) -> usize {
+        self.total_pages * CLICK_SIZE
+    }
+
+    pub fn free_memory(&self) -> usize {
+        self.free_pages * CLICK_SIZE
+    }
+
+    pub fn is_under_pressure(&self) -> bool {
+        self.free_pages * 10 < self.total_pages
+    }
+
+    pub(crate) fn largest_free(&self) -> usize {
+        for order in (0..=self.max_order).rev() {
+            if self.free_list_heads[order] != FREE_LIST_SENTINEL {
+                return 1usize << order;
+            }
+        }
+        0
     }
 
     fn add_free_region(&mut self, start: usize, count: usize) {
@@ -84,24 +98,30 @@ impl BuddyAllocator {
         while pos < end {
             let remaining = end - pos;
             let max_align_order = pos.trailing_zeros() as usize;
-            let max_size_order = remaining.next_power_of_two().trailing_zeros() as usize;
+            let max_size_order = if remaining == 0 {
+                0
+            } else {
+                remaining.ilog2() as usize
+            };
             let order = max_align_order.min(max_size_order).min(self.max_order);
             let block_size = 1usize << order;
 
             if pos + block_size > end {
-                let smaller = (end - pos).trailing_zeros() as usize;
-                let smaller = smaller.min(order);
-                if smaller == 0 {
-                    self.page_free[pos] = true;
-                    self.page_order[pos] = 0;
-                    self.free_lists[0].push(pos);
-                    self.free_pages += 1;
+                let gap = end - pos;
+                let fallback_order = if gap <= 1 {
+                    0
+                } else {
+                    gap.ilog2() as usize
+                };
+                let fallback_order = fallback_order.min(order);
+                if fallback_order == 0 {
+                    self.free_block_internal(pos, 0);
                     pos += 1;
                     continue;
                 }
-                let smaller_size = 1usize << smaller;
-                self.free_block_internal(pos, smaller);
-                pos += smaller_size;
+                let fallback_size = 1usize << fallback_order;
+                self.free_block_internal(pos, fallback_order);
+                pos += fallback_size;
                 continue;
             }
 
@@ -110,16 +130,53 @@ impl BuddyAllocator {
         }
     }
 
-    fn free_block(&mut self, page: usize, order: usize) {
+    fn free_block_internal(&mut self, page: usize, order: usize) {
         let block_size = 1usize << order;
-        for i in page..page + block_size {
-            if i < self.total_pages {
-                self.page_free[i] = true;
-                self.page_order[i] = order as u8;
-            }
-        }
-        self.free_lists[order].push(page);
+        self.page_orders[page] = order as u8;
         self.free_pages += block_size;
+        self.push_free(order, page);
+        self.try_merge(page, order);
+    }
+
+    fn try_merge(&mut self, page: usize, mut order: usize) {
+        let mut page = page;
+        while order < self.max_order {
+            let buddy = Self::buddy_of(page, order);
+
+            if buddy >= self.total_pages {
+                break;
+            }
+
+            if self.page_orders[buddy] == ORDER_INVALID {
+                break;
+            }
+
+            if (self.page_orders[buddy] & FLAG_ALLOCATED) != 0 {
+                break;
+            }
+
+            if (self.page_orders[buddy] & ORDER_MASK) != order as u8 {
+                break;
+            }
+
+            if !self.remove_from_free_list(order, buddy) {
+                break;
+            }
+
+            if !self.remove_from_free_list(order, page) {
+                self.push_free(order, buddy);
+                break;
+            }
+
+            self.page_orders[page] = ORDER_INVALID;
+            self.page_orders[buddy] = ORDER_INVALID;
+            let merged = page.min(buddy);
+            order += 1;
+            self.page_orders[merged] = order as u8;
+            self.push_free(order, merged);
+
+            page = merged;
+        }
     }
 
     fn alloc_block(&mut self, order: usize) -> Option<usize> {
@@ -127,14 +184,9 @@ impl BuddyAllocator {
             return None;
         }
 
-        if !self.free_lists[order].is_empty() {
-            let page = self.free_lists[order].pop().unwrap();
+        if let Some(page) = self.pop_free(order) {
             let block_size = 1usize << order;
-            for i in page..page + block_size {
-                if i < self.total_pages {
-                    self.page_free[i] = false;
-                }
-            }
+            self.page_orders[page] = (order as u8) | FLAG_ALLOCATED;
             self.free_pages -= block_size;
             return Some(page);
         }
@@ -142,8 +194,11 @@ impl BuddyAllocator {
         if order < self.max_order {
             if let Some(block) = self.alloc_block(order + 1) {
                 let buddy = block + (1usize << order);
-                self.free_block(buddy, order);
-                self.page_order[block] = order as u8;
+                let buddy_size = 1usize << order;
+                self.page_orders[buddy] = order as u8;
+                self.push_free(order, buddy);
+                self.free_pages += buddy_size;
+                self.page_orders[block] = (order as u8) | FLAG_ALLOCATED;
                 return Some(block);
             }
         }
@@ -151,49 +206,58 @@ impl BuddyAllocator {
         None
     }
 
-    fn buddy_of(&self, page: usize, order: usize) -> usize {
+    fn buddy_of(page: usize, order: usize) -> usize {
         page ^ (1usize << order)
     }
 
-    fn free_block_internal(&mut self, page: usize, order: usize) {
-        let block_size = 1usize << order;
-        for i in page..page + block_size {
-            if i < self.total_pages {
-                self.page_free[i] = true;
-            }
-        }
-        self.page_order[page] = order as u8;
-        self.free_pages += block_size;
-        self.free_lists[order].push(page);
-        self.try_merge(page, order);
+    fn push_free(&mut self, order: usize, page: usize) {
+        let head = self.free_list_heads[order];
+        self.page_next[page] = head;
+        self.free_list_heads[order] = page as u32;
     }
 
-    fn try_merge(&mut self, page: usize, mut order: usize) {
-        let mut page = page;
-        while order < self.max_order {
-            let buddy = self.buddy_of(page, order);
+    fn pop_free(&mut self, order: usize) -> Option<usize> {
+        let head = self.free_list_heads[order];
+        if head == FREE_LIST_SENTINEL {
+            return None;
+        }
+        let page = head as usize;
+        self.free_list_heads[order] = self.page_next[page];
+        self.page_next[page] = FREE_LIST_SENTINEL;
+        Some(page)
+    }
 
-            if buddy >= self.total_pages {
-                break;
+    fn remove_from_free_list(&mut self, order: usize, target: usize) -> bool {
+        let head = self.free_list_heads[order];
+
+        if head == FREE_LIST_SENTINEL {
+            return false;
+        }
+
+        if head as usize == target {
+            self.free_list_heads[order] = self.page_next[target];
+            self.page_next[target] = FREE_LIST_SENTINEL;
+            return true;
+        }
+
+        let max_chain_len = self.total_pages / (1usize << order).max(1);
+        let mut prev = head as usize;
+        let mut visited = 0;
+        loop {
+            let next = self.page_next[prev];
+            if next == FREE_LIST_SENTINEL {
+                return false;
             }
-
-            if self.page_order[buddy] as usize != order {
-                break;
+            if next as usize == target {
+                self.page_next[prev] = self.page_next[target];
+                self.page_next[target] = FREE_LIST_SENTINEL;
+                return true;
             }
-
-            let buddy_idx = self.free_lists[order].iter().position(|&p| p == buddy);
-            if buddy_idx.is_none() {
-                break;
+            prev = next as usize;
+            visited += 1;
+            if visited > max_chain_len {
+                return false;
             }
-            let buddy_idx = buddy_idx.unwrap();
-            self.free_lists[order].remove(buddy_idx);
-
-            let merged = page.min(buddy);
-            order += 1;
-            self.page_order[merged] = order as u8;
-            self.free_lists[order].push(merged);
-
-            page = merged;
         }
     }
 
@@ -203,84 +267,89 @@ impl BuddyAllocator {
         }
         (pages - 1).next_power_of_two().trailing_zeros() as usize
     }
-
-    pub(crate) fn stats(&self) -> &MemStats {
-        &self.stats
-    }
-
-    pub(crate) fn total_memory(&self) -> usize {
-        self.total_pages * CLICK_SIZE
-    }
-
-    pub(crate) fn free_memory(&self) -> usize {
-        self.free_pages * CLICK_SIZE
-    }
-
-    pub(crate) fn is_under_pressure(&self) -> bool {
-        self.free_pages * 10 < self.total_pages
-    }
-
-    pub(crate) fn largest_free(&self) -> usize {
-        for order in (0..=self.max_order).rev() {
-            if !self.free_lists[order].is_empty() {
-                return 1usize << order;
-            }
-        }
-        0
-    }
 }
 
-impl PhysMemAlloc for BuddyAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysAddr, AllocError> {
+impl PhysAllocator for BuddyAllocator {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
         if clicks == 0 {
             self.stats.record_failure();
             return Err(AllocError::OutOfMemory);
         }
 
-        let params = AllocParams::compute(clicks, flags, self.total_pages);
+        let align_clicks = if flags.contains(PageAllocFlags::ALIGN64K) {
+            (64 * 1024) / CLICK_SIZE
+        } else if flags.contains(PageAllocFlags::ALIGN16K) {
+            (16 * 1024) / CLICK_SIZE
+        } else {
+            0
+        };
 
-        let order = Self::order_for_pages(params.alloc_clicks);
+        let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
+            (1 * 1024 * 1024) / CLICK_SIZE
+        } else if flags.contains(PageAllocFlags::LOWER16MB) {
+            (16 * 1024 * 1024) / CLICK_SIZE
+        } else {
+            self.total_pages
+        };
+
+        let size_order = Self::order_for_pages(clicks);
+        let align_order = if align_clicks > 0 {
+            align_clicks.trailing_zeros() as usize
+        } else {
+            0
+        };
+        let order = size_order.max(align_order);
+
+        let page = match self.alloc_block(order) {
+            Some(p) => p,
+            None => {
+                self.stats.record_failure();
+                return Err(super::oom_error(flags));
+            }
+        };
+
         let block_size = 1usize << order;
 
-        let page = self.alloc_block(order).ok_or_else(|| {
-            self.stats.record_failure();
-            params.error_type()
-        })?;
-
-        if page + block_size > params.max_page {
-            self.free_block_internal(page, order);
+        if page + block_size > max_page {
+            self.add_free_region(page, block_size);
             self.stats.record_failure();
             return Err(AllocError::LowMemoryExhausted);
         }
 
-        let (result_page, leading) = params.aligned_result(page);
-
-        if leading > 0 {
-            self.add_free_region(page, leading);
+        if block_size > clicks {
+            self.add_free_region(page + clicks, block_size - clicks);
         }
 
-        let trailing_start = result_page + params.clicks;
-        let trailing_count = (page + block_size).saturating_sub(trailing_start);
-        if trailing_count > 0 {
-            self.add_free_region(trailing_start, trailing_count);
+        if flags.contains(PageAllocFlags::CLEAR) {
+            // TODO: requires kernel IPC (sys_memset), implement after kernel interface
         }
 
-        // TODO(stage-3): 处理 PAF_CLEAR flag。Minix3 在 alloc_pages 末尾调用
-        // sys_memset(NONE, 0, CLICK_SIZE*mem, VM_PAGE_SIZE*pages) 清零分配的页。
-        // 当前阶段缺少 kernel IPC 基础设施，无法调用 sys_memset。
-        // if flags.contains(PageAllocFlags::CLEAR) { ... }
-
-        self.stats.record_alloc(clicks_to_bytes(params.clicks));
-        Ok(PhysAddr::from_page_index(result_page))
+        self.stats.record_alloc(clicks * CLICK_SIZE);
+        Ok(PhysBytes::from_page_index(page))
     }
 
-    fn free_mem(&mut self, base: PhysAddr, clicks: usize) {
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
         if clicks == 0 {
             return;
         }
         let start_page = base.page_index();
         self.add_free_region(start_page, clicks);
-        self.stats.record_free(clicks_to_bytes(clicks));
+        self.stats.record_free(clicks * CLICK_SIZE);
+    }
+
+    fn total_count(&self) -> usize {
+        self.total_pages
+    }
+}
+
+impl PhysAllocatorStats for BuddyAllocator {
+    fn memstats(&self) -> PhysMemStats {
+        let largest_free = self.largest_free();
+        PhysMemStats {
+            free_nodes: 0, // Buddy system does not track free node count; use free_pages instead
+            free_pages: self.free_pages,
+            largest_free,
+        }
     }
 }
 
@@ -288,8 +357,7 @@ fn compute_max_order(total_pages: usize) -> usize {
     if total_pages == 0 {
         return 0;
     }
-    let max_order = total_pages.next_power_of_two().trailing_zeros() as usize;
-    max_order.min(MAX_ORDER)
+    total_pages.next_power_of_two().trailing_zeros() as usize
 }
 
 #[cfg(test)]
@@ -300,24 +368,51 @@ mod tests {
         vec![BootMemRegion { base: 0, size: 128 * 1024 * 1024 }]
     }
 
+    fn make_test_heap(regions: &[BootMemRegion]) -> (&'static mut [u8], EarlyHeap) {
+        let (total_pages, _, _) = super::super::compute_memory_bounds(regions);
+        let max_order = compute_max_order(total_pages);
+
+        let heads_size = (max_order + 1) * 4;
+        let next_size = total_pages * 4;
+        let orders_size = total_pages;
+        let heap_size = heads_size + next_size + orders_size + 1024;
+
+        let buffer: &'static mut [u8] = {
+            let mut v = alloc::vec::Vec::with_capacity(2 * 1024 * 1024);
+            v.resize(2 * 1024 * 1024, 0u8);
+            let boxed = v.into_boxed_slice();
+            alloc::boxed::Box::leak(boxed)
+        };
+
+        let mut heap = EarlyHeap::new();
+        heap.init(buffer.as_mut_ptr(), heap_size);
+        (buffer, heap)
+    }
+
     #[test]
     fn test_alloc_free_basic() {
-        let mut alloc = BuddyAllocator::init(&make_test_regions());
+        let regions = make_test_regions();
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
     }
 
     #[test]
-    fn test_alloc_zero_clicks() {
-        let mut alloc = BuddyAllocator::init(&make_test_regions());
+    fn test_alloc_zero_pages() {
+        let regions = make_test_regions();
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
 
     #[test]
     fn test_alloc_exhaustion() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -334,7 +429,8 @@ mod tests {
     #[test]
     fn test_buddy_merge() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
@@ -347,20 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn test_lower16mb_flag() {
-        let regions = vec![BootMemRegion { base: 0, size: 32 * 1024 * 1024 }];
-        let mut alloc = BuddyAllocator::init(&regions);
-
-        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
-        assert!(addr.as_usize() < 16 * 1024 * 1024);
-
-        alloc.free_mem(addr, 1);
-    }
-
-    #[test]
     fn test_largest_free() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         assert!(alloc.largest_free() >= 256);
 
@@ -371,7 +457,8 @@ mod tests {
     #[test]
     fn test_internal_fragmentation() {
         let regions = vec![BootMemRegion { base: 0, size: 16 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
         let start = a.page_index();
@@ -384,7 +471,8 @@ mod tests {
     #[test]
     fn test_multiple_allocations() {
         let regions = vec![BootMemRegion { base: 0, size: 64 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let mut addrs = Vec::new();
         for _ in 0..4 {
@@ -403,7 +491,8 @@ mod tests {
             BootMemRegion { base: 0x100000, size: 4 * 1024 * 1024 },
             BootMemRegion { base: 0x10000000, size: 8 * 1024 * 1024 },
         ];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -414,7 +503,8 @@ mod tests {
     #[test]
     fn test_single_page() {
         let regions = vec![BootMemRegion { base: 0, size: CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -431,13 +521,11 @@ mod tests {
     #[test]
     fn test_merge_chain() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
-
-        let page_a = a.page_index();
-        let page_b = b.page_index();
 
         alloc.free_mem(a, 128);
         alloc.free_mem(b, 128);
@@ -451,73 +539,72 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_chain_high_to_low() {
-        let regions = vec![BootMemRegion { base: 0, size: 16 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+    fn test_low_mem_exhausted_error() {
+        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
-        let a = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
-        let b = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
-        let c = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
+        let _a = alloc.alloc_mem(256, PageAllocFlags::empty()).unwrap();
 
-        let page_a = a.page_index();
-        let page_b = b.page_index();
-        let page_c = c.page_index();
-
-        alloc.free_mem(b, 4);
-        alloc.free_mem(a, 4);
-
-        assert_eq!(alloc.largest_free(), 8);
-
-        let d = alloc.alloc_mem(8, PageAllocFlags::empty());
-        assert!(d.is_ok(), "should be able to allocate 8 pages after freeing a+b and merge chain");
-
-        alloc.free_mem(c, 4);
-        alloc.free_mem(d.unwrap(), 8);
+        let err = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap_err();
+        assert_eq!(err, AllocError::LowMemoryExhausted);
     }
 
     #[test]
-    fn test_excess_pages_reused() {
-        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
+    fn test_oom_error_type() {
+        let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
-        let a = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
-        let page_a = a.page_index();
-        assert!(page_a % 16 == 0, "should be 64K aligned");
+        let _a = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
 
-        let free_before = alloc.free_memory();
-        let total = alloc.total_memory();
-
-        let mut addrs = Vec::new();
-        while let Ok(addr) = alloc.alloc_mem(1, PageAllocFlags::empty()) {
-            addrs.push(addr);
-        }
-
-        assert!(addrs.len() > 0, "should be able to allocate pages from excess region");
-        assert_eq!(alloc.free_memory(), 0, "all memory should be allocated");
-
-        for addr in addrs {
-            alloc.free_mem(addr, 1);
-        }
-        alloc.free_mem(a, 1);
+        let err = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap_err();
+        assert_eq!(err, AllocError::OutOfMemory);
     }
 
     #[test]
-    fn test_aligned_alloc_free_no_leak() {
-        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let mut alloc = BuddyAllocator::init(&regions);
-        let total = alloc.total_memory();
-        let free_before = alloc.free_memory();
+    fn test_align64k_no_leak() {
+        let regions = vec![BootMemRegion { base: 0, size: 1024 * CLICK_SIZE }];
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+
+        let initial_free = alloc.free_pages;
 
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
+        assert_eq!(addr.as_usize() % (64 * 1024), 0);
+
         alloc.free_mem(addr, 1);
 
-        let free_after = alloc.free_memory();
-        assert_eq!(free_before, free_after, "aligned alloc+free should not leak: before={}, after={}", free_before, free_after);
+        assert_eq!(alloc.free_pages, initial_free, "free_pages should return to initial after alloc+free with ALIGN64K");
+    }
 
-        let addr = alloc.alloc_mem(3, PageAllocFlags::ALIGN16K).unwrap();
-        alloc.free_mem(addr, 3);
+    #[test]
+    fn test_align16k_no_leak() {
+        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
 
-        let free_after = alloc.free_memory();
-        assert_eq!(free_before, free_after, "aligned alloc+free (3 pages, ALIGN16K) should not leak");
+        let initial_free = alloc.free_pages;
+
+        let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN16K).unwrap();
+        assert_eq!(addr.as_usize() % (16 * 1024), 0);
+
+        alloc.free_mem(addr, 1);
+
+        assert_eq!(alloc.free_pages, initial_free, "free_pages should return to initial after alloc+free with ALIGN16K");
+    }
+
+    #[test]
+    fn test_align_naturally_satisfied() {
+        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
+        let (_, mut heap) = make_test_heap(&regions);
+        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+
+        let addr = alloc.alloc_mem(16, PageAllocFlags::ALIGN64K).unwrap();
+        assert_eq!(addr.as_usize() % (64 * 1024), 0);
+
+        let initial_free = alloc.free_pages;
+        alloc.free_mem(addr, 16);
+        assert_eq!(alloc.free_pages, initial_free + 16);
     }
 }

@@ -46,6 +46,8 @@ impl MemStats {
     }
 
     pub(crate) fn record_free(&mut self, bytes: usize) {
+        debug_assert!(self.active_allocations > 0, "record_free underflow: no active allocations");
+        debug_assert!(self.current_allocated_bytes >= bytes, "record_free underflow: current={}, freeing={}", self.current_allocated_bytes, bytes);
         self.total_deallocations += 1;
         self.active_allocations -= 1;
         self.total_freed_bytes += bytes;
