@@ -5,7 +5,8 @@
 //! - `pid`: Process ID, process index
 //! - `endpoint`: Endpoint identifier (core IPC concept)
 //! - `id`: User ID, Group ID
-//! - `clock`: Clock ticks, virtual address
+//! - `clock`: Clock ticks, timestamp, file offset
+//! - `address`: Virtual/physical address types
 //! - `bitmap`: Generic bitmap
 //! - `boot`: Boot image types
 //! - `cell`: Single-threaded interior mutability primitives
@@ -16,6 +17,7 @@ mod pid;
 mod endpoint;
 mod id;
 mod clock;
+mod address;
 mod bitmap;
 mod boot;
 mod cell;
@@ -26,6 +28,7 @@ pub use pid::*;
 pub use endpoint::*;
 pub use id::*;
 pub use clock::*;
+pub use address::*;
 pub use bitmap::*;
 pub use boot::*;
 pub use cell::*;

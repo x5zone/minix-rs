@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 minix-types = { path = "../libs/minix-types" }
+bitflags = { workspace = true }
 
 [features]
 default = ["mock"]

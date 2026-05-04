@@ -513,11 +513,11 @@ mod tests {
     #[test]
     fn test_page_flags() {
         let flags = PageFlags::read_only();
-        assert!(flags.present());
-        assert!(!flags.writable());
-        assert!(flags.user_accessible());
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(!flags.contains(PageFlags::WRITABLE));
+        assert!(flags.contains(PageFlags::USER_ACCESSIBLE));
 
         let flags = PageFlags::read_write();
-        assert!(flags.writable());
+        assert!(flags.contains(PageFlags::WRITABLE));
     }
 }

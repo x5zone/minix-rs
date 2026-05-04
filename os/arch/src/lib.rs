@@ -21,16 +21,15 @@
 extern crate alloc;
 
 pub mod paging;
+pub mod paging_ext;
 
-// 根据特性选择实现
+#[cfg(feature = "x86_64")]
+pub mod x86_64;
+
+pub use paging_ext::{PagingWithId, HugePages, VmPagingExt};
+
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
-
-#[cfg(feature = "mock")]
-pub use paging::mock::VmPagingExt;
-
-#[cfg(feature = "mock")]
-pub use paging::mock::PagingWithId;
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockAsid;

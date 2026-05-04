@@ -8,142 +8,80 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
-/// 页表项标志位
-///
-/// 各架构的具体标志位可能不同，但核心语义一致：
-/// - Present: 页是否存在
-/// - Writable: 是否可写
-/// - UserAccessible: 用户态是否可访问
-/// - Executable: 是否可执行
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PageFlags {
-    present: bool,
-    writable: bool,
-    user_accessible: bool,
-    executable: bool,
-    global: bool,
-    write_through: bool,
-    no_cache: bool,
-    accessed: bool,
-    dirty: bool,
+bitflags::bitflags! {
+    /// 页表项标志位
+    ///
+    /// OS 层的语义接口，各架构 Paging 实现内部负责将其翻译为硬件 PTE 位编码。
+    /// 使用 bitflags（u16 底层）兼顾内存效率和语义清晰。
+    ///
+    /// 标志分为两类：
+    ///
+    /// **状态类**（直接映射硬件，语义跨架构一致）：
+    /// - `PRESENT` / `WRITABLE` / `USER_ACCESSIBLE` / `ACCESSED` / `DIRTY`
+    ///
+    /// **策略类**（需要翻译，部分架构为反逻辑）：
+    /// - `EXECUTABLE`：x86-64 为 NX 位（反逻辑），ARM64 为 PXN 位（反逻辑），RISC-V 为 X 位（正逻辑）
+    /// - `GLOBAL`：x86-64 为 G 位（正逻辑），ARM64 为 nG 位（反逻辑）
+    /// - `WRITE_THROUGH` / `NO_CACHE`：缓存策略，各架构编码差异大
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct PageFlags: u16 {
+        const PRESENT         = 1 << 0;
+        const WRITABLE        = 1 << 1;
+        const USER_ACCESSIBLE = 1 << 2;
+        const EXECUTABLE      = 1 << 3;
+        const GLOBAL          = 1 << 4;
+        const WRITE_THROUGH   = 1 << 5;
+        const NO_CACHE        = 1 << 6;
+        const ACCESSED        = 1 << 7;
+        const DIRTY           = 1 << 8;
+    }
 }
 
 impl PageFlags {
-    pub const fn empty() -> Self {
-        Self {
-            present: false,
-            writable: false,
-            user_accessible: false,
-            executable: false,
-            global: false,
-            write_through: false,
-            no_cache: false,
-            accessed: false,
-            dirty: false,
-        }
-    }
-
     pub const fn read_only() -> Self {
-        Self {
-            present: true,
-            writable: false,
-            user_accessible: true,
-            executable: false,
-            global: false,
-            write_through: false,
-            no_cache: false,
-            accessed: false,
-            dirty: false,
-        }
+        Self::from_bits_truncate(
+            Self::PRESENT.bits() | Self::USER_ACCESSIBLE.bits()
+        )
     }
 
     pub const fn read_write() -> Self {
-        Self {
-            present: true,
-            writable: true,
-            user_accessible: true,
-            executable: false,
-            global: false,
-            write_through: false,
-            no_cache: false,
-            accessed: false,
-            dirty: false,
-        }
+        Self::from_bits_truncate(
+            Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::USER_ACCESSIBLE.bits()
+        )
     }
 
     pub const fn kernel_read_only() -> Self {
-        Self {
-            present: true,
-            writable: false,
-            user_accessible: false,
-            executable: false,
-            global: true,
-            write_through: false,
-            no_cache: false,
-            accessed: false,
-            dirty: false,
-        }
+        Self::from_bits_truncate(
+            Self::PRESENT.bits() | Self::GLOBAL.bits()
+        )
     }
 
     pub const fn kernel_read_write() -> Self {
-        Self {
-            present: true,
-            writable: true,
-            user_accessible: false,
-            executable: false,
-            global: true,
-            write_through: false,
-            no_cache: false,
-            accessed: false,
-            dirty: false,
-        }
+        Self::from_bits_truncate(
+            Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::GLOBAL.bits()
+        )
     }
 
-    pub const fn present(&self) -> bool { self.present }
-    pub const fn writable(&self) -> bool { self.writable }
-    pub const fn user_accessible(&self) -> bool { self.user_accessible }
-    pub const fn executable(&self) -> bool { self.executable }
-    pub const fn global(&self) -> bool { self.global }
-    pub const fn write_through(&self) -> bool { self.write_through }
-    pub const fn no_cache(&self) -> bool { self.no_cache }
-    pub const fn accessed(&self) -> bool { self.accessed }
-    pub const fn dirty(&self) -> bool { self.dirty }
-
-    pub const fn with_writable(self) -> Self {
-        Self { writable: true, ..self }
-    }
-
-    pub const fn without_writable(self) -> Self {
-        Self { writable: false, ..self }
-    }
-
-    pub const fn with_user(self) -> Self {
-        Self { user_accessible: true, ..self }
-    }
-
-    pub const fn with_executable(self) -> Self {
-        Self { executable: true, ..self }
-    }
-
-    pub const fn with_global(self) -> Self {
-        Self { global: true, ..self }
+    /// Kernel code pages: present + executable + global, but NOT writable.
+    ///
+    /// Kernel code pages should be read-execute only (W^X principle).
+    /// For writable executable pages (e.g., kernel module loading, ftrace),
+    /// construct the flags manually.
+    pub const fn kernel_executable() -> Self {
+        Self::from_bits_truncate(
+            Self::PRESENT.bits() | Self::EXECUTABLE.bits() | Self::GLOBAL.bits()
+        )
     }
 }
 
 /// 页表错误类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageTableError {
-    /// 无效地址
     InvalidAddress,
-    /// 页已存在
     AlreadyMapped,
-    /// 页不存在
     NotMapped,
-    /// 分配失败
     AllocationFailed,
-    /// 权限不足
     PermissionDenied,
-    /// 架构不支持
     NotSupported,
 }
 
@@ -163,97 +101,79 @@ impl core::fmt::Display for PageTableError {
 /// 页表管理trait
 ///
 /// 定义页表的核心操作，各架构需要实现此trait。
-/// 这是OS与硬件分页机制的抽象接口。
+///
+/// **设计选择**：当前 trait 采用"扁平映射"语义——`map()` 在调用者看来
+/// 是单步操作，中间页表（PDPT/PD/PT 等）的按需分配由实现内部处理，
+/// 不暴露给调用者。这简化了 VM 层的使用，但意味着调用者无法直接控制
+/// 中间层条目。若未来需要 THP split/merge、migration entry 等精细控制，
+/// 可扩展此 trait 或引入新的 `PagingLevel` trait。
 pub trait Paging {
-    /// 页大小（通常为4KB）
     const PAGE_SIZE: usize;
 
-    /// 创建新的页表
-    ///
-    /// # 返回值
-    /// - `Ok(table_id)`: 页表标识符
-    /// - `Err(_)`: 创建失败
     fn new() -> Result<Self, PageTableError>
     where
         Self: Sized;
 
-    /// 销毁页表
+    /// Destroy this page table and release all resources.
     ///
     /// # Safety
-    /// 调用者必须确保此页表不再被使用（包括当前未激活此页表）
+    ///
+    /// Caller must ensure:
+    /// - This page table is not currently active on any CPU
+    /// - The page table has been unbound from any process
+    /// - All mappings have been properly unmapped, or caller accepts memory leak
     unsafe fn destroy(&mut self);
 
-    /// 映射虚拟地址到物理地址
-    ///
-    /// # 参数
-    /// - `vaddr`: 虚拟地址（页对齐）
-    /// - `paddr`: 物理地址（页对齐）
-    /// - `flags`: 页标志
-    ///
-    /// # 返回值
-    /// - `Ok(())`: 映射成功
-    /// - `Err(AlreadyMapped)`: 该虚拟地址已映射
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
-    /// 取消映射虚拟地址
-    ///
-    /// # 参数
-    /// - `vaddr`: 虚拟地址（页对齐）
-    ///
-    /// # 返回值
-    /// - `Ok(paddr)`: 取消映射成功，返回原物理地址
-    /// - `Err(NotMapped)`: 该虚拟地址未映射
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
 
-    /// 更新页标志
-    ///
-    /// # 参数
-    /// - `vaddr`: 虚拟地址
-    /// - `flags`: 新标志
-    ///
-    /// # 返回值
-    /// - `Ok(())`: 更新成功
-    /// - `Err(NotMapped)`: 该虚拟地址未映射
     fn update_flags(&mut self, vaddr: VirBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
-    /// 查询虚拟地址的映射信息
-    ///
-    /// # 参数
-    /// - `vaddr`: 虚拟地址
-    ///
-    /// # 返回值
-    /// - `Some((paddr, flags))`: 映射信息
-    /// - `None`: 未映射
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)>;
 
-    /// 获取页表根物理地址（用于激活页表）
-    ///
-    /// # 返回值
-    /// 页目录/页表的物理地址
     fn root_paddr(&self) -> PhysBytes;
 
-    /// 激活此页表
+    /// Activate this page table on the current CPU.
     ///
     /// # Safety
-    /// 这是特权操作，只能在内核态执行。
-    /// 调用者必须确保新页表包含有效的内核映射。
+    ///
+    /// Caller must ensure:
+    /// - The page table is fully initialized (kernel mappings present)
+    /// - On SMP systems, proper TLB invalidation is performed after switch
+    /// - No stale references to the old page table's mappings are in use
     unsafe fn switch(&self);
 
-    /// 刷新地址转换缓存（整个页表）
+    /// Flush TLB entries associated with this page table.
+    ///
+    /// Without ASID, equivalent to a global TLB flush.
+    /// With PCID/ASID, only flushes entries for the current address space.
     ///
     /// # Safety
-    /// 特权操作
+    ///
+    /// Caller must ensure:
+    /// - This is called in a valid MMU context (a page table is active)
+    /// - Global flush affects all address spaces; use with care on SMP
     unsafe fn flush_tlb(&self);
 
-    /// 刷新指定虚拟地址的地址转换缓存项
+    /// Flush the TLB entry for a single virtual address.
     ///
     /// # Safety
-    /// 特权操作
+    ///
+    /// Caller must ensure:
+    /// - `vaddr` falls within the currently active page table's valid range
+    /// - This is called in a valid MMU context (a page table is active)
     unsafe fn flush_tlb_addr(&self, vaddr: VirBytes);
 
     /// 批量映射连续虚拟页到连续物理页
+    ///
+    /// 提供默认实现（逐页调用 `map()`），arch 实现可覆盖以利用硬件优化：
+    /// - x86-64：批量映射后单次 CR3 reload 替代多次 INVLPG，减少 TLB 刷新开销
+    /// - ARM64：类似，可利用 TLBI range 指令
+    ///
+    /// 对应 Minix3 `pt_writemap()` 的批量映射语义。
     fn map_range(
         &mut self,
         vaddr_start: VirBytes,
@@ -269,7 +189,10 @@ pub trait Paging {
         Ok(())
     }
 
-    /// 批量取消映射
+    /// 批量取消映射连续虚拟页
+    ///
+    /// 提供默认实现（逐页调用 `unmap()`），arch 实现可覆盖以利用硬件优化，
+    /// 与 `map_range` 对称。
     fn unmap_range(
         &mut self,
         vaddr_start: VirBytes,
@@ -282,58 +205,68 @@ pub trait Paging {
         Ok(())
     }
 
-    /// 检查地址范围是否全部映射且满足权限
-    fn check_range(
-        &self,
-        vaddr_start: VirBytes,
-        pages: usize,
-        require_writable: bool,
-    ) -> Result<(), PageTableError> {
-        for i in 0..pages {
-            let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
-            match self.query(v) {
-                Some((_, flags)) => {
-                    if require_writable && !flags.writable() {
-                        return Err(PageTableError::PermissionDenied);
-                    }
-                }
-                None => return Err(PageTableError::NotMapped),
-            }
-        }
-        Ok(())
-    }
+    // REMOVED: check_range — 2026-05
+    //
+    // Minix3 原版 pt_checkrange() 在全源码中仅有一处调用，且被 #if SANITYCHECKS
+    // 包裹（region.c:746-751，在 map_pf() 中），属于 debug-only 断言而非生产 API。
+    // 该函数无硬件优化空间（仅是 query() 的循环），VM 层需要时可自行循环 query()
+    // 实现。因此不纳入 Paging trait，保持 trait 只包含硬件必须提供语义的操作。
+    //
+    // 原实现保留如下供参考：
+    //
+    // fn check_range(
+    //     &self,
+    //     vaddr_start: VirBytes,
+    //     pages: usize,
+    //     require_writable: bool,
+    // ) -> Result<(), PageTableError> {
+    //     for i in 0..pages {
+    //         let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+    //         match self.query(v) {
+    //             Some((_, flags)) => {
+    //                 if require_writable && !flags.contains(PageFlags::WRITABLE) {
+    //                     return Err(PageTableError::PermissionDenied);
+    //                 }
+    //             }
+    //             None => return Err(PageTableError::NotMapped),
+    //         }
+    //     }
+    //     Ok(())
+    // }
 }
 
-/// 页表统计信息
+/// Page table statistics.
+///
+/// Corresponds to Minix3's `memstats()`/`total_pages`/`free_pages` tracking
+/// used by `printmemstats()` and `vm_info` sysctl. Fields will be populated
+/// by a future `Paging::stats()` method.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PageTableStats {
-    /// 已映射页数
-    pub mapped_pages: usize,
-    /// 已使用页表数
-    pub used_page_tables: usize,
-    /// 总页表数
-    pub total_page_tables: usize,
+    pub(crate) mapped_pages: usize,
+    pub(crate) used_page_tables: usize,
+    pub(crate) total_page_tables: usize,
 }
+
+
 
 /// Mock分页实现
 ///
 /// 用于用户态测试的软件模拟实现。
 /// 不操作真实硬件，仅在内存中维护映射表。
+///
+/// **线程模型**：非并发安全。`mappings` 字段使用 `BTreeMap` 且未加锁，
+/// 仅设计用于单线程测试（`#[cfg(test)]`）。多线程测试需外部同步。
 #[cfg(feature = "mock")]
 pub mod mock {
     use super::*;
+    use crate::paging_ext::PagingWithId;
     use alloc::collections::BTreeMap;
-    use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Mock页表实现
     #[derive(Debug)]
     pub struct MockPaging {
-        /// 页表ID
         id: usize,
-        /// 虚拟地址到(物理地址, 标志)的映射
         mappings: BTreeMap<u64, (u64, PageFlags)>,
-        /// 页表根物理地址（模拟）
         root_phys: u64,
     }
 
@@ -343,10 +276,8 @@ pub mod mock {
     const NO_ACTIVE_TABLE: usize = usize::MAX;
 
     impl MockPaging {
-        /// 创建新的Mock页表
-        pub fn new_mock() -> Result<Self, PageTableError> {
+        pub(crate) fn new_mock() -> Result<Self, PageTableError> {
             let id = MOCK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-
             Ok(Self {
                 id,
                 mappings: BTreeMap::new(),
@@ -354,24 +285,12 @@ pub mod mock {
             })
         }
 
-        /// 获取页表ID
         pub fn id(&self) -> usize {
             self.id
         }
 
-        /// 获取所有映射（用于测试）
         pub fn mappings(&self) -> &BTreeMap<u64, (u64, PageFlags)> {
             &self.mappings
-        }
-
-        /// 对齐地址到页边界
-        fn page_align(addr: u64) -> u64 {
-            (addr + Self::PAGE_SIZE as u64 - 1) & !(Self::PAGE_SIZE as u64 - 1)
-        }
-
-        /// 向下对齐地址
-        fn page_align_down(addr: u64) -> u64 {
-            addr & !(Self::PAGE_SIZE as u64 - 1)
         }
     }
 
@@ -387,7 +306,6 @@ pub mod mock {
 
         unsafe fn destroy(&mut self) {
             self.mappings.clear();
-
             if ACTIVE_MOCK_TABLE.load(Ordering::SeqCst) == self.id {
                 ACTIVE_MOCK_TABLE.store(NO_ACTIVE_TABLE, Ordering::SeqCst);
             }
@@ -399,12 +317,10 @@ pub mod mock {
             let v = vaddr.0;
             let p = paddr.0;
 
-            // 检查页对齐
             if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
                 return Err(PageTableError::InvalidAddress);
             }
 
-            // 检查是否已映射
             if self.mappings.contains_key(&v) {
                 return Err(PageTableError::AlreadyMapped);
             }
@@ -416,7 +332,6 @@ pub mod mock {
         fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
             let v = vaddr.0;
 
-            // 检查页对齐
             if v % Self::PAGE_SIZE as u64 != 0 {
                 return Err(PageTableError::InvalidAddress);
             }
@@ -430,9 +345,7 @@ pub mod mock {
         fn update_flags(&mut self, vaddr: VirBytes, flags: PageFlags)
             -> Result<(), PageTableError>
         {
-            let v = vaddr.0;
-
-            match self.mappings.get_mut(&v) {
+            match self.mappings.get_mut(&vaddr.0) {
                 Some((_, f)) => {
                     *f = flags;
                     Ok(())
@@ -442,8 +355,7 @@ pub mod mock {
         }
 
         fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-            let v = vaddr.0;
-            self.mappings.get(&v).map(|(p, f)| (PhysBytes(*p), *f))
+            self.mappings.get(&vaddr.0).map(|(p, f)| (PhysBytes(*p), *f))
         }
 
         fn root_paddr(&self) -> PhysBytes {
@@ -454,76 +366,29 @@ pub mod mock {
             ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
         }
 
-        unsafe fn flush_tlb(&self) {
-            // Mock实现：无操作
-        }
+        unsafe fn flush_tlb(&self) {}
 
-        unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {
-            // Mock实现：无操作
-        }
+        unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {}
     }
 
-    /// VM 层页表扩展操作
-    ///
-    /// 这些操作不属于纯分页机制，而是 VM 策略层的需求：
-    /// - `bind_to_process` 涉及内核交互（sys_vmctl_set_addrspace）
-    /// - `map_kernel` 涉及内核映射策略（4MB 大页、页目录页表等）
-    pub trait VmPagingExt: Paging {
-        /// 将页表绑定到指定进程
-        ///
-        /// 对应Minix3的 `pt_bind()`。
-        fn bind_to_process(&self, endpoint: minix_types::Endpoint) -> Result<(), PageTableError>;
-
-        /// 映射内核地址空间到页表
-        ///
-        /// 对应Minix3的 `pt_mapkernel()`。
-        fn map_kernel(&mut self) -> Result<(), PageTableError>;
-    }
-
-    impl VmPagingExt for MockPaging {
+    impl crate::paging_ext::VmPagingExt for MockPaging {
         fn bind_to_process(&self, _endpoint: minix_types::Endpoint) -> Result<(), PageTableError> {
             Ok(())
         }
 
         fn map_kernel(&mut self) -> Result<(), PageTableError> {
-            let kernel_start = 0xFFFF_8000_0000_0000u64;
-            for i in 0..16 {
-                let vaddr = VirBytes(kernel_start + i * Self::PAGE_SIZE as u64);
-                let paddr = PhysBytes(0x100_0000 + i * Self::PAGE_SIZE as u64);
+            const MOCK_KERNEL_VBASE: u64 = 0xFFFF_8000_0000_0000;
+            const MOCK_KERNEL_PBASE: u64 = 0x100_0000;
+            const MOCK_KERNEL_PAGES: usize = 16;
+
+            for i in 0..MOCK_KERNEL_PAGES {
+                let vaddr = VirBytes(MOCK_KERNEL_VBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let paddr = PhysBytes(MOCK_KERNEL_PBASE + i as u64 * Self::PAGE_SIZE as u64);
                 let flags = PageFlags::kernel_read_write();
-                let _ = self.map(vaddr, paddr, flags);
+                self.map(vaddr, paddr, flags)?;
             }
             Ok(())
         }
-    }
-
-    /// PCID/ASID 支持（可选 trait）
-    ///
-    /// 不是所有架构都支持此功能。Minix3 未使用 PCID，
-    /// 但 x86-64/ARM64/RISC-V 实现应实现此 trait 以获得 TLB 优化。
-    ///
-    /// | 架构 | 机制 | 位宽 |
-    /// |------|------|------|
-    /// | x86-64 | PCID | 12-bit |
-    /// | ARM64 | ASID | 8/16-bit |
-    /// | RISC-V | ASID | 16-bit |
-    pub trait PagingWithId: Paging {
-        type AddressSpaceId: Copy + Eq + core::fmt::Debug;
-
-        fn alloc_asid(&self) -> Result<Self::AddressSpaceId, PageTableError>;
-        fn free_asid(&self, id: Self::AddressSpaceId);
-
-        /// # Safety
-        /// 特权操作
-        unsafe fn switch_with_asid(&self, id: Self::AddressSpaceId);
-
-        /// # Safety
-        /// 特权操作
-        unsafe fn flush_tlb_asid(&self, id: Self::AddressSpaceId);
-
-        /// # Safety
-        /// 特权操作
-        unsafe fn flush_tlb_addr_asid(&self, vaddr: VirBytes, id: Self::AddressSpaceId);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,8 +406,7 @@ pub mod mock {
 
         fn free_asid(&self, _id: MockAsid) {}
 
-        unsafe fn switch_with_asid(&self, id: MockAsid) {
-            let _ = id;
+        unsafe fn switch_with_asid(&self, _id: MockAsid) {
             self.switch();
         }
 
@@ -568,22 +432,18 @@ pub mod mock {
             let paddr = PhysBytes(0x2000);
             let flags = PageFlags::read_write();
 
-            // 映射
             assert!(pt.map(vaddr, paddr, flags).is_ok());
 
-            // 查询
             let result = pt.query(vaddr);
             assert!(result.is_some());
             let (p, f) = result.unwrap();
             assert_eq!(p, paddr);
-            assert!(f.writable());
+            assert!(f.contains(PageFlags::WRITABLE));
 
-            // 取消映射
             let unmapped = pt.unmap(vaddr);
             assert!(unmapped.is_ok());
             assert_eq!(unmapped.unwrap(), paddr);
 
-            // 再次查询应失败
             assert!(pt.query(vaddr).is_none());
         }
 
@@ -604,9 +464,7 @@ pub mod mock {
         #[test]
         fn test_mock_unmapped() {
             let mut pt = MockPaging::new().unwrap();
-            let vaddr = VirBytes(0x1000);
-
-            assert_eq!(pt.unmap(vaddr), Err(PageTableError::NotMapped));
+            assert_eq!(pt.unmap(VirBytes(0x1000)), Err(PageTableError::NotMapped));
         }
 
         #[test]
@@ -615,26 +473,19 @@ pub mod mock {
             let vaddr = VirBytes(0x1000);
             let paddr = PhysBytes(0x2000);
 
-            // 初始为可写
             pt.map(vaddr, paddr, PageFlags::read_write()).unwrap();
-
-            // 更新为只读
             pt.update_flags(vaddr, PageFlags::read_only()).unwrap();
 
-            // 验证
             let (_, flags) = pt.query(vaddr).unwrap();
-            assert!(!flags.writable());
-            assert!(flags.present());
+            assert!(!flags.contains(PageFlags::WRITABLE));
+            assert!(flags.contains(PageFlags::PRESENT));
         }
 
         #[test]
         fn test_mock_switch() {
             let pt = MockPaging::new().unwrap();
-            let id = pt.id();
-
             unsafe {
                 pt.switch();
-                // 在Mock中无法直接验证，但不应panic
             }
         }
 
@@ -649,13 +500,53 @@ pub mod mock {
         fn test_mock_alignment_check() {
             let mut pt = MockPaging::new().unwrap();
 
-            // 未对齐的地址应该失败
             let vaddr = VirBytes(0x1001);
             let paddr = PhysBytes(0x2000);
             assert_eq!(
                 pt.map(vaddr, paddr, PageFlags::read_write()),
                 Err(PageTableError::InvalidAddress)
             );
+        }
+
+        #[test]
+        fn test_page_flags_presets() {
+            let ro = PageFlags::read_only();
+            assert!(ro.contains(PageFlags::PRESENT));
+            assert!(!ro.contains(PageFlags::WRITABLE));
+            assert!(ro.contains(PageFlags::USER_ACCESSIBLE));
+
+            let rw = PageFlags::read_write();
+            assert!(rw.contains(PageFlags::PRESENT));
+            assert!(rw.contains(PageFlags::WRITABLE));
+            assert!(rw.contains(PageFlags::USER_ACCESSIBLE));
+
+            let kro = PageFlags::kernel_read_only();
+            assert!(kro.contains(PageFlags::PRESENT));
+            assert!(!kro.contains(PageFlags::WRITABLE));
+            assert!(!kro.contains(PageFlags::USER_ACCESSIBLE));
+            assert!(kro.contains(PageFlags::GLOBAL));
+
+            let krw = PageFlags::kernel_read_write();
+            assert!(krw.contains(PageFlags::PRESENT));
+            assert!(krw.contains(PageFlags::WRITABLE));
+            assert!(!krw.contains(PageFlags::USER_ACCESSIBLE));
+            assert!(krw.contains(PageFlags::GLOBAL));
+        }
+
+        #[test]
+        fn test_page_flags_combination() {
+            let flags = PageFlags::read_write() | PageFlags::EXECUTABLE;
+            assert!(flags.contains(PageFlags::EXECUTABLE));
+            assert!(flags.contains(PageFlags::WRITABLE));
+
+            let cow_flags = PageFlags::read_write() - PageFlags::WRITABLE;
+            assert!(!cow_flags.contains(PageFlags::WRITABLE));
+            assert!(cow_flags.contains(PageFlags::PRESENT));
+        }
+
+        #[test]
+        fn test_page_flags_size() {
+            assert_eq!(core::mem::size_of::<PageFlags>(), 2);
         }
     }
 }
