@@ -1,18 +1,19 @@
-//! 分页扩展 trait
+//! Paging extension traits
 //!
-//! 可选的页表功能扩展，非所有架构都支持：
-//! - `PagingWithId`: TLB 进程标识（PCID/ASID）
-//! - `HugePages`: 大页支持
-//! - `VmPagingExt`: VM 进程管理专用操作
+//! Optional page table feature extensions, not supported by all architectures:
+//! - `PagingWithId`: TLB process identification (PCID/ASID)
+//! - `HugePages`: huge page support
+//! - `VmPagingExt`: VM process management operations
 //!
-//! # 未来扩展
+//! # Future extensions
 //!
-//! 以下功能待实际需求出现时添加到此模块：
+//! The following features will be added to this module when actual demand arises:
 //!
-//! - **`clear_dirty()`**：页面置换算法（Clock/LRU）需要周期性清除 dirty 位
-//!   以检测页面被重新写入。当前可通过 `update_flags()` 实现，但专用方法
-//!   可在 x86-64 上使用原子 RMW 操作（如 `LOCK CMPXCHG16B`），避免
-//!   读取-修改-写回期间硬件更新丢失。
+//! - **`clear_dirty()`**: Page replacement algorithms (Clock/LRU) need to periodically
+//!   clear the dirty bit to detect pages that have been re-written. Currently this can
+//!   be done via `update_flags()`, but a dedicated method could use atomic RMW
+//!   operations on x86-64 (e.g., `LOCK CMPXCHG16B`), avoiding loss of hardware
+//!   updates during the read-modify-write cycle.
 
 use minix_types::{Endpoint, PhysBytes, VirBytes};
 use crate::paging::{PageFlags, PageTableError, Paging};
@@ -45,14 +46,16 @@ pub trait VmPagingExt: Paging {
     fn map_kernel(&mut self) -> Result<(), PageTableError>;
 }
 
-/// TLB 进程标识支持（可选 trait）
+/// TLB process identification support (optional trait)
 ///
-/// 为 TLB 条目标记进程标识，避免上下文切换时刷新整个 TLB，
-/// 从而显著减少 TLB miss 开销。
+/// Tags TLB entries with a process identifier, avoiding a full TLB flush
+/// on context switch and significantly reducing TLB miss overhead.
 ///
-/// **注意**：本 trait 不定义 ASID/PCID 的生命周期语义和复用策略。
-/// ASID 的分配/回收策略、TLB shootdown 一致性维护、generation counter
-/// 等机制由上层 VM 管理器负责。本 trait 仅提供底层硬件操作的原语。
+/// **Note**: This trait does not define ASID/PCID lifecycle semantics or
+/// reuse strategies. ASID allocation/recycling policy, TLB shootdown
+/// consistency maintenance, and generation counter mechanisms are the
+/// responsibility of the upper VM manager. This trait only provides
+/// low-level hardware operation primitives.
 pub trait PagingWithId: Paging {
     type AddressSpaceId: Copy + Eq + core::fmt::Debug + Send;
 
@@ -100,7 +103,7 @@ pub trait PagingWithId: Paging {
     unsafe fn flush_tlb_addr_asid(&self, vaddr: VirBytes, id: Self::AddressSpaceId);
 }
 
-/// 大页支持（可选 trait）
+/// Huge page support (optional trait)
 pub trait HugePages: Paging {
     const HUGE_PAGE_SIZES: &'static [usize];
 

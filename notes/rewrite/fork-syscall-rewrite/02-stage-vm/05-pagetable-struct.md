@@ -299,6 +299,10 @@ pub trait Paging {
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
+    /// 原子覆盖映射，对应 Minix3 pt_writemap() + WMF_OVERWRITE
+    fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+        -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>;
+
     /// 取消映射虚拟地址
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
 
@@ -424,30 +428,35 @@ bitflags::bitflags! {
 }
 
 impl PageFlags {
+    /// User-space read-only. Minix3: `PTF_PRESENT|PTF_USER`
     pub const fn read_only() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::USER_ACCESSIBLE.bits()
         )
     }
 
+    /// User-space read-write. Minix3: `PTF_PRESENT|PTF_USER|PTF_WRITE`
     pub const fn read_write() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::USER_ACCESSIBLE.bits()
         )
     }
 
+    /// Kernel read-only (global).
     pub const fn kernel_read_only() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::GLOBAL.bits()
         )
     }
 
+    /// Kernel read-write (global).
     pub const fn kernel_read_write() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::GLOBAL.bits()
         )
     }
 
+    /// Kernel executable (global, W^X).
     pub const fn kernel_executable() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::EXECUTABLE.bits() | Self::GLOBAL.bits()
@@ -610,6 +619,8 @@ impl Paging for MockPaging {
 
 ## 4. 实现详解
 
+> 本章使用的地址类型（`VirBytes`/`PhysBytes`）和架构抽象定义见 §5。
+
 ### 4.1 MockPaging 实现
 
 **Mock 实现**:
@@ -660,6 +671,17 @@ impl Paging for MockPaging {
         // 添加映射
         self.mappings.insert(vaddr.0, (paddr.0, flags));
         Ok(())
+    }
+
+    fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+        -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>
+    {
+        if vaddr.0 % Self::PAGE_SIZE as u64 != 0 {
+            return Err(PageTableError::InvalidAddress);
+        }
+        let old = self.mappings.insert(vaddr.0, (paddr.0, flags))
+            .map(|(old_p, old_f)| (PhysBytes(old_p), old_f));
+        Ok(old)
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
@@ -721,7 +743,10 @@ let root = page_table.root_paddr();
 
 **设计决策**: `page_align`/`page_align_down` 作为模块级自由函数定义在
 VM crate 的 `pagetable/mod.rs` 中（以 `PageTable` 的 `PAGE_SIZE` 为基准），
-而非 `Paging` trait 的方法或具体实现的私有方法。
+而非 `Paging` trait 的方法或具体实现的私有方法。理由：对齐操作不依赖页表实例，
+只依赖 `PAGE_SIZE` 常量，作为自由函数更自然（`page_align(addr)` vs
+`pt.page_align(addr)`）。放在 VM crate 而非 `minix_types`，是因为
+`PAGE_SIZE` 是 `Paging` trait 的关联常量，VM crate 是唯一的使用方。
 
 **对齐辅助方法**:
 
@@ -846,6 +871,12 @@ pub struct VirBytes(pub u64);
 pub struct PhysBytes(pub u64);
 ```
 
+> **为什么用 `u64` 而非 `usize`**：虚拟/物理地址的宽度由架构决定，不等于指针大小。
+> x86-64 的虚拟地址仅 48 位（或 57 位 w/ L5PT）但存储在 64 位寄存器中，
+> 物理地址宽度为 52 位。使用 `u64` 明确表达"这是一个 64 位地址值"，
+> 而 `usize` 的语义是"指针大小"，在 32 位目标上为 32 位，会导致地址截断。
+> 此外，`u64` 保证跨平台布局一致，便于内核-用户态共享结构体。
+
 **类型对比**:
 
 | 特性 | `VirBytes` | `PhysBytes` |
@@ -887,6 +918,9 @@ let aligned = VirBytes(0x1234) + 0x100 - 0x34;  // VirBytes(0x1300)
 **设计原则**: 通过 trait 抽象架构差异，统一 OS 接口。
 
 **架构差异对比**:
+
+> ⚠️ 以下 ARM64/RISC-V 信息来自架构手册，非 Minix3 源码（Minix3 仅支持 x86-32），
+> 仅供 Rust 版本设计参考。
 
 | 特性 | Mock | x86-64 | ARM64 | RISC-V 64 |
 |------|------|--------|-------|-----------|
@@ -1134,6 +1168,14 @@ pub(crate) struct VmProc {
 > 可能使用固定大小数组或 early heap。无论内部实现如何，`MaybeUninit` 提供了
 > 延迟初始化的能力，让 `VmProc::vacant()` 可以是 `const fn`。
 
+> **为什么不用 `Option<PageTable>`**：`Option` 的自动 `Drop` 会在 `VmProc` 被 drop
+> 时自动调用 `PageTable::drop()`，这与内核的显式生命周期管理理念冲突——内核偏好
+> `unsafe fn destroy()` 显式销毁，而非依赖 RAII。`MaybeUninit` 没有 `Drop`，
+> 天然避免此问题。`ManuallyDrop<Option<PageTable>>` 虽然也能防止自动 drop，
+> 但比 `MaybeUninit + bool` 更啰嗦，且语义类似。此外，typestate view
+> （`EmptySlot` → `ActiveProc` → `ExitingProc`）在编译期保证了"初始化后才能访问"，
+> `vm_pt_initialized` 字段是防御性运行时检查，不是主要保障。
+
 **初始化失败处理**:
 
 | 进程类型 | 失败处理 | 原因 |
@@ -1256,218 +1298,29 @@ fn setup_process_memory(active: &mut ActiveProc) -> Result<(), PageTableError> {
 
 ## 6. 测试与验证
 
-### 6.1 Paging trait 实现测试
+> 实际测试代码位于 `os/arch/src/paging.rs` 的 `mock::tests` 模块，
+> 使用 `#[cfg(test)]` + `#[cfg(feature = "mock")]` 条件编译。
+> 以下仅列出测试设计意图，不重复实际代码。
 
-**测试原则**: 验证 MockPaging 正确实现 Paging trait。
+### 6.1 测试覆盖矩阵
 
-**创建和销毁测试**:
+| 测试场景 | 验证点 | 对应 Minix3 行为 |
+|----------|--------|-----------------|
+| `new()` + `destroy()` | 页表创建/销毁生命周期 | `pt_new()` / `pt_free()` |
+| `map()` + `query()` | 映射后可查询 | `pt_writemap()` + `pt_checkrange()` |
+| `map()` 重复映射 → `AlreadyMapped` | 不允许静默覆盖 | `pt_writemap()` 无 `WMF_OVERWRITE` 时行为 |
+| `remap()` 覆盖映射 | 原子替换旧映射 | `pt_writemap()` + `WMF_OVERWRITE` |
+| `unmap()` → `query()` 返回 None | 取消映射后不可查询 | `pt_writemap(MAP_NONE, 0)` |
+| `unmap()` 未映射地址 → `NotMapped` | 取消不存在的映射报错 | Minix3 无此检查（静默忽略） |
+| `update_flags()` 保留物理地址 | 只改标志不改映射目标 | `pt_writemap()` + `WMF_WRITEFLAGSONLY` |
+| 未对齐地址 → `InvalidAddress` | 地址必须页对齐 | Minix3 隐式依赖硬件检查 |
+| `PageFlags::read_only()` / `read_write()` | 预设标志位正确性 | `PTF_PRESENT|PTF_USER` / `PTF_PRESENT|PTF_USER|PTF_WRITE` |
+| `PageFlags` 位运算（`-` / `|`） | CoW 清 WRITABLE、共享加 GLOBAL | Minix3 手动位操作 |
 
-```rust
-#[test]
-fn test_mock_paging_new() {
-    // 创建页表应成功
-    let pt = MockPaging::new();
-    assert!(pt.is_ok());
-
-    // 根物理地址应有效
-    let pt = pt.unwrap();
-    let root = pt.root_paddr();
-    assert!(root.0 > 0);
-}
-
-#[test]
-fn test_mock_paging_destroy() {
-    let mut pt = MockPaging::new().unwrap();
-    
-    // 销毁页表
-    unsafe { pt.destroy(); }
-    
-    // 映射表应已清空
-    assert!(pt.mappings().is_empty());
-}
-```
-
-**映射操作测试**:
-
-```rust
-#[test]
-fn test_mock_map_unmap() {
-    let mut pt = MockPaging::new().unwrap();
-    let vaddr = VirBytes(0x1000);
-    let paddr = PhysBytes(0x2000);
-    let flags = PageFlags::read_write();
-
-    // 映射
-    assert!(pt.map(vaddr, paddr, flags).is_ok());
-
-    // 查询
-    let result = pt.query(vaddr);
-    assert!(result.is_some());
-    let (p, f) = result.unwrap();
-    assert_eq!(p, paddr);
-    assert!(f.writable);
-
-    // 取消映射
-    let unmapped = pt.unmap(vaddr);
-    assert!(unmapped.is_ok());
-    assert_eq!(unmapped.unwrap(), paddr);
-
-    // 再次查询应失败
-    assert!(pt.query(vaddr).is_none());
-}
-
-#[test]
-fn test_mock_double_map() {
-    let mut pt = MockPaging::new().unwrap();
-    let vaddr = VirBytes(0x1000);
-    let paddr = PhysBytes(0x2000);
-
-    // 重复映射应失败
-    pt.map(vaddr, paddr, PageFlags::read_write()).unwrap();
-    assert_eq!(
-        pt.map(vaddr, paddr, PageFlags::read_write()),
-        Err(PageTableError::AlreadyMapped)
-    );
-}
-
-#[test]
-fn test_mock_unmapped() {
-    let mut pt = MockPaging::new().unwrap();
-    
-    // 取消未映射的地址应失败
-    assert_eq!(
-        pt.unmap(VirBytes(0x1000)),
-        Err(PageTableError::NotMapped)
-    );
-}
-```
-
-**标志更新测试**:
-
-```rust
-#[test]
-fn test_mock_update_flags() {
-    let mut pt = MockPaging::new().unwrap();
-    let vaddr = VirBytes(0x1000);
-    let paddr = PhysBytes(0x2000);
-
-    // 初始为可写
-    pt.map(vaddr, paddr, PageFlags::read_write()).unwrap();
-
-    // 更新为只读（CoW 场景）
-    pt.update_flags(vaddr, PageFlags::read_only()).unwrap();
-
-    // 验证
-    let (_, flags) = pt.query(vaddr).unwrap();
-    assert!(!flags.contains(PageFlags::WRITABLE));
-    assert!(flags.contains(PageFlags::PRESENT));
-}
-```
-
-**对齐检查测试**:
-
-```rust
-#[test]
-fn test_mock_alignment_check() {
-    let mut pt = MockPaging::new().unwrap();
-
-    // 未对齐的地址应失败
-    let vaddr = VirBytes(0x1001);  // 未页对齐
-    let paddr = PhysBytes(0x2000);
-    assert_eq!(
-        pt.map(vaddr, paddr, PageFlags::read_write()),
-        Err(PageTableError::InvalidAddress)
-    );
-
-    // 物理地址未对齐也应失败
-    let vaddr = VirBytes(0x1000);
-    let paddr = PhysBytes(0x2001);  // 未页对齐
-    assert_eq!(
-        pt.map(vaddr, paddr, PageFlags::read_write()),
-        Err(PageTableError::InvalidAddress)
-    );
-}
-```
-
-### 6.2 PageFlags 操作测试
-
-**预设标志测试**:
-
-```rust
-#[test]
-fn test_page_flags_presets() {
-    // 只读页
-    let ro = PageFlags::read_only();
-    assert!(ro.contains(PageFlags::PRESENT));
-    assert!(!ro.contains(PageFlags::WRITABLE));
-    assert!(ro.contains(PageFlags::USER_ACCESSIBLE));
-
-    // 可读写页
-    let rw = PageFlags::read_write();
-    assert!(rw.contains(PageFlags::PRESENT));
-    assert!(rw.contains(PageFlags::WRITABLE));
-    assert!(rw.contains(PageFlags::USER_ACCESSIBLE));
-
-    // 空标志
-    let empty = PageFlags::empty();
-    assert!(!empty.contains(PageFlags::PRESENT));
-    assert!(!empty.contains(PageFlags::WRITABLE));
-}
-```
-
-**自定义标志测试**:
-
-```rust
-#[test]
-fn test_page_flags_custom() {
-    // 内核可执行页
-    let kernel_code = PageFlags::kernel_executable();
-
-    assert!(kernel_code.contains(PageFlags::PRESENT));
-    assert!(!kernel_code.contains(PageFlags::WRITABLE));
-    assert!(!kernel_code.contains(PageFlags::USER_ACCESSIBLE));
-    assert!(kernel_code.contains(PageFlags::EXECUTABLE));
-    assert!(kernel_code.contains(PageFlags::GLOBAL));
-}
-
-#[test]
-fn test_page_flags_modify() {
-    // 创建可读写页
-    let flags = PageFlags::read_write();
-
-    // CoW: 设置为只读
-    let cow_flags = flags - PageFlags::WRITABLE;
-    assert!(!cow_flags.contains(PageFlags::WRITABLE));
-
-    // 共享: 设置为全局页
-    let global_flags = cow_flags | PageFlags::GLOBAL;
-    assert!(global_flags.contains(PageFlags::GLOBAL));
-}
-```
-
-**Default trait 测试**:
-
-```rust
-#[test]
-fn test_page_flags_default() {
-    let flags = PageFlags::default();
-
-    // 默认所有标志为空
-    assert!(flags.is_empty());
-}
-```
-
-**运行测试**:
+### 6.2 运行测试
 
 ```bash
-# 运行所有测试
-cargo test -p minix-arch
-
-# 运行特定测试
-cargo test -p minix-arch test_mock_map_unmap
-
-# 显示测试输出
-cargo test -p minix-arch -- --nocapture
+cargo test -p minix-arch --features mock
 ```
 
 ---

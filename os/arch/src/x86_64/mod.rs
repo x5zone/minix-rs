@@ -1,3 +1,3 @@
-//! x86-64 架构实现
+//! x86-64 architecture implementation
 
 pub mod pte;

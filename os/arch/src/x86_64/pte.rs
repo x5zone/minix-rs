@@ -1,7 +1,8 @@
-//! x86-64 页表项定义
+//! x86-64 page table entry definitions
 //!
-//! 定义 x86-64 架构的 PTE/PDE 位字段、索引计算和条目构造函数。
-//! 这些是 `X86_64Paging` 实现的内部细节，不暴露给 OS 层。
+//! Defines PTE/PDE bit fields, index calculations, and entry construction
+//! functions for the x86-64 architecture. These are internal details of
+//! the `X86_64Paging` implementation and are not exposed to the OS layer.
 
 use crate::paging::{PageFlags, PageTableError};
 use minix_types::{PhysBytes, VirBytes};

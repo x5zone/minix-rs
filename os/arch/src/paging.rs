@@ -1,28 +1,29 @@
-//! 分页机制抽象
+//! Paging abstraction
 //!
-//! 定义页表管理的trait接口，包括：
-//! - 页表创建和销毁
-//! - 页映射和取消映射
-//! - 页表切换
-//! - 地址转换
+//! Defines the trait interface for page table management, including:
+//! - Page table creation and destruction
+//! - Page mapping and unmapping
+//! - Page table switching
+//! - Address translation
 
 use minix_types::{PhysBytes, VirBytes};
 
 bitflags::bitflags! {
-    /// 页表项标志位
+    /// Page table entry flags
     ///
-    /// OS 层的语义接口，各架构 Paging 实现内部负责将其翻译为硬件 PTE 位编码。
-    /// 使用 bitflags（u16 底层）兼顾内存效率和语义清晰。
+    /// OS-level semantic interface; each architecture's Paging implementation
+    /// translates these into hardware PTE bit encodings internally.
+    /// Uses bitflags (u16 backing) for memory efficiency and semantic clarity.
     ///
-    /// 标志分为两类：
+    /// Flags fall into two categories:
     ///
-    /// **状态类**（直接映射硬件，语义跨架构一致）：
+    /// **Status** (directly maps to hardware, consistent across architectures):
     /// - `PRESENT` / `WRITABLE` / `USER_ACCESSIBLE` / `ACCESSED` / `DIRTY`
     ///
-    /// **策略类**（需要翻译，部分架构为反逻辑）：
-    /// - `EXECUTABLE`：x86-64 为 NX 位（反逻辑），ARM64 为 PXN 位（反逻辑），RISC-V 为 X 位（正逻辑）
-    /// - `GLOBAL`：x86-64 为 G 位（正逻辑），ARM64 为 nG 位（反逻辑）
-    /// - `WRITE_THROUGH` / `NO_CACHE`：缓存策略，各架构编码差异大
+    /// **Policy** (requires translation; some architectures use inverted logic):
+    /// - `EXECUTABLE`: x86-64 NX bit (inverted), ARM64 PXN bit (inverted), RISC-V X bit (normal)
+    /// - `GLOBAL`: x86-64 G bit (normal), ARM64 nG bit (inverted)
+    /// - `WRITE_THROUGH` / `NO_CACHE`: cache policy, encoding varies greatly across architectures
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct PageFlags: u16 {
         const PRESENT         = 1 << 0;
@@ -38,24 +39,30 @@ bitflags::bitflags! {
 }
 
 impl PageFlags {
+    /// User-space read-only page: PTF_PRESENT | PTF_USER.
+    /// Corresponds to Minix3 `PTF_PRESENT|PTF_USER` (no PTF_WRITE).
     pub const fn read_only() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::USER_ACCESSIBLE.bits()
         )
     }
 
+    /// User-space read-write page: PTF_PRESENT | PTF_USER | PTF_WRITE.
+    /// Corresponds to Minix3 `PTF_PRESENT|PTF_USER|PTF_WRITE`.
     pub const fn read_write() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::USER_ACCESSIBLE.bits()
         )
     }
 
+    /// Kernel read-only page (global): PTF_PRESENT | PTF_GLOBAL.
     pub const fn kernel_read_only() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::GLOBAL.bits()
         )
     }
 
+    /// Kernel read-write page (global): PTF_PRESENT | PTF_WRITE | PTF_GLOBAL.
     pub const fn kernel_read_write() -> Self {
         Self::from_bits_truncate(
             Self::PRESENT.bits() | Self::WRITABLE.bits() | Self::GLOBAL.bits()
@@ -74,7 +81,7 @@ impl PageFlags {
     }
 }
 
-/// 页表错误类型
+/// Page table error type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageTableError {
     InvalidAddress,
@@ -98,15 +105,17 @@ impl core::fmt::Display for PageTableError {
     }
 }
 
-/// 页表管理trait
+/// Page table management trait
 ///
-/// 定义页表的核心操作，各架构需要实现此trait。
+/// Defines core page table operations; each architecture must implement this trait.
 ///
-/// **设计选择**：当前 trait 采用"扁平映射"语义——`map()` 在调用者看来
-/// 是单步操作，中间页表（PDPT/PD/PT 等）的按需分配由实现内部处理，
-/// 不暴露给调用者。这简化了 VM 层的使用，但意味着调用者无法直接控制
-/// 中间层条目。若未来需要 THP split/merge、migration entry 等精细控制，
-/// 可扩展此 trait 或引入新的 `PagingLevel` trait。
+/// **Design choice**: The current trait uses "flat mapping" semantics — `map()` appears
+/// as a single-step operation to the caller; on-demand allocation of intermediate page
+/// tables (PDPT/PD/PT etc.) is handled internally by the implementation and not exposed
+/// to the caller. This simplifies VM-layer usage, but means the caller cannot directly
+/// control intermediate-level entries. If finer control is needed in the future (e.g.,
+/// THP split/merge, migration entries), this trait can be extended or a new
+/// `PagingLevel` trait can be introduced.
 pub trait Paging {
     const PAGE_SIZE: usize;
 
@@ -126,6 +135,22 @@ pub trait Paging {
 
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
+
+    /// Atomically replace an existing mapping or create a new one.
+    ///
+    /// Corresponds to Minix3's `pt_writemap()` with `WMF_OVERWRITE` flag,
+    /// which is the default behavior in Minix3 — "overwrite mapping" is
+    /// the norm, not the exception (region.c:285, pagetable.c:713,743).
+    ///
+    /// Unlike `map()` which returns `AlreadyMapped` if the virtual address
+    /// is already mapped, `remap()` atomically replaces the old entry,
+    /// avoiding the "no mapping" window that would exist between a manual
+    /// `unmap()` + `map()` sequence.
+    ///
+    /// Returns the old physical address and flags if a mapping was replaced,
+    /// or `None` if the virtual address was previously unmapped.
+    fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+        -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>;
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
 
@@ -167,13 +192,14 @@ pub trait Paging {
     /// - This is called in a valid MMU context (a page table is active)
     unsafe fn flush_tlb_addr(&self, vaddr: VirBytes);
 
-    /// 批量映射连续虚拟页到连续物理页
+    /// Map a range of consecutive virtual pages to consecutive physical pages.
     ///
-    /// 提供默认实现（逐页调用 `map()`），arch 实现可覆盖以利用硬件优化：
-    /// - x86-64：批量映射后单次 CR3 reload 替代多次 INVLPG，减少 TLB 刷新开销
-    /// - ARM64：类似，可利用 TLBI range 指令
+    /// Provides a default implementation (calls `map()` per page); arch implementations
+    /// may override to exploit hardware optimizations:
+    /// - x86-64: single CR3 reload after batch mapping instead of multiple INVLPGs
+    /// - ARM64: similar, can use TLBI range instructions
     ///
-    /// 对应 Minix3 `pt_writemap()` 的批量映射语义。
+    /// Corresponds to Minix3 `pt_writemap()` batch mapping semantics.
     fn map_range(
         &mut self,
         vaddr_start: VirBytes,
@@ -189,10 +215,10 @@ pub trait Paging {
         Ok(())
     }
 
-    /// 批量取消映射连续虚拟页
+    /// Unmap a range of consecutive virtual pages.
     ///
-    /// 提供默认实现（逐页调用 `unmap()`），arch 实现可覆盖以利用硬件优化，
-    /// 与 `map_range` 对称。
+    /// Provides a default implementation (calls `unmap()` per page); arch implementations
+    /// may override to exploit hardware optimizations, symmetric with `map_range`.
     fn unmap_range(
         &mut self,
         vaddr_start: VirBytes,
@@ -207,12 +233,15 @@ pub trait Paging {
 
     // REMOVED: check_range — 2026-05
     //
-    // Minix3 原版 pt_checkrange() 在全源码中仅有一处调用，且被 #if SANITYCHECKS
-    // 包裹（region.c:746-751，在 map_pf() 中），属于 debug-only 断言而非生产 API。
-    // 该函数无硬件优化空间（仅是 query() 的循环），VM 层需要时可自行循环 query()
-    // 实现。因此不纳入 Paging trait，保持 trait 只包含硬件必须提供语义的操作。
+    // Minix3's pt_checkrange() has only one call site in the entire source,
+    // wrapped in #if SANITYCHECKS (region.c:746-751, in map_pf()), making it
+    // a debug-only assertion rather than a production API. It has no hardware
+    // optimization opportunity (just a query() loop); the VM layer can
+    // implement its own loop using query() when needed. Therefore it is not
+    // included in the Paging trait, keeping the trait limited to operations
+    // that hardware must provide semantics for.
     //
-    // 原实现保留如下供参考：
+    // Original implementation preserved below for reference:
     //
     // fn check_range(
     //     &self,
@@ -249,13 +278,14 @@ pub struct PageTableStats {
 
 
 
-/// Mock分页实现
+/// Mock paging implementation
 ///
-/// 用于用户态测试的软件模拟实现。
-/// 不操作真实硬件，仅在内存中维护映射表。
+/// Software-simulated implementation for user-space testing.
+/// Does not operate on real hardware; maintains a mapping table in memory only.
 ///
-/// **线程模型**：非并发安全。`mappings` 字段使用 `BTreeMap` 且未加锁，
-/// 仅设计用于单线程测试（`#[cfg(test)]`）。多线程测试需外部同步。
+/// **Thread model**: Not concurrency-safe. The `mappings` field uses `BTreeMap`
+/// without locking, designed for single-threaded testing only (`#[cfg(test)]`).
+/// Multi-threaded tests require external synchronization.
 #[cfg(feature = "mock")]
 pub mod mock {
     use super::*;
@@ -327,6 +357,21 @@ pub mod mock {
 
             self.mappings.insert(v, (p, flags));
             Ok(())
+        }
+
+        fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+            -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>
+        {
+            let v = vaddr.0;
+            let p = paddr.0;
+
+            if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
+                return Err(PageTableError::InvalidAddress);
+            }
+
+            let old = self.mappings.insert(v, (p, flags))
+                .map(|(old_p, old_f)| (PhysBytes(old_p), old_f));
+            Ok(old)
         }
 
         fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
