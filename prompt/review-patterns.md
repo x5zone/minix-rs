@@ -160,6 +160,31 @@
         或使用固定大小数组 + 自定义查找
 ```
 
+### 模式14：硬件未抽象为 trait
+```markdown
+❌ 错误：数据结构直接编码硬件寄存器布局
+        struct PageTable {
+            pde: [u32; 1024],  // x86-32 PDE 数组
+        }
+        → 上层代码直接操作 PDE 位，与架构紧耦合
+
+❌ 错误：使用 #[cfg(target_arch)] 选择硬件行为
+        #[cfg(target_arch = "x86_64")]
+        fn map_page(...) { /* x86-64 PTE 操作 */ }
+        #[cfg(target_arch = "aarch64")]
+        fn map_page(...) { /* ARM64 描述符操作 */ }
+        → 条件编译分散在各处，新增架构需改动所有调用点
+
+✅ 正确：抽象机制为 trait，描述"做什么"而非"怎么做"
+        trait Paging {
+            const PAGE_SIZE: usize;
+            fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags) -> Result<(), PageTableError>;
+            fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
+            fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)>;
+        }
+        → 上层仅依赖 trait 接口，各架构自行实现
+```
+
 ---
 
 ## 二、跨文档联动错误模式

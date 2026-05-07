@@ -89,6 +89,47 @@ Review 的核心目标是：**验证 Rust 实现是否保持了 Minix3 的行为
 - 改变生命周期语义（如提前或延迟释放资源）
 - 改变错误恢复语义（如改变错误码含义或重试策略）
 
+### 硬件抽象原则
+
+**核心原则：抽象机制，而非描述硬件。描述"做什么"，而非"怎么做"。**
+
+Minix3 的 C 代码经常将硬件细节直接编码进数据结构（如 `pt_t` 将页目录指针、物理地址、PDE/PTE 位编码进结构体，与 x86-32 紧耦合；支持 arm32 则依赖 `#if defined()` 条件编译）。这种做法的本质是**描述硬件**——"第几个 PDE 指向哪个页表"。
+
+Rust 版本必须改变建模方式：OS 需要的是**机制**（映射地址、设置权限、切换地址空间），而非**硬件细节**。
+
+**强制规则：所有硬件都必须被抽象为 trait。**
+
+| Minix3 做法 | Rust 做法 | 说明 |
+|------------|----------|------|
+| 结构体直接编码硬件寄存器布局 | `trait` 定义机制接口 | 描述"做什么"，而非"怎么做" |
+| `#if defined()` 条件编译 | 各架构实现同一 trait | 新增架构只需实现 trait |
+| 硬件位编码暴露给上层 | `PageFlags` 等 OS 语义类型 | OS 层不感知 PDE/PTE 位编码 |
+| 全局常量硬编码页大小 | trait 关联常量 | 代码自动适配目标架构 |
+
+**Review 检查点**：
+- ❌ 上层代码直接操作硬件寄存器或 PTE 位编码 → 应通过 trait 方法
+- ❌ 数据结构中包含架构特定的硬件字段（如 `pde` 数组）→ 应由 trait 实现内部管理
+- ❌ 使用 `#[cfg(target_arch)]` 条件编译选择硬件行为 → 应通过 trait 静态分派
+- ✅ 上层仅依赖 trait 接口，不感知底层硬件布局
+- ✅ 各架构自行实现 trait，通过泛型或关联类型绑定
+- ✅ OS 语义类型（如 `PageFlags`）与硬件编码分离
+
+**示例**（页表）：
+```rust
+// ❌ 错误：直接暴露硬件细节
+struct PageTable {
+    pde: [u32; 1024],  // x86-32 PDE 数组，与硬件紧耦合
+}
+
+// ✅ 正确：抽象机制为 trait
+trait Paging {
+    const PAGE_SIZE: usize;
+    fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags) -> Result<(), PageTableError>;
+    fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
+    fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)>;
+}
+```
+
 ### 文档链路模型
 
 每篇文档遵循以下链路结构，Review 必须验证链路的完整性：
@@ -167,7 +208,7 @@ Minix3 源码行为  >  文档描述  >  Rust 实现  >  AI 分析
 | 维度 | 检查项 |
 |------|--------|
 | 文档 | 架构差异未说明；覆盖不完整；设计决策缺乏依据；章节链路断裂 |
-| 代码 | typestate 无效；pub 滥用；模块职责不清；所有权混乱；代码与文档设计不一致 |
+| 代码 | typestate 无效；pub 滥用；模块职责不清；所有权混乱；代码与文档设计不一致；硬件未抽象为 trait |
 
 ### P2 - 改善性检查（可选修复）
 
