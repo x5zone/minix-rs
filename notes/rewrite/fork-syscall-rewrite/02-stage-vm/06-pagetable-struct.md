@@ -125,7 +125,7 @@ return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 // pagetable.c:pt_ptalloc ([pagetable.c:494](minix3/minix/servers/vm/pagetable.c#L494))
 p = vm_allocpage(&pt_phys, VMP_PAGETABLE);  // p=虚拟地址, pt_phys=物理地址
 pt->pt_pt[pde] = p;                          // 缓存虚拟地址
-pt->pt_dir[pde] = pt_phys | flags            // 存入页目录（物理地址）
+pt->pt_dir[pde] = (pt_phys & ARCH_VM_ADDR_MASK) | flags  // 存入页目录（物理地址）
     | ARCH_VM_PDE_PRESENT | ARCH_VM_PTE_USER | ARCH_VM_PTE_RW;
 ```
 
@@ -153,7 +153,7 @@ static u32_t findhole(int pages)
 }
 ```
 
-**结论**：`pt_virtop` 在当前 Minix3 实现中未实际使用。每个进程的 `pt_t` 都有此字段，但 `findhole()` 只处理 VM 自身的地址空间，且使用静态变量 `lastv` 而非此字段。用户进程的虚拟地址分配由 region 机制管理，不使用此字段。Rust 版本不包含此字段。
+**结论**：`pt_virtop` 在当前 Minix3 实现中未实际使用。每个进程的 `pt_t` 都有此字段，但 `findhole()` 只处理 VM 自身的地址空间，且使用静态变量 `lastv` 而非此字段。用户进程的虚拟地址分配由 region 机制管理，不使用此字段。
 
 ### 2.2 页目录项 (PDE)
 
@@ -648,47 +648,79 @@ pub struct MockPaging {
 impl Paging for MockPaging {
     const PAGE_SIZE: usize = 4096;
 
-    fn new() -> Result<Self, PageTableError> {
-        // 创建空的映射表
+    fn new() -> Result<Self, PageTableError>
+    where
+        Self: Sized,
+    {
+        let id = MOCK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         Ok(Self {
-            id: next_id(),
+            id,
             mappings: BTreeMap::new(),
-            root_phys: allocate_root_phys(),
+            root_phys: 0x1000 + (id as u64 * 0x1000),
         })
+    }
+
+    unsafe fn destroy(&mut self) {
+        self.mappings.clear();
+        if ACTIVE_MOCK_TABLE.load(Ordering::SeqCst) == self.id {
+            ACTIVE_MOCK_TABLE.store(NO_ACTIVE_TABLE, Ordering::SeqCst);
+        }
     }
 
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>
     {
-        // 检查页对齐
-        if vaddr.0 % Self::PAGE_SIZE as u64 != 0 {
+        let v = vaddr.0;
+        let p = paddr.0;
+
+        if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
             return Err(PageTableError::InvalidAddress);
         }
 
-        // 检查是否已映射
-        if self.mappings.contains_key(&vaddr.0) {
+        if self.mappings.contains_key(&v) {
             return Err(PageTableError::AlreadyMapped);
         }
 
-        // 添加映射
-        self.mappings.insert(vaddr.0, (paddr.0, flags));
+        self.mappings.insert(v, (p, flags));
         Ok(())
     }
 
     fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>
     {
-        if vaddr.0 % Self::PAGE_SIZE as u64 != 0 {
+        let v = vaddr.0;
+        let p = paddr.0;
+
+        if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
             return Err(PageTableError::InvalidAddress);
         }
-        let old = self.mappings.insert(vaddr.0, (paddr.0, flags))
+
+        let old = self.mappings.insert(v, (p, flags))
             .map(|(old_p, old_f)| (PhysBytes(old_p), old_f));
         Ok(old)
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
-        match self.mappings.remove(&vaddr.0) {
+        let v = vaddr.0;
+
+        if v % Self::PAGE_SIZE as u64 != 0 {
+            return Err(PageTableError::InvalidAddress);
+        }
+
+        match self.mappings.remove(&v) {
             Some((p, _)) => Ok(PhysBytes(p)),
+            None => Err(PageTableError::NotMapped),
+        }
+    }
+
+    fn update_flags(&mut self, vaddr: VirBytes, flags: PageFlags)
+        -> Result<(), PageTableError>
+    {
+        match self.mappings.get_mut(&vaddr.0) {
+            Some((_, f)) => {
+                *f = flags;
+                Ok(())
+            }
             None => Err(PageTableError::NotMapped),
         }
     }
@@ -703,9 +735,12 @@ impl Paging for MockPaging {
     }
 
     unsafe fn switch(&self) {
-        // Mock 实现：记录当前活动页表
-        ACTIVE_TABLE = Some(self.id);
+        ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
     }
+
+    unsafe fn flush_tlb(&self) {}
+
+    unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {}
 }
 ```
 
@@ -862,13 +897,15 @@ typedef long unsigned int vir_bytes;  // 虚拟地址/长度
 ///
 /// 用于进程地址空间中的地址和长度。
 /// 被 PM、VM、VFS、Kernel 共用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
 
 /// 物理地址
 ///
 /// 用于物理内存地址。
 /// 被 VM、Kernel 使用。
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysBytes(pub u64);
 ```
@@ -1208,13 +1245,13 @@ impl ActiveProc<'_> {
 
     /// 获取页表引用（已初始化状态）
     pub(crate) fn page_table(&self) -> &PageTable {
-        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init");
+        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
         unsafe { self.inner.vm_pt.assume_init_ref() }
     }
 
     /// 获取页表可变引用（已初始化状态）
     pub(crate) fn page_table_mut(&mut self) -> &mut PageTable {
-        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init");
+        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
         unsafe { self.inner.vm_pt.assume_init_mut() }
     }
 }
@@ -1277,7 +1314,7 @@ fn setup_process_memory(active: &mut ActiveProc) -> Result<(), PageTableError> {
     pt.map(
         VirBytes::new(0x400000),  // 用户空间起始地址
         PhysBytes::new(0x1000000),
-        PageFlags::user_read_write(),
+        PageFlags::read_write(),
     )?;
 
     Ok(())

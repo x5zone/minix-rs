@@ -3,7 +3,7 @@
 > **分类**: VM私有 ✅（修正：不是全局基建）  
 > **源码**: [slaballoc.c](minix3/minix/servers/vm/slaballoc.c)  
 > **说明**: VM 专用的内存分配器，用于分配固定大小的对象
-> **状态**: ⚠️ Rust 实现尚未完成。本文档 §1-§2 为 Minix3 C 源码分析，§3+ 为设计分析，具体 Rust 实现代码待补充。
+> **状态**: Rust 实现已完成基础框架（global.rs、alloc_stats.rs、critical_pool.rs）。本文档 §1-§2 为 Minix3 C 源码分析，§3 为设计决策分析，§4 为 Rust 实现详解。
 
 ---
 
@@ -350,15 +350,13 @@ typedef element_t elements_t[USEELEMENTS];  // 位图数组
 #define NOJUNK 0xc0ffee    // 新分配对象的标记（coffee 的 hex 拼写）
 
 // Sanity check 级别
-#define SCL_FUNCTIONS  0   // 函数入口/出口检查
-#define SCL_DETAIL     1   // 详细检查（遍历链表等）
+#define SCL_FUNCTIONS  2   // 函数入口/出口检查
+#define SCL_DETAIL     3   // 详细检查（遍历链表等）
 
 // 主 sanity check 宏
-#define SLABSANITYCHECK(level) do { \
-    if(SANITYCHECKS) { \
-        slab_sanitycheck(__FILE__, __LINE__); \
-    } \
-} while(0)
+#define SLABSANITYCHECK(l) if(_minix_kerninfo) { \
+    slab_sanitycheck(__FILE__, __LINE__); \
+}
 ```
 
 **魔数的作用**：
@@ -373,10 +371,12 @@ typedef element_t elements_t[USEELEMENTS];  // 位图数组
 **`nojunkwarning` 变量**：
 
 ```c
+#if SANITYCHECKS
 // 用于抑制 JUNK 警告的计数器
 // 在 MEMPROTECT 解锁/锁定期间，对象会临时包含 JUNK
 // 需要抑制警告避免误报
 static int nojunkwarning = 0;
+#endif
 ```
 
 **MEMPROTECT：虚拟页保护机制**
@@ -520,11 +520,6 @@ case VMCTL_I386_INVLPG:
 #endif
 ```
 
-**Rust 重写的建议**：
-- 生产环境：禁用 MEMPROTECT
-- 调试环境：可以考虑使用 INVLPG 而不是 reload_cr3
-- 或者使用更轻量的调试机制（如 RedZone、canary）
-
 **示例：8 字节对象的 slab**
 
 ```
@@ -562,7 +557,6 @@ MYASSERT(usedpages_add(n->sdh.phys, VM_PAGE_SIZE) == OK);
 **是否必要？**
 - 对于 slab 的正常功能，**虚拟地址足够**
 - 如果禁用 SANITYCHECKS，这个字段浪费 8 字节
-- Rust 重写时可以考虑移除或条件编译
 
 **slabs 数组索引计算**
 
@@ -1122,9 +1116,9 @@ static inline int objstats(void *mem, int bytes,
     assert(GETBIT(f, i));
 
     // 6. 返回结果
-    *sp = s;
-    *fp = f;
     *ip = i;
+    *fp = f;
+    *sp = s;
     return OK;
 }
 ```
@@ -1892,32 +1886,54 @@ use core::alloc::{GlobalAlloc, Layout};
 
 /// VM 的全局分配器
 ///
-/// 底层对接 VM 自己的物理页分配器（PhysAllocator），
-/// 而非系统的 mmap。这意味着 VM 的内存分配全程在用户态完成。
+/// 底层通过 extern "Rust" 链接至 __vm_global_alloc / __vm_global_dealloc，
+/// 后者调用 C 的 malloc/free（当前阶段），未来可替换为对接 PhysAllocator。
 pub(crate) struct VmAllocator;
 
 unsafe impl GlobalAlloc for VmAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // 将 Layout 转换为页数，调用 PhysAllocator::alloc_mem()
-        // 映射到 VM 地址空间后返回指针
-        todo!("对接 PhysAllocator")
+        unsafe extern "Rust" {
+            fn __vm_global_alloc(layout: Layout) -> *mut u8;
+        }
+        unsafe { __vm_global_alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // 调用 PhysAllocator::free_mem() 释放物理页
-        todo!("对接 PhysAllocator")
+        unsafe extern "Rust" {
+            fn __vm_global_dealloc(ptr: *mut u8, layout: Layout);
+        }
+        unsafe { __vm_global_dealloc(ptr, layout) }
     }
 }
 
-#[global_allocator]
+#[cfg_attr(not(test), global_allocator)]
 static GLOBAL: VmAllocator = VmAllocator;
+
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+unsafe fn __vm_global_alloc(layout: Layout) -> *mut u8 {
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut u8;
+    }
+    unsafe { malloc(layout.size()) }
+}
+
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+unsafe fn __vm_global_dealloc(ptr: *mut u8, _layout: Layout) {
+    unsafe extern "C" {
+        fn free(ptr: *mut u8);
+    }
+    unsafe { free(ptr) }
+}
 ```
 
 **关键设计决策**：
 
-- **为什么不用系统的 mmap？** VM 是内存管理服务器，物理页由自己管理。使用系统 mmap 会引入对内核的依赖，且无法精确控制物理页的分配策略。
+- **为什么当前阶段用 malloc/free？** VM 是内存管理服务器，物理页最终由自己管理。当前阶段先通过 C 的 malloc/free 跑通系统，未来 `__vm_global_alloc`/`__vm_global_dealloc` 可替换为对接 PhysAllocator，实现全程用户态分配。
 - **为什么不用 jemalloc/mimalloc？** 当前阶段使用系统默认分配器即可。关于分配器的选型分析，详见附录 A。
 - **可替换性**：通过 `#[global_allocator]` 机制，替换分配器只需修改一处代码，无需改动任何业务逻辑。
+- **测试隔离**：`#[cfg_attr(not(test), global_allocator)]` 确保测试时使用标准分配器，避免循环依赖。
 
 ### 4.2 分配统计与可观测性
 
@@ -2231,15 +2247,6 @@ fn test_alloc_stress() {
 
 ---
 
-## 7. 参见
-
-- [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（全局分配器的底层）
-- [12-vir-region.md](12-vir-region.md) - VirRegion 结构体
-- [14-phys-region.md](14-phys-region.md) - PhysRegion 结构体
-- [10-phys-block.md](10-phys-block.md) - PhysBlock 结构体
-
----
-
 ## 附录 A：Rust 全局分配器选型分析
 
 ### A.1 候选分配器概览
@@ -2422,6 +2429,15 @@ Minix3 的 slab 设计深受 32 位地址空间限制的影响：
 在 64 位下，元数据开销几乎可以忽略。这从根本上改变了设计权衡——不再需要为了节省几 KB 而引入复杂的位图管理。
 
 > **设计启发**：软件架构应服务于当前的硬件现实。在地址空间充沛的 64 位时代，过度复杂的私有管理逻辑只会增加 Bug 的温床。保留 Slab 的设计方案，是为了在未来面对"每秒百万级"的特定对象分配需求时，依然握有一把手术刀级的优化工具。
+
+---
+
+## 7. 参见
+
+- [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（全局分配器的底层）
+- [12-vir-region.md](12-vir-region.md) - VirRegion 结构体
+- [14-phys-region.md](14-phys-region.md) - PhysRegion 结构体
+- [10-phys-block.md](10-phys-block.md) - PhysBlock 结构体
 
 ---
 
