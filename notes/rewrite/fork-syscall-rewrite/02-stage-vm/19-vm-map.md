@@ -1,4 +1,4 @@
-# 19-vm-map: VM_MAP/VM_UNMAP 服务
+# 19-vm-map: VM_MMAP/VM_MUNMAP 服务
 
 > **分类**: VM服务  
 > **源码**: `minix3/minix/servers/vm/mmap.c`  
@@ -8,52 +8,26 @@
 
 ## 1. 概述
 
-VM_MAP/VM_UNMAP 服务提供内存映射功能，实现 POSIX mmap/munmap 系统调用。
+VM_MMAP/VM_MUNMAP 服务提供内存映射功能，实现 POSIX mmap/munmap 系统调用。
 
 **服务类型**
 
-| 消息类型 | 说明 | 对应系统调用 |
-|---------|------|-------------|
-| `VM_MMAP` | 内存映射 | mmap() |
-| `VM_MUNMAP` | 解除映射 | munmap() |
-| `VM_MAP_PHYS` | 物理内存映射 | vm_map_phys() |
-| `VM_UNMAP_PHYS` | 解除物理映射 | vm_unmap_phys() |
+| 消息类型 | 值 | 说明 | 对应系统调用 |
+|---------|-----|------|-------------|
+| `VM_MMAP` | `VM_RQ_BASE+10` | 内存映射 | mmap() |
+| `VM_MUNMAP` | `VM_RQ_BASE+17` | 解除映射 | munmap() |
+| `VM_MAP_PHYS` | `VM_RQ_BASE+15` | 物理内存映射 | vm_map_phys() |
+| `VM_UNMAP_PHYS` | `VM_RQ_BASE+16` | 解除物理映射 | vm_unmap_phys() |
+
+> **注意**: `VM_UNMAP_PHYS` 和 `VM_SHM_UNMAP` 均由 `do_munmap` 函数处理，不是独立的处理函数。
 
 **映射类型**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    映射类型                                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 匿名映射 (MAP_ANONYMOUS)                             │      │
-│   │                                                     │      │
-│   │   - 不关联文件                                      │      │
-│   │   - 内存初始化为 0                                  │      │
-│   │   - 私有映射，写时复制                              │      │
-│   │   - 用于 malloc 大块分配                            │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 文件映射 (MAP_FILE)                                  │      │
-│   │                                                     │      │
-│   │   - 关联文件描述符                                  │      │
-│   │   - 支持共享/私有映射                               │      │
-│   │   - 按需从文件加载页面                              │      │
-│   │   - 用于加载可执行文件、共享库                      │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 物理内存映射 (VM_MAP_PHYS)                           │      │
-│   │                                                     │      │
-│   │   - 映射指定物理地址                                │      │
-│   │   - 仅允许特权进程                                  │      │
-│   │   - 用于设备驱动访问硬件                            │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 映射类型 | 标志 | 特点 | 典型用途 |
+|---------|------|------|---------|
+| 匿名映射 | `MAP_ANONYMOUS` | 不关联文件，内存初始化为 0，私有映射写时复制 | malloc 大块分配 |
+| 文件映射 | `MAP_FILE` | 关联文件描述符，支持共享/私有映射，按需从文件加载 | 加载可执行文件、共享库 |
+| 物理内存映射 | `VM_MAP_PHYS` | 映射指定物理地址，仅允许特权进程 | 设备驱动访问硬件 |
 
 **与 Minix3 的对应关系**
 
@@ -79,38 +53,17 @@ static struct callmap vm_callmap[] = {
 
 **地址空间布局**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    进程地址空间                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   低地址                                                        │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ text | data | bss                                    │      │
-│   └─────────────────────────────────────────────────────┘      │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ heap (brk)                                           │      │
-│   └─────────────────────────────────────────────────────┘      │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ mmap 区域 (VM_MMAPBASE - VM_MMAPTOP)                 │      │
-│   │                                                     │      │
-│   │   - 匿名映射                                        │      │
-│   │   - 文件映射                                        │      │
-│   │   - 共享内存                                        │      │
-│   └─────────────────────────────────────────────────────┘      │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ stack                                                │      │
-│   └─────────────────────────────────────────────────────┘      │
-│   高地址                                                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+> **Minix3 (32位)**: mmap 区域位于 `VM_MMAPBASE` 到 `VM_MMAPTOP` 之间。在 `_MINIX_MAGIC` 构建下，`VM_MMAPTOP = VM_STACKTOP - DEFAULT_STACK_LIMIT`，`VM_MMAPBASE = VM_MMAPTOP / 2`；否则 `VM_MMAPTOP = VM_DATATOP`，`VM_MMAPBASE = VM_PAGE_SIZE`。这些值在运行时确定，不是固定常量。
+>
+> **minix-rs (64位)**: 64 位地址空间远大于 32 位，mmap 区域范围需要重新规划，利用更大的地址空间。
+
+进程地址空间从低到高依次为：text/data/bss → heap (brk) → mmap 区域 → stack。mmap 区域是本服务管理的核心范围。
 
 ---
 
-## 2. IPC 接口说明
+## 2. C 源码分析
 
-### 2.1 VM_MAP
+### 2.1 IPC 接口说明
 
 #### 2.1.1 调用者
 
@@ -128,7 +81,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 }
 ```
 
-用户进程通过 libc 的 mmap() 函数直接向 VM 发送 VM_MMAP 请求。
+用户进程通过 libc 的 mmap() 调用 minix_mmap_for(SELF, ...)，后者向 VM 发送 VM_MMAP 请求。若 forwhom != SELF，则自动附加 MAP_THIRDPARTY 标志。
 
 **2. VFS（文件映射）**
 
@@ -142,8 +95,8 @@ int minix_vfs_mmap(endpoint_t who, off_t offset, size_t len,
 文件映射需要 VFS 和 VM 协作：
 1. 用户调用 mmap() → VM 收到 VM_MMAP
 2. VM 向 VFS 发送 VMVFSREQ_FDLOOKUP 请求
-3. VFS 返回文件信息
-4. VM 完成映射
+3. VFS 返回文件信息（fd, dev, ino, size_pages）
+4. VM 回调 mmap_file_cont 完成映射，解除进程阻塞
 
 **3. RS（系统服务）**
 
@@ -159,26 +112,8 @@ RS 和 VFS 拥有特权，可以执行特殊映射操作（如 MAP_UNINITIALIZED
 
 **调用流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    VM_MMAP 调用流程                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   匿名映射:                                                     │
-│   ┌─────────┐     VM_MMAP      ┌─────┐                         │
-│   │ 用户进程 │ ────────────────▶│ VM  │                         │
-│   └─────────┘                  └─────┘                         │
-│                                                                 │
-│   文件映射:                                                     │
-│   ┌─────────┐     VM_MMAP      ┌─────┐   VMVFSREQ_FDLOOKUP ┌─────┐
-│   │ 用户进程 │ ────────────────▶│ VM  │ ──────────────────▶│ VFS │
-│   └─────────┘                  └─────┘                     └─────┘
-│                                     ▲                         │   │
-│                                     │    文件信息              │   │
-│                                     └─────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+- **匿名映射**: 用户进程 → VM_MMAP → VM → 直接创建匿名区域 → 返回映射地址
+- **文件映射**: 用户进程 → VM_MMAP → VM → VMVFSREQ_FDLOOKUP → VFS → 返回文件信息 → VM 创建文件区域 → 返回映射地址
 
 #### 2.1.2 请求参数
 
@@ -331,7 +266,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 #define MAP_FAILED  ((void *) -1)   // mmap 失败时的返回值
 ```
 
-### 2.2 VM_UNMAP
+### 2.2 VM_MUNMAP
 
 #### 2.2.1 调用者
 
@@ -511,7 +446,7 @@ int munmap(void *addr, size_t len)
 
 **POSIX 语义**
 
-根据 POSIX 标准，对未映射的地址调用 munmap 应该静默忽略。但 Minix3 实现会返回错误。
+根据 POSIX 标准，对未映射的地址调用 munmap 应该静默忽略。Minix3 的 `map_unmap_range` 在没有找到区域时返回 OK（静默成功），符合 POSIX 语义。但 `VM_UNMAP_PHYS` 和 `VM_SHM_UNMAP` 类型的 munmap 在地址未找到时返回 EFAULT，这是非 POSIX 行为。
 
 ### 2.3 VM_MAP_PHYS
 
@@ -534,9 +469,9 @@ void *vm_map_phys(endpoint_t who, void *phaddr, size_t len)
     m.m_lsys_vm_map_phys.phaddr = (phys_bytes)phaddr;
     m.m_lsys_vm_map_phys.len = len;
 
-    r = _syscall(VM_PROC_NR, VM_MAP_PHYS, &m);
+    r = _taskcall(VM_PROC_NR, VM_MAP_PHYS, &m);
 
-    if(r != OK) {
+    if (r != OK) {
         return MAP_FAILED;
     }
 
@@ -746,11 +681,7 @@ if (vaddr == MAP_FAILED) {
 uint32_t reg = *(volatile uint32_t *)vaddr;
 ```
 
----
-
-## 3. C 源码分析
-
-### 3.1 do_mmap - 主处理函数
+### 2.4 do_mmap - 主处理函数
 
 do_mmap 是 mmap 系统调用的核心处理函数。
 
@@ -843,60 +774,19 @@ int do_mmap(message *m)
 }
 ```
 
-**流程图**
+**流程概述**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    do_mmap 处理流程                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────┐                                              │
-│   │ 接收消息    │                                              │
-│   └──────┬──────┘                                              │
-│          ▼                                                      │
-│   ┌─────────────┐                                              │
-│   │ 检查特权    │ ← VFS/RS 有特权                              │
-│   └──────┬──────┘                                              │
-│          ▼                                                      │
-│   ┌─────────────┐                                              │
-│   │ 确定目标进程│ ← MAP_THIRDPARTY                             │
-│   └──────┬──────┘                                              │
-│          ▼                                                      │
-│   ┌─────────────┐                                              │
-│   │ 验证参数    │ ← len > 0                                    │
-│   └──────┬──────┘                                              │
-│          ▼                                                      │
-│   ┌─────────────┐    fd == -1 或 MAP_ANON?                    │
-│   │ 匿名映射?   │─────────────────────────┐                   │
-│   └──────┬──────┘                          │                   │
-│          │ 是                              │ 否                │
-│          ▼                                  ▼                   │
-│   ┌─────────────┐                   ┌─────────────┐           │
-│   │ 创建匿名区域│                   │ 请求 VFS    │           │
-│   └──────┬──────┘                   └──────┬──────┘           │
-│          │                                  │                   │
-│          │                                  ▼                   │
-│          │                          ┌─────────────┐           │
-│          │                          │ 等待 VFS    │           │
-│          │                          │ 回复        │           │
-│          │                          └──────┬──────┘           │
-│          │                                  │                   │
-│          │                                  ▼                   │
-│          │                          ┌─────────────┐           │
-│          │                          │ 创建文件区域│           │
-│          │                          └──────┬──────┘           │
-│          │                                  │                   │
-│          ▼◀─────────────────────────────────┘                   │
-│   ┌─────────────┐                                              │
-│   │ 返回映射地址│                                              │
-│   └─────────────┘                                              │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. 检查特权：VFS/RS 拥有 execpriv
+2. 确定目标进程：MAP_THIRDPARTY 时从 forwhom 获取，否则从 m_source 获取
+3. 验证长度：len <= 0 返回 EINVAL
+4. 根据映射类型处理：
+   - 匿名映射（fd == -1 或 MAP_ANON）：选择 mem_type_anon 或 mem_type_anon_contig，调用 mmap_region 创建区域
+   - 文件映射：检查 enable_filemap，拒绝可写 MAP_SHARED，通过 vfs_request 异步请求 VFS，返回 SUSPEND
+5. 返回映射地址：m->m_mmap.retaddr = vr->vaddr
 
-### 3.2 地址选择
+### 2.5 地址选择
 
-#### 3.2.1 固定地址
+#### 2.5.1 固定地址
 
 MAP_FIXED 标志要求映射必须发生在指定地址。
 
@@ -945,7 +835,7 @@ static struct vir_region *mmap_region(struct vmproc *vmp, vir_bytes addr,
 2. 地址必须是页对齐的
 3. 如果指定地址无法使用，MAP_FIXED 会失败而不是选择其他地址
 
-#### 3.2.2 自动选择
+#### 2.5.2 自动选择
 
 当没有指定地址或 MAP_FIXED 失败时，系统自动选择映射地址。
 
@@ -964,69 +854,68 @@ if (!vr) {
 **地址范围**
 
 ```c
-/* minix3/minix/include/machine/vmparam.h */
+/* minix3/minix/servers/vm/vm.h */
 
-#define VM_MMAPBASE    0x40000000   /* mmap 区域起始 */
-#define VM_MMAPTOP     0x70000000   /* mmap 区域结束 */
+/* VM_MMAPBASE 和 VM_MMAPTOP 不是固定常量，取决于构建配置和运行时值 */
+#ifdef _MINIX_MAGIC
+#define VM_MMAPTOP    (VM_STACKTOP - DEFAULT_STACK_LIMIT)
+#define VM_MMAPBASE   (VM_MMAPTOP / 2)
+#else
+#define VM_MMAPTOP    VM_DATATOP    /* = kernel_boot_info.user_end */
+#define VM_MMAPBASE   VM_PAGE_SIZE  /* = 4096 */
+#endif
 ```
+
+> **32位/64位差异**: Minix3 的 mmap 区域在非 `_MINIX_MAGIC` 构建下从 `VM_PAGE_SIZE` 开始到 `VM_DATATOP`，范围由运行时确定。minix-rs 使用 64 位地址空间，mmap 区域范围需要重新规划以利用更大的地址空间。
 
 **查找算法**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    地址空间查找                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   VM_MMAPBASE                                                   │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │                                                     │      │
-│   │   已有映射 A                                         │      │
-│   │   ┌───────────┐                                     │      │
-│   │   │           │                                     │      │
-│   │   └───────────┘                                     │      │
-│   │                                                     │      │
-│   │   空闲区域                                          │      │
-│   │   ┌───────────┐                                     │      │
-│   │   │ 新映射    │ ← 找到足够大的空洞                  │      │
-│   │   └───────────┘                                     │      │
-│   │                                                     │      │
-│   │   已有映射 B                                         │      │
-│   │   ┌───────────┐                                     │      │
-│   │   │           │                                     │      │
-│   │   └───────────┘                                     │      │
-│   │                                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│   VM_MMAPTOP                                                    │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+map_page_region 调用 region_find_slot 在 [minv, maxv) 范围内查找足够大的空闲区域。查找通过 AVL 树遍历实现，找到第一个能容纳请求长度的空洞即返回。
 
 **map_page_region 实现**
 
 ```c
-/* minix3/minix/servers/vm/region.c */
+/* minix3/minix/servers/vm/region.c:463 */
 
 struct vir_region *map_page_region(struct vmproc *vmp,
-    vir_bytes minv, vir_bytes maxv, size_t len,
-    u32_t vrflags, u32_t mfflags, mem_type_t *mt)
+    vir_bytes minv, vir_bytes maxv, vir_bytes length,
+    u32_t flags, int mapflags, mem_type_t *memtype)
 {
-    struct vir_region *vr;
+    struct vir_region *newregion;
+    vir_bytes startv;
 
-    /* 在指定范围内查找空闲区域 */
-    vr = region_search_free(&vmp->vm_regions_avl, minv, maxv, len);
+    assert(!(length % VM_PAGE_SIZE));
 
-    if(!vr) {
-        return NULL;  /* 没有找到足够大的空洞 */
+    startv = region_find_slot(vmp, minv, maxv, length);
+    if (startv == SLOT_FAIL)
+        return NULL;
+
+    if(!(newregion = region_new(vmp, startv, length, flags, memtype))) {
+        printf("VM: map_page_region: allocating region failed\n");
+        return NULL;
     }
 
-    /* 创建新的虚拟区域 */
-    // ...
+    if(newregion->def_memtype->ev_new) {
+        if(newregion->def_memtype->ev_new(newregion) != OK) {
+            return NULL;
+        }
+    }
+
+    if(mapflags & MF_PREALLOC) {
+        if(map_handle_memory(vmp, newregion, 0, length, 1,
+            NULL, 0, 0) != OK) {
+            map_free(newregion);
+            return NULL;
+        }
+    }
+
+    /* ... */
 }
 ```
 
-### 3.3 区域创建
+### 2.6 区域创建
 
-#### 3.3.1 创建 vir_region
+#### 2.6.1 创建 vir_region
 
 根据映射类型创建不同的虚拟区域。
 
@@ -1074,35 +963,77 @@ if(!(vr = map_page_region(vmp, VM_MMAPBASE, VM_MMAPTOP, len,
 phys_setphys(vr, startaddr);
 ```
 
-#### 3.3.2 设置 mem_type
+#### 2.6.2 设置 mem_type
 
 mem_type 决定了内存的分配和访问方式。
 
-**内存类型定义**
+**mem_type 结构体定义**
 
 ```c
-/* minix3/minix/servers/vm/mem_type.c */
+/* minix3/minix/servers/vm/memtype.h:12 */
 
-mem_type_t mem_type_anon = {
+typedef struct mem_type {
+    const char *name;
+    int (*ev_new)(struct vir_region *region);
+    void (*ev_delete)(struct vir_region *region);
+    int (*ev_reference)(struct phys_region *pr, struct phys_region *newpr);
+    int (*ev_unreference)(struct phys_region *pr);
+    int (*ev_pagefault)(struct vmproc *vmp, struct vir_region *region,
+         struct phys_region *ph, int write, vfs_callback_t cb, void *state,
+         int len, int *io);
+    int (*ev_resize)(struct vmproc *vmp, struct vir_region *vr, vir_bytes len);
+    void (*ev_split)(struct vmproc *vmp, struct vir_region *vr,
+            struct vir_region *r1, struct vir_region *r2);
+    int (*writable)(struct phys_region *pr);
+    int (*ev_sanitycheck)(struct phys_region *pr, const char *file, int line);
+    int (*ev_copy)(struct vir_region *vr, struct vir_region *newvr);
+    int (*ev_lowshrink)(struct vir_region *vr, vir_bytes len);
+    u32_t (*regionid)(struct vir_region *vr);
+    int (*refcount)(struct vir_region *vr);
+    int (*pt_flags)(struct vir_region *vr);
+} mem_type_t;
+```
+
+**各 mem_type 实例**
+
+```c
+/* minix3/minix/servers/vm/mem_anon.c:34 */
+struct mem_type mem_type_anon = {
     .name = "anonymous memory",
-    .ev_alloc = anon_alloc,
-    .ev_free = anon_free,
     .ev_unreference = anon_unreference,
-    .ev_copy = anon_copy,
+    .ev_pagefault = anon_pagefault,
     .ev_resize = anon_resize,
+    .ev_sanitycheck = anon_sanitycheck,
+    .ev_lowshrink = anon_lowshrink,
+    .ev_split = anon_split,
+    .regionid = anon_regionid,
+    .writable = anon_writable,
+    .refcount = anon_refcount,
+    .pt_flags = anon_pt_flags,
 };
 
-mem_type_t mem_type_mappedfile = {
-    .name = "mapped file",
-    .ev_alloc = mappedfile_alloc,
-    .ev_free = mappedfile_free,
+/* minix3/minix/servers/vm/mem_file.c:30 */
+struct mem_type mem_type_mappedfile = {
+    .name = "file-mapped memory",
+    .ev_unreference = mappedfile_unreference,
+    .ev_pagefault = mappedfile_pagefault,
+    .ev_sanitycheck = mappedfile_sanitycheck,
     .ev_copy = mappedfile_copy,
+    .writable = mappedfile_writable,
+    .ev_split = mappedfile_split,
+    .ev_lowshrink = mappedfile_lowshrink,
+    .ev_delete = mappedfile_delete,
+    .pt_flags = mappedfile_pt_flags,
 };
 
-mem_type_t mem_type_directphys = {
-    .name = "direct physical",
-    .ev_alloc = directphys_alloc,
-    .ev_free = directphys_free,
+/* minix3/minix/servers/vm/mem_directphys.c:28 */
+struct mem_type mem_type_directphys = {
+    .name = "physical memory mapping",
+    .ev_copy = phys_copy,
+    .ev_unreference = phys_unreference,
+    .writable = phys_writable,
+    .ev_pagefault = phys_pagefault,
+    .pt_flags = phys_pt_flags,
 };
 ```
 
@@ -1118,17 +1049,25 @@ mem_type_t mem_type_directphys = {
 **区域标志**
 
 ```c
-/* minix3/minix/servers/vm/region.h */
+/* minix3/minix/servers/vm/region.h:68 */
 
-#define VR_ANON      0x01    /* 匿名内存 */
-#define VR_WRITABLE  0x02    /* 可写 */
-#define VR_DIRECT    0x04    /* 直接映射 */
-#define VR_SHARED    0x08    /* 共享映射 */
+/* Mapping flags: */
+#define VR_WRITABLE      0x001   /* Process may write here. */
+#define VR_PHYS64K       0x004   /* Physical memory must be 64k aligned. */
+#define VR_LOWER16MB     0x008
+#define VR_LOWER1MB      0x010
+#define VR_SHARED        0x040
+#define VR_UNINITIALIZED 0x080   /* Do not clear after allocation */
+
+/* Mapping type: */
+#define VR_ANON          0x100   /* Memory to be cleared and allocated */
+#define VR_DIRECT        0x200   /* Mapped, but not managed by VM */
+#define VR_PREALLOC_MAP  0x400   /* Preallocated map. */
 ```
 
-### 3.4 文件映射
+### 2.7 文件映射
 
-#### 3.4.1 VFS 交互
+#### 2.7.1 VFS 交互
 
 文件映射需要 VFS 提供文件信息。
 
@@ -1156,44 +1095,20 @@ replymsg->VMV_DEV        /* 设备号 */
 replymsg->VMV_SIZE_PAGES /* 文件大小（页数） */
 ```
 
-**交互流程图**
+**交互流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    文件映射 VFS 交互                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────┐     VM_MMAP      ┌─────┐                         │
-│   │ 用户进程 │ ────────────────▶│ VM  │                         │
-│   └─────────┘                  └─────┘                         │
-│                                     │                           │
-│                                     │ VMVFSREQ_FDLOOKUP         │
-│                                     ▼                           │
-│                                 ┌─────────┐                     │
-│                                 │   VFS   │                     │
-│                                 └─────────┘                     │
-│                                     │                           │
-│                                     │ 文件信息:                 │
-│                                     │ - fd, dev, ino            │
-│                                     │ - size, offset            │
-│                                     ▼                           │
-│                                 ┌─────┐                         │
-│                                 │ VM  │                         │
-│                                 └─────┘                         │
-│                                     │                           │
-│                                     │ 创建文件映射              │
-│                                     ▼                           │
-│   ┌─────────┐     映射地址      ┌─────┐                         │
-│   │ 用户进程 │ ◀────────────────│ VM  │                         │
-│   └─────────┘                  └─────┘                         │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. VM 收到 VM_MMAP 请求（文件映射）
+2. VM 调用 vfs_request(VMVFSREQ_FDLOOKUP, fd, ...) 发送异步请求给 VFS
+3. VM 返回 SUSPEND，进程阻塞
+4. VFS 查找文件信息后回复
+5. VM 回调 mmap_file_cont 处理 VFS 回复
+6. mmap_file_cont 调用 mmap_file 创建文件映射区域
+7. VM 通过 ipc_send 解除进程阻塞
 
 **VFS 回调处理**
 
 ```c
-/* minix3/minix/servers/vm/mmap.c */
+/* minix3/minix/servers/vm/mmap.c:160 */
 
 static void mmap_file_cont(struct vmproc *vmp, message *replymsg, void *cbarg,
     void *origmsg_v)
@@ -1201,12 +1116,16 @@ static void mmap_file_cont(struct vmproc *vmp, message *replymsg, void *cbarg,
     message *origmsg = (message *) origmsg_v;
     message mmap_reply;
     int result;
+    int writable = 0;
     vir_bytes v = (vir_bytes) MAP_FAILED;
+
+    if(origmsg->m_mmap.prot & PROT_WRITE)
+        writable = 1;
 
     if(replymsg->VMV_RESULT != OK) {
         result = replymsg->VMV_RESULT;
     } else {
-        /* 完成 mmap */
+        /* Finish mmap */
         result = mmap_file(vmp, replymsg->VMV_FD, origmsg->m_mmap.offset,
             origmsg->m_mmap.flags, 
             replymsg->VMV_INO, replymsg->VMV_DEV,
@@ -1215,73 +1134,27 @@ static void mmap_file_cont(struct vmproc *vmp, message *replymsg, void *cbarg,
             origmsg->m_mmap.len, &v, 0, writable, 1);
     }
 
-    /* 解除进程阻塞 */
+    /* Unblock requesting process. */
     memset(&mmap_reply, 0, sizeof(mmap_reply));
     mmap_reply.m_type = result;
     mmap_reply.m_mmap.retaddr = (void *) v;
 
-    ipc_send(vmp->vm_endpoint, &mmap_reply);
+    if(ipc_send(vmp->vm_endpoint, &mmap_reply) != OK)
+        panic("VM: mmap_file_cont: ipc_send() failed");
 }
 ```
 
-#### 3.4.2 页缓存
+#### 2.7.2 页缓存
 
 文件映射与文件系统缓存的关系。
 
 **按需加载**
 
-```c
-/* minix3/minix/servers/vm/mem_mappedfile.c */
-
-/* 文件映射的缺页处理 */
-static int mappedfile_pagefault(struct vir_region *region,
-    struct phys_region *pr, int write)
-{
-    /* 从文件读取页面 */
-    /* 这里使用 VFS 的页缓存机制 */
-}
-```
+文件映射的缺页处理由 `mappedfile_pagefault` 回调完成（`mem_type_mappedfile.ev_pagefault`）。当写入私有映射页面时，执行写时复制（COW）；当读取未加载页面时，从文件加载。具体实现参见 [11-memtype.md](11-memtype.md)。
 
 **缓存策略**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    文件映射与页缓存                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 文件映射                                             │      │
-│   │                                                     │      │
-│   │   虚拟地址空间                                       │      │
-│   │   ┌───────┬───────┬───────┬───────┐                │      │
-│   │   │ Page 0│ Page 1│ Page 2│ Page 3│                │      │
-│   │   └───┬───┴───┬───┴───────┴───────┘                │      │
-│   │       │       │                                      │      │
-│   └───────┼───────┼──────────────────────────────────────┘      │
-│           │       │                                              │
-│           ▼       ▼                                              │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ VFS 页缓存                                           │      │
-│   │                                                     │      │
-│   │   缓存的文件页面                                     │      │
-│   │   ┌───────┬───────┬───────┬───────┐                │      │
-│   │   │Cache 0│Cache 1│Cache 2│Cache 3│                │      │
-│   │   └───────┴───────┴───────┴───────┘                │      │
-│   │                                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│           │       │                                              │
-│           ▼       ▼                                              │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 磁盘文件                                             │      │
-│   │                                                     │      │
-│   │   ┌───────┬───────┬───────┬───────┐                │      │
-│   │   │ Block │ Block │ Block │ Block │                │      │
-│   │   └───────┴───────┴───────┴───────┘                │      │
-│   │                                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+文件映射使用按需加载：首次访问某页时触发缺页，由 `mappedfile_pagefault` 处理。私有映射（MAP_PRIVATE）的写入触发 COW，修改不影响文件；共享映射（MAP_SHARED）的修改写回文件。
 
 **MAP_SHARED vs MAP_PRIVATE**
 
@@ -1301,234 +1174,222 @@ if((m->m_mmap.flags & MAP_SHARED) && (m->m_mmap.prot & PROT_WRITE)) {
 }
 ```
 
-### 3.5 do_munmap - 解除映射
+### 2.8 do_munmap - 解除映射
 
-#### 3.5.1 查找区域
+#### 2.8.1 查找区域
 
 根据地址查找要解除映射的区域。
 
 **查找函数**
 
 ```c
-/* minix3/minix/servers/vm/mmap.c */
+/* minix3/minix/servers/vm/mmap.c:512 */
 
 int do_munmap(message *m)
 {
-    int r, n;
-    struct vmproc *vmp;
-    struct vir_region *vr;
-    vir_bytes addr, len;
+        int r, n;
+        struct vmproc *vmp;
+	struct vir_region *vr;
+        vir_bytes addr, len;
+	endpoint_t target = SELF;
 
-    // ...
+	if(m->m_type == VM_UNMAP_PHYS) {
+		target = m->m_lsys_vm_unmap_phys.ep;
+	} else if(m->m_type == VM_SHM_UNMAP) {
+		target = m->m_lc_vm_shm_unmap.forwhom;
+	}
 
-    if(!(vr = map_lookup(vmp, addr, NULL))) {
-        printf("VM: unmap: address 0x%lx not found in %d\n",
-               addr, target);
-        return EFAULT;
-    }
+	if(target == SELF)
+		target = m->m_source;
 
-    // ...
+        if((r=vm_isokendpt(target, &n)) != OK) {
+                panic("do_mmap: message from strange source: %d", m->m_source);
+        }
+
+        vmp = &vmproc[n];
+
+	if(m->m_source == VM_PROC_NR) {
+		/* VM munmap is a special case, the region we want to
+		 * munmap may or may not be there in our data structures,
+		 * depending on whether this is an updated VM instance or not.
+		 */
+		if(!region_search_root(&vmp->vm_regions_avl)) {
+			munmap_vm_lin(addr, m->VMUM_LEN);
+		}
+		else if((vr = map_lookup(vmp, addr, NULL))) {
+			if(map_unmap_region(vmp, vr, 0, m->VMUM_LEN) != OK) {
+				printf("VM: self map_unmap_region failed\n");
+			}
+		}
+		return SUSPEND;
+	}
+
+	if(m->m_type == VM_UNMAP_PHYS) {
+		addr = (vir_bytes) m->m_lsys_vm_unmap_phys.vaddr;
+	} else if(m->m_type == VM_SHM_UNMAP) {
+		addr = (vir_bytes) m->m_lc_vm_shm_unmap.addr;
+	} else	addr = (vir_bytes) m->VMUM_ADDR;
+
+	if(addr % VM_PAGE_SIZE)
+		return EFAULT;
+ 
+	if(m->m_type == VM_UNMAP_PHYS || m->m_type == VM_SHM_UNMAP) {
+		struct vir_region *vr;
+	        if(!(vr = map_lookup(vmp, addr, NULL))) {
+			printf("VM: unmap: address 0x%lx not found in %d\n",
+	                       addr, target);
+			sys_diagctl_stacktrace(target);
+	                return EFAULT;
+		}
+		len = vr->length;
+	} else len = roundup(m->VMUM_LEN, VM_PAGE_SIZE);
+
+	return map_unmap_range(vmp, addr, len);
 }
 ```
+
+> **注意**: `do_munmap` 同时处理 `VM_MUNMAP`、`VM_UNMAP_PHYS` 和 `VM_SHM_UNMAP` 三种消息类型。`VM_UNMAP_PHYS` 和 `VM_SHM_UNMAP` 使用找到的区域长度，而非请求中指定的长度。
 
 **map_lookup 实现**
 
 ```c
-/* minix3/minix/servers/vm/region.c */
+/* minix3/minix/servers/vm/region.c:616 */
 
-struct vir_region *map_lookup(struct vmproc *vmp, vir_bytes v,
-    struct vir_region **prev)
+struct vir_region *map_lookup(struct vmproc *vmp,
+	vir_bytes offset, struct phys_region **physr)
 {
-    struct vir_region *vr;
+	struct vir_region *r;
 
-    /* 在 AVL 树中查找包含地址 v 的区域 */
-    vr = region_search(&vmp->vm_regions_avl, v, AVL_EQUAL);
+	if((r = region_search(&vmp->vm_regions_avl, offset, AVL_LESS_EQUAL))) {
+		vir_bytes ph;
+		if(offset >= r->vaddr && offset < r->vaddr + r->length) {
+			ph = offset - r->vaddr;
+			if(physr) {
+				*physr = physblock_get(r, ph);
+				if(*physr) assert((*physr)->offset == ph);
+			}
+			return r;
+		}
+	}
 
-    if(vr && vr->vaddr <= v && v < vr->vaddr + vr->length) {
-        return vr;
-    }
-
-    return NULL;
+	return NULL;
 }
 ```
 
+> **注意**: `region_search` 使用 `AVL_LESS_EQUAL` 搜索，找到起始地址 <= offset 的最近区域，然后再检查 offset 是否在该区域范围内。这不是精确匹配。
+
 **地址匹配规则**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    地址匹配                                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   区域: vaddr=0x1000, length=0x2000                             │
-│   ┌───────────────────────────────────────┐                    │
-│   │         已映射区域                     │                    │
-│   │    0x1000                        0x3000                    │
-│   └───────────────────────────────────────┘                    │
-│                                                                 │
-│   请求: addr=0x1500                                             │
-│   ✓ 匹配成功 (0x1000 <= 0x1500 < 0x3000)                       │
-│                                                                 │
-│   请求: addr=0x0800                                             │
-│   ✗ 匹配失败 (0x0800 < 0x1000)                                  │
-│                                                                 │
-│   请求: addr=0x3000                                             │
-│   ✗ 匹配失败 (0x3000 >= 0x3000)                                 │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+map_lookup 判断地址是否在区域内：`vaddr <= offset < vaddr + length`。
 
-#### 3.5.2 部分解除
+- 区域 vaddr=0x1000, length=0x2000，则范围 [0x1000, 0x3000)
+- offset=0x1500 → 匹配成功（0x1000 <= 0x1500 < 0x3000）
+- offset=0x0800 → 匹配失败（0x0800 < 0x1000）
+- offset=0x3000 → 匹配失败（0x3000 >= 0x3000）
+
+#### 2.8.2 部分解除
 
 当解除映射的范围只覆盖区域的一部分时，需要分割区域。
 
 **分割场景**
 
 ```c
-/* minix3/minix/servers/vm/region.c */
+/* minix3/minix/servers/vm/region.c:1222 */
 
-int map_unmap_range(struct vmproc *vmp, vir_bytes addr, vir_bytes len)
+int map_unmap_range(struct vmproc *vmp, vir_bytes unmap_start, vir_bytes length)
 {
-    struct vir_region *vr;
+	vir_bytes o = unmap_start % VM_PAGE_SIZE, unmap_limit;
+	region_iter v_iter;
+	struct vir_region *vr, *nextvr;
 
-    /* 查找起始地址所在区域 */
-    vr = map_lookup(vmp, addr, NULL);
+	unmap_start -= o;
+	length += o;
+	length = roundup(length, VM_PAGE_SIZE);
+	unmap_limit = length + unmap_start;
 
-    if(!vr) {
-        return OK;  /* 没有找到区域，静默成功 */
-    }
+	if(length < VM_PAGE_SIZE) return EINVAL;
+	if(unmap_limit <= unmap_start) return EINVAL;
 
-    /* 情况 1: 解除区域开头部分 */
-    if(vr->vaddr == addr && len < vr->length) {
-        /* 缩小区域，调整起始地址 */
-        // ...
-    }
+	region_start_iter(&vmp->vm_regions_avl, &v_iter, unmap_start, AVL_LESS_EQUAL);
 
-    /* 情况 2: 解除区域结尾部分 */
-    if(addr > vr->vaddr && addr + len >= vr->vaddr + vr->length) {
-        /* 缩小区域，减小长度 */
-        // ...
-    }
+	if(!(vr = region_get_iter(&v_iter))) {
+		region_start_iter(&vmp->vm_regions_avl, &v_iter, unmap_start, AVL_GREATER);
+		if(!(vr = region_get_iter(&v_iter))) {
+			return OK;  /* 没有找到区域，静默成功 */
+		}
+	}
 
-    /* 情况 3: 解除区域中间部分 */
-    if(addr > vr->vaddr && addr + len < vr->vaddr + vr->length) {
-        /* 分割成两个区域 */
-        // ...
-    }
+	for(; vr && vr->vaddr < unmap_limit; vr = nextvr) {
+		vir_bytes thislimit = vr->vaddr + vr->length;
+		vir_bytes this_unmap_start, this_unmap_limit;
 
-    /* 情况 4: 解除整个区域 */
-    if(vr->vaddr == addr && len >= vr->length) {
-        /* 完全释放 */
-        // ...
-    }
+		region_incr_iter(&v_iter);
+		nextvr = region_get_iter(&v_iter);
+
+		this_unmap_start = MAX(unmap_start, vr->vaddr);
+		this_unmap_limit = MIN(unmap_limit, thislimit);
+
+		if(this_unmap_start >= this_unmap_limit) continue;
+
+		/* 中间部分：需要先分割 */
+		if(this_unmap_start > vr->vaddr && this_unmap_limit < thislimit) {
+			struct vir_region *vr1, *vr2;
+			vir_bytes split_len = this_unmap_limit - vr->vaddr;
+			if((r=split_region(vmp, vr, &vr1, &vr2, split_len)) != OK) {
+				return r;
+			}
+			vr = vr1;
+		}
+
+		r = map_unmap_region(vmp, vr, this_unmap_start - vr->vaddr,
+			this_unmap_limit - this_unmap_start);
+		if(r != OK) return r;
+	}
+
+	return OK;
 }
 ```
 
-**分割示意图**
+**分割逻辑**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    区域分割                                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   原始区域:                                                     │
-│   ┌───────────────────────────────────────────────┐            │
-│   │              0x1000 - 0x4000                  │            │
-│   └───────────────────────────────────────────────┘            │
-│                                                                 │
-│   情况 1: 解除开头 (munmap(0x1000, 0x1000))                    │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ XXXXXXXX │        0x2000 - 0x4000             │            │
-│   └───────────────────────────────────────────────┘            │
-│             └─────────────────────────────────────┘ 新区域     │
-│                                                                 │
-│   情况 2: 解除结尾 (munmap(0x3000, 0x1000))                    │
-│   ┌───────────────────────────────────────────────┐            │
-│   │        0x1000 - 0x3000             │ XXXXXXXX │            │
-│   └───────────────────────────────────────────────┘            │
-│   └─────────────────────────────────────┘ 新区域               │
-│                                                                 │
-│   情况 3: 解除中间 (munmap(0x2000, 0x1000))                    │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ 0x1000-0x2000 │ XXXXXXXX │ 0x3000-0x4000     │            │
-│   └───────────────────────────────────────────────┘            │
-│   └───────────────┘           └───────────────┘ 两个新区域    │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+map_unmap_range 使用迭代器遍历 [unmap_start, unmap_limit) 范围内的所有区域，对每个区域：
 
-#### 3.5.3 完全解除
+| 情况 | 处理方式 |
+|------|---------|
+| 解除开头部分 | 直接调用 map_unmap_region(offset=0, len=partial) |
+| 解除结尾部分 | 直接调用 map_unmap_region(offset=partial, len=tail) |
+| 解除中间部分 | 先 split_region 分割，再 map_unmap_region 释放后半 |
+| 解除整个区域 | 直接调用 map_unmap_region(offset=0, len=full) |
+| 无区域覆盖 | 返回 OK（静默成功） |
+
+**分割示例**
+
+原始区域 [0x1000, 0x4000)：
+
+- 解除开头 munmap(0x1000, 0x1000)：新区域 [0x2000, 0x4000)
+- 解除结尾 munmap(0x3000, 0x1000)：新区域 [0x1000, 0x3000)
+- 解除中间 munmap(0x2000, 0x1000)：分割为 [0x1000, 0x2000) 和 [0x3000, 0x4000)
+
+#### 2.8.3 完全解除
 
 释放整个映射区域。
 
 **释放流程**
 
-```c
-/* minix3/minix/servers/vm/region.c */
+map_unmap_region 负责释放指定偏移和长度的区域部分。对于完全释放，流程为：
 
-int map_unmap_region(struct vmproc *vmp, struct vir_region *vr,
-    vir_bytes offset, vir_bytes len)
-{
-    /* 1. 从 AVL 树中移除 */
-    region_remove(&vmp->vm_regions_avl, vr);
-
-    /* 2. 释放物理页面 */
-    for(i = 0; i < phys_slot(vr->length); i++) {
-        struct phys_region *pr = vr->physblocks[i];
-        if(pr) {
-            /* 减少引用计数 */
-            if(pr->ph->refcount > 0) {
-                pr->ph->refcount--;
-            }
-            /* 如果引用计数为 0，释放物理页面 */
-            if(pr->ph->refcount == 0) {
-                free_phys_block(pr->ph);
-            }
-        }
-    }
-
-    /* 3. 释放区域结构 */
-    free(vr->physblocks);
-    free(vr);
-
-    return OK;
-}
-```
+1. 从 AVL 树中移除区域（region_remove）
+2. 对每个 phys_region 调用 mem_type 的 ev_unreference 回调，减少 phys_block 的引用计数
+3. 引用计数为 0 的 phys_block 被释放回物理内存
+4. 释放 vir_region 结构本身
 
 **资源释放**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    完全解除映射                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   释放前:                                                       │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ vir_region                                    │            │
-│   │   vaddr = 0x1000                              │            │
-│   │   length = 0x3000                             │            │
-│   │   physblocks[0..2]                            │            │
-│   └───────────────────────────────────────────────┘            │
-│              │              │              │                    │
-│              ▼              ▼              ▼                    │
-│         ┌────────┐    ┌────────┐    ┌────────┐                │
-│         │phys blk│    │phys blk│    │phys blk│                │
-│         │ref=1   │    │ref=2   │    │ref=1   │                │
-│         └────────┘    └────────┘    └────────┘                │
-│                                                                 │
-│   释放后:                                                       │
-│         ┌────────┐    ┌────────┐    ┌────────┐                │
-│         │freed   │    │ref=1   │    │freed   │                │
-│         └────────┘    └────────┘    └────────┘                │
-│              ↑                             ↑                    │
-│              └─────────────────────────────┘                    │
-│                    ref=0 的页面被释放                           │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+释放时，每个 phys_block 的引用计数递减。引用计数降为 0 的物理页面被释放回空闲内存池；引用计数仍大于 0 的页面（被其他区域共享）继续保留。
 
-### 3.6 do_map_phys - 物理内存映射
+### 2.9 do_map_phys - 物理内存映射
 
-#### 3.6.1 权限检查
+#### 2.9.1 权限检查
 
 物理内存映射需要特权检查，防止普通进程随意访问硬件。
 
@@ -1553,43 +1414,13 @@ static int map_perm_check(endpoint_t caller, endpoint_t target,
 
 **权限来源**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    物理映射权限                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 特权进程                                             │      │
-│   │                                                     │      │
-│   │   TTY (终端驱动)                                    │      │
-│   │     - 可以映射任何物理地址                          │      │
-│   │     - 用于帧缓冲访问                                │      │
-│   │                                                     │      │
-│   │   MEM (/dev/mem)                                    │      │
-│   │     - 可以映射自身地址空间                          │      │
-│   │     - 用于 /dev/mem 实现                            │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 授权进程                                             │      │
-│   │                                                     │      │
-│   │   PCI 设备驱动                                      │      │
-│   │     - 由 PCI 子系统授权设备寄存器范围               │      │
-│   │     - 通过 sys_privquery_mem() 检查                 │      │
-│   │                                                     │      │
-│   │   网络驱动、存储驱动等                              │      │
-│   │     - 只能映射其控制的设备范围                      │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 普通进程                                             │      │
-│   │                                                     │      │
-│   │   不允许调用 vm_map_phys                            │      │
-│   │   返回 EPERM                                        │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 调用者类型 | 权限范围 | 检查方式 |
+|-----------|---------|---------|
+| TTY (终端驱动) | 任何物理地址，可代表任何进程 | 直接放行 |
+| MEM (/dev/mem) | 自身地址空间 | 直接放行 |
+| PCI 设备驱动 | 由 PCI 子系统授权的设备寄存器范围 | sys_privquery_mem() |
+| 网络驱动、存储驱动等 | 仅其控制的设备范围 | sys_privquery_mem() |
+| 普通进程 | 不允许 | 返回 EPERM |
 
 **内核授权机制**
 
@@ -1602,49 +1433,62 @@ int sys_privquery_mem(endpoint_t ep, phys_bytes addr, phys_bytes len)
 }
 ```
 
-#### 3.6.2 直接映射
+#### 2.9.2 直接映射
 
 使用 VR_DIRECT 标志创建物理内存直接映射。
 
 **do_map_phys 实现**
 
 ```c
-/* minix3/minix/servers/vm/mmap.c */
+/* minix3/minix/servers/vm/mmap.c:310 */
 
 int do_map_phys(message *m)
 {
     int r, n;
     struct vmproc *vmp;
+    endpoint_t target;
     struct vir_region *vr;
     vir_bytes len;
     phys_bytes startaddr;
+    size_t offset;
 
-    /* 1. 确定目标进程 */
-    if((r = vm_isokendpt(m->m_source, &n)) != OK) {
-        panic("do_map_phys: message from strange source: %d", m->m_source);
-    }
-    vmp = &vmproc[n];
+    target = m->m_lsys_vm_map_phys.ep;
+    len = m->m_lsys_vm_map_phys.len;
 
-    /* 2. 获取参数 */
-    startaddr = (phys_bytes) m->m_lsys_vm_map_phys.phys_addr;
-    len = (vir_bytes) m->m_lsys_vm_map_phys.len;
+    if (len <= 0) return EINVAL;
 
-    /* 3. 权限检查 */
-    if(map_perm_check(m->m_source, vmp->vm_endpoint, startaddr, len) != OK) {
+    if(target == SELF)
+        target = m->m_source;
+
+    if((r=vm_isokendpt(target, &n)) != OK)
+        return EINVAL;
+
+    startaddr = (vir_bytes)m->m_lsys_vm_map_phys.phaddr;
+
+    /* First check permission, then round range down/up. */
+    if(map_perm_check(m->m_source, target, startaddr, len) != OK) {
+        printf("VM: unauthorized mapping of 0x%lx by %d for %d\n",
+            startaddr, m->m_source, target);
         return EPERM;
     }
 
-    /* 4. 创建直接映射区域 */
+    vmp = &vmproc[n];
+
+    offset = startaddr % VM_PAGE_SIZE;
+    len += offset;
+    startaddr -= offset;
+
+    if(len % VM_PAGE_SIZE)
+        len += VM_PAGE_SIZE - (len % VM_PAGE_SIZE);
+
     if(!(vr = map_page_region(vmp, VM_MMAPBASE, VM_MMAPTOP, len,
         VR_DIRECT | VR_WRITABLE, 0, &mem_type_directphys))) {
         return ENOMEM;
     }
 
-    /* 5. 设置物理地址 */
     phys_setphys(vr, startaddr);
 
-    /* 6. 返回映射地址 */
-    m->m_lsys_vm_map_phys.ret_addr = (void *) vr->vaddr;
+    m->m_lsys_vm_map_phys.reply = (void *) (vr->vaddr + offset);
 
     return OK;
 }
@@ -1652,59 +1496,30 @@ int do_map_phys(message *m)
 
 **VR_DIRECT 特性**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    直接物理映射                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   普通映射 (匿名/文件):                                         │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ 虚拟地址                                       │            │
-│   │   0x40000000                                  │            │
-│   └───────────────────────────────────────────────┘            │
-│              │                                                  │
-│              │ 页表映射                                         │
-│              ▼                                                  │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ 物理页面 (动态分配)                            │            │
-│   │   由 VM 管理的普通内存                         │            │
-│   └───────────────────────────────────────────────┘            │
-│                                                                 │
-│   直接映射 (VR_DIRECT):                                         │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ 虚拟地址                                       │            │
-│   │   0x40000000                                  │            │
-│   └───────────────────────────────────────────────┘            │
-│              │                                                  │
-│              │ 直接映射 (无额外分配)                            │
-│              ▼                                                  │
-│   ┌───────────────────────────────────────────────┐            │
-│   │ 设备寄存器 / 物理内存                          │            │
-│   │   0xFEC00000 (I/O APIC)                       │            │
-│   │   0xA0000 (VGA 帧)                            │            │
-│   └───────────────────────────────────────────────┘            │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+普通映射（匿名/文件）的虚拟地址通过页表映射到 VM 动态分配的物理页面；VR_DIRECT 映射的虚拟地址直接映射到指定的物理地址（如设备寄存器 0xFEC00000 或 VGA 帧 0xA0000），无需 VM 分配物理页面。
 
 **mem_type_directphys**
 
 ```c
-/* minix3/minix/servers/vm/mem_directphys.c */
+/* minix3/minix/servers/vm/mem_directphys.c:28 */
 
-mem_type_t mem_type_directphys = {
-    .name = "direct physical",
-    .ev_alloc = directphys_alloc,      /* 无需分配 */
-    .ev_free = directphys_free,        /* 无需释放 */
-    .ev_pagefault = directphys_pagefault,  /* 直接映射 */
+struct mem_type mem_type_directphys = {
+    .name = "physical memory mapping",
+    .ev_copy = phys_copy,
+    .ev_unreference = phys_unreference,
+    .writable = phys_writable,
+    .ev_pagefault = phys_pagefault,
+    .pt_flags = phys_pt_flags
 };
 ```
 
+phys_pagefault 的实现直接将物理地址写入 phys_block：`ph->ph->phys = region->param.phys + ph->offset`，无需分配新页面。phys_unreference 为空操作（直接映射不需要释放物理页面）。
+
 ---
 
-## 4. Rust 设计决策
+## 3. Rust 设计决策
 
-### 4.1 MmapRequest/MmapResponse
+### 3.1 MmapRequest/MmapResponse
 
 类型安全的 IPC 消息结构。
 
@@ -1803,7 +1618,7 @@ pub enum MapPhysError {
 }
 ```
 
-### 4.2 映射标志
+### 3.2 映射标志
 
 使用 bitflags 定义类型安全的映射标志。
 
@@ -1813,12 +1628,12 @@ pub enum MapPhysError {
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MmapFlags: u32 {
-        const MAP_SHARED        = 0x01;
-        const MAP_PRIVATE       = 0x02;
-        const MAP_FIXED         = 0x10;
-        const MAP_ANONYMOUS     = 0x20;
-        const MAP_CONTIG        = 0x40;
-        const MAP_PREALLOC      = 0x80;
+        const MAP_SHARED        = 0x0001;
+        const MAP_PRIVATE       = 0x0002;
+        const MAP_FIXED         = 0x0010;
+        const MAP_ANONYMOUS     = 0x1000;
+        const MAP_CONTIG        = 0x100000;
+        const MAP_PREALLOC      = 0x080000;
     }
 }
 
@@ -1872,7 +1687,7 @@ impl ProtectionFlags {
 | - | MAP_CONTIG | MAP_CONTIG | 连续物理内存 |
 | - | MAP_PREALLOC | MAP_PREALLOC | 预分配 |
 
-### 4.3 错误处理
+### 3.3 错误处理
 
 统一的错误处理策略。
 
@@ -1945,45 +1760,13 @@ impl VmHandler {
 
 **错误处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    错误处理流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   mmap 请求                                                     │
-│       │                                                         │
-│       ▼                                                         │
-│   ┌─────────────────┐                                          │
-│   │ 参数验证        │                                          │
-│   └────────┬────────┘                                          │
-│            │                                                    │
-│       失败 │ 成功                                               │
-│            ▼                                                    │
-│   ┌─────────────────┐    ┌─────────────────┐                   │
-│   │ EINVAL          │    │ 权限检查        │                   │
-│   └─────────────────┘    └────────┬────────┘                   │
-│                                   │                             │
-│                              失败 │ 成功                        │
-│                                   ▼                             │
-│                          ┌─────────────────┐                   │
-│                          │ EPERM           │    ┌───────────┐  │
-│                          └─────────────────┘    │ 地址查找  │  │
-│                                                  └─────┬─────┘  │
-│                                                        │        │
-│                                                   失败 │ 成功   │
-│                                                        ▼        │
-│                                                ┌───────────┐    │
-│                                                │ ENOMEM    │    │
-│                                                └───────────┘    │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+mmap 请求的错误检查按以下顺序进行：参数验证（EINVAL）→ 权限检查（EPERM）→ 地址查找/区域创建（ENOMEM）。任何步骤失败立即返回对应错误码。
 
 ---
 
-## 5. 实现详解
+## 4. 实现详解
 
-### 5.1 消息处理入口
+### 4.1 消息处理入口
 
 VM 服务消息分发处理。
 
@@ -2051,7 +1834,7 @@ impl VmHandler {
 }
 ```
 
-### 5.2 地址空间查找
+### 4.2 地址空间查找
 
 在进程地址空间中查找合适的空闲区域。
 
@@ -2059,8 +1842,8 @@ impl VmHandler {
 
 ```rust
 impl AddressSpace {
-    const MMAP_BASE: VirtualAddress = VirtualAddress::new(0x4000_0000);
-    const MMAP_TOP: VirtualAddress = VirtualAddress::new(0x7000_0000);
+    const MMAP_BASE: VirtualAddress = VirtualAddress::new(0x0000_0001_0000_0000);
+    const MMAP_TOP: VirtualAddress = VirtualAddress::new(0x0000_0200_0000_0000);
 
     pub fn find_free_region(
         &self,
@@ -2135,7 +1918,7 @@ impl<V: VirtualRegion> RegionTree<V> {
 }
 ```
 
-### 5.3 区域创建与插入
+### 4.3 区域创建与插入
 
 创建虚拟区域并插入 AVL 树。
 
@@ -2219,7 +2002,7 @@ impl<V: VirtualRegion> RegionTree<V> {
 }
 ```
 
-### 5.4 页表映射
+### 4.4 页表映射
 
 按需映射或预映射页面。
 
@@ -2297,7 +2080,7 @@ pub trait PageTableMapper {
 }
 ```
 
-### 5.5 解除映射处理
+### 4.5 解除映射处理
 
 区域分割和释放。
 
@@ -2391,9 +2174,9 @@ impl PhysBlock {
 
 ---
 
-## 6. 内存类型与映射
+## 5. 内存类型与映射
 
-### 6.1 匿名映射
+### 5.1 匿名映射
 
 匿名内存类型实现。
 
@@ -2482,7 +2265,7 @@ impl MemoryType for AnonymousMemory {
 }
 ```
 
-### 6.2 文件映射
+### 5.2 文件映射
 
 文件映射内存类型实现。
 
@@ -2574,7 +2357,7 @@ pub struct FileMappingParams {
 }
 ```
 
-### 6.3 物理内存映射
+### 5.3 物理内存映射
 
 直接物理内存映射类型实现。
 
@@ -2650,386 +2433,66 @@ impl VirtualRegion {
 
 **使用场景**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    物理内存映射使用场景                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   1. 设备寄存器映射                                             │
-│      - VGA 帧缓冲区 (0xA0000)                                   │
-│      - PCI 配置空间                                             │
-│      - APIC 寄存器                                              │
-│                                                                 │
-│   2. DMA 缓冲区                                                 │
-│      - 网络驱动 DMA 区域                                        │
-│      - 存储驱动 DMA 区域                                        │
-│                                                                 │
-│   3. 共享内存                                                   │
-│      - 进程间共享物理内存                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+- 设备寄存器映射：VGA 帧缓冲区 (0xA0000)、PCI 配置空间、APIC 寄存器
+- DMA 缓冲区：网络驱动 DMA 区域、存储驱动 DMA 区域
+- 共享内存：进程间共享物理内存
 
 ---
 
-## 7. 测试与验证
+## 6. 测试要点
 
-### 7.1 匿名映射测试
+### 6.1 匿名映射测试维度
 
-测试匿名映射功能。
+- **基本功能**: mmap 返回页对齐地址，地址在 MMAP_BASE 到 MMAP_TOP 范围内
+- **MAP_FIXED**: 指定地址映射成功，覆盖已有映射时先解除旧映射
+- **多次映射**: 连续 mmap 返回不同地址，无重叠
+- **零长度**: length=0 返回 EINVAL
+- **MAP_CONTIG 无 MAP_PREALLOC**: 返回 EINVAL
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+### 6.2 文件映射测试维度
 
-    #[test]
-    fn test_anonymous_mmap_basic() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
+- **只读文件映射**: 正确映射文件内容
+- **带偏移的文件映射**: offset 参数正确传递
+- **MAP_PRIVATE 写时复制**: 修改不影响原文件
+- **可写 MAP_SHARED**: 返回 ENXIO（Minix3 限制）
+- **文件映射禁用**: enable_filemap=false 时返回 ENXIO
 
-        let request = MmapRequest {
-            addr: None,
-            length: 4096,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE,
-            fd: None,
-            offset: 0,
-        };
+### 6.3 物理映射测试维度
 
-        let result = vm.do_mmap(&request);
-        assert!(result.is_ok());
+- **特权进程映射**: TTY/MEM 可映射任意物理地址
+- **权限拒绝**: 普通进程返回 EPERM
+- **PCI 驱动映射**: 授权范围内成功，范围外失败
+- **地址偏移保留**: 非页对齐物理地址返回的虚拟地址保留偏移
+- **映射后解除**: vm_map_phys 后 vm_unmap_phys 成功
 
-        let addr = result.unwrap();
-        assert!(addr.is_page_aligned());
-        assert!(addr >= AddressSpace::MMAP_BASE);
-        assert!(addr < AddressSpace::MMAP_TOP);
-    }
+### 6.4 解除映射测试维度
 
-    #[test]
-    fn test_anonymous_mmap_fixed() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
+- **完全解除**: munmap 整个区域后 lookup 返回 None
+- **部分解除-开头**: 区域起始地址调整
+- **部分解除-中间**: 区域分割为两个
+- **未映射地址**: munmap 未映射地址返回 OK（POSIX 语义）
+- **地址未对齐**: 非页对齐地址返回 EFAULT
 
-        let fixed_addr = VirtualAddress::new(0x5000_0000);
+### 6.5 关键测试场景
 
-        let request = MmapRequest {
-            addr: Some(fixed_addr),
-            length: 4096,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE | MmapFlags::MAP_FIXED,
-            fd: None,
-            offset: 0,
-        };
-
-        let result = vm.do_mmap(&request);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), fixed_addr);
-    }
-
-    #[test]
-    fn test_anonymous_mmap_multiple() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-
-        let mut addresses = Vec::new();
-
-        for _ in 0..10 {
-            let request = MmapRequest {
-                addr: None,
-                length: 4096,
-                prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-                flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE,
-                fd: None,
-                offset: 0,
-            };
-
-            let addr = vm.do_mmap(&request).unwrap();
-            addresses.push(addr);
-        }
-
-        for i in 0..addresses.len() {
-            for j in (i + 1)..addresses.len() {
-                assert_ne!(addresses[i], addresses[j]);
-            }
-        }
-    }
-}
-```
-
-### 7.2 文件映射测试
-
-测试文件映射功能。
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_file_mmap_readonly() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-        let file = vm.create_test_file(b"Hello, World!");
-
-        let request = MmapRequest {
-            addr: None,
-            length: 4096,
-            prot: ProtectionFlags::PROT_READ,
-            flags: MmapFlags::MAP_PRIVATE,
-            fd: Some(file.fd),
-            offset: 0,
-        };
-
-        let result = vm.do_mmap(&request);
-        assert!(result.is_ok());
-
-        let addr = result.unwrap();
-        let data = vm.read_memory(process, addr, 13);
-        assert_eq!(&data[..], b"Hello, World!");
-    }
-
-    #[test]
-    fn test_file_mmap_offset() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-        let file = vm.create_test_file(b"0123456789ABCDEF");
-
-        let request = MmapRequest {
-            addr: None,
-            length: 4096,
-            prot: ProtectionFlags::PROT_READ,
-            flags: MmapFlags::MAP_PRIVATE,
-            fd: Some(file.fd),
-            offset: 8,
-        };
-
-        let result = vm.do_mmap(&request);
-        assert!(result.is_ok());
-
-        let addr = result.unwrap();
-        let data = vm.read_memory(process, addr, 8);
-        assert_eq!(&data[..], b"ABCDEF");
-    }
-
-    #[test]
-    fn test_file_mmap_private_copy_on_write() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-        let file = vm.create_test_file(b"Original Data");
-
-        let request = MmapRequest {
-            addr: None,
-            length: 4096,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_PRIVATE,
-            fd: Some(file.fd),
-            offset: 0,
-        };
-
-        let addr = vm.do_mmap(&request).unwrap();
-
-        vm.write_memory(process, addr, b"Modified   ");
-
-        let data = vm.read_file(file.fd, 0, 13);
-        assert_eq!(&data[..], b"Original Data");
-    }
-}
-```
-
-### 7.3 物理映射测试
-
-测试物理内存映射功能。
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_map_phys_privileged() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_privileged_process(Endpoint::TTY);
-
-        let request = MapPhysRequest {
-            phys_addr: PhysicalAddress::new(0xA0000),
-            length: 4096,
-        };
-
-        let result = vm.do_map_phys(&request);
-        assert!(result.is_ok());
-
-        let virt_addr = result.unwrap();
-        assert!(virt_addr.is_page_aligned());
-    }
-
-    #[test]
-    fn test_map_phys_permission_denied() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_user_process();
-
-        let request = MapPhysRequest {
-            phys_addr: PhysicalAddress::new(0xA0000),
-            length: 4096,
-        };
-
-        let result = vm.do_map_phys(&request);
-        assert!(matches!(result, Err(MapPhysError::PermissionDenied)));
-    }
-
-    #[test]
-    fn test_map_phys_device_register() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_privileged_process(Endpoint::PCI_DRIVER);
-
-        let request = MapPhysRequest {
-            phys_addr: PhysicalAddress::new(0xFEC00000),
-            length: 4096,
-        };
-
-        let result = vm.do_map_phys(&request);
-        assert!(result.is_ok());
-
-        let virt_addr = result.unwrap();
-
-        vm.write_memory(process, virt_addr, &[0x01, 0x02, 0x03, 0x04]);
-
-        let phys_data = vm.read_physical_memory(0xFEC00000, 4);
-        assert_eq!(phys_data, &[0x01, 0x02, 0x03, 0x04]);
-    }
-
-    #[test]
-    fn test_map_phys_unmap() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_privileged_process(Endpoint::TTY);
-
-        let request = MapPhysRequest {
-            phys_addr: PhysicalAddress::new(0xB8000),
-            length: 4096,
-        };
-
-        let virt_addr = vm.do_map_phys(&request).unwrap();
-
-        let unmap_request = MunmapRequest {
-            addr: virt_addr,
-            length: 4096,
-        };
-
-        let result = vm.do_munmap(&unmap_request);
-        assert!(result.is_ok());
-    }
-}
-```
-
-### 7.4 解除映射测试
-
-测试解除映射功能。
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_munmap_complete() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-
-        let mmap_request = MmapRequest {
-            addr: None,
-            length: 4096 * 3,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE,
-            fd: None,
-            offset: 0,
-        };
-
-        let addr = vm.do_mmap(&mmap_request).unwrap();
-
-        let munmap_request = MunmapRequest {
-            addr,
-            length: 4096 * 3,
-        };
-
-        let result = vm.do_munmap(&munmap_request);
-        assert!(result.is_ok());
-
-        let lookup_result = vm.lookup_region(process, addr);
-        assert!(lookup_result.is_none());
-    }
-
-    #[test]
-    fn test_munmap_partial_start() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-
-        let addr = vm.do_mmap(&MmapRequest {
-            addr: None,
-            length: 4096 * 4,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE,
-            fd: None,
-            offset: 0,
-        }).unwrap();
-
-        let result = vm.do_munmap(&MunmapRequest {
-            addr,
-            length: 4096,
-        });
-        assert!(result.is_ok());
-
-        assert!(vm.lookup_region(process, addr).is_none());
-        assert!(vm.lookup_region(process, addr + 4096).is_some());
-    }
-
-    #[test]
-    fn test_munmap_partial_middle() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-
-        let addr = vm.do_mmap(&MmapRequest {
-            addr: None,
-            length: 4096 * 4,
-            prot: ProtectionFlags::PROT_READ | ProtectionFlags::PROT_WRITE,
-            flags: MmapFlags::MAP_ANONYMOUS | MmapFlags::MAP_PRIVATE,
-            fd: None,
-            offset: 0,
-        }).unwrap();
-
-        let result = vm.do_munmap(&MunmapRequest {
-            addr: addr + 4096,
-            length: 4096 * 2,
-        });
-        assert!(result.is_ok());
-
-        assert!(vm.lookup_region(process, addr).is_some());
-        assert!(vm.lookup_region(process, addr + 4096).is_none());
-        assert!(vm.lookup_region(process, addr + 4096 * 3).is_some());
-    }
-
-    #[test]
-    fn test_munmap_not_mapped() {
-        let mut vm = VmHandler::new_test();
-        let process = vm.create_test_process();
-
-        let result = vm.do_munmap(&MunmapRequest {
-            addr: VirtualAddress::new(0x5000_0000),
-            length: 4096,
-        });
-
-        assert!(result.is_ok());
-    }
-}
-```
+- **fork 后映射共享**: 父子进程的匿名映射共享物理页面（refcount 递增）
+- **MAP_PREALLOC 预分配**: 所有页面在 mmap 时即分配，非按需分配
+- **MAP_UNINITIALIZED**: 仅 VFS/RS 可使用，内存不清零
+- **mmap 区域耗尽**: 大量映射后 ENOMEM
 
 ---
 
-## 8. 参见
+## 7. 参见
 
-- [12-vir-region.md](12-vir-region.md) - 区域创建与管理
-- [11-memtype.md](11-memtype.md) - 不同映射类型的内存类型
-- [13-region-avl.md](13-region-avl.md) - 区域查找与插入
+- [12-vir-region.md](12-vir-region.md) - 区域创建与管理（vir_region 结构体、region_new、map_page_region）
+- [11-memtype.md](11-memtype.md) - 不同映射类型的内存类型（mem_type 结构体及各实现）
+- [13-region-avl.md](13-region-avl.md) - 区域查找与插入（AVL 树操作、region_find_slot）
+- [14-phys-region.md](14-phys-region.md) - 物理区域管理（phys_region、phys_block 引用计数）
+- [10-phys-block.md](10-phys-block.md) - 物理内存块管理
+- [00-vm-overview.md](00-vm-overview.md) - VM 模块总览
+- [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体（vmproc、地址空间）
+- [18-vm-brk.md](18-vm-brk.md) - brk 系统调用（堆管理，与 mmap 区域相邻）
 
 ---
 
-*分类: VM服务 | IPC接口: VM_MAP, VM_UNMAP, VM_MAP_PHYS | 调用者: VFS, 进程自身, 驱动*
+*分类: VM服务 | IPC接口: VM_MMAP, VM_MUNMAP, VM_MAP_PHYS, VM_UNMAP_PHYS | 调用者: VFS, 进程自身, 驱动*
