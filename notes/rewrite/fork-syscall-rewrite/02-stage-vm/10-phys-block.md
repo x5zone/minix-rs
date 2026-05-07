@@ -12,136 +12,42 @@
 
 `phys_block` 是 VM 中管理物理内存页的核心数据结构。每个 `phys_block` 代表一个物理内存页（4KB），并通过引用计数机制支持多个虚拟区域共享同一物理页。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_block 在 VM 中的位置                  │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   进程虚拟地址空间                                           │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ vir_region (虚拟区域)                                │   │
-│   │   vaddr: 0x400000                                    │   │
-│   │   length: 0x3000                                     │   │
-│   │   physblocks[0] ──────────────────┐                 │   │
-│   │   physblocks[1] ──────────────────┼──────────┐      │   │
-│   │   physblocks[2] ──────────────────┼──────────┼───┐  │   │
-│   └───────────────────────────────────┼──────────┼───┼──┘   │
-│                                       │          │   │      │
-│   phys_region (物理区域)              │          │   │      │
-│   ┌───────────────────────────────────┼──────────┼───┼──┐   │
-│   │ offset: 0x0000                    │          │   │  │   │
-│   │ ph ───────────────────────────────┘          │   │  │   │
-│   │ memtype: anon                                 │   │  │   │
-│   └───────────────────────────────────────────────┘   │  │   │
-│                                                       │  │   │
-│   phys_block (物理块)                                  │  │   │
-│   ┌───────────────────────────────────────────────┐   │  │   │
-│   │ phys: 0x1234000                                │   │  │   │
-│   │ refcount: 1                                    │   │  │   │
-│   │ firstregion ───────────────────────────────────┘  │  │   │
-│   └───────────────────────────────────────────────────┘  │   │
-│                                                           │   │
-│   CoW 场景: fork 后父子进程共享物理页                       │   │
-│   ┌───────────────────────────────────────────────────┐   │   │
-│   │ 父进程 vir_region                                  │   │   │
-│   │   physblocks[0] ──┐                               │   │   │
-│   └────────────────────┼──────────────────────────────┘   │   │
-│                        │                                   │   │
-│   ┌────────────────────┼──────────────────────────────┐   │   │
-│   │ 子进程 vir_region  │                              │   │   │
-│   │   physblocks[0] ───┼──┐                           │   │   │
-│   └────────────────────┼──┼──────────────────────────┘   │   │
-│                        │  │                               │   │
-│                        ▼  ▼                               │   │
-│   ┌───────────────────────────────────────────────────┐   │   │
-│   │ phys_block                                         │   │   │
-│   │ phys: 0x1234000                                    │   │   │
-│   │ refcount: 2  ◄─── 两个进程共享                      │   │   │
-│   │ firstregion ──► phys_region 链表                   │   │   │
-│   └───────────────────────────────────────────────────┘   │   │
-│                                                           │   │
-└─────────────────────────────────────────────────────────────┘
-```
+**phys_block 在 VM 中的位置**
+
+三层关系：
+1. `vir_region`（虚拟区域）：进程的虚拟地址空间段，通过 `physblocks[]` 数组间接引用物理块
+2. `phys_region`（物理区域）：连接虚拟区域与物理块的桥梁，记录 offset、memtype 等映射信息
+3. `phys_block`（物理块）：代表一个物理页，维护引用计数和引用者链表
+
+CoW 场景下，fork 后父子进程的 `phys_region` 通过各自的 `vir_region.physblocks[]` 引用同一个 `phys_block`，此时 `refcount` 增为 2，页表标记为只读。写入时触发缺页异常，执行写时复制。
 
 **引用计数机制**
 
 引用计数是 `phys_block` 的核心特性，实现了物理内存的安全共享：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    引用计数生命周期                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   创建 phys_block:                                          │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ pb_new() → phys_block { refcount: 0 }              │   │
-│   │                    │                                │   │
-│   │ pb_link() ─────────┼──► refcount: 1                │   │
-│   │                    │                                │   │
-│   │ 第一个 phys_region 引用此块                          │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   增加引用 (fork, 共享内存):                                 │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ pb_link() ────► refcount++                          │   │
-│   │                                                     │   │
-│   │ refcount: 1 → 2 → 3 ...                            │   │
-│   │                                                     │   │
-│   │ 每增加一个 phys_region 引用，refcount +1            │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   减少引用 (munmap, exit, CoW):                             │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ pb_unreferenced() ────► refcount--                  │   │
-│   │                                                     │   │
-│   │ refcount: 3 → 2 → 1 ...                            │   │
-│   │                                                     │   │
-│   │ 当 refcount == 0 时:                                │   │
-│   │   - 调用 memtype->ev_unreference()                  │   │
-│   │   - 释放物理内存                                     │   │
-│   │   - SLABFREE(pb)                                    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **创建**：`pb_new()` 返回 `refcount=0` 的物理块，尚未被任何 `phys_region` 引用
+- **增加引用**（fork、共享内存）：`pb_link()` 使 `refcount++`，每增加一个 `phys_region` 引用，refcount +1
+- **减少引用**（munmap、exit、CoW）：`pb_unreferenced()` 使 `refcount--`，当 `refcount==0` 时调用 `memtype->ev_unreference()` 释放物理内存，然后 `SLABFREE(pb)` 释放结构体
 
 **与 Minix3 的对应关系**
 
-| Minix3 结构 | 作用 | Rust 对应 |
-|------------|------|----------|
-| `phys_block` | 物理内存块，含引用计数 | `PhysBlock` |
-| `phys_region` | 虚拟区域到物理块的映射 | `PhysRegion` |
-| `pb_new()` | 创建物理块 | `PhysBlock::new()` |
-| `pb_free()` | 释放物理块 | `Drop` trait |
-| `pb_link()` | 增加引用 | `PhysBlock::link()` |
-| `pb_unreferenced()` | 减少引用 | `PhysBlock::unlink()` |
-| `refcount` | 引用计数 | `AtomicU8` 或 `Cell<u8>` |
-| `firstregion` | 引用链表头 | `Option<NonNull<PhysRegion>>` |
+| Minix3 结构 | 作用 |
+|------------|------|
+| `phys_block` | 物理内存块，含引用计数 |
+| `phys_region` | 虚拟区域到物理块的映射 |
+| `pb_new()` | 创建物理块 |
+| `pb_free()` | 释放物理块 |
+| `pb_link()` | 增加引用 |
+| `pb_unreferenced()` | 减少引用 |
+| `refcount` | 引用计数（u8_t） |
+| `firstregion` | 引用链表头 |
 
 **关键设计要点**
 
-```
-1. 引用计数存储位置:
-   - Minix3: 在 phys_block 中存储 refcount
-   - 优点: 集中管理，易于验证
-   - 缺点: 需要额外的链表遍历
-
-2. 物理块与虚拟区域的关系:
-   - 一个 phys_block 可被多个 phys_region 引用
-   - 一个 phys_region 只能引用一个 phys_block
-   - 通过 firstregion 链表维护所有引用
-
-3. 生命周期管理:
-   - 创建: 分配物理页 + 初始化 refcount=0
-   - 链接: pb_link() 增加 refcount
-   - 解链: pb_unreferenced() 减少 refcount
-   - 释放: refcount==0 时释放物理页和 phys_block
-
-4. CoW 支持:
-   - 写操作时检查 refcount
-   - refcount > 1 时触发写时复制
-   - 复制后原块 refcount--，新块 refcount=1
-```
+1. **引用计数存储位置**：Minix3 在 `phys_block` 中存储 `refcount`，集中管理，易于验证，但需要额外的链表遍历
+2. **物理块与虚拟区域的关系**：一个 `phys_block` 可被多个 `phys_region` 引用；一个 `phys_region` 只能引用一个 `phys_block`；通过 `firstregion` 链表维护所有引用
+3. **生命周期管理**：创建（分配物理页 + 初始化 `refcount=0`）→ 链接（`pb_link()` 增加 refcount）→ 解链（`pb_unreferenced()` 减少 refcount）→ 释放（`refcount==0` 时释放物理页和 `phys_block`）
+4. **CoW 支持**：写操作时检查 refcount；`refcount > 1` 时触发写时复制；复制后原块 `refcount--`，新块 `refcount=1`
 
 ---
 
@@ -172,24 +78,17 @@ struct phys_block {
 
 **字段详解**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_block 字段布局                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   字段            类型         大小    说明                   │
-│   ────────────────────────────────────────────────────────  │
-│   seencount      u32_t        4      调试用（条件编译）       │
-│   phys           phys_bytes   8      物理内存地址            │
-│   firstregion    *phys_region 8      引用链表头              │
-│   refcount       u8_t         1      引用计数                │
-│   flags          u8_t         1      标志位                  │
-│   ────────────────────────────────────────────────────────  │
-│   总大小（不含调试字段）: 约 24 字节（64位，含对齐填充）     │
-│   SLAB 分配对齐后: 约 24-32 字节                             │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `seencount` | `u32_t` | 调试用（仅 `SANITYCHECKS` 构建） |
+| `phys` | `phys_bytes` | 物理内存地址 |
+| `firstregion` | `*phys_region` | 引用链表头 |
+| `refcount` | `u8_t` | 引用计数 |
+| `flags` | `u8_t` | 标志位 |
+
+> **32位 vs 64位差异**：Minix3 原始代码运行在 x86-32 上，`phys_bytes` 为 `u32_t`（4字节），指针为4字节；minix-rs 目标为 x86-64，`phys_bytes` 为 `u64_t`（8字节），指针为8字节。因此结构体大小不同：
+> - 32位（不含 seencount）：phys(4) + firstregion(4) + refcount(1) + flags(1) + padding(2) = 12字节
+> - 64位（不含 seencount）：phys(8) + firstregion(8) + refcount(1) + flags(1) + padding(6) = 24字节
 
 **phys 字段**
 
@@ -199,7 +98,7 @@ phys_bytes phys;  /* 物理内存地址 */
 
 - 存储物理页的起始地址
 - 必须是页对齐（4KB 对齐）
-- 值为 `MAP_NONE` 表示未分配物理内存（延迟分配）
+- 值为 `MAP_NONE`（`0xFFFFFFFE`）表示未分配物理内存（延迟分配）
 
 ```
 示例:
@@ -216,39 +115,7 @@ struct phys_region *firstregion;  /* 引用链表头 */
 - 指向第一个引用此块的 `phys_region`
 - 通过 `phys_region.next_ph_list` 形成链表
 - 用于遍历所有引用此块的虚拟区域
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    firstregion 链表结构                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   phys_block                                                 │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys: 0x1234000                                     │   │
-│   │ refcount: 3                                         │   │
-│   │ firstregion ────────────────────────────────┐       │   │
-│   └───────────────────────────────────────────────┼───────┘   │
-│                                                     │         │
-│   phys_region 链表                                  ▼         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_region 1 (进程A, offset=0x0000)                │   │
-│   │ next_ph_list ───────────────────────────────┐       │   │
-│   └───────────────────────────────────────────────┼───────┘   │
-│                                                     │         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_region 2 (进程B, offset=0x1000)                │   │
-│   │ next_ph_list ───────────────────────────────┐       │   │
-│   └───────────────────────────────────────────────┼───────┘   │
-│                                                     │         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_region 3 (进程C, offset=0x2000)                │   │
-│   │ next_ph_list = NULL                                 │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   refcount = 链表长度 = 3                                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- 链表长度始终等于 `refcount`
 
 **refcount 字段**
 
@@ -321,43 +188,18 @@ u32_t seencount;  /* 调试用 */
 - 用于遍历检查，防止重复访问
 - 生产环境不包含此字段
 
-**内存布局示意**
+**内存布局**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_block 内存布局                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   生产环境 (SANITYCHECKS 未定义):                            │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys (8 bytes)                                      │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ firstregion (8 bytes)                               │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ refcount (1 byte) │ flags (1 byte) │ padding (6)    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   总计: 24 bytes                                             │
-│                                                             │
-│   调试环境 (SANITYCHECKS 定义):                              │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ seencount (4 bytes)                                 │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ padding (4 bytes)                                   │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ phys (8 bytes)                                      │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ firstregion (8 bytes)                               │   │
-│   ├─────────────────────────────────────────────────────┤   │
-│   │ refcount (1 byte) │ flags (1 byte) │ padding (6)    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   总计: 32 bytes                                             │
-│                                                             │
-│   SLAB 分配: 使用 pb_slab (见 slab.c)                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+生产环境（`SANITYCHECKS` 未定义）：phys(8) + firstregion(8) + refcount(1) + flags(1) + padding(6) = 24字节（64位）
 
----### 2.2 物理块生命周期
+调试环境（`SANITYCHECKS` 定义）：seencount(4) + padding(4) + phys(8) + firstregion(8) + refcount(1) + flags(1) + padding(6) = 32字节（64位）
+
+SLAB 分配：通过通用 slaballoc() 按大小分配
+
+
+---
+
+### 2.2 物理块生命周期
 
 #### 2.2.1 pb_new - 创建物理块
 
@@ -384,11 +226,13 @@ struct phys_block *pb_new(phys_bytes phys)
     if(phys != MAP_NONE)
         assert(!(phys % VM_PAGE_SIZE));
     
-    /* 初始化字段 */
+    /* 初始化字段（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    USE(newpb,
     newpb->phys = phys;           /* 物理地址 */
     newpb->refcount = 0;          /* 初始引用计数为 0 */
     newpb->firstregion = NULL;    /* 无引用 */
     newpb->flags = 0;             /* 无标志 */
+    );
 
     return newpb;
 }
@@ -396,95 +240,25 @@ struct phys_block *pb_new(phys_bytes phys)
 
 **参数说明**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_new 参数说明                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   phys: 物理内存地址                                         │
-│   ────────────────────────────────────────────────────────  │
-│   MAP_NONE (0):  延迟分配，不立即分配物理页                  │
-│                  后续通过缺页处理分配                        │
-│                                                             │
-│   有效地址:      已分配的物理页地址                          │
-│                  必须页对齐 (4KB)                            │
-│                  例如: 0x1234000                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- `phys = MAP_NONE`（`0xFFFFFFFE`）：延迟分配，不立即分配物理页，后续通过缺页处理分配
+- `phys = 有效地址`：已分配的物理页地址，必须页对齐（4KB），例如 `0x1234000`
 
 **创建流程**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_new 创建流程                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. SLAB 分配                                              │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ SLABALLOC(newpb)                                │   │
-│      │                                                 │   │
-│      │ 从 pb_slab 分配 phys_block 结构体               │   │
-│      │ 失败返回 NULL                                   │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 验证物理地址                                           │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ if (phys != MAP_NONE)                           │   │
-│      │     assert(phys % VM_PAGE_SIZE == 0)            │   │
-│      │                                                 │   │
-│      │ 确保物理地址是页对齐的                           │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   3. 初始化字段                                             │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ newpb->phys = phys                              │   │
-│      │ newpb->refcount = 0    ◄─── 尚未被引用          │   │
-│      │ newpb->firstregion = NULL                       │   │
-│      │ newpb->flags = 0                                │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   4. 返回                                                   │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ return newpb                                    │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. `SLABALLOC(newpb)`：从通用 SLAB 分配器分配 `phys_block` 结构体，失败返回 NULL
+2. 验证物理地址：`if (phys != MAP_NONE) assert(phys % VM_PAGE_SIZE == 0)`，确保物理地址页对齐
+3. 初始化字段：`USE(newpb, ...)` 宏包裹字段赋值（SANITYCHECKS 构建中执行 slabunlock/slablock），设置 `phys`、`refcount=0`、`firstregion=NULL`、`flags=0`
+4. 返回 `newpb`
 
 **关键点：refcount 初始化为 0**
 
-```
-为什么 refcount 初始化为 0 而不是 1？
+refcount 初始化为 0 而不是 1 的原因：
 
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│   设计原因:                                                  │
-│                                                             │
-│   1. 分离创建和引用                                          │
-│      - pb_new(): 仅创建结构体                                │
-│      - pb_link(): 建立引用关系，refcount++                  │
-│      - 允许创建后不立即使用                                  │
-│                                                             │
-│   2. 灵活性                                                  │
-│      - 可以预分配 phys_block                                 │
-│      - 延迟到需要时再链接                                    │
-│      - 支持批量操作优化                                      │
-│                                                             │
-│   3. 一致性                                                  │
-│      - refcount 始终等于链表长度                             │
-│      - 初始状态: 无链表，refcount = 0                        │
-│      - 易于验证正确性                                        │
-│                                                             │
-│   典型使用模式:                                              │
-│   pb = pb_new(phys);        // refcount = 0                │
-│   pb_link(pr, pb, ...);     // refcount = 1                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **分离创建和引用**：`pb_new()` 仅创建结构体，`pb_link()` 建立引用关系并 `refcount++`，允许创建后不立即使用
+2. **灵活性**：可以预分配 `phys_block`，延迟到需要时再链接，支持批量操作优化
+3. **一致性**：`refcount` 始终等于链表长度，初始状态无链表则 `refcount=0`，易于验证正确性
+
+典型使用模式：`pb = pb_new(phys);` → `refcount=0`，然后 `pb_link(pr, pb, ...);` → `refcount=1`
 
 **使用场景**
 
@@ -496,7 +270,7 @@ struct phys_block *pb = pb_new(CLICK2ABS(phys));
 
 /* 场景 2: 延迟分配 */
 struct phys_block *pb = pb_new(MAP_NONE);
-/* pb->phys = 0, refcount = 0 */
+/* pb->phys = MAP_NONE (0xFFFFFFFE), refcount = 0 */
 /* 后续缺页时再分配物理页 */
 
 /* 场景 3: CoW 复制 */
@@ -511,17 +285,16 @@ struct phys_block *pb = pb_new(new_page);
 ```
 SLABALLOC 宏展开:
 
-#define SLABALLOC(var) \
-    ((var) = allocate(&pb_slab, sizeof(*(var))))
+#define SLABALLOC(var) (var = slaballoc(sizeof(*var)))
 
 特点:
-1. 从预分配的 SLAB 池中分配
+1. slaballoc() 是通用分配器，根据对象大小自动选择合适的 slab 池
 2. 避免频繁调用 malloc/free
 3. 提高分配效率
 4. 减少内存碎片
 
-pb_slab 定义 (sanitycheck.h):
-SLAB_DECLARE(pb_slab);
+注意：Minix3 的 slab 分配器是通用的，不为 phys_block 单独声明专用 slab。
+     SLABALLOC 根据sizeof(*var)自动路由到对应大小的 slab 池。
 ```
 
 #### 2.2.2 pb_free - 释放物理块
@@ -548,65 +321,20 @@ void pb_free(struct phys_block *pb)
 
 **释放流程**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_free 释放流程                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   输入: pb (要释放的 phys_block 指针)                        │
-│                                                             │
-│   1. 检查物理地址                                            │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ if (pb->phys != MAP_NONE)                       │   │
-│      │     free_mem(ABS2CLICK(pb->phys), 1);           │   │
-│      │                                                 │   │
-│      │ 如果有物理页，归还给内存分配器                     │   │
-│      │ MAP_NONE 表示延迟分配，无物理页需要释放           │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 释放结构体                                              │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ SLABFREE(pb);                                   │   │
-│      │                                                 │   │
-│      │ 将 phys_block 归还给 SLAB 分配器                 │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 检查物理地址：`if (pb->phys != MAP_NONE) free_mem(ABS2CLICK(pb->phys), 1);`，如果有物理页则归还给内存分配器，`MAP_NONE` 表示延迟分配无需释放
+2. 释放结构体：`SLABFREE(pb);`，将 `phys_block` 归还给 SLAB 分配器
 
 **重要前提条件**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_free 调用前提                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   ⚠️ pb_free 只能在 refcount == 0 时调用！                   │
-│                                                             │
-│   正确的释放路径:                                            │
-│                                                             │
-│   1. 通过 pb_unreferenced() 减少 refcount                   │
-│   2. 当 refcount 变为 0 时                                   │
-│   3. pb_unreferenced() 内部调用 SLABFREE(pb)                │
-│                                                             │
-│   pb_free() 的实际用途:                                      │
-│   - 清理创建后未使用的 phys_block                            │
-│   - 错误处理路径                                             │
-│   - 特殊的内存类型释放                                       │
-│                                                             │
-│   正常流程中，pb_free 由 pb_unreferenced 间接调用:           │
-│                                                             │
-│   pb_unreferenced() {                                       │
-│       pb->refcount--;                                       │
-│       if (pb->refcount == 0) {                              │
-│           pr->memtype->ev_unreference(pr);  // 释放物理页   │
-│           SLABFREE(pb);                     // 释放结构体   │
-│       }                                                     │
-│   }                                                         │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+⚠️ `pb_free` 只能在 `refcount == 0` 时调用！
+
+**两条释放路径**：
+
+1. **直接调用 `pb_free()`**：适用于创建后未使用的块、错误处理路径、`refcount == 0` 的块。前提是确保无 `phys_region` 引用此块。`pb_free` 释放物理页（`free_mem`）+ 释放结构体（`SLABFREE`）。
+
+2. **通过 `pb_unreferenced()`**：适用于正常的引用释放（munmap、exit、CoW）。流程：从链表中移除 `phys_region` → `refcount--` → 如果 `refcount == 0`，调用 `memtype->ev_unreference(pr)` 释放物理页 → `SLABFREE(pb)` 释放结构体。
+
+> 注意：`pb_unreferenced` 并不调用 `pb_free`。两者是独立的释放路径。`pb_unreferenced` 在 `refcount==0` 时直接调用 `pr->memtype->ev_unreference(pr)`（由 memtype 回调负责释放物理页），然后 `SLABFREE(pb)`。而 `pb_free` 是直接释放物理页和结构体的便捷函数。
 
 **物理内存释放细节**
 
@@ -617,8 +345,13 @@ free_mem(ABS2CLICK(pb->phys), 1);
 ```
 ABS2CLICK 宏:
 - 将字节地址转换为 click (4KB 块号)
-- #define ABS2ABS(a) ((a) >> CLICK_SHIFT)
+- #define ABS2CLICK(a) ((a) >> CLICK_SHIFT)   /* minix/include/minix/const.h */
 - 例如: 0x1234000 → 0x1234
+
+CLICK2ABS 宏:
+- 将 click 号转换为字节地址
+- #define CLICK2ABS(v) ((v) << CLICK_SHIFT)
+- 例如: 0x1234 → 0x1234000
 
 free_mem 参数:
 - 第一个参数: 起始 click 号
@@ -628,7 +361,7 @@ free_mem 参数:
 **使用场景**
 
 ```c
-/* 场景 1: 错误处理 - 创建后未使用 */
+/* 场景 1: 错误处理 - 创建后未使用（简化示例） */
 struct phys_block *pb = pb_new(phys);
 if (!pb) {
     return ENOMEM;
@@ -643,53 +376,36 @@ if (some_error_condition) {
 pb_link(pr, pb, offset, region);
 
 /* 场景 2: 内存类型释放回调 */
-/* mem_type_anon 的 ev_unreference 可能调用 pb_free */
+/* anon_unreference: 匿名内存的 ev_unreference 回调 */
 static int anon_unreference(struct phys_region *pr) {
-    /* 匿名内存直接释放 */
-    pb_free(pr->ph);
+    /* 断言 refcount 已经为 0 */
+    assert(pr->ph->refcount == 0);
+    /* 匿名内存直接释放物理页（不是调用 pb_free） */
+    if(pr->ph->phys != MAP_NONE)
+        free_mem(ABS2CLICK(pr->ph->phys), 1);
     return OK;
 }
 
 /* 场景 3: 延迟分配的块 */
 struct phys_block *pb = pb_new(MAP_NONE);
-/* pb->phys = 0，无物理页 */
+/* pb->phys = MAP_NONE (0xFFFFFFFE)，无物理页 */
 pb_free(pb);  /* 只释放结构体，无物理页释放 */
 ```
 
 **与 pb_unreferenced 的关系**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    释放路径对比                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   直接调用 pb_free():                                        │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 适用场景:                                            │   │
-│   │ - 创建后未使用的块                                   │   │
-│   │ - 错误处理路径                                       │   │
-│   │ - refcount == 0 的块                                 │   │
-│   │                                                     │   │
-│   │ 前提: 确保无 phys_region 引用此块                    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   通过 pb_unreferenced():                                    │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 适用场景:                                            │   │
-│   │ - 正常的引用释放                                     │   │
-│   │ - munmap, exit, CoW                                 │   │
-│   │                                                     │   │
-│   │ 流程:                                               │   │
-│   │ 1. 从链表中移除 phys_region                         │   │
-│   │ 2. refcount--                                       │   │
-│   │ 3. 如果 refcount == 0，调用 memtype 回调            │   │
-│   │ 4. SLABFREE(pb)                                     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 方面 | 直接调用 `pb_free()` | 通过 `pb_unreferenced()` |
+|------|----------------------|--------------------------|
+| 适用场景 | 创建后未使用的块、错误处理路径 | 正常的引用释放（munmap、exit、CoW） |
+| 前提 | 确保无 `phys_region` 引用此块 | `pr` 必须已链接到 `pb` |
+| 物理页释放 | `free_mem(ABS2CLICK(pb->phys), 1)` | 由 `memtype->ev_unreference(pr)` 回调负责 |
+| 结构体释放 | `SLABFREE(pb)` | `SLABFREE(pb)`（在 `refcount==0` 时） |
+| refcount 操作 | 无（调用者保证 `refcount==0`） | `refcount--`，检查是否为 0 |
 
----### 2.3 引用计数管理
+
+---
+
+### 2.3 引用计数管理
 
 #### 2.3.1 pb_reference - 增加引用
 
@@ -745,14 +461,15 @@ void pb_link(
     struct vir_region *parent
 )
 {
-    /* 设置 phys_region 字段 */
+    /* 设置 phys_region 字段并加入链表（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    USE(newphysr,
     newphysr->offset = offset;
     newphysr->ph = newpb;
     newphysr->parent = parent;
 
-    /* 将 phys_region 加入 phys_block 的引用链表 */
+    /* 将 phys_region 加入 phys_block 的引用链表（头插法） */
     newphysr->next_ph_list = newpb->firstregion;
-    newpb->firstregion = newphysr;
+    newpb->firstregion = newphysr;);
 
     /* 增加引用计数 */
     newpb->refcount++;
@@ -761,108 +478,45 @@ void pb_link(
 
 **参数说明**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_reference 参数说明                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   newpb:    要引用的 phys_block                              │
-│   offset:   在 vir_region 中的偏移量（页对齐）               │
-│   region:   所属的 vir_region                                │
-│   memtype:  内存类型（anon, file, cache 等）                 │
-│                                                             │
-│   返回值:   新创建的 phys_region，或 NULL（失败）            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- `newpb`：要引用的 `phys_block`
+- `offset`：在 `vir_region` 中的偏移量（页对齐）
+- `region`：所属的 `vir_region`
+- `memtype`：内存类型（anon、file、cache 等）
+- 返回值：新创建的 `phys_region`，或 NULL（失败）
 
 **引用建立流程**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_reference 流程                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 分配 phys_region                                        │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ SLABALLOC(newphysr)                             │   │
-│      │                                                 │   │
-│      │ 从 physr_slab 分配 phys_region 结构体           │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 设置内存类型                                           │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ newphysr->memtype = memtype                     │   │
-│      │                                                 │   │
-│      │ 决定此物理区域的内存管理策略                      │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   3. 调用 pb_link 建立引用                                   │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ pb_link(newphysr, newpb, offset, region)        │   │
-│      │                                                 │   │
-│      │ - 设置 phys_region 字段                         │   │
-│      │ - 加入 phys_block 的引用链表                    │   │
-│      │ - refcount++                                    │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   4. 更新 vir_region 的 physblocks 数组                     │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ physblock_set(region, offset, newphysr)         │   │
-│      │                                                 │   │
-│      │ 将 phys_region 记录在 vir_region 中             │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. `SLABALLOC(newphysr)`：分配 `phys_region` 结构体
+2. `newphysr->memtype = memtype`：设置内存类型，决定此物理区域的管理策略
+3. `pb_link(newphysr, newpb, offset, region)`：建立引用关系——设置 `phys_region` 字段、头插法加入链表、`refcount++`
+4. `physblock_set(region, offset, newphysr)`：将 `phys_region` 记录在 `vir_region` 的 `physblocks[]` 数组中
 
 **pb_link 链表操作详解**
 
 ```
-链表插入操作（头插法）:
+链表插入操作（头插法）：
 
-插入前:
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│   phys_block                                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ firstregion ──► pr1 ──► pr2 ──► NULL               │   │
-│   │ refcount = 2                                        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   新 phys_region: newphysr                                  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+插入前：`firstregion → pr1 → pr2 → NULL`，`refcount = 2`
 
-插入后:
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│   phys_block                                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ firstregion ──► newphysr ──► pr1 ──► pr2 ──► NULL  │   │
-│   │ refcount = 3  ◄─── refcount++                       │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   代码:                                                      │
-│   newphysr->next_ph_list = newpb->firstregion;  // 指向旧头 │
-│   newpb->firstregion = newphysr;                // 成为新头 │
-│   newpb->refcount++;                            // 计数+1   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+插入后：`firstregion → newphysr → pr1 → pr2 → NULL`，`refcount = 3`
+
+代码：
+```c
+newphysr->next_ph_list = newpb->firstregion;  // 指向旧头
+newpb->firstregion = newphysr;                // 成为新头
+newpb->refcount++;                            // 计数+1
+```
 ```
 
 **使用场景**
 
 ```c
-/* 场景 1: 创建新的物理区域 */
+/* 场景 1: 创建新的物理区域（简化示例） */
 struct phys_block *pb = pb_new(phys_addr);
 struct phys_region *pr = pb_reference(pb, 0x1000, region, &mem_type_anon);
 /* pb->refcount = 1 */
 
-/* 场景 2: fork 共享物理页 */
+/* 场景 2: fork 共享物理页（简化示例） */
 /* 父进程已有 phys_block */
 struct phys_region *child_pr = pb_reference(
     parent_pb,           /* 共享父进程的物理块 */
@@ -883,32 +537,17 @@ struct phys_region *pr = pb_reference(
 
 **与 pb_link 的关系**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_reference vs pb_link                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   pb_reference():                                           │
-│   - 高层接口                                                 │
-│   - 分配 phys_region                                        │
-│   - 调用 pb_link                                            │
-│   - 更新 vir_region                                         │
-│   - 用于创建新引用                                          │
-│                                                             │
-│   pb_link():                                                │
-│   - 低层接口                                                 │
-│   - 不分配 phys_region（需要已分配）                         │
-│   - 只建立链接关系                                          │
-│   - 用于内部操作（如 CoW 复制后重新链接）                    │
-│                                                             │
-│   典型使用:                                                  │
-│   - 外部代码: 调用 pb_reference()                           │
-│   - 内部代码: 直接调用 pb_link()                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 方面 | `pb_reference()` | `pb_link()` |
+|------|-------------------|-------------|
+| 层级 | 高层接口 | 低层接口 |
+| 分配 | 分配 `phys_region` | 不分配（需要已分配） |
+| 操作 | 调用 `pb_link` + 更新 `vir_region` | 只建立链接关系 |
+| 用途 | 创建新引用 | 内部操作（如 CoW 复制后重新链接） |
 
----######## 2.3.2 pb_unreferenced - 减少引用
+
+---
+
+######## 2.3.2 pb_unreferenced - 减少引用
 
 **函数签名**
 
@@ -930,13 +569,13 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
     pb = pr->ph;
     assert(pb->refcount > 0);
     
-    /* 减少引用计数 */
-    pb->refcount--;
+    /* 减少引用计数（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    USE(pb, pb->refcount--;);
 
     /* 从链表中移除 phys_region */
     if(pb->firstregion == pr) {
         /* pr 是链表头 */
-        pb->firstregion = pr->next_ph_list;
+        USE(pb, pb->firstregion = pr->next_ph_list;);
     } else {
         /* pr 在链表中间，需要遍历查找 */
         struct phys_region *others;
@@ -945,7 +584,7 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
             others = others->next_ph_list) {
             assert(others->ph == pb);
             if(others->next_ph_list == pr) {
-                others->next_ph_list = pr->next_ph_list;
+                USE(others, others->next_ph_list = pr->next_ph_list;);
                 break;
             }
         }
@@ -972,96 +611,33 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 
 **参数说明**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_unreferenced 参数说明                  │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   region:   phys_region 所属的 vir_region                   │
-│   pr:       要取消引用的 phys_region                         │
-│   rm:       是否从 vir_region 中移除                         │
-│             0 = 不移除（用于 CoW 重新链接）                  │
-│             1 = 移除（用于 munmap, exit）                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- `region`：`phys_region` 所属的 `vir_region`
+- `pr`：要取消引用的 `phys_region`
+- `rm`：是否从 `vir_region` 中移除（0 = 不移除，用于 CoW 重新链接；1 = 移除，用于 munmap/exit）
 
 **引用释放流程**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pb_unreferenced 流程                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 减少引用计数                                            │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ pb = pr->ph;                                     │   │
-│      │ assert(pb->refcount > 0);                        │   │
-│      │ pb->refcount--;                                  │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 从链表中移除 phys_region                               │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ if (pb->firstregion == pr)                       │   │
-│      │     pb->firstregion = pr->next_ph_list;  // 头部 │   │
-│      │ else                                             │   │
-│      │     遍历链表找到 pr 并移除                // 中间 │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   3. 检查是否需要释放                                        │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ if (pb->refcount == 0) {                         │   │
-│      │     pr->memtype->ev_unreference(pr);             │   │
-│      │     SLABFREE(pb);                                │   │
-│      │ }                                                │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   4. 清理 phys_region                                        │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ pr->ph = NULL;                                   │   │
-│      │ if (rm) physblock_set(region, offset, NULL);     │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 减少引用计数：`pb = pr->ph; assert(pb->refcount > 0); USE(pb, pb->refcount--;);`
+2. 从链表中移除 `phys_region`：若 `pr` 是链表头则 `USE(pb, pb->firstregion = pr->next_ph_list;)`，否则遍历链表查找并移除
+3. 检查是否需要释放：若 `pb->refcount == 0`，调用 `pr->memtype->ev_unreference(pr)` 释放物理页，然后 `SLABFREE(pb)` 释放结构体
+4. 清理 `phys_region`：`pr->ph = NULL;` 若 `rm` 为真则 `physblock_set(region, pr->offset, NULL)`
 
 **链表移除操作详解**
 
-```
-情况 1: pr 是链表头
+情况 1：pr 是链表头
 
-移除前:
-┌─────────────────────────────────────────────────────────────┐
-│   pb->firstregion ──► pr ──► pr2 ──► pr3 ──► NULL          │
-└─────────────────────────────────────────────────────────────┘
+移除前：`firstregion → pr → pr2 → pr3 → NULL`
+移除后：`firstregion → pr2 → pr3 → NULL`
 
-移除后:
-┌─────────────────────────────────────────────────────────────┐
-│   pb->firstregion ──► pr2 ──► pr3 ──► NULL                 │
-│   pr->next_ph_list = ? (不再使用)                           │
-└─────────────────────────────────────────────────────────────┘
+代码：`pb->firstregion = pr->next_ph_list;`
 
-代码:
-pb->firstregion = pr->next_ph_list;
+情况 2：pr 在链表中间
 
+移除前：`firstregion → pr1 → pr → pr3 → NULL`
+移除后：`firstregion → pr1 → pr3 → NULL`
 
-情况 2: pr 在链表中间
-
-移除前:
-┌─────────────────────────────────────────────────────────────┐
-│   pb->firstregion ──► pr1 ──► pr ──► pr3 ──► NULL          │
-└─────────────────────────────────────────────────────────────┘
-
-移除后:
-┌─────────────────────────────────────────────────────────────┐
-│   pb->firstregion ──► pr1 ──► pr3 ──► NULL                 │
-│   pr->next_ph_list = ? (不再使用)                           │
-└─────────────────────────────────────────────────────────────┘
-
-代码:
+代码：
+```c
 for (others = pb->firstregion; others; others = others->next_ph_list) {
     if (others->next_ph_list == pr) {
         others->next_ph_list = pr->next_ph_list;
@@ -1091,38 +667,15 @@ static int shared_unreference(struct phys_region *pr);
 
 **rm 参数的作用**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    rm 参数使用场景                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   rm = 1 (移除):                                            │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ - munmap: 完全移除映射                               │   │
-│   │ - exit: 进程退出，清理所有映射                       │   │
-│   │ - physblock_set(region, offset, NULL) 被调用        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   rm = 0 (不移除):                                          │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ - CoW: 取消旧引用，但保留 phys_region 结构           │   │
-│   │ - 后续会 pb_link 到新的 phys_block                   │   │
-│   │ - physblock_set 不被调用                            │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   CoW 示例:                                                  │
-│   mem_cow() {                                               │
-│       pb_unreferenced(region, ph, 0);  // rm=0, 不移除     │
-│       pb_link(ph, new_pb, ...);       // 链接到新块        │
-│   }                                                         │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- `rm = 1`（移除）：用于 munmap（完全移除映射）、exit（进程退出清理所有映射），会调用 `physblock_set(region, offset, NULL)` 从 `vir_region` 中移除
+- `rm = 0`（不移除）：用于 CoW（取消旧引用但保留 `phys_region` 结构），后续会 `pb_link` 到新的 `phys_block`，`physblock_set` 不被调用
+
+CoW 示例：`mem_cow()` 中 `pb_unreferenced(region, ph, 0)` → `pb_link(ph, new_pb, ...)`
 
 **使用场景**
 
 ```c
-/* 场景 1: munmap */
+/* 场景 1: munmap（简化示例） */
 void region_free(struct vir_region *region) {
     for (each phys_region pr in region) {
         pb_unreferenced(region, pr, 1);  /* rm=1, 移除 */
@@ -1130,7 +683,7 @@ void region_free(struct vir_region *region) {
     }
 }
 
-/* 场景 2: 进程退出 */
+/* 场景 2: 进程退出（简化示例） */
 void vm_proc_cleanup(struct vmproc *vmp) {
     for (each region in vmp) {
         for (each phys_region pr in region) {
@@ -1139,7 +692,7 @@ void vm_proc_cleanup(struct vmproc *vmp) {
     }
 }
 
-/* 场景 3: CoW 写时复制 */
+/* 场景 3: CoW 写时复制（简化示例，非源码引用） */
 int mem_cow(struct vir_region *region, struct phys_region *ph, ...) {
     /* 分配新物理页 */
     new_pb = pb_new(new_page);
@@ -1154,294 +707,47 @@ int mem_cow(struct vir_region *region, struct phys_region *ph, ...) {
 }
 ```
 
-**引用计数状态变化**
+**引用计数状态变化示例**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    refcount 状态变化示例                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   初始状态:                                                  │
-│   pb->refcount = 3                                          │
-│   pb->firstregion ──► pr1 ──► pr2 ──► pr3 ──► NULL         │
-│                                                             │
-│   调用 pb_unreferenced(region, pr2, 1):                     │
-│   pb->refcount = 2                                          │
-│   pb->firstregion ──► pr1 ──► pr3 ──► NULL                  │
-│                                                             │
-│   调用 pb_unreferenced(region, pr1, 1):                     │
-│   pb->refcount = 1                                          │
-│   pb->firstregion ──► pr3 ──► NULL                          │
-│                                                             │
-│   调用 pb_unreferenced(region, pr3, 1):                     │
-│   pb->refcount = 0                                          │
-│   pb->firstregion = NULL                                    │
-│   → 调用 memtype->ev_unreference(pr3)                       │
-│   → SLABFREE(pb)                                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+初始状态：`pb->refcount = 3`，链表 `firstregion → pr1 → pr2 → pr3 → NULL`
 
----### 2.4 物理块链表
+1. `pb_unreferenced(region, pr2, 1)`：`refcount = 2`，链表 `firstregion → pr1 → pr3 → NULL`
+2. `pb_unreferenced(region, pr1, 1)`：`refcount = 1`，链表 `firstregion → pr3 → NULL`
+3. `pb_unreferenced(region, pr3, 1)`：`refcount = 0`，`firstregion = NULL` → 调用 `memtype->ev_unreference(pr3)` → `SLABFREE(pb)`
+
+
+---
+
+### 2.4 物理块链表
 
 **链表结构概述**
 
-`phys_block` 通过 `firstregion` 指针维护一个 `phys_region` 链表，记录所有引用此物理块的虚拟区域。
+`phys_block` 通过 `firstregion` 指针维护一个 `phys_region` 链表，记录所有引用此物理块的虚拟区域。链表使用头插法，`pb_link()` 将新 `phys_region` 插入链表头部，`pb_unreferenced()` 从链表中移除指定节点。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_block 链表结构                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   phys_block                                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys: 0x1234000                                     │   │
-│   │ refcount: 3                                         │   │
-│   │ firstregion ────────────────────────────────┐       │   │
-│   └───────────────────────────────────────────────┼───────┘   │
-│                                                     │         │
-│                     phys_region 链表               ▼         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_region A                                       │   │
-│   │ ┌─────────────────────────────────────────────────┐ │   │
-│   │ │ ph: ───────────────────────────────────┐        │ │   │
-│   │ │ offset: 0x0000                          │        │ │   │
-│   │ │ parent: vir_region (进程A)              │        │ │   │
-│   │ │ memtype: mem_type_anon                  │        │ │   │
-│   │ │ next_ph_list ───────────────────────────┼───┐    │ │   │
-│   │ └─────────────────────────────────────────┘   │    │ │   │
-│   └───────────────────────────────────────────────┼────┘   │
-│                                                     │        │
-│   ┌───────────────────────────────────────────────┼────┐   │
-│   │ phys_region B                                  │    │   │
-│   │ ┌─────────────────────────────────────────────┼──┐ │   │
-│   │ │ ph: ───────────────────────────────────┐    │  │ │   │
-│   │ │ offset: 0x1000                          │    │  │ │   │
-│   │ │ parent: vir_region (进程B)              │    │  │ │   │
-│   │ │ memtype: mem_type_anon                  │    │  │ │   │
-│   │ │ next_ph_list ───────────────────────────┼────┼┐ │   │
-│   │ └─────────────────────────────────────────┘    ││  │ │   │
-│   └─────────────────────────────────────────────────┘│  │   │
-│                                                       │  │   │
-│   ┌───────────────────────────────────────────────────┼┐ │   │
-│   │ phys_region C                                     ││ │   │
-│   │ ┌─────────────────────────────────────────────────┼┐│ │   │
-│   │ │ ph: ───────────────────────────────────┐        │││ │   │
-│   │ │ offset: 0x2000                          │        │││ │   │
-│   │ │ parent: vir_region (进程C)              │        │││ │   │
-│   │ │ memtype: mem_type_anon                  │        │││ │   │
-│   │ │ next_ph_list: NULL                      │        │││ │   │
-│   │ └─────────────────────────────────────────┘        │││ │   │
-│   └─────────────────────────────────────────────────────┘││ │   │
-│                                                           ││ │   │
-│   所有 ph 指针都指向同一个 phys_block ◄────────────────────┘│ │   │
-│                                                             │ │   │
-└─────────────────────────────────────────────────────────────┘ │   │
-```
+链表核心不变量：**`refcount` 始终等于链表长度**。
 
 **链表的作用**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_region 链表的作用                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 引用计数验证                                            │
-│      - refcount 应该等于链表长度                             │
-│      - 可用于调试和一致性检查                                │
-│                                                             │
-│   2. 遍历所有引用者                                          │
-│      - 找出哪些进程/区域引用此物理页                          │
-│      - 用于调试和诊断                                        │
-│                                                             │
-│   3. 批量操作                                                │
-│      - 页面换出时通知所有引用者                               │
-│      - 更新所有相关的页表映射                                 │
-│                                                             │
-│   4. CoW 判断                                                │
-│      - 检查 refcount > 1 判断是否需要 CoW                    │
-│      - 快速判断是否为共享页                                  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **引用计数验证**：`refcount` 应该等于链表长度，可用于调试和一致性检查
+2. **遍历所有引用者**：找出哪些进程/区域引用此物理页，用于调试和诊断
+3. **CoW 判断**：检查 `refcount > 1` 判断是否需要 CoW，快速判断是否为共享页
 
 **链表操作时间复杂度**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    链表操作复杂度                             │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   操作              时间复杂度    说明                       │
-│   ────────────────────────────────────────────────────────  │
-│   头部插入          O(1)         pb_link()                  │
-│   头部删除          O(1)         pb_unreferenced()          │
-│   中间删除          O(n)         pb_unreferenced()          │
-│   遍历链表          O(n)         调试/诊断                   │
-│   查找特定 pr       O(n)         删除时需要                  │
-│                                                             │
-│   n = refcount，通常很小 (1-5)，所以 O(n) 可接受            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 操作 | 时间复杂度 | 说明 |
+|------|-----------|------|
+| 头部插入 | O(1) | `pb_link()` |
+| 头部删除 | O(1) | `pb_unreferenced()`（pr 是链表头时） |
+| 中间删除 | O(n) | `pb_unreferenced()`（需遍历查找） |
+| 遍历链表 | O(n) | 调试/诊断 |
 
-**链表遍历示例**
-
-```c
-/* 遍历 phys_block 的所有引用者 */
-void print_pb_references(struct phys_block *pb)
-{
-    struct phys_region *pr;
-    int count = 0;
-
-    printf("phys_block %p (phys=0x%lx, refcount=%d):\n",
-           pb, pb->phys, pb->refcount);
-
-    for (pr = pb->firstregion; pr; pr = pr->next_ph_list) {
-        printf("  [%d] phys_region %p, offset=0x%lx, parent=%p\n",
-               count++, pr, pr->offset, pr->parent);
-    }
-
-    /* 验证 refcount 与链表长度一致 */
-    assert(count == pb->refcount);
-}
-
-/* 检查指定 vir_region 是否引用此 phys_block */
-int is_region_referencing_pb(struct phys_block *pb, 
-                              struct vir_region *vr)
-{
-    struct phys_region *pr;
-
-    for (pr = pb->firstregion; pr; pr = pr->next_ph_list) {
-        if (pr->parent == vr)
-            return 1;
-    }
-    return 0;
-}
-```
+n = refcount，通常很小（1-5），所以 O(n) 可接受。
 
 **链表与 CoW 的关系**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    链表在 CoW 中的作用                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   fork 后的共享状态:                                         │
-│                                                             │
-│   phys_block                                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys: 0x1234000                                     │   │
-│   │ refcount: 2  ◄─── 共享页                             │   │
-│   │ firstregion ──► parent_pr ──► child_pr ──► NULL    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   写操作触发 CoW:                                            │
-│   1. 检查 pb->refcount > 1 → 需要复制                       │
-│   2. 分配新物理页                                            │
-│   3. 复制内容                                                │
-│   4. 调用 pb_unreferenced() 减少原块引用                    │
-│   5. 调用 pb_link() 链接到新块                              │
-│                                                             │
-│   写入后:                                                    │
-│   原块: refcount = 1 (另一个进程)                            │
-│   新块: refcount = 1 (当前进程)                              │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+fork 后共享状态：`phys_block.refcount = 2`，`firstregion → parent_pr → child_pr → NULL`
 
-**链表一致性验证**
-
-```c
-#if SANITYCHECKS
-/* 验证 phys_block 链表一致性 */
-void verify_pb_chain(struct phys_block *pb)
-{
-    struct phys_region *pr;
-    int count = 0;
-
-    /* 遍历链表 */
-    for (pr = pb->firstregion; pr; pr = pr->next_ph_list) {
-        /* 验证每个 pr 都指向此 pb */
-        assert(pr->ph == pb);
-        count++;
-    }
-
-    /* 验证 refcount 与链表长度一致 */
-    assert(count == pb->refcount);
-}
-
-/* 全局验证 */
-void verify_all_pb_chains(void)
-{
-    /* 遍历所有 phys_block，验证每个链表 */
-    for (each phys_block pb in system) {
-        verify_pb_chain(pb);
-    }
-}
-#endif
-```
-
-**链表在页面换出中的应用**
-
-```c
-/* 换出物理页时，需要通知所有引用者 */
-int page_out(struct phys_block *pb)
-{
-    struct phys_region *pr;
-
-    /* 检查是否可以换出 */
-    if (pb->refcount > 1) {
-        /* 共享页，可能不应该换出 */
-        return EBUSY;
-    }
-
-    /* 遍历所有引用者，更新页表 */
-    for (pr = pb->firstregion; pr; pr = pr->next_ph_list) {
-        /* 从页表中移除映射 */
-        pt_clearmap(pr->parent, pr->offset);
-    }
-
-    /* 写入交换区 */
-    write_to_swap(pb->phys, ...);
-
-    /* 释放物理页 */
-    free_mem(ABS2CLICK(pb->phys), 1);
-    pb->phys = MAP_NONE;
-
-    return OK;
-}
-```
-
-**链表设计总结**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    phys_region 链表设计总结                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   优点:                                                      │
-│   ✓ 简单高效的头插法                                         │
-│   ✓ O(1) 的引用增加操作                                      │
-│   ✓ 直接访问所有引用者                                       │
-│   ✓ 易于调试和验证                                           │
-│                                                             │
-│   缺点:                                                      │
-│   ✗ 中间删除需要 O(n) 遍历                                   │
-│   ✗ 链表指针增加内存开销                                     │
-│                                                             │
-│   适用场景:                                                  │
-│   • refcount 通常很小 (1-5)                                 │
-│   • 删除操作相对较少                                         │
-│   • 需要遍历引用者的场景                                     │
-│                                                             │
-│   替代方案:                                                  │
-│   • 使用双向链表: 删除 O(1)，但增加内存开销                  │
-│   • 使用引用计数数组: 不需要链表，但失去遍历能力             │
-│   • Minix3 选择单向链表是合理的权衡                          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+写操作触发 CoW：检查 `pb->refcount > 1` → 分配新物理页 → 复制内容 → `pb_unreferenced()` 减少原块引用 → `pb_link()` 链接到新块。写入后原块 `refcount = 1`，新块 `refcount = 1`。
 
 ---
 
@@ -1453,30 +759,10 @@ int page_out(struct phys_block *pb)
 
 将 Minix3 的 `phys_block` 封装为安全的 Rust 结构体，需要解决以下问题：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Rust 设计挑战                             │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 引用计数安全                                            │
-│      - C 代码手动管理 refcount，容易出错                     │
-│      - Rust 需要保证引用计数的正确性                          │
-│                                                             │
-│   2. 链表安全                                                │
-│      - firstregion 链表涉及裸指针                            │
-│      - 需要在 unsafe 块中操作，但提供安全接口                 │
-│                                                             │
-│   3. 生命周期管理                                            │
-│      - phys_block 生命周期由引用计数决定                     │
-│      - 不能简单使用 Rust 的所有权模型                        │
-│                                                             │
-│   4. 与 phys_region 的双向引用                               │
-│      - phys_block → phys_region (firstregion 链表)          │
-│      - phys_region → phys_block (ph 指针)                   │
-│      - 需要使用弱引用或其他机制避免循环                      │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **引用计数安全**：C 代码手动管理 refcount，容易出错；Rust 需要保证引用计数的正确性
+2. **链表安全**：`firstregion` 链表涉及裸指针，需要在 unsafe 块中操作，但提供安全接口
+3. **生命周期管理**：`phys_block` 生命周期由引用计数决定，不能简单使用 Rust 的所有权模型
+4. **与 phys_region 的双向引用**：`phys_block → phys_region`（firstregion 链表）、`phys_region → phys_block`（ph 指针），需要使用弱引用或其他机制避免循环
 
 **结构体定义**
 
@@ -1535,7 +821,7 @@ impl PhysBlock {
     ///
     /// # 参数
     ///
-    /// - `phys`: 物理内存地址，`PhysBytes(0)` 表示延迟分配
+    /// - `phys`: 物理内存地址，`PhysBytes(MAP_NONE as u64)` 表示延迟分配
     ///
     /// # 返回
     ///
@@ -1566,7 +852,7 @@ impl PhysBlock {
     
     /// 检查是否有物理内存
     pub fn has_phys(&self) -> bool {
-        self.phys.0 != 0
+        self.phys.0 != MAP_NONE as u64
     }
     
     /// 获取链表头（仅用于遍历）
@@ -1578,32 +864,10 @@ impl PhysBlock {
 
 **封装决策说明**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    封装决策                                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. refcount 使用 Cell<u8>                                  │
-│      - 允许通过 &self 修改                                    │
-│      - 避免使用 &mut self 导致借用冲突                       │
-│      - 单线程环境足够，VM 是单线程的                          │
-│                                                             │
-│   2. firstregion 使用 Option<NonNull<PhysRegion>>            │
-│      - NonNull 表示非空指针，优化 Option 大小                │
-│      - 访问需要 unsafe，但提供安全封装                        │
-│      - 链表操作封装在方法中                                   │
-│                                                             │
-│   3. phys 和 flags 公开                                      │
-│      - 这些字段需要外部访问                                   │
-│      - 不涉及内存安全                                        │
-│                                                             │
-│   4. 不实现 Drop                                             │
-│      - PhysBlock 由 Slab 分配，不自动释放                    │
-│      - 释放通过显式调用 pb_free() 完成                       │
-│      - 避免 Drop 与引用计数的冲突                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **refcount 使用 `Cell<u8>`**：允许通过 `&self` 修改，避免使用 `&mut self` 导致借用冲突；单线程环境足够，VM 是单线程的
+2. **firstregion 使用 `Option<NonNull<PhysRegion>>`**：NonNull 表示非空指针，优化 Option 大小；访问需要 unsafe，但提供安全封装；链表操作封装在方法中
+3. **phys 和 flags 公开**：这些字段需要外部访问，不涉及内存安全
+4. **不实现 Drop**：PhysBlock 由 Slab 分配，不自动释放；释放通过显式调用完成；避免 Drop 与引用计数的冲突
 
 **与 Minix3 的对应**
 
@@ -1648,52 +912,24 @@ impl PhysBlock {
 }
 ```
 
----###### 3.2 引用计数模式
+
+---
+
+###### 3.2 引用计数模式
 
 **手动管理 vs Arc**
 
 在 Rust 中实现引用计数有两种主要方式：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    引用计数方案对比                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   方案 1: Arc<T> (标准库)                                    │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 优点:                                               │   │
-│   │ - 自动管理，无需手动增减                             │   │
-│   │ - 线程安全（Arc）或单线程（Rc）                       │   │
-│   │ - 与 Rust 所有权模型一致                             │   │
-│   │                                                     │   │
-│   │ 缺点:                                               │   │
-│   │ - 不支持弱引用链表遍历                               │   │
-│   │ - 无法实现 Minix3 的 firstregion 链表               │   │
-│   │ - Drop 会自动释放，与 VM 的生命周期管理冲突          │   │
-│   │ - 每个 Arc 有额外的内存开销（strong/weak count）     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   方案 2: 手动管理 (Cell<u8>)                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 优点:                                               │   │
-│   │ - 完全控制生命周期                                   │   │
-│   │ - 支持 firstregion 链表                             │   │
-│   │ - 与 Minix3 设计一致                                │   │
-│   │ - 无额外内存开销                                     │   │
-│   │                                                     │   │
-│   │ 缺点:                                               │   │
-│   │ - 需要手动调用 link/unlink                          │   │
-│   │ - 容易出错（但可通过封装减少）                       │   │
-│   │ - 需要 unsafe 代码                                   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   结论: 选择方案 2（手动管理）                                │
-│   - Minix3 的设计需要链表遍历能力                            │
-│   - VM 是单线程环境，不需要 Arc 的线程安全                   │
-│   - 需要与 Slab 分配器集成                                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 方面 | `Arc<T>`（标准库） | 手动管理（`Cell<u8>`） |
+|------|---------------------|------------------------|
+| 自动管理 | 自动增减，无需手动 | 需要手动调用 link/unlink |
+| 链表遍历 | 不支持 | 支持 firstregion 链表 |
+| Drop | 自动释放，与 VM 生命周期管理冲突 | 完全控制释放时机 |
+| 内存开销 | 额外 strong/weak count | 无额外开销 |
+| 线程安全 | Arc 线程安全 | Cell 单线程 |
+
+选择手动管理（方案2）的原因：Minix3 的设计需要链表遍历能力；VM 是单线程环境，不需要 Arc 的线程安全；需要与 Slab 分配器集成。
 
 **为什么不用 Arc**
 
@@ -1800,31 +1036,10 @@ impl PhysBlock {
 
 **引用计数不变量**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    引用计数不变量                             │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. refcount >= 0                                          │
-│      - 不会出现负数                                          │
-│      - dec_refcount 前检查 count > 0                        │
-│                                                             │
-│   2. refcount == 链表长度                                    │
-│      - 每次 link 增加 refcount                              │
-│      - 每次 unlink 减少 refcount                            │
-│      - 可通过遍历链表验证                                    │
-│                                                             │
-│   3. refcount == 0 时可以释放                                │
-│      - 此时 firstregion 必须为 None                         │
-│      - 物理页可以归还                                        │
-│      - PhysBlock 可以归还给 Slab                            │
-│                                                             │
-│   4. refcount > 1 时需要 CoW                                 │
-│      - 写操作前检查 is_shared()                             │
-│      - 如果共享，先复制再写入                                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **refcount >= 0**：不会出现负数，`dec_refcount` 前检查 `count > 0`
+2. **refcount == 链表长度**：每次 link 增加 refcount，每次 unlink 减少 refcount，可通过遍历链表验证
+3. **refcount == 0 时可以释放**：此时 `firstregion` 必须为 None，物理页可以归还，PhysBlock 可以归还给 Slab
+4. **refcount > 1 时需要 CoW**：写操作前检查 `is_shared()`，如果共享则先复制再写入
 
 **验证函数**
 
@@ -1864,47 +1079,32 @@ impl PhysBlock {
 | 下溢检查 | assert(refcount > 0) | debug_assert!(count > 0) |
 | 一致性验证 | SANITYCHECKS 宏 | debug_assertions + verify_refcount() |
 
----### 3.3 与 Slab 的关系
+
+---
+
+### 3.3 与 Slab 的关系
 
 **Slab 分配器的作用**
 
-Minix3 使用 Slab 分配器管理 `phys_block` 和 `phys_region` 结构体，而非通用的 malloc/free。
+Minix3 使用通用 Slab 分配器管理 `phys_block` 和 `phys_region` 结构体，而非通用的 malloc/free。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Slab 分配器优势                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 固定大小分配                                            │
-│      - phys_block 大小固定（约 24-32 字节）                  │
-│      - 无需每次计算大小                                      │
-│      - 分配/释放 O(1)                                        │
-│                                                             │
-│   2. 减少内存碎片                                            │
-│      - 相同大小的对象在同一 Slab 中                          │
-│      - 不会产生外部碎片                                      │
-│                                                             │
-│   3. 缓存友好                                                │
-│      - 连续内存分配                                          │
-│      - 提高缓存命中率                                        │
-│                                                             │
-│   4. 批量管理                                                │
-│      - 可以预分配一批对象                                    │
-│      - 统计使用情况                                          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+Slab 分配器优势：
+1. **固定大小分配**：对象大小固定，无需每次计算大小，分配/释放 O(1)
+2. **减少内存碎片**：相同大小的对象在同一 Slab 中，不会产生外部碎片
+3. **缓存友好**：连续内存分配，提高缓存命中率
+4. **批量管理**：可以预分配一批对象，统计使用情况
 
-**Minix3 的 Slab 定义**
+**Minix3 的 Slab 分配器**
+
+Minix3 使用通用 Slab 分配器管理 `phys_block` 和 `phys_region` 等结构体，而非为每种类型声明专用 slab。
 
 ```c
-/* sanitycheck.h */
-SLAB_DECLARE(pb_slab);      /* phys_block 的 Slab */
-SLAB_DECLARE(physr_slab);   /* phys_region 的 Slab */
+/* proto.h - SLABALLOC/SLABFREE 宏定义 */
+#define SLABALLOC(var) (var = slaballoc(sizeof(*var)))
+#define SLABFREE(ptr) do { slabfree(ptr, sizeof(*(ptr))); (ptr) = NULL; } while(0)
 
-/* slab.c */
-SLAB_DEFINE(pb_slab, sizeof(struct phys_block));
-SLAB_DEFINE(physr_slab, sizeof(struct phys_region));
+/* slaballoc() 是通用分配器，根据对象大小自动路由到对应大小的 slab 池 */
+/* 不需要为 phys_block 单独声明 SLAB_DECLARE / SLAB_DEFINE */
 ```
 
 **Rust Slab 实现**
@@ -1914,7 +1114,7 @@ use crate::slab::Slab;
 
 /// phys_block 的 Slab 分配器
 ///
-/// 对应 Minix3: `pb_slab`
+/// Minix3 使用通用 slaballoc() 按大小分配，不为此类型声明专用 slab
 pub struct PhysBlockSlab {
     inner: Slab<PhysBlock>,
 }
@@ -2006,45 +1206,11 @@ pub unsafe fn pb_free(pb: *mut PhysBlock) {
 
 **Slab 与生命周期的关系**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    PhysBlock 生命周期                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 分配                                                    │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ pb_alloc(phys) → PhysBlock                      │   │
-│      │                                                 │   │
-│      │ - 从 Slab 获取内存                               │   │
-│      │ - 初始化字段                                     │   │
-│      │ - refcount = 0                                   │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 使用                                                    │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ pb_link() → refcount++                          │   │
-│      │ pb_unlink() → refcount--                        │   │
-│      │                                                 │   │
-│      │ 可能多次增减                                      │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   3. 释放                                                    │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ refcount == 0 时                                 │   │
-│      │                                                 │   │
-│      │ - 调用 memtype->ev_unreference()                 │   │
-│      │ - 释放物理页（如果有）                            │   │
-│      │ - 归还给 Slab                                    │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-│   注意: PhysBlock 不实现 Drop trait                         │
-│   - 释放必须显式调用 pb_free()                              │
-│   - 避免 Drop 与引用计数的冲突                              │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **分配**：`pb_alloc(phys)` → 从 Slab 获取内存，初始化字段，`refcount = 0`
+2. **使用**：`pb_link()` → `refcount++`，`pb_unlink()` → `refcount--`，可能多次增减
+3. **释放**：`refcount == 0` 时，调用 `memtype->ev_unreference()` 释放物理页，归还给 Slab
+
+注意：PhysBlock 不实现 Drop trait，释放必须显式调用，避免 Drop 与引用计数的冲突。
 
 **Slab 统计与调试**
 
@@ -2089,10 +1255,10 @@ pub fn print_slab_stats() {
 
 | 方面 | Minix3 | Rust |
 |------|--------|------|
-| Slab 定义 | `SLAB_DECLARE` / `SLAB_DEFINE` 宏 | `struct PhysBlockSlab` |
+| Slab 定义 | 通用 `slaballoc()` 按大小自动路由 | `struct PhysBlockSlab` |
 | 分配 | `SLABALLOC(var)` | `slab.alloc(phys)` |
 | 释放 | `SLABFREE(ptr)` | `slab.dealloc(pb)` |
-| 全局访问 | 直接使用 `pb_slab` | `PB_SLAB` Mutex |
+| 全局访问 | 通用分配器，无需专用全局变量 | `PB_SLAB` Mutex |
 | 线程安全 | 单线程，无需保护 | Mutex 保护 |
 
 ---
@@ -2136,7 +1302,7 @@ pub fn pb_alloc_with_page() -> Option<*mut PhysBlock> {
 /// 物理页在首次访问时分配
 pub fn pb_alloc_delayed() -> Option<*mut PhysBlock> {
     let mut slab = PB_SLAB.lock();
-    slab.alloc(PhysBytes(0)).map(|pb| pb as *mut _)
+    slab.alloc(PhysBytes(MAP_NONE as u64)).map(|pb| pb as *mut _)
 }
 ```
 
@@ -2156,7 +1322,7 @@ fn alloc_phys_page(flags: AllocFlags) -> Option<PhysBytes> {
 ///
 /// 对应 Minix3: `free_mem()`
 fn free_phys_page(phys: PhysBytes) {
-    if phys.0 != 0 {
+    if phys.0 != MAP_NONE as u64 {
         free_mem(abs2click(phys.0), 1);
     }
 }
@@ -2193,7 +1359,10 @@ fn test_pb_create_delayed() {
 }
 ```
 
----###### 4.2 引用管理
+
+---
+
+###### 4.2 引用管理
 
 **安全的引用操作**
 
@@ -2379,24 +1548,9 @@ fn test_refcount_overflow() {
 
 **释放条件**
 
-PhysBlock 只能在 refcount == 0 时释放：
+PhysBlock 只能在 refcount == 0 时释放。释放前必须满足：1. refcount == 0；2. firstregion == None；3. 所有引用都已取消。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    释放条件检查                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   释放前必须满足:                                            │
-│   1. refcount == 0                                          │
-│   2. firstregion == None                                    │
-│   3. 所有引用都已取消                                        │
-│                                                             │
-│   释放步骤:                                                  │
-│   1. 调用 memtype->ev_unreference()                         │
-│   2. 释放物理页（如果有）                                    │
-│   3. 归还 PhysBlock 给 Slab                                 │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+释放步骤：1. 调用 `memtype->ev_unreference()`（由回调负责释放物理页）；2. 归还 PhysBlock 给 Slab（`SLABFREE`）
 ```
 
 **释放实现**
@@ -2504,13 +1658,13 @@ pub struct FileMemoryType;
 
 impl MemoryType for FileMemoryType {
     fn ev_unreference(&self, pr: &PhysRegion) -> Result<(), i32> {
-        // 文件映射可能需要写回磁盘
+        // 文件映射的 ev_unreference 实际与匿名内存相同（见 mem_file.c mappedfile_unreference）
+        // 都是直接 free_mem 释放物理页
+        // 文件映射的缓存管理由 cache.c 独立处理，PBF_INCACHE 标志控制缓存行为
         let pb = unsafe { &*pr.ph.unwrap().as_ptr() };
-        if pb.flags.contains(PbFlags::DIRTY) {
-            // 写回文件
-            write_back_to_file(pb)?;
+        if pb.phys.0 != MAP_NONE as u64 {
+            free_phys_page(pb.phys);
         }
-        // 物理页保留在缓存中
         Ok(())
     }
 }
@@ -2568,34 +1722,19 @@ fn test_pb_free_with_refcount() {
 }
 ```
 
----### 4.4 线程安全
+
+---
+
+### 4.4 线程安全
 
 **单线程假设**
 
-Minix3 的 VM 是单线程的，不需要原子操作。但在 Rust 实现中，我们可能需要考虑线程安全：
+Minix3 的 VM 是单线程的，不需要原子操作。Rust 实现同样遵循单线程假设，使用 `Cell<u8>` 而非 `AtomicU8`。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    线程安全分析                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   Minix3 VM:                                                │
-│   - 单线程事件循环                                          │
-│   - 无并发访问                                              │
-│   - refcount 使用普通 u8_t                                  │
-│                                                             │
-│   Rust 实现:                                                │
-│   - 可能在多核环境运行                                      │
-│   - 需要考虑中断处理                                        │
-│   - 使用 Cell<u8> 或 AtomicU8                               │
-│                                                             │
-│   选择:                                                      │
-│   - 如果确定单线程: Cell<u8>                                │
-│   - 如果可能多线程: AtomicU8                                │
-│   - 当前选择 Cell<u8>，与 Minix3 保持一致                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- Minix3 VM：单线程事件循环，无并发访问，refcount 使用普通 `u8_t`
+- Rust 实现：遵循单线程假设，使用 `Cell<u8>`，与 Minix3 保持一致
+
+> ⚠️ 如果未来扩展为多线程，需要将 `Cell<u8>` 替换为 `AtomicU8`，并重新评估所有 unsafe 代码的安全性。
 
 **原子操作版本（可选）**
 
@@ -2643,28 +1782,10 @@ impl AtomicPhysBlock {
 
 **内存顺序说明**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    内存顺序选择                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   Ordering::Relaxed:                                        │
-│   - 仅保证原子性                                            │
-│   - 不保证顺序                                              │
-│   - 适用于简单的计数器                                      │
-│                                                             │
-│   Ordering::Release / Acquire:                              │
-│   - Release: 写操作前的所有写操作对其他线程可见             │
-│   - Acquire: 读操作后的所有读操作看到最新值                 │
-│   - 适用于有数据依赖的场景                                  │
-│                                                             │
-│   对于 refcount:                                            │
-│   - inc_ref: Relaxed 足够（无数据依赖）                     │
-│   - dec_ref: Release（释放前确保所有写操作完成）            │
-│   - refcount(): Acquire（读取最新值）                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+对于 refcount 的原子操作版本：
+- `inc_ref`：`Relaxed` 足够（无数据依赖）
+- `dec_ref`：`Release`（释放前确保所有写操作完成）
+- `refcount()`：`Acquire`（读取最新值）
 
 **Mutex 保护**
 
@@ -2761,33 +1882,10 @@ mod thread_safety_tests {
 
 **线程安全总结**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    线程安全策略总结                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 默认实现 (Cell<u8>)                                     │
-│      - 与 Minix3 保持一致                                    │
-│      - 适用于单线程环境                                      │
-│      - 更好的性能                                            │
-│                                                             │
-│   2. 可选原子实现 (AtomicU8)                                 │
-│      - 适用于多线程环境                                      │
-│      - 使用适当的内存顺序                                    │
-│      - 可通过 feature flag 切换                             │
-│                                                             │
-│   3. Slab 保护                                               │
-│      - 使用 Mutex 保护全局 Slab                              │
-│      - 分配/释放操作需要获取锁                               │
-│      - 考虑中断上下文的特殊处理                              │
-│                                                             │
-│   4. 建议                                                    │
-│      - 保持与 Minix3 一致的单线程假设                        │
-│      - 如需多线程，使用 AtomicU8 版本                        │
-│      - 通过编译时 feature 选择实现方式                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **默认实现（`Cell<u8>`）**：与 Minix3 保持一致，适用于单线程环境，更好的性能
+2. **可选原子实现（`AtomicU8`）**：适用于多线程环境，使用适当的内存顺序，可通过 feature flag 切换
+3. **Slab 保护**：使用 Mutex 保护全局 Slab，分配/释放操作需要获取锁
+4. **建议**：保持与 Minix3 一致的单线程假设；如需多线程，使用 AtomicU8 版本；通过编译时 feature 选择实现方式
 
 ---
 
@@ -2799,47 +1897,8 @@ mod thread_safety_tests {
 
 fork 系统调用创建子进程时，父子进程共享物理页：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    fork 后的共享状态                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   fork 前:                                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 父进程 vir_region                                    │   │
-│   │   vaddr: 0x400000                                    │   │
-│   │   physblocks[0] ──► phys_block                       │   │
-│   │                     ├─ phys: 0x1234000               │   │
-│   │                     ├─ refcount: 1                   │   │
-│   │                     └─ firstregion ──► parent_pr     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   fork 后:                                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 父进程 vir_region                                    │   │
-│   │   physblocks[0] ──┐                                  │   │
-│   └────────────────────┼──────────────────────────────────┘   │
-│                        │                                    │
-│   ┌────────────────────┼──────────────────────────────────┐   │
-│   │ 子进程 vir_region  │                                  │   │
-│   │   physblocks[0] ───┼──┐                               │   │
-│   └────────────────────┼──┼──────────────────────────────┘   │
-│                        │  │                                  │
-│                        ▼  ▼                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 共享的 phys_block                                    │   │
-│   │   phys: 0x1234000                                    │   │
-│   │   refcount: 2  ◄─── 共享                              │   │
-│   │   firstregion ──► parent_pr ──► child_pr ──► NULL    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   关键点:                                                    │
-│   - 同一个物理页被两个进程映射                              │
-│   - refcount = 2 表示共享                                   │
-│   - 页表项标记为只读，触发 CoW                              │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- fork 前：父进程 `vir_region.physblocks[0]` → `phys_block`（`refcount=1`，`firstregion → parent_pr`）
+- fork 后：父子进程的 `phys_region` 都引用同一个 `phys_block`（`refcount=2`，`firstregion → parent_pr → child_pr`），页表项标记为只读
 
 **共享的实现**
 
@@ -2895,52 +1954,17 @@ impl PhysBlock {
 }
 ```
 
----### 5.2 写时复制触发
+
+---
+
+### 5.2 写时复制触发
 
 **CoW 触发流程**
 
-当进程尝试写入共享页时，触发写时复制：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CoW 触发流程                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 写操作尝试                                              │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ 进程写入共享页                                    │   │
-│      │ 页表项为只读                                      │   │
-│      │ 触发页面保护异常                                  │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   2. 异常处理                                                │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ VM 接收异常                                       │   │
-│      │ 查找对应的 vir_region 和 phys_region             │   │
-│      │ 检查 pb->refcount > 1                            │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   3. CoW 复制                                                │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ 分配新物理页                                      │   │
-│      │ 复制原页内容                                      │   │
-│      │ 更新页表映射                                      │   │
-│      │ 减少 refcount                                     │   │
-│      │ 链接到新 phys_block                               │   │
-│      └─────────────────────────────────────────────────┘   │
-│                         │                                   │
-│                         ▼                                   │
-│   4. 继续写入                                                │
-│      ┌─────────────────────────────────────────────────┐   │
-│      │ 进程拥有私有页                                    │   │
-│      │ refcount = 1                                      │   │
-│      │ 可以正常写入                                      │   │
-│      └─────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **写操作尝试**：进程写入共享页，页表项为只读，触发页面保护异常
+2. **异常处理**：VM 接收异常，查找对应的 `vir_region` 和 `phys_region`，检查 `pb->refcount > 1`
+3. **CoW 复制**：分配新物理页，复制原页内容，更新页表映射，`pb_unreferenced()` 减少原块 refcount，`pb_link()` 链接到新 `phys_block`
+4. **继续写入**：进程拥有私有页（`refcount=1`），可以正常写入
 
 **CoW 实现**
 
@@ -3000,53 +2024,15 @@ pub fn mem_cow(
 }
 ```
 
-**CoW 前后对比**
+**CoW 前后状态对比**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CoW 前后状态对比                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   CoW 前:                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 父进程 vir_region                                    │   │
-│   │   physblocks[0] ──┐                                  │   │
-│   └────────────────────┼──────────────────────────────────┘   │
-│                        │                                    │
-│   ┌────────────────────┼──────────────────────────────────┐   │
-│   │ 子进程 vir_region  │   (尝试写入)                     │   │
-│   │   physblocks[0] ───┼──┐                               │   │
-│   └────────────────────┼──┼──────────────────────────────┘   │
-│                        │  │                                  │
-│                        ▼  ▼                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 共享的 phys_block                                    │   │
-│   │   phys: 0x1234000                                    │   │
-│   │   refcount: 2                                        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   CoW 后:                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 父进程 vir_region                                    │   │
-│   │   physblocks[0] ──► phys_block_A                     │   │
-│   │                     ├─ phys: 0x1234000               │   │
-│   │                     └─ refcount: 1                   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 子进程 vir_region   (写入完成)                       │   │
-│   │   physblocks[0] ──► phys_block_B                     │   │
-│   │                     ├─ phys: 0x5678000 (新页)        │   │
-│   │                     └─ refcount: 1                   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   关键变化:                                                  │
-│   - 子进程拥有独立的物理页                                  │
-│   - 父子进程的 refcount 都变为 1                            │
-│   - 各自可以独立写入                                        │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+CoW 前（共享状态）：`phys_block_A`（`phys=0x1234000, refcount=2`），`firstregion → parent_pr → child_pr`
+
+CoW 后（私有状态）：
+- `phys_block_A`（`phys=0x1234000, refcount=1`），`firstregion → parent_pr`（父进程保留原页）
+- `phys_block_B`（`phys=0x5678000, refcount=1`），`firstregion → child_pr`（子进程拥有新页）
+
+> 注意：`mem_cow()` 中 `pb_unreferenced(region, ph, 0)` 使用 `rm=0`，不移除 `phys_region`，而是后续 `pb_link(ph, new_pb, ...)` 重新链接到新块。
 
 **CoW 测试**
 
@@ -3096,420 +2082,48 @@ fn test_cow_basic() {
 
 ---
 
-## 6. 测试与验证
+## 6. 测试要点
 
 ### 6.1 引用计数测试
 
-**基本测试**
+- **初始状态**：`pb_new()` 返回 `refcount=0`，`is_referenced()=false`，`is_shared()=false`
+- **增减操作**：`inc_ref` 后 `refcount` 递增，`dec_ref` 后递减，`refcount==0` 时 `is_referenced()=false`
+- **CoW 判断**：`refcount > 1` 时 `needs_cow()=true`，`refcount <= 1` 时 `needs_cow()=false`
+- **溢出/下溢保护**：`dec_ref` 在 `refcount==0` 时应 panic（下溢），`inc_ref` 在 `refcount==255` 时应 panic（溢出）
 
-```rust
-#[cfg(test)]
-mod refcount_tests {
-    use super::*;
-    
-    #[test]
-    fn test_refcount_initial() {
-        let pb = PhysBlock::new(PhysBytes(0x1000));
-        assert_eq!(pb.refcount(), 0);
-        assert!(!pb.is_referenced());
-        assert!(!pb.is_shared());
-    }
-    
-    #[test]
-    fn test_refcount_inc_dec() {
-        let pb = PhysBlock::new(PhysBytes(0x1000));
-        
-        pb.inc_ref();
-        assert_eq!(pb.refcount(), 1);
-        assert!(pb.is_referenced());
-        assert!(!pb.is_shared());
-        
-        pb.inc_ref();
-        assert_eq!(pb.refcount(), 2);
-        assert!(pb.is_shared());
-        
-        let new_count = pb.dec_ref();
-        assert_eq!(new_count, 1);
-        assert!(!pb.is_shared());
-        
-        let new_count = pb.dec_ref();
-        assert_eq!(new_count, 0);
-        assert!(!pb.is_referenced());
-    }
-    
-    #[test]
-    #[should_panic(expected = "underflow")]
-    fn test_refcount_underflow() {
-        let pb = PhysBlock::new(PhysBytes(0x1000));
-        pb.dec_ref();  // 应该 panic
-    }
-    
-    #[test]
-    #[should_panic(expected = "overflow")]
-    fn test_refcount_overflow() {
-        let mut pb = PhysBlock::new(PhysBytes(0x1000));
-        pb.refcount.set(255);
-        pb.inc_ref();  // 应该 panic
-    }
-    
-    #[test]
-    fn test_needs_cow() {
-        let pb = PhysBlock::new(PhysBytes(0x1000));
-        
-        assert!(!pb.needs_cow());  // refcount = 0
-        
-        pb.inc_ref();
-        assert!(!pb.needs_cow());  // refcount = 1
-        
-        pb.inc_ref();
-        assert!(pb.needs_cow());   // refcount = 2
-    }
-}
-```
+### 6.2 链表一致性测试
 
-**链表一致性测试**
+- **refcount 与链表长度一致**：每次 `pb_link` 后 `refcount` 应等于链表长度，每次 `pb_unreferenced` 后也应一致
+- **头插法顺序**：链表顺序为后插入的在前（头插法）
+- **中间节点删除**：从链表中间移除 `phys_region` 后，链表仍完整，`refcount` 正确递减
 
-```rust
-#[cfg(test)]
-mod chain_tests {
-    use super::*;
-    
-    #[test]
-    fn test_chain_consistency() {
-        let mut pb = PhysBlock::new(PhysBytes(0x1000));
-        let mut pr1 = PhysRegion::new();
-        let mut pr2 = PhysRegion::new();
-        let mut pr3 = PhysRegion::new();
-        
-        unsafe {
-            // 链接三个 phys_region
-            pb_link(&mut pr1, &mut pb, VirBytes(0x0000), std::ptr::null_mut());
-            pb_link(&mut pr2, &mut pb, VirBytes(0x1000), std::ptr::null_mut());
-            pb_link(&mut pr3, &mut pb, VirBytes(0x2000), std::ptr::null_mut());
-        }
-        
-        // 验证 refcount
-        assert_eq!(pb.refcount(), 3);
-        
-        // 验证链表一致性
-        #[cfg(debug_assertions)]
-        assert!(pb.verify_refcount());
-        
-        // 移除中间节点
-        unsafe {
-            let new_count = pb_unlink(&mut pb, &pr2);
-            assert_eq!(new_count, 2);
-        }
-        
-        assert_eq!(pb.refcount(), 2);
-        
-        #[cfg(debug_assertions)]
-        assert!(pb.verify_refcount());
-    }
-    
-    #[test]
-    fn test_chain_order() {
-        let mut pb = PhysBlock::new(PhysBytes(0x1000));
-        let mut pr1 = PhysRegion::new();
-        let mut pr2 = PhysRegion::new();
-        let mut pr3 = PhysRegion::new();
-        
-        unsafe {
-            pb_link(&mut pr1, &mut pb, VirBytes(0x0000), std::ptr::null_mut());
-            pb_link(&mut pr2, &mut pb, VirBytes(0x1000), std::ptr::null_mut());
-            pb_link(&mut pr3, &mut pb, VirBytes(0x2000), std::ptr::null_mut());
-        }
-        
-        // 验证链表顺序（头插法，应该是 3 -> 2 -> 1）
-        let first = pb.first_region().unwrap();
-        assert_eq!(first.offset, VirBytes(0x2000));
-        
-        let second = first.next_ph_list.as_ref().unwrap();
-        assert_eq!(second.offset, VirBytes(0x1000));
-        
-        let third = second.next_ph_list.as_ref().unwrap();
-        assert_eq!(third.offset, VirBytes(0x0000));
-        
-        assert!(third.next_ph_list.is_none());
-    }
-}
-```
+### 6.3 生命周期测试
 
----### 6.2 生命周期测试
+- **创建和释放**：`pb_alloc` → `pb_free`，Slab 统计正确
+- **延迟分配**：`pb_new(MAP_NONE)` 创建无物理页的块，`has_phys()=false`，`pb_free` 不释放物理页
+- **引用生命周期**：`pb_link` → `pb_unreferenced` → `pb_free`，完整流程
+- **多引用释放**：多个 `phys_region` 引用同一 `phys_block`，逐个 `pb_unreferenced`，最后一个触发释放
+- **释放保护**：对 `refcount > 0` 的块调用 `pb_free` 应 panic
 
-**创建和释放测试**
+### 6.4 CoW 测试
 
-```rust
-#[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    
-    #[test]
-    fn test_create_free_basic() {
-        // 创建 PhysBlock
-        let pb = pb_alloc_with_page().expect("allocation failed");
-        
-        unsafe {
-            assert!((*pb).has_phys());
-            assert_eq!((*pb).refcount(), 0);
-            
-            // 立即释放
-            pb_free(pb);
-        }
-        
-        // 验证 Slab 统计
-        let slab = PB_SLAB.lock();
-        assert_eq!(slab.used_count(), 0);
-    }
-    
-    #[test]
-    fn test_delayed_allocation() {
-        // 创建延迟分配的 PhysBlock
-        let pb = pb_alloc_delayed().expect("allocation failed");
-        
-        unsafe {
-            assert!(!(*pb).has_phys());
-            assert_eq!((*pb).phys, PhysBytes(0));
-            
-            // 后续分配物理页
-            let phys = alloc_phys_page(AllocFlags::empty()).expect("no memory");
-            (*pb).phys = phys;
-            assert!((*pb).has_phys());
-            
-            pb_free(pb);
-        }
-    }
-    
-    #[test]
-    fn test_reference_lifecycle() {
-        let pb = pb_alloc_with_page().expect("allocation failed");
-        
-        unsafe {
-            // 创建引用
-            let mut pr = PhysRegion::new();
-            pb_link(&mut pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-            
-            assert_eq!((*pb).refcount(), 1);
-            
-            // 取消引用
-            let new_count = pb_unlink(&mut *pb, &pr);
-            assert_eq!(new_count, 0);
-            
-            // 现在可以释放
-            pb_free(pb);
-        }
-    }
-    
-    #[test]
-    fn test_multiple_references() {
-        let pb = pb_alloc_with_page().expect("allocation failed");
-        
-        unsafe {
-            let mut pr1 = PhysRegion::new();
-            let mut pr2 = PhysRegion::new();
-            let mut pr3 = PhysRegion::new();
-            
-            // 创建多个引用
-            pb_link(&mut pr1, &mut *pb, VirBytes(0x0000), std::ptr::null_mut());
-            pb_link(&mut pr2, &mut *pb, VirBytes(0x1000), std::ptr::null_mut());
-            pb_link(&mut pr3, &mut *pb, VirBytes(0x2000), std::ptr::null_mut());
-            
-            assert_eq!((*pb).refcount(), 3);
-            
-            // 逐个取消引用
-            pb_unlink(&mut *pb, &pr1);
-            assert_eq!((*pb).refcount(), 2);
-            
-            pb_unlink(&mut *pb, &pr2);
-            assert_eq!((*pb).refcount(), 1);
-            
-            pb_unlink(&mut *pb, &pr3);
-            assert_eq!((*pb).refcount(), 0);
-            
-            // 所有引用取消后可以释放
-            pb_free(pb);
-        }
-    }
-    
-    #[test]
-    #[should_panic(expected = "refcount > 0")]
-    fn test_free_with_references() {
-        let pb = pb_alloc_with_page().expect("allocation failed");
-        
-        unsafe {
-            let mut pr = PhysRegion::new();
-            pb_link(&mut pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-            
-            // 尝试释放有引用的块，应该 panic
-            pb_free(pb);
-        }
-    }
-}
-```
+- **fork 共享**：fork 后 `refcount` 增为 2，`needs_cow()=true`
+- **CoW 复制**：写操作触发 CoW，原块 `refcount` 减为 1，新块 `refcount=1`
+- **无泄漏**：fork + CoW 循环后，Slab 统计应与初始一致
 
-**Slab 统计测试**
+### 6.5 Slab 分配测试
 
-```rust
-#[cfg(test)]
-mod slab_tests {
-    use super::*;
-    
-    #[test]
-    fn test_slab_allocation() {
-        let initial_free = {
-            let slab = PB_SLAB.lock();
-            slab.free_count()
-        };
-        
-        // 分配多个 PhysBlock
-        let mut blocks = Vec::new();
-        for _ in 0..10 {
-            blocks.push(pb_alloc_delayed().expect("allocation failed"));
-        }
-        
-        {
-            let slab = PB_SLAB.lock();
-            assert_eq!(slab.used_count(), 10);
-            assert_eq!(slab.free_count(), initial_free.saturating_sub(10));
-        }
-        
-        // 释放所有块
-        unsafe {
-            for pb in blocks {
-                pb_free(pb);
-            }
-        }
-        
-        {
-            let slab = PB_SLAB.lock();
-            assert_eq!(slab.used_count(), 0);
-            assert_eq!(slab.free_count(), initial_free);
-        }
-    }
-    
-    #[test]
-    fn test_slab_exhaustion() {
-        // 分配直到耗尽
-        let mut blocks = Vec::new();
-        while let Some(pb) = pb_alloc_delayed() {
-            blocks.push(pb);
-        }
-        
-        let used = blocks.len();
-        assert!(used > 0, "should have allocated at least one block");
-        
-        // 下一次分配应该失败
-        assert!(pb_alloc_delayed().is_none());
-        
-        // 释放一个
-        unsafe {
-            pb_free(blocks.pop().unwrap());
-        }
-        
-        // 现在应该可以再分配一个
-        assert!(pb_alloc_delayed().is_some());
-        
-        // 清理
-        unsafe {
-            for pb in blocks {
-                pb_free(pb);
-            }
-        }
-    }
-}
-```
-
-**内存泄漏检测**
-
-```rust
-#[cfg(test)]
-mod leak_tests {
-    use super::*;
-    
-    #[test]
-    fn test_no_leak_basic() {
-        let initial_stats = {
-            let slab = PB_SLAB.lock();
-            slab.stats()
-        };
-        
-        // 执行一些操作
-        for _ in 0..100 {
-            let pb = pb_alloc_with_page().expect("allocation failed");
-            unsafe {
-                let mut pr = PhysRegion::new();
-                pb_link(&mut pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-                pb_unlink(&mut *pb, &pr);
-                pb_free(pb);
-            }
-        }
-        
-        // 验证没有泄漏
-        let final_stats = {
-            let slab = PB_SLAB.lock();
-            slab.stats()
-        };
-        
-        assert_eq!(initial_stats.used, final_stats.used);
-        assert_eq!(initial_stats.free, final_stats.free);
-    }
-    
-    #[test]
-    fn test_no_leak_cow() {
-        let initial_stats = {
-            let slab = PB_SLAB.lock();
-            slab.stats()
-        };
-        
-        // 模拟 fork 和 CoW
-        for _ in 0..50 {
-            // 父进程创建区域
-            let pb = pb_alloc_with_page().expect("allocation failed");
-            
-            unsafe {
-                let mut parent_pr = PhysRegion::new();
-                pb_link(&mut parent_pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-                
-                // fork 共享
-                let mut child_pr = PhysRegion::new();
-                pb_link(&mut child_pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-                
-                assert_eq!((*pb).refcount(), 2);
-                
-                // 子进程 CoW
-                let new_pb = pb_alloc_with_page().expect("allocation failed");
-                pb_unlink(&mut *pb, &child_pr);
-                pb_link(&mut child_pr, &mut *new_pb, VirBytes(0), std::ptr::null_mut());
-                
-                assert_eq!((*pb).refcount(), 1);
-                assert_eq!((*new_pb).refcount(), 1);
-                
-                // 清理
-                pb_unlink(&mut *pb, &parent_pr);
-                pb_free(pb);
-                
-                pb_unlink(&mut *new_pb, &child_pr);
-                pb_free(new_pb);
-            }
-        }
-        
-        // 验证没有泄漏
-        let final_stats = {
-            let slab = PB_SLAB.lock();
-            slab.stats()
-        };
-        
-        assert_eq!(initial_stats.used, final_stats.used);
-    }
-}
-```
+- **批量分配/释放**：分配多个 PhysBlock 后释放，Slab 统计正确
+- **耗尽恢复**：分配直到 Slab 耗尽，释放一个后可再分配
 
 ---
 
 ## 7. 参见
 
 - [08-slab-allocator.md](08-slab-allocator.md) - 使用 Slab 分配 phys_block
-- [14-phys-region.md](14-phys-region.md) - 引用 phys_block
+- [09-vir-region.md](09-vir-region.md) - vir_region 通过 physblocks[] 引用 phys_block
+- [12-page-fault.md](12-page-fault.md) - 缺页处理与延迟分配（phys=MAP_NONE）
+- [14-phys-region.md](14-phys-region.md) - phys_region 连接 vir_region 与 phys_block
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 基于 phys_block 的 CoW
 
 ---
