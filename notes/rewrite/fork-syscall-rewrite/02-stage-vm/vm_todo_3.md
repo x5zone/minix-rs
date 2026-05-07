@@ -160,3 +160,45 @@
 - mmap_file_cont异步回调的完整流程需补充
 - VM_SHM_UNMAP处理逻辑需与共享内存文档交叉验证
 - MAP_THIRDPARTY标志在minix-rs中的实现需验证
+
+---
+
+# Rust 代码修改记录
+
+## 已修复的Rust代码问题
+
+### 1. MAP_NONE 值修正（P0）
+
+| 文件 | 修改 | 原因 |
+|------|------|------|
+| phys_region.rs:20 | `MAP_NONE: u64 = 0` → `0xFFFF_FFFF_FFFF_FFFE` | Minix3使用0xFFFFFFFE作为"未映射"哨兵值，Rust原用0导致物理地址0无法作为有效映射 |
+
+### 2. memtype.rs 物理地址检查统一使用 MAP_NONE（P0）
+
+| 位置 | 修改 | 原因 |
+|------|------|------|
+| AnonymousMemory::is_writable | `unwrap_or(0) == 0` → `unwrap_or(MAP_NONE) == MAP_NONE` | 与Minix3 anon_writable一致 |
+| AnonymousMemory::on_unreference | `unwrap_or(0) != 0` → `unwrap_or(MAP_NONE) != MAP_NONE` | 与Minix3 anon_unreference一致 |
+| AnonymousMemory::on_pagefault | `unwrap_or(0) == 0` → `unwrap_or(MAP_NONE) == MAP_NONE` | 与Minix3 anon_pagefault一致 |
+| DirectPhysical::is_writable | `unwrap_or(0) != 0` → `unwrap_or(MAP_NONE) != MAP_NONE` | 与Minix3 phys_writable一致 |
+| DirectPhysical::on_pagefault | `*base_phys == 0` → `== MAP_NONE`；`unwrap_or(0) != 0` → `unwrap_or(MAP_NONE) != MAP_NONE` | 与Minix3 phys_pagefault一致 |
+| SharedMemory::is_writable | `unwrap_or(0) != 0` → `unwrap_or(MAP_NONE) != MAP_NONE` | 与Minix3 shared_writable一致 |
+
+### 3. vir_region.rs VrParam 默认值修正（P1）
+
+| 位置 | 修改 | 原因 |
+|------|------|------|
+| VrParam::default() | `phys: 0` → `phys: PhysBlock::MAP_NONE` | 默认值应与MAP_NONE一致 |
+
+### 4. vir_region.rs prepare_cow 逻辑修正（P0）
+
+| 位置 | 修改 | 原因 |
+|------|------|------|
+| prepare_cow() | `refcount>1 && is_writable() && phys_region.is_writable()` → `has_phys_block() && is_writable() && !phys_region.is_writable()` | 原逻辑错误：当phys_region可写时做CoW，实际应在不可写时做CoW。与Minix3的map_ph_writept→pr_writable调用链一致 |
+
+## Rust 代码遗留 TODO
+
+1. **MappedFile 和 Cache memtype 缺失**：memtype.rs 中缺少 `MappedFile` 和 `Cache` 的 MemType 实现，Minix3 有 `mem_type_mappedfile` 和 `mem_type_cache`
+2. **AnonContiguous memtype 缺失**：缺少 `AnonContiguous` 的 MemType 实现
+3. **pb_new(MAP_NONE) 场景**：region_new 中创建新 phys_block 时应使用 `PhysBlock::new(PhysBlock::MAP_NONE)` 而非 `PhysBlock::new(0)`
+4. **MAP_NONE 在页表操作中的使用**：pagetable 模块中可能也有硬编码的 0 需要替换为 MAP_NONE
