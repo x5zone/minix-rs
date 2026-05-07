@@ -109,3 +109,44 @@ mod tests {
         VM_INSTANCE_COUNT.store(0, Ordering::SeqCst);
     }
 }
+
+use core::alloc::{GlobalAlloc, Layout};
+
+pub(crate) struct VmAllocator;
+
+unsafe impl GlobalAlloc for VmAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe extern "Rust" {
+            fn __vm_global_alloc(layout: Layout) -> *mut u8;
+        }
+        unsafe { __vm_global_alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe extern "Rust" {
+            fn __vm_global_dealloc(ptr: *mut u8, layout: Layout);
+        }
+        unsafe { __vm_global_dealloc(ptr, layout) }
+    }
+}
+
+#[cfg_attr(not(test), global_allocator)]
+static GLOBAL: VmAllocator = VmAllocator;
+
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+unsafe fn __vm_global_alloc(layout: Layout) -> *mut u8 {
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut u8;
+    }
+    unsafe { malloc(layout.size()) }
+}
+
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+unsafe fn __vm_global_dealloc(ptr: *mut u8, _layout: Layout) {
+    unsafe extern "C" {
+        fn free(ptr: *mut u8);
+    }
+    unsafe { free(ptr) }
+}

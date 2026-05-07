@@ -26,11 +26,20 @@ pub type ClockTicks = u64;
 /// CPU cycles type.
 pub type CpuCycles = u64;
 
+/// Number of kernel tasks.
+/// TODO: Move to a shared constant (minix-types or kernel config).
+const NR_TASKS: usize = 8;
+
 /// Process number constants.
+/// Note: In Minix3, p_nr values are slot indices. Kernel tasks have negative
+/// p_nr (e.g., CLOCK=-3, SYSTEM=-2, KERNEL=-1), user processes have p_nr >= 0.
+/// These are dynamic values assigned at slot allocation, not special constants.
+/// The special "NONE" value belongs to Endpoint, not ProcNr.
 pub mod proc_nr {
     use super::ProcNr;
-    pub const NONE: ProcNr = -1;
-    pub const KERNEL: ProcNr = -2;
+    /// Minimum kernel task p_nr (first task in proc[]).
+    /// Actual task p_nr values range from -NR_TASKS to -1.
+    pub const MIN_TASK_NR: ProcNr = -(super::NR_TASKS as ProcNr);
 }
 
 /// Runtime status flags.
@@ -93,6 +102,10 @@ pub struct RtsFlags(AtomicU32);
 pub struct MiscFlags(AtomicU32);
 
 /// Priority newtype (wraps validity check).
+///
+/// Valid range: `TASK_Q(0)` to `MIN_USER_Q(15)`.
+/// The special value `-1` in Minix3's `sched_proc()` means "keep current priority"
+/// and is NOT a valid `Priority` — it is a parameter sentinel, not a priority value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Priority(i8);
 
@@ -141,13 +154,25 @@ impl Quantum {
     }
 
     pub fn consume(&self, cycles: u64) -> bool {
-        let left = self.cpu_time_left.load(Ordering::Acquire);
-        if left <= cycles {
-            self.cpu_time_left.store(0, Ordering::Release);
-            true
-        } else {
-            self.cpu_time_left.store(left - cycles, Ordering::Release);
-            false
+        let mut current = self.cpu_time_left.load(Ordering::Acquire);
+        loop {
+            if current <= cycles {
+                // Quantum exhausted — set to 0 and return true
+                match self.cpu_time_left.compare_exchange_weak(
+                    current, 0, Ordering::AcqRel, Ordering::Acquire,
+                ) {
+                    Ok(_) => return true,
+                    Err(actual) => current = actual,
+                }
+            } else {
+                // Still has time left
+                match self.cpu_time_left.compare_exchange_weak(
+                    current, current - cycles, Ordering::AcqRel, Ordering::Acquire,
+                ) {
+                    Ok(_) => return false,
+                    Err(actual) => current = actual,
+                }
+            }
         }
     }
 }
@@ -161,6 +186,11 @@ pub struct SchedFields {
     pub priority: AtomicI8,
     pub quantum: Quantum,
     pub cpu: AtomicU32,
+    /// User-space scheduler process number.
+    /// `None` means kernel default scheduling (C: `p_scheduler == NULL || p_scheduler == self`).
+    /// `Some(nr)` means the process at slot `nr` is the user-space scheduler.
+    /// Corresponds to C's `struct proc *p_scheduler`.
+    pub scheduler: Option<ProcNr>,
 }
 
 impl SchedFields {
@@ -169,6 +199,7 @@ impl SchedFields {
             priority: AtomicI8::new(priority::USER_Q),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
+            scheduler: None,
         }
     }
 
@@ -177,6 +208,7 @@ impl SchedFields {
             priority: AtomicI8::new(priority),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
+            scheduler: None,
         }
     }
 }
@@ -280,22 +312,34 @@ impl TimeStats {
     }
 
     pub fn tick_virt_timer(&self) -> bool {
-        let left = self.virt_left.load(Ordering::Acquire);
-        if left > 0 {
-            self.virt_left.store(left - 1, Ordering::Release);
-            left == 1
-        } else {
-            false
+        let mut current = self.virt_left.load(Ordering::Acquire);
+        loop {
+            if current == 0 {
+                return false;
+            }
+            let new_val = current - 1;
+            match self.virt_left.compare_exchange_weak(
+                current, new_val, Ordering::AcqRel, Ordering::Acquire,
+            ) {
+                Ok(_) => return new_val == 0,
+                Err(actual) => current = actual,
+            }
         }
     }
 
     pub fn tick_prof_timer(&self) -> bool {
-        let left = self.prof_left.load(Ordering::Acquire);
-        if left > 0 {
-            self.prof_left.store(left - 1, Ordering::Release);
-            left == 1
-        } else {
-            false
+        let mut current = self.prof_left.load(Ordering::Acquire);
+        loop {
+            if current == 0 {
+                return false;
+            }
+            let new_val = current - 1;
+            match self.prof_left.compare_exchange_weak(
+                current, new_val, Ordering::AcqRel, Ordering::Acquire,
+            ) {
+                Ok(_) => return new_val == 0,
+                Err(actual) => current = actual,
+            }
         }
     }
 }
@@ -494,7 +538,7 @@ impl core::fmt::Display for ProcName {
 /// Corresponds to C's sigset_t, using 64 bits for 64 signals.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SigSet(pub u64);
+pub struct SigSet(u64);
 
 impl SigSet {
     /// Creates empty signal set.
@@ -558,6 +602,9 @@ impl RtsFlags {
         (self.load() & flags) == flags
     }
 
+    // TODO: RTS_SET/RTS_UNSET in Minix3 also call dequeue/enqueue when
+    // the process transitions between runnable/non-runnable. Once the
+    // scheduler is implemented, these methods need scheduling integration.
     pub fn set(&self, flags: u32) {
         self.0.fetch_or(flags, Ordering::AcqRel);
     }
@@ -618,12 +665,25 @@ impl KProcess {
         self.p_rts_flags.is_runnable()
     }
 
-    pub fn get_priority(&self) -> i8 {
-        self.p_sched.priority.load(Ordering::Acquire)
+    pub fn get_priority(&self) -> Priority {
+        Priority::new(self.p_sched.priority.load(Ordering::Acquire))
+            .unwrap_or(Priority::default())
     }
 
-    pub fn set_priority(&self, priority: i8) {
-        self.p_sched.priority.store(priority, Ordering::Release);
+    /// Sets priority with validation. Returns false if value is out of range.
+    pub fn set_priority(&self, prio: i8) -> bool {
+        if let Some(p) = Priority::new(prio) {
+            self.p_sched.priority.store(p.get(), Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Sets priority without validation. For internal use by sched_proc
+    /// where the caller has already validated the range.
+    pub fn set_priority_unchecked(&self, prio: i8) {
+        self.p_sched.priority.store(prio, Ordering::Release);
     }
 
     pub fn reset_accounting(&self) {
@@ -636,29 +696,62 @@ impl KProcess {
     /// Does not copy p_nr and p_endpoint, specified by caller via parameters.
     /// Time stats, accounting info, signal set start from zero, IPC queue pointers cleared.
     ///
+    /// # Fork field corrections (matching Minix3 do_fork.c)
+    ///
+    /// | Field | C behavior | Rust behavior |
+    /// |-------|-----------|---------------|
+    /// | `p_rts_flags` | Copy then `RTS_SET(NO_QUANTUM)`, `RTS_UNSET(SIGNALED\|SIG_PENDING\|P_STOP)` | Copy then apply same corrections |
+    /// | `p_misc_flags` | Copy then clear `VIRT_TIMER\|PROF_TIMER\|SC_TRACE\|SPROF_SEEN\|STEP` | Copy then apply same mask |
+    /// | `p_time` | `virt_left=0, prof_left=0` | All zeroed (new) |
+    /// | `p_pending` | `sigemptyset()` | Empty |
+    /// | `p_nextready/p_caller_q/p_q_link` | Pointer copied but child gets own queues | `None` (child not queued yet) |
+    ///
     /// # Parameters
     /// - `parent`: Reference to parent process
     /// - `child_nr`: Child process number (slot number)
     /// - `child_endpoint`: Child's new endpoint
     pub fn fork_from(parent: &KProcess, child_nr: ProcNr, child_endpoint: Endpoint) -> Self {
+        // Copy p_rts_flags then apply fork corrections:
+        // RTS_SET(rpc, RTS_NO_QUANTUM) — child not runnable until scheduled
+        // RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP) — no signal inheritance
+        let child_rts = {
+            let flags = parent.p_rts_flags.load();
+            let flags = flags | rts::NO_QUANTUM;
+            let flags = flags & !(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP);
+            RtsFlags::new(flags)
+        };
+
+        // Copy p_misc_flags then clear timer/trace flags:
+        // rpc->p_misc_flags &= ~(MF_VIRT_TIMER | MF_PROF_TIMER | MF_SC_TRACE | MF_SPROF_SEEN | MF_STEP)
+        let child_mf = {
+            let flags = parent.p_misc_flags.load();
+            let flags = flags
+                & !(mf::VIRT_TIMER | mf::PROF_TIMER | mf::SC_TRACE | mf::SPROF_SEEN | mf::STEP);
+            MiscFlags::new(flags)
+        };
+
         let mut child = Self {
             p_nr: child_nr,
             p_endpoint: child_endpoint,
-            p_rts_flags: RtsFlags::new(parent.p_rts_flags.load()),
-            p_misc_flags: MiscFlags::new(parent.p_misc_flags.load()),
+            p_rts_flags: child_rts,
+            p_misc_flags: child_mf,
             p_sched: SchedFields {
                 priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
                 quantum: Quantum::new(parent.p_sched.quantum.size_ms.load(Ordering::Acquire)),
                 cpu: AtomicU32::new(parent.p_sched.cpu.load(Ordering::Acquire)),
             },
             p_accounting: Accounting::new(),
+            // p_time zeroed: corresponds to rpc->p_user_time=0, p_sys_time=0, p_virt_left=0, p_prof_left=0
             p_time: TimeStats::new(),
+            // p_cycles zeroed: corresponds to rpc->p_cycles=0, p_kcall_cycles=0, p_kipc_cycles=0
             p_cycles: CyclesStats::new(),
+            // IPC queue pointers: child is not queued, no callers, no links
             p_nextready: None,
             p_caller_q: None,
             p_q_link: None,
             p_getfrom_e: parent.p_getfrom_e,
             p_sendto_e: parent.p_sendto_e,
+            // p_pending cleared: corresponds to sigemptyset(&rpc->p_pending)
             p_pending: SigSet::empty(),
             p_name: parent.p_name,
             p_sendmsg: parent.p_sendmsg.clone(),
@@ -668,9 +761,9 @@ impl KProcess {
         };
 
         // Copy extended register state if parent has initialized it
-        // Modern 64-bit architectures use extended registers (SSE/AVX/NEON/SVE)
-        // instead of a separate FPU. Corresponds to Minix3's FPU copy logic
-        // but adapted for modern hardware.
+        // Corresponds to Minix3's FPU copy on i386:
+        //   if(proc_used_fpu(rpp))
+        //       memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state, FPU_XFP_SIZE);
         if parent.p_misc_flags.is_set(mf::EXT_REG_INITIALIZED) {
             child.p_ext_reg_state = parent.p_ext_reg_state.clone();
             child.p_misc_flags.set(mf::EXT_REG_INITIALIZED);
@@ -678,18 +771,6 @@ impl KProcess {
 
         child
     }
-}
-
-/// Creates a process.
-pub fn create_process() -> KProcess {
-    KProcess::new(0, Endpoint::default())
-}
-
-/// Copies a process (fork).
-pub fn copy_process(proc: &KProcess) -> KProcess {
-    let new_proc = KProcess::new(proc.p_nr, proc.p_endpoint);
-    new_proc.set_priority(proc.get_priority());
-    new_proc
 }
 
 /// Fork flags (corresponds to Minix3's PFF_* flags).
@@ -991,5 +1072,42 @@ mod tests {
 
         assert_eq!(child.p_cycles.total.load(Ordering::Relaxed), 0);
         assert_eq!(child.p_cycles.kcall.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_fork_from_rts_flags_corrections() {
+        // Parent has SIGNALED and SIG_PENDING set — child must NOT inherit these
+        let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        parent.p_rts_flags.clear(rts::SLOT_FREE);
+        parent.p_rts_flags.set(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP);
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        // Child must have NO_QUANTUM set (C: RTS_SET(rpc, RTS_NO_QUANTUM))
+        assert!(child.p_rts_flags.is_set(rts::NO_QUANTUM));
+        // Child must NOT have SIGNALED, SIG_PENDING, P_STOP (C: RTS_UNSET)
+        assert!(!child.p_rts_flags.is_set(rts::SIGNALED));
+        assert!(!child.p_rts_flags.is_set(rts::SIG_PENDING));
+        assert!(!child.p_rts_flags.is_set(rts::P_STOP));
+    }
+
+    #[test]
+    fn test_fork_from_misc_flags_corrections() {
+        // Parent has VIRT_TIMER, PROF_TIMER, STEP set — child must NOT inherit
+        let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        parent.p_misc_flags.set(mf::VIRT_TIMER | mf::PROF_TIMER | mf::STEP | mf::SC_TRACE | mf::SPROF_SEEN);
+        // Also set a flag that SHOULD be inherited
+        parent.p_misc_flags.set(mf::REPLY_PEND);
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        // Cleared flags
+        assert!(!child.p_misc_flags.is_set(mf::VIRT_TIMER));
+        assert!(!child.p_misc_flags.is_set(mf::PROF_TIMER));
+        assert!(!child.p_misc_flags.is_set(mf::STEP));
+        assert!(!child.p_misc_flags.is_set(mf::SC_TRACE));
+        assert!(!child.p_misc_flags.is_set(mf::SPROF_SEEN));
+        // Inherited flag
+        assert!(child.p_misc_flags.is_set(mf::REPLY_PEND));
     }
 }

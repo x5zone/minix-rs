@@ -52,6 +52,21 @@ pub(crate) trait MemType: Send + Sync {
     ) {
     }
 
+    fn on_low_shrink(
+        &self,
+        _region: &mut crate::region::VirRegion,
+        _len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        Ok(())
+    }
+
+    fn on_sanitycheck(
+        &self,
+        _pr: &crate::region::PhysRegion,
+    ) -> Result<(), MemTypeError> {
+        Ok(())
+    }
+
     fn is_writable(&self, _pr: &crate::region::PhysRegion) -> bool {
         false
     }
@@ -126,6 +141,16 @@ impl MemType for AnonymousMemory {
     }
 
     fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        if pr.get_phys_addr().unwrap_or(0) == 0 {
+            return false;
+        }
+        if let Some(parent) = pr.parent {
+            unsafe {
+                if (*parent).remaps > 0 {
+                    return true;
+                }
+            }
+        }
         if let Some(refcount) = pr.get_refcount() {
             refcount == 1
         } else {
@@ -134,14 +159,12 @@ impl MemType for AnonymousMemory {
     }
 
     fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        if let Some(refcount) = pr.get_refcount() {
-            if refcount == 0 {
-                if let Some(_phys) = pr.get_phys_addr() {
-                }
-                return Ok(true);
-            }
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount == 0 && pr.get_phys_addr().unwrap_or(0) != 0 {
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(false)
     }
 
     fn on_pagefault(
@@ -151,6 +174,10 @@ impl MemType for AnonymousMemory {
         pr: &mut crate::region::PhysRegion,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
+        if pr.get_phys_addr().unwrap_or(0) == 0 {
+            return Ok(PagefaultResult::NeedNewPage);
+        }
+
         let refcount = pr.get_refcount().unwrap_or(0);
 
         if refcount < 2 || !write {
@@ -169,15 +196,13 @@ impl MemType for AnonymousMemory {
     }
 
     fn ref_count(&self, region: &crate::region::VirRegion) -> i32 {
-        let mut count = 0i32;
+        let mut mapped = 0i32;
         for pb in &region.physblocks {
-            if let Some(pr) = pb {
-                if let Some(rc) = pr.get_refcount() {
-                    count += rc as i32;
-                }
+            if pb.is_some() {
+                mapped += 1;
             }
         }
-        count
+        mapped
     }
 }
 
@@ -197,11 +222,43 @@ impl Default for DirectPhysical {
 
 impl MemType for DirectPhysical {
     fn name(&self) -> &'static str {
-        "direct physical"
+        "physical memory mapping"
     }
 
-    fn is_writable(&self, _pr: &crate::region::PhysRegion) -> bool {
-        true
+    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        pr.get_phys_addr().unwrap_or(0) != 0
+    }
+
+    fn on_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        region: &mut crate::region::VirRegion,
+        pr: &mut crate::region::PhysRegion,
+        _write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        if let crate::region::VrParam::Direct { phys: base_phys } = &region.param {
+            if *base_phys == 0 {
+                return Err(MemTypeError::InvalidParam);
+            }
+            if pr.get_phys_addr().unwrap_or(0) != 0 {
+                return Ok(PagefaultResult::Handled);
+            }
+            return Ok(PagefaultResult::NeedNewPage);
+        }
+        Err(MemTypeError::InvalidParam)
+    }
+
+    fn on_copy(
+        &self,
+        src: &crate::region::VirRegion,
+        dst: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        dst.param = src.param.clone();
+        Ok(())
+    }
+
+    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
     }
 }
 
@@ -224,8 +281,21 @@ impl MemType for SharedMemory {
         "shared memory"
     }
 
-    fn is_writable(&self, _pr: &crate::region::PhysRegion) -> bool {
-        true
+    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        pr.get_phys_addr().unwrap_or(0) != 0
+    }
+
+    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
+    }
+
+    fn on_copy(
+        &self,
+        src: &crate::region::VirRegion,
+        dst: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        dst.param = src.param.clone();
+        Ok(())
     }
 }
 
@@ -246,7 +316,7 @@ mod tests {
     #[test]
     fn test_direct_physical_name() {
         let direct = DirectPhysical::new();
-        assert_eq!(direct.name(), "direct physical");
+        assert_eq!(direct.name(), "physical memory mapping");
     }
 
     #[test]
@@ -258,7 +328,7 @@ mod tests {
     #[test]
     fn test_static_instances() {
         assert_eq!(MEM_TYPE_ANON.name(), "anonymous memory");
-        assert_eq!(MEM_TYPE_DIRECT.name(), "direct physical");
+        assert_eq!(MEM_TYPE_DIRECT.name(), "physical memory mapping");
         assert_eq!(MEM_TYPE_SHARED.name(), "shared memory");
     }
 }

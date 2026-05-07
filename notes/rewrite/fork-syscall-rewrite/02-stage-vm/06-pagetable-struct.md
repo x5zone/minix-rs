@@ -1,4 +1,4 @@
-# 05-pagetable-struct: 页表结构
+# 06-pagetable-struct: 页表结构
 
 > **分类**: VM库  
 > **源码**: `minix3/minix/servers/vm/pt.h`  
@@ -1327,9 +1327,9 @@ cargo test -p minix-arch --features mock
 
 ## 7. 参见
 
-- [06-pagetable-ops.md](06-pagetable-ops.md) - 页表操作
+- [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vm_pt 字段
-- [15-vm-fork.md](15-vm-fork.md) - fork 时的页表复制
+- [17-vm-fork.md](17-vm-fork.md) - fork 时的页表复制
 
 ---
 

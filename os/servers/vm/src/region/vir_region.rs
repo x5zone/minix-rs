@@ -197,9 +197,9 @@ impl VirRegion {
                     unsafe {
                         let block = &*block_ptr;
 
-                        if block.refcount > 1 && self.is_writable() && phys_region.is_writable() {
+                        if block.refcount() > 1 && self.is_writable() && phys_region.is_writable() {
                             let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
-                            let _paddr = block.phys;
+                            let _paddr = block.phys();
 
                             let _cow_flags = PageFlags::read_only();
                         }

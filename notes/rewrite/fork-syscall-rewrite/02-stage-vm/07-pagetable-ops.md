@@ -1,4 +1,4 @@
-# 06-pagetable-ops: 页表操作
+# 07-pagetable-ops: 页表操作
 
 > **分类**: VM库  
 > **源码**: `minix3/minix/servers/vm/pagetable.c`  
@@ -148,7 +148,7 @@ typedef struct {
 } pt_t;
 ```
 
-> **页表结构 `pt_t`** 详见 [05-pagetable-struct.md](05-pagetable-struct.md#21-页表结构体-pt_t)。
+> **页表结构 `pt_t`** 详见 [06-pagetable-struct.md](06-pagetable-struct.md#21-页表结构体-pt_t)。
 
 ### 2.1 页表创建与销毁
 
@@ -202,7 +202,7 @@ int pt_new(pt_t *pt)
 
 - **页目录不重新分配**: 一旦某个进程槽位的页目录被分配，就不会再释放或重新分配。源码注释指出两个原因：(1) 略微提高性能，避免重复分配；(2) 避免更新内核页表中指向页目录的映射（`page_directories` 数据）。这意味着页目录的生命周期与进程槽位绑定，而非与进程绑定。
 - **每个页表必须映射内核**: Minix3 内核在系统调用、中断等场景下运行时，不切换页表，而是直接使用当前进程的页表。因此每个进程的页目录中必须包含内核映射，否则内核代码无法执行。内核映射使用 `PTF_GLOBAL` 标志，在进程切换时对应的 TLB 条目不会被刷新。
-- **`pt_virtop` 为冗余字段**: 被初始化为 0，但实际未被使用。详见 [05-pagetable-struct.md](05-pagetable-struct.md#22-pt_virtop---冗余字段)。
+- **`pt_virtop` 为冗余字段**: 被初始化为 0，但实际未被使用。详见 [06-pagetable-struct.md](06-pagetable-struct.md#22-pt_virtop---冗余字段)。
 
 > **pt_mapkernel 详情**: `pt_mapkernel`（`pagetable.c:1442`）执行三段映射：
 > 1. **内核代码段**: 从 `kern_mb_mod->mod_start` 开始，以 4MB 大页（x86）或 1MB section（ARM）映射 `kern_size` 字节。x86 使用 `ARCH_VM_BIGPAGE` 标志，无需二级页表。
@@ -805,7 +805,7 @@ pub enum PageTableError {
 
 ## 4. 实现详解
 
-> `Paging` trait 的完整定义、`MockPaging` 实现、`PageFlags`/`PageTableError` 类型详见 [05-pagetable-struct.md](05-pagetable-struct.md)。本章聚焦于各操作的语义和 Minix3 对应关系。
+> `Paging` trait 的完整定义、`MockPaging` 实现、`PageFlags`/`PageTableError` 类型详见 [06-pagetable-struct.md](06-pagetable-struct.md)。本章聚焦于各操作的语义和 Minix3 对应关系。
 
 > **TODO**：当前仅有 `MockPaging` 实现（用于用户态单元测试），各架构的具体实现（如 `X86_64Paging`）尚未完成。待架构实现就绪后，补充各操作在硬件层面的实现细节（如中间页表按需分配、TLB 刷新策略、大页映射路径等）。
 
@@ -859,7 +859,7 @@ pub enum PageTableError {
 
 ### 4.4 fork 相关操作 【设计目标】
 
-> fork 时的页表复制、CoW 标记、`phys_block` 引用计数等内容详见 [12-phys-block.md](12-phys-block.md) 和 [15-vm-fork.md](15-vm-fork.md)。
+> fork 时的页表复制、CoW 标记、`phys_block` 引用计数等内容详见 [10-phys-block.md](10-phys-block.md) 和 [17-vm-fork.md](17-vm-fork.md)。
 
 ---
 
@@ -892,9 +892,9 @@ cargo test -p minix-arch --features mock
 
 ## 6. 参见
 
-- [05-pagetable-struct.md](05-pagetable-struct.md) - 页表结构
-- [12-phys-block.md](12-phys-block.md) - 物理块引用计数
-- [15-vm-fork.md](15-vm-fork.md) - fork 时的页表操作
+- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
+- [10-phys-block.md](10-phys-block.md) - 物理块引用计数
+- [17-vm-fork.md](17-vm-fork.md) - fork 时的页表操作
 
 ---
 

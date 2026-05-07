@@ -25,7 +25,9 @@ pub struct ExtRegState {
     valid: bool,
 }
 
-/// Extended register state size (x86-64 AVX-512 XSAVE area).
+/// Extended register state size.
+/// TODO: This is currently hardcoded for x86-64 AVX-512. Each architecture
+/// should define its own size via a const or cfg-based selection.
 const EXT_REG_STATE_SIZE: usize = 576;
 
 impl ExtRegState {

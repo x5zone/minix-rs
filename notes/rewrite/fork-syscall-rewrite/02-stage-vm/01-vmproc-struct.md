@@ -248,7 +248,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 2. 复制父进程页表映射（共享物理页，只读标记）
 3. 绑定页表到子进程（`pt_bind`）
 
-> **详见**: [05-pagetable-struct.md](05-pagetable-struct.md)
+> **详见**: [06-pagetable-struct.md](06-pagetable-struct.md)
 
 #### 3.2.4 vm\_regions\_avl - 虚拟区域 AVL 树
 
@@ -262,7 +262,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 2. 遍历父进程区域，复制到子进程
 3. 增加物理页引用计数（CoW 机制）
 
-> **详见**: [07-vir-region.md](07-vir-region.md) 和 [11-region-avl.md](11-region-avl.md)
+> **详见**: [12-vir-region.md](12-vir-region.md) 和 [13-region-avl.md](13-region-avl.md)
 
 #### 3.2.5 vm\_acl - ACL 访问控制列表索引
 
@@ -387,7 +387,7 @@ Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootI
 
 **fork 时的处理**: 直接复制父进程的值，子进程的地址空间布局与父进程一致。
 
-> **详见**: [07-vir-region.md](07-vir-region.md) 的区域管理。
+> **详见**: [12-vir-region.md](12-vir-region.md) 的区域管理。
 
 ##### vm\_total / vm\_total\_max - 虚拟内存大小
 
@@ -443,7 +443,7 @@ pub byte_copies: u64,
 - 生产环境通常禁用，避免运行时开销
 - 调试/性能分析时启用，收集统计信息
 
-> **详见**: [13-cow-mechanism.md](13-cow-mechanism.md) 的写时复制机制。
+> **详见**: [15-cow-mechanism.md](15-cow-mechanism.md) 的写时复制机制。
 
 ##### vm\_minor\_page\_fault / vm\_major\_page\_fault - 缺页统计
 
@@ -461,7 +461,7 @@ pub byte_copies: u64,
 
 **fork 时的处理**: 子进程初始化为 0，开始独立统计自己的缺页情况。
 
-> **详见**: [14-pagefault.md](14-pagefault.md) 的页错误处理。
+> **详见**: [16-pagefault.md](16-pagefault.md) 的页错误处理。
 
 ***
 
@@ -744,8 +744,8 @@ active.set_endpoint(child_ep); // 设置真实 endpoint
 | 类型          | VmProc 字段                                | 定义位置                                  | 说明                                                                                                           | 专属文档                                             |
 | ----------- | ---------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `BootImage` | `vm_boot: Option<BootImage>`             | `minix-types` crate (`types/boot.rs`) | 启动时进程的引导映像信息，跨服务共享类型                                                                                         | [00-vm-overview.md](00-vm-overview.md)           |
-| `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [05-pagetable-struct.md](05-pagetable-struct.md) |
-| `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [07-vir-region.md](07-vir-region.md)             |
+| `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [06-pagetable-struct.md](06-pagetable-struct.md) |
+| `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [12-vir-region.md](12-vir-region.md)             |
 | `AclState`  | `vm_acl: AclState`                       | `vm/src/acl.rs`                       | ACL 状态，控制进程对 VM 系统调用的访问。三态 enum：`Uninitialized`/`Default`/`System(AclMask)` | [03-acl.md](03-acl.md)       |
 
 **与 VmProc 的关系**: 这些类型通过 `VmProc` 的字段被组合使用，但各自有独立的生命周期管理和 API。在 vmproc 模块中，通过 typestate view（`ActiveProc`）的方法访问它们，例如 `ActiveProc::page_table()`、`ActiveProc::regions()`、`ActiveProc::init_page_table()` 等。
@@ -1175,7 +1175,7 @@ child.copy_acl_from(&parent);
 | 页表初始化  | `pt_new()` 创建新页表                             | `init_page_table()` 创建新页表          |
 | ACL 复制   | `acl_fork()`                                    | `copy_acl_from()`                     |
 
-> **注意**: Minix3 使用 `*vmc = *vmp` 整体复制后逐字段修正，Rust 使用逐字段显式复制。Rust 的方式更安全（避免 origpt 保存/恢复问题），但需要确保所有必要字段都被复制。详见 [15-vm-fork.md](15-vm-fork.md) 的 fork 实现对比。
+> **注意**: Minix3 使用 `*vmc = *vmp` 整体复制后逐字段修正，Rust 使用逐字段显式复制。Rust 的方式更安全（避免 origpt 保存/恢复问题），但需要确保所有必要字段都被复制。详见 [17-vm-fork.md](17-vm-fork.md) 的 fork 实现对比。
 
 **exit 流程**（通过 typestate API）:
 
@@ -1389,7 +1389,7 @@ if(map_proc_copy(vmc, vmp) != OK) {
 
 fork 失败后，child slot 在 VM 看来仍然是 `VMF_INUSE`，但实际上是个"脏"状态——`INUSE` 置位但进程不可用。Minix3 依赖 **PM 的隐式协议**保证安全：PM 知道 fork 失败了，不会再使用这个 slot；下次 fork 时 `*vmc = *vmp` 无条件覆盖，脏数据不会被观察到。
 
-**为什么 Minix3 不直接** **`clear_proc(vmc)`？** 完全可以——失败时 child 的状态完全可以安全清理。Minix3 没有这样做，纯粹是依赖单线程 + PM 隐式协议的"够用就行"设计。详见 [15-vm-fork.md](15-vm-fork.md) 的 fork 失败处理分析。
+**为什么 Minix3 不直接** **`clear_proc(vmc)`？** 完全可以——失败时 child 的状态完全可以安全清理。Minix3 没有这样做，纯粹是依赖单线程 + PM 隐式协议的"够用就行"设计。详见 [17-vm-fork.md](17-vm-fork.md) 的 fork 失败处理分析。
 
 **Rust typestate 体系下，`force_clear()`** **是必要操作**：
 
@@ -1556,8 +1556,8 @@ VmProc 测试覆盖
 - [00-vm-overview.md](00-vm-overview.md) - VM 整体架构（地址稳定性等全局原则）
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
 - [03-acl.md](03-acl.md) - 访问控制
-- [05-pagetable-struct.md](05-pagetable-struct.md) - 页表结构
-- [07-vir-region.md](07-vir-region.md) - 虚拟区域
+- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
+- [12-vir-region.md](12-vir-region.md) - 虚拟区域
 
 ***
 

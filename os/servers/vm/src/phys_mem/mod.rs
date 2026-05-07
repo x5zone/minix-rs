@@ -24,7 +24,8 @@
 //! | SegmentTreeAllocator | O(log n) | Yes | No | High |
 //! | BuddyAllocator | O(log n) | No (2^n) | Yes | Medium |
 //!
-//! Default: `BitmapAllocator` (matches Minix3 behavior).
+//! Default: `BuddyAllocator` when `buddy_alloc` feature is enabled,
+//! falls back to `BitmapAllocator` (which matches Minix3 behavior).
 //!
 //! # TODO: Reserved Page Queue
 //!

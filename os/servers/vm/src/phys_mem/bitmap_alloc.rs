@@ -301,6 +301,31 @@ impl PhysAllocator for BitmapAllocator {
     fn total_count(&self) -> usize {
         self.total_pages
     }
+
+    fn reloc_array_count(&self) -> usize {
+        2
+    }
+
+    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
+        match index {
+            0 => (self.bitmap.as_ptr() as *const u8, self.bitmap.len(), core::mem::size_of::<u64>()),
+            1 => (self.page_cache.as_ptr() as *const u8, self.page_cache.len(), core::mem::size_of::<usize>()),
+            _ => (core::ptr::null(), 0, 0),
+        }
+    }
+
+    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
+        unsafe {
+            self.bitmap = core::slice::from_raw_parts_mut(
+                new_ptrs[0] as *mut u64,
+                self.bitmap.len(),
+            );
+            self.page_cache = core::slice::from_raw_parts_mut(
+                new_ptrs[1] as *mut usize,
+                self.page_cache.len(),
+            );
+        }
+    }
 }
 
 impl PhysAllocatorStats for BitmapAllocator {

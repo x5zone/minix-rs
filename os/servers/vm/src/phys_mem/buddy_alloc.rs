@@ -15,6 +15,11 @@ const ORDER_INVALID: u8 = 0xFF;
 // MAX_ORDER=30 limits addressable memory to 2^30 * 4KB = 4TB.
 // To support more, increase to 31 (8TB) or 32 (16TB, requires u33 indices).
 const MAX_ORDER: usize = 30;
+// Sentinel value for empty free list entries.
+// Uses u32::MAX instead of Option<u32> because the SoA (Structure of Arrays)
+// design stores page_next as &[u32] for cache efficiency — Option<u32> would
+// double the memory footprint per entry. This is a conscious trade-off:
+// cache-friendly SoA layout over type-level null safety.
 const FREE_LIST_SENTINEL: u32 = u32::MAX;
 // u32 page indices limit total pages to 2^32-1, i.e. 2^32 * 4KB = 16TB.
 
@@ -339,6 +344,36 @@ impl PhysAllocator for BuddyAllocator {
 
     fn total_count(&self) -> usize {
         self.total_pages
+    }
+
+    fn reloc_array_count(&self) -> usize {
+        3
+    }
+
+    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
+        match index {
+            0 => (self.free_list_heads.as_ptr() as *const u8, self.free_list_heads.len(), core::mem::size_of::<u32>()),
+            1 => (self.page_next.as_ptr() as *const u8, self.page_next.len(), core::mem::size_of::<u32>()),
+            2 => (self.page_orders.as_ptr() as *const u8, self.page_orders.len(), core::mem::size_of::<u8>()),
+            _ => (core::ptr::null(), 0, 0),
+        }
+    }
+
+    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
+        unsafe {
+            self.free_list_heads = core::slice::from_raw_parts_mut(
+                new_ptrs[0] as *mut u32,
+                self.free_list_heads.len(),
+            );
+            self.page_next = core::slice::from_raw_parts_mut(
+                new_ptrs[1] as *mut u32,
+                self.page_next.len(),
+            );
+            self.page_orders = core::slice::from_raw_parts_mut(
+                new_ptrs[2] as *mut u8,
+                self.page_orders.len(),
+            );
+        }
     }
 }
 

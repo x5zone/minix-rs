@@ -1254,7 +1254,7 @@ Buddy 的约束——所有块大小必须是 2^n 且 2^n 对齐——让问题�
 
 代价是**内部碎片**：分配 3 页实际占用 4 页。这是特化的典型 trade-off：用精度换性质。严格来说，buddy 不是线段树的"特化"——它们的数据结构完全不同。更准确的说法是：**buddy 是对问题域施加约束后得到的特化算法**。约束让问题变简单了，所以不需要线段树那么重的数据结构，用轻得多的 SoA 数组就够了。线段树是**无约束区间分配**的标准解；buddy 是**2^n 约束区间分配**的最优解。这正是 buddy 成为内核广泛采用的物理内存算法的原因：**用精度换性质，用约束换简洁**。
 
-默认使用 **BitmapAllocator**（与 Minix3 一致），BuddyAllocator 作为替代方案，线段树仅作教学/实验用途。
+默认使用 **BuddyAllocator**（启用 `buddy_alloc` feature 时），回退到 **BitmapAllocator**（与 Minix3 行为一致），线段树仅作教学/实验用途。
 
 ### 5.3 BitmapAllocator
 
@@ -1773,8 +1773,8 @@ phys_mem/
 - [heap-bootstrap.md](heap-bootstrap.md) - Early Heap 详细设计
 - [03-acl.md](03-acl.md) - ACL 权限控制
 - [08-slab-allocator.md](08-slab-allocator.md) - VM 内部使用 Slab
-- [15-vm-fork.md](15-vm-fork.md) - fork 时的内存分配
-- [17-vm-map.md](17-vm-map.md) - VM\_MAP 服务中的内存分配
+- [17-vm-fork.md](17-vm-fork.md) - fork 时的内存分配
+- [19-vm-map.md](19-vm-map.md) - VM\_MAP 服务中的内存分配
 
 ***
 

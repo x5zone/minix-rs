@@ -365,9 +365,9 @@ impl<'a> ActiveProc<'a> {
                         unsafe {
                             let block = &*block_ptr;
                             let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
-                            let paddr = PhysBytes::new(block.phys);
+                            let paddr = PhysBytes::new(block.phys());
 
-                            let writable = region.is_writable() && block.refcount == 1;
+                            let writable = region.is_writable() && block.refcount() == 1;
                             let flags = if writable {
                                 PageFlags::read_write()
                             } else {
