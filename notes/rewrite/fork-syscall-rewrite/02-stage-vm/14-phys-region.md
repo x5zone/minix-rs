@@ -52,16 +52,18 @@
 
 ### 1.3 与 Minix3 的对应关系
 
-| Minix3 结构体 | Rust 实现 | 说明 |
-|--------------|----------|------|
-| `struct phys_region` | `PhysRegion` | 虚拟到物理的映射单元 |
-| `struct phys_block` | `PhysBlock` | 物理内存块，支持引用计数 |
-| `ph->phys` | `PhysBlock.phys` | 物理地址 |
-| `ph->refcount` | `PhysBlock.refcount` | 引用计数 |
-| `ph->firstregion` | `PhysBlock.first_region` | 引用链表头 |
-| `pr->offset` | `PhysRegion.offset` | 在 vir_region 中的偏移 |
-| `pr->memtype` | `PhysRegion.memtype` | 内存类型回调 |
-| `pr->next_ph_list` | `PhysRegion.next_ph_list` | 同一 phys_block 的下一个引用 |
+| Minix3 结构体/字段 | 说明 |
+|-------------------|------|
+| `struct phys_region` | 虚拟到物理的映射单元 |
+| `struct phys_block` | 物理内存块，支持引用计数 |
+| `ph->phys` | 物理地址 |
+| `ph->refcount` | 引用计数 |
+| `ph->firstregion` | 引用链表头 |
+| `pr->offset` | 在 vir_region 中的偏移 |
+| `pr->memtype` | 内存类型回调 |
+| `pr->next_ph_list` | 同一 phys_block 的下一个引用 |
+
+> Rust 实现的对应关系见第3章设计决策。
 
 ---
 
@@ -69,7 +71,7 @@
 
 ### 2.1 phys_region 结构体
 
-**源码定义** (`phys_region.h:9`):
+**源码定义** (`phys_region.h:8`):
 
 ```c
 typedef struct phys_region {
@@ -86,13 +88,18 @@ typedef struct phys_region {
 
 **字段详解**:
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `ph` | `phys_block*` | 指向物理块，可能为 NULL（未分配物理页） |
-| `parent` | `vir_region*` | 所属虚拟区域，yielded 时为 NULL |
-| `offset` | `vir_bytes` | 在 vir_region 中的字节偏移 |
-| `memtype` | `mem_type_t*` | 内存类型回调（anon、file 等） |
-| `next_ph_list` | `phys_region*` | 链向同一 phys_block 的其他引用 |
+| 字段 | 类型 | 条件编译 | 说明 |
+|------|------|---------|------|
+| `ph` | `phys_block*` | - | 指向物理块，可能为 NULL（未分配物理页） |
+| `parent` | `vir_region*` | - | 所属虚拟区域，yielded 时为 NULL |
+| `offset` | `vir_bytes` | - | 在 vir_region 中的字节偏移 |
+| `written` | `int` | `SANITYCHECKS` | 调试用：是否已写入页表 |
+| `memtype` | `mem_type_t*` | - | 内存类型回调（anon、file 等） |
+| `next_ph_list` | `phys_region*` | - | 链向同一 phys_block 的其他引用 |
+
+> **32位 vs 64位差异**：Minix3 原始代码运行在 x86-32 上，`vir_bytes` 为 `u32_t`（4字节），指针为4字节；minix-rs 目标为 x86-64，`vir_bytes` 为 `u64_t`（8字节），指针为8字节。因此 `phys_region` 结构体大小不同：
+> - 32位（不含 SANITYCHECKS 字段）：ph(4) + parent(4) + offset(4) + memtype(4) + next_ph_list(4) = 20字节
+> - 64位（不含 SANITYCHECKS 字段）：ph(8) + parent(8) + offset(8) + memtype(8) + next_ph_list(8) = 40字节
 
 **与 vir_region 和 phys_block 的关系**:
 
@@ -120,17 +127,6 @@ vir_region (vaddr=0x1000, length=0x3000)
 ### 2.2 链表结构
 
 #### 2.2.1 next_ph_list - 物理块引用链表
-
-**源码定义** (`phys_region.h:20`):
-
-```c
-struct phys_region {
-    struct phys_block  *ph;            // 指向物理块
-    struct vir_region  *parent;        // 所属虚拟区域
-    vir_bytes           offset;        // 区域内偏移
-    struct phys_region *next_ph_list;  // 同一 phys_block 的共享链表
-};
-```
 
 **链表作用**:
 
@@ -167,27 +163,31 @@ phys_block (refcount=3)
 
 #### 2.2.2 链表操作
 
+> **注意**：`pb_link()` 和 `pb_unreferenced()` 的完整分析见 [10-phys-block.md](10-phys-block.md)。本节侧重于链表结构在 `phys_region` 语境下的语义。
+
 **核心函数** (`pb.c`):
 
 ##### 1. pb_link - 插入链表（头插法）
+
+**源码位置**: [pb.c:61](file:///workspace/minix3/minix/servers/vm/pb.c#L61)
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
     vir_bytes offset, struct vir_region *parent)
 {
-    // 设置 phys_region 字段
-    newphysr->offset = offset;
-    newphysr->ph = newpb;
-    newphysr->parent = parent;
-
-    // 头插法：新节点插入链表头部
-    newphysr->next_ph_list = newpb->firstregion;
-    newpb->firstregion = newphysr;
-
-    // 增加引用计数
+    USE(newphysr,
+        newphysr->offset = offset;
+        newphysr->ph = newpb;
+        newphysr->parent = parent;
+        newphysr->next_ph_list = newpb->firstregion;  // 头插法
+        newpb->firstregion = newphysr;);
     newpb->refcount++;
 }
 ```
+
+> **注意**：`pb_link()` 和 `pb_unreferenced()` 的详细分析见第2章和 [10-phys-block.md](10-phys-block.md)。
+
+> **注意**：`USE` 宏在 `MEMPROTECT` 构建中会执行 `slabunlock`/`slablock` 操作，在普通构建中直接执行代码。参见 [sanitycheck.h:57](file:///workspace/minix3/minix/servers/vm/sanitycheck.h#L57)。
 
 **操作步骤**:
 
@@ -206,39 +206,48 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 ##### 2. pb_unreferenced - 从链表移除
 
+**源码位置**: [pb.c:96](file:///workspace/minix3/minix/servers/vm/pb.c#L96)
+
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 {
-    struct phys_block *pb = pr->ph;
+    struct phys_block *pb;
     
-    // 减少引用计数
-    pb->refcount--;
+    pb = pr->ph;
+    assert(pb->refcount > 0);
+    USE(pb, pb->refcount--;);
 
     // 从链表中移除
     if(pb->firstregion == pr) {
-        // 情况1：移除的是头节点
-        pb->firstregion = pr->next_ph_list;
+        USE(pb, pb->firstregion = pr->next_ph_list;);
     } else {
-        // 情况2：移除的是中间或尾部节点
         struct phys_region *others;
         for(others = pb->firstregion; others; others = others->next_ph_list) {
+            assert(others->ph == pb);
             if(others->next_ph_list == pr) {
-                others->next_ph_list = pr->next_ph_list;
+                USE(others, others->next_ph_list = pr->next_ph_list;);
                 break;
             }
         }
+        assert(others); // 否则不在链表中
     }
 
     // 如果引用计数为0，释放物理块
     if(pb->refcount == 0) {
         assert(!pb->firstregion);
-        pr->memtype->ev_unreference(pr);
+        int r;
+        if((r = pr->memtype->ev_unreference(pr)) != OK)
+            panic("unref failed, %d", r);
         SLABFREE(pb);
     }
 
     pr->ph = NULL;
+
+    if(rm) physblock_set(region, pr->offset, NULL);
 }
 ```
+
+> **注意**：`ev_unreference` 的返回值必须检查，失败时 panic。`rm` 参数控制是否从 VirRegion 的 physblocks 数组中移除。
 
 **移除操作示意**:
 
@@ -281,13 +290,13 @@ for(others = pb->firstregion; others; others = others->next_ph_list) {
 
 #### 2.3.1 offset - 在 vir_region 中的偏移
 
-**源码定义** (`phys_region.h:12`):
+**源码定义** (`phys_region.h:11`):
 
 ```c
 typedef struct phys_region {
     struct phys_block  *ph;
     struct vir_region  *parent;
-    vir_bytes           offset;  // 在 vir_region 中的字节偏移
+    vir_bytes           offset;  // 在 vir_region 中的字节偏移 (line 11)
     // ...
 } phys_region_t;
 ```
@@ -339,13 +348,39 @@ struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
 ##### 1. 页表映射
 
 ```c
-// region.c:153 - map_ph_writept()
-r = pt_writemap(vmp, &vmp->vm_pt, 
-    vr->vaddr + pr->offset,  // 虚拟地址 = 区域起始 + 偏移
-    pb->phys,                 // 物理地址
-    VM_PAGE_SIZE, 
-    PTF_PRESENT | PTF_USER | rw, 
-    WMF_VERIFY);
+// region.c:257 - map_ph_writept()
+int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
+    struct phys_region *pr)
+{
+    int flags = PTF_PRESENT | PTF_USER;
+    struct phys_block *pb = pr->ph;
+
+    assert(vr);
+    assert(pr);
+    assert(pb);
+    assert(!(vr->vaddr % VM_PAGE_SIZE));
+    assert(!(pr->offset % VM_PAGE_SIZE));
+    assert(pb->refcount > 0);
+
+    if(pr_writable(vr, pr))
+        flags |= PTF_WRITE;
+    else
+        flags |= PTF_READ;
+
+    if(vr->def_memtype->pt_flags)
+        flags |= vr->def_memtype->pt_flags(vr);
+
+    r = pt_writemap(vmp, &vmp->vm_pt, 
+        vr->vaddr + pr->offset,  // 虚拟地址 = 区域起始 + 偏移
+        pb->phys,                 // 物理地址
+        VM_PAGE_SIZE, 
+        flags, 
+#if SANITYCHECKS
+        !pr->written ? 0 :
+#endif
+        WMF_OVERWRITE);
+    // ...
+}
 ```
 
 **地址转换示意**:
@@ -378,7 +413,7 @@ r = pt_writemap(vmp, &vmp->vm_pt,
 ##### 2. 地址查找
 
 ```c
-// region.c:617 - map_lookup()
+// region.c:616 - map_lookup()
 struct vir_region *map_lookup(struct vmproc *vmp,
     vir_bytes offset, struct phys_region **physr)
 {
@@ -406,9 +441,11 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 
 ```c
 // region.c:1124 - 区域收缩时调整 offset
-if(pr->offset >= offset) {
+for(voffset = len; voffset < r->length; voffset += VM_PAGE_SIZE) {
+    if(!(pr = physblock_get(r, voffset))) continue;
+    assert(pr->offset >= offset);
     assert(pr->offset >= len);
-    pr->offset -= len;  // 调整偏移量
+    USE(pr, pr->offset -= len;);  // 调整偏移量
 }
 ```
 
@@ -423,11 +460,11 @@ if(pr->offset >= offset) {
 
 ### 2.4 phys_block 引用
 
-**源码定义** (`phys_region.h:10`):
+**源码定义** (`phys_region.h:9`):
 
 ```c
 typedef struct phys_region {
-    struct phys_block  *ph;      // 指向物理块（可能为 NULL）
+    struct phys_block  *ph;      // 指向物理块（可能为 NULL）(line 9)
     struct vir_region  *parent;
     vir_bytes           offset;
     // ...
@@ -482,14 +519,29 @@ int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
 
 ##### 2. CoW 判断
 
+CoW 判断不是通过简单的 `refcount` 检查完成的，而是通过 `pr_writable()` 函数间接判断。当 `refcount > 1` 时，`anon_writable()` 返回 0（不可写），页表被设置为只读，写入时触发缺页异常，进而执行 CoW。
+
 ```c
-// region.c:886 - 判断是否需要 CoW
-if(ph->ph->refcount != 1) {
-    // refcount > 1，说明被共享，需要 CoW
-    // 复制物理页内容
-    sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE);
+// region.c:130 - pr_writable() 判断是否可写
+static int pr_writable(struct vir_region *vr, struct phys_region *pr)
+{
+    assert(pr->memtype->writable);
+    return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
+}
+
+// mem_anon.c:105 - anon_writable() 匿名内存的可写判断
+static int anon_writable(struct phys_region *pr)
+{
+    assert(pr->ph->refcount > 0);
+    if(pr->ph->phys == MAP_NONE)
+        return 0;
+    if(pr->parent->remaps > 0)
+        return 1;
+    return pr->ph->refcount == 1;  // 只有独占时可写
 }
 ```
+
+> **注意**：`refcount != 1` 并不直接触发 CoW，而是使 `anon_writable()` 返回 0，导致页表设置为只读。实际 CoW 由缺页异常处理程序执行。参见 [15-cow-mechanism.md](15-cow-mechanism.md)。
 
 ##### 3. 引用计数管理
 
@@ -500,16 +552,21 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
     struct phys_block *pb = pr->ph;
     
     assert(pb->refcount > 0);
-    pb->refcount--;  // 减少引用计数
+    USE(pb, pb->refcount--;);  // 减少引用计数
+    
+    // 从链表移除...
     
     if(pb->refcount == 0) {
         // 引用计数为0，释放物理块
         assert(!pb->firstregion);
-        pr->memtype->ev_unreference(pr);
+        int r;
+        if((r = pr->memtype->ev_unreference(pr)) != OK)
+            panic("unref failed, %d", r);
         SLABFREE(pb);
     }
     
     pr->ph = NULL;  // 清空指针
+    if(rm) physblock_set(region, pr->offset, NULL);
 }
 ```
 
@@ -523,19 +580,10 @@ weighted += VM_PAGE_SIZE / pr->ph->refcount;
 
 **指针生命周期**:
 
-```
-phys_region 生命周期:
-  │
-  ├─ 创建时: ph = NULL (未分配物理页)
-  │
-  ├─ 分配物理页: ph = pb_new(phys)
-  │               pb_link(pr, pb, offset, region)
-  │
-  ├─ 使用中: 访问 ph->phys, ph->refcount 等
-  │
-  └─ 释放时: pb_unreferenced(region, pr, 1)
-             pr->ph = NULL
-```
+1. **创建时**: `ph = NULL`（未分配物理页）
+2. **分配物理页**: `ph = pb_new(phys)` → `pb_link(pr, pb, offset, region)`
+3. **使用中**: 访问 `ph->phys`, `ph->refcount` 等
+4. **释放时**: `pb_unreferenced(region, pr, 1)` → `pr->ph = NULL`
 
 **关键约束**:
 
@@ -567,6 +615,7 @@ pub struct PhysRegion {
     pub ph: Option<*mut PhysBlock>,      // 指向物理块（可能为 NULL）
     pub parent: Option<*mut VirRegion>,  // 所属虚拟区域
     pub offset: VirBytes,                 // 区域内偏移
+    pub memtype: Option<*mut MemType>,    // 内存类型回调
     pub next_ph_list: Option<*mut PhysRegion>, // 链表下一个节点
 }
 ```
@@ -578,7 +627,10 @@ pub struct PhysRegion {
 | `ph` | `struct phys_block *ph` | `Option<*mut PhysBlock>` | NULL → None，显式表达可能为空 |
 | `parent` | `struct vir_region *parent` | `Option<*mut VirRegion>` | 同上，支持 yielded 状态 |
 | `offset` | `vir_bytes offset` | `VirBytes` | 类型别名，保持语义清晰 |
+| `memtype` | `mem_type_t *memtype` | `Option<*mut MemType>` | 内存类型回调，决定页表属性和 CoW 行为 |
 | `next_ph_list` | `struct phys_region *next_ph_list` | `Option<*mut PhysRegion>` | 链表节点，NULL 表示链尾 |
+
+> **注意**：C 源码中 `memtype` 不会为 NULL（由 `pb_reference()` 设置），但 Rust 中使用 `Option` 以保持一致性。`written` 字段（SANITYCHECKS 条件编译）在 Rust 中通过 `debug_assert!` 替代，不需要显式字段。
 
 **为什么使用裸指针？**
 
@@ -967,31 +1019,42 @@ Minix3 内存管理采用三层结构，从虚拟地址到物理内存的映射�
 **Minix3 源码定义**:
 
 ```c
-// vir_region (region.h:50)
+// vir_region (region.h:37)
 typedef struct vir_region {
     vir_bytes vaddr;                    // 虚拟地址起始
     vir_bytes length;                   // 区域长度
     struct phys_region **physblocks;    // 物理区域数组
     u16_t flags;                        // 标志位
     struct vmproc *parent;              // 所属进程
-    // ...
+    mem_type_t  *def_memtype;           // 默认内存类型
+    int         remaps;                 // 重映射计数
+    int         id;                     // 唯一 ID
+    union { /* ... */ } param;          // VR_DIRECT/SHARED/file 等参数
+    struct vir_region *lower, *higher;  // AVL 树节点
+    int         factor;                 // AVL 平衡因子
 } region_t;
 
-// phys_region (phys_region.h:10)
+// phys_region (phys_region.h:8)
 typedef struct phys_region {
     struct phys_block  *ph;             // 指向物理块
     struct vir_region  *parent;         // 所属虚拟区域
     vir_bytes           offset;         // 偏移量
+#if SANITYCHECKS
+    int                 written;        // 调试: 是否已写入页表
+#endif
+    mem_type_t         *memtype;        // 内存类型回调
     struct phys_region *next_ph_list;   // 链表下一个
-    // ...
 } phys_region_t;
 
 // phys_block (region.h:23)
 struct phys_block {
-    phys_bytes           phys;          // 物理地址
-    struct phys_region  *firstregion;   // 链表头
-    u8_t                 refcount;      // 引用计数
-    u8_t                 flags;         // 标志位
+#if SANITYCHECKS
+    u32_t       seencount;             // 调试用: 遍历检查计数
+#endif
+    phys_bytes  phys;                   // 物理地址
+    struct phys_region *firstregion;    // 链表头
+    u8_t        refcount;               // 引用计数
+    u8_t        flags;                  // 标志位
 };
 ```
 
@@ -1107,36 +1170,7 @@ impl PhysRegion {
 
 **引用关系图示**:
 
-```
-进程 A (父进程)                      进程 B (子进程)
-    │                                    │
-    ├─→ VirRegion_A                      ├─→ VirRegion_B
-    │       │                            │       │
-    │       ├─→ PhysRegion_A1            │       ├─→ PhysRegion_B1
-    │       │       │                    │       │       │
-    │       │       └──────┐    ┌────────┘       │       │
-    │       │              ↓    ↓                │       │
-    │       │          PhysBlock_1               │       │
-    │       │              ↑    ↑                │       │
-    │       │       ┌──────┘    └────────┐       │       │
-    │       │       │                    │       │       │
-    │       ├─→ PhysRegion_A2            │       ├─→ PhysRegion_B2
-    │       │       │                    │       │       │
-    │       │       └─→ PhysBlock_2      │       │       │
-    │       │                            │       │       │
-    │       └─→ PhysRegion_A3            │       └─→ PhysRegion_B3
-    │               │                    │               │
-    │               └─→ PhysBlock_3      │               │
-    │                                    │               │
-    └─→ 独立的物理块                     └─→ 共享的物理块 (CoW)
-
-图例：
-  VirRegion: 虚拟区域
-  PhysRegion: 物理区域
-  PhysBlock: 物理块
-  → : 引用关系
-  ─→ : 所有权关系
-```
+fork 后的共享关系：父进程和子进程各自的 PhysRegion 通过 `next_ph_list` 链表连接到同一个 PhysBlock。PhysBlock_1 被 PhysRegion_A1 和 PhysRegion_B1 共享（CoW），PhysBlock_2 和 PhysBlock_3 各自独立。
 
 **引用计数管理**:
 
@@ -1206,22 +1240,16 @@ pub fn iterate_block_refs<F>(block: &PhysBlock, f: F) {
 
 创建物理区域涉及三个关键步骤：分配、初始化、链接。
 
-```
-创建流程:
-  1. 分配 PhysRegion 内存
-     ↓
-  2. 初始化 PhysRegion 字段
-     ↓
-  3. 链接到 PhysBlock (pb_link)
-     ↓
-  4. 设置到 VirRegion (physblock_set)
-```
+1. **分配 PhysRegion 内存**（`SLABALLOC`）
+2. **初始化 PhysRegion 字段**（设置 `memtype`）
+3. **链接到 PhysBlock**（`pb_link`，增加 `refcount`）
+4. **设置到 VirRegion**（`physblock_set`，更新 `vm_total`）
 
 **Minix3 源码分析**:
 
 ##### 1. pb_reference() - 创建并引用物理块
 
-**源码位置**: [pb.c:71](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/pb.c#L71)
+**源码位置**: [pb.c:73](file:///workspace/minix3/minix/servers/vm/pb.c#L73)
 
 ```c
 struct phys_region *pb_reference(struct phys_block *newpb,
@@ -1256,7 +1284,7 @@ struct phys_region *pb_reference(struct phys_block *newpb,
 
 ##### 2. pb_link() - 链接到物理块
 
-**源码位置**: [pb.c:61](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/pb.c#L61)
+**源码位置**: [pb.c:61](file:///workspace/minix3/minix/servers/vm/pb.c#L61)
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -1285,7 +1313,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 ##### 3. physblock_set() - 设置到虚拟区域
 
-**源码位置**: [region.c:72](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L72)
+**源码位置**: [region.c:72](file:///workspace/minix3/minix/servers/vm/region.c#L72)
 
 ```c
 void physblock_set(struct vir_region *region, vir_bytes offset,
@@ -1528,7 +1556,7 @@ mod tests {
 
 **Minix3 源码分析**:
 
-**源码位置**: [region.c:60](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L60)
+**源码位置**: [region.c:60](file:///workspace/minix3/minix/servers/vm/region.c#L60)
 
 ```c
 struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
@@ -1777,24 +1805,15 @@ mod tests {
 
 释放物理区域涉及解引用 PhysBlock、从链表移除、可能的物理块释放。
 
-```
-释放流程:
-  1. 减少引用计数 (refcount--)
-     ↓
-  2. 从链表移除 PhysRegion
-     ↓
-  3. 如果 refcount == 0
-     ├─ 调用 memtype->ev_unreference()
-     └─ 释放 PhysBlock
-     ↓
-  4. 清空 PhysRegion 的 ph 指针
-     ↓
-  5. 从 VirRegion 移除（可选）
-```
+1. **减少引用计数**（`refcount--`）
+2. **从链表移除 PhysRegion**（更新 `firstregion` 或前驱的 `next_ph_list`）
+3. **如果 `refcount == 0`**：调用 `memtype->ev_unreference()` → `SLABFREE(pb)`
+4. **清空 PhysRegion 的 ph 指针**（`pr->ph = NULL`）
+5. **从 VirRegion 移除**（可选，`rm` 参数为真时调用 `physblock_set`）
 
 **Minix3 源码分析**:
 
-**源码位置**: [pb.c:95](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/pb.c#L95)
+**源码位置**: [pb.c:96](file:///workspace/minix3/minix/servers/vm/pb.c#L96)
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -2049,23 +2068,10 @@ vr.release_all_phys_regions();
 
 **引用计数管理**:
 
-```
-初始状态:
-  PhysBlock { refcount: 1 }
-  PhysRegion A → PhysBlock
-
-fork 后:
-  PhysBlock { refcount: 2 }
-  PhysRegion A → PhysBlock ← PhysRegion B
-
-释放 A:
-  PhysBlock { refcount: 1 }
-  PhysRegion B → PhysBlock
-
-释放 B:
-  PhysBlock { refcount: 0 }
-  → 释放 PhysBlock
-```
+- 初始状态：`PhysBlock { refcount: 1 }`，`PhysRegion A → PhysBlock`
+- fork 后：`PhysBlock { refcount: 2 }`，`PhysRegion A → PhysBlock ← PhysRegion B`
+- 释放 A：`PhysBlock { refcount: 1 }`，`PhysRegion B → PhysBlock`
+- 释放 B：`PhysBlock { refcount: 0 }` → 释放 PhysBlock
 
 **性能考虑**:
 
@@ -2172,24 +2178,7 @@ Minix3 中的 PhysRegion 链表**不需要排序和合并**，原因如下：
 
 **1. 链表特性**:
 
-PhysRegion 链表是**单向链表**，连接所有引用同一个 PhysBlock 的 PhysRegion。
-
-```
-PhysBlock
-  ↓
-  firstregion → PhysRegion A (offset=0x1000, parent=VR1)
-                  ↓
-                PhysRegion B (offset=0x2000, parent=VR2)
-                  ↓
-                PhysRegion C (offset=0x0000, parent=VR3)
-                  ↓
-                NULL
-```
-
-**关键点**：
-- 链表顺序是**插入顺序的逆序**（头插法）
-- 每个 PhysRegion 的 offset 是**固定的**，由其所属的 VirRegion 决定
-- 链表用于**遍历所有引用者**，而非按地址访问
+PhysRegion 链表是**单向链表**，连接所有引用同一个 PhysBlock 的 PhysRegion。链表顺序是**插入顺序的逆序**（头插法），每个 PhysRegion 的 offset 是**固定的**，由其所属的 VirRegion 决定。链表用于**遍历所有引用者**，而非按地址访问。
 
 **2. 为什么不需要排序**:
 
@@ -2211,21 +2200,7 @@ PhysBlock
 
 **Minix3 源码分析**:
 
-**源码位置**: [pb.c:68](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/pb.c#L68)
-
-```c
-void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
-    vir_bytes offset, struct vir_region *parent)
-{
-    USE(newphysr,
-        newphysr->offset = offset;
-        newphysr->ph = newpb;
-        newphysr->parent = parent;
-        newphysr->next_ph_list = newpb->firstregion;  // 头插法
-        newpb->firstregion = newphysr;);
-    newpb->refcount++;
-}
-```
+`pb_link()` 使用头插法插入链表，详见 [2.2.2 节](#222-链表操作) 和 [10-phys-block.md](10-phys-block.md)。
 
 **关键观察**：
 - 使用**头插法**插入链表：`newphysr->next_ph_list = newpb->firstregion`
@@ -2404,20 +2379,8 @@ assert_eq!(block.refcount, 3);
 
 **与 VirRegion 的关系**:
 
-```
-VirRegion (虚拟区域)
-  ├─ physblocks[0] → PhysRegion A → PhysBlock X
-  ├─ physblocks[1] → PhysRegion B → PhysBlock X  (共享)
-  ├─ physblocks[2] → PhysRegion C → PhysBlock Y
-  └─ physblocks[3] → NULL (未分配)
-
-PhysBlock X (共享物理块)
-  └─ first_region → PhysRegion A → PhysRegion B → NULL
-```
-
-**关键点**：
-- VirRegion 通过数组管理 PhysRegion，O(1) 访问
-- PhysBlock 通过链表管理引用者，遍历所有引用者
+- VirRegion 通过 `physblocks[]` 数组管理 PhysRegion，O(1) 访问
+- PhysBlock 通过 `firstregion` 链表管理引用者，遍历所有引用者
 - 两者是**正交**的，互不影响
 
 **测试用例**:
@@ -2502,23 +2465,14 @@ mod tests {
 
 fork 时复制物理区域，实际上是**共享 PhysBlock**，增加引用计数。
 
-```
-fork 复制流程:
-  1. 创建新的 VirRegion
-     ↓
-  2. 遍历原 VirRegion 的所有 PhysRegion
-     ↓
-  3. 对每个 PhysRegion:
-     ├─ 调用 pb_reference() 创建新 PhysRegion
-     ├─ 链接到相同的 PhysBlock
-     └─ 增加 PhysBlock 的引用计数
-     ↓
-  4. 返回新的 VirRegion
-```
+1. **创建新的 VirRegion**（`region_new`，相同参数）
+2. **遍历原 VirRegion 的所有 PhysRegion**
+3. **对每个 PhysRegion**：调用 `pb_reference()` 创建新 PhysRegion → 链接到相同的 PhysBlock → 增加 PhysBlock 的引用计数
+4. **返回新的 VirRegion**
 
 **Minix3 源码分析**:
 
-**源码位置**: [region.c:802](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L802)
+**源码位置**: [region.c:802](file:///workspace/minix3/minix/servers/vm/region.c#L802)
 
 ```c
 struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
@@ -2580,15 +2534,8 @@ struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
 
 **引用计数变化**:
 
-```
-fork 前:
-  PhysBlock { refcount: 1 }
-  PhysRegion P1 → PhysBlock
-
-fork 后:
-  PhysBlock { refcount: 2 }
-  PhysRegion P1 → PhysBlock ← PhysRegion P2
-```
+- fork 前：`PhysBlock { refcount: 1 }`，`PhysRegion P1 → PhysBlock`
+- fork 后：`PhysBlock { refcount: 2 }`，`PhysRegion P1 → PhysBlock ← PhysRegion P2`
 
 **Rust 实现**:
 
@@ -2712,19 +2659,8 @@ assert_eq!(pr1.ph, pr2.ph); // 相同的 PhysBlock
 
 **fork 场景**:
 
-```
-父进程:
-  VirRegion A
-    ├─ PhysRegion P1 → PhysBlock X (refcount=2)
-    ├─ PhysRegion P2 → PhysBlock Y (refcount=1)
-    └─ PhysRegion P3 → NULL
-
-子进程 (fork 后):
-  VirRegion B
-    ├─ PhysRegion P4 → PhysBlock X (refcount=2, 共享)
-    ├─ PhysRegion P5 → PhysBlock Y (refcount=1, 独立)
-    └─ PhysRegion P6 → NULL
-```
+- 父进程 VirRegion A：PhysRegion P1 → PhysBlock X (refcount=2)，PhysRegion P2 → PhysBlock Y (refcount=1)，PhysRegion P3 → NULL
+- 子进程 VirRegion B：PhysRegion P4 → PhysBlock X (共享)，PhysRegion P5 → PhysBlock Y (独立)，PhysRegion P6 → NULL
 
 **关键点**：
 - **共享 PhysBlock**: fork 不复制物理页，只共享
@@ -2840,23 +2776,16 @@ mod tests {
 
 CoW 准备的核心是将共享物理页的页表项设置为**只读**，以触发写时复制。
 
-```
-CoW 准备流程:
-  1. 遍历所有共享的 PhysRegion
-     ↓
-  2. 检查是否可写: `pr_writable()`
-     ↓
-  3. 如果共享 (refcount > 1)
-     └─ 清除 PTF_WRITE 标志 (设置为只读)
-     ↓
-  4. 更新页表映射: `pt_writemap()`
-```
+1. **遍历所有共享的 PhysRegion**
+2. **检查是否可写**: `pr_writable()` → `anon_writable()` 检查 `refcount == 1`
+3. **如果共享**（`refcount > 1`）：清除 `PTF_WRITE` 标志（设置为只读）
+4. **更新页表映射**: `pt_writemap()`
 
 **Minix3 源码分析**:
 
 ##### 1. pr_writable() - 判断是否可写
 
-**源码位置**: [region.c:130](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L130)
+**源码位置**: [region.c:130](file:///workspace/minix3/minix/servers/vm/region.c#L130)
 
 ```c
 static int pr_writable(struct vir_region *vr, struct phys_region *pr)
@@ -2868,7 +2797,7 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
 
 ##### 2. anon_writable() - 匿名内存的可写判断
 
-**源码位置**: [mem_anon.c:105](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/mem_anon.c#L105)
+**源码位置**: [mem_anon.c:105](file:///workspace/minix3/minix/servers/vm/mem_anon.c#L105)
 
 ```c
 static int anon_writable(struct phys_region *pr)
@@ -2884,7 +2813,7 @@ static int anon_writable(struct phys_region *pr)
 
 ##### 3. 页表映射设置
 
-**源码位置**: [region.c:274](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L274)
+**源码位置**: [region.c:274](file:///workspace/minix3/minix/servers/vm/region.c#L274)
 
 ```c
 if(pr_writable(vr, pr))
@@ -3019,23 +2948,9 @@ assert!(!vr.get_phys_region(VirBytes(0)).unwrap().is_writable());
 
 **CoW 触发流程**:
 
-```
-1. fork 后:
-   - PhysBlock { refcount: 2 }
-   - 父子进程的页表项均为可写
-
-2. CoW 准备:
-   - 检测到 refcount > 1
-   - 将父子进程的页表项均设置为只读
-
-3. 写操作:
-   - CPU 触发写保护异常
-   - 内核调用 VM 服务器处理
-   - VM 检查 refcount > 1 → 执行 CoW
-   - 分配新物理页，复制内容
-   - 更新子进程页表指向新物理页
-   - 设置新页表项为可写
-```
+1. **fork 后**：PhysBlock refcount=2，父子进程的页表项均为可写
+2. **CoW 准备**：检测到 refcount > 1，将父子进程的页表项均设置为只读
+3. **写操作**：CPU 触发写保护异常 → 内核调用 VM 服务器处理 → VM 检查 refcount > 1 → 执行 CoW → 分配新物理页，复制内容 → 更新页表指向新物理页 → 设置新页表项为可写
 
 **性能考虑**:
 
@@ -3139,15 +3054,16 @@ mod tests {
 
 Minix3 使用 `SANITYCHECKS` 宏进行运行时验证：
 
-**源码位置**: [sanitycheck.h:8](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/sanitycheck.h#L8)
+**源码位置**: [sanitycheck.h:15](file:///workspace/minix3/minix/servers/vm/sanitycheck.h#L15)
 
 ```c
 #if SANITYCHECKS
 #define MYASSERT(c) do { if(!(c)) { \
-    printf("VM:%s:%d: %s failed\n", file, line, #c); \
+    printf("VM:%s:%d: %s failed (last sanity check %s:%d)\n", \
+        file, line, #c, sc_lastfile, sc_lastline); \
     panic("sanity check failed"); } } while(0)
 
-// 验证所有指针有效性
+// 验证所有指针有效性 (region.c:198)
 ALLREGIONS(MYSLABSANE(vr), MYSLABSANE(pr); MYSLABSANE(pr->ph); MYSLABSANE(pr->parent));
 #endif
 ```
@@ -3303,24 +3219,17 @@ mod basic_operation_tests {
 
 **Minix3 链表验证**:
 
-**源码位置**: [region.c:196](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/region.c#L196)
+**源码位置**: [region.c:196](file:///workspace/minix3/minix/servers/vm/region.c#L196)
 
 ```c
-// 验证链表指针有效性
-ALLREGIONS(
-    MYSLABSANE(vr),
-    MYSLABSANE(pr);
-    MYSLABSANE(pr->ph);
-    MYSLABSANE(pr->parent);
-    // 验证链表完整性
-    if(pr->ph) {
-        struct phys_region *p;
-        int found = 0;
-        for(p = pr->ph->firstregion; p; p = p->next_ph_list)
-            if(p == pr) found = 1;
-        MYASSERT(found);
-    }
-);
+// region.c:196 - 验证链表指针有效性
+#define MYSLABSANE(s) MYASSERT(slabsane_f(__FILE__, __LINE__, s, sizeof(*(s))))
+
+// region.c:198 - 基本指针检查
+ALLREGIONS(MYSLABSANE(vr), MYSLABSANE(pr); MYSLABSANE(pr->ph); MYSLABSANE(pr->parent));
+
+// region.c:203 - offset 一致性检查
+ALLREGIONS(;, MYASSERT(pr->offset == voffset););
 ```
 
 **Rust 测试实现**:
@@ -3552,9 +3461,12 @@ cargo test --lib -- --nocapture
 
 ## 7. 参见
 
-- [12-vir-region.md](12-vir-region.md) - 虚拟区域
-- [10-phys-block.md](10-phys-block.md) - 物理块
-- [17-vm-fork.md](17-vm-fork.md) - fork 时的处理
+- [10-phys-block.md](10-phys-block.md) - 物理块（pb_link/pb_unreferenced 的详细分析）
+- [12-vir-region.md](12-vir-region.md) - 虚拟区域（physblocks 数组的管理）
+- [11-memtype.md](11-memtype.md) - 内存类型（memtype 回调机制）
+- [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 机制（写时复制的完整流程）
+- [16-pagefault.md](16-pagefault.md) - 缺页处理（phys_region 的分配触发点）
+- [17-vm-fork.md](17-vm-fork.md) - fork 时的处理（map_copy_region 的调用上下文）
 
 ---
 
