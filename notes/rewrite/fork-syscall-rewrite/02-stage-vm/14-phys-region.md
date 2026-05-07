@@ -169,7 +169,7 @@ phys_block (refcount=3)
 
 ##### 1. pb_link - 插入链表（头插法）
 
-**源码位置**: [pb.c:61](file:///workspace/minix3/minix/servers/vm/pb.c#L61)
+**源码位置**: [pb.c:61](minix3/minix3/minix/servers/vm/pb.c#L61)
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -187,7 +187,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 > **注意**：`pb_link()` 和 `pb_unreferenced()` 的详细分析见第2章和 [10-phys-block.md](10-phys-block.md)。
 
-> **注意**：`USE` 宏在 `MEMPROTECT` 构建中会执行 `slabunlock`/`slablock` 操作，在普通构建中直接执行代码。参见 [sanitycheck.h:57](file:///workspace/minix3/minix/servers/vm/sanitycheck.h#L57)。
+> **注意**：`USE` 宏在 `MEMPROTECT` 构建中会执行 `slabunlock`/`slablock` 操作，在普通构建中直接执行代码。参见 [sanitycheck.h:57](minix3/minix3/minix/servers/vm/sanitycheck.h#L57)。
 
 **操作步骤**:
 
@@ -206,7 +206,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 ##### 2. pb_unreferenced - 从链表移除
 
-**源码位置**: [pb.c:96](file:///workspace/minix3/minix/servers/vm/pb.c#L96)
+**源码位置**: [pb.c:96](minix3/minix3/minix/servers/vm/pb.c#L96)
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -1249,7 +1249,7 @@ pub fn iterate_block_refs<F>(block: &PhysBlock, f: F) {
 
 ##### 1. pb_reference() - 创建并引用物理块
 
-**源码位置**: [pb.c:73](file:///workspace/minix3/minix/servers/vm/pb.c#L73)
+**源码位置**: [pb.c:71](minix3/minix/servers/vm/pb.c#L71)
 
 ```c
 struct phys_region *pb_reference(struct phys_block *newpb,
@@ -1284,7 +1284,7 @@ struct phys_region *pb_reference(struct phys_block *newpb,
 
 ##### 2. pb_link() - 链接到物理块
 
-**源码位置**: [pb.c:61](file:///workspace/minix3/minix/servers/vm/pb.c#L61)
+**源码位置**: [pb.c:61](minix3/minix/servers/vm/pb.c#L61)
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -1313,7 +1313,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 ##### 3. physblock_set() - 设置到虚拟区域
 
-**源码位置**: [region.c:72](file:///workspace/minix3/minix/servers/vm/region.c#L72)
+**源码位置**: [region.c:72](minix3/minix/servers/vm/region.c#L72)
 
 ```c
 void physblock_set(struct vir_region *region, vir_bytes offset,
@@ -1556,7 +1556,7 @@ mod tests {
 
 **Minix3 源码分析**:
 
-**源码位置**: [region.c:60](file:///workspace/minix3/minix/servers/vm/region.c#L60)
+**源码位置**: [region.c:60](minix3/minix/servers/vm/region.c#L60)
 
 ```c
 struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
@@ -1813,7 +1813,7 @@ mod tests {
 
 **Minix3 源码分析**:
 
-**源码位置**: [pb.c:96](file:///workspace/minix3/minix/servers/vm/pb.c#L96)
+**源码位置**: [pb.c:95](minix3/minix/servers/vm/pb.c#L95)
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -2200,7 +2200,21 @@ PhysRegion 链表是**单向链表**，连接所有引用同一个 PhysBlock 的
 
 **Minix3 源码分析**:
 
-`pb_link()` 使用头插法插入链表，详见 [2.2.2 节](#222-链表操作) 和 [10-phys-block.md](10-phys-block.md)。
+**源码位置**: [pb.c:68](minix3/minix/servers/vm/pb.c#L68)
+
+```c
+void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
+    vir_bytes offset, struct vir_region *parent)
+{
+    USE(newphysr,
+        newphysr->offset = offset;
+        newphysr->ph = newpb;
+        newphysr->parent = parent;
+        newphysr->next_ph_list = newpb->firstregion;  // 头插法
+        newpb->firstregion = newphysr;);
+    newpb->refcount++;
+}
+```
 
 **关键观察**：
 - 使用**头插法**插入链表：`newphysr->next_ph_list = newpb->firstregion`
@@ -2472,7 +2486,7 @@ fork 时复制物理区域，实际上是**共享 PhysBlock**，增加引用计�
 
 **Minix3 源码分析**:
 
-**源码位置**: [region.c:802](file:///workspace/minix3/minix/servers/vm/region.c#L802)
+**源码位置**: [region.c:802](minix3/minix/servers/vm/region.c#L802)
 
 ```c
 struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
@@ -2785,7 +2799,7 @@ CoW 准备的核心是将共享物理页的页表项设置为**只读**，以触
 
 ##### 1. pr_writable() - 判断是否可写
 
-**源码位置**: [region.c:130](file:///workspace/minix3/minix/servers/vm/region.c#L130)
+**源码位置**: [region.c:130](minix3/minix/servers/vm/region.c#L130)
 
 ```c
 static int pr_writable(struct vir_region *vr, struct phys_region *pr)
@@ -2797,7 +2811,7 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
 
 ##### 2. anon_writable() - 匿名内存的可写判断
 
-**源码位置**: [mem_anon.c:105](file:///workspace/minix3/minix/servers/vm/mem_anon.c#L105)
+**源码位置**: [mem_anon.c:105](minix3/minix/servers/vm/mem_anon.c#L105)
 
 ```c
 static int anon_writable(struct phys_region *pr)
@@ -2813,7 +2827,7 @@ static int anon_writable(struct phys_region *pr)
 
 ##### 3. 页表映射设置
 
-**源码位置**: [region.c:274](file:///workspace/minix3/minix/servers/vm/region.c#L274)
+**源码位置**: [region.c:274](minix3/minix/servers/vm/region.c#L274)
 
 ```c
 if(pr_writable(vr, pr))
@@ -3054,7 +3068,7 @@ mod tests {
 
 Minix3 使用 `SANITYCHECKS` 宏进行运行时验证：
 
-**源码位置**: [sanitycheck.h:15](file:///workspace/minix3/minix/servers/vm/sanitycheck.h#L15)
+**源码位置**: [sanitycheck.h:8](minix3/minix/servers/vm/sanitycheck.h#L8)
 
 ```c
 #if SANITYCHECKS
@@ -3219,7 +3233,7 @@ mod basic_operation_tests {
 
 **Minix3 链表验证**:
 
-**源码位置**: [region.c:196](file:///workspace/minix3/minix/servers/vm/region.c#L196)
+**源码位置**: [region.c:196](minix3/minix/servers/vm/region.c#L196)
 
 ```c
 // region.c:196 - 验证链表指针有效性

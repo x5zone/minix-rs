@@ -114,7 +114,7 @@ vmproc (进程控制块)
 #### 2.2.3 初始化要求
 
 - `vm_slot` 在 slot 被首次使用时设置，之后不变
-  - Minix3: `vmproc[i].vm_slot = i` 在 `main.c` 初始化时设置
+  - Minix3: `vmproc[i].vm_slot = i` 在 [main.c:461](minix3/minix/servers/vm/main.c#L461) 初始化时设置
   - Rust: `VmProc::vacant()` 因 const 初始化约束使用 `UserSlot(0)` 占位，实际 `vm_slot` 在 `get_empty()` 或 `alloc_empty_slot()` 中根据数组索引设置，语义与 Minix3 一致
 - `vm_flags` 初始为 0，通过 `VMF_INUSE` 标记激活
 - `vm_endpoint` 在 `sys_fork` 后由内核分配
@@ -178,8 +178,8 @@ struct vmproc {
 **使用场景**:
 
 - **进程分配**: PM 通过 `VM_FORK` 请求分配新槽位时，VM 设置 `VMF_INUSE` 标记该槽位已被占用
-- **进程退出**: PM 调用 `VM_EXIT` 时，VM 设置 `VMF_EXITING` 防止新的内存操作，同时开始清理资源（`exit.c:112`）
-- **VM 自识别**: VM 进程自身带有 `VMF_VM_INSTANCE`，用于特殊处理（如避免递归调用，`main.c:579`）
+- **进程退出**: PM 调用 `VM_WILLEXIT` 时，VM 设置 `VMF_EXITING` 防止新的内存操作（[exit.c:112](minix3/minix/servers/vm/exit.c#L112) `do_willexit()`），之后 PM 调用 `VM_EXIT` 时 VM 清理资源
+- **VM 自识别**: VM 进程自身带有 `VMF_VM_INSTANCE`，用于特殊处理（如避免递归调用，[main.c:579](minix3/minix/servers/vm/main.c#L579)）
 - **退出处理**: `do_exit()` 检查 `VMF_VM_INSTANCE`，如果设置则递减全局计数器 `num_vm_instances`（用于 RS 重启机制）。Rust 代码中 `clear()` 自动处理此逻辑
 
 **标志位组合**:
@@ -213,7 +213,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 
 1. **fork 前验证**: VM 收到 `VM_FORK` 消息后，验证父进程 endpoint 是否有效
    ```c
-   // fork.c:44-48
+   // fork.c:41-44
    if (vm_isokendpt(msg->VMF_ENDPOINT, &proc_nr) != OK) {
        return EINVAL;  // 父进程不存在或已退出
    }
@@ -344,16 +344,27 @@ endpoint = (slot << 8) | generation
 - **启动初始化**：系统启动时，内核加载各个服务器进程，VM 记录每个进程的引导信息
 - **重启恢复**：如果某个系统服务崩溃重启，可以使用 `vm_boot` 重新初始化其内存空间
 
-**Minix3** **`init_proc()`** **初始化路径**: `vm_boot` 唯一被设置的地方是 `init_proc()`（main.c）：
+**Minix3** **`init_proc()`** **初始化路径**: `vm_boot` 唯一被设置的地方是 `init_proc()`（[main.c:262](minix3/minix/servers/vm/main.c#L262)）：
 
 ```c
-static struct vmproc *init_proc(endpoint_t ep_nr) {
-    vmp = &vmproc[ip->proc_nr];
-    clear_proc(vmp);
-    vmp->vm_flags = VMF_INUSE;
-    vmp->vm_endpoint = ip->endpoint;
-    vmp->vm_boot = ip;       // ← vm_boot 唯一被设置的地方
-    return vmp;
+static struct vmproc *init_proc(endpoint_t ep_nr)
+{
+    struct boot_image *ip;
+    for (ip = &kernel_boot_info.boot_procs[0];
+            ip < &kernel_boot_info.boot_procs[NR_BOOT_PROCS]; ip++) {
+        struct vmproc *vmp;
+        if(ip->proc_nr != ep_nr) continue;
+        if(ip->proc_nr >= _NR_PROCS || ip->proc_nr < 0)
+            panic("proc: %d", ip->proc_nr);
+        vmp = &vmproc[ip->proc_nr];
+        assert(!(vmp->vm_flags & VMF_INUSE));  /* no double procs */
+        clear_proc(vmp);
+        vmp->vm_flags = VMF_INUSE;
+        vmp->vm_endpoint = ip->endpoint;
+        vmp->vm_boot = ip;       /* ← vm_boot 唯一被设置的地方 */
+        return vmp;
+    }
+    panic("no init_proc");
 }
 ```
 
@@ -901,7 +912,7 @@ Minix3 的进程退出分两步：`free_proc()` 释放页表/物理页/区域/�
 **关键差异**:
 
 1. **ACL 重置**: `clear()` 内部直接将 `vm_acl` 重置为 `AclState::Uninitialized`，等价于 Minix3 的 `acl_clear()` 将 `vm_acl` 设为 `NO_ACL`。由于 Rust 的 `AclState::System(AclMask)` 权限数据内联于 enum 中（无全局 `acl_mask[][]` 数组），无需额外的槽位释放操作
-2. **endpoint/boot 重置**: Rust 比 Minix3 更彻底，清除了 Minix3 不重置的字段
+2. **endpoint/boot 重置**: Rust 比 Minix3 更彻底，清除了 Minix3 不重置的字段。Minix3 不重置是因为 C 代码依赖 `vm_flags = 0`（清除 `VMF_INUSE`）来标记 slot 为空闲，后续 `*vmc = *vmp` 会无条件覆盖所有字段，旧值不会被观察到。Rust 的 typestate 体系下，`EmptySlot` 可能被多次读取（如 `check()` 断言），残留的 endpoint/boot 值可能导致误判，因此必须清除
 3. **VM\_INSTANCE 计数器**: `clear()` 内部处理 `VM_INSTANCE` 标志的计数器递减（对应 Minix3 的 `do_exit()` 在 `free_proc()` + `clear_proc()` 之前检查 `VMF_VM_INSTANCE` 并递减 `num_vm_instances`）
 
 **VmProc 的双层安全设计**:

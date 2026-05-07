@@ -1,7 +1,7 @@
 # 07-pagetable-ops: 页表操作
 
 > **分类**: VM库  
-> **源码**: `minix3/minix/servers/vm/pagetable.c`  
+> **源码**: [pagetable.c](minix3/minix/servers/vm/pagetable.c)  
 > **说明**: 页表的生命周期管理，包括创建、绑定、映射等操作
 
 > ⚠️ **设计目标标注**: 本文档第 4-5 章中的 Rust API 为架构设计方向，供后续实现参考。当前实现使用 `VmProc` + `Paging` trait + `VmPagingExt` trait。
@@ -204,7 +204,7 @@ int pt_new(pt_t *pt)
 - **每个页表必须映射内核**: Minix3 内核在系统调用、中断等场景下运行时，不切换页表，而是直接使用当前进程的页表。因此每个进程的页目录中必须包含内核映射，否则内核代码无法执行。内核映射使用 `PTF_GLOBAL` 标志，在进程切换时对应的 TLB 条目不会被刷新。
 - **`pt_virtop` 为冗余字段**: 被初始化为 0，但实际未被使用。详见 [06-pagetable-struct.md](06-pagetable-struct.md#22-pt_virtop---冗余字段)。
 
-> **pt_mapkernel 详情**: `pt_mapkernel`（`pagetable.c:1442`）执行三段映射：
+> **pt_mapkernel 详情**: `pt_mapkernel`（[pagetable.c:1442](minix3/minix/servers/vm/pagetable.c#L1442)）执行三段映射：
 > 1. **内核代码段**: 从 `kern_mb_mod->mod_start` 开始，以 4MB 大页（x86）或 1MB section（ARM）映射 `kern_size` 字节。x86 使用 `ARCH_VM_BIGPAGE` 标志，无需二级页表。
 > 2. **页目录登记册**: 遍历 `pagedir_mappings` 数组，将每个 `pdm` 的 PDE 写入页目录。这些 PDE 指向 `page_directories` 页表，使内核能通过该窗口访问所有进程的页目录。
 > 3. **内核特殊映射**: 遍历 `kern_mappings` 数组，通过 `pt_writemap` 建立映射。这些映射由内核在启动时通过 `sys_vmctl_get_mapping` 提供，包括视频内存、APIC、用户态可访问的内核代码段（`usermapped`）等。
@@ -259,7 +259,7 @@ static struct pdm {
 - `phys`: `page_directories` 页表的物理地址。
 - `page_directories`: `page_directories` 页表的虚拟地址，VM 通过此指针读写页表内容。该页表的每个条目存储一个进程页目录的物理地址。
 
-**初始化过程**（`pt_allocate_kernel_mapped_pagetables`, `pagetable.c:1036`）:
+**初始化过程**（[pagetable.c:1039](minix3/minix/servers/vm/pagetable.c#L1039) `pt_allocate_kernel_mapped_pagetables`）:
 
 1. 为每个 `pdm` 分配一个 PDE 编号（通过 `freepde()`）。
 2. 分配一个物理页作为 `page_directories` 页表，内容清零。此函数仅在 VM 初始化时调用一次，liveupdate 时会重新调用一次以切换到动态内存。
@@ -492,7 +492,7 @@ int pt_writemap(struct vmproc * vmp,
 | `flags` | 页表项标志（`PTF_PRESENT`、`PTF_WRITE`、`PTF_USER` 等） |
 | `writemapflags` | 操作模式（见下表） |
 
-**writemapflags 标志**（定义在 `vm.h:56`）:
+**writemapflags 标志**（[vm.h:56-59](minix3/minix/servers/vm/vm.h#L56-L59)）:
 | 标志 | 值 | 说明 |
 |------|-----|------|
 | `WMF_OVERWRITE` | 0x01 | 允许覆盖已有映射 |
@@ -567,6 +567,78 @@ int pt_checkrange(pt_t *pt, vir_bytes v, size_t bytes, int write)
 
 **使用场景**: 仅在 `#if SANITYCHECKS` 条件编译下使用（`region.c:747`），属于调试断言。在 page fault 处理后验证映射是否正确建立。
 
+#### 2.3.3 vm_mappages - 分配虚拟地址并建立映射
+
+> **注意**: `vm_mappages` 在 Minix3 源码中位于 `pagetable.c:295`，但语义上属于"页表映射操作"。它由 `vm_allocpage` 调用，负责为物理页分配虚拟地址并建立映射。
+
+**源码位置**: `minix3/minix/servers/vm/pagetable.c:295-320`
+
+```c
+void *vm_mappages(phys_bytes p, int pages)
+{
+	vir_bytes loc;
+	int r;
+	pt_t *pt = &vmprocess->vm_pt;
+
+	/* Where in our virtual address space can we put it? */
+	loc = findhole(pages);
+	if(loc == NO_MEM) {
+		printf("vm_mappages: findhole failed\n");
+		return NULL;
+	}
+
+	/* Map this page into our address space. */
+	if((r=pt_writemap(vmprocess, pt, loc, p, VM_PAGE_SIZE*pages,
+		ARCH_VM_PTE_PRESENT | ARCH_VM_PTE_USER | ARCH_VM_PTE_RW
+#if defined(__arm__)
+		| ARM_VM_PTE_CACHED
+#endif
+		, 0)) != OK) {
+		printf("vm_mappages writemap failed\n");
+		return NULL;
+	}
+
+	if((r=sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
+		panic("VMCTL_FLUSHTLB failed: %d", r);
+	}
+
+	return (void *) loc;
+}
+```
+
+**逐行解析**:
+
+- **`findhole(pages)`**：在 VM 的虚拟地址空间中找到一个足够大的空洞。
+- **`pt_writemap(vmprocess, pt, loc, p, VM_PAGE_SIZE*pages, flags, 0)`**：将物理地址 `p` 开始的 `pages` 页，映射到虚拟地址 `loc`。
+  - **`ARCH_VM_PTE_PRESENT`**：页存在。
+  - **`ARCH_VM_PTE_USER`**：用户态可访问。
+  - **`ARCH_VM_PTE_RW`**：可读写。
+  - **`ARM_VM_PTE_CACHED`**：ARM 架构的缓存标志。
+- **`sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)`**：刷新 TLB。因为页表被修改了，CPU 的 TLB 中可能还有旧的映射，需要刷新。
+- **`return (void *) loc`**：返回虚拟地址。
+
+**与 `pt_writemap` 的关系**:
+
+`vm_mappages` 是对 `pt_writemap` 的高级封装：
+
+| 步骤 | `vm_mappages` | `pt_writemap` |
+|------|---------------|---------------|
+| 1 | 调用 `findhole` 分配虚拟地址 | 调用方负责分配虚拟地址 |
+| 2 | 调用 `pt_writemap` 建立映射 | 直接建立映射 |
+| 3 | 刷新 TLB | 调用方决定是否刷新 |
+
+**TLB 刷新说明**:
+
+`vm_mappages` 在修改页表后调用 `sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)` 刷新 TLB，这是必要的，因为：
+
+1. **CPU 缓存旧映射**：x86/ARM 处理器的 TLB（Translation Lookaside Buffer）缓存了最近使用的虚拟地址到物理地址的映射。当页表被修改后，TLB 中可能仍保留旧的映射（或该虚拟地址之前未映射时的"无映射"状态）。
+2. **VM 使用自身页表**：`vm_mappages` 将物理页映射到 VM 自身的地址空间（`vmprocess->vm_pt`），VM 随后会通过返回的虚拟地址访问这些页。如果 TLB 未刷新，CPU 可能使用缓存的旧映射，导致访问错误。
+3. **与 `pt_writemap` 的区别**：`pt_writemap` 不自动刷新 TLB，因为调用场景多样——有时批量修改多个页表项后才需要一次刷新，有时修改的是其他进程的页表（当前未运行，无需立即刷新）。`vm_mappages` 作为高级封装，明确知道"映射已建立，即将使用"，因此负责刷新。
+
+**注意**: 在 SMP 系统中，TLB 刷新需要广播到其他 CPU。Minix3 的 `VMCTL_FLUSHTLB` 会触发内核的跨核 TLB shootdown 机制。
+
+**递归问题**: `vm_mappages` 调用 `pt_writemap`，后者在目标页表不存在时调用 `pt_ptalloc()` → `vm_allocpage()` → `vm_mappages()`，形成递归。这是 05-vm-allocpage.md 中分析的核心问题。
+
 ### 2.4 页表遍历
 
 #### 2.4.1 pt_map_in_range - 范围内转移映射
@@ -622,14 +694,80 @@ int pt_map_in_range(struct vmproc *src_vmp, struct vmproc *dst_vmp,
 - 源进程的 PDE/PTE 不存在时会被跳过
 - **前置条件**：目标进程的二级页表（`dst_pt->pt_pt[pde]`）必须已分配。代码中 `assert(dst_pt->pt_pt[pde])` 在写入之后检查，位置不当，但实际运行时因调用场景保证前置条件成立，不会出问题。
 
-**调用场景**: 唯一调用点是 `swap_proc_dyn_data`（`utility.c:326,331`），用于 VM 热更新时将旧 VM 进程的映射转移到新 VM 进程：
+**调用场景**:
+
+| 场景 | 源码位置 | 说明 |
+|------|----------|------|
+| VM 热更新（堆/mmap） | `utility.c:326` | 转移 VM 的堆和 mmap 区域映射 |
+| VM 热更新（栈） | `utility.c:331` | 转移 VM 的栈区域映射 |
+
+> **注意**: `pt_map_in_range` 与 `pt_ptmap` 的区别：
+> - `pt_map_in_range`：复制指定虚拟地址范围内的**页表项（PTE）**，用于复制用户空间映射
+> - `pt_ptmap`：复制页目录和二级页表本身的映射（即让 dst 进程能访问 src 进程的页表结构），用于 RS 服务重启时恢复 VM 的页表自映射
+
+#### 2.3.5 pt_writable - 查询页是否可写
+
+**源码位置**: `minix/servers/vm/pagetable.c:761`
+
+**作用**: 查询指定虚拟地址对应的页表项是否设置了写权限。
 
 ```c
-// utility.c:326 - 转移 VM 的堆和 mmap 区域
-r = pt_map_in_range(src_vmp, dst_vmp, VM_OWN_HEAPBASE, VM_OWN_MMAPTOP);
-// utility.c:331 - 转移 VM 的栈区域
-r = pt_map_in_range(src_vmp, dst_vmp, VM_STACKTOP, VM_DATATOP);
+int pt_writable(struct vmproc *vmp, vir_bytes v)
+{
+	u32_t entry;
+	pt_t *pt = &vmp->vm_pt;
+	assert(!(v % VM_PAGE_SIZE));
+	int pde = ARCH_VM_PDE(v);
+	int pte = ARCH_VM_PTE(v);
+
+	assert(pt->pt_dir[pde] & ARCH_VM_PDE_PRESENT);
+	assert(pt->pt_pt[pde]);
+
+	entry = pt->pt_pt[pde][pte];
+
+#if defined(__i386__)
+	return((entry & PTF_WRITE) ? 1 : 0);
+#elif defined(__arm__)
+	return((entry & ARCH_VM_PTE_RO) ? 0 : 1);
+#endif
+}
 ```
+
+**架构差异**:
+- **x86**: 检查 `PTF_WRITE`（RW 位），置位返回 1
+- **ARM**: 检查 `ARCH_VM_PTE_RO`（只读位），置位返回 0（取反逻辑）
+
+**调用场景**: 仅在 `#if SANITYCHECKS` 条件编译下使用（`region.c:55`），用于调试输出时标记物理页是只读（R）还是可写（W）。
+
+#### 2.3.6 pt_clearmapcache - 清除内核映射缓存
+
+**源码位置**: `minix/servers/vm/pagetable.c:751`
+
+**作用**: 通知内核清除其内部的页表映射缓存（mapcache），确保内核在使用当前页表建立新映射前使 TLB 失效。
+
+```c
+void pt_clearmapcache(void)
+{
+	/* Make sure kernel will invalidate tlb when using current
+	 * pagetable (i.e. vm's) to make new mappings before new cr3
+	 * is loaded.
+	 */
+	if(sys_vmctl(SELF, VMCTL_CLEARMAPCACHE, 0) != OK)
+		panic("VMCTL_CLEARMAPCACHE failed");
+}
+```
+
+**背景**: Minix3 内核在 `data_copy` 等操作中会缓存页目录项（PDE）到 `freepdes` 槽位（详见[附录 A](#附录-a-内核访问页目录的实现细节)）。当 VM 修改了页表（如 `pt_bind` 重新绑定、live update 交换进程槽位后），这些缓存的 PDE 可能指向旧的页表。`pt_clearmapcache` 通过 `VMCTL_CLEARMAPCACHE` 通知内核丢弃缓存。
+
+**调用场景**:
+
+| 场景 | 源码位置 | 说明 |
+|------|----------|------|
+| VM 初始化完成 | `main.c:212` | VM 初始化自身页表并 `pt_bind` 后清除缓存 |
+| VM 热更新 | `main.c:719` | live update 交换新旧 VM 进程槽位并重新 `pt_bind` 后 |
+| VM 主循环结束 | `main.c:749` | 每次 `alloc_cycle` 后（处理完所有请求后） |
+| page fault 处理完成 | `pagefaults.c:153` | 处理完 page fault、修改页表后 |
+| `pt_assert` 调试 | `pagetable.c:118` | 验证页表前确保内核缓存同步 |
 
 ---
 

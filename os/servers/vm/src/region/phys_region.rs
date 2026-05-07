@@ -20,6 +20,7 @@ impl PhysBlock {
     pub(crate) const MAP_NONE: u64 = 0xFFFF_FFFF_FFFF_FFFE;
 
     pub(crate) fn new(phys: u64) -> Self {
+        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
         Self {
             phys,
             refcount: 0,

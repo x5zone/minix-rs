@@ -1,7 +1,7 @@
 # 09-vm-relocation: 初始化数据搬迁
 
 > **分类**: VM私有
-> **源码**: `minix3/minix/servers/vm/alloc.c`、`minix3/minix/servers/vm/pagetable.c`
+> **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
 > **说明**: Bootstrap 阶段结束后，将预留区域中的数据搬迁到堆上
 
 ---
@@ -128,7 +128,7 @@ T5: 主循环开始，所有分配走动态路径
 Minix3 的物理内存管理器位于 `minix3/minix/servers/vm/alloc.c`，其核心数据结构如下：
 
 ```c
-// minix3/minix/servers/vm/alloc.c:32-38
+// [alloc.c:32-38](minix3/minix/servers/vm/alloc.c#L32-L38)
 
 /* Number of physical pages in a 32-bit address space */
 #define NUMBER_PHYSICAL_PAGES (int)(0x100000000ULL/VM_PAGE_SIZE)
@@ -145,7 +145,7 @@ static int free_page_cache_size = 0;
 - **`free_page_cache[]`**：静态数组，大小为 10000 项。用于缓存最近释放的单页，加速单页分配。
 - **`free_page_cache_size`**：缓存当前使用的项数，初始为 0。
 
-**位图操作宏**（来自 `minix/include/minix/bitmap.h`）：
+**位图操作宏**（来自 [bitmap.h](minix3/minix/include/minix/bitmap.h)）：
 
 ```c
 #define BITCHUNK_BITS   (sizeof(bitchunk_t) * CHAR_BIT)   // 32
@@ -164,10 +164,20 @@ static int free_page_cache_size = 0;
 ### 2.2 初始化流程：`mem_init()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:306-335
+// [alloc.c:306-345](minix3/minix/servers/vm/alloc.c#L306-L345)
 
 void mem_init(struct memory *chunks)
 {
+/* Initialize hole lists.  There are two lists: 'hole_head' points to a
+ * linked list of all the holes (unused memory) in the system;
+ * 'free_slots' points to a linked list of table entries that are not
+ * in use.  Initially, the former list has one entry for each chunk of
+ * physical memory, and the second list links together the remaining
+ * table slots.  As memory becomes more fragmented in the course of
+ * time (i.e., the initial big holes break up into smaller holes), new
+ * table slots are needed to represent them.  These slots are taken
+ * from the list headed by 'free_slots'.
+ */
   int i, first = 0;
 
   total_pages = 0;
@@ -207,10 +217,16 @@ Minix3 的 `alloc_pages()` 使用**从高地址向低地址扫描**的策略（�
 ### 2.3 分配流程：`alloc_mem()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:242-279
+// [alloc.c:242-281](minix3/minix/servers/vm/alloc.c#L242-L281)
 
 phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 {
+/* Allocate a block of memory from the free list using first fit. The block
+ * consists of a sequence of contiguous bytes, whose length in clicks is
+ * given by 'clicks'.  A pointer to the block is returned.  The block is
+ * always on a click boundary.  This procedure is called when memory is
+ * needed for FORK or EXEC.
+ */
   phys_clicks mem = NO_MEM, align_clicks = 0;
 
   if(memflags & PAF_ALIGN64K) {
@@ -260,7 +276,7 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 ### 2.4 底层分配：`alloc_pages()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:404-460
+// [alloc.c:404-462](minix3/minix/servers/vm/alloc.c#L404-L462)
 
 static phys_bytes alloc_pages(int pages, int memflags)
 {
@@ -349,7 +365,7 @@ static phys_bytes alloc_pages(int pages, int memflags)
 ### 2.5 位图扫描：`findbit()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:369-399
+// [alloc.c:369-401](minix3/minix/servers/vm/alloc.c#L369-L401)
 
 static int findbit(int low, int startscan, int pages, int memflags, int *len)
 {
@@ -407,10 +423,13 @@ Minix3 采用这种策略是为了让低地址内存保留更久。低地址内�
 ### 2.6 释放流程：`free_mem()` 和 `free_pages()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:289-301
+// [alloc.c:289-301](minix3/minix/servers/vm/alloc.c#L289-L301)
 
 void free_mem(phys_clicks base, phys_clicks clicks)
 {
+/* Return a block of free memory to the hole list.  The parameters tell
+ * where the block starts and how big it is.
+ */
   if (clicks == 0) return;
 
   assert(CLICK_SIZE == VM_PAGE_SIZE);
@@ -424,7 +443,7 @@ void free_mem(phys_clicks base, phys_clicks clicks)
 - **`free_pages(base, clicks)`**：调用底层释放函数。
 
 ```c
-// minix3/minix/servers/vm/alloc.c:465-481
+// [alloc.c:465-484](minix3/minix/servers/vm/alloc.c#L465-L484)
 
 static void free_pages(phys_bytes pageno, int npages)
 {
@@ -458,7 +477,7 @@ static void free_pages(phys_bytes pageno, int npages)
 Minix3 的页表操作（如 `pt_ptalloc()`）需要分配物理页来存储页表。但 `vm_allocpage()` 在初始化阶段（`pt_init_done == 0`）不能调用 `alloc_mem()`，因为物理内存管理器可能还没完全就绪。为了解决这个递归依赖，Minix3 引入了**备用页池（spare page pool）**。
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:59-109
+// [pagetable.c:59-109](minix3/minix/servers/vm/pagetable.c#L59-L109)
 
 #if SANITYCHECKS
 #define SPAREPAGES 200
@@ -486,7 +505,7 @@ static char static_sparepages[VM_PAGE_SIZE*STATIC_SPAREPAGES]
 **`reservedqueue` 结构**：
 
 ```c
-// minix3/minix/servers/vm/alloc.c:60-72
+// [alloc.c:60-72](minix3/minix/servers/vm/alloc.c#L60-L72)
 
 static struct reserved_pages {
 	struct reserved_pages *next;	/* next in use */
@@ -514,7 +533,7 @@ static struct reserved_pages {
 **`pt_init()` 中的备用页池初始化**：
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:1116-1162
+// [pagetable.c:1116-1162](minix3/minix/servers/vm/pagetable.c#L1116-L1162)
 
 /* Get ourselves spare pages. */
 sparepages_mem = (vir_bytes) static_sparepages;
@@ -547,7 +566,7 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 ### 2.8 阶段切换：`pt_init_done`
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:328
+// [pagetable.c:328](minix3/minix/servers/vm/pagetable.c#L328)
 
 static int pt_init_done;
 ```
@@ -555,7 +574,7 @@ static int pt_init_done;
 `pt_init_done` 是一个静态整型标志，初始值为 0（C 语言静态变量默认初始化）。
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:333-364
+// [pagetable.c:333-364](minix3/minix/servers/vm/pagetable.c#L333-L364)
 
 void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 {
@@ -604,26 +623,25 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 **`pt_init_done = 1` 的位置**：
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:1311
+// [pagetable.c:1309](minix3/minix/servers/vm/pagetable.c#L1309)
 
 pt_init_done = 1;
 ```
 
-这行代码位于 `pt_init()` 的末尾，但在"隐式搬迁"之前。具体来说，`pt_init()` 的执行顺序是：
+这行代码位于 `pt_init()` 的"显式搬迁"之前。具体来说，`pt_init()` 的执行顺序是：
 
 1. 初始化 spare page 池（静态页）。
 2. 创建 VM 自己的页表（使用静态 spare page）。
-3. `pt_init_done = 1`。
-4. **隐式搬迁**：用光静态页，重新分配动态页，复制页表。
+3. 绑定页表到内核（`pt_bind`）。
+4. `pt_init_done = 1`。
+5. **显式搬迁**：用光静态页，重新分配动态页，复制页表。
 
-这意味着 `pt_init_done = 1` 之后，VM 仍然使用静态页一段时间，直到搬迁完成。
+这意味着 `pt_init_done = 1` 之后，VM 立即执行搬迁，将静态页替换为动态分配的页。
 
-### 2.9 隐式搬迁：`pt_init()` 的后半段
+### 2.9 显式搬迁：`pt_init()` 的后半段
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:1311-1352
-
-pt_init_done = 1;
+// [pagetable.c:1313-1352](minix3/minix/servers/vm/pagetable.c#L1313-L1352)
 
 /* VM is now fully functional in that it can dynamically allocate memory
  * for itself.
@@ -682,7 +700,7 @@ if((sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
 
 **搬迁的本质**：
 
-Minix3 的"搬迁"不是显式的 `memcpy` + 更新指针，而是通过**重新分配 + 复制内容 + 替换结构**来实现的。具体来说：
+Minix3 的搬迁不是显式的 `memcpy` + 更新指针，而是通过**重新分配 + 复制内容 + 替换结构**来实现的。具体来说：
 
 1. **页目录**：`pt_new()` 分配新的页目录（动态页），`memcpy` 替换旧的页目录指针。
 2. **页表**：`pt_copy()` 为每个 PDE 分配新的页表（动态页），复制旧页表的内容。
@@ -690,10 +708,12 @@ Minix3 的"搬迁"不是显式的 `memcpy` + 更新指针，而是通过**重新
 
 这种设计的优点是**不需要更新所有指向旧结构的引用**——因为 `newpt` 是一个局部结构，`memcpy` 直接替换了它的内容，所有通过 `newpt` 访问的代码自动使用新结构。
 
+**关键澄清**：这里的搬迁对象是**页表结构本身**（页目录和页表页），而不是 `free_pages_bitmap` 或 `free_page_cache`。`free_pages_bitmap` 和 `free_page_cache` 是 BSS 中的静态数组，它们在 VM 的整个生命周期中一直留在原地，不会被搬迁到堆上。文档 §1.3 中"搬迁涉及的数据"表格提到的这些数组，实际上在 Minix3 源码中并没有被搬迁。
+
 ### 2.10 虚拟地址分配：`findhole()`
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:155-230
+// [pagetable.c:155-230](minix3/minix/servers/vm/pagetable.c#L155-L230)
 
 static u32_t findhole(int pages)
 {
@@ -798,64 +818,24 @@ Minix3 的 VM 是一个用户态进程，它自己的地址空间也需要管理
 
 ### 2.11 页表映射：`vm_mappages()`
 
-```c
-// minix3/minix/servers/vm/pagetable.c:295-320
+> **注意**: `vm_mappages` 的完整文档已移至 [07-pagetable-ops.md](07-pagetable-ops.md) §2.3.3。本文档仅引用其功能。
 
-void *vm_mappages(phys_bytes p, int pages)
-{
-	vir_bytes loc;
-	int r;
-	pt_t *pt = &vmprocess->vm_pt;
+**核心功能**: 为物理页分配虚拟地址并建立页表映射。
 
-	/* Where in our virtual address space can we put it? */
-	loc = findhole(pages);
-	if(loc == NO_MEM) {
-		printf("vm_mappages: findhole failed\n");
-		return NULL;
-	}
-
-	/* Map this page into our address space. */
-	if((r=pt_writemap(vmprocess, pt, loc, p, VM_PAGE_SIZE*pages,
-		ARCH_VM_PTE_PRESENT | ARCH_VM_PTE_USER | ARCH_VM_PTE_RW
-#if defined(__arm__)
-		| ARM_VM_PTE_CACHED
-#endif
-		, 0)) != OK) {
-		printf("vm_mappages writemap failed\n");
-		return NULL;
-	}
-
-	if((r=sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
-		panic("VMCTL_FLUSHTLB failed: %d", r);
-	}
-
-	return (void *) loc;
-}
+**调用链**:
+```
+vm_allocpage()
+  └── vm_mappages(phys, pages)
+        ├── findhole(pages)        // 分配虚拟地址
+        └── pt_writemap(...)      // 建立页表映射
 ```
 
-**逐行解析**：
-
-- **`findhole(pages)`**：在 VM 的虚拟地址空间中找到一个足够大的空洞。
-- **`pt_writemap(vmprocess, pt, loc, p, VM_PAGE_SIZE*pages, flags, 0)`**：将物理地址 `p` 开始的 `pages` 页，映射到虚拟地址 `loc`。
-  - **`ARCH_VM_PTE_PRESENT`**：页存在。
-  - **`ARCH_VM_PTE_USER`**：用户态可访问。
-  - **`ARCH_VM_PTE_RW`**：可读写。
-  - **`ARM_VM_PTE_CACHED`**：ARM 架构的缓存标志。
-- **`sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)`**：刷新 TLB。因为页表被修改了，CPU 的 TLB 中可能还有旧的映射，需要刷新。
-- **`return (void *) loc`**：返回虚拟地址。
-
-**`pt_writemap()` 的作用**：
-
-`pt_writemap()` 是 Minix3 页表操作的核心函数。它会：
-1. 检查目标虚拟地址范围是否需要页表（即对应的 PDE 是否存在）。
-2. 如果不存在，调用 `pt_ptalloc()` 分配页表。
-3. 设置页表项（PTE），将虚拟地址映射到物理地址。
-4. 处理各种标志（如 `WMF_OVERWRITE`、`WMF_FREE` 等）。
+**与递归问题的关系**: `vm_mappages` → `pt_writemap` → `pt_ptalloc()` → `vm_allocpage()` → `vm_mappages()` 形成递归。这是 05-vm-allocpage.md 解决的核心问题。
 
 ### 2.12 页表分配：`pt_ptalloc()`
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:494-540
+// [pagetable.c:494-540](minix3/minix/servers/vm/pagetable.c#L494-L540)
 
 static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 {
@@ -927,7 +907,7 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 ### 2.13 内存统计：`memstats()`
 
 ```c
-// minix3/minix/servers/vm/alloc.c:348-367
+// [alloc.c:348-367](minix3/minix/servers/vm/alloc.c#L348-L367)
 
 void memstats(int *nodes, int *pages, int *largest)
 {

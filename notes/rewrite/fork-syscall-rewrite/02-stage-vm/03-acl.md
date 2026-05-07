@@ -20,7 +20,7 @@
 
 ### 1.2 与 Minix3 的对应关系
 
-**C 源码位置**：`minix3/minix/servers/vm/acl.c`
+**C 源码位置**：[acl.c](minix3/minix/servers/vm/acl.c)
 
 **核心数据结构**：
 ```c
@@ -34,13 +34,13 @@ static bitchunk_t acl_inuse[BITMAP_CHUNKS(NR_SYS_PROCS)];      // 使用状态
 ```
 
 **核心函数**：
-| C 函数 | 作用 |
-|-------|------|
-| `acl_init()` | 初始化 ACL 数据结构 |
-| `acl_check()` | 检查进程是否有权限执行某个 VM 调用 |
-| `acl_set()` | 为进程设置 ACL |
-| `acl_fork()` | fork 时处理 ACL 继承 |
-| `acl_clear()` | 进程退出时清理 ACL |
+| C 函数 | 源码 | 作用 |
+|-------|------|------|
+| `acl_init()` | [acl.c:21](minix3/minix/servers/vm/acl.c#L21) | 初始化 ACL 数据结构 |
+| `acl_check()` | [acl.c:37](minix3/minix/servers/vm/acl.c#L37) | 检查进程是否有权限执行某个 VM 调用 |
+| `acl_set()` | [acl.c:70](minix3/minix/servers/vm/acl.c#L70) | 为进程设置 ACL |
+| `acl_fork()` | [acl.c:110](minix3/minix/servers/vm/acl.c#L110) | fork 时处理 ACL 继承 |
+| `acl_clear()` | [acl.c:120](minix3/minix/servers/vm/acl.c#L120) | 进程退出时清理 ACL |
 
 **与 vmproc 的关系**：
 ```c
@@ -60,7 +60,7 @@ Minix3 的 `vm_acl` 字段有三种取值，对应三种语义不同的状态：
 |-------------|------|------|------|
 | `-1` (NO_ACL) | 未初始化 | 生命周期状态 | 进程尚未被 RS 接管，暂时允许所有调用 |
 | `0` (USER_ACL) | 默认权限 | 权限策略 | 所有普通用户进程共享相同的权限配置 |
-| `1~31` | 系统权限 | 权限策略 | 系统服务拥有独立的权限位图 |
+| `1~63` | 系统权限 | 权限策略 | 系统服务拥有独立的权限位图 |
 
 **核心洞察**：`NO_ACL` 不是权限策略，而是"尚未进入权限系统"的生命周期状态。
 
@@ -68,7 +68,7 @@ Minix3 的 `vm_acl` 字段有三种取值，对应三种语义不同的状态：
 
 **fork 时的行为**：
 - **普通进程** (`USER_ACL`)：子进程继承父进程的 `USER_ACL`
-- **系统进程** (有独立 ACL，`1~31`)：子进程获得 `NO_ACL`，需要 RS 重新设置权限
+- **系统进程** (有独立 ACL，`1~63`)：子进程获得 `NO_ACL`，需要 RS 重新设置权限
 
 **设计理由**：
 - 普通进程保持简单，自动继承权限
@@ -82,7 +82,7 @@ Minix3 的 `vm_acl` 字段有三种取值，对应三种语义不同的状态：
 
 ACL 检查的是 VM 调用权限，调用号是 ACL 位图的索引。
 
-**Minix3 定义位置**: `minix/include/minix/com.h`
+**Minix3 定义位置**: [com.h:627](minix3/minix/include/minix/com.h#L627)
 
 ```c
 #define VM_RQ_BASE      0xC00    // VM 调用号基址
@@ -157,8 +157,8 @@ static bitchunk_t acl_inuse[BITMAP_CHUNKS(NR_SYS_PROCS)];      // ACL 使用状�
 
 | 数据结构 | 类型 | 说明 |
 |---------|------|------|
-| `acl_mask[][]` | `bitchunk_t[32][2]` | 二维数组，每个 ACL 索引对应一个位图，表示允许的 VM 调用 |
-| `acl_inuse[]` | `bitchunk_t` | 位图，标记哪些系统 ACL 槽位已被占用 |
+| `acl_mask[][]` | `bitchunk_t[64][2]` | 二维数组，每个 ACL 索引对应一个位图，表示允许的 VM 调用 |
+| `acl_inuse[]` | `bitchunk_t[2]` | 位图，标记哪些系统 ACL 槽位已被占用 |
 | `vm_acl` | `int` | 每个进程一个，指向 `acl_mask` 的索引 |
 
 **ACL 索引类型**
@@ -169,7 +169,7 @@ vm_acl 值      含义                              使用者
 -1 (NO_ACL)    临时状态，尚未设置 ACL，暂时允许    新创建的系统进程、
                （会打印警告）                      系统进程 fork 后的子进程
  0 (USER_ACL)   普通用户进程共享 ACL                所有普通用户进程
- 1~31           系统进程独立 ACL                    RS、DS、VM 等系统服务
+ 1~63           系统进程独立 ACL                    RS、DS、VM 等系统服务
 ```
 
 **权限位图布局**
@@ -205,7 +205,7 @@ struct vmproc {
 **函数签名**
 
 ```c
-// acl.c
+// [acl.c:37](minix3/minix/servers/vm/acl.c#L37)
 int acl_check(struct vmproc *vmp, int call);
 ```
 
@@ -309,7 +309,7 @@ while (TRUE) {
 **函数签名**
 
 ```c
-// acl.c
+// [acl.c:110-114](minix3/minix/servers/vm/acl.c#L110-L114)
 void acl_fork(struct vmproc *vmp);
 ```
 
@@ -366,7 +366,7 @@ int do_fork(message *msg) {
 **进程退出时的权限清理**
 
 ```c
-// acl.c: acl_clear
+// [acl.c:120-128](minix3/minix/servers/vm/acl.c#L120-L128)
 void acl_clear(struct vmproc *vmp) {
     if (vmp->vm_acl != NO_ACL) {
         // 系统 ACL 需要释放槽位
@@ -587,6 +587,11 @@ impl AclState {
 | 返回值 | `OK` / `EPERM` | `Ok(())` / `Err(VmError::PermissionDenied)` |
 
 ### 3.6 权限设置 — `acl_set`
+
+```c
+// [acl.c:70-101](minix3/minix/servers/vm/acl.c#L70-L101)
+void acl_set(struct vmproc *vmp, bitchunk_t *mask, int sys_proc);
+```
 
 ```rust
 impl AclState {

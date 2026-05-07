@@ -5,8 +5,6 @@
 //! - `TOTAL_PAGES`: Total physical memory pages
 //! - `VM_INSTANCE_COUNT`: Number of active VM instances (for RS restart)
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use minix_types::{BootImage, Endpoint, NR_BOOT_PROCS, AssumeSyncCell};
 
 /// Boot image array - populated by kernel at startup.
@@ -20,7 +18,8 @@ static TOTAL_PAGES: AssumeSyncCell<usize> = AssumeSyncCell::new(0);
 
 /// Number of active VM instances.
 /// Corresponds to Minix3's `num_vm_instances`.
-static VM_INSTANCE_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Uses AssumeSyncCell (not AtomicU32) because VM is single-threaded.
+static VM_INSTANCE_COUNT: AssumeSyncCell<u32> = AssumeSyncCell::new(0);
 
 /// Initializes global state with total pages.
 /// 
@@ -39,17 +38,21 @@ pub(crate) fn total_pages() -> usize {
 
 /// Increments VM instance count.
 pub(crate) fn inc_vm_instance() {
-    VM_INSTANCE_COUNT.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        *VM_INSTANCE_COUNT.get() += 1;
+    }
 }
 
 /// Decrements VM instance count.
 pub(crate) fn dec_vm_instance() {
-    VM_INSTANCE_COUNT.fetch_sub(1, Ordering::SeqCst);
+    unsafe {
+        *VM_INSTANCE_COUNT.get() -= 1;
+    }
 }
 
 /// Returns current VM instance count.
 pub(crate) fn vm_instance_count() -> u32 {
-    VM_INSTANCE_COUNT.load(Ordering::SeqCst)
+    unsafe { *VM_INSTANCE_COUNT.get() }
 }
 
 /// Finds boot image by endpoint.
@@ -91,8 +94,9 @@ mod tests {
 
     #[test]
     fn test_vm_instance_count() {
-        // Reset counter for test
-        VM_INSTANCE_COUNT.store(0, Ordering::SeqCst);
+        unsafe {
+            *VM_INSTANCE_COUNT.get() = 0;
+        }
         
         assert_eq!(vm_instance_count(), 0);
         
@@ -105,8 +109,9 @@ mod tests {
         dec_vm_instance();
         assert_eq!(vm_instance_count(), 1);
         
-        // Reset
-        VM_INSTANCE_COUNT.store(0, Ordering::SeqCst);
+        unsafe {
+            *VM_INSTANCE_COUNT.get() = 0;
+        }
     }
 }
 

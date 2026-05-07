@@ -1,7 +1,7 @@
 # 04-physical-memory: 物理内存分配
 
 > **分类**: VM库\
-> **源码**: `minix3/minix/servers/vm/alloc.c`\
+> **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)\
 > **说明**: VM 提供的物理内存分配接口，其他服务通过 IPC 调用
 
 ***
@@ -96,15 +96,15 @@ Click 是 Minix3 中的内存分配基本单位，类似于 Linux 的 Page：
 **核心 API**
 
 ```c
-// minix3/minix/servers/vm/proto.h
-
-/* 分配物理内存（返回 click 编号，非字节地址） */
-phys_clicks alloc_mem(phys_clicks clicks, u32_t flags);
+// [alloc.c:242](minix3/minix/servers/vm/alloc.c#L242)
+phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags);
 
 /* 释放物理内存 */
+// [alloc.c:289](minix3/minix/servers/vm/alloc.c#L289)
 void free_mem(phys_clicks base, phys_clicks clicks);
 
 /* 查询内存统计 */
+// [alloc.c:348](minix3/minix/servers/vm/alloc.c#L348)
 void memstats(int *nodes, int *pages, int *largest);
 ```
 
@@ -117,7 +117,7 @@ void memstats(int *nodes, int *pages, int *largest);
 **分配标志 (flags)**
 
 ```c
-// minix3/minix/servers/vm/vm.h
+// [vm.h:22-27](minix3/minix/servers/vm/vm.h#L22-L27)
 
 #define PAF_CLEAR       0x01    /* 清零物理内存 */
 #define PAF_CONTIG      0x02    /* 要求物理连续（定义但未使用） */
@@ -238,7 +238,7 @@ VM.do_fork()
 Minix3 物理内存管理使用三个核心数据结构：
 
 ```c
-// minix3/minix/servers/vm/alloc.c
+// [alloc.c:57-72](minix3/minix/servers/vm/alloc.c#L57-L72)
 
 #define NUMBER_PHYSICAL_PAGES (int)(0x100000000ULL/VM_PAGE_SIZE)  // 4GB / 4KB = 1M 页
 #define PAGE_BITMAP_CHUNKS BITMAP_CHUNKS(NUMBER_PHYSICAL_PAGES)
@@ -799,11 +799,16 @@ static struct reserved_pages {
 
 #### 2.3.4 使用场景：spare pages
 
-**初始化**（`pagetable.c:pt_init()`）：
+**初始化**（[pagetable.c:1151](minix3/minix/servers/vm/pagetable.c#L1151) `pt_init()`）：
 
 ```c
-#define SPAREPAGES 200        // i386: 200 个备用页
-#define STATIC_SPAREPAGES 190 // 静态预分配 190 个
+// SPAREPAGES 值取决于编译配置：
+//   SANITYCHECKS: SPAREPAGES=200, STATIC_SPAREPAGES=190
+//   i386 生产版:   SPAREPAGES=20,  STATIC_SPAREPAGES=15
+//   其他:          SPAREPAGES=150, STATIC_SPAREPAGES=140
+// 以下以 SANITYCHECKS 配置为例：
+#define SPAREPAGES 200
+#define STATIC_SPAREPAGES 190
 
 // 创建保留队列
 spare_pagequeue = reservedqueue_new(SPAREPAGES, 1, 1, 0);
@@ -817,7 +822,7 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 }
 ```
 
-**使用**（`pagetable.c:vm_getsparepage()`）：
+**使用**（[pagetable.c:264](minix3/minix/servers/vm/pagetable.c#L264) `vm_getsparepage()`）：
 
 ```c
 static void *vm_getsparepage(phys_bytes *phys)
@@ -1770,7 +1775,7 @@ phys_mem/
 ## 10. 参见
 
 - [00-vm-overview.md §2.3](00-vm-overview.md) - 启动阶段物理内存初始化链路
-- [heap-bootstrap.md](heap-bootstrap.md) - Early Heap 详细设计
+- [05-vm-allocpage.md](05-vm-allocpage.md) - VM 堆初始化与保留页池
 - [03-acl.md](03-acl.md) - ACL 权限控制
 - [08-slab-allocator.md](08-slab-allocator.md) - VM 内部使用 Slab
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的内存分配
@@ -1860,4 +1865,4 @@ pub struct BitmapAllocator {
 
 ### A.4 详细设计
 
-完整方案见 [heap-bootstrap.md](heap-bootstrap.md)。
+完整方案见 [05-vm-allocpage.md](05-vm-allocpage.md)。

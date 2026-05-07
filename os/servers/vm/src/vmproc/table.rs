@@ -12,6 +12,17 @@
 use minix_types::{AssumeSyncCell, Endpoint, NR_PROCS, UserSlot};
 use super::{VmFlags, vmproc::VmProc, ActiveProc, ExitingProc, EmptySlot};
 
+/// Error type for endpoint validation.
+///
+/// Corresponds to Minix3's `vm_isokendpt()` error distinction:
+/// - `EINVAL`: slot index out of range (bad endpoint encoding)
+/// - `EDEADEPT`: slot valid but endpoint mismatch or process not active
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EndpointError {
+    InvalidSlot,
+    DeadEndpoint,
+}
+
 /// Number of VM process slots: all user processes + 1 exec temporary slot.
 pub(crate) const VM_PROC_COUNT: usize = NR_PROCS + 1;
 
@@ -211,30 +222,29 @@ impl VmProcTable {
     /// Validates the endpoint and returns the corresponding slot index.
     ///
     /// Corresponds to Minix3's `vm_isokendpt()`.
-    /// Returns `Some(UserSlot)` if the endpoint is valid and the process is in use.
+    /// Returns `Ok(UserSlot)` if the endpoint is valid and the process is in use.
     ///
-    /// Unlike Minix3 which distinguishes `EINVAL` (slot out of range) from
-    /// `EDEADEPT` (endpoint mismatch or process not active), this returns
-    /// a unified `None`. The distinction is unnecessary because all current
-    /// callers treat any failure as "invalid endpoint" — the specific reason
-    /// does not affect error handling.
-    pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Option<UserSlot> {
+    /// Distinguishes `InvalidSlot` (Minix3's EINVAL: slot out of range)
+    /// from `DeadEndpoint` (Minix3's EDEADEPT: endpoint mismatch or not active).
+    /// This distinction is important for debugging and for callers that
+    /// need to differentiate between "bad endpoint encoding" and "stale endpoint".
+    pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, EndpointError> {
         let vm_slot = endpoint.slot();
         if vm_slot < 0 || vm_slot as usize >= VM_PROC_COUNT {
-            return None;
+            return Err(EndpointError::InvalidSlot);
         }
         let slot_idx = UserSlot(vm_slot as usize);
         let proc = unsafe { &*self.slots[slot_idx.get()].get() };
 
         if proc.vm_endpoint != endpoint {
-            return None;
+            return Err(EndpointError::DeadEndpoint);
         }
 
         if !proc.vm_flags.contains(VmFlags::IN_USE) {
-            return None;
+            return Err(EndpointError::DeadEndpoint);
         }
 
-        Some(slot_idx)
+        Ok(slot_idx)
     }
 
     /// Iterates over all used processes immutably.
@@ -425,7 +435,7 @@ mod tests {
         let _active = empty.activate(ep);
 
         let result = table.vm_isokendpt(ep);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap(), UserSlot::new(6));
     }
 
@@ -439,7 +449,7 @@ mod tests {
         let _active = empty.activate(ep);
 
         let old_ep = Endpoint::from_generation_slot(0, 7);
-        assert!(table.vm_isokendpt(old_ep).is_none());
+        assert_eq!(table.vm_isokendpt(old_ep), Err(EndpointError::DeadEndpoint));
     }
 
     #[test]

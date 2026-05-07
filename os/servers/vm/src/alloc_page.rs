@@ -37,9 +37,9 @@ impl VmPageAllocator<Bootstrap, RealPtOps> {
         }
     }
 
-    pub(crate) fn into_normal(self) -> VmPageAllocator<Normal, RealPtOps> {
+    pub(crate) fn into_normal(mut self) -> VmPageAllocator<Normal, RealPtOps> {
         let pt_region = PtRegion::from_reserved_with_ops(
-            &self.reserved,
+            &mut self.reserved,
             self.phys_alloc.unwrap(),
             self.pt_ops.unwrap(),
         );
@@ -185,9 +185,9 @@ mod tests {
     }
 
     impl VmPageAllocator<Bootstrap, MockPtOps> {
-        fn into_normal_for_test(self) -> VmPageAllocator<Normal, MockPtOps> {
+        fn into_normal_for_test(mut self) -> VmPageAllocator<Normal, MockPtOps> {
             let pt_region = PtRegion::from_reserved_with_ops(
-                &self.reserved,
+                &mut self.reserved,
                 self.phys_alloc.unwrap(),
                 self.pt_ops.unwrap(),
             );

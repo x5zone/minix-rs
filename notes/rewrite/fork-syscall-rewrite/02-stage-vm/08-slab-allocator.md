@@ -1,7 +1,7 @@
 # 08-slab-allocator: Slab 分配器
 
 > **分类**: VM私有 ✅（修正：不是全局基建）  
-> **源码**: `minix3/minix/servers/vm/slaballoc.c`  
+> **源码**: [slaballoc.c](minix3/minix/servers/vm/slaballoc.c)  
 > **说明**: VM 专用的内存分配器，用于分配固定大小的对象
 > **状态**: ⚠️ Rust 实现尚未完成。本文档 §1-§2 为 Minix3 C 源码分析，§3+ 为设计分析，具体 Rust 实现代码待补充。
 
@@ -411,24 +411,47 @@ MEMPROTECT 不是物理页保护，而是 **VM 进程虚拟地址空间的页保
 2. **临时解锁**：需要修改元数据时，临时设置为可写（`vm_pagelock(data, 0)`）
 3. **修改后锁定**：修改完成后，再次设置为只读
 
-**vm_pagelock 实现**：
+**vm_pagelock 实现**（[pagetable.c:403](minix3/minix/servers/vm/pagetable.c#L403)）：
 
 ```c
 void vm_pagelock(void *vir, int lockflag)
 {
+    vir_bytes m = (vir_bytes) vir;
+    int r;
     u32_t flags = ARCH_VM_PTE_PRESENT | ARCH_VM_PTE_USER;
-    
+    pt_t *pt;
+
+    pt = &vmprocess->vm_pt;
+
+    assert(!(m % VM_PAGE_SIZE));
+
     if(!lockflag)
-        flags |= ARCH_VM_PTE_RW;  // 添加可写权限
-    
-    // 修改页表项的权限位
-    pt_writemap(vmprocess, pt, m, 0, VM_PAGE_SIZE,
-        flags, WMF_OVERWRITE | WMF_WRITEFLAGSONLY);
-    
-    // 刷新 TLB
-    sys_vmctl(SELF, VMCTL_FLUSHTLB, 0);
+        flags |= ARCH_VM_PTE_RW;
+#if defined(__arm__)
+    else
+        flags |= ARCH_VM_PTE_RO;
+
+    flags |= ARM_VM_PTE_CACHED;
+#endif
+
+    /* Update flags. */
+    if((r=pt_writemap(vmprocess, pt, m, 0, VM_PAGE_SIZE,
+        flags, WMF_OVERWRITE | WMF_WRITEFLAGSONLY)) != OK) {
+        panic("vm_lockpage: pt_writemap failed");
+    }
+
+    if((r=sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
+        panic("VMCTL_FLUSHTLB failed: %d", r);
+    }
+
+    return;
 }
 ```
+
+**关键细节**：
+- `pt_writemap` 的 `physaddr` 参数为 `0`，配合 `WMF_WRITEFLAGSONLY` 表示只更新 flags 不修改物理地址
+- ARM 架构有额外的 `ARCH_VM_PTE_RO` 和 `ARM_VM_PTE_CACHED` 标志
+- 每次调用都刷新 TLB（`VMCTL_FLUSHTLB`），这是 MEMPROTECT 性能开销大的主要原因
 
 **为什么需要这个机制？**
 
@@ -596,7 +619,7 @@ bytes = roundup(bytes, OBJALIGN);  // 先对齐到 8 字节边界
 index = bytes - MINSIZE;            // 再计算索引
 ```
 
-**关键：对齐导致大量 slabheader 被浪费**
+**关键：对齐导致大量 slabheader 未被使用**
 
 由于 `roundup(bytes, 8)` 的存在，实际使用的 slabheader 只有约 25 个：
 
@@ -609,21 +632,21 @@ index = bytes - MINSIZE;            // 再计算索引
 | ... | ... | ... | ... |
 | 193~200 字节 | 200 | 192 | `slabs[192]` ✓ |
 
-**被浪费的 slabheader**：`slabs[1-7]`, `slabs[9-15]`, `slabs[17-23]`, ... 共约 175 个永远不会被使用！
+**未被使用的 slabheader**：`slabs[1-7]`, `slabs[9-15]`, `slabs[17-23]`, ... 共约 175 个在 8 字节对齐下永远不会被直接索引到。
 
-**设计缺陷分析**：
+**设计分析**：
 
-1. **内存浪费**：定义了 200 个 slabheader，但由于对齐，约 175 个永远不会被使用
-2. **MAXSIZE 定义误导**：`MAXSIZE = 207` 但实际最大支持 200 字节（请求 201 字节会被对齐到 208，超出范围）
-3. **设计不一致**：既做了对齐，又定义了每个字节大小的 slabheader，逻辑矛盾
+1. **slabs 数组大小**：`SLABSIZES = 200`，覆盖 `MINSIZE(8)` 到 `MAXSIZE(207)` 的范围
+2. **MAXSIZE 定义**：`#define MAXSIZE (SLABSIZES-1+MINSIZE)` = 207，但实际最大对齐后大小为 200（`roundup(200, 8) = 200`）。请求 201~207 字节会被对齐到 208，超出 `slabs[199]` 的范围
+3. **索引计算**：`GETSLAB` 宏中 `_gsi = (b) - MINSIZE`，其中 `b` 已经过 `roundup(bytes, OBJALIGN)` 处理。因此索引总是 8 的倍数
 
-**代码证据**：
+**代码证据**（`slaballoc.c:267,133`）：
 
 ```c
 // slaballoc.c:267
 bytes = roundup(bytes, OBJALIGN);  // 对齐到 8 字节
 
-// slaballoc.c:133
+// slaballoc.c:133 (GETSLAB 宏)
 _gsi = (b) - MINSIZE;  // 索引 = bytes - 8
 
 // 推导：
@@ -632,18 +655,20 @@ _gsi = (b) - MINSIZE;  // 索引 = bytes - 8
 // 请求 16 字节 → roundup(16, 8) = 16 → index = 8  → slabs[8]
 // 请求 17 字节 → roundup(17, 8) = 24 → index = 16 → slabs[16]
 // ...
-// 所以 slabs[1-7], slabs[9-15], slabs[17-23] 等永远不会被访问
+// 所以 slabs[1-7], slabs[9-15], slabs[17-23] 等不会被 GETSLAB 访问
 ```
+
+**设计意图推测**：
+
+Minix3 的设计者可能预留了非 8 字节对齐的使用场景（如未来支持 4 字节对齐），或者为了简化索引计算而接受数组稀疏。`slabs` 数组仅 200 个指针（`struct slabheader` 只有一个 `list_head` 指针，约 1600 字节），空间开销极小，不构成实际问题。
 
 ### 2.1 内存分配
 
 #### 2.1.1 slaballoc - 分配对象
 
-**Minix3 C 实现**
+**源码位置**: [slaballoc.c:259](minix3/minix/servers/vm/slaballoc.c#L259)
 
 ```c
-// slaballoc.c
-
 void *slaballoc(int bytes)
 {
     int i;
@@ -955,11 +980,9 @@ slab = (struct slabdata *) ((char *) ptr - (vir_bytes) ptr % VM_PAGE_SIZE);
 
 #### 2.2.1 slabfree - 释放对象
 
-**Minix3 C 实现**
+**源码位置**: [slaballoc.c:406](minix3/minix/servers/vm/slaballoc.c#L406)
 
 ```c
-// slaballoc.c
-
 void slabfree(void *mem, int bytes)
 {
     int i;
@@ -1068,6 +1091,8 @@ slabfree(ptr, 64) 释放 64 字节对象
 ```
 
 **objstats 函数详解**
+
+**源码位置**: [slaballoc.c:344](minix3/minix/servers/vm/slaballoc.c#L344)
 
 ```c
 // 验证对象指针并返回统计信息
@@ -1303,7 +1328,7 @@ vm_pagelock(addr, 0);
 
 /* 安全操作封装：临时解锁 -> 执行代码 -> 重新锁定 */
 #define SLABDATAUSE(data, code) do {            \
-    SLABDATADATAWRITABLE(data, WRITABLE_HEADER); \
+    SLABDATAWRITABLE(data, WRITABLE_HEADER);    \
     code                                        \
     SLABDATAUNWRITABLE(data);                   \
 } while(0)
@@ -1357,9 +1382,9 @@ vm_pagelock(addr, 0);
 
 **页锁定/解锁函数**
 
-```c
-// slaballoc.c
+**源码位置**: `slablock` 在 [slaballoc.c:464](minix3/minix/servers/vm/slaballoc.c#L464)，`slabunlock` 在 [slaballoc.c:483](minix3/minix/servers/vm/slaballoc.c#L483)
 
+```c
 #if MEMPROTECT
 
 /* 锁定对象（设为只读） */

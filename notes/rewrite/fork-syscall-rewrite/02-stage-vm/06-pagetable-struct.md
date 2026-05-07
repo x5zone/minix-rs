@@ -1,7 +1,7 @@
 # 06-pagetable-struct: 页表结构
 
 > **分类**: VM库  
-> **源码**: `minix3/minix/servers/vm/pt.h`  
+> **源码**: [pt.h](minix3/minix/servers/vm/pt.h)  
 > **说明**: 定义页表数据结构，可被其他需要地址空间管理的服务使用
 
 > **术语约定**: 为避免混淆，本文档使用数字表示页表层级：
@@ -88,14 +88,14 @@ typedef struct {
 - **指向内容**：页目录本身，CPU 通过 CR3 加载其物理地址进行硬件地址转换
 
 ```c
-// pagetable.c:pt_new
+// pagetable.c:pt_new ([pagetable.c:990](minix3/minix/servers/vm/pagetable.c#L990))
 pt->pt_dir = vm_allocpages((phys_bytes *)&pt->pt_dir_phys,
     VMP_PAGEDIR, ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE);
 ```
 
-内存来源分两阶段：
-- **init 阶段**（`pt_init_done=0`）：来自静态 BSS `static_sparepages[]`/`static_sparepagedirs[]`
-- **normal 阶段**（`pt_init_done=1`）：来自 `alloc_mem()` 物理分配器
+内存来源由 `vm_allocpages()` 根据全局变量 `pt_init_done` 决定（[pagetable.c:328](minix3/minix/servers/vm/pagetable.c#L328)）：
+- **init 阶段**（`pt_init_done == 0`）：来自静态 BSS `static_sparepages[]`/`static_sparepagedirs[]`
+- **normal 阶段**（`pt_init_done == 1`）：来自 `alloc_mem()` 物理分配器
 
 #### `pt_dir_phys` — 页目录物理地址
 
@@ -111,26 +111,27 @@ vm_allocpages((phys_bytes *)&pt->pt_dir_phys, ...);  // 输出物理地址
 fork 时通过 `pt_bind()` 传递给内核：
 
 ```c
-// pagetable.c:pt_bind
+// pagetable.c:pt_bind ([pagetable.c:1358](minix3/minix/servers/vm/pagetable.c#L1358))
 return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 ```
 
-内核收到后调用 `setcr3()` 将物理地址写入进程的 CR3 寄存器，激活该进程的页表。
+`pt_bind()` 将页目录物理地址登记到 `pagedir_mappings`，并通过 `sys_vmctl_set_addrspace()` 通知内核更新进程的 CR3 寄存器，激活该进程的页表。
 
 #### `pt_pt[]` — 页表虚拟地址缓存
 
 长度为 1024 的指针数组，`pt_pt[pde]` 存储第 `pde` 个页表（P1）的虚拟地址。与 `pt_dir[pde]` 指向同一个物理页，但 `pt_dir[pde]` 存物理地址（给 CPU 用），`pt_pt[pde]` 存虚拟地址（给 VM 用）。
 
 ```c
-// pagetable.c:pt_ptalloc
+// pagetable.c:pt_ptalloc ([pagetable.c:494](minix3/minix/servers/vm/pagetable.c#L494))
 p = vm_allocpage(&pt_phys, VMP_PAGETABLE);  // p=虚拟地址, pt_phys=物理地址
 pt->pt_pt[pde] = p;                          // 缓存虚拟地址
-pt->pt_dir[pde] = pt_phys | flags;           // 存入页目录（物理地址）
+pt->pt_dir[pde] = pt_phys | flags            // 存入页目录（物理地址）
+    | ARCH_VM_PDE_PRESENT | ARCH_VM_PTE_USER | ARCH_VM_PTE_RW;
 ```
 
-页表按需分配，初始时 `pt_pt[pde]` 为 NULL，首次映射该范围时才分配。
+页表按需分配，初始时 `pt_pt[pde]` 为 NULL，首次映射该范围时才分配。PDE 的 flags 由调用者传入的 `flags` 参数与固定的 `PRESENT|USER|RW` 组合而成。
 
-#### `pt_virtop` — 虚拟地址分配提示（冗余字段）
+#### `pt_virtop` — 虚拟地址分配提示（当前未使用）
 
 设计意图是作为查找空闲虚拟地址空间的起始位置提示。但实际代码中存在两个问题：
 
@@ -138,10 +139,10 @@ pt->pt_dir[pde] = pt_phys | flags;           // 存入页目录（物理地址�
 2. `findhole()` 只操作 `vmprocess->vm_pt`（VM 自身的页表），不处理用户进程页表
 
 ```c
-// pagetable.c:pt_new
+// pagetable.c:pt_new ([pagetable.c:1019](minix3/minix/servers/vm/pagetable.c#L1019))
 pt->pt_virtop = 0;  // 初始化为 0，但从未被读取
 
-// pagetable.c:findhole - 只给 VM 自己用
+// pagetable.c:findhole ([pagetable.c:155](minix3/minix/servers/vm/pagetable.c#L155)) - 只给 VM 自己用
 static u32_t findhole(int pages)
 {
     static void *lastv = 0;  // 静态变量，VM 单例进程使用
@@ -152,7 +153,7 @@ static u32_t findhole(int pages)
 }
 ```
 
-**结论**：`pt_virtop` 是冗余字段。每个进程的 `pt_t` 都有此字段，但 `findhole()` 只处理 VM 自身的地址空间，且使用静态变量而非此字段。用户进程的虚拟地址分配由 region 机制管理，不使用此字段。
+**结论**：`pt_virtop` 在当前 Minix3 实现中未实际使用。每个进程的 `pt_t` 都有此字段，但 `findhole()` 只处理 VM 自身的地址空间，且使用静态变量 `lastv` 而非此字段。用户进程的虚拟地址分配由 region 机制管理，不使用此字段。Rust 版本不包含此字段。
 
 ### 2.2 页目录项 (PDE)
 
@@ -199,6 +200,7 @@ pt->pt_dir[pde] = (pt_phys & ARCH_VM_ADDR_MASK /* 0xFFFFF000 */) | flags
 |----|------|-----|------|
 | 0 | `I386_VM_PRESENT` | 0x001 | 物理页存在 |
 | 1 | `I386_VM_WRITE` | 0x002 | 页面可写 |
+| 1 | `I386_VM_READ` | 0x000 | 页面只读（值为0，与WRITE互斥） |
 | 2 | `I386_VM_USER` | 0x004 | 用户模式可访问 |
 | 3 | `I386_VM_PWT` | 0x008 | 写穿透缓存 |
 | 4 | `I386_VM_PCD` | 0x010 | 禁用缓存 |
@@ -1096,7 +1098,7 @@ VM crate
 | `Paging` | 核心页表操作 | `pt_new`/`pt_free`/`pt_writemap` | ✅ 所有架构 |
 | `PagingWithId` | TLB 进程标识 | 无（Minix3 未用 PCID） | ❌ 可选 |
 | `HugePages` | 大页支持 | `I386_VM_BIGPAGE` | ❌ 可选 |
-| `VmPagingExt` | VM 进程管理 | `pt_bind`/`pt_mapkernel` | ✅ VM 需要 |
+| `VmPagingExt` | VM 进程管理 | `pt_bind`/`pt_mapkernel`（Rust 设计聚合） | ✅ VM 需要 |
 
 **为什么分离为多个 trait**:
 
@@ -1288,10 +1290,10 @@ fn setup_process_memory(active: &mut ActiveProc) -> Result<(), PageTableError> {
 |--------|------|------|
 | `pt_t vm_pt` | `MaybeUninit<PageTable>` | 延迟初始化 |
 | `pt_new(&vm_pt)` | `ActiveProc::init_page_table()` | 创建页表 + 映射内核 |
-| `pt_free(&vm_pt)` | `VmProc::clear()` | 销毁页表（在 clear 中调用） |
+| `pt_free(&vm_pt)` | `VmProc::clear()` | 释放二级页表（不释放页目录，见 [pagetable.c:1427](minix3/minix/servers/vm/pagetable.c#L1427)） |
 | `pt_bind(&vm_pt, vmp)` | `ActiveProc::bind_page_table()` | 绑定进程 |
 | `pt_mapkernel(&vm_pt)` | `PageTable::map_kernel()` | 映射内核（init_page_table 内部调用） |
-| `pt_writemap(...)` | `Paging::map()` | 映射页面 |
+| `pt_writemap(...)` | `Paging::map()` / `Paging::update_flags()` | 映射页面（`WMF_WRITEFLAGSONLY` 对应 `update_flags`） |
 | `pt_clearmapcache()` | （内部实现） | 清除映射缓存 |
 
 ---

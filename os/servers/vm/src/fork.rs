@@ -215,7 +215,7 @@ pub(crate) fn handle_fork(
     child_endpoint: Endpoint,
 ) -> Result<VmForkResponse, VmForkError> {
     let parent_slot = table.vm_isokendpt(request.parent_endpoint)
-        .ok_or(VmForkError::ParentNotFound)?;
+        .map_err(|_| VmForkError::ParentNotFound)?;
 
     let child_index = request.child_slot.get();
 

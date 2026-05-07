@@ -185,10 +185,10 @@ Minix3 采用微内核架构，将传统单体内核的功能拆分为多个用�
 
 | 阶段 | 代码位置 | 关键函数 |
 |------|---------|---------|
-| 1. 解析 Multiboot | `kernel/arch/i386/pre_init.c` | `get_parameters()`, `add_memmap()`, `cut_memmap()` |
-| 2. 恒等映射 | `kernel/arch/i386/pg_utils.c` | `pg_identity()`, `pg_mapkernel()`, `vm_enable_paging()` |
-| 3. VM 获取内存信息 | `minix/servers/vm/main.c`, `vm/utility.c` | `sys_getkinfo()`, `get_mem_chunks()` |
-| 4. VM 初始化分配器 | `minix/servers/vm/alloc.c` | `mem_init()` |
+| 1. 解析 Multiboot | [pre_init.c](minix3/minix/kernel/arch/i386/pre_init.c) | `get_parameters()`, `add_memmap()`, `cut_memmap()` |
+| 2. 恒等映射 | [pg_utils.c](minix3/minix/kernel/arch/i386/pg_utils.c) | `pg_identity()`, `pg_mapkernel()`, `vm_enable_paging()` |
+| 3. VM 获取内存信息 | [main.c](minix3/minix/servers/vm/main.c), [utility.c](minix3/minix/servers/vm/utility.c) | `sys_getkinfo()`, `get_mem_chunks()` |
+| 4. VM 初始化分配器 | [alloc.c](minix3/minix/servers/vm/alloc.c) | `mem_init()` |
 
 #### 2.3.3 数据流转
 
@@ -232,7 +232,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 │  阶段 0: 内核启动 VM 进程                                            │
 │  ─────────────────────────                                          │
 │  ├── 创建初始页表（映射代码段、数据段、栈）                           │
-│  ├── BSS 段清零（包括 static_sparepages[190 页]）                   │
+│  ├── BSS 段清零（包括 static_sparepages[STATIC_SPAREPAGES 页]）     │
 │  └── 堆状态: ❌ 不可用（只能使用栈和静态变量）                        │
 │                                                                     │
 │  阶段 1: init_vm() 开始                                             │
@@ -257,7 +257,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 │  ├── 初始化 VM 自己的页表                                            │
 │  │     → 对应文档: 06-pagetable-struct, 07-pagetable-ops            │
 │  ├── 创建保留页池（spare_pagequeue）                                │
-│  │     → 对应文档: vm-heap-init                                     │
+│  │     → 对应文档: 05-vm-allocpage                                  │
 │  ├── _brk() 可用                      ← VM 可以扩展自己的堆         │
 │  └── 堆状态: ✅ 可用！malloc/calloc 可以使用                         │
 │                                                                     │
@@ -304,90 +304,99 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 
 #### 2.4.4 Rust 实现约束
 
-**阶段 1-2（堆不可用）的代码**：
-- 不能使用 `Vec`, `Box`, `String` 等 heap 类型
-- 必须使用静态数组或栈分配
-- `BitmapAllocator` 的 bitmap 必须静态分配
+> 以下约束基于 §2.4.3 的堆依赖分析，指导 Rust 实现中各阶段可用的类型。
 
-**阶段 3（堆开始可用）的代码**：
-- 可以使用 `_brk()` 扩展堆
-- 可以使用保留页池分配关键结构
-- 页表操作需要使用保留页池
+**阶段 1-2（堆不可用）**：不能使用 `Vec`, `Box`, `String` 等 heap 类型，必须使用静态数组或栈分配，`BitmapAllocator` 的 bitmap 必须静态分配。
 
-**阶段 4（堆完全可用）的代码**：
-- 可以自由使用 `Vec`, `Box` 等
-- 可以使用 `malloc`/`free`
-- IPC 处理、区域管理等可以使用堆
+**阶段 3（堆开始可用）**：可以使用 `_brk()` 扩展堆，可以使用保留页池分配关键结构，页表操作需要使用保留页池。
 
-> **详见**: [vm-heap-init.md](vm-heap-init.md) - VM 堆初始化与内存自举的完整分析。
+**阶段 4（堆完全可用）**：可以自由使用 `Vec`, `Box` 等，可以使用 `malloc`/`free`，IPC 处理、区域管理等可以使用堆。
+
+> **详见**: [05-vm-allocpage.md](05-vm-allocpage.md) §2.4 - VM 堆初始化与保留页池的完整分析。
 
 ---
 
-## 2. VM 全局概念
+## 3. VM 全局概念
 
-### 2.1 进程标识
+### 3.1 进程标识
 
-#### 2.1.1 vmproc 与进程的关系
+#### 3.1.1 vmproc 与进程的关系
 // TODO: 每个进程在 VM 中有一个 vmproc 条目
 
-#### 2.1.2 slot 的概念
+#### 3.1.2 slot 的概念
 // TODO: 进程表索引，与 endpoint 的关系
 
-### 2.2 内存管理抽象
+### 3.2 内存管理抽象
 
-#### 2.2.1 虚拟地址空间
+#### 3.2.1 虚拟地址空间
 // TODO: 每个进程的独立地址空间
 
-#### 2.2.2 物理内存管理
+#### 3.2.2 物理内存管理
 // TODO: VM 作为物理内存的分配者
 
-#### 2.2.3 页表管理
+#### 3.2.3 页表管理
 // TODO: 两级页表结构
 
-### 2.3 核心数据结构关系
+### 3.3 核心数据结构关系
 
 ```
 // TODO: vmproc → page_table → vir_region(AVL) → phys_region → phys_block
 ```
 
-### 2.4 全局状态
+### 3.4 全局状态
 
-VM 服务维护以下全局状态（定义在 `global.rs`）：
+VM 服务维护以下全局状态：
 
-| 变量 | 类型 | 说明 |
-|------|------|------|
-| `TOTAL_PAGES` | `AssumeSyncCell<usize>` | VM 管理的总物理页数 |
-| `VM_INSTANCE_COUNT` | `AtomicU32` | 当前 VM 进程实例数 |
-| `BOOT_INFO` | `AssumeSyncCell<[BootImage; NR_BOOT_PROCS]>` | 启动镜像数组 |
+| Minix3 C 变量 | Rust 变量 | C 类型 | Rust 类型 | 说明 |
+|------|------|------|------|------|
+| `total_pages` | `TOTAL_PAGES` | `EXTERN int` | `AssumeSyncCell<usize>` | VM 管理的总物理页数 |
+| `num_vm_instances` | `VM_INSTANCE_COUNT` | `EXTERN int` | `AssumeSyncCell<u32>` | 当前 VM 进程实例数 |
+| `kernel_boot_info.boot_procs[]` | `BOOT_INFO` | `struct boot_image[]` | `AssumeSyncCell<[BootImage; NR_BOOT_PROCS]>` | 启动镜像数组 |
 
-**BootImage 类型**（定义在 `minix-types` crate，`types/boot.rs`）：
+> **架构演进说明**：Minix3 C 源码中 `num_vm_instances` 是普通 `int`（单线程无需原子），Rust 版本使用 `AssumeSyncCell<u32>` 而非 `AtomicU32`，因为 VM 是单线程事件循环模型，不需要原子操作。
 
+**BootImage 类型**：
+
+Minix3 C 源码定义（[type.h:148](minix3/minix/include/minix/type.h#L148)）：
+```c
+struct boot_image {
+  int proc_nr;                     /* process number to use */
+  char proc_name[PROC_NAME_LEN];   /* name in process table */
+  endpoint_t endpoint;             /* endpoint number when started */
+  phys_bytes start_addr;           /* Where it's in memory */
+  phys_bytes len;
+};
+```
+
+Rust 实现（定义在 `minix-types` crate，`types/boot.rs`）：
 ```rust
 #[derive(Debug, Clone, Copy)]
 pub struct BootImage {
     pub proc_nr: i32,
-    pub proc_name: [u8; PROC_NAME_LEN],  // PROC_NAME_LEN = 16
+    pub proc_name: [u8; PROC_NAME_LEN],
     pub endpoint: Endpoint,
     pub start_addr: u64,
     pub len: u64,
 }
 ```
 
+> **架构演进说明**：C 源码中 `start_addr` 和 `len` 类型为 `phys_bytes`（32 位下为 `u32`），Rust 版本使用 `u64` 以支持 64 位物理地址空间。
+
 `BootImage` 是跨服务共享类型，记录系统启动时加载的进程信息。VM 通过 `VmProc.vm_boot: Option<BootImage>` 引用它。
 
 > **TODO**: `BootImage` 的完整文档应归属于 `minix-types` crate 的文档，当前暂放此处。
 
-**VM 实例数说明**：
-- 标准启动时为 1（VM 服务自身）
+**VM 实例数说明**（C 源码：[glo.h:46](minix3/minix/servers/vm/glo.h#L46) `num_vm_instances`，[rs.c:230](minix3/minix/servers/vm/rs.c#L230) 限制检查）：
+- 标准启动时为 1（VM 服务自身，[main.c:578](minix3/minix/servers/vm/main.c#L578)）
 - RS（复活服务器）可创建新 VM 实例进行无缝重启
 - 最多支持 2 个实例：1 个旧实例（可能故障）+ 1 个新实例（正在启动）
-- 超过 2 个会因 VM 内部实现限制（页表、内存映射冲突）而返回 `EPERM`
+- 超过 2 个会因 VM 内部实现限制（页表、内存映射冲突）而返回 `EPERM`（[rs.c:231-233](minix3/minix/servers/vm/rs.c#L231-L233)）
 
 ---
 
-## 3. 设计原则
+## 4. 设计原则
 
-### 3.1 地址稳定性
+### 4.1 地址稳定性
 
 > **原则**: `vmproc` 对象一旦创建，其内存地址必须保持不变。
 
@@ -406,14 +415,14 @@ pub struct BootImage {
 - 禁止 move 操作（没有 `Pin`，直接禁止 move 语义）
 - 删除操作只标记为未使用，不收缩数组
 
-### 3.2 Fail-Stop 语义
+### 4.2 Fail-Stop 语义
 
 > **原则**: VM 是核心服务，一旦崩溃系统必须重启，设计需保证崩溃时"干净地死掉"。
 
 **背景**:
 - VM 被标记为 `SF_CORE_SRV`（核心服务）
 - VM 崩溃时 RS（重启动服务）会直接退出，系统必须重启
-- 参考: `minix3/minix/servers/rs/manager.c:1120-1122`
+- 参考: [manager.c:1121-1123](minix3/minix/servers/rs/manager.c#L1121-L1123)
 
 **为什么需要"干净地死掉"**:
 - 避免崩溃过程中污染系统状态
@@ -423,9 +432,9 @@ pub struct BootImage {
 **实现策略**:
 - 使用 `MaybeUninit` 避免隐式 Drop
 - panic 时直接终止，不执行栈展开
-- 参考: `minix3/minix/kernel/utility.c:22-49` 的 `panic()` 实现
+- 参考: [panic.c:21-67](minix3/minix/lib/libsys/panic.c#L21-L67) 的用户态 `panic()` 实现
 
-### 3.3 无堆分配
+### 4.3 无堆分配
 
 > **原则**: VM 是系统的内存分配器，不能使用 malloc，`vmproc` 必须使用静态分配或 Slab 分配器。
 
@@ -444,10 +453,10 @@ VM 需要分配内存 → 调用 malloc → malloc 需要内存 → 调用 VM
 - 仅用于 VM 内部，不对外提供服务
 - 详见: [08-slab-allocator.md](08-slab-allocator.md)
 
-### 3.4 引用计数管理
+### 4.4 引用计数管理
 // TODO: 物理块的引用计数约定
 
-### 3.5 可见性原则：VM crate 对外不暴露内部类型
+### 4.5 可见性原则：VM crate 对外不暴露内部类型
 
 > **原则**: VM 是独立用户空间进程，没有外部 crate 消费者。crate 内部最大可见性为 `pub(crate)`。
 
@@ -474,20 +483,20 @@ VM 需要分配内存 → 调用 malloc → malloc 需要内存 → 调用 VM
 
 ---
 
-## 4. 跨组件约定
+## 5. 跨组件约定
 
-### 4.1 与 PM 的交互
+### 5.1 与 PM 的交互
 
-#### 4.1.1 进程生命周期
+#### 5.1.1 进程生命周期
 // TODO: PM 管理逻辑进程，VM 管理内存
 
-#### 4.1.2 Fork 协作
+#### 5.1.2 Fork 协作
 // TODO: PM 分配 slot，VM 复制内存
 
-#### 4.1.3 Exit 协作
+#### 5.1.3 Exit 协作
 // TODO: PM 通知，VM 清理内存
 
-### 4.1.4 TOCTOU 与分布式一致性
+### 5.1.4 TOCTOU 与分布式一致性
 
 > **问题**: PM 和 VM 是两个独立的地址空间，如何处理进程生命周期的竞争条件？
 
@@ -509,19 +518,20 @@ VM 需要分配内存 → 调用 malloc → malloc 需要内存 → 调用 VM
 
 **解决方案 - Endpoint 验证**:
 
-VM 使用 `vm_isokendpt()` 验证 endpoint 有效性：
+VM 使用 `vm_isokendpt()` 验证 endpoint 有效性（[utility.c:84](minix3/minix/servers/vm/utility.c#L84)）：
 
 ```c
-// 1. 提取 slot
-int procn = _ENDPOINT_P(endpoint);
-
-// 2. 验证 endpoint 是否匹配当前存储的值
-if (endpoint != vmproc[procn].vm_endpoint)
-    return EDEADEPT;  // 端点已失效（slot 被重用）
-
-// 3. 验证进程是否活跃
-if (!(vmproc[procn].vm_flags & VMF_INUSE))
-    return EDEADEPT;  // 进程已退出
+int vm_isokendpt(endpoint_t endpoint, int *procn)
+{
+    *procn = _ENDPOINT_P(endpoint);
+    if(*procn < 0 || *procn >= NR_PROCS)
+        return EINVAL;      // slot 越界
+    if(*procn >= 0 && endpoint != vmproc[*procn].vm_endpoint)
+        return EDEADEPT;    // 端点已失效（slot 被重用，generation 不匹配）
+    if(*procn >= 0 && !(vmproc[*procn].vm_flags & VMF_INUSE))
+        return EDEADEPT;    // 进程已退出
+    return OK;
+}
 ```
 
 **设计本质**:
@@ -532,43 +542,43 @@ if (!(vmproc[procn].vm_flags & VMF_INUSE))
 
 > 这种验证机制防的不是恶意攻击，而是**时间差（TOCTOU: Time-of-Check to Time-of-Use）**问题。
 
-### 4.2 与 VFS 的交互
+### 5.2 与 VFS 的交互
 
-#### 4.2.1 文件映射
+#### 5.2.1 文件映射
 // TODO: mmap 文件时的协作
 
-#### 4.2.2 页缓存
+#### 5.2.2 页缓存
 // TODO: 与文件系统缓存的关系
 
-### 4.3 与 Kernel 的交互
+### 5.3 与 Kernel 的交互
 
-#### 4.3.1 页错误处理
+#### 5.3.1 页错误处理
 // TODO: 内核捕获页错误，转发给 VM
 
-#### 4.3.2 系统调用转发
+#### 5.3.2 系统调用转发
 // TODO: 内核将内存相关系统调用转发给 VM
 
 ---
 
-## 5. 命名约定
+## 6. 命名约定
 
-### 5.1 类型命名
+### 6.1 类型命名
 // TODO: VmProc vs vmproc，Rust 与 C 的对应
 
-### 5.2 函数命名
+### 6.2 函数命名
 // TODO: do_xxx 表示 IPC 处理函数
 
-### 5.3 常量命名
+### 6.3 常量命名
 // TODO: VM_ 前缀的常量
 
 ---
 
-## 6. 错误处理策略
+## 7. 错误处理策略
 
-### 6.1 错误码约定
+### 7.1 错误码约定
 // TODO: 使用 Minix3 标准错误码
 
-### 6.2 panic 策略
+### 7.2 panic 策略
 
 VM 作为 Minix3 的核心服务，采用 **Fail-Stop** 语义：
 
@@ -578,18 +588,27 @@ Fail-Stop = 检测到错误 → 立即停止 → 不执行任何副作用
 
 **核心原则**: 宁可让系统停止，也不要让系统处于不确定状态。
 
-**Minix3 panic 实现**（`minix3/minix/lib/libsys/panic.c`）：
+**Minix3 用户态 panic 实现**（[panic.c:21-67](minix3/minix/lib/libsys/panic.c#L21-L67)）：
 
 ```c
 void panic(const char *fmt, ...)
 {
-    printf("%s(%d): panic: ", name, me);
-    vprintf(fmt, args);
+    endpoint_t me = NONE;
+    char name[20];
+    /* ... sys_whoami 获取调用者信息 ... */
+    if(sys_whoami(&me, name, sizeof(name), &priv_flags, &init_flags) == OK && me != NONE)
+        printf("%s(%d): panic: ", name, me);
+    else
+        printf("(sys_whoami failed): panic: ");
+    if(fmt) { va_start(args, fmt); vprintf(fmt, args); va_end(args); }
+    else { printf("no message\n"); }
+    printf("\n");
     util_stacktrace();
     panic_hook();
-    _exit(1);       // 直接退出！
-    abort();        // 备用方案
-    for(;;) { }     // 最后手段：死循环
+    _exit(1);       /* 直接退出！ */
+    abort();        /* 备用方案 */
+    suicide = (void (*)(void)) -1; suicide();  /* 更激进的自杀 */
+    for(;;) { }     /* 最后手段：死循环 */
 }
 ```
 
@@ -613,7 +632,7 @@ void panic(const char *fmt, ...)
 **VM 是核心服务（SF_CORE_SRV）**：
 
 ```c
-// rs/manager.c#L1120-1122
+// [manager.c:1121-1123](minix3/minix/servers/rs/manager.c#L1121-L1123)
 if ((rp->r_pub->sys_flags & SF_CORE_SRV) && !shutting_down) {
     printf("core system service died: %s\n", srv_to_string(rp));
     _exit(1);  // RS 直接退出，系统崩溃
@@ -663,7 +682,7 @@ pub unsafe fn force_cleanup() {
 
 > **详见**: [fail-stop.md](../../concepts/fail-stop.md) 的完整 Fail-Stop 语义与 Panic 安全分析。
 
-### 6.3 资源清理
+### 7.3 资源清理
 
 **MaybeUninit 的 panic 安全价值**：
 
@@ -687,22 +706,22 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 
 ---
 
-## 7. 性能考虑
+## 8. 性能考虑
 
-### 7.1 缓存友好性
+### 8.1 缓存友好性
 // TODO: 数据结构布局优化
 
-### 7.2 锁粒度
+### 8.2 锁粒度
 // TODO: 并发访问控制
 
-### 7.3 快速路径
+### 8.3 快速路径
 // TODO: 常见操作的优化
 
 ---
 
-## 8. 参见
+## 9. 参见
 
-### 8.1 文档阶段分类
+### 9.1 文档阶段分类
 
 > 根据 §2.4 的初始化时序，将文档按堆可用性分类。这对编程和文档阅读有重大意义。
 
@@ -727,8 +746,7 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 
 | 文档 | 初始化时机 | 堆依赖 | Rust 实现约束 |
 |------|-----------|--------|---------------|
-| [vm-heap-init.md](vm-heap-init.md) | `pt_init()` | ❌ 无 | Minix3 自举机制分析 |
-| [heap-bootstrap.md](heap-bootstrap.md) | 设计文档 | ❌ 无 | Rust 自举方案设计 |
+| [05-vm-allocpage.md](05-vm-allocpage.md) | `pt_init()` | ❌ 无 | 保留页池与自举机制 |
 | [06-pagetable-struct.md](06-pagetable-struct.md) | `pt_init()` | ⚠️ 保留页 | 使用 `vm_allocpage()` |
 | [07-pagetable-ops.md](07-pagetable-ops.md) | `pt_init()` | ⚠️ 保留页 | 页表操作 |
 
@@ -759,7 +777,7 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - ✅ 可以自由使用 `Vec`, `Box`, `String`, `HashMap` 等
 - ✅ 可以使用 `malloc`/`free`（通过 `#[global_allocator]`）
 
-### 8.2 VM 私有组件
+### 9.2 VM 私有组件
 - [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
 - [03-acl.md](03-acl.md) - 访问控制
@@ -771,18 +789,18 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 写时复制
 - [16-pagefault.md](16-pagefault.md) - 页错误处理
 
-### 8.3 VM 库组件
+### 9.3 VM 库组件
 - [04-physical-memory.md](04-physical-memory.md) - 物理内存分配
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作
 - [11-memtype.md](11-memtype.md) - 内存类型系统
 
-### 8.4 VM 服务组件
+### 9.4 VM 服务组件
 - [17-vm-fork.md](17-vm-fork.md) - VM_FORK 服务
 - [18-vm-brk.md](18-vm-brk.md) - VM_BRK 服务
 - [19-vm-map.md](19-vm-map.md) - VM_MAP 服务
 
-### 8.5 全局概念
+### 9.5 全局概念
 - [系统核心概念](../../concepts/README.md) - 全局概念文档（Endpoint、IPC 等）
 - [Endpoint 协议](../../concepts/endpoint.md) - 进程标识协议详解
 

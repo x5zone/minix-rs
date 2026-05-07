@@ -171,7 +171,7 @@ VM 通过 `sys_vmctl` 系统调用将页目录**物理地址值**（`pt_dir_phys
 
 ### 3.1 进程表定义
 
-**进程表定义** (`glo.h`):
+**进程表定义** ([glo.h:17-20](minix3/minix/servers/vm/glo.h#L17-L20)):
 
 ```c
 #define VMP_EXECTMP	_NR_PROCS
@@ -194,7 +194,7 @@ EXTERN struct vmproc vmproc[VMP_NR];        /* 进程表数组 */
 int vm_isokendpt(endpoint_t endpoint, int *procn);
 ```
 
-**文件**: `minix3/minix/servers/vm/utility.c:84-97`
+**文件**: [utility.c:84-94](minix3/minix/servers/vm/utility.c#L84-L94)
 
 **功能**: 验证 endpoint 是否有效，并返回对应的进程槽位号。
 
@@ -804,7 +804,7 @@ for slot in slots_to_clear {
 
 **未来需求：`swap_proc_slot()` (live update)**:
 
-Minix3 的 `swap_proc_slot()` (utility.c) 在 live update 时交换两个进程的 vmproc 内容，同时保留各自的 endpoint 和 slot 号：
+Minix3 的 `swap_proc_slot()` ([utility.c:188](minix3/minix/servers/vm/utility.c#L188)) 在 live update 时交换两个进程的 vmproc 内容，同时保留各自的 endpoint 和 slot 号：
 
 ```c
 int swap_proc_slot(struct vmproc *src_vmp, struct vmproc *dst_vmp) {
@@ -1076,6 +1076,7 @@ typedef struct {
     u32_t *pt_dir;              // 页目录虚拟地址（VM 地址空间中的指针）
     u32_t pt_dir_phys;          // 页目录物理地址（u32_t 值，非指针）
     u32_t *pt_pt[ARCH_VM_DIR_ENTRIES];  // 页表指针数组
+    u32_t pt_virtop;            // 虚拟地址空间空洞搜索提示
 } pt_t;
 ```
 

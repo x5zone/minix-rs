@@ -74,7 +74,7 @@ pub(crate) struct PtRegion<O: PtOps> {
 
 impl PtRegion<RealPtOps> {
     pub(crate) fn from_reserved(
-        reserved: &ReservedRegion,
+        reserved: &mut ReservedRegion,
         phys_alloc: Box<dyn PhysAllocator>,
     ) -> Self {
         Self::from_reserved_with_ops(reserved, phys_alloc, RealPtOps)
@@ -83,7 +83,7 @@ impl PtRegion<RealPtOps> {
 
 impl<O: PtOps> PtRegion<O> {
     pub(crate) fn from_reserved_with_ops(
-        reserved: &ReservedRegion,
+        reserved: &mut ReservedRegion,
         phys_alloc: Box<dyn PhysAllocator>,
         pt_ops: O,
     ) -> Self {
@@ -247,6 +247,7 @@ pub(crate) struct ReservedRegion {
     virt_start: VirBytes,
     total_pages: usize,
     allocated_pages: usize,
+    high_watermark: usize,
     bitmap: u64,
 }
 
@@ -258,12 +259,21 @@ impl ReservedRegion {
             virt_start,
             total_pages,
             allocated_pages: 0,
+            high_watermark: 0,
             bitmap: 0,
         }
     }
 
     pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let free_bit = (!self.bitmap).trailing_zeros() as usize;
+        let start = self.high_watermark;
+        if start >= self.total_pages {
+            return None;
+        }
+
+        let mask = !self.bitmap >> start;
+        let rel_bit = mask.trailing_zeros() as usize;
+        let free_bit = start + rel_bit;
+
         if free_bit >= self.total_pages {
             return None;
         }
@@ -278,9 +288,10 @@ impl ReservedRegion {
         Some((virt, phys))
     }
 
-    pub(crate) fn alloc_contig_virt(&self, pages: usize) -> VirBytes {
-        assert!(pages <= self.total_pages - self.allocated_pages);
-        let offset = self.allocated_pages * PAGE_SIZE;
+    pub(crate) fn alloc_contig_virt(&mut self, pages: usize) -> VirBytes {
+        assert!(pages <= self.total_pages - self.high_watermark);
+        let offset = self.high_watermark * PAGE_SIZE;
+        self.high_watermark += pages;
         VirBytes(self.virt_start.0 + offset as u64)
     }
 
@@ -393,10 +404,10 @@ mod tests {
 
     #[test]
     fn test_pt_region_alloc_and_expand() {
-        let reserved = mock_reserved();
+        let mut reserved = mock_reserved();
         let phys_alloc = mock_phys_alloc();
         let pt_ops = MockPtOps::new();
-        let mut region = PtRegion::from_reserved_with_ops(&reserved, phys_alloc, pt_ops);
+        let mut region = PtRegion::from_reserved_with_ops(&mut reserved, phys_alloc, pt_ops);
 
         let initial = region.remaining();
         assert!(initial > 0);
