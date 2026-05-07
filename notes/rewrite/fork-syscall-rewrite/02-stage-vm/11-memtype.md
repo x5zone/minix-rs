@@ -62,39 +62,18 @@ typedef struct mem_type {
 int result = pr->memtype->ev_pagefault(vmp, region, ph, write, ...);
 ```
 
-**Rust 的多态实现**
-
-Rust 使用 trait 实现更安全的多态：
-
-```rust
-pub trait MemType: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn on_pagefault(&self, vmp: &VmProc, region: &mut VirRegion, 
-                    pr: &mut PhysRegion, write: bool) -> Result<PagefaultResult, MemTypeError>;
-    fn on_unreference(&self, pr: &mut PhysRegion) -> Result<bool, MemTypeError>;
-    fn is_writable(&self, pr: &PhysRegion) -> bool;
-    // ... 其他方法
-}
-
-// 使用 trait object 实现动态分发
-pub struct PhysRegion {
-    pub memtype: Option<&'static dyn MemType>,
-    // ...
-}
-```
-
 ### 1.3 与 Minix3 的对应关系
 
 **全局内存类型实例**
 
-| Minix3 | Rust | 用途 |
-|--------|------|------|
-| `mem_type_anon` | `AnonymousMemory` | 普通堆内存、栈 |
-| `mem_type_directphys` | `DirectPhysical` | 设备内存映射 |
-| `mem_type_anon_contig` | - | DMA 缓冲区（待实现） |
-| `mem_type_cache` | - | 文件系统缓存（待实现） |
-| `mem_type_mappedfile` | - | mmap 文件（待实现） |
-| `mem_type_shared` | `SharedMemory` | 进程间共享内存 |
+| Minix3 变量 | 用途 |
+|-------------|------|
+| `mem_type_anon` | 普通堆内存、栈 |
+| `mem_type_directphys` | 设备内存映射 |
+| `mem_type_anon_contig` | DMA 缓冲区（物理连续） |
+| `mem_type_cache` | 文件系统缓存 |
+| `mem_type_mappedfile` | mmap 文件映射 |
+| `mem_type_shared` | 进程间共享内存 |
 
 **源码位置**：
 
@@ -107,34 +86,12 @@ pub struct PhysRegion {
 
 ### 1.4 内存类型与区域的关系
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    内存类型系统架构                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   vir_region (虚拟区域)                                     │
-│   ├── def_memtype: MemType  ◄─── 默认内存类型              │
-│   ├── vaddr: 0x1000                                         │
-│   ├── length: 0x4000                                        │
-│   └── physblocks[]                                          │
-│       ├── [0] phys_region                                   │
-│       │   ├── memtype: MemType  ◄─── 可覆盖默认类型        │
-│       │   └── ph → phys_block                               │
-│       ├── [1] phys_region                                   │
-│       │   ├── memtype: MemType                              │
-│       │   └── ph → phys_block                               │
-│       └── ...                                               │
-│                                                             │
-│   调用示例:                                                  │
-│   phys_region.memtype.on_pagefault(vmp, region, pr, write)  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
 **两层 memtype**：
 
 1. **vir_region.def_memtype**：区域的默认内存类型，新分配的物理区域继承此类型
 2. **phys_region.memtype**：物理区域的具体类型，可以覆盖默认类型
+
+调用方式：`phys_region.memtype->ev_pagefault(vmp, region, pr, write)`
 
 **设计理由**：
 
@@ -174,6 +131,8 @@ typedef struct mem_type {
     int (*pt_flags)(struct vir_region *vr);    /* 页表标志 */
 } mem_type_t;
 ```
+
+> **32 位 vs 64 位差异**：`regionid` 回调返回 `u32_t`，在 Minix3 x86-32 下 `region->id` 为 32 位。minix-rs 使用 x86-64，区域 ID 应使用 `u64`。`phys_bytes` 类型在 Minix3 中为 `u32_t`（32 位物理地址），64 位下需扩展为 `u64`。`ev_pagefault` 的 `vfs_callback_t`、`void *state`、`int len`、`int *io` 参数在 64 位下指针大小变化，但语义不变。
 
 #### 2.1.2 回调函数详解
 
@@ -344,37 +303,9 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 **三种处理路径**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   anon_pagefault 流程                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   页错误触发                                                 │
-│        │                                                    │
-│        ▼                                                    │
-│   预分配新页                                                 │
-│        │                                                    │
-│        ▼                                                    │
-│   ┌─────────────────┐                                       │
-│   │ phys == MAP_NONE?│──是──► 直接使用新页，返回 OK          │
-│   └────────┬────────┘                                       │
-│            │否                                              │
-│            ▼                                                │
-│   ┌─────────────────┐                                       │
-│   │ refcount < 2    │──是──► 释放预分配页，返回 OK           │
-│   │ 或 !write?      │       （页面已就绪）                   │
-│   └────────┬────────┘                                       │
-│            │否                                              │
-│            ▼                                                │
-│   ┌─────────────────┐                                       │
-│   │ VR_WRITABLE?    │──否──► 返回错误                       │
-│   └────────┬────────┘                                       │
-│            │是                                              │
-│            ▼                                                │
-│   调用 mem_cow() 执行写时复制                                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **全新页面**（`phys == MAP_NONE`）：直接使用预分配的新页，返回 OK
+2. **无需 CoW**（`refcount < 2` 或非写操作）：释放预分配页，返回 OK（页面已就绪）
+3. **需要 CoW**（`refcount >= 2` 且写操作）：断言 `VR_WRITABLE`，调用 `mem_cow()` 执行写时复制
 
 **anon_writable - 可写判断**
 
@@ -387,7 +318,7 @@ static int anon_writable(struct phys_region *pr)
     if(pr->ph->phys == MAP_NONE)
         return 0;
     
-    // 有 remaps（如 mremap），可写
+    // 有 remaps（共享内存映射），可写
     if(pr->parent->remaps > 0)
         return 1;
     
@@ -529,30 +460,7 @@ static int phys_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 **工作原理**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              phys_pagefault 物理地址计算                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   vir_region                                                │
-│   ├── vaddr: 0x7f000000 (虚拟基地址)                        │
-│   ├── length: 0x10000 (64KB)                                │
-│   └── param.phys: 0xFEC00000 (物理基地址，设备寄存器)        │
-│                                                             │
-│   phys_region[0]                                            │
-│   ├── offset: 0x0000                                        │
-│   └── phys = 0xFEC00000 + 0x0000 = 0xFEC00000               │
-│                                                             │
-│   phys_region[1]                                            │
-│   ├── offset: 0x1000                                        │
-│   └── phys = 0xFEC00000 + 0x1000 = 0xFEC01000               │
-│                                                             │
-│   phys_region[15]                                           │
-│   ├── offset: 0xF000                                        │
-│   └── phys = 0xFEC00000 + 0xF000 = 0xFEC0F000               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+物理地址计算方式：`phmem = region->param.phys + ph->offset`。即虚拟区域保存物理基地址（`param.phys`），每个 `phys_region` 的物理地址等于基地址加上该区域的页内偏移。例如，`param.phys = 0xFEC00000`，则 offset 为 0x1000 的页面映射到物理地址 0xFEC01000。
 
 **phys_writable - 可写判断**
 
@@ -747,35 +655,9 @@ static int anon_contig_new(struct vir_region *region)
 
 **分配流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              anon_contig_new 分配流程                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   步骤 1: 创建 phys_block 结构                               │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_block[0] ── phys_block[1] ── ... ── phys_block[n]│  │
-│   │      ↓              ↓                    ↓          │   │
-│   │   phys = MAP_NONE  phys = MAP_NONE    phys = MAP_NONE│  │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   步骤 2: 一次性分配连续物理内存                              │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ alloc_mem(pages) → 返回连续的 click 编号             │   │
-│   │ 例如: pages=4, 返回 click=100                        │   │
-│   │ 物理地址: 0x64000, 0x65000, 0x66000, 0x67000         │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   步骤 3: 设置每个页面的物理地址                             │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ phys_block[0].phys = base + 0x0000 = 0x64000        │   │
-│   │ phys_block[1].phys = base + 0x1000 = 0x65000        │   │
-│   │ phys_block[2].phys = base + 0x2000 = 0x66000        │   │
-│   │ phys_block[3].phys = base + 0x3000 = 0x67000        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **创建 phys_block 结构**：为每个页面创建 `phys_block`（phys = MAP_NONE）和对应的 `phys_region`，通过 `pb_reference` 关联
+2. **一次性分配连续物理内存**：调用 `alloc_mem(pages, allocflags)` 分配 `pages` 个连续 click
+3. **设置每个页面的物理地址**：遍历所有 `phys_region`，设置 `pr->ph->phys = cur_ph + pr->offset`，确保物理地址连续
 
 **anon_contig_pagefault - 不应发生**
 
@@ -915,7 +797,7 @@ struct cached_page {
 | `ev_pagefault` | `cache_pagefault` | 链接预分配的缓存块 |
 | `ev_resize` | `cache_resize` | 返回错误 |
 | `ev_lowshrink` | `cache_lowshrink` | 空操作（OK） |
-| `writable` | `cache_writable` | 总是可写 |
+| `writable` | `cache_writable` | 物理页已分配则可写 |
 | `pt_flags` | `cache_pt_flags` | ARM 返回缓存标志 |
 
 **关键函数分析**
@@ -948,36 +830,16 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 **工作原理**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   cache_pagefault 流程                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   do_mapcache 调用时：                                       │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 查找 cached_page (find_cached_page_bydev)        │   │
-│   │ 2. 设置 region->param.pb_cache = cached_page->page  │   │
-│   │ 3. 触发页错误 map_pf()                               │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                         ↓                                   │
-│   cache_pagefault 执行：                                     │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. pb_unreferenced(): 解除原有链接                   │   │
-│   │ 2. pb_link(): 将缓存块链接到 phys_region             │   │
-│   │ 3. 清除 param.pb_cache                              │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                         ↓                                   │
-│   结果：phys_region.ph 指向缓存的物理块                      │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. `do_mapcache` 调用时：查找 `cached_page`（`find_cached_page_bydev`），设置 `region->param.pb_cache = cached_page->page`，触发页错误 `map_pf()`
+2. `cache_pagefault` 执行：调用 `pb_unreferenced()` 解除原有链接，调用 `pb_link()` 将缓存块链接到 `phys_region`，清除 `param.pb_cache`
+3. 结果：`phys_region.ph` 指向缓存的物理块
 
 **cache_writable - 可写判断**
 
 ```c
 static int cache_writable(struct phys_region *pr)
 {
-    // 缓存块目前只被文件系统使用，总是可写
+    // 缓存块目前只被文件系统使用，物理页已分配即可写
     assert(pr->ph->refcount > 0);
     return pr->ph->phys != MAP_NONE;
 }
@@ -1078,27 +940,12 @@ struct mem_type mem_type_cache = {
 };
 ```
 
-**缓存生命周期**
+**缓存生命周期**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    缓存页面生命周期                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 创建                                                   │
-│      文件系统分配匿名内存 → do_setcache → 类型改为 cache     │
-│                         ↓                                   │
-│   2. 使用                                                   │
-│      文件系统读写 → do_mapcache → 映射到地址空间             │
-│                         ↓                                   │
-│   3. 回收                                                   │
-│      解除映射 → ev_unreference → 引用为0时释放              │
-│                         ↓                                   │
-│   4. 失效                                                   │
-│      do_forgetcache / do_clearcache → 从缓存索引移除        │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **创建**：文件系统分配匿名内存 → `do_setcache` → 类型改为 cache
+2. **使用**：文件系统读写 → `do_mapcache` → 映射到地址空间
+3. **回收**：解除映射 → `ev_unreference` → 引用为 0 时释放
+4. **失效**：`do_forgetcache` / `do_clearcache` → 从缓存索引移除
 
 **与其他内存类型的关系**
 
@@ -1115,7 +962,7 @@ struct mem_type mem_type_cache = {
 | 映射 | ✅ | 通过 `do_mapcache` 映射到文件系统 |
 | fork | ✅ | `ev_reference` 返回 OK |
 | resize | ❌ | 缓存大小固定 |
-| 写入 | ✅ | 总是可写 |
+| 写入 | ✅ | 物理页已分配则可写 |
 
 #### 2.2.5 mem_type_mappedfile - 文件映射
 
@@ -1174,110 +1021,82 @@ struct fdref {
 **mappedfile_pagefault - 页错误处理**
 
 ```c
+// mem_file.c:84-165 (简化，保留核心逻辑)
 static int mappedfile_pagefault(struct vmproc *vmp, struct vir_region *region,
     struct phys_region *ph, int write, vfs_callback_t cb,
     void *state, int statelen, int *io)
 {
-    // 情况 1: 物理页不存在，需要加载
+    u32_t allocflags;
+    int procfd = region->param.file.fdref->fd;
+
+    allocflags = vrallocflags(region->flags);
+
+    assert(ph->ph->refcount > 0);
+    assert(region->param.file.inited);
+    assert(region->param.file.fdref);
+    assert(region->param.file.fdref->dev != NO_DEV);
+
     if(ph->ph->phys == MAP_NONE) {
         struct cached_page *cp;
-        u64_t referenced_offset = region->param.file.offset + ph->offset;
-        
-        // 尝试从缓存查找
+        u64_t referenced_offset =
+            region->param.file.offset + ph->offset;
         if(region->param.file.fdref->ino == VMC_NO_INODE) {
-            cp = find_cached_page_bydev(...);
+            cp = find_cached_page_bydev(region->param.file.fdref->dev,
+                referenced_offset, VMC_NO_INODE, 0, 1);
         } else {
-            cp = find_cached_page_byino(...);
+            cp = find_cached_page_byino(region->param.file.fdref->dev,
+                region->param.file.fdref->ino, referenced_offset, 1);
         }
-        
-        // 缓存命中
+
         if(cp && (!cb || !(cp->flags & VMSF_ONCE))) {
+            int result = OK;
             pb_unreferenced(region, ph, 0);
             pb_link(ph, cp->page, ph->offset, region);
-            
-            // 如果需要写入或末尾清理，执行 COW
-            if(write || 需要clearend) {
-                return cow_block(vmp, region, ph, clearend);
+
+            if(roundup(ph->offset+region->param.file.clearend,
+                VM_PAGE_SIZE) >= region->length) {
+                result = cow_block(vmp, region, ph,
+                    region->param.file.clearend);
+            } else if(result == OK && write) {
+                result = cow_block(vmp, region, ph, 0);
             }
-            return OK;
+
+            if (result == OK && (cp->flags & VMSF_ONCE))
+                rmcache(cp);
+
+            return result;
         }
-        
-        // 缓存未命中，向 VFS 请求
-        if(!cb) return EFAULT;
-        
-        vfs_request(VMVFSREQ_FDIO, procfd, vmp, referenced_offset,
-            VM_PAGE_SIZE, cb, NULL, state, statelen);
+
+        if(!cb) {
+            return EFAULT;
+        }
+
+        if(vfs_request(VMVFSREQ_FDIO, procfd, vmp, referenced_offset,
+            VM_PAGE_SIZE, cb, NULL, state, statelen) != OK) {
+            printf("VM: mappedfile_pagefault: vfs_request failed\n");
+            return ENOMEM;
+        }
         *io = 1;
         return SUSPEND;
     }
-    
-    // 情况 2: 物理页存在，但需要写入
-    if(!write) return OK;
-    
-    // 执行 COW，转为匿名内存
+
+    if(!write) {
+        return OK;
+    }
+
     return cow_block(vmp, region, ph, 0);
 }
 ```
 
 **页错误处理流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                mappedfile_pagefault 流程                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   页错误触发                                                 │
-│        ↓                                                    │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 物理页不存在 (phys == MAP_NONE)?                     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│        │ 是                    │ 否                         │
-│        ↓                      ↓                             │
-│   ┌─────────────┐      ┌─────────────────────────────────┐  │
-│   │ 查找缓存页   │      │ 是写操作?                        │  │
-│   └─────────────┘      └─────────────────────────────────┘  │
-│        │                      │ 是          │ 否            │
-│        ↓                      ↓             ↓               │
-│   ┌─────────────┐      ┌─────────────┐  返回 OK            │
-│   │ 缓存命中?    │      │ cow_block() │                     │
-│   └─────────────┘      │ 转为匿名内存 │                     │
-│        │ 是    │ 否     └─────────────┘                     │
-│        ↓       ↓                                             │
-│   链接缓存页  向 VFS 请求                                     │
-│        │       │                                             │
-│        ↓       ↓                                             │
-│   需要写入?   返回 SUSPEND                                    │
-│        │ 是    │ 否                                          │
-│        ↓       ↓                                             │
-│   cow_block()  返回 OK                                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**cow_block - 写时复制**
-
-```c
-static int cow_block(struct vmproc *vmp, struct vir_region *region,
-    struct phys_region *ph, u16_t clearend)
-{
-    // 分配新的物理页并复制数据
-    if((r=mem_cow(region, ph, MAP_NONE, MAP_NONE)) != OK) {
-        printf("mappedfile_pagefault: COW failed\n");
-        return r;
-    }
-
-    // COW 后转为匿名内存类型
-    ph->memtype = &mem_type_anon;
-
-    // 清理末尾字节（处理文件末尾不对齐）
-    if(clearend) {
-        phys_bytes phaddr = ph->ph->phys, po = VM_PAGE_SIZE-clearend;
-        sys_memset(NONE, 0, phaddr + po, clearend);
-    }
-
-    return OK;
-}
-```
+1. **物理页不存在**（`phys == MAP_NONE`）：
+   - 查找缓存页（`find_cached_page_bydev` 或 `find_cached_page_byino`）
+   - 缓存命中：链接缓存页（`pb_link`），若需要写入或末尾清理则执行 `cow_block`，否则返回 OK
+   - 缓存未命中且无回调：返回 `EFAULT`
+   - 缓存未命中且有回调：向 VFS 请求（`vfs_request`），返回 `SUSPEND`
+2. **物理页存在且非写操作**：返回 OK
+3. **物理页存在且写操作**：执行 `cow_block`，转为匿名内存
 
 **mappedfile_writable - 不可直接写**
 
@@ -1341,31 +1160,13 @@ struct mem_type mem_type_mappedfile = {
 };
 ```
 
-**mmap 系统调用流程**
+**mmap 系统调用流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    mmap 系统调用流程                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   用户进程: mmap(addr, len, prot, flags, fd, offset)        │
-│                         ↓                                   │
-│   VM: do_mmap()                                             │
-│       ├── 验证参数                                          │
-│       └── 向 VFS 请求文件信息 (VMVFSREQ_FDLOOKUP)           │
-│                         ↓                                   │
-│   VFS: 返回 dev, ino, size                                  │
-│                         ↓                                   │
-│   VM: mmap_file()                                           │
-│       ├── mmap_region() 创建虚拟区域                        │
-│       └── mappedfile_setfile() 设置文件信息                 │
-│               ├── fdref_dedup_or_new() 创建/复用 fdref      │
-│               └── prefill: 预填充已有缓存页                 │
-│                         ↓                                   │
-│   返回映射地址                                              │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 用户进程调用 `mmap(addr, len, prot, flags, fd, offset)`
+2. VM 的 `do_mmap()` 验证参数，向 VFS 请求文件信息（`VMVFSREQ_FDLOOKUP`）
+3. VFS 返回 `dev`, `ino`, `size`
+4. VM 的 `mmap_file()` 调用 `mmap_region()` 创建虚拟区域，`mappedfile_setfile()` 设置文件信息（包括 `fdref_dedup_or_new()` 创建/复用 fdref，以及 prefill 预填充已有缓存页）
+5. 返回映射地址
 
 **与缓存系统的交互**
 
@@ -1376,34 +1177,11 @@ struct mem_type mem_type_mappedfile = {
 | 写入 | COW 分配新页，转为匿名内存 |
 | fork | 复制映射信息，共享 fdref |
 
-**写时复制的意义**
+**写时复制的意义**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   写时复制 (COW) 机制                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   读取时：                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 多个进程共享同一缓存页                               │   │
-│   │ phys_region → cached_page (只读)                    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   写入时：                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 分配新的物理页                                    │   │
-│   │ 2. 复制缓存页内容到新页                              │   │
-│   │ 3. 修改 phys_region 指向新页                        │   │
-│   │ 4. 类型改为 mem_type_anon                           │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   结果：                                                     │
-│   - 写入进程拥有私有副本                                    │
-│   - 其他进程仍共享原缓存页                                  │
-│   - 保证文件映射的写隔离                                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **读取时**：多个进程共享同一缓存页，`phys_region` 指向 `cached_page`（只读）
+- **写入时**：1. 分配新的物理页；2. 复制缓存页内容到新页；3. 修改 `phys_region` 指向新页；4. 类型改为 `mem_type_anon`
+- **结果**：写入进程拥有私有副本，其他进程仍共享原缓存页，保证文件映射的写隔离
 
 **限制总结**
 
@@ -1509,39 +1287,13 @@ static int shared_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 **页错误处理流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                shared_pagefault 流程                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   进程 B 访问共享内存触发页错误                               │
-│                ↓                                            │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ getsrc(): 获取源进程和源区域                         │   │
-│   │   - 根据 ep 找到源进程                               │   │
-│   │   - 根据 vaddr 找到源区域                            │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                ↓                                            │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 物理页已存在?                                        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│        │ 是                    │ 否                         │
-│        ↓                      ↓                             │
-│   返回 OK            ┌─────────────────────────────────┐    │
-│                       │ physblock_get(): 查找源区域物理页 │    │
-│                       └─────────────────────────────────┘    │
-│                              │ 找到      │ 未找到            │
-│                              ↓           ↓                   │
-│                         pb_link()    map_pf(): 触发源区域    │
-│                         链接物理页     页错误后重试           │
-│                              │                              │
-│                              ↓                              │
-│                         pb_link() 链接物理页                 │
-│                                                             │
-│   结果：进程 B 的 phys_region 指向进程 A 的物理块            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. `getsrc()` 获取源进程和源区域（根据 `param.shared.ep` 和 `param.shared.vaddr`）
+2. 若物理页已存在（`ph->ph->phys != MAP_NONE`），直接返回 OK
+3. 释放空的物理块（`pb_free(ph->ph)`）
+4. 查找源区域对应偏移的物理区域（`physblock_get(src_region, ph->offset)`）
+5. 若源区域也没有物理页：先触发源区域的页错误（`map_pf(src_vmp, src_region, ...)`），然后重试获取
+6. 链接到源区域的物理块（`pb_link(ph, pr->ph, ph->offset, region)`）
+7. 结果：进程 B 的 `phys_region` 指向进程 A 的物理块
 
 **getsrc - 获取源区域**
 
@@ -1798,23 +1550,53 @@ int do_remap(message *m)
 Minix3 的内存回收完全依赖引用计数机制，通过 `ev_unreference` 回调实现：
 
 ```c
-// pb.c - 物理块引用计数管理
-int pb_free(struct phys_block *pb)
+// pb.c - 物理块释放（无引用计数逻辑）
+void pb_free(struct phys_block *pb)
 {
-    if(pb->refcount <= 0) {
-        panic("pb_free: bad refcount");
-    }
-
-    if(--pb->refcount > 0) {
-        return FALSE;  // 还有引用，不释放
-    }
-
-    // 引用计数为 0，释放物理页
-    if(pb->phys != MAP_NONE) {
+    if(pb->phys != MAP_NONE)
         free_mem(ABS2CLICK(pb->phys), 1);
+    SLABFREE(pb);
+}
+
+// pb.c - 物理块引用计数管理（解除引用时调用）
+void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
+{
+    struct phys_block *pb;
+
+    pb = pr->ph;
+    assert(pb->refcount > 0);
+    USE(pb, pb->refcount--;);
+
+    // 从链表中移除 phys_region
+    if(pb->firstregion == pr) {
+        USE(pb, pb->firstregion = pr->next_ph_list;);
+    } else {
+        // 遍历链表找到前驱
+        struct phys_region *others;
+        for(others = pb->firstregion; others;
+            others = others->next_ph_list) {
+            assert(others->ph == pb);
+            if(others->next_ph_list == pr) {
+                USE(others, others->next_ph_list = pr->next_ph_list;);
+                break;
+            }
+        }
+        assert(others);
     }
 
-    return TRUE;  // 已释放
+    // 引用计数为 0 时，调用 ev_unreference 回调并释放 phys_block
+    if(pb->refcount == 0) {
+        assert(!pb->firstregion);
+        int r;
+        if((r = pr->memtype->ev_unreference(pr)) != OK)
+            panic("unref failed, %d", r);
+
+        SLABFREE(pb);
+    }
+
+    pr->ph = NULL;
+
+    if(rm) physblock_set(region, pr->offset, NULL);
 }
 ```
 
@@ -1831,37 +1613,23 @@ int pb_free(struct phys_block *pb)
 | `mem_type_mappedfile` | `mappedfile_unreference` | 引用为 0 时释放物理页 |
 | `mem_type_shared` | 复用 `anon_unreference` | 引用为 0 时释放物理页 |
 
-**引用计数变化场景**
+**引用计数变化场景**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    引用计数变化场景                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   增加引用 (ev_reference):                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. fork: 父进程的 phys_region 被子进程引用          │   │
-│   │ 2. 共享内存: 多个进程共享同一物理页                  │   │
-│   │ 3. 缓存共享: 多个文件系统请求同一缓存页              │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   减少引用 (ev_unreference):                                 │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. munmap: 解除内存映射                             │   │
-│   │ 2. 进程终止: 释放所有内存区域                        │   │
-│   │ 3. 区域收缩: 释放被移除的部分                        │   │
-│   │ 4. CoW: 写时复制后解除对原页面的引用                 │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   引用计数 = 0 时:                                           │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 调用 ev_unreference 回调                         │   │
-│   │ 2. 释放物理页 (free_mem)                            │   │
-│   │ 3. 释放 phys_block 结构                             │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+增加引用（`ev_reference`）：
+1. fork：父进程的 `phys_region` 被子进程引用
+2. 共享内存：多个进程共享同一物理页
+3. 缓存共享：多个文件系统请求同一缓存页
+
+减少引用（`ev_unreference`）：
+1. munmap：解除内存映射
+2. 进程终止：释放所有内存区域
+3. 区域收缩：释放被移除的部分
+4. CoW：写时复制后解除对原页面的引用
+
+引用计数 = 0 时：
+1. 调用 `ev_unreference` 回调
+2. 释放物理页（`free_mem`）
+3. 释放 `phys_block` 结构
 
 **内存压力处理**
 
@@ -1908,20 +1676,6 @@ Minix3 选择不实现传统页面回收的原因：
 2. **实时性**：避免页面换出导致的延迟
 3. **嵌入式友好**：适合没有 swap 空间的嵌入式系统
 4. **可靠性**：内存不足时行为可预测
-
-**Rust 实现建议**
-
-```rust
-pub trait MemoryType {
-    fn on_unreference(&self, phys_region: &mut PhysRegion) -> Result<()> {
-        Ok(())
-    }
-    
-    fn can_evict(&self) -> bool {
-        false  // Minix3 风格：不支持页面回收
-    }
-}
-```
 
 #### 2.3.2 cow - 写时复制
 
@@ -1984,39 +1738,18 @@ int mem_cow(struct vir_region *region,
 }
 ```
 
-**CoW 流程图**
+**CoW 执行流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CoW 执行流程                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   写入操作触发页错误                                         │
-│        ↓                                                    │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 检查条件:                                            │   │
-│   │   - refcount > 1 (多个引用)                          │   │
-│   │   - write = true (写入操作)                          │   │
-│   └─────────────────────────────────────────────────────┘   │
-│        │ 满足          │ 不满足                             │
-│        ↓              ↓                                     │
-│   执行 CoW         直接返回 OK                              │
-│        │                                                    │
-│        ↓                                                    │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 分配新物理页 (alloc_mem)                          │   │
-│   │ 2. 复制数据 (sys_abscopy)                           │   │
-│   │ 3. 创建新 phys_block                                 │   │
-│   │ 4. 解除原引用 (pb_unreferenced)                      │   │
-│   │ 5. 链接新块 (pb_link)                               │   │
-│   │ 6. 类型改为 mem_type_anon                           │   │
-│   └─────────────────────────────────────────────────────┘   │
-│        │                                                    │
-│        ↓                                                    │
-│   返回 OK，进程继续写入                                      │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 写入操作触发页错误，检查条件：`refcount > 1` 且 `write = true`
+2. 若不满足条件，直接返回 OK
+3. 若满足条件，执行 CoW：
+   - 分配新物理页（`alloc_mem`）
+   - 复制数据（`sys_abscopy`）
+   - 创建新 `phys_block`
+   - 解除原引用（`pb_unreferenced`）
+   - 链接新块（`pb_link`）
+   - 类型改为 `mem_type_anon`
+4. 返回 OK，进程继续写入
 
 **anon_pagefault 中的 CoW 判断**
 
@@ -2209,43 +1942,6 @@ if(ph->ph->refcount < 2 || !write) {
 return mem_cow(region, ph, new_page_cl, new_page);
 ```
 
-**Rust 实现建议**
-
-```rust
-pub fn handle_cow(
-    region: &mut VirRegion,
-    phys_region: &mut PhysRegion,
-) -> Result<()> {
-    // 检查是否需要 CoW
-    if phys_region.phys_block.refcount <= 1 {
-        return Ok(());
-    }
-
-    // 分配新物理页
-    let new_frame = PhysFrame::alloc()?;
-
-    // 复制数据
-    arch::memcpy_phys(
-        phys_region.phys_block.phys,
-        new_frame.phys(),
-        PAGE_SIZE,
-    );
-
-    // 创建新物理块
-    let new_block = PhysBlock::new(new_frame);
-
-    // 解除原引用
-    phys_region.phys_block.dec_ref();
-
-    // 链接新块
-    phys_region.phys_block = new_block;
-
-    // 类型转为匿名内存
-    phys_region.mem_type = MemoryType::Anonymous;
-
-    Ok(())
-}
-
 #### 2.3.3 other 操作
 
 **回调函数完整列表**
@@ -2341,27 +2037,9 @@ static void mappedfile_split(struct vmproc *vmp, struct vir_region *vr,
 
 **分割流程**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    区域分割流程                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   原区域:  [========== 区域 VR ==========]                  │
-│             ↑                               ↑               │
-│          vaddr                          vaddr+len           │
-│                                                             │
-│   munmap 中间部分后:                                         │
-│                                                             │
-│   区域 R1: [======]          区域 R2:          [======]     │
-│            ↑    ↑                                  ↑    ↑   │
-│         vaddr split_len                      split_len  len │
-│                                                             │
-│   ev_split 调整:                                             │
-│   - R1: 保持原 vaddr, length = split_len                    │
-│   - R2: vaddr += split_len, 调整内部偏移                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+区域分割发生在 `munmap` 中间部分时。原区域 VR 被分为 R1 和 R2：
+- R1：保持原 vaddr，length = split_len
+- R2：vaddr += split_len，`ev_split` 调整内部偏移（如文件映射的 `file.offset += r1->length`）
 
 **ev_resize - 调整大小**
 
@@ -2547,78 +2225,6 @@ if(pr->memtype->ev_sanitycheck)
 | `regionid` | ✅ | - | - | - | - | ✅ |
 | `refcount` | ✅ | - | - | - | - | ✅ |
 | `pt_flags` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-
-**Rust 实现建议**
-
-```rust
-pub trait MemoryType {
-    fn name(&self) -> &'static str;
-
-    fn on_new(&self, _region: &mut VirRegion) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_delete(&self, _region: &mut VirRegion) {}
-
-    fn on_reference(&self, _pr: &PhysRegion, _new_pr: &PhysRegion) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_pagefault(
-        &self,
-        _vmp: &mut VmProc,
-        _region: &mut VirRegion,
-        _ph: &mut PhysRegion,
-        _write: bool,
-    ) -> Result<PagefaultResult> {
-        Ok(PagefaultResult::Ok)
-    }
-
-    fn on_resize(&self, _vmp: &mut VmProc, _region: &mut VirRegion, _new_len: usize) -> Result<()> {
-        Err(Errno::EINVAL)
-    }
-
-    fn on_split(
-        &self,
-        _vmp: &mut VmProc,
-        _vr: &VirRegion,
-        _r1: &mut VirRegion,
-        _r2: &mut VirRegion,
-    ) {
-    }
-
-    fn on_copy(&self, _vr: &VirRegion, _new_vr: &mut VirRegion) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_lowshrink(&self, _vr: &mut VirRegion, _len: usize) -> Result<()> {
-        Err(Errno::EINVAL)
-    }
-
-    fn writable(&self, _pr: &PhysRegion) -> bool {
-        false
-    }
-
-    fn on_sanitycheck(&self, _pr: &PhysRegion) -> Result<()> {
-        Ok(())
-    }
-
-    fn regionid(&self, _vr: &VirRegion) -> Option<u32> {
-        None
-    }
-
-    fn refcount(&self, _vr: &VirRegion) -> Option<u32> {
-        None
-    }
-
-    fn pt_flags(&self, _vr: &VirRegion) -> u32 {
-        0
-    }
-}
 
 ---
 
@@ -3104,8 +2710,8 @@ impl MemType for DirectPhysical {
         Ok(())
     }
 
-    fn is_writable(&self, _pr: &PhysRegion) -> bool {
-        true  // 直接物理映射总是可写
+    fn is_writable(&self, pr: &PhysRegion) -> bool {
+        pr.get_phys_addr().is_some()
     }
 }
 ```
@@ -3435,7 +3041,7 @@ impl MemType for SharedMemory {
 | `on_resize` | ✅ 扩展 | 默认 | ❌ 不支持 | ❌ 不支持 | 默认 | 默认 |
 | `on_split` | 默认 | 默认 | ✅ | 默认 | ✅ 调整偏移 | 默认 |
 | `on_copy` | 默认 | ✅ 复制物理 | 默认 | 默认 | ✅ 复制信息 | ✅ 复制引用 |
-| `is_writable` | ✅ refcount=1 | ✅ true | ✅ 已分配 | ✅ 已分配 | ❌ false | ✅ true |
+| `is_writable` | ✅ refcount=1 | ✅ 已分配 | ✅ 已分配 | ✅ 已分配 | ❌ false | ✅ 已分配 |
 
 ### 3.3 与 C 的兼容性
 
@@ -3495,50 +3101,12 @@ let result = region.mem_type.on_pagefault(vmp, region, pr, write);
 
 **内存布局对比**
 
-```
-C 函数指针表:
-┌─────────────────────────────────────────────────────────────┐
-│ mem_type_anon (静态存储)                                     │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ name: "anonymous memory"                                │ │
-│ │ ev_new: NULL                                            │ │
-│ │ ev_delete: NULL                                         │ │
-│ │ ev_pagefault: 0x401234                                  │ │
-│ │ ev_resize: 0x401567                                     │ │
-│ │ ...                                                     │ │
-│ └─────────────────────────────────────────────────────────┘ │
-│                                                             │
-│ vir_region                                                  │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ def_memtype: 0x401000 ────────┘                         │ │
-│ └─────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-
-Rust trait object:
-┌─────────────────────────────────────────────────────────────┐
-│ AnonymousMemory (静态存储)                                   │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ (单元结构体，无数据)                                     │ │
-│ └─────────────────────────────────────────────────────────┘ │
-│                                                             │
-│ vtable (编译器生成)                                          │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ name: 0x401234                                          │ │
-│ │ on_new: 0x401300 (默认实现)                              │ │
-│ │ on_delete: 0x401320 (默认实现)                           │ │
-│ │ on_pagefault: 0x401340                                  │ │
-│ │ on_resize: 0x401560                                     │ │
-│ │ ...                                                     │ │
-│ └─────────────────────────────────────────────────────────┘ │
-│                                                             │
-│ vir_region                                                  │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ mem_type: Arc<dyn MemType>                               │ │
-│ │   - data_ptr: 0x401000 ────────┐                         │ │
-│ │   - vtable_ptr: 0x402000 ──────┼───┘                     │ │
-│ └─────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
+| 方面 | C 函数指针表 | Rust trait object |
+|------|-------------|-------------------|
+| 存储方式 | 静态结构体，包含所有函数指针 | 单元结构体（无数据）+ 编译器生成 vtable |
+| 引用方式 | `vir_region.def_memtype` 指向静态实例 | `Arc<dyn MemType>` 胖指针（data_ptr + vtable_ptr） |
+| NULL 处理 | 需运行时检查每个函数指针 | 不需要，默认实现替代 NULL |
+| vtable 共享 | 每个实例自带函数指针数组 | 同类型共享 vtable |
 
 **性能对比**
 
@@ -5335,9 +4903,13 @@ mod integration_tests {
 
 ## 7. 参见
 
-- [12-vir-region.md](12-vir-region.md) - 区域的 mem_type 字段
-- [15-cow-mechanism.md](15-cow-mechanism.md) - 匿名内存的 CoW
-- [19-vm-map.md](19-vm-map.md) - mmap 使用不同内存类型
+- [10-phys-block.md](10-phys-block.md) - phys_block 结构与引用计数（pb_reference/pb_unreferenced）
+- [12-vir-region.md](12-vir-region.md) - 区域的 def_memtype 字段与内存类型绑定
+- [14-phys-region.md](14-phys-region.md) - phys_region 的 memtype 字段与类型覆盖
+- [15-cow-mechanism.md](15-cow-mechanism.md) - 匿名内存的 CoW 与 cow_block 实现
+- [16-pagefault.md](16-pagefault.md) - 页错误处理流程与 memtype 回调的调用时机
+- [17-vm-fork.md](17-vm-fork.md) - fork 中的 ev_reference 与内存类型继承
+- [19-vm-map.md](19-vm-map.md) - mmap 使用 mappedfile/shared 内存类型
 
 ---
 

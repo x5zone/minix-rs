@@ -22,7 +22,7 @@
 
 ### 1.2 地址空间布局
 
-进程的虚拟地址空间由多个不连续的区域组成：
+进程的虚拟地址空间由多个不连续的区域组成。以下是典型的区域布局（具体地址范围由 Minix3 的 `VM_MMAPBASE` 等常量决定）：
 
 ```
 低地址
@@ -37,7 +37,7 @@
 │    未使用        │
 │                 │
 ├─────────────────┤
-│   内存映射区      │  ← mmap 分配
+│   内存映射区      │  ← mmap 分配（从 VM_MMAPBASE 开始）
 │                 │
 ├─────────────────┤
 │    未使用        │
@@ -99,7 +99,7 @@ typedef struct vir_region {
             struct fdref *fdref;
             u64_t   offset;
             u16_t   clearend;
-        } file;                 /* VR_MAPPEDFILE: 文件映射 */
+        } file;                 /* 文件映射（def_memtype==mem_type_mappedfile 时使用） */
     } param;
 
     /* AVL 树字段 */
@@ -147,10 +147,10 @@ vir_region (虚拟区域)
    - 元素为 `NULL` 表示该页未分配物理内存（按需分配）
 
 2. **param 联合体**:
-   - 根据 `flags` 中的类型标志使用不同字段
+   - 根据 `flags` 中的类型标志和 `def_memtype` 使用不同字段
    - `VR_DIRECT`: 直接物理映射（设备内存）
    - `VR_SHARED`: 共享内存映射
-   - 文件映射: 映射到文件
+   - 文件映射: 由 `def_memtype == &mem_type_mappedfile` 决定，使用 `param.file` 字段
 
 3. **AVL 树组织**:
    - 所有 vir_region 按 `vaddr` 排序
@@ -241,7 +241,7 @@ Minix3 提供了一组区域操作函数，用于分配、释放和查找虚拟�
 
 #### 2.3.1 map_page_region - 分配区域
 
-分配新的虚拟区域并插入进程的 AVL 树：
+分配新的虚拟区域并插入进程的 AVL 树（`region.c:463`）：
 
 ```c
 struct vir_region *map_page_region(struct vmproc *vmp, vir_bytes minv,
@@ -250,6 +250,8 @@ struct vir_region *map_page_region(struct vmproc *vmp, vir_bytes minv,
 {
     struct vir_region *newregion;
     vir_bytes startv;
+
+    assert(!(length % VM_PAGE_SIZE));
 
     // 1. 在地址空间中找到合适的空闲槽位
     startv = region_find_slot(vmp, minv, maxv, length);
@@ -265,11 +267,23 @@ struct vir_region *map_page_region(struct vmproc *vmp, vir_bytes minv,
     // 3. 调用内存类型的 ev_new 回调（如需要）
     if(newregion->def_memtype->ev_new) {
         if(newregion->def_memtype->ev_new(newregion) != OK) {
+            /* ev_new will have freed and removed the region */
             return NULL;
         }
     }
 
-    // 4. 插入 AVL 树
+    // 4. MF_PREALLOC: 预分配物理页（可选）
+    if(mapflags & MF_PREALLOC) {
+        if(map_handle_memory(vmp, newregion, 0, length, 1,
+            NULL, 0, 0) != OK) {
+            printf("VM: map_page_region: prealloc failed\n");
+            map_free(newregion);
+            return NULL;
+        }
+    }
+    newregion->flags &= ~VR_UNINITIALIZED;  // 预分配后取消 UNINITIALIZED
+
+    // 5. 插入 AVL 树
     region_insert(&vmp->vm_regions_avl, newregion);
 
     return newregion;
@@ -284,6 +298,7 @@ static struct vir_region *region_new(struct vmproc *vmp, vir_bytes startv,
 {
     struct vir_region *newregion;
     struct phys_region **newphysregions;
+    static u32_t id;
     int slots = phys_slot(length);  // length / VM_PAGE_SIZE
 
     // 使用 Slab 分配器分配结构体
@@ -297,6 +312,9 @@ static struct vir_region *region_new(struct vmproc *vmp, vir_bytes startv,
     newregion->length = length;
     newregion->flags = flags;
     newregion->def_memtype = memtype;
+    newregion->remaps = 0;
+    newregion->id = id++;
+    newregion->lower = newregion->higher = NULL;
     newregion->parent = vmp;
 
     // 分配 physblocks 数组
@@ -317,7 +335,7 @@ static struct vir_region *region_new(struct vmproc *vmp, vir_bytes startv,
 
 #### 2.3.2 map_free - 释放区域
 
-释放虚拟区域及其所有物理页映射：
+释放虚拟区域及其所有物理页映射（`region.c:568`）：
 
 ```c
 int map_free(struct vir_region *region)
@@ -326,6 +344,7 @@ int map_free(struct vir_region *region)
 
     // 1. 释放所有 phys_region 和减少 phys_block 引用计数
     if((r=map_subfree(region, 0, region->length)) != OK) {
+        printf("%d\n", __LINE__);
         return r;
     }
 
@@ -350,9 +369,28 @@ static int map_subfree(struct vir_region *region,
     vir_bytes end = start + len;
     vir_bytes voffset;
 
+#if SANITYCHECKS
+    // 调试模式下先验证链表完整性
+    SLABSANE(region);
+    for(voffset = 0; voffset < phys_slot(region->length);
+        voffset += VM_PAGE_SIZE) {
+        struct phys_region *others;
+        struct phys_block *pb;
+        if(!(pr = physblock_get(region, voffset)))
+            continue;
+        pb = pr->ph;
+        for(others = pb->firstregion; others;
+            others = others->next_ph_list) {
+            assert(others->ph == pb);
+        }
+    }
+#endif
+
     for(voffset = start; voffset < end; voffset += VM_PAGE_SIZE) {
         if(!(pr = physblock_get(region, voffset)))
             continue;
+        assert(pr->offset >= start);
+        assert(pr->offset < end);
         // 减少引用计数，可能释放物理页
         pb_unreferenced(region, pr, 1);
         SLABFREE(pr);
@@ -370,13 +408,18 @@ static int map_subfree(struct vir_region *region,
 
 #### 2.3.3 map_lookup - 查找区域
 
-通过 AVL 树查找包含指定地址的区域：
+通过 AVL 树查找包含指定地址的区域（`region.c:616`）：
 
 ```c
 struct vir_region *map_lookup(struct vmproc *vmp,
     vir_bytes offset, struct phys_region **physr)
 {
     struct vir_region *r;
+
+#if SANITYCHECKS
+    if(!region_search_root(&vmp->vm_regions_avl))
+        panic("process has no regions: %d", vmp->vm_endpoint);
+#endif
 
     // 在 AVL 树中搜索（查找 <= offset 的最大 vaddr）
     if((r = region_search(&vmp->vm_regions_avl, offset, AVL_LESS_EQUAL))) {
@@ -386,6 +429,7 @@ struct vir_region *map_lookup(struct vmproc *vmp,
             vir_bytes ph = offset - r->vaddr;
             if(physr) {
                 *physr = physblock_get(r, ph);
+                if(*physr) assert((*physr)->offset == ph);
             }
             return r;
         }
@@ -432,10 +476,13 @@ phys_block (物理块)
 ```c
 // region.h
 struct phys_block {
-    phys_bytes      phys;           // 物理内存地址
+#if SANITYCHECKS
+    u32_t            seencount;     // 调试：遍历检查计数
+#endif
+    phys_bytes       phys;          // 物理内存地址
     struct phys_region *firstregion; // 引用链表头
-    u8_t            refcount;       // 引用计数
-    u8_t            flags;
+    u8_t             refcount;      // 引用计数
+    u8_t             flags;
 };
 
 // phys_region.h
@@ -443,28 +490,29 @@ struct phys_region {
     struct phys_block  *ph;         // 指向物理块
     struct vir_region  *parent;     // 所属虚拟区域
     vir_bytes          offset;      // 区域内偏移
+#if SANITYCHECKS
+    int                written;     // 已写入页表标记
+#endif
+    mem_type_t        *memtype;     // 内存类型回调
     struct phys_region *next_ph_list; // 链表下一个节点
 };
 ```
 
 #### 2.4.2 pb_link - 插入链表
 
-使用**头插法**将新的 `phys_region` 插入链表：
+使用**头插法**将新的 `phys_region` 插入链表（`pb.c:61`）：
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
     vir_bytes offset, struct vir_region *parent)
 {
-    // 设置 phys_region 字段
+    // 设置 phys_region 字段（USE 宏在 SANITYCHECKS 下有额外检查）
+    USE(newphysr,
     newphysr->offset = offset;
     newphysr->ph = newpb;
     newphysr->parent = parent;
-
-    // 头插法：新节点插入链表头部
     newphysr->next_ph_list = newpb->firstregion;
-    newpb->firstregion = newphysr;
-
-    // 增加引用计数
+    newpb->firstregion = newphysr;);
     newpb->refcount++;
 }
 ```
@@ -473,14 +521,14 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 #### 2.4.3 pb_unreferenced - 从链表移除
 
-从链表中移除 `phys_region` 并减少引用计数：
+从链表中移除 `phys_region` 并减少引用计数（`pb.c:96`）：
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 {
     struct phys_block *pb = pr->ph;
 
-    // 减少引用计数
+    assert(pb->refcount > 0);
     pb->refcount--;
 
     // 从链表中移除
@@ -491,17 +539,21 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
         // 遍历链表找到前驱节点
         struct phys_region *others;
         for (others = pb->firstregion; others; others = others->next_ph_list) {
+            assert(others->ph == pb);  // 验证链表完整性
             if (others->next_ph_list == pr) {
                 others->next_ph_list = pr->next_ph_list;
                 break;
             }
         }
+        assert(others);  // 确保找到了节点（否则不在链表中）
     }
 
     // 引用计数为 0，释放物理块
     if (pb->refcount == 0) {
         assert(!pb->firstregion);  // 链表应为空
-        pr->memtype->ev_unreference(pr);
+        int r;
+        if((r = pr->memtype->ev_unreference(pr)) != OK)
+            panic("unref failed, %d", r);
         SLABFREE(pb);
     }
 
@@ -579,6 +631,15 @@ pub struct VirRegion {
 | `flags` | `u16_t` | `VrFlags(u16)` | 封装为类型安全的结构体 |
 | `param` | `union` | `enum VrParam` | Rust enum 提供类型安全的联合体 |
 | AVL 字段 | 内嵌指针 | `Option<Box<VirRegion>>` | 所有权明确，自动内存管理 |
+
+**32位 vs 64位架构差异**:
+
+| 方面 | Minix3 (32位) | minix-rs (64位) | 说明 |
+|------|---------------|-----------------|------|
+| `vaddr` / `length` | `vir_bytes` = u32 | `VirBytes` = u64 | 64位地址空间 |
+| `physblocks` 指针 | 4字节指针 | 8字节指针 | 指针大小翻倍 |
+| `param.phys` | `phys_bytes` = u32 | u64 | 支持更大物理地址 |
+| 结构体大小 | ~40字节 | ~72字节 | 指针和地址字段增大 |
 
 ### 3.2 标志位设计
 
@@ -711,6 +772,7 @@ static struct vir_region *region_new(struct vmproc *vmp,
 {
     struct vir_region *newregion;
     struct phys_region **newphysregions;
+    static u32_t id;
     int slots = phys_slot(length);  // length / VM_PAGE_SIZE
 
     // 使用 Slab 分配器分配结构体
@@ -724,6 +786,9 @@ static struct vir_region *region_new(struct vmproc *vmp,
     newregion->length = length;
     newregion->flags = flags;
     newregion->def_memtype = memtype;
+    newregion->remaps = 0;
+    newregion->id = id++;
+    newregion->lower = newregion->higher = NULL;
     newregion->parent = vmp;
 
     // 分配 physblocks 数组
@@ -835,22 +900,51 @@ static int split_region(struct vmproc *vmp, struct vir_region *vr,
 {
     struct vir_region *r1 = NULL, *r2 = NULL;
     vir_bytes rem_len = vr->length - split_len;
+    int slots1, slots2;
+    vir_bytes voffset;
+    int n1 = 0, n2 = 0;
+
+    assert(!(split_len % VM_PAGE_SIZE));
+    assert(!(rem_len % VM_PAGE_SIZE));
 
     // 检查内存类型是否支持分割
     if(!vr->def_memtype->ev_split) {
+        printf("VM: split region not implemented for %s\n",
+            vr->def_memtype->name);
         return EINVAL;
     }
 
-    // 创建两个新区域
-    r1 = region_new(vmp, vr->vaddr, split_len, vr->flags, vr->def_memtype);
-    r2 = region_new(vmp, vr->vaddr + split_len, rem_len, vr->flags, vr->def_memtype);
+    slots1 = phys_slot(split_len);
+    slots2 = phys_slot(rem_len);
 
-    // 迁移 phys_region 引用
-    for(voffset = 0; voffset < r1->length; voffset += VM_PAGE_SIZE) {
-        struct phys_region *ph = physblock_get(vr, voffset);
-        if(ph) pb_reference(ph->ph, voffset, r1, ph->memtype);
+    // 创建两个新区域
+    if(!(r1 = region_new(vmp, vr->vaddr, split_len, vr->flags,
+        vr->def_memtype))) {
+        goto bail;
     }
-    // r2 同理...
+    if(!(r2 = region_new(vmp, vr->vaddr+split_len, rem_len, vr->flags,
+        vr->def_memtype))) {
+        map_free(r1);
+        goto bail;
+    }
+
+    // 迁移 r1 的 phys_region 引用
+    for(voffset = 0; voffset < r1->length; voffset += VM_PAGE_SIZE) {
+        struct phys_region *ph, *phn;
+        if(!(ph = physblock_get(vr, voffset))) continue;
+        if(!(phn = pb_reference(ph->ph, voffset, r1, ph->memtype)))
+            goto bail;
+        n1++;
+    }
+
+    // 迁移 r2 的 phys_region 引用
+    for(voffset = 0; voffset < r2->length; voffset += VM_PAGE_SIZE) {
+        struct phys_region *ph, *phn;
+        if(!(ph = physblock_get(vr, split_len + voffset))) continue;
+        if(!(phn = pb_reference(ph->ph, voffset, r2, ph->memtype)))
+            goto bail;
+        n2++;
+    }
 
     // 调用内存类型的 ev_split 回调
     vr->def_memtype->ev_split(vmp, vr, r1, r2);
@@ -864,6 +958,12 @@ static int split_region(struct vmproc *vmp, struct vir_region *vr,
     *vr1 = r1;
     *vr2 = r2;
     return OK;
+
+  bail:
+    if(r1) map_free(r1);
+    if(r2) map_free(r2);
+    printf("split_region: failed\n");
+    return ENOMEM;
 }
 ```
 
@@ -876,158 +976,27 @@ static int split_region(struct vmproc *vmp, struct vir_region *vr,
 
 ## 5. fork 相关操作
 
+> 本章仅概述 vir_region 在 fork 中的角色，详细分析参见 [17-vm-fork.md](17-vm-fork.md)。
+
 ### 5.1 区域复制
 
-**核心函数**: `map_copy_region()` + `map_proc_copy()`
+fork 时通过 `map_proc_copy()` → `map_copy_region()` 复制父进程的所有虚拟区域。核心逻辑：
 
-**调用链**:
+1. `map_copy_region()` (`region.c:802`) 为每个 `vir_region` 创建新实例
+2. 新区域共享原物理页（`pb_reference` 增加引用计数），不复制数据
+3. `ev_reference` 回调设置 CoW 标记
 
-```
-do_fork()                           // fork.c
-    │
-    ├── map_proc_copy(dst, src)     // 复制进程所有区域
-    │       │
-    │       └── map_copy_region()   // 复制单个区域
-    │               ├── region_new()        // 创建新 vir_region
-    │               ├── ev_copy() 回调      // 内存类型特定复制
-    │               └── pb_reference()      // 共享物理页
-    │
-    ├── map_writept(src)            // 更新父进程页表
-    └── map_writept(dst)            // 更新子进程页表
-```
-
-**map_copy_region() 实现** (`region.c:802`):
-
-```c
-struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
-{
-    struct vir_region *newvr;
-    struct phys_region *ph;
-    vir_bytes p;
-
-    // 创建新的 vir_region（不增加 refcount）
-    if(!(newvr = region_new(vr->parent, vr->vaddr, vr->length, vr->flags, vr->def_memtype)))
-        return NULL;
-
-    newvr->parent = vmp;  // 设置新父进程
-
-    // 调用内存类型的 ev_copy 回调
-    if(vr->def_memtype->ev_copy && (r=vr->def_memtype->ev_copy(vr, newvr)) != OK) {
-        map_free(newvr);
-        return NULL;
-    }
-
-    // 遍历所有 phys_region，共享物理页
-    for(p = 0; p < phys_slot(vr->length); p++) {
-        struct phys_region *newph;
-
-        if(!(ph = physblock_get(vr, p*VM_PAGE_SIZE))) continue;
-
-        // 共享物理页，增加 refcount
-        newph = pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype);
-
-        // 调用 ev_reference 回调（设置 CoW）
-        if(ph->memtype->ev_reference)
-            ph->memtype->ev_reference(ph, newph);
-    }
-
-    return newvr;
-}
-```
-
-**关键点**:
-- 新区域共享原物理页，不复制数据
-- `pb_reference` 增加物理页引用计数
-- `ev_reference` 回调用于设置 CoW（见下节）
+**关键设计**: `map_copy_region` 创建的新区域处于"limbo"状态——不增加 `phys_block.refcount`，由调用者（`map_proc_copy_range`）在链接到子进程后负责增加。
 
 ### 5.2 CoW 设置
 
-**CoW (Copy-on-Write) 机制**:
+fork 后父子进程共享物理页，写入时才复制：
 
-fork 后父子进程共享物理页，写入时才复制。这需要：
-1. 页表设置为只读
-2. 物理页引用计数增加
-3. 写入时触发缺页异常，复制物理页
+1. **页表只读**: `map_ph_writept()` 根据区域和内存类型的可写性设置页表标志
+2. **写入触发缺页**: 缺页处理调用 `mem_cow()` (`pb.c:136`) 分配新物理页并复制数据
+3. **CoW 后变匿名**: `mem_cow()` 将 `ph->memtype` 设为 `mem_type_anon`
 
-**页表权限判断** (`region.c:130`):
-
-```c
-static int pr_writable(struct vir_region *vr, struct phys_region *pr)
-{
-    // 区域可写 且 内存类型允许写入
-    return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
-}
-```
-
-**页表写入** (`region.c:256`):
-
-```c
-int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
-    struct phys_region *pr)
-{
-    int flags = PTF_PRESENT | PTF_USER;
-    struct phys_block *pb = pr->ph;
-
-    if(pr_writable(vr, pr))
-        flags |= PTF_WRITE;   // 可写
-    else
-        flags |= PTF_READ;    // 只读（CoW）
-
-    // 写入页表
-    pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,
-        pb->phys, VM_PAGE_SIZE, flags, WMF_OVERWRITE);
-
-    return OK;
-}
-```
-
-**CoW 写入流程** (`pb.c:136`):
-
-```c
-int mem_cow(struct vir_region *region,
-    struct phys_region *ph, phys_bytes new_page_cl, phys_bytes new_page)
-{
-    struct phys_block *pb;
-
-    // 分配新物理页
-    if(new_page == MAP_NONE) {
-        new_page_cl = alloc_mem(1, allocflags);
-        new_page = CLICK2ABS(new_page_cl);
-    }
-
-    // 复制数据到新页
-    sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE);
-
-    // 创建新 phys_block
-    pb = pb_new(new_page);
-
-    // 解除原引用，建立新引用
-    pb_unreferenced(region, ph, 0);  // refcount--
-    pb_link(ph, pb, ph->offset, region);  // 新页 refcount=1
-
-    return OK;
-}
-```
-
-**CoW 流程图**:
-
-```
-fork 后:
-  父进程: PTE=RO, phys_block.refcount=2
-  子进程: PTE=RO, phys_block.refcount=2
-
-写入时（父进程）:
-  1. 触发缺页异常
-  2. VM 调用 mem_cow()
-  3. 分配新物理页，复制数据
-  4. pb_unreferenced(): refcount 2→1
-  5. 更新父进程 PTE=RW
-  6. 父进程写入新页
-
-结果:
-  父进程: PTE=RW, 新 phys_block.refcount=1
-  子进程: PTE=RO, 原 phys_block.refcount=1
-```
+> CoW 机制的完整分析参见 [15-cow-mechanism.md](15-cow-mechanism.md)。
 
 ---
 
@@ -1108,11 +1077,15 @@ cargo test region
 
 ## 7. 参见
 
+- [00-vm-overview.md](00-vm-overview.md) - VM 模块总览
 - [08-slab-allocator.md](08-slab-allocator.md) - 区域分配使用 Slab
-- [14-phys-region.md](14-phys-region.md) - 物理区域
-- [11-memtype.md](11-memtype.md) - 内存类型
+- [10-phys-block.md](10-phys-block.md) - 物理块（phys_block 结构体）
+- [14-phys-region.md](14-phys-region.md) - 物理区域（phys_region 结构体、pb_link、pb_unreferenced）
+- [11-memtype.md](11-memtype.md) - 内存类型（mem_type_t 及回调机制）
 - [13-region-avl.md](13-region-avl.md) - AVL 树实现
-- [17-vm-fork.md](17-vm-fork.md) - fork 时的区域复制
+- [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 机制详解（mem_cow、CoW 触发流程）
+- [16-pagefault.md](16-pagefault.md) - 缺页处理（CoW 触发入口）
+- [17-vm-fork.md](17-vm-fork.md) - fork 时的区域复制（map_proc_copy、map_copy_region 详解）
 
 ---
 

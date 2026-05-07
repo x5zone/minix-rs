@@ -63,7 +63,7 @@ pub(crate) enum VrParam {
 
 impl Default for VrParam {
     fn default() -> Self {
-        Self::Direct { phys: 0 }
+        Self::Direct { phys: PhysBlock::MAP_NONE }
     }
 }
 
@@ -193,17 +193,10 @@ impl VirRegion {
 
         for i in 0..num_pages {
             if let Some(phys_region) = &self.physblocks[i] {
-                if let Some(block_ptr) = phys_region.ph {
-                    unsafe {
-                        let block = &*block_ptr;
-
-                        if block.refcount() > 1 && self.is_writable() && phys_region.is_writable() {
-                            let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
-                            let _paddr = block.phys();
-
-                            let _cow_flags = PageFlags::read_only();
-                        }
-                    }
+                if phys_region.has_phys_block() && self.is_writable() && !phys_region.is_writable() {
+                    let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
+                    let _paddr = phys_region.get_phys_addr().unwrap_or(0);
+                    let _cow_flags = PageFlags::read_only();
                 }
             }
         }
