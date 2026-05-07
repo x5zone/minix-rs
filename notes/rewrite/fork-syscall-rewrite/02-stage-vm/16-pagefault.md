@@ -12,20 +12,22 @@
 
 ### 1.1 页错误类型
 
-Minix3 定义了两种基本页错误类型（基于 x86 架构）：
+Minix3 定义了两种基本页错误类型（基于 x86-32 架构）：
 
 | 错误类型 | 宏定义 | 触发条件 | 典型场景 |
 |---------|--------|---------|---------|
-| **不存在错误 (NP)** | `PFERR_NOPAGE(err)` | 页表项 Present 位为 0 | 首次访问、栈扩展、按需加载 |
+| **不存在错误 (NP)** | `PFERR_NOPAGE(err)` | 页表项 Present 位为 0 | 首次访问、按需加载 |
 | **保护错误 (WP)** | `PFERR_PROT(err)` | 页表项 Present 位为 1 但权限不足 | CoW 写保护触发 |
 
 ```c
-// minix3/minix/servers/vm/arch/i386/pagetable.h
-#define PFERR_NOPAGE(e) (!((e) & I386_VM_PFE_P))  // 页不存在
-#define PFERR_PROT(e)   (((e) & I386_VM_PFE_P))   // 保护错误
-#define PFERR_WRITE(e)  ((e) & I386_VM_PFE_W)     // 写操作触发
-#define PFERR_READ(e)   (!((e) & I386_VM_PFE_W))  // 读操作触发
+// minix3/minix/servers/vm/arch/i386/pagetable.h:36
+#define PFERR_NOPAGE(e)	(!((e) & I386_VM_PFE_P))  // 页不存在
+#define PFERR_PROT(e)	(((e) & I386_VM_PFE_P))    // 保护错误
+#define PFERR_WRITE(e)	((e) & I386_VM_PFE_W)      // 写操作触发
+#define PFERR_READ(e)	(!((e) & I386_VM_PFE_W))    // 读操作触发
 ```
+
+> **x86-32 vs x86-64 差异**: 上述宏定义位于 `arch/i386/pagetable.h`，是 x86-32 特有的。x86-64 的页错误码增加了 bit 2（保留位违规，`PFE_RSVD`）和 bit 4（取指违规，`PFE_FETCH`/`PFERR_EXECUTE`），支持 NX 位（No-Execute）检测。minix-rs 在 x86-64 上需要扩展 `PageFaultType` 和 `AccessType` 以支持执行权限错误。
 
 ### 1.2 处理流程概览
 
@@ -98,6 +100,7 @@ Minix3 定义了两种基本页错误类型（基于 x86 架构）：
 
 ```c
 // 页错误处理状态
+// minix3/minix/servers/vm/pagefaults.c:33
 struct pf_state {
     endpoint_t ep;      // 触发页错误的进程端点
     vir_bytes vaddr;    // 触发错误的虚拟地址
@@ -105,6 +108,7 @@ struct pf_state {
 };
 
 // 内存请求状态（用于内核请求的内存操作）
+// minix3/minix/servers/vm/pagefaults.c:39
 struct hm_state {
     endpoint_t caller;      // 调用者（KERNEL 或进程）
     endpoint_t requestor;   // 请求发起者
@@ -112,8 +116,9 @@ struct hm_state {
     struct vmproc *vmp;     // 目标地址空间
     vir_bytes mem, len;     // 内存范围
     int wrflag;             // 写标志
-    int valid;              // 有效性检查
+    int valid;              // 有效性检查（VALID = 0xc0ff1）
     int vfs_avail;          // 是否可以调用 VFS
+#define VALID	0xc0ff1
 };
 ```
 
@@ -177,7 +182,7 @@ PFERR_WRITE(err) == true  // 是写操作触发
 **Minix3 源码分析**
 
 ```c
-// minix3/minix/servers/vm/mem_anon.c - anon_pagefault()
+// minix3/minix/servers/vm/mem_anon.c:64 - anon_pagefault()
 static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     struct phys_region *ph, int write, vfs_callback_t cb, void *state,
     int len, int *io)
@@ -215,7 +220,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
 **判断是否需要 CoW**
 
 ```c
-// minix3/minix/servers/vm/mem_anon.c - anon_writable()
+// minix3/minix/servers/vm/mem_anon.c:105 - anon_writable()
 static int anon_writable(struct phys_region *pr)
 {
     assert(pr->ph->refcount > 0);
@@ -304,40 +309,61 @@ PFERR_NOPAGE(err) == true  // 页表项 Present 位为 0
 
 **栈扩展**
 
-Minix3 中栈区域可以自动增长。当访问栈区域未映射部分时，VM 自动扩展：
+Minix3 中栈区域的增长由 `do_brk()` 系统调用处理（见 [18-vm-brk.md](18-vm-brk.md)），而非在页错误处理中自动扩展。页错误处理中不包含栈自动增长逻辑——如果访问的地址不在任何已映射区域内，直接发送 SIGSEGV。
 
-```c
-// 栈区域特征
-region->flags |= VR_GROWSDOWN;  // 向下增长
-
-// 栈扩展检查（简化逻辑）
-if (addr < region->vaddr && 
-    addr >= vmp->vm_stack_low) {
-    // 扩展栈区域
-    region->vaddr = addr & PAGE_MASK;
-    region->length += old_vaddr - region->vaddr;
-}
-```
+> **注意**: Minix3 没有 `VR_GROWSDOWN` 或 `VR_GROWSUP` 标志。栈和数据段的增长由 `do_brk()` 管理，不是通过页错误触发的自动增长机制。
 
 **按需加载（文件映射）**
 
 ```c
-// minix3/minix/servers/vm/mem_mappedfile.c
-static int mappedfile_pagefault(...) {
-    // 从文件读取内容到页面
-    r = req_readwrite(...);
-    
-    // 设置 major page fault 统计
-    *io = 1;
-    
-    return OK;
+// minix3/minix/servers/vm/mem_file.c:84
+static int mappedfile_pagefault(struct vmproc *vmp, struct vir_region *region,
+    struct phys_region *ph, int write, vfs_callback_t cb,
+    void *state, int statelen, int *io)
+{
+    u32_t allocflags;
+    int procfd = region->param.file.fdref->fd;
+
+    allocflags = vrallocflags(region->flags);
+    assert(ph->ph->refcount > 0);
+    assert(region->param.file.inited);
+
+    // 情况1: 物理块未分配 → 从文件加载或使用缓存
+    if(ph->ph->phys == MAP_NONE) {
+        struct cached_page *cp;
+        u64_t referenced_offset =
+            region->param.file.offset + ph->offset;
+
+        // 先查找 VM 页面缓存
+        // ... (缓存查找逻辑)
+
+        // 缓存未命中且无回调 → 返回错误
+        if(!cb) return EFAULT;
+
+        // 异步请求 VFS 从文件加载
+        if(vfs_request(VMVFSREQ_FDIO, procfd, vmp, referenced_offset,
+            VM_PAGE_SIZE, cb, NULL, state, statelen) != OK) {
+            printf("VM: mappedfile_pagefault: vfs_request failed\n");
+            return ENOMEM;
+        }
+        *io = 1;
+        return SUSPEND;
+    }
+
+    // 情况2: 读操作，页面已存在
+    if(!write) return OK;
+
+    // 情况3: 写操作 → 执行 CoW
+    return cow_block(vmp, region, ph, 0);
 }
 ```
+
+> **注意**: `mappedfile_writable()` 始终返回 0，即文件映射内存从不直接可写，写操作总是触发 CoW。
 
 **Minix3 源码分析**
 
 ```c
-// minix3/minix/servers/vm/region.c - map_pf()
+// minix3/minix/servers/vm/region.c:664
 int map_pf(struct vmproc *vmp,
     struct vir_region *region,
     vir_bytes offset,
@@ -393,7 +419,7 @@ int map_pf(struct vmproc *vmp,
 **缺页统计**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:135
 if (io)
     vmp->vm_major_page_fault++;  // 需要 I/O（从磁盘加载）
 else
@@ -402,6 +428,20 @@ else
 
 ### 2.2 页错误处理入口
 
+#### 2.2.0 do_pagefaults - 消息入口
+
+`do_pagefaults()` 是 VM 消息循环调用的入口函数，从内核消息中提取页错误信息。
+
+```c
+// minix3/minix/servers/vm/pagefaults.c:240
+void do_pagefaults(message *m)
+{
+    handle_pagefault(m->m_source, m->VPF_ADDR, m->VPF_FLAGS, 0);
+}
+```
+
+消息字段 `VPF_ADDR` 和 `VPF_FLAGS` 由内核在捕获页错误异常时填充。
+
 #### 2.2.1 handle_pagefault - 主处理函数
 
 `handle_pagefault()` 是页错误处理的核心函数，负责解析错误信息、查找区域、执行处理。
@@ -409,7 +449,7 @@ else
 **函数原型**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:76
 static void handle_pagefault(endpoint_t ep, vir_bytes addr, 
                              u32_t err, int retry);
 ```
@@ -598,7 +638,7 @@ static void pf_cont(struct vmproc *vmp, message *m, void *arg, void *statearg)
 **函数原型**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:254
 int handle_memory_start(struct vmproc *vmp, vir_bytes mem, vir_bytes len,
     int wrflag, endpoint_t caller, endpoint_t requestor, int transid,
     int vfs_avail);
@@ -675,32 +715,16 @@ int handle_memory_once(struct vmproc *vmp, vir_bytes mem, vir_bytes len,
 }
 ```
 
-**使用场景**
+**handle_memory_start 使用场景**:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│               handle_memory_start 使用场景                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. 内核请求内存访问 (VMPTYPE_CHECK)                              │
-│     - sys_vircopy/sys_physcopy 跨进程内存复制                    │
-│     - 内核需要访问用户空间内存                                    │
-│                                                                 │
-│  2. VFS 请求内存操作                                             │
-│     - 文件读写需要访问用户缓冲区                                  │
-│     - 异步操作，需要事务 ID 跟踪                                  │
-│                                                                 │
-│  3. 进程间内存共享检查                                           │
-│     - 共享内存区域验证                                           │
-│     - 权限检查                                                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **内核请求内存访问 (VMPTYPE_CHECK)**: `sys_vircopy`/`sys_physcopy` 跨进程内存复制，内核需要访问用户空间内存
+2. **VFS 请求内存操作**: 文件读写需要访问用户缓冲区，异步操作需要事务 ID 跟踪
+3. **进程间内存共享检查**: 共享内存区域验证和权限检查
 
 **内核内存请求处理**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c - do_memory()
+// minix3/minix/servers/vm/pagefaults.c:294 - do_memory()
 void do_memory(void)
 {
     endpoint_t who, who_s, requestor;
@@ -837,42 +861,18 @@ if(!(region = map_lookup(vmp, addr, NULL))) {
 
 **地址合法性检查**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     地址合法性检查                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  进程地址空间布局:                                               │
-│                                                                 │
-│  高地址 ┌────────────────┐                                      │
-│         │    内核空间     │  ← 用户态不可访问                     │
-│         ├────────────────┤                                      │
-│         │    栈区域       │  ← 可向下增长                        │
-│         │       ↓        │                                      │
-│         │       ...       │                                      │
-│         │       ↑        │                                      │
-│         │    堆区域       │  ← 可向上增长                        │
-│         ├────────────────┤                                      │
-│         │    BSS 段       │                                      │
-│         ├────────────────┤                                      │
-│         │    数据段       │                                      │
-│         ├────────────────┤                                      │
-│         │    代码段       │                                      │
-│  低地址 └────────────────┘                                      │
-│                                                                 │
-│  非法地址示例:                                                   │
-│  - NULL (0x0)                                                   │
-│  - 超出进程地址空间范围                                          │
-│  - 未映射的间隙区域                                              │
-│  - 内核空间地址（用户态）                                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+进程地址空间布局（从低到高）：代码段 → 数据段 → BSS 段 → 堆区域（向上增长）→ ... → 栈区域（向下增长）→ 内核空间（用户态不可访问）。
+
+非法地址示例：
+- NULL (0x0)
+- 超出进程地址空间范围
+- 未映射的间隙区域
+- 内核空间地址（用户态）
 
 **map_lookup 实现**
 
 ```c
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:616
 struct vir_region *map_lookup(struct vmproc *vmp,
     vir_bytes offset, struct phys_region **physr)
 {
@@ -936,63 +936,44 @@ if(!(region = map_lookup(vmp, addr, NULL))) {
 
 **AVL 树查找原理**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    AVL 树区域查找                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  进程的虚拟区域按起始地址组织成 AVL 树:                            │
-│                                                                 │
-│                    [0x400000, 0x410000]                         │
-│                         /          \                            │
-│        [0x10000, 0x20000]          [0x600000, 0x610000]        │
-│              /     \                                            │
-│   [0x0, 0x1000]  [0x20000, 0x30000]                            │
-│                                                                 │
-│  查找 addr=0x15000:                                             │
-│  1. 比较 0x15000 < 0x400000 → 向左                              │
-│  2. 比较 0x15000 >= 0x10000 且 < 0x20000 → 找到!                │
-│                                                                 │
-│  region_search(vmp->vm_regions_avl, addr, AVL_LESS_EQUAL)       │
-│  返回: vaddr <= addr 的最大区域                                  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+进程的虚拟区域按起始地址组织成 AVL 树，`region_search` 使用 `AVL_LESS_EQUAL` 搜索策略：返回 `vaddr <= addr` 的最大区域，再验证 `addr` 是否在该区域内。
+
+示例：查找 `addr=0x15000`
+1. 比较 `0x15000 < 0x400000` → 向左子树
+2. 比较 `0x15000 >= 0x10000` 且 `< 0x20000` → 找到区域 `[0x10000, 0x20000)`
 
 **region_search 实现**
 
+Minix3 的 `region_search` 由通用 AVL 库（CAVL）通过宏生成，不是手写实现。其函数签名通过宏展开为：
+
 ```c
-// minix3/minix/servers/vm/region.c - region_search()
-struct vir_region *region_search(struct avl_head *head, vir_bytes addr,
-    int avlflags)
-{
-    struct avl_node *node;
-    struct vir_region *r, *best = NULL;
-
-    node = head->root;
-    while(node) {
-        r = avl_data(node, struct vir_region, avl_node);
-        
-        if(addr < r->vaddr) {
-            // 地址在当前区域之前，向左子树查找
-            node = node->left;
-        } else if(addr >= r->vaddr + r->length) {
-            // 地址在当前区域之后，向右子树查找
-            if(avlflags & AVL_LESS_EQUAL)
-                best = r;  // 记录候选
-            node = node->right;
-        } else {
-            // 地址在当前区域内
-            return r;
-        }
-    }
-
-    // 返回最近的候选区域
-    if(avlflags & AVL_LESS_EQUAL)
-        return best;
-    return NULL;
-}
+// 由 cavl_if.h + regionavl_defs.h 宏展开生成
+// 函数名: region_search (AVL_UNIQUE(id) = region_ ## id)
+region_t *region_search(region_avl *tree, vir_bytes k, avl_search_type st);
 ```
+
+CAVL 库定义了搜索类型枚举：
+
+```c
+// minix3/minix/servers/vm/cavl_if.h:24
+typedef enum {
+    AVL_EQUAL = 1,
+    AVL_LESS = 2,
+    AVL_GREATER = 4,
+    AVL_LESS_EQUAL = AVL_EQUAL | AVL_LESS,    // = 3
+    AVL_GREATER_EQUAL = AVL_EQUAL | AVL_GREATER  // = 5
+} avl_search_type;
+```
+
+AVL 树的节点比较基于 `vaddr` 字段：
+
+```c
+// minix3/minix/servers/vm/regionavl_defs.h
+#define AVL_COMPARE_KEY_NODE(k, h) AVL_COMPARE_KEY_KEY((k), (h)->vaddr)
+#define AVL_COMPARE_NODE_NODE(h1, h2) AVL_COMPARE_KEY_KEY((h1)->vaddr, (h2)->vaddr)
+```
+
+`map_lookup` 使用 `AVL_LESS_EQUAL` 搜索：先找到 `vaddr <= addr` 的最大区域，再验证 `addr` 是否确实在该区域内。
 
 **查找标志**
 
@@ -1005,7 +986,7 @@ struct vir_region *region_search(struct avl_head *head, vir_bytes addr,
 **map_lookup 完整实现**
 
 ```c
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:616
 struct vir_region *map_lookup(struct vmproc *vmp,
     vir_bytes offset, struct phys_region **physr)
 {
@@ -1042,64 +1023,31 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 **physblock_get 实现**
 
 ```c
-// 获取虚拟区域内特定偏移处的物理区域
+// minix3/minix/servers/vm/region.c:60
 struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
 {
-    struct phys_region *ph;
-
-    // 遍历物理区域链表
-    for(ph = region->phys; ph; ph = ph->next) {
-        if(ph->offset == offset)
-            return ph;
-        if(ph->offset > offset)
-            break;  // 物理区域按偏移排序
-    }
-
-    return NULL;  // 该偏移处没有物理区域
+    int i;
+    struct phys_region *foundregion;
+    assert(!(offset % VM_PAGE_SIZE));
+    assert(offset < region->length);
+    i = offset/VM_PAGE_SIZE;
+    if((foundregion = region->physblocks[i]))
+        assert(foundregion->offset == offset);
+    return foundregion;
 }
 ```
 
-**查找流程图**
+> **注意**: Minix3 的 `physblock_get` 使用数组索引（`region->physblocks[i]`）而非链表遍历，时间复杂度为 O(1)。`physblocks` 是一个按页偏移索引的指针数组，每个槽位指向对应的 `phys_region` 或 NULL。
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    区域查找流程                                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: vmp, addr                                                │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ region_search AVL树  │                                       │
-│  │ AVL_LESS_EQUAL       │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 未找到 ──► 返回 NULL                            │
-│         │                                                       │
-│         ▼ 找到候选区域 r                                        │
-│  ┌──────────────────────┐                                       │
-│  │ 验证: addr >= r->vaddr &&                                    │
-│  │       addr < r->vaddr + r->length                            │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 不在区域内 ──► 返回 NULL                        │
-│         │                                                       │
-│         ▼ 在区域内                                              │
-│  ┌──────────────────────┐                                       │
-│  │ 计算偏移: offset = addr - r->vaddr                           │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ physblock_get(r, offset)                                     │
-│  │ 获取物理区域（可选）                                          │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  返回: struct vir_region *                                      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+**查找流程**
+
+1. `region_search` AVL 树查找 → `AVL_LESS_EQUAL` 找到 `vaddr <= addr` 的候选区域
+   - 未找到 → 返回 NULL
+2. 验证 `addr >= r->vaddr && addr < r->vaddr + r->length`
+   - 不在区域内 → 返回 NULL
+3. 计算偏移 `offset = addr - r->vaddr`
+4. `physblock_get(r, offset)` 获取物理区域（可选）
+5. 返回 `struct vir_region *`
 
 **性能分析**
 
@@ -1122,7 +1070,7 @@ struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
 **权限检查代码**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:82
 int wr = PFERR_WRITE(err);  // 是否是写操作
 
 // 检查区域是否可写
@@ -1138,35 +1086,28 @@ if(!(region->flags & VR_WRITABLE) && wr) {
 **区域权限标志**
 
 ```c
-// minix3/minix/servers/vm/region.h
-#define VR_NONE        0x0000   // 无权限
-#define VR_READABLE    0x0001   // 可读
-#define VR_WRITABLE    0x0002   // 可写
-#define VR_EXECUTABLE  0x0004   // 可执行
-#define VR_ANON        0x0010   // 匿名内存
-#define VR_GROWSDOWN   0x0020   // 向下增长（栈）
-#define VR_GROWSUP     0x0040   // 向上增长（堆）
+// minix3/minix/servers/vm/region.h:69
+#define VR_WRITABLE      0x001   // 可写
+#define VR_PHYS64K       0x004   // 物理内存必须 64K 对齐
+#define VR_LOWER16MB     0x008   // 物理内存限制在低 16MB
+#define VR_LOWER1MB      0x010   // 物理内存限制在低 1MB
+#define VR_SHARED        0x040   // 共享内存
+#define VR_UNINITIALIZED 0x080   // 分配后不清零
+#define VR_ANON          0x100   // 匿名内存（需清零和分配）
+#define VR_DIRECT        0x200   // 直接映射（不由 VM 管理）
+#define VR_PREALLOC_MAP  0x400   // 预分配映射
 ```
+
+> **注意**: Minix3 没有 `VR_READABLE`、`VR_EXECUTABLE`、`VR_GROWSDOWN`、`VR_GROWSUP` 标志。可读是默认的（不可写即只读），执行权限不由 VM 区域标志管理。栈增长由内核和 VM 的其他机制处理，不通过区域标志。
 
 **权限检查矩阵**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     权限检查矩阵                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  区域权限    │  读操作    │  写操作    │  执行操作               │
-│  ───────────┼───────────┼───────────┼────────────              │
-│  VR_READABLE │    ✓      │    ✗      │    ✗                    │
-│  VR_WRITABLE │    ✓      │    ✓      │    ✗                    │
-│  VR_EXECUTABLE│   ✓      │    ✗      │    ✓                    │
-│  全部权限    │    ✓      │    ✓      │    ✓                    │
-│                                                                 │
-│  ✗ = 触发 SIGSEGV                                              │
-│  ✓ = 允许访问                                                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 区域权限 | 读操作 | 写操作 | 执行操作 |
+|---------|--------|--------|---------|
+| VR_WRITABLE | ✓ | ✓ | ✗ (SIGSEGV) |
+| 无 VR_WRITABLE | ✓ | ✗ (SIGSEGV) | ✗ (SIGSEGV) |
+
+> **注意**: Minix3 没有 `VR_READABLE` 或 `VR_EXECUTABLE` 标志。可读是默认行为，执行权限不在 VM 层面检查。
 
 **CoW 特殊处理**
 
@@ -1183,56 +1124,19 @@ if(region->flags & VR_WRITABLE) {
 
 **权限检查流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     权限检查流程                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: region, err (错误码)                                      │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ PFERR_WRITE(err)?    │                                       │
-│  │ 判断是否写操作        │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 读操作 ──► 检查 VR_READABLE                     │
-│         │                                                       │
-│         ▼ 写操作                                                │
-│  ┌──────────────────────┐                                       │
-│  │ region->flags &      │                                       │
-│  │ VR_WRITABLE?         │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 否 ──► SIGSEGV (写只读区域)                     │
-│         │                                                       │
-│         ▼ 是                                                    │
-│  ┌──────────────────────┐                                       │
-│  │ 检查 CoW 状态         │                                       │
-│  │ phys_block.refcount? │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► refcount == 1 ──► 直接写入                      │
-│         │                                                       │
-│         ├─────► refcount > 1 ──► 触发 CoW                       │
-│         │                                                       │
-│         ▼                                                       │
-│  允许访问                                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. `PFERR_WRITE(err)` 判断是否写操作
+   - 读操作 → 可读是默认行为，继续处理
+   - 写操作 → 继续检查
+2. `region->flags & VR_WRITABLE` 检查区域是否可写
+   - 否 → SIGSEGV（写只读区域）
+   - 是 → 继续检查
+3. 检查 CoW 状态：`phys_block.refcount`
+   - `refcount == 1` → 直接写入
+   - `refcount > 1` → 触发 CoW
 
 **执行权限检查**
 
-对于代码段，需要检查执行权限：
-
-```c
-// 执行权限检查（通常在页错误处理之外）
-if(!(region->flags & VR_EXECUTABLE) && is_instruction_fetch(addr)) {
-    // 尝试执行不可执行区域
-    sys_kill(vmp->vm_endpoint, SIGSEGV);
-}
-```
+Minix3 的 VM 不在页错误处理中检查执行权限。x86-32 的页错误码不包含执行权限位（该位在 x86-64 中才引入，即 bit 4 `PFERR_FETCH`）。执行权限违规由内核的段保护机制处理，不经过 VM 的页错误处理路径。
 
 **共享内存权限**
 
@@ -1268,7 +1172,7 @@ if(new_region->flags & VR_WRITABLE) {
 **处理入口**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:120
 // 计算区域内的偏移
 offset = addr - region->vaddr;
 
@@ -1279,7 +1183,7 @@ result = map_pf(vmp, region, offset, wr, pf_cont, &state, sizeof(state), &io);
 **map_pf 处理逻辑**
 
 ```c
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:664
 int map_pf(struct vmproc *vmp,
     struct vir_region *region,
     vir_bytes offset,
@@ -1336,54 +1240,16 @@ int map_pf(struct vmproc *vmp,
 
 **处理决策流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    执行处理决策流程                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: region, offset, write                                    │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ physblock_get()      │                                       │
-│  │ 获取物理区域          │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 未找到 ──► 创建新物理块                         │
-│         │                   │                                   │
-│         │                   ▼                                   │
-│         │              pb_new(MAP_NONE)                         │
-│         │              pb_reference()                           │
-│         │                                                       │
-│         ▼ 找到物理区域 ph                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 检查是否需要处理      │                                       │
-│  │ !write || !writable? │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 否 ──► 跳过处理                                 │
-│         │                                                       │
-│         ▼ 是                                                    │
-│  ┌──────────────────────┐                                       │
-│  │ memtype->ev_pagefault│                                       │
-│  │ 调用内存类型处理器    │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► SUSPEND ──► 等待异步操作                        │
-│         │                                                       │
-│         ├─────► 错误 ──► pb_unreferenced, 返回错误              │
-│         │                                                       │
-│         ▼ OK                                                    │
-│  ┌──────────────────────┐                                       │
-│  │ map_ph_writept()     │                                       │
-│  │ 更新页表              │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  返回 OK                                                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. `physblock_get()` 获取物理区域
+   - 未找到 → `pb_new(MAP_NONE)` + `pb_reference()` 创建新物理块
+   - 找到 → 继续检查
+2. 检查是否需要处理：`!write || !writable(pr)` → 跳过处理
+3. `memtype->ev_pagefault()` 调用内存类型处理器
+   - SUSPEND → 等待异步操作
+   - 错误 → `pb_unreferenced`，返回错误
+   - OK → 继续
+4. `map_ph_writept()` 更新页表
+5. 返回 OK
 
 **不同内存类型的处理**
 
@@ -1391,13 +1257,13 @@ int map_pf(struct vmproc *vmp,
 |---------|---------|------|
 | 匿名内存 | `anon_pagefault()` | CoW 或分配新页 |
 | 文件映射 | `mappedfile_pagefault()` | 从文件加载 |
-| 共享内存 | `shared_pagefault()` | 映射共享页 |
-| 直接物理 | `direct_pagefault()` | 直接映射 |
+| 共享内存 | `shared_pagefault()` | 从源区域获取物理块并链接 |
+| 直接物理 | `phys_pagefault()` | 直接计算物理地址 |
 
 **CoW 处理详解**
 
 ```c
-// minix3/minix/servers/vm/mem_anon.c
+// minix3/minix/servers/vm/mem_anon.c:64
 static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     struct phys_region *ph, int write, ...)
 {
@@ -1428,44 +1294,99 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
 **mem_cow 实现**
 
 ```c
-// minix3/minix/servers/vm/mem_anon.c
-int mem_cow(struct vir_region *region, struct phys_region *ph,
-    phys_clicks new_page_cl, phys_bytes new_page)
+// minix3/minix/servers/vm/pb.c:136
+int mem_cow(struct vir_region *region,
+    struct phys_region *ph, phys_bytes new_page_cl, phys_bytes new_page)
 {
-    // 1. 复制原页面内容到新页面
-    memcpy((void *)new_page, (void *)ph->ph->phys, VM_PAGE_SIZE);
+    struct phys_block *pb;
 
-    // 2. 减少原页面引用计数
-    ph->ph->refcount--;
+    if(new_page == MAP_NONE) {
+        u32_t allocflags;
+        allocflags = vrallocflags(region->flags);
 
-    // 3. 设置新物理块
-    ph->ph->phys = new_page;
+        if((new_page_cl = alloc_mem(1, allocflags)) == NO_MEM)
+            return ENOMEM;
 
-    // 4. 更新页表为可写
-    // (由 map_ph_writept 完成)
+        new_page = CLICK2ABS(new_page_cl);
+    }
+
+    assert(ph->ph->phys != MAP_NONE);
+
+    // 1. 复制原页面内容到新页面（使用内核系统调用）
+    if(sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE) != OK) {
+        panic("VM: abscopy failed\n");
+        return EFAULT;
+    }
+
+    // 2. 创建新物理块
+    if(!(pb = pb_new(new_page))) {
+        free_mem(new_page_cl, 1);
+        return ENOMEM;
+    }
+
+    // 3. 解除原物理块引用，链接新物理块
+    pb_unreferenced(region, ph, 0);
+    pb_link(ph, pb, ph->offset, region);
+
+    // 4. CoW 后内存类型变为匿名
+    ph->memtype = &mem_type_anon;
 
     return OK;
 }
 ```
 
+> **关键差异**: Minix3 的 `mem_cow` 不是简单的 `memcpy` + `refcount--`。它使用 `sys_abscopy`（内核系统调用）复制页面，通过 `pb_unreferenced`/`pb_link` 管理物理块引用关系，并将内存类型切换为匿名内存。
+
 **页表更新**
 
 ```c
-// minix3/minix/servers/vm/region.c
-int map_ph_writept(struct vmproc *vmp, struct vir_region *region,
-    struct phys_region *ph)
+// minix3/minix/servers/vm/region.c:257
+int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
+    struct phys_region *pr)
 {
-    int flags = 0;
+    int flags = PTF_PRESENT | PTF_USER;
+    struct phys_block *pb = pr->ph;
 
-    // 设置页表权限
-    if(region->flags & VR_WRITABLE && ph->memtype->writable(ph))
+    assert(vr);
+    assert(pr);
+    assert(pb);
+    assert(!(vr->vaddr % VM_PAGE_SIZE));
+    assert(!(pr->offset % VM_PAGE_SIZE));
+    assert(pb->refcount > 0);
+
+    // 通过 pr_writable() 判断是否可写
+    if(pr_writable(vr, pr))
         flags |= PTF_WRITE;
-    if(!(region->flags & VR_KERNEL))
-        flags |= PTF_USER;
+    else
+        flags |= PTF_READ;
 
-    // 更新页表项
-    return pt_writemap(&vmp->vm_pt, region->vaddr + ph->offset,
-        ph->ph->phys, VM_PAGE_SIZE, flags, PTF_PRESENT);
+    // 内存类型附加标志
+    if(vr->def_memtype->pt_flags)
+        flags |= vr->def_memtype->pt_flags(vr);
+
+    // 更新页表映射
+    if(pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,
+            pb->phys, VM_PAGE_SIZE, flags,
+#if SANITYCHECKS
+            !pr->written ? 0 :
+#endif
+            WMF_OVERWRITE) != OK) {
+        printf("VM: map_writept: pt_writemap failed\n");
+        return ENOMEM;
+    }
+
+    return OK;
+}
+```
+
+其中 `pr_writable()` 是辅助函数：
+
+```c
+// minix3/minix/servers/vm/region.c:130
+static int pr_writable(struct vir_region *vr, struct phys_region *pr)
+{
+    assert(pr->memtype->writable);
+    return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
 }
 ```
 
@@ -1487,7 +1408,7 @@ int map_ph_writept(struct vmproc *vmp, struct vir_region *region,
 **错误处理代码**
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:92-151
 
 // 情况1: 地址不在任何区域内
 if(!(region = map_lookup(vmp, addr, NULL))) {
@@ -1525,48 +1446,12 @@ if(result != OK) {
 
 **SIGSEGV 信号处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   SIGSEGV 处理流程                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  VM 检测到非法访问                                               │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 打印错误信息      │  printf("VM: pagefault: SIGSEGV ...")    │
-│  │ 可选: 打印调用栈  │  sys_diagctl_stacktrace(ep)              │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ sys_kill(ep, SIGSEGV)                                        │
-│  │ 发送段错误信号     │                                          │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ sys_vmctl(VMCTL_CLEAR_PAGEFAULT)                             │
-│  │ 清除页错误状态     │                                          │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  内核接收 SIGSEGV                                                │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 检查进程信号处理器 │                                          │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ├─────► 有处理器 ──► 执行用户定义处理器                  │
-│         │                                                       │
-│         ├─────► 无处理器 ──► 终止进程，生成 core dump            │
-│         │                                                       │
-│         ▼                                                       │
-│  进程终止                                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. VM 检测到非法访问 → 打印错误信息（可选 `sys_diagctl_stacktrace(ep)` 打印调用栈）
+2. `sys_kill(vmp->vm_endpoint, SIGSEGV)` → 发送段错误信号
+3. `sys_vmctl(ep, VMCTL_CLEAR_PAGEFAULT, 0)` → 清除页错误状态
+4. 内核接收 SIGSEGV → 检查进程信号处理器
+   - 有处理器 → 执行用户定义处理器
+   - 无处理器 → 终止进程，生成 core dump
 
 **调试信息输出**
 
@@ -1664,7 +1549,7 @@ int sys_vmctl(endpoint_t ep, int request, int value)
 **错误处理代码**
 
 ```c
-// minix3/minix/servers/vm/mem_anon.c
+// minix3/minix/servers/vm/mem_anon.c:64
 static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     struct phys_region *ph, int write, ...)
 {
@@ -1678,7 +1563,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     // ...
 }
 
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:664
 int map_pf(struct vmproc *vmp, ...)
 {
     // 创建新的物理块
@@ -1699,46 +1584,17 @@ int map_pf(struct vmproc *vmp, ...)
 
 **OOM 处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     OOM 处理流程                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  页错误处理中分配内存失败                                         │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 返回 ENOMEM       │                                          │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ handle_pagefault │                                           │
-│  │ 检查 result != OK │                                          │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 打印错误信息      │  printf("pagefault not handled")         │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 发送 SIGSEGV     │  sys_kill(ep, SIGSEGV)                    │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  进程被终止                                                     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. 页错误处理中分配内存失败 → 返回 ENOMEM
+2. `handle_pagefault` 检查 `result != OK` → 打印 "pagefault not handled"
+3. `sys_kill(ep, SIGSEGV)` → 发送段错误信号
+4. 进程被终止
 
 **Minix3 的 OOM 策略**
 
 Minix3 采用简单策略：内存不足时终止触发页错误的进程。
 
 ```c
-// minix3/minix/servers/vm/pagefaults.c
+// minix3/minix/servers/vm/pagefaults.c:144
 if(result != OK) {
     printf("VM: pagefault: SIGSEGV %d pagefault not handled\n", ep);
     sys_kill(ep, SIGSEGV);
@@ -1749,73 +1605,18 @@ if(result != OK) {
 
 **可能的改进策略**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    OOM 改进策略                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. 页面回收 (Page Reclamation)                                 │
-│     - 释放最近最少使用的页面                                     │
-│     - 丢弃干净的文件映射页                                       │
-│     - 压缩内存中的数据                                           │
-│                                                                 │
-│  2. 交换 (Swapping)                                             │
-│     - 将页面换出到磁盘                                           │
-│     - 释放物理内存                                               │
-│     - 需要时再换入                                               │
-│                                                                 │
-│  3. OOM Killer (Linux 风格)                                     │
-│     - 选择一个进程终止                                           │
-│     - 优先选择内存占用大的进程                                   │
-│     - 保护关键系统进程                                           │
-│                                                                 │
-│  4. 内存压缩 (Memory Compaction)                                │
-│     - 整理内存碎片                                               │
-│     - 合并空闲页面                                               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **页面回收 (Page Reclamation)**: 释放最近最少使用的页面，丢弃干净的文件映射页
+2. **交换 (Swapping)**: 将页面换出到磁盘释放物理内存，需要时再换入
+3. **OOM Killer (Linux 风格)**: 选择一个进程终止，优先选择内存占用大的进程，保护关键系统进程
+4. **内存压缩 (Memory Compaction)**: 整理内存碎片，合并空闲页面
 
 **内存压力检测**
 
-```c
-// 检查可用内存
-int check_memory_pressure(void)
-{
-    phys_clicks free = free_pages();
-    phys_clicks total = total_pages();
-    
-    // 计算空闲比例
-    int free_percent = (free * 100) / total;
-    
-    if(free_percent < 5) {
-        return MEMORY_CRITICAL;
-    } else if(free_percent < 15) {
-        return MEMORY_LOW;
-    } else if(free_percent < 30) {
-        return MEMORY_MODERATE;
-    }
-    
-    return MEMORY_NORMAL;
-}
-```
+Minix3 没有独立的内存压力检测函数。内存不足时 `alloc_mem()` 返回 `NO_MEM`，由上层处理。
 
 **预留内存**
 
-```c
-// 为关键操作预留内存
-#define RESERVED_PAGES  16  // 预留页面数
-
-int alloc_mem_safe(phys_clicks clicks)
-{
-    // 检查预留内存
-    if(free_pages() - clicks < RESERVED_PAGES) {
-        return NO_MEM;  // 保护预留内存
-    }
-    
-    return alloc_mem(clicks, 0);
-}
-```
+Minix3 通过 `SPAREPAGES` 机制为关键操作预留内存，而非通过单独的函数。参见 [05-vm-allocpage.md](05-vm-allocpage.md)。
 
 **错误传播**
 
@@ -1832,22 +1633,7 @@ sys_kill(ep, SIGSEGV)
 
 **日志记录**
 
-```c
-// 记录 OOM 事件
-void log_oom_event(endpoint_t ep, vir_bytes addr)
-{
-    struct vmproc *vmp;
-    int p;
-    
-    if(vm_isokendpt(ep, &p) == OK) {
-        vmp = &vmproc[p];
-        printf("VM: OOM: process %d (%s) at addr 0x%lx\n",
-            ep, vmp->vm_proc_name, addr);
-        printf("VM: free memory: %lu KB\n", 
-            (unsigned long)free_pages() * (VM_PAGE_SIZE / 1024));
-    }
-}
-```
+Minix3 在页错误处理失败时直接 `printf` 输出错误信息，没有独立的 OOM 日志函数。
 
 ---
 
@@ -3113,51 +2899,14 @@ impl VirRegion {
 
 **地址解析流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    地址解析流程                                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: vmp, vaddr                                               │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ AVL 树查找           │                                       │
-│  │ SearchType::LessEqual│                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 未找到 ──► 返回 None                            │
-│         │                                                       │
-│         ▼ 找到候选区域                                          │
-│  ┌──────────────────────┐                                       │
-│  │ 验证: vaddr >= region.vaddr &&                               │
-│  │       vaddr < region.vaddr + region.length                   │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 不在区域内 ──► 返回 None                        │
-│         │                                                       │
-│         ▼ 在区域内                                              │
-│  ┌──────────────────────┐                                       │
-│  │ 计算偏移:            │                                       │
-│  │ offset = vaddr - region.vaddr                                │
-│  │ page_offset = offset & ~PAGE_MASK                            │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 查找物理区域         │                                       │
-│  │ 遍历 phys_regions    │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 找到 ──► 返回 AddressResolution                 │
-│         │                                                       │
-│         ├─────► 未找到 ──► phys_region = None                   │
-│         │                                                       │
-│         ▼                                                       │
-│  返回 AddressResolution { region, offset, phys_region: None }  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. AVL 树查找 `SearchType::LessEqual` → 找到 `vaddr <= addr` 的候选区域
+   - 未找到 → 返回 None
+2. 验证 `vaddr >= region.vaddr && vaddr < region.vaddr + region.length`
+   - 不在区域内 → 返回 None
+3. 计算偏移 `offset = vaddr - region.vaddr`，`page_offset = offset & !PAGE_MASK`
+4. 查找物理区域（数组索引）
+   - 找到 → 返回 `AddressResolution { region, offset, phys_region }`
+   - 未找到 → 返回 `AddressResolution { region, offset, phys_region: None }`
 
 **地址范围检查**
 
@@ -3347,57 +3096,14 @@ impl CowHandler {
 
 **CoW 处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CoW 处理流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: region, phys_region, write=true                          │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 检查 refcount        │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► refcount == 1 ──► 无需 CoW，返回 Ok             │
-│         │                                                       │
-│         ▼ refcount > 1                                          │
-│  ┌──────────────────────┐                                       │
-│  │ 获取原物理地址       │                                       │
-│  │ old_phys = ph->phys  │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 分配新页面           │                                       │
-│  │ alloc_mem(1)         │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 失败 ──► 返回 OutOfMemory                       │
-│         │                                                       │
-│         ▼ 成功                                                  │
-│  ┌──────────────────────┐                                       │
-│  │ 复制页面内容         │                                       │
-│  │ memcpy(new, old)     │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 减少原页面引用计数   │                                       │
-│  │ refcount--           │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 设置新物理地址       │                                       │
-│  │ ph->phys = new_page  │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  返回 Ok                                                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. 检查 `refcount`：`refcount == 1` → 无需 CoW，返回 Ok
+2. `refcount > 1` → 需要复制：
+   - 获取原物理地址 `old_phys = ph->phys`
+   - 分配新页面 `alloc_mem(1)` → 失败返回 OutOfMemory
+   - 复制页面内容 `sys_abscopy(old, new)`（内核系统调用，非 memcpy）
+   - `pb_unreferenced()` 解除原物理块引用
+   - `pb_link()` 链接新物理块
+   - 切换内存类型为匿名
 
 **页面复制实现**
 
@@ -3618,45 +3324,11 @@ impl VirRegion {
 
 **按需加载流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    按需加载流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  输入: region, phys_region                                      │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 检查 phys 是否已分配 │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 已分配 ──► 返回 Ok                              │
-│         │                                                       │
-│         ▼ 未分配                                                │
-│  ┌──────────────────────┐                                       │
-│  │ 获取分配标志         │                                       │
-│  │ alloc_flags()        │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 分配物理页面         │                                       │
-│  │ alloc_mem(1, flags)  │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 失败 ──► 返回 OutOfMemory                       │
-│         │                                                       │
-│         ▼ 成功                                                  │
-│  ┌──────────────────────┐                                       │
-│  │ 设置物理地址         │                                       │
-│  │ phys_block.phys = new│                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ▼                                                       │
-│  返回 Ok                                                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. 检查 `phys` 是否已分配 → 已分配返回 Ok
+2. 未分配 → 获取分配标志 `alloc_flags()`
+3. 分配物理页面 `alloc_mem(1, flags)` → 失败返回 OutOfMemory
+4. 设置物理地址 `phys_block.phys = new`
+5. 返回 Ok
 
 **文件映射按需加载**
 
@@ -3912,47 +3584,14 @@ impl StackGrowHandler {
 
 **栈扩展流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    栈扩展流程                                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  页错误: 访问栈区域外的地址                                      │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────────┐                                       │
-│  │ 查找栈区域           │                                       │
-│  │ map_lookup()         │                                       │
-│  └──────────────────────┘                                       │
-│         │                                                       │
-│         ├─────► 未找到 ──► 检查是否可以扩展                     │
-│         │                    │                                  │
-│         │                    ▼                                  │
-│         │              ┌──────────────────┐                     │
-│         │              │ 地址 >= stack_low?│                    │
-│         │              └──────────────────┘                     │
-│         │                    │                                  │
-│         │                    ├─────► 否 ──► SIGSEGV             │
-│         │                    │                                  │
-│         │                    ▼ 是                               │
-│         │              ┌──────────────────┐                     │
-│         │              │ 扩展栈区域       │                     │
-│         │              │ grow_stack()     │                     │
-│         │              └──────────────────┘                     │
-│         │                    │                                  │
-│         │                    ▼                                  │
-│         │              ┌──────────────────┐                     │
-│         │              │ 分配新页面       │                     │
-│         │              │ 处理页错误       │                     │
-│         │              └──────────────────┘                     │
-│         │                                                       │
-│         ▼ 找到区域                                              │
-│  ┌──────────────────────┐                                       │
-│  │ 正常页错误处理       │                                       │
-│  └──────────────────────┘                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+> **重要**: Minix3 不支持栈自动扩展。访问不在已映射区域内的地址会直接触发 SIGSEGV。栈和数据段的增长由 `do_brk()` 系统调用管理。minix-rs 可考虑实现自动栈扩展作为改进。
+
+如果实现自动栈扩展，流程为：
+1. 页错误访问栈区域外地址 → `map_lookup()` 查找栈区域
+2. 未找到 → 检查地址是否在可扩展范围（`addr >= stack_low`）
+   - 否 → SIGSEGV
+   - 是 → 扩展栈区域，分配新页面，处理页错误
+3. 找到区域 → 正常页错误处理
 
 **栈保护页**
 
@@ -4699,334 +4338,26 @@ pub enum LockId {
 
 ### 6.1 CoW 触发测试
 
-测试写保护错误正确触发 CoW 机制。
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    /// 测试 CoW 触发
-    #[test]
-    fn test_cow_triggered() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, region) = setup_shared_region();
-        
-        // 设置共享页面（refcount = 2）
-        let phys_region = region.get_or_create_phys_region(0).unwrap();
-        phys_region.phys_block().set_phys(PhysAddr::new(0x1000));
-        phys_region.phys_block().set_refcount(2);
-        
-        // 触发写操作页错误
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: region.vaddr(),
-            fault_type: PageFaultType::Protection,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info).unwrap();
-        assert_eq!(result, PageFaultResult::Ok);
-        
-        // 验证 CoW 发生
-        assert_eq!(phys_region.phys_block().refcount(), 1);
-        assert_ne!(phys_region.phys_block().phys(), Some(PhysAddr::new(0x1000)));
-    }
-    
-    /// 测试 CoW 不触发（refcount == 1）
-    #[test]
-    fn test_cow_not_triggered_single_ref() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, region) = setup_private_region();
-        
-        let phys_region = region.get_or_create_phys_region(0).unwrap();
-        phys_region.phys_block().set_phys(PhysAddr::new(0x1000));
-        phys_region.phys_block().set_refcount(1);
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: region.vaddr(),
-            fault_type: PageFaultType::Protection,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info).unwrap();
-        assert_eq!(result, PageFaultResult::Ok);
-        
-        // 物理地址不变
-        assert_eq!(phys_region.phys_block().phys(), Some(PhysAddr::new(0x1000)));
-    }
-    
-    /// 测试 CoW 不触发（读操作）
-    #[test]
-    fn test_cow_not_triggered_read() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, region) = setup_shared_region();
-        
-        let phys_region = region.get_or_create_phys_region(0).unwrap();
-        phys_region.phys_block().set_phys(PhysAddr::new(0x1000));
-        phys_region.phys_block().set_refcount(2);
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: region.vaddr(),
-            fault_type: PageFaultType::Protection,
-            access_type: AccessType::Read,
-            error_code: 0x4,
-        };
-        
-        let result = handler.handle(info).unwrap();
-        assert_eq!(result, PageFaultResult::Ok);
-        
-        // 引用计数不变
-        assert_eq!(phys_region.phys_block().refcount(), 2);
-    }
-    
-    /// 测试 CoW 内容复制
-    #[test]
-    fn test_cow_content_copy() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, region) = setup_shared_region();
-        
-        // 设置原始内容
-        let old_phys = PhysAddr::new(0x1000);
-        let old_page = unsafe { &mut *(old_phys.as_usize() as *mut [u8; 4096]) };
-        old_page[0] = 0x42;
-        old_page[100] = 0x99;
-        
-        let phys_region = region.get_or_create_phys_region(0).unwrap();
-        phys_region.phys_block().set_phys(old_phys);
-        phys_region.phys_block().set_refcount(2);
-        
-        // 触发 CoW
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: region.vaddr(),
-            fault_type: PageFaultType::Protection,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        handler.handle(info).unwrap();
-        
-        // 验证新页面内容相同
-        let new_phys = phys_region.phys_block().phys().unwrap();
-        let new_page = unsafe { &*(new_phys.as_usize() as *const [u8; 4096]) };
-        assert_eq!(new_page[0], 0x42);
-        assert_eq!(new_page[100], 0x99);
-    }
-}
-```
+- **CoW 触发**: 共享页面（refcount=2）写操作 → 触发 CoW，refcount 降为 1，物理地址改变
+- **CoW 不触发（单引用）**: 私有页面（refcount=1）写操作 → 不触发 CoW，物理地址不变
+- **CoW 不触发（读操作）**: 共享页面读操作 → 不触发 CoW，refcount 不变
+- **CoW 内容复制**: CoW 后新页面内容与原页面一致
 
 ### 6.2 非法访问测试
 
-测试 SIGSEGV 正确发送给非法访问的进程。
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    /// 测试空指针访问
-    #[test]
-    fn test_null_pointer_access() {
-        let mut handler = PageFaultHandler::new_mock();
-        let vmp = create_test_process();
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: VirtAddr::new(0x0),
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Read,
-            error_code: 0x4,
-        };
-        
-        let result = handler.handle(info);
-        assert!(matches!(result, Err(PageFaultError::InvalidAddress(_))));
-        
-        // 验证 SIGSEGV 被发送
-        assert!(handler.signal_sent(vmp.endpoint(), Signal::SIGSEGV));
-    }
-    
-    /// 测试写只读区域
-    #[test]
-    fn test_write_readonly_region() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, region) = setup_readonly_region();
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: region.vaddr(),
-            fault_type: PageFaultType::Protection,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info);
-        assert!(matches!(result, Err(PageFaultError::PermissionDenied { .. })));
-        
-        assert!(handler.signal_sent(vmp.endpoint(), Signal::SIGSEGV));
-    }
-    
-    /// 测试越界访问
-    #[test]
-    fn test_out_of_bounds_access() {
-        let mut handler = PageFaultHandler::new_mock();
-        let vmp = create_test_process();
-        
-        // 访问超出进程地址空间的地址
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: VirtAddr::new(0xFFFFFFFFF000),
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Read,
-            error_code: 0x4,
-        };
-        
-        let result = handler.handle(info);
-        assert!(matches!(result, Err(PageFaultError::InvalidAddress(_))));
-    }
-    
-    /// 测试栈溢出检测
-    #[test]
-    fn test_stack_overflow_detection() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, stack) = setup_stack_region(4096, 8192);  // 初始 4KB，最大 8KB
-        
-        // 尝试扩展超过最大限制
-        let overflow_addr = stack.vaddr() - 16384;  // 超出最大限制
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: overflow_addr,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info);
-        assert!(matches!(result, Err(PageFaultError::InvalidAddress(_))));
-    }
-}
-```
+- **空指针访问**: vaddr=0 → InvalidAddress + SIGSEGV
+- **写只读区域**: 无 VR_WRITABLE 区域写操作 → PermissionDenied + SIGSEGV
+- **越界访问**: 超出进程地址空间 → InvalidAddress
+- **栈溢出检测**: 超出最大栈限制 → InvalidAddress
 
 ### 6.3 栈扩展测试
 
-测试自动增长栈功能。
+> **注意**: Minix3 不支持栈自动扩展，以下为 minix-rs 改进特性的测试要点。
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    /// 测试栈正常扩展
-    #[test]
-    fn test_stack_normal_growth() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, stack) = setup_stack_region(4096, 65536);  // 初始 4KB，最大 64KB
-        
-        // 访问栈底以下的地址
-        let growth_addr = stack.vaddr() - 4096;
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: growth_addr,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info).unwrap();
-        assert_eq!(result, PageFaultResult::Ok);
-        
-        // 验证栈已扩展
-        assert!(stack.contains(growth_addr));
-        assert_eq!(stack.length(), 8192);
-    }
-    
-    /// 测试栈多次扩展
-    #[test]
-    fn test_stack_multiple_growth() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, stack) = setup_stack_region(4096, 65536);
-        
-        // 第一次扩展
-        let addr1 = stack.vaddr() - 4096;
-        handler.handle(PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: addr1,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        }).unwrap();
-        
-        assert_eq!(stack.length(), 8192);
-        
-        // 第二次扩展
-        let addr2 = stack.vaddr() - 8192;
-        handler.handle(PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: addr2,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        }).unwrap();
-        
-        assert_eq!(stack.length(), 16384);
-    }
-    
-    /// 测试保护页
-    #[test]
-    fn test_stack_guard_page() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, stack, guard) = setup_stack_with_guard(4096, 65536);
-        
-        // 访问保护页
-        let guard_addr = guard.guard_addr().unwrap();
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: guard_addr,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        let result = handler.handle(info);
-        assert!(matches!(result, Err(PageFaultError::InvalidAddress(_))));
-    }
-    
-    /// 测试栈扩展后页面分配
-    #[test]
-    fn test_stack_growth_page_allocation() {
-        let mut handler = PageFaultHandler::new_mock();
-        let (vmp, stack) = setup_stack_region(4096, 65536);
-        
-        let growth_addr = stack.vaddr() - 4096;
-        
-        let info = PageFaultInfo {
-            endpoint: vmp.endpoint(),
-            vaddr: growth_addr,
-            fault_type: PageFaultType::NotPresent,
-            access_type: AccessType::Write,
-            error_code: 0x6,
-        };
-        
-        handler.handle(info).unwrap();
-        
-        // 验证页面已分配并清零
-        let phys_region = stack.get_phys_region(0).unwrap();
-        assert!(phys_region.phys_block().phys().is_some());
-        
-        // 验证页面已清零
-        let phys = phys_region.phys_block().phys().unwrap();
-        let page = unsafe { &*(phys.as_usize() as *const [u8; 4096]) };
-        assert!(page.iter().all(|&b| b == 0));
-    }
-}
-```
+- **栈正常扩展**: 访问栈底以下地址 → 栈区域增长，页面分配
+- **栈多次扩展**: 连续多次触发 → 栈区域持续增长
+- **保护页**: 访问保护页地址 → InvalidAddress
+- **栈扩展后页面清零**: 新分配页面内容全为零
 
 ### 6.4 缺页统计 (vm_minor_page_fault / vm_major_page_fault)
 
@@ -5109,9 +4440,15 @@ if (need_disk_io) {
 
 ## 7. 参见
 
-- [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 实现
+- [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 实现（mem_cow 详解）
 - [17-vm-fork.md](17-vm-fork.md) - fork 后的首次写入
-- [12-vir-region.md](12-vir-region.md) - 区域查找
+- [12-vir-region.md](12-vir-region.md) - 区域查找（map_lookup 详解）
+- [13-region-avl.md](13-region-avl.md) - AVL 树实现（region_search 详解）
+- [10-phys-block.md](10-phys-block.md) - 物理块管理（pb_new/pb_link/pb_unreferenced）
+- [14-phys-region.md](14-phys-region.md) - 物理区域（physblock_get 详解）
+- [11-memtype.md](11-memtype.md) - 内存类型（mem_type 及 ev_pagefault 分派）
+- [05-vm-allocpage.md](05-vm-allocpage.md) - 物理内存分配（alloc_mem/SPAREPAGES）
+- [18-vm-brk.md](18-vm-brk.md) - 栈和数据段增长（do_brk）
 
 ---
 
