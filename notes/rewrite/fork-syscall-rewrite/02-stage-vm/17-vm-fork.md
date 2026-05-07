@@ -21,57 +21,16 @@ VM 层 fork 是 fork 系统调用的核心部分，负责复制父进程的地�
 
 ### 1.2 fork 处理流程
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    VM 层 fork 处理流程                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  PM: do_fork()                                                  │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ vm_fork_init()   │  初始化子进程 VM 结构                      │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ map_proc_copy()  │  复制地址空间                              │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ├─────► 遍历父进程所有区域                               │
-│         │              │                                        │
-│         │              ▼                                        │
-│         │       ┌──────────────────┐                            │
-│         │       │ map_copy_region()│  复制单个区域               │
-│         │       └──────────────────┘                            │
-│         │              │                                        │
-│         │              ├─────► 创建新 vir_region                 │
-│         │              │                                        │
-│         │              ├─────► 遍历所有 phys_region              │
-│         │              │              │                         │
-│         │              │              ▼                         │
-│         │              │       pb_reference() 共享物理块         │
-│         │              │              │                         │
-│         │              │              ▼                         │
-│         │              │       refcount++ (引用计数增加)         │
-│         │              │                                        │
-│         │              └─────► 返回新区域                        │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ map_writept()    │  更新页表                                  │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌──────────────────┐                                           │
-│  │ 设置页面只读     │  CoW 标记                                  │
-│  └──────────────────┘                                           │
-│         │                                                       │
-│         ▼                                                       │
-│  返回 OK 给 PM                                                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. PM 调用 `do_fork()`，向 VM 发送 VM_FORK 消息
+2. VM 验证参数（`vm_isokendpt()`、slot 范围检查）
+3. 初始化子进程结构：`*vmc = *vmp`（浅拷贝），恢复子进程特有字段
+4. 创建子进程页表：`pt_new(&vmc->vm_pt)`
+5. 复制地址空间：`map_proc_copy(vmc, vmp)` → `map_proc_copy_range()` 遍历每个区域调用 `map_copy_region()`，最后调用 `map_writept(src)` 和 `map_writept(dst)` 更新父子进程页表
+6. 设置进程标志和 ACL：`vmc->vm_flags &= VMF_INUSE`、`acl_fork(vmc)`
+7. 通知内核：`sys_fork()`、`pt_bind()`、`handle_memory_once()`
+8. 返回子进程 endpoint 给 PM
+
+> **关键点**：`map_writept()` 在 `map_proc_copy_range()` 内部被调用（region.c:995-996），对父子进程都更新页表。共享页通过 `pr_writable()` → `anon_writable()` 检测 `refcount > 1` 自动标记为只读，实现 CoW。
 
 ### 1.3 与 Minix3 源码的对应关系
 
@@ -89,140 +48,112 @@ VM 层 fork 是 fork 系统调用的核心部分，负责复制父进程的地�
 
 ### 1.4 关键数据结构
 
+> 以下为 Minix3 x86-32 源码中的实际定义，详细字段说明参见各专题文档。
+
 ```c
-// VM 进程结构
+// VM 进程结构 (vmproc.h:14)
 struct vmproc {
+    int vm_flags;                   // 标志 (VMF_INUSE 等)
     endpoint_t vm_endpoint;         // 进程端点
-    struct avl_head vm_regions_avl; // 虚拟区域 AVL 树
-    struct pt_t vm_pt;              // 页表
-    vir_bytes vm_stack_low;         // 栈最低地址
-    u32_t vm_flags;                 // 标志
-    int vm_slot;                    // 进程槽位号
+    pt_t vm_pt;                     // 页表数据
+    struct boot_image *vm_boot;     // 启动时进程信息
+    region_avl vm_regions_avl;      // 虚拟区域 AVL 树
+    vir_bytes vm_region_top;        // 最高已插入虚拟地址
     int vm_acl;                     // ACL 索引
+    int vm_slot;                    // 进程槽位号
+#if VMSTATS
+    int vm_bytecopies;
+#endif
+    vir_bytes vm_total;             // 已分配内存总量
+    vir_bytes vm_total_max;         // 历史最大内存
+    u64_t vm_minor_page_fault;      // minor 页错误计数
+    u64_t vm_major_page_fault;      // major 页错误计数
 };
 
-// 虚拟区域
-struct vir_region {
+// 虚拟区域 (region.h:37)
+typedef struct vir_region {
     vir_bytes vaddr;                // 起始虚拟地址
     vir_bytes length;               // 长度
-    u32_t flags;                    // 权限标志
+    struct phys_region **physblocks;// 物理区域数组
+    u16_t flags;                    // 权限标志 (VR_WRITABLE 等)
     struct vmproc *parent;          // 所属进程
-    struct phys_region **physblocks; // 物理区域数组
-    int physblocks;                 // 物理块数量
-    int remaps;                     // fork 后的共享计数
-    struct mem_type *def_memtype;   // 默认内存类型
-    struct avl_node avl_node;       // AVL 树节点
-};
+    mem_type_t *def_memtype;        // 默认内存类型
+    int remaps;                     // remap 计数
+    int id;                         // 唯一 ID
+    union {
+        phys_bytes phys;            // VR_DIRECT
+        struct { endpoint_t ep; vir_bytes vaddr; int id; } shared;
+        struct phys_block *pb_cache;
+        struct { int inited; struct fdref *fdref; u64_t offset; u16_t clearend; } file;
+    } param;
+    struct vir_region *lower, *higher; // AVL 树节点
+    int factor;                     // AVL 平衡因子
+} region_t;
 
-// 物理区域
-struct phys_region {
-    vir_bytes offset;               // 区域内偏移
+// 物理区域 (phys_region.h:8)
+typedef struct phys_region {
     struct phys_block *ph;          // 物理块指针
     struct vir_region *parent;      // 所属虚拟区域
-    struct phys_region *next_ph_list; // 链表下一个
-    struct mem_type *memtype;       // 内存类型
-};
+    vir_bytes offset;               // 区域内偏移
+#if SANITYCHECKS
+    int written;                    // 是否已写入页表
+#endif
+    mem_type_t *memtype;            // 内存类型
+    struct phys_region *next_ph_list;// 同一 phys_block 的链表
+} phys_region_t;
 
-// 物理块
+// 物理块 (region.h:23)
 struct phys_block {
+#if SANITYCHECKS
+    u32_t seencount;
+#endif
     phys_bytes phys;                // 物理地址
-    u32_t refcount;                 // 引用计数
-    struct phys_region *firstregion; // 第一个引用
+    struct phys_region *firstregion;// 第一个引用
+    u8_t refcount;                  // 引用计数
+    u8_t flags;                     // 标志 (PBF_INCACHE)
 };
 
-// 页表结构
+// 页表结构 (pt.h:11) — x86-32 两级页表
 typedef struct {
     u32_t *pt_dir;                  // 页目录虚拟地址
-    phys_bytes pt_dir_phys;         // 页目录物理地址
-    void *pt_pt[ARCH_VM_DIR_ENTRIES]; // 页表指针数组
-    vir_bytes pt_virtop;            // 虚拟地址分配起点
+    u32_t pt_dir_phys;              // 页目录物理地址
+    u32_t *pt_pt[ARCH_VM_DIR_ENTRIES]; // 页表指针数组
+    u32_t pt_virtop;                // 虚拟地址分配起点
 } pt_t;
 ```
+
+> **32 位 vs 64 位差异**：以上 `pt_t` 为 x86-32 两级页表设计（`ARCH_VM_DIR_ENTRIES=1024`）。
+> minix-rs 使用 x86-64 四级页表（PML4+PDPT+PD+PT），页表项大小从 32 位变为 64 位，
+> `pt_pt` 数组无法预分配所有页表，需改为动态分配。详见 [06-pagetable-struct](06-pagetable-struct.md)。
 
 ### 1.5 CoW 机制
 
 fork 时不立即复制物理内存，而是：
 
 1. **共享物理页面**：父子进程指向相同的物理块
-2. **增加引用计数**：`phys_block.refcount++`
-3. **标记只读**：页表项设置为只读
+2. **增加引用计数**：`phys_block.refcount++`（通过 `pb_reference()` → `pb_link()`）
+3. **标记只读**：`map_writept()` → `map_ph_writept()` → `pr_writable()` 检测到共享页（`refcount > 1`），页表项不含 `PTF_WRITE`
 4. **延迟复制**：写入时触发页错误，执行真正的复制
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CoW 内存布局                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  fork() 前:                                                     │
-│                                                                 │
-│  父进程页表: PTE_W | PTE_PRESENT                                │
-│  物理页:     phys=0xABC000, refcount=1                          │
-│                                                                 │
-│  ─────────────────────────────────────────────────────────────  │
-│                                                                 │
-│  fork() 后:                                                     │
-│                                                                 │
-│  父进程页表: PTE_R | PTE_PRESENT (只读)                          │
-│  子进程页表: PTE_R | PTE_PRESENT (只读)                          │
-│  物理页:     phys=0xABC000, refcount=2                          │
-│                                                                 │
-│  ─────────────────────────────────────────────────────────────  │
-│                                                                 │
-│  父进程写入后:                                                   │
-│                                                                 │
-│  父进程页表: PTE_W | PTE_PRESENT (可写) ← 新物理页               │
-│  子进程页表: PTE_R | PTE_PRESENT (只读) ← 原物理页               │
-│  原物理页:  phys=0xABC000, refcount=1 (子进程)                   │
-│  新物理页:  phys=0xDEF000, refcount=1 (父进程)                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+CoW 的完整机制（触发条件、页错误处理流程、`anon_writable()` 逻辑等）详见 [15-cow-mechanism](15-cow-mechanism.md)。
 
 ### 1.6 fork 与其他组件的关系
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    fork 组件关系图                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│                        ┌─────────────┐                          │
-│                        │   用户进程   │                          │
-│                        └──────┬──────┘                          │
-│                               │ fork()                          │
-│                               ▼                                 │
-│                        ┌─────────────┐                          │
-│                        │     PM      │                          │
-│                        │  do_fork()  │                          │
-│                        └──────┬──────┘                          │
-│                               │ VM_FORK 消息                    │
-│                               ▼                                 │
-│                        ┌─────────────┐                          │
-│                        │     VM      │                          │
-│                        │  do_fork()  │                          │
-│                        └──────┬──────┘                          │
-│                               │                                 │
-│          ┌────────────────────┼────────────────────┐           │
-│          │                    │                    │           │
-│          ▼                    ▼                    ▼           │
-│   ┌────────────┐      ┌────────────┐      ┌────────────┐      │
-│   │  region.c  │      │pagetable.c │      │   acl.c    │      │
-│   │ 区域复制    │      │  页表管理   │      │ ACL 继承   │      │
-│   └────────────┘      └────────────┘      └────────────┘      │
-│          │                    │                                 │
-│          ▼                    ▼                                 │
-│   ┌────────────┐      ┌────────────┐                          │
-│   │    pb.c    │      │   Kernel   │                          │
-│   │ 物理块引用  │      │  sys_fork  │                          │
-│   └────────────┘      └────────────┘                          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| PM | `pm/forkexit.c` | 协调 fork 流程，向 VM 发送 VM_FORK 消息 |
+| VM | `vm/fork.c` | 处理 VM_FORK，复制地址空间 |
+| region.c | `vm/region.c` | 区域复制（`map_proc_copy`、`map_copy_region`）、页表更新（`map_writept`） |
+| pagetable.c | `vm/pagetable.c` | 页表创建（`pt_new`）、绑定（`pt_bind`） |
+| pb.c | `vm/pb.c` | 物理块引用（`pb_reference`、`pb_link`） |
+| acl.c | `vm/acl.c` | ACL 继承（`acl_fork`） |
+| Kernel | `kernel/` | `sys_fork()` 创建内核进程、`sys_set_pagetable()` 设置页表 |
 
 ---
 
-## 2. IPC 接口说明
+## 2. C 源码分析
 
-### 2.1 调用者
+### 2.1 IPC 接口
 
 PM (Process Manager) 发起 fork 请求。当用户进程调用 `fork()` 系统调用时，PM 负责协调整个 fork 流程，包括向 VM 发送 VM_FORK 消息请求复制地址空间。
 
@@ -254,18 +185,17 @@ int do_fork(void)
 
 ### 2.2 消息类型
 
-VM_FORK 是 VM 服务处理 fork 请求的消息类型。
-
 **消息定义**
 
 ```c
-// minix3/minix/include/minix/vm.h
-#define VM_FORK     7   // fork 请求消息类型
+// minix3/minix/include/minix/com.h
+#define VM_RQ_BASE          0xC00
+#define VM_FORK             (VM_RQ_BASE+1)   // fork 请求消息类型
 
-// 消息字段
-#define VMF_ENDPOINT        m4_l1   // 父进程 endpoint
-#define VMF_SLOTNO          m4_l2   // 子进程 slot 号
-#define VMF_CHILD_ENDPOINT  m4_l3   // 返回的子进程 endpoint
+// 消息字段 (使用 m1 消息格式)
+#define VMF_ENDPOINT        m1_i1   // 父进程 endpoint
+#define VMF_SLOTNO          m1_i2   // 子进程 slot 号
+#define VMF_CHILD_ENDPOINT  m1_i3   // 返回的子进程 endpoint
 ```
 
 ### 2.3 请求参数
@@ -288,31 +218,21 @@ vmp = &vmproc[proc];  // 父进程
 **vm_isokendpt 函数**
 
 ```c
-// 验证 endpoint 是否有效
-int vm_isokendpt(endpoint_t endpoint, int *procslot)
+// 验证 endpoint 是否有效 (utility.c:84)
+int vm_isokendpt(endpoint_t endpoint, int *procn)
 {
-    int slot;
-    
-    // 检查 endpoint 是否在有效范围内
-    if(endpoint < 0 || endpoint >= NR_PROCS)
+    *procn = _ENDPOINT_P(endpoint);
+    if(*procn < 0 || *procn >= NR_PROCS)
         return EINVAL;
-    
-    slot = _ENDPOINT_P(endpoint);
-    if(slot < 0 || slot >= NR_PROCS)
-        return EINVAL;
-    
-    // 检查进程是否在使用中
-    if(!(vmproc[slot].vm_flags & VMF_INUSE))
-        return EINVAL;
-    
-    // 检查 endpoint 是否匹配
-    if(vmproc[slot].vm_endpoint != endpoint)
-        return EINVAL;
-    
-    *procslot = slot;
+    if(*procn >= 0 && endpoint != vmproc[*procn].vm_endpoint)
+        return EDEADEPT;
+    if(*procn >= 0 && !(vmproc[*procn].vm_flags & VMF_INUSE))
+        return EDEADEPT;
     return OK;
 }
 ```
+
+> **注意**：endpoint 不匹配或进程未使用时返回 `EDEADEPT`（而非 `EINVAL`），表示端点已过期。
 
 #### 2.3.2 VMF_SLOTNO
 
@@ -348,57 +268,21 @@ msg->VMF_CHILD_ENDPOINT = vmc->vm_endpoint;
 
 **错误处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    fork 错误处理                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   错误类型 1: 参数验证失败                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ vm_isokendpt() 失败                                  │      │
-│   │ slotno 超出范围                                      │      │
-│   │                                                     │      │
-│   │ 处理: 直接返回 EINVAL，无副作用                      │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   错误类型 2: 页表创建失败                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ pt_new() 返回 ENOMEM                                 │      │
-│   │                                                     │      │
-│   │ 处理: 返回 ENOMEM，子进程结构未修改                   │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   错误类型 3: 地址空间复制失败                                   │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ map_proc_copy() 返回 ENOMEM                          │      │
-│   │                                                     │      │
-│   │ 处理:                                               │      │
-│   │   1. pt_free(&vmc->vm_pt) 释放页表                   │      │
-│   │   2. 返回 ENOMEM                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   注意: sys_fork() 成功后不能失败                               │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 一旦 sys_fork() 成功，内核已经创建了子进程            │      │
-│   │ 此时 VM 必须成功，否则系统状态不一致                   │      │
-│   │ panic("do_fork can't sys_fork: %d", r);             │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 阶段 | 失败条件 | 返回值 | 处理 |
+|------|---------|--------|------|
+| 参数验证 | `vm_isokendpt()` 失败或 slot 越界 | `EINVAL` | 直接返回，无副作用 |
+| 页表创建 | `pt_new()` 失败 | `ENOMEM` | 直接返回，子进程结构未修改 |
+| 地址空间复制 | `map_proc_copy()` 失败 | `ENOMEM` | `pt_free(&vmc->vm_pt)` 释放页表后返回 |
+| 内核通知 | `sys_fork()` 失败 | panic | 不可恢复：内核已创建子进程，VM 必须成功 |
 
----
-
-## 3. C 源码分析
-
-### 3.1 do_fork - 主处理函数
+### 2.5 do_fork - 主处理函数
 
 fork 的完整流程包括：验证参数、初始化子进程结构、复制地址空间、设置 CoW。
 
 **函数原型**
 
 ```c
-// minix3/minix/servers/vm/fork.c
+// minix3/minix/servers/vm/fork.c:32
 int do_fork(message *msg);
 ```
 
@@ -589,48 +473,21 @@ int do_fork(message *msg)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 验证阶段
+### 2.6 验证阶段
 
-#### 3.2.1 验证父进程
+#### 2.6.1 验证父进程
 
 使用 `vm_isokendpt()` 检查父进程 endpoint 是否有效，确保进程存在且在使用中。
 
 **验证要点**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    父进程验证要点                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   1. endpoint 范围检查                                          │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ endpoint < 0 || endpoint >= NR_PROCS → EINVAL        │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   2. slot 范围检查                                              │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ slot = _ENDPOINT_P(endpoint)                         │   │
-│      │ slot < 0 || slot >= NR_PROCS → EINVAL                │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   3. 进程状态检查                                               │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ !(vmproc[slot].vm_flags & VMF_INUSE) → EINVAL        │   │
-│      │                                                     │   │
-│      │ 确保进程正在使用中，不是空闲槽位                       │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   4. endpoint 一致性检查                                        │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ vmproc[slot].vm_endpoint != endpoint → EINVAL        │   │
-│      │                                                     │   │
-│      │ 防止使用过期的 endpoint                              │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+`vm_isokendpt()` (utility.c:84) 执行三步验证：
 
-#### 3.2.2 验证子进程槽位
+1. **slot 范围检查**：`*procn = _ENDPOINT_P(endpoint)`，若 `*procn < 0 || *procn >= NR_PROCS` 返回 `EINVAL`
+2. **endpoint 一致性**：若 `endpoint != vmproc[*procn].vm_endpoint` 返回 `EDEADEPT`（防止使用过期 endpoint）
+3. **进程状态**：若 `!(vmproc[*procn].vm_flags & VMF_INUSE)` 返回 `EDEADEPT`（进程不在使用中）
+
+#### 2.6.2 验证子进程槽位
 
 检查 PM 提供的子进程 slot 是否在有效范围内，且未被其他进程占用。
 
@@ -652,82 +509,32 @@ vmc = &vmproc[childproc];
 assert(vmc->vm_slot == childproc);
 ```
 
-### 3.3 初始化阶段
+### 2.7 初始化阶段
 
-#### 3.3.1 分配子进程结构
+#### 2.7.1 分配子进程结构
 
 使用 PM 提供的 slot 初始化子进程的 vmproc 结构，设置基本标志。
 
 **初始化步骤**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    子进程结构初始化                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   初始状态:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 父进程 vmp:                                          │      │
-│   │   vm_endpoint: 0x1001                                │      │
-│   │   vm_regions_avl: [区域树]                           │      │
-│   │   vm_pt: [页表]                                      │      │
-│   │   vm_flags: VMF_INUSE | ...                          │      │
-│   │   vm_slot: 5                                         │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 子进程 vmc (初始):                                    │      │
-│   │   vm_endpoint: NONE                                  │      │
-│   │   vm_regions_avl: 空                                 │      │
-│   │   vm_pt: [原始页表]                                  │      │
-│   │   vm_flags: 0                                        │      │
-│   │   vm_slot: 10                                        │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   步骤 1: 保存原始页表                                          │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ origpt = vmc->vm_pt                                   │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   步骤 2: 浅拷贝父进程结构                                      │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ *vmc = *vmp                                           │      │
-│   │                                                     │      │
-│   │ 此时 vmc 暂时与 vmp 共享:                             │      │
-│   │   - 区域树指针                                       │      │
-│   │   - 页表指针                                         │      │
-│   │   - 标志                                             │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   步骤 3: 恢复子进程特有字段                                    │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ vmc->vm_slot = childproc        // 恢复 slot         │      │
-│   │ region_init(&vmc->vm_regions_avl) // 初始化空区域树   │      │
-│   │ vmc->vm_endpoint = NONE         // 暂时无效          │      │
-│   │ vmc->vm_pt = origpt             // 恢复原始页表       │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   结果状态:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 子进程 vmc:                                           │      │
-│   │   vm_endpoint: NONE (等待内核分配)                    │      │
-│   │   vm_regions_avl: 空 (等待复制)                       │      │
-│   │   vm_pt: [原始页表] (等待 pt_new)                     │      │
-│   │   vm_flags: VMF_INUSE | ... (从父进程复制)            │      │
-│   │   vm_slot: 10                                        │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **保存原始页表**：`origpt = vmc->vm_pt`（子进程 slot 原有的页表）
+2. **浅拷贝父进程结构**：`*vmc = *vmp`（此时 vmc 暂时与 vmp 共享区域树指针、页表指针、标志等）
+3. **恢复子进程特有字段**：
+   - `vmc->vm_slot = childproc`（恢复自己的 slot）
+   - `region_init(&vmc->vm_regions_avl)`（初始化空区域树）
+   - `vmc->vm_endpoint = NONE`（暂时无效，等待内核分配）
+   - `vmc->vm_pt = origpt`（恢复原始页表，等待 `pt_new()`）
 
-#### 3.3.2 创建页表
+初始化完成后子进程状态：`vm_endpoint=NONE`，`vm_regions_avl=空`，`vm_pt=原始页表`，`vm_flags` 从父进程复制（后续 `&= VMF_INUSE`），`vm_slot=childproc`。
+
+#### 2.7.2 创建页表
 
 调用 `pt_new()` 为子进程创建新的页表结构。
 
 **pt_new 函数**
 
 ```c
-// minix3/minix/servers/vm/pagetable.c
+// minix3/minix/servers/vm/pagetable.c:990
 int pt_new(pt_t *pt)
 {
     int i, r;
@@ -802,7 +609,11 @@ int pt_new(pt_t *pt)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.3.3 调用 sys_fork
+> **32 位 vs 64 位差异**：以上为 x86-32 两级页表（1024 个 PDE，每个 PDE 指向 1024 项页表，寻址 4GB）。
+> x86-64 使用四级页表（PML4 → PDPT → PD → PT），虚拟地址 48 位，PTE 从 32 位扩展为 64 位。
+> `pt_pt[]` 数组在 64 位下无法预分配所有页表，需改为动态分配。
+
+#### 2.7.3 调用 sys_fork
 
 内核生成子进程 endpoint，完成进程表中的注册。
 
@@ -828,48 +639,20 @@ if((r = sys_fork(vmp->vm_endpoint, childproc,
 
 **关键点**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    sys_fork 关键点                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   1. 不可逆性                                                   │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ sys_fork() 成功后，内核已创建子进程                    │   │
-│      │ 此时 VM 必须成功，否则系统状态不一致                   │   │
-│      │                                                     │   │
-│      │ 因此 sys_fork() 失败时 panic，而不是返回错误          │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   2. PFF_VMINHIBIT 标志                                        │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ 表示子进程的内存管理由 VM 负责                         │   │
-│      │ 内核不会自动复制父进程的内存映射                       │   │
-│      │                                                     │   │
-│      │ 这是 Minix3 微内核架构的特点                          │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   3. fork 消息地址                                              │
-│      ┌─────────────────────────────────────────────────────┐   │
-│      │ 内核返回 fork 消息的地址                              │   │
-│      │ VM 需要处理这个消息页面的内存访问                      │   │
-│      │                                                     │   │
-│      │ 这是父子进程通信的优化                                │   │
-│      └─────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **不可逆性**：`sys_fork()` 成功后内核已创建子进程，VM 必须成功，否则系统状态不一致。因此 `sys_fork()` 失败时 panic，而不是返回错误
+2. **PFF_VMINHIBIT 标志**：表示子进程的内存管理由 VM 负责，内核不会自动复制父进程的内存映射。这是 Minix3 微内核架构的特点
+3. **fork 消息地址**：内核返回 fork 消息的地址，VM 需要处理这个消息页面的内存访问（`handle_memory_once`）
 
-### 3.4 内存复制阶段
+### 2.8 内存复制阶段
 
-#### 3.4.1 map_proc_copy
+#### 2.8.1 map_proc_copy
 
 遍历父进程的所有虚拟区域，为每个区域创建副本。
 
 **函数原型**
 
 ```c
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:933
 int map_proc_copy(struct vmproc *dst, struct vmproc *src);
 ```
 
@@ -886,7 +669,7 @@ int map_proc_copy(struct vmproc *dst, struct vmproc *src)
 }
 ```
 
-#### 3.4.2 map_proc_copy_range
+#### 2.8.2 map_proc_copy_range
 
 复制指定范围内的虚拟区域。
 
@@ -1031,7 +814,7 @@ int map_proc_copy_range(struct vmproc *dst, struct vmproc *src,
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.4.3 map_copy_region
+#### 2.8.3 map_copy_region
 
 复制单个虚拟区域，包括创建新的 vir_region 结构和共享物理块。
 
@@ -1093,95 +876,37 @@ struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
 
 **区域复制详解**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    map_copy_region 详解                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   复制前:                                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 父进程 vir_region (vr):                               │      │
-│   │   vaddr: 0x400000                                     │      │
-│   │   length: 0x3000 (3 页)                               │      │
-│   │   flags: VR_WRITABLE | VR_ANON                        │      │
-│   │   physblocks:                                         │      │
-│   │     [0] ──► phys_region_0 ──► phys_block_A            │      │
-│   │     [1] ──► phys_region_1 ──► phys_block_B            │      │
-│   │     [2] ──► NULL (未分配)                             │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   复制过程:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 1. region_new() 创建新 vir_region                     │      │
-│   │    - vaddr, length, flags 相同                       │      │
-│   │    - physblocks 数组为空                             │      │
-│   │                                                     │      │
-│   │ 2. 遍历 physblocks:                                  │      │
-│   │    for p in 0..phys_slot(vr->length):               │      │
-│   │        ph = physblock_get(vr, p*PAGE_SIZE)          │      │
-│   │        if ph:                                       │      │
-│   │            newph = pb_reference(ph->ph, ...)        │      │
-│   │            // 共享 phys_block，refcount++            │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   复制后:                                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 子进程 vir_region (newvr):                            │      │
-│   │   vaddr: 0x400000                                     │      │
-│   │   length: 0x3000 (3 页)                               │      │
-│   │   flags: VR_WRITABLE | VR_ANON                        │      │
-│   │   physblocks:                                         │      │
-│   │     [0] ──► new_phys_region_0 ──┐                     │      │
-│   │     [1] ──► new_phys_region_1 ──┼──► 共享 phys_block  │      │
-│   │     [2] ──► NULL                 │                     │      │
-│   └─────────────────────────────────┼────────────────────┘      │
-│                                     │                           │
-│   ┌─────────────────────────────────┼────────────────────┐      │
-│   │ 父进程 vir_region (vr):          │                    │      │
-│   │   physblocks:                   │                    │      │
-│   │     [0] ──► phys_region_0 ──────┘                    │      │
-│   │     [1] ──► phys_region_1                            │      │
-│   │     [2] ──► NULL                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   phys_block 状态变化:                                          │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ phys_block_A:                                        │      │
-│   │   phys: 0x1234000                                    │      │
-│   │   refcount: 1 → 2  ◄─── 共享后增加                    │      │
-│   │   firstregion ──► new_phys_region_0 ──► phys_region_0│      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+`map_copy_region()` 的核心操作：
 
-#### 3.4.4 CoW 设置
+1. `region_new()` 创建新 `vir_region`，复制 `vaddr`、`length`、`flags`、`def_memtype`
+2. 遍历源区域的 `physblocks` 数组（`physblock_get(vr, p*VM_PAGE_SIZE)`），跳过未分配的槽位
+3. 对每个已分配的 `phys_region`，调用 `pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype)` 共享物理块（`refcount++`）
+4. 调用 `memtype->ev_reference()` 回调（如有）
+
+复制后父子进程的 `vir_region` 指向相同的 `phys_block`，`refcount` 从 1 增至 2。
+
+#### 2.8.4 CoW 设置
 
 共享 phys_block 后，将页表项标记为只读，触发写时复制。
 
 **map_writept 函数**
 
 ```c
-// minix3/minix/servers/vm/region.c
+// minix3/minix/servers/vm/region.c:906
 int map_writept(struct vmproc *vmp)
 {
     struct vir_region *vr;
     struct phys_region *ph;
     int r;
     region_iter v_iter;
-
     region_start_iter_least(&vmp->vm_regions_avl, &v_iter);
 
     while((vr = region_get_iter(&v_iter))) {
-        // 遍历区域内的所有物理块
-        for(ph = vr->phys; ph; ph = ph->next) {
-            // 更新页表映射
-            if((r = pt_writemap(&vmp->vm_pt, 
-                    vr->vaddr + ph->offset,
-                    ph->ph->phys,
-                    VM_PAGE_SIZE,
-                    physblock_pt_flags(ph),
-                    WMF_WRITEUPDATES))) {
+        vir_bytes p;
+        for(p = 0; p < vr->length; p += VM_PAGE_SIZE) {
+            if(!(ph = physblock_get(vr, p))) continue;
+
+            if((r=map_ph_writept(vmp, vr, ph)) != OK) {
                 printf("VM: map_writept: failed\n");
                 return r;
             }
@@ -1193,65 +918,69 @@ int map_writept(struct vmproc *vmp)
 }
 ```
 
+**map_ph_writept 函数 — 实际的页表标志计算**
+
+```c
+// minix3/minix/servers/vm/region.c:257
+int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
+    struct phys_region *pr)
+{
+    int flags = PTF_PRESENT | PTF_USER;
+    struct phys_block *pb = pr->ph;
+
+    if(pr_writable(vr, pr))
+        flags |= PTF_WRITE;
+    else
+        flags |= PTF_READ;
+
+    if(vr->def_memtype->pt_flags)
+        flags |= vr->def_memtype->pt_flags(vr);
+
+    if(pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,
+            pb->phys, VM_PAGE_SIZE, flags,
+#if SANITYCHECKS
+            !pr->written ? 0 :
+#endif
+            WMF_OVERWRITE) != OK) {
+        printf("VM: map_writept: pt_writemap failed\n");
+        return ENOMEM;
+    }
+
+#if SANITYCHECKS
+    USE(pr, pr->written = 1;);
+#endif
+    return OK;
+}
+```
+
+**pr_writable 函数 — 可写判断的核心逻辑**
+
+```c
+// minix3/minix/servers/vm/region.c:130
+static int pr_writable(struct vir_region *vr, struct phys_region *pr)
+{
+    assert(pr->memtype->writable);
+    return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
+}
+```
+
+CoW 只读机制通过 `pr_writable()` → `memtype->writable()` 间接实现。对于匿名内存，`anon_writable()` (mem_anon.c:105) 在 `refcount > 1` 时返回 0，从而使页表项不含 `PTF_WRITE`。详见 [15-cow-mechanism](15-cow-mechanism.md)。
+
 **CoW 页表标志**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CoW 页表标志设置                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   页表项标志计算:                                                │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ physblock_pt_flags(ph):                              │      │
-│   │                                                     │      │
-│   │   if (ph->ph->refcount > 1) {                        │      │
-│   │       // 共享页：设置为只读                           │      │
-│   │       return PTE_PRESENT | PTE_USER;                 │      │
-│   │   } else {                                          │      │
-│   │       // 私有页：根据区域标志设置                      │      │
-│   │       flags = PTE_PRESENT | PTE_USER;                │      │
-│   │       if (vr->flags & VR_WRITABLE)                   │      │
-│   │           flags |= PTE_RW;                           │      │
-│   │       return flags;                                  │      │
-│   │   }                                                 │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   fork 后的页表状态:                                             │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 父进程页表:                                           │      │
-│   │   PTE[0]: PTE_PRESENT | PTE_USER (只读)              │      │
-│   │   PTE[1]: PTE_PRESENT | PTE_USER (只读)              │      │
-│   │                                                     │      │
-│   │ 子进程页表:                                           │      │
-│   │   PTE[0]: PTE_PRESENT | PTE_USER (只读)              │      │
-│   │   PTE[1]: PTE_PRESENT | PTE_USER (只读)              │      │
-│   │                                                     │      │
-│   │ 物理块引用计数:                                       │      │
-│   │   phys_block_A.refcount = 2                         │      │
-│   │   phys_block_B.refcount = 2                         │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   写入触发 CoW 后:                                               │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 写入进程页表:                                         │      │
-│   │   PTE[0]: PTE_PRESENT | PTE_USER | PTE_RW (可写)     │      │
-│   │          └──► 新物理页                               │      │
-│   │                                                     │      │
-│   │ 另一进程页表:                                         │      │
-│   │   PTE[0]: PTE_PRESENT | PTE_USER (只读)              │      │
-│   │          └──► 原物理页                               │      │
-│   │                                                     │      │
-│   │ 物理块引用计数:                                       │      │
-│   │   新物理页: refcount = 1                             │      │
-│   │   原物理页: refcount = 1                             │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+fork 后的页表状态由 `map_ph_writept()` 通过 `pr_writable()` 自动设置：
 
-### 3.5 完成阶段
+| 条件 | pr_writable() | 页表标志 | 说明 |
+|------|--------------|---------|------|
+| `refcount == 1` 且 `VR_WRITABLE` | 1 | `PTF_PRESENT \| PTF_USER \| PTF_WRITE` | 私有可写页 |
+| `refcount > 1` 且 `VR_WRITABLE` | 0 | `PTF_PRESENT \| PTF_USER \| PTF_READ` | 共享页只读（CoW） |
+| 非 `VR_WRITABLE` | 0 | `PTF_PRESENT \| PTF_USER \| PTF_READ` | 本身只读页 |
 
-#### 3.5.1 设置子进程状态
+fork 后，父子进程的共享页 `refcount > 1`，`anon_writable()` 返回 0，`pr_writable()` 返回 0，页表项不含 `PTF_WRITE`。写入时触发页错误，CoW 处理分配新物理页后 `refcount` 降为 1，`pr_writable()` 返回 1，页表项恢复 `PTF_WRITE`。
+
+### 2.9 完成阶段
+
+#### 2.9.1 设置子进程状态
 
 设置 vm_flags 为 VMF_INUSE，设置 vm_endpoint 为子进程端点。
 
@@ -1260,18 +989,17 @@ int map_writept(struct vmproc *vmp)
 vmc->vm_flags &= VMF_INUSE;
 ```
 
-#### 3.5.2 ACL 继承
+#### 2.9.2 ACL 继承
 
-调用 acl_fork() 继承父进程的 ACL 条目。
+调用 `acl_fork()` 处理子进程的 ACL 条目。
 
 **acl_fork 函数**
 
 ```c
-// minix3/minix/servers/vm/acl.c
+// minix3/minix/servers/vm/acl.c:110
+// 参数 vmp 是子进程（vmc），已通过 *vmc = *vmp 继承了父进程的 vm_acl
 void acl_fork(struct vmproc *vmp)
 {
-    // 如果父进程使用系统进程 ACL，则清除
-    // 用户进程共享 USER_ACL，无需特殊处理
     if (vmp->vm_acl != USER_ACL)
         vmp->vm_acl = NO_ACL;
 }
@@ -1279,43 +1007,19 @@ void acl_fork(struct vmproc *vmp)
 
 **ACL 继承规则**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ACL 继承规则                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ACL 类型:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ NO_ACL (-1):     无 ACL，允许所有调用                 │      │
-│   │ USER_ACL (0):    用户进程共享 ACL                     │      │
-│   │ FIRST_SYS_ACL:   系统进程专用 ACL                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   继承规则:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 父进程 ACL          子进程 ACL                       │      │
-│   │ ─────────────────────────────                       │      │
-│   │ NO_ACL         →    NO_ACL                          │      │
-│   │ USER_ACL       →    USER_ACL (共享)                  │      │
-│   │ 系统进程 ACL    →    NO_ACL (清除)                   │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   原因:                                                         │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 系统进程的 ACL 是特定于进程的，不应该继承             │      │
-│   │ 子进程应该由 RS 重新设置 ACL                         │      │
-│   │                                                     │      │
-│   │ 用户进程共享同一个 USER_ACL，可以继承                │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 父进程 ACL | 子进程 ACL | 说明 |
+|-----------|-----------|------|
+| `NO_ACL` (-1) | `NO_ACL` | 无限制，直接继承 |
+| `USER_ACL` (0) | `USER_ACL` | 用户进程共享 ACL，直接继承 |
+| 系统进程 ACL | `NO_ACL` | 系统进程 ACL 是进程特定的，不应继承，由 RS 重新设置 |
+
+> **注意**：`acl_fork()` 中的 `vmp` 此时指向子进程（因为 `*vmc = *vmp` 后 `vmc` 的 `vm_acl` 继承了父进程值），所以 `vmp->vm_acl != USER_ACL` 检查的是子进程继承来的 ACL 值。
 
 ---
 
-## 4. Rust 设计决策
+## 3. Rust 设计决策
 
-### 4.1 ForkRequest/ForkResponse
+### 3.1 ForkRequest/ForkResponse
 
 使用类型安全的 IPC 消息结构，包括 ForkRequest 和 ForkResponse 枚举。
 
@@ -1359,7 +1063,7 @@ impl ForkFlags {
 }
 ```
 
-### 4.2 错误处理
+### 3.2 错误处理
 
 使用 Result 类型处理各阶段失败，包括验证失败、内存不足等错误。
 
@@ -1392,7 +1096,7 @@ pub enum ForkError {
 pub type ForkResult<T> = Result<T, ForkError>;
 ```
 
-### 4.3 事务性
+### 3.3 事务性
 
 通过检查点和回滚机制保证 fork 操作的原子性。
 
@@ -1465,7 +1169,7 @@ impl ForkState {
 }
 ```
 
-### 4.4 进程表管理
+### 3.4 进程表管理
 
 ```rust
 use std::sync::RwLock;
@@ -1531,9 +1235,9 @@ impl ProcTable {
 
 ---
 
-## 5. 实现详解
+## 4. 实现详解
 
-### 5.1 消息处理入口
+### 4.1 消息处理入口
 
 do_fork 函数接收 VM_FORK 消息，解析参数并启动 fork 流程。
 
@@ -1616,7 +1320,7 @@ fn fork_process(
 }
 ```
 
-### 5.2 父进程查找
+### 4.2 父进程查找
 
 通过 endpoint 在进程表中查找父进程的 VmProc 结构。
 
@@ -1649,7 +1353,7 @@ impl ProcTable {
 }
 ```
 
-### 5.3 子进程初始化
+### 4.3 子进程初始化
 
 初始化子进程的 VmProc 结构，包括创建页表和初始化区域树。
 
@@ -1673,7 +1377,7 @@ impl VmProc {
 }
 ```
 
-### 5.4 区域遍历与复制
+### 4.4 区域遍历与复制
 
 遍历父进程的 AVL 树，复制每个虚拟区域到子进程。
 
@@ -1758,7 +1462,7 @@ fn map_writept(vmp: &VmProc) -> Result<(), PageTableError> {
 }
 ```
 
-### 5.5 内核通知
+### 4.5 内核通知
 
 调用 sys_fork 通知内核创建子进程，并绑定页表。
 
@@ -1803,38 +1507,16 @@ pub fn sys_fork(
 
 **sys_fork 内核处理**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    sys_fork 内核处理                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   输入:                                                         │
-│   - parent: 父进程 endpoint                                     │
-│   - child_slot: 子进程 slot                                     │
-│   - flags: 标志位                                               │
-│                                                                 │
-│   内核操作:                                                      │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 1. 分配新的 endpoint 给子进程                        │      │
-│   │    endpoint = _ENDPOINT(0, child_slot)              │      │
-│   │                                                     │      │
-│   │ 2. 复制父进程的内核栈                                │      │
-│   │                                                     │      │
-│   │ 3. 设置子进程的调度状态                              │      │
-│   │                                                     │      │
-│   │ 4. 如果设置了 PFF_VMINHIBIT:                        │      │
-│   │    子进程初始状态为 VM 阻塞                          │      │
-│   │    等待 VM 完成初始化                                │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   返回:                                                         │
-│   - child_endpoint: 子进程的 endpoint                           │
-│   - msgaddr: fork 消息页面的地址                                │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+`sys_fork()` 的内核操作：
 
-### 5.6 页表绑定
+1. 分配新的 endpoint 给子进程：`endpoint = _ENDPOINT(0, child_slot)`
+2. 复制父进程的内核栈
+3. 设置子进程的调度状态
+4. 如果设置了 `PFF_VMINHIBIT`：子进程初始状态为 VM 阻塞，等待 VM 完成初始化
+
+返回值：`child_endpoint`（子进程 endpoint）和 `msgaddr`（fork 消息页面地址）
+
+### 4.6 页表绑定
 
 将创建的页表绑定到子进程。
 
@@ -1869,7 +1551,7 @@ pub fn sys_set_pagetable(
 }
 ```
 
-### 5.7 错误处理与回滚
+### 4.7 错误处理与回滚
 
 fork 过程中如果发生错误，需要回滚已完成的操作。
 
@@ -1922,649 +1604,52 @@ pub enum ForkPhase {
 
 **错误处理流程**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    fork 错误处理流程                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   错误类型 1: 参数验证失败                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 阶段: Init → Validated 失败                          │      │
-│   │                                                     │      │
-│   │ 处理:                                               │      │
-│   │   - 直接返回错误码                                   │      │
-│   │   - 无需回滚（无副作用）                             │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   错误类型 2: 页表创建失败                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 阶段: Validated → PageTableCreated 失败              │      │
-│   │                                                     │      │
-│   │ 处理:                                               │      │
-│   │   - 返回 ENOMEM                                     │      │
-│   │   - 无需回滚（子进程结构未修改）                      │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   错误类型 3: 地址空间复制失败                                   │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 阶段: PageTableCreated → RegionsCopied 失败          │      │
-│   │                                                     │      │
-│   │ 处理:                                               │      │
-│   │   - 调用 state.rollback()                           │      │
-│   │   - 释放已创建的页表                                 │      │
-│   │   - 清除已复制的区域                                 │      │
-│   │   - 返回 ENOMEM                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   错误类型 4: 内核通知失败                                       │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 阶段: RegionsCopied → KernelNotified 失败             │      │
-│   │                                                     │      │
-│   │ 处理:                                               │      │
-│   │   - panic! (不应该发生)                              │      │
-│   │   - sys_fork 失败表示内核状态不一致                   │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   注意: sys_fork 成功后不能失败                                 │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 一旦 sys_fork 成功，内核已经创建了子进程              │      │
-│   │ 此时不能回滚，必须继续完成                            │      │
-│   │                                                     │      │
-│   │ 这就是为什么 Minix3 中使用 panic 而非返回错误         │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 阶段 | 失败条件 | 处理 |
+|------|---------|------|
+| Init → Validated | 参数验证失败 | 直接返回错误码，无副作用 |
+| Validated → PageTableCreated | `pt_new()` 失败 | 返回 `ENOMEM`，子进程结构未修改 |
+| PageTableCreated → RegionsCopied | `map_proc_copy()` 失败 | `state.rollback()` 释放页表和已复制区域，返回 `ENOMEM` |
+| RegionsCopied → KernelNotified | `sys_fork()` 失败 | `panic!`（内核已创建子进程，状态不可逆） |
+
+> `sys_fork()` 成功后不能失败——内核已创建子进程，不能回滚，必须继续完成。这就是 Minix3 使用 `panic` 而非返回错误的原因。
 
 ---
 
-## 6. 测试与验证
+## 5. 测试要点
 
-### 6.1 单元测试
+### 5.1 测试维度
 
-#### 6.1.1 参数验证测试
+| 维度 | 测试内容 |
+|------|---------|
+| **参数验证** | 无效 endpoint（不存在、未使用、过期）、无效 slot（越界、负数） |
+| **子进程初始化** | 浅拷贝后字段恢复（slot、endpoint、regions、pagetable）正确性 |
+| **页表创建** | `pt_new()` 成功/失败路径、内核空间映射正确性 |
+| **区域复制** | `map_copy_region()` 物理块共享（refcount 增加）、`map_proc_copy_range()` 遍历完整性 |
+| **CoW 设置** | fork 后父子进程页表均为只读、refcount > 1 的页不可写 |
+| **内核通知** | `sys_fork()` 失败时 panic（不可恢复）、`pt_bind()` 绑定正确性 |
+| **错误处理** | 各阶段失败回滚：pt_new 失败无副作用、map_proc_copy 失败释放页表 |
+| **ACL 继承** | USER_ACL 继承、系统 ACL 清除为 NO_ACL |
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vm::test_utils::*;
-    
-    #[test]
-    fn test_validate_endpoint_valid() {
-        let table = ProcTable::new();
-        let endpoint = Endpoint::from_raw(0x1001);
-        table.insert(5, endpoint, VmProc::new(5));
-        
-        let result = table.validate_endpoint(endpoint);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 5);
-    }
-    
-    #[test]
-    fn test_validate_endpoint_invalid() {
-        let table = ProcTable::new();
-        
-        let result = table.validate_endpoint(Endpoint::from_raw(0x9999));
-        assert!(matches!(result, Err(ForkError::InvalidEndpoint(_))));
-    }
-    
-    #[test]
-    fn test_validate_endpoint_not_in_use() {
-        let table = ProcTable::new();
-        let mut proc = VmProc::new(5);
-        proc.set_flags(VmFlags::empty());  // not in use
-        table.insert(5, Endpoint::from_raw(0x1001), proc);
-        
-        let result = table.validate_endpoint(Endpoint::from_raw(0x1001));
-        assert!(matches!(result, Err(ForkError::InvalidEndpoint(_))));
-    }
-    
-    #[test]
-    fn test_validate_slot_valid() {
-        let table = ProcTable::new();
-        
-        assert!(table.validate_slot(0).is_ok());
-        assert!(table.validate_slot(NR_PROCS - 1).is_ok());
-    }
-    
-    #[test]
-    fn test_validate_slot_out_of_range() {
-        let table = ProcTable::new();
-        
-        let result = table.validate_slot(NR_PROCS);
-        assert!(matches!(result, Err(ForkError::InvalidSlot(_))));
-        
-        let result = table.validate_slot(-1i32 as usize);
-        assert!(matches!(result, Err(ForkError::InvalidSlot(_))));
-    }
-}
-```
+### 5.2 关键测试场景
 
-#### 6.1.2 子进程初始化测试
-
-```rust
-#[test]
-fn test_child_init() {
-    let mut parent = VmProc::new(5);
-    parent.set_endpoint(Endpoint::from_raw(0x1001));
-    parent.set_flags(VmFlags::IN_USE | VmFlags::HAS_SIGNALS);
-    parent.regions_mut().insert(create_test_region(0x400000, 0x1000));
-    
-    let mut child = VmProc::new(10);
-    child.copy_from(&parent);
-    
-    assert_eq!(child.slot(), 10);  // 保持自己的 slot
-    assert!(child.regions().is_empty());  // 区域需要单独复制
-    assert_eq!(child.endpoint(), Endpoint::NONE);  // endpoint 暂时无效
-}
-
-#[test]
-fn test_pagetable_creation() {
-    let pt = PageTable::new().expect("failed to create page table");
-    
-    assert!(pt.dir().is_some());
-    assert!(pt.dir_phys().is_valid());
-    
-    // 验证内核空间映射
-    for i in KERNEL_PDE_START..ARCH_VM_DIR_ENTRIES {
-        assert!(pt.dir_entry(i).is_present());
-    }
-}
-```
-
-#### 6.1.3 区域复制测试
-
-```rust
-#[test]
-fn test_map_copy_region() {
-    let mut parent_region = VirRegion::new(
-        0x400000,           // vaddr
-        0x3000,             // length (3 pages)
-        RegionFlags::WRITABLE | RegionFlags::ANON,
-        MemType::Anon,
-    ).unwrap();
-    
-    // 添加物理块
-    let pb1 = PhysBlock::new(PhysAddr::new(0x1234000));
-    parent_region.add_phys_region(0, pb1.clone());
-    
-    let pb2 = PhysBlock::new(PhysAddr::new(0x1235000));
-    parent_region.add_phys_region(0x1000, pb2.clone());
-    
-    let child = VmProc::new(10);
-    let new_region = map_copy_region(&child, &parent_region).unwrap();
-    
-    // 验证新区域属性
-    assert_eq!(new_region.vaddr(), parent_region.vaddr());
-    assert_eq!(new_region.length(), parent_region.length());
-    assert_eq!(new_region.flags(), parent_region.flags());
-    
-    // 验证物理块共享
-    assert_eq!(pb1.refcount(), 2);  // 父子共享
-    assert_eq!(pb2.refcount(), 2);
-    
-    // 验证新区域的物理块指向同一物理页
-    let new_pb1 = new_region.get_phys_block(0).unwrap();
-    assert_eq!(new_pb1.phys(), pb1.phys());
-}
-
-#[test]
-fn test_map_proc_copy() {
-    let mut parent = VmProc::new(5);
-    parent.regions_mut().insert(create_test_region(0x400000, 0x1000));
-    parent.regions_mut().insert(create_test_region(0x500000, 0x2000));
-    
-    let mut child = VmProc::new(10);
-    child.set_pagetable(PageTable::new().unwrap());
-    
-    map_proc_copy(&mut child, &parent).unwrap();
-    
-    // 验证区域数量相同
-    assert_eq!(child.regions().len(), parent.regions().len());
-    
-    // 验证区域内容相同
-    for (p_region, c_region) in parent.regions().iter().zip(child.regions().iter()) {
-        assert_eq!(p_region.vaddr(), c_region.vaddr());
-        assert_eq!(p_region.length(), c_region.length());
-    }
-}
-```
-
-#### 6.1.4 CoW 设置测试
-
-```rust
-#[test]
-fn test_cow_setup() {
-    let mut parent = VmProc::new(5);
-    let region = create_test_region(0x400000, 0x1000);
-    let pb = region.get_phys_block(0).unwrap();
-    
-    parent.regions_mut().insert(region);
-    
-    let mut child = VmProc::new(10);
-    child.set_pagetable(PageTable::new().unwrap());
-    
-    map_proc_copy(&mut child, &parent).unwrap();
-    
-    // 验证引用计数
-    assert_eq!(pb.refcount(), 2);
-    
-    // 验证父进程页表为只读
-    let parent_pte = parent.pagetable().get_pte(0x400000).unwrap();
-    assert!(parent_pte.is_present());
-    assert!(!parent_pte.is_writable());  // 只读
-    
-    // 验证子进程页表为只读
-    let child_pte = child.pagetable().get_pte(0x400000).unwrap();
-    assert!(child_pte.is_present());
-    assert!(!child_pte.is_writable());  // 只读
-}
-
-#[test]
-fn test_cow_trigger() {
-    // fork 后触发 CoW
-    let (mut parent, mut child) = create_fork_pair();
-    
-    // 子进程写入触发 CoW
-    let result = child.write_memory(0x400000, &[0x42]);
-    assert!(result.is_ok());
-    
-    // 验证物理页分离
-    let parent_pb = parent.get_phys_block(0x400000).unwrap();
-    let child_pb = child.get_phys_block(0x400000).unwrap();
-    
-    assert_ne!(parent_pb.phys(), child_pb.phys());  // 不同物理页
-    assert_eq!(parent_pb.refcount(), 1);  // 各自私有
-    assert_eq!(child_pb.refcount(), 1);
-    
-    // 验证子进程页表现在可写
-    let child_pte = child.pagetable().get_pte(0x400000).unwrap();
-    assert!(child_pte.is_writable());
-}
-```
-
-### 6.2 集成测试
-
-#### 6.2.1 完整 fork 流程测试
-
-```rust
-#[test]
-fn test_full_fork_flow() {
-    // 初始化进程表
-    let proc_table = ProcTable::new();
-    
-    // 创建父进程
-    let parent = create_process_with_memory(
-        &proc_table,
-        5,
-        &[
-            (0x400000, 0x1000, "code"),
-            (0x500000, 0x2000, "data"),
-            (0x7FFF0000, 0x1000, "stack"),
-        ],
-    );
-    
-    // 执行 fork
-    let request = ForkRequest {
-        parent_endpoint: parent.endpoint(),
-        child_slot: 10,
-    };
-    
-    let response = fork_process(&proc_table, &request).unwrap();
-    
-    // 验证响应
-    match response {
-        ForkResponse::Ok { child_endpoint } => {
-            assert!(child_endpoint.is_valid());
-            assert_ne!(child_endpoint, parent.endpoint());
-        }
-        _ => panic!("expected Ok response"),
-    }
-    
-    // 验证子进程状态
-    let child = proc_table.get(10).unwrap();
-    assert!(child.is_in_use());
-    assert_eq!(child.regions().len(), parent.regions().len());
-    
-    // 验证内存共享
-    for (p_region, c_region) in parent.regions().iter().zip(child.regions().iter()) {
-        assert_eq!(p_region.vaddr(), c_region.vaddr());
-        
-        for offset in (0..p_region.length()).step_by(PAGE_SIZE) {
-            let p_pb = p_region.get_phys_block(offset).unwrap();
-            let c_pb = c_region.get_phys_block(offset).unwrap();
-            assert_eq!(p_pb.phys(), c_pb.phys());  // 共享物理页
-            assert_eq!(p_pb.refcount(), 2);
-        }
-    }
-}
-```
-
-#### 6.2.2 fork 后内存隔离测试
-
-```rust
-#[test]
-fn test_memory_isolation_after_fork() {
-    let (parent, child) = create_fork_pair();
-    
-    // 父进程写入
-    parent.write_memory(0x500000, &[1, 2, 3, 4]).unwrap();
-    
-    // 子进程写入同一地址
-    child.write_memory(0x500000, &[5, 6, 7, 8]).unwrap();
-    
-    // 验证内存隔离
-    let parent_data = parent.read_memory(0x500000, 4).unwrap();
-    let child_data = child.read_memory(0x500000, 4).unwrap();
-    
-    assert_eq!(parent_data, &[1, 2, 3, 4]);
-    assert_eq!(child_data, &[5, 6, 7, 8]);
-}
-
-#[test]
-fn test_read_sharing() {
-    let (parent, child) = create_fork_pair();
-    
-    // 父进程写入初始数据
-    parent.write_memory(0x500000, &[1, 2, 3, 4]).unwrap();
-    
-    // 此时触发 CoW，父子分离
-    
-    // 子进程读取（应该看到父进程写入的数据）
-    let data = child.read_memory(0x500000, 4).unwrap();
-    assert_eq!(data, &[1, 2, 3, 4]);
-    
-    // 但物理页已经分离
-    let parent_pb = parent.get_phys_block(0x500000).unwrap();
-    let child_pb = child.get_phys_block(0x500000).unwrap();
-    assert_ne!(parent_pb.phys(), child_pb.phys());
-}
-```
-
-#### 6.2.3 错误处理测试
-
-```rust
-#[test]
-fn test_fork_invalid_endpoint() {
-    let proc_table = ProcTable::new();
-    
-    let request = ForkRequest {
-        parent_endpoint: Endpoint::from_raw(0x9999),  // 无效
-        child_slot: 10,
-    };
-    
-    let result = fork_process(&proc_table, &request);
-    assert!(matches!(result, Err(ForkError::InvalidEndpoint(_))));
-}
-
-#[test]
-fn test_fork_invalid_slot() {
-    let proc_table = ProcTable::new();
-    let parent = create_test_process(&proc_table, 5);
-    
-    let request = ForkRequest {
-        parent_endpoint: parent.endpoint(),
-        child_slot: NR_PROCS + 100,  // 超出范围
-    };
-    
-    let result = fork_process(&proc_table, &request);
-    assert!(matches!(result, Err(ForkError::InvalidSlot(_))));
-}
-
-#[test]
-fn test_fork_out_of_memory() {
-    let proc_table = ProcTable::new();
-    let parent = create_test_process(&proc_table, 5);
-    
-    // 模拟内存不足
-    inject_memory_pressure();
-    
-    let request = ForkRequest {
-        parent_endpoint: parent.endpoint(),
-        child_slot: 10,
-    };
-    
-    let result = fork_process(&proc_table, &request);
-    assert!(matches!(result, Err(ForkError::OutOfMemory)));
-    
-    // 验证父进程状态未改变
-    assert!(parent.is_in_use());
-    assert!(!parent.regions().is_empty());
-}
-```
-
-### 6.3 性能测试
-
-#### 6.3.1 fork 延迟测试
-
-```rust
-#[test]
-fn test_fork_latency() {
-    let proc_table = ProcTable::new();
-    
-    // 创建不同大小的进程
-    let sizes = [0x1000, 0x10000, 0x100000, 0x1000000];  // 4KB to 16MB
-    
-    for &size in &sizes {
-        let parent = create_process_with_memory(
-            &proc_table,
-            5,
-            &[(0x400000, size, "data")],
-        );
-        
-        let start = Instant::now();
-        let _ = fork_process(&proc_table, &ForkRequest {
-            parent_endpoint: parent.endpoint(),
-            child_slot: 10,
-        }).unwrap();
-        let elapsed = start.elapsed();
-        
-        println!("fork latency for {} bytes: {:?}", size, elapsed);
-        
-        // CoW 使 fork 延迟与内存大小几乎无关
-        assert!(elapsed < Duration::from_millis(10));
-    }
-}
-```
-
-#### 6.3.2 内存使用测试
-
-```rust
-#[test]
-fn test_memory_usage() {
-    let proc_table = ProcTable::new();
-    
-    let parent = create_process_with_memory(
-        &proc_table,
-        5,
-        &[(0x400000, 0x1000000, "data")],  // 16MB
-    );
-    
-    let before = get_total_memory_usage();
-    
-    let _ = fork_process(&proc_table, &ForkRequest {
-        parent_endpoint: parent.endpoint(),
-        child_slot: 10,
-    }).unwrap();
-    
-    let after = get_total_memory_usage();
-    
-    // CoW 使 fork 后内存增量很小（只有页表和结构体）
-    let overhead = after - before;
-    assert!(overhead < 1024 * 1024);  // < 1MB overhead for 16MB process
-}
-```
-
-### 6.4 测试辅助函数
-
-```rust
-#[cfg(test)]
-mod test_utils {
-    use super::*;
-    
-    /// 创建测试进程
-    pub fn create_test_process(table: &ProcTable, slot: usize) -> VmProcGuard {
-        let mut proc = VmProc::new(slot);
-        proc.set_endpoint(Endpoint::new(slot));
-        proc.set_flags(VmFlags::IN_USE);
-        table.insert(slot, proc.endpoint(), proc);
-        table.get(slot).unwrap()
-    }
-    
-    /// 创建带内存的测试进程
-    pub fn create_process_with_memory(
-        table: &ProcTable,
-        slot: usize,
-        regions: &[(usize, usize, &str)],
-    ) -> VmProcGuard {
-        let mut proc = VmProc::new(slot);
-        proc.set_endpoint(Endpoint::new(slot));
-        proc.set_flags(VmFlags::IN_USE);
-        proc.set_pagetable(PageTable::new().unwrap());
-        
-        for &(vaddr, length, _name) in regions {
-            let region = VirRegion::new(
-                vaddr,
-                length,
-                RegionFlags::WRITABLE | RegionFlags::ANON,
-                MemType::Anon,
-            ).unwrap();
-            proc.regions_mut().insert(region);
-        }
-        
-        let endpoint = proc.endpoint();
-        table.insert(slot, endpoint, proc);
-        table.get(slot).unwrap()
-    }
-    
-    /// 创建 fork 对
-    pub fn create_fork_pair() -> (VmProc, VmProc) {
-        let mut parent = VmProc::new(5);
-        parent.set_endpoint(Endpoint::from_raw(0x1001));
-        parent.set_flags(VmFlags::IN_USE);
-        parent.set_pagetable(PageTable::new().unwrap());
-        
-        let region = VirRegion::new(
-            0x400000,
-            0x1000,
-            RegionFlags::WRITABLE | RegionFlags::ANON,
-            MemType::Anon,
-        ).unwrap();
-        parent.regions_mut().insert(region);
-        
-        let mut child = VmProc::new(10);
-        child.set_pagetable(PageTable::new().unwrap());
-        
-        map_proc_copy(&mut child, &parent).unwrap();
-        
-        (parent, child)
-    }
-    
-    /// 创建测试区域
-    pub fn create_test_region(vaddr: usize, length: usize) -> VirRegion {
-        VirRegion::new(
-            vaddr,
-            length,
-            RegionFlags::WRITABLE | RegionFlags::ANON,
-            MemType::Anon,
-        ).unwrap()
-    }
-}
-```
-
-### 6.5 测试覆盖率
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    测试覆盖率统计                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   模块                    覆盖率    说明                        │
-│   ────────────────────────────────────────────────────────────  │
-│   参数验证                100%      所有边界条件                 │
-│   子进程初始化            95%       主要路径覆盖                 │
-│   页表创建                90%       正常路径覆盖                 │
-│   区域复制                95%       包括错误路径                 │
-│   CoW 设置               90%       主要场景覆盖                 │
-│   内核通知                80%       需要 mock 内核               │
-│   错误处理                95%       所有错误类型                 │
-│   ────────────────────────────────────────────────────────────  │
-│   总体覆盖率              92%                                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **正常 fork 流程**：父进程有多个区域（code、data、stack），fork 后子进程区域数量和属性一致，物理块共享且 refcount 正确
+2. **CoW 触发**：fork 后子进程写入共享页，验证物理页分离、refcount 降为 1、页表恢复可写
+3. **CoW 只读共享**：fork 后父子进程读取共享页不触发 CoW，物理页不变
+4. **内存不足**：模拟 `pt_new()` 或 `map_copy_region()` 失败，验证回滚正确、父进程状态不变
+5. **sys_fork 不可逆**：验证 `sys_fork()` 成功后后续步骤失败时 panic 而非返回错误
+6. **handle_memory_once**：fork 消息页面的可写处理，父子进程都需调用
 
 ---
 
-## 7. 总结
+## 6. 参见
 
-### 7.1 关键设计点
-
-| 设计点 | 说明 |
-|--------|------|
-| **CoW 机制** | fork 时不复制物理内存，只共享并标记只读 |
-| **引用计数** | phys_block.refcount 跟踪共享状态 |
-| **页表只读** | 共享页设置为只读，写入时触发 CoW |
-| **事务性操作** | 支持回滚，确保失败时状态一致 |
-| **类型安全** | Rust 类型系统防止常见错误 |
-
-### 7.2 与 Minix3 的对应关系
-
-| Minix3 函数 | Rust 实现 | 说明 |
-|-------------|-----------|------|
-| `do_fork()` | `do_fork()` | 消息处理入口 |
-| `vm_isokendpt()` | `ProcTable::validate_endpoint()` | 端点验证 |
-| `pt_new()` | `PageTable::new()` | 页表创建 |
-| `map_proc_copy()` | `map_proc_copy()` | 地址空间复制 |
-| `map_copy_region()` | `map_copy_region()` | 区域复制 |
-| `pb_reference()` | `pb_reference()` | 物理块共享 |
-| `map_writept()` | `map_writept()` | 页表更新 |
-| `sys_fork()` | `sys_fork()` | 内核通知 |
-| `pt_bind()` | `pt_bind()` | 页表绑定 |
-| `acl_fork()` | `acl_fork()` | ACL 继承 |
-
-### 7.3 性能优势
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    fork 性能优势                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   传统 fork:                                                    │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 复制所有物理页面                                     │      │
-│   │ 时间复杂度: O(n)，n = 页面数量                       │      │
-│   │ 内存使用: 翻倍                                       │      │
-│   │                                                     │      │
-│   │ 16MB 进程 fork:                                     │      │
-│   │   - 复制 4096 个页面                                │      │
-│   │   - 耗时约 100ms                                    │      │
-│   │   - 内存增加 16MB                                   │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   CoW fork:                                                     │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ 只复制页表和结构体                                   │      │
-│   │ 时间复杂度: O(1)（与页面数量无关）                    │      │
-│   │ 内存使用: 增量很小                                   │      │
-│   │                                                     │      │
-│   │ 16MB 进程 fork:                                     │      │
-│   │   - 复制页表和 vir_region                           │      │
-│   │   - 耗时约 1ms                                      │      │
-│   │   - 内存增加约 64KB                                 │      │
-│   │                                                     │      │
-│   │ 性能提升: 100x                                      │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 8. 参见
-
-- [15-cow-mechanism](15-cow-mechanism.md) - CoW 机制详解
-- [16-pagefault](16-pagefault.md) - 页错误处理
+- [01-vmproc-struct](01-vmproc-struct.md) - vmproc 结构定义
+- [06-pagetable-struct](06-pagetable-struct.md) - 页表结构定义
+- [07-pagetable-ops](07-pagetable-ops.md) - 页表操作（pt_new、pt_bind）
 - [10-phys-block](10-phys-block.md) - 物理块与引用计数
+- [12-vir-region](12-vir-region.md) - 虚拟区域
 - [13-region-avl](13-region-avl.md) - 虚拟区域 AVL 树
+- [14-phys-region](14-phys-region.md) - 物理区域
+- [15-cow-mechanism](15-cow-mechanism.md) - CoW 机制详解（pr_writable、anon_writable、页错误处理）
+- [16-pagefault](16-pagefault.md) - 页错误处理
+- [03-acl](03-acl.md) - ACL 机制
