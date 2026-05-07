@@ -2,6 +2,7 @@
 
 use minix_types::VirBytes;
 use crate::vmproc::ActiveProc;
+use crate::region::phys_region::PhysBlock;
 
 pub(crate) trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
@@ -141,7 +142,7 @@ impl MemType for AnonymousMemory {
     }
 
     fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        if pr.get_phys_addr().unwrap_or(0) == 0 {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
             return false;
         }
         if let Some(parent) = pr.parent {
@@ -160,7 +161,7 @@ impl MemType for AnonymousMemory {
 
     fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
         let refcount = pr.get_refcount().unwrap_or(0);
-        if refcount == 0 && pr.get_phys_addr().unwrap_or(0) != 0 {
+        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
             Ok(true)
         } else {
             Ok(false)
@@ -174,7 +175,7 @@ impl MemType for AnonymousMemory {
         pr: &mut crate::region::PhysRegion,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if pr.get_phys_addr().unwrap_or(0) == 0 {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
             return Ok(PagefaultResult::NeedNewPage);
         }
 
@@ -226,7 +227,7 @@ impl MemType for DirectPhysical {
     }
 
     fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        pr.get_phys_addr().unwrap_or(0) != 0
+        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
     fn on_pagefault(
@@ -237,10 +238,10 @@ impl MemType for DirectPhysical {
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
         if let crate::region::VrParam::Direct { phys: base_phys } = &region.param {
-            if *base_phys == 0 {
+            if *base_phys == PhysBlock::MAP_NONE {
                 return Err(MemTypeError::InvalidParam);
             }
-            if pr.get_phys_addr().unwrap_or(0) != 0 {
+            if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
                 return Ok(PagefaultResult::Handled);
             }
             return Ok(PagefaultResult::NeedNewPage);
@@ -282,7 +283,7 @@ impl MemType for SharedMemory {
     }
 
     fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        pr.get_phys_addr().unwrap_or(0) != 0
+        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
     fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {

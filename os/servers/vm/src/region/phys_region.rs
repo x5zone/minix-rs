@@ -17,7 +17,7 @@ pub(crate) struct PhysBlock {
 }
 
 impl PhysBlock {
-    pub(crate) const MAP_NONE: u64 = 0;
+    pub(crate) const MAP_NONE: u64 = 0xFFFF_FFFF_FFFF_FFFE;
 
     pub(crate) fn new(phys: u64) -> Self {
         Self {
