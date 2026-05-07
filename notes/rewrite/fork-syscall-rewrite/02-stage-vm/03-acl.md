@@ -108,24 +108,6 @@ ACL 检查的是 VM 调用权限，调用号是 ACL 位图的索引。
 #define VM_PAGEFAULT    (VM_RQ_BASE+0xFF) // 缺页异常（内核发送，不经过 ACL）
 ```
 
-**Rust 定义**: `minix-types/src/ipc/vm.rs`
-
-```rust
-pub const VM_RQ_BASE: u32 = 0xC00;
-
-pub const VM_EXIT: u32 = VM_RQ_BASE + 0;
-pub const VM_FORK: u32 = VM_RQ_BASE + 1;
-pub const VM_BRK: u32 = VM_RQ_BASE + 2;
-pub const VM_EXEC_NEWMEM: u32 = VM_RQ_BASE + 3;
-pub const VM_WILLEXIT: u32 = VM_RQ_BASE + 5;
-pub const VM_MMAP: u32 = VM_RQ_BASE + 10;
-pub const VM_MUNMAP: u32 = VM_RQ_BASE + 17;
-pub const VM_MAP_PHYS: u32 = VM_RQ_BASE + 15;
-pub const VM_RS_PREPARE: u32 = VM_RQ_BASE + 48;
-pub const VM_PAGEFAULT: u32 = VM_RQ_BASE + 0xFF;
-// ... 以及其他调用号
-```
-
 **调用来源分类**
 
 | 来源 | 典型调用 | 说明 |
@@ -138,6 +120,8 @@ pub const VM_PAGEFAULT: u32 = VM_RQ_BASE + 0xFF;
 **ACL 位偏移**: `acl_check(vmp, call)` 中的 `call` 参数是调用号相对于 `VM_RQ_BASE` 的偏移量（0 开始），用于索引位图。例如 `VM_MMAP` 的偏移量为 10，对应位图的第 10 位。
 
 **VM_PAGEFAULT 不在 ACL 范围内**: `VM_PAGEFAULT` 的偏移量为 0xFF = 255，远超 ACL 位图的 64 位范围（`NR_VM_CALLS = 49`）。这是合理的，因为缺页异常由内核直接发送，不经过 IPC 请求通道，不需要 ACL 检查。
+
+> Rust 调用号常量定义在 `minix-types/src/ipc/vm.rs`，与 C 定义一一对应。详见 [§3.3](#33-aclmask-位标志)。
 
 ### 2.2 ACL 表结构
 
@@ -460,7 +444,11 @@ Minix3 使用 `bitchunk_t acl_mask[NR_SYS_PROCS][VM_CALL_MASK_SIZE]` 全局数�
 ```rust
 use minix_types::{
     VM_RQ_BASE, VM_EXIT, VM_FORK, VM_BRK, VM_EXEC_NEWMEM, VM_WILLEXIT,
-    VM_MMAP, VM_MUNMAP, VM_MAP_PHYS, VM_RS_PREPARE,
+    VM_MMAP, VM_ADDDMA, VM_DELDMA, VM_GETDMA, VM_MAP_PHYS, VM_UNMAP_PHYS,
+    VM_MUNMAP, VM_MAPCACHEPAGE, VM_SETCACHEPAGE, VM_FORGETCACHEPAGE,
+    VM_CLEARCACHE, VM_VFS_REPLY, VM_REMAP, VM_SHM_UNMAP, VM_GETPHYS,
+    VM_GETREF, VM_RS_SET_PRIV, VM_INFO, VM_RS_UPDATE, VM_RS_MEMCTL,
+    VM_REMAP_RO, VM_PROCCTL, VM_VFS_MMAP, VM_GETRUSAGE, VM_RS_PREPARE,
 };
 
 bitflags::bitflags! {
@@ -476,10 +464,30 @@ bitflags::bitflags! {
         const VM_EXEC_NEWMEM = 1 << (VM_EXEC_NEWMEM - VM_RQ_BASE);
         const VM_WILLEXIT = 1 << (VM_WILLEXIT - VM_RQ_BASE);
         const VM_MMAP = 1 << (VM_MMAP - VM_RQ_BASE);
-        const VM_MUNMAP = 1 << (VM_MUNMAP - VM_RQ_BASE);
+        const VM_ADDDMA = 1 << (VM_ADDDMA - VM_RQ_BASE);
+        const VM_DELDMA = 1 << (VM_DELDMA - VM_RQ_BASE);
+        const VM_GETDMA = 1 << (VM_GETDMA - VM_RQ_BASE);
         const VM_MAP_PHYS = 1 << (VM_MAP_PHYS - VM_RQ_BASE);
+        const VM_UNMAP_PHYS = 1 << (VM_UNMAP_PHYS - VM_RQ_BASE);
+        const VM_MUNMAP = 1 << (VM_MUNMAP - VM_RQ_BASE);
+        const VM_MAPCACHEPAGE = 1 << (VM_MAPCACHEPAGE - VM_RQ_BASE);
+        const VM_SETCACHEPAGE = 1 << (VM_SETCACHEPAGE - VM_RQ_BASE);
+        const VM_FORGETCACHEPAGE = 1 << (VM_FORGETCACHEPAGE - VM_RQ_BASE);
+        const VM_CLEARCACHE = 1 << (VM_CLEARCACHE - VM_RQ_BASE);
+        const VM_VFS_REPLY = 1 << (VM_VFS_REPLY - VM_RQ_BASE);
+        const VM_REMAP = 1 << (VM_REMAP - VM_RQ_BASE);
+        const VM_SHM_UNMAP = 1 << (VM_SHM_UNMAP - VM_RQ_BASE);
+        const VM_GETPHYS = 1 << (VM_GETPHYS - VM_RQ_BASE);
+        const VM_GETREF = 1 << (VM_GETREF - VM_RQ_BASE);
+        const VM_RS_SET_PRIV = 1 << (VM_RS_SET_PRIV - VM_RQ_BASE);
+        const VM_INFO = 1 << (VM_INFO - VM_RQ_BASE);
+        const VM_RS_UPDATE = 1 << (VM_RS_UPDATE - VM_RQ_BASE);
+        const VM_RS_MEMCTL = 1 << (VM_RS_MEMCTL - VM_RQ_BASE);
+        const VM_REMAP_RO = 1 << (VM_REMAP_RO - VM_RQ_BASE);
+        const VM_PROCCTL = 1 << (VM_PROCCTL - VM_RQ_BASE);
+        const VM_VFS_MMAP = 1 << (VM_VFS_MMAP - VM_RQ_BASE);
+        const VM_GETRUSAGE = 1 << (VM_GETRUSAGE - VM_RQ_BASE);
         const VM_RS_PREPARE = 1 << (VM_RS_PREPARE - VM_RQ_BASE);
-        // ... 以及其他调用号
     }
 }
 ```
@@ -501,14 +509,15 @@ impl AclMask {
     ///
     /// 不包含特权操作（如 VM_MAP_PHYS、VM_RS_PREPARE）。
     pub(crate) const DEFAULT: Self = Self::from_bits_truncate(
-        (1 << (VM_EXIT - VM_RQ_BASE)) |
-        (1 << (VM_FORK - VM_RQ_BASE)) |
-        (1 << (VM_BRK - VM_RQ_BASE)) |
-        (1 << (VM_EXEC_NEWMEM - VM_RQ_BASE)) |
-        (1 << (VM_WILLEXIT - VM_RQ_BASE)) |
-        (1 << (VM_MMAP - VM_RQ_BASE)) |
-        (1 << (VM_MUNMAP - VM_RQ_BASE))
+        Self::VM_EXIT.bits() |
+        Self::VM_FORK.bits() |
+        Self::VM_BRK.bits() |
+        Self::VM_EXEC_NEWMEM.bits() |
+        Self::VM_WILLEXIT.bits() |
+        Self::VM_MMAP.bits() |
+        Self::VM_MUNMAP.bits()
     );
+}
 ```
 
 > `Uninitialized` 是特殊生命周期状态，`acl_check()` 直接放行不走位图，因此不需要 `ALL_ALLOWED` 常量。`mask()` 方法返回 `Option<AclMask>`，`Uninitialized` 返回 `None`：
