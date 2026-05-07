@@ -165,7 +165,7 @@ void memstats(int *nodes, int *pages, int *largest);
 - **内存统计**：记录总页数、空闲页数、最低可用地址等信息
 - **物理页分配器**：基于位图进行分配，支持分配连续物理页（DMA 等场景需要）
 
-> **Rust 实现状态**：保留页队列在 Rust 版本中暂未实现，这是待补充的重要功能（见 §3.7）。 TODO
+> 保留页队列的 Rust 实现状态见 [§5.3](#53-bitmapallocator) 和 [§5.4](#54-buddyallocator-soa-结构)。
 
 **注意**：普通进程内存不需要物理连续（通过页表映射即可），只有 DMA、大页等特殊场景才需要连续物理页。
 
@@ -855,7 +855,7 @@ for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
 | **容量**   | 200 页（约 800KB），足够应对突发需求    |
 | **自动补充** | 后台任务补充消耗的备用页               |
 
-> **Rust 实现状态**：当前 Rust 版本未实现保留页队列。这是待补充的重要功能，否则在内存紧张时页表操作可能失败。
+> 保留页队列的 Rust 实现状态见 [§5.3](#53-bitmapallocator) 和 [§5.4](#54-buddyallocator-soa-结构)。
 
 ### 2.4 内存统计与资源限制
 
