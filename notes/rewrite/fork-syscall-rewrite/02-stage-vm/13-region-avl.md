@@ -1,7 +1,7 @@
 # 13-region-avl: 区域 AVL 树
 
 > **分类**: VM私有  
-> **源码**: `minix3/minix/servers/vm/regionavl.c`, `cavl_if.h`  
+> **源码**: `minix3/minix/servers/vm/regionavl.c`, `regionavl_defs.h`, `cavl_if.h`, `cavl_impl.h`, `region.h`, `region.c`
 > **说明**: 使用 AVL 树高效管理虚拟区域，支持快速查找、插入和删除
 
 ---
@@ -45,16 +45,16 @@ Minix3 选择 AVL 树的原因：
 
 **与 Minix3 的对应关系**
 
-| Minix3 | Rust |
-|--------|------|
-| `regionavl_defs.h` | 宏定义配置 |
-| `cavl_if.h` | 接口声明 |
-| `cavl_impl.h` | 实现代码 |
-| `regionavl.h` | 模块入口 |
-| `regionavl.c` | 编译单元 |
-| `region_t.lower/higher/factor` | `VirRegion` 中的 AVL 字段 |
-| `region_avl` (vmproc.h) | `RegionAvl` 结构体 |
-| `region_avl` 迭代器 | `RegionIter` 迭代器 |
+| Minix3 组件 | 作用 |
+|------------|------|
+| `regionavl_defs.h` | 宏定义配置（泛型参数） |
+| `cavl_if.h` | 接口声明（类型、函数原型） |
+| `cavl_impl.h` | 实现代码（函数体） |
+| `regionavl.h` | 模块入口（组合以上头文件） |
+| `regionavl.c` | 编译单元（include cavl_impl.h 触发实例化） |
+| `region_t.lower/higher/factor` | AVL 节点字段（嵌入 vir_region） |
+| `region_avl` (vmproc.h) | 树根结构体（嵌入 vmproc） |
+| `region_iter` | 迭代器结构体 |
 
 **Minix3 的 AVL 实现特点**
 
@@ -71,7 +71,7 @@ Minix3 使用了一种独特的**宏泛型**方式实现 AVL 树：
 #define AVL_GET_BALANCE_FACTOR(h) (h)->factor // 获取平衡因子
 ```
 
-这种方式的优点是零开销抽象（纯宏展开），缺点是类型不安全、难以调试。Rust 实现将用 trait 和泛型替代。
+这种方式的优点是零开销抽象（纯宏展开），缺点是类型不安全、难以调试。
 
 ---
 
@@ -135,7 +135,17 @@ typedef struct vir_region {
 
 1. **AVL 字段嵌入节点**：`lower`、`higher`、`factor` 直接在 `vir_region` 中，无需额外分配
 2. **键为 vaddr**：以虚拟地址作为排序键，`AVL_KEY` 定义为 `vir_bytes`
-3. **最大深度 30**：`AVL_MAX_DEPTH = 30`，支持最多约 2³⁰ ≈ 10 亿个节点
+3. **最大深度 30**：`AVL_MAX_DEPTH = 30`，源码注释为"good for 2 million nodes"（AVL 树高度 30 对应约 200 万节点）
+
+**32 位 vs 64 位差异**
+
+| 方面 | Minix3 (32 位) | minix-rs (64 位) | 说明 |
+|------|---------------|-----------------|------|
+| `vir_bytes` | `u32` (4 字节) | `u64` (8 字节) | 64 位地址空间 |
+| `lower`/`higher` 指针 | 4 字节 | 8 字节 | 64 位指针 |
+| `factor` | `int` (4 字节) | `i8` (1 字节) | Rust 用最小类型 |
+| `branch` 位图 | `unsigned long` (4 字节) | `unsigned long` (8 字节) | 64 位 long |
+| `AVL_MAX_DEPTH` | 30 | 30 | 64 位下可适当增大 |
 
 **平衡因子含义**
 
@@ -193,7 +203,7 @@ Minix3 的 AVL 树使用 Walt Karas 的公共域 C AVL 库，通过宏实现泛�
 #define AVL_UNIQUE(id) region_ ## id     // 所有函数名加 region_ 前缀
 #define AVL_HANDLE region_t *             // 节点句柄 = region_t 指针
 #define AVL_KEY vir_bytes                 // 键类型 = 虚拟地址
-#define AVL_MAX_DEPTH 30                  // 最大深度（支持 ~2^30 节点）
+#define AVL_MAX_DEPTH 30                  // 最大深度（good for ~2M nodes）
 #define AVL_NULL NULL                     // 空句柄
 ```
 
@@ -255,26 +265,24 @@ typedef struct {
 可以选择性编译特定函数，减少代码体积：
 
 ```c
-#define AVL_IMPL_INIT           (1 << 0)   // region_init
-#define AVL_IMPL_IS_EMPTY       (1 << 1)   // region_is_empty
-#define AVL_IMPL_INSERT         (1 << 2)   // region_insert
-#define AVL_IMPL_SEARCH         (1 << 3)   // region_search
-#define AVL_IMPL_REMOVE         (1 << 6)   // region_remove
-#define AVL_IMPL_START_ITER     (1 << 8)   // region_start_iter
-#define AVL_IMPL_INCR_ITER      (1 << 12)  // region_incr_iter
-#define AVL_IMPL_ALL            (~0)        // 全部实现
+#define AVL_IMPL_INIT               1        // region_init
+#define AVL_IMPL_IS_EMPTY           (1 << 1) // region_is_empty
+#define AVL_IMPL_INSERT             (1 << 2) // region_insert
+#define AVL_IMPL_SEARCH             (1 << 3) // region_search
+#define AVL_IMPL_SEARCH_LEAST       (1 << 4) // region_search_least
+#define AVL_IMPL_SEARCH_GREATEST    (1 << 5) // region_search_greatest
+#define AVL_IMPL_REMOVE             (1 << 6) // region_remove
+#define AVL_IMPL_BUILD              (1 << 7) // region_build
+#define AVL_IMPL_START_ITER         (1 << 8) // region_start_iter
+#define AVL_IMPL_START_ITER_LEAST   (1 << 9) // region_start_iter_least
+#define AVL_IMPL_START_ITER_GREATEST (1 << 10) // region_start_iter_greatest
+#define AVL_IMPL_GET_ITER           (1 << 11) // region_get_iter
+#define AVL_IMPL_INCR_ITER          (1 << 12) // region_incr_iter
+#define AVL_IMPL_DECR_ITER          (1 << 13) // region_decr_iter
+#define AVL_IMPL_INIT_ITER          (1 << 14) // region_init_iter
+#define AVL_IMPL_SUBST              (1 << 15) // region_subst
+#define AVL_IMPL_ALL                (~0)      // 全部实现
 ```
-
-**Rust 对比**
-
-| C 宏机制 | Rust 等价 |
-|---------|----------|
-| `AVL_HANDLE` 宏 | 泛型参数 `T` |
-| `AVL_KEY` 宏 | 泛型参数 `K` |
-| `AVL_COMPARE_*` 宏 | `Ord` trait |
-| `AVL_GET/SET_*` 宏 | 结构体字段访问 |
-| `AVL_UNIQUE` 前缀 | 模块/impl 块 |
-| 条件编译掩码 | feature flag / cfg |
 
 ### 2.2 核心操作
 
@@ -304,21 +312,6 @@ void region_init(region_avl *tree) {
 // 进程初始化时
 region_init(&vmp->vm_regions_avl);
 ```
-
-**Rust 实现**
-
-```rust
-impl RegionAvl {
-    pub fn new() -> Self {
-        Self {
-            root: None,
-            count: 0,
-        }
-    }
-}
-```
-
-Rust 的 `Option<Box<VirRegion>>` 天然表示了"空或非空"的语义，不需要显式初始化。
 
 #### 2.2.2 region_insert - 插入区域
 
@@ -492,34 +485,13 @@ static region_t *balance(region_t *bal_h)
 
 **插入流程总结**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    region_insert 流程                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 初始化新节点 (lower=NULL, higher=NULL, factor=0)       │
-│                      ↓                                      │
-│   2. 空树? → 直接设为根                                     │
-│                      ↓                                      │
-│   3. BST 搜索插入位置                                       │
-│      - 记录最后一个 factor != 0 的祖先 (unbal)              │
-│      - 记录路径位图 (branch)                                │
-│      - 重复键 → 返回已有节点                                │
-│                      ↓                                      │
-│   4. 插入为叶子节点                                         │
-│                      ↓                                      │
-│   5. 从 unbal 到新节点更新平衡因子                          │
-│                      ↓                                      │
-│   6. |factor| == 2? → 旋转恢复平衡                         │
-│      - LL: 右旋                                            │
-│      - RR: 左旋                                            │
-│      - LR: 先左旋后右旋                                     │
-│      - RL: 先右旋后左旋                                     │
-│                      ↓                                      │
-│   7. 返回新插入的节点                                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 初始化新节点（lower=NULL, higher=NULL, factor=0）
+2. 空树 → 直接设为根
+3. BST 搜索插入位置，记录最后一个 factor != 0 的祖先（unbal）和路径位图（branch），重复键 → 返回已有节点
+4. 插入为叶子节点
+5. 从 unbal 到新节点更新平衡因子
+6. |factor| == 2 → 旋转恢复平衡（LL: 右旋, RR: 左旋, LR: 先左旋后右旋, RL: 先右旋后左旋）
+7. 返回新插入的节点
 
 #### 2.2.3 region_remove - 删除区域
 
@@ -586,62 +558,50 @@ region_t *region_remove(region_avl *tree, vir_bytes key)
 
 与插入不同，删除可能需要 O(log n) 次旋转：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              删除 vs 插入的平衡调整对比                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   插入:                                                     │
-│   - 最多 1 次旋转（单旋或双旋）                              │
-│   - 旋转后子树高度不变，上层不受影响                          │
-│                                                             │
-│   删除:                                                     │
-│   - 最多 O(log n) 次旋转                                    │
-│   - 旋转后子树高度可能减 1，上层可能继续不平衡               │
-│   - 需要从删除点向上回溯到根                                 │
-│                                                             │
-│   示例（删除导致连续旋转）：                                  │
-│                                                             │
-│   删除前:                删除节点 X 后:                       │
-│         C                    C (不平衡)                      │
-│        / \                  / \                              │
-│       B   D               B   D                             │
-│      /   / \             /     \                            │
-│     A   X   E           A       E                           │
-│                                                             │
-│   旋转 1:                旋转 2:                             │
-│         C                    D                              │
-│        / \                  / \                             │
-│       B   D               C   E                            │
-│      /     \             /                                  │
-│     A       E           B                                   │
-│                        /                                    │
-│                       A                                     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **插入**：最多 1 次旋转（单旋或双旋），旋转后子树高度不变，上层不受影响
+- **删除**：最多 O(log n) 次旋转，旋转后子树高度可能减 1，上层可能继续不平衡，需要从删除点向上回溯到根
 
 **Minix3 的 subst 替代操作**
 
 Minix3 使用 `region_subst` 替代直接删除+重插入：
 
 ```c
+// cavl_impl.h - region_subst 宏展开后
 region_t *region_subst(region_avl *tree, region_t *new_node)
 {
-    // 查找与 new_node 相同键的节点
-    region_t *old = region_search(tree, new_node->vaddr, AVL_EQUAL);
+    region_t *h = tree->root;
+    region_t *parent = NULL;
+    int cmp, last_cmp = 0;
 
-    if (old != NULL) {
-        // 复制 AVL 链接到新节点
-        new_node->lower = old->lower;
-        new_node->higher = old->higher;
-        new_node->factor = old->factor;
-
-        // 替换父节点的引用
-        // ...
+    // 搜索与 new_node 相同键的节点（内联搜索，不调用 region_search）
+    for ( ; ; ) {
+        if (h == NULL)
+            return NULL;    // 无同键节点
+        cmp = (new_node->vaddr > h->vaddr ? 1 :
+               (new_node->vaddr < h->vaddr ? -1 : 0));
+        if (cmp == 0)
+            break;          // 找到
+        last_cmp = cmp;
+        parent = h;
+        h = cmp < 0 ? h->lower : h->higher;
     }
 
-    return old;
+    // 复制 AVL 链接到新节点
+    new_node->lower = h->lower;
+    new_node->higher = h->higher;
+    new_node->factor = h->factor;
+
+    // 替换父节点的引用
+    if (parent == NULL) {
+        tree->root = new_node;     // 新节点成为根
+    } else {
+        if (last_cmp < 0)
+            parent->lower = new_node;
+        else
+            parent->higher = new_node;
+    }
+
+    return h;    // 返回被替换的旧节点
 }
 ```
 
@@ -649,30 +609,12 @@ region_t *region_subst(region_avl *tree, region_t *new_node)
 
 **删除流程总结**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    region_remove 流程                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. BST 搜索目标节点                                       │
-│      - 未找到 → 返回 NULL                                   │
-│                      ↓                                      │
-│   2. 目标有两个子节点?                                       │
-│      - 是 → 找中序后继，替换键值                             │
-│      - 否 → 直接删除                                        │
-│                      ↓                                      │
-│   3. 将唯一子节点（或 NULL）连接到父节点                     │
-│                      ↓                                      │
-│   4. 从删除点到根更新平衡因子                                │
-│                      ↓                                      │
-│   5. |factor| == 2? → 旋转恢复平衡                         │
-│      - 可能需要多次旋转                                     │
-│      - 继续向上回溯直到根                                   │
-│                      ↓                                      │
-│   6. 返回被删除的节点                                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. BST 搜索目标节点，未找到 → 返回 NULL
+2. 目标有两个子节点 → 从更深子树找替代叶子节点
+3. 将唯一子节点（或 NULL）连接到父节点
+4. 如果替代节点不是目标本身，将替代节点"塞入"目标位置（复制 lower/higher/factor）
+5. 从替代节点的父节点到根，更新平衡因子并旋转恢复平衡（可能需要多次旋转）
+6. 返回被删除的节点
 
 #### 2.2.4 region_find - 查找区域
 
@@ -710,26 +652,34 @@ region_t *region_search(region_avl *tree, vir_bytes key, avl_search_type st)
 VM 最常用的查找是"找到包含某地址的区域"。这需要使用 `AVL_LESS_EQUAL` 搜索：
 
 ```c
-// map_lookup - 查找包含地址 v 的区域
-region_t *map_lookup(struct vmproc *vmp, vir_bytes v, struct phys_region **pr)
+// region.c:616 - map_lookup
+struct vir_region *map_lookup(struct vmproc *vmp,
+    vir_bytes offset, struct phys_region **physr)
 {
-    // 搜索 vaddr <= v 的最大区域
-    region_t *r = region_search(&vmp->vm_regions_avl, v, AVL_LESS_EQUAL);
+    struct vir_region *r;
 
-    if (r == NULL) return NULL;
+    SANITYCHECK(SCL_FUNCTIONS);
 
-    // 检查 v 是否在该区域范围内
-    if (v >= r->vaddr && v < r->vaddr + r->length) {
-        if (pr) {
-            // 计算页内偏移
-            vir_bytes offset = v - r->vaddr;
-            offset = rounddown(offset, VM_PAGE_SIZE);
-            *pr = physblock_get(r, offset);
+#if SANITYCHECKS
+    if(!region_search_root(&vmp->vm_regions_avl))
+        panic("process has no regions: %d", vmp->vm_endpoint);
+#endif
+
+    if((r = region_search(&vmp->vm_regions_avl, offset, AVL_LESS_EQUAL))) {
+        vir_bytes ph;
+        if(offset >= r->vaddr && offset < r->vaddr + r->length) {
+            ph = offset - r->vaddr;
+            if(physr) {
+                *physr = physblock_get(r, ph);
+                if(*physr) assert((*physr)->offset == ph);
+            }
+            return r;
         }
-        return r;
     }
 
-    return NULL;    // v 不在任何区域内
+    SANITYCHECK(SCL_FUNCTIONS);
+
+    return NULL;
 }
 ```
 
@@ -879,42 +829,45 @@ Minix3 提供三种开始迭代的方式：
 **从最小节点开始**
 
 ```c
+// cavl_impl.h - region_start_iter_least 宏展开后
 void region_start_iter_least(region_avl *tree, region_iter *iter)
 {
+    region_t *h = tree->root;
+
     iter->tree_ = tree;
     iter->depth = ~0;       // 初始化为无效
-    iter->branch = 0;
 
-    region_t *h = tree->root;
-    if (h != NULL) {
-        // 沿左子树到底，找到最小节点
-        while (h->lower != NULL) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            h = h->lower;
-        }
+    L__BIT_ARR_ALL(iter->branch, 0)  // branch 全部置 0
+
+    while (h != NULL) {
+        if (iter->depth != ~0)
+            iter->path_h[iter->depth] = h;  // 跳过第一次（depth=-1）
+        iter->depth++;
+        h = h->lower;
     }
 }
 ```
 
+**关键细节**：第一次循环时 `depth == ~0`（-1），跳过 `path_h` 写入，因为此时还没有有效的路径条目。之后每次循环先将当前节点存入 `path_h[depth]`，再递增 `depth`。
+
 **从最大节点开始**
 
 ```c
+// cavl_impl.h - region_start_iter_greatest 宏展开后
 void region_start_iter_greatest(region_avl *tree, region_iter *iter)
 {
+    region_t *h = tree->root;
+
     iter->tree_ = tree;
     iter->depth = ~0;
-    iter->branch = 0;
 
-    region_t *h = tree->root;
-    if (h != NULL) {
-        // 沿右子树到底，找到最大节点
-        while (h->higher != NULL) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            branch |= (1UL << iter->depth);
-            h = h->higher;
-        }
+    L__BIT_ARR_ALL(iter->branch, 1)  // branch 全部置 1
+
+    while (h != NULL) {
+        if (iter->depth != ~0)
+            iter->path_h[iter->depth] = h;
+        iter->depth++;
+        h = h->higher;
     }
 }
 ```
@@ -922,29 +875,49 @@ void region_start_iter_greatest(region_avl *tree, region_iter *iter)
 **从指定键开始**
 
 ```c
+// cavl_impl.h - region_start_iter 宏展开后
 void region_start_iter(region_avl *tree, region_iter *iter,
     vir_bytes key, avl_search_type st)
 {
+    region_t *h = tree->root;
+    unsigned d = 0;
+    int cmp, target_cmp;
+
     iter->tree_ = tree;
     iter->depth = ~0;
-    iter->branch = 0;
 
-    region_t *h = tree->root;
-    while (h != NULL) {
-        if (key < h->vaddr) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            h = h->lower;
-            // branch bit = 0 (左)
-        } else if (key > h->vaddr) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            iter->branch |= (1UL << iter->depth);
-            h = h->higher;
-        } else {
-            // 精确匹配
-            break;
+    if (h == NULL)
+        return;    // 空树
+
+    // 确定搜索方向
+    if (st & AVL_LESS)
+        target_cmp = 1;     // 允许键大于节点
+    else if (st & AVL_GREATER)
+        target_cmp = -1;    // 允许键小于节点
+    else
+        target_cmp = 0;     // 必须精确匹配
+
+    for ( ; ; ) {
+        cmp = (key > h->vaddr ? 1 : (key < h->vaddr ? -1 : 0));
+        if (cmp == 0) {
+            if (st & AVL_EQUAL) {
+                iter->depth = d;    // 找到精确匹配
+                break;
+            }
+            cmp = -target_cmp;      // 精确匹配但不需要，继续搜索
         }
+        else if (target_cmp != 0)
+            if (!((cmp ^ target_cmp) & L__MASK_HIGH_BIT))
+                iter->depth = d;    // cmp 和 target_cmp 同号，记录候选
+
+        h = cmp < 0 ? h->lower : h->higher;
+        if (h == NULL)
+            break;
+        if (cmp > 0)
+            iter->branch |= (1UL << d);  // 标记走右
+        else
+            iter->branch &= ~(1UL << d); // 标记走左
+        iter->path_h[d++] = h;
     }
 }
 ```
@@ -1002,36 +975,36 @@ for (r = region_start_iter_least(&vmp->vm_regions_avl, &iter);
 **递增迭代（中序后继）**
 
 ```c
+// cavl_impl.h - region_incr_iter 宏展开后
 void region_incr_iter(region_iter *iter)
 {
-    region_t *h = region_get_iter(iter);    // 获取当前节点
+    if (iter->depth != ~0) {
+        // 获取当前节点的右子节点
+        region_t *h = (iter->depth == 0 ?
+            iter->tree_->root : iter->path_h[iter->depth - 1])->higher;
 
-    if (h == NULL) return;
-
-    // 情况 1: 当前节点有右子树
-    // 中序后继是右子树的最左节点
-    if (h->higher != NULL) {
-        iter->path_h[iter->depth + 1] = h;
-        iter->depth++;
-        iter->branch |= (1UL << iter->depth);  // 标记走右
-
-        h = h->higher;
-        while (h->lower != NULL) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            // branch bit = 0 (走左)
-            h = h->lower;
+        if (h == NULL) {
+            // 无右子树：回溯到第一个"从左子树返回"的祖先
+            do {
+                if (iter->depth == 0) {
+                    iter->depth = ~0;   // 已到最末
+                    break;
+                }
+                iter->depth--;
+            } while (iter->branch & (1UL << iter->depth));
+            // branch bit = 1 表示从右子树来，继续回溯
+            // branch bit = 0 表示从左子树来，停止
+        } else {
+            // 有右子树：进入右子树，沿左边界到底
+            iter->branch |= (1UL << iter->depth);
+            iter->path_h[iter->depth++] = h;
+            for ( ; ; ) {
+                h = h->lower;
+                if (h == NULL) break;
+                iter->branch &= ~(1UL << iter->depth);
+                iter->path_h[iter->depth++] = h;
+            }
         }
-    }
-    // 情况 2: 当前节点无右子树
-    // 回溯到第一个"从左子树返回"的祖先
-    else {
-        while (iter->depth >= 0 &&
-               (iter->branch & (1UL << iter->depth))) {
-            iter->depth--;
-        }
-        iter->depth--;
-        // 清除 branch 位
     }
 }
 ```
@@ -1078,35 +1051,36 @@ void region_incr_iter(region_iter *iter)
 **递减迭代（中序前驱）**
 
 ```c
+// cavl_impl.h - region_decr_iter 宏展开后
 void region_decr_iter(region_iter *iter)
 {
-    region_t *h = region_get_iter(iter);
+    if (iter->depth != ~0) {
+        // 获取当前节点的左子节点
+        region_t *h = (iter->depth == 0 ?
+            iter->tree_->root : iter->path_h[iter->depth - 1])->lower;
 
-    if (h == NULL) return;
-
-    // 情况 1: 当前节点有左子树
-    // 中序前驱是左子树的最右节点
-    if (h->lower != NULL) {
-        iter->path_h[iter->depth + 1] = h;
-        iter->depth++;
-        // branch bit = 0 (走左)
-
-        h = h->lower;
-        while (h->higher != NULL) {
-            iter->path_h[iter->depth + 1] = h;
-            iter->depth++;
-            iter->branch |= (1UL << iter->depth);
-            h = h->higher;
+        if (h == NULL) {
+            // 无左子树：回溯到第一个"从右子树返回"的祖先
+            do {
+                if (iter->depth == 0) {
+                    iter->depth = ~0;
+                    break;
+                }
+                iter->depth--;
+            } while (!(iter->branch & (1UL << iter->depth)));
+            // branch bit = 0 表示从左子树来，继续回溯
+            // branch bit = 1 表示从右子树来，停止
+        } else {
+            // 有左子树：进入左子树，沿右边界到底
+            iter->branch &= ~(1UL << iter->depth);
+            iter->path_h[iter->depth++] = h;
+            for ( ; ; ) {
+                h = h->higher;
+                if (h == NULL) break;
+                iter->branch |= (1UL << iter->depth);
+                iter->path_h[iter->depth++] = h;
+            }
         }
-    }
-    // 情况 2: 当前节点无左子树
-    // 回溯到第一个"从右子树返回"的祖先
-    else {
-        while (iter->depth >= 0 &&
-               !(iter->branch & (1UL << iter->depth))) {
-            iter->depth--;
-        }
-        iter->depth--;
     }
 }
 ```
@@ -1114,38 +1088,19 @@ void region_decr_iter(region_iter *iter)
 **获取当前节点**
 
 ```c
+// cavl_impl.h - region_get_iter 宏展开后
 region_t *region_get_iter(region_iter *iter)
 {
-    if (iter->depth < 0) return NULL;   // 无效迭代器
+    if (iter->depth == ~0)
+        return NULL;           // 无效迭代器
 
-    region_t *h;
-    if (iter->depth == 0) {
-        h = iter->tree_->root;          // 根节点
-    } else {
-        // 从路径栈获取当前节点的父节点
-        h = iter->path_h[iter->depth - 1];
-        if (iter->branch & (1UL << (iter->depth - 1))) {
-            h = h->higher;              // 从右子树来
-        } else {
-            h = h->lower;               // 从左子树来
-        }
-    }
-
-    return h;
+    return(iter->depth == 0 ?
+        iter->tree_->root :    // depth=0 时当前节点就是根
+        iter->path_h[iter->depth - 1]);  // path_h 直接存储当前节点
 }
 ```
 
-**Rust 迭代器对比**
-
-| C 迭代器 | Rust 迭代器 |
-|---------|------------|
-| 手动管理 `depth`, `branch`, `path_h` | 编译器自动管理状态 |
-| `region_start_iter_least` | `IntoIterator::into_iter` |
-| `region_incr_iter` | `Iterator::next` |
-| `region_get_iter` | `Iterator::current` (非标准) |
-| O(1) 空间（固定大小栈） | O(log n) 空间（递归或栈） |
-
-Rust 可以实现零分配的中序迭代器，使用与 C 相同的路径栈技术。
+**注意**：`path_h` 数组存储的是路径上的节点本身（不是父节点）。`depth=0` 时当前节点是根节点，直接从 `tree_->root` 获取；`depth>0` 时，`path_h[depth-1]` 就是当前节点。
 
 ---
 
@@ -1192,31 +1147,10 @@ Rust 可以实现零分配的中序迭代器，使用与 C 相同的路径栈技
 
 **实现策略**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              AVL 树实现策略                                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 节点设计                                               │
-│      - AVL 字段嵌入 VirRegion                               │
-│      - lower, higher, factor 作为 Option/引用              │
-│                                                             │
-│   2. 核心操作                                               │
-│      - insert: 插入并平衡                                   │
-│      - remove: 删除并平衡                                   │
-│      - find: 查找包含地址的区域                             │
-│      - find_overlap: 查找重叠区域                           │
-│                                                             │
-│   3. 迭代器                                                 │
-│      - 实现 Iterator trait                                  │
-│      - 中序遍历（按地址排序）                                │
-│                                                             │
-│   4. 安全性                                                 │
-│      - 全部使用安全 Rust                                    │
-│      - 无裸指针、无 unsafe 块                               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **节点设计**：AVL 字段嵌入 VirRegion，lower/higher/factor 作为 Option/引用
+2. **核心操作**：insert（插入并平衡）、remove（删除并平衡）、find（查找包含地址的区域）、find_overlap（查找重叠区域）
+3. **迭代器**：实现 Iterator trait，中序遍历（按地址排序）
+4. **安全性**：全部使用安全 Rust，无裸指针、无 unsafe 块
 
 **当前实现状态**
 
@@ -1310,33 +1244,7 @@ impl RegionAvl {
 
 **类型安全保证**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              Rust 类型安全保证                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   C 代码问题:                                               │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ region_t *r = tree->root;                           │   │
-│   │ r->lower = some_ptr;  // 可能悬垂指针               │   │
-│   │ free(r);              // use-after-free 风险        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   Rust 解决:                                                │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ let r = tree.root.as_mut()?;  // Option 检查        │   │
-│   │ r.lower = Some(Box::new(region)); // 所有权转移     │   │
-│   │ // 自动 Drop，无 use-after-free                     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   编译期检查:                                               │
-│   - 空指针 → Option<T>                                     │
-│   - 悬垂指针 → 借用检查器                                   │
-│   - 内存泄漏 → Drop trait                                   │
-│   - 数据竞争 → &mut 独占访问                                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+C 代码的问题：裸指针可能悬垂，free 后 use-after-free 风险。Rust 的解决：`Option<Box<VirRegion>>` 天然表示"空或非空"，所有权转移保证无 use-after-free，借用检查器防止悬垂指针，Drop trait 自动释放，`&mut` 独占访问防止数据竞争。
 
 **嵌入 VirRegion 的 AVL 字段**
 
@@ -1368,34 +1276,9 @@ impl VirRegion {
 
 **内存布局**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              VirRegion 内存布局                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   VirRegion 结构体:                                         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ vaddr: u64 (8 bytes)                                │   │
-│   │ length: u64 (8 bytes)                               │   │
-│   │ flags: VrFlags (4 bytes)                            │   │
-│   │ ... 其他字段 ...                                     │   │
-│   │ lower: Option<Box<VirRegion>> (8 bytes)            │   │
-│   │ higher: Option<Box<VirRegion>> (8 bytes)           │   │
-│   │ factor: i8 (1 byte)                                 │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   与 C 的对比:                                               │
-│   - C: 指针 8 bytes, factor 4 bytes (padding)              │
-│   - Rust: Option<Box> 8 bytes, factor 1 byte               │
-│   - Rust 更紧凑（Option 优化）                              │
-│                                                             │
-│   Option<Box<T>> 优化:                                      │
-│   - None 用 0 表示（空指针）                                │
-│   - Some(ptr) 用非零指针表示                                │
-│   - 无额外判别字段                                          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+VirRegion 结构体：vaddr u64 8 bytes, length u64 8 bytes, flags VrFlags 4 bytes, ... 其他字段 ..., lower Option\<Box\<VirRegion\>\> 8 bytes, higher Option\<Box\<VirRegion\>\> 8 bytes, factor i8 1 byte。
+
+与 C 的对比：C 指针 8 bytes + factor 4 bytes（padding）；Rust Option\<Box\> 8 bytes + factor 1 byte。Rust 更紧凑（Option 优化：None 用 0 表示空指针，Some(ptr) 用非零指针表示，无额外判别字段）。
 
 ### 3.3 RegionIter 迭代器
 
@@ -2239,49 +2122,8 @@ impl RegionAvl {
 
 **插入 vs 删除的平衡差异**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│           插入 vs 删除的平衡调整对比                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   插入:                                                     │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 从插入点向上回溯                                  │   │
-│   │ 2. 更新平衡因子                                      │   │
-│   │ 3. 遇到第一个不平衡节点时旋转                        │   │
-│   │ 4. 旋转后子树高度不变，停止回溯                      │   │
-│   │ 5. 最多 1 次旋转                                     │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   删除:                                                     │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. 从删除点向上回溯                                  │   │
-│   │ 2. 更新平衡因子                                      │   │
-│   │ 3. 遇到不平衡节点时旋转                              │   │
-│   │ 4. 旋转后子树高度可能减 1，继续回溯                  │   │
-│   │ 5. 最多 O(log n) 次旋转                              │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   示例：删除导致连续旋转                                     │
-│                                                             │
-│   删除前:                   删除 X 后:                       │
-│         C(0)                   C(-1)                         │
-│        / \                     / \                          │
-│       B   D(0)                B   D(-1)                      │
-│      /   / \                 /     \                        │
-│     A   X   E               A       E                        │
-│                                                             │
-│   旋转 1 (D 处):            旋转 2 (C 处):                    │
-│         C(-1)                  D(0)                          │
-│        / \                    /   \                          │
-│       B   D(-1)    →         C     E                        │
-│      /     \                /                                │
-│     A       E              B                                 │
-│                            /                                 │
-│                           A                                  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **插入**：从插入点向上回溯，更新平衡因子，遇到第一个不平衡节点时旋转，旋转后子树高度不变停止回溯，最多 1 次旋转
+- **删除**：从删除点向上回溯，更新平衡因子，遇到不平衡节点时旋转，旋转后子树高度可能减 1 继续回溯，最多 O(log n) 次旋转
 
 **平衡因子更新规则**
 
@@ -2351,33 +2193,14 @@ fn update_balance_after_remove(node: &mut VirRegion, removed_from_left: bool) ->
 
 VM 的 AVL 树查找与普通 BST 查找不同：我们需要查找"包含指定地址的区域"，而不是精确匹配键值。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              地址范围查找 vs 精确键查找                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   普通 BST 查找:                                             │
-│   - 查找键 == 节点键                                         │
-│   - 返回精确匹配的节点                                        │
-│                                                             │
-│   VM 区域查找:                                               │
-│   - 查找地址 >= 节点.vaddr                                   │
-│   - 查找地址 < 节点.end_addr()                               │
-│   - 返回包含该地址的区域                                      │
-│                                                             │
-│   示例:                                                      │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 区域 A: vaddr=0x1000, length=0x2000                 │   │
-│   │ 区域 B: vaddr=0x4000, length=0x1000                 │   │
-│   │ 区域 C: vaddr=0x6000, length=0x3000                 │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   find(0x1500) → 区域 A (0x1000 <= 0x1500 < 0x3000)        │
-│   find(0x3500) → None (间隙)                                │
-│   find(0x4500) → 区域 B (0x4000 <= 0x4500 < 0x5000)        │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+普通 BST 查找：查找键 == 节点键，返回精确匹配的节点。
+
+VM 区域查找：查找地址 >= 节点.vaddr 且查找地址 < 节点.end_addr()，返回包含该地址的区域。
+
+示例：区域 A (vaddr=0x1000, length=0x2000), 区域 B (vaddr=0x4000, length=0x1000), 区域 C (vaddr=0x6000, length=0x3000)。
+- find(0x1500) → 区域 A (0x1000 <= 0x1500 < 0x3000)
+- find(0x3500) → None（间隙）
+- find(0x4500) → 区域 B (0x4000 <= 0x4500 < 0x5000)
 
 **Minix3 的搜索类型**
 
@@ -2686,26 +2509,15 @@ impl RegionAvl {
 
 **查找优化总结**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    查找操作对比                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   操作           时间复杂度    用途                          │
-│   ────────────────────────────────────────────────────────  │
-│   find           O(log n)     缺页处理、地址验证             │
-│   find_overlap   O(log n)     mmap 冲突检测                 │
-│   search         O(log n)     通用搜索                      │
-│   find_slot      O(n)         寻找空闲地址空间              │
-│   iter           O(n)         遍历所有区域                  │
-│                                                             │
-│   优化策略:                                                  │
-│   1. find/find_overlap: 利用 BST 性质，剪枝搜索             │
-│   2. find_slot: 需要遍历间隙，无法避免 O(n)                 │
-│   3. 缓存最近查找结果（可选优化）                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| 操作 | 时间复杂度 | 用途 |
+|------|-----------|------|
+| find | O(log n) | 缺页处理、地址验证 |
+| find_overlap | O(log n) | mmap 冲突检测 |
+| search | O(log n) | 通用搜索 |
+| find_slot | O(n) | 寻找空闲地址空间 |
+| iter | O(n) | 遍历所有区域 |
+
+优化策略：find/find_overlap 利用 BST 性质剪枝搜索；find_slot 需要遍历间隙，无法避免 O(n)；可选缓存最近查找结果。
 
 ---
 
@@ -2717,28 +2529,19 @@ impl RegionAvl {
 
 AVL 树通过强制平衡，保证了所有基本操作的 O(log n) 时间复杂度。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    AVL 树操作时间复杂度                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   操作           平均         最坏         说明              │
-│   ────────────────────────────────────────────────────────  │
-│   查找 find      O(log n)     O(log n)     包含地址查找      │
-│   插入 insert    O(log n)     O(log n)     含平衡调整        │
-│   删除 remove    O(log n)     O(log n)     含平衡调整        │
-│   最小值         O(log n)     O(log n)     左边界遍历        │
-│   最大值         O(log n)     O(log n)     右边界遍历        │
-│   中序后继       O(log n)     O(log n)     删除时使用        │
-│   遍历 iter      O(n)         O(n)         访问所有节点      │
-│                                                             │
-│   对比普通 BST:                                              │
-│   查找           O(log n)     O(n)         最坏退化为链表    │
-│   插入           O(log n)     O(n)         最坏退化为链表    │
-│   删除           O(log n)     O(n)         最坏退化为链表    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+**AVL 树操作时间复杂度**
+
+| 操作 | 平均 | 最坏 | 说明 |
+|------|------|------|------|
+| 查找 find | O(log n) | O(log n) | 包含地址查找 |
+| 插入 insert | O(log n) | O(log n) | 含平衡调整 |
+| 删除 remove | O(log n) | O(log n) | 含平衡调整 |
+| 最小值 | O(log n) | O(log n) | 左边界遍历 |
+| 最大值 | O(log n) | O(log n) | 右边界遍历 |
+| 中序后继 | O(log n) | O(log n) | 删除时使用 |
+| 遍历 iter | O(n) | O(n) | 访问所有节点 |
+
+对比普通 BST：查找/插入/删除最坏均为 O(n)（退化为链表）。
 
 **高度证明**
 
@@ -2828,32 +2631,12 @@ fn find_containing(node: &Option<Box<VirRegion>>, addr: VirBytes) -> Option<&Vir
 
 **实际性能考量**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    实际性能影响因素                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 常数因子                                                │
-│      - AVL 树的平衡操作比红黑树更频繁                         │
-│      - 但 AVL 树查找更快（树更矮）                            │
-│      - 适合读多写少的场景                                    │
-│                                                             │
-│   2. 缓存局部性                                              │
-│      - 节点分散在堆上，指针跳转多                             │
-│      - 每次访问可能触发缓存未命中                             │
-│      - 实际性能受内存访问模式影响                             │
-│                                                             │
-│   3. 分支预测                                                │
-│      - 比较结果难以预测                                       │
-│      - 分支预测失败代价高                                     │
-│                                                             │
-│   4. 内存分配                                                │
-│      - 每个节点单独分配                                       │
-│      - 分配/释放开销                                          │
-│      - 可考虑内存池优化                                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+**实际性能影响因素**
+
+1. **常数因子**：AVL 树平衡操作比红黑树更频繁，但查找更快（树更矮），适合读多写少场景
+2. **缓存局部性**：节点分散在堆上，指针跳转多，每次访问可能缓存未命中，实际性能受内存访问模式影响
+3. **分支预测**：比较结果难以预测，分支预测失败代价高
+4. **内存分配**：每个节点单独分配，分配/释放有开销，可考虑内存池优化
 
 **VM 场景的实际复杂度**
 
@@ -2882,42 +2665,33 @@ fn find_containing(node: &Option<Box<VirRegion>>, addr: VirBytes) -> Option<&Vir
 
 AVL 树和红黑树都是自平衡二叉搜索树，但平衡策略不同：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    AVL vs 红黑树对比                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   特性              AVL 树           红黑树                  │
-│   ────────────────────────────────────────────────────────  │
-│   平衡条件          |平衡因子| ≤ 1    无红红相邻              │
-│   最大高度          1.44 log n       2 log n                 │
-│   查找性能          更优              稍差                    │
-│   插入旋转          最多 1 次         最多 2 次               │
-│   删除旋转          最多 O(log n)     最多 3 次               │
-│   插入调整          O(log n)          O(1) 均摊              │
-│   删除调整          O(log n)          O(1) 均摊              │
-│   空间开销          1 字节平衡因子    1 位颜色                │
-│                                                             │
-│   适用场景:                                                  │
-│   - AVL: 读多写少，查找密集                                  │
-│   - 红黑树: 写多读少，修改频繁                               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+**AVL vs 红黑树对比**
+
+| 特性 | AVL 树 | 红黑树 |
+|------|--------|--------|
+| 平衡条件 | \|平衡因子\| ≤ 1 | 无红红相邻 |
+| 最大高度 | 1.44 log n | 2 log n |
+| 查找性能 | 更优 | 稍差 |
+| 插入旋转 | 最多 1 次 | 最多 2 次 |
+| 删除旋转 | 最多 O(log n) | 最多 3 次 |
+| 插入调整 | O(log n) | O(1) 均摊 |
+| 删除调整 | O(log n) | O(1) 均摊 |
+| 空间开销 | 1 字节平衡因子 | 1 位颜色 |
+
+适用场景：AVL 适合读多写少、查找密集；红黑树适合写多读少、修改频繁。
 
 **Minix3 选择 AVL 的原因**
 
 ```
 1. VM 区域操作的特点:
-   ┌─────────────────────────────────────────────────────┐
-   │ 操作           频率           说明                   │
-   │ ─────────────────────────────────────────────────── │
-   │ 查找 find      非常高        每次缺页、内存访问      │
-   │ 插入 insert    中等          mmap, brk              │
-   │ 删除 remove    低            munmap                 │
-   │ 遍历 iter      中等          fork, exit            │
-   └─────────────────────────────────────────────────────┘
-   
+
+   | 操作 | 频率 | 说明 |
+   |------|------|------|
+   | 查找 find | 非常高 | 每次缺页、内存访问 |
+   | 插入 insert | 中等 | mmap, brk |
+   | 删除 remove | 低 | munmap |
+   | 遍历 iter | 中等 | fork, exit |
+
    查找操作远多于修改操作，AVL 的低高度优势明显。
 
 2. 历史原因:
@@ -2952,26 +2726,24 @@ AVL 查找快约 30-50%
 **旋转次数对比**
 
 ```
-插入操作:
-┌─────────────────────────────────────────────────────┐
-│ 情况           AVL 旋转      红黑树旋转              │
-│ ─────────────────────────────────────────────────── │
-│ 无需调整       0             0                       │
-│ 单旋转         1             1                       │
-│ 双旋转         2             2                       │
-│ 颜色调整       -             可能多次                │
-│ 最大旋转       2             2                       │
-└─────────────────────────────────────────────────────┘
+插入操作旋转对比：
 
-删除操作:
-┌─────────────────────────────────────────────────────┐
-│ 情况           AVL 旋转      红黑树旋转              │
-│ ─────────────────────────────────────────────────── │
-│ 无需调整       0             0                       │
-│ 简单情况       1             1-2                     │
-│ 复杂情况       O(log n)      最多 3                  │
-│ 最大旋转       O(log n)      3                       │
-└─────────────────────────────────────────────────────┘
+| 情况 | AVL 旋转 | 红黑树旋转 |
+|------|---------|-----------|
+| 无需调整 | 0 | 0 |
+| 单旋转 | 1 | 1 |
+| 双旋转 | 2 | 2 |
+| 颜色调整 | - | 可能多次 |
+| 最大旋转 | 2 | 2 |
+
+删除操作旋转对比：
+
+| 情况 | AVL 旋转 | 红黑树旋转 |
+|------|---------|-----------|
+| 无需调整 | 0 | 0 |
+| 简单情况 | 1 | 1-2 |
+| 复杂情况 | O(log n) | 最多 3 |
+| 最大旋转 | O(log n) | 3 |
 
 红黑树删除最多 3 次旋转，AVL 可能需要 O(log n) 次。
 但 VM 场景删除较少，影响有限。
@@ -3010,25 +2782,7 @@ B 树优势:
 
 **结论**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    为什么 VM 使用 AVL 树                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. 查找密集: 缺页处理、地址验证频繁，AVL 查找更快          │
-│                                                             │
-│   2. 修改稀疏: mmap/munmap 相对较少，删除旋转开销可接受      │
-│                                                             │
-│   3. 历史兼容: Minix3 使用 AVL，保持一致性                   │
-│                                                             │
-│   4. 实现简洁: 平衡条件直观，代码易于维护                    │
-│                                                             │
-│   5. 节点嵌入: 平衡因子只需 1 字节，开销小                   │
-│                                                             │
-│   总结: VM 场景的特点（读多写少）使 AVL 成为更优选择          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+VM 使用 AVL 树的原因：1) 查找密集（缺页处理频繁），AVL 查找更快；2) 修改稀疏（mmap/munmap 较少），删除旋转开销可接受；3) 历史兼容（Minix3 使用 AVL）；4) 实现简洁（平衡条件直观）；5) 节点嵌入（平衡因子只需 1 字节）。VM 场景读多写少的特点使 AVL 成为更优选择。
 
 ---
 
@@ -3038,38 +2792,9 @@ B 树优势:
 
 AVL 树节点的内存布局直接影响缓存效率：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    VirRegion 内存布局                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   C 语言布局 (Minix3):                                       │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ vaddr: 8 bytes                                      │   │
-│   │ length: 8 bytes                                     │   │
-│   │ flags: 4 bytes                                      │   │
-│   │ ... 其他字段 ...                                     │   │
-│   │ lower: 8 bytes (指针)                               │   │
-│   │ higher: 8 bytes (指针)                              │   │
-│   │ factor: 4 bytes (int，实际只用 1 byte)              │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   总大小: 约 80-120 bytes                                    │
-│                                                             │
-│   Rust 布局:                                                 │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ vaddr: VirBytes (8 bytes)                           │   │
-│   │ length: VirBytes (8 bytes)                          │   │
-│   │ flags: VrFlags (4 bytes)                            │   │
-│   │ ... 其他字段 ...                                     │   │
-│   │ lower: Option<Box<VirRegion>> (8 bytes, None=0)    │   │
-│   │ higher: Option<Box<VirRegion>> (8 bytes)           │   │
-│   │ factor: i8 (1 byte)                                 │   │
-│   │ padding: 7 bytes (对齐)                             │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   总大小: 类似 C 布局                                        │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+C 语言布局（Minix3）：vaddr 8 bytes, length 8 bytes, flags 4 bytes, ... 其他字段 ..., lower 8 bytes（指针）, higher 8 bytes（指针）, factor 4 bytes（int，实际只用 1 byte）。总大小约 80-120 bytes。
+
+Rust 布局：vaddr VirBytes 8 bytes, length VirBytes 8 bytes, flags VrFlags 4 bytes, ... 其他字段 ..., lower Option\<Box\<VirRegion\>\> 8 bytes（None=0）, higher Option\<Box\<VirRegion\>\> 8 bytes, factor i8 1 byte + padding 7 bytes。总大小类似 C 布局。
 
 **缓存行分析**
 
@@ -3094,54 +2819,18 @@ VirRegion 大小: ~100 bytes
 
 **内存访问模式**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    AVL 树访问模式                             │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   查找操作:                                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ Root → Node1 → Node2 → ... → Target                │   │
-│   │                                                     │   │
-│   │ 特点:                                               │   │
-│   │ - 顺序访问，但地址不连续                            │   │
-│   │ - 每次跳转可能跨越不同内存页                        │   │
-│   │ - 预取器难以预测                                    │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   遍历操作 (中序):                                           │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ A → B → C → D → E → F → G                          │   │
-│   │                                                     │   │
-│   │ 特点:                                               │   │
-│   │ - 按地址顺序访问                                    │   │
-│   │ - 但节点物理位置不连续                              │   │
-│   │ - 每次访问可能缓存未命中                            │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│   与数组对比:                                                │
-│   数组遍历: 连续内存，预取器高效工作                         │
-│   AVL 遍历: 指针跳转，每次可能缓存未命中                     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+查找操作：Root → Node1 → Node2 → ... → Target，顺序访问但地址不连续，每次跳转可能跨越不同内存页，预取器难以预测。
+
+遍历操作（中序）：A → B → C → D → E → F → G，按地址顺序访问但节点物理位置不连续，每次访问可能缓存未命中。
+
+与数组对比：数组遍历连续内存、预取器高效工作；AVL 遍历指针跳转、每次可能缓存未命中。
 
 **优化策略**
 
 ```
 1. 节点预分配
 
-   使用内存池预分配节点，提高局部性:
-
-   ┌─────────────────────────────────────────────────────┐
-   │ 内存池布局:                                          │
-   │ [Node0][Node1][Node2][Node3]...[NodeN]             │
-   │                                                     │
-   │ 优点:                                               │
-   │ - 相关节点可能在同一缓存行                           │
-   │ - 减少内存碎片                                       │
-   │ - 分配/释放更快                                      │
-   └─────────────────────────────────────────────────────┘
+   使用内存池预分配节点，提高局部性：相关节点可能在同一缓存行，减少内存碎片，分配/释放更快。
 
 2. 冷热分离
 
@@ -3206,25 +2895,7 @@ VirRegion 大小: ~100 bytes
 **与 B 树对比**
 
 ```
-B 树的缓存优势:
-
-┌─────────────────────────────────────────────────────────────┐
-│   B 树节点 (假设阶数 16)                                     │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ [key0][key1][key2]...[key15]  (16 * 8 = 128 bytes) │   │
-│   │ [ptr0][ptr1][ptr2]...[ptr16] (17 * 8 = 136 bytes)  │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   一个节点包含 16 个键，一次缓存加载可比较多个键             │
-│                                                             │
-│   AVL 树节点                                                 │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ [key][left][right][factor]  (~24 bytes AVL 部分)   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   一个节点只有 1 个键，每次缓存加载只比较 1 个键             │
-│                                                             │
-│   缓存效率: B 树 > AVL 树                                    │
-│   但 B 树不适合 VM 区域管理的特殊查找需求                    │
-└─────────────────────────────────────────────────────────────┘
+B 树的缓存优势：B 树节点（假设阶数 16）包含 16 个键（128 bytes）和 17 个指针（136 bytes），一次缓存加载可比较多个键。AVL 树节点只有 1 个键（~24 bytes AVL 部分），每次缓存加载只比较 1 个键。缓存效率 B 树 > AVL 树，但 B 树不适合 VM 区域管理的特殊查找需求。
 ```
 
 **Rust 实现的缓存考虑**
@@ -3256,535 +2927,47 @@ pub struct VirRegion {
 
 **总结**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    缓存效率总结                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   1. AVL 树缓存效率一般:                                     │
-│      - 节点分散，指针跳转多                                  │
-│      - 每次访问可能缓存未命中                                │
-│      - 但 VM 场景节点数少，影响有限                          │
-│                                                             │
-│   2. 优化空间有限:                                           │
-│      - 节点大小由 VirRegion 决定                             │
-│      - 不能像 B 树那样增加节点密度                           │
-│      - 内存池可改善局部性                                    │
-│                                                             │
-│   3. 实际性能足够:                                           │
-│      - 典型进程 < 100 个区域                                 │
-│      - 查找深度 < 10                                         │
-│      - 微秒级延迟，满足需求                                  │
-│                                                             │
-│   4. 选择 AVL 的理由:                                        │
-│      - 算法简单，实现可靠                                    │
-│      - 查找性能优于红黑树                                    │
-│      - Minix3 兼容性                                         │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. AVL 树缓存效率一般：节点分散、指针跳转多，每次访问可能缓存未命中，但 VM 场景节点数少、影响有限
+2. 优化空间有限：节点大小由 VirRegion 决定，不能像 B 树那样增加节点密度，内存池可改善局部性
+3. 实际性能足够：典型进程 < 100 个区域，查找深度 < 10，微秒级延迟
+4. 选择 AVL 的理由：算法简单实现可靠，查找性能优于红黑树，Minix3 兼容性
 
 ---
 
-## 6. 测试与验证
-
-### 6.1 基本操作测试
-
-**插入测试**
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_region(vaddr: u64, length: u64) -> VirRegion {
-        VirRegion::new(VirBytes(vaddr), VirBytes(length), VrFlags::empty())
-    }
-
-    #[test]
-    fn test_insert_single() {
-        let mut avl = RegionAvl::new();
-        avl.insert(make_region(0x1000, 0x1000));
-
-        assert_eq!(avl.len(), 1);
-        assert!(avl.find(VirBytes(0x1500)).is_some());
-    }
-
-    #[test]
-    fn test_insert_multiple() {
-        let mut avl = RegionAvl::new();
-
-        // 乱序插入
-        avl.insert(make_region(0x3000, 0x1000));
-        avl.insert(make_region(0x1000, 0x1000));
-        avl.insert(make_region(0x2000, 0x1000));
-
-        assert_eq!(avl.len(), 3);
-
-        // 验证所有区域都可找到
-        assert!(avl.find(VirBytes(0x1500)).is_some());
-        assert!(avl.find(VirBytes(0x2500)).is_some());
-        assert!(avl.find(VirBytes(0x3500)).is_some());
-    }
-
-    #[test]
-    fn test_insert_duplicate() {
-        let mut avl = RegionAvl::new();
-
-        avl.insert(make_region(0x1000, 0x1000));
-        avl.insert(make_region(0x1000, 0x2000)); // 相同 vaddr，不同 length
-
-        // 应该替换，不是增加
-        assert_eq!(avl.len(), 1);
-        assert_eq!(avl.find(VirBytes(0x1000)).unwrap().length, VirBytes(0x2000));
-    }
-}
-```
-
-**查找测试**
-
-```rust
-#[test]
-fn test_find_containing() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x1000, 0x1000)); // 0x1000-0x2000
-    avl.insert(make_region(0x3000, 0x1000)); // 0x3000-0x4000
-
-    // 查找包含的地址
-    assert_eq!(avl.find(VirBytes(0x1000)).unwrap().vaddr, VirBytes(0x1000));
-    assert_eq!(avl.find(VirBytes(0x1500)).unwrap().vaddr, VirBytes(0x1000));
-    assert_eq!(avl.find(VirBytes(0x1FFF)).unwrap().vaddr, VirBytes(0x1000));
-
-    // 查找间隙中的地址
-    assert!(avl.find(VirBytes(0x2000)).is_none());
-    assert!(avl.find(VirBytes(0x2500)).is_none());
-    assert!(avl.find(VirBytes(0x2FFF)).is_none());
-
-    // 查找第二个区域
-    assert_eq!(avl.find(VirBytes(0x3500)).unwrap().vaddr, VirBytes(0x3000));
-}
-
-#[test]
-fn test_find_empty_tree() {
-    let avl = RegionAvl::new();
-    assert!(avl.find(VirBytes(0x1000)).is_none());
-}
-
-#[test]
-fn test_find_boundary() {
-    let mut avl = RegionAvl::new();
-    avl.insert(make_region(0x1000, 0x1000));
-
-    // 边界测试
-    assert!(avl.find(VirBytes(0x0FFF)).is_none());  // 区域前
-    assert!(avl.find(VirBytes(0x1000)).is_some());  // 区域起始
-    assert!(avl.find(VirBytes(0x1FFF)).is_some());  // 区域结束前
-    assert!(avl.find(VirBytes(0x2000)).is_none());  // 区域结束
-}
-```
-
-**删除测试**
-
-```rust
-#[test]
-fn test_remove_leaf() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-
-    // 删除叶子节点
-    let removed = avl.remove(VirBytes(0x1000));
-    assert!(removed.is_some());
-    assert_eq!(removed.unwrap().vaddr, VirBytes(0x1000));
-
-    assert_eq!(avl.len(), 2);
-    assert!(avl.find(VirBytes(0x1500)).is_none());
-    assert!(avl.find(VirBytes(0x2500)).is_some());
-}
-
-#[test]
-fn test_remove_root() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-
-    // 删除根节点
-    let removed = avl.remove(VirBytes(0x2000));
-    assert!(removed.is_some());
-
-    assert_eq!(avl.len(), 2);
-    assert!(avl.find(VirBytes(0x2500)).is_none());
-    assert!(avl.find(VirBytes(0x1500)).is_some());
-    assert!(avl.find(VirBytes(0x3500)).is_some());
-}
-
-#[test]
-fn test_remove_nonexistent() {
-    let mut avl = RegionAvl::new();
-    avl.insert(make_region(0x1000, 0x1000));
-
-    let removed = avl.remove(VirBytes(0x2000));
-    assert!(removed.is_none());
-    assert_eq!(avl.len(), 1);
-}
-```
-
-**重叠查找测试**
-
-```rust
-#[test]
-fn test_find_overlap_basic() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x1000, 0x1000)); // 0x1000-0x2000
-    avl.insert(make_region(0x3000, 0x1000)); // 0x3000-0x4000
-
-    // 完全包含
-    assert!(avl.find_overlap(VirBytes(0x1500), VirBytes(0x1800)).is_some());
-
-    // 部分重叠
-    assert!(avl.find_overlap(VirBytes(0x1500), VirBytes(0x2500)).is_some());
-
-    // 完全跨越
-    assert!(avl.find_overlap(VirBytes(0x0500), VirBytes(0x5000)).is_some());
-
-    // 无重叠
-    assert!(avl.find_overlap(VirBytes(0x2000), VirBytes(0x3000)).is_none());
-    assert!(avl.find_overlap(VirBytes(0x5000), VirBytes(0x6000)).is_none());
-}
-
-#[test]
-fn test_find_all_overlaps() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-
-    let overlaps: Vec<_> = avl
-        .find_all_overlaps(VirBytes(0x1500), VirBytes(0x3500))
-        .map(|r| r.vaddr)
-        .collect();
-
-    assert_eq!(overlaps, vec![
-        VirBytes(0x1000),
-        VirBytes(0x2000),
-        VirBytes(0x3000)
-    ]);
-}
-```
-
-### 6.2 平衡性测试
-
-**AVL 性质验证**
-
-```rust
-impl RegionAvl {
-    /// 验证 AVL 性质（仅测试用）
-    #[cfg(test)]
-    pub fn verify_avl(&self) -> bool {
-        self.verify_avl_node(self.root.as_ref()).is_some()
-    }
-
-    fn verify_avl_node(node: Option<&Box<VirRegion>>) -> Option<i32> {
-        let n = node?;
-
-        let left_h = Self::verify_avl_node(n.lower.as_ref())?;
-        let right_h = Self::verify_avl_node(n.higher.as_ref())?;
-
-        // 验证平衡因子
-        let expected_factor = right_h - left_h;
-        if expected_factor.abs() > 1 {
-            return None; // 不平衡
-        }
-
-        // 验证存储的平衡因子正确
-        if n.factor != expected_factor as i8 {
-            return None;
-        }
-
-        Some(1 + left_h.max(right_h))
-    }
-}
-
-#[test]
-fn test_avl_balance_after_insert() {
-    let mut avl = RegionAvl::new();
-
-    // 顺序插入（最坏情况）
-    for i in 0..100 {
-        avl.insert(make_region(i * 0x1000, 0x1000));
-    }
-
-    assert!(avl.verify_avl(), "AVL 性质应保持");
-}
-
-#[test]
-fn test_avl_balance_after_remove() {
-    let mut avl = RegionAvl::new();
-
-    // 插入 100 个区域
-    for i in 0..100 {
-        avl.insert(make_region(i * 0x1000, 0x1000));
-    }
-
-    // 删除一半
-    for i in (0..100).step_by(2) {
-        avl.remove(VirBytes(i * 0x1000));
-    }
-
-    assert!(avl.verify_avl(), "删除后 AVL 性质应保持");
-}
-
-#[test]
-fn test_avl_height_bound() {
-    let mut avl = RegionAvl::new();
-
-    for i in 0..1000 {
-        avl.insert(make_region(i * 0x1000, 0x1000));
-    }
-
-    // AVL 高度最多 1.44 * log2(n)
-    let max_height = (1.44 * (1000f64).log2()) as i32 + 1;
-    let actual_height = avl.height();
-
-    assert!(
-        actual_height <= max_height,
-        "高度 {} 应 <= {}",
-        actual_height,
-        max_height
-    );
-}
-```
-
-**旋转正确性测试**
-
-```rust
-#[test]
-fn test_ll_rotation() {
-    let mut avl = RegionAvl::new();
-
-    // 构造 LL 情况
-    avl.insert(make_region(0x3000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x1000, 0x1000));
-
-    assert!(avl.verify_avl());
-
-    // 验证新的根
-    let root = avl.root.as_ref().unwrap();
-    assert_eq!(root.vaddr, VirBytes(0x2000));
-}
-
-#[test]
-fn test_rr_rotation() {
-    let mut avl = RegionAvl::new();
-
-    // 构造 RR 情况
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-
-    assert!(avl.verify_avl());
-
-    let root = avl.root.as_ref().unwrap();
-    assert_eq!(root.vaddr, VirBytes(0x2000));
-}
-
-#[test]
-fn test_lr_rotation() {
-    let mut avl = RegionAvl::new();
-
-    // 构造 LR 情况
-    avl.insert(make_region(0x3000, 0x1000));
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-
-    assert!(avl.verify_avl());
-
-    let root = avl.root.as_ref().unwrap();
-    assert_eq!(root.vaddr, VirBytes(0x2000));
-}
-
-#[test]
-fn test_rl_rotation() {
-    let mut avl = RegionAvl::new();
-
-    // 构造 RL 情况
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-
-    assert!(avl.verify_avl());
-
-    let root = avl.root.as_ref().unwrap();
-    assert_eq!(root.vaddr, VirBytes(0x2000));
-}
-```
-
-### 6.3 迭代器测试
-
-**遍历顺序测试**
-
-```rust
-#[test]
-fn test_iter_order() {
-    let mut avl = RegionAvl::new();
-
-    // 乱序插入
-    avl.insert(make_region(0x5000, 0x1000));
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x3000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-    avl.insert(make_region(0x4000, 0x1000));
-
-    // 验证中序遍历是升序
-    let addrs: Vec<_> = avl.iter().map(|r| r.vaddr).collect();
-    assert!(addrs.windows(2).all(|w| w[0] < w[1]));
-    assert_eq!(addrs, vec![
-        VirBytes(0x1000),
-        VirBytes(0x2000),
-        VirBytes(0x3000),
-        VirBytes(0x4000),
-        VirBytes(0x5000)
-    ]);
-}
-
-#[test]
-fn test_iter_empty() {
-    let avl = RegionAvl::new();
-    let count = avl.iter().count();
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn test_iter_single() {
-    let mut avl = RegionAvl::new();
-    avl.insert(make_region(0x1000, 0x1000));
-
-    let addrs: Vec<_> = avl.iter().map(|r| r.vaddr).collect();
-    assert_eq!(addrs, vec![VirBytes(0x1000)]);
-}
-```
-
-**迭代器完整性测试**
-
-```rust
-#[test]
-fn test_iter_covers_all() {
-    let mut avl = RegionAvl::new();
-
-    for i in 0..100 {
-        avl.insert(make_region(i * 0x1000, 0x1000));
-    }
-
-    let count = avl.iter().count();
-    assert_eq!(count, 100);
-}
-
-#[test]
-fn test_iter_after_remove() {
-    let mut avl = RegionAvl::new();
-
-    for i in 0..10 {
-        avl.insert(make_region(i * 0x1000, 0x1000));
-    }
-
-    avl.remove(VirBytes(0x5000));
-
-    let addrs: Vec<_> = avl.iter().map(|r| r.vaddr).collect();
-    assert_eq!(addrs.len(), 9);
-    assert!(!addrs.contains(&VirBytes(0x5000)));
-}
-```
-
-**可变迭代器测试**
-
-```rust
-#[test]
-fn test_iter_mut_modify() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-
-    // 修改所有区域的长度
-    for region in avl.iter_mut() {
-        region.length = VirBytes(0x2000);
-    }
-
-    // 验证修改生效
-    for region in avl.iter() {
-        assert_eq!(region.length, VirBytes(0x2000));
-    }
-}
-```
-
-**IntoIterator 测试**
-
-```rust
-#[test]
-fn test_into_iterator() {
-    let mut avl = RegionAvl::new();
-
-    avl.insert(make_region(0x1000, 0x1000));
-    avl.insert(make_region(0x2000, 0x1000));
-
-    // 使用 for 循环
-    let mut count = 0;
-    for region in &avl {
-        count += 1;
-        assert!(region.vaddr.0 >= 0x1000);
-    }
-    assert_eq!(count, 2);
-}
-```
-
-**测试总结**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    测试覆盖总结                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   基本操作测试:                                              │
-│   ✓ 插入单个/多个节点                                        │
-│   ✓ 插入重复键                                               │
-│   ✓ 查找包含地址                                             │
-│   ✓ 查找边界条件                                             │
-│   ✓ 删除叶子/内部/根节点                                     │
-│   ✓ 删除不存在的节点                                         │
-│   ✓ 重叠查找                                                 │
-│                                                             │
-│   平衡性测试:                                                │
-│   ✓ AVL 性质验证                                             │
-│   ✓ 插入后平衡                                               │
-│   ✓ 删除后平衡                                               │
-│   ✓ 高度上界                                                 │
-│   ✓ 四种旋转正确性                                           │
-│                                                             │
-│   迭代器测试:                                                │
-│   ✓ 遍历顺序正确                                             │
-│   ✓ 空/单节点树                                              │
-│   ✓ 覆盖所有节点                                             │
-│   ✓ 删除后迭代                                               │
-│   ✓ 可变迭代器                                               │
-│   ✓ IntoIterator trait                                       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+## 6. 测试要点
+
+### 6.1 测试维度
+
+| 维度 | 测试场景 | 优先级 |
+|------|---------|--------|
+| 基本操作 | 插入单个/多个节点、重复键替换 | 高 |
+| 查找 | 包含地址查找、边界条件、空树查找 | 高 |
+| 删除 | 叶子/内部/根节点删除、不存在键删除 | 高 |
+| 平衡性 | 顺序插入后 AVL 性质、删除后平衡、高度上界 | 高 |
+| 旋转 | LL/RR/LR/RL 四种旋转正确性 | 高 |
+| 重叠查找 | 完全包含、部分重叠、无重叠 | 中 |
+| 迭代器 | 中序遍历顺序、空/单节点树、删除后迭代 | 中 |
+| 可变迭代 | 修改区域属性后一致性 | 中 |
+| 32/64 位 | 大地址空间（>4GB）下的查找和插入 | 中 |
+
+### 6.2 关键测试场景
+
+1. **顺序插入 1000 个区域**：验证 AVL 性质保持，高度不超过 1.44 × log₂(n)
+2. **删除后连续旋转**：构造需要 O(log n) 次旋转的删除场景
+3. **地址间隙查找**：验证 find 对区域间间隙返回 None
+4. **find_overlap 边界**：查询范围恰好与区域边界相切
+5. **迭代器与修改交互**：删除节点后迭代器行为正确
+6. **大地址空间**：使用 64 位地址（>4GB）验证查找正确性
 
 ---
 
 ## 7. 参见
 
 - [12-vir-region.md](12-vir-region.md) - 使用 AVL 树的 vir_region
+- [16-pagefault.md](16-pagefault.md) - 缺页处理中的区域查找（map_lookup）
 - [17-vm-fork.md](17-vm-fork.md) - fork 时遍历 AVL 树
+- [19-vm-map.md](19-vm-map.md) - mmap/munmap 中的区域插入与删除
+- [01-vmproc-struct.md](01-vmproc-struct.md) - vmproc 中的 vm_regions_avl 字段
 
 ---
 
