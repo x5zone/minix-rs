@@ -499,7 +499,7 @@ bitflags::bitflags! {
 - 消除了重复定义的不一致风险
 - `u64` 足以覆盖所有 ACL 范围内的调用号（`NR_VM_CALLS = 49`）
 
-**VM_PAGEFAULT 不在 AclMask 中**：其偏移量 0xFF = 255 超出 `u64` 范围，且缺页异常不经过 ACL 检查。
+**VM_PAGEFAULT 不在 AclMask 中**：其偏移量 0xFF = 255 超出 u64 的 64 位宽度（`1 << 255` 无法用 u64 表示），且缺页异常不经过 ACL 检查。
 
 **预定义权限集合**
 
@@ -938,7 +938,6 @@ fn test_acl_state_mask() {
 
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vm_acl 字段
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的 ACL 处理
-- [acl-todo.md](acl-todo.md) - ACL 重构设计文档
 
 ---
 
