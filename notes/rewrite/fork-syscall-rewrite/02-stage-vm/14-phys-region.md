@@ -612,11 +612,11 @@ weighted += VM_PAGE_SIZE / pr->ph->refcount;
 ```rust
 #[derive(Debug)]
 pub struct PhysRegion {
-    pub ph: Option<*mut PhysBlock>,      // 指向物理块（可能为 NULL）
-    pub parent: Option<*mut VirRegion>,  // 所属虚拟区域
+    pub ph: Option<NonNull<PhysBlock>>,      // 指向物理块（可能为 NULL）
+    pub parent: Option<NonNull<VirRegion>>,  // 所属虚拟区域
     pub offset: VirBytes,                 // 区域内偏移
-    pub memtype: Option<*mut MemType>,    // 内存类型回调
-    pub next_ph_list: Option<*mut PhysRegion>, // 链表下一个节点
+    pub memtype: Option<&'static dyn MemType>,    // 内存类型回调
+    pub next_ph_list: Option<NonNull<PhysRegion>>, // 链表下一个节点
 }
 ```
 
@@ -624,22 +624,23 @@ pub struct PhysRegion {
 
 | 字段 | Minix3 C | Rust 实现 | 设计理由 |
 |------|----------|-----------|---------|
-| `ph` | `struct phys_block *ph` | `Option<*mut PhysBlock>` | NULL → None，显式表达可能为空 |
-| `parent` | `struct vir_region *parent` | `Option<*mut VirRegion>` | 同上，支持 yielded 状态 |
+| `ph` | `struct phys_block *ph` | `Option<NonNull<PhysBlock>>` | NULL → None，NonNull 保证非空时有效 |
+| `parent` | `struct vir_region *parent` | `Option<NonNull<VirRegion>>` | 同上，支持 yielded 状态 |
 | `offset` | `vir_bytes offset` | `VirBytes` | 类型别名，保持语义清晰 |
-| `memtype` | `mem_type_t *memtype` | `Option<*mut MemType>` | 内存类型回调，决定页表属性和 CoW 行为 |
-| `next_ph_list` | `struct phys_region *next_ph_list` | `Option<*mut PhysRegion>` | 链表节点，NULL 表示链尾 |
+| `memtype` | `mem_type_t *memtype` | `Option<&'static dyn MemType>` | 内存类型回调，决定页表属性和 CoW 行为 |
+| `next_ph_list` | `struct phys_region *next_ph_list` | `Option<NonNull<PhysRegion>>` | 链表节点，None 表示链尾 |
 
 > **注意**：C 源码中 `memtype` 不会为 NULL（由 `pb_reference()` 设置），但 Rust 中使用 `Option` 以保持一致性。`written` 字段（SANITYCHECKS 条件编译）在 Rust 中通过 `debug_assert!` 替代，不需要显式字段。
 
-**为什么使用裸指针？**
+**为什么使用 NonNull？**
 
-Minix3 使用 C 指针实现多对一映射和链表结构。Rust 中使用裸指针的原因：
+Minix3 使用 C 指针实现多对一映射和链表结构。Rust 中使用 `NonNull<T>` 而非 `*mut T` 的原因：
 
 1. **多对一映射**: 多个 `PhysRegion` 共享同一 `PhysBlock`，无法用单一所有权表达
 2. **循环引用**: `PhysBlock.first_region` → `PhysRegion` → `PhysRegion.next_ph_list` 形成循环
-3. **性能**: 避免智能指针的运行时开销（引用计数已手动管理）
-4. **兼容性**: 与 C 代码交互时更直接
+3. **性能**: `NonNull<T>` 与 `*mut T` 零开销，同时 `Option<NonNull<T>>` 利用 niche optimization 与裸指针同大小
+4. **类型安全**: `NonNull<T>` 保证指针非空（`Some` 状态下），比 `*mut T` 更安全
+5. **解引用方式**: 通过 `.as_ptr()` 获取 `*mut T`，再进行 unsafe 解引用
 
 **生命周期管理**:
 
@@ -651,12 +652,12 @@ Minix3 使用 C 指针实现多对一映射和链表结构。Rust 中使用裸�
               │
               └─→ PhysRegion (被拥有)
                       │
-                      ├─→ ph: *mut PhysBlock (引用，不拥有)
+                      ├─→ ph: NonNull<PhysBlock> (引用，不拥有)
                       │       └─→ refcount 管理生命周期
                       │
-                      ├─→ parent: *mut VirRegion (反向引用)
+                      ├─→ parent: NonNull<VirRegion> (反向引用)
                       │
-                      └─→ next_ph_list: *mut PhysRegion (链表引用)
+                      └─→ next_ph_list: NonNull<PhysRegion> (链表引用)
 
 PhysBlock 生命周期:
   创建: pb_new() → refcount = 0
@@ -679,16 +680,17 @@ PhysBlock 生命周期:
 ```rust
 impl PhysRegion {
     /// 插入到物理块的引用链表（头插法）
-    pub fn link_to_block(&mut self, block: *mut PhysBlock, parent: *mut VirRegion) {
+    pub fn link_to_block(&mut self, block: NonNull<PhysBlock>, parent: NonNull<VirRegion>) {
         unsafe {
             // 安全性：调用者确保 block 和 parent 有效
             self.ph = Some(block);
             self.parent = Some(parent);
             
             // 头插法
-            self.next_ph_list = (*block).first_region;
-            (*block).first_region = Some(self as *mut PhysRegion);
-            (*block).refcount = (*block).refcount.saturating_add(1);
+            let block_ptr = block.as_ptr();
+            self.next_ph_list = (*block_ptr).first_region;
+            (*block_ptr).first_region = Some(NonNull::new_unchecked(self as *mut PhysRegion));
+            (*block_ptr).refcount = (*block_ptr).refcount.saturating_add(1);
         }
     }
 }
@@ -698,10 +700,10 @@ impl PhysRegion {
 
 ```
 PhysRegion 内存布局 (64位系统):
-  ┌─────────────────────────────────────┐
-  │ ph: Option<*mut PhysBlock> (16字节) │
-  ├─────────────────────────────────────┤
-  │ parent: Option<*mut VirRegion>      │
+  ┌──────────────────────────────────────────┐
+  │ ph: Option<NonNull<PhysBlock>> (8字节)   │
+  ├──────────────────────────────────────────┤
+  │ parent: Option<NonNull<VirRegion>>       │
   │       (16字节)                       │
   ├─────────────────────────────────────┤
   │ offset: VirBytes (8字节)            │
@@ -1098,14 +1100,14 @@ let pr = vr.physblocks[1].as_ref();  // offset = 4096
 
 ```rust
 pub struct PhysRegion {
-    pub ph: Option<*mut PhysBlock>,  // 引用，不拥有
+    pub ph: Option<NonNull<PhysBlock>>,  // 引用，不拥有
     // ...
 }
 
 pub struct PhysBlock {
-    pub phys: u64,
-    pub refcount: u8,                 // 引用计数
-    pub first_region: Option<*mut PhysRegion>,  // 链表头
+    pub phys: PhysBytes,
+    pub refcount: u16,                 // 引用计数
+    pub first_region: Option<NonNull<PhysRegion>>,  // 链表头
     // ...
 }
 ```
