@@ -1,265 +1,254 @@
-# Minix3 VM Server — Rust Rewrite 遗漏逻辑清单
+# Minix3 VM Server 逻辑遗漏检查
 
-> 本文档对照 Minix3 VM 源码（`/workspace/minix3/minix/servers/vm/`）与 Rust 实现（`/workspace/os/servers/vm/src/`），
-> 列出所有尚未实现或仅部分实现的关键逻辑。
->
-> 优先级：🔴 关键遗漏（影响核心功能） 🟡 部分实现（框架存在但逻辑不完整） 🟢 计划中（设计文档已描述但未实现）
+> **生成日期**: 2026-05-08
+> **方法**: 对照 minix3/minix/servers/vm/ 源码与 01-27 文档 §2 章节，找出文档 §2 中描述但 §3-§4 中未覆盖的 Minix3 逻辑
 
 ---
 
-## 1. exit.c — 进程退出处理 🔴
+## 1. pagetable.c — 遗漏函数
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `free_proc(vmp)` | 释放进程所有内存区域和页表 | ❌ 完全缺失 |
-| `clear_proc(vmp)` | 清零进程结构体字段 | ❌ 完全缺失 |
-| `do_exit(msg)` | 处理 VM_EXIT 请求 | ❌ 完全缺失 |
-| `do_willexit(msg)` | 处理 VM_WILLEXIT 请求 | ❌ 完全缺失 |
-| `do_procctl(msg, transid)` | 处理 VM_PROCCTL 请求 | ❌ 完全缺失 |
+### 1.1 `vm_pagelock()` — 页面锁定
+**源码**: `pagetable.c:403`
+**功能**: 锁定/解锁 VM 自身地址空间中的页面，防止被换出
+**文档状态**: 未提及
+**重要性**: P2 — minix-rs 当前无 swap 机制，但未来需要
 
-**影响**: 进程退出是 VM 服务的基本功能，缺失将导致物理内存泄漏（PhysBlock 引用计数不减少、页表不释放）。
+### 1.2 `vm_addrok()` — 地址有效性检查
+**源码**: `pagetable.c:440`
+**功能**: 检查 VM 自身地址空间中的地址是否可访问（读/写）
+**文档状态**: 未提及
+**重要性**: P2 — 调试和 sanity check 用途
 
----
+### 1.3 `pt_ptalloc_in_range()` — 范围内页表分配
+**源码**: `pagetable.c:545`
+**功能**: 在指定虚拟地址范围内分配页表页
+**文档状态**: 07 §2.3.3 间接提及（vm_mappages 调用链），但未单独描述
+**重要性**: P2 — 被 pt_writemap 内部调用，Rust Paging::map() 内部处理
 
-## 2. region.c — 区域管理操作 🟡
+### 1.4 `pt_map_in_range()` — 范围内页表映射复制
+**源码**: `pagetable.c:631`
+**功能**: 在指定虚拟地址范围内复制页表映射（fork 用）
+**文档状态**: 17 §2 间接提及（map_proc_copy 调用链），但未单独描述
+**重要性**: P1 — fork 核心路径，Rust 实现需覆盖
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `map_region_init()` | 初始化区域管理器 | ✅ `init_regions()` |
-| `map_free(region)` | 释放单个区域的所有 PhysBlock | 🟡 `free_range()` 存在但逻辑不完整 |
-| `map_free_proc(vmp)` | 释放进程所有区域 | ❌ 缺失（exit.c 需要） |
-| `map_pf(vmp, vr, pr, write)` | 页错误核心处理 | 🟡 `on_pagefault()` 存在但 `mem_cow` 未实现 |
-| `map_handle_memory(vmp, ...)` | 批量内存处理 | ❌ 缺失 |
-| `map_pin_memory(vmp)` | 锁定内存（不可换出） | ❌ 缺失 |
-| `map_writept(vmp)` | 写回所有页表映射 | 🟡 `write_page_table_mappings()` 存在但为占位 |
-| `map_ph_writept(vmp, vr, pr)` | 写回单个 PhysRegion 的页表 | ❌ 缺失（CoW 核心操作） |
-| `map_proc_copy(dst, src)` | 复制进程地址空间 | 🟡 `copy_regions_with_cow()` 存在 |
-| `map_region_extend_upto_v(vmp, v)` | 扩展区域到指定地址 | ❌ 缺失（brk 需要） |
-| `map_unmap_region(vmp, r, ...)` | 取消区域映射 | ❌ 缺失（munmap 需要） |
-| `map_unmap_range(vmp, ...)` | 取消地址范围映射 | ❌ 缺失 |
-| `map_get_phys(vmp, addr, r)` | 获取虚拟地址的物理地址 | ❌ 缺失 |
-| `map_get_ref(vmp, addr, cnt)` | 获取虚拟地址的引用计数 | ❌ 缺失 |
-| `map_setparent(vmp)` | 设置区域父进程指针 | ❌ 缺失 |
-| `copy_abs2region(abs, dest, ...)` | 从绝对物理地址复制到区域 | ❌ 缺失 |
-| `get_usage_info(vmp, vui)` | 获取进程内存使用信息 | ❌ 缺失 |
-| `get_region_info(vmp, vri, ...)` | 获取区域信息 | ❌ 缺失 |
-| `map_sanitycheck(file, line)` | 区域一致性检查 | ❌ 缺失 |
-| `map_printmap(vmp)` | 打印进程内存映射 | ❌ 缺失（调试用） |
+### 1.5 `pt_ptmap()` — 页表映射复制
+**源码**: `pagetable.c:685`
+**功能**: 复制页表映射（fork 用）
+**文档状态**: 17 §2 间接提及
+**重要性**: P1 — fork 核心路径
 
----
+### 1.6 `pt_writable()` — 页面可写检查
+**源码**: `pagetable.c:761`
+**功能**: 检查指定虚拟地址在进程页表中是否可写
+**文档状态**: 未提及
+**重要性**: P2 — CoW 判断辅助函数
 
-## 3. pb.c — 物理块操作 🟡
+### 1.7 `pt_copy()` — 页表复制
+**源码**: `pagetable.c:1069`
+**功能**: 复制页表结构（fork 用）
+**文档状态**: 17 §2 间接提及
+**重要性**: P1 — fork 核心路径
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `pb_free(pb)` | 释放物理块 | 🟡 `release_ref()` 存在但不释放回分配器 |
-| `pb_link(newphysr, newpb, ...)` | 链接 PhysRegion 到 PhysBlock | ✅ `link_to_block()` |
-| `pb_unreferenced(region, pr, rm)` | 取消 PhysRegion 引用 | 🟡 `unlink_from_block()` 存在但未调用 memtype 回调 |
-| `mem_cow(region, pr)` | 执行 Copy-on-Write | ❌ 完全缺失（CoW 核心操作） |
-
-**影响**: `mem_cow` 是 CoW 机制的执行核心，缺失意味着写时复制无法实际执行。
+### 1.8 `freepde()` — 空闲 PDE 获取
+**源码**: `pagetable.c:1028`
+**功能**: 从备用页目录池获取空闲 PDE slot
+**文档状态**: 07 §2.1 提及 pagedir_mappings 机制
+**重要性**: P3 — 方案四中 direct map 替代，不需要
 
 ---
 
-## 4. pagetable.c — 页表操作 🟡
+## 2. region.c — 遗漏函数
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `pt_new(pt)` | 创建新页表 | ✅ `init_page_table()` |
-| `pt_bind(pt, who)` | 绑定页表到进程 | ✅ `bind_page_table()` |
-| `pt_free(pt)` | 释放页表 | ❌ 缺失（exit 需要） |
-| `pt_mapkernel(pt)` | 映射内核空间 | ❌ 缺失 |
-| `pt_writable(vmp, v)` | 检查虚拟地址是否可写 | ❌ 缺失 |
-| `pt_writemap(vmp, ...)` | 写入页表映射 | ❌ 缺失（CoW/映射核心） |
-| `pt_map_in_range(src, dst, ...)` | 范围内映射页表 | ❌ 缺失 |
-| `pt_ptmap(src, dst)` | 映射整个页表 | ❌ 缺失 |
-| `pt_checkrange(pt, v, bytes, ...)` | 检查地址范围权限 | ❌ 缺失 |
-| `pt_clearmapcache()` | 清除映射缓存 | ❌ 缺失 |
-| `pt_ptalloc_in_range(pt, start, end, ...)` | 在范围内分配页表页 | ❌ 缺失 |
-| `vm_freepages(vir, pages)` | 释放虚拟页面 | ❌ 缺失 |
-| `vm_pagelock(vir, lockflag)` | 锁定/解锁页面 | ❌ 缺失 |
-| `vm_addrok(vir, writeflag)` | 检查地址是否有效 | ❌ 缺失 |
-| `pt_sanitycheck(pt, file, line)` | 页表一致性检查 | ❌ 缺失 |
-| `pt_allocate_kernel_mapped_pagetables()` | 分配内核映射页表 | ❌ 缺失 |
-| `pt_init()` | 页表子系统初始化 | ❌ 缺失 |
+### 2.1 `map_pin_memory()` — 内存锁定
+**源码**: `region.c:779`
+**功能**: 锁定进程的所有内存页，防止被换出
+**文档状态**: 未提及
+**重要性**: P2 — minix-rs 当前无 swap，但 mlock 系统调用需要
 
----
+### 2.2 `copy_abs2region()` — 绝对地址复制到区域
+**源码**: `region.c:860`
+**功能**: 将物理地址内容复制到虚拟区域的指定偏移
+**文档状态**: 10 §2 间接提及（sys_abscopy 调用），但未单独描述
+**重要性**: P1 — exec 路径中加载新程序内存使用
 
-## 5. pagefaults.c — 页错误处理 🟡
+### 2.3 `map_writept()` — 写入页表
+**源码**: `region.c:906`
+**功能**: 将进程所有区域的映射写入页表（CoW 准备后调用）
+**文档状态**: 15 §2 间接提及
+**重要性**: P1 — fork 后设置 CoW 的关键步骤
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `do_pagefaults(msg)` | 页错误主处理入口 | ❌ 缺失（与内核中断对接） |
-| `handle_memory_once(vmp, mem, len, ...)` | 单次内存处理 | ❌ 缺失 |
-| `handle_memory_start(vmp, mem, len, ...)` | 启动内存处理 | ❌ 缺失 |
-| `do_memory()` | 批量内存请求处理 | ❌ 缺失 |
+### 2.4 `map_region_extend_upto_v()` — 区域扩展
+**源码**: `region.c:1002`
+**功能**: 扩展进程的堆区域到指定虚拟地址
+**文档状态**: 18 §2 描述了 brk 逻辑，但未单独描述此函数
+**重要性**: P2 — brk 实现的内部函数
 
----
+### 2.5 `split_region()` — 区域分割
+**源码**: `region.c:1150`
+**功能**: 将虚拟区域在指定偏移处分割为两个区域
+**文档状态**: 23 §2 间接提及（munmap 路径），但未单独描述
+**重要性**: P1 — munmap/mprotect 核心操作
 
-## 6. mmap.c — 内存映射 🟡
+### 2.6 `map_unmap_range()` — 范围取消映射
+**源码**: `region.c:1222`
+**功能**: 取消指定虚拟地址范围的映射
+**文档状态**: 23 §2 描述了 unmap_region，但未描述范围操作
+**重要性**: P1 — munmap 核心路径
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `do_mmap(msg)` | 处理 mmap 系统调用 | 🟡 框架存在，核心逻辑不完整 |
-| `do_munmap(msg)` | 处理 munmap 系统调用 | ❌ 缺失 |
-| `do_map_phys(msg)` | 处理物理内存映射 | ❌ 缺失 |
-| `do_remap(msg)` | 处理内存重映射 | ❌ 缺失 |
-| `do_get_phys(msg)` | 获取物理地址 | ❌ 缺失 |
-| `do_get_refcount(msg)` | 获取引用计数 | ❌ 缺失 |
-| `do_vfs_mmap(msg)` | VFS mmap 请求 | ❌ 缺失 |
-| `munmap_vm_lin(addr, len)` | 按线性地址取消映射 | ❌ 缺失 |
+### 2.7 `map_get_phys()` — 获取物理地址
+**源码**: `region.c:1323`
+**功能**: 获取指定虚拟地址对应的物理地址
+**文档状态**: 未提及
+**重要性**: P2 — VM_MAP_PHYS_GET 系统调用需要
 
----
+### 2.8 `map_get_ref()` — 获取引用计数
+**源码**: `region.c:1343`
+**功能**: 获取指定虚拟地址对应的物理页引用计数
+**文档状态**: 未提及
+**重要性**: P2 — 调试和监控用途
 
-## 7. break.c — brk 系统调用 🟡
+### 2.9 `get_usage_info()` / `get_region_info()` — 使用统计
+**源码**: `region.c:1395`, `region.c:1452`
+**功能**: 获取进程内存使用统计信息
+**文档状态**: 未提及
+**重要性**: P2 — VM_INFO 系统调用需要
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `do_brk(msg)` | 处理 brk 系统调用 | 🟡 框架存在，核心逻辑不完整 |
-| `real_brk(vmp, v)` | 实际堆调整 | ❌ 缺失（需要 `map_region_extend_upto_v`） |
-
----
-
-## 8. utility.c — 通用工具函数 🟡
-
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `get_mem_chunks()` | 解析引导内存块信息 | ❌ 缺失（启动初始化） |
-| `vm_isokendpt(endpoint, procn)` | 验证端点有效性 | ✅ `vm_isokendpt()` |
-| `do_info(msg)` | 处理 VM_INFO 请求 | ❌ 缺失 |
-| `swap_proc_slot(src, dst)` | 交换进程槽位 | ✅ `swap_proc_slot()` |
-| `swap_proc_dyn_data(src, dst, ...)` | 交换进程动态数据 | ❌ 缺失 |
-| `do_getrusage(msg)` | 获取资源使用统计 | ❌ 缺失 |
-| `adjust_proc_refs()` | 调整进程引用计数 | ❌ 缺失 |
+### 2.10 `map_setparent()` — 设置父进程
+**源码**: `region.c:1535`
+**功能**: 设置进程的父进程标记（fork 后调用）
+**文档状态**: 未提及
+**重要性**: P2 — fork 后的辅助操作
 
 ---
 
-## 9. cache.c — 文件系统缓存 🔴
+## 3. utility.c — 遗漏函数
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `cache_lru_touch(hb)` | 更新 LRU 缓存位置 | ❌ 完全缺失 |
-| `addcache(dev, dev_off, ino, ...)` | 添加缓存页 | ❌ 完全缺失 |
-| `rmcache(cp)` | 移除缓存页 | ❌ 完全缺失 |
-| `cache_freepages(pages)` | 释放缓存页面 | ❌ 完全缺失 |
-| `get_stats_info(vsi)` | 获取缓存统计 | ❌ 完全缺失 |
+### 3.1 `do_info()` — 信息查询
+**源码**: `utility.c:100`
+**功能**: 处理 VM_INFO 系统调用，返回内存使用统计
+**文档状态**: 未提及
+**重要性**: P2 — 系统调用接口
 
-**影响**: 文件系统缓存是 Minix3 VM 的重要功能，缺失影响文件映射性能。
+### 3.2 `swap_proc_dyn_data()` — 进程动态数据交换
+**源码**: `utility.c:312`
+**功能**: 交换两个进程槽位的动态数据（live update 用）
+**文档状态**: 02 §2.3 提及 swap_proc_slot，但未描述动态数据交换
+**重要性**: P2 — RS 重启机制需要
 
----
+### 3.3 `do_getrusage()` — 资源使用查询
+**源码**: `utility.c:426`
+**功能**: 处理资源使用查询系统调用
+**文档状态**: 未提及
+**重要性**: P3 — 可后续添加
 
-## 10. fdref.c — 文件描述符引用 🔴
-
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `fdref_ref(ref, region)` | 增加文件描述符引用 | ❌ 完全缺失 |
-| `fdref_deref(region)` | 减少文件描述符引用 | ❌ 完全缺失 |
-| `fdref_sanitycheck()` | 引用一致性检查 | ❌ 完全缺失 |
-
-**影响**: 文件映射内存（mem_file）依赖 fdref 管理文件描述符生命周期。
-
----
-
-## 11. 内存类型实现 🟡
-
-| Minix3 文件 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `mem_anon.c` | 匿名内存 | ✅ `AnonymousMemory` |
-| `mem_anon_contig.c` | 连续匿名内存 | ❌ 缺失 |
-| `mem_cache.c` | 缓存内存 | ❌ 缺失 |
-| `mem_directphys.c` | 直接物理映射 | 🟡 `DirectPhysicalMemory` 存在但 `phys_setphys` 缺失 |
-| `mem_file.c` | 文件映射内存 | 🟡 `MappedFileMemory` 存在但 VFS 交互缺失 |
-| `mem_shared.c` | 共享内存 | ❌ 缺失 |
+### 3.4 `adjust_proc_refs()` — 进程引用调整
+**源码**: `utility.c:477`
+**功能**: 调整进程引用计数（共享内存相关）
+**文档状态**: 未提及
+**重要性**: P2 — 共享内存管理
 
 ---
 
-## 12. vfs.c — VFS 交互 🔴
+## 4. rs.c — 完全未覆盖
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `vfs_request(reqno, fd, vmp, ...)` | 向 VFS 发送请求 | ❌ 完全缺失 |
-| `do_vfs_reply(msg)` | 处理 VFS 回复 | ❌ 完全缺失 |
+### 4.1 `do_rs_set_priv()` — RS 权限设置
+**源码**: `rs.c:34`
+**重要性**: P2 — RS 重启机制
 
-**影响**: 文件映射和页面换入依赖 VFS 交互，缺失导致文件映射无法工作。
+### 4.2 `do_rs_prepare()` — RS 准备
+**源码**: `rs.c:71`
+**重要性**: P2 — RS 重启机制
 
----
+### 4.3 `do_rs_update()` — RS 更新
+**源码**: `rs.c:150`
+**重要性**: P2 — RS 重启机制
 
-## 13. rs.c — 资源服务交互 🔴
+### 4.4 `do_rs_memctl()` — RS 内存控制
+**源码**: `rs.c:349`
+**重要性**: P2 — RS 重启机制
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `do_rs_set_priv(msg)` | 设置 RS 权限 | ❌ 完全缺失 |
-| `do_rs_prepare(msg)` | RS 准备 | ❌ 完全缺失 |
-| `do_rs_update(msg)` | RS 更新 | ❌ 完全缺失 |
-| `do_rs_memctl(msg)` | RS 内存控制 | ❌ 完全缺失 |
-
----
-
-## 14. main.c — 主循环与初始化 🟡
-
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `main()` | VM 主循环 | 🟡 `main.rs` 存在但消息循环不完整 |
-| `init_vm()` | VM 初始化 | 🟡 `global::init()` 存在但不完整 |
-| `do_sef_init_request(msg)` | SEF 初始化 | ❌ 缺失 |
+**说明**: rs.c 整个文件在 01-27 文档中未覆盖。这是 Minix3 的 RS（Restart Server）交互逻辑，包括 VM 实例创建、堆预分配、映射预分配等。minix-rs 需要决定是否支持 RS 重启机制。
 
 ---
 
-## 15. slaballoc.c — Slab 分配器 🟢
+## 5. vfs.c — 部分覆盖
 
-| Minix3 函数 | 功能 | Rust 状态 |
-|-------------|------|-----------|
-| `slabfree(mem, bytes)` | 释放 slab 对象 | ✅ 由 Rust `global_alloc` 替代 |
-| `slablock(mem, bytes)` | 锁定 slab 对象 | ❌ 缺失 |
-| `slabunlock(mem, bytes)` | 解锁 slab 对象 | ❌ 缺失 |
+### 5.1 `vfs_request()` — VFS 请求
+**源码**: `vfs.c:60`
+**文档状态**: 24 §2 描述了 VFS 交互，但未详细描述请求队列实现
+**重要性**: P1 — 文件映射核心路径
 
-**说明**: Minix3 的 slab 分配器已被 Rust 的 `global_alloc` 系统替代，这是设计上的改进。
-
----
-
-## 关键遗漏优先级排序
-
-### 🔴 P0 — 必须实现（核心功能缺失）
-
-1. **exit.c 全部函数** — 进程退出处理，否则物理内存泄漏
-2. **mem_cow** — CoW 执行核心，否则写时复制无法工作
-3. **map_ph_writept / pt_writemap** — 页表写入，否则 CoW 页表保护无法设置
-4. **VFS 交互** — 文件映射依赖
-5. **fdref** — 文件描述符引用管理
-
-### 🟡 P1 — 重要但可延后
-
-6. **map_free_proc** — 释放进程所有区域（exit 依赖）
-7. **map_region_extend_upto_v** — brk 堆扩展核心
-8. **map_unmap_region / map_unmap_range** — munmap 核心逻辑
-9. **pt_free** — 页表释放（exit 依赖）
-10. **pt_mapkernel** — 内核空间映射
-11. **do_pagefaults** — 页错误主入口
-12. **cache.c 全部** — 文件系统缓存
-13. **mem_shared** — 共享内存类型
-14. **mem_anon_contig** — 连续匿名内存
-
-### 🟢 P2 — 可后续实现
-
-15. **do_info / do_getrusage** — 信息查询
-16. **map_sanitycheck / pt_sanitycheck** — 一致性检查
-17. **map_printmap** — 调试输出
-18. **RS 交互** — 资源服务
-19. **do_remap / do_get_phys / do_get_refcount** — 辅助系统调用
-20. **handle_memory_once / handle_memory_start** — 批量内存处理
-21. **vm_pagelock / vm_addrok** — 页面锁定和验证
-22. **swap_proc_dyn_data** — 进程动态数据交换
-23. **adjust_proc_refs** — 引用计数调整
+### 5.2 `do_vfs_reply()` — VFS 回复处理
+**源码**: `vfs.c:109`
+**文档状态**: 24 §2 间接提及
+**重要性**: P1 — 文件映射核心路径
 
 ---
 
-## 审查中已修复的 Rust 代码问题
+## 6. mem_cache.c — 完全未覆盖
 
-| 文件 | 修复内容 | 对应文档 |
-|------|----------|----------|
-| phys_region.rs | PhysBytes/u16/NonNull 类型对齐 | 10-phys-block |
-| memtype.rs | NonNull 解引用、region_id/ref_count 对齐 Minix3 | 11-memtype |
-| vir_region.rs | PhysBytes 类型、split_len==0 检查 | 12-vir-region |
-| fork.rs | link_phys_blocks 改用 link_to_block（pb_link 等价） | 17-vm-fork |
-| vmproc_handle.rs | NonNull 解引用修复 | 10-phys-block |
-| 14-phys-region.md | 文档 NonNull/PhysBytes/u16 API 更新 | 14-phys-region |
+### 6.1 `mem_type_cache` — 缓存内存类型
+**源码**: `mem_cache.c:39`
+**功能**: 缓存内存类型的 mem_type 实现，包括 cache_pagefault、cache_reference、cache_unreference、cache_resize、cache_lowshrink
+**文档状态**: 26 §2 提及了 cache memtype，但未详细描述 cache_lowshrink 等函数
+**重要性**: P1 — 缓存回收路径
+
+---
+
+## 7. fdref.c — 完全未覆盖
+
+### 7.1 fdref 引用计数
+**源码**: `fdref.c`, `fdref.h`
+**功能**: 文件描述符引用计数管理，用于文件映射的 fork/exit
+**文档状态**: 24 §2 间接提及 fdref，但未详细描述引用计数机制
+**重要性**: P1 — 文件映射 fork/exit 核心路径
+
+---
+
+## 8. mmap.c — 未单独覆盖
+
+### 8.1 `do_mmap()` — mmap 系统调用
+**源码**: `mmap.c`
+**文档状态**: 19 §2 描述了 map_region，但未描述 do_mmap 的完整系统调用处理
+**重要性**: P1 — mmap 系统调用入口
+
+---
+
+## 9. 遗漏汇总
+
+| 优先级 | 遗漏项 | 文件 | 说明 |
+|--------|--------|------|------|
+| P1 | pt_map_in_range / pt_ptmap | pagetable.c | fork 页表复制核心路径 |
+| P1 | copy_abs2region | region.c | exec 加载新程序内存 |
+| P1 | map_writept | region.c | fork 后 CoW 页表设置 |
+| P1 | split_region | region.c | munmap/mprotect 区域分割 |
+| P1 | map_unmap_range | region.c | munmap 范围操作 |
+| P1 | vfs_request / do_vfs_reply | vfs.c | 文件映射核心路径 |
+| P1 | mem_type_cache (cache_lowshrink) | mem_cache.c | 缓存回收路径 |
+| P1 | fdref 引用计数 | fdref.c | 文件映射 fork/exit |
+| P1 | do_mmap | mmap.c | mmap 系统调用入口 |
+| P2 | vm_pagelock / vm_addrok | pagetable.c | 页面锁定和地址检查 |
+| P2 | map_pin_memory | region.c | mlock 系统调用 |
+| P2 | map_get_phys / map_get_ref | region.c | VM_MAP_PHYS_GET 等查询 |
+| P2 | get_usage_info / get_region_info | region.c | VM_INFO 系统调用 |
+| P2 | rs.c 全部函数 | rs.c | RS 重启机制 |
+| P2 | swap_proc_dyn_data | utility.c | Live update |
+| P2 | adjust_proc_refs | utility.c | 共享内存引用调整 |
+| P3 | pt_writable | pagetable.c | CoW 辅助 |
+| P3 | do_getrusage | utility.c | 资源查询 |
+| P3 | freepde | pagetable.c | 方案四不需要 |
+
+---
+
+## 10. 与上次 minix3_missed.md 的差异
+
+上次生成的 minix3_missed.md 主要关注 Phase A 的文档修复遗漏。本次重新生成基于完整的 01-27 review，重点关注：
+
+1. **新增**: rs.c 整个文件的遗漏（RS 重启机制）
+2. **新增**: fdref.c 引用计数机制的遗漏
+3. **新增**: mem_cache.c 的 cache_lowshrink 函数遗漏
+4. **新增**: mmap.c 系统调用入口的遗漏
+5. **保留**: region.c 中多个函数的遗漏（split_region, map_unmap_range 等）
+6. **保留**: pagetable.c 中 fork 相关函数的遗漏
+
+**方案四影响**: 上述遗漏项中，freepde 等函数在方案四中不需要（direct map 替代），但 fork/exec/munmap 相关函数仍然需要实现。
