@@ -1,117 +1,77 @@
-# 07-pagetable-ops.md 修订记录
+# 07-todo: Review 修复记录
 
-## 修订日期: 2026-05-07
+## 审查文件
+`07-pagetable-ops.md`
 
-## 变更列表
+## 审查结果
 
-### 1. C 源码行号修正
+### 无需修复
 
-| 位置 | 原文 | 修正 | 原因 |
-|------|------|------|------|
-| §2.1.3 pagedir_mappings 初始化 | `pagetable.c:1039` | `pagetable.c:1035` | `pt_allocate_kernel_mapped_pagetables` 函数定义始于第 1035 行，1039 是 for 循环体 |
-| §2.3.1 pt_writemap 调用场景 | `region.c:283` | `region.c:280` | `pt_writemap` 调用始于第 280 行，283 是 SANITYCHECKS 条件分支 |
-| §2.4.3 pt_clearmapcache 调用场景 | `pagetable.c:118` | `pagetable.c:115` | `pt_assert` 函数定义始于第 115 行，118 是其内部的 `pt_clearmapcache()` 调用 |
-| 附录 A.2 vm_lookup | `memory.c:325-370` | `memory.c:325-372` | 函数体结束于第 372 行（含闭合大括号） |
+本文件文档与代码完全一致，无需修改文档或 Rust 代码。
 
-### 2. 章节编号修正
+### 源码行号验证
 
-| 位置 | 原文 | 修正 | 原因 |
-|------|------|------|------|
-| pt_writable 标题 | `#### 2.3.5` | `#### 2.4.2` | 该节位于 §2.4 页表遍历之下，应编为 2.4.2 |
-| pt_clearmapcache 标题 | `#### 2.3.6` | `#### 2.4.3` | 该节位于 §2.4 页表遍历之下，应编为 2.4.3 |
+| 引用 | 文档标注 | 实际位置 | 一致? |
+|------|----------|----------|-------|
+| `pagetable.c:990` pt_new | L990 | L990=函数签名 | ✅ |
+| `pagetable.c:1427` pt_free | L1427 | L1427=函数签名 | ✅ |
+| `pagetable.c:1358` pt_bind | L1358 | L1358=函数签名 | ✅ |
+| `pagetable.c:784` pt_writemap | L784 | L784=函数签名 | ✅ |
+| `pagetable.c:943` pt_checkrange | L943 | L943=函数签名 | ✅ |
+| `pagetable.c:295` vm_mappages | L295 | L295=函数签名 | ✅ |
+| `pagetable.c:631` pt_map_in_range | L631 | L631=函数签名 | ✅ |
+| `pagetable.c:761` pt_writable | L761 | L761=函数签名 | ✅ |
+| `pagetable.c:751` pt_clearmapcache | L751 | L751=函数签名 | ✅ |
+| `pagetable.c:38` pagedir_mappings | L38 | L38=struct pdm | ✅ |
+| `pagetable.c:1035` pt_allocate_kernel_mapped_pagetables | L1035 | L1035=函数签名 | ✅ |
+| `vm.h:56-59` WMF flags | L56-59 | L56=WMF_OVERWRITE, L59=WMF_VERIFY | ✅ |
 
-### 3. Rust 函数映射修正（§3.1）
+### Rust 代码审查
 
-| 位置 | 原文 | 修正 | 原因 |
-|------|------|------|------|
-| §3.1 Minix3 函数映射表 | `pt_bind()` → `Paging::switch()` | `pt_bind()` → `VmPagingExt::bind_to_process()` | `pt_bind()` 的语义是绑定页表到进程（通知内核），对应 `VmPagingExt::bind_to_process()`；`Paging::switch()` 仅对应内核的 CR3 加载（激活页表），与 §4.3 的映射表一致 |
+Rust 代码与文档设计完全一致，无需修改：
 
-### 4. Rust 代码与实际源码对齐
+**Paging trait（paging.rs:119-265）**：
+- `new()`/`destroy()`/`map()`/`remap()`/`unmap()`/`update_flags()`/`query()`/`root_paddr()`/`switch()`/`flush_tlb()`/`flush_tlb_addr()` 与 §3.2 一致
+- `map_range()`/`unmap_range()` 默认实现与 §3.2 一致
+- `check_range` 已移除，注释说明与 §3.2 的 REMOVED 注释一致
 
-#### 4.1 VirBytes / PhysBytes 类型定义（§3.2）
+**PageFlags（paging.rs:11-82）**：
+- 9 个标志位值与 §3.2 一致
+- 5 个预设组合（read_only/read_write/kernel_read_only/kernel_read_write/kernel_executable）与 §3.2 一致
+- 额外的 `kernel_executable()` 是 W^X 安全增强，文档未提及但属于合理扩展
 
-- VirBytes: 添加 `#[repr(transparent)]`、`Hash`、`Default` derive
-- PhysBytes: 添加 `#[repr(transparent)]`、`Hash` derive
+**PageTableError（paging.rs:84-106）**：
+- 6 个变体与 §3.3 一致
+- `Display` impl 与 §3.3 一致
 
-实际源码位置: `os/libs/minix-types/src/types/address.rs`
+**MockPaging（paging.rs:290-596）**：
+- `Paging` impl 与 §3.2 一致
+- `VmPagingExt` impl（bind_to_process/map_kernel）与 §4.3 一致
+- `PagingWithId` impl 与 §3.3 一致
+- 测试覆盖 §5.1 中所有测试要点
 
-#### 4.2 Paging trait 定义（§3.2）
+**VmPagingExt（paging_ext.rs:33-47）**：
+- `bind_to_process()`/`map_kernel()` 与 §4.3 一致
 
-原文仅列出 `map()`、`map_range()`、`switch()`、`destroy()` 四个方法，与实际 trait 定义不符。更新为包含完整方法签名：
+**PagingWithId（paging_ext.rs:59-104）**：
+- 5 个方法 + 1 关联类型与 §3.3 一致
 
-- 添加 `const PAGE_SIZE: usize`
-- 添加 `fn new()`
-- 添加 `fn remap()` （原子覆盖映射，对应 WMF_OVERWRITE）
-- 添加 `fn unmap()` （取消映射，返回原物理地址）
-- 添加 `fn update_flags()` （更新标志位，对应 WMF_WRITEFLAGSONLY）
-- 添加 `fn query()` （查询映射）
-- 添加 `fn root_paddr()` （获取页表根物理地址）
-- 添加 `unsafe fn flush_tlb()` / `unsafe fn flush_tlb_addr()`
-- `map_range()` 补充默认实现体
-- 添加 `fn unmap_range()` 及默认实现体
+**HugePages（paging_ext.rs:107-121）**：
+- 2 个方法 + 1 关联常量与 §3.4 一致
 
-实际源码位置: `os/arch/src/paging.rs`
+### Review 准则检查
 
-#### 4.3 MockPaging 实现（§3.2）
+按 `review-code-checklist.md` 逐项检查：
 
-- 添加 `const PAGE_SIZE: usize = 4096`
-- 添加 `fn new()` 实现
-- `map()` 方法添加对齐检查和 `AlreadyMapped` 检查（与实际代码一致）
-- `switch()` 方法使用 `AtomicUsize::store` 替代 `Option` 赋值
-- 添加 `destroy()` 实现
-- 添加 `// ... 其他方法省略` 注释
-
-实际源码位置: `os/arch/src/paging.rs` mock 模块
-
-#### 4.4 PageTableError 枚举（§3.3）
-
-- 添加 `Copy` derive（实际代码为 `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`）
-
-实际源码位置: `os/arch/src/paging.rs`
-
-## 已验证无误的内容
-
-### C 源码行号（全部正确）
-
-- `pt_new`: pagetable.c:990 ✅
-- `pt_free`: pagetable.c:1427 ✅
-- `pt_bind`: pagetable.c:1358 ✅
-- `pt_writemap`: pagetable.c:784 ✅
-- `pt_checkrange`: pagetable.c:943 ✅
-- `vm_mappages`: pagetable.c:295 ✅
-- `pt_map_in_range`: pagetable.c:631 ✅
-- `pt_writable`: pagetable.c:761 ✅
-- `pt_clearmapcache`: pagetable.c:751 ✅
-- `pt_mapkernel`: pagetable.c:1442 ✅
-- `pagedir_mappings` 结构定义: pagetable.c:38 ✅
-
-### C 源码调用场景（全部正确）
-
-- fork.c:94 (pt_bind) ✅
-- main.c:211,355,717-718 (pt_bind) ✅
-- main.c:212,719,749 (pt_clearmapcache) ✅
-- exit.c:35-36 (map_free_proc / pt_free) ✅
-- exit.c:137 (pt_bind) ✅
-- pagetable.c:1329,1343 (pt_bind) ✅
-- region.c:153,1139 (pt_writemap) ✅
-- pagetable.c:425 (pt_writemap + WMF_WRITEFLAGSONLY) ✅
-- mmap.c:500 (pt_writemap + WMF_FREE) ✅
-- utility.c:326,331 (pt_map_in_range) ✅
-- region.c:55 (pt_writable) ✅
-- region.c:747 (pt_checkrange) ✅
-- pagefaults.c:153 (pt_clearmapcache) ✅
-
-### 数值常量（全部正确）
-
-- MAX_PAGEDIR_PDES = 5 ✅
-- WMF_OVERWRITE = 0x01 ✅
-- WMF_WRITEFLAGSONLY = 0x02 ✅
-- WMF_FREE = 0x04 ✅
-- WMF_VERIFY = 0x08 ✅
-
-### 规则合规性
-
-- Ch1/Ch2 不含 Rust 内容 ✅
-- 最后一章为"参见" ✅
-- Ch3 聚焦"why"（设计决策动机） ✅
-- Ch4 聚焦"how"（实现语义对应） ✅
+1. **Rewrite 质量** ✅ — trait 抽象，无 C 式裸指针
+2. **硬件抽象** ✅ — 所有硬件细节通过 trait 抽象
+3. **类型系统与安全** ✅ — `unsafe` 最小化（switch/flush_tlb/destroy），有 safety 注释
+4. **执行模型** ✅ — 单线程 MockPaging，BTreeMap 无锁
+5. **内存模型** ✅ — MockPaging 使用 BTreeMap，无裸指针
+6. **公开接口** ✅ — `pub` 最小权限
+7. **命名** ✅ — 与 Minix3 对应关系清晰（§3.1 映射表）
+8. **测试** ✅ — 覆盖正常路径、边界条件、错误路径
+9. **注释** ✅ — 英文注释，`unsafe` 有 safety 注释
+10. **64 位** ✅ — `VirBytes(u64)`/`PhysBytes(u64)`
+11. **no_std** ✅ — 使用 `alloc::collections::BTreeMap`
+12. **设计-代码一致性** ✅ — 代码完全实现文档 Ch3/Ch4 设计
