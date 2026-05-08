@@ -1,22 +1,16 @@
-# 19-vm-map.md Review Todo
+# 19-todo: Review 修复记录
 
-## Document Review
-- 文档无需修改
+## 审查文件
+`19-vm-map.md`
 
-## Rust Code Review
-- mmap/munmap 实现与 Minix3 `do_mmap`/`do_munmap` 逻辑一致
-- `MmapRequest`/`MunmapRequest` 结构体与文档描述匹配
-- `MmapFlags`/`ProtectionFlags` 使用 bitflags 宏增强类型安全
-- `AnonymousMemory`/`MappedFileMemory`/`DirectPhysicalMemory` 类型与文档设计一致
-- 无需修改代码
+## 审查结果
 
-## 已知设计差异（Allowed Evolution，不修改）
-- Rust 使用 bitflags 宏替代 Minix3 的 int 标志位
-- Rust 使用枚举类型替代 Minix3 的错误码
-- `find_free_region` 使用线性查找（待 AVL 树完善后优化）
-- `MappedFileMemory` 的 VFS 交互部分待实现
+### 无需修复
 
-## Ground Truth 验证
-- Minix3 `do_mmap`: 参数验证→查找空闲区域→创建映射 ✓
-- Minix3 `do_munmap`: 参数验证→取消映射→释放资源 ✓
-- Minix3 `do_mapphys`: 直接物理内存映射 ✓
+文档质量高，mmap 流程描述准确。
+
+### 验证通过项
+
+1. **方案四变更**：文档已描述 VM_MAP_PHYS 实现简化（direct map 替代 createpde 临时映射）
+2. **Rust 代码**：munmap.rs 实现了基础 munmap 处理
+3. **Minix3 源码引用**：region.c 中 map_region() 验证通过

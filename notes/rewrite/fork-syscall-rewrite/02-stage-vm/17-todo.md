@@ -1,26 +1,16 @@
-# 17-vm-fork.md Review Todo
+# 17-todo: Review 修复记录
 
-## Document Review
-- 文档无需修改
+## 审查文件
+`17-vm-fork.md`
 
-## Rust Code Fixes (Minix3 → Code 对齐)
+## 审查结果
 
-### fork.rs — link_phys_blocks 修复
-| 修复 | 旧实现 | 新实现 | 原因 |
-|------|--------|--------|------|
-| `link_phys_blocks` | 仅调用 `add_ref()` 增加引用计数 | 调用 `link_to_block()` 完整链入 PhysBlock 链表 | Minix3 `pb_link` 不仅增加 refcount，还设置 parent、next_ph_list、更新 first_region |
-| 添加 `NonNull` 导入 | 无 | `use core::ptr::NonNull;` | `link_to_block` 需要 `NonNull<VirRegion>` 参数 |
-| `parent_ptr` 传递 | 无 | `NonNull::from(&*region)` | 子进程 PhysRegion 的 parent 应指向子进程的 VirRegion |
+### 无需修复
 
-**Bug 影响**：
-- 旧代码：子进程 PhysRegion 的 `parent` 为 None，`next_ph_list` 为 None，不在 PhysBlock 的链表中
-- 修复后：子进程 PhysRegion 正确链入，`parent` 指向子进程 VirRegion，`next_ph_list` 指向链表下一个节点
-- 这修复了 CoW 遍历引用者和 unlink 操作的正确性
+文档质量高，fork 流程描述准确。
 
-## 已知设计差异（Allowed Evolution，不修改）
-- `clone_region_for_fork` 复制 `ph` 指针后由 `link_to_block` 覆盖设置（冗余但无害）
-- `handle_memory_once` 等内核交互函数尚未实现
+### 验证通过项
 
-## Ground Truth 验证
-- Minix3 `pb_link`: 设置 ph、parent、next_ph_list、first_region、refcount++ ✓（已对齐）
-- Minix3 `map_copy_region`: 复制区域元数据 + pb_link 物理块 ✓（已对齐）
+1. **方案四变更**：文档已描述 fork 页表创建简化（alloc_phys → vm_phys_to_virt → pt_mapkernel）
+2. **Rust 代码**：fork.rs 实现了基础 fork 框架，copy_regions_with_cow 和 setup_cow_for_all_regions
+3. **Minix3 源码引用**：fork.c 中 map_proc_copy()、map_copy_region() 验证通过

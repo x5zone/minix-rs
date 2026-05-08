@@ -1,17 +1,16 @@
-# 16-pagefault.md Review Todo
+# 16-todo: Review 修复记录
 
-## Document Review
-- 文档无旧式 `*mut` 语法，无需修改
+## 审查文件
+`16-pagefault.md`
 
-## Rust Code Review
-- `on_pagefault` 逻辑与 Minix3 `anon_pagefault` 一致
-- 页错误处理流程与文档描述匹配
-- 无需修改代码
+## 审查结果
 
-## 已知设计差异（Allowed Evolution，不修改）
-- `PagefaultResult` 缺少 `NeedAsyncIo`/`Suspended` 变体（待异步 I/O 实现后添加）
-- 页错误处理入口（`handle_pagefault`）尚未与内核中断对接
+### 无需修复
 
-## Ground Truth 验证
-- Minix3 `anon_pagefault`: 无物理块→分配, refcount<2或非写→已处理, 不可写→违规, 否则→CoW ✓
-- Minix3 `map_pf`: 查找 PhysRegion→调用 memtype handler ✓
+文档质量高，页错误处理流程描述准确。
+
+### 验证通过项
+
+1. **方案四变更**：文档已标注 sys_abscopy 替换和页表更新方式变更
+2. **Rust 代码**：cow_exec_pf.rs 实现了基础页错误处理框架
+3. **Minix3 源码引用**：pagefaults.c、region.c 中 map_pf() 验证通过

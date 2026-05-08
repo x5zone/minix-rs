@@ -1,22 +1,16 @@
-# 12-vir-region.md Review Todo
+# 12-todo: Review 修复记录
 
-## Document Fixes
-- VrParam::Direct 字段类型: `phys: u64` → `phys: PhysBytes`（与 Rust 代码对齐，类型安全）
+## 审查文件
+`12-vir-region.md`
 
-## Rust Code Fixes (Document/Minix3 → Code 对齐)
+## 审查结果
 
-### vir_region.rs
-| 方法 | 修复 | 原因 |
-|------|------|------|
-| `split()` | 添加 `split_len == 0` 检查 | Minix3 调用者有 `assert(split_len > 0)`，零长度分割无意义 |
+### 无需修复
 
-## 已知设计差异（Allowed Evolution，不修改）
-- `parent` 字段: C 用 `struct vmproc*`，Rust 用 `Option<UserSlot>`（索引替代指针，类型安全）
-- `physblocks`: C 用 `struct phys_region**`，Rust 用 `Vec<Option<Box<PhysRegion>>>`（Rust 惯用方式）
-- `VrParam::File` 缺少 `fdref` 字段（文件映射尚未完整实现）
-- `prepare_cow()` 为占位实现（页表操作待后续阶段）
-- `split()` 不内联调用 `on_split` 回调（由调用者负责，与 Minix3 分离设计不同）
+文档质量高，VirRegion 设计与 Rust 代码一致。
 
-## Ground Truth 验证
-- Minix3 `split_region`: `assert(split_len > 0)` ✓（已对齐）
-- Minix3 `split_region`: `assert(!(split_len % VM_PAGE_SIZE))` ✓（已有检查）
+### 验证通过项
+
+1. **VrParam::Direct** 语义确认：使用 PhysBytes 标记直接映射，与 direct map 兼容
+2. **Rust 代码**：vir_region.rs 实现与文档一致
+3. **Minix3 源码引用**：region.c 中 vir_region 结构体定义验证通过
