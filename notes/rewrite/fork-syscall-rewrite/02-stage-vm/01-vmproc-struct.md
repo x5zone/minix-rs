@@ -86,9 +86,7 @@ vmproc (进程控制块)
 
 #### 2.2.1 与 Minix3 语义兼容
 
-根据 [重构指导原则](../../../RECONSTRUCTION-PRINCIPLES.md)，当前处于 **L2 Semantic Preservation** 阶段：
-
-> **外部语义不变，内部表达可以改变**
+根据语义冻结原则（外部语义不变，内部表达可以改变）：
 
 **必须保持的语义**:
 
@@ -178,7 +176,7 @@ struct vmproc {
 **使用场景**:
 
 - **进程分配**: PM 通过 `VM_FORK` 请求分配新槽位时，VM 设置 `VMF_INUSE` 标记该槽位已被占用
-- **进程退出**: PM 调用 `VM_WILLEXIT` 时，VM 设置 `VMF_EXITING` 防止新的内存操作（[exit.c:112](minix3/minix/servers/vm/exit.c#L112) `do_willexit()`），之后 PM 调用 `VM_EXIT` 时 VM 清理资源
+- **进程退出**: PM 调用 `VM_WILLEXIT` 时，VM 设置 `VMF_EXITING` 防止新的内存操作（[exit.c:112](minix3/minix/servers/vm/exit.c#L112) `do_willexit()`），之后 PM 调用 `VM_EXIT` 时 VM 清理资源。`do_exit()` 会检查 `VMF_EXITING` 标志——未经过 `VM_WILLEXIT` 的退出请求会被拒绝（[exit.c:73](minix3/minix/servers/vm/exit.c#L73)）
 - **VM 自识别**: VM 进程自身带有 `VMF_VM_INSTANCE`，用于特殊处理（如避免递归调用，[main.c:579](minix3/minix/servers/vm/main.c#L579)）
 - **退出处理**: `do_exit()` 检查 `VMF_VM_INSTANCE`，如果设置则递减全局计数器 `num_vm_instances`（用于 RS 重启机制）。Rust 代码中 `clear()` 自动处理此逻辑
 
@@ -1190,7 +1188,7 @@ Minix3 的退出是两个独立消息：
 且 `do_exit()` 会检查 `VMF_EXITING` 标志——未经过 `VM_WILLEXIT` 的退出请求会被拒绝：
 
 ```c
-// exit.c:91
+// exit.c:73
 if(!(vmp->vm_flags & VMF_EXITING)) {
     printf("VM: unannounced VM_EXIT %d\n", msg->VME_ENDPOINT);
     return EINVAL;

@@ -1,67 +1,38 @@
-# 01-vmproc-struct.md Review 修改记录
+# 01-todo: Review 修复记录
 
-## 修改概要
+## 审查文件
+`01-vmproc-struct.md`
 
-对 01-vmproc-struct.md 进行深度 review，修复 P0/P1 问题，并同步修改关联 Rust 代码。
+## 审查结果
 
----
+### P1 修复
 
-## P0 修复
+#### 1. 行号错误：exit.c:91 → exit.c:73
 
-### 1. Ch2 §2.2.3 包含 Rust 内容（违反文档结构规则）
+**问题**: 文档中 `do_exit()` 检查 `VMF_EXITING` 的代码注释标注为 `exit.c:91`，但实际代码位于 `exit.c:73`。行 91 实际是 `clear_proc(vmp)` 调用。
 
-**问题**: §2.2.3 "初始化要求" 中包含 Rust 实现细节：
-> Rust: `VmProc::vacant()` 因 const 初始化约束使用 `UserSlot(0)` 占位，实际 `vm_slot` 在 `get_empty()` 或 `alloc_empty_slot()` 中根据数组索引设置
+**修复**: 将 `// exit.c:91` 改为 `// exit.c:73`。同时在 §3.2.1 的"进程退出"使用场景中补充了 `do_exit()` 检查 `VMF_EXITING` 的行号引用 `exit.c:73`，使文档更完整。
 
-**规则**: 第1章（概述）和第2章（背景与约束/C 源码分析）不得包含 Rust 相关内容。
+**验证**: `grep -n "VMF_EXITING" minix3/minix/servers/vm/exit.c` 确认行 73 为 `if(!(vmp->vm_flags & VMF_EXITING))`。
 
-**修改**: 将 Rust 实现细节替换为指向 §4.3 和 §5.1.2 的交叉引用。
+#### 2. 失效交叉引用：RECONSTRUCTION-PRINCIPLES.md
 
-### 2. Ch3 §3.2.6 vm_boot 包含 "Rust 设计差异" 表格
+**问题**: §2.2.1 引用 `[重构指导原则](../../../RECONSTRUCTION-PRINCIPLES.md)`，但该文件不存在于仓库中。
 
-**问题**: §3.2.6 vm_boot 字段详解中包含完整的 Rust 设计差异对比表（类型、所有权、初始化三行对比），以及 Rust 使用值语义的三点理由。
+**修复**: 移除失效链接，将引用改为内联描述"根据语义冻结原则（外部语义不变，内部表达可以改变）"，保留核心语义。
 
-**规则**: Ch3（C 源码分析）不得包含 Rust 相关内容。
+### Rust 代码审查
 
-**修改**: 删除 "Rust 设计差异" 表格和理由说明，替换为一句摘要 + 指向 §4.3 和 §5.1 的交叉引用。
+Rust 代码与文档设计一致，无需修改：
 
-### 3. Ch3 §3.2.6 vm_bytecopies 包含 Rust 代码对比
+- `VmProc` 结构体字段与文档 §5.1 完全对应
+- `VmFlags` bitflags 值（0x001/0x002/0x010）与 Minix3 `vmproc.h` 一致
+- `clear()` 方法行为与文档 §5.3 对比表一致
+- Typestate view（`EmptySlot`/`ActiveProc`/`ExitingProc`）与文档 §6.1.2 一致
+- `vm_isokendpt()` 三重检查与文档 §6.2.2 一致
+- `AclState` 三态 enum 与文档 §4.1.2 一致
 
-**问题**: §3.2.6 vm_bytecopies 字段详解中：
-- 类型描述混合 C/Rust：`int（C，32-bit）/ u64（Rust，64-bit）`
-- 包含 "类型差异说明" 段落解释 Rust 为何用 u64
-- 包含 Rust 代码片段 `#[cfg(feature = "vmstats")] pub byte_copies: u64`
-- 常量编译说明混合 C/Rust：`VMSTATS（C）或 vmstats feature（Rust）`
+### 未修复项（P2，记录备查）
 
-**规则**: Ch3（C 源码分析）不得包含 Rust 相关内容。
-
-**修改**:
-- 类型描述改为纯 C：`int（仅在 VMSTATS 启用时存在）`
-- 删除 "类型差异说明" 段落
-- 删除 Rust 代码片段
-- 常量编译说明改为纯 C 描述
-- 添加一句 Rust 差异摘要 + 指向 §5.1 的交叉引用
-
----
-
-## P1 修复
-
-### 4. Ch5 `clear()` 对比表缺少 `map_free_proc()` 行
-
-**问题**: Minix3 `free_proc()` 调用了 `map_free_proc()` 释放映射页（exit.c:35），但对比表中没有对应行。Rust 的 `vm_regions_avl.clear()` 实际合并了 `map_free_proc()` + `region_init()` 两个操作。
-
-**修改**: 在对比表中添加 "映射页释放" 行：`map_free_proc()` → `—` → `vm_regions_avl.clear()` → ✅
-
-### 5. Rust 代码 `write_page_table_mappings()` 硬编码 PAGE_SIZE
-
-**问题**: `vmproc_handle.rs:356` 使用 `const PAGE_SIZE: u64 = 4096;` 硬编码页大小，违反硬件抽象原则。应通过 `Paging` trait 的关联常量获取。
-
-**修改**: 改为 `const PAGE_SIZE: u64 = <PageTable as Paging>::PAGE_SIZE as u64;`
-
----
-
-## 未修改项（记录备查）
-
-- **Ch2 结构**: 当前 Ch2 为"背景与约束"而非标准结构的"C 源码分析"。内容上与 Ch1 有重叠，但未做大规模重构，仅修复了 Rust 内容违规。
-- **Ch6 生命周期与状态机**: 内容详实，typestate view 设计与 Rust 代码一致，无需修改。
-- **Ch7 测试与验证**: 覆盖了构造、字段访问、状态标志、Drop、clear()、Minix3 行为对比等维度，无需修改。
+1. 文档中 `fork.c:41-44` 的 `vm_isokendpt` 检查代码片段省略了 `printf` 和 `SANITYCHECK`，这是合理的简化，无需修改
+2. 文档 §5.3 `clear()` 注释说 "Corresponds to Minix3's `free_proc()` + `clear_proc()`"，而 Rust 代码注释说 "Corresponds to Minix3's `acl_clear()` + `free_proc()` + `clear_proc()`"，后者更精确（因为 `clear_proc()` 内部调用了 `acl_clear()`），但语义等价，无需修改
