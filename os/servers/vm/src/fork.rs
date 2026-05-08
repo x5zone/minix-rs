@@ -5,6 +5,7 @@
 //! Corresponds to Minix3's `do_fork()` in `fork.c`.
 
 use minix_types::{Endpoint, UserSlot, VirBytes};
+use core::ptr::NonNull;
 use crate::vmproc::{VmProcTable, VmFlags};
 use crate::region::{VirRegion, VrFlags, PhysRegion, PhysBlock};
 use alloc::boxed::Box;
@@ -190,17 +191,20 @@ fn clone_region_for_fork(original: &VirRegion) -> VirRegion {
     new_region
 }
 
-/// Links physical blocks by increasing their reference counts.
+/// Links physical blocks by inserting into PhysBlock linked lists.
+///
+/// Corresponds to Minix3's `pb_link()` for each PhysRegion.
+/// Properly sets parent, next_ph_list, and updates first_region.
 ///
 /// # Safety
-/// Caller must ensure all PhysRegions have valid `ph` pointers.
+/// Caller must ensure all PhysRegions have valid `ph` pointers and
+/// the VirRegion reference remains valid.
 unsafe fn link_phys_blocks(region: &mut VirRegion) {
+    let parent_ptr = NonNull::from(&*region);
     for phys_opt in region.physblocks.iter_mut() {
         if let Some(phys) = phys_opt.as_mut() {
             if let Some(block_ptr) = phys.ph {
-                unsafe {
-                    (*block_ptr.as_ptr()).add_ref();
-                }
+                phys.link_to_block(block_ptr, parent_ptr);
             }
         }
     }
