@@ -769,6 +769,8 @@ impl Default for VrParam {
 | 默认值 | 需手动初始化 | `Default` trait | 默认为 `Direct { phys: MAP_NONE }` |
 | 内存布局 | 所有字段共享内存 | 变体独占 + 判别式 | Rust enum 略大，但类型安全 |
 
+> **方案四标注**：`VrParam::Direct { phys: PhysBytes }` 标记直接物理映射（设备寄存器等）。在 Minix3 中，建立 Direct 映射需要通过 `createpde` 临时映射窗口操作目标进程的页表；在方案四中，物理页已有 stable VA（`vm_phys_to_virt()`），Direct 映射的建立更简单——VM 直接通过 `vm_phys_to_virt(pt_phys)` 写入页表项即可。`VrParam::Direct` 的语义不变（仍然是"这个区域映射到固定物理地址"），但建立映射的实现被简化了。
+
 ### 3.4 physblocks 数组设计
 
 **C 实现**: 指针数组

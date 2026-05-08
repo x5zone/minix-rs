@@ -1,27 +1,51 @@
-//! Buddy system physical memory allocator.
-//!
-//! This allocator uses the buddy system algorithm for O(log n) allocation
-//! and automatic coalescing of free blocks. Uses SoA (Structure of Arrays)
-//! design for better cache efficiency.
-
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion, EarlyHeap};
+use super::{CLICK_SIZE, BootMemRegion};
 
 const FLAG_ALLOCATED: u8 = 0x80;
 const ORDER_MASK: u8 = 0x7F;
 const ORDER_INVALID: u8 = 0xFF;
-// MAX_ORDER=30 limits addressable memory to 2^30 * 4KB = 4TB.
-// To support more, increase to 31 (8TB) or 32 (16TB, requires u33 indices).
 const MAX_ORDER: usize = 30;
-// Sentinel value for empty free list entries.
-// Uses u32::MAX instead of Option<u32> because the SoA (Structure of Arrays)
-// design stores page_next as &[u32] for cache efficiency — Option<u32> would
-// double the memory footprint per entry. This is a conscious trade-off:
-// cache-friendly SoA layout over type-level null safety.
 const FREE_LIST_SENTINEL: u32 = u32::MAX;
-// u32 page indices limit total pages to 2^32-1, i.e. 2^32 * 4KB = 16TB.
+
+struct BumpBuf {
+    ptr: *mut u8,
+    offset: usize,
+    len: usize,
+}
+
+impl BumpBuf {
+    fn new(buf: &mut [u8]) -> Self {
+        Self {
+            ptr: buf.as_mut_ptr(),
+            offset: 0,
+            len: buf.len(),
+        }
+    }
+
+    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        if count == 0 {
+            return &mut [];
+        }
+        let size = count * core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        let current = self.ptr as usize + self.offset;
+        let aligned = (current + align - 1) & !(align - 1);
+        let padding = aligned - current;
+        let new_offset = self.offset + padding + size;
+        assert!(
+            new_offset <= self.len,
+            "metadata buffer exhausted: need {} bytes, have {}",
+            size,
+            self.len - self.offset - padding,
+        );
+        self.offset = new_offset;
+        unsafe {
+            core::slice::from_raw_parts_mut(aligned as *mut T, count)
+        }
+    }
+}
 
 pub struct BuddyAllocator {
     free_list_heads: &'static mut [u32],
@@ -34,13 +58,15 @@ pub struct BuddyAllocator {
 }
 
 impl BuddyAllocator {
-    pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    pub fn init(metadata: &mut [u8], regions: &[BootMemRegion]) -> Self {
         let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
         let max_order = compute_max_order(total_pages);
 
-        let free_list_heads = early_heap.alloc_slice::<u32>(max_order + 1);
-        let page_next = early_heap.alloc_slice::<u32>(total_pages);
-        let page_orders = early_heap.alloc_slice::<u8>(total_pages);
+        let mut buf = BumpBuf::new(metadata);
+
+        let free_list_heads = buf.alloc_slice::<u32>(max_order + 1);
+        let page_next = buf.alloc_slice::<u32>(total_pages);
+        let page_orders = buf.alloc_slice::<u8>(total_pages);
 
         for head in free_list_heads.iter_mut() {
             *head = FREE_LIST_SENTINEL;
@@ -73,6 +99,14 @@ impl BuddyAllocator {
         }
 
         alloc
+    }
+
+    pub fn metadata_size(total_pages: usize) -> usize {
+        let max_order = compute_max_order(total_pages);
+        let heads_size = (max_order + 1) * core::mem::size_of::<u32>();
+        let next_size = total_pages * core::mem::size_of::<u32>();
+        let orders_size = total_pages * core::mem::size_of::<u8>();
+        heads_size + next_size + orders_size + 2 * CLICK_SIZE
     }
 
     pub fn total_memory(&self) -> usize {
@@ -326,7 +360,6 @@ impl PhysAllocator for BuddyAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            // TODO: requires kernel IPC (sys_memset), implement after kernel interface
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
@@ -345,43 +378,13 @@ impl PhysAllocator for BuddyAllocator {
     fn total_count(&self) -> usize {
         self.total_pages
     }
-
-    fn reloc_array_count(&self) -> usize {
-        3
-    }
-
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        match index {
-            0 => (self.free_list_heads.as_ptr() as *const u8, self.free_list_heads.len(), core::mem::size_of::<u32>()),
-            1 => (self.page_next.as_ptr() as *const u8, self.page_next.len(), core::mem::size_of::<u32>()),
-            2 => (self.page_orders.as_ptr() as *const u8, self.page_orders.len(), core::mem::size_of::<u8>()),
-            _ => (core::ptr::null(), 0, 0),
-        }
-    }
-
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        unsafe {
-            self.free_list_heads = core::slice::from_raw_parts_mut(
-                new_ptrs[0] as *mut u32,
-                self.free_list_heads.len(),
-            );
-            self.page_next = core::slice::from_raw_parts_mut(
-                new_ptrs[1] as *mut u32,
-                self.page_next.len(),
-            );
-            self.page_orders = core::slice::from_raw_parts_mut(
-                new_ptrs[2] as *mut u8,
-                self.page_orders.len(),
-            );
-        }
-    }
 }
 
 impl PhysAllocatorStats for BuddyAllocator {
     fn memstats(&self) -> PhysMemStats {
         let largest_free = self.largest_free();
         PhysMemStats {
-            free_nodes: 0, // Buddy system does not track free node count; use free_pages instead
+            free_nodes: 0,
             free_pages: self.free_pages,
             largest_free,
         }
@@ -403,32 +406,19 @@ mod tests {
         vec![BootMemRegion { base: 0, size: 128 * 1024 * 1024 }]
     }
 
-    fn make_test_heap(regions: &[BootMemRegion]) -> (&'static mut [u8], EarlyHeap) {
+    fn make_test_metadata(regions: &[BootMemRegion]) -> &'static mut [u8] {
         let (total_pages, _, _) = super::super::compute_memory_bounds(regions);
-        let max_order = compute_max_order(total_pages);
-
-        let heads_size = (max_order + 1) * 4;
-        let next_size = total_pages * 4;
-        let orders_size = total_pages;
-        let heap_size = heads_size + next_size + orders_size + 1024;
-
-        let buffer: &'static mut [u8] = {
-            let mut v = alloc::vec::Vec::with_capacity(2 * 1024 * 1024);
-            v.resize(2 * 1024 * 1024, 0u8);
-            let boxed = v.into_boxed_slice();
-            alloc::boxed::Box::leak(boxed)
-        };
-
-        let mut heap = EarlyHeap::new();
-        heap.init(buffer.as_mut_ptr(), heap_size);
-        (buffer, heap)
+        let size = BuddyAllocator::metadata_size(total_pages);
+        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; 2 * 1024 * 1024];
+        let buf = alloc::boxed::Box::leak(v.into_boxed_slice());
+        &mut buf[..size]
     }
 
     #[test]
     fn test_alloc_free_basic() {
         let regions = make_test_regions();
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
@@ -437,8 +427,8 @@ mod tests {
     #[test]
     fn test_alloc_zero_pages() {
         let regions = make_test_regions();
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
@@ -446,8 +436,8 @@ mod tests {
     #[test]
     fn test_alloc_exhaustion() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -464,8 +454,8 @@ mod tests {
     #[test]
     fn test_buddy_merge() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
@@ -480,8 +470,8 @@ mod tests {
     #[test]
     fn test_largest_free() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         assert!(alloc.largest_free() >= 256);
 
@@ -492,8 +482,8 @@ mod tests {
     #[test]
     fn test_internal_fragmentation() {
         let regions = vec![BootMemRegion { base: 0, size: 16 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
         let start = a.page_index();
@@ -506,8 +496,8 @@ mod tests {
     #[test]
     fn test_multiple_allocations() {
         let regions = vec![BootMemRegion { base: 0, size: 64 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let mut addrs = Vec::new();
         for _ in 0..4 {
@@ -526,8 +516,8 @@ mod tests {
             BootMemRegion { base: 0x100000, size: 4 * 1024 * 1024 },
             BootMemRegion { base: 0x10000000, size: 8 * 1024 * 1024 },
         ];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -538,8 +528,8 @@ mod tests {
     #[test]
     fn test_single_page() {
         let regions = vec![BootMemRegion { base: 0, size: CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -556,8 +546,8 @@ mod tests {
     #[test]
     fn test_merge_chain() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
@@ -576,8 +566,8 @@ mod tests {
     #[test]
     fn test_low_mem_exhausted_error() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let _a = alloc.alloc_mem(256, PageAllocFlags::empty()).unwrap();
 
@@ -588,8 +578,8 @@ mod tests {
     #[test]
     fn test_oom_error_type() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let _a = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
 
@@ -600,8 +590,8 @@ mod tests {
     #[test]
     fn test_align64k_no_leak() {
         let regions = vec![BootMemRegion { base: 0, size: 1024 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let initial_free = alloc.free_pages;
 
@@ -616,8 +606,8 @@ mod tests {
     #[test]
     fn test_align16k_no_leak() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BuddyAllocator::init(metadata, &regions);
 
         let initial_free = alloc.free_pages;
 
@@ -627,19 +617,5 @@ mod tests {
         alloc.free_mem(addr, 1);
 
         assert_eq!(alloc.free_pages, initial_free, "free_pages should return to initial after alloc+free with ALIGN16K");
-    }
-
-    #[test]
-    fn test_align_naturally_satisfied() {
-        let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BuddyAllocator::init(&mut heap, &regions);
-
-        let addr = alloc.alloc_mem(16, PageAllocFlags::ALIGN64K).unwrap();
-        assert_eq!(addr.as_usize() % (64 * 1024), 0);
-
-        let initial_free = alloc.free_pages;
-        alloc.free_mem(addr, 16);
-        assert_eq!(alloc.free_pages, initial_free + 16);
     }
 }

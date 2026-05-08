@@ -1186,3 +1186,5 @@ if(pt_bind(&vmp->vm_pt, vmp) != OK)  // 2. 绑定页表到 MMU
 - [00-vm-overview.md](00-vm-overview.md) - VM 整体架构与分布式一致性分析
 - [03-acl.md](03-acl.md) - 访问控制
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构（pt_dir_phys 等）
+
+> **方案四确认**：进程表管理（slot 分配、typestate view、地址稳定性）与 direct map 无关，无需修改。`vm_pt` 字段语义不变（见 01-vmproc-struct.md），进程表的操作逻辑不受影响。

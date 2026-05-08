@@ -280,6 +280,25 @@ struct phys_block *pb = pb_new(new_page);
 /* 新块独立，refcount = 0，等待链接 */
 ```
 
+#### 方案四视角：CoW 复制的简化
+
+> **方案四标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
+
+```rust
+/* 场景 3: CoW 复制（方案四） */
+let new_phys = alloc_phys(1, flags)?;
+unsafe {
+    core::ptr::copy_nonoverlapping(
+        vm_phys_to_virt(old_phys) as *const u8,
+        vm_phys_to_virt(new_phys) as *mut u8,
+        4096,
+    );
+}
+let pb = PhysBlock::new(new_phys);
+```
+
+`sys_abscopy` 的存在意味着 VM 不信任自己能直接操作物理内存——需要内核作为中介。Direct map 使 VM 成为物理内存的直接操作者，不再需要"委托内核复制"。读者应理解：这是 VM 从"受信任的请求者"到"物理内存的主人"的角色转变。详见 [15-cow-mechanism.md](15-cow-mechanism.md) §2.2.1。
+
 **内存分配细节**
 
 ```
@@ -823,6 +842,8 @@ Minix3 中 `pb_link()` 和 `pb_unreferenced()` 是独立函数，操作涉及 `P
 | `u8_t refcount` | `refcount: u8` | 普通 u8，非 Cell |
 | `u8_t flags` | `flags: PhysBlockFlags` | bitflags 宏生成 |
 | `u32_t seencount` | 不实现 | 仅调试用 |
+
+> **方案四标注**：PhysBlock 的 `phys: u64` 字段存储物理地址。在方案三中，访问该物理页的内容需要通过 PtRegion 分配 VA 并建立映射；在方案四中，`vm_phys_to_virt(phys)` 一行加法即可获得 VA。PhysBlock 本身不持有 VA——VA 总是通过 `vm_phys_to_virt()` 按需计算，与 PhysBlock 的生命周期无关。这是 direct map 统一性的又一个例证：物理地址是唯一的"锚点"，VA 是物理地址的派生值。
 
 **PhysBlock 的核心方法**
 

@@ -1886,8 +1886,9 @@ use core::alloc::{GlobalAlloc, Layout};
 
 /// VM 的全局分配器
 ///
-/// 底层通过 extern "Rust" 链接至 __vm_global_alloc / __vm_global_dealloc，
-/// 后者调用 C 的 malloc/free（当前阶段），未来可替换为对接 PhysAllocator。
+/// 方案四（Direct Map）：底层通过 alloc_phys() + vm_phys_to_virt() 实现全程用户态分配。
+/// 分配路径：GlobalAlloc → alloc_phys() → vm_phys_to_virt() → 返回 VA。
+/// 全程用户态，不经过内核，不依赖 C 运行时。
 pub(crate) struct VmAllocator;
 
 unsafe impl GlobalAlloc for VmAllocator {
@@ -1912,28 +1913,56 @@ static GLOBAL: VmAllocator = VmAllocator;
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 unsafe fn __vm_global_alloc(layout: Layout) -> *mut u8 {
-    unsafe extern "C" {
-        fn malloc(size: usize) -> *mut u8;
-    }
-    unsafe { malloc(layout.size()) }
+    use crate::alloc_page::vm_phys_to_virt;
+    use crate::phys_alloc::global_phys_alloc;
+
+    let pages = (layout.size() + PAGE_SIZE - 1) / PAGE_SIZE;
+    let phys = global_phys_alloc()
+        .alloc_mem(pages, PageAllocFlags::empty())
+        .expect("VM: out of physical memory");
+    vm_phys_to_virt(phys).0 as *mut u8
 }
 
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 unsafe fn __vm_global_dealloc(ptr: *mut u8, _layout: Layout) {
-    unsafe extern "C" {
-        fn free(ptr: *mut u8);
-    }
-    unsafe { free(ptr) }
+    // TODO: 实现 free_phys — 将虚拟地址反算为物理地址，归还给 PhysAllocator
+    // 当前阶段：VM 单线程运行，内存不回收，待 buddy allocator 实现后补全
 }
 ```
 
 **关键设计决策**：
 
-- **为什么当前阶段用 malloc/free？** VM 是内存管理服务器，物理页最终由自己管理。当前阶段先通过 C 的 malloc/free 跑通系统，未来 `__vm_global_alloc`/`__vm_global_dealloc` 可替换为对接 PhysAllocator，实现全程用户态分配。
-- **为什么不用 jemalloc/mimalloc？** 当前阶段使用系统默认分配器即可。关于分配器的选型分析，详见附录 A。
+- **为什么用 alloc_phys + vm_phys_to_virt？** VM 是内存管理服务器——它自己就是物理内存的来源。GlobalAlloc 对接 `vm_phys_to_virt()` 使 VM 的分配链路完全自包含：请求内存 → 从自己的物理池分配 → 通过自己的 direct map 访问。这不是"优化了分配路径"，而是 **"VM 终于成为了自己内存的主人"**。
+
+- **为什么不再用 malloc/free？** 方案三阶段用 C 的 malloc/free 是因为 VM 还没有自己的 VA 获取机制（PtRegion 仅服务于页表页）。Direct map 出现后，`vm_phys_to_virt()` 统一了所有物理页的 VA 获取，malloc/free 的间接依赖不再必要。
+
+- **与 05-vm-allocpage.md 的呼应**：05 中 `alloc_page()` 简化为 `alloc_phys() → vm_phys_to_virt()`，08 的 GlobalAlloc 是同一个模式的另一个实例。两者共享同一个物理分配器和同一个 direct map——`vm_phys_to_virt()` 成为所有"物理页 → 虚拟地址"转换的唯一路径。
+
+- **为什么不用 jemalloc/mimalloc？** 当前阶段使用简单页分配器即可。关于分配器的选型分析，详见附录 A。
+
 - **可替换性**：通过 `#[global_allocator]` 机制，替换分配器只需修改一处代码，无需改动任何业务逻辑。
+
 - **测试隔离**：`#[cfg_attr(not(test), global_allocator)]` 确保测试时使用标准分配器，避免循环依赖。
+
+- **dealloc 的当前状态**：`__vm_global_dealloc` 暂未实现物理页回收。VM 单线程运行，初始化阶段分配的内存不会释放。待 buddy allocator 实现后，可通过 `vm_virt_to_phys()` 反算物理地址，调用 `free_mem()` 归还。
+
+#### 方案四视角：Slab 元数据访问方式
+
+> **方案四标注**：Direct Map 方案下，slab 元数据的访问从"需要先映射到 VA"变为"物理页天然有 VA"。
+
+Minix3 的 slab 元数据访问需要经过 `vm_pagelock` 解锁/锁定机制（详见 §2.1.5 MEMPROTECT）。这个机制的核心开销不在 `vm_pagelock` 本身，而在于它需要 `pt_writemap` 修改页表项——而 `pt_writemap` 内部需要通过 `createpde` 临时映射窗口来操作页表页。
+
+Direct Map 方案下，slab 元数据的访问路径简化为：
+
+```
+Minix3:  slab 元数据在 VM 地址空间 → vm_pagelock 解锁 → pt_writemap → createpde → 修改页表项 → TLB 刷新
+方案四:  slab 元数据在 direct map 中 → 直接读写（vm_phys_to_virt 已提供 VA）
+```
+
+但更深层的变化是：Minix3 的 MEMPROTECT 机制（`vm_pagelock`）在 direct map 下需要重新审视。Direct map 的 PTE 权限是 U/S=1（用户态可访问），VM 可以直接读写所有物理页。如果需要 slab 元数据的写保护，不能再用 `vm_pagelock`（它修改的是 VM 地址空间的 PTE，而 direct map 的 PTE 是共享的），需要考虑其他机制（如 mprotect on direct map 范围，或软件层面的写保护）。
+
+这是 `vm_phys_to_virt()` 统一性的一个具体例证——slab 元数据和其他物理页一样，通过同一个 direct map 访问，不再有特殊的映射路径。
 
 ### 4.2 分配统计与可观测性
 

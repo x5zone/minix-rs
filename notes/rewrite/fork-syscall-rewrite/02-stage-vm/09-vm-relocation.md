@@ -1,8 +1,29 @@
-# 09-vm-relocation: 初始化数据搬迁
+# 09-vm-relocation: VM 自举的终点
 
 > **分类**: VM私有
 > **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
 > **说明**: Bootstrap 阶段结束后，将预留区域中的数据搬迁到堆上
+
+> **里程碑定位**：09 是 VM 自举叙事的高潮。从 04 到 09，VM 经历了从"内核馈赠 1GB"到"完全自主管理所有物理内存"的完整自举过程：
+>
+> | 文档 | VM 获得的能力 | 前提 |
+> |------|-------------|------|
+> | 04 | 物理内存管理（bitmap allocator） | kernel 传过来的 1GB direct map |
+> | 05 | 页分配（alloc_phys + vm_phys_to_virt） | bitmap allocator |
+> | 06 | 初始页表（4 页 + 1GB direct map） | kernel 建立 |
+> | 07 | 页表操作（双视图模型） | direct map |
+> | 08 | 堆分配（GlobalAlloc 对接 vm_phys_to_virt） | alloc crate 可用 |
+> | **09** | **完全建模所有物理内存** | **自举终点** |
+>
+> **09 之前**：VM 依赖 kernel 传过来的初始 1GB direct map，bitmap 元数据在启动区
+> **09 之后**：direct map 覆盖全部物理内存，分配器元数据在堆上，VM 完全自主
+>
+> 09 的三个阶段对应 VM 自举的三个跃迁：
+> - **Phase 1**（1GB 足以启动世界）：不是"临时方案"，而是"已经够用"
+> - **Phase 2**（扩展到覆盖全部物理内存）：不是"补救"，而是"扩展"
+> - **Phase 3**（可选的分配器策略升级）：不是"必须"，而是"策略选择"
+>
+> 从此 VM 不再需要内核的特殊帮助。
 
 ---
 
@@ -37,6 +58,16 @@ Bootstrap 阶段                    Normal 阶段
 ```
 
 **搬迁不是简单的 memcpy**。搬迁后的数据位于新的虚拟地址，所有指向旧地址的引用必须更新。如果管理结构内部包含指针（如链表头指向节点），搬迁后这些指针会失效，必须逐一修正。
+
+#### 方案四视角：搬迁被大幅简化
+
+> **方案四标注**：在 Direct Map 方案下，搬迁的概念被大幅简化。
+
+方案三中，PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。方案四中简化为：`alloc_phys() → vm_phys_to_virt() → memcpy → 更新指针`。
+
+关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `ensure_tables`），方案四中物理页天然拥有 stable VA（`vm_phys_to_virt()`），VA 分配这个步骤消失了。
+
+搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 05-vm-allocpage.md 中范式转变的又一个例证。
 
 ### 1.2 为什么需要搬迁
 
@@ -74,6 +105,8 @@ Bootstrap 阶段                    Normal 阶段
 
 ### 1.4 搬迁在初始化时序中的位置
 
+#### Minix3 时序
+
 ```
 T0: Kernel 启动 VM 进程
     ├── 加载 VM 的 ELF，映射 BSS 段（含 static_sparepages）
@@ -103,6 +136,50 @@ T1: main() → init_vm()
 
 T5: 主循环开始，所有分配走动态路径
 ```
+
+#### 方案四（Direct Map）时序
+
+> **方案四标注**：Direct Map 方案下，搬迁被 3 阶段启动替代。
+
+```
+T0: Kernel 启动 VM 进程
+    ├── 建立初始页表（4 页 + 1GB direct map）
+    ├── 映射 VM 代码/数据段
+    └── 传递 boot_info（含物理内存范围 + 可用页列表）
+
+T1: main() → init_vm()
+    │
+    ├── T2: Phase 1 — Bootstrap
+    │       → vm_phys_to_virt() 可用（前 1GB）
+    │       → 读取 boot_info，初始化 bitmap allocator
+    │       → bitmap 元数据通过 vm_phys_to_virt() 访问
+    │       → alloc_phys() + vm_phys_to_virt() 可用
+    │
+    ├── T3: Phase 2 — Direct Map 扩展
+    │       → 如果物理内存 ≤ 1GB：跳过
+    │       → 如果物理内存 > 1GB：
+    │       │   bitmap.alloc_phys() 分配新页表页
+    │       │   vm_phys_to_virt() 直接读写新页表页
+    │       │   扩展 direct map 覆盖全部物理内存
+    │       → vm_phys_to_virt() 覆盖全部物理内存
+    │
+    ├── T4: Phase 3 — 分配器迁移（可选）
+    │       → 如果策略决定：bitmap → buddy
+    │       → buddy 元数据通过 vm_phys_to_virt() 访问
+    │       → 无需搬迁——物理页天然拥有 stable VA
+    │
+    ├── T5: GlobalAlloc 对接 vm_phys_to_virt()
+    │       → alloc crate 完整可用
+    │       → VM 堆完全可用
+    │
+    └── init_vm() 返回
+            → VM 完全自主管理所有物理内存
+
+T6: 主循环开始
+    → VM 不再需要内核的特殊帮助
+```
+
+**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。方案四的 3 阶段启动是"显式的"——每个阶段有明确的职责和边界，且 Phase 2 的 direct map 扩展替代了 Minix3 的搬迁逻辑。
 
 ### 1.5 核心边界条件
 
@@ -1150,6 +1227,30 @@ impl<O: PtOps> PtRegion<O> {
 }
 ```
 
+#### 方案四视角：搬迁逻辑的简化
+
+> **方案四标注**：Direct Map 方案下，PtRegion 搬迁逻辑被大幅简化。
+
+方案三的搬迁逻辑需要 3 步间接操作：
+
+```
+1. alloc_phys() + alloc_pt_page() + write_data_pte()  → 分配物理页 + 分配 VA + 建立映射
+2. copy_nonoverlapping(old_ptr, new_virt, size)        → 复制数据
+3. update_relocated_arrays(&new_ptrs)                  → 更新指针
+```
+
+方案四的搬迁逻辑只需 2 步：
+
+```
+1. alloc_phys() + vm_phys_to_virt()  → 分配物理页 + 物理页天然有 VA
+2. copy_nonoverlapping(old_ptr, vm_phys_to_virt(new_phys), size) → 复制数据
+3. update_relocated_arrays(&new_ptrs) → 更新指针
+```
+
+关键区别：方案三的步骤 1 需要 `alloc_pt_page()` 从 PtRegion 分配 VA 并 `write_data_pte()` 建立映射（可能触发 `ensure_tables`），方案四中 `vm_phys_to_virt()` 一步完成。`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用消失了——搬迁不再依赖 PtRegion 的 VA 管理能力。
+
+搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 §1.1 和 05-vm-allocpage.md 中范式转变的又一个例证。
+
 ### 4.3 PhysAllocator trait 的搬迁接口
 
 搬迁接口使用分步查询设计（`reloc_array_count()` + `reloc_array_info()`），而非返回 `Vec`。这避免了搬迁期间对堆分配器的依赖（搬迁时 alloc 可能尚未就绪）：
@@ -1276,6 +1377,28 @@ fn init_vm(boot_info: BootInfo) -> VmPageAllocator<Normal, RealPtOps> {
     alloc
 }
 ```
+
+#### 方案四视角：ReservedRegion 的简化
+
+> **方案四标注**：Direct Map 方案下，ReservedRegion 简化为纯物理页预留列表，VA 分配相关逻辑不再需要。
+
+方案三的 `ReservedRegion` 承担双重职责：
+1. **物理页预留**：从 kernel 传递的 boot_info 中提取预留的物理页范围
+2. **VA 分配**：为这些物理页分配虚拟地址（通过 PtRegion 的 `alloc_pt_page()`），建立映射
+
+方案四的 `ReservedRegion` 仅保留第 1 项职责——物理页预留。物理页的 VA 通过 `vm_phys_to_virt()` 天然获得，不需要额外的 VA 分配步骤。
+
+```rust
+// 方案三
+let reserved = ReservedRegion::from_boot_info(&boot_info);
+// reserved 内部需要 alloc_pt_page() + write_data_pte() 为每个物理页建立 VA 映射
+
+// 方案四
+let reserved = ReservedRegion::from_boot_info(&boot_info);
+// reserved 仅记录物理页范围，VA 通过 vm_phys_to_virt(phys) 直接获取
+```
+
+这与 §4.2 的搬迁简化是同一个模式——VA 分配步骤消失了。ReservedRegion 从"物理页 + VA 管理"退化为"纯物理页列表"，`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用不再出现。
 
 ---
 

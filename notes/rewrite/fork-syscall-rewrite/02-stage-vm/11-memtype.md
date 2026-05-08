@@ -1754,6 +1754,12 @@ int mem_cow(struct vir_region *region,
    - 类型改为 `mem_type_anon`
 4. 返回 OK，进程继续写入
 
+> **方案四标注**：CoW 中的 `sys_abscopy` 在方案四下被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。这不是性能优化，而是概念消除——`sys_abscopy` 的存在前提是 VM 无法直接访问物理内存，direct map 消除了这个前提，`sys_abscopy` 就没有存在的理由了。
+>
+> 关键理解：Minix3 内核不是独立线程。VM 发起 `sys_abscopy` 时，执行流程是 VM(ring 3) → syscall → 内核(ring 0，仍在 VM 进程上下文中) → memcpy → 返回 VM(ring 3)。内核的"执行"就是 VM 自己在 ring 0 的执行，VM 仍然被阻塞，没有并行性优势。因此 `sys_abscopy` 相比 VM 直接 memcpy 多了 ring 切换开销（~100-200 cycles），没有任何补偿收益。
+>
+> 这与 15-cow-mechanism.md §2.2.1 的 `mem_cow()` 简化是同一个范式转变——VM 从"委托内核复制"变为"自己直接复制"。
+
 **anon_pagefault 中的 CoW 判断**
 
 ```c
@@ -4540,6 +4546,14 @@ pub fn alloc_dma_buffer(
     Ok((vaddr, phys))
 }
 ```
+
+> **方案四标注**：`alloc_virtual_space` 是为进程分配虚拟地址空间（mmap 等），属于"进程地址空间管理"层次，不受 direct map 影响。但 `arch::map_page()` 内部操作页表时，在 direct map 下通过 `vm_phys_to_virt()` 直接写入页表项，无需临时映射窗口。
+>
+> 读者应区分两个不同层次：
+> - **进程地址空间管理**（`alloc_virtual_space`）：为进程分配 VA，建立 VA→PA 映射。这是 VM 的核心职责，direct map 不改变这个层次。
+> - **VM 物理页访问**（`vm_phys_to_virt`）：VM 操作页表页、物理页等。这是 VM 的内部实现，direct map 简化了这个层次。
+>
+> 两个层次的区分是理解 direct map 影响范围的关键：direct map 简化的是 VM 的内部实现（如何访问物理页），而不是 VM 的外部接口（如何管理进程地址空间）。
 
 **驱动 API 总结**
 

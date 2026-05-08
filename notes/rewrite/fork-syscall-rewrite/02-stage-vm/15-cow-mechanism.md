@@ -226,6 +226,39 @@ int mem_cow(struct vir_region *region,
 }
 ```
 
+#### 方案四（Direct Map）实现
+
+> **方案四标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
+
+```rust
+fn mem_cow(region: &mut VirRegion, ph: &mut PhysRegion) -> Result<(), VmError> {
+    let old_phys = ph.phys_block.phys.ok_or(VmError::NoPhysBlock)?;
+
+    let new_phys = global_phys_alloc()
+        .alloc_mem(1, PageAllocFlags::empty())
+        .ok_or(VmError::NoMemory)?;
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            vm_phys_to_virt(old_phys) as *const u8,
+            vm_phys_to_virt(new_phys) as *mut u8,
+            4096,
+        );
+    }
+
+    let new_pb = PhysBlock::new(new_phys);
+    pb_unreferenced(region, ph, false);
+    pb_link(ph, new_pb, ph.offset, region);
+    ph.memtype = MemType::Anon;
+
+    Ok(())
+}
+```
+
+**关键区别**：Minix3 的 `sys_abscopy` 是内核系统调用——VM 无法直接访问物理内存，必须请求内核代劳。方案四中 VM 拥有 direct map，`vm_phys_to_virt()` 使物理页直接可操作，复制变成一行 `copy_nonoverlapping`。CoW 逻辑的简化不是"去掉了系统调用开销"，而是 **"VM 不再需要内核作为物理内存访问的中介"**——这与 07 的双视图模型、08 的 GlobalAlloc 自包含是同一个叙事。
+
+> **方案四深入分析——`sys_abscopy` 为什么存在**：Minix3 的 VM 运行在 ring 3，页表中没有映射物理内存。当 VM 需要复制一个物理页时，它无法通过任何虚拟地址访问源页和目标页——`sys_abscopy` 是唯一的出路。内核运行在 ring 0，拥有 `pagedir_mappings` 登记册，可以通过 `kmemptr_to_virt()` 将物理地址转换为虚拟地址，然后执行 memcpy。所以 `sys_abscopy` 的本质是 **VM 借用内核的地址空间来访问物理内存**。Direct map 使 VM 自己拥有了物理内存的完整映射，"借用"就不再需要了。注意：Minix3 内核不是独立线程，`sys_abscopy` 的执行就是 VM 自己在 ring 0 的执行，没有并行性优势，只有 ring 切换开销。
+
 **执行流程**
 
 1. **确保新页已分配**: `if (new_page == MAP_NONE)` 则调用 `alloc_mem(1, flags)` 分配。如果调用者已预分配（如 `anon_pagefault`），跳过此步骤
@@ -247,7 +280,7 @@ int mem_cow(struct vir_region *region,
 
 1. **`pb_unreferenced(region, ph, 0)` 的 `rm=0` 参数**: rm=0 表示不从 vir_region 移除 phys_region，因为 phys_region 还要继续使用，只是换一个 pb。如果 rm=1，physblock_set 会清除引用
 2. **memtype 变为匿名**: CoW 后总是 `mem_type_anon`，因为私有副本不再与文件关联，修改不会写回原文件，后续页错误由 `anon_pagefault` 处理
-3. **`sys_abscopy` 系统调用**: 内核提供的物理内存复制接口，直接操作物理地址，无需映射到虚拟地址空间，内核可使用优化的复制例程
+3. **`sys_abscopy` 系统调用**：内核提供的物理内存复制接口，直接操作物理地址，无需映射到虚拟地址空间，内核可使用优化的复制例程。**方案四中不再需要**：VM 拥有 direct map，`vm_phys_to_virt()` 使物理页直接可操作，`sys_abscopy` 的角色被 `copy_nonoverlapping` 替代。`sys_abscopy` 存在的根本原因是 VM 无法直接访问物理内存——direct map 消除了这个限制
 4. **错误处理**: ENOMEM 无法分配新页；EFAULT 复制失败（不应该发生）。失败时需要释放已分配的资源
 
 ---
@@ -982,12 +1015,12 @@ impl PhysBlock {
         let new_pb = pb_alloc(new_page).ok_or(ENOMEM)?;
         
         // 2. 复制数据
+        // 方案三: sys_abscopy(pr.ph.unwrap().as_ref().phys.0, new_page.0, VM_PAGE_SIZE)?;
+        // 方案四: vm_phys_to_virt() + copy_nonoverlapping()
         if pr.ph.unwrap().as_ref().has_phys() {
-            sys_abscopy(
-                pr.ph.unwrap().as_ref().phys.0,
-                new_page.0,
-                VM_PAGE_SIZE,
-            )?;
+            let src = vm_phys_to_virt(pr.ph.unwrap().as_ref().phys) as *const u8;
+            let dst = vm_phys_to_virt(new_page) as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, VM_PAGE_SIZE);
         }
         
         // 3. 取消旧引用
@@ -1160,13 +1193,13 @@ pub fn handle_pagefault(
 /// - src 和 dst 必须是有效的物理地址
 /// - 两个地址都必须页对齐
 pub unsafe fn copy_phys_page(src: PhysBytes, dst: PhysBytes) -> Result<(), i32> {
-    // 方法 1: 使用内核系统调用
-    sys_abscopy(src.0, dst.0, VM_PAGE_SIZE)?;
+    // 方案三: 使用内核系统调用（VM 无法直接访问物理内存）
+    // sys_abscopy(src.0, dst.0, VM_PAGE_SIZE)?;
     
-    // 方法 2: 通过虚拟映射复制
-    // let src_ptr = phys_to_virt(src);
-    // let dst_ptr = phys_to_virt(dst);
-    // core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, VM_PAGE_SIZE);
+    // 方案四: 通过 direct map 直接复制（VM 拥有物理内存的完整映射）
+    let src_ptr = vm_phys_to_virt(src) as *const u8;
+    let dst_ptr = vm_phys_to_virt(dst) as *mut u8;
+    core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, VM_PAGE_SIZE);
     
     Ok(())
 }
@@ -1754,6 +1787,8 @@ mod correctness_tests {
 ```
 
 > **注意**: 在当前 Minix3 源码中，`vm_bytecopies` 仅在 fork 和 exit 时被清零，**未在 `mem_cow()` 中递增**。`mem_cow()` 使用 `sys_abscopy()` 而非 `memcpy()`。文档之前的版本声称 `mem_cow()` 中有 `vm_bytecopies += PAGE_SIZE` 和 `memcpy()` 调用，这是不准确的。该字段可能曾在早期版本中使用，但在当前代码中仅保留清零操作。
+
+> **方案四标注**：方案四下 `vm_bytecopies` 的统计逻辑不变（仍在 fork/exit 时清零），但 CoW 复制从 `sys_abscopy` 变为 `copy_nonoverlapping`。如果需要统计 CoW 复制量，可以在 `copy_phys_page()` 中递增 `vm_bytecopies += VM_PAGE_SIZE`——因为复制代码现在在 VM 进程内执行，直接访问 `vmp` 结构即可，不需要内核参与统计。
 
 **fork 时的处理**:
 - 子进程的 `vm_bytecopies` 初始化为 0（fork.c:67）

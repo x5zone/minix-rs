@@ -1,27 +1,5 @@
 #![cfg_attr(not(test), no_std)]
 
-//! Minix VM (Virtual Memory Manager)
-//!
-//! Standalone VM service process. All internal types are `pub(crate)` —
-//! VM is an independent user-space process, not a library for other crates.
-//! External processes (PM, VFS, RS) interact with VM via IPC messages,
-//! not by linking against this crate.
-//!
-//! # Architecture
-//!
-//! ```text
-//! PM ──IPC──> VM dispatcher ──> fork / exit / brk / mmap ...
-//! VFS ──IPC──>                ──> VmProcTable ──> typestate views
-//! RS ──IPC──>                 ──> PageTable / Region / PhysMem
-//! ```
-//!
-//! # State Machine
-//!
-//! ```text
-//! EmptySlot ──[activate]──> ActiveProc ──[mark_exiting]──> ExitingProc ──[reap]──> EmptySlot
-//!                           ActiveProc ──[force_clear]──────────────────────────> EmptySlot
-//! ```
-
 extern crate alloc;
 
 pub(crate) mod global;
@@ -35,7 +13,7 @@ pub(crate) mod region;
 pub(crate) mod pagetable;
 pub(crate) mod memtype;
 pub(crate) mod ipc;
-pub(crate) mod pt_region;
+pub(crate) mod direct_map;
 pub(crate) mod alloc_page;
 
 pub(crate) use global::*;
@@ -55,5 +33,5 @@ pub(crate) use memtype::{
     MEM_TYPE_ANON, MEM_TYPE_DIRECT, MEM_TYPE_SHARED,
 };
 pub(crate) use ipc::*;
-pub(crate) use pt_region::{PtRegion, ReservedRegion};
-pub(crate) use alloc_page::{VmPageAllocator, Bootstrap, Normal};
+pub(crate) use direct_map::{DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
+pub(crate) use alloc_page::{VmPageAllocator, ReservedRegion};

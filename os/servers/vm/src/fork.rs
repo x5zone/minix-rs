@@ -204,7 +204,7 @@ unsafe fn link_phys_blocks(region: &mut VirRegion) {
     for phys_opt in region.physblocks.iter_mut() {
         if let Some(phys) = phys_opt.as_mut() {
             if let Some(block_ptr) = phys.ph {
-                phys.link_to_block(block_ptr, parent_ptr);
+                phys.link_to_block(block_ptr, parent_ptr, phys.offset);
             }
         }
     }

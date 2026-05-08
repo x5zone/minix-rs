@@ -1,15 +1,7 @@
-//! Segment tree-based physical memory allocator (experimental).
-//!
-//! **WARNING**: This allocator has high memory overhead (~8x) and is only
-//! intended for educational purposes. Not recommended for production use.
-//!
-//! This allocator uses a segment tree to track free/used pages with O(log n)
-//! allocation and precise allocation of any size.
-
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion, EarlyHeap};
+use super::{CLICK_SIZE, BootMemRegion};
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +49,44 @@ fn merge(left: SegmentNode, right: SegmentNode) -> SegmentNode {
     SegmentNode { max_free, left_free, right_free, len }
 }
 
+struct BumpBuf {
+    ptr: *mut u8,
+    offset: usize,
+    len: usize,
+}
+
+impl BumpBuf {
+    fn new(buf: &mut [u8]) -> Self {
+        Self {
+            ptr: buf.as_mut_ptr(),
+            offset: 0,
+            len: buf.len(),
+        }
+    }
+
+    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        if count == 0 {
+            return &mut [];
+        }
+        let size = count * core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        let current = self.ptr as usize + self.offset;
+        let aligned = (current + align - 1) & !(align - 1);
+        let padding = aligned - current;
+        let new_offset = self.offset + padding + size;
+        assert!(
+            new_offset <= self.len,
+            "metadata buffer exhausted: need {} bytes, have {}",
+            size,
+            self.len - self.offset - padding,
+        );
+        self.offset = new_offset;
+        unsafe {
+            core::slice::from_raw_parts_mut(aligned as *mut T, count)
+        }
+    }
+}
+
 #[cfg(feature = "segment_tree_alloc")]
 pub struct SegmentTreeAllocator {
     n: usize,
@@ -69,14 +99,15 @@ pub struct SegmentTreeAllocator {
 
 #[cfg(feature = "segment_tree_alloc")]
 impl SegmentTreeAllocator {
-    pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    pub fn init(metadata: &mut [u8], regions: &[BootMemRegion]) -> Self {
         let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
 
         let n = total_pages;
         let offset = n.next_power_of_two();
         let tree_size = if n > 0 { 2 * offset } else { 2 };
 
-        let tree = early_heap.alloc_slice::<SegmentNode>(tree_size);
+        let mut buf = BumpBuf::new(metadata);
+        let tree = buf.alloc_slice::<SegmentNode>(tree_size);
 
         for node in tree.iter_mut() {
             *node = SegmentNode::used(1);
@@ -111,6 +142,16 @@ impl SegmentTreeAllocator {
         }
 
         alloc
+    }
+
+    pub fn metadata_size(total_pages: usize) -> usize {
+        let offset = if total_pages == 0 {
+            1
+        } else {
+            total_pages.next_power_of_two()
+        };
+        let tree_size = if total_pages > 0 { 2 * offset } else { 2 };
+        tree_size * core::mem::size_of::<SegmentNode>() + 2 * CLICK_SIZE
     }
 
     pub fn total_memory(&self) -> usize {
@@ -268,7 +309,6 @@ impl PhysAllocator for SegmentTreeAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            // TODO: requires kernel IPC (sys_memset), implement after kernel interface
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
@@ -306,16 +346,18 @@ impl PhysAllocatorStats for SegmentTreeAllocator {
 }
 
 #[cfg(not(feature = "segment_tree_alloc"))]
-/// Stub implementation. All methods panic at runtime.
-/// Enable `segment_tree_alloc` feature to use this allocator.
 pub struct SegmentTreeAllocator {
     _private: (),
 }
 
 #[cfg(not(feature = "segment_tree_alloc"))]
 impl SegmentTreeAllocator {
-    pub fn init(_early_heap: &mut EarlyHeap, _regions: &[BootMemRegion]) -> Self {
+    pub fn init(_metadata: &mut [u8], _regions: &[BootMemRegion]) -> Self {
         unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
+    }
+
+    pub fn metadata_size(_total_pages: usize) -> usize {
+        0
     }
 
     pub(crate) fn largest_free(&self) -> usize {

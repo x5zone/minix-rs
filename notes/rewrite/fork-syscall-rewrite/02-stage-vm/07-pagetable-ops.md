@@ -209,6 +209,14 @@ int pt_new(pt_t *pt)
 > 2. **页目录登记册**: 遍历 `pagedir_mappings` 数组，将每个 `pdm` 的 PDE 写入页目录。这些 PDE 指向 `page_directories` 页表，使内核能通过该窗口访问所有进程的页目录。
 > 3. **内核特殊映射**: 遍历 `kern_mappings` 数组，通过 `pt_writemap` 建立映射。这些映射由内核在启动时通过 `sys_vmctl_get_mapping` 提供，包括视频内存、APIC、用户态可访问的内核代码段（`usermapped`）等。
 
+> **方案四标注**：minix-rs 的 `map_kernel()` 执行两段映射：
+> 1. **内核代码/数据段**: 与 Minix3 相同，必须映射，否则中断/系统调用进入 ring 0 时无法执行。
+> 2. **Kernel direct map**: 1GB huge pages，U/S=0（仅内核可访问），G=1（Global，CR3 切换不刷新 TLB）。
+>
+> Minix3 的第 2 段（`pagedir_mappings` 登记册）和第 3 段（`kern_mappings` 特殊映射）不再需要——kernel direct map 替代了 `pagedir_mappings`，设备内存映射通过 VM_MAP_PHYS 处理。
+>
+> **Kernel direct map 只读不变量**：`map_kernel()` 建立后，VM 不再修改 kernel direct map 的 PTE/PDE/PDPT 表项。这个约束不是限制，而是简化——不变的东西不需要管理。Global 位的 TLB 条目不需要额外刷新策略（CR3 切换不刷新，且内容不变）。如果未来需要动态修改（如内存热插拔），需要设计显式的 TLB 刷新协议（跨核 shootdown），但当前设计中不需要。
+
 #### 2.1.2 pt_free - 释放页表
 
 **源码位置**: `minix/servers/vm/pagetable.c:1427`
@@ -301,6 +309,10 @@ kernel_vaddr[0] = new_pde_value;       // 内核修改页目录项
 ```
 
 VM 通过 `pt->pt_dir` 直接访问页目录（VM 的虚拟地址）。内核通过 `pagedir_mappings` 建立的映射窗口访问，虚拟地址由 PDE 索引和槽内偏移计算得出。
+
+> **方案四标注**：`pagedir_mappings` 是 x86-32 内核无法直接映射所有物理内存时的间接访问机制。内核需要访问进程页目录，但没有 direct map，只能通过 VM 在每个进程页目录中注入的固定窗口（`p_cr3_v`）来间接访问。x86-64 下 kernel 通过 direct map 直接访问进程页目录——`kernel_phys_to_virt(cr3_phys)` 一步到位，`pagedir_mappings` 登记册、`page_directories` 页表、`p_cr3_v` 窗口全部不再需要。
+>
+> 读者可对比 `pagedir_mappings` 与 `createpde`（§A.1-A.2）的定位差异：`pagedir_mappings` 是**持久化**的间接访问机制（VM 初始化时建立，进程生命周期内有效），`createpde` 是**临时**的间接访问机制（每次使用时建立，用完立即清除）。两者都是 x86-32 没有 direct map 的产物，只是生命周期不同。
 
 ### 2.2 页表绑定
 
@@ -396,6 +408,10 @@ int pt_bind(pt_t *pt, struct vmproc *who)
 | VM 热更新 | `main.c:717-718` | live update 交换新旧 VM 进程槽位后，分别重新绑定 |
 | exec (VMPPARAM_CLEAR) | `exit.c:137` | 清除旧地址空间后创建新页表，绑定到进程 |
 | VM 切换动态内存 | `pagetable.c:1329,1343` | `page_directories` 页表重新分配并清零，需重新填充进程页目录物理地址 |
+
+> **方案四标注**：minix-rs 的 `bind_to_process()` 仅对应 Minix3 `pt_bind` 的第 5 步——调用 `sys_vmctl_set_addrspace()` 通知内核。步骤 1-4（定位登记册槽位、写入物理地址、计算虚拟访问地址）全部不再需要，因为 x86-64 使用 direct map，内核可直接通过 `kernel_phys_to_virt(cr3_phys)` 访问任何进程的页目录，不需要 `pagedir_mappings` 登记册。
+>
+> `pt_bind` 从 5 步简化为 1 步，这不是"优化了绑定流程"，而是 **"绑定的语义被重新定义"**——Minix3 的"绑定"包含"让内核能看到页目录"（步骤 1-4）和"通知内核切换地址空间"（步骤 5），方案四的"绑定"仅包含后者，因为内核已经能看到所有页目录。
 
 ### 2.3 页表映射操作
 
@@ -775,40 +791,102 @@ void pt_clearmapcache(void)
 
 > 以下 Rust 设计基于 64 位假设（x86-64 四级页表、48 位虚拟地址、52 位物理地址），不适用于 32 位架构。
 
-### 3.0 架构决策：取消 `pagedir_mappings`，采用直接映射区
+### 3.0 架构决策：取消 `pagedir_mappings`，采用双视图直接映射区
 
-Minix3 的 `pagedir_mappings` 机制是 32 位地址空间约束下的产物。minix-rs 目标为 x86-64，虚拟地址空间充裕（48 位，256TB），应采用直接映射区方案。
+Minix3 的 `pagedir_mappings` 机制是 32 位地址空间约束下的产物。minix-rs 目标为 x86-64，虚拟地址空间充裕（48 位，256TB），应采用直接映射区方案。但 x86-64 的特权级硬件要求 kernel（ring 0）和 VM（ring 3）使用不同的页表映射来访问同一物理内存——这就是**双视图模型**。
 
-**问题一：内核如何访问其他进程的页表**
+#### 3.0.1 双视图模型
+
+Kernel 和 VM 都需要访问物理内存，但运行在不同的特权级。x86-64 硬件规定：U/S=0 的页面只能在 ring 0 访问，U/S=1 的页面可以在 ring 3 访问。因此，同一物理内存需要两套映射：
+
+| | Kernel direct map | VM direct map |
+|---|---|---|
+| U/S 位 | 0（特权级） | 1（用户态） |
+| 存在于 | 所有进程页表 | 仅 VM 进程页表 |
+| 用途 | 内核执行代码时访问物理内存 | VM 编辑页表数据时访问物理内存 |
+| 权限 | R/W，Global 位 | R/W + NX，无 Global 位 |
+| 建立者 | VM 在 `map_kernel()` 中建立 | VM 在初始化时建立 |
+| 生命周期 | 建立后只读不变量 | 随物理内存扩展而扩展 |
+| VA 基址 | `KERNEL_DIRECT_MAP_BASE`（高位内核空间） | `VM_DIRECT_MAP_BASE`（用户空间高位） |
+
+两者映射**同一物理内存**，只是 VA 窗口和权限不同。这不是冗余，而是 x86-64 特权级硬件的必然要求——不同执行上下文需要不同的映射来访问同一物理内存。
+
+**`phys_to_virt()` 的拆分**：
+
+```rust
+fn kernel_phys_to_virt(phys: PhysBytes) -> VirBytes {
+    VirBytes(KERNEL_DIRECT_MAP_BASE + phys.as_u64())
+}
+
+fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
+    VirBytes(VM_DIRECT_MAP_BASE + phys.as_u64())
+}
+```
+
+Kernel 代码使用 `kernel_phys_to_virt()`，VM 代码使用 `vm_phys_to_virt()`。两者做的是同一件事——`phys → stable VA`——只是 VA 窗口不同。
+
+#### 3.0.2 安全边界论证
+
+VM 有了 U/S=1 的 direct map，是否扩大了权限？
+
+**没有。** VM 是 trusted pager，原本就控制所有进程的页表，拥有**事实上**的全物理内存访问能力。Minix3 的 `createpde` 只是一个 **capability façade**——它没有真正限制 VM 的物理内存访问权。VM 可以通过修改任何进程的页表来读写任意物理内存，只是多了一步间接操作。
+
+Direct map 是"**显式拥有**"而非"新增权限"。安全边界没有变化，只是从 createpde 的"事实上拥有"变为 direct map 的"显式拥有"。
+
+VM direct map 设置 NX 位，阻止代码执行，提供深度防御——即使攻击者获得了 VM 进程的执行控制权，也无法通过 direct map 执行物理内存中的代码。
+
+#### 3.0.3 Direct map 的归属
+
+Direct map 是 CPU/MMU architecture mechanism，不是 VM policy——它不表达"哪个进程该拥有什么内存"，只表达"如何稳定访问 physical memory"。但"谁使用 ≠ 谁构造"：
+
+- **Kernel direct map**：由 VM 在 `map_kernel()` 中建立（Minix3 的 VM 本来就负责 `map_kernel()`），但建立后视为只读不变量，VM 不再修改
+- **VM direct map**：由 VM 在初始化时建立，仅存在于 VM 进程页表
+
+这比"kernel 建立 direct map"更符合微内核精神——VM 是 address-space architect，kernel 只是消费者。
+
+#### 3.0.4 问题一：内核如何访问其他进程的页表
 
 Minix3 内核运行时使用当前进程的页表，没有物理内存的直接映射。`pagedir_mappings` 为每个进程分配一个固定的虚拟地址窗口（`p_cr3_v`），内核通过该窗口读写进程的页目录。
 
-minix-rs 采用直接映射区：内核启动时在高位虚拟地址（如 `0xffff8880_00000000`）建立所有物理内存的线性映射，关系为 `va = pa + DIRECT_MAP_BASE`。内核拿到任意物理地址后，通过 `phys_to_virt()` 一行加法即可得到可用的虚拟地址。
+minix-rs 采用 kernel direct map：内核启动时在高位虚拟地址建立所有物理内存的线性映射，关系为 `va = pa + KERNEL_DIRECT_MAP_BASE`。内核拿到任意物理地址后，通过 `kernel_phys_to_virt()` 一行加法即可得到可用的虚拟地址。
 
-**问题二：跨进程内存拷贝**
+#### 3.0.5 问题二：跨进程内存拷贝
 
 Minix3 的 `sys_datacopy` 需要将目标进程的 PDE 写入当前进程页目录的 `freepdes` 空闲槽位，建立 4MB 临时映射窗口，拷贝完成后清除映射（详见附录 A）。
 
-minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物理地址，再通过 `phys_to_virt()` 得到内核虚拟地址，直接 `memcpy` 即可，无需修改页表。
+minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物理地址，再通过 `kernel_phys_to_virt()` 得到内核虚拟地址，直接 `memcpy` 即可，无需修改页表。
 
-**对比总结**：
+> **方案四深化**：`sys_datacopy` 的消失不是"优化了跨进程复制"，而是 **"跨进程复制这个概念本身被重新定义"**。
+>
+> 在 Minix3 中，"跨进程复制"是一个特殊的操作——需要内核介入，修改页表，建立临时映射窗口。这是因为内核无法直接看到其他进程的物理内存。
+>
+> 在 direct map 方案下，"跨进程复制"退化为"普通 memcpy"——内核已经能看到所有物理内存，源和目标只是两个不同的物理地址。`sys_datacopy` 这个系统调用不再需要，因为它的存在前提（"内核无法直接看到物理内存"）被消除了。
+>
+> VM 侧同理：VM 通过 `vm_phys_to_virt()` 可以直接看到所有物理内存，跨进程复制也是普通 memcpy。VM 不再需要 `sys_datacopy` 系统调用——它自己就是内存的来源，也是内存的观察者。
 
-| 场景 | Minix3（32 位） | minix-rs（64 位 + 直接映射区） |
+#### 3.0.6 对比总结
+
+| 场景 | Minix3（32 位） | minix-rs（64 位 + 双视图直接映射区） |
 |------|-----------------|-------------------------------|
-| 访问进程页目录 | `p_cr3_v`（固定窗口） | `phys_to_virt(paddr)` |
-| 跨进程内存拷贝 | `freepdes` 临时映射 → 拷贝 → 清除 | 翻译虚拟地址 → `phys_to_virt()` → 直接 memcpy |
+| 访问进程页目录 | `p_cr3_v`（固定窗口） | `kernel_phys_to_virt(paddr)` |
+| 跨进程内存拷贝 | `freepdes` 临时映射 → 拷贝 → 清除 | 翻译虚拟地址 → `kernel_phys_to_virt()` → 直接 memcpy |
 | 页表修改 | 需要（临时注入 PDE） | 不需要 |
 | 并发风险 | 有（临时借用页表） | 无 |
+| VM 访问物理内存 | `createpde` 临时映射 | `vm_phys_to_virt()` 永久映射 |
+| VM 安全边界 | 事实上拥有（capability façade） | 显式拥有（direct map + NX） |
 
-**`map_kernel` 职责简化**：
+#### 3.0.7 `map_kernel` 职责简化
 
-每个用户进程的页表中必须映射内核代码段和数据段，否则中断/系统调用进入 ring 0 时无法执行。直接映射区消除了 `page_directories` 登记册和 `freepdes` 空闲槽位的映射需求：
+每个用户进程的页表中必须映射内核代码段和数据段，否则中断/系统调用进入 ring 0 时无法执行。直接映射区消除了 `page_directories` 登记册和 `freepdes` 空闲槽位的映射需求，但增加了 kernel direct map 的建立：
 
 | 映射内容 | Minix3 `pt_mapkernel` | minix-rs `map_kernel` |
 |----------|----------------------|----------------------|
 | 内核代码/数据段 | ✅ 必须 | ✅ 必须 |
+| Kernel direct map（1GB huge pages, U/S=0, G=1） | ❌ 不存在 | ✅ 必须 |
 | `page_directories` 登记册 | ✅ 必须 | ❌ 不需要 |
 | `freepdes` 空闲槽位 | ✅ 必须预留 | ❌ 不需要 |
+
+Kernel direct map 设 Global 位（G=1），CR3 切换时不刷新这部分 TLB 条目。这是安全的，因为 kernel direct map 是"建立后只读不变量"——`map_kernel()` 建立后 VM 不再修改 kernel direct map 的 PTE/PDE/PDPT 表项。如果未来需要动态修改（如内存热插拔），需要设计显式的 TLB 刷新协议（跨核 shootdown）。但当前设计中，不变的东西不需要管理。
 
 ### 3.1 Minix3 函数映射
 
@@ -1154,6 +1232,16 @@ cargo test -p minix-arch --features mock
 5. 从 PTE 中提取物理页地址，加上页内偏移得到最终物理地址
 
 **关键点**：`phys_get32` 内部调用 `lin_lin_copy(NULL, addr, ...)`，源进程为 NULL（物理地址），走 `createpde` 的 `pr==NULL` 路径——直接构造 4MB 大页 PDE 写入 `freepdes` 槽位。因此 `vm_lookup` 依赖的是 `freepdes`（临时 PDE 注入），**不依赖** `pagedir_mappings`（`p_cr3_v`）。这是两级索引直接定位（非遍历），没有 for 循环。
+
+#### A.3 方案四视角：createpde/freepde 的历史意义
+
+> **方案四标注**：x86-64 下 kernel direct map 使 createpde/freepde 机制完全不再需要。
+
+**createpde/freepde 存在的原因**：Minix3 的 x86-32 内核没有直接映射区，无法直接访问物理内存。内核只有 2 个空闲 PDE 槽位（`MAXFREEPDES = 2`），通过轮转 2 个 4MB 窗口来访问非当前进程的物理内存。这是 x86-32 地址空间极端限制下的产物——3GB 用户空间 + 1GB 内核空间，内核空间还要容纳内核代码/数据、内核栈、页表等，留给临时映射的空间只有 2 × 4MB。
+
+**x86-64 的根本变化**：64 位地址空间使 kernel direct map 成为可能——内核可以映射所有物理内存到高位虚拟地址空间，无需临时映射窗口。`createpde` 的 2 × 4MB 轮转窗口被 `kernel_phys_to_virt()` 的永久映射替代。
+
+**保留历史描述的价值**：理解 `createpde` 的极端限制（2 个 PDE 槽位、4MB 窗口、轮转使用）有助于读者理解为什么 x86-64 的 direct map 是"架构决定的方案选择"而非"可选的优化"——32 位地址空间根本放不下 direct map，64 位地址空间天然适合。
 
 ---
 

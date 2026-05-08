@@ -735,6 +735,9 @@ active.set_endpoint(child_ep); // 设置真实 endpoint
 | ----------- | ---------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `BootImage` | `vm_boot: Option<BootImage>`             | `minix-types` crate (`types/boot.rs`) | 启动时进程的引导映像信息，跨服务共享类型                                                                                         | [00-vm-overview.md](00-vm-overview.md)           |
 | `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [06-pagetable-struct.md](06-pagetable-struct.md) |
+
+> **方案四确认**：`vm_pt` 字段语义不变——仍然是"进程的页表"。Direct map 简化的是页表操作的实现（通过 `vm_phys_to_virt()` 直接操作页表页，无需 `createpde` 临时映射窗口），而非页表数据结构本身。vmproc 结构体无需修改。
+
 | `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [12-vir-region.md](12-vir-region.md)             |
 | `AclState`  | `vm_acl: AclState`                       | `vm/src/acl.rs`                       | ACL 状态，控制进程对 VM 系统调用的访问。三态 enum：`Uninitialized`/`Default`/`System(AclMask)` | [03-acl.md](03-acl.md)       |
 

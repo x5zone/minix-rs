@@ -1,12 +1,7 @@
-//! Bitmap-based physical memory allocator.
-//!
-//! This allocator uses a bitmap to track free/used pages, matching Minix3's
-//! original implementation. Each bit represents one page (1 = free, 0 = used).
-
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion, EarlyHeap};
+use super::{CLICK_SIZE, BootMemRegion};
 
 const BITS_PER_CHUNK: usize = 64;
 const PAGE_CACHE_MAX: usize = 10000;
@@ -20,18 +15,57 @@ pub struct BitmapAllocator {
     stats: MemStats,
 }
 
+struct BumpBuf {
+    ptr: *mut u8,
+    offset: usize,
+    len: usize,
+}
+
+impl BumpBuf {
+    fn new(buf: &mut [u8]) -> Self {
+        Self {
+            ptr: buf.as_mut_ptr(),
+            offset: 0,
+            len: buf.len(),
+        }
+    }
+
+    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        if count == 0 {
+            return &mut [];
+        }
+        let size = count * core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        let current = self.ptr as usize + self.offset;
+        let aligned = (current + align - 1) & !(align - 1);
+        let padding = aligned - current;
+        let new_offset = self.offset + padding + size;
+        assert!(
+            new_offset <= self.len,
+            "metadata buffer exhausted: need {} bytes, have {}",
+            size,
+            self.len - self.offset - padding,
+        );
+        self.offset = new_offset;
+        unsafe {
+            core::slice::from_raw_parts_mut(aligned as *mut T, count)
+        }
+    }
+}
+
 impl BitmapAllocator {
-    pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
+    pub fn init(metadata: &mut [u8], regions: &[BootMemRegion]) -> Self {
         let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
 
         let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
-        let bitmap = early_heap.alloc_slice::<u64>(bitmap_chunks);
+        let mut buf = BumpBuf::new(metadata);
 
+        let bitmap = buf.alloc_slice::<u64>(bitmap_chunks);
         for chunk in bitmap.iter_mut() {
             *chunk = 0;
         }
 
-        let page_cache = early_heap.alloc_slice::<usize>(PAGE_CACHE_MAX);
+        let page_cache = buf.alloc_slice::<usize>(PAGE_CACHE_MAX);
 
         let mut alloc = Self {
             bitmap,
@@ -53,6 +87,13 @@ impl BitmapAllocator {
         }
 
         alloc
+    }
+
+    pub fn metadata_size(total_pages: usize) -> usize {
+        let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
+        let bitmap_bytes = bitmap_chunks * core::mem::size_of::<u64>();
+        let cache_bytes = PAGE_CACHE_MAX * core::mem::size_of::<usize>();
+        bitmap_bytes + cache_bytes + 2 * CLICK_SIZE
     }
 
     pub fn total_memory(&self) -> usize {
@@ -128,10 +169,6 @@ impl BitmapAllocator {
             if !self.page_is_free(i) {
                 run_length = 0;
 
-                // Chunk skip optimization: if the current 64-bit chunk is entirely
-                // allocated (all zeros), scan backwards to find the nearest non-empty
-                // chunk. This avoids checking each page individually in fully-allocated
-                // regions, which is common under memory pressure.
                 let chunk_idx = i / BITS_PER_CHUNK;
                 if chunk_idx > 0 && self.bitmap[chunk_idx] == 0 {
                     let mut skip_to = chunk_idx;
@@ -215,9 +252,6 @@ impl BitmapAllocator {
     }
 
     fn cache_freepages(&mut self, _needed: usize) -> usize {
-        // TODO: In Minix3, cache_freepages() evicts pages from the VM file cache
-        // (LRU list in cache.c) to free physical memory. This requires the VM
-        // page cache subsystem which is not yet implemented. Returns 0 for now.
         0
     }
 }
@@ -282,7 +316,6 @@ impl PhysAllocator for BitmapAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            // TODO: requires kernel IPC (sys_memset), implement after kernel interface
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
@@ -300,31 +333,6 @@ impl PhysAllocator for BitmapAllocator {
 
     fn total_count(&self) -> usize {
         self.total_pages
-    }
-
-    fn reloc_array_count(&self) -> usize {
-        2
-    }
-
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        match index {
-            0 => (self.bitmap.as_ptr() as *const u8, self.bitmap.len(), core::mem::size_of::<u64>()),
-            1 => (self.page_cache.as_ptr() as *const u8, self.page_cache.len(), core::mem::size_of::<usize>()),
-            _ => (core::ptr::null(), 0, 0),
-        }
-    }
-
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        unsafe {
-            self.bitmap = core::slice::from_raw_parts_mut(
-                new_ptrs[0] as *mut u64,
-                self.bitmap.len(),
-            );
-            self.page_cache = core::slice::from_raw_parts_mut(
-                new_ptrs[1] as *mut usize,
-                self.page_cache.len(),
-            );
-        }
     }
 }
 
@@ -345,20 +353,12 @@ mod tests {
         ]
     }
 
-    fn make_test_heap(regions: &[BootMemRegion]) -> (&'static mut [u8], EarlyHeap) {
-        let (_, _, mem_high) = super::super::compute_memory_bounds(regions);
-        let total_pages = mem_high / CLICK_SIZE + 1;
-        let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
-        let heap_size = bitmap_chunks * 8 + PAGE_CACHE_MAX * core::mem::size_of::<usize>() + 1024;
-
-        let buffer: &'static mut [u8] = {
-            let boxed = alloc::boxed::Box::new([0u8; 1024 * 1024]);
-            alloc::boxed::Box::leak(boxed)
-        };
-
-        let mut heap = EarlyHeap::new();
-        heap.init(buffer.as_mut_ptr(), heap_size);
-        (buffer, heap)
+    fn make_test_metadata(regions: &[BootMemRegion]) -> &'static mut [u8] {
+        let (total_pages, _, _) = super::super::compute_memory_bounds(regions);
+        let size = BitmapAllocator::metadata_size(total_pages);
+        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; 1024 * 1024];
+        let buf = alloc::boxed::Box::leak(v.into_boxed_slice());
+        &mut buf[..size]
     }
 
     #[test]
@@ -371,8 +371,8 @@ mod tests {
     #[test]
     fn test_alloc_free_basic() {
         let regions = make_test_regions();
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         assert_eq!(addr.page_index() % 1, 0);
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn test_alloc_zero_pages() {
         let regions = make_test_regions();
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
@@ -392,8 +392,8 @@ mod tests {
     #[test]
     fn test_alloc_exhaustion() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -410,8 +410,8 @@ mod tests {
     #[test]
     fn test_free_and_realloc() {
         let regions = vec![BootMemRegion { base: 0, size: 20 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
@@ -428,8 +428,8 @@ mod tests {
     #[test]
     fn test_memstats() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let stats = alloc.memstats();
         assert_eq!(stats.free_nodes, 1);
@@ -449,8 +449,8 @@ mod tests {
             BootMemRegion { base: 0x100000, size: 4 * 1024 * 1024 },
             BootMemRegion { base: 0x10000000, size: 8 * 1024 * 1024 },
         ];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -461,8 +461,8 @@ mod tests {
     #[test]
     fn test_memory_pressure() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         assert!(!alloc.is_under_pressure());
 
@@ -473,8 +473,8 @@ mod tests {
     #[test]
     fn test_page_cache_single_page() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
@@ -492,8 +492,8 @@ mod tests {
     #[test]
     fn test_page_cache_not_used_with_lower_flags() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 1);
@@ -507,8 +507,8 @@ mod tests {
     #[test]
     fn test_page_cache_stale_entry_skipped() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
@@ -531,8 +531,8 @@ mod tests {
     #[test]
     fn test_low_mem_exhausted_error() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let _a = alloc.alloc_mem(100, PageAllocFlags::empty()).unwrap();
 
@@ -546,8 +546,8 @@ mod tests {
     #[test]
     fn test_oom_error_type() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
 
         let _a = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
 
@@ -558,8 +558,8 @@ mod tests {
     #[test]
     fn test_cache_freepages_returns_zero() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let (_, mut heap) = make_test_heap(&regions);
-        let mut alloc = BitmapAllocator::init(&mut heap, &regions);
+        let metadata = make_test_metadata(&regions);
+        let mut alloc = BitmapAllocator::init(metadata, &regions);
         assert_eq!(alloc.cache_freepages(1), 0);
         assert_eq!(alloc.cache_freepages(100), 0);
     }

@@ -855,6 +855,13 @@ for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
 | **容量**   | 200 页（约 800KB），足够应对突发需求    |
 | **自动补充** | 后台任务补充消耗的备用页               |
 
+> **方案四分析**：`spare_pagequeue` 不是"设计失误"，而是 **32 位时代的正确工程权衡**。Minix3 运行在 x86-32 上，32 位内核无法建立全物理内存 direct map（4GB 虚拟地址空间要容纳内核代码、内核栈、设备映射等，无法再映射所有物理内存），只能预分配备用页池来应对递归。当 `vm_mappages` 需要为新页表页分配 VA 时，它本身可能触发页错误，需要再分配页表页——这就是递归。备用页池是"递归发生时的兜底"。
+>
+> x86-64 下 direct map 从结构上消除了递归根源——物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤，因此不存在递归，也不需要兜底。三种方案的递归处理是递进关系：
+> - Minix3 spare_pagequeue：**缓解递归**——递归发生时从备用页池取页
+> - 方案三 PtRegion：**结构性消除递归**——页表页 VA 不走 `find_hole + vm_mappages`
+> - 方案四 Direct Map：**递归根源消失**——物理页不需要分配 VA
+
 > 保留页队列的 Rust 实现状态见 [§5.3](#53-bitmapallocator) 和 [§5.4](#54-buddyallocator-soa-结构)。
 
 ### 2.4 内存统计与资源限制
@@ -1075,6 +1082,8 @@ static bitchunk_t free_pages_bitmap[PAGE_BITMAP_CHUNKS];          // ~128KB
 
 ## 4. Early Heap 设计
 
+> **方案四标注**：EarlyHeap 是方案三（PtRegion）的组件，用于在 direct map 不可用时提供临时元数据存储。方案四（Direct Map）下，bitmap 元数据通过 `vm_phys_to_virt()` 直接访问物理内存，不再需要 EarlyHeap。本节保留作为方案三的设计记录。
+
 ### 4.1 设计目标
 
 | 目标        | 说明                       |
@@ -1125,6 +1134,25 @@ impl EarlyHeap {
 }
 ```
 
+#### 方案四视角：EarlyHeap 不再需要
+
+> **方案四标注**：Direct Map 方案下，EarlyHeap 不再需要。这不是"换了一种 early allocator"，而是 **"early allocator 这个概念本身不再需要"**。
+
+**EarlyHeap 存在的原因**：方案三（PtRegion）下，VM 启动时没有 direct map，无法直接访问物理内存。元数据（bitmap、free list heads 等）需要存储在某个"VM 已经能访问"的地方——EarlyHeap 就是这个"某个地方"。它从内核预留的物理页中切出，通过 VM 代码/数据段的直接映射访问。
+
+**Direct Map 消除了 EarlyHeap 的前提**：方案四下，VM 启动即有 1GB direct map（kernel 初始页表提供），可以通过 `vm_phys_to_virt()` 直接访问前 1GB 物理内存。Bitmap 元数据直接分配在物理内存中，通过 direct map 访问——不需要中间存储，不需要搬迁。
+
+**三方案对比**：
+
+| | Minix3（BSS） | 方案三（EarlyHeap） | 方案四（Direct Map） |
+|---|---|---|---|
+| 元数据存储 | 静态 BSS 数组 | EarlyHeap → 搬迁到最终位置 | Bitmap 在物理内存中，direct map 访问 |
+| 是否搬迁 | 否 | 是 | 否 |
+| 自举依赖 | 编译时固定 | 内核预留 2MB | Kernel 初始页表提供 1GB |
+| 地址空间限制 | 32 位：4GB 上限 | 无硬限制 | 无硬限制 |
+
+读者应理解：EarlyHeap 是"没有 direct map 时的过渡方案"，它的存在前提是"VM 启动时无法直接访问物理内存"。Direct Map 消除了这个前提——VM 启动时已经能直接访问物理内存，不需要过渡。
+
 ### 4.3 使用示例
 
 ```rust
@@ -1141,80 +1169,91 @@ let used = early_heap.used();
 let remaining = early_heap.remaining();
 ```
 
-### 4.4 Early Heap 物理页来源
+### 4.4 物理内存初始化：3 阶段启动
 
-> **TODO**: 本节为设计草案，待内核启动流程实现后完善。
+> **方案四标注**：本节描述 Direct Map 方案下的 3 阶段启动流程。方案三（PtRegion）使用 EarlyHeap + 搬迁的 5 阶段流程，见 §4.4a。
 
-#### 问题：物理内存大小不可预知
-
-64 位系统物理内存大小动态变化（16GB ~ 256GB+），元数据大小也随之变化：
-- 16GB 物理内存，Buddy 元数据约 19MB
-- 256GB 物理内存，Buddy 元数据约 305MB
-
-内核无法预知最终需要的元数据大小，因此无法一次性预留足够的 early heap。
-
-#### 解决方案：两阶段初始化 + 搬迁
+Direct Map 方案下，物理内存初始化分为 3 个阶段。核心洞察是 **"1GB 足以启动世界"**——bitmap 元数据永远能放进 1GB（即使 4TB 物理内存也只需 ~128MB），因此不需要 EarlyHeap 这样的中间存储。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    VM 初始化流程                                             │
+│                    VM 物理内存初始化：3 阶段启动                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  阶段 1: 内核加载 VM                                                         │
-│  ├── 分配 VM 代码/数据/BSS/栈                                               │
-│  └── 额外预留 early_heap（2MB，足够管理 ~512MB 物理内存）                     │
+│  Phase 1: Bootstrap — 1GB direct map → bitmap allocator                    │
+│  ├── Kernel 初始页表已建立 1GB direct map（1 个 1GB huge page）             │
+│  ├── VM 启动时，前 1GB 物理内存已通过 vm_phys_to_virt() 可访问              │
+│  ├── 从 boot_info 获取 memmap，计算 bitmap 大小                             │
+│  ├── bitmap 元数据分配在物理内存前 1GB 内（通过 alloc_phys + vm_phys_to_virt）│
+│  └── bitmap allocator 可用，管理全部物理页的分配状态                         │
 │                                                                             │
-│  阶段 2: VM 启动                                                             │
-│  ├── early_heap 已被内核映射到 VM 地址空间                                   │
-│  └── early_heap 不在 memmap 中（不属于物理分配器管理范围）                    │
+│  Phase 2: Direct Map 扩展 — bitmap 分配页表页 → 扩展覆盖全部物理内存         │
+│  ├── 如果物理内存 ≤ 1GB：无需扩展，跳过此阶段                               │
+│  ├── 如果物理内存 > 1GB：                                                   │
+│  │   ├── bitmap.alloc_phys() 分配新页表页（PDPT/PD）                       │
+│  │   ├── vm_phys_to_virt() 直接读写新页表页（零递归）                       │
+│  │   └── 扩展 direct map 覆盖全部物理内存                                   │
+│  └── 扩展完成后，vm_phys_to_virt() 覆盖全部物理内存                         │
 │                                                                             │
-│  阶段 3: 初始化物理分配器（临时）                                             │
-│  ├── 从 memmap 获取可用内存信息                                             │
-│  ├── 使用 early_heap 分配临时元数据                                         │
-│  └── 物理分配器管理 memmap 中的内存                                         │
-│                                                                             │
-│  阶段 4: 搬迁元数据                                                          │
-│  ├── 计算最终元数据大小（PhysAllocType::metadata_size）                      │
-│  ├── 从物理分配器分配新空间                                                  │
-│  ├── 复制元数据到新空间                                                      │
-│  ├── 更新分配器内部指针                                                      │
-│  └── early_heap 物理页归还给物理分配器                                       │
-│                                                                             │
-│  阶段 5: VM 完全初始化，管理所有物理内存                                       │
+│  Phase 3: 分配器迁移 — bitmap → buddy（策略决定）                           │
+│  ├── bitmap 是 O(n) 分配，buddy 是 O(log n) 分配                           │
+│  ├── VM 的分配模式是非高频的，bitmap 可能就够用                              │
+│  ├── 迁移到 buddy 是策略选择，不是技术必须                                   │
+│  └── 如果选择迁移：buddy 元数据通过 vm_phys_to_virt() 访问，无需搬迁        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### Phase 1 不是"临时方案"，而是"已经够用"
+
+1GB direct map 覆盖了绝大部分系统的全部物理内存。即使物理内存 > 1GB，bitmap 元数据也永远在前 1GB 内——因为 bitmap 占用的空间远小于被管理的物理内存：
+
+| 物理内存 | Bitmap 大小 | 能放进 1GB 吗 |
+|----------|------------|--------------|
+| 16GB | 512KB | ✅ 绰绰有余 |
+| 128GB | 4MB | ✅ |
+| 512GB | 16MB | ✅ |
+| 1TB | 32MB | ✅ |
+| 4TB | 128MB | ✅ |
+
+Bitmap 本身占用的物理页也在前 1GB 内，通过 direct map 直接读写。不需要 EarlyHeap，不需要搬迁。
+
+#### Phase 2 不是"补救"，而是"扩展"
+
+如果物理内存 > 1GB，需要扩展 direct map。但扩展本身不需要任何新的自举机制：
+
+1. `bitmap.alloc_phys()` 分配新页表页（PDPT 或 PD 页）
+2. `vm_phys_to_virt(pt_phys)` 直接读写新页表页——此时 direct map 至少覆盖 1GB，新页表页的物理地址一定在前 1GB 内
+3. 写入映射条目，扩展 direct map 覆盖范围
+
+**零递归**：操作页表页不需要 `vm_mappages` / `ensure_tables`，因为页表页通过 `vm_phys_to_virt()` 直接访问。
+
+**完备性论证**：一个 PDPT 页能容纳 512 个 1GB 条目，覆盖 512GB 物理内存。超过 512GB 需要新 PDPT 页，但此时 VM 已有至少 1GB direct map，可以 `alloc_phys() → vm_phys_to_virt()` 直接操作新 PDPT 页。仍然零递归、零额外自举风险。
+
+#### Phase 3 不是"必须"，而是"策略选择"
+
+Bitmap allocator 的 `alloc_mem()` 是线性扫描，O(n) 复杂度。Buddy allocator 是 O(log n)。但 VM 的物理页分配模式是非高频的（fork、mmap、page fault 时才分配），bitmap 可能就够用。
+
+迁移到 buddy 的条件是**性能测量表明 bitmap 成为瓶颈**，而不是"buddy 理论上更优"。如果选择迁移，buddy 元数据通过 `vm_phys_to_virt()` 访问，无需搬迁——因为物理页天然拥有 stable VA。
+
+#### 与方案三（EarlyHeap + 搬迁）的对比
+
+| | 方案三（EarlyHeap） | 方案四（3 阶段启动） |
+|---|---|---|
+| 元数据存储 | EarlyHeap（2MB 预留）→ 搬迁到最终位置 | Bitmap 在物理内存中，通过 direct map 访问 |
+| 搬迁需求 | 必须（EarlyHeap → 最终位置） | 无（bitmap 就在最终位置） |
+| 自举依赖 | EarlyHeap 需要内核预留 2MB | Direct map 由 kernel 初始页表提供 |
+| 阶段数 | 5 个阶段 | 3 个阶段 |
+| 复杂度 | 高（搬迁逻辑、指针更新） | 低（无搬迁，直接访问） |
+
 #### Minix3 对比
 
-| 方面 | Minix3 | rs 版本 |
-|------|--------|---------|
-| **元数据存储** | 静态 BSS（固定 4GB 上限） | 动态分配 + 搬迁 |
-| **物理页来源** | 内核从 memmap 末尾分配，不在 memmap 中 | 同样由内核预留 |
-| **是否搬迁** | 否（BSS 生命周期 = 进程生命周期） | 是（适应动态内存大小） |
-
-#### 搬迁实现要点
-
-搬迁需要更新元数据指针，因此分配器内部使用**裸指针**而非 `&'static mut [T]`：
-
-```rust
-pub struct BuddyAllocator {
-    free_lists: *mut u32,     // 裸指针，支持搬迁时更新
-    page_next: *mut u32,
-    page_orders: *mut u8,
-    // ...
-}
-
-impl BuddyAllocator {
-    pub fn relocate(&mut self, new_base: *mut u8, new_size: usize) -> Result<()> {
-        // 复制数据到新位置
-        // 更新内部指针
-        // 返回旧内存给物理分配器
-    }
-}
-```
-
-**搬迁安全性**：VM 初始化期间持有 Big Kernel Lock，相当于 stop the world，搬迁风险可控。
+| 方面 | Minix3 | 方案三（EarlyHeap） | 方案四（3 阶段启动） |
+|------|--------|---------|---------|
+| **元数据存储** | 静态 BSS（固定 4GB 上限） | EarlyHeap + 搬迁 | Bitmap + direct map |
+| **物理页来源** | 内核从 memmap 末尾分配 | 内核预留 2MB | Kernel 初始页表提供 1GB |
+| **是否搬迁** | 否（BSS 生命周期 = 进程生命周期） | 是 | 否 |
+| **地址空间限制** | 32 位（4GB 上限） | 64 位 | 64 位（512GB+ 可扩展） |
 
 ***
 
@@ -1285,6 +1324,8 @@ pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
     // 从 early heap 分配 bitmap，然后将 boot memory regions 标记为空闲
 }
 ```
+
+> **方案四标注**：方案四下，`init()` 签名从 `init(early_heap: &mut EarlyHeap, ...)` 变为 `init(alloc: &mut VmPageAllocator, ...)`。元数据不再从 EarlyHeap 分配，而是通过 `alloc.alloc_phys()` 分配物理页，再通过 `vm_phys_to_virt()` 访问。三个分配器（Bitmap、Buddy、线段树）的 init 签名统一变更，EarlyHeap 参数消失。
 
 **核心方法**：
 
@@ -1392,6 +1433,8 @@ pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
     // 将 boot memory regions 按 2^n 对齐切分后加入空闲链表
 }
 ```
+
+> **方案四标注**：同 §5.3，`init()` 签名变更，EarlyHeap 参数消失。Buddy 的三个数组（`free_list_heads`、`page_next`、`page_orders`）通过 `alloc_phys()` 分配物理页后 `vm_phys_to_virt()` 访问。
 
 **核心方法**：
 
@@ -1512,6 +1555,8 @@ pub fn init(early_heap: &mut EarlyHeap, regions: &[BootMemRegion]) -> Self {
     // 叶节点初始化后自底向上 merge()
 }
 ```
+
+> **方案四标注**：同 §5.3，`init()` 签名变更，EarlyHeap 参数消失。线段树的节点数组通过 `alloc_phys()` 分配物理页后 `vm_phys_to_virt()` 访问。
 
 **核心方法**：
 
@@ -1745,7 +1790,8 @@ pub enum AllocError {
 ```
 phys_mem/
 ├── mod.rs                    # 模块入口
-├── early_heap.rs             # Bump allocator
+├── early_heap.rs             # Bump allocator（方案三专用，方案四中删除）
+├── direct_map.rs             # Direct map 常量与 vm_phys_to_virt()（方案四新增）
 ├── alloc_trait.rs            # PhysAllocator + PhysAllocatorStats traits, PhysMemStats
 ├── types.rs                  # PhysBytes, PageAllocFlags, AllocError
 ├── bitmap_alloc.rs           # Bitmap 分配器

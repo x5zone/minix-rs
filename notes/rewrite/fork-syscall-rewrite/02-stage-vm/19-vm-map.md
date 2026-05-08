@@ -667,6 +667,24 @@ void *vm_map_phys(endpoint_t who, void *phaddr, size_t len)
 }
 ```
 
+#### 方案四视角：VM_MAP_PHYS 实现简化
+
+> **方案四标注**：Direct Map 方案下，VM_MAP_PHYS 的实现被简化——VM 已有 direct map，映射物理地址到进程虚拟地址不需要临时映射窗口。
+
+**Minix3 的 VM_MAP_PHYS 实现**中，`map_page_region()` + `phys_setphys()` 需要通过 `createpde` 临时映射窗口来操作目标进程的页表，建立物理地址到虚拟地址的映射。这是因为 VM 无法直接访问目标进程的页表页（它们是物理页）。
+
+**方案四的 VM_MAP_PHYS 实现**中，VM 通过 `vm_phys_to_virt()` 直接操作目标进程的页表页：
+
+```
+1. map_page_region() → 在目标进程地址空间分配虚拟区域
+2. vm_phys_to_virt(pt_phys) → 直接获取页表页 VA → 写入页表项
+3. 返回映射的虚拟地址
+```
+
+`createpde` 临时映射窗口不再需要——VM 已经拥有所有物理内存的 direct map，操作目标进程的页表页与操作自己的数据结构一样简单。
+
+这与 16-pagefault.md §2.3 的页表写入简化、17-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
+
 **映射示例**
 
 ```c
@@ -2240,6 +2258,8 @@ impl MemoryType for AnonymousMemory {
         }
         Ok(())
     }
+
+> **方案四标注**：mmap 的物理页分配通过 `FrameAllocator::allocate()` 完成，返回物理地址 `frame`。在方案三中，分配后需要通过 PtRegion 为物理页分配 VA；在方案四中，`vm_phys_to_virt(frame)` 一行加法即可获得 VA。mmap 调用方不需要关心 VA 如何获取——这是 `FrameAllocator` 内部的简化，上层接口不变。与 18-vm-brk.md 的 brk 一样，mmap 是 direct map 统一性的"透明受益者"。
 
     fn copy_for_fork(
         &self,

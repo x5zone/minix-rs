@@ -1,5 +1,9 @@
 # PtRegion 设计文档
 
+> **归档标注**：本文档记录了 PtRegion 的完整设计过程。PtRegion 作为方案三（Typestate+PtRegion）的完整描述保留，但最终方案为方案四（Direct Map）。§8 描述了 Direct Map 方案及其与 PtRegion 的关系。本文档的设计演进叙述已融入 05-vm-allocpage.md 的 §3.1-3.6。
+>
+> **保留价值**：(1) §1-7 展示了 PtRegion 的完整设计推导，帮助读者理解"为什么 PtRegion 是正确的局部解"；(2) §8 展示了 Direct Map 如何超越 PtRegion，帮助读者理解"为什么 Direct Map 是更好的全局解"。保留这份文档，就是保留设计思考的轨迹。
+
 > **分类**: 模块私有  
 > **源码**: `minix3/minix/servers/vm/pagetable.c`, `minix3/minix/servers/vm/alloc.c`  
 > **说明**: 页表页专用虚拟地址区域设计，解决 vm_allocpage 递归分配问题  

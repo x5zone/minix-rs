@@ -1337,6 +1337,13 @@ int mem_cow(struct vir_region *region,
 
 > **关键差异**: Minix3 的 `mem_cow` 不是简单的 `memcpy` + `refcount--`。它使用 `sys_abscopy`（内核系统调用）复制页面，通过 `pb_unreferenced`/`pb_link` 管理物理块引用关系，并将内存类型切换为匿名内存。
 
+> **方案四补充**：`sys_abscopy` 在方案四下被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。在方案四中，这三个操作都通过 `vm_phys_to_virt()` 统一完成：
+> - CoW 复制：`copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)`
+> - 页表写入：`*(vm_phys_to_virt(pt_phys) + offset) = pte_value`
+> - 物理页分配：`alloc_phys() → vm_phys_to_virt()` 获取 VA
+>
+> 三个操作共享同一个 `vm_phys_to_virt()` 入口——这是 direct map 统一性的集中体现。
+
 **页表更新**
 
 ```c
@@ -1389,6 +1396,36 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
     return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
 }
 ```
+
+#### 方案四视角：页表写入的终极简化
+
+> **方案四标注**：Direct Map 方案下，`pt_writemap()` 内部的页表项写入通过 `vm_phys_to_virt()` 直接操作，无需 `createpde` 临时映射窗口。
+
+页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。其中**页表写入**是最关键的操作：
+
+**Minix3 的页表写入**需要 `createpde` 临时映射窗口——VM 无法直接访问页表页（它们是物理页），必须请求内核在 VM 的地址空间中临时映射一个物理页，写入页表项后再释放：
+
+```
+1. createpde(pt_phys) → 在 VM 地址空间临时映射页表页
+2. 通过临时映射写入页表项
+3. 释放临时映射
+```
+
+**方案四的页表写入**只需一步：
+
+```
+1. vm_phys_to_virt(pt_phys) → 直接获取页表页 VA → 写入页表项
+```
+
+**三种方案的复杂度递减**：
+
+| 方案 | 页表写入方式 | 复杂度来源 |
+|------|------------|-----------|
+| Minix3（createpde） | 建临时映射 → 写入 → 释放临时映射 | VM 无法直接访问物理页 |
+| 方案三（PtRegion） | 从 PtRegion 分配 VA → 写入 | 页表页需要特殊 VA 管理 |
+| 方案四（Direct Map） | `vm_phys_to_virt()` → 直接写入 | 物理页天然有 VA |
+
+读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 17-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
 
 ### 2.4 错误处理
 
@@ -3107,11 +3144,14 @@ impl CowHandler {
 
 **页面复制实现**
 
+> **方案四标注**：`PhysPage::addr` 来自 `vm_phys_to_virt(alloc_phys())`——物理页天然拥有 stable VA，无需从 PtRegion 分配 VA 或通过 createpde 建立临时映射。
+
 ```rust
 impl PhysPage {
     /// 从另一个物理页复制内容
     pub fn copy_from(&self, src: &PhysAddr) -> Result<(), MemoryError> {
         // 安全：两个物理地址都有效，大小相同
+        // self.addr 来自 vm_phys_to_virt()，src 通过 vm_phys_to_virt() 获取
         unsafe {
             let dst_ptr = self.addr.as_usize() as *mut u8;
             let src_ptr = src.as_usize() as *const u8;
@@ -3130,6 +3170,8 @@ impl PhysPage {
     }
 }
 ```
+
+**`copy_from` 的地址来源**：`self.addr` 是 `vm_phys_to_virt(alloc_phys())` 的结果——物理页分配后天然拥有 stable VA。在 Minix3 中，复制物理页需要 `sys_abscopy` 系统调用（因为 VM 无法直接访问物理页）；在方案四中，`vm_phys_to_virt()` 使物理页直接可操作，复制变成一行 `copy_nonoverlapping`。这与 15-cow-mechanism.md §2.2.1 的 `mem_cow()` 简化是同一个范式转变。
 
 **引用计数管理**
 

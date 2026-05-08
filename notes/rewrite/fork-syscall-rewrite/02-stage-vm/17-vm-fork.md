@@ -978,6 +978,44 @@ fork 后的页表状态由 `map_ph_writept()` 通过 `pr_writable()` 自动设�
 
 fork 后，父子进程的共享页 `refcount > 1`，`anon_writable()` 返回 0，`pr_writable()` 返回 0，页表项不含 `PTF_WRITE`。写入时触发页错误，CoW 处理分配新物理页后 `refcount` 降为 1，`pr_writable()` 返回 1，页表项恢复 `PTF_WRITE`。
 
+> **方案四标注**：CoW 设置中的 `pt_writemap()` 在方案四下通过 `vm_phys_to_virt()` 直接操作页表页，无需 `createpde` 临时映射窗口。CoW 的逻辑（`refcount > 1` → 只读 → 写入触发页错误 → 分配新页）完全不变——direct map 简化的是"如何写入页表项"这个实现细节，而不是 CoW 的策略逻辑。这是策略/机制分离的一个例证：CoW 策略（何时共享、何时复制）不变，机制（如何写入页表）被简化。
+
+#### 2.8.5 方案四视角：fork 页表创建的终极简化
+
+> **方案四标注**：Direct Map 方案下，fork 创建子进程页表的流程被大幅简化。
+
+**Minix3 的 fork 页表创建**需要 `createpde` 临时映射窗口——VM 无法直接访问物理页，必须请求内核在 VM 的地址空间中临时映射一个物理页，操作完毕后再解除映射：
+
+```
+1. alloc_mem() 分配物理页
+2. createpde() 建立临时映射窗口
+3. 通过临时映射窗口清零页目录
+4. pt_mapkernel() 建立内核映射
+5. 复制父进程用户空间映射
+6. 释放临时映射窗口
+```
+
+**方案四的 fork 页表创建**只需 4 步，无需临时映射窗口：
+
+```
+1. bitmap.alloc_mem(1)           → 分配新页目录物理页
+2. vm_phys_to_virt(dir_phys)     → 清零（物理页天然有 VA）
+3. pt_mapkernel(dir_ptr)         → 建立内核映射（含 kernel direct map）
+4. 复制父进程的用户空间映射
+```
+
+**三种方案的复杂度递减**：
+
+| 方案 | 步骤 | 复杂度来源 |
+|------|------|-----------|
+| Minix3（createpde） | 分配 → 建临时映射 → 清零 → 建内核映射 → 复制 → 释放临时映射 | VM 无法直接访问物理页 |
+| 方案三（PtRegion） | 分配 → 从 PtRegion 分配 VA → 清零 → 建内核映射 → 复制 | 页表页需要特殊 VA 管理 |
+| 方案四（Direct Map） | 分配 → `vm_phys_to_virt()` 清零 → 建内核映射 → 复制 | 物理页天然有 VA |
+
+读者应感受到：**direct map 的"终极简化"不是"又少了一步"，而是"间接操作的根源被消除了"**——Minix3 的 `createpde` 和方案三的 PtRegion 都是为了解决"VM 无法直接访问物理页"这个问题，direct map 从根本上消除了这个问题。
+
+**双视图模型在 fork 中的协作**：VM 通过 VM direct map（`vm_phys_to_virt()`）操作物理页（清零、复制），通过 `pt_mapkernel()` 确保新页表包含 kernel direct map。两者在 fork 中协作——VM 用自己的视图操作数据，用内核的视图确保新进程的页表包含内核映射。
+
 ### 2.9 完成阶段
 
 #### 2.9.1 设置子进程状态
@@ -1461,6 +1499,8 @@ fn map_writept(vmp: &VmProc) -> Result<(), PageTableError> {
     Ok(())
 }
 ```
+
+> **方案四标注**：`map_writept()` 中 `pt_writemap()` 的实现通过 `vm_phys_to_virt()` 直接操作页表页，无需 Minix3 的 `createpde` 临时映射窗口。这是 §2.8.5 "终极简化"在 Rust 实现中的体现。
 
 ### 4.5 内核通知
 

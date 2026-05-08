@@ -617,6 +617,141 @@ impl Paging for MockPaging {
 }
 ```
 
+### 3.6 VM 初始页表结构
+
+> **方案四新增**：本节描述 Direct Map 方案下 kernel 为 VM 创建的初始页表。这是整个 direct map 叙事的物理起点——04-physical-memory.md 的"3 阶段启动"和 05-vm-allocpage.md 的"方案四"都以本节描述的初始页表为前提。
+
+#### 3.6.0 双视图地址空间布局
+
+VM 进程的虚拟地址空间包含两个 direct map 区域——一个在用户空间（VM direct map），一个在内核空间（Kernel direct map）。两者映射同一物理内存，但特权级不同：
+
+```
+x86-64 VM 进程地址空间布局（48 位虚拟地址）：
+
+0x00000000_00000000 ┌─────────────────────────┐
+                   │ VM 代码/数据             │
+                   │ (2MB huge pages, U/S=1)  │
+0x00000000_40000000 ├─────────────────────────┤
+                   │ VM direct map            │  ← vm_phys_to_virt(pa) = DIRECT_MAP_BASE + pa
+                   │ (1GB huge pages, U/S=1)  │     VM 用户态可访问
+                   │ 映射全部物理内存          │
+0x00000000_80000000 ├─────────────────────────┤
+                   │ ... (用户空间其他区域)    │
+                   │                          │
+0x00008000_00000000 ├─────────────────────────┤ ← 非规范地址空洞
+                   │ (不可访问)               │
+0xFFFF8000_00000000 ├─────────────────────────┤
+                   │ Kernel direct map        │  ← kernel_phys_to_virt(pa) = KERNEL_DIRECT_MAP_BASE + pa
+                   │ (1GB huge pages, U/S=0)  │     仅 ring 0 可访问
+                   │ 映射全部物理内存          │
+0xFFFF8800_00000000 ├─────────────────────────┤
+                   │ Kernel 代码/数据         │
+                   │ (U/S=0, G=1)             │
+0xFFFFFFFF_FFFFFFFF └─────────────────────────┘
+```
+
+**这不是"两份映射"，而是"同一物理内存在不同特权级下的两个必要窗口"**。x86-64 的特权级硬件要求：
+- VM（ring 3）通过 U/S=1 的 PTE 访问物理内存
+- Kernel（ring 0）通过 U/S=0 的 PTE 访问物理内存
+
+一个 PTE 的 U/S 位不可能同时为 0 和 1，因此两个窗口是硬件的必然要求，不是冗余。
+
+| 属性 | VM direct map | Kernel direct map |
+|------|--------------|-------------------|
+| 虚拟地址基址 | `0x00000000_00000000` | `0xFFFF8000_00000000` |
+| U/S 位 | 1（用户态可访问） | 0（仅内核态可访问） |
+| NX 位 | 1（不可执行） | 1（不可执行） |
+| G 位 | 0 | 1（CR3 切换不刷新 TLB） |
+| 建立者 | Kernel 初始页表 | VM `map_kernel()` |
+| 修改者 | VM（Phase 2 扩展） | 无人（只读不变量） |
+
+#### 3.6.1 4 页结构
+
+Kernel 创建 VM 进程时，建立最小初始页表——仅 4 页物理内存（16KB）：
+
+```
+x86-64 初始页表（4 页 = 16KB）：
+
+PML4[0]   → PDPT_A → PD_A → 2MB huge pages（VM 代码/数据）
+PML4[32]  → PDPT_B → PDPT_B[0] = phys 0 | P | RW | US | NX | PS  ← 1GB direct map
+```
+
+| 页 | 用途 | 物理位置 |
+|----|------|---------|
+| PML4 | 根页表 | 物理内存前几页 |
+| PDPT_A | VM 代码/数据映射 | 同上 |
+| PD_A | VM 代码/数据（2MB 大页） | 同上 |
+| PDPT_B | VM direct map | 同上 |
+
+**PDPT_B[0] 那一个 8 字节的表项，就是 1GB direct map。**
+
+这不是"精心设计的最小集"，而是"硬件大页机制的自然结果"。x86-64 的 1GB huge page 机制使得一个页表项就能映射 1GB 物理内存。Kernel 只需在 PDPT_B 的第 0 个 slot 写入 `phys 0 | P | RW | US | NX | PS`，VM 就能通过 `vm_phys_to_virt()` 访问前 1GB 物理内存。
+
+#### 3.6.2 跨架构等价结构
+
+三种架构的初始页表结构在语义上等价，只是层级命名不同：
+
+| 架构 | 第 1 级 | 第 2 级 | 第 3 级 = 1GB direct map |
+|------|---------|---------|------------------------|
+| x86-64 | PML4 | PDPT | PDPT[i] = 1GB huge page |
+| arm64 | PGD | PUD | PUD[i] = 1GB block |
+| riscv64 | PGD | PMD | PMD[i] = 1GB gigapage |
+
+三种架构的 direct map 语义被归一化为"在第 2 级页表入口写一个大页表项"。这为 `DirectMapArch` trait 的设计提供了基础——跨架构适配不是"为每个架构写一套代码"，而是"找到语义上的最大公约数"。
+
+#### 3.6.3 DirectMapArch trait
+
+三种架构的 direct map 语义可归一化为以下 trait：
+
+```rust
+pub trait DirectMapArch {
+    const DIRECT_MAP_BASE: u64;
+    const HUGE_PAGE_SIZE: u64;
+    const HUGE_PAGE_SHIFT: u32;
+    const PTE_HUGE_FLAGS: u64;
+
+    fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
+        VirBytes(phys.0 + Self::DIRECT_MAP_BASE)
+    }
+
+    fn vm_virt_to_phys(virt: VirBytes) -> PhysBytes {
+        PhysBytes(virt.0 - Self::DIRECT_MAP_BASE)
+    }
+
+    fn supports_1gb_page() -> bool;
+}
+```
+
+| 架构 | `DIRECT_MAP_BASE` | `HUGE_PAGE_SIZE` | `PTE_HUGE_FLAGS` | `supports_1gb_page()` |
+|------|-------------------|-------------------|-------------------|----------------------|
+| x86-64 | `0xFFFF8000_00000000` | 1GB | `PS | RW | US | NX` | CPUID 检查 |
+| arm64 | `0xFFFF8000_00000000` | 1GB | `BLOCK | UXN | PXN` | 始终支持 |
+| riscv64 Sv39 | `0xFFFFFFC0_00000000` | 1GB | `Gigapage` | 始终支持 |
+
+**1GB 大页 CPU 支持检查**：并非所有 x86-64 CPU 支持 1GB 大页（需 CPUID.80000001H:EDX.GBPAGES 检查）。不支持时回退到 2MB 大页（每 1GB 段需 1 个 PD 页 = 512 个 2MB 条目）。回退逻辑在 `DirectMapArch` 抽象层完成，对上层 `vm_phys_to_virt()` 透明。自举逻辑几乎不变——只是初始页表多一个 PD 页。
+
+**设计思考**：`DirectMapArch` 的核心抽象不是"页表层级差异"（PML4/PDPT vs PGD/PUD vs PGD/PMD），而是"在第几级页表写大页表项"。三种架构的答案都是"第 2 级"，这使 trait 的设计极其简洁——`vm_phys_to_virt()` 就是一行加法，与架构无关。
+
+#### 3.6.4 初始页表的建立者
+
+初始页表由 **kernel** 建立，而非 VM 自建。原因：
+
+1. **VM 还没有运行**：初始页表是 VM 进程创建的前提，VM 进程的代码/数据映射就在初始页表中
+2. **Kernel 掌握物理内存布局**：kernel 知道哪些物理页可用，可以安全地为初始页表分配物理页
+3. **与 Minix3 一致**：Minix3 的 kernel 也是在创建 VM 进程时建立初始页表
+
+VM 启动后，通过 `vm_phys_to_virt()` 读写自己的页表，可以自行扩展 direct map（Phase 2）。但初始的 4 页 + 1GB 映射由 kernel 提供。
+
+#### 3.6.5 初始页表物理页的冲突避免
+
+初始页表（4 页）放在物理内存前几页，需要确保这些页不会与 reserved_region 冲突，也不会被 bitmap 误分配。处理方式：
+
+1. Kernel 从预留区域中划出 4 页，用于初始页表
+2. 在 `boot_info` 中将这 4 页标记为 `used`，bitmap allocator 不会分配它们
+3. reserved_region 的物理页范围与初始页表页不重叠
+
+这保证了自举的完整性——bitmap allocator 初始化时，初始页表的物理页已经被排除在可分配范围之外。
+
 ---
 
 ## 4. 实现详解

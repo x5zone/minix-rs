@@ -642,6 +642,10 @@ Minix3 使用 C 指针实现多对一映射和链表结构。Rust 中使用 `Non
 4. **类型安全**: `NonNull<T>` 保证指针非空（`Some` 状态下），比 `*mut T` 更安全
 5. **解引用方式**: 通过 `.as_ptr()` 获取 `*mut T`，再进行 unsafe 解引用
 
+> **方案四标注**：NonNull 的地址来源统一。在方案三中，指向物理页内容的 NonNull 来自 `alloc_virt()`（PtRegion 分配的 VA）；在方案四中，NonNull 来自 `vm_phys_to_virt(alloc_phys())`。语义不变（都是非空裸指针），但来源统一了——所有物理页的 NonNull 都经过同一条路径。这是 direct map 统一性的微观体现：每个 `unsafe { (*ptr).field }` 背后的指针都来自 `vm_phys_to_virt()`。
+
+> **方案四补充**：PhysRegion 的核心操作（`link_to_block`/`unlink_from_block`）操作的是链表指针，不直接访问物理页内容，因此不受 direct map 影响。但 PhysRegion 通过 `ph: NonNull<PhysBlock>` 引用的 PhysBlock，其内部的物理页内容访问（如 CoW 复制、页面清零）在方案四下统一通过 `vm_phys_to_virt()` 完成。PhysRegion 是"管理元数据"，PhysBlock 是"物理页内容"——direct map 简化的是后者，前者不需要改动。
+
 **生命周期管理**:
 
 ```
