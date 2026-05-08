@@ -15,6 +15,8 @@ use crate::alloc_page::VmPageAllocator;
 use crate::memtype::{PagefaultResult, MEM_TYPE_ANON};
 use crate::pagetable::{PageTable, PageFlags};
 use crate::phys_mem::PhysBytes as PmPhysBytes;
+use crate::direct_map::vm_phys_to_virt;
+use core::ptr::NonNull;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -56,8 +58,10 @@ pub(crate) fn handle_pagefault(
     let mut active = table.get_active(slot)
         .ok_or(PageFaultError::ProcessNotFound)?;
 
-    let region = active.regions_mut().find_mut(fault.vaddr)
+    let mut region = active.regions_mut().find_mut(fault.vaddr)
         .ok_or(PageFaultError::InvalidAddress)?;
+
+    let page_table_mut = active.page_table_mut();
 
     let offset = VirBytes(fault.vaddr.0 - region.vaddr.0);
     let page_index = (offset.0 / PAGE_SIZE) as usize;
@@ -66,7 +70,7 @@ pub(crate) fn handle_pagefault(
         return Err(PageFaultError::InvalidAddress);
     }
 
-    let _memtype = region.def_memtype
+    let memtype = region.def_memtype
         .ok_or(PageFaultError::InternalError)?;
 
     let is_unmapped = region.physblocks.get(page_index)
@@ -80,6 +84,30 @@ pub(crate) fn handle_pagefault(
         .unwrap_or(false);
 
     if is_unmapped {
+        let new_phys = page_alloc.alloc_page()
+            .map_err(|_| PageFaultError::OutOfMemory)?;
+
+        let mut new_phys_region = PhysRegion::new(offset);
+        unsafe {
+            new_phys_region.bind_block(NonNull::from(
+                &mut PhysBlock::new(new_phys) as *mut PhysBlock
+            ));
+        }
+        new_phys_region.memtype = memtype;
+
+        region.set_phys_region(offset, new_phys_region);
+
+        let writable = region.is_writable();
+        let flags = if writable {
+            PageFlags::read_write()
+        } else {
+            PageFlags::read_only()
+        };
+
+        let vaddr = VirBytes(region.vaddr.0 + offset.0);
+        page_table_mut.map(vaddr, new_phys, flags)
+            .map_err(|_| PageFaultError::InternalError)?;
+
         active.inc_minor_fault();
         return Ok(());
     }
@@ -88,6 +116,46 @@ pub(crate) fn handle_pagefault(
         if !region.is_writable() {
             return Err(PageFaultError::AccessViolation);
         }
+
+        let old_phys = region.physblocks.get(page_index)
+            .and_then(|opt| opt.as_ref())
+            .and_then(|pr| pr.get_phys_addr())
+            .ok_or(PageFaultError::InternalError)?;
+
+        let new_phys = page_alloc.alloc_page()
+            .map_err(|_| PageFaultError::OutOfMemory)?;
+
+        unsafe {
+            let src = vm_phys_to_virt(old_phys) as *const u8;
+            let dst = vm_phys_to_virt(new_phys) as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE as usize);
+        }
+
+        if let Some(pr) = region.physblocks.get_mut(page_index) {
+            if let Some(existing) = pr {
+                let should_free = existing.unbind_block();
+                if should_free {
+                    if let Some(memtype) = existing.memtype {
+                        let _ = memtype.on_unreference(existing);
+                    }
+                }
+            }
+
+            let mut new_phys_region = PhysRegion::new(offset);
+            unsafe {
+                new_phys_region.bind_block(NonNull::from(
+                    &mut PhysBlock::new(new_phys) as *mut PhysBlock
+                ));
+            }
+            new_phys_region.memtype = memtype;
+            *pr = Some(new_phys_region);
+        }
+
+        let flags = PageFlags::read_write();
+        let vaddr = VirBytes(region.vaddr.0 + offset.0);
+        page_table_mut.map(vaddr, new_phys, flags)
+            .map_err(|_| PageFaultError::InternalError)?;
+
         active.inc_major_fault();
         return Ok(());
     }

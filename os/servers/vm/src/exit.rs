@@ -10,6 +10,7 @@ use crate::vmproc::{VmProcTable, ActiveProc, ExitingProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::PhysBytes;
+use crate::pagetable::PageTable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmExitError {
@@ -48,6 +49,24 @@ pub(crate) fn handle_vm_exit(
     let region_top = active.region_top();
     let total = active.total();
 
+    let regions: alloc::vec::Vec<VirRegion> = active.regions_mut().iter()
+        .map(|r| {
+            VirRegion::new(r.vaddr, r.length, r.flags)
+        })
+        .collect();
+
+    let mut page_table = active.page_table_mut();
+
+    for region in &regions {
+        let page_count = (region.length.0 / 4096) as usize;
+        for i in 0..page_count {
+            let vaddr = VirBytes(region.vaddr.0 + (i as u64) * 4096);
+            if let Ok(()) = page_table.unmap(vaddr) {}
+        }
+    }
+
+    drop(page_table);
+
     let exiting = active.mark_exiting();
 
     free_process_regions(exiting, page_alloc, region_top, total);
@@ -62,15 +81,17 @@ pub(crate) fn handle_vm_willexit(
     let slot = table.vm_isokendpt(endpoint)
         .map_err(|_| VmExitError::ProcessNotFound)?;
 
-    let _active = table.get_active(slot)
+    let active = table.get_active(slot)
         .ok_or(VmExitError::ProcessNotFound)?;
+
+    let _exiting = active.mark_exiting();
 
     Ok(())
 }
 
 fn free_process_regions(
     mut exiting: ExitingProc<'_>,
-    _page_alloc: &mut VmPageAllocator,
+    page_alloc: &mut VmPageAllocator,
     _region_top: VirBytes,
     _total: VirBytes,
 ) {

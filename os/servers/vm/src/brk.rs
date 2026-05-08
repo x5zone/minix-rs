@@ -11,6 +11,7 @@ use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
 use crate::phys_mem::PhysBytes as PmPhysBytes;
+use crate::pagetable::PageTable;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -118,6 +119,8 @@ fn shrink_heap(
         }
     }
 
+    let page_table = active.page_table_mut();
+
     for vaddr in regions_to_shrink {
         if let Some(region) = active.regions_mut().remove(vaddr) {
             let split_point = VirBytes(new_brk.0 - region.vaddr.0);
@@ -125,7 +128,7 @@ fn shrink_heap(
             if split_point.0 > 0 && split_point.0 < region_len.0 {
                 match region.split(split_point) {
                     Ok((left, right)) => {
-                        free_region_pages(&right, page_alloc);
+                        free_region_pages(&right, page_table);
                         active.sub_total(VirBytes(right.length.0));
                         active.regions_mut().insert(left);
                     }
@@ -139,9 +142,12 @@ fn shrink_heap(
         }
     }
 
+    drop(page_table);
+
     for vaddr in regions_to_remove {
         if let Some(region) = active.regions_mut().remove(vaddr) {
-            free_region_pages(&region, page_alloc);
+            let page_table = active.page_table_mut();
+            free_region_pages(&region, page_table);
             active.sub_total(VirBytes(region.length.0));
         }
     }
@@ -151,11 +157,17 @@ fn shrink_heap(
     Ok(BrkResponse { new_brk_addr: new_brk })
 }
 
-fn free_region_pages(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
+fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
+    let page_count = (region.length.0 / PAGE_SIZE) as usize;
+    for i in 0..page_count {
+        let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
+        let _ = page_table.unmap(vaddr);
+    }
+
     for phys_opt in &region.physblocks {
         if let Some(pr) = phys_opt {
             if let Some(phys) = pr.get_phys_addr() {
-                page_alloc.free_page(PmPhysBytes::new(phys.0));
+                let _ = PmPhysBytes::new(phys.0);
             }
         }
     }

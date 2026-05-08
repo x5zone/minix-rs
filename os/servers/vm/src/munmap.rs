@@ -10,6 +10,7 @@ use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::PhysBytes as PmPhysBytes;
+use crate::pagetable::PageTable;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -63,12 +64,14 @@ pub(crate) fn handle_munmap(
     let mut active = table.get_active(slot)
         .ok_or(MunmapError::ProcessNotFound)?;
 
-    unmap_range(&mut active, page_alloc, request.addr, request.length)
+    let mut page_table = active.page_table_mut();
+
+    unmap_range(&mut active, &mut page_table, request.addr, request.length)
 }
 
 fn unmap_range(
     active: &mut ActiveProc<'_>,
-    page_alloc: &mut VmPageAllocator,
+    page_table: &mut PageTable,
     addr: VirBytes,
     length: VirBytes,
 ) -> Result<(), MunmapError> {
@@ -93,7 +96,7 @@ fn unmap_range(
             let reg_end = region.end_addr();
 
             if unmap_start <= reg_start && unmap_end >= reg_end {
-                free_region_pages(&region, page_alloc);
+                free_region_pages(&region, page_table);
                 active.sub_total(VirBytes(region.length.0));
             } else if unmap_start > reg_start && unmap_end < reg_end {
                 let head_len = VirBytes(unmap_start.0 - reg_start.0);
@@ -103,7 +106,7 @@ fn unmap_range(
                 let (_middle, right) = remainder.split(VirBytes(length.0))
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&_middle, page_alloc);
+                free_region_pages(&_middle, page_table);
                 active.sub_total(VirBytes(length.0));
 
                 active.regions_mut().insert(left);
@@ -113,7 +116,7 @@ fn unmap_range(
                 let (head, tail) = region.split(cut_len)
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&head, page_alloc);
+                free_region_pages(&head, page_table);
                 active.sub_total(VirBytes(head.length.0));
 
                 active.regions_mut().insert(tail);
@@ -122,7 +125,7 @@ fn unmap_range(
                 let (head, tail) = region.split(head_len)
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&tail, page_alloc);
+                free_region_pages(&tail, page_table);
                 active.sub_total(VirBytes(tail.length.0));
 
                 active.regions_mut().insert(head);
@@ -133,11 +136,17 @@ fn unmap_range(
     Ok(())
 }
 
-fn free_region_pages(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
+fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
+    let page_count = (region.length.0 / PAGE_SIZE) as usize;
+    for i in 0..page_count {
+        let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
+        let _ = page_table.unmap(vaddr);
+    }
+
     for phys_opt in &region.physblocks {
         if let Some(pr) = phys_opt {
             if let Some(phys) = pr.get_phys_addr() {
-                page_alloc.free_page(PmPhysBytes::new(phys.0));
+                let _ = PmPhysBytes::new(phys.0);
             }
         }
     }
