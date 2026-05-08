@@ -353,7 +353,7 @@ impl<'a> ActiveProc<'a> {
         use minix_arch::paging::PageFlags;
         use minix_types::{PhysBytes, VirBytes};
 
-        const PAGE_SIZE: u64 = 4096;
+        const PAGE_SIZE: u64 = <PageTable as Paging>::PAGE_SIZE as u64;
 
         // Collect all mappings first to avoid borrow issues
         let mut mappings: alloc::vec::Vec<(VirBytes, PhysBytes, PageFlags)> = alloc::vec::Vec::new();

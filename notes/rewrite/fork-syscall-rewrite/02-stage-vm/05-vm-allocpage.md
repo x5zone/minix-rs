@@ -47,7 +47,7 @@ void *vm_allocpage(phys_bytes *phys, int reason);
 | 参数 | 含义 |
 |------|------|
 | `phys` | [出参] 物理地址，供硬件使用（如加载到 CR3） |
-| `reason` | 用途分类：`VMP_SLAB` / `VMP_PAGEDIR` / `VMP_PAGETABLE` |
+| `reason` | 用途分类：`VMP_SPARE`(0) / `VMP_SLAB` / `VMP_PAGEDIR` / `VMP_PAGETABLE` |
 | `pages` | 页数（`vm_allocpage` 固定为 1） |
 | 返回值 | 虚拟地址，供 VM 代码访问 |
 
@@ -437,9 +437,9 @@ impl VmPageAllocator<Bootstrap, RealPtOps> {
     /// 
     /// 注意：into_normal 仅在 RealPtOps 上实现，因为 PtRegion::from_reserved
     /// 需要真实的页表操作。测试代码使用 into_normal_for_test() 配合 MockPtOps。
-    pub(crate) fn into_normal(self) -> VmPageAllocator<Normal, RealPtOps> {
+    pub(crate) fn into_normal(mut self) -> VmPageAllocator<Normal, RealPtOps> {
         let pt_region = PtRegion::from_reserved_with_ops(
-            &self.reserved,
+            &mut self.reserved,
             self.phys_alloc.unwrap(),
             self.pt_ops.unwrap(),
         );
@@ -647,25 +647,39 @@ pub(crate) struct ReservedRegion {
     virt_start: VirBytes,
     total_pages: usize,
     allocated_pages: usize,
+    high_watermark: usize,
     bitmap: u64,
 }
 
 impl ReservedRegion {
     pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let free_bit = (!self.bitmap).trailing_zeros() as usize;
+        let start = self.high_watermark;
+        if start >= self.total_pages {
+            return None;
+        }
+
+        let mask = !self.bitmap >> start;
+        let rel_bit = mask.trailing_zeros() as usize;
+        let free_bit = start + rel_bit;
+
         if free_bit >= self.total_pages {
             return None;
         }
+
         self.bitmap |= 1 << free_bit;
         self.allocated_pages += 1;
+
         let offset = free_bit * PAGE_SIZE;
         let virt = VirBytes(self.virt_start.0 + offset as u64);
         let phys = self.phys_start.add(offset);
+
         Some((virt, phys))
     }
 
-    pub(crate) fn alloc_contig_virt(&self, pages: usize) -> VirBytes {
-        let offset = self.allocated_pages * PAGE_SIZE;
+    pub(crate) fn alloc_contig_virt(&mut self, pages: usize) -> VirBytes {
+        assert!(pages <= self.total_pages - self.high_watermark);
+        let offset = self.high_watermark * PAGE_SIZE;
+        self.high_watermark += pages;
         VirBytes(self.virt_start.0 + offset as u64)
     }
 
@@ -676,42 +690,16 @@ impl ReservedRegion {
 }
 ```
 
-`alloc_contig_virt` 用于在预留区域末尾切出连续虚拟地址（给 PtRegion 的 PDPT/PD/PT[0] 使用），它不修改 bitmap——这些页的物理内存由内核保证。
+`alloc_contig_virt` 用于在预留区域高水位标记之上切出连续虚拟地址（给 PtRegion 的 PDPT/PD/PT[0] 使用），它不修改 bitmap——这些页的物理内存由内核保证已映射。
 
-**`alloc_contig_virt` 的安全约束**：
+**`high_watermark` 的设计意图**：
 
-1. **调用时机**：必须在所有 `alloc_page()` 调用之后、`into_normal()` 之前调用
-2. **不更新 bitmap**：返回的虚拟地址对应的 bitmap 位保持为 0
-3. **不递增 `allocated_pages`**：当前实现存在隐患，可能导致后续 `alloc_page()` 返回重叠地址
+`high_watermark` 将预留区域分为两个区域：
 
-**待修复问题**：`alloc_contig_virt` 应该维护一个"高水位标记"（`high_watermark`），或者改为 `&mut self` 并递增 `allocated_pages`。当前实现假设调用者不会在 `alloc_contig_virt` 之后继续调用 `alloc_page()`，但这个假设没有编译期保证。
+1. **低地址区**（slot 0 ~ high_watermark-1）：由 `alloc_contig_virt` 线性切出，供 PtRegion 初始化使用。这些 slot 不经过 bitmap 分配，物理页由内核保证已映射。
+2. **高地址区**（slot high_watermark ~ total_pages-1）：由 `alloc_page` 通过 bitmap 分配，供 Bootstrap 阶段的其他分配使用。
 
-**推荐修复方案**：
-
-```rust
-pub(crate) struct ReservedRegion {
-    phys_start: PhysBytes,
-    virt_start: VirBytes,
-    total_pages: usize,
-    allocated_pages: usize,      // bitmap 分配的页数
-    high_watermark: usize,       // 高水位标记（包括 alloc_contig_virt）
-    bitmap: u64,
-}
-
-pub(crate) fn alloc_contig_virt(&mut self, pages: usize) -> VirBytes {
-    let offset = self.high_watermark * PAGE_SIZE;
-    self.high_watermark += pages;
-    VirBytes(self.virt_start.0 + offset as u64)
-}
-
-pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-    let free_bit = (!self.bitmap).trailing_zeros() as usize;
-    if free_bit >= self.total_pages || free_bit >= self.high_watermark {
-        return None;
-    }
-    // ...
-}
-```
+`alloc_page` 从 `high_watermark` 开始搜索空闲位（`let mask = !self.bitmap >> start`），确保 bitmap 分配不会与 `alloc_contig_virt` 的线性分配重叠。`alloc_contig_virt` 递增 `high_watermark`，将新切出的区域从 bitmap 可分配空间中排除。两个方法共享同一个 `high_watermark`，互不干扰。
 
 ### 4.3 PtRegion：页表页专用虚拟地址区域
 
@@ -722,6 +710,7 @@ pub(crate) struct PtRegion<O: PtOps> {
     next: VirBytes,
     pd_page: VirBytes,
     current_pt: VirBytes,
+    current_pt_base: VirBytes,
     phys_alloc: Box<dyn PhysAllocator>,
     pt_ops: O,
 }
@@ -732,7 +721,7 @@ pub(crate) struct PtRegion<O: PtOps> {
 ```rust
 impl<O: PtOps> PtRegion<O> {
     pub(crate) fn from_reserved_with_ops(
-        reserved: &ReservedRegion,
+        reserved: &mut ReservedRegion,
         phys_alloc: Box<dyn PhysAllocator>,
         pt_ops: O,
     ) -> Self {
@@ -750,6 +739,7 @@ impl<O: PtOps> PtRegion<O> {
             next: VirBytes(start.0 + 3 * PAGE_SIZE as u64),
             pd_page,
             current_pt,
+            current_pt_base: start,
             phys_alloc,
             pt_ops,
         };
@@ -802,28 +792,15 @@ fn expand(&mut self) -> Option<()> {
         pt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
 
     self.pt_ops.zero_table(pt_virt);
-    self.current_pt = pt_virt;
 
-    // 新 PT 页的第一个 slot 自映射
-    self.pt_ops.write_pte(pt_virt, 0,
+        self.current_pt = pt_virt;
+        self.current_pt_base = VirBytes(self.start.0 + (pd_idx * 512 * PAGE_SIZE) as u64);
+
+        self.pt_ops.write_pte(pt_virt, 0,
         pt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
 
     self.mapped_end = VirBytes(self.mapped_end.0 + 512 * PAGE_SIZE as u64);
     Some(())
-}
-```
-
-**虚拟地址到物理地址转换**：利用每个 PT 页首 slot 自映射的特性，统一用 `pd_idx` 和 `pte_idx` 两级查找。
-
-```rust
-pub(crate) fn virt_to_phys(&self, virt: VirBytes) -> PhysBytes {
-    let offset = virt.0 - self.start.0;
-    let pd_idx = offset as usize / (512 * PAGE_SIZE);
-    let pte_idx = (offset as usize / PAGE_SIZE) % 512;
-
-    let pt_virt = VirBytes(self.start.0 + (pd_idx * 512 * PAGE_SIZE) as u64);
-    let pte = self.pt_ops.read_pte(pt_virt, pte_idx);
-    PhysBytes::new(pte & 0x0000_FFFF_FFFF_F000)
 }
 ```
 

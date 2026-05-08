@@ -139,7 +139,7 @@ static int free_page_cache[PAGE_CACHE_MAX];
 static int free_page_cache_size = 0;
 ```
 
-- **`NUMBER_PHYSICAL_PAGES`**：32 位地址空间的总页数。`0x100000000ULL` 是 4GB，`VM_PAGE_SIZE` 在 i386 上是 4096，所以总页数为 `0x100000 / 4096 = 1048576` 页（即 4GB / 4KB = 1M 页）。
+- **`NUMBER_PHYSICAL_PAGES`**：32 位地址空间的总页数。`0x100000000ULL` 是 4GB，`VM_PAGE_SIZE` 在 i386 上是 4096，所以总页数为 `0x100000000 / 4096 = 0x100000 = 1048576` 页（即 4GB / 4KB = 1M 页）。
 - **`PAGE_BITMAP_CHUNKS`**：`BITMAP_CHUNKS(NUMBER_PHYSICAL_PAGES)` 计算位图需要的 `bitchunk_t` 数量。`bitchunk_t` 是 `uint32_t`，每个 chunk 管理 32 页。`1M / 32 = 32768` 个 chunk，每个 chunk 4 字节，总大小为 `32768 * 4 = 131072` 字节（128KB）。
 - **`free_pages_bitmap[]`**：静态数组，在 BSS 段中。每一位对应一个物理页，`1` 表示空闲，`0` 表示已分配。
 - **`free_page_cache[]`**：静态数组，大小为 10000 项。用于缓存最近释放的单页，加速单页分配。
@@ -164,7 +164,7 @@ static int free_page_cache_size = 0;
 ### 2.2 初始化流程：`mem_init()`
 
 ```c
-// [alloc.c:306-345](minix3/minix/servers/vm/alloc.c#L306-L345)
+// [alloc.c:306-335](minix3/minix/servers/vm/alloc.c#L306-L335)
 
 void mem_init(struct memory *chunks)
 {
@@ -217,7 +217,7 @@ Minix3 的 `alloc_pages()` 使用**从高地址向低地址扫描**的策略（�
 ### 2.3 分配流程：`alloc_mem()`
 
 ```c
-// [alloc.c:242-281](minix3/minix/servers/vm/alloc.c#L242-L281)
+// [alloc.c:242-279](minix3/minix/servers/vm/alloc.c#L242-L279)
 
 phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 {
@@ -276,7 +276,7 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 ### 2.4 底层分配：`alloc_pages()`
 
 ```c
-// [alloc.c:404-462](minix3/minix/servers/vm/alloc.c#L404-L462)
+// [alloc.c:404-460](minix3/minix/servers/vm/alloc.c#L404-L460)
 
 static phys_bytes alloc_pages(int pages, int memflags)
 {
@@ -365,7 +365,7 @@ static phys_bytes alloc_pages(int pages, int memflags)
 ### 2.5 位图扫描：`findbit()`
 
 ```c
-// [alloc.c:369-401](minix3/minix/servers/vm/alloc.c#L369-L401)
+// [alloc.c:369-399](minix3/minix/servers/vm/alloc.c#L369-L399)
 
 static int findbit(int low, int startscan, int pages, int memflags, int *len)
 {
@@ -427,8 +427,10 @@ Minix3 采用这种策略是为了让低地址内存保留更久。低地址内�
 
 void free_mem(phys_clicks base, phys_clicks clicks)
 {
-/* Return a block of free memory to the hole list.  The parameters tell
- * where the block starts and how big it is.
+/* Return a block of free memory to the hole list.  The parameters tell where
+ * the block starts in physical memory and how big it is.  The block is added
+ * to the hole list.  If it is contiguous with an existing hole on either end,
+ * it is merged with the hole or holes.
  */
   if (clicks == 0) return;
 
@@ -443,7 +445,7 @@ void free_mem(phys_clicks base, phys_clicks clicks)
 - **`free_pages(base, clicks)`**：调用底层释放函数。
 
 ```c
-// [alloc.c:465-484](minix3/minix/servers/vm/alloc.c#L465-L484)
+// [alloc.c:465-481](minix3/minix/servers/vm/alloc.c#L465-L481)
 
 static void free_pages(phys_bytes pageno, int npages)
 {
@@ -623,7 +625,7 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 **`pt_init_done = 1` 的位置**：
 
 ```c
-// [pagetable.c:1309](minix3/minix/servers/vm/pagetable.c#L1309)
+// [pagetable.c:1311](minix3/minix/servers/vm/pagetable.c#L1311)
 
 pt_init_done = 1;
 ```
@@ -1085,11 +1087,8 @@ impl VmPageAllocator<Normal> {
 // os/servers/vm/src/alloc_page.rs
 
 impl VmPageAllocator<Normal, RealPtOps> {
-    /// 将 PhysAllocator 的元数据从预留区域搬迁到堆上。
     pub(crate) fn relocate_phys_allocator(&mut self) {
-        let pt_region = self.pt_region.as_mut()
-            .expect("PtRegion must be initialized before relocation");
-        pt_region.relocate_phys_allocator();
+        self.pt_region.as_mut().unwrap().relocate_phys_allocator();
     }
 }
 ```
@@ -1190,8 +1189,8 @@ impl PhysAllocator for BitmapAllocator {
 
     fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
         match index {
-            0 => (self.bitmap.as_ptr() as *const u8, self.bitmap.len(), 8),
-            1 => (self.page_cache.as_ptr() as *const u8, self.page_cache.len(), 8),
+            0 => (self.bitmap.as_ptr() as *const u8, self.bitmap.len(), core::mem::size_of::<u64>()),
+            1 => (self.page_cache.as_ptr() as *const u8, self.page_cache.len(), core::mem::size_of::<usize>()),
             _ => (core::ptr::null(), 0, 0),
         }
     }
@@ -1223,9 +1222,9 @@ impl PhysAllocator for BuddyAllocator {
 
     fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
         match index {
-            0 => (self.free_list_heads.as_ptr() as *const u8, self.free_list_heads.len(), 4),
-            1 => (self.page_next.as_ptr() as *const u8, self.page_next.len(), 4),
-            2 => (self.page_orders.as_ptr() as *const u8, self.page_orders.len(), 1),
+            0 => (self.free_list_heads.as_ptr() as *const u8, self.free_list_heads.len(), core::mem::size_of::<u32>()),
+            1 => (self.page_next.as_ptr() as *const u8, self.page_next.len(), core::mem::size_of::<u32>()),
+            2 => (self.page_orders.as_ptr() as *const u8, self.page_orders.len(), core::mem::size_of::<u8>()),
             _ => (core::ptr::null(), 0, 0),
         }
     }

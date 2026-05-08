@@ -259,7 +259,7 @@ static struct pdm {
 - `phys`: `page_directories` 页表的物理地址。
 - `page_directories`: `page_directories` 页表的虚拟地址，VM 通过此指针读写页表内容。该页表的每个条目存储一个进程页目录的物理地址。
 
-**初始化过程**（[pagetable.c:1039](minix3/minix/servers/vm/pagetable.c#L1039) `pt_allocate_kernel_mapped_pagetables`）:
+**初始化过程**（[pagetable.c:1035](minix3/minix/servers/vm/pagetable.c#L1035) `pt_allocate_kernel_mapped_pagetables`）:
 
 1. 为每个 `pdm` 分配一个 PDE 编号（通过 `freepde()`）。
 2. 分配一个物理页作为 `page_directories` 页表，内容清零。此函数仅在 VM 初始化时调用一次，liveupdate 时会重新调用一次以切换到动态内存。
@@ -513,7 +513,7 @@ int pt_writemap(struct vmproc * vmp,
 **调用场景**:
 | 场景 | 源码位置 | flags | writemapflags |
 |------|----------|-------|---------------|
-| 建立映射 | `region.c:283` | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_OVERWRITE` |
+| 建立映射 | `region.c:280` | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_OVERWRITE` |
 | 取消映射 | `region.c:1139` | 0 | `WMF_OVERWRITE` |
 | 验证映射 | `region.c:153` | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_VERIFY` |
 | 修改权限 | `pagetable.c:425` | 新 flags | `WMF_OVERWRITE\|WMF_WRITEFLAGSONLY` |
@@ -705,7 +705,7 @@ int pt_map_in_range(struct vmproc *src_vmp, struct vmproc *dst_vmp,
 > - `pt_map_in_range`：复制指定虚拟地址范围内的**页表项（PTE）**，用于复制用户空间映射
 > - `pt_ptmap`：复制页目录和二级页表本身的映射（即让 dst 进程能访问 src 进程的页表结构），用于 RS 服务重启时恢复 VM 的页表自映射
 
-#### 2.3.5 pt_writable - 查询页是否可写
+#### 2.4.2 pt_writable - 查询页是否可写
 
 **源码位置**: `minix/servers/vm/pagetable.c:761`
 
@@ -739,7 +739,7 @@ int pt_writable(struct vmproc *vmp, vir_bytes v)
 
 **调用场景**: 仅在 `#if SANITYCHECKS` 条件编译下使用（`region.c:55`），用于调试输出时标记物理页是只读（R）还是可写（W）。
 
-#### 2.3.6 pt_clearmapcache - 清除内核映射缓存
+#### 2.4.3 pt_clearmapcache - 清除内核映射缓存
 
 **源码位置**: `minix/servers/vm/pagetable.c:751`
 
@@ -767,7 +767,7 @@ void pt_clearmapcache(void)
 | VM 热更新 | `main.c:719` | live update 交换新旧 VM 进程槽位并重新 `pt_bind` 后 |
 | VM 主循环结束 | `main.c:749` | 每次 `alloc_cycle` 后（处理完所有请求后） |
 | page fault 处理完成 | `pagefaults.c:153` | 处理完 page fault、修改页表后 |
-| `pt_assert` 调试 | `pagetable.c:118` | 验证页表前确保内核缓存同步 |
+| `pt_assert` 调试 | `pagetable.c:115` | 验证页表前确保内核缓存同步 |
 
 ---
 
@@ -815,7 +815,7 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 | Minix3 函数 | Rust trait 方法 | 说明 |
 |-------------|-----------------|------|
 | `pt_new()` | `Paging::new()` | 创建页表 |
-| `pt_bind()` | `Paging::switch()` | 激活页表 |
+| `pt_bind()` | `VmPagingExt::bind_to_process()` | 绑定页表到进程（通知内核） |
 | `pt_free()` | `Paging::destroy()` | 销毁页表 |
 | `pt_writemap()` | `Paging::map()` | 建立映射 |
 | `pt_checkrange()` | `Paging::query()` | 检查映射 |
@@ -838,10 +838,12 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 /// 类型安全的地址类型
 ///
 /// 防止虚拟地址和物理地址混淆。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysBytes(pub u64);
 
 /// 编译时防止类型混淆
@@ -856,35 +858,104 @@ fn map(vaddr: VirBytes, paddr: PhysBytes) {
 ```rust
 /// Paging trait 定义（已实现）
 pub trait Paging {
+    const PAGE_SIZE: usize;
+
+    fn new() -> Result<Self, PageTableError>
+    where
+        Self: Sized;
+
     /// 单页映射（底层 API）
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
-    /// 批量映射（默认实现：逐页调用 map）
-    fn map_range(&mut self, vaddr_start: VirBytes, paddr_start: PhysBytes,
-        pages: usize, flags: PageFlags) -> Result<(), PageTableError>;
+    /// 原子覆盖映射（对应 WMF_OVERWRITE）
+    fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+        -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>;
+
+    /// 取消映射，返回原物理地址
+    fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError>;
+
+    /// 更新标志位，保留物理地址（对应 WMF_WRITEFLAGSONLY）
+    fn update_flags(&mut self, vaddr: VirBytes, flags: PageFlags)
+        -> Result<(), PageTableError>;
+
+    /// 查询映射
+    fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)>;
+
+    /// 获取页表根物理地址
+    fn root_paddr(&self) -> PhysBytes;
 
     /// 切换页表（unsafe：修改全局状态）
     unsafe fn switch(&self);
 
+    /// 刷新整个 TLB
+    unsafe fn flush_tlb(&self);
+
+    /// 刷新单个虚拟地址的 TLB 条目
+    unsafe fn flush_tlb_addr(&self, vaddr: VirBytes);
+
+    /// 批量映射（默认实现：逐页调用 map）
+    fn map_range(&mut self, vaddr_start: VirBytes, paddr_start: PhysBytes,
+        pages: usize, flags: PageFlags) -> Result<(), PageTableError> {
+        for i in 0..pages {
+            let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+            let p = PhysBytes(paddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+            self.map(v, p, flags)?;
+        }
+        Ok(())
+    }
+
+    /// 批量取消映射（默认实现：逐页调用 unmap）
+    fn unmap_range(&mut self, vaddr_start: VirBytes, pages: usize)
+        -> Result<(), PageTableError> {
+        for i in 0..pages {
+            let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+            self.unmap(v)?;
+        }
+        Ok(())
+    }
+
     /// 销毁页表（unsafe：需确保未激活）
     unsafe fn destroy(&mut self);
 }
+```
 
+```rust
 /// unsafe 操作封装示例
 impl Paging for MockPaging {
+    const PAGE_SIZE: usize = 4096;
+
+    fn new() -> Result<Self, PageTableError> {
+        Self::new_mock()
+    }
+
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>
     {
-        // 单页映射，参数已由调用者验证
-        self.mappings.insert(vaddr.0, (paddr.0, flags));
+        let v = vaddr.0;
+        let p = paddr.0;
+        if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
+            return Err(PageTableError::InvalidAddress);
+        }
+        if self.mappings.contains_key(&v) {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        self.mappings.insert(v, (p, flags));
         Ok(())
     }
 
     unsafe fn switch(&self) {
-        // 修改全局状态，调用者需确保安全
-        ACTIVE_MOCK_TABLE = Some(self.id);
+        ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
     }
+
+    unsafe fn destroy(&mut self) {
+        self.mappings.clear();
+        if ACTIVE_MOCK_TABLE.load(Ordering::SeqCst) == self.id {
+            ACTIVE_MOCK_TABLE.store(NO_ACTIVE_TABLE, Ordering::SeqCst);
+        }
+    }
+
+    // ... 其他方法省略
 }
 ```
 
@@ -906,7 +977,7 @@ impl Paging for MockPaging {
 
 ```rust
 /// 页表错误类型
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageTableError {
     /// 地址未页对齐或超出有效范围
     InvalidAddress,
@@ -1070,7 +1141,7 @@ cargo test -p minix-arch --features mock
 
 ### A.2 虚拟地址翻译：`vm_lookup`
 
-**源码位置**: `minix/kernel/arch/i386/memory.c:325-370`
+**源码位置**: `minix/kernel/arch/i386/memory.c:325-372`
 
 `vm_lookup` 是内核函数（非 VM 服务器函数），用于将目标进程的虚拟地址翻译为物理地址。被内核的 `do_umap_remote`、`umap_virtual` 等调用。
 

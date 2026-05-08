@@ -115,7 +115,7 @@ vmproc (进程控制块)
 
 - `vm_slot` 在 slot 被首次使用时设置，之后不变
   - Minix3: `vmproc[i].vm_slot = i` 在 [main.c:461](minix3/minix/servers/vm/main.c#L461) 初始化时设置
-  - Rust: `VmProc::vacant()` 因 const 初始化约束使用 `UserSlot(0)` 占位，实际 `vm_slot` 在 `get_empty()` 或 `alloc_empty_slot()` 中根据数组索引设置，语义与 Minix3 一致
+  - Rust 实现差异见 [§4.3](#43-内存布局) 和 [§5.1.2](#512-初始化策略)
 - `vm_flags` 初始为 0，通过 `VMF_INUSE` 标记激活
 - `vm_endpoint` 在 `sys_fork` 后由内核分配
 
@@ -368,20 +368,7 @@ static struct vmproc *init_proc(endpoint_t ep_nr)
 }
 ```
 
-**Rust 设计差异**:
-
-| 方面  | Minix3                                | Rust                                           |
-| --- | ------------------------------------- | ---------------------------------------------- |
-| 类型  | `struct boot_image *vm_boot` (指针)     | `Option<BootImage> vm_boot` (值)                |
-| 所有权 | 多个 vmproc 可指向同一个 boot\_image，零拷贝但无所有权 | 每个 vmproc 拥有独立的 BootImage 副本，所有权明确             |
-| 初始化 | `init_proc()` 设置 `vm_boot = ip`       | `ActiveProc::set_boot()` 设置 `vm_boot` |
-
-Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootImage>`），原因是：
-
-1. **所有权明确**: BootImage 的生命周期不依赖外部数据结构
-2. **避免 unsafe**: 指针需要 unsafe 访问，值语义完全安全
-3. **内存开销可接受**: 启动时进程数量有限（通常 < 10），BootImage 结构较小
-
+> **Rust 设计差异**：Rust 使用 `Option<BootImage>` 值语义而非 C 的 `struct boot_image *` 指针。详见 [§4.3 内存布局](#43-内存布局) 和 [§5.1 VmProc 结构体](#51-vmproc-结构体)。
 
 **fork 时的处理**: 普通用户进程的 `vm_boot` 为 `NULL`，fork 时直接复制（`NULL` 复制后还是 `NULL`）。
 
@@ -422,11 +409,9 @@ Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootI
 
 ##### vm\_bytecopies - 字节复制计数
 
-**类型**: `int`（C，32-bit）/ `u64`（Rust，64-bit）（仅在 `VMSTATS` 启用时存在）
+**类型**: `int`（仅在 `VMSTATS` 启用时存在）
 
 **作用**: 统计 VM 执行的字节复制操作次数，用于性能分析和调试。
-
-**类型差异说明**: Minix3 使用 `int`（32-bit），Rust 使用 `u64`（64-bit）。这是合理的 64 位改进——长时间运行的系统可能产生大量复制操作，32-bit 计数器可能溢出。
 
 **使用场景**:
 
@@ -444,15 +429,11 @@ Rust 使用值语义（`Option<BootImage>`）而非指针（`Option<*const BootI
 #endif
 ```
 
-```rust
-// Rust 实现
-#[cfg(feature = "vmstats")]
-pub byte_copies: u64,
-```
-
-- 该字段仅在启用 `VMSTATS`（C）或 `vmstats` feature（Rust）时存在
+- 该字段仅在启用 `VMSTATS` 时存在
 - 生产环境通常禁用，避免运行时开销
 - 调试/性能分析时启用，收集统计信息
+
+> **Rust 实现差异**：Rust 使用 `u64`（64-bit）而非 C 的 `int`（32-bit），并通过 `#[cfg(feature = "vmstats")]` 条件编译。详见 [§5.1 VmProc 结构体](#51-vmproc-结构体)。
 
 > **详见**: [15-cow-mechanism.md](15-cow-mechanism.md) 的写时复制机制。
 
@@ -899,6 +880,7 @@ Minix3 的进程退出分两步：`free_proc()` 释放页表/物理页/区域/�
 
 | 字段                   | Minix3 `free_proc()` | Minix3 `clear_proc()`       | Rust `clear()`           | 一致?         |
 | -------------------- | -------------------- | --------------------------- | ------------------------ | ----------- |
+| 映射页释放               | `map_free_proc()`    | —                           | `vm_regions_avl.clear()` | ✅           |
 | 页表释放                 | `pt_free()`          | —                           | `vm_pt.destroy()`        | ✅           |
 | 区域重置                 | `region_init()`      | `region_init()`             | `vm_regions_avl.clear()` | ✅           |
 | ACL 清理               | —                    | `acl_clear()` (释放+设NO\_ACL) | `AclState::Uninitialized` | ✅           |

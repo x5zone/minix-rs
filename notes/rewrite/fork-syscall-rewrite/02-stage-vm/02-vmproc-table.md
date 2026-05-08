@@ -142,28 +142,29 @@ VM 通过 `sys_vmctl` 系统调用将页目录**物理地址值**（`pt_dir_phys
 
 内核资源管理需要**精确控制释放时机**：
 
-- **作用域驱动 vs 事件驱动**：Rust Drop 由作用域触发，内核资源由系统事件触发
+- **作用域驱动 vs 事件驱动**：Drop 由作用域触发，内核资源由系统事件触发
 - **状态重置 vs 对象销毁**：内核需要 Reset（原地状态归零），不是 Destroy（析构重建）
-- **避免隐式 Drop**：`*slot = new_val` 的隐式析构会破坏确定性时序
+- **避免隐式析构**：`*slot = new_val` 的隐式析构会破坏确定性时序
 
-> 详细讨论见 [Drop 在内核中的风险](../../concepts/drop-in-kernel-risks.md)
+Minix3 的处理方式：
+- `memset(vmproc, 0, sizeof(vmproc))` 将所有槽位初始化为零
+- 状态由 `vm_flags` 字段管理（`VMF_INUSE` 标记占用）
+- `clear_proc()` 显式重置槽位状态
 
-**解决方案**：
-- 预初始化所有槽位为 `vacant()` 状态
-- 状态由 `VmFlags` 管理，不是由类型系统管理存在性
-- 提供显式 `clear()` 方法
-- `VmProc` 的 Drop 为空操作（`debug_assert` 检查状态）
+> Rust 设计差异详见 [§5.1](#51-数据结构定义) 和 [01-vmproc-struct.md](01-vmproc-struct.md) 的 Drop 设计。
 
 ### 2.3 与 Minix3 语义对齐
 
 保持与 Minix3 C 代码的语义一致性：
 
-| Minix3 (C) | Rust 实现 |
-|------------|-----------|
-| `vmproc[slot]` 静态数组 | `[AssumeSyncCell<VmProc>; VM_PROC_COUNT]` |
-| `vm_flags & VMF_INUSE` | `VmFlags::IN_USE` |
-| `clear_proc(vmp)` | `proc.clear()` |
-| `memset(vmproc, 0, ...)` | `VmProc::vacant()` |
+| Minix3 (C) | 语义 |
+|------------|------|
+| `vmproc[slot]` 静态数组 | O(1) slot 索引访问 |
+| `vm_flags & VMF_INUSE` | 槽位占用状态判断 |
+| `clear_proc(vmp)` | 显式状态重置 |
+| `memset(vmproc, 0, ...)` | 全零初始化 |
+
+> Rust 实现映射详见 [§5.1](#51-数据结构定义)。
 
 ---
 
@@ -232,29 +233,7 @@ if(vm_isokendpt(msg->VMF_ENDPOINT, &proc) != OK) {
 // 现在可以安全使用 vmproc[proc]
 ```
 
-**Rust 实现**:
-
-```rust
-impl VmProcTable {
-    pub fn vm_isokendpt(&self, endpoint: Endpoint) -> Option<UserSlot> {
-        let vm_slot = endpoint.slot();
-        if vm_slot < 0 || vm_slot as usize >= VM_PROC_COUNT {
-            return None;
-        }
-        let slot_idx = UserSlot(vm_slot as usize);
-        let proc = unsafe { &*self.slots[slot_idx.get()].get() };
-
-        if proc.vm_endpoint != endpoint { return None; }
-        if !proc.vm_flags.contains(VmFlags::IN_USE) { return None; }
-
-        Some(slot_idx)
-    }
-}
-```
-
-与 C 版本逻辑一致：检查范围、endpoint 匹配、活跃状态。
-
-> **设计差异**: Minix3 区分 `EINVAL`（slot 越界）和 `EDEADEPT`（endpoint 不匹配或进程不活跃），Rust 统一返回 `None`。当前所有调用方对任何失败都按"无效 endpoint"处理，不需要区分具体原因。如果未来需要区分，可改为 `Result<UserSlot, VmError>`。
+> **Rust 实现差异**：Rust 版本区分 `InvalidSlot`（对应 C 的 `EINVAL`）和 `DeadEndpoint`（对应 C 的 `EDEADEPT`），返回 `Result<UserSlot, EndpointError>` 而非 C 的 `int` 错误码。详见 [§5.3](#53-typestate-views)。
 
 **设计意义**:
 
@@ -1200,3 +1179,10 @@ if(pt_bind(&vmp->vm_pt, vmp) != OK)  // 2. 绑定页表到 MMU
 - 硬件绑定的是**物理地址值**（已传递出去）
 - 不是**容器地址**（`vmproc` 的地址）
 - 因此 `vmproc` 的地址稳定性是**软件设计选择**，非硬件强制
+
+## 8. 参见
+
+- [01-vmproc-struct.md](01-vmproc-struct.md) - VmProc 结构体定义与 typestate 设计
+- [00-vm-overview.md](00-vm-overview.md) - VM 整体架构与分布式一致性分析
+- [03-acl.md](03-acl.md) - 访问控制
+- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构（pt_dir_phys 等）

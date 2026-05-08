@@ -132,8 +132,6 @@ typedef struct mem_type {
 } mem_type_t;
 ```
 
-> **32 位 vs 64 位差异**：`regionid` 回调返回 `u32_t`，在 Minix3 x86-32 下 `region->id` 为 32 位。minix-rs 使用 x86-64，区域 ID 应使用 `u64`。`phys_bytes` 类型在 Minix3 中为 `u32_t`（32 位物理地址），64 位下需扩展为 `u64`。`ev_pagefault` 的 `vfs_callback_t`、`void *state`、`int len`、`int *io` 参数在 64 位下指针大小变化，但语义不变。
-
 #### 2.1.2 回调函数详解
 
 **生命周期回调**
@@ -778,13 +776,16 @@ if (flags & MAP_CONTIG) {
 ```c
 // cache.h
 struct cached_page {
-    struct phys_block *page;    // 物理块
     dev_t dev;                  // 设备号
     u64_t dev_offset;           // 设备偏移
     ino_t ino;                  // inode 号
-    off_t ino_offset;           // inode 偏移
-    int flags;                  // 标志
-    // ... 哈希链表、LRU 链表等
+    u64_t ino_offset;           // inode 偏移
+    int flags;                  // 标志（VMSF_ONCE 或 0）
+    struct phys_block *page;    // 物理块
+    struct cached_page *older;  // LRU 链表（较旧）
+    struct cached_page *newer;  // LRU 链表（较新）
+    struct cached_page *hash_next_dev; // 哈希链表（按设备）
+    struct cached_page *hash_next_ino; // 哈希链表（按 inode）
 };
 ```
 
@@ -987,18 +988,20 @@ struct mem_type mem_type_cache = {
 ```c
 // vir_region->param.file
 struct {
+    int inited;             // 是否已初始化
     struct fdref *fdref;    // 文件描述符引用
     u64_t offset;           // 文件偏移
     u16_t clearend;         // 末尾清理字节数
-    int inited;             // 是否已初始化
 };
 
 // fdref - 文件描述符引用
 struct fdref {
     int fd;                 // 文件描述符
+    int refcount;           // 引用计数
     dev_t dev;              // 设备号
     ino_t ino;              // inode 号
-    int refcount;           // 引用计数
+    struct fdref *next;     // 全局链表
+    int counting;           // 完整性检查标志
 };
 ```
 
@@ -1816,7 +1819,7 @@ static int anon_writable(struct phys_region *pr)
 **fork 时的引用共享**
 
 ```c
-// region.c - region_copy_slab
+// region.c - map_copy_region
 for(p = 0; p < phys_slot(vr->length); p++) {
     struct phys_region *newph;
 
@@ -2070,21 +2073,22 @@ static int cache_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
 从区域低地址端收缩，用于特殊情况。
 
 ```c
-// region.c
-int region_lowshrink(struct vmproc *vmp, struct vir_region *r, vir_bytes len)
-{
-    if(!r->def_memtype->ev_lowshrink) {
-        return EINVAL;
-    }
-
-    if(r->def_memtype->ev_lowshrink(r, len) != OK) {
-        return EINVAL;
-    }
-
-    // 更新虚拟地址和长度
-    USE(r, r->vaddr += len;);
-    USE(r, r->length -= len;);
+// region.c - 低地址收缩逻辑（内联在 region 操作中）
+if(!r->def_memtype->ev_lowshrink) {
+    printf("VM: low-shrinking not implemented for %s\n",
+        r->def_memtype->name);
+    return EINVAL;
 }
+
+if(r->def_memtype->ev_lowshrink(r, len) != OK) {
+    printf("VM: low-shrinking failed for %s\n",
+        r->def_memtype->name);
+    return EINVAL;
+}
+
+// 更新虚拟地址和长度
+USE(r, r->vaddr += len;);
+USE(r, r->length -= len;);
 
 // mem_file.c
 static int mappedfile_lowshrink(struct vir_region *vr, vir_bytes len)
@@ -2253,7 +2257,7 @@ if(pr->memtype->ev_sanitycheck)
 ///
 /// 定义内存类型的核心操作接口。
 /// 对应 Minix3: `struct mem_type`
-pub trait MemType: Send + Sync {
+pub(crate) trait MemType: Send + Sync {
     /// 获取类型名称
     fn name(&self) -> &'static str;
 
@@ -2261,15 +2265,13 @@ pub trait MemType: Send + Sync {
     ///
     /// 对应 Minix3: `ev_new`
     fn on_new(&self, _region: &mut VirRegion) -> Result<(), MemTypeError> {
-        Ok(())  // 默认：不需要特殊初始化
+        Ok(())
     }
 
     /// 删除区域时的回调
     ///
     /// 对应 Minix3: `ev_delete`
-    fn on_delete(&self, _region: &mut VirRegion) {
-        // 默认：不需要特殊清理
-    }
+    fn on_delete(&self, _region: &mut VirRegion) {}
 
     /// 引用物理区域时的回调
     ///
@@ -2279,14 +2281,14 @@ pub trait MemType: Send + Sync {
         _src: &PhysRegion,
         _dst: &mut PhysRegion,
     ) -> Result<(), MemTypeError> {
-        Ok(())  // 默认：不需要特殊处理
+        Ok(())
     }
 
     /// 取消引用物理区域时的回调
     ///
     /// 对应 Minix3: `ev_unreference`
     fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)  // 默认：不释放物理内存
+        Ok(false)
     }
 
     /// 页错误处理回调
@@ -2294,12 +2296,12 @@ pub trait MemType: Send + Sync {
     /// 对应 Minix3: `ev_pagefault`
     fn on_pagefault(
         &self,
-        _vmp: &VmProc,
+        _proc: &ActiveProc<'_>,
         _region: &mut VirRegion,
         _pr: &mut PhysRegion,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        Ok(PagefaultResult::Handled)  // 默认：已处理
+        Ok(PagefaultResult::Handled)
     }
 
     /// 区域大小调整回调
@@ -2307,11 +2309,11 @@ pub trait MemType: Send + Sync {
     /// 对应 Minix3: `ev_resize`
     fn on_resize(
         &self,
-        _vmp: &mut VmProc,
+        _proc: &mut ActiveProc<'_>,
         _region: &mut VirRegion,
-        _new_len: usize,
+        _new_len: VirBytes,
     ) -> Result<(), MemTypeError> {
-        Err(MemTypeError::NotSupported)  // 默认：不支持
+        Ok(())
     }
 
     /// 区域分割回调
@@ -2319,19 +2321,18 @@ pub trait MemType: Send + Sync {
     /// 对应 Minix3: `ev_split`
     fn on_split(
         &self,
-        _vmp: &VmProc,
+        _proc: &ActiveProc<'_>,
         _original: &VirRegion,
         _left: &mut VirRegion,
         _right: &mut VirRegion,
     ) {
-        // 默认：不需要特殊处理
     }
 
     /// 检查是否可写
     ///
     /// 对应 Minix3: `writable`
     fn is_writable(&self, _pr: &PhysRegion) -> bool {
-        false  // 默认：不可写
+        false
     }
 
     /// 复制区域时的回调
@@ -2342,46 +2343,46 @@ pub trait MemType: Send + Sync {
         _src: &VirRegion,
         _dst: &mut VirRegion,
     ) -> Result<(), MemTypeError> {
-        Ok(())  // 默认：不需要特殊处理
+        Ok(())
     }
 
     /// 低地址收缩回调
     ///
     /// 对应 Minix3: `ev_lowshrink`
-    fn on_lowshrink(
+    fn on_low_shrink(
         &self,
         _region: &mut VirRegion,
-        _len: usize,
+        _len: VirBytes,
     ) -> Result<(), MemTypeError> {
-        Err(MemTypeError::NotSupported)  // 默认：不支持
+        Ok(())
     }
 
     /// 一致性检查
     ///
     /// 对应 Minix3: `ev_sanitycheck`
     fn on_sanitycheck(&self, _pr: &PhysRegion) -> Result<(), MemTypeError> {
-        Ok(())  // 默认：检查通过
+        Ok(())
     }
 
     /// 获取区域 ID
     ///
     /// 对应 Minix3: `regionid`
-    fn region_id(&self, _region: &VirRegion) -> Option<u32> {
-        None  // 默认：无 ID
+    fn region_id(&self, _region: &VirRegion) -> u32 {
+        0
     }
 
     /// 获取引用计数
     ///
     /// 对应 Minix3: `refcount`
-    fn ref_count(&self, _region: &VirRegion) -> Option<u32> {
-        None  // 默认：无引用计数
+    fn ref_count(&self, _region: &VirRegion) -> i32 {
+        0
     }
 
     /// 获取页表标志
     ///
     /// 对应 Minix3: `pt_flags`
-    fn pt_flags(&self, _region: &VirRegion) -> u32 {
-        0  // 默认：无额外标志
+    fn pt_flags(&self, _region: &VirRegion) -> i32 {
+        0
     }
 }
 ```
@@ -2391,7 +2392,7 @@ pub trait MemType: Send + Sync {
 ```rust
 /// 内存类型错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemTypeError {
+pub(crate) enum MemTypeError {
     /// 内存不足
     NoMemory,
     /// 无效参数
@@ -2402,25 +2403,19 @@ pub enum MemTypeError {
     IoError,
     /// 复制失败
     CopyFailed,
-    /// 访问违规
-    AccessViolation,
 }
 
 /// 页错误处理结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PagefaultResult {
+pub(crate) enum PagefaultResult {
     /// 已处理
     Handled,
     /// 需要分配新页
     NeedNewPage,
     /// 需要 CoW
     NeedCow,
-    /// 需要异步 IO
-    NeedAsyncIo,
     /// 访问违规
     AccessViolation,
-    /// 挂起等待
-    Suspended,
 }
 ```
 
@@ -2581,11 +2576,17 @@ impl MemType {
 ///
 /// 普通堆内存，支持 CoW（写时复制）。
 /// 对应 Minix3: `mem_type_anon`
-pub struct AnonymousMemory;
+pub(crate) struct AnonymousMemory;
 
 impl AnonymousMemory {
     pub const fn new() -> Self {
         Self
+    }
+}
+
+impl Default for AnonymousMemory {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2594,42 +2595,50 @@ impl MemType for AnonymousMemory {
         "anonymous memory"
     }
 
-    fn on_unreference(&self, pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
-        // 引用计数为 0 时释放物理页
-        if let Some(refcount) = pr.get_refcount() {
-            if refcount == 0 {
-                if let Some(phys) = pr.get_phys_addr() {
-                    // 释放物理页
-                    // free_mem(ABS2CLICK(phys), 1)
-                    return Ok(true);
+    fn is_writable(&self, pr: &PhysRegion) -> bool {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return false;
+        }
+        if let Some(parent) = pr.parent {
+            unsafe {
+                if (*parent).remaps > 0 {
+                    return true;
                 }
             }
         }
-        Ok(false)
+        if let Some(refcount) = pr.get_refcount() {
+            refcount == 1
+        } else {
+            false
+        }
+    }
+
+    fn on_unreference(&self, pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn on_pagefault(
         &self,
-        _vmp: &VmProc,
+        _proc: &ActiveProc<'_>,
         region: &mut VirRegion,
         pr: &mut PhysRegion,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        let refcount = pr.get_refcount().unwrap_or(0);
-
-        // 情况 1: 物理页不存在，需要分配
-        if pr.get_phys_addr().is_none() {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
             return Ok(PagefaultResult::NeedNewPage);
         }
 
-        // 情况 2: 不需要 CoW
-        // - refcount < 2: 只有一个引用
-        // - !write: 只读访问
+        let refcount = pr.get_refcount().unwrap_or(0);
+
         if refcount < 2 || !write {
             return Ok(PagefaultResult::Handled);
         }
 
-        // 情况 3: 需要 CoW
         if !region.is_writable() {
             return Ok(PagefaultResult::AccessViolation);
         }
@@ -2637,36 +2646,18 @@ impl MemType for AnonymousMemory {
         Ok(PagefaultResult::NeedCow)
     }
 
-    fn on_resize(
-        &self,
-        _vmp: &mut VmProc,
-        region: &mut VirRegion,
-        new_len: usize,
-    ) -> Result<(), MemTypeError> {
-        // 只支持扩展
-        if new_len > region.length {
-            region.length = new_len;
-        }
-        Ok(())
+    fn region_id(&self, _region: &VirRegion) -> u32 {
+        1
     }
 
-    fn is_writable(&self, pr: &PhysRegion) -> bool {
-        // 有共享映射或只有一个引用时可写
-        if let Some(refcount) = pr.get_refcount() {
-            if pr.parent_remaps() > 0 {
-                return true;
+    fn ref_count(&self, region: &VirRegion) -> i32 {
+        let mut mapped = 0i32;
+        for pb in &region.physblocks {
+            if pb.is_some() {
+                mapped += 1;
             }
-            return refcount == 1;
         }
-        false
-    }
-
-    fn region_id(&self, region: &VirRegion) -> Option<u32> {
-        Some(region.id)
-    }
-
-    fn ref_count(&self, region: &VirRegion) -> Option<u32> {
-        Some(1 + region.remaps as u32)
+        mapped
     }
 }
 ```
@@ -2678,26 +2669,46 @@ impl MemType for AnonymousMemory {
 ///
 /// 设备内存映射，不由 VM 管理分配。
 /// 对应 Minix3: `mem_type_directphys`
-pub struct DirectPhysical;
+pub(crate) struct DirectPhysical;
+
+impl DirectPhysical {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DirectPhysical {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MemType for DirectPhysical {
     fn name(&self) -> &'static str {
         "physical memory mapping"
     }
 
+    fn is_writable(&self, pr: &PhysRegion) -> bool {
+        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
+    }
+
     fn on_pagefault(
         &self,
-        _vmp: &VmProc,
-        _region: &mut VirRegion,
+        _proc: &ActiveProc<'_>,
+        region: &mut VirRegion,
         pr: &mut PhysRegion,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // 物理地址在创建时已设置，直接返回
-        if pr.get_phys_addr().is_some() {
-            Ok(PagefaultResult::Handled)
-        } else {
-            Err(MemTypeError::InvalidParam)
+        if let crate::region::VrParam::Direct { phys: base_phys } = &region.param {
+            if *base_phys == PhysBlock::MAP_NONE {
+                return Err(MemTypeError::InvalidParam);
+            }
+            if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
+                return Ok(PagefaultResult::Handled);
+            }
+            return Ok(PagefaultResult::NeedNewPage);
         }
+        Err(MemTypeError::InvalidParam)
     }
 
     fn on_copy(
@@ -2705,18 +2716,19 @@ impl MemType for DirectPhysical {
         src: &VirRegion,
         dst: &mut VirRegion,
     ) -> Result<(), MemTypeError> {
-        // 复制物理地址
-        dst.set_direct_phys(src.get_direct_phys());
+        dst.param = src.param.clone();
         Ok(())
     }
 
-    fn is_writable(&self, pr: &PhysRegion) -> bool {
-        pr.get_phys_addr().is_some()
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
     }
 }
 ```
 
-**ContiguousAnonymous - 连续匿名内存**
+**ContiguousAnonymous - 连续匿名内存**（尚未实现）
+
+> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
 
 ```rust
 /// 连续匿名内存类型
@@ -2781,7 +2793,9 @@ impl MemType for ContiguousAnonymous {
 }
 ```
 
-**CacheMemory - 磁盘缓存**
+**CacheMemory - 磁盘缓存**（尚未实现）
+
+> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
 
 ```rust
 /// 磁盘缓存类型
@@ -2842,7 +2856,9 @@ impl MemType for CacheMemory {
 }
 ```
 
-**MappedFile - 文件映射**
+**MappedFile - 文件映射**（尚未实现）
+
+> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
 
 ```rust
 /// 文件映射类型
@@ -2958,46 +2974,31 @@ impl MemType for MappedFile {
 ///
 /// 进程间共享内存，多个进程映射同一物理页。
 /// 对应 Minix3: `mem_type_shared`
-pub struct SharedMemory;
+pub(crate) struct SharedMemory;
+
+impl SharedMemory {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SharedMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MemType for SharedMemory {
     fn name(&self) -> &'static str {
         "shared memory"
     }
 
-    fn on_unreference(&self, pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
-        // 复用匿名内存的实现
-        AnonymousMemory.on_unreference(pr)
+    fn is_writable(&self, pr: &PhysRegion) -> bool {
+        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
-    fn on_pagefault(
-        &self,
-        _vmp: &VmProc,
-        region: &mut VirRegion,
-        pr: &mut PhysRegion,
-        _write: bool,
-    ) -> Result<PagefaultResult, MemTypeError> {
-        // 物理页已存在
-        if pr.get_phys_addr().is_some() {
-            return Ok(PagefaultResult::Handled);
-        }
-        
-        // 获取源区域的物理页
-        if let Some((src_vmp, src_region)) = get_source_region(region)? {
-            // 查找或分配源区域的物理页
-            let src_pr = src_region.get_phys_block(pr.offset)?;
-            pr.link_to_block(src_pr.phys_block);
-            return Ok(PagefaultResult::Handled);
-        }
-        
-        Err(MemTypeError::InvalidParam)
-    }
-
-    fn on_delete(&self, region: &mut VirRegion) {
-        // 减少源区域的 remaps 计数
-        if let Some((_, src_region)) = get_source_region(region) {
-            src_region.dec_remaps();
-        }
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
     }
 
     fn on_copy(
@@ -3005,26 +3006,8 @@ impl MemType for SharedMemory {
         src: &VirRegion,
         dst: &mut VirRegion,
     ) -> Result<(), MemTypeError> {
-        // 复制共享信息
-        if let Some((_, src_region)) = get_source_region(src)? {
-            set_source(dst, src.get_source_ep(), src_region);
-        }
+        dst.param = src.param.clone();
         Ok(())
-    }
-
-    fn region_id(&self, region: &VirRegion) -> Option<u32> {
-        // 返回源区域的 ID
-        get_source_region(region).map(|(_, src)| src.id)
-    }
-
-    fn ref_count(&self, region: &VirRegion) -> Option<u32> {
-        // 源区域 + 共享映射
-        Some(1 + region.remaps as u32)
-    }
-
-    fn is_writable(&self, pr: &PhysRegion) -> bool {
-        // 共享内存总是可写
-        pr.get_phys_addr().is_some()
     }
 }
 ```

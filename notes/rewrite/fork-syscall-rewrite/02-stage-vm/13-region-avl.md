@@ -50,7 +50,7 @@ Minix3 选择 AVL 树的原因：
 | `regionavl_defs.h` | 宏定义配置（泛型参数） |
 | `cavl_if.h` | 接口声明（类型、函数原型） |
 | `cavl_impl.h` | 实现代码（函数体） |
-| `regionavl.h` | 模块入口（组合以上头文件） |
+| `regionavl.h` | 模块入口（组合以上头文件及 unavl.h） |
 | `regionavl.c` | 编译单元（include cavl_impl.h 触发实例化） |
 | `region_t.lower/higher/factor` | AVL 节点字段（嵌入 vir_region） |
 | `region_avl` (vmproc.h) | 树根结构体（嵌入 vmproc） |
@@ -61,11 +61,12 @@ Minix3 选择 AVL 树的原因：
 Minix3 使用了一种独特的**宏泛型**方式实现 AVL 树：
 
 ```c
-// regionavl_defs.h - 通过宏定义"泛型参数"
+// regionavl_defs.h - 通过宏定义"泛型参数"（部分）
 #define AVL_UNIQUE(id) region_ ## id    // 函数名前缀
 #define AVL_HANDLE region_t *            // 节点句柄类型
 #define AVL_KEY vir_bytes                // 键类型
 #define AVL_MAX_DEPTH 30                 // 最大深度
+#define AVL_NULL NULL                    // 空句柄
 #define AVL_GET_LESS(h, a) (h)->lower    // 获取左子节点
 #define AVL_GET_GREATER(h, a) (h)->higher // 获取右子节点
 #define AVL_GET_BALANCE_FACTOR(h) (h)->factor // 获取平衡因子
@@ -139,13 +140,13 @@ typedef struct vir_region {
 
 **32 位 vs 64 位差异**
 
-| 方面 | Minix3 (32 位) | minix-rs (64 位) | 说明 |
-|------|---------------|-----------------|------|
-| `vir_bytes` | `u32` (4 字节) | `u64` (8 字节) | 64 位地址空间 |
-| `lower`/`higher` 指针 | 4 字节 | 8 字节 | 64 位指针 |
-| `factor` | `int` (4 字节) | `i8` (1 字节) | Rust 用最小类型 |
-| `branch` 位图 | `unsigned long` (4 字节) | `unsigned long` (8 字节) | 64 位 long |
-| `AVL_MAX_DEPTH` | 30 | 30 | 64 位下可适当增大 |
+| 方面 | Minix3 (32 位) | 说明 |
+|------|---------------|------|
+| `vir_bytes` | `u32` (4 字节) | 32 位地址空间 |
+| `lower`/`higher` 指针 | 4 字节 | 32 位指针 |
+| `factor` | `int` (4 字节) | 实际只用 -1/0/1 |
+| `branch` 位图 | `unsigned long` (4 字节) | 32 位 long |
+| `AVL_MAX_DEPTH` | 30 | good for ~2M nodes |
 
 **平衡因子含义**
 
@@ -616,7 +617,7 @@ region_t *region_subst(region_avl *tree, region_t *new_node)
 5. 从替代节点的父节点到根，更新平衡因子并旋转恢复平衡（可能需要多次旋转）
 6. 返回被删除的节点
 
-#### 2.2.4 region_find - 查找区域
+#### 2.2.4 region_search - 搜索区域
 
 **源码位置**: [`cavl_impl.h`](../../../minix3/minix/servers/vm/cavl_impl.h)
 
@@ -625,25 +626,39 @@ region_t *region_subst(region_avl *tree, region_t *new_node)
 **精确查找**
 
 ```c
+// cavl_impl.h - region_search 宏展开后
 region_t *region_search(region_avl *tree, vir_bytes key, avl_search_type st)
 {
+    int cmp, target_cmp;
+    region_t *match_h = NULL;
     region_t *h = tree->root;
-    region_t *found = NULL;
+
+    // 确定搜索方向
+    if (st & AVL_LESS)
+        target_cmp = 1;         // 允许键大于节点
+    else if (st & AVL_GREATER)
+        target_cmp = -1;        // 允许键小于节点
+    else
+        target_cmp = 0;         // 必须精确匹配
 
     while (h != NULL) {
-        if (key < h->vaddr) {
-            if (st & AVL_LESS) found = h;   // 记录最近的小于节点
-            h = h->lower;
-        } else if (key > h->vaddr) {
-            if (st & AVL_GREATER) found = h; // 记录最近的大于节点
-            h = h->higher;
-        } else {
-            if (st & AVL_EQUAL) found = h;   // 精确匹配
-            break;
+        cmp = (key > h->vaddr ? 1 : (key < h->vaddr ? -1 : 0));
+        if (cmp == 0) {
+            if (st & AVL_EQUAL) {
+                match_h = h;     // 精确匹配
+                break;
+            }
+            cmp = -target_cmp;   // 精确匹配但不需要，继续搜索
         }
+        else if (target_cmp != 0)
+            if (!((cmp ^ target_cmp) & L__MASK_HIGH_BIT))
+                // cmp 和 target_cmp 同号，记录候选
+                match_h = h;
+
+        h = cmp < 0 ? h->lower : h->higher;
     }
 
-    return found;
+    return match_h;
 }
 ```
 
@@ -815,9 +830,9 @@ typedef struct {
 
 | 场景 | 函数 | 说明 |
 |------|------|------|
-| fork | `region_copy_slab` | 遍历所有区域复制 |
-| 进程终止 | `map_free` | 遍历所有区域释放 |
-| 调试 | `region_sanitycheck` | 遍历检查一致性 |
+| fork | `map_copy_region` | 遍历所有区域复制 |
+| 进程终止 | `map_free_proc` | 遍历所有区域释放 |
+| 调试 | `map_sanitycheck` | 遍历检查一致性 |
 | munmap | `map_unmap_region` | 查找重叠区域 |
 
 #### 2.3.2 region_start - 开始迭代
@@ -962,7 +977,7 @@ for (r = region_start_iter_least(&vmp->vm_regions_avl, &iter);
      r != NULL;
      r = region_incr_iter(&iter)) {
     // 处理每个区域
-    region_sanitycheck(r);
+    map_sanitycheck(__FILE__, __LINE__);
 }
 ```
 
@@ -1147,25 +1162,31 @@ region_t *region_get_iter(region_iter *iter)
 
 **实现策略**
 
-1. **节点设计**：AVL 字段嵌入 VirRegion，lower/higher/factor 作为 Option/引用
-2. **核心操作**：insert（插入并平衡）、remove（删除并平衡）、find（查找包含地址的区域）、find_overlap（查找重叠区域）
-3. **迭代器**：实现 Iterator trait，中序遍历（按地址排序）
-4. **安全性**：全部使用安全 Rust，无裸指针、无 unsafe 块
+1. **节点设计**：AVL 字段嵌入 VirRegion，lower/higher 用 `Option<Box<VirRegion>>`，factor 用 `i8`
+2. **核心操作**：insert（递归 BST 插入，重复键替换）、remove（递归 BST 删除，两子节点时合并）、find（查找包含地址的区域）、find_overlap（查找重叠区域）
+3. **迭代器**：实现 Iterator trait，中序遍历（按地址排序），使用 Vec 作为路径栈
+4. **安全性**：大部分使用安全 Rust，`RegionIterMut` 使用 `*mut VirRegion` 原始指针配合 `PhantomData`
 
 **当前实现状态**
 
 已有基础实现 [avl.rs](../../../os/servers/vm/src/region/avl.rs)，包含：
 
-- `RegionAvl` 结构体
-- `insert`, `remove`, `find` 基本操作
-- `find_overlap` 重叠查找
+- `RegionAvl` 结构体（`root: Option<Box<VirRegion>>`, `count: usize`）
+- `insert` 递归 BST 插入（重复键替换，保留 AVL 链接）
+- `remove` 递归 BST 删除（两子节点时合并子树）
+- `find`/`find_mut` 地址包含查找
+- `find_overlap`/`find_all_overlaps` 重叠查找
+- `search` 通用搜索（支持 LESS/GREATER/EQUAL 等搜索类型）
+- `find_slot` 空闲槽位查找
 - `traverse` 中序遍历
+- `iter`/`iter_mut` 迭代器
+- `SearchType` 搜索类型定义
 
 待完善：
 
-- 平衡因子维护（当前未实现完整平衡）
-- 迭代器 trait 实现
-- 性能优化
+- AVL 平衡因子维护（当前 `factor` 字段保留但未使用，插入/删除不维护平衡）
+- 旋转操作实现（LL/RR/LR/RL 四种旋转）
+- 迭代器性能优化（使用 `smallvec` 替代 `Vec`）
 
 ### 3.2 RegionAvlTree 结构
 
@@ -1186,7 +1207,7 @@ use super::vir_region::VirRegion;
 /// 管理进程的虚拟区域集合，按虚拟地址排序。
 /// 对应 Minix3: `region_avl` 结构体
 #[derive(Debug, Default)]
-pub struct RegionAvl {
+pub(crate) struct RegionAvl {
     /// 树根节点
     root: Option<Box<VirRegion>>,
     /// 节点数量
@@ -1208,37 +1229,37 @@ pub struct RegionAvl {
 ```rust
 impl RegionAvl {
     /// 创建新的空 AVL 树
-    pub fn new() -> Self;
+    pub(crate) fn new() -> Self;
 
     /// 获取节点数量
-    pub fn len(&self) -> usize;
+    pub(crate) fn len(&self) -> usize;
 
     /// 检查是否为空
-    pub fn is_empty(&self) -> bool;
+    pub(crate) fn is_empty(&self) -> bool;
 
     /// 查找包含指定地址的区域
     ///
     /// 返回 vaddr <= addr < vaddr + length 的区域
-    pub fn find(&self, addr: VirBytes) -> Option<&VirRegion>;
+    pub(crate) fn find(&self, addr: VirBytes) -> Option<&VirRegion>;
 
     /// 查找指定地址的区域（可变）
-    pub fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion>;
+    pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion>;
 
     /// 插入区域
     ///
     /// 如果存在相同 vaddr 的区域，替换它
-    pub fn insert(&mut self, region: VirRegion);
+    pub(crate) fn insert(&mut self, region: VirRegion);
 
     /// 删除指定地址的区域
     ///
     /// 返回被删除的区域，如果不存在返回 None
-    pub fn remove(&mut self, addr: VirBytes) -> Option<VirRegion>;
+    pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion>;
 
     /// 查找与指定范围重叠的区域
-    pub fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion>;
+    pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion>;
 
     /// 遍历所有区域（中序遍历）
-    pub fn traverse<F>(&self, f: F) where F: FnMut(&VirRegion);
+    pub(crate) fn traverse<F>(&self, f: F) where F: FnMut(&VirRegion);
 }
 ```
 
@@ -1250,13 +1271,26 @@ C 代码的问题：裸指针可能悬垂，free 后 use-after-free 风险。Rus
 
 ```rust
 /// 虚拟区域
-pub struct VirRegion {
+pub(crate) struct VirRegion {
     /// 虚拟地址（AVL 键）
     pub vaddr: VirBytes,
     /// 区域长度
     pub length: VirBytes,
-    /// 其他字段...
-    
+    /// 物理块指针数组
+    pub physblocks: Vec<Option<Box<PhysRegion>>>,
+    /// 区域标志
+    pub flags: VrFlags,
+    /// 父进程槽位
+    pub parent_slot: Option<UserSlot>,
+    /// 默认内存类型
+    pub def_memtype: Option<&'static dyn MemType>,
+    /// 共享映射计数
+    pub remaps: i32,
+    /// 唯一 ID
+    pub id: i32,
+    /// 类型特定参数
+    pub param: VrParam,
+
     // AVL 树字段 - 嵌入在节点中
     /// 左子节点（地址更小）
     pub lower: Option<Box<VirRegion>>,
@@ -1268,8 +1302,8 @@ pub struct VirRegion {
 
 impl VirRegion {
     /// 获取结束地址
-    pub fn end_addr(&self) -> VirBytes {
-        VirBytes(self.vaddr.0 + self.length.0)
+    pub(crate) fn end_addr(&self) -> VirBytes {
+        self.vaddr + self.length
     }
 }
 ```
@@ -1293,14 +1327,15 @@ VirRegion 结构体：vaddr u64 8 bytes, length u64 8 bytes, flags VrFlags 4 byt
 ///
 /// 按虚拟地址升序遍历所有区域。
 /// 对应 Minix3: `region_iter` 结构体
-pub struct RegionIter<'a> {
+pub(crate) struct RegionIter<'a> {
     /// 路径栈，存储从根到当前节点的路径
     stack: Vec<&'a VirRegion>,
 }
 
 /// 可变迭代器
-pub struct RegionIterMut<'a> {
-    stack: Vec<&'a mut VirRegion>,
+pub(crate) struct RegionIterMut<'a> {
+    stack: Vec<*mut VirRegion>,
+    _marker: PhantomData<&'a mut VirRegion>,
 }
 ```
 
@@ -1327,7 +1362,7 @@ impl<'a> Iterator for RegionIter<'a> {
         // 将右子树的左边界压栈
         let mut right = node.higher.as_ref();
         while let Some(r) = right {
-            self.stack.push(r);
+            self.stack.push(r.as_ref());
             right = r.lower.as_ref();
         }
 
@@ -1341,13 +1376,13 @@ impl<'a> Iterator for RegionIter<'a> {
 ```rust
 impl RegionAvl {
     /// 创建中序迭代器
-    pub fn iter(&self) -> RegionIter<'_> {
+    pub(crate) fn iter(&self) -> RegionIter<'_> {
         let mut stack = Vec::new();
 
         // 将左边界压栈（找到最小节点）
         let mut node = self.root.as_ref();
         while let Some(n) = node {
-            stack.push(n);
+            stack.push(n.as_ref());
             node = n.lower.as_ref();
         }
 
@@ -1355,16 +1390,16 @@ impl RegionAvl {
     }
 
     /// 创建可变迭代器
-    pub fn iter_mut(&mut self) -> RegionIterMut<'_> {
+    pub(crate) fn iter_mut(&mut self) -> RegionIterMut<'_> {
         let mut stack = Vec::new();
 
         let mut node = self.root.as_mut();
         while let Some(n) = node {
-            stack.push(n);
+            stack.push(n.as_mut() as *mut VirRegion);
             node = n.lower.as_mut();
         }
 
-        RegionIterMut { stack }
+        RegionIterMut { stack, _marker: PhantomData }
     }
 }
 ```
@@ -1435,7 +1470,7 @@ let total: u64 = tree.iter()
 
 // 可变遍历
 for region in tree.iter_mut() {
-    region.flags |= VR_ACCESSED;
+    region.flags |= VrFlags::WRITABLE;
 }
 ```
 
@@ -1465,7 +1500,7 @@ impl<'a> IntoIterator for &'a RegionAvl {
 ```rust
 use smallvec::SmallVec;
 
-pub struct RegionIter<'a> {
+pub(crate) struct RegionIter<'a> {
     stack: SmallVec<[&'a VirRegion; 30]>,  // 固定 30 层
 }
 ```
@@ -1480,139 +1515,50 @@ pub struct RegionIter<'a> {
 
 AVL 节点的键是虚拟地址 `vaddr`，值是整个 `VirRegion` 结构体。
 
-```rust
-/// 平衡因子类型
-///
-/// -1: 左子树比右子树高 1
-///  0: 左右子树等高
-///  1: 右子树比左子树高 1
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct BalanceFactor(i8);
-
-impl BalanceFactor {
-    pub const LEFT_HEAVY: Self = Self(-1);
-    pub const BALANCED: Self = Self(0);
-    pub const RIGHT_HEAVY: Self = Self(1);
-
-    /// 是否需要重新平衡
-    pub fn needs_rebalance(&self) -> bool {
-        self.0.abs() > 1
-    }
-
-    /// 增加平衡因子（右子树增高）
-    pub fn inc(&mut self) {
-        self.0 += 1;
-    }
-
-    /// 减少平衡因子（左子树增高）
-    pub fn dec(&mut self) {
-        self.0 -= 1;
-    }
-}
-```
-
-**节点结构**
-
-```rust
-/// AVL 节点（嵌入在 VirRegion 中）
-///
-/// 对应 Minix3: `vir_region` 中的 `lower`, `higher`, `factor` 字段
-pub struct AvlNode {
-    /// 左子节点（地址更小的区域）
-    pub lower: Option<Box<VirRegion>>,
-    /// 右子节点（地址更大的区域）
-    pub higher: Option<Box<VirRegion>>,
-    /// 平衡因子
-    pub factor: BalanceFactor,
-}
-
-impl AvlNode {
-    /// 创建新的叶子节点
-    pub fn new_leaf() -> Self {
-        Self {
-            lower: None,
-            higher: None,
-            factor: BalanceFactor::BALANCED,
-        }
-    }
-
-    /// 获取子节点高度
-    ///
-    /// 返回 (左子树高度, 右子树高度)
-    pub fn child_heights(&self) -> (u32, u32) {
-        let left_h = self.lower.as_ref().map_or(0, |n| n.height());
-        let right_h = self.higher.as_ref().map_or(0, |n| n.height());
-        (left_h, right_h)
-    }
-
-    /// 更新平衡因子
-    pub fn update_factor(&mut self) {
-        let (left_h, right_h) = self.child_heights();
-        self.factor = BalanceFactor((right_h as i8) - (left_h as i8));
-    }
-}
-```
-
 **VirRegion 中的 AVL 字段**
+
+AVL 字段直接嵌入 `VirRegion`，无需额外的节点包装类型：
 
 ```rust
 /// 虚拟区域
 ///
 /// 包含 AVL 树节点字段，可直接作为 AVL 节点使用。
-pub struct VirRegion {
-    // ===== 区域属性 =====
-    /// 虚拟地址起始（AVL 键）
+pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
-    /// 区域长度
     pub length: VirBytes,
-    /// 区域标志
+    pub physblocks: Vec<Option<Box<PhysRegion>>>,
     pub flags: VrFlags,
-    /// 所属进程
-    pub parent: Weak<VmProc>,
-    /// 内存类型
-    pub mem_type: Arc<dyn MemType>,
-    /// 物理区域数组
-    pub phys_regions: Vec<PhysRegion>,
-    /// 唯一 ID
-    pub id: u32,
-    /// 共享映射计数
-    pub remaps: u32,
-    /// 类型特定参数
-    pub param: RegionParam,
+    pub parent_slot: Option<UserSlot>,
+    pub def_memtype: Option<&'static dyn MemType>,
+    pub remaps: i32,
+    pub id: i32,
+    pub param: VrParam,
 
-    // ===== AVL 树字段 =====
-    /// 左子节点
+    // AVL 树字段
     pub lower: Option<Box<VirRegion>>,
-    /// 右子节点
     pub higher: Option<Box<VirRegion>>,
-    /// 平衡因子
-    pub factor: BalanceFactor,
+    pub factor: i8,
 }
 
 impl VirRegion {
-    /// 获取节点高度
-    pub fn height(&self) -> u32 {
-        let left_h = self.lower.as_ref().map_or(0, |n| n.height());
-        let right_h = self.higher.as_ref().map_or(0, |n| n.height());
-        1 + left_h.max(right_h)
-    }
-
     /// 获取结束地址
-    pub fn end_addr(&self) -> VirBytes {
-        VirBytes(self.vaddr.0 + self.length.0)
+    pub(crate) fn end_addr(&self) -> VirBytes {
+        self.vaddr + self.length
     }
 
     /// 检查地址是否在区域内
-    pub fn contains(&self, addr: VirBytes) -> bool {
+    pub(crate) fn contains(&self, addr: VirBytes) -> bool {
         addr >= self.vaddr && addr < self.end_addr()
     }
 
     /// 检查是否与指定范围重叠
-    pub fn overlaps(&self, start: VirBytes, end: VirBytes) -> bool {
+    pub(crate) fn overlaps(&self, start: VirBytes, end: VirBytes) -> bool {
         self.vaddr < end && self.end_addr() > start
     }
 }
 ```
+
+**与文档 Ch3 中设计决策的对应**：`factor` 使用 `i8` 而非自定义 `BalanceFactor` 类型，因为当前实现尚未加入平衡维护逻辑，直接使用原始类型更简洁。待平衡逻辑实现后可考虑引入类型安全的封装。
 
 **节点关系图**
 
@@ -1650,482 +1596,130 @@ impl VirRegion {
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**内存布局优化**
-
-```rust
-// 使用 repr(C) 确保 C 兼容布局（如果需要 FFI）
-#[repr(C)]
-pub struct VirRegion {
-    pub vaddr: VirBytes,        // 8 bytes
-    pub length: VirBytes,       // 8 bytes
-    pub flags: VrFlags,         // 4 bytes
-    pub _pad1: u32,             // 4 bytes (对齐)
-    // ... 其他字段 ...
-    pub lower: Option<Box<VirRegion>>,   // 8 bytes
-    pub higher: Option<Box<VirRegion>>,  // 8 bytes
-    pub factor: i8,             // 1 byte
-    pub _pad2: [u8; 7],         // 7 bytes (对齐)
-}
-```
-
 **键比较**
 
 ```rust
 impl VirRegion {
     /// 比较键值
-    ///
-    /// 返回:
-    /// - Ordering::Less: self.vaddr < other
-    /// - Ordering::Equal: self.vaddr == other
-    /// - Ordering::Greater: self.vaddr > other
-    pub fn cmp_key(&self, other: VirBytes) -> Ordering {
-        self.vaddr.0.cmp(&other.0)
-    }
-}
-
-impl Ord for VirRegion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.vaddr.cmp(&other.vaddr)
-    }
-}
-
-impl PartialOrd for VirRegion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Eq for VirRegion {}
-
-impl PartialEq for VirRegion {
-    fn eq(&self, other: &Self) -> bool {
-        self.vaddr == other.vaddr
+    pub(crate) fn cmp_key(&self, other: VirBytes) -> Ordering {
+        self.vaddr.cmp(&other)
     }
 }
 ```
 
-### 4.2 旋转操作
+### 4.2 插入与删除
 
-**四种旋转类型**
+**当前实现状态**
 
-AVL 树有四种旋转操作来恢复平衡：
+当前 Rust 实现采用简单的递归 BST 插入/删除，尚未实现 AVL 平衡维护。`factor` 字段保留但未使用，为后续添加平衡逻辑预留。
 
-| 类型 | 条件 | 操作 |
-|------|------|------|
-| LL（右旋） | 左子树的左子树过深 | 单次右旋 |
-| RR（左旋） | 右子树的右子树过深 | 单次左旋 |
-| LR（左右旋） | 左子树的右子树过深 | 先左旋后右旋 |
-| RL（右左旋） | 右子树的左子树过深 | 先右旋后左旋 |
-
-**右旋（LL 情况）**
+**插入操作**
 
 ```rust
-/// 右旋
-///
-/// 用于 LL 情况：左子树的左子树过深
-///
-///     A              B
-///    / \            / \
-///   B   T3   →    T1   A
-///  / \                / \
-/// T1  T2            T2  T3
 impl RegionAvl {
-    fn rotate_right(node: &mut Box<VirRegion>) {
-        // 1. 保存 B 的右子树
-        let mut b = node.lower.take().expect("left child must exist");
-        let t2 = b.higher.take();
-
-        // 2. 更新平衡因子
-        // 如果 B.factor == 0（删除情况），旋转后 A.factor = 0, B.factor = 0
-        // 如果 B.factor == -1（插入情况），旋转后 A.factor = 0, B.factor = 0
-        match b.factor.0 {
-            -1 => {
-                node.factor = BalanceFactor::BALANCED;
-                b.factor = BalanceFactor::BALANCED;
-            }
-            0 => {
-                // 删除时可能发生
-                node.factor = BalanceFactor::LEFT_HEAVY;
-                b.factor = BalanceFactor::RIGHT_HEAVY;
-            }
-            _ => unreachable!("invalid factor for LL rotation"),
+    pub(crate) fn insert(&mut self, region: VirRegion) {
+        let was_inserted = Self::insert_node(&mut self.root, region);
+        if was_inserted {
+            self.count += 1;
         }
-
-        // 3. 重新连接
-        b.higher = Some(std::mem::replace(node, b));
-        node.lower = t2;
     }
-}
-```
 
-**左旋（RR 情况）**
-
-```rust
-/// 左旋
-///
-/// 用于 RR 情况：右子树的右子树过深
-///
-///   A                B
-///  / \              / \
-/// T1  B     →      A   T3
-///    / \          / \
-///   T2  T3      T1  T2
-impl RegionAvl {
-    fn rotate_left(node: &mut Box<VirRegion>) {
-        // 1. 保存 B 的左子树
-        let mut b = node.higher.take().expect("right child must exist");
-        let t2 = b.lower.take();
-
-        // 2. 更新平衡因子
-        match b.factor.0 {
-            1 => {
-                node.factor = BalanceFactor::BALANCED;
-                b.factor = BalanceFactor::BALANCED;
+    fn insert_node(node: &mut Option<Box<VirRegion>>, mut region: VirRegion) -> bool {
+        match node {
+            None => {
+                *node = Some(Box::new(region));
+                true
             }
-            0 => {
-                node.factor = BalanceFactor::RIGHT_HEAVY;
-                b.factor = BalanceFactor::LEFT_HEAVY;
+            Some(n) => {
+                if region.vaddr < n.vaddr {
+                    Self::insert_node(&mut n.lower, region)
+                } else if region.vaddr > n.vaddr {
+                    Self::insert_node(&mut n.higher, region)
+                } else {
+                    // 重复键：替换节点内容，保留 AVL 链接
+                    region.lower = n.lower.take();
+                    region.higher = n.higher.take();
+                    region.factor = n.factor;
+                    **n = region;
+                    false
+                }
             }
-            _ => unreachable!("invalid factor for RR rotation"),
-        }
-
-        // 3. 重新连接
-        b.lower = Some(std::mem::replace(node, b));
-        node.higher = t2;
-    }
-}
-```
-
-**LR 双旋（先左旋后右旋）**
-
-```rust
-/// LR 双旋
-///
-/// 用于 LR 情况：左子树的右子树过深
-///
-///       A              A              C
-///      / \            / \            / \
-///     B   T4   →     C   T4   →    B   A
-///    / \            / \            / \ / \
-///   T1  C          B   T3        T1 T2 T3 T4
-///      / \        / \
-///     T2  T3    T1  T2
-impl RegionAvl {
-    fn rotate_left_right(node: &mut Box<VirRegion>) {
-        // 1. 对左子树左旋
-        let b = node.lower.as_mut().expect("left child must exist");
-        Self::rotate_left(b);
-
-        // 2. 对当前节点右旋
-        Self::rotate_right(node);
-
-        // 3. 更新平衡因子（取决于 C 的原平衡因子）
-        // C 是旋转后的新根（原 B.higher）
-        let c_factor = node.factor.0;
-        match c_factor {
-            -1 => {
-                // C 原来左重
-                node.lower.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::RIGHT_HEAVY;
-            }
-            0 => {
-                node.lower.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-            }
-            1 => {
-                // C 原来右重
-                node.lower.as_mut().unwrap().factor = BalanceFactor::LEFT_HEAVY;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-            }
-            _ => unreachable!(),
-        }
-        node.factor = BalanceFactor::BALANCED;
-    }
-}
-```
-
-**RL 双旋（先右旋后左旋）**
-
-```rust
-/// RL 双旋
-///
-/// 用于 RL 情况：右子树的左子树过深
-///
-///     A              A              C
-///    / \            / \            / \
-///   T1  B     →   T1   C     →    A   B
-///      / \            / \        / \ / \
-///     C   T4        T2  B      T1 T2 T3 T4
-///    / \                / \
-///   T2  T3            T3  T4
-impl RegionAvl {
-    fn rotate_right_left(node: &mut Box<VirRegion>) {
-        // 1. 对右子树右旋
-        let b = node.higher.as_mut().expect("right child must exist");
-        Self::rotate_right(b);
-
-        // 2. 对当前节点左旋
-        Self::rotate_left(node);
-
-        // 3. 更新平衡因子
-        let c_factor = node.factor.0;
-        match c_factor {
-            -1 => {
-                node.lower.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::RIGHT_HEAVY;
-            }
-            0 => {
-                node.lower.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-            }
-            1 => {
-                node.lower.as_mut().unwrap().factor = BalanceFactor::LEFT_HEAVY;
-                node.higher.as_mut().unwrap().factor = BalanceFactor::BALANCED;
-            }
-            _ => unreachable!(),
-        }
-        node.factor = BalanceFactor::BALANCED;
-    }
-}
-```
-
-**旋转选择逻辑**
-
-```rust
-impl RegionAvl {
-    /// 根据平衡因子选择旋转类型
-    fn rebalance(node: &mut Box<VirRegion>) -> bool {
-        let factor = node.factor.0;
-
-        if factor <= -2 {
-            // 左子树过深
-            let left = node.lower.as_ref().unwrap();
-            if left.factor.0 <= 0 {
-                // LL 情况
-                Self::rotate_right(node);
-            } else {
-                // LR 情况
-                Self::rotate_left_right(node);
-            }
-            true
-        } else if factor >= 2 {
-            // 右子树过深
-            let right = node.higher.as_ref().unwrap();
-            if right.factor.0 >= 0 {
-                // RR 情况
-                Self::rotate_left(node);
-            } else {
-                // RL 情况
-                Self::rotate_right_left(node);
-            }
-            true
-        } else {
-            // 不需要旋转
-            false
         }
     }
 }
 ```
 
-**旋转图示**
+**插入逻辑说明**：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    四种旋转操作                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  1. LL 右旋 (factor = -2, left.factor <= 0)                │
-│                                                             │
-│        A(-2)                  B(0)                          │
-│        / \                   /   \                          │
-│       B   T3      →         T1    A(0)                      │
-│      / \                         / \                        │
-│     T1  T2                     T2  T3                       │
-│                                                             │
-│  2. RR 左旋 (factor = 2, right.factor >= 0)                │
-│                                                             │
-│     A(2)                     B(0)                           │
-│     / \                     /   \                           │
-│    T1  B          →       A(0)   T3                         │
-│       / \                 / \                               │
-│      T2  T3             T1  T2                              │
-│                                                             │
-│  3. LR 双旋 (factor = -2, left.factor > 0)                 │
-│                                                             │
-│       A(-2)              A(-2)           C(0)               │
-│       / \                / \            /   \               │
-│      B   T4    →       C   T4   →     B     A               │
-│     / \                / \           / \   / \              │
-│    T1  C              B   T3       T1 T2 T3 T4              │
-│       / \            / \                                    │
-│      T2  T3        T1  T2                                   │
-│                                                             │
-│  4. RL 双旋 (factor = 2, right.factor < 0)                 │
-│                                                             │
-│     A(2)               A(2)            C(0)                 │
-│     / \                / \            /   \                 │
-│    T1  B      →      T1  C     →    A     B                 │
-│       / \                / \        / \   / \               │
-│      C   T4            T2  B      T1 T2 T3 T4               │
-│     / \                    / \                              │
-│    T2  T3                T3  T4                             │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+1. 空节点位置 → 创建新节点，返回 `true` 表示新增
+2. 键小于当前节点 → 递归插入左子树
+3. 键大于当前节点 → 递归插入右子树
+4. 键相等 → 替换节点内容，保留 `lower`/`higher`/`factor`（对应 Minix3 的 `region_subst` 语义），返回 `false` 表示替换而非新增
 
-### 4.3 平衡维护
-
-**插入时的平衡维护**
-
-插入后，需要从插入点向上回溯更新平衡因子，并在必要时旋转。
+**删除操作**
 
 ```rust
 impl RegionAvl {
-    /// 插入区域并维护平衡
-    pub fn insert(&mut self, mut region: VirRegion) -> Option<VirRegion> {
-        // 初始化新节点
-        region.lower = None;
-        region.higher = None;
-        region.factor = BalanceFactor::BALANCED;
+    pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
+        Self::remove_node(&mut self.root, addr).map(|region| {
+            self.count -= 1;
+            *region
+        })
+    }
 
-        // 空树
-        if self.root.is_none() {
-            self.root = Some(Box::new(region));
-            self.count = 1;
-            return None;
+    fn remove_node(node: &mut Option<Box<VirRegion>>, addr: VirBytes) -> Option<Box<VirRegion>> {
+        let n = node.as_mut()?;
+
+        if addr < n.vaddr {
+            return Self::remove_node(&mut n.lower, addr);
+        } else if addr > n.vaddr {
+            return Self::remove_node(&mut n.higher, addr);
         }
 
-        // 搜索插入位置，记录路径
-        let mut path: Vec<*mut VirRegion> = Vec::new();
-        let mut current = self.root.as_mut().unwrap();
+        let mut removed = node.take().unwrap();
 
-        loop {
-            path.push(&mut **current);
-
-            match region.vaddr.cmp(&current.vaddr) {
-                Ordering::Less => {
-                    if current.lower.is_none() {
-                        current.lower = Some(Box::new(region));
-                        break;
-                    }
+        match (removed.lower.take(), removed.higher.take()) {
+            (None, None) => Some(removed),
+            (Some(left), None) => {
+                *node = Some(left);
+                Some(removed)
+            }
+            (None, Some(right)) => {
+                *node = Some(right);
+                Some(removed)
+            }
+            (Some(left), Some(right)) => {
+                // 两个子节点：将左子树挂到右子树的最左端
+                *node = Some(right);
+                let mut current = node.as_mut().unwrap();
+                while current.lower.is_some() {
                     current = current.lower.as_mut().unwrap();
                 }
-                Ordering::Greater => {
-                    if current.higher.is_none() {
-                        current.higher = Some(Box::new(region));
-                        break;
-                    }
-                    current = current.higher.as_mut().unwrap();
-                }
-                Ordering::Equal => {
-                    // 重复键，替换
-                    let old = std::mem::replace(current, Box::new(region));
-                    return Some(*old);
-                }
+                current.lower = Some(left);
+                Some(removed)
             }
         }
-
-        self.count += 1;
-
-        // 从插入点向上更新平衡因子
-        // 插入在左子树: factor -= 1
-        // 插入在右子树: factor += 1
-        for node_ptr in path.into_iter().rev() {
-            let node = unsafe { &mut *node_ptr };
-
-            // 更新平衡因子（需要知道插入方向）
-            // 这里简化处理，实际需要记录方向
-            node.update_factor();
-
-            // 检查是否需要旋转
-            if node.factor.needs_rebalance() {
-                // 执行旋转
-                // 注意：这里需要处理 Box 的所有权
-                // 实际实现更复杂
-            }
-        }
-
-        None
     }
 }
 ```
 
-**删除时的平衡维护**
+**删除逻辑说明**：
 
-删除比插入更复杂，可能需要多次旋转。
+1. 无子节点 → 直接移除
+2. 仅一个子节点 → 用子节点替换
+3. 两个子节点 → 用右子树替换，将左子树挂到右子树的最左端（不同于 Minix3 的替代节点策略，但结果等价）
 
-```rust
-impl RegionAvl {
-    /// 删除区域并维护平衡
-    pub fn remove(&mut self, key: VirBytes) -> Option<VirRegion> {
-        // 搜索要删除的节点
-        let mut path: Vec<*mut VirRegion> = Vec::new();
-        let mut current = self.root.as_mut()?;
+**与 Minix3 删除的差异**：Minix3 的 `region_remove` 从更深的子树找替代叶子节点，然后"塞入"被删节点位置，并从替代节点的父节点向上回溯平衡。当前 Rust 实现简化为直接合并子树，不维护平衡因子。
 
-        loop {
-            path.push(&mut **current);
+**待实现的平衡维护**
 
-            match key.cmp(&current.vaddr) {
-                Ordering::Less => {
-                    current = current.lower.as_mut()?;
-                }
-                Ordering::Greater => {
-                    current = current.higher.as_mut()?;
-                }
-                Ordering::Equal => {
-                    break;
-                }
-            }
-        }
+当前实现未维护 AVL 平衡因子，最坏情况下可能退化为链表。后续需添加：
 
-        // 找到节点，执行删除
-        let removed = if current.lower.is_none() || current.higher.is_none() {
-            // 最多一个子节点，直接删除
-            let child = current.lower.take().or_else(|| current.higher.take());
-            // 将子节点连接到父节点
-            // ...
-            self.count -= 1;
-            Some(current)
-        } else {
-            // 两个子节点，找中序后继
-            let successor = Self::find_min_mut(&mut current.higher);
-            // 交换键值
-            // ...
-            self.count -= 1;
-            Some(successor)
-        };
+1. 插入后从插入点向上回溯更新 `factor`，必要时旋转
+2. 删除后从删除点向上回溯更新 `factor`，必要时旋转
+3. 四种旋转操作：LL（右旋）、RR（左旋）、LR（先左旋后右旋）、RL（先右旋后左旋）
 
-        // 从删除点向上更新平衡因子
-        for node_ptr in path.into_iter().rev() {
-            let node = unsafe { &mut *node_ptr };
-            node.update_factor();
-
-            // 删除可能需要多次旋转
-            while node.factor.needs_rebalance() {
-                Self::rebalance(node);
-            }
-        }
-
-        removed.map(|b| *b)
-    }
-
-    /// 找到子树的最小节点
-    fn find_min_mut(node: &mut Option<Box<VirRegion>>) -> &mut Box<VirRegion> {
-        let mut current = node.as_mut().unwrap();
-        while current.lower.is_some() {
-            current = current.lower.as_mut().unwrap();
-        }
-        current
-    }
-}
-```
-
-**插入 vs 删除的平衡差异**
-
-- **插入**：从插入点向上回溯，更新平衡因子，遇到第一个不平衡节点时旋转，旋转后子树高度不变停止回溯，最多 1 次旋转
-- **删除**：从删除点向上回溯，更新平衡因子，遇到不平衡节点时旋转，旋转后子树高度可能减 1 继续回溯，最多 O(log n) 次旋转
-
-**平衡因子更新规则**
+平衡因子更新规则（待实现时参考）：
 
 | 操作 | 方向 | 平衡因子变化 |
 |------|------|-------------|
@@ -2134,60 +1728,12 @@ impl RegionAvl {
 | 删除左子树节点 | 左 | factor += 1 |
 | 删除右子树节点 | 右 | factor -= 1 |
 
-**停止条件**
-
 | 操作 | 停止回溯条件 |
 |------|-------------|
 | 插入 | factor 变为 0（子树高度不变）或旋转后 |
 | 删除 | factor 变为 ±1（子树高度不变）或旋转后仍需检查 |
 
-**高度变化传播**
-
-```rust
-/// 插入后更新平衡因子
-///
-/// 返回 true 表示子树高度增加，需要继续向上传播
-fn update_balance_after_insert(node: &mut VirRegion, went_left: bool) -> bool {
-    if went_left {
-        node.factor.dec();
-    } else {
-        node.factor.inc();
-    }
-
-    match node.factor.0 {
-        0 => false,    // 高度不变，停止传播
-        -1 | 1 => true, // 高度增加，继续传播
-        _ => {
-            // 需要旋转
-            // 旋转后高度恢复原状，停止传播
-            false
-        }
-    }
-}
-
-/// 删除后更新平衡因子
-///
-/// 返回 true 表示子树高度减少，需要继续向上传播
-fn update_balance_after_remove(node: &mut VirRegion, removed_from_left: bool) -> bool {
-    if removed_from_left {
-        node.factor.inc();
-    } else {
-        node.factor.dec();
-    }
-
-    match node.factor.0 {
-        -1 | 1 => false, // 高度不变，停止传播
-        0 => true,       // 高度减少，继续传播
-        _ => {
-            // 需要旋转
-            // 旋转后可能继续减少，需要检查
-            true
-        }
-    }
-}
-```
-
-### 4.4 查找优化
+### 4.3 查找优化
 
 **地址范围查找的特殊性**
 
@@ -2223,21 +1769,16 @@ typedef enum {
 ///
 /// 对应 Minix3: `avl_search_type` 枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SearchType(u8);
+pub(crate) struct SearchType(u8);
 
 impl SearchType {
-    /// 精确匹配键值
-    pub const EQUAL: Self = Self(1);
-    /// 小于指定键
-    pub const LESS: Self = Self(2);
-    /// 大于指定键
-    pub const GREATER: Self = Self(4);
-    /// 小于等于
-    pub const LESS_EQUAL: Self = Self(3);  // EQUAL | LESS
-    /// 大于等于
-    pub const GREATER_EQUAL: Self = Self(5); // EQUAL | GREATER
+    pub(crate) const EQUAL: Self = Self(1);
+    pub(crate) const LESS: Self = Self(2);
+    pub(crate) const GREATER: Self = Self(4);
+    pub(crate) const LESS_EQUAL: Self = Self(3);
+    pub(crate) const GREATER_EQUAL: Self = Self(5);
 
-    pub fn contains(&self, other: Self) -> bool {
+    pub(crate) fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) != 0
     }
 }
@@ -2254,7 +1795,7 @@ impl RegionAvl {
     /// - 内存访问：验证地址是否在有效区域内
     ///
     /// 时间复杂度: O(log n)
-    pub fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
         Self::find_containing(&self.root, addr)
     }
 
@@ -2262,13 +1803,10 @@ impl RegionAvl {
         let n = node.as_ref()?;
 
         if addr < n.vaddr {
-            // 地址在当前区域之前，搜索左子树
             Self::find_containing(&n.lower, addr)
         } else if addr >= n.end_addr() {
-            // 地址在当前区域之后，搜索右子树
             Self::find_containing(&n.higher, addr)
         } else {
-            // 地址在当前区域内
             Some(n)
         }
     }
@@ -2316,31 +1854,26 @@ impl RegionAvl {
     /// 重叠条件: region.vaddr < end && region.end_addr() > start
     ///
     /// 时间复杂度: O(log n) 平均，最坏 O(n) 如果范围跨越多个区域
-    pub fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
-        Self::find_overlap_node(&self.root, start, end)
+    pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
+        Self::find_overlap_node(self.root.as_ref(), start, end)
     }
 
     fn find_overlap_node(
-        node: &Option<Box<VirRegion>>,
+        node: Option<&Box<VirRegion>>,
         start: VirBytes,
         end: VirBytes,
     ) -> Option<&VirRegion> {
-        let n = node.as_ref()?;
+        let n = node?;
 
-        // 检查当前节点是否重叠
         if n.vaddr < end && n.end_addr() > start {
             return Some(n);
         }
 
-        // 根据位置决定搜索方向
         if end <= n.vaddr {
-            // 查询范围完全在当前区域左侧
-            Self::find_overlap_node(&n.lower, start, end)
+            Self::find_overlap_node(n.lower.as_ref(), start, end)
         } else if start >= n.end_addr() {
-            // 查询范围完全在当前区域右侧
-            Self::find_overlap_node(&n.higher, start, end)
+            Self::find_overlap_node(n.higher.as_ref(), start, end)
         } else {
-            // 不应该到达这里（已被第一个条件捕获）
             None
         }
     }
@@ -2348,7 +1881,7 @@ impl RegionAvl {
     /// 查找所有与指定范围重叠的区域
     ///
     /// 返回重叠区域的迭代器
-    pub fn find_all_overlaps<'a>(
+    pub(crate) fn find_all_overlaps<'a>(
         &'a self,
         start: VirBytes,
         end: VirBytes,
@@ -2365,52 +1898,48 @@ impl RegionAvl {
     /// 通用搜索函数
     ///
     /// 支持多种搜索类型，对应 Minix3 的 `region_search`
-    pub fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
-        Self::search_node(&self.root, key, st)
+    pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
+        Self::search_node(self.root.as_ref(), key, st)
     }
 
     fn search_node(
-        node: &Option<Box<VirRegion>>,
+        mut node: Option<&Box<VirRegion>>,
         key: VirBytes,
         st: SearchType,
     ) -> Option<&VirRegion> {
-        let n = node.as_ref()?;
-        let mut match_h: Option<&VirRegion> = None;
-
         let target_cmp = if st.contains(SearchType::LESS) {
-            1  // 允许键大于节点
+            1i32
         } else if st.contains(SearchType::GREATER) {
-            -1 // 允许键小于节点
+            -1i32
         } else {
-            0  // 必须精确匹配
+            0i32
         };
 
-        let mut current = Some(n);
-        while let Some(h) = current {
+        let mut match_h: Option<&VirRegion> = None;
+
+        while let Some(h) = node {
             let cmp = key.0.cmp(&h.vaddr.0);
 
             if cmp == Ordering::Equal {
                 if st.contains(SearchType::EQUAL) {
                     return Some(h);
                 }
-                // 继续向目标方向搜索
                 return if target_cmp < 0 {
-                    Self::search_node(&h.lower, key, st)
+                    Self::search_node(h.lower.as_ref(), key, st)
                 } else {
-                    Self::search_node(&h.higher, key, st)
+                    Self::search_node(h.higher.as_ref(), key, st)
                 };
             }
 
-            // 记录候选匹配
-            if target_cmp != 0 && (cmp.0 ^ target_cmp) >= 0 {
-                // cmp 和 target_cmp 同号
+            let cmp_val = if cmp == Ordering::Less { -1i32 } else { 1i32 };
+            if target_cmp != 0 && (cmp_val ^ target_cmp) >= 0 {
                 match_h = Some(h);
             }
 
-            current = if cmp == Ordering::Less {
-                h.lower.as_ref().map(|b| b.as_ref())
+            node = if cmp == Ordering::Less {
+                h.lower.as_ref()
             } else {
-                h.higher.as_ref().map(|b| b.as_ref())
+                h.higher.as_ref()
             };
         }
 
@@ -2418,22 +1947,22 @@ impl RegionAvl {
     }
 
     /// 查找小于指定键的最大区域
-    pub fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::LESS)
     }
 
     /// 查找大于指定键的最小区域
-    pub fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::GREATER)
     }
 
     /// 查找小于等于指定键的最大区域
-    pub fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::LESS_EQUAL)
     }
 
     /// 查找大于等于指定键的最小区域
-    pub fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
+    pub(crate) fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::GREATER_EQUAL)
     }
 }
@@ -2448,14 +1977,7 @@ impl RegionAvl {
     /// 在指定范围内查找足够大的空闲槽位
     ///
     /// 对应 Minix3: `region_find_slot_range`
-    ///
-    /// 参数:
-    /// - minv: 最小起始地址
-    /// - maxv: 最大结束地址（0 表示使用 minv + length）
-    /// - length: 需要的空间大小
-    ///
-    /// 返回: 可用起始地址，或 None 表示无合适空间
-    pub fn find_slot(
+    pub(crate) fn find_slot(
         &self,
         minv: VirBytes,
         maxv: VirBytes,
@@ -2576,25 +2098,14 @@ h <= c * log₂(n)
 **查找复杂度分析**
 
 ```rust
-/// 查找包含指定地址的区域
-///
-/// 时间复杂度分析:
-/// - 每次迭代比较一次，进入一个子树
-/// - 树高度为 O(log n)，最多迭代 O(log n) 次
-/// - 每次迭代 O(1) 操作
-/// - 总时间: O(log n)
 fn find_containing(node: &Option<Box<VirRegion>>, addr: VirBytes) -> Option<&VirRegion> {
     let n = node.as_ref()?;
 
-    // O(1) 比较
     if addr < n.vaddr {
-        // 进入左子树，递归深度 +1
         Self::find_containing(&n.lower, addr)
     } else if addr >= n.end_addr() {
-        // 进入右子树，递归深度 +1
         Self::find_containing(&n.higher, addr)
     } else {
-        // 找到，O(1)
         Some(n)
     }
 }
@@ -2901,27 +2412,24 @@ B 树的缓存优势：B 树节点（假设阶数 16）包含 16 个键（128 by
 **Rust 实现的缓存考虑**
 
 ```rust
-/// 优化后的 VirRegion 布局
+/// 优化后的 VirRegion 布局（冷热分离建议）
 #[repr(C)]
-pub struct VirRegion {
+pub(crate) struct VirRegion {
     // ===== 热字段: 查找时必访问 =====
-    /// 虚拟地址（键）
     pub vaddr: VirBytes,
-    /// 区域长度
     pub length: VirBytes,
-    /// 左子节点
     pub lower: Option<Box<VirRegion>>,
-    /// 右子节点
     pub higher: Option<Box<VirRegion>>,
-    /// 平衡因子
     pub factor: i8,
     
     // ===== 冷字段: 特定操作时访问 =====
-    /// 区域标志
+    pub physblocks: Vec<Option<Box<PhysRegion>>>,
     pub flags: VrFlags,
-    /// 物理区域
-    pub phys_regions: Vec<PhysRegion>,
-    // ... 其他字段
+    pub parent_slot: Option<UserSlot>,
+    pub def_memtype: Option<&'static dyn MemType>,
+    pub remaps: i32,
+    pub id: i32,
+    pub param: VrParam,
 }
 ```
 

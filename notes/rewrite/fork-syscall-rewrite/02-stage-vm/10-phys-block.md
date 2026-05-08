@@ -762,155 +762,106 @@ fork 后共享状态：`phys_block.refcount = 2`，`firstregion → parent_pr �
 1. **引用计数安全**：C 代码手动管理 refcount，容易出错；Rust 需要保证引用计数的正确性
 2. **链表安全**：`firstregion` 链表涉及裸指针，需要在 unsafe 块中操作，但提供安全接口
 3. **生命周期管理**：`phys_block` 生命周期由引用计数决定，不能简单使用 Rust 的所有权模型
-4. **与 phys_region 的双向引用**：`phys_block → phys_region`（firstregion 链表）、`phys_region → phys_block`（ph 指针），需要使用弱引用或其他机制避免循环
+4. **与 phys_region 的双向引用**：`phys_block → phys_region`（firstregion 链表）、`phys_region → phys_block`（ph 指针），需要使用裸指针避免循环
 
 **结构体定义**
 
 ```rust
-use minix_types::{PhysBytes, VirBytes};
-use core::cell::Cell;
-use core::ptr::NonNull;
-
-/// 物理块标志位
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PbFlags(u8);
-
-impl PbFlags {
-    /// 此块在页面缓存中
-    pub const IN_CACHE: Self = Self(0x01);
-    
-    pub fn contains(&self, other: Self) -> bool {
-        (self.0 & other.0) != 0
-    }
-    
-    pub fn insert(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
-    
-    pub fn remove(&mut self, other: Self) {
-        self.0 &= !other.0;
-    }
+pub(crate) struct PhysBlock {
+    phys: u64,
+    refcount: u8,
+    flags: PhysBlockFlags,
+    first_region: Option<*mut PhysRegion>,
 }
+```
 
-/// 物理块结构体
-///
-/// 对应 Minix3: `struct phys_block`
-///
-/// # Safety
-///
-/// - `firstregion` 链表操作需要通过安全接口进行
-/// - `refcount` 由内部方法维护，不应直接修改
-pub struct PhysBlock {
-    /// 物理内存地址（页对齐）
-    pub phys: PhysBytes,
-    
-    /// 引用此块的 phys_region 链表头
-    firstregion: Option<NonNull<PhysRegion>>,
-    
-    /// 引用计数
-    refcount: Cell<u8>,
-    
-    /// 标志位
-    pub flags: PbFlags,
-}
+**为什么 phys 使用 u64 而非 newtype**
 
-impl PhysBlock {
-    /// 创建新的物理块
-    ///
-    /// 对应 Minix3: `pb_new()`
-    ///
-    /// # 参数
-    ///
-    /// - `phys`: 物理内存地址，`PhysBytes(MAP_NONE as u64)` 表示延迟分配
-    ///
-    /// # 返回
-    ///
-    /// 返回新的 PhysBlock，初始 refcount = 0
-    pub fn new(phys: PhysBytes) -> Self {
-        Self {
-            phys,
-            firstregion: None,
-            refcount: Cell::new(0),
-            flags: PbFlags::default(),
-        }
-    }
-    
-    /// 获取引用计数
-    pub fn refcount(&self) -> u8 {
-        self.refcount.get()
-    }
-    
-    /// 检查是否为共享页（refcount > 1）
-    pub fn is_shared(&self) -> bool {
-        self.refcount.get() > 1
-    }
-    
-    /// 检查是否被引用（refcount > 0）
-    pub fn is_referenced(&self) -> bool {
-        self.refcount.get() > 0
-    }
-    
-    /// 检查是否有物理内存
-    pub fn has_phys(&self) -> bool {
-        self.phys.0 != MAP_NONE as u64
-    }
-    
-    /// 获取链表头（仅用于遍历）
-    pub fn first_region(&self) -> Option<&PhysRegion> {
-        self.firstregion.map(|ptr| unsafe { ptr.as_ref() })
+Minix3 的 `phys_bytes` 在 32 位系统上是 `u32_t`，在 64 位系统上应为 `u64`。当前实现直接使用 `u64`，避免引入 newtype 包装带来的转换开销。`PhysBlock` 内部定义了 `MAP_NONE` 常量：
+
+```rust
+pub(crate) const MAP_NONE: u64 = 0xFFFF_FFFF_FFFF_FFFE;
+```
+
+注意：Minix3 C 代码中 `MAP_NONE` 为 `0xFFFFFFFE`（32 位），Rust 版本扩展为 64 位值 `0xFFFF_FFFF_FFFF_FFFE`，语义相同——全 1 末位 0，表示无效物理地址。
+
+**为什么 refcount 使用普通 u8 而非 Cell\<u8\>**
+
+Minix3 VM 是单线程的，所有对 `PhysBlock` 的操作都需要 `&mut self`（通过 `PhysRegion::link_to_block` / `unlink_from_block` 等方法获取可变引用），因此不需要内部可变性。使用普通 `u8` 比 `Cell<u8>` 更简单、更高效，也避免了 `&self` 方法中意外修改 refcount 的风险。
+
+**为什么 first_region 使用 Option\<*mut PhysRegion\> 而非 Option\<NonNull\<PhysRegion\>\>**
+
+`Option<*mut T>` 在 Rust 中与裸指针大小相同（null 优化），而 `NonNull<T>` 虽然也有 null 优化，但语义上表示"非空指针"，不适合表示"可能为空的链表头"。使用 `Option<*mut PhysRegion>` 更直观，访问时需要 unsafe，但链表操作已封装在 `PhysRegion` 的方法中。
+
+**为什么 flags 使用 bitflags 宏而非手动 newtype**
+
+```rust
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct PhysBlockFlags: u8 {
+        const IN_CACHE = 0x01;
     }
 }
 ```
 
-**封装决策说明**
+`bitflags!` 宏自动生成 `contains`、`insert`、`remove` 等方法，以及 `Debug`、`PartialEq` 等 trait 实现，比手动 newtype 更简洁、更规范。Minix3 中 `PBF_INCACHE = 0x01`，Rust 版本保持相同值。
 
-1. **refcount 使用 `Cell<u8>`**：允许通过 `&self` 修改，避免使用 `&mut self` 导致借用冲突；单线程环境足够，VM 是单线程的
-2. **firstregion 使用 `Option<NonNull<PhysRegion>>`**：NonNull 表示非空指针，优化 Option 大小；访问需要 unsafe，但提供安全封装；链表操作封装在方法中
-3. **phys 和 flags 公开**：这些字段需要外部访问，不涉及内存安全
-4. **不实现 Drop**：PhysBlock 由 Slab 分配，不自动释放；释放通过显式调用完成；避免 Drop 与引用计数的冲突
+**为什么操作方法放在 PhysRegion 而非 PhysBlock 上**
+
+Minix3 中 `pb_link()` 和 `pb_unreferenced()` 是独立函数，操作涉及 `PhysBlock` 和 `PhysRegion` 双方。Rust 实现将这些操作放在 `PhysRegion` 上（`link_to_block`、`unlink_from_block`），原因：
+
+1. **所有权语义**：`PhysRegion` 是链表节点，"链接到块"和"从块解链"是节点的行为，不是块的行为
+2. **借用一致性**：`PhysRegion` 持有 `&mut self` 时可以安全修改自身字段，同时通过 unsafe 修改 `PhysBlock` 的链表头和 refcount
+3. **封装性**：`PhysBlock` 的 `add_ref`/`release_ref` 方法是内部实现细节，由 `PhysRegion` 的方法调用
 
 **与 Minix3 的对应**
 
 | Minix3 字段 | Rust 字段 | 说明 |
 |------------|----------|------|
-| `phys_bytes phys` | `phys: PhysBytes` | 物理地址，使用 newtype |
-| `struct phys_region *firstregion` | `firstregion: Option<NonNull<PhysRegion>>` | 链表头，使用 Option |
-| `u8_t refcount` | `refcount: Cell<u8>` | 内部可变性 |
-| `u8_t flags` | `flags: PbFlags` | 标志位，使用 newtype |
+| `phys_bytes phys` | `phys: u64` | 物理地址，直接用 u64 |
+| `struct phys_region *firstregion` | `first_region: Option<*mut PhysRegion>` | 链表头，下划线命名 |
+| `u8_t refcount` | `refcount: u8` | 普通 u8，非 Cell |
+| `u8_t flags` | `flags: PhysBlockFlags` | bitflags 宏生成 |
 | `u32_t seencount` | 不实现 | 仅调试用 |
 
-**安全性考虑**
+**PhysBlock 的核心方法**
 
 ```rust
 impl PhysBlock {
-    /// 增加引用计数（内部方法）
-    ///
-    /// # Safety
-    ///
-    /// 调用者必须确保：
-    /// - phys_region 已正确初始化
-    /// - 不会导致 refcount 溢出
-    unsafe fn inc_refcount(&self) {
-        let count = self.refcount.get();
-        debug_assert!(count < u8::MAX, "refcount overflow");
-        self.refcount.set(count + 1);
+    pub(crate) fn new(phys: u64) -> Self {
+        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
+        Self {
+            phys,
+            refcount: 0,
+            flags: PhysBlockFlags::empty(),
+            first_region: None,
+        }
     }
-    
-    /// 减少引用计数（内部方法）
-    ///
-    /// # Safety
-    ///
-    /// 调用者必须确保：
-    /// - refcount > 0
-    /// - 如果 refcount 变为 0，需要处理释放逻辑
-    unsafe fn dec_refcount(&self) -> u8 {
-        let count = self.refcount.get();
-        debug_assert!(count > 0, "refcount underflow");
-        self.refcount.set(count - 1);
-        count - 1
+
+    pub(crate) fn is_mapped(&self) -> bool {
+        self.phys != Self::MAP_NONE
+    }
+
+    pub(crate) fn add_ref(&mut self) {
+        self.refcount = self.refcount.saturating_add(1);
+    }
+
+    pub(crate) fn release_ref(&mut self) -> bool {
+        if self.refcount > 0 {
+            self.refcount -= 1;
+        }
+        self.refcount > 0
     }
 }
 ```
+
+**为什么 add_ref 使用 saturating_add 而非 panic**
+
+`saturating_add` 在溢出时饱和到 255 而非 panic，与 Minix3 的 `u8_t` 自溢出行为一致。Minix3 的 `pb->refcount++` 在 u8 溢出时也是静默回绕（实际场景 refcount 极少超过 10）。`debug_assert` 可在调试构建中检测溢出，但生产构建不应 panic。
+
+**为什么 release_ref 返回 bool 而非新 refcount**
+
+`release_ref` 返回 `bool` 表示"块是否仍有引用"（`refcount > 0`），而非返回新的 refcount 值。调用者只需知道"是否可以释放"，不需要具体数值。这与 Minix3 中 `pb_unreferenced` 检查 `refcount == 0` 的逻辑对应。
 
 
 ---
@@ -921,345 +872,84 @@ impl PhysBlock {
 
 在 Rust 中实现引用计数有两种主要方式：
 
-| 方面 | `Arc<T>`（标准库） | 手动管理（`Cell<u8>`） |
+| 方面 | `Arc<T>`（标准库） | 手动管理（`u8`） |
 |------|---------------------|------------------------|
-| 自动管理 | 自动增减，无需手动 | 需要手动调用 link/unlink |
-| 链表遍历 | 不支持 | 支持 firstregion 链表 |
+| 自动管理 | 自动增减，无需手动 | 需要手动调用 add_ref/release_ref |
+| 链表遍历 | 不支持 | 支持 first_region 链表 |
 | Drop | 自动释放，与 VM 生命周期管理冲突 | 完全控制释放时机 |
 | 内存开销 | 额外 strong/weak count | 无额外开销 |
-| 线程安全 | Arc 线程安全 | Cell 单线程 |
+| 线程安全 | Arc 线程安全 | 单线程，无需原子 |
 
-选择手动管理（方案2）的原因：Minix3 的设计需要链表遍历能力；VM 是单线程环境，不需要 Arc 的线程安全；需要与 Slab 分配器集成。
+选择手动管理（方案2）的原因：Minix3 的设计需要链表遍历能力；VM 是单线程环境，不需要 Arc 的线程安全；需要与 PhysRegion 的链表操作集成。
 
 **为什么不用 Arc**
 
-```rust
-// Arc 方案的问题示例
-
-use std::sync::Arc;
-
-// 问题 1: 无法实现链表遍历
-struct PhysBlockArc {
-    phys: PhysBytes,
-    // Arc 无法提供遍历所有引用者的能力
-    // firstregion: ??? 
-}
-
-// 问题 2: Drop 自动释放
-fn example_arc() {
-    let pb = Arc::new(PhysBlockArc { phys: PhysBytes(0x1000) });
-    let pb2 = Arc::clone(&pb);
-    
-    // 当 pb 和 pb2 都 drop 时，PhysBlockArc 自动释放
-    // 但 VM 需要控制释放时机（如调用 memtype 回调）
-    // Arc::drop 无法调用自定义的释放逻辑
-}
-
-// 问题 3: 无法与 Slab 集成
-// Arc 使用堆分配，而 PhysBlock 应该从 Slab 分配
-```
-
-**手动管理的实现**
-
-```rust
-use core::cell::Cell;
-use core::ptr::NonNull;
-
-/// PhysBlock 的引用计数管理
-impl PhysBlock {
-    /// 将 phys_region 链接到此物理块
-    ///
-    /// 对应 Minix3: `pb_link()`
-    ///
-    /// # Safety
-    ///
-    /// - `pr` 必须是有效且未链接到其他 phys_block 的
-    /// - 调用后 `pr.ph` 将指向此块
-    pub unsafe fn link(
-        &mut self,
-        pr: &mut PhysRegion,
-        offset: VirBytes,
-        parent: *mut VirRegion,
-    ) {
-        pr.offset = offset;
-        pr.ph = NonNull::new(self as *mut _);
-        pr.parent = parent;
-        
-        // 头插法加入链表
-        pr.next_ph_list = self.firstregion;
-        self.firstregion = NonNull::new(pr as *mut _);
-        
-        // 增加引用计数
-        let count = self.refcount.get();
-        self.refcount.set(count + 1);
-    }
-    
-    /// 从此物理块取消链接 phys_region
-    ///
-    /// 对应 Minix3: `pb_unreferenced()` 的链表移除部分
-    ///
-    /// # Safety
-    ///
-    /// - `pr` 必须已链接到此块
-    /// - 返回新的引用计数
-    pub unsafe fn unlink(&mut self, pr: &PhysRegion) -> u8 {
-        // 从链表中移除
-        if let Some(head) = self.firstregion {
-            if head.as_ptr() == pr as *const _ as *mut _ {
-                // pr 是链表头
-                self.firstregion = pr.next_ph_list;
-            } else {
-                // 遍历链表查找 pr
-                let mut current = head;
-                loop {
-                    let current_ref = current.as_ref();
-                    if let Some(next) = current_ref.next_ph_list {
-                        if next.as_ptr() == pr as *const _ as *mut _ {
-                            current.as_mut().next_ph_list = pr.next_ph_list;
-                            break;
-                        }
-                        current = next;
-                    } else {
-                        panic!("phys_region not found in chain");
-                    }
-                }
-            }
-        }
-        
-        // 减少引用计数
-        let count = self.refcount.get();
-        self.refcount.set(count - 1);
-        count - 1
-    }
-}
-```
+1. **无法实现链表遍历**：Arc 无法提供遍历所有引用者的能力，而 Minix3 的 `firstregion` 链表是核心功能
+2. **Drop 自动释放**：当所有 Arc clone 都 drop 时，PhysBlock 自动释放，但 VM 需要控制释放时机（如调用 memtype 回调）
+3. **无法与链表集成**：Arc 的引用计数是内部的，无法与 `first_region` 链表保持同步
 
 **引用计数不变量**
 
-1. **refcount >= 0**：不会出现负数，`dec_refcount` 前检查 `count > 0`
-2. **refcount == 链表长度**：每次 link 增加 refcount，每次 unlink 减少 refcount，可通过遍历链表验证
-3. **refcount == 0 时可以释放**：此时 `firstregion` 必须为 None，物理页可以归还，PhysBlock 可以归还给 Slab
-4. **refcount > 1 时需要 CoW**：写操作前检查 `is_shared()`，如果共享则先复制再写入
-
-**验证函数**
-
-```rust
-impl PhysBlock {
-    /// 验证引用计数一致性（调试用）
-    ///
-    /// 遍历链表，确认 refcount 与链表长度一致
-    #[cfg(debug_assertions)]
-    pub fn verify_refcount(&self) -> bool {
-        let mut count = 0u8;
-        let mut current = self.firstregion;
-        
-        while let Some(ptr) = current {
-            let pr = unsafe { ptr.as_ref() };
-            // 验证 pr.ph 指向此块
-            if pr.ph.map(|p| p.as_ptr() as *const _ != self as *const _).unwrap_or(true) {
-                return false;
-            }
-            count = count.saturating_add(1);
-            current = pr.next_ph_list;
-        }
-        
-        count == self.refcount.get()
-    }
-}
-```
+1. **refcount >= 0**：`release_ref` 在 refcount 为 0 时不减少，避免下溢
+2. **refcount == 链表长度**：每次 `link_to_block` 增加 refcount，每次 `unlink_from_block` 减少 refcount，可通过 `iterate_block_refs` 验证
+3. **refcount == 0 时可以释放**：此时 `first_region` 必须为 None，物理页可以归还
+4. **refcount > 1 时需要 CoW**：`PhysRegion::needs_cow()` 检查 `refcount > 1`
 
 **与 Minix3 的对比**
 
 | 方面 | Minix3 (C) | Rust |
 |------|-----------|------|
-| 引用计数类型 | `u8_t` | `Cell<u8>` |
-| 增加 | `pb->refcount++` | `self.refcount.set(count + 1)` |
-| 减少 | `pb->refcount--` | `self.refcount.set(count - 1)` |
-| 溢出检查 | 无 | debug_assert! |
-| 下溢检查 | assert(refcount > 0) | debug_assert!(count > 0) |
-| 一致性验证 | SANITYCHECKS 宏 | debug_assertions + verify_refcount() |
+| 引用计数类型 | `u8_t` | `u8` |
+| 增加 | `pb->refcount++` | `self.refcount.saturating_add(1)` |
+| 减少 | `pb->refcount--` | `if self.refcount > 0 { self.refcount -= 1 }` |
+| 溢出检查 | 无 | saturating_add 饱和 |
+| 下溢检查 | assert(refcount > 0) | 条件判断避免下溢 |
+| 一致性验证 | SANITYCHECKS 宏 | debug_assert + iterate_block_refs |
 
 
 ---
 
-### 3.3 与 Slab 的关系
-
-**Slab 分配器的作用**
-
-Minix3 使用通用 Slab 分配器管理 `phys_block` 和 `phys_region` 结构体，而非通用的 malloc/free。
-
-Slab 分配器优势：
-1. **固定大小分配**：对象大小固定，无需每次计算大小，分配/释放 O(1)
-2. **减少内存碎片**：相同大小的对象在同一 Slab 中，不会产生外部碎片
-3. **缓存友好**：连续内存分配，提高缓存命中率
-4. **批量管理**：可以预分配一批对象，统计使用情况
+### 3.3 内存分配策略
 
 **Minix3 的 Slab 分配器**
 
-Minix3 使用通用 Slab 分配器管理 `phys_block` 和 `phys_region` 等结构体，而非为每种类型声明专用 slab。
+Minix3 使用通用 Slab 分配器管理 `phys_block` 和 `phys_region` 结构体：
 
 ```c
-/* proto.h - SLABALLOC/SLABFREE 宏定义 */
 #define SLABALLOC(var) (var = slaballoc(sizeof(*var)))
 #define SLABFREE(ptr) do { slabfree(ptr, sizeof(*(ptr))); (ptr) = NULL; } while(0)
-
-/* slaballoc() 是通用分配器，根据对象大小自动路由到对应大小的 slab 池 */
-/* 不需要为 phys_block 单独声明 SLAB_DECLARE / SLAB_DEFINE */
 ```
 
-**Rust Slab 实现**
+Slab 分配器优势：固定大小分配 O(1)、减少内存碎片、缓存友好。Minix3 使用通用 `slaballoc()` 按 `sizeof(*var)` 自动路由到对应大小的 slab 池，不为 `phys_block` 单独声明专用 slab。
 
-```rust
-use crate::slab::Slab;
+**为什么 Rust 实现不使用 Slab**
 
-/// phys_block 的 Slab 分配器
-///
-/// Minix3 使用通用 slaballoc() 按大小分配，不为此类型声明专用 slab
-pub struct PhysBlockSlab {
-    inner: Slab<PhysBlock>,
-}
+Rust 实现当前使用 `Box<PhysBlock>` 和 `Vec<Option<Box<PhysRegion>>>` 管理物理块和物理区域，而非 Slab 分配器，原因：
 
-impl PhysBlockSlab {
-    /// 创建新的 Slab
-    pub fn new() -> Self {
-        Self {
-            inner: Slab::new(),
-        }
-    }
-    
-    /// 分配一个 PhysBlock
-    ///
-    /// 对应 Minix3: `SLABALLOC(pb)`
-    pub fn alloc(&mut self, phys: PhysBytes) -> Option<&mut PhysBlock> {
-        let idx = self.inner.alloc(PhysBlock::new(phys))?;
-        Some(&mut self.inner[idx])
-    }
-    
-    /// 释放一个 PhysBlock
-    ///
-    /// 对应 Minix3: `SLABFREE(pb)`
-    ///
-    /// # Safety
-    ///
-    /// - pb 必须是从此 Slab 分配的
-    /// - pb 的 refcount 必须为 0
-    pub unsafe fn dealloc(&mut self, pb: &PhysBlock) {
-        debug_assert_eq!(pb.refcount(), 0, "cannot free PhysBlock with refcount > 0");
-        // 找到索引并释放
-        let idx = self.inner.find(pb as *const _);
-        if let Some(i) = idx {
-            self.inner.dealloc(i);
-        }
-    }
-    
-    /// 获取 Slab 统计信息
-    pub fn stats(&self) -> SlabStats {
-        self.inner.stats()
-    }
-}
-```
+1. **Rust 所有权模型**：`Box<T>` 提供堆分配和自动 Drop，与 Rust 所有权系统天然集成；Slab 分配器需要手动管理生命周期，与 Rust 安全模型冲突
+2. **开发阶段优先正确性**：当前阶段优先保证逻辑正确性，Slab 优化可后续引入；`Box` 分配在功能上等价，性能差异在开发阶段可接受
+3. **VirRegion 的 physblocks 字段**：使用 `Vec<Option<Box<PhysRegion>>>` 存储，Vec 自动管理内存，无需手动 Slab
+4. **PhysBlock 的存储**：PhysBlock 通过 `Box::new(PhysBlock::new(phys))` 分配，指针存储在 PhysRegion 的 `ph` 字段中
 
-**全局 Slab 管理**
+**未来可能的 Slab 集成**
 
-```rust
-use spin::Mutex;
+如果性能分析表明 `Box` 分配成为瓶颈，可以引入 Slab 分配器：
 
-/// 全局 phys_block Slab
-pub static PB_SLAB: Mutex<PhysBlockSlab> = Mutex::new(PhysBlockSlab::new());
+1. 实现 `PhysBlockSlab` 类型，内部维护预分配的 PhysBlock 池
+2. 使用 `unsafe` 实现 `alloc`/`dealloc` 方法，返回 `&mut PhysBlock` 引用
+3. 替换 `Box::new()` 为 `slab.alloc()`，替换 `drop(Box)` 为 `slab.dealloc()`
 
-/// 全局 phys_region Slab
-pub static PHYSR_SLAB: Mutex<PhysRegionSlab> = Mutex::new(PhysRegionSlab::new());
-
-/// 分配新的 PhysBlock
-///
-/// 对应 Minix3: `pb_new()`
-pub fn pb_alloc(phys: PhysBytes) -> Option<*mut PhysBlock> {
-    let mut slab = PB_SLAB.lock();
-    slab.alloc(phys).map(|pb| pb as *mut _)
-}
-
-/// 释放 PhysBlock
-///
-/// 对应 Minix3: `pb_free()`
-///
-/// # Safety
-///
-/// - pb 必须是从 pb_alloc() 获得的
-/// - pb 的 refcount 必须为 0
-pub unsafe fn pb_free(pb: *mut PhysBlock) {
-    if pb.is_null() {
-        return;
-    }
-    
-    let pb_ref = &*pb;
-    
-    // 释放物理内存页
-    if pb_ref.has_phys() {
-        free_phys_page(pb_ref.phys);
-    }
-    
-    // 归还给 Slab
-    let mut slab = PB_SLAB.lock();
-    slab.dealloc(pb_ref);
-}
-```
-
-**Slab 与生命周期的关系**
-
-1. **分配**：`pb_alloc(phys)` → 从 Slab 获取内存，初始化字段，`refcount = 0`
-2. **使用**：`pb_link()` → `refcount++`，`pb_unlink()` → `refcount--`，可能多次增减
-3. **释放**：`refcount == 0` 时，调用 `memtype->ev_unreference()` 释放物理页，归还给 Slab
-
-注意：PhysBlock 不实现 Drop trait，释放必须显式调用，避免 Drop 与引用计数的冲突。
-
-**Slab 统计与调试**
-
-```rust
-impl PhysBlockSlab {
-    /// 验证所有 PhysBlock 的一致性
-    #[cfg(debug_assertions)]
-    pub fn verify_all(&self) -> bool {
-        for (_, pb) in self.inner.iter() {
-            if !pb.verify_refcount() {
-                return false;
-            }
-        }
-        true
-    }
-    
-    /// 获取使用中的 PhysBlock 数量
-    pub fn used_count(&self) -> usize {
-        self.inner.used_count()
-    }
-    
-    /// 获取空闲的 PhysBlock 数量
-    pub fn free_count(&self) -> usize {
-        self.inner.free_count()
-    }
-}
-
-/// 打印 Slab 统计信息（调试用）
-#[cfg(debug_assertions)]
-pub fn print_slab_stats() {
-    let pb_slab = PB_SLAB.lock();
-    let physr_slab = PHYSR_SLAB.lock();
-    
-    println!("PhysBlock Slab: used={}, free={}", 
-             pb_slab.used_count(), pb_slab.free_count());
-    println!("PhysRegion Slab: used={}, free={}", 
-             physr_slab.used_count(), physr_slab.free_count());
-}
-```
+但这需要谨慎处理：Slab 分配的 PhysBlock 不能实现 Drop（否则 double free）；需要确保所有引用在 dealloc 前清除；需要处理 Slab 耗尽的情况。
 
 **与 Minix3 的对比**
 
 | 方面 | Minix3 | Rust |
 |------|--------|------|
-| Slab 定义 | 通用 `slaballoc()` 按大小自动路由 | `struct PhysBlockSlab` |
-| 分配 | `SLABALLOC(var)` | `slab.alloc(phys)` |
-| 释放 | `SLABFREE(ptr)` | `slab.dealloc(pb)` |
-| 全局访问 | 通用分配器，无需专用全局变量 | `PB_SLAB` Mutex |
-| 线程安全 | 单线程，无需保护 | Mutex 保护 |
+| 分配方式 | 通用 `slaballoc()` | `Box::new()` |
+| 释放方式 | `SLABFREE(ptr)` | 自动 Drop 或手动 |
+| PhysBlock 存储 | SLAB 分配的裸指针 | `Box<PhysBlock>` 的裸指针 |
+| PhysRegion 存储 | SLAB 分配的裸指针 | `Vec<Option<Box<PhysRegion>>>` |
+| 碎片管理 | Slab 自动管理 | 依赖 Rust 全局分配器 |
 
 ---
 
@@ -1271,456 +961,293 @@ pub fn print_slab_stats() {
 
 ```rust
 impl PhysBlock {
-    /// 创建新的物理块
-    ///
-    /// 对应 Minix3: `pb_new()`
-    pub fn new(phys: PhysBytes) -> Self {
+    pub(crate) fn new(phys: u64) -> Self {
+        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
         Self {
             phys,
-            firstregion: None,
-            refcount: Cell::new(0),
-            flags: PbFlags::default(),
+            refcount: 0,
+            flags: PhysBlockFlags::empty(),
+            first_region: None,
         }
     }
 }
-
-/// 分配物理块并分配物理页
-///
-/// 完整的物理块创建流程
-pub fn pb_alloc_with_page() -> Option<*mut PhysBlock> {
-    // 1. 分配物理页
-    let phys_click = alloc_mem(1, AllocFlags::empty())?;
-    let phys = PhysBytes(click2abs(phys_click));
-    
-    // 2. 从 Slab 分配 PhysBlock
-    let mut slab = PB_SLAB.lock();
-    slab.alloc(phys).map(|pb| pb as *mut _)
-}
-
-/// 分配延迟分配的物理块
-///
-/// 物理页在首次访问时分配
-pub fn pb_alloc_delayed() -> Option<*mut PhysBlock> {
-    let mut slab = PB_SLAB.lock();
-    slab.alloc(PhysBytes(MAP_NONE as u64)).map(|pb| pb as *mut _)
-}
 ```
 
-**物理页分配**
+`PhysBlock::new()` 对应 Minix3 的 `pb_new()`，初始化 `refcount = 0`、`first_region = None`、`flags = empty()`。`debug_assert` 检查 `phys != 0`，因为 0 既不是有效物理地址也不是 `MAP_NONE`，很可能是编程错误。
+
+**PhysRegion 创建**
 
 ```rust
-/// 分配物理页
-///
-/// 对应 Minix3: `alloc_mem()`
-fn alloc_phys_page(flags: AllocFlags) -> Option<PhysBytes> {
-    // 调用内存分配器
-    let click = alloc_mem(1, flags)?;
-    Some(PhysBytes(click2abs(click)))
-}
+impl PhysRegion {
+    pub(crate) fn new(offset: VirBytes) -> Self {
+        Self {
+            ph: None,
+            parent: None,
+            offset,
+            memtype: None,
+            next_ph_list: None,
+        }
+    }
 
-/// 释放物理页
-///
-/// 对应 Minix3: `free_mem()`
-fn free_phys_page(phys: PhysBytes) {
-    if phys.0 != MAP_NONE as u64 {
-        free_mem(abs2click(phys.0), 1);
+    pub(crate) fn with_memtype(offset: VirBytes, memtype: &'static dyn MemType) -> Self {
+        Self {
+            ph: None,
+            parent: None,
+            offset,
+            memtype: Some(memtype),
+            next_ph_list: None,
+        }
     }
 }
 ```
 
-**创建示例**
+`PhysRegion::new()` 创建未链接的物理区域，`with_memtype()` 同时设置内存类型。对应 Minix3 中 `SLABALLOC(newphysr)` + `newphysr->memtype = memtype` 的组合。
+
+**在 VirRegion 中使用**
 
 ```rust
-#[test]
-fn test_pb_create() {
-    // 创建带物理页的块
-    let pb = pb_alloc_with_page().expect("allocation failed");
-    unsafe {
-        assert!((*pb).has_phys());
-        assert_eq!((*pb).refcount(), 0);
-        assert!(!(*pb).is_referenced());
-        
-        // 清理
-        pb_free(pb);
-    }
-}
-
-#[test]
-fn test_pb_create_delayed() {
-    // 创建延迟分配的块
-    let pb = pb_alloc_delayed().expect("allocation failed");
-    unsafe {
-        assert!(!(*pb).has_phys());
-        assert_eq!((*pb).refcount(), 0);
-        
-        // 清理
-        pb_free(pb);
+impl VirRegion {
+    pub(crate) fn set_phys_region(&mut self, offset: VirBytes, region: PhysRegion) {
+        let page = (offset.get() / 4096) as usize;
+        if page < self.physblocks.len() {
+            self.physblocks[page] = Some(Box::new(region));
+        }
     }
 }
 ```
+
+VirRegion 使用 `Vec<Option<Box<PhysRegion>>>` 存储物理区域，对应 Minix3 的 `physblocks[]` 数组和 `physblock_set()` 函数。
 
 
 ---
 
 ###### 4.2 引用管理
 
-**安全的引用操作**
+**链接操作：link_to_block**
 
 ```rust
-impl PhysBlock {
-    /// 增加引用计数
-    ///
-    /// # Panics
-    ///
-    /// 如果 refcount 会溢出，触发 panic
-    pub fn inc_ref(&self) {
-        let count = self.refcount.get();
-        assert!(count < u8::MAX, "PhysBlock refcount overflow");
-        self.refcount.set(count + 1);
-    }
-    
-    /// 减少引用计数
-    ///
-    /// # Returns
-    ///
-    /// 返回新的引用计数
-    ///
-    /// # Panics
-    ///
-    /// 如果 refcount 为 0，触发 panic
-    pub fn dec_ref(&self) -> u8 {
-        let count = self.refcount.get();
-        assert!(count > 0, "PhysBlock refcount underflow");
-        let new_count = count - 1;
-        self.refcount.set(new_count);
-        new_count
+impl PhysRegion {
+    pub(crate) unsafe fn link_to_block(
+        &mut self, block: *mut PhysBlock, parent: *mut VirRegion, offset: VirBytes
+    ) {
+        debug_assert!(!block.is_null(), "block pointer must not be null");
+        debug_assert!(self.ph.is_none(), "PhysRegion must not already be in a list");
+
+        self.offset = offset;
+        self.ph = Some(block);
+        self.parent = Some(parent);
+
+        self.next_ph_list = unsafe { (*block).first_region };
+        unsafe {
+            (*block).first_region = Some(self as *mut PhysRegion);
+            (*block).refcount = (*block).refcount.saturating_add(1);
+        }
+
+        debug_assert!(unsafe { (*block).refcount } > 0, "refcount must be positive after link");
+        debug_assert!(self.ph.is_some(), "ph must be set after link");
     }
 }
 ```
 
-**链接操作**
+对应 Minix3 的 `pb_link()`，实现头插法链表插入和 refcount 递增。关键步骤：
+
+1. 设置 `self.offset`、`self.ph`、`self.parent` 字段
+2. 头插法：`self.next_ph_list = block.first_region`，`block.first_region = self`
+3. `block.refcount` 使用 `saturating_add(1)` 递增
+4. `debug_assert` 验证链接后状态一致
+
+**简化链接：bind_block**
 
 ```rust
-/// 将 phys_region 链接到 phys_block
-///
-/// 对应 Minix3: `pb_link()`
-///
-/// # Safety
-///
-/// - `pr` 必须是有效的 phys_region
-/// - `pr` 不能已经链接到其他 phys_block
-pub unsafe fn pb_link(
-    pr: &mut PhysRegion,
-    pb: &mut PhysBlock,
-    offset: VirBytes,
-    parent: *mut VirRegion,
-) {
-    pr.offset = offset;
-    pr.ph = NonNull::new(pb as *mut _);
-    pr.parent = parent;
-    
-    // 头插法加入链表
-    pr.next_ph_list = pb.firstregion;
-    pb.firstregion = NonNull::new(pr as *mut _);
-    
-    // 增加引用计数
-    pb.inc_ref();
-}
-
-/// 创建新的 phys_region 并链接到 phys_block
-///
-/// 对应 Minix3: `pb_reference()`
-pub fn pb_reference(
-    pb: *mut PhysBlock,
-    offset: VirBytes,
-    parent: *mut VirRegion,
-    memtype: &'static MemoryType,
-) -> Option<*mut PhysRegion> {
-    // 分配 phys_region
-    let pr = physr_alloc()?;
-    
-    unsafe {
-        (*pr).memtype = memtype;
-        pb_link(&mut *pr, &mut *pb, offset, parent);
+impl PhysRegion {
+    pub(crate) unsafe fn bind_block(&mut self, block: *mut PhysBlock) {
+        self.ph = Some(block);
+        unsafe {
+            (*block).add_ref();
+        }
     }
-    
-    Some(pr)
 }
 ```
 
-**取消链接操作**
+`bind_block` 是 `link_to_block` 的简化版本，只设置 `ph` 指针和递增 refcount，不操作链表。用于不需要链表遍历的场景（如 fork 时的引用共享）。
+
+**解链操作：unlink_from_block**
 
 ```rust
-/// 从 phys_block 取消链接 phys_region
-///
-/// 对应 Minix3: `pb_unreferenced()`
-///
-/// # Returns
-///
-/// 返回新的引用计数
-///
-/// # Safety
-///
-/// - `pr` 必须已链接到 `pb`
-pub unsafe fn pb_unlink(
-    pb: &mut PhysBlock,
-    pr: &PhysRegion,
-) -> u8 {
-    // 从链表中移除
-    if let Some(head) = pb.firstregion {
-        if head.as_ptr() == pr as *const _ as *mut _ {
-            // pr 是链表头
-            pb.firstregion = pr.next_ph_list;
-        } else {
-            // 遍历链表查找 pr
-            let mut current = head;
-            loop {
-                let current_ref = current.as_ref();
-                if let Some(next) = current_ref.next_ph_list {
-                    if next.as_ptr() == pr as *const _ as *mut _ {
-                        current.as_mut().next_ph_list = pr.next_ph_list;
-                        break;
+impl PhysRegion {
+    pub(crate) fn unlink_from_block(&mut self) -> bool {
+        if let Some(block) = self.ph {
+            unsafe {
+                debug_assert!((*block).refcount > 0, "refcount must be positive before unlink");
+                debug_assert!(self.is_in_list(block), "PhysRegion must be in the list");
+
+                (*block).refcount = (*block).refcount.saturating_sub(1);
+
+                if (*block).first_region == Some(self as *mut PhysRegion) {
+                    (*block).first_region = self.next_ph_list;
+                } else if let Some(first) = (*block).first_region {
+                    let mut current = first;
+                    loop {
+                        let next = (*current).next_ph_list;
+                        if next == Some(self as *mut PhysRegion) {
+                            (*current).next_ph_list = self.next_ph_list;
+                            break;
+                        }
+                        match next {
+                            Some(n) => current = n,
+                            None => {
+                                debug_assert!(false, "PhysRegion not found in list");
+                                break;
+                            }
+                        }
                     }
-                    current = next;
-                } else {
-                    panic!("phys_region not found in chain");
                 }
+
+                self.ph = None;
+                self.next_ph_list = None;
+
+                (*block).refcount == 0
+            }
+        } else {
+            false
+        }
+    }
+}
+```
+
+对应 Minix3 的 `pb_unreferenced()` 中链表移除和 refcount 递减部分。返回 `bool` 表示 PhysBlock 的 refcount 是否为 0（即是否应该释放）。
+
+关键步骤：
+1. `refcount` 使用 `saturating_sub(1)` 递减
+2. 从链表中移除 self：如果是头节点则直接替换头，否则遍历查找
+3. 清除 `self.ph` 和 `self.next_ph_list`
+4. 返回 `block.refcount == 0`
+
+**简化解链：unbind_block**
+
+```rust
+impl PhysRegion {
+    pub(crate) fn unbind_block(&mut self) -> bool {
+        if let Some(block) = self.ph {
+            unsafe {
+                let has_more_refs = (*block).release_ref();
+                self.ph = None;
+                has_more_refs
+            }
+        } else {
+            false
+        }
+    }
+}
+```
+
+`unbind_block` 是 `unlink_from_block` 的简化版本，只递减 refcount 和清除 `ph`，不操作链表。返回 `bool` 表示 PhysBlock 是否仍有引用。
+
+**链表遍历：iterate_block_refs**
+
+```rust
+impl PhysRegion {
+    pub(crate) fn iterate_block_refs<F>(block: &PhysBlock, mut f: F)
+    where
+        F: FnMut(&PhysRegion),
+    {
+        let mut current = block.first_region;
+        while let Some(ptr) = current {
+            unsafe {
+                let region = &*ptr;
+                f(region);
+                current = region.next_ph_list;
             }
         }
     }
-    
-    // 减少引用计数
-    pb.dec_ref()
 }
 ```
 
-**引用管理示例**
-
-```rust
-#[test]
-fn test_refcount_management() {
-    let mut pb = PhysBlock::new(PhysBytes(0x1000));
-    
-    // 初始状态
-    assert_eq!(pb.refcount(), 0);
-    assert!(!pb.is_referenced());
-    assert!(!pb.is_shared());
-    
-    // 增加引用
-    pb.inc_ref();
-    assert_eq!(pb.refcount(), 1);
-    assert!(pb.is_referenced());
-    assert!(!pb.is_shared());
-    
-    // 再次增加
-    pb.inc_ref();
-    assert_eq!(pb.refcount(), 2);
-    assert!(pb.is_shared());  // refcount > 1
-    
-    // 减少引用
-    let new_count = pb.dec_ref();
-    assert_eq!(new_count, 1);
-    assert!(!pb.is_shared());
-    
-    // 减少到 0
-    let new_count = pb.dec_ref();
-    assert_eq!(new_count, 0);
-    assert!(!pb.is_referenced());
-}
-
-#[test]
-#[should_panic(expected = "underflow")]
-fn test_refcount_underflow() {
-    let pb = PhysBlock::new(PhysBytes(0x1000));
-    pb.dec_ref();  // 应该 panic
-}
-
-#[test]
-#[should_panic(expected = "overflow")]
-fn test_refcount_overflow() {
-    let mut pb = PhysBlock::new(PhysBytes(0x1000));
-    pb.refcount.set(255);
-    pb.inc_ref();  // 应该 panic
-}
-```
+遍历 PhysBlock 的 `first_region` 链表，对每个 PhysRegion 执行闭包。用于调试和一致性验证。
 
 ### 4.3 释放策略
 
 **释放条件**
 
-PhysBlock 只能在 refcount == 0 时释放。释放前必须满足：1. refcount == 0；2. firstregion == None；3. 所有引用都已取消。
+PhysBlock 只能在 refcount == 0 时释放。释放前必须满足：1. refcount == 0；2. first_region == None；3. 所有引用都已取消。
 
-释放步骤：1. 调用 `memtype->ev_unreference()`（由回调负责释放物理页）；2. 归还 PhysBlock 给 Slab（`SLABFREE`）
-```
+释放步骤：1. 调用 `memtype.on_unreference()`（由回调决定是否释放物理页）；2. 释放 PhysBlock（Drop 或手动）
 
-**释放实现**
-
-```rust
-/// 释放 PhysBlock
-///
-/// 对应 Minix3: `pb_free()`
-///
-/// # Safety
-///
-/// - pb 必须是从 pb_alloc() 获得的
-/// - pb 的 refcount 必须为 0
-pub unsafe fn pb_free(pb: *mut PhysBlock) {
-    if pb.is_null() {
-        return;
-    }
-    
-    let pb_ref = &*pb;
-    
-    // 验证可以释放
-    debug_assert_eq!(pb_ref.refcount(), 0, "cannot free PhysBlock with refcount > 0");
-    debug_assert!(pb_ref.firstregion.is_none(), "cannot free PhysBlock with active references");
-    
-    // 释放物理页
-    if pb_ref.has_phys() {
-        free_phys_page(pb_ref.phys);
-    }
-    
-    // 归还给 Slab
-    let mut slab = PB_SLAB.lock();
-    slab.dealloc(pb_ref);
-}
-
-/// 取消引用并可能释放
-///
-/// 对应 Minix3: `pb_unreferenced()`
-///
-/// # Safety
-///
-/// - pr 必须是有效的 phys_region
-/// - pr 必须已链接到某个 phys_block
-pub unsafe fn pb_unreferenced(
-    region: *mut VirRegion,
-    pr: *mut PhysRegion,
-    remove: bool,
-) {
-    let pr_ref = &mut *pr;
-    let pb = pr_ref.ph.expect("phys_region not linked").as_ptr();
-    
-    // 从链表中移除
-    let new_count = pb_unlink(&mut *pb, pr_ref);
-    
-    // 清除 pr 的 ph 指针
-    pr_ref.ph = None;
-    
-    // 如果需要，从 vir_region 中移除
-    if remove {
-        physblock_set(region, pr_ref.offset, None);
-    }
-    
-    // 如果引用计数为 0，释放
-    if new_count == 0 {
-        // 调用 memtype 回调
-        let memtype = pr_ref.memtype;
-        if let Err(e) = memtype.ev_unreference(pr_ref) {
-            panic!("memtype unreference failed: {:?}", e);
-        }
-        
-        // 释放 PhysBlock
-        pb_free(pb);
-    }
-}
-```
-
-**memtype 回调**
+**MemType trait 的 on_unreference 回调**
 
 ```rust
-/// 内存类型 trait
-///
-/// 定义不同内存类型的释放行为
-pub trait MemoryType {
-    /// 取消引用时的回调
-    ///
-    /// 返回 Err 表示释放失败
-    fn ev_unreference(&self, pr: &PhysRegion) -> Result<(), i32>;
-}
-
-/// 匿名内存类型
-pub struct AnonMemoryType;
-
-impl MemoryType for AnonMemoryType {
-    fn ev_unreference(&self, pr: &PhysRegion) -> Result<(), i32> {
-        // 匿名内存直接释放物理页
-        let pb = unsafe { &*pr.ph.unwrap().as_ptr() };
-        if pb.has_phys() {
-            free_phys_page(pb.phys);
-        }
-        Ok(())
-    }
-}
-
-/// 文件映射内存类型
-pub struct FileMemoryType;
-
-impl MemoryType for FileMemoryType {
-    fn ev_unreference(&self, pr: &PhysRegion) -> Result<(), i32> {
-        // 文件映射的 ev_unreference 实际与匿名内存相同（见 mem_file.c mappedfile_unreference）
-        // 都是直接 free_mem 释放物理页
-        // 文件映射的缓存管理由 cache.c 独立处理，PBF_INCACHE 标志控制缓存行为
-        let pb = unsafe { &*pr.ph.unwrap().as_ptr() };
-        if pb.phys.0 != MAP_NONE as u64 {
-            free_phys_page(pb.phys);
-        }
-        Ok(())
+pub(crate) trait MemType: Send + Sync {
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
     }
 }
 ```
 
-**释放示例**
+`on_unreference` 返回 `Result<bool, MemTypeError>`：
+- `Ok(true)`：物理页需要释放（refcount 为 0 且有物理页）
+- `Ok(false)`：不需要释放物理页
+- `Err(...)`：释放失败
+
+对应 Minix3 的 `memtype->ev_unreference(pr)` 回调，但语义不同：Minix3 回调直接释放物理页，Rust 版本返回是否需要释放，由调用者执行释放。
+
+**AnonymousMemory 的 on_unreference**
 
 ```rust
-#[test]
-fn test_pb_free() {
-    // 创建并立即释放
-    let pb = pb_alloc_with_page().expect("allocation failed");
-    unsafe {
-        assert_eq!((*pb).refcount(), 0);
-        pb_free(pb);
-    }
-    
-    // 验证 Slab 统计
-    let slab = PB_SLAB.lock();
-    assert_eq!(slab.used_count(), 0);
-}
-
-#[test]
-fn test_pb_unreferenced() {
-    // 创建 PhysBlock
-    let pb = pb_alloc_with_page().expect("allocation failed");
-    
-    unsafe {
-        // 创建引用
-        let mut pr = PhysRegion::new();
-        pb_link(&mut pr, &mut *pb, VirBytes(0), std::ptr::null_mut());
-        
-        assert_eq!((*pb).refcount(), 1);
-        
-        // 取消引用
-        pb_unreferenced(std::ptr::null_mut(), &mut pr, false);
-        
-        // PhysBlock 应该被释放
-        // 注意：此时 pb 指针已无效
-    }
-}
-
-#[test]
-#[should_panic(expected = "refcount > 0")]
-fn test_pb_free_with_refcount() {
-    let pb = pb_alloc_with_page().expect("allocation failed");
-    
-    unsafe {
-        // 增加引用计数
-        (*pb).inc_ref();
-        
-        // 尝试释放应该 panic
-        pb_free(pb);
+impl MemType for AnonymousMemory {
+    fn on_unreference(&self, pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 ```
+
+匿名内存在 refcount 为 0 且有物理页时返回 `Ok(true)`，表示需要释放物理页。对应 Minix3 的 `anon_unreference()`。
+
+**SharedMemory 的 on_unreference**
+
+```rust
+impl MemType for SharedMemory {
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
+    }
+}
+```
+
+共享内存永不释放物理页（由 shm 系统调用管理），始终返回 `Ok(false)`。对应 Minix3 的 `shared_unreference()`。
+
+**DirectPhysical 的 on_unreference**
+
+```rust
+impl MemType for DirectPhysical {
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
+    }
+}
+```
+
+直接物理映射不释放物理页，始终返回 `Ok(false)`。
+
+**释放流程**
+
+Minix3 的 `pb_unreferenced()` 在 refcount == 0 时调用 `memtype->ev_unreference(pr)` 释放物理页，然后 `SLABFREE(pb)` 释放结构体。Rust 实现中，释放逻辑由调用者协调：
+
+1. 调用 `phys_region.unlink_from_block()` 或 `unbind_block()` 获取 refcount 状态
+2. 如果 refcount == 0，调用 `memtype.on_unreference(&mut pr)` 判断是否需要释放物理页
+3. 如果需要释放，执行物理页释放
+4. PhysBlock 随 Box Drop 自动释放（或由调用者手动处理）
+
+**与 Minix3 的对比**
+
+| 方面 | Minix3 | Rust |
+|------|--------|------|
+| 释放回调 | `memtype->ev_unreference(pr)` 直接释放 | `memtype.on_unreference(&mut pr)` 返回是否需要释放 |
+| 回调返回值 | `int`（OK/错误） | `Result<bool, MemTypeError>` |
+| 物理页释放 | 回调内部 `free_mem()` | 调用者根据返回值决定 |
+| 结构体释放 | `SLABFREE(pb)` | Box Drop 或手动 |
 
 
 ---
@@ -1729,163 +1256,42 @@ fn test_pb_free_with_refcount() {
 
 **单线程假设**
 
-Minix3 的 VM 是单线程的，不需要原子操作。Rust 实现同样遵循单线程假设，使用 `Cell<u8>` 而非 `AtomicU8`。
+Minix3 的 VM 是单线程的，不需要原子操作。Rust 实现同样遵循单线程假设，使用普通 `u8` 而非 `AtomicU8`。
 
 - Minix3 VM：单线程事件循环，无并发访问，refcount 使用普通 `u8_t`
-- Rust 实现：遵循单线程假设，使用 `Cell<u8>`，与 Minix3 保持一致
+- Rust 实现：遵循单线程假设，使用普通 `u8`，与 Minix3 保持一致
 
-> ⚠️ 如果未来扩展为多线程，需要将 `Cell<u8>` 替换为 `AtomicU8`，并重新评估所有 unsafe 代码的安全性。
+> ⚠️ 如果未来扩展为多线程，需要将 `u8` 替换为 `AtomicU8`，并重新评估所有 unsafe 代码的安全性。`MemType` trait 已要求 `Send + Sync`，为多线程扩展预留了基础。
 
-**原子操作版本（可选）**
+**MemType 的 Send + Sync 约束**
 
 ```rust
-use core::sync::atomic::{AtomicU8, Ordering};
-
-/// 线程安全的 PhysBlock（可选实现）
-pub struct AtomicPhysBlock {
-    pub phys: PhysBytes,
-    firstregion: AtomicPtr<PhysRegion>,
-    refcount: AtomicU8,
-    pub flags: PbFlags,
-}
-
-impl AtomicPhysBlock {
-    /// 增加引用计数（原子操作）
-    pub fn inc_ref(&self) {
-        let old = self.refcount.fetch_add(1, Ordering::Relaxed);
-        if old == u8::MAX {
-            // 溢出，回滚并 panic
-            self.refcount.fetch_sub(1, Ordering::Relaxed);
-            panic!("PhysBlock refcount overflow");
-        }
-    }
-    
-    /// 减少引用计数（原子操作）
-    /// 
-    /// 返回新的引用计数
-    pub fn dec_ref(&self) -> u8 {
-        let old = self.refcount.fetch_sub(1, Ordering::Release);
-        if old == 0 {
-            // 下溢，回滚并 panic
-            self.refcount.fetch_add(1, Ordering::Release);
-            panic!("PhysBlock refcount underflow");
-        }
-        old - 1
-    }
-    
-    /// 获取引用计数
-    pub fn refcount(&self) -> u8 {
-        self.refcount.load(Ordering::Acquire)
-    }
+pub(crate) trait MemType: Send + Sync {
+    // ...
 }
 ```
 
-**内存顺序说明**
+`MemType` trait 要求实现者满足 `Send + Sync`，这意味着：
+- `Send`：可以安全地跨线程转移所有权
+- `Sync`：可以安全地在线程间共享引用
 
-对于 refcount 的原子操作版本：
-- `inc_ref`：`Relaxed` 足够（无数据依赖）
-- `dec_ref`：`Release`（释放前确保所有写操作完成）
-- `refcount()`：`Acquire`（读取最新值）
+当前 VM 是单线程的，这两个约束不会带来实际开销，但为未来多线程扩展预留了安全性保证。`AnonymousMemory`、`DirectPhysical`、`SharedMemory` 都是零大小类型（ZST），天然满足 `Send + Sync`。
 
-**Mutex 保护**
+**PhysRegion 的裸指针与线程安全**
 
-当前实现使用 Mutex 保护 Slab：
+PhysRegion 中使用 `Option<*mut PhysBlock>` 等裸指针字段，这些字段不满足 `Send` 和 `Sync`。在单线程环境中这不是问题，但如果扩展为多线程：
 
-```rust
-use spin::Mutex;
-
-/// 全局 Slab 使用 Mutex 保护
-pub static PB_SLAB: Mutex<PhysBlockSlab> = Mutex::new(PhysBlockSlab::new());
-
-/// 分配 PhysBlock
-pub fn pb_alloc(phys: PhysBytes) -> Option<*mut PhysBlock> {
-    let mut slab = PB_SLAB.lock();
-    slab.alloc(phys).map(|pb| pb as *mut _)
-}
-
-/// 释放 PhysBlock
-pub unsafe fn pb_free(pb: *mut PhysBlock) {
-    let mut slab = PB_SLAB.lock();
-    slab.dealloc(&*pb);
-}
-```
-
-**中断安全**
-
-```rust
-/// 禁用中断的保护
-/// 
-/// 如果在中断上下文中可能访问 PhysBlock，需要禁用中断
-pub fn pb_alloc_irqsafe(phys: PhysBytes) -> Option<*mut PhysBlock> {
-    // 禁用中断
-    let irq_flags = irq_save();
-    
-    let result = {
-        let mut slab = PB_SLAB.lock();
-        slab.alloc(phys).map(|pb| pb as *mut _)
-    };
-    
-    // 恢复中断
-    irq_restore(irq_flags);
-    
-    result
-}
-```
-
-**线程安全测试**
-
-```rust
-#[cfg(test)]
-mod thread_safety_tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::thread;
-    
-    #[test]
-    fn test_concurrent_refcount() {
-        // 测试原子版本的并发安全性
-        let pb = Arc::new(AtomicPhysBlock::new(PhysBytes(0x1000)));
-        
-        let mut handles = vec![];
-        
-        // 多线程增加引用
-        for _ in 0..10 {
-            let pb_clone = Arc::clone(&pb);
-            handles.push(thread::spawn(move || {
-                pb_clone.inc_ref();
-            }));
-        }
-        
-        for h in handles {
-            h.join().unwrap();
-        }
-        
-        assert_eq!(pb.refcount(), 10);
-        
-        // 多线程减少引用
-        let mut handles = vec![];
-        for _ in 0..10 {
-            let pb_clone = Arc::clone(&pb);
-            handles.push(thread::spawn(move || {
-                pb_clone.dec_ref();
-            }));
-        }
-        
-        for h in handles {
-            h.join().unwrap();
-        }
-        
-        assert_eq!(pb.refcount(), 0);
-    }
-}
-```
+1. `*mut PhysBlock` 需要替换为 `AtomicPtr<PhysBlock>` 或用 Mutex 保护
+2. `refcount: u8` 需要替换为 `AtomicU8`
+3. `first_region: Option<*mut PhysRegion>` 需要替换为 `AtomicPtr<PhysRegion>`
+4. 所有 unsafe 块需要重新评估数据竞争风险
 
 **线程安全总结**
 
-1. **默认实现（`Cell<u8>`）**：与 Minix3 保持一致，适用于单线程环境，更好的性能
-2. **可选原子实现（`AtomicU8`）**：适用于多线程环境，使用适当的内存顺序，可通过 feature flag 切换
-3. **Slab 保护**：使用 Mutex 保护全局 Slab，分配/释放操作需要获取锁
-4. **建议**：保持与 Minix3 一致的单线程假设；如需多线程，使用 AtomicU8 版本；通过编译时 feature 选择实现方式
+1. **当前实现**：与 Minix3 保持一致，适用于单线程环境，更好的性能
+2. **MemType trait**：已要求 `Send + Sync`，为多线程扩展预留
+3. **裸指针**：PhysRegion/PhysBlock 中的裸指针在单线程中安全，多线程需要原子化
+4. **建议**：保持与 Minix3 一致的单线程假设；如需多线程，先原子化 refcount 和 first_region
 
 ---
 
@@ -1897,62 +1303,65 @@ mod thread_safety_tests {
 
 fork 系统调用创建子进程时，父子进程共享物理页：
 
-- fork 前：父进程 `vir_region.physblocks[0]` → `phys_block`（`refcount=1`，`firstregion → parent_pr`）
-- fork 后：父子进程的 `phys_region` 都引用同一个 `phys_block`（`refcount=2`，`firstregion → parent_pr → child_pr`），页表项标记为只读
+- fork 前：父进程 `vir_region.physblocks[0]` → `phys_block`（`refcount=1`，`first_region → parent_pr`）
+- fork 后：父子进程的 `phys_region` 都引用同一个 `phys_block`（`refcount=2`，`first_region → child_pr → parent_pr`），页表项标记为只读
 
 **共享的实现**
 
+fork 时共享物理页通过 `clone_region_for_fork()` 和 `link_phys_blocks()` 实现：
+
 ```rust
-/// fork 时共享物理页
-///
-/// 创建新的 phys_region 引用同一个 phys_block
-pub fn fork_share_phys(
-    parent_region: &VirRegion,
-    child_region: &mut VirRegion,
-    offset: VirBytes,
-) -> Result<(), i32> {
-    // 获取父进程的 phys_region
-    let parent_pr = parent_region.physblock_get(offset)
-        .ok_or(ENOMEM)?;
+fn clone_region_for_fork(original: &VirRegion) -> VirRegion {
+    let mut new_region = VirRegion::new(original.vaddr, original.length, original.flags);
+    new_region.def_memtype = original.def_memtype;
+    new_region.remaps = original.remaps;
+    new_region.id = original.id;
+    new_region.param = original.param.clone();
     
-    let pb = unsafe { &mut *parent_pr.ph.unwrap().as_ptr() };
-    
-    // 创建子进程的 phys_region
-    let child_pr = pb_reference(
-        pb as *mut _,
-        offset,
-        child_region as *mut _ as *mut VirRegion,
-        parent_pr.memtype,
-    ).ok_or(ENOMEM)?;
-    
-    // 设置页表为只读
-    unsafe {
-        pt_makereadonly(child_region, offset);
+    for (i, phys_opt) in original.physblocks.iter().enumerate() {
+        if let Some(phys) = phys_opt {
+            let offset = VirBytes((i as u64) * 4096);
+            let mut new_phys = PhysRegion::new(offset);
+            new_phys.ph = phys.ph;
+            new_phys.memtype = phys.memtype;
+            new_region.physblocks[i] = Some(Box::new(new_phys));
+        }
     }
     
-    Ok(())
+    new_region
+}
+
+unsafe fn link_phys_blocks(region: &mut VirRegion) {
+    for phys_opt in region.physblocks.iter_mut() {
+        if let Some(phys) = phys_opt.as_mut() {
+            if let Some(block_ptr) = phys.ph {
+                unsafe {
+                    (*block_ptr).add_ref();
+                }
+            }
+        }
+    }
 }
 ```
+
+`clone_region_for_fork` 复制 VirRegion 的元数据，并将子进程的 PhysRegion 的 `ph` 指向父进程的同一个 PhysBlock。`link_phys_blocks` 遍历子进程的所有 PhysRegion，对每个 PhysBlock 调用 `add_ref()` 递增 refcount。
+
+对应 Minix3 中 fork 时 `pb_reference()` 共享物理页的逻辑。
 
 **共享检测**
 
 ```rust
-impl PhysBlock {
-    /// 检查是否需要 CoW
-    ///
-    /// refcount > 1 表示共享，写入需要 CoW
-    pub fn needs_cow(&self) -> bool {
-        self.refcount.get() > 1
-    }
-    
-    /// 检查是否为私有页
-    ///
-    /// refcount == 1 表示私有，可以直接写入
-    pub fn is_private(&self) -> bool {
-        self.refcount.get() == 1
+impl PhysRegion {
+    pub(crate) fn needs_cow(&self) -> bool {
+        match self.get_refcount() {
+            Some(count) if count > 1 => true,
+            _ => false,
+        }
     }
 }
 ```
+
+`needs_cow()` 放在 PhysRegion 上而非 PhysBlock 上，因为 CoW 判断需要结合 PhysRegion 的上下文（如 memtype）。对应 Minix3 中检查 `pb->refcount > 1` 的逻辑。
 
 
 ---
@@ -1962,123 +1371,57 @@ impl PhysBlock {
 **CoW 触发流程**
 
 1. **写操作尝试**：进程写入共享页，页表项为只读，触发页面保护异常
-2. **异常处理**：VM 接收异常，查找对应的 `vir_region` 和 `phys_region`，检查 `pb->refcount > 1`
-3. **CoW 复制**：分配新物理页，复制原页内容，更新页表映射，`pb_unreferenced()` 减少原块 refcount，`pb_link()` 链接到新 `phys_block`
+2. **异常处理**：VM 接收异常，查找对应的 `vir_region` 和 `phys_region`，检查 `needs_cow()`
+3. **CoW 复制**：分配新物理页，复制原页内容，更新页表映射，`unbind_block()` 减少原块 refcount，`bind_block()` 链接到新 `phys_block`
 4. **继续写入**：进程拥有私有页（`refcount=1`），可以正常写入
 
-**CoW 实现**
+**AnonymousMemory 的 pagefault 处理**
 
 ```rust
-/// 写时复制
-///
-/// 对应 Minix3: `mem_cow()`
-///
-/// # 参数
-///
-/// - `region`: 发生写入的虚拟区域
-/// - `pr`: 对应的 phys_region
-/// - `new_page_cl`: 预分配的新物理页（可选）
-///
-/// # 返回
-///
-/// 成功返回 OK，失败返回错误码
-pub fn mem_cow(
-    region: &mut VirRegion,
-    pr: &mut PhysRegion,
-    new_page_cl: Option<PhysClick>,
-) -> Result<(), i32> {
-    // 1. 分配新物理页
-    let (new_page_cl, new_page) = if let Some(cl) = new_page_cl {
-        (cl, click2abs(cl))
-    } else {
-        let cl = alloc_mem(1, vrallocflags(region.flags))?;
-        (cl, click2abs(cl))
-    };
-    
-    let old_pb = unsafe { &*pr.ph.unwrap().as_ptr() };
-    
-    // 2. 复制内容
-    if old_pb.has_phys() {
-        unsafe {
-            sys_abscopy(old_pb.phys.0, new_page, VM_PAGE_SIZE)?;
+impl MemType for AnonymousMemory {
+    fn on_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        region: &mut crate::region::VirRegion,
+        pr: &mut crate::region::PhysRegion,
+        write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return Ok(PagefaultResult::NeedNewPage);
         }
+
+        let refcount = pr.get_refcount().unwrap_or(0);
+
+        if refcount < 2 || !write {
+            return Ok(PagefaultResult::Handled);
+        }
+
+        if !region.is_writable() {
+            return Ok(PagefaultResult::AccessViolation);
+        }
+
+        Ok(PagefaultResult::NeedCow)
     }
-    
-    // 3. 创建新的 phys_block
-    let new_pb = pb_alloc(PhysBytes(new_page)).ok_or(ENOMEM)?;
-    
-    // 4. 取消旧引用
-    unsafe {
-        pb_unreferenced(region as *mut _ as *mut VirRegion, pr, false);
-    }
-    
-    // 5. 链接到新块
-    unsafe {
-        pb_link(pr, &mut *new_pb, pr.offset, region as *mut _ as *mut VirRegion);
-    }
-    
-    // 6. 更新 memtype
-    pr.memtype = &MEM_TYPE_ANON;
-    
-    Ok(())
 }
 ```
+
+`on_pagefault` 返回 `PagefaultResult` 枚举，由上层调度器决定如何处理：
+- `NeedNewPage`：延迟分配，需要分配新物理页
+- `Handled`：页已就绪，无需操作
+- `NeedCow`：需要写时复制
+- `AccessViolation`：访问违规（SIGSEGV）
+
+对应 Minix3 的 `anon_pagefault()` 函数，但使用枚举返回值而非直接执行 CoW。
 
 **CoW 前后状态对比**
 
-CoW 前（共享状态）：`phys_block_A`（`phys=0x1234000, refcount=2`），`firstregion → parent_pr → child_pr`
+CoW 前（共享状态）：`phys_block_A`（`phys=0x1234000, refcount=2`），`first_region → parent_pr → child_pr`
 
 CoW 后（私有状态）：
-- `phys_block_A`（`phys=0x1234000, refcount=1`），`firstregion → parent_pr`（父进程保留原页）
-- `phys_block_B`（`phys=0x5678000, refcount=1`），`firstregion → child_pr`（子进程拥有新页）
+- `phys_block_A`（`phys=0x1234000, refcount=1`），`first_region → parent_pr`（父进程保留原页）
+- `phys_block_B`（`phys=0x5678000, refcount=1`），`first_region → child_pr`（子进程拥有新页）
 
-> 注意：`mem_cow()` 中 `pb_unreferenced(region, ph, 0)` 使用 `rm=0`，不移除 `phys_region`，而是后续 `pb_link(ph, new_pb, ...)` 重新链接到新块。
-
-**CoW 测试**
-
-```rust
-#[test]
-fn test_cow_basic() {
-    // 创建父进程的 vir_region
-    let mut parent_region = VirRegion::new(VirBytes(0x400000), VirBytes(0x1000), VrFlags::WRITABLE);
-    
-    // 分配物理页
-    let pb = pb_alloc_with_page().expect("allocation failed");
-    unsafe {
-        // 链接到父进程
-        let mut pr = PhysRegion::new();
-        pb_link(&mut pr, &mut *pb, VirBytes(0), &mut parent_region as *mut _);
-        
-        assert_eq!((*pb).refcount(), 1);
-        assert!(!(*pb).needs_cow());
-    }
-    
-    // 模拟 fork
-    let mut child_region = VirRegion::new(VirBytes(0x400000), VirBytes(0x1000), VrFlags::WRITABLE);
-    unsafe {
-        fork_share_phys(&parent_region, &mut child_region, VirBytes(0)).unwrap();
-        
-        // 现在是共享状态
-        assert_eq!((*pb).refcount(), 2);
-        assert!((*pb).needs_cow());
-    }
-    
-    // 模拟子进程写入，触发 CoW
-    let pr = child_region.physblock_get(VirBytes(0)).unwrap();
-    mem_cow(&mut child_region, pr, None).unwrap();
-    
-    unsafe {
-        // 父进程的 refcount 恢复为 1
-        assert_eq!((*pb).refcount(), 1);
-        assert!(!(*pb).needs_cow());
-        
-        // 子进程有新的 phys_block
-        let child_pb = pr.ph.unwrap().as_ptr();
-        assert_ne!(child_pb, pb);
-        assert_eq!((*child_pb).refcount(), 1);
-    }
-}
-```
+> 注意：Minix3 的 `mem_cow()` 中 `pb_unreferenced(region, ph, 0)` 使用 `rm=0`，不移除 `phys_region`，而是后续 `pb_link(ph, pb, ...)` 重新链接到新块。Rust 实现中，CoW 由上层根据 `PagefaultResult::NeedCow` 执行，先 `unbind_block()` 再 `bind_block()` 到新块。
 
 ---
 
@@ -2086,35 +1429,36 @@ fn test_cow_basic() {
 
 ### 6.1 引用计数测试
 
-- **初始状态**：`pb_new()` 返回 `refcount=0`，`is_referenced()=false`，`is_shared()=false`
-- **增减操作**：`inc_ref` 后 `refcount` 递增，`dec_ref` 后递减，`refcount==0` 时 `is_referenced()=false`
-- **CoW 判断**：`refcount > 1` 时 `needs_cow()=true`，`refcount <= 1` 时 `needs_cow()=false`
-- **溢出/下溢保护**：`dec_ref` 在 `refcount==0` 时应 panic（下溢），`inc_ref` 在 `refcount==255` 时应 panic（溢出）
+- **初始状态**：`PhysBlock::new()` 返回 `refcount=0`，`is_mapped()=true`（给定有效地址）
+- **增减操作**：`add_ref` 后 `refcount` 递增，`release_ref` 后递减，`release_ref` 返回 `bool` 表示是否仍有引用
+- **CoW 判断**：`PhysRegion::needs_cow()` 在 `refcount > 1` 时返回 true
+- **饱和行为**：`add_ref` 使用 `saturating_add`，溢出时饱和到 255；`release_ref` 在 `refcount==0` 时不递减
 
 ### 6.2 链表一致性测试
 
-- **refcount 与链表长度一致**：每次 `pb_link` 后 `refcount` 应等于链表长度，每次 `pb_unreferenced` 后也应一致
-- **头插法顺序**：链表顺序为后插入的在前（头插法）
-- **中间节点删除**：从链表中间移除 `phys_region` 后，链表仍完整，`refcount` 正确递减
+- **refcount 与链表长度一致**：每次 `link_to_block` 后 `refcount` 应等于链表长度，每次 `unlink_from_block` 后也应一致
+- **头插法顺序**：链表顺序为后插入的在前（头插法），可通过 `iterate_block_refs` 验证
+- **中间节点删除**：从链表中间移除 `PhysRegion` 后，链表仍完整，`refcount` 正确递减
 
 ### 6.3 生命周期测试
 
-- **创建和释放**：`pb_alloc` → `pb_free`，Slab 统计正确
-- **延迟分配**：`pb_new(MAP_NONE)` 创建无物理页的块，`has_phys()=false`，`pb_free` 不释放物理页
-- **引用生命周期**：`pb_link` → `pb_unreferenced` → `pb_free`，完整流程
-- **多引用释放**：多个 `phys_region` 引用同一 `phys_block`，逐个 `pb_unreferenced`，最后一个触发释放
-- **释放保护**：对 `refcount > 0` 的块调用 `pb_free` 应 panic
+- **创建和释放**：`PhysBlock::new()` → Box Drop，Vec 自动管理 PhysRegion
+- **延迟分配**：`PhysBlock::new(PhysBlock::MAP_NONE)` 创建无物理页的块，`is_mapped()=false`
+- **引用生命周期**：`bind_block` → `unbind_block`，完整流程
+- **多引用释放**：多个 `PhysRegion` 引用同一 `PhysBlock`，逐个 `unbind_block`，最后一个触发 refcount 归零
+- **链表操作**：`link_to_block` → `unlink_from_block`，完整链表管理流程
 
 ### 6.4 CoW 测试
 
-- **fork 共享**：fork 后 `refcount` 增为 2，`needs_cow()=true`
-- **CoW 复制**：写操作触发 CoW，原块 `refcount` 减为 1，新块 `refcount=1`
-- **无泄漏**：fork + CoW 循环后，Slab 统计应与初始一致
+- **fork 共享**：`clone_region_for_fork` + `link_phys_blocks` 后 `refcount` 增为 2，`needs_cow()=true`
+- **CoW 判定**：`AnonymousMemory::on_pagefault` 在 `refcount >= 2 && write` 时返回 `NeedCow`
+- **无泄漏**：fork + CoW 循环后，PhysBlock 和 PhysRegion 数量应与初始一致
 
-### 6.5 Slab 分配测试
+### 6.5 MemType 测试
 
-- **批量分配/释放**：分配多个 PhysBlock 后释放，Slab 统计正确
-- **耗尽恢复**：分配直到 Slab 耗尽，释放一个后可再分配
+- **AnonymousMemory**：`on_unreference` 在 refcount==0 且有物理页时返回 `Ok(true)`
+- **SharedMemory**：`on_unreference` 始终返回 `Ok(false)`
+- **DirectPhysical**：`on_unreference` 始终返回 `Ok(false)`
 
 ---
 

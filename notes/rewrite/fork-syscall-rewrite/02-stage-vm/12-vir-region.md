@@ -607,12 +607,13 @@ typedef struct vir_region {
 **Rust 结构体** (`vir_region.rs`):
 
 ```rust
-pub struct VirRegion {
+pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
     pub length: VirBytes,
     pub physblocks: Vec<Option<Box<PhysRegion>>>,
     pub flags: VrFlags,
-    pub parent: Option<NonNull<VmProc>>,
+    pub parent_slot: Option<UserSlot>,
+    pub def_memtype: Option<&'static dyn MemType>,
     pub remaps: i32,
     pub id: i32,
     pub param: VrParam,
@@ -627,7 +628,8 @@ pub struct VirRegion {
 | 字段 | C 类型 | Rust 类型 | 说明 |
 |------|--------|-----------|------|
 | `physblocks` | `struct phys_region**` | `Vec<Option<Box<PhysRegion>>>` | Rust 使用 Vec 替代裸指针数组，内存安全 |
-| `parent` | `struct vmproc*` | `Option<NonNull<VmProc>>` | 显式表达可能为空，避免空指针 |
+| `parent_slot` | `struct vmproc*` | `Option<UserSlot>` | C 用指针引用所属进程，Rust 用进程槽索引，避免裸指针 |
+| `def_memtype` | `mem_type_t*` | `Option<&'static dyn MemType>` | Rust 用 trait 对象替代函数指针结构体，类型安全 |
 | `flags` | `u16_t` | `VrFlags(u16)` | 封装为类型安全的结构体 |
 | `param` | `union` | `enum VrParam` | Rust enum 提供类型安全的联合体 |
 | AVL 字段 | 内嵌指针 | `Option<Box<VirRegion>>` | 所有权明确，自动内存管理 |
@@ -661,21 +663,39 @@ pub struct VirRegion {
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VrFlags(pub u16);
+pub(crate) struct VrFlags(pub u16);
 
 impl VrFlags {
-    pub const WRITABLE: u16 = 0x001;
-    pub const PHYS64K: u16 = 0x004;
-    pub const LOWER16MB: u16 = 0x008;
-    pub const LOWER1MB: u16 = 0x010;
-    pub const SHARED: u16 = 0x040;
-    pub const UNINITIALIZED: u16 = 0x080;
-    pub const ANON: u16 = 0x100;
-    pub const DIRECT: u16 = 0x200;
-    pub const PREALLOC_MAP: u16 = 0x400;
+    pub(crate) const WRITABLE: u16 = 0x001;
+    pub(crate) const PHYS64K: u16 = 0x004;
+    pub(crate) const LOWER16MB: u16 = 0x008;
+    pub(crate) const LOWER1MB: u16 = 0x010;
+    pub(crate) const SHARED: u16 = 0x040;
+    pub(crate) const UNINITIALIZED: u16 = 0x080;
+    pub(crate) const ANON: u16 = 0x100;
+    pub(crate) const DIRECT: u16 = 0x200;
+    pub(crate) const PREALLOC_MAP: u16 = 0x400;
 
-    pub const fn contains(&self, flag: u16) -> bool {
+    pub(crate) const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub(crate) const fn contains(&self, flag: u16) -> bool {
         (self.0 & flag) != 0
+    }
+
+    pub(crate) fn insert(&mut self, flag: u16) {
+        self.0 |= flag;
+    }
+
+    pub(crate) fn remove(&mut self, flag: u16) {
+        self.0 &= !flag;
+    }
+}
+
+impl Default for VrFlags {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 ```
@@ -700,7 +720,56 @@ bitflags::bitflags! {
 }
 ```
 
-### 3.3 physblocks 数组设计
+### 3.3 VrParam 联合体设计
+
+**C 联合体** (`region.h`):
+
+```c
+union {
+    phys_bytes phys;        /* VR_DIRECT */
+    struct {
+        endpoint_t ep;
+        vir_bytes vaddr;
+        int id;
+    } shared;
+    struct phys_block *pb_cache;
+    struct {
+        int     inited;
+        struct fdref *fdref;
+        u64_t   offset;
+        u16_t   clearend;
+    } file;
+} param;
+```
+
+**Rust 枚举** (`vir_region.rs`):
+
+```rust
+#[derive(Debug, Clone)]
+pub(crate) enum VrParam {
+    Direct { phys: u64 },
+    Shared { ep: i32, vaddr: VirBytes, id: i32 },
+    PbCache { pb: Option<NonNull<PhysBlock>> },
+    File { inited: bool, offset: u64, clearend: u16 },
+}
+
+impl Default for VrParam {
+    fn default() -> Self {
+        Self::Direct { phys: PhysBlock::MAP_NONE }
+    }
+}
+```
+
+**设计差异**:
+
+| 方面 | C union | Rust enum | 说明 |
+|------|---------|-----------|------|
+| 类型安全 | 无，靠 flags 判断 | 编译器保证 | Rust enum 只能访问当前变体 |
+| `File` 字段 | 有 `fdref` 指针 | 无 `fdref` | Rust 版本暂未实现 fdref，文件映射功能待完善 |
+| 默认值 | 需手动初始化 | `Default` trait | 默认为 `Direct { phys: MAP_NONE }` |
+| 内存布局 | 所有字段共享内存 | 变体独占 + 判别式 | Rust enum 略大，但类型安全 |
+
+### 3.4 physblocks 数组设计
 
 **C 实现**: 指针数组
 
@@ -986,7 +1055,7 @@ fork 时通过 `map_proc_copy()` → `map_copy_region()` 复制父进程的所�
 2. 新区域共享原物理页（`pb_reference` 增加引用计数），不复制数据
 3. `ev_reference` 回调设置 CoW 标记
 
-**关键设计**: `map_copy_region` 创建的新区域处于"limbo"状态——不增加 `phys_block.refcount`，由调用者（`map_proc_copy_range`）在链接到子进程后负责增加。
+**关键设计**: `map_copy_region` 创建的新区域通过 `pb_reference` 共享原物理页，引用计数随之增加。新区域在插入目标进程的 AVL 树之前处于"limbo"状态——尚未链接到任何进程，但这不影响引用计数的正确性。C 源码注释中"不增加 refcount"的描述与实际代码行为不符（`pb_reference` → `pb_link` 会执行 `refcount++`）。
 
 ### 5.2 CoW 设置
 
@@ -1045,21 +1114,34 @@ fn test_vir_region_split() {
 | `test_avl_remove` | 删除节点，验证树结构完整性 |
 | `test_avl_find_overlap` | 重叠区域查找 |
 | `test_avl_traverse` | 中序遍历，验证按地址排序 |
+| `test_avl_iter` | 迭代器遍历 |
+| `test_search_type_less` | AVL_LESS 搜索类型 |
+| `test_search_type_greater` | AVL_GREATER 搜索类型 |
+| `test_search_type_less_equal` | AVL_LESS_EQUAL 搜索类型 |
+| `test_search_type_greater_equal` | AVL_GREATER_EQUAL 搜索类型 |
+| `test_find_slot_basic` | 基本槽位查找 |
+| `test_find_slot_in_gap` | 间隙中查找槽位 |
+| `test_find_slot_no_space` | 无空间时查找失败 |
+| `test_find_all_overlaps` | 查找所有重叠区域 |
+| `test_search_type_flags` | 搜索类型标志位组合 |
 
 **示例测试代码**:
 
 ```rust
+fn make_region(vaddr: u64, length: u64) -> VirRegion {
+    VirRegion::new(VirBytes(vaddr), VirBytes(length), VrFlags::empty())
+}
+
 #[test]
 fn test_avl_insert_and_find() {
     let mut avl = RegionAvl::new();
 
-    avl.insert(VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty()));
-    avl.insert(VirRegion::new(VirBytes(0x3000), VirBytes(0x1000), VrFlags::empty()));
-    avl.insert(VirRegion::new(VirBytes(0x2000), VirBytes(0x1000), VrFlags::empty()));
+    avl.insert(make_region(0x1000, 0x1000));
+    avl.insert(make_region(0x3000, 0x1000));
+    avl.insert(make_region(0x2000, 0x1000));
 
     assert_eq!(avl.len(), 3);
 
-    // 查找存在的区域
     let found = avl.find(VirBytes(0x1500));
     assert!(found.is_some());
     assert_eq!(found.unwrap().vaddr, VirBytes(0x1000));
