@@ -227,6 +227,9 @@ impl VirRegion {
     pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
         let page_size: u64 = 4096;
 
+        if split_len.get() == 0 {
+            return Err(VmError::InvalidParam);
+        }
         if split_len.get() % page_size != 0 {
             return Err(VmError::InvalidParam);
         }

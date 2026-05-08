@@ -747,7 +747,7 @@ union {
 ```rust
 #[derive(Debug, Clone)]
 pub(crate) enum VrParam {
-    Direct { phys: u64 },
+    Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
     PbCache { pb: Option<NonNull<PhysBlock>> },
     File { inited: bool, offset: u64, clearend: u16 },
