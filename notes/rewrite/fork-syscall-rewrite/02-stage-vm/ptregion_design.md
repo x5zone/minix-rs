@@ -1337,6 +1337,18 @@ pub trait DirectMapArch {
     const KERNEL_DIRECT_MAP_BASE: u64;
     const HUGE_PAGE_SIZE: u64;
     const INITIAL_MAP_SIZE: u64;
+
+    /// 运行时检测是否支持 1GB 大页
+    /// x86-64: CPUID.80000001H:EDX[26] (PDPE1GB)
+    /// arm64: 始终支持 1GB block (PUD level)
+    /// riscv64: Sv39 始终支持 1GB gigapage (PMD level)
+    fn supports_1gb_page() -> bool;
+
+    /// 回退大页大小（当 1GB 大页不可用时）
+    /// x86-64: 2MB (PDE.PS=1)
+    /// arm64: 2MB (PMD block)
+    /// riscv64: 2MB (megapage)
+    const FALLBACK_HUGE_PAGE_SIZE: u64;
 }
 
 impl DirectMapArch for X86_64 {
@@ -1344,6 +1356,11 @@ impl DirectMapArch for X86_64 {
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8800_0000_0000;
     const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB
     const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
+    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB
+
+    fn supports_1gb_page() -> bool {
+        cpuid_check_pdpe1gb() // CPUID.80000001H:EDX[26]
+    }
 }
 
 impl DirectMapArch for Arm64 {
@@ -1351,6 +1368,9 @@ impl DirectMapArch for Arm64 {
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
     const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB block
     const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
+    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB block
+
+    fn supports_1gb_page() -> bool { true }
 }
 
 impl DirectMapArch for Riscv64 {
@@ -1358,6 +1378,9 @@ impl DirectMapArch for Riscv64 {
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_FC00_0000_0000;
     const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB gigapage
     const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
+    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB megapage
+
+    fn supports_1gb_page() -> bool { true } // Sv39 gigapage always supported
 }
 ```
 
@@ -1454,6 +1477,13 @@ VM:
 ```
 
 **关键**：1GB 大页映射不需要分配新的页表页。PDPT_B 页已经在初始页表中，只需写入更多表项。即使物理内存 = 64GB，也只需写 63 个额外的 PDPT 表项（每个 8 字节），0 额外物理页分配。
+
+**边界情况：物理内存 > 512GB**。一个 PDPT 页最多容纳 512 个 1GB 表项（覆盖 512TB），但 PML4 中每个条目对应一个 PDPT 页，每个 PDPT 覆盖 512GB。当物理内存超过 512GB 时，需要分配新的 PDPT 页并写入 PML4。此时 VM 已拥有至少 1GB direct map，可以：
+1. `bitmap.alloc_mem(1)` → 获得新 PDPT 物理页
+2. `vm_phys_to_virt(new_pdpt_phys)` → 清零并写入 1GB 大页表项
+3. 通过 direct map 访问 PML4 页（在 reserved_region 中，物理地址在前 1GB 内），写入新 PML4 条目指向新 PDPT
+
+**仍然不需要递归，0 额外自举风险**。代码路径统一，只是多了一步"分配 PDPT 页"。
 
 **代码路径统一**：即使物理内存只有 512MB（1GB direct map 已覆盖全部），扩展逻辑也只是"发现无需扩展"然后跳过。代码路径统一，只是循环次数为 0。
 
@@ -1555,6 +1585,11 @@ fn free_proc(vmp: &mut ActiveProc) {
 | 用户进程通过 VM 的 direct map 访问物理内存 | VM direct map 仅存在于 VM 进程页表，其他进程页表中不存在 | 不受影响 |
 | VM 通过 direct map 执行物理页中的代码 | VM direct map 默认 NX (No-Execute) | 硬件阻止代码执行 |
 | VM 修改 kernel direct map 的页表结构 | Kernel direct map 建立后视为只读不变量，VM 代码结构保证不再修改 | 代码层面保证 |
+
+**Kernel direct map 只读不变量约束**：`map_kernel()` 建立 kernel direct map 后，VM 不再修改其页表结构。这意味着：
+- Kernel direct map 的 PTE/PDE/PDPT 表项在 `map_kernel()` 返回后不再变化
+- Global 位的 TLB 条目不需要额外刷新策略（CR3 切换不刷新，且内容不变）
+- 如果未来需要动态修改 kernel direct map（如内存热插拔），需要设计显式的 TLB 刷新协议
 
 #### 8.8.2 与 Minix3 安全模型的对比
 
