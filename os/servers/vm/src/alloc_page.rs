@@ -39,7 +39,6 @@ pub(crate) struct ReservedRegion {
     phys_start: PhysBytes,
     total_pages: usize,
     allocated_pages: usize,
-    high_watermark: usize,
     bitmap: u64,
 }
 
@@ -50,20 +49,13 @@ impl ReservedRegion {
             phys_start,
             total_pages,
             allocated_pages: 0,
-            high_watermark: 0,
             bitmap: 0,
         }
     }
 
     pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let start = self.high_watermark;
-        if start >= self.total_pages {
-            return None;
-        }
-
-        let mask = !self.bitmap >> start;
-        let rel_bit = mask.trailing_zeros() as usize;
-        let free_bit = start + rel_bit;
+        let mask = !self.bitmap;
+        let free_bit = mask.trailing_zeros() as usize;
 
         if free_bit >= self.total_pages {
             return None;
