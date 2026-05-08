@@ -4,23 +4,24 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use super::vir_region::VirRegion;
-use minix_types::VirBytes;
+use core::ptr::NonNull;
+use minix_types::{PhysBytes, VirBytes};
 use crate::memtype::MemType;
 use crate::pagetable::PageFlags;
 
 #[derive(Debug)]
 pub(crate) struct PhysBlock {
-    phys: u64,
-    refcount: u8,
+    phys: PhysBytes,
+    refcount: u16,
     flags: PhysBlockFlags,
-    first_region: Option<*mut PhysRegion>,
+    first_region: Option<NonNull<PhysRegion>>,
 }
 
 impl PhysBlock {
-    pub(crate) const MAP_NONE: u64 = 0xFFFF_FFFF_FFFF_FFFE;
+    pub(crate) const MAP_NONE: PhysBytes = PhysBytes(0xFFFF_FFFF_FFFF_FFFE);
 
-    pub(crate) fn new(phys: u64) -> Self {
-        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
+    pub(crate) fn new(phys: PhysBytes) -> Self {
+        debug_assert!(phys.0 != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
         Self {
             phys,
             refcount: 0,
@@ -29,11 +30,11 @@ impl PhysBlock {
         }
     }
 
-    pub(crate) fn phys(&self) -> u64 {
+    pub(crate) fn phys(&self) -> PhysBytes {
         self.phys
     }
 
-    pub(crate) fn set_phys(&mut self, phys: u64) {
+    pub(crate) fn set_phys(&mut self, phys: PhysBytes) {
         self.phys = phys;
     }
 
@@ -41,7 +42,7 @@ impl PhysBlock {
         self.phys != Self::MAP_NONE
     }
 
-    pub(crate) fn refcount(&self) -> u8 {
+    pub(crate) fn refcount(&self) -> u16 {
         self.refcount
     }
 
@@ -69,11 +70,11 @@ bitflags::bitflags! {
 }
 
 pub(crate) struct PhysRegion {
-    pub ph: Option<*mut PhysBlock>,
-    pub parent: Option<*mut VirRegion>,
+    pub ph: Option<NonNull<PhysBlock>>,
+    pub parent: Option<NonNull<VirRegion>>,
     pub offset: VirBytes,
     pub memtype: Option<&'static dyn MemType>,
-    pub next_ph_list: Option<*mut PhysRegion>,
+    pub next_ph_list: Option<NonNull<PhysRegion>>,
 }
 
 impl core::fmt::Debug for PhysRegion {
@@ -116,21 +117,21 @@ impl PhysRegion {
     ///
     /// # Safety
     /// Caller must ensure:
-    /// - `block` is a valid, non-null pointer to a PhysBlock
+    /// - `block` points to a valid PhysBlock
     /// - `block`'s lifetime exceeds that of `self`
     /// - No concurrent modifications to `block` (VM is single-threaded)
     /// - After this call, `self.ph` is set and subsequent operations depend on `block` remaining valid
-    pub(crate) unsafe fn bind_block(&mut self, block: *mut PhysBlock) {
+    pub(crate) unsafe fn bind_block(&mut self, block: NonNull<PhysBlock>) {
         self.ph = Some(block);
         unsafe {
-            (*block).add_ref();
+            (*block.as_ptr()).add_ref();
         }
     }
 
     pub(crate) fn unbind_block(&mut self) -> bool {
         if let Some(block) = self.ph {
             unsafe {
-                let has_more_refs = (*block).release_ref();
+                let has_more_refs = (*block.as_ptr()).release_ref();
                 self.ph = None;
                 has_more_refs
             }
@@ -139,16 +140,16 @@ impl PhysRegion {
         }
     }
 
-    pub(crate) fn get_phys_addr(&self) -> Option<u64> {
-        self.ph.map(|block| unsafe { (*block).phys })
+    pub(crate) fn get_phys_addr(&self) -> Option<PhysBytes> {
+        self.ph.map(|block| unsafe { (*block.as_ptr()).phys })
     }
 
     pub(crate) fn has_phys_block(&self) -> bool {
         self.ph.is_some()
     }
 
-    pub(crate) fn get_refcount(&self) -> Option<u8> {
-        self.ph.map(|block| unsafe { (*block).refcount })
+    pub(crate) fn get_refcount(&self) -> Option<u16> {
+        self.ph.map(|block| unsafe { (*block.as_ptr()).refcount })
     }
 
     pub(crate) fn is_writable(&self) -> bool {
@@ -170,7 +171,7 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_block_flags(&self) -> Option<PhysBlockFlags> {
-        self.ph.map(|block| unsafe { (*block).flags })
+        self.ph.map(|block| unsafe { (*block.as_ptr()).flags })
     }
 
     pub(crate) fn is_in_cache(&self) -> bool {
@@ -181,7 +182,7 @@ impl PhysRegion {
 
     pub(crate) fn get_virtual_addr(&self) -> Option<VirBytes> {
         self.parent.map(|parent| unsafe {
-            VirBytes((*parent).vaddr.0 + self.offset.0)
+            VirBytes((*parent.as_ptr()).vaddr.0 + self.offset.0)
         })
     }
 
@@ -192,17 +193,17 @@ impl PhysRegion {
 
     pub(crate) fn validate_offset(&self, region_length: VirBytes) -> bool {
         const PAGE_SIZE: u64 = 4096;
-        
+
         let offset = self.offset.0;
-        
+
         if offset % PAGE_SIZE != 0 {
             return false;
         }
-        
+
         if offset >= region_length.0 {
             return false;
         }
-        
+
         true
     }
 
@@ -221,37 +222,38 @@ impl PhysRegion {
     ///
     /// # Safety
     /// Caller must ensure:
-    /// - `block` is a valid, non-null pointer to a PhysBlock
-    /// - `parent` is a valid pointer to the parent VirRegion
+    /// - `block` points to a valid PhysBlock
+    /// - `parent` points to a valid VirRegion
     /// - This PhysRegion is not already linked to another block
     /// - `block`'s lifetime exceeds that of `self`
     /// - No concurrent modifications to `block` (VM is single-threaded)
-    pub(crate) unsafe fn link_to_block(&mut self, block: *mut PhysBlock, parent: *mut VirRegion, offset: VirBytes) {
-        debug_assert!(!block.is_null(), "block pointer must not be null");
+    pub(crate) unsafe fn link_to_block(&mut self, block: NonNull<PhysBlock>, parent: NonNull<VirRegion>, offset: VirBytes) {
         debug_assert!(self.ph.is_none(), "PhysRegion must not already be in a list");
 
         self.offset = offset;
         self.ph = Some(block);
         self.parent = Some(parent);
 
-        self.next_ph_list = unsafe { (*block).first_region };
+        let block_ptr = block.as_ptr();
+        self.next_ph_list = unsafe { (*block_ptr).first_region };
         unsafe {
-            (*block).first_region = Some(self as *mut PhysRegion);
-            (*block).refcount = (*block).refcount.saturating_add(1);
+            (*block_ptr).first_region = NonNull::new(self as *mut PhysRegion);
+            (*block_ptr).refcount = (*block_ptr).refcount.saturating_add(1);
         }
 
-        debug_assert!(unsafe { (*block).refcount } > 0, "refcount must be positive after link");
+        debug_assert!(unsafe { (*block_ptr).refcount } > 0, "refcount must be positive after link");
         debug_assert!(self.ph.is_some(), "ph must be set after link");
     }
 
-    fn is_in_list(&self, block: *mut PhysBlock) -> bool {
+    fn is_in_list(&self, block: NonNull<PhysBlock>) -> bool {
         unsafe {
-            let mut current = (*block).first_region;
+            let block_ptr = block.as_ptr();
+            let mut current = (*block_ptr).first_region;
             while let Some(ptr) = current {
-                if ptr == self as *const PhysRegion as *mut PhysRegion {
+                if ptr.as_ptr() == self as *const PhysRegion as *mut PhysRegion {
                     return true;
                 }
-                current = (*ptr).next_ph_list;
+                current = (*ptr.as_ptr()).next_ph_list;
             }
             false
         }
@@ -260,19 +262,21 @@ impl PhysRegion {
     pub(crate) fn unlink_from_block(&mut self) -> bool {
         if let Some(block) = self.ph {
             unsafe {
-                debug_assert!((*block).refcount > 0, "refcount must be positive before unlink");
+                let block_ptr = block.as_ptr();
+                debug_assert!((*block_ptr).refcount > 0, "refcount must be positive before unlink");
                 debug_assert!(self.is_in_list(block), "PhysRegion must be in the list");
 
-                (*block).refcount = (*block).refcount.saturating_sub(1);
+                (*block_ptr).refcount = (*block_ptr).refcount.saturating_sub(1);
 
-                if (*block).first_region == Some(self as *mut PhysRegion) {
-                    (*block).first_region = self.next_ph_list;
-                } else if let Some(first) = (*block).first_region {
+                let self_ptr = NonNull::new(self as *mut PhysRegion);
+                if (*block_ptr).first_region == self_ptr {
+                    (*block_ptr).first_region = self.next_ph_list;
+                } else if let Some(first) = (*block_ptr).first_region {
                     let mut current = first;
                     loop {
-                        let next = (*current).next_ph_list;
-                        if next == Some(self as *mut PhysRegion) {
-                            (*current).next_ph_list = self.next_ph_list;
+                        let next = (*current.as_ptr()).next_ph_list;
+                        if next == self_ptr {
+                            (*current.as_ptr()).next_ph_list = self.next_ph_list;
                             break;
                         }
                         match next {
@@ -291,7 +295,7 @@ impl PhysRegion {
                 debug_assert!(self.ph.is_none(), "ph must be None after unlink");
                 debug_assert!(self.next_ph_list.is_none(), "next_ph_list must be None after unlink");
 
-                (*block).refcount == 0
+                (*block_ptr).refcount == 0
             }
         } else {
             false
@@ -305,7 +309,7 @@ impl PhysRegion {
         let mut current = block.first_region;
         while let Some(ptr) = current {
             unsafe {
-                let region = &*ptr;
+                let region = &*ptr.as_ptr();
                 f(region);
                 current = region.next_ph_list;
             }
@@ -320,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_phys_block_refcount() {
-        let mut block = PhysBlock::new(0x1000);
+        let mut block = PhysBlock::new(PhysBytes(0x1000));
         assert_eq!(block.refcount, 0);
 
         block.add_ref();
@@ -338,11 +342,10 @@ mod tests {
 
     #[test]
     fn test_phys_region_bind() {
-        use minix_types::VirBytes;
         let mut region = PhysRegion::new(VirBytes(0));
-        let mut block = PhysBlock::new(0x1000);
+        let mut block = PhysBlock::new(PhysBytes(0x1000));
 
-        unsafe { region.bind_block(&mut block); }
+        unsafe { region.bind_block(NonNull::from(&mut block)); }
         assert_eq!(block.refcount, 1);
 
         assert!(!region.unbind_block());
@@ -351,46 +354,41 @@ mod tests {
 
     #[test]
     fn test_link_to_block() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
 
-        let block_ptr = &mut block as *mut PhysBlock;
+        let block_ptr = NonNull::from(&mut block);
 
         unsafe {
-            region1.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0));
+            region1.link_to_block(block_ptr, NonNull::from(&mut *region1), VirBytes(0));
             assert_eq!(block.refcount, 1);
-            assert_eq!(block.first_region, Some(&mut *region1 as *mut PhysRegion));
 
-            region2.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0));
+            region2.link_to_block(block_ptr, NonNull::from(&mut *region2), VirBytes(0));
             assert_eq!(block.refcount, 2);
-            assert_eq!(block.first_region, Some(&mut *region2 as *mut PhysRegion));
-            assert_eq!(region2.next_ph_list, Some(&mut *region1 as *mut PhysRegion));
+            assert_eq!(block.first_region, NonNull::new(&mut *region2 as *mut PhysRegion));
+            assert_eq!(region2.next_ph_list, NonNull::new(&mut *region1 as *mut PhysRegion));
         }
     }
 
     #[test]
     fn test_unlink_from_block() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
 
-        let block_ptr = &mut block as *mut PhysBlock;
+        let block_ptr = NonNull::from(&mut block);
 
         unsafe {
-            region1.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0));
-            region2.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0));
+            region1.link_to_block(block_ptr, NonNull::from(&mut *region1), VirBytes(0));
+            region2.link_to_block(block_ptr, NonNull::from(&mut *region2), VirBytes(0));
 
             assert_eq!(block.refcount, 2);
 
             let should_free = region2.unlink_from_block();
             assert!(!should_free);
             assert_eq!(block.refcount, 1);
-            assert_eq!(block.first_region, Some(&mut *region1 as *mut PhysRegion));
+            assert_eq!(block.first_region, NonNull::new(&mut *region1 as *mut PhysRegion));
 
             let should_free = region1.unlink_from_block();
             assert!(should_free);
@@ -401,19 +399,17 @@ mod tests {
 
     #[test]
     fn test_iterate_block_refs() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
         let mut region3 = Box::new(PhysRegion::new(VirBytes(0x3000)));
 
-        let block_ptr = &mut block as *mut PhysBlock;
+        let block_ptr = NonNull::from(&mut block);
 
         unsafe {
-            region1.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x1000));
-            region2.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x2000));
-            region3.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x3000));
+            region1.link_to_block(block_ptr, NonNull::from(&mut *region1), VirBytes(0x1000));
+            region2.link_to_block(block_ptr, NonNull::from(&mut *region2), VirBytes(0x2000));
+            region3.link_to_block(block_ptr, NonNull::from(&mut *region3), VirBytes(0x3000));
         }
 
         let mut count = 0;
@@ -429,19 +425,17 @@ mod tests {
 
     #[test]
     fn test_unlink_middle_node() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
         let mut region3 = Box::new(PhysRegion::new(VirBytes(0x3000)));
 
-        let block_ptr = &mut block as *mut PhysBlock;
+        let block_ptr = NonNull::from(&mut block);
 
         unsafe {
-            region1.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x1000));
-            region2.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x2000));
-            region3.link_to_block(block_ptr, core::ptr::null_mut(), VirBytes(0x3000));
+            region1.link_to_block(block_ptr, NonNull::from(&mut *region1), VirBytes(0x1000));
+            region2.link_to_block(block_ptr, NonNull::from(&mut *region2), VirBytes(0x2000));
+            region3.link_to_block(block_ptr, NonNull::from(&mut *region3), VirBytes(0x3000));
 
             let should_free = region2.unlink_from_block();
             assert!(!should_free);
@@ -455,77 +449,66 @@ mod tests {
 
     #[test]
     fn test_offset_calculations() {
-        use minix_types::VirBytes;
-        
         let region = PhysRegion::new(VirBytes(0x2000));
-        
+
         assert_eq!(region.get_page_index(), 2);
-        
+
         let vaddr = PhysRegion::offset_from_vaddr(VirBytes(0x401500), VirBytes(0x400000));
         assert_eq!(vaddr, VirBytes(0x1500));
-        
+
         let offset = PhysRegion::offset_from_page_index(5);
         assert_eq!(offset, VirBytes(0x5000));
     }
 
     #[test]
     fn test_validate_offset() {
-        use minix_types::VirBytes;
-        
         let region1 = PhysRegion::new(VirBytes(0x1000));
         assert!(region1.validate_offset(VirBytes(0x3000)));
-        
+
         let region2 = PhysRegion::new(VirBytes(0x1001));
         assert!(!region2.validate_offset(VirBytes(0x3000)));
-        
+
         let region3 = PhysRegion::new(VirBytes(0x4000));
         assert!(!region3.validate_offset(VirBytes(0x3000)));
     }
 
     #[test]
     fn test_virtual_addr_calculation() {
-        use minix_types::VirBytes;
-        use crate::region::VirRegion;
-        
         let mut vir_region = Box::new(VirRegion::new(
             VirBytes(0x400000),
             VirBytes(0x3000),
             crate::region::VrFlags(0),
         ));
-        
+
         let mut phys_region = Box::new(PhysRegion::new(VirBytes(0x1000)));
-        phys_region.parent = Some(&mut *vir_region as *mut VirRegion);
-        
+        phys_region.parent = Some(NonNull::from(&mut *vir_region));
+
         let vaddr = phys_region.get_virtual_addr();
         assert_eq!(vaddr, Some(VirBytes(0x401000)));
     }
 
     #[test]
     fn test_has_phys_block() {
-        use minix_types::VirBytes;
-        
         let mut region = PhysRegion::new(VirBytes(0x1000));
         assert!(!region.has_phys_block());
-        
-        let mut block = PhysBlock::new(0x8000);
-        unsafe { region.bind_block(&mut block); }
+
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
+        unsafe { region.bind_block(NonNull::from(&mut block)); }
         assert!(region.has_phys_block());
     }
 
     #[test]
     fn test_refcount_methods() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = PhysRegion::new(VirBytes(0x1000));
         let mut region2 = PhysRegion::new(VirBytes(0x2000));
-        
-        unsafe { region1.bind_block(&mut block); }
+
+        unsafe { region1.bind_block(NonNull::from(&mut block)); }
         assert_eq!(region1.get_refcount(), Some(1));
         assert!(region1.is_writable());
         assert!(!region1.needs_cow());
-        
-        unsafe { region2.bind_block(&mut block); }
+
+        unsafe { region2.bind_block(NonNull::from(&mut block)); }
         assert_eq!(region1.get_refcount(), Some(2));
         assert!(!region1.is_writable());
         assert!(region1.needs_cow());
@@ -533,14 +516,12 @@ mod tests {
 
     #[test]
     fn test_block_flags() {
-        use minix_types::VirBytes;
-        
-        let mut block = PhysBlock::new(0x8000);
+        let mut block = PhysBlock::new(PhysBytes(0x8000));
         block.flags = PhysBlockFlags::IN_CACHE;
-        
+
         let mut region = PhysRegion::new(VirBytes(0x1000));
-        unsafe { region.bind_block(&mut block); }
-        
+        unsafe { region.bind_block(NonNull::from(&mut block)); }
+
         assert!(region.is_in_cache());
         assert_eq!(region.get_block_flags(), Some(PhysBlockFlags::IN_CACHE));
     }

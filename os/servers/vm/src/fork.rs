@@ -199,7 +199,7 @@ unsafe fn link_phys_blocks(region: &mut VirRegion) {
         if let Some(phys) = phys_opt.as_mut() {
             if let Some(block_ptr) = phys.ph {
                 unsafe {
-                    (*block_ptr).add_ref();
+                    (*block_ptr.as_ptr()).add_ref();
                 }
             }
         }

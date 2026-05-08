@@ -1,6 +1,6 @@
 //! Memory type system.
 
-use minix_types::VirBytes;
+use minix_types::{PhysBytes, VirBytes};
 use crate::vmproc::ActiveProc;
 use crate::region::phys_region::PhysBlock;
 
@@ -147,7 +147,7 @@ impl MemType for AnonymousMemory {
         }
         if let Some(parent) = pr.parent {
             unsafe {
-                if (*parent).remaps > 0 {
+                if (*parent.as_ptr()).remaps > 0 {
                     return true;
                 }
             }

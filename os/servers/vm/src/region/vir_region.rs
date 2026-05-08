@@ -4,7 +4,7 @@
 //! Corresponds to Minix3's `vir_region` struct in `region.h`.
 
 use super::phys_region::{PhysBlock, PhysRegion};
-use minix_types::{VirBytes, UserSlot};
+use minix_types::{PhysBytes, VirBytes, UserSlot};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
@@ -55,7 +55,7 @@ impl Default for VrFlags {
 /// Corresponds to Minix3's `param` union in `vir_region`.
 #[derive(Debug, Clone)]
 pub(crate) enum VrParam {
-    Direct { phys: u64 },
+    Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
     PbCache { pb: Option<NonNull<PhysBlock>> },
     File { inited: bool, offset: u64, clearend: u16 },
@@ -195,7 +195,7 @@ impl VirRegion {
             if let Some(phys_region) = &self.physblocks[i] {
                 if phys_region.has_phys_block() && self.is_writable() && !phys_region.is_writable() {
                     let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
-                    let _paddr = phys_region.get_phys_addr().unwrap_or(0);
+                    let _paddr = phys_region.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE);
                     let _cow_flags = PageFlags::read_only();
                 }
             }

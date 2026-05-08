@@ -332,7 +332,7 @@ impl<'a> ActiveProc<'a> {
             for phys_block in &mut region.physblocks {
                 if let Some(pb) = phys_block {
                     if let Some(block) = pb.ph {
-                        unsafe { (*block).add_ref(); }
+                        unsafe { (*block.as_ptr()).add_ref(); }
                     }
                 }
             }
@@ -363,7 +363,7 @@ impl<'a> ActiveProc<'a> {
                 if let Some(phys) = phys_opt {
                     if let Some(block_ptr) = phys.ph {
                         unsafe {
-                            let block = &*block_ptr;
+                            let block = &*block_ptr.as_ptr();
                             let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
                             let paddr = PhysBytes::new(block.phys());
 
