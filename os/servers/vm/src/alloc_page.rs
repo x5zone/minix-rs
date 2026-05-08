@@ -118,11 +118,11 @@ mod tests {
         let mut alloc = VmPageAllocator::new(phys_alloc);
 
         let (v1, p1) = alloc.alloc_page().unwrap();
-        assert_eq!(v1.0, crate::direct_map::DIRECT_MAP_BASE + p1.as_u64());
+        assert_eq!(v1.0, crate::direct_map::VM_DIRECT_MAP_BASE + p1.as_u64());
 
         let (v2, p2) = alloc.alloc_page().unwrap();
         assert_ne!(p1.as_u64(), p2.as_u64());
-        assert_eq!(v2.0, crate::direct_map::DIRECT_MAP_BASE + p2.as_u64());
+        assert_eq!(v2.0, crate::direct_map::VM_DIRECT_MAP_BASE + p2.as_u64());
     }
 
     #[test]
@@ -145,11 +145,11 @@ mod tests {
 
         let (v1, p1) = reserved.alloc_page().unwrap();
         assert_eq!(p1.as_u64(), 0x1000);
-        assert_eq!(v1.0, crate::direct_map::DIRECT_MAP_BASE + 0x1000);
+        assert_eq!(v1.0, crate::direct_map::VM_DIRECT_MAP_BASE + 0x1000);
 
         let (v2, p2) = reserved.alloc_page().unwrap();
         assert_eq!(p2.as_u64(), 0x2000);
-        assert_eq!(v2.0, crate::direct_map::DIRECT_MAP_BASE + 0x2000);
+        assert_eq!(v2.0, crate::direct_map::VM_DIRECT_MAP_BASE + 0x2000);
 
         assert!(reserved.alloc_page().is_none());
     }

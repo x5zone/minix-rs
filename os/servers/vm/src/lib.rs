@@ -43,7 +43,7 @@ pub(crate) use memtype::{
     MEM_TYPE_CONTIG_ANON, MEM_TYPE_CACHE, MEM_TYPE_MAPPED_FILE,
 };
 pub(crate) use ipc::*;
-pub(crate) use direct_map::{DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
+pub(crate) use direct_map::{VM_DIRECT_MAP_BASE, KERNEL_DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
 pub(crate) use alloc_page::{VmPageAllocator, ReservedRegion};
 pub(crate) use page_cache::PageCache;
 pub(crate) use vfs_queue::VfsRequestQueue;

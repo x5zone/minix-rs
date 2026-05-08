@@ -5,52 +5,40 @@
 
 ## 审查结果
 
-### 无需修复
+### P0 修复
 
-本文件文档与代码完全一致，无需修改文档或 Rust 代码。
+#### 1. direct_map.rs 双视图地址空间修正
 
-### 源码行号验证
+**问题**: 文档 §3.6.0 明确描述了双视图地址空间布局：
+- VM direct map: `0x00000000_80000000` 附近（U/S=1，用户态可访问）
+- Kernel direct map: `0xFFFF8000_00000000`（U/S=0，仅内核态可访问）
 
-| 引用 | 文档标注 | 实际位置 | 一致? |
-|------|----------|----------|-------|
-| `pagetable.c:990` pt_new | L990 | L990=函数签名 | ✅ |
-| `pagetable.c:1358` pt_bind | L1358 | L1358=函数签名 | ✅ |
-| `pagetable.c:494` pt_ptalloc | L494 | L494=函数签名 | ✅ |
-| `pagetable.c:155` findhole | L155 | L155=函数签名 | ✅ |
-| `pagetable.c:1427` pt_free | L1427 | L1427=函数签名 | ✅ |
-| `pagetable.c:1442` pt_mapkernel | L1442 | L1442=函数签名 | ✅ |
+但代码 `direct_map.rs` 中 `vm_phys_to_virt()` 和 `kernel_phys_to_virt()` 都使用 `DIRECT_MAP_BASE = 0xFFFF_8000_0000_0000`，返回相同的 VA。这意味着 VM（ring 3 进程）会尝试访问 U/S=0 的内核地址，导致页错误。
 
-### Rust 代码审查
+**修复**:
+- 将 `DIRECT_MAP_BASE` 拆分为 `VM_DIRECT_MAP_BASE = 0x0000_0000_8000_0000` 和 `KERNEL_DIRECT_MAP_BASE = 0xFFFF_8000_0000_0000`
+- `vm_phys_to_virt()` 使用 `VM_DIRECT_MAP_BASE`
+- `kernel_phys_to_virt()` 使用 `KERNEL_DIRECT_MAP_BASE`
+- `virt_to_phys()` 自动检测属于哪个 direct map 区域
+- `is_direct_map_virt()` 检查两个区域
+- 更新 `alloc_page.rs` 和 `lib.rs` 中的所有引用
+- 新增 `test_kernel_phys_to_virt` 测试
 
-Rust 代码与文档设计完全一致，无需修改：
+**文件**: `os/servers/vm/src/direct_map.rs`, `os/servers/vm/src/alloc_page.rs`, `os/servers/vm/src/lib.rs`
 
-- `Paging` trait（13 个方法 + 1 关联常量）与 §3.1 一致
-- `PageFlags` bitflags（9 个标志 + 5 个预设组合）与 §3.2 一致
-- `PageTableError` enum（6 个变体）与 §3.1 一致
-- `PagingWithId` trait（5 个方法 + 1 关联类型）与 §3.3 一致
-- `HugePages` trait（2 个方法 + 1 关联常量）与 §3.4 一致
-- `VmPagingExt` trait（2 个方法）与 §5.3.1 一致
-- `MockPaging` 实现与 §4.1 一致（含 `Paging`/`VmPagingExt`/`PagingWithId`）
-- `PageTable = minix_arch::CurrentPaging` 类型别名与 §5.3.3 一致
-- `page_align`/`page_align_down` 自由函数与 §4.2 一致
-- `MaybeUninit<PageTable>` 存储方式与 §5.3.2 一致
-- `init_page_table()`/`bind_page_table()`/`page_table()`/`page_table_mut()` 与 §5.3.2 一致
-- `check_range` 移除注释与 §3.1 的 REMOVED 注释一致
-- 测试覆盖 §6.1 中所有测试要点
+**验证**: `cargo check` 编译通过，`cargo test direct_map` 4 个测试全部通过。
 
-### Review 准则检查
+**注意**: `VM_DIRECT_MAP_BASE = 0x0000_0000_8000_0000` 是根据文档 §3.6.0 的地址空间布局图选择的（VM direct map 在 VM 代码/数据之后）。实际值可能需要根据 kernel 的 VM 初始页表设置调整。
 
-按 `review-code-checklist.md` 逐项检查：
+### 文档审查
 
-1. **Rewrite 质量** ✅ — 使用 newtype/enum/bitflags，无 C 式裸整数
-2. **硬件抽象** ✅ — 所有硬件细节通过 trait 抽象，VM 层不感知 PDE/PTE
-3. **类型系统与安全** ✅ — typestate 约束有效，unsafe 最小化且有安全契约
-4. **执行模型** ✅ — 单线程假设明确，`unsafe impl Send for EarlyHeap` 有注释
-5. **内存模型** ✅ — `MaybeUninit` 仅用于空槽位，有 `vm_pt_initialized` 运行时检查
-6. **公开接口** ✅ — `pub(crate)` 最小权限，`VmProc` 不导出
-7. **命名** ✅ — 与 Minix3 保持一致（`pt_new` → `init_page_table`，`pt_bind` → `bind_page_table`）
-8. **测试** ✅ — 覆盖正常路径、边界条件、错误路径
-9. **注释** ✅ — 英文注释，`unsafe` 有 safety 注释，`pub` 函数有文档注释
-10. **64 位** ✅ — 使用 `u64` 而非 `u32`/`usize`，`PhysBytes(u64)`/`VirBytes(u64)`
-11. **no_std** ✅ — 无 `use std::`，`MockPaging` 在 `#[cfg(feature = "mock")]` 下
-12. **设计-代码一致性** ✅ — 代码完全实现文档 Ch3/Ch4 设计
+1. **文档 §3.6 方案四新增**：完整描述了 VM 初始页表结构（4 页）、DirectMapArch trait、双视图布局，与 ptregion_design.md §8 一致。
+2. **Minix3 源码引用**：`pt.h` pt_t 定义、`pagetable.c:990` pt_new、`pagetable.c:494` pt_ptalloc — 全部验证通过。
+3. **Paging trait**：设计合理，与代码一致。
+4. **PageFlags**：bitflags u16 设计，与代码一致。
+5. **DirectMapArch trait**：文档中定义为【设计目标】，代码中尚未实现。当前 `direct_map.rs` 是简化版本。
+
+### 未修复项（P2，记录备查）
+
+1. **DirectMapArch trait 未实现**：文档 §3.6.3 定义了 `DirectMapArch` trait（含 `supports_1gb_page()`、`HUGE_PAGE_SHIFT`、`PTE_HUGE_FLAGS` 等），代码中尚未实现。当前 `direct_map.rs` 是硬编码的 x86-64 常量。
+2. **VM_DIRECT_MAP_BASE 值待确认**：当前选择 `0x0000_0000_8000_0000`（2GB 处），与文档 §3.6.0 的布局图一致，但实际值需要与 kernel 的初始页表设置协调。
