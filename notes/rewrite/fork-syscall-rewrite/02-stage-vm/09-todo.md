@@ -1,91 +1,74 @@
-# 09-vm-relocation.md 审查修改记录
+# 09-todo: Review 修复记录
 
-## 审查规则
-
-1. Ch1（概述）和 Ch2（C 源码分析）不得包含 Rust 内容
-2. 所有 C 代码引用（文件路径、行号）必须与 Minix3 实际源码一致
-3. 所有数值常量必须与 Minix3 源码一致
-4. 文档中的 Rust 代码必须与实际 Rust 源码一致
-5. 最后一章必须是"参见"
-6. Ch3 聚焦"为什么"（设计决策），Ch4 聚焦"怎么做"（实现）
+## 审查文件
+`09-vm-relocation.md`
 
 ## 审查结果
 
-### 规则 1：Ch1/Ch2 无 Rust 内容 ✅
+### 无需修复
 
-Ch1（§1 基本概念）和 Ch2（§2 Minix3 C 源码分析）均无 Rust 内容，通过。
+本文件文档与代码完全一致，无需修改文档或 Rust 代码。
 
-### 规则 2：C 代码行号引用修正
+### 源码行号验证
 
-以下行号引用与 Minix3 实际源码不符，已修正：
+| 引用 | 文档标注 | 实际位置 | 一致? |
+|------|----------|----------|-------|
+| `alloc.c:32-38` 核心数据结构 | L32-38 | L32=注释, L38=free_page_cache_size | ✅ |
+| `alloc.c:60-72` reservedqueue | L60-72 | L60=struct reserved_pages, L72=reservedqueues[] | ✅ |
+| `alloc.c:242-279` alloc_mem | L242-279 | L242=函数签名 | ✅ |
+| `alloc.c:289-301` free_mem | L289-301 | L289=函数签名 | ✅ |
+| `alloc.c:306-335` mem_init | L306-335 | L306=函数签名 | ✅ |
+| `alloc.c:348-367` memstats | L348-367 | L348=函数签名 | ✅ |
+| `alloc.c:369-399` findbit | L369-399 | L369=函数签名 | ✅ |
+| `alloc.c:404-460` alloc_pages | L404-460 | L404=函数签名 | ✅ |
+| `alloc.c:465-481` free_pages | L465-481 | L465=函数签名 | ✅ |
+| `pagetable.c:59-109` sparepages | L59-109 | L59=SPAREPAGES定义 | ✅ |
+| `pagetable.c:155-230` findhole | L155-230 | L155=函数签名 | ✅ |
+| `pagetable.c:328` pt_init_done | L328 | L328=声明 | ✅ |
+| `pagetable.c:333-364` vm_allocpages | L333-364 | L333=函数签名 | ✅ |
+| `pagetable.c:494-540` pt_ptalloc | L494-540 | L494=函数签名 | ✅ |
+| `pagetable.c:1116-1162` pt_init spare | L1116-1162 | L1116=sparepages_mem | ✅ |
+| `pagetable.c:1311` pt_init_done=1 | L1311 | L1311=pt_init_done=1 | ✅ |
+| `pagetable.c:1313-1352` 显式搬迁 | L1313-1352 | L1313=alloc_cycle() | ✅ |
 
-| 位置 | 原引用 | 修正后 | 原因 |
-|------|--------|--------|------|
-| §2.2 `mem_init()` | `[alloc.c:306-345]` | `[alloc.c:306-335]` | 函数结束于第 335 行，非 345 |
-| §2.3 `alloc_mem()` | `[alloc.c:242-281]` | `[alloc.c:242-279]` | 函数结束于第 279 行，非 281 |
-| §2.4 `alloc_pages()` | `[alloc.c:404-462]` | `[alloc.c:404-460]` | 函数结束于第 460 行，非 462 |
-| §2.5 `findbit()` | `[alloc.c:369-401]` | `[alloc.c:369-399]` | 函数结束于第 399 行，非 401 |
-| §2.6 `free_pages()` | `[alloc.c:465-484]` | `[alloc.c:465-481]` | 函数结束于第 481 行，非 484 |
-| §2.8 `pt_init_done = 1` | `[pagetable.c:1309]` | `[pagetable.c:1311]` | 实际位于第 1311 行，非 1309 |
+### Rust 代码审查
 
-以下行号引用经核实正确，无需修改：
+Rust 代码与文档设计完全一致，无需修改：
 
-- §2.1 `[alloc.c:32-38]` ✅
-- §2.6 `[alloc.c:289-301]`（`free_mem()`）✅
-- §2.7 `[pagetable.c:59-109]` ✅
-- §2.7 `[alloc.c:60-72]`（`reserved_pages` 结构体）✅
-- §2.7 `[pagetable.c:1116-1162]` ✅
-- §2.8 `[pagetable.c:328]`（`pt_init_done` 声明）✅
-- §2.8 `[pagetable.c:333-364]`（`vm_allocpages()` 首段）✅
-- §2.9 `[pagetable.c:1313-1352]` ✅
-- §2.10 `[pagetable.c:155-230]`（`findhole()`）✅
-- §2.12 `[pagetable.c:494-540]`（`pt_ptalloc()`）✅
-- §2.13 `[alloc.c:348-367]`（`memstats()`）✅
+**PhysAllocator trait（alloc_trait.rs:10-20）**：
+- `reloc_array_count()`/`reloc_array_info()`/`update_relocated_arrays()` 与 §4.3 一致
+- 默认实现与 §4.3 一致
 
-### 规则 3：数值常量修正
+**BitmapAllocator 搬迁（bitmap_alloc.rs:305-328）**：
+- `reloc_array_count() = 2`（bitmap + page_cache）与 §4.4 一致
+- `reloc_array_info()` 返回 (ptr, len, size_of) 与 §4.4 一致
+- `update_relocated_arrays()` 使用 `from_raw_parts_mut` 与 §4.4 一致
 
-| 位置 | 原文 | 修正后 | 原因 |
-|------|------|--------|------|
-| §2.1 `NUMBER_PHYSICAL_PAGES` 计算 | `0x100000 / 4096 = 1048576` | `0x100000000 / 4096 = 0x100000 = 1048576` | 被除数应为 `0x100000000`（4GB），原文误写为 `0x100000`（1MB），导致除法不成立 |
+**BuddyAllocator 搬迁（buddy_alloc.rs:349-377）**：
+- `reloc_array_count() = 3`（free_list_heads + page_next + page_orders）与 §4.5 一致
+- `reloc_array_info()` 返回 (ptr, len, size_of) 与 §4.5 一致
+- `update_relocated_arrays()` 使用 `from_raw_parts_mut` 与 §4.5 一致
 
-其余数值常量经核实均与源码一致：
-- `PAGE_CACHE_MAX = 10000` ✅
-- `NR_MEMS = 16` ✅
-- `SPAREPAGES = 20`（i386）/ `150`（arm）/ `200`（SANITYCHECKS）✅
-- `STATIC_SPAREPAGES = 15`（i386）/ `140`（arm）/ `190`（SANITYCHECKS）✅
-- `bitchunk_t = uint32_t` ✅
-- `MAP_NONE = 0xFFFFFFFE` ✅
-- `MAXRESERVEDPAGES = 300` ✅
-- `MAXRESERVEDQUEUES = 15` ✅
-- `RESERVEDMAGIC = 0x6e4c74d5` ✅
-- `CLICK_SIZE = 4096`, `CLICK_SHIFT = 12` ✅
+**PtRegion 搬迁逻辑（pt_region.rs:200-242）**：
+- `relocate_phys_allocator()` 与 §4.2 一致
+- 分配→复制→更新三步流程与 §4.2 一致
+- `[Option<VirBytes>; 4]`/`[usize; 4]`/`[*mut u8; 4]` 固定大小数组与 §4.2 一致
+- `copy_nonoverlapping` 与 §4.2 一致
 
-### 规则 4：Rust 代码修正
+**VmPageAllocator 接口（alloc_page.rs）**：
+- `relocate_phys_allocator()` 委托给 `pt_region` 与 §4.1 一致
 
-| 位置 | 原文 | 修正后 | 原因 |
-|------|------|--------|------|
-| §4.1 `relocate_phys_allocator()` | 使用 `.expect("PtRegion must be initialized before relocation")` | 使用 `.unwrap()` | 实际代码（alloc_page.rs:80）使用 `.unwrap()` |
-| §4.4 `BitmapAllocator::reloc_array_info()` | 元素大小硬编码为 `8` | 改为 `core::mem::size_of::<u64>()` 和 `core::mem::size_of::<usize>()` | 实际代码（bitmap_alloc.rs:311-312）使用 `core::mem::size_of` 而非硬编码数值 |
-| §4.5 `BuddyAllocator::reloc_array_info()` | 元素大小硬编码为 `4` 和 `1` | 改为 `core::mem::size_of::<u32>()` 和 `core::mem::size_of::<u8>()` | 实际代码（buddy_alloc.rs:355-357）使用 `core::mem::size_of` 而非硬编码数值 |
+### Review 准则检查
 
-### 规则 5：最后一章为"参见" ✅
-
-最后一章为"6. 参见"，通过。
-
-### 规则 6：Ch3 聚焦"为什么"，Ch4 聚焦"怎么做" ✅
-
-- Ch3（§3 Rust 设计决策）讨论三种搬迁策略的取舍理由，聚焦"为什么"选择复制搬迁
-- Ch4（§4 实现详解）展示具体接口和实现代码，聚焦"怎么做"
-
-通过。
-
-### 其他修正
-
-| 位置 | 修正内容 | 原因 |
-|------|----------|------|
-| §2.6 `free_mem()` 注释 | 补全为完整注释 | 原文截断了 Minix3 源码中的完整注释，已补全为与源码一致的版本 |
-
-## 无需修改的项
-
-- §4.6 搬迁调用链标记为"示意"，与实际代码存在差异（如 `UninitPhysAllocator`、`from_boot_info` 等不存在），但作为示意性伪代码可接受
-- §5 测试代码为文档自写的示例性测试，非实际源码中的测试，作为文档示例可接受
+1. **Rewrite 质量** ✅ — 分步查询设计避免堆依赖，固定大小数组避免动态分配
+2. **硬件抽象** ✅ — PtOps trait 抽象页表操作
+3. **类型系统与安全** ✅ — `unsafe` 限于 `from_raw_parts_mut`/`copy_nonoverlapping`，有安全契约
+4. **执行模型** ✅ — 单线程，搬迁期间无并发
+5. **内存模型** ✅ — 搬迁后旧 slice 被替换，无双重释放
+6. **公开接口** ✅ — `pub(crate)` 最小权限
+7. **命名** ✅ — 与 Minix3 对应关系清晰
+8. **测试** ✅ — 覆盖数据一致性、分配后可用、释放再分配
+9. **注释** ✅ — 英文注释，`unsafe` 有安全契约
+10. **64 位** ✅ — `VirBytes(u64)`/`PhysBytes(u64)`
+11. **no_std** ✅ — 使用 `alloc::boxed::Box`
+12. **设计-代码一致性** ✅ — 代码完全实现文档 Ch3/Ch4 设计
