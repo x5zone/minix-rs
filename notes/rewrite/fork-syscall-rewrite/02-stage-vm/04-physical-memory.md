@@ -238,7 +238,7 @@ VM.do_fork()
 Minix3 物理内存管理使用三个核心数据结构：
 
 ```c
-// [alloc.c:57-72](minix3/minix/servers/vm/alloc.c#L57-L72)
+// [alloc.c:33-41](minix3/minix/servers/vm/alloc.c#L33-L41)
 
 #define NUMBER_PHYSICAL_PAGES (int)(0x100000000ULL/VM_PAGE_SIZE)  // 4GB / 4KB = 1M 页
 #define PAGE_BITMAP_CHUNKS BITMAP_CHUNKS(NUMBER_PHYSICAL_PAGES)
@@ -1090,37 +1090,36 @@ static bitchunk_t free_pages_bitmap[PAGE_BITMAP_CHUNKS];          // ~128KB
 
 ```rust
 pub struct EarlyHeap {
-    start: *mut u8,
-    current: *mut u8,
-    end: *mut u8,
+    start: NonNull<u8>,
+    current: NonNull<u8>,
+    end: NonNull<u8>,
 }
 
 impl EarlyHeap {
+    pub const fn new() -> Self { /* NonNull::dangling() 初始化 */ }
+    
     pub fn init(&mut self, start: *mut u8, size: usize) {
-        self.start = start;
-        self.current = start;
-        self.end = unsafe { start.add(size) };
+        assert!(size > 0, "early heap size must be positive");
+        assert!(!start.is_null(), "early heap start must not be null");
+        // ...
     }
     
     pub fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        if count == 0 { return &mut []; }
         let size = count * core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        
         let ptr = self.alloc_aligned(size, align);
-        unsafe {
-            core::slice::from_raw_parts_mut(ptr as *mut T, count)
-        }
+        unsafe { core::slice::from_raw_parts_mut(ptr as *mut T, count) }
     }
     
     fn alloc_aligned(&mut self, size: usize, align: usize) -> *mut u8 {
-        let aligned = (self.current as usize + align - 1) & !(align - 1);
+        let current = self.current.as_ptr() as usize;
+        let aligned = (current + align - 1) & !(align - 1);
         let new_current = aligned + size;
-        
-        if new_current > self.end as usize {
+        if new_current > self.end.as_ptr() as usize {
             panic!("early heap exhausted");
         }
-        
-        self.current = new_current as *mut u8;
+        self.current = unsafe { NonNull::new_unchecked(new_current as *mut u8) };
         aligned as *mut u8
     }
 }
@@ -1130,12 +1129,16 @@ impl EarlyHeap {
 
 ```rust
 // 初始化
-let mut early_heap = EarlyHeap::empty();
+let mut early_heap = EarlyHeap::new();
 early_heap.init(phys_addr, size);
 
 // 分配元数据
 let bitmap: &'static mut [u64] = early_heap.alloc_slice(1024);
 let heads: &'static mut [u32] = early_heap.alloc_slice(64);
+
+// 查询使用情况
+let used = early_heap.used();
+let remaining = early_heap.remaining();
 ```
 
 ### 4.4 Early Heap 物理页来源
@@ -1630,7 +1633,7 @@ impl PhysAllocType {
                 let offset = if total_pages == 0 { 1 }
                     else { total_pages.next_power_of_two() };
                 let tree_size = if total_pages > 0 { 2 * offset } else { 2 };
-                tree_size * size_of::<SegmentNode>()
+                tree_size * size_of::<(usize, usize, usize, usize)>()  // SegmentNode = (max_free, left_free, right_free, len)
             }
         }
     }
