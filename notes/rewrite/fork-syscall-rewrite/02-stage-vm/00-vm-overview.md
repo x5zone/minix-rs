@@ -316,34 +316,123 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 
 ---
 
-## 3. VM 全局概念
+## 3. 文档导航：主线叙事与补全路径
 
-### 3.1 进程标识
+### 3.1 叙事策略：以 fork 系统调用为主线
 
-#### 3.1.1 vmproc 与进程的关系
+VM Server 涉及的概念极多——物理内存、页表、虚拟区域、CoW、页错误、mmap……如果平铺直叙地逐个介绍，读者容易迷失在概念海洋中。
+
+因此，01-19 采用**单一主线叙事**：跟随 `fork` 系统调用的执行路径，按需引入每个概念。fork 是最复杂的内存操作之一，它几乎触及 VM 的所有核心组件：
+
+```
+fork 请求到达
+  │
+  ├── 需要进程表 → 01 vmproc 结构 / 02 vmproc 表
+  ├── 需要权限检查 → 03 ACL
+  ├── 需要分配物理页 → 04 物理内存 / 05 页分配
+  ├── 需要页表 → 06 页表结构 / 07 页表操作
+  ├── 需要内核堆 → 08 slab 分配器
+  ├── 需要搬迁元数据 → 09 VM 重定位
+  ├── 需要物理块 → 10 PhysBlock / 11 MemType / 14 PhysRegion
+  ├── 需要虚拟区域 → 12 VirRegion / 13 AVL 树
+  ├── 需要写时复制 → 15 CoW 机制
+  ├── 需要页错误 → 16 页错误处理
+  ├── 执行 fork → 17 VM Fork
+  ├── 需要堆扩展 → 18 brk
+  └── 需要内存映射 → 19 mmap
+```
+
+**核心思路**：每个文档只在 fork 需要它时才出现，读者始终知道"为什么现在要学这个"。
+
+### 3.2 01-19：fork 主线（已完成）
+
+fork 主线构建了 VM 的**完整骨架**——所有核心数据结构和抽象层都已建立。以下是各文档在主线中的角色：
+
+| 编号 | 文档 | 主线角色 | 引入的核心抽象 |
+|------|------|---------|--------------|
+| 01 | vmproc-struct | fork 的目标：进程在 VM 中的表示 | `VmProc` 结构体 |
+| 02 | vmproc-table | fork 需要查找/分配进程槽 | 进程表、slot/endpoint |
+| 03 | acl | fork 需要权限检查 | ACL 位图 |
+| 04 | physical-memory | fork 需要分配物理页 | `PhysAllocator` trait |
+| 05 | vm-allocpage | fork 需要页分配器 | `VmPageAllocator`、`ReservedRegion` |
+| 06 | pagetable-struct | fork 需要创建子进程页表 | `Paging` trait、`DirectMapArch` |
+| 07 | pagetable-ops | fork 需要操作页表 | `map`/`unmap`/`remap`/`query` |
+| 08 | slab-allocator | fork 使用的堆分配器 | Slab 分配器 |
+| 09 | vm-relocation | fork 前需完成元数据搬迁 | 重定位接口 |
+| 10 | phys-block | fork 的 CoW 需要物理块引用计数 | `PhysBlock`、引用计数 |
+| 11 | memtype | fork 需要知道内存类型语义 | `MemType` trait |
+| 12 | vir-region | fork 需要复制虚拟区域 | `VirRegion`、AVL 树 |
+| 13 | region-avl | fork 的区域查找需要 AVL | AVL 平衡树操作 |
+| 14 | phys-region | fork 需要链接物理区域到物理块 | `PhysRegion` |
+| 15 | cow-mechanism | fork 设置 CoW 保护 | CoW 标记、页表只读 |
+| 16 | pagefault | CoW 页面写入时触发页错误 | 页错误解析 |
+| 17 | vm-fork | fork 的完整执行流程 | `do_fork()` |
+| 18 | vm-brk | fork 后子进程可能扩展堆 | `do_brk()` |
+| 19 | vm-map | fork 后可能 mmap | `do_mmap()` |
+
+### 3.3 20-27：补全阶段（fork 主线完成后）
+
+fork 主线完成后，VM 的主体框架已经建立。剩余内容是**在已有骨架上填充操作**——不需要再找新的系统调用做主线，直接按功能补全即可。
+
+补全阶段的组织原则是**教学性优先**：每个文档回答读者此刻最想知道的问题，顺着好奇心走。
+
+| 编号 | 文档 | 读者心中的问题 | 覆盖的 Minix3 模块 | 文档结构 |
+|------|------|---------------|-------------------|---------|
+| 20 | cow-exec-pagefault | "写入 CoW 页面时到底怎么复制？" | mem_cow, pt_writemap, map_ph_writept, do_pagefaults | 完整 Ch1-4 |
+| 21 | vm-exit | "fork 的反面——进程怎么退出？" | exit.c, pt_free, map_free_proc | 完整 Ch1-4 |
+| 22 | vm-brk-complete | "brk 完整逻辑是什么？" | real_brk, map_region_extend_upto_v | 完整 Ch1-4 |
+| 23 | vm-munmap | "怎么取消映射？" | do_munmap, map_unmap_region/range, do_map_phys | 完整 Ch1-4 |
+| 24 | vfs-interaction | "VM 怎么和 VFS 对话？" | vfs_request/reply, fdref, mem_file 补全 | 完整 Ch1-4 |
+| 25 | client-alloc-lib | "其他服务器怎么用 VM 分配内存？" | minix_alloc crate 设计 | Ch1-3，Ch4=TODO |
+| 26 | cache-memtypes | "缓存、共享内存、连续内存呢？" | cache.c, mem_cache/shared/contig | 完整 Ch1-4 |
+| 27 | vm-init-main | "所有零件怎么组装启动？" | init_vm, pt_init, SEF, 主循环, 工具函数 | 完整 Ch1-4 |
+
+**补全阶段的叙事线**：
+
+```
+兑现承诺          生命周期闭合       补全接口           走出 VM              变体扩展         回到起点        收尾
+   │                 │                │                  │                   │              │             │
+   ▼                 ▼                ▼                  ▼                   ▼              ▼             ▼
+20 CoW执行       21 进程退出      22 brk补全        24 VFS交互          26 缓存+       27 初始化+     27(续)
++ 页错误                         23 munmap         + fdref              内存类型       主循环
+                                                  25 客户端内存库
+   │                 │                │                  │                   │              │
+   └─────────────────┴────────────────┴──────────────────┴───────────────────┴──────────────┘
+                                        VM Server 完成
+```
+
+> **遗留逻辑完整清单**: [minix3_missed.md](minix3_missed.md) 对照 Minix3 源码列出了所有尚未实现的函数，20-27 的内容即来源于此。
+
+---
+
+## 4. VM 全局概念
+
+### 4.1 进程标识
+
+#### 4.1.1 vmproc 与进程的关系
 // TODO: 每个进程在 VM 中有一个 vmproc 条目
 
-#### 3.1.2 slot 的概念
+#### 4.1.2 slot 的概念
 // TODO: 进程表索引，与 endpoint 的关系
 
-### 3.2 内存管理抽象
+### 4.2 内存管理抽象
 
-#### 3.2.1 虚拟地址空间
+#### 4.2.1 虚拟地址空间
 // TODO: 每个进程的独立地址空间
 
-#### 3.2.2 物理内存管理
+#### 4.2.2 物理内存管理
 // TODO: VM 作为物理内存的分配者
 
-#### 3.2.3 页表管理
+#### 4.2.3 页表管理
 // TODO: 两级页表结构
 
-### 3.3 核心数据结构关系
+### 4.3 核心数据结构关系
 
 ```
 // TODO: vmproc → page_table → vir_region(AVL) → phys_region → phys_block
 ```
 
-### 3.4 全局状态
+### 4.4 全局状态
 
 VM 服务维护以下全局状态：
 

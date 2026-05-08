@@ -15,6 +15,14 @@ pub(crate) mod memtype;
 pub(crate) mod ipc;
 pub(crate) mod direct_map;
 pub(crate) mod alloc_page;
+pub(crate) mod page_cache;
+pub(crate) mod vfs_queue;
+pub(crate) mod exit;
+pub(crate) mod brk;
+pub(crate) mod munmap;
+pub(crate) mod cow_exec_pf;
+
+pub use vm_server::VmServer;
 
 pub(crate) use global::*;
 pub(crate) use vmproc::*;
@@ -30,8 +38,21 @@ pub(crate) use pagetable::{PageTable, PageFlags, PageTableError};
 pub(crate) use memtype::{
     MemType, MemTypeError, PagefaultResult,
     AnonymousMemory, DirectPhysical, SharedMemory,
+    ContiguousAnonymous, CacheMemory, MappedFile,
     MEM_TYPE_ANON, MEM_TYPE_DIRECT, MEM_TYPE_SHARED,
+    MEM_TYPE_CONTIG_ANON, MEM_TYPE_CACHE, MEM_TYPE_MAPPED_FILE,
 };
 pub(crate) use ipc::*;
 pub(crate) use direct_map::{DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
 pub(crate) use alloc_page::{VmPageAllocator, ReservedRegion};
+pub(crate) use page_cache::PageCache;
+pub(crate) use vfs_queue::VfsRequestQueue;
+pub(crate) use exit::{VmExitError, handle_vm_exit, handle_vm_willexit};
+pub(crate) use brk::{BrkError, BrkRequest, BrkResponse, handle_brk};
+pub(crate) use munmap::{MunmapError, MunmapRequest, handle_munmap};
+pub(crate) use cow_exec_pf::{
+    PageFaultError, PageFaultInfo, handle_pagefault,
+    ExecError, ExecNewmemRequest, handle_exec_newmem,
+};
+
+mod vm_server;

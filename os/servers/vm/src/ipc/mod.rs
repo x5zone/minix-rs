@@ -2,6 +2,4 @@
 //!
 //! Handles message dispatch and communication with other services.
 
-mod dispatcher;
-
-pub(crate) use dispatcher::*;
+pub(crate) mod dispatcher;

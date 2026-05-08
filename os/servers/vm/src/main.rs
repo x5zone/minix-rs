@@ -1,23 +1,9 @@
 //! Minix VM Server.
 //!
 //! Virtual memory manager service process.
+//! Entry point for the VM server binary.
 
-struct VmServer {
-}
-
-impl VmServer {
-    fn new() -> Self {
-        Self {}
-    }
-
-    fn init(&mut self) {
-    }
-
-    fn run(&mut self) {
-        loop {
-        }
-    }
-}
+use minix_vm::VmServer;
 
 fn main() {
     let mut server = VmServer::new();

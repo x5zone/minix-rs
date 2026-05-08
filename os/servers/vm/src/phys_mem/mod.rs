@@ -7,10 +7,14 @@ pub(crate) mod stats;
 #[cfg(test)]
 pub(crate) mod allocator_tests;
 
+#[allow(unused_imports)]
 pub(crate) use alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 pub(crate) use bitmap_alloc::BitmapAllocator;
+#[allow(unused_imports)]
 pub(crate) use buddy_alloc::BuddyAllocator;
+#[allow(unused_imports)]
 pub(crate) use segment_tree_alloc::SegmentTreeAllocator;
+#[allow(unused_imports)]
 pub(crate) use stats::MemStats;
 pub(crate) use types::{AllocError, PageAllocFlags, PhysBytes};
 

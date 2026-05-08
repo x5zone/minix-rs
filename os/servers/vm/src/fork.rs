@@ -6,8 +6,8 @@
 
 use minix_types::{Endpoint, UserSlot, VirBytes};
 use core::ptr::NonNull;
-use crate::vmproc::{VmProcTable, VmFlags};
-use crate::region::{VirRegion, VrFlags, PhysRegion, PhysBlock};
+use crate::vmproc::VmProcTable;
+use crate::region::{VirRegion, PhysRegion};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 

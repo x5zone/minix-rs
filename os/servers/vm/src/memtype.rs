@@ -1,6 +1,6 @@
 //! Memory type system.
 
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::VirBytes;
 use crate::vmproc::ActiveProc;
 use crate::region::phys_region::PhysBlock;
 
@@ -294,9 +294,188 @@ impl MemType for SharedMemory {
     }
 }
 
+pub(crate) struct ContiguousAnonymous;
+
+impl ContiguousAnonymous {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ContiguousAnonymous {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemType for ContiguousAnonymous {
+    fn name(&self) -> &'static str {
+        "contiguous anonymous memory"
+    }
+
+    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
+    }
+
+    fn on_new(&self, region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
+        let pages = region.physblocks.len();
+        if pages == 0 {
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    fn on_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _region: &mut crate::region::VirRegion,
+        pr: &mut crate::region::PhysRegion,
+        _write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return Ok(PagefaultResult::NeedNewPage);
+        }
+        Ok(PagefaultResult::Handled)
+    }
+
+    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+pub(crate) struct CacheMemory;
+
+impl CacheMemory {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CacheMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemType for CacheMemory {
+    fn name(&self) -> &'static str {
+        "cache memory"
+    }
+
+    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return false;
+        }
+        if let Some(refcount) = pr.get_refcount() {
+            refcount == 1
+        } else {
+            false
+        }
+    }
+
+    fn on_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _region: &mut crate::region::VirRegion,
+        pr: &mut crate::region::PhysRegion,
+        write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return Ok(PagefaultResult::NeedNewPage);
+        }
+
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount < 2 || !write {
+            return Ok(PagefaultResult::Handled);
+        }
+
+        Ok(PagefaultResult::NeedCow)
+    }
+
+    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
+    }
+
+    fn on_delete(&self, region: &mut crate::region::VirRegion) {
+        if let crate::region::VrParam::PbCache { pb } = &mut region.param {
+            *pb = None;
+        }
+    }
+}
+
+pub(crate) struct MappedFile;
+
+impl MappedFile {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for MappedFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemType for MappedFile {
+    fn name(&self) -> &'static str {
+        "mapped file"
+    }
+
+    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return false;
+        }
+        if let Some(refcount) = pr.get_refcount() {
+            refcount == 1
+        } else {
+            false
+        }
+    }
+
+    fn on_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _region: &mut crate::region::VirRegion,
+        pr: &mut crate::region::PhysRegion,
+        write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return Ok(PagefaultResult::NeedNewPage);
+        }
+
+        let refcount = pr.get_refcount().unwrap_or(0);
+        if refcount < 2 || !write {
+            return Ok(PagefaultResult::Handled);
+        }
+
+        Ok(PagefaultResult::NeedCow)
+    }
+
+    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+        Ok(false)
+    }
+
+    fn on_copy(
+        &self,
+        _src: &crate::region::VirRegion,
+        _dst: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
+    }
+}
+
 pub(crate) static MEM_TYPE_ANON: AnonymousMemory = AnonymousMemory::new();
 pub(crate) static MEM_TYPE_DIRECT: DirectPhysical = DirectPhysical::new();
 pub(crate) static MEM_TYPE_SHARED: SharedMemory = SharedMemory::new();
+pub(crate) static MEM_TYPE_CONTIG_ANON: ContiguousAnonymous = ContiguousAnonymous::new();
+pub(crate) static MEM_TYPE_CACHE: CacheMemory = CacheMemory::new();
+pub(crate) static MEM_TYPE_MAPPED_FILE: MappedFile = MappedFile::new();
 
 #[cfg(test)]
 mod tests {
@@ -325,5 +504,42 @@ mod tests {
         assert_eq!(MEM_TYPE_ANON.name(), "anonymous memory");
         assert_eq!(MEM_TYPE_DIRECT.name(), "physical memory mapping");
         assert_eq!(MEM_TYPE_SHARED.name(), "shared memory");
+        assert_eq!(MEM_TYPE_CONTIG_ANON.name(), "contiguous anonymous memory");
+        assert_eq!(MEM_TYPE_CACHE.name(), "cache memory");
+        assert_eq!(MEM_TYPE_MAPPED_FILE.name(), "mapped file");
+    }
+
+    #[test]
+    fn test_contiguous_anonymous_memory() {
+        let contig = ContiguousAnonymous::new();
+        assert_eq!(contig.name(), "contiguous anonymous memory");
+    }
+
+    #[test]
+    fn test_cache_memory() {
+        let cache = CacheMemory::new();
+        assert_eq!(cache.name(), "cache memory");
+    }
+
+    #[test]
+    fn test_mapped_file() {
+        let mf = MappedFile::new();
+        assert_eq!(mf.name(), "mapped file");
+    }
+
+    #[test]
+    fn test_mapped_file_copy_not_supported() {
+        let mf = MappedFile::new();
+        let src = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x1000),
+            minix_types::VirBytes(0x1000),
+            crate::region::VrFlags::empty(),
+        );
+        let mut dst = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x2000),
+            minix_types::VirBytes(0x1000),
+            crate::region::VrFlags::empty(),
+        );
+        assert_eq!(mf.on_copy(&src, &mut dst), Err(MemTypeError::NotSupported));
     }
 }

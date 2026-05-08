@@ -1,7 +1,6 @@
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
-use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion};
+use super::BootMemRegion;
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]

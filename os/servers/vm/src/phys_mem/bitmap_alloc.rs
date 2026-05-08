@@ -104,6 +104,17 @@ impl BitmapAllocator {
         self.free_pages * CLICK_SIZE
     }
 
+    #[cfg(test)]
+    pub fn new_for_test(total_pages: usize) -> Self {
+        let base = 0x100000;
+        let size = total_pages * CLICK_SIZE;
+        let regions = [BootMemRegion { base, size }];
+        let meta_size = Self::metadata_size(total_pages);
+        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size.max(1024 * 1024)];
+        let metadata = alloc::boxed::Box::leak(v.into_boxed_slice());
+        Self::init(&mut metadata[..meta_size], &regions)
+    }
+
     pub fn is_under_pressure(&self) -> bool {
         self.free_pages * 10 < self.total_pages
     }

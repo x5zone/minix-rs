@@ -2,12 +2,10 @@
 
 #[cfg(test)]
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use super::vir_region::VirRegion;
 use core::ptr::NonNull;
 use minix_types::{PhysBytes, VirBytes};
 use crate::memtype::MemType;
-use crate::pagetable::PageFlags;
+use super::vir_region::VirRegion;
 
 #[derive(Debug)]
 pub(crate) struct PhysBlock {
@@ -181,7 +179,7 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_virtual_addr(&self) -> Option<VirBytes> {
-        self.parent.map(|parent| unsafe {
+        self.parent.map(|parent: NonNull<VirRegion>| unsafe {
             VirBytes((*parent.as_ptr()).vaddr.0 + self.offset.0)
         })
     }
@@ -537,6 +535,7 @@ mod tests {
 
     #[test]
     fn test_page_flags() {
+        use crate::pagetable::PageFlags;
         let flags = PageFlags::read_only();
         assert!(flags.contains(PageFlags::PRESENT));
         assert!(!flags.contains(PageFlags::WRITABLE));
