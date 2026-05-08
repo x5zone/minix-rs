@@ -1790,8 +1790,6 @@ pub enum AllocError {
 ```
 phys_mem/
 ├── mod.rs                    # 模块入口
-├── early_heap.rs             # Bump allocator（方案三专用，方案四中删除）
-├── direct_map.rs             # Direct map 常量与 vm_phys_to_virt()（方案四新增）
 ├── alloc_trait.rs            # PhysAllocator + PhysAllocatorStats traits, PhysMemStats
 ├── types.rs                  # PhysBytes, PageAllocFlags, AllocError
 ├── bitmap_alloc.rs           # Bitmap 分配器
@@ -1799,6 +1797,10 @@ phys_mem/
 ├── segment_tree_alloc.rs     # 线段树分配器 (实验性)
 ├── stats.rs                  # 运维统计 (alloc/free 计数)
 └── allocator_tests.rs        # 统一测试套件
+
+src/ (顶层)
+├── direct_map.rs             # Direct map 常量与 vm_phys_to_virt()（方案四新增）
+└── alloc_page.rs             # VmPageAllocator + ReservedRegion
 ```
 
 ***

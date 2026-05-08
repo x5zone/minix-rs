@@ -5,84 +5,27 @@
 
 ## 审查结果
 
-### P0 修复
-
-#### 1. 行号错误：alloc.c:57-72 → alloc.c:33-41
-
-**问题**: §2.0 核心数据结构引用 `alloc.c:57-72`，但实际代码中：
-- `NUMBER_PHYSICAL_PAGES` 定义在行 33
-- `free_pages_bitmap` 在行 35
-- `PAGE_CACHE_MAX` 在行 36
-- `free_page_cache` 在行 37
-- `mem_low/mem_high` 在行 41
-
-行 57-72 对应的是 `reservedqueues` 结构体定义，不是核心数据结构部分。
-
-**修复**: 改为 `alloc.c:33-41`。
-
-**验证**: `grep -n "NUMBER_PHYSICAL_PAGES\|free_pages_bitmap\|PAGE_CACHE_MAX\|free_page_cache\|mem_low" minix3/minix/servers/vm/alloc.c`。
-
 ### P1 修复
 
-#### 2. EarlyHeap 代码与实际 Rust 实现不一致
+#### 1. 文件结构树更新
 
-**问题**: §4.2 中 `EarlyHeap` 使用 `*mut u8` 原始指针，但实际 Rust 代码使用 `NonNull<u8>`。此外：
-- 文档中 `EarlyHeap::empty()` 构造，实际代码为 `EarlyHeap::new()`
-- 文档中 `init()` 缺少 `assert` 检查，实际代码有 `assert!(size > 0)` 和 `assert!(!start.is_null())`
-- 文档中 `alloc_slice()` 未处理 `count == 0`，实际代码有 `if count == 0 { return &mut []; }`
-- 文档中 `alloc_aligned()` 使用 `self.current as usize`，实际代码使用 `self.current.as_ptr() as usize`
+**问题**: §8 文件结构树将 `direct_map.rs` 列在 `phys_mem/` 下，但实际代码中 `direct_map.rs` 位于 `src/` 顶层。`early_heap.rs` 在代码中已不存在（方案四删除），但文档仍列出。
 
-**修复**: 更新 §4.2 代码为与实际 Rust 代码一致的 `NonNull<u8>` 版本，补充 `new()`、`assert` 检查、零计数处理。同时更新 §4.3 使用示例（`EarlyHeap::new()` + `used()/remaining()` 方法）。
+**修复**: 更新文件结构树：
+- 从 `phys_mem/` 中删除 `early_heap.rs` 和 `direct_map.rs`
+- 新增 `src/ (顶层)` 段，列出 `direct_map.rs` 和 `alloc_page.rs`
 
-**验证**: 对比 `os/servers/vm/src/phys_mem/early_heap.rs`。
-
-#### 3. PhysAllocType::SegmentTree 的 metadata_size_exact 使用 SegmentNode 而非元组
-
-**问题**: §5.7 中 `PhysAllocType::SegmentTree` 的 `metadata_size_exact` 使用 `size_of::<SegmentNode>()`，但实际 Rust 代码使用 `size_of::<(usize, usize, usize, usize)>()`。代码中 `SegmentNode` 是 `(usize, usize, usize, usize)` 的类型别名（在 `segment_tree_alloc.rs` 中 `#[cfg(feature)]` 保护下），而 `mod.rs` 中的 `metadata_size_exact` 不能引用 feature-gated 类型，因此使用元组。
-
-**修复**: 改为 `size_of::<(usize, usize, usize, usize)>()` 并添加注释说明 SegmentNode 字段含义。
-
-**验证**: 对比 `os/servers/vm/src/phys_mem/mod.rs:105-113`。
-
-### 源码行号验证
-
-| 引用 | 文档标注 | 实际位置 | 一致? |
-|------|----------|----------|-------|
-| `alloc.c:242` alloc_mem | L242 | L242=函数签名 | ✅ |
-| `alloc.c:289` free_mem | L289 | L289=函数签名 | ✅ |
-| `alloc.c:348` memstats | L348 | L348=函数签名 | ✅ |
-| `alloc.c:33-41` 核心数据结构 | L33-41 | ✅ (已修复) | ✅ |
-| `vm.h:22-27` PAF 标志 | L22-27 | L22=PAF_CLEAR, L27=PAF_ALIGN16K | ✅ |
-| `pagetable.c:1151` pt_init | L1151 | L1151=reservedqueue_new | ✅ |
-| `pagetable.c:264` vm_getsparepage | L264 | L264=函数签名 | ✅ |
+**验证**: `ls os/servers/vm/src/phys_mem/*.rs` 确认无 `early_heap.rs`；`ls os/servers/vm/src/direct_map.rs` 确认在顶层。
 
 ### Rust 代码审查
 
-Rust 代码与文档设计基本一致，无需修改：
-
-- `PhysAllocator` / `PhysAllocatorStats` trait 与 §3.0/§5.1 一致
-- `PhysMemStats` 结构体与 §5.1 一致
-- `PageAllocFlags` bitflags 值与 §6.2 一致（0x01/0x02/0x04/0x08/0x10/0x40）
-- `AllocError` enum 与 §6.3 一致
-- `PhysBytes` newtype 与 §6.1 一致
-- `BitmapAllocator` 结构体与 §5.3 一致
-- `BuddyAllocator` SoA 结构与 §5.4 一致
-- `PhysAllocType` enum 与 §5.7 一致
-- `EarlyHeap` 实现与 §4.2 一致（已修复文档）
-- `BootMemRegion` 与 §3.0 一致
-- `CLICK_SIZE`/`CLICK_SHIFT` 常量与 §1.2 一致
-- `PhysAllocator` trait 额外有 `reloc_array_count/info/update` 方法（用于搬迁），文档 §4.4 提及了搬迁机制但未详述这些方法，属于合理简化
-
-### 上一轮 review 修复验证
-
-上一轮 04-todo.md 记录了 2 个修复：
-1. ✅ P0: §1.4 已移除 Rust 实现状态说明，替换为交叉引用
-2. ✅ P0: §2.3.5 已移除 Rust 实现状态说明，替换为交叉引用
+1. **direct_map.rs** — 已实现 `vm_phys_to_virt()`、`kernel_phys_to_virt()`、`virt_to_phys()`、`is_direct_map_virt()`，与文档 §4.4 描述一致
+2. **alloc_page.rs** — `VmPageAllocator` 已使用 `vm_phys_to_virt()`，`ReservedRegion` 已简化为纯物理页预留（无 VA 分配），与文档 §2.3 一致
+3. **phys_mem/ 模块** — 无 `early_heap.rs`，与方案四一致
+4. **kernel_phys_to_virt** — 当前实现与 `vm_phys_to_virt` 相同（都是 `phys + DIRECT_MAP_BASE`）。根据 ptregion_design.md §8.1.3，两者应映射到不同 VA 窗口（VM direct map U/S=1, Kernel direct map U/S=0）。当前是简化实现，后续需区分
 
 ### 未修复项（P2，记录备查）
 
-1. 文档 §2.1.1 的 `alloc_mem()` 和 `alloc_pages()` 代码块是伪代码（简化了实际实现），这是合理的简化
-2. 文档 §2.1.2 的 `findbit()` 代码块也是伪代码，简化了 chunk 跳过优化的细节
-3. `PhysAllocator` trait 中的 `reloc_array_count/info/update` 方法未在文档中详述，但文档 §4.4 提及了搬迁机制
-4. `BitmapAllocator` 实际代码有 `MemStats` 字段和 `stats` 模块，文档 §5.3 未提及，但 §8 文件结构中列出了 `stats.rs`
-5. 文档 §5.3 中 `PAF_CLEAR` 标注为 TODO，实际代码中也是 TODO（需内核 IPC sys_memset），一致
+1. **kernel_phys_to_virt 与 vm_phys_to_virt 未区分**：当前两者实现相同。ptregion_design.md §8.1.3 描述的双视图模型（VM direct map + Kernel direct map）需要在页表层面区分，但 `phys_to_virt()` 函数本身在单地址空间下返回相同 VA 是正确的——区别在于 PTE 的 U/S 标志位，而非 VA 值。需要确认设计意图
+2. **PAF_CLEAR 仍为 TODO**：文档 §5.3 中标注 `sys_memset` 需内核 IPC，方案四下可通过 `vm_phys_to_virt()` 直接 memset，无需 IPC。但代码中尚未实现
+3. **BitmapAllocator init 签名**：文档 §5.3 方案四标注说 init 签名应从 `init(early_heap, ...)` 变为 `init(alloc, ...)`，但代码中 BitmapAllocator 的 init 仍接受 `&mut [u64]` 切片参数（由调用方分配），这是更灵活的设计
