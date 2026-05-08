@@ -2601,7 +2601,7 @@ impl MemType for AnonymousMemory {
         }
         if let Some(parent) = pr.parent {
             unsafe {
-                if (*parent).remaps > 0 {
+                if (*parent.as_ptr()).remaps > 0 {
                     return true;
                 }
             }

@@ -192,18 +192,12 @@ impl MemType for AnonymousMemory {
         Ok(PagefaultResult::NeedCow)
     }
 
-    fn region_id(&self, _region: &crate::region::VirRegion) -> u32 {
-        1
+    fn region_id(&self, region: &crate::region::VirRegion) -> u32 {
+        region.id as u32
     }
 
     fn ref_count(&self, region: &crate::region::VirRegion) -> i32 {
-        let mut mapped = 0i32;
-        for pb in &region.physblocks {
-            if pb.is_some() {
-                mapped += 1;
-            }
-        }
-        mapped
+        1 + region.remaps
     }
 }
 
