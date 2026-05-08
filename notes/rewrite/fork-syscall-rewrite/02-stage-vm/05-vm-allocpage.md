@@ -189,7 +189,7 @@ vm_allocpage()
 
 ### 2.4 递归链分析
 
-`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[pagetable.c:333-389](minix3/minix/servers/vm/pagetable.c#L333-L389) → [pagetable.c:494-523](minix3/minix/servers/vm/pagetable.c#L494-L523)）：
+`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[pagetable.c:333-392](minix3/minix/servers/vm/pagetable.c#L333-L392) → [pagetable.c:494-523](minix3/minix/servers/vm/pagetable.c#L494-L523)）：
 
 ```
 vm_allocpages()                          [level = 1]

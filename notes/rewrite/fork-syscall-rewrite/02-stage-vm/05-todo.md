@@ -1,63 +1,69 @@
-# 05-vm-allocpage.md 变更记录
+# 05-todo: Review 修复记录
 
-## P0 修复（关键错误）
+## 审查文件
+`05-vm-allocpage.md`
 
-### P0-1: §4.2 ReservedRegion 缺少 high_watermark 字段
-- **问题**: 文档中 ReservedRegion 结构体缺少 `high_watermark: usize` 字段
-- **实际代码**: `pt_region.rs` 中 ReservedRegion 包含 `high_watermark: usize` 字段，位于 `allocated_pages` 和 `bitmap` 之间
-- **修复**: 在结构体定义中添加 `high_watermark: usize` 字段
+## 审查结果
 
-### P0-2: §4.2 ReservedRegion::alloc_page 实现不正确
-- **问题**: 文档使用 `(!self.bitmap).trailing_zeros()` 从 bit 0 开始搜索空闲位，未使用 high_watermark
-- **实际代码**: 使用 `let start = self.high_watermark;` 和 `let mask = !self.bitmap >> start;` 从高水位标记开始搜索
-- **修复**: 替换为实际代码，确保 alloc_page 从 high_watermark 开始搜索，避免与 alloc_contig_virt 的线性分配重叠
+### P2 修复
 
-### P0-3: §4.2 alloc_contig_virt 签名和实现错误
-- **问题**: 签名为 `&self`（不可变借用），使用 `allocated_pages` 计算偏移，无 assert 检查，不递增任何计数器
-- **实际代码**: 签名为 `&mut self`，使用 `high_watermark` 计算偏移，包含 `assert!(pages <= self.total_pages - self.high_watermark)`，并执行 `self.high_watermark += pages`
-- **修复**: 替换为实际代码
+#### 1. 行号范围不精确：pagetable.c:333-389 → 333-392
 
-### P0-4: §4.3 PtRegion 缺少 current_pt_base 字段
-- **问题**: 文档中 PtRegion 结构体缺少 `current_pt_base: VirBytes` 字段
-- **实际代码**: `pt_region.rs` 中 PtRegion 包含 `current_pt_base: VirBytes`，位于 `current_pt` 之后
-- **修复**: 在结构体定义中添加 `current_pt_base: VirBytes` 字段
+**问题**: §2.4 递归链分析中引用 `pagetable.c:333-389`，但 `vm_allocpages` 函数体实际到行 392。行 389 是 `level--;`，行 390 是 `vm_self_pages++;`，行 392 是 `return ret;`（函数的最后一行）。
 
-### P0-5: §4.3 PtRegion::virt_to_phys 方法不存在
-- **问题**: 文档中为 PtRegion 实现了 `virt_to_phys` 方法，但实际代码中 PtRegion 没有此方法（virt_to_phys 仅存在于 ReservedRegion）
-- **修复**: 删除整个 virt_to_phys 代码块及其说明段落
+**修复**: 改为 `pagetable.c:333-392`。
 
-### P0-6: §3.3 into_normal 签名错误
-- **问题**: 签名为 `into_normal(self)`，调用 `from_reserved_with_ops` 时使用 `&self.reserved`
-- **实际代码**: 签名为 `into_normal(mut self)`，调用时使用 `&mut self.reserved`
-- **修复**: 修改签名为 `into_normal(mut self)`，参数改为 `&mut self.reserved`
+**验证**: 读取 `minix3/minix/servers/vm/pagetable.c:333-392`，确认行 392 为 `return ret;`。
 
-## P1 修复（重要问题）
+### 源码行号验证
 
-### P1-4: §1.3 缺少 VMP_SPARE
-- **问题**: reason 分类中未列出 `VMP_SPARE`（值为 0）
-- **修复**: 在 reason 分类中添加 `VMP_SPARE`(0)
+| 引用 | 文档标注 | 实际位置 | 一致? |
+|------|----------|----------|-------|
+| `pagetable.c:328` pt_init_done | L328 | L328=声明 | ✅ |
+| `pagetable.c:333` vm_allocpages | L333 | L333=函数签名 | ✅ |
+| `pagetable.c:333-392` 完整函数体 | L333-392 | ✅ (已修复) | ✅ |
+| `pagetable.c:494-523` pt_ptalloc | L494-523 | L494=函数签名, L523=设置pt_dir | ✅ |
+| `pagetable.c:235` vm_freepages | L235 | L235=函数签名 | ✅ |
+| `pagetable.c:1088` pt_init | L1088 | L1088=函数签名 | ✅ |
+| `pagetable.c:1311-1327` pt_init结尾 | L1311-1327 | L1311=pt_init_done=1, L1327=alloc_cycle | ✅ |
 
-### P1-5: §4.3 from_reserved_with_ops 参数类型错误
-- **问题**: 参数为 `reserved: &ReservedRegion`（不可变借用）
-- **实际代码**: 参数为 `reserved: &mut ReservedRegion`（可变借用），因为内部调用了 `alloc_contig_virt` 需要 &mut
-- **修复**: 修改参数类型为 `&mut ReservedRegion`
+### Rust 代码审查
 
-### P1-6: §4.3 PtRegion 初始化缺少 current_pt_base
-- **问题**: PtRegion 初始化代码中未设置 `current_pt_base` 字段
-- **实际代码**: 初始化时设置 `current_pt_base: start`
-- **修复**: 在初始化代码中添加 `current_pt_base: start`
+Rust 代码与文档设计完全一致，无需修改：
 
-### P1-7: §4.3 expand() 缺少 current_pt_base 更新
-- **问题**: expand() 中 `self.current_pt = pt_virt` 之后未更新 `current_pt_base`
-- **实际代码**: 在 `self.current_pt = pt_virt` 之后有 `self.current_pt_base = VirBytes(self.start.0 + (pd_idx * 512 * PAGE_SIZE) as u64)`
-- **修复**: 在 expand() 中添加 current_pt_base 更新
+- `VmPageAllocator<S, O>` typestate 结构与 §3.3 一致
+- `Bootstrap`/`Normal` 类型参数与 §3.3 一致
+- `ReservedRegion` 结构体（含 `high_watermark`）与 §4.2 一致
+- `ReservedRegion::alloc_page()` 从 high_watermark 开始搜索与 §4.2 一致
+- `ReservedRegion::alloc_contig_virt()` 使用 `&mut self` 与 §4.2 一致
+- `PtRegion<O>` 结构体（含 `current_pt_base`）与 §4.3 一致
+- `PtRegion::from_reserved_with_ops()` 接受 `&mut ReservedRegion` 与 §4.3 一致
+- `PtRegion::alloc_pt_page()` 剩余不足 8 时自动扩展与 §4.3 一致
+- `PtRegion::expand()` 更新 `current_pt_base` 与 §4.3 一致
+- `PtOps` trait（6 个方法）与 §4.1 一致
+- `RealPtOps` 使用 `write_volatile`/`read_volatile` 与 §4.1 一致
+- `VmPageAllocator<Normal>.alloc_phys/alloc_virt/alloc_page` 与 §3.5 一致
+- `into_normal(mut self)` 签名与 §3.3 一致
+- 测试覆盖 §5 中所有测试要点
 
-### P1-8: §4.2 "待修复问题"段落描述已修复的 bug
-- **问题**: "待修复问题"和"推荐修复方案"段落描述的 high_watermark 缺失问题在实际代码中已经修复
-- **修复**: 删除"待修复问题"和"推荐修复方案"段落，替换为 high_watermark 的设计意图说明（解释低地址区/高地址区的划分，以及 alloc_page 和 alloc_contig_virt 如何通过 high_watermark 互不干扰）
+### 上一轮 review 修复验证
 
-## Ch1/Ch2 Rust 内容检查
+上一轮 05-todo.md 记录了 6 个 P0 修复和 5 个 P1 修复：
+1. ✅ P0-1: ReservedRegion 已添加 high_watermark 字段
+2. ✅ P0-2: alloc_page 已使用 high_watermark 搜索
+3. ✅ P0-3: alloc_contig_virt 已使用 &mut self + high_watermark
+4. ✅ P0-4: PtRegion 已添加 current_pt_base 字段
+5. ✅ P0-5: PtRegion::virt_to_phys 已删除
+6. ✅ P0-6: into_normal 签名已改为 mut self
+7. ✅ P1-4: VMP_SPARE(0) 已添加
+8. ✅ P1-5: from_reserved_with_ops 已使用 &mut ReservedRegion
+9. ✅ P1-6: 初始化已设置 current_pt_base: start
+10. ✅ P1-7: expand() 已更新 current_pt_base
+11. ✅ P1-8: "待修复问题"段落已替换为 high_watermark 设计意图说明
 
-- 检查了 §1（概述）和 §2（Minix3 C 源码分析）
-- Ch1 和 Ch2 仅包含 C 代码，无 Rust 内容
-- 无需移动
+### 未修复项（P2，记录备查）
+
+1. 文档 §2.1 的 `vm_allocpages` 代码块省略了 `assert(reason >= 0 && reason < VMP_CATEGORIES)` 和 `assert(pages > 0)`，这是合理的简化
+2. 文档 §2.2 的 `pt_init()` 代码块是简化版本，省略了 `sys_umap` 的详细参数
+3. 文档 §4.3 `PtRegion::expand()` 代码块中 `self.current_pt = pt_virt;` 的缩进不一致（多了 4 空格），但不影响理解
+4. Rust 代码中 `VmPageAllocator<Normal>` 有 `free_page()` 和 `relocate_phys_allocator()` 方法，文档 §3.3/§3.5 未提及，但 §4.4 时序图中的 T6 涉及了搬迁
