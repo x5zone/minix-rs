@@ -861,7 +861,7 @@ old_service.swap_proc_slot(&mut new_service);
 |------|------|
 | 不需要特殊 API | 直接使用现有 `get_active()` 获取两个 view |
 | `swap_content_with` | 交换内容而非引用，保留标识 |
-| 安全性 | 方法本身是 safe 的，内部使用 `ptr::swap` |
+| 安全性 | 方法签名是 safe 的，内部使用 `unsafe { ptr::swap }` |
 | 与 Minix3 对应 | 语义完全一致 |
 
 **与 Minix3 的差异**：
@@ -886,7 +886,7 @@ Minix3 的 `vm_isokendpt()` 只检查 `VMF_INUSE`，不检查 `!VMF_EXITING`。R
 | `used_count()`/`free_count()`/`is_empty()`/`is_full()` | `pub(crate)` | 统计查询 |
 | `reset_slot()` | `#[cfg(test)] pub(crate) unsafe` | 仅测试用，重置槽位 |
 | `VmProcIter` | `pub(super)` | 仅 vmproc 模块树内部使用 |
-| `VM_PROC_COUNT`/`VM_EXEC_TMP_SLOT` | `pub(crate)`（table.rs 内） | 未从 mod.rs 重导出，仅 table.rs 内部使用 |
+| `VM_PROC_COUNT`/`VM_EXEC_TMP_SLOT` | `pub(crate)`（table.rs 内） | 定义在 table.rs 中为 `pub(crate)`，但未从 mod.rs 重导出；vm crate 其他模块可通过 `table::VM_PROC_COUNT` 访问 |
 
 **`mod.rs` 导出策略**：
 

@@ -1,56 +1,49 @@
-# 02-vmproc-table.md Review 修改记录
+# 02-todo: Review 修复记录
 
-## 修改概要
+## 审查文件
+`02-vmproc-table.md`
 
-对 02-vmproc-table.md 进行深度 review，修复 P0/P1 问题。
+## 审查结果
 
----
+### P2 修复
 
-## P0 修复
+#### 1. `swap_proc_slot()` 安全性描述不够精确
 
-### 1. Ch2 §2.2 包含 Rust 内容
+**问题**: §5.3 设计要点表中"安全性"描述为"方法本身是 safe 的，内部使用 `ptr::swap`"，但实际 Rust 代码中使用了 `unsafe { core::ptr::swap(...) }` 块。虽然方法签名确实是 safe 的，但描述应更精确地反映内部使用了 unsafe 块。
 
-**问题**: §2.2 "显式生命周期控制" 包含 Rust 实现细节：
-- "Rust Drop 由作用域触发"
-- "VmProc 的 Drop 为空操作（debug_assert 检查状态）"
-- "预初始化所有槽位为 vacant() 状态"
-- "状态由 VmFlags 管理"
+**修复**: 改为"方法签名是 safe 的，内部使用 `unsafe { ptr::swap }`"。
 
-**修改**: 将 Rust 实现细节替换为 Minix3 的处理方式描述 + 指向 §5.1 的交叉引用。
+**验证**: 查看 `vmproc_handle.rs:420-434`，`swap_proc_slot()` 方法签名为 `pub(crate) fn swap_proc_slot(&mut self, other: &mut ActiveProc<'_>)`（safe），内部使用 `unsafe { core::ptr::swap(self.inner as *mut VmProc, other.inner as *mut VmProc); }`。
 
-### 2. Ch2 §2.3 包含 Rust 实现映射表
+#### 2. `VM_PROC_COUNT`/`VM_EXEC_TMP_SLOT` 可见性描述不准确
 
-**问题**: §2.3 "与 Minix3 语义对齐" 的对比表第二列直接列出 Rust 实现类型（如 `AssumeSyncCell<VmProc>`、`VmFlags::IN_USE`、`proc.clear()`、`VmProc::vacant()`）。
+**问题**: §5.4 可见性表中描述"未从 mod.rs 重导出，仅 table.rs 内部使用"，但这两个常量在 table.rs 中定义为 `pub(crate)`，意味着 vm crate 的其他模块可以通过 `crate::vmproc::table::VM_PROC_COUNT` 访问（虽然 mod.rs 没有重导出，但 `pub(crate)` 本身允许同 crate 访问）。
 
-**修改**: 将对比表改为纯语义描述（O(1) 索引、状态判断、显式重置、全零初始化），添加指向 §5.1 的交叉引用。
+**修复**: 改为"定义在 table.rs 中为 `pub(crate)`，但未从 mod.rs 重导出；vm crate 其他模块可通过 `table::VM_PROC_COUNT` 访问"。
 
-### 3. Ch3 §3.2.1 包含 "Rust 实现" 代码块
+**验证**: `table.rs:27-30` 中 `VM_PROC_COUNT` 和 `VM_EXEC_TMP_SLOT` 均为 `pub(crate)`。
 
-**问题**: §3.2.1 vm_isokendpt 分析中包含完整的 Rust 实现代码（`impl VmProcTable { pub fn vm_isokendpt(...) -> Option<UserSlot> }`）和设计差异讨论。
+### 源码行号验证
 
-**修改**: 删除 Rust 代码块和设计差异讨论，替换为一句摘要 + 指向 §5.3 的交叉引用。
+| 引用 | 文档标注 | 实际位置 | 一致? |
+|------|----------|----------|-------|
+| `glo.h:17-20` 进程表定义 | L17-20 | L17=`VMP_EXECTMP`, L18=`VMP_NR`, L20=`vmproc[]` | ✅ |
+| `utility.c:84-94` vm_isokendpt | L84-94 | L84=函数签名, L93=return OK | ✅ |
+| `utility.c:188` swap_proc_slot | L188 | L188=函数签名 | ✅ |
 
-### 4. vm_isokendpt 文档代码与实际 Rust 代码不一致
+### Rust 代码审查
 
-**问题**: 文档中 `vm_isokendpt` 返回 `Option<UserSlot>`，但实际 Rust 代码（table.rs）返回 `Result<UserSlot, EndpointError>`，区分 `InvalidSlot`（EINVAL）和 `DeadEndpoint`（EDEADEPT）。文档的设计差异说明称"Rust 统一返回 None"，与实际代码矛盾。
+Rust 代码与文档设计一致，无需修改：
 
-**修改**: 更新交叉引用描述，准确反映 Rust 实现使用 `Result<UserSlot, EndpointError>` 区分两种错误。
+- `VmProcTable` 结构体与文档 §5.1 一致
+- `AssumeSyncCell` 包装与文档 §4.2.4 一致
+- Typestate view API 与文档 §5.3 一致
+- `vm_isokendpt()` 三重检查与文档 §3.2.1 一致
+- `VmProcIter` 实现与文档 §5.3 一致
+- 可见性设计与文档 §5.4 基本一致（已修正描述）
+- `swap_proc_slot()` 实现与文档 §5.3 一致
 
----
+### 未修复项（P2，记录备查）
 
-## P1 修复
-
-### 5. 缺少 "参见" 章节
-
-**问题**: 文档最后一章是"附录"，缺少标准的"参见"章节。根据文档结构规范，最后一章应为参见。
-
-**修改**: 在附录后添加 "8. 参见" 章节，引用 01-vmproc-struct.md、00-vm-overview.md、03-acl.md、06-pagetable-struct.md。
-
----
-
-## 未修改项（记录备查）
-
-- **Ch2 结构**: 当前 Ch2 为"设计目标与约束"而非标准结构的"C 源码分析"。内容上与 Ch1 有重叠，但未做大规模重构。
-- **Ch4 技术选型分析**: 内容详实，选型论证充分，无需修改。
-- **Ch5 Rust 实现设计**: 与实际 Rust 代码一致，无需修改。
-- **附录A**: 地址稳定性论证完整，无需修改。
+1. 文档 §3.2.1 中 `vm_isokendpt` 的 C 代码有冗余检查 `if(*procn >= 0 && ...)`——因为步骤 1 已排除 `*procn < 0`，步骤 2/3 的 `*procn >= 0` 条件恒为真。这是 Minix3 原始代码的风格，文档如实记录，无需修改
+2. 文档附录 A 中 `pt_new()` 的代码是简化版本，省略了部分实现细节（如 `ARCH_VM_DIR_ENTRIES` 清空循环），这是合理的简化
