@@ -1204,471 +1204,463 @@ fn vm_bootstrap_init() {
 
 ## 8. Direct Map 设计方案
 
-### 8.1 决策：VM 页表中 direct map 为 U/S=1
+### 8.1 架构决策
+
+#### 8.1.1 VM 建立 direct map（不是 kernel）
+
+**决策**：VM 是地址空间的建筑师（address-space architect），由 VM 建立 direct map。
 
 **理由**：
 
-1. **VM 是 trusted pager**：VM 已经控制所有进程的页表，拥有事实上的全物理内存读写能力。U/S=0 只是增加了间接性（需要通过页表操作而非直接内存访问），并未增加安全性。一个能随意修改页表的进程，不需要 direct map 也能读写任意物理页。
+1. **策略/机制分离更纯粹**：
+   - Kernel = 机制执行者（CR3 切换、TLB 刷新、MMU 操作）
+   - VM = 策略制定者（地址空间构造、页表编辑、内存分配策略）
+   - Direct map 是地址空间构造的一部分，属于 VM 职责
 
-2. **概念简化**：统一"物理页访问"为一个机制——`vm_phys_to_virt()`。不再区分"页表页的 VA 分配"和"普通页的 VA 分配"。
+2. **Kernel 不需要知道 VM 的内部数据结构**：
+   - 如果 kernel 建立 direct map，还需要知道 VM 的分配器元数据大小
+   - 这违反策略/机制分离：kernel 不应知道 VM 用 bitmap 还是 buddy
 
-3. **可理解性**：内核编程模型变为"所有物理内存始终可访问"，消除了 Minix3 中 `createpde`/`freepde` 临时映射窗口的心智负担。
+3. **保留 Minix3 精神**：
+   - Minix3 的 VM 本来就负责 `map_kernel()`（为所有进程建立内核映射）
+   - Direct map 是 `map_kernel()` 的自然扩展
+   - 不是理念背叛，而是 x86-64 下的工程升级
 
-4. **性能**：直接内存访问 vs 间接页表操作，减少一层间接。
+#### 8.1.2 VM 保持 ring3（不升级到 ring0）
 
-5. **安全边界不变**：其他用户进程的 direct map 仍为 U/S=0。只有 VM 进程的页表特殊。
+**决策**：VM 仍然是普通用户态进程，运行在 ring3。
 
-### 8.2 x86-64 地址空间布局
+**理由**：
+
+1. VM 不执行任何特权指令（不切 CR3、不刷新 TLB、不操作 MMU）
+2. VM 把页表当作"普通数据"读写，通过 IPC 让 kernel 加载
+3. Kernel 甚至不需要知道 VM direct map 的存在——对 kernel 而言，VM 的页表内存就是普通用户空间页面
+
+#### 8.1.3 双视图模型：同一物理内存，两个 VA 窗口
+
+**决策**：建立两个 direct map 视图，映射同一物理内存，权限不同。
+
+| 视图 | VA 范围 | 权限 | 存在于 | 用途 |
+|------|---------|------|--------|------|
+| Kernel direct map | 内核空间高半部分 | U/S=0 (supervisor) | 所有进程页表 | Kernel 访问物理内存 |
+| VM direct map | 用户空间低半部分 | U/S=1 (user) | 仅 VM 进程页表 | VM 读写物理页数据 |
+
+**关键**：这不是"复制物理内存"，只是创建两组 virtual aliases。成本极低——每个 1GB 映射只需 1 个页表表项（8 字节）。
+
+**为什么需要两个视图**：一个 PTE 的 U/S 位不可能同时为 0 和 1。Kernel 需要 supervisor-only 的映射（所有进程可见），VM 需要 user-accessible 的映射（仅 VM 进程可见）。两者映射同一物理内存，只是 VA 窗口和权限不同。
+
+#### 8.1.4 PtRegion 完全删除
+
+**决策**：引入 direct map 后，PtRegion 失去存在意义，完全删除。
+
+**理由**：
+
+1. PtRegion 的核心用途是"给物理页分配 stable VA"——direct map 已经天然完成
+2. PtRegion 的 `alloc_pt_page()` 本质上是在 VM 里"重新发明一套 mini direct-map"
+3. Direct map 出现后，所有物理页天然就有 stable VA：`va = DIRECT_MAP_BASE + pa`
+4. 递归问题根源直接消失：新 PT 页 = `alloc_phys() → vm_phys_to_virt()`，不需要 map、不需要 find_hole、不需要 ensure_tables
+
+#### 8.1.5 EarlyHeap 完全消除
+
+**决策**：1GB direct map + bitmap 替代 EarlyHeap。
+
+**理由**：
+
+1. EarlyHeap 存在的原因是"VM 无法访问物理内存，需要从 BSS 段分配"
+2. 有了 1GB direct map，VM 启动即可访问前 1GB 物理内存
+3. Bitmap 元数据永远能放进 1GB（即使 4TB 物理内存也只需 128MB）
+4. EarlyHeap 的所有功能被 direct map + bitmap 完全替代
+
+### 8.2 地址空间布局
+
+#### 8.2.1 x86-64 布局
 
 ```
-0x0000_0000_0000_0000  ┬── 用户空间（低 128TB）
-                       │    进程代码、数据、堆、栈
+0x0000_0000_0000_0000  ┬── VM 代码/数据/堆/栈（普通用户空间）
                        │
-0x0000_7F00_0000_0000  ┬── PtRegion（bootstrap 阶段，2MB 初始）
-                       │    仅在 VM 初始化早期使用
-                       │    direct map 建立后退役
+0x0000_1000_0000_0000  ┬── VM Direct Map（user-accessible, U/S=1）
+                       │    va = VM_DIRECT_MAP_BASE + pa
+                       │    仅存在于 VM 进程的页表
+                       │    映射所有物理内存
+                       │    权限：P | RW | US | NX | PS(1GB)
+                       │
 0x0000_7FFF_FFFF_FFFF  ┴── 用户空间结束
 
                        ─── 非规范地址空洞（不可用）───
 
-0xFFFF_8800_0000_0000  ┬── Direct Map 区域（内核空间）
-                       │    va = pa + DIRECT_MAP_BASE
-                       │    映射所有物理内存
-                       │    ┌── 0x0 物理地址 → 0xFFFF_8800_0000_0000
-                       │    ├── ...
-                       │    └── max_phys → 0xFFFF_8800_max_phys
-                       │
-                       │    权限：
-                       │    - 普通进程页表：U/S=0（supervisor-only）
-                       │    - VM 进程页表：U/S=1（VM 可直接访问）
+0xFFFF_8800_0000_0000  ┬── Kernel Direct Map（supervisor-only, U/S=0）
+                       │    va = KERNEL_DIRECT_MAP_BASE + pa
+                       │    存在于所有进程页表
+                       │    仅 ring0 可访问
+                       │    权限：P | RW | G | NX | PS(1GB)
                        │
 0xFFFF_C800_0000_0000  ├── 内核代码/数据（.text, .rodata, .data, .bss）
-                       │    U/S=0（所有进程共享，supervisor-only）
+                       │    U/S=0, Global
                        │
 0xFFFF_FFFF_FFFF_FFFF  ┴── 内核空间结束
 ```
 
-**DIRECT_MAP_BASE 选择**：
+#### 8.2.2 arm64 布局
+
+```
+0x0000_0000_0000       ┬── VM 代码/数据/堆/栈
+0x0000_1000_0000_0000  ┬── VM Direct Map（user-accessible）
+                       │    1GB block mapping
+                       │
+0x0000_FFFF_FFFF_FFFF  ┴── 用户空间结束（48位VA）
+
+0xFFFF_8000_0000_0000  ┬── Kernel Direct Map（supervisor-only）
+                       │    1GB block mapping
+0xFFFF_FFFF_FFFF_FFFF  ┴── 内核空间结束
+```
+
+#### 8.2.3 riscv64 Sv39 布局
+
+```
+0x0000_0000_0000       ┬── VM 代码/数据/堆/栈
+0x0000_0010_0000_0000  ┬── VM Direct Map（user-accessible）
+                       │    1GB gigapage mapping
+                       │    注意：Sv39 只有 512GB 用户空间
+                       │    1GB direct map 占 0.2%，可行
+                       │
+0x0000_3FFF_FFFF_FFFF  ┴── 用户空间结束（39位VA）
+
+0xFFFF_FC00_0000_0000  ┬── Kernel Direct Map（supervisor-only）
+0xFFFF_FFFF_FFFF_FFFF  ┴── 内核空间结束
+```
+
+### 8.3 架构抽象
 
 ```rust
-/// Direct map 基地址
-/// 选择 0xFFFF_8800_0000_0000，与 Linux x86-64 一致
-/// 可映射 64TB 物理内存（远超实际需求）
-pub const DIRECT_MAP_BASE: u64 = 0xFFFF_8800_0000_0000;
-```
+pub trait DirectMapArch {
+    const VM_DIRECT_MAP_BASE: u64;
+    const KERNEL_DIRECT_MAP_BASE: u64;
+    const HUGE_PAGE_SIZE: u64;
+    const INITIAL_MAP_SIZE: u64;
+}
 
-选择理由：
-- 与 Linux x86-64 的 `PAGE_OFFSET` 一致，开发者熟悉
-- 64TB 映射空间，远超任何实际物理内存配置
-- 高位地址，不与用户空间冲突
-- 2MB 对齐（PUD 条目粒度），便于大页映射
+impl DirectMapArch for X86_64 {
+    const VM_DIRECT_MAP_BASE: u64     = 0x0000_1000_0000_0000;
+    const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8800_0000_0000;
+    const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB
+    const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
+}
 
-### 8.3 内核侧：建立 Direct Map
+impl DirectMapArch for Arm64 {
+    const VM_DIRECT_MAP_BASE: u64     = 0x0000_1000_0000_0000;
+    const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
+    const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB block
+    const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
+}
 
-#### 8.3.1 启动阶段
-
-内核在启动时（进入 long mode 后、调度用户进程前）建立 direct map：
-
-```
-内核启动流程（x86-64）：
-
-1. Bootloader → 进入 long mode（4级页表已建立）
-2. 内核初始化：
-   a. 探测物理内存（从 BIOS/UEFI 获取内存映射）
-   b. 建立内核自身的 .text/.rodata/.data/.bss 映射
-   c. 建立 direct map：
-      - 为每个物理页在 DIRECT_MAP_BASE + pa 处建立 PTE
-      - 使用 2MB 大页（PD 条目）减少页表页数量
-      - 所有 direct map PTE 标记为 Present | Writable | Global
-      - U/S=0（supervisor-only，默认）
-   d. 刷新 TLB
-3. 启动 VM 进程
-```
-
-**2MB 大页映射**（推荐）：
-
-```rust
-// 内核启动时建立 direct map（伪代码）
-fn setup_direct_map(phys_mem_end: u64) {
-    let pud_start = (DIRECT_MAP_BASE >> 30) & 0x1FF;  // P4D 索引
-    let num_2mb_pages = (phys_mem_end + 2 * 1024 * 1024 - 1) / (2 * 1024 * 1024);
-
-    for i in 0..num_2mb_pages {
-        let phys = i as u64 * 2 * 1024 * 1024;
-        let virt = DIRECT_MAP_BASE + phys;
-        let pde_flags = PDE_PRESENT | PDE_WRITABLE | PDE_HUGE_PAGE | PDE_GLOBAL;
-        // U/S=0: supervisor-only by default
-        write_pde(virt, phys | pde_flags);
-    }
+impl DirectMapArch for Riscv64 {
+    const VM_DIRECT_MAP_BASE: u64     = 0x0000_0010_0000_0000;
+    const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_FC00_0000_0000;
+    const HUGE_PAGE_SIZE: u64         = 1 << 30; // 1GB gigapage
+    const INITIAL_MAP_SIZE: u64       = 1 << 30; // 1GB
 }
 ```
 
-**4KB 细粒度映射**（可选，用于调试）：
+### 8.4 VM 初始页表结构
 
-如果需要更细粒度的权限控制（例如标记某些物理页为 non-cacheable），可以使用 4KB 页而非 2MB 大页。但代价是需要更多页表页。
+Kernel 创建 VM 进程时，建立最小初始页表：
 
-#### 8.3.2 VM 进程的特殊处理
+```
+x86-64 初始页表（4 页 = 16KB）：
 
-内核启动 VM 进程时，需要为 VM 的页表中的 direct map 区域设置 U/S=1：
+PML4[0]   → PDPT_A → PD_A → 2MB huge pages（VM 代码/数据）
+PML4[32]  → PDPT_B → PDPT_B[0] = phys 0 | P | RW | US | NX | PS  ← 1GB direct map
+```
+
+| 页 | 用途 | 物理位置 |
+|----|------|---------|
+| PML4 | 根页表 | 物理内存前几页 |
+| PDPT_A | VM 代码/数据映射 | 同上 |
+| PD_A | VM 代码/数据（2MB 大页） | 同上 |
+| PDPT_B | VM direct map | 同上 |
+
+**PDPT_B[0] 那一个 8 字节的表项，就是 1GB direct map**。
+
+三种架构等价结构：
+
+| 架构 | 第 1 级 | 第 2 级 | 第 3 级 = 1GB direct map |
+|------|---------|---------|------------------------|
+| x86-64 | PML4 | PDPT | PDPT[i] = 1GB huge page |
+| arm64 | PGD | PUD | PUD[i] = 1GB block |
+| riscv64 | PGD | PMD | PMD[i] = 1GB gigapage |
+
+### 8.5 统一 3 阶段启动机制
+
+```
+┌──────────────────────────────────────────────────────┐
+│            统一的 3 阶段启动机制                          │
+│                                                        │
+│  Phase 1: Bootstrap（永远执行）                           │
+│    1GB direct map → bitmap allocator                    │
+│                                                        │
+│  Phase 2: Direct Map 扩展（永远执行）                      │
+│    bitmap 分配页表页 → 扩展到覆盖全部物理内存                 │
+│                                                        │
+│  Phase 3: 分配器迁移（机制永远在，策略决定是否执行）           │
+│    bitmap → buddy（如果策略决定）                          │
+│    bitmap → bitmap（如果策略决定不迁移）                    │
+│                                                        │
+│  机制 = Phase 1+2+3 的代码路径永远存在                      │
+│  策略 = Phase 3 是否执行、迁移到什么分配器                    │
+└──────────────────────────────────────────────────────┘
+```
+
+#### Phase 1: Bootstrap（永远执行）
+
+```
+Kernel → VM:
+  初始页表（4 页）+ 1GB direct map（1 个大页表项）
+  boot_info（物理内存范围 + 可用页列表 + VM 页表物理地址）
+  reserved_region（~10 页：boot_info + 初始栈 + 初始页表页）
+
+VM:
+  1. vm_phys_to_virt() 可用（前 1GB）
+  2. 读取 boot_info，获取 total_pages
+  3. 计算 bitmap 元数据大小（total_pages / 8 + page_cache）
+  4. 从前 1GB 的可用物理页中分配 bitmap 元数据
+     → 永远够用（即使 4TB 物理内存也只需 ~128MB）
+  5. 初始化 bitmap allocator
+  6. bitmap 管理全部物理内存（不仅仅是前 1GB）
+```
+
+**为什么 bitmap 永远能放进 1GB**：
+
+| 物理内存 | Bitmap 元数据 | 占 1GB 比例 |
+|---------|-------------|-----------|
+| 4 GB | ~206 KB | 0.02% |
+| 64 GB | ~2.1 MB | 0.2% |
+| 256 GB | ~8.1 MB | 0.8% |
+| 1 TB | ~32 MB | 3.1% |
+| 4 TB | ~128 MB | 12.5% |
+
+#### Phase 2: Direct Map 扩展（永远执行）
+
+```
+VM:
+  1. 通过 bitmap allocator 分配物理页（用于页表页，如果需要）
+  2. 通过 1GB direct map 访问 PDPT_B 页
+  3. 写入额外的大页表项：
+     PDPT_B[1] = phys 1GB | P | RW | US | NX | PS
+     PDPT_B[2] = phys 2GB | P | RW | US | NX | PS
+     ...
+  4. 现在 direct map 覆盖全部物理内存
+  5. 建立 kernel direct map（map_kernel 的一部分）：
+     在 VM 页表的高半部分写入同样的 1GB 大页表项，但 U/S=0, G=1
+```
+
+**关键**：1GB 大页映射不需要分配新的页表页。PDPT_B 页已经在初始页表中，只需写入更多表项。即使物理内存 = 64GB，也只需写 63 个额外的 PDPT 表项（每个 8 字节），0 额外物理页分配。
+
+**代码路径统一**：即使物理内存只有 512MB（1GB direct map 已覆盖全部），扩展逻辑也只是"发现无需扩展"然后跳过。代码路径统一，只是循环次数为 0。
+
+#### Phase 3: 分配器迁移（机制永远在，策略决定）
 
 ```rust
-// 内核创建 VM 进程时的特殊处理
-fn create_vm_process() {
-    // 1. 创建 VM 的 PML4（页表根）
-    let vm_pml4 = alloc_page();
-
-    // 2. 复制内核映射（.text/.data 等），保持 U/S=0
-    copy_kernel_mappings(vm_pml4);
-
-    // 3. 复制 direct map 映射，但设置 U/S=1
-    //    这是 VM 与其他进程的唯一区别
-    copy_direct_map_with_user_accessible(vm_pml4);
-
-    // 4. 映射 VM 自身的 .text/.data/.bss（用户态可执行）
-    map_vm_user_segments(vm_pml4);
-
-    // 5. 设置 CR3 指向 VM 的 PML4
-    set_cr3(vm_pml4);
+fn should_migrate_to_buddy(total_pages: usize) -> bool {
+    total_pages > 128 * 1024 // > 512MB 时迁移
 }
 ```
 
-**关键点**：只有 VM 进程的页表中 direct map 是 U/S=1。其他所有进程的页表中 direct map 是 U/S=0。
+迁移流程：
 
-### 8.4 VM 侧：使用 Direct Map
+```
+1. 计算 buddy 元数据大小
+2. 通过 bitmap allocator 分配 buddy 元数据物理页
+   → 此时 direct map 已覆盖全部物理内存，可以分配任意位置的页
+3. 通过 direct map 初始化 buddy 元数据
+4. 从 bitmap 迁移空闲页信息到 buddy
+5. 切换到 buddy allocator
+6. 释放 bitmap 元数据物理页
+```
 
-#### 8.4.1 核心函数
+**机制统一**：迁移代码永远存在。策略函数返回 true 则执行迁移，返回 false 则跳过。物理内存大小只影响策略决策，不改变代码路径。
+
+### 8.6 核心函数
 
 ```rust
-/// 物理地址 → 虚拟地址（通过 direct map）
-///
-/// 这是 VM 中最核心的函数之一。建立后，所有物理页访问
-/// 都通过此函数，不再需要 PtRegion 的 bump allocator。
+/// 物理地址 → 虚拟地址（通过 VM direct map）
 #[inline(always)]
 pub(crate) fn vm_phys_to_virt(phys: PhysBytes) -> *mut u8 {
-    (phys.as_u64() + DIRECT_MAP_BASE) as *mut u8
+    (phys.as_u64() + VM_DIRECT_MAP_BASE) as *mut u8
 }
 
-/// 虚拟地址 → 物理地址（通过 direct map 反查）
-///
-/// 仅对 direct map 区域内的虚拟地址有效。
+/// 物理地址 → 虚拟地址（通过 kernel direct map）
+/// 仅在构建其他进程的页表时使用
 #[inline(always)]
-pub(crate) fn vm_virt_to_phys(virt: *const u8) -> Option<PhysBytes> {
-    let va = virt as u64;
-    if va >= DIRECT_MAP_BASE && va < DIRECT_MAP_BASE + total_phys_memory() {
-        Some(PhysBytes::new(va - DIRECT_MAP_BASE))
-    } else {
-        None
-    }
+pub(crate) fn kernel_phys_to_virt(phys: PhysBytes) -> *mut u8 {
+    (phys.as_u64() + KERNEL_DIRECT_MAP_BASE) as *mut u8
 }
 ```
 
-#### 8.4.2 VM 初始化时序（修订版）
+### 8.7 操作简化示例
 
-```
-T0: 内核启动 VM 进程
-    ├── 创建 VM 的 PML4（包含 direct map U/S=1）
-    ├── 映射 VM 的 .text/.rodata/.data/.bss
-    ├── 映射 reserved_region（内核保证的初始映射）
-    └── 传递 boot_info（含物理内存范围）
-
-T1: VM 入口点执行
-    ├── 此时 direct map 已可用（内核已建立）
-    ├── vm_phys_to_virt() 可直接使用
-    └── 但 VM 尚未验证 direct map 的正确性
-
-T2: VM 验证 direct map
-    ├── 读取 boot_info 中的物理内存范围
-    ├── 通过 direct map 读取已知物理地址（如 boot_info 自身）
-    ├── 比对内容，确认 direct map 正确建立
-    └── 如果验证失败 → panic（内核未正确建立 direct map）
-
-T3: VM 初始化物理内存分配器
-    ├── 使用 direct map 访问物理内存位图
-    ├── 初始化 BitmapAlloc / BuddyAlloc
-    └── 分配器的元数据通过 direct map 访问
-
-T4: VM 初始化页表系统
-    ├── pt_init()
-    ├── 页表页通过 direct map 访问（不再需要 PtRegion 的 bump allocator）
-    └── 新进程的页表创建：pt_new() → alloc_phys() → vm_phys_to_virt()
-
-T5: VM 进入正常服务循环
-    └── 所有物理页操作通过 vm_phys_to_virt() 完成
-```
-
-**与旧时序的关键差异**：
-- 旧：T5 才创建 PtRegion，之后 alloc_page 走 PtRegion 的 bump allocator
-- 新：T1 起 direct map 就可用，无需 PtRegion 作为 VA 分配器
-
-#### 8.4.3 PtRegion 的新角色：纯 Bootstrap 备用
-
-Direct map 建立后，PtRegion 的 bump allocator 功能不再需要。但 PtRegion 仍保留作为**极端情况的 bootstrap 备用**：
+#### 创建新进程页表
 
 ```rust
-/// VM 初始化流程
-fn vm_init() {
-    // T1: direct map 已由内核建立，可直接使用
-    assert!(verify_direct_map());
-
-    // T2-T4: 所有初始化通过 direct map 完成
-    init_phys_allocator();  // 通过 direct map 访问位图
-    init_page_table_system();  // 通过 direct map 操作页表
-
-    // PtRegion 仅在以下极端情况使用：
-    // - direct map 意外不可用（不应发生，但防御性编程）
-    // - 内核未正确建立 direct map（启动失败路径）
-    // - 未来可能的特殊场景（如 direct map 区域不足）
-}
-```
-
-**PtRegion 的简化方向**：
-
-| 功能 | 当前实现 | Direct Map 后 |
-|------|----------|-------------|
-| 分配页表页 VA | `alloc_pt_page()` bump allocator | `vm_phys_to_virt(alloc_phys(1))` |
-| 扩展 PT/PD | `expand()` 复杂的递归避免逻辑 | 不需要（direct map 已覆盖所有物理页） |
-| 自映射 | PDPT/PD/PT 层级管理 | 不需要（direct map 本身就是映射） |
-| 物理页分配 | `phys_alloc.alloc_mem()` | 不变（仍需要物理分配器） |
-| Relocation | `relocate_phys_allocator()` | 大幅简化（分配器元数据通过 direct map 访问） |
-
-#### 8.4.4 页表操作简化
-
-**当前（无 direct map）**：
-
-```rust
-// 创建新进程的页表
 fn pt_new() -> PageTable {
-    // 1. 分配物理页
-    let dir_phys = phys_alloc.alloc_mem(1)?;
-    // 2. 需要虚拟地址来清零页目录
-    let dir_virt = pt_region.alloc_pt_page()?;  // ← 需要 PtRegion
-    // 3. 建立映射
-    pt_region.write_data_pte(dir_virt, dir_phys);
-    // 4. 清零
-    unsafe { core::ptr::write_bytes(dir_virt.0 as *mut u8, 0, 4096); }
-    // 5. 设置内核映射
-    pt_mapkernel(dir_virt);
-}
-```
-
-**Direct Map 后**：
-
-```rust
-// 创建新进程的页表
-fn pt_new() -> PageTable {
-    // 1. 分配物理页
-    let dir_phys = phys_alloc.alloc_mem(1)?;
-    // 2. 通过 direct map 直接访问，无需分配 VA
+    let dir_phys = bitmap.alloc_mem(1)?;
     let dir_ptr = vm_phys_to_virt(dir_phys) as *mut u64;
-    // 3. 清零（直接通过 direct map）
     unsafe { core::ptr::write_bytes(dir_ptr as *mut u8, 0, 4096); }
-    // 4. 设置内核映射（直接通过 direct map 写页目录项）
     pt_mapkernel(dir_ptr);
 }
 ```
 
-**消除的操作**：
-- ❌ `alloc_pt_page()` — 不再需要为页表页分配虚拟地址
-- ❌ `expand()` — 不再需要扩展 PtRegion 的 PT/PD 层级
-- ❌ `write_data_pte()` — 不再需要手动建立 VA→PA 映射
-- ❌ `relocate_phys_allocator()` 中的 VA 分配 — 分配器元数据通过 direct map 访问
-
-#### 8.4.5 CoW 操作简化
-
-**当前（无 direct map）**：`mem_cow` 需要复杂的 VA 管理来复制物理页内容。
-
-**Direct Map 后**：
+#### CoW 复制
 
 ```rust
-fn mem_cow(region: &mut VirRegion, pr: &mut PhysRegion) -> Result<(), VmError> {
-    // 1. 获取旧物理页地址
+fn mem_cow(pr: &mut PhysRegion) -> Result<(), VmError> {
     let old_phys = pr.get_phys_addr().ok_or(VmError::NoPhysBlock)?;
-
-    // 2. 分配新物理页
-    let new_phys = phys_alloc.alloc_mem(1, PageAllocFlags::empty())?;
-
-    // 3. 通过 direct map 复制内容（简单、直接、无递归风险）
-    let old_ptr = vm_phys_to_virt(old_phys);
-    let new_ptr = vm_phys_to_virt(new_phys);
-    unsafe { core::ptr::copy_nonoverlapping(old_ptr, new_ptr, 4096); }
-
-    // 4. 解除旧引用，建立新引用
+    let new_phys = bitmap.alloc_mem(1, PageAllocFlags::empty())?;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            vm_phys_to_virt(old_phys),
+            vm_phys_to_virt(new_phys),
+            4096,
+        );
+    }
     pr.unlink_from_block();
     pr.link_to_block(new_block, parent);
-
-    // 5. 更新页表映射
-    pt_writemap(vmp, vaddr, new_phys, 4096, flags);
-
     Ok(())
 }
 ```
 
-#### 8.4.6 进程退出简化
-
-**当前**：`free_proc` 需要为每个物理页找到 VA 才能操作。
-
-**Direct Map 后**：
+#### 进程退出
 
 ```rust
 fn free_proc(vmp: &mut ActiveProc) {
-    // 遍历所有区域
     for region in vmp.regions_mut().drain() {
-        // 遍历所有物理页
         for phys_opt in region.physblocks.iter() {
             if let Some(phys) = phys_opt {
-                // 通过 direct map 直接访问物理页
-                // 无需先分配 VA 再操作
                 let ptr = vm_phys_to_virt(phys.get_phys_addr().unwrap());
-                // 清零（安全要求）
                 unsafe { core::ptr::write_bytes(ptr, 0, 4096); }
-                // 释放物理页
-                phys_alloc.free_mem(phys.get_phys_addr().unwrap(), 1);
+                bitmap.free_mem(phys.get_phys_addr().unwrap(), 1);
             }
         }
     }
-    // 释放页表
     pt_free(vmp);
 }
 ```
 
-### 8.5 安全分析
+### 8.8 安全分析
 
-#### 8.5.1 威胁模型
+#### 8.8.1 VM direct map 的安全边界
 
 | 威胁 | 分析 | 结论 |
 |------|------|------|
-| VM 进程被攻破，通过 direct map 读写其他进程内存 | VM 已经控制所有进程的页表，攻破 VM 等同于攻破整个内存隔离 | U/S=1 不增加攻击面 |
-| 用户进程通过 VM 的 direct map 访问内核数据 | 用户进程的页表中 direct map 为 U/S=0，硬件强制隔离 | 不受影响 |
-| VM 进程的页表被其他进程修改 | 页表本身在内核空间（U/S=0），其他进程无法修改 | 不受影响 |
-| VM 通过 direct map 修改内核代码段 | 内核代码段映射为 Read-Only（即使 direct map 中），硬件强制 | 不受影响 |
+| VM 被攻破，通过 direct map 读写其他进程内存 | VM 已经控制所有进程的页表，攻破 VM = 攻破整个内存隔离 | U/S=1 不增加攻击面 |
+| 用户进程通过 VM 的 direct map 访问物理内存 | VM direct map 仅存在于 VM 进程页表，其他进程页表中不存在 | 不受影响 |
+| VM 通过 direct map 执行物理页中的代码 | VM direct map 默认 NX (No-Execute) | 硬件阻止代码执行 |
+| VM 修改 kernel direct map 的页表结构 | Kernel direct map 建立后视为只读不变量，VM 代码结构保证不再修改 | 代码层面保证 |
 
-#### 8.5.2 与 Minix3 安全模型的对比
+#### 8.8.2 与 Minix3 安全模型的对比
 
-| 维度 | Minix3 | minix-rs (direct map U/S=1) |
-|------|--------|---------------------------|
-| VM 访问物理内存 | 通过 `createpde` 临时映射（内核协助） | 通过 direct map 直接访问 |
-| 权限检查 | 内核在 `createpde` 中检查 | 硬件 U/S 位检查（一次性，启动时设置） |
-| 审计能力 | 每次临时映射都有内核介入 | 启动时一次性设置，后续无内核介入 |
+| 维度 | Minix3 | minix-rs |
+|------|--------|----------|
+| VM 访问物理内存 | `createpde` 临时映射（内核协助） | VM direct map 永久映射 |
+| 权限检查 | 内核在 `createpde` 中检查 | 硬件 U/S 位检查（一次性，VM 页表建立时设置） |
+| 审计能力 | 每次临时映射都有内核介入 | 启动时一次性设置 |
 | 实际安全边界 | VM 能获取任意物理页映射 → 等价于全访问 | VM 有全物理页 direct map → 等价于全访问 |
 
-**结论**：两者的实际安全边界相同——VM 都是 trusted 组件，拥有全物理内存访问能力。区别仅在于访问方式：Minix3 通过内核间接访问，minix-rs 通过 direct map 直接访问。
+**结论**：两者实际安全边界相同。差别只是"显式拥有"（direct map）vs"事实上拥有"（createpde）。
 
-### 8.6 与 Minix3 的架构对比
+#### 8.8.3 侧信道考虑
 
-#### 8.6.1 从 Minix3 到 minix-rs 的演进
+- 当前不考虑 KPTI（Meltdown 缓解），VM direct map 在 VM 页表中是 user-accessible
+- 如果未来需要 KPTI，VM 进程的 direct map 仍然可以保持 U/S=1（VM 是 trusted 组件，不需要隔离）
+- Direct map 使用 Global 页（kernel 视图），CR3 切换不刷新 kernel direct map 的 TLB 条目
 
-```
-Minix3 (x86-32):                    minix-rs (x86-64):
-                                    
-内核页表:                            内核页表:
-  内核自身 (几MB)                      direct map (所有物理内存)
-  2 个 freepde 窗口                    内核自身
-  pagedir_mappings                     (不需要 freepde)
-                                    
-VM 访问物理页:                       VM 访问物理页:
-  createpde() → 临时映射               vm_phys_to_virt() → 直接访问
-  4MB 窗口，用完归还                    无窗口概念，始终可访问
-                                    
-VM 分配页表页:                       VM 分配页表页:
-  spare_pagequeue → 预分配              alloc_phys() → vm_phys_to_virt()
-  可能耗尽 → 紧急分配 → 递归风险         不递归，无容量限制
-                                    
-进程页表中的内核映射:                  进程页表中的内核映射:
-  pt_mapkernel → 内核自身               pt_mapkernel → direct map + 内核自身
-  pagedir_mappings                      (不需要 pagedir_mappings)
-```
-
-#### 8.6.2 消除的 Minix3 机制
+### 8.9 消除的 Minix3 机制
 
 | Minix3 机制 | 存在原因 | Direct Map 后 |
 |-------------|----------|-------------|
 | `freepde` 临时映射窗口 | 内核未映射所有物理内存 | ❌ 不需要 |
 | `createpde` | 访问非当前进程的物理内存 | ❌ 不需要 |
-| `pagedir_mappings` | 内核跟踪进程页目录 | ❌ 不需要（direct map 直接访问） |
+| `pagedir_mappings` | 内核跟踪进程页目录 | ❌ 不需要 |
 | `spare_pagequeue` | 避免页表页分配递归 | ❌ 不需要（direct map 消除递归根源） |
-| `switch_address_space_idle` | IDLE 任务需要切换到 VM 页表 | ❌ 不需要（内核共享 direct map） |
+| `switch_address_space_idle` | IDLE 任务需要切换到 VM 页表 | ❌ 不需要 |
+| PtRegion | 给物理页分配 stable VA | ❌ 不需要（direct map 天然提供） |
+| EarlyHeap | VM 启动时无法访问物理内存 | ❌ 不需要（1GB direct map 替代） |
 
-### 8.7 VM 代码改动清单
+### 8.10 VM 代码改动清单
 
-#### 8.7.1 新增文件/模块
+#### 新增
 
 | 文件 | 内容 |
 |------|------|
-| `os/servers/vm/src/direct_map.rs` | `vm_phys_to_virt()`, `vm_virt_to_phys()`, `DIRECT_MAP_BASE` 常量，direct map 验证 |
+| `direct_map.rs` | `vm_phys_to_virt()`, `kernel_phys_to_virt()`, `DirectMapArch` trait, direct map 扩展逻辑 |
 
-#### 8.7.2 修改文件
+#### 修改
 
 | 文件 | 改动 |
 |------|------|
-| `pt_region.rs` | 降级为 bootstrap 备用，添加 `deprecated` 标注；`expand()` 可移除 |
-| `alloc_page.rs` | `VmPageAllocator<Normal>::alloc_virt()` 改用 `vm_phys_to_virt()`；移除 `alloc_pt_page()` 调用 |
+| `alloc_page.rs` | `alloc_virt()` → `vm_phys_to_virt()`；移除 PtRegion 依赖 |
 | `memtype.rs` | `on_pagefault` 中 CoW 操作使用 `vm_phys_to_virt()` |
 | `phys_region.rs` | 物理页内容访问通过 `vm_phys_to_virt()` |
 | `vmproc/vmproc_handle.rs` | `write_page_table_mappings()` 使用 `vm_phys_to_virt()` |
 | `fork.rs` | `clone_region_for_fork()` 中物理页复制通过 `vm_phys_to_virt()` |
-| `global.rs` | 添加 `DIRECT_MAP_BASE` 常量 |
+| `global.rs` | 添加 `VM_DIRECT_MAP_BASE` / `KERNEL_DIRECT_MAP_BASE` 常量 |
 
-#### 8.7.3 可删除的代码
+#### 删除
 
 | 代码 | 原因 |
 |------|------|
-| `PtRegion::expand()` | 不再需要扩展 PT/PD 层级 |
-| `PtRegion::alloc_pt_page()` | 被 `vm_phys_to_virt()` 替代 |
-| `PtRegion::write_data_pte()` | 不再需要手动建立 VA→PA 映射 |
-| `PtRegion::relocate_phys_allocator()` | 分配器元数据通过 direct map 访问，无需搬迁 VA |
-| `ReservedRegion` 的部分功能 | bootstrap 阶段仍需，但 normal 阶段不再使用 |
+| `pt_region.rs` 整个文件 | Direct map 替代 PtRegion 的所有功能 |
+| `EarlyHeap` 分配器 | 1GB direct map + bitmap 替代 |
+| `ReservedRegion` 的 VA 分配功能 | Direct map 替代 |
 
-### 8.8 内核侧改动清单
-
-#### 8.8.1 启动阶段
+### 8.11 Kernel 侧改动
 
 | 改动 | 说明 |
 |------|------|
-| 建立 direct map 页表 | 在进入 long mode 后，为所有物理内存建立 PTE/PDE |
-| VM 进程创建时设置 U/S=1 | `create_vm_process()` 中，direct map PTE 的 U/S 位设为 1 |
-| 传递物理内存范围 | boot_info 中增加 `phys_mem_end` 字段，VM 用此验证 direct map |
+| 创建 VM 时建立初始页表 | PML4 + PDPT_A + PD_A + PDPT_B（4 页） |
+| 写入 1 个 1GB 大页表项 | PDPT_B[0] = phys 0, U/S=1, PS=1 |
+| 传递 boot_info | 物理内存范围 + 可用页列表 + VM 页表物理地址 |
+| 传递 reserved_region | ~10 页（boot_info + 初始栈 + 初始页表页） |
+| `sys_datacopy` 简化 | VM 可直接通过 direct map 完成跨进程复制，无需 kernel 切换 PDE |
+| `createpde` 移除 | 不再需要临时映射窗口 |
 
-#### 8.8.2 系统调用变化
-
-| 系统调用 | 变化 |
-|----------|------|
-| `sys_vmctl_set_addrspace` | 不变（仍需通知内核切换 CR3） |
-| `sys_datacopy` | 可简化：内核通过 direct map 直接访问源/目标，无需 `createpde` |
-| `createpde` | 可移除：内核已有 direct map，不需要临时映射窗口 |
-
-### 8.9 实施路线
+### 8.12 实施路线
 
 ```
-Phase 1: 内核建立 direct map（U/S=0 默认）
-  ├── 内核启动时建立 direct map 页表
-  ├── 验证：内核可通过 phys_to_virt() 访问物理内存
-  └── 所有现有功能不受影响
+Phase 1: Kernel 建立初始页表 + 1GB direct map
+  ├── Kernel 创建 VM 时建立 4 页初始页表
+  ├── 写入 1 个 1GB 大页表项（U/S=1）
+  ├── 传递 boot_info + reserved_region
+  └── 验证：VM 启动后可通过 vm_phys_to_virt() 访问前 1GB
 
-Phase 2: VM 进程获得 U/S=1 的 direct map
-  ├── 内核创建 VM 时设置 direct map U/S=1
-  ├── VM 添加 direct_map.rs 模块
-  ├── VM 验证 direct map 可用性
-  └── PtRegion 降级为 bootstrap 备用
+Phase 2: VM 初始化 bitmap + 扩展 direct map
+  ├── VM 从前 1GB 物理页分配 bitmap 元数据
+  ├── 初始化 bitmap allocator（管理全部物理内存）
+  ├── 扩展 VM direct map 到覆盖全部物理内存
+  ├── 建立 kernel direct map（map_kernel）
+  └── 验证：vm_phys_to_virt() 可访问任意物理页
 
 Phase 3: VM 代码迁移到 direct map
-  ├── alloc_page.rs: alloc_virt → vm_phys_to_virt
-  ├── 页表操作: 通过 direct map 直接写页表项
-  ├── CoW: mem_cow 通过 direct map 复制
-  └── 进程退出: free_proc 通过 direct map 释放
+  ├── 页表操作：通过 direct map 直接写页表项
+  ├── CoW：mem_cow 通过 direct map 复制
+  ├── 进程退出：free_proc 通过 direct map 释放
+  └── 删除 PtRegion 相关代码
 
 Phase 4: 清理
-  ├── 移除 PtRegion 的 expand/alloc_pt_page（保留 bootstrap 最小集）
-  ├── 移除 createpde/freepde 机制
-  ├── 移除 pagedir_mappings
-  └── 更新文档
+  ├── 删除 pt_region.rs
+  ├── 删除 EarlyHeap
+  ├── 删除 createpde/freepde 机制
+  ├── 删除 pagedir_mappings
+  └── 可选：bitmap → buddy 迁移
 ```
 
-### 8.10 风险与缓解
+### 8.13 风险与缓解
 
 | 风险 | 缓解 |
 |------|------|
-| Direct map 占用过多页表页 | 使用 2MB 大页，1GB 物理内存只需 512 个 PDE 条目 |
-| VM 进程的 direct map U/S=1 被滥用 | VM 是 trusted 组件，安全审计关注 VM 代码质量 |
-| 物理内存超过 direct map 映射范围 | 64TB 上限远超实际；可动态扩展 PML4/PUD 条目 |
-| TLB 压力增大 | 使用 Global 页（`PTE_GLOBAL`），CR3 切换不刷新 direct map 的 TLB |
-| 内存热插拔 | 需要动态更新 direct map 页表；当前不考虑 |
+| 1GB direct map 不够覆盖 Buddy 元数据 | 不可能：Buddy 元数据 ≤0.12%，Bitmap 元数据更小 |
+| 物理内存 >1GB 时需要扩展 direct map | 统一机制：写 PDPT 表项，0 额外页分配，代码路径与 ≤1GB 相同 |
+| VM direct map U/S=1 被滥用 | VM 是 trusted 组件；NX 位阻止代码执行；其他进程无此映射 |
+| TLB 压力 | Kernel direct map 使用 Global 页；VM direct map 仅 VM 进程使用 |
+| 1GB 大页 CPU 支持 | x86-64 需 CPUID 检查；不支持时回退到 2MB 大页（每 1GB 段需 1 个 PD 页） |
+| riscv64 Sv39 地址空间紧张 | 512GB 用户空间中 1GB direct map 占 0.2%，可行；Sv48 可扩展 |
+| 物理内存有 hole（NUMA 等） | 当前不考虑；未来可通过 sparse direct map 处理 |
