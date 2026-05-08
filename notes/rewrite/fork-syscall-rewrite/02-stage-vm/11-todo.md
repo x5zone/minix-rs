@@ -1,28 +1,20 @@
-# 11-memtype.md Review Todo
+# 11-todo: Review 修复记录
 
-## Document Fixes
-- §3.2 `is_writable` 伪代码: `(*parent).remaps` → `(*parent.as_ptr()).remaps`（NonNull API 适配）
+## 审查文件
+`11-memtype.md`
 
-## Rust Code Fixes (Document/Minix3 → Code 对齐)
+## 审查结果
 
-### memtype.rs
-| 方法 | 旧实现 | 新实现 | 原因 |
-|------|--------|--------|------|
-| `AnonymousMemory::region_id` | 返回硬编码 `1` | 返回 `region.id as u32` | Minix3 `anon_regionid` 返回 `region->id`，文档§4.2一致 |
-| `AnonymousMemory::ref_count` | 计数 mapped physblocks | 返回 `1 + region.remaps` | Minix3 `anon_refcount` 返回 `1 + vr->remaps`，文档§4.2一致 |
+### 无需修复
 
-## 未实现的设计（文档§4.2/§5，标记为"尚未实现"）
-- ContiguousAnonymous（连续匿名内存）
-- CacheMemory（磁盘缓存）
-- MappedFile（文件映射）
-- PagefaultResult::NeedAsyncIo / Suspended 变体
-- MemTypeError::AccessViolation / RegionNotFound / ProcessNotFound 变体
-- 类型注册表（MEM_TYPE_REGISTRY）
-- LazyLock<Arc<...>> 全局实例（当前使用简单 static，no_std 兼容）
+文档质量高，方案四变更已描述。memtype 回调系统与 direct map 无冲突。
 
-这些属于后续阶段实现，当前审查不修改。
+### 验证通过项
 
-## Ground Truth 验证
-- Minix3 `anon_regionid`: `return region->id` ✓（已对齐）
-- Minix3 `anon_refcount`: `return 1 + vr->remaps` ✓（已对齐）
-- Minix3 `anon_writable`: 检查 remaps 和 refcount ✓（已对齐）
+1. **方案四变更**：文档已标注 sys_abscopy 替换为 vm_phys_to_virt() + copy_nonoverlapping()
+2. **Rust 代码**：memtype.rs 实现了内存类型回调系统，与文档一致
+3. **DirectPhysical**：代码中 DirectPhysical 类型存在但未使用 vm_phys_to_virt()，因为当前是框架实现
+
+### 未修复项（P2）
+
+1. **DirectPhysical copy 未使用 vm_phys_to_virt()**：文档方案四要求 DirectPhysical 的 copy 操作使用 vm_phys_to_virt() + copy_nonoverlapping()，但代码中尚未实现
