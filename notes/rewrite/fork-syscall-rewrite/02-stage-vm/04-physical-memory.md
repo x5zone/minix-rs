@@ -793,7 +793,7 @@ static struct reserved_pages {
     struct reserved_pages *next;   // first_reserved_inuse 链表，alloc_cycle() 遍历此链表补充 spare pages
     int max_available;             // 队列容量
     int npages;                    // 每槽页数（通常为1）
-    int mappedin;                  // 是否需要映射到内核地址空间
+    int mappedin;                  // 是否需要映射到 VM 进程的虚拟地址空间
     int n_available;               // 当前可用槽数
     int allocflags;                // 分配标志
     struct reserved_pageslot {
@@ -849,8 +849,10 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 
     // 递归中 或 pt_init 未完成 → 从 spare page 取，打破循环依赖
     if((level > 1) || !pt_init_done) {
+        void *s;
         if(pages == 1) s = vm_getsparepage(phys);
         else if(pages == 4) s = vm_getsparepagedir(phys);
+        else panic("%d pages", pages);
         level--;
         if(!s) printf("VM: warning: out of spare pages\n");
         return s;
@@ -885,7 +887,7 @@ if(missing_spares > 0) {
 void alloc_cycle(void)
 {
     for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
-        reservedqueue_fill(rq);  // 调用 alloc_mem + vm_mappages 补充
+        reservedqueue_fill(rq);  // 调用 reservedqueue_addslot → alloc_mem + vm_mappages 补充
     }
 }
 ```
@@ -901,7 +903,7 @@ void alloc_cycle(void)
 | **容量**   | 200 页（约 800KB），足够应对递归深度 |
 | **自动补充** | 后台任务补充消耗的备用页 |
 
-> **32 位时代的工程权衡**：`spare_pagequeue` 不是"设计失误"，而是 **32 位架构下的正确工程权衡**。Minix3 的 VM 运行在 x86-32 用户空间，32 位地址空间只有 4GB，VM 自身还需要容纳代码段、数据段、BSS、栈等，剩余可用于映射物理内存的虚拟地址空间有限。虽然理论上可以划出一段地址空间做 direct map（Linux x86-32 就用 ~896MB direct map 覆盖 ZONE_NORMAL），但 Minix3 选择了更简单的方案：不建 direct map，所有物理页访问都通过 `vm_mappages` 动态映射。这导致 `vm_mappages` 需要为新页表页分配 VA 时，它本身可能触发页错误，需要再分配页表页——这就是递归。备用页池是"递归发生时的兜底"。
+> **32 位时代的工程权衡**：`spare_pagequeue` 不是"设计失误"，而是 **32 位架构下的正确工程权衡**。Minix3 的 VM 运行在 x86-32 用户空间，32 位地址空间只有 4GB，VM 自身还需要容纳代码段、数据段、BSS、栈等，剩余可用于映射物理内存的虚拟地址空间有限。虽然理论上可以划出一段地址空间做 direct map（Linux x86-32 用 ~896MB 线性映射区覆盖 ZONE_NORMAL，这是**虚拟地址空间的预留**，不消耗实际物理内存），但 Minix3 选择了更简单的方案：不建 direct map，所有物理页访问都通过 `vm_mappages` 动态映射。这导致 `vm_mappages` 需要为新页表页分配 VA 时，它本身可能触发页错误，需要再分配页表页——这就是递归。备用页池是"递归发生时的兜底"。
 
 ### 2.4 内存统计与资源限制
 
@@ -909,51 +911,112 @@ void alloc_cycle(void)
 
 **total\_pages**: 系统总物理内存页数
 
-- 在 VM 初始化时从内核获取
-- 用于计算内存使用率和内存压力
+- VM 初始化时通过 `mem_add_total_pages()` 累加计算：内核静态/动态分配页 + 各模块占用页
+- 初始化完成后不再变化，作为内存使用率的计算基准
 
-**内存压力检测**:
+**memstats**: 空闲内存统计
 
-- 当空闲内存低于阈值时，触发内存回收
-- 可能涉及交换（swapping）或 OOM 处理
+- 遍历空闲页位图，返回：空闲块数、空闲页总数、最大连续空闲块大小
+- 用于诊断和 `printmemstats()` 输出，无自动内存回收或 OOM 逻辑
 
 #### 2.4.2 进程级内存统计 (vm\_total / vm\_total\_max)
 
-**vm\_total**: 当前进程已分配的虚拟内存总量
-
-- 单位: bytes
-- 更新时机: 分配/释放虚拟区域时
-
-**vm\_total\_max**: 历史最大虚拟内存使用量（high water mark）
-
-- 记录进程运行期间 `vm_total` 达到的最大值
-- 用于 `getrusage()` 系统调用的 `ru_maxrss` 字段
-- **不是资源限制**，只是统计信息
-
-**更新逻辑**（见 `region.c`）:
+每个进程在 VM 中对应一个 `struct vmproc`（[vmproc.h:13-32](minix3/minix/servers/vm/vmproc.h#L13-L32)），其中包含两个统计字段：
 
 ```c
-// 分配新页时
-proc->vm_total += VM_PAGE_SIZE;
-if (proc->vm_total > proc->vm_total_max)
-    proc->vm_total_max = proc->vm_total;  // 更新历史最大值
-
-// 释放页时
-proc->vm_total -= VM_PAGE_SIZE;
-// vm_total_max 不减少，保留历史峰值
+struct vmproc {
+    // ... 页表、region 等字段 ...
+    vir_bytes   vm_total;       // 当前已映射物理页总字节数
+    vir_bytes   vm_total_max;   // 历史峰值（high water mark）
+    u64_t       vm_minor_page_fault;
+    u64_t       vm_major_page_fault;
+};
 ```
 
-**getrusage 返回**:
+**这两个字段的语义**
+
+| 字段 | 含义 | 更新方向 |
+|------|------|---------|
+| `vm_total` | 当前进程**实际持有**的物理页总字节数 | 分配时 `+`，释放时 `-` |
+| `vm_total_max` | 运行期间 `vm_total` 达到过的最大值 | 只增不减 |
+
+> **注意**：统计的是**已映射的物理页**，不是虚拟地址空间大小。进程可能拥有很大的虚拟 region（如 mmap 预留），但只要没触发 page fault 分配物理页，就不计入 `vm_total`。
+
+**更新逻辑**（[region.c:80-91](minix3/minix/servers/vm/region.c#L80-L91)）
+
+`physblock_set()` 在物理页映射/解映射时更新统计：
+
+```c
+void physblock_set(struct vir_region *region, vir_bytes offset,
+                   struct phys_region *newphysr)
+{
+    struct vmproc *proc = region->parent;
+    if (newphysr) {
+        // 新映射一页物理内存
+        proc->vm_total += VM_PAGE_SIZE;
+        if (proc->vm_total > proc->vm_total_max)
+            proc->vm_total_max = proc->vm_total;
+    } else {
+        // 解映射一页物理内存
+        proc->vm_total -= VM_PAGE_SIZE;
+    }
+}
+```
+
+触发 `physblock_set()` 的典型场景：
+- **page fault**：首次访问匿名页 → `anon_pagefault()` → 分配物理页 → `physblock_set(region, offset, newphysr)`
+- **COW 解引用**：写时复制触发 → 分配新物理页 → 替换原 `phys_region` → `physblock_set()`
+- **释放 region**：`map_free_proc()` → 遍历 region 的 `physblocks[]` → `physblock_set(region, offset, NULL)`
+
+**读取路径：getrusage**
+
+PM 处理 `getrusage(2)` 时，通过 `vm_getrusage()` IPC 向 VM 查询。VM 的 `do_getrusage()`（[utility.c:424-461](minix3/minix/servers/vm/utility.c#L424-L461)）将 `vm_total_max` 转换为 KB 填入 `ru_maxrss`：
 
 ```c
 r_usage.ru_maxrss = vmp->vm_total_max / 1024L;  // 单位 KB
 ```
 
-**fork 时的处理**:
+VM 也将其暴露给 MIB 服务（[region.c:1444](minix3/minix/servers/vm/region.c#L1444)）：
 
-- 子进程继承父进程的 `vm_total`
-- `vm_total_max` 初始化为 `vm_total`（因为子进程初始内存就是当前值）
-- 子进程后续独立维护自己的统计
+```c
+vui->vui_maxrss = vmp->vm_total_max / 1024L;
+```
+
+**生命周期：何时继承，何时清零**
+
+| 场景 | 源码位置 | 对 `vm_total` / `vm_total_max` 的影响 |
+|------|---------|-----------------------------------|
+| **fork** | [vm/fork.c](minix3/minix/servers/vm/fork.c) `*vmc = *vmp` | **继承父值**。子进程的 `vmproc` 是父进程的完整副本，包括这两个字段 |
+| **exec** | [libexec/exec_general.c:54](minix3/minix/lib/libexec/exec_general.c#L54) → [vm/exit.c:130-138](minix3/minix/servers/vm/exit.c#L130-L138) | **清零**。exec 加载新程序前，VFS/RS 调用 `vm_procctl_clear()` → VM 执行 `VMPPARAM_CLEAR` → `free_proc()` → `reset_vm_rusage()` 将两字段置 0 |
+| **exit** | [vm/exit.c:33-43](minix3/minix/servers/vm/exit.c#L33-L43) | **清零**。`free_proc()` → `reset_vm_rusage()` |
+| **运行中** | [region.c:85-90](minix3/minix/servers/vm/region.c#L85-L90) | **独立维护**。fork 后子进程有独立的 `vmproc` 实例，`region->parent` 指向子进程，page fault/COW 只修改子进程的字段 |
+
+**exec 清零的完整调用链**：
+
+```
+VFS/RS exec 路径
+    libexec_clearproc_vm_procctl(execi)     // libexec/exec_general.c:54
+        → vm_procctl_clear(proc_e)          // libsys/vm_procctl.c:28
+            → send VM_PROCCTL(VMPPARAM_CLEAR) to VM
+                → do_procctl()              // vm/exit.c:117
+                    → free_proc(vmp)        // vm/exit.c:134
+                        → reset_vm_rusage(vmp)   // vm/exit.c:42
+                            → vm_total = 0, vm_total_max = 0
+```
+
+**`reset_vm_rusage()` 源码**（[exit.c:25-31](minix3/minix/servers/vm/exit.c#L25-L31)）：
+
+```c
+static void reset_vm_rusage(struct vmproc *vmp)
+{
+    vmp->vm_total = 0;
+    vmp->vm_total_max = 0;
+    vmp->vm_minor_page_fault = 0;
+    vmp->vm_major_page_fault = 0;
+}
+```
+
+**总结**：`vm_total` / `vm_total_max` 的生命周期与进程地址空间的生命周期绑定——fork 时复制父进程的当前状态，exec 和 exit 时随地址空间清空而清零。它们不是资源限制，只是反映"该进程实际占用了多少物理页"的统计信息。
 
 ***
 
@@ -976,12 +1039,12 @@ r_usage.ru_maxrss = vmp->vm_total_max / 1024L;  // 单位 KB
 
 **核心操作**（与 Minix3 alloc.c API 精确对应）：
 
-| 操作 | Minix3 C                   | 语义                    | trait              |
-| -- | -------------------------- | --------------------- | ------------------ |
-| 分配 | `alloc_mem(clicks, flags)` | 找到 k 个连续空闲页，标记为已用     | `PhysAllocator`    |
-| 释放 | `free_mem(base, clicks)`   | 将 k 个连续页标记为空闲         | `PhysAllocator`    |
-| 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `PhysAllocatorStats` |
-| 总量 | `total_pages` 全局变量        | 系统物理页总数（初始化时设定，不再变化）  | `PhysAllocator`    |
+| 操作 | Minix3 C                   | 语义                    | Rust trait 方法                        |
+| -- | -------------------------- | --------------------- | ------------------------------------- |
+| 分配 | `alloc_mem(clicks, flags)` | 找到 k 个连续空闲页，标记为已用     | `PhysAllocator::alloc_mem()`          |
+| 释放 | `free_mem(base, clicks)`   | 将 k 个连续页标记为空闲         | `PhysAllocator::free_mem()`           |
+| 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `PhysAllocatorStats::memstats()`      |
+| 总量 | `total_pages` 全局变量        | 系统物理页总数（初始化时设定，不再变化）  | `PhysAllocator::total_count()`        |
 
 > **设计说明**：Minix3 的 `memstats()` 通过 3 个指针参数隐式返回结果，这是 C 语言常见的多返回值模式。Rust 中用命名结构体 `PhysMemStats` 替代，字段语义一目了然。分配/释放是核心路径（高频调用），查询是诊断路径（低频调用），因此拆分为两个 trait，职责清晰。
 
