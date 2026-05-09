@@ -10,7 +10,7 @@ use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::PhysBytes as PmPhysBytes;
-use crate::pagetable::PageTable;
+use crate::pagetable::{PageTable, Paging};
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -43,7 +43,7 @@ pub(crate) struct MunmapRequest {
 
 pub(crate) fn handle_munmap(
     table: &VmProcTable,
-    page_alloc: &mut VmPageAllocator,
+    _page_alloc: &mut VmPageAllocator,
     request: &MunmapRequest,
 ) -> Result<(), MunmapError> {
     if request.length.0 == 0 {
@@ -64,14 +64,11 @@ pub(crate) fn handle_munmap(
     let mut active = table.get_active(slot)
         .ok_or(MunmapError::ProcessNotFound)?;
 
-    let mut page_table = active.page_table_mut();
-
-    unmap_range(&mut active, &mut page_table, request.addr, request.length)
+    unmap_range(&mut active, request.addr, request.length)
 }
 
 fn unmap_range(
     active: &mut ActiveProc<'_>,
-    page_table: &mut PageTable,
     addr: VirBytes,
     length: VirBytes,
 ) -> Result<(), MunmapError> {
@@ -96,7 +93,10 @@ fn unmap_range(
             let reg_end = region.end_addr();
 
             if unmap_start <= reg_start && unmap_end >= reg_end {
-                free_region_pages(&region, page_table);
+                {
+                    let page_table = active.page_table_mut();
+                    free_region_pages(&region, page_table);
+                }
                 active.sub_total(VirBytes(region.length.0));
             } else if unmap_start > reg_start && unmap_end < reg_end {
                 let head_len = VirBytes(unmap_start.0 - reg_start.0);
@@ -106,7 +106,10 @@ fn unmap_range(
                 let (_middle, right) = remainder.split(VirBytes(length.0))
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&_middle, page_table);
+                {
+                    let page_table = active.page_table_mut();
+                    free_region_pages(&_middle, page_table);
+                }
                 active.sub_total(VirBytes(length.0));
 
                 active.regions_mut().insert(left);
@@ -116,7 +119,10 @@ fn unmap_range(
                 let (head, tail) = region.split(cut_len)
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&head, page_table);
+                {
+                    let page_table = active.page_table_mut();
+                    free_region_pages(&head, page_table);
+                }
                 active.sub_total(VirBytes(head.length.0));
 
                 active.regions_mut().insert(tail);
@@ -125,7 +131,10 @@ fn unmap_range(
                 let (head, tail) = region.split(head_len)
                     .map_err(|_| MunmapError::InternalError)?;
 
-                free_region_pages(&tail, page_table);
+                {
+                    let page_table = active.page_table_mut();
+                    free_region_pages(&tail, page_table);
+                }
                 active.sub_total(VirBytes(tail.length.0));
 
                 active.regions_mut().insert(head);
@@ -156,7 +165,7 @@ fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
 mod tests {
     use super::*;
     use crate::vmproc::VmProcTable;
-    use crate::phys_mem::BitmapAllocator;
+    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
     use minix_types::Endpoint;
 
     fn init_test_process(slot: UserSlot) -> Endpoint {
@@ -180,7 +189,7 @@ mod tests {
     #[test]
     fn test_munmap_zero_length() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = MunmapRequest {
             endpoint: Endpoint::PM,
@@ -195,7 +204,7 @@ mod tests {
     #[test]
     fn test_munmap_unaligned_addr() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = MunmapRequest {
             endpoint: Endpoint::PM,
@@ -210,7 +219,7 @@ mod tests {
     #[test]
     fn test_munmap_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = MunmapRequest {
             endpoint: Endpoint::NONE,

@@ -31,7 +31,7 @@ pub(crate) use fork::{VmForkRequest, VmForkResponse, VmForkError, ForkContext, h
 pub(crate) use alloc_stats::VmAllocStats;
 pub(crate) use critical_pool::CriticalPool;
 pub(crate) use phys_mem::{
-    PhysAllocator, PhysAllocatorStats, PhysMemStats, PageAllocFlags, PhysBytes, AllocError,
+    PhysAlloc, PhysAllocator, PhysAllocatorStats, PhysMemStats, PageAllocFlags, PhysBytes, AllocError,
 };
 pub(crate) use region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
 pub(crate) use pagetable::{PageTable, PageFlags, PageTableError};

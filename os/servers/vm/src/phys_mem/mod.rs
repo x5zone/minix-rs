@@ -30,6 +30,85 @@ pub(crate) type DefaultAllocator = BitmapAllocator;
 #[cfg(not(any(feature = "bitmap_alloc", feature = "segment_tree_alloc", feature = "buddy_alloc")))]
 pub(crate) type DefaultAllocator = BitmapAllocator;
 
+pub(crate) enum PhysAlloc {
+    Bitmap(BitmapAllocator),
+    #[cfg(feature = "buddy_alloc")]
+    Buddy(BuddyAllocator),
+    #[cfg(feature = "segment_tree_alloc")]
+    SegmentTree(SegmentTreeAllocator),
+}
+
+impl PhysAllocator for PhysAlloc {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+        match self {
+            PhysAlloc::Bitmap(b) => b.alloc_mem(clicks, flags),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.alloc_mem(clicks, flags),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.alloc_mem(clicks, flags),
+        }
+    }
+
+    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+        match self {
+            PhysAlloc::Bitmap(b) => b.free_mem(base, clicks),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.free_mem(base, clicks),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.free_mem(base, clicks),
+        }
+    }
+
+    fn total_count(&self) -> usize {
+        match self {
+            PhysAlloc::Bitmap(b) => b.total_count(),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.total_count(),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.total_count(),
+        }
+    }
+
+    fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        match self {
+            PhysAlloc::Bitmap(b) => b.reserve_pages(base_page, count),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.reserve_pages(base_page, count),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.reserve_pages(base_page, count),
+        }
+    }
+}
+
+impl PhysAlloc {
+    pub(crate) fn is_bitmap(&self) -> bool {
+        matches!(self, PhysAlloc::Bitmap(_))
+    }
+
+    #[cfg(feature = "buddy_alloc")]
+    pub(crate) fn as_buddy(&self) -> Option<&BuddyAllocator> {
+        match self {
+            PhysAlloc::Buddy(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "buddy_alloc")]
+    pub(crate) fn as_buddy_mut(&mut self) -> Option<&mut BuddyAllocator> {
+        match self {
+            PhysAlloc::Buddy(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_bitmap_mut(&mut self) -> Option<&mut BitmapAllocator> {
+        match self {
+            PhysAlloc::Bitmap(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PhysAllocType {
     Bitmap,

@@ -238,7 +238,7 @@ impl MessageDispatcher {
 mod tests {
     use super::*;
     use minix_types::Endpoint;
-    use crate::phys_mem::BitmapAllocator;
+    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
 
     fn init_test_slots() {
         let table = VmProcTable::get_global();
@@ -328,7 +328,7 @@ mod tests {
     fn test_dispatch_with_alloc_fork() {
         init_test_slots();
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = VmRequest::Fork {
             parent_endpoint: Endpoint::from_generation_slot(1, 50),
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_dispatch_brk_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = VmRequest::Brk {
             endpoint: Endpoint::NONE,
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn test_dispatch_munmap_zero_length() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = VmRequest::Munmap {
             endpoint: Endpoint::PM,
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn test_dispatch_exit_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = VmRequest::Exit {
             endpoint: Endpoint::NONE,
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn test_dispatch_pagefault_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = VmRequest::Pagefault {
             endpoint: Endpoint::NONE,

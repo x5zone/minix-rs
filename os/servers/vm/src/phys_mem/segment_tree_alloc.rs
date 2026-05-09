@@ -98,9 +98,7 @@ pub struct SegmentTreeAllocator {
 
 #[cfg(feature = "segment_tree_alloc")]
 impl SegmentTreeAllocator {
-    pub fn init(metadata: &mut [u8], regions: &[BootMemRegion]) -> Self {
-        let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
-
+    pub fn init(metadata: &mut [u8], total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
         let n = total_pages;
         let offset = n.next_power_of_two();
         let tree_size = if n > 0 { 2 * offset } else { 2 };
@@ -121,7 +119,7 @@ impl SegmentTreeAllocator {
             stats: MemStats::new(),
         };
 
-        for region in regions {
+        for region in free_regions {
             if region.size == 0 {
                 continue;
             }
@@ -308,6 +306,10 @@ impl PhysAllocator for SegmentTreeAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
+            let virt = crate::direct_map::vm_phys_to_virt(PhysBytes::from_page_index(mem));
+            unsafe {
+                core::ptr::write_bytes(virt.0 as *mut u8, 0, clicks * CLICK_SIZE);
+            }
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
@@ -331,6 +333,19 @@ impl PhysAllocator for SegmentTreeAllocator {
     fn total_count(&self) -> usize {
         self.total_pages
     }
+
+    fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        let end = (base_page + count).min(self.n);
+        for i in base_page..end {
+            if self.page_is_free(i) {
+                self.tree[self.offset + i] = SegmentNode::used(1);
+                self.free_pages -= 1;
+            }
+        }
+        for i in (1..self.offset).rev() {
+            self.tree[i] = merge(self.tree[i * 2], self.tree[i * 2 + 1]);
+        }
+    }
 }
 
 #[cfg(feature = "segment_tree_alloc")]
@@ -351,7 +366,7 @@ pub struct SegmentTreeAllocator {
 
 #[cfg(not(feature = "segment_tree_alloc"))]
 impl SegmentTreeAllocator {
-    pub fn init(_metadata: &mut [u8], _regions: &[BootMemRegion]) -> Self {
+    pub fn init(_metadata: &mut [u8], _total_pages: usize, _free_regions: &[BootMemRegion]) -> Self {
         unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 
@@ -380,6 +395,10 @@ impl PhysAllocator for SegmentTreeAllocator {
 
     fn total_count(&self) -> usize {
         0
+    }
+
+    fn reserve_pages(&mut self, _base_page: usize, _count: usize) {
+        unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 }
 

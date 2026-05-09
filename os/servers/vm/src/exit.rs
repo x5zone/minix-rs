@@ -10,7 +10,7 @@ use crate::vmproc::{VmProcTable, ActiveProc, ExitingProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::PhysBytes;
-use crate::pagetable::PageTable;
+use crate::pagetable::{PageTable, Paging};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmExitError {
@@ -61,7 +61,7 @@ pub(crate) fn handle_vm_exit(
         let page_count = (region.length.0 / 4096) as usize;
         for i in 0..page_count {
             let vaddr = VirBytes(region.vaddr.0 + (i as u64) * 4096);
-            if let Ok(()) = page_table.unmap(vaddr) {}
+            if let Ok(_) = page_table.unmap(vaddr) {}
         }
     }
 
@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use crate::vmproc::VmProcTable;
     use minix_types::Endpoint;
-    use crate::phys_mem::BitmapAllocator;
+    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
 
     fn init_test_process(slot: UserSlot) -> Endpoint {
         let table = VmProcTable::get_global();
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn test_exit_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let result = handle_vm_exit(table, &mut page_alloc, Endpoint::NONE);
         assert!(matches!(result, Err(VmExitError::ProcessNotFound)));

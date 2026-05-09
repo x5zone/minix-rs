@@ -12,17 +12,12 @@
 //! page table operations.
 
 use minix_types::VirBytes;
-use minix_arch::paging::Paging;
 
-/// Page table type using the current architecture implementation.
-///
-/// This is a type alias to the architecture-specific paging implementation
-/// from `minix_arch`. VM process code should use this type rather than
-/// depending directly on `minix_arch` types.
 pub(crate) type PageTable = minix_arch::CurrentPaging;
 
 pub(crate) use minix_arch::paging::PageFlags;
 pub(crate) use minix_arch::paging::PageTableError;
+pub(crate) use minix_arch::paging::Paging;
 
 pub(crate) fn page_align(addr: VirBytes) -> VirBytes {
     let ps = <PageTable as Paging>::PAGE_SIZE as u64;

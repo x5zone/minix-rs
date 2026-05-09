@@ -58,8 +58,7 @@ pub struct BuddyAllocator {
 }
 
 impl BuddyAllocator {
-    pub fn init(metadata: &mut [u8], regions: &[BootMemRegion]) -> Self {
-        let (total_pages, _mem_low, _mem_high) = super::compute_memory_bounds(regions);
+    pub fn init(metadata: &mut [u8], total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
         let max_order = compute_max_order(total_pages);
 
         let mut buf = BumpBuf::new(metadata);
@@ -88,7 +87,7 @@ impl BuddyAllocator {
             stats: MemStats::new(),
         };
 
-        for region in regions {
+        for region in free_regions {
             if region.size == 0 {
                 continue;
             }
@@ -360,6 +359,10 @@ impl PhysAllocator for BuddyAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
+            let virt = crate::direct_map::vm_phys_to_virt(PhysBytes::from_page_index(page));
+            unsafe {
+                core::ptr::write_bytes(virt.0 as *mut u8, 0, clicks * CLICK_SIZE);
+            }
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
@@ -377,6 +380,29 @@ impl PhysAllocator for BuddyAllocator {
 
     fn total_count(&self) -> usize {
         self.total_pages
+    }
+
+    fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        let end = (base_page + count).min(self.total_pages);
+        for i in base_page..end {
+            if self.page_orders[i] != ORDER_INVALID
+                && (self.page_orders[i] & FLAG_ALLOCATED) == 0
+            {
+                let order = (self.page_orders[i] & ORDER_MASK) as usize;
+                self.remove_from_free_list(order, i);
+                let block_size = 1usize << order;
+                self.free_pages -= block_size;
+                self.page_orders[i] = ORDER_INVALID;
+                let mut j = i + 1;
+                while j < i + block_size && j < end {
+                    self.page_orders[j] = ORDER_INVALID;
+                    j += 1;
+                }
+            }
+        }
+        for i in base_page..end {
+            self.page_orders[i] = ORDER_INVALID;
+        }
     }
 }
 
@@ -406,19 +432,24 @@ mod tests {
         vec![BootMemRegion { base: 0, size: 128 * 1024 * 1024 }]
     }
 
-    fn make_test_metadata(regions: &[BootMemRegion]) -> &'static mut [u8] {
-        let (total_pages, _, _) = super::super::compute_memory_bounds(regions);
+    fn make_test_metadata(total_pages: usize) -> &'static mut [u8] {
         let size = BuddyAllocator::metadata_size(total_pages);
         let v: alloc::vec::Vec<u8> = alloc::vec![0u8; 2 * 1024 * 1024];
         let buf = alloc::boxed::Box::leak(v.into_boxed_slice());
         &mut buf[..size]
     }
 
+    fn total_pages_from_regions(regions: &[BootMemRegion]) -> usize {
+        let (tp, _, _) = super::super::compute_memory_bounds(regions);
+        tp
+    }
+
     #[test]
     fn test_alloc_free_basic() {
         let regions = make_test_regions();
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
@@ -427,8 +458,9 @@ mod tests {
     #[test]
     fn test_alloc_zero_pages() {
         let regions = make_test_regions();
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
@@ -436,8 +468,9 @@ mod tests {
     #[test]
     fn test_alloc_exhaustion() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -454,8 +487,9 @@ mod tests {
     #[test]
     fn test_buddy_merge() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
@@ -470,8 +504,9 @@ mod tests {
     #[test]
     fn test_largest_free() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         assert!(alloc.largest_free() >= 256);
 
@@ -482,8 +517,9 @@ mod tests {
     #[test]
     fn test_internal_fragmentation() {
         let regions = vec![BootMemRegion { base: 0, size: 16 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
         let start = a.page_index();
@@ -496,8 +532,9 @@ mod tests {
     #[test]
     fn test_multiple_allocations() {
         let regions = vec![BootMemRegion { base: 0, size: 64 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let mut addrs = Vec::new();
         for _ in 0..4 {
@@ -516,8 +553,9 @@ mod tests {
             BootMemRegion { base: 0x100000, size: 4 * 1024 * 1024 },
             BootMemRegion { base: 0x10000000, size: 8 * 1024 * 1024 },
         ];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -528,8 +566,9 @@ mod tests {
     #[test]
     fn test_single_page() {
         let regions = vec![BootMemRegion { base: 0, size: CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
@@ -546,8 +585,9 @@ mod tests {
     #[test]
     fn test_merge_chain() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
@@ -566,8 +606,9 @@ mod tests {
     #[test]
     fn test_low_mem_exhausted_error() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let _a = alloc.alloc_mem(256, PageAllocFlags::empty()).unwrap();
 
@@ -578,8 +619,9 @@ mod tests {
     #[test]
     fn test_oom_error_type() {
         let regions = vec![BootMemRegion { base: 0, size: 4 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let _a = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
 
@@ -590,8 +632,9 @@ mod tests {
     #[test]
     fn test_align64k_no_leak() {
         let regions = vec![BootMemRegion { base: 0, size: 1024 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let initial_free = alloc.free_pages;
 
@@ -606,8 +649,9 @@ mod tests {
     #[test]
     fn test_align16k_no_leak() {
         let regions = vec![BootMemRegion { base: 0, size: 256 * CLICK_SIZE }];
-        let metadata = make_test_metadata(&regions);
-        let mut alloc = BuddyAllocator::init(metadata, &regions);
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
 
         let initial_free = alloc.free_pages;
 

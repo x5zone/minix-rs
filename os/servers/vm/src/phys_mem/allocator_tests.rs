@@ -35,13 +35,18 @@ fn make_metadata() -> &'static mut [u8] {
     alloc::boxed::Box::leak(v.into_boxed_slice())
 }
 
+fn total_pages(regions: &[BootMemRegion]) -> usize {
+    let (tp, _, _) = super::compute_memory_bounds(regions);
+    tp
+}
+
 mod basic {
     use super::*;
 
     #[test]
     fn bitmap_alloc_free_basic() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(64));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
     }
@@ -50,7 +55,7 @@ mod basic {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_alloc_free_basic() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(64));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
     }
@@ -58,7 +63,7 @@ mod basic {
     #[test]
     fn buddy_alloc_free_basic() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(64));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(addr, 4);
     }
@@ -66,7 +71,7 @@ mod basic {
     #[test]
     fn bitmap_alloc_zero() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(64));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
 
@@ -74,21 +79,21 @@ mod basic {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_alloc_zero() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(64));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
 
     #[test]
     fn buddy_alloc_zero() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(64));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(64)), &make_regions(64));
         assert!(alloc.alloc_mem(0, PageAllocFlags::empty()).is_err());
     }
 
     #[test]
     fn bitmap_single_page() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(1));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(1)), &make_small_regions(1));
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -102,7 +107,7 @@ mod basic {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_single_page() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(1));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(1)), &make_small_regions(1));
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -115,7 +120,7 @@ mod basic {
     #[test]
     fn buddy_single_page() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_small_regions(1));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(1)), &make_small_regions(1));
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -132,7 +137,7 @@ mod exhaustion {
     #[test]
     fn bitmap_exhaustion() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(4));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(4)), &make_small_regions(4));
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -146,7 +151,7 @@ mod exhaustion {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_exhaustion() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(4));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(4)), &make_small_regions(4));
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -159,7 +164,7 @@ mod exhaustion {
     #[test]
     fn buddy_exhaustion() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_small_regions(4));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(4)), &make_small_regions(4));
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
         let b = alloc.alloc_mem(1, PageAllocFlags::empty());
@@ -173,7 +178,7 @@ mod exhaustion {
     fn bitmap_alloc_all_then_free_all() {
         let metadata = make_metadata();
         let total = 64;
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(total));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(total)), &make_small_regions(total));
         let mut addrs = Vec::new();
         for _ in 0..total {
             let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
@@ -192,7 +197,7 @@ mod exhaustion {
     fn segment_tree_alloc_all_then_free_all() {
         let metadata = make_metadata();
         let total = 64;
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(total));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(total)), &make_small_regions(total));
         let mut addrs = Vec::new();
         for _ in 0..total {
             let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
@@ -213,7 +218,7 @@ mod free_realloc {
     #[test]
     fn bitmap_free_realloc() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(20));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(20)), &make_small_regions(20));
         let a = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 10);
@@ -227,7 +232,7 @@ mod free_realloc {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_free_realloc() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(20));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(20)), &make_small_regions(20));
         let a = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 10);
@@ -240,7 +245,7 @@ mod free_realloc {
     #[test]
     fn buddy_free_realloc() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_small_regions(64));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(64)), &make_small_regions(64));
         let a = alloc.alloc_mem(16, PageAllocFlags::empty()).unwrap();
         let _b = alloc.alloc_mem(16, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 16);
@@ -251,7 +256,7 @@ mod free_realloc {
     #[test]
     fn bitmap_merge_on_free() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let a = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 50);
@@ -264,7 +269,7 @@ mod free_realloc {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_merge_on_free() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let a = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(50, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 50);
@@ -276,7 +281,7 @@ mod free_realloc {
     #[test]
     fn buddy_merge_on_free() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_small_regions(256));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(256)), &make_small_regions(256));
         let a = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         let b = alloc.alloc_mem(128, PageAllocFlags::empty()).unwrap();
         alloc.free_mem(a, 128);
@@ -292,7 +297,7 @@ mod flags {
     #[test]
     fn bitmap_lower16mb() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(32));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
         assert!(addr.as_usize() < 16 * 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -302,7 +307,7 @@ mod flags {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_lower16mb() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(32));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
         assert!(addr.as_usize() < 16 * 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -311,7 +316,7 @@ mod flags {
     #[test]
     fn buddy_lower16mb() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(32));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
         assert!(addr.as_usize() < 16 * 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -320,7 +325,7 @@ mod flags {
     #[test]
     fn bitmap_align64k() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(4));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(4)), &make_regions(4));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
         assert_eq!(addr.as_usize() % (64 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -330,7 +335,7 @@ mod flags {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_align64k() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(4));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(4)), &make_regions(4));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
         assert_eq!(addr.as_usize() % (64 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -339,7 +344,7 @@ mod flags {
     #[test]
     fn buddy_align64k() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(4));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(4)), &make_regions(4));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN64K).unwrap();
         assert_eq!(addr.as_usize() % (64 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -348,7 +353,7 @@ mod flags {
     #[test]
     fn bitmap_align16k() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(1));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(1)), &make_regions(1));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN16K).unwrap();
         assert_eq!(addr.as_usize() % (16 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -358,7 +363,7 @@ mod flags {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_align16k() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(1));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(1)), &make_regions(1));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN16K).unwrap();
         assert_eq!(addr.as_usize() % (16 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -367,7 +372,7 @@ mod flags {
     #[test]
     fn buddy_align16k() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(1));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(1)), &make_regions(1));
         let addr = alloc.alloc_mem(1, PageAllocFlags::ALIGN16K).unwrap();
         assert_eq!(addr.as_usize() % (16 * 1024), 0);
         alloc.free_mem(addr, 1);
@@ -376,7 +381,7 @@ mod flags {
     #[test]
     fn bitmap_contig() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let a = alloc.alloc_mem(10, PageAllocFlags::CONTIG).unwrap();
         let start = a.page_index();
         for i in 0..10 {
@@ -389,7 +394,7 @@ mod flags {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_contig() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let a = alloc.alloc_mem(10, PageAllocFlags::CONTIG).unwrap();
         let start = a.page_index();
         for i in 0..10 {
@@ -401,7 +406,7 @@ mod flags {
     #[test]
     fn bitmap_lower1mb() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_regions(2));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(2)), &make_regions(2));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER1MB).unwrap();
         assert!(addr.as_usize() < 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -411,7 +416,7 @@ mod flags {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_lower1mb() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_regions(2));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(2)), &make_regions(2));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER1MB).unwrap();
         assert!(addr.as_usize() < 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -420,7 +425,7 @@ mod flags {
     #[test]
     fn buddy_lower1mb() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_regions(2));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(2)), &make_regions(2));
         let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER1MB).unwrap();
         assert!(addr.as_usize() < 1024 * 1024);
         alloc.free_mem(addr, 1);
@@ -433,7 +438,7 @@ mod fragmentation {
     #[test]
     fn bitmap_fragmentation() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
         for size in 1..=10usize {
             if let Ok(addr) = alloc.alloc_mem(size, PageAllocFlags::empty()) {
@@ -460,7 +465,7 @@ mod fragmentation {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_fragmentation() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
         for size in 1..=10usize {
             if let Ok(addr) = alloc.alloc_mem(size, PageAllocFlags::empty()) {
@@ -486,7 +491,7 @@ mod fragmentation {
     #[test]
     fn buddy_fragmentation() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_small_regions(128));
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(128)), &make_small_regions(128));
         let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
         for size in [1usize, 2, 4, 8, 16, 32].iter() {
             if let Ok(addr) = alloc.alloc_mem(*size, PageAllocFlags::empty()) {
@@ -510,7 +515,7 @@ mod fragmentation {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_largest_free_tracking() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_small_regions(100));
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
         assert_eq!(alloc.largest_free(), 100);
 
         let a = alloc.alloc_mem(25, PageAllocFlags::empty()).unwrap();
@@ -536,7 +541,7 @@ mod multi_region {
     #[test]
     fn bitmap_multi_region() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_multi_regions());
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_multi_regions()), &make_multi_regions());
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         alloc.free_mem(a.unwrap(), 1);
@@ -546,7 +551,7 @@ mod multi_region {
     #[cfg(feature = "segment_tree_alloc")]
     fn segment_tree_multi_region() {
         let metadata = make_metadata();
-        let mut alloc = SegmentTreeAllocator::init(metadata, &make_multi_regions());
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_multi_regions()), &make_multi_regions());
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         alloc.free_mem(a.unwrap(), 1);
@@ -555,7 +560,7 @@ mod multi_region {
     #[test]
     fn buddy_multi_region() {
         let metadata = make_metadata();
-        let mut alloc = BuddyAllocator::init(metadata, &make_multi_regions());
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_multi_regions()), &make_multi_regions());
         let a = alloc.alloc_mem(1, PageAllocFlags::empty());
         assert!(a.is_ok());
         alloc.free_mem(a.unwrap(), 1);
@@ -564,7 +569,7 @@ mod multi_region {
     #[test]
     fn bitmap_gap_regions() {
         let metadata = make_metadata();
-        let mut alloc = BitmapAllocator::init(metadata, &make_gap_regions());
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_gap_regions()), &make_gap_regions());
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
     }

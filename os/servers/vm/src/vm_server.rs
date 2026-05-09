@@ -21,7 +21,7 @@ use alloc::boxed::Box;
 use minix_types::{VmRequest, VmResponse, VmError, Endpoint, VirBytes};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
-use crate::phys_mem::{BitmapAllocator, PhysAllocator, BootMemRegion};
+use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -44,7 +44,7 @@ impl VmServer {
         }
     }
 
-    fn create_default_allocator() -> Box<dyn PhysAllocator> {
+    fn create_default_allocator() -> PhysAlloc {
         let total_pages = 65536;
         let base = 0x100000;
         let size = total_pages * 4096;
@@ -52,7 +52,7 @@ impl VmServer {
         let meta_size = BitmapAllocator::metadata_size(total_pages);
         let v: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size];
         let metadata = alloc::boxed::Box::leak(v.into_boxed_slice());
-        Box::new(BitmapAllocator::init(&mut metadata[..meta_size], &regions))
+        PhysAlloc::Bitmap(BitmapAllocator::init(&mut metadata[..meta_size], total_pages, &regions))
     }
 
     pub fn init(&mut self) {

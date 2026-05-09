@@ -11,7 +11,7 @@ use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
 use crate::phys_mem::PhysBytes as PmPhysBytes;
-use crate::pagetable::PageTable;
+use crate::pagetable::{PageTable, Paging};
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -99,7 +99,7 @@ fn grow_heap(
 
 fn shrink_heap(
     active: &mut ActiveProc<'_>,
-    page_alloc: &mut VmPageAllocator,
+    _page_alloc: &mut VmPageAllocator,
     new_brk: VirBytes,
 ) -> Result<BrkResponse, BrkError> {
     let current_top = active.region_top();
@@ -119,8 +119,6 @@ fn shrink_heap(
         }
     }
 
-    let page_table = active.page_table_mut();
-
     for vaddr in regions_to_shrink {
         if let Some(region) = active.regions_mut().remove(vaddr) {
             let split_point = VirBytes(new_brk.0 - region.vaddr.0);
@@ -128,7 +126,10 @@ fn shrink_heap(
             if split_point.0 > 0 && split_point.0 < region_len.0 {
                 match region.split(split_point) {
                     Ok((left, right)) => {
-                        free_region_pages(&right, page_table);
+                        {
+                            let page_table = active.page_table_mut();
+                            free_region_pages(&right, page_table);
+                        }
                         active.sub_total(VirBytes(right.length.0));
                         active.regions_mut().insert(left);
                     }
@@ -142,12 +143,12 @@ fn shrink_heap(
         }
     }
 
-    drop(page_table);
-
     for vaddr in regions_to_remove {
         if let Some(region) = active.regions_mut().remove(vaddr) {
-            let page_table = active.page_table_mut();
-            free_region_pages(&region, page_table);
+            {
+                let page_table = active.page_table_mut();
+                free_region_pages(&region, page_table);
+            }
             active.sub_total(VirBytes(region.length.0));
         }
     }
@@ -177,7 +178,7 @@ fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
 mod tests {
     use super::*;
     use crate::vmproc::VmProcTable;
-    use crate::phys_mem::BitmapAllocator;
+    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
 
     fn init_test_process(slot: UserSlot) -> Endpoint {
         let table = VmProcTable::get_global();
@@ -202,7 +203,7 @@ mod tests {
     fn test_brk_no_change() {
         let ep = init_test_process(UserSlot::new(60));
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = BrkRequest {
             endpoint: ep,
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn test_brk_process_not_found() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(Box::new(BitmapAllocator::new_for_test(256)));
+        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
 
         let request = BrkRequest {
             endpoint: Endpoint::NONE,

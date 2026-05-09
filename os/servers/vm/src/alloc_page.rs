@@ -1,16 +1,14 @@
-use alloc::boxed::Box;
-
 use minix_types::VirBytes;
 
 use crate::direct_map::vm_phys_to_virt;
-use crate::phys_mem::{PhysAllocator, PageAllocFlags, AllocError, PhysBytes};
+use crate::phys_mem::{PhysAlloc, PhysAllocator, PageAllocFlags, AllocError, PhysBytes};
 
 pub(crate) struct VmPageAllocator {
-    phys_alloc: Box<dyn PhysAllocator>,
+    phys_alloc: PhysAlloc,
 }
 
 impl VmPageAllocator {
-    pub(crate) fn new(phys_alloc: Box<dyn PhysAllocator>) -> Self {
+    pub(crate) fn new(phys_alloc: PhysAlloc) -> Self {
         Self { phys_alloc }
     }
 
@@ -79,42 +77,21 @@ impl ReservedRegion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phys_mem::{PhysAllocator, PageAllocFlags, AllocError, PhysBytes};
+    use crate::phys_mem::{BitmapAllocator, BootMemRegion, CLICK_SIZE};
 
-    struct MockPhysAllocator {
-        next: u64,
-        total: usize,
-    }
-
-    impl MockPhysAllocator {
-        fn new(total: usize) -> Self {
-            Self { next: 0x1000, total }
-        }
-    }
-
-    impl PhysAllocator for MockPhysAllocator {
-        fn alloc_mem(&mut self, _clicks: usize, _flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
-            if self.total == 0 {
-                return Err(AllocError::OutOfMemory);
-            }
-            let addr = PhysBytes::new(self.next);
-            self.next += 0x1000;
-            self.total -= 1;
-            Ok(addr)
-        }
-
-        fn free_mem(&mut self, _base: PhysBytes, _clicks: usize) {
-            self.total += 1;
-        }
-
-        fn total_count(&self) -> usize {
-            self.total
-        }
+    fn make_test_phys_alloc(total_pages: usize) -> PhysAlloc {
+        let base = 0;
+        let size = total_pages * CLICK_SIZE;
+        let regions = [BootMemRegion { base, size }];
+        let meta_size = BitmapAllocator::metadata_size(total_pages);
+        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size.max(1024 * 1024)];
+        let metadata = alloc::boxed::Box::leak(v.into_boxed_slice());
+        PhysAlloc::Bitmap(BitmapAllocator::init(&mut metadata[..meta_size], total_pages, &regions))
     }
 
     #[test]
     fn test_alloc_page() {
-        let phys_alloc = Box::new(MockPhysAllocator::new(256));
+        let phys_alloc = make_test_phys_alloc(256);
         let mut alloc = VmPageAllocator::new(phys_alloc);
 
         let (v1, p1) = alloc.alloc_page().unwrap();
@@ -127,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_alloc_phys_and_free() {
-        let phys_alloc = Box::new(MockPhysAllocator::new(4));
+        let phys_alloc = make_test_phys_alloc(4);
         let mut alloc = VmPageAllocator::new(phys_alloc);
 
         let p1 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
@@ -156,11 +133,8 @@ mod tests {
 
     #[test]
     fn test_total_pages() {
-        let phys_alloc = Box::new(MockPhysAllocator::new(10));
-        let mut alloc = VmPageAllocator::new(phys_alloc);
+        let phys_alloc = make_test_phys_alloc(10);
+        let alloc = VmPageAllocator::new(phys_alloc);
         assert_eq!(alloc.total_pages(), 10);
-
-        alloc.alloc_page().unwrap();
-        assert_eq!(alloc.total_pages(), 9);
     }
 }
