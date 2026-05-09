@@ -161,7 +161,7 @@ void memstats(int *nodes, int *pages, int *largest);
 **图解**：
 
 - **空闲页位图**：核心数据结构，1 bit 表示 1 个物理页的空闲/占用状态
-- **保留页队列**：预分配备用页（spare pages），用于页表操作等关键路径，确保内存紧张时也能成功分配。
+- **保留页队列**：预分配备用页（spare pages），打破 VM 页表分配的循环依赖（`vm_allocpages → vm_mappages → pt_writemap → vm_allocpages` 递归时从备用池取页）
 - **内存统计**：记录总页数、空闲页数、最低可用地址等信息
 - **物理页分配器**：基于位图进行分配，支持分配连续物理页（DMA 等场景需要）
 
@@ -451,7 +451,7 @@ static phys_bytes alloc_pages(int pages, int memflags)
 
 **关键设计点**
 
-1. **首次适应算法**: 从空闲列表中找到第一个足够大的块
+1. **反向首次适应算法**: 从高地址向低地址扫描，找到第一个足够大的连续空闲块
 2. **对齐处理**: 先分配额外空间，再释放前缀以达到对齐要求
 3. **缓存回收**: 分配失败时尝试回收页缓存后重试
 4. **清零处理**: 在 `alloc_pages()` 中通过 `sys_memset()` 实现
@@ -737,31 +737,49 @@ free_mem(mem, 4);
 
 ### 2.3 保留页队列（Reserved Queue）
 
-> **核心目的**：预分配备用页，确保页表操作等关键路径在内存紧张时也能成功。
+> **核心目的**：打破 VM 页表分配的循环依赖——`vm_allocpages → vm_mappages → pt_writemap → vm_allocpages` 递归时，从预分配的备用池直接取页。
 
 #### 2.3.1 为什么需要保留页队列？
 
-**问题场景**：
+**Minix3 源码注释**（[pagetable.c:55-57](minix3/minix/servers/vm/pagetable.c#L55-L57)）：
 
-```
-fork() 系统调用
-    ↓
-需要为新进程分配页表
-    ↓
-调用 alloc_mem() 分配物理页
-    ↓
-如果系统内存不足，alloc_mem() 返回 NO_MEM
-    ↓
-fork() 失败 → 进程无法创建
+```c
+/* Spare memory, ready to go after initialization, to avoid a
+ * circular dependency on allocating memory and writing it into VM's
+ * page table.
+ */
 ```
 
-**关键问题**：页表操作是系统关键路径，不能因为内存不足而失败。否则可能导致：
+**Minix3 源码注释**（[pagetable.c:1126-1130](minix3/minix/servers/vm/pagetable.c#L1126-L1130)）：
 
-- 进程无法创建
-- 缺页处理失败
-- 系统死锁
+```c
+/* Spare pages are used to allocate memory before VM has its own page
+ * table that things (i.e. arbitrary physical memory) can be mapped into.
+ * We get it by pre-allocating it in our bss (allocated and mapped in by
+ * the kernel) in static_sparepages.
+ */
+```
 
-**解决方案**：预先保留一部分物理页（spare pages），专门用于这些关键操作。
+**循环依赖**：VM 分配页表页时存在递归。
+
+```
+vm_allocpages() 分配物理页
+    ↓
+vm_mappages() 将物理页映射到 VM 地址空间
+    ↓
+pt_writemap() 写页表 → 可能需要分配新的页表页
+    ↓
+vm_allocpages() ← 递归！
+```
+
+**两个触发场景**：
+
+1. **初始化阶段**（`!pt_init_done`）：VM 还没有自己的页表，无法通过 `vm_mappages` 将任意物理内存映射到自己的地址空间，只能使用内核预映射的 BSS 静态页
+2. **运行时递归**（`level > 1`）：`vm_allocpages → vm_mappages → pt_writemap → vm_allocpages` 递归时，不能走正常路径（会无限递归），从 spare pool 直接取一个预分配好的页
+
+**解决方案**：预先保留一部分物理页（spare pages），在递归发生时直接从备用池取页，打破循环依赖。
+
+**注意**：spare pages 不是"防止内存不足"的机制——如果系统真的内存不足，spare pages 用完也一样失败（`vm_getsparepage` 返回 NULL，打印 "VM: warning: out of spare pages"）。它是打破递归的机制。
 
 #### 2.3.2 数据结构
 
@@ -772,7 +790,7 @@ fork() 失败 → 进程无法创建
 #define MAXRESERVEDQUEUES  15   // 最大队列数
 
 static struct reserved_pages {
-    struct reserved_pages *next;   // 链表连接
+    struct reserved_pages *next;   // first_reserved_inuse 链表，alloc_cycle() 遍历此链表补充 spare pages
     int max_available;             // 队列容量
     int npages;                    // 每槽页数（通常为1）
     int mappedin;                  // 是否需要映射到内核地址空间
@@ -820,47 +838,70 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 }
 ```
 
-**使用**（[pagetable.c:264](minix3/minix/servers/vm/pagetable.c#L264) `vm_getsparepage()`）：
+**使用**（[pagetable.c:333](minix3/minix/servers/vm/pagetable.c#L333) `vm_allocpages()`）：
 
 ```c
-static void *vm_getsparepage(phys_bytes *phys)
+void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 {
-    void *ptr;
-    if(reservedqueue_alloc(spare_pagequeue, phys, &ptr) != OK) {
-        return NULL;  // 保留页也用完了，系统处于极端状态
+    static int level = 0;
+    level++;
+    assert(level <= 2);  // 最多递归 2 层
+
+    // 递归中 或 pt_init 未完成 → 从 spare page 取，打破循环依赖
+    if((level > 1) || !pt_init_done) {
+        if(pages == 1) s = vm_getsparepage(phys);
+        else if(pages == 4) s = vm_getsparepagedir(phys);
+        level--;
+        if(!s) printf("VM: warning: out of spare pages\n");
+        return s;
     }
-    return ptr;
+
+    // 正常路径：alloc_mem → vm_mappages（可能触发递归）
+    newpage = alloc_mem(pages, mem_flags);
+    ret = vm_mappages(*phys, pages);  // ← 这里可能递归
+    level--;
+    return ret;
 }
 ```
+
+**关键逻辑**：`level` 变量检测递归深度。正常路径（`level == 1` 且 `pt_init_done`）走 `alloc_mem → vm_mappages`；递归时（`level > 1`）直接从 spare pool 取页，不再走 `vm_mappages`，打破循环。
 
 **补充机制**：
 
-当保留页被消耗后，系统会在后台自动补充：
+当保留页被消耗后，系统会在 VM 主循环的空闲时间延迟补充：
 
 ```c
-// alloc.c: 检查并补充缺失的 spare pages
-for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
-    reservedqueue_fill(rq);  // 调用 alloc_mem 补充
+// VM 主循环中（main.c:118-119）：
+if(missing_spares > 0) {
+    alloc_cycle();  // 在等待下一个 IPC 前补充 spare pages
+}
+
+// 信号处理后（main.c:745-746）：
+if(missing_spares > 0) {
+    alloc_cycle();  // 确保信号处理期间消耗的 spare pages 被补充
+}
+
+// alloc_cycle() 内部（alloc.c:227-237）：
+void alloc_cycle(void)
+{
+    for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
+        reservedqueue_fill(rq);  // 调用 alloc_mem + vm_mappages 补充
+    }
 }
 ```
+
+**关键点**：spare pages 的补充是**延迟的**（在 VM 主循环的空闲时间），不是立即的。这进一步说明 spare pages 的目的是"打破递归"而非"保证供应"——如果目的是保证供应，补充应该是紧急的、立即的。
 
 #### 2.3.5 设计要点
 
 | 要点       | 说明                         |
 | -------- | -------------------------- |
-| **预分配**  | 启动时分配，避免运行时竞争              |
+| **预分配**  | 启动时分配，打破 `vm_allocpages → vm_mappages → pt_writemap → vm_allocpages` 的递归循环 |
 | **映射**   | 页表操作需要虚拟地址，所以 `mappedin=1` |
-| **容量**   | 200 页（约 800KB），足够应对突发需求    |
-| **自动补充** | 后台任务补充消耗的备用页               |
+| **容量**   | 200 页（约 800KB），足够应对递归深度 |
+| **自动补充** | 后台任务补充消耗的备用页 |
 
-> **方案四分析**：`spare_pagequeue` 不是"设计失误"，而是 **32 位时代的正确工程权衡**。Minix3 运行在 x86-32 上，32 位内核无法建立全物理内存 direct map（4GB 虚拟地址空间要容纳内核代码、内核栈、设备映射等，无法再映射所有物理内存），只能预分配备用页池来应对递归。当 `vm_mappages` 需要为新页表页分配 VA 时，它本身可能触发页错误，需要再分配页表页——这就是递归。备用页池是"递归发生时的兜底"。
->
-> x86-64 下 direct map 从结构上消除了递归根源——物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤，因此不存在递归，也不需要兜底。三种方案的递归处理是递进关系：
-> - Minix3 spare_pagequeue：**缓解递归**——递归发生时从备用页池取页
-> - 方案三 PtRegion：**结构性消除递归**——页表页 VA 不走 `find_hole + vm_mappages`
-> - 方案四 Direct Map：**递归根源消失**——物理页不需要分配 VA
-
-> 保留页队列的 Rust 实现状态见 [§5.3](#53-bitmapallocator) 和 [§5.4](#54-buddyallocator-soa-结构)。
+> **32 位时代的工程权衡**：`spare_pagequeue` 不是"设计失误"，而是 **32 位架构下的正确工程权衡**。Minix3 的 VM 运行在 x86-32 用户空间，32 位地址空间只有 4GB，VM 自身还需要容纳代码段、数据段、BSS、栈等，剩余可用于映射物理内存的虚拟地址空间有限。虽然理论上可以划出一段地址空间做 direct map（Linux x86-32 就用 ~896MB direct map 覆盖 ZONE_NORMAL），但 Minix3 选择了更简单的方案：不建 direct map，所有物理页访问都通过 `vm_mappages` 动态映射。这导致 `vm_mappages` 需要为新页表页分配 VA 时，它本身可能触发页错误，需要再分配页表页——这就是递归。备用页池是"递归发生时的兜底"。
 
 ### 2.4 内存统计与资源限制
 
@@ -1364,7 +1405,7 @@ impl PhysAllocator for BitmapAllocator {
         // 对齐：ALIGN64K/ALIGN16K → 多分配 align_clicks 页，释放前缀未对齐部分
         // 低内存：LOWER16MB/LOWER1MB → 限制搜索范围 max_page（此时不用 page_cache）
         // 重试：分配失败时调用 cache_freepages() 回收文件缓存页，再重试
-        // 清零：CLEAR → TODO（VM 仅拥有物理内存描述数据，无物理内存直接访问权，需内核 IPC sys_memset）
+        // 清零：CLEAR → 通过 vm_phys_to_virt() 获取虚拟地址后直接 memset（方案四下无需 IPC）
         // 连续：CONTIG → no-op（bitmap 总是连续分配，与 Minix3 一致）
     }
     fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
@@ -1390,7 +1431,7 @@ impl PhysAllocatorStats for BitmapAllocator {
 | chunk 类型 | `bitchunk_t` (u32) | `u64`（64-bit 更高效） |
 | 初始化 | `mem_init()` 写 BSS | `init()` 从 early heap 分配 |
 | page cache | `free_page_cache[]` + `cache_freepages()` | `page_cache: &'static mut [usize]` + `cache_freepages()` placeholder |
-| PAF_CLEAR | `sys_memset()` 清零 | TODO（需内核 IPC） |
+| PAF_CLEAR | `sys_memset()` 清零 | `vm_phys_to_virt()` + `memset`（方案四下直接访问） |
 
 **辅助方法**：
 
@@ -1490,7 +1531,7 @@ impl PhysAllocator for BuddyAllocator {
     fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
         // 对齐：ALIGN64K/ALIGN16K → 多分配后释放前缀未对齐部分
         // 低内存：LOWER16MB/LOWER1MB → 分配后检查是否超出 max_page，超出则释放返回 Err
-        // 清零：CLEAR → TODO（需内核 IPC sys_memset）
+        // 清零：CLEAR → 通过 vm_phys_to_virt() 获取虚拟地址后直接 memset（方案四下无需 IPC）
         // 连续：CONTIG → no-op（buddy 总是连续分配）
         // 注意：buddy 向上取整到 2^n 页，可能浪费内存
     }
@@ -1596,7 +1637,7 @@ impl PhysAllocator for SegmentTreeAllocator {
     fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
         // 对齐：ALIGN64K/ALIGN16K → 多分配后 set_range 释放前缀未对齐部分
         // 低内存：LOWER16MB/LOWER1MB → 分配后检查是否超出 max_page
-        // 清零：CLEAR → TODO（需内核 IPC sys_memset）
+        // 清零：CLEAR → 通过 vm_phys_to_virt() 获取虚拟地址后直接 memset（方案四下无需 IPC）
         // 连续：CONTIG → no-op（线段树总是连续分配）
     }
     fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
