@@ -25,7 +25,7 @@
 VM 是系统内存管理服务器，但它自己也是一个用户态进程。这产生了一个循环依赖：
 
 ```
-VM 需要分配物理页 → 需要页表来映射 → 页表本身也需要物理页 → 谁来分配？
+VM 需要映射物理页 → 需要页表来建立映射 → 分配页表页又需要映射 → 谁来映射？
 ```
 
 更具体地说，`vm_allocpage` 需要同时返回两个地址：
@@ -35,7 +35,9 @@ VM 需要分配物理页 → 需要页表来映射 → 页表本身也需要物�
 | 虚拟地址（VA） | CPU 执行代码、读写数据 | VM 代码 |
 | 物理地址（PA） | MMU 硬件做地址翻译 | 页表 entry、CR3 |
 
-物理地址可以从物理内存分配器（`alloc_mem`）获取——纯 bitmap 操作，不涉及页表。但虚拟地址的获取需要经过 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)），而 `vm_mappages` 在映射之前必须确保目标虚拟地址对应的页表已存在。如果页表不存在，就需要分配一个新的页表页——这就回到了 `vm_allocpage`，形成递归。
+> **术语说明**：一旦 CPU 启动分页机制（CR0.PG=1），所有内存访问都通过 MMU 进行地址转换，CPU 只能使用虚拟地址（Virtual Address）。
+
+物理地址（Physical Address）可以从物理内存分配器（`alloc_mem`）获取——纯 bitmap 操作，不涉及页表。但虚拟地址的获取需要经过 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)），而 `vm_mappages` 在映射之前必须确保目标虚拟地址对应的页表已存在。如果页表不存在，就需要分配一个新的页表页——这就回到了 `vm_allocpage`，形成递归。
 
 ### 1.3 接口定义
 
@@ -47,11 +49,11 @@ void *vm_allocpage(phys_bytes *phys, int reason);
 | 参数 | 含义 |
 |------|------|
 | `phys` | [出参] 物理地址，供硬件使用（如加载到 CR3） |
-| `reason` | 用途分类：`VMP_SPARE`(0) / `VMP_SLAB` / `VMP_PAGEDIR` / `VMP_PAGETABLE` |
+| `reason` | 用途分类：`VMP_SPARE`(0) / `VMP_PAGETABLE`(1) / `VMP_PAGEDIR`(2) / `VMP_SLAB`(3) |
 | `pages` | 页数（`vm_allocpage` 固定为 1） |
 | 返回值 | 虚拟地址，供 VM 代码访问 |
 
-**关键设计**：一次调用同时返回虚拟地址和物理地址。这是递归问题的根源——两个地址的获取路径不同，其中一个可能触发另一个的再次调用。
+`vm_allocpage` 一次调用同时返回虚拟地址和物理地址。**递归的根源在于 VA 的获取**——建立页表映射可能需要分配新的页表页，而分配页表页又需要建立映射，形成循环。PA 的获取（从空闲页池取页）不会递归，VA 的获取才会。
 
 ---
 
@@ -69,21 +71,23 @@ static int pt_init_done;  // [pagetable.c:328](minix3/minix/servers/vm/pagetable
 void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 {
     phys_bytes newpage;
-    static int level = 0;
+    static int level = 0;   // 递归深度计数器：1=正常调用，2=递归重入
     void *ret;
     u32_t mem_flags = 0;
 
     assert(reason >= 0 && reason < VMP_CATEGORIES);
     assert(pages > 0);
 
-    level++;
-    assert(level >= 1 && level <= 2);
+    level++;                 // 进入时 +1，退出时 -1，保证配对
+    assert(level >= 1 && level <= 2);  // 最多递归一层
 
     // 阶段 1：初始化阶段 或 递归情况
+    //   level > 1：说明是从 vm_mappages 递归回来的，不能再走正常路径
+    //   !pt_init_done：VM 页表尚未初始化，无法调用 vm_mappages
     if ((level > 1) || !pt_init_done) {
         void *s;
-        if (pages == 1) s = vm_getsparepage(phys);
-        else if (pages == 4) s = vm_getsparepagedir(phys);
+        if (pages == 1) s = vm_getsparepage(phys);       // 从备用页池取单页
+        else if (pages == 4) s = vm_getsparepagedir(phys); // 从备用页池取页目录（ARM）
         else panic("%d pages", pages);
 
         level--;
@@ -91,25 +95,30 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
             util_stacktrace();
             printf("VM: warning: out of spare pages\n");
         }
+        // 只有动态分配的页才计入 VM 自身用量统计：
+        // - 静态页（BSS 备用页）：编译期预留，内核加载时已映射，不占用物理内存池，不计数
+        // - 动态页：运行时从 alloc_mem 分配，消耗物理内存池，需要计数跟踪
         if (!is_staticaddr(s)) vm_self_pages++;
         return s;
     }
 
-    // 阶段 2：正常运行阶段
+    // 阶段 2：正常运行阶段（level == 1 且 pt_init_done）
 #if defined(__arm__)
     if (reason == VMP_PAGEDIR) {
-        mem_flags |= PAF_ALIGN16K;
+        mem_flags |= PAF_ALIGN16K;  // ARM 页目录需要 16KB 对齐
     }
 #endif
 
+    // 步骤 1：分配物理页
     if ((newpage = alloc_mem(pages, mem_flags)) == NO_MEM) {
         level--;
         printf("VM: vm_allocpage: alloc_mem failed\n");
         return NULL;
     }
 
-    *phys = CLICK2ABS(newpage);
+    *phys = CLICK2ABS(newpage);  // 页号 → 物理地址
 
+    // 步骤 2：建立 VA 映射（⚠️ 这里可能递归：vm_mappages → pt_writemap → vm_allocpages）
     if (!(ret = vm_mappages(*phys, pages))) {
         level--;
         printf("VM: vm_allocpage: vm_mappages failed\n");
@@ -117,7 +126,7 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
     }
 
     level--;
-    vm_self_pages++;
+    vm_self_pages++;  // 计入 VM 自身占用的页数
     return ret;
 }
 ```
@@ -127,7 +136,7 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 | 条件 | 路径 | 说明 |
 |------|------|------|
 | `!pt_init_done` | `vm_getsparepage()` | 初始化阶段，页表系统未就绪 |
-| `level > 1` | `vm_getsparepage()` | 递归调用，避免在 `alloc_mem` 内部再次触发 `alloc_mem` |
+| `level > 1` | `vm_getsparepage()` | 递归重入，避免 `vm_mappages` → `pt_ptalloc` → `vm_allocpage` 无限递归 |
 | `pt_init_done && level == 1` | `alloc_mem()` + `vm_mappages()` | 正常运行 |
 
 ### 2.2 阶段 1：静态备用页（BSS）
@@ -142,6 +151,11 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 | ARM 生产构建 | 150 | 140 |
 | x86 生产构建 | 20 | 15 |
 
+**字段说明**：
+- `SPAREPAGES`：备用页池**总容量**（静态页 + 动态填充槽位）
+- `STATIC_SPAREPAGES`：BSS 段**静态预留**页数，内核加载时已映射
+- **差额**（10 页）：运行时由 `alloc_cycle()` 动态分配填充，用于平滑过渡——先用光静态页，再用动态页重新填充备用池
+
 > 文档中分析以 SANITYCHECKS 值（190 静态页）为例，生产构建（x86 仅 15 页）的递归保护机制相同，但池容量更小。
 
 ```c
@@ -152,26 +166,49 @@ static char static_sparepages[VM_PAGE_SIZE * STATIC_SPAREPAGES]
 初始化流程（`pt_init()`）：
 
 ```c
+// [pagetable.c:1088](minix3/minix/servers/vm/pagetable.c#L1088) — 简化，省略中间步骤
+
 void pt_init(void)
 {
-    int s, r;
-    vir_bytes sparepages_mem;
+    // ... 变量声明 ...
 
+    // 步骤 1：初始化备用页池
+    // static_sparepages 是 BSS 段数组，编译期已分配 VA，VM 进程可直接访问
     sparepages_mem = (vir_bytes) static_sparepages;
     assert(!(sparepages_mem % VM_PAGE_SIZE));
 
+    // 创建备用页队列，容量 SPAREPAGES 页，每槽 1 页
+    // mappedin=1：队列将来动态补充页时（reservedqueue_addslot），
+    //             需要调用 vm_mappages 建立 VA 映射；
+    //             同时要求通过 reservedqueue_add 加入的静态页也必须提供有效 VA
     spare_pagequeue = reservedqueue_new(SPAREPAGES, 1, 1, 0);
 
+    // 将 STATIC_SPAREPAGES 个静态页加入队列
     for (s = 0; s < STATIC_SPAREPAGES; s++) {
+        // v = 第 s 个静态页的虚拟地址（BSS 段内偏移）
         void *v = (void *)(sparepages_mem + s * VM_PAGE_SIZE);
         phys_bytes ph;
+
+        // sys_umap：内核调用，将 VM 进程的虚拟地址 v 翻译为物理地址 ph
+        //   SELF  = VM 自身进程端点
+        //   VM_D  = LOCAL_VM_SEG | VIR_ADDR，表示查询 VM 自身虚拟地址空间
+        //   第 4 个参数传整个数组大小，内核校验整个区间是否有效映射
+        // 为什么需要 sys_umap？因为 reservedqueue 需要同时记录 VA 和 PA：
+        //   - VA 供 VM 代码访问页内容（CPU 需要 VA）
+        //   - PA 供页表 entry 使用（MMU 需要 PA）
+        // BSS 段在内核加载时已建立映射，但 VM 进程不知道物理地址，必须向内核查询
         if ((r = sys_umap(SELF, VM_D, (vir_bytes)v,
                 VM_PAGE_SIZE * SPAREPAGES, &ph)) != OK)
             panic("pt_init: sys_umap failed: %d", r);
+
+        // 将 (VA, PA) 对加入备用页队列，后续 vm_getsparepage 直接取出使用
         reservedqueue_add(spare_pagequeue, v, ph);
     }
 
-    pt_init_done = 1;  // 切换标志
+    // ... 中间省略：页目录分配、内核映射建立等（约 150 行）...
+
+    // 步骤 N：切换标志（[pagetable.c:1311](minix3/minix/servers/vm/pagetable.c#L1311)）
+    pt_init_done = 1;
 }
 ```
 
@@ -184,12 +221,12 @@ void pt_init(void)
 ```
 vm_allocpage()
     ├── alloc_mem(pages, flags)    // 从物理内存池分配（纯 bitmap，不递归）
-    └── vm_mappages(phys, pages)   // 映射到 VM 虚拟地址空间
+    └── vm_mappages(*phys, pages)   // 映射到 VM 虚拟地址空间
 ```
 
 ### 2.4 递归链分析
 
-`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[pagetable.c:333-392](minix3/minix/servers/vm/pagetable.c#L333-L392) → [pagetable.c:494-523](minix3/minix/servers/vm/pagetable.c#L494-L523)）：
+`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[pagetable.c:333-393](minix3/minix/servers/vm/pagetable.c#L333-L393) → [pagetable.c:494-540](minix3/minix/servers/vm/pagetable.c#L494-L540)）：
 
 ```
 vm_allocpages()                          [level = 1]
@@ -239,7 +276,7 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 }
 ```
 
-**注释中提到的 "side effect"**：递归调用 `vm_allocpage`（level=2）走 `vm_getsparepage()` 拿到一个备用页，然后 `pt_ptalloc` 用这个备用页设置了 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`。当递归返回、外层 `pt_ptalloc` 继续执行时，发现 `pt->pt_pt[pde]` 已经非空——说明递归调用已经替它完成了页表分配，于是释放自己刚拿到的备用页，直接返回 OK。
+**注释中提到的 "side effect"**：`vm_allocpage`（level=1）调用 `vm_mappages` 时，`vm_mappages` → `pt_writemap` → `pt_ptalloc_in_range` 可能递归进入另一个 `pt_ptalloc(pde)`——如果这个内层 `pt_ptalloc` 恰好为同一个 PDE 分配页表，它就会先于外层设置 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`。当递归返回、外层 `pt_ptalloc` 继续执行时，发现 `pt->pt_pt[pde]` 已经非空——说明内层递归已经替它完成了页表分配，于是释放自己刚拿到的页，直接返回 OK。
 
 **递归的根源**：页表页需要两样东西——物理地址（写入 PDE 给 MMU）和虚拟地址（VM 往页表里写 PTE）。物理地址可以从 `alloc_mem` 拿（不递归），但虚拟地址如果走 `find_hole + vm_mappages`，就回到了 `vm_allocpage`。
 
@@ -261,7 +298,7 @@ alloc_cycle();                          /* Refill spares with dynamic */
 
 `pt_init_done = 1` 之后递归仍然可能发生。Minix3 的做法是：先用光 BSS 静态备用页，再调用 `alloc_cycle()` 用**动态分配**的页重新填充备用页池。这样递归保护在初始化后依然有效。
 
-> **方案四分析**：`spare_pagequeue` 是 x86-32 地址空间限制下的必然产物。32 位内核无法建立全物理内存 direct map，只能预分配备用页池来应对递归。x86-64 下 direct map 从结构上消除了递归根源——物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤，因此不存在递归，也不需要备用页池。参见 §3.4 末尾的三方案递进对比（Minix3 spare_pagequeue → PtRegion → Direct Map）。
+> **方案四分析**：`spare_pagequeue` 是 x86-32 地址空间限制下的必然产物。32 位内核无法建立全物理内存 direct map，只能预分配备用页池来应对递归。x86-64 下 direct map 从结构上消除了递归根源——物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤，因此不存在递归，也不需要备用页池。参见 §3.2 的三阶段递进对比。
 
 ### 2.5 释放机制
 
@@ -301,305 +338,63 @@ void vm_freepages(vir_bytes vir, int pages)
 
 ## 3. Rust 设计决策
 
-本章展示三种初始化方案，从 Minix3 原方案出发，逐步演进到最终采用的 Typestate 模式。三种方案的对比本身就是一次设计思维的训练。
+本章围绕两个核心问题展开：**VA 从哪里来**和**递归如何消除**。这两个问题本质上是同一个问题的两面——递归的根源就是 VA 的获取需要页表映射，而页表映射本身又需要 VA。三阶段演进从"递归兜底"到"结构性消除"到"前提消失"，每一步都在重新回答"VA 从哪里来"这个问题。
 
-### 3.1 方案一：BSS 静态分配（Minix3 原方案）
+### 3.1 VA 来源的三阶段演进
 
-**思路**：编译期在 BSS 段预留固定大小的备用页数组，内核加载时已映射。
+#### 3.1.1 spare_pagequeue：递归兜底（Minix3 原方案）
 
-```rust
-// 方案一：直接翻译 Minix3 的 BSS 方案
-#[link_section = ".bss.reserved"]
-static mut STATIC_SPARE_PAGES: [u8; STATIC_SPARE_SIZE] = [0; STATIC_SPARE_SIZE];
-```
-
-**优点**：
-- 实现简单，Minix3 已验证
-- 虚拟地址编译期确定，无运行时开销
-
-**缺点**：
-
-| 问题 | Minix3 (32-bit) | 64-bit |
-|------|-----------------|--------|
-| bitmap 大小 | 128KB（1M 页） | 无法静态分配完整 bitmap |
-| 备用页数量 | 190 页（760KB） | 编译期固定，不灵活 |
-| 扩展性 | 编译期固定 | 需要运行时动态 |
-| 地址空间 | 32 位，BSS 够用 | 64 位，但 BSS 方案本身不利用 64 位优势 |
-
-**结论**：BSS 方案在 64 位下没有根本性问题（备用页本身不需要覆盖全部地址空间），但缺乏灵活性。更重要的是，它把"初始化"和"正常运行"两个阶段的区分交给了运行时的 `pt_init_done` 标志——这个标志是一个全局可变状态，任何函数都可以读取它，编译器无法验证阶段切换的正确性。
-
-### 3.2 方案二：内核预留区域 + 运行时标志
-
-**思路**：kernel 在启动 VM 时预留一段物理内存区域，通过启动信息传递给 VM。VM 内部仍用 `pt_init_done` 标志区分阶段。
+Minix3 的 `spare_pagequeue` 是递归兜底方案。当 `vm_allocpage` 递归重入（`level > 1`）时，不走 `vm_mappages` 路径，而是从备用页池取页。备用页的 VA 来自 BSS 段静态分配——编译期已确定，不需要运行时分配。
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│              内核预留内存方案                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Kernel 启动 VM 时:                                         │
-│  ┌──────────────────────────────────────┐                   │
-│  │  boot_info.reserved_region           │                   │
-│  │  ├── phys_start: 0x1000000           │                   │
-│  │  ├── phys_end:   0x1100000           │                   │
-│  │  ├── virt_start: 0x7f0000000000      │                   │
-│  │  └── size:       0x100000 (1MB)      │                   │
-│  └──────────────────────────────────────┘                   │
-│         │                                                   │
-│         ▼                                                   │
-│  VM 初始化阶段:                                              │
-│  ┌──────────────────────────────────────┐                   │
-│  │  1. 从 reserved_region 分配备用页     │                   │
-│  │  2. 初始化 PhysAllocator (bitmap)    │                   │
-│  │  3. 初始化页表系统                    │                   │
-│  │  4. 搬迁已初始化数据到堆              │                   │
-│  │  5. 释放 reserved_region 回物理池    │                   │
-│  └──────────────────────────────────────┘                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+VA 来源: BSS 段静态预留（编译期确定）
+递归处理: 递归发生时用备用页兜底
+本质: "递归还是会发生，只是有缓冲"
 ```
 
-```rust
-// 方案二：内核预留区域 + 运行时标志
-pub(crate) struct VmPageAllocator {
-    stage: AllocStage,
-    reserved: ReservedRegion,
-    phys_alloc: PhysAllocator,
-    mapper: PageMapper,
-}
+**问题**：备用页池是固定大小的。x86 生产构建仅 15 页，如果递归频繁发生（每次 `vm_mappages` 落入新的 2MB 区域），池会耗尽。更根本地，这个方案没有消除递归，只是提供了缓冲。
 
-enum AllocStage {
-    Bootstrap,
-    Normal,
-}
+> 详细分析见 §2.2–§2.4。
 
-impl VmPageAllocator {
-    pub(crate) fn alloc_page(
-        &mut self, reason: PageCategory,
-    ) -> Option<(VirtAddr, PhysAddr)> {
-        match self.stage {
-            AllocStage::Bootstrap => self.reserved.alloc_page(reason),
-            AllocStage::Normal => self.dynamic_alloc(reason),
-        }
-    }
+#### 3.1.2 PtRegion：结构性消除递归
 
-    pub(crate) fn switch_to_normal(&mut self) {
-        self.stage = AllocStage::Normal;
-    }
-}
+PtRegion 的核心思路：为页表页预留一段**专用的虚拟地址空间**，用 bump allocator 按序分配。页表页的 VA 不再走 `find_hole + vm_mappages`，递归从结构上被消除。
+
+```
+VA 来源: PtRegion bump allocator（运行时从专用区域切）
+递归处理: 页表页 VA 不走 find_hole + vm_mappages，递归不可能发生
+本质: "让递归不可能发生"
 ```
 
-**优点**：
-- 解决了 BSS 方案在 64 位下的灵活性问题
-- 预留区域大小由 kernel 决定，可运行时调整
-- 初始化完成后预留区域归还物理池，不浪费内存
-
-**缺点**：
-- `stage` 仍然是运行时状态，编译器无法验证
-- `switch_to_normal()` 之后，`reserved` 字段仍然存在（虽然不再使用），占用结构体空间
-- 如果某段代码在 Normal 阶段错误地访问了 `reserved`，编译器不会报错
-
-### 3.3 方案三：Typestate 模式（最终选择）
-
-**思路**：将"初始化"和"正常运行"编码为两个不同的类型，阶段切换通过消耗旧类型、产生新类型来完成。编译器在编译期保证：Normal 阶段不可能访问 `reserved`，Bootstrap 阶段不可能调用 `dynamic_alloc`。
-
-```rust
-pub(crate) struct Bootstrap;
-pub(crate) struct Normal;
-
-/// 泛型参数 S 标记当前阶段，O 抽象页表操作（便于测试注入）
-pub(crate) struct VmPageAllocator<S, O: PtOps = RealPtOps> {
-    reserved: ReservedRegion,
-    phys_alloc: Option<Box<dyn PhysAllocator>>,
-    pt_region: Option<PtRegion<O>>,
-    pt_ops: Option<O>,
-    _stage: PhantomData<S>,
-}
-```
-
-**Bootstrap 阶段**：
-
-```rust
-impl<O: PtOps> VmPageAllocator<Bootstrap, O> {
-    /// 从预留区域分配，直接返回 (VA, PA)。
-    /// 预留区域已被内核映射，不需要 vm_mappages。
-    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        self.reserved.alloc_page()
-    }
-}
-
-impl VmPageAllocator<Bootstrap, RealPtOps> {
-    pub(crate) fn new(
-        reserved: ReservedRegion,
-        phys_alloc: Box<dyn PhysAllocator>,
-    ) -> Self { ... }
-
-    /// 消耗 Bootstrap，产生 Normal。
-    /// 从 reserved 切出 3 页初始化 PtRegion，其余物理页后续由搬迁逻辑归还。
-    /// 
-    /// 注意：into_normal 仅在 RealPtOps 上实现，因为 PtRegion::from_reserved
-    /// 需要真实的页表操作。测试代码使用 into_normal_for_test() 配合 MockPtOps。
-    pub(crate) fn into_normal(mut self) -> VmPageAllocator<Normal, RealPtOps> {
-        let pt_region = PtRegion::from_reserved_with_ops(
-            &mut self.reserved,
-            self.phys_alloc.unwrap(),
-            self.pt_ops.unwrap(),
-        );
-        VmPageAllocator {
-            reserved: self.reserved,
-            phys_alloc: None,
-            pt_region: Some(pt_region),
-            pt_ops: None,
-            _stage: PhantomData,
-        }
-    }
-}
-```
-
-**Normal 阶段**：
-
-```rust
-impl<O: PtOps> VmPageAllocator<Normal, O> {
-    pub(crate) fn alloc_phys(&mut self, clicks: usize, flags: PageAllocFlags)
-        -> Result<PhysBytes, AllocError> { ... }
-
-    pub(crate) fn alloc_virt(&mut self, phys: PhysBytes, clicks: usize)
-        -> Option<VirBytes> { ... }
-
-    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let phys = self.alloc_phys(1, PageAllocFlags::empty()).ok()?;
-        let virt = self.alloc_virt(phys, 1)?;
-        Some((virt, phys))
-    }
-}
-```
-
-**关键设计点**：
-
-- `phys_alloc` 用 `Option` 包裹：Bootstrap 阶段持有 `Some`，`into_normal()` 将其所有权转移给 `PtRegion`，Normal 阶段变为 `None`。编译器保证 Normal 阶段不可能再通过 `phys_alloc` 直接分配。
-- `pt_ops` 同样用 `Option` 包裹：Bootstrap 阶段持有 `Some(RealPtOps)`，`into_normal()` 转移给 `PtRegion`。
-- `PtOps` trait 抽象了页表读写操作，使得测试可以用 `MockPtOps` 替代 `RealPtOps`，避免测试中访问非法内存地址。
-
-**三种方案对比**：
-
-| 维度 | BSS 静态分配 | 预留区域 + 标志 | Typestate |
-|------|-------------|----------------|-----------|
-| 内存来源 | 编译期 BSS | kernel 预留 | kernel 预留 |
-| 阶段区分 | 运行时 `pt_init_done` | 运行时 `stage` 枚举 | 编译期类型参数 |
-| Normal 阶段能否访问 reserved | 能（BSS 永远存在） | 能（字段仍存在） | **不能**（所有权已转移） |
-| 阶段切换后旧状态 | 仍可访问 | 仍可访问 | **被消耗，不可访问** |
-| 编译器保证 | 无 | 无 | **有** |
-| 代码复杂度 | 低 | 中 | 中 |
-
-**32/64 位架构差异**：
-
-| 维度 | Minix3 (32-bit x86) | minix-rs (64-bit x86_64) |
-|------|---------------------|--------------------------|
-| 页表层级 | 2 级（PD → PT） | 4 级（PML4 → PDPT → PD → PT） |
-| 虚拟地址宽度 | 32 位（4GB） | 48 位（256TB） |
-| 页表项大小 | 4 字节 | 8 字节 |
-| 单页页表项数 | 1024 | 512 |
-| 单 PT 覆盖空间 | 4MB | 2MB |
-| 单 PD 覆盖空间 | 4GB | 1GB |
-| 备用页方案 | BSS 静态分配 190 页 | 内核预留区域 + Typestate |
-| 递归保护 | `level` 计数器 + 备用页池 | PtRegion 消除递归根源 |
-| 地址空间压力 | 高（4GB 需精心规划） | 低（256TB 充足） |
-
-**为什么选择 Typestate？**
-
-1. **编译期安全**：Normal 阶段不可能访问 `reserved` 和独立的 `phys_alloc`，编译器阻止了整类 bug。
-2. **自文档化**：函数签名 `fn foo(alloc: &VmPageAllocator<Normal>)` 明确表达了"此函数仅在 Normal 阶段调用"。
-3. **零运行时开销**：`PhantomData` 是零大小类型，编译后完全消除。
-4. **符合 Rust 惯例**：`Builder` 模式、状态机等场景广泛使用 Typestate。
-
-> **方案四标注**：Typestate 模式（Bootstrap → Normal）是方案三的优雅解决方案，但 direct map 使"自举阶段"这个概念本身消失了。方案四的 VmPageAllocator 不需要阶段区分——VM 从第一条指令起就能通过 `vm_phys_to_virt()` 访问物理内存，不需要先从 reserved 分配再切换到 PtRegion。
->
-> 方案四的 VmPageAllocator 简化如下：
-> - 删除 `Bootstrap` / `Normal` 类型参数——不再有阶段区分
-> - 删除 `phys_alloc: Option<...>` 的 Option 包裹——物理分配器始终可用
-> - 删除 `pt_ops: Option<O>`——页表操作始终可用
-> - 删除 `pt_region: Option<PtRegion<O>>`——PtRegion 不再存在
-> - 删除 `into_normal()` 转换函数——没有阶段需要转换
-> - `alloc_page()` 直接返回 `PhysBytes`——VA 通过 `vm_phys_to_virt(phys)` 获取
-> - `alloc_virt()` 方法删除——VA 不再需要分配
->
-> Typestate 是解决"自举阶段区分"的优雅方案，但 direct map 使"自举阶段"这个概念本身消失了。这不是 Typestate 不好，而是它要解决的问题不存在了。
-
-### 3.4 递归的结构性消除：PtRegion
-
-Typestate 解决了阶段管理问题，但没有解决递归问题。回顾 §2.4 的分析：递归的根源是页表页的虚拟地址需要走 `find_hole + vm_mappages`。
-
-**Minix3 的 spare_pagequeue 方案的问题**：备用页池是固定大小的。如果递归频繁发生（每次 `vm_mappages` 落入新的 2MB 区域），池会耗尽。
-
-**更根本的解法**：为页表页预留一段**专用的虚拟地址空间**，用 bump allocator 按序分配。页表页的虚拟地址不再走 `find_hole + vm_mappages`，递归从结构上被消除。
+**PtRegion 的结构**：
 
 ```
 VM 虚拟地址空间:
   0x7F0000000000  ┬── 页表页专用区域 (初始 2MB, 可增长)
-                  │   ┌── PDPT page (4KB)     ← 占用 1 个 slot
-                  │   ├── PD page   (4KB)     ← 占用 1 个 slot
-                  │   ├── PT[0]     (4KB)     ← 占用 1 个 slot, 提供 512 slots
+                  │   ├── PDPT page (4KB)
+                  │   ├── PD page   (4KB)
+                  │   ├── PT[0]     (4KB)     ← 提供 512 slots
                   │   ├── slot 3: 可用
-                  │   ├── ...
-                  │   ├── slot 511: 可用
-                  │   │
-                  │   │  快用完时扩展:
-                  │   ├── PT[1]     (4KB)     ← 占用 1 个 slot, 提供 512 slots
                   │   ├── ...
   0x7F0000200000  ┴── 区域结束
   0x7F0000200000  ─── 通用映射区域 (find_hole 从这里开始)
 ```
 
-**容量分析**：
-
-| 层级 | 条目数 | 覆盖的页表空间 | 够用吗 |
-|------|--------|---------------|--------|
-| 1 个 PT 页 | 512 slots | 2MB | 初始 |
-| 1 个 PD 页 | 512 个 PT | 1GB | 远超需求 |
-| 1 个 PDPT 页 | 512 个 PD | 512GB | 不可能用完 |
-
-1GB 页表空间 = 262,144 个页表页。VM 自身映射只需几 MB，一个 PD 页的容量绰绰有余。
-
-**PtRegion 起始地址选择**：
-
-`0x7F0000000000` 的选择理由：
-1. **避开内核空间**：x86_64 Linux 内核占用高地址（`0xFFFF...`），用户空间为 `0x0000_0000_0000` 到 `0x0000_7FFF_FFFF_FFFF`
-2. **避开用户堆/栈**：用户堆从低地址向上增长，栈从高地址向下增长。`0x7F00...` 位于用户空间高位，与典型栈地址（`0x7FFF...`）有足够距离
-3. **对齐友好**：`0x7F00_0000_0000` 是 1GB 对齐，便于页表计算
-4. **可配置**：实际代码中应定义为常量 `PT_REGION_START`，便于调整
+**容量分析**：1 个 PT 页提供 512 slots，1 个 PD 页覆盖 512 个 PT = 1GB 页表空间，远超 VM 自身需求。
 
 **扩展过程（关键：不递归）**：
 
 ```
-扩展前: 只剩 8 个 free slots
-  Region: [used.........................|free(8)]
-
-扩展步骤:
-  1. alloc_phys(1) → pt_phys           ← 纯 bitmap, 不递归
-  2. 取 1 个 free slot → pt_virt       ← bump allocator, 不递归
-  3. 写 PTE: current_pt[slot] = pt_phys | flags  ← current_pt 已映射, 不递归
-  4. 清零新 PT 页 (通过 pt_virt)        ← 刚映射好, 不递归
-  5. 写 PDE: pd[new_idx] = pt_phys | flags       ← pd 已映射, 不递归
-  6. 切换 current_pt → 新 PT 页
-  7. 新 PT[0] = pt_phys | flags        ← 自映射, 不递归
-  8. mapped_end += 2MB
-
-扩展后: 新 PT 页提供 511 个可用 slots
+1. alloc_phys(1) → pt_phys           ← 纯 bitmap, 不递归
+2. 取 1 个 free slot → pt_virt       ← bump allocator, 不递归
+3. 写 PTE: current_pt[slot] = pt_phys | flags  ← current_pt 已映射, 不递归
+4. 清零新 PT 页 (通过 pt_virt)        ← 刚映射好, 不递归
+5. 写 PDE: pd[new_idx] = pt_phys | flags       ← pd 已映射, 不递归
+6. 切换 current_pt → 新 PT 页
+7. 新 PT[0] = pt_phys | flags        ← 自映射, 不递归
 ```
 
 每一步操作的对象都是**已经映射好的页表页**，不需要 `ensure_tables`，不需要 `vm_mappages`。
-
-**跨 2MB 边界时的处理**：当 current PT 的 512 个 slot 全部用完后，`pd_idx` 会递增（进入下一个 2MB 区域）。此时 `expand()` 不再向旧 PT 写 PTE（因为已满），而是直接写 PDE 建立新映射，并将新 PT 页设为 `current_pt`。新 PT 页的第一个 slot 自映射，保证后续的 `virt_to_phys` 能正确工作。
-
-### 3.5 alloc_phys / alloc_virt 拆分
-
-有了 PtRegion 消除递归后，`vm_allocpage` 可以干净地拆分为两个独立步骤：
-
-```
-alloc_phys(pages) → PhysBytes       // 纯物理页分配，不递归
-alloc_virt(phys, pages) → VirBytes  // 从 PtRegion 分配虚拟地址
-alloc_page() → (VirBytes, PhysBytes) // 组合上述两步
-```
 
 **递归检查清单**：
 
@@ -611,23 +406,11 @@ alloc_page() → (VirBytes, PhysBytes) // 组合上述两步
 | `pt_region.expand()` → 写 PTE | 写已映射页表 | `current_pt`（已映射） | ❌ |
 | `pt_region.expand()` → 写 PDE | 写已映射页表 | `pd_page`（已映射） | ❌ |
 
-**全部 ❌。递归从结构上被消除。** 不需要固定大小的池、不需要担心耗尽、不需要区分"递归路径"和"正常路径"。
+**全部 ❌。递归从结构上被消除。**
 
-#### 递归处理的三方案递进
-
-| 方案 | 递归处理 | 核心思路 | 类比 |
-|------|---------|---------|------|
-| Minix3 spare_pagequeue | 递归发生时兜底 | 备用页池承接递归调用 | "治标"——递归还是会发生，只是有缓冲 |
-| 方案三 PtRegion | 结构性消除递归 | 页表页 VA 不走 find_hole + vm_mappages | "治本"——让递归不可能发生 |
-| 方案四 Direct Map | 递归前提条件消失 | 物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤 | "不需要药"——递归的根源消失了 |
-
-这是从"治标"到"治本"到"不需要药"的跃迁。读者应理解：spare_pagequeue 是运行时保护（递归发生但有缓冲），PtRegion 是设计层面消除（递归从结构上不可能），Direct Map 是概念层面消除（"需要分配 VA"这个前提本身不存在了）。
-
-#### 设计反思：PtRegion 的本质
+**设计反思：PtRegion 的本质**
 
 PtRegion 结构性消除了递归，这是一个优雅的局部解。但仔细审视 PtRegion 的核心职责——`alloc_pt_page()` 给物理页分配一个 stable VA——会发现它本质上是在 VM 里**重新发明了一套 mini direct-map**。
-
-对比两者：
 
 | | PtRegion | Direct Map |
 |---|---------|------------|
@@ -635,57 +418,40 @@ PtRegion 结构性消除了递归，这是一个优雅的局部解。但仔细�
 | VA 来源 | bump allocator 从专用区域切 | `DIRECT_MAP_BASE + pa`，简单加法 |
 | 适用范围 | 仅页表页 | 所有物理页 |
 | 自举需求 | 需要 ReservedRegion 切出初始 PDPT/PD/PT | Kernel 初始页表已建立 1GB 映射 |
-| 扩展机制 | `expand()` 分配新 PT 页、写 PTE/PDE | Phase 2 bitmap 分配页表页、扩展 direct map 覆盖 |
 
 PtRegion 的 `alloc_pt_page()` 和 direct map 的 `vm_phys_to_virt()` 做的是同一件事：**phys → stable VA**。PtRegion 只是把范围限制在了页表页，而 direct map 把这个能力推广到了所有物理页。
 
-当真正的 direct map 出现后，PtRegion 的核心职责被 `vm_phys_to_virt()` 天然替代。这不是 PtRegion 的缺陷——恰恰相反，PtRegion 帮助我们发现了真正的问题：不是"如何避免递归"，而是"如何让物理页天然拥有 stable VA"。PtRegion 是 direct map 出现前的正确局部解，它的设计推导是通往全局解的必经之路。
+#### 3.1.3 Direct Map：VA 分配步骤消失（最终方案）
 
-### 3.6 搬迁策略
+Direct Map 使"VA 分配"这个步骤本身消失了。物理页天然拥有 stable VA：`vm_phys_to_virt(phys) = DIRECT_MAP_BASE + phys`。
 
-初始化完成后，需要将 Bootstrap 阶段从预留区域分配的数据搬迁到堆上，然后释放预留区域。搬迁涉及指针追踪、引用更新、旧区域释放，复杂度足够独立成章。
+```
+VA 来源: vm_phys_to_virt(phys) = DIRECT_MAP_BASE + phys（简单加法）
+递归处理: 递归的前提条件消失——不存在"需要分配 VA"这个步骤
+本质: "递归的根源消失了"
+```
 
-详见 [09-vm-relocation.md](09-vm-relocation.md)。本文档仅关注页分配器本身的设计与实现。
-
-### 3.7 方案四：Direct Map
-
-设计反思揭示了 PtRegion 的本质是"mini direct-map"。如果我们已经有了真正的 direct map，PtRegion 的核心职责就被天然替代。方案四不是"另一种方案"，而是设计演进的终点——从"如何避免递归"到"如何让物理页天然拥有 stable VA"。
-
-#### 3.7.1 核心变化
-
-**`alloc_virt()` 不再需要**。在方案三中，`alloc_virt(phys)` 从 PtRegion 分配虚拟地址；在方案四中，物理页天然拥有 stable VA：
+**核心变化**：
 
 ```rust
-// 方案三
+// PtRegion 方案
 fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
     let phys = self.phys_alloc.alloc_mem(1, ...)?;
-    let virt = self.pt_region.alloc_pt_page()?;
+    let virt = self.pt_region.alloc_pt_page()?;  // 需要 bump allocator
     Some((virt, phys))
 }
 
-// 方案四
+// Direct Map 方案（当前实现）
 fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
     let phys = self.phys_alloc.alloc_mem(1, ...)?;
-    let virt = vm_phys_to_virt(phys);
+    let virt = vm_phys_to_virt(phys);  // 简单加法
     Some((virt, phys))
 }
 ```
 
-**`alloc_page()` 简化为 `alloc_phys() → vm_phys_to_virt(phys)`**。虚拟地址的获取从一个需要 bump allocator + 页表操作的复杂流程，变成了一个简单的加法：`DIRECT_MAP_BASE + phys`。
+**递归链消失**：回顾 §1.2 的递归链 `vm_allocpage → vm_mappages → ensure_tables → vm_allocpage`，在 Direct Map 下这条链根本不存在——`vm_allocpage` 不调用 `vm_mappages`，因为映射已经存在于 direct map 中。
 
-**递归从"需要缓解"变为"结构上不可能发生"**。回顾 §1.2 的递归链：
-
-```
-vm_allocpage → vm_mappages → ensure_tables → vm_allocpage（递归！）
-```
-
-在方案四中，这条链根本不存在。`vm_allocpage` 不调用 `vm_mappages`——它不需要建立映射，因为映射已经存在于 direct map 中。递归的前提条件消失了。
-
-**PtRegion 的 bump allocator、PDPT/PD/PT 层级管理全部由 direct map 替代**。PtRegion 的 `expand()` 方法（分配新 PT 页、写 PTE/PDE、切换 current_pt）不再需要——direct map 的扩展由 Phase 2 的 bitmap 分配页表页来完成，而操作页表页本身通过 `vm_phys_to_virt()` 就能直接读写。
-
-#### 3.7.2 范式转变
-
-方案四带来的是从"mapping-centric VM"到"physical-memory-centric VM"的范式转变：
+**范式转变**：
 
 | | 旧世界观（mapping-centric） | 新世界观（physical-memory-centric） |
 |---|---|---|
@@ -694,310 +460,222 @@ vm_allocpage → vm_mappages → ensure_tables → vm_allocpage（递归！）
 | 页表页 | 需要特殊 VA 管理（PtRegion） | 与普通物理页无区别 |
 | 递归风险 | 存在，需要缓解 | 结构上不可能 |
 
-这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。整个 VM 代码会因此大幅简化——因为所有对物理页的操作都统一为 `vm_phys_to_virt()`。
+这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。
 
-#### 3.7.3 页表页不是特殊对象
+**页表页不是特殊对象**：Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"——页表页需要 PtRegion 这样的特殊 VA 管理。Direct map 出现后，"所有 physical pages are equally accessible"——页表页只是物理页的一种用途，不需要特殊 VA 管理。概念从"页表页需要独立 VA 分配路径"进化为"所有物理页统一通过 `vm_phys_to_virt()` 访问"。
 
-Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"——页表页需要 PtRegion 这样的特殊 VA 管理。Direct map 出现后，"所有 physical pages are equally accessible"——页表页只是物理页的一种用途，不需要特殊 VA 管理。
+**Rust 所有权与物理内存 Aliasing**：当一个物理页同时被映射到用户空间（进程页表）和 VM 的 Direct Map 时，Rust 的 `&mut` 要求独占访问会违反内存模型。建议使用 `read_volatile` / `write_volatile` 或封装 `PhysPtr<T>` 包装器来处理。这不是设计缺陷，而是 Rust 安全保证在 OS 内核开发中需要显式处理的固有约束。
 
-这不是"优化了页表页的 VA 分配"，而是 **"页表页需要特殊 VA 管理"这个概念本身消失了**。概念从"页表页需要独立 VA 分配路径"进化为"所有物理页统一通过 `vm_phys_to_virt()` 访问"。
+### 3.2 递归消除三阶段递进
 
-#### 3.7.4 Rust 所有权与物理内存 Aliasing
+| 方案 | 递归处理 | 核心思路 | 类比 |
+|------|---------|---------|------|
+| Minix3 spare_pagequeue | 递归发生时兜底 | 备用页池承接递归调用 | "治标"——递归还是会发生，只是有缓冲 |
+| PtRegion | 结构性消除递归 | 页表页 VA 不走 find_hole + vm_mappages | "治本"——让递归不可能发生 |
+| Direct Map | 递归前提条件消失 | 物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤 | "不需要药"——递归的根源消失了 |
 
-当一个物理页同时被映射到用户空间（进程页表）和 VM 的 Direct Map 时，Rust 的 `&mut` 要求独占访问会违反内存模型。这是 Rust OS 开发中的经典问题——物理内存的 aliasing 与 Rust 所有权模型的冲突。
+这是从"治标"到"治本"到"不需要药"的跃迁。spare_pagequeue 是运行时保护（递归发生但有缓冲），PtRegion 是设计层面消除（递归从结构上不可能），Direct Map 是概念层面消除（"需要分配 VA"这个前提本身不存在了）。
 
-建议的处理方式：
+### 3.3 init 阶段管理
 
-1. **`read_volatile` / `write_volatile`**：明确告知编译器该内存可能在外部被修改，避免优化假设独占访问
-2. **`PhysPtr<T>` 包装器**：通过物理地址在需要时提供访问，封装 volatile 语义
+Minix3 用 `pt_init_done` 全局标志区分初始化阶段和正常运行阶段。在 Direct Map 方案下，VM 从第一条指令起就能通过 `vm_phys_to_virt()` 访问物理内存——不存在"页表系统未就绪"的阶段，因此不需要阶段标志。
+
+**ReservedRegion 的角色变化**：在 Minix3 中，BSS 静态备用页同时提供 VA 和 PA。在 Direct Map 方案下，VA 由 `vm_phys_to_virt()` 统一提供，ReservedRegion 只需提供物理页预留——从预留区域分配一页物理内存，VA 通过 `vm_phys_to_virt(phys)` 直接获取。
 
 ```rust
-pub struct PhysPtr<T> {
-    phys: PhysBytes,
-    _marker: PhantomData<T>,
-}
-
-impl<T> PhysPtr<T> {
-    pub fn read(&self) -> T {
-        let virt = vm_phys_to_virt(self.phys);
-        unsafe { (virt.0 as *const T).read_volatile() }
-    }
-
-    pub fn write(&mut self, value: T) {
-        let virt = vm_phys_to_virt(self.phys);
-        unsafe { (virt.0 as *mut T).write_volatile(value) }
+impl ReservedRegion {
+    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
+        // ... bitmap 分配物理页 ...
+        let virt = vm_phys_to_virt(phys);  // VA 直接由 direct map 提供
+        Some((virt, phys))
     }
 }
 ```
 
-这不是设计缺陷，而是 Rust 安全保证在 OS 内核开发中需要显式处理的固有约束。
+### 3.4 alloc_phys / alloc_virt 拆分
 
-#### 3.7.5 方案四的 VmPageAllocator
+在 PtRegion 方案下，`vm_allocpage` 拆分为两个独立步骤：
 
-方案四中，`VmPageAllocator` 大幅简化：
+```
+alloc_phys(pages) → PhysBytes       // 纯物理页分配，不递归
+alloc_virt(phys, pages) → VirBytes  // 从 PtRegion 分配虚拟地址
+alloc_page() → (VirBytes, PhysBytes) // 组合上述两步
+```
+
+在 Direct Map 方案下，`alloc_virt` 不再需要——VA 通过 `vm_phys_to_virt(phys)` 直接获取。`alloc_page()` 简化为：
 
 ```rust
-// 方案三：Bootstrap → Normal 两阶段
-struct VmPageAllocator<Stage> {
-    phys_alloc: Box<dyn PhysAllocator>,
-    reserved: ReservedRegion,   // Bootstrap 阶段
-    pt_region: PtRegion<...>,   // Normal 阶段
-    _stage: PhantomData<Stage>,
-}
-
-// 方案四：单阶段（direct map 从启动即可用）
-struct VmPageAllocator {
-    phys_alloc: Box<dyn PhysAllocator>,
+fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
+    let phys = self.alloc_phys(1, PageAllocFlags::empty()).ok()?;
+    let virt = vm_phys_to_virt(phys);
+    Some((virt, phys))
 }
 ```
 
-关键简化：
-- **删除 `pt_region`**：`vm_phys_to_virt()` 替代 `alloc_pt_page()`
-- **删除 `pt_ops`**：不再需要页表操作抽象（direct map 下直接读写）
-- **删除 `into_normal()`**：direct map 从启动即可用，不存在 Bootstrap/Normal 阶段切换
-- **删除 `ReservedRegion` 的 VA 分配功能**：`alloc_contig_virt()` 不再需要，ReservedRegion 仅保留物理页预留语义
+### 3.5 ReservedRegion（物理页预留）
+
+ReservedRegion 在 init 阶段为物理内存分配器提供预留页，确保在 PhysAllocator 完全初始化之前就有物理页可用。
+
+```rust
+pub(crate) struct ReservedRegion {
+    phys_start: PhysBytes,
+    total_pages: usize,
+    allocated_pages: usize,
+    bitmap: u64,  // 最多 64 页
+}
+```
+
+**与 Minix3 的对比**：
+
+| 维度 | Minix3 BSS 备用页 | minix-rs ReservedRegion |
+|------|-------------------|------------------------|
+| VA 来源 | BSS 段静态映射 | `vm_phys_to_virt(phys)` |
+| PA 来源 | `sys_umap` 查询 | `phys_start + offset` |
+| 生命周期 | 静态分配，永不释放 | init 完成后物理页归还 |
+| 递归保护 | 承接递归调用 | 不需要（Direct Map 消除递归） |
+
+### 3.6 搬迁策略
+
+初始化完成后，需要将 ReservedRegion 分配的数据搬迁到堆上，然后释放预留区域。搬迁涉及指针追踪、引用更新、旧区域释放，复杂度足够独立成章。
+
+详见 [09-vm-relocation.md](09-vm-relocation.md)。本文档仅关注页分配器本身的设计与实现。
+
+---
+
+## 4. 实现详解
+
+### 4.1 VmPageAllocator
+
+Direct Map 方案下，`VmPageAllocator` 极其简洁：
+
+```rust
+pub(crate) struct VmPageAllocator {
+    phys_alloc: PhysAlloc,
+}
+```
+
+**完整实现**（[alloc_page.rs](os/servers/vm/src/alloc_page.rs)）：
 
 ```rust
 impl VmPageAllocator {
-    fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let phys = self.phys_alloc.alloc_mem(1, PageAllocFlags::empty()).ok()?;
+    pub(crate) fn new(phys_alloc: PhysAlloc) -> Self {
+        Self { phys_alloc }
+    }
+
+    pub(crate) fn alloc_phys(
+        &mut self, clicks: usize, flags: PageAllocFlags,
+    ) -> Result<PhysBytes, AllocError> {
+        self.phys_alloc.alloc_mem(clicks, flags)
+    }
+
+    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
+        let phys = self.alloc_phys(1, PageAllocFlags::empty()).ok()?;
+        let virt = vm_phys_to_virt(phys);
+        Some((virt, phys))
+    }
+
+    pub(crate) fn free_page(&mut self, phys: PhysBytes) {
+        self.phys_alloc.free_mem(phys, 1);
+    }
+
+    pub(crate) fn total_pages(&self) -> usize {
+        self.phys_alloc.total_count()
+    }
+}
+```
+
+**与 Minix3 的对比**：
+
+| 维度 | Minix3 `vm_allocpages` | minix-rs `VmPageAllocator` |
+|------|----------------------|---------------------------|
+| 结构体字段 | 无（全局函数 + 静态变量） | `phys_alloc: PhysAlloc` |
+| 阶段区分 | `pt_init_done` + `level` | 无（Direct Map 消除阶段） |
+| 递归保护 | `level` 计数器 + 备用页池 | 不需要（递归不可能发生） |
+| VA 获取 | `vm_mappages`（可能递归） | `vm_phys_to_virt(phys)`（简单加法） |
+| 代码行数 | ~60 行 | ~15 行 |
+
+### 4.2 ReservedRegion
+
+ReservedRegion 在 init 阶段提供物理页预留，确保 PhysAllocator 完全初始化之前有物理页可用。
+
+```rust
+pub(crate) struct ReservedRegion {
+    phys_start: PhysBytes,
+    total_pages: usize,
+    allocated_pages: usize,
+    bitmap: u64,  // 最多 64 页，用 bitmap 跟踪分配状态
+}
+
+impl ReservedRegion {
+    pub(crate) fn new(phys_start: PhysBytes, total_pages: usize) -> Self {
+        assert!(total_pages <= 64, "reserved region too large for u64 bitmap");
+        Self {
+            phys_start,
+            total_pages,
+            allocated_pages: 0,
+            bitmap: 0,
+        }
+    }
+
+    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
+        let mask = !self.bitmap;
+        let free_bit = mask.trailing_zeros() as usize;
+        if free_bit >= self.total_pages {
+            return None;
+        }
+        self.bitmap |= 1 << free_bit;
+        self.allocated_pages += 1;
+        let offset = free_bit * 4096;
+        let phys = self.phys_start.add(offset);
         let virt = vm_phys_to_virt(phys);
         Some((virt, phys))
     }
 }
 ```
 
-#### 3.7.6 四段演进的递进关系
+**关键设计点**：
+- `bitmap: u64` 限制最多 64 页，init 阶段足够
+- `trailing_zeros()` 找第一个空闲位，O(1) 分配
+- VA 通过 `vm_phys_to_virt(phys)` 获取，不需要独立的 VA 分配
 
-| 方案 | 解决了什么 | 暴露了什么新问题 |
-|------|-----------|----------------|
-| 方案一（BSS） | Minix3 的基本可用性 | 固定大小、无法动态调整 |
-| 方案二（预留区域+标志） | 动态分配 | 运行时标志不安全、阶段区分靠约定 |
-| 方案三（Typestate+PtRegion） | 编译期安全、结构性消除递归 | PtRegion 本质是"mini direct-map"，与真正的 direct map 职责重叠 |
-| 方案四（Direct Map） | 统一所有物理页的 VA 访问 | 递归的前提条件消失——不再需要"分配 VA"这个步骤 |
-
-设计不是一步到位的，而是通过不断追问"这个问题的本质是什么"逐步逼近的。每一段都不是"推翻前一段"，而是"追问前一段的本质"。
-
----
-
-## 4. 实现详解
-
-### 4.1 PtOps：页表操作抽象
-
-为了在测试中不访问真实内存地址，页表读写操作被抽象为 `PtOps` trait：
+### 4.3 Direct Map
 
 ```rust
-// os/servers/vm/src/pt_region.rs
+pub(crate) const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
+pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
 
-pub(crate) trait PtOps {
-    fn write_pte(&mut self, table_virt: VirBytes, index: usize, entry: u64);
-    fn write_pde(&mut self, table_virt: VirBytes, index: usize, entry: u64);
-    fn write_pdpte(&mut self, table_virt: VirBytes, index: usize, entry: u64);
-    fn read_pte(&self, table_virt: VirBytes, index: usize) -> u64;
-    fn read_pde(&self, table_virt: VirBytes, index: usize) -> u64;
-    fn zero_table(&mut self, table_virt: VirBytes);
+pub(crate) fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
+    VirBytes(phys.as_u64() + VM_DIRECT_MAP_BASE)
 }
 
-pub(crate) struct RealPtOps;
-
-impl PtOps for RealPtOps {
-    fn write_pte(&mut self, table_virt: VirBytes, index: usize, entry: u64) {
-        unsafe {
-            let ptr = (table_virt.0 as *mut u64).add(index);
-            ptr.write_volatile(entry);
-        }
-    }
-    // ... 其他方法类似
-}
-```
-
-生产环境使用 `RealPtOps`（直接写内存），测试使用 `MockPtOps`（写入 `BTreeMap<u64, [u64; 512]>`）。
-
-### 4.2 ReservedRegion：内核预留区域
-
-```rust
-pub(crate) struct ReservedRegion {
-    phys_start: PhysBytes,
-    virt_start: VirBytes,
-    total_pages: usize,
-    allocated_pages: usize,
-    high_watermark: usize,
-    bitmap: u64,
-}
-
-impl ReservedRegion {
-    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let start = self.high_watermark;
-        if start >= self.total_pages {
-            return None;
-        }
-
-        let mask = !self.bitmap >> start;
-        let rel_bit = mask.trailing_zeros() as usize;
-        let free_bit = start + rel_bit;
-
-        if free_bit >= self.total_pages {
-            return None;
-        }
-
-        self.bitmap |= 1 << free_bit;
-        self.allocated_pages += 1;
-
-        let offset = free_bit * PAGE_SIZE;
-        let virt = VirBytes(self.virt_start.0 + offset as u64);
-        let phys = self.phys_start.add(offset);
-
-        Some((virt, phys))
-    }
-
-    pub(crate) fn alloc_contig_virt(&mut self, pages: usize) -> VirBytes {
-        assert!(pages <= self.total_pages - self.high_watermark);
-        let offset = self.high_watermark * PAGE_SIZE;
-        self.high_watermark += pages;
-        VirBytes(self.virt_start.0 + offset as u64)
-    }
-
-    pub(crate) fn virt_to_phys(&self, virt: VirBytes) -> PhysBytes {
-        let offset = (virt.0 - self.virt_start.0) as usize;
-        self.phys_start.add(offset)
+pub(crate) fn virt_to_phys(virt: VirBytes) -> PhysBytes {
+    if virt.0 >= KERNEL_DIRECT_MAP_BASE {
+        PhysBytes::new(virt.0 - KERNEL_DIRECT_MAP_BASE)
+    } else {
+        PhysBytes::new(virt.0 - VM_DIRECT_MAP_BASE)
     }
 }
 ```
 
-`alloc_contig_virt` 用于在预留区域高水位标记之上切出连续虚拟地址（给 PtRegion 的 PDPT/PD/PT[0] 使用），它不修改 bitmap——这些页的物理内存由内核保证已映射。
+**地址空间布局**：
 
-> **方案四标注**：`alloc_contig_virt()` 是方案三专用接口，为 PtRegion 初始化提供连续 VA。方案四中 direct map 替代了 PtRegion，物理页的 VA 通过 `vm_phys_to_virt()` 获取，不再需要从预留区域切 VA。ReservedRegion 在方案四中变为纯粹的"已知物理页列表"，仅保留物理页预留语义。
->
-> 方案四的 ReservedRegion 简化如下：
-> - 删除 `virt_start` 字段——VA 通过 `vm_phys_to_virt(phys_start + offset)` 计算，不需要存储起始 VA
-> - 删除 `alloc_contig_virt()` 方法——PtRegion 不再存在，没有调用者
-> - 删除 `virt_to_phys()` 方法——没有 VA 需要反向查找
-> - `alloc_page()` 返回类型从 `(VirBytes, PhysBytes)` 简化为 `PhysBytes`——调用者通过 `vm_phys_to_virt(phys)` 自行获取 VA
-> - 删除 `high_watermark` 字段——它只为 `alloc_contig_virt` 服务，bitmap 分配从 slot 0 开始搜索即可
->
-> 简化后的 ReservedRegion 本质上是一个"带 bitmap 的物理页池"——`phys_start` + `total_pages` + `bitmap`，与 VA 完全无关。
-
-**`high_watermark` 的设计意图**：
-
-`high_watermark` 将预留区域分为两个区域：
-
-1. **低地址区**（slot 0 ~ high_watermark-1）：由 `alloc_contig_virt` 线性切出，供 PtRegion 初始化使用。这些 slot 不经过 bitmap 分配，物理页由内核保证已映射。
-2. **高地址区**（slot high_watermark ~ total_pages-1）：由 `alloc_page` 通过 bitmap 分配，供 Bootstrap 阶段的其他分配使用。
-
-`alloc_page` 从 `high_watermark` 开始搜索空闲位（`let mask = !self.bitmap >> start`），确保 bitmap 分配不会与 `alloc_contig_virt` 的线性分配重叠。`alloc_contig_virt` 递增 `high_watermark`，将新切出的区域从 bitmap 可分配空间中排除。两个方法共享同一个 `high_watermark`，互不干扰。
-
-### 4.3 PtRegion：页表页专用虚拟地址区域
-
-```rust
-pub(crate) struct PtRegion<O: PtOps> {
-    start: VirBytes,
-    mapped_end: VirBytes,
-    next: VirBytes,
-    pd_page: VirBytes,
-    current_pt: VirBytes,
-    current_pt_base: VirBytes,
-    phys_alloc: Box<dyn PhysAllocator>,
-    pt_ops: O,
-}
+```
+0x0000_0000_0000_0000  ─── 用户空间低地址
+        ...
+0x0000_0000_8000_0000  ─── VM Direct Map 基址（1GB 物理内存映射）
+        ...
+0x0000_7FFF_FFFF_FFFF  ─── 用户空间结束
+0xFFFF_8000_0000_0000  ─── Kernel Direct Map 基址
+        ...
+0xFFFF_FFFF_FFFF_FFFF  ─── 内核空间结束
 ```
 
-**初始化**：从预留区域切出 3 页，建立 PDPT → PD → PT[0] 的初始映射链。
-
-```rust
-impl<O: PtOps> PtRegion<O> {
-    pub(crate) fn from_reserved_with_ops(
-        reserved: &mut ReservedRegion,
-        phys_alloc: Box<dyn PhysAllocator>,
-        pt_ops: O,
-    ) -> Self {
-        let start = reserved.alloc_contig_virt(3);
-        let pd_page = VirBytes(start.0 + PAGE_SIZE as u64);
-        let current_pt = VirBytes(start.0 + 2 * PAGE_SIZE as u64);
-
-        let pdpt_phys = reserved.virt_to_phys(start);
-        let pd_phys = reserved.virt_to_phys(pd_page);
-        let pt0_phys = reserved.virt_to_phys(current_pt);
-
-        let mut region = PtRegion {
-            start,
-            mapped_end: VirBytes(start.0 + 3 * PAGE_SIZE as u64),
-            next: VirBytes(start.0 + 3 * PAGE_SIZE as u64),
-            pd_page,
-            current_pt,
-            current_pt_base: start,
-            phys_alloc,
-            pt_ops,
-        };
-
-        region.pt_ops.write_pdpte(start, 0,
-            pdpt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
-        region.pt_ops.write_pde(pd_page, 0,
-            pd_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
-        region.pt_ops.zero_table(current_pt);
-
-        region
-    }
-}
-```
-
-**分配**：bump allocator，剩余不足 8 个 slot 时自动扩展。
-
-```rust
-pub(crate) fn alloc_pt_page(&mut self) -> Option<VirBytes> {
-    if self.remaining() < 8 {
-        self.expand()?;
-    }
-    let virt = self.next;
-    self.next = VirBytes(self.next.0 + PAGE_SIZE as u64);
-    Some(virt)
-}
-```
-
-**扩展**：分配新物理页作为 PT 页，建立映射，切换 `current_pt`。
-
-```rust
-fn expand(&mut self) -> Option<()> {
-    let pt_phys = self.phys_alloc.alloc_mem(1, PageAllocFlags::empty()).ok()?;
-
-    let pt_virt = self.next;
-    self.next = VirBytes(self.next.0 + PAGE_SIZE as u64);
-
-    let pd_idx = (pt_virt.0 - self.start.0) as usize / (512 * PAGE_SIZE);
-    let current_pd_idx = (self.current_pt.0 - self.start.0) as usize / (512 * PAGE_SIZE);
-
-    if pd_idx == current_pd_idx {
-        // 仍在同一 2MB 区域：在当前 PT 中写 PTE
-        let pte_idx = (pt_virt.0 - self.current_pt.0) as usize / PAGE_SIZE;
-        self.pt_ops.write_pte(self.current_pt, pte_idx,
-            pt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
-    }
-
-    // 写 PDE（新 2MB 区域时建立映射，同一区域时覆盖写入，幂等）
-    self.pt_ops.write_pde(self.pd_page, pd_idx,
-        pt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
-
-    self.pt_ops.zero_table(pt_virt);
-
-        self.current_pt = pt_virt;
-        self.current_pt_base = VirBytes(self.start.0 + (pd_idx * 512 * PAGE_SIZE) as u64);
-
-        self.pt_ops.write_pte(pt_virt, 0,
-        pt_phys.as_u64() | PageFlags::PRESENT.bits() as u64 | PageFlags::WRITABLE.bits() as u64);
-
-    self.mapped_end = VirBytes(self.mapped_end.0 + 512 * PAGE_SIZE as u64);
-    Some(())
-}
-```
-
-### 4.4 VmPageAllocator：完整实现
-
-完整代码见 [alloc_page.rs](os/servers/vm/src/alloc_page.rs) 和 [pt_region.rs](os/servers/vm/src/pt_region.rs)。
-
-**初始化时序**：
+### 4.4 初始化时序
 
 ```
 T0: Kernel 启动 VM 进程
     ├── 创建初始页表（映射 .text, .rodata, .data, .bss）
+    ├── 建立 Direct Map（1GB 物理内存映射）
     ├── 映射 reserved_region 到 VM 地址空间
     └── 传递 boot_info（含 reserved_region 描述）
 
@@ -1006,34 +684,26 @@ T1: main() → init_vm()
     ├── T2: PhysAllocator::init(mem_chunks)
     │       → 初始化物理页 bitmap
     │       → 此时 alloc_mem() 可用
-    │       → 创建 Box<dyn PhysAllocator> 实例
     │
-    ├── T3: VmPageAllocator::<Bootstrap>::new(reserved, phys_alloc)
-    │       → phys_alloc 由 T2 创建，传入 new()
-    │       → 此时 alloc_page() 从预留区域分配
+    ├── T3: VmPageAllocator::new(phys_alloc)
+    │       → 此时 alloc_page() 可用
+    │       → alloc_page() = alloc_phys() + vm_phys_to_virt()
     │
     ├── T4: pt_init()
     │       → 创建页表系统
     │
-    ├── T5: allocator.into_normal()
-    │       → 从 reserved 切出 PtRegion（3 页）
-    │       → phys_alloc 所有权转移给 PtRegion
-    │       → 此时 alloc_page() 走 alloc_phys + alloc_virt
-    │
-    ├── T6: relocate_to_heap()  [独立文档详述]
+    ├── T5: relocate_to_heap()  [独立文档详述]
     │       → 搬迁预留区域数据到堆
-    │       → 释放预留区域虚拟地址映射
+    │       → 释放预留区域物理页回 PhysAllocator
     │
     └── init_vm() 返回
             → VM 堆完全可用
 
-T7: 主循环开始
+T6: 主循环开始
     → VM 正常运行
 ```
 
-**时序说明**：
-- T2 必须在 T3 之前，因为 `VmPageAllocator::new(reserved, phys_alloc)` 需要已初始化的 `phys_alloc`
-- T5 中 `into_normal()` 将 `phys_alloc` 的所有权转移给 `PtRegion`，此后 `VmPageAllocator<Normal>` 不再直接持有 `phys_alloc`
+**与 Minix3 时序的对比**：Minix3 需要 `pt_init_done` 标志和 `alloc_cycle()` 来切换阶段；Direct Map 方案下，`alloc_page()` 从 T3 起就使用同一条代码路径，不需要阶段切换。
 
 ---
 
@@ -1041,92 +711,93 @@ T7: 主循环开始
 
 ### 5.1 测试策略概述
 
-本模块采用分层测试策略，覆盖以下维度：
-
 | 维度 | 测试重点 | 关键场景 |
 |------|----------|----------|
-| PtRegion 分配 | bump allocator 正确性、自动扩展 | 初始容量、跨 2MB 边界、扩展后 slot 可用 |
-| Typestate 切换 | 编译期阶段隔离、所有权转移 | Bootstrap → Normal、Normal 无法访问 reserved |
-| alloc_phys/alloc_virt 拆分 | 两步分配的正确组合 | 独立调用、组合调用、错误路径 |
-| 预留区域耗尽 | 边界条件处理 | 分配超过 total_pages 时返回 None |
-| 虚拟地址转换 | virt_to_phys 正确性 | 同一 PT 页内、跨 PT 页、自映射 slot |
+| VmPageAllocator | alloc_page 返回 VA = vm_phys_to_virt(phys) | 分配、释放、地址正确性 |
+| ReservedRegion | 物理页预留与耗尽 | 分配成功、耗尽返回 None |
+| Direct Map | phys ↔ virt 转换 | vm_phys_to_virt、virt_to_phys、roundtrip |
 
-### 5.2 PtRegion 分配与扩展
+### 5.2 VmPageAllocator 测试
 
-**测试目标**：验证 bump allocator 的基本分配和自动扩展机制。
+**alloc_page 地址正确性**：验证 `alloc_page()` 返回的 VA 等于 `VM_DIRECT_MAP_BASE + phys`。
 
-**关键场景**：
-1. 初始容量验证：`remaining()` 返回正确的可用 slot 数
-2. 容量内分配：连续分配不超过初始容量，全部成功
-3. 超容量分配：分配超过初始容量，触发 `expand()`，新 PT 页提供 511 个 slot
-4. 跨 2MB 边界：当 `pd_idx` 递增时，`expand()` 正确建立新映射
+```rust
+#[test]
+fn test_alloc_page() {
+    let phys_alloc = make_test_phys_alloc(256);
+    let mut alloc = VmPageAllocator::new(phys_alloc);
 
-**Mock 依赖**：`MockPtOps` 替代 `RealPtOps`，避免测试中访问非法内存地址。
+    let (v1, p1) = alloc.alloc_page().unwrap();
+    assert_eq!(v1.0, VM_DIRECT_MAP_BASE + p1.as_u64());
 
-### 5.3 Typestate 阶段切换
+    let (v2, p2) = alloc.alloc_page().unwrap();
+    assert_ne!(p1.as_u64(), p2.as_u64());
+    assert_eq!(v2.0, VM_DIRECT_MAP_BASE + p2.as_u64());
+}
+```
 
-**测试目标**：验证 Bootstrap → Normal 切换的编译期安全保证。
+**alloc_phys 与 free_page**：验证物理页分配和释放的正确性。
 
-**关键场景**：
-1. Bootstrap 阶段分配：`alloc_page()` 从 `reserved` 分配，返回的虚拟地址在预留区域内
-2. 切换操作：`into_normal()` 消耗 Bootstrap 实例，产生 Normal 实例
-3. Normal 阶段分配：`alloc_page()` 走 `alloc_phys + alloc_virt`，返回的地址不在预留区域内
-4. 编译期保证：Normal 实例无法访问 `reserved` 字段（编译错误）
+```rust
+#[test]
+fn test_alloc_phys_and_free() {
+    let phys_alloc = make_test_phys_alloc(4);
+    let mut alloc = VmPageAllocator::new(phys_alloc);
 
-**注意**：测试使用 `into_normal_for_test()` 配合 `MockPtOps`，生产代码使用 `into_normal()` 配合 `RealPtOps`。
+    let p1 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+    let p2 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+    assert_ne!(p1, p2);
 
-### 5.4 alloc_phys / alloc_virt 拆分
+    alloc.free_page(p1);
+    let p3 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+    assert_ne!(p3, p2);
+}
+```
 
-**测试目标**：验证两步分配的正确组合。
+### 5.3 ReservedRegion 测试
 
-**关键场景**：
-1. 独立调用 `alloc_phys`：返回有效的物理地址
-2. 独立调用 `alloc_virt`：给定物理地址，返回有效的虚拟地址
-3. 组合调用 `alloc_page`：等价于 `alloc_phys + alloc_virt`
-4. 错误路径：`alloc_phys` 失败时 `alloc_page` 返回 None
+**分配与耗尽**：验证预留区域的分配和边界条件。
 
-### 5.5 预留区域耗尽
+```rust
+#[test]
+fn test_reserved_alloc_and_exhaustion() {
+    let mut reserved = ReservedRegion::new(PhysBytes::new(0x1000), 2);
 
-**测试目标**：验证预留区域边界条件处理。
+    let (v1, p1) = reserved.alloc_page().unwrap();
+    assert_eq!(p1.as_u64(), 0x1000);
+    assert_eq!(v1.0, VM_DIRECT_MAP_BASE + 0x1000);
 
-**关键场景**：
-1. 创建只有 2 页的预留区域
-2. 连续分配 2 页，全部成功
-3. 第 3 次分配返回 None
+    let (v2, p2) = reserved.alloc_page().unwrap();
+    assert_eq!(p2.as_u64(), 0x2000);
+    assert_eq!(v2.0, VM_DIRECT_MAP_BASE + 0x2000);
 
-**注意**：此测试使用 `RealPtOps`，因为不涉及页表操作。
+    assert!(reserved.alloc_page().is_none());
+}
+```
 
-### 5.6 虚拟地址转换
+### 5.4 Direct Map 测试
 
-**测试目标**：验证 `virt_to_phys` 的正确性。
+**phys → virt → phys roundtrip**：验证地址转换的正确性。
 
-**关键场景**：
-1. 同一 PT 页内的地址转换
-2. 跨 PT 页的地址转换
-3. 自映射 slot（PT[0]）的地址转换
+```rust
+#[test]
+fn test_virt_to_phys_roundtrip() {
+    let phys = PhysBytes::new(0x2000);
+    assert_eq!(virt_to_phys(vm_phys_to_virt(phys)), phys);
+    assert_eq!(virt_to_phys(kernel_phys_to_virt(phys)), phys);
+}
+```
 
-**验证方法**：通过 `MockPtOps` 的内部 `BTreeMap` 验证 PTE 内容。
+**is_direct_map_virt**：验证 direct map 地址范围判断。
 
-### 5.7 方案四：Direct Map 测试
-
-**测试目标**：验证方案四（Direct Map）下页分配器的正确性。
-
-**关键场景**：
-
-1. **alloc_page 简化验证**：`alloc_page()` 返回的 VA 等于 `vm_phys_to_virt(phys)`，即 `DIRECT_MAP_BASE + phys`
-2. **alloc_virt 不再需要**：验证直接调用 `vm_phys_to_virt(phys)` 等价于方案三的 `alloc_virt(phys)`
-3. **无递归路径**：验证 `alloc_page()` 的调用链中不包含 `vm_mappages` / `ensure_tables`
-4. **ReservedRegion 简化**：验证 `alloc_contig_virt()` 不再被调用，ReservedRegion 仅提供物理页预留
-5. **PhysPtr 读写**：验证 `PhysPtr<T>` 的 `read()` / `write()` 通过 direct map 正确访问物理页
-
-**与方案三测试的对比**：
-
-| 维度 | 方案三测试 | 方案四测试 |
-|------|-----------|-----------|
-| VA 来源 | PtRegion bump allocator | `vm_phys_to_virt()` |
-| 阶段切换 | Bootstrap → Normal | 无（单阶段） |
-| Mock 依赖 | `MockPtOps` | 不需要（直接加法） |
-| 递归检查 | 验证 expand() 不触发 alloc_virt | 验证调用链无 vm_mappages |
+```rust
+#[test]
+fn test_is_direct_map_virt() {
+    assert!(is_direct_map_virt(VirBytes(VM_DIRECT_MAP_BASE)));
+    assert!(is_direct_map_virt(VirBytes(KERNEL_DIRECT_MAP_BASE)));
+    assert!(!is_direct_map_virt(VirBytes(0x7000_0000)));
+}
+```
 
 ---
 
@@ -1137,18 +808,18 @@ T7: 主循环开始
 VM 进程采用**单线程事件循环**模型（参见项目级 review 规范）。所有内存管理操作都在主线程中顺序执行，不存在并发访问。
 
 **影响**：
-- `VmPageAllocator` 及其内部组件（`ReservedRegion`、`PtRegion`）不需要 `Sync` 或 `Send` trait
+- `VmPageAllocator` 及其内部组件（`ReservedRegion`）不需要 `Sync` 或 `Send` trait
 - 不需要互斥锁、原子操作或内存屏障
-- `level` 变量（Minix3 中用于检测递归）在 Rust 版本中被 Typestate 模式替代，编译期保证
+- Minix3 中用于检测递归的 `level` 变量在 Rust 版本中不再需要——Direct Map 从结构上消除了递归
 
 ### 6.2 与 Minix3 的对比
 
 | 维度 | Minix3 | minix-rs |
 |------|--------|----------|
 | 执行模型 | 单线程事件循环 | 单线程事件循环（保持） |
-| 递归检测 | 运行时 `level` 计数器 | 编译期 Typestate |
+| 递归检测 | 运行时 `level` 计数器 | 不需要（Direct Map 消除递归） |
 | 并发保护 | 无（单线程） | 无（单线程，保持） |
-| 可重入性 | 通过 `level` 限制 | 通过类型系统禁止 |
+| 可重入性 | 通过 `level` 限制 | 不需要（递归不可能发生） |
 
 ---
 
