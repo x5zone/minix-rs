@@ -502,31 +502,30 @@ fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
 
 **递归链消失**：回顾 §1.2 的递归链 `vm_allocpage → vm_mappages → pt_ptalloc_in_range → pt_ptalloc → vm_allocpage`，在 Direct Map 下这条链根本不存在——`vm_allocpage` 不调用 `vm_mappages`，因为映射已经存在于 direct map 中。
 
-**范式转变**：
-
-| | Minix3（spare_pagequeue） | PtRegion（中间方案） | Direct Map（最终方案） |
-|---|---|---|---|
-| 物理页的 VA | BSS 静态预留 | 专用区域 bump allocator | 天然拥有 stable VA |
-| 页表页 VA 来源 | `spare_pagequeue` 取静态页 | `PTREGION_BASE + slot_idx * 4KB` | `DIRECT_MAP_BASE + phys` |
-| 普通页 VA 来源 | `find_hole + vm_mappages` | `find_hole + vm_mappages` | `DIRECT_MAP_BASE + phys` |
-| 页表页 | 需要特殊处理（静态备用页） | 需要特殊 VA 管理（PtRegion） | 与普通物理页无区别 |
-| 递归处理 | 备用页池兜底（治标） | 结构性消除（治本） | 前提消失 |
-
-这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。
-
 **页表页不是特殊对象**：Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"——页表页需要 PtRegion 这样的特殊 VA 管理。Direct map 出现后，"所有 physical pages are equally accessible"——页表页只是物理页的一种用途，不需要特殊 VA 管理。概念从"页表页需要独立 VA 分配路径"进化为"所有物理页统一通过 `vm_phys_to_virt()` 访问"。
 
-**Rust 所有权与物理内存 Aliasing**：当一个物理页同时被映射到用户空间（进程页表）和 VM 的 Direct Map 时，Rust 的 `&mut` 要求独占访问会违反内存模型。建议使用 `read_volatile` / `write_volatile` 或封装 `PhysPtr<T>` 包装器来处理。这不是设计缺陷，而是 Rust 安全保证在 OS 内核开发中需要显式处理的固有约束。
+**Rust 所有权与物理内存 Aliasing**：Direct Map 使每个物理页在 VM 地址空间中都有一个稳定的 VA，但同一个物理页可能同时被映射到进程的地址空间——两个 VA 指向同一个 PA，形成 aliasing。
+
+```
+进程页表:  VA 0x4000_0000 ──→ PA 0x2000 ←── 进程通过这个 VA 读写自己的数据
+VM Direct Map: VA 0x8000_2000 ──→ PA 0x2000 ←── VM 通过 vm_phys_to_virt(0x2000) 访问同一页
+```
+
+这意味着 VM 通过 Direct Map 拿到的 `&mut [u8]` 并非真正独占——进程可能随时通过自己的 VA 修改同一物理页。Rust 编译器基于 `&mut` 的独占承诺做优化（如缓存值到寄存器、省略重复读取），在 aliasing 下这些优化会产出错误结果。
+
+**解法**：不向编译器承诺独占访问，改用 `read_volatile` / `write_volatile` 强制每次都真正读写内存，或封装 `PhysPtr` 统一处理。这不是设计缺陷，而是 Rust 安全保证在 OS 内核开发中需要显式处理的固有约束。
 
 ### 3.2 递归消除三阶段递进
 
-| 方案 | 递归处理 | 核心思路 | 类比 |
-|------|---------|---------|------|
-| Minix3 spare_pagequeue | 递归发生时兜底 | 备用页池承接递归调用 | "治标"——递归还是会发生，只是有缓冲 |
-| PtRegion | 结构性消除递归 | 页表页 VA 不走 find_hole + vm_mappages | "治本"——让递归不可能发生 |
-| Direct Map | 递归前提条件消失 | 物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤 | "不需要药"——递归的根源消失了 |
+| 方案 | 页表页 VA 来源 | 普通页 VA 来源 | 页表页处理 | 递归处理 | 类比 |
+|------|---------------|---------------|-----------|---------|------|
+| Minix3 | `spare_pagequeue` 取静态页 | `find_hole + vm_mappages` | 需要特殊处理（静态备用页） | 备用页池兜底 | 治标——递归还是会发生，只是有缓冲 |
+| PtRegion | `PTREGION_BASE + slot_idx * 4KB` | `find_hole + vm_mappages` | 需要特殊 VA 管理（PtRegion） | 结构性消除 | 治本——让递归不可能发生 |
+| Direct Map | `DIRECT_MAP_BASE + phys` | `DIRECT_MAP_BASE + phys` | 与普通物理页无区别 | 前提消失 | 不需要药——递归的根源消失了 |
 
 这是从"治标"到"治本"到"不需要药"的跃迁。spare_pagequeue 是运行时保护（递归发生但有缓冲），PtRegion 是设计层面消除（递归从结构上不可能），Direct Map 是概念层面消除（"需要分配 VA"这个前提本身不存在了）。
+
+这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。
 
 ### 3.3 init 阶段管理
 
@@ -544,25 +543,23 @@ impl ReservedRegion {
 }
 ```
 
-### 3.4 alloc_phys / alloc_virt 拆分
+### 3.4 从拆分到统一
 
-在 PtRegion 方案下，`vm_allocpage` 拆分为两个独立步骤：
+在 Direct Map 出现前，VM 需要区分"分配物理页"和"分配虚拟地址"两个步骤：
+- 物理页来自物理内存分配器（`alloc_phys`）
+- 虚拟地址需要 `find_hole` 搜索空闲区域，或通过 PtRegion 等专用机制分配
 
-```
-alloc_phys(pages) → PhysBytes       // 纯物理页分配，不递归
-alloc_virt(phys, pages) → VirBytes  // 从 PtRegion 分配虚拟地址
-alloc_page() → (VirBytes, PhysBytes) // 组合上述两步
-```
-
-在 Direct Map 方案下，`alloc_virt` 不再需要——VA 通过 `vm_phys_to_virt(phys)` 直接获取。`alloc_page()` 简化为：
+Direct Map 使这两个步骤统一为一步：`vm_phys_to_virt(phys)`。物理页一旦分配，天然拥有 stable VA。
 
 ```rust
 fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
     let phys = self.alloc_phys(1, PageAllocFlags::empty()).ok()?;
-    let virt = vm_phys_to_virt(phys);
+    let virt = vm_phys_to_virt(phys);  // 不再需要单独的虚拟地址分配
     Some((virt, phys))
 }
 ```
+
+**关键简化**：`alloc_virt` 这个步骤消失了。不是被优化了，而是概念上不再需要——VA 不再是需要"分配"的资源，而是物理地址的简单函数。
 
 ### 3.5 ReservedRegion（物理页预留）
 
