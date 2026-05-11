@@ -1356,7 +1356,7 @@ impl PhysAllocator for BuddyAllocator {
 
 fn init_vm(boot_info: BootInfo) -> VmPageAllocator<Normal, RealPtOps> {
     // T2: Bootstrap
-    let reserved = ReservedRegion::from_boot_info(&boot_info);
+    let reserved = ReservedRegion::from_boot_info(&boot_info); // Direct Map 下不再需要 ReservedRegion
     let phys_alloc = Box::new(UninitPhysAllocator);
     let mut alloc = VmPageAllocator::<Bootstrap>::new(reserved, phys_alloc);
 
@@ -1378,27 +1378,29 @@ fn init_vm(boot_info: BootInfo) -> VmPageAllocator<Normal, RealPtOps> {
 }
 ```
 
-#### 方案四视角：ReservedRegion 的简化
+#### 方案四视角：ReservedRegion 不再需要
 
-> **方案四标注**：Direct Map 方案下，ReservedRegion 简化为纯物理页预留列表，VA 分配相关逻辑不再需要。
+> **方案四标注**：Direct Map 方案下，ReservedRegion 已从代码中删除。VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成。
 
 方案三的 `ReservedRegion` 承担双重职责：
 1. **物理页预留**：从 kernel 传递的 boot_info 中提取预留的物理页范围
 2. **VA 分配**：为这些物理页分配虚拟地址（通过 PtRegion 的 `alloc_pt_page()`），建立映射
 
-方案四的 `ReservedRegion` 仅保留第 1 项职责——物理页预留。物理页的 VA 通过 `vm_phys_to_virt()` 天然获得，不需要额外的 VA 分配步骤。
+Direct Map 方案下，ReservedRegion 的两项职责均被替代：
+- **物理页预留**：由 `PhysAllocator.reserve_pages()` 完成
+- **VA 分配**：由 `vm_phys_to_virt(phys)` 天然获得，不需要额外的 VA 分配步骤
 
 ```rust
 // 方案三
 let reserved = ReservedRegion::from_boot_info(&boot_info);
 // reserved 内部需要 alloc_pt_page() + write_data_pte() 为每个物理页建立 VA 映射
 
-// 方案四
-let reserved = ReservedRegion::from_boot_info(&boot_info);
-// reserved 仅记录物理页范围，VA 通过 vm_phys_to_virt(phys) 直接获取
+// 方案四：ReservedRegion 已删除
+// 物理页预留由 PhysAllocator.reserve_pages() 完成
+// VA 通过 vm_phys_to_virt(phys) 直接获取
 ```
 
-这与 §4.2 的搬迁简化是同一个模式——VA 分配步骤消失了。ReservedRegion 从"物理页 + VA 管理"退化为"纯物理页列表"，`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用不再出现。
+这与 §4.2 的搬迁简化是同一个模式——VA 分配步骤消失了。ReservedRegion 从"物理页 + VA 管理"退化为不再需要，`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用不再出现。物理页预留的语义由 `PhysAllocator.reserve_pages()` 承接。
 
 ---
 

@@ -354,7 +354,7 @@ fork 主线构建了 VM 的**完整骨架**——所有核心数据结构和抽�
 | 02 | vmproc-table | fork 需要查找/分配进程槽 | 进程表、slot/endpoint |
 | 03 | acl | fork 需要权限检查 | ACL 位图 |
 | 04 | physical-memory | fork 需要分配物理页 | `PhysAllocator` trait |
-| 05 | vm-allocpage | fork 需要页分配器 | `VmPageAllocator`、`ReservedRegion` |
+| 05 | vm-allocpage | fork 需要页分配器 | `VmPageAllocator`（ReservedRegion 已删除） |
 | 06 | pagetable-struct | fork 需要创建子进程页表 | `Paging` trait、`DirectMapArch` |
 | 07 | pagetable-ops | fork 需要操作页表 | `map`/`unmap`/`remap`/`query` |
 | 08 | slab-allocator | fork 使用的堆分配器 | Slab 分配器 |

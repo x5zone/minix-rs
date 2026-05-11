@@ -672,7 +672,7 @@ L0可用  L1可用  L2可用
 | `memset(vmproc, 0)` | `VmProcTable::new()` | L0: 静态数组 |
 | `acl_init()` | `Acl::new()` | L0: 位图 |
 | `mem_init()` | `BitmapAllocator::new()` | L0: 静态位图 |
-| `static_sparepages` | `ReservedRegion::new()` | L0: BSS 段 |
+| `static_sparepages` | `ReservedRegion::new()` // Direct Map 下不再需要 | L0: BSS 段 |
 | `pt_new()` | `Paging::new()` | L1: 保留页 |
 | `SLABALLOC` | `Box::new()` | L2: 堆 |
 | `VirRegion::new()` | `VirRegion::new()` | L2: Vec 分配 |

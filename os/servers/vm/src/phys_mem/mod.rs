@@ -176,7 +176,7 @@ pub(crate) const fn click_ceil(addr: usize) -> usize {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BootMemRegion {
+pub struct BootMemRegion {
     pub base: usize,
     pub size: usize,
 }

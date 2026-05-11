@@ -17,11 +17,11 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use alloc::boxed::Box;
 use minix_types::{VmRequest, VmResponse, VmError, Endpoint, VirBytes};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
-use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion};
+use crate::direct_map::vm_phys_to_virt;
+use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion, PhysBytes, bytes_to_clicks, CLICK_SIZE};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -34,8 +34,8 @@ pub struct VmServer {
 }
 
 impl VmServer {
-    pub fn new() -> Self {
-        let phys_alloc = Self::create_default_allocator();
+    pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
+        let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
         Self {
             page_alloc: VmPageAllocator::new(phys_alloc),
             page_cache: PageCache::new(),
@@ -44,15 +44,21 @@ impl VmServer {
         }
     }
 
-    fn create_default_allocator() -> PhysAlloc {
-        let total_pages = 65536;
-        let base = 0x100000;
-        let size = total_pages * 4096;
-        let regions = [BootMemRegion { base, size }];
+    fn create_default_allocator(total_pages: usize, free_regions: &[BootMemRegion]) -> PhysAlloc {
         let meta_size = BitmapAllocator::metadata_size(total_pages);
-        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size];
-        let metadata = alloc::boxed::Box::leak(v.into_boxed_slice());
-        PhysAlloc::Bitmap(BitmapAllocator::init(&mut metadata[..meta_size], total_pages, &regions))
+        let meta_pages = bytes_to_clicks(meta_size);
+
+        let meta_phys_base = free_regions[0].base;
+        let meta_va = vm_phys_to_virt(PhysBytes::new(meta_phys_base as u64));
+        let metadata = unsafe {
+            core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size)
+        };
+
+        let adjusted_base = meta_phys_base + meta_pages * CLICK_SIZE;
+        let adjusted_size = free_regions[0].size.saturating_sub(meta_pages * CLICK_SIZE);
+        let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
+
+        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions))
     }
 
     pub fn init(&mut self) {
@@ -133,9 +139,20 @@ impl VmServer {
     }
 }
 
+#[cfg(test)]
 impl Default for VmServer {
     fn default() -> Self {
-        Self::new()
+        let total_pages = 256;
+        let mock_phys_size = total_pages * CLICK_SIZE + CLICK_SIZE;
+        let mock_phys: alloc::vec::Vec<u8> = alloc::vec![0u8; mock_phys_size];
+        let mock_phys_leaked = alloc::boxed::Box::leak(mock_phys.into_boxed_slice());
+
+        let raw_base = mock_phys_leaked.as_ptr() as usize;
+        let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
+        crate::direct_map::set_mock_phys_base(aligned_base as u64);
+
+        let free_regions = [BootMemRegion { base: 0, size: total_pages * CLICK_SIZE }];
+        Self::new(total_pages, &free_regions)
     }
 }
 
@@ -143,16 +160,34 @@ impl Default for VmServer {
 mod tests {
     use super::*;
 
+    const TEST_TOTAL_PAGES: usize = 256;
+
+    fn test_free_regions() -> [BootMemRegion; 1] {
+        let mock_phys_size = TEST_TOTAL_PAGES * CLICK_SIZE + CLICK_SIZE;
+        let mock_phys: alloc::vec::Vec<u8> = alloc::vec![0u8; mock_phys_size];
+        let mock_phys_leaked = alloc::boxed::Box::leak(mock_phys.into_boxed_slice());
+
+        let raw_base = mock_phys_leaked.as_ptr() as usize;
+        let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
+        crate::direct_map::set_mock_phys_base(aligned_base as u64);
+
+        [BootMemRegion { base: 0, size: TEST_TOTAL_PAGES * CLICK_SIZE }]
+    }
+
+    fn make_test_vm_server() -> VmServer {
+        VmServer::new(TEST_TOTAL_PAGES, &test_free_regions())
+    }
+
     #[test]
     fn test_vm_server_new() {
-        let server = VmServer::new();
+        let server = make_test_vm_server();
         assert!(!server.initialized);
         assert!(!server.is_initialized());
     }
 
     #[test]
     fn test_vm_server_init() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.init();
         assert!(server.initialized);
         assert!(server.is_initialized());
@@ -160,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_run_without_init() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.run();
     }
 
@@ -172,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_handle_fork_not_found() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.init();
 
         let request = VmRequest::Fork {
@@ -187,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_handle_brk_not_found() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.init();
 
         let request = VmRequest::Brk {
@@ -201,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_handle_exit_not_found() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.init();
 
         let request = VmRequest::Exit {
@@ -214,19 +249,19 @@ mod tests {
 
     #[test]
     fn test_vm_server_page_cache_access() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         assert_eq!(server.page_cache().total_pages(), 0);
     }
 
     #[test]
     fn test_vm_server_vfs_queue_access() {
-        let server = VmServer::new();
+        let server = make_test_vm_server();
         assert!(server.vfs_queue().is_empty());
     }
 
     #[test]
     fn test_vm_server_handle_ipc_message() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.init();
 
         let request = VmRequest::Exit {
@@ -239,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_vfs_reply_no_pending() {
-        let mut server = VmServer::new();
+        let mut server = make_test_vm_server();
         server.handle_vfs_reply(Endpoint::VFS, 0);
         assert!(!server.has_pending_vfs_requests());
     }

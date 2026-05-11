@@ -187,7 +187,7 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 |---------|---------|---------|
 | PtRegion 演进为 Direct Map | 05, 07, 09, ptregion_design.md | PtRegion 作为设计插曲保留，最终方案为 `vm_phys_to_virt()` |
 | EarlyHeap 删除 | 04, 05 | 所有 EarlyHeap 引用替换为 1GB direct map + bitmap |
-| ReservedRegion 简化 | 05, 09 | VA 分配功能删除，仅保留物理页预留语义 |
+| ReservedRegion 删除（Direct Map 下不需要） | 05, 09 | VA 分配功能删除，物理页预留由 PhysAllocator.reserve_pages() 完成 |
 | `alloc_virt()` 删除 | 05 | `alloc_virt()` → `vm_phys_to_virt()`，不再需要独立 VA 分配 |
 | `phys_to_virt()` 双视图 | 06, 07, 08, 10, 14, 16 | 区分 `vm_phys_to_virt()` 与 `kernel_phys_to_virt()` |
 | `sys_abscopy` → direct map memcpy | 10, 11, 15, 16 | CoW 页复制不再需要内核系统调用 |
@@ -262,7 +262,7 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 > - 最终方案不是"删除 PtRegion"，而是"PtRegion 被超越"——概念从"页表页需要特殊 VA 管理"进化为"所有物理页统一通过 vm_phys_to_virt() 访问"
 
 ### ✅ TODO-05-1: PtRegion 演进为 Direct Map（保留设计演进叙述） [已完成]
-**位置**: §3.1-3.5 方案演进（~L364-594）、§4.1 VmPageAllocator 结构（~L412-449）、§4.3 ReservedRegion（~L642-724）、§5 测试（~L865-900）
+**位置**: §3.1-3.5 方案演进（~L364-594）、§4.1 VmPageAllocator 结构（~L412-449）、§5 测试（~L865-900）
 **现状**: §3.1-3.3 描述方案一（BSS）、方案二（预留区域+标志）、方案三（Typestate+PtRegion），§3.5 描述 alloc_phys/alloc_virt 拆分
 **修改**:
 - §3.1-3.3 保留不动——这三段设计演进本身有教学价值，展示了从 Minix3 原方案逐步优化的思考过程
@@ -273,7 +273,6 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
   - 递归从"需要缓解"变为"结构上不可能发生"
   - PtRegion 的 bump allocator、PDPT/PD/PT 层级管理全部由 direct map 替代
 - §4.1 VmPageAllocator 结构体：增加"方案四实现"小节，展示简化后的结构（删除 `pt_region`、`pt_ops`、`into_normal()`）
-- §4.3 ReservedRegion：标注 `alloc_contig_virt()` 在 direct map 方案下不再需要
 - §5 测试：增加方案四的测试场景（alloc_phys + vm_phys_to_virt 的组合）
 **设计思考**：读者应感受到设计不是一步到位的，而是通过不断追问"这个问题的本质是什么"逐步逼近的。PtRegion 的价值不在于它被保留，而在于它帮助我们发现——真正的问题不是"如何避免递归"，而是"如何让物理页天然拥有 stable VA"。保留演进叙述，让读者自己走一遍这个思考过程。
 
@@ -285,12 +284,9 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 
 **参考**: ptregion_design.md §8.1.4, §8.6, §8.7
 
-### ✅ TODO-05-2: ReservedRegion 简化 [已完成]
+### ✅ TODO-05-2: ReservedRegion 删除（Direct Map 下不需要） [已完成：ReservedRegion 已删除]
 **位置**: §4.2 ReservedRegion（~L642-724）
-**现状**: ReservedRegion 包含 VA 分配功能（`alloc_contig_virt`），为 PtRegion 提供 VA
-**修改**: ReservedRegion 的 VA 分配功能在方案四中删除（direct map 替代），仅保留物理页预留语义。`alloc_contig_virt()` 标注为"方案三专用，方案四中删除"。ReservedRegion 在方案四中变为纯粹的"已知物理页列表"
-**设计思考**：ReservedRegion 的 VA 分配功能是为 PtRegion 服务的——PtRegion 需要连续 VA 来建立 PDPT/PD/PT 链。Direct map 出现后，物理页已有 stable VA，不再需要从预留区域切 VA。读者应理解：ReservedRegion 的简化不是"删减功能"，而是"不再需要这个功能"。
-**参考**: ptregion_design.md §8.10 删除清单
+**现状**: ReservedRegion 已从代码中删除。Direct Map 方案下，VA 由 vm_phys_to_virt() 统一提供，物理页预留由 PhysAllocator.reserve_pages() 完成，ReservedRegion 不再需要。
 
 ### ✅ TODO-05-3: VmPageAllocator 结构体重写 [已完成]
 **位置**: §4.1 VmPageAllocator 定义（~L364-449）
@@ -300,7 +296,6 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 - 删除 `pt_ops: Option<RealPtOps>`
 - 删除 `pt_region: Option<PtRegion<O>>`
 - 删除 `into_normal()` 转换函数
-- 保留 `reserved: ReservedRegion`（但简化为纯物理页列表）
 **设计思考**：Typestate 模式（Bootstrap → Normal）是为了在编译期保证"Normal 阶段不可能访问 reserved"。Direct map 出现后，不再有阶段区分——VM 从第一条指令起就能通过 `vm_phys_to_virt()` 访问物理内存。读者应理解：Typestate 是解决"自举阶段区分"的优雅方案，但 direct map 使"自举阶段"这个概念本身消失了。
 **参考**: ptregion_design.md §8.5 Phase 1
 
@@ -446,11 +441,9 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 > - Phase 2（direct map 扩展）是 09 的核心新内容——从 1GB 扩展到覆盖全部物理内存
 > - Phase 3（bitmap → buddy）是可选的策略选择，不是必须的
 
-### ✅ TODO-09-1: ReservedRegion::from_boot_info 更新 [已完成]
+### ✅ TODO-09-1: ReservedRegion::from_boot_info 更新 [已完成：ReservedRegion 已删除]
 **位置**: ~L1258 `ReservedRegion::from_boot_info(&boot_info)`
-**现状**: ReservedRegion 包含 VA 分配功能
-**修改**: 更新 ReservedRegion 为纯物理页预留列表，删除 VA 分配相关逻辑
-**参考**: ptregion_design.md §8.10 删除清单
+**现状**: ReservedRegion 已从代码中删除。Direct Map 方案下，VA 由 vm_phys_to_virt() 统一提供，物理页预留由 PhysAllocator.reserve_pages() 完成，ReservedRegion::from_boot_info 不再需要。
 
 ### ✅ TODO-09-2: PtRegion 搬迁逻辑替换 [已完成]
 **位置**: 09-todo.md L52-59 中 PtRegion 搬迁逻辑
@@ -726,7 +719,7 @@ T0: Kernel 启动 VM
     ▼
 ┌─ 04: 物理内存分配 ─────────────────────────────────────────────┐
 │  里程碑: VM 获得物理内存访问能力                                 │
-│  之前: VM 只能通过内核预留的 BSS/ReservedRegion 访问内存         │
+│  之前: VM 只能通过内核预留的 BSS 访问内存                       │
 │  之后: 1GB direct map + bitmap allocator，VM 可分配物理页       │
 │  Direct Map 变化: EarlyHeap 消除 → 1GB direct map + bitmap     │
 └────────────────────────────────────────────────────────────────┘

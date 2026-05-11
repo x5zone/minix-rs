@@ -30,6 +30,8 @@ pub(crate) use acl::{AclState, AclMask};
 pub(crate) use fork::{VmForkRequest, VmForkResponse, VmForkError, ForkContext, handle_fork};
 pub(crate) use alloc_stats::VmAllocStats;
 pub(crate) use critical_pool::CriticalPool;
+pub use phys_mem::BootMemRegion;
+
 pub(crate) use phys_mem::{
     PhysAlloc, PhysAllocator, PhysAllocatorStats, PhysMemStats, PageAllocFlags, PhysBytes, AllocError,
 };
@@ -44,7 +46,7 @@ pub(crate) use memtype::{
 };
 pub(crate) use ipc::*;
 pub(crate) use direct_map::{VM_DIRECT_MAP_BASE, KERNEL_DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
-pub(crate) use alloc_page::{VmPageAllocator, ReservedRegion};
+pub(crate) use alloc_page::VmPageAllocator;
 pub(crate) use page_cache::PageCache;
 pub(crate) use vfs_queue::VfsRequestQueue;
 pub(crate) use exit::{VmExitError, handle_vm_exit, handle_vm_willexit};

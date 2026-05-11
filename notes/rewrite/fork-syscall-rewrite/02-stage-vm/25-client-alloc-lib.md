@@ -568,7 +568,7 @@ pub(crate) fn ipc_vm_unmap_phys(
 |------|---------|-----------|
 | `VmPageAllocator` | ✅ 已实现 | 客户端请求的物理页分配后端 |
 | `PhysAllocator` trait | ✅ 已实现 | 物理内存分配接口 |
-| `ReservedRegion` | ✅ 已实现 | 预留区域（对应 Minix3 reservedqueue） |
+| `ReservedRegion` | ❌ 已删除 | 已删除，Direct Map 下不需要 |
 | `CriticalPool` | ✅ 已实现 | 紧急内存池 |
 | `do_mmap()` | ❌ 不存在 | 需要实现 |
 | `do_map_phys()` | ❌ 不存在 | 23-vm-munmap 中有设计 |

@@ -1943,7 +1943,7 @@ phys_mem/
 
 src/ (顶层)
 ├── direct_map.rs             # Direct map 常量与 vm_phys_to_virt()
-└── alloc_page.rs             # VmPageAllocator + ReservedRegion
+└── alloc_page.rs             # VmPageAllocator
 ```
 
 ***

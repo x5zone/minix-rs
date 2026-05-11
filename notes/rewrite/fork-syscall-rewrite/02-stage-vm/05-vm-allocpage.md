@@ -531,17 +531,7 @@ VM Direct Map: VA 0x8000_2000 ──→ PA 0x2000 ←── VM 通过 vm_phys_to
 
 Minix3 用 `pt_init_done` 全局标志区分初始化阶段和正常运行阶段。在 Direct Map 方案下，VM 从第一条指令起就能通过 `vm_phys_to_virt()` 访问物理内存——不存在"页表系统未就绪"的阶段，因此不需要阶段标志。
 
-**ReservedRegion 的角色变化**：在 Minix3 中，BSS 静态备用页同时提供 VA 和 PA。在 Direct Map 方案下，VA 由 `vm_phys_to_virt()` 统一提供，ReservedRegion 只需提供物理页预留——从预留区域分配一页物理内存，VA 通过 `vm_phys_to_virt(phys)` 直接获取。
-
-```rust
-impl ReservedRegion {
-    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        // ... bitmap 分配物理页 ...
-        let virt = vm_phys_to_virt(phys);  // VA 直接由 direct map 提供
-        Some((virt, phys))
-    }
-}
-```
+**不需要 ReservedRegion**：在 Minix3 中，BSS 静态备用页同时提供 VA 和 PA，用于 init 阶段的物理页预留。在 Direct Map 方案下，VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成——ReservedRegion 的两个职责都被更简单的机制替代，因此不再需要。
 
 ### 3.4 从拆分到统一
 
@@ -560,34 +550,6 @@ fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
 ```
 
 **关键简化**：`alloc_virt` 这个步骤消失了。不是被优化了，而是概念上不再需要——VA 不再是需要"分配"的资源，而是物理地址的简单函数。
-
-### 3.5 ReservedRegion（物理页预留）
-
-ReservedRegion 在 init 阶段为物理内存分配器提供预留页，确保在 PhysAllocator 完全初始化之前就有物理页可用。
-
-```rust
-pub(crate) struct ReservedRegion {
-    phys_start: PhysBytes,
-    total_pages: usize,
-    allocated_pages: usize,
-    bitmap: u64,  // 最多 64 页
-}
-```
-
-**与 Minix3 的对比**：
-
-| 维度 | Minix3 BSS 备用页 | minix-rs ReservedRegion |
-|------|-------------------|------------------------|
-| VA 来源 | BSS 段静态映射 | `vm_phys_to_virt(phys)` |
-| PA 来源 | `sys_umap` 查询 | `phys_start + offset` |
-| 生命周期 | 静态分配，永不释放 | init 完成后物理页归还 |
-| 递归保护 | 承接递归调用 | 不需要（Direct Map 消除递归） |
-
-### 3.6 搬迁策略
-
-初始化完成后，需要将 ReservedRegion 分配的数据搬迁到堆上，然后释放预留区域。搬迁涉及指针追踪、引用更新、旧区域释放，复杂度足够独立成章。
-
-详见 [09-vm-relocation.md](09-vm-relocation.md)。本文档仅关注页分配器本身的设计与实现。
 
 ---
 
@@ -643,51 +605,7 @@ impl VmPageAllocator {
 | VA 获取 | `vm_mappages`（可能递归） | `vm_phys_to_virt(phys)`（简单加法） |
 | 代码行数 | ~60 行 | ~15 行 |
 
-### 4.2 ReservedRegion
-
-ReservedRegion 在 init 阶段提供物理页预留，确保 PhysAllocator 完全初始化之前有物理页可用。
-
-```rust
-pub(crate) struct ReservedRegion {
-    phys_start: PhysBytes,
-    total_pages: usize,
-    allocated_pages: usize,
-    bitmap: u64,  // 最多 64 页，用 bitmap 跟踪分配状态
-}
-
-impl ReservedRegion {
-    pub(crate) fn new(phys_start: PhysBytes, total_pages: usize) -> Self {
-        assert!(total_pages <= 64, "reserved region too large for u64 bitmap");
-        Self {
-            phys_start,
-            total_pages,
-            allocated_pages: 0,
-            bitmap: 0,
-        }
-    }
-
-    pub(crate) fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
-        let mask = !self.bitmap;
-        let free_bit = mask.trailing_zeros() as usize;
-        if free_bit >= self.total_pages {
-            return None;
-        }
-        self.bitmap |= 1 << free_bit;
-        self.allocated_pages += 1;
-        let offset = free_bit * 4096;
-        let phys = self.phys_start.add(offset);
-        let virt = vm_phys_to_virt(phys);
-        Some((virt, phys))
-    }
-}
-```
-
-**关键设计点**：
-- `bitmap: u64` 限制最多 64 页，init 阶段足够
-- `trailing_zeros()` 找第一个空闲位，O(1) 分配
-- VA 通过 `vm_phys_to_virt(phys)` 获取，不需要独立的 VA 分配
-
-### 4.3 Direct Map
+### 4.2 Direct Map
 
 ```rust
 pub(crate) const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
@@ -763,12 +681,11 @@ T6: 主循环开始
 | 维度 | 测试重点 | 关键场景 |
 |------|----------|----------|
 | VmPageAllocator | alloc_page 返回 VA = vm_phys_to_virt(phys) | 分配、释放、地址正确性 |
-| ReservedRegion | 物理页预留与耗尽 | 分配成功、耗尽返回 None |
 | Direct Map | phys ↔ virt 转换 | vm_phys_to_virt、virt_to_phys、roundtrip |
 
 ### 5.2 VmPageAllocator 测试
 
-**alloc_page 地址正确性**：验证 `alloc_page()` 返回的 VA 等于 `VM_DIRECT_MAP_BASE + phys`。
+**alloc_page 地址正确性**：验证 `alloc_page()` 返回的 VA 等于 `vm_phys_to_virt(phys)`。
 
 ```rust
 #[test]
@@ -777,11 +694,11 @@ fn test_alloc_page() {
     let mut alloc = VmPageAllocator::new(phys_alloc);
 
     let (v1, p1) = alloc.alloc_page().unwrap();
-    assert_eq!(v1.0, VM_DIRECT_MAP_BASE + p1.as_u64());
+    assert_eq!(v1.0 - p1.as_u64(), mock_map::offset());
 
     let (v2, p2) = alloc.alloc_page().unwrap();
     assert_ne!(p1.as_u64(), p2.as_u64());
-    assert_eq!(v2.0, VM_DIRECT_MAP_BASE + p2.as_u64());
+    assert_eq!(v2.0 - p2.as_u64(), mock_map::offset());
 }
 ```
 
@@ -790,7 +707,7 @@ fn test_alloc_page() {
 ```rust
 #[test]
 fn test_alloc_phys_and_free() {
-    let phys_alloc = make_test_phys_alloc(4);
+    let phys_alloc = make_test_phys_alloc(256);
     let mut alloc = VmPageAllocator::new(phys_alloc);
 
     let p1 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
@@ -803,28 +720,7 @@ fn test_alloc_phys_and_free() {
 }
 ```
 
-### 5.3 ReservedRegion 测试
-
-**分配与耗尽**：验证预留区域的分配和边界条件。
-
-```rust
-#[test]
-fn test_reserved_alloc_and_exhaustion() {
-    let mut reserved = ReservedRegion::new(PhysBytes::new(0x1000), 2);
-
-    let (v1, p1) = reserved.alloc_page().unwrap();
-    assert_eq!(p1.as_u64(), 0x1000);
-    assert_eq!(v1.0, VM_DIRECT_MAP_BASE + 0x1000);
-
-    let (v2, p2) = reserved.alloc_page().unwrap();
-    assert_eq!(p2.as_u64(), 0x2000);
-    assert_eq!(v2.0, VM_DIRECT_MAP_BASE + 0x2000);
-
-    assert!(reserved.alloc_page().is_none());
-}
-```
-
-### 5.4 Direct Map 测试
+### 5.3 Direct Map 测试
 
 **phys → virt → phys roundtrip**：验证地址转换的正确性。
 
@@ -857,7 +753,7 @@ fn test_is_direct_map_virt() {
 VM 进程采用**单线程事件循环**模型（参见项目级 review 规范）。所有内存管理操作都在主线程中顺序执行，不存在并发访问。
 
 **影响**：
-- `VmPageAllocator` 及其内部组件（`ReservedRegion`）不需要 `Sync` 或 `Send` trait
+- `VmPageAllocator` 及其内部组件不需要 `Sync` 或 `Send` trait
 - 不需要互斥锁、原子操作或内存屏障
 - Minix3 中用于检测递归的 `level` 变量在 Rust 版本中不再需要——Direct Map 从结构上消除了递归
 
