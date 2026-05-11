@@ -1345,9 +1345,9 @@ Bitmap 本身占用的物理页也在前 1GB 内，通过 direct map 直接读�
 2. 通过 `vm_phys_to_virt(pt_phys)` 获取 VA 后直接读写新页表页——此时 direct map 至少覆盖 1GB，新页表页的物理地址一定在前 1GB 内
 3. 写入映射条目，扩展 direct map 覆盖范围
 
-**零递归**：操作页表页不需要 `vm_mappages` / `ensure_tables`，因为页表页通过 `vm_phys_to_virt()` 直接访问。
+**零递归**：操作页表页不需要 `vm_mappages` / `pt_ptalloc_in_range`，因为页表页通过 `vm_phys_to_virt()` 直接访问。
 
-> `vm_mappages` / `ensure_tables` 详见 [07-pagetable-ops.md](07-pagetable-ops.md)。
+> `vm_mappages` / `pt_ptalloc_in_range` 详见 [07-pagetable-ops.md](07-pagetable-ops.md)。
 
 **完备性论证**：一个 PDPT 页能容纳 512 个 1GB 条目，覆盖 512GB 物理内存。超过 512GB 需要新 PDPT 页，但此时 VM 已有至少 1GB direct map，可以 `alloc_phys() → vm_phys_to_virt()` 直接操作新 PDPT 页。仍然零递归、零额外自举风险。
 

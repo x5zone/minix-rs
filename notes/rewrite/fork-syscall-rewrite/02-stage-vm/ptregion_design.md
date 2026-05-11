@@ -20,15 +20,15 @@
 ```
 vm_allocpage(pages) → alloc_mem(pages) → 分配物理页
                     → vm_mappages(virt, phys) → 建立页表映射
-                                            → ensure_tables(virt) 
-                                            → 可能需要分配新页表页
+                                            → pt_ptalloc_in_range(virt)
+                                            → pt_ptalloc(pde) 分配新页表页
                                             → vm_allocpage(1)  ← 递归！
 ```
 
 **递归发生的条件**：
 - 当 `vm_mappages` 映射的虚拟地址落入一个新的 2MB 区域（x86-64 的 PT 覆盖范围）
 - 而该区域的页表页（PT）尚未分配时
-- `ensure_tables` 需要调用 `vm_allocpage` 来分配页表页
+- `pt_ptalloc_in_range` → `pt_ptalloc` 需要调用 `vm_allocpage` 来分配页表页
 - 这就形成了递归
 
 ### 1.2 递归的危险性
@@ -105,7 +105,7 @@ void pt_init_alloc(void) {
 }
 ```
 
-**从备用页池取页**（`ensure_tables` 使用）：
+**从备用页池取页**（`pt_ptalloc` 使用）：
 
 ```c
 // minix3/minix/servers/vm/alloc.c:get_spare_page
@@ -160,16 +160,16 @@ void replenish_spare_pages(void) {
 
 #### 1.3.4 使用场景
 
-在 `ensure_tables` 中，当需要分配新页表页时：
+在 `pt_ptalloc` 中，当需要分配新页表页时：
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:ensure_tables (简化)
-static int ensure_tables(pt_t *pt, vir_bytes addr) {
+// minix3/minix/servers/vm/pagetable.c:pt_ptalloc (简化)
+static int pt_ptalloc(pt_t *pt, int pde, u32_t flags) {
     // ... 计算索引 ...
     
-    if (pt->pt_pt[pt_index] == 0) {
+    if (pt->pt_pt[pde] == NULL) {
         // 需要分配新页表页
-        phys_clicks pt_phys;
+        phys_bytes pt_phys;
         
         // 关键：使用备用页池，而不是 alloc_mem！
         pt_phys = get_spare_page();
@@ -716,7 +716,7 @@ impl<O: PtOps> PtRegion<O> {
         let pt_index = ((pt_virt.0 - self.current_pt_base.0) / PAGE_SIZE as u64) as usize;
         
         // 4. 写 PTE：建立虚拟地址到新物理页的映射
-        //    current_pt 已映射，直接写，不触发 ensure_tables
+        //    current_pt 已映射，直接写，不触发 pt_ptalloc
         self.pt_ops.write_pte(self.current_pt, pt_index, pt_phys.as_u64() | flags);
         
         // 5. 清零新 PT 页（通过刚映射的虚拟地址）
@@ -747,7 +747,7 @@ impl<O: PtOps> PtRegion<O> {
 | 4 | 清零 | 写内存 | `pt_virt`（刚映射） | ❌ 已映射 |
 | 5 | 写 PDE | 写页表 | `pd_page`（已映射） | ❌ 已映射 |
 
-**全部操作的对象都是已映射的页表页，不触发 `ensure_tables`，不递归。**
+**全部操作的对象都是已映射的页表页，不触发 `pt_ptalloc`，不递归。**
 
 ### 2.8 递归的结构性消除
 
@@ -755,11 +755,11 @@ impl<O: PtOps> PtRegion<O> {
 
 **Minix3**：
 ```
-vm_allocpage → vm_mappages → ensure_tables → 需要页表页
-                                          ↓
-                                    get_spare_page（从备用池取）
-                                          ↓
-                                    如果备用池耗尽 → 紧急分配 → 可能递归
+vm_allocpage → vm_mappages → pt_ptalloc_in_range → pt_ptalloc → 需要页表页
+                                                              ↓
+                                                        get_spare_page（从备用池取）
+                                                              ↓
+                                                        如果备用池耗尽 → 紧急分配 → 可能递归
 ```
 
 **PtRegion**：
@@ -1262,7 +1262,7 @@ fn vm_bootstrap_init() {
 1. PtRegion 的核心用途是"给物理页分配 stable VA"——direct map 已经天然完成
 2. PtRegion 的 `alloc_pt_page()` 本质上是在 VM 里"重新发明一套 mini direct-map"
 3. Direct map 出现后，所有物理页天然就有 stable VA：`va = DIRECT_MAP_BASE + pa`
-4. 递归问题根源直接消失：新 PT 页 = `alloc_phys() → vm_phys_to_virt()`，不需要 map、不需要 find_hole、不需要 ensure_tables
+4. 递归问题根源直接消失：新 PT 页 = `alloc_phys() → vm_phys_to_virt()`，不需要 map、不需要 find_hole、不需要 pt_ptalloc
 
 #### 8.1.5 EarlyHeap 完全消除
 

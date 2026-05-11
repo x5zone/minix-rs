@@ -71,7 +71,7 @@
 | 内核访问物理页：createpde 临时映射 | 内核访问物理页：`kernel_phys_to_virt()` |
 | 三套机制，概念割裂 | 一套机制，概念统一 |
 
-**范式转变**：这不是"换了一种 VA 分配方式"，而是从"mapping-centric VM"到"physical-memory-centric VM"的范式转变。旧世界观：physical page → 需要临时 VA → vm_mappages / ensure_tables / 递归。新世界观：physical page → 天然就有 stable VA → DIRECT_MAP_BASE + pa。VA 分配这个步骤本身消失了。
+**范式转变**：这不是"换了一种 VA 分配方式"，而是从"mapping-centric VM"到"physical-memory-centric VM"的范式转变。旧世界观：physical page → 需要临时 VA → vm_mappages / pt_ptalloc_in_range / pt_ptalloc / 递归。新世界观：physical page → 天然就有 stable VA → DIRECT_MAP_BASE + pa。VA 分配这个步骤本身消失了。
 
 **页表页不是特殊对象**：Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"，页表页需要 PtRegion 这样的特殊 VA 管理。Direct map 出现后，"所有 physical pages are equally accessible"——页表页只是物理页的一种用途。这不是"优化了页表页的 VA 分配"，而是"页表页需要特殊 VA 管理"这个概念本身消失了。
 
@@ -101,7 +101,7 @@ Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"，页�
 
 #### 洞察 3：从"mapping-centric VM"到"physical-memory-centric VM"的范式转变
 
-旧世界观：physical page → 需要临时 VA → vm_mappages / ensure_tables / 递归
+旧世界观：physical page → 需要临时 VA → vm_mappages / pt_ptalloc_in_range / pt_ptalloc / 递归
 新世界观：physical page → 天然就有 stable VA → DIRECT_MAP_BASE + pa
 
 这不是"换了一种 VA 分配方式"，而是"VA 分配这个步骤本身消失了"。整个 VM 代码会开始疯狂简化——因为所有对物理页的操作都统一为 `vm_phys_to_virt()`。
@@ -277,7 +277,7 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 - §5 测试：增加方案四的测试场景（alloc_phys + vm_phys_to_virt 的组合）
 **设计思考**：读者应感受到设计不是一步到位的，而是通过不断追问"这个问题的本质是什么"逐步逼近的。PtRegion 的价值不在于它被保留，而在于它帮助我们发现——真正的问题不是"如何避免递归"，而是"如何让物理页天然拥有 stable VA"。保留演进叙述，让读者自己走一遍这个思考过程。
 
-**范式转变**：从"mapping-centric VM"到"physical-memory-centric VM"。旧世界观中，物理页需要临时 VA（vm_mappages / ensure_tables / 递归）；新世界观中，物理页天然就有 stable VA（DIRECT_MAP_BASE + pa）。这不是"换了一种 VA 分配方式"，而是"VA 分配这个步骤本身消失了"。
+**范式转变**：从"mapping-centric VM"到"physical-memory-centric VM"。旧世界观中，物理页需要临时 VA（vm_mappages / pt_ptalloc_in_range / pt_ptalloc / 递归）；新世界观中，物理页天然就有 stable VA（DIRECT_MAP_BASE + pa）。这不是"换了一种 VA 分配方式"，而是"VA 分配这个步骤本身消失了"。
 
 **页表页不是特殊对象**：Direct map 出现前，隐含的模型是"普通物理页 ≠ 页表页"。Direct map 出现后，"所有 physical pages are equally accessible"——页表页只是物理页的一种用途。这不是"优化了页表页的 VA 分配"，而是"页表页需要特殊 VA 管理"这个概念本身消失了。
 

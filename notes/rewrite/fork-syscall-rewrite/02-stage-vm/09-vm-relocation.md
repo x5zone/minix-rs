@@ -65,7 +65,7 @@ Bootstrap 阶段                    Normal 阶段
 
 方案三中，PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。方案四中简化为：`alloc_phys() → vm_phys_to_virt() → memcpy → 更新指针`。
 
-关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `ensure_tables`），方案四中物理页天然拥有 stable VA（`vm_phys_to_virt()`），VA 分配这个步骤消失了。
+关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），方案四中物理页天然拥有 stable VA（`vm_phys_to_virt()`），VA 分配这个步骤消失了。
 
 搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 05-vm-allocpage.md 中范式转变的又一个例证。
 
@@ -1247,7 +1247,7 @@ impl<O: PtOps> PtRegion<O> {
 3. update_relocated_arrays(&new_ptrs) → 更新指针
 ```
 
-关键区别：方案三的步骤 1 需要 `alloc_pt_page()` 从 PtRegion 分配 VA 并 `write_data_pte()` 建立映射（可能触发 `ensure_tables`），方案四中 `vm_phys_to_virt()` 一步完成。`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用消失了——搬迁不再依赖 PtRegion 的 VA 管理能力。
+关键区别：方案三的步骤 1 需要 `alloc_pt_page()` 从 PtRegion 分配 VA 并 `write_data_pte()` 建立映射（可能触发 `pt_ptalloc_in_range`），方案四中 `vm_phys_to_virt()` 一步完成。`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用消失了——搬迁不再依赖 PtRegion 的 VA 管理能力。
 
 搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 §1.1 和 05-vm-allocpage.md 中范式转变的又一个例证。
 

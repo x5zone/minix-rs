@@ -378,74 +378,99 @@ VA 来源: BSS 段静态预留（编译期确定）
 本质: "递归还是会发生，只是有缓冲"
 ```
 
-**问题**：备用页池是固定大小的。x86 生产构建仅 15 页，如果递归频繁发生（每次 `vm_mappages` 落入新的 2MB 区域），池会耗尽。更根本地，这个方案没有消除递归，只是提供了缓冲。
+**问题**：备用页池是固定大小的。x86 生产构建仅 15 页，如果递归频繁发生（每次 `vm_mappages` 落入新的 2MB 区域），池会耗尽。这个方案没有消除递归，只是提供了缓冲。
 
 > 详细分析见 §2.2–§2.4。
 
 #### 3.1.2 PtRegion：结构性消除递归
 
-PtRegion 的核心思路：为页表页预留一段**专用的虚拟地址空间**，用 bump allocator 按序分配。页表页的 VA 不再走 `find_hole + vm_mappages`，递归从结构上被消除。
+**核心思路**：在 VM 虚拟地址空间中预留一段**连续的、预先映射好的区域**，专供页表页使用。页表页需要 VA 时，从这段区域按序切分（bump allocator），不需要 `find_hole`，也不需要 `vm_mappages`。
+
+**关键前提**：这段区域本身必须在 VM 启动时就映射好——由 kernel 在加载 VM 时建立初始页表映射。
+
+**PtRegion 的结构**（假设 x86-64 四级页表）：
 
 ```
-VA 来源: PtRegion bump allocator（运行时从专用区域切）
-递归处理: 页表页 VA 不走 find_hole + vm_mappages，递归不可能发生
-本质: "让递归不可能发生"
+VM 虚拟地址空间（x86-64）:
+  0x0000_7F00_0000_0000  ┬── PtRegion 专用区域 (初始 2MB)
+                         │   ├── PDPT page (4KB)  ← 页目录指针表
+                         │   ├── PD page   (4KB)  ← 页目录
+                         │   ├── PT[0]     (4KB)  ← 页表，512 个 PTE slot
+                         │   ├── slot 0: 已用 (映射 PDPT)
+                         │   ├── slot 1: 已用 (映射 PD)
+                         │   ├── slot 2: 已用 (映射 PT[0])
+                         │   ├── slot 3: 空闲 ← 下一个可分配的页表页
+                         │   ├── ...
+                         │   ├── slot 511: 空闲
+  0x0000_7F00_0020_0000  ┴── 区域结束
 ```
 
-**PtRegion 的结构**：
+**术语说明**：
+- **PDPT**（Page Directory Pointer Table）：x86-64 四级页表的第 3 级，每个 entry 指向一个 PD
+- **PD**（Page Directory）：第 2 级，每个 entry 指向一个 PT
+- **PT**（Page Table）：第 1 级，每个 entry（PTE）指向一个 4KB 物理页
+- **slot**：PT 中的 PTE 索引（0-511），每个 slot 对应一个 4KB 虚拟页
+- **current_pt**：当前活跃的 PT 页，提供 slot 供 bump allocator 分配
+
+**容量分析**：1 个 PT 页有 512 个 slot，每个 slot 映射 4KB。当 512 个 slot 用完时，需要分配一个新的 PT 页。1 个 PD 页可以指向 512 个 PT 页，覆盖 512 × 2MB = 1GB 的虚拟地址空间。VM 自身页表需求远小于 1GB，所以容量充足。
+
+**页表页的分配过程**（从 PtRegion 取一个 slot 给新的页表页）：
 
 ```
-VM 虚拟地址空间:
-  0x7F0000000000  ┬── 页表页专用区域 (初始 2MB, 可增长)
-                  │   ├── PDPT page (4KB)
-                  │   ├── PD page   (4KB)
-                  │   ├── PT[0]     (4KB)     ← 提供 512 slots
-                  │   ├── slot 3: 可用
-                  │   ├── ...
-  0x7F0000200000  ┴── 区域结束
-  0x7F0000200000  ─── 通用映射区域 (find_hole 从这里开始)
+1. 从物理内存分配器取一页: pt_phys = alloc_phys(1)
+   ← 纯 bitmap 操作，不涉及页表，不递归
+
+2. 从 bump allocator 取一个空闲 slot: slot_idx = next_free_slot++
+   ← 纯整数递增，不递归
+
+3. 计算该 slot 对应的虚拟地址:
+   pt_virt = PTREGION_BASE + slot_idx * 4KB
+   ← 简单算术，不递归
+
+4. 写 PTE 建立映射:
+   current_pt[slot_idx] = pt_phys | PRESENT | RW
+   ← current_pt 本身已映射在 PtRegion 中，直接写内存，不递归
+
+5. 清零新页表页:
+   memset(pt_virt, 0, 4KB)
+   ← 通过步骤 4 建立的映射访问，不递归
 ```
 
-**容量分析**：1 个 PT 页提供 512 slots，1 个 PD 页覆盖 512 个 PT = 1GB 页表空间，远超 VM 自身需求。
+**全部操作都不需要 `find_hole` 或 `vm_mappages`，递归从结构上被消除。**
 
-**扩展过程（关键：不递归）**：
+**PT 页用完时的扩展**（current_pt 的 512 slot 耗尽）：
 
 ```
-1. alloc_phys(1) → pt_phys           ← 纯 bitmap, 不递归
-2. 取 1 个 free slot → pt_virt       ← bump allocator, 不递归
-3. 写 PTE: current_pt[slot] = pt_phys | flags  ← current_pt 已映射, 不递归
-4. 清零新 PT 页 (通过 pt_virt)        ← 刚映射好, 不递归
-5. 写 PDE: pd[new_idx] = pt_phys | flags       ← pd 已映射, 不递归
-6. 切换 current_pt → 新 PT 页
-7. 新 PT[0] = pt_phys | flags        ← 自映射, 不递归
+1. 按上述过程分配一个新的 PT 页: new_pt_phys, new_pt_virt
+2. 在 PD 中写入 PDE，让 PD 指向 new_pt_phys:
+   pd[pd_idx] = new_pt_phys | PRESENT | RW
+   ← PD 本身也映射在 PtRegion 中，直接写内存，不递归
+3. 更新 current_pt = new_pt_virt
+4. next_free_slot = 0（新 PT 页从 slot 0 开始分配）
 ```
-
-每一步操作的对象都是**已经映射好的页表页**，不需要 `ensure_tables`，不需要 `vm_mappages`。
 
 **递归检查清单**：
 
-| 操作 | 需要什么 | 从哪来 | 触发 alloc_virt？ |
+| 操作 | 需要什么 | 从哪来 | 触发 vm_mappages？ |
 |------|----------|--------|-------------------|
 | `alloc_phys` | 物理页 | PhysAllocator bitmap | ❌ |
-| `alloc_virt` | 虚拟地址 | `pt_region.alloc_pt_page()` | ❌ bump allocator |
-| `pt_region.expand()` → 新 PT 物理页 | 物理页 | `alloc_phys` | ❌ |
-| `pt_region.expand()` → 写 PTE | 写已映射页表 | `current_pt`（已映射） | ❌ |
-| `pt_region.expand()` → 写 PDE | 写已映射页表 | `pd_page`（已映射） | ❌ |
+| `alloc_pt_page` | 虚拟地址 | bump allocator（整数递增） | ❌ |
+| 写 PTE | 写已映射页表 | `current_pt`（已映射） | ❌ |
+| 写 PDE | 写已映射页表 | `pd`（已映射） | ❌ |
 
 **全部 ❌。递归从结构上被消除。**
 
 **设计反思：PtRegion 的本质**
 
-PtRegion 结构性消除了递归，这是一个优雅的局部解。但仔细审视 PtRegion 的核心职责——`alloc_pt_page()` 给物理页分配一个 stable VA——会发现它本质上是在 VM 里**重新发明了一套 mini direct-map**。
+PtRegion 的核心职责是 `alloc_pt_page() → VirBytes`：给物理页分配一个 stable VA。这和 direct map 的 `vm_phys_to_virt(phys) → VirBytes` 做的是同一件事——**phys → stable VA**。区别只是范围：
 
 | | PtRegion | Direct Map |
 |---|---------|------------|
-| 核心操作 | `alloc_pt_page() → VirBytes` | `vm_phys_to_virt(phys) → VirBytes` |
-| VA 来源 | bump allocator 从专用区域切 | `DIRECT_MAP_BASE + pa`，简单加法 |
+| VA 计算方式 | `PTREGION_BASE + slot_idx * 4KB` | `DIRECT_MAP_BASE + phys` |
 | 适用范围 | 仅页表页 | 所有物理页 |
-| 自举需求 | 需要 ReservedRegion 切出初始 PDPT/PD/PT | Kernel 初始页表已建立 1GB 映射 |
+| 自举复杂度 | 需要 kernel 预先映射 PtRegion 区域 | 需要 kernel 预先映射整个 direct map |
 
-PtRegion 的 `alloc_pt_page()` 和 direct map 的 `vm_phys_to_virt()` 做的是同一件事：**phys → stable VA**。PtRegion 只是把范围限制在了页表页，而 direct map 把这个能力推广到了所有物理页。
+PtRegion 是在 VM 里"重新发明了一套 mini direct-map"——用 bump allocator 替代简单加法，用有限区域替代全局映射。
 
 #### 3.1.3 Direct Map：VA 分配步骤消失（最终方案）
 
@@ -475,16 +500,17 @@ fn alloc_page(&mut self) -> Option<(VirBytes, PhysBytes)> {
 }
 ```
 
-**递归链消失**：回顾 §1.2 的递归链 `vm_allocpage → vm_mappages → ensure_tables → vm_allocpage`，在 Direct Map 下这条链根本不存在——`vm_allocpage` 不调用 `vm_mappages`，因为映射已经存在于 direct map 中。
+**递归链消失**：回顾 §1.2 的递归链 `vm_allocpage → vm_mappages → pt_ptalloc_in_range → pt_ptalloc → vm_allocpage`，在 Direct Map 下这条链根本不存在——`vm_allocpage` 不调用 `vm_mappages`，因为映射已经存在于 direct map 中。
 
 **范式转变**：
 
-| | 旧世界观（mapping-centric） | 新世界观（physical-memory-centric） |
-|---|---|---|
-| 物理页的 VA | 需要临时分配 | 天然拥有 stable VA |
-| VA 获取方式 | `find_hole + vm_mappages` | `DIRECT_MAP_BASE + pa` |
-| 页表页 | 需要特殊 VA 管理（PtRegion） | 与普通物理页无区别 |
-| 递归风险 | 存在，需要缓解 | 结构上不可能 |
+| | Minix3（spare_pagequeue） | PtRegion（中间方案） | Direct Map（最终方案） |
+|---|---|---|---|
+| 物理页的 VA | BSS 静态预留 | 专用区域 bump allocator | 天然拥有 stable VA |
+| 页表页 VA 来源 | `spare_pagequeue` 取静态页 | `PTREGION_BASE + slot_idx * 4KB` | `DIRECT_MAP_BASE + phys` |
+| 普通页 VA 来源 | `find_hole + vm_mappages` | `find_hole + vm_mappages` | `DIRECT_MAP_BASE + phys` |
+| 页表页 | 需要特殊处理（静态备用页） | 需要特殊 VA 管理（PtRegion） | 与普通物理页无区别 |
+| 递归处理 | 备用页池兜底（治标） | 结构性消除（治本） | 前提消失 |
 
 这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。
 
