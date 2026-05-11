@@ -298,9 +298,32 @@ while(vm_getsparepage(&phys)) ;         /* Use up all static pages */
 alloc_cycle();                          /* Refill spares with dynamic */
 ```
 
-`pt_init_done = 1` 之后递归仍然可能发生。Minix3 的做法是：先用光 BSS 静态备用页，再调用 `alloc_cycle()` 用**动态分配**的页重新填充备用页池。这样递归保护在初始化后依然有效。
+`pt_init_done = 1` 标志着 VM 页表初始化完成，可以走正常分配路径。但 Minix3 并不就此停止——它还要替换掉初始化阶段使用的静态备用页。源码注释（[pagetable.c:1316-1318](minix3/minix/servers/vm/pagetable.c#L1316-L1318)）解释了原因：
 
-> **方案四分析**：`spare_pagequeue` 是 x86-32 地址空间限制下的必然产物。32 位内核无法建立全物理内存 direct map，只能预分配备用页池来应对递归。x86-64 下 direct map 从结构上消除了递归根源——物理页天然拥有 stable VA，不存在"需要分配 VA"这个步骤，因此不存在递归，也不需要备用页池。参见 §3.2 的三阶段递进对比。
+```c
+/* We don't want to keep using the bootstrap statically allocated spare
+ * pages though, as the physical addresses will change on liveupdate. So we
+ * re-do part of the initialization now with purely dynamically allocated
+ * memory. */
+```
+
+替换静态页的根本原因是 **liveupdate**——静态页的物理地址在 liveupdate 时会变化，而动态分配的页不受影响。替换过程分三步：
+
+1. `alloc_cycle()`：确保动态分配可用
+2. `while(vm_getsparepage(&phys))`：用光所有静态备用页
+3. `alloc_cycle()`：用动态分配的页重新填充备用池
+
+随后（[pagetable.c:1338-1341](minix3/minix/servers/vm/pagetable.c#L1338-L1341)），Minix3 还用动态分配重建了整个 VM 页表：
+
+```c
+/* Recreate VM page table with dynamic-only allocations */
+memset(&newpt_dyn, 0, sizeof(newpt_dyn));
+pt_new(&newpt_dyn);
+pt_copy(&newpt_dyn, newpt);
+memcpy(newpt, &newpt_dyn, sizeof(*newpt));
+```
+
+至此，VM 彻底脱离对静态内存的依赖，所有页表结构都使用动态分配的内存。
 
 ### 2.5 释放机制
 
