@@ -358,6 +358,7 @@ void vm_freepages(vir_bytes vir, int pages)
 2. **解映射并释放**：`pt_writemap(..., WMF_OVERWRITE | WMF_FREE)` 一次性完成取消映射和物理页释放。`WMF_FREE` 标志使 `pt_writemap` 内部调用 `free_mem`，无需单独调用
 3. **计数递减**：`vm_self_pages--` 跟踪 VM 自身分配的页数
 4. **TLB 刷新**：仅在 `SANITYCHECKS` 构建时刷新 TLB，确保访问已释放页会触发页错误（便于调试）
+    > 正常构建下页表 entry 已清除（PRESENT=0），TLB 的 stale entry 会随运行被自然替换，不刷新是性能与风险的权衡。x86 从 486 起就支持 `invlpg` 指令刷新单条 TLB entry，但 Minix3 使用 `reload_cr3()`（重新加载 CR3 刷新整个 TLB），因为 `pt_writemap` 可能修改多条 entry，批量刷新更简单。
 
 ---
 
