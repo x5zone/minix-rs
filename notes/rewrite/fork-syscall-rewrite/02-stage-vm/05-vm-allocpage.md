@@ -276,7 +276,9 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 }
 ```
 
-**注释中提到的 "side effect"**：`vm_allocpage`（level=1）调用 `vm_mappages` 时，`vm_mappages` → `pt_writemap` → `pt_ptalloc_in_range` 可能递归进入另一个 `pt_ptalloc(pde)`——如果这个内层 `pt_ptalloc` 恰好为同一个 PDE 分配页表，它就会先于外层设置 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`。当递归返回、外层 `pt_ptalloc` 继续执行时，发现 `pt->pt_pt[pde]` 已经非空——说明内层递归已经替它完成了页表分配，于是释放自己刚拿到的页，直接返回 OK。
+**注释中提到的 "side effect"**：`vm_allocpage`（level=1）调用 `vm_mappages` 时，`vm_mappages` → `pt_writemap` → `pt_ptalloc_in_range` 可能递归进入另一个 `pt_ptalloc(pde)`。
+
+关键点在于 `vm_mappages` 硬编码操作 VM 自己的页表（`&vmprocess->vm_pt`），所以内层 `pt_ptalloc` 永远操作 `vmprocess->vm_pt`。如果外层 `pt_ptalloc` 操作的也是 `vmprocess->vm_pt`（如 `pt_init` 中），那么外层和内层操作同一个页表结构。此时 `findhole` 返回的 VA 可能落在外层正在处理的 PDE 范围内——内层 `pt_ptalloc` 先于外层设置了 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`。当递归返回、外层 `pt_ptalloc` 继续执行时，发现 `pt->pt_pt[pde]` 已经非空——说明内层递归已经替它完成了页表分配，于是释放自己刚拿到的页，直接返回 OK。
 
 **递归的根源**：页表页需要两样东西——物理地址（写入 PDE 给 MMU）和虚拟地址（VM 往页表里写 PTE）。物理地址可以从 `alloc_mem` 拿（不递归），但虚拟地址如果走 `find_hole + vm_mappages`，就回到了 `vm_allocpage`。
 
