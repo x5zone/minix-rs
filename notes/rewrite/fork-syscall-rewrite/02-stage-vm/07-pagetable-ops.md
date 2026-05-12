@@ -724,7 +724,7 @@ int pt_checkrange(pt_t *pt, vir_bytes v, size_t bytes, int write)
 
 > **注意**: `vm_mappages` 在 Minix3 源码中位于 `pagetable.c:295`，但语义上属于"页表映射操作"。它由 `vm_allocpage` 调用，负责为物理页分配虚拟地址并建立映射。
 
-**源码位置**: `minix3/minix/servers/vm/pagetable.c:295-320`
+**源码位置**: `minix3/minix/servers/vm/pagetable.c:295`
 
 ```c
 void *vm_mappages(phys_bytes p, int pages)
@@ -942,7 +942,7 @@ int vm_addrok(void *vir, int writeflag)
 
 **调用场景**：`vm_addrok` 有声明（`proto.h:119`）和定义，但在 Minix3 整个 VM 源码中**没有任何调用点**，属于死代码。其设计意图是供 `vm_allocpage` 分配后验证映射有效性，但实际未启用。
 
-> **minix-rs**：当前无 swap 机制，`vm_addrok` 对应的 Rust 实现可作为 `Paging` trait 的 `is_mapped(addr, writable)` 查询方法，在 debug 模式下用于 sanity check。
+> **minix-rs**：当前无 swap 机制，`vm_addrok` 的语义已被 `Paging` trait 的 `query()` 方法覆盖——`query(vaddr).is_some()` 等价于 PDE/PTE Present 检查，`flags.contains(WRITABLE)` 等价于写权限检查。无需新增 `is_mapped()` 方法，避免与 `query()` 功能重叠。
 
 ### 2.4 页表遍历
 
@@ -1138,6 +1138,20 @@ fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
 ```
 
 Kernel 代码使用 `kernel_phys_to_virt()`，VM 代码使用 `vm_phys_to_virt()`。两者做的是同一件事——`phys → stable VA`——只是 VA 窗口不同。
+
+**`virt_to_phys()` 的前置条件**：
+
+```rust
+fn virt_to_phys(virt: VirBytes) -> PhysBytes {
+    if virt.get() >= KERNEL_DIRECT_MAP_BASE {
+        PhysBytes::new(virt.get() - KERNEL_DIRECT_MAP_BASE)
+    } else {
+        PhysBytes::new(virt.get() - VM_DIRECT_MAP_BASE)
+    }
+}
+```
+
+`virt_to_phys()` 假定输入虚拟地址位于某个 direct map 区域内。若传入的地址低于 `VM_DIRECT_MAP_BASE`（不在任何 direct map 区域），`else` 分支会计算 `virt - VM_DIRECT_MAP_BASE`，导致 u64 整数下溢。当前设计下这是可接受的——所有调用者（VM、内核）只对已知位于 direct map 区域内的地址调用此函数。若未来需要更健壮的接口，可改为返回 `Option<PhysBytes>`，对非法地址返回 `None`。
 
 #### 3.0.2 安全边界论证
 
@@ -1476,9 +1490,9 @@ pub enum PageTableError {
 
 阶段 2: VM 自身页表建立（基于 kernel 提供的初始页表）
   - Paging::new()                    // 可选：如果需要替换初始页表
-  - map_kernel()                     // TODO：内核代码/数据段 + Kernel direct map
-  - VM direct map 扩展               // 如果物理内存 > 1GB
-  - bind_to_process()                // 通知内核
+  - map_kernel()                     // ⚠️ TODO（当前仅有 Mock 实现）
+  - VM direct map 扩展               // ⚠️ TODO（物理内存 > 1GB 时需要）
+  - bind_to_process()                // ✅ 已定义（Mock 中为 no-op）
 
 阶段 3: （未来）SMP 其他 CPU 的页表同步
 ```
@@ -1508,6 +1522,12 @@ pub enum PageTableError {
 
 **销毁流程**：`destroy()` 释放页表占用的所有物理页。标记为 `unsafe`，调用者需确保页表未激活且未绑定到任何进程。Minix3 的 `pt_free()` 不释放页目录（与槽位绑定复用），Rust 版本无此限制。
 
+**实现要点**：
+
+- `Paging::new()` 仅分配根页表（x86-64 为 PML4），中间页表（PDPT/PD/PT）在 `map()` 时按需分配，对调用者透明
+- `destroy()` 需递归遍历所有已分配的中间页表并释放物理页，x86-64 实现需遍历 PML4 → PDPT → PD → PT 四级结构
+- `root_paddr()` 返回根页表的物理地址，供 `bind_to_process()` 传递给内核
+
 ### 4.2 映射操作
 
 | 操作 | Minix3 | Rust |
@@ -1530,6 +1550,14 @@ pub enum PageTableError {
 
 **`query()` vs `pt_checkrange()`**：Minix3 的 `pt_checkrange()` 在全源码中仅有一处调用且被 `#if SANITYCHECKS` 包裹，属于 debug-only 断言。Rust 版本使用 `query()` 返回单页映射信息，调用者可自行循环实现范围检查。
 
+**实现要点**：
+
+- **`map()`**：中间页表（PDPT/PD/PT）按需分配，对调用者透明。地址对齐检查在 trait 实现内部完成，未对齐返回 `InvalidAddress`。x86-64 实现中，PTE 写入为 8 字节自然对齐的原子操作（Intel SDM Vol3 §4.10.4）
+- **`remap()`**：原子覆盖语义，避免 `unmap()` + `map()` 之间的无映射窗口。在单线程事件循环模型下逻辑原子（无中间状态可见），硬件层面 PTE 写入也是原子的。返回旧映射的 `(PhysBytes, PageFlags)`，供调用者决定是否释放物理页
+- **`map_range()`**：默认实现为两阶段——Phase 1 预验证（逐页 `query()` 确认无冲突），Phase 2 执行（逐页 `map()`）。arch 实现可覆盖为单遍扫描。使用 `checked_mul`/`checked_add` 防止地址溢出。保证 all-or-nothing 语义：失败时无部分映射残留
+- **`unmap()`**：仅取消映射并返回原物理地址，不释放物理页。物理页释放由 `phys_block` 引用计数管理
+- **`clone_range()`**：跨页表组合函数（非 trait 方法），通过 `src.query()` + `dst.map()` 实现映射复制。跳过源页表中无映射的地址（对应 Minix3 的 absent PDE/PTE 静默跳过行为）。`start=0, end=VM_USER_TOP` 时等价于 Minix3 的 `pt_copy()`
+
 ### 4.3 进程绑定
 
 | 操作 | Minix3 | Rust |
@@ -1546,7 +1574,9 @@ pub enum PageTableError {
 
 #### 4.3.1 映射内容清单
 
-`map_kernel()` 执行两段映射，按以下顺序建立：
+`map_kernel()` 建立三部分映射，按以下顺序建立：
+
+> **注**：代码段和数据段因权限不同（代码段可执行、数据段不可执行）而分开描述，但在逻辑上属于同一映射段（内核代码/数据段）。因此 §4.3.4 与 Minix3 的对比中按逻辑段计数为"2 段"：第 1 段 = 内核代码/数据段，第 2 段 = Kernel direct map。
 
 | 顺序 | 映射内容 | VA 范围 | PA 来源 | 页面类型 | 权限标志 | 说明 |
 |------|---------|---------|---------|---------|---------|------|
@@ -1586,9 +1616,9 @@ map_kernel() 内部步骤：
      - 若 supports_1gb_page：map_huge(va, pa, 1GB, flags)
      - 否则：分配 PD 页，逐项 map_huge(va, pa, 2MB, flags)
 
-4. 刷新 TLB（若需要）
-   - 如果是在已有页表上调用 map_kernel()（而非新建），需刷新 TLB
-   - 新建页表时不需要（尚未 switch 过）
+4. 刷新 TLB（仅热更新场景）
+   - 新建页表时不需要刷新 TLB（尚未 switch 过，无 stale TLB 条目）
+   - 如果未来支持在运行中的页表上热更新 kernel mappings（如内存热插拔），则需刷新 TLB 并设计跨核 shootdown 协议
 ```
 
 #### 4.3.3 Kernel Direct Map 只读不变量
@@ -1603,8 +1633,8 @@ map_kernel() 内部步骤：
 
 | 方面 | Minix3 `pt_mapkernel` | minix-rs `map_kernel` |
 |------|----------------------|----------------------|
-| 映射段数 | 3 段 | 2 段 |
-| 第 1 段 | 内核代码段（4MB 大页） | 内核代码段（2MB huge pages） |
+| 映射段数 | 3 段 | 2 段（逻辑段） |
+| 第 1 段 | 内核代码段（4MB 大页） | 内核代码/数据段（2MB huge pages，按权限拆为两部分） |
 | 第 2 段 | `pagedir_mappings` 登记册 | Kernel direct map（1GB huge pages） |
 | 第 3 段 | `kern_mappings` 特殊映射 | 不需要（设备映射走 VM_MAP_PHYS） |
 | 代码/数据段权限 | 统一 P + RW + G | 分离：代码段可执行，数据段不可执行 |
@@ -1667,6 +1697,7 @@ cargo test -p minix-arch --features mock
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
 - [10-phys-block.md](10-phys-block.md) - 物理块引用计数
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的页表操作
+- [27-vm-init-main.md](27-vm-init-main.md) - VM 初始化主流程
 
 ---
 
