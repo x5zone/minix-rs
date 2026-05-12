@@ -1964,6 +1964,18 @@ Minix3:  slab 元数据在 VM 地址空间 → vm_pagelock 解锁 → pt_writema
 
 这是 `vm_phys_to_virt()` 统一性的一个具体例证——slab 元数据和其他物理页一样，通过同一个 direct map 访问，不再有特殊的映射路径。
 
+#### `vm_pagelock` 消除决策
+
+Minix3 的 `vm_pagelock` 在 minix-rs 中**完全消除**，理由有三层：
+
+**1. 无调用者**：`vm_pagelock` 的唯一调用者是 slab 分配器的 `SLABDATAUSE` 宏（§2.1.5 MEMPROTECT）。minix-rs 不实现专用 slab 分配器（§3.1 决策），改用 Rust `alloc` 体系，因此 `vm_pagelock` 不存在调用者。
+
+**2. Direct Map 下机制失效**：`vm_pagelock` 修改 VM 地址空间中 slab 元数据页的 PTE 权限（只读↔读写），但 Direct Map 的 PTE 是所有进程共享的 kernel/VM 映射——不能为了 slab 保护而把 direct map 的某页设为只读，这会阻塞所有通过 direct map 访问该物理页的路径。即使未来需要 slab 元数据写保护，也不能用修改 PTE 的方式实现。
+
+**3. Rust 安全模型替代调试价值**：MEMPROTECT 本身是 `#if MEMPROTECT` 条件编译的可选调试机制（§2.1.5 "生产环境：无保护"），其价值在于检测 C 语言的悬空指针访问。Rust 的所有权系统和借用检查器在编译期阻止大部分悬空指针问题；对于 `unsafe` 代码，Rust 生态使用 `#[cfg(debug_assertions)]` 或 Miri 做运行时检测，无需通过页表权限实现。
+
+> **07 文档影响**：`Paging::update_flags()` 的 API 契约中增加约束——Direct Map 下不能通过修改 VM 地址空间 PTE 实现 slab 写保护（PTE 共享），详见本节。
+
 ### 4.2 分配统计与可观测性
 
 为支持阶段 2 的观察和 profiling，VM 需要内置分配统计能力：

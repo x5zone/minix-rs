@@ -939,8 +939,6 @@ fn test_acl_state_mask() {
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vm_acl 字段
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的 ACL 处理
 
-> **方案四确认**：访问控制（ACL）与 direct map 无关，无需修改。ACL 控制的是"进程可以调用哪些 VM 系统调用"，属于策略层面，不涉及物理内存访问方式。
-
 ---
 
 *分类: VM私有*

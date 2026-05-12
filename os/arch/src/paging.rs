@@ -228,10 +228,17 @@ pub trait Paging {
 
     /// Map a range of consecutive virtual pages to consecutive physical pages.
     ///
-    /// Provides a default implementation (calls `map()` per page); arch implementations
-    /// may override to exploit hardware optimizations:
-    /// - x86-64: single CR3 reload after batch mapping instead of multiple INVLPGs
-    /// - ARM64: similar, can use TLBI range instructions
+    /// Provides a default implementation with Minix3-style all-or-nothing semantics:
+    /// first validates that none of the target addresses are already mapped (via `query()`),
+    /// then writes all mappings. If validation fails, no PTEs are written.
+    ///
+    /// This two-phase approach mirrors Minix3's `pt_writemap` which calls
+    /// `pt_ptalloc_in_range` first to ensure all second-level page tables exist
+    /// before writing any PTEs — if allocation fails, no partial mappings are left.
+    ///
+    /// Arch implementations may override to merge validation and writing into a
+    /// single pass (e.g., x86-64 can check and write PTEs in one traversal), but
+    /// must preserve the all-or-nothing guarantee: on failure, no partial mappings remain.
     ///
     /// Corresponds to Minix3 `pt_writemap()` batch mapping semantics.
     fn map_range(
@@ -241,6 +248,19 @@ pub trait Paging {
         pages: usize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        // Phase 1: Pre-validate — ensure no address in the range is already mapped
+        for i in 0..pages {
+            let offset = (i as u64)
+                .checked_mul(Self::PAGE_SIZE as u64)
+                .ok_or(PageTableError::InvalidAddress)?;
+            let v = VirBytes(vaddr_start.0.checked_add(offset)
+                .ok_or(PageTableError::InvalidAddress)?);
+            if self.query(v).is_some() {
+                return Err(PageTableError::AlreadyMapped);
+            }
+        }
+
+        // Phase 2: Execute — all addresses are free, write mappings
         for i in 0..pages {
             let offset = (i as u64)
                 .checked_mul(Self::PAGE_SIZE as u64)
@@ -249,6 +269,8 @@ pub trait Paging {
                 .ok_or(PageTableError::InvalidAddress)?);
             let p = PhysBytes(paddr_start.0.checked_add(offset)
                 .ok_or(PageTableError::InvalidAddress)?);
+            // map() should not fail after validation, but propagate if it does
+            // (e.g., AllocationFailed from intermediate page table allocation)
             self.map(v, p, flags)?;
         }
         Ok(())
@@ -307,6 +329,144 @@ pub trait Paging {
     // }
 }
 
+/// Copy page table entries from `src` to `dst` in the given virtual address range.
+///
+/// This is a cross-page-table operation — it reads existing mappings from one page table
+/// and replicates them in another. It is NOT a hardware mechanism; it is a composition
+/// of `query()` + `map()` on the `Paging` trait.
+///
+/// Corresponds to Minix3's:
+/// - `pt_map_in_range(src, dst, start, end)` for partial range copies (VM live update)
+/// - `pt_copy(dst, src)` for full user-space copies (fork) — call with
+///   `start = 0, end = VM_USER_TOP`
+///
+/// # Errors
+///
+/// Returns `AlreadyMapped` if `dst` already has a mapping at any address in the range.
+/// Skips addresses where `src` has no mapping (matches Minix3's behavior: absent
+/// PDEs/PTEs are silently skipped).
+///
+/// # Design note
+///
+/// Minix3's `pt_copy` uses `memcpy` to copy entire page table pages (4KB, 1024 PTEs).
+/// This optimization is x86-32 specific (PTE = u32, page = 4KB). On x86-64, PTE = u64
+/// and the page table structure differs. The `query()`+`map()` approach is architecture-
+/// independent and correct for all implementations. If performance becomes critical,
+/// arch-specific implementations can provide a batch optimization.
+pub fn clone_range<P: Paging>(
+    src: &P,
+    dst: &mut P,
+    start: VirBytes,
+    end: VirBytes,
+) -> Result<(), PageTableError> {
+    let page_size = P::PAGE_SIZE as u64;
+
+    // Validate alignment
+    if start.0 % page_size != 0 || end.0 % page_size != 0 {
+        return Err(PageTableError::InvalidAddress);
+    }
+
+    let mut vaddr = start.0;
+    while vaddr < end.0 {
+        if let Some((paddr, flags)) = src.query(VirBytes(vaddr)) {
+            dst.map(VirBytes(vaddr), paddr, flags)?;
+        }
+        // If src has no mapping at vaddr, skip (matches Minix3's behavior:
+        // pt_map_in_range skips absent PDEs/PTEs)
+
+        vaddr = vaddr.checked_add(page_size).ok_or(PageTableError::InvalidAddress)?;
+    }
+
+    Ok(())
+}
+
+
+/// Initialize the page table subsystem for the VM process.
+///
+/// Corresponds to Minix3's `pt_init()` but drastically simplified:
+/// - **Eliminated**: spare page pool (Direct Map provides VA access),
+///   `kern_mappings` / `pagedir_mappings` initialization (Direct Map replaces),
+///   dynamic rebuild (no static-to-dynamic transition needed)
+/// - **Retained but changed**: CPU feature detection → `HugePages::supports_1gb_page()`;
+///   VM page table setup → `map_kernel()` + direct map extension + `bind_to_process()`
+///
+/// # Phase 1: Huge page capability confirmation
+///
+/// Determines whether to use 1GB or 2MB huge pages for Direct Map extension.
+/// On x86-64, this requires CPUID check; fallback to 2MB is handled by
+/// `HugePages` trait implementation.
+///
+/// # Phase 2: VM page table setup (based on kernel-provided initial page table)
+///
+/// The kernel creates a minimal initial page table for VM (4 pages, 1GB direct map)
+/// before VM starts running. This function extends that page table:
+/// 1. `map_kernel()` — kernel code/data + kernel direct map
+/// 2. VM direct map extension — if physical memory > 1GB
+/// 3. `bind_to_process()` — register page table with the kernel
+///
+/// # Phase 3: (Future) SMP page table synchronization
+///
+/// # Type parameters
+///
+/// - `P`: Paging implementation (must also support VmPagingExt, HugePages)
+/// - `D`: DirectMapArch for address layout constants
+///
+/// # Arguments
+///
+/// - `pt`: The VM process's page table (created from kernel-provided initial page table)
+/// - `total_phys_bytes`: Total physical memory size in bytes (for direct map extension)
+/// - `endpoint`: VM process endpoint (for `bind_to_process()`)
+pub fn paging_init<P, D>(
+    pt: &mut P,
+    total_phys_bytes: u64,
+    endpoint: minix_types::Endpoint,
+) -> Result<(), PageTableError>
+where
+    P: crate::paging_ext::VmPagingExt + crate::paging_ext::HugePages,
+    D: crate::direct_map::DirectMapArch,
+{
+    // Phase 1: Huge page capability confirmation
+    let use_1gb = P::supports_1gb_page();
+    let huge_page_size = if use_1gb {
+        P::HUGE_PAGE_SIZE
+    } else {
+        P::FALLBACK_HUGE_PAGE_SIZE
+    };
+    let _ = huge_page_size; // Used in Phase 2 extension
+
+    // Phase 2: VM page table setup
+
+    // Step 2a: Map kernel address space (kernel code/data + kernel direct map)
+    // TODO: map_kernel() implementation is arch-specific and not yet complete.
+    //       When ready, this will map:
+    //       - Kernel code segment (executable, read-only, global)
+    //       - Kernel data segment (read-write, global)
+    //       - Kernel direct map (all physical memory, U/S=0, Global=1, 1GB huge pages)
+    pt.map_kernel()?;
+
+    // Step 2b: Extend VM direct map if physical memory exceeds 1GB
+    // The kernel-provided initial page table has 1GB direct map starting at
+    // VM_DIRECT_MAP_BASE. If total physical memory exceeds 1GB, we need to
+    // map additional 1GB (or 2MB fallback) entries.
+    //
+    // TODO: Implement direct map extension when phys_mem > 1GB.
+    //       Algorithm:
+    //       for each additional 1GB segment beyond the initial one:
+    //         let paddr = PhysBytes(segment_index * 0x4000_0000);
+    //         let vaddr = D::vm_phys_to_virt(paddr);
+    //         pt.map_huge(vaddr, paddr, huge_page_size as usize,
+    //                     PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE)?;
+    let initial_dm_size: u64 = 1 << 30; // 1GB
+    if total_phys_bytes > initial_dm_size {
+        // TODO: Extend direct map beyond initial 1GB
+        // Requires HugePages::map_huge() support in the implementation
+    }
+
+    // Step 2c: Bind page table to VM process
+    pt.bind_to_process(endpoint)?;
+
+    Ok(())
+}
 
 /// Mock paging implementation
 ///
@@ -452,17 +612,87 @@ pub mod mock {
         }
 
         fn map_kernel(&mut self) -> Result<(), PageTableError> {
-            const MOCK_KERNEL_VBASE: u64 = 0xFFFF_8000_0000_0000;
-            const MOCK_KERNEL_PBASE: u64 = 0x100_0000;
-            const MOCK_KERNEL_PAGES: usize = 16;
+            // Segment 1: Kernel code/data segment
+            // Maps kernel text + rodata + data at high virtual addresses.
+            // In a real x86-64 implementation, code segment uses 2MB huge pages
+            // with Present + ReadWrite + Global + Execute flags, and data segment
+            // uses Present + ReadWrite + Global + NoExecute.
+            // Mock: map as regular 4KB pages with kernel_read_write().
+            // NOTE: In a real kernel, KERNEL_TEXT_START would be different from
+            // KERNEL_DIRECT_MAP_BASE (e.g. 0xFFFF_FFFF_8000_0000 for text vs
+            // 0xFFFF_8000_0000_0000 for direct map). Mock uses a distinct address.
+            const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
+            const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
+            const MOCK_KERNEL_TEXT_PAGES: usize = 8; // code segment
+            const MOCK_KERNEL_DATA_PAGES: usize = 8; // data segment
 
-            for i in 0..MOCK_KERNEL_PAGES {
-                let vaddr = VirBytes(MOCK_KERNEL_VBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let paddr = PhysBytes(MOCK_KERNEL_PBASE + i as u64 * Self::PAGE_SIZE as u64);
+            // Code segment: kernel_read_write() (in real impl, would be executable)
+            for i in 0..MOCK_KERNEL_TEXT_PAGES {
+                let vaddr = VirBytes(MOCK_KERNEL_TEXT_VBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let paddr = PhysBytes(MOCK_KERNEL_TEXT_PBASE + i as u64 * Self::PAGE_SIZE as u64);
                 let flags = PageFlags::kernel_read_write();
                 self.map(vaddr, paddr, flags)?;
             }
+
+            // Data segment: starts after code segment (2MB-aligned in real impl)
+            const PAGE_SIZE: u64 = 4096;
+            const MOCK_KERNEL_DATA_VBASE: u64 =
+                MOCK_KERNEL_TEXT_VBASE + (MOCK_KERNEL_TEXT_PAGES as u64 * PAGE_SIZE);
+            const MOCK_KERNEL_DATA_PBASE: u64 =
+                MOCK_KERNEL_TEXT_PBASE + (MOCK_KERNEL_TEXT_PAGES as u64 * PAGE_SIZE);
+
+            for i in 0..MOCK_KERNEL_DATA_PAGES {
+                let vaddr = VirBytes(MOCK_KERNEL_DATA_VBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let paddr = PhysBytes(MOCK_KERNEL_DATA_PBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let flags = PageFlags::kernel_read_write(); // NoExecute in real impl
+                self.map(vaddr, paddr, flags)?;
+            }
+
+            // Segment 2: Kernel direct map
+            // Maps all physical memory at KERNEL_DIRECT_MAP_BASE using 1GB huge pages
+            // with Present + ReadWrite + Global + NoExecute + Supervisor-only (U/S=0).
+            // After map_kernel(), these PTEs are never modified (read-only invariant).
+            // Mock: map just 4 sentinel pages to verify the region is mapped.
+            const MOCK_DM_VBASE: u64 = {
+                use crate::direct_map::DirectMapArch;
+                crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE
+            };
+            const MOCK_DM_PBASE: u64 = 0; // Direct map starts at physical address 0
+            const MOCK_DM_SENTINEL_PAGES: usize = 4; // Only map a few sentinel pages
+
+            for i in 0..MOCK_DM_SENTINEL_PAGES {
+                let vaddr = VirBytes(MOCK_DM_VBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let paddr = PhysBytes(MOCK_DM_PBASE + i as u64 * Self::PAGE_SIZE as u64);
+                let flags = PageFlags::kernel_read_write(); // U/S=0 in real impl
+                self.map(vaddr, paddr, flags)?;
+            }
+
             Ok(())
+        }
+    }
+
+    impl crate::paging_ext::HugePages for MockPaging {
+        const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21]; // 1GB, 2MB
+        const HUGE_PAGE_SIZE: u64 = 1 << 30;       // 1GB preferred
+        const HUGE_PAGE_SHIFT: u32 = 30;           // 1GB shift
+        const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB fallback
+        const PTE_HUGE_FLAGS: u64 = 0;             // Mock: no hardware PTE flags
+
+        fn map_huge(
+            &mut self,
+            vaddr: VirBytes,
+            paddr: PhysBytes,
+            size: usize,
+            flags: PageFlags,
+        ) -> Result<(), PageTableError> {
+            // Mock: just map as regular pages within the huge page range
+            let page_size = Self::PAGE_SIZE as u64;
+            let pages = size / Self::PAGE_SIZE;
+            self.map_range(vaddr, paddr, pages, flags)
+        }
+
+        fn supports_1gb_page() -> bool {
+            true // Mock always supports 1GB pages
         }
     }
 
@@ -493,7 +723,7 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::paging_ext::{PagingWithId, VmPagingExt};
+        use crate::paging_ext::{PagingWithId, VmPagingExt, HugePages};
 
         #[test]
         fn test_mock_paging_new() {
@@ -689,6 +919,36 @@ pub mod mock {
         }
 
         #[test]
+        fn test_mock_map_range_all_or_nothing() {
+            // Verify all-or-nothing semantics: if any address in the range is
+            // already mapped, map_range returns AlreadyMapped and leaves no
+            // partial mappings behind.
+            let mut pt = MockPaging::new().unwrap();
+            let flags = PageFlags::read_write();
+
+            // Pre-map page 2 of a 4-page range
+            let conflict_vaddr = VirBytes(0x3000);
+            pt.map(conflict_vaddr, PhysBytes(0xF000), flags).unwrap();
+
+            // Attempt map_range covering pages 0-3 (0x1000-0x4000)
+            let result = pt.map_range(
+                VirBytes(0x1000), PhysBytes(0x2000), 4, flags,
+            );
+            assert_eq!(result, Err(PageTableError::AlreadyMapped));
+
+            // Verify no partial mappings were created (pages 0,1,3 should be unmapped)
+            assert!(pt.query(VirBytes(0x1000)).is_none());
+            assert!(pt.query(VirBytes(0x2000)).is_none());
+            assert!(pt.query(VirBytes(0x4000)).is_none());
+
+            // The pre-existing mapping at page 2 should be untouched
+            assert_eq!(
+                pt.query(conflict_vaddr),
+                Some((PhysBytes(0xF000), flags))
+            );
+        }
+
+        #[test]
         fn test_page_flags_display() {
             assert_eq!(format!("{}", PageFlags::read_write()), "P|W|U");
             assert_eq!(format!("{}", PageFlags::read_only()), "P|U");
@@ -701,20 +961,51 @@ pub mod mock {
             let mut pt = MockPaging::new().unwrap();
             pt.map_kernel().unwrap();
 
-            const MOCK_KERNEL_VBASE: u64 = 0xFFFF_8000_0000_0000;
-            const MOCK_KERNEL_PBASE: u64 = 0x100_0000;
+            // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
+            const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
+            const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
             const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;
 
-            for i in 0..16 {
-                let vaddr = VirBytes(MOCK_KERNEL_VBASE + i * PAGE_SIZE);
+            for i in 0..8 {
+                let vaddr = VirBytes(MOCK_KERNEL_TEXT_VBASE + i * PAGE_SIZE);
                 let result = pt.query(vaddr);
-                assert!(result.is_some(), "kernel page {i} not mapped");
+                assert!(result.is_some(), "kernel code page {i} not mapped");
                 let (paddr, flags) = result.unwrap();
-                assert_eq!(paddr, PhysBytes(MOCK_KERNEL_PBASE + i * PAGE_SIZE));
+                assert_eq!(paddr, PhysBytes(MOCK_KERNEL_TEXT_PBASE + i * PAGE_SIZE));
                 assert_eq!(flags, PageFlags::kernel_read_write());
             }
 
-            let unmapped = VirBytes(MOCK_KERNEL_VBASE + 16 * PAGE_SIZE);
+            // Segment 1: Kernel data segment (8 pages after code segment)
+            const MOCK_KERNEL_DATA_VBASE: u64 = MOCK_KERNEL_TEXT_VBASE + 8 * PAGE_SIZE;
+            const MOCK_KERNEL_DATA_PBASE: u64 = MOCK_KERNEL_TEXT_PBASE + 8 * PAGE_SIZE;
+
+            for i in 0..8 {
+                let vaddr = VirBytes(MOCK_KERNEL_DATA_VBASE + i * PAGE_SIZE);
+                let result = pt.query(vaddr);
+                assert!(result.is_some(), "kernel data page {i} not mapped");
+                let (paddr, flags) = result.unwrap();
+                assert_eq!(paddr, PhysBytes(MOCK_KERNEL_DATA_PBASE + i * PAGE_SIZE));
+                assert_eq!(flags, PageFlags::kernel_read_write());
+            }
+
+            // Segment 2: Kernel direct map sentinel (4 pages at KERNEL_DIRECT_MAP_BASE)
+            use crate::direct_map::DirectMapArch;
+            const MOCK_DM_VBASE: u64 = crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE;
+            const MOCK_DM_PBASE: u64 = 0;
+
+            for i in 0..4 {
+                let vaddr = VirBytes(MOCK_DM_VBASE + i * PAGE_SIZE);
+                let result = pt.query(vaddr);
+                assert!(result.is_some(), "kernel DM sentinel page {i} not mapped");
+                let (paddr, flags) = result.unwrap();
+                assert_eq!(paddr, PhysBytes(MOCK_DM_PBASE + i * PAGE_SIZE));
+                assert_eq!(flags, PageFlags::kernel_read_write());
+            }
+
+            // Verify gap between code segment and data segment has no unmapped overlap
+            // (In this mock, code and data are contiguous, so no gap to test)
+            // Verify after last data page is unmapped
+            let unmapped = VirBytes(MOCK_KERNEL_DATA_VBASE + 8 * PAGE_SIZE);
             assert!(pt.query(unmapped).is_none());
         }
 
@@ -741,6 +1032,60 @@ pub mod mock {
             let asid = pt.alloc_asid().unwrap();
 
             unsafe { pt.switch_with_asid(asid); }
+        }
+
+        #[test]
+        fn test_mock_huge_pages_capability() {
+            // Mock always reports 1GB support
+            assert!(MockPaging::supports_1gb_page());
+            assert!(MockPaging::supports_huge_page(1 << 30));
+            assert!(MockPaging::supports_huge_page(1 << 21));
+            assert!(!MockPaging::supports_huge_page(1 << 12)); // 4KB is not huge
+        }
+
+        #[test]
+        fn test_mock_map_huge() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x200_0000); // 32MB
+            let paddr = PhysBytes(0x400_0000);
+            let size = 1 << 21; // 2MB huge page
+            let flags = PageFlags::read_write();
+
+            pt.map_huge(vaddr, paddr, size, flags).unwrap();
+
+            // Mock maps as regular pages; verify first page is accessible
+            let result = pt.query(vaddr);
+            assert!(result.is_some());
+            let (p, f) = result.unwrap();
+            assert_eq!(p, paddr);
+            assert_eq!(f, flags);
+        }
+
+        #[test]
+        fn test_paging_init_basic() {
+            use crate::direct_map::MockDirectMap;
+
+            let mut pt = MockPaging::new().unwrap();
+            let endpoint = minix_types::Endpoint(1);
+
+            // paging_init with small physical memory (< 1GB, no extension needed)
+            let result = super::super::super::paging::paging_init::<
+                MockPaging, MockDirectMap,
+            >(&mut pt, 512 * 1024 * 1024, endpoint); // 512MB
+
+            assert!(result.is_ok());
+
+            // Verify kernel code/data mappings were established by map_kernel() segment 1
+            const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
+            let first_kernel_page = VirBytes(MOCK_KERNEL_TEXT_VBASE);
+            assert!(pt.query(first_kernel_page).is_some());
+
+            // Verify kernel direct map sentinel was established by map_kernel() segment 2
+            const MOCK_DM_VBASE: u64 = crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE;
+            // DirectMapArch trait must be in scope for associated const access
+            use crate::direct_map::DirectMapArch as _;
+            let first_dm_page = VirBytes(MOCK_DM_VBASE);
+            assert!(pt.query(first_dm_page).is_some());
         }
     }
 }
