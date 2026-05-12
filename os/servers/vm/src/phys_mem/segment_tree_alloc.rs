@@ -1,6 +1,6 @@
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
-use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::BootMemRegion;
+use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
+use super::{BumpBuf, BootMemRegion, METADATA_ALIGN_PADDING};
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]
@@ -46,44 +46,6 @@ fn merge(left: SegmentNode, right: SegmentNode) -> SegmentNode {
     let max_free = left.max_free.max(right.max_free).max(cross);
 
     SegmentNode { max_free, left_free, right_free, len }
-}
-
-struct BumpBuf {
-    ptr: *mut u8,
-    offset: usize,
-    len: usize,
-}
-
-impl BumpBuf {
-    fn new(buf: &mut [u8]) -> Self {
-        Self {
-            ptr: buf.as_mut_ptr(),
-            offset: 0,
-            len: buf.len(),
-        }
-    }
-
-    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
-        if count == 0 {
-            return &mut [];
-        }
-        let size = count * core::mem::size_of::<T>();
-        let align = core::mem::align_of::<T>();
-        let current = self.ptr as usize + self.offset;
-        let aligned = (current + align - 1) & !(align - 1);
-        let padding = aligned - current;
-        let new_offset = self.offset + padding + size;
-        assert!(
-            new_offset <= self.len,
-            "metadata buffer exhausted: need {} bytes, have {}",
-            size,
-            self.len - self.offset - padding,
-        );
-        self.offset = new_offset;
-        unsafe {
-            core::slice::from_raw_parts_mut(aligned as *mut T, count)
-        }
-    }
 }
 
 #[cfg(feature = "segment_tree_alloc")]
@@ -148,7 +110,7 @@ impl SegmentTreeAllocator {
             total_pages.next_power_of_two()
         };
         let tree_size = if total_pages > 0 { 2 * offset } else { 2 };
-        tree_size * core::mem::size_of::<SegmentNode>() + 2 * CLICK_SIZE
+        tree_size * core::mem::size_of::<SegmentNode>() + METADATA_ALIGN_PADDING
     }
 
     pub fn total_memory(&self) -> usize {
@@ -252,9 +214,8 @@ impl SegmentTreeAllocator {
 
 #[cfg(feature = "segment_tree_alloc")]
 impl PhysAllocator for SegmentTreeAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError> {
         if clicks == 0 {
-            self.stats.record_failure();
             return Err(AllocError::OutOfMemory);
         }
 
@@ -293,6 +254,9 @@ impl PhysAllocator for SegmentTreeAllocator {
         self.set_range(mem, alloc_clicks, false);
         self.free_pages -= alloc_clicks;
 
+        // Handle alignment: over-allocated to guarantee an aligned boundary.
+        // Free the unused prefix or suffix; no record_free since these are
+        // internal bookkeeping, not logical allocations.
         if align_clicks > 0 {
             let offset = mem % align_clicks;
             if offset > 0 {
@@ -301,22 +265,29 @@ impl PhysAllocator for SegmentTreeAllocator {
                 self.free_pages += excess;
                 let aligned_mem = mem + excess;
                 self.stats.record_alloc(clicks * CLICK_SIZE);
-                return Ok(PhysBytes::from_page_index(aligned_mem));
+                return Ok(AlignedPhysBytes::from_page_index(aligned_mem));
+            } else {
+                self.set_range(mem + clicks, align_clicks, true);
+                self.free_pages += align_clicks;
             }
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            let virt = crate::direct_map::vm_phys_to_virt(PhysBytes::from_page_index(mem));
+            let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(mem));
             unsafe {
-                core::ptr::write_bytes(virt.0 as *mut u8, 0, clicks * CLICK_SIZE);
+                let ptr = virt.0 as *mut u64;
+                let words = clicks * CLICK_SIZE / 8;
+                for i in 0..words {
+                    core::ptr::write_volatile(ptr.add(i), 0);
+                }
             }
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
-        Ok(PhysBytes::from_page_index(mem))
+        Ok(AlignedPhysBytes::from_page_index(mem))
     }
 
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize) {
         if clicks == 0 {
             return;
         }
@@ -335,15 +306,20 @@ impl PhysAllocator for SegmentTreeAllocator {
     }
 
     fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        let mut reserved = 0usize;
         let end = (base_page + count).min(self.n);
         for i in base_page..end {
             if self.page_is_free(i) {
                 self.tree[self.offset + i] = SegmentNode::used(1);
                 self.free_pages -= 1;
+                reserved += 1;
             }
         }
         for i in (1..self.offset).rev() {
             self.tree[i] = merge(self.tree[i * 2], self.tree[i * 2 + 1]);
+        }
+        if reserved > 0 {
+            self.stats.record_alloc(reserved * CLICK_SIZE);
         }
     }
 }
@@ -385,11 +361,11 @@ impl SegmentTreeAllocator {
 
 #[cfg(not(feature = "segment_tree_alloc"))]
 impl PhysAllocator for SegmentTreeAllocator {
-    fn alloc_mem(&mut self, _clicks: usize, _flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+    fn alloc_mem(&mut self, _clicks: usize, _flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError> {
         unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 
-    fn free_mem(&mut self, _base: PhysBytes, _clicks: usize) {
+    fn free_mem(&mut self, _base: AlignedPhysBytes, _clicks: usize) {
         unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 

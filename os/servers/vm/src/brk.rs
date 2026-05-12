@@ -10,7 +10,7 @@ use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
-use crate::phys_mem::PhysBytes as PmPhysBytes;
+use crate::phys_mem::AlignedPhysBytes;
 use crate::pagetable::{PageTable, Paging};
 
 const PAGE_SIZE: u64 = 4096;
@@ -168,7 +168,7 @@ fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
     for phys_opt in &region.physblocks {
         if let Some(pr) = phys_opt {
             if let Some(phys) = pr.get_phys_addr() {
-                let _ = PmPhysBytes::new(phys.0);
+                let _ = AlignedPhysBytes::new(phys.0);
             }
         }
     }

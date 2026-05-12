@@ -1,51 +1,13 @@
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
-use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion};
+use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
+use super::{BumpBuf, CLICK_SIZE, BootMemRegion, METADATA_ALIGN_PADDING};
 
 const FLAG_ALLOCATED: u8 = 0x80;
 const ORDER_MASK: u8 = 0x7F;
 const ORDER_INVALID: u8 = 0xFF;
 const MAX_ORDER: usize = 30;
 const FREE_LIST_SENTINEL: u32 = u32::MAX;
-
-struct BumpBuf {
-    ptr: *mut u8,
-    offset: usize,
-    len: usize,
-}
-
-impl BumpBuf {
-    fn new(buf: &mut [u8]) -> Self {
-        Self {
-            ptr: buf.as_mut_ptr(),
-            offset: 0,
-            len: buf.len(),
-        }
-    }
-
-    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
-        if count == 0 {
-            return &mut [];
-        }
-        let size = count * core::mem::size_of::<T>();
-        let align = core::mem::align_of::<T>();
-        let current = self.ptr as usize + self.offset;
-        let aligned = (current + align - 1) & !(align - 1);
-        let padding = aligned - current;
-        let new_offset = self.offset + padding + size;
-        assert!(
-            new_offset <= self.len,
-            "metadata buffer exhausted: need {} bytes, have {}",
-            size,
-            self.len - self.offset - padding,
-        );
-        self.offset = new_offset;
-        unsafe {
-            core::slice::from_raw_parts_mut(aligned as *mut T, count)
-        }
-    }
-}
 
 pub struct BuddyAllocator {
     free_list_heads: &'static mut [u32],
@@ -105,7 +67,7 @@ impl BuddyAllocator {
         let heads_size = (max_order + 1) * core::mem::size_of::<u32>();
         let next_size = total_pages * core::mem::size_of::<u32>();
         let orders_size = total_pages * core::mem::size_of::<u8>();
-        heads_size + next_size + orders_size + 2 * CLICK_SIZE
+        heads_size + next_size + orders_size + METADATA_ALIGN_PADDING
     }
 
     pub fn total_memory(&self) -> usize {
@@ -308,9 +270,8 @@ impl BuddyAllocator {
 }
 
 impl PhysAllocator for BuddyAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError> {
         if clicks == 0 {
-            self.stats.record_failure();
             return Err(AllocError::OutOfMemory);
         }
 
@@ -359,17 +320,21 @@ impl PhysAllocator for BuddyAllocator {
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            let virt = crate::direct_map::vm_phys_to_virt(PhysBytes::from_page_index(page));
+            let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(page));
             unsafe {
-                core::ptr::write_bytes(virt.0 as *mut u8, 0, clicks * CLICK_SIZE);
+                let ptr = virt.0 as *mut u64;
+                let words = clicks * CLICK_SIZE / 8;
+                for i in 0..words {
+                    core::ptr::write_volatile(ptr.add(i), 0);
+                }
             }
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
-        Ok(PhysBytes::from_page_index(page))
+        Ok(AlignedPhysBytes::from_page_index(page))
     }
 
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize) {
         if clicks == 0 {
             return;
         }
@@ -383,6 +348,7 @@ impl PhysAllocator for BuddyAllocator {
     }
 
     fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        let mut reserved = 0usize;
         let end = (base_page + count).min(self.total_pages);
         for i in base_page..end {
             if self.page_orders[i] != ORDER_INVALID
@@ -392,6 +358,7 @@ impl PhysAllocator for BuddyAllocator {
                 self.remove_from_free_list(order, i);
                 let block_size = 1usize << order;
                 self.free_pages -= block_size;
+                reserved += block_size;
                 self.page_orders[i] = ORDER_INVALID;
                 let mut j = i + 1;
                 while j < i + block_size && j < end {
@@ -402,6 +369,9 @@ impl PhysAllocator for BuddyAllocator {
         }
         for i in base_page..end {
             self.page_orders[i] = ORDER_INVALID;
+        }
+        if reserved > 0 {
+            self.stats.record_alloc(reserved * CLICK_SIZE);
         }
     }
 }

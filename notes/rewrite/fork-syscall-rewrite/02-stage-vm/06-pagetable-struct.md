@@ -4,13 +4,6 @@
 > **源码**: [pt.h](minix3/minix/servers/vm/pt.h)  
 > **说明**: 定义页表数据结构，可被其他需要地址空间管理的服务使用
 
-> **术语约定**: 为避免混淆，本文档使用数字表示页表层级：
-> - **P0**：页目录（Page Directory），x86-32 的顶层
-> - **P1**：页表（Page Table），x86-32 的第二层
-
-> ⚠️ **设计目标标注**: 标注 `【设计目标】` 的代码描述架构设计方向，
-> 供后续架构实现参考。
-
 ---
 
 ## 1. 概述
@@ -82,7 +75,7 @@ typedef struct {
 
 #### `pt_dir` — 页目录虚拟地址
 
-指向页目录（P0）的虚拟地址，页目录包含 1024 个 PDE，每个 PDE 存储一个页表（P1）的物理地址。
+指向页目录的虚拟地址，页目录包含 1024 个 PDE，每个 PDE 存储一个页表的物理地址。
 
 - **字段值**：虚拟地址，供 VM 代码读写页目录（管理用途）
 - **指向内容**：页目录本身，CPU 通过 CR3 加载其物理地址进行硬件地址转换
@@ -94,7 +87,7 @@ pt->pt_dir = vm_allocpages((phys_bytes *)&pt->pt_dir_phys,
 ```
 
 内存来源由 `vm_allocpages()` 根据全局变量 `pt_init_done` 决定（[pagetable.c:328](minix3/minix/servers/vm/pagetable.c#L328)）：
-- **init 阶段**（`pt_init_done == 0`）：来自静态 BSS `static_sparepages[]`/`static_sparepagedirs[]`
+- **init 阶段**（`pt_init_done == 0`）：来自静态 BSS `static_sparepages[]`（4KB 页框池，供页表分配）/`static_sparepagedirs[]`（16KB 页目录框池，供页目录分配）
 - **normal 阶段**（`pt_init_done == 1`）：来自 `alloc_mem()` 物理分配器
 
 #### `pt_dir_phys` — 页目录物理地址
@@ -119,7 +112,7 @@ return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 
 #### `pt_pt[]` — 页表虚拟地址缓存
 
-长度为 1024 的指针数组，`pt_pt[pde]` 存储第 `pde` 个页表（P1）的虚拟地址。与 `pt_dir[pde]` 指向同一个物理页，但 `pt_dir[pde]` 存物理地址（给 CPU 用），`pt_pt[pde]` 存虚拟地址（给 VM 用）。
+长度为 1024 的指针数组，`pt_pt[pde]` 存储第 `pde` 个页表的虚拟地址。与 `pt_dir[pde]` 指向同一个物理页，但 `pt_dir[pde]` 存物理地址（给 CPU 用），`pt_pt[pde]` 存虚拟地址（给 VM 用）。
 
 ```c
 // pagetable.c:pt_ptalloc ([pagetable.c:494](minix3/minix/servers/vm/pagetable.c#L494))
@@ -181,7 +174,7 @@ PDE 和 PTE 共享相同的 32-bit 格式：高 20 位存储**页框物理地址
 | 3 | `I386_VM_PWT` | 0x008 | 写穿透缓存 |
 | 4 | `I386_VM_PCD` | 0x010 | 禁用缓存 |
 | 5 | `I386_VM_ACC` | 0x020 | 已访问（硬件设置） |
-| 7 | `I386_VM_BIGPAGE` | 0x080 | 4MB大页（PDE 专属，跳过 P1） |
+| 7 | `I386_VM_BIGPAGE` | 0x080 | 4MB大页（PDE 专属，跳过页表） |
 
 **PDE 值构造**:
 ```c
@@ -252,7 +245,7 @@ phys_addr = pte & I386_VM_ADDR_MASK;  /* 0xFFFFF000 */
 
 ### 3.0 问题与建模
 
-Rust 版本面向现代 64 位硬件（x86-64、arm64），需要为页表设计合适的抽象。
+Rust 版本面向现代 64 位硬件（x86-64、arm64、riscv64），需要为页表设计合适的抽象。
 
 **Minix3 的做法**：
   - `pt_t` 将页目录指针、物理地址、页表缓存等硬件细节直接编码进结构体，与 x86-32 紧耦合；支持 arm32 则依赖 `#if defined()` 条件编译，每增加一种架构便引入更多分支
@@ -301,7 +294,13 @@ pub trait Paging {
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
-    /// 原子覆盖映射，对应 Minix3 pt_writemap() + WMF_OVERWRITE
+    /// 替换已有映射或创建新映射，单次操作完成。
+    /// 对应 Minix3 pt_writemap() + WMF_OVERWRITE。
+    ///
+    /// **原子性说明**：在单线程事件循环模型中，"原子"指"单个逻辑操作"——
+    /// 调用者不会观察到中间状态。硬件层面，x86-64 的 PTE 写入为 8 字节
+    /// 自然对齐（Intel SDM Vol3 §4.10.4），ARM64 的单次 PTE 写入也是原子的。
+    /// 因此在我们的单线程模型中，`remap()` 既是逻辑原子也是硬件原子。
     fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>;
 
@@ -362,6 +361,11 @@ pub trait Paging {
     // 实现。因此不纳入 Paging trait，保持 trait 只包含硬件必须提供语义的操作。
 }
 ```
+
+> **`map_range`/`unmap_range` 默认实现**：两个方法在 trait 中提供了默认实现，
+> 使用 `checked_mul`/`checked_add` 计算每页偏移量，溢出时返回 `InvalidAddress`。
+> 这避免了 `i * PAGE_SIZE` 在 32 位平台上的算术溢出风险。
+> 架构实现可覆盖默认实现以利用硬件优化（如 x86-64 批量映射后单次 CR3 reload）。
 
 **关键设计决策**:
 1. **机制抽象**: 只定义操作，不定义内部结构
@@ -426,6 +430,33 @@ bitflags::bitflags! {
         const NO_CACHE        = 1 << 6;
         const ACCESSED        = 1 << 7;
         const DIRTY           = 1 << 8;
+        const GUARD_PAGE      = 1 << 9;
+    }
+}
+
+impl core::fmt::Display for PageFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut first = true;
+        let mut flag = |name: &str, present: bool| -> core::fmt::Result {
+            if present {
+                if !first { write!(f, "|")?; }
+                first = false;
+                write!(f, "{}", name)?;
+            }
+            Ok(())
+        };
+        flag("P", self.contains(Self::PRESENT))?;
+        flag("W", self.contains(Self::WRITABLE))?;
+        flag("U", self.contains(Self::USER_ACCESSIBLE))?;
+        flag("X", self.contains(Self::EXECUTABLE))?;
+        flag("G", self.contains(Self::GLOBAL))?;
+        flag("WT", self.contains(Self::WRITE_THROUGH))?;
+        flag("NC", self.contains(Self::NO_CACHE))?;
+        flag("A", self.contains(Self::ACCESSED))?;
+        flag("D", self.contains(Self::DIRTY))?;
+        flag("GUARD", self.contains(Self::GUARD_PAGE))?;
+        if first { write!(f, "0")?; }
+        Ok(())
     }
 }
 
@@ -475,7 +506,7 @@ impl PageFlags {
 **OS 语义 flags → 硬件 flags 的转换**：`PageFlags` 是 OS 层的语义接口，各架构 `Paging` 实现内部负责将其翻译为硬件 PTE 位编码。`map()` 不是高频操作（fork / mmap / page fault 级别），且转换在静态分派下完全内联，零运行时开销。
 
 ```rust
-// 【设计目标】以下为未来架构实现的示例代码，当前未实现
+// 未来架构实现示例
 // x86-64：语义 flags → PTE 位编码
 impl X86_64Paging {
     fn flags_to_hw(flags: PageFlags) -> u64 {
@@ -573,9 +604,24 @@ pub trait PagingWithId: Paging {
 
 ```rust
 /// 大页支持（可选 trait）
+///
+/// 抽象 MMU 的大页能力。各架构提供支持的大小、
+/// 回退方案以及 PTE 标志位布局。
 pub trait HugePages: Paging {
-    /// 支持的大页大小列表
+    /// 支持的大页大小列表（从大到小排列）
     const HUGE_PAGE_SIZES: &'static [usize];
+
+    /// Direct Map 首选大页大小（字节）
+    const HUGE_PAGE_SIZE: u64;
+
+    /// 首选大页对应的页表层偏移
+    const HUGE_PAGE_SHIFT: u32;
+
+    /// 首选大小不可用时的回退大页大小（字节）
+    const FALLBACK_HUGE_PAGE_SIZE: u64;
+
+    /// 大页表项的硬件 PTE 标志位（各架构编码不同）
+    const PTE_HUGE_FLAGS: u64;
 
     /// 使用大页映射
     fn map_huge(
@@ -589,6 +635,14 @@ pub trait HugePages: Paging {
     /// 检查指定大小的大页是否支持
     fn supports_huge_page(size: usize) -> bool {
         Self::HUGE_PAGE_SIZES.contains(&size)
+    }
+
+    /// 当前 CPU 是否支持 1GB 大页
+    ///
+    /// x86-64 需 CPUID 检查（`CPUID.80000001H:EDX.GBPAGES`）；
+    /// ARM64/RISC-V 始终支持。
+    fn supports_1gb_page() -> bool {
+        true
     }
 }
 ```
@@ -619,7 +673,15 @@ impl Paging for MockPaging {
 
 ### 3.6 VM 初始页表结构
 
-> **方案四新增**：本节描述 Direct Map 方案下 kernel 为 VM 创建的初始页表。这是整个 direct map 叙事的物理起点——04-physical-memory.md 的"3 阶段启动"和 05-vm-allocpage.md 的"方案四"都以本节描述的初始页表为前提。
+> **链路说明（Allowed Evolution）**：本节在 Ch2 中无直接对应的 C 源码分析。
+>
+> Minix3 的 VM 服务本身**没有 Direct Map 概念**——VM 通过 `pt_pt[]` 数组（长度为 1024 的虚拟地址指针缓存，`pt_pt[pde]` 指向已映射到 VM 地址空间中的页表页）访问页表内容。页表页的虚拟地址来自 `vm_allocpage()`（init 阶段从 BSS 预映射的 `static_sparepages[]` 池获取，normal 阶段通过 `vm_mappages()` 动态映射到 VM 地址空间的空闲洞）。`pt_dir[pde]` 存同一页表页的物理地址（给 CPU 走 MMU 用），`pt_pt[pde]` 存虚拟地址（给 VM 代码用）——两者指向同一物理页，构成双视图。
+>
+> Minix3 源码树中存在 `sys/arch/x86/include/pmap.h`（NetBSD 上游引入），其中定义了 `PMAP_DIRECT_MAP`/`PMAP_DIRECT_BASE` 宏，但**这些宏受 `#ifdef __HAVE_DIRECT_MAP` 保护**，而 `__HAVE_DIRECT_MAP` 在 Minix3 中从未定义——这是未启用的上游遗留代码。VM 服务不包含 `pmap.h`，Minix3 kernel 也不使用这些宏。换言之，**Minix3 全线没有 Direct Map**。
+>
+> 本节的 `DirectMapArch` trait 以及双视图地址空间布局是 Rust 版本**全新引入**的设计抽象，属于 Allowed Evolution 中的"架构位宽演进"和"硬件抽象"范畴。Direct Map 并非硬件规范——硬件只提供 MMU 机制（页表、TLB、PTE 标志位等），Direct Map 是 OS 内核利用 MMU 机制实现的**软件设计模式**（建立物理地址 → 虚拟地址的固定线性偏移映射，`va = pa + BASE`），被 Linux/Windows/macOS/FreeBSD 等主流内核广泛采用。本 trait 将该模式显式化为跨架构抽象，设计依据来自各架构的 MMU 规范（页表级数、大页大小、PTE 标志位布局等硬件参数）。
+
+> 本节描述 Direct Map 方案下 kernel 为 VM 创建的初始页表。这是整个 direct map 叙事的物理起点——04-physical-memory.md 的"3 阶段启动"和 05-vm-allocpage.md 的 Direct Map 方案都以本节描述的初始页表为前提。
 
 #### 3.6.0 双视图地址空间布局
 
@@ -631,11 +693,11 @@ x86-64 VM 进程地址空间布局（48 位虚拟地址）：
 0x00000000_00000000 ┌─────────────────────────┐
                    │ VM 代码/数据             │
                    │ (2MB huge pages, U/S=1)  │
-0x00000000_40000000 ├─────────────────────────┤
-                   │ VM direct map            │  ← vm_phys_to_virt(pa) = DIRECT_MAP_BASE + pa
+0x00000000_80000000 ├─────────────────────────┤
+                   │ VM direct map            │  ← vm_phys_to_virt(pa) = VM_DIRECT_MAP_BASE + pa
                    │ (1GB huge pages, U/S=1)  │     VM 用户态可访问
                    │ 映射全部物理内存          │
-0x00000000_80000000 ├─────────────────────────┤
+0x00000000_C0000000 ├─────────────────────────┤
                    │ ... (用户空间其他区域)    │
                    │                          │
 0x00008000_00000000 ├─────────────────────────┤ ← 非规范地址空洞
@@ -658,12 +720,14 @@ x86-64 VM 进程地址空间布局（48 位虚拟地址）：
 
 | 属性 | VM direct map | Kernel direct map |
 |------|--------------|-------------------|
-| 虚拟地址基址 | `0x00000000_00000000` | `0xFFFF8000_00000000` |
+| 虚拟地址基址 | `0x00000000_80000000` | `0xFFFF8000_00000000` |
 | U/S 位 | 1（用户态可访问） | 0（仅内核态可访问） |
 | NX 位 | 1（不可执行） | 1（不可执行） |
 | G 位 | 0 | 1（CR3 切换不刷新 TLB） |
-| 建立者 | Kernel 初始页表 | VM `map_kernel()` |
+| 建立者 | Kernel 初始页表（VM 启动前） | VM `map_kernel()`（VM 启动后） |
 | 修改者 | VM（Phase 2 扩展） | 无人（只读不变量） |
+
+> **时序说明**：Kernel 在创建 VM 进程时建立初始页表，此时仅包含 VM direct map（1GB）和 VM 代码/数据映射。VM 启动后，在 `init_page_table()` 内部调用 `map_kernel()`，将 Kernel direct map 写入页表。因此两个 direct map 的建立者不同——VM direct map 由 kernel 建立（VM 还没运行），Kernel direct map 由 VM 自己建立（VM 已在运行）。
 
 #### 3.6.1 4 页结构
 
@@ -701,34 +765,43 @@ PML4[32]  → PDPT_B → PDPT_B[0] = phys 0 | P | RW | US | NX | PS  ← 1GB dir
 
 #### 3.6.3 DirectMapArch trait
 
-三种架构的 direct map 语义可归一化为以下 trait：
+Direct Map 的核心只是地址空间布局（`va = pa + BASE`），各架构的差异仅在于 BASE 放在哪个虚拟地址区间。以下 trait 只抽象这种布局差异：
 
 ```rust
 pub trait DirectMapArch {
-    const DIRECT_MAP_BASE: u64;
-    const HUGE_PAGE_SIZE: u64;
-    const HUGE_PAGE_SHIFT: u32;
-    const PTE_HUGE_FLAGS: u64;
+    const VM_DIRECT_MAP_BASE: u64;
+    const KERNEL_DIRECT_MAP_BASE: u64;
 
     fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
-        VirBytes(phys.0 + Self::DIRECT_MAP_BASE)
+        VirBytes(phys.get() + Self::VM_DIRECT_MAP_BASE)
     }
 
-    fn vm_virt_to_phys(virt: VirBytes) -> PhysBytes {
-        PhysBytes(virt.0 - Self::DIRECT_MAP_BASE)
+    fn kernel_phys_to_virt(phys: PhysBytes) -> VirBytes {
+        VirBytes(phys.get() + Self::KERNEL_DIRECT_MAP_BASE)
     }
 
-    fn supports_1gb_page() -> bool;
+    fn virt_to_phys(virt: VirBytes) -> PhysBytes {
+        if virt.get() >= Self::KERNEL_DIRECT_MAP_BASE {
+            PhysBytes::new(virt.get() - Self::KERNEL_DIRECT_MAP_BASE)
+        } else {
+            PhysBytes::new(virt.get() - Self::VM_DIRECT_MAP_BASE)
+        }
+    }
 }
 ```
 
-| 架构 | `DIRECT_MAP_BASE` | `HUGE_PAGE_SIZE` | `PTE_HUGE_FLAGS` | `supports_1gb_page()` |
-|------|-------------------|-------------------|-------------------|----------------------|
-| x86-64 | `0xFFFF8000_00000000` | 1GB | `PS | RW | US | NX` | CPUID 检查 |
-| arm64 | `0xFFFF8000_00000000` | 1GB | `BLOCK | UXN | PXN` | 始终支持 |
-| riscv64 Sv39 | `0xFFFFFFC0_00000000` | 1GB | `Gigapage` | 始终支持 |
+> **Trait 与实现**：`DirectMapArch` trait 定义地址空间布局抽象（仅包含 BASE 常量和 `va ↔ pa` 算术转换）。编译时通过 `CurrentDirectMap` 类型别名选择具体实现——mock 模式下为 `MockDirectMap`（运行时通过 `set_mock_vm_base()` 可配置 VM_DIRECT_MAP_BASE 以支持无 QEMU 的纯单元测试），x86_64 模式下为 `X86_64DirectMap`。
+>
+> **与 `HugePages` 的关系**：大页参数（`HUGE_PAGE_SIZE`、`FALLBACK_HUGE_PAGE_SIZE`、`PTE_HUGE_FLAGS`、`supports_1gb_page()`）归 `HugePages` trait——它们是 MMU 硬件能力，不是地址空间布局。建立 Direct Map 映射时，大页参数从 `HugePages` 获取。`DirectMapArch` 只负责 BASE 常量和 `va ↔ pa` 算术转换。
 
-**1GB 大页 CPU 支持检查**：并非所有 x86-64 CPU 支持 1GB 大页（需 CPUID.80000001H:EDX.GBPAGES 检查）。不支持时回退到 2MB 大页（每 1GB 段需 1 个 PD 页 = 512 个 2MB 条目）。回退逻辑在 `DirectMapArch` 抽象层完成，对上层 `vm_phys_to_virt()` 透明。自举逻辑几乎不变——只是初始页表多一个 PD 页。
+| 架构 | `VM_DIRECT_MAP_BASE` | `KERNEL_DIRECT_MAP_BASE` |
+|------|---------------------|--------------------------|
+| Mock | 可配置（默认 `0x0000_0000_8000_0000`，运行时通过 `set_mock_vm_base()` 设置） | `0xFFFF_8000_0000_0000` |
+| x86-64 | `0x0000_0000_8000_0000` | `0xFFFF_8000_0000_0000` |
+| arm64 | `0x0000_1000_0000_0000` | `0xFFFF_8000_0000_0000` |
+| riscv64 Sv39 | `0x0000_0010_0000_0000` | `0xFFFF_FC00_0000_0000` |
+
+**1GB 大页 CPU 支持检查**：并非所有 x86-64 CPU 支持 1GB 大页（需 CPUID.80000001H:EDX.GBPAGES 检查）。不支持时回退到 2MB 大页（每 1GB 段需 1 个 PD 页 = 512 个 2MB 条目）。回退逻辑在初始页表构建阶段完成，通过 `HugePages::supports_1gb_page()` 判断，对上层 `vm_phys_to_virt()` 透明。
 
 **设计思考**：`DirectMapArch` 的核心抽象不是"页表层级差异"（PML4/PDPT vs PGD/PUD vs PGD/PMD），而是"在第几级页表写大页表项"。三种架构的答案都是"第 2 级"，这使 trait 的设计极其简洁——`vm_phys_to_virt()` 就是一行加法，与架构无关。
 
@@ -744,11 +817,12 @@ VM 启动后，通过 `vm_phys_to_virt()` 读写自己的页表，可以自行�
 
 #### 3.6.5 初始页表物理页的冲突避免
 
-初始页表（4 页）放在物理内存前几页，需要确保这些页不会与 reserved_region 冲突，也不会被 bitmap 误分配。处理方式：
+初始页表（4 页）放在物理内存前几页，需要确保这些页不会被 bitmap 误分配。处理方式：
 
 1. Kernel 从预留区域中划出 4 页，用于初始页表
 2. 在 `boot_info` 中将这 4 页标记为 `used`，bitmap allocator 不会分配它们
-3. reserved_region 的物理页范围与初始页表页不重叠
+
+> **注意区分**：这里说的"预留区域"是指 kernel 传递给 VM 的启动数据区域（boot_info 中的 `reserved_region`），承载的是启动数据，与 Minix3 的 BSS 静态备用页池（ReservedRegion，用于打破递归）是不同的概念。后者因 Direct Map 而消除（VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成），前者仍然存在。
 
 这保证了自举的完整性——bitmap allocator 初始化时，初始页表的物理页已经被排除在可分配范围之外。
 
@@ -831,7 +905,7 @@ impl Paging for MockPaging {
         }
 
         let old = self.mappings.insert(v, (p, flags))
-            .map(|(old_p, old_f)| (PhysBytes(old_p), old_f));
+            .map(|(old_p, old_f)| (PhysBytes::new(old_p), old_f));
         Ok(old)
     }
 
@@ -843,7 +917,7 @@ impl Paging for MockPaging {
         }
 
         match self.mappings.remove(&v) {
-            Some((p, _)) => Ok(PhysBytes(p)),
+            Some((p, _)) => Ok(PhysBytes::new(p)),
             None => Err(PageTableError::NotMapped),
         }
     }
@@ -862,11 +936,11 @@ impl Paging for MockPaging {
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
         self.mappings.get(&vaddr.0)
-            .map(|(p, f)| (PhysBytes(*p), *f))
+            .map(|(p, f)| (PhysBytes::new(*p), *f))
     }
 
     fn root_paddr(&self) -> PhysBytes {
-        PhysBytes(self.root_phys)
+        PhysBytes::new(self.root_phys)
     }
 
     unsafe fn switch(&self) {
@@ -890,7 +964,7 @@ let mut page_table = MockPaging::new()?;
 
 // 映射页面
 let vaddr = VirBytes(0x1000);
-let paddr = PhysBytes(0x2000);
+let paddr = PhysBytes::new(0x2000);
 page_table.map(vaddr, paddr, PageFlags::read_write())?;
 
 // 查询映射
@@ -1036,6 +1110,11 @@ typedef long unsigned int vir_bytes;  // 虚拟地址/长度
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
 
+impl VirBytes {
+    pub const fn new(value: u64) -> Self { Self(value) }
+    pub const fn get(self) -> u64 { self.0 }
+}
+
 /// 物理地址
 ///
 /// 用于物理内存地址。
@@ -1043,7 +1122,24 @@ pub struct VirBytes(pub u64);
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysBytes(pub u64);
+
+// 推荐使用构造/访问方法，避免直接访问 .0 字段：
+impl PhysBytes {
+    pub const fn new(value: u64) -> Self { Self(value) }
+    pub const fn get(self) -> u64 { self.0 }
+}
 ```
+
+> **VM 内部变体 `AlignedPhysBytes`**：VM crate 内部定义了 `AlignedPhysBytes`，
+> 强制 4K 页对齐（`new()` 含 `assert!`），用于物理内存分配器等必须对齐的场景。
+> `minix_types::PhysBytes` 不强制对齐（`pub u64` 字段可直接构造），用于页表操作等
+> 需要灵活构造的场景。两者通过 `From`/`TryFrom` 双向转换：
+> ```rust
+> // AlignedPhysBytes → PhysBytes（零成本，总是成功）
+> let mt: PhysBytes = aligned.into();
+> // PhysBytes → AlignedPhysBytes（可能失败，需对齐检查）
+> let aligned: Result<AlignedPhysBytes, u64> = mt.try_into();
+> ```
 
 > **为什么用 `u64` 而非 `usize`**：虚拟/物理地址的宽度由架构决定，不等于指针大小。
 > x86-64 的虚拟地址仅 48 位（或 57 位 w/ L5PT）但存储在 64 位寄存器中，
@@ -1149,7 +1245,7 @@ fn create_address_space<P: Paging>() -> Result<P, PageTableError> {
 
     // 映射内核空间
     let kernel_start = VirBytes(0xFFFF800000000000);
-    let kernel_phys = PhysBytes(0x0);
+    let kernel_phys = PhysBytes::new(0x0);
     page_table.map(kernel_start, kernel_phys, PageFlags::read_only())?;
 
     Ok(page_table)
@@ -1177,11 +1273,16 @@ bitflags::bitflags! {
         const USER_ACCESSIBLE = 1 << 2;
         const EXECUTABLE      = 1 << 3;
         const GLOBAL          = 1 << 4;
+        const WRITE_THROUGH   = 1 << 5;
+        const NO_CACHE        = 1 << 6;
+        const ACCESSED        = 1 << 7;
+        const DIRTY           = 1 << 8;
+        const GUARD_PAGE      = 1 << 9;
         // ...
     }
 }
 
-// 【设计目标】以下为未来架构实现的示例代码，当前未实现
+// 未来架构实现示例
 // x86-64 实现：转换为硬件标志位
 impl X86_64Paging {
     fn flags_to_hw(flags: PageFlags) -> u64 {
@@ -1211,13 +1312,15 @@ impl Arm64Paging {
 ```
 minix-arch crate
 ├── src/
-│   ├── lib.rs          # 导出 trait + CurrentPaging
+│   ├── lib.rs          # 导出 trait + CurrentPaging + CurrentDirectMap
 │   ├── paging.rs       # Paging trait + PageFlags + PageTableError
 │   ├── paging_ext.rs   # PagingWithId + HugePages（可选 trait）
+│   ├── direct_map.rs   # DirectMapArch trait + X86_64DirectMap
 │   ├── mock/
 │   │   └── mod.rs      # MockPaging（实现 Paging + PagingWithId）
 │   ├── x86_64/
 │   │   ├── mod.rs      # X86_64Paging（实现 Paging + PagingWithId + HugePages）
+│   │   ├── paging.rs   # X86_64Paging 占位实现（todo!()）
 │   │   ├── pte.rs      # x86-64 PTE/PDE 位域操作（内部使用）
 │   │   └── pcid.rs     # PCID 管理
 │   ├── arm64/
@@ -1401,7 +1504,12 @@ impl VmProc {
     /// 清理进程资源（对应 Minix3 的 `pt_free()` 等）
     ///
     /// # Safety
-    /// 调用者必须确保页表不再被任何 CPU 使用。
+    /// Caller must ensure:
+    /// - This process's page table is not currently active on any CPU
+    /// - The page table has been unbound from any process (typestate guarantees this
+    ///   via `force_clear()` / `reap()` transitions)
+    /// - All mappings have been properly unmapped, or caller accepts memory leak
+    ///   (in `force_clear()` / `reap()`, regions are cleared first, so this is satisfied)
     pub(crate) unsafe fn clear(&mut self) {
         if self.vm_pt_initialized {
             self.vm_pt.assume_init_mut().destroy();
@@ -1490,6 +1598,11 @@ fn setup_process_memory(active: &mut ActiveProc) -> Result<(), PageTableError> {
 | 未对齐地址 → `InvalidAddress` | 地址必须页对齐 | Minix3 隐式依赖硬件检查 |
 | `PageFlags::read_only()` / `read_write()` | 预设标志位正确性 | `PTF_PRESENT|PTF_USER` / `PTF_PRESENT|PTF_USER|PTF_WRITE` |
 | `PageFlags` 位运算（`-` / `|`） | CoW 清 WRITABLE、共享加 GLOBAL | Minix3 手动位操作 |
+| `remap()` 新映射 → `None` | 无旧映射时创建新映射 | `pt_writemap()` + `WMF_OVERWRITE` 首次映射 |
+| `remap()` 覆盖 → `Some(old)` | 原子替换旧映射并返回旧值 | `pt_writemap()` + `WMF_OVERWRITE` 覆盖 |
+| `map_range()` 批量映射 | 多页连续映射 | `pt_writemap()` 循环调用 |
+| `unmap_range()` 批量取消 | 多页连续取消映射 | `pt_writemap(MAP_NONE)` 循环调用 |
+| `PageFlags::Display` | 紧凑格式输出（如 `P\|W\|U`） | 调试/日志可读性 |
 
 ### 6.2 运行测试
 

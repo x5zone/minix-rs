@@ -1,14 +1,20 @@
 use core::fmt;
+use minix_types::PhysBytes as MtPhysBytes;
 use super::CLICK_SIZE;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PhysBytes(u64);
+pub struct AlignedPhysBytes(u64);
 
-impl PhysBytes {
+impl AlignedPhysBytes {
     pub fn new(addr: u64) -> Self {
-        assert!(addr % CLICK_SIZE as u64 == 0, "PhysBytes must be page-aligned, got {addr:#x}");
-        PhysBytes(addr)
+        assert!(addr % CLICK_SIZE as u64 == 0, "AlignedPhysBytes must be page-aligned, got {addr:#x}");
+        AlignedPhysBytes(addr)
+    }
+
+    pub fn new_unchecked(addr: u64) -> Self {
+        debug_assert!(addr % CLICK_SIZE as u64 == 0, "AlignedPhysBytes must be page-aligned, got {addr:#x}");
+        AlignedPhysBytes(addr)
     }
 
     pub const fn as_u64(&self) -> u64 {
@@ -20,7 +26,7 @@ impl PhysBytes {
     }
 
     pub fn from_page_index(idx: usize) -> Self {
-        PhysBytes((idx as u64) * CLICK_SIZE as u64)
+        AlignedPhysBytes((idx as u64) * CLICK_SIZE as u64)
     }
 
     pub fn page_index(&self) -> usize {
@@ -29,8 +35,26 @@ impl PhysBytes {
 
     pub fn add(&self, offset: usize) -> Self {
         let new_addr = self.0 + offset as u64;
-        assert!(new_addr >= self.0, "PhysBytes::add overflow: {:#x} + {:#x}", self.0, offset);
-        PhysBytes(new_addr)
+        assert!(new_addr >= self.0, "AlignedPhysBytes::add overflow: {:#x} + {:#x}", self.0, offset);
+        Self::new_unchecked(new_addr)
+    }
+}
+
+impl From<AlignedPhysBytes> for MtPhysBytes {
+    fn from(phys: AlignedPhysBytes) -> Self {
+        MtPhysBytes::new(phys.0)
+    }
+}
+
+impl TryFrom<MtPhysBytes> for AlignedPhysBytes {
+    type Error = u64;
+    fn try_from(phys: MtPhysBytes) -> Result<Self, Self::Error> {
+        let addr = phys.get();
+        if addr % CLICK_SIZE as u64 == 0 {
+            Ok(AlignedPhysBytes(addr))
+        } else {
+            Err(addr)
+        }
     }
 }
 

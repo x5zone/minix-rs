@@ -22,11 +22,13 @@ extern crate alloc;
 
 pub mod paging;
 pub mod paging_ext;
+pub mod direct_map;
 
 #[cfg(feature = "x86_64")]
 pub mod x86_64;
 
 pub use paging_ext::{PagingWithId, HugePages, VmPagingExt};
+pub use direct_map::DirectMapArch;
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
@@ -34,6 +36,20 @@ pub use paging::mock::MockPaging;
 #[cfg(feature = "mock")]
 pub use paging::mock::MockAsid;
 
-/// Page table implementation type for the current architecture
 #[cfg(feature = "mock")]
 pub type CurrentPaging = MockPaging;
+
+#[cfg(feature = "x86_64")]
+pub type CurrentPaging = crate::x86_64::paging::X86_64Paging;
+
+#[cfg(feature = "mock")]
+pub use direct_map::MockDirectMap;
+
+#[cfg(feature = "x86_64")]
+pub use direct_map::X86_64DirectMap;
+
+#[cfg(feature = "mock")]
+pub type CurrentDirectMap = MockDirectMap;
+
+#[cfg(feature = "x86_64")]
+pub type CurrentDirectMap = X86_64DirectMap;

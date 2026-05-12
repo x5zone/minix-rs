@@ -1,9 +1,10 @@
 use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 use super::stats::MemStats;
-use super::types::{AllocError, PageAllocFlags, PhysBytes};
-use super::{CLICK_SIZE, BootMemRegion};
+use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
+use super::{BumpBuf, CLICK_SIZE, BootMemRegion, METADATA_ALIGN_PADDING};
 
 const BITS_PER_CHUNK: usize = 64;
+/// Maximum number of entries in the single-page free cache.
 const PAGE_CACHE_MAX: usize = 10000;
 
 pub struct BitmapAllocator {
@@ -13,44 +14,6 @@ pub struct BitmapAllocator {
     page_cache: &'static mut [usize],
     page_cache_size: usize,
     stats: MemStats,
-}
-
-struct BumpBuf {
-    ptr: *mut u8,
-    offset: usize,
-    len: usize,
-}
-
-impl BumpBuf {
-    fn new(buf: &mut [u8]) -> Self {
-        Self {
-            ptr: buf.as_mut_ptr(),
-            offset: 0,
-            len: buf.len(),
-        }
-    }
-
-    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
-        if count == 0 {
-            return &mut [];
-        }
-        let size = count * core::mem::size_of::<T>();
-        let align = core::mem::align_of::<T>();
-        let current = self.ptr as usize + self.offset;
-        let aligned = (current + align - 1) & !(align - 1);
-        let padding = aligned - current;
-        let new_offset = self.offset + padding + size;
-        assert!(
-            new_offset <= self.len,
-            "metadata buffer exhausted: need {} bytes, have {}",
-            size,
-            self.len - self.offset - padding,
-        );
-        self.offset = new_offset;
-        unsafe {
-            core::slice::from_raw_parts_mut(aligned as *mut T, count)
-        }
-    }
 }
 
 impl BitmapAllocator {
@@ -91,7 +54,7 @@ impl BitmapAllocator {
         let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
         let bitmap_bytes = bitmap_chunks * core::mem::size_of::<u64>();
         let cache_bytes = PAGE_CACHE_MAX * core::mem::size_of::<usize>();
-        bitmap_bytes + cache_bytes + 2 * CLICK_SIZE
+        bitmap_bytes + cache_bytes + METADATA_ALIGN_PADDING
     }
 
     pub fn total_memory(&self) -> usize {
@@ -227,6 +190,7 @@ impl BitmapAllocator {
             if i >= self.bitmap_len() {
                 break;
             }
+            debug_assert!(!self.page_is_free(i), "double free at page {i}");
             let chunk = i / BITS_PER_CHUNK;
             let bit = i % BITS_PER_CHUNK;
             self.bitmap[chunk] |= 1u64 << bit;
@@ -244,6 +208,7 @@ impl BitmapAllocator {
             let bit = i % BITS_PER_CHUNK;
             self.bitmap[chunk] &= !(1u64 << bit);
         }
+        debug_assert!(self.free_pages >= num_pages, "mark_allocated underflow: free={}, allocating={}", self.free_pages, num_pages);
         self.free_pages -= num_pages;
     }
 
@@ -266,9 +231,8 @@ impl BitmapAllocator {
 }
 
 impl PhysAllocator for BitmapAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError> {
         if clicks == 0 {
-            self.stats.record_failure();
             return Err(AllocError::OutOfMemory);
         }
 
@@ -313,29 +277,39 @@ impl PhysAllocator for BitmapAllocator {
             }
         };
 
+        // Handle alignment: we over-allocated to guarantee an aligned boundary
+        // exists within the block. Free the unused prefix or suffix.
         if align_clicks > 0 {
             let offset = page % align_clicks;
             if offset > 0 {
+                // Page is not aligned; free the excess prefix before the aligned boundary.
                 let excess = align_clicks - offset;
                 self.free_pages_internal(page, excess);
                 let aligned_page = page + excess;
                 self.stats.record_alloc(clicks * CLICK_SIZE);
-                return Ok(PhysBytes::from_page_index(aligned_page));
+                return Ok(AlignedPhysBytes::from_page_index(aligned_page));
+            } else {
+                // Page is already aligned; free the unused suffix after the requested clicks.
+                self.free_pages_internal(page + clicks, align_clicks);
             }
         }
 
         if flags.contains(PageAllocFlags::CLEAR) {
-            let virt = crate::direct_map::vm_phys_to_virt(PhysBytes::from_page_index(page));
+            let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(page));
             unsafe {
-                core::ptr::write_bytes(virt.0 as *mut u8, 0, clicks * CLICK_SIZE);
+                let ptr = virt.0 as *mut u64;
+                let words = clicks * CLICK_SIZE / 8;
+                for i in 0..words {
+                    core::ptr::write_volatile(ptr.add(i), 0);
+                }
             }
         }
 
         self.stats.record_alloc(clicks * CLICK_SIZE);
-        Ok(PhysBytes::from_page_index(page))
+        Ok(AlignedPhysBytes::from_page_index(page))
     }
 
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize) {
         if clicks == 0 {
             return;
         }
@@ -349,6 +323,7 @@ impl PhysAllocator for BitmapAllocator {
     }
 
     fn reserve_pages(&mut self, base_page: usize, count: usize) {
+        let mut reserved = 0usize;
         for i in base_page..base_page + count {
             if i >= self.bitmap_len() {
                 break;
@@ -358,7 +333,11 @@ impl PhysAllocator for BitmapAllocator {
                 let bit = i % BITS_PER_CHUNK;
                 self.bitmap[chunk] &= !(1u64 << bit);
                 self.free_pages -= 1;
+                reserved += 1;
             }
+        }
+        if reserved > 0 {
+            self.stats.record_alloc(reserved * CLICK_SIZE);
         }
     }
 }
@@ -394,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_phys_addr_from_page_index() {
-        let addr = PhysBytes::from_page_index(5);
+        let addr = AlignedPhysBytes::from_page_index(5);
         assert_eq!(addr.as_u64(), 5 * CLICK_SIZE as u64);
         assert_eq!(addr.page_index(), 5);
     }

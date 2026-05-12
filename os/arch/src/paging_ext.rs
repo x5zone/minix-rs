@@ -104,8 +104,28 @@ pub trait PagingWithId: Paging {
 }
 
 /// Huge page support (optional trait)
+///
+/// Abstracts the MMU's huge page capabilities. Each architecture provides
+/// the sizes it supports, fallback sizes for when the preferred size is
+/// unavailable, and the PTE flags for huge page entries.
+///
+/// This trait is separate from `DirectMapArch` because huge page support
+/// is an MMU hardware parameter, not an address space layout decision.
 pub trait HugePages: Paging {
+    /// Supported huge page sizes (in bytes), sorted largest first.
     const HUGE_PAGE_SIZES: &'static [usize];
+
+    /// Preferred huge page size for Direct Map (bytes).
+    const HUGE_PAGE_SIZE: u64;
+
+    /// Page table level shift for the preferred huge page.
+    const HUGE_PAGE_SHIFT: u32;
+
+    /// Fallback huge page size when the preferred size is not available.
+    const FALLBACK_HUGE_PAGE_SIZE: u64;
+
+    /// Hardware PTE flags for a huge page entry (arch-specific bit layout).
+    const PTE_HUGE_FLAGS: u64;
 
     fn map_huge(
         &mut self,
@@ -117,5 +137,13 @@ pub trait HugePages: Paging {
 
     fn supports_huge_page(size: usize) -> bool {
         Self::HUGE_PAGE_SIZES.contains(&size)
+    }
+
+    /// Whether 1GB huge pages are supported by the current CPU.
+    ///
+    /// x86-64 requires a CPUID check (`CPUID.80000001H:EDX.GBPAGES`);
+    /// ARM64 and RISC-V always support it.
+    fn supports_1gb_page() -> bool {
+        true
     }
 }

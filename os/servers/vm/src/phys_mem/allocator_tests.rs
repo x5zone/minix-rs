@@ -5,7 +5,7 @@ use super::bitmap_alloc::BitmapAllocator;
 use super::buddy_alloc::BuddyAllocator;
 #[cfg(feature = "segment_tree_alloc")]
 use super::segment_tree_alloc::SegmentTreeAllocator;
-use super::types::{AllocError, PageAllocFlags, PhysBytes};
+use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::{CLICK_SIZE, BootMemRegion};
 
 fn make_regions(size_mb: usize) -> Vec<BootMemRegion> {
@@ -439,7 +439,7 @@ mod fragmentation {
     fn bitmap_fragmentation() {
         let metadata = make_metadata();
         let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
-        let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
+        let mut ptrs: Vec<Option<(AlignedPhysBytes, usize)>> = Vec::new();
         for size in 1..=10usize {
             if let Ok(addr) = alloc.alloc_mem(size, PageAllocFlags::empty()) {
                 ptrs.push(Some((addr, size)));
@@ -466,7 +466,7 @@ mod fragmentation {
     fn segment_tree_fragmentation() {
         let metadata = make_metadata();
         let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_small_regions(100)), &make_small_regions(100));
-        let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
+        let mut ptrs: Vec<Option<(AlignedPhysBytes, usize)>> = Vec::new();
         for size in 1..=10usize {
             if let Ok(addr) = alloc.alloc_mem(size, PageAllocFlags::empty()) {
                 ptrs.push(Some((addr, size)));
@@ -492,7 +492,7 @@ mod fragmentation {
     fn buddy_fragmentation() {
         let metadata = make_metadata();
         let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_small_regions(128)), &make_small_regions(128));
-        let mut ptrs: Vec<Option<(PhysBytes, usize)>> = Vec::new();
+        let mut ptrs: Vec<Option<(AlignedPhysBytes, usize)>> = Vec::new();
         for size in [1usize, 2, 4, 8, 16, 32].iter() {
             if let Ok(addr) = alloc.alloc_mem(*size, PageAllocFlags::empty()) {
                 ptrs.push(Some((addr, *size)));

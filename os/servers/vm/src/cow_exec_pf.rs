@@ -8,13 +8,13 @@
 //!
 //! Corresponds to Minix3's `map_pf()` in `region.c` and `do_pagefaults()` in `main.c`.
 
-use minix_types::{Endpoint, UserSlot, VirBytes, PhysBytes as MtPhysBytes, EACCES, ENOMEM, EINVAL, ESRCH};
+use minix_types::{Endpoint, UserSlot, VirBytes, PhysBytes, EACCES, ENOMEM, EINVAL, ESRCH};
 use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
 use crate::region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::{PagefaultResult, MEM_TYPE_ANON};
 use crate::pagetable::{PageTable, PageFlags, Paging};
-use crate::phys_mem::PhysBytes as PmPhysBytes;
+use crate::phys_mem::{AlignedPhysBytes, PageAllocFlags};
 use crate::direct_map::vm_phys_to_virt;
 use core::ptr::NonNull;
 
@@ -88,10 +88,10 @@ pub(crate) fn handle_pagefault(
     };
 
     if is_unmapped {
-        let (_new_virt, new_phys) = page_alloc.alloc_page()
+        let (_new_virt, new_phys) = page_alloc.alloc_page(PageAllocFlags::empty())
             .ok_or(PageFaultError::OutOfMemory)?;
 
-        let new_phys_mt = MtPhysBytes::new(new_phys.as_u64());
+        let new_phys_mt = PhysBytes::new(new_phys.as_u64());
 
         {
             let page_table = active.page_table_mut();
@@ -126,7 +126,7 @@ pub(crate) fn handle_pagefault(
             return Err(PageFaultError::AccessViolation);
         }
 
-        let old_phys_mt: MtPhysBytes = {
+        let old_phys_mt: PhysBytes = {
             let region = active.regions_mut().find(fault.vaddr)
                 .ok_or(PageFaultError::InvalidAddress)?;
             region.physblocks.get(page_index)
@@ -135,13 +135,13 @@ pub(crate) fn handle_pagefault(
                 .ok_or(PageFaultError::InternalError)?
         };
 
-        let (_new_virt, new_phys) = page_alloc.alloc_page()
+        let (_new_virt, new_phys) = page_alloc.alloc_page(PageAllocFlags::empty())
             .ok_or(PageFaultError::OutOfMemory)?;
 
-        let new_phys_mt = MtPhysBytes::new(new_phys.as_u64());
+        let new_phys_mt = PhysBytes::new(new_phys.as_u64());
 
         unsafe {
-            let src = vm_phys_to_virt(PmPhysBytes::new(old_phys_mt.get())).0 as *const u8;
+            let src = vm_phys_to_virt(AlignedPhysBytes::new(old_phys_mt.get())).0 as *const u8;
             let dst = vm_phys_to_virt(new_phys).0 as *mut u8;
             core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE as usize);
         }
@@ -267,7 +267,7 @@ fn free_region_pages(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
     for phys_opt in &region.physblocks {
         if let Some(pr) = phys_opt {
             if let Some(phys) = pr.get_phys_addr() {
-                page_alloc.free_page(PmPhysBytes::new(phys.0));
+                page_alloc.free_page(AlignedPhysBytes::new(phys.0));
             }
         }
     }

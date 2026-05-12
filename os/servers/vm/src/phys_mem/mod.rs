@@ -7,6 +7,48 @@ pub(crate) mod stats;
 #[cfg(test)]
 pub(crate) mod allocator_tests;
 
+struct BumpBuf {
+    ptr: *mut u8,
+    offset: usize,
+    len: usize,
+}
+
+impl BumpBuf {
+    fn new(buf: &mut [u8]) -> Self {
+        Self {
+            ptr: buf.as_mut_ptr(),
+            offset: 0,
+            len: buf.len(),
+        }
+    }
+
+    fn alloc_slice<T>(&mut self, count: usize) -> &'static mut [T] {
+        if count == 0 {
+            return &mut [];
+        }
+        let size = count * core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
+        let current = self.ptr as usize + self.offset;
+        let aligned = (current + align - 1) & !(align - 1);
+        let padding = aligned - current;
+        let new_offset = self.offset + padding + size;
+        assert!(
+            new_offset <= self.len,
+            "metadata buffer exhausted: need {} bytes, have {}",
+            size,
+            self.len - self.offset - padding,
+        );
+        self.offset = new_offset;
+        // SAFETY: `aligned` is derived from `self.ptr`, which points to the metadata buffer
+        // allocated during VM init. The buffer lives for the entire VM process lifetime,
+        // so `'static` is sound. The range `[aligned, aligned + size)` is within the buffer
+        // bounds (checked by the assert above), and properly aligned for type `T`.
+        unsafe {
+            core::slice::from_raw_parts_mut(aligned as *mut T, count)
+        }
+    }
+}
+
 #[allow(unused_imports)]
 pub(crate) use alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
 pub(crate) use bitmap_alloc::BitmapAllocator;
@@ -16,7 +58,7 @@ pub(crate) use buddy_alloc::BuddyAllocator;
 pub(crate) use segment_tree_alloc::SegmentTreeAllocator;
 #[allow(unused_imports)]
 pub(crate) use stats::MemStats;
-pub(crate) use types::{AllocError, PageAllocFlags, PhysBytes};
+pub(crate) use types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
 #[cfg(feature = "buddy_alloc")]
 pub(crate) type DefaultAllocator = BuddyAllocator;
@@ -39,7 +81,7 @@ pub(crate) enum PhysAlloc {
 }
 
 impl PhysAllocator for PhysAlloc {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError> {
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError> {
         match self {
             PhysAlloc::Bitmap(b) => b.alloc_mem(clicks, flags),
             #[cfg(feature = "buddy_alloc")]
@@ -49,7 +91,7 @@ impl PhysAllocator for PhysAlloc {
         }
     }
 
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize) {
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize) {
         match self {
             PhysAlloc::Bitmap(b) => b.free_mem(base, clicks),
             #[cfg(feature = "buddy_alloc")]
@@ -154,6 +196,7 @@ impl PhysAllocType {
 
 pub(crate) const CLICK_SIZE: usize = 4096;
 pub(crate) const CLICK_SHIFT: usize = 12;
+pub(super) const METADATA_ALIGN_PADDING: usize = 2 * CLICK_SIZE;
 
 #[inline]
 pub(crate) const fn bytes_to_clicks(bytes: usize) -> usize {

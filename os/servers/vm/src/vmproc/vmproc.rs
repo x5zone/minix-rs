@@ -140,7 +140,12 @@ impl VmProc {
     ///   calling `free_proc()` + `clear_proc()`)
     ///
     /// # Safety
-    /// Caller must ensure this process's page table is no longer in use by hardware.
+    /// Caller must ensure:
+    /// - This process's page table is not currently active on any CPU
+    /// - The page table has been unbound from any process (typestate guarantees this
+    ///   via `force_clear()` / `reap()` transitions)
+    /// - All mappings have been properly unmapped, or caller accepts memory leak
+    ///   (in `force_clear()` / `reap()`, regions are cleared first, so this is satisfied)
     pub(crate) unsafe fn clear(&mut self) {
         if self.vm_regions_avl_initialized {
             unsafe { self.vm_regions_avl.assume_init_mut().clear(); }

@@ -21,7 +21,7 @@ use minix_types::{VmRequest, VmResponse, VmError, Endpoint, VirBytes};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::direct_map::vm_phys_to_virt;
-use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion, PhysBytes, bytes_to_clicks, CLICK_SIZE};
+use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -49,7 +49,7 @@ impl VmServer {
         let meta_pages = bytes_to_clicks(meta_size);
 
         let meta_phys_base = free_regions[0].base;
-        let meta_va = vm_phys_to_virt(PhysBytes::new(meta_phys_base as u64));
+        let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
         let metadata = unsafe {
             core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size)
         };
@@ -149,7 +149,7 @@ impl Default for VmServer {
 
         let raw_base = mock_phys_leaked.as_ptr() as usize;
         let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
-        crate::direct_map::set_mock_phys_base(aligned_base as u64);
+        minix_arch::direct_map::set_mock_vm_base(aligned_base as u64);
 
         let free_regions = [BootMemRegion { base: 0, size: total_pages * CLICK_SIZE }];
         Self::new(total_pages, &free_regions)
@@ -169,7 +169,7 @@ mod tests {
 
         let raw_base = mock_phys_leaked.as_ptr() as usize;
         let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
-        crate::direct_map::set_mock_phys_base(aligned_base as u64);
+        minix_arch::direct_map::set_mock_vm_base(aligned_base as u64);
 
         [BootMemRegion { base: 0, size: TEST_TOTAL_PAGES * CLICK_SIZE }]
     }

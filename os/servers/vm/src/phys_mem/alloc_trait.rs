@@ -1,4 +1,4 @@
-use super::types::{AllocError, PageAllocFlags, PhysBytes};
+use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysMemStats {
@@ -8,8 +8,8 @@ pub struct PhysMemStats {
 }
 
 pub trait PhysAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError>;
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize);
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError>;
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize);
     fn total_count(&self) -> usize;
     fn reserve_pages(&mut self, base_page: usize, count: usize);
 }

@@ -35,6 +35,33 @@ bitflags::bitflags! {
         const NO_CACHE        = 1 << 6;
         const ACCESSED        = 1 << 7;
         const DIRTY           = 1 << 8;
+        const GUARD_PAGE      = 1 << 9;
+    }
+}
+
+impl core::fmt::Display for PageFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut first = true;
+        let mut flag = |name: &str, present: bool| -> core::fmt::Result {
+            if present {
+                if !first { write!(f, "|")?; }
+                first = false;
+                write!(f, "{}", name)?;
+            }
+            Ok(())
+        };
+        flag("P", self.contains(Self::PRESENT))?;
+        flag("W", self.contains(Self::WRITABLE))?;
+        flag("U", self.contains(Self::USER_ACCESSIBLE))?;
+        flag("X", self.contains(Self::EXECUTABLE))?;
+        flag("G", self.contains(Self::GLOBAL))?;
+        flag("WT", self.contains(Self::WRITE_THROUGH))?;
+        flag("NC", self.contains(Self::NO_CACHE))?;
+        flag("A", self.contains(Self::ACCESSED))?;
+        flag("D", self.contains(Self::DIRTY))?;
+        flag("GUARD", self.contains(Self::GUARD_PAGE))?;
+        if first { write!(f, "0")?; }
+        Ok(())
     }
 }
 
@@ -136,16 +163,23 @@ pub trait Paging {
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
-    /// Atomically replace an existing mapping or create a new one.
+    /// Replace an existing mapping or create a new one in a single operation.
     ///
     /// Corresponds to Minix3's `pt_writemap()` with `WMF_OVERWRITE` flag,
     /// which is the default behavior in Minix3 — "overwrite mapping" is
     /// the norm, not the exception (region.c:285, pagetable.c:713,743).
     ///
     /// Unlike `map()` which returns `AlreadyMapped` if the virtual address
-    /// is already mapped, `remap()` atomically replaces the old entry,
+    /// is already mapped, `remap()` replaces the old entry in one step,
     /// avoiding the "no mapping" window that would exist between a manual
     /// `unmap()` + `map()` sequence.
+    ///
+    /// **Atomicity note**: In the single-threaded event loop model, "atomic"
+    /// means "single logical operation" — no intermediate state visible to
+    /// the caller. At the hardware level, x86-64 PTE writes are 8-byte
+    /// naturally aligned and thus atomic per Intel SDM Vol3 §4.10.4. On
+    /// ARM64, a single PTE write is also atomic. Therefore `remap()` is
+    /// both logically and hardware-atomic in our single-threaded model.
     ///
     /// Returns the old physical address and flags if a mapping was replaced,
     /// or `None` if the virtual address was previously unmapped.
@@ -208,8 +242,13 @@ pub trait Paging {
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
         for i in 0..pages {
-            let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
-            let p = PhysBytes(paddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+            let offset = (i as u64)
+                .checked_mul(Self::PAGE_SIZE as u64)
+                .ok_or(PageTableError::InvalidAddress)?;
+            let v = VirBytes(vaddr_start.0.checked_add(offset)
+                .ok_or(PageTableError::InvalidAddress)?);
+            let p = PhysBytes(paddr_start.0.checked_add(offset)
+                .ok_or(PageTableError::InvalidAddress)?);
             self.map(v, p, flags)?;
         }
         Ok(())
@@ -225,7 +264,11 @@ pub trait Paging {
         pages: usize,
     ) -> Result<(), PageTableError> {
         for i in 0..pages {
-            let v = VirBytes(vaddr_start.0 + (i * Self::PAGE_SIZE) as u64);
+            let offset = (i as u64)
+                .checked_mul(Self::PAGE_SIZE as u64)
+                .ok_or(PageTableError::InvalidAddress)?;
+            let v = VirBytes(vaddr_start.0.checked_add(offset)
+                .ok_or(PageTableError::InvalidAddress)?);
             self.unmap(v)?;
         }
         Ok(())
@@ -269,6 +312,7 @@ pub trait Paging {
 /// Corresponds to Minix3's `memstats()`/`total_pages`/`free_pages` tracking
 /// used by `printmemstats()` and `vm_info` sysctl. Fields will be populated
 /// by a future `Paging::stats()` method.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PageTableStats {
     pub(crate) mapped_pages: usize,
@@ -592,6 +636,78 @@ pub mod mock {
         #[test]
         fn test_page_flags_size() {
             assert_eq!(core::mem::size_of::<PageFlags>(), 2);
+        }
+
+        #[test]
+        fn test_mock_remap_new() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x1000);
+            let paddr1 = PhysBytes(0x2000);
+            let paddr2 = PhysBytes(0x3000);
+            let flags = PageFlags::read_write();
+
+            let result = pt.remap(vaddr, paddr2, flags).unwrap();
+            assert!(result.is_none());
+            assert_eq!(pt.query(vaddr), Some((paddr2, flags)));
+        }
+
+        #[test]
+        fn test_mock_remap_replace() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x1000);
+            let paddr1 = PhysBytes(0x2000);
+            let paddr2 = PhysBytes(0x3000);
+            let flags1 = PageFlags::read_write();
+            let flags2 = PageFlags::read_only();
+
+            pt.map(vaddr, paddr1, flags1).unwrap();
+            let result = pt.remap(vaddr, paddr2, flags2).unwrap();
+            assert_eq!(result, Some((paddr1, flags1)));
+            assert_eq!(pt.query(vaddr), Some((paddr2, flags2)));
+        }
+
+        #[test]
+        fn test_mock_map_range() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+            let pages = 4;
+
+            pt.map_range(vaddr, paddr, pages, flags).unwrap();
+
+            for i in 0..pages {
+                let offset = (i as u64) * (MockPaging::PAGE_SIZE as u64);
+                let v = VirBytes(vaddr.0 + offset);
+                let p = PhysBytes(paddr.0 + offset);
+                assert_eq!(pt.query(v), Some((p, flags)));
+            }
+        }
+
+        #[test]
+        fn test_mock_unmap_range() {
+            let mut pt = MockPaging::new().unwrap();
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+            let pages = 3;
+
+            pt.map_range(vaddr, paddr, pages, flags).unwrap();
+            pt.unmap_range(vaddr, pages).unwrap();
+
+            for i in 0..pages {
+                let offset = (i as u64) * (MockPaging::PAGE_SIZE as u64);
+                let v = VirBytes(vaddr.0 + offset);
+                assert!(pt.query(v).is_none());
+            }
+        }
+
+        #[test]
+        fn test_page_flags_display() {
+            assert_eq!(format!("{}", PageFlags::read_write()), "P|W|U");
+            assert_eq!(format!("{}", PageFlags::read_only()), "P|U");
+            assert_eq!(format!("{}", PageFlags::kernel_read_write()), "P|W|G");
+            assert_eq!(format!("{}", PageFlags::empty()), "0");
         }
     }
 }
