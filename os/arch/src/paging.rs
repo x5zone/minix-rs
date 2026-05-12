@@ -307,20 +307,6 @@ pub trait Paging {
     // }
 }
 
-/// Page table statistics.
-///
-/// Corresponds to Minix3's `memstats()`/`total_pages`/`free_pages` tracking
-/// used by `printmemstats()` and `vm_info` sysctl. Fields will be populated
-/// by a future `Paging::stats()` method.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PageTableStats {
-    pub(crate) mapped_pages: usize,
-    pub(crate) used_page_tables: usize,
-    pub(crate) total_page_tables: usize,
-}
-
-
 
 /// Mock paging implementation
 ///
@@ -507,6 +493,7 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::paging_ext::{PagingWithId, VmPagingExt};
 
         #[test]
         fn test_mock_paging_new() {
@@ -642,7 +629,6 @@ pub mod mock {
         fn test_mock_remap_new() {
             let mut pt = MockPaging::new().unwrap();
             let vaddr = VirBytes(0x1000);
-            let paddr1 = PhysBytes(0x2000);
             let paddr2 = PhysBytes(0x3000);
             let flags = PageFlags::read_write();
 
@@ -708,6 +694,53 @@ pub mod mock {
             assert_eq!(format!("{}", PageFlags::read_only()), "P|U");
             assert_eq!(format!("{}", PageFlags::kernel_read_write()), "P|W|G");
             assert_eq!(format!("{}", PageFlags::empty()), "0");
+        }
+
+        #[test]
+        fn test_mock_map_kernel() {
+            let mut pt = MockPaging::new().unwrap();
+            pt.map_kernel().unwrap();
+
+            const MOCK_KERNEL_VBASE: u64 = 0xFFFF_8000_0000_0000;
+            const MOCK_KERNEL_PBASE: u64 = 0x100_0000;
+            const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;
+
+            for i in 0..16 {
+                let vaddr = VirBytes(MOCK_KERNEL_VBASE + i * PAGE_SIZE);
+                let result = pt.query(vaddr);
+                assert!(result.is_some(), "kernel page {i} not mapped");
+                let (paddr, flags) = result.unwrap();
+                assert_eq!(paddr, PhysBytes(MOCK_KERNEL_PBASE + i * PAGE_SIZE));
+                assert_eq!(flags, PageFlags::kernel_read_write());
+            }
+
+            let unmapped = VirBytes(MOCK_KERNEL_VBASE + 16 * PAGE_SIZE);
+            assert!(pt.query(unmapped).is_none());
+        }
+
+        #[test]
+        fn test_mock_alloc_asid_monotonic() {
+            let pt = MockPaging::new().unwrap();
+            let id1 = pt.alloc_asid().unwrap();
+            let id2 = pt.alloc_asid().unwrap();
+            let id3 = pt.alloc_asid().unwrap();
+
+            assert_ne!(id1, id2);
+            assert_ne!(id2, id3);
+            assert_ne!(id1, id3);
+
+            pt.free_asid(id2);
+            let id4 = pt.alloc_asid().unwrap();
+            assert_ne!(id4, id1);
+            assert_ne!(id4, id3);
+        }
+
+        #[test]
+        fn test_mock_switch_with_asid() {
+            let pt = MockPaging::new().unwrap();
+            let asid = pt.alloc_asid().unwrap();
+
+            unsafe { pt.switch_with_asid(asid); }
         }
     }
 }

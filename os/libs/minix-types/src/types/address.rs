@@ -6,14 +6,11 @@
 ///
 /// On 64-bit systems, pointers and `size_t` are both 8 bytes.
 /// Shared by PM, VM, VFS, Kernel.
-// TODO(XZHAO): Add overflow checking for address arithmetic on 64-bit systems.
-// Current implementations use wrapping arithmetic which may silently overflow.
-// This should be addressed when focusing on memory/address related modules.
-//
-// TECH DEBT: `pub u64` field allows constructing sentinel values like
-// `VirBytes(0)` / `PhysBytes(0)` to mean "invalid address" (C-style MAP_NONE).
-// Rust should use `Option<PhysBytes>` instead. Mid-term goal: change to
-// `pub(crate) u64` with `new()` constructor + `as_u64()` accessor.
+///
+/// TECH DEBT: `pub u64` field allows constructing sentinel values like
+/// `VirBytes(0)` / `PhysBytes(0)` to mean "invalid address" (C-style MAP_NONE).
+/// Rust should use `Option<PhysBytes>` instead. Mid-term goal: change to
+/// `pub(crate) u64` with `new()` constructor + `as_u64()` accessor.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VirBytes(pub u64);
@@ -27,6 +24,28 @@ impl VirBytes {
     /// Gets the value.
     pub const fn get(self) -> u64 {
         self.0
+    }
+
+    /// Checked addition. Returns `None` on overflow.
+    ///
+    /// Use for safety-critical address arithmetic where overflow
+    /// would indicate a logic error (e.g., region size calculation).
+    /// Basic `Add` trait impls remain for ergonomic use in contexts
+    /// where overflow is impossible by construction (e.g., adding
+    /// page offsets within the 48-bit address space).
+    pub const fn checked_add(self, rhs: u64) -> Option<Self> {
+        match self.0.checked_add(rhs) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction. Returns `None` on underflow.
+    pub const fn checked_sub(self, rhs: u64) -> Option<Self> {
+        match self.0.checked_sub(rhs) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
     }
 }
 
@@ -105,5 +124,21 @@ impl PhysBytes {
     /// Gets the value.
     pub const fn get(self) -> u64 {
         self.0
+    }
+
+    /// Checked addition. Returns `None` on overflow.
+    pub const fn checked_add(self, rhs: u64) -> Option<Self> {
+        match self.0.checked_add(rhs) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction. Returns `None` on underflow.
+    pub const fn checked_sub(self, rhs: u64) -> Option<Self> {
+        match self.0.checked_sub(rhs) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
     }
 }

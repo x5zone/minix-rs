@@ -33,12 +33,15 @@ pub(crate) struct VmProc {
     pub(crate) vm_boot: Option<BootImage>,
 
     /// Page table - uninitialized until `init_page_table()` is called.
-    /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
-    /// that provides safe in-place initialization/cleanup without move-out.
+    ///
+    /// `MaybeUninit + bool` is the standard Rust pattern for delayed initialization
+    /// (used by Vec, Box, ArrayVec, etc.). Use `vm_pt_initialized` as guard before
+    /// calling `assume_init_mut()` / `assume_init_ref()`.
     pub(crate) vm_pt: MaybeUninit<PageTable>,
     /// Virtual memory regions AVL tree - uninitialized until `init_regions()` is called.
-    /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
-    /// that provides safe in-place initialization/cleanup without move-out.
+    ///
+    /// Same `MaybeUninit + bool` pattern as `vm_pt`. Use `vm_regions_avl_initialized`
+    /// as guard before calling `assume_init_mut()` / `assume_init_ref()`.
     pub(crate) vm_regions_avl: MaybeUninit<RegionAvl>,
     /// Whether vm_pt has been initialized (must check before assume_init).
     pub(crate) vm_pt_initialized: bool,
