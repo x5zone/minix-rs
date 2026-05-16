@@ -35,7 +35,7 @@
 
 在操作系统启动过程中，VM（Virtual Memory）服务器需要管理物理内存。但 VM 自身在初始化阶段也面临"先有鸡还是先有蛋"的问题：
 
-- **物理内存管理器需要元数据**（如 bitmap、free list 等）来跟踪哪些物理页是空闲的。
+- **物理内存管理器需要元数据**（如 bitmap）来跟踪哪些物理页是空闲的。
 - **这些元数据本身也需要内存来存储**。
 - **在 VM 的页表和堆分配器就绪之前**，VM 无法像普通进程一样从自己的堆中分配内存。
 
@@ -53,7 +53,6 @@ Bootstrap 阶段                    Normal 阶段
 │  ┌─────────────┐ │            │  ┌─────────────┐ │
 │  │ bitmap[]    │ │  搬迁 ──►  │  │ bitmap[]    │ │
 │  │ page_cache[]│ │            │  │ page_cache[]│ │
-│  │ free_lists[]│ │            │  │ free_lists[]│ │
 │  │ ...         │ │            │  │ ...         │ │
 │  └─────────────┘ │            │  └─────────────┘ │
 └──────────────────┘            └──────────────────┘
@@ -61,13 +60,13 @@ Bootstrap 阶段                    Normal 阶段
 
 **搬迁不是简单的 memcpy**。搬迁后的数据位于新的虚拟地址，所有指向旧地址的引用必须更新。如果管理结构内部包含指针（如链表头指向节点），搬迁后这些指针会失效，必须逐一修正。
 
-#### 方案四视角：搬迁被大幅简化
+#### Direct Map 视角：搬迁被大幅简化
 
-> **方案四标注**：在 Direct Map + HeapArena 方案下，搬迁的概念被大幅简化。
+> **Direct Map 标注**：在 Direct Map + HeapArena 方案下，搬迁的概念被大幅简化。
 
-方案三中，PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。方案四中简化为：`HeapArena::grow() → memcpy → update_relocated_arrays() → free_mem()`。
+早期使用 PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。Direct Map + HeapArena 简化为：`HeapArena::grow() → memcpy → update_relocated_arrays() → free_mem()`。
 
-关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），方案四中 HeapArena 提供连续 VA（逐页映射碎片化 PA），物理页的 VA 分配步骤消失了。
+关键区别：PtRegion 方案需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），而 HeapArena 提供连续 VA（逐页映射碎片化 PA），物理页的 VA 分配步骤消失了。
 
 **BumpBuf 的连续 PA 约束**：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
 
@@ -155,9 +154,9 @@ T1: main() → init_vm()
 T5: 主循环开始，所有分配走动态路径
 ```
 
-#### 方案四（Direct Map + HeapArena）时序
+#### Direct Map + HeapArena 时序
 
-> **方案四标注**：Direct Map + HeapArena 方案下，搬迁是 Phase 2 的核心动作。
+> **Direct Map 标注**：Direct Map + HeapArena 方案下，搬迁是 Phase 2 的核心动作。
 
 ```
 T0: Kernel 启动 VM 进程
@@ -207,7 +206,7 @@ T6: 主循环开始
     → 无代码通过 Direct Map VA 访问旧元数据位置
 ```
 
-**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。方案四的搬迁是"显式的"——`VmServer::relocate()` 作为独立方法，在 `new()` 之后、`init()` 之前调用。搬迁的核心动机不是"Direct Map 扩展"（那是 Phase 1 的子问题），而是"消除 BumpBuf 的连续 PA 约束"。
+**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。Rust 版本的搬迁是"显式的"——`VmServer::relocate()` 作为独立方法，在 `new()` 之后、`init()` 之前调用。搬迁的核心动机不是"Direct Map 扩展"（那是 Phase 1 的子问题），而是"消除 BumpBuf 的连续 PA 约束"。
 
 ### 1.5 核心边界条件
 
