@@ -11,7 +11,7 @@
 
 use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 use minix_arch::paging::Paging;
-use minix_arch::VmPagingExt;
+use minix_arch::paging::{bind_to_process, map_kernel};
 use super::{VmFlags, vmproc::VmProc};
 use crate::pagetable::PageTable;
 use crate::region::RegionAvl;
@@ -252,7 +252,27 @@ impl<'a> ActiveProc<'a> {
     /// Corresponds to Minix3's `pt_new()` which calls `pt_mapkernel()`.
     pub(crate) fn init_page_table(&mut self) -> Result<(), minix_arch::paging::PageTableError> {
         let mut pt = <PageTable as Paging>::new()?;
-        pt.map_kernel()?;
+
+        // Map kernel address space into this user process's page table.
+        // Kernel layout constants — in real implementation, these come from
+        // boot_info / linker symbols. For now, use mock layout.
+        const KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
+        const KERNEL_TEXT_PBASE: u64 = 0x100_0000;
+        const KERNEL_TEXT_PAGES: usize = 8;
+        const KERNEL_DATA_PAGES: usize = 8;
+        const DM_VBASE: u64 = 0xFFFF_8000_0000_0000;
+        const DM_SENTINEL_PAGES: usize = 4;
+
+        map_kernel(
+            &mut pt,
+            KERNEL_TEXT_VBASE,
+            KERNEL_TEXT_PBASE,
+            KERNEL_TEXT_PAGES,
+            KERNEL_DATA_PAGES,
+            DM_VBASE,
+            DM_SENTINEL_PAGES,
+        )?;
+
         self.inner.vm_pt.write(pt);
         self.inner.vm_pt_initialized = true;
         Ok(())
@@ -264,7 +284,7 @@ impl<'a> ActiveProc<'a> {
     /// Must be called after `init_page_table()` and before the process runs.
     pub(crate) fn bind_page_table(&self) -> Result<(), minix_arch::paging::PageTableError> {
         let pt = self.page_table();
-        pt.bind_to_process(self.endpoint())
+        bind_to_process(pt.root_paddr(), self.endpoint())
     }
 
     /// Initializes memory regions AVL tree for exec or new processes.

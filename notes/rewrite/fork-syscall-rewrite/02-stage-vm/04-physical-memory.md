@@ -1011,10 +1011,10 @@ static void reset_vm_rusage(struct vmproc *vmp)
 | -- | -------------------------- | --------------------- | ------------------------------------- |
 | 分配 | `alloc_mem(clicks, flags)` | 找到 k 个连续空闲页，标记为已用     | `PhysAllocator::alloc_mem()`          |
 | 释放 | `free_mem(base, clicks)`   | 将 k 个连续页标记为空闲         | `PhysAllocator::free_mem()`           |
-| 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `PhysAllocatorStats::memstats()`      |
+| 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `BitmapAllocator::memstats()` / `BuddyAllocator::memstats()` |
 | 总量 | `total_pages` 全局变量        | 系统物理页总数（初始化时设定，不再变化）  | `PhysAllocator::total_count()`        |
 
-> **设计说明**：Minix3 的 `memstats()` 通过 3 个指针参数隐式返回结果，这是 C 语言常见的多返回值模式。Rust 中用命名结构体 `PhysMemStats` 替代，字段语义一目了然。分配/释放是核心路径（高频调用），查询是诊断路径（低频调用），因此拆分为两个 trait，职责清晰。
+> **设计说明**：Minix3 的 `memstats()` 通过 3 个指针参数隐式返回结果，这是 C 语言常见的多返回值模式。Rust 中用命名结构体 `PhysMemStats` 替代，字段语义一目了然。分配/释放是核心路径（高频调用），查询是诊断路径（低频调用），因此 `memstats()` 作为各分配器的固有方法实现，通过 `PhysAlloc` 枚举的 `memstats()` 方法统一分发。
 
 **约束条件**（通过 `flags` 参数传递）：
 
@@ -1035,9 +1035,12 @@ pub trait PhysAllocator {
     fn reserve_pages(&mut self, base_page: usize, count: usize);
 }
 
-pub trait PhysAllocatorStats {
-    fn memstats(&self) -> PhysMemStats;
-}
+// 各分配器实现独立的 memstats() 方法
+// BitmapAllocator::memstats() -> PhysMemStats
+// BuddyAllocator::memstats() -> PhysMemStats
+// SegmentTreeAllocator::memstats() -> PhysMemStats
+//
+// PhysAlloc 枚举通过 match 分发到具体分配器的 memstats()
 ```
 
 ### 3.1 为什么需要预映射内存？
@@ -1482,7 +1485,7 @@ fn memstats_internal(&self) -> (usize, usize, usize) {
 }
 ```
 
-**PhysAllocator / PhysAllocatorStats 实现**：
+**PhysAllocator 实现**：
 
 ```rust
 impl PhysAllocator for BitmapAllocator {
@@ -1501,8 +1504,8 @@ impl PhysAllocator for BitmapAllocator {
     fn total_count(&self) -> usize;
 }
 
-impl PhysAllocatorStats for BitmapAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl BitmapAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         // 内部调用 memstats_internal()
     }
 }
@@ -1613,7 +1616,7 @@ pub fn largest_free(&self) -> usize {
 }
 ```
 
-**PhysAllocator / PhysAllocatorStats 实现**：
+**PhysAllocator 实现**：
 
 ```rust
 impl PhysAllocator for BuddyAllocator {
@@ -1631,8 +1634,8 @@ impl PhysAllocator for BuddyAllocator {
     fn total_count(&self) -> usize;
 }
 
-impl PhysAllocatorStats for BuddyAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl BuddyAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         // free_nodes = 0（buddy 无此概念），largest_free 调用 self.largest_free()
     }
 }
@@ -1723,7 +1726,7 @@ pub fn largest_free(&self) -> usize {
 }
 ```
 
-**PhysAllocator / PhysAllocatorStats 实现**：
+**PhysAllocator 实现**：
 
 ```rust
 impl PhysAllocator for SegmentTreeAllocator {
@@ -1739,8 +1742,8 @@ impl PhysAllocator for SegmentTreeAllocator {
     fn total_count(&self) -> usize;
 }
 
-impl PhysAllocatorStats for SegmentTreeAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl SegmentTreeAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         // free_nodes = 0, largest_free = tree[1].max_free
     }
 }
@@ -1910,7 +1913,7 @@ pub enum AllocError {
 | ------------- | ------------- | ------------------------------- |
 | **元数据存储**     | 静态 BSS 数组     | 预映射内存 + BumpBuf + `&'static mut [T]` |
 | **Bitmap 大小** | 固定 128KB（4GB） | 按需计算                            |
-| **堆就绪时机**     | `pt_init()` 后 | `mem_init()` 前就需要预映射内存         |
+| **堆管理模式**     | `pt_init()` 后 brk 可用（VM 自身有堆） | Direct Map 消除 VM 堆概念：VA = phys + BASE，不需要 brk |
 | **分配器选择**     | 仅 Bitmap      | Bitmap / Buddy / 线段树            |
 | **Buddy 安全性** | N/A           | 状态标志 + 严格检查                     |
 
@@ -1933,7 +1936,7 @@ pub enum AllocError {
 ```
 phys_mem/
 ├── mod.rs                    # 模块入口
-├── alloc_trait.rs            # PhysAllocator + PhysAllocatorStats traits, PhysMemStats
+├── alloc_trait.rs            # PhysAllocator trait, PhysMemStats
 ├── types.rs                  # PhysBytes, PageAllocFlags, AllocError
 ├── bitmap_alloc.rs           # Bitmap 分配器
 ├── buddy_alloc.rs            # Buddy 分配器 (SoA)
@@ -1969,7 +1972,7 @@ src/ (顶层)
 ## 10. 参见
 
 - [00-vm-overview.md §2.3](00-vm-overview.md) - 启动阶段物理内存初始化链路
-- [05-vm-allocpage.md](05-vm-allocpage.md) - VM 堆初始化与保留页池
+- [05-vm-allocpage.md](05-vm-allocpage.md) - VM 页分配器（alloc_phys + vm_phys_to_virt）
 - [03-acl.md](03-acl.md) - ACL 权限控制
 - [08-slab-allocator.md](08-slab-allocator.md) - VM 内部使用 Slab
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的内存分配

@@ -255,3 +255,207 @@ rg "\[.*\]\(.*\.md\)" "$DIR" --type md -n
 # 5. 检查"参见"引用的文档是否存在
 rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n
 ```
+
+---
+
+## 三、代码错误模式
+
+> 以下模式覆盖 Rust 代码 Review 中最常见的错误类型。
+
+### 模式 15：裸整数表达语义（Translate 味道）
+```rust
+❌ 错误：
+fn alloc_pages(count: u32, flags: u32) -> i32 {
+    // ...
+}
+
+✅ 正确：
+fn alloc_pages(count: PageCount, flags: PageFlags) -> Result<PhysAddr, AllocError> {
+    // ...
+}
+```
+> 原因：裸 `u32` 不表达语义，`i32` 返回负数为错误码是 C 风格。应用 newtype 和 `Result`。
+
+### 模式 16：C 式空指针/哨兵值
+```rust
+❌ 错误：
+const NO_PHYS: PhysAddr = PhysAddr(0);  // 用 0 表示"无物理地址"
+let parent_id = -1 as i32;             // 用 -1 表示"无父进程"
+
+✅ 正确：
+let parent_id: Option<ProcessId> = None;
+let phys: Option<PhysAddr> = None;
+```
+> 原因：C 用哨兵值（0, -1, NULL）表达"不存在"，Rust 应用 `Option<T>`。
+
+### 模式 17：unsafe 滥用
+```rust
+❌ 错误：
+let ptr = addr as *mut u8;
+unsafe { *ptr = value; }  // 无 safety 注释，无契约说明
+
+✅ 正确：
+/// SAFETY: `addr` must be a valid, aligned physical address within the
+/// mapped page range. Caller guarantees the page is writable.
+unsafe fn write_phys(addr: PhysAddr, value: u8) {
+    let ptr = addr.as_mut_ptr::<u8>();
+    unsafe { *ptr = value; }
+}
+```
+> 原因：每个 `unsafe` 块必须有 safety 注释说明契约和调用方责任。
+
+### 模式 18：错误码不对齐
+```rust
+❌ 错误：
+fn vm_mappages(...) -> Result<(), Error> {
+    if page_not_found {
+        return Err(Error::NotFound);  // 自己造的错误码
+    }
+    // Minix3 中应返回 EINVAL
+}
+
+✅ 正确：
+fn vm_mappages(...) -> Result<(), VmError> {
+    if page_not_found {
+        return Err(VmError::Einval);  // 对应 Minix3 的 EINVAL
+    }
+```
+> 原因：错误码必须与 Minix3 原始 errno 严格对应，禁止自创或合并错误语义。
+
+### 模式 19：裸 as 截断无说明
+```rust
+❌ 错误：
+let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+let old_count = pages as u16;  // u64 → u16 可能截断，无注释
+
+✅ 正确：
+let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+// Page count is bounded by MAX_PAGES (1024), fits in u16.
+let old_count = pages as u16;
+```
+> 原因：所有可能截断的 `as` 转换必须注释说明安全性（特别是 64→32 位转换）。
+
+### 模式 20：硬件语义泄漏到 OS 层
+```rust
+❌ 错误：
+struct PageTable {
+    cr3_value: u64,  // x86 特定寄存器
+}
+
+fn enable_paging(cr3: u64) {
+    unsafe { asm!("mov cr3, {}", in(reg) cr3); }
+}
+
+✅ 正确：
+trait Paging {
+    fn load_table(&self, table: PhysAddr);
+    fn enable(&self);
+}
+// x86-64 实现
+impl Paging for X8664Paging {
+    fn load_table(&self, table: PhysAddr) {
+        unsafe { asm!("mov cr3, {}", in(reg) table.as_u64()); }
+    }
+}
+```
+> 原因：OS 层不感知 CR3 等具体硬件寄存器，所有硬件操作通过 trait 抽象。
+
+### 模式 21：no_std 违规
+```rust
+❌ 错误：
+// 在 vm_main.rs 中（非 test 模块）
+use std::collections::HashMap;
+let map = HashMap::new();
+
+✅ 正确：
+// 在 #[cfg(test)] 模块中使用 std 是允许的
+// 在生产代码中，使用 alloc 或自定义集合
+use alloc::collections::BTreeMap;
+let map = BTreeMap::new();
+```
+> `std::` 的使用规则：仅在 `#[cfg(test)]` 和 mock 中允许。
+> 生产代码必须 `no_std` 兼容。
+
+### 模式 22：pub 滥用
+```rust
+❌ 错误：
+pub struct VmProc {
+    pub id: u32,         // 所有字段 pub
+    pub state: State,
+    pub page_table: PageTable,
+}
+
+✅ 正确：
+pub struct VmProc {
+    pub(crate) id: u32,       // 模块内可见
+    pub(crate) state: State,
+    page_table: PageTable,    // 私有，通过方法访问
+}
+```
+> 口诀：「这个 pub 是因为外部需要，还是因为内部懒得组织？」
+
+### 模式 23：类型安全过度（复杂度失控）
+```rust
+❌ 错误：
+// 每个状态都变成一个类型，导致类型爆炸
+struct InitVmProc { ... }
+struct RunningVmProc { ... }
+struct BlockedVmProc { ... }
+struct DyingVmProc { ... }
+impl InitVmProc {
+    fn to_running(self) -> Result<RunningVmProc, ...> { ... }
+}
+// 当状态转换是运行时决定时，typestate 模式收益不大
+
+✅ 正确：
+enum VmState {
+    Init,
+    Running,
+    Blocked,
+    Dying,
+}
+struct VmProc {
+    state: VmState,  // 简单 enum + 运行时检查
+    // ...
+}
+```
+> 原因：类型安全是有成本的。如果复杂度超过收益，降级为 enum + 运行时检查。
+
+### 模式 24：不必要的 trait 抽象
+
+```rust
+❌ 错误：创建 trait 但所有实现行为相同
+        trait VmPagingExt {
+            fn bind_to_process(&self, proc: &VmProc);
+        }
+        impl VmPagingExt for X8664Paging {
+            fn bind_to_process(&self, proc: &VmProc) {
+                sys_vmctl_set_addrspace(proc.endpoint, self.cr3_value());
+                // x86-64 和 aarch64 实现完全相同，都调用同一个 syscall
+            }
+        }
+        → trait 没有提供任何多态价值，改为自由函数即可
+
+❌ 错误：单方法 trait 从未作为 trait bound 使用
+        trait PhysAllocatorStats {
+            fn memstats(&self) -> PhysMemStats;
+        }
+        // 从未写过 fn foo<T: PhysAllocatorStats>(t: &T)
+        // 只在具体类型上调用 bitmap.memstats() / buddy.memstats()
+        → 改为各分配器的固有方法 + PhysAlloc enum 分发
+
+✅ 正确：trait 有多个不同实现，且作为泛型约束使用
+        trait Paging {
+            fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
+                -> Result<(), PageTableError>;
+        }
+        // x86-64 用 4 级页表，aarch64 用不同的描述符格式
+        // fn paging_init<P: Paging>(p: &mut P) 使用 trait bound
+        → 合理的 trait 设计
+
+> 原因：trait 的价值在于多态——不同实现、不同行为。如果所有实现相同，
+> trait 只是增加了间接层而没有实际收益。判断标准：
+> 1. 是否有 ≥2 个行为不同的实现？
+> 2. 是否被用作泛型约束（trait bound）？
+> 两个条件都满足 → 合理的 trait；任一不满足 → 考虑简化。
+```

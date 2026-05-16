@@ -1,4 +1,4 @@
-use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
+use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::{BumpBuf, CLICK_SIZE, BootMemRegion, METADATA_ALIGN_PADDING};
@@ -376,8 +376,8 @@ impl PhysAllocator for BuddyAllocator {
     }
 }
 
-impl PhysAllocatorStats for BuddyAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl BuddyAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         let largest_free = self.largest_free();
         PhysMemStats {
             free_nodes: 0,

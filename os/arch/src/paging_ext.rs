@@ -3,7 +3,6 @@
 //! Optional page table feature extensions, not supported by all architectures:
 //! - `PagingWithId`: TLB process identification (PCID/ASID)
 //! - `HugePages`: huge page support
-//! - `VmPagingExt`: VM process management operations
 //!
 //! # Future extensions
 //!
@@ -15,36 +14,8 @@
 //!   operations on x86-64 (e.g., `LOCK CMPXCHG16B`), avoiding loss of hardware
 //!   updates during the read-modify-write cycle.
 
-use minix_types::{Endpoint, PhysBytes, VirBytes};
+use minix_types::{PhysBytes, VirBytes};
 use crate::paging::{PageFlags, PageTableError, Paging};
-
-/// VM process management paging operations (optional trait)
-///
-/// These operations correspond to Minix3's `pt_bind()` and `pt_mapkernel()`.
-/// They are VM policy operations, not pure paging hardware mechanisms:
-///
-/// - `bind_to_process()`: involves kernel IPC (`sys_vmctl_set_addrspace`),
-///   not a pure page table operation
-/// - `map_kernel()`: writes kernel mappings into a user process page table,
-///   a VM strategy decision rather than hardware mechanism
-///
-/// Separated from `Paging` trait because they are VM-layer policy,
-/// not hardware abstraction.
-pub trait VmPagingExt: Paging {
-    /// Bind this page table to a process in the kernel.
-    ///
-    /// Corresponds to Minix3's `pt_bind()` which calls
-    /// `sys_vmctl_set_addrspace()` to register the page table
-    /// with the kernel for the given process endpoint.
-    fn bind_to_process(&self, endpoint: Endpoint) -> Result<(), PageTableError>;
-
-    /// Map kernel address space into this page table.
-    ///
-    /// Corresponds to Minix3's `pt_mapkernel()`. Must be called
-    /// after `Paging::new()` before the process runs, so that
-    /// kernel entry points are accessible from user space.
-    fn map_kernel(&mut self) -> Result<(), PageTableError>;
-}
 
 /// TLB process identification support (optional trait)
 ///

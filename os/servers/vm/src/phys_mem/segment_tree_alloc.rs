@@ -1,4 +1,4 @@
-use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
+use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::{BumpBuf, BootMemRegion, METADATA_ALIGN_PADDING};
 
@@ -325,8 +325,8 @@ impl PhysAllocator for SegmentTreeAllocator {
 }
 
 #[cfg(feature = "segment_tree_alloc")]
-impl PhysAllocatorStats for SegmentTreeAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl SegmentTreeAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         PhysMemStats {
             free_nodes: 0,
             free_pages: self.free_pages,
@@ -379,8 +379,8 @@ impl PhysAllocator for SegmentTreeAllocator {
 }
 
 #[cfg(not(feature = "segment_tree_alloc"))]
-impl PhysAllocatorStats for SegmentTreeAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl SegmentTreeAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         PhysMemStats { free_nodes: 0, free_pages: 0, largest_free: 0 }
     }
 }

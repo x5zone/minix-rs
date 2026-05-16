@@ -1,9 +1,8 @@
 # 08-slab-allocator: Slab 分配器
 
-> **分类**: VM私有 ✅（修正：不是全局基建）  
+> **分类**: VM私有 ✅
 > **源码**: [slaballoc.c](minix3/minix/servers/vm/slaballoc.c)  
 > **说明**: VM 专用的内存分配器，用于分配固定大小的对象
-> **状态**: Rust 实现已完成基础框架（global.rs、alloc_stats.rs、critical_pool.rs）。本文档 §1-§2 为 Minix3 C 源码分析，§3 为设计决策分析，§4 为 Rust 实现详解。
 
 ---
 
@@ -46,6 +45,8 @@ Slab 分配器是一种内存管理技术，用于高效分配固定大小的对
 **为什么 VM 使用 Slab 而非完全依赖 malloc？**
 
 > ⚠️ **澄清**：VM **可以**使用 malloc。VM 有自己的 `brk` 快速路径（`utility.c:_brk()`），直接调用 `alloc_mem()` 分配物理页并映射到自己的地址空间。VM 实际上也使用了 `calloc`/`realloc`/`free`（如 `region->physblocks` 数组）。
+> 
+> 以上是 Minix3（32 位 C 实现）的现状。Rust 版本在 Direct Map 下不再需要 brk——VM 通过 `vm_phys_to_virt()` 直接访问物理页，无需为自身的堆扩展虚拟地址空间。详见 §4.1 和 07-pagetable-ops.md §3.0.4。
 
 **Slab 的价值在于性能优化**：
 
@@ -122,18 +123,7 @@ Slab:
   
 - **缺点**：
   - 内存效率不高（详见 §2.1 源码分析）
-  - 不如 Linux 的几何级数策略高效
-
-**对比：Minix3 vs Linux 设计哲学**
-
-| 维度 | Minix3 VM | Linux Kernel |
-|-----|-----------|--------------|
-| **设计目标** | 实现简单，易于维护 | 性能极致，内存高效 |
-| **大小策略** | 线性增长（8, 16, 24, 32...） | 几何级数（8, 16, 32, 64, 128...） |
-| **适用场景** | 微内核 VM，对象种类有限 | 通用内核，对象种类多样 |
-| **实现复杂度** | 低 | 高 |
-
----
+  - GETSLAB 宏的索引方式导致 200 个 slabheader 中仅 ~25 个被使用（§2.1 详述）
 
 ## 2. C 源码分析
 
@@ -283,6 +273,17 @@ static struct slabheader slabs[SLABSIZES];
 ┌─────────────────────────────────────────────────────────────┐
 │                     物理页 (4KB)                             │
 ├─────────────────────────────────────────────────────────────┤
+│  ← 低地址                                                    │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                    数据区 (DATA)                     │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐     ┌────────┐ │   │
+│  │  │ Object 0│ │ Object 1│ │ Object 2│ ... │Object N│ │   │
+│  │  │ 8 bytes │ │ 8 bytes │ │ 8 bytes │     │8 bytes │ │   │
+│  │  └─────────┘ └─────────┘ └─────────┘     └────────┘ │   │
+│  │                                                     │   │
+│  │  每个对象大小相同，通过位图标记使用状态              │   │
+│  │                                                     │   │
+│  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │              Slab 头 (struct sdh)                   │   │
@@ -300,18 +301,7 @@ static struct slabheader slabs[SLABSIZES];
 │  │  │ nused       │  已使用对象计数                    │   │
 │  │  └─────────────┘                                    │   │
 │  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                    数据区 (DATA)                     │   │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐     ┌────────┐ │   │
-│  │  │ Object 0│ │ Object 1│ │ Object 2│ ... │Object N│ │   │
-│  │  │ 8 bytes │ │ 8 bytes │ │ 8 bytes │     │8 bytes │ │   │
-│  │  └─────────┘ └─────────┘ └─────────┘     └────────┘ │   │
-│  │                                                     │   │
-│  │  每个对象大小相同，通过位图标记使用状态              │   │
-│  │                                                     │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
+│  ← 高地址                                                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -529,7 +519,7 @@ Slab 头大小：~64 bytes
 数据区大小：4032 bytes
 可存储对象数：4032 / 8 = 504 个
 
-位图大小：504 / 8 = 63 bytes = 63 个 u8_t
+位图大小：504 / 8 = 63 bytes = 63 个 u8_t（最小需求；实际 `usebits` 是固定 65 个 `element_t` 的数组，见 `USEELEMENTS` 宏）
 
 usebits[0] 的 8 位对应 Object 0-7
 usebits[1] 的 8 位对应 Object 8-15
@@ -1491,6 +1481,31 @@ CFLAGS += -DMEMPROTECT=0
 3. **仅适用于调试**：MEMPROTECT 主要用于开发和测试阶段
 4. **内核支持**：需要内核提供 `vm_pagelock` 系统调用支持
 
+**用户侧接口：`USE()` 宏**
+
+`sanitycheck.h` 中定义了 `USE(obj, code)` 宏，作为 MEMPROTECT 机制在用户代码中的入口：
+
+```c
+#if MEMPROTECT
+#define USE(obj, code) do {        \
+    slabunlock(obj, sizeof(*obj)); \
+    do { code } while(0);          \
+    slablock(obj, sizeof(*obj));   \
+} while(0)
+#else
+#define USE(obj, code) do { code } while(0)
+#endif
+```
+
+与 `SLABDATAUSE`（操作 slab 内部元数据）不同，`USE()` 保护的是**非 slab 数据结构的字段修改**。VM 中通过 slab 分配的结构体（`vir_region`、`phys_region`、`phys_block`、`fdref` 等），在 MEMPROTECT 模式下其所在页被锁定为只读；用户代码修改这些结构体的字段时，需要先用 `USE(obj, { ... })` 包裹，临时解锁页面、执行修改、再重新锁定。例如：
+
+```c
+USE(vr, vr->parent = vmp;);
+USE(pr, pr->offset -= len;);
+```
+
+这确保了即使分配器之外的用户代码，也不会意外破坏 slab 对象的只读保护。
+
 ---
 
 ## 3. Rust 设计决策
@@ -1501,7 +1516,7 @@ VM 进程内部的内存分配，本质上是一个**高频小对象分配问题
 
 ```
 输入：
-  - 高频分配：vir_region、phys_block、phys_region 等结构体
+  - 高频/极高频率分配：vir_region（高）、phys_block（极高）、phys_region（高）等结构体（详细频率分析见 §5.1）
   - 对象特征：固定大小（几十~几百字节）、生命周期短
   - 环境约束：用户态单线程进程、64 位地址空间
 
@@ -1539,8 +1554,6 @@ Minix3 的 VM 服务器实现私有 slab 分配器，是特定历史条件和技
 | 无自动析构 | 手动 free 易泄漏 | 集中管理，批量释放 |
 | 无标准 allocator | malloc 不可靠 | 自建可控分配器 |
 
-> **设计启发**：Minix3 的 slab 本质上是在**用 C 的位图模拟类型系统**。当你发现自己在用底层机制模拟高层抽象时，说明语言选型可能需要重新考虑。
-
 **2. 微内核的 IPC 开销**
 
 在微内核架构中，如果每次内存分配都需要跨进程通信：
@@ -1550,17 +1563,13 @@ Minix3 的 VM 服务器实现私有 slab 分配器，是特定历史条件和技
 Slab 路径：       VM → 纯用户态位图操作 → 返回
 ```
 
-Slab 将高频操作保留在进程边界内，避免了 IPC 开销。这是微内核架构下性能优化的第一原则。
-
-> **设计启发**：在微内核架构中，"避免 IPC"是性能优化的第一原则。Slab 的价值不在于"slab 本身"，而在于**将高频操作保留在进程边界内**。
+Slab 将高频操作保留在进程边界内，避免了 IPC 开销。在微内核架构中，减少跨进程通信是性能优化的关键考量。
 
 **3. 32 位地址空间的稀缺性**
 
 - 4GB 地址空间下，每字节都要算计
 - 位图管理：每对象 1 bit，理论最低元数据开销
-- 线性 8-200 字节分级：够用且简单
-
-> **设计启发**：硬件约束塑造软件架构。32 位下的"精巧设计"在 64 位下可能变成"过度优化"。好的架构师知道**何时让旧设计退役**。
+- 密集 8 字节步进（200/8=25 级）：在有限的 32 位地址空间内提供更细颗粒度，够用且简单
 
 **4. VM 的工作负载特征**
 
@@ -1568,7 +1577,7 @@ Slab 将高频操作保留在进程边界内，避免了 IPC 开销。这是微�
 - 固定大小对象（vir_region ~64B, phys_block ~32B）
 - 这正是 slab 的"甜点场景"
 
-> **设计启发**：专用分配器的价值 = 工作负载特征 × 通用分配器的不足。两个条件缺一不可。
+专用分配器的价值取决于工作负载特征和通用分配器的不足，两个条件缺一不可。
 
 ### 3.3 为什么现在不需要了 —— 环境变迁分析
 
@@ -1587,15 +1596,11 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 
 关键认识：**不是放弃 slab，而是把 slab 的职责交给更成熟的分配器。** Rust 的 alloc 生态是 20+ 年工程经验的结晶，一个 200 行的私有 slab 不可能比它更好。
 
-> **设计启发**：好的系统设计不是"什么都自己做"，而是**知道什么该委托给下层**。
-
 **2. VM 是用户态进程，不是 kernel runtime**
 
 - 不需要绕过不可靠的 malloc（Rust 的 alloc 是可靠的）
 - 不需要避免 IPC（VM 自己就是内存管理服务器，物理页分配走内部函数）
 - 单线程，无锁竞争
-
-> **设计启发**：Minix3 的 slab 是"在受限环境下不得不做的工程补丁"。当限制消失，补丁也应该消失。
 
 **3. 64 位地址空间的红利**
 
@@ -1611,8 +1616,6 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 | 内存泄漏 | 手动管理 | RAII + 所有权 |
 | use-after-free | 常见 bug | 编译期阻止 |
 | 双重释放 | 常见 bug | 所有权系统阻止 |
-
-> **设计启发**：Minix3 的 slab 用位图模拟类型系统。Rust 已经有了真正的类型系统，不需要这种模拟。**当语言提供了更好的机制，用语言机制替代手动管理。**
 
 ### 3.4 VM 内存管理架构
 
@@ -1649,7 +1652,7 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 
 - 物理页分配器是 VM 自己控制的（不是系统的 mmap）
 - 全局分配器底层对接 VM 自己的物理页分配器
-- 这意味着 VM 的内存分配**全程在用户态完成**，不经过内核
+- VM 自身的动态内存分配不触发内核 IPC。Direct Map 已预先映射全部物理内存，VmAllocator 从 Direct Map 区域拿页后在内部切分（§4.1 bump allocator），整个链路是纯本地操作：alloc_phys → vm_phys_to_virt → 页内切分 → 返回指针。
 
 ### 3.5 关于"确定性"的处理
 
@@ -1671,12 +1674,29 @@ Minix3 slab 的核心价值不是 slab 本身，而是**将关键路径上的内
 /// 为 page fault 处理等关键路径提供有界分配保证。
 /// 池在 VM 启动时预分配，关键路径从池中获取，非关键路径使用全局 alloc。
 pub(crate) struct CriticalPool<T> {
-    free_list: Vec<Box<T>>,
-    min_reserved: usize,  // 低于此阈值时触发补充
+    pool: Vec<Box<T>>,
+    min_reserved: usize,
+}
+
+impl<T: Default> CriticalPool<T> {
+    /// 创建预分配池，capacity 为初始大小，min_reserved 为最低保留阈值
+    fn new(capacity: usize, min_reserved: usize) -> Self;
+
+    /// 从池中获取一个对象，池空时返回 None（关键路径调用）
+    fn take(&mut self) -> Option<Box<T>>;
+
+    /// 将对象归还池中
+    fn restore(&mut self, obj: Box<T>);
+
+    /// 检查是否需要补充（当池中对象数低于 min_reserved 时返回 true）
+    fn needs_refill(&self) -> bool;
+
+    /// 补充池到指定容量（非关键路径调用）
+    fn refill(&mut self, capacity: usize);
+
+    // 完整实现见 §4.3
 }
 ```
-
-> **设计启发**：你不需要 slab，但你需要**控制分配行为**。控制的粒度是"哪些路径需要保证"，而不是"每个字节怎么管理"。
 
 ### 3.6 可选优化路径（三阶段策略）
 
@@ -1697,7 +1717,7 @@ pub(crate) struct CriticalPool<T> {
   └── 不做通用 slab allocator
 ```
 
-> **设计启发**："先相信 allocator，再用数据推翻它。" 过早优化是万恶之源。在没有任何 profiling 数据的情况下引入 slab，是在解决一个可能不存在的问题。
+三阶段策略的核心原则：先使用通用分配器跑通系统，通过 profiling 确认瓶颈后再考虑专用优化。在没有数据的情况下引入 slab，是在解决一个可能不存在的问题。
 
 ### 3.7 教学保留：Rust 版 Slab 设计草案
 
@@ -1709,8 +1729,10 @@ pub(crate) struct CriticalPool<T> {
 /// Slab 分配器（设计草案）
 ///
 /// 管理多个 SlabCache，每个缓存服务一种对象大小。
-/// 大小策略采用几何级数（8, 16, 32, 64, 128, 256...），
-/// 而非 Minix3 的线性策略（8, 16, 24, 32...）。
+/// 大小策略采用 2 的幂次（8, 16, 32, 64, 128, 256...），
+/// 而非 Minix3 的密集 8 字节步进（8, 16, 24, 32...）。
+/// 2^n 用更少的缓存条目覆盖相同范围，代价是相邻大小间
+/// 的间隙更大（如 32 和 64 之间无中间档位）。
 pub struct SlabAllocator {
     caches: [SlabCache; NUM_CACHES],
 }
@@ -1775,7 +1797,7 @@ slab_free(ptr, size):
 
 | 维度 | Minix3 (C) | Rust 设计草案 |
 |------|------------|--------------|
-| 大小策略 | 线性 8, 16, 24, 32... | 几何级数 8, 16, 32, 64... |
+| 大小步进 | 密集 8B 步进（8, 16, 24...） | 2^n（8, 16, 32, 64...） |
 | 类型 | `void*` | 泛型 `T` |
 | 位图 | `u8[]` 手动位运算 | `u64[]` + `trailing_ones()` |
 | 链表 | 手动 prev/next 指针 | `NonNull` + Option |
@@ -1822,8 +1844,8 @@ Minix3 使用方案 1（data 在前，header 在后，页对齐即得 header）�
 
 **要点 3：增长与收缩**
 
-- Minix3 的 slab 永不收缩（满的 slab 从链表移除但不释放）
-- Rust 设计草案建议：空闲 slab 立即释放回物理页分配器
+- Minix3：满的 slab 从链表移除但不释放（对象仍在使用中）；完全空闲的 slab 立即通过 `vm_freepages()` 释放
+- Rust 设计草案：同样策略 — 空闲 slab 立即释放回物理页分配器
 - 权衡：释放减少内存占用，但下次分配需要重新申请页
 
 **要点 4：安全性考量**
@@ -1854,7 +1876,7 @@ Minix3 将 `data` 放在前面、`sdh` 放在后面，是为了让数据区对�
 
 Rust 不需要这种 trick：
 - 索引管理比地址掩码更安全
-- `Vec<T>` 或 `free_list` 模式更符合 Rust 习惯
+- `Vec<Box<T>>` 对象池模式更符合 Rust 习惯
 - 如果确实需要页对齐，可以用 `#[repr(C)]` 精确控制布局
 
 ### 3.8 总结对比表
@@ -1873,83 +1895,175 @@ Rust 不需要这种 trick：
 
 ## 4. 实现详解
 
-本章对应实际代码，而非设计草案。
-
 ### 4.1 全局分配器接入
 
-VM 通过 `#[global_allocator]` 接入 Rust 的全局分配器体系，底层对接 VM 自己的物理页分配器：
+Rust 通过 `#[global_allocator]` 机制允许替换全局内存分配器：实现 `GlobalAlloc` trait，然后用 `#[global_allocator]` 标注一个静态变量，之后所有 `Box`、`Vec`、`String` 等标准容器的堆分配都会走这个分配器。
+
+VM 是一个 freestanding 用户态进程，不能依赖宿主 OS 的 libc `malloc`。它管理自己的物理内存池，因此需要实现自己的全局分配器，底层对接 VM 的物理页分配器。
+
+#### 设计知识点：`GlobalAlloc` 下必须自己做 sub-page 管理
+
+Rust `alloc` crate 的调用链是纯透传的——`Box::new()` → `__rust_alloc(size, align)` → `GLOBAL.alloc(layout)`，**中间没有任何缓冲、cache 或 sub-page 管理**。`alloc` crate 不帮你切页、不做 size class、没有 free list。它只是一个抽象接口层，`GlobalAlloc` 实现者拿到什么返回什么。
+
+因此 `GlobalAlloc::alloc()` 的实现者必须自己做页内切割。如果直接把 `alloc_phys()` 的整页返回（"页级桥接"），每次 `Box::new(24B)` 消耗一整页 4096B——单页可容纳 170 个 `PhysBlock`，在桥接模式下被浪费掉。
+
+Minix3 的 slab allocator 正是承担了这个角色——它从 `vm_allocpage()` 拿页，内部切割为固定大小对象（§2.1）。本节设计的 bump allocator 是 Rust 版本的等价物：从 `VmPageAllocator` 拿页，在 Direct Map 区域内切分。
+
+**实现**：
 
 ```rust
 // os/servers/vm/src/global.rs
 
+use minix_types::AssumeSyncCell;
 use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
-/// VM 的全局分配器
+use crate::alloc_page::VmPageAllocator;
+use crate::direct_map::{vm_phys_to_virt, virt_to_phys};
+use crate::phys_mem::{PageAllocFlags, PAGE_SIZE};
+
+/// 全局分配器 —— bump allocator，在 Direct Map 区域内切分物理页
 ///
-/// 方案四（Direct Map）：底层通过 alloc_phys() + vm_phys_to_virt() 实现全程用户态分配。
-/// 分配路径：GlobalAlloc → alloc_phys() → vm_phys_to_virt() → 返回 VA。
-/// 全程用户态，不经过内核，不依赖 C 运行时。
-pub(crate) struct VmAllocator;
+/// 预分配 16 页（64KB）作为 arena，内部用 cursor 切分。
+/// arena 耗尽时自动申请新 arena（旧 arena 不再使用，但不立即归还）。
+/// dealloc 是 no-op——bump allocator 不回收单个对象，
+/// arena 页在 VM 进程退出时随 Direct Map 一起释放。
+pub(crate) struct VmAllocator {
+    arena_base: AssumeSyncCell<*mut u8>,
+    cursor: AssumeSyncCell<usize>,
+}
+
+// 全局指针：指向 VmServer 持有的 VmPageAllocator 实例
+// VM 初始化时通过 register_page_alloc() 设置，之前为 null（此时 alloc 返回 null）
+// 使用 AtomicPtr 而非 AssumeSyncCell，因为 GlobalAlloc::alloc 是 &self（不可变），
+// 而 VmPageAllocator 的方法需要 &mut self。AtomicPtr 允许我们在 &self 内部
+// 拿到 *mut 指针并 unsafe 转为 &mut——VM 单线程，无数据竞争。
+static PAGE_ALLOC_PTR: AtomicPtr<VmPageAllocator> = AtomicPtr::new(core::ptr::null_mut());
+
+/// 在 VmServer 初始化时调用，将 VmPageAllocator 指针注册到全局分配器。
+/// 此后 Box::new()、Vec::push() 等堆分配才会生效。
+pub(crate) fn register_page_alloc(alloc: &mut VmPageAllocator) {
+    PAGE_ALLOC_PTR.store(alloc as *mut VmPageAllocator, Ordering::SeqCst);
+}
+
+impl VmAllocator {
+    /// 预分配页数。VM 启动后 bump allocator 申请的第一个 arena。
+    /// 64KB 可容纳 ~570 个 PhysBlock（24B）或 ~1300 个 PhysRegion（48B），
+    /// 足够覆盖 VM 启动阶段的所有内部数据结构分配。
+    const ARENA_PAGES: usize = 16;
+    const ARENA_BYTES: usize = Self::ARENA_PAGES * PAGE_SIZE;
+
+    fn refill_arena(&self) {
+        let alloc = unsafe { &mut *PAGE_ALLOC_PTR.load(Ordering::SeqCst) };
+        let phys = alloc.alloc_phys(Self::ARENA_PAGES, PageAllocFlags::empty())
+            .expect("VmAllocator: out of physical memory");
+        let va = unsafe { vm_phys_to_virt(phys).0 as *mut u8 };
+        self.arena_base.store(va);
+        self.cursor.store(0);
+    }
+
+    fn ensure_arena(&self) {
+        if self.arena_base.load().is_null() {
+            self.refill_arena();
+        }
+    }
+}
 
 unsafe impl GlobalAlloc for VmAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe extern "Rust" {
-            fn __vm_global_alloc(layout: Layout) -> *mut u8;
+        self.ensure_arena();
+
+        let size = layout.size();
+        let align = layout.align();
+
+        // bump: 对齐 cursor，切出 size 字节
+        let base = self.arena_base.load();
+        let cursor = self.cursor.load();
+        let ptr = unsafe { base.add(cursor) };
+        let offset = ptr.align_offset(align);
+        let alloc_start = unsafe { ptr.add(offset) };
+        let total = offset + size;
+
+        if cursor + total > Self::ARENA_BYTES {
+            // arena 耗尽，申请新 arena 并重试
+            self.refill_arena();
+            return self.alloc(layout);
         }
-        unsafe { __vm_global_alloc(layout) }
+
+        self.cursor.store(cursor + total);
+
+        // 零初始化（匹配 GlobalAlloc::alloc_zeroed 但 opt-out）
+        alloc_start
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe extern "Rust" {
-            fn __vm_global_dealloc(ptr: *mut u8, layout: Layout);
-        }
-        unsafe { __vm_global_dealloc(ptr, layout) }
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // no-op：bump allocator 不回收单个对象。
+        // arena 页在 VM 进程退出时随 Direct Map 一起释放。
+        //
+        // 这是有意为之：VM server 是长生命周期系统服务，
+        // 绝大多数动态分配的结构体（VirRegion, PhysRegion, PhysBlock...）
+        // 存活期与 VM 进程绑定，不存在"高频分配-立即释放"的临时对象模式。
+        // 如果未来 profiling 发现内存压力，可按需引入 slab（附录 A.3）。
     }
 }
 
+// 注册为全局分配器。cfg_attr(not(test), ...) 确保 cargo test 时使用标准分配器
 #[cfg_attr(not(test), global_allocator)]
-static GLOBAL: VmAllocator = VmAllocator;
+static GLOBAL: VmAllocator = VmAllocator {
+    arena_base: AssumeSyncCell::new(core::ptr::null_mut()),
+    cursor: AssumeSyncCell::new(0),
+};
+```
 
-#[cfg(not(test))]
-#[unsafe(no_mangle)]
-unsafe fn __vm_global_alloc(layout: Layout) -> *mut u8 {
-    use crate::alloc_page::vm_phys_to_virt;
-    use crate::phys_alloc::global_phys_alloc;
+注册时机在 `VmServer::new()` 中：
 
-    let pages = (layout.size() + PAGE_SIZE - 1) / PAGE_SIZE;
-    let phys = global_phys_alloc()
-        .alloc_mem(pages, PageAllocFlags::empty())
-        .expect("VM: out of physical memory");
-    vm_phys_to_virt(phys).0 as *mut u8
-}
+```rust
+// os/servers/vm/src/vm_server.rs
 
-#[cfg(not(test))]
-#[unsafe(no_mangle)]
-unsafe fn __vm_global_dealloc(ptr: *mut u8, _layout: Layout) {
-    // TODO: 实现 free_phys — 将虚拟地址反算为物理地址，归还给 PhysAllocator
-    // 当前阶段：VM 单线程运行，内存不回收，待 buddy allocator 实现后补全
+impl VmServer {
+    pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
+        let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
+        let mut page_alloc = VmPageAllocator::new(phys_alloc);
+        crate::global::register_page_alloc(&mut page_alloc);
+        Self {
+            page_alloc,
+            // ...
+        }
+    }
 }
 ```
 
+**设计权衡**：
+
+| 维度 | bump allocator（当前） | slab（未来备选） | free list |
+|------|----------------------|-----------------|-----------|
+| 实现复杂度 | ~50 行 | ~200 行 | ~150 行 |
+| dealloc 回收 | no-op | 逐对象回收 | 逐对象回收 |
+| 内部碎片 | 无（按需切分） | 无（固定槽位） | 有边界情况 |
+| 外部碎片 | arena 切换浪费 | 无 | 有 |
+| 适用场景 | VM 长生命周期对象 | 高频分配/释放的热点类型 | 通用 heap |
+
+选择 bump 的理由：
+- **VM 单线程**，无并发竞争
+- **VM 是长生命周期进程**，绝大多数动态分配与进程同寿，不需要逐对象 dealloc
+- **Rust 所有权系统**自动处理 drop，dealloc 的 no-op 不会导致 use-after-free
+- **16 页 arena** 足够容纳启动阶段的所有结构体；arena 耗尽后才触发 refill
+
 **关键设计决策**：
 
-- **为什么用 alloc_phys + vm_phys_to_virt？** VM 是内存管理服务器——它自己就是物理内存的来源。GlobalAlloc 对接 `vm_phys_to_virt()` 使 VM 的分配链路完全自包含：请求内存 → 从自己的物理池分配 → 通过自己的 direct map 访问。这不是"优化了分配路径"，而是 **"VM 终于成为了自己内存的主人"**。
+- **为什么必须用 alloc_phys + vm_phys_to_virt？** VM 是 `no_std` freestanding 进程，没有 libc。它管理自己的物理内存池，GlobalAlloc 直接对接 `alloc_phys() → vm_phys_to_virt()`，使分配链路完全自包含：请求内存 → 从自己的物理池分配 → 通过 Direct Map 访问。
 
-- **为什么不再用 malloc/free？** 方案三阶段用 C 的 malloc/free 是因为 VM 还没有自己的 VA 获取机制（PtRegion 仅服务于页表页）。Direct map 出现后，`vm_phys_to_virt()` 统一了所有物理页的 VA 获取，malloc/free 的间接依赖不再必要。
+- **为什么走 VmPageAllocator 而非直接操作 PhysAlloc？** GlobalAlloc 通过 `AtomicPtr<VmPageAllocator>` 指向 `VmServer` 持有的 `VmPageAllocator` 实例，这样 GlobalAlloc 的分配/释放也经过 `VmAllocStats` 统计追踪，与 `alloc_page()` / `free_page()` 路径一致，保证统计完整。
 
-- **与 05-vm-allocpage.md 的呼应**：05 中 `alloc_page()` 简化为 `alloc_phys() → vm_phys_to_virt()`，08 的 GlobalAlloc 是同一个模式的另一个实例。两者共享同一个物理分配器和同一个 direct map——`vm_phys_to_virt()` 成为所有"物理页 → 虚拟地址"转换的唯一路径。
+- **为什么用 AtomicPtr 而非 AssumeSyncCell？** `GlobalAlloc::alloc(&self)` 接收不可变引用，而 `VmPageAllocator::alloc_phys(&mut self)` 需要可变引用。`AtomicPtr` 允许在 `&self` 内部拿到 `*mut` 指针并 `unsafe` 转为 `&mut`——VM 单线程运行，无数据竞争。
 
-- **为什么不用 jemalloc/mimalloc？** 当前阶段使用简单页分配器即可。关于分配器的选型分析，详见附录 A。
+- **与 05-vm-allocpage.md 的呼应**：05 中 `alloc_page()` 底层走 `alloc_phys() → vm_phys_to_virt()`，返回 `(VirBytes, AlignedPhysBytes)` 元组；08 的 GlobalAlloc 走同样底层路径，只返回 `*mut u8`（虚拟地址）。两者共享同一个 `VmPageAllocator` 和同一个 Direct Map——`vm_phys_to_virt()` 是所有"物理页 → 虚拟地址"转换的唯一路径。
 
-- **可替换性**：通过 `#[global_allocator]` 机制，替换分配器只需修改一处代码，无需改动任何业务逻辑。
+- **后续升级路径**：参见[附录 A.3](#a3-未来方向) 关于 slab 和第三方分配器的讨论。
 
-- **测试隔离**：`#[cfg_attr(not(test), global_allocator)]` 确保测试时使用标准分配器，避免循环依赖。
+#### Direct Map 下的 Slab 元数据访问
 
-- **dealloc 的当前状态**：`__vm_global_dealloc` 暂未实现物理页回收。VM 单线程运行，初始化阶段分配的内存不会释放。待 buddy allocator 实现后，可通过 `vm_virt_to_phys()` 反算物理地址，调用 `free_mem()` 归还。
-
-#### 方案四视角：Slab 元数据访问方式
-
-> **方案四标注**：Direct Map 方案下，slab 元数据的访问从"需要先映射到 VA"变为"物理页天然有 VA"。
+> Direct Map 架构下，slab 元数据的访问从"需要先映射到 VA"变为"物理页天然有 VA"。
 
 Minix3 的 slab 元数据访问需要经过 `vm_pagelock` 解锁/锁定机制（详见 §2.1.5 MEMPROTECT）。这个机制的核心开销不在 `vm_pagelock` 本身，而在于它需要 `pt_writemap` 修改页表项——而 `pt_writemap` 内部需要通过 `createpde` 临时映射窗口来操作页表页。
 
@@ -1957,7 +2071,7 @@ Direct Map 方案下，slab 元数据的访问路径简化为：
 
 ```
 Minix3:  slab 元数据在 VM 地址空间 → vm_pagelock 解锁 → pt_writemap → createpde → 修改页表项 → TLB 刷新
-方案四:  slab 元数据在 direct map 中 → 直接读写（vm_phys_to_virt 已提供 VA）
+Direct Map:  slab 元数据在 direct map 中 → 直接读写（vm_phys_to_virt 已提供 VA）
 ```
 
 但更深层的变化是：Minix3 的 MEMPROTECT 机制（`vm_pagelock`）在 direct map 下需要重新审视。Direct map 的 PTE 权限是 U/S=1（用户态可访问），VM 可以直接读写所有物理页。如果需要 slab 元数据的写保护，不能再用 `vm_pagelock`（它修改的是 VM 地址空间的 PTE，而 direct map 的 PTE 是共享的），需要考虑其他机制（如 mprotect on direct map 范围，或软件层面的写保护）。
@@ -1983,48 +2097,60 @@ Minix3 的 `vm_pagelock` 在 minix-rs 中**完全消除**，理由有三层：
 ```rust
 // os/servers/vm/src/alloc_stats.rs
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+//! VM page allocation statistics module.
+//!
+//! # Single-threaded Assumption
+//!
+//! All fields are plain `usize`. The VM server is single-threaded;
+//! atomic operations are unnecessary and misleading.
 
-/// VM 全局分配统计
-///
-/// 使用原子计数器，支持无锁并发访问。
-/// 当前 VM 为单线程，原子操作仅用于未来扩展。
 pub(crate) struct VmAllocStats {
-    total_allocations: AtomicUsize,
-    total_deallocations: AtomicUsize,
-    allocation_failures: AtomicUsize,
+    total_allocations: usize,
+    total_deallocations: usize,
+    total_alloc_clicks: usize,
+    total_dealloc_clicks: usize,
+    allocation_failures: usize,
 }
 
 impl VmAllocStats {
     pub(crate) const fn new() -> Self {
         Self {
-            total_allocations: AtomicUsize::new(0),
-            total_deallocations: AtomicUsize::new(0),
-            allocation_failures: AtomicUsize::new(0),
+            total_allocations: 0,
+            total_deallocations: 0,
+            total_alloc_clicks: 0,
+            total_dealloc_clicks: 0,
+            allocation_failures: 0,
         }
     }
 
-    pub(crate) fn record_alloc(&self) {
-        self.total_allocations.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn record_alloc(&mut self, clicks: usize) {
+        self.total_allocations += 1;
+        self.total_alloc_clicks += clicks;
     }
 
-    pub(crate) fn record_dealloc(&self) {
-        self.total_deallocations.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn record_dealloc(&mut self, clicks: usize) {
+        debug_assert!(
+            self.total_deallocations < self.total_allocations,
+            "record_dealloc underflow: more deallocs than allocs"
+        );
+        self.total_deallocations += 1;
+        self.total_dealloc_clicks += clicks;
     }
 
-    pub(crate) fn record_failure(&self) {
-        self.allocation_failures.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn record_failure(&mut self) {
+        self.allocation_failures += 1;
     }
 
-    /// 当前活跃分配数 = 总分配 - 总释放
     pub(crate) fn active_allocations(&self) -> usize {
-        self.total_allocations.load(Ordering::Relaxed)
-            - self.total_deallocations.load(Ordering::Relaxed)
+        self.total_allocations - self.total_deallocations
     }
 
-    /// 检测潜在的内存泄漏
+    pub(crate) fn active_pages(&self) -> usize {
+        self.total_alloc_clicks - self.total_dealloc_clicks
+    }
+
     pub(crate) fn check_leak(&self) -> Option<usize> {
-        let active = self.active_allocations();
+        let active = self.active_pages();
         if active > 0 {
             Some(active)
         } else {
@@ -2037,8 +2163,8 @@ impl VmAllocStats {
 **设计说明**：
 
 - 统计信息不是 slab 专属的，而是 VM 全局的。这符合"不实现专用 slab"的决策——我们监控的是整个 VM 的分配行为，而非某个分配器的内部状态。
-- `check_leak()` 方法提供轻量级泄漏检测。在 VM 退出时调用，如果活跃分配数 > 0，说明存在内存泄漏。
-- 原子操作的开销极小（单条 CPU 指令），不会成为性能瓶颈。
+- 所有字段使用 `usize` 而非 `AtomicUsize`。VM 是单线程服务器，原子操作不必要且具有误导性——使用原子类型会暗示存在并发访问，这是错误的心智模型。方法签名使用 `&mut self` 而非 `&self`，在类型层面明确独占访问。
+- `record_alloc`/`record_dealloc` 接受 `clicks` 参数，追踪页级粒度。`check_leak()` 返回 `active_pages()`（活跃页数），而非 `active_allocations()`（活跃分配次数），因为页级泄漏比分配级泄漏更有意义。
 
 ### 4.3 关键路径预分配策略
 
@@ -2129,6 +2255,8 @@ fn periodic_maintenance(pool: &mut CriticalPool<PhysBlock>) {
 | 适用场景 | 1~3 个关键类型 | 所有固定大小对象 |
 | 内存开销 | 预分配 N 个对象 | 按需分配页 |
 
+`take()` 使用 `Vec::pop()` 是 LIFO（后进先出）：最近归还的对象优先取出，利用 CPU 缓存局部性。对于 page fault 等关键路径，LIFO 比 FIFO 更有利。
+
 ---
 
 ## 5. VM 内部使用分析
@@ -2137,13 +2265,14 @@ fn periodic_maintenance(pool: &mut CriticalPool<PhysBlock>) {
 
 Minix3 VM 中通过 slab 分配的结构体及其在 Rust 版本中的对应方式：
 
-| Minix3 结构体 | 大小 | 分配频率 | Rust 版本 |
+| Minix3 结构体 | Rust 大小 (x86_64) | 分配频率 | Rust 版本 |
 |--------------|------|---------|-----------|
-| `vir_region` | ~64B | 高（每次 mmap） | `Box<VirRegion>` |
-| `phys_region` | ~32B | 高（每次映射物理页） | `Box<PhysRegion>` |
-| `phys_block` | ~32B | 极高（page fault） | `CriticalPool<PhysBlock>` |
-| `fdref` | ~16B | 低 | `Box<FdRef>` |
-| `vfs_request_node` | ~48B | 中 | `Box<VfsRequestNode>` |
+| `vir_region` | ~112B | 高（每次 mmap） | `Box<VirRegion>` |
+| `phys_region` | ~48B | 高（每次映射物理页） | `Box<PhysRegion>` |
+| `phys_block` | ~24B | 极高（page fault） | `CriticalPool<PhysBlock>` |
+| `fdref` | ~32B | 低 | `Box<FdRef>` |
+| `vfs_request_node` | ~40B | 中 | `Box<VfsRequest>` |
+| `cached_page` | ~16B | 中（VFS 文件映射） | `Box<CachedPage>` |
 
 **为什么 phys_block 走预分配池？**
 
@@ -2168,44 +2297,49 @@ Minix3 中只有 VM 服务器实现了私有 slab，其他服务器（VFS、PM�
 ```rust
 #[test]
 fn test_alloc_stats_basic() {
-    let stats = VmAllocStats::new();
+    let mut stats = VmAllocStats::new();
 
     assert_eq!(stats.active_allocations(), 0);
+    assert_eq!(stats.active_pages(), 0);
     assert_eq!(stats.check_leak(), None);
 
-    stats.record_alloc();
-    stats.record_alloc();
+    stats.record_alloc(1);
+    stats.record_alloc(4);
     assert_eq!(stats.active_allocations(), 2);
+    assert_eq!(stats.active_pages(), 5);
 
-    stats.record_dealloc();
+    stats.record_dealloc(1);
     assert_eq!(stats.active_allocations(), 1);
+    assert_eq!(stats.active_pages(), 4);
 
-    stats.record_dealloc();
+    stats.record_dealloc(4);
     assert_eq!(stats.active_allocations(), 0);
+    assert_eq!(stats.active_pages(), 0);
     assert_eq!(stats.check_leak(), None);
 }
 
 #[test]
 fn test_alloc_stats_leak_detection() {
-    let stats = VmAllocStats::new();
+    let mut stats = VmAllocStats::new();
 
-    stats.record_alloc();
-    stats.record_alloc();
-    stats.record_dealloc();
+    stats.record_alloc(1);
+    stats.record_alloc(4);
+    stats.record_dealloc(1);
 
-    // 活跃分配 = 2 - 1 = 1，存在泄漏
-    assert_eq!(stats.check_leak(), Some(1));
+    // 活跃页 = 1 + 4 - 1 = 4，存在泄漏
+    assert_eq!(stats.check_leak(), Some(4));
 }
 
 #[test]
 fn test_alloc_stats_failure_tracking() {
-    let stats = VmAllocStats::new();
+    let mut stats = VmAllocStats::new();
 
     stats.record_failure();
     stats.record_failure();
 
-    // 验证失败计数不影响活跃分配
+    // 验证失败计数不影响活跃分配和活跃页
     assert_eq!(stats.active_allocations(), 0);
+    assert_eq!(stats.active_pages(), 0);
 }
 ```
 
@@ -2220,9 +2354,9 @@ fn test_critical_pool_take_restore() {
     assert!(!pool.needs_refill());
 
     // 取出 3 个
-    let a = pool.take().unwrap();
+    let _a = pool.take().unwrap();
     let b = pool.take().unwrap();
-    let c = pool.take().unwrap();
+    let _c = pool.take().unwrap();
 
     // 剩余 1 个，低于 min_reserved(2)
     assert!(pool.needs_refill());
@@ -2250,10 +2384,10 @@ fn test_critical_pool_refill() {
     let mut pool = CriticalPool::<TestObj>::new(4, 2);
 
     // 取空
-    let a = pool.take().unwrap();
-    let b = pool.take().unwrap();
-    let c = pool.take().unwrap();
-    let d = pool.take().unwrap();
+    let _a = pool.take().unwrap();
+    let _b = pool.take().unwrap();
+    let _c = pool.take().unwrap();
+    let _d = pool.take().unwrap();
     assert!(pool.take().is_none());
 
     // 补充
@@ -2267,21 +2401,18 @@ fn test_critical_pool_refill() {
 ```rust
 #[test]
 fn test_alloc_stress() {
-    let stats = VmAllocStats::new();
-    let mut ptrs = Vec::new();
+    let mut stats = VmAllocStats::new();
 
-    // 模拟高频分配/释放
     for _ in 0..10000 {
-        stats.record_alloc();
-        ptrs.push(0usize); // 模拟分配
+        stats.record_alloc(1);
     }
 
     for _ in 0..10000 {
-        stats.record_dealloc();
-        ptrs.pop(); // 模拟释放
+        stats.record_dealloc(1);
     }
 
     assert_eq!(stats.active_allocations(), 0);
+    assert_eq!(stats.active_pages(), 0);
     assert_eq!(stats.check_leak(), None);
 }
 ```
@@ -2290,155 +2421,110 @@ fn test_alloc_stress() {
 
 ## 附录 A：Rust 全局分配器选型分析
 
-### A.1 候选分配器概览
+### A.0 接入指南：`#[global_allocator]` 工作原理
 
-Rust 通过 `#[global_allocator]` 机制支持替换全局分配器。以下是主流选项：
+Rust 程序的所有堆分配（`Box`、`Vec`、`String` 等）最终都通过全局分配器完成。标准环境下，Rust 默认链接系统的 libc `malloc`/`free`。在 `no_std` 或自定义内存管理的场景下，可以通过 `#[global_allocator]` 替换。
 
-| 分配器 | 定位 | Rust crate | 维护状态 |
-|--------|------|-----------|---------|
-| 系统默认 (glibc malloc) | 通用 | 内置 | 活跃 |
-| jemalloc | 高性能通用 | `tikv-jemallocator` | 活跃 |
-| mimalloc | 低延迟 | `mimalloc-rust` | 活跃 |
-| snmalloc | 消息传递优化 | `snmalloc-rs` | 活跃 |
-| tlsf | 实时系统 | 无官方 crate | 社区 |
+**三步接入**：
 
-### A.2 各分配器详细分析
-
-#### A.2.1 系统默认 (glibc malloc)
-
-Linux 下默认使用 glibc 的 ptmalloc2，基于 Doug Lea's malloc。
-
-**优点**：
-- 零配置，开箱即用
-- 久经考验，稳定性极高
-- 与系统深度集成
-
-**缺点**：
-- 多线程场景下碎片率较高
-- 性能中等，不如专用分配器
-- 对微内核场景无特殊优化
-
-**适用场景**：开发阶段、非性能敏感场景。
-
-#### A.2.2 jemalloc
-
-由 Jason Evans 开发，最初为 FreeBSD 设计，后被 Facebook 大规模采用。Rust 编译器自身就使用 jemalloc。
-
-**核心优势**：
-- **碎片控制极好**：基于 arena 的独立堆，避免跨线程碎片
-- **NUMA aware**：感知 NUMA 拓扑，优化跨节点访问
-- **profiling 支持**：内置 heap profiling、leak checking
-- **大规模验证**：在 Facebook 数百万台服务器上运行
-
-**核心劣势**：
-- **体积较大**：二进制增加 ~200KB
-- **配置复杂**：大量调优选项，学习曲线陡峭
-- **单线程场景无明显优势**：多线程优化在单线程下用不上
-
-**适用场景**：多线程服务、大规模部署。
-
-#### A.2.3 mimalloc
-
-由 Microsoft Research 开发，专注于极低延迟。
-
-**核心优势**：
-- **延迟极低**：free list sharding + local free list，分配/释放延迟为业界最低之一
-- **体积小**：~10KB，适合嵌入式/微内核
-- **单线程优秀**：无锁设计在单线程下同样高效
-- **安全性**：内置 heap corruption detection、guard pages
-- **Rust 集成成熟**：`mimalloc-rust` crate 维护良好
-
-**核心劣势**：
-- **相对较新**：2019 年发布，不如 jemalloc 久经考验
-- **NUMA 优化不如 jemalloc**：对大规模 NUMA 系统支持较弱
-
-**适用场景**：用户态服务、微内核、低延迟系统。
-
-#### A.2.4 snmalloc
-
-由 Microsoft Research 开发，专为消息传递系统设计。
-
-**核心优势**：
-- **消息传递优化**：allocator 状态随消息传递，减少跨核心同步
-- **微内核友好**：设计理念与微内核架构高度契合
-- **安全**：基于 CHERI 架构的内存安全
-
-**核心劣势**：
-- **生态较小**：社区和文档不如 jemalloc/mimalloc
-- **Rust crate 不够成熟**：`snmalloc-rs` 维护频率较低
-
-**适用场景**：微内核系统、消息传递架构。
-
-#### A.2.5 tlsf
-
-Two-Level Segregated Fit，专为实时系统设计。
-
-**核心优势**：
-- **O(1) 分配/释放**：有界响应时间，适合硬实时系统
-- **实现简单**：~400 行 C 代码
-
-**核心劣势**：
-- **碎片率较高**：实时性优先于内存效率
-- **无 Rust 官方 crate**：需要自行封装 FFI
-
-**适用场景**：硬实时嵌入式系统。
-
-### A.3 对比矩阵
-
-| 维度 | 系统默认 | jemalloc | mimalloc | snmalloc | tlsf |
-|------|---------|----------|----------|----------|------|
-| 分配延迟 | 中 | 低 | **极低** | 低 | O(1) |
-| 碎片控制 | 中 | **极好** | 好 | 好 | 差 |
-| 多线程 | 中 | **极好** | 好 | 好 | N/A |
-| 单线程 | 中 | 好 | **极好** | 好 | 好 |
-| 二进制大小 | 0 | ~200KB | **~10KB** | ~50KB | ~5KB |
-| NUMA | 差 | **极好** | 中 | 中 | N/A |
-| 安全性 | 中 | 中 | **好** | 好 | 中 |
-| Rust 集成 | 内置 | 成熟 | **成熟** | 一般 | 无 |
-| 成熟度 | **极高** | 极高 | 高 | 中 | 高 |
-
-### A.4 本项目选择及理由
-
-```
-阶段 1（当前）：系统默认分配器
-
-  理由：
-  1. 零配置，先跑通系统
-  2. VM 是单线程用户态进程，默认分配器已足够
-  3. 没有 profiling 数据证明需要更换
-  4. 不引入额外依赖，降低复杂度
-
-阶段 2（如需优化）：mimalloc
-
-  理由：
-  1. 单线程场景延迟最低
-  2. 体积小（~10KB），适合微内核
-  3. 与 Rust 集成成熟（mimalloc-rust crate）
-  4. 内置安全检测（heap corruption detection）
-
-不推荐 jemalloc 的原因：
-  1. VM 是单线程，jemalloc 的多线程优化用不上
-  2. 体积较大（~200KB），引入不必要的复杂度
-  3. 配置复杂，维护成本高
-
-不推荐 snmalloc 的原因：
-  1. Rust crate 不够成熟
-  2. 消息传递优化在 VM 场景下收益有限
-```
-
-### A.5 未来切换指南
-
-如果 profiling 确认需要切换分配器，只需修改 `global.rs`：
+**第一步：实现 `GlobalAlloc` trait**
 
 ```rust
-// 切换到 mimalloc
-use mimalloc::MiMalloc;
+use core::alloc::{GlobalAlloc, Layout};
 
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+struct MyAllocator;
+
+unsafe impl GlobalAlloc for MyAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // layout.size()  — 请求的字节数
+        // layout.align() — 对齐要求
+        // 返回：指向分配内存的指针，失败返回 null
+        todo!()
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // ptr    — alloc() 返回的指针
+        // layout — 必须与 alloc() 时的 layout 一致
+        todo!()
+    }
+}
 ```
 
-无需修改任何业务代码。这是 `#[global_allocator]` 机制的核心优势——分配器是**可插拔**的。
+**第二步：注册为全局分配器**
+
+```rust
+#[global_allocator]
+static GLOBAL: MyAllocator = MyAllocator;
+```
+
+此后所有 `Box::new(...)`、`vec.push(...)` 等操作都会调用 `MyAllocator::alloc()`。
+
+**第三步（可选）：测试隔离**
+
+```rust
+#[cfg_attr(not(test), global_allocator)]  // 仅在非测试时注册
+static GLOBAL: MyAllocator = MyAllocator;
+```
+
+`cfg_attr(not(test), ...)` 确保 `cargo test` 时使用标准分配器，避免自定义分配器与测试框架冲突。
+
+**VM 的特殊之处**：
+
+VM 的 `alloc()` 不走 libc `malloc`，而是直接调用自己的物理页分配器：
+
+```
+Box::new(vir_region)
+  → GlobalAlloc::alloc(layout)
+    → alloc_phys()           // 从 VM 的物理内存池分配页
+    → vm_phys_to_virt()      // Direct Map: 物理地址 → 虚拟地址
+    → 返回 VA 指针
+```
+
+整个链路不经过内核，不依赖 C 运行时。这是 Direct Map 架构的核心收益之一。
+
+---
+
+### A.1 当前实现：bump allocator
+
+§4.1 的 `VmAllocator` 是一个 bump allocator——预分配 16 页（64KB）arena，内部用 cursor 切分。dealloc 是 no-op。
+
+**为什么 bump**：
+
+- **VM 单线程**，无并发竞争，不需要锁或原子 sync
+- **VM 是长生命周期进程**。绝大多数动态分配的结构体（`VirRegion` ~112B、`PhysRegion` ~48B、`PhysBlock` ~24B）存活期与 VM 进程绑定，不存在"高频分配-立即释放"的临时对象模式。dealloc 的 no-op 不会导致内存泄漏——这些对象本身就是永久性的
+- **Rust 所有权系统**自动处理 drop，dealloc 的 no-op 不会造成 use-after-free
+
+**当前局限**：bump 不回收单个对象。arena 页在 VM 进程退出时随 Direct Map 一起释放。如果未来某些类型出现了高频分配/释放模式（例如 `VfsRequestNode`），bump 会在 arena 耗尽时频繁 refill，产生外部碎片。
+
+### A.2 设计层次
+
+将分配链路展开，`VmAllocator` 占据中间两层：
+
+```
+Layer 1: PhysAlloc / VmPageAllocator（页提供者）
+    ↓  alloc_phys(clicks) → 物理页
+Layer 2: Direct Map（VA 稳定映射）
+    ↓  vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys
+Layer 3: VmAllocator 内部 bump（页内切割）
+    ↓  cursor += size，在 arena 内切出字节
+Layer 4: Rust GlobalAlloc trait（接口入口）
+    ↓  Box::new() → __rust_alloc → GLOBAL.alloc(layout)
+Layer 5: Box / Vec / String（rust 标准容器）
+```
+
+`#[global_allocator]` 只是接口入口。真正的分配逻辑在 Layer 3——页内切割。Layer 3 和 Layer 4 都在 `VmAllocator` 内部实现。
+
+### A.3 未来方向
+
+**如果需要更精细的内存回收**：
+
+可引入一个简单的 slab 缓存，为热点类型（`PhysBlock` ~24B、`PhysRegion` ~48B）各维护一个固定大小对象池。slab 的好处是 $O(1)$ dealloc——归还的槽位立即重用。但优先级低，因为当前 bump 已经消除了"每对象一页"的浪费。
+
+**如果需要支持多线程或更通用的分配模式**：
+
+可评估 jemalloc/mimalloc 等第三方分配器。但需要注意：这些分配器默认面向"已有 OS 的 userspace"（通过 `mmap`/`munmap` 向 OS 申请内存），不是"自己管理 physical memory 的 VM server"。接入它们需要实现 allocator backend——让它们调用 `alloc_phys()` 而非 `mmap()`。这是一个 FFI 适配工程，不是简单的 `#[global_allocator]` 替换。
+
+**决策原则**：profiling 驱动。在没有数据的情况下引入更复杂的分配器，是在解决一个可能不存在的问题。当前 64KB bump arena 可容纳 ~570 个 `PhysBlock`，远超 VM 启动阶段的分配需求。
 
 ---
 
@@ -2451,7 +2537,7 @@ Minix3 的 slab 设计深受 32 位地址空间限制的影响：
 32 位系统虚拟地址空间最大 4GB。Minix3 的 VM 服务器作为一个用户态进程，可用的地址空间更小（通常 < 2GB）。这迫使设计者精打细算：
 
 - 位图管理：每对象 1 bit，理论最低元数据开销
-- 线性 8-200 字节分级：避免几何级数带来的 slabheader 浪费
+- 密集 8 字节步进（200/8=25 级）：在 32 位下提供细粒度缓存，减少内部碎片
 - 即时释放：空闲 slab 立即归还，不保留缓存
 
 **2. 物理内存上限**
@@ -2467,15 +2553,15 @@ Minix3 的 slab 设计深受 32 位地址空间限制的影响：
 | Bitmap 大小 | < 128KB | < 8MB |
 | 元数据占比 | < 3% | < 0.003% |
 
-在 64 位下，元数据开销几乎可以忽略。这从根本上改变了设计权衡——不再需要为了节省几 KB 而引入复杂的位图管理。
-
-> **设计启发**：软件架构应服务于当前的硬件现实。在地址空间充沛的 64 位时代，过度复杂的私有管理逻辑只会增加 Bug 的温床。保留 Slab 的设计方案，是为了在未来面对"每秒百万级"的特定对象分配需求时，依然握有一把手术刀级的优化工具。
+在 64 位下，元数据开销几乎可以忽略，不再需要为了节省几 KB 而引入复杂的位图管理。保留 Slab 的设计方案，是为了在 profiling 确认分配器成为瓶颈时，有一个可选的优化路径。
 
 ---
 
 ## 7. 参见
 
 - [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（全局分配器的底层）
+- [05-vm-allocpage.md](05-vm-allocpage.md) - VM 物理页分配（`alloc_page()`/`free_pages()`）
+- [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（Direct Map 相关）
 - [12-vir-region.md](12-vir-region.md) - VirRegion 结构体
 - [14-phys-region.md](14-phys-region.md) - PhysRegion 结构体
 - [10-phys-block.md](10-phys-block.md) - PhysBlock 结构体

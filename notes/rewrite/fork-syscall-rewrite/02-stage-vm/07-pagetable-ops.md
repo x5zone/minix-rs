@@ -237,6 +237,11 @@ pt_mapkernel(newpt);                        // 最终内核映射
 
 为什么要重建？源码注释（`pagetable.c:1316-1318`）解释：静态备用页的物理地址在 live update 时会变化，因此必须替换为动态分配的内存。`pt_copy` 复制用户空间 PTE，`memcpy` 替换整个 `pt_t` 结构。
 
+    - 阶段 5 的页表是用静态 BSS 页（`static_sparepages`）建立的，因为那时动态分配还没准备好。
+    - Live update 时，新 VM 进程通过 fork+exec 启动，其 BSS 段加载到全新的物理地址，与老 VM 的 BSS 物理地址不同。
+    - 新 VM 通过 `pt_map_in_range` 复制老 VM 的页表映射。如果页表项指向老 VM 的静态 BSS 页，老 VM 销毁后这些物理页会被内核回收，新 VM 的映射就失效了。
+    - 因此必须把静态页替换为动态分配的页：动态页受 VM 自己的 allocator 管理，在 `swap_proc_dyn_data` 中通过 `map_setparent` 转移所有权，老 VM 销毁时不会被回收。
+
 #### 2.0.2 pt_copy - 复制用户空间页表项
 
 **源码位置**: `minix/servers/vm/pagetable.c:1069`
@@ -246,6 +251,8 @@ pt_mapkernel(newpt);                        // 最终内核映射
 ```c
 static void pt_copy(pt_t *dst, pt_t *src)
 {
+    // dst 是 pt_new 创建的空页表，用户空间 PDE 全为 0；
+    // 只遍历用户空间（< kern_start_pde），内核大页由 pt_mapkernel 处理。
     for(pde=0; pde < kern_start_pde; pde++) {
         if(!(src->pt_dir[pde] & ARCH_VM_PDE_PRESENT)) continue;
         pt_ptalloc(dst, pde, 0);                         // 分配目标二级页表
@@ -316,6 +323,7 @@ int pt_new(pt_t *pt)
 > **pt_mapkernel 详情**: `pt_mapkernel`（[pagetable.c:1442](minix3/minix/servers/vm/pagetable.c#L1442)）执行三段映射：
 > 1. **内核代码段**: 从 `kern_mb_mod->mod_start` 开始，以 4MB 大页（x86）或 1MB section（ARM）映射 `kern_size` 字节。x86 使用 `ARCH_VM_BIGPAGE` 标志，无需二级页表。
 > 2. **页目录登记册**: 遍历 `pagedir_mappings` 数组，将每个 `pdm` 的 PDE 写入页目录。这些 PDE 指向 `page_directories` 页表，使内核能通过该窗口访问所有进程的页目录。
+>     - 详见 [§2.1.3 全局结构：pagedir_mappings 数组](#213-全局结构pagedir_mappings-数组)。
 > 3. **内核特殊映射**: 遍历 `kern_mappings` 数组，通过 `pt_writemap` 建立映射。这些映射由内核在启动时通过 `sys_vmctl_get_mapping` 提供，包括视频内存、APIC、用户态可访问的内核代码段（`usermapped`）等。
 
 > **minix-rs 实现**：`map_kernel()` 执行两段映射：
@@ -363,10 +371,10 @@ void pt_free(pt_t *pt)
 #define MAX_PAGEDIR_PDES 5
 static struct pdm {
     int       pdeno;              // 该页表映射在页目录的哪个 PDE 位置
-    u32_t     val;                // PDE 值（物理地址 | 标志位）
+    u32_t     val;                // PDE 值（由 phys 经掩码处理并加上标志位构造而成，写入页目录）
     phys_bytes phys;              // page_directories 页表的物理地址
     u32_t     *page_directories;  // page_directories 页表的虚拟地址
-} pagedir_mappings[MAX_PAGEDIR_PDES];
+} pagedir_mappings[MAX_PAGEDIR_PDES];  // MAX_PAGEDIR_PDES = 5
 ```
 
 **各字段含义**:
@@ -419,9 +427,11 @@ kernel_vaddr[0] = new_pde_value;       // 内核修改页目录项
 
 VM 通过 `pt->pt_dir` 直接访问页目录（VM 的虚拟地址）。内核通过 `pagedir_mappings` 建立的映射窗口访问，虚拟地址由 PDE 索引和槽内偏移计算得出。
 
-> **Direct Map 标注**：`pagedir_mappings` 是 x86-32 内核未采用 direct map 时的间接访问机制。x86-32 理论上可以划出地址空间做 direct map（Linux x86-32 用 ~896MB 线性映射区），但 Minix3 选择了更简单的方案——不建 direct map，内核需要访问进程页目录时，只能通过 VM 在每个进程页目录中注入的固定窗口（`p_cr3_v`）来间接访问。x86-64 下 kernel 通过 direct map 直接访问进程页目录——`kernel_phys_to_virt(cr3_phys)` 一步到位，`pagedir_mappings` 登记册、`page_directories` 页表、`p_cr3_v` 窗口全部不再需要。
+> **为何需要间接访问**：`pagedir_mappings` 是 x86-32 下 VM（用户态进程）无法直接访问任意物理页的产物。x86-32 内核本身在启动时通过 `pg_identity`（4MB 大页）映射了全部物理内存，但 VM 作为独立用户态服务进程，拥有自己的页目录，无法直接使用内核地址空间中的映射。Minix3 的微内核架构下，VM 要访问其它进程的页目录，只能通过在每个进程页目录中注入固定 PDE 窗口来间接完成。
 >
-> 读者可对比 `pagedir_mappings` 与 `createpde`（§A.1-A.2）的定位差异：`pagedir_mappings` 是**持久化**的间接访问机制（VM 初始化时建立，进程生命周期内有效），`createpde` 是**临时**的间接访问机制（每次使用时建立，用完立即清除）。两者都是 x86-32 没有 direct map 的产物，只是生命周期不同。
+> **PDE 与 PTE 两层访问**：间接访问分两层——(1) **PDE 层**：`pagedir_mappings` 登记册提供持久化的 4KB 窗口（`p_cr3_v`，即上文例子中的 `kernel_vaddr`），内核只能读写目标进程的 PDE；(2) **PTE 层**：内核通过 `createpde`（[memory.c:63](minix3/minix/kernel/arch/i386/memory.c#L63)）从 `p_cr3_v` 读出目标进程的 PDE 值，将其注入**自己页目录**的空闲 PDE 槽位（freepde），建立 4MB 的大页窗口，通过此窗口访问 PTE 及更深层内存，用完立即清除。两者协同实现完整的跨进程页表访问。
+>
+> **x86-64 不再需要**：以上 `pagedir_mappings` 登记册、`page_directories` 页表、`p_cr3_v` 窗口、`createpde` 临时映射，全部是 x86-32 没有 direct map 的产物。x86-64 下 kernel 通过 direct map 直接访问进程页目录——`kernel_phys_to_virt(cr3_phys)` 一步到位。
 
 ### 2.2 页表绑定
 
@@ -1170,7 +1180,7 @@ Direct map 是 CPU/MMU architecture mechanism，不是 VM policy——它不表�
 - **Kernel direct map**：由 VM 在 `map_kernel()` 中建立（Minix3 的 VM 本来就负责 `map_kernel()`），但建立后视为只读不变量，VM 不再修改
 - **VM direct map**：由 VM 在初始化时建立，仅存在于 VM 进程页表
 
-这比"kernel 建立 direct map"更符合微内核精神——VM 是 address-space architect，kernel 只是消费者。
+> **自举问题**：VM 进程自举时，内核已为其建立了初始页表（包含内核映射和 VM 自身代码/数据映射）。VM 在此基础上扩展建立 VM direct map——不是从零开始构造页表，而是在内核提供的初始页表上添加映射。详见 [27-vm-init-main.md](27-vm-init-main.md) 中 `init_phase2()` 的初始化流程。
 
 #### 3.0.4 问题一：内核如何访问其他进程的页表
 
@@ -1186,11 +1196,9 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 
 > **Direct Map 深化**：`sys_datacopy` 的消失不是"优化了跨进程复制"，而是 **"跨进程复制这个概念本身被重新定义"**。
 >
-> 在 Minix3 中，"跨进程复制"是一个特殊的操作——需要内核介入，修改页表，建立临时映射窗口。这是因为内核无法直接看到其他进程的物理内存。
+> 在 Minix3 中，"跨进程复制"是一个特殊的操作——需要内核介入，修改页表，建立临时映射窗口。这是因为内核无法直接看到其他进程的物理内存，必须通过页表间接访问。
 >
-> 在 direct map 方案下，"跨进程复制"退化为"普通 memcpy"——内核已经能看到所有物理内存，源和目标只是两个不同的物理地址。`sys_datacopy` 这个系统调用不再需要，因为它的存在前提（"内核无法直接看到物理内存"）被消除了。
->
-> VM 侧同理：VM 通过 `vm_phys_to_virt()` 可以直接看到所有物理内存，跨进程复制也是普通 memcpy。VM 不再需要 `sys_datacopy` 系统调用——它自己就是内存的来源，也是内存的观察者。
+> 在 direct map 方案下，内核通过 `kernel_phys_to_virt()` 能看到所有物理内存，VM 通过 `vm_phys_to_virt()` 也能看到。"跨进程复制"退化为"普通 memcpy"——源和目标只是两个不同的物理地址，不需要特殊机制。`sys_datacopy` 这个系统调用不再需要，因为它的存在前提（"内核无法直接看到物理内存"）被消除了。
 
 #### 3.0.6 对比总结
 
@@ -1216,12 +1224,49 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 
 Kernel direct map 设 Global 位（G=1），CR3 切换时不刷新这部分 TLB 条目。这是安全的，因为 kernel direct map 是"建立后只读不变量"——`map_kernel()` 建立后 VM 不再修改 kernel direct map 的 PTE/PDE/PDPT 表项。如果未来需要动态修改（如内存热插拔），需要设计显式的 TLB 刷新协议（跨核 shootdown）。但当前设计中，不变的东西不需要管理。
 
+#### 3.0.4 VM 特殊化：为什么 VM 不再有传统堆
+
+Direct Map 的双视图模型带来了一个关键后果：**VM 不再是"普通进程"**。
+
+**普通进程的堆**：虚拟地址空间中的连续增长区域，由 `brk`/`sbrk` 管理。进程请求内存时，内核/VM 需要：
+
+1. 找到数据段的 `vir_region`（`region_search` 查找已有区域）
+2. 扩展区域长度（修改 `vr->length`）
+3. 分配物理页（`alloc_mem`）
+4. 在进程页表中建立映射（`pt_writemap`）
+5. TLB 刷新
+
+整个过程涉及区域扩展、页表修改、TLB 操作。`brk` 是**扩展已有区域**，目标 VA 由数据段的当前末尾预先确定，不需要在虚拟地址空间中"找洞"。
+
+**对比 `mmap`**：当进程通过 `mmap` 申请内存时，需要在虚拟地址空间中找一块空闲区域创建新的 `vir_region`，这时才需要 `find_hole`。
+
+**VM 的特殊处境**：Direct Map 建立后，每一个物理页自动拥有一个 stable virtual address：
+
+```rust
+fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
+    VirBytes(VM_DIRECT_MAP_BASE + phys.as_u64())
+}
+```
+
+VM 拿物理页的瞬间，VA 就已经确定了——不需要 `find_hole`、不需要 `vm_mappages`、不需要为自己写页表项。
+
+**因此**：
+
+- VM **不再需要** `brk`/`sbrk`（没有传统意义的堆扩展）
+- VM **不再需要** `vm_mappages`（为自己——Direct Map 已提供所有物理页的 VA）
+- VM 的页表在 Direct Map 建立后变为**只读不变量**（除 direct map 扩展外不修改）
+- VM 的动态内存分配通过 bump/slab allocator **在 Direct Map 区域内完成**（详见 08-slab-allocator.md §4.1）
+
+这符合 VM 的职责身份：**VM 是 physical memory owner，不是 memory consumer**。物理页的持有者通过偏移直接访问（Direct Map），被管理者通过申请访问（`brk`/`mmap`）。这不是"不一致"，而是职责差异的自然体现。
+
+在 Minix3 的 32 位实现中，VM 是一个有自己堆、自己 `brk`、自己 `find_hole` 的普通用户态进程——它和自己管理的其他进程使用同一套机制。Direct Map 打破了这种同构性：**VM 获得了物理内存的直接视图，付出的代价是和普通进程不再"结构一致"**。但考虑到 VM 的内存分配链路已被简化为 `alloc_phys → vm_phys_to_virt → bump cursor`，这个代价是值得的。
+
 ### 3.1 Minix3 函数映射
 
 | Minix3 函数 | Rust 对应 | 层级 | 说明 |
 |-------------|----------|------|------|
 | `pt_new()` | `Paging::new()` | 硬件机制 | 创建页表 |
-| `pt_bind()` | `VmPagingExt::bind_to_process()` | VM 策略 | 绑定页表到进程（通知内核） |
+| `pt_bind()` | `bind_to_process()` | VM 策略 | 绑定页表到进程（通知内核） |
 | `pt_free()` | `Paging::destroy()` | 硬件机制 | 销毁页表 |
 | `pt_writemap()` | `Paging::map()` | 硬件机制 | 建立映射 |
 | `pt_checkrange()` | `Paging::query()` | 硬件机制 | 检查映射 |
@@ -1240,7 +1285,7 @@ Kernel direct map 设 Global 位（G=1），CR3 切换时不刷新这部分 TLB 
 | 层级 | 抽象 | 操作对象 | 示例 |
 |------|------|---------|------|
 | **硬件机制层** | `Paging` trait | 单个页表 | `map()`、`unmap()`、`query()`、`switch()` |
-| **VM 策略层** | `VmPagingExt` trait | 单个页表 + 内核协作 | `bind_to_process()`、`map_kernel()` |
+| **VM 策略层** | `bind_to_process()`、`map_kernel()` 独立函数 | 单个页表 + 内核协作 | `bind_to_process()`、`map_kernel()` |
 | **跨页表操作层** | 基于 `Paging` 的组合函数 | 两个页表之间 | `pt_copy` → `query(src)` + `map(dst)` 循环 |
 
 **跨页表操作的本质**：`pt_copy` 和 `pt_map_in_range` 都不是硬件机制——它们不操作单个 PTE 的硬件位编码，而是在两个页表之间**搬运已有的映射关系**。因此它们不是 `Paging` trait 的方法，而是基于 `Paging` 的组合操作：
@@ -1293,7 +1338,7 @@ fn map(vaddr: VirBytes, paddr: PhysBytes) {
 **unsafe 边界**:
 
 ```rust
-/// Paging trait 定义（已实现）
+/// Paging trait 定义
 pub trait Paging {
     const PAGE_SIZE: usize;
 
@@ -1562,9 +1607,9 @@ pub enum PageTableError {
 
 | 操作 | Minix3 | Rust |
 |------|--------|------|
-| 绑定页表 | `pt_bind()` | `VmPagingExt::bind_to_process()` |
+| 绑定页表 | `pt_bind()` | `bind_to_process()` |
 | 激活页表 | `setcr3()` (内核) | `unsafe fn switch()` |
-| 映射内核 | `pt_mapkernel()` | `VmPagingExt::map_kernel()` |
+| 映射内核 | `pt_mapkernel()` | `map_kernel()` |
 
 **绑定流程**：`bind_to_process()` 将页表与进程关联，通知内核该进程的地址空间根地址。对应 Minix3 的 `pt_bind()` → `sys_vmctl_set_addrspace()` → 内核 `setcr3()`。
 
@@ -1576,7 +1621,7 @@ pub enum PageTableError {
 
 `map_kernel()` 建立三部分映射，按以下顺序建立：
 
-> **注**：代码段和数据段因权限不同（代码段可执行、数据段不可执行）而分开描述，但在逻辑上属于同一映射段（内核代码/数据段）。因此 §4.3.4 与 Minix3 的对比中按逻辑段计数为"2 段"：第 1 段 = 内核代码/数据段，第 2 段 = Kernel direct map。
+> **注**：代码段和数据段因权限不同（代码段可执行、数据段不可执行）而分开描述，但在逻辑上属于同一映射段（内核代码/数据段）。
 
 | 顺序 | 映射内容 | VA 范围 | PA 来源 | 页面类型 | 权限标志 | 说明 |
 |------|---------|---------|---------|---------|---------|------|
@@ -1627,7 +1672,7 @@ map_kernel() 内部步骤：
 
 - **Global 位的安全性**：G=1 的 TLB 条目在 CR3 切换时不刷新，这是安全的因为内容不变
 - **修改的场景**：如果未来需要动态修改（如内存热插拔），需设计显式的 TLB 刷新协议（跨核 shootdown），但当前不需要
-- **与 VM direct map 的对比**：VM direct map 是 VM 自己的映射，可以自由扩展（如物理内存 > 1GB 时追加映射）；kernel direct map 由 `map_kernel()` 一次性建立，此后只读
+- **与 VM direct map 的关系**：两者映射相同的物理地址范围（PA=0..total_phys），仅虚拟基址和权限不同。VM direct map 可扩展（phys mem > 1GB 时追加映射），kernel direct map 由 `map_kernel()` 一次性建立全部物理内存的映射，此后只读
 
 #### 4.3.4 与 Minix3 的对应
 

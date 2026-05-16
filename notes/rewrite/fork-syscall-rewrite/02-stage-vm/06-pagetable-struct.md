@@ -1355,15 +1355,19 @@ VM crate
                     │  (paging.rs)    │
                     └────────┬────────┘
                              │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-           ▼                 ▼                 ▼
-    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-    │ PagingWithId │  │  HugePages   │  │ VmPagingExt  │
-    │(paging_ext)  │  │(paging_ext)  │  │(paging_ext)  │
-    └──────────────┘  └──────────────┘  └──────────────┘
-         可选              可选            VM 策略层
-      (PCID/ASID)       (大页支持)      (bind/map_kernel)
+               ┌─────────────┼─────────────┐
+               │                           │
+               ▼                           ▼
+        ┌──────────────┐            ┌──────────────┐
+        │ PagingWithId │            │  HugePages   │
+        │(paging_ext)  │            │(paging_ext)  │
+        └──────────────┘            └──────────────┘
+             可选                        可选
+          (PCID/ASID)                 (大页支持)
+
+    VM 策略函数（独立函数，非 trait）:
+    - bind_to_process()  — 绑定页表到进程（通知内核）
+    - map_kernel()       — 映射内核地址空间到进程页表
 ```
 
 **Trait 职责划分**:
@@ -1373,11 +1377,13 @@ VM crate
 | `Paging` | 核心页表操作 | `pt_new`/`pt_free`/`pt_writemap` | ✅ 所有架构 |
 | `PagingWithId` | TLB 进程标识 | 无（Minix3 未用 PCID） | ❌ 可选 |
 | `HugePages` | 大页支持 | `I386_VM_BIGPAGE` | ❌ 可选 |
-| `VmPagingExt` | VM 进程管理 | `pt_bind`/`pt_mapkernel`（Rust 设计聚合） | ✅ VM 需要 |
+
+VM 策略操作（`bind_to_process`、`map_kernel`）不是 trait 方法，而是 `paging.rs` 中的独立函数。
+它们基于 `Paging` trait 的组合操作，不依赖架构特定实现，因此不需要 trait 抽象。
 
 **为什么分离为多个 trait**:
 
-1. **关注点分离**: `Paging` 是硬件机制抽象，`VmPagingExt` 是 VM 策略操作
+1. **关注点分离**: `Paging` 是硬件机制抽象；`bind_to_process()`、`map_kernel()` 是 VM 策略操作，作为独立函数而非 trait 方法
 2. **可选功能**: `PagingWithId`/`HugePages` 不是所有架构都支持
 3. **编译期检查**: 未实现 `PagingWithId` 的架构无法使用 ASID 相关 API
 
@@ -1403,9 +1409,11 @@ struct vmproc {
 > `CurrentPaging` 根据编译时 `feature` 指向具体类型（如 `MockPaging`、`X86_64Paging`）。
 > 该具体类型同时实现多个 trait：
 > - `Paging` — 核心页表操作（必须）
-> - `VmPagingExt` — VM 策略操作（bind_to_process, map_kernel）
 > - `PagingWithId` — TLB 进程标识（可选）
 > - `HugePages` — 大页支持（可选）
+>
+> VM 策略操作（`bind_to_process`、`map_kernel`）是 `paging.rs` 中的独立函数，
+> 不通过 trait 实现。
 
 ```rust
 // VM crate: vmproc/vmproc.rs

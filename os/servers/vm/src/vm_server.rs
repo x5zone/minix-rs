@@ -36,8 +36,10 @@ pub struct VmServer {
 impl VmServer {
     pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
         let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
+        let mut page_alloc = VmPageAllocator::new(phys_alloc);
+        crate::global::register_page_alloc(&mut page_alloc);
         Self {
-            page_alloc: VmPageAllocator::new(phys_alloc),
+            page_alloc,
             page_cache: PageCache::new(),
             vfs_queue: VfsRequestQueue::new(),
             initialized: false,

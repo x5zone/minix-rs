@@ -14,6 +14,4 @@ pub trait PhysAllocator {
     fn reserve_pages(&mut self, base_page: usize, count: usize);
 }
 
-pub trait PhysAllocatorStats {
-    fn memstats(&self) -> PhysMemStats;
-}
+

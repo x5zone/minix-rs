@@ -50,7 +50,7 @@ impl BumpBuf {
 }
 
 #[allow(unused_imports)]
-pub(crate) use alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
+pub(crate) use alloc_trait::{PhysAllocator, PhysMemStats};
 pub(crate) use bitmap_alloc::BitmapAllocator;
 #[allow(unused_imports)]
 pub(crate) use buddy_alloc::BuddyAllocator;
@@ -147,6 +147,16 @@ impl PhysAlloc {
         match self {
             PhysAlloc::Bitmap(b) => Some(b),
             _ => None,
+        }
+    }
+
+    pub(crate) fn memstats(&self) -> PhysMemStats {
+        match self {
+            PhysAlloc::Bitmap(b) => b.memstats(),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.memstats(),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.memstats(),
         }
     }
 }

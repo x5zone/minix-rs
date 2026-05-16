@@ -425,8 +425,8 @@ Direct Map 设计引入后，文档 01-19 需要的修改分为以下几类：
 
 ### ✅ TODO-08-2: GlobalAlloc 实现更新 [已完成]
 **位置**: §4.1 全局分配器接入
-**现状**: `__vm_global_alloc` 当前对接 C 的 malloc/free
-**修改**: 更新为对接 vm_phys_to_virt() + PhysAllocator。分配路径：GlobalAlloc → alloc_phys() → vm_phys_to_virt() → 返回 VA。全程用户态，不经过内核
+**现状**: `__vm_global_alloc` 已从 C 的 malloc/free 切换为 `VmPageAllocator::alloc_phys() + vm_phys_to_virt()`
+**修改**: 通过 `AtomicPtr<VmPageAllocator>` 全局指针桥接 `&self` → `&mut self`，dealloc 通过 `virt_to_phys() + free_pages()` 完整实现。分配路径：GlobalAlloc → VmPageAllocator::alloc_phys() → vm_phys_to_virt() → 返回 VA。全程用户态，不经过内核
 **设计思考**：VM 是内存管理服务器，它的堆分配不应该依赖外部——它自己就是内存的来源。GlobalAlloc 对接 vm_phys_to_virt() 使 VM 的分配链路完全自包含：请求内存 → 从自己的物理池分配 → 通过自己的 direct map 访问。读者应理解：这不是"优化了分配路径"，而是"VM 终于成为了自己内存的主人"。
 **参考**: ptregion_design.md §8.6
 

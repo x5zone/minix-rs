@@ -28,6 +28,11 @@ impl<T: Default> CriticalPool<T> {
     }
 
     pub(crate) fn refill(&mut self, capacity: usize) {
+        debug_assert!(
+            capacity <= self.pool.capacity(),
+            "refill capacity {capacity} exceeds preallocated pool capacity {}",
+            self.pool.capacity()
+        );
         while self.pool.len() < capacity {
             self.pool.push(Box::new(T::default()));
         }

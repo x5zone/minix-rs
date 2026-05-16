@@ -33,7 +33,7 @@ pub(crate) use critical_pool::CriticalPool;
 pub use phys_mem::BootMemRegion;
 
 pub(crate) use phys_mem::{
-    PhysAlloc, PhysAllocator, PhysAllocatorStats, PhysMemStats, PageAllocFlags, AlignedPhysBytes, AllocError,
+    PhysAlloc, PhysAllocator, PhysMemStats, PageAllocFlags, AlignedPhysBytes, AllocError,
 };
 pub(crate) use region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
 pub(crate) use pagetable::{PageTable, PageFlags, PageTableError};

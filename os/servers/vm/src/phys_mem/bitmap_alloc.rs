@@ -1,4 +1,4 @@
-use super::alloc_trait::{PhysAllocator, PhysAllocatorStats, PhysMemStats};
+use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::{BumpBuf, CLICK_SIZE, BootMemRegion, METADATA_ALIGN_PADDING};
@@ -342,8 +342,8 @@ impl PhysAllocator for BitmapAllocator {
     }
 }
 
-impl PhysAllocatorStats for BitmapAllocator {
-    fn memstats(&self) -> PhysMemStats {
+impl BitmapAllocator {
+    pub fn memstats(&self) -> PhysMemStats {
         let (free_nodes, free_pages, largest_free) = self.memstats_internal();
         PhysMemStats { free_nodes, free_pages, largest_free }
     }

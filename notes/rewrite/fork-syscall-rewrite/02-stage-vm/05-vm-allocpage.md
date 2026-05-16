@@ -719,12 +719,14 @@ T1: main() → init_vm()
     ├── T4: pt_init()
     │       → 创建页表系统
     │
-    ├── T5: relocate_to_heap()  [独立文档详述]
-    │       → 搬迁预留区域数据到堆
-    │       → 释放预留区域物理页回 PhysAllocator
+    ├── T5: relocate_to_heap() → phase2_direct_map_extend()  [09 文档详述]
+    │       → 如有必要，扩展 direct map 覆盖全部物理内存
+    │       → complete_bootstrap()
+    │           → bump allocator arena 分配（08-slab-allocator.md §4.1）
+    │           → 自此 Box/Vec 可用（bump allocator 接管 GlobalAlloc）
     │
     └── init_vm() 返回
-            → VM 堆完全可用
+            → VM 完全自治（全部物理内存纳入 direct map）
 
 T6: 主循环开始
     → VM 正常运行
@@ -834,7 +836,7 @@ VM 进程采用**单线程事件循环**模型（参见项目级 review 规范�
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构（`pt_t`）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（`pt_init` / `pt_new`）
 - [08-slab-allocator.md](08-slab-allocator.md) - Slab 分配器（全局 allocator）
-- [09-vm-relocation.md](09-vm-relocation.md) - 数据搬迁（预留区域 → 堆）
+- [09-vm-relocation.md](09-vm-relocation.md) - Direct Map 扩展与 VM 完全自治
 
 ---
 

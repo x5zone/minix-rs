@@ -259,7 +259,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 │  ├── 创建保留页池（spare_pagequeue）                                │
 │  │     → 对应文档: 05-vm-allocpage                                  │
 │  ├── _brk() 可用                      ← VM 可以扩展自己的堆         │
-│  └── 堆状态: ✅ 可用！malloc/calloc 可以使用                         │
+│  └── 堆状态: ✅ 可用！Box/Vec 等 GlobalAlloc 可用                   │
 │                                                                     │
 │  阶段 4: init_vm() 返回后                                           │
 │  ─────────────────────────                                          │
@@ -282,10 +282,9 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
    堆不可用            堆开始可用          堆完全可用
         │                  │                  │
    只能用:            可以用:            可以用:
-   - 静态变量         - _brk()           - malloc()
-   - 栈变量           - alloc_mem()      - calloc()
-   - BSS 段           - 保留页池         - free()
-                                          - Vec, Box 等
+   - 静态变量         - _brk()           - GlobalAlloc
+   - 栈变量           - alloc_mem()      - Box/Vec 等
+   - BSS 段           - 保留页池         - alloc_phys()
 ```
 
 #### 2.4.3 各组件的堆依赖
@@ -299,7 +298,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 | 页表结构 | `pt_init()` | ⚠️ 保留页 | 使用保留页池 |
 | 保留页池 | `pt_init()` | ❌ 无 | BSS 段静态内存 |
 | 虚拟区域 | 运行时 | ✅ 可用 | fork/mmap 时 |
-| Slab 分配器 | 运行时 | ✅ 可用 | 使用 malloc |
+| Slab 分配器 | 运行时 | ✅ 可用 | 通过 GlobalAlloc |
 | IPC 处理 | 运行时 | ✅ 可用 | 处理请求时 |
 
 #### 2.4.4 Rust 实现约束
@@ -310,7 +309,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 
 **阶段 3（堆开始可用）**：可以使用 `_brk()` 扩展堆，可以使用保留页池分配关键结构，页表操作需要使用保留页池。
 
-**阶段 4（堆完全可用）**：可以自由使用 `Vec`, `Box` 等，可以使用 `malloc`/`free`，IPC 处理、区域管理等可以使用堆。
+**阶段 4（堆完全可用）**：可以自由使用 `Vec`, `Box` 等，通过 `#[global_allocator]` 对接 `VmPageAllocator`，IPC 处理、区域管理等可以使用堆。
 
 > **详见**: [05-vm-allocpage.md](05-vm-allocpage.md) §2.4 - VM 堆初始化与保留页池的完整分析。
 
@@ -525,9 +524,9 @@ pub struct BootImage {
 
 ### 4.3 无堆分配
 
-> **原则**: VM 是系统的内存分配器，不能使用 malloc，`vmproc` 必须使用静态分配或 Slab 分配器。
+> **原则**: VM 是 `no_std` freestanding 进程，没有 libc，不能使用 `malloc`/`free`。`vmproc` 必须使用静态分配或通过 `#[global_allocator]` 对接 `VmPageAllocator`。
 
-**循环依赖问题**:
+**循环依赖问题**（Minix3 C 版本）:
 ```
 VM 需要分配内存 → 调用 malloc → malloc 需要内存 → 调用 VM
 ```
@@ -851,7 +850,7 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 | 文档 | 运行时机 | 堆依赖 | Rust 实现约束 |
 |------|---------|--------|---------------|
 | [12-vir-region.md](12-vir-region.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
-| [08-slab-allocator.md](08-slab-allocator.md) | 运行时 | ✅ 可用 | 使用 `malloc` |
+| [08-slab-allocator.md](08-slab-allocator.md) | 运行时 | ✅ 可用 | 通过 `#[global_allocator]` |
 | [14-phys-region.md](14-phys-region.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
 | [11-memtype.md](11-memtype.md) | 运行时 | ✅ 可用 | 可以使用堆 |
 | [13-region-avl.md](13-region-avl.md) | fork/mmap | ✅ 可用 | 可以使用 `Box` |
@@ -864,7 +863,7 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 
 **Rust 代码检查点**：
 - ✅ 可以自由使用 `Vec`, `Box`, `String`, `HashMap` 等
-- ✅ 可以使用 `malloc`/`free`（通过 `#[global_allocator]`）
+- ✅ 可以使用 `#[global_allocator]` 对接 `VmPageAllocator`（`Box`, `Vec`, `String` 等）
 
 ### 9.2 VM 私有组件
 - [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体

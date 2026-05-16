@@ -27,7 +27,7 @@ pub mod direct_map;
 #[cfg(feature = "x86_64")]
 pub mod x86_64;
 
-pub use paging_ext::{PagingWithId, HugePages, VmPagingExt};
+pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
 
 #[cfg(feature = "mock")]

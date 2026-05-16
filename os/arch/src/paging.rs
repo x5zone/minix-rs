@@ -380,6 +380,75 @@ pub fn clone_range<P: Paging>(
     Ok(())
 }
 
+/// Bind a page table to a process in the kernel.
+///
+/// Corresponds to Minix3's `pt_bind()` step 5 — notifies the kernel
+/// of the process's page table root address via `sys_vmctl_set_addrspace`.
+///
+/// This is a VM policy operation, not a hardware mechanism. All architectures
+/// perform the same kernel IPC call, so this is a plain function, not a trait method.
+///
+/// Minix3's `pt_bind()` also wrote the page directory physical address into
+/// `pagedir_mappings` (steps 1-4). Under Direct Map, the kernel can access any
+/// page directory via `kernel_phys_to_virt(cr3_phys)`, so those steps are eliminated.
+pub fn bind_to_process(
+    root_paddr: PhysBytes,
+    endpoint: minix_types::Endpoint,
+) -> Result<(), PageTableError> {
+    // TODO: call sys_vmctl_set_addrspace(endpoint, root_paddr)
+    // Currently a no-op until kernel IPC is implemented.
+    let _ = root_paddr;
+    let _ = endpoint;
+    Ok(())
+}
+
+/// Map kernel address space into a page table.
+///
+/// Corresponds to Minix3's `pt_mapkernel()`. Establishes three mappings:
+/// 1. Kernel code segment (executable in real impl)
+/// 2. Kernel data segment (non-executable in real impl)
+/// 3. Kernel direct map (all physical memory, supervisor-only in real impl)
+///
+/// This is NOT arch-specific — it composes `Paging::map()` operations.
+/// Address layout comes from `DirectMapArch`; physical addresses from boot_info.
+/// Therefore this is a generic function, not a trait method.
+///
+/// After `map_kernel()` completes, the kernel direct map PTEs are never modified
+/// (read-only invariant). This makes the Global bit (G=1) safe — TLB entries
+/// survive CR3 switches because the content never changes.
+pub fn map_kernel<P: Paging>(
+    pt: &mut P,
+    kernel_text_vbase: u64,
+    kernel_text_pbase: u64,
+    kernel_text_pages: usize,
+    kernel_data_pages: usize,
+    dm_vbase: u64,
+    dm_pages: usize,
+) -> Result<(), PageTableError> {
+    let page_size = P::PAGE_SIZE as u64;
+
+    for i in 0..kernel_text_pages {
+        let vaddr = VirBytes(kernel_text_vbase + i as u64 * page_size);
+        let paddr = PhysBytes(kernel_text_pbase + i as u64 * page_size);
+        pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+    }
+
+    let data_vbase = kernel_text_vbase + kernel_text_pages as u64 * page_size;
+    let data_pbase = kernel_text_pbase + kernel_text_pages as u64 * page_size;
+    for i in 0..kernel_data_pages {
+        let vaddr = VirBytes(data_vbase + i as u64 * page_size);
+        let paddr = PhysBytes(data_pbase + i as u64 * page_size);
+        pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+    }
+
+    for i in 0..dm_pages {
+        let vaddr = VirBytes(dm_vbase + i as u64 * page_size);
+        let paddr = PhysBytes(i as u64 * page_size);
+        pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+    }
+
+    Ok(())
+}
 
 /// Initialize the page table subsystem for the VM process.
 ///
@@ -408,7 +477,7 @@ pub fn clone_range<P: Paging>(
 ///
 /// # Type parameters
 ///
-/// - `P`: Paging implementation (must also support VmPagingExt, HugePages)
+/// - `P`: Paging implementation (must also support HugePages)
 /// - `D`: DirectMapArch for address layout constants
 ///
 /// # Arguments
@@ -422,7 +491,7 @@ pub fn paging_init<P, D>(
     endpoint: minix_types::Endpoint,
 ) -> Result<(), PageTableError>
 where
-    P: crate::paging_ext::VmPagingExt + crate::paging_ext::HugePages,
+    P: crate::paging_ext::HugePages,
     D: crate::direct_map::DirectMapArch,
 {
     // Phase 1: Huge page capability confirmation
@@ -437,12 +506,30 @@ where
     // Phase 2: VM page table setup
 
     // Step 2a: Map kernel address space (kernel code/data + kernel direct map)
-    // TODO: map_kernel() implementation is arch-specific and not yet complete.
-    //       When ready, this will map:
-    //       - Kernel code segment (executable, read-only, global)
-    //       - Kernel data segment (read-write, global)
-    //       - Kernel direct map (all physical memory, U/S=0, Global=1, 1GB huge pages)
-    pt.map_kernel()?;
+    // Address layout constants from DirectMapArch trait (architecture-specific)
+    // Kernel segment physical addresses from boot_info (not yet passed to this function)
+    // For now, use mock layout constants. In real implementation, boot_info provides:
+    // - kernel text start physical address
+    // - kernel text size in pages
+    // - kernel data size in pages
+    //
+    // TODO: Pass kernel layout from boot_info when available
+    const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
+    const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
+    const MOCK_KERNEL_TEXT_PAGES: usize = 8;
+    const MOCK_KERNEL_DATA_PAGES: usize = 8;
+    let dm_vbase = D::KERNEL_DIRECT_MAP_BASE;
+    let dm_pages = 4; // Only map a few sentinel pages in mock
+
+    map_kernel(
+        pt,
+        MOCK_KERNEL_TEXT_VBASE,
+        MOCK_KERNEL_TEXT_PBASE,
+        MOCK_KERNEL_TEXT_PAGES,
+        MOCK_KERNEL_DATA_PAGES,
+        dm_vbase,
+        dm_pages,
+    )?;
 
     // Step 2b: Extend VM direct map if physical memory exceeds 1GB
     // The kernel-provided initial page table has 1GB direct map starting at
@@ -463,7 +550,7 @@ where
     }
 
     // Step 2c: Bind page table to VM process
-    pt.bind_to_process(endpoint)?;
+    bind_to_process(pt.root_paddr(), endpoint)?;
 
     Ok(())
 }
@@ -606,71 +693,6 @@ pub mod mock {
         unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {}
     }
 
-    impl crate::paging_ext::VmPagingExt for MockPaging {
-        fn bind_to_process(&self, _endpoint: minix_types::Endpoint) -> Result<(), PageTableError> {
-            Ok(())
-        }
-
-        fn map_kernel(&mut self) -> Result<(), PageTableError> {
-            // Segment 1: Kernel code/data segment
-            // Maps kernel text + rodata + data at high virtual addresses.
-            // In a real x86-64 implementation, code segment uses 2MB huge pages
-            // with Present + ReadWrite + Global + Execute flags, and data segment
-            // uses Present + ReadWrite + Global + NoExecute.
-            // Mock: map as regular 4KB pages with kernel_read_write().
-            // NOTE: In a real kernel, KERNEL_TEXT_START would be different from
-            // KERNEL_DIRECT_MAP_BASE (e.g. 0xFFFF_FFFF_8000_0000 for text vs
-            // 0xFFFF_8000_0000_0000 for direct map). Mock uses a distinct address.
-            const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
-            const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
-            const MOCK_KERNEL_TEXT_PAGES: usize = 8; // code segment
-            const MOCK_KERNEL_DATA_PAGES: usize = 8; // data segment
-
-            // Code segment: kernel_read_write() (in real impl, would be executable)
-            for i in 0..MOCK_KERNEL_TEXT_PAGES {
-                let vaddr = VirBytes(MOCK_KERNEL_TEXT_VBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let paddr = PhysBytes(MOCK_KERNEL_TEXT_PBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let flags = PageFlags::kernel_read_write();
-                self.map(vaddr, paddr, flags)?;
-            }
-
-            // Data segment: starts after code segment (2MB-aligned in real impl)
-            const PAGE_SIZE: u64 = 4096;
-            const MOCK_KERNEL_DATA_VBASE: u64 =
-                MOCK_KERNEL_TEXT_VBASE + (MOCK_KERNEL_TEXT_PAGES as u64 * PAGE_SIZE);
-            const MOCK_KERNEL_DATA_PBASE: u64 =
-                MOCK_KERNEL_TEXT_PBASE + (MOCK_KERNEL_TEXT_PAGES as u64 * PAGE_SIZE);
-
-            for i in 0..MOCK_KERNEL_DATA_PAGES {
-                let vaddr = VirBytes(MOCK_KERNEL_DATA_VBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let paddr = PhysBytes(MOCK_KERNEL_DATA_PBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let flags = PageFlags::kernel_read_write(); // NoExecute in real impl
-                self.map(vaddr, paddr, flags)?;
-            }
-
-            // Segment 2: Kernel direct map
-            // Maps all physical memory at KERNEL_DIRECT_MAP_BASE using 1GB huge pages
-            // with Present + ReadWrite + Global + NoExecute + Supervisor-only (U/S=0).
-            // After map_kernel(), these PTEs are never modified (read-only invariant).
-            // Mock: map just 4 sentinel pages to verify the region is mapped.
-            const MOCK_DM_VBASE: u64 = {
-                use crate::direct_map::DirectMapArch;
-                crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE
-            };
-            const MOCK_DM_PBASE: u64 = 0; // Direct map starts at physical address 0
-            const MOCK_DM_SENTINEL_PAGES: usize = 4; // Only map a few sentinel pages
-
-            for i in 0..MOCK_DM_SENTINEL_PAGES {
-                let vaddr = VirBytes(MOCK_DM_VBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let paddr = PhysBytes(MOCK_DM_PBASE + i as u64 * Self::PAGE_SIZE as u64);
-                let flags = PageFlags::kernel_read_write(); // U/S=0 in real impl
-                self.map(vaddr, paddr, flags)?;
-            }
-
-            Ok(())
-        }
-    }
-
     impl crate::paging_ext::HugePages for MockPaging {
         const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21]; // 1GB, 2MB
         const HUGE_PAGE_SIZE: u64 = 1 << 30;       // 1GB preferred
@@ -723,7 +745,7 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::paging_ext::{PagingWithId, VmPagingExt, HugePages};
+        use crate::paging_ext::{PagingWithId, HugePages};
 
         #[test]
         fn test_mock_paging_new() {
@@ -959,11 +981,25 @@ pub mod mock {
         #[test]
         fn test_mock_map_kernel() {
             let mut pt = MockPaging::new().unwrap();
-            pt.map_kernel().unwrap();
 
-            // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
             const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
             const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
+            const MOCK_KERNEL_TEXT_PAGES: usize = 8;
+            const MOCK_KERNEL_DATA_PAGES: usize = 8;
+            const MOCK_DM_VBASE: u64 = 0xFFFF_8000_0000_0000;
+            const MOCK_DM_SENTINEL_PAGES: usize = 4;
+
+            super::super::map_kernel(
+                &mut pt,
+                MOCK_KERNEL_TEXT_VBASE,
+                MOCK_KERNEL_TEXT_PBASE,
+                MOCK_KERNEL_TEXT_PAGES,
+                MOCK_KERNEL_DATA_PAGES,
+                MOCK_DM_VBASE,
+                MOCK_DM_SENTINEL_PAGES,
+            ).unwrap();
+
+            // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
             const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;
 
             for i in 0..8 {
@@ -989,8 +1025,6 @@ pub mod mock {
             }
 
             // Segment 2: Kernel direct map sentinel (4 pages at KERNEL_DIRECT_MAP_BASE)
-            use crate::direct_map::DirectMapArch;
-            const MOCK_DM_VBASE: u64 = crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE;
             const MOCK_DM_PBASE: u64 = 0;
 
             for i in 0..4 {
