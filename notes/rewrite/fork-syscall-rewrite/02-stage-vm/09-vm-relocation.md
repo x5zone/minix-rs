@@ -4,26 +4,26 @@
 > **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
 > **说明**: Bootstrap 阶段结束后，将预留区域中的数据搬迁到堆上
 
-> **里程碑定位**：09 是 VM 自举叙事的高潮。从 04 到 09，VM 经历了从"内核馈赠 1GB"到"完全自主管理所有物理内存"的完整自举过程：
+> **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖内核初始 1GB Direct Map"到"完全自主管理全部物理内存"的演进：
 >
-> | 文档 | VM 获得的能力 | 前提 |
-> |------|-------------|------|
-> | 04 | 物理内存管理（bitmap allocator） | kernel 传过来的 1GB direct map |
+> | 文档 | VM 获得的能力 | 依赖前提 |
+> |------|-------------|----------|
+> | 04 | 物理内存管理（bitmap allocator） | kernel 提供的 1GB direct map |
 > | 05 | 页分配（alloc_phys + vm_phys_to_virt） | bitmap allocator |
 > | 06 | 初始页表（4 页 + 1GB direct map） | kernel 建立 |
 > | 07 | 页表操作（双视图模型） | direct map |
 > | 08 | 堆分配（GlobalAlloc 对接 vm_phys_to_virt） | alloc crate 可用 |
-> | **09** | **完全建模所有物理内存** | **自举终点** |
+> | **09** | **完全建模所有物理内存** | **自举完成** |
 >
-> **09 之前**：VM 依赖 kernel 传过来的初始 1GB direct map，bitmap 元数据在启动区
-> **09 之后**：direct map 覆盖全部物理内存，分配器元数据在堆上，VM 完全自主
+> **09 之前**：VM 依赖 kernel 提供的初始 1GB direct map，bitmap 元数据位于启动区
+> **09 之后**：direct map 覆盖全部物理内存，分配器元数据位于堆上，VM 完全自主
 >
-> 09 的三个阶段对应 VM 自举的三个跃迁：
-> - **Phase 1**（1GB 足以启动世界）：不是"临时方案"，而是"已经够用"
-> - **Phase 2**（扩展到覆盖全部物理内存）：不是"补救"，而是"扩展"
-> - **Phase 3**（可选的分配器策略升级）：不是"必须"，而是"策略选择"
+> 09 的三个阶段对应 VM 自举的三次状态转换：
+> - **Phase 1**（1GB 启动阶段）：初始 direct map 足以支撑 VM 启动，并非临时方案
+> - **Phase 2**（扩展到全部物理内存）：将 direct map 扩展至覆盖全部物理内存，属于能力扩展而非缺陷补救
+> - **Phase 3**（可选的分配器策略升级）：根据实际需求选择分配器实现，属于策略选择而非必需步骤
 >
-> 从此 VM 不再需要内核的特殊帮助。
+> 自举完成后，VM 不再依赖内核的特殊支持。
 
 ---
 
