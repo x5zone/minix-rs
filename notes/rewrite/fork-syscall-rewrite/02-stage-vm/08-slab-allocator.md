@@ -1941,6 +1941,26 @@ HeapArena 解决了这个问题：预留一段连续 VA 区间（`VM_HEAP_BASE .
 
 Direct Map 用于物理页管理（页表操作、元数据访问、CoW 拷贝），HeapArena 用于 Rust 堆（`Box`/`Vec`/`String`）。
 
+#### BumpBuf vs HeapArena：两种 bump 的本质差异
+
+读者可能注意到 BumpBuf（04-physical-memory.md §4）和 HeapArena 都是 bump 模式——预留空间、cursor 单调递增、不回收。但它们有本质差异：
+
+| 维度 | BumpBuf（自举阶段） | HeapArena（运行阶段） |
+|------|-------------------|---------------------|
+| **粒度** | 字节（`alloc_slice<T>()`） | 页（`grow(pages)`） |
+| **VA 来源** | Direct Map（`VA = PA + BASE`） | 预留 VA 区间 + `vm_self_mappages()` |
+| **VA 连续性** | **跟随 PA 连续性** | **独立于 PA 连续性** |
+| **物理页要求** | **必须连续** | 可以碎片化 |
+| **是否管页表** | 否（Direct Map 已映射） | 是（`vm_self_mappages()` 写 PTE） |
+| **用途** | 分配器元数据（bitmap 等） | Rust 堆（Box/Vec/String） |
+| **生命周期** | 自举阶段，一次性 | 运行阶段，持续增长 |
+
+**核心差异**：BumpBuf 的 VA 连续性来自 PA 连续性（Direct Map 的 `VA = PA + BASE`），因此**强制要求连续物理页**。HeapArena 的 VA 连续性由预留 VA 区间 + 逐页映射保证，物理页可以碎片化。
+
+**为什么自举阶段不能使用 HeapArena？** HeapArena 依赖 `vm_self_mappages()`，而 `vm_self_mappages()` 依赖已初始化的页表。页表初始化又依赖物理页分配器（页表页通过 `alloc_phys()` 分配）。在物理页分配器初始化之前，HeapArena 不可用。这是自举的鸡生蛋问题——BumpBuf 从 Direct Map 的连续物理页中分配元数据，绕过了这个循环。
+
+**为什么运行阶段不再需要连续物理页？** 自举完成后，HeapArena 就位。`VmAllocator::refill_arena()` 调用 `HeapArena::grow()`，后者逐页分配物理页（`alloc_phys(1)` × N）并映射到连续 VA。物理页碎片化不再是问题——HeapArena 将碎片化的物理页缝合为连续 VA。
+
 **实现**：
 
 ```rust
