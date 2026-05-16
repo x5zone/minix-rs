@@ -1,6 +1,6 @@
 # 11-memtype: 内存类型系统
 
-> **分类**: VM库  
+> **分类**: VM私有  
 > **源码**: `minix3/minix/servers/vm/memtype.h`, `mem_anon.c`  
 > **说明**: 多态内存类型系统，支持匿名内存、文件映射、物理内存等不同类型
 
@@ -82,7 +82,9 @@ int result = pr->memtype->ev_pagefault(vmp, region, ph, write, ...);
 | `mem_type_anon` | `mem_anon.c` |
 | `mem_type_directphys` | `mem_directphys.c` |
 | `mem_type_shared` | `mem_shared.c` |
-| `mem_type_mappedfile` | `mem_mapped.c` |
+| `mem_type_mappedfile` | `mem_file.c` |
+| `mem_type_anon_contig` | `mem_anon_contig.c` |
+| `mem_type_cache` | `mem_cache.c` |
 
 ### 1.4 内存类型与区域的关系
 
@@ -272,6 +274,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     u32_t allocflags;
 
     allocflags = vrallocflags(region->flags);
+    assert(ph->ph->refcount > 0);
 
     // 预分配一页（可能用于 CoW）
     if((new_page_cl = alloc_mem(1, allocflags)) == NO_MEM) {
@@ -283,13 +286,13 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     // 情况 1: 全新页面，从未分配
     if(ph->ph->phys == MAP_NONE) {
         ph->ph->phys = new_page;
+        assert(ph->ph->phys != MAP_NONE);
         return OK;
     }
 
     // 情况 2: 只有一个引用，或非写操作
     if(ph->ph->refcount < 2 || !write) {
-        // 预分配的页面不需要，释放
-        free_mem(new_page_cl, 1);
+        /* memory is ready already */
         return OK;
     }
 
@@ -1791,8 +1794,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     // - refcount < 2: 只有一个引用
     // - !write: 只读访问
     if(ph->ph->refcount < 2 || !write) {
-        // 释放预分配的页面
-        free_mem(new_page_cl, 1);
+        /* memory is ready already */
         return OK;
     }
 
@@ -1904,6 +1906,7 @@ static int cow_block(struct vmproc *vmp, struct vir_region *region,
     }
 
     // COW 后转为匿名内存
+    // 注意：此赋值与 mem_cow() 内部的 ph->memtype = &mem_type_anon 冗余
     ph->memtype = &mem_type_anon;
 
     // 清理末尾字节（处理文件末尾不对齐）
@@ -2231,7 +2234,7 @@ if(pr->memtype->ev_sanitycheck)
 | `ev_copy` | - | ✅ | - | - | ✅ | ✅ |
 | `ev_lowshrink` | ✅ | - | - | ✅ | ✅ | - |
 | `writable` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `ev_sanitycheck` | ✅ | ✅ | ✅ | ✅ | ✅ | - |
+| `ev_sanitycheck` | ✅ | - | ✅ | ✅ | ✅ | ✅ |
 | `regionid` | ✅ | - | - | - | - | ✅ |
 | `refcount` | ✅ | - | - | - | - | ✅ |
 | `pt_flags` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -2479,15 +2482,13 @@ fn handle_pagefault(region: &mut VirRegion) {
 
 **推荐方案**
 
-考虑到 Minix3 的设计模式和实际使用场景，推荐使用 **trait object**：
+考虑到 Minix3 的设计模式和实际使用场景，推荐使用 **`&'static dyn MemType`** + **`const` 静态**：
 
 ```rust
-use std::sync::Arc;
-
 pub struct VirRegion {
     vaddr: usize,
     length: usize,
-    mem_type: Arc<dyn MemType>,  // 共享所有权
+    mem_type: &'static dyn MemType,
     // ...
 }
 ```
@@ -2497,34 +2498,17 @@ pub struct VirRegion {
 2. 支持运行时类型变更（如 CoW 后类型改变）
 3. 全局类型实例可以安全共享
 
+> 实际实现选择了更轻量的方案：每个 MemType 实现都是零大小单元结构体（ZST），全局实例为 `const` 静态，通过 `&'static dyn MemType` 进行多态调用。无需 `Arc`（单线程事件循环，无共享所有权需求）和 `LazyLock`（ZST 可直接 const 初始化）。
+
 **全局类型实例**
 
 ```rust
-use std::sync::LazyLock;
-
-/// 匿名内存类型
-pub static MEM_TYPE_ANON: LazyLock<Arc<AnonymousMemory>> = 
-    LazyLock::new(|| Arc::new(AnonymousMemory::new()));
-
-/// 直接物理映射类型
-pub static MEM_TYPE_DIRECT: LazyLock<Arc<DirectPhysical>> = 
-    LazyLock::new(|| Arc::new(DirectPhysical::new()));
-
-/// 连续匿名内存类型
-pub static MEM_TYPE_ANON_CONTIG: LazyLock<Arc<ContiguousAnonymous>> = 
-    LazyLock::new(|| Arc::new(ContiguousAnonymous::new()));
-
-/// 磁盘缓存类型
-pub static MEM_TYPE_CACHE: LazyLock<Arc<CacheMemory>> = 
-    LazyLock::new(|| Arc::new(CacheMemory::new()));
-
-/// 文件映射类型
-pub static MEM_TYPE_MAPPEDFILE: LazyLock<Arc<MappedFile>> = 
-    LazyLock::new(|| Arc::new(MappedFile::new()));
-
-/// 共享内存类型
-pub static MEM_TYPE_SHARED: LazyLock<Arc<SharedMemory>> = 
-    LazyLock::new(|| Arc::new(SharedMemory::new()));
+pub(crate) static MEM_TYPE_ANON: AnonymousMemory = AnonymousMemory::new();
+pub(crate) static MEM_TYPE_DIRECT: DirectPhysical = DirectPhysical::new();
+pub(crate) static MEM_TYPE_SHARED: SharedMemory = SharedMemory::new();
+pub(crate) static MEM_TYPE_CONTIG_ANON: ContiguousAnonymous = ContiguousAnonymous::new();
+pub(crate) static MEM_TYPE_CACHE: CacheMemory = CacheMemory::new();
+pub(crate) static MEM_TYPE_MAPPED_FILE: MappedFile = MappedFile::new();
 ```
 
 **类型变更示例**
@@ -2732,9 +2716,7 @@ impl MemType for DirectPhysical {
 }
 ```
 
-**ContiguousAnonymous - 连续匿名内存**（尚未实现）
-
-> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
+**ContiguousAnonymous - 连续匿名内存**
 
 ```rust
 /// 连续匿名内存类型
@@ -2799,9 +2781,7 @@ impl MemType for ContiguousAnonymous {
 }
 ```
 
-**CacheMemory - 磁盘缓存**（尚未实现）
-
-> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
+**CacheMemory - 磁盘缓存**
 
 ```rust
 /// 磁盘缓存类型
@@ -2862,9 +2842,7 @@ impl MemType for CacheMemory {
 }
 ```
 
-**MappedFile - 文件映射**（尚未实现）
-
-> 以下为设计代码，实际 Rust 实现中尚未包含此类型。
+**MappedFile - 文件映射**
 
 ```rust
 /// 文件映射类型
@@ -3194,6 +3172,8 @@ impl HybridMemType {
 
 **核心 trait 定义**
 
+> **注意**：以下为早期设计版本的 trait 定义，与 Ch3 §3.1 和实际代码（`memtype.rs`）存在差异。实际实现无 `'static` bound，方法签名以 Ch3 为准。此处保留作为设计演进记录。
+
 ```rust
 /// 内存类型 trait
 ///
@@ -3244,6 +3224,8 @@ pub trait MemType: Send + Sync + 'static {
 
 **辅助 trait**
 
+> **注意**：以下辅助 trait 为未来设计，当前 Rust 实现中尚未包含。
+
 ```rust
 /// 引用计数管理
 pub trait RefCounted {
@@ -3268,6 +3250,8 @@ pub trait VirtMem {
 ```
 
 **错误处理**
+
+> **注意**：以下为早期设计版本的错误类型，比 Ch3 §3.1 和实际代码多了 `AccessViolation`、`RegionNotFound`、`ProcessNotFound` 变体。实际实现以 Ch3 为准。
 
 ```rust
 /// 内存类型错误
@@ -3309,6 +3293,8 @@ impl MemTypeError {
 ```
 
 **页错误结果**
+
+> **注意**：以下为早期设计版本的结果类型，比 Ch3 §3.1 和实际代码多了 `NeedAsyncIo`、`Suspended` 变体。实际实现以 Ch3 为准。
 
 ```rust
 /// 页错误处理结果
@@ -4907,7 +4893,9 @@ mod integration_tests {
 - [16-pagefault.md](16-pagefault.md) - 页错误处理流程与 memtype 回调的调用时机
 - [17-vm-fork.md](17-vm-fork.md) - fork 中的 ev_reference 与内存类型继承
 - [19-vm-map.md](19-vm-map.md) - mmap 使用 mappedfile/shared 内存类型
+- [26-cache-memtypes.md](26-cache-memtypes.md) - CacheMemory/SharedMemory/ContiguousAnonymous/MappedFile 补全
+- [04-physical-memory.md](04-physical-memory.md) - 物理内存分配与 mem_type_anon/anon_contig 的关系
 
 ---
 
-*分类: VM库 | 可被其他服务使用*
+*分类: VM私有*
