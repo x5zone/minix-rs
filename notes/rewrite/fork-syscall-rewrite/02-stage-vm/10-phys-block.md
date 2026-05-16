@@ -12,6 +12,58 @@
 
 `phys_block` 是 VM 中管理物理内存页的核心数据结构。每个 `phys_block` 代表一个物理内存页（4KB），并通过引用计数机制支持多个虚拟区域共享同一物理页。
 
+**两层物理页管理：裸物理页 vs phys_block**
+
+> ⚠️ 阅读前文（04-physical-memory、05-vm-allocpage）的读者可能会困惑：前面那些物理页分配（`alloc_mem`、`vm_allocpages`）怎么没提到 `phys_block`？这不是遗漏，而是 VM 确实存在**两层**物理页管理，它们服务于不同场景。
+
+VM 中的物理页管理分为两层：
+
+| 层次 | 数据结构 | 分配接口 | 管理场景 | 文档 |
+|------|---------|---------|---------|------|
+| **第 1 层：裸物理页** | 无（仅 `phys_bytes` 地址） | `alloc_mem()` / `free_mem()` | VM 基础设施：页表页、spare pages、VM 自身内存 | [04-physical-memory.md](04-physical-memory.md)、[05-vm-allocpage.md](05-vm-allocpage.md) |
+| **第 2 层：物理块** | `phys_block`（含 refcount、链表） | `pb_new()` + `pb_reference()` / `pb_unreferenced()` | 进程内存：堆、栈、mmap、CoW 共享页 | 本文档（10-phys-block.md） |
+
+**为什么第 1 层不需要 `phys_block`？**
+
+第 1 层的物理页是**VM 基础设施**——页目录、页表页、spare pages、slab 分配器自身的内存。这些页有以下特点：
+- **独占使用**：页表页只被 VM 自己使用，不存在共享，不需要引用计数
+- **生命周期简单**：创建时分配，销毁时释放，没有 CoW、fork 等复杂场景
+- **分配路径更早**：`vm_allocpages()` 在 VM 初始化阶段就被调用（`pt_init_done` 之前），此时 `phys_block` 基础设施尚未就绪
+
+源码证据：
+- [pagetable.c:375](minix3/minix/servers/vm/pagetable.c#L375)：`vm_allocpages()` 调用 `alloc_mem()` 分配页表页，**完全不经 `phys_block`**
+- [alloc.c](minix3/minix/servers/vm/alloc.c)：整个文件零引用 `pb_new`、`pb_reference`、`phys_block`
+- `pb_new()` 仅在 [region.c:691](minix3/minix/servers/vm/region.c#L691)（进程缺页时创建新物理块）、[pb.c:158](minix3/minix/servers/vm/pb.c#L158)（`mem_cow` CoW 复制）、[mem_anon_contig.c:65](minix3/minix/servers/vm/mem_anon_contig.c#L65)（连续匿名内存）中被调用——全部是**进程内存**场景
+
+**为什么第 2 层需要 `phys_block`？**
+
+第 2 层的物理页是**进程内存**——映射到进程地址空间的堆、栈、mmap 页。这些页需要 `phys_block` 的原因：
+- **共享需求**：fork 后父子进程共享同一物理页，需要引用计数追踪
+- **CoW 支持**：写入共享页时需要判断 `refcount > 1` 来触发写时复制
+- **生命周期复杂**：一个物理页可能被多个 `phys_region` 引用，必须等所有引用都释放后才能回收
+
+**两层的关系**：第 2 层在第 1 层之上。`phys_block.phys` 字段存储的物理地址，最终来源于 `alloc_mem()` 分配的裸物理页——但 `phys_block` 在裸物理页之上增加了引用计数和共享管理。第 1 层不知道第 2 层的存在，第 2 层依赖第 1 层提供物理页。
+
+```
+进程内存（第 2 层）:
+  vir_region → phys_region → phys_block (refcount=2)
+                                    │
+                                    │ phys = 0x1234000
+                                    │
+                              ┌─────┘
+                              ▼
+裸物理页分配（第 1 层）:
+  alloc_mem() → bitmap 分配 → 返回 phys_clicks
+                              ↓
+  free_mem()  ← bitmap 回收 ← 释放 phys_clicks
+
+VM 基础设施（第 1 层，无 phys_block）:
+  vm_allocpages() → alloc_mem() → 页表页、spare pages
+                                   ↑
+                                   直接使用 phys_bytes，
+                                   不经过 phys_block
+```
+
 **phys_block 在 VM 中的位置**
 
 三层关系：
