@@ -285,8 +285,9 @@ struct phys_block *pb = pb_new(new_page);
 > **方案四标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
 
 ```rust
-/* 场景 3: CoW 复制（方案四） */
+/* 场景 3: CoW 复制（Direct Map 方案） */
 let new_phys = alloc_phys(1, flags)?;
+let new_phys_mt = PhysBytes::new(new_phys.as_u64());
 unsafe {
     core::ptr::copy_nonoverlapping(
         vm_phys_to_virt(old_phys) as *const u8,
@@ -294,7 +295,7 @@ unsafe {
         4096,
     );
 }
-let pb = PhysBlock::new(new_phys);
+let pb = PhysBlock::new(new_phys_mt);
 ```
 
 `sys_abscopy` 的存在意味着 VM 不信任自己能直接操作物理内存——需要内核作为中介。Direct map 使 VM 成为物理内存的直接操作者，不再需要"委托内核复制"。读者应理解：这是 VM 从"受信任的请求者"到"物理内存的主人"的角色转变。详见 [15-cow-mechanism.md](15-cow-mechanism.md) §2.2.1。
@@ -787,30 +788,44 @@ fork 后共享状态：`phys_block.refcount = 2`，`firstregion → parent_pr �
 
 ```rust
 pub(crate) struct PhysBlock {
-    phys: u64,
-    refcount: u8,
+    phys: PhysBytes,
+    refcount: u16,
     flags: PhysBlockFlags,
-    first_region: Option<*mut PhysRegion>,
+    first_region: Option<NonNull<PhysRegion>>,
 }
 ```
 
-**为什么 phys 使用 u64 而非 newtype**
+**为什么 phys 使用 PhysBytes 而非裸 u64**
 
-Minix3 的 `phys_bytes` 在 32 位系统上是 `u32_t`，在 64 位系统上应为 `u64`。当前实现直接使用 `u64`，避免引入 newtype 包装带来的转换开销。`PhysBlock` 内部定义了 `MAP_NONE` 常量：
+Minix3 的 `phys_bytes` 在 32 位系统上是 `u32_t`，在 64 位系统上应为 `u64`。Rust 版本使用 `PhysBytes` newtype（`PhysBytes(pub u64)`）而非裸 `u64`，原因：
+
+1. **类型安全**：`PhysBytes` 与 `VirBytes` 是不同类型，编译期防止物理地址和虚拟地址混用
+2. **可读性**：函数签名中 `PhysBytes` 比 `u64` 更清晰地表达"这是一个物理地址"
+3. **与 minix_types 一致**：`PhysBytes` 和 `VirBytes` 定义在 `minix_types` crate 中，全项目统一使用
+
+`PhysBlock` 内部定义了 `MAP_NONE` 常量：
 
 ```rust
-pub(crate) const MAP_NONE: u64 = 0xFFFF_FFFF_FFFF_FFFE;
+pub(crate) const MAP_NONE: PhysBytes = PhysBytes(0xFFFF_FFFF_FFFF_FFFE);
 ```
 
 注意：Minix3 C 代码中 `MAP_NONE` 为 `0xFFFFFFFE`（32 位），Rust 版本扩展为 64 位值 `0xFFFF_FFFF_FFFF_FFFE`，语义相同——全 1 末位 0，表示无效物理地址。
 
-**为什么 refcount 使用普通 u8 而非 Cell\<u8\>**
+**为什么 refcount 使用 u16 而非 u8**
 
-Minix3 VM 是单线程的，所有对 `PhysBlock` 的操作都需要 `&mut self`（通过 `PhysRegion::link_to_block` / `unlink_from_block` 等方法获取可变引用），因此不需要内部可变性。使用普通 `u8` 比 `Cell<u8>` 更简单、更高效，也避免了 `&self` 方法中意外修改 refcount 的风险。
+Minix3 使用 `u8_t`（0-255），但实际场景中 refcount 很少超过 10。Rust 版本使用 `u16`（0-65535），原因：
 
-**为什么 first_region 使用 Option\<*mut PhysRegion\> 而非 Option\<NonNull\<PhysRegion\>\>**
+1. **更大的安全裕量**：`u8` 的 255 上限在某些极端共享场景下可能不足（如大量进程通过 shm 共享同一页）
+2. **对齐友好**：`u16` 在结构体中对齐更自然，避免 padding
+3. **saturating_add 仍适用**：溢出保护逻辑不变，只是上限从 255 提升到 65535
 
-`Option<*mut T>` 在 Rust 中与裸指针大小相同（null 优化），而 `NonNull<T>` 虽然也有 null 优化，但语义上表示"非空指针"，不适合表示"可能为空的链表头"。使用 `Option<*mut PhysRegion>` 更直观，访问时需要 unsafe，但链表操作已封装在 `PhysRegion` 的方法中。
+**为什么 first_region 使用 Option\<NonNull\<PhysRegion\>\> 而非 Option\<*mut PhysRegion\>**
+
+`NonNull<T>` 保证指针非空（当 `Some` 时），比 `*mut T` 提供更强的语义保证：
+
+1. **非空保证**：`NonNull::new()` 返回 `Option<NonNull<T>>`，强制检查 null
+2. **协变**：`NonNull<T>` 是协变的，`*mut T` 是不变的，协变更灵活
+3. **与 Rust 惯用法一致**：`Option<NonNull<T>>` 是 Rust 中表示"可空的非空指针"的标准模式
 
 **为什么 flags 使用 bitflags 宏而非手动 newtype**
 
@@ -837,20 +852,22 @@ Minix3 中 `pb_link()` 和 `pb_unreferenced()` 是独立函数，操作涉及 `P
 
 | Minix3 字段 | Rust 字段 | 说明 |
 |------------|----------|------|
-| `phys_bytes phys` | `phys: u64` | 物理地址，直接用 u64 |
-| `struct phys_region *firstregion` | `first_region: Option<*mut PhysRegion>` | 链表头，下划线命名 |
-| `u8_t refcount` | `refcount: u8` | 普通 u8，非 Cell |
+| `phys_bytes phys` | `phys: PhysBytes` | 物理地址，newtype 包装 |
+| `struct phys_region *firstregion` | `first_region: Option<NonNull<PhysRegion>>` | 链表头，NonNull 保证非空 |
+| `u8_t refcount` | `refcount: u16` | u16 提供更大安全裕量 |
 | `u8_t flags` | `flags: PhysBlockFlags` | bitflags 宏生成 |
 | `u32_t seencount` | 不实现 | 仅调试用 |
 
-> **方案四标注**：PhysBlock 的 `phys: u64` 字段存储物理地址。在方案三中，访问该物理页的内容需要通过 PtRegion 分配 VA 并建立映射；在方案四中，`vm_phys_to_virt(phys)` 一行加法即可获得 VA。PhysBlock 本身不持有 VA——VA 总是通过 `vm_phys_to_virt()` 按需计算，与 PhysBlock 的生命周期无关。这是 direct map 统一性的又一个例证：物理地址是唯一的"锚点"，VA 是物理地址的派生值。
+> **Direct Map 标注**：PhysBlock 的 `phys: PhysBytes` 字段存储物理地址。在方案三中，访问该物理页的内容需要通过 PtRegion 分配 VA 并建立映射；在 Direct Map 方案中，`vm_phys_to_virt(phys)` 一行加法即可获得 VA。PhysBlock 本身不持有 VA——VA 总是通过 `vm_phys_to_virt()` 按需计算，与 PhysBlock 的生命周期无关。这是 direct map 统一性的又一个例证：物理地址是唯一的"锚点"，VA 是物理地址的派生值。
 
 **PhysBlock 的核心方法**
 
 ```rust
 impl PhysBlock {
-    pub(crate) fn new(phys: u64) -> Self {
-        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
+    pub(crate) const MAP_NONE: PhysBytes = PhysBytes(0xFFFF_FFFF_FFFF_FFFE);
+
+    pub(crate) fn new(phys: PhysBytes) -> Self {
+        debug_assert!(phys.0 != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
         Self {
             phys,
             refcount: 0,
@@ -859,8 +876,20 @@ impl PhysBlock {
         }
     }
 
+    pub(crate) fn phys(&self) -> PhysBytes {
+        self.phys
+    }
+
+    pub(crate) fn set_phys(&mut self, phys: PhysBytes) {
+        self.phys = phys;
+    }
+
     pub(crate) fn is_mapped(&self) -> bool {
         self.phys != Self::MAP_NONE
+    }
+
+    pub(crate) fn refcount(&self) -> u16 {
+        self.refcount
     }
 
     pub(crate) fn add_ref(&mut self) {
@@ -872,6 +901,10 @@ impl PhysBlock {
             self.refcount -= 1;
         }
         self.refcount > 0
+    }
+
+    pub(crate) fn is_in_cache(&self) -> bool {
+        self.flags.contains(PhysBlockFlags::IN_CACHE)
     }
 }
 ```
@@ -920,7 +953,7 @@ impl PhysBlock {
 
 | 方面 | Minix3 (C) | Rust |
 |------|-----------|------|
-| 引用计数类型 | `u8_t` | `u8` |
+| 引用计数类型 | `u8_t` | `u16` |
 | 增加 | `pb->refcount++` | `self.refcount.saturating_add(1)` |
 | 减少 | `pb->refcount--` | `if self.refcount > 0 { self.refcount -= 1 }` |
 | 溢出检查 | 无 | saturating_add 饱和 |
@@ -982,8 +1015,8 @@ Rust 实现当前使用 `Box<PhysBlock>` 和 `Vec<Option<Box<PhysRegion>>>` 管�
 
 ```rust
 impl PhysBlock {
-    pub(crate) fn new(phys: u64) -> Self {
-        debug_assert!(phys != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
+    pub(crate) fn new(phys: PhysBytes) -> Self {
+        debug_assert!(phys.0 != 0, "PhysBlock::new(0) is likely a bug; use PhysBlock::new(MAP_NONE) for unmapped blocks");
         Self {
             phys,
             refcount: 0,
@@ -994,7 +1027,7 @@ impl PhysBlock {
 }
 ```
 
-`PhysBlock::new()` 对应 Minix3 的 `pb_new()`，初始化 `refcount = 0`、`first_region = None`、`flags = empty()`。`debug_assert` 检查 `phys != 0`，因为 0 既不是有效物理地址也不是 `MAP_NONE`，很可能是编程错误。
+`PhysBlock::new()` 对应 Minix3 的 `pb_new()`，初始化 `refcount = 0`、`first_region = None`、`flags = empty()`。`debug_assert` 检查 `phys.0 != 0`，因为 0 既不是有效物理地址也不是 `MAP_NONE`，很可能是编程错误。
 
 **PhysRegion 创建**
 
@@ -1049,22 +1082,22 @@ VirRegion 使用 `Vec<Option<Box<PhysRegion>>>` 存储物理区域，对应 Mini
 ```rust
 impl PhysRegion {
     pub(crate) unsafe fn link_to_block(
-        &mut self, block: *mut PhysBlock, parent: *mut VirRegion, offset: VirBytes
+        &mut self, block: NonNull<PhysBlock>, parent: NonNull<VirRegion>, offset: VirBytes
     ) {
-        debug_assert!(!block.is_null(), "block pointer must not be null");
         debug_assert!(self.ph.is_none(), "PhysRegion must not already be in a list");
 
         self.offset = offset;
         self.ph = Some(block);
         self.parent = Some(parent);
 
-        self.next_ph_list = unsafe { (*block).first_region };
+        let block_ptr = block.as_ptr();
+        self.next_ph_list = unsafe { (*block_ptr).first_region };
         unsafe {
-            (*block).first_region = Some(self as *mut PhysRegion);
-            (*block).refcount = (*block).refcount.saturating_add(1);
+            (*block_ptr).first_region = NonNull::new(self as *mut PhysRegion);
+            (*block_ptr).refcount = (*block_ptr).refcount.saturating_add(1);
         }
 
-        debug_assert!(unsafe { (*block).refcount } > 0, "refcount must be positive after link");
+        debug_assert!(unsafe { (*block_ptr).refcount } > 0, "refcount must be positive after link");
         debug_assert!(self.ph.is_some(), "ph must be set after link");
     }
 }
@@ -1073,7 +1106,7 @@ impl PhysRegion {
 对应 Minix3 的 `pb_link()`，实现头插法链表插入和 refcount 递增。关键步骤：
 
 1. 设置 `self.offset`、`self.ph`、`self.parent` 字段
-2. 头插法：`self.next_ph_list = block.first_region`，`block.first_region = self`
+2. 头插法：`self.next_ph_list = block.first_region`，`block.first_region = NonNull::new(self)`
 3. `block.refcount` 使用 `saturating_add(1)` 递增
 4. `debug_assert` 验证链接后状态一致
 
@@ -1081,10 +1114,10 @@ impl PhysRegion {
 
 ```rust
 impl PhysRegion {
-    pub(crate) unsafe fn bind_block(&mut self, block: *mut PhysBlock) {
+    pub(crate) unsafe fn bind_block(&mut self, block: NonNull<PhysBlock>) {
         self.ph = Some(block);
         unsafe {
-            (*block).add_ref();
+            (*block.as_ptr()).add_ref();
         }
     }
 }
@@ -1099,19 +1132,21 @@ impl PhysRegion {
     pub(crate) fn unlink_from_block(&mut self) -> bool {
         if let Some(block) = self.ph {
             unsafe {
-                debug_assert!((*block).refcount > 0, "refcount must be positive before unlink");
+                let block_ptr = block.as_ptr();
+                debug_assert!((*block_ptr).refcount > 0, "refcount must be positive before unlink");
                 debug_assert!(self.is_in_list(block), "PhysRegion must be in the list");
 
-                (*block).refcount = (*block).refcount.saturating_sub(1);
+                (*block_ptr).refcount = (*block_ptr).refcount.saturating_sub(1);
 
-                if (*block).first_region == Some(self as *mut PhysRegion) {
-                    (*block).first_region = self.next_ph_list;
-                } else if let Some(first) = (*block).first_region {
+                let self_ptr = NonNull::new(self as *mut PhysRegion);
+                if (*block_ptr).first_region == self_ptr {
+                    (*block_ptr).first_region = self.next_ph_list;
+                } else if let Some(first) = (*block_ptr).first_region {
                     let mut current = first;
                     loop {
-                        let next = (*current).next_ph_list;
-                        if next == Some(self as *mut PhysRegion) {
-                            (*current).next_ph_list = self.next_ph_list;
+                        let next = (*current.as_ptr()).next_ph_list;
+                        if next == self_ptr {
+                            (*current.as_ptr()).next_ph_list = self.next_ph_list;
                             break;
                         }
                         match next {
@@ -1127,7 +1162,10 @@ impl PhysRegion {
                 self.ph = None;
                 self.next_ph_list = None;
 
-                (*block).refcount == 0
+                debug_assert!(self.ph.is_none(), "ph must be None after unlink");
+                debug_assert!(self.next_ph_list.is_none(), "next_ph_list must be None after unlink");
+
+                (*block_ptr).refcount == 0
             }
         } else {
             false
@@ -1151,7 +1189,7 @@ impl PhysRegion {
     pub(crate) fn unbind_block(&mut self) -> bool {
         if let Some(block) = self.ph {
             unsafe {
-                let has_more_refs = (*block).release_ref();
+                let has_more_refs = (*block.as_ptr()).release_ref();
                 self.ph = None;
                 has_more_refs
             }
@@ -1175,7 +1213,7 @@ impl PhysRegion {
         let mut current = block.first_region;
         while let Some(ptr) = current {
             unsafe {
-                let region = &*ptr;
+                let region = &*ptr.as_ptr();
                 f(region);
                 current = region.next_ph_list;
             }
@@ -1353,21 +1391,20 @@ fn clone_region_for_fork(original: &VirRegion) -> VirRegion {
 }
 
 unsafe fn link_phys_blocks(region: &mut VirRegion) {
+    let parent_ptr = NonNull::from(&*region);
     for phys_opt in region.physblocks.iter_mut() {
         if let Some(phys) = phys_opt.as_mut() {
             if let Some(block_ptr) = phys.ph {
-                unsafe {
-                    (*block_ptr).add_ref();
-                }
+                phys.link_to_block(block_ptr, parent_ptr, phys.offset);
             }
         }
     }
 }
 ```
 
-`clone_region_for_fork` 复制 VirRegion 的元数据，并将子进程的 PhysRegion 的 `ph` 指向父进程的同一个 PhysBlock。`link_phys_blocks` 遍历子进程的所有 PhysRegion，对每个 PhysBlock 调用 `add_ref()` 递增 refcount。
+`clone_region_for_fork` 复制 VirRegion 的元数据，并将子进程的 PhysRegion 的 `ph` 指向父进程的同一个 PhysBlock。`link_phys_blocks` 遍历子进程的所有 PhysRegion，对每个调用 `link_to_block()` 完整链接（设置 parent、offset、头插法插入链表、递增 refcount）。
 
-对应 Minix3 中 fork 时 `pb_reference()` 共享物理页的逻辑。
+注意：`link_phys_blocks` 使用 `link_to_block()` 而非简单的 `add_ref()`，因为 fork 需要完整的链表管理——子进程的 PhysRegion 需要被插入到 PhysBlock 的 `first_region` 链表中，以便后续 CoW 时能遍历所有引用者。
 
 **共享检测**
 
