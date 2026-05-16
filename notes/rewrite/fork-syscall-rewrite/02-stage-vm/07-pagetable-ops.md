@@ -1258,7 +1258,7 @@ fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
 - VM 的页表修改**仅限 HeapArena 区域**——页表页通过 Direct Map 可达，无递归风险
 - VM 的动态内存分配链路：`alloc_phys → HeapArena::grow → vm_self_mappages → 页内切分 → 返回指针`
 
-**搬迁与 HeapArena 的关系**：自举阶段，分配器元数据通过 BumpBuf 从 Direct Map 区域分配（连续 PA 约束）。HeapArena 就位后，`VmServer::relocate()` 将元数据从 BumpBuf 迁移到 HeapArena——HeapArena::grow() 分配新 VA 空间（碎片化 PA + 连续 VA），memcpy 数据，更新指针，释放旧 PA 页。搬迁后，分配器元数据通过 HeapArena VA 访问，不再依赖 Direct Map 的连续 PA 约束（详见 09-vm-relocation.md）。
+**搬迁与 HeapArena 的关系**：自举阶段，分配器元数据通过 BumpBuf 从 Direct Map 区域分配（连续 PA 约束）。HeapArena 就位后，`VmServer::init()` 内部调用私有方法 `relocate()` 将元数据从 BumpBuf 迁移到 HeapArena——HeapArena::grow() 分配新 VA 空间（碎片化 PA + 连续 VA），memcpy 数据，更新指针，释放旧 PA 页。搬迁后，分配器元数据通过 HeapArena VA 访问，不再依赖 Direct Map 的连续 PA 约束（详见 09-vm-relocation.md）。
 
 这符合 VM 的职责身份：**VM 是 physical memory owner，不是 memory consumer**。物理页的持有者通过偏移直接访问（Direct Map），被管理者通过申请访问（`brk`/`mmap`）。这不是"不一致"，而是职责差异的自然体现。
 

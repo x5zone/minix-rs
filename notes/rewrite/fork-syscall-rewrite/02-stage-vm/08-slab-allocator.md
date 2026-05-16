@@ -2589,7 +2589,7 @@ Layer 5: Box / Vec / String（rust 标准容器）
 
 注意 Layer 2 的双机制：Direct Map 解决"物理页可达性"（页表操作、元数据访问），HeapArena 解决"虚拟连续性"（Rust 堆）。两者不是替代关系，而是互补关系。
 
-**Layer 2 的状态转换——搬迁**：自举阶段，分配器元数据通过 BumpBuf 从 Direct Map 区域分配（Layer 2 的 Direct Map 侧）。HeapArena 就位后，`VmServer::relocate()` 将元数据从 Direct Map 侧迁移到 HeapArena 侧——这是 Layer 2 内部的状态转换。搬迁后，Direct Map 侧的连续 PA 页被释放回 Layer 1，分配器元数据通过 HeapArena VA 访问（详见 09-vm-relocation.md）。
+**Layer 2 的状态转换——搬迁**：自举阶段，分配器元数据通过 BumpBuf 从 Direct Map 区域分配（Layer 2 的 Direct Map 侧）。HeapArena 就位后，`VmServer::init()` 内部调用私有方法 `relocate()` 将元数据从 Direct Map 侧迁移到 HeapArena 侧——这是 Layer 2 内部的状态转换。搬迁后，Direct Map 侧的连续 PA 页被释放回 Layer 1，分配器元数据通过 HeapArena VA 访问（详见 09-vm-relocation.md）。
 
 ### A.3 未来方向
 

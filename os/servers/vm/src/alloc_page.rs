@@ -73,6 +73,10 @@ impl VmPageAllocator {
         &self.stats
     }
 
+    pub(crate) fn phys_alloc(&self) -> &PhysAlloc {
+        &self.phys_alloc
+    }
+
     pub(crate) fn phys_alloc_mut(&mut self) -> &mut PhysAlloc {
         &mut self.phys_alloc
     }

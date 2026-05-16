@@ -121,33 +121,13 @@ impl PhysAllocator for PhysAlloc {
         }
     }
 
-    fn reloc_array_count(&self) -> usize {
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
         match self {
-            PhysAlloc::Bitmap(b) => b.reloc_array_count(),
+            PhysAlloc::Bitmap(b) => b.available_regions(callback),
             #[cfg(feature = "buddy_alloc")]
-            PhysAlloc::Buddy(b) => b.reloc_array_count(),
+            PhysAlloc::Buddy(b) => b.available_regions(callback),
             #[cfg(feature = "segment_tree_alloc")]
-            PhysAlloc::SegmentTree(s) => s.reloc_array_count(),
-        }
-    }
-
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        match self {
-            PhysAlloc::Bitmap(b) => b.reloc_array_info(index),
-            #[cfg(feature = "buddy_alloc")]
-            PhysAlloc::Buddy(b) => b.reloc_array_info(index),
-            #[cfg(feature = "segment_tree_alloc")]
-            PhysAlloc::SegmentTree(s) => s.reloc_array_info(index),
-        }
-    }
-
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        match self {
-            PhysAlloc::Bitmap(b) => b.update_relocated_arrays(new_ptrs),
-            #[cfg(feature = "buddy_alloc")]
-            PhysAlloc::Buddy(b) => b.update_relocated_arrays(new_ptrs),
-            #[cfg(feature = "segment_tree_alloc")]
-            PhysAlloc::SegmentTree(s) => s.update_relocated_arrays(new_ptrs),
+            PhysAlloc::SegmentTree(s) => s.available_regions(callback),
         }
     }
 }
@@ -169,6 +149,13 @@ impl PhysAlloc {
     pub(crate) fn as_buddy_mut(&mut self) -> Option<&mut BuddyAllocator> {
         match self {
             PhysAlloc::Buddy(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_bitmap(&self) -> Option<&BitmapAllocator> {
+        match self {
+            PhysAlloc::Bitmap(b) => Some(b),
             _ => None,
         }
     }
@@ -237,6 +224,7 @@ impl PhysAllocType {
 pub(crate) const CLICK_SIZE: usize = 4096;
 pub(crate) const CLICK_SHIFT: usize = 12;
 pub(super) const METADATA_ALIGN_PADDING: usize = 2 * CLICK_SIZE;
+pub(crate) const BUDDY_THRESHOLD_PAGES: usize = 1 << 20;
 
 #[inline]
 pub(crate) const fn bytes_to_clicks(bytes: usize) -> usize {

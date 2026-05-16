@@ -730,18 +730,25 @@ T1: main() → VmServer::new()
     │
     └── VmServer::new() 返回
 
-T5.5: VmServer::relocate() — 搬迁元数据（详见 09-vm-relocation.md）
+T5.5: VmServer::init() → relocate() — 搬迁元数据（详见 09-vm-relocation.md）
     │
-    ├── 收集旧元数据信息（reloc_array_count/info）
-    │      → 栈上固定大小数组，不依赖堆分配
+    ├── 读取旧分配器状态（metadata_pa_range + total_count）
+    │
+    ├── choose_allocator_type() 选择目标分配器类型
+    │      → total_pages ≤ BUDDY_THRESHOLD_PAGES(4GB) → Bitmap，否则 → Buddy
     │
     ├── HeapArena::grow() 分配新 VA 空间
     │      → 逐页分配物理页（可碎片化）+ vm_self_mappages() 映射到连续 VA
+    │      → 分配后旧分配器中这些页已标记为已用
     │
-    ├── memcpy 旧数据到新位置
+    ├── available_regions() 收集旧分配器可用区域
+    │      → 在 HeapArena::grow() 之后收集，新元数据占用的页已被排除
+    │      → 转换为 BootMemRegion 列表
     │
-    ├── update_relocated_arrays() 更新 PhysAllocator 内部指针
-    │      → bitmap 和 page_cache slice 指向 HeapArena VA
+    ├── init() 语义化初始化新分配器
+    │      → 用收集到的可用区域列表创建新分配器（Bitmap 或 Buddy）
+    │
+    ├── *phys_alloc = new_alloc 整体替换旧分配器
     │
     └── free_mem() 释放旧 PA 页
            → 通过 metadata_pa_range() 获取旧 PA 范围

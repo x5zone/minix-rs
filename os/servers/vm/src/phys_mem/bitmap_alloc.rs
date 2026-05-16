@@ -84,52 +84,6 @@ impl BitmapAllocator {
         (self.meta_phys_base, self.meta_pages)
     }
 
-    pub fn reloc_array_count(&self) -> usize {
-        2
-    }
-
-    pub fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        match index {
-            0 => (
-                self.bitmap.as_ptr() as *const u8,
-                self.bitmap.len(),
-                core::mem::size_of::<u64>(),
-            ),
-            1 => (
-                self.page_cache.as_ptr() as *const u8,
-                self.page_cache.len(),
-                core::mem::size_of::<usize>(),
-            ),
-            _ => (core::ptr::null(), 0, 0),
-        }
-    }
-
-    pub fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        if new_ptrs.len() >= 1 && !new_ptrs[0].is_null() {
-            // SAFETY: new_ptrs[0] points to a valid memory region of at least
-            // self.bitmap.len() * size_of::<u64>() bytes, allocated by HeapArena::grow()
-            // during relocation. The region is valid for 'static because HeapArena
-            // never shrinks below its current top.
-            self.bitmap = unsafe {
-                core::slice::from_raw_parts_mut(
-                    new_ptrs[0] as *mut u64,
-                    self.bitmap.len(),
-                )
-            };
-        }
-        if new_ptrs.len() >= 2 && !new_ptrs[1].is_null() {
-            // SAFETY: new_ptrs[1] points to a valid memory region of at least
-            // self.page_cache.len() * size_of::<usize>() bytes, allocated by
-            // HeapArena::grow() during relocation. Same 'static validity as above.
-            self.page_cache = unsafe {
-                core::slice::from_raw_parts_mut(
-                    new_ptrs[1] as *mut usize,
-                    self.page_cache.len(),
-                )
-            };
-        }
-    }
-
     pub fn is_under_pressure(&self) -> bool {
         self.free_pages * 10 < self.total_pages
     }
@@ -395,16 +349,20 @@ impl PhysAllocator for BitmapAllocator {
         }
     }
 
-    fn reloc_array_count(&self) -> usize {
-        BitmapAllocator::reloc_array_count(self)
-    }
-
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        BitmapAllocator::reloc_array_info(self, index)
-    }
-
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        BitmapAllocator::update_relocated_arrays(self, new_ptrs)
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        let mut i = 0;
+        let total = self.bitmap_len();
+        while i < total {
+            if !self.page_is_free(i) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < total && self.page_is_free(i) {
+                i += 1;
+            }
+            callback(start, i - start);
+        }
     }
 }
 
@@ -675,35 +633,66 @@ mod tests {
     }
 
     #[test]
-    fn test_reloc_array_count() {
+    fn test_available_regions_init() {
         let regions = make_test_regions();
         let tp = total_pages_from_regions(&regions);
         let metadata = make_test_metadata(tp);
-        let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
-        assert_eq!(alloc.reloc_array_count(), 2);
+        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0x100000, 5);
+
+        let addr1 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+        let addr2 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr1, 1);
+        alloc.free_mem(addr2, 1);
+        let free_before = alloc.free_pages;
+
+        let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec![];
+        alloc.available_regions(&mut |base_page, num_pages| {
+            free_regions.push(BootMemRegion {
+                base: base_page * CLICK_SIZE,
+                size: num_pages * CLICK_SIZE,
+            });
+        });
+
+        let meta_size = BitmapAllocator::metadata_size(tp);
+        let new_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size + CLICK_SIZE];
+        let new_buf_leaked = alloc::boxed::Box::leak(new_buf.into_boxed_slice());
+        let new_alloc = BitmapAllocator::init(&mut new_buf_leaked[..meta_size], tp, &free_regions, 0, 0);
+
+        assert_eq!(new_alloc.free_pages, free_before);
+        assert_eq!(new_alloc.metadata_pa_range(), (0, 0));
+
+        let mut new_alloc = new_alloc;
+        let addr3 = new_alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+        new_alloc.free_mem(addr3, 1);
+
+        let addr4 = new_alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
+        new_alloc.free_mem(addr4, 10);
     }
 
     #[test]
-    fn test_reloc_array_info_bitmap_and_page_cache() {
+    fn test_available_regions_basic() {
         let regions = make_test_regions();
         let tp = total_pages_from_regions(&regions);
         let metadata = make_test_metadata(tp);
-        let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
 
-        let (ptr0, len0, size0) = alloc.reloc_array_info(0);
-        assert!(!ptr0.is_null());
-        assert_eq!(size0, core::mem::size_of::<u64>());
-        assert_eq!(len0, (tp + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK);
+        let addr = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
+        let alloc_start = addr.page_index();
 
-        let (ptr1, len1, size1) = alloc.reloc_array_info(1);
-        assert!(!ptr1.is_null());
-        assert_eq!(size1, core::mem::size_of::<usize>());
-        assert_eq!(len1, PAGE_CACHE_MAX);
+        let mut free_regions: alloc::vec::Vec<(usize, usize)> = alloc::vec![];
+        alloc.available_regions(&mut |base, count| {
+            free_regions.push((base, count));
+        });
 
-        let (ptr2, len2, size2) = alloc.reloc_array_info(2);
-        assert!(ptr2.is_null());
-        assert_eq!(len2, 0);
-        assert_eq!(size2, 0);
+        assert!(!free_regions.is_empty());
+        let total_free: usize = free_regions.iter().map(|(_, c)| *c).sum();
+        assert_eq!(total_free, alloc.free_pages);
+
+        for (base, _) in &free_regions {
+            assert!(*base < alloc_start || *base >= alloc_start + 10);
+        }
+
+        alloc.free_mem(addr, 10);
     }
 
     #[test]
@@ -729,118 +718,40 @@ mod tests {
     }
 
     #[test]
-    fn test_update_relocated_arrays() {
+    fn test_available_regions_init_clears_pa_range() {
         let regions = make_test_regions();
         let tp = total_pages_from_regions(&regions);
         let metadata = make_test_metadata(tp);
-        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+        let alloc = BitmapAllocator::init(metadata, tp, &regions, 0x100000, 5);
 
-        let addr1 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
-        let addr2 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
-        alloc.free_mem(addr1, 1);
-        alloc.free_mem(addr2, 1);
-        let free_before = alloc.free_pages;
+        let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec![];
+        alloc.available_regions(&mut |base_page, num_pages| {
+            free_regions.push(BootMemRegion {
+                base: base_page * CLICK_SIZE,
+                size: num_pages * CLICK_SIZE,
+            });
+        });
 
-        let (old_bitmap_ptr, bitmap_len, _) = alloc.reloc_array_info(0);
-        let (old_cache_ptr, cache_len, _) = alloc.reloc_array_info(1);
-        let bitmap_bytes = bitmap_len * core::mem::size_of::<u64>();
-        let cache_bytes = cache_len * core::mem::size_of::<usize>();
-        let total_bytes = bitmap_bytes + cache_bytes;
-
-        let new_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; total_bytes + CLICK_SIZE];
+        let meta_size = BitmapAllocator::metadata_size(tp);
+        let new_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; meta_size + CLICK_SIZE];
         let new_buf_leaked = alloc::boxed::Box::leak(new_buf.into_boxed_slice());
+        let new_alloc = BitmapAllocator::init(&mut new_buf_leaked[..meta_size], tp, &free_regions, 0, 0);
 
-        let new_bitmap_ptr = new_buf_leaked.as_mut_ptr();
-        unsafe {
-            core::ptr::copy_nonoverlapping(old_bitmap_ptr, new_bitmap_ptr, bitmap_bytes);
-        }
-        let new_cache_ptr = unsafe { new_bitmap_ptr.add(bitmap_bytes) };
-        unsafe {
-            core::ptr::copy_nonoverlapping(old_cache_ptr, new_cache_ptr, cache_bytes);
-        }
-
-        let new_ptrs: [*mut u8; 2] = [new_bitmap_ptr, new_cache_ptr];
-        alloc.update_relocated_arrays(&new_ptrs[..]);
-
-        assert_eq!(alloc.free_pages, free_before);
-
-        let addr3 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
-        alloc.free_mem(addr3, 1);
-
-        let addr4 = alloc.alloc_mem(10, PageAllocFlags::empty()).unwrap();
-        alloc.free_mem(addr4, 10);
+        let (pa_base, pa_pages) = new_alloc.metadata_pa_range();
+        assert_eq!(pa_base, 0);
+        assert_eq!(pa_pages, 0);
     }
 
     #[test]
-    fn test_update_relocated_arrays_null_skips() {
-        let regions = make_test_regions();
-        let tp = total_pages_from_regions(&regions);
-        let metadata = make_test_metadata(tp);
-        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
-
-        let new_ptrs: [*mut u8; 2] = [core::ptr::null_mut(); 2];
-        alloc.update_relocated_arrays(&new_ptrs[..]);
-    }
-
-    #[test]
-    fn test_reloc_after_failed_relocation_still_works() {
-        let regions = make_test_regions();
-        let tp = total_pages_from_regions(&regions);
-        let metadata = make_test_metadata(tp);
-        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0x100000, 5);
-
-        assert_eq!(alloc.reloc_array_count(), 2);
-
-        let free_before = alloc.free_pages;
-        let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
-        alloc.free_mem(addr, 1);
-        assert_eq!(alloc.free_pages, free_before);
-
-        let (pa_base, pa_pages) = alloc.metadata_pa_range();
-        assert_eq!(pa_base, 0x100000);
-        assert_eq!(pa_pages, 5);
-    }
-
-    #[test]
-    fn test_old_pa_pages_freed_after_relocation() {
-        let regions = make_test_regions();
-        let tp = total_pages_from_regions(&regions);
-        let metadata = make_test_metadata(tp);
-        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
-
-        let (old_pa_base, old_pa_pages) = alloc.metadata_pa_range();
-        assert_eq!(old_pa_base, 0);
-        assert_eq!(old_pa_pages, 0);
-
-        let pa_base = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
-        let pa_pages: usize = 3;
-        alloc.free_mem(pa_base, pa_pages);
-
-        let free_before = alloc.free_pages;
-        let addr = alloc.alloc_mem(pa_pages, PageAllocFlags::empty()).unwrap();
-        assert_eq!(addr, pa_base);
-        alloc.free_mem(addr, pa_pages);
-        assert_eq!(alloc.free_pages, free_before);
-    }
-
-    #[test]
-    fn test_physalloc_bitmap_forwarding() {
+    fn test_physalloc_bitmap_access() {
         let regions = make_test_regions();
         let tp = total_pages_from_regions(&regions);
         let metadata = make_test_metadata(tp);
         let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
         let phys = PhysAlloc::Bitmap(alloc);
 
-        assert_eq!(phys.reloc_array_count(), 2);
-
-        let (ptr0, len0, size0) = phys.reloc_array_info(0);
-        assert!(!ptr0.is_null());
-        assert!(len0 > 0);
-        assert_eq!(size0, core::mem::size_of::<u64>());
-
-        let (ptr1, len1, size1) = phys.reloc_array_info(1);
-        assert!(!ptr1.is_null());
-        assert!(len1 > 0);
-        assert_eq!(size1, core::mem::size_of::<usize>());
+        assert!(phys.as_bitmap().is_some());
+        let mut phys = phys;
+        assert!(phys.as_bitmap_mut().is_some());
     }
 }

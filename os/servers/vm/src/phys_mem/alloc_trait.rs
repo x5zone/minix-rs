@@ -13,15 +13,7 @@ pub trait PhysAllocator {
     fn total_count(&self) -> usize;
     fn reserve_pages(&mut self, base_page: usize, count: usize);
 
-    fn reloc_array_count(&self) -> usize {
-        0
-    }
-
-    fn reloc_array_info(&self, _index: usize) -> (*const u8, usize, usize) {
-        (core::ptr::null(), 0, 0)
-    }
-
-    fn update_relocated_arrays(&mut self, _new_ptrs: &[*mut u8]) {}
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize));
 }
 
 

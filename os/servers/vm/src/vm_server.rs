@@ -6,9 +6,8 @@
 //! # Initialization Phases
 //!
 //! 1. **Phase 1 - Memory detection**: Initialize global state with total page count
-//! 2. **Phase 2 - Physical allocator**: Set up reserved regions and critical pool
-//! 3. **Phase 3 - Page tables**: Initialize kernel page tables and direct map
-//! 4. **Phase 4 - Process table**: Set up boot processes from kernel boot image
+//! 2. **Phase 2 - Process table**: Set up boot processes from kernel boot image
+//! 3. **Phase 3 - Page tables**: Initialize kernel page tables and direct map (reserved)
 //!
 //! # Main Loop
 //!
@@ -22,7 +21,7 @@ use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::direct_map::vm_phys_to_virt;
 use crate::pagetable::init_vm_self_pt;
-use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
+use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, BuddyAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE, BUDDY_THRESHOLD_PAGES};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -54,108 +53,113 @@ impl VmServer {
         let meta_size = BitmapAllocator::metadata_size(total_pages);
         let meta_pages = bytes_to_clicks(meta_size);
 
-        let meta_phys_base = free_regions[0].base;
+        let meta_region = free_regions.iter()
+            .find(|r| {
+                (r.base as u64) < crate::direct_map::VM_DIRECT_MAP_SIZE
+                && r.size >= meta_pages * CLICK_SIZE
+            })
+            .expect("no free region in Direct Map range large enough for allocator metadata");
+
+        let meta_phys_base = meta_region.base;
         let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
         let metadata = unsafe {
             core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size)
         };
 
         let adjusted_base = meta_phys_base + meta_pages * CLICK_SIZE;
-        let adjusted_size = free_regions[0].size.saturating_sub(meta_pages * CLICK_SIZE);
+        let adjusted_size = meta_region.size.saturating_sub(meta_pages * CLICK_SIZE);
         let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
 
         PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
     }
 
-    pub fn relocate(&mut self) {
-        let (count, old_ptrs, old_pa_base, old_pa_pages) = {
-            let phys_alloc = self.page_alloc.phys_alloc_mut();
-            let count = phys_alloc.reloc_array_count();
-            if count == 0 {
-                return;
+    fn choose_allocator_type(total_pages: usize) -> PhysAllocType {
+        #[cfg(feature = "buddy_alloc")]
+        {
+            if total_pages > BUDDY_THRESHOLD_PAGES {
+                return PhysAllocType::Buddy;
             }
-
-            let mut old_ptrs: [(*const u8, usize); 4] = [(core::ptr::null(), 0); 4];
-            let mut total_bytes = 0usize;
-            for i in 0..count {
-                let (ptr, elem_count, elem_size) = phys_alloc.reloc_array_info(i);
-                let bytes = elem_count * elem_size;
-                old_ptrs[i] = (ptr, bytes);
-                total_bytes += bytes;
-            }
-
-            let (old_pa_base, old_pa_pages) = if let Some(bmp) = phys_alloc.as_bitmap_mut() {
-                bmp.metadata_pa_range()
-            } else {
-                return;
-            };
-
-            if old_pa_pages == 0 {
-                return;
-            }
-
-            (count, old_ptrs, old_pa_base, old_pa_pages)
-        };
-
-        let total_bytes: usize = old_ptrs[..count].iter().map(|(_, b)| *b).sum();
-        let pages = (total_bytes + CLICK_SIZE - 1) / CLICK_SIZE;
-        let new_va = match crate::global::heap_arena_grow(pages, &mut self.page_alloc) {
-            Ok(va) => va,
-            Err(_) => return,
-        };
-
-        let mut offset = 0usize;
-        let mut new_ptrs: [*mut u8; 4] = [core::ptr::null_mut(); 4];
-        for i in 0..count {
-            let (old_ptr, bytes) = old_ptrs[i];
-            // SAFETY: new_va is a valid heap VA from HeapArena::grow() with at least
-            // `total_bytes` bytes of contiguous writable memory starting at new_va.
-            // offset is bounded by total_bytes which fits within the allocated region.
-            // old_ptr is a valid readable pointer from reloc_array_info() pointing to
-            // the old metadata buffer in the BumpBuf region.
-            let dst = unsafe { (new_va as *mut u8).add(offset) };
-            unsafe { core::ptr::copy_nonoverlapping(old_ptr, dst, bytes); }
-            new_ptrs[i] = dst;
-            offset += bytes;
         }
+        PhysAllocType::Bitmap
+    }
+
+    fn relocate(&mut self) {
+        let (total_pages, old_pa_base, old_pa_pages) = {
+            let phys_alloc = self.page_alloc.phys_alloc();
+            let bitmap = phys_alloc.as_bitmap().expect("relocate: bootstrap allocator must be Bitmap");
+            let (pa_base, pa_pages) = bitmap.metadata_pa_range();
+            assert!(pa_pages > 0, "relocate: no BumpBuf metadata to relocate (already relocated?)");
+            (bitmap.total_count(), pa_base, pa_pages)
+        };
+
+        let alloc_type = Self::choose_allocator_type(total_pages);
+
+        let meta_size = alloc_type.metadata_size(total_pages);
+        let pages = bytes_to_clicks(meta_size);
+        let new_va = crate::global::heap_arena_grow(pages, &mut self.page_alloc)
+            .expect("relocate: failed to allocate new metadata via HeapArena");
+        let new_metadata = unsafe {
+            core::slice::from_raw_parts_mut(new_va as *mut u8, meta_size)
+        };
+
+        let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec![];
+        {
+            let phys_alloc = self.page_alloc.phys_alloc();
+            phys_alloc.available_regions(&mut |base_page, num_pages| {
+                free_regions.push(BootMemRegion {
+                    base: base_page * CLICK_SIZE,
+                    size: num_pages * CLICK_SIZE,
+                });
+            });
+        }
+
+        let new_alloc = match alloc_type {
+            PhysAllocType::Bitmap => {
+                PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+            }
+            #[cfg(feature = "buddy_alloc")]
+            PhysAllocType::Buddy => {
+                PhysAlloc::Buddy(BuddyAllocator::init(new_metadata, total_pages, &free_regions))
+            }
+            _ => unreachable!(),
+        };
 
         {
             let phys_alloc = self.page_alloc.phys_alloc_mut();
-            phys_alloc.update_relocated_arrays(&new_ptrs[..count]);
+            *phys_alloc = new_alloc;
             let old_pa = AlignedPhysBytes::new(old_pa_base);
             phys_alloc.free_mem(old_pa, old_pa_pages);
         }
     }
 
     pub fn init(&mut self) {
-        self.init_phase1();
-        self.init_phase2();
-        self.init_phase3();
-        self.init_phase4();
+        // Relocation requires real page tables (vm_self_mappages); skipped in tests.
+        #[cfg(not(test))]
+        self.relocate();
+
+        // Phase 1: Memory detection — initialize global state with total page count
+        self.init_global_state();
+
+        // Phase 2: Process table — set up boot processes from kernel boot image
+        self.init_proc_table();
+
+        // Phase 3: Page tables — initialize kernel page tables and direct map (reserved)
+
         self.initialized = true;
     }
 
-    fn init_phase1(&mut self) {
+    fn init_global_state(&mut self) {
         unsafe {
             crate::global::init(self.page_alloc.total_pages());
         }
     }
 
-    fn init_phase2(&mut self) {
-        let _table = VmProcTable::get_global();
-    }
-
-    fn init_phase3(&mut self) {
-    }
-
-    fn init_phase4(&mut self) {
+    fn init_proc_table(&mut self) {
         let _table = VmProcTable::get_global();
     }
 
     pub fn run(&mut self) {
-        if !self.initialized {
-            return;
-        }
+        assert!(self.initialized, "VmServer::run() called before init()");
 
         loop {
             break;
@@ -260,6 +264,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "VmServer::run() called before init()")]
     fn test_vm_server_run_without_init() {
         let mut server = make_test_vm_server();
         server.run();

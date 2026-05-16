@@ -1013,6 +1013,7 @@ static void reset_vm_rusage(struct vmproc *vmp)
 | 释放 | `free_mem(base, clicks)`   | 将 k 个连续页标记为空闲         | `PhysAllocator::free_mem()`           |
 | 查询 | `memstats(&n, &p, &l)`     | 返回空闲块数、空闲页数、最大连续空闲块   | `BitmapAllocator::memstats()` / `BuddyAllocator::memstats()` |
 | 总量 | `total_pages` 全局变量        | 系统物理页总数（初始化时设定，不再变化）  | `PhysAllocator::total_count()`        |
+| 可用区域 | —                        | 遍历当前可用区域，用于搬迁时状态转移    | `PhysAllocator::available_regions()`  |
 
 > **设计说明**：Minix3 的 `memstats()` 通过 3 个指针参数隐式返回结果，这是 C 语言常见的多返回值模式。Rust 中用命名结构体 `PhysMemStats` 替代，字段语义一目了然。分配/释放是核心路径（高频调用），查询是诊断路径（低频调用），因此 `memstats()` 作为各分配器的固有方法实现，通过 `PhysAlloc` 枚举的 `memstats()` 方法统一分发。
 
@@ -1033,6 +1034,7 @@ pub trait PhysAllocator {
     fn free_mem(&mut self, base: PhysBytes, clicks: usize);
     fn total_count(&self) -> usize;
     fn reserve_pages(&mut self, base_page: usize, count: usize);
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize));
 }
 
 // 各分配器实现独立的 memstats() 方法
@@ -1172,6 +1174,7 @@ pub struct BitmapAllocator {
       fn free_mem(&mut self, base: PhysBytes, clicks: usize);
       fn total_count(&self) -> usize;
       fn reserve_pages(&mut self, base_page: usize, count: usize);
+      fn available_regions(&self, callback: &mut dyn FnMut(usize, usize));
   }
   ```
 
@@ -1504,6 +1507,10 @@ impl PhysAllocator for BitmapAllocator {
         // free_pages_internal 同时将每页压入 page_cache（LIFO）
     }
     fn total_count(&self) -> usize;
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        // 遍历 bitmap，收集所有连续空闲页的范围
+        // callback 参数：(base_page, num_pages)
+    }
 }
 
 impl BitmapAllocator {
@@ -1634,6 +1641,10 @@ impl PhysAllocator for BuddyAllocator {
         // 将 PhysBytes 转为页号，调用 add_free_region
     }
     fn total_count(&self) -> usize;
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        // 遍历 page_orders，收集空闲块的 (base_page, block_size)
+        // 每个 page_orders[i] 为空闲块起始页时，block_size = 1 << order
+    }
 }
 
 impl BuddyAllocator {
@@ -1742,6 +1753,10 @@ impl PhysAllocator for SegmentTreeAllocator {
         // 将 PhysBytes 转为页号，调用 set_range(..., true)
     }
     fn total_count(&self) -> usize;
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        // 遍历叶节点，收集连续空闲页的范围
+        // callback 参数：(base_page, num_pages)
+    }
 }
 
 impl SegmentTreeAllocator {

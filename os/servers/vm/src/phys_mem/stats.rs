@@ -8,7 +8,7 @@
 use alloc::format;
 use alloc::string::String;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct MemStats {
     total_allocations: usize,
     total_deallocations: usize,

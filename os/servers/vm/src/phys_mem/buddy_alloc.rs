@@ -374,6 +374,22 @@ impl PhysAllocator for BuddyAllocator {
             self.stats.record_alloc(reserved * CLICK_SIZE);
         }
     }
+
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        let mut i = 0;
+        while i < self.total_pages {
+            if self.page_orders[i] == ORDER_INVALID
+                || (self.page_orders[i] & FLAG_ALLOCATED) != 0
+            {
+                i += 1;
+                continue;
+            }
+            let order = (self.page_orders[i] & ORDER_MASK) as usize;
+            let block_size = 1usize << order;
+            callback(i, block_size);
+            i += block_size;
+        }
+    }
 }
 
 impl BuddyAllocator {

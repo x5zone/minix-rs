@@ -322,6 +322,21 @@ impl PhysAllocator for SegmentTreeAllocator {
             self.stats.record_alloc(reserved * CLICK_SIZE);
         }
     }
+
+    fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
+        let mut i = 0;
+        while i < self.n {
+            if !self.page_is_free(i) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < self.n && self.page_is_free(i) {
+                i += 1;
+            }
+            callback(start, i - start);
+        }
+    }
 }
 
 #[cfg(feature = "segment_tree_alloc")]
@@ -374,6 +389,10 @@ impl PhysAllocator for SegmentTreeAllocator {
     }
 
     fn reserve_pages(&mut self, _base_page: usize, _count: usize) {
+        unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
+    }
+
+    fn available_regions(&self, _callback: &mut dyn FnMut(usize, usize)) {
         unreachable!("SegmentTreeAllocator requires 'segment_tree_alloc' feature flag")
     }
 }
