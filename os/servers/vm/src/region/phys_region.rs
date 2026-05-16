@@ -128,6 +128,9 @@ impl PhysRegion {
 
     pub(crate) fn unbind_block(&mut self) -> bool {
         if let Some(block) = self.ph {
+            // SAFETY: block.as_ptr() is valid because self.ph is Some(NonNull),
+            // meaning the pointer is non-null and was obtained from a valid reference.
+            // The PhysBlock is alive because we hold a reference to it via self.ph.
             unsafe {
                 let has_more_refs = (*block.as_ptr()).release_ref();
                 self.ph = None;
@@ -139,6 +142,8 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_phys_addr(&self) -> Option<PhysBytes> {
+        // SAFETY: block.as_ptr() is valid because NonNull guarantees non-null,
+        // and the PhysBlock is alive as long as self.ph is Some.
         self.ph.map(|block| unsafe { (*block.as_ptr()).phys })
     }
 
@@ -147,6 +152,7 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_refcount(&self) -> Option<u16> {
+        // SAFETY: same as get_phys_addr.
         self.ph.map(|block| unsafe { (*block.as_ptr()).refcount })
     }
 
@@ -169,6 +175,7 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_block_flags(&self) -> Option<PhysBlockFlags> {
+        // SAFETY: same as get_phys_addr.
         self.ph.map(|block| unsafe { (*block.as_ptr()).flags })
     }
 
@@ -179,6 +186,8 @@ impl PhysRegion {
     }
 
     pub(crate) fn get_virtual_addr(&self) -> Option<VirBytes> {
+        // SAFETY: parent.as_ptr() is valid because self.parent is Some(NonNull),
+        // and the VirRegion is alive as long as this PhysRegion exists.
         self.parent.map(|parent: NonNull<VirRegion>| unsafe {
             VirBytes((*parent.as_ptr()).vaddr.0 + self.offset.0)
         })
@@ -244,6 +253,9 @@ impl PhysRegion {
     }
 
     fn is_in_list(&self, block: NonNull<PhysBlock>) -> bool {
+        // SAFETY: block.as_ptr() is valid because NonNull guarantees non-null,
+        // and the caller ensures the PhysBlock is alive. The linked list
+        // traversal follows next_ph_list pointers set by link_to_block().
         unsafe {
             let block_ptr = block.as_ptr();
             let mut current = (*block_ptr).first_region;
@@ -259,6 +271,10 @@ impl PhysRegion {
 
     pub(crate) fn unlink_from_block(&mut self) -> bool {
         if let Some(block) = self.ph {
+            // SAFETY: block.as_ptr() is valid because self.ph is Some(NonNull).
+            // All pointer dereferences are within the PhysBlock's linked list,
+            // which is only modified through link_to_block/unlink_from_block
+            // under &mut self, ensuring no aliasing violations.
             unsafe {
                 let block_ptr = block.as_ptr();
                 debug_assert!((*block_ptr).refcount > 0, "refcount must be positive before unlink");
@@ -306,6 +322,9 @@ impl PhysRegion {
     {
         let mut current = block.first_region;
         while let Some(ptr) = current {
+            // SAFETY: ptr.as_ptr() is valid because it was obtained from
+            // block.first_region chain, which is only populated by
+            // link_to_block() with valid NonNull pointers.
             unsafe {
                 let region = &*ptr.as_ptr();
                 f(region);

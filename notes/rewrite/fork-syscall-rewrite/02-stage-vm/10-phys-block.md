@@ -86,7 +86,7 @@ struct phys_block {
 | `refcount` | `u8_t` | 引用计数 |
 | `flags` | `u8_t` | 标志位 |
 
-> **32位 vs 64位差异**：Minix3 原始代码运行在 x86-32 上，`phys_bytes` 为 `u32_t`（4字节），指针为4字节；minix-rs 目标为 x86-64，`phys_bytes` 为 `u64_t`（8字节），指针为8字节。因此结构体大小不同：
+> **32位 vs 64位差异**：Minix3 原始代码运行在 x86-32 上，`phys_bytes` 为 `unsigned long`（32 位系统上为 4 字节），指针为4字节；minix-rs 目标为 x86-64，`phys_bytes` 为 `u64_t`（8字节），指针为8字节。因此结构体大小不同：
 > - 32位（不含 seencount）：phys(4) + firstregion(4) + refcount(1) + flags(1) + padding(2) = 12字节
 > - 64位（不含 seencount）：phys(8) + firstregion(8) + refcount(1) + flags(1) + padding(6) = 24字节
 
@@ -226,7 +226,7 @@ struct phys_block *pb_new(phys_bytes phys)
     if(phys != MAP_NONE)
         assert(!(phys % VM_PAGE_SIZE));
     
-    /* 初始化字段（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    /* 初始化字段（USE 宏在 MEMPROTECT 构建中执行 slabunlock/slablock） */
     USE(newpb,
     newpb->phys = phys;           /* 物理地址 */
     newpb->refcount = 0;          /* 初始引用计数为 0 */
@@ -280,9 +280,9 @@ struct phys_block *pb = pb_new(new_page);
 /* 新块独立，refcount = 0，等待链接 */
 ```
 
-#### 方案四视角：CoW 复制的简化
+#### Direct Map 视角：CoW 复制的简化
 
-> **方案四标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
+> **Direct Map 标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
 
 ```rust
 /* 场景 3: CoW 复制（Direct Map 方案） */
@@ -481,7 +481,7 @@ void pb_link(
     struct vir_region *parent
 )
 {
-    /* 设置 phys_region 字段并加入链表（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    /* 设置 phys_region 字段并加入链表（USE 宏在 MEMPROTECT 构建中执行 slabunlock/slablock） */
     USE(newphysr,
     newphysr->offset = offset;
     newphysr->ph = newpb;
@@ -567,7 +567,7 @@ struct phys_region *pr = pb_reference(
 
 ---
 
-######## 2.3.2 pb_unreferenced - 减少引用
+#### 2.3.2 pb_unreferenced - 减少引用
 
 **函数签名**
 
@@ -589,7 +589,7 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
     pb = pr->ph;
     assert(pb->refcount > 0);
     
-    /* 减少引用计数（USE 宏在 SANITYCHECKS 构建中执行 slabunlock/slablock） */
+    /* 减少引用计数（USE 宏在 MEMPROTECT 构建中执行 slabunlock/slablock） */
     USE(pb, pb->refcount--;);
 
     /* 从链表中移除 phys_region */
@@ -787,6 +787,7 @@ fork 后共享状态：`phys_block.refcount = 2`，`firstregion → parent_pr �
 **结构体定义**
 
 ```rust
+#[derive(Debug)]
 pub(crate) struct PhysBlock {
     phys: PhysBytes,
     refcount: u16,
@@ -920,7 +921,7 @@ impl PhysBlock {
 
 ---
 
-###### 3.2 引用计数模式
+### 3.2 引用计数模式
 
 **手动管理 vs Arc**
 
@@ -1032,6 +1033,18 @@ impl PhysBlock {
 **PhysRegion 创建**
 
 ```rust
+pub(crate) struct PhysRegion {
+    pub ph: Option<NonNull<PhysBlock>>,
+    pub parent: Option<NonNull<VirRegion>>,
+    pub offset: VirBytes,
+    pub memtype: Option<&'static dyn MemType>,
+    pub next_ph_list: Option<NonNull<PhysRegion>>,
+}
+```
+
+**字段可见性**：所有字段为 `pub`，因为 `fork.rs` 中的 `clone_region_for_fork` 需要直接访问 `phys.ph` 和 `phys.memtype`。
+
+```rust
 impl PhysRegion {
     pub(crate) fn new(offset: VirBytes) -> Self {
         Self {
@@ -1075,7 +1088,7 @@ VirRegion 使用 `Vec<Option<Box<PhysRegion>>>` 存储物理区域，对应 Mini
 
 ---
 
-###### 4.2 引用管理
+### 4.2 引用管理
 
 **链接操作：link_to_block**
 
@@ -1236,11 +1249,40 @@ PhysBlock 只能在 refcount == 0 时释放。释放前必须满足：1. refcoun
 
 ```rust
 pub(crate) trait MemType: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn on_new(&self, _pr: &mut PhysRegion) {}
+    fn on_delete(&self, _pr: &mut PhysRegion) {}
+    fn on_reference(&self, _pr: &mut PhysRegion) {}
     fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
         Ok(false)
     }
+    fn on_pagefault(&self, _pr: &mut PhysRegion, _write: bool) -> Result<PagefaultResult, MemTypeError> {
+        Ok(PagefaultResult::None)
+    }
+    fn on_resize(&self, _pr: &mut PhysRegion, _old_len: VirBytes) {}
+    fn on_split(&self, _pr: &mut PhysRegion, _offset: VirBytes) {}
+    fn on_low_shrink(&self, _pr: &mut PhysRegion, _offset: VirBytes) {}
+    fn on_sanitycheck(&self, _pr: &PhysRegion) {}
+    fn is_writable(&self, _pr: &PhysRegion) -> bool { true }
+    fn on_copy(&self, _src: &PhysRegion, _dst: &mut PhysRegion) -> Result<(), MemTypeError> { Ok(()) }
+    fn region_id(&self) -> usize { 0 }
+    fn ref_count(&self) -> usize { 1 }
+    fn pt_flags(&self) -> u64 { 0 }
 }
 ```
+
+> **注意**：完整的方法列表和各实现的详细分析见 [11-memtype.md](11-memtype.md)。本文仅分析与 `on_unreference` 相关的语义。
+
+**当前 MemType 实现一览**：
+
+| 实现 | `on_unreference` 行为 | 说明 |
+|------|----------------------|------|
+| `AnonymousMemory` | 释放物理页 + 清除映射 | 匿名内存，refcount 归零时回收 |
+| `DirectPhysical` | 返回 `Ok(false)` | 直接物理映射，不自动回收 |
+| `SharedMemory` | 返回 `Ok(false)` | 共享内存，不自动回收 |
+| `ContiguousAnonymous` | 释放物理页 + 清除映射 | 连续匿名内存（DMA 等） |
+| `CacheMemory` | 返回 `Ok(false)` | 缓存内存，`on_delete` 中回收 |
+| `MappedFile` | 返回 `Ok(false)` | 文件映射，`on_copy` 返回 NotSupported |
 
 `on_unreference` 返回 `Result<bool, MemTypeError>`：
 - `Ok(true)`：物理页需要释放（refcount 为 0 且有物理页）
@@ -1524,6 +1566,7 @@ CoW 后（私有状态）：
 
 - [08-slab-allocator.md](08-slab-allocator.md) - 使用 Slab 分配 phys_block
 - [09-vir-region.md](09-vir-region.md) - vir_region 通过 physblocks[] 引用 phys_block
+- [11-memtype.md](11-memtype.md) - MemType trait 完整定义和各实现
 - [12-page-fault.md](12-page-fault.md) - 缺页处理与延迟分配（phys=MAP_NONE）
 - [14-phys-region.md](14-phys-region.md) - phys_region 连接 vir_region 与 phys_block
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 基于 phys_block 的 CoW
