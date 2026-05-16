@@ -4,24 +4,26 @@
 > **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
 > **说明**: Bootstrap 阶段结束后，将预留区域中的数据搬迁到堆上
 
-> **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖内核初始 1GB Direct Map"到"完全自主管理全部物理内存"的演进：
+> **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖 BumpBuf 的连续 PA 约束"到"完全自主管理全部物理内存"的演进：
 >
 > | 文档 | VM 获得的能力 | 依赖前提 |
 > |------|-------------|----------|
-> | 04 | 物理内存管理（bitmap allocator） | kernel 提供的 1GB direct map |
+> | 04 | 物理内存管理（bitmap allocator） | BumpBuf 从 free_regions[0] 分配元数据（连续 PA 约束） |
 > | 05 | 页分配（alloc_phys + vm_phys_to_virt） | bitmap allocator |
 > | 06 | 初始页表（4 页 + 1GB direct map） | kernel 建立 |
 > | 07 | 页表操作（双视图模型） | direct map |
-> | 08 | 堆分配（GlobalAlloc 对接 vm_phys_to_virt） | alloc crate 可用 |
-> | **09** | **完全建模所有物理内存** | **自举完成** |
+> | 08 | 堆分配（GlobalAlloc 对接 HeapArena） | alloc crate 可用 |
+> | **09** | **搬迁消除 BumpBuf 的连续 PA 约束** | **HeapArena + vm_self_mappages 可用** |
 >
-> **09 之前**：VM 依赖 kernel 提供的初始 1GB direct map，bitmap 元数据位于启动区
-> **09 之后**：direct map 覆盖全部物理内存，分配器元数据位于堆上，VM 完全自主
+> **09 之前**：BumpBuf 元数据占据 free_regions[0] 开头的连续 PA 页（永久占用，不可释放）
+> **09 之后**：元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页释放回分配器
 >
 > 09 的三个阶段对应 VM 自举的三次状态转换：
-> - **Phase 1**（1GB 启动阶段）：初始 direct map 足以支撑 VM 启动，并非临时方案
-> - **Phase 2**（扩展到全部物理内存）：将 direct map 扩展至覆盖全部物理内存，属于能力扩展而非缺陷补救
-> - **Phase 3**（可选的分配器策略升级）：根据实际需求选择分配器实现，属于策略选择而非必需步骤
+> - **Phase 1**（自举阶段）：BumpBuf 要求连续 PA，元数据占据 free_regions[0] 开头——这是**临时方案**，有硬性约束
+> - **Phase 2**（搬迁）：元数据从 BumpBuf 迁移到 HeapArena，释放连续 PA——这是**约束消除**，搬迁的核心动机
+> - **Phase 3**（可选升级）：分配器策略选择（bitmap → buddy 等）——这是**策略选择**，非必需步骤
+>
+> Direct Map 扩展是 Phase 1 的子问题（如果 PA > 1GB，需要扩展 Direct Map 才能让 BumpBuf 访问更多物理页），但不是搬迁的核心动机。
 >
 > 自举完成后，VM 不再依赖内核的特殊支持。
 
@@ -61,30 +63,46 @@ Bootstrap 阶段                    Normal 阶段
 
 #### 方案四视角：搬迁被大幅简化
 
-> **方案四标注**：在 Direct Map 方案下，搬迁的概念被大幅简化。
+> **方案四标注**：在 Direct Map + HeapArena 方案下，搬迁的概念被大幅简化。
 
-方案三中，PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。方案四中简化为：`alloc_phys() → vm_phys_to_virt() → memcpy → 更新指针`。
+方案三中，PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。方案四中简化为：`HeapArena::grow() → memcpy → update_relocated_arrays() → free_mem()`。
 
-关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），方案四中物理页天然拥有 stable VA（`vm_phys_to_virt()`），VA 分配这个步骤消失了。
+关键区别：方案三需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），方案四中 HeapArena 提供连续 VA（逐页映射碎片化 PA），物理页的 VA 分配步骤消失了。
 
-搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 05-vm-allocpage.md 中范式转变的又一个例证。
+**BumpBuf 的连续 PA 约束**：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
+
+搬迁后，元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页被释放回分配器。这些连续 PA 页对 DMA 等需要连续物理内存的场景非常有价值——搬迁不仅消除了约束，还回收了稀缺资源。
 
 ### 1.2 为什么需要搬迁
 
-根本原因：**Bootstrap 阶段的内存是受限的、静态的，而 Normal 阶段需要灵活的、动态的内存管理**。
+**Rust 版本的搬迁动机：消除 BumpBuf 的连续 PA 约束**。
 
-在 Minix3 的具体实现中：
+当前 `create_default_allocator()` 从 `free_regions[0]` 的 Direct Map 区域分配元数据：
 
-- **BSS 段中的 bitmap 大小固定**：`free_pages_bitmap` 在编译期就确定为 `PAGE_BITMAP_CHUNKS` 大小，对应 32 位地址空间的全部物理页（约 4GB）。如果实际物理内存只有 256MB，bitmap 仍然占用 128KB，造成浪费；如果物理内存超过 4GB（如 PAE 模式），bitmap 不够用。
-- **静态 spare page 池大小固定**：`static_sparepages` 在编译期确定（i386 上为 15 页），如果初始化过程中需要更多页，会耗尽并 panic。
-- **静态内存的物理地址在 liveupdate 时会变化**：Minix3 支持 liveupdate（运行时更新），静态 spare page 的物理地址在更新后会改变，导致页表中的映射失效。
+```
+free_regions[0].base → [bitmap | page_cache | ... ] → Direct Map VA
+                      ↑ 连续 PA（BumpBuf 要求）  ↑ VA = PA + BASE（VA 连续性跟随 PA 连续性）
+```
 
-因此，Minix3 在 `pt_init()` 完成后，会执行一个**隐式的搬迁过程**：
+这是自举阶段的硬性约束：HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。BumpBuf **必须**要求连续物理页。
 
-1. 用光所有静态 spare page（强制后续分配走动态路径）。
-2. 重新分配页表等关键结构（使用动态分配的内存）。
-3. 复制页表内容到新的动态结构中。
-4. 丢弃旧的静态结构。
+搬迁后：
+
+```
+搬迁前: BumpBuf 元数据占据 free_regions[0] 开头的连续 PA 页（永久占用，不可释放）
+搬迁后: 元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页释放回分配器
+```
+
+搬迁的核心价值不仅是"元数据从 Direct Map 迁移到 HeapArena"，更是**释放连续 PA 页**——这些连续物理页对 DMA 等场景是稀缺资源。
+
+**与 Minix3 搬迁动机的对比**：
+
+| 维度 | Minix3 | Rust 版本 |
+|------|--------|----------|
+| 搬迁对象 | 页表结构（spare page 池 + 页目录/页表页） | 分配器元数据（bitmap + page_cache） |
+| 搬迁原因 | BSS 大小固定 + liveupdate 物理地址变化 | BumpBuf 连续 PA 约束 |
+| 搬迁后效果 | 页表使用动态内存，spare page 池可扩展 | 连续 PA 页释放，元数据通过 HeapArena 访问 |
+| 搬迁方式 | 重新分配 + 复制内容 + 替换结构 | HeapArena::grow + memcpy + update_ptrs + free_mem |
 
 ### 1.3 搬迁涉及的数据
 
@@ -137,9 +155,9 @@ T1: main() → init_vm()
 T5: 主循环开始，所有分配走动态路径
 ```
 
-#### 方案四（Direct Map）时序
+#### 方案四（Direct Map + HeapArena）时序
 
-> **方案四标注**：Direct Map 方案下，搬迁被 3 阶段启动替代。
+> **方案四标注**：Direct Map + HeapArena 方案下，搬迁是 Phase 2 的核心动作。
 
 ```
 T0: Kernel 启动 VM 进程
@@ -147,39 +165,49 @@ T0: Kernel 启动 VM 进程
     ├── 映射 VM 代码/数据段
     └── 传递 boot_info（含物理内存范围 + 可用页列表）
 
-T1: main() → init_vm()
+T1: main() → VmServer::new()
     │
-    ├── T2: Phase 1 — Bootstrap
+    ├── T2: Phase 1 — Bootstrap（临时方案，有硬性约束）
     │       → vm_phys_to_virt() 可用（前 1GB）
     │       → 读取 boot_info，初始化 bitmap allocator
-    │       → bitmap 元数据通过 vm_phys_to_virt() 访问
+    │       → bitmap 元数据从 free_regions[0] 的 BumpBuf 分配（连续 PA 约束）
     │       → alloc_phys() + vm_phys_to_virt() 可用
     │
-    ├── T3: Phase 2 — Direct Map 扩展
-    │       → 如果物理内存 ≤ 1GB：跳过
-    │       → 如果物理内存 > 1GB：
-    │       │   bitmap.alloc_phys() 分配新页表页
-    │       │   vm_phys_to_virt() 直接读写新页表页
-    │       │   扩展 direct map 覆盖全部物理内存
-    │       → vm_phys_to_virt() 覆盖全部物理内存
+    ├── T3: register_page_alloc() + init_vm_self_pt()
+    │       → GlobalAlloc 可用（VmAllocator → HeapArena::grow）
+    │       → vm_self_mappages() 可用
     │
-    ├── T4: Phase 3 — 分配器迁移（可选）
-    │       → 如果策略决定：bitmap → buddy
-    │       → buddy 元数据通过 vm_phys_to_virt() 访问
-    │       → 无需搬迁——物理页天然拥有 stable VA
+    └── VmServer::new() 返回
+
+T4: VmServer::relocate() — Phase 2 搬迁（约束消除）
     │
-    ├── T5: GlobalAlloc 对接 vm_phys_to_virt()
-    │       → alloc crate 完整可用
-    │       → VM 堆完全可用
+    ├── 1. 收集旧元数据信息（reloc_array_count + reloc_array_info）
+    │      → 栈上固定大小数组，不依赖堆分配
     │
-    └── init_vm() 返回
-            → VM 完全自主管理所有物理内存
+    ├── 2. HeapArena::grow() 分配新 VA 空间
+    │      → 逐页分配物理页（可碎片化）+ vm_self_mappages() 映射到连续 VA
+    │
+    ├── 3. memcpy 旧数据到新位置
+    │      → copy_nonoverlapping(old_ptr, new_va, bytes)
+    │
+    ├── 4. update_relocated_arrays() 更新 PhysAllocator 内部指针
+    │      → bitmap 和 page_cache slice 指向 HeapArena VA
+    │
+    └── 5. free_mem() 释放旧 PA 页
+           → 通过 metadata_pa_range() 获取旧 PA 范围
+           → 连续 PA 页释放回分配器（可被 DMA 等场景使用）
+
+T5: VmServer::init() — Phase 3（可选升级）
+    → 如果策略决定：bitmap → buddy
+    → buddy 元数据通过 HeapArena 分配
+    → 无需再次搬迁——HeapArena 已提供连续 VA
 
 T6: 主循环开始
-    → VM 不再需要内核的特殊帮助
+    → VM 完全自主管理所有物理内存
+    → 无代码通过 Direct Map VA 访问旧元数据位置
 ```
 
-**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。方案四的 3 阶段启动是"显式的"——每个阶段有明确的职责和边界，且 Phase 2 的 direct map 扩展替代了 Minix3 的搬迁逻辑。
+**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。方案四的搬迁是"显式的"——`VmServer::relocate()` 作为独立方法，在 `new()` 之后、`init()` 之前调用。搬迁的核心动机不是"Direct Map 扩展"（那是 Phase 1 的子问题），而是"消除 BumpBuf 的连续 PA 约束"。
 
 ### 1.5 核心边界条件
 
@@ -1033,16 +1061,16 @@ void memstats(int *nodes, int *pages, int *largest)
 
 #### 策略一：原地升级（In-place Upgrade）
 
-**思路**：不搬迁。直接把预留区域的内存"标记"为堆的一部分，PhysAllocator 的元数据永远留在原地。
+**思路**：不搬迁。直接把 BumpBuf 的内存"标记"为堆的一部分，PhysAllocator 的元数据永远留在原地。
 
 ```
-搬迁前:  [ Reserved Region | ... ]
-搬迁后:  [ Reserved Region | ... ]  ← 同一块内存，只是"身份"变了
+搬迁前:  [ BumpBuf Region | ... ]
+搬迁后:  [ BumpBuf Region | ... ]  ← 同一块内存，只是"身份"变了
           ↑
           └── 现在属于 VM Heap
 ```
 
-**实现**：在 `into_normal()` 时，不释放预留区域，而是将其虚拟地址范围注册到 VM 的虚拟地址分配器中，标记为"已占用"。后续堆分配从预留区域之后开始。
+**实现**：在 `relocate()` 时，不释放 BumpBuf 区域，而是将其虚拟地址范围注册到 HeapArena 中，标记为"已占用"。后续堆分配从 BumpBuf 区域之后开始。
 
 **优点**：
 - 零拷贝，最快
@@ -1050,34 +1078,36 @@ void memstats(int *nodes, int *pages, int *largest)
 - 实现最简单
 
 **缺点**：
-- 预留区域的位置由内核决定，可能不在 VM 期望的堆区域
-- 预留区域大小有限（通常几 MB），堆的起始位置被"钉"在这里
-- 如果预留区域在虚拟地址空间的中间，会造成地址空间碎片
-- 语义不干净：预留区域的物理页是内核分配的，VM 堆的物理页是 VM 自己分配的，混在一起管理复杂
+- **连续 PA 约束无法消除**：BumpBuf 区域占据 free_regions[0] 开头的连续 PA 页，这些页无法释放回分配器
+- BumpBuf 区域的位置由内核决定，可能不在 VM 期望的堆区域
+- BumpBuf 区域大小有限（通常几 MB），堆的起始位置被"钉"在这里
+- 如果 BumpBuf 区域在虚拟地址空间的中间，会造成地址空间碎片
+- 语义不干净：BumpBuf 的物理页是内核分配的，VM 堆的物理页是 VM 自己分配的，混在一起管理复杂
 
 #### 策略二：复制搬迁（Copy Relocation）
 
-**思路**：在堆上分配新内存，把数据复制过去，更新引用，释放旧内存。
+**思路**：在 HeapArena 上分配新内存，把数据复制过去，更新引用，释放旧内存。
 
 ```
 搬迁前:
-  Reserved Region:  [bitmap][page_cache][free_lists]
-  VM Heap:          [.......................................]
+  BumpBuf (Direct Map):  [bitmap][page_cache]  ← 连续 PA，永久占用
+  HeapArena:             [.......................................]
 
 搬迁后:
-  Reserved Region:  [free    ][free      ][free       ]  ← 归还
-  VM Heap:          [bitmap][page_cache][free_lists][...]
+  BumpBuf (Direct Map):  [free    ][free      ]  ← 连续 PA 释放回分配器
+  HeapArena:             [bitmap][page_cache][...]
 ```
 
 **实现步骤**：
-1. 在堆上分配与旧数组相同大小的新数组
+1. 通过 HeapArena::grow() 分配新 VA 空间（逐页映射碎片化 PA）
 2. memcpy 数据
 3. 更新 PhysAllocator 内部指针指向新数组
-4. 释放预留区域中的旧数组
+4. 通过 metadata_pa_range() 获取旧 PA 范围，调用 free_mem() 释放
 
 **优点**：
+- **释放连续 PA 页**：BumpBuf 占据的连续 PA 页被释放回分配器，可被 DMA 等场景使用
 - 堆的布局完全由 VM 控制
-- 预留区域可以完全释放
+- BumpBuf 区域可以完全释放
 - 语义清晰：Bootstrap 数据是"临时"的，Normal 数据是"永久"的
 
 **缺点**：
@@ -1118,10 +1148,11 @@ void memstats(int *nodes, int *pages, int *largest)
 
 对于当前场景，**复制搬迁**是最佳选择：
 
-1. **SoA 结构使引用更新极简**：只需更新 3~5 个 slice 指针，不需要遍历对象图。
+1. **SoA 结构使引用更新极简**：只需更新 2 个 slice 指针（bitmap + page_cache），不需要遍历对象图。
 2. **搬迁窗口极短**：memcpy 几个数组只需要微秒级时间。搬迁期间暂停分配是可接受的（初始化阶段没有并发请求）。
 3. **双缓冲过度设计**：双缓冲的价值在于"搬迁期间系统仍可用"，但初始化阶段没有其他线程竞争 PhysAllocator。
-4. **原地升级有长期代价**：把预留区域钉在地址空间中间，后续的虚拟地址管理会变复杂。
+4. **原地升级无法消除连续 PA 约束**：BumpBuf 占据的连续 PA 页无法释放，对 DMA 等需要连续物理内存的场景是永久损失。
+5. **搬迁后连续 PA 页可被 DMA 等场景使用**：释放的连续 PA 页是稀缺资源，搬迁回收了这些资源。
 
 ### 3.2 搬迁的边界条件
 
@@ -1139,20 +1170,17 @@ void memstats(int *nodes, int *pages, int *largest)
 - panic（初始化阶段，没有恢复的必要）
 - 或者回退到原地升级（保留预留区域，标记为堆的一部分）
 
-### 3.3 与 Typestate 的配合
+### 3.3 搬迁的调用时机
 
-搬迁是 `into_normal()` 之后的独立步骤。Typestate 保证了搬迁的调用时机：
+搬迁是 `VmServer::new()` 之后的独立步骤。`new()` 中已完成 `register_page_alloc()` + `init_vm_self_pt()`，HeapArena 和 vm_self_mappages() 均已可用：
 
 ```rust
-// 编译期保证：只有 Normal 阶段才能调用搬迁
-impl VmPageAllocator<Normal> {
-    pub(crate) fn relocate_phys_allocator(&mut self) {
-        // self.pt_region 可用（由 into_normal 初始化）
-        // self.phys_alloc 不可用（已被 into_normal 消耗）
-        // 搬迁通过 pt_region 分配新内存
-    }
-}
+pub fn new(...) -> Self { ... }     // 创建分配器 + 注册 GlobalAlloc + init_vm_self_pt
+pub fn relocate(&mut self) { ... }  // 搬迁元数据：BumpBuf → HeapArena
+pub fn init(&mut self) { ... }      // 正常初始化（搬迁后的状态）
 ```
+
+`relocate()` 是独立方法，与 `init()` 分离。搬迁后 `init()` 中不再有连续 PA 约束。
 
 ---
 
@@ -1160,135 +1188,38 @@ impl VmPageAllocator<Normal> {
 
 ### 4.1 搬迁接口
 
-```rust
-// os/servers/vm/src/alloc_page.rs
-
-impl VmPageAllocator<Normal, RealPtOps> {
-    pub(crate) fn relocate_phys_allocator(&mut self) {
-        self.pt_region.as_mut().unwrap().relocate_phys_allocator();
-    }
-}
-```
-
-### 4.2 PtRegion 中的搬迁逻辑
-
-搬迁逻辑集中在 `PtRegion::relocate_phys_allocator()` 中，而非 PhysAllocator trait 的默认方法。这样设计的原因是：搬迁需要同时使用 PhysAllocator（分配物理页）和 PtRegion（分配虚拟地址并建立映射），将逻辑放在 PtRegion 中可以自然地访问两者。
-
-```rust
-// os/servers/vm/src/pt_region.rs
-
-impl<O: PtOps> PtRegion<O> {
-    pub(crate) fn relocate_phys_allocator(&mut self) {
-        let count = self.phys_alloc.reloc_array_count();
-        if count == 0 {
-            return;
-        }
-
-        // 1. 在堆上分配新数组（物理页 + 虚拟地址 + 映射）
-        let mut new_virts: [Option<VirBytes>; 4] = [None; 4];
-        let mut total_bytes: [usize; 4] = [0; 4];
-
-        for i in 0..count {
-            let (_old_ptr, elem_count, elem_size) = self.phys_alloc.reloc_array_info(i);
-            let bytes = elem_count * elem_size;
-            total_bytes[i] = bytes;
-            let pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-
-            for _ in 0..pages {
-                let phys = self.phys_alloc.alloc_mem(1, PageAllocFlags::empty())
-                    .expect("relocation: failed to allocate physical page");
-                let virt = self.alloc_pt_page()
-                    .expect("relocation: failed to allocate virtual address");
-                if new_virts[i].is_none() {
-                    new_virts[i] = Some(virt);
-                }
-                self.write_data_pte(virt, phys);
-            }
-        }
-
-        // 2. 复制数据
-        for i in 0..count {
-            let (old_ptr, _elem_count, _elem_size) = self.phys_alloc.reloc_array_info(i);
-            let new_virt = new_virts[i].unwrap();
-            unsafe {
-                core::ptr::copy_nonoverlapping(old_ptr, new_virt.0 as *mut u8, total_bytes[i]);
-            }
-        }
-
-        // 3. 更新 PhysAllocator 内部指针
-        let new_ptrs: [*mut u8; 4] = [
-            new_virts[0].map(|v| v.0 as *mut u8).unwrap_or(core::ptr::null_mut()),
-            new_virts[1].map(|v| v.0 as *mut u8).unwrap_or(core::ptr::null_mut()),
-            new_virts[2].map(|v| v.0 as *mut u8).unwrap_or(core::ptr::null_mut()),
-            new_virts[3].map(|v| v.0 as *mut u8).unwrap_or(core::ptr::null_mut()),
-        ];
-        self.phys_alloc.update_relocated_arrays(&new_ptrs[..count]);
-    }
-}
-```
-
-#### 方案四视角：搬迁逻辑的简化
-
-> **方案四标注**：Direct Map 方案下，PtRegion 搬迁逻辑被大幅简化。
-
-方案三的搬迁逻辑需要 3 步间接操作：
-
-```
-1. alloc_phys() + alloc_pt_page() + write_data_pte()  → 分配物理页 + 分配 VA + 建立映射
-2. copy_nonoverlapping(old_ptr, new_virt, size)        → 复制数据
-3. update_relocated_arrays(&new_ptrs)                  → 更新指针
-```
-
-方案四的搬迁逻辑只需 2 步：
-
-```
-1. alloc_phys() + vm_phys_to_virt()  → 分配物理页 + 物理页天然有 VA
-2. copy_nonoverlapping(old_ptr, vm_phys_to_virt(new_phys), size) → 复制数据
-3. update_relocated_arrays(&new_ptrs) → 更新指针
-```
-
-关键区别：方案三的步骤 1 需要 `alloc_pt_page()` 从 PtRegion 分配 VA 并 `write_data_pte()` 建立映射（可能触发 `pt_ptalloc_in_range`），方案四中 `vm_phys_to_virt()` 一步完成。`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用消失了——搬迁不再依赖 PtRegion 的 VA 管理能力。
-
-搬迁简化不是"优化了搬迁流程"，而是 **"VA 分配这个步骤本身消失了"**——这正是 §1.1 和 05-vm-allocpage.md 中范式转变的又一个例证。
-
-### 4.3 PhysAllocator trait 的搬迁接口
-
-搬迁接口使用分步查询设计（`reloc_array_count()` + `reloc_array_info()`），而非返回 `Vec`。这避免了搬迁期间对堆分配器的依赖（搬迁时 alloc 可能尚未就绪）：
+搬迁接口使用分步查询设计（`reloc_array_count()` + `reloc_array_info()` + `update_relocated_arrays()`），避免在 trait 方法中使用 Vec（保持 trait 不依赖 alloc crate）：
 
 ```rust
 // os/servers/vm/src/phys_mem/alloc_trait.rs
 
 pub trait PhysAllocator {
-    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<PhysBytes, AllocError>;
-    fn free_mem(&mut self, base: PhysBytes, clicks: usize);
+    fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError>;
+    fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize);
     fn total_count(&self) -> usize;
+    fn reserve_pages(&mut self, base_page: usize, count: usize);
 
-    /// 需要搬迁的数组数量。
     fn reloc_array_count(&self) -> usize { 0 }
 
-    /// 获取第 index 个数组的信息。
-    /// 返回 (当前指针, 元素个数, 元素大小)。
     fn reloc_array_info(&self, _index: usize) -> (*const u8, usize, usize) {
         (core::ptr::null(), 0, 0)
     }
 
-    /// 更新内部指针，指向新数组。
-    /// new_ptrs 的顺序与 reloc_array_info() 的 index 顺序一致。
     fn update_relocated_arrays(&mut self, _new_ptrs: &[*mut u8]) {}
 }
 ```
 
-### 4.4 BitmapAllocator 的搬迁
+默认实现返回空——不支持搬迁的分配器（如 BuddyAllocator、测试 mock）无需实现。
+
+### 4.2 BitmapAllocator 的搬迁实现
 
 ```rust
 // os/servers/vm/src/phys_mem/bitmap_alloc.rs
 
-impl PhysAllocator for BitmapAllocator {
-    fn reloc_array_count(&self) -> usize {
-        2  // bitmap + page_cache
-    }
+impl BitmapAllocator {
+    pub fn reloc_array_count(&self) -> usize { 2 }
 
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
+    pub fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
         match index {
             0 => (self.bitmap.as_ptr() as *const u8, self.bitmap.len(), core::mem::size_of::<u64>()),
             1 => (self.page_cache.as_ptr() as *const u8, self.page_cache.len(), core::mem::size_of::<usize>()),
@@ -1296,174 +1227,249 @@ impl PhysAllocator for BitmapAllocator {
         }
     }
 
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        unsafe {
-            self.bitmap = core::slice::from_raw_parts_mut(
-                new_ptrs[0] as *mut u64,
-                self.bitmap.len(),
-            );
-            self.page_cache = core::slice::from_raw_parts_mut(
-                new_ptrs[1] as *mut usize,
-                self.page_cache.len(),
-            );
+    pub fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
+        if new_ptrs.len() >= 1 && !new_ptrs[0].is_null() {
+            self.bitmap = unsafe {
+                core::slice::from_raw_parts_mut(new_ptrs[0] as *mut u64, self.bitmap.len())
+            };
+        }
+        if new_ptrs.len() >= 2 && !new_ptrs[1].is_null() {
+            self.page_cache = unsafe {
+                core::slice::from_raw_parts_mut(new_ptrs[1] as *mut usize, self.page_cache.len())
+            };
+        }
+    }
+
+    pub fn metadata_pa_range(&self) -> (u64, usize) {
+        (self.meta_phys_base, self.meta_pages)
+    }
+}
+```
+
+`metadata_pa_range()` 返回旧元数据占据的 PA 基地址和页数。`create_default_allocator()` 中 `meta_phys_base` 和 `meta_pages` 原本是局部变量，现在保存到 `BitmapAllocator` 字段中，供搬迁时释放旧 PA 页。
+
+### 4.3 PhysAlloc 枚举转发
+
+所有 `PhysAllocator` trait 方法都通过 `PhysAlloc` 枚举的 match 转发。新增的三个搬迁方法同样需要转发：
+
+```rust
+// os/servers/vm/src/phys_mem/mod.rs
+
+impl PhysAllocator for PhysAlloc {
+    // ... existing methods ...
+
+    fn reloc_array_count(&self) -> usize {
+        match self {
+            PhysAlloc::Bitmap(b) => b.reloc_array_count(),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.reloc_array_count(),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.reloc_array_count(),
+        }
+    }
+    // ... reloc_array_info, update_relocated_arrays 同理 ...
+}
+```
+
+### 4.4 VmServer::relocate() 实现
+
+```rust
+// os/servers/vm/src/vm_server.rs
+
+impl VmServer {
+    pub fn relocate(&mut self) {
+        // Phase 1: collect old metadata info (stack-allocated, no heap dependency)
+        let (count, old_ptrs, old_pa_base, old_pa_pages) = {
+            let phys_alloc = self.page_alloc.phys_alloc_mut();
+            let count = phys_alloc.reloc_array_count();
+            if count == 0 { return; }
+
+            let mut old_ptrs: [(*const u8, usize); 4] = [(core::ptr::null(), 0); 4];
+            let mut total_bytes = 0usize;
+            for i in 0..count {
+                let (ptr, elem_count, elem_size) = phys_alloc.reloc_array_info(i);
+                let bytes = elem_count * elem_size;
+                old_ptrs[i] = (ptr, bytes);
+                total_bytes += bytes;
+            }
+
+            let (old_pa_base, old_pa_pages) = phys_alloc.as_bitmap_mut()
+                .map(|bmp| bmp.metadata_pa_range())
+                .unwrap_or((0, 0));
+            if old_pa_pages == 0 { return; }
+
+            (count, old_ptrs, old_pa_base, old_pa_pages)
+        };
+
+        // Phase 2: allocate new VA space via HeapArena
+        let total_bytes: usize = old_ptrs[..count].iter().map(|(_, b)| *b).sum();
+        let pages = (total_bytes + CLICK_SIZE - 1) / CLICK_SIZE;
+        let new_va = match crate::global::heap_arena_grow(pages, &mut self.page_alloc) {
+            Ok(va) => va,
+            Err(_) => return,
+        };
+
+        // Phase 3: memcpy old data to new location
+        let mut offset = 0usize;
+        let mut new_ptrs: [*mut u8; 4] = [core::ptr::null_mut(); 4];
+        for i in 0..count {
+            let (old_ptr, bytes) = old_ptrs[i];
+            let dst = unsafe { (new_va as *mut u8).add(offset) };
+            unsafe { core::ptr::copy_nonoverlapping(old_ptr, dst, bytes); }
+            new_ptrs[i] = dst;
+            offset += bytes;
+        }
+
+        // Phase 4: update PhysAllocator internal pointers
+        // Phase 5: free old PA pages
+        {
+            let phys_alloc = self.page_alloc.phys_alloc_mut();
+            phys_alloc.update_relocated_arrays(&new_ptrs[..count]);
+            let old_pa = AlignedPhysBytes::new(old_pa_base);
+            phys_alloc.free_mem(old_pa, old_pa_pages);
         }
     }
 }
 ```
 
-### 4.5 BuddyAllocator 的搬迁
+**关键设计约束**：
 
-```rust
-// os/servers/vm/src/phys_mem/buddy_alloc.rs
+1. **搬迁不依赖 GlobalAlloc 分配元数据**。新元数据空间通过 `HeapArena::grow()` 分配（逐页映射物理页），不通过 `Box::new()` 或 `Vec::new()`。
+2. **搬迁后无代码通过 Direct Map VA 访问旧元数据位置**。`BitmapAllocator` 通过 `self.bitmap` 和 `self.page_cache` slice 访问元数据，搬迁只需更新这两个 slice 指针。
+3. **`metadata_pa_range()` 将旧 VA 转回 PA**。搬迁后释放旧 PA 页时，通过 `metadata_pa_range()` 获取旧 metadata buffer 的物理地址范围。
+4. **借用检查器友好**：分阶段释放 `phys_alloc` 的可变借用，避免同时持有 `&mut PhysAlloc` 和 `&mut VmPageAllocator`。
 
-impl PhysAllocator for BuddyAllocator {
-    fn reloc_array_count(&self) -> usize {
-        3  // free_list_heads + page_next + page_orders
-    }
+### 4.5 搬迁时序图
 
-    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
-        match index {
-            0 => (self.free_list_heads.as_ptr() as *const u8, self.free_list_heads.len(), core::mem::size_of::<u32>()),
-            1 => (self.page_next.as_ptr() as *const u8, self.page_next.len(), core::mem::size_of::<u32>()),
-            2 => (self.page_orders.as_ptr() as *const u8, self.page_orders.len(), core::mem::size_of::<u8>()),
-            _ => (core::ptr::null(), 0, 0),
-        }
-    }
-
-    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
-        unsafe {
-            self.free_list_heads = core::slice::from_raw_parts_mut(
-                new_ptrs[0] as *mut u32,
-                self.free_list_heads.len(),
-            );
-            self.page_next = core::slice::from_raw_parts_mut(
-                new_ptrs[1] as *mut u32,
-                self.page_next.len(),
-            );
-            self.page_orders = core::slice::from_raw_parts_mut(
-                new_ptrs[2] as *mut u8,
-                self.page_orders.len(),
-            );
-        }
-    }
-}
+```
+VmServer::new()                  VmServer::relocate()              VmServer::init()
+│                                │                                 │
+├─ create_default_allocator()    │                                 │
+│  ├─ BumpBuf 分配元数据          │                                 │
+│  │  (连续 PA, Direct Map VA)    │                                 │
+│  └─ BitmapAllocator::init()    │                                 │
+│     (meta_phys_base, meta_pages)                                 │
+│                                │                                 │
+├─ register_page_alloc()         │                                 │
+├─ init_vm_self_pt()             │                                 │
+│                                │                                 │
+└─────────────────────────────────┤                                 │
+                                 │                                 │
+                                 ├─ reloc_array_count/info()       │
+                                 │  → 收集旧元数据信息               │
+                                 │  → 栈上固定大小数组               │
+                                 │                                 │
+                                 ├─ HeapArena::grow()              │
+                                 │  → alloc_phys() × N             │
+                                 │  → vm_self_mappages() × N       │
+                                 │  → 返回连续 VA                   │
+                                 │                                 │
+                                 ├─ copy_nonoverlapping()          │
+                                 │  → memcpy 旧→新                  │
+                                 │                                 │
+                                 ├─ update_relocated_arrays()      │
+                                 │  → bitmap slice → HeapArena VA  │
+                                 │  → page_cache slice → HeapArena │
+                                 │                                 │
+                                 ├─ free_mem(old_pa, meta_pages)   │
+                                 │  → 连续 PA 页释放回分配器         │
+                                 │                                 │
+                                 └─────────────────────────────────┤
+                                                                   │
+                                                                   ├─ init_phase1..4()
+                                                                   └─ initialized = true
 ```
 
 ### 4.6 搬迁的完整调用链
 
-```rust
-// os/servers/vm/src/main.rs (示意)
-
-fn init_vm(boot_info: BootInfo) -> VmPageAllocator<Normal, RealPtOps> {
-    // T2: Bootstrap
-    let reserved = ReservedRegion::from_boot_info(&boot_info); // Direct Map 下不再需要 ReservedRegion
-    let phys_alloc = Box::new(UninitPhysAllocator);
-    let mut alloc = VmPageAllocator::<Bootstrap>::new(reserved, phys_alloc);
-
-    // T3: 初始化 PhysAllocator（从预留区域分配元数据）
-    let mem_chunks = get_mem_chunks(&boot_info);
-    let phys_alloc = BitmapAllocator::init(&mut alloc, &mem_chunks);
-    // ... 将 phys_alloc 注入到 alloc 中 ...
-
-    // T4: 初始化页表
-    pt_init(&mut alloc);
-
-    // T5: 切换到 Normal
-    let mut alloc = alloc.into_normal();
-
-    // T6: 搬迁 PhysAllocator 元数据
-    alloc.relocate_phys_allocator();
-
-    alloc
-}
 ```
-
-#### 方案四视角：ReservedRegion 不再需要
-
-> **方案四标注**：Direct Map 方案下，ReservedRegion 已从代码中删除。VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成。
-
-方案三的 `ReservedRegion` 承担双重职责：
-1. **物理页预留**：从 kernel 传递的 boot_info 中提取预留的物理页范围
-2. **VA 分配**：为这些物理页分配虚拟地址（通过 PtRegion 的 `alloc_pt_page()`），建立映射
-
-Direct Map 方案下，ReservedRegion 的两项职责均被替代：
-- **物理页预留**：由 `PhysAllocator.reserve_pages()` 完成
-- **VA 分配**：由 `vm_phys_to_virt(phys)` 天然获得，不需要额外的 VA 分配步骤
-
-```rust
-// 方案三
-let reserved = ReservedRegion::from_boot_info(&boot_info);
-// reserved 内部需要 alloc_pt_page() + write_data_pte() 为每个物理页建立 VA 映射
-
-// 方案四：ReservedRegion 已删除
-// 物理页预留由 PhysAllocator.reserve_pages() 完成
-// VA 通过 vm_phys_to_virt(phys) 直接获取
+VmServer::relocate()
+  │
+  ├── VmPageAllocator::phys_alloc_mut()     → 获取 &mut PhysAlloc
+  │
+  ├── PhysAlloc::reloc_array_count()        → 2 (bitmap + page_cache)
+  │
+  ├── PhysAlloc::reloc_array_info(0)        → (bitmap_ptr, len, sizeof(u64))
+  ├── PhysAlloc::reloc_array_info(1)        → (cache_ptr, len, sizeof(usize))
+  │
+  ├── BitmapAllocator::metadata_pa_range()  → (meta_phys_base, meta_pages)
+  │
+  ├── global::heap_arena_grow(pages, alloc)
+  │   └── HeapArena::grow(pages, page_alloc)
+  │       ├── page_alloc.alloc_phys(1) × N   → 碎片化 PA
+  │       └── vm_self_mappages(va, phys) × N  → 连续 VA
+  │
+  ├── copy_nonoverlapping(old, new, bytes)  → memcpy
+  │
+  ├── PhysAlloc::update_relocated_arrays(&new_ptrs)
+  │   └── BitmapAllocator::update_relocated_arrays()
+  │       ├── self.bitmap = from_raw_parts_mut(new_ptrs[0])
+  │       └── self.page_cache = from_raw_parts_mut(new_ptrs[1])
+  │
+  └── PhysAlloc::free_mem(old_pa, meta_pages)
+      └── BitmapAllocator::free_mem()
+          └── free_pages_internal()          → 连续 PA 页标记为空闲
 ```
-
-这与 §4.2 的搬迁简化是同一个模式——VA 分配步骤消失了。ReservedRegion 从"物理页 + VA 管理"退化为不再需要，`alloc_pt_page()` 和 `write_data_pte()` 这两个函数调用不再出现。物理页预留的语义由 `PhysAllocator.reserve_pages()` 承接。
 
 ---
 
 ## 5. 测试
 
-### 5.1 搬迁后数据一致性
+### 5.1 搬迁接口测试
 
 ```rust
+// os/servers/vm/src/phys_mem/bitmap_alloc.rs
+
 #[test]
-fn test_relocation_data_integrity() {
-    let mut bootstrap = mock_bootstrap_with_phys_alloc();
-    let mut normal = bootstrap.into_normal_for_test();
+fn test_reloc_array_count() {
+    let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+    assert_eq!(alloc.reloc_array_count(), 2);
+}
 
-    // 搬迁前记录 PhysAllocator 状态
-    let stats_before = normal.pt_region.as_ref().unwrap().phys_alloc.memstats();
+#[test]
+fn test_reloc_array_info_bitmap_and_page_cache() {
+    let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+    let (ptr0, len0, size0) = alloc.reloc_array_info(0);
+    assert!(!ptr0.is_null());
+    assert_eq!(size0, core::mem::size_of::<u64>());
+    // ...
+}
 
-    // 执行搬迁
-    normal.relocate_phys_allocator();
-
-    // 搬迁后状态一致
-    let stats_after = normal.pt_region.as_ref().unwrap().phys_alloc.memstats();
-    assert_eq!(stats_before.free_pages, stats_after.free_pages);
-    assert_eq!(stats_before.largest_free, stats_after.largest_free);
+#[test]
+fn test_metadata_pa_range() {
+    let alloc = BitmapAllocator::init(metadata, tp, &regions, 0x100000, 5);
+    let (pa_base, pa_pages) = alloc.metadata_pa_range();
+    assert_eq!(pa_base, 0x100000);
+    assert_eq!(pa_pages, 5);
 }
 ```
 
-### 5.2 搬迁后可正常分配
+### 5.2 搬迁后数据一致性
 
 ```rust
 #[test]
-fn test_allocation_after_relocation() {
-    let mut bootstrap = mock_bootstrap_with_phys_alloc();
-    let mut normal = bootstrap.into_normal_for_test();
-    normal.relocate_phys_allocator();
+fn test_update_relocated_arrays() {
+    let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+    // allocate and free some pages
+    let addr1 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+    alloc.free_mem(addr1, 1);
+    let free_before = alloc.free_pages;
 
-    // 搬迁后仍可正常分配
-    let phys = normal.alloc_phys(1, PageAllocFlags::empty());
-    assert!(phys.is_ok());
+    // simulate relocation: copy data to new buffer, update pointers
+    let (old_bitmap_ptr, bitmap_len, _) = alloc.reloc_array_info(0);
+    let (old_cache_ptr, cache_len, _) = alloc.reloc_array_info(1);
+    // ... allocate new buffer, memcpy, update_relocated_arrays ...
+
+    assert_eq!(alloc.free_pages, free_before);
+    // allocation still works after relocation
+    let addr2 = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+    alloc.free_mem(addr2, 1);
 }
 ```
 
-### 5.3 搬迁后释放再分配
+### 5.3 搬迁后可正常分配和释放
 
-```rust
-#[test]
-fn test_free_realloc_after_relocation() {
-    let mut bootstrap = mock_bootstrap_with_phys_alloc();
-    let mut normal = bootstrap.into_normal_for_test();
-
-    // 搬迁前分配一页
-    let phys = normal.alloc_phys(1, PageAllocFlags::empty()).unwrap();
-
-    // 搬迁
-    normal.relocate_phys_allocator();
-
-    // 释放
-    normal.pt_region.as_mut().unwrap().phys_alloc.free_mem(phys, 1);
-
-    // 重新分配同一页
-    let phys2 = normal.alloc_phys(1, PageAllocFlags::empty()).unwrap();
-    assert_eq!(phys.as_u64(), phys2.as_u64());
-}
-```
+搬迁后 `BitmapAllocator` 的 `self.bitmap` 和 `self.page_cache` slice 指向 HeapArena VA 范围，alloc/free 行为与搬迁前一致。
 
 ---
 

@@ -729,9 +729,28 @@ T1: main() → VmServer::new()
     │       → 自此 Box/Vec 可用（bump allocator 接管 GlobalAlloc）
     │
     └── VmServer::new() 返回
-            → VM 完全自治（Direct Map + HeapArena 就绪）
 
-T6: 主循环开始
+T5.5: VmServer::relocate() — 搬迁元数据（详见 09-vm-relocation.md）
+    │
+    ├── 收集旧元数据信息（reloc_array_count/info）
+    │      → 栈上固定大小数组，不依赖堆分配
+    │
+    ├── HeapArena::grow() 分配新 VA 空间
+    │      → 逐页分配物理页（可碎片化）+ vm_self_mappages() 映射到连续 VA
+    │
+    ├── memcpy 旧数据到新位置
+    │
+    ├── update_relocated_arrays() 更新 PhysAllocator 内部指针
+    │      → bitmap 和 page_cache slice 指向 HeapArena VA
+    │
+    └── free_mem() 释放旧 PA 页
+           → 通过 metadata_pa_range() 获取旧 PA 范围
+           → 连续 PA 页释放回分配器（BumpBuf 的连续 PA 约束消除）
+
+T6: VmServer::init()
+    → VM 完全自治（Direct Map + HeapArena 就绪，连续 PA 约束已消除）
+
+T7: 主循环开始
     → VM 正常运行
 ```
 

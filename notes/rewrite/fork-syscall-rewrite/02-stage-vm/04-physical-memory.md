@@ -1244,6 +1244,7 @@ pub struct BitmapAllocator {
 - **不可扩展，只能搬迁**：如需管理更大物理内存，必须废弃当前分配器、整体迁移
 - **BumpBuf 适配**：只分配不释放不增长，bump allocator 即可满足；`alloc_slice<T>()` 提供类型安全封装
 - **连续物理页约束**：BumpBuf 的底层 buffer 来自 Direct Map（`vm_phys_to_virt(free_regions[0].base)`），Direct Map 的 VA 连续性完全跟随 PA 连续性（`VA = PA + BASE`）。因此 BumpBuf 要求底层物理内存是**连续的**——`free_regions[0]` 必须是一段足够大的连续物理内存区域。这是自举阶段的固有约束：在 HeapArena 就位之前，VM 没有任何机制可以将碎片化的物理页缝合为连续 VA。
+- **搬迁消除连续 PA 约束**（09-vm-relocation.md）：HeapArena 就位后，元数据从 BumpBuf（Direct Map，连续 PA）迁移到 HeapArena（碎片化 PA + 连续 VA）。搬迁后，BumpBuf 占据的连续 PA 页通过 `free_mem()` 释放回分配器——这些连续物理页对 DMA 等场景是稀缺资源。搬迁的核心动机不是"Direct Map 扩展"，而是"消除 BumpBuf 的连续 PA 约束"。
 
 ### 4.2 BumpBuf 实现
 

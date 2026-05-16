@@ -64,7 +64,62 @@ impl VmServer {
         let adjusted_size = free_regions[0].size.saturating_sub(meta_pages * CLICK_SIZE);
         let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
 
-        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions))
+        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
+    }
+
+    pub fn relocate(&mut self) {
+        let (count, old_ptrs, old_pa_base, old_pa_pages) = {
+            let phys_alloc = self.page_alloc.phys_alloc_mut();
+            let count = phys_alloc.reloc_array_count();
+            if count == 0 {
+                return;
+            }
+
+            let mut old_ptrs: [(*const u8, usize); 4] = [(core::ptr::null(), 0); 4];
+            let mut total_bytes = 0usize;
+            for i in 0..count {
+                let (ptr, elem_count, elem_size) = phys_alloc.reloc_array_info(i);
+                let bytes = elem_count * elem_size;
+                old_ptrs[i] = (ptr, bytes);
+                total_bytes += bytes;
+            }
+
+            let (old_pa_base, old_pa_pages) = if let Some(bmp) = phys_alloc.as_bitmap_mut() {
+                bmp.metadata_pa_range()
+            } else {
+                return;
+            };
+
+            if old_pa_pages == 0 {
+                return;
+            }
+
+            (count, old_ptrs, old_pa_base, old_pa_pages)
+        };
+
+        let total_bytes: usize = old_ptrs[..count].iter().map(|(_, b)| *b).sum();
+        let pages = (total_bytes + CLICK_SIZE - 1) / CLICK_SIZE;
+        let new_va = match crate::global::heap_arena_grow(pages, &mut self.page_alloc) {
+            Ok(va) => va,
+            Err(_) => return,
+        };
+
+        let mut offset = 0usize;
+        let mut new_ptrs: [*mut u8; 4] = [core::ptr::null_mut(); 4];
+        for i in 0..count {
+            let (old_ptr, bytes) = old_ptrs[i];
+            let dst = unsafe { (new_va as *mut u8).add(offset) };
+            unsafe { core::ptr::copy_nonoverlapping(old_ptr, dst, bytes); }
+            new_ptrs[i] = dst;
+            offset += bytes;
+        }
+
+        {
+            let phys_alloc = self.page_alloc.phys_alloc_mut();
+            phys_alloc.update_relocated_arrays(&new_ptrs[..count]);
+            let old_pa = AlignedPhysBytes::new(old_pa_base);
+            phys_alloc.free_mem(old_pa, old_pa_pages);
+        }
     }
 
     pub fn init(&mut self) {

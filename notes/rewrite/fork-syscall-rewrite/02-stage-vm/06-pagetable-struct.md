@@ -822,7 +822,7 @@ VM 启动后，通过 `vm_phys_to_virt()` 读写自己的页表，可以自行�
 1. Kernel 从预留区域中划出 4 页，用于初始页表
 2. 在 `boot_info` 中将这 4 页标记为 `used`，bitmap allocator 不会分配它们
 
-> **注意区分**：这里说的"预留区域"是指 kernel 传递给 VM 的启动数据区域（boot_info 中的 `reserved_region`），承载的是启动数据，与 Minix3 的 BSS 静态备用页池（ReservedRegion，用于打破递归）是不同的概念。后者因 Direct Map 而消除（VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成），前者仍然存在。
+> **注意区分**：这里说的"预留区域"是指 kernel 传递给 VM 的启动数据区域（boot_info 中的 `reserved_region`），承载的是启动数据，与 Minix3 的 BSS 静态备用页池（ReservedRegion，用于打破递归）是不同的概念。后者因 Direct Map 而消除（VA 由 `vm_phys_to_virt()` 统一提供，物理页预留由 `PhysAllocator.reserve_pages()` 完成），前者仍然存在。此外，自举阶段 BumpBuf 元数据占据的连续 PA 页在搬迁后（09-vm-relocation.md）也会被释放——这些页通过 `free_mem()` 归还分配器，不同于 `reserve_pages()` 的永久预留。
 
 这保证了自举的完整性——bitmap allocator 初始化时，初始页表的物理页已经被排除在可分配范围之外。
 

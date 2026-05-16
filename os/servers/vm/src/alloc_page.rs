@@ -72,6 +72,10 @@ impl VmPageAllocator {
     pub(crate) fn stats(&self) -> &VmAllocStats {
         &self.stats
     }
+
+    pub(crate) fn phys_alloc_mut(&mut self) -> &mut PhysAlloc {
+        &mut self.phys_alloc
+    }
 }
 
 #[cfg(test)]
@@ -106,7 +110,7 @@ mod tests {
         let adjusted_size = size.saturating_sub(meta_pages * CLICK_SIZE);
         let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
 
-        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions))
+        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
     }
 
     #[test]

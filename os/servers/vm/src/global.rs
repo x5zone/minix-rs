@@ -155,6 +155,13 @@ pub(crate) fn register_page_alloc(alloc: &mut VmPageAllocator) {
     PAGE_ALLOC_PTR.store(alloc as *mut VmPageAllocator, Ordering::SeqCst);
 }
 
+pub(crate) fn heap_arena_grow(
+    pages: usize,
+    page_alloc: &mut VmPageAllocator,
+) -> Result<u64, crate::heap_arena::HeapArenaError> {
+    HEAP_ARENA.grow(pages, page_alloc)
+}
+
 impl VmAllocator {
     const ARENA_PAGES: usize = 16;
     const ARENA_BYTES: usize = Self::ARENA_PAGES * CLICK_SIZE;

@@ -1258,6 +1258,8 @@ fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
 - VM 的页表修改**仅限 HeapArena 区域**——页表页通过 Direct Map 可达，无递归风险
 - VM 的动态内存分配链路：`alloc_phys → HeapArena::grow → vm_self_mappages → 页内切分 → 返回指针`
 
+**搬迁与 HeapArena 的关系**：自举阶段，分配器元数据通过 BumpBuf 从 Direct Map 区域分配（连续 PA 约束）。HeapArena 就位后，`VmServer::relocate()` 将元数据从 BumpBuf 迁移到 HeapArena——HeapArena::grow() 分配新 VA 空间（碎片化 PA + 连续 VA），memcpy 数据，更新指针，释放旧 PA 页。搬迁后，分配器元数据通过 HeapArena VA 访问，不再依赖 Direct Map 的连续 PA 约束（详见 09-vm-relocation.md）。
+
 这符合 VM 的职责身份：**VM 是 physical memory owner，不是 memory consumer**。物理页的持有者通过偏移直接访问（Direct Map），被管理者通过申请访问（`brk`/`mmap`）。这不是"不一致"，而是职责差异的自然体现。
 
 在 Minix3 的 32 位实现中，VM 是一个有自己堆、自己 `brk`、自己 `findhole` 的普通用户态进程——它和自己管理的其他进程使用同一套机制。Direct Map 打破了这种同构性：**VM 获得了物理内存的直接视图，付出的代价是和普通进程不再"结构一致"**。HeapArena 在 VM 进程内恢复了堆的虚拟连续性，但机制完全不同于 brk——它是 VM 主动映射物理页到预留 VA 区间，而非通过内核 IPC 扩展数据段。

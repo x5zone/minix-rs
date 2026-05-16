@@ -120,6 +120,36 @@ impl PhysAllocator for PhysAlloc {
             PhysAlloc::SegmentTree(s) => s.reserve_pages(base_page, count),
         }
     }
+
+    fn reloc_array_count(&self) -> usize {
+        match self {
+            PhysAlloc::Bitmap(b) => b.reloc_array_count(),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.reloc_array_count(),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.reloc_array_count(),
+        }
+    }
+
+    fn reloc_array_info(&self, index: usize) -> (*const u8, usize, usize) {
+        match self {
+            PhysAlloc::Bitmap(b) => b.reloc_array_info(index),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.reloc_array_info(index),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.reloc_array_info(index),
+        }
+    }
+
+    fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
+        match self {
+            PhysAlloc::Bitmap(b) => b.update_relocated_arrays(new_ptrs),
+            #[cfg(feature = "buddy_alloc")]
+            PhysAlloc::Buddy(b) => b.update_relocated_arrays(new_ptrs),
+            #[cfg(feature = "segment_tree_alloc")]
+            PhysAlloc::SegmentTree(s) => s.update_relocated_arrays(new_ptrs),
+        }
+    }
 }
 
 impl PhysAlloc {
