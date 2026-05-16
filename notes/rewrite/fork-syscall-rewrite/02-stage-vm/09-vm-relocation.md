@@ -2,28 +2,26 @@
 
 > **分类**: VM私有
 > **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
-> **说明**: 自举阶段结束后，将 BumpBuf 中的元数据搬迁到 HeapArena 上
+> **说明**: Minix3 的初始化数据搬迁机制分析，以及 Rust 版本的搬迁设计
 
-> **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖 BumpBuf 的连续 PA 约束"到"完全自主管理全部物理内存"的演进：
+> **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖 BSS 静态分配"到"完全自主管理全部物理内存"的演进：
 >
 > | 文档 | VM 获得的能力 | 依赖前提 |
 > |------|-------------|----------|
-> | 04 | 物理内存管理（bitmap allocator） | BumpBuf 从 free_regions[0] 分配元数据（连续 PA 约束） |
+> | 04 | 物理内存管理（bitmap allocator） | BSS 静态数组存储元数据 |
 > | 05 | 页分配（alloc_phys + vm_phys_to_virt） | bitmap allocator |
 > | 06 | 初始页表（4 页 + 1GB direct map） | kernel 建立 |
 > | 07 | 页表操作（双视图模型） | direct map |
 > | 08 | 堆分配（GlobalAlloc 对接 HeapArena） | alloc crate 可用 |
-> | **09** | **搬迁消除 BumpBuf 的连续 PA 约束** | **HeapArena + vm_self_mappages 可用** |
+> | **09** | **搬迁：从静态分配切换到动态分配** | **堆分配器 + 页表操作可用** |
 >
-> **09 之前**：BumpBuf 元数据占据 free_regions[0] 开头的连续 PA 页（永久占用，不可释放）
-> **09 之后**：元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页释放回分配器
+> **09 之前**：页表结构和 spare page 池依赖 BSS 静态分配（Minix3），或元数据依赖 BumpBuf 连续 PA 约束（Rust 版本）
+> **09 之后**：所有 VM 内部数据结构由动态分配支撑，不再依赖静态资源
 >
 > 09 的三个阶段对应 VM 自举的三次状态转换：
-> - **Phase 1**（自举阶段）：BumpBuf 要求连续 PA，元数据占据 free_regions[0] 开头——这是**临时方案**，有硬性约束
-> - **Phase 2**（搬迁）：元数据从 BumpBuf 迁移到 HeapArena，释放连续 PA——这是**约束消除**，搬迁的核心动机
+> - **Phase 1**（自举阶段）：Minix3 使用 BSS 静态数组，Rust 版本使用 BumpBuf——这是**临时方案**，有硬性约束
+> - **Phase 2**（搬迁）：从静态/BumpBuf 切换到动态分配——这是**约束消除**，搬迁的核心动机
 > - **Phase 3**（可选升级）：分配器策略选择（bitmap → buddy 等）——这是**策略选择**，非必需步骤
->
-> Direct Map 扩展是 Phase 1 的子问题（如果 PA > 1GB，需要扩展 Direct Map 才能让 BumpBuf 访问更多物理页），但不是搬迁的核心动机。
 >
 > 自举完成后，VM 不再依赖内核的特殊支持。
 
@@ -41,68 +39,48 @@
 
 因此，Minix3 采用了一个**两阶段初始化**策略：
 
-1. **自举阶段**：VM 使用 BumpBuf 从 `free_regions[0]` 的 Direct Map 区域分配物理内存管理器的元数据。此时 VM 还没有 HeapArena，所有元数据访问依赖 Direct Map（`VA = PA + BASE`），且 BumpBuf 强制要求连续 PA。
-2. **运行阶段**：VM 建立了 HeapArena 后，可以从堆中动态分配内存，碎片化的物理页通过 vm_self_mappages() 映射为连续 VA。
+1. **自举阶段**：VM 使用 BSS 段中的静态数组（`free_pages_bitmap`、`free_page_cache`、`static_sparepages`）存储元数据。这些数组编译进 VM 的 ELF，由内核在加载时映射。此时 VM 不需要动态分配——所有元数据已在 BSS 中。
+2. **运行阶段**：`pt_init()` 完成后（`pt_init_done = 1`），VM 可以通过 `alloc_mem()` + `vm_mappages()` 动态分配内存。页表结构和备用页池从静态分配切换到动态分配。
 
-**搬迁**就是指：在 HeapArena 就位后，将那些原本存放在 BumpBuf（Direct Map，连续 PA 约束）中的管理元数据，转移到 HeapArena（碎片化 PA + 连续 VA）中。搬迁完成后，BumpBuf 占据的连续 PA 页被释放回分配器。
+**搬迁**就是指：在 `pt_init()` 中，将页表结构和备用页池从 BSS 静态分配切换到动态分配。搬迁完成后，VM 的页表基础设施完全由动态内存支撑，不再依赖 BSS 中的静态资源。
+
+注意：Minix3 中 `free_pages_bitmap` 和 `free_page_cache` **不需要搬迁**——它们一直在 BSS 中，大小固定但位置永久。真正需要搬迁的是**页表结构**和 **spare page 池**（Rust 版本的搬迁对象不同，见 §3.0）。
 
 ```
 自举阶段                         运行阶段
 ┌──────────────────┐            ┌──────────────────┐
-│ BumpBuf          │            │ HeapArena        │
-│ (Direct Map)     │            │ (碎片化PA+连续VA) │
+│ BSS 静态数组      │            │ 动态分配           │
 │  ┌─────────────┐ │            │  ┌─────────────┐ │
-│  │ bitmap[]    │ │  搬迁 ──►  │  │ bitmap[]    │ │
-│  │ page_cache[]│ │            │  │ page_cache[]│ │
-│  │ ...         │ │            │  │ ...         │ │
+│  │ spare pages │ │  搬迁 ──►  │  │ spare pages │ │
+│  │ 页表结构     │ │            │  │ 页表结构     │ │
 │  └─────────────┘ │            │  └─────────────┘ │
+│  bitmap[]        │  不搬迁     │  bitmap[]        │
+│  page_cache[]    │  不搬迁     │  page_cache[]    │
 └──────────────────┘            └──────────────────┘
 ```
 
-**搬迁不是简单的 memcpy**。搬迁后的数据位于新的虚拟地址，所有指向旧地址的引用必须更新。如果管理结构内部包含指针（如链表头指向节点），搬迁后这些指针会失效，必须逐一修正。
-
-#### Direct Map 视角：搬迁被大幅简化
-
-> **Direct Map 标注**：在 Direct Map + HeapArena 方案下，搬迁的概念被大幅简化。
-
-早期使用 PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。Direct Map + HeapArena 简化为：`HeapArena::grow() → memcpy → update_relocated_arrays() → free_mem()`。
-
-关键区别：PtRegion 方案需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），而 HeapArena 提供连续 VA（逐页映射碎片化 PA），物理页的 VA 分配步骤消失了。
-
-**BumpBuf 的连续 PA 约束**：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
-
-搬迁后，元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页被释放回分配器。这些连续 PA 页对 DMA 等需要连续物理内存的场景非常有价值——搬迁不仅消除了约束，还回收了稀缺资源。
+**搬迁不是简单的 memcpy**。Minix3 的搬迁通过"重新分配 + 复制内容 + 替换结构"实现——分配新的动态页，复制旧内容，然后用新结构替换旧结构（详见 §2.9）。
 
 ### 1.2 为什么需要搬迁
 
-**Rust 版本的搬迁动机：消除 BumpBuf 的连续 PA 约束**。
+Minix3 的搬迁动机有两个：
 
-当前 `create_default_allocator()` 从 `free_regions[0]` 的 Direct Map 区域分配元数据：
+**1. BSS 大小固定，无法扩展**
+
+`free_pages_bitmap` 和 `free_page_cache` 是 BSS 中的静态数组，大小在编译时确定。`free_pages_bitmap` 固定为 128KB（对应 4GB 地址空间），`free_page_cache` 固定为 10000 项。如果物理内存超过 4GB，bitmap 无法扩展；如果缓存需求超过 10000 项，缓存无法增长。
+
+但 `free_pages_bitmap` 和 `free_page_cache` 本身不需要搬迁——它们在 BSS 中的位置是永久的。真正受固定大小限制的是**spare page 池**和**页表结构**：静态 spare page 池只有 15 页（i386），页表结构在初始化时用静态页构建，无法动态扩展。
+
+**2. liveupdate 导致物理地址变化**
+
+Minix3 支持 liveupdate——在系统运行时更新 VM 的代码和数据。liveupdate 会重新分配 VM 的物理内存，导致 BSS 中 `static_sparepages` 的物理地址失效。搬迁将 spare page 池从静态 BSS 切换到动态分配，确保 liveupdate 后 spare page 的物理地址仍然有效。
 
 ```
-free_regions[0].base → [bitmap | page_cache | ... ] → Direct Map VA
-                      ↑ 连续 PA（BumpBuf 要求）  ↑ VA = PA + BASE（VA 连续性跟随 PA 连续性）
+搬迁前: BSS 静态 spare pages（物理地址由内核在加载时决定，liveupdate 后失效）
+搬迁后: 动态分配的 spare pages（物理地址由 VM 自行分配，liveupdate 后仍有效）
 ```
 
-这是自举阶段的硬性约束：HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。BumpBuf **必须**要求连续物理页。
-
-搬迁后：
-
-```
-搬迁前: BumpBuf 元数据占据 free_regions[0] 开头的连续 PA 页（永久占用，不可释放）
-搬迁后: 元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页释放回分配器
-```
-
-搬迁的核心价值不仅是"元数据从 Direct Map 迁移到 HeapArena"，更是**释放连续 PA 页**——这些连续物理页对 DMA 等场景是稀缺资源。
-
-**与 Minix3 搬迁动机的对比**：
-
-| 维度 | Minix3 | Rust 版本 |
-|------|--------|----------|
-| 搬迁对象 | 页表结构（spare page 池 + 页目录/页表页） | 分配器元数据（bitmap + page_cache） |
-| 搬迁原因 | BSS 大小固定 + liveupdate 物理地址变化 | BumpBuf 连续 PA 约束 |
-| 搬迁后效果 | 页表使用动态内存，spare page 池可扩展 | 连续 PA 页释放，元数据通过 HeapArena 访问 |
-| 搬迁方式 | 重新分配 + 复制内容 + 替换结构 | HeapArena::grow + memcpy + update_ptrs + free_mem |
+搬迁的核心价值：让 VM 的页表基础设施不再依赖 BSS 中的静态资源，从而支持 liveupdate 和动态扩展。
 
 ### 1.3 搬迁涉及的数据
 
@@ -120,8 +98,6 @@ free_regions[0].base → [bitmap | page_cache | ... ] → Direct Map VA
 - `free_pages_bitmap` 和 `free_page_cache` 是**扁平数组**（SoA，Structure of Arrays），没有指针、没有嵌套结构、没有链表。
 - `static_sparepages` 是**物理页数组**，每个元素是一页物理内存，由内核在加载 ELF 时分配并映射到 VM 的虚拟地址空间。
 - 搬迁时，`free_pages_bitmap` 和 `free_page_cache` 不需要搬迁（它们一直在 BSS 中，只是大小固定）。真正需要搬迁的是**页表结构**和**spare page 池**——从静态分配切换到动态分配。
-
-**Rust 版本的搬迁对象**：与 Minix3 不同，Rust 版本中**bitmap 和 page_cache 确实需要搬迁**。原因：Rust 版本没有 BSS 静态数组——bitmap 和 page_cache 的内存来自 BumpBuf（`free_regions[0]` 的 Direct Map 区域），这是自举阶段的临时分配。搬迁将它们从 BumpBuf（连续 PA 约束）迁移到 HeapArena（碎片化 PA + 连续 VA），释放连续 PA 页。Minix3 不需要搬迁 bitmap/page_cache 是因为它们在 BSS 中（大小固定但位置永久），而 Rust 版本的 BumpBuf 分配是临时的。
 
 ### 1.4 搬迁在初始化时序中的位置
 
@@ -157,67 +133,13 @@ T1: main() → init_vm()
 T5: 主循环开始，所有分配走动态路径
 ```
 
-#### Direct Map + HeapArena 时序
-
-> **Direct Map 标注**：Direct Map + HeapArena 方案下，搬迁是 Phase 2 的核心动作。
-
-```
-T0: Kernel 启动 VM 进程
-    ├── 建立初始页表（4 页 + 1GB direct map）
-    ├── 映射 VM 代码/数据段
-    └── 传递 boot_info（含物理内存范围 + 可用页列表）
-
-T1: main() → VmServer::new()
-    │
-    ├── T2: Phase 1 — Bootstrap（临时方案，有硬性约束）
-    │       → vm_phys_to_virt() 可用（前 1GB）
-    │       → 读取 boot_info，初始化 bitmap allocator
-    │       → bitmap 元数据从 free_regions[0] 的 BumpBuf 分配（连续 PA 约束）
-    │       → alloc_phys() + vm_phys_to_virt() 可用
-    │
-    ├── T3: register_page_alloc() + init_vm_self_pt()
-    │       → GlobalAlloc 可用（VmAllocator → HeapArena::grow）
-    │       → vm_self_mappages() 可用
-    │
-    └── VmServer::new() 返回
-
-T4: VmServer::relocate() — Phase 2 搬迁（约束消除）
-    │
-    ├── 1. 收集旧元数据信息（reloc_array_count + reloc_array_info）
-    │      → 栈上固定大小数组，不依赖堆分配
-    │
-    ├── 2. HeapArena::grow() 分配新 VA 空间
-    │      → 逐页分配物理页（可碎片化）+ vm_self_mappages() 映射到连续 VA
-    │
-    ├── 3. memcpy 旧数据到新位置
-    │      → copy_nonoverlapping(old_ptr, new_va, bytes)
-    │
-    ├── 4. update_relocated_arrays() 更新 PhysAllocator 内部指针
-    │      → bitmap 和 page_cache slice 指向 HeapArena VA
-    │
-    └── 5. free_mem() 释放旧 PA 页
-           → 通过 metadata_pa_range() 获取旧 PA 范围
-           → 连续 PA 页释放回分配器（可被 DMA 等场景使用）
-
-T5: VmServer::init() — Phase 3（可选升级）
-    → 如果策略决定：bitmap → buddy
-    → buddy 元数据通过 HeapArena 分配
-    → 无需再次搬迁——HeapArena 已提供连续 VA
-
-T6: 主循环开始
-    → VM 完全自主管理所有物理内存
-    → 无代码通过 Direct Map VA 访问旧元数据位置
-```
-
-**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。Rust 版本的搬迁是"显式的"——`VmServer::relocate()` 作为独立方法，在 `new()` 之后、`init()` 之前调用。搬迁的核心动机不是"Direct Map 扩展"（那是 Phase 1 的子问题），而是"消除 BumpBuf 的连续 PA 约束"。
+Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。搬迁发生在 `pt_init_done = 1` 之后，此时 VM 已经可以动态分配内存，但仍然在使用 BSS 中的静态 spare page。搬迁将这些静态资源替换为动态分配的资源。
 
 ### 1.5 核心边界条件
 
 **分配失败**：
 - Minix3 Bootstrap 阶段：如果静态 spare page 池耗尽（如 `static_sparepages` 的 15 页用完），`vm_allocpage()` 返回 NULL，可能导致 panic。
 - Minix3 Normal 阶段：如果堆分配失败（`alloc_mem()` 返回 `NO_MEM`），系统无法继续运行，通常 panic。
-- Rust 版本自举阶段：如果 `free_regions[0]` 不足以容纳元数据，`BitmapAllocator::init()` 会 panic（debug_assert）。
-- Rust 版本搬迁阶段：如果 `HeapArena::grow()` 失败，`relocate()` 静默返回，系统继续使用 BumpBuf 元数据。
 
 **内存对齐**：
 - `alloc_mem()` 支持 `PAF_ALIGN64K` 和 `PAF_ALIGN16K` 标志。对齐分配时，先分配比请求更大的块，然后释放头部未对齐的部分。这要求空闲位图能够正确标记部分释放的页。
@@ -227,10 +149,6 @@ T6: 主循环开始
 
 **物理内存限制**：
 - `PAF_LOWER16MB` 和 `PAF_LOWER1MB` 限制分配只能在低地址区域。这在 DMA 设备需要物理连续内存时使用。
-
-**搬迁失败**：
-- 如果 `HeapArena::grow()` 失败（物理内存不足），`relocate()` 静默返回，系统继续使用 BumpBuf 元数据。搬迁是优化而非必需——连续 PA 约束未被消除，但系统仍可正常运行。
-- 如果 `reloc_array_count() == 0` 或 `metadata_pa_range() == (0, 0)`，`relocate()` 立即返回（无需搬迁）。
 
 ---
 
@@ -1062,6 +980,84 @@ void memstats(int *nodes, int *pages, int *largest)
 ---
 
 ## 3. Rust 设计决策
+
+### 3.0 Rust 版本的搬迁动机与 Minix3 的差异
+
+§1.2 分析了 Minix3 的搬迁动机（BSS 大小固定 + liveupdate 物理地址变化）。Rust 版本的搬迁动机不同——核心驱动力是**消除 BumpBuf 的连续 PA 约束**。
+
+**与 Minix3 搬迁动机的对比**：
+
+| 维度 | Minix3 | Rust 版本 |
+|------|--------|----------|
+| 搬迁对象 | 页表结构（spare page 池 + 页目录/页表页） | 分配器元数据（bitmap + page_cache） |
+| 搬迁原因 | BSS 大小固定 + liveupdate 物理地址变化 | BumpBuf 连续 PA 约束 |
+| 搬迁后效果 | 页表使用动态内存，spare page 池可扩展 | 连续 PA 页释放，元数据通过 HeapArena 访问 |
+| 搬迁方式 | 重新分配 + 复制内容 + 替换结构 | HeapArena::grow + memcpy + update_ptrs + free_mem |
+
+**Rust 版本的搬迁对象**：与 Minix3 不同，Rust 版本中**bitmap 和 page_cache 确实需要搬迁**。原因：Rust 版本没有 BSS 静态数组——bitmap 和 page_cache 的内存来自 BumpBuf（`free_regions[0]` 的 Direct Map 区域），这是自举阶段的临时分配。搬迁将它们从 BumpBuf（连续 PA 约束）迁移到 HeapArena（碎片化 PA + 连续 VA），释放连续 PA 页。Minix3 不需要搬迁 bitmap/page_cache 是因为它们在 BSS 中（大小固定但位置永久），而 Rust 版本的 BumpBuf 分配是临时的。
+
+**BumpBuf 的连续 PA 约束**：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
+
+搬迁后，元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页被释放回分配器。这些连续 PA 页对 DMA 等需要连续物理内存的场景非常有价值——搬迁不仅消除了约束，还回收了稀缺资源。
+
+**Direct Map 视角：搬迁被大幅简化**：在 Direct Map + HeapArena 方案下，搬迁的概念被大幅简化。早期使用 PtRegion 的搬迁逻辑是：分配 VA → 建立映射 → 复制 → 更新指针。Direct Map + HeapArena 简化为：`HeapArena::grow() → memcpy → update_relocated_arrays() → free_mem()`。关键区别：PtRegion 方案需要从 PtRegion 分配 VA 并建立映射（可能触发 `pt_ptalloc_in_range`），而 HeapArena 提供连续 VA（逐页映射碎片化 PA），物理页的 VA 分配步骤消失了。
+
+**Rust 版本的初始化时序**：
+
+```
+T0: Kernel 启动 VM 进程
+    ├── 建立初始页表（4 页 + 1GB direct map）
+    ├── 映射 VM 代码/数据段
+    └── 传递 boot_info（含物理内存范围 + 可用页列表）
+
+T1: main() → VmServer::new()
+    │
+    ├── T2: Phase 1 — Bootstrap（临时方案，有硬性约束）
+    │       → vm_phys_to_virt() 可用（前 1GB）
+    │       → 读取 boot_info，初始化 bitmap allocator
+    │       → bitmap 元数据从 free_regions[0] 的 BumpBuf 分配（连续 PA 约束）
+    │       → alloc_phys() + vm_phys_to_virt() 可用
+    │
+    ├── T3: register_page_alloc() + init_vm_self_pt()
+    │       → GlobalAlloc 可用（VmAllocator → HeapArena::grow）
+    │       → vm_self_mappages() 可用
+    │
+    └── VmServer::new() 返回
+
+T4: VmServer::relocate() — Phase 2 搬迁（约束消除）
+    │
+    ├── 1. 收集旧元数据信息（reloc_array_count + reloc_array_info）
+    │      → 栈上固定大小数组，不依赖堆分配
+    │
+    ├── 2. HeapArena::grow() 分配新 VA 空间
+    │      → 逐页分配物理页（可碎片化）+ vm_self_mappages() 映射到连续 VA
+    │
+    ├── 3. memcpy 旧数据到新位置
+    │      → copy_nonoverlapping(old_ptr, new_va, bytes)
+    │
+    ├── 4. update_relocated_arrays() 更新 PhysAllocator 内部指针
+    │      → bitmap 和 page_cache slice 指向 HeapArena VA
+    │
+    └── 5. free_mem() 释放旧 PA 页
+           → 通过 metadata_pa_range() 获取旧 PA 范围
+           → 连续 PA 页释放回分配器（可被 DMA 等场景使用）
+
+T5: VmServer::init() — Phase 3（可选升级）
+    → 如果策略决定：bitmap → buddy
+    → buddy 元数据通过 HeapArena 分配
+    → 无需再次搬迁——HeapArena 已提供连续 VA
+
+T6: 主循环开始
+    → VM 完全自主管理所有物理内存
+    → 无代码通过 Direct Map VA 访问旧元数据位置
+```
+
+**关键区别**：Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显式的搬迁函数。Rust 版本的搬迁是"显式的"——`VmServer::relocate()` 作为独立方法，在 `new()` 之后、`init()` 之前调用。
+
+**Rust 版本的边界条件**（详见 §3.2）：
+
+- 自举阶段分配失败：如果 `free_regions[0]` 不足以容纳元数据，`BitmapAllocator::init()` 会 panic（debug_assert）。
+- 搬迁失败：`relocate()` 静默返回，系统继续使用 BumpBuf 元数据（降级策略）。
 
 ### 3.1 搬迁策略选择
 
