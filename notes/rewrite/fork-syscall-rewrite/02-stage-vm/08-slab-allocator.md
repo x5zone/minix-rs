@@ -46,7 +46,7 @@ Slab 分配器是一种内存管理技术，用于高效分配固定大小的对
 
 > ⚠️ **澄清**：VM **可以**使用 malloc。VM 有自己的 `brk` 快速路径（`utility.c:_brk()`），直接调用 `alloc_mem()` 分配物理页并映射到自己的地址空间。VM 实际上也使用了 `calloc`/`realloc`/`free`（如 `region->physblocks` 数组）。
 > 
-> 以上是 Minix3（32 位 C 实现）的现状。Rust 版本在 Direct Map 下不再需要 brk——VM 通过 `vm_phys_to_virt()` 直接访问物理页，无需为自身的堆扩展虚拟地址空间。详见 §4.1 和 07-pagetable-ops.md §3.0.4。
+> 以上是 Minix3（32 位 C 实现）的现状。Rust 版本中，Direct Map 解决了"物理页可达性"（`vm_phys_to_virt()` 直接访问），HeapArena 解决了"虚拟连续性"（预留连续 VA 区间，逐页映射物理页）。VM 不再需要 brk/sbrk，但需要 HeapArena 为 Rust 堆提供连续 VA。详见 §4.1 和 07-pagetable-ops.md §3.0.4。
 
 **Slab 的价值在于性能优化**：
 
@@ -131,6 +131,8 @@ Slab:
 
 Slab allocator 需要物理页面来存储对象，调用链如下：
 
+**Minix3 链路**（32 位，需要 `vm_mappages` 获取 VA）：
+
 ```
 slaballoc()
   └─> newslabdata()              // 分配新的 slab
@@ -139,6 +141,21 @@ slaballoc()
                  ├─> alloc_mem() // 从物理内存池分配
                  └─> vm_mappages() // 映射到 VM 的虚拟地址空间
 ```
+
+**Rust 版本链路**（64 位，Direct Map + HeapArena）：
+
+```
+Box::new() / Vec::push()
+  └─> GlobalAlloc::alloc()
+       └─> VmAllocator::alloc()
+            └─> bump within arena
+            └─> arena exhausted? → refill_arena()
+                 └─> HeapArena::grow(pages, page_alloc)
+                      ├─> alloc_phys(1) × N    // 逐页分配物理页（可碎片化）
+                      └─> vm_self_mappages()    // 映射到 HeapArena 连续 VA
+```
+
+关键差异：Minix3 通过 `vm_mappages()` 获取 VA（需要 `find_hole` + 页表映射），Rust 版本通过 HeapArena 获取连续 VA（预留区间 + 逐页映射），Direct Map 仅用于物理页管理。
 
 **newslabdata 实现**
 
@@ -1652,7 +1669,7 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 
 - 物理页分配器是 VM 自己控制的（不是系统的 mmap）
 - 全局分配器底层对接 VM 自己的物理页分配器
-- VM 自身的动态内存分配不触发内核 IPC。Direct Map 已预先映射全部物理内存，VmAllocator 从 Direct Map 区域拿页后在内部切分（§4.1 bump allocator），整个链路是纯本地操作：alloc_phys → vm_phys_to_virt → 页内切分 → 返回指针。
+- VM 自身的动态内存分配不触发内核 IPC。HeapArena 扩展时通过 `vm_self_mappages()` 修改 VM 自身页表，但页表页通过 Direct Map 可达，无递归风险。完整链路：`alloc_phys → HeapArena::grow → vm_self_mappages → 页内切分 → 返回指针`。
 
 ### 3.5 关于"确定性"的处理
 
@@ -1907,7 +1924,22 @@ Rust `alloc` crate 的调用链是纯透传的——`Box::new()` → `__rust_all
 
 因此 `GlobalAlloc::alloc()` 的实现者必须自己做页内切割。如果直接把 `alloc_phys()` 的整页返回（"页级桥接"），每次 `Box::new(24B)` 消耗一整页 4096B——单页可容纳 170 个 `PhysBlock`，在桥接模式下被浪费掉。
 
-Minix3 的 slab allocator 正是承担了这个角色——它从 `vm_allocpage()` 拿页，内部切割为固定大小对象（§2.1）。本节设计的 bump allocator 是 Rust 版本的等价物：从 `VmPageAllocator` 拿页，在 Direct Map 区域内切分。
+Minix3 的 slab allocator 正是承担了这个角色——它从 `vm_allocpage()` 拿页，内部切割为固定大小对象（§2.1）。本节设计的 bump allocator 是 Rust 版本的等价物：从 `VmPageAllocator` 拿页，在 HeapArena 区域内切分。
+
+#### 为什么不能在 Direct Map 区域内切分？
+
+Direct Map 提供 `VA = PA + BASE` 的稳定映射，但**物理不连续则 VA 不连续**。Bump allocator 的 cursor 假设 `[arena_base, arena_base + ARENA_BYTES)` 是连续 VA——如果 arena 跨越物理空洞，cursor 会跳到未映射的 VA，导致 page fault。
+
+HeapArena 解决了这个问题：预留一段连续 VA 区间（`VM_HEAP_BASE .. VM_HEAP_BASE + VM_HEAP_SIZE`），将不连续的物理页逐页映射进去。物理页可以碎片化，但 VA 始终连续。
+
+#### Direct Map 与 HeapArena 的职责分工
+
+| 问题 | 机制 | 一句话定义 |
+|------|------|-----------|
+| 物理页可达性 | Direct Map | 任意物理页有稳定 VA，无需分配 |
+| 虚拟连续性 | HeapArena | 预留连续 VA 区间，按需映射物理页 |
+
+Direct Map 用于物理页管理（页表操作、元数据访问、CoW 拷贝），HeapArena 用于 Rust 堆（`Box`/`Vec`/`String`）。
 
 **实现**：
 
@@ -1919,86 +1951,95 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::alloc_page::VmPageAllocator;
-use crate::direct_map::{vm_phys_to_virt, virt_to_phys};
-use crate::phys_mem::{PageAllocFlags, PAGE_SIZE};
+use crate::heap_arena::HeapArena;
+use crate::phys_mem::CLICK_SIZE;
 
-/// 全局分配器 —— bump allocator，在 Direct Map 区域内切分物理页
+/// 全局分配器 —— bump allocator，在 HeapArena 区域内切分
 ///
 /// 预分配 16 页（64KB）作为 arena，内部用 cursor 切分。
 /// arena 耗尽时自动申请新 arena（旧 arena 不再使用，但不立即归还）。
 /// dealloc 是 no-op——bump allocator 不回收单个对象，
-/// arena 页在 VM 进程退出时随 Direct Map 一起释放。
+/// arena 页在 VM 进程生命周期内保持映射。
+///
+/// 分配链路：
+///   Box::new → GlobalAlloc::alloc → VmAllocator::alloc
+///     → bump within current arena
+///     → arena exhausted? → refill_arena()
+///         → HeapArena::grow(ARENA_PAGES, page_alloc)
+///             → alloc_phys(1) × N  (物理页，可碎片化)
+///             → vm_self_mappages()  (映射到 HeapArena 连续 VA)
+///         → new arena_base = HeapArena VA
 pub(crate) struct VmAllocator {
     arena_base: AssumeSyncCell<*mut u8>,
     cursor: AssumeSyncCell<usize>,
 }
 
-// 全局指针：指向 VmServer 持有的 VmPageAllocator 实例
-// VM 初始化时通过 register_page_alloc() 设置，之前为 null（此时 alloc 返回 null）
-// 使用 AtomicPtr 而非 AssumeSyncCell，因为 GlobalAlloc::alloc 是 &self（不可变），
-// 而 VmPageAllocator 的方法需要 &mut self。AtomicPtr 允许我们在 &self 内部
-// 拿到 *mut 指针并 unsafe 转为 &mut——VM 单线程，无数据竞争。
 static PAGE_ALLOC_PTR: AtomicPtr<VmPageAllocator> = AtomicPtr::new(core::ptr::null_mut());
 
-/// 在 VmServer 初始化时调用，将 VmPageAllocator 指针注册到全局分配器。
-/// 此后 Box::new()、Vec::push() 等堆分配才会生效。
+static HEAP_ARENA: HeapArena = HeapArena::new();
+
 pub(crate) fn register_page_alloc(alloc: &mut VmPageAllocator) {
     PAGE_ALLOC_PTR.store(alloc as *mut VmPageAllocator, Ordering::SeqCst);
 }
 
 impl VmAllocator {
-    /// 预分配页数。VM 启动后 bump allocator 申请的第一个 arena。
-    /// 64KB 可容纳 ~570 个 PhysBlock（24B）或 ~1300 个 PhysRegion（48B），
-    /// 足够覆盖 VM 启动阶段的所有内部数据结构分配。
     const ARENA_PAGES: usize = 16;
-    const ARENA_BYTES: usize = Self::ARENA_PAGES * PAGE_SIZE;
+    const ARENA_BYTES: usize = Self::ARENA_PAGES * CLICK_SIZE;
 
-    fn refill_arena(&self) {
-        let alloc = unsafe { &mut *PAGE_ALLOC_PTR.load(Ordering::SeqCst) };
-        let phys = alloc.alloc_phys(Self::ARENA_PAGES, PageAllocFlags::empty())
-            .expect("VmAllocator: out of physical memory");
-        let va = unsafe { vm_phys_to_virt(phys).0 as *mut u8 };
-        self.arena_base.store(va);
-        self.cursor.store(0);
+    fn refill_arena(&self) -> bool {
+        let alloc_ptr = PAGE_ALLOC_PTR.load(Ordering::SeqCst);
+        if alloc_ptr.is_null() {
+            return false;
+        }
+        let alloc = unsafe { &mut *alloc_ptr };
+        match HEAP_ARENA.grow(Self::ARENA_PAGES, alloc) {
+            Ok(va) => {
+                unsafe { *self.arena_base.get() = va as *mut u8; }
+                unsafe { *self.cursor.get() = 0; }
+                true
+            }
+            Err(_) => false,
+        }
     }
 
-    fn ensure_arena(&self) {
-        if self.arena_base.load().is_null() {
-            self.refill_arena();
+    fn ensure_arena(&self) -> bool {
+        if unsafe { (*self.arena_base.get()).is_null() } {
+            return self.refill_arena();
         }
+        true
     }
 }
 
 unsafe impl GlobalAlloc for VmAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.ensure_arena();
+        if !self.ensure_arena() {
+            return core::ptr::null_mut();
+        }
 
         let size = layout.size();
         let align = layout.align();
 
-        // bump: 对齐 cursor，切出 size 字节
-        let base = self.arena_base.load();
-        let cursor = self.cursor.load();
+        let base = unsafe { *self.arena_base.get() };
+        let cursor = unsafe { *self.cursor.get() };
         let ptr = unsafe { base.add(cursor) };
         let offset = ptr.align_offset(align);
         let alloc_start = unsafe { ptr.add(offset) };
         let total = offset + size;
 
         if cursor + total > Self::ARENA_BYTES {
-            // arena 耗尽，申请新 arena 并重试
-            self.refill_arena();
+            if !self.refill_arena() {
+                return core::ptr::null_mut();
+            }
             return self.alloc(layout);
         }
 
-        self.cursor.store(cursor + total);
-
-        // 零初始化（匹配 GlobalAlloc::alloc_zeroed 但 opt-out）
+        unsafe { *self.cursor.get() = cursor + total; }
         alloc_start
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
         // no-op：bump allocator 不回收单个对象。
-        // arena 页在 VM 进程退出时随 Direct Map 一起释放。
+        // arena 页在 VM 进程生命周期内保持映射。
         //
         // 这是有意为之：VM server 是长生命周期系统服务，
         // 绝大多数动态分配的结构体（VirRegion, PhysRegion, PhysBlock...）
@@ -2007,7 +2048,6 @@ unsafe impl GlobalAlloc for VmAllocator {
     }
 }
 
-// 注册为全局分配器。cfg_attr(not(test), ...) 确保 cargo test 时使用标准分配器
 #[cfg_attr(not(test), global_allocator)]
 static GLOBAL: VmAllocator = VmAllocator {
     arena_base: AssumeSyncCell::new(core::ptr::null_mut()),
@@ -2025,6 +2065,11 @@ impl VmServer {
         let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
         let mut page_alloc = VmPageAllocator::new(phys_alloc);
         crate::global::register_page_alloc(&mut page_alloc);
+
+        // 在模块级静态存储中创建并注册 VM 自身页表
+        // 页表存储在 vm_self_map 模块的 static 中，地址稳定，不受 VmServer 移动影响
+        crate::pagetable::init_vm_self_pt();
+
         Self {
             page_alloc,
             // ...
@@ -2032,6 +2077,8 @@ impl VmServer {
     }
 }
 ```
+
+注意初始化顺序：`register_page_alloc()` 和 `init_vm_self_pt()` 必须在首次堆分配之前完成。HeapArena::grow() 依赖 `vm_self_mappages()`，而后者依赖已初始化的页表。页表存储在 `vm_self_map` 模块的静态存储中，不随 VmServer 移动，指针始终有效。
 
 **设计权衡**：
 
@@ -2475,12 +2522,16 @@ VM 的 `alloc()` 不走 libc `malloc`，而是直接调用自己的物理页分�
 ```
 Box::new(vir_region)
   → GlobalAlloc::alloc(layout)
-    → alloc_phys()           // 从 VM 的物理内存池分配页
-    → vm_phys_to_virt()      // Direct Map: 物理地址 → 虚拟地址
-    → 返回 VA 指针
+    → VmAllocator::alloc()
+      → bump within arena (HeapArena VA)
+      → arena exhausted?
+          → HeapArena::grow()
+              → alloc_phys()           // 从 VM 的物理内存池分配页
+              → vm_self_mappages()     // 映射到 HeapArena 连续 VA
+          → 返回 VA 指针
 ```
 
-整个链路不经过内核，不依赖 C 运行时。这是 Direct Map 架构的核心收益之一。
+整个链路不经过内核，不依赖 C 运行时。Direct Map 提供物理页可达性，HeapArena 提供虚拟连续性，二者分工明确。
 
 ---
 
@@ -2494,7 +2545,7 @@ Box::new(vir_region)
 - **VM 是长生命周期进程**。绝大多数动态分配的结构体（`VirRegion` ~112B、`PhysRegion` ~48B、`PhysBlock` ~24B）存活期与 VM 进程绑定，不存在"高频分配-立即释放"的临时对象模式。dealloc 的 no-op 不会导致内存泄漏——这些对象本身就是永久性的
 - **Rust 所有权系统**自动处理 drop，dealloc 的 no-op 不会造成 use-after-free
 
-**当前局限**：bump 不回收单个对象。arena 页在 VM 进程退出时随 Direct Map 一起释放。如果未来某些类型出现了高频分配/释放模式（例如 `VfsRequestNode`），bump 会在 arena 耗尽时频繁 refill，产生外部碎片。
+**当前局限**：bump 不回收单个对象。arena 页在 VM 进程生命周期内保持映射。如果未来某些类型出现了高频分配/释放模式（例如 `VfsRequestNode`），bump 会在 arena 耗尽时频繁 refill，产生外部碎片。
 
 ### A.2 设计层次
 
@@ -2503,8 +2554,9 @@ Box::new(vir_region)
 ```
 Layer 1: PhysAlloc / VmPageAllocator（页提供者）
     ↓  alloc_phys(clicks) → 物理页
-Layer 2: Direct Map（VA 稳定映射）
-    ↓  vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys
+Layer 2: Direct Map（物理页可达性）+ HeapArena（虚拟连续性）
+    ↓  Direct Map: vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys  （页表/元数据访问）
+    ↓  HeapArena:  grow(pages) → alloc_phys × N + vm_self_mappages    （Rust 堆）
 Layer 3: VmAllocator 内部 bump（页内切割）
     ↓  cursor += size，在 arena 内切出字节
 Layer 4: Rust GlobalAlloc trait（接口入口）
@@ -2513,6 +2565,8 @@ Layer 5: Box / Vec / String（rust 标准容器）
 ```
 
 `#[global_allocator]` 只是接口入口。真正的分配逻辑在 Layer 3——页内切割。Layer 3 和 Layer 4 都在 `VmAllocator` 内部实现。
+
+注意 Layer 2 的双机制：Direct Map 解决"物理页可达性"（页表操作、元数据访问），HeapArena 解决"虚拟连续性"（Rust 堆）。两者不是替代关系，而是互补关系。
 
 ### A.3 未来方向
 

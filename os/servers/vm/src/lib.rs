@@ -15,6 +15,7 @@ pub(crate) mod memtype;
 pub(crate) mod ipc;
 pub(crate) mod direct_map;
 pub(crate) mod alloc_page;
+pub(crate) mod heap_arena;
 pub(crate) mod page_cache;
 pub(crate) mod vfs_queue;
 pub(crate) mod exit;
@@ -36,7 +37,7 @@ pub(crate) use phys_mem::{
     PhysAlloc, PhysAllocator, PhysMemStats, PageAllocFlags, AlignedPhysBytes, AllocError,
 };
 pub(crate) use region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
-pub(crate) use pagetable::{PageTable, PageFlags, PageTableError};
+pub(crate) use pagetable::{PageTable, PageFlags, PageTableError, vm_self_mappages, vm_self_unmappages, vm_self_unmap, vm_self_query, init_vm_self_pt};
 pub(crate) use memtype::{
     MemType, MemTypeError, PagefaultResult,
     AnonymousMemory, DirectPhysical, SharedMemory,
@@ -45,7 +46,7 @@ pub(crate) use memtype::{
     MEM_TYPE_CONTIG_ANON, MEM_TYPE_CACHE, MEM_TYPE_MAPPED_FILE,
 };
 pub(crate) use ipc::*;
-pub(crate) use direct_map::{VM_DIRECT_MAP_BASE, KERNEL_DIRECT_MAP_BASE, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
+pub(crate) use direct_map::{VM_DIRECT_MAP_BASE, KERNEL_DIRECT_MAP_BASE, VM_HEAP_BASE, VM_HEAP_SIZE, VM_HEAP_LIMIT, vm_phys_to_virt, kernel_phys_to_virt, virt_to_phys};
 pub(crate) use alloc_page::VmPageAllocator;
 pub(crate) use page_cache::PageCache;
 pub(crate) use vfs_queue::VfsRequestQueue;

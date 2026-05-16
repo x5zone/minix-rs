@@ -21,6 +21,7 @@ use minix_types::{VmRequest, VmResponse, VmError, Endpoint, VirBytes};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::direct_map::vm_phys_to_virt;
+use crate::pagetable::init_vm_self_pt;
 use crate::phys_mem::{PhysAlloc, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
@@ -38,6 +39,9 @@ impl VmServer {
         let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
         let mut page_alloc = VmPageAllocator::new(phys_alloc);
         crate::global::register_page_alloc(&mut page_alloc);
+
+        init_vm_self_pt();
+
         Self {
             page_alloc,
             page_cache: PageCache::new(),

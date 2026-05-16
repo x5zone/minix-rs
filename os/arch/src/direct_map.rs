@@ -30,6 +30,13 @@ pub trait DirectMapArch {
     /// Base virtual address of the kernel Direct Map region.
     const KERNEL_DIRECT_MAP_BASE: u64;
 
+    /// Base virtual address of the VM HeapArena region.
+    /// Located immediately after the VM Direct Map window.
+    const VM_HEAP_BASE: u64;
+
+    /// Size of the VM HeapArena region in bytes.
+    const VM_HEAP_SIZE: u64;
+
     fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
         VirBytes(phys.get() + Self::VM_DIRECT_MAP_BASE)
     }
@@ -53,6 +60,8 @@ pub struct X86_64DirectMap;
 impl DirectMapArch for X86_64DirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
+    const VM_HEAP_BASE: u64 = 0x0000_0000_C000_0000;
+    const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 }
 
 /// Mock Direct Map — configurable base addresses for testing.
@@ -66,6 +75,8 @@ pub struct MockDirectMap;
 impl DirectMapArch for MockDirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
+    const VM_HEAP_BASE: u64 = 0x0000_0000_C000_0000;
+    const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
     fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
         VirBytes(phys.get() + mock_base())

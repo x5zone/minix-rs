@@ -1913,7 +1913,7 @@ pub enum AllocError {
 | ------------- | ------------- | ------------------------------- |
 | **元数据存储**     | 静态 BSS 数组     | 预映射内存 + BumpBuf + `&'static mut [T]` |
 | **Bitmap 大小** | 固定 128KB（4GB） | 按需计算                            |
-| **堆管理模式**     | `pt_init()` 后 brk 可用（VM 自身有堆） | Direct Map 消除 VM 堆概念：VA = phys + BASE，不需要 brk |
+| **堆管理模式**     | `pt_init()` 后 brk 可用（VM 自身有堆） | Direct Map 提供物理页可达性，HeapArena 提供虚拟连续性；不需要 brk，但需要 HeapArena |
 | **分配器选择**     | 仅 Bitmap      | Bitmap / Buddy / 线段树            |
 | **Buddy 安全性** | N/A           | 状态标志 + 严格检查                     |
 

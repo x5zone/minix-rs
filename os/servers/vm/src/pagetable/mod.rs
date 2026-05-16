@@ -10,6 +10,12 @@
 //! page table indices, etc.). Those belong in `minix_arch` implementations.
 //! VM code should use `Paging` trait methods and `PageFlags` for all
 //! page table operations.
+//!
+//! # Sub-modules
+//!
+//! - `vm_self_map`: VM self page table mapping interface (vm_self_mappages)
+
+pub(crate) mod vm_self_map;
 
 use minix_types::VirBytes;
 
@@ -18,6 +24,7 @@ pub(crate) type PageTable = minix_arch::CurrentPaging;
 pub(crate) use minix_arch::paging::PageFlags;
 pub(crate) use minix_arch::paging::PageTableError;
 pub(crate) use minix_arch::paging::Paging;
+pub(crate) use vm_self_map::{vm_self_mappages, vm_self_unmappages, vm_self_unmap, vm_self_query, init_vm_self_pt};
 
 pub(crate) fn page_align(addr: VirBytes) -> VirBytes {
     let ps = <PageTable as Paging>::PAGE_SIZE as u64;

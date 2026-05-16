@@ -11,8 +11,11 @@ use crate::phys_mem::AlignedPhysBytes;
 
 pub(crate) const VM_DIRECT_MAP_BASE: u64 = CurrentDirectMap::VM_DIRECT_MAP_BASE;
 pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-
 pub(crate) const VM_DIRECT_MAP_SIZE: u64 = 1 << 30;
+
+pub(crate) const VM_HEAP_BASE: u64 = CurrentDirectMap::VM_HEAP_BASE;
+pub(crate) const VM_HEAP_SIZE: u64 = CurrentDirectMap::VM_HEAP_SIZE;
+pub(crate) const VM_HEAP_LIMIT: u64 = VM_HEAP_BASE + VM_HEAP_SIZE;
 
 #[inline]
 pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {

@@ -1224,9 +1224,9 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 
 Kernel direct map 设 Global 位（G=1），CR3 切换时不刷新这部分 TLB 条目。这是安全的，因为 kernel direct map 是"建立后只读不变量"——`map_kernel()` 建立后 VM 不再修改 kernel direct map 的 PTE/PDE/PDPT 表项。如果未来需要动态修改（如内存热插拔），需要设计显式的 TLB 刷新协议（跨核 shootdown）。但当前设计中，不变的东西不需要管理。
 
-#### 3.0.4 VM 特殊化：为什么 VM 不再有传统堆
+#### 3.0.4 VM 特殊化：VM 的堆为何不由 brk 驱动
 
-Direct Map 的双视图模型带来了一个关键后果：**VM 不再是"普通进程"**。
+Direct Map 带来了一个关键后果：**VM 不再是"普通进程"**。
 
 **普通进程的堆**：虚拟地址空间中的连续增长区域，由 `brk`/`sbrk` 管理。进程请求内存时，内核/VM 需要：
 
@@ -1240,7 +1240,7 @@ Direct Map 的双视图模型带来了一个关键后果：**VM 不再是"普通
 
 **对比 `mmap`**：当进程通过 `mmap` 申请内存时，需要在虚拟地址空间中找一块空闲区域创建新的 `vir_region`，这时才需要 `find_hole`。
 
-**VM 的特殊处境**：Direct Map 建立后，每一个物理页自动拥有一个 stable virtual address：
+**VM 的特殊处境**：Direct Map 解决了"物理页可达性"——每一个物理页自动拥有一个 stable VA：
 
 ```rust
 fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
@@ -1248,18 +1248,19 @@ fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
 }
 ```
 
-VM 拿物理页的瞬间，VA 就已经确定了——不需要 `find_hole`、不需要 `vm_mappages`、不需要为自己写页表项。
+但 Direct Map **不解决"虚拟连续性"**——`VA = PA + BASE`，物理不连续则 VA 不连续。Rust 堆（`Box`/`Vec`/`String`）需要连续 VA，因此 VM 引入 HeapArena：预留一段连续 VA 区间，将不连续的物理页逐页映射进去（详见 08-slab-allocator.md §4.1）。
 
 **因此**：
 
-- VM **不再需要** `brk`/`sbrk`（没有传统意义的堆扩展）
+- VM **不再需要** `brk`/`sbrk`（堆扩展由 HeapArena 驱动，不由 brk 驱动）
 - VM **不再需要** `vm_mappages`（为自己——Direct Map 已提供所有物理页的 VA）
-- VM 的页表在 Direct Map 建立后变为**只读不变量**（除 direct map 扩展外不修改）
-- VM 的动态内存分配通过 bump/slab allocator **在 Direct Map 区域内完成**（详见 08-slab-allocator.md §4.1）
+- VM **不再需要** `find_hole`（HeapArena 的 VA 区间在初始化时预留，无需搜索）
+- VM 的页表修改**仅限 HeapArena 区域**——页表页通过 Direct Map 可达，无递归风险
+- VM 的动态内存分配链路：`alloc_phys → HeapArena::grow → vm_self_mappages → 页内切分 → 返回指针`
 
 这符合 VM 的职责身份：**VM 是 physical memory owner，不是 memory consumer**。物理页的持有者通过偏移直接访问（Direct Map），被管理者通过申请访问（`brk`/`mmap`）。这不是"不一致"，而是职责差异的自然体现。
 
-在 Minix3 的 32 位实现中，VM 是一个有自己堆、自己 `brk`、自己 `find_hole` 的普通用户态进程——它和自己管理的其他进程使用同一套机制。Direct Map 打破了这种同构性：**VM 获得了物理内存的直接视图，付出的代价是和普通进程不再"结构一致"**。但考虑到 VM 的内存分配链路已被简化为 `alloc_phys → vm_phys_to_virt → bump cursor`，这个代价是值得的。
+在 Minix3 的 32 位实现中，VM 是一个有自己堆、自己 `brk`、自己 `findhole` 的普通用户态进程——它和自己管理的其他进程使用同一套机制。Direct Map 打破了这种同构性：**VM 获得了物理内存的直接视图，付出的代价是和普通进程不再"结构一致"**。HeapArena 在 VM 进程内恢复了堆的虚拟连续性，但机制完全不同于 brk——它是 VM 主动映射物理页到预留 VA 区间，而非通过内核 IPC 扩展数据段。
 
 ### 3.1 Minix3 函数映射
 

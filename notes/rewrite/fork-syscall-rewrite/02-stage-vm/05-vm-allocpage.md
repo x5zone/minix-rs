@@ -481,11 +481,13 @@ PtRegion 的核心职责是 `alloc_pt_page() → VirBytes`：给物理页分配�
 | 适用范围 | 仅页表页 | 所有物理页 |
 | 自举复杂度 | 需要 kernel 预先映射 PtRegion 区域 | 需要 kernel 预先映射整个 direct map |
 
-PtRegion 是在 VM 里"重新发明了一套 mini direct-map"——用 bump allocator 替代简单加法，用有限区域替代全局映射。既然 PtRegion 已经消除了递归，为什么还需要 Direct Map？因为 PtRegion 只解决了**页表页**的 VA 问题，普通物理页仍然需要 `find_hole + vm_mappages` 来获取 VA——两套 VA 分配路径并存。Direct Map 的目标是让**所有物理页**统一走一条路径，彻底消除"VA 分配"这个概念。
+PtRegion 是在 VM 里"重新发明了一套 mini direct-map"——用 bump allocator 替代简单加法，用有限区域替代全局映射。既然 PtRegion 已经消除了递归，为什么还需要 Direct Map？因为 PtRegion 只解决了**页表页**的 VA 问题，普通物理页仍然需要 `find_hole + vm_mappages` 来获取 VA——两套 VA 分配路径并存。Direct Map 的目标是让**所有物理页**统一走一条路径，消除"为物理页分配 VA"这个概念。
 
-#### 3.1.3 Direct Map：VA 分配步骤消失（最终方案）
+> **注意**：Direct Map 消除的是"为物理页分配 VA"的需求，而非所有 VA 分配需求。Rust 堆（`Box`/`Vec`/`String`）需要连续 VA，这由 HeapArena 提供——预留连续 VA 区间，逐页映射物理页。详见 08-slab-allocator.md §4.1。
 
-Direct Map 使"VA 分配"这个步骤本身消失了。物理页天然拥有 stable VA：`vm_phys_to_virt(phys) = DIRECT_MAP_BASE + phys`。
+#### 3.1.3 Direct Map：物理页的 VA 分配步骤消失（最终方案）
+
+Direct Map 使"为物理页分配 VA"这个步骤本身消失了。物理页天然拥有 stable VA：`vm_phys_to_virt(phys) = DIRECT_MAP_BASE + phys`。
 
 ```
 VA 来源: vm_phys_to_virt(phys) = DIRECT_MAP_BASE + phys（简单加法）
@@ -534,9 +536,9 @@ VM Direct Map: VA 0x8000_2000 ──→ PA 0x2000 ←── VM 通过 vm_phys_to
 | PtRegion | `PTREGION_BASE + slot_idx * 4KB` | `find_hole + vm_mappages` | 需要特殊 VA 管理（PtRegion） | 结构性消除 | 治本——让递归不可能发生 |
 | Direct Map | `DIRECT_MAP_BASE + phys` | `DIRECT_MAP_BASE + phys` | 与普通物理页无区别 | 前提消失 | 不需要药——递归的根源消失了 |
 
-这是从"治标"到"治本"到"不需要药"的跃迁。spare_pagequeue 是运行时保护（递归发生但有缓冲），PtRegion 是设计层面消除（递归从结构上不可能），Direct Map 是概念层面消除（"需要分配 VA"这个前提本身不存在了）。
+这是从"治标"到"治本"到"不需要药"的跃迁。spare_pagequeue 是运行时保护（递归发生但有缓冲），PtRegion 是设计层面消除（递归从结构上不可能），Direct Map 是概念层面消除（"需要为物理页分配 VA"这个前提本身不存在了）。
 
-这不是"换了一种 VA 分配方式"，而是 **"VA 分配这个步骤本身消失了"**。
+这不是"换了一种 VA 分配方式"，而是 **"为物理页分配 VA 这个步骤本身消失了"**。但注意：Rust 堆的连续 VA 需求仍然存在，由 HeapArena 满足——这是不同层面的问题（详见 08-slab-allocator.md §4.1）。
 
 ### 3.3 init 阶段管理
 
@@ -703,30 +705,31 @@ pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool {
 T0: Kernel 启动 VM 进程
     ├── 创建初始页表（映射 .text, .rodata, .data, .bss）
     ├── 建立 Direct Map（1GB 物理内存映射）
-    ├── 映射 reserved_region 到 VM 地址空间
-    └── 传递 boot_info（含 reserved_region 描述）
+    ├── 建立 HeapArena VA 区间（预留 VM_HEAP_BASE .. VM_HEAP_LIMIT）
+    └── 传递 boot_info（含 free_regions 描述）
 
-T1: main() → init_vm()
+T1: main() → VmServer::new()
     │
     ├── T2: PhysAllocator::init(mem_chunks)
     │       → 初始化物理页 bitmap
     │       → 此时 alloc_mem() 可用
     │
     ├── T3: VmPageAllocator::new(phys_alloc)
-    │       → 此时 alloc_page() 可用
-    │       → alloc_page() = alloc_phys() + vm_phys_to_virt()
+    │       → register_page_alloc()：注册全局页分配器指针
+    │       → 此时 alloc_phys() 可用
     │
-    ├── T4: pt_init()
-    │       → 创建页表系统
+    ├── T4: init_vm_self_pt()
+    │       → 在模块级静态存储中创建 VM 自身页表
+    │       → 此时 vm_self_mappages() 可用
     │
-    ├── T5: relocate_to_heap() → phase2_direct_map_extend()  [09 文档详述]
-    │       → 如有必要，扩展 direct map 覆盖全部物理内存
-    │       → complete_bootstrap()
-    │           → bump allocator arena 分配（08-slab-allocator.md §4.1）
-    │           → 自此 Box/Vec 可用（bump allocator 接管 GlobalAlloc）
+    ├── T5: 首次堆分配触发 ensure_arena()
+    │       → HeapArena::grow(ARENA_PAGES, page_alloc)
+    │           → alloc_phys(1) × N：逐页分配物理页
+    │           → vm_self_mappages()：映射到 HeapArena 连续 VA
+    │       → 自此 Box/Vec 可用（bump allocator 接管 GlobalAlloc）
     │
-    └── init_vm() 返回
-            → VM 完全自治（全部物理内存纳入 direct map）
+    └── VmServer::new() 返回
+            → VM 完全自治（Direct Map + HeapArena 就绪）
 
 T6: 主循环开始
     → VM 正常运行
