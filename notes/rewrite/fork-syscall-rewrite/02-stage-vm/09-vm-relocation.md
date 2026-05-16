@@ -2,7 +2,7 @@
 
 > **分类**: VM私有
 > **源码**: [alloc.c](minix3/minix/servers/vm/alloc.c)、[pagetable.c](minix3/minix/servers/vm/pagetable.c)
-> **说明**: Bootstrap 阶段结束后，将预留区域中的数据搬迁到堆上
+> **说明**: 自举阶段结束后，将 BumpBuf 中的元数据搬迁到 HeapArena 上
 
 > **里程碑定位**：09 是 VM 自举的终点。从 04 到 09，VM 完成了从"依赖 BumpBuf 的连续 PA 约束"到"完全自主管理全部物理内存"的演进：
 >
@@ -41,15 +41,16 @@
 
 因此，Minix3 采用了一个**两阶段初始化**策略：
 
-1. **Bootstrap 阶段**：VM 使用内核预先映射好的静态内存（BSS 段中的数组）来存储物理内存管理器的元数据。此时 VM 还没有自己的页表，所有内存操作都依赖内核在加载 ELF 时已经建立好的映射。
-2. **Normal 阶段**：VM 建立了自己的页表和堆分配能力后，可以从堆中动态分配内存。
+1. **自举阶段**：VM 使用 BumpBuf 从 `free_regions[0]` 的 Direct Map 区域分配物理内存管理器的元数据。此时 VM 还没有 HeapArena，所有元数据访问依赖 Direct Map（`VA = PA + BASE`），且 BumpBuf 强制要求连续 PA。
+2. **运行阶段**：VM 建立了 HeapArena 后，可以从堆中动态分配内存，碎片化的物理页通过 vm_self_mappages() 映射为连续 VA。
 
-**搬迁**就是指：在 Bootstrap 阶段结束后，将那些原本存放在静态内存（或预留区域）中的管理元数据，转移到 Normal 阶段的动态堆中。搬迁完成后，静态内存可以被释放或重新利用。
+**搬迁**就是指：在 HeapArena 就位后，将那些原本存放在 BumpBuf（Direct Map，连续 PA 约束）中的管理元数据，转移到 HeapArena（碎片化 PA + 连续 VA）中。搬迁完成后，BumpBuf 占据的连续 PA 页被释放回分配器。
 
 ```
-Bootstrap 阶段                    Normal 阶段
+自举阶段                         运行阶段
 ┌──────────────────┐            ┌──────────────────┐
-│ BSS / Reserved   │            │ VM Heap          │
+│ BumpBuf          │            │ HeapArena        │
+│ (Direct Map)     │            │ (碎片化PA+连续VA) │
 │  ┌─────────────┐ │            │  ┌─────────────┐ │
 │  │ bitmap[]    │ │  搬迁 ──►  │  │ bitmap[]    │ │
 │  │ page_cache[]│ │            │  │ page_cache[]│ │
@@ -119,6 +120,8 @@ free_regions[0].base → [bitmap | page_cache | ... ] → Direct Map VA
 - `free_pages_bitmap` 和 `free_page_cache` 是**扁平数组**（SoA，Structure of Arrays），没有指针、没有嵌套结构、没有链表。
 - `static_sparepages` 是**物理页数组**，每个元素是一页物理内存，由内核在加载 ELF 时分配并映射到 VM 的虚拟地址空间。
 - 搬迁时，`free_pages_bitmap` 和 `free_page_cache` 不需要搬迁（它们一直在 BSS 中，只是大小固定）。真正需要搬迁的是**页表结构**和**spare page 池**——从静态分配切换到动态分配。
+
+**Rust 版本的搬迁对象**：与 Minix3 不同，Rust 版本中**bitmap 和 page_cache 确实需要搬迁**。原因：Rust 版本没有 BSS 静态数组——bitmap 和 page_cache 的内存来自 BumpBuf（`free_regions[0]` 的 Direct Map 区域），这是自举阶段的临时分配。搬迁将它们从 BumpBuf（连续 PA 约束）迁移到 HeapArena（碎片化 PA + 连续 VA），释放连续 PA 页。Minix3 不需要搬迁 bitmap/page_cache 是因为它们在 BSS 中（大小固定但位置永久），而 Rust 版本的 BumpBuf 分配是临时的。
 
 ### 1.4 搬迁在初始化时序中的位置
 
@@ -211,8 +214,10 @@ T6: 主循环开始
 ### 1.5 核心边界条件
 
 **分配失败**：
-- Bootstrap 阶段：如果静态 spare page 池耗尽（如 `static_sparepages` 的 15 页用完），`vm_allocpage()` 返回 NULL，可能导致 panic。
-- Normal 阶段：如果堆分配失败（`alloc_mem()` 返回 `NO_MEM`），系统无法继续运行，通常 panic。
+- Minix3 Bootstrap 阶段：如果静态 spare page 池耗尽（如 `static_sparepages` 的 15 页用完），`vm_allocpage()` 返回 NULL，可能导致 panic。
+- Minix3 Normal 阶段：如果堆分配失败（`alloc_mem()` 返回 `NO_MEM`），系统无法继续运行，通常 panic。
+- Rust 版本自举阶段：如果 `free_regions[0]` 不足以容纳元数据，`BitmapAllocator::init()` 会 panic（debug_assert）。
+- Rust 版本搬迁阶段：如果 `HeapArena::grow()` 失败，`relocate()` 静默返回，系统继续使用 BumpBuf 元数据。
 
 **内存对齐**：
 - `alloc_mem()` 支持 `PAF_ALIGN64K` 和 `PAF_ALIGN16K` 标志。对齐分配时，先分配比请求更大的块，然后释放头部未对齐的部分。这要求空闲位图能够正确标记部分释放的页。
@@ -222,6 +227,10 @@ T6: 主循环开始
 
 **物理内存限制**：
 - `PAF_LOWER16MB` 和 `PAF_LOWER1MB` 限制分配只能在低地址区域。这在 DMA 设备需要物理连续内存时使用。
+
+**搬迁失败**：
+- 如果 `HeapArena::grow()` 失败（物理内存不足），`relocate()` 静默返回，系统继续使用 BumpBuf 元数据。搬迁是优化而非必需——连续 PA 约束未被消除，但系统仍可正常运行。
+- 如果 `reloc_array_count() == 0` 或 `metadata_pa_range() == (0, 0)`，`relocate()` 立即返回（无需搬迁）。
 
 ---
 
@@ -1165,9 +1174,9 @@ void memstats(int *nodes, int *pages, int *largest)
 
 **搬迁失败的处理**：
 
-如果堆分配失败（内存不足），搬迁无法完成。此时系统无法进入 Normal 阶段。处理方式：
-- panic（初始化阶段，没有恢复的必要）
-- 或者回退到原地升级（保留预留区域，标记为堆的一部分）
+如果堆分配失败（内存不足），搬迁无法完成。当前实现中 `relocate()` 在失败时静默返回（`Err(_) => return`），系统继续使用 BumpBuf 中的元数据——连续 PA 约束未被消除，但系统仍可正常运行。这是一种**降级策略**：搬迁是优化（释放连续 PA），不是必需（BumpBuf 元数据仍然可用）。
+
+如果未来需要更严格的语义，可以改为 panic（初始化阶段，没有恢复的必要）或回退到原地升级（保留 BumpBuf 区域，标记为堆的一部分）。
 
 ### 3.3 搬迁的调用时机
 
@@ -1228,11 +1237,18 @@ impl BitmapAllocator {
 
     pub fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
         if new_ptrs.len() >= 1 && !new_ptrs[0].is_null() {
+            // SAFETY: new_ptrs[0] points to a valid memory region of at least
+            // self.bitmap.len() * size_of::<u64>() bytes, allocated by HeapArena::grow()
+            // during relocation. The region is valid for 'static because HeapArena
+            // never shrinks below its current top.
             self.bitmap = unsafe {
                 core::slice::from_raw_parts_mut(new_ptrs[0] as *mut u64, self.bitmap.len())
             };
         }
         if new_ptrs.len() >= 2 && !new_ptrs[1].is_null() {
+            // SAFETY: new_ptrs[1] points to a valid memory region of at least
+            // self.page_cache.len() * size_of::<usize>() bytes, allocated by
+            // HeapArena::grow() during relocation. Same 'static validity as above.
             self.page_cache = unsafe {
                 core::slice::from_raw_parts_mut(new_ptrs[1] as *mut usize, self.page_cache.len())
             };
@@ -1292,9 +1308,11 @@ impl VmServer {
                 total_bytes += bytes;
             }
 
-            let (old_pa_base, old_pa_pages) = phys_alloc.as_bitmap_mut()
-                .map(|bmp| bmp.metadata_pa_range())
-                .unwrap_or((0, 0));
+            let (old_pa_base, old_pa_pages) = if let Some(bmp) = phys_alloc.as_bitmap_mut() {
+                bmp.metadata_pa_range()
+            } else {
+                return;
+            };
             if old_pa_pages == 0 { return; }
 
             (count, old_ptrs, old_pa_base, old_pa_pages)
@@ -1313,6 +1331,11 @@ impl VmServer {
         let mut new_ptrs: [*mut u8; 4] = [core::ptr::null_mut(); 4];
         for i in 0..count {
             let (old_ptr, bytes) = old_ptrs[i];
+            // SAFETY: new_va is a valid heap VA from HeapArena::grow() with at least
+            // `total_bytes` bytes of contiguous writable memory starting at new_va.
+            // offset is bounded by total_bytes which fits within the allocated region.
+            // old_ptr is a valid readable pointer from reloc_array_info() pointing to
+            // the old metadata buffer in the BumpBuf region.
             let dst = unsafe { (new_va as *mut u8).add(offset) };
             unsafe { core::ptr::copy_nonoverlapping(old_ptr, dst, bytes); }
             new_ptrs[i] = dst;
@@ -1475,7 +1498,7 @@ fn test_update_relocated_arrays() {
 ## 6. 参见
 
 - [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（搬迁的主要对象）
-- [05-vm-allocpage.md](05-vm-allocpage.md) - 页分配器（Typestate 模式，Bootstrap/Normal 阶段）
+- [05-vm-allocpage.md](05-vm-allocpage.md) - 页分配器（BumpBuf → HeapArena 的初始化时序）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（搬迁依赖的映射能力）
 - [08-slab-allocator.md](08-slab-allocator.md) - Slab 分配器（搬迁后堆的主要使用者）
 

@@ -108,6 +108,11 @@ impl VmServer {
         let mut new_ptrs: [*mut u8; 4] = [core::ptr::null_mut(); 4];
         for i in 0..count {
             let (old_ptr, bytes) = old_ptrs[i];
+            // SAFETY: new_va is a valid heap VA from HeapArena::grow() with at least
+            // `total_bytes` bytes of contiguous writable memory starting at new_va.
+            // offset is bounded by total_bytes which fits within the allocated region.
+            // old_ptr is a valid readable pointer from reloc_array_info() pointing to
+            // the old metadata buffer in the BumpBuf region.
             let dst = unsafe { (new_va as *mut u8).add(offset) };
             unsafe { core::ptr::copy_nonoverlapping(old_ptr, dst, bytes); }
             new_ptrs[i] = dst;

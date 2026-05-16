@@ -911,7 +911,7 @@ impl PhysBlock {
 
 **为什么 add_ref 使用 saturating_add 而非 panic**
 
-`saturating_add` 在溢出时饱和到 255 而非 panic，与 Minix3 的 `u8_t` 自溢出行为一致。Minix3 的 `pb->refcount++` 在 u8 溢出时也是静默回绕（实际场景 refcount 极少超过 10）。`debug_assert` 可在调试构建中检测溢出，但生产构建不应 panic。
+`saturating_add` 在溢出时饱和到 65535 而非 panic，与 Minix3 的 `u8_t` 自溢出行为一致。Minix3 的 `pb->refcount++` 在 u8 溢出时也是静默回绕（实际场景 refcount 极少超过 10）。`debug_assert` 可在调试构建中检测溢出，但生产构建不应 panic。
 
 **为什么 release_ref 返回 bool 而非新 refcount**
 
@@ -926,7 +926,7 @@ impl PhysBlock {
 
 在 Rust 中实现引用计数有两种主要方式：
 
-| 方面 | `Arc<T>`（标准库） | 手动管理（`u8`） |
+| 方面 | `Arc<T>`（标准库） | 手动管理（`u16`） |
 |------|---------------------|------------------------|
 | 自动管理 | 自动增减，无需手动 | 需要手动调用 add_ref/release_ref |
 | 链表遍历 | 不支持 | 支持 first_region 链表 |
@@ -1315,12 +1315,12 @@ Minix3 的 `pb_unreferenced()` 在 refcount == 0 时调用 `memtype->ev_unrefere
 
 **单线程假设**
 
-Minix3 的 VM 是单线程的，不需要原子操作。Rust 实现同样遵循单线程假设，使用普通 `u8` 而非 `AtomicU8`。
+Minix3 的 VM 是单线程的，不需要原子操作。Rust 实现同样遵循单线程假设，使用普通 `u16` 而非 `AtomicU16`。
 
 - Minix3 VM：单线程事件循环，无并发访问，refcount 使用普通 `u8_t`
-- Rust 实现：遵循单线程假设，使用普通 `u8`，与 Minix3 保持一致
+- Rust 实现：遵循单线程假设，使用普通 `u16`，与 Minix3 保持一致
 
-> ⚠️ 如果未来扩展为多线程，需要将 `u8` 替换为 `AtomicU8`，并重新评估所有 unsafe 代码的安全性。`MemType` trait 已要求 `Send + Sync`，为多线程扩展预留了基础。
+> ⚠️ 如果未来扩展为多线程，需要将 `u16` 替换为 `AtomicU16`，并重新评估所有 unsafe 代码的安全性。`MemType` trait 已要求 `Send + Sync`，为多线程扩展预留了基础。
 
 **MemType 的 Send + Sync 约束**
 
@@ -1338,11 +1338,11 @@ pub(crate) trait MemType: Send + Sync {
 
 **PhysRegion 的裸指针与线程安全**
 
-PhysRegion 中使用 `Option<*mut PhysBlock>` 等裸指针字段，这些字段不满足 `Send` 和 `Sync`。在单线程环境中这不是问题，但如果扩展为多线程：
+PhysRegion 中使用 `Option<NonNull<PhysBlock>>` 等指针字段，`NonNull` 本身不满足 `Send` 和 `Sync`（因为裸指针是 `!Send + !Sync`），所以包含 `NonNull` 的结构体自动成为 `!Send + !Sync`。在单线程环境中这不是问题，但如果扩展为多线程：
 
-1. `*mut PhysBlock` 需要替换为 `AtomicPtr<PhysBlock>` 或用 Mutex 保护
-2. `refcount: u8` 需要替换为 `AtomicU8`
-3. `first_region: Option<*mut PhysRegion>` 需要替换为 `AtomicPtr<PhysRegion>`
+1. `NonNull<PhysBlock>` 需要替换为 `AtomicPtr<PhysBlock>` 或用 Mutex 保护
+2. `refcount: u16` 需要替换为 `AtomicU16`
+3. `first_region: Option<NonNull<PhysRegion>>` 需要替换为 `AtomicPtr<PhysRegion>`
 4. 所有 unsafe 块需要重新评估数据竞争风险
 
 **线程安全总结**
@@ -1490,7 +1490,7 @@ CoW 后（私有状态）：
 - **初始状态**：`PhysBlock::new()` 返回 `refcount=0`，`is_mapped()=true`（给定有效地址）
 - **增减操作**：`add_ref` 后 `refcount` 递增，`release_ref` 后递减，`release_ref` 返回 `bool` 表示是否仍有引用
 - **CoW 判断**：`PhysRegion::needs_cow()` 在 `refcount > 1` 时返回 true
-- **饱和行为**：`add_ref` 使用 `saturating_add`，溢出时饱和到 255；`release_ref` 在 `refcount==0` 时不递减
+- **饱和行为**：`add_ref` 使用 `saturating_add`，溢出时饱和到 65535；`release_ref` 在 `refcount==0` 时不递减
 
 ### 6.2 链表一致性测试
 

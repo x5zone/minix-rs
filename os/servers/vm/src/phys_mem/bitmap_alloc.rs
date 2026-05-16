@@ -106,6 +106,10 @@ impl BitmapAllocator {
 
     pub fn update_relocated_arrays(&mut self, new_ptrs: &[*mut u8]) {
         if new_ptrs.len() >= 1 && !new_ptrs[0].is_null() {
+            // SAFETY: new_ptrs[0] points to a valid memory region of at least
+            // self.bitmap.len() * size_of::<u64>() bytes, allocated by HeapArena::grow()
+            // during relocation. The region is valid for 'static because HeapArena
+            // never shrinks below its current top.
             self.bitmap = unsafe {
                 core::slice::from_raw_parts_mut(
                     new_ptrs[0] as *mut u64,
@@ -114,6 +118,9 @@ impl BitmapAllocator {
             };
         }
         if new_ptrs.len() >= 2 && !new_ptrs[1].is_null() {
+            // SAFETY: new_ptrs[1] points to a valid memory region of at least
+            // self.page_cache.len() * size_of::<usize>() bytes, allocated by
+            // HeapArena::grow() during relocation. Same 'static validity as above.
             self.page_cache = unsafe {
                 core::slice::from_raw_parts_mut(
                     new_ptrs[1] as *mut usize,
