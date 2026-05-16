@@ -303,3 +303,312 @@ vm_mappages、不需要为自己写页表。
 | P1 | 05 §5 L837 | 参见描述修正 |
 | P1 | 08 §1.2 L47 | 加 Direct Map 注释 |
 | P1 | 08 §3.4 L1653 | 堆描述修正 |
+
+---
+
+## 2026-05-12 更新：双视图模型（Direct Map + HeapArena）
+
+> 以下 TODO 基于对物理地址空间不连续性的重新认识。
+> 之前的方案假设 Direct Map 区域可作为 bump allocator 的连续 arena，
+> 这是错误的：`VA = PA + BASE`，物理不连续则 VA 不连续。
+>
+> 新方案引入 HeapArena：VM 预留一段连续 VA 区间，
+> 将不连续的物理页逐页映射进去，从而为 Rust 堆提供虚拟连续性。
+> Direct Map 仅用于物理页管理（页表操作、元数据访问、CoW 拷贝）。
+
+### 概念模型
+
+```
+问题              机制           一句话定义
+─────────────────────────────────────────────────
+物理页可达性      Direct Map     任意物理页有稳定 VA，无需分配
+虚拟连续性        HeapArena     预留连续 VA 区间，按需映射物理页
+用户进程 VA 管理  VirRegion     进程地址空间的语义区域
+```
+
+### 依赖链（线性，无循环）
+
+```
+PhysAlloc (L1: 物理页提供者)
+    ↓
+Direct Map (L2: 物理页可达性，纯计算，无状态)
+    ↓
+HeapArena (L2': 虚拟连续性，三个整数，无堆依赖)
+    ↓
+VmAllocator (L3: bump/slab 在 Arena 内切分)
+    ↓
+GlobalAlloc (L4: Rust 堆接口)
+    ↓
+VirRegion / PhysRegion / PhysBlock (L5: 用户进程区域管理)
+```
+
+---
+
+### TODO-D1: 新增 HeapArena 模块（代码）
+
+**文件**: `os/servers/vm/src/heap_arena.rs`（新建）
+
+**内容**:
+- `HeapArena` 结构体：`base: VirBytes`, `limit: VirBytes`, `top: VirBytes`
+- `grow(pages, page_alloc, pt) -> Result<()>`: 分配物理页 + 映射到 Arena 连续 VA
+- `shrink(pages, page_alloc, pt)`: 解除映射 + 释放物理页
+- `alloc_va(size, align) -> Option<VirBytes>`: 在 Arena 内分配连续 VA
+- 不依赖 GlobalAlloc（三个 VirBytes 字段，可在栈/BSS 上构造）
+
+**关键**: 物理页逐页分配（`alloc_phys(1)`），可以碎片化，但 VA 始终连续。
+
+---
+
+### TODO-D2: 新增 VM 自身页表映射接口（代码）
+
+**文件**: `os/servers/vm/src/pagetable/mod.rs` 或新模块
+
+**内容**:
+- `vm_self_mappages(va, phys, flags)`: 在 VM 自身页表中建立映射
+- `vm_self_unmappages(va, count)`: 在 VM 自身页表中解除映射
+- 页表页通过 Direct Map 稳定可达，不会触发递归
+- 需要获取 VM 自身页表的根指针（CR3 或 boot_info 提供）
+
+---
+
+### TODO-D3: 定义堆地址空间常量（代码）
+
+**文件**: `os/arch/src/direct_map.rs`（DirectMapArch trait）
+
+**内容**:
+- `VM_HEAP_BASE`: 堆区域起始 VA（如 `VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE`）
+- `VM_HEAP_SIZE`: 堆区域大小（如 64MB）
+- x86_64 实现和 mock 实现均需添加
+
+---
+
+### TODO-D4: 重构 VmAllocator（代码）
+
+**文件**: `os/servers/vm/src/global.rs`
+
+**修改**:
+- `refill_arena()`: 改用 `HeapArena::grow()` 映射物理页，而非 `vm_phys_to_virt()`
+- `arena_base` 指向 HeapArena 区域的 VA，而非 Direct Map 区域
+- `dealloc`: 仍可 no-op（bump 不回收单对象），但注释更新
+- 移除 `use crate::direct_map::vm_phys_to_virt`（堆分配器不再依赖 Direct Map）
+
+---
+
+### TODO-D5: 08-slab §1 L47-49 修正（文档）
+
+**当前**: "Rust 版本在 Direct Map 下不再需要 brk——VM 通过 `vm_phys_to_virt()` 直接访问物理页，无需为自身的堆扩展虚拟地址空间"
+
+**问题**: 过于绝对。VM 仍需要连续 VA 的堆，只是不需要 Minix3 那套递归映射。
+
+**修改方向**: 改为说明 Direct Map 解决"物理页可达性"，HeapArena 解决"虚拟连续性"，
+两者各司其职。VM 不需要 brk/sbrk，但需要 HeapArena。
+
+---
+
+### TODO-D6: 08-slab §4.1 重写（文档）
+
+**当前**: bump allocator 的 arena 基于 Direct Map（`vm_phys_to_virt(phys)`）
+
+**问题**: Direct Map VA 不连续，bump cursor 无法跨越空洞。
+
+**修改方向**:
+- arena 改为基于 HeapArena（预留连续 VA 区间）
+- `refill_arena()` 改为 `HeapArena::grow()`：逐页分配物理页，映射到 Arena 连续 VA
+- 保留 bump 的简单性，但底层从 Direct Map 迁移到 HeapArena
+- 代码示例中 `vm_phys_to_virt(phys)` 替换为 `HeapArena` 映射
+
+---
+
+### TODO-D7: 08-slab 附录 A 重写（文档）
+
+**当前**: 层次描述为 `PhysAlloc → Direct Map → VmAllocator → GlobalAlloc → Box/Vec`
+
+**问题**: 缺少 HeapArena 层，且"Direct Map 消除 VM 堆概念"的说法错误。
+
+**修改方向**:
+```
+Layer 1: PhysAlloc / VmPageAllocator（页提供者）
+Layer 2: Direct Map（物理页可达性，va=pa+BASE）
+Layer 2': HeapArena（虚拟连续性，预留连续 VA + 逐页映射物理页）
+Layer 3: VmAllocator 内部 bump（Arena 内切割）
+Layer 4: Rust GlobalAlloc trait（接口入口）
+Layer 5: Box / Vec / String
+```
+
+---
+
+### TODO-D8: 07-pagetable-ops §3.0.4 修正（文档）
+
+**当前**: "VM 不再有传统堆"、"VM 的页表在 Direct Map 建立后变为只读不变量"
+
+**问题**:
+1. VM 仍有堆（HeapArena），只是不需要 brk/sbrk
+2. VM 需要为 HeapArena 写页表，页表不再是只读不变量
+
+**修改方向**:
+- "VM 不再有传统堆" → "VM 的堆不由 brk 驱动，而是由 HeapArena + vm_self_mappages 驱动"
+- "页表只读不变量" → "页表修改仅限 HeapArena 区域，页表页通过 Direct Map 可达，无递归风险"
+- 保留"VM 不需要 find_hole / vm_mappages（为自己）"的正确结论
+- 保留"VM 是 physical memory owner"的身份论述
+
+---
+
+### TODO-D9: 04-physical-memory §7 L1916 修正（文档）
+
+**当前**: "Direct Map 消除 VM 堆概念：VA = phys + BASE，不需要 brk"
+
+**问题**: Direct Map 消除的不是"堆"，而是"为访问物理页而分配 VA"。
+
+**修改方向**: 改为"Direct Map 消除 VM 对 brk 的依赖：物理页通过偏移直接可达，
+堆的连续 VA 由 HeapArena 提供（独立于 Direct Map）"
+
+---
+
+### TODO-D10: 05-vm-allocpage §4.3 初始化时序修正（文档）
+
+**当前**: T5 "relocate_to_heap()" → "搬迁预留区域数据到堆"
+
+**问题**: Direct Map 下不需要"搬迁"语义。HeapArena 的初始化应在 T5 中描述。
+
+**修改方向**:
+```
+T5: heap_arena_init()
+    → HeapArena 初始化（预留连续 VA 区间）
+    → 首批物理页映射到 HeapArena
+    → bump allocator arena 就位
+    → 自此 Box/Vec 可用
+```
+
+---
+
+### TODO-D11: 08-slab §3.4 L1653 修正（文档）
+
+**当前**: "VM 自身的堆内存分配不触发内核 IPC"
+
+**问题**: HeapArena 需要写页表（vm_self_mappages），但这不是内核 IPC，
+而是 VM 修改自己的页表。
+
+**修改方向**: 改为"VM 自身的动态内存分配不触发内核 IPC。
+HeapArena 扩展时通过 vm_self_mappages 修改 VM 自身页表，
+但页表页通过 Direct Map 可达，无递归风险。
+alloc_phys → HeapArena::grow → vm_self_mappages → 页内切分 → 返回指针。"
+
+---
+
+### TODO-D12: 09-vm-relocation 重写（文档）
+
+**当前**: 描述 BSS 静态数据搬迁到堆的过程
+
+**问题**: Direct Map + HeapArena 下，搬迁语义完全不同：
+- Direct Map 消灭了"为物理页找 VA"的需求
+- HeapArena 的 grow 机制需要描述
+- 不再有 BSS → 堆的搬迁
+
+**修改方向**: 重写为"Direct Map 扩展与 HeapArena 初始化"，
+描述 Phase 1（1GB direct map）→ Phase 2（扩展覆盖全部物理内存）→
+HeapArena 初始化（预留 VA + 首批映射）→ bump allocator 就位
+
+---
+
+### TODO-D13: 12-vir-region 明确层次关系（文档）
+
+**修改方向**: 明确 VirRegion 依赖 GlobalAlloc（L5），
+与 HeapArena（L2'）是不同层次的概念。
+VirRegion 的 Vec<PhysRegion> 等字段通过 GlobalAlloc 分配，
+底层经过 HeapArena 获得连续 VA。
+
+---
+
+### TODO-D14: 27-vm-init-main 更新初始化时序（文档）
+
+**修改方向**: 初始化时序更新为 5 层线性启动：
+```
+L0: 静态/BSS（boot_info 解析）
+L1: PhysAlloc（物理页分配器，metadata 从 boot_info 物理内存分配）
+L2: Direct Map（物理页可达性，内核已建立）
+L2': HeapArena（虚拟连续性，VM 初始化时建立）
+L3: VmAllocator + GlobalAlloc（bump allocator 就位）
+L4: VirRegion / PhysRegion / PhysBlock（用户进程区域管理）
+```
+
+---
+
+### TODO-D15: direct_map.rs 测试更新（代码）
+
+**文件**: `os/servers/vm/src/direct_map.rs`
+
+**修改**: mock_map 的 offset 机制需要适配 HeapArena。
+测试中 `set_mock_phys_base()` 设置 Direct Map 偏移，
+HeapArena 需要独立的 mock 机制。
+
+---
+
+### TODO-D16: vm_server.rs 初始化更新（代码）
+
+**文件**: `os/servers/vm/src/vm_server.rs`
+
+**修改**: `VmServer::new()` 中添加 HeapArena 初始化逻辑。
+HeapArena 需要访问 VM 自身页表，可能需要 boot_info 提供页表根指针。
+
+---
+
+### TODO-D17: 08-slab §2.0 物理页获取链路更新（文档）
+
+**当前**: `slaballoc → newslabdata → vm_allocpage → vm_mappages`
+
+**问题**: Direct Map 下不再有 `vm_mappages`。
+
+**修改方向**: 更新为 Direct Map 下的链路：
+`slaballoc → newslabdata → alloc_phys → vm_phys_to_virt`（Minix3 旧链路）
+→ Rust 版本：`Box::new → GlobalAlloc → VmAllocator → HeapArena::grow → alloc_phys + vm_self_mappages`
+
+---
+
+### TODO-D18: 05-vm-allocpage §2.4 方案四分析限定（文档）
+
+**当前**: "Direct Map 消灭了 VA 分配"
+
+**问题**: Direct Map 消灭的是"为访问物理页而分配 VA"，不是"所有 VA 分配"。
+
+**修改方向**: 限定为"Direct Map 消灭了为访问物理页而进行的 VA 分配（find_hole + vm_mappages）。
+堆的连续 VA 分配由 HeapArena 承担，这是不同层次的问题。"
+
+---
+
+### TODO-D19: 10-27 文档审查与调整（文档）
+
+**范围**: 10-phys-block.md, 14-phys-region.md, 18-vm-brk.md,
+22-vm-brk-complete.md, 25-client-alloc-lib.md 等 09-27 全部文档
+
+**修改方向**:
+- 删除或重写基于"VM 不需要堆"假设的段落
+- 更新 SLABALLOC → Box::new 的对应关系
+- 更新初始化时序引用
+- 明确 HeapArena 与 Direct Map 的职责边界
+- 09（含）之后的文档可大幅调整甚至删除重建
+
+---
+
+### 修改优先级
+
+| 优先级 | TODO | 说明 |
+|--------|------|------|
+| P0 | D1 | HeapArena 模块实现（基建） |
+| P0 | D2 | VM 自身页表映射接口（基建） |
+| P0 | D3 | 堆地址空间常量（基建） |
+| P0 | D4 | VmAllocator 重构（核心代码） |
+| P0 | D6 | 08 §4.1 重写（核心文档） |
+| P0 | D8 | 07 §3.0.4 修正（概念纠正） |
+| P1 | D5 | 08 §1 L47 修正 |
+| P1 | D7 | 08 附录 A 重写 |
+| P1 | D9 | 04 §7 修正 |
+| P1 | D10 | 05 §4.3 修正 |
+| P1 | D11 | 08 §3.4 修正 |
+| P1 | D12 | 09 重写 |
+| P1 | D17 | 08 §2.0 链路更新 |
+| P1 | D18 | 05 §2.4 限定 |
+| P2 | D13 | 12 层次关系明确 |
+| P2 | D14 | 27 初始化时序更新 |
+| P2 | D15 | 测试更新 |
+| P2 | D16 | vm_server 初始化更新 |
+| P2 | D19 | 10-27 文档审查调整 |
