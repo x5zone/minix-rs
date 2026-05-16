@@ -100,6 +100,8 @@ phys_bytes phys;  /* 物理内存地址 */
 - 必须是页对齐（4KB 对齐）
 - 值为 `MAP_NONE`（`0xFFFFFFFE`）表示未分配物理内存（延迟分配）
 
+> **注意**：`MAP_NONE` 在页表操作中另有"取消映射"语义（如 `pt_writemap()` 传入 `MAP_NONE` 表示清除页表项），参见 [07-pagetable-ops.md](07-pagetable-ops.md)。
+
 ```
 示例:
 phys = 0x1234000  → 物理页 0x1234000-0x1234FFF
@@ -149,7 +151,7 @@ refcount 状态:
 
 ```c
 u8_t flags;
-#define PBF_INCACHE  0x01  /* 此块在页面缓存中 */
+#define PBF_INCACHE  0x01  /* 此块在页面缓存中 */  /*（定义同 §2.1 L76，此处为方便阅读重复列出）*/
 ```
 
 - `PBF_INCACHE`: 表示此物理块被页面缓存管理
@@ -247,7 +249,7 @@ struct phys_block *pb_new(phys_bytes phys)
 
 1. `SLABALLOC(newpb)`：从通用 SLAB 分配器分配 `phys_block` 结构体，失败返回 NULL
 2. 验证物理地址：`if (phys != MAP_NONE) assert(phys % VM_PAGE_SIZE == 0)`，确保物理地址页对齐
-3. 初始化字段：`USE(newpb, ...)` 宏包裹字段赋值（SANITYCHECKS 构建中执行 slabunlock/slablock），设置 `phys`、`refcount=0`、`firstregion=NULL`、`flags=0`
+3. 初始化字段：`USE(newpb, ...)` 宏包裹字段赋值（MEMPROTECT 构建中执行 slabunlock/slablock），设置 `phys`、`refcount=0`、`firstregion=NULL`、`flags=0`
 4. 返回 `newpb`
 
 **关键点：refcount 初始化为 0**
@@ -272,33 +274,7 @@ struct phys_block *pb = pb_new(CLICK2ABS(phys));
 struct phys_block *pb = pb_new(MAP_NONE);
 /* pb->phys = MAP_NONE (0xFFFFFFFE), refcount = 0 */
 /* 后续缺页时再分配物理页 */
-
-/* 场景 3: CoW 复制 */
-phys_bytes new_page = alloc_mem(1, flags);
-sys_abscopy(old_page, new_page, VM_PAGE_SIZE);
-struct phys_block *pb = pb_new(new_page);
-/* 新块独立，refcount = 0，等待链接 */
 ```
-
-#### Direct Map 视角：CoW 复制的简化
-
-> **Direct Map 标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
-
-```rust
-/* 场景 3: CoW 复制（Direct Map 方案） */
-let new_phys = alloc_phys(1, flags)?;
-let new_phys_mt = PhysBytes::new(new_phys.as_u64());
-unsafe {
-    core::ptr::copy_nonoverlapping(
-        vm_phys_to_virt(old_phys) as *const u8,
-        vm_phys_to_virt(new_phys) as *mut u8,
-        4096,
-    );
-}
-let pb = PhysBlock::new(new_phys_mt);
-```
-
-`sys_abscopy` 的存在意味着 VM 不信任自己能直接操作物理内存——需要内核作为中介。Direct map 使 VM 成为物理内存的直接操作者，不再需要"委托内核复制"。读者应理解：这是 VM 从"受信任的请求者"到"物理内存的主人"的角色转变。详见 [15-cow-mechanism.md](15-cow-mechanism.md) §2.2.1。
 
 **内存分配细节**
 
@@ -503,6 +479,8 @@ void pb_link(
 - `region`：所属的 `vir_region`
 - `memtype`：内存类型（anon、file、cache 等）
 - 返回值：新创建的 `phys_region`，或 NULL（失败）
+
+> **phys_region 完整字段**：Minix3 中 `phys_region` 还包含 `written` 字段（`#if SANITYCHECKS`，`int written`，标记是否已写入页表），此处省略。完整定义见 [14-phys-region.md](14-phys-region.md) §2.1。
 
 **引用建立流程**
 
@@ -771,6 +749,31 @@ fork 后共享状态：`phys_block.refcount = 2`，`firstregion → parent_pr �
 
 ---
 
+### 2.5 mem_cow - 写时复制
+
+**函数签名**
+
+```c
+int mem_cow(struct vir_region *region, struct phys_region *pr, phys_bytes *newphys);
+```
+
+**Minix3 源码实现**（pb.c:136-168）
+
+mem_cow() 是 CoW 的核心实现函数，被 anon_pagefault() 和 file_pagefault() 调用。流程：
+1. 如果 `*newphys == MAP_NONE`，调用 `alloc_mem(1, 0)` 分配新物理页
+2. 调用 `sys_abscopy(old_phys, new_phys, VM_PAGE_SIZE)` 复制原页内容到新页
+3. 调用 `pb_new(new_page)` 创建新物理块
+4. 调用 `pb_unreferenced(region, pr, 0)` 取消旧引用（rm=0，不移除 phys_region）
+5. 调用 `pb_link(pr, pb, pr->offset, region)` 链接到新块
+6. 设置 `pr->memtype = &mem_type_anon`
+
+**关键点**：
+- `rm=0`：CoW 不移除 phys_region，而是重新链接到新块
+- `sys_abscopy`：通过内核系统调用复制物理页内容，VM 不能直接操作物理内存
+- 详见 [15-cow-mechanism.md](15-cow-mechanism.md) §2.2.1
+
+---
+
 ## 3. Rust 设计决策
 
 ### 3.1 PhysBlock 结构
@@ -860,6 +863,26 @@ Minix3 中 `pb_link()` 和 `pb_unreferenced()` 是独立函数，操作涉及 `P
 | `u32_t seencount` | 不实现 | 仅调试用 |
 
 > **Direct Map 标注**：PhysBlock 的 `phys: PhysBytes` 字段存储物理地址。在方案三中，访问该物理页的内容需要通过 PtRegion 分配 VA 并建立映射；在 Direct Map 方案中，`vm_phys_to_virt(phys)` 一行加法即可获得 VA。PhysBlock 本身不持有 VA——VA 总是通过 `vm_phys_to_virt()` 按需计算，与 PhysBlock 的生命周期无关。这是 direct map 统一性的又一个例证：物理地址是唯一的"锚点"，VA 是物理地址的派生值。
+
+**Direct Map 视角：CoW 复制的简化**
+
+> **Direct Map 标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
+
+```rust
+/* CoW 复制（Direct Map 方案） */
+let new_phys = alloc_phys(1, flags)?;
+let new_phys_mt = PhysBytes::new(new_phys.as_u64());
+unsafe {
+    core::ptr::copy_nonoverlapping(
+        vm_phys_to_virt(old_phys) as *const u8,
+        vm_phys_to_virt(new_phys) as *mut u8,
+        4096,
+    );
+}
+let pb = PhysBlock::new(new_phys_mt);
+```
+
+`sys_abscopy` 的存在意味着 VM 不信任自己能直接操作物理内存——需要内核作为中介。Direct map 使 VM 成为物理内存的直接操作者，不再需要"委托内核复制"。读者应理解：这是 VM 从"受信任的请求者"到"物理内存的主人"的角色转变。详见 [15-cow-mechanism.md](15-cow-mechanism.md) §2.2.1。
 
 **PhysBlock 的核心方法**
 
@@ -1250,24 +1273,20 @@ PhysBlock 只能在 refcount == 0 时释放。释放前必须满足：1. refcoun
 ```rust
 pub(crate) trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
-    fn on_new(&self, _pr: &mut PhysRegion) {}
-    fn on_delete(&self, _pr: &mut PhysRegion) {}
-    fn on_reference(&self, _pr: &mut PhysRegion) {}
-    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
-    fn on_pagefault(&self, _pr: &mut PhysRegion, _write: bool) -> Result<PagefaultResult, MemTypeError> {
-        Ok(PagefaultResult::None)
-    }
-    fn on_resize(&self, _pr: &mut PhysRegion, _old_len: VirBytes) {}
-    fn on_split(&self, _pr: &mut PhysRegion, _offset: VirBytes) {}
-    fn on_low_shrink(&self, _pr: &mut PhysRegion, _offset: VirBytes) {}
-    fn on_sanitycheck(&self, _pr: &PhysRegion) {}
-    fn is_writable(&self, _pr: &PhysRegion) -> bool { true }
-    fn on_copy(&self, _src: &PhysRegion, _dst: &mut PhysRegion) -> Result<(), MemTypeError> { Ok(()) }
-    fn region_id(&self) -> usize { 0 }
-    fn ref_count(&self) -> usize { 1 }
-    fn pt_flags(&self) -> u64 { 0 }
+    fn on_new(&self, _region: &mut VirRegion) -> Result<(), MemTypeError> { Ok(()) }
+    fn on_delete(&self, _region: &mut VirRegion) {}
+    fn on_reference(&self, _src: &PhysRegion, _dst: &mut PhysRegion) -> Result<(), MemTypeError> { Ok(()) }
+    fn on_unreference(&self, _pr: &mut PhysRegion) -> Result<bool, MemTypeError> { Ok(false) }
+    fn on_pagefault(&self, _proc: &ActiveProc<'_>, _region: &mut VirRegion, _pr: &mut PhysRegion, _write: bool) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
+    fn on_resize(&self, _proc: &mut ActiveProc<'_>, _region: &mut VirRegion, _new_len: VirBytes) -> Result<(), MemTypeError> { Ok(()) }
+    fn on_split(&self, _proc: &mut ActiveProc<'_>, _original: &VirRegion, _left: &mut VirRegion, _right: &mut VirRegion) {}
+    fn on_low_shrink(&self, _region: &mut VirRegion, _len: VirBytes) -> Result<(), MemTypeError> { Ok(()) }
+    fn on_sanitycheck(&self, _pr: &PhysRegion) -> Result<(), MemTypeError> { Ok(()) }
+    fn is_writable(&self, _pr: &PhysRegion) -> bool { false }
+    fn on_copy(&self, _src: &VirRegion, _dst: &mut VirRegion) -> Result<(), MemTypeError> { Ok(()) }
+    fn region_id(&self, _region: &VirRegion) -> u32 { 0 }
+    fn ref_count(&self, _region: &VirRegion) -> i32 { 0 }
+    fn pt_flags(&self, _region: &VirRegion) -> i32 { 0 }
 }
 ```
 
@@ -1307,6 +1326,32 @@ impl MemType for AnonymousMemory {
 ```
 
 匿名内存在 refcount 为 0 且有物理页时返回 `Ok(true)`，表示需要释放物理页。对应 Minix3 的 `anon_unreference()`。
+
+**AnonymousMemory 的 is_writable**
+
+```rust
+impl MemType for AnonymousMemory {
+    fn is_writable(&self, pr: &PhysRegion) -> bool {
+        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+            return false;
+        }
+        if let Some(parent) = pr.parent {
+            unsafe {
+                if (*parent.as_ptr()).remaps > 0 {
+                    return true;
+                }
+            }
+        }
+        if let Some(refcount) = pr.get_refcount() {
+            refcount == 1
+        } else {
+            false
+        }
+    }
+}
+```
+
+匿名内存的可写判断逻辑：1. 无物理页 → 不可写；2. 有 remap → 可写（remap 区域始终可写）；3. refcount==1 → 可写（私有页）；4. refcount>1 → 不可写（需 CoW）。对应 Minix3 的 `anon_writable()` 函数。
 
 **SharedMemory 的 on_unreference**
 
@@ -1565,11 +1610,17 @@ CoW 后（私有状态）：
 ## 7. 参见
 
 - [08-slab-allocator.md](08-slab-allocator.md) - 使用 Slab 分配 phys_block
-- [09-vir-region.md](09-vir-region.md) - vir_region 通过 physblocks[] 引用 phys_block
+- [12-vir-region.md](12-vir-region.md) - vir_region 通过 physblocks[] 引用 phys_block
 - [11-memtype.md](11-memtype.md) - MemType trait 完整定义和各实现
 - [12-page-fault.md](12-page-fault.md) - 缺页处理与延迟分配（phys=MAP_NONE）
 - [14-phys-region.md](14-phys-region.md) - phys_region 连接 vir_region 与 phys_block
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 基于 phys_block 的 CoW
+- [04-physical-memory.md](04-physical-memory.md) - PhysBytes 类型定义
+- [16-pagefault.md](16-pagefault.md) - 缺页处理与 MAP_NONE 延迟分配
+- [17-vm-fork.md](17-vm-fork.md) - fork 中的 pb_reference/pb_link
+- [26-cache-memtypes.md](26-cache-memtypes.md) - PBF_INCACHE 与缓存管理
+
+> **跨文档去重说明**：`pb_link()`、`pb_unreferenced()` 等函数在 14-phys-region.md、15-cow-mechanism.md 中有重复分析。本文档为这些函数的权威来源，其他文档应精简为引用。
 
 ---
 
