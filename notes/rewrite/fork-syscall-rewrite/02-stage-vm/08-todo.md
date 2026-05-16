@@ -306,7 +306,7 @@ vm_mappages、不需要为自己写页表。
 
 ---
 
-## 2026-05-12 更新：双视图模型（Direct Map + HeapArena）
+## 2026-05-12 更新：Direct Map + HeapArena
 
 > 以下 TODO 基于对物理地址空间不连续性的重新认识。
 > 之前的方案假设 Direct Map 区域可作为 bump allocator 的连续 arena，
@@ -315,6 +315,17 @@ vm_mappages、不需要为自己写页表。
 > 新方案引入 HeapArena：VM 预留一段连续 VA 区间，
 > 将不连续的物理页逐页映射进去，从而为 Rust 堆提供虚拟连续性。
 > Direct Map 仅用于物理页管理（页表操作、元数据访问、CoW 拷贝）。
+>
+> ⚠️ **术语注意**：历史文档中的"双视图"指内核和 VM 各建一套 Direct Map
+> （VA offset 和特权位不同），这是**两个特权级对同一物理内存的映射**。
+> 本节讨论的 Direct Map + HeapArena 是**VM 进程内的两个机制**：
+> Direct Map 解决物理页可达性，HeapArena 解决虚拟连续性。
+> 两者不在同一概念层级，不可混淆。
+>
+> 一个物理页最多有三个 VA：
+> 1. `KERNEL_DIRECT_MAP_BASE + phys`（内核 Direct Map，Ring 0）
+> 2. `VM_DIRECT_MAP_BASE + phys`（VM Direct Map，Ring 3）
+> 3. HeapArena 中的 VA（仅当该页被用作堆时，Ring 3）
 
 ### 概念模型
 
