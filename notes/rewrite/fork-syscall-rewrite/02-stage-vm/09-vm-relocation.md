@@ -46,18 +46,10 @@
 
 注意：Minix3 中 `free_pages_bitmap` 和 `free_page_cache` **不需要搬迁**——它们一直在 BSS 中，大小固定但位置永久。真正需要搬迁的是**页表结构**和 **spare page 池**（Rust 版本的搬迁对象不同，见 §3.0）。
 
-```
-自举阶段                         运行阶段
-┌──────────────────┐            ┌──────────────────┐
-│ BSS 静态数组      │            │ 动态分配           │
-│  ┌─────────────┐ │            │  ┌─────────────┐ │
-│  │ spare pages │ │  搬迁 ──►  │  │ spare pages │ │
-│  │ 页表结构     │ │            │  │ 页表结构     │ │
-│  └─────────────┘ │            │  └─────────────┘ │
-│  bitmap[]        │  不搬迁     │  bitmap[]        │
-│  page_cache[]    │  不搬迁     │  page_cache[]    │
-└──────────────────┘            └──────────────────┘
-```
+| | 自举阶段（BSS 静态数组） | 运行阶段（动态分配） |
+|--|----------------------|------------------|
+| **搬迁** | spare pages, 页表结构 | spare pages, 页表结构 |
+| **不搬迁** | bitmap[], page_cache[] | bitmap[], page_cache[] |
 
 **搬迁不是简单的 memcpy**。Minix3 的搬迁通过"重新分配 + 复制内容 + 替换结构"实现——分配新的动态页，复制旧内容，然后用新结构替换旧结构（详见 §2.9）。
 
@@ -82,7 +74,7 @@ Minix3 支持 liveupdate——在系统运行时更新 VM 的代码和数据。l
 
 搬迁的核心价值：让 VM 的页表基础设施不再依赖 BSS 中的静态资源，从而支持 liveupdate 和动态扩展。
 
-### 1.3 搬迁涉及的数据
+### 1.3 自举阶段依赖的静态数据
 
 在 Minix3 中，Bootstrap 阶段依赖的静态数据主要包括：
 
@@ -150,360 +142,59 @@ Minix3 的搬迁是"隐式的"——在 `pt_init()` 中悄悄完成，没有显�
 **物理内存限制**：
 - `PAF_LOWER16MB` 和 `PAF_LOWER1MB` 限制分配只能在低地址区域。这在 DMA 设备需要物理连续内存时使用。
 
+### 1.6 BSS 静态分配的约束
+
+Minix3 的自举阶段依赖 BSS 静态数组存储元数据。这种方案有两个根本性约束：
+
+**1. 大小固定，无法扩展**
+
+BSS 数组在编译时确定大小，运行时无法增长。`free_pages_bitmap` 固定 128KB（对应 4GB 地址空间），`free_page_cache` 固定 10000 项，`static_sparepages` 固定 15 页。如果物理内存超过 4GB，bitmap 无法扩展；如果缓存需求超过 10000 项，缓存无法增长。
+
+**2. 物理地址不可控**
+
+BSS 段的虚拟地址由链接器决定，物理地址由内核在加载 VM 的 ELF 时决定。VM 无法选择 BSS 数据的物理位置。这对 liveupdate 构成问题——liveupdate 会重新分配 VM 的物理内存，导致 BSS 中数据的物理地址失效。
+
+这两个约束是搬迁的根本动机（详见 §1.2）。Rust 版本的自举方案不同（使用 BumpBuf 而非 BSS），但面临类似的约束——详见 §3.0 的对比分析。
+
 ---
 
 ## 2. Minix3 C 源码分析
 
 ### 2.1 物理内存管理器的核心数据结构
 
-Minix3 的物理内存管理器位于 `minix3/minix/servers/vm/alloc.c`，其核心数据结构如下：
+Minix3 的物理内存管理器位于 `minix3/minix/servers/vm/alloc.c`。核心数据结构（`free_pages_bitmap[]`、`free_page_cache[]`、位图操作宏）的完整定义和逐行解析见 [04-physical-memory.md §2.0-2.0.3](04-physical-memory.md)。
 
-```c
-// [alloc.c:32-38](minix3/minix/servers/vm/alloc.c#L32-L38)
-
-/* Number of physical pages in a 32-bit address space */
-#define NUMBER_PHYSICAL_PAGES (int)(0x100000000ULL/VM_PAGE_SIZE)
-#define PAGE_BITMAP_CHUNKS BITMAP_CHUNKS(NUMBER_PHYSICAL_PAGES)
-static bitchunk_t free_pages_bitmap[PAGE_BITMAP_CHUNKS];
-#define PAGE_CACHE_MAX 10000
-static int free_page_cache[PAGE_CACHE_MAX];
-static int free_page_cache_size = 0;
-```
-
-- **`NUMBER_PHYSICAL_PAGES`**：32 位地址空间的总页数。`0x100000000ULL` 是 4GB，`VM_PAGE_SIZE` 在 i386 上是 4096，所以总页数为 `0x100000000 / 4096 = 0x100000 = 1048576` 页（即 4GB / 4KB = 1M 页）。
-- **`PAGE_BITMAP_CHUNKS`**：`BITMAP_CHUNKS(NUMBER_PHYSICAL_PAGES)` 计算位图需要的 `bitchunk_t` 数量。`bitchunk_t` 是 `uint32_t`，每个 chunk 管理 32 页。`1M / 32 = 32768` 个 chunk，每个 chunk 4 字节，总大小为 `32768 * 4 = 131072` 字节（128KB）。
-- **`free_pages_bitmap[]`**：静态数组，在 BSS 段中。每一位对应一个物理页，`1` 表示空闲，`0` 表示已分配。
-- **`free_page_cache[]`**：静态数组，大小为 10000 项。用于缓存最近释放的单页，加速单页分配。
-- **`free_page_cache_size`**：缓存当前使用的项数，初始为 0。
-
-**位图操作宏**（来自 [bitmap.h](minix3/minix/include/minix/bitmap.h)）：
-
-```c
-#define BITCHUNK_BITS   (sizeof(bitchunk_t) * CHAR_BIT)   // 32
-#define BITMAP_CHUNKS(nr_bits) (((nr_bits)+BITCHUNK_BITS-1)/BITCHUNK_BITS)
-#define MAP_CHUNK(map,bit) (map)[((bit)/BITCHUNK_BITS)]
-#define CHUNK_OFFSET(bit) ((bit)%BITCHUNK_BITS)
-#define GET_BIT(map,bit) ( MAP_CHUNK(map,bit) & (1 << CHUNK_OFFSET(bit)) )
-#define SET_BIT(map,bit) ( MAP_CHUNK(map,bit) |= (1 << CHUNK_OFFSET(bit)) )
-#define UNSET_BIT(map,bit) ( MAP_CHUNK(map,bit) &= ~(1 << CHUNK_OFFSET(bit)) )
-```
-
-- **`GET_BIT`**：检查某一位是否为 1。
-- **`SET_BIT`**：将某一位设为 1（标记为空闲）。
-- **`UNSET_BIT`**：将某一位清零（标记为已分配）。
+**搬迁关联**：`free_pages_bitmap` 和 `free_page_cache` 是 BSS 中的静态数组，在 Minix3 中**不需要搬迁**（大小固定但位置永久）。Rust 版本中它们来自 BumpBuf 分配，需要搬迁（见 §3.0）。
 
 ### 2.2 初始化流程：`mem_init()`
 
-```c
-// [alloc.c:306-335](minix3/minix/servers/vm/alloc.c#L306-L335)
+`mem_init()` 从 `kernel_boot_info` 解析内存布局，将可用物理页标记为空闲。完整代码和逐行解析见 [04-physical-memory.md §3.1.5](04-physical-memory.md)。
 
-void mem_init(struct memory *chunks)
-{
-/* Initialize hole lists.  There are two lists: 'hole_head' points to a
- * linked list of all the holes (unused memory) in the system;
- * 'free_slots' points to a linked list of table entries that are not
- * in use.  Initially, the former list has one entry for each chunk of
- * physical memory, and the second list links together the remaining
- * table slots.  As memory becomes more fragmented in the course of
- * time (i.e., the initial big holes break up into smaller holes), new
- * table slots are needed to represent them.  These slots are taken
- * from the list headed by 'free_slots'.
- */
-  int i, first = 0;
-
-  total_pages = 0;
-
-  memset(free_pages_bitmap, 0, sizeof(free_pages_bitmap));
-
-  /* Use the chunks of physical memory to allocate holes. */
-  for (i=NR_MEMS-1; i>=0; i--) {
-  	if (chunks[i].size > 0) {
-		phys_bytes from = CLICK2ABS(chunks[i].base),
-			to = CLICK2ABS(chunks[i].base+chunks[i].size)-1;
-		if(first || from < mem_low) mem_low = from;
-		if(first || to > mem_high) mem_high = to;
-		free_mem(chunks[i].base, chunks[i].size);
-		total_pages += chunks[i].size;
-		first = 0;
-	}
-  }
-}
-```
-
-**逐行解析**：
-
-- **`total_pages = 0`**：重置总页数计数器。`total_pages` 是全局变量，定义在 `glo.h` 中，用于统计系统中物理内存的总页数。
-- **`memset(free_pages_bitmap, 0, sizeof(free_pages_bitmap))`**：将整个位图清零。注意：这里清零意味着所有位都是 0，但后续 `free_mem()` 会将可用内存对应的位设为 1（空闲）。这是一个容易混淆的地方——**0 表示已分配，1 表示空闲**。
-- **`for (i=NR_MEMS-1; i>=0; i--)`**：从后向前遍历内存块数组。`NR_MEMS` 是 16，表示最多 16 个内存块。
-- **`chunks[i].size > 0`**：只处理有效的内存块。`struct memory` 的定义是 `{ phys_bytes base; phys_bytes size; }`，`base` 和 `size` 都以 click（4096 字节）为单位。
-- **`CLICK2ABS(chunks[i].base)`**：将 click 转换为字节地址。`CLICK2ABS` 是 `((v) << CLICK_SHIFT)`，即乘以 4096。
-- **`mem_low` 和 `mem_high`**：记录最低和最高的物理内存地址，用于调试和 sanity check。
-- **`free_mem(chunks[i].base, chunks[i].size)`**：将这块内存标记为空闲。注意这里调用的是 `free_mem()`，它会进一步调用 `free_pages()`，将对应的位图位设为 1。
-- **`total_pages += chunks[i].size`**：累加总页数。
-
-**为什么从后向前遍历？**
-
-Minix3 的 `alloc_pages()` 使用**从高地址向低地址扫描**的策略（见 2.4 节）。初始化时从后向前调用 `free_mem()`，可以确保高地址的内存块先被标记为空闲，从而优先被分配。这是一种经验性的优化，让低地址内存保留更久（低地址内存对某些设备更友好）。
+**搬迁关联**：`mem_init()` 初始化的 `free_pages_bitmap` 在 Minix3 中是 BSS 静态数组，不涉及搬迁。Rust 版本的 `BitmapAllocator::init()` 从 BumpBuf 分配 bitmap 内存，搬迁时需要迁移。
 
 ### 2.3 分配流程：`alloc_mem()`
 
-```c
-// [alloc.c:242-279](minix3/minix/servers/vm/alloc.c#L242-L279)
+`alloc_mem()` 从空闲位图中分配指定大小的连续物理页块。完整代码和逐行解析见 [04-physical-memory.md §2.1.1](04-physical-memory.md)。
 
-phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
-{
-/* Allocate a block of memory from the free list using first fit. The block
- * consists of a sequence of contiguous bytes, whose length in clicks is
- * given by 'clicks'.  A pointer to the block is returned.  The block is
- * always on a click boundary.  This procedure is called when memory is
- * needed for FORK or EXEC.
- */
-  phys_clicks mem = NO_MEM, align_clicks = 0;
-
-  if(memflags & PAF_ALIGN64K) {
-  	align_clicks = (64 * 1024) / CLICK_SIZE;
-	clicks += align_clicks;
-  } else if(memflags & PAF_ALIGN16K) {
-	align_clicks = (16 * 1024) / CLICK_SIZE;
-	clicks += align_clicks;
-  }
-
-  do {
-	mem = alloc_pages(clicks, memflags);
-  } while(mem == NO_MEM && cache_freepages(clicks) > 0);
-
-  if(mem == NO_MEM)
-  	return mem;
-
-  if(align_clicks) {
-  	phys_clicks o;
-  	o = mem % align_clicks;
-  	if(o > 0) {
-  		phys_clicks e;
-  		e = align_clicks - o;
-	  	free_mem(mem, e);
-	  	mem += e;
-	}
-  }
-
-  return mem;
-}
-```
-
-**逐行解析**：
-
-- **`phys_clicks mem = NO_MEM, align_clicks = 0`**：`NO_MEM` 定义为 `((phys_clicks) MAP_NONE)`，即 `0xFFFFFFFE`，表示分配失败。`align_clicks` 用于对齐分配。
-- **`if(memflags & PAF_ALIGN64K)`**：如果需要 64KB 对齐，计算对齐需要的额外 click 数。`64 * 1024 / 4096 = 16` clicks。将 `clicks` 增加 16，确保即使分配的起始地址未对齐，也有足够的空间可以调整到对齐边界。
-- **`do { mem = alloc_pages(clicks, memflags); } while(...)`**：尝试分配。如果失败（`mem == NO_MEM`），调用 `cache_freepages(clicks)` 尝试从页缓存中释放足够数量的页，然后重试。`cache_freepages()` 在 `cache.c` 中实现，它会遍历 LRU 缓存，释放未被引用的页。
-- **`if(align_clicks)`**：如果请求了对齐，检查分配结果是否确实对齐。
-  - **`o = mem % align_clicks`**：计算起始地址相对于对齐边界的偏移。
-  - **`if(o > 0)`**：如果未对齐，释放前 `e = align_clicks - o` 个 click，将起始地址调整到对齐边界。
-  - **例如**：请求 1 页，64K 对齐。`alloc_pages` 分配了 17 页（1 + 16）。如果返回的地址是 click 5，偏移 `5 % 16 = 5`，释放前 11 页，起始地址变为 click 16（64KB 对齐）。
-
-**对齐分配的代价**：
-
-对齐分配会浪费内存。 worst case 下，需要额外分配 `align_clicks - 1` 个 click，然后释放它们。这些被释放的 click 会回到空闲池，但可能造成碎片。
+**搬迁关联**：搬迁完成后，`alloc_mem()` 仍使用同一个 `free_pages_bitmap`（只是 bitmap 的内存位置从 BumpBuf 变为 HeapArena）。搬迁不影响 `alloc_mem()` 的逻辑。
 
 ### 2.4 底层分配：`alloc_pages()`
 
-```c
-// [alloc.c:404-460](minix3/minix/servers/vm/alloc.c#L404-L460)
+`alloc_pages()` 从位图中分配指定数量的连续页，支持对齐标志。完整代码和逐行解析见 [04-physical-memory.md §2.1.2](04-physical-memory.md)。
 
-static phys_bytes alloc_pages(int pages, int memflags)
-{
-	phys_bytes boundary16 = 16 * 1024 * 1024 / VM_PAGE_SIZE;
-	phys_bytes boundary1  =  1 * 1024 * 1024 / VM_PAGE_SIZE;
-	phys_bytes mem = NO_MEM, i;
-	int maxpage = NUMBER_PHYSICAL_PAGES - 1;
-	static int lastscan = -1;
-	int startscan, run_length;
-
-	if(memflags & PAF_LOWER16MB)
-		maxpage = boundary16 - 1;
-	else if(memflags & PAF_LOWER1MB)
-		maxpage = boundary1 - 1;
-	else {
-		/* no position restrictions: check page cache */
-		if(pages == 1) {
-			while(free_page_cache_size > 0) {
-				i = free_page_cache[free_page_cache_size-1];
-				if(page_isfree(i)) {
-					free_page_cache_size--;
-					mem = i;
-					assert(mem != NO_MEM);
-					run_length = 1;
-					break;
-				}
-				free_page_cache_size--;
-			}
-		}
-	}
-
-	if(lastscan < maxpage && lastscan >= 0)
-		startscan = lastscan;
-	else	startscan = maxpage;
-
-	if(mem == NO_MEM)
-		mem = findbit(0, startscan, pages, memflags, &run_length);
-	if(mem == NO_MEM)
-		mem = findbit(0, maxpage, pages, memflags, &run_length);
-	if(mem == NO_MEM)
-		return NO_MEM;
-
-	/* remember for next time */
-	lastscan = mem;
-
-	for(i = mem; i < mem + pages; i++) {
-		UNSET_BIT(free_pages_bitmap, i);
-	}
-
-	if(memflags & PAF_CLEAR) {
-		int s;
-		if ((s= sys_memset(NONE, 0, CLICK_SIZE*mem,
-			VM_PAGE_SIZE*pages)) != OK)
-			panic("alloc_mem: sys_memset failed: %d", s);
-	}
-
-	return mem;
-}
-```
-
-**逐行解析**：
-
-- **`boundary16 = 16 * 1024 * 1024 / VM_PAGE_SIZE`**：16MB 边界对应的页号。`16MB / 4KB = 4096` 页。
-- **`boundary1 = 1 * 1024 * 1024 / VM_PAGE_SIZE`**：1MB 边界对应的页号。`1MB / 4KB = 256` 页。
-- **`maxpage = NUMBER_PHYSICAL_PAGES - 1`**：默认扫描到最高页号（对应 4GB 地址空间的最后一页）。
-- **`if(memflags & PAF_LOWER16MB)`**：如果限制在低 16MB，将 `maxpage` 设为 4095。这用于 DMA 设备，因为某些旧设备只能访问低 16MB 物理内存。
-- **`else if(memflags & PAF_LOWER1MB)`**：限制在低 1MB，用于更老的设备（如 BIOS）。
-- **`else { ... }`**：没有位置限制时，先检查单页缓存。
-  - **`if(pages == 1)`**：只有单页分配才使用缓存。多页分配不走缓存，因为缓存只存单页。
-  - **`while(free_page_cache_size > 0)`**：从缓存末尾开始检查（LIFO）。
-  - **`i = free_page_cache[free_page_cache_size-1]`**：取出最后一项。
-  - **`if(page_isfree(i))`**：检查该页是否仍然空闲。注意：缓存中的页可能被之前的分配占用（如果缓存没有正确维护），所以需要双重检查。
-  - **`free_page_cache_size--`**：无论是否命中，都将该项从缓存中移除。如果命中，返回该页；如果未命中，继续检查前一项。
-- **`static int lastscan = -1`**：静态变量，记录上次成功分配的页号。下次分配从这里开始扫描，利用局部性原理。
-- **`startscan = lastscan`**：如果 `lastscan` 在有效范围内，从这里开始扫描。
-- **`mem = findbit(0, startscan, pages, memflags, &run_length)`**：从高地址向低地址扫描，寻找连续的 `pages` 个空闲页。
-- **`mem = findbit(0, maxpage, pages, memflags, &run_length)`**：如果第一次扫描失败，从最高页号重新开始扫描（覆盖整个范围）。
-- **`lastscan = mem`**：记录本次成功分配的页号，供下次使用。
-- **`UNSET_BIT(free_pages_bitmap, i)`**：将分配出去的页标记为已分配（位清零）。
-- **`if(memflags & PAF_CLEAR)`**：如果请求清零，通过 `sys_memset()` 系统调用将物理内存清零。注意：`sys_memset` 的参数是 `CLICK_SIZE*mem`（字节地址）和 `VM_PAGE_SIZE*pages`（字节长度）。
-
-**页缓存的设计意图**：
-
-`free_page_cache` 是一个简单的 LIFO 缓存，用于加速单页分配。当页被释放时（`free_pages()`），如果缓存未满，页号被加入缓存。分配单页时，优先从缓存取，避免扫描位图。但缓存不保证一致性——缓存中的页可能被其他路径分配（虽然 Minix3 单线程，但 sanity check 等路径可能绕过缓存），所以分配时需要再次检查 `page_isfree()`。
+**搬迁关联**：同 `alloc_mem()`，搬迁不影响 `alloc_pages()` 的逻辑。
 
 ### 2.5 位图扫描：`findbit()`
 
-```c
-// [alloc.c:369-399](minix3/minix/servers/vm/alloc.c#L369-L399)
+`findbit()` 在位图中从指定位置向前扫描，找到第一个满足条件的连续空闲块。完整代码和逐行解析见 [04-physical-memory.md §2.1.2](04-physical-memory.md)。
 
-static int findbit(int low, int startscan, int pages, int memflags, int *len)
-{
-	int run_length = 0, i;
-	int freerange_start = startscan;
-
-	for(i = startscan; i >= low; i--) {
-		if(!page_isfree(i)) {
-			int pi;
-			int chunk = i/BITCHUNK_BITS, moved = 0;
-			run_length = 0;
-			pi = i;
-			while(chunk > 0 &&
-			   !MAP_CHUNK(free_pages_bitmap, chunk*BITCHUNK_BITS)) {
-				chunk--;
-				moved = 1;
-			}
-			if(moved) { i = chunk * BITCHUNK_BITS + BITCHUNK_BITS; }
-			continue;
-		}
-		if(!run_length) { freerange_start = i; run_length = 1; }
-		else { freerange_start--; run_length++; }
-		assert(run_length <= pages);
-		if(run_length == pages) {
-			/* good block found! */
-			*len = run_length;
-			return freerange_start;
-		}
-	}
-
-	return NO_MEM;
-}
-```
-
-**逐行解析**：
-
-- **`for(i = startscan; i >= low; i--)`**：从高地址向低地址扫描。`low` 通常是 0，`startscan` 是上次分配的页号或最高页号。
-- **`if(!page_isfree(i))`**：如果当前页已分配，重置连续空闲计数。
-- **`chunk = i / BITCHUNK_BITS`**：计算当前页属于哪个 `bitchunk_t`。
-- **`while(chunk > 0 && !MAP_CHUNK(...))`**：如果当前 chunk 的所有位都是 0（即该 chunk 对应的所有页都已分配），跳过整个 chunk。
-  - **`MAP_CHUNK(free_pages_bitmap, chunk*BITCHUNK_BITS)`**：取该 chunk 的值。如果为 0，表示这 32 页全部已分配。
-  - **`chunk--`**：向前跳一个 chunk。
-  - **`moved = 1`**：标记发生了跳转。
-  - **`i = chunk * BITCHUNK_BITS + BITCHUNK_BITS`**：将 `i` 设置为跳转后 chunk 的末尾（最高位对应的页号），继续扫描。
-- **跳转优化**：这个 `while` 循环是 `findbit` 的关键优化。位图扫描的最坏情况是逐位检查，时间复杂度 O(n)。通过跳过全 0 的 chunk，可以将扫描速度提升约 32 倍（一个 chunk 32 位）。
-- **`if(!run_length)`**：如果当前是连续空闲区的第一页，记录起始页号。
-- **`else { freerange_start--; run_length++; }`**：继续扩展连续空闲区。注意：`freerange_start` 递减，因为扫描方向是从高到低。
-- **`assert(run_length <= pages)`**：断言连续长度不超过请求长度。如果超过，说明逻辑有误。
-- **`if(run_length == pages)`**：找到足够大的连续块，返回起始页号。
-
-**为什么从高地址向低地址扫描？**
-
-Minix3 采用这种策略是为了让低地址内存保留更久。低地址内存（尤其是低 1MB、低 16MB）对某些硬件设备（如 DMA 控制器）有特殊要求。优先使用高地址内存，可以延长低地址内存的可用时间。
+**搬迁关联**：无直接关联。
 
 ### 2.6 释放流程：`free_mem()` 和 `free_pages()`
 
-```c
-// [alloc.c:289-301](minix3/minix/servers/vm/alloc.c#L289-L301)
+`free_mem()` 将连续物理页块标记为空闲，`free_pages()` 释放单页。完整代码和逐行解析见 [04-physical-memory.md §2.2.1](04-physical-memory.md)。
 
-void free_mem(phys_clicks base, phys_clicks clicks)
-{
-/* Return a block of free memory to the hole list.  The parameters tell where
- * the block starts in physical memory and how big it is.  The block is added
- * to the hole list.  If it is contiguous with an existing hole on either end,
- * it is merged with the hole or holes.
- */
-  if (clicks == 0) return;
-
-  assert(CLICK_SIZE == VM_PAGE_SIZE);
-  free_pages(base, clicks);
-  return;
-}
-```
-
-- **`clicks == 0`**：空释放，直接返回。
-- **`assert(CLICK_SIZE == VM_PAGE_SIZE)`**：断言 click 大小等于页大小。Minix3 要求这两者相等（`#if CLICK_SIZE != VM_PAGE_SIZE #error`）。
-- **`free_pages(base, clicks)`**：调用底层释放函数。
-
-```c
-// [alloc.c:465-481](minix3/minix/servers/vm/alloc.c#L465-L481)
-
-static void free_pages(phys_bytes pageno, int npages)
-{
-	int i, lim = pageno + npages - 1;
-
-#if JUNKFREE
-       if(sys_memset(NONE, 0xa5a5a5a5, VM_PAGE_SIZE * pageno,
-               VM_PAGE_SIZE * npages) != OK)
-                       panic("free_pages: sys_memset failed");
-#endif
-
-	for(i = pageno; i <= lim; i++) {
-		SET_BIT(free_pages_bitmap, i);
-		if(free_page_cache_size < PAGE_CACHE_MAX) {
-			free_page_cache[free_page_cache_size++] = i;
-		}
-	}
-}
-```
-
-**逐行解析**：
-
-- **`lim = pageno + npages - 1`**：计算最后一页的页号。
-- **`#if JUNKFREE`**：如果定义了 `JUNKFREE`，将释放的内存填充为 `0xa5a5a5a5`。这是一种调试技术，帮助发现"使用已释放内存"的 bug。
-- **`SET_BIT(free_pages_bitmap, i)`**：将位设为 1，标记为空闲。
-- **`if(free_page_cache_size < PAGE_CACHE_MAX)`**：如果缓存未满，将页号加入缓存。
-- **`free_page_cache[free_page_cache_size++] = i`**：LIFO 追加。注意：这里没有检查该页是否已经在缓存中。如果同一页被释放两次，缓存中会有两个相同的项。这不会导致错误（因为分配时会检查 `page_isfree()`），但会降低缓存效率。
+**搬迁关联**：搬迁完成后，`relocate()` 调用 `free_mem()` 释放旧 PA 页（BumpBuf 占据的连续物理页）。这是搬迁的核心收益——释放稀缺的连续 PA 资源。
 
 ### 2.7 备用页池：`spare_pagequeue` 与 `reservedqueue`
 
@@ -563,6 +254,137 @@ static struct reserved_pages {
 - **`slots[]`**：每个 slot 记录物理地址和虚拟地址。
 - **`magic`**：魔数 `0x6e4c74d5`，用于 sanity check。
 
+**reservedqueue 操作函数**：
+
+```c
+// [alloc.c:74](minix3/minix/servers/vm/alloc.c#L74)
+
+int missing_spares = 0;
+```
+
+`missing_spares` 是全局计数器，记录所有 reservedqueue 中尚未填充的 slot 总数。每次 `reservedqueue_new()` 时增加 `max_available`，每次 `reservedqueue_fillslot()` 时递减，每次 `reservedqueue_alloc()` 时递增。`alloc_cycle()` 根据 `missing_spares > 0` 决定是否需要填充。
+
+```c
+// [alloc.c:136-146](minix3/minix/servers/vm/alloc.c#L136-L146)
+
+static void
+reservedqueue_fillslot(struct reserved_pages *rq,
+	struct reserved_pageslot *rps, phys_bytes ph, void *vir)
+{
+	rps->phys = ph;
+	rps->vir = vir;
+	assert(missing_spares > 0);
+	if(rq->mappedin) assert(vir);
+	missing_spares--;
+	rq->n_available++;
+}
+```
+
+`reservedqueue_fillslot()` 是底层填充函数，将一个物理地址+虚拟地址对写入 slot，递减 `missing_spares`，递增 `n_available`。如果队列要求映射（`mappedin`），断言虚拟地址非空。
+
+```c
+// [alloc.c:148-177](minix3/minix/servers/vm/alloc.c#L148-L177)
+
+static int
+reservedqueue_addslot(struct reserved_pages *rq)
+{
+	phys_bytes cl, cl_addr;
+	void *vir;
+	struct reserved_pageslot *rps;
+
+	sanitycheck_rq(rq);
+
+	if((cl = alloc_mem(rq->npages, rq->allocflags)) == NO_MEM)
+		return ENOMEM;
+
+	cl_addr = CLICK2ABS(cl);
+
+	vir = NULL;
+
+	if(rq->mappedin) {
+		if(!(vir = vm_mappages(cl_addr, rq->npages))) {
+			free_mem(cl, rq->npages);
+			printf("reservedqueue_addslot: vm_mappages failed\n");
+			return ENOMEM;
+		}
+	}
+
+	rps = &rq->slots[rq->n_available];
+
+	reservedqueue_fillslot(rq, rps, cl_addr, vir);
+
+	return OK;
+}
+```
+
+`reservedqueue_addslot()` 动态分配一个 slot：调用 `alloc_mem()` 分配物理页，如果需要映射则调用 `vm_mappages()` 分配虚拟地址，最后通过 `reservedqueue_fillslot()` 填入队列。如果 `vm_mappages()` 失败，会先释放已分配的物理页再返回错误。
+
+```c
+// [alloc.c:191-203](minix3/minix/servers/vm/alloc.c#L191-L203)
+
+static int reservedqueue_fill(void *rq_v)
+{
+	struct reserved_pages *rq = rq_v;
+	int r;
+
+	sanitycheck_rq(rq);
+
+	while(rq->n_available < rq->max_available)
+		if((r=reservedqueue_addslot(rq)) != OK)
+			return r;
+
+	return OK;
+}
+```
+
+`reservedqueue_fill()` 循环调用 `reservedqueue_addslot()` 直到队列填满或分配失败。
+
+```c
+// [alloc.c:206-225](minix3/minix/servers/vm/alloc.c#L206-L225)
+
+int
+reservedqueue_alloc(void *rq_v, phys_bytes *ph, void **vir)
+{
+	struct reserved_pages *rq = rq_v;
+	struct reserved_pageslot *rps;
+
+	sanitycheck_rq(rq);
+
+	if(rq->n_available < 1) return ENOMEM;
+
+	rq->n_available--;
+	missing_spares++;
+	rps = &rq->slots[rq->n_available];
+
+	*ph = rps->phys;
+	*vir = rps->vir;
+
+	sanitycheck_rq(rq);
+
+	return OK;
+}
+```
+
+`reservedqueue_alloc()` 从队列尾部取出一个 slot：递减 `n_available`，递增 `missing_spares`（因为该 slot 变为空缺），返回物理地址和虚拟地址。LIFO 顺序——最后填入的 slot 最先被取出。
+
+```c
+// [alloc.c:227-237](minix3/minix/servers/vm/alloc.c#L227-L237)
+
+void alloc_cycle(void)
+{
+	struct reserved_pages *rq;
+	sanitycheck_queues();
+	for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
+		sanitycheck_rq(rq);
+		reservedqueue_fill(rq);
+		sanitycheck_rq(rq);
+	}
+	sanitycheck_queues();
+}
+```
+
+`alloc_cycle()` 遍历所有活跃的 reservedqueue，对每个有空缺的队列调用 `reservedqueue_fill()` 填充。这是 `pt_init()` 搬迁阶段的核心函数——先用光静态页（`missing_spares` 增加），再调用 `alloc_cycle()` 用动态页填充空缺。
+
 **`pt_init()` 中的备用页池初始化**：
 
 ```c
@@ -604,10 +426,10 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 static int pt_init_done;
 ```
 
-`pt_init_done` 是一个静态整型标志，初始值为 0（C 语言静态变量默认初始化）。
+`pt_init_done` 是一个静态整型标志，初始值为 0（C 语言静态变量默认初始化）。详细定义见 [05-vm-allocpage.md](05-vm-allocpage.md)。
 
 ```c
-// [pagetable.c:333-364](minix3/minix/servers/vm/pagetable.c#L333-L364)
+// [pagetable.c:333-393](minix3/minix/servers/vm/pagetable.c#L333-L393)
 
 void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 {
@@ -673,6 +495,53 @@ pt_init_done = 1;
 
 ### 2.9 显式搬迁：`pt_init()` 的后半段
 
+**关键函数说明**：
+
+```c
+// [pagetable.c:264-272](minix3/minix/servers/vm/pagetable.c#L264-L272)
+
+static void *vm_getsparepage(phys_bytes *phys)
+{
+	void *ptr;
+	if(reservedqueue_alloc(spare_pagequeue, phys, &ptr) != OK) {
+		return NULL;
+	}
+	assert(ptr);
+	return ptr;
+}
+```
+
+`vm_getsparepage()` 从备用页队列取出一个页：调用 `reservedqueue_alloc()` 从 `spare_pagequeue` 尾部取出一个 slot，返回虚拟地址，通过指针参数返回物理地址。如果队列为空，返回 NULL。
+
+```c
+// [pagetable.c:235-259](minix3/minix/servers/vm/pagetable.c#L235-L259)
+
+void vm_freepages(vir_bytes vir, int pages)
+{
+	assert(!(vir % VM_PAGE_SIZE)); 
+
+	if(is_staticaddr(vir)) {
+		printf("VM: not freeing static page\n");
+		return;
+	}
+
+	if(pt_writemap(vmprocess, &vmprocess->vm_pt, vir,
+		MAP_NONE, pages*VM_PAGE_SIZE, 0,
+		WMF_OVERWRITE | WMF_FREE) != OK)
+		panic("vm_freepages: pt_writemap failed");
+
+	vm_self_pages--;
+
+#if SANITYCHECKS
+	if((sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
+		panic("VMCTL_FLUSHTLB failed");
+	}
+#endif
+}
+```
+
+`vm_freepages()` 释放 VM 自身使用的页：先通过 `is_staticaddr()` 检查是否是静态地址（低于 `VM_OWN_HEAPSTART`），如果是则跳过释放（静态页不属于动态分配，无法回收）；否则调用 `pt_writemap()` 解除映射并释放物理页，递减 `vm_self_pages` 计数。
+
 ```c
 // [pagetable.c:1313-1352](minix3/minix/servers/vm/pagetable.c#L1313-L1352)
 
@@ -718,7 +587,7 @@ if((sys_vmctl(SELF, VMCTL_FLUSHTLB, 0)) != OK) {
 **逐行解析**：
 
 - **`alloc_cycle()`**：触发备用页队列的填充。`alloc_cycle()` 遍历所有 `reservedqueue`，如果某个队列的可用 slot 数小于最大容量，调用 `reservedqueue_fill()` 动态分配新页并加入队列。这里的作用是确保备用页池中有动态分配的页。
-- **`while(vm_getsparepage(&phys))`**：循环取出所有备用页，直到队列为空。这会耗尽静态 spare page（因为静态页在队列前面，动态页在后面）。但注意：`vm_getsparepage()` 只是取出页，并不释放它们。这些页被"消耗"了——它们被用于后续的重新分配。
+- **`while(vm_getsparepage(&phys))`**：循环取出所有备用页，直到队列为空。这会耗尽静态 spare page（因为静态页在队列前面，动态页在后面）。但注意：`vm_getsparepage()` 只是取出页，并不释放它们。静态页无法被 `vm_freepages()` 释放（`is_staticaddr` 检查会跳过），所以它们只能被"用 up"——从队列中取出后不再归还。
 - **`alloc_cycle()`**：再次触发填充。此时队列已空，`alloc_cycle()` 会通过 `alloc_mem()` 动态分配新页加入队列。这些新页是动态分配的，物理地址不会随 liveupdate 改变。
 - **`pt_allocate_kernel_mapped_pagetables()`**：重新分配内核映射的页表。这些页表之前可能是用静态页分配的，现在用动态页重新分配。
 - **`pt_bind(newpt, &vmproc[VM_PROC_NR])`**：将新的页表绑定到 VM 进程。`pt_bind()` 更新内核中的页目录映射，让内核知道 VM 的新页表位置。
@@ -744,6 +613,8 @@ Minix3 的搬迁不是显式的 `memcpy` + 更新指针，而是通过**重新�
 **关键澄清**：这里的搬迁对象是**页表结构本身**（页目录和页表页），而不是 `free_pages_bitmap` 或 `free_page_cache`。`free_pages_bitmap` 和 `free_page_cache` 是 BSS 中的静态数组，它们在 VM 的整个生命周期中一直留在原地，不会被搬迁到堆上。文档 §1.3 中"搬迁涉及的数据"表格提到的这些数组，实际上在 Minix3 源码中并没有被搬迁。
 
 ### 2.10 虚拟地址分配：`findhole()`
+
+`findhole()` 的功能概述见 [07-pagetable-ops.md](07-pagetable-ops.md)，本文分析其与搬迁相关的细节。
 
 ```c
 // [pagetable.c:155-230](minix3/minix/servers/vm/pagetable.c#L155-L230)
@@ -833,6 +704,9 @@ static u32_t findhole(int pages)
 - **`curv = (u32_t) lastv`**：从上次分配的地址之后开始扫描。`lastv` 是静态变量，初始为 0。
 - **`try_restart = 1`**：允许从头开始扫描一次。
 - **`pde = ARCH_VM_PDE(curv)`**：计算虚拟地址对应的页目录项索引。在 i386 上，`ARCH_VM_PDE` 是 `(addr >> 22)`，即取高 10 位。
+
+> **架构演进**：以上为 Minix3 x86-32 设计。minix-rs 使用 x86-64，页表从 2 级变为 4 级（PML4+PDPT+PD+PT），地址划分从 10+10+12 变为 9+9+9+9+12，页表项从 u32 变为 u64，`pt_pt[1024]` 固定数组改为动态分配。详见 [06-pagetable-struct.md](06-pagetable-struct.md)。
+
 - **`pte = ARCH_VM_PTE(curv)`**：计算页表项索引。在 i386 上，`ARCH_VM_PTE` 是 `((addr >> 12) & 0x3FF)`，即取中间 10 位。
 - **`if((pt->pt_dir[pde] & ARCH_VM_PDE_PRESENT) && (pt->pt_pt[pde][pte] & ARCH_VM_PTE_PRESENT))`**：检查该虚拟地址是否已有映射。
   - **`pt->pt_dir[pde] & ARCH_VM_PDE_PRESENT`**：页目录项是否存在。
@@ -866,6 +740,8 @@ vm_allocpage()
 **与递归问题的关系**: `vm_mappages` → `pt_writemap` → `pt_ptalloc()` → `vm_allocpage()` → `vm_mappages()` 形成递归。这是 05-vm-allocpage.md 解决的核心问题。
 
 ### 2.12 页表分配：`pt_ptalloc()`
+
+`pt_ptalloc()` 的详细分析见 [07-pagetable-ops.md](07-pagetable-ops.md)，本文分析其与搬迁相关的防御性检查。
 
 ```c
 // [pagetable.c:494-540](minix3/minix/servers/vm/pagetable.c#L494-L540)
@@ -939,43 +815,9 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 
 ### 2.13 内存统计：`memstats()`
 
-```c
-// [alloc.c:348-367](minix3/minix/servers/vm/alloc.c#L348-L367)
+`memstats()` 返回物理内存的使用统计信息。完整代码和逐行解析见 [04-physical-memory.md](04-physical-memory.md)。
 
-void memstats(int *nodes, int *pages, int *largest)
-{
-	int i;
-	*nodes = 0;
-	*pages = 0;
-	*largest = 0;
-
-	for(i = 0; i < NUMBER_PHYSICAL_PAGES; i++) {
-		int size = 0;
-		while(i < NUMBER_PHYSICAL_PAGES && page_isfree(i)) {
-			size++;
-			i++;
-		}
-		if(size == 0) continue;
-		(*nodes)++;
-		(*pages)+= size;
-		if(size > *largest)
-			*largest = size;
-	}
-}
-```
-
-**逐行解析**：
-
-- **`nodes`**：空闲块的数量。一个"块"是连续的物理页序列。
-- **`pages`**：总空闲页数。
-- **`largest`**：最大的连续空闲块大小。
-- **`for(i = 0; i < NUMBER_PHYSICAL_PAGES; i++)`**：遍历所有物理页。
-- **`while(i < NUMBER_PHYSICAL_PAGES && page_isfree(i))`**：如果遇到空闲页，继续向后统计连续空闲页数。
-- **`(*nodes)++`**：找到一个空闲块，块计数加 1。
-- **`(*pages) += size`**：累加空闲页数。
-- **`if(size > *largest)`**：更新最大块大小。
-
-**时间复杂度**：O(NUMBER_PHYSICAL_PAGES)，即 O(1M)。对于 32 位系统来说，这个开销是可接受的（约 1M 次位检查）。但对于 64 位系统，这个算法不可行。
+**搬迁关联**：`memstats()` 在 64 位系统上不可行（`NUMBER_PHYSICAL_PAGES` 溢出），这是 Rust 版本使用动态分配 bitmap 的原因之一。
 
 ---
 
@@ -983,7 +825,7 @@ void memstats(int *nodes, int *pages, int *largest)
 
 ### 3.0 Rust 版本的搬迁动机与 Minix3 的差异
 
-§1.2 分析了 Minix3 的搬迁动机（BSS 大小固定 + liveupdate 物理地址变化）。Rust 版本的搬迁动机不同——核心驱动力是**消除 BumpBuf 的连续 PA 约束**。
+§1.2 分析了 Minix3 的搬迁动机，§1.6 归纳了 BSS 静态分配的两个根本约束（大小固定 + 物理地址不可控）。Rust 版本的自举方案使用 BumpBuf 而非 BSS，但面临对应的约束——核心驱动力是**消除 BumpBuf 的连续 PA 约束**（对应 Minix3 的"物理地址不可控"约束）。
 
 **与 Minix3 搬迁动机的对比**：
 
@@ -996,7 +838,7 @@ void memstats(int *nodes, int *pages, int *largest)
 
 **Rust 版本的搬迁对象**：与 Minix3 不同，Rust 版本中**bitmap 和 page_cache 确实需要搬迁**。原因：Rust 版本没有 BSS 静态数组——bitmap 和 page_cache 的内存来自 BumpBuf（`free_regions[0]` 的 Direct Map 区域），这是自举阶段的临时分配。搬迁将它们从 BumpBuf（连续 PA 约束）迁移到 HeapArena（碎片化 PA + 连续 VA），释放连续 PA 页。Minix3 不需要搬迁 bitmap/page_cache 是因为它们在 BSS 中（大小固定但位置永久），而 Rust 版本的 BumpBuf 分配是临时的。
 
-**BumpBuf 的连续 PA 约束**：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
+**BumpBuf 的连续 PA 约束**（BumpBuf 定义见 [04-physical-memory.md](04-physical-memory.md)，HeapArena 定义见 [08-slab-allocator.md](08-slab-allocator.md)）：自举阶段，元数据（bitmap + page_cache）从 `free_regions[0]` 的 Direct Map 区域分配。由于 `VA = PA + BASE`，VA 的连续性跟随 PA 的连续性——BumpBuf **强制要求连续物理页**。HeapArena 就位之前，VM 没有任何机制将碎片化的物理页缝合为连续 VA。
 
 搬迁后，元数据迁移到 HeapArena（碎片化 PA + 连续 VA），原来的连续 PA 页被释放回分配器。这些连续 PA 页对 DMA 等需要连续物理内存的场景非常有价值——搬迁不仅消除了约束，还回收了稀缺资源。
 
@@ -1173,6 +1015,14 @@ T6: 主循环开始
 如果堆分配失败（内存不足），搬迁无法完成。当前实现中 `relocate()` 在失败时静默返回（`Err(_) => return`），系统继续使用 BumpBuf 中的元数据——连续 PA 约束未被消除，但系统仍可正常运行。这是一种**降级策略**：搬迁是优化（释放连续 PA），不是必需（BumpBuf 元数据仍然可用）。
 
 如果未来需要更严格的语义，可以改为 panic（初始化阶段，没有恢复的必要）或回退到原地升级（保留 BumpBuf 区域，标记为堆的一部分）。
+
+**`HeapArena::grow()` 部分失败的资源安全**：
+
+`relocate()` Phase 2 调用 `heap_arena_grow(pages, &mut self.page_alloc)`。如果 `HeapArena::grow()` 在分配部分物理页后失败（已映射 N 页但请求 M > N 页），已分配的物理页是否泄漏？
+
+当前实现依赖 `HeapArena::grow()` 的**原子性保证**：要么全部成功（映射所有 M 页），要么不分配任何页（回滚已映射的 N 页）。如果 `HeapArena::grow()` 不提供此保证，`relocate()` 中的 `Err(_) => return` 会导致已映射的物理页永久泄漏——这些页既不在 HeapArena 的有效区域中，也没有被释放回分配器。
+
+确保 `HeapArena::grow()` 的原子性是搬迁资源安全的前提。如果未来 `HeapArena::grow()` 的实现变为部分成功，`relocate()` 需要添加回滚逻辑：在 `Err` 分支中调用 `HeapArena` 的 shrink/rollback 接口释放已映射的页。
 
 ### 3.3 搬迁的调用时机
 
@@ -1489,15 +1339,40 @@ fn test_update_relocated_arrays() {
 
 搬迁后 `BitmapAllocator` 的 `self.bitmap` 和 `self.page_cache` slice 指向 HeapArena VA 范围，alloc/free 行为与搬迁前一致。
 
----
+### 5.4 搬迁失败降级测试
+
+如果 `HeapArena::grow()` 失败，`relocate()` 静默返回，系统继续使用 BumpBuf 元数据。测试应验证：
+
+- 搬迁失败后 `alloc_mem()` / `free_mem()` 仍可正常工作
+- `reloc_array_count()` 仍返回 2（元数据仍在 BumpBuf 中）
+- `metadata_pa_range()` 仍返回原始 PA 范围
+
+### 5.5 旧 PA 页释放验证
+
+搬迁完成后，`relocate()` 调用 `free_mem()` 释放旧 PA 页。测试应验证：
+
+- `metadata_pa_range()` 返回的 PA 页在 `free_mem()` 后被标记为空闲
+- 释放的 PA 页可被后续 `alloc_mem()` 重新分配
+
+### 5.6 PhysAlloc 枚举转发测试
+
+`PhysAlloc` 枚举的 `reloc_array_count()` / `reloc_array_info()` / `update_relocated_arrays()` 方法应正确转发到内部变体。测试应验证：
+
+- `PhysAlloc::Bitmap(b)` 的转发结果与直接调用 `b.reloc_array_count()` 一致
+- `PhysAlloc::Buddy(b)` 的转发结果与直接调用一致（需 `buddy_alloc` feature）
+
+### 5.7 端到端搬迁测试
+
+完整执行 `VmServer::relocate()`，验证搬迁前后 `alloc_mem()` / `free_mem()` 行为一致。这是集成测试，需要完整的 VmServer 初始化环境。
 
 ## 6. 参见
 
 - [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（搬迁的主要对象）
 - [05-vm-allocpage.md](05-vm-allocpage.md) - 页分配器（BumpBuf → HeapArena 的初始化时序）
+- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构体（pt_t 定义，架构差异说明）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（搬迁依赖的映射能力）
 - [08-slab-allocator.md](08-slab-allocator.md) - Slab 分配器（搬迁后堆的主要使用者）
 
 ---
 
-*分类: VM库 | 使用范围: 仅 VM 内部，初始化阶段*
+*分类: VM私有 | 使用范围: 仅 VM 内部，初始化阶段*

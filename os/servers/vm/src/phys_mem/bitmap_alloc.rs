@@ -418,6 +418,7 @@ impl BitmapAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::PhysAlloc;
 
     fn make_test_regions() -> Vec<BootMemRegion> {
         vec![
@@ -779,5 +780,67 @@ mod tests {
 
         let new_ptrs: [*mut u8; 2] = [core::ptr::null_mut(); 2];
         alloc.update_relocated_arrays(&new_ptrs[..]);
+    }
+
+    #[test]
+    fn test_reloc_after_failed_relocation_still_works() {
+        let regions = make_test_regions();
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0x100000, 5);
+
+        assert_eq!(alloc.reloc_array_count(), 2);
+
+        let free_before = alloc.free_pages;
+        let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr, 1);
+        assert_eq!(alloc.free_pages, free_before);
+
+        let (pa_base, pa_pages) = alloc.metadata_pa_range();
+        assert_eq!(pa_base, 0x100000);
+        assert_eq!(pa_pages, 5);
+    }
+
+    #[test]
+    fn test_old_pa_pages_freed_after_relocation() {
+        let regions = make_test_regions();
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+
+        let (old_pa_base, old_pa_pages) = alloc.metadata_pa_range();
+        assert_eq!(old_pa_base, 0);
+        assert_eq!(old_pa_pages, 0);
+
+        let pa_base = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
+        let pa_pages: usize = 3;
+        alloc.free_mem(pa_base, pa_pages);
+
+        let free_before = alloc.free_pages;
+        let addr = alloc.alloc_mem(pa_pages, PageAllocFlags::empty()).unwrap();
+        assert_eq!(addr, pa_base);
+        alloc.free_mem(addr, pa_pages);
+        assert_eq!(alloc.free_pages, free_before);
+    }
+
+    #[test]
+    fn test_physalloc_bitmap_forwarding() {
+        let regions = make_test_regions();
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+        let phys = PhysAlloc::Bitmap(alloc);
+
+        assert_eq!(phys.reloc_array_count(), 2);
+
+        let (ptr0, len0, size0) = phys.reloc_array_info(0);
+        assert!(!ptr0.is_null());
+        assert!(len0 > 0);
+        assert_eq!(size0, core::mem::size_of::<u64>());
+
+        let (ptr1, len1, size1) = phys.reloc_array_info(1);
+        assert!(!ptr1.is_null());
+        assert!(len1 > 0);
+        assert_eq!(size1, core::mem::size_of::<usize>());
     }
 }
