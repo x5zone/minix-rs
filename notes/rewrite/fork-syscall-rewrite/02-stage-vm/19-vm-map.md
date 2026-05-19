@@ -1168,7 +1168,7 @@ static void mmap_file_cont(struct vmproc *vmp, message *replymsg, void *cbarg,
 
 **按需加载**
 
-文件映射的缺页处理由 `mappedfile_pagefault` 回调完成（`mem_type_mappedfile.ev_pagefault`）。当写入私有映射页面时，执行写时复制（COW）；当读取未加载页面时，从文件加载。具体实现参见 [11-memtype.md](11-memtype.md)。
+文件映射的缺页处理由 `mappedfile_pagefault` 回调完成（`mem_type_mappedfile.ev_pagefault`）。当写入私有映射页面时，执行写时复制（COW）；当读取未加载页面时，从文件加载。具体实现参见 [12-memtype.md](12-memtype.md)。
 
 **缓存策略**
 
@@ -1908,26 +1908,26 @@ impl AddressSpace {
 **AVL 树查找间隙**
 
 ```rust
-impl<V: VirtualRegion> RegionTree<V> {
+impl RegionTree {
     pub fn find_gap(
         &self,
-        start: VirtualAddress,
-        end: VirtualAddress,
-        length: usize,
-    ) -> Option<VirtualAddress> {
+        start: VirBytes,
+        end: VirBytes,
+        length: VirBytes,
+    ) -> Option<VirBytes> {
         let mut current_addr = start;
 
         for region in self.iter() {
-            if current_addr + length <= region.start() {
+            if current_addr.get() + length.get() <= region.vaddr.get() {
                 return Some(current_addr);
             }
-            current_addr = region.end();
+            current_addr = VirBytes(region.vaddr.get() + region.length.get());
             if current_addr >= end {
                 return None;
             }
         }
 
-        if current_addr + length <= end {
+        if current_addr.get() + length.get() <= end.get() {
             Some(current_addr)
         } else {
             None
@@ -1946,51 +1946,25 @@ impl<V: VirtualRegion> RegionTree<V> {
 impl AddressSpace {
     pub fn create_region(
         &mut self,
-        addr: VirtualAddress,
-        length: usize,
-        flags: RegionFlags,
-        mem_type: MemoryType,
-    ) -> Result<Arc<VirtualRegion>, MmapError> {
-        let region = VirtualRegion::new(addr, length, flags, mem_type);
-
-        self.regions.insert(region.clone())?;
-
+        addr: VirBytes,
+        length: VirBytes,
+        flags: VrFlags,
+        memtype: Option<&'static dyn MemType>,
+    ) -> Result<VirRegion, MmapError> {
+        let region = VirRegion::new(addr, length, flags, memtype);
+        self.regions.insert(region)?;
         Ok(region)
-    }
-}
-
-pub struct VirtualRegion {
-    start: VirtualAddress,
-    length: usize,
-    flags: RegionFlags,
-    mem_type: MemoryType,
-    phys_blocks: Vec<Option<Arc<PhysBlock>>>,
-}
-
-impl VirtualRegion {
-    pub fn new(
-        start: VirtualAddress,
-        length: usize,
-        flags: RegionFlags,
-        mem_type: MemoryType,
-    ) -> Arc<Self> {
-        let page_count = length / PAGE_SIZE;
-        Arc::new(Self {
-            start,
-            length,
-            flags,
-            mem_type,
-            phys_blocks: vec![None; page_count],
-        })
     }
 }
 ```
 
+> **方案 A 简化**: Minix3 的 `VirtualRegion` 使用 `Vec<Option<Arc<PhysBlock>>>`，每个 `PhysBlock` 是堆分配的引用计数对象。方案 A 使用 `Vec<Option<PageSlot>>`，`PageSlot` 是 `Copy` 类型（pfn + offset + memtype），无需堆分配，引用计数统一由 `PageFrames` 全局数组管理。
+
 **AVL 树插入**
 
 ```rust
-impl<V: VirtualRegion> RegionTree<V> {
-    pub fn insert(&mut self, region: Arc<V>) -> Result<(), MmapError> {
+impl RegionTree {
+    pub fn insert(&mut self, region: VirRegion) -> Result<(), MmapError> {
         if self.overlaps(&region) {
             return Err(MmapError::InvalidAddress);
         }
@@ -2001,18 +1975,18 @@ impl<V: VirtualRegion> RegionTree<V> {
 
     fn insert_node(
         &self,
-        node: Option<Box<Node<V>>>,
-        region: Arc<V>,
-    ) -> Option<Box<Node<V>>> {
+        node: Option<Box<Node>>,
+        region: VirRegion,
+    ) -> Option<Box<Node>> {
         match node {
             None => Some(Box::new(Node::new(region))),
             Some(mut n) => {
-                if region.start() < n.region.start() {
-                    n.left = self.insert_node(n.left.take(), region);
+                if region.vaddr < n.region.vaddr {
+                    n.lower = self.insert_node(n.lower.take(), region);
                 } else {
-                    n.right = self.insert_node(n.right.take(), region);
+                    n.higher = self.insert_node(n.higher.take(), region);
                 }
-                n.update_height();
+                n.update_factor();
                 Some(self.balance(n))
             }
         }
@@ -2027,30 +2001,40 @@ impl<V: VirtualRegion> RegionTree<V> {
 **按需映射**
 
 ```rust
-impl VirtualRegion {
+impl VirRegion {
     pub fn handle_page_fault(
         &mut self,
-        fault_addr: VirtualAddress,
+        frames: &mut PageFrames,
+        fault_addr: VirtAddr,
         write: bool,
     ) -> Result<(), PageFaultError> {
-        let page_index = self.page_index(fault_addr)?;
+        let offset = VirBytes(fault_addr.align_down(PAGE_SIZE) - self.vaddr);
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
 
-        if self.phys_blocks[page_index].is_none() {
-            let phys_block = self.mem_type.allocate_page()?;
-            self.phys_blocks[page_index] = Some(phys_block);
+        if self.physblocks[page_idx].is_none() {
+            let pfn = frames.alloc_phys_page()
+                .map_err(|_| PageFaultError::OutOfMemory)?;
+            let memtype = self.def_memtype.unwrap();
+            self.map_page(frames, offset, pfn, memtype);
         }
 
-        let phys_block = self.phys_blocks[page_index].as_ref().unwrap();
+        let slot = self.physblocks[page_idx].unwrap();
+        let state = frames.get(slot.pfn).unwrap();
 
-        let mut flags = PageFlags::PRESENT | PageFlags::USER;
-        if self.flags.contains(RegionFlags::WRITABLE) && write {
-            flags |= PageFlags::WRITABLE;
-        }
-        if !self.flags.contains(RegionFlags::WRITABLE) {
-            flags |= PageFlags::NO_EXECUTE;
-        }
+        let writable = slot.memtype.unwrap().writable(frames, slot);
+        let flags = if writable && write {
+            PteFlags::PRESENT | PteFlags::USER | PteFlags::WRITE
+        } else {
+            PteFlags::PRESENT | PteFlags::USER
+        };
 
-        self.map_page(fault_addr, phys_block.phys_addr(), flags)?;
+        pt_writemap(
+            pagetable,
+            self.vaddr + offset.get(),
+            frames.pfn_to_phys(slot.pfn),
+            PAGE_SIZE,
+            flags,
+        )?;
 
         Ok(())
     }
@@ -2060,16 +2044,27 @@ impl VirtualRegion {
 **预映射 (MAP_PREALLOC)**
 
 ```rust
-impl VirtualRegion {
-    pub fn preallocate_pages(&mut self) -> Result<(), MmapError> {
-        for i in 0..self.phys_blocks.len() {
-            if self.phys_blocks[i].is_none() {
-                let phys_block = self.mem_type.allocate_page()?;
-                
-                let virt_addr = self.start + i * PAGE_SIZE;
-                self.map_page(virt_addr, phys_block.phys_addr(), self.page_flags())?;
-                
-                self.phys_blocks[i] = Some(phys_block);
+impl VirRegion {
+    pub fn preallocate_pages(
+        &mut self,
+        frames: &mut PageFrames,
+    ) -> Result<(), MmapError> {
+        for page_idx in 0..self.physblocks.len() {
+            if self.physblocks[page_idx].is_none() {
+                let pfn = frames.alloc_phys_page()
+                    .map_err(|_| MmapError::OutOfMemory)?;
+                let memtype = self.def_memtype.unwrap();
+                let offset = VirBytes((page_idx * PAGE_SIZE) as u64);
+                self.map_page(frames, offset, pfn, memtype);
+
+                let slot = self.physblocks[page_idx].unwrap();
+                pt_writemap(
+                    pagetable,
+                    self.vaddr + offset.get(),
+                    frames.pfn_to_phys(slot.pfn),
+                    PAGE_SIZE,
+                    self.page_flags(),
+                )?;
             }
         }
         Ok(())
@@ -2137,27 +2132,28 @@ impl AddressSpace {
 impl AddressSpace {
     fn split_region(
         &mut self,
-        region: Arc<VirtualRegion>,
-        split_addr: VirtualAddress,
-        split_length: usize,
+        region: &mut VirRegion,
+        split_addr: VirBytes,
+        split_length: VirBytes,
+        frames: &mut PageFrames,
     ) -> Result<(), MunmapError> {
-        self.regions.remove(&region);
+        self.regions.remove(region);
 
-        let left_length = (split_addr - region.start()) as usize;
-        let right_start = split_addr + split_length;
-        let right_length = (region.end() - right_start) as usize;
+        let left_length = VirBytes(split_addr.get() - region.vaddr.get());
+        let right_start = VirBytes(split_addr.get() + split_length.get());
+        let right_length = VirBytes(region.vaddr.get() + region.length.get() - right_start.get());
 
-        if left_length > 0 {
-            let left_region = region.split_left(left_length)?;
+        if left_length.get() > 0 {
+            let left_region = region.split_left(left_length, frames)?;
             self.regions.insert(left_region);
         }
 
-        if right_length > 0 {
-            let right_region = region.split_right(right_start, right_length)?;
+        if right_length.get() > 0 {
+            let right_region = region.split_right(right_start, right_length, frames)?;
             self.regions.insert(right_region);
         }
 
-        region.release_pages(split_addr, split_length)?;
+        region.release(split_addr, split_length, frames)?;
 
         Ok(())
     }
@@ -2167,28 +2163,28 @@ impl AddressSpace {
 **区域释放**
 
 ```rust
-impl VirtualRegion {
-    pub fn release(&self) {
-        for block in &self.phys_blocks {
-            if let Some(phys_block) = block {
-                phys_block.decrement_refcount();
+impl VirRegion {
+    pub fn release(&mut self, frames: &mut PageFrames) {
+        for slot_opt in self.physblocks.iter_mut() {
+            if let Some(slot) = slot_opt.take() {
+                if slot.is_mapped() {
+                    let state = frames.get_mut(slot.pfn).unwrap();
+                    state.refcount -= 1;
+                    if state.refcount == 0
+                        && !state.flags.contains(PageFlags::IN_CACHE)
+                    {
+                        if let Some(mt) = slot.memtype {
+                            mt.ev_unreference(frames, slot);
+                        }
+                    }
+                }
             }
         }
     }
 }
-
-impl PhysBlock {
-    pub fn decrement_refcount(&self) {
-        if self.refcount.fetch_sub(1, Ordering::SeqCst) == 1 {
-            self.free();
-        }
-    }
-
-    fn free(&self) {
-        FRAME_ALLOCATOR.lock().free(self.phys_addr);
-    }
-}
 ```
+
+> **方案 A 简化**: Minix3 的 `VirtualRegion.release()` 需要遍历 `phys_blocks`，对每个 `Arc<PhysBlock>` 调用 `decrement_refcount()`，当 `refcount` 降为 0 时释放回 `FrameAllocator`。方案 A 使用 `VirRegion.unmap_page()` 统一处理，递减 `PageFrames.states[pfn].refcount`，由 `MemType.ev_unreference()` 决定是否释放物理页。
 
 ---
 
@@ -2198,171 +2194,145 @@ impl PhysBlock {
 
 匿名内存类型实现。
 
-**MemoryType trait**
+**MemType trait（核心接口）**
 
 ```rust
-pub trait MemoryType: Send + Sync {
+pub trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn allocate_page(&self) -> Result<Arc<PhysBlock>, AllocError>;
-
-    fn free_page(&self, block: &PhysBlock);
-
-    fn handle_page_fault(
+    fn ev_pagefault(
         &self,
-        region: &VirtualRegion,
-        page_index: usize,
+        vmp: &VmProc,
+        region: &mut VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<(), PageFaultError>;
+    ) -> Result<PageFaultResult, PageFaultError>;
 
-    fn copy_for_fork(
-        &self,
-        region: &VirtualRegion,
-        child_space: &mut AddressSpace,
-    ) -> Result<Arc<VirtualRegion>, ForkError>;
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool;
+
+    fn ev_reference(&self, frames: &mut PageFrames, slot: PageSlot);
+
+    fn ev_unreference(&self, frames: &mut PageFrames, slot: PageSlot);
 }
 ```
 
-**AnonymousMemory 实现**
+**AnonymousMemType 实现**
 
 ```rust
-pub struct AnonymousMemory {
-    allocator: Arc<FrameAllocator>,
-}
+pub struct AnonymousMemType;
 
-impl MemoryType for AnonymousMemory {
+impl MemType for AnonymousMemType {
     fn name(&self) -> &'static str {
         "anonymous"
     }
 
-    fn allocate_page(&self) -> Result<Arc<PhysBlock>, AllocError> {
-        let frame = self.allocator.allocate()?;
-        Ok(Arc::new(PhysBlock::new(frame)))
-    }
-
-    fn free_page(&self, block: &PhysBlock) {
-        if block.refcount() == 0 {
-            self.allocator.free(block.phys_addr());
-        }
-    }
-
-    fn handle_page_fault(
+    fn ev_pagefault(
         &self,
-        region: &VirtualRegion,
-        page_index: usize,
+        vmp: &VmProc,
+        region: &mut VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<(), PageFaultError> {
-        if region.phys_blocks[page_index].is_none() {
-            let block = self.allocate_page()?;
-            region.phys_blocks[page_index] = Some(block);
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        if region.physblocks[page_idx].is_none() {
+            let pfn = frames.alloc_phys_page()
+                .map_err(|_| PageFaultError::OutOfMemory)?;
+            region.map_page(frames, offset, pfn, self);
         }
-        Ok(())
+
+        Ok(PageFaultResult::Ok)
     }
 
-> **方案四标注**：mmap 的物理页分配通过 `FrameAllocator::allocate()` 完成，返回物理地址 `frame`。在方案三中，分配后需要通过 PtRegion 为物理页分配 VA；在方案四中，`vm_phys_to_virt(frame)` 一行加法即可获得 VA。mmap 调用方不需要关心 VA 如何获取——这是 `FrameAllocator` 内部的简化，上层接口不变。与 18-vm-brk.md 的 brk 一样，mmap 是 direct map 统一性的"透明受益者"。
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+        let state = frames.get(slot.pfn).unwrap();
+        state.refcount <= 1
+    }
 
-    fn copy_for_fork(
-        &self,
-        region: &VirtualRegion,
-        child_space: &mut AddressSpace,
-    ) -> Result<Arc<VirtualRegion>, ForkError> {
-        let child_region = VirtualRegion::new(
-            region.start,
-            region.length,
-            region.flags,
-            MemoryTypeEnum::Anonymous,
-        );
+    fn ev_reference(&self, frames: &mut PageFrames, slot: PageSlot) {
+        frames.get_mut(slot.pfn).unwrap().refcount += 1;
+    }
 
-        for (i, block) in region.phys_blocks.iter().enumerate() {
-            if let Some(b) = block {
-                b.increment_refcount();
-                child_region.phys_blocks[i] = Some(b.clone());
-            }
+    fn ev_unreference(&self, frames: &mut PageFrames, slot: PageSlot) {
+        let state = frames.get_mut(slot.pfn).unwrap();
+        state.refcount -= 1;
+        if state.refcount == 0 {
+            frames.free_phys_page(slot.pfn);
         }
-
-        Ok(child_region)
     }
 }
 ```
+
+> **方案 A 简化**: Minix3 的 `AnonymousMemory` 使用 `Arc<PhysBlock>` 管理引用计数，`allocate_page()` 返回 `Arc<PhysBlock>`，`free_page()` 检查 `refcount == 0`。方案 A 将引用计数移至 `PageFrames.states[pfn].refcount`，`MemType` 只需递增/递减 refcount，无需管理 `Arc` 对象生命周期。
 
 ### 5.2 文件映射
 
 文件映射内存类型实现。
 
-**MappedFileMemory 实现**
+**MappedFileMemType 实现**
 
 ```rust
-pub struct MappedFileMemory {
-    allocator: Arc<FrameAllocator>,
+pub struct MappedFileMemType {
     vfs_client: Arc<VfsClient>,
 }
 
-impl MappedFileMemory {
-    pub fn new(allocator: Arc<FrameAllocator>, vfs_client: Arc<VfsClient>) -> Self {
-        Self { allocator, vfs_client }
+impl MappedFileMemType {
+    pub fn new(vfs_client: Arc<VfsClient>) -> Self {
+        Self { vfs_client }
     }
 }
 
-impl MemoryType for MappedFileMemory {
+impl MemType for MappedFileMemType {
     fn name(&self) -> &'static str {
         "mapped file"
     }
 
-    fn allocate_page(&self) -> Result<Arc<PhysBlock>, AllocError> {
-        let frame = self.allocator.allocate()?;
-        Ok(Arc::new(PhysBlock::new(frame)))
-    }
-
-    fn free_page(&self, block: &PhysBlock) {
-        if block.refcount() == 0 {
-            self.allocator.free(block.phys_addr());
-        }
-    }
-
-    fn handle_page_fault(
+    fn ev_pagefault(
         &self,
-        region: &VirtualRegion,
-        page_index: usize,
+        vmp: &VmProc,
+        region: &mut VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<(), PageFaultError> {
-        if region.phys_blocks[page_index].is_none() {
-            let block = self.allocate_page()?;
-            
-            let file_offset = region.file_offset + (page_index * PAGE_SIZE) as u64;
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        if region.physblocks[page_idx].is_none() {
+            let pfn = frames.alloc_phys_page()
+                .map_err(|_| PageFaultError::OutOfMemory)?;
+
+            let file_offset = region.param.file_offset + (page_idx as u64) * PAGE_SIZE;
+            let phys_addr = frames.pfn_to_phys(pfn);
+            let virt_addr = vm_phys_to_virt(phys_addr);
             self.vfs_client.read_page(
-                region.file_handle,
+                region.param.file_handle,
                 file_offset,
-                block.phys_addr(),
+                virt_addr,
             )?;
-            
-            region.phys_blocks[page_index] = Some(block);
+
+            region.map_page(frames, offset, pfn, self);
         }
-        Ok(())
+
+        Ok(PageFaultResult::Ok)
     }
 
-    fn copy_for_fork(
-        &self,
-        region: &VirtualRegion,
-        child_space: &mut AddressSpace,
-    ) -> Result<Arc<VirtualRegion>, ForkError> {
-        let child_region = VirtualRegion::new(
-            region.start,
-            region.length,
-            region.flags,
-            MemoryTypeEnum::MappedFile,
-        );
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+        let state = frames.get(slot.pfn).unwrap();
+        state.refcount <= 1
+    }
 
-        child_region.file_handle = region.file_handle;
-        child_region.file_offset = region.file_offset;
+    fn ev_reference(&self, frames: &mut PageFrames, slot: PageSlot) {
+        frames.get_mut(slot.pfn).unwrap().refcount += 1;
+    }
 
-        for (i, block) in region.phys_blocks.iter().enumerate() {
-            if let Some(b) = block {
-                b.increment_refcount();
-                child_region.phys_blocks[i] = Some(b.clone());
-            }
+    fn ev_unreference(&self, frames: &mut PageFrames, slot: PageSlot) {
+        let state = frames.get_mut(slot.pfn).unwrap();
+        state.refcount -= 1;
+        if state.refcount == 0 {
+            frames.free_phys_page(slot.pfn);
         }
-
-        Ok(child_region)
     }
 }
 ```
@@ -2381,57 +2351,45 @@ pub struct FileMappingParams {
 
 直接物理内存映射类型实现。
 
-**DirectPhysicalMemory 实现**
+**DirectPhysicalMemType 实现**
 
 ```rust
-pub struct DirectPhysicalMemory;
+pub struct DirectPhysicalMemType;
 
-impl MemoryType for DirectPhysicalMemory {
+impl MemType for DirectPhysicalMemType {
     fn name(&self) -> &'static str {
         "direct physical"
     }
 
-    fn allocate_page(&self) -> Result<Arc<PhysBlock>, AllocError> {
-        Ok(Arc::new(PhysBlock::new_direct()))
-    }
-
-    fn free_page(&self, _block: &PhysBlock) {
-        // 直接映射不需要释放物理页面
-    }
-
-    fn handle_page_fault(
+    fn ev_pagefault(
         &self,
-        region: &VirtualRegion,
-        page_index: usize,
+        vmp: &VmProc,
+        region: &mut VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<(), PageFaultError> {
-        let phys_addr = region.phys_base + (page_index * PAGE_SIZE);
-        
-        let block = PhysBlock::new_direct_mapped(phys_addr);
-        region.phys_blocks[page_index] = Some(Arc::new(block));
-        
-        Ok(())
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let phys_addr = region.param.phys_base + offset.get();
+        let pfn = frames.phys_to_pfn(PhysBytes(phys_addr));
+
+        region.physblocks[page_idx] = Some(PageSlot {
+            pfn,
+            offset,
+            memtype: Some(self),
+        });
+
+        Ok(PageFaultResult::Ok)
     }
 
-    fn copy_for_fork(
-        &self,
-        region: &VirtualRegion,
-        child_space: &mut AddressSpace,
-    ) -> Result<Arc<VirtualRegion>, ForkError> {
-        let child_region = VirtualRegion::new(
-            region.start,
-            region.length,
-            region.flags,
-            MemoryTypeEnum::DirectPhysical,
-        );
+    fn writable(&self, _frames: &PageFrames, _slot: PageSlot) -> bool {
+        true
+    }
 
-        child_region.phys_base = region.phys_base;
+    fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) {
+    }
 
-        for (i, block) in region.phys_blocks.iter().enumerate() {
-            child_region.phys_blocks[i] = block.clone();
-        }
-
-        Ok(child_region)
+    fn ev_unreference(&self, _frames: &mut PageFrames, _slot: PageSlot) {
     }
 }
 ```
@@ -2439,14 +2397,10 @@ impl MemoryType for DirectPhysicalMemory {
 **直接映射区域**
 
 ```rust
-pub struct DirectPhysicalRegion {
-    phys_base: PhysicalAddress,
-}
-
-impl VirtualRegion {
-    pub fn set_direct_physical(&mut self, phys_addr: PhysicalAddress) {
-        self.phys_base = phys_addr;
-        self.flags |= RegionFlags::DIRECT;
+impl VirRegion {
+    pub fn set_direct_physical(&mut self, phys_addr: PhysBytes) {
+        self.param.phys_base = phys_addr.0;
+        self.flags |= VrFlags::DIRECT;
     }
 }
 ```
@@ -2456,6 +2410,8 @@ impl VirtualRegion {
 - 设备寄存器映射：VGA 帧缓冲区 (0xA0000)、PCI 配置空间、APIC 寄存器
 - DMA 缓冲区：网络驱动 DMA 区域、存储驱动 DMA 区域
 - 共享内存：进程间共享物理内存
+
+> **方案 A 简化**: Minix3 的 `DirectPhysicalMemory` 需要创建 `PhysBlock::new_direct_mapped(phys_addr)` 并包装在 `Arc` 中。方案 A 的 `DirectPhysicalMemType` 直接将 PFN 写入 `PageSlot`，无需分配 `PhysBlock` 对象，`ev_reference`/`ev_unreference` 为空操作（直接映射不管理 refcount）。
 
 ---
 
@@ -2504,11 +2460,10 @@ impl VirtualRegion {
 
 ## 7. 参见
 
-- [12-vir-region.md](12-vir-region.md) - 区域创建与管理（vir_region 结构体、region_new、map_page_region）
-- [11-memtype.md](11-memtype.md) - 不同映射类型的内存类型（mem_type 结构体及各实现）
+- [11-region-mapping.md](11-region-mapping.md) - 区域创建与页映射（VirRegion + PageSlot，替代原 vir_region + phys_region）
+- [12-memtype.md](12-memtype.md) - 不同映射类型的内存类型（mem_type 结构体及各实现）
 - [13-region-avl.md](13-region-avl.md) - 区域查找与插入（AVL 树操作、region_find_slot）
-- [14-phys-region.md](14-phys-region.md) - 物理区域管理（phys_region、phys_block 引用计数）
-- [10-phys-block.md](10-phys-block.md) - 物理内存块管理
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态管理（PageState/PageFrames，替代原 phys_block）
 - [00-vm-overview.md](00-vm-overview.md) - VM 模块总览
 - [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体（vmproc、地址空间）
 - [18-vm-brk.md](18-vm-brk.md) - brk 系统调用（堆管理，与 mmap 区域相邻）

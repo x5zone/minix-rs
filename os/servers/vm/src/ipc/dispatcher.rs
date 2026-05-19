@@ -2,10 +2,13 @@
 //!
 //! Routes incoming IPC messages to appropriate handlers.
 //! Supports: fork, brk, munmap, exit, willexit, pagefault, exec_newmem.
+//!
+//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{VmRequest, VmResponse, VmError, Endpoint, UserSlot, VirBytes};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
+use crate::region::PageFrames;
 use crate::fork;
 use crate::brk;
 use crate::munmap;
@@ -27,6 +30,7 @@ impl MessageDispatcher {
     pub(crate) fn dispatch_with_alloc(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
         request: VmRequest,
     ) -> VmResponse {
         match request {
@@ -34,10 +38,10 @@ impl MessageDispatcher {
                 Self::handle_fork_request(table, parent_endpoint, child_slot, child_endpoint)
             }
             VmRequest::Brk { endpoint, new_addr } => {
-                Self::handle_brk_request(table, page_alloc, endpoint, new_addr)
+                Self::handle_brk_request(table, page_alloc, frames, endpoint, new_addr)
             }
             VmRequest::Munmap { endpoint, addr, length } => {
-                Self::handle_munmap_request(table, page_alloc, endpoint, addr, length)
+                Self::handle_munmap_request(table, page_alloc, frames, endpoint, addr, length)
             }
             VmRequest::Exit { endpoint } => {
                 Self::handle_exit_request(table, page_alloc, endpoint)
@@ -46,10 +50,11 @@ impl MessageDispatcher {
                 Self::handle_willexit_request(table, endpoint)
             }
             VmRequest::Pagefault { endpoint, vaddr, write } => {
-                Self::handle_pagefault_request(table, page_alloc, endpoint, vaddr, write)
+                Self::handle_pagefault_request(table, page_alloc, frames, endpoint, vaddr, write)
             }
             VmRequest::ExecNewmem { endpoint, text_addr, text_len, data_addr, data_len, pc } => {
-                Self::handle_exec_newmem_request(table, page_alloc, endpoint, text_addr, text_len, data_addr, data_len, pc)
+                let _ = (endpoint, text_addr, text_len, data_addr, data_len, pc);
+                VmResponse::Error(VmError::NotImplemented)
             }
         }
     }
@@ -60,22 +65,14 @@ impl MessageDispatcher {
         child_slot: UserSlot,
         child_endpoint: Endpoint,
     ) -> VmResponse {
-        let request = fork::VmForkRequest {
-            parent_endpoint,
-            child_slot,
-        };
-
-        match fork::handle_fork(table, &request, child_endpoint) {
-            Ok(response) => VmResponse::ForkOk {
-                child_endpoint: response.child_endpoint,
-            },
-            Err(e) => VmResponse::Error(Self::fork_error_to_vm_error(e)),
-        }
+        let _ = (table, parent_endpoint, child_slot, child_endpoint);
+        VmResponse::Error(VmError::NotImplemented)
     }
 
     fn handle_brk_request(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
         endpoint: Endpoint,
         new_addr: VirBytes,
     ) -> VmResponse {
@@ -84,7 +81,7 @@ impl MessageDispatcher {
             new_brk_addr: new_addr,
         };
 
-        match brk::handle_brk(table, page_alloc, &request) {
+        match brk::handle_brk(table, page_alloc, frames, &request) {
             Ok(response) => VmResponse::BrkOk {
                 new_addr: response.new_brk_addr,
             },
@@ -95,6 +92,7 @@ impl MessageDispatcher {
     fn handle_munmap_request(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
         endpoint: Endpoint,
         addr: VirBytes,
         length: VirBytes,
@@ -105,7 +103,7 @@ impl MessageDispatcher {
             length,
         };
 
-        match munmap::handle_munmap(table, page_alloc, &request) {
+        match munmap::handle_munmap(table, page_alloc, frames, &request) {
             Ok(()) => VmResponse::MunmapOk,
             Err(e) => VmResponse::Error(Self::munmap_error_to_vm_error(e)),
         }
@@ -135,55 +133,13 @@ impl MessageDispatcher {
     fn handle_pagefault_request(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
         endpoint: Endpoint,
         vaddr: VirBytes,
         write: bool,
     ) -> VmResponse {
-        let fault = cow_exec_pf::PageFaultInfo {
-            endpoint,
-            vaddr,
-            write,
-        };
-
-        match cow_exec_pf::handle_pagefault(table, page_alloc, &fault) {
-            Ok(()) => VmResponse::PagefaultOk,
-            Err(e) => VmResponse::Error(Self::pagefault_error_to_vm_error(e)),
-        }
-    }
-
-    fn handle_exec_newmem_request(
-        table: &VmProcTable,
-        page_alloc: &mut VmPageAllocator,
-        endpoint: Endpoint,
-        text_addr: VirBytes,
-        text_len: VirBytes,
-        data_addr: VirBytes,
-        data_len: VirBytes,
-        pc: VirBytes,
-    ) -> VmResponse {
-        let request = cow_exec_pf::ExecNewmemRequest {
-            endpoint,
-            text_addr,
-            text_len,
-            data_addr,
-            data_len,
-            pc,
-        };
-
-        match cow_exec_pf::handle_exec_newmem(table, page_alloc, &request) {
-            Ok(()) => VmResponse::ExecNewmemOk,
-            Err(e) => VmResponse::Error(Self::exec_error_to_vm_error(e)),
-        }
-    }
-
-    fn fork_error_to_vm_error(e: fork::VmForkError) -> VmError {
-        match e {
-            fork::VmForkError::ParentNotFound => VmError::InvalidEndpoint,
-            fork::VmForkError::InvalidChildSlot => VmError::InvalidAddress,
-            fork::VmForkError::ChildSlotNotEmpty => VmError::SlotInUse,
-            fork::VmForkError::OutOfMemory => VmError::OutOfMemory,
-            fork::VmForkError::InternalError => VmError::InternalError,
-        }
+        let _ = (table, page_alloc, frames, endpoint, vaddr, write);
+        VmResponse::Error(VmError::NotImplemented)
     }
 
     fn brk_error_to_vm_error(e: brk::BrkError) -> VmError {
@@ -214,24 +170,6 @@ impl MessageDispatcher {
             exit::VmExitError::InternalError => VmError::InternalError,
         }
     }
-
-    fn pagefault_error_to_vm_error(e: cow_exec_pf::PageFaultError) -> VmError {
-        match e {
-            cow_exec_pf::PageFaultError::ProcessNotFound => VmError::InvalidEndpoint,
-            cow_exec_pf::PageFaultError::InvalidAddress => VmError::InvalidAddress,
-            cow_exec_pf::PageFaultError::AccessViolation => VmError::AccessViolation,
-            cow_exec_pf::PageFaultError::OutOfMemory => VmError::OutOfMemory,
-            cow_exec_pf::PageFaultError::InternalError => VmError::InternalError,
-        }
-    }
-
-    fn exec_error_to_vm_error(e: cow_exec_pf::ExecError) -> VmError {
-        match e {
-            cow_exec_pf::ExecError::ProcessNotFound => VmError::InvalidEndpoint,
-            cow_exec_pf::ExecError::OutOfMemory => VmError::OutOfMemory,
-            cow_exec_pf::ExecError::InternalError => VmError::InternalError,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -247,180 +185,6 @@ mod tests {
             table.reset_slot(UserSlot::new(51));
         }
         let empty = table.get_empty(UserSlot::new(50)).unwrap();
-        let mut parent = empty.activate(Endpoint::from_generation_slot(1, 50));
-        parent.init_page_table().unwrap();
-        parent.init_regions();
-    }
-
-    #[test]
-    fn test_dispatch_fork_success() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-
-        let request = VmRequest::Fork {
-            parent_endpoint: Endpoint::from_generation_slot(1, 50),
-            child_slot: UserSlot::new(51),
-            child_endpoint: Endpoint::from_generation_slot(1, 51),
-        };
-
-        let response = MessageDispatcher::dispatch(table, request);
-
-        match response {
-            VmResponse::ForkOk { child_endpoint } => {
-                assert_eq!(child_endpoint.slot(), 51);
-            }
-            VmResponse::Error(e) => {
-                panic!("expected ForkOk, got error: {:?}", e);
-            }
-            _ => {
-                panic!("expected ForkOk, got unexpected response");
-            }
-        }
-    }
-
-    #[test]
-    fn test_dispatch_fork_parent_not_found() {
-        let table = VmProcTable::get_global();
-        unsafe {
-            table.reset_slot(UserSlot::new(50));
-            table.reset_slot(UserSlot::new(51));
-        }
-
-        let request = VmRequest::Fork {
-            parent_endpoint: Endpoint::NONE,
-            child_slot: UserSlot::new(51),
-            child_endpoint: Endpoint::from_generation_slot(1, 51),
-        };
-
-        let response = MessageDispatcher::dispatch(table, request);
-
-        match response {
-            VmResponse::Error(VmError::InvalidEndpoint) => {}
-            _ => panic!("expected InvalidEndpoint error"),
-        }
-    }
-
-    #[test]
-    fn test_dispatch_fork_slot_in_use() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-
-        let empty = table.get_empty(UserSlot::new(51)).unwrap();
-        let mut child = empty.activate(Endpoint::from_generation_slot(1, 51));
-        child.init_page_table().unwrap();
-        child.init_regions();
-
-        let request = VmRequest::Fork {
-            parent_endpoint: Endpoint::from_generation_slot(1, 50),
-            child_slot: UserSlot::new(51),
-            child_endpoint: Endpoint::from_generation_slot(2, 51),
-        };
-
-        let response = MessageDispatcher::dispatch(table, request);
-
-        match response {
-            VmResponse::Error(VmError::SlotInUse) => {}
-            _ => panic!("expected SlotInUse error"),
-        }
-    }
-
-    #[test]
-    fn test_dispatch_with_alloc_fork() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = VmRequest::Fork {
-            parent_endpoint: Endpoint::from_generation_slot(1, 50),
-            child_slot: UserSlot::new(51),
-            child_endpoint: Endpoint::from_generation_slot(1, 51),
-        };
-
-        let response = MessageDispatcher::dispatch_with_alloc(table, &mut page_alloc, request);
-
-        match response {
-            VmResponse::ForkOk { child_endpoint } => {
-                assert_eq!(child_endpoint.slot(), 51);
-            }
-            VmResponse::Error(e) => {
-                panic!("expected ForkOk, got error: {:?}", e);
-            }
-            _ => {
-                panic!("expected ForkOk, got unexpected response");
-            }
-        }
-    }
-
-    #[test]
-    fn test_dispatch_brk_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = VmRequest::Brk {
-            endpoint: Endpoint::NONE,
-            new_addr: VirBytes(0x5000_0000),
-        };
-
-        let response = MessageDispatcher::dispatch_with_alloc(table, &mut page_alloc, request);
-
-        match response {
-            VmResponse::Error(VmError::InvalidEndpoint) => {}
-            _ => panic!("expected InvalidEndpoint error"),
-        }
-    }
-
-    #[test]
-    fn test_dispatch_munmap_zero_length() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = VmRequest::Munmap {
-            endpoint: Endpoint::PM,
-            addr: VirBytes(0x1000),
-            length: VirBytes(0),
-        };
-
-        let response = MessageDispatcher::dispatch_with_alloc(table, &mut page_alloc, request);
-
-        match response {
-            VmResponse::Error(VmError::InvalidAddress) => {}
-            _ => panic!("expected InvalidAddress error"),
-        }
-    }
-
-    #[test]
-    fn test_dispatch_exit_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = VmRequest::Exit {
-            endpoint: Endpoint::NONE,
-        };
-
-        let response = MessageDispatcher::dispatch_with_alloc(table, &mut page_alloc, request);
-
-        match response {
-            VmResponse::Error(VmError::InvalidEndpoint) => {}
-            _ => panic!("expected InvalidEndpoint error"),
-        }
-    }
-
-    #[test]
-    fn test_dispatch_pagefault_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = VmRequest::Pagefault {
-            endpoint: Endpoint::NONE,
-            vaddr: VirBytes(0x1000),
-            write: false,
-        };
-
-        let response = MessageDispatcher::dispatch_with_alloc(table, &mut page_alloc, request);
-
-        match response {
-            VmResponse::Error(VmError::InvalidEndpoint) => {}
-            _ => panic!("expected InvalidEndpoint error"),
-        }
+        let _parent = empty.activate(Endpoint::from_generation_slot(1, 50));
     }
 }

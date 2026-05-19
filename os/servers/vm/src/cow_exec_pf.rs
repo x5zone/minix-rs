@@ -1,336 +1,258 @@
-//! Copy-on-Write, Exec, and Page Fault handling.
+//! Copy-on-Write and page fault handling (方案三：PFN 索引模型).
 //!
-//! Implements the core page fault resolution logic:
-//! - Anonymous page faults: allocate new physical page
-//! - CoW page faults: copy page on write
-//! - Direct physical page faults: map physical address
-//! - Exec: replace process address space
-//!
-//! Corresponds to Minix3's `map_pf()` in `region.c` and `do_pagefaults()` in `main.c`.
+//! Uses PageFrames + PageSlot for CoW resolution and page fault dispatch.
 
-use minix_types::{Endpoint, UserSlot, VirBytes, PhysBytes, EACCES, ENOMEM, EINVAL, ESRCH};
-use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
-use crate::region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
-use crate::alloc_page::VmPageAllocator;
-use crate::memtype::{PagefaultResult, MEM_TYPE_ANON};
-use crate::pagetable::{PageTable, PageFlags, Paging};
-use crate::phys_mem::{AlignedPhysBytes, PageAllocFlags};
-use crate::direct_map::vm_phys_to_virt;
-use core::ptr::NonNull;
-
-const PAGE_SIZE: u64 = 4096;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PageFaultError {
-    ProcessNotFound,
-    InvalidAddress,
-    AccessViolation,
-    OutOfMemory,
-    InternalError,
-}
-
-impl PageFaultError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            Self::InvalidAddress => EINVAL,
-            Self::AccessViolation => EACCES,
-            Self::OutOfMemory => ENOMEM,
-            Self::InternalError => ENOMEM,
-        }
-    }
-}
-
-pub(crate) struct PageFaultInfo {
-    pub endpoint: Endpoint,
-    pub vaddr: VirBytes,
-    pub write: bool,
-}
+use minix_types::VirBytes;
+use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PfnAllocError, PAGE_SIZE};
+use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
+use crate::vmproc::ActiveProc;
 
 pub(crate) fn handle_pagefault(
-    table: &VmProcTable,
-    page_alloc: &mut VmPageAllocator,
-    fault: &PageFaultInfo,
-) -> Result<(), PageFaultError> {
-    let slot = table.vm_isokendpt(fault.endpoint)
-        .map_err(|_| PageFaultError::ProcessNotFound)?;
+    proc: &ActiveProc<'_>,
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    fault_addr: VirBytes,
+    write: bool,
+) -> Result<PagefaultAction, CowError> {
+    let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
-    let mut active = table.get_active(slot)
-        .ok_or(PageFaultError::ProcessNotFound)?;
+    let memtype = region.def_memtype
+        .ok_or(CowError::NoMemType)?;
 
-    let (region_vaddr, page_index, memtype, is_unmapped, needs_cow, is_writable) = {
-        let region = active.regions_mut().find(fault.vaddr)
-            .ok_or(PageFaultError::InvalidAddress)?;
+    let result = memtype.ev_pagefault(proc, region, frames, offset, write)?;
 
-        let offset = VirBytes(fault.vaddr.0 - region.vaddr.0);
-        let page_index = (offset.0 / PAGE_SIZE) as usize;
-
-        if page_index >= region.physblocks.len() {
-            return Err(PageFaultError::InvalidAddress);
+    match result {
+        PagefaultResult::Handled => Ok(PagefaultAction::Handled),
+        PagefaultResult::NeedNewPage => {
+            alloc_and_map(region, frames, alloc, offset, memtype)?;
+            Ok(PagefaultAction::MappedNewPage)
         }
-
-        let memtype = region.def_memtype
-            .ok_or(PageFaultError::InternalError)?;
-
-        let is_unmapped = region.physblocks.get(page_index)
-            .and_then(|opt| opt.as_ref())
-            .map(|pr| pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE)
-            .unwrap_or(true);
-
-        let needs_cow = region.physblocks.get(page_index)
-            .and_then(|opt| opt.as_ref())
-            .map(|pr| pr.needs_cow())
-            .unwrap_or(false);
-
-        let is_writable = region.is_writable();
-
-        (region.vaddr, page_index, memtype, is_unmapped, needs_cow, is_writable)
-    };
-
-    if is_unmapped {
-        let (_new_virt, new_phys) = page_alloc.alloc_page(PageAllocFlags::empty())
-            .ok_or(PageFaultError::OutOfMemory)?;
-
-        let new_phys_mt = PhysBytes::new(new_phys.as_u64());
-
-        {
-            let page_table = active.page_table_mut();
-            let vaddr = VirBytes(region_vaddr.0 + (page_index as u64) * PAGE_SIZE);
-            let flags = if is_writable {
-                PageFlags::read_write()
-            } else {
-                PageFlags::read_only()
-            };
-            page_table.map(vaddr, new_phys_mt, flags)
-                .map_err(|_| PageFaultError::InternalError)?;
+        PagefaultResult::NeedCow => {
+            cow_resolve(region, frames, alloc, offset)?;
+            Ok(PagefaultAction::CowResolved)
         }
-
-        {
-            let region = active.regions_mut().find_mut(fault.vaddr)
-                .ok_or(PageFaultError::InvalidAddress)?;
-            let offset = VirBytes(fault.vaddr.0 - region_vaddr.0);
-            let mut new_phys_region = PhysRegion::new(offset);
-            let block = alloc::boxed::Box::new(PhysBlock::new(new_phys_mt));
-            let block_ptr = NonNull::new(alloc::boxed::Box::into_raw(block)).unwrap();
-            unsafe { new_phys_region.bind_block(block_ptr); }
-            new_phys_region.memtype = Some(memtype);
-            region.set_phys_region(offset, new_phys_region);
+        PagefaultResult::AccessViolation => {
+            Ok(PagefaultAction::AccessViolation)
         }
+    }
+}
 
-        active.inc_minor_fault();
-        return Ok(());
+pub(crate) fn alloc_and_map(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+    memtype: &'static dyn MemType,
+) -> Result<u32, CowError> {
+    let pfn = alloc.alloc_pfn()
+        .map_err(|_| CowError::NoMemory)?;
+
+    // NOTE: If map_page could fail in the future, we would need to roll back:
+    //   alloc.free_pfn(pfn);
+    // Currently map_page is infallible (just sets slot + increments refcount).
+    region.map_page(frames, offset, pfn, memtype);
+
+    Ok(pfn)
+}
+
+pub(crate) fn cow_resolve(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<u32, CowError> {
+    cow_resolve_core(region, frames, alloc, offset).map_err(Into::into)
+}
+
+pub(crate) fn cow_resolve_core(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<u32, CowCoreError> {
+    let slot = region.get_slot(offset)
+        .ok_or(CowCoreError::PageNotMapped)?;
+
+    if !slot.is_mapped() {
+        return Err(CowCoreError::PageNotMapped);
     }
 
-    if needs_cow && fault.write {
-        if !is_writable {
-            return Err(PageFaultError::AccessViolation);
-        }
+    let old_pfn = slot.pfn;
+    let refcount = frames.get(old_pfn)
+        .map(|s| s.refcount)
+        .unwrap_or(0);
 
-        let old_phys_mt: PhysBytes = {
-            let region = active.regions_mut().find(fault.vaddr)
-                .ok_or(PageFaultError::InvalidAddress)?;
-            region.physblocks.get(page_index)
-                .and_then(|opt| opt.as_ref())
-                .and_then(|pr| pr.get_phys_addr())
-                .ok_or(PageFaultError::InternalError)?
-        };
-
-        let (_new_virt, new_phys) = page_alloc.alloc_page(PageAllocFlags::empty())
-            .ok_or(PageFaultError::OutOfMemory)?;
-
-        let new_phys_mt = PhysBytes::new(new_phys.as_u64());
-
-        unsafe {
-            let src = vm_phys_to_virt(AlignedPhysBytes::new(old_phys_mt.get())).0 as *const u8;
-            let dst = vm_phys_to_virt(new_phys).0 as *mut u8;
-            core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE as usize);
-        }
-
-        {
-            let page_table = active.page_table_mut();
-            let vaddr = VirBytes(region_vaddr.0 + (page_index as u64) * PAGE_SIZE);
-            page_table.map(vaddr, new_phys_mt, PageFlags::read_write())
-                .map_err(|_| PageFaultError::InternalError)?;
-        }
-
-        {
-            let region = active.regions_mut().find_mut(fault.vaddr)
-                .ok_or(PageFaultError::InvalidAddress)?;
-            let offset = VirBytes(fault.vaddr.0 - region_vaddr.0);
-
-            if let Some(pr) = region.physblocks.get_mut(page_index) {
-                if let Some(existing) = pr {
-                    let should_free = existing.unbind_block();
-                    if should_free {
-                        if let Some(mt) = existing.memtype {
-                            let _ = mt.on_unreference(existing);
-                        }
-                    }
-                }
-
-                let mut new_phys_region = PhysRegion::new(offset);
-                let block = alloc::boxed::Box::new(PhysBlock::new(new_phys_mt));
-                let block_ptr = NonNull::new(alloc::boxed::Box::into_raw(block)).unwrap();
-                unsafe { new_phys_region.bind_block(block_ptr); }
-                new_phys_region.memtype = Some(memtype);
-                *pr = Some(alloc::boxed::Box::new(new_phys_region));
-            }
-        }
-
-        active.inc_major_fault();
-        return Ok(());
+    if refcount <= 1 {
+        return Ok(old_pfn);
     }
 
-    Ok(())
+    let new_pfn = alloc.alloc_pfn()
+        .map_err(|_| CowCoreError::NoMemory)?;
+
+    copy_page_content(frames, old_pfn, new_pfn);
+
+    let pending = region.unmap_page(frames, offset);
+    region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
+
+    if let Some((pfn, mt)) = pending {
+        mt.ev_unreference(frames, pfn);
+        alloc.free_pfn(pfn);
+    }
+
+    Ok(new_pfn)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecError {
-    ProcessNotFound,
-    OutOfMemory,
-    InternalError,
+pub(crate) enum CowCoreError {
+    NoMemory,
+    PageNotMapped,
 }
 
-impl ExecError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            Self::OutOfMemory => ENOMEM,
-            Self::InternalError => ENOMEM,
+impl From<CowCoreError> for CowError {
+    fn from(e: CowCoreError) -> Self {
+        match e {
+            CowCoreError::NoMemory => CowError::NoMemory,
+            CowCoreError::PageNotMapped => CowError::PageNotMapped,
         }
     }
 }
 
-pub(crate) struct ExecNewmemRequest {
-    pub endpoint: Endpoint,
-    pub text_addr: VirBytes,
-    pub text_len: VirBytes,
-    pub data_addr: VirBytes,
-    pub data_len: VirBytes,
-    pub pc: VirBytes,
+fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
+    let _ = (frames, src_pfn, dst_pfn);
+    // TODO: Copy page content from src_pfn to dst_pfn via Direct Map.
+    // Equivalent to Minix3's sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE).
+    // Requires vm_phys_to_virt() to convert physical addresses to virtual
+    // addresses, then core::ptr::copy_nonoverlapping to copy PAGE_SIZE bytes.
 }
 
-pub(crate) fn handle_exec_newmem(
-    table: &VmProcTable,
-    page_alloc: &mut VmPageAllocator,
-    request: &ExecNewmemRequest,
-) -> Result<(), ExecError> {
-    let slot = table.vm_isokendpt(request.endpoint)
-        .map_err(|_| ExecError::ProcessNotFound)?;
+pub(crate) fn cow_resolve_region(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+) -> Result<usize, CowError> {
+    let num_pages = region.physblocks.len();
+    let mut resolved = 0;
 
-    let mut active = table.get_active(slot)
-        .ok_or(ExecError::ProcessNotFound)?;
-
-    {
-        let regions = active.regions_mut();
-        for region in regions.iter() {
-            free_region_pages(region, page_alloc);
+    for i in 0..num_pages {
+        let offset = VirBytes((i as u64) * PAGE_SIZE);
+        if region.needs_cow(frames, offset) {
+            cow_resolve(region, frames, alloc, offset)?;
+            resolved += 1;
         }
-        regions.clear();
     }
 
-    if request.text_len.0 > 0 {
-        let text_pages = ((request.text_len.0 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let aligned_len = VirBytes(text_pages as u64 * PAGE_SIZE);
-
-        let text_region = VirRegion::with_memtype(
-            request.text_addr,
-            aligned_len,
-            VrFlags(VrFlags::ANON),
-            &MEM_TYPE_ANON,
-        );
-
-        active.regions_mut().insert(text_region);
-        active.add_total(aligned_len);
-    }
-
-    if request.data_len.0 > 0 {
-        let data_pages = ((request.data_len.0 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let aligned_len = VirBytes(data_pages as u64 * PAGE_SIZE);
-
-        let data_region = VirRegion::with_memtype(
-            request.data_addr,
-            aligned_len,
-            VrFlags(VrFlags::WRITABLE | VrFlags::ANON),
-            &MEM_TYPE_ANON,
-        );
-
-        active.regions_mut().insert(data_region);
-        active.add_total(aligned_len);
-        active.set_region_top(VirBytes(request.data_addr.0 + aligned_len.0));
-    }
-
-    Ok(())
+    Ok(resolved)
 }
 
-fn free_region_pages(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
-    for phys_opt in &region.physblocks {
-        if let Some(pr) = phys_opt {
-            if let Some(phys) = pr.get_phys_addr() {
-                page_alloc.free_page(AlignedPhysBytes::new(phys.0));
-            }
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PagefaultAction {
+    Handled,
+    MappedNewPage,
+    CowResolved,
+    AccessViolation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CowError {
+    NoMemory,
+    NoMemType,
+    PageNotMapped,
+    MemType(MemTypeError),
+}
+
+impl From<MemTypeError> for CowError {
+    fn from(e: MemTypeError) -> Self {
+        Self::MemType(e)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vmproc::VmProcTable;
-    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
+    use minix_types::PhysBytes;
+    use crate::region::VrFlags;
 
-    fn init_test_process(slot: UserSlot) -> Endpoint {
-        let table = VmProcTable::get_global();
-        unsafe { table.reset_slot(slot); }
-        let empty = table.get_empty(slot).unwrap();
-        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
-        let mut active = empty.activate(ep);
-        active.init_page_table().unwrap();
-        active.init_regions();
-        ep
+    struct TestAlloc { next: u32 }
+    impl PfnAllocator for TestAlloc {
+        fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+            let pfn = self.next;
+            self.next += 1;
+            Ok(pfn)
+        }
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    fn make_frames(pages: u32) -> PageFrames {
+        PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
     }
 
     #[test]
-    fn test_pagefault_error_to_errno() {
-        assert_eq!(PageFaultError::ProcessNotFound.to_errno(), ESRCH);
-        assert_eq!(PageFaultError::AccessViolation.to_errno(), EACCES);
-        assert_eq!(PageFaultError::OutOfMemory.to_errno(), ENOMEM);
+    fn test_alloc_and_map() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
+
+        let pfn = alloc_and_map(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &MEM_TYPE_ANON).unwrap();
+
+        let slot = region.get_slot(VirBytes(0x0000)).unwrap();
+        assert!(slot.is_mapped());
+        assert_eq!(slot.pfn, pfn);
     }
 
     #[test]
-    fn test_exec_error_to_errno() {
-        assert_eq!(ExecError::ProcessNotFound.to_errno(), ESRCH);
-        assert_eq!(ExecError::OutOfMemory.to_errno(), ENOMEM);
+    fn test_cow_resolve() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
+
+        frames.get_mut(pfn).unwrap().refcount = 2;
+
+        let new_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+
+        assert_ne!(new_pfn, pfn);
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+        assert_eq!(frames.get(new_pfn).unwrap().refcount, 1);
     }
 
     #[test]
-    fn test_pagefault_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
+    fn test_cow_resolve_no_sharing() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
 
-        let fault = PageFaultInfo {
-            endpoint: Endpoint::NONE,
-            vaddr: VirBytes(0x1000),
-            write: false,
-        };
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
-        let result = handle_pagefault(table, &mut page_alloc, &fault);
-        assert!(matches!(result, Err(PageFaultError::ProcessNotFound)));
+        let result_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        assert_eq!(result_pfn, pfn);
     }
 
     #[test]
-    fn test_pagefault_no_region() {
-        let ep = init_test_process(UserSlot::new(70));
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
+    fn test_cow_resolve_region() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
 
-        let fault = PageFaultInfo {
-            endpoint: ep,
-            vaddr: VirBytes(0xDEAD_0000),
-            write: false,
-        };
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn0, &MEM_TYPE_ANON);
+        region.map_page(&mut frames, VirBytes(0x1000), pfn1, &MEM_TYPE_ANON);
 
-        let result = handle_pagefault(table, &mut page_alloc, &fault);
-        assert!(matches!(result, Err(PageFaultError::InvalidAddress)));
+        frames.get_mut(pfn0).unwrap().refcount = 2;
+        frames.get_mut(pfn1).unwrap().refcount = 3;
+
+        let resolved = cow_resolve_region(&mut region, &mut frames, &mut alloc).unwrap();
+        assert_eq!(resolved, 2);
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 1);
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 2);
     }
 }

@@ -1,224 +1,204 @@
-//! Page cache for file-backed memory.
+//! Page cache implementation (方案三：PFN 索引模型).
 //!
-//! Caches file pages to avoid repeated VFS requests. Uses a two-level
-//! HashMap indexed by (device, inode) -> (page_offset) -> PhysBlock.
-//!
-//! Corresponds to Minix3's `cache_hash_bydev[]` + `cachepage` linked lists.
+//! Uses PFN-based indexing with PageFrames for refcount management.
 
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use core::ptr::NonNull;
-use minix_types::{PhysBytes, VirBytes};
-use crate::region::phys_region::PhysBlock;
-
-pub(crate) type DeviceId = u64;
-pub(crate) type InodeNum = u64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CacheKey {
-    pub device: DeviceId,
-    pub inode: InodeNum,
-}
-
-impl CacheKey {
-    pub(crate) fn new(device: DeviceId, inode: InodeNum) -> Self {
-        Self { device, inode }
-    }
-}
+use alloc::vec::Vec;
+use minix_types::PhysBytes;
+use crate::region::{PageFrames, PageSlot, PageFlags, PFN_NONE, PfnAllocator, PfnAllocError};
 
 #[derive(Debug)]
-pub(crate) struct CachedPage {
-    pub phys_block: Arc<CachedPhysBlock>,
-    pub offset: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct CachedPhysBlock {
-    pub phys: PhysBytes,
-    pub refcount: core::sync::atomic::AtomicU32,
-}
-
-impl CachedPhysBlock {
-    pub(crate) fn new(phys: PhysBytes) -> Self {
-        Self {
-            phys,
-            refcount: core::sync::atomic::AtomicU32::new(1),
-        }
-    }
-
-    pub(crate) fn add_ref(&self) {
-        self.refcount.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub(crate) fn release_ref(&self) -> u32 {
-        self.refcount.fetch_sub(1, core::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn refcount(&self) -> u32 {
-        self.refcount.load(core::sync::atomic::Ordering::Relaxed)
-    }
+pub(crate) struct PageCacheEntry {
+    pub pfn: u32,
+    pub refcount: u16,
 }
 
 pub(crate) struct PageCache {
-    by_key: BTreeMap<CacheKey, BTreeMap<u64, Arc<CachedPhysBlock>>>,
-    total_pages: usize,
+    entries: BTreeMap<u64, PageCacheEntry>,
+    total_cached: u64,
 }
 
 impl PageCache {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            by_key: BTreeMap::new(),
-            total_pages: 0,
+            entries: BTreeMap::new(),
+            total_cached: 0,
         }
     }
 
-    pub(crate) fn lookup(&self, key: CacheKey, offset: u64) -> Option<Arc<CachedPhysBlock>> {
-        self.by_key.get(&key).and_then(|pages| pages.get(&offset).cloned())
+    pub fn get(&self, block: u64) -> Option<&PageCacheEntry> {
+        self.entries.get(&block)
     }
 
-    pub(crate) fn insert(
-        &mut self,
-        key: CacheKey,
-        offset: u64,
-        phys: PhysBytes,
-    ) -> Arc<CachedPhysBlock> {
-        let entry = self.by_key.entry(key).or_default();
-        if let Some(existing) = entry.get(&offset) {
-            existing.add_ref();
-            return existing.clone();
+    pub fn get_mut(&mut self, block: u64) -> Option<&mut PageCacheEntry> {
+        self.entries.get_mut(&block)
+    }
+
+    pub fn insert(&mut self, block: u64, pfn: u32, frames: &mut PageFrames) {
+        frames.addcache(pfn);
+        self.entries.insert(block, PageCacheEntry { pfn, refcount: 1 });
+        self.total_cached += 1;
+    }
+
+    pub fn remove(&mut self, block: u64, frames: &mut PageFrames) -> Option<u32> {
+        if let Some(entry) = self.entries.remove(&block) {
+            frames.rmcache(entry.pfn);
+            self.total_cached = self.total_cached.saturating_sub(1);
+            Some(entry.pfn)
+        } else {
+            None
         }
-
-        let block = Arc::new(CachedPhysBlock::new(phys));
-        entry.insert(offset, block.clone());
-        self.total_pages += 1;
-        block
     }
 
-    pub(crate) fn remove(&mut self, key: CacheKey, offset: u64) -> Option<Arc<CachedPhysBlock>> {
-        let entry = self.by_key.get_mut(&key)?;
-        let block = entry.remove(&offset)?;
-        self.total_pages = self.total_pages.saturating_sub(1);
-        if entry.is_empty() {
-            self.by_key.remove(&key);
+    pub fn increase_refcount(&mut self, block: u64) -> bool {
+        if let Some(entry) = self.entries.get_mut(&block) {
+            entry.refcount = entry.refcount.saturating_add(1);
+            true
+        } else {
+            false
         }
-        Some(block)
     }
 
-    pub(crate) fn total_pages(&self) -> usize {
-        self.total_pages
+    pub fn decrease_refcount(&mut self, block: u64, frames: &mut PageFrames) -> Option<u16> {
+        if let Some(entry) = self.entries.get_mut(&block) {
+            if entry.refcount > 0 {
+                entry.refcount -= 1;
+            }
+            if entry.refcount == 0 {
+                let pfn = entry.pfn;
+                frames.rmcache(pfn);
+                self.entries.remove(&block);
+                self.total_cached = self.total_cached.saturating_sub(1);
+                return Some(0);
+            }
+            Some(entry.refcount)
+        } else {
+            None
+        }
     }
 
-    pub(crate) fn pages_for_file(&self, key: CacheKey) -> usize {
-        self.by_key.get(&key).map(|m| m.len()).unwrap_or(0)
+    pub fn total_cached(&self) -> u64 {
+        self.total_cached
     }
 
-    pub(crate) fn invalidate_file(&mut self, key: CacheKey) -> usize {
-        let removed = self.by_key.remove(&key)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        self.total_pages = self.total_pages.saturating_sub(removed);
-        removed
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn find_by_pfn(&self, pfn: u32) -> Option<u64> {
+        for (&block, entry) in &self.entries {
+            if entry.pfn == pfn {
+                return Some(block);
+            }
+        }
+        None
+    }
+
+    pub fn flush_all(&mut self, frames: &mut PageFrames) {
+        let keys: alloc::vec::Vec<u64> = self.entries.keys().copied().collect();
+        for key in keys {
+            if let Some(entry) = self.entries.remove(&key) {
+                frames.rmcache(entry.pfn);
+            }
+        }
+        self.total_cached = 0;
+    }
+}
+
+impl Default for PageCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region::PAGE_SIZE;
+
+    struct TestAlloc { next: u32 }
+    impl PfnAllocator for TestAlloc {
+        fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+            let pfn = self.next;
+            self.next += 1;
+            Ok(pfn)
+        }
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    fn make_frames(pages: u32) -> PageFrames {
+        PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
+    }
 
     #[test]
-    fn test_page_cache_insert_lookup() {
+    fn test_page_cache_insert_remove() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
-        let key = CacheKey::new(1, 100);
 
-        let block = cache.insert(key, 0, PhysBytes(0x1000));
-        assert_eq!(block.phys, PhysBytes(0x1000));
-        assert_eq!(block.refcount(), 1);
+        let pfn = alloc.alloc_pfn().unwrap();
+        cache.insert(42, pfn, &mut frames);
 
-        let found = cache.lookup(key, 0);
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().phys, PhysBytes(0x1000));
+        assert!(cache.get(42).is_some());
+        assert_eq!(cache.get(42).unwrap().pfn, pfn);
+        assert_eq!(cache.len(), 1);
+
+        let removed_pfn = cache.remove(42, &mut frames).unwrap();
+        assert_eq!(removed_pfn, pfn);
+        assert!(cache.get(42).is_none());
     }
 
     #[test]
-    fn test_page_cache_duplicate_insert() {
+    fn test_page_cache_refcount() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
-        let key = CacheKey::new(1, 100);
 
-        let b1 = cache.insert(key, 0, PhysBytes(0x1000));
-        assert_eq!(b1.refcount(), 1);
+        let pfn = alloc.alloc_pfn().unwrap();
+        cache.insert(42, pfn, &mut frames);
 
-        let b2 = cache.insert(key, 0, PhysBytes(0x2000));
-        assert_eq!(b1.refcount(), 2);
-        assert!(Arc::ptr_eq(&b1, &b2));
+        assert!(cache.increase_refcount(42));
+        assert_eq!(cache.get(42).unwrap().refcount, 2);
+
+        let rc = cache.decrease_refcount(42, &mut frames);
+        assert_eq!(rc, Some(1));
+
+        let rc = cache.decrease_refcount(42, &mut frames);
+        assert_eq!(rc, Some(0));
+        assert!(cache.get(42).is_none());
     }
 
     #[test]
-    fn test_page_cache_remove() {
+    fn test_page_cache_find_by_pfn() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
-        let key = CacheKey::new(1, 100);
 
-        cache.insert(key, 0, PhysBytes(0x1000));
-        cache.insert(key, 4096, PhysBytes(0x2000));
-        assert_eq!(cache.total_pages(), 2);
+        let pfn = alloc.alloc_pfn().unwrap();
+        cache.insert(100, pfn, &mut frames);
 
-        let removed = cache.remove(key, 0);
-        assert!(removed.is_some());
-        assert_eq!(cache.total_pages(), 1);
-        assert!(cache.lookup(key, 0).is_none());
-        assert!(cache.lookup(key, 4096).is_some());
+        assert_eq!(cache.find_by_pfn(pfn), Some(100));
+        assert_eq!(cache.find_by_pfn(999), None);
     }
 
     #[test]
-    fn test_page_cache_invalidate_file() {
+    fn test_page_cache_flush_all() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
-        let key1 = CacheKey::new(1, 100);
-        let key2 = CacheKey::new(2, 200);
 
-        cache.insert(key1, 0, PhysBytes(0x1000));
-        cache.insert(key1, 4096, PhysBytes(0x2000));
-        cache.insert(key2, 0, PhysBytes(0x3000));
-        assert_eq!(cache.total_pages(), 3);
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        cache.insert(1, pfn0, &mut frames);
+        cache.insert(2, pfn1, &mut frames);
 
-        let removed = cache.invalidate_file(key1);
-        assert_eq!(removed, 2);
-        assert_eq!(cache.total_pages(), 1);
-        assert!(cache.lookup(key1, 0).is_none());
-        assert!(cache.lookup(key2, 0).is_some());
-    }
+        assert_eq!(cache.len(), 2);
 
-    #[test]
-    fn test_page_cache_pages_for_file() {
-        let mut cache = PageCache::new();
-        let key = CacheKey::new(1, 100);
-
-        assert_eq!(cache.pages_for_file(key), 0);
-
-        cache.insert(key, 0, PhysBytes(0x1000));
-        cache.insert(key, 4096, PhysBytes(0x2000));
-        assert_eq!(cache.pages_for_file(key), 2);
-    }
-
-    #[test]
-    fn test_cached_phys_block_refcount() {
-        let block = CachedPhysBlock::new(PhysBytes(0x5000));
-        assert_eq!(block.refcount(), 1);
-
-        block.add_ref();
-        assert_eq!(block.refcount(), 2);
-
-        let prev = block.release_ref();
-        assert_eq!(prev, 2);
-        assert_eq!(block.refcount(), 1);
-    }
-
-    #[test]
-    fn test_cache_key_ordering() {
-        let k1 = CacheKey::new(1, 100);
-        let k2 = CacheKey::new(1, 200);
-        let k3 = CacheKey::new(2, 100);
-
-        assert!(k1 < k2);
-        assert!(k1 < k3);
-        assert!(k2 < k3);
+        cache.flush_all(&mut frames);
+        assert!(cache.is_empty());
     }
 }

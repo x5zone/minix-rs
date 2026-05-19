@@ -265,7 +265,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 │  ─────────────────────────                                          │
 │  ├── sef_local_startup()              ← SEF 框架初始化              │
 │  ├── 主循环开始                        ← 处理 IPC 请求               │
-│  │     → 对应文档: 12-vir-region ~ 19-vm-map                        │
+│  │     → 对应文档: 10-phys-pagestate ~ 19-vm-map                        │
 │  └── 堆状态: ✅ 完全可用                                             │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -849,12 +849,11 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 
 | 文档 | 运行时机 | 堆依赖 | Rust 实现约束 |
 |------|---------|--------|---------------|
-| [12-vir-region.md](12-vir-region.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
+| [10-phys-pagestate.md](10-phys-pagestate.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
 | [08-slab-allocator.md](08-slab-allocator.md) | 运行时 | ✅ 可用 | 通过 `#[global_allocator]` |
-| [14-phys-region.md](14-phys-region.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
-| [11-memtype.md](11-memtype.md) | 运行时 | ✅ 可用 | 可以使用堆 |
+| [11-region-mapping.md](11-region-mapping.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
+| [12-memtype.md](12-memtype.md) | 运行时 | ✅ 可用 | 可以使用堆 |
 | [13-region-avl.md](13-region-avl.md) | fork/mmap | ✅ 可用 | 可以使用 `Box` |
-| [10-phys-block.md](10-phys-block.md) | fork/mmap | ✅ 可用 | 可以使用堆 |
 | [15-cow-mechanism.md](15-cow-mechanism.md) | 页错误 | ✅ 可用 | 可以使用堆 |
 | [16-pagefault.md](16-pagefault.md) | 页错误 | ✅ 可用 | 可以使用堆 |
 | [17-vm-fork.md](17-vm-fork.md) | IPC | ✅ 可用 | 可以使用堆 |
@@ -870,10 +869,9 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
 - [03-acl.md](03-acl.md) - 访问控制
 - [08-slab-allocator.md](08-slab-allocator.md) - Slab 分配器
-- [12-vir-region.md](12-vir-region.md) - 虚拟区域
-- [14-phys-region.md](14-phys-region.md) - 物理区域
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态
+- [11-region-mapping.md](11-region-mapping.md) - 虚拟区域与页映射
 - [13-region-avl.md](13-region-avl.md) - AVL 树
-- [10-phys-block.md](10-phys-block.md) - 物理块
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 写时复制
 - [16-pagefault.md](16-pagefault.md) - 页错误处理
 
@@ -881,7 +879,7 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - [04-physical-memory.md](04-physical-memory.md) - 物理内存分配
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作
-- [11-memtype.md](11-memtype.md) - 内存类型系统
+- [12-memtype.md](12-memtype.md) - 内存类型系统
 
 ### 9.4 VM 服务组件
 - [17-vm-fork.md](17-vm-fork.md) - VM_FORK 服务

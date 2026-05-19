@@ -375,7 +375,7 @@ mod tests {
         let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
-        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags(0)));
+        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags::empty()));
 
         let block_ptr = NonNull::from(&mut block);
         let parent_ptr = NonNull::from(&mut *vir_region);
@@ -396,7 +396,7 @@ mod tests {
         let mut block = PhysBlock::new(PhysBytes(0x8000));
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
-        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags(0)));
+        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags::empty()));
 
         let block_ptr = NonNull::from(&mut block);
         let parent_ptr = NonNull::from(&mut *vir_region);
@@ -425,7 +425,7 @@ mod tests {
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
         let mut region3 = Box::new(PhysRegion::new(VirBytes(0x3000)));
-        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags(0)));
+        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags::empty()));
 
         let block_ptr = NonNull::from(&mut block);
         let parent_ptr = NonNull::from(&mut *vir_region);
@@ -453,7 +453,7 @@ mod tests {
         let mut region1 = Box::new(PhysRegion::new(VirBytes(0x1000)));
         let mut region2 = Box::new(PhysRegion::new(VirBytes(0x2000)));
         let mut region3 = Box::new(PhysRegion::new(VirBytes(0x3000)));
-        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags(0)));
+        let mut vir_region = Box::new(VirRegion::new(VirBytes(0x400000), VirBytes(0x3000), VrFlags::empty()));
 
         let block_ptr = NonNull::from(&mut block);
         let parent_ptr = NonNull::from(&mut *vir_region);
@@ -503,7 +503,7 @@ mod tests {
         let mut vir_region = Box::new(VirRegion::new(
             VirBytes(0x400000),
             VirBytes(0x3000),
-            crate::region::VrFlags(0),
+            crate::region::VrFlags::empty(),
         ));
 
         let mut phys_region = Box::new(PhysRegion::new(VirBytes(0x1000)));

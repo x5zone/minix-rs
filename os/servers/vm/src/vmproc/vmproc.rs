@@ -5,7 +5,7 @@ use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 use minix_arch::paging::Paging;
 use super::VmFlags;
 use crate::acl::AclState;
-use crate::region::RegionAvl;
+use crate::region::RegionMap;
 use crate::pagetable::PageTable;
 
 /// VM process structure.
@@ -14,7 +14,7 @@ use crate::pagetable::PageTable;
 /// - All fields always exist (no Option)
 /// - State expressed via flags
 /// - Allows temporary inconsistency (e.g., during fork)
-/// - `vm_pt` and `vm_regions_avl` are MaybeUninit - only valid when IN_USE
+/// - `vm_pt` and `vm_regions` are MaybeUninit - only valid when IN_USE
 ///
 /// Corresponds to Minix3's `struct vmproc`.
 ///
@@ -38,15 +38,15 @@ pub(crate) struct VmProc {
     /// (used by Vec, Box, ArrayVec, etc.). Use `vm_pt_initialized` as guard before
     /// calling `assume_init_mut()` / `assume_init_ref()`.
     pub(crate) vm_pt: MaybeUninit<PageTable>,
-    /// Virtual memory regions AVL tree - uninitialized until `init_regions()` is called.
+    /// Virtual memory regions map - uninitialized until `init_regions()` is called.
     ///
-    /// Same `MaybeUninit + bool` pattern as `vm_pt`. Use `vm_regions_avl_initialized`
+    /// Same `MaybeUninit + bool` pattern as `vm_pt`. Use `vm_regions_initialized`
     /// as guard before calling `assume_init_mut()` / `assume_init_ref()`.
-    pub(crate) vm_regions_avl: MaybeUninit<RegionAvl>,
+    pub(crate) vm_regions: MaybeUninit<RegionMap>,
     /// Whether vm_pt has been initialized (must check before assume_init).
     pub(crate) vm_pt_initialized: bool,
-    /// Whether vm_regions_avl has been initialized (must check before assume_init).
-    pub(crate) vm_regions_avl_initialized: bool,
+    /// Whether vm_regions has been initialized (must check before assume_init).
+    pub(crate) vm_regions_initialized: bool,
     pub(crate) vm_region_top: VirBytes,
 
     pub(crate) vm_total: VirBytes,
@@ -64,7 +64,7 @@ impl VmProc {
     /// Creates a vacant (unoccupied) process slot.
     ///
     /// Corresponds to Minix3's `memset(vmproc, 0, sizeof(vmproc))`.
-    /// `vm_pt` and `vm_regions_avl` are uninitialized - only access when IN_USE.
+    /// `vm_pt` and `vm_regions` are uninitialized - only access when IN_USE.
     pub(crate) const fn vacant() -> Self {
         Self {
             vm_slot: UserSlot(0),
@@ -73,9 +73,9 @@ impl VmProc {
             vm_acl: AclState::Uninitialized,
             vm_boot: None,
             vm_pt: MaybeUninit::uninit(),
-            vm_regions_avl: MaybeUninit::uninit(),
+            vm_regions: MaybeUninit::uninit(),
             vm_pt_initialized: false,
-            vm_regions_avl_initialized: false,
+            vm_regions_initialized: false,
             vm_region_top: VirBytes::new(0),
             vm_total: VirBytes::new(0),
             vm_total_max: VirBytes::new(0),
@@ -89,7 +89,7 @@ impl VmProc {
     /// Creates a vacant slot with the given slot number.
     ///
     /// This creates a vacant slot and sets the vm_slot field.
-    /// The vm_pt and vm_regions_avl remain uninitialized.
+    /// The vm_pt and vm_regions remain uninitialized.
     pub(crate) const fn vacant_with_slot(vm_slot: UserSlot) -> Self {
         let mut proc = Self::vacant();
         proc.vm_slot = vm_slot;
@@ -128,9 +128,9 @@ impl VmProc {
     /// (`ExitingProc::reap()`, `ActiveProc::force_clear()`).
     /// Does not rely on Drop.
     ///
-    /// Only clears `vm_pt` and `vm_regions_avl` if they were previously initialized
-    /// (tracked by `vm_pt_initialized` / `vm_regions_avl_initialized` flags). This makes it
-    /// safe to call on slots that were activated but never had vm_pt/vm_regions_avl
+    /// Only clears `vm_pt` and `vm_regions` if they were previously initialized
+    /// (tracked by `vm_pt_initialized` / `vm_regions_initialized` flags). This makes it
+    /// safe to call on slots that were activated but never had vm_pt/vm_regions
     /// initialized (e.g., fork intermediate state).
     ///
     /// Corresponds to Minix3's `acl_clear()` + `free_proc()` + `clear_proc()`, combined:
@@ -150,8 +150,8 @@ impl VmProc {
     /// - All mappings have been properly unmapped, or caller accepts memory leak
     ///   (in `force_clear()` / `reap()`, regions are cleared first, so this is satisfied)
     pub(crate) unsafe fn clear(&mut self) {
-        if self.vm_regions_avl_initialized {
-            unsafe { self.vm_regions_avl.assume_init_mut().clear(); }
+        if self.vm_regions_initialized {
+            unsafe { self.vm_regions.assume_init_mut().clear(); }
         }
         if self.vm_pt_initialized {
             unsafe { self.vm_pt.assume_init_mut().destroy(); }
@@ -166,7 +166,7 @@ impl VmProc {
         self.vm_boot = None;
         self.vm_acl = AclState::Uninitialized;
         self.vm_pt_initialized = false;
-        self.vm_regions_avl_initialized = false;
+        self.vm_regions_initialized = false;
 
         self.vm_region_top = VirBytes::new(0);
         self.vm_total = VirBytes::default();

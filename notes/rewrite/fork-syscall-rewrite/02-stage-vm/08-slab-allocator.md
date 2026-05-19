@@ -2639,9 +2639,8 @@ Minix3 的 slab 设计深受 32 位地址空间限制的影响：
 - [04-physical-memory.md](04-physical-memory.md) - 物理页分配器（全局分配器的底层）
 - [05-vm-allocpage.md](05-vm-allocpage.md) - VM 物理页分配（`alloc_page()`/`free_pages()`）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（Direct Map 相关）
-- [12-vir-region.md](12-vir-region.md) - VirRegion 结构体
-- [14-phys-region.md](14-phys-region.md) - PhysRegion 结构体
-- [10-phys-block.md](10-phys-block.md) - PhysBlock 结构体
+- [11-region-mapping.md](11-region-mapping.md) - VirRegion + PageSlot 页映射
+- [10-phys-pagestate.md](10-phys-pagestate.md) - PageState/PageFrames 物理页状态
 
 ---
 

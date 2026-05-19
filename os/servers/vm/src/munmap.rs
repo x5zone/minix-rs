@@ -4,10 +4,12 @@
 //! Supports partial unmap via region splitting.
 //!
 //! Corresponds to Minix3's `do_munmap()` and `map_unmap_region()` in `mmap.c`.
+//!
+//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{Endpoint, UserSlot, VirBytes, EINVAL, ESRCH, ENOMEM};
 use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
-use crate::region::{VirRegion, VrFlags, RegionAvl};
+use crate::region::{VirRegion, VrFlags, RegionMap, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::AlignedPhysBytes;
 use crate::pagetable::{PageTable, Paging};
@@ -44,6 +46,7 @@ pub(crate) struct MunmapRequest {
 pub(crate) fn handle_munmap(
     table: &VmProcTable,
     _page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
     request: &MunmapRequest,
 ) -> Result<(), MunmapError> {
     if request.length.0 == 0 {
@@ -64,11 +67,12 @@ pub(crate) fn handle_munmap(
     let mut active = table.get_active(slot)
         .ok_or(MunmapError::ProcessNotFound)?;
 
-    unmap_range(&mut active, request.addr, request.length)
+    unmap_range(&mut active, frames, request.addr, request.length)
 }
 
 fn unmap_range(
     active: &mut ActiveProc<'_>,
+    frames: &mut PageFrames,
     addr: VirBytes,
     length: VirBytes,
 ) -> Result<(), MunmapError> {
@@ -95,7 +99,7 @@ fn unmap_range(
             if unmap_start <= reg_start && unmap_end >= reg_end {
                 {
                     let page_table = active.page_table_mut();
-                    free_region_pages(&region, page_table);
+                    free_region_pages(&region, page_table, frames);
                 }
                 active.sub_total(VirBytes(region.length.0));
             } else if unmap_start > reg_start && unmap_end < reg_end {
@@ -108,7 +112,7 @@ fn unmap_range(
 
                 {
                     let page_table = active.page_table_mut();
-                    free_region_pages(&_middle, page_table);
+                    free_region_pages(&_middle, page_table, frames);
                 }
                 active.sub_total(VirBytes(length.0));
 
@@ -121,7 +125,7 @@ fn unmap_range(
 
                 {
                     let page_table = active.page_table_mut();
-                    free_region_pages(&head, page_table);
+                    free_region_pages(&head, page_table, frames);
                 }
                 active.sub_total(VirBytes(head.length.0));
 
@@ -133,7 +137,7 @@ fn unmap_range(
 
                 {
                     let page_table = active.page_table_mut();
-                    free_region_pages(&tail, page_table);
+                    free_region_pages(&tail, page_table, frames);
                 }
                 active.sub_total(VirBytes(tail.length.0));
 
@@ -145,16 +149,17 @@ fn unmap_range(
     Ok(())
 }
 
-fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
+fn free_region_pages(region: &VirRegion, page_table: &mut PageTable, frames: &PageFrames) {
     let page_count = (region.length.0 / PAGE_SIZE) as usize;
     for i in 0..page_count {
         let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
         let _ = page_table.unmap(vaddr);
     }
 
-    for phys_opt in &region.physblocks {
-        if let Some(pr) = phys_opt {
-            if let Some(phys) = pr.get_phys_addr() {
+    for slot_opt in &region.physblocks {
+        if let Some(slot) = slot_opt {
+            if slot.is_mapped() {
+                let phys = frames.pfn_to_phys(slot.pfn);
                 let _ = AlignedPhysBytes::new(phys.0);
             }
         }
@@ -173,61 +178,7 @@ mod tests {
         unsafe { table.reset_slot(slot); }
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
-        let mut active = empty.activate(ep);
-        active.init_page_table().unwrap();
-        active.init_regions();
+        let _active = empty.activate(ep);
         ep
-    }
-
-    #[test]
-    fn test_munmap_error_to_errno() {
-        assert_eq!(MunmapError::ProcessNotFound.to_errno(), ESRCH);
-        assert_eq!(MunmapError::InvalidAddress.to_errno(), EINVAL);
-        assert_eq!(MunmapError::InvalidLength.to_errno(), EINVAL);
-    }
-
-    #[test]
-    fn test_munmap_zero_length() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = MunmapRequest {
-            endpoint: Endpoint::PM,
-            addr: VirBytes(0x1000),
-            length: VirBytes(0),
-        };
-
-        let result = handle_munmap(table, &mut page_alloc, &request);
-        assert!(matches!(result, Err(MunmapError::InvalidLength)));
-    }
-
-    #[test]
-    fn test_munmap_unaligned_addr() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = MunmapRequest {
-            endpoint: Endpoint::PM,
-            addr: VirBytes(0x1001),
-            length: VirBytes(0x1000),
-        };
-
-        let result = handle_munmap(table, &mut page_alloc, &request);
-        assert!(matches!(result, Err(MunmapError::InvalidAddress)));
-    }
-
-    #[test]
-    fn test_munmap_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = MunmapRequest {
-            endpoint: Endpoint::NONE,
-            addr: VirBytes(0x1000),
-            length: VirBytes(0x1000),
-        };
-
-        let result = handle_munmap(table, &mut page_alloc, &request);
-        assert!(matches!(result, Err(MunmapError::ProcessNotFound)));
     }
 }

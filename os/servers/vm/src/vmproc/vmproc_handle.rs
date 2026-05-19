@@ -14,7 +14,7 @@ use minix_arch::paging::Paging;
 use minix_arch::paging::{bind_to_process, map_kernel};
 use super::{VmFlags, vmproc::VmProc};
 use crate::pagetable::PageTable;
-use crate::region::RegionAvl;
+use crate::region::RegionMap;
 
 /// Empty (free) slot typestate view.
 ///
@@ -65,7 +65,7 @@ impl<'a> EmptySlot<'a> {
     /// - Exec temporary slot: old endpoint may differ from temporary slot
     /// - Tests: using arbitrary endpoints without matching slot numbers
     ///
-    /// Does NOT initialize vm_pt or vm_regions_avl - caller must initialize
+    /// Does NOT initialize vm_pt or vm_regions - caller must initialize
     /// separately based on the specific operation (fork/exec/new).
     ///
     /// In normal cases, use `activate()` which enforces consistency.
@@ -287,12 +287,12 @@ impl<'a> ActiveProc<'a> {
         bind_to_process(pt.root_paddr(), self.endpoint())
     }
 
-    /// Initializes memory regions AVL tree for exec or new processes.
+    /// Initializes memory regions map for exec or new processes.
     ///
-    /// Creates a new empty region tree. Must be called before accessing vm_regions_avl.
+    /// Creates a new empty region map. Must be called before accessing vm_regions.
     pub(crate) fn init_regions(&mut self) {
-        self.inner.vm_regions_avl.write(RegionAvl::new());
-        self.inner.vm_regions_avl_initialized = true;
+        self.inner.vm_regions.write(RegionMap::new());
+        self.inner.vm_regions_initialized = true;
     }
 
     /// Returns reference to the page table.
@@ -318,90 +318,93 @@ impl<'a> ActiveProc<'a> {
     /// Returns reference to the memory regions.
     ///
     /// # Panics
-    /// Panics in debug mode if vm_regions_avl has not been initialized.
+    /// Panics in debug mode if vm_regions has not been initialized.
     #[inline]
-    pub(crate) fn regions(&self) -> &RegionAvl {
-        debug_assert!(self.inner.vm_regions_avl_initialized, "vm_regions_avl accessed before init_regions()");
-        unsafe { self.inner.vm_regions_avl.assume_init_ref() }
+    pub(crate) fn regions(&self) -> &RegionMap {
+        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 
     /// Returns mutable reference to the memory regions.
     ///
     /// # Panics
-    /// Panics in debug mode if vm_regions_avl has not been initialized.
+    /// Panics in debug mode if vm_regions has not been initialized.
     #[inline]
-    pub(crate) fn regions_mut(&mut self) -> &mut RegionAvl {
-        debug_assert!(self.inner.vm_regions_avl_initialized, "vm_regions_avl accessed before init_regions()");
-        unsafe { self.inner.vm_regions_avl.assume_init_mut() }
+    pub(crate) fn regions_mut(&mut self) -> &mut RegionMap {
+        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        unsafe { self.inner.vm_regions.assume_init_mut() }
     }
 
     pub(crate) fn region_count(&self) -> usize {
         self.regions().len()
     }
 
-    /// Sets up CoW for all memory regions.
+    /// Sets up CoW for all memory regions (方案三：PFN 索引模型).
+    ///
+    /// Uses PageFrames refcount instead of PhysBlock refcount.
+    /// For each mapped page, increments refcount in the global PageFrames array.
     ///
     /// # Safety
-    /// Caller must ensure physical block reference count operations are safe.
-    pub(crate) unsafe fn setup_cow_for_all_regions(&mut self) {
+    /// Caller must ensure PageFrames is initialized and valid.
+    pub(crate) unsafe fn setup_cow_for_all_regions(&mut self, frames: &mut crate::region::PageFrames) {
         use crate::region::VrFlags;
 
         for region in self.regions_mut().iter_mut() {
             region.flags.insert(VrFlags::WRITABLE);
 
-            for phys_block in &mut region.physblocks {
-                if let Some(pb) = phys_block {
-                    if let Some(block) = pb.ph {
-                        unsafe { (*block.as_ptr()).add_ref(); }
+            for slot_opt in &region.physblocks {
+                if let Some(slot) = slot_opt {
+                    if slot.is_mapped() {
+                        if let Some(state) = frames.get_mut(slot.pfn) {
+                            state.refcount = state.refcount.saturating_add(1);
+                        }
                     }
                 }
             }
 
-            unsafe { region.prepare_cow(); }
+            region.prepare_cow(frames);
         }
     }
 
-    /// Writes all physical mappings into the page table.
+    /// Writes all physical mappings into the page table (方案三：PFN 索引模型).
     ///
-    /// Corresponds to Minix3's `map_writept()`.
-    /// Iterates all regions and their physical blocks, writing
+    /// Uses PageFrames + PageSlot instead of PhysBlock.
+    /// Iterates all regions and their PageSlots, writing
     /// virtual-to-physical mappings into the hardware page table.
     ///
     /// # Safety
     /// Caller must ensure page table is initialized and valid.
-    pub(crate) unsafe fn write_page_table_mappings(&mut self) {
+    pub(crate) unsafe fn write_page_table_mappings(&mut self, frames: &crate::region::PageFrames) {
         use minix_arch::paging::PageFlags;
         use minix_types::{PhysBytes, VirBytes};
 
         const PAGE_SIZE: u64 = <PageTable as Paging>::PAGE_SIZE as u64;
 
-        // Collect all mappings first to avoid borrow issues
         let mut mappings: alloc::vec::Vec<(VirBytes, PhysBytes, PageFlags)> = alloc::vec::Vec::new();
 
         for region in self.regions_mut().iter_mut() {
-            for (i, phys_opt) in region.physblocks.iter().enumerate() {
-                if let Some(phys) = phys_opt {
-                    if let Some(block_ptr) = phys.ph {
-                        unsafe {
-                            let block = &*block_ptr.as_ptr();
-                            let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
-                            let paddr = block.phys();
+            for (i, slot_opt) in region.physblocks.iter().enumerate() {
+                if let Some(slot) = slot_opt {
+                    if slot.is_mapped() {
+                        let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
+                        let paddr = frames.pfn_to_phys(slot.pfn);
 
-                            let writable = region.is_writable() && block.refcount() == 1;
-                            let flags = if writable {
-                                PageFlags::read_write()
-                            } else {
-                                PageFlags::read_only()
-                            };
+                        let writable = region.is_writable()
+                            && frames.get(slot.pfn)
+                                .map(|s| s.refcount == 1)
+                                .unwrap_or(false);
+                        let flags = if writable {
+                            PageFlags::read_write()
+                        } else {
+                            PageFlags::read_only()
+                        };
 
-                            mappings.push((vaddr, paddr, flags));
-                        }
+                        mappings.push((vaddr, paddr, flags));
                     }
                 }
             }
         }
 
-        // Now write all mappings to page table
         let pt = self.page_table_mut();
         for (vaddr, paddr, flags) in mappings {
             let _ = pt.map(vaddr, paddr, flags);

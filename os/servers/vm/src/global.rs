@@ -222,7 +222,7 @@ unsafe impl GlobalAlloc for VmAllocator {
         // arena pages remain mapped in HeapArena for the VM process lifetime.
         //
         // This is intentional: VM server is a long-lived system service,
-        // and most dynamically allocated structures (VirRegion, PhysRegion, PhysBlock...)
+        // and most dynamically allocated structures (VirRegion, PageSlot, PageState...)
         // have lifetimes bound to the VM process. There is no "high-frequency alloc-immediate-free"
         // temporary object pattern.
     }

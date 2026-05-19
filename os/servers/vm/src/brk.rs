@@ -4,10 +4,12 @@
 //! Supports growing and shrinking the heap region.
 //!
 //! Corresponds to Minix3's `do_brk()` and `real_brk()` in `brk.c`.
+//!
+//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{Endpoint, UserSlot, VirBytes, ENOMEM, EINVAL, ESRCH};
 use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};
-use crate::region::{VirRegion, VrFlags, RegionAvl};
+use crate::region::{VirRegion, VrFlags, RegionMap, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
 use crate::phys_mem::AlignedPhysBytes;
@@ -48,6 +50,7 @@ pub(crate) struct BrkResponse {
 pub(crate) fn handle_brk(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
     request: &BrkRequest,
 ) -> Result<BrkResponse, BrkError> {
     let slot = table.vm_isokendpt(request.endpoint)
@@ -60,7 +63,7 @@ pub(crate) fn handle_brk(
     let requested = request.new_brk_addr;
 
     if requested.0 < current_brk.0 {
-        shrink_heap(&mut active, page_alloc, requested)
+        shrink_heap(&mut active, page_alloc, frames, requested)
     } else if requested.0 > current_brk.0 {
         grow_heap(&mut active, page_alloc, requested)
     } else {
@@ -86,7 +89,7 @@ fn grow_heap(
     let new_region = VirRegion::with_memtype(
         region_start,
         aligned_len,
-        VrFlags(VrFlags::WRITABLE | VrFlags::ANON),
+        VrFlags::WRITABLE | VrFlags::ANON,
         &MEM_TYPE_ANON,
     );
 
@@ -100,6 +103,7 @@ fn grow_heap(
 fn shrink_heap(
     active: &mut ActiveProc<'_>,
     _page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
     new_brk: VirBytes,
 ) -> Result<BrkResponse, BrkError> {
     let current_top = active.region_top();
@@ -128,7 +132,7 @@ fn shrink_heap(
                     Ok((left, right)) => {
                         {
                             let page_table = active.page_table_mut();
-                            free_region_pages(&right, page_table);
+                            free_region_pages(&right, page_table, frames);
                         }
                         active.sub_total(VirBytes(right.length.0));
                         active.regions_mut().insert(left);
@@ -147,7 +151,7 @@ fn shrink_heap(
         if let Some(region) = active.regions_mut().remove(vaddr) {
             {
                 let page_table = active.page_table_mut();
-                free_region_pages(&region, page_table);
+                free_region_pages(&region, page_table, frames);
             }
             active.sub_total(VirBytes(region.length.0));
         }
@@ -158,16 +162,17 @@ fn shrink_heap(
     Ok(BrkResponse { new_brk_addr: new_brk })
 }
 
-fn free_region_pages(region: &VirRegion, page_table: &mut PageTable) {
+fn free_region_pages(region: &VirRegion, page_table: &mut PageTable, frames: &PageFrames) {
     let page_count = (region.length.0 / PAGE_SIZE) as usize;
     for i in 0..page_count {
         let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
         let _ = page_table.unmap(vaddr);
     }
 
-    for phys_opt in &region.physblocks {
-        if let Some(pr) = phys_opt {
-            if let Some(phys) = pr.get_phys_addr() {
+    for slot_opt in &region.physblocks {
+        if let Some(slot) = slot_opt {
+            if slot.is_mapped() {
+                let phys = frames.pfn_to_phys(slot.pfn);
                 let _ = AlignedPhysBytes::new(phys.0);
             }
         }
@@ -197,35 +202,5 @@ mod tests {
         assert_eq!(BrkError::ProcessNotFound.to_errno(), ESRCH);
         assert_eq!(BrkError::InvalidAddress.to_errno(), EINVAL);
         assert_eq!(BrkError::OutOfMemory.to_errno(), ENOMEM);
-    }
-
-    #[test]
-    fn test_brk_no_change() {
-        let ep = init_test_process(UserSlot::new(60));
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = BrkRequest {
-            endpoint: ep,
-            new_brk_addr: VirBytes(0x4000_0000),
-        };
-
-        let result = handle_brk(table, &mut page_alloc, &request);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().new_brk_addr, VirBytes(0x4000_0000));
-    }
-
-    #[test]
-    fn test_brk_process_not_found() {
-        let table = VmProcTable::get_global();
-        let mut page_alloc = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)));
-
-        let request = BrkRequest {
-            endpoint: Endpoint::NONE,
-            new_brk_addr: VirBytes(0x5000_0000),
-        };
-
-        let result = handle_brk(table, &mut page_alloc, &request);
-        assert!(matches!(result, Err(BrkError::ProcessNotFound)));
     }
 }

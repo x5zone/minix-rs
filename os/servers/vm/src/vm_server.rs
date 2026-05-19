@@ -25,10 +25,13 @@ use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, BuddyAllocator,
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
+use crate::region::PageFrames;
+use minix_types::PhysBytes;
 
 pub struct VmServer {
     page_alloc: VmPageAllocator,
     page_cache: PageCache,
+    page_frames: PageFrames,
     vfs_queue: VfsRequestQueue,
     initialized: bool,
 }
@@ -44,6 +47,7 @@ impl VmServer {
         Self {
             page_alloc,
             page_cache: PageCache::new(),
+            page_frames: PageFrames::new(PhysBytes(0)),
             vfs_queue: VfsRequestQueue::new(),
             initialized: false,
         }
@@ -168,7 +172,7 @@ impl VmServer {
 
     pub fn handle_request(&mut self, request: VmRequest) -> VmResponse {
         let table = VmProcTable::get_global();
-        MessageDispatcher::dispatch_with_alloc(table, &mut self.page_alloc, request)
+        MessageDispatcher::dispatch_with_alloc(table, &mut self.page_alloc, &mut self.page_frames, request)
     }
 
     pub fn handle_ipc_message(&mut self, src: Endpoint, request: VmRequest) -> VmResponse {
@@ -288,7 +292,7 @@ mod tests {
         };
 
         let response = server.handle_request(request);
-        assert!(matches!(response, VmResponse::Error(VmError::InvalidEndpoint)));
+        assert!(matches!(response, VmResponse::Error(VmError::NotImplemented)));
     }
 
     #[test]
@@ -321,7 +325,7 @@ mod tests {
     #[test]
     fn test_vm_server_page_cache_access() {
         let mut server = make_test_vm_server();
-        assert_eq!(server.page_cache().total_pages(), 0);
+        assert_eq!(server.page_cache().total_cached(), 0);
     }
 
     #[test]

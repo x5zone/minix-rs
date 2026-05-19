@@ -3,12 +3,16 @@
 //! Provides `VmPageAllocator` which wraps a physical memory allocator
 //! (`PhysAlloc`) and handles the Direct Map VA↔PA translation for
 //! single-page and multi-page allocations.
+//!
+//! Implements `PfnAllocator` trait for integration with PageFrames
+//! (方案三：PFN 索引模型).
 
 use minix_types::VirBytes;
 
 use crate::alloc_stats::VmAllocStats;
 use crate::direct_map::vm_phys_to_virt;
 use crate::phys_mem::{PhysAlloc, PhysAllocator, PageAllocFlags, AllocError, AlignedPhysBytes};
+use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
 
 pub(crate) struct VmPageAllocator {
     phys_alloc: PhysAlloc,
@@ -79,6 +83,19 @@ impl VmPageAllocator {
 
     pub(crate) fn phys_alloc_mut(&mut self) -> &mut PhysAlloc {
         &mut self.phys_alloc
+    }
+}
+
+impl PfnAllocator for VmPageAllocator {
+    fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+        self.alloc_phys(1, PageAllocFlags::empty())
+            .map(|phys| (phys.as_u64() / PAGE_SIZE) as u32)
+            .map_err(|_| PfnAllocError::OutOfMemory)
+    }
+
+    fn free_pfn(&mut self, pfn: u32) {
+        let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
+        self.free_page(phys);
     }
 }
 

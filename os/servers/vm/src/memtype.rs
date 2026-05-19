@@ -1,41 +1,36 @@
-//! Memory type system.
+//! Memory type system (方案三：PFN 索引模型).
+//!
+//! MemType trait uses `PageSlot + PageFrames` instead of `PhysRegion`.
 
 use minix_types::VirBytes;
 use crate::vmproc::ActiveProc;
-use crate::region::phys_region::PhysBlock;
+use crate::region::{PageFrames, PageSlot};
 
 pub(crate) trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn on_new(&self, _region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
+    fn ev_new(&self, _region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
         Ok(())
     }
 
-    fn on_delete(&self, _region: &mut crate::region::VirRegion) {}
+    fn ev_delete(&self, _region: &mut crate::region::VirRegion) {}
 
-    fn on_reference(
-        &self,
-        _src: &crate::region::PhysRegion,
-        _dst: &mut crate::region::PhysRegion,
-    ) -> Result<(), MemTypeError> {
-        Ok(())
-    }
+    fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) {}
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
-        _pr: &mut crate::region::PhysRegion,
+        _frames: &mut PageFrames,
+        _offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
         Ok(PagefaultResult::Handled)
     }
 
-    fn on_resize(
+    fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
@@ -44,7 +39,7 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
-    fn on_split(
+    fn ev_split(
         &self,
         _proc: &ActiveProc<'_>,
         _original: &crate::region::VirRegion,
@@ -53,7 +48,7 @@ pub(crate) trait MemType: Send + Sync {
     ) {
     }
 
-    fn on_low_shrink(
+    fn ev_low_shrink(
         &self,
         _region: &mut crate::region::VirRegion,
         _len: VirBytes,
@@ -61,18 +56,19 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
-    fn on_sanitycheck(
+    fn ev_sanitycheck(
         &self,
-        _pr: &crate::region::PhysRegion,
+        _frames: &PageFrames,
+        _slot: PageSlot,
     ) -> Result<(), MemTypeError> {
         Ok(())
     }
 
-    fn is_writable(&self, _pr: &crate::region::PhysRegion) -> bool {
+    fn writable(&self, _frames: &PageFrames, _slot: PageSlot) -> bool {
         false
     }
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         _src: &crate::region::VirRegion,
         _dst: &mut crate::region::VirRegion,
@@ -141,45 +137,46 @@ impl MemType for AnonymousMemory {
         "anonymous memory"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+        if !slot.is_mapped() {
             return false;
         }
-        if let Some(parent) = pr.parent {
-            unsafe {
-                if (*parent.as_ptr()).remaps > 0 {
-                    return true;
-                }
-            }
-        }
-        if let Some(refcount) = pr.get_refcount() {
-            refcount == 1
-        } else {
-            false
-        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
     }
 
-    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        let refcount = pr.get_refcount().unwrap_or(0);
-        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {
+        // Physical page freeing is the caller's responsibility via PfnAllocator::free_pfn().
+        // Minix3's mem_anon.c ev_unreference frees the page here, but in 方案三
+        // the separation of concerns means PageFrames only tracks refcount/flags,
+        // and PfnAllocator handles allocation/deallocation.
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
-        pr: &mut crate::region::PhysRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
-            return Ok(PagefaultResult::NeedNewPage);
+        let slot = region.get_slot(offset);
+
+        match slot {
+            None => {
+                return Ok(PagefaultResult::NeedNewPage);
+            }
+            Some(s) if !s.is_mapped() => {
+                return Ok(PagefaultResult::NeedNewPage);
+            }
+            _ => {}
         }
 
-        let refcount = pr.get_refcount().unwrap_or(0);
+        let slot = slot.unwrap();
+        let refcount = frames.get(slot.pfn)
+            .map(|s| s.refcount)
+            .unwrap_or(0);
 
         if refcount < 2 || !write {
             return Ok(PagefaultResult::Handled);
@@ -220,30 +217,39 @@ impl MemType for DirectPhysical {
         "physical memory mapping"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+        slot.is_mapped()
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
-        pr: &mut crate::region::PhysRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
         if let crate::region::VrParam::Direct { phys: base_phys } = &region.param {
-            if *base_phys == PhysBlock::MAP_NONE {
+            if base_phys.0 == 0 {
                 return Err(MemTypeError::InvalidParam);
             }
-            if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
-                return Ok(PagefaultResult::Handled);
+            let slot = region.get_slot(offset);
+            match slot {
+                None => {
+                    return Ok(PagefaultResult::NeedNewPage);
+                }
+                Some(s) if !s.is_mapped() => {
+                    return Ok(PagefaultResult::NeedNewPage);
+                }
+                _ => {
+                    return Ok(PagefaultResult::Handled);
+                }
             }
-            return Ok(PagefaultResult::NeedNewPage);
         }
         Err(MemTypeError::InvalidParam)
     }
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         src: &crate::region::VirRegion,
         dst: &mut crate::region::VirRegion,
@@ -252,9 +258,7 @@ impl MemType for DirectPhysical {
         Ok(())
     }
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 }
 
 pub(crate) struct SharedMemory;
@@ -276,15 +280,13 @@ impl MemType for SharedMemory {
         "shared memory"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+        slot.is_mapped()
     }
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         src: &crate::region::VirRegion,
         dst: &mut crate::region::VirRegion,
@@ -313,11 +315,11 @@ impl MemType for ContiguousAnonymous {
         "contiguous anonymous memory"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+        slot.is_mapped()
     }
 
-    fn on_new(&self, region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
+    fn ev_new(&self, region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
         let pages = region.physblocks.len();
         if pages == 0 {
             return Ok(());
@@ -325,26 +327,19 @@ impl MemType for ContiguousAnonymous {
         Ok(())
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
-        pr: &mut crate::region::PhysRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
-            return Ok(PagefaultResult::NeedNewPage);
-        }
-        Ok(PagefaultResult::Handled)
+        Ok(PagefaultResult::NeedNewPage)
     }
 
-    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        let refcount = pr.get_refcount().unwrap_or(0);
-        if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {
+        // Physical page freeing is the caller's responsibility via PfnAllocator::free_pfn().
     }
 }
 
@@ -367,43 +362,31 @@ impl MemType for CacheMemory {
         "cache memory"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+        if !slot.is_mapped() {
             return false;
         }
-        if let Some(refcount) = pr.get_refcount() {
-            refcount == 1
-        } else {
-            false
-        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
-        pr: &mut crate::region::PhysRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
-            return Ok(PagefaultResult::NeedNewPage);
-        }
-
-        let refcount = pr.get_refcount().unwrap_or(0);
-        if refcount < 2 || !write {
-            return Ok(PagefaultResult::Handled);
-        }
-
-        Ok(PagefaultResult::NeedCow)
+        Ok(PagefaultResult::NeedNewPage)
     }
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
-    fn on_delete(&self, region: &mut crate::region::VirRegion) {
-        if let crate::region::VrParam::PbCache { pb } = &mut region.param {
-            *pb = None;
+    fn ev_delete(&self, region: &mut crate::region::VirRegion) {
+        if let crate::region::VrParam::PbCache { pfn } = &mut region.param {
+            *pfn = 0;
         }
     }
 }
@@ -427,41 +410,29 @@ impl MemType for MappedFile {
         "mapped file"
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
+    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+        if !slot.is_mapped() {
             return false;
         }
-        if let Some(refcount) = pr.get_refcount() {
-            refcount == 1
-        } else {
-            false
-        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
-        pr: &mut crate::region::PhysRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) == PhysBlock::MAP_NONE {
-            return Ok(PagefaultResult::NeedNewPage);
-        }
-
-        let refcount = pr.get_refcount().unwrap_or(0);
-        if refcount < 2 || !write {
-            return Ok(PagefaultResult::Handled);
-        }
-
-        Ok(PagefaultResult::NeedCow)
+        Ok(PagefaultResult::NeedNewPage)
     }
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
-        Ok(false)
-    }
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         _src: &crate::region::VirRegion,
         _dst: &mut crate::region::VirRegion,
@@ -510,21 +481,34 @@ mod tests {
     }
 
     #[test]
-    fn test_contiguous_anonymous_memory() {
-        let contig = ContiguousAnonymous::new();
-        assert_eq!(contig.name(), "contiguous anonymous memory");
-    }
+    fn test_anon_writable() {
+        use crate::region::{PfnAllocator, PfnAllocError};
 
-    #[test]
-    fn test_cache_memory() {
-        let cache = CacheMemory::new();
-        assert_eq!(cache.name(), "cache memory");
-    }
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
 
-    #[test]
-    fn test_mapped_file() {
-        let mf = MappedFile::new();
-        assert_eq!(mf.name(), "mapped file");
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 4));
+        let mut alloc = TestAlloc { next: 0 };
+        let pfn = alloc.alloc_pfn().unwrap();
+        let mut region = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x1000),
+            minix_types::VirBytes(0x1000),
+            crate::region::VrFlags::empty(),
+        );
+        region.map_page(&mut frames, minix_types::VirBytes(0), pfn, &MEM_TYPE_ANON);
+        let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
+
+        assert!(MEM_TYPE_ANON.writable(&frames, *slot));
+
+        frames.get_mut(pfn).unwrap().refcount = 2;
+        assert!(!MEM_TYPE_ANON.writable(&frames, *slot));
     }
 
     #[test]
@@ -540,6 +524,6 @@ mod tests {
             minix_types::VirBytes(0x1000),
             crate::region::VrFlags::empty(),
         );
-        assert_eq!(mf.on_copy(&src, &mut dst), Err(MemTypeError::NotSupported));
+        assert_eq!(mf.ev_copy(&src, &mut dst), Err(MemTypeError::NotSupported));
     }
 }

@@ -179,7 +179,7 @@ impl BuddyAllocator {
         }
     }
 
-    fn alloc_block(&mut self, order: usize) -> Option<usize> {
+    fn alloc_block(&mut self, order: usize, max_page: usize) -> Option<usize> {
         if order > self.max_order {
             return None;
         }
@@ -192,9 +192,16 @@ impl BuddyAllocator {
         }
 
         if order < self.max_order {
-            if let Some(block) = self.alloc_block(order + 1) {
+            if let Some(block) = self.alloc_block(order + 1, max_page) {
                 let buddy = block + (1usize << order);
                 let buddy_size = 1usize << order;
+                if buddy + buddy_size <= max_page {
+                    self.page_orders[block] = order as u8;
+                    self.push_free(order, block);
+                    self.free_pages += buddy_size;
+                    self.page_orders[buddy] = (order as u8) | FLAG_ALLOCATED;
+                    return Some(buddy);
+                }
                 self.page_orders[buddy] = order as u8;
                 self.push_free(order, buddy);
                 self.free_pages += buddy_size;
@@ -265,7 +272,7 @@ impl BuddyAllocator {
         if pages == 0 {
             return 0;
         }
-        (pages - 1).next_power_of_two().trailing_zeros() as usize
+        pages.next_power_of_two().trailing_zeros() as usize
     }
 }
 
@@ -299,7 +306,7 @@ impl PhysAllocator for BuddyAllocator {
         };
         let order = size_order.max(align_order);
 
-        let page = match self.alloc_block(order) {
+        let page = match self.alloc_block(order, max_page) {
             Some(p) => p,
             None => {
                 self.stats.record_failure();
@@ -308,12 +315,6 @@ impl PhysAllocator for BuddyAllocator {
         };
 
         let block_size = 1usize << order;
-
-        if page + block_size > max_page {
-            self.add_free_region(page, block_size);
-            self.stats.record_failure();
-            return Err(AllocError::LowMemoryExhausted);
-        }
 
         if block_size > clicks {
             self.add_free_region(page + clicks, block_size - clicks);
@@ -510,7 +511,8 @@ mod tests {
         let a = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
         let start = a.page_index();
 
-        assert!(start % 4 == 0);
+        assert!(start % 4 == 0, "order-2 block should be 4-page aligned, got {start}");
+        assert!(start + 3 <= tp);
 
         alloc.free_mem(a, 3);
     }

@@ -1546,6 +1546,8 @@ pub fn is_under_pressure(&self) -> bool   // free_pages * 10 < total_pages
 
 **Buddy 系统简介**：Buddy 分配器是经典物理内存管理算法，Linux 内核亦采用此方案。核心思想是将内存按 2^n 划分：每个块大小为 2^order 页，两个大小相同、地址相邻的块互为"buddy"。分配时从匹配的 order 链表取块，不足则向上分裂大块（一分为二）；释放时检查 buddy 是否空闲，若空闲则自动合并，如此递归。优势是 O(log n) 分配/释放且天然抗外部碎片，代价是内部碎片（向上取整到 2^n）。
 
+**高地址优先**：分裂大块时释放低半部分、分配高半部分，优先从高物理地址分配。这与 Minix3 bitmap 从高地址向低地址扫描的策略一致——低端物理内存常需要预留给 ISA DMA 等硬件设备，优先消耗高地址有助于保护低端内存。当调用方指定 `LOWER1MB` / `LOWER16MB` 约束时，若高半部分超出范围则回退到低半部分，确保约束优先于高地址偏好。
+
 **SoA 设计选择**：传统 buddy 实现使用指针链表（如 Linux 的 `struct free_area`），但指针在 Rust 中引入所有权和生命周期问题，且对 BumpBuf 分配不友好。本实现采用 SoA（Structure of Arrays）结构——三个平行的数组替代指针链表，更 cache 友好，也更适合从 BumpBuf 一次性分配。
 
 ```rust

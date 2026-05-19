@@ -1708,7 +1708,7 @@ SMP TLB shootdown 不属于 `Paging` trait 或 07 的范畴——VM 运行在 ri
 
 > fork 时的跨页表 PTE 复制机制见 §3.2 操作分层。`pt_copy` 和 `pt_map_in_range` 是 `Paging` trait 之上的组合操作（`query()`+`map()` 循环），不是 trait 方法。
 >
-> fork **策略**（哪些页需要复制、CoW 标记、`phys_block` 引用计数）详见 [10-phys-block.md](10-phys-block.md) 和 [17-vm-fork.md](17-vm-fork.md)。
+> fork **策略**（哪些页需要复制、CoW 标记、`PageState` 引用计数）详见 [10-phys-pagestate.md](10-phys-pagestate.md) 和 [17-vm-fork.md](17-vm-fork.md)。
 
 ---
 
@@ -1743,7 +1743,7 @@ cargo test -p minix-arch --features mock
 ## 6. 参见
 
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
-- [10-phys-block.md](10-phys-block.md) - 物理块引用计数
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数
 - [17-vm-fork.md](17-vm-fork.md) - fork 时的页表操作
 - [27-vm-init-main.md](27-vm-init-main.md) - VM 初始化主流程
 

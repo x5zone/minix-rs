@@ -956,7 +956,7 @@ pub enum HeapAdjustment {
 
 impl ProcessMemory {
     /// 查找堆区域
-    pub fn find_heap_region(&self, addr: VAddr) -> Option<&VirtualRegion> {
+    pub fn find_heap_region(&self, addr: VAddr) -> Option<&VirRegion> {
         // 使用 AVL 树查找地址小于 addr 的最大区域
         self.regions.search(addr, AvlSearchType::Less)
     }
@@ -1057,13 +1057,11 @@ impl BrkError {
     }
 }
 
-impl std::fmt::Display for BrkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for BrkError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "brk error: {}", self.description())
     }
 }
-
-impl std::error::Error for BrkError {}
 ```
 
 **错误处理流程**
@@ -1537,72 +1535,75 @@ impl VmHandler {
 **区域扩展实现**
 
 ```rust
-/* os/vm/src/region/ops.rs */
-
 impl ProcessMemory {
-    /// 扩展区域到指定地址
-    pub fn extend_region(&mut self, region: &VirtualRegion, new_end: VAddr) 
-        -> Result<(), BrkError> 
-    {
-        let new_length = new_end.value() - region.vaddr().value();
-        let old_length = region.length();
+    pub fn extend_region(
+        &mut self,
+        region: &mut VirRegion,
+        new_end: VirBytes,
+        frames: &mut PageFrames,
+    ) -> Result<(), BrkError> {
+        let new_length = VirBytes(new_end.get() - region.vaddr.get());
+        let old_length = region.length;
 
-        if new_length <= old_length {
-            return Ok(());  // 无需扩展
+        if new_length.get() <= old_length.get() {
+            return Ok(());
         }
 
-        // 计算新增的页面数
-        let added_pages = (new_length - old_length + PAGE_SIZE - 1) / PAGE_SIZE;
+        let added_pages = ((new_length.get() - old_length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        region.physblocks.extend((0..added_pages).map(|_| None));
 
-        // 扩展物理块数组
-        region.extend_physblocks(added_pages)?;
-
-        // 更新区域长度
-        region.set_length(new_length);
+        region.length = new_length;
 
         Ok(())
     }
 
-    /// 收缩区域到指定地址
-    pub fn shrink_region(&mut self, region: &VirtualRegion, new_end: VAddr) 
-        -> Result<(), BrkError> 
-    {
-        let new_length = new_end.value() - region.vaddr().value();
-        let old_length = region.length();
+    pub fn shrink_region(
+        &mut self,
+        region: &mut VirRegion,
+        new_end: VirBytes,
+        frames: &mut PageFrames,
+    ) -> Result<(), BrkError> {
+        let new_length = VirBytes(new_end.get() - region.vaddr.get());
+        let old_length = region.length;
 
-        if new_length >= old_length {
-            return Ok(());  // 无需收缩
+        if new_length.get() >= old_length.get() {
+            return Ok(());
         }
 
-        // 计算要释放的页面数
-        let freed_pages = (old_length - new_length + PAGE_SIZE - 1) / PAGE_SIZE;
-        let freed_start = new_end.page_align_up();
+        let freed_pages = ((old_length.get() - new_length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let keep_pages = (new_length.get() / PAGE_SIZE) as usize;
 
-        // 释放物理页面
-        for page in 0..freed_pages {
-            let addr = VAddr::new(freed_start.value() + page * PAGE_SIZE);
-            if let Some(phys_block) = region.get_phys_block(addr) {
-                phys_block.decrement_refcount();
-                if phys_block.refcount() == 0 {
-                    self.free_physical_page(phys_block.phys_addr());
+        for page_idx in keep_pages..(keep_pages + freed_pages) {
+            if let Some(slot) = region.physblocks[page_idx].take() {
+                if slot.is_mapped() {
+                    let state = frames.get_mut(slot.pfn).unwrap();
+                    state.refcount -= 1;
+                    if state.refcount == 0
+                        && !state.flags.contains(PageFlags::IN_CACHE)
+                    {
+                        if let Some(mt) = slot.memtype {
+                            mt.ev_unreference(frames, slot);
+                        }
+                    }
                 }
-                region.clear_phys_block(addr);
             }
         }
 
-        // 更新区域长度
-        region.set_length(new_length);
+        region.physblocks.truncate(keep_pages);
+        region.length = new_length;
 
         Ok(())
     }
 }
 ```
 
+> **方案 A 简化**: Minix3 的 `shrink_region` 需要遍历 `phys_blocks`，对每个 `PhysBlock` 调用 `decrement_refcount()`，当 `refcount` 降为 0 时调用 `free_physical_page()`。方案 A 使用 `VirRegion.unmap_page()` 统一处理，递减 `PageFrames.states[pfn].refcount`，由 `MemType.ev_unreference()` 决定是否释放物理页。
+
 **调整流程**
 
 1. 计算调整类型：`calculate_new_brk(new_brk)` → NoChange / Expand / Shrink
-2. Expand 路径：查找堆区域 → 检查冲突 → 扩展区域（扩展 physblocks、调用 ev_resize）
-3. Shrink 路径：查找堆区域 → 释放物理页（decrement_refcount，归零时 free） → 更新区域长度
+2. Expand 路径：查找堆区域 → 检查冲突 → 扩展区域（`physblocks.extend`，新增 `None` 槽位）
+3. Shrink 路径：查找堆区域 → 释放物理页（递减 `PageFrames.states[pfn].refcount`，归零时 `ev_unreference`） → `physblocks.truncate` → 更新区域长度
 4. 更新堆状态：`current_brk = new_brk`, `max_brk = max(max_brk, new_brk)`
 
 ### 4.5 返回结果
@@ -1983,11 +1984,11 @@ int can_expand_heap(size_t size)
 
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vmproc 结构体定义（vm_total, vm_total_max 等字段）
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表与 endpoint 验证（vm_isokendpt）
-- [11-memtype.md](11-memtype.md) - 内存类型与 ev_resize/ev_lowshrink 回调
-- [12-vir-region.md](12-vir-region.md) - vir_region 结构与区域管理
+- [12-memtype.md](12-memtype.md) - 内存类型与 ev_resize/ev_lowshrink 回调
+- [11-region-mapping.md](11-region-mapping.md) - VirRegion + PageSlot 页映射
 - [13-region-avl.md](13-region-avl.md) - AVL 树搜索（region_search, AVL_LESS）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（pt_writemap）
-- [10-phys-block.md](10-phys-block.md) - 物理块与引用计数（pb_unreferenced）
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数（unmap_page）
 - [00-vm-overview.md](00-vm-overview.md) - VM 服务总览
 
 ---

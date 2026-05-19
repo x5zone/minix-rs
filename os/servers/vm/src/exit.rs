@@ -7,7 +7,7 @@
 
 use minix_types::{Endpoint, UserSlot, VirBytes, EINVAL, ESRCH, EPERM, EIO};
 use crate::vmproc::{VmProcTable, ActiveProc, ExitingProc, VmFlags};
-use crate::region::{VirRegion, VrFlags, RegionAvl};
+use crate::region::{VirRegion, VrFlags, RegionMap};
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::AlignedPhysBytes;
 use crate::pagetable::{PageTable, Paging};

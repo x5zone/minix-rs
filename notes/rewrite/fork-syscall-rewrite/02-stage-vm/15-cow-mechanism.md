@@ -226,38 +226,39 @@ int mem_cow(struct vir_region *region,
 }
 ```
 
-#### 方案四（Direct Map）实现
+#### 方案 A（PageState + PageSlot）实现
 
-> **方案四标注**：Direct Map 方案下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代。
+> **方案 A 标注**：方案 A 下，`sys_abscopy` 被 `vm_phys_to_virt() + copy_nonoverlapping()` 替代（Direct Map），`PhysBlock`/`PhysRegion` 被 `PageFrames`/`PageSlot` 替代。CoW 不再需要侵入式链表操作（`pb_link`/`pb_unreferenced`），而是通过 `PageSlot` 的 Copy 语义和 `PageFrames` 的 refcount 操作完成。
 
 ```rust
-fn mem_cow(region: &mut VirRegion, ph: &mut PhysRegion) -> Result<(), VmError> {
-    let old_phys = ph.phys_block.phys.ok_or(VmError::NoPhysBlock)?;
+fn mem_cow(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    offset: VirBytes,
+) -> Result<(), i32> {
+    let page_idx = (offset.get() / PAGE_SIZE) as usize;
+    let old_slot = region.physblocks[page_idx].ok_or(EFAULT)?;
 
-    let new_phys = global_phys_alloc()
-        .alloc_mem(1, PageAllocFlags::empty())
-        .ok_or(VmError::NoMemory)?;
+    let new_pfn = frames.alloc_phys_page()
+        .map_err(|_| ENOMEM)?;
 
+    let src_phys = frames.pfn_to_phys(old_slot.pfn);
+    let dst_phys = frames.pfn_to_phys(new_pfn);
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            vm_phys_to_virt(old_phys) as *const u8,
-            vm_phys_to_virt(new_phys) as *mut u8,
-            4096,
-        );
+        let src = vm_phys_to_virt(src_phys) as *const u8;
+        let dst = vm_phys_to_virt(dst_phys) as *mut u8;
+        core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE as usize);
     }
 
-    let new_pb = PhysBlock::new(new_phys);
-    pb_unreferenced(region, ph, false);
-    pb_link(ph, new_pb, ph.offset, region);
-    ph.memtype = MemType::Anon;
+    let memtype = old_slot.memtype.ok_or(EFAULT)?;
+    region.unmap_page(frames, offset);
+    region.map_page(frames, offset, new_pfn, memtype);
 
     Ok(())
 }
 ```
 
-**关键区别**：Minix3 的 `sys_abscopy` 是内核系统调用——VM 无法直接访问物理内存，必须请求内核代劳。方案四中 VM 拥有 direct map，`vm_phys_to_virt()` 使物理页直接可操作，复制变成一行 `copy_nonoverlapping`。CoW 逻辑的简化不是"去掉了系统调用开销"，而是 **"VM 不再需要内核作为物理内存访问的中介"**——这与 07 的双视图模型、08 的 GlobalAlloc 自包含是同一个叙事。
-
-> **方案四深入分析——`sys_abscopy` 为什么存在**：Minix3 的 VM 运行在 ring 3，页表中没有映射物理内存。当 VM 需要复制一个物理页时，它无法通过任何虚拟地址访问源页和目标页——`sys_abscopy` 是唯一的出路。内核运行在 ring 0，拥有 `pagedir_mappings` 登记册，可以通过 `kmemptr_to_virt()` 将物理地址转换为虚拟地址，然后执行 memcpy。所以 `sys_abscopy` 的本质是 **VM 借用内核的地址空间来访问物理内存**。Direct map 使 VM 自己拥有了物理内存的完整映射，"借用"就不再需要了。注意：Minix3 内核不是独立线程，`sys_abscopy` 的执行就是 VM 自己在 ring 0 的执行，没有并行性优势，只有 ring 切换开销。
+**关键区别**：Minix3 的 `sys_abscopy` 是内核系统调用——VM 无法直接访问物理内存，必须请求内核代劳。方案 A 中 VM 拥有 direct map，`vm_phys_to_virt()` 使物理页直接可操作，复制变成一行 `copy_nonoverlapping`。CoW 逻辑的简化不是"去掉了系统调用开销"，而是 **"VM 不再需要内核作为物理内存访问的中介"**——这与 07 的双视图模型、08 的 GlobalAlloc 自包含是同一个叙事。同时，方案 A 消除了 `pb_link`/`pb_unreferenced` 的侵入式链表操作，CoW 只需 `unmap_page`（递减旧 refcount）+ `map_page`（递增新 refcount）两步。
 
 **执行流程**
 
@@ -964,16 +965,14 @@ CoW 涉及多个进程共享同一物理页，需要安全地处理并发访问�
 **CoW 安全挑战**
 
 1. **并发写入**: 多个进程可能同时尝试写入同一共享页，需要确保只有一个进程执行 CoW，其他进程等待或重试
-2. **引用计数一致性**: refcount 必须与实际引用数一致，增减操作必须成对出现，不会出现悬垂指针
+2. **引用计数一致性**: `PageState.refcount` 必须与实际引用数一致，增减操作必须成对出现，不会出现悬垂指针
 3. **页表同步**: 页表更新需要与 CoW 操作同步，页表更新在 CoW 完成后，TLB 刷新及时
 
-**Rust 解决方案**
+**方案 A 下的 Rust 解决方案**
+
+方案 A 使用全局 `PageFrames`（`Vec<PageState>`）按 PFN 索引管理物理页状态，`VirRegion.physblocks: Vec<Option<PageSlot>>` 管理映射。CoW 操作不再需要侵入式链表（`pb_link`/`pb_unreferenced`），而是通过 `PageSlot` 的 Copy 语义和 `PageFrames` 的 refcount 操作完成。
 
 ```rust
-use core::cell::Cell;
-use core::ptr::NonNull;
-use spin::Mutex;
-
 /// CoW 状态机
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CowState {
@@ -985,146 +984,161 @@ pub enum CowState {
     Copying,
 }
 
-/// PhysBlock 的 CoW 支持
-impl PhysBlock {
-    /// 检查是否需要 CoW
-    pub fn needs_cow(&self) -> bool {
-        self.refcount.get() > 1
-    }
-    
-    /// 尝试开始 CoW
-    ///
-    /// 返回是否成功获取 CoW 权限
-    pub fn begin_cow(&self) -> bool {
-        // 在单线程 VM 中，这总是成功
-        // 在多线程环境中，需要原子操作
-        self.refcount.get() > 1
-    }
-    
-    /// 执行 CoW
-    ///
-    /// # Safety
-    ///
-    /// - 调用者必须确保 pr 是有效的 phys_region
-    /// - 调用者必须确保有足够的内存
-    pub unsafe fn execute_cow(
-        pr: &mut PhysRegion,
-        new_page: PhysBytes,
-    ) -> Result<(), i32> {
-        // 1. 分配新 phys_block
-        let new_pb = pb_alloc(new_page).ok_or(ENOMEM)?;
-        
-        // 2. 复制数据
-        // 方案三: sys_abscopy(pr.ph.unwrap().as_ref().phys.0, new_page.0, VM_PAGE_SIZE)?;
-        // 方案四: vm_phys_to_virt() + copy_nonoverlapping()
-        if pr.ph.unwrap().as_ref().has_phys() {
-            let src = vm_phys_to_virt(pr.ph.unwrap().as_ref().phys) as *const u8;
-            let dst = vm_phys_to_virt(new_page) as *mut u8;
-            core::ptr::copy_nonoverlapping(src, dst, VM_PAGE_SIZE);
+/// VirRegion 的 CoW 支持
+impl VirRegion {
+    /// 检查指定偏移处的页是否需要 CoW
+    pub fn needs_cow(&self, frames: &PageFrames, offset: VirBytes) -> bool {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        match self.physblocks.get(page_idx).and_then(|s| *s) {
+            Some(slot) => {
+                let state = frames.get(slot.pfn).unwrap();
+                state.refcount > 1
+            }
+            None => false,
         }
-        
-        // 3. 取消旧引用
-        pb_unreferenced(pr.parent, pr, false);
-        
-        // 4. 链接新块
-        pb_link(pr, &mut *new_pb, pr.offset, pr.parent);
-        
+    }
+
+    /// 执行 CoW：分配新物理页，复制数据，替换 PageSlot
+    ///
+    /// # Errors
+    ///
+    /// - `ENOMEM`: 物理页分配失败
+    pub fn mem_cow(
+        &mut self,
+        frames: &mut PageFrames,
+        offset: VirBytes,
+        new_pfn: u32,
+    ) -> Result<(), i32> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let old_slot = self.physblocks[page_idx]
+            .ok_or(EFAULT)?;
+
+        // 1. 复制数据：通过 Direct Map 访问物理页
+        let src_phys = frames.pfn_to_phys(old_slot.pfn);
+        let dst_phys = frames.pfn_to_phys(new_pfn);
+        unsafe {
+            let src = vm_phys_to_virt(src_phys) as *const u8;
+            let dst = vm_phys_to_virt(dst_phys) as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE as usize);
+        }
+
+        // 2. 取消旧引用：unmap_page 减少 refcount
+        let dropped = self.unmap_page(frames, offset);
+        // unmap_page 返回 refcount==0 且非 IN_CACHE 的 (pfn, memtype)
+        // 对于 CoW，旧页 refcount > 0（其他进程仍在引用），所以 dropped 通常为 None
+
+        // 3. 映射新页：map_page 增加 refcount
+        let memtype = old_slot.memtype
+            .ok_or(EFAULT)?;
+        self.map_page(frames, offset, new_pfn, memtype);
+
         Ok(())
     }
 }
 ```
 
-**内存类型 trait**
+**MemType trait 集成**
 
 ```rust
-/// 内存类型 trait
+/// 内存类型 trait（详见 12-memtype.md）
 ///
 /// 对应 Minix3: `struct mem_type`
-pub trait MemoryType: Send + Sync {
+pub trait MemType: Send + Sync {
     /// 类型名称
     fn name(&self) -> &'static str;
-    
+
     /// 页错误处理
-    fn pagefault(
+    fn ev_pagefault(
         &self,
         vmp: &mut VmProc,
         region: &mut VirRegion,
-        pr: &mut PhysRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<(), i32>;
-    
+
     /// 取消引用回调
-    fn unreference(&self, pr: &PhysRegion) -> Result<(), i32>;
-    
-    /// 检查是否可写
-    fn writable(&self, pr: &PhysRegion) -> bool;
-    
-    /// 是否支持 CoW
-    fn supports_cow(&self) -> bool {
-        true  // 默认支持
-    }
-    
-    /// CoW 后的新类型
-    fn cow_target_type(&self) -> &'static dyn MemoryType;
-}
-
-/// 匿名内存类型
-pub struct AnonMemoryType;
-
-impl MemoryType for AnonMemoryType {
-    fn name(&self) -> &'static str {
-        "anonymous memory"
-    }
-    
-    fn pagefault(
+    fn ev_unreference(
         &self,
-        vmp: &mut VmProc,
-        region: &mut VirRegion,
-        pr: &mut PhysRegion,
-        write: bool,
-    ) -> Result<(), i32> {
-        let pb = unsafe { pr.ph.unwrap().as_ref() };
-        
-        // 延迟分配
-        if !pb.has_phys() {
-            let new_page = alloc_phys_page(vrallocflags(region.flags))?;
-            unsafe {
-                (*pr.ph.unwrap().as_ptr()).phys = new_page;
-            }
-            return Ok(());
-        }
-        
-        // 检查是否需要 CoW
-        if pb.refcount() < 2 || !write {
-            return Ok(());
-        }
-        
-        // 执行 CoW
-        let new_page = alloc_phys_page(vrallocflags(region.flags))?;
-        unsafe { PhysBlock::execute_cow(pr, new_page) }
-    }
-    
-    fn unreference(&self, pr: &PhysRegion) -> Result<(), i32> {
-        let pb = unsafe { pr.ph.unwrap().as_ref() };
-        assert_eq!(pb.refcount(), 0);
-        
-        if pb.has_phys() {
-            free_phys_page(pb.phys);
-        }
-        Ok(())
-    }
-    
-    fn writable(&self, pr: &PhysRegion) -> bool {
-        let pb = unsafe { pr.ph.unwrap().as_ref() };
-        pb.has_phys() && pb.refcount() == 1
-    }
-    
+        frames: &mut PageFrames,
+        pfn: u32,
+    ) -> Result<(), i32>;
+
+    /// 检查是否可写
+    fn writable(
+        &self,
+        frames: &PageFrames,
+        slot: &PageSlot,
+    ) -> bool;
+
+    /// 是否支持 CoW
     fn supports_cow(&self) -> bool {
         true
     }
-    
-    fn cow_target_type(&self) -> &'static dyn MemoryType {
-        self  // 匿名内存 CoW 后仍是匿名内存
+}
+
+/// 匿名内存类型
+pub struct AnonMemType;
+
+impl MemType for AnonMemType {
+    fn name(&self) -> &'static str {
+        "anonymous memory"
+    }
+
+    fn ev_pagefault(
+        &self,
+        vmp: &mut VmProc,
+        region: &mut VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
+        write: bool,
+    ) -> Result<(), i32> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks[page_idx];
+
+        // 延迟分配：无映射时分配新页
+        if slot.is_none() {
+            let new_pfn = alloc_phys_page(vrallocflags(region.flags))?;
+            let memtype: &'static dyn MemType = self;
+            region.map_page(frames, offset, new_pfn, memtype);
+            return Ok(());
+        }
+
+        let slot = slot.unwrap();
+        let state = frames.get(slot.pfn).unwrap();
+
+        // 检查是否需要 CoW
+        if state.refcount < 2 || !write {
+            return Ok(());
+        }
+
+        // 执行 CoW
+        let new_pfn = alloc_phys_page(vrallocflags(region.flags))?;
+        region.mem_cow(frames, offset, new_pfn)
+    }
+
+    fn ev_unreference(
+        &self,
+        frames: &mut PageFrames,
+        pfn: u32,
+    ) -> Result<(), i32> {
+        let state = frames.get(pfn).unwrap();
+        assert_eq!(state.refcount, 0);
+        free_phys_page(pfn);
+        Ok(())
+    }
+
+    fn writable(
+        &self,
+        frames: &PageFrames,
+        slot: &PageSlot,
+    ) -> bool {
+        slot.is_mapped()
+            && frames.get(slot.pfn).unwrap().refcount == 1
+    }
+
+    fn supports_cow(&self) -> bool {
+        true
     }
 }
 ```
@@ -1138,10 +1152,10 @@ impl MemoryType for AnonMemoryType {
 **完整流程**
 
 1. **页错误发生**: CPU 写入只读页 → 页面保护异常 (#PF) → 内核捕获异常 → 传递给 VM
-2. **VM 处理**: `map_pf(vmp, vaddr, write)` → 查找 vir_region（AVL 树查找）→ 查找 phys_region（数组索引）
-3. **检查 CoW 条件**: `if (write && ph->ph->refcount > 1)` → 需要 CoW，否则不需要
-4. **执行 CoW**: `mem_cow(region, ph, new_page_cl, new_page)` → 分配新物理页 → 复制数据 (4KB) → 创建新 phys_block → 取消旧引用 → 链接新块
-5. **更新页表**: `map_ph_writept(vmp, region, ph)` → 更新 PTE 指向新物理页，设置可写 → 刷新 TLB
+2. **VM 处理**: `map_pf(vmp, vaddr, write)` → 查找 VirRegion（AVL 树查找）→ 计算 offset → 查找 PageSlot（Vec 索引）
+3. **检查 CoW 条件**: `if (write && frames.get(slot.pfn).refcount > 1)` → 需要 CoW，否则不需要
+4. **执行 CoW**: `region.mem_cow(frames, offset, new_pfn)` → 分配新物理页 → 复制数据 (4KB) → unmap_page 减少旧页 refcount → map_page 增加新页 refcount
+5. **更新页表**: `map_writept(vmp, region, frames, offset)` → 更新 PTE 指向新物理页，设置可写 → 刷新 TLB
 6. **恢复执行**: 返回用户态，重新执行写入指令。此时页面已私有，写入成功
 
 **Rust 实现**
@@ -1150,33 +1164,31 @@ impl MemoryType for AnonMemoryType {
 /// VM 页错误处理入口
 pub fn handle_pagefault(
     vmp: &mut VmProc,
+    frames: &mut PageFrames,
     vaddr: VirBytes,
     write: bool,
 ) -> Result<(), i32> {
-    // 1. 查找 vir_region
+    // 1. 查找 VirRegion
     let region = vmp.find_region(vaddr)
         .ok_or(EFAULT)?;
-    
+
     // 2. 计算页内偏移
     let offset = VirBytes(vaddr.0 - region.vaddr.0);
-    let page_offset = VirBytes(offset.0 & !(VM_PAGE_SIZE - 1));
-    
-    // 3. 查找 phys_region
-    let pr = region.physblock_get(page_offset)
-        .ok_or(EFAULT)?;
-    
-    // 4. 检查权限
+    let page_offset = VirBytes(offset.0 & !(PAGE_SIZE - 1));
+
+    // 3. 检查权限
     if write && !region.flags.contains(VrFlags::WRITABLE) {
         return Err(EACCES);
     }
-    
-    // 5. 调用内存类型的页错误处理
-    let memtype = pr.memtype;
-    memtype.pagefault(vmp, region, pr, write)?;
-    
-    // 6. 更新页表
-    map_writept(vmp, region, pr)?;
-    
+
+    // 4. 调用内存类型的页错误处理
+    let memtype = region.def_memtype
+        .ok_or(EFAULT)?;
+    memtype.ev_pagefault(vmp, region, frames, page_offset, write)?;
+
+    // 5. 更新页表
+    map_writept(vmp, region, frames, page_offset)?;
+
     Ok(())
 }
 ```
@@ -1193,13 +1205,10 @@ pub fn handle_pagefault(
 /// - src 和 dst 必须是有效的物理地址
 /// - 两个地址都必须页对齐
 pub unsafe fn copy_phys_page(src: PhysBytes, dst: PhysBytes) -> Result<(), i32> {
-    // 方案三: 使用内核系统调用（VM 无法直接访问物理内存）
-    // sys_abscopy(src.0, dst.0, VM_PAGE_SIZE)?;
-    
-    // 方案四: 通过 direct map 直接复制（VM 拥有物理内存的完整映射）
+    // 通过 direct map 直接复制（VM 拥有物理内存的完整映射）
     let src_ptr = vm_phys_to_virt(src) as *const u8;
     let dst_ptr = vm_phys_to_virt(dst) as *mut u8;
-    core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, VM_PAGE_SIZE);
+    core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
     
     Ok(())
 }
@@ -1221,32 +1230,37 @@ pub unsafe fn copy_phys_page(src: PhysBytes, dst: PhysBytes) -> Result<(), i32> 
 pub fn map_writept(
     vmp: &mut VmProc,
     region: &VirRegion,
-    pr: &PhysRegion,
+    frames: &PageFrames,
+    offset: VirBytes,
 ) -> Result<(), i32> {
-    let pb = unsafe { pr.ph.unwrap().as_ref() };
-    
+    let page_idx = (offset.get() / PAGE_SIZE) as usize;
+    let slot = region.physblocks[page_idx]
+        .ok_or(EFAULT)?;
+
     // 确定页表标志
     let mut flags = PteFlags::PRESENT | PteFlags::USER;
-    
+
     // 如果是私有页且区域可写，设置可写
-    if pb.refcount() == 1 && region.flags.contains(VrFlags::WRITABLE) {
+    let state = frames.get(slot.pfn).unwrap();
+    if state.refcount == 1 && region.flags.contains(VrFlags::WRITABLE) {
         flags |= PteFlags::WRITABLE;
     }
-    
+
     // 计算虚拟地址
-    let vaddr = VirBytes(region.vaddr.0 + pr.offset.0);
-    
+    let vaddr = VirBytes(region.vaddr.0 + offset.0);
+
     // 写入页表
+    let phys = frames.pfn_to_phys(slot.pfn);
     vmp.page_table.map_page(
         vaddr,
-        pb.phys,
+        phys,
         flags,
         MapFlags::OVERWRITE,
     )?;
-    
+
     // 刷新 TLB
     vmp.page_table.flush_tlb(vaddr);
-    
+
     Ok(())
 }
 ```
@@ -1261,14 +1275,14 @@ pub fn map_writept(
 
 **引用计数变化**
 
-| 阶段 | old_pb | new_pb |
-|------|--------|--------|
-| CoW 前 | refcount: 2, firstregion → parent_pr → child_pr | 不存在 |
-| `pb_unreferenced(region, ph, 0)` 后 | refcount: 1, firstregion → parent_pr | 不存在 |
-| `pb_new(new_page)` 后 | 同上 | refcount: 0, firstregion → NULL |
-| `pb_link(child_pr, new_pb, ...)` 后 | 同上 | refcount: 1, firstregion → child_pr |
+| 阶段 | old_pfn (PageState) | new_pfn (PageState) |
+|------|---------------------|---------------------|
+| CoW 前 | refcount: 2 | 不存在 |
+| `unmap_page(frames, offset)` 后 | refcount: 1 | 不存在 |
+| `alloc_phys_page()` 后 | 同上 | refcount: 0 |
+| `map_page(frames, offset, new_pfn, mt)` 后 | 同上 | refcount: 1 |
 
-CoW 后：old_pb 变为父进程私有（refcount=1），new_pb 为子进程私有（refcount=1）。
+CoW 后：old_pfn 变为父进程私有（refcount=1），new_pfn 为子进程私有（refcount=1）。
 
 **引用计数一致性保证**
 
@@ -1276,28 +1290,25 @@ CoW 后：old_pb 变为父进程私有（refcount=1），new_pb 为子进程私�
 /// CoW 引用计数一致性验证
 #[cfg(debug_assertions)]
 fn verify_cow_consistency(
-    old_pb: &PhysBlock,
-    new_pb: &PhysBlock,
-    parent_pr: &PhysRegion,
-    child_pr: &PhysRegion,
+    frames: &PageFrames,
+    old_pfn: u32,
+    new_pfn: u32,
+    parent_slot: &PageSlot,
+    child_slot: &PageSlot,
 ) {
-    // 原块应该只有父进程引用
-    assert_eq!(old_pb.refcount(), 1);
-    assert!(old_pb.first_region().is_some());
-    
-    // 新块应该只有子进程引用
-    assert_eq!(new_pb.refcount(), 1);
-    assert!(new_pb.first_region().is_some());
-    
-    // 父进程应该指向原块
-    assert_eq!(parent_pr.ph.unwrap().as_ptr() as *const _, old_pb as *const _);
-    
-    // 子进程应该指向新块
-    assert_eq!(child_pr.ph.unwrap().as_ptr() as *const _, new_pb as *const _);
-    
-    // 验证链表一致性
-    assert!(old_pb.verify_refcount());
-    assert!(new_pb.verify_refcount());
+    // 原页应该只有父进程引用
+    let old_state = frames.get(old_pfn).unwrap();
+    assert_eq!(old_state.refcount, 1);
+
+    // 新页应该只有子进程引用
+    let new_state = frames.get(new_pfn).unwrap();
+    assert_eq!(new_state.refcount, 1);
+
+    // 父进程 PageSlot 应指向原页
+    assert_eq!(parent_slot.pfn, old_pfn);
+
+    // 子进程 PageSlot 应指向新页
+    assert_eq!(child_slot.pfn, new_pfn);
 }
 ```
 
@@ -1432,11 +1443,11 @@ struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
 
 fork 后父子进程共享状态：
 
-- 父进程 vir_region A (vaddr: 0x400000): physblocks[0] → phys_region_p0, physblocks[1] → phys_region_p1, physblocks[2] → phys_region_p2
-- 子进程 vir_region A (vaddr: 0x400000): physblocks[0] → phys_region_c0, physblocks[1] → phys_region_c1, physblocks[2] → phys_region_c2
-- 共享 phys_block 0: refcount=2, firstregion → c0 → p0
-- 共享 phys_block 1: refcount=2, firstregion → c1 → p1
-- 共享 phys_block 2: refcount=2, firstregion → c2 → p2
+- 父进程 VirRegion A (vaddr: 0x400000): physblocks[0] → PageSlot(pfn=10), physblocks[1] → PageSlot(pfn=11), physblocks[2] → PageSlot(pfn=12)
+- 子进程 VirRegion A (vaddr: 0x400000): physblocks[0] → PageSlot(pfn=10), physblocks[1] → PageSlot(pfn=11), physblocks[2] → PageSlot(pfn=12)
+- PageFrames[10]: refcount=2
+- PageFrames[11]: refcount=2
+- PageFrames[12]: refcount=2
 - 所有页表项都是只读（不含 PTF_WRITE）
 
 ### 5.2 首次写入触发
@@ -1451,7 +1462,7 @@ fork 后父子进程共享状态：
 
 **多次 fork 的 CoW**
 
-| 阶段 | phys_block refcount | 说明 |
+| 阶段 | PageState refcount | 说明 |
 |------|-------------------|------|
 | 初始 | 1 | 父进程私有 |
 | 第一次 fork | 2 | 父 + 子1 共享 |
@@ -1472,104 +1483,98 @@ fork 后父子进程共享状态：
 #[cfg(test)]
 mod cow_trigger_tests {
     use super::*;
-    
+
     #[test]
     fn test_cow_deferred() {
-        // 创建父进程
+        let mut frames = PageFrames::new(PhysBytes(128 * 1024 * 1024));
         let mut parent = VmProc::new(1);
         let vaddr = VirBytes(0x400000);
-        
+
         // 分配一个页面
         let region = parent.alloc_region(vaddr, VirBytes(0x1000), VrFlags::WRITABLE).unwrap();
-        
+
         // 写入数据
         let data: [u8; 4096] = [0xAA; 4096];
         parent.write_memory(vaddr, &data).unwrap();
-        
-        // 记录原始物理页
-        let pr = region.physblock_get(VirBytes(0)).unwrap();
-        let original_phys = unsafe { pr.ph.unwrap().as_ref().phys };
-        
+
+        // 记录原始 PFN
+        let slot = region.physblocks[0].unwrap();
+        let original_pfn = slot.pfn;
+
         // fork
         let child = parent.fork().unwrap();
-        
-        // 验证共享：物理页相同
+
+        // 验证共享：PFN 相同
         let child_region = child.find_region(vaddr).unwrap();
-        let child_pr = child_region.physblock_get(VirBytes(0)).unwrap();
-        let child_phys = unsafe { child_pr.ph.unwrap().as_ref().phys };
-        
-        assert_eq!(original_phys, child_phys, "fork 后应该共享物理页");
-        
+        let child_slot = child_region.physblocks[0].unwrap();
+        assert_eq!(original_pfn, child_slot.pfn, "fork 后应该共享物理页");
+
         // 验证引用计数
-        assert_eq!(unsafe { pr.ph.unwrap().as_ref().refcount() }, 2);
-        
+        assert_eq!(frames.get(original_pfn).unwrap().refcount, 2);
+
         // 验证页表只读
         assert!(!parent.is_writable(vaddr));
         assert!(!child.is_writable(vaddr));
     }
-    
+
     #[test]
     fn test_cow_on_write() {
+        let mut frames = PageFrames::new(PhysBytes(128 * 1024 * 1024));
         let mut parent = VmProc::new(1);
         let vaddr = VirBytes(0x400000);
-        
+
         // 分配并写入
         parent.alloc_region(vaddr, VirBytes(0x1000), VrFlags::WRITABLE).unwrap();
         let data: [u8; 4096] = [0xAA; 4096];
         parent.write_memory(vaddr, &data).unwrap();
-        
+
         // fork
         let mut child = parent.fork().unwrap();
-        
+
         // 子进程写入触发 CoW
         let new_data: [u8; 4096] = [0xBB; 4096];
         child.write_memory(vaddr, &new_data).unwrap();
-        
-        // 验证物理页不同
+
+        // 验证 PFN 不同
         let parent_region = parent.find_region(vaddr).unwrap();
         let child_region = child.find_region(vaddr).unwrap();
-        
-        let parent_phys = unsafe { 
-            parent_region.physblock_get(VirBytes(0)).unwrap()
-                .ph.unwrap().as_ref().phys 
-        };
-        let child_phys = unsafe { 
-            child_region.physblock_get(VirBytes(0)).unwrap()
-                .ph.unwrap().as_ref().phys 
-        };
-        
-        assert_ne!(parent_phys, child_phys, "CoW 后物理页应该不同");
-        
+
+        let parent_pfn = parent_region.physblocks[0].unwrap().pfn;
+        let child_pfn = child_region.physblocks[0].unwrap().pfn;
+
+        assert_ne!(parent_pfn, child_pfn, "CoW 后物理页应该不同");
+
         // 验证数据隔离
         let mut parent_buf = [0u8; 4096];
         let mut child_buf = [0u8; 4096];
         parent.read_memory(vaddr, &mut parent_buf).unwrap();
         child.read_memory(vaddr, &mut child_buf).unwrap();
-        
+
         assert_eq!(parent_buf, [0xAA; 4096]);
         assert_eq!(child_buf, [0xBB; 4096]);
     }
-    
+
     #[test]
     fn test_cow_refcount_decrement() {
+        let mut frames = PageFrames::new(PhysBytes(128 * 1024 * 1024));
         let mut parent = VmProc::new(1);
         let vaddr = VirBytes(0x400000);
-        
+
         parent.alloc_region(vaddr, VirBytes(0x1000), VrFlags::WRITABLE).unwrap();
         parent.write_memory(vaddr, &[0xAA; 4096]).unwrap();
-        
+
         let child = parent.fork().unwrap();
-        
+
         // 验证 refcount = 2
         let region = parent.find_region(vaddr).unwrap();
-        let pr = region.physblock_get(VirBytes(0)).unwrap();
-        assert_eq!(unsafe { pr.ph.unwrap().as_ref().refcount() }, 2);
-        
-        // 子进程写入触发 CoW
+        let pfn = region.physblocks[0].unwrap().pfn;
+        assert_eq!(frames.get(pfn).unwrap().refcount, 2);
+
+        // 子进程释放
         drop(child);
-        
+
         // 验证 refcount = 1
-        assert_eq!(unsafe { pr.ph.unwrap().as_ref().refcount() }, 1);
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
     }
 }
 ```
@@ -1582,74 +1587,64 @@ mod cow_trigger_tests {
 #[cfg(test)]
 mod memory_saving_tests {
     use super::*;
-    
+
     #[test]
     fn test_shared_pages_count() {
-        // 创建父进程，分配 10 页
+        let mut frames = PageFrames::new(PhysBytes(128 * 1024 * 1024));
         let mut parent = VmProc::new(1);
         let vaddr = VirBytes(0x400000);
-        
+
         for i in 0..10 {
             let addr = VirBytes(vaddr.0 + i * 0x1000);
             parent.alloc_region(addr, VirBytes(0x1000), VrFlags::WRITABLE).unwrap();
             parent.write_memory(addr, &[i as u8; 4096]).unwrap();
         }
-        
-        // 记录物理内存使用
-        let phys_before = count_allocated_pages();
-        
-        // fork
+
+        let phys_before = frames.allocated_count();
+
         let child = parent.fork().unwrap();
-        
-        // 验证物理内存没有翻倍
-        let phys_after = count_allocated_pages();
+
+        let phys_after = frames.allocated_count();
         assert_eq!(phys_after, phys_before, "fork 后物理内存应该不变");
-        
-        // 统计共享页
-        let shared_count = count_shared_pages(&parent);
+
+        let shared_count = count_shared_pages(&frames, &parent);
         assert_eq!(shared_count, 10, "所有 10 页应该共享");
     }
-    
+
     #[test]
     fn test_cow_gradual_allocation() {
+        let mut frames = PageFrames::new(PhysBytes(128 * 1024 * 1024));
         let mut parent = VmProc::new(1);
         let vaddr = VirBytes(0x400000);
-        
-        // 分配 10 页
+
         for i in 0..10 {
             let addr = VirBytes(vaddr.0 + i * 0x1000);
             parent.alloc_region(addr, VirBytes(0x1000), VrFlags::WRITABLE).unwrap();
         }
-        
+
         let mut child = parent.fork().unwrap();
-        
-        let phys_after_fork = count_allocated_pages();
-        
-        // 子进程只写入 3 页
+
+        let phys_after_fork = frames.allocated_count();
+
         for i in 0..3 {
             let addr = VirBytes(vaddr.0 + i * 0x1000);
             child.write_memory(addr, &[i as u8; 4096]).unwrap();
         }
-        
-        let phys_after_cow = count_allocated_pages();
-        
-        // 验证只增加了 3 页
-        assert_eq!(phys_after_cow, phys_after_fork + 3, 
+
+        let phys_after_cow = frames.allocated_count();
+
+        assert_eq!(phys_after_cow, phys_after_fork + 3,
                    "应该只分配了被修改的 3 页");
     }
-    
-    fn count_allocated_pages() -> usize {
-        // 统计已分配的物理页数量
-        PB_SLAB.lock().used_count()
-    }
-    
-    fn count_shared_pages(vmp: &VmProc) -> usize {
-        // 统计共享页（refcount > 1）数量
+
+    fn count_shared_pages(frames: &PageFrames, vmp: &VmProc) -> usize {
         let mut count = 0;
         for region in vmp.regions() {
-            for pr in region.physblocks() {
-                if unsafe { pr.ph.unwrap().as_ref().refcount() > 1 } {
-                    count += 1;
+            for slot_opt in &region.physblocks {
+                if let Some(slot) = slot_opt {
+                    if frames.get(slot.pfn).unwrap().refcount > 1 {
+                        count += 1;
+                    }
                 }
             }
         }
@@ -1799,10 +1794,9 @@ mod correctness_tests {
 
 ## 7. 参见
 
-- [10-phys-block.md](10-phys-block.md) - phys_block 引用计数基础（pb_new, pb_link, pb_unreferenced, pb_reference）
-- [11-memtype.md](11-memtype.md) - mem_type_anon / mem_type_mappedfile / mem_type_shared 的定义与 CoW 行为
-- [12-vir-region.md](12-vir-region.md) - vir_region 结构与 physblocks 数组
-- [14-phys-region.md](14-phys-region.md) - phys_region 结构与链表操作
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 全局物理页状态（PageState.refcount，替代原 phys_block）
+- [12-memtype.md](12-memtype.md) - mem_type_anon / mem_type_mappedfile / mem_type_shared 的定义与 CoW 行为
+- [11-region-mapping.md](11-region-mapping.md) - VirRegion + PageSlot 页映射（替代原 vir_region + phys_region）
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构（x86-32 vs x86-64 差异）
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（pt_writemap, PTF_* 标志）
 - [16-pagefault.md](16-pagefault.md) - 页错误处理流程（map_pf → ev_pagefault → map_ph_writept）

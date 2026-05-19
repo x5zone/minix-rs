@@ -28,7 +28,7 @@ pub use vm_server::VmServer;
 pub(crate) use global::*;
 pub(crate) use vmproc::*;
 pub(crate) use acl::{AclState, AclMask};
-pub(crate) use fork::{VmForkRequest, VmForkResponse, VmForkError, ForkContext, handle_fork};
+pub(crate) use fork::{ForkError, fork_region, fork_regions, cow_copy_page};
 pub(crate) use alloc_stats::VmAllocStats;
 pub(crate) use critical_pool::CriticalPool;
 pub use phys_mem::BootMemRegion;
@@ -36,7 +36,7 @@ pub use phys_mem::BootMemRegion;
 pub(crate) use phys_mem::{
     PhysAlloc, PhysAllocator, PhysMemStats, PageAllocFlags, AlignedPhysBytes, AllocError,
 };
-pub(crate) use region::{VirRegion, VrFlags, PhysRegion, PhysBlock, RegionAvl};
+pub(crate) use region::{VirRegion, VrFlags, PageState, PageFrames, PageSlot, PageFlags as PhysPageFlags, PFN_NONE, PfnAllocator, PfnAllocError, RegionMap};
 pub(crate) use pagetable::{PageTable, PageFlags, PageTableError, vm_self_mappages, vm_self_unmappages, vm_self_unmap, vm_self_query, init_vm_self_pt};
 pub(crate) use memtype::{
     MemType, MemTypeError, PagefaultResult,
@@ -54,8 +54,8 @@ pub(crate) use exit::{VmExitError, handle_vm_exit, handle_vm_willexit};
 pub(crate) use brk::{BrkError, BrkRequest, BrkResponse, handle_brk};
 pub(crate) use munmap::{MunmapError, MunmapRequest, handle_munmap};
 pub(crate) use cow_exec_pf::{
-    PageFaultError, PageFaultInfo, handle_pagefault,
-    ExecError, ExecNewmemRequest, handle_exec_newmem,
+    PagefaultAction, CowError,
+    handle_pagefault, alloc_and_map, cow_resolve, cow_resolve_region,
 };
 
 mod vm_server;

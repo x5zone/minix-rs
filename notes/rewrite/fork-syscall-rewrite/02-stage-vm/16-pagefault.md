@@ -1780,196 +1780,129 @@ pub enum PageFaultResult {
 }
 ```
 
-**安全的状态机设计**
+**安全的页错误处理入口**
 
 ```rust
-/// 页错误处理状态机
-pub enum PageFaultState {
-    /// 初始状态
-    Initial,
-    /// 验证进程
-    ValidatingProcess {
-        info: PageFaultInfo,
-    },
-    /// 查找区域
-    LookingUpRegion {
-        info: PageFaultInfo,
-        vmp: VmProcRef,
-    },
-    /// 检查权限
-    CheckingPermission {
-        info: PageFaultInfo,
-        vmp: VmProcRef,
-        region: VirRegionRef,
-    },
-    /// 处理页面
-    HandlingPage {
-        info: PageFaultInfo,
-        vmp: VmProcRef,
-        region: VirRegionRef,
-        offset: usize,
-    },
-    /// 等待异步操作
-    WaitingAsync {
-        info: PageFaultInfo,
-        callback: AsyncCallback,
-    },
-    /// 完成
-    Completed(PageFaultResult),
-}
+/// 页错误处理入口（对应 Minix3 handle_pagefault）
+pub fn handle_pagefault(
+    vmp: &mut VmProc,
+    frames: &mut PageFrames,
+    info: PageFaultInfo,
+) -> Result<PageFaultResult, PageFaultError> {
+    // 1. 查找虚拟区域（AVL 树，O(log n)）
+    let region = vmp.lookup_region_mut(info.vaddr)
+        .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
 
-impl PageFaultState {
-    /// 执行下一步处理
-    pub fn step(self) -> Result<Self, PageFaultError> {
-        match self {
-            Self::Initial => panic!("Invalid state"),
-            
-            Self::ValidatingProcess { info } => {
-                let vmp = VmProcTable::get_by_endpoint(info.endpoint)?;
-                Ok(Self::LookingUpRegion { info, vmp })
-            }
-            
-            Self::LookingUpRegion { info, vmp } => {
-                let region = vmp.lookup_region(info.vaddr)
-                    .ok_or(PageFaultError::InvalidAddress)?;
-                Ok(Self::CheckingPermission { info, vmp, region })
-            }
-            
-            Self::CheckingPermission { info, vmp, region } => {
-                if info.is_write() && !region.is_writable() {
-                    return Err(PageFaultError::PermissionDenied);
+    // 2. 权限检查：写操作需要 VR_WRITABLE
+    if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
+        return Ok(PageFaultResult::PermissionDenied);
+    }
+
+    // 3. 计算区域内偏移
+    let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
+
+    // 4. 获取 PageSlot（Vec 索引，O(1)，替代 physblock_get）
+    let page_idx = (offset.get() / PAGE_SIZE) as usize;
+    if page_idx >= region.physblocks.len() {
+        return Ok(PageFaultResult::InvalidAddress);
+    }
+
+    // 5. 如果 PageSlot 不存在，创建懒映射
+    if region.physblocks[page_idx].is_none() {
+        region.map_lazy(offset);
+    }
+
+    // 6. 调用 MemType 的 ev_pagefault
+    let slot = region.physblocks[page_idx].unwrap();
+    let memtype = slot.memtype.unwrap_or(region.def_memtype.unwrap());
+
+    if !info.is_write() || !memtype.writable(frames, &slot) {
+        let action = memtype.ev_pagefault(vmp, region, frames, offset, info.is_write())?;
+        match action {
+            PageFaultAction::Done => {}
+            PageFaultAction::Suspend(_) => return Ok(PageFaultResult::Suspend),
+            PageFaultAction::AllocateNewPage { zero } => {
+                let pfn = frames.alloc_phys_page()?;
+                if zero {
+                    let va = vm_phys_to_virt(frames.pfn_to_phys(pfn));
+                    unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
                 }
-                let offset = info.vaddr - region.vaddr();
-                Ok(Self::HandlingPage { info, vmp, region, offset })
+                region.map_page(frames, offset, pfn, memtype);
             }
-            
-            Self::HandlingPage { info, vmp, region, offset } => {
-                match region.handle_pagefault(&vmp, offset, info.is_write())? {
-                    HandleResult::Ok => Ok(Self::Completed(PageFaultResult::Ok)),
-                    HandleResult::Suspend(callback) => {
-                        Ok(Self::WaitingAsync { info, callback })
-                    }
+            PageFaultAction::CopyOnWrite { src_pfn } => {
+                let new_pfn = frames.alloc_phys_page()?;
+                let src_va = vm_phys_to_virt(frames.pfn_to_phys(src_pfn));
+                let dst_va = vm_phys_to_virt(frames.pfn_to_phys(new_pfn));
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE,
+                    );
                 }
+                frames.get_mut(src_pfn).unwrap().refcount -= 1;
+                region.physblocks[page_idx] = Some(PageSlot {
+                    pfn: new_pfn,
+                    offset,
+                    memtype: Some(ANON_MEMTYPE),
+                });
+                frames.get_mut(new_pfn).unwrap().refcount = 1;
             }
-            
-            Self::WaitingAsync { info, callback } => {
-                if callback.is_ready() {
-                    Ok(Self::Completed(PageFaultResult::Ok))
-                } else {
-                    Ok(Self::WaitingAsync { info, callback })
-                }
-            }
-            
-            Self::Completed(_) => Ok(self),
         }
     }
+
+    // 7. 更新页表
+    let slot = region.physblocks[page_idx].unwrap();
+    let phys = frames.pfn_to_phys(slot.pfn);
+    let writable = slot.memtype.unwrap().writable(frames, &slot);
+    let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
+    pt_writemap(vmp, region.vaddr + offset.get(), phys, PAGE_SIZE, pt_flags)?;
+
+    Ok(PageFaultResult::Ok)
 }
 ```
 
-**安全的物理内存访问**
+**关键安全改进**
 
-```rust
-/// 物理页引用
-pub struct PhysPage {
-    addr: PhysAddr,
-    size: usize,
-}
-
-impl PhysPage {
-    /// 安全读取页面内容
-    pub fn read(&self, offset: usize, buf: &mut [u8]) -> Result<(), MemoryError> {
-        if offset + buf.len() > self.size {
-            return Err(MemoryError::OutOfBounds);
-        }
-        
-        // 安全：边界已检查，物理地址有效
-        unsafe {
-            let src = (self.addr.as_usize() + offset) as *const u8;
-            core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), buf.len());
-        }
-        
-        Ok(())
-    }
-    
-    /// 安全写入页面内容
-    pub fn write(&self, offset: usize, data: &[u8]) -> Result<(), MemoryError> {
-        if offset + data.len() > self.size {
-            return Err(MemoryError::OutOfBounds);
-        }
-        
-        // 安全：边界已检查，物理地址有效
-        unsafe {
-            let dst = (self.addr.as_usize() + offset) as *mut u8;
-            core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
-        }
-        
-        Ok(())
-    }
-}
-```
-
-**错误处理**
-
-```rust
-/// 页错误处理错误
-#[derive(Debug)]
-pub enum PageFaultError {
-    /// 进程不存在
-    ProcessNotFound(Endpoint),
-    /// 地址无效
-    InvalidAddress,
-    /// 权限被拒绝
-    PermissionDenied,
-    /// 内存不足
-    OutOfMemory,
-    /// 内部错误
-    InternalError(i32),
-}
-
-impl From<PageFaultError> for PageFaultResult {
-    fn from(err: PageFaultError) -> Self {
-        match err {
-            PageFaultError::ProcessNotFound(_) |
-            PageFaultError::InvalidAddress => PageFaultResult::InvalidAddress,
-            PageFaultError::PermissionDenied => PageFaultResult::PermissionDenied,
-            PageFaultError::OutOfMemory => PageFaultResult::OutOfMemory,
-            PageFaultError::InternalError(_) => PageFaultResult::InvalidAddress,
-        }
-    }
-}
-```
+| C 代码问题 | Rust 安全封装 |
+|-----------|-------------|
+| `vmproc[p]` 可能越界 | `VmProcTable::get_by_endpoint()` 返回 Option |
+| `region` 可能为 NULL | `lookup_region_mut()` 返回 Option，必须显式处理 |
+| `ph->ph->phys` 可能是 `MAP_NONE` | `PageSlot.is_mapped()` + `PageFrames.get(pfn)` 返回 Option |
+| `memcpy((void*)phys, ...)` 物理地址直接操作 | `vm_phys_to_virt()` + `copy_nonoverlapping()` 有类型保证 |
+| `refcount` 溢出无检测 | `u16` + debug 构建下 saturating_add 断言 |
 
 ### 3.2 与 memtype 的集成
 
 页错误处理通过 MemoryType trait 与不同内存类型实现解耦，实现多态处理。
 
-**MemoryType Trait 扩展**
+**MemType Trait 扩展**
 
 ```rust
-/// 内存类型 trait - 页错误处理相关方法
-pub trait MemoryType: Send + Sync {
+/// 内存类型 trait - 页错误处理相关方法（详见 12-memtype.md）
+pub trait MemType: Send + Sync {
     /// 内存类型名称
     fn name(&self) -> &'static str;
-    
+
     /// 处理页错误
-    fn pagefault(
+    fn ev_pagefault(
         &self,
         vmp: &mut VmProc,
         region: &mut VirRegion,
-        phys_region: &mut PhysRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PageFaultAction, PageFaultError>;
-    
+
     /// 检查是否可写
-    fn writable(&self, phys_region: &PhysRegion) -> bool;
-    
+    fn writable(
+        &self,
+        frames: &PageFrames,
+        slot: &PageSlot,
+    ) -> bool;
+
     /// 是否支持 CoW
     fn supports_cow(&self) -> bool {
         false
     }
-    
-    /// CoW 目标类型
-    fn cow_target_type(&self) -> &'static dyn MemoryType;
 }
 
 /// 页错误处理动作
@@ -1996,228 +1929,201 @@ pub enum PageFaultAction {
 
 ```rust
 /// 匿名内存类型
-pub struct AnonymousMemory;
+pub struct AnonMemType;
 
-impl MemoryType for AnonymousMemory {
+impl MemType for AnonMemType {
     fn name(&self) -> &'static str {
         "anonymous memory"
     }
-    
-    fn pagefault(
+
+    fn ev_pagefault(
         &self,
         vmp: &mut VmProc,
         region: &mut VirRegion,
-        phys_region: &mut PhysRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PageFaultAction, PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 情况1: 物理块未分配
-        if phys_block.phys().is_none() {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks[page_idx];
+
+        // 情况1: 物理页未分配
+        if slot.is_none() {
             return Ok(PageFaultAction::AllocateNewPage { zero: true });
         }
-        
+
+        let slot = slot.unwrap();
+        let state = frames.get(slot.pfn).unwrap();
+
         // 情况2: 不需要 CoW
-        if phys_block.refcount() < 2 || !write {
+        if state.refcount < 2 || !write {
             return Ok(PageFaultAction::Done);
         }
-        
+
         // 情况3: 执行 CoW
-        let src_phys = phys_block.phys().unwrap();
-        Ok(PageFaultAction::CopyOnWrite { src_phys })
+        let src_phys = frames.pfn_to_phys(slot.pfn);
+        Ok(PageFaultAction::CopyOnWrite { src_pfn: slot.pfn })
     }
-    
-    fn writable(&self, phys_region: &PhysRegion) -> bool {
-        let phys_block = phys_region.phys_block();
-        
-        // 物理页未分配，不可写
-        if phys_block.phys().is_none() {
+
+    fn writable(
+        &self,
+        frames: &PageFrames,
+        slot: &PageSlot,
+    ) -> bool {
+        if !slot.is_mapped() {
             return false;
         }
-        
-        // 有 remaps，可写（但会触发 CoW）
-        if phys_region.parent().remaps() > 0 {
-            return true;
-        }
-        
-        // 只有当引用计数为 1 时才真正可写
-        phys_block.refcount() == 1
+        frames.get(slot.pfn).unwrap().refcount == 1
     }
-    
+
     fn supports_cow(&self) -> bool {
         true
-    }
-    
-    fn cow_target_type(&self) -> &'static dyn MemoryType {
-        &ANONYMOUS_MEMORY
     }
 }
 
 /// 全局匿名内存实例
-pub static ANONYMOUS_MEMORY: AnonymousMemory = AnonymousMemory;
+pub static ANON_MEMTYPE: AnonMemType = AnonMemType;
 ```
 
 **文件映射内存实现**
 
 ```rust
 /// 文件映射内存类型
-pub struct MappedFileMemory {
-    /// 文件系统接口（mock）
-    fs: &'static dyn FileSystemOps,
-}
+pub struct MappedFileMemType;
 
-impl MemoryType for MappedFileMemory {
+impl MemType for MappedFileMemType {
     fn name(&self) -> &'static str {
         "mapped file"
     }
-    
-    fn pagefault(
+
+    fn ev_pagefault(
         &self,
         vmp: &mut VmProc,
         region: &mut VirRegion,
-        phys_region: &mut PhysRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
     ) -> Result<PageFaultAction, PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 物理块未分配，需要从文件加载
-        if phys_block.phys().is_none() {
-            let file_info = region.file_info()
-                .ok_or(PageFaultError::InternalError(ENODEV))?;
-            
-            // 创建异步回调
-            let callback = self.fs.read_async(
-                file_info.inode,
-                phys_region.offset(),
-                phys_block,
-            );
-            
-            return Ok(PageFaultAction::Suspend(callback));
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks[page_idx];
+
+        // 情况1: 物理页未分配 → 从文件加载
+        if slot.is_none() {
+            return Ok(PageFaultAction::Suspend(
+                AsyncCallback::new(PageFaultInfo {
+                    endpoint: vmp.endpoint,
+                    vaddr: region.vaddr + offset.get(),
+                    fault_type: PageFaultType::NotPresent,
+                    access_type: if write { AccessType::Write } else { AccessType::Read },
+                    error_code: 0,
+                }),
+            ));
         }
-        
-        // 如果是写操作且不是私有映射，需要 CoW
-        if write && !region.is_private_mapping() {
-            let src_phys = phys_block.phys().unwrap();
-            return Ok(PageFaultAction::CopyOnWrite { src_phys });
+
+        let slot = slot.unwrap();
+
+        // 情况2: 读操作，页面已存在
+        if !write {
+            return Ok(PageFaultAction::Done);
         }
-        
-        Ok(PageFaultAction::Done)
+
+        // 情况3: 写操作 → 执行 CoW（文件映射写时复制为匿名页）
+        Ok(PageFaultAction::CopyOnWrite { src_pfn: slot.pfn })
     }
-    
-    fn writable(&self, phys_region: &PhysRegion) -> bool {
-        // 文件映射的可写性取决于映射类型
-        phys_region.parent().is_writable()
+
+    fn writable(
+        &self,
+        _frames: &PageFrames,
+        _slot: &PageSlot,
+    ) -> bool {
+        false
     }
-    
+
     fn supports_cow(&self) -> bool {
         true
     }
-    
-    fn cow_target_type(&self) -> &'static dyn MemoryType {
-        &ANONYMOUS_MEMORY  // CoW 后变为匿名内存
-    }
 }
+
+pub static MAPPED_FILE_MEMTYPE: MappedFileMemType = MappedFileMemType;
 ```
+
+> **与 Minix3 的对应**: `mappedfile_writable()` 始终返回 0，即文件映射内存从不直接可写，写操作总是触发 CoW。CoW 后 memtype 切换为 `ANON_MEMTYPE`，与 Minix3 的 `ph->memtype = &mem_type_anon` 语义一致。
 
 **共享内存实现**
 
 ```rust
 /// 共享内存类型
-pub struct SharedMemory;
+pub struct SharedMemType;
 
-impl MemoryType for SharedMemory {
+impl MemType for SharedMemType {
     fn name(&self) -> &'static str {
         "shared memory"
     }
-    
-    fn pagefault(
+
+    fn ev_pagefault(
         &self,
-        vmp: &mut VmProc,
+        _vmp: &mut VmProc,
         region: &mut VirRegion,
-        phys_region: &mut PhysRegion,
-        write: bool,
+        frames: &mut PageFrames,
+        offset: VirBytes,
+        _write: bool,
     ) -> Result<PageFaultAction, PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 共享内存不支持 CoW
-        if phys_block.phys().is_none() {
-            return Ok(PageFaultAction::AllocateNewPage { zero: true });
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks[page_idx];
+
+        // 共享内存不支持 CoW，物理页未分配时分配新页
+        if slot.is_none() {
+            return Ok(PageFaultAction::AllocateNewPage { zero: false });
         }
-        
+
         Ok(PageFaultAction::Done)
     }
-    
-    fn writable(&self, phys_region: &PhysRegion) -> bool {
-        // 共享内存总是可写的（如果映射时指定了写权限）
-        phys_region.parent().is_writable()
+
+    fn writable(
+        &self,
+        _frames: &PageFrames,
+        slot: &PageSlot,
+    ) -> bool {
+        slot.is_mapped()
     }
-    
+
     fn supports_cow(&self) -> bool {
-        false  // 共享内存不支持 CoW
-    }
-    
-    fn cow_target_type(&self) -> &'static dyn MemoryType {
-        panic!("Shared memory does not support CoW")
+        false
     }
 }
+
+pub static SHARED_MEMTYPE: SharedMemType = SharedMemType;
 ```
 
-**页错误处理集成**
+**页错误处理集成（VirRegion 视角）**
 
 ```rust
 impl VirRegion {
-    /// 处理页错误
+    /// 处理页错误（对应 Minix3 map_pf）
     pub fn handle_pagefault(
         &mut self,
         vmp: &mut VmProc,
-        offset: usize,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<HandleResult, PageFaultError> {
-        // 获取或创建物理区域
-        let phys_region = self.get_or_create_phys_region(offset)?;
-        
-        // 检查是否需要处理
-        if write && phys_region.memtype().writable(&phys_region) {
-            return Ok(HandleResult::Ok);
+    ) -> Result<PageFaultAction, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        // 如果 PageSlot 不存在，创建懒映射（对应 physblock_get + pb_new）
+        if self.physblocks[page_idx].is_none() {
+            self.map_lazy(offset);
         }
-        
-        // 调用内存类型的 pagefault 处理器
-        let action = phys_region.memtype().pagefault(
-            vmp,
-            self,
-            &mut phys_region,
-            write,
-        )?;
-        
-        // 处理动作
-        match action {
-            PageFaultAction::Done => {
-                self.update_pagetable(vmp, &phys_region, write)?;
-                Ok(HandleResult::Ok)
-            }
-            
-            PageFaultAction::Suspend(callback) => {
-                Ok(HandleResult::Suspend(callback))
-            }
-            
-            PageFaultAction::AllocateNewPage { zero } => {
-                let new_page = vmp.alloc_page(zero)?;
-                phys_region.phys_block().set_phys(new_page);
-                self.update_pagetable(vmp, &phys_region, write)?;
-                Ok(HandleResult::Ok)
-            }
-            
-            PageFaultAction::CopyOnWrite { src_phys } => {
-                let new_page = vmp.alloc_page(false)?;
-                // 复制内容
-                new_page.copy_from(&src_phys)?;
-                // 更新引用计数
-                phys_region.phys_block().dec_refcount();
-                phys_region.phys_block().set_phys(new_page);
-                self.update_pagetable(vmp, &phys_region, write)?;
-                Ok(HandleResult::Ok)
-            }
+
+        let slot = self.physblocks[page_idx].unwrap();
+        let memtype = slot.memtype.unwrap_or(self.def_memtype.unwrap());
+
+        // 检查是否需要处理（对应 !write || !writable(pr)）
+        if write && memtype.writable(frames, &slot) {
+            return Ok(PageFaultAction::Done);
         }
+
+        // 调用 MemType 的 ev_pagefault
+        memtype.ev_pagefault(vmp, self, frames, offset, write)
     }
 }
 ```
@@ -2243,271 +2149,97 @@ if(result != OK) {
 
 ```rust
 /// 页错误处理错误
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PageFaultError {
-    #[error("process not found: {0}")]
-    ProcessNotFound(Endpoint),
-    
-    #[error("invalid address: {0:#x}")]
+    /// 地址无效
     InvalidAddress(VirtAddr),
-    
-    #[error("permission denied for {access:?} at {addr:#x}")]
+    /// 权限被拒绝
     PermissionDenied {
         addr: VirtAddr,
         access: AccessType,
     },
-    
-    #[error("out of memory while handling page fault for process {process}")]
-    OutOfMemory {
-        process: Endpoint,
-    },
-    
-    #[error("region lookup failed: {0}")]
-    RegionLookup(#[from] RegionError),
-    
-    #[error("physical block error: {0}")]
-    PhysBlock(#[from] PhysBlockError),
-    
-    #[error("page table error: {0}")]
-    PageTable(#[from] PageTableError),
-    
-    #[error("async operation failed: {0}")]
-    AsyncError(String),
-    
-    #[error("internal error: {0}")]
-    Internal(i32),
-}
-
-/// 区域错误
-#[derive(Debug, thiserror::Error)]
-pub enum RegionError {
-    #[error("region not found at address {0:#x}")]
-    NotFound(VirtAddr),
-    
-    #[error("region split failed: {reason}")]
-    SplitFailed { reason: String },
-    
-    #[error("region merge failed: {reason}")]
-    MergeFailed { reason: String },
-}
-
-/// 物理块错误
-#[derive(Debug, thiserror::Error)]
-pub enum PhysBlockError {
-    #[error("failed to allocate physical block")]
-    AllocationFailed,
-    
-    #[error("failed to reference physical block")]
-    ReferenceFailed,
-    
-    #[error("physical block has no physical address")]
-    NoPhysicalAddress,
-    
-    #[error("invalid reference count: {0}")]
-    InvalidRefcount(u32),
+    /// 内存不足（alloc_phys_page 失败）
+    OutOfMemory,
+    /// 页表操作失败
+    PageTable(PageTableError),
+    /// 异步操作失败
+    AsyncError(&'static str),
 }
 
 /// 页表错误
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PageTableError {
-    #[error("failed to map page at {vaddr:#x} -> {paddr:#x}")]
-    MapFailed {
-        vaddr: VirtAddr,
-        paddr: PhysAddr,
-    },
-    
-    #[error("failed to update page table entry at {0:#x}")]
+    /// 映射失败
+    MapFailed { vaddr: VirtAddr, pfn: u32 },
+    /// 更新失败
     UpdateFailed(VirtAddr),
-    
-    #[error("TLB flush failed for address {0:#x}")]
-    TlbFlushFailed(VirtAddr),
 }
 ```
+
+**与 Minix3 错误码的对应**
+
+| Minix3 错误码 | Rust 错误类型 | 说明 |
+|--------------|-------------|------|
+| `ENOMEM` (map_pf 中 pb_new 失败) | `PageFaultError::OutOfMemory` | alloc_phys_page 失败 |
+| `ENOMEM` (anon_pagefault 中 alloc_mem 失败) | `PageFaultError::OutOfMemory` | CoW 分配新页失败 |
+| `EFAULT` (map_lookup 返回 NULL) | `PageFaultError::InvalidAddress` | 地址不在任何区域内 |
+| `EACCES` (写只读区域) | `PageFaultError::PermissionDenied` | VR_WRITABLE 未设置 |
+| `SUSPEND` (mappedfile_pagefault 等待 VFS) | `Ok(PageFaultAction::Suspend(..))` | 非错误，异步等待 |
+
+**关键简化**: 方案 A 消除了 `PhysBlockError` 和 `RegionError`——`PhysBlock` 的分配/引用失败合并为 `PageFaultError::OutOfMemory`（`PageFrames::alloc_phys_page` 返回 `Result`），`PhysRegion` 的查找失败合并为 `PageFaultError::InvalidAddress`（`Vec` 索引越界）。Minix3 中 `pb_new` → `ENOMEM`、`pb_reference` → `ENOMEM` 两条错误路径在方案 A 中合并为 `alloc_phys_page` → `OutOfMemory` 一条。
 
 **错误传播示例**
 
 ```rust
-/// 页错误处理入口
 pub fn handle_pagefault(
+    vmp: &mut VmProc,
+    frames: &mut PageFrames,
     info: PageFaultInfo,
 ) -> Result<PageFaultResult, PageFaultError> {
-    // 使用 ? 运算符自动传播错误
-    
-    // 1. 验证进程
-    let vmp = VmProcTable::get_by_endpoint(info.endpoint)
-        .map_err(|_| PageFaultError::ProcessNotFound(info.endpoint))?;
-    
-    // 2. 查找区域
-    let region = vmp.lookup_region(info.vaddr)
+    // 1. 查找区域 → InvalidAddress
+    let region = vmp.lookup_region_mut(info.vaddr)
         .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
-    
-    // 3. 检查权限
-    if info.is_write() && !region.is_writable() {
+
+    // 2. 权限检查 → PermissionDenied
+    if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
         return Err(PageFaultError::PermissionDenied {
             addr: info.vaddr,
             access: info.access_type,
         });
     }
-    
-    // 4. 处理页面
-    let offset = info.vaddr - region.vaddr();
-    match region.handle_pagefault(&vmp, offset, info.is_write()) {
-        Ok(HandleResult::Ok) => Ok(PageFaultResult::Ok),
-        Ok(HandleResult::Suspend(cb)) => Ok(PageFaultResult::Suspend),
-        Err(e) => Err(e),
-    }
-}
-```
 
-**错误上下文增强**
+    // 3. MemType 处理 → ? 自动传播
+    let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
+    let action = region.handle_pagefault(vmp, frames, offset, info.is_write())?;
 
-```rust
-/// 带上下文的错误处理
-impl PageFaultHandler {
-    pub fn handle(&mut self, info: PageFaultInfo) -> Result<(), PageFaultError> {
-        self.handle_inner(info).map_err(|e| {
-            // 添加上下文信息
-            log::error!(
-                "Page fault handling failed for process {} at {:#x}: {}",
-                info.endpoint,
-                info.vaddr,
-                e
-            );
-            
-            // 记录详细状态
-            if let Ok(vmp) = VmProcTable::get_by_endpoint(info.endpoint) {
-                log::debug!("Process state: {:?}", vmp.state());
-                log::debug!("Memory usage: {} KB", vmp.memory_usage() / 1024);
-            }
-            
-            e
-        })
+    // 4. 执行动作 → OutOfMemory
+    match action {
+        PageFaultAction::AllocateNewPage { zero } => {
+            let pfn = frames.alloc_phys_page()
+                .map_err(|_| PageFaultError::OutOfMemory)?;
+            // ...
+        }
+        PageFaultAction::CopyOnWrite { src_pfn } => {
+            let new_pfn = frames.alloc_phys_page()
+                .map_err(|_| PageFaultError::OutOfMemory)?;
+            // ...
+        }
+        _ => {}
     }
+
+    Ok(PageFaultResult::Ok)
 }
 ```
 
 **错误恢复策略**
 
-```rust
-impl PageFaultResult {
-    /// 执行错误恢复
-    pub fn recover(self, info: &PageFaultInfo) -> Result<(), ()> {
-        match self {
-            Self::Ok => Ok(()),
-            
-            Self::Suspend => {
-                // 等待异步操作完成
-                Ok(())
-            }
-            
-            Self::InvalidAddress | Self::PermissionDenied => {
-                // 发送 SIGSEGV
-                send_signal(info.endpoint, Signal::SIGSEGV);
-                Err(())
-            }
-            
-            Self::OutOfMemory => {
-                // 尝试释放内存
-                if try_free_memory() {
-                    // 重试页错误处理
-                    log::info!("Memory freed, retrying page fault");
-                    Err(())  // 让调用者重试
-                } else {
-                    // 无法释放内存，终止进程
-                    send_signal(info.endpoint, Signal::SIGKILL);
-                    Err(())
-                }
-            }
-        }
-    }
-}
-```
-
-**错误链追踪**
-
-```rust
-/// 错误链
-#[derive(Debug)]
-pub struct ErrorChain {
-    errors: Vec<(String, PageFaultError)>,
-}
-
-impl ErrorChain {
-    pub fn new() -> Self {
-        Self { errors: Vec::new() }
-    }
-    
-    pub fn push(&mut self, context: &str, error: PageFaultError) {
-        self.errors.push((context.to_string(), error));
-    }
-    
-    pub fn last(&self) -> Option<&PageFaultError> {
-        self.errors.last().map(|(_, e)| e)
-    }
-    
-    pub fn format_chain(&self) -> String {
-        self.errors
-            .iter()
-            .rev()
-            .map(|(ctx, e)| format!("{}: {}", ctx, e))
-            .collect::<Vec<_>>()
-            .join(" -> ")
-    }
-}
-
-/// 使用示例
-fn handle_with_context(info: PageFaultInfo) -> Result<(), ErrorChain> {
-    let mut chain = ErrorChain::new();
-    
-    match VmProcTable::get_by_endpoint(info.endpoint) {
-        Ok(vmp) => {
-            match vmp.lookup_region(info.vaddr) {
-                Some(region) => {
-                    // 继续处理...
-                }
-                None => {
-                    chain.push("region lookup", PageFaultError::InvalidAddress(info.vaddr));
-                }
-            }
-        }
-        Err(e) => {
-            chain.push("process lookup", PageFaultError::ProcessNotFound(info.endpoint));
-        }
-    }
-    
-    Err(chain)
-}
-```
-
-**与 C 错误码的互操作**
-
-```rust
-impl From<PageFaultError> for i32 {
-    fn from(err: PageFaultError) -> Self {
-        match err {
-            PageFaultError::ProcessNotFound(_) => ESRCH,
-            PageFaultError::InvalidAddress(_) => EFAULT,
-            PageFaultError::PermissionDenied { .. } => EACCES,
-            PageFaultError::OutOfMemory { .. } => ENOMEM,
-            PageFaultError::RegionLookup(e) => e.into(),
-            PageFaultError::PhysBlock(e) => e.into(),
-            PageFaultError::PageTable(e) => e.into(),
-            PageFaultError::AsyncError(_) => EIO,
-            PageFaultError::Internal(code) => code,
-        }
-    }
-}
-
-impl From<RegionError> for i32 {
-    fn from(err: RegionError) -> Self {
-        match err {
-            RegionError::NotFound(_) => EFAULT,
-            RegionError::SplitFailed { .. } => ENOMEM,
-            RegionError::MergeFailed { .. } => ENOMEM,
-        }
-    }
-}
-```
+| 错误类型 | 恢复策略 | 对应 Minix3 行为 |
+|---------|---------|----------------|
+| `InvalidAddress` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
+| `PermissionDenied` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
+| `OutOfMemory` | 发送 SIGSEGV（Minix3 无 OOM killer） | `sys_kill(ep, SIGSEGV)` |
+| `PageTableError` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
+| `AsyncError` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
 
 ---
 
@@ -2542,127 +2274,192 @@ pub const VM_PAGEFAULT: i32 = 1;
 ```rust
 /// 页错误处理器
 pub struct PageFaultHandler {
-    /// 进程表引用
-    proc_table: &'static VmProcTable,
-    /// 物理内存分配器
-    allocator: &'static dyn PhysMemAlloc,
+    /// 全局物理页状态表
+    frames: &'static mut PageFrames,
 }
 
 impl PageFaultHandler {
     /// 创建新的页错误处理器
-    pub fn new(
-        proc_table: &'static VmProcTable,
-        allocator: &'static dyn PhysMemAlloc,
-    ) -> Self {
-        Self { proc_table, allocator }
+    pub fn new(frames: &'static mut PageFrames) -> Self {
+        Self { frames }
     }
-    
-    /// 处理页错误消息
-    pub fn handle_message(&mut self, msg: PageFaultMessage) {
+
+    /// 处理页错误消息（对应 Minix3 do_pagefaults + handle_pagefault）
+    pub fn handle_message(
+        &mut self,
+        vmp: &mut VmProc,
+        msg: PageFaultMessage,
+    ) {
         let info = PageFaultInfo::from_error_code(
             msg.m_source,
             msg.vpf_addr,
             msg.vpf_flags,
         );
-        
-        match self.handle(info) {
+
+        match self.handle(vmp, info) {
             Ok(PageFaultResult::Ok) => {
-                // 清除页错误状态
-                self.clear_pagefault(msg.m_source);
+                kernel::vmctl_clear_pagefault(msg.m_source);
             }
-            Ok(PageFaultResult::Suspend) => {
-                // 等待异步操作完成
-            }
+            Ok(PageFaultResult::Suspend) => {}
             Err(e) => {
-                log::error!("Page fault error: {}", e);
-                // 发送 SIGSEGV
-                self.send_signal(msg.m_source, Signal::SIGSEGV);
-                self.clear_pagefault(msg.m_source);
+                kernel::sys_kill(msg.m_source, Signal::SIGSEGV);
+                kernel::vmctl_clear_pagefault(msg.m_source);
             }
         }
     }
-    
+
     /// 处理页错误
-    fn handle(&mut self, info: PageFaultInfo) -> Result<PageFaultResult, PageFaultError> {
-        // 1. 验证进程
-        let vmp = self.proc_table
-            .get_by_endpoint(info.endpoint)
-            .ok_or(PageFaultError::ProcessNotFound(info.endpoint))?;
-        
-        // 2. 查找区域
-        let region = vmp.lookup_region(info.vaddr)
+    fn handle(
+        &mut self,
+        vmp: &mut VmProc,
+        info: PageFaultInfo,
+    ) -> Result<PageFaultResult, PageFaultError> {
+        // 1. 查找虚拟区域
+        let region = vmp.lookup_region_mut(info.vaddr)
             .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
-        
-        // 3. 检查权限
-        if info.is_write() && !region.is_writable() {
+
+        // 2. 权限检查
+        if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
             return Err(PageFaultError::PermissionDenied {
                 addr: info.vaddr,
                 access: info.access_type,
             });
         }
-        
-        // 4. 计算偏移
-        let offset = info.vaddr.align_down(PAGE_SIZE) - region.vaddr();
-        
-        // 5. 处理页面
+
+        // 3. 计算偏移
+        let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
+
+        // 4. 处理页面
         let result = self.handle_page(vmp, region, offset, info.is_write())?;
-        
-        // 6. 更新缺页统计
-        if result.is_io() {
-            vmp.increment_major_fault();
-        } else {
-            vmp.increment_minor_fault();
+
+        // 5. 更新缺页统计
+        match &result {
+            PageFaultResult::Ok => vmp.increment_minor_fault(),
+            PageFaultResult::Suspend => vmp.increment_major_fault(),
+            _ => {}
         }
-        
-        Ok(result.into())
+
+        Ok(result)
     }
-    
-    /// 清除页错误状态
-    fn clear_pagefault(&self, endpoint: Endpoint) {
-        // 调用内核接口清除页错误
-        kernel::vmctl_clear_pagefault(endpoint);
+
+    /// 处理单个页面（对应 Minix3 map_pf）
+    fn handle_page(
+        &mut self,
+        vmp: &mut VmProc,
+        region: &mut VirRegion,
+        offset: VirBytes,
+        write: bool,
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        // 如果 PageSlot 不存在，创建懒映射
+        if region.physblocks[page_idx].is_none() {
+            region.map_lazy(offset);
+        }
+
+        let slot = region.physblocks[page_idx].unwrap();
+        let memtype = slot.memtype.unwrap_or(region.def_memtype.unwrap());
+
+        // 检查是否需要处理
+        if write && memtype.writable(self.frames, &slot) {
+            // 更新页表
+            self.update_pt(vmp, region, page_idx)?;
+            return Ok(PageFaultResult::Ok);
+        }
+
+        // 调用 MemType 的 ev_pagefault
+        let action = memtype.ev_pagefault(vmp, region, self.frames, offset, write)?;
+
+        // 执行动作
+        match action {
+            PageFaultAction::Done => {
+                self.update_pt(vmp, region, page_idx)?;
+                Ok(PageFaultResult::Ok)
+            }
+            PageFaultAction::Suspend(_) => Ok(PageFaultResult::Suspend),
+            PageFaultAction::AllocateNewPage { zero } => {
+                let pfn = self.frames.alloc_phys_page()
+                    .map_err(|_| PageFaultError::OutOfMemory)?;
+                if zero {
+                    let va = vm_phys_to_virt(self.frames.pfn_to_phys(pfn));
+                    unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
+                }
+                region.map_page(self.frames, offset, pfn, memtype);
+                self.update_pt(vmp, region, page_idx)?;
+                Ok(PageFaultResult::Ok)
+            }
+            PageFaultAction::CopyOnWrite { src_pfn } => {
+                let new_pfn = self.frames.alloc_phys_page()
+                    .map_err(|_| PageFaultError::OutOfMemory)?;
+                let src_va = vm_phys_to_virt(self.frames.pfn_to_phys(src_pfn));
+                let dst_va = vm_phys_to_virt(self.frames.pfn_to_phys(new_pfn));
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE,
+                    );
+                }
+                self.frames.get_mut(src_pfn).unwrap().refcount -= 1;
+                region.physblocks[page_idx] = Some(PageSlot {
+                    pfn: new_pfn,
+                    offset,
+                    memtype: Some(ANON_MEMTYPE),
+                });
+                self.frames.get_mut(new_pfn).unwrap().refcount = 1;
+                self.update_pt(vmp, region, page_idx)?;
+                Ok(PageFaultResult::Ok)
+            }
+        }
     }
-    
-    /// 发送信号
-    fn send_signal(&self, endpoint: Endpoint, signal: Signal) {
-        kernel::sys_kill(endpoint, signal);
+
+    /// 更新页表（对应 Minix3 map_ph_writept）
+    fn update_pt(
+        &self,
+        vmp: &mut VmProc,
+        region: &VirRegion,
+        page_idx: usize,
+    ) -> Result<(), PageFaultError> {
+        let slot = region.physblocks[page_idx].unwrap();
+        let phys = self.frames.pfn_to_phys(slot.pfn);
+        let writable = slot.memtype.unwrap().writable(self.frames, &slot);
+        let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
+        pt_writemap(vmp, region.vaddr + slot.offset.get(), phys, PAGE_SIZE, pt_flags)
+            .map_err(PageFaultError::PageTable)
     }
 }
 ```
 
-**内核接口（mock）**
+**与 Minix3 的关键差异**
+
+| Minix3 | 方案 A | 说明 |
+|--------|-------|------|
+| `physblock_get(region, offset)` | `region.physblocks[page_idx]` | O(1) Vec 索引替代链表遍历 |
+| `pb_new(MAP_NONE)` + `pb_reference()` | `region.map_lazy(offset)` | 懒映射，无需分配 PhysBlock |
+| `ph->memtype->ev_pagefault(vmp, region, ph, ...)` | `memtype.ev_pagefault(vmp, region, frames, offset, ...)` | PageSlot + PageFrames 替代 PhysRegion |
+| `pb_unreferenced(region, ph, 0)` + `pb_link(ph, pb, ...)` | `frames.refcount -= 1` + `region.physblocks[idx] = Some(new_slot)` | 直接操作，无侵入式链表 |
+| `sys_abscopy(old, new, PAGE_SIZE)` | `copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)` | Direct Map 替代内核系统调用 |
+| `map_ph_writept(vmp, vr, pr)` | `update_pt(vmp, region, page_idx)` | PageSlot + PageFrames 替代 PhysRegion |
+
+**异步回调处理**
 
 ```rust
-/// 内核接口模块
-pub mod kernel {
-    use super::*;
-    
-    /// VM 控制操作
-    pub fn vmctl_clear_pagefault(endpoint: Endpoint) {
-        // 实际实现会调用内核系统调用
-        log::debug!("Clearing pagefault for {}", endpoint);
+impl PageFaultHandler {
+    /// 异步操作完成后重试页错误处理（对应 Minix3 pf_cont）
+    pub fn handle_async_callback(
+        &mut self,
+        vmp: &mut VmProc,
+        info: PageFaultInfo,
+    ) {
+        match self.handle(vmp, info) {
+            Ok(PageFaultResult::Ok) => {
+                kernel::vmctl_clear_pagefault(info.endpoint);
+            }
+            Ok(PageFaultResult::Suspend) => {}
+            Err(_) => {
+                kernel::sys_kill(info.endpoint, Signal::SIGSEGV);
+                kernel::vmctl_clear_pagefault(info.endpoint);
+            }
+        }
     }
-    
-    /// 发送信号
-    pub fn sys_kill(endpoint: Endpoint, signal: Signal) {
-        log::debug!("Sending signal {:?} to {}", signal, endpoint);
-    }
-    
-    /// 获取内存请求
-    pub fn vmctl_get_memreq() -> Option<MemoryRequest> {
-        // 从内核获取内存请求
-        None
-    }
-}
-
-/// 内存请求
-#[derive(Debug)]
-pub struct MemoryRequest {
-    pub endpoint: Endpoint,
-    pub addr: VirtAddr,
-    pub len: usize,
-    pub write: bool,
-    pub requestor: Endpoint,
 }
 ```
 
@@ -2673,9 +2470,8 @@ impl VmServer {
     /// 主消息循环
     pub fn run(&mut self) {
         loop {
-            // 接收消息
             let msg = self.receive_message();
-            
+
             match msg.m_type {
                 VM_PAGEFAULT => {
                     let pf_msg = PageFaultMessage {
@@ -2684,98 +2480,25 @@ impl VmServer {
                         vpf_addr: msg.vpf_addr,
                         vpf_flags: msg.vpf_flags,
                     };
-                    self.pagefault_handler.handle_message(pf_msg);
+                    if let Some(vmp) = self.proc_table.get_mut(msg.m_source) {
+                        self.pagefault_handler.handle_message(vmp, pf_msg);
+                    }
                 }
-                
+
                 VM_MEMORY_REQ => {
                     self.handle_memory_request();
                 }
-                
-                _ => {
-                    log::warn!("Unknown message type: {}", msg.m_type);
-                }
+
+                _ => {}
             }
         }
-    }
-    
-    /// 处理内存请求
-    fn handle_memory_request(&mut self) {
-        while let Some(req) = kernel::vmctl_get_memreq() {
-            match self.handle_memory(req) {
-                Ok(result) => {
-                    kernel::vmctl_memreq_reply(req.requestor, result);
-                }
-                Err(e) => {
-                    log::error!("Memory request failed: {}", e);
-                    kernel::vmctl_memreq_reply(req.requestor, EFAULT);
-                }
-            }
-        }
-    }
-}
-```
-
-**异步处理支持**
-
-```rust
-/// 异步页错误处理
-impl PageFaultHandler {
-    /// 处理需要异步操作的页错误
-    pub fn handle_async(&mut self, callback: AsyncCallback) {
-        // 检查回调是否完成
-        if callback.is_ready() {
-            // 重试页错误处理
-            if let Some(info) = callback.pagefault_info() {
-                match self.handle(info) {
-                    Ok(PageFaultResult::Ok) => {
-                        self.clear_pagefault(info.endpoint);
-                    }
-                    Err(e) => {
-                        log::error!("Async page fault error: {}", e);
-                        self.send_signal(info.endpoint, Signal::SIGSEGV);
-                        self.clear_pagefault(info.endpoint);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-/// 异步回调
-#[derive(Debug)]
-pub struct AsyncCallback {
-    /// 页错误信息
-    pagefault_info: Option<PageFaultInfo>,
-    /// 是否完成
-    ready: bool,
-}
-
-impl AsyncCallback {
-    pub fn new(info: PageFaultInfo) -> Self {
-        Self {
-            pagefault_info: Some(info),
-            ready: false,
-        }
-    }
-    
-    pub fn is_ready(&self) -> bool {
-        self.ready
-    }
-    
-    pub fn pagefault_info(&self) -> Option<PageFaultInfo> {
-        self.pagefault_info.clone()
-    }
-    
-    pub fn complete(&mut self) {
-        self.ready = true;
     }
 }
 ```
 
 ### 4.2 地址解析
 
-地址解析将虚拟地址转换为对应的虚拟区域和物理区域。
+地址解析将虚拟地址转换为对应的虚拟区域和 PageSlot。
 
 **地址解析结构**
 
@@ -2784,35 +2507,31 @@ impl AsyncCallback {
 #[derive(Debug)]
 pub struct AddressResolution {
     /// 虚拟区域引用
-    pub region: VirRegionRef,
+    pub region: &'static VirRegion,
     /// 区域内偏移（页对齐）
-    pub offset: usize,
-    /// 物理区域（如果存在）
-    pub phys_region: Option<PhysRegionRef>,
+    pub offset: VirBytes,
+    /// 物理页槽（如果已映射）
+    pub slot: Option<PageSlot>,
 }
 
 impl VmProc {
-    /// 解析虚拟地址
+    /// 解析虚拟地址（对应 Minix3 map_lookup + physblock_get）
     pub fn resolve_address(&self, vaddr: VirtAddr) -> Option<AddressResolution> {
-        // 1. 查找虚拟区域
+        // 1. 查找虚拟区域（AVL 树，O(log n)）
         let region = self.lookup_region(vaddr)?;
-        
+
         // 2. 计算区域内偏移
-        let offset = vaddr.align_down(PAGE_SIZE) - region.vaddr();
-        
-        // 3. 查找物理区域
-        let phys_region = region.get_phys_region(offset);
-        
+        let offset = VirBytes(vaddr.align_down(PAGE_SIZE) - region.vaddr);
+
+        // 3. 查找 PageSlot（Vec 索引，O(1)）
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks.get(page_idx).copied().flatten();
+
         Some(AddressResolution {
             region,
             offset,
-            phys_region,
+            slot,
         })
-    }
-    
-    /// 查找虚拟区域
-    pub fn lookup_region(&self, vaddr: VirtAddr) -> Option<VirRegionRef> {
-        self.regions.find(vaddr)
     }
 }
 ```
@@ -2821,115 +2540,41 @@ impl VmProc {
 
 ```rust
 impl RegionAvlTree {
-    /// 查找包含指定地址的区域
-    pub fn find(&self, vaddr: VirtAddr) -> Option<VirRegionRef> {
+    /// 查找包含指定地址的区域（对应 Minix3 region_search + map_lookup 验证）
+    pub fn find(&self, vaddr: VirtAddr) -> Option<&VirRegion> {
         // 使用 AVL_LESS_EQUAL 查找
         let candidate = self.search(vaddr, SearchType::LessEqual)?;
-        
+
         // 验证地址确实在区域内
-        if vaddr >= candidate.vaddr() && vaddr < candidate.vaddr() + candidate.length() {
+        if vaddr >= candidate.vaddr && vaddr < candidate.vaddr + candidate.length {
             Some(candidate)
         } else {
             None
         }
     }
-    
-    /// 搜索区域
-    fn search(&self, vaddr: VirtAddr, search_type: SearchType) -> Option<VirRegionRef> {
-        let mut node = self.root.as_ref()?;
-        let mut best: Option<VirRegionRef> = None;
-        
-        while let Some(current) = node {
-            let region = current.data();
-            
-            if vaddr < region.vaddr() {
-                // 地址在当前区域之前
-                node = current.left.as_ref();
-            } else if vaddr >= region.vaddr() + region.length() {
-                // 地址在当前区域之后
-                if search_type == SearchType::LessEqual {
-                    best = Some(region.clone());
-                }
-                node = current.right.as_ref();
-            } else {
-                // 地址在当前区域内
-                return Some(region.clone());
-            }
-        }
-        
-        best
-    }
-}
-
-/// 搜索类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchType {
-    /// 精确匹配
-    Equal,
-    /// 小于等于
-    LessEqual,
-    /// 大于等于
-    GreaterEqual,
 }
 ```
 
-**物理区域查找**
+**PageSlot 查找**
 
 ```rust
 impl VirRegion {
-    /// 获取指定偏移处的物理区域
-    pub fn get_phys_region(&self, offset: usize) -> Option<PhysRegionRef> {
-        // 页对齐偏移
-        let page_offset = offset & !(PAGE_SIZE - 1);
-        
-        // 遍历物理区域链表
-        for pr in self.phys_regions.iter() {
-            if pr.offset() == page_offset {
-                return Some(pr.clone());
-            }
-            if pr.offset() > page_offset {
-                break;  // 物理区域按偏移排序
-            }
-        }
-        
-        None
+    /// 获取指定偏移处的 PageSlot（对应 Minix3 physblock_get）
+    ///
+    /// Minix3 使用 region->physblocks[i] 指针数组索引，方案 A 使用 Vec<Option<PageSlot>> 索引。
+    /// 两者都是 O(1) 操作，但方案 A 的 PageSlot 是 Copy 类型，无需堆分配。
+    pub fn get_slot(&self, offset: VirBytes) -> Option<PageSlot> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        self.physblocks.get(page_idx).copied().flatten()
     }
-    
-    /// 获取或创建物理区域
-    pub fn get_or_create_phys_region(
-        &mut self,
-        offset: usize,
-    ) -> Result<PhysRegionRef, PageFaultError> {
-        let page_offset = offset & !(PAGE_SIZE - 1);
-        
-        // 尝试获取现有区域
-        if let Some(pr) = self.get_phys_region(offset) {
-            return Ok(pr);
+
+    /// 获取或创建懒映射 PageSlot（对应 Minix3 physblock_get + pb_new + pb_reference）
+    pub fn get_or_create_slot(&mut self, offset: VirBytes) -> Option<PageSlot> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        if self.physblocks[page_idx].is_none() {
+            self.map_lazy(offset);
         }
-        
-        // 创建新的物理区域
-        self.create_phys_region(page_offset)
-    }
-    
-    /// 创建新的物理区域
-    fn create_phys_region(
-        &mut self,
-        offset: usize,
-    ) -> Result<PhysRegionRef, PageFaultError> {
-        // 创建物理块
-        let phys_block = PhysBlock::new(None)?;
-        
-        // 创建物理区域
-        let phys_region = PhysRegion::new(
-            offset,
-            phys_block,
-            self.default_memtype(),
-        );
-        
-        // 插入到链表（按偏移排序）
-        self.phys_regions.insert_sorted(phys_region.clone());
-        
-        Ok(phys_region)
+        self.physblocks[page_idx]
     }
 }
 ```
@@ -2940,16 +2585,24 @@ impl VirRegion {
    - 未找到 → 返回 None
 2. 验证 `vaddr >= region.vaddr && vaddr < region.vaddr + region.length`
    - 不在区域内 → 返回 None
-3. 计算偏移 `offset = vaddr - region.vaddr`，`page_offset = offset & !PAGE_MASK`
-4. 查找物理区域（数组索引）
-   - 找到 → 返回 `AddressResolution { region, offset, phys_region }`
-   - 未找到 → 返回 `AddressResolution { region, offset, phys_region: None }`
+3. 计算偏移 `offset = vaddr - region.vaddr`
+4. `Vec` 索引查找 PageSlot → `region.physblocks[page_idx]`
+   - 找到 → 返回 `AddressResolution { region, offset, slot: Some(..) }`
+   - 未找到 → 返回 `AddressResolution { region, offset, slot: None }`
+
+**与 Minix3 的对比**
+
+| Minix3 | 方案 A | 说明 |
+|--------|-------|------|
+| `region->physblocks[i]` (指针数组) | `region.physblocks[page_idx]` (Vec) | O(1) 索引，但 PageSlot 是 Copy 类型 |
+| `physblock_get()` 返回 `phys_region*` | `get_slot()` 返回 `Option<PageSlot>` | 无裸指针，Option 强制空检查 |
+| `pb_new(MAP_NONE)` + `pb_reference()` | `map_lazy(offset)` | 懒映射无需堆分配 |
 
 **地址范围检查**
 
 ```rust
 impl VmProc {
-    /// 检查地址范围是否有效
+    /// 检查地址范围是否有效（对应 Minix3 handle_memory_start）
     pub fn check_address_range(
         &self,
         start: VirtAddr,
@@ -2958,103 +2611,22 @@ impl VmProc {
     ) -> Result<(), PageFaultError> {
         let mut current = start;
         let end = start + len;
-        
+
         while current < end {
-            // 查找区域
             let region = self.lookup_region(current)
                 .ok_or(PageFaultError::InvalidAddress(current))?;
-            
-            // 检查权限
-            if write && !region.is_writable() {
+
+            if write && !region.flags.contains(VrFlags::WRITABLE) {
                 return Err(PageFaultError::PermissionDenied {
                     addr: current,
                     access: AccessType::Write,
                 });
             }
-            
-            // 移动到下一个区域
-            current = region.vaddr() + region.length();
+
+            current = region.vaddr + region.length;
         }
-        
+
         Ok(())
-    }
-}
-```
-
-**地址缓存优化**
-
-```rust
-/// 地址解析缓存
-pub struct AddressCache {
-    /// 最近访问的区域
-    recent_region: Option<VirRegionRef>,
-    /// 缓存命中率统计
-    hits: u64,
-    misses: u64,
-}
-
-impl AddressCache {
-    pub fn new() -> Self {
-        Self {
-            recent_region: None,
-            hits: 0,
-            misses: 0,
-        }
-    }
-    
-    /// 尝试从缓存获取
-    pub fn try_get(&mut self, vaddr: VirtAddr) -> Option<VirRegionRef> {
-        if let Some(ref region) = self.recent_region {
-            if vaddr >= region.vaddr() && vaddr < region.vaddr() + region.length() {
-                self.hits += 1;
-                return Some(region.clone());
-            }
-        }
-        self.misses += 1;
-        None
-    }
-    
-    /// 更新缓存
-    pub fn update(&mut self, region: VirRegionRef) {
-        self.recent_region = Some(region);
-    }
-    
-    /// 获取命中率
-    pub fn hit_rate(&self) -> f64 {
-        let total = self.hits + self.misses;
-        if total == 0 {
-            0.0
-        } else {
-            self.hits as f64 / total as f64
-        }
-    }
-}
-
-impl VmProc {
-    /// 带缓存的地址解析
-    pub fn resolve_address_cached(
-        &self,
-        vaddr: VirtAddr,
-        cache: &mut AddressCache,
-    ) -> Option<AddressResolution> {
-        // 尝试缓存
-        if let Some(region) = cache.try_get(vaddr) {
-            let offset = vaddr.align_down(PAGE_SIZE) - region.vaddr();
-            let phys_region = region.get_phys_region(offset);
-            return Some(AddressResolution {
-                region,
-                offset,
-                phys_region,
-            });
-        }
-        
-        // 正常查找
-        let result = self.resolve_address(vaddr);
-        if let Some(ref resolution) = result {
-            cache.update(resolution.region.clone());
-        }
-        
-        result
     }
 }
 ```
@@ -3063,148 +2635,109 @@ impl VmProc {
 
 CoW 处理路径负责处理写保护错误，实现写时复制。
 
-**CoW 处理器**
+**CoW 处理流程（方案 A）**
 
 ```rust
-/// CoW 处理器
-pub struct CowHandler {
-    /// 物理内存分配器
-    allocator: &'static dyn PhysMemAlloc,
-}
+/// CoW 处理（对应 Minix3 mem_cow）
+pub fn handle_cow(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    page_idx: usize,
+) -> Result<(), PageFaultError> {
+    let slot = region.physblocks[page_idx].unwrap();
+    let src_pfn = slot.pfn;
+    let src_state = frames.get(src_pfn).unwrap();
 
-impl CowHandler {
-    /// 创建新的 CoW 处理器
-    pub fn new(allocator: &'static dyn PhysMemAlloc) -> Self {
-        Self { allocator }
+    // 检查是否需要 CoW
+    if src_state.refcount <= 1 {
+        return Ok(());
     }
-    
-    /// 处理 CoW
-    pub fn handle(
-        &self,
-        region: &mut VirRegion,
-        phys_region: &mut PhysRegion,
-    ) -> Result<(), PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 检查是否需要 CoW
-        if phys_block.refcount() <= 1 {
-            // 只有一个引用，无需 CoW
-            return Ok(());
-        }
-        
-        // 执行 CoW
-        self.do_cow(region, phys_region)
+
+    // 1. 分配新物理页
+    let new_pfn = frames.alloc_phys_page()
+        .map_err(|_| PageFaultError::OutOfMemory)?;
+
+    // 2. 复制页面内容（Direct Map，替代 sys_abscopy）
+    let src_va = vm_phys_to_virt(frames.pfn_to_phys(src_pfn));
+    let dst_va = vm_phys_to_virt(frames.pfn_to_phys(new_pfn));
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE);
     }
-    
-    /// 执行 CoW 复制
-    fn do_cow(
-        &self,
-        region: &VirRegion,
-        phys_region: &mut PhysRegion,
-    ) -> Result<(), PageFaultError> {
-        let old_phys = phys_region.phys_block().phys()
-            .ok_or(PageFaultError::PhysBlock(PhysBlockError::NoPhysicalAddress))?;
-        
-        // 分配新页面
-        let new_page = self.allocator.alloc(1, AllocFlags::empty())
-            .map_err(|_| PageFaultError::OutOfMemory {
-                process: region.owner(),
-            })?;
-        
-        // 复制内容
-        new_page.copy_from(&old_phys)?;
-        
-        // 减少原页面引用计数
-        phys_region.phys_block().dec_refcount();
-        
-        // 设置新物理地址
-        phys_region.phys_block().set_phys(new_page);
-        
-        log::debug!(
-            "CoW: copied page from {:#x} to {:#x}",
-            old_phys,
-            new_page
-        );
-        
-        Ok(())
-    }
+
+    // 3. 减少原页面引用计数（替代 pb_unreferenced）
+    frames.get_mut(src_pfn).unwrap().refcount -= 1;
+
+    // 4. 更新 PageSlot 指向新页面，memtype 切换为匿名（替代 pb_link + ph->memtype = &mem_type_anon）
+    region.physblocks[page_idx] = Some(PageSlot {
+        pfn: new_pfn,
+        offset: slot.offset,
+        memtype: Some(ANON_MEMTYPE),
+    });
+
+    // 5. 设置新页面引用计数
+    frames.get_mut(new_pfn).unwrap().refcount = 1;
+
+    Ok(())
 }
 ```
 
-**CoW 处理流程**
+**与 Minix3 mem_cow 的对应**
 
-1. 检查 `refcount`：`refcount == 1` → 无需 CoW，返回 Ok
-2. `refcount > 1` → 需要复制：
-   - 获取原物理地址 `old_phys = ph->phys`
-   - 分配新页面 `alloc_mem(1)` → 失败返回 OutOfMemory
-   - 复制页面内容 `sys_abscopy(old, new)`（内核系统调用，非 memcpy）
-   - `pb_unreferenced()` 解除原物理块引用
-   - `pb_link()` 链接新物理块
-   - 切换内存类型为匿名
+| Minix3 步骤 | 方案 A 步骤 | 说明 |
+|------------|-----------|------|
+| `alloc_mem(1, allocflags)` | `frames.alloc_phys_page()` | 物理页分配 |
+| `sys_abscopy(old, new, PAGE_SIZE)` | `copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)` | Direct Map 替代内核系统调用 |
+| `pb_new(new_page)` | 不需要 | PageFrames 全局数组，无需创建 PhysBlock |
+| `pb_unreferenced(region, ph, 0)` | `frames.get_mut(src_pfn).refcount -= 1` | 直接递减 refcount |
+| `pb_link(ph, pb, ph->offset, region)` | `region.physblocks[idx] = Some(PageSlot { pfn: new_pfn, .. })` | Vec 索引替代侵入式链表 |
+| `ph->memtype = &mem_type_anon` | `memtype: Some(ANON_MEMTYPE)` | CoW 后切换为匿名内存 |
+
+**关键简化**: Minix3 的 `mem_cow` 需要 5 步（分配 → 复制 → 创建 PhysBlock → 解除旧引用 → 链接新引用），方案 A 只需 4 步（分配 → 复制 → 递减旧 refcount → 更新 PageSlot），因为 `PageFrames` 全局数组无需创建/销毁 `PhysBlock` 对象。
 
 **页面复制实现**
 
-> **方案四标注**：`PhysPage::addr` 来自 `vm_phys_to_virt(alloc_phys())`——物理页天然拥有 stable VA，无需从 PtRegion 分配 VA 或通过 createpde 建立临时映射。
-
-```rust
-impl PhysPage {
-    /// 从另一个物理页复制内容
-    pub fn copy_from(&self, src: &PhysAddr) -> Result<(), MemoryError> {
-        // 安全：两个物理地址都有效，大小相同
-        // self.addr 来自 vm_phys_to_virt()，src 通过 vm_phys_to_virt() 获取
-        unsafe {
-            let dst_ptr = self.addr.as_usize() as *mut u8;
-            let src_ptr = src.as_usize() as *const u8;
-            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE);
-        }
-        Ok(())
-    }
-    
-    /// 清零页面
-    pub fn zero(&self) -> Result<(), MemoryError> {
-        unsafe {
-            let ptr = self.addr.as_usize() as *mut u8;
-            core::ptr::write_bytes(ptr, 0, PAGE_SIZE);
-        }
-        Ok(())
-    }
-}
-```
-
-**`copy_from` 的地址来源**：`self.addr` 是 `vm_phys_to_virt(alloc_phys())` 的结果——物理页分配后天然拥有 stable VA。在 Minix3 中，复制物理页需要 `sys_abscopy` 系统调用（因为 VM 无法直接访问物理页）；在方案四中，`vm_phys_to_virt()` 使物理页直接可操作，复制变成一行 `copy_nonoverlapping`。这与 15-cow-mechanism.md §2.2.1 的 `mem_cow()` 简化是同一个范式转变。
+> **Direct Map 统一性**: `vm_phys_to_virt()` 使物理页直接可操作。Minix3 中 `sys_abscopy` 是内核系统调用（VM 无法直接访问物理页）；方案 A 中 `vm_phys_to_virt()` 将物理地址转换为虚拟地址，复制变成一行 `copy_nonoverlapping`。这与 [15-cow-mechanism.md](15-cow-mechanism.md) 的 `mem_cow()` 简化是同一个范式转变。
 
 **引用计数管理**
 
 ```rust
-impl PhysBlock {
-    /// 增加引用计数
-    pub fn inc_refcount(&self) {
-        self.refcount.fetch_add(1, Ordering::SeqCst);
+impl PageFrames {
+    /// 分配物理页并返回 PFN
+    pub fn alloc_phys_page(&mut self) -> Result<u32, ()> {
+        let pfn = self.buddy_alloc.alloc(1)?;
+        self.states[pfn as usize] = PageState {
+            refcount: 1,
+            flags: PageFlags::ALLOCATED,
+        };
+        Ok(pfn)
     }
-    
-    /// 减少引用计数
-    pub fn dec_refcount(&self) -> u32 {
-        let old = self.refcount.fetch_sub(1, Ordering::SeqCst);
-        if old == 1 {
-            // 引用计数降为 0，释放物理内存
-            self.free();
-        }
-        old - 1
+
+    /// 释放物理页（refcount 降为 0 时调用）
+    pub fn free_phys_page(&mut self, pfn: u32) {
+        self.buddy_alloc.free(pfn, 1);
+        self.states[pfn as usize] = PageState {
+            refcount: 0,
+            flags: PageFlags::empty(),
+        };
     }
-    
-    /// 获取引用计数
-    pub fn refcount(&self) -> u32 {
-        self.refcount.load(Ordering::SeqCst)
-    }
-    
-    /// 释放物理内存
-    fn free(&self) {
-        if let Some(phys) = self.phys {
-            // 通知分配器释放
-            PHYS_ALLOCATOR.free(phys);
-            self.phys = None;
-        }
-    }
+}
+```
+
+**CoW 后页表更新**
+
+```rust
+/// CoW 后更新页表（对应 Minix3 map_ph_writept）
+pub fn update_pt_after_cow(
+    vmp: &mut VmProc,
+    region: &VirRegion,
+    frames: &PageFrames,
+    page_idx: usize,
+) -> Result<(), PageTableError> {
+    let slot = region.physblocks[page_idx].unwrap();
+    let phys = frames.pfn_to_phys(slot.pfn);
+    let writable = slot.memtype.unwrap().writable(frames, &slot);
+    let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
+    pt_writemap(vmp, region.vaddr + slot.offset.get(), phys, PAGE_SIZE, pt_flags)
 }
 ```
 
@@ -3218,55 +2751,8 @@ pub struct CowStats {
     pub cow_count: u64,
     /// 跳过 CoW 次数（refcount == 1）
     pub skip_count: u64,
-    /// CoW 失败次数
+    /// CoW 失败次数（alloc_phys_page 失败）
     pub fail_count: u64,
-    /// 复制的总字节数
-    pub bytes_copied: u64,
-}
-
-impl CowStats {
-    /// 记录 CoW 事件
-    pub fn record_cow(&mut self) {
-        self.cow_count += 1;
-        self.bytes_copied += PAGE_SIZE as u64;
-    }
-    
-    /// 记录跳过事件
-    pub fn record_skip(&mut self) {
-        self.skip_count += 1;
-    }
-    
-    /// 记录失败事件
-    pub fn record_fail(&mut self) {
-        self.fail_count += 1;
-    }
-}
-```
-
-**与页表更新集成**
-
-```rust
-impl VirRegion {
-    /// 更新页表（CoW 后）
-    pub fn update_pagetable_after_cow(
-        &self,
-        vmp: &VmProc,
-        phys_region: &PhysRegion,
-    ) -> Result<(), PageTableError> {
-        let vaddr = self.vaddr() + phys_region.offset();
-        let phys = phys_region.phys_block().phys()
-            .ok_or(PageTableError::UpdateFailed(vaddr))?;
-        
-        // 更新页表项为可写
-        let flags = PageTableFlags::PRESENT | PageTableFlags::USER | PageTableFlags::WRITABLE;
-        
-        vmp.page_table().map(vaddr, phys, flags)?;
-        
-        // 刷新 TLB
-        vmp.page_table().flush_tlb(vaddr);
-        
-        Ok(())
-    }
 }
 ```
 
@@ -3277,47 +2763,38 @@ impl VirRegion {
 **按需加载处理器**
 
 ```rust
-/// 按需加载处理器
+/// 按需加载处理器（对应 Minix3 map_pf 中 phys == MAP_NONE 分支）
 pub struct DemandLoadHandler {
-    /// 物理内存分配器
-    allocator: &'static dyn PhysMemAlloc,
+    /// 全局物理页状态表
+    frames: &'static mut PageFrames,
 }
 
 impl DemandLoadHandler {
-    /// 创建新的按需加载处理器
-    pub fn new(allocator: &'static dyn PhysMemAlloc) -> Self {
-        Self { allocator }
+    pub fn new(frames: &'static mut PageFrames) -> Self {
+        Self { frames }
     }
-    
+
     /// 处理按需加载
     pub fn handle(
-        &self,
-        region: &VirRegion,
-        phys_region: &mut PhysRegion,
+        &mut self,
+        region: &mut VirRegion,
+        offset: VirBytes,
     ) -> Result<(), PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 检查是否已分配物理页
-        if phys_block.phys().is_some() {
-            return Ok(());  // 已分配，无需处理
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        if region.physblocks[page_idx].is_some() {
+            return Ok(());
         }
-        
-        // 分配新页面
-        let new_page = self.allocator.alloc(1, AllocFlags::CLEAR)
-            .map_err(|_| PageFaultError::OutOfMemory {
-                process: region.owner(),
-            })?;
-        
-        // 设置物理地址
-        phys_block.set_phys(new_page);
-        
-        log::debug!(
-            "Demand load: allocated page at {:#x} for region {:#x}+{:#x}",
-            new_page,
-            region.vaddr(),
-            phys_region.offset()
-        );
-        
+
+        let pfn = self.frames.alloc_phys_page()
+            .map_err(|_| PageFaultError::OutOfMemory)?;
+
+        let va = vm_phys_to_virt(self.frames.pfn_to_phys(pfn));
+        unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
+
+        let memtype = region.def_memtype.unwrap();
+        region.map_page(self.frames, offset, pfn, memtype);
+
         Ok(())
     }
 }
@@ -3326,39 +2803,35 @@ impl DemandLoadHandler {
 **分配标志**
 
 ```rust
-/// 内存分配标志
+/// 内存分配标志（对应 Minix3 vrallocflags）
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct AllocFlags: u32 {
-        /// 清零分配的内存
+    pub struct VrAllocFlags: u32 {
+        const NONE = 0x00;
         const CLEAR = 0x01;
-        /// 对齐到 64KB 边界
         const ALIGN64K = 0x02;
-        /// 在低 16MB 范围内
         const LOWER16MB = 0x04;
-        /// 在低 1MB 范围内
         const LOWER1MB = 0x08;
     }
 }
 
 impl VirRegion {
-    /// 获取分配标志
-    pub fn alloc_flags(&self) -> AllocFlags {
-        let mut flags = AllocFlags::empty();
-        
-        if !self.flags().contains(RegionFlags::UNINITIALIZED) {
-            flags |= AllocFlags::CLEAR;
+    pub fn alloc_flags(&self) -> VrAllocFlags {
+        let mut flags = VrAllocFlags::empty();
+
+        if !self.flags.contains(VrFlags::UNINITIALIZED) {
+            flags |= VrAllocFlags::CLEAR;
         }
-        if self.flags().contains(RegionFlags::PHYS64K) {
-            flags |= AllocFlags::ALIGN64K;
+        if self.flags.contains(VrFlags::PHYS64K) {
+            flags |= VrAllocFlags::ALIGN64K;
         }
-        if self.flags().contains(RegionFlags::LOWER16MB) {
-            flags |= AllocFlags::LOWER16MB;
+        if self.flags.contains(VrFlags::LOWER16MB) {
+            flags |= VrAllocFlags::LOWER16MB;
         }
-        if self.flags().contains(RegionFlags::LOWER1MB) {
-            flags |= AllocFlags::LOWER1MB;
+        if self.flags.contains(VrFlags::LOWER1MB) {
+            flags |= VrAllocFlags::LOWER1MB;
         }
-        
+
         flags
     }
 }
@@ -3366,91 +2839,46 @@ impl VirRegion {
 
 **按需加载流程**
 
-1. 检查 `phys` 是否已分配 → 已分配返回 Ok
-2. 未分配 → 获取分配标志 `alloc_flags()`
-3. 分配物理页面 `alloc_mem(1, flags)` → 失败返回 OutOfMemory
-4. 设置物理地址 `phys_block.phys = new`
+1. 检查 `PageSlot` 是否存在 → 已存在返回 Ok
+2. 不存在 → `frames.alloc_phys_page()` 分配物理页 → 失败返回 OutOfMemory
+3. 清零页面内容（Direct Map + `write_bytes`）
+4. `region.map_page(frames, offset, pfn, memtype)` 更新 PageSlot 并递增 refcount
 5. 返回 Ok
 
 **文件映射按需加载**
 
 ```rust
-/// 文件映射按需加载处理器
-pub struct FileDemandLoader {
-    /// 文件系统接口
-    fs: &'static dyn FileSystemOps,
-}
+/// 文件映射按需加载处理器（对应 Minix3 mappedfile_pagefault）
+pub struct FileDemandLoader;
 
 impl FileDemandLoader {
     /// 处理文件映射按需加载
     pub fn handle(
-        &self,
-        region: &VirRegion,
-        phys_region: &mut PhysRegion,
-    ) -> Result<LoadResult, PageFaultError> {
-        let phys_block = phys_region.phys_block();
-        
-        // 检查是否已加载
-        if phys_block.phys().is_some() {
-            return Ok(LoadResult::Done);
+        frames: &mut PageFrames,
+        region: &mut VirRegion,
+        offset: VirBytes,
+    ) -> Result<PageFaultAction, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+
+        if region.physblocks[page_idx].is_some() {
+            return Ok(PageFaultAction::Done);
         }
-        
-        // 获取文件信息
-        let file_info = region.file_info()
-            .ok_or(PageFaultError::Internal(ENODEV))?;
-        
-        // 分配物理页
-        let new_page = PHYS_ALLOCATOR.alloc(1, AllocFlags::empty())
-            .map_err(|_| PageFaultError::OutOfMemory {
-                process: region.owner(),
-            })?;
-        
-        // 从文件读取内容
-        let offset = phys_region.offset();
-        let result = self.fs.read_sync(
-            file_info.inode,
-            file_info.offset + offset,
-            new_page,
-            PAGE_SIZE,
-        );
-        
-        match result {
-            Ok(bytes_read) => {
-                // 如果读取不足，清零剩余部分
-                if bytes_read < PAGE_SIZE {
-                    new_page.zero_range(bytes_read, PAGE_SIZE - bytes_read)?;
-                }
-                
-                phys_block.set_phys(new_page);
-                Ok(LoadResult::Done)
-            }
-            Err(e) => {
-                // 读取失败，释放页面
-                PHYS_ALLOCATOR.free(new_page);
-                Err(PageFaultError::AsyncError(format!("File read failed: {}", e)))
-            }
-        }
+
+        let file_info = region.param.file;
+        let referenced_offset = file_info.offset + offset.get();
+
+        Ok(PageFaultAction::Suspend(
+            AsyncCallback::new(VfsRequest::Fdio {
+                fd: file_info.fdref.fd,
+                offset: referenced_offset,
+                len: PAGE_SIZE,
+            }),
+        ))
     }
 }
-
-/// 加载结果
-#[derive(Debug)]
-pub enum LoadResult {
-    /// 加载完成
-    Done,
-    /// 需要异步等待
-    Pending(AsyncLoadHandle),
-}
-
-/// 异步加载句柄
-#[derive(Debug)]
-pub struct AsyncLoadHandle {
-    /// 请求 ID
-    request_id: u64,
-    /// 是否完成
-    completed: bool,
-}
 ```
+
+> **与 Minix3 的对应**: Minix3 的 `mappedfile_pagefault` 在 `phys == MAP_NONE` 时调用 `vfs_request(VMVFSREQ_FDIO, ...)` 发起异步 I/O，返回 `SUSPEND`。方案 A 将此逻辑封装在 `PageFaultAction::Suspend` 中，VFS 回调完成后由 `pf_cont` 重试页错误处理。文件内容加载到物理页后，`map_page()` 更新 PageSlot 并设置 refcount。
 
 **统计信息**
 
@@ -3458,20 +2886,14 @@ pub struct AsyncLoadHandle {
 /// 按需加载统计
 #[derive(Debug, Default)]
 pub struct DemandLoadStats {
-    /// 分配的页面数
     pub pages_allocated: u64,
-    /// 清零的页面数
     pub pages_zeroed: u64,
-    /// 从文件加载的页面数
     pub pages_loaded: u64,
-    /// 加载失败次数
     pub load_failures: u64,
-    /// 总分配字节数
     pub bytes_allocated: u64,
 }
 
 impl DemandLoadStats {
-    /// 记录分配
     pub fn record_alloc(&mut self, zeroed: bool) {
         self.pages_allocated += 1;
         self.bytes_allocated += PAGE_SIZE as u64;
@@ -3479,13 +2901,11 @@ impl DemandLoadStats {
             self.pages_zeroed += 1;
         }
     }
-    
-    /// 记录文件加载
+
     pub fn record_file_load(&mut self) {
         self.pages_loaded += 1;
     }
-    
-    /// 记录失败
+
     pub fn record_failure(&mut self) {
         self.load_failures += 1;
     }
@@ -3496,45 +2916,38 @@ impl DemandLoadStats {
 
 栈扩展处理栈区域的自动增长，当访问超出当前栈边界时自动扩展。
 
+> **重要**: Minix3 不支持栈自动扩展。访问不在已映射区域内的地址会直接触发 SIGSEGV。栈和数据段的增长由 `do_brk()` 系统调用管理（见 [18-vm-brk.md](18-vm-brk.md)）。minix-rs 可考虑实现自动栈扩展作为改进。
+
 **栈区域特征**
 
 ```rust
-/// 栈区域标志
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct StackFlags: u32 {
-        /// 向下增长
         const GROWSDOWN = 0x01;
-        /// 最大大小限制
         const LIMITED = 0x02;
     }
 }
 
-/// 栈区域
 pub struct StackRegion {
-    /// 基础区域
     base: VirRegion,
-    /// 栈标志
     stack_flags: StackFlags,
-    /// 栈底地址（最低可扩展到的地址）
     stack_low: VirtAddr,
-    /// 最大栈大小
     max_size: usize,
 }
 
 impl StackRegion {
-    /// 创建新的栈区域
     pub fn new(
         vaddr: VirtAddr,
         initial_size: usize,
         max_size: usize,
-    ) -> Result<Self, RegionError> {
+    ) -> Result<Self, PageFaultError> {
         let base = VirRegion::new(
             vaddr - initial_size,
             initial_size,
-            RegionFlags::WRITABLE | RegionFlags::ANON,
-        )?;
-        
+            VrFlags::WRITABLE | VrFlags::ANON,
+        ).map_err(|_| PageFaultError::OutOfMemory)?;
+
         Ok(Self {
             base,
             stack_flags: StackFlags::GROWSDOWN | StackFlags::LIMITED,
@@ -3542,45 +2955,27 @@ impl StackRegion {
             max_size,
         })
     }
-    
-    /// 检查是否可以扩展
+
     pub fn can_grow(&self, addr: VirtAddr) -> bool {
-        // 地址必须在可扩展范围内
-        addr >= self.stack_low && addr < self.base.vaddr()
+        addr >= self.stack_low && addr < self.base.vaddr
     }
-    
-    /// 扩展栈
+
     pub fn grow(&mut self, addr: VirtAddr) -> Result<(), PageFaultError> {
         if !self.can_grow(addr) {
             return Err(PageFaultError::InvalidAddress(addr));
         }
-        
-        // 计算新的起始地址（页对齐）
+
         let new_vaddr = addr.align_down(PAGE_SIZE);
-        let new_size = self.base.vaddr() + self.base.length() - new_vaddr;
-        
-        // 检查最大大小限制
+        let new_size = self.base.vaddr + self.base.length - new_vaddr;
+
         if new_size > self.max_size {
-            log::warn!(
-                "Stack growth exceeded limit: {} > {}",
-                new_size,
-                self.max_size
-            );
             return Err(PageFaultError::InvalidAddress(addr));
         }
-        
-        // 扩展区域
-        let growth = self.base.vaddr() - new_vaddr;
-        self.base.set_vaddr(new_vaddr);
-        self.base.set_length(new_size);
-        
-        log::debug!(
-            "Stack grown by {} bytes to {:#x}+{:#x}",
-            growth,
-            new_vaddr,
-            new_size
-        );
-        
+
+        let growth = self.base.vaddr - new_vaddr;
+        self.base.vaddr = new_vaddr;
+        self.base.length = new_size;
+
         Ok(())
     }
 }
@@ -3589,47 +2984,36 @@ impl StackRegion {
 **栈扩展处理器**
 
 ```rust
-/// 栈扩展处理器
 pub struct StackGrowHandler {
-    /// 最大栈大小
     max_stack_size: usize,
 }
 
 impl StackGrowHandler {
-    /// 创建新的栈扩展处理器
     pub fn new(max_stack_size: usize) -> Self {
         Self { max_stack_size }
     }
-    
-    /// 处理栈扩展
+
     pub fn handle(
         &self,
         vmp: &mut VmProc,
         addr: VirtAddr,
     ) -> Result<(), PageFaultError> {
-        // 获取栈区域
         let stack = vmp.stack_region_mut()
             .ok_or(PageFaultError::InvalidAddress(addr))?;
-        
-        // 检查地址是否在可扩展范围内
+
         if !stack.can_grow(addr) {
             return Err(PageFaultError::InvalidAddress(addr));
         }
-        
-        // 扩展栈
-        stack.grow(addr)?;
-        
-        Ok(())
+
+        stack.grow(addr)
     }
 }
 ```
 
 **栈扩展流程**
 
-> **重要**: Minix3 不支持栈自动扩展。访问不在已映射区域内的地址会直接触发 SIGSEGV。栈和数据段的增长由 `do_brk()` 系统调用管理。minix-rs 可考虑实现自动栈扩展作为改进。
-
 如果实现自动栈扩展，流程为：
-1. 页错误访问栈区域外地址 → `map_lookup()` 查找栈区域
+1. 页错误访问栈区域外地址 → `lookup_region()` 查找栈区域
 2. 未找到 → 检查地址是否在可扩展范围（`addr >= stack_low`）
    - 否 → SIGSEGV
    - 是 → 扩展栈区域，分配新页面，处理页错误
@@ -3638,29 +3022,16 @@ impl StackGrowHandler {
 **栈保护页**
 
 ```rust
-/// 栈保护页管理
 pub struct StackGuard {
-    /// 保护页大小（通常 1 页）
     guard_size: usize,
-    /// 保护页地址
     guard_addr: Option<VirtAddr>,
 }
 
 impl StackGuard {
-    /// 创建新的栈保护
     pub fn new(guard_size: usize) -> Self {
-        Self {
-            guard_size,
-            guard_addr: None,
-        }
+        Self { guard_size, guard_addr: None }
     }
-    
-    /// 设置保护页
-    pub fn set_guard(&mut self, addr: VirtAddr) {
-        self.guard_addr = Some(addr);
-    }
-    
-    /// 检查地址是否在保护页内
+
     pub fn is_guard(&self, addr: VirtAddr) -> bool {
         if let Some(guard) = self.guard_addr {
             addr >= guard && addr < guard + self.guard_size
@@ -3668,142 +3039,46 @@ impl StackGuard {
             false
         }
     }
-    
-    /// 更新保护页位置
+
     pub fn update_guard(&mut self, new_stack_bottom: VirtAddr) {
-        // 保护页在栈底之下
         self.guard_addr = Some(new_stack_bottom - self.guard_size);
     }
 }
 
 impl StackRegion {
-    /// 带保护页的栈扩展
     pub fn grow_with_guard(
         &mut self,
         addr: VirtAddr,
         guard: &mut StackGuard,
     ) -> Result<(), PageFaultError> {
-        // 检查是否访问保护页
         if guard.is_guard(addr) {
-            log::warn!("Access to stack guard page at {:#x}", addr);
             return Err(PageFaultError::InvalidAddress(addr));
         }
-        
-        // 正常扩展
         self.grow(addr)?;
-        
-        // 更新保护页位置
-        guard.update_guard(self.base.vaddr());
-        
+        guard.update_guard(self.base.vaddr);
         Ok(())
     }
 }
 ```
 
-**栈限制检查**
+**栈限制配置**
 
 ```rust
-impl VmProc {
-    /// 获取栈使用情况
-    pub fn stack_usage(&self) -> StackUsage {
-        if let Some(stack) = self.stack_region() {
-            let current_size = stack.length();
-            let max_size = stack.max_size();
-            
-            StackUsage {
-                current_size,
-                max_size,
-                used: current_size,  // 简化，实际应计算已映射部分
-                available: max_size - current_size,
-            }
-        } else {
-            StackUsage::default()
-        }
-    }
-}
-
-/// 栈使用情况
-#[derive(Debug, Default)]
-pub struct StackUsage {
-    /// 当前栈大小
-    pub current_size: usize,
-    /// 最大栈大小
-    pub max_size: usize,
-    /// 已使用大小
-    pub used: usize,
-    /// 可用大小
-    pub available: usize,
-}
-
-/// 栈限制配置
 #[derive(Debug, Clone)]
 pub struct StackLimits {
-    /// 默认初始栈大小
     pub default_size: usize,
-    /// 最大栈大小
     pub max_size: usize,
-    /// 保护页大小
     pub guard_size: usize,
 }
 
 impl Default for StackLimits {
     fn default() -> Self {
         Self {
-            default_size: 128 * 1024,      // 128 KB
-            max_size: 8 * 1024 * 1024,     // 8 MB
-            guard_size: PAGE_SIZE,          // 1 页
+            default_size: 128 * 1024,
+            max_size: 8 * 1024 * 1024,
+            guard_size: PAGE_SIZE,
         }
     }
-}
-```
-
-**栈溢出检测**
-
-```rust
-/// 栈溢出检测器
-pub struct StackOverflowDetector {
-    /// 栈限制
-    limits: StackLimits,
-    /// 溢出计数
-    overflow_count: u64,
-}
-
-impl StackOverflowDetector {
-    /// 检测栈溢出
-    pub fn check(&mut self, vmp: &VmProc, addr: VirtAddr) -> StackCheckResult {
-        let usage = vmp.stack_usage();
-        
-        if usage.current_size >= self.limits.max_size {
-            self.overflow_count += 1;
-            log::error!(
-                "Stack overflow: current={}, max={}",
-                usage.current_size,
-                self.limits.max_size
-            );
-            return StackCheckResult::Overflow;
-        }
-        
-        if usage.available < self.limits.guard_size {
-            log::warn!(
-                "Stack near limit: available={}",
-                usage.available
-            );
-            return StackCheckResult::NearLimit;
-        }
-        
-        StackCheckResult::Ok
-    }
-}
-
-/// 栈检查结果
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StackCheckResult {
-    /// 正常
-    Ok,
-    /// 接近限制
-    NearLimit,
-    /// 溢出
-    Overflow,
 }
 ```
 
@@ -3818,46 +3093,33 @@ pub enum StackCheckResult {
 **快速路径识别**
 
 ```rust
-/// 快速路径条件
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastPath {
-    /// CoW 触发（refcount > 1，写操作）
     Cow,
-    /// 首次访问（phys == MAP_NONE）
     FirstAccess,
-    /// 无需处理（已映射且权限正确）
     NoOp,
-    /// 需要慢路径
     SlowPath,
 }
 
 impl PageFaultHandler {
-    /// 检测是否可以使用快速路径
     pub fn detect_fast_path(
         &self,
-        region: &VirRegion,
-        phys_region: Option<&PhysRegion>,
+        frames: &PageFrames,
+        slot: Option<PageSlot>,
         write: bool,
     ) -> FastPath {
-        match phys_region {
-            None => {
-                // 无物理区域，首次访问
-                FastPath::FirstAccess
-            }
-            Some(pr) => {
-                let phys_block = pr.phys_block();
-                
-                // 检查物理地址
-                if phys_block.phys().is_none() {
+        match slot {
+            None => FastPath::FirstAccess,
+            Some(s) => {
+                if !s.is_mapped() {
                     return FastPath::FirstAccess;
                 }
-                
-                // 检查 CoW
-                if write && phys_block.refcount() > 1 {
+
+                let state = frames.get(s.pfn).unwrap();
+                if write && state.refcount > 1 {
                     return FastPath::Cow;
                 }
-                
-                // 已正确映射
+
                 FastPath::NoOp
             }
         }
@@ -3865,96 +3127,76 @@ impl PageFaultHandler {
 }
 ```
 
+> **与 Minix3 的对应**: Minix3 的 `map_pf` 中 `physblock_get` 返回 NULL 对应 `PageSlot::None`（首次访问），`ph->ph->phys == MAP_NONE` 对应 `!s.is_mapped()`，`ph->ph->refcount > 1` 对应 `state.refcount > 1`。方案 A 的 `Vec<Option<PageSlot>>` 索引是 O(1)，比 Minix3 的指针数组索引更紧凑（PageSlot 是 Copy 类型，4+8+8=20 字节 vs 指针 8 字节，但省去了 PhysBlock 堆分配开销）。
+
 **快速路径实现**
 
 ```rust
 impl PageFaultHandler {
-    /// 快速路径处理
     #[inline]
     pub fn handle_fast(
         &mut self,
         vmp: &mut VmProc,
         region: &mut VirRegion,
-        offset: usize,
+        offset: VirBytes,
         write: bool,
-    ) -> Result<HandleResult, PageFaultError> {
-        // 获取物理区域
-        let phys_region = region.get_phys_region(offset);
-        
-        // 检测快速路径类型
-        match self.detect_fast_path(region, phys_region.as_ref(), write) {
-            FastPath::FirstAccess => {
-                // 快速分配新页
-                self.fast_alloc(region, offset)
-            }
-            
-            FastPath::Cow => {
-                // 快速 CoW
-                self.fast_cow(vmp, region, offset)
-            }
-            
-            FastPath::NoOp => {
-                // 无需处理
-                Ok(HandleResult::Ok)
-            }
-            
-            FastPath::SlowPath => {
-                // 回退到慢路径
-                self.handle_slow(vmp, region, offset, write)
-            }
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks.get(page_idx).copied().flatten();
+
+        match self.detect_fast_path(self.frames, slot, write) {
+            FastPath::FirstAccess => self.fast_alloc(region, offset),
+            FastPath::Cow => self.fast_cow(region, offset),
+            FastPath::NoOp => Ok(PageFaultResult::Ok),
+            FastPath::SlowPath => self.handle_slow(vmp, region, offset, write),
         }
     }
-    
-    /// 快速分配
+
     #[inline]
     fn fast_alloc(
         &mut self,
         region: &mut VirRegion,
-        offset: usize,
-    ) -> Result<HandleResult, PageFaultError> {
-        // 直接分配，跳过复杂检查
-        let phys_region = region.get_or_create_phys_region(offset)?;
-        let phys_block = phys_region.phys_block();
-        
-        // 分配并清零
-        let page = self.allocator.alloc(1, AllocFlags::CLEAR)
-            .map_err(|_| PageFaultError::OutOfMemory {
-                process: region.owner(),
-            })?;
-        
-        phys_block.set_phys(page);
-        
-        Ok(HandleResult::Ok)
+        offset: VirBytes,
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let pfn = self.frames.alloc_phys_page()
+            .map_err(|_| PageFaultError::OutOfMemory)?;
+
+        let va = vm_phys_to_virt(self.frames.pfn_to_phys(pfn));
+        unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
+
+        let memtype = region.def_memtype.unwrap();
+        region.map_page(self.frames, offset, pfn, memtype);
+
+        Ok(PageFaultResult::Ok)
     }
-    
-    /// 快速 CoW
+
     #[inline]
     fn fast_cow(
         &mut self,
-        vmp: &mut VmProc,
         region: &mut VirRegion,
-        offset: usize,
-    ) -> Result<HandleResult, PageFaultError> {
-        let phys_region = region.get_phys_region(offset)
-            .ok_or(PageFaultError::Internal(EFAULT))?;
-        
-        let old_phys = phys_region.phys_block().phys()
-            .ok_or(PageFaultError::Internal(EFAULT))?;
-        
-        // 分配新页
-        let new_page = self.allocator.alloc(1, AllocFlags::empty())
-            .map_err(|_| PageFaultError::OutOfMemory {
-                process: region.owner(),
-            })?;
-        
-        // 复制内容
-        new_page.copy_from(&old_phys)?;
-        
-        // 更新引用计数和物理地址
-        phys_region.phys_block().dec_refcount();
-        phys_region.phys_block().set_phys(new_page);
-        
-        Ok(HandleResult::Ok)
+        offset: VirBytes,
+    ) -> Result<PageFaultResult, PageFaultError> {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let src_pfn = region.physblocks[page_idx].unwrap().pfn;
+
+        let new_pfn = self.frames.alloc_phys_page()
+            .map_err(|_| PageFaultError::OutOfMemory)?;
+
+        let src_va = vm_phys_to_virt(self.frames.pfn_to_phys(src_pfn));
+        let dst_va = vm_phys_to_virt(self.frames.pfn_to_phys(new_pfn));
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE);
+        }
+
+        self.frames.get_mut(src_pfn).unwrap().refcount -= 1;
+        region.physblocks[page_idx] = Some(PageSlot {
+            pfn: new_pfn,
+            offset,
+            memtype: Some(ANON_MEMTYPE),
+        });
+        self.frames.get_mut(new_pfn).unwrap().refcount = 1;
+
+        Ok(PageFaultResult::Ok)
     }
 }
 ```
@@ -3962,21 +3204,16 @@ impl PageFaultHandler {
 **快速路径统计**
 
 ```rust
-/// 快速路径统计
 #[derive(Debug, Default)]
 pub struct FastPathStats {
-    /// 快速路径命中次数
     pub fast_hits: u64,
-    /// 慢路径次数
     pub slow_hits: u64,
-    /// 各类型命中次数
     pub first_access: u64,
     pub cow_count: u64,
     pub noop_count: u64,
 }
 
 impl FastPathStats {
-    /// 记录快速路径
     pub fn record_fast(&mut self, path: FastPath) {
         self.fast_hits += 1;
         match path {
@@ -3986,15 +3223,10 @@ impl FastPathStats {
             FastPath::SlowPath => self.slow_hits += 1,
         }
     }
-    
-    /// 获取快速路径命中率
+
     pub fn hit_rate(&self) -> f64 {
         let total = self.fast_hits + self.slow_hits;
-        if total == 0 {
-            0.0
-        } else {
-            self.fast_hits as f64 / total as f64
-        }
+        if total == 0 { 0.0 } else { self.fast_hits as f64 / total as f64 }
     }
 }
 ```
@@ -4002,38 +3234,15 @@ impl FastPathStats {
 **内联优化**
 
 ```rust
-impl VirRegion {
-    /// 内联的物理区域查找
+impl PageFrames {
     #[inline]
-    pub fn get_phys_region_inline(&self, offset: usize) -> Option<&PhysRegion> {
-        let page_offset = offset & !(PAGE_SIZE - 1);
-        
-        // 内联遍历
-        let mut current = self.phys_regions.head();
-        while let Some(pr) = current {
-            if pr.offset() == page_offset {
-                return Some(pr);
-            }
-            if pr.offset() > page_offset {
-                return None;
-            }
-            current = pr.next();
-        }
-        None
+    pub fn needs_cow_inline(&self, pfn: u32, write: bool) -> bool {
+        write && self.states[pfn as usize].refcount > 1
     }
-}
 
-impl PhysBlock {
-    /// 内联的引用计数检查
     #[inline]
-    pub fn needs_cow_inline(&self, write: bool) -> bool {
-        write && self.refcount.load(Ordering::Relaxed) > 1
-    }
-    
-    /// 内联的物理地址检查
-    #[inline]
-    pub fn has_phys_inline(&self) -> bool {
-        self.phys.is_some()
+    pub fn is_mapped_inline(&self, slot: &Option<PageSlot>) -> bool {
+        slot.is_some()
     }
 }
 ```
@@ -4042,36 +3251,31 @@ impl PhysBlock {
 
 ```rust
 impl PageFaultHandler {
-    /// 批量处理页错误
     pub fn handle_batch(
         &mut self,
         vmp: &mut VmProc,
         faults: &[PageFaultInfo],
     ) -> Vec<Result<PageFaultResult, PageFaultError>> {
         let mut results = Vec::with_capacity(faults.len());
-        
-        // 按区域分组
+
         let mut by_region: BTreeMap<VirtAddr, Vec<usize>> = BTreeMap::new();
         for (i, info) in faults.iter().enumerate() {
             if let Some(region) = vmp.lookup_region(info.vaddr) {
-                by_region.entry(region.vaddr())
-                    .or_default()
-                    .push(i);
+                by_region.entry(region.vaddr).or_default().push(i);
             }
         }
-        
-        // 批量处理每个区域
+
         for (region_vaddr, indices) in by_region {
             if let Some(region) = vmp.lookup_region_mut(region_vaddr) {
                 for &i in &indices {
                     let info = &faults[i];
-                    let offset = info.vaddr.align_down(PAGE_SIZE) - region_vaddr;
+                    let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region_vaddr);
                     let result = self.handle_fast(vmp, region, offset, info.is_write());
-                    results.push(result.map(|r| r.into()));
+                    results.push(result);
                 }
             }
         }
-        
+
         results
     }
 }
@@ -4081,26 +3285,24 @@ impl PageFaultHandler {
 
 细粒度锁减少锁竞争，提高并发性能。
 
+> **注意**: Minix3 VM 是单线程事件驱动模型，不存在并发问题。以下锁设计是 minix-rs 多线程改进的预留设计。
+
 **锁层次结构**
 
 ```rust
 /// VM 锁层次
-/// 
+///
 /// 锁获取顺序（避免死锁）:
 /// 1. VmProcTable 锁（全局进程表）
 /// 2. VmProc 锁（进程级）
 /// 3. VirRegion 锁（区域级）
-/// 4. PhysBlock 锁（物理块级）
+/// 4. PageFrames 锁（全局物理页状态表级）
 pub struct VmLocks {
-    /// 全局进程表锁
     proc_table: RwLock<()>,
-    /// 进程级锁
     proc_locks: Vec<Mutex<()>>,
-    /// 区域级锁池
     region_lock_pool: LockPool,
 }
 
-/// 锁池
 pub struct LockPool {
     locks: Vec<Mutex<()>>,
     mask: usize,
@@ -4114,8 +3316,7 @@ impl LockPool {
             mask: count - 1,
         }
     }
-    
-    /// 根据地址获取锁
+
     pub fn get_lock(&self, addr: VirtAddr) -> &Mutex<()> {
         &self.locks[addr.as_usize() & self.mask]
     }
@@ -4126,36 +3327,31 @@ impl LockPool {
 
 ```rust
 impl PageFaultHandler {
-    /// 使用细粒度锁处理页错误
     pub fn handle_with_locking(
         &mut self,
         info: PageFaultInfo,
     ) -> Result<PageFaultResult, PageFaultError> {
-        // 1. 获取进程引用（不需要锁）
         let vmp = self.proc_table.get_by_endpoint(info.endpoint)
-            .ok_or(PageFaultError::ProcessNotFound(info.endpoint))?;
-        
-        // 2. 查找区域（使用读锁）
+            .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
+
         let region = {
             let _read = vmp.regions_read_lock();
             vmp.lookup_region(info.vaddr)
                 .ok_or(PageFaultError::InvalidAddress(info.vaddr))?
         };
-        
-        // 3. 检查权限（无需锁）
-        if info.is_write() && !region.is_writable() {
+
+        if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
             return Err(PageFaultError::PermissionDenied {
                 addr: info.vaddr,
                 access: info.access_type,
             });
         }
-        
-        // 4. 获取区域锁并处理
-        let offset = info.vaddr.align_down(PAGE_SIZE) - region.vaddr();
+
+        let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
         let _region_lock = region.lock();
-        
+
         self.handle_page(&vmp, &region, offset, info.is_write())?;
-        
+
         Ok(PageFaultResult::Ok)
     }
 }
@@ -4165,48 +3361,16 @@ impl PageFaultHandler {
 
 ```rust
 impl VmProc {
-    /// 区域读锁
     pub fn regions_read_lock(&self) -> RwLockReadGuard<'_, ()> {
         self.regions_lock.read().unwrap()
     }
-    
-    /// 区域写锁
+
     pub fn regions_write_lock(&self) -> RwLockWriteGuard<'_, ()> {
         self.regions_lock.write().unwrap()
     }
-    
-    /// 尝试获取读锁
+
     pub fn try_regions_read_lock(&self) -> Option<RwLockReadGuard<'_, ()>> {
         self.regions_lock.try_read().ok()
-    }
-}
-
-impl VirRegion {
-    /// 使用乐观锁处理页错误
-    pub fn handle_optimistic(
-        &self,
-        vmp: &VmProc,
-        offset: usize,
-        write: bool,
-    ) -> Result<HandleResult, PageFaultError> {
-        // 乐观读取：假设不需要修改
-        loop {
-            // 获取版本号
-            let version = self.version.load(Ordering::Acquire);
-            
-            // 执行操作
-            let result = self.handle_inner(vmp, offset, write);
-            
-            // 检查版本是否变化
-            if self.version.load(Ordering::Acquire) == version {
-                return result;
-            }
-            
-            // 版本变化，重试
-            if result.is_err() {
-                return result;
-            }
-        }
     }
 }
 ```
@@ -4215,61 +3379,50 @@ impl VirRegion {
 
 ```rust
 impl PageFaultHandler {
-    /// 无锁快速路径
     pub fn handle_lockfree(
         &mut self,
         info: PageFaultInfo,
     ) -> Result<PageFaultResult, PageFaultError> {
-        // 使用原子操作避免锁
-        
-        // 1. 原子查找进程
         let vmp = self.proc_table.get_by_endpoint_atomic(info.endpoint)
-            .ok_or(PageFaultError::ProcessNotFound(info.endpoint))?;
-        
-        // 2. 无锁区域查找（RCU 风格）
+            .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
+
         let region = vmp.lookup_region_rcu(info.vaddr)
             .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
-        
-        // 3. 权限检查（只读）
-        if info.is_write() && !region.is_writable() {
+
+        if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
             return Err(PageFaultError::PermissionDenied {
                 addr: info.vaddr,
                 access: info.access_type,
             });
         }
-        
-        // 4. 原子页处理
-        let offset = info.vaddr.align_down(PAGE_SIZE) - region.vaddr();
+
+        let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
         self.handle_page_atomic(&region, offset, info.is_write())?;
-        
+
         Ok(PageFaultResult::Ok)
     }
-    
-    /// 原子页处理
+
     fn handle_page_atomic(
         &mut self,
         region: &VirRegion,
-        offset: usize,
+        offset: VirBytes,
         write: bool,
     ) -> Result<(), PageFaultError> {
-        // 使用 CAS 操作更新引用计数
-        let phys_region = region.get_phys_region(offset);
-        
-        match phys_region {
+        let page_idx = (offset.get() / PAGE_SIZE) as usize;
+        let slot = region.physblocks.get(page_idx).copied().flatten();
+
+        match slot {
             None => {
-                // 需要分配，获取锁
                 let _lock = region.lock();
                 self.allocate_page(region, offset)
             }
-            Some(pr) => {
-                let phys_block = pr.phys_block();
-                
-                if phys_block.phys().is_none() {
+            Some(s) => {
+                let state = self.frames.get(s.pfn).unwrap();
+                if !s.is_mapped() {
                     let _lock = region.lock();
                     self.allocate_page(region, offset)
-                } else if write && phys_block.refcount() > 1 {
-                    // CoW：使用原子 CAS
-                    self.do_cow_atomic(pr)
+                } else if write && state.refcount > 1 {
+                    self.do_cow_atomic(region, offset)
                 } else {
                     Ok(())
                 }
@@ -4279,64 +3432,16 @@ impl PageFaultHandler {
 }
 ```
 
-**锁统计**
-
-```rust
-/// 锁统计
-#[derive(Debug, Default)]
-pub struct LockStats {
-    /// 读锁获取次数
-    pub read_locks: AtomicU64,
-    /// 写锁获取次数
-    pub write_locks: AtomicU64,
-    /// 锁竞争次数
-    pub contentions: AtomicU64,
-    /// 总等待时间（纳秒）
-    pub wait_time_ns: AtomicU64,
-}
-
-impl LockStats {
-    /// 记录锁获取
-    pub fn record_lock(&self, is_write: bool, wait_ns: u64, contended: bool) {
-        if is_write {
-            self.write_locks.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.read_locks.fetch_add(1, Ordering::Relaxed);
-        }
-        
-        if contended {
-            self.contentions.fetch_add(1, Ordering::Relaxed);
-        }
-        
-        self.wait_time_ns.fetch_add(wait_ns, Ordering::Relaxed);
-    }
-    
-    /// 计算竞争率
-    pub fn contention_rate(&self) -> f64 {
-        let total = self.read_locks.load(Ordering::Relaxed) 
-            + self.write_locks.load(Ordering::Relaxed);
-        if total == 0 {
-            0.0
-        } else {
-            self.contentions.load(Ordering::Relaxed) as f64 / total as f64
-        }
-    }
-}
-```
-
 **死锁避免**
 
 ```rust
-/// 锁顺序验证
 #[cfg(debug_assertions)]
 pub struct LockOrderChecker {
-    /// 当前持有的锁
     held_locks: RefCell<Vec<LockId>>,
 }
 
 #[cfg(debug_assertions)]
 impl LockOrderChecker {
-    /// 检查锁顺序
     pub fn check_acquire(&self, lock_id: LockId) {
         let held = self.held_locks.borrow();
         for &held_id in held.iter() {
@@ -4350,8 +3455,7 @@ impl LockOrderChecker {
         drop(held);
         self.held_locks.borrow_mut().push(lock_id);
     }
-    
-    /// 记录锁释放
+
     pub fn record_release(&self, lock_id: LockId) {
         let mut held = self.held_locks.borrow_mut();
         if let Some(pos) = held.iter().position(|&id| id == lock_id) {
@@ -4360,19 +3464,16 @@ impl LockOrderChecker {
     }
 }
 
-/// 锁 ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LockId {
-    /// 进程表锁
     ProcTable = 1,
-    /// 进程锁
     Proc(usize) = 2,
-    /// 区域锁
     Region(usize) = 3,
-    /// 物理块锁
-    PhysBlock(usize) = 4,
+    PageFrames(usize) = 4,
 }
 ```
+
+> **与 Minix3 的对比**: Minix3 的 `PhysBlock` 有独立的 `refcount` 原子操作（`AtomicU8`），方案 A 将 `refcount` 放在 `PageFrames.states[pfn]` 中，锁粒度从"物理块级"变为"全局物理页状态表级"。在 Minix3 单线程模型下无差异；若 minix-rs 引入多线程，可考虑对 `PageFrames` 分区加锁或使用原子 `refcount`。
 
 ---
 
@@ -4484,11 +3585,10 @@ if (need_disk_io) {
 
 - [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 实现（mem_cow 详解）
 - [17-vm-fork.md](17-vm-fork.md) - fork 后的首次写入
-- [12-vir-region.md](12-vir-region.md) - 区域查找（map_lookup 详解）
+- [11-region-mapping.md](11-region-mapping.md) - 区域查找与页映射（map_lookup 详解，替代原 vir_region + phys_region）
 - [13-region-avl.md](13-region-avl.md) - AVL 树实现（region_search 详解）
-- [10-phys-block.md](10-phys-block.md) - 物理块管理（pb_new/pb_link/pb_unreferenced）
-- [14-phys-region.md](14-phys-region.md) - 物理区域（physblock_get 详解）
-- [11-memtype.md](11-memtype.md) - 内存类型（mem_type 及 ev_pagefault 分派）
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态管理（PageState.refcount，替代原 pb_new/pb_link/pb_unreferenced）
+- [12-memtype.md](12-memtype.md) - 内存类型（mem_type 及 ev_pagefault 分派）
 - [05-vm-allocpage.md](05-vm-allocpage.md) - 物理内存分配（alloc_mem/SPAREPAGES）
 - [18-vm-brk.md](18-vm-brk.md) - 栈和数据段增长（do_brk）
 

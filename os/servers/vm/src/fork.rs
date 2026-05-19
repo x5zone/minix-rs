@@ -1,329 +1,160 @@
-//! VM Fork handling.
+//! Fork syscall implementation (方案三：PFN 索引模型).
 //!
-//! Handles VM_FORK requests from PM to duplicate process address space.
-//!
-//! Corresponds to Minix3's `do_fork()` in `fork.c`.
+//! Uses PageSlot Copy semantics and PageFrames refcount for CoW.
 
-use minix_types::{Endpoint, UserSlot, VirBytes};
-use core::ptr::NonNull;
-use crate::vmproc::VmProcTable;
-use crate::region::{VirRegion, PhysRegion};
+use minix_types::VirBytes;
+use crate::region::{VirRegion, VrFlags, PageFrames, PfnAllocator, PfnAllocError, PAGE_SIZE};
+use crate::memtype::{MemType, MemTypeError, MEM_TYPE_ANON};
+use crate::cow_exec_pf::cow_resolve_core;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-/// VM Fork request message from PM.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VmForkRequest {
-    pub(crate) parent_endpoint: Endpoint,
-    pub(crate) child_slot: UserSlot,
+pub(crate) fn fork_region(
+    src: &VirRegion,
+    frames: &mut PageFrames,
+) -> Result<Box<VirRegion>, ForkError> {
+    let mut dst = VirRegion::new(src.vaddr, src.length, src.flags);
+    dst.parent_slot = src.parent_slot;
+    dst.def_memtype = src.def_memtype;
+    dst.remaps = src.remaps;
+    dst.id = src.id;
+    dst.param = src.param.clone();
+
+    for (i, slot_opt) in src.physblocks.iter().enumerate() {
+        if let Some(slot) = slot_opt {
+            if slot.is_mapped() {
+                if let Some(state) = frames.get_mut(slot.pfn) {
+                    state.refcount = state.refcount.saturating_add(1);
+                }
+            }
+            dst.physblocks[i] = Some(*slot);
+        }
+    }
+
+    if let Some(mt) = src.def_memtype {
+        mt.ev_copy(src, &mut dst)?;
+    }
+
+    dst.set_writable(false);
+
+    Ok(Box::new(dst))
 }
 
-/// VM Fork response message.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VmForkResponse {
-    pub(crate) child_endpoint: Endpoint,
-    pub(crate) success: bool,
+pub(crate) fn fork_regions(
+    src_regions: &[Box<VirRegion>],
+    frames: &mut PageFrames,
+) -> Result<Vec<Box<VirRegion>>, ForkError> {
+    let mut dst_regions = Vec::with_capacity(src_regions.len());
+    for src in src_regions {
+        let dst = fork_region(src, frames)?;
+        dst_regions.push(dst);
+    }
+    Ok(dst_regions)
 }
 
-/// Fork error type.
+pub(crate) fn cow_copy_page(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<(), ForkError> {
+    cow_resolve_core(region, frames, alloc, offset)
+        .map(|_| ())
+        .map_err(|e| match e {
+            crate::cow_exec_pf::CowCoreError::NoMemory => ForkError::NoMemory,
+            crate::cow_exec_pf::CowCoreError::PageNotMapped => ForkError::PageNotMapped,
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VmForkError {
-    ParentNotFound,
-    InvalidChildSlot,
-    ChildSlotNotEmpty,
-    OutOfMemory,
-    InternalError,
+pub(crate) enum ForkError {
+    NoMemory,
+    PageNotMapped,
+    MemType(MemTypeError),
 }
 
-impl VmForkError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ParentNotFound => 3,      // ESRCH
-            Self::InvalidChildSlot => 22,   // EINVAL
-            Self::ChildSlotNotEmpty => 22,  // EINVAL
-            Self::OutOfMemory => 12,        // ENOMEM
-            Self::InternalError => 5,       // EIO
-        }
+impl From<MemTypeError> for ForkError {
+    fn from(e: MemTypeError) -> Self {
+        Self::MemType(e)
     }
-}
-
-/// Fork context containing all info needed for the operation.
-pub(crate) struct ForkContext<'a> {
-    pub(crate) table: &'a VmProcTable,
-    pub(crate) parent_index: usize,
-    pub(crate) child_index: usize,
-    pub(crate) child_endpoint: Endpoint,
-}
-
-impl<'a> ForkContext<'a> {
-    pub(crate) fn new(
-        table: &'a VmProcTable,
-        parent_index: usize,
-        child_index: usize,
-        child_endpoint: Endpoint,
-    ) -> Self {
-        Self {
-            table,
-            parent_index,
-            child_index,
-            child_endpoint,
-        }
-    }
-
-    /// Performs the fork operation.
-    ///
-    /// Corresponds to Minix3's `do_fork()` main logic.
-    pub(crate) fn do_fork(&mut self) -> Result<Endpoint, VmForkError> {
-        let parent_total;
-        let parent_total_max;
-        let parent_region_top;
-        let parent_region_count;
-
-        {
-            let parent = self.table.get_active(UserSlot::new(self.parent_index))
-                .ok_or(VmForkError::ParentNotFound)?;
-
-            parent_total = parent.total();
-            parent_total_max = parent.total_max();
-            parent_region_top = parent.region_top();
-            parent_region_count = parent.region_count();
-        }
-
-        let child_endpoint = self.child_endpoint;
-
-        {
-            let empty = self.table.get_empty(UserSlot::new(self.child_index))
-                .ok_or(VmForkError::ChildSlotNotEmpty)?;
-
-            let mut child = empty.activate(child_endpoint);
-            child.init_page_table().map_err(|_| VmForkError::OutOfMemory)?;
-            child.init_regions();
-            child.init_from_fork(child_endpoint, parent_total, parent_total_max, parent_region_top);
-
-            // Copy ACL from parent (corresponds to Minix3's acl_fork())
-            let parent = self.table.get_active(UserSlot::new(self.parent_index))
-                .ok_or(VmForkError::ParentNotFound)?;
-            child.copy_acl_from(&parent);
-        }
-
-        self.copy_regions_with_cow(parent_region_count)?;
-
-        // Bind child's page table to kernel (pt_bind equivalent)
-        {
-            let child = self.table.get_active(UserSlot::new(self.child_index))
-                .ok_or(VmForkError::InvalidChildSlot)?;
-            child.bind_page_table().map_err(|_| VmForkError::InternalError)?;
-        }
-
-        // Write page table mappings for both parent and child (map_writept equivalent)
-        {
-            let mut parent = self.table.get_active(UserSlot::new(self.parent_index))
-                .ok_or(VmForkError::ParentNotFound)?;
-            unsafe { parent.write_page_table_mappings(); }
-        }
-        {
-            let mut child = self.table.get_active(UserSlot::new(self.child_index))
-                .ok_or(VmForkError::InvalidChildSlot)?;
-            unsafe { child.write_page_table_mappings(); }
-        }
-
-        Ok(child_endpoint)
-    }
-
-    /// Copies memory regions with CoW.
-    ///
-    /// In Minix3, child shares parent's physical pages during fork,
-    /// implemented via reference counting. CoW triggers when either process writes.
-    fn copy_regions_with_cow(&mut self, _region_count: usize) -> Result<(), VmForkError> {
-        // Get parent regions first to avoid borrow issues
-        let parent_regions: Vec<VirRegion> = {
-            let parent = self.table.get_active(UserSlot::new(self.parent_index))
-                .ok_or(VmForkError::ParentNotFound)?;
-            
-            // Clone all parent regions (this copies metadata but not physical blocks)
-            parent.regions().iter().map(|r| clone_region_for_fork(r)).collect()
-        };
-
-        // Now add regions to child
-        let mut child = self.table.get_active(UserSlot::new(self.child_index))
-            .ok_or(VmForkError::InvalidChildSlot)?;
-
-        for mut region in parent_regions {
-            // Link physical blocks (share them, increase refcount)
-            unsafe {
-                link_phys_blocks(&mut region);
-            }
-            
-            // Add region to child's AVL tree
-            child.regions_mut().insert(region);
-        }
-
-        // Update page tables for both parent and child
-        unsafe {
-            child.setup_cow_for_all_regions();
-        }
-
-        Ok(())
-    }
-}
-
-/// Clones a region for fork (copies metadata but not physical blocks).
-///
-/// Corresponds to Minix3's `map_copy_region()` logic.
-fn clone_region_for_fork(original: &VirRegion) -> VirRegion {
-    let mut new_region = VirRegion::new(original.vaddr, original.length, original.flags);
-    new_region.def_memtype = original.def_memtype;
-    new_region.remaps = original.remaps;
-    new_region.id = original.id;
-    new_region.param = original.param.clone();
-    
-    // Copy physical region pointers (but don't increase refcount yet)
-    for (i, phys_opt) in original.physblocks.iter().enumerate() {
-        if let Some(phys) = phys_opt {
-            let offset = VirBytes((i as u64) * 4096);
-            let mut new_phys = PhysRegion::new(offset);
-            new_phys.ph = phys.ph;  // Share the same physical block
-            new_phys.memtype = phys.memtype;
-            new_region.physblocks[i] = Some(Box::new(new_phys));
-        }
-    }
-    
-    new_region
-}
-
-/// Links physical blocks by inserting into PhysBlock linked lists.
-///
-/// Corresponds to Minix3's `pb_link()` for each PhysRegion.
-/// Properly sets parent, next_ph_list, and updates first_region.
-///
-/// # Safety
-/// Caller must ensure all PhysRegions have valid `ph` pointers and
-/// the VirRegion reference remains valid.
-unsafe fn link_phys_blocks(region: &mut VirRegion) {
-    let parent_ptr = NonNull::from(&*region);
-    for phys_opt in region.physblocks.iter_mut() {
-        if let Some(phys) = phys_opt.as_mut() {
-            if let Some(block_ptr) = phys.ph {
-                phys.link_to_block(block_ptr, parent_ptr, phys.offset);
-            }
-        }
-    }
-}
-
-/// Handles VM_FORK request.
-///
-/// Main entry point for VM service, called by PM.
-pub(crate) fn handle_fork(
-    table: &VmProcTable,
-    request: &VmForkRequest,
-    child_endpoint: Endpoint,
-) -> Result<VmForkResponse, VmForkError> {
-    let parent_slot = table.vm_isokendpt(request.parent_endpoint)
-        .map_err(|_| VmForkError::ParentNotFound)?;
-
-    let child_index = request.child_slot.get();
-
-    let mut ctx = ForkContext::new(table, parent_slot.get(), child_index, child_endpoint);
-    let child_endpoint = ctx.do_fork()?;
-
-    Ok(VmForkResponse {
-        child_endpoint,
-        success: true,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::PhysBytes;
 
-    /// Initializes test slots in the global table.
-    /// Slot 40 is set up as a parent process, slot 41 is reset for child.
-    fn init_test_slots() {
-        let table = VmProcTable::get_global();
-        unsafe {
-            table.reset_slot(UserSlot::new(40));
-            table.reset_slot(UserSlot::new(41));
+    struct TestAlloc { next: u32 }
+    impl PfnAllocator for TestAlloc {
+        fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+            let pfn = self.next;
+            self.next += 1;
+            Ok(pfn)
         }
-        let empty = table.get_empty(UserSlot::new(40)).unwrap();
-        let mut parent = empty.activate(Endpoint::from_generation_slot(1, 40));
-        parent.init_page_table().unwrap();
-        parent.init_regions();
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    fn make_frames(pages: u32) -> PageFrames {
+        PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
     }
 
     #[test]
-    fn test_fork_request_creation() {
-        let request = VmForkRequest {
-            parent_endpoint: Endpoint::PM,
-            child_slot: UserSlot::new(41),
-        };
+    fn test_fork_region_basic() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut src = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        src.set_writable(true);
+        src.def_memtype = Some(&MEM_TYPE_ANON);
 
-        assert_eq!(request.parent_endpoint, Endpoint::PM);
-        assert_eq!(request.child_slot.get(), 41);
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        src.map_page(&mut frames, VirBytes(0x0000), pfn0, &MEM_TYPE_ANON);
+        src.map_page(&mut frames, VirBytes(0x1000), pfn1, &MEM_TYPE_ANON);
+
+        let dst = fork_region(&src, &mut frames).unwrap();
+
+        assert_eq!(dst.vaddr, src.vaddr);
+        assert_eq!(dst.length, src.length);
+        assert!(!dst.is_writable());
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 2);
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 2);
     }
 
     #[test]
-    fn test_fork_response_creation() {
-        let response = VmForkResponse {
-            child_endpoint: Endpoint(100),
-            success: true,
-        };
+    fn test_cow_copy_page() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
 
-        assert!(response.success);
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
+
+        frames.get_mut(pfn).unwrap().refcount = 2;
+
+        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+
+        let new_slot = region.get_slot(VirBytes(0x0000)).unwrap();
+        assert_ne!(new_slot.pfn, pfn);
+        assert_eq!(frames.get(new_slot.pfn).unwrap().refcount, 1);
     }
 
     #[test]
-    fn test_fork_error_to_errno() {
-        assert_eq!(VmForkError::ParentNotFound.to_errno(), 3);
-        assert_eq!(VmForkError::OutOfMemory.to_errno(), 12);
-        assert_eq!(VmForkError::InternalError.to_errno(), 5);
-    }
+    fn test_cow_copy_page_no_sharing() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
 
-    #[test]
-    fn test_fork_context_creation() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-        let ctx = ForkContext::new(
-            table,
-            40,
-            41,
-            Endpoint::from_generation_slot(1, 41),
-        );
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
-        assert_eq!(ctx.parent_index, 40);
-        assert_eq!(ctx.child_index, 41);
-    }
+        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
 
-    #[test]
-    fn test_handle_fork_parent_not_found() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-
-        let request = VmForkRequest {
-            parent_endpoint: Endpoint::NONE,
-            child_slot: UserSlot::new(41),
-        };
-
-        let result = handle_fork(table, &request, Endpoint::from_generation_slot(1, 41));
-        assert!(matches!(result, Err(VmForkError::ParentNotFound)));
-    }
-
-    #[test]
-    fn test_handle_fork_success() {
-        init_test_slots();
-        let table = VmProcTable::get_global();
-
-        let child_slot = UserSlot::new(41);
-
-        let request = VmForkRequest {
-            parent_endpoint: Endpoint::from_generation_slot(1, 40),
-            child_slot,
-        };
-
-        let result = handle_fork(table, &request, Endpoint::from_generation_slot(1, 41));
-        assert!(result.is_ok());
-
-        let response = result.unwrap();
-        assert!(response.success);
-        assert_eq!(response.child_endpoint.slot(), 41);
+        let slot = region.get_slot(VirBytes(0x0000)).unwrap();
+        assert_eq!(slot.pfn, pfn);
     }
 }

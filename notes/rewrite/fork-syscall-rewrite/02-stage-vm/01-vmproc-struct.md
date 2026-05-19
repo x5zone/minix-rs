@@ -260,7 +260,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 2. 遍历父进程区域，复制到子进程
 3. 增加物理页引用计数（CoW 机制）
 
-> **详见**: [12-vir-region.md](12-vir-region.md) 和 [13-region-avl.md](13-region-avl.md)
+> **详见**: [11-region-mapping.md](11-region-mapping.md) 和 [13-region-avl.md](13-region-avl.md)
 
 #### 3.2.5 vm\_acl - ACL 访问控制列表索引
 
@@ -383,7 +383,7 @@ static struct vmproc *init_proc(endpoint_t ep_nr)
 
 **fork 时的处理**: 直接复制父进程的值，子进程的地址空间布局与父进程一致。
 
-> **详见**: [12-vir-region.md](12-vir-region.md) 的区域管理。
+> **详见**: [11-region-mapping.md](11-region-mapping.md) 的区域管理。
 
 ##### vm\_total / vm\_total\_max - 虚拟内存大小
 
@@ -585,7 +585,7 @@ pub struct VmProc {
 /// - All fields always exist (no Option)
 /// - State expressed via flags
 /// - Allows temporary inconsistency (e.g., during fork)
-/// - `vm_pt` and `vm_regions_avl` are MaybeUninit - only valid when IN_USE
+/// - `vm_pt` and `vm_regions` are MaybeUninit - only valid when IN_USE
 ///
 /// Corresponds to Minix3's `struct vmproc`.
 ///
@@ -609,14 +609,14 @@ pub struct VmProc {
     /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
     /// that provides safe in-place initialization/cleanup without move-out.
     pub(crate) vm_pt: MaybeUninit<PageTable>,
-    /// Virtual memory regions AVL tree - uninitialized until `init_regions()` is called.
+    /// Virtual memory regions map - uninitialized until `init_regions()` is called.
     /// TODO: Evaluate replacing MaybeUninit+bool with a custom InPlaceOption<T>
     /// that provides safe in-place initialization/cleanup without move-out.
-    pub(crate) vm_regions_avl: MaybeUninit<RegionAvl>,
+    pub(crate) vm_regions: MaybeUninit<RegionMap>,
     /// Whether vm_pt has been initialized (must check before assume_init).
     pub(crate) vm_pt_initialized: bool,
-    /// Whether vm_regions_avl has been initialized (must check before assume_init).
-    pub(crate) vm_regions_avl_initialized: bool,
+    /// Whether vm_regions has been initialized (must check before assume_init).
+    pub(crate) vm_regions_initialized: bool,
     pub(crate) vm_region_top: VirBytes,
 
     // === 资源限制 ===
@@ -647,7 +647,7 @@ impl VmProc {
     /// Creates a vacant (unoccupied) process slot.
     ///
     /// Corresponds to Minix3's `memset(vmproc, 0, sizeof(vmproc))`.
-    /// `vm_pt` and `vm_regions_avl` are uninitialized - only access when IN_USE.
+    /// `vm_pt` and `vm_regions` are uninitialized - only access when IN_USE.
     pub const fn vacant() -> Self {
         Self {
             vm_slot: UserSlot(0),
@@ -656,9 +656,9 @@ impl VmProc {
             vm_acl: AclState::Uninitialized,
             vm_boot: None,
             vm_pt: MaybeUninit::uninit(),
-            vm_regions_avl: MaybeUninit::uninit(),
+            vm_regions: MaybeUninit::uninit(),
             vm_pt_initialized: false,
-            vm_regions_avl_initialized: false,
+            vm_regions_initialized: false,
             vm_region_top: VirBytes::new(0),
             vm_total: VirBytes::new(0),
             vm_total_max: VirBytes::new(0),
@@ -690,7 +690,7 @@ Minix3 的 vmproc 初始化是三步：
 
 **注意**: Rust 的 `vacant()` 直接初始化为 `NO_ACL`，而 Minix3 是 BSS 零初始化后再由 `acl_init()` 修正。两者最终语义一致，但 Rust 更直接。
 
-**MaybeUninit+flag 模式**: `vm_pt` 和 `vm_regions_avl` 使用 `MaybeUninit` + `bool` flag 跟踪初始化状态，而非 `Option`：
+**MaybeUninit+flag 模式**: `vm_pt` 和 `vm_regions` 使用 `MaybeUninit` + `bool` flag 跟踪初始化状态，而非 `Option`：
 
 ```rust
 // ❌ Option 的代价：占用额外 tag 空间，且 move-out 语义不适合 in-place 场景
@@ -735,7 +735,7 @@ active.set_endpoint(child_ep); // 设置真实 endpoint
 | ----------- | ---------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `BootImage` | `vm_boot: Option<BootImage>`             | `minix-types` crate (`types/boot.rs`) | 启动时进程的引导映像信息，跨服务共享类型                                                                                         | [00-vm-overview.md](00-vm-overview.md)           |
 | `PageTable` | `vm_pt: MaybeUninit<PageTable>`          | `vm/src/pagetable/mod.rs`             | 进程页表，`minix_arch::CurrentPaging` 的类型别名                                                                       | [06-pagetable-struct.md](06-pagetable-struct.md) |
-| `RegionAvl` | `vm_regions_avl: MaybeUninit<RegionAvl>` | `vm/src/region/avl.rs`                | 虚拟内存区域 AVL 树，按地址排序管理进程区域                                                                                     | [12-vir-region.md](12-vir-region.md)             |
+| `RegionMap` | `vm_regions: MaybeUninit<RegionMap>` | `vm/src/region/region_map.rs`           | 虚拟内存区域映射表，使用 BTreeMap 按地址排序管理进程区域                                                                                     | [11-region-mapping.md](11-region-mapping.md)             |
 | `AclState`  | `vm_acl: AclState`                       | `vm/src/acl.rs`                       | ACL 状态，控制进程对 VM 系统调用的访问。三态 enum：`Uninitialized`/`Default`/`System(AclMask)` | [03-acl.md](03-acl.md)       |
 
 **与 VmProc 的关系**: 这些类型通过 `VmProc` 的字段被组合使用，但各自有独立的生命周期管理和 API。在 vmproc 模块中，通过 typestate view（`ActiveProc`）的方法访问它们，例如 `ActiveProc::page_table()`、`ActiveProc::regions()`、`ActiveProc::init_page_table()` 等。
@@ -776,9 +776,9 @@ impl VmProc {
     /// (`ExitingProc::reap()`, `ActiveProc::force_clear()`).
     /// Does not rely on Drop.
     ///
-    /// Only clears `vm_pt` and `vm_regions_avl` if they were previously initialized
-    /// (tracked by `vm_pt_initialized` / `vm_regions_avl_initialized` flags). This makes it
-    /// safe to call on slots that were activated but never had vm_pt/vm_regions_avl
+    /// Only clears `vm_pt` and `vm_regions` if they were previously initialized
+    /// (tracked by `vm_pt_initialized` / `vm_regions_initialized` flags). This makes it
+    /// safe to call on slots that were activated but never had vm_pt/vm_regions
     /// initialized (e.g., fork intermediate state).
     ///
     /// Corresponds to Minix3's `free_proc()` + `clear_proc()`, with differences
@@ -788,8 +788,8 @@ impl VmProc {
     /// Caller must ensure this process's page table is no longer in use by hardware.
     /// Caller must also call `AclManager::clear()` before this method to release ACL slot.
     pub(crate) unsafe fn clear(&mut self) {
-        if self.vm_regions_avl_initialized {
-            unsafe { self.vm_regions_avl.assume_init_mut().clear(); }
+        if self.vm_regions_initialized {
+            unsafe { self.vm_regions.assume_init_mut().clear(); }
         }
         if self.vm_pt_initialized {
             unsafe { self.vm_pt.assume_init_mut().destroy(); }
@@ -804,7 +804,7 @@ impl VmProc {
         self.vm_boot = None;
         self.vm_acl = AclState::Uninitialized;
         self.vm_pt_initialized = false;
-        self.vm_regions_avl_initialized = false;
+        self.vm_regions_initialized = false;
 
         self.vm_region_top = VirBytes::new(0);
         self.vm_total = VirBytes::default();
@@ -878,9 +878,9 @@ Minix3 的进程退出分两步：`free_proc()` 释放页表/物理页/区域/�
 
 | 字段                   | Minix3 `free_proc()` | Minix3 `clear_proc()`       | Rust `clear()`           | 一致?         |
 | -------------------- | -------------------- | --------------------------- | ------------------------ | ----------- |
-| 映射页释放               | `map_free_proc()`    | —                           | `vm_regions_avl.clear()` | ✅           |
+| 映射页释放               | `map_free_proc()`    | —                           | `vm_regions.clear()` | ✅           |
 | 页表释放                 | `pt_free()`          | —                           | `vm_pt.destroy()`        | ✅           |
-| 区域重置                 | `region_init()`      | `region_init()`             | `vm_regions_avl.clear()` | ✅           |
+| 区域重置                 | `region_init()`      | `region_init()`             | `vm_regions.clear()` | ✅           |
 | ACL 清理               | —                    | `acl_clear()` (释放+设NO\_ACL) | `AclState::Uninitialized` | ✅           |
 | vm\_flags            | —                    | `= 0`                       | `= empty()`              | ✅           |
 | vm\_endpoint         | —                    | 不重置                         | `= NONE`                 | ⚠️ Rust 更彻底 |
@@ -984,8 +984,8 @@ impl<'a> ActiveProc<'a> {
     pub(crate) fn set_endpoint(&mut self, ep: Endpoint) { self.inner.vm_endpoint = ep; }
     pub(crate) fn page_table(&self) -> &PageTable { ... }
     pub(crate) fn page_table_mut(&mut self) -> &mut PageTable { ... }
-    pub(crate) fn regions(&self) -> &RegionAvl { ... }
-    pub(crate) fn regions_mut(&mut self) -> &mut RegionAvl { ... }
+    pub(crate) fn regions(&self) -> &RegionMap { ... }
+    pub(crate) fn regions_mut(&mut self) -> &mut RegionMap { ... }
 
     /// 内存统计
     pub(crate) fn total(&self) -> VirBytes { self.inner.vm_total }
@@ -1014,8 +1014,8 @@ impl<'a> ActiveProc<'a> {
         self.page_table().bind_to_process(self.endpoint())
     }
     pub(crate) fn init_regions(&mut self) {
-        self.inner.vm_regions_avl.write(RegionAvl::new());
-        self.inner.vm_regions_avl_initialized = true;
+        self.inner.vm_regions.write(RegionMap::new());
+        self.inner.vm_regions_initialized = true;
     }
     pub(crate) fn init_from_fork(&mut self, endpoint: Endpoint, total: VirBytes, total_max: VirBytes, region_top: VirBytes) {
         self.inner.vm_flags = VmFlags::IN_USE;   // 清除其他标志，只保留 IN_USE
@@ -1418,8 +1418,8 @@ if let Err(_) = child.init_page_table() {
 
 ```rust
 pub unsafe fn clear(&mut self) {
-    if self.vm_regions_avl_initialized {   // 只在已初始化时才清理
-        unsafe { self.vm_regions_avl.assume_init_mut().clear(); }
+    if self.vm_regions_initialized {   // 只在已初始化时才清理
+        unsafe { self.vm_regions.assume_init_mut().clear(); }
     }
     if self.vm_pt_initialized {            // 只在已初始化时才清理
         unsafe { self.vm_pt.assume_init_mut().destroy(); }
@@ -1483,7 +1483,7 @@ fn get_active_vmproc(slot: UserSlot) -> ActiveProc<'static> {
 | --------------------- | ----------------------- | ----------------------------------------------------------------------- |
 | `vacant()` 初始状态       | 新构造的 VmProc 所有字段处于安全默认值 | `endpoint == NONE`, `flags.is_empty()`, `!is_in_use()`, `!is_exiting()` |
 | `vacant_with_slot(n)` | slot 编号正确设置             | `vm_slot == UserSlot(n)`, 其余同 vacant                                    |
-| MaybeUninit 字段        | 未初始化字段不可访问              | `vm_pt_initialized == false`, `vm_regions_avl_initialized == false`     |
+| MaybeUninit 字段        | 未初始化字段不可访问              | `vm_pt_initialized == false`, `vm_regions_initialized == false`     |
 
 ### 7.3 字段访问与一致性
 
@@ -1548,7 +1548,7 @@ VmProc 测试覆盖
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
 - [03-acl.md](03-acl.md) - 访问控制
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
-- [12-vir-region.md](12-vir-region.md) - 虚拟区域
+- [11-region-mapping.md](11-region-mapping.md) - 虚拟区域与页映射
 
 ***
 

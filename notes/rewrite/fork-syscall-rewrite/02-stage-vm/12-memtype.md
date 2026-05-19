@@ -1,4 +1,4 @@
-# 11-memtype: 内存类型系统
+# 12-memtype: 内存类型系统
 
 > **分类**: VM私有  
 > **源码**: `minix3/minix/servers/vm/memtype.h`, `mem_anon.c`  
@@ -4875,7 +4875,7 @@ mod integration_tests {
 
 **与 15-cow-mechanism.md 的关系**
 
-| 方面 | 本文档 (11-memtype.md) | 15-cow-mechanism.md |
+| 方面 | 本文档 (12-memtype.md) | 15-cow-mechanism.md |
 |------|----------------------|---------------------|
 | 侧重点 | 内存类型多态性 | CoW 机制细节 |
 | 测试范围 | 各类型的 CoW 行为 | CoW 算法本身 |
@@ -4886,9 +4886,8 @@ mod integration_tests {
 
 ## 7. 参见
 
-- [10-phys-block.md](10-phys-block.md) - phys_block 结构与引用计数（pb_reference/pb_unreferenced）
-- [12-vir-region.md](12-vir-region.md) - 区域的 def_memtype 字段与内存类型绑定
-- [14-phys-region.md](14-phys-region.md) - phys_region 的 memtype 字段与类型覆盖
+- [10-phys-pagestate.md](10-phys-pagestate.md) - 全局物理页状态（PageState/PageFrames，替代原 phys_block）
+- [11-region-mapping.md](11-region-mapping.md) - 页映射（PageSlot + VirRegion，替代原 vir_region + phys_region）
 - [15-cow-mechanism.md](15-cow-mechanism.md) - 匿名内存的 CoW 与 cow_block 实现
 - [16-pagefault.md](16-pagefault.md) - 页错误处理流程与 memtype 回调的调用时机
 - [17-vm-fork.md](17-vm-fork.md) - fork 中的 ev_reference 与内存类型继承

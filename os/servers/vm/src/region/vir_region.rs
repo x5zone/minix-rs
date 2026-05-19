@@ -1,94 +1,80 @@
 //! Virtual region (vir_region) implementation.
 //!
-//! Manages process virtual address space layout using an AVL tree.
+//! Manages process virtual address space layout using a BTreeMap.
 //! Corresponds to Minix3's `vir_region` struct in `region.h`.
+//!
+//! 方案三: uses `Vec<Option<PageSlot>>` instead of `Vec<Option<Box<PhysRegion>>>`.
 
-use super::phys_region::{PhysBlock, PhysRegion};
+use super::page_state::{PageFrames, PageSlot, PageFlags, PFN_NONE, PAGE_SIZE, PfnAllocator, PfnAllocError};
 use minix_types::{PhysBytes, VirBytes, UserSlot};
-use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use crate::memtype::MemType;
 
-/// Virtual region flags.
-///
-/// Corresponds to Minix3's `VR_*` macros.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct VrFlags(pub u16);
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct VrFlags: u16 {
+        const WRITABLE = 0x001;
+        const PHYS64K = 0x004;
+        const LOWER16MB = 0x008;
+        const LOWER1MB = 0x010;
+        const SHARED = 0x040;
+        const UNINITIALIZED = 0x080;
+        const ANON = 0x100;
+        const DIRECT = 0x200;
+        const PREALLOC_MAP = 0x400;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct PageAllocFlags: u32 {
+        const CLEAR = 0x01;
+        const CONTIG = 0x02;
+        const ALIGN64K = 0x04;
+        const LOWER16MB = 0x08;
+        const LOWER1MB = 0x10;
+        const ALIGN16K = 0x40;
+    }
+}
 
 impl VrFlags {
-    pub(crate) const WRITABLE: u16 = 0x001;
-    pub(crate) const PHYS64K: u16 = 0x004;
-    pub(crate) const LOWER16MB: u16 = 0x008;
-    pub(crate) const LOWER1MB: u16 = 0x010;
-    pub(crate) const SHARED: u16 = 0x040;
-    pub(crate) const UNINITIALIZED: u16 = 0x080;
-    pub(crate) const ANON: u16 = 0x100;
-    pub(crate) const DIRECT: u16 = 0x200;
-    pub(crate) const PREALLOC_MAP: u16 = 0x400;
-
-    pub(crate) const fn empty() -> Self {
-        Self(0)
-    }
-
-    pub(crate) const fn contains(&self, flag: u16) -> bool {
-        (self.0 & flag) != 0
-    }
-
-    pub(crate) fn insert(&mut self, flag: u16) {
-        self.0 |= flag;
-    }
-
-    pub(crate) fn remove(&mut self, flag: u16) {
-        self.0 &= !flag;
+    pub(crate) fn to_alloc_flags(&self) -> PageAllocFlags {
+        let mut af = PageAllocFlags::empty();
+        if self.contains(Self::PHYS64K) { af |= PageAllocFlags::ALIGN64K; }
+        if self.contains(Self::LOWER16MB) { af |= PageAllocFlags::LOWER16MB; }
+        if self.contains(Self::LOWER1MB) { af |= PageAllocFlags::LOWER1MB; }
+        if !self.contains(Self::UNINITIALIZED) { af |= PageAllocFlags::CLEAR; }
+        af
     }
 }
 
-impl Default for VrFlags {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-/// Virtual region parameters (union equivalent).
-///
-/// Corresponds to Minix3's `param` union in `vir_region`.
 #[derive(Debug, Clone)]
 pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
-    PbCache { pb: Option<NonNull<PhysBlock>> },
+    PbCache { pfn: u32 },
+    // TODO: File variant is missing `fdref` field. Minix3's `param.file.fdref` tracks
+    // the file descriptor reference count for mmap'd files. Rust rewrite needs a
+    // corresponding mechanism (e.g., `Arc<FdRef>`) when implementing `mem_type_mappedfile`.
     File { inited: bool, offset: u64, clearend: u16 },
 }
 
 impl Default for VrParam {
     fn default() -> Self {
-        Self::Direct { phys: PhysBlock::MAP_NONE }
+        Self::Direct { phys: PhysBytes(0) }
     }
 }
 
-/// Virtual region (vir_region).
-///
-/// Represents a contiguous range in the process's virtual address space
-/// with uniform properties. Corresponds to Minix3's `struct vir_region`.
 pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
     pub length: VirBytes,
-    /// Physical block pointer array. Size = length / PAGE_SIZE.
-    pub physblocks: Vec<Option<Box<PhysRegion>>>,
+    pub physblocks: Vec<Option<PageSlot>>,
     pub flags: VrFlags,
-    /// Parent process slot (if any).
     pub parent_slot: Option<UserSlot>,
-    /// Default memory type for new allocations in this region.
     pub def_memtype: Option<&'static dyn MemType>,
     pub remaps: i32,
     pub id: i32,
     pub param: VrParam,
-
-    // AVL tree fields
-    pub lower: Option<Box<VirRegion>>,
-    pub higher: Option<Box<VirRegion>>,
-    pub factor: i8,
 }
 
 impl core::fmt::Debug for VirRegion {
@@ -103,18 +89,14 @@ impl core::fmt::Debug for VirRegion {
             .field("remaps", &self.remaps)
             .field("id", &self.id)
             .field("param", &self.param)
-            .field("factor", &self.factor)
             .finish()
     }
 }
 
 impl VirRegion {
     pub(crate) fn new(vaddr: VirBytes, length: VirBytes, flags: VrFlags) -> Self {
-        let pages = ((length.get() + 4095) / 4096) as usize;
-        let mut physblocks = Vec::with_capacity(pages);
-        for _ in 0..pages {
-            physblocks.push(None);
-        }
+        let pages = ((length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let physblocks = (0..pages).map(|_| None).collect();
         Self {
             vaddr,
             length,
@@ -125,9 +107,6 @@ impl VirRegion {
             remaps: 0,
             id: 0,
             param: VrParam::default(),
-            lower: None,
-            higher: None,
-            factor: 0,
         }
     }
 
@@ -142,19 +121,16 @@ impl VirRegion {
         region
     }
 
-    /// Returns the end address (exclusive).
     pub(crate) fn end_addr(&self) -> VirBytes {
-        self.vaddr + self.length
+        VirBytes(self.vaddr.0 + self.length.0)
     }
 
-    /// Checks if the address is within this region.
-    pub(crate) fn contains(&self, addr: VirBytes) -> bool {
-        addr >= self.vaddr && addr < self.end_addr()
+    pub(crate) fn contains_addr(&self, addr: VirBytes) -> bool {
+        addr.0 >= self.vaddr.0 && addr.0 < self.end_addr().0
     }
 
-    /// Checks if this region overlaps with the given range.
     pub(crate) fn overlaps(&self, start: VirBytes, end: VirBytes) -> bool {
-        self.vaddr < end && self.end_addr() > start
+        self.vaddr.0 < end.0 && self.end_addr().0 > start.0
     }
 
     pub(crate) fn is_writable(&self) -> bool {
@@ -177,71 +153,106 @@ impl VirRegion {
         }
     }
 
-    /// Prepares for CoW: sets shared pages to read-only.
-    ///
-    /// Iterates all physical regions, setting shared pages (refcount > 1) to read-only
-    /// to trigger copy-on-write.
-    ///
-    /// Corresponds to Minix3's CoW preparation logic in `map_writept()`.
-    ///
-    /// # Safety
-    /// Caller must ensure all PhysRegions are properly initialized and page table operations are safe.
-    pub(crate) unsafe fn prepare_cow(&mut self) {
-        use crate::pagetable::PageFlags;
-        const PAGE_SIZE: u64 = 4096;
-        let num_pages = (self.length.get() / PAGE_SIZE) as usize;
+    pub(crate) fn map_page(
+        &mut self,
+        frames: &mut PageFrames,
+        offset: VirBytes,
+        pfn: u32,
+        memtype: &'static dyn MemType,
+    ) {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        let slot = PageSlot::new(pfn, offset, Some(memtype));
+        self.physblocks[page_idx] = Some(slot);
+        if let Some(state) = frames.get_mut(pfn) {
+            state.refcount = state.refcount.saturating_add(1);
+        }
+    }
 
-        for i in 0..num_pages {
-            if let Some(phys_region) = &self.physblocks[i] {
-                if phys_region.has_phys_block() && self.is_writable() && !phys_region.is_writable() {
-                    let _vaddr = self.vaddr.get() + i as u64 * PAGE_SIZE;
-                    let _paddr = phys_region.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE);
-                    let _cow_flags = PageFlags::read_only();
+    pub(crate) fn unmap_page(
+        &mut self,
+        frames: &mut PageFrames,
+        offset: VirBytes,
+    ) -> Option<(u32, &'static dyn MemType)> {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        let slot = self.physblocks[page_idx].take()?;
+        if slot.is_mapped() {
+            if let Some(state) = frames.get_mut(slot.pfn) {
+                if state.refcount > 0 {
+                    state.refcount -= 1;
+                }
+                if state.refcount == 0
+                    && !state.flags.contains(PageFlags::IN_CACHE)
+                {
+                    if let Some(mt) = slot.memtype {
+                        return Some((slot.pfn, mt));
+                    }
                 }
             }
         }
+        None
     }
 
-    pub(crate) fn get_phys_region(&self, offset: VirBytes) -> Option<&PhysRegion> {
-        let page = (offset.get() / 4096) as usize;
-        self.physblocks.get(page).and_then(|opt| opt.as_ref().map(|b| b.as_ref()))
-    }
-
-    pub(crate) fn get_phys_region_mut(&mut self, offset: VirBytes) -> Option<&mut PhysRegion> {
-        let page = (offset.get() / 4096) as usize;
-        self.physblocks.get_mut(page).and_then(|opt| opt.as_mut().map(|b| b.as_mut()))
-    }
-
-    pub(crate) fn set_phys_region(&mut self, offset: VirBytes, region: PhysRegion) {
-        let page = (offset.get() / 4096) as usize;
-        if page < self.physblocks.len() {
-            self.physblocks[page] = Some(Box::new(region));
+    pub(crate) fn map_lazy(&mut self, offset: VirBytes) {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        if page_idx < self.physblocks.len() {
+            self.physblocks[page_idx] = Some(PageSlot::new(PFN_NONE, offset, self.def_memtype));
         }
     }
 
-    /// Splits the region at the given position.
-    ///
-    /// Returns (left, right) where left retains the original start address.
-    ///
-    /// Corresponds to Minix3's `split_region()`.
+    pub(crate) fn get_slot(&self, offset: VirBytes) -> Option<&PageSlot> {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        self.physblocks.get(page_idx).and_then(|opt| opt.as_ref())
+    }
+
+    pub(crate) fn get_slot_mut(&mut self, offset: VirBytes) -> Option<&mut PageSlot> {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        self.physblocks.get_mut(page_idx).and_then(|opt| opt.as_mut())
+    }
+
+    pub(crate) fn needs_cow(&self, frames: &PageFrames, offset: VirBytes) -> bool {
+        match self.get_slot(offset) {
+            Some(slot) if slot.is_mapped() => {
+                frames.get(slot.pfn)
+                    .map(|s| s.refcount > 1)
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_page_writable(&self, frames: &PageFrames, offset: VirBytes) -> bool {
+        match self.get_slot(offset) {
+            Some(slot) if slot.is_mapped() => {
+                if let Some(mt) = slot.memtype {
+                    mt.writable(frames, *slot)
+                } else {
+                    frames.get(slot.pfn)
+                        .map(|s| s.refcount == 1)
+                        .unwrap_or(false)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn prepare_cow(&mut self, frames: &PageFrames) {
+        // TODO: Set page table entries to read-only for all mapped writable pages.
+        // This triggers page faults on write, enabling CoW resolution.
+        // Equivalent to Minix3's pt_writemap() with ~PT_W flag in map_copy_region().
+        // Requires access to the page table (PageTable) to modify PTE flags.
+        let _ = (frames, &self.physblocks);
+    }
+
     pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
-        let page_size: u64 = 4096;
-
-        if split_len.get() == 0 {
-            return Err(VmError::InvalidParam);
-        }
-        if split_len.get() % page_size != 0 {
-            return Err(VmError::InvalidParam);
-        }
-        if split_len.get() >= self.length.get() {
+        if split_len.0 == 0 || split_len.0 % PAGE_SIZE != 0 || split_len.0 >= self.length.0 {
             return Err(VmError::InvalidParam);
         }
 
-        let rem_len = VirBytes(self.length.get() - split_len.get());
+        let rem_len = VirBytes(self.length.0 - split_len.0);
 
         let mut left = VirRegion::new(self.vaddr, split_len, self.flags);
         let mut right = VirRegion::new(
-            VirBytes(self.vaddr.get() + split_len.get()),
+            VirBytes(self.vaddr.0 + split_len.0),
             rem_len,
             self.flags,
         );
@@ -251,14 +262,15 @@ impl VirRegion {
         right.remaps = self.remaps;
         right.id = self.id + 1;
 
-        for (i, phys_opt) in self.physblocks.into_iter().enumerate() {
-            if let Some(phys) = phys_opt {
-                let offset = VirBytes((i as u64) * page_size);
-                if offset.get() < split_len.get() {
-                    left.set_phys_region(offset, *phys);
-                } else {
-                    let right_offset = VirBytes(offset.get() - split_len.get());
-                    right.set_phys_region(right_offset, *phys);
+        let left_pages = (split_len.0 / PAGE_SIZE) as usize;
+
+        for (i, slot_opt) in self.physblocks.into_iter().enumerate() {
+            if i < left_pages {
+                left.physblocks[i] = slot_opt;
+            } else {
+                let right_idx = i - left_pages;
+                if right_idx < right.physblocks.len() {
+                    right.physblocks[right_idx] = slot_opt;
                 }
             }
         }
@@ -266,29 +278,22 @@ impl VirRegion {
         Ok((left, right))
     }
 
-    /// Frees the region from the given offset.
-    ///
-    /// Frees physical pages in the range [offset, offset+len).
-    /// Returns the number of pages freed.
-    ///
-    /// Corresponds to Minix3's `map_subfree()`.
-    pub(crate) fn free_range(&mut self, offset: VirBytes, len: VirBytes) -> usize {
-        let page_size: u64 = 4096;
-        let start_page = (offset.get() / page_size) as usize;
-        let end_page = ((offset.get() + len.get() + page_size - 1) / page_size) as usize;
-        let mut freed = 0;
+    pub(crate) fn free_range(&mut self, frames: &mut PageFrames, offset: VirBytes, len: VirBytes) -> Vec<(u32, &'static dyn MemType)> {
+        let start_page = (offset.0 / PAGE_SIZE) as usize;
+        let end_page = ((offset.0 + len.0 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let mut pending_unrefs = Vec::new();
 
         for page in start_page..end_page.min(self.physblocks.len()) {
-            if self.physblocks[page].take().is_some() {
-                freed += 1;
+            let page_offset = VirBytes((page as u64) * PAGE_SIZE);
+            if let Some((pfn, mt)) = self.unmap_page(frames, page_offset) {
+                pending_unrefs.push((pfn, mt));
             }
         }
 
-        freed
+        pending_unrefs
     }
 }
 
-/// VM error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmError {
     InvalidParam,
@@ -299,7 +304,20 @@ pub(crate) enum VmError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::VirBytes;
+
+    struct TestAlloc { next: u32 }
+    impl PfnAllocator for TestAlloc {
+        fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+            let pfn = self.next;
+            self.next += 1;
+            Ok(pfn)
+        }
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    fn make_frames(pages: u32) -> PageFrames {
+        PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
+    }
 
     #[test]
     fn test_vir_region_creation() {
@@ -312,11 +330,11 @@ mod tests {
     #[test]
     fn test_vir_region_contains() {
         let region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
-        assert!(region.contains(VirBytes(0x1000)));
-        assert!(region.contains(VirBytes(0x2000)));
-        assert!(region.contains(VirBytes(0x4fff)));
-        assert!(!region.contains(VirBytes(0x5000)));
-        assert!(!region.contains(VirBytes(0x0fff)));
+        assert!(region.contains_addr(VirBytes(0x1000)));
+        assert!(region.contains_addr(VirBytes(0x2000)));
+        assert!(region.contains_addr(VirBytes(0x4fff)));
+        assert!(!region.contains_addr(VirBytes(0x5000)));
+        assert!(!region.contains_addr(VirBytes(0x0fff)));
     }
 
     #[test]
@@ -332,6 +350,38 @@ mod tests {
 
         flags.remove(VrFlags::WRITABLE);
         assert!(!flags.contains(VrFlags::WRITABLE));
+    }
+
+    #[test]
+    fn test_map_unmap_page() {
+        let mut frames = make_frames(4);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0), pfn, &crate::memtype::MEM_TYPE_ANON);
+
+        assert!(region.get_slot(VirBytes(0)).is_some());
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+
+        let result = region.unmap_page(&mut frames, VirBytes(0));
+        assert!(result.is_some());
+        assert_eq!(frames.get(pfn).unwrap().refcount, 0);
+    }
+
+    #[test]
+    fn test_needs_cow() {
+        let mut frames = make_frames(4);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0), pfn, &crate::memtype::MEM_TYPE_ANON);
+
+        assert!(!region.needs_cow(&frames, VirBytes(0)));
+
+        frames.get_mut(pfn).unwrap().refcount = 2;
+        assert!(region.needs_cow(&frames, VirBytes(0)));
     }
 
     #[test]
@@ -358,20 +408,39 @@ mod tests {
     }
 
     #[test]
-    fn test_vir_region_free_range() {
+    fn test_free_range() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
 
-        region.set_phys_region(VirBytes(0x0000), PhysRegion::new(VirBytes(0x0000)));
-        region.set_phys_region(VirBytes(0x1000), PhysRegion::new(VirBytes(0x1000)));
-        region.set_phys_region(VirBytes(0x2000), PhysRegion::new(VirBytes(0x2000)));
-        region.set_phys_region(VirBytes(0x3000), PhysRegion::new(VirBytes(0x3000)));
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        let pfn2 = alloc.alloc_pfn().unwrap();
+        let pfn3 = alloc.alloc_pfn().unwrap();
 
-        let freed = region.free_range(VirBytes(0x1000), VirBytes(0x1000));
-        assert_eq!(freed, 1);
+        region.map_page(&mut frames, VirBytes(0x0000), pfn0, &crate::memtype::MEM_TYPE_ANON);
+        region.map_page(&mut frames, VirBytes(0x1000), pfn1, &crate::memtype::MEM_TYPE_ANON);
+        region.map_page(&mut frames, VirBytes(0x2000), pfn2, &crate::memtype::MEM_TYPE_ANON);
+        region.map_page(&mut frames, VirBytes(0x3000), pfn3, &crate::memtype::MEM_TYPE_ANON);
 
-        assert!(region.get_phys_region(VirBytes(0x0000)).is_some());
-        assert!(region.get_phys_region(VirBytes(0x1000)).is_none());
-        assert!(region.get_phys_region(VirBytes(0x2000)).is_some());
-        assert!(region.get_phys_region(VirBytes(0x3000)).is_some());
+        let pending = region.free_range(&mut frames, VirBytes(0x1000), VirBytes(0x1000));
+        assert_eq!(pending.len(), 1);
+
+        assert!(region.get_slot(VirBytes(0x0000)).is_some());
+        assert!(region.get_slot(VirBytes(0x1000)).is_none());
+        assert!(region.get_slot(VirBytes(0x2000)).is_some());
+        assert!(region.get_slot(VirBytes(0x3000)).is_some());
+    }
+
+    #[test]
+    fn test_map_lazy() {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
+
+        region.map_lazy(VirBytes(0x1000));
+
+        let slot = region.get_slot(VirBytes(0x1000)).unwrap();
+        assert!(!slot.is_mapped());
+        assert_eq!(slot.pfn, PFN_NONE);
     }
 }
