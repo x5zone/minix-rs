@@ -1,4 +1,4 @@
-# 21-vm-exit: 进程退出与资源释放
+# 20-vm-exit: 进程退出与资源释放
 
 > **分类**: VM服务
 > **源码**: `minix3/minix/servers/vm/exit.c`, `region.c`, `pb.c`, `pagetable.c`
@@ -10,7 +10,7 @@
 
 ### 1.1 本文档的定位
 
-17-vm-fork 创建进程，20-cow-exec-pagefault 处理运行时 CoW，本文档是生命周期的终点——进程退出时释放所有内存资源。
+16-vm-fork 创建进程，19-cow-exec-pagefault 处理运行时 CoW，本文档是生命周期的终点——进程退出时释放所有内存资源。
 
 进程退出看似简单（"释放所有东西"），但涉及一个核心问题：**CoW 共享页的正确释放**。fork 后父子进程共享物理页（refcount > 1），退出时不能直接释放物理内存，必须等最后一个引用者退出。这就是引用计数系统的最终兑现——每个 `add_ref()` 都必须对应一个 `release_ref()`。
 
@@ -22,7 +22,7 @@ fork 创建进程
   ├── 页表标记为只读
   │
   ▼  (写入时)
-CoW 执行 (20-cow-exec-pagefault)
+CoW 执行 (19-cow-exec-pagefault)
   ├── 分配新页，复制数据
   ├── 旧页 refcount: 2 → 1
   ├── 新页 refcount = 1
@@ -43,8 +43,8 @@ CoW 执行 (20-cow-exec-pagefault)
 |------|------|
 | 10-phys-block | PhysBlock 引用计数是退出的核心机制 |
 | 14-phys-region | `unlink_from_block()` 是退出的核心操作 |
-| 15-cow-mechanism | CoW 设置的 refcount 在退出时被消费 |
-| 17-vm-fork | fork 创建的共享页在退出时被释放 |
+| 14-cow-mechanism | CoW 设置的 refcount 在退出时被消费 |
+| 16-vm-fork | fork 创建的共享页在退出时被释放 |
 | 01-vmproc-struct | `VmProc::clear()` 是退出的核心实现 |
 | 02-vmproc-table | typestate 状态转换驱动退出流程 |
 
@@ -472,7 +472,7 @@ PM → VM_EXIT:
 | `do_exit()` | ❌ 不存在 | VM_EXIT IPC 处理 |
 | `do_willexit()` | ❌ 不存在 | VM_WILLEXIT IPC 处理 |
 | `do_procctl()` | ❌ 不存在 | VM_PROCCTL IPC 处理 |
-| 物理页归还分配器 | ❌ 缺失 | `on_unreference` 返回 true 后无释放逻辑 |
+| 物理页归还分配器 | ❌ 缺失 | `ev_unreference` 返回 true 后无释放逻辑 |
 
 ### 3.2 设计原则
 
@@ -561,7 +561,7 @@ fn clear_recursive(node: Box<VirRegion>) {
 if pr.unlink_from_block() {
     // refcount 降到 0，需要释放物理页
     if let Some(memtype) = pr.memtype {
-        if memtype.on_unreference(pr)? {
+        if memtype.ev_unreference(pr)? {
             // 归还物理页给分配器
             page_alloc.free_phys(old_phys, 1);
         }
@@ -613,7 +613,7 @@ impl RegionAvl {
                 let should_free_block = pr.unlink_from_block();
                 if should_free_block {
                     if let Some(memtype) = pr.memtype {
-                        if let Ok(true) = memtype.on_unreference(pr) {
+                        if let Ok(true) = memtype.ev_unreference(pr) {
                             // 物理页需要归还给分配器
                             // 但这里无法访问 page_alloc...
                         }
@@ -655,7 +655,7 @@ impl RegionAvl {
 
         // 调用 memtype 的 on_delete 回调
         if let Some(memtype) = node.def_memtype {
-            memtype.on_delete(&mut *node.into());
+            memtype.ev_delete(&mut *node.into());
         }
     }
 
@@ -665,7 +665,7 @@ impl RegionAvl {
                 let should_free = pr.unlink_from_block();
                 if should_free {
                     if let Some(memtype) = pr.memtype {
-                        if let Ok(true) = memtype.on_unreference(pr) {
+                        if let Ok(true) = memtype.ev_unreference(pr) {
                             if let Some(phys) = pr.get_phys_addr() {
                                 page_alloc.free_phys(phys, 1);
                             }
@@ -894,10 +894,10 @@ PM → VM_EXIT(endpoint):
             │         │    │    ├── 从 pb.firstregion 链表移除
             │         │    │    └── 返回 should_free (refcount == 0)
             │         │    ├── if should_free:
-            │         │    │    ├── memtype.on_unreference(pr)
+            │         │    │    ├── memtype.ev_unreference(pr)
             │         │    │    └── if Ok(true): page_alloc.free_phys(phys, 1)
             │         │    └── (PhysRegion 随 Vec drop 释放)
-            │         ├── memtype.on_delete(region)
+            │         ├── memtype.ev_delete(region)
             │         └── (VirRegion 随 Box drop 释放)
             │
             ├── PageTable::destroy()
@@ -924,7 +924,7 @@ PM → VM_EXIT(endpoint):
 A 退出:
   ├── pr.unlink_from_block(): P.refcount 1 → 0
   ├── should_free = true
-  ├── anon.on_unreference(pr) → Ok(true)
+  ├── anon.ev_unreference(pr) → Ok(true)
   ├── page_alloc.free_phys(P.phys, 1)  ← 物理页归还
   └── P 被 SLABFREE (Rust: Box drop)
 ```
@@ -959,7 +959,7 @@ B 先退出:
 A 再退出:
   ├── A 的 pr.unlink_from_block(): P.refcount 1 → 0
   ├── should_free = true
-  ├── anon.on_unreference(pr) → Ok(true)
+  ├── anon.ev_unreference(pr) → Ok(true)
   ├── page_alloc.free_phys(P.phys, 1)  ← 物理页归还
   └── P 被释放
 ```
@@ -1035,7 +1035,7 @@ A 退出:
 
 ---
 
-## 7. 与 20-cow-exec-pagefault 的闭环
+## 7. 与 19-cow-exec-pagefault 的闭环
 
 20 文档实现了 CoW 的"正向"流程（写入 → 分配新页 → 复制 → 更新引用），本文档实现了"反向"流程（退出 → 减少引用 → 条件释放物理页）。两者共同完成了引用计数系统的闭环：
 
@@ -1050,4 +1050,4 @@ exit:   unlink_from_block()  → refcount: 1→0 → free_phys()
 每个 alloc_phys 都有对应的 free_phys
 ```
 
-这就是 fork 叙事线的完整闭环：从创建（17-vm-fork）到运行时 CoW（20-cow-exec-pagefault）到退出释放（21-vm-exit），引用计数系统保证了物理内存的正确管理——不多不少，不早不晚。
+这就是 fork 叙事线的完整闭环：从创建（16-vm-fork）到运行时 CoW（19-cow-exec-pagefault）到退出释放（20-vm-exit），引用计数系统保证了物理内存的正确管理——不多不少，不早不晚。

@@ -1,8 +1,8 @@
-# 22-vm-brk-complete: brk 完整实现
+# 21-vm-brk-complete: brk 完整实现
 
 > **分类**: VM服务
 > **源码**: `minix3/minix/servers/vm/break.c`, `region.c:map_region_extend_upto_v`, `mem_anon.c:anon_resize`
-> **说明**: 将 18-vm-brk 的设计落地为可运行的实现——补全区域扩展/收缩、物理页分配/释放、页表更新
+> **说明**: 将 17-vm-brk 的设计落地为可运行的实现——补全区域扩展/收缩、物理页分配/释放、页表更新
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### 1.1 本文档的定位
 
-18-vm-brk 详细描述了 brk 的 IPC 接口、消息格式、Minix3 C 源码分析。但 18 的 Ch4（实现详解）是占位状态——没有给出完整的 Rust 实现。
+17-vm-brk 详细描述了 brk 的 IPC 接口、消息格式、Minix3 C 源码分析。但 18 的 Ch4（实现详解）是占位状态——没有给出完整的 Rust 实现。
 
 本文档是**实现文档**：把 18 的设计落地为可编译、可运行的 Rust 代码，补全以下缺失：
 
@@ -38,12 +38,12 @@ brk 与 fork/exit 不同，它**只操作调用者自身的地址空间**，不�
 
 | 文档 | 关系 |
 |------|------|
-| 18-vm-brk | 前置：IPC 接口、消息格式、C 源码分析 |
+| 17-vm-brk | 前置：IPC 接口、消息格式、C 源码分析 |
 | 12-vir-region | VirRegion 结构和操作 |
 | 13-region-avl | AVL 树搜索（find_less, find_slot） |
 | 14-phys-region | PhysRegion 引用计数管理 |
-| 20-cow-exec-pagefault | 缺页处理：brk 扩展后的物理页分配 |
-| 21-vm-exit | 退出时释放 brk 扩展的内存 |
+| 19-cow-exec-pagefault | 缺页处理：brk 扩展后的物理页分配 |
+| 20-vm-exit | 退出时释放 brk 扩展的内存 |
 
 ---
 
@@ -201,7 +201,7 @@ Minix3 的 `real_brk` 只调用 `map_region_extend_upto_v`，而后者**不处�
 2. **实际影响小**：收缩的内存通常不多，不释放也不会导致 OOM
 3. **malloc 的行为**：用户态 malloc 通常不调用 brk 收缩，而是缓存已分配的内存
 
-**但 Rust 实现应该支持收缩**：作为教学项目，完整实现更有价值。收缩逻辑与 21-vm-exit 中的 `map_subfree` 类似——遍历 PhysRegion，减少引用计数，释放物理页。
+**但 Rust 实现应该支持收缩**：作为教学项目，完整实现更有价值。收缩逻辑与 20-vm-exit 中的 `map_subfree` 类似——遍历 PhysRegion，减少引用计数，释放物理页。
 
 ### 2.5 完整链路总结
 
@@ -266,8 +266,8 @@ brk 无操作 (new_addr == current_brk):
 **原则 3：两条扩展路径**
 
 保留 Minix3 的两条路径设计：
-- 有 `on_resize` 回调的区域：扩展现有区域（匿名内存→堆）
-- 无 `on_resize` 回调的区域：创建新的匿名区域
+- 有 `ev_resize` 回调的区域：扩展现有区域（匿名内存→堆）
+- 无 `ev_resize` 回调的区域：创建新的匿名区域
 
 **原则 4：不使用 map_page_region**
 
@@ -426,7 +426,7 @@ fn extend_existing_region(
 
         // 调用 memtype 的 on_resize 回调
         if let Some(memtype) = region.def_memtype {
-            memtype.on_resize(vmp, region, new_length)
+            memtype.ev_resize(vmp, region, new_length)
                 .map_err(|_| BrkError::ResizeFailed)?;
         }
     }
@@ -440,11 +440,11 @@ fn extend_existing_region(
 
 ### 4.5 AnonymousMemory::on_resize — 实现
 
-当前 `MemType` trait 的 `on_resize` 默认实现是空操作。需要为 `AnonymousMemory` 实现：
+当前 `MemType` trait 的 `ev_resize` 默认实现是空操作。需要为 `AnonymousMemory` 实现：
 
 ```rust
 impl MemType for AnonymousMemory {
-    fn on_resize(
+    fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
@@ -488,7 +488,7 @@ fn create_new_anon_region(
 
     // 调用 memtype 的 on_new 回调
     if let Some(memtype) = new_region.def_memtype {
-        memtype.on_new(&mut new_region)
+        memtype.ev_new(&mut new_region)
             .map_err(|_| BrkError::NewRegionFailed)?;
     }
 
@@ -531,7 +531,7 @@ fn shrink_if_needed(
             .ok_or(BrkError::InternalError)?;
 
         if let Some(memtype) = region.def_memtype {
-            memtype.on_resize(vmp, region, VirBytes(new_end.0 - vr_vaddr.0))
+            memtype.ev_resize(vmp, region, VirBytes(new_end.0 - vr_vaddr.0))
                 .map_err(|_| BrkError::ResizeFailed)?;
         } else {
             // 无回调：手动释放物理页 + 缩减 length
@@ -606,7 +606,7 @@ do_brk():
        │
        ├── offset <= current_end → shrink_if_needed():
        │    ├── regions.find(new_end) → 包含区域
-       │    ├── memtype.on_resize(vmp, region, new_length):
+       │    ├── memtype.ev_resize(vmp, region, new_length):
        │    │    └── free_range(new_end, shrink_len) + region.length = new_length
        │    ├── pt.unmap() 取消收缩区域映射
        │    ├── pt.flush_tlb()
@@ -617,13 +617,13 @@ do_brk():
             │
             ├── has_resize → extend_existing_region():
             │    ├── physblocks.resize(len + added, None)
-            │    ├── memtype.on_resize(vmp, region, new_length):
+            │    ├── memtype.ev_resize(vmp, region, new_length):
             │    │    └── region.length = new_length
             │    └── add_total(extralen)
             │
             └── !has_resize → create_new_anon_region():
                  ├── VirRegion::with_memtype(start, len, WRITABLE|ANON, ANON)
-                 ├── memtype.on_new(&mut new_region)
+                 ├── memtype.ev_new(&mut new_region)
                  ├── regions.insert(new_region)
                  └── add_total(extralen)
 ```
@@ -649,7 +649,7 @@ do_pagefaults() → handle_pagefault():
   ├── regions.find(0x420000) → 找到堆区域
   ├── physblocks[page_idx] → None（未分配）
   ├── 创建 PhysRegion + PhysBlock(MAP_NONE)
-  ├── memtype.on_pagefault() → NeedNewPage
+  ├── memtype.ev_pagefault() → NeedNewPage
   ├── page_alloc.alloc_phys(1) → new_phys
   ├── pr.set_phys_addr(new_phys)
   └── write_pt_single(vmp, region, pr) → 页表映射
@@ -724,9 +724,9 @@ brk(0x400000) 后:
 
 ---
 
-## 7. 与 21-vm-exit 的闭环
+## 7. 与 20-vm-exit 的闭环
 
-21-vm-exit 释放进程的所有内存，包括 brk 扩展的堆区域。两者形成闭环：
+20-vm-exit 释放进程的所有内存，包括 brk 扩展的堆区域。两者形成闭环：
 
 ```
 brk 扩展: add_total(extralen) + region.length += extralen

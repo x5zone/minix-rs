@@ -937,7 +937,7 @@ fn test_acl_state_mask() {
 ## 6. 参见
 
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vm_acl 字段
-- [17-vm-fork.md](17-vm-fork.md) - fork 时的 ACL 处理
+- [16-vm-fork.md](16-vm-fork.md) - fork 时的 ACL 处理
 
 ---
 

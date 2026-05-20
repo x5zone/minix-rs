@@ -7,6 +7,11 @@ use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PfnAllocError
 use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
 use crate::vmproc::ActiveProc;
 
+/// VM page fault handler entry point.
+///
+/// Dispatches to the region's `MemType::ev_pagefault`, then acts on the
+/// returned `PagefaultResult`: allocate a new page, resolve CoW, or report
+/// an access violation.
 pub(crate) fn handle_pagefault(
     proc: &ActiveProc<'_>,
     region: &mut VirRegion,
@@ -65,6 +70,10 @@ pub(crate) fn cow_resolve(
     cow_resolve_core(region, frames, alloc, offset).map_err(Into::into)
 }
 
+/// Core CoW resolution: allocate a new physical page, copy content from the
+/// shared page, unmap the old slot and map the new one as `MEM_TYPE_ANON`.
+///
+/// If `refcount <= 1` the page is already private and no copy is needed.
 pub(crate) fn cow_resolve_core(
     region: &mut VirRegion,
     frames: &mut PageFrames,
@@ -126,6 +135,10 @@ fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
     // addresses, then core::ptr::copy_nonoverlapping to copy PAGE_SIZE bytes.
 }
 
+/// Resolve CoW for all pages in a region that need it.
+///
+/// Iterates over every page slot; if `needs_cow` is true, performs
+/// `cow_resolve` on that page. Returns the number of pages resolved.
 pub(crate) fn cow_resolve_region(
     region: &mut VirRegion,
     frames: &mut PageFrames,

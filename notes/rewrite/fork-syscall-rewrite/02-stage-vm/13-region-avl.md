@@ -1237,7 +1237,7 @@ impl RegionMap {
     pub(crate) fn find_slot(&self, minv: VirBytes, maxv: VirBytes, length: VirBytes) -> Option<VirBytes>;
 
     /// 插入/删除/遍历
-    pub(crate) fn insert(&mut self, region: VirRegion);
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion>;
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion>;
     pub(crate) fn traverse<F>(&self, f: F) where F: FnMut(&VirRegion);
     pub(crate) fn iter(&self) -> impl Iterator<Item = &VirRegion>;
@@ -1347,7 +1347,7 @@ active.regions_mut().remove(vaddr);       // RegionMap::remove
 | `region_init(&tree)` | `RegionMap::new()` | 创建空映射表 |
 | `region_insert(&tree, r)` | `map.insert(r)` | 以 vaddr 为键插入 |
 | `region_remove(&tree, key)` | `map.remove(key)` | 按键删除，返回被删除的区域 |
-| `region_subst(&tree, new)` | `map.insert(new)` | BTreeMap 的 insert 对同键自动替换 |
+| `region_subst(&tree, new)` | `map.insert(new)` | BTreeMap 的 insert 对同键自动替换，返回 `Option<VirRegion>`（旧值） |
 | `region_search(&tree, k, AVL_LESS_EQUAL)` | `map.find_less_equal(k)` | 查找 ≤ k 的最大区域 |
 | `region_search(&tree, k, AVL_GREATER)` | `map.find_greater(k)` | 查找 > k 的最小区域 |
 | `region_search_least(&tree)` | `map.iter().next()` | 最小区域 |
@@ -1377,11 +1377,14 @@ impl RegionMap {
     }
 
     pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {
-        self.regions
-            .range_mut(..=addr)
+        let key = self
+            .regions
+            .range(..=addr)
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
-            .map(|(_, r)| r)
+            .map(|(k, _)| *k)?;
+
+        self.regions.get_mut(&key)
     }
 }
 ```
@@ -1396,8 +1399,8 @@ impl RegionMap {
 
 ```rust
 impl RegionMap {
-    pub(crate) fn insert(&mut self, region: VirRegion) {
-        self.regions.insert(region.vaddr, region);
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion> {
+        self.regions.insert(region.vaddr, region)
     }
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
@@ -1466,9 +1469,12 @@ impl RegionMap {
 ```rust
 impl RegionMap {
     pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
-        for (_, region) in self.iter() {
-            if region.overlaps(start, end) {
-                return Some(region);
+        for (_, r) in self.regions.range(..end) {
+            if r.overlaps(start, end) {
+                return Some(r);
+            }
+            if r.vaddr >= end {
+                break;
             }
         }
         None
@@ -1479,12 +1485,15 @@ impl RegionMap {
         start: VirBytes,
         end: VirBytes,
     ) -> impl Iterator<Item = &'a VirRegion> {
-        self.iter().filter(move |r| r.overlaps(start, end))
+        self.regions
+            .range(..end)
+            .filter(move |(_, r)| r.overlaps(start, end))
+            .map(|(_, r)| r)
     }
 }
 ```
 
-优化思路：可以利用 BTreeMap 的有序性，从 `range(..end)` 开始遍历，跳过 vaddr ≥ end 的区域，因为它们不可能与 `[start, end)` 重叠。
+利用 BTreeMap 的有序性，`range(..end)` 只遍历 `vaddr < end` 的区域，跳过不可能重叠的区域。与 C 的 `region_start_iter(AVL_GREATER_EQUAL)` + 递减遍历逻辑等价，但更简洁。
 
 **空闲槽位查找**
 
@@ -1510,36 +1519,44 @@ impl RegionMap {
             return None;
         }
 
+        let try_gap = |gap_start: VirBytes, gap_end: VirBytes| -> Option<VirBytes> {
+            let frstart = gap_start.max(minv);
+            let frend = gap_end.min(maxv);
+            if frend.0 > frstart.0 && frend.0.saturating_sub(frstart.0) >= length.0 {
+                // 优先页对齐（对应 C 的 FREEVRANGE 宏：先尝试 start+PAGE_SIZE ~ end-PAGE_SIZE）
+                let aligned_start = (frstart.0 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let aligned_end = frend.0 & !(PAGE_SIZE - 1);
+                if aligned_end > aligned_start
+                    && aligned_end.saturating_sub(aligned_start) >= length.0
+                {
+                    return Some(VirBytes(aligned_end - length.0));
+                }
+                // 页对齐失败，回退到不对齐（对应 C 的 FREEVRANGE 第二次尝试）
+                return Some(VirBytes(frend.0 - length.0));
+            }
+            None
+        };
+
         let mut prev_end = minv;
 
         for region in self.iter() {
             if region.vaddr >= prev_end {
-                let gap_start = prev_end.max(minv);
-                let gap_end = region.vaddr.min(maxv);
-
-                if gap_end.0 > gap_start.0
-                    && gap_end.0.saturating_sub(gap_start.0) >= length.0
-                {
-                    return Some(VirBytes(gap_end.0 - length.0));
+                if let Some(addr) = try_gap(prev_end, region.vaddr) {
+                    return Some(addr);
                 }
             }
 
             prev_end = region.end_addr().max(prev_end);
         }
 
-        let gap_start = prev_end.max(minv);
-        if maxv.0 > gap_start.0
-            && maxv.0.saturating_sub(gap_start.0) >= length.0
-        {
-            return Some(VirBytes(maxv.0 - length.0));
-        }
-
-        None
+        try_gap(prev_end, maxv)
     }
 }
 ```
 
-与 Minix3 `region_find_slot_range` 逻辑一致：遍历区域间的间隙，找到第一个 ≥ length 的空闲段。
+与 Minix3 `region_find_slot_range` 逻辑一致：遍历区域间的间隙，找到第一个 ≥ length 的空闲段。`try_gap` 闭包实现了 C 中 `FREEVRANGE` 宏的页对齐优先语义——先尝试在页对齐边界内分配，失败则回退到不对齐分配。
+
+**注意**：C 中还有 `vm_region_top` hint 机制（从上次插入位置开始搜索），Rust 暂未实现。该 hint 是性能优化而非正确性需求，可在后续迭代中加入。
 
 ### 4.2 迭代器
 
@@ -1581,10 +1598,12 @@ impl RegionMap {
 | 操作 | 时间复杂度 | BTreeMap 实现方式 | 用途 |
 |------|-----------|------------------|------|
 | find | O(log n) | `range(..=addr).next_back()` + filter | 缺页处理、地址验证 |
-| find_overlap | O(n) | 遍历 + filter | mmap 冲突检测 |
+| find_overlap | O(k)* | `range(..end)` + filter | mmap 冲突检测 |
 | search | O(log n) | `get` + `range` | 通用搜索 |
-| find_slot | O(n) | 遍历间隙 | 寻找空闲地址空间 |
+| find_slot | O(n) | 遍历间隙 + 页对齐优先 | 寻找空闲地址空间 |
 | iter | O(n) | `regions.iter()` | 遍历所有区域 |
+
+*k = 可能重叠的区域数，通常远小于 n。`range(..end)` 跳过 vaddr ≥ end 的区域。
 
 ---
 
@@ -1729,9 +1748,9 @@ BTreeMap 查找:
 
 - [11-region-mapping.md](11-region-mapping.md) - 区域映射层（vir_region + phys_region）
 - [12-vir-region.md](12-vir-region.md) - vir_region 结构定义
-- [16-pagefault.md](16-pagefault.md) - 缺页处理中的区域查找（map_lookup）
-- [17-vm-fork.md](17-vm-fork.md) - fork 时遍历区域映射表
-- [19-vm-map.md](19-vm-map.md) - mmap/munmap 中的区域插入与删除
+- [15-pagefault.md](15-pagefault.md) - 缺页处理中的区域查找（map_lookup）
+- [16-vm-fork.md](16-vm-fork.md) - fork 时遍历区域映射表
+- [18-vm-map.md](18-vm-map.md) - mmap/munmap 中的区域插入与删除
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vmproc 中的 vm_regions 字段
 
 ---

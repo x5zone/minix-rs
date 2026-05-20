@@ -1180,7 +1180,7 @@ Direct map 是 CPU/MMU architecture mechanism，不是 VM policy——它不表�
 - **Kernel direct map**：由 VM 在 `map_kernel()` 中建立（Minix3 的 VM 本来就负责 `map_kernel()`），但建立后视为只读不变量，VM 不再修改
 - **VM direct map**：由 VM 在初始化时建立，仅存在于 VM 进程页表
 
-> **自举问题**：VM 进程自举时，内核已为其建立了初始页表（包含内核映射和 VM 自身代码/数据映射）。VM 在此基础上扩展建立 VM direct map——不是从零开始构造页表，而是在内核提供的初始页表上添加映射。详见 [27-vm-init-main.md](27-vm-init-main.md) 中 `init_phase2()` 的初始化流程。
+> **自举问题**：VM 进程自举时，内核已为其建立了初始页表（包含内核映射和 VM 自身代码/数据映射）。VM 在此基础上扩展建立 VM direct map——不是从零开始构造页表，而是在内核提供的初始页表上添加映射。详见 [26-vm-init-main.md](26-vm-init-main.md) 中 `init_phase2()` 的初始化流程。
 
 #### 3.0.4 问题一：内核如何访问其他进程的页表
 
@@ -1545,7 +1545,7 @@ pub enum PageTableError {
 阶段 3: （未来）SMP 其他 CPU 的页表同步
 ```
 
-**与 27-vm-init-main.md 的对应**：27 中 `init_phase2()` 已有 `vm_proc.init_page_table()` 调用，`paging_init()` 是其内部逻辑：
+**与 26-vm-init-main.md 的对应**：27 中 `init_phase2()` 已有 `vm_proc.init_page_table()` 调用，`paging_init()` 是其内部逻辑：
 - 大页能力确认属于 `paging_init()` 内部第一阶段
 - VM direct map 扩展在物理内存 > 1GB 时需要
 - `map_kernel()` 具体内容属于 #13 的范畴
@@ -1708,7 +1708,7 @@ SMP TLB shootdown 不属于 `Paging` trait 或 07 的范畴——VM 运行在 ri
 
 > fork 时的跨页表 PTE 复制机制见 §3.2 操作分层。`pt_copy` 和 `pt_map_in_range` 是 `Paging` trait 之上的组合操作（`query()`+`map()` 循环），不是 trait 方法。
 >
-> fork **策略**（哪些页需要复制、CoW 标记、`PageState` 引用计数）详见 [10-phys-pagestate.md](10-phys-pagestate.md) 和 [17-vm-fork.md](17-vm-fork.md)。
+> fork **策略**（哪些页需要复制、CoW 标记、`PageState` 引用计数）详见 [10-phys-pagestate.md](10-phys-pagestate.md) 和 [16-vm-fork.md](16-vm-fork.md)。
 
 ---
 
@@ -1744,8 +1744,8 @@ cargo test -p minix-arch --features mock
 
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数
-- [17-vm-fork.md](17-vm-fork.md) - fork 时的页表操作
-- [27-vm-init-main.md](27-vm-init-main.md) - VM 初始化主流程
+- [16-vm-fork.md](16-vm-fork.md) - fork 时的页表操作
+- [26-vm-init-main.md](26-vm-init-main.md) - VM 初始化主流程
 
 ---
 

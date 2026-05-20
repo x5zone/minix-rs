@@ -1,4 +1,4 @@
-# 27-vm-init-main: 所有零件怎么组装启动
+# 26-vm-init-main: 所有零件怎么组装启动
 
 > **分类**: VM 初始化与主循环
 > **源码**: `minix3/minix/servers/vm/main.c`, `pagetable.c(pt_init)`, `utility.c(get_mem_chunks)`
@@ -363,8 +363,8 @@ static void sef_cb_signal_handler(int signo)
 | `PhysAllocator` | ✅ 已实现 | 位图/buddy/线段树分配器 |
 | `Paging` trait | ✅ 已实现 | 页表操作 |
 | `MemType` trait | ✅ 已实现 | 内存类型系统 |
-| `PageCache` | ❌ 不存在 | 26-cache-memtypes 中已设计 |
-| `VfsRequestQueue` | ❌ 不存在 | 24-vfs-interaction 中已设计 |
+| `PageCache` | ❌ 不存在 | 25-cache-memtypes 中已设计 |
+| `VfsRequestQueue` | ❌ 不存在 | 23-vfs-interaction 中已设计 |
 | IPC 分发 | ❌ 不存在 | 需要实现 |
 | SEF 框架 | ❌ 不存在 | 需要设计 |
 

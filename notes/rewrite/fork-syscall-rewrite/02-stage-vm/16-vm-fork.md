@@ -1,4 +1,4 @@
-# 17-vm-fork: VM_FORK 服务
+# 16-vm-fork: VM_FORK 服务
 
 > **分类**: VM服务  
 > **源码**: `minix3/minix/servers/vm/fork.c`, `region.c`  
@@ -135,7 +135,7 @@ fork 时不立即复制物理内存，而是：
 3. **标记只读**：`map_writept()` → `map_ph_writept()` → `pr_writable()` 检测到共享页（`refcount > 1`），页表项不含 `PTF_WRITE`
 4. **延迟复制**：写入时触发页错误，执行真正的复制
 
-CoW 的完整机制（触发条件、页错误处理流程、`anon_writable()` 逻辑等）详见 [15-cow-mechanism](15-cow-mechanism.md)。
+CoW 的完整机制（触发条件、页错误处理流程、`anon_writable()` 逻辑等）详见 [14-cow-mechanism](14-cow-mechanism.md)。
 
 ### 1.6 fork 与其他组件的关系
 
@@ -964,7 +964,7 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
 }
 ```
 
-CoW 只读机制通过 `pr_writable()` → `memtype->writable()` 间接实现。对于匿名内存，`anon_writable()` (mem_anon.c:105) 在 `refcount > 1` 时返回 0，从而使页表项不含 `PTF_WRITE`。详见 [15-cow-mechanism](15-cow-mechanism.md)。
+CoW 只读机制通过 `pr_writable()` → `memtype->writable()` 间接实现。对于匿名内存，`anon_writable()` (mem_anon.c:105) 在 `refcount > 1` 时返回 0，从而使页表项不含 `PTF_WRITE`。详见 [14-cow-mechanism](14-cow-mechanism.md)。
 
 **CoW 页表标志**
 
@@ -1667,6 +1667,6 @@ impl ForkState {
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数
 - [11-region-mapping.md](11-region-mapping.md) - 虚拟区域与页映射
 - [13-region-avl](13-region-avl.md) - 虚拟区域 AVL 树
-- [15-cow-mechanism](15-cow-mechanism.md) - CoW 机制详解（pr_writable、anon_writable、页错误处理）
-- [16-pagefault](16-pagefault.md) - 页错误处理
+- [14-cow-mechanism](14-cow-mechanism.md) - CoW 机制详解（pr_writable、anon_writable、页错误处理）
+- [15-pagefault](15-pagefault.md) - 页错误处理
 - [03-acl](03-acl.md) - ACL 机制

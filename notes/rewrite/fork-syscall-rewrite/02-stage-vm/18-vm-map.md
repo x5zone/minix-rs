@@ -1,4 +1,4 @@
-# 19-vm-map: VM_MMAP/VM_MUNMAP 服务
+# 18-vm-map: VM_MMAP/VM_MUNMAP 服务
 
 > **分类**: VM服务  
 > **源码**: `minix3/minix/servers/vm/mmap.c`  
@@ -683,7 +683,7 @@ void *vm_map_phys(endpoint_t who, void *phaddr, size_t len)
 
 `createpde` 临时映射窗口不再需要——VM 已经拥有所有物理内存的 direct map，操作目标进程的页表页与操作自己的数据结构一样简单。
 
-这与 16-pagefault.md §2.3 的页表写入简化、17-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
+这与 15-pagefault.md §2.3 的页表写入简化、16-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
 
 **映射示例**
 
@@ -2466,7 +2466,7 @@ impl VirRegion {
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态管理（PageState/PageFrames，替代原 phys_block）
 - [00-vm-overview.md](00-vm-overview.md) - VM 模块总览
 - [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体（vmproc、地址空间）
-- [18-vm-brk.md](18-vm-brk.md) - brk 系统调用（堆管理，与 mmap 区域相邻）
+- [17-vm-brk.md](17-vm-brk.md) - brk 系统调用（堆管理，与 mmap 区域相邻）
 
 ---
 

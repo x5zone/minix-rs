@@ -559,7 +559,7 @@ int mem_cow(struct vir_region *region,
 - `pb_link(ph, pb, ...)`：新块 `refcount++`（从 0 到 1）
 - CoW 后旧块和新块各自 `refcount=1`
 
-> 完整 CoW 流程分析见 [15-cow-mechanism.md](15-cow-mechanism.md)。
+> 完整 CoW 流程分析见 [14-cow-mechanism.md](14-cow-mechanism.md)。
 
 ### 2.6.1 pb_new 的调用者：缺页时的 phys_block 创建
 
@@ -1058,7 +1058,7 @@ if let Some((pfn, mt)) = pending {
 - [05-vm-allocpage.md](05-vm-allocpage.md) — VM 自身内存分配
 - [11-region-mapping.md](11-region-mapping.md) — PageSlot + VirRegion（使用 PageFrames API）
 - [12-memtype.md](12-memtype.md) — MemType trait（ev_unreference 使用 PageFrames）
-- [26-cache-memtypes.md](26-cache-memtypes.md) — 页缓存与 PageState 的交互
+- [25-cache-memtypes.md](25-cache-memtypes.md) — 页缓存与 PageState 的交互
 
 ---
 

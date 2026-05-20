@@ -1,4 +1,4 @@
-# 18-vm-brk: VM_BRK 服务
+# 17-vm-brk: VM_BRK 服务
 
 > **分类**: VM服务  
 > **源码**: `minix3/minix/servers/vm/break.c`  
@@ -510,7 +510,7 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 2. 缺页处理程序分配实际物理页
 3. 支持延迟分配（lazy allocation）
 
-> **方案四标注**：brk 的物理页分配通过缺页处理程序间接完成，调用方不受 direct map 影响。缺页处理程序内部已简化为 `alloc_phys() → vm_phys_to_virt()`（见 16-pagefault.md），brk 代码无需修改。这是 direct map 统一性的体现——物理页分配的简化在底层完成，上层调用者透明受益。
+> **方案四标注**：brk 的物理页分配通过缺页处理程序间接完成，调用方不受 direct map 影响。缺页处理程序内部已简化为 `alloc_phys() → vm_phys_to_virt()`（见 15-pagefault.md），brk 代码无需修改。这是 direct map 统一性的体现——物理页分配的简化在底层完成，上层调用者透明受益。
 
 #### 2.7.3 收缩堆
 

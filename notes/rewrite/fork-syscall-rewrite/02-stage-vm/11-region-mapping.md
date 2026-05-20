@@ -1415,7 +1415,7 @@ Minix3 为每个 `phys_region` 调用 `pb_reference()` → `SLABALLOC` + `pb_lin
 
 **ev_copy 回调**：Minix3 的 `map_copy_region` 在复制完所有 `phys_region` 后，调用 `vr->def_memtype->ev_copy(vr, newvr)` 让 memtype 执行额外复制逻辑（如 `cache_copy`）。Rust 重写中 `ev_copy` 在 `fork_region` 中调用，确保子区域的 memtype 特定数据被正确初始化。
 
-**CoW 只读标记**：`dst.set_writable(false)` 清除子区域的 WRITABLE 标志。Minix3 中 CoW 只读保护由 `map_proc_copy_range` 末尾的 `map_writept(src); map_writept(dst);` 实现——`map_writept` 遍历所有 `phys_region`，通过 `pr_writable(vr, pr)` 检查 `(vr->flags & VR_WRITABLE) && memtype->writable(pr)`，而 `anon_writable` 返回 `pr->ph->refcount == 1`。共享页（refcount > 1）自然不可写，无需 `ev_reference` 设置只读。Rust 重写中页表操作见 [16-pagefault.md](16-pagefault.md)。
+**CoW 只读标记**：`dst.set_writable(false)` 清除子区域的 WRITABLE 标志。Minix3 中 CoW 只读保护由 `map_proc_copy_range` 末尾的 `map_writept(src); map_writept(dst);` 实现——`map_writept` 遍历所有 `phys_region`，通过 `pr_writable(vr, pr)` 检查 `(vr->flags & VR_WRITABLE) && memtype->writable(pr)`，而 `anon_writable` 返回 `pr->ph->refcount == 1`。共享页（refcount > 1）自然不可写，无需 `ev_reference` 设置只读。Rust 重写中页表操作见 [15-pagefault.md](15-pagefault.md)。
 
 #### 3.3.4 unmap_page — 解除映射（替代 pb_unreferenced）
 
@@ -2182,5 +2182,5 @@ VFS 异步回调是独立于 PageSlot/VirRegion 设计的问题。Rust 重写不
 - [10-phys-pagestate.md](10-phys-pagestate.md) — PageFrames API（本文档的前置）
 - [12-memtype.md](12-memtype.md) — MemType trait 定义和各实现
 - [13-region-avl.md](13-region-avl.md) — 区域映射表（BTreeMap）组织与操作
-- [15-cow-mechanism.md](15-cow-mechanism.md) — CoW 机制详解
-- [16-pagefault.md](16-pagefault.md) — 页错误处理
+- [14-cow-mechanism.md](14-cow-mechanism.md) — CoW 机制详解
+- [15-pagefault.md](15-pagefault.md) — 页错误处理

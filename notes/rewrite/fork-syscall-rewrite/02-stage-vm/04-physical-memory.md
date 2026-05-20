@@ -1994,8 +1994,8 @@ src/ (顶层)
 - [05-vm-allocpage.md](05-vm-allocpage.md) - VM 页分配器（alloc_phys + vm_phys_to_virt）
 - [03-acl.md](03-acl.md) - ACL 权限控制
 - [08-slab-allocator.md](08-slab-allocator.md) - VM 内部使用 Slab
-- [17-vm-fork.md](17-vm-fork.md) - fork 时的内存分配
-- [19-vm-map.md](19-vm-map.md) - VM\_MAP 服务中的内存分配
+- [16-vm-fork.md](16-vm-fork.md) - fork 时的内存分配
+- [18-vm-map.md](18-vm-map.md) - VM\_MAP 服务中的内存分配
 
 ***
 

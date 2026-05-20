@@ -433,7 +433,7 @@ static struct vmproc *init_proc(endpoint_t ep_nr)
 
 > **Rust 实现差异**：Rust 使用 `u64`（64-bit）而非 C 的 `int`（32-bit），并通过 `#[cfg(feature = "vmstats")]` 条件编译。详见 [§5.1 VmProc 结构体](#51-vmproc-结构体)。
 
-> **详见**: [15-cow-mechanism.md](15-cow-mechanism.md) 的写时复制机制。
+> **详见**: [14-cow-mechanism.md](14-cow-mechanism.md) 的写时复制机制。
 
 ##### vm\_minor\_page\_fault / vm\_major\_page\_fault - 缺页统计
 
@@ -451,7 +451,7 @@ static struct vmproc *init_proc(endpoint_t ep_nr)
 
 **fork 时的处理**: 子进程初始化为 0，开始独立统计自己的缺页情况。
 
-> **详见**: [16-pagefault.md](16-pagefault.md) 的页错误处理。
+> **详见**: [15-pagefault.md](15-pagefault.md) 的页错误处理。
 
 ***
 
@@ -1166,7 +1166,7 @@ child.copy_acl_from(&parent);
 | 页表初始化  | `pt_new()` 创建新页表                             | `init_page_table()` 创建新页表          |
 | ACL 复制   | `acl_fork()`                                    | `copy_acl_from()`                     |
 
-> **注意**: Minix3 使用 `*vmc = *vmp` 整体复制后逐字段修正，Rust 使用逐字段显式复制。Rust 的方式更安全（避免 origpt 保存/恢复问题），但需要确保所有必要字段都被复制。详见 [17-vm-fork.md](17-vm-fork.md) 的 fork 实现对比。
+> **注意**: Minix3 使用 `*vmc = *vmp` 整体复制后逐字段修正，Rust 使用逐字段显式复制。Rust 的方式更安全（避免 origpt 保存/恢复问题），但需要确保所有必要字段都被复制。详见 [16-vm-fork.md](16-vm-fork.md) 的 fork 实现对比。
 
 **exit 流程**（通过 typestate API）:
 
@@ -1380,7 +1380,7 @@ if(map_proc_copy(vmc, vmp) != OK) {
 
 fork 失败后，child slot 在 VM 看来仍然是 `VMF_INUSE`，但实际上是个"脏"状态——`INUSE` 置位但进程不可用。Minix3 依赖 **PM 的隐式协议**保证安全：PM 知道 fork 失败了，不会再使用这个 slot；下次 fork 时 `*vmc = *vmp` 无条件覆盖，脏数据不会被观察到。
 
-**为什么 Minix3 不直接** **`clear_proc(vmc)`？** 完全可以——失败时 child 的状态完全可以安全清理。Minix3 没有这样做，纯粹是依赖单线程 + PM 隐式协议的"够用就行"设计。详见 [17-vm-fork.md](17-vm-fork.md) 的 fork 失败处理分析。
+**为什么 Minix3 不直接** **`clear_proc(vmc)`？** 完全可以——失败时 child 的状态完全可以安全清理。Minix3 没有这样做，纯粹是依赖单线程 + PM 隐式协议的"够用就行"设计。详见 [16-vm-fork.md](16-vm-fork.md) 的 fork 失败处理分析。
 
 **Rust typestate 体系下，`force_clear()`** **是必要操作**：
 

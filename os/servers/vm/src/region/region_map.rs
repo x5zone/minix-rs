@@ -5,6 +5,7 @@
 //! providing the same O(log n) semantics with standard library quality.
 
 use super::vir_region::VirRegion;
+use super::page_state::PAGE_SIZE;
 use minix_types::VirBytes;
 use alloc::collections::BTreeMap;
 use core::ops::Bound;
@@ -59,24 +60,14 @@ impl RegionMap {
     }
 
     pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {
-        let contains = self
+        let key = self
             .regions
             .range(..=addr)
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
-            .is_some();
+            .map(|(k, _)| *k)?;
 
-        if contains {
-            let key = self
-                .regions
-                .range(..=addr)
-                .next_back()
-                .map(|(k, _)| *k)
-                .unwrap();
-            self.regions.get_mut(&key)
-        } else {
-            None
-        }
+        self.regions.get_mut(&key)
     }
 
     pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
@@ -118,10 +109,15 @@ impl RegionMap {
     }
 
     pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
-        self.regions
-            .iter()
-            .find(|(_, r)| r.overlaps(start, end))
-            .map(|(_, r)| r)
+        for (_, r) in self.regions.range(..end) {
+            if r.overlaps(start, end) {
+                return Some(r);
+            }
+            if r.vaddr >= end {
+                break;
+            }
+        }
+        None
     }
 
     pub(crate) fn find_all_overlaps<'a>(
@@ -130,7 +126,7 @@ impl RegionMap {
         end: VirBytes,
     ) -> impl Iterator<Item = &'a VirRegion> {
         self.regions
-            .iter()
+            .range(..end)
             .filter(move |(_, r)| r.overlaps(start, end))
             .map(|(_, r)| r)
     }
@@ -155,35 +151,39 @@ impl RegionMap {
             return None;
         }
 
+        let try_gap = |gap_start: VirBytes, gap_end: VirBytes| -> Option<VirBytes> {
+            let frstart = gap_start.max(minv);
+            let frend = gap_end.min(maxv);
+            if frend.0 > frstart.0 && frend.0.saturating_sub(frstart.0) >= length.0 {
+                let aligned_start = (frstart.0 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let aligned_end = frend.0 & !(PAGE_SIZE - 1);
+                if aligned_end > aligned_start
+                    && aligned_end.saturating_sub(aligned_start) >= length.0
+                {
+                    return Some(VirBytes(aligned_end - length.0));
+                }
+                return Some(VirBytes(frend.0 - length.0));
+            }
+            None
+        };
+
         let mut prev_end = minv;
 
         for region in self.iter() {
             if region.vaddr >= prev_end {
-                let gap_start = prev_end.max(minv);
-                let gap_end = region.vaddr.min(maxv);
-
-                if gap_end.0 > gap_start.0
-                    && gap_end.0.saturating_sub(gap_start.0) >= length.0
-                {
-                    return Some(VirBytes(gap_end.0 - length.0));
+                if let Some(addr) = try_gap(prev_end, region.vaddr) {
+                    return Some(addr);
                 }
             }
 
             prev_end = region.end_addr().max(prev_end);
         }
 
-        let gap_start = prev_end.max(minv);
-        if maxv.0 > gap_start.0
-            && maxv.0.saturating_sub(gap_start.0) >= length.0
-        {
-            return Some(VirBytes(maxv.0 - length.0));
-        }
-
-        None
+        try_gap(prev_end, maxv)
     }
 
-    pub(crate) fn insert(&mut self, region: VirRegion) {
-        self.regions.insert(region.vaddr, region);
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion> {
+        self.regions.insert(region.vaddr, region)
     }
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {

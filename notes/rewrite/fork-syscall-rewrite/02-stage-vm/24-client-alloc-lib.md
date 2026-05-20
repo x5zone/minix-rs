@@ -1,4 +1,4 @@
-# 25-client-alloc-lib: 其他服务器怎么用 VM 分配内存
+# 24-client-alloc-lib: 其他服务器怎么用 VM 分配内存
 
 > **分类**: VM客户端库
 > **源码**: `minix3/minix/lib/libsys/alloc_util.c`, `vm_map_phys.c`, `vm_cache.c`
@@ -49,9 +49,9 @@ VM 不仅是用户进程的内存管理器，也是**整个系统中所有服务
 
 | 文档 | 关系 |
 |------|------|
-| 23-vm-munmap | `VM_MAP_PHYS` / `VM_UNMAP_PHYS` 的服务端实现 |
-| 24-vfs-interaction | `VM_MAPCACHEPAGE` / `VM_SETCACHEPAGE` 的 VFS 协作 |
-| 22-vm-brk-complete | `VM_BRK` 的服务端实现 |
+| 22-vm-munmap | `VM_MAP_PHYS` / `VM_UNMAP_PHYS` 的服务端实现 |
+| 23-vfs-interaction | `VM_MAPCACHEPAGE` / `VM_SETCACHEPAGE` 的 VFS 协作 |
+| 21-vm-brk-complete | `VM_BRK` 的服务端实现 |
 | 08 slab 分配器 | VM 自身使用 slab 分配内核堆 |
 
 ---
@@ -571,8 +571,8 @@ pub(crate) fn ipc_vm_unmap_phys(
 | `ReservedRegion` | ❌ 已删除 | 已删除，Direct Map 下不需要 |
 | `CriticalPool` | ✅ 已实现 | 紧急内存池 |
 | `do_mmap()` | ❌ 不存在 | 需要实现 |
-| `do_map_phys()` | ❌ 不存在 | 23-vm-munmap 中有设计 |
-| `do_munmap()` | ❌ 不存在 | 23-vm-munmap 中有设计 |
+| `do_map_phys()` | ❌ 不存在 | 22-vm-munmap 中有设计 |
+| `do_munmap()` | ❌ 不存在 | 22-vm-munmap 中有设计 |
 | `do_mapcache()` | ❌ 不存在 | 需要实现 |
 | IPC 分发 | ❌ 不存在 | 需要实现主循环的消息分发 |
 

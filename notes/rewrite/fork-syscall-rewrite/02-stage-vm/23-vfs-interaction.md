@@ -1,4 +1,4 @@
-# 24-vfs-interaction: VM 与 VFS 的异步对话
+# 23-vfs-interaction: VM 与 VFS 的异步对话
 
 > **分类**: VM服务
 > **源码**: `minix3/minix/servers/vm/vfs.c`, `fdref.c`, `mem_file.c`, `mmap.c`
@@ -48,8 +48,8 @@ VM 管理内存，VFS 管理文件。当两者交汇时——**文件映射（mm
 
 | 文档 | 关系 |
 |------|------|
-| 20-cow-exec-pagefault | exec 缺页也需要 VFS 交互 |
-| 23-vm-munmap | munmap 文件映射区域时调用 fdref_deref → vfs_request(FDCLOSE) |
+| 19-cow-exec-pagefault | exec 缺页也需要 VFS 交互 |
+| 22-vm-munmap | munmap 文件映射区域时调用 fdref_deref → vfs_request(FDCLOSE) |
 | 14-phys-region | PhysBlock 引用计数在文件映射中的特殊处理 |
 | 12-vir-region | VrParam::File 存储文件映射参数 |
 
@@ -502,7 +502,7 @@ static void mmap_file_cont(struct vmproc *vmp, message *replymsg,
 
 | 组件 | 现有状态 | VFS 交互需要 |
 |------|---------|------------|
-| `MemType` trait | ✅ 已有 `on_pagefault` 签名 | 需要支持异步返回 |
+| `MemType` trait | ✅ 已有 `ev_pagefault` 签名 | 需要支持异步返回 |
 | `AnonymousMemory` | ✅ 已实现 | 不需要 VFS |
 | `DirectPhysical` | ✅ 已实现 | 不需要 VFS |
 | `SharedMemory` | ✅ 已实现 | 不需要 VFS |
@@ -547,12 +547,12 @@ struct FdRef(Arc<FdRefInner>);
 struct MappedFile;
 
 impl MemType for MappedFile {
-    fn on_pagefault(&self, ...) -> Result<PagefaultResult, MemTypeError> {
+    fn ev_pagefault(&self, ...) -> Result<PagefaultResult, MemTypeError> {
         // 查缓存 → 未命中 → 返回 NeedVfsIo
     }
-    fn on_split(&self, ...) { /* 调整 offset, 增加 fdref */ }
-    fn on_low_shrink(&self, ...) { /* offset += len */ }
-    fn on_delete(&self, ...) { /* fdref_deref */ }
+    fn ev_split(&self, ...) { /* 调整 offset, 增加 fdref */ }
+    fn ev_low_shrink(&self, ...) { /* offset += len */ }
+    fn ev_delete(&self, ...) { /* fdref_deref */ }
 }
 ```
 
@@ -767,11 +767,11 @@ impl MemType for MappedFile {
         "file-mapped memory"
     }
 
-    fn is_writable(&self, _pr: &crate::region::PhysRegion) -> bool {
+    fn writable(&self, _pr: &crate::region::PhysRegion) -> bool {
         false  // 文件映射页初始只读，写入触发 CoW
     }
 
-    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+    fn ev_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
         let refcount = pr.get_refcount().unwrap_or(0);
         if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
             Ok(true)  // 释放物理页
@@ -780,7 +780,7 @@ impl MemType for MappedFile {
         }
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
@@ -800,7 +800,7 @@ impl MemType for MappedFile {
         Ok(PagefaultResult::NeedCow)
     }
 
-    fn on_split(
+    fn ev_split(
         &self,
         _proc: &mut ActiveProc<'_>,
         original: &crate::region::VirRegion,
@@ -830,7 +830,7 @@ impl MemType for MappedFile {
         }
     }
 
-    fn on_low_shrink(
+    fn ev_low_shrink(
         &self,
         region: &mut crate::region::VirRegion,
         len: VirBytes,
@@ -841,7 +841,7 @@ impl MemType for MappedFile {
         Ok(())
     }
 
-    fn on_delete(&self, region: &mut crate::region::VirRegion) {
+    fn ev_delete(&self, region: &mut crate::region::VirRegion) {
         // 将 fdref 设为 None，触发 Arc 的 drop
         if let VrParam::File { fdref, inited, .. } = &mut region.param {
             *fdref = None;
@@ -849,7 +849,7 @@ impl MemType for MappedFile {
         }
     }
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         src: &crate::region::VirRegion,
         dst: &mut crate::region::VirRegion,
@@ -1088,7 +1088,7 @@ impl PhysRegion {
 
 **MappedFile 是唯一需要 VFS 交互的 memtype**。其他 memtype 的缺页处理完全在 VM 内部完成。这就是 memtype 抽象的另一个好处：VFS 交互逻辑被封装在 `MappedFile` 中，不影响其他 memtype。
 
-### 7.3 与 20-cow-exec-pagefault 的关系
+### 7.3 与 19-cow-exec-pagefault 的关系
 
 exec 加载可执行文件时也需要 VFS 交互（读取 ELF 段）。但 exec 使用不同的机制：
 

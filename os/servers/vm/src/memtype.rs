@@ -1,24 +1,32 @@
-//! Memory type system (方案三：PFN 索引模型).
+//! Memory type system (PFN index model).
 //!
 //! MemType trait uses `PageSlot + PageFrames` instead of `PhysRegion`.
 
 use minix_types::VirBytes;
+use minix_arch::paging::PageFlags;
 use crate::vmproc::ActiveProc;
 use crate::region::{PageFrames, PageSlot};
 
 pub(crate) trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
 
+    // C NULL → skip init. Default Ok(()): framework handles page allocation.
     fn ev_new(&self, _region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
         Ok(())
     }
 
+    // C NULL → skip cleanup. Default no-op: framework releases resources.
     fn ev_delete(&self, _region: &mut crate::region::VirRegion) {}
 
-    fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) {}
+    // C NULL → skip reference. PageFrames manages refcount in PFN model, default no-op.
+    fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) -> Result<(), MemTypeError> {
+        Ok(())
+    }
 
+    // C implementations free physical pages here. PfnAllocator handles this in PFN model, default no-op.
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
+    // All C types implement this (no NULL). Default Handled; complex types must override.
     fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
@@ -30,6 +38,7 @@ pub(crate) trait MemType: Send + Sync {
         Ok(PagefaultResult::Handled)
     }
 
+    // C NULL → generic resize logic. Default Ok(()): framework handles page allocation.
     fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
@@ -39,23 +48,27 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
+    // C NULL → EINVAL (region.c:1164). Default Err(NotSupported).
     fn ev_split(
         &self,
         _proc: &ActiveProc<'_>,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
-    ) {
+    ) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
     }
 
+    // C NULL → EINVAL (region.c:1096). Default Err(NotSupported).
     fn ev_low_shrink(
         &self,
         _region: &mut crate::region::VirRegion,
         _len: VirBytes,
     ) -> Result<(), MemTypeError> {
-        Ok(())
+        Err(MemTypeError::NotSupported)
     }
 
+    // C NULL → skip. No runtime checks needed in PFN model.
     fn ev_sanitycheck(
         &self,
         _frames: &PageFrames,
@@ -64,10 +77,12 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
-    fn writable(&self, _frames: &PageFrames, _slot: PageSlot) -> bool {
+    // All C types implement this (no NULL). Default false; AnonymousMemory overrides for CoW check.
+    fn writable(&self, _frames: &PageFrames, _slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         false
     }
 
+    // C NULL → skip copy specialization. Default Ok(()).
     fn ev_copy(
         &self,
         _src: &crate::region::VirRegion,
@@ -76,16 +91,19 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
+    // C NULL → return 0. Default 0.
     fn region_id(&self, _region: &crate::region::VirRegion) -> u32 {
         0
     }
 
+    // C NULL → return 0. Default 0. AnonymousMemory overrides with 1+remaps.
     fn ref_count(&self, _region: &crate::region::VirRegion) -> i32 {
         0
     }
 
-    fn pt_flags(&self, _region: &crate::region::VirRegion) -> i32 {
-        0
+    // C NULL → return 0 (default caching). Default empty(). DirectPhysical etc. override with NO_CACHE.
+    fn pt_flags(&self, _region: &crate::region::VirRegion) -> PageFlags {
+        PageFlags::empty()
     }
 }
 
@@ -137,9 +155,12 @@ impl MemType for AnonymousMemory {
         "anonymous memory"
     }
 
-    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
+    fn writable(&self, frames: &PageFrames, slot: PageSlot, region: &crate::region::VirRegion) -> bool {
         if !slot.is_mapped() {
             return false;
+        }
+        if region.remaps > 0 {
+            return true;
         }
         frames.get(slot.pfn)
             .map(|s| s.refcount == 1)
@@ -148,7 +169,7 @@ impl MemType for AnonymousMemory {
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {
         // Physical page freeing is the caller's responsibility via PfnAllocator::free_pfn().
-        // Minix3's mem_anon.c ev_unreference frees the page here, but in 方案三
+        // Minix3's mem_anon.c ev_unreference frees the page here, but in the PFN model
         // the separation of concerns means PageFrames only tracks refcount/flags,
         // and PfnAllocator handles allocation/deallocation.
     }
@@ -196,6 +217,26 @@ impl MemType for AnonymousMemory {
     fn ref_count(&self, region: &crate::region::VirRegion) -> i32 {
         1 + region.remaps
     }
+
+    fn ev_split(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _original: &crate::region::VirRegion,
+        _left: &mut crate::region::VirRegion,
+        _right: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's anon_split is a no-op (return).
+        Ok(())
+    }
+
+    fn ev_low_shrink(
+        &self,
+        _region: &mut crate::region::VirRegion,
+        _len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's anon_lowshrink is a no-op (return OK).
+        Ok(())
+    }
 }
 
 pub(crate) struct DirectPhysical;
@@ -217,7 +258,7 @@ impl MemType for DirectPhysical {
         "physical memory mapping"
     }
 
-    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
     }
 
@@ -225,7 +266,7 @@ impl MemType for DirectPhysical {
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
-        _frames: &mut PageFrames,
+        frames: &mut PageFrames,
         offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
@@ -235,18 +276,20 @@ impl MemType for DirectPhysical {
             }
             let slot = region.get_slot(offset);
             match slot {
-                None => {
-                    return Ok(PagefaultResult::NeedNewPage);
-                }
-                Some(s) if !s.is_mapped() => {
-                    return Ok(PagefaultResult::NeedNewPage);
-                }
-                _ => {
+                Some(s) if s.is_mapped() => {
                     return Ok(PagefaultResult::Handled);
                 }
+                _ => {}
             }
+            let phys_addr = minix_types::PhysBytes(base_phys.0 + offset.0);
+            let pfn = frames.phys_to_pfn(phys_addr);
+            let memtype = region.def_memtype
+                .ok_or(MemTypeError::InvalidParam)?;
+            region.map_page(frames, offset, pfn, memtype);
+            Ok(PagefaultResult::Handled)
+        } else {
+            Err(MemTypeError::InvalidParam)
         }
-        Err(MemTypeError::InvalidParam)
     }
 
     fn ev_copy(
@@ -259,6 +302,22 @@ impl MemType for DirectPhysical {
     }
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
+
+    fn pt_flags(&self, _region: &crate::region::VirRegion) -> PageFlags {
+        PageFlags::NO_CACHE
+    }
+
+    fn ev_split(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _original: &crate::region::VirRegion,
+        _left: &mut crate::region::VirRegion,
+        _right: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's mem_type_directphys has no ev_split (NULL → EINVAL).
+        // Direct physical mapping does not support split; use default Err(NotSupported).
+        Err(MemTypeError::NotSupported)
+    }
 }
 
 pub(crate) struct SharedMemory;
@@ -280,7 +339,7 @@ impl MemType for SharedMemory {
         "shared memory"
     }
 
-    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
     }
 
@@ -293,6 +352,28 @@ impl MemType for SharedMemory {
     ) -> Result<(), MemTypeError> {
         dst.param = src.param.clone();
         Ok(())
+    }
+
+    fn ev_split(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _original: &crate::region::VirRegion,
+        _left: &mut crate::region::VirRegion,
+        _right: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's mem_type_shared has no ev_split (NULL → EINVAL).
+        // Shared memory does not support split; use default Err(NotSupported).
+        Err(MemTypeError::NotSupported)
+    }
+
+    fn ev_low_shrink(
+        &self,
+        _region: &mut crate::region::VirRegion,
+        _len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's mem_type_shared has no ev_lowshrink (NULL → EINVAL).
+        // Shared memory does not support low_shrink; use default Err(NotSupported).
+        Err(MemTypeError::NotSupported)
     }
 }
 
@@ -315,8 +396,29 @@ impl MemType for ContiguousAnonymous {
         "contiguous anonymous memory"
     }
 
-    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
+    }
+
+    fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
+    }
+
+    fn ev_resize(
+        &self,
+        _proc: &mut ActiveProc<'_>,
+        _region: &mut crate::region::VirRegion,
+        _new_len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
+    }
+
+    fn ev_copy(
+        &self,
+        _src: &crate::region::VirRegion,
+        _dst: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
     }
 
     fn ev_new(&self, region: &mut crate::region::VirRegion) -> Result<(), MemTypeError> {
@@ -332,7 +434,7 @@ impl MemType for ContiguousAnonymous {
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
-        offset: VirBytes,
+        _offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
         Ok(PagefaultResult::NeedNewPage)
@@ -340,6 +442,21 @@ impl MemType for ContiguousAnonymous {
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {
         // Physical page freeing is the caller's responsibility via PfnAllocator::free_pfn().
+    }
+
+    fn pt_flags(&self, _region: &crate::region::VirRegion) -> PageFlags {
+        PageFlags::NO_CACHE
+    }
+
+    fn ev_split(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _original: &crate::region::VirRegion,
+        _left: &mut crate::region::VirRegion,
+        _right: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        // Minix3's anon_contig_split is a no-op (return).
+        Ok(())
     }
 }
 
@@ -362,13 +479,8 @@ impl MemType for CacheMemory {
         "cache memory"
     }
 
-    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
-        if !slot.is_mapped() {
-            return false;
-        }
-        frames.get(slot.pfn)
-            .map(|s| s.refcount == 1)
-            .unwrap_or(false)
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
+        slot.is_mapped()
     }
 
     fn ev_pagefault(
@@ -376,18 +488,36 @@ impl MemType for CacheMemory {
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
-        offset: VirBytes,
-        write: bool,
+        _offset: VirBytes,
+        _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
         Ok(PagefaultResult::NeedNewPage)
     }
 
-    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
+    fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {
+    }
+
+    fn ev_resize(
+        &self,
+        _proc: &mut ActiveProc<'_>,
+        _region: &mut crate::region::VirRegion,
+        _new_len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        Err(MemTypeError::NotSupported)
+    }
 
     fn ev_delete(&self, region: &mut crate::region::VirRegion) {
         if let crate::region::VrParam::PbCache { pfn } = &mut region.param {
             *pfn = 0;
         }
+    }
+
+    fn ev_low_shrink(
+        &self,
+        _region: &mut crate::region::VirRegion,
+        _len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        Ok(())
     }
 }
 
@@ -410,13 +540,8 @@ impl MemType for MappedFile {
         "mapped file"
     }
 
-    fn writable(&self, frames: &PageFrames, slot: PageSlot) -> bool {
-        if !slot.is_mapped() {
-            return false;
-        }
-        frames.get(slot.pfn)
-            .map(|s| s.refcount == 1)
-            .unwrap_or(false)
+    fn writable(&self, _frames: &PageFrames, _slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
+        false
     }
 
     fn ev_pagefault(
@@ -434,10 +559,31 @@ impl MemType for MappedFile {
 
     fn ev_copy(
         &self,
-        _src: &crate::region::VirRegion,
-        _dst: &mut crate::region::VirRegion,
+        src: &crate::region::VirRegion,
+        dst: &mut crate::region::VirRegion,
     ) -> Result<(), MemTypeError> {
-        Err(MemTypeError::NotSupported)
+        dst.param = src.param.clone();
+        Ok(())
+    }
+
+    fn ev_split(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _original: &crate::region::VirRegion,
+        _left: &mut crate::region::VirRegion,
+        _right: &mut crate::region::VirRegion,
+    ) -> Result<(), MemTypeError> {
+        // TODO: Minix3's mappedfile_split copies vm_region_param.
+        Ok(())
+    }
+
+    fn ev_low_shrink(
+        &self,
+        _region: &mut crate::region::VirRegion,
+        _len: VirBytes,
+    ) -> Result<(), MemTypeError> {
+        // TODO: Minix3's mappedfile_lowshrink adjusts vm_region_param offset.
+        Ok(())
     }
 }
 
@@ -505,14 +651,14 @@ mod tests {
         region.map_page(&mut frames, minix_types::VirBytes(0), pfn, &MEM_TYPE_ANON);
         let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
 
-        assert!(MEM_TYPE_ANON.writable(&frames, *slot));
+        assert!(MEM_TYPE_ANON.writable(&frames, *slot, &region));
 
         frames.get_mut(pfn).unwrap().refcount = 2;
-        assert!(!MEM_TYPE_ANON.writable(&frames, *slot));
+        assert!(!MEM_TYPE_ANON.writable(&frames, *slot, &region));
     }
 
     #[test]
-    fn test_mapped_file_copy_not_supported() {
+    fn test_mapped_file_copy() {
         let mf = MappedFile::new();
         let src = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
@@ -524,6 +670,6 @@ mod tests {
             minix_types::VirBytes(0x1000),
             crate::region::VrFlags::empty(),
         );
-        assert_eq!(mf.ev_copy(&src, &mut dst), Err(MemTypeError::NotSupported));
+        assert_eq!(mf.ev_copy(&src, &mut dst), Ok(()));
     }
 }

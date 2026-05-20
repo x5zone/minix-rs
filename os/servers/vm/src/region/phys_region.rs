@@ -158,7 +158,7 @@ impl PhysRegion {
 
     pub(crate) fn is_writable(&self) -> bool {
         if let Some(memtype) = self.memtype {
-            memtype.is_writable(self)
+            memtype.writable(self)
         } else {
             match self.get_refcount() {
                 Some(1) => true,

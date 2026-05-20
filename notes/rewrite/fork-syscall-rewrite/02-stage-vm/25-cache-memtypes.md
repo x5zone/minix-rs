@@ -1,4 +1,4 @@
-# 26-cache-memtypes: 缓存、共享内存、连续内存
+# 25-cache-memtypes: 缓存、共享内存、连续内存
 
 > **分类**: MemType 补全
 > **源码**: `minix3/minix/servers/vm/cache.c`, `mem_cache.c`, `mem_shared.c`, `mem_anon_contig.c`
@@ -514,10 +514,10 @@ static int anon_contig_new(struct vir_region *region)
 |------|------|------|
 | `AnonymousMemory` | ✅ 已实现 | 基本功能完整 |
 | `DirectPhysical` | ✅ 已实现 | 基本功能完整 |
-| `SharedMemory` | ⚠️ 骨架 | 缺少 `on_pagefault`、`on_copy` 的实际逻辑 |
+| `SharedMemory` | ⚠️ 骨架 | 缺少 `ev_pagefault`、`ev_copy` 的实际逻辑 |
 | `ContiguousAnonymous` | ❌ 不存在 | 需要新增 |
 | `CacheMemory` | ❌ 不存在 | 需要新增 |
-| `MappedFile` | ❌ 不存在 | 24-vfs-interaction 中已设计 |
+| `MappedFile` | ❌ 不存在 | 23-vfs-interaction 中已设计 |
 | `PageCache` 数据结构 | ❌ 不存在 | 需要新增 |
 | `VrParam::PbCache` | ✅ 已存在 | 缓存预加载指针 |
 
@@ -684,7 +684,7 @@ impl MemType for CacheMemory {
         "cache memory"
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
@@ -708,11 +708,11 @@ impl MemType for CacheMemory {
         }
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+    fn writable(&self, pr: &crate::region::PhysRegion) -> bool {
         pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
-    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+    fn ev_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
         let refcount = pr.get_refcount().unwrap_or(0);
         if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
             Ok(true)
@@ -721,7 +721,7 @@ impl MemType for CacheMemory {
         }
     }
 
-    fn on_resize(
+    fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
@@ -742,7 +742,7 @@ impl MemType for ContiguousAnonymous {
         "anonymous memory (physically contiguous)"
     }
 
-    fn on_new(
+    fn ev_new(
         &self,
         region: &mut crate::region::VirRegion,
     ) -> Result<(), MemTypeError> {
@@ -754,7 +754,7 @@ impl MemType for ContiguousAnonymous {
         Ok(())
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
@@ -764,7 +764,7 @@ impl MemType for ContiguousAnonymous {
         panic!("contiguous anonymous pagefault: impossible, pages are pre-allocated");
     }
 
-    fn on_reference(
+    fn ev_reference(
         &self,
         _src: &crate::region::PhysRegion,
         _dst: &mut crate::region::PhysRegion,
@@ -772,7 +772,7 @@ impl MemType for ContiguousAnonymous {
         Err(MemTypeError::NotSupported)
     }
 
-    fn on_resize(
+    fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
         _region: &mut crate::region::VirRegion,
@@ -781,7 +781,7 @@ impl MemType for ContiguousAnonymous {
         Err(MemTypeError::NotSupported)
     }
 
-    fn on_split(
+    fn ev_split(
         &self,
         _proc: &ActiveProc<'_>,
         _original: &crate::region::VirRegion,
@@ -790,7 +790,7 @@ impl MemType for ContiguousAnonymous {
     ) {
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+    fn writable(&self, pr: &crate::region::PhysRegion) -> bool {
         if let Some(parent) = pr.parent {
             unsafe {
                 if (*parent.as_ptr()).remaps > 0 {
@@ -802,7 +802,7 @@ impl MemType for ContiguousAnonymous {
             && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
-    fn on_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+    fn ev_unreference(&self, pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
         let refcount = pr.get_refcount().unwrap_or(0);
         if refcount == 0 && pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE {
             Ok(true)
@@ -815,7 +815,7 @@ impl MemType for ContiguousAnonymous {
 
 ### 6.5 SharedMemory 补全
 
-现有 `SharedMemory` 骨架需要补全 `on_pagefault` 和 `on_copy`：
+现有 `SharedMemory` 骨架需要补全 `ev_pagefault` 和 `ev_copy`：
 
 ```rust
 impl MemType for SharedMemory {
@@ -823,7 +823,7 @@ impl MemType for SharedMemory {
         "shared memory"
     }
 
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,
@@ -858,7 +858,7 @@ impl MemType for SharedMemory {
         Ok(PagefaultResult::Handled)
     }
 
-    fn on_copy(
+    fn ev_copy(
         &self,
         src: &crate::region::VirRegion,
         dst: &mut crate::region::VirRegion,
@@ -868,15 +868,15 @@ impl MemType for SharedMemory {
         Ok(())
     }
 
-    fn on_delete(&self, region: &mut crate::region::VirRegion) {
+    fn ev_delete(&self, region: &mut crate::region::VirRegion) {
         // 需要减少源区域的 remaps
     }
 
-    fn is_writable(&self, pr: &crate::region::PhysRegion) -> bool {
+    fn writable(&self, pr: &crate::region::PhysRegion) -> bool {
         pr.get_phys_addr().unwrap_or(PhysBlock::MAP_NONE) != PhysBlock::MAP_NONE
     }
 
-    fn on_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
+    fn ev_unreference(&self, _pr: &mut crate::region::PhysRegion) -> Result<bool, MemTypeError> {
         Ok(false)
     }
 
@@ -901,7 +901,7 @@ pub(crate) static MEM_TYPE_DIRECT: DirectPhysical = DirectPhysical::new();
 pub(crate) static MEM_TYPE_SHARED: SharedMemory = SharedMemory::new();
 pub(crate) static MEM_TYPE_CONTIG: ContiguousAnonymous = ContiguousAnonymous;
 pub(crate) static MEM_TYPE_CACHE: CacheMemory = CacheMemory;
-// MEM_TYPE_MAPPEDFILE 在 24-vfs-interaction 中设计
+// MEM_TYPE_MAPPEDFILE 在 23-vfs-interaction 中设计
 ```
 
 ---
@@ -1054,7 +1054,7 @@ Minix3 中有一个重要的模式：**memtype 就地切换**。
 /* do_setcache 中 */
 phys_region->memtype = &mem_type_cache;  /* anon → cache */
 
-/* mappedfile_pagefault 中（24-vfs-interaction） */
+/* mappedfile_pagefault 中（23-vfs-interaction） */
 cow_block(vmp, region, ph, 0);
 /* cow_block 内部: ph->memtype = &mem_type_anon;  /* file → anon */
 ```

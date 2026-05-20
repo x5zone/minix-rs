@@ -20,19 +20,22 @@ pub(crate) fn fork_region(
     dst.id = src.id;
     dst.param = src.param.clone();
 
+    if let Some(mt) = src.def_memtype {
+        mt.ev_copy(src, &mut dst)?;
+    }
+
     for (i, slot_opt) in src.physblocks.iter().enumerate() {
         if let Some(slot) = slot_opt {
             if slot.is_mapped() {
                 if let Some(state) = frames.get_mut(slot.pfn) {
                     state.refcount = state.refcount.saturating_add(1);
                 }
+                if let Some(mt) = slot.memtype {
+                    mt.ev_reference(frames, *slot)?;
+                }
             }
             dst.physblocks[i] = Some(*slot);
         }
-    }
-
-    if let Some(mt) = src.def_memtype {
-        mt.ev_copy(src, &mut dst)?;
     }
 
     dst.set_writable(false);
@@ -52,6 +55,10 @@ pub(crate) fn fork_regions(
     Ok(dst_regions)
 }
 
+/// Resolve CoW for a single page within a region (fork helper).
+///
+/// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
+/// `ForkError`.
 pub(crate) fn cow_copy_page(
     region: &mut VirRegion,
     frames: &mut PageFrames,

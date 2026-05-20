@@ -1,4 +1,4 @@
-# 23-vm-munmap: 取消映射与物理内存映射
+# 22-vm-munmap: 取消映射与物理内存映射
 
 > **分类**: VM服务
 > **源码**: `minix3/minix/servers/vm/mmap.c`, `region.c:map_unmap_region/range`, `mem_directphys.c`
@@ -27,8 +27,8 @@ munmap 和 map_phys 是一对互补操作：
 
 | 文档 | 关系 |
 |------|------|
-| 22-vm-brk-complete | brk 收缩使用 `free_range()`，与 munmap 的 `map_subfree` 逻辑类似 |
-| 21-vm-exit | `map_free_proc()` 释放所有区域，是 munmap 的"全部取消"特例 |
+| 21-vm-brk-complete | brk 收缩使用 `free_range()`，与 munmap 的 `map_subfree` 逻辑类似 |
+| 20-vm-exit | `map_free_proc()` 释放所有区域，是 munmap 的"全部取消"特例 |
 | 14-phys-region | `pb_unreferenced()` 是 munmap 释放物理页的核心 |
 | 13-region-avl | AVL 树搜索、插入、删除操作 |
 | 12-vir-region | VirRegion 结构和 split 操作 |
@@ -545,7 +545,7 @@ Minix3 使用 `memmove` 调整 physblocks 数组。Rust 中 `Vec` 的 `drain()` 
 
 **原则 4：map_phys 不分配物理页**
 
-与 Minix3 一致，`DirectPhysical` 的 `on_pagefault` 只计算物理地址，不分配新页。`on_unreference` 不释放物理页。
+与 Minix3 一致，`DirectPhysical` 的 `ev_pagefault` 只计算物理地址，不分配新页。`ev_unreference` 不释放物理页。
 
 ### 3.3 与 Minix3 的关键差异
 
@@ -726,7 +726,7 @@ fn unmap_region(
             .ok_or(MunmapError::InternalError)?;
 
         if let Some(memtype) = region.def_memtype {
-            memtype.on_delete(&mut region.clone());
+            memtype.ev_delete(&mut region.clone());
         }
         // region 被 drop，PhysRegion 的 Drop 会处理引用计数
 
@@ -737,7 +737,7 @@ fn unmap_region(
 
         // 调用 on_low_shrink
         if let Some(memtype) = region.def_memtype {
-            memtype.on_low_shrink(&mut region.clone(), len)
+            memtype.ev_low_shrink(&mut region.clone(), len)
                 .map_err(|_| MunmapError::LowShrinkFailed)?;
         }
 
@@ -843,7 +843,7 @@ pub fn do_map_phys(
 
     // 4. 调用 on_new
     if let Some(memtype) = region.def_memtype {
-        memtype.on_new(&mut region)
+        memtype.ev_new(&mut region)
             .map_err(|_| MapPhysError::NewRegionFailed)?;
     }
 
@@ -861,7 +861,7 @@ pub fn do_map_phys(
 
 ```rust
 impl MemType for DirectPhysical {
-    fn on_pagefault(
+    fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
         region: &mut crate::region::VirRegion,

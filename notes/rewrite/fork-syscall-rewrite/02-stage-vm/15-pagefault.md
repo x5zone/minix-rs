@@ -1,4 +1,4 @@
-# 16-pagefault: 页错误处理
+# 15-pagefault: 页错误处理
 
 > **分类**: VM私有  
 > **源码**: `minix3/minix/servers/vm/pagefaults.c`  
@@ -309,7 +309,7 @@ PFERR_NOPAGE(err) == true  // 页表项 Present 位为 0
 
 **栈扩展**
 
-Minix3 中栈区域的增长由 `do_brk()` 系统调用处理（见 [18-vm-brk.md](18-vm-brk.md)），而非在页错误处理中自动扩展。页错误处理中不包含栈自动增长逻辑——如果访问的地址不在任何已映射区域内，直接发送 SIGSEGV。
+Minix3 中栈区域的增长由 `do_brk()` 系统调用处理（见 [17-vm-brk.md](17-vm-brk.md)），而非在页错误处理中自动扩展。页错误处理中不包含栈自动增长逻辑——如果访问的地址不在任何已映射区域内，直接发送 SIGSEGV。
 
 > **注意**: Minix3 没有 `VR_GROWSDOWN` 或 `VR_GROWSUP` 标志。栈和数据段的增长由 `do_brk()` 管理，不是通过页错误触发的自动增长机制。
 
@@ -1425,7 +1425,7 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
 | 方案三（PtRegion） | 从 PtRegion 分配 VA → 写入 | 页表页需要特殊 VA 管理 |
 | 方案四（Direct Map） | `vm_phys_to_virt()` → 直接写入 | 物理页天然有 VA |
 
-读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 17-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
+读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 16-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
 
 ### 2.4 错误处理
 
@@ -2696,7 +2696,7 @@ pub fn handle_cow(
 
 **页面复制实现**
 
-> **Direct Map 统一性**: `vm_phys_to_virt()` 使物理页直接可操作。Minix3 中 `sys_abscopy` 是内核系统调用（VM 无法直接访问物理页）；方案 A 中 `vm_phys_to_virt()` 将物理地址转换为虚拟地址，复制变成一行 `copy_nonoverlapping`。这与 [15-cow-mechanism.md](15-cow-mechanism.md) 的 `mem_cow()` 简化是同一个范式转变。
+> **Direct Map 统一性**: `vm_phys_to_virt()` 使物理页直接可操作。Minix3 中 `sys_abscopy` 是内核系统调用（VM 无法直接访问物理页）；方案 A 中 `vm_phys_to_virt()` 将物理地址转换为虚拟地址，复制变成一行 `copy_nonoverlapping`。这与 [14-cow-mechanism.md](14-cow-mechanism.md) 的 `mem_cow()` 简化是同一个范式转变。
 
 **引用计数管理**
 
@@ -2916,7 +2916,7 @@ impl DemandLoadStats {
 
 栈扩展处理栈区域的自动增长，当访问超出当前栈边界时自动扩展。
 
-> **重要**: Minix3 不支持栈自动扩展。访问不在已映射区域内的地址会直接触发 SIGSEGV。栈和数据段的增长由 `do_brk()` 系统调用管理（见 [18-vm-brk.md](18-vm-brk.md)）。minix-rs 可考虑实现自动栈扩展作为改进。
+> **重要**: Minix3 不支持栈自动扩展。访问不在已映射区域内的地址会直接触发 SIGSEGV。栈和数据段的增长由 `do_brk()` 系统调用管理（见 [17-vm-brk.md](17-vm-brk.md)）。minix-rs 可考虑实现自动栈扩展作为改进。
 
 **栈区域特征**
 
@@ -3583,14 +3583,14 @@ if (need_disk_io) {
 
 ## 7. 参见
 
-- [15-cow-mechanism.md](15-cow-mechanism.md) - CoW 实现（mem_cow 详解）
-- [17-vm-fork.md](17-vm-fork.md) - fork 后的首次写入
+- [14-cow-mechanism.md](14-cow-mechanism.md) - CoW 实现（mem_cow 详解）
+- [16-vm-fork.md](16-vm-fork.md) - fork 后的首次写入
 - [11-region-mapping.md](11-region-mapping.md) - 区域查找与页映射（map_lookup 详解，替代原 vir_region + phys_region）
 - [13-region-avl.md](13-region-avl.md) - AVL 树实现（region_search 详解）
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态管理（PageState.refcount，替代原 pb_new/pb_link/pb_unreferenced）
 - [12-memtype.md](12-memtype.md) - 内存类型（mem_type 及 ev_pagefault 分派）
 - [05-vm-allocpage.md](05-vm-allocpage.md) - 物理内存分配（alloc_mem/SPAREPAGES）
-- [18-vm-brk.md](18-vm-brk.md) - 栈和数据段增长（do_brk）
+- [17-vm-brk.md](17-vm-brk.md) - 栈和数据段增长（do_brk）
 
 ---
 

@@ -265,7 +265,7 @@ VM: free_pages_bitmap[]               ← 阶段 4 产出
 │  ─────────────────────────                                          │
 │  ├── sef_local_startup()              ← SEF 框架初始化              │
 │  ├── 主循环开始                        ← 处理 IPC 请求               │
-│  │     → 对应文档: 10-phys-pagestate ~ 19-vm-map                        │
+│  │     → 对应文档: 10-phys-pagestate ~ 18-vm-map                        │
 │  └── 堆状态: ✅ 完全可用                                             │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -854,11 +854,11 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 | [11-region-mapping.md](11-region-mapping.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
 | [12-memtype.md](12-memtype.md) | 运行时 | ✅ 可用 | 可以使用堆 |
 | [13-region-avl.md](13-region-avl.md) | fork/mmap | ✅ 可用 | 可以使用 `Box` |
-| [15-cow-mechanism.md](15-cow-mechanism.md) | 页错误 | ✅ 可用 | 可以使用堆 |
-| [16-pagefault.md](16-pagefault.md) | 页错误 | ✅ 可用 | 可以使用堆 |
-| [17-vm-fork.md](17-vm-fork.md) | IPC | ✅ 可用 | 可以使用堆 |
-| [18-vm-brk.md](18-vm-brk.md) | IPC | ✅ 可用 | 可以使用堆 |
-| [19-vm-map.md](19-vm-map.md) | IPC | ✅ 可用 | 可以使用堆 |
+| [14-cow-mechanism.md](14-cow-mechanism.md) | 页错误 | ✅ 可用 | 可以使用堆 |
+| [15-pagefault.md](15-pagefault.md) | 页错误 | ✅ 可用 | 可以使用堆 |
+| [16-vm-fork.md](16-vm-fork.md) | IPC | ✅ 可用 | 可以使用堆 |
+| [17-vm-brk.md](17-vm-brk.md) | IPC | ✅ 可用 | 可以使用堆 |
+| [18-vm-map.md](18-vm-map.md) | IPC | ✅ 可用 | 可以使用堆 |
 
 **Rust 代码检查点**：
 - ✅ 可以自由使用 `Vec`, `Box`, `String`, `HashMap` 等
@@ -872,8 +872,8 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态
 - [11-region-mapping.md](11-region-mapping.md) - 虚拟区域与页映射
 - [13-region-avl.md](13-region-avl.md) - AVL 树
-- [15-cow-mechanism.md](15-cow-mechanism.md) - 写时复制
-- [16-pagefault.md](16-pagefault.md) - 页错误处理
+- [14-cow-mechanism.md](14-cow-mechanism.md) - 写时复制
+- [15-pagefault.md](15-pagefault.md) - 页错误处理
 
 ### 9.3 VM 库组件
 - [04-physical-memory.md](04-physical-memory.md) - 物理内存分配
@@ -882,9 +882,9 @@ let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
 - [12-memtype.md](12-memtype.md) - 内存类型系统
 
 ### 9.4 VM 服务组件
-- [17-vm-fork.md](17-vm-fork.md) - VM_FORK 服务
-- [18-vm-brk.md](18-vm-brk.md) - VM_BRK 服务
-- [19-vm-map.md](19-vm-map.md) - VM_MAP 服务
+- [16-vm-fork.md](16-vm-fork.md) - VM_FORK 服务
+- [17-vm-brk.md](17-vm-brk.md) - VM_BRK 服务
+- [18-vm-map.md](18-vm-map.md) - VM_MAP 服务
 
 ### 9.5 全局概念
 - [系统核心概念](../../concepts/README.md) - 全局概念文档（Endpoint、IPC 等）

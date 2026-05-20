@@ -224,7 +224,7 @@ impl VirRegion {
         match self.get_slot(offset) {
             Some(slot) if slot.is_mapped() => {
                 if let Some(mt) = slot.memtype {
-                    mt.writable(frames, *slot)
+                    mt.writable(frames, *slot, self)
                 } else {
                     frames.get(slot.pfn)
                         .map(|s| s.refcount == 1)

@@ -1,8 +1,8 @@
-# 20-cow-exec-pagefault: CoW 执行与页错误完整流程
+# 19-cow-exec-pagefault: CoW 执行与页错误完整流程
 
 > **分类**: VM服务
 > **源码**: `minix3/minix/servers/vm/pb.c`, `region.c`, `pagefaults.c`, `pagetable.c`
-> **说明**: 将 15-cow-mechanism 和 16-pagefault 的设计落地为可运行的实现——兑现 fork 留下的 CoW 悬念
+> **说明**: 将 14-cow-mechanism 和 15-pagefault 的设计落地为可运行的实现——兑现 fork 留下的 CoW 悬念
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### 1.1 本文档的定位
 
-15-cow-mechanism 描述了 CoW 的**机制设计**：引用计数、页表只读、mem_cow 流程。16-pagefault 描述了页错误的**处理框架**：错误类型、状态机、MemoryType 集成。两篇文档都有 Ch4（实现详解），但那些代码是**设计级伪代码**——展示了"应该怎么写"，但没有和现有代码库整合。
+14-cow-mechanism 描述了 CoW 的**机制设计**：引用计数、页表只读、mem_cow 流程。15-pagefault 描述了页错误的**处理框架**：错误类型、状态机、MemoryType 集成。两篇文档都有 Ch4（实现详解），但那些代码是**设计级伪代码**——展示了"应该怎么写"，但没有和现有代码库整合。
 
 本文档是**实现文档**：把 15/16 的设计落地为可编译、可运行的 Rust 代码，解决以下问题：
 
@@ -23,7 +23,7 @@
 
 ### 1.2 从 fork 的悬念说起
 
-17-vm-fork 以 fork 完成结束，但留下一个关键悬念：
+16-vm-fork 以 fork 完成结束，但留下一个关键悬念：
 
 ```
 fork 完成
@@ -62,7 +62,7 @@ execute_cow() 分配新页 → 复制数据 → 更新引用 → 更新页表
 ### 1.3 与 15/16 的关系
 
 ```
-15-cow-mechanism (设计)          16-pagefault (设计)
+14-cow-mechanism (设计)          15-pagefault (设计)
        │                              │
        │  mem_cow 设计                │  do_pagefaults 设计
        │  pb_reference/unref 设计     │  PageFaultState 设计
@@ -71,7 +71,7 @@ execute_cow() 分配新页 → 复制数据 → 更新引用 → 更新页表
        └──────────┬───────────────────┘
                   │
                   ▼
-         20-cow-exec-pagefault (实现)
+         19-cow-exec-pagefault (实现)
                   │
          ┌────────┼────────┐
          │        │        │
@@ -418,7 +418,7 @@ Rust 代码已有 `write_page_table_mappings()`（对应 `map_writept`），需�
 
 **原则 4：页错误处理不使用状态机**
 
-16-pagefault 设计了 `PageFaultState` 状态机，但 VM 是单线程事件循环，状态机增加了不必要的复杂度。20 使用简单的函数调用链：
+15-pagefault 设计了 `PageFaultState` 状态机，但 VM 是单线程事件循环，状态机增加了不必要的复杂度。20 使用简单的函数调用链：
 
 ```rust
 fn do_pagefaults(msg) → handle_pagefault(vmp, vaddr, write) → map_pf(vmp, region, offset, write)
@@ -607,7 +607,7 @@ fn handle_pagefault(
 
     // 5. 调用内存类型的页错误处理
     let result = if let Some(memtype) = pr.memtype {
-        memtype.on_pagefault(&vmp.as_active(), region, pr, write)?
+        memtype.ev_pagefault(&vmp.as_active(), region, pr, write)?
     } else {
         // 无 memtype，默认行为
         if pr.needs_cow() && write {
@@ -768,7 +768,7 @@ pub fn handle_pagefault(
         .ok_or(PageFaultError::InternalError)?;
 
     let result = if let Some(memtype) = pr.memtype {
-        memtype.on_pagefault(&vmp.as_active(), region, pr, write)
+        memtype.ev_pagefault(&vmp.as_active(), region, pr, write)
             .map_err(|_| PageFaultError::InternalError)?
     } else {
         if pr.needs_cow() && write {
