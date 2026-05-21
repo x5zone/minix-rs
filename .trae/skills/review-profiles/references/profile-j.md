@@ -62,14 +62,38 @@ For each dimension, load the corresponding reference file from `review-code` for
 ### J4: C-Rust Semantic Alignment (P1)
 > Load [review-code alignment-detail.md](../../review-code/references/alignment-detail.md) for §14.5/14.7 rules.
 
+**J4a: 叶函数语义对齐 (§14.2)** — 逐函数分级检查
+
+| 函数 | C 返回值 | Rust 返回值 | C 错误码 | Rust 错误类型 | C 副作用 | Rust 副作用 | 对齐? | 优先级 |
+|------|---------|-----------|---------|-------------|---------|-----------|------|--------|
+
 - Leaf function return value semantics match C?
 - Leaf function error codes match C? (Pattern 18)
 - Leaf function side effects match C?
-- Architecture-level mismatch annotated with rationale?
-- Corrective mismatch (C bug) annotated with explanation?
+
+**J4b: C 有但 Rust 缺失 (§14.3)** — C 回调覆盖检查
+
+| C 回调 | C 文件 | Rust trait 方法 | Rust 实现? | 缺失影响 | 优先级 |
+|--------|-------|---------------|----------|---------|--------|
+
 - C callback exists but Rust trait doesn't override it → P1?
-- Rust comment C source references correct?
+- C 全局实例中的回调字段在 Rust 中无对应 → P1
+
+**J4c: 架构级不对齐 (§14.5)** — 需注释说明
+
+| 不对齐项 | C 行为 | Rust 行为 | 注释说明? | 优先级 |
+|---------|--------|---------|----------|--------|
+
+- Architecture-level mismatch annotated with rationale?
 - Architecture evolution function disappearance properly categorized? (§14.5)
+
+**J4d: 修正性不对齐 (§14.6)** — C bug 修正需注释
+
+| 修正项 | C 行为(bug) | Rust 行为(修正) | 注释说明? | 优先级 |
+|--------|-----------|---------------|----------|--------|
+
+- Corrective mismatch (C bug) annotated with explanation?
+- 修正性不对齐未标注 → P1（读者无法区分"设计差异"和"bug 修正"）
 
 ### J5: no_std Compliance (P0)
 - `use std::` in non-test code → P0 (Pattern 21)
@@ -97,6 +121,16 @@ For each dimension, load the corresponding reference file from `review-code` for
 - Every module has `//!` doc comment?
 - Complex algorithms have inline "why" comments?
 - `unsafe` blocks have safety comments?
+
+**J8a: C 源码引用注释 (§14.4)** — 验证注释中的 C 引用正确性
+
+| Rust 函数 | 注释中的 C 引用 | C 文件:行号 | 引用正确? | 优先级 |
+|----------|---------------|-----------|----------|--------|
+
+- Rust comment C source references correct?
+- 注释中引用的 C 函数名与源码一致?
+- 注释中引用的行号与源码偏差 <5?
+- 关键语义对齐处有 C 源码引用注释?
 
 ### J9: 64-bit Assumptions (P1)
 - No unnecessary 32-bit remnants (`u32` for address/size)?

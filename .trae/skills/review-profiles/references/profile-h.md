@@ -1,9 +1,9 @@
 # Profile H: Stage 1 — Ch1&2 Accuracy Verification
 
 **Objective**: Verify that Ch1 (Concepts) and Ch2 (Source Analysis) accurately describe Minix3 C source code.
-**Rules**: ~40 items
+**Rules**: ~50 items (原 40 + 新增 H9/H10/H11)
 **Input**: Target document + Minix3 C source code
-**Output**: P0 concept errors + P0 reference errors + P0 coverage gaps + P1 architecture annotation gaps
+**Output**: P0 concept errors + P0 reference errors + P0 coverage gaps + P1 architecture annotation gaps + P1 Ch1&2 Rust violations + P1 header violations
 
 ## Preparation
 
@@ -176,7 +176,81 @@ From review-doc-checklist §2.8.
 | Uncovered | {K} | {K/N*100}% |
 ```
 
-## H9: Output Format
+## H9: Ch1&2 Rust Content Check (P1, Mandatory)
+
+> **硬规则来源**: review-doc-checklist.md L54 — "Ch1&2 不得包含 Rust 内容"
+> **历史教训**: 10-phys-block.md、15-pagefault.md 均因 Ch2 包含"方案四视角"/"Direct Map 视角"等 Rust 设计内容被多次遗漏，直到第 2-3 轮 review 才发现。
+
+**Process**:
+1. 扫描 Ch1 和 Ch2 中的所有代码块
+2. 检查代码块是否使用 Rust 语法
+3. 检查 Ch1&2 中是否出现 Rust 设计术语
+
+| Check Item | Method | P1 if |
+|-----------|--------|-------|
+| Ch1&2 代码块使用 Rust 语法 | 搜索 `fn `, `impl`, `pub`, `struct`, `trait`, `let `, `::`, `->`, `&mut`, `Option<`, `Result<` | 任何 Rust 代码块出现在 Ch1&2 |
+| Ch1&2 出现 Rust 设计术语 | 搜索 "方案四视角", "Direct Map 视角", "Direct Map 标注", "HeapArena", "BumpBuf", "PhysBytes", "VirBytes" | 任何 Rust 设计术语出现在 Ch1&2 |
+| Ch1&2 出现 Rust 版本对比 | 搜索 "Rust 版本", "Rust 中", "Rust 实现" | 任何 Rust 版本描述出现在 Ch1&2 |
+
+**修复方式**: 将 Rust 内容移至 Ch3（添加 §3.0 或在 §3.1 中增加子节），Ch1&2 仅保留 Minix3 概念和 C 源码分析。
+
+**Verification Table**:
+```markdown
+| Location | Content Type | Rust Content? | Moved To | Priority |
+|----------|-------------|--------------|----------|----------|
+```
+
+## H10: Document Header Norm Check (P1, Mandatory)
+
+> **历史教训**: 11-memtype.md 被标记为 "VM库" 但实际应为 "VM私有"，多轮 review 后才发现。
+
+**Process**:
+1. 读取文档头部（前 10 行）
+2. 验证分类标签
+3. 验证 §7 参见中的文件名
+
+| Check Item | Method | P1 if |
+|-----------|--------|-------|
+| 分类标签正确 | 读取 `> **分类**:` 行 | VM 内部概念标为 "VM库" |
+| 分类标签与同类文档一致 | 对比同目录其他文档的标签 | 与同类文档不一致 |
+| §7 参见文件名存在 | `ls` 每个引用的文件 | 文件不存在（断链） |
+| §7 参见文件名正确 | 对比实际文件名 | 文件名拼写错误 |
+
+**分类标签判定规则**:
+- **VM私有**: 仅 VM 内部使用的数据结构/函数（如 PhysBlock, MemType, VirRegion, PageFault 处理）
+- **VM库**: 可被其他服务使用的接口（如 IPC 消息格式、系统调用接口）
+- **全局基建**: 跨模块共享的基础设施（如 slab 分配器、物理内存管理）
+
+**Verification Table**:
+```markdown
+| Check Item | Doc Value | Expected Value | Match? | Priority |
+|-----------|----------|---------------|--------|----------|
+| 分类标签 | | | | |
+| §7 引用文件1 | | exists? | | |
+| §7 引用文件2 | | exists? | | |
+```
+
+## H11: Grep Evidence Requirement (强制)
+
+> **目的**: 防止 AI "凭印象扫描"而非"逐条验证"。
+
+**规则**: 对 H1-H10 中的每个验证声明，必须满足以下条件之一：
+1. 提供了 grep/read 命令的输出作为证据
+2. 提供了源码行号作为证据
+3. 明确标注"未验证"并说明原因
+
+**禁止**:
+- 仅凭记忆或印象给出"✅ 通过"
+- 不执行 grep 就声称"源码中不存在"
+- 选择性忽略 grep 结果为空的情况
+
+**Verification Table**:
+```markdown
+| Claim | Evidence Type | Evidence Detail | Verified? |
+|-------|-------------|----------------|-----------|
+```
+
+## H12: Output Format
 
 ```markdown
 # Profile H: Ch1&2 Accuracy — {document}
@@ -188,6 +262,8 @@ From review-doc-checklist §2.8.
 - Algorithms verified: {N}, errors: {M}
 - Structs analyzed: {N}, gaps: {M}
 - Architecture annotation gaps: {N}
+- Ch1&2 Rust violations: {N}
+- Header violations: {N}
 - Coverage rate: {X}%
 
 ## P0 Issues
@@ -196,6 +272,7 @@ From review-doc-checklist §2.8.
 
 ## P1 Issues
 | # | Type | Location | Description | Evidence | Fix |
+|---|------|---------|-------------|---------|-----|
 
 ## Verdict
 - Ch1&2 accuracy: 🟢 Accurate / 🟡 Minor issues / 🔴 Major issues

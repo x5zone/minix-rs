@@ -28,7 +28,7 @@ Do NOT use for:
 Profile H ──→ Profile I ──→ Profile J ──→ Profile K
  Ch1&2          Ch3&4          Code           Cross-doc
  Accuracy       Design         Quality        + Readability
- (40 rules)     (30 rules)     (70 rules)     (25 rules)
+ (50 rules)     (30 rules)     (75 rules)     (30 rules)
 ```
 
 ### Stage Dependency Graph
@@ -51,7 +51,7 @@ Profile H (Ch1&2 Accuracy) → Profile I (Ch3&4 Design) → Profile J (Code Qual
 
 | Profile | Focus | Input | Output | ~Time | Reference |
 |---------|-------|-------|--------|-------|-----------|
-| **H** | Ch1&2 Accuracy | Doc + C source | P0 concept/ref errors, coverage gaps | 20-60 min | [profile-h.md](references/profile-h.md) |
+| **H** | Ch1&2 Accuracy | Doc + C source | P0 concept/ref errors, coverage gaps, P1 Rust/header violations | 20-60 min | [profile-h.md](references/profile-h.md) |
 | **I** | Ch3&4 Design Quality | Doc + Stage H output + Rust code | P0 scene gaps, P1 broken linkage | 15-40 min | [profile-i.md](references/profile-i.md) |
 | **J** | Code Quality | Rust code + Stage I output | P0 UB/semantic drift, P1 type issues | 20-50 min | [profile-j.md](references/profile-j.md) |
 | **K** | Cross-doc + Readability | All sibling .md + Stages H-J output | P2 readability, P1 cross-doc issues | 10-30 min | [profile-k.md](references/profile-k.md) |
@@ -64,7 +64,7 @@ Profile H (Ch1&2 Accuracy) → Profile I (Ch3&4 Design) → Profile J (Code Qual
 启动指令: "按 Profile H 对 xxx.md 做 Ch1&2 准确性验证"
 ```
 
-Validates concept accuracy, C code references, data structure coverage, architecture evolution annotation, diagram quality, and C source coverage completeness.
+Validates concept accuracy, C code references, data structure coverage, architecture evolution annotation, diagram quality, C source coverage completeness, Ch1&2 Rust content check (H9), document header norm check (H10), and grep evidence requirement (H11).
 
 > Detailed checklist: [profile-h.md](references/profile-h.md)
 
@@ -84,7 +84,7 @@ Validates doc-code consistency, design decision quality (traceability, scene cov
 启动指令: "按 Profile J 对 xxx.rs 做代码质量验证。阶段 I 的结论是：[粘贴摘要]"
 ```
 
-Validates rewrite quality, hardware abstraction, type safety, execution model, memory model, no_std compliance, design-code consistency, and all 15 code review dimensions.
+Validates rewrite quality, hardware abstraction, type safety, execution model, memory model, no_std compliance, design-code consistency, all 15 code review dimensions, C-Rust semantic alignment with leaf function grading (J4a-d), and C source reference comment verification (J8a).
 
 > Detailed checklist: [profile-j.md](references/profile-j.md)
 
@@ -94,7 +94,7 @@ Validates rewrite quality, hardware abstraction, type safety, execution model, m
 启动指令: "按 Profile K 对 xxx.md 做跨文档联动和可读性检查。前几轮的结论是：[粘贴摘要]"
 ```
 
-Validates cross-document consistency (duplicate definitions, contradictions, missing refs) and overall readability (fluency, organization, redundancy, reader experience).
+Validates cross-document consistency (duplicate definitions, contradictions, missing refs), overall readability (fluency, organization, redundancy, reader experience), stale design content check (K4a), and P2 execution strategy.
 
 > Detailed checklist: [profile-k.md](references/profile-k.md)
 
@@ -132,7 +132,7 @@ These profiles are covered by the dedicated skills:
 
 | File | Profile | When to Load |
 |------|---------|-------------|
-| [profile-h.md](references/profile-h.md) | H | Stage 1: Ch1&2 accuracy (40 rules) |
+| [profile-h.md](references/profile-h.md) | H | Stage 1: Ch1&2 accuracy (50 rules, incl. H9 Rust check, H10 header, H11 grep evidence) |
 | [profile-i.md](references/profile-i.md) | I | Stage 2: Ch3&4 design quality (30 rules) |
-| [profile-j.md](references/profile-j.md) | J | Stage 3: Rust code quality (70 rules) |
-| [profile-k.md](references/profile-k.md) | K | Stage 4: Cross-doc + readability (25 rules) |
+| [profile-j.md](references/profile-j.md) | J | Stage 3: Rust code quality (75 rules, incl. J4a-d alignment, J8a C ref comments) |
+| [profile-k.md](references/profile-k.md) | K | Stage 4: Cross-doc + readability (30 rules, incl. K4a stale design, P2 strategy) |

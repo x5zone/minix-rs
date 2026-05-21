@@ -67,6 +67,12 @@ rg "struct \w+" notes/rewrite/{module}/ --type md -n
 
 ## K2: Readability & Organization (P2)
 
+> **P2 执行策略** (review-doc-checklist §3.6): P2 问题按以下优先级处理：
+> 1. 影响理解的表述歧义 → 必须修复
+> 2. 冗余内容精简 → 建议修复
+> 3. 纯风格改善 → 可选修复
+> 不要求所有 P2 都修复，但必须全部列出。
+
 ### K2a: Section Flow
 
 | Check Item | Assessment |
@@ -133,6 +139,19 @@ Process:
 | Any "TODO" or "FIXME" without tracking issue? | ✅/❌ |
 | Any outdated figures/diagrams not matching current code? | ✅/❌ |
 | Any version-specific notes that should be removed? | ✅/❌ |
+
+### K4a: Stale Design Content Check (P1)
+
+> **历史教训**: 15-pagefault.md 中的 AddressResolution/PageFaultMessage/RegionAvlTree 在 Ch4 中有完整定义但代码中不存在，属于陈旧设计内容。
+
+| Ch3/Ch4 设计项 | Rust 代码中存在? | 标注为"未来设计"? | 优先级 |
+|---------------|----------------|-----------------|--------|
+
+**Process**:
+1. 提取 Ch3&4 中所有 Rust struct/enum/trait/函数定义
+2. 在实际 Rust 代码中搜索对应项
+3. 代码中不存在的 → 必须标注为"未来设计"或"设计草图"
+4. 未标注的陈旧设计内容 → P1（误导读者以为已实现）
 
 ## K5: Output Format
 
