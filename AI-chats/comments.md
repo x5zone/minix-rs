@@ -744,7 +744,7 @@ Framework guarantees:
 很多 invariant 还散落在正文里。
 
 ---
-
+是
 # 十二、最后评价
 
 这份 memtype 文档相比前一个，最大的进步是：

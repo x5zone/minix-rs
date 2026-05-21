@@ -5,7 +5,7 @@
 //! single-page and multi-page allocations.
 //!
 //! Implements `PfnAllocator` trait for integration with PageFrames
-//! (方案三：PFN 索引模型).
+//! (PFN index model).
 
 use minix_types::VirBytes;
 

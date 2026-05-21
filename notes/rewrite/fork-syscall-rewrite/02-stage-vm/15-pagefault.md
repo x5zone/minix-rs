@@ -1699,164 +1699,93 @@ void handle_pagefault(endpoint_t ep, vir_bytes addr, u32_t err) {
 
 **Rust 安全封装设计**
 
+> **注意**: 以下设计描述基于实际代码 `os/servers/vm/src/cow_exec_pf.rs`。页错误处理分为两层：`MemType::ev_pagefault`（返回 `PagefaultResult`）和 `handle_pagefault`（转换为 `PagefaultAction` 并执行动作）。
+
+**PagefaultResult** (memtype 层，定义在 `os/servers/vm/src/memtype.rs`)
+
 ```rust
-/// 页错误类型
+/// memtype 的 ev_pagefault 返回结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageFaultType {
-    /// 页不存在 (Not Present)
-    NotPresent,
-    /// 保护错误 (Protection Fault)
-    Protection,
-}
-
-/// 页错误访问类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccessType {
-    Read,
-    Write,
-    Execute,
-}
-
-/// 页错误信息
-#[derive(Debug)]
-pub struct PageFaultInfo {
-    /// 触发错误的进程端点
-    pub endpoint: Endpoint,
-    /// 触发错误的虚拟地址
-    pub vaddr: VirtAddr,
-    /// 错误类型
-    pub fault_type: PageFaultType,
-    /// 访问类型
-    pub access_type: AccessType,
-    /// CPU 错误码
-    pub error_code: u32,
-}
-
-impl PageFaultInfo {
-    /// 从 CPU 错误码解析页错误信息
-    pub fn from_error_code(endpoint: Endpoint, vaddr: VirtAddr, error_code: u32) -> Self {
-        let fault_type = if error_code & PFE_PRESENT != 0 {
-            PageFaultType::Protection
-        } else {
-            PageFaultType::NotPresent
-        };
-        
-        let access_type = if error_code & PFE_WRITE != 0 {
-            AccessType::Write
-        } else if error_code & PFE_EXECUTE != 0 {
-            AccessType::Execute
-        } else {
-            AccessType::Read
-        };
-        
-        Self {
-            endpoint,
-            vaddr,
-            fault_type,
-            access_type,
-            error_code,
-        }
-    }
-    
-    /// 是否是写操作
-    pub fn is_write(&self) -> bool {
-        self.access_type == AccessType::Write
-    }
-}
-
-/// 页错误处理结果
-#[derive(Debug)]
-pub enum PageFaultResult {
-    /// 处理成功
-    Ok,
-    /// 需要等待异步操作
-    Suspend,
-    /// 地址无效，发送 SIGSEGV
-    InvalidAddress,
-    /// 权限错误，发送 SIGSEGV
-    PermissionDenied,
-    /// 内存不足
-    OutOfMemory,
+pub enum PagefaultResult {
+    Handled,         // 页面已就绪
+    NeedNewPage,     // 需要分配新物理页
+    NeedCow,         // 需要执行 CoW
+    AccessViolation, // 访问违规
 }
 ```
 
-**安全的页错误处理入口**
+**PagefaultAction** (调用者层，定义在 `os/servers/vm/src/cow_exec_pf.rs`)
+
+```rust
+/// handle_pagefault 的返回值
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagefaultAction {
+    Handled,
+    MappedNewPage,
+    CowResolved,
+    AccessViolation,
+}
+```
+
+> **注意**: 当前实现暂无 `Suspend` 变体——异步 I/O 回调机制（对应 Minix3 的 `pf_cont` / `handle_memory_continue`）尚未实现。这是 P1 级别的实现缺口。
+
+**安全的页错误处理入口**（实际设计）
 
 ```rust
 /// 页错误处理入口（对应 Minix3 handle_pagefault）
-pub fn handle_pagefault(
-    vmp: &mut VmProc,
-    frames: &mut PageFrames,
-    info: PageFaultInfo,
-) -> Result<PageFaultResult, PageFaultError> {
-    // 1. 查找虚拟区域（AVL 树，O(log n)）
-    let region = vmp.lookup_region_mut(info.vaddr)
-        .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
+/// 实际代码: os/servers/vm/src/cow_exec_pf.rs
+pub(crate) fn handle_pagefault(
+    proc: &ActiveProc<'_>,       // 当前进程
+    region: &mut VirRegion,      // 虚拟区域
+    frames: &mut PageFrames,     // 全局物理页帧表
+    alloc: &mut dyn PfnAllocator, // PFN 分配器
+    fault_addr: VirBytes,        // 故障地址
+    write: bool,                 // 是否写操作
+) -> Result<PagefaultAction, CowError> {
+    let offset = VirBytes(fault_addr.0 - region.vaddr.0);
+    let memtype = region.def_memtype.ok_or(CowError::NoMemType)?;
 
-    // 2. 权限检查：写操作需要 VR_WRITABLE
-    if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
-        return Ok(PageFaultResult::PermissionDenied);
-    }
+    // 1. 调用 MemType 的 ev_pagefault
+    let result = memtype.ev_pagefault(proc, region, frames, offset, write)?;
 
-    // 3. 计算区域内偏移
-    let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
-
-    // 4. 获取 PageSlot（Vec 索引，O(1)，替代 physblock_get）
-    let page_idx = (offset.get() / PAGE_SIZE) as usize;
-    if page_idx >= region.physblocks.len() {
-        return Ok(PageFaultResult::InvalidAddress);
-    }
-
-    // 5. 如果 PageSlot 不存在，创建懒映射
-    if region.physblocks[page_idx].is_none() {
-        region.map_lazy(offset);
-    }
-
-    // 6. 调用 MemType 的 ev_pagefault
-    let slot = region.physblocks[page_idx].unwrap();
-    let memtype = slot.memtype.unwrap_or(region.def_memtype.unwrap());
-
-    if !info.is_write() || !memtype.writable(frames, &slot) {
-        let action = memtype.ev_pagefault(vmp, region, frames, offset, info.is_write())?;
-        match action {
-            PageFaultAction::Done => {}
-            PageFaultAction::Suspend(_) => return Ok(PageFaultResult::Suspend),
-            PageFaultAction::AllocateNewPage { zero } => {
-                let pfn = frames.alloc_phys_page()?;
-                if zero {
-                    let va = vm_phys_to_virt(frames.pfn_to_phys(pfn));
-                    unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
-                }
-                region.map_page(frames, offset, pfn, memtype);
-            }
-            PageFaultAction::CopyOnWrite { src_pfn } => {
-                let new_pfn = frames.alloc_phys_page()?;
-                let src_va = vm_phys_to_virt(frames.pfn_to_phys(src_pfn));
-                let dst_va = vm_phys_to_virt(frames.pfn_to_phys(new_pfn));
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE,
-                    );
-                }
-                frames.get_mut(src_pfn).unwrap().refcount -= 1;
-                region.physblocks[page_idx] = Some(PageSlot {
-                    pfn: new_pfn,
-                    offset,
-                    memtype: Some(ANON_MEMTYPE),
-                });
-                frames.get_mut(new_pfn).unwrap().refcount = 1;
-            }
+    // 2. 根据 PagefaultResult 执行动作
+    match result {
+        PagefaultResult::Handled => Ok(PagefaultAction::Handled),
+        PagefaultResult::NeedNewPage => {
+            alloc_and_map(region, frames, alloc, offset, memtype)?;
+            Ok(PagefaultAction::MappedNewPage)
+        }
+        PagefaultResult::NeedCow => {
+            cow_resolve(region, frames, alloc, offset)?;
+            Ok(PagefaultAction::CowResolved)
+        }
+        PagefaultResult::AccessViolation => {
+            Ok(PagefaultAction::AccessViolation)
         }
     }
+}
 
-    // 7. 更新页表
-    let slot = region.physblocks[page_idx].unwrap();
-    let phys = frames.pfn_to_phys(slot.pfn);
-    let writable = slot.memtype.unwrap().writable(frames, &slot);
-    let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
-    pt_writemap(vmp, region.vaddr + offset.get(), phys, PAGE_SIZE, pt_flags)?;
+/// 分配新页并映射到区域
+pub(crate) fn alloc_and_map(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+    memtype: &'static dyn MemType,
+) -> Result<u32, CowError> {
+    let pfn = alloc.alloc_pfn().map_err(|_| CowError::NoMemory)?;
+    region.map_page(frames, offset, pfn, memtype);
+    Ok(pfn)
+}
 
-    Ok(PageFaultResult::Ok)
+/// CoW 解析入口
+pub(crate) fn cow_resolve(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<u32, CowError> {
+    cow_resolve_core(region, frames, alloc, offset).map_err(Into::into)
 }
 ```
 
@@ -1864,11 +1793,25 @@ pub fn handle_pagefault(
 
 | C 代码问题 | Rust 安全封装 |
 |-----------|-------------|
-| `vmproc[p]` 可能越界 | `VmProcTable::get_by_endpoint()` 返回 Option |
-| `region` 可能为 NULL | `lookup_region_mut()` 返回 Option，必须显式处理 |
+| `vmproc[p]` 可能越界 | `ActiveProc` 通过生命周期保证有效性 |
+| `region` 可能为 NULL | `VirRegion` 是引用类型，编译器保证非空 |
 | `ph->ph->phys` 可能是 `MAP_NONE` | `PageSlot.is_mapped()` + `PageFrames.get(pfn)` 返回 Option |
 | `memcpy((void*)phys, ...)` 物理地址直接操作 | `vm_phys_to_virt()` + `copy_nonoverlapping()` 有类型保证 |
 | `refcount` 溢出无检测 | `u16` + debug 构建下 saturating_add 断言 |
+| 物理页分配失败直接 panic | `PfnAllocator::alloc_pfn()` 返回 Result，显式错误处理 |
+
+**错误类型**
+
+```rust
+/// 页错误处理错误
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CowError {
+    NoMemory,        // 物理页分配失败 (PfnAllocError)
+    NoMemType,       // 区域未设置 memtype
+    PageNotMapped,   // 页面未映射
+    MemType(MemTypeError), // memtype 层错误
+}
+```
 
 ### 3.2 与 memtype 的集成
 
@@ -1876,8 +1819,11 @@ pub fn handle_pagefault(
 
 **MemType Trait 扩展**
 
+> **注意**: 以下 trait 签名来自实际代码 `os/servers/vm/src/memtype.rs`，§3.1 和 §4.1 中的伪代码现已替换为实际 API 的具体描述。
+
 ```rust
 /// 内存类型 trait - 页错误处理相关方法（详见 12-memtype.md）
+/// 实际代码: os/servers/vm/src/memtype.rs
 pub trait MemType: Send + Sync {
     /// 内存类型名称
     fn name(&self) -> &'static str;
@@ -1885,247 +1831,204 @@ pub trait MemType: Send + Sync {
     /// 处理页错误
     fn ev_pagefault(
         &self,
-        vmp: &mut VmProc,
-        region: &mut VirRegion,
-        frames: &mut PageFrames,
-        offset: VirBytes,
-        write: bool,
-    ) -> Result<PageFaultAction, PageFaultError>;
+        _proc: &ActiveProc<'_>,     // 当前进程
+        _region: &mut VirRegion,    // 虚拟区域
+        _frames: &mut PageFrames,   // 全局物理页帧表
+        _offset: VirBytes,          // 区域内偏移
+        _write: bool,               // 是否写操作
+    ) -> Result<PagefaultResult, MemTypeError>;
 
-    /// 检查是否可写
+    /// 检查物理页是否可写（对应 Minix3 的 mem_type.writable(pr)）
     fn writable(
         &self,
-        frames: &PageFrames,
-        slot: &PageSlot,
+        _frames: &PageFrames,
+        _slot: PageSlot,            // PageSlot 是 Copy 类型，非引用
+        _region: &VirRegion,        // remaps>0 时返回 true
     ) -> bool;
-
-    /// 是否支持 CoW
-    fn supports_cow(&self) -> bool {
-        false
-    }
-}
-
-/// 页错误处理动作
-#[derive(Debug)]
-pub enum PageFaultAction {
-    /// 处理完成
-    Done,
-    /// 需要等待异步操作
-    Suspend(AsyncCallback),
-    /// 需要分配新页
-    AllocateNewPage {
-        /// 是否需要清零
-        zero: bool,
-    },
-    /// 需要执行 CoW
-    CopyOnWrite {
-        /// 源物理地址
-        src_phys: PhysAddr,
-    },
 }
 ```
 
-**匿名内存实现**
+**PagefaultResult** (实际代码: `os/servers/vm/src/memtype.rs`)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagefaultResult {
+    Handled,        // 页面已就绪，无需额外处理
+    NeedNewPage,    // 需要分配新物理页（首次访问、按需加载）
+    NeedCow,        // 需要执行 CoW（refcount>1 && 写操作）
+    AccessViolation, // 访问违规（写只读区域）
+}
+```
+
+**PagefaultAction** (实际代码: `os/servers/vm/src/cow_exec_pf.rs`)
+
+```rust
+/// handle_pagefault 的返回值，由调用者用于执行后续动作（如 pt_writemap）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagefaultAction {
+    Handled,         // 页面已就绪
+    MappedNewPage,   // 已分配并映射新页
+    CowResolved,     // CoW 已解决
+    AccessViolation, // 访问违规
+}
+```
+
+**关键**: `ev_pagefault` 返回 `PagefaultResult`（memtype 层的语义），`handle_pagefault` 将其转换为 `PagefaultAction`（调用者层的执行结果）。两阶段解耦便于 `handle_pagefault` 统一处理 `alloc_and_map` / `cow_resolve` 等动作。
+
+**匿名内存实现**（实际代码: `os/servers/vm/src/memtype.rs`）
 
 ```rust
 /// 匿名内存类型
-pub struct AnonMemType;
+pub struct AnonymousMemory;
 
-impl MemType for AnonMemType {
+impl MemType for AnonymousMemory {
     fn name(&self) -> &'static str {
         "anonymous memory"
     }
 
+    fn writable(&self, frames: &PageFrames, slot: PageSlot, region: &VirRegion) -> bool {
+        if !slot.is_mapped() {
+            return false;
+        }
+        if region.remaps > 0 {
+            return true;
+        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
+    }
+
     fn ev_pagefault(
         &self,
-        vmp: &mut VmProc,
+        _proc: &ActiveProc<'_>,
         region: &mut VirRegion,
         frames: &mut PageFrames,
         offset: VirBytes,
         write: bool,
-    ) -> Result<PageFaultAction, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-        let slot = region.physblocks[page_idx];
+    ) -> Result<PagefaultResult, MemTypeError> {
+        let slot = region.get_slot(offset);
 
-        // 情况1: 物理页未分配
-        if slot.is_none() {
-            return Ok(PageFaultAction::AllocateNewPage { zero: true });
+        // 情况1: PageSlot 不存在或物理页未分配
+        match slot {
+            None => return Ok(PagefaultResult::NeedNewPage),
+            Some(s) if !s.is_mapped() => return Ok(PagefaultResult::NeedNewPage),
+            _ => {}
         }
 
         let slot = slot.unwrap();
-        let state = frames.get(slot.pfn).unwrap();
+        let refcount = frames.get(slot.pfn)
+            .map(|s| s.refcount)
+            .unwrap_or(0);
 
         // 情况2: 不需要 CoW
-        if state.refcount < 2 || !write {
-            return Ok(PageFaultAction::Done);
+        if refcount < 2 || !write {
+            return Ok(PagefaultResult::Handled);
         }
 
-        // 情况3: 执行 CoW
-        let src_phys = frames.pfn_to_phys(slot.pfn);
-        Ok(PageFaultAction::CopyOnWrite { src_pfn: slot.pfn })
-    }
-
-    fn writable(
-        &self,
-        frames: &PageFrames,
-        slot: &PageSlot,
-    ) -> bool {
-        if !slot.is_mapped() {
-            return false;
+        // 情况3: 区域不可写 → 访问违规
+        if !region.is_writable() {
+            return Ok(PagefaultResult::AccessViolation);
         }
-        frames.get(slot.pfn).unwrap().refcount == 1
+
+        // 情况4: refcount>=2 && 写操作 → 需要 CoW
+        Ok(PagefaultResult::NeedCow)
     }
 
-    fn supports_cow(&self) -> bool {
-        true
+    fn region_id(&self, region: &VirRegion) -> u32 {
+        region.id as u32
+    }
+
+    fn ref_count(&self, region: &VirRegion) -> i32 {
+        1 + region.remaps
     }
 }
-
-/// 全局匿名内存实例
-pub static ANON_MEMTYPE: AnonMemType = AnonMemType;
 ```
 
-**文件映射内存实现**
+> **与 Minix3 的对应**: 上述实现对应 `mem_anon.c:64` 的 `anon_pagefault()`。关键差异是引入了 `region.is_writable()` 检查（对应 `VR_WRITABLE` 标志）和 `region.remaps > 0` 的快速可写路径。
+
+---
+
+**文件映射内存实现**（实际代码: `os/servers/vm/src/memtype.rs`）
 
 ```rust
-/// 文件映射内存类型
-pub struct MappedFileMemType;
+pub struct MappedFile;
 
-impl MemType for MappedFileMemType {
+impl MemType for MappedFile {
     fn name(&self) -> &'static str {
         "mapped file"
     }
 
-    fn ev_pagefault(
-        &self,
-        vmp: &mut VmProc,
-        region: &mut VirRegion,
-        frames: &mut PageFrames,
-        offset: VirBytes,
-        write: bool,
-    ) -> Result<PageFaultAction, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-        let slot = region.physblocks[page_idx];
-
-        // 情况1: 物理页未分配 → 从文件加载
-        if slot.is_none() {
-            return Ok(PageFaultAction::Suspend(
-                AsyncCallback::new(PageFaultInfo {
-                    endpoint: vmp.endpoint,
-                    vaddr: region.vaddr + offset.get(),
-                    fault_type: PageFaultType::NotPresent,
-                    access_type: if write { AccessType::Write } else { AccessType::Read },
-                    error_code: 0,
-                }),
-            ));
-        }
-
-        let slot = slot.unwrap();
-
-        // 情况2: 读操作，页面已存在
-        if !write {
-            return Ok(PageFaultAction::Done);
-        }
-
-        // 情况3: 写操作 → 执行 CoW（文件映射写时复制为匿名页）
-        Ok(PageFaultAction::CopyOnWrite { src_pfn: slot.pfn })
-    }
-
-    fn writable(
-        &self,
-        _frames: &PageFrames,
-        _slot: &PageSlot,
-    ) -> bool {
+    fn writable(&self, _frames: &PageFrames, _slot: PageSlot, _region: &VirRegion) -> bool {
         false
     }
 
-    fn supports_cow(&self) -> bool {
-        true
+    fn ev_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _region: &mut VirRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
+        write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        // TODO(P0): Minix3's mappedfile_pagefault implements CoW for file-mapped pages
+        // (cow_block path): when refcount > 1 and write=true, it calls cow_block()
+        // to create a private anonymous copy. Currently we only return NeedNewPage
+        // for unmapped pages, missing the CoW case for shared file-mapped pages.
+        //
+        // Minix3 的 mappedfile_pagefault 有两种情况:
+        //   phys == MAP_NONE → 从 VM cache 查找或异步请求 VFS 加载 → SUSPEND
+        //   phys != MAP_NONE && write → cow_block() → 写时复制为匿名页
+        //
+        // 当前实现仅返回 NeedNewPage（覆盖首次访问），
+        // 缺失: VFS 异步加载 和 CoW cow_block 路径。
+        Ok(PagefaultResult::NeedNewPage)
     }
 }
-
-pub static MAPPED_FILE_MEMTYPE: MappedFileMemType = MappedFileMemType;
 ```
 
-> **与 Minix3 的对应**: `mappedfile_writable()` 始终返回 0，即文件映射内存从不直接可写，写操作总是触发 CoW。CoW 后 memtype 切换为 `ANON_MEMTYPE`，与 Minix3 的 `ph->memtype = &mem_type_anon` 语义一致。
+> **与 Minix3 的对应**: `mappedfile_writable()` 始终返回 0（`mem_file.c:150`），即文件映射内存从不直接可写，写操作总是触发 CoW。CoW 后 memtype 切换为 `MEM_TYPE_ANON`，与 Minix3 的 `ph->memtype = &mem_type_anon` 语义一致。
 
-**共享内存实现**
+---
+
+**共享内存实现**（实际代码: `os/servers/vm/src/memtype.rs`）
 
 ```rust
-/// 共享内存类型
-pub struct SharedMemType;
+pub struct SharedMemory;
 
-impl MemType for SharedMemType {
+impl MemType for SharedMemory {
     fn name(&self) -> &'static str {
         "shared memory"
     }
 
-    fn ev_pagefault(
-        &self,
-        _vmp: &mut VmProc,
-        region: &mut VirRegion,
-        frames: &mut PageFrames,
-        offset: VirBytes,
-        _write: bool,
-    ) -> Result<PageFaultAction, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-        let slot = region.physblocks[page_idx];
-
-        // 共享内存不支持 CoW，物理页未分配时分配新页
-        if slot.is_none() {
-            return Ok(PageFaultAction::AllocateNewPage { zero: false });
-        }
-
-        Ok(PageFaultAction::Done)
-    }
-
-    fn writable(
-        &self,
-        _frames: &PageFrames,
-        slot: &PageSlot,
-    ) -> bool {
+    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &VirRegion) -> bool {
         slot.is_mapped()
     }
 
-    fn supports_cow(&self) -> bool {
-        false
+    fn ev_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        _region: &mut VirRegion,
+        _frames: &mut PageFrames,
+        _offset: VirBytes,
+        _write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        // TODO(P0): Minix3's shared_pagefault maps the shared segment's physical page
+        // into the faulting process's address space. Shared memory never triggers
+        // CoW — writes go to the shared page directly. Current default (Handled)
+        // is incorrect for unmapped shared pages; should map the shared page on
+        // first access (similar to DirectPhysical's ev_pagefault).
+        //
+        // Minix3 的 mem_shared.c shared_pagefault():
+        //   phys == MAP_NONE → 从共享段获取物理页并映射 → return OK
+        //   phys != MAP_NONE → 页面已映射 → return OK
+        //
+        // 当前实现返回 Handled（默认），对于未映射的共享页是错误行为。
+        Ok(PagefaultResult::Handled)
     }
 }
-
-pub static SHARED_MEMTYPE: SharedMemType = SharedMemType;
 ```
 
-**页错误处理集成（VirRegion 视角）**
-
-```rust
-impl VirRegion {
-    /// 处理页错误（对应 Minix3 map_pf）
-    pub fn handle_pagefault(
-        &mut self,
-        vmp: &mut VmProc,
-        frames: &mut PageFrames,
-        offset: VirBytes,
-        write: bool,
-    ) -> Result<PageFaultAction, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-
-        // 如果 PageSlot 不存在，创建懒映射（对应 physblock_get + pb_new）
-        if self.physblocks[page_idx].is_none() {
-            self.map_lazy(offset);
-        }
-
-        let slot = self.physblocks[page_idx].unwrap();
-        let memtype = slot.memtype.unwrap_or(self.def_memtype.unwrap());
-
-        // 检查是否需要处理（对应 !write || !writable(pr)）
-        if write && memtype.writable(frames, &slot) {
-            return Ok(PageFaultAction::Done);
-        }
-
-        // 调用 MemType 的 ev_pagefault
-        memtype.ev_pagefault(vmp, self, frames, offset, write)
-    }
-}
+> **与 Minix3 的对应**: 共享内存不支持 CoW（`mem_shared.c`）。写操作直接修改共享物理页，所有共享进程可见。当前实现为占位（stub），待实现。
 ```
 
 ### 3.3 错误传播
@@ -2145,101 +2048,88 @@ if(result != OK) {
 }
 ```
 
-**Rust 错误类型设计**
+**Rust 错误类型设计**（实际代码: `os/servers/vm/src/cow_exec_pf.rs`, `os/servers/vm/src/memtype.rs`）
 
 ```rust
-/// 页错误处理错误
+/// handle_pagefault 的错误类型（实际代码: cow_exec_pf.rs）
 #[derive(Debug)]
-pub enum PageFaultError {
-    /// 地址无效
-    InvalidAddress(VirtAddr),
-    /// 权限被拒绝
-    PermissionDenied {
-        addr: VirtAddr,
-        access: AccessType,
-    },
-    /// 内存不足（alloc_phys_page 失败）
-    OutOfMemory,
-    /// 页表操作失败
-    PageTable(PageTableError),
-    /// 异步操作失败
-    AsyncError(&'static str),
+pub(crate) enum CowError {
+    NoMemory,       // PFN 分配失败（对应 Minix3 ENOMEM）
+    PageNotMapped,  // 页面未映射
+    NoMemType,      // 区域无 memtype 关联
 }
 
-/// 页表错误
+/// cow_resolve_core 的错误类型（实际代码: cow_exec_pf.rs）
 #[derive(Debug)]
-pub enum PageTableError {
-    /// 映射失败
-    MapFailed { vaddr: VirtAddr, pfn: u32 },
-    /// 更新失败
-    UpdateFailed(VirtAddr),
+pub(crate) enum CowCoreError {
+    NoMemory,
+    PageNotMapped,
+}
+
+/// memtype 操作的错误类型（实际代码: memtype.rs）
+#[derive(Debug)]
+pub(crate) enum MemTypeError {
+    // 当前为空枚举，各 memtype 实现通过 PagefaultResult 表达不同的处理结果
 }
 ```
 
+> **设计要点**: Minix3 使用整型错误码（`ENOMEM`, `EFAULT`, `EACCES`, `SUSPEND`），Rust 通过两层机制替代：
+> 1. **错误类型枚举** (`CowError`, `CowCoreError`): 对真正的失败（如内存不足）使用 `Result::Err`
+> 2. **结果枚举** (`PagefaultResult`, `PagefaultAction`): 对非错误的处理路径（如 NeedCow, Handled）使用 `Result::Ok` 内的枚举变体，避免将正常控制流当作错误传播
+
 **与 Minix3 错误码的对应**
 
-| Minix3 错误码 | Rust 错误类型 | 说明 |
+| Minix3 错误码 | Rust 处理方式 | 说明 |
 |--------------|-------------|------|
-| `ENOMEM` (map_pf 中 pb_new 失败) | `PageFaultError::OutOfMemory` | alloc_phys_page 失败 |
-| `ENOMEM` (anon_pagefault 中 alloc_mem 失败) | `PageFaultError::OutOfMemory` | CoW 分配新页失败 |
-| `EFAULT` (map_lookup 返回 NULL) | `PageFaultError::InvalidAddress` | 地址不在任何区域内 |
-| `EACCES` (写只读区域) | `PageFaultError::PermissionDenied` | VR_WRITABLE 未设置 |
-| `SUSPEND` (mappedfile_pagefault 等待 VFS) | `Ok(PageFaultAction::Suspend(..))` | 非错误，异步等待 |
+| `ENOMEM` (alloc_mem 失败) | `CowError::NoMemory` | PFN 分配失败，通过 `?` 向上传播 |
+| `EFAULT` (map_lookup 返回 NULL) | 调用者通过 `ActiveProc` 查找 region，返回 `Option` | 不存在的区域直接 SIGSEGV |
+| `EACCES` (写只读区域) | `PagefaultResult::AccessViolation` | 权限违规作为处理结果，非错误 |
+| `SUSPEND` (mappedfile_pagefault) | **未实现** | 异步 I/O 回调机制（对应 Minix3 `pf_cont`）尚未实现，见 §4.1 说明 |
 
-**关键简化**: 方案 A 消除了 `PhysBlockError` 和 `RegionError`——`PhysBlock` 的分配/引用失败合并为 `PageFaultError::OutOfMemory`（`PageFrames::alloc_phys_page` 返回 `Result`），`PhysRegion` 的查找失败合并为 `PageFaultError::InvalidAddress`（`Vec` 索引越界）。Minix3 中 `pb_new` → `ENOMEM`、`pb_reference` → `ENOMEM` 两条错误路径在方案 A 中合并为 `alloc_phys_page` → `OutOfMemory` 一条。
+**关键简化**: 方案 A 通过 PFN index model 消除了 `PhysBlock` 的独立分配/引用操作——`PhysBlock` 的分配失败（`pb_new` → `ENOMEM`）、引用失败（`pb_reference` → `ENOMEM`）在方案 A 中合并为 PFN 分配器的 `alloc_pfn()` → `CowError::NoMemory`一条路径。
 
-**错误传播示例**
+**错误传播示例**（实际代码: `cow_exec_pf.rs`）
 
 ```rust
-pub fn handle_pagefault(
-    vmp: &mut VmProc,
+pub(crate) fn handle_pagefault(
+    proc: &ActiveProc<'_>,
+    region: &mut VirRegion,
     frames: &mut PageFrames,
-    info: PageFaultInfo,
-) -> Result<PageFaultResult, PageFaultError> {
-    // 1. 查找区域 → InvalidAddress
-    let region = vmp.lookup_region_mut(info.vaddr)
-        .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
+    alloc: &mut dyn PfnAllocator,
+    fault_addr: VirBytes,
+    write: bool,
+) -> Result<PagefaultAction, CowError> {
+    let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
-    // 2. 权限检查 → PermissionDenied
-    if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
-        return Err(PageFaultError::PermissionDenied {
-            addr: info.vaddr,
-            access: info.access_type,
-        });
-    }
+    let memtype = region.def_memtype
+        .ok_or(CowError::NoMemType)?;
 
-    // 3. MemType 处理 → ? 自动传播
-    let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
-    let action = region.handle_pagefault(vmp, frames, offset, info.is_write())?;
+    let result = memtype.ev_pagefault(proc, region, frames, offset, write)?;
 
-    // 4. 执行动作 → OutOfMemory
-    match action {
-        PageFaultAction::AllocateNewPage { zero } => {
-            let pfn = frames.alloc_phys_page()
-                .map_err(|_| PageFaultError::OutOfMemory)?;
-            // ...
+    match result {
+        PagefaultResult::Handled => Ok(PagefaultAction::Handled),
+        PagefaultResult::NeedNewPage => {
+            alloc_and_map(region, frames, alloc, offset, memtype)?;
+            Ok(PagefaultAction::MappedNewPage)
         }
-        PageFaultAction::CopyOnWrite { src_pfn } => {
-            let new_pfn = frames.alloc_phys_page()
-                .map_err(|_| PageFaultError::OutOfMemory)?;
-            // ...
+        PagefaultResult::NeedCow => {
+            cow_resolve(region, frames, alloc, offset)?;
+            Ok(PagefaultAction::CowResolved)
         }
-        _ => {}
+        PagefaultResult::AccessViolation => {
+            Ok(PagefaultAction::AccessViolation)
+        }
     }
-
-    Ok(PageFaultResult::Ok)
 }
 ```
 
 **错误恢复策略**
 
-| 错误类型 | 恢复策略 | 对应 Minix3 行为 |
-|---------|---------|----------------|
-| `InvalidAddress` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
-| `PermissionDenied` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
-| `OutOfMemory` | 发送 SIGSEGV（Minix3 无 OOM killer） | `sys_kill(ep, SIGSEGV)` |
-| `PageTableError` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
-| `AsyncError` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
+| PagefaultAction | 调用者动作 | 对应 Minix3 行为 |
+|----------------|-----------|----------------|
+| `Handled` / `MappedNewPage` / `CowResolved` | 更新页表（`pt_writemap`），恢复进程执行 | `map_ph_writept` + 返回 OK |
+| `AccessViolation` | 发送 SIGSEGV | `sys_kill(ep, SIGSEGV)` |
+| `Err(CowError::NoMemory)` | 发送 SIGSEGV（Minix3 无 OOM killer） | `sys_kill(ep, SIGSEGV)` |
 
 ---
 
@@ -2247,7 +2137,7 @@ pub fn handle_pagefault(
 
 ### 4.1 页错误入口
 
-页错误入口负责从内核接收页错误信息并启动处理流程。
+> **注意**: 以下描述基于实际代码 `os/servers/vm/src/cow_exec_pf.rs`。文档之前描述的 `PageFaultHandler` 和 `update_pt` 是早期设计，实际代码采用更简洁的函数式设计。
 
 **内核到 VM 的消息格式**
 
@@ -2264,167 +2154,85 @@ pub struct PageFaultMessage {
     /// CPU 错误码
     pub vpf_flags: u32,
 }
-
-/// VM 消息类型
-pub const VM_PAGEFAULT: i32 = 1;
 ```
 
-**页错误处理入口**
+**页错误处理入口**（实际代码: `os/servers/vm/src/cow_exec_pf.rs`）
 
 ```rust
-/// 页错误处理器
-pub struct PageFaultHandler {
-    /// 全局物理页状态表
-    frames: &'static mut PageFrames,
+/// VM page fault handler entry point.
+///
+/// Dispatches to the region's `MemType::ev_pagefault`, then acts on the
+/// returned `PagefaultResult`: allocate a new page, resolve CoW, or report
+/// an access violation.
+pub(crate) fn handle_pagefault(
+    proc: &ActiveProc<'_>,
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    fault_addr: VirBytes,
+    write: bool,
+) -> Result<PagefaultAction, CowError> {
+    let offset = VirBytes(fault_addr.0 - region.vaddr.0);
+
+    let memtype = region.def_memtype
+        .ok_or(CowError::NoMemType)?;
+
+    let result = memtype.ev_pagefault(proc, region, frames, offset, write)?;
+
+    match result {
+        PagefaultResult::Handled => Ok(PagefaultAction::Handled),
+        PagefaultResult::NeedNewPage => {
+            alloc_and_map(region, frames, alloc, offset, memtype)?;
+            Ok(PagefaultAction::MappedNewPage)
+        }
+        PagefaultResult::NeedCow => {
+            cow_resolve(region, frames, alloc, offset)?;
+            Ok(PagefaultAction::CowResolved)
+        }
+        PagefaultResult::AccessViolation => {
+            Ok(PagefaultAction::AccessViolation)
+        }
+    }
 }
+```
 
-impl PageFaultHandler {
-    /// 创建新的页错误处理器
-    pub fn new(frames: &'static mut PageFrames) -> Self {
-        Self { frames }
-    }
+**关键设计决策**: `handle_pagefault` 不包含页表更新（`pt_writemap`）。页表写入由调用者负责，因为 `handle_pagefault` 接收 `&ActiveProc`（不可变借用），而页表写入需要 `&mut VmProc`（可变借用）。调用者根据 `PagefaultAction` 变体决定是否执行页表更新：
 
-    /// 处理页错误消息（对应 Minix3 do_pagefaults + handle_pagefault）
-    pub fn handle_message(
-        &mut self,
-        vmp: &mut VmProc,
-        msg: PageFaultMessage,
-    ) {
-        let info = PageFaultInfo::from_error_code(
-            msg.m_source,
-            msg.vpf_addr,
-            msg.vpf_flags,
-        );
+| PagefaultAction | 调用者动作 |
+|----------------|-----------|
+| `Handled` | 页面已就绪，可能不需要页表更新（memtype 内部已处理）|
+| `MappedNewPage` | 执行 `pt_writemap` 将新 PFN 写入页表 |
+| `CowResolved` | 执行 `pt_writemap` 将新 PFN 写入页表 |
+| `AccessViolation` | 发送 SIGSEGV |
 
-        match self.handle(vmp, info) {
-            Ok(PageFaultResult::Ok) => {
-                kernel::vmctl_clear_pagefault(msg.m_source);
-            }
-            Ok(PageFaultResult::Suspend) => {}
-            Err(e) => {
-                kernel::sys_kill(msg.m_source, Signal::SIGSEGV);
-                kernel::vmctl_clear_pagefault(msg.m_source);
-            }
-        }
-    }
+> **与 Minix3 的差异**: Minix3 的 `handle_pagefault` 内部隐式调用 `map_ph_writept`（通过 `map_pf` → 末尾的 `map_ph_writept`）。方案 A 将此步骤推迟到调用者，实现了页表操作的延迟和借用模型的清晰化。
 
-    /// 处理页错误
-    fn handle(
-        &mut self,
-        vmp: &mut VmProc,
-        info: PageFaultInfo,
-    ) -> Result<PageFaultResult, PageFaultError> {
-        // 1. 查找虚拟区域
-        let region = vmp.lookup_region_mut(info.vaddr)
-            .ok_or(PageFaultError::InvalidAddress(info.vaddr))?;
+**alloc_and_map 辅助函数**
 
-        // 2. 权限检查
-        if info.is_write() && !region.flags.contains(VrFlags::WRITABLE) {
-            return Err(PageFaultError::PermissionDenied {
-                addr: info.vaddr,
-                access: info.access_type,
-            });
-        }
+```rust
+pub(crate) fn alloc_and_map(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+    memtype: &'static dyn MemType,
+) -> Result<u32, CowError> {
+    let pfn = alloc.alloc_pfn()
+        .map_err(|_| CowError::NoMemory)?;
+    region.map_page(frames, offset, pfn, memtype);
+    Ok(pfn)
+}
+```
 
-        // 3. 计算偏移
-        let offset = VirBytes(info.vaddr.align_down(PAGE_SIZE) - region.vaddr);
+**错误类型**
 
-        // 4. 处理页面
-        let result = self.handle_page(vmp, region, offset, info.is_write())?;
-
-        // 5. 更新缺页统计
-        match &result {
-            PageFaultResult::Ok => vmp.increment_minor_fault(),
-            PageFaultResult::Suspend => vmp.increment_major_fault(),
-            _ => {}
-        }
-
-        Ok(result)
-    }
-
-    /// 处理单个页面（对应 Minix3 map_pf）
-    fn handle_page(
-        &mut self,
-        vmp: &mut VmProc,
-        region: &mut VirRegion,
-        offset: VirBytes,
-        write: bool,
-    ) -> Result<PageFaultResult, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-
-        // 如果 PageSlot 不存在，创建懒映射
-        if region.physblocks[page_idx].is_none() {
-            region.map_lazy(offset);
-        }
-
-        let slot = region.physblocks[page_idx].unwrap();
-        let memtype = slot.memtype.unwrap_or(region.def_memtype.unwrap());
-
-        // 检查是否需要处理
-        if write && memtype.writable(self.frames, &slot) {
-            // 更新页表
-            self.update_pt(vmp, region, page_idx)?;
-            return Ok(PageFaultResult::Ok);
-        }
-
-        // 调用 MemType 的 ev_pagefault
-        let action = memtype.ev_pagefault(vmp, region, self.frames, offset, write)?;
-
-        // 执行动作
-        match action {
-            PageFaultAction::Done => {
-                self.update_pt(vmp, region, page_idx)?;
-                Ok(PageFaultResult::Ok)
-            }
-            PageFaultAction::Suspend(_) => Ok(PageFaultResult::Suspend),
-            PageFaultAction::AllocateNewPage { zero } => {
-                let pfn = self.frames.alloc_phys_page()
-                    .map_err(|_| PageFaultError::OutOfMemory)?;
-                if zero {
-                    let va = vm_phys_to_virt(self.frames.pfn_to_phys(pfn));
-                    unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
-                }
-                region.map_page(self.frames, offset, pfn, memtype);
-                self.update_pt(vmp, region, page_idx)?;
-                Ok(PageFaultResult::Ok)
-            }
-            PageFaultAction::CopyOnWrite { src_pfn } => {
-                let new_pfn = self.frames.alloc_phys_page()
-                    .map_err(|_| PageFaultError::OutOfMemory)?;
-                let src_va = vm_phys_to_virt(self.frames.pfn_to_phys(src_pfn));
-                let dst_va = vm_phys_to_virt(self.frames.pfn_to_phys(new_pfn));
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE,
-                    );
-                }
-                self.frames.get_mut(src_pfn).unwrap().refcount -= 1;
-                region.physblocks[page_idx] = Some(PageSlot {
-                    pfn: new_pfn,
-                    offset,
-                    memtype: Some(ANON_MEMTYPE),
-                });
-                self.frames.get_mut(new_pfn).unwrap().refcount = 1;
-                self.update_pt(vmp, region, page_idx)?;
-                Ok(PageFaultResult::Ok)
-            }
-        }
-    }
-
-    /// 更新页表（对应 Minix3 map_ph_writept）
-    fn update_pt(
-        &self,
-        vmp: &mut VmProc,
-        region: &VirRegion,
-        page_idx: usize,
-    ) -> Result<(), PageFaultError> {
-        let slot = region.physblocks[page_idx].unwrap();
-        let phys = self.frames.pfn_to_phys(slot.pfn);
-        let writable = slot.memtype.unwrap().writable(self.frames, &slot);
-        let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
-        pt_writemap(vmp, region.vaddr + slot.offset.get(), phys, PAGE_SIZE, pt_flags)
-            .map_err(PageFaultError::PageTable)
-    }
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CowError {
+    NoMemory,
+    NoMemType,
+    PageNotMapped,
+    MemType(MemTypeError),
 }
 ```
 
@@ -2432,69 +2240,43 @@ impl PageFaultHandler {
 
 | Minix3 | 方案 A | 说明 |
 |--------|-------|------|
-| `physblock_get(region, offset)` | `region.physblocks[page_idx]` | O(1) Vec 索引替代链表遍历 |
-| `pb_new(MAP_NONE)` + `pb_reference()` | `region.map_lazy(offset)` | 懒映射，无需分配 PhysBlock |
-| `ph->memtype->ev_pagefault(vmp, region, ph, ...)` | `memtype.ev_pagefault(vmp, region, frames, offset, ...)` | PageSlot + PageFrames 替代 PhysRegion |
-| `pb_unreferenced(region, ph, 0)` + `pb_link(ph, pb, ...)` | `frames.refcount -= 1` + `region.physblocks[idx] = Some(new_slot)` | 直接操作，无侵入式链表 |
+| `physblock_get(region, offset)` | `region.get_slot(offset)` | O(1) Vec 索引替代链表遍历 |
+| `pb_new(MAP_NONE)` + `pb_reference()` | `region.map_page(frames, offset, pfn, mt)` | 直接映射，无需分配 PhysBlock |
+| `ph->memtype->ev_pagefault(vmp, region, ph, ...)` | `memtype.ev_pagefault(proc, region, frames, offset, write)` | PageSlot + PageFrames 替代 PhysRegion |
+| `pb_unreferenced(region, ph, 0)` + `pb_link(ph, pb, ...)` | `region.unmap_page` → `ev_unreference` + `free_pfn` | 两阶段释放，无侵入式链表 |
 | `sys_abscopy(old, new, PAGE_SIZE)` | `copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)` | Direct Map 替代内核系统调用 |
-| `map_ph_writept(vmp, vr, pr)` | `update_pt(vmp, region, page_idx)` | PageSlot + PageFrames 替代 PhysRegion |
+| `map_ph_writept(vmp, vr, pr)` | 调用者负责 `pt_writemap` | 页表更新推迟到调用者 |
 
-**异步回调处理**
+> **异步回调**: Minix3 的 `pf_cont` / `handle_memory_continue` 异步回调机制在方案 A 中尚未实现。当前 `PagefaultAction` 不包含 `Suspend` 变体。这是 P1 级别的实现缺口（见 [19-cow-exec-pagefault.md](19-cow-exec-pagefault.md)）。
 
-```rust
-impl PageFaultHandler {
-    /// 异步操作完成后重试页错误处理（对应 Minix3 pf_cont）
-    pub fn handle_async_callback(
-        &mut self,
-        vmp: &mut VmProc,
-        info: PageFaultInfo,
-    ) {
-        match self.handle(vmp, info) {
-            Ok(PageFaultResult::Ok) => {
-                kernel::vmctl_clear_pagefault(info.endpoint);
-            }
-            Ok(PageFaultResult::Suspend) => {}
-            Err(_) => {
-                kernel::sys_kill(info.endpoint, Signal::SIGSEGV);
-                kernel::vmctl_clear_pagefault(info.endpoint);
-            }
-        }
-    }
-}
-```
-
-**消息循环**
+**消息循环集成**（调用者示例）
 
 ```rust
-impl VmServer {
-    /// 主消息循环
-    pub fn run(&mut self) {
-        loop {
-            let msg = self.receive_message();
-
-            match msg.m_type {
-                VM_PAGEFAULT => {
-                    let pf_msg = PageFaultMessage {
-                        m_type: msg.m_type,
-                        m_source: msg.m_source,
-                        vpf_addr: msg.vpf_addr,
-                        vpf_flags: msg.vpf_flags,
-                    };
-                    if let Some(vmp) = self.proc_table.get_mut(msg.m_source) {
-                        self.pagefault_handler.handle_message(vmp, pf_msg);
-                    }
+// VM 服务器主循环中处理页错误：
+match msg.m_type {
+    VM_PAGEFAULT => {
+        let ep = msg.m_source;
+        if let Some(vmp) = self.proc_table.get_mut(ep) {
+            let region = vmp.lookup_region_mut(msg.vpf_addr);
+            let action = handle_pagefault(
+                vmp.as_active(), region, &mut self.frames,
+                &mut self.buddy, msg.vpf_addr,
+                (msg.vpf_flags & PFE_WRITE) != 0,
+            );
+            match action {
+                Ok(PagefaultAction::MappedNewPage | PagefaultAction::CowResolved) => {
+                    pt_writemap(vmp, ...)?;
                 }
-
-                VM_MEMORY_REQ => {
-                    self.handle_memory_request();
+                Ok(PagefaultAction::AccessViolation) => {
+                    sys_kill(ep, SIGSEGV);
                 }
-
                 _ => {}
             }
+            kernel::vmctl_clear_pagefault(ep);
         }
     }
+    _ => {}
 }
-```
 
 ### 4.2 地址解析
 
@@ -2637,282 +2419,241 @@ CoW 处理路径负责处理写保护错误，实现写时复制。
 
 **CoW 处理流程（方案 A）**
 
+**cow_resolve_core — 核心 CoW 解析**（实际代码：`os/servers/vm/src/cow_exec_pf.rs`）
+
 ```rust
-/// CoW 处理（对应 Minix3 mem_cow）
-pub fn handle_cow(
+/// Core CoW resolution: allocate a new physical page, copy content from the
+/// shared page, unmap the old slot and map the new one as `MEM_TYPE_ANON`.
+///
+/// If `refcount <= 1` the page is already private and no copy is needed.
+pub(crate) fn cow_resolve_core(
     region: &mut VirRegion,
     frames: &mut PageFrames,
-    page_idx: usize,
-) -> Result<(), PageFaultError> {
-    let slot = region.physblocks[page_idx].unwrap();
-    let src_pfn = slot.pfn;
-    let src_state = frames.get(src_pfn).unwrap();
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<u32, CowCoreError> {
+    // 1. 获取当前 PageSlot
+    let slot = region.get_slot(offset)
+        .ok_or(CowCoreError::PageNotMapped)?;
 
-    // 检查是否需要 CoW
-    if src_state.refcount <= 1 {
-        return Ok(());
+    if !slot.is_mapped() {
+        return Err(CowCoreError::PageNotMapped);
     }
 
-    // 1. 分配新物理页
-    let new_pfn = frames.alloc_phys_page()
-        .map_err(|_| PageFaultError::OutOfMemory)?;
+    let old_pfn = slot.pfn;
+    let refcount = frames.get(old_pfn)
+        .map(|s| s.refcount)
+        .unwrap_or(0);
 
-    // 2. 复制页面内容（Direct Map，替代 sys_abscopy）
-    let src_va = vm_phys_to_virt(frames.pfn_to_phys(src_pfn));
-    let dst_va = vm_phys_to_virt(frames.pfn_to_phys(new_pfn));
-    unsafe {
-        core::ptr::copy_nonoverlapping(src_va.as_ptr(), dst_va.as_mut_ptr(), PAGE_SIZE);
+    // 2. 快速路径: refcount <= 1，页面已是私有，无需 CoW
+    if refcount <= 1 {
+        return Ok(old_pfn);
     }
 
-    // 3. 减少原页面引用计数（替代 pb_unreferenced）
-    frames.get_mut(src_pfn).unwrap().refcount -= 1;
+    // 3. 分配新物理页（通过 PfnAllocator，对应 Minix3 alloc_mem）
+    let new_pfn = alloc.alloc_pfn()
+        .map_err(|_| CowCoreError::NoMemory)?;
 
-    // 4. 更新 PageSlot 指向新页面，memtype 切换为匿名（替代 pb_link + ph->memtype = &mem_type_anon）
-    region.physblocks[page_idx] = Some(PageSlot {
-        pfn: new_pfn,
-        offset: slot.offset,
-        memtype: Some(ANON_MEMTYPE),
-    });
+    // 4. 复制页面内容（Direct Map + copy_nonoverlapping，替代 sys_abscopy）
+    copy_page_content(frames, old_pfn, new_pfn);
 
-    // 5. 设置新页面引用计数
-    frames.get_mut(new_pfn).unwrap().refcount = 1;
+    // 5. unmap 旧页面，递减 refcount
+    let pending = region.unmap_page(frames, offset);
 
-    Ok(())
+    // 6. map 新页面为匿名内存（对应 Minix3 ph->memtype = &mem_type_anon）
+    region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
+
+    // 7. 如果旧页 refcount 降为 0 且非缓存页，释放物理页
+    //    （对应 Minix3 pb_unreferenced 后的释放逻辑）
+    if let Some((pfn, mt)) = pending {
+        mt.ev_unreference(frames, pfn);
+        alloc.free_pfn(pfn);
+    }
+
+    // 8. Debug 构建：验证 CoW 后一致性
+    #[cfg(debug_assertions)]
+    verify_cow_consistency(frames, old_pfn, new_pfn, region, offset);
+
+    Ok(new_pfn)
 }
 ```
 
-**与 Minix3 mem_cow 的对应**
+**copy_page_content — 页面复制**（对应 Minix3 `sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE)`）
+
+```rust
+#[cfg(not(test))]
+fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
+    // SAFETY: pfn_to_phys 返回页对齐的物理地址（PAGE_SIZE 的倍数）。
+    // AlignedPhysBytes::new_unchecked 要求参数页对齐，
+    // 由 PageFrames 不变式保证所有 PFN 映射到页对齐的物理地址。
+    let src_phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(src_pfn).0);
+    let dst_phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(dst_pfn).0);
+    let src_ptr = vm_phys_to_virt(src_phys).0 as *const u8;
+    let dst_ptr = vm_phys_to_virt(dst_phys).0 as *mut u8;
+    // SAFETY: src_ptr 和 dst_ptr 指向不同的物理页（调用者保证 src_pfn != dst_pfn），
+    // 因此内存区域不重叠。两个页面均通过 direct map 区域映射且可访问。
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
+    }
+}
+```
+
+> **与 19-cow-exec-pagefault.md §5.2 “CoW 复制 → Direct Map 方案” 对应**：`copy_page_content` 的 Direct Map 实现是方案四的典型应用——Minix3 需要 `createpde` 临时映射窗口调用 `sys_abscopy`，方案四只需 `vm_phys_to_virt()` + `copy_nonoverlapping`。
+
+**verify_cow_consistency — Debug 一致性验证**
+
+```rust
+/// Debug-only CoW consistency verification.
+///
+/// After CoW resolution, asserts that refcounts and slot mappings are correct:
+/// - old_pfn: refcount should be decremented (was shared, now private to other owner)
+/// - new_pfn: refcount should be 1 (newly allocated, owned by this region)
+/// - region's slot at `offset` should point to new_pfn
+#[cfg(debug_assertions)]
+fn verify_cow_consistency(
+    frames: &PageFrames,
+    old_pfn: u32,
+    new_pfn: u32,
+    region: &VirRegion,
+    offset: VirBytes,
+) {
+    if let Some(old_state) = frames.get(old_pfn) {
+        assert!(
+            old_state.refcount >= 1,
+            "old_pfn {} refcount should be >= 1 after CoW, got {}",
+            old_pfn, old_state.refcount
+        );
+    }
+
+    if let Some(new_state) = frames.get(new_pfn) {
+        assert_eq!(
+            new_state.refcount, 1,
+            "new_pfn {} refcount should be 1 after CoW, got {}",
+            new_pfn, new_state.refcount
+        );
+    }
+
+    if let Some(slot) = region.get_slot(offset) {
+        assert!(
+            slot.is_mapped(),
+            "slot at offset {:?} should be mapped after CoW",
+            offset
+        );
+        assert_eq!(
+            slot.pfn, new_pfn,
+            "slot at offset {:?} should point to new_pfn {}, got {}",
+            offset, new_pfn, slot.pfn
+        );
+    }
+}
+```
+
+**CowCoreError — CoW 核心错误类型**
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CowCoreError {
+    NoMemory,         // PfnAllocator::alloc_pfn 失败
+    PageNotMapped,    // 页面未映射（get_slot 返回 None 或 slot.is_mapped() == false）
+}
+```
+
+**cow_resolve_region — 批量 CoW 解析**
+
+```rust
+/// Resolve CoW for all pages in a region that need it.
+///
+/// Iterates over every page slot; if `needs_cow` is true, performs
+/// `cow_resolve` on that page. Returns the number of pages resolved.
+pub(crate) fn cow_resolve_region(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+) -> Result<usize, CowError> {
+    let num_pages = region.physblocks.len();
+    let mut resolved = 0;
+
+    for i in 0..num_pages {
+        let offset = VirBytes((i as u64) * PAGE_SIZE);
+        if region.needs_cow(frames, offset) {
+            cow_resolve(region, frames, alloc, offset)?;
+            resolved += 1;
+        }
+    }
+
+    Ok(resolved)
+}
+```
+
+**与 Minix3 mem_cow 的完整对应**
 
 | Minix3 步骤 | 方案 A 步骤 | 说明 |
 |------------|-----------|------|
-| `alloc_mem(1, allocflags)` | `frames.alloc_phys_page()` | 物理页分配 |
-| `sys_abscopy(old, new, PAGE_SIZE)` | `copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)` | Direct Map 替代内核系统调用 |
+| `alloc_mem(1, allocflags)` | `alloc.alloc_pfn()` | 通过 PfnAllocator trait 分配 PFN |
+| `sys_abscopy(ph->ph->phys, new_page, PAGE_SIZE)` | `copy_page_content(frames, old_pfn, new_pfn)` | Direct Map + copy_nonoverlapping |
 | `pb_new(new_page)` | 不需要 | PageFrames 全局数组，无需创建 PhysBlock |
-| `pb_unreferenced(region, ph, 0)` | `frames.get_mut(src_pfn).refcount -= 1` | 直接递减 refcount |
-| `pb_link(ph, pb, ph->offset, region)` | `region.physblocks[idx] = Some(PageSlot { pfn: new_pfn, .. })` | Vec 索引替代侵入式链表 |
-| `ph->memtype = &mem_type_anon` | `memtype: Some(ANON_MEMTYPE)` | CoW 后切换为匿名内存 |
+| `pb_unreferenced(region, ph, 0)` | `region.unmap_page(frames, offset)` | 递减 refcount 并返回待释放信息 |
+| `pb_link(ph, pb, ph->offset, region)` | `region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON)` | 直接映射，memtype 切换为匿名 |
+| `ph->memtype = &mem_type_anon` | `&MEM_TYPE_ANON` 作为 map_page 参数 | CoW 后切换为匿名内存 |
+| `pb_unreferenced` 后 refcount=0 的释放 | `ev_unreference` + `alloc.free_pfn` | 两阶段释放：通知 memtype → 释放 PFN |
+| — | `verify_cow_consistency` | 方案 A 新增：debug 构建下的完整性断言 |
+| — | `cow_resolve_region` 批量 CoW | 方案 A 新增：遍历整个区域执行 CoW |
 
-**关键简化**: Minix3 的 `mem_cow` 需要 5 步（分配 → 复制 → 创建 PhysBlock → 解除旧引用 → 链接新引用），方案 A 只需 4 步（分配 → 复制 → 递减旧 refcount → 更新 PageSlot），因为 `PageFrames` 全局数组无需创建/销毁 `PhysBlock` 对象。
-
-**页面复制实现**
+**关键简化**: Minix3 的 `mem_cow` 需要 5 步（分配 → 复制 → 创建 PhysBlock → 解除旧引用 → 链接新引用），方案 A 的核心路径只需 3 步（分配 → 复制 → unmap+map），因为 `PageFrames` 全局数组无需创建/销毁 `PhysBlock` 对象。此外 `refcount <= 1` 快速路径避免了不必要的分配和复制。
 
 > **Direct Map 统一性**: `vm_phys_to_virt()` 使物理页直接可操作。Minix3 中 `sys_abscopy` 是内核系统调用（VM 无法直接访问物理页）；方案 A 中 `vm_phys_to_virt()` 将物理地址转换为虚拟地址，复制变成一行 `copy_nonoverlapping`。这与 [14-cow-mechanism.md](14-cow-mechanism.md) 的 `mem_cow()` 简化是同一个范式转变。
 
-**引用计数管理**
-
-```rust
-impl PageFrames {
-    /// 分配物理页并返回 PFN
-    pub fn alloc_phys_page(&mut self) -> Result<u32, ()> {
-        let pfn = self.buddy_alloc.alloc(1)?;
-        self.states[pfn as usize] = PageState {
-            refcount: 1,
-            flags: PageFlags::ALLOCATED,
-        };
-        Ok(pfn)
-    }
-
-    /// 释放物理页（refcount 降为 0 时调用）
-    pub fn free_phys_page(&mut self, pfn: u32) {
-        self.buddy_alloc.free(pfn, 1);
-        self.states[pfn as usize] = PageState {
-            refcount: 0,
-            flags: PageFlags::empty(),
-        };
-    }
-}
-```
-
-**CoW 后页表更新**
-
-```rust
-/// CoW 后更新页表（对应 Minix3 map_ph_writept）
-pub fn update_pt_after_cow(
-    vmp: &mut VmProc,
-    region: &VirRegion,
-    frames: &PageFrames,
-    page_idx: usize,
-) -> Result<(), PageTableError> {
-    let slot = region.physblocks[page_idx].unwrap();
-    let phys = frames.pfn_to_phys(slot.pfn);
-    let writable = slot.memtype.unwrap().writable(frames, &slot);
-    let pt_flags = PTF_PRESENT | PTF_USER | if writable { PTF_WRITE } else { PTF_READ };
-    pt_writemap(vmp, region.vaddr + slot.offset.get(), phys, PAGE_SIZE, pt_flags)
-}
-```
-
-**CoW 统计**
-
-```rust
-/// CoW 统计信息
-#[derive(Debug, Default)]
-pub struct CowStats {
-    /// CoW 触发次数
-    pub cow_count: u64,
-    /// 跳过 CoW 次数（refcount == 1）
-    pub skip_count: u64,
-    /// CoW 失败次数（alloc_phys_page 失败）
-    pub fail_count: u64,
-}
-```
-
 ### 4.4 按需加载路径
 
-按需加载路径处理首次访问未映射页面的情况，分配新页并清零。
+按需加载路径处理首次访问未映射页面的情况。在方案 A 中，按需加载通过 `MemType::ev_pagefault` 返回 `NeedNewPage`，由 `handle_pagefault` 统一调用 `alloc_and_map` 完成。
 
-**按需加载处理器**
+**`alloc_and_map` — 分配物理页并映射**（实际代码: `os/servers/vm/src/cow_exec_pf.rs`）
 
 ```rust
-/// 按需加载处理器（对应 Minix3 map_pf 中 phys == MAP_NONE 分支）
-pub struct DemandLoadHandler {
-    /// 全局物理页状态表
-    frames: &'static mut PageFrames,
-}
+/// Allocate a new physical page via PfnAllocator, then map it into the region.
+/// Called when memtype's ev_pagefault returns NeedNewPage.
+pub(crate) fn alloc_and_map(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+    memtype: &'static dyn MemType,
+) -> Result<u32, CowError> {
+    let pfn = alloc.alloc_pfn()
+        .map_err(|_| CowError::NoMemory)?;
 
-impl DemandLoadHandler {
-    pub fn new(frames: &'static mut PageFrames) -> Self {
-        Self { frames }
-    }
+    region.map_page(frames, offset, pfn, memtype);
 
-    /// 处理按需加载
-    pub fn handle(
-        &mut self,
-        region: &mut VirRegion,
-        offset: VirBytes,
-    ) -> Result<(), PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-
-        if region.physblocks[page_idx].is_some() {
-            return Ok(());
-        }
-
-        let pfn = self.frames.alloc_phys_page()
-            .map_err(|_| PageFaultError::OutOfMemory)?;
-
-        let va = vm_phys_to_virt(self.frames.pfn_to_phys(pfn));
-        unsafe { core::ptr::write_bytes(va.as_mut_ptr(), 0, PAGE_SIZE); }
-
-        let memtype = region.def_memtype.unwrap();
-        region.map_page(self.frames, offset, pfn, memtype);
-
-        Ok(())
-    }
+    Ok(pfn)
 }
 ```
 
-**分配标志**
+**按需加载触发路径**
 
-```rust
-/// 内存分配标志（对应 Minix3 vrallocflags）
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct VrAllocFlags: u32 {
-        const NONE = 0x00;
-        const CLEAR = 0x01;
-        const ALIGN64K = 0x02;
-        const LOWER16MB = 0x04;
-        const LOWER1MB = 0x08;
-    }
-}
-
-impl VirRegion {
-    pub fn alloc_flags(&self) -> VrAllocFlags {
-        let mut flags = VrAllocFlags::empty();
-
-        if !self.flags.contains(VrFlags::UNINITIALIZED) {
-            flags |= VrAllocFlags::CLEAR;
-        }
-        if self.flags.contains(VrFlags::PHYS64K) {
-            flags |= VrAllocFlags::ALIGN64K;
-        }
-        if self.flags.contains(VrFlags::LOWER16MB) {
-            flags |= VrAllocFlags::LOWER16MB;
-        }
-        if self.flags.contains(VrFlags::LOWER1MB) {
-            flags |= VrAllocFlags::LOWER1MB;
-        }
-
-        flags
-    }
-}
+```
+handle_pagefault()
+  → memtype.ev_pagefault(...)
+    → 返回 NeedNewPage
+      → alloc_and_map(region, frames, alloc, offset, memtype)
+        → alloc.alloc_pfn()      // 分配物理页
+        → region.map_page(...)   // 更新 PageSlot + refcount
+      → 返回 MappedNewPage
+    → 调用者执行 pt_writemap    // 写入页表
 ```
 
-**按需加载流程**
+> **与 Minix3 的对应**: Minix3 的 `map_pf` 中 `phys == MAP_NONE` 分支由各 `mem_type.ev_pagefault` 处理。方案 A 将"分配+映射"分离为 `alloc_and_map`，使 `handle_pagefault` 统一处理所有内存类型的分配，避免每个 memtype 实现重复分配逻辑。
 
-1. 检查 `PageSlot` 是否存在 → 已存在返回 Ok
-2. 不存在 → `frames.alloc_phys_page()` 分配物理页 → 失败返回 OutOfMemory
-3. 清零页面内容（Direct Map + `write_bytes`）
-4. `region.map_page(frames, offset, pfn, memtype)` 更新 PageSlot 并递增 refcount
-5. 返回 Ok
+**匿名内存按需加载**
+
+匿名内存（`AnonymousMemory`）的 `ev_pagefault` 在 slot 为空时返回 `NeedNewPage`（§3.2）。`alloc_and_map` 分配物理页并映射后，页面内容在 Direct Map 下已隐式清零（物理分配器保证），无需显式 `write_bytes`。
 
 **文件映射按需加载**
 
-```rust
-/// 文件映射按需加载处理器（对应 Minix3 mappedfile_pagefault）
-pub struct FileDemandLoader;
-
-impl FileDemandLoader {
-    /// 处理文件映射按需加载
-    pub fn handle(
-        frames: &mut PageFrames,
-        region: &mut VirRegion,
-        offset: VirBytes,
-    ) -> Result<PageFaultAction, PageFaultError> {
-        let page_idx = (offset.get() / PAGE_SIZE) as usize;
-
-        if region.physblocks[page_idx].is_some() {
-            return Ok(PageFaultAction::Done);
-        }
-
-        let file_info = region.param.file;
-        let referenced_offset = file_info.offset + offset.get();
-
-        Ok(PageFaultAction::Suspend(
-            AsyncCallback::new(VfsRequest::Fdio {
-                fd: file_info.fdref.fd,
-                offset: referenced_offset,
-                len: PAGE_SIZE,
-            }),
-        ))
-    }
-}
-```
-
-> **与 Minix3 的对应**: Minix3 的 `mappedfile_pagefault` 在 `phys == MAP_NONE` 时调用 `vfs_request(VMVFSREQ_FDIO, ...)` 发起异步 I/O，返回 `SUSPEND`。方案 A 将此逻辑封装在 `PageFaultAction::Suspend` 中，VFS 回调完成后由 `pf_cont` 重试页错误处理。文件内容加载到物理页后，`map_page()` 更新 PageSlot 并设置 refcount。
-
-**统计信息**
-
-```rust
-/// 按需加载统计
-#[derive(Debug, Default)]
-pub struct DemandLoadStats {
-    pub pages_allocated: u64,
-    pub pages_zeroed: u64,
-    pub pages_loaded: u64,
-    pub load_failures: u64,
-    pub bytes_allocated: u64,
-}
-
-impl DemandLoadStats {
-    pub fn record_alloc(&mut self, zeroed: bool) {
-        self.pages_allocated += 1;
-        self.bytes_allocated += PAGE_SIZE as u64;
-        if zeroed {
-            self.pages_zeroed += 1;
-        }
-    }
-
-    pub fn record_file_load(&mut self) {
-        self.pages_loaded += 1;
-    }
-
-    pub fn record_failure(&mut self) {
-        self.load_failures += 1;
-    }
-}
-```
+文件映射（`MappedFile`）的按需加载在方案 A 中尚未完全实现。Minix3 的 `mappedfile_pagefault` 在 `phys == MAP_NONE` 时通过 `vfs_request(VMVFSREQ_FDIO, ...)` 发起异步 I/O 从磁盘读取文件内容，返回 `SUSPEND`。当前 `MappedFile::ev_pagefault` 简化地返回 `NeedNewPage` 处理 slot 为空的情况，异步 VFS 回调机制（对应 Minix3 的 `pf_cont` / `handle_memory_continue`）留待后续实现。
 
 ### 4.5 栈扩展
+
+> **设计草图**: Minix3 不支持栈自动扩展（栈大小由 `do_brk` 静态分配），以下为 minix-rs 未来可能引入的改进特性设计草图，尚未在实际代码中实现。
 
 栈扩展处理栈区域的自动增长，当访问超出当前栈边界时自动扩展。
 
@@ -3085,6 +2826,8 @@ impl Default for StackLimits {
 ---
 
 ## 5. 性能优化
+
+> **设计草图**: 以下性能优化方案为设计草图，尚未在实际代码中实现。当前 minix-rs VM 服务器为单线程事件驱动模型（和 Minix3 一致），快速路径优化和锁粒度设计留待性能分析和多线程引入后实施。
 
 ### 5.1 快速路径
 
@@ -3281,11 +3024,11 @@ impl PageFaultHandler {
 }
 ```
 
-### 5.2 锁粒度
+### 5.2 锁粒度（设计草图）
+
+> **设计草图**: 以下锁设计是 minix-rs 多线程改进的预留设计，当前单线程模型下不存在并发问题。
 
 细粒度锁减少锁竞争，提高并发性能。
-
-> **注意**: Minix3 VM 是单线程事件驱动模型，不存在并发问题。以下锁设计是 minix-rs 多线程改进的预留设计。
 
 **锁层次结构**
 
@@ -3479,19 +3222,22 @@ pub enum LockId {
 
 ## 6. 测试与验证
 
+> **现有测试**: `cow_exec_pf.rs` 中已有 `test_alloc_and_map`、`test_cow_resolve`、`test_cow_resolve_no_sharing`、`test_cow_resolve_region`、`test_cow_resolve_core_refcount_one` 等单元测试，`memtype.rs` 中有 `test_anon_writable`、`test_mapped_file_copy`。以下为补充测试要点。
+
 ### 6.1 CoW 触发测试
 
 - **CoW 触发**: 共享页面（refcount=2）写操作 → 触发 CoW，refcount 降为 1，物理地址改变
-- **CoW 不触发（单引用）**: 私有页面（refcount=1）写操作 → 不触发 CoW，物理地址不变
-- **CoW 不触发（读操作）**: 共享页面读操作 → 不触发 CoW，refcount 不变
+- **CoW 不触发（单引用快速路径）**: 私有页面（refcount<=1）写操作 → `cow_resolve_core` 快速路径直接返回原 PFN，物理地址不变
+- **CoW 不触发（读操作）**: 共享页面读操作 → `ev_pagefault` 返回 `Handled`，refcount 不变
 - **CoW 内容复制**: CoW 后新页面内容与原页面一致
+- **CoW 一致性验证**: `#[cfg(debug_assertions)]` 下 `verify_cow_consistency` 校验 refcount 和新旧 PFN
 
 ### 6.2 非法访问测试
 
-- **空指针访问**: vaddr=0 → InvalidAddress + SIGSEGV
-- **写只读区域**: 无 VR_WRITABLE 区域写操作 → PermissionDenied + SIGSEGV
-- **越界访问**: 超出进程地址空间 → InvalidAddress
-- **栈溢出检测**: 超出最大栈限制 → InvalidAddress
+- **空指针访问**: vaddr=0 → 调用者发送 SIGSEGV
+- **写只读区域**: 无 VR_WRITABLE 区域写操作 → `PagefaultResult::AccessViolation` + SIGSEGV
+- **越界访问**: 超出进程地址空间 → 调用者发送 SIGSEGV
+- **栈溢出检测**: 超出最大栈限制 → SIGSEGV
 
 ### 6.3 栈扩展测试
 

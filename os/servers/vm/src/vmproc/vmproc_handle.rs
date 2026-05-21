@@ -339,7 +339,7 @@ impl<'a> ActiveProc<'a> {
         self.regions().len()
     }
 
-    /// Sets up CoW for all memory regions (方案三：PFN 索引模型).
+    /// Sets up CoW for all memory regions (PFN index model).
     ///
     /// Uses PageFrames refcount instead of PhysBlock refcount.
     /// For each mapped page, increments refcount in the global PageFrames array.
@@ -366,7 +366,7 @@ impl<'a> ActiveProc<'a> {
         }
     }
 
-    /// Writes all physical mappings into the page table (方案三：PFN 索引模型).
+    /// Writes all physical mappings into the page table (PFN index model).
     ///
     /// Uses PageFrames + PageSlot instead of PhysBlock.
     /// Iterates all regions and their PageSlots, writing

@@ -343,6 +343,25 @@ impl MemType for SharedMemory {
         slot.is_mapped()
     }
 
+    fn ev_pagefault(
+        &self,
+        _proc: &ActiveProc<'_>,
+        region: &mut crate::region::VirRegion,
+        _frames: &mut PageFrames,
+        offset: VirBytes,
+        _write: bool,
+    ) -> Result<PagefaultResult, MemTypeError> {
+        let slot = region.get_slot(offset);
+
+        match slot {
+            None => return Ok(PagefaultResult::NeedNewPage),
+            Some(s) if !s.is_mapped() => return Ok(PagefaultResult::NeedNewPage),
+            _ => {}
+        }
+
+        Ok(PagefaultResult::Handled)
+    }
+
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
     fn ev_copy(
@@ -426,6 +445,9 @@ impl MemType for ContiguousAnonymous {
         if pages == 0 {
             return Ok(());
         }
+        // TODO: Minix3's anon_contig_new pre-allocates contiguous physical pages.
+        // Current implementation is a no-op; contiguous physical memory is not yet
+        // guaranteed for ContiguousAnonymous regions.
         Ok(())
     }
 
@@ -547,12 +569,24 @@ impl MemType for MappedFile {
     fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
-        _region: &mut crate::region::VirRegion,
+        region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
         offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        Ok(PagefaultResult::NeedNewPage)
+        let slot = region.get_slot(offset);
+
+        match slot {
+            None => return Ok(PagefaultResult::NeedNewPage),
+            Some(s) if !s.is_mapped() => return Ok(PagefaultResult::NeedNewPage),
+            _ => {}
+        }
+
+        if write {
+            Ok(PagefaultResult::NeedCow)
+        } else {
+            Ok(PagefaultResult::Handled)
+        }
     }
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}

@@ -3,7 +3,7 @@
 //! Manages process virtual address space layout using a BTreeMap.
 //! Corresponds to Minix3's `vir_region` struct in `region.h`.
 //!
-//! 方案三: uses `Vec<Option<PageSlot>>` instead of `Vec<Option<Box<PhysRegion>>>`.
+//! PFN index model: uses `Vec<Option<PageSlot>>` instead of `Vec<Option<Box<PhysRegion>>>`.
 
 use super::page_state::{PageFrames, PageSlot, PageFlags, PFN_NONE, PAGE_SIZE, PfnAllocator, PfnAllocError};
 use minix_types::{PhysBytes, VirBytes, UserSlot};
@@ -168,6 +168,17 @@ impl VirRegion {
         }
     }
 
+    /// Unmap a page from this region, decrementing its refcount in PageFrames.
+    ///
+    /// Returns `Some((pfn, memtype))` if the page's refcount dropped to 0 AND
+    /// it is not marked as cached (`!IN_CACHE`). In that case, the caller is
+    /// responsible for calling `memtype.ev_unreference(frames, pfn)` and then
+    /// freeing the physical page via `PfnAllocator::free_pfn(pfn)`.
+    ///
+    /// Returns `None` if:
+    /// - The slot was not mapped, or
+    /// - The refcount is still > 0 (other regions share this page), or
+    /// - The refcount is 0 but the page is cached (`IN_CACHE` flag set)
     pub(crate) fn unmap_page(
         &mut self,
         frames: &mut PageFrames,

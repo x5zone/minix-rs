@@ -5,7 +5,7 @@
 //!
 //! Corresponds to Minix3's `do_brk()` and `real_brk()` in `brk.c`.
 //!
-//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
+//! PFN index model: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{Endpoint, UserSlot, VirBytes, ENOMEM, EINVAL, ESRCH};
 use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};

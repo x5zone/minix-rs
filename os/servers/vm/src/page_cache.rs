@@ -1,4 +1,4 @@
-//! Page cache implementation (方案三：PFN 索引模型).
+//! Page cache implementation (PFN index model).
 //!
 //! Uses PFN-based indexing with PageFrames for refcount management.
 

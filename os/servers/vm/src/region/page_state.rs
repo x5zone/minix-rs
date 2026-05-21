@@ -1,10 +1,11 @@
-//! Physical page state management (方案三：PFN 索引模型).
+//! Physical page state management (PFN index model).
 //!
 //! Global PageState array indexed by PFN, replacing PhysBlock + PhysRegion.
 //! Corresponds to Minix3's `phys_block` + `pb.c`.
 //!
-//! PageFrames 只管理物理页的引用计数和缓存标志，不负责物理页的分配/释放。
-//! 物理页分配由 buddy/bitmap 分配器完成（见 phys_mem 模块）。
+//! PageFrames only tracks physical page refcounts and cache flags; it does not
+//! handle physical page allocation/deallocation. Page allocation is done by the
+//! buddy/bitmap allocator (see phys_mem module).
 
 use alloc::vec;
 use alloc::vec::Vec;

@@ -1,4 +1,4 @@
-//! Fork syscall implementation (方案三：PFN 索引模型).
+//! Fork syscall implementation (PFN index model).
 //!
 //! Uses PageSlot Copy semantics and PageFrames refcount for CoW.
 
@@ -9,6 +9,11 @@ use crate::cow_exec_pf::cow_resolve_core;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+/// Fork a single VirRegion: share physical pages (refcount++) and set child
+/// region read-only. Corresponds to Minix3 `map_copy_region()` (region.c).
+///
+/// On `ev_reference` failure, rolls back all previously incremented refcounts
+/// and returns `ForkError`.
 pub(crate) fn fork_region(
     src: &VirRegion,
     frames: &mut PageFrames,
@@ -24,14 +29,28 @@ pub(crate) fn fork_region(
         mt.ev_copy(src, &mut dst)?;
     }
 
+    // Track refcount increments for rollback on error.
+    let mut refcounted_pfns: Vec<u32> = Vec::new();
+
     for (i, slot_opt) in src.physblocks.iter().enumerate() {
         if let Some(slot) = slot_opt {
             if slot.is_mapped() {
                 if let Some(state) = frames.get_mut(slot.pfn) {
                     state.refcount = state.refcount.saturating_add(1);
+                    refcounted_pfns.push(slot.pfn);
                 }
                 if let Some(mt) = slot.memtype {
-                    mt.ev_reference(frames, *slot)?;
+                    if let Err(e) = mt.ev_reference(frames, *slot) {
+                        // Rollback: decrement refcount for all pages that were incremented.
+                        for pfn in &refcounted_pfns {
+                            if let Some(state) = frames.get_mut(*pfn) {
+                                if state.refcount > 0 {
+                                    state.refcount -= 1;
+                                }
+                            }
+                        }
+                        return Err(ForkError::from(e));
+                    }
                 }
             }
             dst.physblocks[i] = Some(*slot);
@@ -163,5 +182,50 @@ mod tests {
 
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert_eq!(slot.pfn, pfn);
+    }
+
+    #[test]
+    fn test_fork_rollback_on_ev_reference_error() {
+        use crate::memtype::{MemType, PagefaultResult, MemTypeError};
+
+        struct FailOnRefMemType;
+        impl MemType for FailOnRefMemType {
+            fn name(&self) -> &'static str { "fail-on-ref" }
+            fn ev_pagefault(&self, _proc: &crate::vmproc::ActiveProc<'_>, _region: &mut VirRegion,
+                _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
+            ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
+            fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
+            fn ev_reference(&self, _frames: &mut PageFrames, _slot: crate::region::PageSlot,
+            ) -> Result<(), MemTypeError> {
+                Err(MemTypeError::NotSupported)
+            }
+            fn writable(&self, _frames: &PageFrames, _slot: crate::region::PageSlot,
+                _region: &VirRegion,
+            ) -> bool { false }
+        }
+
+        static FAIL_MT: FailOnRefMemType = FailOnRefMemType;
+
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut src = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        src.set_writable(true);
+        src.def_memtype = Some(&FAIL_MT);
+
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        src.map_page(&mut frames, VirBytes(0x0000), pfn0, &FAIL_MT);
+        src.map_page(&mut frames, VirBytes(0x1000), pfn1, &FAIL_MT);
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 1);
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 1);
+
+        let result = fork_region(&src, &mut frames);
+        assert!(result.is_err());
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 1,
+            "refcount should be rolled back after ev_reference failure");
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 1,
+            "refcount should be rolled back after ev_reference failure");
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! Corresponds to Minix3's `do_munmap()` and `map_unmap_region()` in `mmap.c`.
 //!
-//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
+//! PFN index model: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{Endpoint, UserSlot, VirBytes, EINVAL, ESRCH, ENOMEM};
 use crate::vmproc::{VmProcTable, ActiveProc, VmFlags};

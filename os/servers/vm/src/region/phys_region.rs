@@ -1,4 +1,8 @@
-//! Physical region implementation.
+//! Physical region implementation (legacy).
+//!
+//! This file is superseded by `page_state.rs` (PageFrames/PageSlot model).
+//! It is NOT included in `mod.rs` and is compiled as dead code.
+//! Keep only for reference; new code should use the `page_state` model.
 
 #[cfg(test)]
 use alloc::boxed::Box;

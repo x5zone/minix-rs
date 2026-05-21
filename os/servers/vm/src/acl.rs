@@ -98,7 +98,7 @@ impl AclState {
         match self {
             AclState::Uninitialized => {
                 if proc.endpoint() != Endpoint::RS {
-                    // TODO: no_std 环境暂无日志方案，后续补充。
+                    // TODO: no logging solution in no_std yet; add later.
                     // Minix3: printf("VM: calling process %u has no ACL!\n", vmp->vm_endpoint);
                 }
                 Ok(())

@@ -1,11 +1,13 @@
-//! Copy-on-Write and page fault handling (方案三：PFN 索引模型).
+//! Copy-on-Write and page fault handling (PFN index model).
 //!
 //! Uses PageFrames + PageSlot for CoW resolution and page fault dispatch.
 
-use minix_types::VirBytes;
+use minix_types::{PhysBytes, VirBytes};
 use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PfnAllocError, PAGE_SIZE};
 use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
 use crate::vmproc::ActiveProc;
+use crate::phys_mem::AlignedPhysBytes;
+use crate::direct_map::vm_phys_to_virt;
 
 /// VM page fault handler entry point.
 ///
@@ -104,12 +106,63 @@ pub(crate) fn cow_resolve_core(
     let pending = region.unmap_page(frames, offset);
     region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
 
+    // If the old page's refcount dropped to 0 and it's not cached, unmap_page
+    // returns (pfn, memtype) so the caller can notify the memtype (ev_unreference)
+    // and free the physical page. This matches Minix3's pb_unreferenced() path
+    // where a shared page's last reference is released.
     if let Some((pfn, mt)) = pending {
         mt.ev_unreference(frames, pfn);
         alloc.free_pfn(pfn);
     }
 
+    #[cfg(debug_assertions)]
+    verify_cow_consistency(frames, old_pfn, new_pfn, region, offset);
+
     Ok(new_pfn)
+}
+
+/// Debug-only CoW consistency verification.
+///
+/// After CoW resolution, asserts that refcounts and slot mappings are correct:
+/// - old_pfn: refcount should be decremented (was shared, now private to other owner)
+/// - new_pfn: refcount should be 1 (newly allocated, owned by this region)
+/// - region's slot at `offset` should point to new_pfn
+#[cfg(debug_assertions)]
+fn verify_cow_consistency(
+    frames: &PageFrames,
+    old_pfn: u32,
+    new_pfn: u32,
+    region: &VirRegion,
+    offset: VirBytes,
+) {
+    if let Some(old_state) = frames.get(old_pfn) {
+        assert!(
+            old_state.refcount >= 1,
+            "old_pfn {} refcount should be >= 1 after CoW, got {}",
+            old_pfn, old_state.refcount
+        );
+    }
+
+    if let Some(new_state) = frames.get(new_pfn) {
+        assert_eq!(
+            new_state.refcount, 1,
+            "new_pfn {} refcount should be 1 after CoW, got {}",
+            new_pfn, new_state.refcount
+        );
+    }
+
+    if let Some(slot) = region.get_slot(offset) {
+        assert!(
+            slot.is_mapped(),
+            "slot at offset {:?} should be mapped after CoW",
+            offset
+        );
+        assert_eq!(
+            slot.pfn, new_pfn,
+            "slot at offset {:?} should point to new_pfn {}, got {}",
+            offset, new_pfn, slot.pfn
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,12 +180,26 @@ impl From<CowCoreError> for CowError {
     }
 }
 
+#[cfg(not(test))]
 fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
-    let _ = (frames, src_pfn, dst_pfn);
-    // TODO: Copy page content from src_pfn to dst_pfn via Direct Map.
-    // Equivalent to Minix3's sys_abscopy(ph->ph->phys, new_page, VM_PAGE_SIZE).
-    // Requires vm_phys_to_virt() to convert physical addresses to virtual
-    // addresses, then core::ptr::copy_nonoverlapping to copy PAGE_SIZE bytes.
+    // SAFETY: pfn_to_phys returns a page-aligned physical address (multiple of PAGE_SIZE).
+    // AlignedPhysBytes::new_unchecked requires its argument to be page-aligned, which is
+    // guaranteed by the PageFrames invariant that all PFNs map to page-aligned addresses.
+    let src_phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(src_pfn).0);
+    let dst_phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(dst_pfn).0);
+    let src_ptr = vm_phys_to_virt(src_phys).0 as *const u8;
+    let dst_ptr = vm_phys_to_virt(dst_phys).0 as *mut u8;
+    // SAFETY: src_ptr and dst_ptr are valid for reads/writes of PAGE_SIZE bytes.
+    // They point to distinct physical pages (src_pfn != dst_pfn guaranteed by caller),
+    // so the regions do not overlap. Both pages are mapped and accessible via the
+    // direct-mapped region (vm_phys_to_virt).
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
+    }
+}
+
+#[cfg(test)]
+fn copy_page_content(_frames: &PageFrames, _src_pfn: u32, _dst_pfn: u32) {
 }
 
 /// Resolve CoW for all pages in a region that need it.
@@ -267,5 +334,23 @@ mod tests {
 
         assert_eq!(frames.get(pfn0).unwrap().refcount, 1);
         assert_eq!(frames.get(pfn1).unwrap().refcount, 2);
+    }
+
+    #[test]
+    fn test_cow_resolve_core_refcount_one_fast_path() {
+        let mut frames = make_frames(4);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_ANON);
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+
+        let result = cow_resolve_core(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        assert_eq!(result, pfn);
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+        let slot = region.get_slot(VirBytes(0x0000)).unwrap();
+        assert_eq!(slot.pfn, pfn);
     }
 }

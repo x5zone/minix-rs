@@ -3,7 +3,7 @@
 //! Routes incoming IPC messages to appropriate handlers.
 //! Supports: fork, brk, munmap, exit, willexit, pagefault, exec_newmem.
 //!
-//! 方案三：PFN 索引模型: Updated to use PageFrames/PageSlot instead of PhysRegion.
+//! PFN index model: Updated to use PageFrames/PageSlot instead of PhysRegion.
 
 use minix_types::{VmRequest, VmResponse, VmError, Endpoint, UserSlot, VirBytes};
 use crate::vmproc::VmProcTable;
