@@ -1,6 +1,6 @@
 # 16-vm-fork: VM_FORK 服务
 
-> **分类**: VM服务  
+> **分类**: VM私有  
 > **源码**: `minix3/minix/servers/vm/fork.c`, `region.c`  
 > **说明**: VM 对外提供的 fork 服务，处理进程创建和内存复制
 
@@ -885,6 +885,8 @@ struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
 
 复制后父子进程的 `vir_region` 指向相同的 `phys_block`，`refcount` 从 1 增至 2。
 
+> **Rust 实现差异**：`fork_region()` 在 `ev_reference` 失败时会自动回滚已递增的 refcount（遍历 `refcounted_pfns` 向量逐个递减），而 Minix3 的 `map_copy_region()` 在失败时调用 `map_free(newvr)` 释放整个新区域（`map_free` 内部会调用 `pb_unreferenced` 递减 refcount）。
+
 #### 2.8.4 CoW 设置
 
 共享 phys_block 后，将页表项标记为只读，触发写时复制。
@@ -978,44 +980,6 @@ fork 后的页表状态由 `map_ph_writept()` 通过 `pr_writable()` 自动设�
 
 fork 后，父子进程的共享页 `refcount > 1`，`anon_writable()` 返回 0，`pr_writable()` 返回 0，页表项不含 `PTF_WRITE`。写入时触发页错误，CoW 处理分配新物理页后 `refcount` 降为 1，`pr_writable()` 返回 1，页表项恢复 `PTF_WRITE`。
 
-> **方案四标注**：CoW 设置中的 `pt_writemap()` 在方案四下通过 `vm_phys_to_virt()` 直接操作页表页，无需 `createpde` 临时映射窗口。CoW 的逻辑（`refcount > 1` → 只读 → 写入触发页错误 → 分配新页）完全不变——direct map 简化的是"如何写入页表项"这个实现细节，而不是 CoW 的策略逻辑。这是策略/机制分离的一个例证：CoW 策略（何时共享、何时复制）不变，机制（如何写入页表）被简化。
-
-#### 2.8.5 方案四视角：fork 页表创建的终极简化
-
-> **方案四标注**：Direct Map 方案下，fork 创建子进程页表的流程被大幅简化。
-
-**Minix3 的 fork 页表创建**需要 `createpde` 临时映射窗口——VM 无法直接访问物理页，必须请求内核在 VM 的地址空间中临时映射一个物理页，操作完毕后再解除映射：
-
-```
-1. alloc_mem() 分配物理页
-2. createpde() 建立临时映射窗口
-3. 通过临时映射窗口清零页目录
-4. pt_mapkernel() 建立内核映射
-5. 复制父进程用户空间映射
-6. 释放临时映射窗口
-```
-
-**方案四的 fork 页表创建**只需 4 步，无需临时映射窗口：
-
-```
-1. bitmap.alloc_mem(1)           → 分配新页目录物理页
-2. vm_phys_to_virt(dir_phys)     → 清零（物理页天然有 VA）
-3. pt_mapkernel(dir_ptr)         → 建立内核映射（含 kernel direct map）
-4. 复制父进程的用户空间映射
-```
-
-**三种方案的复杂度递减**：
-
-| 方案 | 步骤 | 复杂度来源 |
-|------|------|-----------|
-| Minix3（createpde） | 分配 → 建临时映射 → 清零 → 建内核映射 → 复制 → 释放临时映射 | VM 无法直接访问物理页 |
-| 方案三（PtRegion） | 分配 → 从 PtRegion 分配 VA → 清零 → 建内核映射 → 复制 | 页表页需要特殊 VA 管理 |
-| 方案四（Direct Map） | 分配 → `vm_phys_to_virt()` 清零 → 建内核映射 → 复制 | 物理页天然有 VA |
-
-读者应感受到：**direct map 的"终极简化"不是"又少了一步"，而是"间接操作的根源被消除了"**——Minix3 的 `createpde` 和方案三的 PtRegion 都是为了解决"VM 无法直接访问物理页"这个问题，direct map 从根本上消除了这个问题。
-
-**双视图模型在 fork 中的协作**：VM 通过 VM direct map（`vm_phys_to_virt()`）操作物理页（清零、复制），通过 `pt_mapkernel()` 确保新页表包含 kernel direct map。两者在 fork 中协作——VM 用自己的视图操作数据，用内核的视图确保新进程的页表包含内核映射。
-
 ### 2.9 完成阶段
 
 #### 2.9.1 设置子进程状态
@@ -1061,6 +1025,8 @@ void acl_fork(struct vmproc *vmp)
 
 使用类型安全的 IPC 消息结构，包括 ForkRequest 和 ForkResponse 枚举。
 
+> **注意**: 以下 `ForkRequest`、`ForkResponse`、`ForkFlags` 为未来设计，当前 Rust 实现中尚未包含。实际 fork 入口由 VM 服务器的 IPC 层直接调用 `fork_region()`/`fork_regions()`。
+
 ```rust
 use crate::vm::vmproc::{VmProc, Endpoint};
 use crate::vm::region::VirRegion;
@@ -1101,9 +1067,51 @@ impl ForkFlags {
 }
 ```
 
+**方案四视角：CoW 设置与页表创建的简化**
+
+> **Direct Map 标注**：CoW 设置中的 `pt_writemap()` 在 Direct Map 方案下通过 `vm_phys_to_virt()` 直接操作页表页，无需 `createpde` 临时映射窗口。CoW 的逻辑（`refcount > 1` → 只读 → 写入触发页错误 → 分配新页）完全不变——direct map 简化的是"如何写入页表项"这个实现细节，而不是 CoW 的策略逻辑。这是策略/机制分离的一个例证：CoW 策略（何时共享、何时复制）不变，机制（如何写入页表）被简化。
+
+**fork 页表创建的终极简化**
+
+Direct Map 方案下，fork 创建子进程页表的流程被大幅简化。
+
+**Minix3 的 fork 页表创建**需要 `createpde` 临时映射窗口——VM 无法直接访问物理页，必须请求内核在 VM 的地址空间中临时映射一个物理页，操作完毕后再解除映射：
+
+```
+1. alloc_mem() 分配物理页
+2. createpde() 建立临时映射窗口
+3. 通过临时映射窗口清零页目录
+4. pt_mapkernel() 建立内核映射
+5. 复制父进程用户空间映射
+6. 释放临时映射窗口
+```
+
+**Direct Map 方案的 fork 页表创建**只需 4 步，无需临时映射窗口：
+
+```
+1. bitmap.alloc_mem(1)           → 分配新页目录物理页
+2. vm_phys_to_virt(dir_phys)     → 清零（物理页天然有 VA）
+3. pt_mapkernel(dir_ptr)         → 建立内核映射（含 kernel direct map）
+4. 复制父进程的用户空间映射
+```
+
+**三种方案的复杂度递减**：
+
+| 方案 | 步骤 | 复杂度来源 |
+|------|------|-----------|
+| Minix3（createpde） | 分配 → 建临时映射 → 清零 → 建内核映射 → 复制 → 释放临时映射 | VM 无法直接访问物理页 |
+| 方案三（PtRegion） | 分配 → 从 PtRegion 分配 VA → 清零 → 建内核映射 → 复制 | 页表页需要特殊 VA 管理 |
+| 方案四（Direct Map） | 分配 → `vm_phys_to_virt()` 清零 → 建内核映射 → 复制 | 物理页天然有 VA |
+
+读者应感受到：**direct map 的"终极简化"不是"又少了一步"，而是"间接操作的根源被消除了"**——Minix3 的 `createpde` 和方案三的 PtRegion 都是为了解决"VM 无法直接访问物理页"这个问题，direct map 从根本上消除了这个问题。
+
+**双视图模型在 fork 中的协作**：VM 通过 VM direct map（`vm_phys_to_virt()`）操作物理页（清零、复制），通过 `pt_mapkernel()` 确保新页表包含 kernel direct map。两者在 fork 中协作——VM 用自己的视图操作数据，用内核的视图确保新进程的页表包含内核映射。
+
 ### 3.2 错误处理
 
 使用 Result 类型处理各阶段失败，包括验证失败、内存不足等错误。
+
+> **注意**: 以下 `ForkError` 为早期设计版本（5 变体），实际 Rust 实现中只有 3 变体：`NoMemory`、`PageNotMapped`、`MemType(MemTypeError)`。参见 `fork.rs`。
 
 ```rust
 /// fork 错误类型
@@ -1125,6 +1133,8 @@ pub type ForkResult<T> = Result<T, ForkError>;
 ### 3.3 事务性
 
 通过检查点和回滚机制保证 fork 操作的原子性。
+
+> **注意**: 以下 `ForkState`、`ForkCheckpoint`、`ForkPhase` 为未来设计，当前 Rust 实现中尚未包含。`fork_region()` 函数内部自行处理回滚（递减已递增的 refcount）。
 
 ```rust
 /// fork 操作状态
@@ -1209,6 +1219,8 @@ impl ForkState {
 
 ### 3.4 进程表管理
 
+> **注意**: 以下 `ProcTable` 为未来设计，当前 Rust 实现中尚未包含。
+
 ```rust
 use alloc::collections::BTreeMap;
 
@@ -1258,6 +1270,8 @@ impl ProcTable {
 ### 4.1 消息处理入口
 
 do_fork 函数接收 VM_FORK 消息，解析参数并启动 fork 流程。
+
+> **注意**: 以下 §4.1-4.7 为未来设计代码，当前 Rust 实现仅包含 `fork_region()`、`fork_regions()`、`cow_copy_page()` 三个函数（见 `fork.rs`）。上层入口（`do_fork`）、进程表管理（`ProcTable`）、页表操作（`map_writept`）、内核通知（`sys_fork`）等尚未实现。
 
 ```rust
 use crate::ipc::Message;
@@ -1495,6 +1509,51 @@ fn map_writept(
 | `pr_writable(vr, pr)` | `slot.memtype.unwrap().writable(frames, slot)` | 可写判断统一到 MemType trait |
 
 > **方案 A 简化**: Minix3 的 `map_copy_region` 需要 `pb_reference()` → `pb_link()` 创建新的 `phys_region` 并链入 `phys_block.firstregion` 侵入式链表。方案 A 只需递增 `PageFrames.states[pfn].refcount` 并复制 `PageSlot`（Copy 类型），省去了堆分配和链表操作。
+
+### 4.4a 已实现函数
+
+> 以下函数已在 `fork.rs` 中实现，是当前代码的核心。
+
+**fork_region** — 复制单个虚拟区域
+
+```rust
+// os/servers/vm/src/fork.rs:17
+pub(crate) fn fork_region(
+    src: &VirRegion,
+    frames: &mut PageFrames,
+) -> Result<Box<VirRegion>, ForkError>
+```
+
+对应 Minix3 的 `map_copy_region()`。关键差异：
+- 使用 `PageSlot` Copy 语义替代 `pb_reference()` + `pb_link()`
+- `ev_reference` 失败时自动回滚已递增的 refcount
+- 复制后设置 `dst.set_writable(false)` 实现 CoW
+
+**fork_regions** — 复制所有虚拟区域
+
+```rust
+// os/servers/vm/src/fork.rs:65
+pub(crate) fn fork_regions(
+    src_regions: &[Box<VirRegion>],
+    frames: &mut PageFrames,
+) -> Result<Vec<Box<VirRegion>>, ForkError>
+```
+
+对应 Minix3 的 `map_proc_copy()`。遍历源区域列表，对每个区域调用 `fork_region()`。
+
+**cow_copy_page** — CoW 单页复制
+
+```rust
+// os/servers/vm/src/fork.rs:81
+pub(crate) fn cow_copy_page(
+    region: &mut VirRegion,
+    frames: &mut PageFrames,
+    alloc: &mut dyn PfnAllocator,
+    offset: VirBytes,
+) -> Result<(), ForkError>
+```
+
+对应 Minix3 的 `mem_cow()`。是 `cow_resolve_core()` 的薄封装，将 `CowCoreError` 映射为 `ForkError`。
 
 ### 4.5 内核通知
 
