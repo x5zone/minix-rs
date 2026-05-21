@@ -346,20 +346,22 @@ impl MemType for SharedMemory {
     fn ev_pagefault(
         &self,
         _proc: &ActiveProc<'_>,
-        region: &mut crate::region::VirRegion,
+        _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
-        offset: VirBytes,
+        _offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        let slot = region.get_slot(offset);
-
-        match slot {
-            None => return Ok(PagefaultResult::NeedNewPage),
-            Some(s) if !s.is_mapped() => return Ok(PagefaultResult::NeedNewPage),
-            _ => {}
-        }
-
-        Ok(PagefaultResult::Handled)
+        // TODO(P0): Minix3's shared_pagefault maps the shared segment's physical page
+        // into the faulting process's address space. Shared memory never triggers
+        // CoW — writes go to the shared page directly.
+        //
+        // Minix3 的 mem_shared.c shared_pagefault():
+        //   phys == MAP_NONE → 从共享段获取物理页并映射 → return OK
+        //   phys != MAP_NONE → 页面已映射 → return OK
+        //
+        // 当前返回 NeedNewPage（覆盖首次访问），缺失：从共享段获取物理页
+        // 并映射到当前进程的逻辑（需要跨进程物理页共享机制）。
+        Ok(PagefaultResult::NeedNewPage)
     }
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}

@@ -207,8 +207,9 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     }
 
     // 情况2: 不需要 CoW（只有一个引用或只是读操作）
+    // ⚠️ Minix3 内存泄漏：预分配的 new_page_cl 未释放，直接 return OK
     if(ph->ph->refcount < 2 || !write) {
-        return OK;  // 内存已就绪
+        return OK;  // 内存已就绪（但 new_page_cl 泄漏）
     }
 
     // 情况3: 执行 CoW
@@ -1054,8 +1055,8 @@ struct phys_region *physblock_get(struct vir_region *region, vir_bytes offset)
 | 操作 | 时间复杂度 | 说明 |
 |------|-----------|------|
 | AVL 树查找 | O(log n) | n 为区域数量 |
-| 物理区域查找 | O(m) | m 为区域内的物理块数量 |
-| 总体 | O(log n + m) | 通常 m 很小 |
+| 物理区域查找 | O(1) | 数组索引（见 L1040 说明） |
+| 总体 | O(log n) | 物理区域查找已为 O(1) |
 
 **优化策略**
 
@@ -1182,61 +1183,7 @@ result = map_pf(vmp, region, offset, wr, pf_cont, &state, sizeof(state), &io);
 
 **map_pf 处理逻辑**
 
-```c
-// minix3/minix/servers/vm/region.c:664
-int map_pf(struct vmproc *vmp,
-    struct vir_region *region,
-    vir_bytes offset,
-    int write,
-    vfs_callback_t pf_callback,
-    void *state,
-    int len,
-    int *io)
-{
-    struct phys_region *ph;
-    int r = OK;
-
-    offset -= offset % VM_PAGE_SIZE;
-    assert(offset < region->length);
-
-    // 1. 获取或创建物理区域
-    if(!(ph = physblock_get(region, offset))) {
-        struct phys_block *pb;
-
-        // 创建新的物理块
-        if(!(pb = pb_new(MAP_NONE))) {
-            return ENOMEM;
-        }
-
-        // 引用物理块
-        if(!(ph = pb_reference(pb, offset, region, region->def_memtype))) {
-            pb_free(pb);
-            return ENOMEM;
-        }
-    }
-
-    // 2. 检查是否需要处理
-    if(!write || !ph->memtype->writable(ph)) {
-        // 调用内存类型的 pagefault 处理器
-        if((r = ph->memtype->ev_pagefault(vmp, region, ph, write,
-            pf_callback, state, len, io)) == SUSPEND) {
-            return SUSPEND;
-        }
-
-        if(r != OK) {
-            pb_unreferenced(region, ph, 1);
-            return r;
-        }
-    }
-
-    // 3. 更新页表
-    if((r = map_ph_writept(vmp, region, ph)) != OK) {
-        return r;
-    }
-
-    return r;
-}
-```
+`map_pf()` 的完整源码见 §2.1.2（L366-416）。以下为处理决策流程摘要：
 
 **处理决策流程**
 
@@ -1396,36 +1343,6 @@ static int pr_writable(struct vir_region *vr, struct phys_region *pr)
     return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
 }
 ```
-
-#### 方案四视角：页表写入的终极简化
-
-> **方案四标注**：Direct Map 方案下，`pt_writemap()` 内部的页表项写入通过 `vm_phys_to_virt()` 直接操作，无需 `createpde` 临时映射窗口。
-
-页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。其中**页表写入**是最关键的操作：
-
-**Minix3 的页表写入**需要 `createpde` 临时映射窗口——VM 无法直接访问页表页（它们是物理页），必须请求内核在 VM 的地址空间中临时映射一个物理页，写入页表项后再释放：
-
-```
-1. createpde(pt_phys) → 在 VM 地址空间临时映射页表页
-2. 通过临时映射写入页表项
-3. 释放临时映射
-```
-
-**方案四的页表写入**只需一步：
-
-```
-1. vm_phys_to_virt(pt_phys) → 直接获取页表页 VA → 写入页表项
-```
-
-**三种方案的复杂度递减**：
-
-| 方案 | 页表写入方式 | 复杂度来源 |
-|------|------------|-----------|
-| Minix3（createpde） | 建临时映射 → 写入 → 释放临时映射 | VM 无法直接访问物理页 |
-| 方案三（PtRegion） | 从 PtRegion 分配 VA → 写入 | 页表页需要特殊 VA 管理 |
-| 方案四（Direct Map） | `vm_phys_to_virt()` → 直接写入 | 物理页天然有 VA |
-
-读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 16-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
 
 ### 2.4 错误处理
 
@@ -1800,6 +1717,36 @@ pub(crate) fn cow_resolve(
 | `refcount` 溢出无检测 | `u16` + debug 构建下 saturating_add 断言 |
 | 物理页分配失败直接 panic | `PfnAllocator::alloc_pfn()` 返回 Result，显式错误处理 |
 
+**方案四视角：页表写入的终极简化**
+
+> **Direct Map 标注**：Direct Map 方案下，`pt_writemap()` 内部的页表项写入通过 `vm_phys_to_virt()` 直接操作，无需 `createpde` 临时映射窗口。
+
+页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。其中**页表写入**是最关键的操作：
+
+**Minix3 的页表写入**需要 `createpde` 临时映射窗口——VM 无法直接访问页表页（它们是物理页），必须请求内核在 VM 的地址空间中临时映射一个物理页，写入页表项后再释放：
+
+```
+1. createpde(pt_phys) → 在 VM 地址空间临时映射页表页
+2. 通过临时映射写入页表项
+3. 释放临时映射
+```
+
+**方案四的页表写入**只需一步：
+
+```
+1. vm_phys_to_virt(pt_phys) → 直接获取页表页 VA → 写入页表项
+```
+
+**三种方案的复杂度递减**：
+
+| 方案 | 页表写入方式 | 复杂度来源 |
+|------|------------|-----------|
+| Minix3（createpde） | 建临时映射 → 写入 → 释放临时映射 | VM 无法直接访问物理页 |
+| 方案三（PtRegion） | 从 PtRegion 分配 VA → 写入 | 页表页需要特殊 VA 管理 |
+| 方案四（Direct Map） | `vm_phys_to_virt()` → 直接写入 | 物理页天然有 VA |
+
+读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 16-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
+
 **错误类型**
 
 ```rust
@@ -2141,6 +2088,8 @@ pub(crate) fn handle_pagefault(
 
 **内核到 VM 的消息格式**
 
+> **注意**: 以下 `PageFaultMessage` 为未来设计，当前 Rust 实现中尚未包含。实际消息格式由 VM 服务器的 IPC 层定义。
+
 ```rust
 /// 页错误消息（从内核接收）
 #[repr(C)]
@@ -2284,6 +2233,8 @@ match msg.m_type {
 
 **地址解析结构**
 
+> **注意**: 以下 `AddressResolution` 和 `VmProc::resolve_address()` 为未来设计，当前 Rust 实现中尚未包含。
+
 ```rust
 /// 地址解析结果
 #[derive(Debug)]
@@ -2319,6 +2270,8 @@ impl VmProc {
 ```
 
 **AVL 树查找实现**
+
+> **注意**: 以下 `RegionAvlTree::find()` 为未来设计，当前 Rust 实现中尚未包含。
 
 ```rust
 impl RegionAvlTree {
