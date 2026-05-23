@@ -1,11 +1,19 @@
 //! Fork syscall implementation (PFN index model).
 //!
 //! Uses PageSlot Copy semantics and PageFrames refcount for CoW.
+//!
+//! Rollback model mirrors Minix3:
+//! - `fork_region`: single-region rollback on `ev_reference` failure (decrement refcounts)
+//! - `fork_regions`: multi-region rollback on `fork_region` failure (free all previously
+//!   copied regions, equivalent to Minix3's `map_free_proc`)
+//! - `do_fork`: top-level orchestration, frees page table on `fork_regions` failure
+//!   (equivalent to Minix3's `pt_free(&vmc->vm_pt)`)
 
-use minix_types::VirBytes;
+use minix_types::{VirBytes, Endpoint, UserSlot};
 use crate::region::{VirRegion, VrFlags, PageFrames, PfnAllocator, PfnAllocError, PAGE_SIZE};
 use crate::memtype::{MemType, MemTypeError, MEM_TYPE_ANON};
 use crate::cow_exec_pf::cow_resolve_core;
+use crate::vmproc::VmProcTable;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -63,15 +71,129 @@ pub(crate) fn fork_region(
 }
 
 pub(crate) fn fork_regions(
-    src_regions: &[Box<VirRegion>],
+    src_regions: &[&VirRegion],
     frames: &mut PageFrames,
 ) -> Result<Vec<Box<VirRegion>>, ForkError> {
     let mut dst_regions = Vec::with_capacity(src_regions.len());
     for src in src_regions {
-        let dst = fork_region(src, frames)?;
-        dst_regions.push(dst);
+        match fork_region(src, frames) {
+            Ok(dst) => dst_regions.push(dst),
+            Err(e) => {
+                free_forked_regions(&mut dst_regions, frames);
+                return Err(e);
+            }
+        }
     }
     Ok(dst_regions)
+}
+
+/// Free all forked regions by decrementing refcounts and calling `ev_unreference`.
+/// Corresponds to Minix3's `map_free_proc()` → `map_free()` → `map_subfree()` →
+/// `pb_unreferenced()`.
+fn free_forked_regions(regions: &mut [Box<VirRegion>], frames: &mut PageFrames) {
+    for region in regions.iter() {
+        for slot_opt in region.physblocks.iter() {
+            if let Some(slot) = slot_opt {
+                if slot.is_mapped() {
+                    if let Some(mt) = slot.memtype {
+                        mt.ev_unreference(frames, slot.pfn);
+                    }
+                    if let Some(state) = frames.get_mut(slot.pfn) {
+                        if state.refcount > 0 {
+                            state.refcount -= 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Top-level fork orchestration. Corresponds to Minix3's `do_fork()`.
+///
+/// Error handling mirrors Minix3:
+/// - Validation failure → return error, no side effects
+/// - `pt_new` failure → return `NoMemory`, no side effects
+/// - `fork_regions` failure → free page table + free copied regions, return `NoMemory`
+/// - `sys_fork` failure → panic (irrecoverable: kernel has created the child process)
+pub(crate) fn do_fork(
+    table: &VmProcTable,
+    frames: &mut PageFrames,
+    parent_endpoint: Endpoint,
+    child_slot: UserSlot,
+) -> Result<Endpoint, ForkError> {
+    let parent_slot = table
+        .vm_isokendpt(parent_endpoint)
+        .map_err(|_| ForkError::InvalidEndpoint)?;
+
+    let parent = table
+        .get_active(parent_slot)
+        .ok_or(ForkError::InvalidSlot)?;
+
+    assert_ne!(parent_slot, child_slot, "parent and child must occupy different slots");
+
+    let empty = table
+        .get_empty(child_slot)
+        .ok_or(ForkError::SlotInUse)?;
+
+    let mut child = empty.activate_relaxed(Endpoint::NONE);
+
+    child.init_from_fork(
+        Endpoint::NONE,
+        parent.total(),
+        parent.total_max(),
+        parent.region_top(),
+    );
+    child.copy_acl_from(&parent);
+
+    child.init_page_table().map_err(|_| ForkError::NoMemory)?;
+    child.init_regions();
+
+    let parent_regions: alloc::vec::Vec<&VirRegion> = parent.regions().iter().collect();
+    let dst_regions = match fork_regions(&parent_regions, frames) {
+        Ok(r) => r,
+        Err(e) => {
+            unsafe { child.free_page_table(); }
+            return Err(e);
+        }
+    };
+
+    for region in dst_regions {
+        child.regions_mut().insert(*region);
+    }
+
+    unsafe {
+        child.setup_cow_for_all_regions(frames);
+    }
+    unsafe {
+        child.write_page_table_mappings(frames);
+    }
+
+    let child_endpoint = sys_fork(parent.endpoint(), child.slot());
+    child.set_endpoint(child_endpoint);
+
+    child.bind_page_table()
+        .expect("pt_bind failed after sys_fork — irrecoverable, kernel already created child");
+
+    // TODO: handle_memory_once — notify kernel of initial memory mapping
+    // for the child process. Corresponds to Minix3's
+    //   handle_memory_once(vmc, msgaddr, PFF_VMINHIBIT, ...)
+
+    Ok(child_endpoint)
+}
+
+/// Notify kernel to create child process scheduling entity.
+/// Corresponds to Minix3's `sys_fork()`.
+///
+/// Returns the child's new endpoint assigned by the kernel.
+/// On failure, panics — like Minix3, this is irrecoverable because
+/// the kernel may have already created the child process.
+fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
+    // TODO: implement kernel IPC — send SYS_FORK message to kernel,
+    // receive child endpoint in reply. Minix3 signature:
+    //   sys_fork(parent_ep, child_slot, &child_ep, PFF_VMINHIBIT, &msgaddr)
+    // Currently returns a placeholder endpoint assuming success.
+    Endpoint::from_generation_slot(1, _child_slot.get() as i32)
 }
 
 /// Resolve CoW for a single page within a region (fork helper).
@@ -94,6 +216,9 @@ pub(crate) fn cow_copy_page(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ForkError {
+    InvalidEndpoint,
+    InvalidSlot,
+    SlotInUse,
     NoMemory,
     PageNotMapped,
     MemType(MemTypeError),
@@ -227,5 +352,67 @@ mod tests {
             "refcount should be rolled back after ev_reference failure");
         assert_eq!(frames.get(pfn1).unwrap().refcount, 1,
             "refcount should be rolled back after ev_reference failure");
+    }
+
+    #[test]
+    fn test_fork_regions_rollback_on_failure() {
+        use crate::memtype::{MemType, PagefaultResult, MemTypeError};
+
+        struct FailOnSecondRefMemType;
+        impl MemType for FailOnSecondRefMemType {
+            fn name(&self) -> &'static str { "fail-on-2nd-ref" }
+            fn ev_pagefault(&self, _proc: &crate::vmproc::ActiveProc<'_>, _region: &mut VirRegion,
+                _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
+            ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
+            fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
+            fn ev_reference(&self, _frames: &mut PageFrames, _slot: crate::region::PageSlot,
+            ) -> Result<(), MemTypeError> {
+                static COUNT: core::sync::atomic::AtomicUsize =
+                    core::sync::atomic::AtomicUsize::new(0);
+                let n = COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                if n >= 1 {
+                    return Err(MemTypeError::NotSupported);
+                }
+                Ok(())
+            }
+            fn writable(&self, _frames: &PageFrames, _slot: crate::region::PageSlot,
+                _region: &VirRegion,
+            ) -> bool { false }
+        }
+
+        static FAIL2_MT: FailOnSecondRefMemType = FailOnSecondRefMemType;
+
+        let mut frames = make_frames(16);
+        let mut alloc = TestAlloc { next: 0 };
+
+        let mut src0 = VirRegion::new(VirBytes(0x1000), VirBytes(0x2000), VrFlags::empty());
+        src0.set_writable(true);
+        src0.def_memtype = Some(&FAIL2_MT);
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        src0.map_page(&mut frames, VirBytes(0x0000), pfn0, &FAIL2_MT);
+        src0.map_page(&mut frames, VirBytes(0x1000), pfn1, &FAIL2_MT);
+
+        let mut src1 = VirRegion::new(VirBytes(0x5000), VirBytes(0x2000), VrFlags::empty());
+        src1.set_writable(true);
+        src1.def_memtype = Some(&FAIL2_MT);
+        let pfn2 = alloc.alloc_pfn().unwrap();
+        let pfn3 = alloc.alloc_pfn().unwrap();
+        src1.map_page(&mut frames, VirBytes(0x0000), pfn2, &FAIL2_MT);
+        src1.map_page(&mut frames, VirBytes(0x1000), pfn3, &FAIL2_MT);
+
+        let src_regions: Vec<Box<VirRegion>> = vec![Box::new(src0), Box::new(src1)];
+        let src_refs: Vec<&VirRegion> = src_regions.iter().map(|b| b.as_ref()).collect();
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 1);
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 1);
+
+        let result = fork_regions(&src_refs, &mut frames);
+        assert!(result.is_err());
+
+        assert_eq!(frames.get(pfn0).unwrap().refcount, 1,
+            "refcount for first region page should be rolled back after fork_regions failure");
+        assert_eq!(frames.get(pfn1).unwrap().refcount, 1,
+            "refcount for first region page should be rolled back after fork_regions failure");
     }
 }

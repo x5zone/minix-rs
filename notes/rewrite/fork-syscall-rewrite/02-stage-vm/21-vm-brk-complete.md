@@ -236,9 +236,9 @@ brk 无操作 (new_addr == current_brk):
 
 | 组件 | 现有状态 | brk 需要的操作 |
 |------|---------|---------------|
-| `RegionAvl::find_less()` | ✅ 已实现 | 对应 `region_search(AVL_LESS)` |
-| `RegionAvl::find_slot()` | ✅ 已实现 | 对应 `region_find_slot()` |
-| `RegionAvl::insert()` | ✅ 已实现 | 插入新区域 |
+| `RegionMap::find()` | ✅ 已实现 | 对应 `region_search(AVL_LESS_EQUAL)` |
+| `RegionMap::search()` | ✅ 已实现 | 对应 `region_search(AVL_LESS)` 等 |
+| `RegionMap::insert()` | ✅ 已实现 | 插入新区域 |
 | `VirRegion::new()` | ✅ 已实现 | 创建新区域 |
 | `VirRegion::free_range()` | ✅ 已实现 | 释放范围内物理页 |
 | `MemType::on_resize()` | ✅ 已实现（默认空） | 区域扩展回调 |
@@ -271,7 +271,7 @@ brk 无操作 (new_addr == current_brk):
 
 **原则 4：不使用 map_page_region**
 
-Minix3 的 `map_page_region()` 是一个通用函数，创建新区域并插入 AVL 树。Rust 中可以用 `RegionAvl::insert()` + `VirRegion::new()` 组合实现，不需要单独的 `map_page_region()` 函数。
+Minix3 的 `map_page_region()` 是一个通用函数，创建新区域并插入 AVL 树。Rust 中可以用 `RegionMap::insert()` + `VirRegion::new()` 组合实现，不需要单独的 `map_page_region()` 函数。
 
 ### 3.3 与 Minix3 的关键差异
 
@@ -279,8 +279,8 @@ Minix3 的 `map_page_region()` 是一个通用函数，创建新区域并插入 
 |------|--------|----------|
 | 收缩处理 | `anon_resize` 静默忽略 | 实现完整收缩：释放物理页 + 缩减 length |
 | 区域扩展 | `realloc(physblocks)` + `memset` | `Vec::resize()` |
-| 新区域创建 | `map_page_region()` 通用函数 | `VirRegion::new()` + `RegionAvl::insert()` |
-| 下一个区域查找 | `getnextvr()` 使用迭代器 | `RegionAvl::find_greater()` |
+| 新区域创建 | `map_page_region()` 通用函数 | `VirRegion::new()` + `RegionMap::insert()` |
+| 下一个区域查找 | `getnextvr()` 使用迭代器 | `RegionMap::search(SearchType::GREATER)` |
 | 内存统计 | 分散在 pb.c/region.c | `VmProc::add_total()` / `sub_total()` |
 | 页对齐 | `roundup()` 宏 | `(addr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)` |
 
@@ -734,7 +734,7 @@ brk 扩展: add_total(extralen) + region.length += extralen
   │  （进程运行，使用堆内存）
   │
   ▼
-exit 释放: RegionAvl::free_all() → unlink_from_block() → free_phys()
+exit 释放: RegionMap::free_all() → unlink_from_block() → free_phys()
   └── sub_total 由 clear() 中的 vm_total = default 隐式处理
 ```
 

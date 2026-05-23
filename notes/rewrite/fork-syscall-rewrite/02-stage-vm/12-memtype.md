@@ -2850,8 +2850,16 @@ impl MemType for DirectPhysical {
         "physical memory mapping"
     }
 
-    fn writable(&self, _frames: &PageFrames, slot: PageSlot) -> bool {
-        slot.is_mapped()
+    fn writable(&self, frames: &PageFrames, slot: PageSlot, region: &VirRegion) -> bool {
+        if !slot.is_mapped() {
+            return false;
+        }
+        if region.remaps > 0 {
+            return true;
+        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
     }
 
     fn ev_pagefault(

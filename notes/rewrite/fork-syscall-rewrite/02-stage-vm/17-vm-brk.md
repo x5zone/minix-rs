@@ -15,23 +15,23 @@
 | 功能 | 说明 |
 |------|------|
 | **设置堆顶** | 将堆顶设置为指定地址 |
-| **扩展堆** | 增加堆空间，分配新内存页 |
-| **收缩堆** | 减少堆空间，释放内存页 |
+| **扩展堆** | 增加堆空间，扩展虚拟区域（物理页延迟分配） |
+| **收缩堆** | Minix3 中收缩被静默忽略（返回成功但不释放内存）；Rust 实现支持真正收缩 |
 | **查询堆顶** | 参数为 0 时返回当前堆顶 |
 
 **进程地址空间布局**（低地址→高地址）：text → data → bss → heap（↑向上增长）→ gap → stack（↓向下增长）。堆和栈从 gap 两端相向增长，若相遇则进程被杀死（ENOMEM）。
 
 ### 1.2 堆的增长方向
 
-- **扩展堆**（`brk(new_addr)` 其中 `new_addr > 当前堆顶`）：堆向高地址扩展，分配新的虚拟区域和物理页
-- **收缩堆**（`brk(new_addr)` 其中 `new_addr < 当前堆顶`）：堆向低地址收缩，释放虚拟区域和物理页
+- **扩展堆**（`brk(new_addr)` 其中 `new_addr > 当前堆顶`）：堆向高地址扩展，扩展虚拟区域长度（物理页延迟分配，首次访问时通过缺页异常分配）
+- **收缩堆**（`brk(new_addr)` 其中 `new_addr < 当前堆顶`）：**Minix3 中收缩被静默忽略**——`anon_resize` 对 `l <= vr->length` 直接返回 OK，不释放任何内存，堆顶不变但调用成功。这是 Minix3 的设计选择（见 §2.7.2 anon_resize 分析）。Rust 实现计划支持真正收缩（见 §3.2 设计决策）
 - **危险情况**：堆顶超过栈底时，进程被杀死（ENOMEM）
 
 ### 1.3 与 Minix3 的对应关系
 
 | 功能 | Minix3 源文件 | 函数 |
 |------|--------------|------|
-| brk 入口 | `break.c:44` | `do_brk()` |
+| brk 入口 | `break.c:46` | `do_brk()` |
 | 实际调整 | `break.c:62` | `real_brk()` |
 | 区域扩展 | `region.c:1002` | `map_region_extend_upto_v()` |
 | 区域查找 | `region.c` (via `regionavl`) | `region_search()` |
@@ -134,7 +134,7 @@ VM_BRK 是 VM 服务处理堆调整请求的消息类型。
 **消息结构**
 
 ```c
-/* minix3/minix/include/minix/ipc.h:922-925 */
+/* minix3/minix/include/minix/ipc.h:918-925 */
 typedef struct {
 	void		*addr;
 	uint8_t		padding[52];
@@ -271,7 +271,7 @@ do_brk 是 VM_BRK 消息的处理入口，负责验证调用者并调用实际�
 **Minix3 源码实现**
 
 ```c
-/* minix3/minix/servers/vm/break.c:44-57 */
+/* minix3/minix/servers/vm/break.c:46-57 */
 int do_brk(message *msg)
 {
 /* Perform the brk(addr) system call.
@@ -512,18 +512,65 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 
 > **方案四标注**：brk 的物理页分配通过缺页处理程序间接完成，调用方不受 direct map 影响。缺页处理程序内部已简化为 `alloc_phys() → vm_phys_to_virt()`（见 15-pagefault.md），brk 代码无需修改。这是 direct map 统一性的体现——物理页分配的简化在底层完成，上层调用者透明受益。
 
-#### 2.7.3 收缩堆
+#### 2.7.2a anon_resize — brk 扩展的实际执行者
 
-收缩堆需要释放物理页面并更新区域元数据。
-
-**收缩流程**
-
-1. 计算要释放的区域：从新堆顶到当前堆顶的区域需要释放，`shrink_len = current_brk - new_brk`
-2. 取消物理页面映射：`map_subfree(r, offset, len)` — 减少物理块引用计数，归零时释放物理页
-3. 更新区域长度：`r->length -= shrink_len`（从尾部收缩的典型情况）
-4. 更新页表：`pt_writemap(vmp, &vmp->vm_pt, regionstart, MAP_NONE, len, 0, WMF_OVERWRITE)` 取消映射
+> **关键发现**：brk 扩展路径中，`map_region_extend_upto_v` 调用 `vr->def_memtype->ev_resize` 回调。对于堆区域（匿名内存类型 `mem_type_anon`），该回调是 `anon_resize`，它才是真正修改 `vr->length` 的函数。理解 `anon_resize` 的行为是理解 brk 收缩被静默忽略的关键。
 
 **Minix3 源码**
+
+```c
+/* minix3/minix/servers/vm/mem_anon.c:115-125 */
+static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
+{
+	/* Shrinking not implemented; silently ignored.
+	 * (Which is ok for brk().)
+	 */
+	if(l <= vr->length)
+		return OK;
+
+        assert(vr);
+        assert(vr->flags & VR_ANON);
+        assert(!(l % VM_PAGE_SIZE));
+
+        USE(vr, vr->length = l;);
+
+	return OK;
+}
+```
+
+**行为分析**
+
+| 输入 | 行为 | 返回值 |
+|------|------|--------|
+| `l > vr->length`（扩展） | 设置 `vr->length = l`，仅修改虚拟区域长度 | OK |
+| `l <= vr->length`（收缩或无变化） | **静默忽略**，不做任何操作 | OK |
+| `l <= vr->length`（收缩） | 不释放物理页、不更新页表、不修改 physblocks | OK |
+
+**关键洞察**：
+
+1. **扩展时只修改 length**：`anon_resize` 不分配物理页、不更新页表。物理页在缺页时分配（延迟分配 / demand paging），页表在缺页处理时更新。brk 只扩展虚拟地址空间的"承诺"，不立即兑现物理内存
+2. **收缩时静默忽略**：Minix3 的 brk **不真正收缩**。当 `brk(addr)` 传入的地址小于当前堆顶时，`real_brk` → `map_region_extend_upto_v` → `anon_resize`，`anon_resize` 判断 `l <= vr->length` 直接返回 OK。堆顶不变，但调用返回成功
+3. **为什么 Minix3 不实现 brk 收缩**：
+   - `anon_resize` 源码注释明确说 "Which is ok for brk()"
+   - 用户态 malloc 通常不调用 brk 收缩，而是缓存已分配的内存
+   - 收缩需要释放物理页、更新页表、调整 physblocks，实现复杂
+   - 静默忽略收缩对 POSIX 语义是可接受的（brk 成功返回但实际不释放）
+
+**其他内存类型的 ev_resize 行为**
+
+| 内存类型 | ev_resize 实现 | 行为 |
+|---------|---------------|------|
+| `mem_type_anon` | `anon_resize` | 扩展修改 length，收缩静默忽略 |
+| `mem_type_anon_contig` | `anon_contig_resize` | 直接返回 ENOMEM（物理连续内存不可调整大小） |
+| `mem_type_cache` | `cache_resize` | 直接返回 ENOMEM（缓存块不可调整大小） |
+
+#### 2.7.3 收缩堆
+
+> **重要说明**：Minix3 的 brk **不真正收缩堆**。`real_brk` 只调用 `map_region_extend_upto_v`，后者通过 `anon_resize` 对收缩请求静默忽略（返回 OK 但不操作）。本节分析的 `map_unmap_region` **不是 brk 的调用路径**，而是用于 `munmap` 等场景的区域释放函数。此处保留分析是因为 Rust 实现计划支持真正的 brk 收缩（见 §3.2），需要理解区域收缩的完整机制。
+
+**map_unmap_region — 区域释放函数**
+
+`map_unmap_region` 是通用的区域释放函数，用于 `munmap`、`exit` 等场景，**不被 brk 调用**。
 
 ```c
 /* minix3/minix/servers/vm/region.c:1065-1148 */
@@ -572,7 +619,7 @@ int map_unmap_region(struct vmproc *vmp, struct vir_region *r,
 }
 ```
 
-> **注意**: brk 收缩走的是 `offset + len == r->length` 分支（从尾部收缩），这是最简单的情况，只需减少 `r->length`。从头部收缩（`offset == 0`）需要 `ev_lowshrink` 回调支持，且涉及 `vaddr` 调整和 `physblocks` 移位，更为复杂。
+> **注意**: 若 brk 收缩走 `map_unmap_region`，则走的是 `offset + len == r->length` 分支（从尾部收缩），这是最简单的情况，只需减少 `r->length`。从头部收缩（`offset == 0`）需要 `ev_lowshrink` 回调支持，且涉及 `vaddr` 调整和 `physblocks` 移位，更为复杂。但再次强调，Minix3 的 brk 路径不调用此函数。
 >
 > **32位 vs 64位差异**: Minix3 中 `vir_bytes` 为 `u32`，`phys_slot()` 宏将字节数转换为页面槽位数。在 64 位 minix-rs 中，`vir_bytes` 为 `u64`，需要确保 `phys_slot` 的计算不会溢出，且 `realloc` 的 `newslots * sizeof(...)` 不会在 32 位 `size_t` 下溢出。
 
@@ -604,12 +651,19 @@ static int map_subfree(struct vir_region *region,
 >
 > **32位 vs 64位差异**: Minix3 中 `vir_bytes` 为 `u32`，物理地址也为 32 位。在 64 位 minix-rs 中，物理地址和虚拟地址均为 64 位，`pb_unreferenced` 的实现需要正确处理 64 位地址。
 
-**收缩 vs 扩展**
+**收缩 vs 扩展（Minix3 实际行为）**
 
-| 操作 | 物理页面 | 区域元数据 |
-|------|---------|-----------|
-| **扩展** | 延迟分配（缺页时） | 增加 length |
-| **收缩** | 立即释放 | 减少 length |
+| 操作 | 物理页面 | 区域元数据 | Minix3 brk 行为 |
+|------|---------|-----------|----------------|
+| **扩展** | 延迟分配（缺页时） | `anon_resize` 增加 length | ✅ 真正执行 |
+| **收缩** | 不释放 | `anon_resize` 静默忽略 | ⚠️ 返回 OK 但不操作 |
+
+**收缩 vs 扩展（Rust 实现计划）**
+
+| 操作 | 物理页面 | 区域元数据 | 说明 |
+|------|---------|-----------|------|
+| **扩展** | 延迟分配（缺页时） | 增加 length | 与 Minix3 一致 |
+| **收缩** | 释放物理页、递减 refcount | 减少 length、truncate physblocks | Rust 设计增强，Minix3 不支持 |
 
 ### 2.8 限制检查
 
@@ -823,8 +877,10 @@ pub enum BrkError {
     InvalidEndpoint,
     /// 与其他区域冲突
     RegionConflict,
-    /// 地址无效
+    /// 地址无效（Rust 设计新增：Minix3 无此独立检查，地址低于数据段由 anon_resize 隐式处理）
     InvalidAddress,
+    /// 扩展失败（realloc/map_page_region 失败）
+    ExtendFailed,
 }
 
 impl BrkError {
@@ -834,6 +890,7 @@ impl BrkError {
             BrkError::InvalidEndpoint => -(errno::EINVAL as i32),
             BrkError::RegionConflict => -(errno::ENOMEM as i32),
             BrkError::InvalidAddress => -(errno::EINVAL as i32),
+            BrkError::ExtendFailed => -(errno::ENOMEM as i32),
         }
     }
 }
@@ -869,6 +926,18 @@ impl VmRequest {
 ### 3.2 堆区域管理
 
 堆区域作为进程地址空间的一部分，通过 AVL 树进行管理。
+
+> **设计决策：为什么引入独立 HeapState？** Minix3 没有独立的堆状态结构，堆顶隐含在 vir_region 的 `vaddr + length` 中（§1.3 已说明）。引入独立 HeapState 的理由：
+> 1. **显式状态**：Minix3 需要通过 AVL 树搜索间接获取堆顶，HeapState 直接记录 `current_brk`，避免每次查询都遍历区域树
+> 2. **类型安全**：HeapAdjustment 枚举在类型层面区分扩展/收缩/无变化/无效，Minix3 的 `anon_resize` 用 if-else 隐式处理
+> 3. **统计追踪**：`max_brk` 对应 Minix3 的 `vm_total_max`，但粒度更细（仅堆区域），便于资源监控
+> 4. **收缩支持**：Minix3 的 `anon_resize` 对收缩静默忽略（§2.7.2a），HeapState + HeapAdjustment::Shrink 使 Rust 实现能真正执行收缩操作
+
+> **设计增强：HeapAdjustment::Shrink** — Minix3 的 brk 不支持收缩（`anon_resize` 对 `l <= vr->length` 静默忽略，返回 OK 但不操作，见 §2.7.2a）。Rust 实现计划支持真正的 brk 收缩，理由：
+> 1. **内存回收**：收缩时释放物理页，减少内存占用（Minix3 的静默忽略导致内存无法回收）
+> 2. **语义正确性**：POSIX 允许 brk 收缩成功但实际不释放，但真正收缩更符合用户预期
+> 3. **实现可行**：Rust 的 RAII 和类型系统使收缩实现更安全（physblocks.truncate + refcount 递减）
+> 4. **兼容性**：外部行为不变——收缩成功返回 0，失败返回 -1（ENOMEM），与 Minix3 的"静默成功"在错误码层面兼容
 
 **进程堆状态**
 
@@ -1033,6 +1102,11 @@ pub enum BrkError {
     /// - 低于数据段起始
     /// - 地址空间无效
     InvalidAddress,
+
+    /// 扩展失败（内部错误）
+    /// - realloc physblocks 失败（对应 Minix3 map_region_extend_upto_v 中 realloc 失败）
+    /// - map_page_region 失败（对应 Minix3 无 ev_resize 时映射匿名内存失败）
+    ExtendFailed,
 }
 
 impl BrkError {
@@ -1043,6 +1117,7 @@ impl BrkError {
             BrkError::InvalidEndpoint => -(errno::EINVAL as i32),
             BrkError::RegionConflict => -(errno::ENOMEM as i32),
             BrkError::InvalidAddress => -(errno::EINVAL as i32),
+            BrkError::ExtendFailed => -(errno::ENOMEM as i32),
         }
     }
 
@@ -1053,6 +1128,7 @@ impl BrkError {
             BrkError::InvalidEndpoint => "Invalid endpoint",
             BrkError::RegionConflict => "Region conflict",
             BrkError::InvalidAddress => "Invalid address",
+            BrkError::ExtendFailed => "Extend failed",
         }
     }
 }
@@ -1598,6 +1674,12 @@ impl ProcessMemory {
 ```
 
 > **方案 A 简化**: Minix3 的 `shrink_region` 需要遍历 `phys_blocks`，对每个 `PhysBlock` 调用 `decrement_refcount()`，当 `refcount` 降为 0 时调用 `free_physical_page()`。方案 A 使用 `VirRegion.unmap_page()` 统一处理，递减 `PageFrames.states[pfn].refcount`，由 `MemType.ev_unreference()` 决定是否释放物理页。
+>
+> **设计决策：为什么直接操作 refcount 而非使用 pb_unreferenced？** Minix3 通过 `pb_unreferenced(region, pr, 1)` 统一处理引用计数递减和物理页释放。Rust 实现直接操作 `frames.get_mut(slot.pfn).unwrap().refcount -= 1`，理由：
+> 1. **类型安全**：Minix3 的 `pb_unreferenced` 接受 `phys_region *` 指针，Rust 的 `PageSlot` 是值类型，不需要指针间接
+> 2. **统一路径**：`refcount` 递减 + `ev_unreference` 回调与 Minix3 的 `pb_unreferenced` 语义等价——都是递减引用计数，归零时通过回调释放
+> 3. **RAII 兼容**：`physblocks[page_idx].take()` 将 slot 设为 None，配合 `truncate` 实现 RAII 式清理
+> 4. **语义对齐**：最终效果与 Minix3 一致——引用计数归零时释放物理页，缓存页不释放
 
 **调整流程**
 
@@ -1953,12 +2035,14 @@ int can_expand_heap(size_t size)
 
 **堆收缩**
 
-| 场景 | 初始堆顶 | 目标堆顶 | 预期结果 |
-|------|---------|---------|---------|
-| 小收缩 | current_brk | current_brk - PAGE_SIZE | 成功 |
-| 大收缩 | current_brk | data_top | 成功（堆大小=0） |
-| 部分收缩 | current_brk | current_brk - N*PAGE_SIZE | 成功，物理页释放 |
-| 收缩后 vm_total | 有已分配物理页 | 收缩释放区域 | vm_total 减少 |
+> **Minix3 行为差异**：Minix3 的 brk 收缩被 `anon_resize` 静默忽略（返回 OK 但不释放内存，见 §2.7.2a）。下表测试场景针对 Rust 实现（支持真正收缩），需额外测试 Minix3 兼容模式（收缩返回成功但不操作）。
+
+| 场景 | 初始堆顶 | 目标堆顶 | Rust 预期结果 | Minix3 行为 |
+|------|---------|---------|-------------|------------|
+| 小收缩 | current_brk | current_brk - PAGE_SIZE | 成功，释放物理页 | 返回成功，不操作 |
+| 大收缩 | current_brk | data_top | 成功（堆大小=0） | 返回成功，不操作 |
+| 部分收缩 | current_brk | current_brk - N*PAGE_SIZE | 成功，物理页释放 | 返回成功，不操作 |
+| 收缩后 vm_total | 有已分配物理页 | 收缩释放区域 | vm_total 减少 | vm_total 不变 |
 
 **错误处理**
 
@@ -1976,7 +2060,8 @@ int can_expand_heap(size_t size)
 | OutOfMemory | ENOMEM | 与 Minix3 real_brk 返回值一致 |
 | InvalidEndpoint | EINVAL | 与 Minix3 do_brk 中 vm_isokendpt 失败一致 |
 | RegionConflict | ENOMEM | 与 Minix3 "can't grow into next region" 一致 |
-| InvalidAddress | EINVAL | Rust 设计新增，Minix3 无此独立检查 |
+| InvalidAddress | EINVAL | Rust 设计新增：Minix3 无此独立检查，地址低于数据段由 anon_resize 隐式处理 |
+| ExtendFailed | ENOMEM | 与 Minix3 map_region_extend_upto_v 中 realloc/map_page_region 失败一致 |
 
 ---
 
@@ -1990,6 +2075,7 @@ int can_expand_heap(size_t size)
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（pt_writemap）
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数（unmap_page）
 - [00-vm-overview.md](00-vm-overview.md) - VM 服务总览
+- [21-vm-brk-complete.md](21-vm-brk-complete.md) - brk 完整实现（包含 anon_resize 分析、Rust 实现详解、收缩行为差异）
 
 ---
 

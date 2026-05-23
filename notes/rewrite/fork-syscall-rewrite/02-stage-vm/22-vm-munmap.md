@@ -513,10 +513,10 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 
 | 组件 | 现有状态 | munmap 需要的操作 |
 |------|---------|-----------------|
-| `RegionAvl::find_less_equal()` | ✅ 已实现 | 对应 `region_search(AVL_LESS_EQUAL)` |
-| `RegionAvl::find_greater()` | ✅ 已实现 | 找下一个区域 |
-| `RegionAvl::remove()` | ✅ 已实现 | 移除区域 |
-| `RegionAvl::insert()` | ✅ 已实现 | 重新插入修改后的区域 |
+| `RegionMap::find()` | ✅ 已实现 | 对应 `region_search(AVL_LESS_EQUAL)` |
+| `RegionMap::search(SearchType::GREATER)` | ✅ 已实现 | 找下一个区域 |
+| `RegionMap::remove()` | ✅ 已实现 | 移除区域 |
+| `RegionMap::insert()` | ✅ 已实现 | 重新插入修改后的区域 |
 | `VirRegion::split()` | ✅ 已实现 | 区域分裂 |
 | `VirRegion::free_range()` | ✅ 已实现 | 释放范围内物理页 |
 | `DirectPhysical` memtype | ✅ 已实现 | directphys 缺页和 unreference |
@@ -552,7 +552,7 @@ Minix3 使用 `memmove` 调整 physblocks 数组。Rust 中 `Vec` 的 `drain()` 
 | 方面 | Minix3 | minix-rs |
 |------|--------|----------|
 | physblocks 调整 | `memmove` + 手动 offset 调整 | `Vec::drain()` + 自动 offset |
-| 区域迭代 | `region_start_iter` + `region_incr_iter` | `RegionAvl::iter()` |
+| 区域迭代 | `region_start_iter` + `region_incr_iter` | `RegionMap::iter()` |
 | 物理页释放 | `pb_unreferenced()` + `SLABFREE(pr)` | `PhysRegion::unlink_from_block()` + `Vec::take()` |
 | 权限检查 | `map_perm_check()` | 需要实现 ACL 检查 |
 | split 后引用计数 | `pb_reference()` (refcount++) + `map_free()` (refcount--) | `PhysBlock::reference()` + `VirRegion::free_range()` |
@@ -893,29 +893,19 @@ impl MemType for DirectPhysical {
 /// 查找地址所在的区域
 ///
 /// 对应 Minix3 的 map_lookup()。
-/// 使用 AVL_LESS_EQUAL 搜索，然后检查地址是否在区域内。
+/// 使用 BTreeMap range 搜索，然后检查地址是否在区域内。
 pub(crate) fn lookup_region(
-    regions: &RegionAvl,
+    regions: &RegionMap,
     addr: VirBytes,
 ) -> Option<&VirRegion> {
-    let region = regions.find_less_equal(addr)?;
-    if region.contains(addr) {
-        Some(region)
-    } else {
-        None
-    }
+    regions.find(addr)
 }
 
 pub(crate) fn lookup_region_mut(
-    regions: &mut RegionAvl,
+    regions: &mut RegionMap,
     addr: VirBytes,
 ) -> Option<&mut VirRegion> {
-    let region = regions.find_less_equal_mut(addr)?;
-    if region.contains(addr) {
-        Some(region)
-    } else {
-        None
-    }
+    regions.find_mut(addr)
 }
 ```
 

@@ -1,11 +1,22 @@
 //! Message dispatcher for VM service.
 //!
-//! Routes incoming IPC messages to appropriate handlers.
-//! Supports: fork, brk, munmap, exit, willexit, pagefault, exec_newmem.
+//! Routes decoded IPC messages (per-link `In` types) to handler functions
+//! and returns unified `VmReply` enum for encoding back to transport layer.
 //!
-//! PFN index model: Updated to use PageFrames/PageSlot instead of PhysRegion.
+//! # Architecture
+//!
+//! ```
+//! Message (transport) → VmXxxIn::decode() → dispatch_xxx() → VmReply → encode → Message
+//! ```
+//!
+//! Supports: fork, brk, munmap, exit, willexit, pagefault, exec_newmem.
 
-use minix_types::{VmRequest, VmResponse, VmError, Endpoint, UserSlot, VirBytes};
+use minix_types::{
+    Endpoint, UserSlot, VirBytes,
+    VmForkIn, VmBrkIn, VmMunmapIn, VmExitIn, VmWillexitIn, VmPagefaultIn, VmExecNewmemIn,
+    VmForkOut, VmBrkOut,
+    VmReply, VmError,
+};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::region::PageFrames;
@@ -18,128 +29,110 @@ use crate::cow_exec_pf;
 pub(crate) struct MessageDispatcher;
 
 impl MessageDispatcher {
-    pub(crate) fn dispatch(table: &VmProcTable, request: VmRequest) -> VmResponse {
-        match request {
-            VmRequest::Fork { parent_endpoint, child_slot, child_endpoint } => {
-                Self::handle_fork_request(table, parent_endpoint, child_slot, child_endpoint)
-            }
-            _ => VmResponse::Error(VmError::NotImplemented),
-        }
-    }
-
     pub(crate) fn dispatch_with_alloc(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        request: VmRequest,
-    ) -> VmResponse {
-        match request {
-            VmRequest::Fork { parent_endpoint, child_slot, child_endpoint } => {
-                Self::handle_fork_request(table, parent_endpoint, child_slot, child_endpoint)
-            }
-            VmRequest::Brk { endpoint, new_addr } => {
-                Self::handle_brk_request(table, page_alloc, frames, endpoint, new_addr)
-            }
-            VmRequest::Munmap { endpoint, addr, length } => {
-                Self::handle_munmap_request(table, page_alloc, frames, endpoint, addr, length)
-            }
-            VmRequest::Exit { endpoint } => {
-                Self::handle_exit_request(table, page_alloc, endpoint)
-            }
-            VmRequest::Willexit { endpoint } => {
-                Self::handle_willexit_request(table, endpoint)
-            }
-            VmRequest::Pagefault { endpoint, vaddr, write } => {
-                Self::handle_pagefault_request(table, page_alloc, frames, endpoint, vaddr, write)
-            }
-            VmRequest::ExecNewmem { endpoint, text_addr, text_len, data_addr, data_len, pc } => {
-                let _ = (endpoint, text_addr, text_len, data_addr, data_len, pc);
-                VmResponse::Error(VmError::NotImplemented)
-            }
+        request: VmForkIn,
+    ) -> VmReply {
+        Self::dispatch_fork(table, page_alloc, frames, request)
+    }
+
+    fn dispatch_fork(
+        table: &VmProcTable,
+        _page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
+        request: VmForkIn,
+    ) -> VmReply {
+        match fork::do_fork(table, frames, request.parent_endpoint, request.child_slot) {
+            Ok(child_endpoint) => VmReply::Fork(VmForkOut {
+                child_endpoint,
+            }),
+            Err(fork::ForkError::InvalidEndpoint) => VmReply::Error(VmError::InvalidEndpoint),
+            Err(fork::ForkError::InvalidSlot) => VmReply::Error(VmError::SlotInUse),
+            Err(fork::ForkError::SlotInUse) => VmReply::Error(VmError::SlotInUse),
+            Err(fork::ForkError::NoMemory) => VmReply::Error(VmError::OutOfMemory),
+            Err(fork::ForkError::PageNotMapped) => VmReply::Error(VmError::PageNotMapped),
+            Err(fork::ForkError::MemType(_)) => VmReply::Error(VmError::MemType),
         }
     }
 
-    fn handle_fork_request(
-        table: &VmProcTable,
-        parent_endpoint: Endpoint,
-        child_slot: UserSlot,
-        child_endpoint: Endpoint,
-    ) -> VmResponse {
-        let _ = (table, parent_endpoint, child_slot, child_endpoint);
-        VmResponse::Error(VmError::NotImplemented)
-    }
-
-    fn handle_brk_request(
+    pub(crate) fn dispatch_brk(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        endpoint: Endpoint,
-        new_addr: VirBytes,
-    ) -> VmResponse {
-        let request = brk::BrkRequest {
-            endpoint,
-            new_brk_addr: new_addr,
+        request: VmBrkIn,
+    ) -> VmReply {
+        let brk_req = brk::BrkRequest {
+            endpoint: request.endpoint,
+            new_brk_addr: request.new_addr,
         };
 
-        match brk::handle_brk(table, page_alloc, frames, &request) {
-            Ok(response) => VmResponse::BrkOk {
+        match brk::handle_brk(table, page_alloc, frames, &brk_req) {
+            Ok(response) => VmReply::Brk(VmBrkOut {
                 new_addr: response.new_brk_addr,
-            },
-            Err(e) => VmResponse::Error(Self::brk_error_to_vm_error(e)),
+            }),
+            Err(e) => VmReply::Error(Self::brk_error_to_vm_error(e)),
         }
     }
 
-    fn handle_munmap_request(
+    pub(crate) fn dispatch_munmap(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        endpoint: Endpoint,
-        addr: VirBytes,
-        length: VirBytes,
-    ) -> VmResponse {
-        let request = munmap::MunmapRequest {
-            endpoint,
-            addr,
-            length,
+        request: VmMunmapIn,
+    ) -> VmReply {
+        let munmap_req = munmap::MunmapRequest {
+            endpoint: request.endpoint,
+            addr: request.addr,
+            length: request.length,
         };
 
-        match munmap::handle_munmap(table, page_alloc, frames, &request) {
-            Ok(()) => VmResponse::MunmapOk,
-            Err(e) => VmResponse::Error(Self::munmap_error_to_vm_error(e)),
+        match munmap::handle_munmap(table, page_alloc, frames, &munmap_req) {
+            Ok(()) => VmReply::Munmap,
+            Err(e) => VmReply::Error(Self::munmap_error_to_vm_error(e)),
         }
     }
 
-    fn handle_exit_request(
+    pub(crate) fn dispatch_exit(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
-        endpoint: Endpoint,
-    ) -> VmResponse {
-        match exit::handle_vm_exit(table, page_alloc, endpoint) {
-            Ok(()) => VmResponse::ExitOk,
-            Err(e) => VmResponse::Error(Self::exit_error_to_vm_error(e)),
+        request: VmExitIn,
+    ) -> VmReply {
+        match exit::handle_vm_exit(table, page_alloc, request.endpoint) {
+            Ok(()) => VmReply::Exit,
+            Err(e) => VmReply::Error(Self::exit_error_to_vm_error(e)),
         }
     }
 
-    fn handle_willexit_request(
+    pub(crate) fn dispatch_willexit(
         table: &VmProcTable,
-        endpoint: Endpoint,
-    ) -> VmResponse {
-        match exit::handle_vm_willexit(table, endpoint) {
-            Ok(()) => VmResponse::WillexitOk,
-            Err(e) => VmResponse::Error(Self::exit_error_to_vm_error(e)),
+        request: VmWillexitIn,
+    ) -> VmReply {
+        match exit::handle_vm_willexit(table, request.endpoint) {
+            Ok(()) => VmReply::Willexit,
+            Err(e) => VmReply::Error(Self::exit_error_to_vm_error(e)),
         }
     }
 
-    fn handle_pagefault_request(
+    pub(crate) fn dispatch_pagefault(
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        endpoint: Endpoint,
-        vaddr: VirBytes,
-        write: bool,
-    ) -> VmResponse {
-        let _ = (table, page_alloc, frames, endpoint, vaddr, write);
-        VmResponse::Error(VmError::NotImplemented)
+        request: VmPagefaultIn,
+    ) -> VmReply {
+        let _ = (table, page_alloc, frames, request);
+        VmReply::Error(VmError::NotImplemented)
+    }
+
+    pub(crate) fn dispatch_exec_newmem(
+        table: &VmProcTable,
+        page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
+        request: VmExecNewmemIn,
+    ) -> VmReply {
+        let _ = (table, page_alloc, frames, request);
+        VmReply::Error(VmError::NotImplemented)
     }
 
     fn brk_error_to_vm_error(e: brk::BrkError) -> VmError {

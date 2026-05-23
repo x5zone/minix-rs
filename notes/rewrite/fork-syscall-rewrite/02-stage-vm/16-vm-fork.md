@@ -25,7 +25,7 @@ VM 层 fork 是 fork 系统调用的核心部分，负责复制父进程的地�
 2. VM 验证参数（`vm_isokendpt()`、slot 范围检查）
 3. 初始化子进程结构：`*vmc = *vmp`（浅拷贝），恢复子进程特有字段
 4. 创建子进程页表：`pt_new(&vmc->vm_pt)`
-5. 复制地址空间：`map_proc_copy(vmc, vmp)` → `map_proc_copy_range()` 遍历每个区域调用 `map_copy_region()`，最后调用 `map_writept(src)` 和 `map_writept(dst)` 更新父子进程页表
+5. 复制地址空间：`map_proc_copy(vmc, vmp)` → `map_proc_copy_range()` 遍历每个区域调用 `map_copy_region()`，`map_proc_copy_range()` 内部在所有区域复制完成后调用 `map_writept(src)` 和 `map_writept(dst)` 更新父子进程页表
 6. 设置进程标志和 ACL：`vmc->vm_flags &= VMF_INUSE`、`acl_fork(vmc)`
 7. 通知内核：`sys_fork()`、`pt_bind()`、`handle_memory_once()`
 8. 返回子进程 endpoint 给 PM
@@ -48,7 +48,7 @@ VM 层 fork 是 fork 系统调用的核心部分，负责复制父进程的地�
 
 ### 1.4 关键数据结构
 
-> 以下为 Minix3 x86-32 源码中的实际定义，详细字段说明参见各专题文档。
+> 以下为 Minix3 x86-32 源码中的实际定义，详细字段说明参见各专题文档：[01-vmproc-struct](01-vmproc-struct.md)、[06-pagetable-struct](06-pagetable-struct.md)、[10-phys-pagestate](10-phys-pagestate.md)、[11-region-mapping](11-region-mapping.md)。
 
 ```c
 // VM 进程结构 (vmproc.h:14)
@@ -198,11 +198,19 @@ int do_fork(void)
 #define VMF_CHILD_ENDPOINT  m1_i3   // 返回的子进程 endpoint
 ```
 
+**m1 消息格式**
+
+Minix3 的 IPC 消息是一个 64 字节的 `union message`，内含多种子格式（`mess_1`~`mess_8`）。`VM_FORK` 使用 `mess_1`（简称 m1）格式，该格式提供 3 个 `int` 输入字段（`m1_i1`/`m1_i2`/`m1_i3`）和 3 个 `int` 输出字段。PM 将请求参数写入输入字段，VM 处理完毕后将结果写入输出字段，**请求和响应复用同一个 `message` 结构**——没有独立的 `ForkRequest`/`ForkResponse` 类型。
+
+这种设计的问题：字段语义完全依赖 `#define` 宏名约定，编译器无法检查字段是否被正确使用（例如写入 `m1_i3` 时无法区分是请求还是响应），也无法防止 VM 意外覆盖请求字段。Rust 的三层分离架构（§3.1）正是为了解决这些问题。
+
 ### 2.3 请求参数
 
 #### 2.3.1 VMF_ENDPOINT
 
 父进程 endpoint，用于标识要 fork 的源进程。VM 通过此 endpoint 查找父进程的 VM 结构。
+
+> `vmproc` 结构的字段定义和 endpoint 管理机制见 [01-vmproc-struct](01-vmproc-struct.md)。
 
 **验证逻辑**
 
@@ -217,19 +225,15 @@ vmp = &vmproc[proc];  // 父进程
 
 **vm_isokendpt 函数**
 
-```c
-// 验证 endpoint 是否有效 (utility.c:84)
-int vm_isokendpt(endpoint_t endpoint, int *procn)
-{
-    *procn = _ENDPOINT_P(endpoint);
-    if(*procn < 0 || *procn >= NR_PROCS)
-        return EINVAL;
-    if(*procn >= 0 && endpoint != vmproc[*procn].vm_endpoint)
-        return EDEADEPT;
-    if(*procn >= 0 && !(vmproc[*procn].vm_flags & VMF_INUSE))
-        return EDEADEPT;
-    return OK;
-}
+**vm_isokendpt 伪代码**
+
+```
+vm_isokendpt(endpoint, &procn):
+    procn = _ENDPOINT_P(endpoint)         // 提取 slot
+    若 slot 越界 → EINVAL
+    若 endpoint 与 vmproc[slot] 不匹配 → EDEADEPT（过期）
+    若进程未标记 VMF_INUSE → EDEADEPT
+    → OK
 ```
 
 > **注意**：endpoint 不匹配或进程未使用时返回 `EDEADEPT`（而非 `EINVAL`），表示端点已过期。
@@ -237,6 +241,8 @@ int vm_isokendpt(endpoint_t endpoint, int *procn)
 #### 2.3.2 VMF_SLOTNO
 
 子进程槽位号（由 PM 分配）。PM 在进程表中为子进程预留了一个 slot，VM 使用此 slot 初始化子进程的 VM 结构。
+
+> 进程表 `vmproc[]` 数组的结构和 slot 管理见 [02-vmproc-table](02-vmproc-table.md)。
 
 **验证逻辑**
 
@@ -271,127 +277,87 @@ msg->VMF_CHILD_ENDPOINT = vmc->vm_endpoint;
 | 阶段 | 失败条件 | 返回值 | 处理 |
 |------|---------|--------|------|
 | 参数验证 | `vm_isokendpt()` 失败或 slot 越界 | `EINVAL` | 直接返回，无副作用 |
-| 页表创建 | `pt_new()` 失败 | `ENOMEM` | 直接返回，子进程结构未修改 |
+| 页表创建 | `pt_new()` 失败 | `ENOMEM` | 直接返回，子进程结构已被浅拷贝修改，但无新资源需释放（pt_new 未成功分配） |
 | 地址空间复制 | `map_proc_copy()` 失败 | `ENOMEM` | `pt_free(&vmc->vm_pt)` 释放页表后返回 |
 | 内核通知 | `sys_fork()` 失败 | panic | 不可恢复：内核已创建子进程，VM 必须成功 |
 
-### 2.5 do_fork - 主处理函数
+**两层回滚链路**
 
-fork 的完整流程包括：验证参数、初始化子进程结构、复制地址空间、设置 CoW。
+Minix3 的 fork 错误回滚分两层：
 
-**函数原型**
+1. **区域复制层**（`map_proc_copy_range` 内部）：某个 `map_copy_region` 失败时，先调用 `map_free_proc(dst)` 释放已复制的所有区域，再返回 `ENOMEM`：
 
-```c
-// minix3/minix/servers/vm/fork.c:32
-int do_fork(message *msg);
+```
+map_proc_copy_range() 失败
+  → map_free_proc(dst)              // 释放 dst 所有已复制区域
+    → map_free(region)              // 逐区域释放
+      → map_subfree(region, 0, len) // 逐页释放
+        → pb_unreferenced(region, pr, 1)
+          → pb->refcount--          // 递减物理页引用计数
+          → if refcount == 0:
+              ev_unreference(pr)    // 通知 memtype 释放物理页
 ```
 
-**Minix3 源码实现**
+2. **do_fork 层**：`map_proc_copy` 返回失败后，`do_fork` 调用 `pt_free(&vmc->vm_pt)` 释放已创建的页表。`map_free_proc` 在 `map_proc_copy_range` 内部已调用（区域已清理），`do_fork` 只需释放页表。
+
+> Rust 实现的对应回滚策略见 §3.4。`pb_unreferenced` 的详细语义见 [14-cow-mechanism](14-cow-mechanism.md) §2.2.2。
+
+### 2.5 do_fork - 主处理函数
+
+fork 的完整流程包括 7 个阶段，各阶段在 §2.6-2.9 逐阶段展开。
+
+**Minix3 源码**：`minix3/minix/servers/vm/fork.c:32`，`do_fork(message *msg)`。
+
+**伪代码**
 
 ```c
-int do_fork(message *msg)
-{
-    int r, proc, childproc;
-    struct vmproc *vmp, *vmc;
-    pt_t origpt;
-    vir_bytes msgaddr;
-
-    SANITYCHECK(SCL_FUNCTIONS);
-
+int do_fork(message *msg) {
     // ========== 阶段 1: 参数验证 ==========
-    
-    // 1.1 验证父进程 endpoint
-    if(vm_isokendpt(msg->VMF_ENDPOINT, &proc) != OK) {
-        printf("VM: bogus endpoint VM_FORK %d\n", msg->VMF_ENDPOINT);
-        SANITYCHECK(SCL_FUNCTIONS);
-        return EINVAL;
-    }
-
-    // 1.2 验证子进程 slot
+    if(vm_isokendpt(msg->VMF_ENDPOINT, &proc) != OK)
+        return EINVAL;                                    // 父进程 endpoint 无效
     childproc = msg->VMF_SLOTNO;
-    if(childproc < 0 || childproc >= NR_PROCS) {
-        printf("VM: bogus slotno VM_FORK %d\n", msg->VMF_SLOTNO);
-        SANITYCHECK(SCL_FUNCTIONS);
-        return EINVAL;
-    }
-
-    vmp = &vmproc[proc];      // 父进程
-    vmc = &vmproc[childproc]; // 子进程
-    assert(vmc->vm_slot == childproc);
+    if(childproc < 0 || childproc >= NR_PROCS)
+        return EINVAL;                                    // 子进程 slot 越界
+    vmp = &vmproc[proc]; vmc = &vmproc[childproc];
 
     // ========== 阶段 2: 初始化子进程结构 ==========
-    
-    // 2.1 保存原始页表指针
-    origpt = vmc->vm_pt;
-    
-    // 2.2 复制父进程结构（浅拷贝）
-    *vmc = *vmp;
-    
-    // 2.3 恢复子进程特有字段
-    vmc->vm_slot = childproc;
-    region_init(&vmc->vm_regions_avl);  // 初始化空的区域树
-    vmc->vm_endpoint = NONE;            // 暂时无效
-    vmc->vm_pt = origpt;                // 恢复原始页表
-
-#if VMSTATS
-    vmc->vm_bytecopies = 0;
-#endif
+    origpt = vmc->vm_pt;                                  // 保存原始页表
+    *vmc = *vmp;                                          // 浅拷贝父进程结构
+    vmc->vm_slot = childproc;                             // 恢复子进程特有字段
+    region_init(&vmc->vm_regions_avl);                    // 初始化空区域树
+    vmc->vm_endpoint = NONE;                              // 暂时无效
+    vmc->vm_pt = origpt;                                  // 恢复原始页表
 
     // ========== 阶段 3: 创建页表 ==========
-    
-    if(pt_new(&vmc->vm_pt) != OK) {
+    if(pt_new(&vmc->vm_pt) != OK)                         // 详见 [07-pagetable-ops](07-pagetable-ops.md) §2.1
         return ENOMEM;
-    }
-
-    SANITYCHECK(SCL_DETAIL);
 
     // ========== 阶段 4: 复制地址空间 ==========
-    
-    if(map_proc_copy(vmc, vmp) != OK) {
-        printf("VM: fork: map_proc_copy failed\n");
-        pt_free(&vmc->vm_pt);
-        return ENOMEM;
+    if(map_proc_copy(vmc, vmp) != OK) {                   // 详见 §2.8
+        pt_free(&vmc->vm_pt);                             // 回滚：释放页表
+        return ENOMEM;                                    // 区域已在 map_proc_copy_range 内回滚（§2.4）
     }
 
     // ========== 阶段 5: 设置进程标志和 ACL ==========
-    
-    // 只继承 VMF_INUSE 标志
-    vmc->vm_flags &= VMF_INUSE;
-    
-    // 处理 ACL 继承
-    acl_fork(vmc);
+    vmc->vm_flags &= VMF_INUSE;                           // 只继承 VMF_INUSE
+    acl_fork(vmc);                                        // 详见 §2.9.2
 
     // ========== 阶段 6: 通知内核 ==========
-    
-    // 6.1 调用 sys_fork 创建内核进程
-    if((r = sys_fork(vmp->vm_endpoint, childproc,
-            &vmc->vm_endpoint, PFF_VMINHIBIT, &msgaddr)) != OK) {
-        panic("do_fork can't sys_fork: %d", r);
-    }
-
-    // 6.2 绑定页表到进程
-    if((r = pt_bind(&vmc->vm_pt, vmc)) != OK)
-        panic("fork can't pt_bind: %d", r);
-
-    // 6.3 处理 fork 消息页面的内存访问
-    {
-        vir_bytes vir;
-        vir = msgaddr;
-        if (handle_memory_once(vmc, vir, sizeof(message), 1) != OK)
-            panic("do_fork: handle_memory for child failed\n");
-        vir = msgaddr;
-        if (handle_memory_once(vmp, vir, sizeof(message), 1) != OK)
-            panic("do_fork: handle_memory for parent failed\n");
-    }
+    if(sys_fork(vmp->vm_endpoint, childproc,              // 详见 §2.7.3
+            &vmc->vm_endpoint, PFF_VMINHIBIT, &msgaddr) != OK)
+        panic("do_fork can't sys_fork");                  // 不可回滚：内核已创建子进程
+    if(pt_bind(&vmc->vm_pt, vmc) != OK)                   // 详见 [07-pagetable-ops](07-pagetable-ops.md) §2.3
+        panic("fork can't pt_bind");                      // 不可回滚
+    handle_memory_once(vmc, msgaddr, sizeof(message), 1); // 处理 fork 消息页面
+    handle_memory_once(vmp, msgaddr, sizeof(message), 1);
 
     // ========== 阶段 7: 返回结果 ==========
-    
     msg->VMF_CHILD_ENDPOINT = vmc->vm_endpoint;
-
-    SANITYCHECK(SCL_FUNCTIONS);
     return OK;
 }
 ```
+
+> **C 源码注释矛盾**：`handle_memory_once` 的 C 源码注释称"return value needn't be checked"（暗示是可选优化），但实际代码在失败时 panic，说明其语义是必要的——fork 消息页面必须正确映射，否则子进程无法接收 fork 返回消息。注释低估了该函数的重要性。
 
 **处理流程图**
 
@@ -505,7 +471,7 @@ if(childproc < 0 || childproc >= NR_PROCS) {
 // 2. 获取子进程结构
 vmc = &vmproc[childproc];
 
-// 3. 验证 slot 一致性
+// 3. 防御性断言（非严格验证，Minix3 依赖 PM 保证 slot 一致性）
 assert(vmc->vm_slot == childproc);
 ```
 
@@ -514,6 +480,8 @@ assert(vmc->vm_slot == childproc);
 #### 2.7.1 分配子进程结构
 
 使用 PM 提供的 slot 初始化子进程的 vmproc 结构，设置基本标志。
+
+> `vmproc` 结构的完整字段定义见 [01-vmproc-struct](01-vmproc-struct.md)。`region_init` 的 AVL 树初始化见 [13-region-avl](13-region-avl.md)。
 
 **初始化步骤**
 
@@ -527,89 +495,32 @@ assert(vmc->vm_slot == childproc);
 
 初始化完成后子进程状态：`vm_endpoint=NONE`，`vm_regions_avl=空`，`vm_pt=原始页表`，`vm_flags` 从父进程复制（后续 `&= VMF_INUSE`），`vm_slot=childproc`。
 
+> **设计观察 — 冗余调用**：`do_fork()` 在此步骤中调用了 `region_init(&vmc->vm_regions_avl)`（fork.c:60），而后续 `map_proc_copy()` 内部也调用了 `region_init(&dst->vm_regions_avl)`（region.c:935）。这是 Minix3 的防御性编程——`region_init` 将 AVL 树初始化为空树，是幂等操作，重复调用安全但冗余。
+
 #### 2.7.2 创建页表
 
 调用 `pt_new()` 为子进程创建新的页表结构。
 
-**pt_new 函数**
+**pt_new 伪代码**
 
 ```c
-// minix3/minix/servers/vm/pagetable.c:990
-int pt_new(pt_t *pt)
-{
-    int i, r;
-
-    // 1. 分配页目录（如果尚未分配）
-    if(!pt->pt_dir &&
-        !(pt->pt_dir = vm_allocpages((phys_bytes *)&pt->pt_dir_phys,
-            VMP_PAGEDIR, ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE))) {
-        return ENOMEM;
-    }
-
-    // 2. 验证页目录物理地址对齐
-    assert(!((u32_t)pt->pt_dir_phys % ARCH_PAGEDIR_SIZE));
-
-    // 3. 初始化页目录项
+int pt_new(pt_t *pt) {
+    if(!pt->pt_dir)
+        pt->pt_dir = vm_allocpages(&pt->pt_dir_phys, VMP_PAGEDIR, ...);  // 分配页目录
+    if(!pt->pt_dir) return ENOMEM;
+    assert(pt->pt_dir_phys % ARCH_PAGEDIR_SIZE == 0);                     // 对齐验证
     for(i = 0; i < ARCH_VM_DIR_ENTRIES; i++) {
-        pt->pt_dir[i] = 0;  // 无效条目 (PRESENT 位 = 0)
+        pt->pt_dir[i] = 0;   // 无效条目 (PRESENT=0)
         pt->pt_pt[i] = NULL;
     }
-
-    // 4. 初始化虚拟地址分配起点
-    pt->pt_virtop = 0;
-
-    // 5. 映射内核空间
-    if((r = pt_mapkernel(pt)) != OK)
-        return r;
-
-    return OK;
+    pt->pt_virtop = 0;                                                    // 虚拟地址起点
+    return pt_mapkernel(pt);                                               // 映射内核空间
 }
 ```
 
-**页表结构**
+> `pt_new` 的完整 C 源码和 `vm_allocpages` 分配细节见 [07-pagetable-ops](07-pagetable-ops.md) §2.1。页表结构（pt_t 字段、x86 两级页表、地址转换）见 [06-pagetable-struct](06-pagetable-struct.md)。
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    页表结构                                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   pt_t 结构:                                                    │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │ pt_dir:        页目录虚拟地址                        │      │
-│   │ pt_dir_phys:   页目录物理地址                        │      │
-│   │ pt_pt[]:       页表指针数组                          │      │
-│   │ pt_virtop:     虚拟地址分配起点                       │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   x86 两级页表结构:                                              │
-│   ┌─────────────────────────────────────────────────────┐      │
-│   │                                                     │      │
-│   │   页目录 (Page Directory)                           │      │
-│   │   ┌─────────────────────────────────────┐           │      │
-│   │   │ PDE[0] ──► 页表 0                    │           │      │
-│   │   │ PDE[1] ──► 页表 1                    │           │      │
-│   │   │ ...                                 │           │      │
-│   │   │ PDE[1023] ──► 内核页表               │           │      │
-│   │   └─────────────────────────────────────┘           │      │
-│   │         │                                           │      │
-│   │         ▼                                           │      │
-│   │   页表 (Page Table)                                 │      │
-│   │   ┌─────────────────────────────────────┐           │      │
-│   │   │ PTE[0] ──► 物理页 0                  │           │      │
-│   │   │ PTE[1] ──► 物理页 1                  │           │      │
-│   │   │ ...                                 │           │      │
-│   │   │ PTE[1023] ──► 物理页 1023            │           │      │
-│   │   └─────────────────────────────────────┘           │      │
-│   │                                                     │      │
-│   └─────────────────────────────────────────────────────┘      │
-│                                                                 │
-│   地址转换:                                                     │
-│   虚拟地址: [31:22] 页目录索引 | [21:12] 页表索引 | [11:0] 偏移  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-> **32 位 vs 64 位差异**：以上为 x86-32 两级页表（1024 个 PDE，每个 PDE 指向 1024 项页表，寻址 4GB）。
+> **32 位 vs 64 位差异**：x86-32 使用两级页表（1024 个 PDE，每个 PDE 指向 1024 项页表，寻址 4GB）。
 > x86-64 使用四级页表（PML4 → PDPT → PD → PT），虚拟地址 48 位，PTE 从 32 位扩展为 64 位。
 > `pt_pt[]` 数组在 64 位下无法预分配所有页表，需改为动态分配。
 
@@ -617,14 +528,12 @@ int pt_new(pt_t *pt)
 
 内核生成子进程 endpoint，完成进程表中的注册。
 
-**sys_fork 调用**
+**VM 侧调用**
 
 ```c
-// 调用内核的 sys_fork
-if((r = sys_fork(vmp->vm_endpoint, childproc,
-        &vmc->vm_endpoint, PFF_VMINHIBIT, &msgaddr)) != OK) {
-    panic("do_fork can't sys_fork: %d", r);
-}
+if(sys_fork(vmp->vm_endpoint, childproc,
+        &vmc->vm_endpoint, PFF_VMINHIBIT, &msgaddr) != OK)
+    panic("do_fork can't sys_fork");  // 不可回滚
 ```
 
 **参数说明**
@@ -634,14 +543,64 @@ if((r = sys_fork(vmp->vm_endpoint, childproc,
 | `vmp->vm_endpoint` | 父进程 endpoint |
 | `childproc` | 子进程 slot 号 |
 | `&vmc->vm_endpoint` | 输出：子进程 endpoint |
-| `PFF_VMINHIBIT` | fork 标志：VM 禁止标志 |
+| `PFF_VMINHIBIT` | fork 标志：阻止调度直到 VM 释放 |
 | `&msgaddr` | 输出：fork 消息地址 |
 
 **关键点**
 
 1. **不可逆性**：`sys_fork()` 成功后内核已创建子进程，VM 必须成功，否则系统状态不一致。因此 `sys_fork()` 失败时 panic，而不是返回错误
-2. **PFF_VMINHIBIT 标志**：表示子进程的内存管理由 VM 负责，内核不会自动复制父进程的内存映射。这是 Minix3 微内核架构的特点
+2. **PFF_VMINHIBIT 标志**：源码定义为"Don't schedule until release by VM"（`com.h:360`）。内核在 `sys_fork()` 中检测到此标志后设置 `RTS_VMINHIBIT`，阻止子进程被调度，直到 VM 完成内存初始化后调用 `handle_memory_once()` 清除此标志。这是 Minix3 微内核架构中 VM 与内核的同步机制：PM 先请求 VM 准备内存，VM 完成后通知内核放行子进程
 3. **fork 消息地址**：内核返回 fork 消息的地址，VM 需要处理这个消息页面的内存访问（`handle_memory_once`）
+
+**内核侧消息字段**
+
+VM 调用 `sys_fork()` 时，消息在 VM 侧使用 `VMF_ENDPOINT`/`VMF_SLOTNO` 字段名，经 IPC 传递到内核后，内核侧使用不同的字段名访问：
+
+| 方向 | 字段名 | 含义 |
+|------|--------|------|
+| VM → 内核 | `m_lsys_krn_sys_fork.endpt` | 父进程 endpoint |
+| VM → 内核 | `m_lsys_krn_sys_fork.slot` | 子进程 slot |
+| VM → 内核 | `m_lsys_krn_sys_fork.flags` | fork 标志（含 PFF_VMINHIBIT） |
+| 内核 → VM | `m_krn_lsys_sys_fork.endpt` | 子进程 endpoint（内核生成） |
+| 内核 → VM | `m_krn_lsys_sys_fork.msgaddr` | fork 消息页面地址 |
+
+> 详见 `minix3/minix/kernel/system/do_fork.c:5-9`。
+
+**内核 `do_fork()` 处理**（`kernel/system/do_fork.c:26`）
+
+> **注意**：以下伪代码省略了平台特定细节（如 i386 的 FPU/SSE 上下文复制、ARM 的 TTB 设置等），仅保留与 fork 语义直接相关的核心逻辑。
+
+```c
+int do_fork(endpoint_t endpt, int slot, int flags, ...) {
+    // 1. 验证父进程
+    isokendpt(endpt, &p_proc);            // 父进程 endpoint 有效性
+    isemptyp(rpc);                        // 子进程 slot 为空
+
+    // 2. 复制整个 proc 结构体
+    *rpc = *rpp;                          // 浅拷贝父进程 struct proc
+    rpc->p_nr = slot;                     // 恢复子进程编号
+    rpc->p_endpoint = _ENDPOINT(++gen, p_nr);  // 递增代数生成新 endpoint
+    rpc->p_reg.retreg = 0;                // 子进程 fork 返回 0
+
+    // 3. 设置子进程调度状态
+    RTS_SET(rpc, RTS_NO_QUANTUM);         // 无时间片，不可调度
+    if(flags & PFF_VMINHIBIT)
+        RTS_SET(rpc, RTS_VMINHIBIT);      // VM 阻塞，等待内存初始化
+    RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP);  // 不继承信号
+
+    // 4. 特权处理
+    if(rpp->p_priv->s_flags & SYS_PROC) {
+        rpc->p_priv = privp(USER_PRIV);   // 系统进程子进程降级为 USER_PRIV
+        RTS_SET(rpc, RTS_NO_PRIV);
+    }
+
+    // 5. 返回值
+    reply->endpt = rpc->p_endpoint;       // 子进程 endpoint
+    reply->msgaddr = rpp->p_delivermsg_vir; // 消息页面地址
+}
+```
+
+> **endpoint 生成方式**：内核使用 `_ENDPOINT(++gen, p_nr)` 递增代数生成新 endpoint，而非 `_ENDPOINT(0, child_slot)`。这保证了 endpoint 的唯一性——即使 slot 被复用，代数递增使得旧 endpoint 不可能匹配新进程。
 
 ### 2.8 内存复制阶段
 
@@ -649,23 +608,14 @@ if((r = sys_fork(vmp->vm_endpoint, childproc,
 
 遍历父进程的所有虚拟区域，为每个区域创建副本。
 
-**函数原型**
+> 区域映射的完整机制（`vir_region` 结构、区域查找/插入/删除）见 [11-region-mapping](11-region-mapping.md)。
+
+**map_proc_copy 伪代码**
 
 ```c
-// minix3/minix/servers/vm/region.c:933
-int map_proc_copy(struct vmproc *dst, struct vmproc *src);
-```
-
-**Minix3 源码实现**
-
-```c
-int map_proc_copy(struct vmproc *dst, struct vmproc *src)
-{
-    // 初始化目标进程的区域树
-    region_init(&dst->vm_regions_avl);
-
-    // 调用范围复制函数
-    return map_proc_copy_range(dst, src, NULL, NULL);
+int map_proc_copy(dst, src) {
+    region_init(&dst->vm_regions_avl);                    // 初始化空区域树
+    return map_proc_copy_range(dst, src, NULL, NULL);     // 复制全部区域（§2.8.2）
 }
 ```
 
@@ -673,217 +623,88 @@ int map_proc_copy(struct vmproc *dst, struct vmproc *src)
 
 复制指定范围内的虚拟区域。
 
-**函数原型**
+**map_proc_copy_range 伪代码**
 
 ```c
-int map_proc_copy_range(struct vmproc *dst, struct vmproc *src,
-    struct vir_region *start_src_vr, struct vir_region *end_src_vr);
-```
+int map_proc_copy_range(dst, src, start_vr, end_vr) {
+    if(!start_vr) start_vr = region_search_least(src);    // 默认：最小区域
+    if(!end_vr)   end_vr   = region_search_greatest(src);  // 默认：最大区域
 
-**Minix3 源码实现**
-
-```c
-int map_proc_copy_range(struct vmproc *dst, struct vmproc *src,
-    struct vir_region *start_src_vr, struct vir_region *end_src_vr)
-{
-    struct vir_region *vr;
-    region_iter v_iter;
-
-    // 1. 确定复制范围
-    if(!start_src_vr)
-        start_src_vr = region_search_least(&src->vm_regions_avl);
-    if(!end_src_vr)
-        end_src_vr = region_search_greatest(&src->vm_regions_avl);
-
-    assert(start_src_vr && end_src_vr);
-    assert(start_src_vr->parent == src);
-
-    // 2. 初始化迭代器
-    region_start_iter(&src->vm_regions_avl, &v_iter,
-        start_src_vr->vaddr, AVL_EQUAL);
-    assert(region_get_iter(&v_iter) == start_src_vr);
-
-    SANITYCHECK(SCL_FUNCTIONS);
-
-    // 3. 遍历并复制每个区域
-    while((vr = region_get_iter(&v_iter))) {
-        struct vir_region *newvr;
-        
-        // 3.1 复制单个区域
-        if(!(newvr = map_copy_region(dst, vr))) {
-            map_free_proc(dst);
+    for each vr from start_vr to end_vr (AVL 迭代) {
+        newvr = map_copy_region(dst, vr);                  // 复制单个区域（§2.8.3）
+        if(!newvr) {
+            map_free_proc(dst);                            // 回滚：释放已复制区域（§2.4）
             return ENOMEM;
         }
-        
-        // 3.2 插入到目标进程的区域树
-        region_insert(&dst->vm_regions_avl, newvr);
-        assert(vr->length == newvr->length);
-
-#if SANITYCHECKS
-        // 验证物理块共享正确
-        {
-            vir_bytes vaddr;
-            struct phys_region *orig_ph, *new_ph;
-            assert(vr->physblocks != newvr->physblocks);
-            for(vaddr = 0; vaddr < vr->length; vaddr += VM_PAGE_SIZE) {
-                orig_ph = physblock_get(vr, vaddr);
-                new_ph = physblock_get(newvr, vaddr);
-                if(!orig_ph) { assert(!new_ph); continue; }
-                assert(new_ph);
-                assert(orig_ph != new_ph);        // 不同的 phys_region
-                assert(orig_ph->ph == new_ph->ph); // 相同的 phys_block
-            }
-        }
-#endif
-
-        // 3.3 检查是否到达结束区域
-        if(vr == end_src_vr) {
-            break;
-        }
-        region_incr_iter(&v_iter);
+        region_insert(&dst->vm_regions_avl, newvr);        // 插入目标区域树
     }
 
-    // 4. 更新页表
-    map_writept(src);
-    map_writept(dst);
-
-    SANITYCHECK(SCL_FUNCTIONS);
+    map_writept(src);                                      // 更新父进程页表（CoW 只读）
+    map_writept(dst);                                      // 更新子进程页表（CoW 只读）
     return OK;
 }
 ```
 
+> `region_search_least`/`region_insert` 等 AVL 操作见 [13-region-avl](13-region-avl.md)。`map_writept` 的 CoW 只读设置见 §2.8.4。
+
 **处理流程图**
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    map_proc_copy_range 流程                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   输入: dst, src, start_vr, end_vr                              │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌──────────────────┐                                          │
-│   │ 确定复制范围     │                                          │
-│   │ start_vr = least │                                          │
-│   │ end_vr = greatest│                                          │
-│   └──────────────────┘                                          │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌──────────────────┐                                          │
-│   │ 初始化迭代器     │                                          │
-│   └──────────────────┘                                          │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │ 循环: 遍历每个区域                                        │  │
-│   │                                                          │  │
-│   │   vr = region_get_iter(&v_iter)                          │  │
-│   │         │                                                │  │
-│   │         ▼                                                │  │
-│   │   ┌──────────────────┐                                   │  │
-│   │   │ map_copy_region()│                                   │  │
-│   │   └──────────────────┘                                   │  │
-│   │         │                                                │  │
-│   │         ├─► 失败 ──► map_free_proc(dst) ──► return ENOMEM│  │
-│   │         │                                                │  │
-│   │         ▼                                                │  │
-│   │   region_insert(&dst->vm_regions_avl, newvr)             │  │
-│   │         │                                                │  │
-│   │         ▼                                                │  │
-│   │   vr == end_vr? ──► 是 ──► break                         │  │
-│   │         │                                                │  │
-│   │         否                                               │  │
-│   │         ▼                                                │  │
-│   │   region_incr_iter(&v_iter)                              │  │
-│   │                                                          │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌──────────────────┐                                          │
-│   │ map_writept(src) │  更新父进程页表（设置只读）              │
-│   └──────────────────┘                                          │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌──────────────────┐                                          │
-│   │ map_writept(dst) │  更新子进程页表（设置只读）              │
-│   └──────────────────┘                                          │
-│         │                                                       │
-│         ▼                                                       │
-│   return OK                                                     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+确定复制范围 (least → greatest)
+        │
+        ▼
+┌─► map_copy_region(dst, vr)
+│       │
+│       ├─ 失败 → map_free_proc(dst) → return ENOMEM
+│       │
+│       ▼
+│   region_insert(dst, newvr)
+│       │
+│       ▼
+│   还有下一个区域? ── 是 ──► 下一个 vr
+│       │
+│       否
+│       ▼
+└── map_writept(src) + map_writept(dst) → return OK
 ```
 
 #### 2.8.3 map_copy_region
 
 复制单个虚拟区域，包括创建新的 vir_region 结构和共享物理块。
 
-**函数原型**
+> `phys_block`/`phys_region` 的结构和 `pb_reference`/`pb_link` 的完整语义见 [10-phys-pagestate](10-phys-pagestate.md)。
+
+> **C 源码注释矛盾**：`map_copy_region` 的注释（region.c:804-810）声称"it doesn't increase the refcount in the phys_block; the caller has to do this once it's linked"，但实际代码中 `pb_reference()` → `pb_link()` 已经递增了 refcount（`pb_link` 内部调用 `pb->refcount++`）。注释描述的是设计意图（延迟递增以保持 sanity check 工作），但实际实现并未遵循。
+
+**map_copy_region 伪代码**
 
 ```c
-struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr);
-```
+struct vir_region *map_copy_region(vmp, vr) {
+    newvr = region_new(vr->parent, vr->vaddr, vr->length, vr->flags, vr->def_memtype);
+    if(!newvr) return NULL;
+    newvr->parent = vmp;                                  // 设置为子进程
 
-**Minix3 源码实现**
-
-```c
-struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
-{
-    struct vir_region *newvr;
-    struct phys_region *ph;
-    int r;
-    vir_bytes p;
-
-    // 1. 创建新的虚拟区域结构
-    if(!(newvr = region_new(vr->parent, vr->vaddr, vr->length, 
-            vr->flags, vr->def_memtype)))
-        return NULL;
-
-    // 2. 设置父进程为子进程
-    USE(newvr, newvr->parent = vmp;);
-
-    // 3. 调用内存类型的复制回调（如果有）
-    if(vr->def_memtype->ev_copy && 
-       (r = vr->def_memtype->ev_copy(vr, newvr)) != OK) {
+    if(vr->def_memtype->ev_copy &&
+       vr->def_memtype->ev_copy(vr, newvr) != OK) {      // memtype 复制回调
         map_free(newvr);
-        printf("VM: memtype-specific copy failed (%d)\n", r);
         return NULL;
     }
 
-    // 4. 遍历所有物理块，共享引用
     for(p = 0; p < phys_slot(vr->length); p++) {
-        struct phys_region *newph;
-
-        // 4.1 获取源物理区域
-        if(!(ph = physblock_get(vr, p*VM_PAGE_SIZE))) continue;
-        
-        // 4.2 创建新的物理区域，共享物理块
-        newph = pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype);
-
-        if(!newph) { 
-            map_free(newvr); 
-            return NULL; 
-        }
-
-        // 4.3 调用内存类型的引用回调
+        ph = physblock_get(vr, p*VM_PAGE_SIZE);
+        if(!ph) continue;                                 // 跳过未分配槽位
+        newph = pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype);  // 共享物理块（refcount++）
+        if(!newph) { map_free(newvr); return NULL; }
         if(ph->memtype->ev_reference)
-            ph->memtype->ev_reference(ph, newph);
+            ph->memtype->ev_reference(ph, newph);         // 引用回调（返回值被忽略 — C 源码 bug）
     }
-
     return newvr;
 }
 ```
 
-**区域复制详解**
+> `pb_reference`/`pb_link` 的完整语义见 [10-phys-pagestate](10-phys-pagestate.md)。`ev_copy`/`ev_reference` 回调机制见 [12-memtype](12-memtype.md)。
 
-`map_copy_region()` 的核心操作：
-
-1. `region_new()` 创建新 `vir_region`，复制 `vaddr`、`length`、`flags`、`def_memtype`
-2. 遍历源区域的 `physblocks` 数组（`physblock_get(vr, p*VM_PAGE_SIZE)`），跳过未分配的槽位
-3. 对每个已分配的 `phys_region`，调用 `pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype)` 共享物理块（`refcount++`）
-4. 调用 `memtype->ev_reference()` 回调（如有）
-
-复制后父子进程的 `vir_region` 指向相同的 `phys_block`，`refcount` 从 1 增至 2。
+> **C 源码 bug**：`map_copy_region()` 中 `ev_reference` 的返回值被忽略（region.c:841-842 `if(ph->memtype->ev_reference) ph->memtype->ev_reference(ph, newph);`），如果回调返回错误，物理块引用状态可能不一致。Rust `fork_region()` 修复了此问题：`ev_reference` 失败时回滚已递增的 refcount（遍历 `refcounted_pfns` 向量逐个递减）。详见 [14-cow-mechanism](14-cow-mechanism.md) §2.5。
 
 > **Rust 实现差异**：`fork_region()` 在 `ev_reference` 失败时会自动回滚已递增的 refcount（遍历 `refcounted_pfns` 向量逐个递减），而 Minix3 的 `map_copy_region()` 在失败时调用 `map_free(newvr)` 释放整个新区域（`map_free` 内部会调用 `pb_unreferenced` 递减 refcount）。
 
@@ -891,94 +712,46 @@ struct vir_region *map_copy_region(struct vmproc *vmp, struct vir_region *vr)
 
 共享 phys_block 后，将页表项标记为只读，触发写时复制。
 
-**map_writept 函数**
+**map_writept 伪代码**
 
 ```c
-// minix3/minix/servers/vm/region.c:906
-int map_writept(struct vmproc *vmp)
-{
-    struct vir_region *vr;
-    struct phys_region *ph;
-    int r;
-    region_iter v_iter;
-    region_start_iter_least(&vmp->vm_regions_avl, &v_iter);
-
-    while((vr = region_get_iter(&v_iter))) {
-        vir_bytes p;
-        for(p = 0; p < vr->length; p += VM_PAGE_SIZE) {
-            if(!(ph = physblock_get(vr, p))) continue;
-
-            if((r=map_ph_writept(vmp, vr, ph)) != OK) {
-                printf("VM: map_writept: failed\n");
-                return r;
-            }
+int map_writept(struct vmproc *vmp) {
+    for each vir_region vr in vmp->vm_regions_avl {
+        for each phys_region ph in vr (page granularity) {
+            map_ph_writept(vmp, vr, ph);  // 写入单个页表项
         }
-        region_incr_iter(&v_iter);
     }
-
-    return OK;
 }
 ```
 
-**map_ph_writept 函数 — 实际的页表标志计算**
+**map_ph_writept 伪代码** — 页表标志计算
 
 ```c
-// minix3/minix/servers/vm/region.c:257
-int map_ph_writept(struct vmproc *vmp, struct vir_region *vr,
-    struct phys_region *pr)
-{
-    int flags = PTF_PRESENT | PTF_USER;
-    struct phys_block *pb = pr->ph;
-
+int map_ph_writept(vmp, vr, pr) {
+    flags = PTF_PRESENT | PTF_USER;
     if(pr_writable(vr, pr))
-        flags |= PTF_WRITE;
+        flags |= PTF_WRITE;       // 私有可写页
     else
-        flags |= PTF_READ;
-
-    if(vr->def_memtype->pt_flags)
-        flags |= vr->def_memtype->pt_flags(vr);
-
-    if(pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,
-            pb->phys, VM_PAGE_SIZE, flags,
-#if SANITYCHECKS
-            !pr->written ? 0 :
-#endif
-            WMF_OVERWRITE) != OK) {
-        printf("VM: map_writept: pt_writemap failed\n");
-        return ENOMEM;
-    }
-
-#if SANITYCHECKS
-    USE(pr, pr->written = 1;);
-#endif
-    return OK;
+        flags |= PTF_READ;        // 共享页只读（CoW）或本身只读
+    flags |= vr->def_memtype->pt_flags(vr);  // memtype 附加标志
+    pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,
+                pr->ph->phys, VM_PAGE_SIZE, flags, WMF_OVERWRITE);
 }
 ```
 
-**pr_writable 函数 — 可写判断的核心逻辑**
+**pr_writable → anon_writable 判断链**
 
-```c
-// minix3/minix/servers/vm/region.c:130
-static int pr_writable(struct vir_region *vr, struct phys_region *pr)
-{
-    assert(pr->memtype->writable);
-    return ((vr->flags & VR_WRITABLE) && pr->memtype->writable(pr));
-}
-```
+CoW 只读机制的核心判断链：`pr_writable(vr, pr)` → `memtype->writable(pr)` → `anon_writable(pr)`。对于匿名内存，`anon_writable()` 在 `refcount > 1` 时返回 0（不可写），fork 后共享页因此被标记为只读。写入时触发页错误，CoW 处理分配新物理页后 `refcount` 降为 1，页表恢复可写。
 
-CoW 只读机制通过 `pr_writable()` → `memtype->writable()` 间接实现。对于匿名内存，`anon_writable()` (mem_anon.c:105) 在 `refcount > 1` 时返回 0，从而使页表项不含 `PTF_WRITE`。详见 [14-cow-mechanism](14-cow-mechanism.md)。
+fork 语境下的页表标志：
 
-**CoW 页表标志**
+| 条件 | 页表标志 | 说明 |
+|------|---------|------|
+| `refcount == 1` 且 `VR_WRITABLE` | `PTF_PRESENT | PTF_USER | PTF_WRITE` | 私有可写页 |
+| `refcount > 1` 且 `VR_WRITABLE` | `PTF_PRESENT | PTF_USER | PTF_READ` | 共享页只读（CoW） |
+| 非 `VR_WRITABLE` | `PTF_PRESENT | PTF_USER | PTF_READ` | 本身只读页 |
 
-fork 后的页表状态由 `map_ph_writept()` 通过 `pr_writable()` 自动设置：
-
-| 条件 | pr_writable() | 页表标志 | 说明 |
-|------|--------------|---------|------|
-| `refcount == 1` 且 `VR_WRITABLE` | 1 | `PTF_PRESENT \| PTF_USER \| PTF_WRITE` | 私有可写页 |
-| `refcount > 1` 且 `VR_WRITABLE` | 0 | `PTF_PRESENT \| PTF_USER \| PTF_READ` | 共享页只读（CoW） |
-| 非 `VR_WRITABLE` | 0 | `PTF_PRESENT \| PTF_USER \| PTF_READ` | 本身只读页 |
-
-fork 后，父子进程的共享页 `refcount > 1`，`anon_writable()` 返回 0，`pr_writable()` 返回 0，页表项不含 `PTF_WRITE`。写入时触发页错误，CoW 处理分配新物理页后 `refcount` 降为 1，`pr_writable()` 返回 1，页表项恢复 `PTF_WRITE`。
+> `anon_writable()` 的完整判断逻辑（`MAP_NONE`/`remaps`/`refcount` 三条件）和 CoW 页错误处理流程详见 [14-cow-mechanism](14-cow-mechanism.md) §2.4.1。`map_writept`/`map_ph_writept` 的完整 C 源码见 `region.c:906` 和 `region.c:257`。
 
 ### 2.9 完成阶段
 
@@ -995,15 +768,14 @@ vmc->vm_flags &= VMF_INUSE;
 
 调用 `acl_fork()` 处理子进程的 ACL 条目。
 
-**acl_fork 函数**
+> ACL 机制的完整设计（ACL 类型、权限检查流程）见 [03-acl](03-acl.md)。
+
+**acl_fork 伪代码**
 
 ```c
-// minix3/minix/servers/vm/acl.c:110
-// 参数 vmp 是子进程（vmc），已通过 *vmc = *vmp 继承了父进程的 vm_acl
-void acl_fork(struct vmproc *vmp)
-{
-    if (vmp->vm_acl != USER_ACL)
-        vmp->vm_acl = NO_ACL;
+void acl_fork(vmp) {    // vmp 是子进程（vmc），已通过 *vmc = *vmp 继承了父进程的 vm_acl
+    if(vmp->vm_acl != USER_ACL)
+        vmp->vm_acl = NO_ACL;   // 系统进程 ACL 不继承，降级为 NO_ACL
 }
 ```
 
@@ -1021,247 +793,217 @@ void acl_fork(struct vmproc *vmp)
 
 ## 3. Rust 设计决策
 
-### 3.1 ForkRequest/ForkResponse
+> **阅读提示**：
+> - §3.1 IPC 消息类型：`VmForkIn`/`VmForkOut` 的传输层定义与编解码（`os/libs/minix-types/src/ipc/vm.rs`）
+> - §3.2 Direct Map 对 fork 的简化：CoW 和页表创建如何受益于 Direct Map
+> - §3.3 错误处理：`ForkError` 6 变体与 Minix3 错误路径的对应
+> - §3.4 `do_fork` 编排：验证→初始化→页表→区域复制→CoW→sys_fork→pt_bind 的完整流程
+> - §3.5 进程表管理：`AssumeSyncCell` + typestate 视图如何支持 fork 的跨 slot 访问
 
-使用类型安全的 IPC 消息结构，包括 ForkRequest 和 ForkResponse 枚举。
+### 3.1 IPC 消息类型设计：传输层 + 语义层 + 编解码
 
-> **注意**: 以下 `ForkRequest`、`ForkResponse`、`ForkFlags` 为未来设计，当前 Rust 实现中尚未包含。实际 fork 入口由 VM 服务器的 IPC 层直接调用 `fork_region()`/`fork_regions()`。
+Minix3 的 IPC 消息是一个 64 字节的大 union（`struct message`），没有独立的 per-message 类型。`VM_FORK` 消息使用的是 `mess_1` 子格式（`m_m1`），通过 `#define` 宏将字段语义映射到偏移：
+
+```c
+// minix3/minix/include/minix/com.h:633-635
+#define VMF_ENDPOINT        m1_i1   // 父进程 endpoint
+#define VMF_SLOTNO          m1_i2   // 子进程 slot
+#define VMF_CHILD_ENDPOINT  m1_i3   // 返回值: 子进程 endpoint
+```
+
+请求和响应**复用同一个 `message`** —— PM 把 `VMF_ENDPOINT` 和 `VMF_SLOTNO` 写入 `m1_i1`/`m1_i2`，VM 处理完毕后把 `VMF_CHILD_ENDPOINT` 写入 `m1_i3`。**没有独立的 `ForkRequest` 结构体**。
+
+Rust 设计采用**三层分离**架构：
+
+```
+┌──────────────────────────────────────┐
+│         语义层 (Semantic)             │  ← handler 操作的类型，栈上 Copy
+│  VmForkIn / VmForkOut                │
+├──────────────────────────────────────┤
+│         编解码层 (Codec)              │  ← #[inline(always)]，编译后等同 C 宏
+│  DecodeFromM1 / EncodeToM1           │
+├──────────────────────────────────────┤
+│         传输层 (Transport)            │  ← #[repr(C)]，与 C message 二进制兼容
+│  Message / MessageM1 / MessageUnion  │
+└──────────────────────────────────────┘
+```
+
+**语义层类型定义**（`minix-types/src/ipc/vm.rs`）：
 
 ```rust
-use crate::vm::vmproc::{VmProc, Endpoint};
-use crate::vm::region::VirRegion;
-
-/// fork 请求
-#[derive(Debug, Clone)]
-pub struct ForkRequest {
-    /// 父进程端点
-    pub parent_endpoint: Endpoint,
-    /// 子进程 slot
-    pub child_slot: usize,
+/// PM → VM: fork 请求
+/// 对应 Minix3: VMF_ENDPOINT(m1_i1), VMF_SLOTNO(m1_i2)
+pub struct VmForkIn {
+    pub parent_endpoint: Endpoint,  // 父进程 endpoint（PM 传入）
+    pub child_slot: UserSlot,       // 子进程 slot 号（PM 分配）
 }
 
-/// fork 响应
-#[derive(Debug)]
-pub enum ForkResponse {
-    /// 成功
-    Ok {
-        /// 子进程端点
-        child_endpoint: Endpoint,
-    },
-    /// 内存不足
-    OutOfMemory,
-    /// 参数无效
-    InvalidParameter,
+/// VM → PM: fork 响应
+/// 对应 Minix3: VMF_CHILD_ENDPOINT(m1_i3)
+pub struct VmForkOut {
+    pub child_endpoint: Endpoint,   // 子进程 endpoint（内核生成）
+}
+```
+
+**编解码实现**：
+
+```rust
+// 从 m1 消息解码 fork 请求（PM → VM 方向）
+impl DecodeFromM1 for VmForkIn {
+    #[inline(always)]
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            parent_endpoint: Endpoint(m1.m1i1),  // m1_i1 → 父进程 endpoint
+            child_slot: UserSlot(m1.m1i2 as usize), // m1_i2 → 子进程 slot
+        }
+    }
 }
 
-/// fork 标志
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ForkFlags(u32);
-
-impl ForkFlags {
-    pub const VM_INHIBIT: ForkFlags = ForkFlags(0x01);
-    
-    pub fn contains(&self, other: ForkFlags) -> bool {
-        (self.0 & other.0) != 0
+// 将 fork 响应编码到 m1 消息（VM → PM 方向）
+impl EncodeToM1 for VmForkOut {
+    #[inline(always)]
+    fn encode(&self, m1: &mut MessageM1) {
+        m1.m1i3 = self.child_endpoint.0; // 子进程 endpoint → m1_i3
     }
 }
 ```
 
-**方案四视角：CoW 设置与页表创建的简化**
+**设计要点**：
 
-> **Direct Map 标注**：CoW 设置中的 `pt_writemap()` 在 Direct Map 方案下通过 `vm_phys_to_virt()` 直接操作页表页，无需 `createpde` 临时映射窗口。CoW 的逻辑（`refcount > 1` → 只读 → 写入触发页错误 → 分配新页）完全不变——direct map 简化的是"如何写入页表项"这个实现细节，而不是 CoW 的策略逻辑。这是策略/机制分离的一个例证：CoW 策略（何时共享、何时复制）不变，机制（如何写入页表）被简化。
+1. **请求/响应分离**：`VmForkIn`（PM→VM 输入）和 `VmForkOut`（VM→PM 输出）是两个独立类型，分别对应 `mess_1` 的不同字段。不像旧设计把 `child_endpoint`（响应字段）混入请求类型。
+2. **命名遵守链路**：`In` = VM 接收，`Out` = VM 发出。同一链路的其他方向消息（如 VM→Kernel 的 `SYS_FORK`）属于独立类型，不在 VM 的 IPC 类型中。
+3. **编解码零开销**：`#[inline(always)]` + `Copy` + 栈分配，编译后与 C 宏生成相同的 `mov` 指令，无额外 CPU 或内存开销。
+4. **传输层独立于语义层**：`Message`/`MessageM1` 是 `#[repr(C)]` flat struct，与 C 的 `message` union 二进制兼容。修改语义层不影响传输格式。
 
-**fork 页表创建的终极简化**
+**VMF_INHIBIT 标志不属于 VM_FORK**：
 
-Direct Map 方案下，fork 创建子进程页表的流程被大幅简化。
+C 源码中 `PFF_VMINHIBIT` 标志是 VM→**Kernel** `sys_fork()` 的参数（`fork.c:91`），不是 PM→VM `VM_FORK` 的参数。该标志应出现在 `SysForkIn` 类型中（VM→Kernel 链路），不在 `VmForkIn` 中。
 
-**Minix3 的 fork 页表创建**需要 `createpde` 临时映射窗口——VM 无法直接访问物理页，必须请求内核在 VM 的地址空间中临时映射一个物理页，操作完毕后再解除映射：
+> **TODO**: 内核侧 `SysForkIn`/`SysForkOut` 类型尚未实现，需在 VM→Kernel IPC 链路设计中补充。
 
-```
-1. alloc_mem() 分配物理页
-2. createpde() 建立临时映射窗口
-3. 通过临时映射窗口清零页目录
-4. pt_mapkernel() 建立内核映射
-5. 复制父进程用户空间映射
-6. 释放临时映射窗口
-```
+### 3.2 Direct Map 对 fork 实现的简化
 
-**Direct Map 方案的 fork 页表创建**只需 4 步，无需临时映射窗口：
+Direct Map 从根本上消除了"VM 无法直接通过物理地址访问内存"的限制，fork 实现的两个环节因此被简化。
 
-```
-1. bitmap.alloc_mem(1)           → 分配新页目录物理页
-2. vm_phys_to_virt(dir_phys)     → 清零（物理页天然有 VA）
-3. pt_mapkernel(dir_ptr)         → 建立内核映射（含 kernel direct map）
-4. 复制父进程的用户空间映射
-```
+**CoW 设置的简化**
 
-**三种方案的复杂度递减**：
+CoW 设置中，`pt_writemap()` 需要写入目标进程的页表项。在 Minix3 中，这些页表页通过 `vm_mappages()` 映射到 VM 自身地址空间后才能操作。Direct Map 方案下，`vm_phys_to_virt()` 让 VM 直接访问任意物理页，无需 `vm_mappages` 的"找洞→映射"流程。
 
-| 方案 | 步骤 | 复杂度来源 |
-|------|------|-----------|
-| Minix3（createpde） | 分配 → 建临时映射 → 清零 → 建内核映射 → 复制 → 释放临时映射 | VM 无法直接访问物理页 |
-| 方案三（PtRegion） | 分配 → 从 PtRegion 分配 VA → 清零 → 建内核映射 → 复制 | 页表页需要特殊 VA 管理 |
-| 方案四（Direct Map） | 分配 → `vm_phys_to_virt()` 清零 → 建内核映射 → 复制 | 物理页天然有 VA |
+CoW 的策略逻辑（`refcount > 1` → 只读 → 写入触发页错误 → 分配新页）完全不变——简化的是"如何写入页表项"的机制，而非 CoW 策略本身。
 
-读者应感受到：**direct map 的"终极简化"不是"又少了一步"，而是"间接操作的根源被消除了"**——Minix3 的 `createpde` 和方案三的 PtRegion 都是为了解决"VM 无法直接访问物理页"这个问题，direct map 从根本上消除了这个问题。
+**页表创建的简化**
+
+`pt_new()` 为子进程创建新页表，两方案步骤数相同，但每步复杂度不同：
+
+| 步骤 | Minix3 | Direct Map |
+|------|--------|------------|
+| 分配物理页 | `vm_allocpages()`：`alloc_mem()` + `vm_mappages()` 映射到 VM 地址空间 | `bitmap.alloc_mem(1)`：分配即可，物理页天然有 VA |
+| 清零页目录 | 通过 `vm_mappages` 映射的虚拟地址操作 | `vm_phys_to_virt(dir_phys)` 直接操作 |
+| 建立内核映射 | `pt_mapkernel()` | `pt_mapkernel()`（含 kernel direct map） |
+| 复制用户空间映射 | 遍历父进程区域复制 | 遍历父进程区域复制 |
+
+Minix3 的 `vm_allocpages` 流程：`alloc_mem()` 分配物理页 → `findhole()` 在 VM 地址空间找空洞 → `pt_writemap()` 建立映射 → `sys_vmctl(VMCTL_FLUSHTLB)` 刷新 TLB。Direct Map 跳过了后三步。
+
+> **`createpde` 澄清**：`createpde` 是 **kernel** 的函数（`kernel/arch/i386/memory.c`），用于 kernel 的 `virtual_copy`/`vm_memset` 在进程地址空间间拷贝数据时临时映射 4MB 窗口，与 VM 创建页表无关。VM 自身使用 `vm_mappages()` 管理物理页映射。
 
 **双视图模型在 fork 中的协作**：VM 通过 VM direct map（`vm_phys_to_virt()`）操作物理页（清零、复制），通过 `pt_mapkernel()` 确保新页表包含 kernel direct map。两者在 fork 中协作——VM 用自己的视图操作数据，用内核的视图确保新进程的页表包含内核映射。
 
-### 3.2 错误处理
+### 3.3 错误处理
 
-使用 Result 类型处理各阶段失败，包括验证失败、内存不足等错误。
-
-> **注意**: 以下 `ForkError` 为早期设计版本（5 变体），实际 Rust 实现中只有 3 变体：`NoMemory`、`PageNotMapped`、`MemType(MemTypeError)`。参见 `fork.rs`。
+使用 `Result<T, ForkError>` 处理各阶段失败。
 
 ```rust
-/// fork 错误类型
-#[derive(Debug)]
-pub enum ForkError {
-    InvalidEndpoint(i32),
-    InvalidSlot(i32),
-    OutOfMemory,
-    PageTableError(PageTableError),
-    KernelError(i32),
-}
-
-/// fork 结果类型
-pub type ForkResult<T> = Result<T, ForkError>;
-```
-
-> **方案 A 简化**: Minix3 的 fork 错误路径涉及 `pb_new` → `ENOMEM`、`pb_reference` → `ENOMEM`、`alloc_mem` → `NO_MEM` 三条物理内存分配失败路径。方案 A 统一为 `PageFrames::alloc_phys_page` → `ForkError::OutOfMemory` 一条，因为 `PageSlot` 是 `Copy` 类型无需堆分配，`PageFrames` 全局数组无需创建 `PhysBlock` 对象。
-
-### 3.3 事务性
-
-通过检查点和回滚机制保证 fork 操作的原子性。
-
-> **注意**: 以下 `ForkState`、`ForkCheckpoint`、`ForkPhase` 为未来设计，当前 Rust 实现中尚未包含。`fork_region()` 函数内部自行处理回滚（递减已递增的 refcount）。
-
-```rust
-/// fork 操作状态
-pub struct ForkState {
-    /// 检查点：保存的原始状态
-    checkpoint: Option<ForkCheckpoint>,
-    /// 当前阶段
-    phase: ForkPhase,
-}
-
-/// fork 检查点
-struct ForkCheckpoint {
-    /// 原始页表
-    orig_pagetable: PageTable,
-    /// 原始标志
-    orig_flags: VmFlags,
-}
-
-/// fork 阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForkPhase {
-    /// 初始状态
-    Init,
-    /// 参数验证完成
-    Validated,
-    /// 页表创建完成
-    PageTableCreated,
-    /// 区域复制完成
-    RegionsCopied,
-    /// 内核通知完成
-    KernelNotified,
-    /// 完成
-    Completed,
-}
-
-impl ForkState {
-    pub fn new() -> Self {
-        Self {
-            checkpoint: None,
-            phase: ForkPhase::Init,
-        }
-    }
-
-    pub fn checkpoint(&mut self, child: &mut VmProc) {
-        self.checkpoint = Some(ForkCheckpoint {
-            orig_pagetable: child.pagetable().clone(),
-            orig_flags: child.flags(),
-        });
-        self.phase = ForkPhase::Validated;
-    }
-    
-    pub fn rollback(&mut self, child: &mut VmProc, frames: &mut PageFrames) {
-        if let Some(cp) = self.checkpoint.take() {
-            if self.phase >= ForkPhase::PageTableCreated {
-                child.pagetable_mut().free();
-            }
-
-            if self.phase >= ForkPhase::RegionsCopied {
-                for region in child.regions_mut().iter_mut() {
-                    for slot_opt in region.physblocks.iter() {
-                        if let Some(slot) = slot_opt {
-                            let state = frames.get_mut(slot.pfn).unwrap();
-                            state.refcount -= 1;
-                        }
-                    }
-                }
-            }
-
-            child.set_pagetable(cp.orig_pagetable);
-            child.set_flags(cp.orig_flags);
-            child.regions_mut().clear();
-        }
-        self.phase = ForkPhase::Init;
-    }
-    
-    /// 更新阶段
-    pub fn set_phase(&mut self, phase: ForkPhase) {
-        self.phase = phase;
-    }
+pub(crate) enum ForkError {
+    InvalidEndpoint,       // 父进程 endpoint 无效
+    InvalidSlot,           // 父进程 slot 非活跃状态
+    SlotInUse,             // 子进程 slot 已被占用
+    NoMemory,              // 物理内存不足（页表/区域复制）
+    PageNotMapped,         // 页表项缺失
+    MemType(MemTypeError), // MemType 回调失败
 }
 ```
 
-### 3.4 进程表管理
+| 变体 | 对应 Minix3 错误 | 触发场景 |
+|------|-----------------|---------|
+| `InvalidEndpoint` | `vm_isokendpt()` → `EINVAL`/`EDEADEPT` | 父进程 endpoint 不存在、已过期或进程未使用 |
+| `InvalidSlot` | `vm_isokendpt()` 通过但 `get_active` 返回 None | 父进程不在活跃状态（未设置 `IN_USE` 标志，或处于 `EXITING` 退出过程中） |
+| `SlotInUse` | Minix3 未显式检查（依赖 PM 保证 slot 空闲） | 子进程 slot 已被占用（`IN_USE` 已设置），Rust 通过 `get_empty()` 显式验证 |
+| `NoMemory` | `pt_new` → `ENOMEM`、`pb_new` → `ENOMEM`、`alloc_mem` → `NO_MEM` | 页表分配或物理页分配失败 |
+| `PageNotMapped` | 无直接对应（Minix3 不区分此情况） | 页表项缺失 |
+| `MemType(MemTypeError)` | `ev_copy`/`ev_reference` 返回非 OK | MemType 回调（如 `ev_reference`）失败 |
 
-> **注意**: 以下 `ProcTable` 为未来设计，当前 Rust 实现中尚未包含。
+与 Minix3 的关键差异：Minix3 的 `pb_new` → `ENOMEM`、`pb_reference` → `ENOMEM`、`alloc_mem` → `NO_MEM` 三条物理内存分配失败路径，在 Rust 中统一为 `NoMemory` 一条——因为 `PageSlot` 是 `Copy` 类型无需堆分配，`PageFrames` 全局数组无需创建 `PhysBlock` 对象。新增的 `InvalidEndpoint`/`InvalidSlot`/`SlotInUse` 三个变体对应 Minix3 中 `vm_isokendpt()` 和 slot 检查的验证路径，Minix3 统一返回 `EINVAL`，Rust 拆分为更精确的错误类型。
 
-```rust
-use alloc::collections::BTreeMap;
+### 3.4 事务性
 
-pub struct ProcTable {
-    procs: Vec<Mutex<VmProc>>,
-    endpoint_map: BTreeMap<Endpoint, usize>,
-}
+fork 是多阶段操作（验证→页表创建→区域复制→内核通知），任何阶段失败都需回滚已完成的副作用。
 
-impl ProcTable {
-    pub fn new(nr_procs: usize) -> Self {
-        let mut procs = Vec::with_capacity(nr_procs);
-        for slot in 0..nr_procs {
-            procs.push(Mutex::new(VmProc::new_empty(slot)));
-        }
+#### Minix3 的回滚机制
 
-        Self {
-            procs,
-            endpoint_map: BTreeMap::new(),
-        }
-    }
+Minix3 的 `do_fork()`（`fork.c:32`）采用线性错误路径，每个阶段失败后执行对应的清理：
 
-    pub fn validate_endpoint(&self, endpoint: Endpoint) -> ForkResult<usize> {
-        let slot = self.endpoint_map.get(&endpoint)
-            .copied()
-            .ok_or(ForkError::InvalidEndpoint(endpoint.as_raw()))?;
+| 阶段 | Minix3 代码 | 失败条件 | 回滚动作 |
+|------|------------|---------|---------|
+| 验证 | `vm_isokendpt()` / slot 范围检查 | endpoint 无效或 slot 越界 | `return EINVAL`（无副作用） |
+| 页表创建 | `pt_new(&vmc->vm_pt)` | 内存不足 | `return ENOMEM`（子进程结构未修改） |
+| 区域复制 | `map_proc_copy(vmc, vmp)` | `map_copy_region` 返回 NULL | `pt_free(&vmc->vm_pt)` + `map_free_proc(dst)` |
+| 内核通知 | `sys_fork(...)` | 内核返回错误 | `panic`（不可回滚：内核已创建子进程） |
+| 页表绑定 | `pt_bind(...)` | 绑定失败 | `panic`（不可回滚） |
 
-        let proc = self.procs[slot].lock();
-        if !proc.is_in_use() || proc.endpoint() != endpoint {
-            return Err(ForkError::InvalidEndpoint(endpoint.as_raw()));
-        }
+区域复制阶段的回滚链路：
 
-        Ok(slot)
-    }
-
-    pub fn get(&self, slot: usize) -> Option<MutexGuard<'_, VmProc>> {
-        self.procs.get(slot).map(|p| p.lock())
-    }
-}
+```
+map_proc_copy_range() 失败
+  → map_free_proc(dst)              // 释放 dst 所有已复制区域
+    → map_free(region)              // 逐区域释放
+      → map_subfree(region, 0, len) // 逐页释放
+        → pb_unreferenced(region, pr, 1)
+          → pb->refcount--          // 递减物理页引用计数
+          → if refcount == 0:
+              ev_unreference(pr)    // 通知 memtype 释放物理页
+  → pt_free(&vmc->vm_pt)           // 释放已创建的页表
 ```
 
-> **no_std 兼容性**: 使用 `alloc` crate 的 `Vec` 和 `BTreeMap`，而非 `std::sync::RwLock`。项目已在 09 完成自举，`VmAllocator`（基于 HeapArena）已实现 `GlobalAlloc`，`alloc` crate 可用。
+关键点：`map_free_proc` 在 `map_proc_copy_range` 内部调用，而非 `do_fork` 中调用。`do_fork` 只负责 `pt_free`。这是因为 `map_proc_copy` 返回时，失败路径的区域已经被 `map_free_proc` 清理，但页表仍需 `do_fork` 释放。
+
+#### Rust 实现
+
+Rust 不需要 `ForkState` 状态机。Minix3 本身也没有状态机——它用的是线性错误路径。Rust 用 `Result` + 显式清理函数实现同样的语义：
+
+**两层回滚**：
+
+1. **`fork_regions` 层**（对应 Minix3 的 `map_proc_copy_range`）：失败时调用 `free_forked_regions` 递减已复制区域的 refcount + 调用 `ev_unreference`
+2. **`do_fork` 层**（对应 Minix3 的 `do_fork`）：`fork_regions` 失败时释放页表
+
+`fork_regions` 的回滚策略：逐区域调用 `fork_region`，任一失败则对已成功的区域调用 `free_forked_regions` 回滚，再向上传播错误。这对应 Minix3 的 `map_free_proc(dst)`——区别是 Minix3 遍历侵入式链表 `phys_block.firstregion` 逐个 `pb_unlink`，Rust 遍历 `region.physblocks` 递减 `PageFrames.states[pfn].refcount`。
+
+`do_fork` 的编排步骤与 Minix3 的 `do_fork` 一一对应：
+
+| 步骤 | Minix3 | Rust | 失败处理 |
+|------|--------|------|---------|
+| 验证父进程 | `vm_isokendpt()` | `table.vm_isokendpt()` → `get_active()` | `InvalidEndpoint`/`InvalidSlot` |
+| 验证子进程 slot | slot 范围检查 + `assert` | `table.get_empty()` | `SlotInUse` |
+| 初始化子进程 | `*vmc = *vmp` + 恢复字段 | `activate_relaxed()` → `init_from_fork()` + `copy_acl_from()` | 不会失败 |
+| 创建页表 | `pt_new()` | `init_page_table()` | `NoMemory` |
+| 复制区域 | `map_proc_copy()` | `fork_regions()` | 内部回滚 + `free_page_table()` |
+| CoW + 页表写入 | `map_writept()` ×2 | `setup_cow_for_all_regions()` + `write_page_table_mappings()` | 不会失败 |
+| 内核通知 | `sys_fork()` | `sys_fork()`（stub） | panic（不可回滚） |
+| 页表绑定 | `pt_bind()` | `bind_page_table()` | panic（不可回滚） |
+| 消息页面处理 | `handle_memory_once()` ×2 | TODO（stub） | panic（不可回滚，注释矛盾已识别，见 §2.5） |
+
+关键设计差异：Minix3 用 `*vmc = *vmp` 整结构体浅拷贝再逐字段恢复，Rust 用 `init_from_fork()` 逐字段拷贝——避免拷贝后"恢复"的脆弱模式，typestate 视图保证子进程只能通过 `EmptySlot` → `ActiveProc` 转换进入活跃状态。
+
+### 3.5 进程表管理
+
+fork 对进程表的核心需求：通过 endpoint 定位父进程（只读），通过 slot 初始化子进程（写入）。两者操作不同 slot，且父进程只读、子进程只写。
+
+`VmProcTable` 的 `AssumeSyncCell<VmProc>` 静态数组 + typestate 视图设计天然满足这一需求：
+
+- **slot 粒度隔离**：每个 slot 的 `UnsafeCell` 独立，`get_active(parent_slot)` 和 `get_empty(child_slot)` 返回的视图各自持有不同 slot 的 `&mut VmProc`，Rust 借用检查器看到的是两个 `&table` 共享借用，完全合法
+- **不变量显式检查**：`do_fork` 中 `assert_ne!(parent_slot, child_slot)` 将"父子 slot 不同"这一安全性前提从隐式依赖（PM 语义）提升为运行时显式断言，防止同一 slot 产生两个 `&mut VmProc` 别名导致 UB
+- **typestate 保证状态安全**：父进程通过 `ActiveProc` 视图读取 regions/page_table，子进程通过 `EmptySlot` → `ActiveProc` 视图逐步初始化，状态转换由类型系统强制，不可能在未初始化的 slot 上执行 `ActiveProc` 操作
+- **无需跨 slot 联合方法**：父子操作是顺序的（先从 parent 读，再写到 child），各自在独立 view 上完成，不需要 `get_two_active` 之类的聚合接口
 
 ---
 
@@ -1269,262 +1011,129 @@ impl ProcTable {
 
 ### 4.1 消息处理入口
 
-do_fork 函数接收 VM_FORK 消息，解析参数并启动 fork 流程。
+dispatcher 从 IPC 消息解码出 `VmForkIn`，调用 `do_fork` 编排 fork 流程。
 
-> **注意**: 以下 §4.1-4.7 为未来设计代码，当前 Rust 实现仅包含 `fork_region()`、`fork_regions()`、`cow_copy_page()` 三个函数（见 `fork.rs`）。上层入口（`do_fork`）、进程表管理（`ProcTable`）、页表操作（`map_writept`）、内核通知（`sys_fork`）等尚未实现。
+> **注意**: `sys_fork` 当前为 stub（假设成功），待内核 IPC 实现后替换。
 
 ```rust
-use crate::ipc::Message;
-use super::{ForkRequest, ForkResponse, ForkError, ForkState};
-
-/// VM_FORK 消息处理入口
-pub fn do_fork(
-    proc_table: &ProcTable,
-    frames: &mut PageFrames,
-    msg: &Message,
-) -> ForkResult<ForkResponse> {
-    let request = ForkRequest {
-        parent_endpoint: Endpoint::from_raw(msg.vmf_endpoint()),
-        child_slot: msg.vmf_slotno() as usize,
-    };
-    
-    let child_endpoint = fork_process(proc_table, frames, &request)?;
-    
-    Ok(ForkResponse::Ok { child_endpoint })
-}
-
-/// 执行 fork 操作
-fn fork_process(
-    proc_table: &ProcTable,
-    frames: &mut PageFrames,
-    request: &ForkRequest,
-) -> ForkResult<Endpoint> {
-    let mut state = ForkState::new();
-    
-    let parent_slot = proc_table.validate_endpoint(request.parent_endpoint)?;
-    
-    if request.child_slot >= NR_PROCS {
-        return Err(ForkError::InvalidSlot(request.child_slot as i32));
+// dispatcher 收到 VM_FORK 后的调用路径
+fn dispatch_fork(table: &VmProcTable, _page_alloc: &mut VmPageAllocator, frames: &mut PageFrames, request: VmForkIn) -> VmReply {
+    match fork::do_fork(table, frames, request.parent_endpoint, request.child_slot) {
+        Ok(child_endpoint) => VmReply::Fork(VmForkOut { child_endpoint }),
+        Err(ForkError::InvalidEndpoint) => VmReply::Error(VmError::InvalidEndpoint),
+        Err(ForkError::InvalidSlot) | Err(ForkError::SlotInUse) => VmReply::Error(VmError::SlotInUse),
+        Err(ForkError::NoMemory) => VmReply::Error(VmError::OutOfMemory),
+        // ... 其他错误映射
     }
-    
-    let parent = proc_table.get(parent_slot)
-        .ok_or(ForkError::InvalidSlot(parent_slot as i32))?;
-    
-    let mut child = proc_table.get_mut(request.child_slot)
-        .ok_or(ForkError::InvalidSlot(request.child_slot as i32))?;
-    
-    state.checkpoint(&mut child);
-    
-    child.copy_from(&parent);
-    child.set_slot(request.child_slot);
-    child.regions_mut().clear();
-    child.set_endpoint(Endpoint::NONE);
-    
-    let pagetable = PageTable::new()
-        .map_err(ForkError::PageTableError)?;
-    child.set_pagetable(pagetable);
-    state.set_phase(ForkPhase::PageTableCreated);
-    
-    map_proc_copy(&mut child, &parent, frames)
-        .map_err(|e| {
-            state.rollback(&mut child, frames);
-            ForkError::OutOfMemory
-        })?;
-    state.set_phase(ForkPhase::RegionsCopied);
-    
-    child.set_flags(VmFlags::IN_USE);
-    acl_fork(&mut child);
-    
-    let child_endpoint = sys_fork(
-        parent.endpoint(),
-        request.child_slot,
-        ForkFlags::VM_INHIBIT,
-    ).map_err(|e| {
-        panic!("sys_fork failed: {}", e);
-    })?;
-    
+}
+```
+
+dispatcher 只做消息解码和错误映射，核心逻辑在 `fork::do_fork`（§4.2）。
+
+### 4.2 do_fork 编排
+
+`do_fork` 是 fork 的核心编排函数，对应 Minix3 的 `do_fork()`。通过 `VmProcTable` 的 typestate 视图获取父子进程的独立访问。
+
+```rust
+pub(crate) fn do_fork(
+    table: &VmProcTable,
+    frames: &mut PageFrames,
+    parent_endpoint: Endpoint,   // PM 传入的父进程 endpoint
+    child_slot: UserSlot,        // PM 分配的子进程 slot
+) -> Result<Endpoint, ForkError> {
+    // 阶段1: 验证父进程 — endpoint → slot → ActiveProc 视图
+    let parent_slot = table.vm_isokendpt(parent_endpoint)
+        .map_err(|_| ForkError::InvalidEndpoint)?;
+    let parent = table.get_active(parent_slot)
+        .ok_or(ForkError::InvalidSlot)?;
+
+    // 安全性不变量：父子 slot 必须不同，否则同一 slot 产生两个 &mut VmProc 别名
+    assert_ne!(parent_slot, child_slot);
+
+    // 阶段1: 验证子进程 slot — EmptySlot 视图
+    let empty = table.get_empty(child_slot)
+        .ok_or(ForkError::SlotInUse)?;
+
+    // 阶段2: 初始化子进程（EmptySlot → ActiveProc 状态转换）
+    let mut child = empty.activate_relaxed(Endpoint::NONE);
+    child.init_from_fork(Endpoint::NONE, parent.total(), parent.total_max(), parent.region_top());
+    child.copy_acl_from(&parent);
+
+    // 阶段3: 创建子进程页表
+    child.init_page_table().map_err(|_| ForkError::NoMemory)?;
+    child.init_regions();
+
+    // 阶段4: 复制地址空间（详见 §4.4）
+    let parent_regions: Vec<&VirRegion> = parent.regions().iter().collect();
+    let dst_regions = match fork_regions(&parent_regions, frames) {
+        Ok(r) => r,
+        Err(e) => {
+            unsafe { child.free_page_table(); }  // 回滚：释放页表（对应 Minix3 pt_free）
+            return Err(e);
+        }
+    };
+    for region in dst_regions {
+        child.regions_mut().insert(*region);
+    }
+
+    // 阶段5: CoW 设置 + 页表写入
+    unsafe { child.setup_cow_for_all_regions(frames); }
+    unsafe { child.write_page_table_mappings(frames); }
+
+    // 阶段6: 通知内核（详见 §4.5）
+    let child_endpoint = sys_fork(parent.endpoint(), child.slot());
     child.set_endpoint(child_endpoint);
-    
-    child.bind_pagetable()
-        .map_err(ForkError::PageTableError)?;
-    
-    state.set_phase(ForkPhase::Completed);
-    
+
+    // 阶段7: 绑定页表（详见 §4.6）— 不可回滚，失败时 panic
+    child.bind_page_table()
+        .expect("pt_bind failed after sys_fork — irrecoverable");
+
+    // TODO: handle_memory_once — 通知内核 fork 消息页面的内存映射
+
     Ok(child_endpoint)
 }
 ```
 
-### 4.2 父进程查找
+**关键设计点**：
 
-通过 endpoint 在进程表中查找父进程的 VmProc 结构。
+- `parent` 和 `child` 是不同 slot 的 typestate 视图，`AssumeSyncCell` 保证它们可以同时存在（§3.5）
+- `empty.activate_relaxed(Endpoint::NONE)` 完成 `EmptySlot` → `ActiveProc` 的状态转换，之后 `child` 只能调用 `ActiveProc` 的方法
+- `init_from_fork()` 逐字段拷贝（而非 Minix3 的 `*vmc = *vmp` 整结构体拷贝后恢复），避免"拷贝后恢复"的脆弱模式
 
-```rust
-impl ProcTable {
-    pub fn lookup_by_endpoint(&self, endpoint: Endpoint) -> Option<usize> {
-        self.endpoint_map.get(&endpoint).copied()
-    }
+### 4.3 进程表操作
 
-    pub fn validate_and_get_slot(&self, endpoint: Endpoint) -> ForkResult<usize> {
-        let slot = self.lookup_by_endpoint(endpoint)
-            .ok_or(ForkError::InvalidEndpoint(endpoint.as_raw()))?;
+fork 使用的三个 `VmProcTable` 方法，对应 Minix3 的验证和访问逻辑：
 
-        let proc = self.get(slot)
-            .ok_or(ForkError::InvalidSlot(slot as i32))?;
+| 方法 | 对应 Minix3 | 返回类型 | 说明 |
+|------|------------|---------|------|
+| `vm_isokendpt(endpoint)` | `vm_isokendpt()` | `Result<UserSlot, EndptError>` | endpoint → slot 映射，验证有效性 |
+| `get_active(slot)` | `&vmproc[proc]` + flags 检查 | `Option<ActiveProc>` | 获取活跃进程视图（`IN_USE` + 非 `EXITING`） |
+| `get_empty(slot)` | `&vmproc[childproc]` + 范围检查 | `Option<EmptySlot>` | 获取空槽位视图（非 `IN_USE`）。**注意**：Minix3 的 `do_fork` 不检查子进程 slot 是否空闲（依赖 PM 保证 slot 正确），Rust 通过 `get_empty()` 显式验证 `IN_USE` 标志 |
 
-        if !proc.is_in_use() || proc.endpoint() != endpoint {
-            return Err(ForkError::InvalidEndpoint(endpoint.as_raw()));
-        }
-
-        Ok(slot)
-    }
-}
-```
-
-### 4.3 子进程初始化
-
-初始化子进程的 VmProc 结构，包括创建页表和初始化区域树。
-
-```rust
-impl VmProc {
-    pub fn copy_from(&mut self, parent: &VmProc) {
-        self.flags = parent.flags;
-        self.stack_low = parent.stack_low;
-        self.acl = parent.acl;
-    }
-
-    pub fn init_empty(&mut self, slot: usize) {
-        self.slot = slot;
-        self.endpoint = Endpoint::NONE;
-        self.flags = VmFlags::empty();
-        self.regions.clear();
-        self.acl = NO_ACL;
-    }
-}
-```
+Minix3 直接通过 `&vmproc[proc]` 获取裸指针，无状态检查。Rust 通过 typestate 视图在编译时保证：不可能对空 slot 执行 `ActiveProc` 操作，不可能对活跃 slot 执行 `EmptySlot` 操作。
 
 ### 4.4 区域遍历与复制
 
-遍历父进程的 AVL 树，复制每个虚拟区域到子进程。
-
-```rust
-/// 复制进程地址空间（对应 Minix3 map_proc_copy + map_proc_copy_range）
-fn map_proc_copy(
-    child: &mut VmProc,
-    parent: &VmProc,
-    frames: &mut PageFrames,
-) -> Result<(), ForkError> {
-    child.regions_mut().clear();
-
-    for region in parent.regions().iter() {
-        let new_region = map_copy_region(child, region, frames)?;
-        child.regions_mut().insert(new_region);
-    }
-
-    map_writept(parent, frames)?;
-    map_writept(child, frames)?;
-
-    Ok(())
-}
-
-/// 复制单个虚拟区域（对应 Minix3 map_copy_region）
-fn map_copy_region(
-    child: &VmProc,
-    parent_region: &VirRegion,
-    frames: &mut PageFrames,
-) -> Result<VirRegion, ForkError> {
-    let mut new_region = VirRegion::new(
-        parent_region.vaddr,
-        parent_region.length,
-        parent_region.flags,
-        parent_region.def_memtype,
-    );
-
-    new_region.parent_slot = Some(child.slot.into());
-
-    for (page_idx, slot_opt) in parent_region.physblocks.iter().enumerate() {
-        if let Some(slot) = slot_opt {
-            let memtype = slot.memtype.unwrap_or(parent_region.def_memtype.unwrap());
-
-            if let Some(ev_ref) = memtype.ev_reference() {
-                ev_ref(frames, slot);
-            }
-
-            frames.get_mut(slot.pfn).unwrap().refcount += 1;
-
-            new_region.physblocks[page_idx] = Some(PageSlot {
-                pfn: slot.pfn,
-                offset: slot.offset,
-                memtype: slot.memtype,
-            });
-        }
-    }
-
-    Ok(new_region)
-}
-
-/// 更新进程页表（对应 Minix3 map_writept）
-fn map_writept(
-    vmp: &VmProc,
-    frames: &PageFrames,
-) -> Result<(), PageTableError> {
-    for region in vmp.regions().iter() {
-        for (page_idx, slot_opt) in region.physblocks.iter().enumerate() {
-            if let Some(slot) = slot_opt {
-                if !slot.is_mapped() {
-                    continue;
-                }
-
-                let state = frames.get(slot.pfn).unwrap();
-                let writable = slot.memtype.unwrap().writable(frames, slot);
-                let flags = if writable {
-                    PteFlags::PRESENT | PteFlags::USER | PteFlags::WRITE
-                } else {
-                    PteFlags::PRESENT | PteFlags::USER
-                };
-
-                let offset = page_idx * PAGE_SIZE;
-                pt_writemap(
-                    vmp.pagetable(),
-                    region.vaddr + offset,
-                    frames.pfn_to_phys(slot.pfn),
-                    PAGE_SIZE,
-                    flags,
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-```
-
-**与 Minix3 的关键差异**
-
-| Minix3 | 方案 A | 说明 |
-|--------|-------|------|
-| `pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype)` | `frames.get_mut(slot.pfn).refcount += 1` + `new_region.physblocks[idx] = Some(slot)` | 直接递增 refcount + 复制 PageSlot，无需创建 PhysRegion/PhysBlock 对象 |
-| `ph->memtype->ev_reference(ph, newph)` | `memtype.ev_reference()(frames, slot)` | MemType 回调签名变更：`PhysRegion` → `PageSlot + PageFrames` |
-| `phys_region.phys_block().refcount()` | `frames.get(slot.pfn).refcount` | refcount 从 PhysBlock 移至 PageFrames 全局数组 |
-| `phys_region.phys_block().phys()` | `frames.pfn_to_phys(slot.pfn)` | 物理地址通过 PFN 间接获取 |
-| `pr_writable(vr, pr)` | `slot.memtype.unwrap().writable(frames, slot)` | 可写判断统一到 MemType trait |
-
-> **方案 A 简化**: Minix3 的 `map_copy_region` 需要 `pb_reference()` → `pb_link()` 创建新的 `phys_region` 并链入 `phys_block.firstregion` 侵入式链表。方案 A 只需递增 `PageFrames.states[pfn].refcount` 并复制 `PageSlot`（Copy 类型），省去了堆分配和链表操作。
-
-### 4.4a 已实现函数
-
-> 以下函数已在 `fork.rs` 中实现，是当前代码的核心。
+遍历父进程的区域列表，复制每个虚拟区域到子进程。
 
 **fork_region** — 复制单个虚拟区域
 
 ```rust
-// os/servers/vm/src/fork.rs:17
+// 复制单个虚拟区域（对应 Minix3 map_copy_region）
 pub(crate) fn fork_region(
-    src: &VirRegion,
-    frames: &mut PageFrames,
-) -> Result<Box<VirRegion>, ForkError>
+    src: &VirRegion,          // 源区域（父进程）
+    frames: &mut PageFrames,  // 全局物理页帧管理器
+) -> Result<Box<VirRegion>, ForkError>  // 返回新区域或错误
 ```
 
-对应 Minix3 的 `map_copy_region()`。关键差异：
+对应 Minix3 的 `map_copy_region()`。核心步骤：
+
+1. **创建新区域**：`VirRegion::new()` 复制 `vaddr`、`length`、`flags`、`memtype` 等字段（含 `parent_slot`，此时仍指向父进程 slot，后续由 `region_insert` 更新）
+2. **遍历 physblocks**：对源区域每个已分配的 `PageSlot`，递增 `frames.get_mut(slot.pfn).refcount` 并复制 `PageSlot` 到新区域（Copy 语义）
+3. **ev_reference 回调**：对每个已共享的物理页调用 `memtype.ev_reference()(frames, slot)`，失败时回滚已递增的 refcount（遍历 `refcounted_pfns` 向量逐个递减）
+4. **设置不可写**：`dst.set_writable(false)` 标记 CoW
+
+关键差异：
 - 使用 `PageSlot` Copy 语义替代 `pb_reference()` + `pb_link()`
 - `ev_reference` 失败时自动回滚已递增的 refcount
 - 复制后设置 `dst.set_writable(false)` 实现 CoW
@@ -1532,163 +1141,116 @@ pub(crate) fn fork_region(
 **fork_regions** — 复制所有虚拟区域
 
 ```rust
-// os/servers/vm/src/fork.rs:65
+// 复制所有虚拟区域（对应 Minix3 map_proc_copy）
 pub(crate) fn fork_regions(
-    src_regions: &[Box<VirRegion>],
-    frames: &mut PageFrames,
-) -> Result<Vec<Box<VirRegion>>, ForkError>
+    src_regions: &[&VirRegion],  // 父进程区域引用列表
+    frames: &mut PageFrames,     // 全局物理页帧管理器
+) -> Result<Vec<Box<VirRegion>>, ForkError>  // 返回新区域列表或错误
 ```
 
-对应 Minix3 的 `map_proc_copy()`。遍历源区域列表，对每个区域调用 `fork_region()`。
+对应 Minix3 的 `map_proc_copy()`。遍历源区域列表，对每个区域调用 `fork_region()`。失败时自动调用 `free_forked_regions` 回滚。
 
 **cow_copy_page** — CoW 单页复制
 
+> **注意**：`cow_copy_page` 是页错误处理时调用的辅助函数，**不在 fork 主流程中**。fork 时仅设置 CoW（共享页 + 只读），实际页面复制在写入触发页错误后由 `cow_resolve_core` 完成。
+
 ```rust
-// os/servers/vm/src/fork.rs:81
+// CoW 单页复制（对应 Minix3 mem_cow）
 pub(crate) fn cow_copy_page(
-    region: &mut VirRegion,
-    frames: &mut PageFrames,
-    alloc: &mut dyn PfnAllocator,
-    offset: VirBytes,
-) -> Result<(), ForkError>
+    region: &mut VirRegion,       // 目标区域（CoW 触发页所在区域）
+    frames: &mut PageFrames,      // 全局物理页帧管理器
+    alloc: &mut dyn PfnAllocator, // 物理页分配器
+    offset: VirBytes,             // 页内偏移量
+) -> Result<(), ForkError>        // 成功或错误
 ```
 
 对应 Minix3 的 `mem_cow()`。是 `cow_resolve_core()` 的薄封装，将 `CowCoreError` 映射为 `ForkError`。
 
+**与 Minix3 的关键差异**
+
+| Minix3 | Rust 实现 | 说明 |
+|--------|-------|------|
+| `pb_reference(ph->ph, ph->offset, newvr, vr->def_memtype)` | `frames.get_mut(slot.pfn).refcount += 1` + `new_region.physblocks[idx] = Some(slot)` | 直接递增 refcount + 复制 PageSlot，无需创建 PhysRegion/PhysBlock 对象 |
+| `ph->memtype->ev_reference(ph, newph)` | `memtype.ev_reference()(frames, slot)` | MemType 回调签名变更：`PhysRegion` → `PageSlot + PageFrames` |
+| `phys_region.phys_block().refcount()` | `frames.get(slot.pfn).refcount` | refcount 从 PhysBlock 移至 PageFrames 全局数组 |
+| `phys_region.phys_block().phys()` | `frames.pfn_to_phys(slot.pfn)` | 物理地址通过 PFN 间接获取 |
+| `pr_writable(vr, pr)` | `slot.memtype.unwrap().writable(frames, slot)` | 可写判断统一到 MemType trait |
+
+> Minix3 的 `map_copy_region` 需要 `pb_reference()` → `pb_link()` 创建新的 `phys_region` 并链入 `phys_block.firstregion` 侵入式链表。Rust 实现只需递增 `PageFrames.states[pfn].refcount` 并复制 `PageSlot`（Copy 类型），省去了堆分配和链表操作。
+
 ### 4.5 内核通知
 
-调用 sys_fork 通知内核创建子进程，并绑定页表。
+`sys_fork` 通知内核创建子进程的调度实体。当前为 stub 实现，假设永远成功。
 
 ```rust
-/// 通知内核创建子进程
-fn notify_kernel(
-    parent_endpoint: Endpoint,
-    child_slot: usize,
-) -> ForkResult<Endpoint> {
-    let child_endpoint = sys_fork(
-        parent_endpoint,
-        child_slot,
-        ForkFlags::VM_INHIBIT,
-    ).map_err(|e| {
-        panic!("sys_fork failed: {:?}", e);
-    })?;
-
-    Ok(child_endpoint)
-}
-
-pub fn sys_fork(
-    parent: Endpoint,
-    child_slot: usize,
-    flags: ForkFlags,
-) -> Result<Endpoint, KernelError> {
-    let mut msg = Message::new(KERNEL, SYS_FORK);
-    msg.set_parent(parent);
-    msg.set_child_slot(child_slot);
-    msg.set_flags(flags.bits());
-
-    kernel_call(&mut msg)?;
-
-    Ok(Endpoint::from_raw(msg.child_endpoint()))
+// 通知内核创建子进程（stub，TODO: 实现内核 IPC）
+fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
+    // TODO: 发送 SYS_FORK 消息给内核，接收子进程 endpoint
+    // Minix3 签名：sys_fork(parent_ep, child_slot, &child_ep, PFF_VMINHIBIT, &msgaddr)
+    Endpoint::from_generation_slot(1, _child_slot.get() as i32)
 }
 ```
 
-**sys_fork 内核处理**
+> 内核侧 `sys_fork` 的完整处理流程（消息字段、proc 结构体复制、调度状态设置、endpoint 生成方式）见 §2.7.3。
 
-`sys_fork()` 的内核操作：
-
-1. 分配新的 endpoint 给子进程：`endpoint = _ENDPOINT(0, child_slot)`
-2. 复制父进程的内核栈
-3. 设置子进程的调度状态
-4. 如果设置了 `PFF_VMINHIBIT`：子进程初始状态为 VM 阻塞，等待 VM 完成初始化
-
-返回值：`child_endpoint`（子进程 endpoint）和 `msgaddr`（fork 消息页面地址）
+**不可回滚**：`sys_fork` 成功后内核已创建子进程，系统状态不可逆，因此失败时 panic。这与 Minix3 的 `panic("VM: do_fork can't sys_fork")` 语义一致。
 
 ### 4.6 页表绑定
 
-将创建的页表绑定到子进程。
+`bind_page_table` 将子进程的页表物理地址注册到内核，使内核在调度子进程时切换到正确的页表。
 
 ```rust
-impl VmProc {
-    pub fn bind_pagetable(&mut self) -> Result<(), PageTableError> {
-        pt_bind(&self.pagetable, self)
-    }
-}
-
-fn pt_bind(pt: &PageTable, vmp: &VmProc) -> Result<(), PageTableError> {
-    let pt_phys = pt.dir_phys();
-
-    sys_set_pagetable(vmp.endpoint(), pt_phys)
-        .map_err(PageTableError::KernelError)
-}
-
-pub fn sys_set_pagetable(
-    endpoint: Endpoint,
-    pt_phys: PhysAddr,
-) -> Result<(), KernelError> {
-    let mut msg = Message::new(KERNEL, SYS_VMCTL);
-    msg.set_endpoint(endpoint);
-    msg.set_request(VMCTL_SET_PAGE_DIR);
-    msg.set_value(pt_phys.as_raw());
-
-    kernel_call(&mut msg)?;
+// ActiveProc 方法，将页表绑定到子进程（stub，TODO: 实现内核 IPC）
+fn bind_page_table(&self) -> Result<(), PageTableError> {
+    // TODO: 调用 sys_vmctl(VMCTL_SET_PAGE_DIR, endpoint, pt_phys)
+    // 通知内核将子进程的页目录物理地址写入进程结构
     Ok(())
 }
 ```
 
+对应 Minix3 的 `pt_bind(&vmc->vm_pt, vmc)`，最终调用 `sys_vmctl(VMCTL_SET_PAGE_DIR, endpoint, pt_phys)`。当前为 stub 实现，假设成功。
+
+**不可回滚**：`bind_page_table` 在 `sys_fork` 成功后调用，此时内核已创建子进程，绑定失败不可恢复。`do_fork` 中使用 `.expect()` 而非 `?` 处理此错误，与 Minix3 的 `panic("fork can't pt_bind")` 语义一致。
+
 ### 4.7 错误处理与回滚
 
-fork 过程中如果发生错误，需要回滚已完成的操作。
+fork 的错误回滚分两层（§3.4 有设计要点，此处为实现细节）：
+
+**第一层：`fork_regions` 内部回滚**
 
 ```rust
-impl ForkState {
-    pub fn checkpoint(&mut self, child: &mut VmProc) {
-        self.checkpoint = Some(ForkCheckpoint {
-            orig_pagetable: child.pagetable().clone(),
-            orig_flags: child.flags(),
-        });
-    }
-
-    pub fn rollback(&self, child: &mut VmProc, frames: &mut PageFrames) {
-        if let Some(ref cp) = self.checkpoint {
-            if self.phase >= ForkPhase::PageTableCreated {
-                child.pagetable_mut().free();
+pub(crate) fn fork_regions(
+    src_regions: &[&VirRegion],  // 父进程区域引用列表
+    frames: &mut PageFrames,     // 全局物理页帧管理器
+) -> Result<Vec<VirRegion>, ForkError> {
+    let mut dst_regions = Vec::with_capacity(src_regions.len()); // 预分配容量
+    for src in src_regions {
+        match fork_region(src, frames) {
+            Ok(dst) => dst_regions.push(dst), // 成功：加入结果列表
+            Err(e) => {
+                // 任一区域复制失败，回滚已成功的所有区域
+                free_forked_regions(&mut dst_regions, frames);
+                return Err(e);
             }
-
-            if self.phase >= ForkPhase::RegionsCopied {
-                for region in child.regions_mut().iter_mut() {
-                    for slot_opt in region.physblocks.iter() {
-                        if let Some(slot) = slot_opt {
-                            let state = frames.get_mut(slot.pfn).unwrap();
-                            state.refcount -= 1;
-                        }
-                    }
-                }
-            }
-
-            child.set_pagetable(cp.orig_pagetable.clone());
-            child.set_flags(cp.orig_flags);
-            child.regions_mut().clear();
         }
     }
-
-    pub fn set_phase(&mut self, phase: ForkPhase) {
-        self.phase = phase;
-    }
+    Ok(dst_regions)
 }
 ```
 
-> **方案 A 回滚简化**: Minix3 的回滚需要遍历 `phys_block.firstregion` 侵入式链表，逐个 `pb_unlink()` 释放 `phys_region`。方案 A 的回滚只需遍历 `region.physblocks` 递减 `PageFrames.states[pfn].refcount`，无需链表操作和堆释放。
+`free_forked_regions` 遍历已复制区域的 `physblocks`，递减 `PageFrames.states[pfn].refcount` 并调用 `ev_unreference`。对应 Minix3 的 `map_free_proc` → `map_free` → `pb_unreferenced` 链路，但无需侵入式链表操作。
 
-**错误处理流程**
+**第二层：`do_fork` 回滚**
+
+`fork_regions` 返回 `Err` 时，`do_fork` 调用 `child.free_page_table()` 释放已创建的子进程页表（对应 Minix3 的 `pt_free(&vmc->vm_pt)`）。`sys_fork` 成功后不存在回滚路径。
 
 | 阶段 | 失败条件 | 处理 |
 |------|---------|------|
-| Init → Validated | 参数验证失败 | 直接返回错误码，无副作用 |
-| Validated → PageTableCreated | `pt_new()` 失败 | 返回 `ENOMEM`，子进程结构未修改 |
-| PageTableCreated → RegionsCopied | `map_proc_copy()` 失败 | `state.rollback()` 释放页表和已复制区域，返回 `ENOMEM` |
-| RegionsCopied → KernelNotified | `sys_fork()` 失败 | `panic!`（内核已创建子进程，状态不可逆） |
-
-> `sys_fork()` 成功后不能失败——内核已创建子进程，不能回滚，必须继续完成。这就是 Minix3 使用 `panic` 而非返回错误的原因。
+| 参数验证 | endpoint 无效或 slot 越界 | 直接返回错误码，无副作用 |
+| 页表创建 | `init_page_table()` 失败 | 返回 `NoMemory`，子进程结构未修改 |
+| 区域复制 | `fork_regions()` 失败 | `free_forked_regions` 递减 refcount + `free_page_table()` 释放页表 |
+| 内核通知 | `sys_fork()` 失败 | panic（不可回滚） |
+| 页表绑定 | `bind_page_table()` 失败 | panic（不可回滚） |
 
 ---
 

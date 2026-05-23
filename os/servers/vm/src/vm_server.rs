@@ -16,7 +16,7 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{VmRequest, VmResponse, VmError, Endpoint, VirBytes};
+use minix_types::{Endpoint, UserSlot, VirBytes, VmForkIn, VmBrkIn, VmExitIn, VmReply, VmError};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::direct_map::vm_phys_to_virt;
@@ -170,14 +170,24 @@ impl VmServer {
         }
     }
 
-    pub fn handle_request(&mut self, request: VmRequest) -> VmResponse {
+    pub fn handle_fork(&mut self, req: VmForkIn) -> VmReply {
         let table = VmProcTable::get_global();
-        MessageDispatcher::dispatch_with_alloc(table, &mut self.page_alloc, &mut self.page_frames, request)
+        MessageDispatcher::dispatch_with_alloc(table, &mut self.page_alloc, &mut self.page_frames, req)
     }
 
-    pub fn handle_ipc_message(&mut self, src: Endpoint, request: VmRequest) -> VmResponse {
+    pub fn handle_brk(&mut self, req: VmBrkIn) -> VmReply {
+        let table = VmProcTable::get_global();
+        MessageDispatcher::dispatch_brk(table, &mut self.page_alloc, &mut self.page_frames, req)
+    }
+
+    pub fn handle_exit(&mut self, req: VmExitIn) -> VmReply {
+        let table = VmProcTable::get_global();
+        MessageDispatcher::dispatch_exit(table, &mut self.page_alloc, req)
+    }
+
+    pub fn handle_ipc_message(&mut self, src: Endpoint, request: VmForkIn) -> VmReply {
         let _ = src;
-        self.handle_request(request)
+        self.handle_fork(request)
     }
 
     pub fn handle_vfs_reply(&mut self, src: Endpoint, result: i32) {
@@ -285,14 +295,13 @@ mod tests {
         let mut server = make_test_vm_server();
         server.init();
 
-        let request = VmRequest::Fork {
+        let request = VmForkIn {
             parent_endpoint: Endpoint::NONE,
-            child_slot: minix_types::UserSlot::new(1),
-            child_endpoint: Endpoint::from_generation_slot(1, 1),
+            child_slot: UserSlot::new(1),
         };
 
-        let response = server.handle_request(request);
-        assert!(matches!(response, VmResponse::Error(VmError::NotImplemented)));
+        let reply = server.handle_fork(request);
+        assert!(matches!(reply, VmReply::Error(VmError::InvalidEndpoint)));
     }
 
     #[test]
@@ -300,13 +309,13 @@ mod tests {
         let mut server = make_test_vm_server();
         server.init();
 
-        let request = VmRequest::Brk {
+        let request = VmBrkIn {
             endpoint: Endpoint::NONE,
             new_addr: VirBytes(0x5000_0000),
         };
 
-        let response = server.handle_request(request);
-        assert!(matches!(response, VmResponse::Error(VmError::InvalidEndpoint)));
+        let reply = server.handle_brk(request);
+        assert!(matches!(reply, VmReply::Error(VmError::InvalidEndpoint)));
     }
 
     #[test]
@@ -314,12 +323,12 @@ mod tests {
         let mut server = make_test_vm_server();
         server.init();
 
-        let request = VmRequest::Exit {
+        let request = VmExitIn {
             endpoint: Endpoint::NONE,
         };
 
-        let response = server.handle_request(request);
-        assert!(matches!(response, VmResponse::Error(VmError::InvalidEndpoint)));
+        let reply = server.handle_exit(request);
+        assert!(matches!(reply, VmReply::Error(VmError::InvalidEndpoint)));
     }
 
     #[test]
@@ -339,12 +348,13 @@ mod tests {
         let mut server = make_test_vm_server();
         server.init();
 
-        let request = VmRequest::Exit {
-            endpoint: Endpoint::NONE,
+        let request = VmForkIn {
+            parent_endpoint: Endpoint::NONE,
+            child_slot: UserSlot::new(1),
         };
 
-        let response = server.handle_ipc_message(Endpoint::PM, request);
-        assert!(matches!(response, VmResponse::Error(VmError::InvalidEndpoint)));
+        let reply = server.handle_ipc_message(Endpoint::PM, request);
+        assert!(matches!(reply, VmReply::Error(VmError::NotImplemented)));
     }
 
     #[test]

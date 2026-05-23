@@ -417,8 +417,21 @@ impl MemType for ContiguousAnonymous {
         "contiguous anonymous memory"
     }
 
-    fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
-        slot.is_mapped()
+    fn writable(&self, frames: &PageFrames, slot: PageSlot, region: &crate::region::VirRegion) -> bool {
+        // Minix3's anon_contig_writable delegates to anon_writable (refcount+remaps
+        // check). Currently ev_copy returns NotSupported so refcount is always 1 and
+        // remaps is always 0, making this equivalent to slot.is_mapped(). However, if
+        // fork support is added for ContiguousAnonymous in the future, the full check
+        // must remain to correctly determine CoW eligibility.
+        if !slot.is_mapped() {
+            return false;
+        }
+        if region.remaps > 0 {
+            return true;
+        }
+        frames.get(slot.pfn)
+            .map(|s| s.refcount == 1)
+            .unwrap_or(false)
     }
 
     fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) -> Result<(), MemTypeError> {
@@ -531,6 +544,10 @@ impl MemType for CacheMemory {
     }
 
     fn ev_delete(&self, region: &mut crate::region::VirRegion) {
+        // Minix3's mem_type_cache has no ev_delete callback (NULL). Cache cleanup
+        // happens in do_forgetcache/rmcache. In the PFN index model, we clear the
+        // cached pfn to prevent dangling references — if the region outlives the
+        // cache entry, a stale pfn would point to a freed or reused page.
         if let crate::region::VrParam::PbCache { pfn } = &mut region.param {
             *pfn = 0;
         }

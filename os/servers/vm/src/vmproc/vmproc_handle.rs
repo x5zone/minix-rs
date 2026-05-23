@@ -287,6 +287,20 @@ impl<'a> ActiveProc<'a> {
         bind_to_process(pt.root_paddr(), self.endpoint())
     }
 
+    /// Frees the page table resources and resets initialization flag.
+    ///
+    /// Used for rollback when fork fails after `init_page_table()` succeeds
+    /// but before `sys_fork()`. Corresponds to Minix3's `pt_free(&vmc->vm_pt)`.
+    ///
+    /// # Safety
+    /// Caller must ensure this process's page table is not currently active on any CPU.
+    pub(crate) unsafe fn free_page_table(&mut self) {
+        if self.inner.vm_pt_initialized {
+            unsafe { self.inner.vm_pt.assume_init_mut().destroy(); }
+            self.inner.vm_pt_initialized = false;
+        }
+    }
+
     /// Initializes memory regions map for exec or new processes.
     ///
     /// Creates a new empty region map. Must be called before accessing vm_regions.
@@ -341,8 +355,9 @@ impl<'a> ActiveProc<'a> {
 
     /// Sets up CoW for all memory regions (PFN index model).
     ///
-    /// Uses PageFrames refcount instead of PhysBlock refcount.
-    /// For each mapped page, increments refcount in the global PageFrames array.
+    /// Marks all regions as writable and prepares CoW (sets pages read-only
+    /// in the page table when refcount > 1). Does NOT increment refcount —
+    /// that was already done by `fork_region()` during region copying.
     ///
     /// # Safety
     /// Caller must ensure PageFrames is initialized and valid.
@@ -351,17 +366,6 @@ impl<'a> ActiveProc<'a> {
 
         for region in self.regions_mut().iter_mut() {
             region.flags.insert(VrFlags::WRITABLE);
-
-            for slot_opt in &region.physblocks {
-                if let Some(slot) = slot_opt {
-                    if slot.is_mapped() {
-                        if let Some(state) = frames.get_mut(slot.pfn) {
-                            state.refcount = state.refcount.saturating_add(1);
-                        }
-                    }
-                }
-            }
-
             region.prepare_cow(frames);
         }
     }

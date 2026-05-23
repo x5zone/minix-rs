@@ -462,7 +462,7 @@ PM → VM_EXIT:
 | `VmProc::clear()` | ✅ 已实现 | 核心：释放区域 + 页表 + 重置字段 |
 | `ExitingProc::reap()` | ✅ 已实现 | 调用 `VmProc::clear()`，返回 `EmptySlot` |
 | `ActiveProc::force_clear()` | ✅ 已实现 | 异常终止：调用 `VmProc::clear()` |
-| `RegionAvl::clear()` | ✅ 已实现 | 递归释放所有 VirRegion 节点 |
+| `RegionMap::clear()` | ✅ 已实现 | 释放所有 VirRegion 节点 |
 | `PageTable::destroy()` | ✅ 已实现（trait） | 释放页表资源 |
 | `PhysRegion::unlink_from_block()` | ✅ 已实现 | 从 PhysBlock 链表移除，减少引用计数 |
 | `PhysRegion::unbind_block()` | ✅ 已实现 | 简化版引用释放（无链表管理） |
@@ -529,21 +529,16 @@ pub(crate) unsafe fn clear(&mut self) {
 2. `do_procctl(VMPPARAM_CLEAR)` 只调用 `free_proc` 不调用 `clear_proc`，但 Rust 中这个场景用 `force_clear()` + 重新初始化来处理
 3. 合并减少了遗漏调用的风险
 
-**原则 3：RegionAvl::clear() 需要增强**
+**原则 3：RegionMap::clear() 需要增强**
 
-当前的 `RegionAvl::clear()` 只递归释放 AVL 节点（`Box<VirRegion>`），但**不处理 PhysRegion 的引用计数**：
+当前的 `RegionMap::clear()` 释放 BTreeMap 中的所有 VirRegion 节点，但**不处理 PhysRegion 的引用计数**：
 
 ```rust
 // 当前实现 — 只释放树结构
-fn clear_recursive(node: Box<VirRegion>) {
-    if let Some(lower) = node.lower {
-        Self::clear_recursive(lower);
-    }
-    if let Some(higher) = node.higher {
-        Self::clear_recursive(higher);
-    }
-    // Box<VirRegion> drop → Vec<Option<Box<PhysRegion>>> drop
+fn clear(&mut self) {
+    // BTreeMap drop → Box<VirRegion> drop → Vec<Option<Box<PhysRegion>>> drop
     // 但 PhysRegion 的 drop 不会调用 unlink_from_block()!
+    self.regions.clear();
 }
 ```
 
@@ -551,7 +546,7 @@ fn clear_recursive(node: Box<VirRegion>) {
 - PhysBlock 的 refcount 不减少 → 物理页泄漏
 - PhysBlock 的 firstregion 链表悬空指针 → UB
 
-**解决方案**：在 `RegionAvl::clear()` 中，先遍历所有 VirRegion 的 PhysRegion，调用 `unlink_from_block()` 释放引用，再 drop 树节点。
+**解决方案**：在 `RegionMap::clear()` 中，先遍历所有 VirRegion 的 PhysRegion，调用 `unlink_from_block()` 释放引用，再清空 BTreeMap。
 
 **原则 4：物理页归还分配器**
 
@@ -575,7 +570,7 @@ if pr.unlink_from_block() {
 |------|--------|----------|
 | 状态管理 | `VMF_EXITING` 标志位 | `ExitingProc` typestate |
 | 退出函数 | `free_proc()` + `clear_proc()` | `VmProc::clear()` 合并 |
-| 区域释放 | `map_free_proc()` + `map_free()` + `map_subfree()` | `RegionAvl::clear()` + 增强 |
+| 区域释放 | `map_free_proc()` + `map_free()` + `map_subfree()` | `RegionMap::clear()` + 增强 |
 | 引用释放 | `pb_unreferenced()` | `PhysRegion::unlink_from_block()` |
 | 物理页释放 | `ev_unreference()` → `free_mem()` | `on_unreference()` → `page_alloc.free_phys()` |
 | 页表释放 | `pt_free()` → `vm_freepages()` | `PageTable::destroy()` |
@@ -586,77 +581,39 @@ if pr.unlink_from_block() {
 
 ## 4. Rust 实现详解
 
-### 4.1 RegionAvl::clear() 增强 — 释放 PhysRegion 引用
+### 4.1 RegionMap::clear() 增强 — 释放 PhysRegion 引用
 
 当前实现只释放树结构，需要增加引用计数释放逻辑：
 
 ```rust
-impl RegionAvl {
+impl RegionMap {
     pub(crate) fn clear(&mut self) {
-        if let Some(root) = self.root.take() {
-            Self::clear_with_phys(root);
+        // 先释放所有 PhysRegion 的引用
+        for (_, region) in self.regions.iter_mut() {
+            Self::free_region_phys(region);
         }
-        self.count = 0;
+        // 再清空 BTreeMap
+        self.regions.clear();
     }
-
-    fn clear_with_phys(node: Box<VirRegion>) {
-        if let Some(lower) = node.lower {
-            Self::clear_with_phys(lower);
-        }
-        if let Some(higher) = node.higher {
-            Self::clear_with_phys(higher);
-        }
-
-        // 释放所有 PhysRegion 的引用
-        for phys_opt in node.physblocks.iter_mut() {
-            if let Some(pr) = phys_opt {
-                let should_free_block = pr.unlink_from_block();
-                if should_free_block {
-                    if let Some(memtype) = pr.memtype {
-                        if let Ok(true) = memtype.ev_unreference(pr) {
-                            // 物理页需要归还给分配器
-                            // 但这里无法访问 page_alloc...
-                        }
-                    }
-                }
-            }
-        }
         // Box<VirRegion> drop → Vec drop → PhysRegion drop
     }
 }
 ```
 
-**问题**：`RegionAvl::clear()` 无法访问 `VmPageAllocator` 来归还物理页。
+**问题**：`RegionMap::clear()` 无法访问 `VmPageAllocator` 来归还物理页。
 
-**解决方案**：将物理页释放逻辑提升到 `VmProc::clear()` 层级，`RegionAvl::clear()` 只负责释放引用计数和树结构：
+**解决方案**：将物理页释放逻辑提升到 `VmProc::clear()` 层级，`RegionMap::clear()` 只负责释放引用计数和 BTreeMap 结构：
 
 ```rust
-impl RegionAvl {
+impl RegionMap {
     /// 释放所有区域，归还物理页给分配器
     ///
     /// 对应 Minix3 的 map_free_proc()。
     pub(crate) fn free_all(&mut self, page_alloc: &mut VmPageAllocator) {
-        if let Some(root) = self.root.take() {
-            Self::free_all_recursive(root, page_alloc);
+        for (_, region) in self.regions.iter() {
+            Self::free_region_phys(region, page_alloc);
         }
-        self.count = 0;
-    }
-
-    fn free_all_recursive(node: Box<VirRegion>, page_alloc: &mut VmPageAllocator) {
-        if let Some(lower) = node.lower {
-            Self::free_all_recursive(lower, page_alloc);
-        }
-        if let Some(higher) = node.higher {
-            Self::free_all_recursive(higher, page_alloc);
-        }
-
-        // 释放 VirRegion 内的所有 PhysRegion
-        Self::free_region_phys(&node, page_alloc);
-
-        // 调用 memtype 的 on_delete 回调
-        if let Some(memtype) = node.def_memtype {
-            memtype.ev_delete(&mut *node.into());
-        }
+        self.regions.clear();
     }
 
     fn free_region_phys(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
@@ -845,12 +802,12 @@ pub fn do_procctl(
 
 ### 4.6 PhysRegion Drop 的安全性
 
-当前 `PhysRegion` 没有 `Drop` 实现。在退出流程中，`unlink_from_block()` 在 `RegionAvl::free_all()` 中被显式调用，之后 `PhysRegion` 被 `Vec` 的 drop 释放。这是安全的，因为：
+当前 `PhysRegion` 没有 `Drop` 实现。在退出流程中，`unlink_from_block()` 在 `RegionMap::free_all()` 中被显式调用，之后 `PhysRegion` 被 `Vec` 的 drop 释放。这是安全的，因为：
 
 1. `unlink_from_block()` 已经将 `pr.ph = None` 和 `pr.next_ph_list = None`
 2. 后续的 `Drop`（如果有）不会尝试再次释放引用
 
-**但有一个隐患**：如果 `RegionAvl::clear()` 被直接调用（不经过 `free_all()`），`PhysRegion` 的 drop 不会释放引用。解决方案：
+**但有一个隐患**：如果 `RegionMap::clear()` 被直接调用（不经过 `free_all()`），`PhysRegion` 的 drop 不会释放引用。解决方案：
 
 ```rust
 impl Drop for PhysRegion {
@@ -861,7 +818,7 @@ impl Drop for PhysRegion {
             debug_assert!(
                 self.ph.is_none(),
                 "PhysRegion dropped while still linked to PhysBlock — \
-                 use unlink_from_block() before dropping, or use RegionAvl::free_all()"
+                 use unlink_from_block() before dropping, or use RegionMap::free_all()"
             );
             // 在 release 模式下尝试释放（防御性）
             unsafe {
@@ -886,7 +843,7 @@ PM → VM_EXIT(endpoint):
   ├── table.get_exiting(slot) → ExitingProc
   └── exiting.reap(page_alloc):
        └── VmProc::clear(page_alloc):
-            ├── RegionAvl::free_all(page_alloc):
+            ├── RegionMap::free_all(page_alloc):
             │    └── 递归遍历所有 VirRegion:
             │         ├── 对每个 PhysRegion:
             │         │    ├── pr.unlink_from_block()
