@@ -642,7 +642,7 @@ static int mappedfile_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 > **注意**: `mem_type_cache`（mem_cache.c）是 VM 内部的文件缓存机制，其 `cache_pagefault` 逻辑是链接预分配的缓存页，与 CoW 无关。
 
-> **Rust 实现现状**：当前 Rust 代码中 `MappedFile::ev_pagefault` 仅返回 `NeedNewPage`，**未实现** C 中 `cow_block` 的 CoW 逻辑。文件映射页的写操作 CoW 是一个重要的待实现功能（TODO）。C 中 `mappedfile_pagefault` 的完整流程为：读操作 → 缓存查找/VFS 请求；写操作 → `cow_block()` → `mem_cow()` + `ph->memtype = &mem_type_anon`。Rust 版本需要补充此 CoW 路径。
+> **Rust 实现现状**：`MappedFile::ev_pagefault` 已设计为返回 `NeedVfsIo`（读操作缓存未命中）或 `NeedCow`（写操作已映射页），对应 C 中的 `SUSPEND` 和 `cow_block()` 路径。CoW 后的 memtype 切换（`ph->memtype = &mem_type_anon`）已通过 `map_page(new_pfn, &MEM_TYPE_ANON)` 实现（见 23-vfs-interaction.md §3.7）。完整设计见 [23-vfs-interaction.md](23-vfs-interaction.md) §4.7。
 
 **共享内存的 CoW**
 

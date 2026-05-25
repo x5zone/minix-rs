@@ -53,10 +53,7 @@ pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
     PbCache { pfn: u32 },
-    // TODO: File variant is missing `fdref` field. Minix3's `param.file.fdref` tracks
-    // the file descriptor reference count for mmap'd files. Rust rewrite needs a
-    // corresponding mechanism (e.g., `Arc<FdRef>`) when implementing `mem_type_mappedfile`.
-    File { inited: bool, offset: u64, clearend: u16 },
+    File { inited: bool, fdref_id: Option<u32>, offset: u64, clearend: u16 },
 }
 
 impl Default for VrParam {
@@ -123,6 +120,21 @@ impl VirRegion {
 
     pub(crate) fn end_addr(&self) -> VirBytes {
         VirBytes(self.vaddr.0 + self.length.0)
+    }
+
+    pub(crate) fn extend(&mut self, extra: VirBytes) -> Result<(), VmError> {
+        if extra.0 == 0 || extra.0 % PAGE_SIZE != 0 {
+            return Err(VmError::InvalidParam);
+        }
+        let old_pages = self.physblocks.len();
+        let added_pages = (extra.0 / PAGE_SIZE) as usize;
+        self.physblocks.reserve(added_pages);
+        for _ in 0..added_pages {
+            self.physblocks.push(None);
+        }
+        self.length = VirBytes(self.length.0 + extra.0);
+        debug_assert_eq!(self.physblocks.len(), old_pages + added_pages);
+        Ok(())
     }
 
     pub(crate) fn contains_addr(&self, addr: VirBytes) -> bool {
@@ -272,6 +284,35 @@ impl VirRegion {
         left.id = self.id;
         right.remaps = self.remaps;
         right.id = self.id + 1;
+
+        match &self.param {
+            VrParam::File { inited: true, fdref_id, offset, clearend } => {
+                let fdref_id = *fdref_id;
+                let orig_offset = *offset;
+                let orig_clearend = *clearend;
+                left.param = VrParam::File {
+                    inited: true,
+                    fdref_id,
+                    offset: orig_offset,
+                    clearend: 0,
+                };
+                right.param = VrParam::File {
+                    inited: true,
+                    fdref_id,
+                    offset: orig_offset + split_len.get(),
+                    clearend: orig_clearend,
+                };
+            }
+            _ => {
+                left.param = self.param.clone();
+                right.param = self.param.clone();
+            }
+        }
+
+        if let VrParam::File { fdref_id: Some(id), .. } = left.param {
+            crate::fdref::FdRefTable::get_global().ref_entry(id);
+            crate::fdref::FdRefTable::get_global().ref_entry(id);
+        }
 
         let left_pages = (split_len.0 / PAGE_SIZE) as usize;
 
@@ -453,5 +494,26 @@ mod tests {
         let slot = region.get_slot(VirBytes(0x1000)).unwrap();
         assert!(!slot.is_mapped());
         assert_eq!(slot.pfn, PFN_NONE);
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x2000), VrFlags::empty());
+        assert_eq!(region.physblocks.len(), 2);
+        assert_eq!(region.end_addr(), VirBytes(0x3000));
+
+        region.extend(VirBytes(0x1000)).unwrap();
+        assert_eq!(region.length, VirBytes(0x3000));
+        assert_eq!(region.physblocks.len(), 3);
+        assert_eq!(region.end_addr(), VirBytes(0x4000));
+        assert!(region.get_slot(VirBytes(0x2000)).is_none());
+    }
+
+    #[test]
+    fn test_extend_invalid() {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x2000), VrFlags::empty());
+
+        assert!(matches!(region.extend(VirBytes(0)), Err(VmError::InvalidParam)));
+        assert!(matches!(region.extend(VirBytes(0x1001)), Err(VmError::InvalidParam)));
     }
 }

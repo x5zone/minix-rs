@@ -1661,7 +1661,7 @@ pub enum PagefaultAction {
 }
 ```
 
-> **注意**: 当前实现暂无 `Suspend` 变体——异步 I/O 回调机制（对应 Minix3 的 `pf_cont` / `handle_memory_continue`）尚未实现。`SUSPEND` 在 Minix3 中仅由 `mappedfile_pagefault` 返回（需要 VFS 从磁盘加载文件页），匿名内存（`anon_pagefault`）始终同步完成。因此，VFS 未就绪前无需此机制，不属于实现缺口。TODO: VFS 就绪后需实现 `Suspend` 变体及异步回调。
+> **注意**: `PagefaultAction` 已新增 `Suspended` 变体——对应 Minix3 的 `SUSPEND`。当 `MappedFile::ev_pagefault` 返回 `PagefaultResult::NeedVfsIo` 时，缺页框架将其转换为 `PagefaultAction::Suspended`，构造 `VfsRequest(FdIo)` 加入队列，不回复用户进程。VFS 回复后回调完成物理页映射和用户进程回复。完整设计见 [23-vfs-interaction.md](23-vfs-interaction.md) §3.4、§4.6。
 
 **关键安全改进**
 
@@ -1674,34 +1674,37 @@ pub enum PagefaultAction {
 | `refcount` 溢出无检测 | `u16` + debug 构建下 saturating_add 断言 |
 | 物理页分配失败直接 panic | `PfnAllocator::alloc_pfn()` 返回 Result，显式错误处理 |
 
-**Direct Map 视角：页表写入的终极简化**
+**Direct Map 视角：跨进程物理页访问的简化**
 
-> **Direct Map 标注**：Direct Map 方案下，`pt_writemap()` 内部的页表项写入通过 `vm_phys_to_virt()` 直接操作，无需 `createpde` 临时映射窗口。
+> **Direct Map 标注**：Direct Map 方案下，`vm_phys_to_virt()` 让 VM 可以直接访问任意物理页，无需 `vm_mappages`/`vm_unmappages` 的映射/解映射流程。
 
-页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。其中**页表写入**是最关键的操作：
+页错误处理是 direct map 统一性的"压力测试"——它同时涉及 CoW 复制、页表写入、物理页分配，是所有机制的交汇点。其中**物理页访问**是最关键的操作：
 
-**Minix3 的页表写入**需要 `createpde` 临时映射窗口——VM 无法直接访问页表页（它们是物理页），必须请求内核在 VM 的地址空间中临时映射一个物理页，写入页表项后再释放：
-
-```
-1. createpde(pt_phys) → 在 VM 地址空间临时映射页表页
-2. 通过临时映射写入页表项
-3. 释放临时映射
-```
-
-**Direct Map 的页表写入**只需一步：
+**Minix3 (32位) 的物理页访问**受限于 VM 的 32 位虚拟地址空间：无法预先映射全部物理内存。当需要访问一个尚未在 VM 地址空间中映射的物理页时（如 CoW 复制用户数据、零化新分配的匿名页），`vm_mappages()` 必须在 VM 自己的地址空间中 `findhole()` 找空闲区域 → `pt_writemap()` 写入 VM 自己的页表项 → 操作完毕 → `vm_unmappages()` 解除映射：
 
 ```
-1. vm_phys_to_virt(pt_phys) → 直接获取页表页 VA → 写入页表项
+1. vm_mappages(src_phys, 1)  → findhole() + pt_writemap() 在 VM 地址空间映射源页
+2. vm_mappages(dst_phys, 1)  → findhole() + pt_writemap() 在 VM 地址空间映射目标页
+3. copy_nonoverlapping(src_va, dst_va, PAGE_SIZE)
+4. vm_unmappages(...) → 解除两个临时映射
+```
+
+（注：`createpde` 是 **kernel** 函数（`kernel/arch/i386/memory.c:69`），供 kernel 的 `virtual_copy`/`vm_memset` 使用，VM 自身不使用。VM 使用 `vm_mappages()`（`vm/pagetable.c:295`）管理物理页映射。）
+
+**Direct Map 的物理页访问**只需一步：
+
+```
+1. copy_nonoverlapping(vm_phys_to_virt(src_phys), vm_phys_to_virt(dst_phys), PAGE_SIZE)
 ```
 
 **两种方案的对比**：
 
-| 方案 | 页表写入方式 | 复杂度来源 |
+| 方案 | 物理页访问方式 | 复杂度来源 |
 |------|------------|-----------|
-| Minix3（createpde） | 建临时映射 → 写入 → 释放临时映射 | VM 无法直接访问物理页 |
-| Direct Map | `vm_phys_to_virt()` → 直接写入 | 物理页天然有 VA |
+| Minix3 (vm_mappages) | findhole → 映射 → 操作 → unmap | VM 32位地址空间无法永久映射全部物理内存 |
+| Direct Map | `vm_phys_to_virt()` → 直接操作 | 所有物理页天然有 VA |
 
-读者应感受到：**页错误处理中"写入页表项"是 direct map 统一性的关键验证**——如果这个最复杂的操作都能被 `vm_phys_to_virt()` 一步解决，那么 direct map 的统一性就是经得起考验的。这与 16-vm-fork.md §2.8.5 的 fork 页表创建简化是同一个模式——`createpde` 的消失不是"去掉了临时映射步骤"，而是"VM 不再需要内核作为物理页访问的中介"。
+这与 16-vm-fork.md §3.2 的 fork 页表创建简化是同一个模式——`vm_mappages`/`vm_unmappages` 的消失不是"去掉了映射步骤"，而是"VM 不再受 32 位地址空间限制，所有物理页在 64 位 direct map 中永久可访问"。
 
 ### 3.2 与 memtype 的集成
 
@@ -1979,7 +1982,7 @@ pub(crate) fn alloc_and_map(
 | `sys_abscopy(old, new, PAGE_SIZE)` | `copy_nonoverlapping(vm_phys_to_virt(old), vm_phys_to_virt(new), PAGE_SIZE)` | Direct Map 替代内核系统调用 |
 | `map_ph_writept(vmp, vr, pr)` | 调用者负责 `pt_writemap` | 页表更新推迟到调用者 |
 
-> **异步回调**: Minix3 的 `pf_cont` / `handle_memory_continue` 异步回调机制尚未实现。当前 `PagefaultAction` 不包含 `Suspend` 变体。VFS 就绪后需实现（见 [19-cow-exec-pagefault.md](19-cow-exec-pagefault.md)）。
+> **异步回调**: Minix3 的 `pf_cont` / `handle_memory_continue` 异步回调机制尚未实现。当前 `PagefaultAction` 不包含 `Suspend` 变体。VFS 就绪后需实现（异步回调设计方案见 [23-vfs-interaction.md](23-vfs-interaction.md) §3.1）。
 
 **消息循环集成**（调用者示例）
 
@@ -2417,18 +2420,12 @@ impl MemType for MappedFile {
         offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // TODO(P0): Minix3's mappedfile_pagefault implements CoW for file-mapped pages
-        // (cow_block path): when refcount > 1 and write=true, it calls cow_block()
-        // to create a private anonymous copy. Currently we only return NeedNewPage
-        // for unmapped pages, missing the CoW case for shared file-mapped pages.
-        //
+        // MappedFile::ev_pagefault 完整设计见 23-vfs-interaction.md §4.7
         // Minix3 的 mappedfile_pagefault 有两种情况:
-        //   phys == MAP_NONE → 从 VM cache 查找或异步请求 VFS 加载 → SUSPEND
-        //   phys != MAP_NONE && write → cow_block() → 写时复制为匿名页
-        //
-        // 当前实现仅返回 NeedNewPage（覆盖首次访问），
-        // 缺失: VFS 异步加载 和 CoW cow_block 路径。
-        Ok(PagefaultResult::NeedNewPage)
+        //   phys == MAP_NONE → 缓存查找或 NeedVfsIo（异步 VFS 加载）
+        //   phys != MAP_NONE && write → NeedCow（cow_block 写时复制）
+        //   phys != MAP_NONE && !write → Handled
+        Ok(PagefaultResult::NeedVfsIo)
     }
 }
 ```

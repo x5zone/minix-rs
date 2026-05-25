@@ -1180,20 +1180,26 @@ pub(crate) fn cow_copy_page(
 
 ### 4.5 内核通知
 
-`sys_fork` 通知内核创建子进程的调度实体。当前为 stub 实现，假设永远成功。
+`sys_fork` 通知内核创建子进程的调度实体。实现采用 `#[cfg(test)]`/`#[cfg(not(test))]` 分版本：测试中返回一个有效的假 endpoint，生产代码中使用 `todo!()` 显式标记未实现。
 
 ```rust
-// 通知内核创建子进程（stub，TODO: 实现内核 IPC）
+// 通知内核创建子进程
+// 测试版本：返回有效的假 endpoint 供 fork 测试使用
+#[cfg(test)]
+fn sys_fork(_parent_endpoint: Endpoint, child_slot: UserSlot) -> Endpoint {
+    Endpoint::from_generation_slot(1, child_slot.get() as i32)
+}
+
+// 生产版本：标记为未实现（发送 SYS_FORK 消息给内核）
+#[cfg(not(test))]
 fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
-    // TODO: 发送 SYS_FORK 消息给内核，接收子进程 endpoint
-    // Minix3 签名：sys_fork(parent_ep, child_slot, &child_ep, PFF_VMINHIBIT, &msgaddr)
-    Endpoint::from_generation_slot(1, _child_slot.get() as i32)
+    todo!("sys_fork: send SYS_FORK message to kernel and receive child endpoint")
 }
 ```
 
 > 内核侧 `sys_fork` 的完整处理流程（消息字段、proc 结构体复制、调度状态设置、endpoint 生成方式）见 §2.7.3。
 
-**不可回滚**：`sys_fork` 成功后内核已创建子进程，系统状态不可逆，因此失败时 panic。这与 Minix3 的 `panic("VM: do_fork can't sys_fork")` 语义一致。
+**不可回滚**：`sys_fork` 成功后内核已创建子进程，系统状态不可逆，因此失败时 panic。这与 Minix3 的 `panic("VM: do_fork can't sys_fork")` 语义一致。分版本的原因：测试版本需要 `sys_fork` 返回有效的 endpoint 来验证后续 `pt_bind` 和 CoW 逻辑；生产版本使用 `todo!()` 在运行时 panic 而非静默返回错误值。
 
 ### 4.6 页表绑定
 

@@ -1,327 +1,119 @@
 # 00-vm-overview: VM 整体架构概览
 
-> **分类**: VM整体层级  
-> **说明**: 汇总 VM 模块的全局概念、设计原则和跨组件约定
+> **分类**: VM整体层级
+> **源码**: `minix3/minix/servers/vm/`（24 个 .c 文件，198 个 C 函数）
+> **说明**: VM 是什么、怎么工作、和谁协作——一份面向新读者的入口文档
 
 ---
 
-## 1. VM 的双重身份
+## 1. VM 是什么
 
-### 1.1 As Server
-// TODO: VM 作为内存管理服务器，处理 IPC 请求
+### 1.1 先从一个类比开始
 
-### 1.2 As Library
-// TODO: VM 提供的库功能，可被其他组件使用
-
-### 1.3 策略 vs 机制：VM 的本质定位
-
-> **核心原则**: Kernel 提供**机制**，VM 提供**策略**。
-
-VM server 是**独立的用户态进程**，它不直接操作硬件，也不直接访问物理内存。它的角色可以用一个比喻来理解：
-
-> VM 像一个"内存策略引擎"——kernel 告诉它"世界是什么样的"（有哪些物理内存可用），它决定"怎么分配这些内存"（给谁、给多少、何时回收），然后请求 kernel 执行实际的硬件操作。
+VM（Virtual Memory server）是一个**用户态服务进程**。如果你写过 Web Server，VM 的结构会让你感到熟悉：
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    策略 vs 机制分层                            │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Kernel（机制层）                                             │
-│  ├── 解析 UEFI/BIOS 内存 map，发现物理内存                    │
-│  ├── 建立初始页表（恒等映射 + 内核映射）                       │
-│  ├── 执行页表修改（CR3 / TLB 刷新）                           │
-│  ├── 执行物理内存映射（vm_map_phys）                          │
-│  └── 通过 IPC 将内存信息传递给 VM                             │
-│          │                                                   │
-│          │  sys_getkinfo() → kinfo.memmap[]                  │
-│          │  sys_vm_map_phys() → 实际映射                      │
-│          ▼                                                   │
-│  VM Server（策略层）                                          │
-│  ├── 接收 kernel 提供的物理内存描述数据                        │
-│  ├── 决定物理页分配策略（alloc_mem / free_mem）                │
-│  ├── 决定进程地址空间布局（vir_region / CoW）                  │
-│  ├── 决定页错误处理策略（按需分配 / swap）                     │
-│  └── 请求 kernel 执行特权操作                                 │
-│          │                                                   │
-│          │  VM_FORK / VM_BRK / VM_MAP                        │
-│          ▼                                                   │
-│  用户进程                                                     │
-│  └── 通过系统调用请求内存服务                                  │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+Web Server                          VM Server
+─────────                          ────────
+监听 HTTP 请求                    监听 IPC 消息（VM_FORK, VM_BRK, VM_MMAP...）
+路由到 handler                    按消息类型分派到 do_xxx()
+操作数据库                        操作页表、物理内存、虚拟区域
+返回 JSON 响应                    返回 errno + 消息体
+单线程事件循环                    单线程事件循环
 ```
 
-**VM 能做什么**:
-- ✅ 管理物理页的分配策略（位图 / free list）
-- ✅ 管理进程的虚拟地址空间布局
-- ✅ 决定 CoW / 按需分配等策略
-- ✅ 通过 IPC 请求 kernel 执行特权操作
+和 Web Server 一样，VM 的核心业务逻辑就是**处理数据、响应请求**。只不过 VM 处理的是**物理页、页表、虚拟地址区域**而不是 JSON 和数据库。
 
-**VM 不能做什么**:
-- ❌ 直接操作页表硬件（CR3 / TLB）
-- ❌ 直接访问物理内存地址
-- ❌ 探测物理内存（UEFI / e820）
-- ❌ 处理中断 / 异常（由 kernel 转发）
+VM 不直接操作硬件。它看不到真正的物理内存——kernel 通过 IPC 传给它一组 `{ base, size }` 的描述数据，VM 在这些数据之上做决策：谁该得到多少内存、什么时候回收、页面之间怎么共享。
 
-**关键洞察**: VM 看到的"物理内存"只是 kernel 传递给它的**数据描述**（`PhysRegion { base, size }`），而非物理内存本身。VM 管理的是这些描述数据的策略，实际的硬件操作全部由 kernel 执行。
+### 1.2 VM 在 Minix3 微内核中的位置
 
-### 1.4 架构位置
-
-VM 在 Minix3 微内核架构中的位置：
+Minix3 是一个微内核操作系统。传统单体内核中的内存管理子系统被拆成了**两个独立进程**：
 
 ```
-用户进程 ←→ 内核 ←→ VM (管理 vmproc) ←→ PM (管理进程生命周期)
-                ↓
-            页表、物理内存、区域管理
+┌──────────────────────────────────────────────────────┐
+│                  用户进程层                            │
+│           (应用程序、Shell 等)                         │
+├──────────────────────────────────────────────────────┤
+│                  系统服务层（用户态）                   │
+│   ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐               │
+│   │  PM  │ │  VM  │ │ VFS  │ │  RS  │ ...           │
+│   └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘               │
+├──────┼────────┼────────┼────────┼───────────────────┤
+│      └────────┴────────┴────────┘                    │
+│                   微内核层（内核态）                    │
+│     (进程调度、中断处理、页错误捕获、IPC 机制)          │
+└──────────────────────────────────────────────────────┘
 ```
 
-**协作关系**:
-- **PM (Process Manager)**: 负责逻辑进程状态（pid、信号、调度等）
-- **VM (Virtual Memory)**: 负责内存相关状态（页表、虚拟区域、物理内存等）
-- **内核**: 捕获页错误，转发给 VM 处理；提供底层内存管理原语
-
-**数据流**:
-1. 用户进程发起内存相关系统调用（如 fork、brk、mmap）
-2. 内核捕获并转发给对应服务（PM 或 VM）
-3. PM 处理逻辑状态，必要时调用 VM 处理内存状态
-4. VM 更新页表、区域等数据结构
-5. 返回结果给用户进程
-
----
-
-## 2. VM 在 Minix3 中的职责
-
-### 2.1 微内核架构中的角色
-
-Minix3 采用微内核架构，将传统单体内核的功能拆分为多个用户态服务：
-
-```
-┌─────────────────────────────────────────┐
-│              用户进程层                  │
-│         (应用程序、Shell 等)              │
-├─────────────────────────────────────────┤
-│              系统服务层                  │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐       │
-│  │ PM  │ │ VM  │ │ VFS │ │ RS  │ ...   │
-│  └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘       │
-├─────┼───────┼───────┼───────┼──────────┤
-│     └───────┴───────┴───────┘          │
-│              微内核层                    │
-│    (进程调度、中断处理、IPC 机制)         │
-└─────────────────────────────────────────┘
-```
-
-**VM 的核心职责**:
-- 管理进程的虚拟地址空间
+VM 的核心职责：
+- 管理每个进程的虚拟地址空间
 - 分配和回收物理内存
 - 处理页错误（Page Fault）
 - 实现写时复制（Copy-on-Write）
 - 提供内存映射（mmap）服务
 
-### 2.2 与其他服务的关系
+### 1.3 策略 vs 机制：VM 的本质定位
 
-#### 2.2.1 与 PM 的协作
-- **进程创建**: PM 决定创建进程，VM 复制内存空间
-- **进程退出**: PM 通知 VM 清理内存资源
-- **进程查找**: PM 和 VM 使用相同的 slot 号标识进程
+> **核心原则**: Kernel 提供**机制**，VM 提供**策略**。
 
-#### 2.2.2 与 VFS 的协作
-- **文件映射**: VFS 提供文件信息，VM 建立内存映射
-- **页缓存**: VM 管理文件数据的内存缓存
-
-#### 2.2.3 与内核的协作
-- **页错误**: 内核捕获页错误，转发给 VM
-- **系统调用**: 内核将内存相关系统调用路由到 VM
-- **特权操作**: VM 通过系统调用请求内核执行特权操作
-
-### 2.3 启动阶段物理内存初始化
-
-> 本节描述从硬件启动到 VM 开始管理物理内存的完整链路。这是理解"VM 的物理内存从哪来"的关键背景。
-
-**与单体内核的区别**: 在 Linux/xv6 等单体内核中，物理内存的发现（UEFI/e820）和管理（buddy allocator）在同一个执行主体中完成。在 Minix3 微内核中，这条链路被拆分到 kernel 和 VM 两个不同的执行主体中，中间通过 IPC 传递信息。
-
-#### 2.3.1 完整初始化链路
+VM 是一个策略引擎。Kernel 告诉它"世界是什么样的"，它决定"怎么分配"，然后请求 Kernel 执行实际的硬件操作。
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    物理内存初始化的四个阶段                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  阶段 1: Kernel 获取内存 map（pre_init）                             │
-│  ─────────────────────────────────────                               │
-│  Bootloader (GRUB)                                                  │
-│    │  multiboot_info_t（ebx 寄存器）                                 │
-│    │  ├── MULTIBOOT_INFO_HAS_MMAP → 完整内存 map                    │
-│    │  └── mi_mem_lower / mi_mem_upper → 基本内存大小                 │
-│    ▼                                                                │
-│  pre_init() → get_parameters()                                      │
-│    │  遍历 multiboot_memory_map_t                                   │
-│    │  只保留 MULTIBOOT_MEMORY_AVAILABLE 的区域                       │
-│    │  add_memmap(cbi, base, length)                                 │
-│    │  cut_memmap() 扣除 kernel 自身 + boot modules 占用              │
-│    ▼                                                                │
-│  kinfo.memmap[]  ←  可用物理内存区域列表                             │
-│                                                                     │
-│  阶段 2: Kernel 建立恒等映射（pre_init）                             │
-│  ─────────────────────────────────────                               │
-│  pg_identity(&kinfo)    ← 4MB 大页恒等映射：VA = PA                  │
-│  pg_mapkernel()         ← 映射内核到高地址                           │
-│  pg_load() + vm_enable_paging()  ← 开启分页                         │
-│                                                                     │
-│  阶段 3: VM 通过 IPC 获取内存 map（vm/main.c）                       │
-│  ─────────────────────────────────────                               │
-│  sys_getkinfo(&kernel_boot_info)  ← IPC 请求 kernel 拷贝 kinfo      │
-│  get_mem_chunks(mem_chunks)        ← 转换为 click 单位               │
-│                                                                     │
-│  阶段 4: VM 初始化物理内存管理器（vm/alloc.c）                        │
-│  ─────────────────────────────────────                               │
-│  mem_init(mem_chunks)              ← 初始化空闲页位图                 │
-│  → 详见 [04-physical-memory.md](04-physical-memory.md)              │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+策略层（VM Server — 用户态）
+├── 接收 kernel 的物理内存描述数据
+├── 决定分配策略（给谁、给多少、何时回收）
+├── 决定地址空间布局（虚拟区域、CoW、页错误处理）
+└── 请求 kernel 执行特权操作
+
+机制层（Kernel — 内核态）
+├── 解析 UEFI/BIOS 内存 map，发现物理内存
+├── 建立初始页表（恒等映射 + 内核映射）
+├── 执行页表修改、TLB 刷新
+└── 通过 IPC 将内存信息传递给 VM
 ```
 
-#### 2.3.2 各阶段源码位置
+**VM 能做什么**:
+- 管理物理页的分配策略（位图 / free list / buddy）
+- 管理进程的虚拟地址空间布局
+- 决定 CoW / 按需分配等策略
+- 通过 IPC 请求 kernel 执行特权操作
 
-| 阶段 | 代码位置 | 关键函数 |
+**VM 不能做什么**:
+- 直接操作页表硬件 — CR3/TLB 等是 x86-64 特定概念，Rust 的 `Paging` trait 抽象了这些硬件细节。上层代码通过 `trait` 方法（`map()`, `unmap()`, `query()`）操作页表，不感知底层寄存器编码。各架构在独立的 `arch` crate 中实现 trait
+- 直接访问物理内存地址 — 通过 `vm_phys_to_virt()` / Direct Map 间接访问
+- 探测物理内存 — 这是 UEFI/e820 的职责
+- 处理中断/异常 — 由 kernel 转发
+
+### 1.4 执行模型：单线程事件循环
+
+VM 是一个**单线程**进程。主循环（`run()`）独占 `&mut self`，每次处理一条 IPC 消息。这意味着：
+
+- `Rc` 替代 `Arc`（无跨线程共享）
+- `RefCell` 替代 `Mutex`（无并发访问）
+- `!Send` / `!Sync` 是合理的（数据不跨线程）
+- `AssumeSyncCell` 在单线程下安全
+
+这条假设贯穿整个 VM 代码库。如果未来需要多线程，需要重构状态管理。
+
+### 1.5 协作关系
+
+| 服务 | 协作方式 | 典型场景 |
 |------|---------|---------|
-| 1. 解析 Multiboot | [pre_init.c](minix3/minix/kernel/arch/i386/pre_init.c) | `get_parameters()`, `add_memmap()`, `cut_memmap()` |
-| 2. 恒等映射 | [pg_utils.c](minix3/minix/kernel/arch/i386/pg_utils.c) | `pg_identity()`, `pg_mapkernel()`, `vm_enable_paging()` |
-| 3. VM 获取内存信息 | [main.c](minix3/minix/servers/vm/main.c), [utility.c](minix3/minix/servers/vm/utility.c) | `sys_getkinfo()`, `get_mem_chunks()` |
-| 4. VM 初始化分配器 | [alloc.c](minix3/minix/servers/vm/alloc.c) | `mem_init()` |
-
-#### 2.3.3 数据流转
-
-```
-Multiboot (GRUB)
-    │
-    │  multiboot_info_t
-    ▼
-kernel: kinfo.memmap[NR_MEMS]          ← 阶段 1 产出
-    │    (multiboot_memory_map_t[])
-    │    已扣除: kernel, boot modules, BIOS 保留区
-    │
-    │  sys_getkinfo() IPC
-    ▼
-VM: kernel_boot_info.memmap[]          ← 阶段 3 产出
-    │
-    │  get_mem_chunks() 转换
-    ▼
-VM: mem_chunks[NR_MEMS]               ← click 单位的内存块
-    │    (struct memory { base, size })
-    │
-    │  mem_init() 初始化
-    ▼
-VM: free_pages_bitmap[]               ← 阶段 4 产出
-       位图：1 bit = 1 page (4KB)
-```
-
-**关键点**: VM 从未直接接触 UEFI/BIOS 或物理硬件。它看到的"物理内存"只是 kernel 通过 IPC 传递的**数据描述**——一组 `{ base, size }` 结构体。VM 在此基础上构建自己的管理策略。
-
-### 2.4 VM 初始化顺序与堆可用时机
-
-> **核心问题**: VM 是系统的内存分配器，它自己什么时候可以使用堆？
-
-#### 2.4.1 完整初始化时序
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    VM 初始化时序与堆可用性                            │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  阶段 0: 内核启动 VM 进程                                            │
-│  ─────────────────────────                                          │
-│  ├── 创建初始页表（映射代码段、数据段、栈）                           │
-│  ├── BSS 段清零（包括 static_sparepages[STATIC_SPAREPAGES 页]）     │
-│  └── 堆状态: ❌ 不可用（只能使用栈和静态变量）                        │
-│                                                                     │
-│  阶段 1: init_vm() 开始                                             │
-│  ─────────────────────────                                          │
-│  ├── sys_getkinfo(&kernel_boot_info)  ← IPC 获取内核信息            │
-│  ├── get_mem_chunks(mem_chunks)       ← 转换为 click 单位           │
-│  ├── memset(vmproc, 0)                ← 清零进程表                  │
-│  │     → 对应文档: 01-vmproc-struct, 02-vmproc-table               │
-│  ├── acl_init()                       ← ACL 初始化                  │
-│  │     → 对应文档: 03-acl                                           │
-│  └── 堆状态: ❌ 不可用                                               │
-│                                                                     │
-│  阶段 2: mem_init(mem_chunks)                                       │
-│  ─────────────────────────                                          │
-│  ├── 初始化 free_pages_bitmap[]       ← 物理内存分配器              │
-│  │     → 对应文档: 04-physical-memory                               │
-│  ├── alloc_mem() 可用                 ← 可以分配物理页              │
-│  └── 堆状态: ❌ 仍不可用（_brk 尚未就绪）                            │
-│                                                                     │
-│  阶段 3: pt_init()                                                  │
-│  ─────────────────────────                                          │
-│  ├── 初始化 VM 自己的页表                                            │
-│  │     → 对应文档: 06-pagetable-struct, 07-pagetable-ops            │
-│  ├── 创建保留页池（spare_pagequeue）                                │
-│  │     → 对应文档: 05-vm-allocpage                                  │
-│  ├── _brk() 可用                      ← VM 可以扩展自己的堆         │
-│  └── 堆状态: ✅ 可用！Box/Vec 等 GlobalAlloc 可用                   │
-│                                                                     │
-│  阶段 4: init_vm() 返回后                                           │
-│  ─────────────────────────                                          │
-│  ├── sef_local_startup()              ← SEF 框架初始化              │
-│  ├── 主循环开始                        ← 处理 IPC 请求               │
-│  │     → 对应文档: 10-phys-pagestate ~ 18-vm-map                        │
-│  └── 堆状态: ✅ 完全可用                                             │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.4.2 关键边界：pt_init()
-
-```
-                    pt_init() 是分界线
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-   堆不可用            堆开始可用          堆完全可用
-        │                  │                  │
-   只能用:            可以用:            可以用:
-   - 静态变量         - _brk()           - GlobalAlloc
-   - 栈变量           - alloc_mem()      - Box/Vec 等
-   - BSS 段           - 保留页池         - alloc_phys()
-```
-
-#### 2.4.3 各组件的堆依赖
-
-| 组件 | 初始化时机 | 堆依赖 | 说明 |
-|------|-----------|--------|------|
-| vmproc 结构体 | `memset(vmproc, 0)` | ❌ 无 | 静态数组 |
-| vmproc 表 | `memset(vmproc, 0)` | ❌ 无 | 静态数组 |
-| ACL | `acl_init()` | ❌ 无 | 静态数据 |
-| 物理内存分配器 | `mem_init()` | ❌ **禁止** | 必须静态分配 |
-| 页表结构 | `pt_init()` | ⚠️ 保留页 | 使用保留页池 |
-| 保留页池 | `pt_init()` | ❌ 无 | BSS 段静态内存 |
-| 虚拟区域 | 运行时 | ✅ 可用 | fork/mmap 时 |
-| Slab 分配器 | 运行时 | ✅ 可用 | 通过 GlobalAlloc |
-| IPC 处理 | 运行时 | ✅ 可用 | 处理请求时 |
-
-#### 2.4.4 Rust 实现约束
-
-> 以下约束基于 §2.4.3 的堆依赖分析，指导 Rust 实现中各阶段可用的类型。
-
-**阶段 1-2（堆不可用）**：不能使用 `Vec`, `Box`, `String` 等 heap 类型，必须使用静态数组或栈分配，`BitmapAllocator` 的 bitmap 必须静态分配。
-
-**阶段 3（堆开始可用）**：可以使用 `_brk()` 扩展堆，可以使用保留页池分配关键结构，页表操作需要使用保留页池。
-
-**阶段 4（堆完全可用）**：可以自由使用 `Vec`, `Box` 等，通过 `#[global_allocator]` 对接 `VmPageAllocator`，IPC 处理、区域管理等可以使用堆。
-
-> **详见**: [05-vm-allocpage.md](05-vm-allocpage.md) §2.4 - VM 堆初始化与保留页池的完整分析。
+| **PM** (Process Manager) | PM 分配 slot，VM 复制/清理内存 | fork、exit |
+| **VFS** (Virtual File System) | VFS 提供文件信息，VM 建立内存映射 | mmap 文件、缺页 I/O |
+| **RS** (Reincarnation Server) | RS 管理服务生命周期，VM 注册 ACL | 启动握手、Live Update（暂不实现） |
+| **Kernel** | 捕获页错误→转发 VM；VM 请求 kernel 执行特权操作 | pagefault、sys_vmctl |
 
 ---
 
-## 3. 文档导航：主线叙事与补全路径
+## 2. 文档导航：01~26 的叙事逻辑
 
-### 3.1 叙事策略：以 fork 系统调用为主线
+VM 涉及的概念极多——物理内存、页表、虚拟区域、CoW、页错误、mmap...如果平铺直叙地逐个介绍，读者容易迷失在概念海洋中。
 
-VM Server 涉及的概念极多——物理内存、页表、虚拟区域、CoW、页错误、mmap……如果平铺直叙地逐个介绍，读者容易迷失在概念海洋中。
+因此，01~19 采用**单一主线叙事**：跟随 `fork` 系统调用的执行路径，按需引入每个概念。fork 是最复杂的内存操作之一，它几乎触及 VM 的所有核心组件。
 
-因此，01-19 采用**单一主线叙事**：跟随 `fork` 系统调用的执行路径，按需引入每个概念。fork 是最复杂的内存操作之一，它几乎触及 VM 的所有核心组件：
+### 2.1 01~19：fork 主线
 
 ```
 fork 请求到达
@@ -330,155 +122,105 @@ fork 请求到达
   ├── 需要权限检查 → 03 ACL
   ├── 需要分配物理页 → 04 物理内存 / 05 页分配
   ├── 需要页表 → 06 页表结构 / 07 页表操作
-  ├── 需要内核堆 → 08 slab 分配器
-  ├── 需要搬迁元数据 → 09 VM 重定位
-  ├── 需要物理块 → 10 PhysBlock / 11 MemType / 14 PhysRegion
-  ├── 需要虚拟区域 → 12 VirRegion / 13 AVL 树
-  ├── 需要写时复制 → 15 CoW 机制
-  ├── 需要页错误 → 16 页错误处理
-  ├── 执行 fork → 17 VM Fork
-  ├── 需要堆扩展 → 18 brk
-  └── 需要内存映射 → 19 mmap
+  ├── 需要内核堆 → 08 slab 分配器 / 09 VM 重定位
+  ├── 需要物理块/区域 → 10 PhysBlock / 11 MemType / 12 VirRegion / 13 AVL
+  ├── 需要写时复制 → 14 CoW 机制 / 15 页错误处理
+  ├── 执行 fork → 16 VM_FORK
+  ├── 需要堆扩展 → 17 VM_BRK
+  └── 需要内存映射 → 18 VM_MMAP / 19 VM_MUNMAP
 ```
 
-**核心思路**：每个文档只在 fork 需要它时才出现，读者始终知道"为什么现在要学这个"。
+| 编号 | 文档 | 主线角色 |
+|------|------|---------|
+| 01 | [vmproc-struct](01-vmproc-struct.md) | fork 的目标：进程在 VM 中的表示 |
+| 02 | [vmproc-table](02-vmproc-table.md) | fork 需要查找/分配进程槽 |
+| 03 | [acl](03-acl.md) | fork 需要权限检查 |
+| 04 | [physical-memory](04-physical-memory.md) | fork 需要分配物理页 |
+| 05 | [vm-allocpage](05-vm-allocpage.md) | fork 需要页分配器 |
+| 06 | [pagetable-struct](06-pagetable-struct.md) | fork 需要创建子进程页表 |
+| 07 | [pagetable-ops](07-pagetable-ops.md) | fork 需要操作页表 |
+| 08 | [slab-allocator](08-slab-allocator.md) | VM 内部使用的堆分配器 |
+| 09 | [vm-relocation](09-vm-relocation.md) | fork 前需完成元数据搬迁 |
+| 10 | [phys-pagestate](10-phys-pagestate.md) | fork 的 CoW 需要物理块引用计数 |
+| 11 | [region-mapping](11-region-mapping.md) | fork 需要复制虚拟区域和物理映射 |
+| 12 | [memtype](12-memtype.md) | fork 需要知道内存类型语义 |
+| 13 | [region-avl](13-region-avl.md) | fork 的区域查找需要 AVL 树 |
+| 14 | [cow-mechanism](14-cow-mechanism.md) | fork 设置 CoW 保护 |
+| 15 | [pagefault](15-pagefault.md) | CoW 页面写入时触发页错误 |
+| 16 | [vm-fork](16-vm-fork.md) | fork 的完整执行流程 |
+| 17 | [vm-brk](17-vm-brk.md) | fork 后子进程可能扩展堆 |
+| 18 | [vm-mmap](18-vm-mmap.md) | fork 后可能 mmap |
+| 19 | [vm-munmap](19-vm-munmap.md) | 取消映射 |
 
-### 3.2 01-19：fork 主线（已完成）
+### 2.2 20~26：补全阶段
 
-fork 主线构建了 VM 的**完整骨架**——所有核心数据结构和抽象层都已建立。以下是各文档在主线中的角色：
+fork 主线完成后，VM 的主体框架已经建立。剩余内容是在已有骨架上填充：
 
-| 编号 | 文档 | 主线角色 | 引入的核心抽象 |
-|------|------|---------|--------------|
-| 01 | vmproc-struct | fork 的目标：进程在 VM 中的表示 | `VmProc` 结构体 |
-| 02 | vmproc-table | fork 需要查找/分配进程槽 | 进程表、slot/endpoint |
-| 03 | acl | fork 需要权限检查 | ACL 位图 |
-| 04 | physical-memory | fork 需要分配物理页 | `PhysAllocator` trait |
-| 05 | vm-allocpage | fork 需要页分配器 | `VmPageAllocator`（ReservedRegion 已删除） |
-| 06 | pagetable-struct | fork 需要创建子进程页表 | `Paging` trait、`DirectMapArch` |
-| 07 | pagetable-ops | fork 需要操作页表 | `map`/`unmap`/`remap`/`query` |
-| 08 | slab-allocator | fork 使用的堆分配器 | Slab 分配器 |
-| 09 | vm-relocation | fork 前需完成元数据搬迁 | 重定位接口 |
-| 10 | phys-block | fork 的 CoW 需要物理块引用计数 | `PhysBlock`、引用计数 |
-| 11 | memtype | fork 需要知道内存类型语义 | `MemType` trait |
-| 12 | vir-region | fork 需要复制虚拟区域 | `VirRegion`、AVL 树 |
-| 13 | region-avl | fork 的区域查找需要 AVL | AVL 平衡树操作 |
-| 14 | phys-region | fork 需要链接物理区域到物理块 | `PhysRegion` |
-| 15 | cow-mechanism | fork 设置 CoW 保护 | CoW 标记、页表只读 |
-| 16 | pagefault | CoW 页面写入时触发页错误 | 页错误解析 |
-| 17 | vm-fork | fork 的完整执行流程 | `do_fork()` |
-| 18 | vm-brk | fork 后子进程可能扩展堆 | `do_brk()` |
-| 19 | vm-map | fork 后可能 mmap | `do_mmap()` |
-
-### 3.3 20-27：补全阶段（fork 主线完成后）
-
-fork 主线完成后，VM 的主体框架已经建立。剩余内容是**在已有骨架上填充操作**——不需要再找新的系统调用做主线，直接按功能补全即可。
-
-补全阶段的组织原则是**教学性优先**：每个文档回答读者此刻最想知道的问题，顺着好奇心走。
-
-| 编号 | 文档 | 读者心中的问题 | 覆盖的 Minix3 模块 | 文档结构 |
-|------|------|---------------|-------------------|---------|
-| 20 | cow-exec-pagefault | "写入 CoW 页面时到底怎么复制？" | mem_cow, pt_writemap, map_ph_writept, do_pagefaults | 完整 Ch1-4 |
-| 21 | vm-exit | "fork 的反面——进程怎么退出？" | exit.c, pt_free, map_free_proc | 完整 Ch1-4 |
-| 22 | vm-brk-complete | "brk 完整逻辑是什么？" | real_brk, map_region_extend_upto_v | 完整 Ch1-4 |
-| 23 | vm-munmap | "怎么取消映射？" | do_munmap, map_unmap_region/range, do_map_phys | 完整 Ch1-4 |
-| 24 | vfs-interaction | "VM 怎么和 VFS 对话？" | vfs_request/reply, fdref, mem_file 补全 | 完整 Ch1-4 |
-| 25 | client-alloc-lib | "其他服务器怎么用 VM 分配内存？" | minix_alloc crate 设计 | Ch1-3，Ch4=TODO |
-| 26 | cache-memtypes | "缓存、共享内存、连续内存呢？" | cache.c, mem_cache/shared/contig | 完整 Ch1-4 |
-| 27 | vm-init-main | "所有零件怎么组装启动？" | init_vm, pt_init, SEF, 主循环, 工具函数 | 完整 Ch1-4 |
-
-**补全阶段的叙事线**：
-
-```
-兑现承诺          生命周期闭合       补全接口           走出 VM              变体扩展         回到起点        收尾
-   │                 │                │                  │                   │              │             │
-   ▼                 ▼                ▼                  ▼                   ▼              ▼             ▼
-20 CoW执行       21 进程退出      22 brk补全        24 VFS交互          26 缓存+       27 初始化+     27(续)
-+ 页错误                         23 munmap         + fdref              内存类型       主循环
-                                                  25 客户端内存库
-   │                 │                │                  │                   │              │
-   └─────────────────┴────────────────┴──────────────────┴───────────────────┴──────────────┘
-                                        VM Server 完成
-```
-
-> **遗留逻辑完整清单**: [minix3_missed.md](minix3_missed.md) 对照 Minix3 源码列出了所有尚未实现的函数，20-27 的内容即来源于此。
+| 编号 | 文档 | 覆盖内容 |
+|------|------|---------|
+| 20 | [vm-exit](20-vm-exit.md) | 进程退出：清理页表、释放内存 |
+| 21 | [vm-rs-services](21-vm-rs-services.md) | RS 服务：SET_PRIV、PREPARE、UPDATE、MEMCTL |
+| 22 | [vm-queries](22-vm-queries.md) | 查询服务：GETPHYS、GETREF、INFO、GETRUSAGE |
+| 23 | [vfs-interaction](23-vfs-interaction.md) | VM 与 VFS 的异步对话：文件映射、fd 引用计数 |
+| 24 | [vm-ipc-dispatch](24-vm-ipc-dispatch.md) | IPC 消息分发：MessageDispatcher |
+| 25 | [page-cache](25-page-cache.md) | 页缓存：缓存块、内存类型变体 |
+| 26 | [vm-init-main](26-vm-init-main.md) | 所有零件怎么组装启动：初始化、主循环、SEF |
 
 ---
 
-## 4. VM 全局概念
+## 3. 初始化：VM 怎么启动
 
-### 4.1 进程标识
+### 3.1 "鸡生蛋"问题
 
-#### 4.1.1 vmproc 与进程的关系
-// TODO: 每个进程在 VM 中有一个 vmproc 条目
-
-#### 4.1.2 slot 的概念
-// TODO: 进程表索引，与 endpoint 的关系
-
-### 4.2 内存管理抽象
-
-#### 4.2.1 虚拟地址空间
-// TODO: 每个进程的独立地址空间
-
-#### 4.2.2 物理内存管理
-// TODO: VM 作为物理内存的分配者
-
-#### 4.2.3 页表管理
-// TODO: 两级页表结构
-
-### 4.3 核心数据结构关系
+VM 是系统的内存分配器。但它自己也需要内存来运行。这就是 VM 启动的核心矛盾：
 
 ```
-// TODO: vmproc → page_table → vir_region(AVL) → phys_region → phys_block
+VM 需要内存 → 但内存管理是 VM 的职责 → VM 怎么管理自己的内存？
 ```
 
-### 4.4 全局状态
+答案：**分阶段初始化**。先用内核提供的静态内存，再逐步建立自己的内存管理系统。
 
-VM 服务维护以下全局状态：
+### 3.2 初始化四阶段
 
-| Minix3 C 变量 | Rust 变量 | C 类型 | Rust 类型 | 说明 |
-|------|------|------|------|------|
-| `total_pages` | `TOTAL_PAGES` | `EXTERN int` | `AssumeSyncCell<usize>` | VM 管理的总物理页数 |
-| `num_vm_instances` | `VM_INSTANCE_COUNT` | `EXTERN int` | `AssumeSyncCell<u32>` | 当前 VM 进程实例数 |
-| `kernel_boot_info.boot_procs[]` | `BOOT_INFO` | `struct boot_image[]` | `AssumeSyncCell<[BootImage; NR_BOOT_PROCS]>` | 启动镜像数组 |
+```
+阶段 1: 堆不可用
+├── sys_getkinfo() → 获取内核启动信息
+├── memset(vmproc, 0) → 进程表清零
+├── acl_init() → ACL 初始化
+├── mem_init() → 物理内存分配器
+└── 只能用: 静态变量、栈、BSS
 
-> **架构演进说明**：Minix3 C 源码中 `num_vm_instances` 是普通 `int`（单线程无需原子），Rust 版本使用 `AssumeSyncCell<u32>` 而非 `AtomicU32`，因为 VM 是单线程事件循环模型，不需要原子操作。
+阶段 2: 堆不可用
+├── init_proc(VM) → VM 自身进程槽
+├── pt_init() → 建立页表 + 保留页池
+└── 只能用: 静态变量、栈、BSS
 
-**BootImage 类型**：
+        ─── pt_init() 是分界线 ───
 
-Minix3 C 源码定义（[type.h:148](minix3/minix/include/minix/type.h#L148)）：
-```c
-struct boot_image {
-  int proc_nr;                     /* process number to use */
-  char proc_name[PROC_NAME_LEN];   /* name in process table */
-  endpoint_t endpoint;             /* endpoint number when started */
-  phys_bytes start_addr;           /* Where it's in memory */
-  phys_bytes len;
-};
+阶段 3: 堆可用
+├── __minix_init() → IPC 向量初始化
+├── exec_bootproc() → 为启动进程建立地址空间
+├── CALLMAP 注册 + SEF 启动
+└── 可以用: Box / Vec / GlobalAlloc
+
+阶段 4: 主循环
+├── 接收 IPC 消息
+├── 分派到 do_xxx() handler
+└── 回复 errno
 ```
 
-Rust 实现（定义在 `minix-types` crate，`types/boot.rs`）：
-```rust
-#[derive(Debug, Clone, Copy)]
-pub struct BootImage {
-    pub proc_nr: i32,
-    pub proc_name: [u8; PROC_NAME_LEN],
-    pub endpoint: Endpoint,
-    pub start_addr: u64,
-    pub len: u64,
-}
-```
+### 3.3 各组件的堆依赖
 
-> **架构演进说明**：C 源码中 `start_addr` 和 `len` 类型为 `phys_bytes`（32 位下为 `u32`），Rust 版本使用 `u64` 以支持 64 位物理地址空间。
-
-`BootImage` 是跨服务共享类型，记录系统启动时加载的进程信息。VM 通过 `VmProc.vm_boot: Option<BootImage>` 引用它。
-
-> **TODO**: `BootImage` 的完整文档应归属于 `minix-types` crate 的文档，当前暂放此处。
-
-**VM 实例数说明**（C 源码：[glo.h:46](minix3/minix/servers/vm/glo.h#L46) `num_vm_instances`，[rs.c:230](minix3/minix/servers/vm/rs.c#L230) 限制检查）：
-- 标准启动时为 1（VM 服务自身，[main.c:578](minix3/minix/servers/vm/main.c#L578)）
-- RS（复活服务器）可创建新 VM 实例进行无缝重启
-- 最多支持 2 个实例：1 个旧实例（可能故障）+ 1 个新实例（正在启动）
-- 超过 2 个会因 VM 内部实现限制（页表、内存映射冲突）而返回 `EPERM`（[rs.c:231-233](minix3/minix/servers/vm/rs.c#L231-L233)）
+| 组件 | 文档 | 需要堆？ | 说明 |
+|------|------|---------|------|
+| vmproc 结构体 | 01, 02 | 否 | 编译时静态数组 |
+| ACL | 03 | 否 | 静态位图 |
+| 物理内存分配器 | 04 | **禁止** | bitmap 必须静态分配 |
+| 页表结构 | 06 | 保留页 | 使用 `vm_allocpage()` |
+| 页表操作 | 07 | 保留页 | 使用保留页池 |
+| Slab 分配器 | 08 | 可用 | 通过 `#[global_allocator]` |
+| 虚拟区域 | 11 | 可用 | fork/mmap 时 |
+| IPC 处理 | 24, 26 | 可用 | 主循环中 |
 
 ---
 
@@ -486,410 +228,145 @@ pub struct BootImage {
 
 ### 4.1 地址稳定性
 
-> **原则**: `vmproc` 对象一旦创建，其内存地址必须保持不变。
+`VmProc` 对象一旦创建，其内存地址必须保持不变。页表、区域迭代器等可能持有指向进程的引用，如果地址变化会导致悬空指针。
 
-**原因**:
-- 页表、区域等结构可能持有指向 `vmproc` 的指针
-- 内核的 `pagedir_mappings[]` 数组存储进程到页表的映射
-- IPC 消息处理中通过 slot 快速定位进程
-
-**如果地址变化**:
-- 页表绑定失效，MMU 无法正确转换地址
-- 区域迭代器中的进程指针成为悬空指针
-- 其他服务持有的进程引用失效
-
-**实现保障**:
-- 使用静态数组 `[MaybeUninit<VmProc>; NR_PROCS]`
-- 禁止 move 操作（没有 `Pin`，直接禁止 move 语义）
-- 删除操作只标记为未使用，不收缩数组
+**实现**：使用编译时静态数组 `[AssumeSyncCell<VmProc>; VM_PROC_COUNT]`，禁止 move 语义，删除只标记不收缩。
 
 ### 4.2 Fail-Stop 语义
 
-> **原则**: VM 是核心服务，一旦崩溃系统必须重启，设计需保证崩溃时"干净地死掉"。
+VM 是核心服务（`SF_CORE_SRV`）。VM 崩溃 = 系统必须重启。因此一旦检测到内部不一致，VM 直接 `_exit(1)` ——不执行任何清理操作。如果状态已经损坏，执行清理可能加剧损坏。
 
-**背景**:
-- VM 被标记为 `SF_CORE_SRV`（核心服务）
-- VM 崩溃时 RS（重启动服务）会直接退出，系统必须重启
-- 参考: [manager.c:1121-1123](minix3/minix/servers/rs/manager.c#L1121-L1123)
+**Rust 注意**：普通的 `panic!` 会触发栈展开和 `Drop`，这在 VM 的上下文中是危险的——Drop 可能释放错误的资源、写入损坏的数据。
 
-**为什么需要"干净地死掉"**:
-- 避免崩溃过程中污染系统状态
-- 防止错误的 Drop 操作释放不存在的资源
-- 保证调试信息可靠
+### 4.3 可见性：VM crate 不对外暴露内部类型
 
-**实现策略**:
-- 使用 `MaybeUninit` 避免隐式 Drop
-- panic 时直接终止，不执行栈展开
-- 参考: [panic.c:21-67](minix3/minix/lib/libsys/panic.c#L21-L67) 的用户态 `panic()` 实现
+VM 是独立用户空间进程，没有外部 crate 消费者。VM 通过 IPC 消息（定义在 `minix-types` crate）与 PM、VFS、RS 通信，不需要共享库。
 
-### 4.3 无堆分配
+| 层级 | 可见性 |
+|------|--------|
+| 子模块声明 | `pub(crate) mod` |
+| 类型重导出 | `pub(crate) use` |
+| 内部类型/方法 | `pub(crate)` 或 `pub(super)` |
+| 对外接口 | `pub`（仅 `VmServer::new()`, `init()`, `run()` 三个入口） |
 
-> **原则**: VM 是 `no_std` freestanding 进程，没有 libc，不能使用 `malloc`/`free`。`vmproc` 必须使用静态分配或通过 `#[global_allocator]` 对接 `VmPageAllocator`。
+### 4.4 TOCTOU 防御：Endpoint 验证
 
-**循环依赖问题**（Minix3 C 版本）:
-```
-VM 需要分配内存 → 调用 malloc → malloc 需要内存 → 调用 VM
-```
+PM 和 VM 是独立的地址空间。当 PM 发送 VM_FORK 携带一个 endpoint 时，在消息到达之前那个进程可能已经崩溃退出了。VM 必须用 `vm_isokendpt()` 验证 endpoint 有效性：
 
-**解决方案**:
-- `vmproc` 使用静态数组：`[MaybeUninit<VmProc>; NR_PROCS]`
-- 其他 VM 内部结构使用 Slab 分配器（VM 自己实现的）
-- 物理内存分配通过 `alloc_mem()` 接口，不依赖外部分配器
+- **slot 越界检查**：`ENDPOINT_P(endpoint) < 0 || >= NR_PROCS` → `EINVAL`
+- **generation 不匹配**：slot 被重用后 generation 递增，旧 endpoint 自然失效 → `EDEADEPT`
+- **进程已退出**：`!(vm_flags & VMF_INUSE)` → `EDEADEPT`
 
-**Slab 分配器**:
-- VM 专用的内存分配器
-- 仅用于 VM 内部，不对外提供服务
-- 详见: [08-slab-allocator.md](08-slab-allocator.md)
-
-### 4.4 引用计数管理
-// TODO: 物理块的引用计数约定
-
-### 4.5 可见性原则：VM crate 对外不暴露内部类型
-
-> **原则**: VM 是独立用户空间进程，没有外部 crate 消费者。crate 内部最大可见性为 `pub(crate)`。
-
-**架构依据**：
-- VM 与 PM、VFS、RS 等服务进程通过 **IPC 消息**交互，不通过共享库
-- IPC 消息类型（`VmRequest`/`VmResponse`）定义在 `minix-types` crate 中，外部进程使用 `minix-types` 构造消息，而非链接 VM crate
-- VM crate 的所有类型均为内部实现细节，外部无需也不应访问
-
-**当前可见性策略**：
-
-| 层级 | 可见性 | 说明 |
-|------|--------|------|
-| 子模块声明 | `pub(crate) mod` | 所有子模块（`vmproc`、`phys_mem`、`region` 等） |
-| 类型重导出 | `pub(crate) use` | 所有 `use` 重导出 |
-| 内部类型 | `pub(crate) struct/enum/fn` | 所有 struct、enum、方法 |
-| 模块内部 | `pub(super)` / 私有 | 模块树内部更严格的可见性 |
-
-**例外**：无。当前 VM crate 没有任何需要 `pub` 导出的类型。
-
-> **TODO**: 当更多模块就绪后，再次 review 整个 VM crate 的可见性。需确认：
-> - `minix-types` 中的 `VmRequest`/`VmResponse` 是否已覆盖所有 IPC 交互需求
-> - 是否有类型（如错误码、常量）需要提升到 `minix-types` 供外部使用
-> - Kernel 是否需要直接使用 VM 的某些类型（当前通过 IPC 间接访问）
+这是分布式系统中的防御性编程——VM 不信任 PM 提供的任何 endpoint。
 
 ---
 
-## 5. 跨组件约定
+## 5. 错误处理
 
-### 5.1 与 PM 的交互
+### 5.1 错误码
 
-#### 5.1.1 进程生命周期
-// TODO: PM 管理逻辑进程，VM 管理内存
+VM 使用 Minix3 标准 errno，不自行创造错误码：
 
-#### 5.1.2 Fork 协作
-// TODO: PM 分配 slot，VM 复制内存
+| VmError | C errno | 典型场景 |
+|---------|---------|---------|
+| `InvalidEndpoint` | `ESRCH` | mmap 第三方映射失败、getrusage 进程不存在 |
+| `InvalidProcess` | `EINVAL` | fork/brk/exit 的 vm_isokendpt 失败 |
+| `OutOfMemory` | `ENOMEM` | 物理页分配不足 |
+| `PermissionDenied` | `EPERM` | ACL 拒绝、创建 VM 实例过多 |
+| `AccessViolation` | `EACCES` | 写只读页面 |
+| `NotImplemented` | `ENOSYS` | 尚未实现的调用号 |
 
-#### 5.1.3 Exit 协作
-// TODO: PM 通知，VM 清理内存
+### 5.2 panic 策略
 
-### 5.1.4 TOCTOU 与分布式一致性
-
-> **问题**: PM 和 VM 是两个独立的地址空间，如何处理进程生命周期的竞争条件？
-
-**场景分析**:
-
-```
-时间线:
-  T0: PM 决定为进程 A fork 子进程
-  T1: PM 发送 VM_FORK 消息给 VM（携带父进程 endpoint）
-  T2: 进程 A 在消息到达前崩溃退出
-  T3: PM 回收 slot，分配给新进程 B
-  T4: VM 收到 VM_FORK 消息，endpoint 已失效
-```
-
-**如果没有验证机制**:
-- VM 使用旧的 endpoint 查找进程
-- 可能错误地操作进程 B 的内存（slot 已被重用）
-- 导致严重的安全问题
-
-**解决方案 - Endpoint 验证**:
-
-VM 使用 `vm_isokendpt()` 验证 endpoint 有效性（[utility.c:84](minix3/minix/servers/vm/utility.c#L84)）：
-
-```c
-int vm_isokendpt(endpoint_t endpoint, int *procn)
-{
-    *procn = _ENDPOINT_P(endpoint);
-    if(*procn < 0 || *procn >= NR_PROCS)
-        return EINVAL;      // slot 越界
-    if(*procn >= 0 && endpoint != vmproc[*procn].vm_endpoint)
-        return EDEADEPT;    // 端点已失效（slot 被重用，generation 不匹配）
-    if(*procn >= 0 && !(vmproc[*procn].vm_flags & VMF_INUSE))
-        return EDEADEPT;    // 进程已退出
-    return OK;
-}
-```
-
-**设计本质**:
-
-- **分布式一致性**: PM 和 VM 像分布式系统中的节点，需要处理状态不一致
-- **Generation 机制**: endpoint 包含 generation，slot 重用后 generation 递增，旧 endpoint 自然失效
-- **防御性编程**: VM 不信任 PM 提供的 endpoint，必须验证
-
-> 这种验证机制防的不是恶意攻击，而是**时间差（TOCTOU: Time-of-Check to Time-of-Use）**问题。
-
-### 5.2 与 VFS 的交互
-
-#### 5.2.1 文件映射
-// TODO: mmap 文件时的协作
-
-#### 5.2.2 页缓存
-// TODO: 与文件系统缓存的关系
-
-### 5.3 与 Kernel 的交互
-
-#### 5.3.1 页错误处理
-// TODO: 内核捕获页错误，转发给 VM
-
-#### 5.3.2 系统调用转发
-// TODO: 内核将内存相关系统调用转发给 VM
+可恢复的错误返回 `Result`，不可恢复的错误直接 panic。panic 时**不执行栈展开**——栈展开会触发 Drop，而 Drop 在已损坏的状态上可能造成二次破坏。
 
 ---
 
-## 6. 命名约定
+## 6. 全局状态
 
-### 6.1 类型命名
-// TODO: VmProc vs vmproc，Rust 与 C 的对应
+VM 维护以下跨组件共享的全局变量：
 
-### 6.2 函数命名
-// TODO: do_xxx 表示 IPC 处理函数
+| Rust 变量 | C 对应 | 类型 | 说明 |
+|------|------|------|------|
+| `TOTAL_PAGES` | `total_pages` | `AssumeSyncCell<usize>` | VM 管理的总物理页数 |
+| `VM_INSTANCE_COUNT` | `num_vm_instances` | `AssumeSyncCell<u32>` | VM 进程实例数（最多 2） |
+| `BOOT_INFO` | `kernel_boot_info.boot_procs[]` | `AssumeSyncCell<[BootImage; N]>` | 启动镜像数组 |
+| `VM_PROC_TABLE` | `vmproc[]` (BSS) | `[AssumeSyncCell<VmProc>; N]` | 进程表（编译时静态数组） |
 
-### 6.3 常量命名
-// TODO: VM_ 前缀的常量
-
----
-
-## 7. 错误处理策略
-
-### 7.1 错误码约定
-// TODO: 使用 Minix3 标准错误码
-
-### 7.2 panic 策略
-
-VM 作为 Minix3 的核心服务，采用 **Fail-Stop** 语义：
-
-```
-Fail-Stop = 检测到错误 → 立即停止 → 不执行任何副作用
-```
-
-**核心原则**: 宁可让系统停止，也不要让系统处于不确定状态。
-
-**Minix3 用户态 panic 实现**（[panic.c:21-67](minix3/minix/lib/libsys/panic.c#L21-L67)）：
-
-```c
-void panic(const char *fmt, ...)
-{
-    endpoint_t me = NONE;
-    char name[20];
-    /* ... sys_whoami 获取调用者信息 ... */
-    if(sys_whoami(&me, name, sizeof(name), &priv_flags, &init_flags) == OK && me != NONE)
-        printf("%s(%d): panic: ", name, me);
-    else
-        printf("(sys_whoami failed): panic: ");
-    if(fmt) { va_start(args, fmt); vprintf(fmt, args); va_end(args); }
-    else { printf("no message\n"); }
-    printf("\n");
-    util_stacktrace();
-    panic_hook();
-    _exit(1);       /* 直接退出！ */
-    abort();        /* 备用方案 */
-    suicide = (void (*)(void)) -1; suicide();  /* 更激进的自杀 */
-    for(;;) { }     /* 最后手段：死循环 */
-}
-```
-
-**关键特点**：
-- **没有清理操作**！直接 `_exit(1)`
-- **没有资源释放**！不调用任何 cleanup 函数
-- **立即终止**，不执行任何后续代码
-
-**Rust panic 的风险**：
-
-| 特性 | Minix3 panic | Rust panic |
-|------|-------------|------------|
-| **触发后行为** | 打印信息 → `_exit(1)` | 栈展开 → 调用 `Drop` → 终止 |
-| **资源清理** | ❌ 不清理 | ✅ 自动 Drop |
-| **副作用风险** | ✅ 无（直接退出） | ⚠️ Drop 可能出错 |
-
-**问题**：如果对象处于不一致状态，Rust 的 `Drop` 可能释放错误的资源、写入损坏的数据、导致更严重的系统状态污染。
-
-**Minix3 的设计哲学**：一旦检测到内部不一致，系统状态可能已经损坏，**执行任何清理操作都可能加剧损坏**，所以直接 `_exit(1)`。
-
-**VM 是核心服务（SF_CORE_SRV）**：
-
-```c
-// [manager.c:1121-1123](minix3/minix/servers/rs/manager.c#L1121-L1123)
-if ((rp->r_pub->sys_flags & SF_CORE_SRV) && !shutting_down) {
-    printf("core system service died: %s\n", srv_to_string(rp));
-    _exit(1);  // RS 直接退出，系统崩溃
-}
-```
-
-只有非核心服务才能被 RS 重启。VM 崩溃 = 系统崩溃。
-
-**Rust 实现策略**：
-
-```rust
-pub enum VmError {
-    OutOfMemory,        // 致命：VM 状态已损坏
-    PageTableError,
-    ProcessNotFound,    // 非致命：可以继续运行
-    PermissionDenied,   // 非致命
-}
-
-impl VmError {
-    pub fn is_fatal(&self) -> bool {
-        matches!(self, VmError::OutOfMemory)
-    }
-
-    pub fn handle(&self) {
-        log::error!("VM error: {:?}", self);
-        if self.is_fatal() {
-            unsafe { libc::_exit(1) };  // 干净地死掉
-        }
-    }
-}
-```
-
-**panic 时避免污染系统状态**：
-
-```rust
-pub fn safe_operation<F, T>(op: F) -> Result<T, VmError>
-where F: FnOnce() -> Result<T, VmError>,
-{
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(op))
-        .map_err(|_| VmError::InternalError)?
-}
-
-pub unsafe fn force_cleanup() {
-    libc::_exit(1);  // 直接调用 _exit，不执行任何 Drop
-}
-```
-
-> **详见**: [fail-stop.md](../../concepts/fail-stop.md) 的完整 Fail-Stop 语义与 Panic 安全分析。
-
-### 7.3 资源清理
-
-**MaybeUninit 的 panic 安全价值**：
-
-`MaybeUninit` 防止未初始化内存的非法 Drop：
-
-```rust
-// 普通数组会 panic
-let arr: [VmProc; 256] = unsafe { uninitialized() };  // 未定义行为！
-
-// MaybeUninit 明确告诉编译器：这是未初始化的
-let arr: [MaybeUninit<VmProc>; 256] = unsafe { uninitialized() };
-// panic 时不会尝试 Drop 不存在的对象
-```
-
-| 风险 | 没有 MaybeUninit | 有 MaybeUninit |
-|------|------------------|---------------|
-| panic 时 Drop | 释放不存在的物理页 | 安全：未初始化内存不 Drop |
-| 破坏页表 | 可能 | 避免 |
-| 发送错误 IPC | 可能 | 避免 |
-| 调试信息 | 不可靠 | 可靠 |
+`VmProcTable` 是编译时静态数组，通过 `VmProcTable::get_global()` 全局访问。它不在 `VmServer` 结构体中——全局静态让 `MessageDispatcher::dispatch_xxx()` 可以直接访问进程表，无需从 VmServer 参数链层层传递。
 
 ---
 
-## 8. 性能考虑
+## 7. 与其他文档的关系
 
-### 8.1 缓存友好性
-// TODO: 数据结构布局优化
+### 7.1 按堆依赖分类
 
-### 8.2 锁粒度
-// TODO: 并发访问控制
+| 阶段 | 文档 | 堆状态 |
+|------|------|--------|
+| 阶段 1-2 | 01, 02, 03, 04 | 堆不可用——只能静态分配 |
+| 阶段 3 | 05, 06, 07 | 保留页池可用 |
+| 阶段 4 | 08~26 | 堆完全可用 |
 
-### 8.3 快速路径
-// TODO: 常见操作的优化
+### 7.2 由 VM 暴露的全局类型
+
+| 类型 | 定义位置 | 使用 |
+|------|---------|------|
+| `BootImage` | `minix-types` crate | VM 和 PM 共享的启动进程信息 |
+| `VmForkIn` / `VmForkOut` 等 IPC 类型 | `minix-types` crate | VM 与 PM/VFS/RS 的 IPC 协议 |
+| `VmProcTable` | `vmproc/table.rs` | 全局静态进程表 |
+| `VmServer` | `vm_server.rs` | 主循环入口 |
+
+---
+
+## 8. Minix3 未迁移的函数
+
+> 以下 Minix3 C 函数当前既无独立文档覆盖、也无 Rust 实现。
+
+### 8.1 Debug/Sanity — ARCH 不需要
+
+这些函数仅在 `SANITYCHECKS` 编译时生效。Rust 的类型系统、`debug_assert!`、`#[cfg(test)]` 模块可以提供等价或更强的保护。
+
+| 函数 | C 源文件 | 说明 |
+|------|---------|------|
+| `cache_sanitycheck_internal` | cache.c:87 | 缓存一致性检查 |
+| `fdref_sanitycheck` | fdref.c:37 | fd 引用计数一致性检查 |
+| `map_printmap` | region.c:98 | 打印整个区域映射表 |
+| `map_printregion` | region.c:40 | 打印单个区域 |
+| `mem_sanitycheck` | alloc.c:338 | 物理内存分配器一致性检查 |
+| `printregionstats` | region.c:1510 | 区域统计打印 |
+| `pt_sanitycheck` | pagetable.c:130 | 页表结构一致性检查 |
+| `ptestr` | pagetable.c:587 | 页表条目格式化 |
+| `slabstats` | slaballoc.c:504 | Slab 分配器统计打印 |
+| `usedpages_add_f` | alloc.c:509 | 已用页调试计数器 |
+| `usedpages_reset` | alloc.c:501 | 已用页计数器重置 |
+| `rmhash_f` (×2) | cache.c:152-153 | hash 表内部辅助函数 |
+
+> **ARCH 理由**：这些函数不产生外部可观察行为。在 C 中作为手动自检工具存在；在 Rust 中，unused 警告、`debug_assert!`、`#[cfg(test)]` 模块和更强的类型安全提供等价保护。
+
+### 8.2 Live Update — 暂不实现
+
+| 函数 | C 源文件 | 说明 |
+|------|---------|------|
+| `sef_cb_init_vm_multi_lu` | main.c:592 | 多组件 Live Update 回调 |
+
+> **ARCH 理由**：Live Update 需要进程槽交换、状态序列化、IPC 过滤三个子系统协同工作。Rust 版本暂不实现。`rs.rs` 中 `handle_rs_prepare()` / `handle_rs_update()` 已预留 RS 协议入口。详见 [26-vm-init-main.md](26-vm-init-main.md) §9.4。
+
+### 8.3 非 Debug 函数 — 待归属文档
+
+| 函数 | C 源文件 | 行为 | 应归属 |
+|------|---------|------|--------|
+| `is_stack_region` | region.c:1385 | 判断 vir_region 是否为栈区域。C 源码注释明确指出"we do not actually have this information"，仅用于统计目的 | [22-vm-queries.md](22-vm-queries.md) |
+| `get_usage_info_vm` | region.c:1366 | 获取 VM 自身内存使用量，`get_usage_info()` 的内部辅助函数 | [22-vm-queries.md](22-vm-queries.md) |
+| `physregions` | region.c:1546 | 遍历 vir_region 所有 phys_region，统计已映射物理页数 | [11-region-mapping.md](11-region-mapping.md) |
 
 ---
 
 ## 9. 参见
 
-### 9.1 文档阶段分类
-
-> 根据 §2.4 的初始化时序，将文档按堆可用性分类。这对编程和文档阅读有重大意义。
-
-#### 阶段 1-2：堆不可用（Heap-Free）
-
-这些文档对应的代码在 `pt_init()` 之前执行，**不能使用堆**：
-
-| 文档 | 初始化时机 | 堆依赖 | Rust 实现约束 |
-|------|-----------|--------|---------------|
-| [01-vmproc-struct.md](01-vmproc-struct.md) | `memset(vmproc, 0)` | ❌ 无 | 静态数组 `[VmProc; NR_PROCS]` |
-| [02-vmproc-table.md](02-vmproc-table.md) | `memset(vmproc, 0)` | ❌ 无 | 静态数组，`AssumeSyncCell` |
-| [03-acl.md](03-acl.md) | `acl_init()` | ❌ 无 | 静态数据，bitflags |
-| [04-physical-memory.md](04-physical-memory.md) | `mem_init()` | ❌ **禁止** | bitmap 必须静态分配！ |
-
-**Rust 代码检查点**：
-- ❌ 不能使用 `Vec`, `Box`, `String`, `HashMap` 等
-- ✅ 只能使用静态数组、栈变量、`MaybeUninit`
-
-#### 阶段 3：堆开始可用（Heap-Bootstrapping）
-
-这些文档对应的代码在 `pt_init()` 期间执行，**可以使用保留页池**：
-
-| 文档 | 初始化时机 | 堆依赖 | Rust 实现约束 |
-|------|-----------|--------|---------------|
-| [05-vm-allocpage.md](05-vm-allocpage.md) | `pt_init()` | ❌ 无 | 保留页池与自举机制 |
-| [06-pagetable-struct.md](06-pagetable-struct.md) | `pt_init()` | ⚠️ 保留页 | 使用 `vm_allocpage()` |
-| [07-pagetable-ops.md](07-pagetable-ops.md) | `pt_init()` | ⚠️ 保留页 | 页表操作 |
-
-**Rust 代码检查点**：
-- ⚠️ 可以使用 `alloc_mem()` 获取物理页
-- ⚠️ 可以使用保留页池（`vm_getsparepage()`）
-- ❌ 仍不能直接使用 `Vec`, `Box`（`_brk` 刚就绪）
-
-#### 阶段 4：堆完全可用（Heap-Available）
-
-这些文档对应的代码在 `init_vm()` 返回后执行，**可以自由使用堆**：
-
-| 文档 | 运行时机 | 堆依赖 | Rust 实现约束 |
-|------|---------|--------|---------------|
-| [10-phys-pagestate.md](10-phys-pagestate.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
-| [08-slab-allocator.md](08-slab-allocator.md) | 运行时 | ✅ 可用 | 通过 `#[global_allocator]` |
-| [11-region-mapping.md](11-region-mapping.md) | fork/mmap | ✅ 可用 | 可以使用 `Vec` |
-| [12-memtype.md](12-memtype.md) | 运行时 | ✅ 可用 | 可以使用堆 |
-| [13-region-avl.md](13-region-avl.md) | fork/mmap | ✅ 可用 | 可以使用 `Box` |
-| [14-cow-mechanism.md](14-cow-mechanism.md) | 页错误 | ✅ 可用 | 可以使用堆 |
-| [15-pagefault.md](15-pagefault.md) | 页错误 | ✅ 可用 | 可以使用堆 |
-| [16-vm-fork.md](16-vm-fork.md) | IPC | ✅ 可用 | 可以使用堆 |
-| [17-vm-brk.md](17-vm-brk.md) | IPC | ✅ 可用 | 可以使用堆 |
-| [18-vm-map.md](18-vm-map.md) | IPC | ✅ 可用 | 可以使用堆 |
-
-**Rust 代码检查点**：
-- ✅ 可以自由使用 `Vec`, `Box`, `String`, `HashMap` 等
-- ✅ 可以使用 `#[global_allocator]` 对接 `VmPageAllocator`（`Box`, `Vec`, `String` 等）
-
-### 9.2 VM 私有组件
-- [01-vmproc-struct.md](01-vmproc-struct.md) - 进程结构体
-- [02-vmproc-table.md](02-vmproc-table.md) - 进程表管理
-- [03-acl.md](03-acl.md) - 访问控制
-- [08-slab-allocator.md](08-slab-allocator.md) - Slab 分配器
-- [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态
-- [11-region-mapping.md](11-region-mapping.md) - 虚拟区域与页映射
-- [13-region-avl.md](13-region-avl.md) - AVL 树
-- [14-cow-mechanism.md](14-cow-mechanism.md) - 写时复制
-- [15-pagefault.md](15-pagefault.md) - 页错误处理
-
-### 9.3 VM 库组件
-- [04-physical-memory.md](04-physical-memory.md) - 物理内存分配
-- [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
-- [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作
-- [12-memtype.md](12-memtype.md) - 内存类型系统
-
-### 9.4 VM 服务组件
-- [16-vm-fork.md](16-vm-fork.md) - VM_FORK 服务
-- [17-vm-brk.md](17-vm-brk.md) - VM_BRK 服务
-- [18-vm-map.md](18-vm-map.md) - VM_MAP 服务
-
-### 9.5 全局概念
-- [系统核心概念](../../concepts/README.md) - 全局概念文档（Endpoint、IPC 等）
-- [Endpoint 协议](../../concepts/endpoint.md) - 进程标识协议详解
+- [01-vmproc-struct.md](01-vmproc-struct.md) — 进程结构体（入口点）
+- [26-vm-init-main.md](26-vm-init-main.md) — 所有零件怎么组装启动（终结点）
+- [系统核心概念](../../concepts/README.md) — Endpoint、IPC 等全局概念
 
 ---
 
-*分类: VM整体层级 | 本文档汇总 VM 模块的全局概念和约定*
+*分类: VM整体层级*

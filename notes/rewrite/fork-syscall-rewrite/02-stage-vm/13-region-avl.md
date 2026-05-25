@@ -1747,10 +1747,10 @@ BTreeMap 查找:
 ## 7. 参见
 
 - [11-region-mapping.md](11-region-mapping.md) - 区域映射层（vir_region + phys_region）
-- [12-vir-region.md](12-vir-region.md) - vir_region 结构定义
+- [11-region-mapping.md#22-vir_region-结构体](11-region-mapping.md#22-vir_region-结构体) - vir_region 结构定义
 - [15-pagefault.md](15-pagefault.md) - 缺页处理中的区域查找（map_lookup）
 - [16-vm-fork.md](16-vm-fork.md) - fork 时遍历区域映射表
-- [18-vm-map.md](18-vm-map.md) - mmap/munmap 中的区域插入与删除
+- [18-vm-mmap.md](18-vm-mmap.md) - mmap/munmap 中的区域插入与删除
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vmproc 中的 vm_regions 字段
 
 ---

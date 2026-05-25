@@ -37,6 +37,10 @@ pub(crate) fn fork_region(
         mt.ev_copy(src, &mut dst)?;
     }
 
+    if let crate::region::VrParam::File { fdref_id: Some(id), .. } = dst.param {
+        crate::fdref::FdRefTable::get_global().ref_entry(id);
+    }
+
     // Track refcount increments for rollback on error.
     let mut refcounted_pfns: Vec<u32> = Vec::new();
 
@@ -153,6 +157,9 @@ pub(crate) fn do_fork(
     let dst_regions = match fork_regions(&parent_regions, frames) {
         Ok(r) => r,
         Err(e) => {
+            // SAFETY: page table was initialized by init_page_table() above,
+            // and fork_regions failure means no regions were copied into it,
+            // so there are no dangling references.
             unsafe { child.free_page_table(); }
             return Err(e);
         }
@@ -162,12 +169,11 @@ pub(crate) fn do_fork(
         child.regions_mut().insert(*region);
     }
 
-    unsafe {
-        child.setup_cow_for_all_regions(frames);
-    }
-    unsafe {
-        child.write_page_table_mappings(frames);
-    }
+    // SAFETY: child regions were just copied from parent with shared pages.
+    // The page table is freshly created and contains only the pages mapped
+    // during fork_region.
+    unsafe { child.setup_cow_for_all_regions(frames); }
+    unsafe { child.write_page_table_mappings(frames); }
 
     let child_endpoint = sys_fork(parent.endpoint(), child.slot());
     child.set_endpoint(child_endpoint);
@@ -188,12 +194,14 @@ pub(crate) fn do_fork(
 /// Returns the child's new endpoint assigned by the kernel.
 /// On failure, panics — like Minix3, this is irrecoverable because
 /// the kernel may have already created the child process.
+#[cfg(test)]
+fn sys_fork(_parent_endpoint: Endpoint, child_slot: UserSlot) -> Endpoint {
+    Endpoint::from_generation_slot(1, child_slot.get() as i32)
+}
+
+#[cfg(not(test))]
 fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
-    // TODO: implement kernel IPC — send SYS_FORK message to kernel,
-    // receive child endpoint in reply. Minix3 signature:
-    //   sys_fork(parent_ep, child_slot, &child_ep, PFF_VMINHIBIT, &msgaddr)
-    // Currently returns a placeholder endpoint assuming success.
-    Endpoint::from_generation_slot(1, _child_slot.get() as i32)
+    todo!("sys_fork: send SYS_FORK message to kernel and receive child endpoint")
 }
 
 /// Resolve CoW for a single page within a region (fork helper).

@@ -1058,7 +1058,7 @@ if let Some((pfn, mt)) = pending {
 - [05-vm-allocpage.md](05-vm-allocpage.md) — VM 自身内存分配
 - [11-region-mapping.md](11-region-mapping.md) — PageSlot + VirRegion（使用 PageFrames API）
 - [12-memtype.md](12-memtype.md) — MemType trait（ev_unreference 使用 PageFrames）
-- [25-cache-memtypes.md](25-cache-memtypes.md) — 页缓存与 PageState 的交互
+- [25-page-cache.md](25-page-cache.md) — 页缓存与 PageState 的交互
 
 ---
 

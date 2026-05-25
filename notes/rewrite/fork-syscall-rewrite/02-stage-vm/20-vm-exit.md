@@ -10,7 +10,7 @@
 
 ### 1.1 本文档的定位
 
-16-vm-fork 创建进程，19-cow-exec-pagefault 处理运行时 CoW，本文档是生命周期的终点——进程退出时释放所有内存资源。
+16-vm-fork 创建进程，14-cow-mechanism + 15-pagefault 处理运行时 CoW 和页错误，本文档是生命周期的终点——进程退出时释放所有内存资源。
 
 进程退出看似简单（"释放所有东西"），但涉及一个核心问题：**CoW 共享页的正确释放**。fork 后父子进程共享物理页（refcount > 1），退出时不能直接释放物理内存，必须等最后一个引用者退出。这就是引用计数系统的最终兑现——每个 `add_ref()` 都必须对应一个 `release_ref()`。
 
@@ -22,7 +22,7 @@ fork 创建进程
   ├── 页表标记为只读
   │
   ▼  (写入时)
-CoW 执行 (19-cow-exec-pagefault)
+CoW 执行 (14-cow-mechanism + 15-pagefault)
   ├── 分配新页，复制数据
   ├── 旧页 refcount: 2 → 1
   ├── 新页 refcount = 1
@@ -41,9 +41,9 @@ CoW 执行 (19-cow-exec-pagefault)
 
 | 文档 | 关系 |
 |------|------|
-| 10-phys-block | PhysBlock 引用计数是退出的核心机制 |
-| 14-phys-region | `unlink_from_block()` 是退出的核心操作 |
+| 10-phys-pagestate | PhysBlock/PFN 引用计数是退出的核心机制 |
 | 14-cow-mechanism | CoW 设置的 refcount 在退出时被消费 |
+| 15-pagefault | 页错误处理中发现 CoW 条件，退出时释放共享页（最后一页） |
 | 16-vm-fork | fork 创建的共享页在退出时被释放 |
 | 01-vmproc-struct | `VmProc::clear()` 是退出的核心实现 |
 | 02-vmproc-table | typestate 状态转换驱动退出流程 |
@@ -87,10 +87,19 @@ VM: do_exit()
 
 **两阶段设计的原因**：PM 先通知 VM "进程即将退出"（willexit），VM 设置 EXITING 标志。之后 PM 才发送正式的 exit 请求。这个两阶段设计允许 VM 在 EXITING 状态下拒绝新的内存分配请求，防止即将退出的进程继续消耗内存。
 
+**关键依赖 — vm_isokendpt 分析**：`do_willexit` 和 `do_exit` 都依赖 `vm_isokendpt()` 验证 endpoint 有效性（utility.c:84-93）。该函数按以下优先级验证：
+
+1. endpoint→slot 映射：`ENDPOINT_P(endpoint)` 提取 proc 索引
+2. 范围检查：`proc < 0 || proc >= NR_PROCS` → **EINVAL**
+3. endpoint 匹配：`endpoint != vmproc[proc].vm_endpoint` → **EDEADEPT**（endpoint 过期）
+4. IN_USE 检查：`!(vmproc[proc].vm_flags & VMF_INUSE)` → **EDEADEPT**（slot 已空闲）
+
+注意 do_exit 和 do_willexit 对 `vm_isokendpt` 的所有失败返回统一映射为 **EINVAL**（不区分 EINVAL 和 EDEADEPT）。这是 Minix3 的设计选择——在退出路径中，无论 endpoint 无效还是 slot 已释放，都视为同一类"无效请求"错误。Rust 实现中 typestate 在编译时保证 slot 有效性，`table.vm_isokendpt()` 失败时统一映射为 `VmExitError::ProcessNotFound → EINVAL`。
+
 ### 2.2 do_willexit — 预通知
 
 ```c
-/* minix3/minix/servers/vm/exit.c:112 */
+/* minix3/minix/servers/vm/exit.c:100 */
 int do_willexit(message *msg)
 {
     int proc;
@@ -114,7 +123,7 @@ int do_willexit(message *msg)
 ### 2.3 do_exit — 正式退出
 
 ```c
-/* minix3/minix/servers/vm/exit.c:68 */
+/* minix3/minix/servers/vm/exit.c:60 */
 int do_exit(message *msg)
 {
     int proc;
@@ -154,7 +163,7 @@ int do_exit(message *msg)
 ### 2.4 free_proc — 释放内存资源
 
 ```c
-/* minix3/minix/servers/vm/exit.c:28 */
+/* minix3/minix/servers/vm/exit.c:33 */
 void free_proc(struct vmproc *vmp)
 {
     map_free_proc(vmp);           /* 1. 释放所有虚拟区域 */
@@ -174,6 +183,8 @@ void free_proc(struct vmproc *vmp)
 3. **最后重置**：清零统计和区域树
 
 为什么先释放区域再释放页表？因为释放区域时可能需要访问页表（例如 `ev_unreference` 回调可能需要更新页表映射）。但实际上 Minix3 的 `ev_unreference` 只释放物理内存，不操作页表，所以顺序理论上可以互换。但保持"先释放内容，再释放容器"的逻辑更清晰。
+
+**reset_vm_rusage 辅助函数**：该 static 函数（exit.c:25-31）被 `free_proc` 和 `clear_proc` 共同调用，清零以下统计字段：`vm_total`（总分配量）、`vm_total_max`（峰值分配量）、`vm_minor_page_fault`（轻微页错误次数）、`vm_major_page_fault`（严重页错误次数）。在 Rust 中此逻辑被合并到 `VmProc::clear()` 方法中。
 
 ### 2.5 map_free_proc — 释放所有区域
 
@@ -353,7 +364,7 @@ void pt_free(pt_t *pt)
 ### 2.11 clear_proc — 清零进程结构体
 
 ```c
-/* minix3/minix/servers/vm/exit.c:42 */
+/* minix3/minix/servers/vm/exit.c:45 */
 void clear_proc(struct vmproc *vmp)
 {
     region_init(&vmp->vm_regions_avl);
@@ -376,7 +387,7 @@ void clear_proc(struct vmproc *vmp)
 ### 2.12 do_procctl — 进程控制操作
 
 ```c
-/* minix3/minix/servers/vm/exit.c:131 */
+/* minix3/minix/servers/vm/exit.c:117 */
 int do_procctl(message *msg, int transid)
 {
     endpoint_t proc;
@@ -393,7 +404,8 @@ int do_procctl(message *msg, int transid)
             && msg->m_source != VFS_PROC_NR)
             return EPERM;
         free_proc(vmp);               /* 释放内存资源 */
-        pt_new(&vmp->vm_pt);          /* 创建新的空页表 */
+        if(pt_new(&vmp->vm_pt) != OK) /* 创建新的空页表 */
+            panic("VMPPARAM_CLEAR: pt_new failed");
         pt_bind(&vmp->vm_pt, vmp);    /* 绑定到进程 */
         return OK;
 
@@ -401,7 +413,9 @@ int do_procctl(message *msg, int transid)
         /* VFS 专用：处理内存映射 */
         if(msg->m_source != VFS_PROC_NR)
             return EPERM;
-        handle_memory_start(vmp, ...);
+        handle_memory_start(vmp, msg->VMPCTL_M1,
+            msg->VMPCTL_LEN, msg->VMPCTL_FLAGS,
+            VFS_PROC_NR, VFS_PROC_NR, transid, 1);
         return SUSPEND;
 
     default:
@@ -455,179 +469,254 @@ PM → VM_EXIT:
 
 ## 3. Rust 设计决策
 
-### 3.1 现有代码状态
+> **本章基于 Ch1&Ch2 分析，确定 Rust 实现的设计决策。每节标注了 Ch2 依据。**
 
-| 组件 | 现有状态 | 退出需要的操作 |
-|------|---------|---------------|
-| `VmProc::clear()` | ✅ 已实现 | 核心：释放区域 + 页表 + 重置字段 |
-| `ExitingProc::reap()` | ✅ 已实现 | 调用 `VmProc::clear()`，返回 `EmptySlot` |
-| `ActiveProc::force_clear()` | ✅ 已实现 | 异常终止：调用 `VmProc::clear()` |
-| `RegionMap::clear()` | ✅ 已实现 | 释放所有 VirRegion 节点 |
-| `PageTable::destroy()` | ✅ 已实现（trait） | 释放页表资源 |
-| `PhysRegion::unlink_from_block()` | ✅ 已实现 | 从 PhysBlock 链表移除，减少引用计数 |
-| `PhysRegion::unbind_block()` | ✅ 已实现 | 简化版引用释放（无链表管理） |
-| `AnonymousMemory::on_unreference()` | ✅ 已实现 | refcount==0 时返回 `Ok(true)` |
-| `VirRegion::free_range()` | ✅ 已实现 | 释放范围内物理页 |
-| `MemType::on_delete()` | ✅ 已实现（默认空） | 区域删除回调 |
-| `do_exit()` | ❌ 不存在 | VM_EXIT IPC 处理 |
-| `do_willexit()` | ❌ 不存在 | VM_WILLEXIT IPC 处理 |
-| `do_procctl()` | ❌ 不存在 | VM_PROCCTL IPC 处理 |
-| 物理页归还分配器 | ❌ 缺失 | `ev_unreference` 返回 true 后无释放逻辑 |
+### 3.1 Typestate 驱动退出流程
 
-### 3.2 设计原则
+**决策**：编译时 typestate 替代 Minix3 的运行时 `VMF_EXITING` 标志位检查。
 
-**原则 1：typestate 驱动退出流程**
-
-Minix3 用标志位（`VMF_EXITING`）控制状态，Rust 用 typestate 编译时保证：
+**依据**（Ch2§2.2-§2.3）：
 
 ```
-Minix3:                              Rust:
-Active + VMF_EXITING=0               ActiveProc
-Active + VMF_EXITING=1               ExitingProc
-!VMF_INUSE                           EmptySlot
+Minix3 两阶段退出:                     Rust typestate:
+  do_willexit → VMF_EXITING              ActiveProc → mark_exiting() → ExitingProc
+  do_exit → check VMF_EXITING            table.get_exiting(slot) → ExitingProc
+  free_proc + clear_proc                 exiting.reap() → EmptySlot
+  slot 变为空闲                           slot 可被新进程使用
 ```
 
-退出流程：
-```rust
-let active = table.get_active(slot)?;
-let exiting = active.mark_exiting();  // 对应 do_willexit
-let empty = unsafe { exiting.reap() }; // 对应 do_exit
+**设计对比**：
+
+| 状态 | Minix3（运行时 flags） | Rust（编译时 typestate） |
+|------|----------------------|------------------------|
+| 空闲 | `vm_flags = 0` | `EmptySlot` — 无 endpoint，只能 `activate()` |
+| 正常 | `VMF_INUSE` | `ActiveProc` — 有 endpoint+page_table+regions |
+| 预通知 | `VMF_INUSE \| VMF_EXITING` | `ExitingProc` — 只能 `reap()`，不能分配内存 |
+| 释放后 | `vm_flags = 0` | `EmptySlot`（由 `reap()` 返回） |
+
+**关键**：`mark_exiting()` 消费 `ActiveProc`（拿走 `&mut VmProc` 引用），返回 `ExitingProc`。之后 `handle_vm_exit` 通过 `table.get_exiting(slot)` 获取 `ExitingProc`，在类型层面保证"先 willexit 再 exit"——如果 `get_exiting()` 返回 `None`（即进程不在 EXITING 状态），直接返回错误。
+
+**不采用**：
+- 单一 `enum VmState { Active, Exiting }` — 失去编译时安全，运行时仍需 assert
+- 继续使用 Minix3 的 flags 方式 — C 式运行时检查，不是 Rewrite 目标
+
+### 3.2 PFN 模型简化物理页释放
+
+**决策**：不逐个显式 "unlink"，利用 PageFrames 全局引用计数 + `free_range()` 统一释放。
+
+**依据**（Ch2§2.5-§2.9）：
+
+Minix3 的退出物理页释放链路是：`map_free_proc → map_free → map_subfree → pb_unreferenced(rm=1) → refcount-- → if 0 then ev_unreference → free_mem → SLABFREE(pr) + SLABFREE(pb)`。这一连串操作的核心是两件事：**减少引用计数** 和 **条件释放物理页**。
+
+在 PFN 模型中，`PageSlot` 是 `Copy` 类型（pfn + memtype），物理页引用计数集中在 `PageFrames.states[pfn].refcount` 全局数组中，不再由 `PhysBlock` 侵入式链表管理。退出释放步骤：
+
+```
+1. 遍历 region.physblocks 中所有 mapped PageSlot（pfn != PFN_NONE）：
+   a. 递减 PageFrames refcount（state.refcount--，等价于 Minix3 的 pb.refcount--）
+   b. slot.memtype.ev_unreference(frames, slot.pfn) — MemType 回调
+      （注意：anon/direct 的 ev_unreference 在 PFN 模型中为空操作，
+       物理页的实际释放由 caller 通过 free_pfn 执行，而不是在回调中归还。
+       这是 PFN 模型的职责分离设计——PageFrames 管理引用计数，
+       PfnAllocator 管理物理页分配/归还。）
+   c. 若 refcount == 0 且非缓存页：page_alloc.free_pfn(slot.pfn) — 归还物理页
+2. RegionMap::clear() — 释放 BTreeMap → VirRegion → physblocks Vec
+   （Vec 的 drop 自动回收堆内存，PageSlot 是 Copy 无需手动释放）
 ```
 
-**原则 2：VmProc::clear() 是退出的核心**
+**对比**：
 
-Minix3 将退出拆分为 `free_proc()` + `clear_proc()` 两个函数。Rust 的 `VmProc::clear()` 合并了两者：
+| 操作 | Minix3 | Rust (PFN) |
+|------|--------|------------|
+| 释放入口 | `map_free_proc()` | `free_region_pages()` + `RegionMap::clear()` |
+| 引用计数 | `pb.refcount--`（侵入式链表） | `refcount--`（PageFrames 全局数组） |
+| 物理页归还 | `free_mem(ABS2CLICK(...), 1)` | `page_alloc.free_pfn(pfn)` |
+| PhysRegion 释放 | `SLABFREE(pr)` | `Vec<Option<PageSlot>>` drop 自动回收 |
+| PhysBlock 释放 | `SLABFREE(pb)` | 不需要（PFN 模型没有 PhysBlock 堆分配） |
 
-```rust
-pub(crate) unsafe fn clear(&mut self) {
-    // === free_proc 部分 ===
-    if self.vm_regions_avl_initialized {
-        self.vm_regions_avl.assume_init_mut().clear(); // map_free_proc
-    }
-    if self.vm_pt_initialized {
-        self.vm_pt.assume_init_mut().destroy();        // pt_free
-    }
-    if self.vm_flags.contains(VmFlags::VM_INSTANCE) {
-        crate::global::dec_vm_instance();              // VM_INSTANCE 处理
-    }
+**不采用**：为 `PageSlot` 添加 `Drop` — `PageSlot` 是 Copy，且物理页生命周期由 `PageFrames` 统一管理，不应在 drop 中隐式释放。
 
-    // === clear_proc 部分 ===
-    self.vm_flags = VmFlags::empty();                  // 清除 IN_USE
-    self.vm_endpoint = Endpoint::NONE;
-    self.vm_acl = AclState::Uninitialized;             // acl_clear
-    self.vm_region_top = VirBytes::new(0);
-    self.vm_total = VirBytes::default();               // reset_vm_rusage
-    self.vm_total_max = VirBytes::default();
-    self.vm_minor_page_fault = 0;
-    self.vm_major_page_fault = 0;
-    // ...
-}
-```
+### 3.3 错误处理
 
-**合并的原因**：
-1. Minix3 的 `free_proc()` 和 `clear_proc()` 总是成对调用（`do_exit` 中 `free_proc` → `clear_proc`），没有单独调用 `clear_proc` 的场景
-2. `do_procctl(VMPPARAM_CLEAR)` 只调用 `free_proc` 不调用 `clear_proc`，但 Rust 中这个场景用 `force_clear()` + 重新初始化来处理
-3. 合并减少了遗漏调用的风险
+**决策**：`VmExitError` 独立枚举，错误语义与 Minix3 exit.c 严格对齐。
 
-**原则 3：RegionMap::clear() 需要增强**
+**依据**（Ch2§2.2, §2.3, §2.12）：
 
-当前的 `RegionMap::clear()` 释放 BTreeMap 中的所有 VirRegion 节点，但**不处理 PhysRegion 的引用计数**：
+| VmExitError 变体 | errno | Minix3 来源 | 触发条件 |
+|-----------------|-------|------------|---------|
+| `ProcessNotFound` | EINVAL | `vm_isokendpt()` 失败 | endpoint 无效或进程不存在 |
+| `NotExiting` | EINVAL | do_exit 检查 `!(VMF_EXITING)` | 未先 willexit 就 exit |
 
-```rust
-// 当前实现 — 只释放树结构
-fn clear(&mut self) {
-    // BTreeMap drop → Box<VirRegion> drop → Vec<Option<Box<PhysRegion>>> drop
-    // 但 PhysRegion 的 drop 不会调用 unlink_from_block()!
-    self.regions.clear();
-}
-```
+**与 Minix3 的差异说明**：Minix3 的 `vm_isokendpt` 对无效 endpoint 可返回 EINVAL（proc 越界）或 EDEADEPT（endpoint 过期/slot 已空闲）。do_exit/do_willexit 将两者统一映射为 EINVAL。Rust 中 typestate 在编译时保证 slot 有效性，`table.vm_isokendpt()` 失败时映射为 `ProcessNotFound → EINVAL`，不再区分 EDEADEPT 场景。
 
-**问题**：`PhysRegion` 的 `Drop` 实现没有调用 `unlink_from_block()`，因为 `PhysRegion` 不拥有 `PhysBlock`（它只是引用）。直接 drop 会导致：
-- PhysBlock 的 refcount 不减少 → 物理页泄漏
-- PhysBlock 的 firstregion 链表悬空指针 → UB
+Minix3 的 do_exit 在 `!(VMF_EXITING)` 时返回 EINVAL，语义是"未预告退出"（unannounced exit），不是"已退出"。Rust 中 typestate 在编译时保证顺序，但 `get_exiting()` 仍然可能返回 `None`（并发场景或 bug），对应 `NotExiting`。
 
-**解决方案**：在 `RegionMap::clear()` 中，先遍历所有 VirRegion 的 PhysRegion，调用 `unlink_from_block()` 释放引用，再清空 BTreeMap。
+### 3.4 IPC 类型
 
-**原则 4：物理页归还分配器**
+**决策**：复用已有的 minix-types `VmExitIn`/`VmWillexitIn`，无需新增类型。
 
-`AnonymousMemory::on_unreference()` 返回 `Ok(true)` 表示物理页应该被释放，但当前代码没有消费这个返回值。需要在退出流程中：
+| 类型 | 对应 C 宏 | 方向 | 字段 |
+|------|----------|------|------|
+| `VmExitIn` | `VME_ENDPOINT` (m1_i1) | PM→VM | `endpoint: Endpoint` |
+| `VmWillexitIn` | `VMWE_ENDPOINT` (m1_i1) | PM→VM | `endpoint: Endpoint` |
 
-```rust
-if pr.unlink_from_block() {
-    // refcount 降到 0，需要释放物理页
-    if let Some(memtype) = pr.memtype {
-        if memtype.ev_unreference(pr)? {
-            // 归还物理页给分配器
-            page_alloc.free_phys(old_phys, 1);
-        }
-    }
-}
-```
+Minix3 的 `VM_PROCCTL`（Ch2§2.12）支持 `VMPPARAM_CLEAR`（释放内存但保留 slot）和 `VMPPARAM_HANDLEMEM`（VFS 内存处理），但不是退出核心路径。`VMPPARAM_HANDLEMEM` 涉及的 VFS 交互（fdref 释放）见 [23-vfs-interaction.md](23-vfs-interaction.md) §4.5，标记为 **Phase N**。
 
-### 3.3 与 Minix3 的关键差异
+### 3.5 与已有服务的模式一致性
 
-| 方面 | Minix3 | minix-rs |
-|------|--------|----------|
-| 状态管理 | `VMF_EXITING` 标志位 | `ExitingProc` typestate |
-| 退出函数 | `free_proc()` + `clear_proc()` | `VmProc::clear()` 合并 |
-| 区域释放 | `map_free_proc()` + `map_free()` + `map_subfree()` | `RegionMap::clear()` + 增强 |
-| 引用释放 | `pb_unreferenced()` | `PhysRegion::unlink_from_block()` |
-| 物理页释放 | `ev_unreference()` → `free_mem()` | `on_unreference()` → `page_alloc.free_phys()` |
-| 页表释放 | `pt_free()` → `vm_freepages()` | `PageTable::destroy()` |
-| 进程控制 | `do_procctl(VMPPARAM_CLEAR)` | `ActiveProc::force_clear()` + 重新初始化 |
-| 内存安全 | 运行时 assert | 编译时 typestate + 运行时 debug_assert |
+**决策**：退出服务遵循 fork/brk/munmap 建立的模式。
+
+| 方面 | fork | brk | munmap | exit |
+|------|------|-----|--------|------|
+| 模块文件 | fork.rs | brk.rs | munmap.rs | exit.rs |
+| 入口函数 | `do_fork()` | `handle_brk()` | `handle_munmap()` | `handle_vm_exit()` / `handle_vm_willexit()` |
+| 错误类型 | `ForkError` | `BrkError` | `MunmapError` | `VmExitError` |
+| Typestate | Empty→Active | 从 table 取 Active | 从 table 取 Active | Active→Exiting→Empty |
+| PageFrames | refcount++ | 分配新页 | refcount-- + unmap | refcount-- + free_pfn |
+| VFS 交互 | 无 | 无 | 无 | 无 |
+| IPC 响应 | `VmReply::Fork` | `VmReply::Brk` | `VmReply::Munmap` | `VmReply::Exit` / `VmReply::Willexit` |
+
+退出是唯一涉及 typestate "销毁"转换（Active→Exiting→Empty）的服务——fork/brk/munmap 只持有 ActiveProc 的可变引用，不改变其生命周期。
+
+**架构演进 — 页表层级**：Minix3（32位）使用 2 级页表（PD→PT），`pt_free` 释放 `pt_pt[ARCH_VM_DIR_ENTRIES]`（1024 个条目）。minix-rs（64位）使用 4 级页表（PML4→PDPT→PD→PT），`PageTable::destroy()` 递归释放所有 4 级页表页。这一差异不影响退出流程的正确性，因为两个实现都是"遍历→释放页表页"的同构操作，仅遍历深度不同。
 
 ---
 
-## 4. Rust 实现详解
+## 4. 实现详解
 
-### 4.1 RegionMap::clear() 增强 — 释放 PhysRegion 引用
+> **本章描述实际 Rust 代码结构。每个 § 对应一个源文件或关键流程，标注了与 Ch2 C 源码的对应关系。**
 
-当前实现只释放树结构，需要增加引用计数释放逻辑：
+### 4.1 模块结构
+
+```
+os/servers/vm/src/
+├── exit.rs                  # handle_vm_exit() + handle_vm_willexit() + VmExitError
+├── vmproc/
+│   ├── vmproc.rs            # VmProc + clear()（对应 free_proc + clear_proc）
+│   └── vmproc_handle.rs     # ActiveProc / ExitingProc / EmptySlot typestate views
+├── region/
+│   ├── mod.rs               # free_region_pages()（对应 map_free/map_subfree）
+│   ├── vir_region.rs        # VirRegion + free_range()
+│   └── page_state.rs        # PageFrames + refcount 管理
+├── ipc/
+│   └── dispatcher.rs        # dispatch_exit / dispatch_willexit
+└── vm_server.rs             # handle_exit 入口（handle_willexit 直接通过 dispatcher）
+
+os/libs/minix-types/src/ipc/
+└── vm.rs                    # VmExitIn / VmWillexitIn / VmReply::{Exit, Willexit}
+```
+
+### 4.2 exit.rs — handle_vm_willexit
+
+**对应 C 源码**：`minix3/minix/servers/vm/exit.c` 的 `do_willexit()` (L100-115)
+
+```
+handle_vm_willexit(table, endpoint) → Result<(), VmExitError>
+```
+
+| 步骤 | Rust | Minix3 C |
+|------|------|----------|
+| 1. 验证端点 | `table.vm_isokendpt(endpoint)` | `vm_isokendpt(msg->VMWE_ENDPOINT, &proc)` |
+| 2. 获取进程 | `table.get_active(slot)` | `vmp = &vmproc[proc]` |
+| 3. 设置标志 | `active.mark_exiting()` | `vmp->vm_flags \|= VMF_EXITING` |
+| 4. 返回 | drop(ExitingProc) 释放 &mut VmProc | `return OK` |
+
+> **设计决策**：§3.1（typestate 驱动）。`mark_exiting()` 消费 `ActiveProc`，返回 `ExitingProc`。drop `ExitingProc` 释放 `&mut VmProc` 引用但 VmProc 内部 flags 已包含 EXITING——后续 `get_exiting()` 可以获取此进程。
 
 ```rust
-impl RegionMap {
-    pub(crate) fn clear(&mut self) {
-        // 先释放所有 PhysRegion 的引用
-        for (_, region) in self.regions.iter_mut() {
-            Self::free_region_phys(region);
-        }
-        // 再清空 BTreeMap
-        self.regions.clear();
-    }
-        // Box<VirRegion> drop → Vec drop → PhysRegion drop
-    }
+pub(crate) fn handle_vm_willexit(
+    table: &VmProcTable,
+    endpoint: Endpoint,
+) -> Result<(), VmExitError> {
+    let slot = table.vm_isokendpt(endpoint)
+        .map_err(|_| VmExitError::ProcessNotFound)?;
+
+    let active = table.get_active(slot)
+        .ok_or(VmExitError::ProcessNotFound)?;
+
+    let _exiting = active.mark_exiting();
+
+    Ok(())
 }
 ```
 
-**问题**：`RegionMap::clear()` 无法访问 `VmPageAllocator` 来归还物理页。
+### 4.3 exit.rs — handle_vm_exit
 
-**解决方案**：将物理页释放逻辑提升到 `VmProc::clear()` 层级，`RegionMap::clear()` 只负责释放引用计数和 BTreeMap 结构：
+**对应 C 源码**：`minix3/minix/servers/vm/exit.c` 的 `do_exit()` (L60-94)
+
+```
+handle_vm_exit(table, page_alloc, frames, endpoint) → Result<(), VmExitError>
+```
+
+| 步骤 | Rust | Minix3 C | 在哪个函数 |
+|------|------|----------|-----------|
+| 1. 验证端点 | `table.vm_isokendpt(endpoint)` | `vm_isokendpt(msg->VME_ENDPOINT, &proc)` | `handle_vm_exit` |
+| 2. 获取 ExitingProc | `table.get_exiting(slot)` | 检查 `!(vmp->vm_flags & VMF_EXITING)` | `handle_vm_exit` |
+| 3. 释放物理页 | `free_process_phys` → ev_unreference + free_pfn | `free_proc → map_free_proc → map_subfree → pb_unreferenced → free_mem` | `handle_vm_exit` |
+| 4. 释放区域树 | `RegionMap::clear()` | `region_init()` | `reap()` → `VmProc::clear()` |
+| 5. 释放页表 | `PageTable::destroy()` | `pt_free(&vmp->vm_pt)` | `reap()` → `VmProc::clear()` |
+| 6. 重置结构 | `vm_flags=empty()` 等 | `clear_proc(vmp)` → `vm_flags = 0` | `reap()` → `VmProc::clear()` |
+
+> **关键**：`handle_vm_exit` 负责步骤 1-3（验证 + 物理页释放），`exiting.reap()` 负责步骤 4-6（数据结构释放 + 元数据重置）。物理页释放必须在 `reap()` **之前**完成——因为 `RegionMap::clear()` 只释放数据结构，不处理 PageFrames 引用计数。
 
 ```rust
-impl RegionMap {
-    /// 释放所有区域，归还物理页给分配器
-    ///
-    /// 对应 Minix3 的 map_free_proc()。
-    pub(crate) fn free_all(&mut self, page_alloc: &mut VmPageAllocator) {
-        for (_, region) in self.regions.iter() {
-            Self::free_region_phys(region, page_alloc);
-        }
-        self.regions.clear();
-    }
+pub(crate) fn handle_vm_exit(
+    table: &VmProcTable,
+    page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
+    endpoint: Endpoint,
+) -> Result<(), VmExitError> {
+    let slot = table.vm_isokendpt(endpoint)
+        .map_err(|_| VmExitError::ProcessNotFound)?;
 
-    fn free_region_phys(region: &VirRegion, page_alloc: &mut VmPageAllocator) {
-        for phys_opt in region.physblocks.iter() {
-            if let Some(pr) = phys_opt {
-                let should_free = pr.unlink_from_block();
-                if should_free {
-                    if let Some(memtype) = pr.memtype {
-                        if let Ok(true) = memtype.ev_unreference(pr) {
-                            if let Some(phys) = pr.get_phys_addr() {
-                                page_alloc.free_phys(phys, 1);
-                            }
-                        }
+    // Typestate guarantees: only ExitingProc can be reaped
+    let exiting = table.get_exiting(slot)
+        .ok_or(VmExitError::NotExiting)?;
+
+    // 1. Free physical pages (PFN refcounts)
+    free_process_phys(exiting.regions(), frames, page_alloc);
+
+    // 2. Release all resources + reset fields → EmptySlot
+    unsafe { exiting.reap(); }
+
+    Ok(())
+}
+```
+
+### 4.4 物理页释放流程（PFN 模型）
+
+**对应 C 源码**：`map_subfree` (region.c:527-563) → `pb_unreferenced` (pb.c:96-133) → `anon_unreference` (mem_anon.c:56-62)
+
+```rust
+/// Release physical pages for all regions in the exiting process.
+///
+/// Corresponds to Minix3's map_free_proc() → map_free() → map_subfree() chain.
+/// For each PageSlot: decrements PageFrames refcount, calls ev_unreference,
+/// and conditionally frees physical pages when refcount reaches 0.
+/// RegionMap::clear() (inside reap()) handles releasing the data structures.
+fn free_process_phys(
+    regions: &RegionMap,
+    frames: &mut PageFrames,
+    page_alloc: &mut VmPageAllocator,
+) {
+    for region in regions.iter() {
+        for slot_opt in &region.physblocks {
+            if let Some(slot) = slot_opt {
+                if slot.pfn == PFN_NONE {
+                    continue;
+                }
+                if let Some(mt) = slot.memtype {
+                    mt.ev_unreference(frames, slot.pfn);
+                }
+                let should_free = if let Some(state) = frames.get_mut(slot.pfn) {
+                    if state.refcount > 0 {
+                        state.refcount -= 1;
                     }
+                    state.refcount == 0 && !state.flags.contains(PageFlags::IN_CACHE)
+                } else {
+                    false
+                };
+                if should_free {
+                    page_alloc.free_pfn(slot.pfn);
                 }
             }
         }
@@ -635,376 +724,141 @@ impl RegionMap {
 }
 ```
 
-**注意**：`unlink_from_block()` 需要 `&mut PhysRegion`，但 `physblocks` 是 `Vec<Option<Box<PhysRegion>>>`，遍历时可以获取可变引用。但 `on_unreference()` 也需要 `&mut PhysRegion`，而 `unlink_from_block()` 已经修改了 `pr.ph = None`。需要仔细设计调用顺序。
+**与 Minix3 的关键差异**（详细宏观对比见 §3.2，此处聚焦实现层面的差异）：
 
-### 4.2 VmProc::clear() 增强 — 传入 page_alloc
+| 步骤 | Minix3 | Rust (PFN) |
+|------|--------|------------|
+| 遍历区域 | `region_search_root` 循环 | `regions.iter()` |
+| 查找 PhysRegion | `physblock_get(region, voffset)` | `physblocks[i]`（Vec 索引） |
+| 释放 physblocks 数组 | `free(region->physblocks)` | Vec drop 自动 |
+| 释放 VirRegion | `SLABFREE(region)` | Box drop 自动 |
 
-当前 `VmProc::clear()` 无法访问 `VmPageAllocator`，需要修改签名：
+### 4.5 Typestate 转换链
+
+**对应 Minix3 do_willexit → do_exit 的两阶段协议**：
+
+```
+PM 发送 VM_WILLEXIT
+  └── dispatcher → handle_vm_willexit(table, endpoint):
+        ├── table.vm_isokendpt(endpoint) → slot
+        ├── table.get_active(slot) → ActiveProc
+        └── active.mark_exiting() → ExitingProc
+             └── drop(ExitingProc) → 释放 &mut VmProc（flags 保留 EXITING）
+
+PM 发送 VM_EXIT
+  └── dispatcher → handle_vm_exit(table, page_alloc, frames, endpoint):
+        ├── table.vm_isokendpt(endpoint) → slot
+        ├── table.get_exiting(slot) → ExitingProc  ← typestate 编译时保证
+        ├── free_process_phys(exiting.regions(), frames, page_alloc)
+        └── exiting.reap():
+             └── VmProc::clear():
+                  ├── RegionMap::clear()      ← 释放 BTreeMap + VirRegion 节点
+                  ├── PageTable::destroy()    ← 释放页表物理页
+                  ├── if VM_INSTANCE: dec_vm_instance()
+                  ├── vm_flags = empty()      ← 清除 IN_USE/EXITING/VM_INSTANCE
+                  ├── vm_endpoint = NONE      ← 重置 endpoint
+                  ├── vm_boot = None          ← 清除 boot 信息
+                  ├── vm_acl = Uninitialized  ← ACL 回到未初始化状态
+                  ├── vm_pt_initialized = false
+                  ├── vm_regions_initialized = false
+                  ├── vm_total = 0, vm_total_max = 0  ← 统计清零
+                  └── vm_minor_fault = 0, vm_major_fault = 0
+                  → EmptySlot → slot 可被新进程使用
+```
+
+**对比 Minix3**：
+
+| 状态 | Minix3 | Rust |
+|------|--------|------|
+| 两阶段顺序保证 | 运行时 `if(!(vmp->vm_flags & VMF_EXITING))` | 编译时 typestate（只有 `get_exiting()` 能获取 ExitingProc） |
+| 内存释放 | `free_proc()` 显式调用 | `free_process_phys()` + `reap().clear()` |
+| 结构清零 | `clear_proc()` 显式调用 | `VmProc::clear()` 在 `reap()` 中 |
+| Slot 复用 | `vm_flags = 0` 后 `get_empty()` 可用 | `reap()` 返回 `EmptySlot` |
+
+### 4.6 Dispatcher 和 VmServer 入口
+
+**dispatcher.rs** — 错误映射：
 
 ```rust
-impl VmProc {
-    pub(crate) unsafe fn clear(&mut self, page_alloc: &mut VmPageAllocator) {
-        // 1. 释放所有区域（包括 PhysRegion 引用和物理页归还）
-        if self.vm_regions_avl_initialized {
-            self.vm_regions_avl.assume_init_mut().free_all(page_alloc);
-        }
-
-        // 2. 释放页表
-        if self.vm_pt_initialized {
-            self.vm_pt.assume_init_mut().destroy();
-        }
-
-        // 3. VM_INSTANCE 计数器
-        if self.vm_flags.contains(VmFlags::VM_INSTANCE) {
-            crate::global::dec_vm_instance();
-        }
-
-        // 4. 重置所有字段
-        self.vm_flags = VmFlags::empty();
-        self.vm_endpoint = Endpoint::NONE;
-        self.vm_boot = None;
-        self.vm_acl = AclState::Uninitialized;
-        self.vm_pt_initialized = false;
-        self.vm_regions_avl_initialized = false;
-        self.vm_region_top = VirBytes::new(0);
-        self.vm_total = VirBytes::default();
-        self.vm_total_max = VirBytes::default();
-        self.vm_minor_page_fault = 0;
-        self.vm_major_page_fault = 0;
+fn exit_error_to_vm_error(e: exit::VmExitError) -> VmError {
+    match e {
+        exit::VmExitError::ProcessNotFound => VmError::InvalidEndpoint,
+        exit::VmExitError::NotExiting => VmError::InvalidEndpoint,
     }
 }
 ```
 
-**影响**：`ExitingProc::reap()` 和 `ActiveProc::force_clear()` 也需要传入 `page_alloc`：
+**vm_server.rs** — 传入 PageFrames：
 
 ```rust
-impl<'a> ExitingProc<'a> {
-    pub(crate) unsafe fn reap(
-        self,
-        page_alloc: &mut VmPageAllocator,
-    ) -> EmptySlot<'a> {
-        unsafe { self.inner.clear(page_alloc); }
-        EmptySlot::new(self.inner)
-    }
-}
-
-impl<'a> ActiveProc<'a> {
-    pub(crate) unsafe fn force_clear(
-        self,
-        page_alloc: &mut VmPageAllocator,
-    ) -> EmptySlot<'a> {
-        unsafe { self.inner.clear(page_alloc); }
-        EmptySlot::new(self.inner)
-    }
+pub fn handle_exit(&mut self, req: VmExitIn) -> VmReply {
+    let table = VmProcTable::get_global();
+    let frames = self.page_frames.as_mut().expect("page_frames not initialized");
+    MessageDispatcher::dispatch_exit(table, &mut self.page_alloc, frames, req)
 }
 ```
 
-### 4.3 do_willexit — 设置 EXITING 标志
-
-```rust
-/// 处理 VM_WILLEXIT 请求
-///
-/// 对应 Minix3 的 do_willexit()。
-/// PM 通知 VM 进程即将退出，VM 设置 EXITING 标志。
-pub fn do_willexit(
-    endpoint: Endpoint,
-    table: &VmProcTable,
-) -> Result<(), ExitError> {
-    let slot = table.vm_isokendpt(endpoint)
-        .map_err(|_| ExitError::InvalidEndpoint)?;
-
-    let active = table.get_active(slot)
-        .ok_or(ExitError::ProcessNotActive)?;
-
-    // 转换为 ExitingProc（设置 EXITING 标志）
-    let _exiting = active.mark_exiting();
-
-    Ok(())
-}
+> **注意**：`handle_willexit` 在 vm_server.rs 中尚未实现（Phase N TODO），当前 willexit 请求通过 dispatcher 直接调用 `exit::handle_vm_willexit`。
 ```
 
-**问题**：`mark_exiting()` 消费了 `ActiveProc`，返回 `ExitingProc`。但 `ExitingProc` 持有 `&mut VmProc` 的可变引用，如果直接 drop，引用就释放了。这没问题——typestate 转换已经完成，进程的 `vm_flags` 已经包含 `EXITING`。
+### 4.7 C-Rust 对应关系
 
-### 4.4 do_exit — 正式退出
-
-```rust
-/// 处理 VM_EXIT 请求
-///
-/// 对应 Minix3 的 do_exit()。
-/// 释放进程的所有内存资源，清零进程结构体。
-pub fn do_exit(
-    endpoint: Endpoint,
-    table: &VmProcTable,
-    page_alloc: &mut VmPageAllocator,
-) -> Result<(), ExitError> {
-    let slot = table.vm_isokendpt(endpoint)
-        .map_err(|_| ExitError::InvalidEndpoint)?;
-
-    // 必须是 EXITING 状态
-    let exiting = table.get_exiting(slot)
-        .ok_or(ExitError::NotExiting)?;
-
-    // 释放资源，返回 EmptySlot
-    let _empty = unsafe { exiting.reap(page_alloc) };
-
-    Ok(())
-}
-```
-
-**typestate 保证**：`get_exiting()` 只返回 `ExitingProc`（IN_USE + EXITING），确保只有经过 willexit 的进程才能被 exit。这比 Minix3 的运行时检查 `if(!(vmp->vm_flags & VMF_EXITING))` 更安全——编译时就阻止了未 willexit 的进程被 exit。
-
-### 4.5 do_procctl — 进程控制
-
-```rust
-/// 处理 VM_PROCCTL 请求
-///
-/// 对应 Minix3 的 do_procctl()。
-pub fn do_procctl(
-    msg: &ProcctlMessage,
-    table: &VmProcTable,
-    page_alloc: &mut VmPageAllocator,
-) -> Result<(), ProcctlError> {
-    let slot = table.vm_isokendpt(msg.who)
-        .map_err(|_| ProcctlError::InvalidEndpoint)?;
-
-    match msg.param {
-        ProcctlParam::Clear => {
-            // 权限检查：只有 RS 和 VFS 可以调用
-            if !is_rs_or_vfs(msg.source) {
-                return Err(ProcctlError::PermissionDenied);
-            }
-
-            let active = table.get_active(slot)
-                .ok_or(ProcctlError::ProcessNotActive)?;
-
-            // 释放内存资源，但不清零进程结构体
-            let empty = unsafe { active.force_clear(page_alloc) };
-
-            // 创建新页表并绑定（服务重启场景）
-            let mut active = empty.activate_relaxed(endpoint);
-            active.init_page_table()?;
-            active.bind_page_table()?;
-
-            Ok(())
-        }
-
-        ProcctlParam::HandleMem => {
-            // VFS 专用
-            if !is_vfs(msg.source) {
-                return Err(ProcctlError::PermissionDenied);
-            }
-            // TODO: handle_memory_start
-            Err(ProcctlError::NotImplemented)
-        }
-    }
-}
-```
-
-### 4.6 PhysRegion Drop 的安全性
-
-当前 `PhysRegion` 没有 `Drop` 实现。在退出流程中，`unlink_from_block()` 在 `RegionMap::free_all()` 中被显式调用，之后 `PhysRegion` 被 `Vec` 的 drop 释放。这是安全的，因为：
-
-1. `unlink_from_block()` 已经将 `pr.ph = None` 和 `pr.next_ph_list = None`
-2. 后续的 `Drop`（如果有）不会尝试再次释放引用
-
-**但有一个隐患**：如果 `RegionMap::clear()` 被直接调用（不经过 `free_all()`），`PhysRegion` 的 drop 不会释放引用。解决方案：
-
-```rust
-impl Drop for PhysRegion {
-    fn drop(&mut self) {
-        // 防御性检查：如果还有 PhysBlock 引用，说明退出流程有 bug
-        if self.ph.is_some() {
-            // 在 debug 模式下 panic
-            debug_assert!(
-                self.ph.is_none(),
-                "PhysRegion dropped while still linked to PhysBlock — \
-                 use unlink_from_block() before dropping, or use RegionMap::free_all()"
-            );
-            // 在 release 模式下尝试释放（防御性）
-            unsafe {
-                self.unlink_from_block();
-            }
-        }
-    }
-}
-```
-
-### 4.7 完整退出流程（Rust）
-
-```
-PM → VM_WILLEXIT(endpoint):
-  ├── table.vm_isokendpt(endpoint) → slot
-  ├── table.get_active(slot) → ActiveProc
-  └── active.mark_exiting() → ExitingProc (vm_flags |= EXITING)
-       └── drop(ExitingProc) → 释放 &mut VmProc 引用
-
-PM → VM_EXIT(endpoint):
-  ├── table.vm_isokendpt(endpoint) → slot
-  ├── table.get_exiting(slot) → ExitingProc
-  └── exiting.reap(page_alloc):
-       └── VmProc::clear(page_alloc):
-            ├── RegionMap::free_all(page_alloc):
-            │    └── 递归遍历所有 VirRegion:
-            │         ├── 对每个 PhysRegion:
-            │         │    ├── pr.unlink_from_block()
-            │         │    │    ├── pb.refcount--
-            │         │    │    ├── 从 pb.firstregion 链表移除
-            │         │    │    └── 返回 should_free (refcount == 0)
-            │         │    ├── if should_free:
-            │         │    │    ├── memtype.ev_unreference(pr)
-            │         │    │    └── if Ok(true): page_alloc.free_phys(phys, 1)
-            │         │    └── (PhysRegion 随 Vec drop 释放)
-            │         ├── memtype.ev_delete(region)
-            │         └── (VirRegion 随 Box drop 释放)
-            │
-            ├── PageTable::destroy()
-            │    └── 释放页表页资源
-            │
-            ├── if VM_INSTANCE: dec_vm_instance()
-            │
-            └── 重置所有字段:
-                 ├── vm_flags = empty()    ← slot 变为空闲
-                 ├── vm_endpoint = NONE
-                 ├── vm_acl = Uninitialized
-                 └── 统计归零
-```
+| Minix3 函数 | 源码位置 | Rust 对应 | 代码位置 |
+|------------|---------|----------|---------|
+| `do_willexit()` | exit.c:100 | `handle_vm_willexit()` | exit.rs |
+| `do_exit()` | exit.c:60 | `handle_vm_exit()` | exit.rs |
+| `free_proc()` | exit.c:33 | `free_process_phys()` + `VmProc::clear()` | exit.rs + vmproc.rs |
+| `clear_proc()` | exit.c:45 | `VmProc::clear()`（在 reap 中） | vmproc.rs:152 |
+| `map_free_proc()` | region.c:589 | `free_process_phys()` 的遍历逻辑 | exit.rs |
+| `map_free()` | region.c:568 | `free_process_phys()` 遍历单区域 | exit.rs |
+| `map_subfree()` | region.c:527 | `free_process_phys()` 遍历 physblocks | exit.rs |
+| `pb_unreferenced()` | pb.c:96 | `ev_unreference` + `free_pfn` | exit.rs |
+| `anon_unreference()` | mem_anon.c:56 | `MemType::ev_unreference` | memtype.rs |
+| `pt_free()` | pagetable.c:1427 | `PageTable::destroy()` | pagetable.rs |
+| `VMF_EXITING` | vmproc.h:36 | `VmFlags::EXITING` (∈ `ExitingProc` typestate) | vmproc_handle.rs |
 
 ---
 
-## 5. CoW 退出场景详解
+## 5. 测试要点
 
-### 5.1 场景 1：独立进程退出
+> **本节基于 Ch2 错误场景和 Ch3 设计决策，列出测试覆盖要点。**
 
-```
-进程 A 独占物理页 P (refcount = 1)
+### 5.1 退出流程测试
 
-A 退出:
-  ├── pr.unlink_from_block(): P.refcount 1 → 0
-  ├── should_free = true
-  ├── anon.ev_unreference(pr) → Ok(true)
-  ├── page_alloc.free_phys(P.phys, 1)  ← 物理页归还
-  └── P 被 SLABFREE (Rust: Box drop)
-```
+| 测试场景 | 验证点 |
+|---------|--------|
+| 正常两阶段退出 | willexit → exit → slot 变为 EmptySlot |
+| 未 willexit 直接 exit | `table.get_exiting()` 返回 None → `NotExiting` |
+| 重复 willexit | `mark_exiting()` 在 EXITING 标志已设置时的行为 |
+| exit 后 slot 可复用 | `EmptySlot.activate()` 创建新进程 |
 
-### 5.2 场景 2：CoW 共享页，一个进程退出
+### 5.2 物理页释放测试
 
-```
-fork 后: 进程 A 和 B 共享物理页 P (refcount = 2)
+| 测试场景 | 验证点 |
+|---------|--------|
+| 独立进程退出 | 所有物理页 refcount 归零，归还 allocator |
+| CoW 共享页，一个进程退出 | 共享页 refcount 从 2 降到 1，页保留 |
+| CoW 共享页，两个进程都退出 | 共享页 refcount 从 2→1→0，最终释放 |
+| CoW 已执行，各自拥有独立页 | 各进程释放自己的私有页 |
+| 三进程 fork 树，逐个退出 | refcount 3→2→1→0 正确递减 |
 
-B 退出:
-  ├── B 的 pr.unlink_from_block(): P.refcount 2 → 1
-  ├── should_free = false (refcount > 0)
-  ├── 物理页 P 不释放
-  └── A 的 pr 仍在 P.firstregion 链表中
+### 5.3 资源完整性测试
 
-A 继续运行:
-  ├── A 的 pr.refcount = 1 → is_writable() = true
-  ├── 页表可以设置为可写
-  └── A 拥有 P 的独占使用权
-```
-
-### 5.3 场景 3：CoW 共享页，两个进程都退出
-
-```
-fork 后: 进程 A 和 B 共享物理页 P (refcount = 2)
-
-B 先退出:
-  ├── B 的 pr.unlink_from_block(): P.refcount 2 → 1
-  ├── should_free = false
-  └── 物理页 P 保留
-
-A 再退出:
-  ├── A 的 pr.unlink_from_block(): P.refcount 1 → 0
-  ├── should_free = true
-  ├── anon.ev_unreference(pr) → Ok(true)
-  ├── page_alloc.free_phys(P.phys, 1)  ← 物理页归还
-  └── P 被释放
-```
-
-### 5.4 场景 4：CoW 已执行，各自拥有独立页
-
-```
-fork 后共享 P (refcount = 2)
-  → B 写入触发 CoW
-  → B 获得 P' (refcount = 1), P.refcount 降为 1
-
-B 退出:
-  ├── B 的 pr(P').unlink_from_block(): P'.refcount 1 → 0
-  ├── should_free = true
-  └── page_alloc.free_phys(P'.phys, 1)  ← B 的私有页归还
-
-A 退出:
-  ├── A 的 pr(P).unlink_from_block(): P.refcount 1 → 0
-  ├── should_free = true
-  └── page_alloc.free_phys(P.phys, 1)  ← A 的页归还
-```
-
-### 5.5 场景 5：多进程共享（3+ 引用）
-
-```
-A fork B, B fork C → P.refcount = 3
-
-C 退出:
-  ├── P.refcount 3 → 2, should_free = false
-
-B 退出:
-  ├── P.refcount 2 → 1, should_free = false
-
-A 退出:
-  ├── P.refcount 1 → 0, should_free = true
-  └── page_alloc.free_phys(P.phys, 1)  ← 最终释放
-```
+| 测试场景 | 验证点 |
+|---------|--------|
+| 区域树清空 | exit 后 `regions.len() == 0` |
+| 页表释放 | exit 后 `vm_pt_initialized == false` |
+| VM_INSTANCE 计数器 | VM 实例退出后 `dec_vm_instance()` 被调用 |
+| 统计归零 | `vm_total = 0`, `vm_minor_page_fault = 0` 等 |
+| 标志清零 | `vm_flags = empty()` |
 
 ---
 
-## 6. 实现清单
+## 6. 参见
 
-### 6.1 需要修改的现有代码
-
-| 文件 | 修改内容 | 优先级 |
-|------|---------|--------|
-| `region/avl.rs` | 新增 `free_all()` 方法，处理 PhysRegion 引用释放 | 🔴 P0 |
-| `vmproc/vmproc.rs` | `VmProc::clear()` 增加 `page_alloc` 参数 | 🔴 P0 |
-| `vmproc/vmproc_handle.rs` | `reap()` 和 `force_clear()` 增加 `page_alloc` 参数 | 🔴 P0 |
-| `region/phys_region.rs` | 可选：为 `PhysRegion` 添加防御性 `Drop` | 🟡 P1 |
-
-### 6.2 需要新增的代码
-
-| 文件 | 新增内容 | 优先级 |
-|------|---------|--------|
-| `exit.rs` (新) | `do_willexit()`, `do_exit()`, `do_procctl()` | 🔴 P0 |
-| `exit.rs` | `ExitError`, `ProcctlError` 错误类型 | 🔴 P0 |
-| `region/avl.rs` | `free_region_phys()` 辅助函数 | 🔴 P0 |
-
-### 6.3 测试计划
-
-| 测试 | 描述 |
-|------|------|
-| `test_willexit_then_exit` | 完整两阶段退出流程 |
-| `test_exit_cow_shared_one_exits` | CoW 共享页，一个进程退出，物理页保留 |
-| `test_exit_cow_shared_both_exit` | CoW 共享页，两个进程都退出，物理页释放 |
-| `test_exit_cow_already_split` | CoW 已执行，各自退出独立页 |
-| `test_exit_independent_process` | 独立进程退出，物理页直接释放 |
-| `test_exit_refcount_3` | 三进程共享，逐个退出 |
-| `test_procctl_clear` | VMPPARAM_CLEAR：释放内存但保留 slot |
-| `test_exit_without_willexit` | 未 willexit 直接 exit 应失败 |
-| `test_reap_and_reactivate` | 退出后 slot 可被新进程使用 |
-
----
-
-## 7. 与 19-cow-exec-pagefault 的闭环
-
-20 文档实现了 CoW 的"正向"流程（写入 → 分配新页 → 复制 → 更新引用），本文档实现了"反向"流程（退出 → 减少引用 → 条件释放物理页）。两者共同完成了引用计数系统的闭环：
-
-```
-引用计数生命周期:
-
-fork:   add_ref()           → refcount: 0→1, 1→2
-cow:    unlink + link        → refcount: 2→1 (旧页), 0→1 (新页)
-exit:   unlink_from_block()  → refcount: 1→0 → free_phys()
-
-每个 add_ref 都有对应的 release
-每个 alloc_phys 都有对应的 free_phys
-```
-
-这就是 fork 叙事线的完整闭环：从创建（16-vm-fork）到运行时 CoW（19-cow-exec-pagefault）到退出释放（20-vm-exit），引用计数系统保证了物理内存的正确管理——不多不少，不早不晚。
+- [01-vmproc-struct.md](01-vmproc-struct.md) — VmProc 结构体定义
+- [02-vmproc-table.md](02-vmproc-table.md) — 进程表 + typestate 视图
+- [10-phys-pagestate.md](10-phys-pagestate.md) — PhysBlock 引用计数（C 侧）
+- [14-cow-mechanism.md](14-cow-mechanism.md) — CoW 机制，退出时 refcount 递减的"正向"操作
+- [15-pagefault.md](15-pagefault.md) — 页错误处理，退出时触发 CoW 条件的"前置"操作
+- [16-vm-fork.md](16-vm-fork.md) — fork 创建进程，退出是 fork 的生命周期终点

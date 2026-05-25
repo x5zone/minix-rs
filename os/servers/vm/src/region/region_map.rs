@@ -96,6 +96,17 @@ impl RegionMap {
         self.search(key, SearchType::LESS)
     }
 
+    pub(crate) fn find_mut_by_end(&mut self, end_addr: VirBytes) -> Option<&mut VirRegion> {
+        let key = self
+            .regions
+            .range(..end_addr)
+            .next_back()
+            .filter(|(_, r)| r.end_addr() == end_addr)
+            .map(|(k, _)| *k)?;
+
+        self.regions.get_mut(&key)
+    }
+
     pub(crate) fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
         self.search(key, SearchType::GREATER)
     }
@@ -188,6 +199,10 @@ impl RegionMap {
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
         self.regions.remove(&addr)
+    }
+
+    pub(crate) fn get_mut(&mut self, addr: &VirBytes) -> Option<&mut VirRegion> {
+        self.regions.get_mut(addr)
     }
 
     pub(crate) fn traverse<F>(&self, mut f: F)

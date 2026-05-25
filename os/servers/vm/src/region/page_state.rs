@@ -119,6 +119,7 @@ pub(crate) struct PageFrames {
 
 impl PageFrames {
     pub fn new(total_phys: PhysBytes) -> Self {
+        // total_pages bounded by u32: max 4TB physical memory with 4KB pages
         let total_pages = (total_phys.0 / PAGE_SIZE) as u32;
         let states = vec![PageState::new(); total_pages as usize];
         Self { states, total_pages }

@@ -39,6 +39,9 @@ pub(crate) fn handle_pagefault(
             cow_resolve(region, frames, alloc, offset)?;
             Ok(PagefaultAction::CowResolved)
         }
+        PagefaultResult::NeedVfsIo => {
+            Ok(PagefaultAction::Suspended)
+        }
         PagefaultResult::AccessViolation => {
             Ok(PagefaultAction::AccessViolation)
         }
@@ -230,6 +233,7 @@ pub(crate) enum PagefaultAction {
     Handled,
     MappedNewPage,
     CowResolved,
+    Suspended,
     AccessViolation,
 }
 

@@ -89,6 +89,7 @@ impl VmPageAllocator {
 impl PfnAllocator for VmPageAllocator {
     fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
         self.alloc_phys(1, PageAllocFlags::empty())
+            // PFN fits in u32: max 4TB physical memory with 4KB pages
             .map(|phys| (phys.as_u64() / PAGE_SIZE) as u32)
             .map_err(|_| PfnAllocError::OutOfMemory)
     }

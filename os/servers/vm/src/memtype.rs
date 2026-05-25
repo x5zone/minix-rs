@@ -133,6 +133,7 @@ pub(crate) enum PagefaultResult {
     Handled,
     NeedNewPage,
     NeedCow,
+    NeedVfsIo,
     AccessViolation,
 }
 
@@ -211,6 +212,7 @@ impl MemType for AnonymousMemory {
     }
 
     fn region_id(&self, region: &crate::region::VirRegion) -> u32 {
+        // region.id is i32, always non-negative (valid region IDs), safe for u32
         region.id as u32
     }
 
@@ -345,23 +347,35 @@ impl MemType for SharedMemory {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
-        _region: &mut crate::region::VirRegion,
-        _frames: &mut PageFrames,
-        _offset: VirBytes,
+        proc: &ActiveProc<'_>,
+        region: &mut crate::region::VirRegion,
+        frames: &mut PageFrames,
+        offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // TODO(P0): Minix3's shared_pagefault maps the shared segment's physical page
-        // into the faulting process's address space. Shared memory never triggers
-        // CoW — writes go to the shared page directly.
+        // Check if the page is already mapped. If so, no action needed.
+        if let Some(slot) = region.get_slot(offset) {
+            if slot.is_mapped() {
+                return Ok(PagefaultResult::Handled);
+            }
+        }
+
+        // Page not mapped. In Minix3, shared_pagefault() (mem_shared.c:122) does:
+        //   1. getsrc() → look up the source process and source region
+        //   2. map_pf() on the source → ensure source has the page
+        //   3. pb_link() → link current phys_region to the same phys_block
         //
-        // Minix3 的 mem_shared.c shared_pagefault():
-        //   phys == MAP_NONE → 从共享段获取物理页并映射 → return OK
-        //   phys != MAP_NONE → 页面已映射 → return OK
+        // This requires cross-process region lookup (VmProcTable → ActiveProc →
+        // RegionMap::find). The ev_pagefault signature doesn't carry VmProcTable,
+        // so this must be handled by the caller (dispatch_pagefault in vm_server.rs).
         //
-        // 当前返回 NeedNewPage（覆盖首次访问），缺失：从共享段获取物理页
-        // 并映射到当前进程的逻辑（需要跨进程物理页共享机制）。
-        Ok(PagefaultResult::NeedNewPage)
+        // For now: fail closed. Real implementation must:
+        //   - Extract VrParam::Shared { ep, vaddr, id } from region.param
+        //   - Look up source process by endpoint (vm_isokendpt + get_active)
+        //   - Find source VirRegion by vaddr
+        //   - Get source PFN at the matching offset
+        //   - Map current PageSlot to the same PFN (pb_link equivalent)
+        Err(MemTypeError::NotSupported)
     }
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
@@ -593,18 +607,26 @@ impl MemType for MappedFile {
         offset: VirBytes,
         write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
+        // _proc and _frames unused here: page table update and frame allocation
+        // happen in the VFS reply callback (mappedfile_pf_cont), not in this
+        // initial page-fault check which only determines the action needed.
+        if let crate::region::VrParam::File { inited, .. } = &region.param {
+            if !inited {
+                return Ok(PagefaultResult::NeedNewPage);
+            }
+        }
+
         let slot = region.get_slot(offset);
 
         match slot {
-            None => return Ok(PagefaultResult::NeedNewPage),
-            Some(s) if !s.is_mapped() => return Ok(PagefaultResult::NeedNewPage),
-            _ => {}
-        }
-
-        if write {
-            Ok(PagefaultResult::NeedCow)
-        } else {
-            Ok(PagefaultResult::Handled)
+            Some(s) if s.is_mapped() => {
+                if write {
+                    Ok(PagefaultResult::NeedCow)
+                } else {
+                    Ok(PagefaultResult::Handled)
+                }
+            }
+            _ => Ok(PagefaultResult::NeedVfsIo),
         }
     }
 
@@ -622,21 +644,48 @@ impl MemType for MappedFile {
     fn ev_split(
         &self,
         _proc: &ActiveProc<'_>,
-        _original: &crate::region::VirRegion,
-        _left: &mut crate::region::VirRegion,
-        _right: &mut crate::region::VirRegion,
+        original: &crate::region::VirRegion,
+        left: &mut crate::region::VirRegion,
+        right: &mut crate::region::VirRegion,
     ) -> Result<(), MemTypeError> {
-        // TODO: Minix3's mappedfile_split copies vm_region_param.
+        if let crate::region::VrParam::File { inited: true, fdref_id, offset, clearend } = &original.param {
+            let fdref_id = *fdref_id;
+            let orig_offset = *offset;
+            let orig_clearend = *clearend;
+
+            left.param = crate::region::VrParam::File {
+                inited: true,
+                fdref_id,
+                offset: orig_offset,
+                clearend: 0,
+            };
+
+            right.param = crate::region::VrParam::File {
+                inited: true,
+                fdref_id,
+                offset: orig_offset + left.length.get(),
+                clearend: orig_clearend,
+            };
+        }
         Ok(())
     }
 
     fn ev_low_shrink(
         &self,
-        _region: &mut crate::region::VirRegion,
-        _len: VirBytes,
+        region: &mut crate::region::VirRegion,
+        len: VirBytes,
     ) -> Result<(), MemTypeError> {
-        // TODO: Minix3's mappedfile_lowshrink adjusts vm_region_param offset.
+        if let crate::region::VrParam::File { offset, .. } = &mut region.param {
+            *offset += len.get();
+        }
         Ok(())
+    }
+
+    fn ev_delete(&self, region: &mut crate::region::VirRegion) {
+        if let crate::region::VrParam::File { inited, fdref_id, .. } = &mut region.param {
+            *inited = false;
+            *fdref_id = None;
+        }
     }
 }
 

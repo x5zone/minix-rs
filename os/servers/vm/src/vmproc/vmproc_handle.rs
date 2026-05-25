@@ -491,6 +491,12 @@ impl<'a> ExitingProc<'a> {
         self.inner.vm_flags
     }
 
+    #[inline]
+    pub(crate) fn regions(&self) -> &RegionMap {
+        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed after clear()");
+        unsafe { self.inner.vm_regions.assume_init_ref() }
+    }
+
     /// Reaps the exiting process, releasing resources and returning the slot to empty.
     ///
     /// Calls `VmProc::clear()` to release resources, then returns `EmptySlot`.

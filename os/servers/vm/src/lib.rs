@@ -18,10 +18,15 @@ pub(crate) mod alloc_page;
 pub(crate) mod heap_arena;
 pub(crate) mod page_cache;
 pub(crate) mod vfs_queue;
+pub(crate) mod fdref;
 pub(crate) mod exit;
 pub(crate) mod brk;
 pub(crate) mod munmap;
+pub(crate) mod mmap;
+pub(crate) mod map_phys;
 pub(crate) mod cow_exec_pf;
+pub(crate) mod rs;
+pub(crate) mod query;
 
 pub use vm_server::VmServer;
 
@@ -36,7 +41,7 @@ pub use phys_mem::BootMemRegion;
 pub(crate) use phys_mem::{
     PhysAlloc, PhysAllocator, PhysMemStats, PageAllocFlags, AlignedPhysBytes, AllocError,
 };
-pub(crate) use region::{VirRegion, VrFlags, PageState, PageFrames, PageSlot, PageFlags as PhysPageFlags, PFN_NONE, PfnAllocator, PfnAllocError, RegionMap};
+pub(crate) use region::{VirRegion, VrFlags, VrParam, PageState, PageFrames, PageSlot, PageFlags as PhysPageFlags, PFN_NONE, PfnAllocator, PfnAllocError, RegionMap};
 pub(crate) use pagetable::{PageTable, PageFlags, PageTableError, vm_self_mappages, vm_self_unmappages, vm_self_unmap, vm_self_query, init_vm_self_pt};
 pub(crate) use memtype::{
     MemType, MemTypeError, PagefaultResult,
@@ -56,6 +61,16 @@ pub(crate) use munmap::{MunmapError, MunmapRequest, handle_munmap};
 pub(crate) use cow_exec_pf::{
     PagefaultAction, CowError,
     handle_pagefault, alloc_and_map, cow_resolve, cow_resolve_region,
+};
+pub(crate) use rs::{
+    RsSetPrivError, RsPrepareError, RsUpdateError, RsMemctlError,
+    RsMemctlRequest, RsMemctlResult, RsUpdateResult,
+    handle_rs_set_priv, handle_rs_prepare, handle_rs_update, handle_rs_memctl,
+};
+pub(crate) use query::{
+    QueryError, InfoQuery, InfoResult, StatsInfo, UsageInfo, RegionInfo,
+    ResourceUsage, GetrusageResult,
+    handle_get_phys, handle_get_refcount, handle_info, handle_getrusage,
 };
 
 mod vm_server;

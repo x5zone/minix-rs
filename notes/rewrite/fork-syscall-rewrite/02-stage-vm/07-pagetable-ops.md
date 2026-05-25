@@ -1744,6 +1744,7 @@ cargo test -p minix-arch --features mock
 
 - [06-pagetable-struct.md](06-pagetable-struct.md) - 页表结构
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数
+- [13-region-avl.md](13-region-avl.md) - AVL 树实现的区域查找（region_search）
 - [16-vm-fork.md](16-vm-fork.md) - fork 时的页表操作
 - [26-vm-init-main.md](26-vm-init-main.md) - VM 初始化主流程
 

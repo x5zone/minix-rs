@@ -30,7 +30,7 @@
 //! - `VmReply`  = unified reply enum (for dispatcher return type)
 //! - `VmError`  = shared error type (maps to errno)
 
-use crate::{Endpoint, UserSlot, VirBytes, ESRCH, EINVAL, ENOMEM, EFAULT, EPERM, EIO, ENOSYS, EACCES};
+use crate::{Endpoint, UserSlot, VirBytes, PhysBytes, ESRCH, EINVAL, ENOMEM, EFAULT, EPERM, EIO, ENOSYS, EACCES};
 use crate::ipc::MessageM1;
 
 // ============================================================================
@@ -192,6 +192,76 @@ pub struct VmBrkOut {
 }
 
 // ---------------------------------------------------------------------------
+// VM_MMAP  (PM → VM, VM → PM)
+// ---------------------------------------------------------------------------
+// C: mess_mmap (ipc.h:1575)
+//     #define VMUM_ADDR  m_mmap.addr
+//     #define VMUM_LEN   m_mmap.len
+
+/// PM → VM: mmap request.
+/// Fields correspond 1:1 to Minix3 `mess_mmap`, plus `caller`
+/// which is derived from the IPC source endpoint (m_source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmMmapIn {
+    pub caller: Endpoint,
+    pub forwhom: Endpoint,
+    pub addr: VirBytes,
+    pub length: VirBytes,
+    pub prot: u32,
+    pub flags: u32,
+    pub fd: i32,
+    pub offset: u64,
+}
+
+/// VM → PM: mmap reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmMmapOut {
+    pub ret_addr: VirBytes,
+}
+
+// ---------------------------------------------------------------------------
+// VM_MAP_PHYS  (PM → VM, VM → PM)
+// ---------------------------------------------------------------------------
+// C: mess_lsys_vm_map_phys (ipc.h:1498)
+
+/// PM → VM: map physical memory request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmMapPhysIn {
+    pub caller: Endpoint,
+    pub target: Endpoint,
+    pub phys_addr: PhysBytes,
+    pub length: VirBytes,
+}
+
+/// VM → PM: map physical memory reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmMapPhysOut {
+    pub virt_addr: VirBytes,
+}
+
+// ---------------------------------------------------------------------------
+// VM_VFS_MMAP  (VFS → VM, synchronous)
+// ---------------------------------------------------------------------------
+// C: mess_vm_vfs_mmap (ipc.h:2367)
+//     VM_VFS_MMAP = VM_RQ_BASE+46
+
+/// VFS → VM: VFS-initiated file mapping request (synchronous).
+/// Used by VFS to map file contents into process address space
+/// (e.g. ld.so loading shared libraries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmVfsMmapIn {
+    pub who: Endpoint,
+    pub fd: i32,
+    pub offset: u64,
+    pub dev: u64,
+    pub ino: u64,
+    pub vaddr: VirBytes,
+    pub length: VirBytes,
+    pub flags: u32,
+    pub clearend: u16,
+}
+
+// ---------------------------------------------------------------------------
 // VM_MUNMAP  (PM → VM)
 // ---------------------------------------------------------------------------
 
@@ -201,6 +271,63 @@ pub struct VmMunmapIn {
     pub endpoint: Endpoint,
     pub addr: VirBytes,
     pub length: VirBytes,
+}
+
+// ---------------------------------------------------------------------------
+// VM_UNMAP_PHYS  (driver → VM)
+// ---------------------------------------------------------------------------
+// C: mess_lsys_vm_unmap_phys (ipc.h:1521)
+
+/// Driver → VM: unmap physical memory mapping.
+/// Unlike VM_MUNMAP, the length is derived from the region found at `vaddr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmUnmapPhysIn {
+    pub target: Endpoint,
+    pub vaddr: VirBytes,
+}
+
+// ---------------------------------------------------------------------------
+// VM_SHM_UNMAP  (process → VM)
+// ---------------------------------------------------------------------------
+// C: mess_lc_vm_shm_unmap (ipc.h:935)
+
+/// Process → VM: unmap shared memory mapping.
+/// Unlike VM_MUNMAP, the length is derived from the region found at `addr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmShmUnmapIn {
+    pub forwhom: Endpoint,
+    pub addr: VirBytes,
+}
+
+// ---------------------------------------------------------------------------
+// VM_MAPCACHEPAGE / VM_SETCACHEPAGE / VM_FORGETCACHEPAGE / VM_CLEARCACHE
+// (VFS → VM)
+// ---------------------------------------------------------------------------
+// C: m_vmmcp message fields — shared format for all 4 cache requests.
+//
+//   #define m2_l1 m_vmmcp.dev         // device number
+//   #define m2_l2 m_vmmcp.dev_offset  // device offset (u64)
+//   #define m2_l1 m_vmmcp.ino         // inode number
+//   #define m2_l2 m_vmmcp.ino_offset  // inode offset (u64)
+//   #define m2_i1 m_vmmcp.pages       // number of pages
+//   #define m2_i2 m_vmmcp.flags       // flags (VMSF_ONCE)
+//   #define m2_p1 m_vmmcp.block       // user-space block ptr (setcache only)
+
+/// VFS → VM: cache operation request.
+///
+/// Shared by `VM_MAPCACHEPAGE`, `VM_SETCACHEPAGE`, `VM_FORGETCACHEPAGE`,
+/// and `VM_CLEARCACHE`. Individual handlers read only the fields they need.
+///
+/// Corresponds to Minix3 `m_vmmcp` union in `mess_2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmCacheIn {
+    pub dev: u64,
+    pub dev_offset: u64,
+    pub ino: u64,
+    pub ino_offset: u64,
+    pub pages: u32,
+    pub flags: u32,
+    pub block: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,15 +397,54 @@ pub struct VmExecNewmemOut {
 // Unified Reply Type (for dispatcher return value)
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmRegionInfo {
+    pub vaddr: VirBytes,
+    pub length: VirBytes,
+    pub flags: u32,
+}
+
 /// VM reply — wraps each link's Out type or an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmReply {
     Fork(VmForkOut),
     Brk(VmBrkOut),
+    Mmap(VmMmapOut),
+    MapPhys(VmMapPhysOut),
+    MapCache { addr: VirBytes },
+    VfsMmap(VmMmapOut),
     Munmap,
     Exit,
     Willexit,
     ExecNewmem(VmExecNewmemOut),
+    Ok,
+    Suspend,
+    RsMemctlAddrLen { addr: VirBytes, len: usize },
+    GetPhys { phys_addr: PhysBytes },
+    GetRefcount { count: u8 },
+    InfoStats {
+        page_size: u64,
+        total_pages: u32,
+        free_pages: u32,
+        largest_contiguous: u32,
+    },
+    InfoUsage {
+        total: VirBytes,
+        shared: VirBytes,
+        text: VirBytes,
+        data: VirBytes,
+        stack: VirBytes,
+    },
+    InfoRegion {
+        regions: [VmRegionInfo; 8],
+        count: usize,
+        next: usize,
+    },
+    Getrusage {
+        max_rss_kb: u64,
+        minor_faults: u64,
+        major_faults: u64,
+    },
     Error(VmError),
 }
 
@@ -287,9 +453,23 @@ pub enum VmReply {
 // ============================================================================
 
 /// VM error types.
+///
+/// # `InvalidEndpoint` vs `InvalidProcess`
+///
+/// Both represent "bad endpoint" but map to different errno values,
+/// matching Minix3 C source behavior:
+///
+/// - `InvalidEndpoint` → `ESRCH`: Used when C's `vm_isokendpt` failure
+///   returns `ESRCH` (e.g. `do_mmap` third-party mapping: mmap.c:216,
+///   `do_getrusage`: utility.c:442)
+///
+/// - `InvalidProcess` → `EINVAL`: Used when C's `vm_isokendpt` failure
+///   returns `EINVAL` (most services: fork.c:44, break.c:53, exit.c:69,
+///   mmap.c:329, rs.c:44/94/165/361, utility.c:110)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmError {
     InvalidEndpoint,
+    InvalidProcess,
     SlotInUse,
     OutOfMemory,
     InvalidAddress,
@@ -306,6 +486,7 @@ impl VmError {
     pub fn to_errno(&self) -> i32 {
         match self {
             Self::InvalidEndpoint => ESRCH,
+            Self::InvalidProcess => EINVAL,
             Self::SlotInUse => EINVAL,
             Self::OutOfMemory => ENOMEM,
             Self::InvalidAddress => EFAULT,
@@ -370,7 +551,7 @@ impl DecodeFromM1 for VmBrkIn {
 impl EncodeToM1 for VmBrkOut {
     #[inline(always)]
     fn encode(&self, m1: &mut MessageM1) {
-        m1.m1i1 = self.new_addr.0 as i32;
+        m1.m1p1 = self.new_addr.0;
     }
 }
 

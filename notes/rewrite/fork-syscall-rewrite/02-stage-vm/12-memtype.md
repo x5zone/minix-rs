@@ -2531,7 +2531,7 @@ Ch2§2.2.2 分析了 Minix3 中 `phys_pt_flags` 通过 `#if defined(__arm__)` �
 | `ref_count` | ✅ | 默认 | 默认 | 默认 | 默认 | 默认 |
 | `ev_low_shrink` | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
 
-> **注意**：当前 MappedFile、CacheMemory、SharedMemory 的 `ev_pagefault` 实现为 stub（直接返回 `NeedNewPage`），等待 VFS 集成和缓存系统实现后补全。详见 §4.7~4.9 中的 TODO 标注。
+> **注意**：MappedFile 的 `ev_pagefault` 已设计为返回 `NeedVfsIo`（对应 Minix3 的 `SUSPEND`），缓存查找和 VFS 异步 I/O 的完整设计见 [23-vfs-interaction.md](23-vfs-interaction.md) §4.6~4.7。CacheMemory、SharedMemory 的 `ev_pagefault` 仍为 stub。
 
 ---
 
@@ -3229,13 +3229,11 @@ impl MemType for MappedFile {
         _offset: VirBytes,
         _write: bool,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // TODO: 实现缓存查找和 VFS 异步 I/O
-        // Minix3 的 mappedfile_pagefault 实现了完整的缓存查找
-        // 和 VFS 异步 I/O 逻辑（Ch2§2.2.5）。
-        // 需要：1) 缓存系统（PageFrames.addcache/rmcache）
-        //       2) VFS 集成（异步文件读取）
-        //       3) PagefaultResult::NeedAsyncIo 变体
-        Ok(PagefaultResult::NeedNewPage)
+        // MappedFile::ev_pagefault 完整设计见 23-vfs-interaction.md §4.7
+        // 缓存查找 → 命中 → Handled/NeedCow
+        // 缓存未命中 → NeedVfsIo（对应 Minix3 的 SUSPEND）
+        // 缺页框架将 NeedVfsIo 转换为 PagefaultAction::Suspended，构造 VfsRequest(FdIo)
+        Ok(PagefaultResult::NeedVfsIo)
     }
 
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
@@ -3247,7 +3245,7 @@ impl MemType for MappedFile {
     ) -> Result<(), MemTypeError> {
         // Minix3 的 mappedfile_copy 调用 mappedfile_setfile 复制文件映射信息，
         // 并返回 OK（fork 文件映射区域是正常行为）。
-        // TODO: 待 fdref 机制实现后补全引用计数。
+        // fdref 引用计数由调用方负责（fdref_ref），见 23-vfs-interaction.md §4.5
         dst.param = src.param.clone();
         Ok(())
     }
@@ -3280,14 +3278,14 @@ impl MemType for MappedFile {
 
 | Minix3 行为 | Rust 行为 | 说明 |
 |------------|----------|------|
-| 缓存查找（`pb_cache`） | TODO | 等待缓存系统 |
-| VFS 异步读取（`SUSPEND`） | TODO | 等待 VFS 集成 |
+| 缓存查找（`pb_cache`） | `PageCache::find_by_inode/find_by_device` | 见 23-vfs-interaction.md §4.9 |
+| VFS 异步读取（`SUSPEND`） | `PagefaultResult::NeedVfsIo` → `PagefaultAction::Suspended` | 见 23-vfs-interaction.md §4.6 |
 | `mappedfile_writable` 返回 0 | `writable` 返回 `false` | 文件映射不可直接写 |
 | `mappedfile_copy` 返回 OK | `ev_copy` 复制 `VrParam::File` | fork 文件映射是正常行为 |
-| `mappedfile_split` 复制 param | `ev_split` → `Ok(())` | TODO: 待 VrParam::File 补全 |
-| `mappedfile_lowshrink` 调整 offset | `ev_low_shrink` → `Ok(())` | TODO: 待 VrParam::File 补全 |
+| `mappedfile_split` 复制 param | `ev_split` 设置子区域 `fdref_id` | 见 23-vfs-interaction.md §4.7 |
+| `mappedfile_lowshrink` 调整 offset | `ev_low_shrink` 调整 `offset` | 见 23-vfs-interaction.md §4.7 |
 
-> **TODO**：`VrParam::File` 缺少 `fdref` 字段。Minix3 的 `param.file.fdref` 跟踪文件描述符引用计数（Ch2§2.2.5），Rust 版本需要对应的 `Arc<FdRef>` 机制。但当前 VM 是单线程事件循环，`Rc<FdRef>` 即可。
+> `VrParam::File` 已设计 `fdref_id: Option<u32>` 字段，通过 `FdRefTable` 管理引用计数。详见 [23-vfs-interaction.md](23-vfs-interaction.md) §3.2、§4.5、§4.8。
 
 ### 4.9 全局实例
 
@@ -3334,8 +3332,8 @@ region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
 - [14-cow-mechanism.md](14-cow-mechanism.md) — CoW 机制与 cow_resolve_core 实现
 - [15-pagefault.md](15-pagefault.md) — 页错误处理流程与 memtype 回调的调用时机
 - [16-vm-fork.md](16-vm-fork.md) — fork 中的 ev_copy 与内存类型继承
-- [18-vm-map.md](18-vm-map.md) — mmap 使用 mappedfile/shared 内存类型
-- [25-cache-memtypes.md](25-cache-memtypes.md) — CacheMemory/SharedMemory/ContiguousAnonymous/MappedFile 补全
+- [18-vm-mmap.md](18-vm-mmap.md) — mmap 使用 mappedfile/shared 内存类型
+- [25-page-cache.md](25-page-cache.md) — CacheMemory/SharedMemory/ContiguousAnonymous/MappedFile 补全
 
 ---
 

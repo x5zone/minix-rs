@@ -1312,7 +1312,7 @@ impl Default for VrParam {
 
 **`VrParam::Direct` 语义**：`VR_DIRECT` 表示该区域映射的是一段固定的物理地址（如设备 MMIO 寄存器），VM 不负责分配/释放物理页。pagefault 时直接用 `param.phys + offset` 作为物理地址填入页表项。典型场景：驱动通过 `vm_map_phys` 系统调用映射设备寄存器（[mmap.c:351](minix3/minix/servers/vm/mmap.c#L351)）。
 
-**TODO**: `VrParam::File` 缺少 `fdref` 字段。Minix3 的 `param.file.fdref` 是指向文件描述符引用计数结构的指针，用于跟踪文件映射的生命周期。Rust 重写中需要设计对应的文件引用机制（可能是 `Arc<FdRef>` 或类似方案），在实现文件映射（`mem_type_mappedfile`）时必须补全。
+**`VrParam::File` 的 `fdref_id` 字段**：`VrParam::File` 已设计 `fdref_id: Option<u32>` 字段，通过 `FdRefTable` 管理文件描述符引用计数。这对应 Minix3 的 `param.file.fdref` 指针，但使用索引而非裸指针。详见 [23-vfs-interaction.md](23-vfs-interaction.md) §3.2、§4.5、§4.8。
 
 ### 3.3 核心操作
 

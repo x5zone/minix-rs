@@ -1,11 +1,31 @@
 //! Page cache implementation (PFN index model).
 //!
 //! Uses PFN-based indexing with PageFrames for refcount management.
+//! Supports two lookup paths: by inode (regular files) and by device
+//! (device files with VMC_NO_INODE), matching Minix3's `find_cached_page_byino`
+//! and `find_cached_page_bydev`.
+//!
+//! # LRU Eviction
+//!
+//! Minix3 uses a doubly-linked list for precise LRU ordering. This
+//! implementation uses a `Vec<CacheKey>` as a simplified LRU — entries
+//! are appended on insert and scanned from the front during eviction.
+//! Acceptable because cache operations are not on the hot path.
+//!
+//! # Design Decisions
+//!
+//! See `notes/rewrite/fork-syscall-rewrite/02-stage-vm/25-page-cache.md` §4.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use minix_types::PhysBytes;
-use crate::region::{PageFrames, PageSlot, PageFlags, PFN_NONE, PfnAllocator, PfnAllocError};
+use crate::region::{PageFrames, PfnAllocator, PfnAllocError};
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CacheKey {
+    ByInode { dev: u64, ino: u64, offset: u64 },
+    ByDevice { dev: u64, offset: u64 },
+}
 
 #[derive(Debug)]
 pub(crate) struct PageCacheEntry {
@@ -14,7 +34,8 @@ pub(crate) struct PageCacheEntry {
 }
 
 pub(crate) struct PageCache {
-    entries: BTreeMap<u64, PageCacheEntry>,
+    entries: BTreeMap<CacheKey, PageCacheEntry>,
+    lru: Vec<CacheKey>,
     total_cached: u64,
 }
 
@@ -22,27 +43,30 @@ impl PageCache {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
+            lru: Vec::new(),
             total_cached: 0,
         }
     }
 
-    pub fn get(&self, block: u64) -> Option<&PageCacheEntry> {
-        self.entries.get(&block)
+    pub fn find_by_inode(&self, dev: u64, ino: u64, offset: u64) -> Option<&PageCacheEntry> {
+        self.entries.get(&CacheKey::ByInode { dev, ino, offset })
     }
 
-    pub fn get_mut(&mut self, block: u64) -> Option<&mut PageCacheEntry> {
-        self.entries.get_mut(&block)
+    pub fn find_by_device(&self, dev: u64, offset: u64) -> Option<&PageCacheEntry> {
+        self.entries.get(&CacheKey::ByDevice { dev, offset })
     }
 
-    pub fn insert(&mut self, block: u64, pfn: u32, frames: &mut PageFrames) {
+    pub fn insert(&mut self, key: CacheKey, pfn: u32, frames: &mut PageFrames) {
         frames.addcache(pfn);
-        self.entries.insert(block, PageCacheEntry { pfn, refcount: 1 });
+        self.lru.push(key.clone());
+        self.entries.insert(key, PageCacheEntry { pfn, refcount: 1 });
         self.total_cached += 1;
     }
 
-    pub fn remove(&mut self, block: u64, frames: &mut PageFrames) -> Option<u32> {
-        if let Some(entry) = self.entries.remove(&block) {
+    pub fn remove(&mut self, key: &CacheKey, frames: &mut PageFrames) -> Option<u32> {
+        if let Some(entry) = self.entries.remove(key) {
             frames.rmcache(entry.pfn);
+            self.lru.retain(|k| k != key);
             self.total_cached = self.total_cached.saturating_sub(1);
             Some(entry.pfn)
         } else {
@@ -50,8 +74,8 @@ impl PageCache {
         }
     }
 
-    pub fn increase_refcount(&mut self, block: u64) -> bool {
-        if let Some(entry) = self.entries.get_mut(&block) {
+    pub fn increase_refcount(&mut self, key: &CacheKey) -> bool {
+        if let Some(entry) = self.entries.get_mut(key) {
             entry.refcount = entry.refcount.saturating_add(1);
             true
         } else {
@@ -59,15 +83,17 @@ impl PageCache {
         }
     }
 
-    pub fn decrease_refcount(&mut self, block: u64, frames: &mut PageFrames) -> Option<u16> {
-        if let Some(entry) = self.entries.get_mut(&block) {
+    pub fn decrease_refcount(&mut self, key: &CacheKey, frames: &mut PageFrames) -> Option<u16> {
+        if let Some(entry) = self.entries.get_mut(key) {
             if entry.refcount > 0 {
                 entry.refcount -= 1;
             }
             if entry.refcount == 0 {
                 let pfn = entry.pfn;
                 frames.rmcache(pfn);
-                self.entries.remove(&block);
+                // Can't call self.remove() here (double &mut self), clean lru manually
+                self.entries.remove(key);
+                self.lru.retain(|k| k != key);
                 self.total_cached = self.total_cached.saturating_sub(1);
                 return Some(0);
             }
@@ -89,23 +115,66 @@ impl PageCache {
         self.entries.is_empty()
     }
 
-    pub fn find_by_pfn(&self, pfn: u32) -> Option<u64> {
-        for (&block, entry) in &self.entries {
+    pub fn find_by_pfn(&self, pfn: u32) -> Option<CacheKey> {
+        for (key, entry) in &self.entries {
             if entry.pfn == pfn {
-                return Some(block);
+                return Some(key.clone());
             }
         }
         None
     }
 
     pub fn flush_all(&mut self, frames: &mut PageFrames) {
-        let keys: alloc::vec::Vec<u64> = self.entries.keys().copied().collect();
+        let keys: alloc::vec::Vec<CacheKey> = self.entries.keys().cloned().collect();
         for key in keys {
             if let Some(entry) = self.entries.remove(&key) {
                 frames.rmcache(entry.pfn);
             }
         }
+        self.lru.clear();
         self.total_cached = 0;
+    }
+
+    /// Evict cached pages from the LRU oldest end when memory is low.
+    /// Corresponds to Minix3 cache_freepages() (cache.c:288).
+    /// Eviction condition: refcount == 1 (only referenced by cache, not mapped).
+    pub fn free_pages(&mut self, needed: usize, frames: &mut PageFrames) -> usize {
+        let mut freed = 0;
+        let mut keys_to_remove = Vec::new();
+
+        for key in &self.lru {
+            if freed >= needed { break; }
+            if let Some(entry) = self.entries.get(key) {
+                if frames.get(entry.pfn)
+                    .map(|s| s.refcount == 1)
+                    .unwrap_or(false)
+                {
+                    keys_to_remove.push(key.clone());
+                    freed += 1;
+                }
+            }
+        }
+
+        for key in keys_to_remove {
+            self.remove(&key, frames);
+        }
+
+        freed
+    }
+
+    /// Remove all cached pages associated with the given device.
+    /// Corresponds to Minix3 clear_cache_bydev() (cache.c:313).
+    pub fn clear_by_dev(&mut self, dev: u64, frames: &mut PageFrames) {
+        let keys: Vec<CacheKey> = self.entries.keys()
+            .filter(|k| match k {
+                CacheKey::ByInode { dev: d, .. } => *d == dev,
+                CacheKey::ByDevice { dev: d, .. } => *d == dev,
+            })
+            .cloned()
+            .collect();
+        for key in keys {
+            self.remove(&key, frames);
+        }
     }
 }
 
@@ -135,21 +204,36 @@ mod tests {
     }
 
     #[test]
-    fn test_page_cache_insert_remove() {
+    fn test_page_cache_insert_remove_by_inode() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
 
         let pfn = alloc.alloc_pfn().unwrap();
-        cache.insert(42, pfn, &mut frames);
+        let key = CacheKey::ByInode { dev: 100, ino: 200, offset: 0 };
+        cache.insert(key.clone(), pfn, &mut frames);
 
-        assert!(cache.get(42).is_some());
-        assert_eq!(cache.get(42).unwrap().pfn, pfn);
+        assert!(cache.find_by_inode(100, 200, 0).is_some());
+        assert_eq!(cache.find_by_inode(100, 200, 0).unwrap().pfn, pfn);
         assert_eq!(cache.len(), 1);
 
-        let removed_pfn = cache.remove(42, &mut frames).unwrap();
+        let removed_pfn = cache.remove(&key, &mut frames).unwrap();
         assert_eq!(removed_pfn, pfn);
-        assert!(cache.get(42).is_none());
+        assert!(cache.find_by_inode(100, 200, 0).is_none());
+    }
+
+    #[test]
+    fn test_page_cache_by_device() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        let key = CacheKey::ByDevice { dev: 100, offset: 4096 };
+        cache.insert(key.clone(), pfn, &mut frames);
+
+        assert!(cache.find_by_device(100, 4096).is_some());
+        assert!(cache.find_by_inode(100, 200, 4096).is_none());
     }
 
     #[test]
@@ -159,17 +243,18 @@ mod tests {
         let mut cache = PageCache::new();
 
         let pfn = alloc.alloc_pfn().unwrap();
-        cache.insert(42, pfn, &mut frames);
+        let key = CacheKey::ByInode { dev: 100, ino: 200, offset: 0 };
+        cache.insert(key.clone(), pfn, &mut frames);
 
-        assert!(cache.increase_refcount(42));
-        assert_eq!(cache.get(42).unwrap().refcount, 2);
+        assert!(cache.increase_refcount(&key));
+        assert_eq!(cache.find_by_inode(100, 200, 0).unwrap().refcount, 2);
 
-        let rc = cache.decrease_refcount(42, &mut frames);
+        let rc = cache.decrease_refcount(&key, &mut frames);
         assert_eq!(rc, Some(1));
 
-        let rc = cache.decrease_refcount(42, &mut frames);
+        let rc = cache.decrease_refcount(&key, &mut frames);
         assert_eq!(rc, Some(0));
-        assert!(cache.get(42).is_none());
+        assert!(cache.find_by_inode(100, 200, 0).is_none());
     }
 
     #[test]
@@ -179,9 +264,11 @@ mod tests {
         let mut cache = PageCache::new();
 
         let pfn = alloc.alloc_pfn().unwrap();
-        cache.insert(100, pfn, &mut frames);
+        let key = CacheKey::ByInode { dev: 100, ino: 200, offset: 0 };
+        cache.insert(key.clone(), pfn, &mut frames);
 
-        assert_eq!(cache.find_by_pfn(pfn), Some(100));
+        let found = cache.find_by_pfn(pfn).unwrap();
+        assert_eq!(found, key);
         assert_eq!(cache.find_by_pfn(999), None);
     }
 
@@ -193,12 +280,52 @@ mod tests {
 
         let pfn0 = alloc.alloc_pfn().unwrap();
         let pfn1 = alloc.alloc_pfn().unwrap();
-        cache.insert(1, pfn0, &mut frames);
-        cache.insert(2, pfn1, &mut frames);
+        cache.insert(CacheKey::ByInode { dev: 1, ino: 1, offset: 0 }, pfn0, &mut frames);
+        cache.insert(CacheKey::ByInode { dev: 2, ino: 2, offset: 0 }, pfn1, &mut frames);
 
         assert_eq!(cache.len(), 2);
 
         cache.flush_all(&mut frames);
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_page_cache_free_pages_lru() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        let pfn2 = alloc.alloc_pfn().unwrap();
+        cache.insert(CacheKey::ByDevice { dev: 10, offset: 0 }, pfn0, &mut frames);
+        cache.insert(CacheKey::ByDevice { dev: 10, offset: 4096 }, pfn1, &mut frames);
+        cache.insert(CacheKey::ByDevice { dev: 10, offset: 8192 }, pfn2, &mut frames);
+
+        assert_eq!(cache.len(), 3);
+
+        let freed = cache.free_pages(2, &mut frames);
+        assert_eq!(freed, 2);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_page_cache_clear_by_dev() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let pfn0 = alloc.alloc_pfn().unwrap();
+        let pfn1 = alloc.alloc_pfn().unwrap();
+        let pfn2 = alloc.alloc_pfn().unwrap();
+        cache.insert(CacheKey::ByInode { dev: 10, ino: 1, offset: 0 }, pfn0, &mut frames);
+        cache.insert(CacheKey::ByInode { dev: 20, ino: 2, offset: 0 }, pfn1, &mut frames);
+        cache.insert(CacheKey::ByDevice { dev: 10, offset: 0 }, pfn2, &mut frames);
+
+        assert_eq!(cache.len(), 3);
+
+        cache.clear_by_dev(10, &mut frames);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.find_by_inode(20, 2, 0).is_some());
     }
 }

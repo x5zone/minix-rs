@@ -1,11 +1,11 @@
 ---
 name: "review-patterns-skill"
-description: "Minix-RS Review 常见错误模式。包含文档14个模式、跨文档3个模式、代码10个模式、以及验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
+description: "Minix-RS Review 常见错误模式。包含文档15个模式、跨文档3个模式、代码10个模式、以及验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
 ---
 
 # Minix-RS Review 常见错误模式
 
-## 一、文档错误模式（14个）
+## 一、文档错误模式（15个）
 
 ### 模式1：概念混淆
 ```
@@ -97,6 +97,19 @@ description: "Minix-RS Review 常见错误模式。包含文档14个模式、跨
     fn map(&mut self, vaddr, paddr, flags) -> Result<(), PageTableError>;
     fn unmap(&mut self, vaddr) -> Result<PhysBytes, PageTableError>;
 }
+```
+
+### 模式15：开发记录风格（文档定位偏移）
+```
+❌ "已实现：handle_munmap 函数"  "待实现：munmap_vm_lin"
+❌ "✅ Split-First 原则  ❌ 权限检查"  "## 实现清单"  "## 现有代码状态"
+✅ "handle_munmap 函数负责处理取消映射请求"
+✅ "munmap_vm_lin 处理 VM 进程自身的取消映射"
+✅ "## 模块组成与测试"  "## Rust 实现组件一览"
+
+核心区分：开发记录关注"做了什么/没做什么"；知识讲解关注"系统怎么工作"
+判定："已实现/待实现/未实现"→P1；✅❌🚧→P1；进度标题→P1；>5处→系统性重写
+注意：TODO 允许保留，TODO 标记待做事项与进度标记不同
 ```
 
 ---

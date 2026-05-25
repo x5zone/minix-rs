@@ -24,7 +24,7 @@
 ### 1.2 堆的增长方向
 
 - **扩展堆**（`brk(new_addr)` 其中 `new_addr > 当前堆顶`）：堆向高地址扩展，扩展虚拟区域长度（物理页延迟分配，首次访问时通过缺页异常分配）
-- **收缩堆**（`brk(new_addr)` 其中 `new_addr < 当前堆顶`）：**Minix3 中收缩被静默忽略**——`anon_resize` 对 `l <= vr->length` 直接返回 OK，不释放任何内存，堆顶不变但调用成功。这是 Minix3 的设计选择（见 §2.7.2 anon_resize 分析）。Rust 实现计划支持真正收缩（见 §3.2 设计决策）
+- **收缩堆**（`brk(new_addr)` 其中 `new_addr < 当前堆顶`）：**Minix3 中收缩被静默忽略**——`anon_resize` 对 `l <= vr->length` 直接返回 OK，不释放任何内存，堆顶不变但调用成功。这是 Minix3 的设计选择（见 §2.7.2 anon_resize 分析）。Rust 实现已支持真正收缩（见 §3.2 设计决策）
 - **危险情况**：堆顶超过栈底时，进程被杀死（ENOMEM）
 
 ### 1.3 与 Minix3 的对应关系
@@ -47,6 +47,21 @@
 | `sbrk(incr)` | 增量（可正可负） | 成功返回旧堆顶，失败返回 -1 | 增量调整堆大小 |
 
 sbrk 基于 brk 实现：`old_brk = _brksize; if (brk(old_brk + incr) == 0) return old_brk; else return -1;`
+
+### 1.5 与 malloc 的关系
+
+用户态 malloc 通过 brk/sbrk 获取堆内存，层次关系为：
+
+应用程序 → `malloc(size)`/`free(ptr)` → 用户态内存分配器（管理已分配内存块、合并/分割空闲块、需要更多内存时调用 sbrk） → `sbrk(incr)`/`brk(addr)` → libc 系统调用封装（设置消息结构、`_syscall(VM_PROC_NR, VM_BRK, &m)`、维护 `_brksize` 全局变量） → VM 服务（管理进程地址空间、扩展/收缩堆区域、分配/释放物理页面）
+
+**关键点**：
+
+1. **malloc 是用户态分配器**：在 brk 获取的堆空间内管理内存块，调用者不直接使用 brk
+2. **brk 是内核态服务**：VM 管理进程地址空间，扩展/收缩堆区域
+3. **_brksize 全局变量**：libc 维护的当前堆顶，brk 成功后更新（libc 实现见 §2.1）
+4. **malloc 通常不收缩**：free 后通常不调用 brk 收缩，而是缓存已分配内存供后续 malloc 使用
+
+> **libc brk/sbrk 实现见 §2.1**，brk 与 sbrk 的接口对比见 §1.4。
 
 ---
 
@@ -134,7 +149,7 @@ VM_BRK 是 VM 服务处理堆调整请求的消息类型。
 **消息结构**
 
 ```c
-/* minix3/minix/include/minix/ipc.h:918-925 */
+/* minix3/minix/include/minix/ipc.h:921-924 */
 typedef struct {
 	void		*addr;
 	uint8_t		padding[52];
@@ -179,25 +194,30 @@ CALLMAP(VM_BRK, do_brk),    // VM_BRK 消息由 do_brk 处理
 
 | addr 值 | 含义 |
 |---------|------|
-| `NULL (0)` | 查询当前堆顶，不修改 |
+| `0` 或极小值 | Minix3 中导致 ENOMEM（无法找到 vaddr < 0 的区域） |
 | `> 当前堆顶` | 扩展堆，增加内存 |
 | `< 当前堆顶` | 收缩堆，释放内存 |
 | `= 当前堆顶` | 无操作，直接返回成功 |
 
-**地址验证**
+**Minix3 的限制检查机制**
 
-1. 地址必须 >= 数据段顶部（data_top）：不能低于进程的代码/数据段
-2. 地址必须 < 栈底（stack_low）：不能与栈区域重叠
-3. 地址必须符合页对齐（内部处理）：VM 会向上取整到页边界
+Minix3 的 brk **没有显式的地址范围验证**（如 data_top/stack_low 检查）。限制检查通过 `map_region_extend_upto_v` 的区域查找和冲突检查间接实现：
 
-错误情况：
-- `addr < data_top` → EINVAL（低于数据段）
-- `addr >= stack_low` → ENOMEM（与栈冲突）
-- 超出虚拟内存限制 → ENOMEM
+1. **区域查找失败** → ENOMEM：`region_search(&vmp->vm_regions_avl, offset, AVL_LESS)` 找不到起始地址 < offset 的区域时返回 ENOMEM。这隐含了"地址不能低于数据段"的约束——若 addr 低于所有区域的起始地址，查找必然失败
+2. **堆栈冲突** → ENOMEM：`nextvr->vaddr < offset` 检查堆扩展是否会侵入下一个区域（通常是栈）。这隐含了"地址不能与栈重叠"的约束
+3. **页对齐**（内部处理）：VM 通过 `roundup(offset, VM_PAGE_SIZE)` 向上取整到页边界
+
+> **注意**：Minix3 的 vmproc 结构体中没有 `vm_brk`、`vm_data_top`、`vm_stack_low` 等堆专用字段（见 §1.3）。堆顶地址隐含在数据段 vir_region 的 `vaddr + length` 中。
+
+错误情况（Minix3 实际行为）：
+- `region_search(AVL_LESS)` 找不到区域 → ENOMEM（地址低于所有区域，或进程无数据段区域）
+- `nextvr->vaddr < offset` → ENOMEM（堆扩展与下一个区域冲突，通常是栈）
+- `realloc(physblocks)` 失败 → ENOMEM（内存不足）
+- `vm_isokendpt()` 失败 → EINVAL（endpoint 无效）
 
 **Minix3 源码中的处理**
 
-do_brk 的完整实现见第3章 3.1 节。其核心逻辑是：先通过 `vm_isokendpt` 验证调用者 endpoint，再调用 `real_brk` 执行实际调整。
+do_brk 的完整实现见 §2.5。其核心逻辑是：先通过 `vm_isokendpt` 验证调用者 endpoint，再调用 `real_brk` 执行实际调整。
 
 ### 2.4 返回结果
 
@@ -214,22 +234,7 @@ brk 系统调用的返回值表示操作结果：
 
 **libc 层的处理**
 
-```c
-/* minix3/minix/lib/libc/sys/brk.c */
-int brk(void *addr)
-{
-    message m;
-
-    if (addr != _brksize) {
-        memset(&m, 0, sizeof(m));
-        m.m_lc_vm_brk.addr = addr;
-        if (_syscall(VM_PROC_NR, VM_BRK, &m) < 0)
-            return -1;  // 失败
-        _brksize = addr;  // 更新本地记录
-    }
-    return 0;  // 成功
-}
-```
+libc 的 `brk()` 封装在成功时更新 `_brksize` 全局变量，失败时返回 -1 并设置 errno。完整实现见 §2.1。
 
 **实际堆顶可能不同的原因**
 
@@ -331,7 +336,7 @@ int real_brk(struct vmproc *vmp, vir_bytes v)
 **map_region_extend_upto_v 核心逻辑**
 
 ```c
-/* minix3/minix/servers/vm/region.c:1002-1060 */
+/* minix3/minix/servers/vm/region.c:1002-1061 */
 int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 {
 	vir_bytes offset = v, limit, extralen;
@@ -402,6 +407,8 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 
 #### 2.7.1 查找堆区域
 
+> AVL 树的完整实现分析见 [13-region-avl.md](13-region-avl.md)，本节聚焦 brk 调用路径中的 AVL_LESS 搜索语义。
+
 堆区域通过 AVL 树搜索来定位，使用 AVL_LESS 搜索类型。
 
 **AVL 搜索类型**
@@ -426,7 +433,7 @@ typedef enum {
 **Minix3 源码**
 
 ```c
-/* minix3/minix/servers/vm/region.c:1002-1060 */
+/* minix3/minix/servers/vm/region.c:1002-1061 */
 int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 {
     vir_bytes offset = v;
@@ -452,6 +459,8 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 3. 堆区域和数据段可能是同一个区域（取决于内存布局）
 
 #### 2.7.2 扩展堆
+
+> VirRegion 和 PhysBlock 的完整数据结构分析见 [11-region-mapping.md](11-region-mapping.md)，本节聚焦 brk 扩展路径中的 physblocks realloc 和 ev_resize 回调。
 
 扩展堆需要分配新的物理页面并更新区域元数据。
 
@@ -510,9 +519,67 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 2. 缺页处理程序分配实际物理页
 3. 支持延迟分配（lazy allocation）
 
-> **方案四标注**：brk 的物理页分配通过缺页处理程序间接完成，调用方不受 direct map 影响。缺页处理程序内部已简化为 `alloc_phys() → vm_phys_to_virt()`（见 15-pagefault.md），brk 代码无需修改。这是 direct map 统一性的体现——物理页分配的简化在底层完成，上层调用者透明受益。
+> **Direct Map 影响分析**：brk 的物理页分配通过缺页处理程序间接完成，调用方不受 direct map 影响。缺页处理程序内部已简化为 `alloc_phys() → vm_phys_to_virt()`（见 15-pagefault.md），brk 代码无需修改。这是 direct map 统一性的体现——物理页分配的简化在底层完成，上层调用者透明受益。
 
-#### 2.7.2a anon_resize — brk 扩展的实际执行者
+**延迟分配的完整链路**
+
+brk 扩展区域后，新页没有物理内存。当用户首次访问这些页时触发缺页异常，由缺页处理程序分配物理页：
+
+```
+brk(0x500000) → 区域扩展到 0x500000
+  │
+  │  （新页 0x400000-0x500000 无物理映射）
+  │
+  ▼  用户写入 0x420000
+CPU #PF (P=0, 页不存在)
+  │
+  ▼
+handle_pagefault():
+  ├── regions.find(0x420000) → 找到堆区域
+  ├── physblocks[page_idx] → None（未分配）
+  ├── page_alloc.alloc_pfn() → new_pfn
+  ├── PageFrames[new_pfn].refcount = 1
+  ├── physblocks[page_idx] = Some(PageSlot { pfn: new_pfn, ... })
+  └── page_table.map(0x420000, new_pfn) → 页表映射
+```
+
+**brk 扩展后的区域状态**（以 `physblocks: Vec<Option<PageSlot>>` 模型表示）：
+
+```
+brk 前:
+  VirRegion { vaddr: 0x200000, length: 0x200000 }
+  physblocks: [Some(slot0), Some(slot1), ..., Some(slot7)]  ← 8 页，全部有物理页
+  页表: 0x200000-0x3FF000 全部映射
+
+brk(0x500000) 后:
+  VirRegion { vaddr: 0x200000, length: 0x300000 }     ← length 增加
+  physblocks: [Some(slot0), ..., Some(slot7), None, None, None, None]  ← 新页为 None
+  页表: 0x200000-0x3FF000 映射，0x400000-0x4FF000 未映射
+
+首次访问 0x420000 后:
+  VirRegion { vaddr: 0x200000, length: 0x300000 }
+  physblocks: [Some(slot0), ..., Some(slot7), None, Some(slot9), None, None]  ← slot9 已分配
+  页表: 0x200000-0x3FF000 映射，0x420000 映射，其余未映射
+```
+
+**brk 收缩后的区域状态**：
+
+```
+brk 前:
+  VirRegion { vaddr: 0x200000, length: 0x300000 }
+  physblocks: [Some(slot0), ..., Some(slot11)]  ← 12 页
+  页表: 0x200000-0x4FF000 全部映射
+
+brk(0x400000) 后（Rust 实现，Minix3 不支持收缩）:
+  VirRegion { vaddr: 0x200000, length: 0x200000 }     ← length 减少
+  physblocks: [Some(slot0), ..., Some(slot7)]          ← 8 页（Vec 已 resize）
+  页表: 0x200000-0x3FF000 映射，0x400000-0x4FF000 已 unmap
+  物理页: slot8-slot11 对应的 PageFrames refcount 递减，refcount==0 的已 free_pfn
+```
+
+#### 2.7.3 anon_resize — brk 扩展的实际执行者
+
+> 内存类型回调机制的完整分析见 [12-memtype.md](12-memtype.md)，本节聚焦 `anon_resize` 在 brk 路径中的行为。
 
 > **关键发现**：brk 扩展路径中，`map_region_extend_upto_v` 调用 `vr->def_memtype->ev_resize` 回调。对于堆区域（匿名内存类型 `mem_type_anon`），该回调是 `anon_resize`，它才是真正修改 `vr->length` 的函数。理解 `anon_resize` 的行为是理解 brk 收缩被静默忽略的关键。
 
@@ -564,9 +631,11 @@ static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
 | `mem_type_anon_contig` | `anon_contig_resize` | 直接返回 ENOMEM（物理连续内存不可调整大小） |
 | `mem_type_cache` | `cache_resize` | 直接返回 ENOMEM（缓存块不可调整大小） |
 
-#### 2.7.3 收缩堆
+#### 2.7.4 收缩堆
 
-> **重要说明**：Minix3 的 brk **不真正收缩堆**。`real_brk` 只调用 `map_region_extend_upto_v`，后者通过 `anon_resize` 对收缩请求静默忽略（返回 OK 但不操作）。本节分析的 `map_unmap_region` **不是 brk 的调用路径**，而是用于 `munmap` 等场景的区域释放函数。此处保留分析是因为 Rust 实现计划支持真正的 brk 收缩（见 §3.2），需要理解区域收缩的完整机制。
+> 物理页引用计数和释放机制的完整分析见 [10-phys-pagestate.md](10-phys-pagestate.md)，本节聚焦 brk 收缩路径中的 `map_subfree` → `pb_unreferenced` 调用链。
+
+> **重要说明**：Minix3 的 brk **不真正收缩堆**。`real_brk` 只调用 `map_region_extend_upto_v`，后者通过 `anon_resize` 对收缩请求静默忽略（返回 OK 但不操作）。本节分析的 `map_unmap_region` **不是 brk 的调用路径**，而是用于 `munmap` 等场景的区域释放函数。此处保留分析是因为 Rust 实现已支持真正的 brk 收缩（见 §3.2），需要理解区域收缩的完整机制。
 
 **map_unmap_region — 区域释放函数**
 
@@ -658,7 +727,7 @@ static int map_subfree(struct vir_region *region,
 | **扩展** | 延迟分配（缺页时） | `anon_resize` 增加 length | ✅ 真正执行 |
 | **收缩** | 不释放 | `anon_resize` 静默忽略 | ⚠️ 返回 OK 但不操作 |
 
-**收缩 vs 扩展（Rust 实现计划）**
+**收缩 vs 扩展（Rust 实现）**
 
 | 操作 | 物理页面 | 区域元数据 | 说明 |
 |------|---------|-----------|------|
@@ -667,6 +736,8 @@ static int map_subfree(struct vir_region *region,
 
 ### 2.8 限制检查
 
+> vmproc 结构体的完整字段分析见 [01-vmproc-struct.md](01-vmproc-struct.md)，本节聚焦 brk 相关的 `vm_total`/`vm_total_max` 统计和栈碰撞检查。
+
 #### 2.8.1 vm_total_max
 
 vm_total_max 记录进程使用过的最大虚拟内存量，用于资源统计。
@@ -674,7 +745,7 @@ vm_total_max 记录进程使用过的最大虚拟内存量，用于资源统计�
 **数据结构**
 
 ```c
-/* minix3/minix/servers/vm/vmproc.h:14-32 */
+/* minix3/minix/servers/vm/vmproc.h:14-33 */
 struct vmproc {
 	int		vm_flags;
 	endpoint_t	vm_endpoint;
@@ -752,7 +823,7 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 **getnextvr 函数**
 
 ```c
-/* minix3/minix/servers/vm/region.c:112-128 */
+/* minix3/minix/servers/vm/region.c:112-130 */
 static struct vir_region *getnextvr(struct vir_region *vr)
 {
 	struct vir_region *nextvr;
@@ -797,455 +868,175 @@ Minix3 不强制要求堆和栈之间有最小间隙，但区域边界检查确�
 
 ## 3. Rust 设计决策
 
-### 3.1 BrkRequest/BrkResponse
+### 3.1 IPC 消息类型设计
 
-使用类型安全的 IPC 消息结构，与 VM_FORK 等其他服务保持一致。
+与 VM_FORK 等其他服务保持一致的三层分离架构（Transport + Codec + Semantic）。
 
-**请求结构**
-
-```rust
-/* os/vm/src/ipc/brk.rs */
-
-/// brk 系统调用请求
-#[derive(Debug, Clone, Copy)]
-pub struct BrkRequest {
-    /// 新堆顶地址
-    /// - 0: 查询当前堆顶
-    /// - 其他: 设置新堆顶
-    pub addr: VAddr,
-}
-
-impl BrkRequest {
-    /// 从 IPC 消息解析
-    pub fn from_message(msg: &Message) -> Self {
-        Self {
-            addr: VAddr::new(msg.m_lc_vm_brk.addr as usize),
-        }
-    }
-
-    /// 是否为查询操作
-    pub fn is_query(&self) -> bool {
-        self.addr.is_null()
-    }
-}
-```
-
-**响应结构**
+**语义层类型**（`minix-types/src/ipc/vm.rs`）
 
 ```rust
-/// brk 系统调用响应
-#[derive(Debug, Clone, Copy)]
-pub struct BrkResponse {
-    /// 操作结果
-    pub result: Result<VAddr, BrkError>,
-}
-
-impl BrkResponse {
-    /// 成功响应
-    pub fn success(new_brk: VAddr) -> Self {
-        Self {
-            result: Ok(new_brk),
-        }
-    }
-
-    /// 错误响应
-    pub fn error(err: BrkError) -> Self {
-        Self {
-            result: Err(err),
-        }
-    }
-
-    /// 转换为 IPC 返回值
-    pub fn to_return_value(&self) -> i32 {
-        match &self.result {
-            Ok(_) => 0,        // brk 成功返回 0
-            Err(e) => e.to_errno(),
-        }
-    }
-}
-```
-
-**错误类型**
-
-```rust
-/// brk 错误类型
+/// PM → VM: brk 请求
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrkError {
-    /// 内存不足
-    OutOfMemory,
-    /// 无效的 endpoint
-    InvalidEndpoint,
-    /// 与其他区域冲突
-    RegionConflict,
-    /// 地址无效（Rust 设计新增：Minix3 无此独立检查，地址低于数据段由 anon_resize 隐式处理）
-    InvalidAddress,
-    /// 扩展失败（realloc/map_page_region 失败）
-    ExtendFailed,
+pub struct VmBrkIn {
+    pub endpoint: Endpoint,
+    pub new_addr: VirBytes,
 }
 
-impl BrkError {
-    pub fn to_errno(&self) -> i32 {
-        match self {
-            BrkError::OutOfMemory => -(errno::ENOMEM as i32),
-            BrkError::InvalidEndpoint => -(errno::EINVAL as i32),
-            BrkError::RegionConflict => -(errno::ENOMEM as i32),
-            BrkError::InvalidAddress => -(errno::EINVAL as i32),
-            BrkError::ExtendFailed => -(errno::ENOMEM as i32),
-        }
-    }
+/// VM → PM: brk 响应
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmBrkOut {
+    pub new_addr: VirBytes,
 }
 ```
 
-**消息类型定义**
+**Codec 层**（`DecodeFromM1` / `EncodeToM1`）
 
 ```rust
-/* os/vm/src/ipc/mod.rs */
-
-/// VM 服务消息类型
-#[derive(Debug, Clone, Copy)]
-pub enum VmRequest {
-    Exit(ExitRequest),
-    Fork(ForkRequest),
-    Brk(BrkRequest),      // brk 请求
-    ExecNewmem(ExecNewmemRequest),
-    // ...
-}
-
-impl VmRequest {
-    /// 从原始消息解析
-    pub fn from_message(msg: &Message) -> Option<Self> {
-        match msg.m_type {
-            VM_BRK => Some(VmRequest::Brk(BrkRequest::from_message(msg))),
-            // ...
-            _ => None,
+impl DecodeFromM1 for VmBrkIn {
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            endpoint: Endpoint(m1.m1i1),
+            new_addr: VirBytes(m1.m1p1),
         }
     }
 }
+
+impl EncodeToM1 for VmBrkOut {
+    fn encode(&self, m1: &mut MessageM1) {
+        m1.m1i1 = self.new_addr.0 as i32;
+    }
+}
 ```
+
+**内部类型**（`os/servers/vm/src/brk.rs`）
+
+```rust
+pub(crate) struct BrkRequest {
+    pub endpoint: Endpoint,
+    pub new_brk_addr: VirBytes,
+}
+
+pub(crate) struct BrkResponse {
+    pub new_brk_addr: VirBytes,
+}
+```
+
+dispatcher 将 `VmBrkIn` 转换为 `BrkRequest`，将 `BrkResponse` 转换为 `VmBrkOut`。
 
 ### 3.2 堆区域管理
 
-堆区域作为进程地址空间的一部分，通过 AVL 树进行管理。
+> **设计决策：为什么不用独立 HeapState？** Minix3 没有独立的堆状态结构，堆顶隐含在 vir_region 的 `vaddr + length` 中（§1.3 已说明）。Rust 实现同样不引入独立 HeapState，而是通过 `ActiveProc::region_top()` 获取当前堆顶（对应 Minix3 的 `vm_region_top` 字段），理由：
+> 1. **与 Minix3 语义对齐**：Minix3 的 `vm_region_top` 就是堆顶，Rust 的 `vm_region_top` 字段语义相同
+> 2. **避免冗余状态**：独立 HeapState 的 `current_brk` 与 `vm_region_top` 语义重复，需要额外同步逻辑
+> 3. **简化实现**：`region_top()` 直接返回 `vm_region_top`，无需维护额外状态
 
-> **设计决策：为什么引入独立 HeapState？** Minix3 没有独立的堆状态结构，堆顶隐含在 vir_region 的 `vaddr + length` 中（§1.3 已说明）。引入独立 HeapState 的理由：
-> 1. **显式状态**：Minix3 需要通过 AVL 树搜索间接获取堆顶，HeapState 直接记录 `current_brk`，避免每次查询都遍历区域树
-> 2. **类型安全**：HeapAdjustment 枚举在类型层面区分扩展/收缩/无变化/无效，Minix3 的 `anon_resize` 用 if-else 隐式处理
-> 3. **统计追踪**：`max_brk` 对应 Minix3 的 `vm_total_max`，但粒度更细（仅堆区域），便于资源监控
-> 4. **收缩支持**：Minix3 的 `anon_resize` 对收缩静默忽略（§2.7.2a），HeapState + HeapAdjustment::Shrink 使 Rust 实现能真正执行收缩操作
-
-> **设计增强：HeapAdjustment::Shrink** — Minix3 的 brk 不支持收缩（`anon_resize` 对 `l <= vr->length` 静默忽略，返回 OK 但不操作，见 §2.7.2a）。Rust 实现计划支持真正的 brk 收缩，理由：
+> **设计增强：brk 收缩** — Minix3 的 brk 不支持收缩（`anon_resize` 对 `l <= vr->length` 静默忽略，返回 OK 但不操作，见 §2.7.3）。Rust 实现支持真正的 brk 收缩，理由：
 > 1. **内存回收**：收缩时释放物理页，减少内存占用（Minix3 的静默忽略导致内存无法回收）
 > 2. **语义正确性**：POSIX 允许 brk 收缩成功但实际不释放，但真正收缩更符合用户预期
-> 3. **实现可行**：Rust 的 RAII 和类型系统使收缩实现更安全（physblocks.truncate + refcount 递减）
-> 4. **兼容性**：外部行为不变——收缩成功返回 0，失败返回 -1（ENOMEM），与 Minix3 的"静默成功"在错误码层面兼容
+> 3. **实现可行**：Rust 的 `VirRegion::split()` + `free_region_pages()` 使收缩实现更安全
+> 4. **兼容性**：外部行为不变——收缩成功返回新地址，失败返回错误，与 Minix3 的"静默成功"在错误码层面兼容
 
-**进程堆状态**
+**堆顶判断逻辑**
 
 ```rust
-/* os/vm/src/process/heap.rs */
+// handle_brk 中的三路分支（对应 Minix3 的 real_brk → map_region_extend_upto_v）
+let current_brk = active.region_top();
+let requested = request.new_brk_addr;
 
-/// 进程堆状态
-#[derive(Debug)]
-pub struct HeapState {
-    /// 堆起始地址（数据段顶部）
-    pub start: VAddr,
-    /// 当前堆顶地址
-    pub current_brk: VAddr,
-    /// 历史最大堆大小
-    pub max_brk: VAddr,
-}
-
-impl HeapState {
-    /// 创建新的堆状态
-    pub fn new(data_top: VAddr) -> Self {
-        Self {
-            start: data_top,
-            current_brk: data_top,
-            max_brk: data_top,
-        }
-    }
-
-    /// 当前堆大小
-    pub fn size(&self) -> usize {
-        self.current_brk.value() - self.start.value()
-    }
-
-    /// 计算新堆顶
-    pub fn calculate_new_brk(&self, requested: VAddr) -> HeapAdjustment {
-        if requested.value() < self.start.value() {
-            // 低于数据段，无效
-            HeapAdjustment::Invalid
-        } else if requested.value() < self.current_brk.value() {
-            // 收缩堆
-            HeapAdjustment::Shrink {
-                old_brk: self.current_brk,
-                new_brk: requested,
-                freed_size: self.current_brk.value() - requested.value(),
-            }
-        } else if requested.value() > self.current_brk.value() {
-            // 扩展堆
-            HeapAdjustment::Expand {
-                old_brk: self.current_brk,
-                new_brk: requested,
-                added_size: requested.value() - self.current_brk.value(),
-            }
-        } else {
-            // 无变化
-            HeapAdjustment::NoChange
-        }
-    }
-}
-
-/// 堆调整类型
-#[derive(Debug, Clone, Copy)]
-pub enum HeapAdjustment {
-    /// 无需调整
-    NoChange,
-    /// 扩展堆
-    Expand {
-        old_brk: VAddr,
-        new_brk: VAddr,
-        added_size: usize,
-    },
-    /// 收缩堆
-    Shrink {
-        old_brk: VAddr,
-        new_brk: VAddr,
-        freed_size: usize,
-    },
-    /// 无效请求
-    Invalid,
+if requested.0 < current_brk.0 {
+    shrink_heap(&mut active, page_alloc, frames, requested)  // 收缩
+} else if requested.0 > current_brk.0 {
+    grow_heap(&mut active, page_alloc, frames, requested)             // 扩展
+} else {
+    Ok(BrkResponse { new_brk_addr: current_brk })             // 无变化
 }
 ```
 
-**堆区域查找**
-
-```rust
-/* os/vm/src/region/heap.rs */
-
-impl ProcessMemory {
-    /// 查找堆区域
-    pub fn find_heap_region(&self, addr: VAddr) -> Option<&VirRegion> {
-        // 使用 AVL 树查找地址小于 addr 的最大区域
-        self.regions.search(addr, AvlSearchType::Less)
-    }
-
-    /// 扩展堆区域到指定地址
-    pub fn extend_heap(&mut self, new_brk: VAddr) -> Result<(), BrkError> {
-        let page_aligned = new_brk.page_align_up();
-
-        // 查找堆区域
-        let heap_region = self.find_heap_region(page_aligned)
-            .ok_or(BrkError::OutOfMemory)?;
-
-        // 检查是否会与下一个区域冲突
-        if let Some(next) = self.regions.next_region(heap_region) {
-            if page_aligned.value() > next.vaddr().value() {
-                return Err(BrkError::RegionConflict);
-            }
-        }
-
-        // 执行扩展
-        self.region_extend_upto(heap_region, page_aligned)
-    }
-}
-```
-
-**与进程结构的关系**
-
-```rust
-/* os/vm/src/process/mod.rs */
-
-/// VM 进程结构
-pub struct VmProcess {
-    /// 进程标识
-    pub endpoint: Endpoint,
-    /// 地址空间
-    pub memory: ProcessMemory,
-    /// 堆状态
-    pub heap: HeapState,
-    /// 当前虚拟内存使用量
-    pub total_memory: usize,
-    /// 历史最大虚拟内存使用量
-    pub max_memory: usize,
-}
-```
+与 Minix3 的 `map_region_extend_upto_v` 对比：Minix3 只处理扩展（收缩被 `anon_resize` 静默忽略），Rust 增加了收缩路径。
 
 ### 3.3 错误处理
 
-使用 Rust 的 Result 类型进行类型安全的错误处理。
-
-**错误分类**
+使用 `Result<BrkResponse, BrkError>` 进行类型安全的错误处理。
 
 ```rust
-/* os/vm/src/error/brk.rs */
-
-/// brk 操作错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrkError {
-    /// 内存不足
-    /// - 物理内存耗尽
-    /// - 超出虚拟内存限制
-    OutOfMemory,
-
-    /// 无效的 endpoint
-    /// - 进程不存在
-    /// - endpoint 与 slot 不匹配
-    InvalidEndpoint,
-
-    /// 区域冲突
-    /// - 与栈区域重叠
-    /// - 与其他映射区域冲突
-    RegionConflict,
-
-    /// 无效地址
-    /// - 低于数据段起始
-    /// - 地址空间无效
-    InvalidAddress,
-
-    /// 扩展失败（内部错误）
-    /// - realloc physblocks 失败（对应 Minix3 map_region_extend_upto_v 中 realloc 失败）
-    /// - map_page_region 失败（对应 Minix3 无 ev_resize 时映射匿名内存失败）
-    ExtendFailed,
+pub(crate) enum BrkError {
+    ProcessNotFound,   // vm_isokendpt 或 get_active 失败
+    OutOfMemory,       // 内存不足或区域冲突
 }
 
 impl BrkError {
-    /// 转换为 errno
-    pub fn to_errno(&self) -> i32 {
+    pub(crate) fn to_errno(&self) -> i32 {
         match self {
-            BrkError::OutOfMemory => -(errno::ENOMEM as i32),
-            BrkError::InvalidEndpoint => -(errno::EINVAL as i32),
-            BrkError::RegionConflict => -(errno::ENOMEM as i32),
-            BrkError::InvalidAddress => -(errno::EINVAL as i32),
-            BrkError::ExtendFailed => -(errno::ENOMEM as i32),
-        }
-    }
-
-    /// 错误描述
-    pub fn description(&self) -> &'static str {
-        match self {
-            BrkError::OutOfMemory => "Out of memory",
-            BrkError::InvalidEndpoint => "Invalid endpoint",
-            BrkError::RegionConflict => "Region conflict",
-            BrkError::InvalidAddress => "Invalid address",
-            BrkError::ExtendFailed => "Extend failed",
-        }
-    }
-}
-
-impl core::fmt::Display for BrkError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "brk error: {}", self.description())
-    }
-}
-```
-
-**错误处理流程**
-
-```rust
-/* os/vm/src/handler/brk.rs */
-
-impl VmHandler {
-    /// 处理 brk 请求
-    pub fn handle_brk(&mut self, request: BrkRequest) -> BrkResponse {
-        // 1. 验证 endpoint
-        let process = match self.process_table.find_by_endpoint(request.caller) {
-            Some(p) => p,
-            None => return BrkResponse::error(BrkError::InvalidEndpoint),
-        };
-
-        // 2. 验证地址
-        if !self.is_valid_brk_address(process, request.addr) {
-            return BrkResponse::error(BrkError::InvalidAddress);
-        }
-
-        // 3. 执行调整
-        match self.adjust_heap(process, request.addr) {
-            Ok(new_brk) => BrkResponse::success(new_brk),
-            Err(e) => BrkResponse::error(e),
-        }
-    }
-
-    /// 验证 brk 地址
-    fn is_valid_brk_address(&self, process: &VmProcess, addr: VAddr) -> bool {
-        // 地址不能低于数据段顶部
-        if addr.value() < process.heap.start.value() {
-            return false;
-        }
-
-        // 地址必须在有效范围内
-        if addr.value() > process.memory.max_user_address() {
-            return false;
-        }
-
-        true
-    }
-}
-```
-
-**错误恢复**
-
-```rust
-impl VmHandler {
-    /// 调整堆（带错误恢复）
-    fn adjust_heap(&mut self, process: &mut VmProcess, new_brk: VAddr) 
-        -> Result<VAddr, BrkError> 
-    {
-        let adjustment = process.heap.calculate_new_brk(new_brk);
-
-        match adjustment {
-            HeapAdjustment::NoChange => Ok(process.heap.current_brk),
-
-            HeapAdjustment::Expand { old_brk, new_brk, added_size } => {
-                // 尝试扩展
-                match self.try_expand_heap(process, new_brk, added_size) {
-                    Ok(()) => {
-                        process.heap.current_brk = new_brk;
-                        if new_brk.value() > process.heap.max_brk.value() {
-                            process.heap.max_brk = new_brk;
-                        }
-                        Ok(new_brk)
-                    }
-                    Err(e) => {
-                        // 扩展失败，保持原状态
-                        Err(e)
-                    }
-                }
-            }
-
-            HeapAdjustment::Shrink { old_brk, new_brk, freed_size } => {
-                // 收缩通常不会失败
-                self.shrink_heap(process, new_brk, freed_size);
-                process.heap.current_brk = new_brk;
-                Ok(new_brk)
-            }
-
-            HeapAdjustment::Invalid => Err(BrkError::InvalidAddress),
+            Self::ProcessNotFound => ESRCH,
+            Self::OutOfMemory => ENOMEM,
         }
     }
 }
 ```
 
-**日志记录**
+| BrkError 变体 | 对应 Minix3 错误 | errno | 触发场景 |
+|---------------|-----------------|-------|---------|
+| `ProcessNotFound` | `vm_isokendpt()` → `EINVAL`/`EDEADEPT` | ESRCH | endpoint 无效或进程不活跃 |
+| `OutOfMemory` | `real_brk` → `ENOMEM` | ENOMEM | 区域扩展失败或堆与栈区域冲突 |
 
-```rust
-impl VmHandler {
-    fn log_brk_result(&self, process: &VmProcess, request: &BrkRequest, 
-                      result: &Result<VAddr, BrkError>) 
-    {
-        match result {
-            Ok(new_brk) => {
-                trace!("brk: process {} set brk to {:#x}", 
-                       process.endpoint, new_brk.value());
-            }
-            Err(e) => {
-                warn!("brk: process {} failed: {} (requested {:#x})", 
-                      process.endpoint, e.description(), request.addr.value());
-            }
-        }
-    }
-}
+**与 Minix3 的关键差异**：Minix3 的 `do_brk` 对 endpoint 验证失败返回 `EINVAL`，Rust 返回 `ESRCH`（更精确地表示"进程不存在"）。Minix3 的 `real_brk` 只返回 `ENOMEM`，Rust 的 `OutOfMemory` 同时覆盖 Minix3 的 `ENOMEM`（内存不足）和 `nextvr->vaddr < offset`（堆与栈区域冲突）两种场景。
+
+> **设计说明**：早期版本曾定义 `InvalidAddress` 变体用于地址验证，但 Minix3 源码中 brk 路径无显式地址范围检查（见 §2.3），地址限制由 `region_search` 和 `nextvr` 冲突检查间接实现，因此删除了此变体。
+
+### 3.4 进程表操作
+
+brk 使用 `VmProcTable` 的 typestate 视图获取进程访问，与 fork（§3.5）相同的模式：
+
+| 方法 | 对应 Minix3 | 返回类型 | 说明 |
+|------|------------|---------|------|
+| `vm_isokendpt(endpoint)` | `vm_isokendpt()` | `Result<UserSlot, EndptError>` | endpoint → slot 映射 |
+| `get_active(slot)` | `&vmproc[proc]` + flags 检查 | `Option<ActiveProc>` | 获取活跃进程视图 |
+
+与 fork 不同的是：brk 不需要 `get_empty()`（不创建新进程），只需定位调用者自身。
+
+### 3.5 区域扩展策略
+
+> **设计决策：优先扩展现有区域而非创建新区域** — Minix3 的 `map_region_extend_upto_v` 通过 `realloc(physblocks)` + `anon_resize` 扩展已有区域的 length，不创建新区域。Rust 实现对齐此语义：`grow_heap` 优先调用 `VirRegion::extend()` 扩展现有堆区域的 physblocks Vec，仅首次 brk（`find_mut(current_top)` 返回 None）时创建新 VirRegion。
+
+**与 Minix3 的关键差异**：
+
+| 方面 | Minix3 | Rust |
+|------|--------|------|
+| 扩展方式 | `map_region_extend_upto_v` 扩展已有区域的 length + realloc physblocks | `VirRegion::extend()` 扩展已有区域的 physblocks Vec，语义对齐 |
+| 区域冲突检查 | `nextvr->vaddr < offset` → ENOMEM | `find_overlap(current_top, new_end)` → `OutOfMemory` |
+| 首次 brk | `region_search(AVL_LESS)` 找不到区域 → ENOMEM | `find_mut(current_top)` 返回 None → 创建新 VirRegion |
+| 物理页分配 | 延迟分配（缺页时） | 延迟分配（缺页时），一致 |
+| ev_resize 回调 | 调用 `vr->def_memtype->ev_resize`（即 `anon_resize`，只更新 length） | `extend()` 内部直接更新 length + physblocks，等价于 `anon_resize` |
+| 页对齐 | `roundup(offset, VM_PAGE_SIZE)` | `((grow_len + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE` |
+
+### 3.6 区域收缩策略
+
+> **设计决策：为什么用 split + remove 而非 truncate physblocks？** Minix3 的 `map_unmap_region` 通过 `r->length -= len` + `pt_writemap` 实现收缩。Rust 使用 `VirRegion::split()` 将区域拆分为保留部分和释放部分，理由：
+> 1. **类型安全**：`split()` 返回两个独立的 `VirRegion`，生命周期清晰，不存在部分初始化状态
+> 2. **RAII 兼容**：释放部分（right）作为独立对象，`free_region_pages` 可以完整处理
+> 3. **语义对齐**：最终效果与 Minix3 一致——释放超出新堆顶的物理页，保留未超出部分
+
+### 3.7 物理页释放策略
+
+> **与 Minix3 对齐**: Minix3 的 `shrink_region` 遍历 `phys_blocks`，对每个 `PhysBlock` 调用 `decrement_refcount()`，当 `refcount` 降为 0 时调用 `free_physical_page()`。Rust 的 `free_range` → `unmap_page` 递减 refcount，refcount=0 时返回 `(pfn, memtype)`，调用者执行 `ev_unreference` + `free_pfn`，语义完全对齐。
+
+**brk 与 exit 的闭环**
+
+brk 和 exit 形成内存生命周期闭环：brk 扩展虚拟地址空间（延迟分配物理页），exit 释放所有内存（包括 brk 扩展的区域）。
+
 ```
+brk 扩展: add_total(extralen) + region.length += extralen
+  │
+  │  （进程运行，使用堆内存；部分页通过缺页分配了物理页）
+  │
+  ▼
+exit 释放: free_region_pages() → free_range() → unmap_page 递减 refcount
+  └── refcount==0 且非缓存页 → ev_unreference + free_pfn
+  └── sub_total 由 VmProc::clear() 中 vm_total = default 隐式处理
+```
+
+brk 的延迟分配意味着退出时可能有些 physblocks 是 `None`（从未访问），这些不需要释放物理页。只有 `Some(PageSlot { pfn, ... })` 的槽位才需要递减 refcount 和释放物理页。这就是 brk 和 exit 的协作：brk 承诺虚拟地址空间，exit 兑现物理内存回收。
 
 ---
 
@@ -1253,763 +1044,254 @@ impl VmHandler {
 
 ### 4.1 消息处理入口
 
-do_brk 是 VM_BRK 消息的处理入口函数。
-
-**函数签名**
+dispatcher 从 IPC 消息解码出 `VmBrkIn`，转换为 `BrkRequest`，调用 `handle_brk`。
 
 ```rust
-/* os/vm/src/handler/brk.rs */
+// dispatcher 收到 VM_BRK 后的调用路径
+pub(crate) fn dispatch_brk(
+    table: &VmProcTable,
+    page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
+    request: VmBrkIn,
+) -> VmReply {
+    let brk_req = brk::BrkRequest {
+        endpoint: request.endpoint,
+        new_brk_addr: request.new_addr,
+    };
 
-impl VmHandler {
-    /// 处理 VM_BRK 消息
-    /// 
-    /// # 参数
-    /// - `msg`: 原始 IPC 消息
-    /// 
-    /// # 返回
-    /// 操作结果，成功返回 0，失败返回负的 errno
-    pub fn do_brk(&mut self, msg: &Message) -> i32 {
-        // 解析请求
-        let request = BrkRequest::from_message(msg);
-
-        // 处理请求
-        let response = self.handle_brk(request);
-
-        // 返回结果
-        response.to_return_value()
+    match brk::handle_brk(table, page_alloc, frames, &brk_req) {
+        Ok(response) => VmReply::Brk(VmBrkOut {
+            new_addr: response.new_brk_addr,
+        }),
+        Err(e) => VmReply::Error(Self::brk_error_to_vm_error(e)),
     }
 }
 ```
 
-**消息分发**
+dispatcher 只做消息转换和错误映射，核心逻辑在 `brk::handle_brk`（§4.2）。
+
+### 4.2 handle_brk 编排
+
+`handle_brk` 是 brk 的核心编排函数，对应 Minix3 的 `do_brk()` + `real_brk()`。
 
 ```rust
-/* os/vm/src/main.rs */
+pub(crate) fn handle_brk(
+    table: &VmProcTable,
+    page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
+    request: &BrkRequest,
+) -> Result<BrkResponse, BrkError> {
+    // 阶段1: 验证调用者 — endpoint → slot → ActiveProc 视图
+    let slot = table.vm_isokendpt(request.endpoint)
+        .map_err(|_| BrkError::ProcessNotFound)?;
 
-impl VmServer {
-    /// 消息处理循环
-    pub fn run(&mut self) -> ! {
-        loop {
-            // 接收消息
-            let msg = self.receive_message();
+    let mut active = table.get_active(slot)
+        .ok_or(BrkError::ProcessNotFound)?;
 
-            // 根据消息类型分发
-            let result = match msg.m_type {
-                VM_BRK => self.handler.do_brk(&msg),
-                VM_FORK => self.handler.do_fork(&msg),
-                VM_EXIT => self.handler.do_exit(&msg),
-                // ...
-                _ => {
-                    warn!("unknown message type: {}", msg.m_type);
-                    -(errno::EINVAL as i32)
-                }
-            };
+    // 阶段2: 判断操作类型（扩展/收缩/无变化）
+    let current_brk = active.region_top();
+    let requested = request.new_brk_addr;
 
-            // 发送响应
-            self.send_response(result);
-        }
+    if requested.0 < current_brk.0 {
+        shrink_heap(&mut active, page_alloc, frames, requested)
+    } else if requested.0 > current_brk.0 {
+        grow_heap(&mut active, page_alloc, frames, requested)
+    } else {
+        Ok(BrkResponse { new_brk_addr: current_brk })
     }
 }
 ```
 
-**处理流程**
+**与 Minix3 的对应关系**：
 
-1. 解析请求：`BrkRequest::from_message(msg)` — 提取 addr 字段和 caller endpoint
-2. 处理请求：`handle_brk(request)` — 验证 endpoint、验证地址、执行堆调整
-3. 构造响应：`BrkResponse { result: Ok/Err }` — 成功返回 0，失败返回负的 errno
+| Minix3 | Rust | 说明 |
+|--------|------|------|
+| `vm_isokendpt(msg->m_source, &proc)` | `table.vm_isokendpt(request.endpoint)` | 验证调用者 endpoint |
+| `real_brk(&vmproc[proc], addr)` | `grow_heap` / `shrink_heap` | 执行堆调整 |
+| `map_region_extend_upto_v(vmp, v)` | `grow_heap` 扩展现有区域 | 扩展堆区域 |
+| `nextvr->vaddr < offset` → ENOMEM | `find_overlap` → `OutOfMemory` | 堆栈冲突检查 |
+| `anon_resize` 静默忽略收缩 | `shrink_heap` 真正释放物理页 | 收缩行为差异 |
 
-### 4.2 进程查找
+### 4.3 堆扩展
 
-通过消息来源 endpoint 查找进程结构。
-
-**进程查找实现**
+`grow_heap` 对应 Minix3 的 `map_region_extend_upto_v`，实现方式与 Minix3 对齐：优先扩展现有堆区域，仅在没有可扩展区域时创建新区域。
 
 ```rust
-/* os/vm/src/process/table.rs */
+fn grow_heap(
+    active: &mut ActiveProc<'_>,
+    _page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
+    new_brk: VirBytes,
+) -> Result<BrkResponse, BrkError> {
+    let current_top = active.region_top();
+    let grow_len = new_brk.0 - current_top.0;
 
-impl ProcessTable {
-    /// 通过 endpoint 查找进程
-    /// 
-    /// # 参数
-    /// - `endpoint`: 进程的 endpoint
-    /// 
-    /// # 返回
-    /// 成功返回进程的可变引用，失败返回 None
-    pub fn find_by_endpoint(&mut self, endpoint: Endpoint) 
-        -> Option<&mut VmProcess> 
-    {
-        // 验证 endpoint 有效性
-        if !self.is_valid_endpoint(endpoint) {
-            return None;
-        }
-
-        // 计算 slot
-        let slot = self.endpoint_to_slot(endpoint);
-
-        // 检查 slot 有效性
-        if slot >= self.processes.len() {
-            return None;
-        }
-
-        let process = &mut self.processes[slot];
-
-        // 验证进程在使用中且 endpoint 匹配
-        if process.flags.contains(VmProcessFlags::INUSE) 
-            && process.endpoint == endpoint 
-        {
-            Some(process)
-        } else {
-            None
-        }
+    if grow_len == 0 {
+        return Ok(BrkResponse { new_brk_addr: current_top });
     }
 
-    /// 验证 endpoint 有效性
-    fn is_valid_endpoint(&self, endpoint: Endpoint) -> bool {
-        // endpoint 必须是有效的进程 endpoint
-        endpoint.is_valid() && !endpoint.is_none()
+    let aligned_len = VirBytes(((grow_len + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE);
+    let new_end = VirBytes(current_top.0 + aligned_len.0);
+
+    // 区域冲突检查：防止堆扩展侵入栈或其他区域（对应 Minix3 nextvr->vaddr < offset）
+    if active.regions().find_overlap(current_top, new_end).is_some() {
+        return Err(BrkError::OutOfMemory);
     }
 
-    /// 从 endpoint 计算 slot
-    fn endpoint_to_slot(&self, endpoint: Endpoint) -> usize {
-        // Minix3 的 endpoint 编码方式
-        // slot = (endpoint - FIRST_USER_PROC) 或类似计算
-        endpoint.slot()
+    // 优先扩展现有区域（对应 Minix3 realloc physblocks + anon_resize）
+    if let Some(top_region) = active.regions_mut().find_mut(current_top) {
+        top_region.extend(aligned_len)
+            .map_err(|_| BrkError::OutOfMemory)?;
+    } else if let Some(top_region) = active.regions_mut().find_mut_by_end(current_top) {
+        // find_mut 要求 contains_addr(addr)，而 addr == end_addr() 不满足。
+        // find_mut_by_end 通过 end_addr() == target 查找边界相邻的区域。
+        top_region.extend(aligned_len)
+            .map_err(|_| BrkError::OutOfMemory)?;
+    } else {
+        // 首次 brk：没有可扩展的区域，创建新区域
+        let new_region = VirRegion::with_memtype(
+            current_top,
+            aligned_len,
+            VrFlags::WRITABLE | VrFlags::ANON,
+            &MEM_TYPE_ANON,
+        );
+        active.regions_mut().insert(new_region);
     }
+
+    active.add_total(aligned_len);
+    active.set_region_top(new_end);
+
+    Ok(BrkResponse { new_brk_addr: new_brk })
 }
 ```
 
-**endpoint 验证**
+> **三路分支说明**：`find_mut` 查找 `contains_addr(addr)` 的区域（适用于常规扩展），`find_mut_by_end` 查找 `end_addr() == target` 的区域（适用于 `addr` 恰好等于区域尾地址的边界情况，此时 `contains_addr` 返回 false）。这是 BTreeMap 模型与 Minix3 AVL 树行为差异的补偿——AVL 树中 `region_search(AVL_LESS)` 能找到 `vaddr <= addr` 的最近区域，而 BTreeMap 的 `range(..=addr).next_back()` 后还需额外的包含性检查。`find_mut_by_end` 方法在 [RegionMap](os/servers/vm/src/region/region_map.rs) 中定义，消除了原有的 `find_less + filter + get_mut` 三次查找。
+
+### 4.4 堆收缩
+
+`shrink_heap` 是 Rust 新增功能，Minix3 的 brk 不支持收缩。实现逻辑：遍历区域树，移除或拆分超出新堆顶的区域。
 
 ```rust
-/* os/vm/src/ipc/endpoint.rs */
+fn shrink_heap(
+    active: &mut ActiveProc<'_>,
+    _page_alloc: &mut VmPageAllocator,
+    frames: &mut PageFrames,
+    new_brk: VirBytes,
+) -> Result<BrkResponse, BrkError> {
+    let current_top = active.region_top();
 
-impl Endpoint {
-    /// 检查 endpoint 是否有效
-    pub fn is_valid(&self) -> bool {
-        // 检查 endpoint 是否在有效范围内
-        self.value >= MIN_ENDPOINT && self.value <= MAX_ENDPOINT
+    if new_brk.0 >= current_top.0 {
+        return Ok(BrkResponse { new_brk_addr: current_top });
     }
 
-    /// 获取进程 slot
-    pub fn slot(&self) -> usize {
-        // 从 endpoint 提取 slot
-        // Minix3 编码: endpoint 包含 slot 信息
-        ((self.value - MIN_ENDPOINT) as usize) & SLOT_MASK
-    }
-}
-```
+    // 收集需要移除和需要拆分的区域
+    let mut regions_to_remove = alloc::vec::Vec::new();
+    let mut regions_to_shrink = alloc::vec::Vec::new();
 
-**查找流程**
-
-1. 验证 endpoint 格式：`is_valid_endpoint(endpoint)` — 检查是否在有效范围内、是否为 NONE，无效返回 None
-2. 计算 slot：`slot = endpoint.slot()`
-3. 检查进程状态：INUSE 标志是否设置、endpoint 是否匹配，匹配返回 `Some(&mut process)`，不匹配返回 None
-
-**错误处理**
-
-```rust
-impl VmHandler {
-    fn lookup_process(&mut self, endpoint: Endpoint) 
-        -> Result<&mut VmProcess, BrkError> 
-    {
-        match self.process_table.find_by_endpoint(endpoint) {
-            Some(process) => Ok(process),
-            None => {
-                warn!("brk: invalid endpoint {}", endpoint);
-                Err(BrkError::InvalidEndpoint)
-            }
-        }
-    }
-}
-```
-
-### 4.3 地址验证
-
-验证新堆顶地址的合法性。
-
-**地址验证实现**
-
-```rust
-/* os/vm/src/handler/brk.rs */
-
-impl VmHandler {
-    /// 验证 brk 地址
-    /// 
-    /// # 检查项
-    /// 1. 地址不能低于数据段顶部
-    /// 2. 地址不能与栈区域冲突
-    /// 3. 地址必须在用户空间范围内
-    pub fn validate_brk_address(&self, process: &VmProcess, addr: VAddr) 
-        -> Result<(), BrkError> 
-    {
-        // 1. 检查地址不能低于数据段顶部
-        if addr.value() < process.heap.start.value() {
-            warn!("brk: address {:#x} below data top {:#x}", 
-                  addr.value(), process.heap.start.value());
-            return Err(BrkError::InvalidAddress);
-        }
-
-        // 2. 检查地址必须在用户空间范围内
-        if addr.value() > process.memory.max_user_address() {
-            warn!("brk: address {:#x} exceeds user space", addr.value());
-            return Err(BrkError::InvalidAddress);
-        }
-
-        // 3. 检查是否与栈区域冲突
-        if self.would_conflict_with_stack(process, addr) {
-            warn!("brk: address {:#x} conflicts with stack", addr.value());
-            return Err(BrkError::RegionConflict);
-        }
-
-        Ok(())
-    }
-
-    /// 检查是否会与栈区域冲突
-    fn would_conflict_with_stack(&self, process: &VmProcess, addr: VAddr) -> bool {
-        // 查找堆区域
-        let heap_region = match process.memory.find_heap_region(addr) {
-            Some(r) => r,
-            None => return true,  // 找不到区域，视为冲突
-        };
-
-        // 获取下一个区域
-        if let Some(next) = process.memory.next_region(heap_region) {
-            // 如果下一个区域是栈，检查是否会重叠
-            let page_aligned = addr.page_align_up();
-            if page_aligned.value() > next.vaddr().value() {
-                return true;
-            }
-        }
-
-        false
-    }
-}
-```
-
-**地址验证流程**
-
-1. 检查 `addr >= process.heap.start`（地址 >= 数据段顶部），失败返回 InvalidAddress
-2. 检查 `addr <= max_user_address`（地址 <= 用户空间最大地址），失败返回 InvalidAddress
-3. 检查 `page_align_up(addr) < stack_region.vaddr`（不与栈区域冲突），失败返回 RegionConflict
-
-**边界情况处理**
-
-```rust
-impl VmHandler {
-    /// 处理边界情况
-    fn handle_edge_cases(&self, process: &VmProcess, addr: VAddr) 
-        -> Option<BrkResponse> 
-    {
-        // NULL 地址：查询当前堆顶
-        if addr.is_null() {
-            return Some(BrkResponse::success(process.heap.current_brk));
-        }
-
-        // 地址等于当前堆顶：无需操作
-        if addr == process.heap.current_brk {
-            return Some(BrkResponse::success(addr));
-        }
-
-        // 地址在当前堆范围内（收缩）：直接处理
-        if addr.value() < process.heap.current_brk.value() {
-            // 收缩操作通常不会失败
-            return None;  // 继续正常处理
-        }
-
-        None  // 继续正常处理
-    }
-}
-```
-
-### 4.4 堆调整
-
-执行实际的堆扩展或收缩操作。
-
-**堆调整实现**
-
-```rust
-/* os/vm/src/handler/brk.rs */
-
-impl VmHandler {
-    /// 执行堆调整
-    pub fn adjust_heap(&mut self, process: &mut VmProcess, new_brk: VAddr) 
-        -> Result<VAddr, BrkError> 
-    {
-        let adjustment = process.heap.calculate_new_brk(new_brk);
-
-        match adjustment {
-            HeapAdjustment::NoChange => {
-                Ok(process.heap.current_brk)
-            }
-
-            HeapAdjustment::Expand { old_brk, new_brk, added_size } => {
-                self.expand_heap(process, old_brk, new_brk, added_size)
-            }
-
-            HeapAdjustment::Shrink { old_brk, new_brk, freed_size } => {
-                self.shrink_heap(process, old_brk, new_brk, freed_size)
-            }
-
-            HeapAdjustment::Invalid => {
-                Err(BrkError::InvalidAddress)
-            }
+    for region in active.regions().iter() {
+        if region.vaddr.0 >= new_brk.0 {
+            regions_to_remove.push(region.vaddr);
+        } else if region.end_addr().0 > new_brk.0 && region.vaddr.0 < new_brk.0 {
+            regions_to_shrink.push(region.vaddr);
         }
     }
 
-    /// 扩展堆
-    fn expand_heap(&mut self, process: &mut VmProcess, 
-                   old_brk: VAddr, new_brk: VAddr, added_size: usize) 
-        -> Result<VAddr, BrkError> 
-    {
-        let page_aligned = new_brk.page_align_up();
-
-        // 查找堆区域
-        let heap_region = process.memory.find_heap_region(page_aligned)
-            .ok_or(BrkError::OutOfMemory)?;
-
-        // 检查区域冲突
-        if let Some(next) = process.memory.next_region(heap_region) {
-            if page_aligned.value() > next.vaddr().value() {
-                return Err(BrkError::RegionConflict);
-            }
-        }
-
-        // 执行区域扩展
-        process.memory.extend_region(heap_region, page_aligned)?;
-
-        // 更新堆状态
-        process.heap.current_brk = new_brk;
-        if new_brk.value() > process.heap.max_brk.value() {
-            process.heap.max_brk = new_brk;
-        }
-
-        Ok(new_brk)
-    }
-
-    /// 收缩堆
-    fn shrink_heap(&mut self, process: &mut VmProcess,
-                   old_brk: VAddr, new_brk: VAddr, freed_size: usize) 
-        -> Result<VAddr, BrkError> 
-    {
-        let page_aligned = new_brk.page_align_up();
-
-        // 查找堆区域
-        let heap_region = process.memory.find_heap_region(old_brk)
-            .ok_or(BrkError::OutOfMemory)?;
-
-        // 释放物理页面
-        process.memory.shrink_region(heap_region, page_aligned)?;
-
-        // 更新堆状态
-        process.heap.current_brk = new_brk;
-
-        Ok(new_brk)
-    }
-}
-```
-
-**区域扩展实现**
-
-```rust
-impl ProcessMemory {
-    pub fn extend_region(
-        &mut self,
-        region: &mut VirRegion,
-        new_end: VirBytes,
-        frames: &mut PageFrames,
-    ) -> Result<(), BrkError> {
-        let new_length = VirBytes(new_end.get() - region.vaddr.get());
-        let old_length = region.length;
-
-        if new_length.get() <= old_length.get() {
-            return Ok(());
-        }
-
-        let added_pages = ((new_length.get() - old_length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        region.physblocks.extend((0..added_pages).map(|_| None));
-
-        region.length = new_length;
-
-        Ok(())
-    }
-
-    pub fn shrink_region(
-        &mut self,
-        region: &mut VirRegion,
-        new_end: VirBytes,
-        frames: &mut PageFrames,
-    ) -> Result<(), BrkError> {
-        let new_length = VirBytes(new_end.get() - region.vaddr.get());
-        let old_length = region.length;
-
-        if new_length.get() >= old_length.get() {
-            return Ok(());
-        }
-
-        let freed_pages = ((old_length.get() - new_length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let keep_pages = (new_length.get() / PAGE_SIZE) as usize;
-
-        for page_idx in keep_pages..(keep_pages + freed_pages) {
-            if let Some(slot) = region.physblocks[page_idx].take() {
-                if slot.is_mapped() {
-                    let state = frames.get_mut(slot.pfn).unwrap();
-                    state.refcount -= 1;
-                    if state.refcount == 0
-                        && !state.flags.contains(PageFlags::IN_CACHE)
-                    {
-                        if let Some(mt) = slot.memtype {
-                            mt.ev_unreference(frames, slot);
+    // 拆分跨越新堆顶的区域
+    for vaddr in regions_to_shrink {
+        if let Some(region) = active.regions_mut().remove(vaddr) {
+            let split_point = VirBytes(new_brk.0 - region.vaddr.0);
+            let region_len = region.length;
+            if split_point.0 > 0 && split_point.0 < region_len.0 {
+                match region.split(split_point) {
+                    Ok((left, right)) => {
+                        let freed_len = right.length;
+                        {
+                            let page_table = active.page_table_mut();
+                            free_region_pages(right, page_table, frames, page_alloc);
                         }
+                        active.sub_total(VirBytes(freed_len.0));
+                        active.regions_mut().insert(left);
+                    }
+                    Err(_) => {
+                        active.sub_total(VirBytes(region_len.0));
                     }
                 }
+            } else {
+                active.regions_mut().insert(region);
             }
         }
+    }
 
-        region.physblocks.truncate(keep_pages);
-        region.length = new_length;
+    // 移除完全超出新堆顶的区域
+    for vaddr in regions_to_remove {
+        if let Some(region) = active.regions_mut().remove(vaddr) {
+            let freed_len = region.length;
+            {
+                let page_table = active.page_table_mut();
+                free_region_pages(region, page_table, frames, page_alloc);
+            }
+            active.sub_total(VirBytes(freed_len.0));
+        }
+    }
 
-        Ok(())
+    active.set_region_top(new_brk);
+
+    Ok(BrkResponse { new_brk_addr: new_brk })
+}
+```
+
+**收缩策略**：
+
+1. **完全超出**：区域起始地址 >= 新堆顶 → 整个移除并释放物理页
+2. **跨越边界**：区域起始 < 新堆顶 < 区域结束 → `VirRegion::split()` 拆分，保留左半部分，释放右半部分
+3. **完全在内**：区域结束 <= 新堆顶 → 不操作
+
+**free_region_pages** — 释放区域物理页
+
+```rust
+fn free_region_pages(
+    region: VirRegion,
+    page_table: &mut PageTable,
+    frames: &mut PageFrames,
+    page_alloc: &mut VmPageAllocator,
+) {
+    // 从页表取消映射
+    let page_count = (region.length.0 / PAGE_SIZE) as usize;
+    for i in 0..page_count {
+        let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
+        let _ = page_table.unmap(vaddr);
+    }
+
+    // 递减 refcount 并释放物理页（对应 Minix3 pb_unreferenced + free_physical_page）
+    let mut region = region;
+    let pending = region.free_range(frames, VirBytes(0), region.length);
+    for (pfn, mt) in pending {
+        mt.ev_unreference(frames, pfn);
+        page_alloc.free_pfn(pfn);
     }
 }
 ```
 
-> **方案 A 简化**: Minix3 的 `shrink_region` 需要遍历 `phys_blocks`，对每个 `PhysBlock` 调用 `decrement_refcount()`，当 `refcount` 降为 0 时调用 `free_physical_page()`。方案 A 使用 `VirRegion.unmap_page()` 统一处理，递减 `PageFrames.states[pfn].refcount`，由 `MemType.ev_unreference()` 决定是否释放物理页。
->
-> **设计决策：为什么直接操作 refcount 而非使用 pb_unreferenced？** Minix3 通过 `pb_unreferenced(region, pr, 1)` 统一处理引用计数递减和物理页释放。Rust 实现直接操作 `frames.get_mut(slot.pfn).unwrap().refcount -= 1`，理由：
-> 1. **类型安全**：Minix3 的 `pb_unreferenced` 接受 `phys_region *` 指针，Rust 的 `PageSlot` 是值类型，不需要指针间接
-> 2. **统一路径**：`refcount` 递减 + `ev_unreference` 回调与 Minix3 的 `pb_unreferenced` 语义等价——都是递减引用计数，归零时通过回调释放
-> 3. **RAII 兼容**：`physblocks[page_idx].take()` 将 slot 设为 None，配合 `truncate` 实现 RAII 式清理
-> 4. **语义对齐**：最终效果与 Minix3 一致——引用计数归零时释放物理页，缓存页不释放
-
-**调整流程**
-
-1. 计算调整类型：`calculate_new_brk(new_brk)` → NoChange / Expand / Shrink
-2. Expand 路径：查找堆区域 → 检查冲突 → 扩展区域（`physblocks.extend`，新增 `None` 槽位）
-3. Shrink 路径：查找堆区域 → 释放物理页（递减 `PageFrames.states[pfn].refcount`，归零时 `ev_unreference`） → `physblocks.truncate` → 更新区域长度
-4. 更新堆状态：`current_brk = new_brk`, `max_brk = max(max_brk, new_brk)`
+> 收缩策略的设计决策见 §3.6，物理页释放策略见 §3.7。
 
 ### 4.5 返回结果
 
-构造响应消息返回给调用者。
+构造 `BrkResponse` 返回给 dispatcher，由 dispatcher 转换为 `VmReply::Brk(VmBrkOut)`。
 
-**响应构造**
-
-```rust
-/* os/vm/src/handler/brk.rs */
-
-impl VmHandler {
-    /// 构造 brk 响应
-    pub fn build_response(&self, result: Result<VAddr, BrkError>) -> BrkResponse {
-        match result {
-            Ok(new_brk) => {
-                trace!("brk: success, new_brk = {:#x}", new_brk.value());
-                BrkResponse::success(new_brk)
-            }
-            Err(e) => {
-                warn!("brk: failed: {}", e.description());
-                BrkResponse::error(e)
-            }
-        }
-    }
-}
-```
-
-**BrkResponse 实现**
-
-```rust
-/* os/vm/src/ipc/brk.rs */
-
-impl BrkResponse {
-    /// 成功响应
-    pub fn success(new_brk: VAddr) -> Self {
-        Self {
-            result: Ok(new_brk),
-        }
-    }
-
-    /// 错误响应
-    pub fn error(err: BrkError) -> Self {
-        Self {
-            result: Err(err),
-        }
-    }
-
-    /// 转换为 IPC 返回值
-    /// 
-    /// # 返回值
-    /// - 成功: 0
-    /// - 失败: 负的 errno 值
-    pub fn to_return_value(&self) -> i32 {
-        match &self.result {
-            Ok(_) => 0,
-            Err(e) => e.to_errno(),
-        }
-    }
-
-    /// 获取新堆顶地址（用于日志）
-    pub fn new_brk(&self) -> Option<VAddr> {
-        self.result.ok()
-    }
-}
-```
-
-**响应流程**
-
-1. 成功路径：`Ok(new_brk)` → 记录成功日志 → `BrkResponse::success(new_brk)` → `to_return_value()` 返回 0
-2. 失败路径：`Err(error)` → 记录错误日志 → `BrkResponse::error(err)` → `to_return_value()` 返回负的 errno
-
-**完整处理函数**
-
-```rust
-impl VmHandler {
-    /// 完整的 brk 处理函数
-    pub fn handle_brk(&mut self, request: BrkRequest) -> BrkResponse {
-        // 1. 查找进程
-        let process = match self.process_table.find_by_endpoint(request.caller) {
-            Some(p) => p,
-            None => return BrkResponse::error(BrkError::InvalidEndpoint),
-        };
-
-        // 2. 处理边界情况
-        if let Some(response) = self.handle_edge_cases(process, request.addr) {
-            return response;
-        }
-
-        // 3. 验证地址
-        if let Err(e) = self.validate_brk_address(process, request.addr) {
-            return BrkResponse::error(e);
-        }
-
-        // 4. 执行堆调整
-        let result = self.adjust_heap(process, request.addr);
-
-        // 5. 构造响应
-        self.build_response(result)
-    }
-}
-```
+**成功路径**：`Ok(BrkResponse { new_brk_addr })` → `VmReply::Brk(VmBrkOut { new_addr })` → 编码为 M1 消息返回
+**失败路径**：`Err(BrkError)` → `VmReply::Error(VmError)` → 返回错误码
 
 **与 libc 的交互**
 
-```c
-/* 用户态 libc */
-int brk(void *addr)
-{
-    message m;
-    memset(&m, 0, sizeof(m));
-    m.m_lc_vm_brk.addr = addr;
-    
-    // 发送请求并接收响应
-    if (_syscall(VM_PROC_NR, VM_BRK, &m) < 0)
-        return -1;  // errno 已设置
-    
-    _brksize = addr;  // 更新本地记录
-    return 0;
-}
-```
+libc 的 `brk()` 收到 VM 返回后更新 `_brksize` 全局变量（实现见 §2.1），用户态通过 `_brksize` 获取当前堆顶。
 
 ---
 
-## 5. 专题：与 malloc 的关系
-
-### 5.1 libc brk
-
-用户态 malloc 通过 brk/sbrk 获取堆内存。
-
-**malloc 与 brk 的层次关系**
-
-应用程序 → `malloc(size)`/`free(ptr)` → 用户态内存分配器（管理已分配内存块、合并/分割空闲块、需要更多内存时调用 sbrk） → `sbrk(incr)`/`brk(addr)` → libc 系统调用封装（设置消息结构、`_syscall(VM_PROC_NR, VM_BRK, &m)`、维护 `_brksize` 全局变量） → VM 服务（管理进程地址空间、扩展/收缩堆区域、分配/释放物理页面）
-
-**Minix3 libc 实现**
-
-```c
-/* minix3/minix/lib/libc/sys/brk.c */
-
-extern char *_brksize;  // 当前堆顶（全局变量）
-
-int brk(void *addr)
-{
-    message m;
-
-    // 只有请求的地址与当前堆顶不同时才调用 VM
-    if (addr != _brksize) {
-        memset(&m, 0, sizeof(m));
-        m.m_lc_vm_brk.addr = addr;
-        if (_syscall(VM_PROC_NR, VM_BRK, &m) < 0)
-            return -1;
-        _brksize = addr;
-    }
-    return 0;
-}
-```
-
-**malloc 的典型实现**
-
-```c
-/* 简化的 malloc 实现示意 */
-
-struct block_header {
-    size_t size;
-    int free;
-    struct block_header *next;
-};
-
-static struct block_header *free_list = NULL;
-static void *heap_start = NULL;
-
-void *malloc(size_t size)
-{
-    // 1. 对齐请求大小
-    size = ALIGN(size + sizeof(struct block_header));
-
-    // 2. 在空闲链表中查找合适的块
-    struct block_header *block = find_free_block(size);
-    if (block) {
-        block->free = 0;
-        return (void *)(block + 1);
-    }
-
-    // 3. 没有合适的块，需要扩展堆
-    void *new_mem = sbrk(size);
-    if (new_mem == (void *)-1) {
-        return NULL;  // 内存不足
-    }
-
-    // 4. 初始化新块
-    block = (struct block_header *)new_mem;
-    block->size = size;
-    block->free = 0;
-    block->next = NULL;
-
-    return (void *)(block + 1);
-}
-
-void free(void *ptr)
-{
-    if (!ptr) return;
-
-    struct block_header *block = (struct block_header *)ptr - 1;
-    block->free = 1;
-
-    // 可选：合并相邻的空闲块
-    // 可选：如果堆末尾有大块空闲，收缩堆
-}
-```
-
-**_brksize 全局变量**
-
-```c
-/* _brksize 由 libc 维护 */
-char *_brksize;
-
-/* 在进程启动时初始化 */
-void _init_brk(void)
-{
-    // 通过 brk(0) 查询当前堆顶
-    message m;
-    memset(&m, 0, sizeof(m));
-    m.m_lc_vm_brk.addr = 0;
-    _syscall(VM_PROC_NR, VM_BRK, &m);
-    // _brksize 在 brk 中被设置
-}
-```
-
-### 5.2 sbrk 实现
-
-sbrk 是基于 brk 的便捷封装，用于增量调整堆。
-
-**Minix3 sbrk 实现**
-
-```c
-/* minix3/minix/lib/libc/sys/sbrk.c */
-
-#include <unistd.h>
-
-extern char *_brksize;
-
-void *sbrk(intptr_t incr)
-{
-    char *newsize, *oldsize;
-
-    // 保存旧堆顶
-    oldsize = _brksize;
-    
-    // 计算新堆顶
-    newsize = _brksize + incr;
-
-    // 溢出检查
-    if ((incr > 0 && newsize < oldsize) ||
-        (incr < 0 && newsize > oldsize))
-        return (void *)-1;
-
-    // 调用 brk
-    if (brk(newsize) == 0)
-        return oldsize;  // 返回旧堆顶
-    else
-        return (void *)-1;
-}
-```
-
-**sbrk 与 brk 的区别**
-
-| 接口 | 参数 | 返回值 | 用途 |
-|------|------|--------|------|
-| `brk(addr)` | 绝对地址 | 0 (成功) 或 -1 (失败) | 设置堆顶到指定地址 |
-| `sbrk(incr)` | 增量（可正可负） | 旧堆顶地址 或 -1 (失败) | 增量调整堆大小 |
-
-示例：`brk((void*)0x10000)` 设置堆顶到 0x10000；`sbrk(4096)` 扩展 4KB 并返回扩展前的堆顶。
-
-**sbrk 的典型用法**
-
-```c
-/* malloc 使用 sbrk 获取内存 */
-void *malloc(size_t size)
-{
-    // ... 省略查找空闲块的逻辑 ...
-
-    // 需要更多内存
-    void *mem = sbrk(size);
-    if (mem == (void *)-1) {
-        errno = ENOMEM;
-        return NULL;
-    }
-
-    return mem;
-}
-
-/* 查询当前堆顶 */
-void *current_brk = sbrk(0);  // incr = 0，返回当前堆顶
-```
-
-**sbrk(0) 的特殊用途**
-
-```c
-// 查询当前堆顶，不修改
-void *get_current_brk(void)
-{
-    return sbrk(0);
-}
-
-// 检查堆是否可以扩展
-int can_expand_heap(size_t size)
-{
-    void *current = sbrk(0);
-    void *test = sbrk(size);
-    if (test == (void *)-1) {
-        return 0;  // 无法扩展
-    }
-    sbrk(-size);  // 恢复
-    return 1;
-}
-```
-
----
-
-## 6. 测试要点
+## 5. 测试要点
 
 > 本章描述 Rust 实现需要测试的维度和关键场景，而非罗列测试代码。
 
-### 6.1 测试维度
+### 5.1 测试维度
 
 | 维度 | 测试重点 |
 |------|---------|
@@ -2017,10 +1299,10 @@ int can_expand_heap(size_t size)
 | **边界条件** | 页对齐、零地址、堆顶等于数据段顶 |
 | **错误路径** | 无效 endpoint、地址低于数据段、与栈冲突、内存不足 |
 | **错误码对齐** | 验证 BrkError 到 errno 的映射与 Minix3 一致 |
-| **状态一致性** | 扩展/收缩后 HeapState 与区域长度一致 |
+| **状态一致性** | 扩展/收缩后 region_top 与区域长度一致 |
 | **物理页面** | 收缩后物理页引用计数正确、vm_total 正确更新 |
 
-### 6.2 关键测试场景
+### 5.2 关键测试场景
 
 **堆扩展**
 
@@ -2029,13 +1311,13 @@ int can_expand_heap(size_t size)
 | 小扩展（+1 页） | addr = current_brk + PAGE_SIZE | 成功 |
 | 大扩展（+N 页） | addr = current_brk + N*PAGE_SIZE | 成功 |
 | 非对齐地址 | addr 未页对齐 | 成功（内部向上取整） |
-| 连续扩展 | 多次调用 | 每次成功，max_brk 递增 |
+| 连续扩展 | 多次调用 | 每次成功，region_top 递增 |
 | 无变化 | addr = current_brk | 成功，无操作 |
 | NULL 地址查询 | addr = 0 | 返回当前堆顶 |
 
 **堆收缩**
 
-> **Minix3 行为差异**：Minix3 的 brk 收缩被 `anon_resize` 静默忽略（返回 OK 但不释放内存，见 §2.7.2a）。下表测试场景针对 Rust 实现（支持真正收缩），需额外测试 Minix3 兼容模式（收缩返回成功但不操作）。
+> **Minix3 行为差异**：Minix3 的 brk 收缩被 `anon_resize` 静默忽略（返回 OK 但不释放内存，见 §2.7.3）。下表测试场景针对 Rust 实现（支持真正收缩），需额外测试 Minix3 兼容模式（收缩返回成功但不操作）。
 
 | 场景 | 初始堆顶 | 目标堆顶 | Rust 预期结果 | Minix3 行为 |
 |------|---------|---------|-------------|------------|
@@ -2048,24 +1330,21 @@ int can_expand_heap(size_t size)
 
 | 场景 | 输入 | 预期错误 |
 |------|------|---------|
-| 无效 endpoint | 不存在的进程 | InvalidEndpoint → EINVAL |
-| 地址低于数据段 | addr < data_top | InvalidAddress → EINVAL |
-| 与栈冲突 | page_align(addr) >= stack_region.vaddr | RegionConflict → ENOMEM |
+| 无效 endpoint | 不存在的进程 | ProcessNotFound → ESRCH |
+| 与栈冲突 | page_align(addr) >= stack_region.vaddr | OutOfMemory → ENOMEM |
 | 内存不足 | 请求超过可用物理内存 | OutOfMemory → ENOMEM |
+| 区域查找失败 | addr 低于所有区域 | OutOfMemory → ENOMEM |
 
 **错误码对齐验证**
 
 | BrkError 变体 | 期望 errno | 说明 |
 |---------------|-----------|------|
-| OutOfMemory | ENOMEM | 与 Minix3 real_brk 返回值一致 |
-| InvalidEndpoint | EINVAL | 与 Minix3 do_brk 中 vm_isokendpt 失败一致 |
-| RegionConflict | ENOMEM | 与 Minix3 "can't grow into next region" 一致 |
-| InvalidAddress | EINVAL | Rust 设计新增：Minix3 无此独立检查，地址低于数据段由 anon_resize 隐式处理 |
-| ExtendFailed | ENOMEM | 与 Minix3 map_region_extend_upto_v 中 realloc/map_page_region 失败一致 |
+| ProcessNotFound | ESRCH | Minix3 do_brk 中 vm_isokendpt 失败返回 EINVAL，Rust 使用更精确的 ESRCH |
+| OutOfMemory | ENOMEM | 与 Minix3 real_brk 返回值一致；同时覆盖堆栈冲突场景（对应 Minix3 nextvr->vaddr < offset → ENOMEM）和区域查找失败（对应 Minix3 region_search 找不到区域 → ENOMEM） |
 
 ---
 
-## 7. 参见
+## 6. 参见
 
 - [01-vmproc-struct.md](01-vmproc-struct.md) - vmproc 结构体定义（vm_total, vm_total_max 等字段）
 - [02-vmproc-table.md](02-vmproc-table.md) - 进程表与 endpoint 验证（vm_isokendpt）
@@ -2075,7 +1354,6 @@ int can_expand_heap(size_t size)
 - [07-pagetable-ops.md](07-pagetable-ops.md) - 页表操作（pt_writemap）
 - [10-phys-pagestate.md](10-phys-pagestate.md) - 物理页状态与引用计数（unmap_page）
 - [00-vm-overview.md](00-vm-overview.md) - VM 服务总览
-- [21-vm-brk-complete.md](21-vm-brk-complete.md) - brk 完整实现（包含 anon_resize 分析、Rust 实现详解、收缩行为差异）
 
 ---
 
