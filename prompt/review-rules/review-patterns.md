@@ -487,4 +487,73 @@ struct VmProc {
 > 1. 是否有 ≥2 个行为不同的实现？
 > 2. 是否被用作泛型约束（trait bound）？
 > 两个条件都满足 → 合理的 trait；任一不满足 → 考虑简化。
+
+### 模式 25：Kernel SMP 并发违规（BKL 未持有）
+
+```rust
+❌ 错误：内核全局变量访问未受 BKL 保护
+        static mut CPU_READY: bool = false;
+        fn check_cpu_ready() -> bool {
+            unsafe { CPU_READY }  // 其他 CPU 可能正在写 CPU_READY
+        }
+
+✅ 正确：明确标注 BKL 保护的前提
+        /// SAFETY: Caller must hold BKL (BKL_LOCK() already acquired).
+        static mut CPU_READY: bool = false;
+        fn check_cpu_ready() -> bool {
+            // 调用者已持有 BKL，单写者保证
+            unsafe { CPU_READY }
+        }
+```
+> 原因：内核 SMP 环境下，全局可变状态必须被 BKL、per-CPU 隔离、或 Atomic 保护。
+
+### 模式 26：Kernel SMP 并发违规（Rc/RefCell 跨 CPU 共享）
+
+```rust
+❌ 错误：`Rc` 在多 CPU 内核中共享（`!Send + !Sync`）
+        use alloc::rc::Rc;
+        static KERNEL_CONFIG: Lazy<Rc<KernelConfig>> = Lazy::new(|| Rc::new(...));
+
+✅ 正确：使用 `Arc`（`Send + Sync`）替代 `Rc`
+        use alloc::sync::Arc;
+        static KERNEL_CONFIG: Lazy<Arc<KernelConfig>> = Lazy::new(|| Arc::new(...));
+        // 或 per-CPU 数据仍用 Rc，但必须注释"per-CPU, no cross-CPU sharing"
+```
+
+### 模式 27：Kernel SMP 并发违规（spinlock 内睡眠/调度/等待）
+
+```rust
+❌ 错误：BKL 内等待 IPC 响应（spinlock 内禁止 block）
+        BKL_LOCK();
+        let reply = ipc_sendrec(PM_PROC_NR, &msg);  // 可能 block
+        BKL_UNLOCK();
+
+✅ 正确：释放 BKL 后等待 IPC，重新获取后验证共享状态
+        BKL_UNLOCK();
+        let reply = ipc_sendrec(PM_PROC_NR, &msg);
+        BKL_LOCK();
+        // 注意：重新获取 BKL 后，共享状态可能已被其他 CPU 修改
+        // 需要重新验证共享状态 invariants
+```
+> 原因：BKL 是 spinlock（busy-wait），spinlock 内任何可能导致当前 CPU 让出执行权的操作（睡眠、调度、等待锁、等待 IPC 响应）都可能导致 deadlock。
+
+### 模式 28：Kernel SMP 并发违规（per-CPU 数据被跨 CPU 访问）
+
+```rust
+❌ 错误：直接读取其他 CPU 的 local 数据，无保护
+        fn get_cpu_ticks(cpu_id: u32) -> u64 {
+            unsafe { PER_CPU_DATA[cpu_id as usize].ticks }
+        }
+
+✅ 正确：per-CPU 数据不暴露跨 CPU 读取接口
+        fn get_my_ticks() -> u64 {
+            let cpu = get_cpu_var();
+            unsafe { PER_CPU_DATA[cpu].ticks }
+        }
+
+✅ 正确：如需跨 CPU 读取，使用 Atomic 类型
+        struct PerCpuData {
+            ticks: AtomicU64,  // Atomic 保证跨 CPU 可见性
+        }
+```
 ```

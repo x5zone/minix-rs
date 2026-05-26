@@ -10,11 +10,12 @@
 > 为防止 AI 在 Review 过程中"浮躁"或遗漏关键验证，必须按以下步骤执行。
 > **关键原则**：每个 Step 必须产生**可见的中间产物**（表格、列表、grep 输出）。不允许"在脑子里过一遍"然后跳到最终输出。
 
-### Step 0: 范围声明 + 时间预算
+### Step 0: 范围声明 + 时间预算 + 状态恢复
 
 - 按 [review.md §Review 启动：范围声明](review.md) 声明 Review 模式和范围
 - 声明时间预算（按 [review.md §时间预算参考](review.md#时间预算参考)）
-- **中间产物**：范围声明 + 时间预算声明
+- **读取状态**：检查 `.review/{module}/STATE.md` 是否存在，如存在则读取当前进度
+- **中间产物**：范围声明 + 时间预算声明 + 状态恢复摘要
 
 ### Step 1: Ground Truth Lookup（源码定位）
 
@@ -161,6 +162,43 @@
 - 每个问题必须标注优先级（P0/P1/P2）
 - 每个问题必须提供明确的修改方向
 - **必须包含**：维度覆盖自检表格、最弱项自检、时间预算评估
+
+### Step 5.5: 状态写入与收敛判断
+
+> **目的**：将当前 phase 的验证结果持久化写入 `.review/{module}/` 目录，并判断是否收敛。
+
+**执行步骤**：
+1. 创建或更新 `.review/{module}/STATE.md`（参考 [review-agent.md §STATE.md](review-agent.md) 格式）
+2. 创建或更新对应维度的检查文件（如 `.review/{module}/CONCEPT-CHECK.md`）
+3. 更新 `.review/{module}/FINDINGS.md`，追加新发现的问题（不覆盖已有已修复项）
+4. 更新 STATE.md 的 Phase Completion Log 和 Convergence Checklist
+5. 输出收敛状态评估
+
+**收敛终止条件**（全部满足才算审查完成）：
+1. 所有 10 个维度检查文件均已标记 COMPLETE
+2. 最近一次完整 Pass 中，P0 新增数量 = 0
+3. 最近一次完整 Pass 中，P1 新增数量 ≤ 1
+4. 独立验证（VERIFY-CHECK.md）结果为 PASS
+5. FINDINGS.md 中所有 P0 已被修复并验证通过
+
+### Step 5.6: Review Verification Protocol（独立验证，可选但推荐）
+
+> **目的**：解决"自己审自己"的盲区。在审查收敛后，用新会话独立验证审查质量。
+
+**触发条件**：所有 10 个维度标记 COMPLETE + P0/P1 收敛后，用户发起「验证 review」
+
+**执行方式**（独立会话中执行）：
+1. Agent 读取 `.review/{module}/STATE.md` + `FINDINGS.md` + 原始文档/代码
+2. **随机抽样**：从 FINDINGS.md 中随机选取 20% 的已报告问题
+3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
+4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
+5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
+6. **输出判定**：
+   - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信
+   - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
+   - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
+
+**输出**：写入 `.review/{module}/VERIFY-CHECK.md`
 
 ### Step 6: Action Item Generation（修改项生成）
 

@@ -27,9 +27,23 @@ Minix3 源码行为  >  文档描述  >  Rust 实现  >  AI 分析
 **允许**：数据结构重组、状态拆分、生命周期显式化、trait 抽象
 **不允许**：改外部行为、改 IPC 协议、改生命周期语义、改错误恢复语义
 
-### 执行模型
+### 执行模型（按模块分层）
 
-服务器默认单线程事件循环。`Rc`/`RefCell`/`!Send`/`!Sync` 合理，`UnsafeCell` 在单线程下安全。
+Minix3 系统有两类不同的执行模型，Review 时必须根据模块类型选择对应假设：
+
+**A. 用户态服务器（VM/PM/VFS/RS/DS/INET 等）**：
+- 单线程事件循环：每个服务器是独立的单线程用户态进程
+- 无共享内存并发修改：服务器间通过 IPC 通信
+- 无 SMP 并行访问：不存在多核同时访问同一数据结构的情况
+- `Rc`/`RefCell`/`!Send`/`!Sync` 合理，`UnsafeCell` 在单线程下安全
+
+**B. 内核（Kernel）**：
+- SMP 支持：`CONFIG_SMP` 启用时，多核可同时在内核中执行
+- BKL（Big Kernel Lock）：`spinlock_t big_kernel_lock`，以 `BKL_LOCK()`/`BKL_UNLOCK()` 保护临界区
+- BKL 是 spinlock（busy-wait），不是 mutex——临界区内禁止睡眠/调度
+- CPU-local 变量（`get_cpu_var()`）用于 per-CPU 数据
+- `Rc`/`RefCell` **不**直接适用于内核共享数据（不是 `Send`/`Sync`）
+- `UnsafeCell` 不能以"单线程"为安全论据——需要显式论证 BKL 保护或 lock-free 语义
 
 ### 运行时环境
 
@@ -103,9 +117,9 @@ Ch1(概念)+Ch2(源码) ──推导──▶ Ch3(设计) ──实现──▶ 
 
 ## 4 个 Skill 清单
 
-1. **review-doc-skill** — 文档检查：结构规范 + §2.1-2.11 十一个维度 + §3 可读性/教学性 + 优先级映射
-2. **review-code-skill** — 代码检查：§1-14 十四个维度（Rewrite/硬件/trait/类型/no_std/语义对齐）
-3. **review-patterns-skill** — 错误模式：文档15个 + 跨文档3个 + 代码10个 + 验证命令
+1. **review-doc-skill** — 文档检查：结构规范 + §2.0 Claims-Evidence + §2.1-2.11 十一个维度 + §3 可读性/教学性 + 优先级映射
+2. **review-code-skill** — 代码检查：§1-14 十四个维度（Rewrite/硬件/trait/类型/no_std/SMP-BKL/语义对齐）
+3. **review-patterns-skill** — 错误模式：文档15个 + 跨文档3个 + 代码14个（含4个SMP） + 验证命令
 4. **review-process-skill** — 执行流程：Step 0-7 + 中间产物格式 + 自检清单 + 工具命令
 
 **Skill 之间互不引用，由你调度。**
@@ -123,9 +137,10 @@ Ch1(概念)+Ch2(源码) ──推导──▶ Ch3(设计) ──实现──▶ 
 |「完整 review」/「全面检查」 | **加载** 全部 4 个 Skill |
 | **复杂文档（>300行）或关键模块 +「完整验证」** | **必须分阶段**（每轮独立对话）|
 |「快速扫描」「快速 review」 | **不加载 Skill**，仅用本文档口诀 |
-|「只 review 第一章和第二章」「检查概念」 | **加载** review-doc-skill（仅§2.1,§2.2,§2.3,§2.8）|
+|「只 review 第一章和第二章」「检查概念」 | **加载** review-doc-skill（仅§2.0,§2.1,§2.2,§2.3,§2.8）|
 |「链路验证」 | **加载** doc(§2.9,§2.10) + code(§13) + patterns(模式10~12) |
 |「跨文档检查」 | **加载** doc(§2.6) + patterns(模式A~C+验证命令) |
+|「验证 review」/「review of review」 | **加载** review-doc-skill(§2.0 Claims) + review-code-skill + review-patterns-skill — 独立验证前一轮 Review 的结果，随机抽样 20% claims 重新验证 |
 | 需要流程细节 | **加载** review-process-skill |
 
 **默认判定**：用户意图不明确时——目录下有对应 `.rs` → 提示是否完整 Review；只说「检查概念」→ 局部(Ch1&2)；其他 → 默认文档 Review
@@ -139,10 +154,86 @@ Ch1(概念)+Ch2(源码) ──推导──▶ Ch3(设计) ──实现──▶ 
 
 | 阶段 | Skill 加载 | 输出 |
 |------|-----------|------|
-| **1**：Ch1&2 准确性 | doc(§2.1,§2.2,§2.3,§2.5,§2.7,§2.8) + patterns(模式1~9) | P0概念/引用/覆盖 |
+| **1**：Ch1&2 准确性 | doc(§2.0,§2.1,§2.2,§2.3,§2.5,§2.7,§2.8) + patterns(模式1~9) | P0概念/引用/覆盖 |
 | **2**：Ch3&4 设计 | doc(§2.4,§2.9,§2.10) + patterns(10~13) | P0场景+P1链路 |
 | **3**：代码质量 | code + patterns(15~24) | P0 UB/偏移+P1 trait |
 | **4**：跨文档+可读性 | doc(§2.6,§2.11,§3.1~3.4) + patterns(A~C) | P2可读+P1跨文档+P1文档风格 |
+
+---
+
+## 审查收敛与状态追踪
+
+> 解决"反复 Review 仍发现新错误"的根本方案：状态持久化 + 收敛终止条件。
+
+### 状态持久化目录结构
+
+每次 Review 在目标文档/代码的上级目录创建 `.review/` 目录：
+
+```
+.review/{module}/
+├── STATE.md              ← 审查进度状态（跨会话持久，下轮 Review 从这里开始）
+├── FINDINGS.md           ← 汇总的 P0/P1/P2 问题清单
+├── CONCEPT-CHECK.md      ← §2.1 概念准确性验证结果
+├── REF-CHECK.md          ← §2.2 C代码引用验证结果
+├── STRUCT-CHECK.md       ← §2.3 数据结构覆盖结果
+├── COVERAGE-CHECK.md     ← §2.8 C源码覆盖完整性结果
+├── DESIGN-CHECK.md       ← §2.9 设计决策质量结果
+├── LINK-CHECK.md         ← §2.10 章节链路验证结果
+├── CODE-CHECK.md         ← Code §1-14 各维度结果
+├── CROSS-DOC-CHECK.md    ← 跨文档联动检查结果
+├── CLAIMS-CHECK.md       ← Claims-Evidence 逐 claim 验证结果
+└── VERIFY-CHECK.md       ← 独立验证结果（Review-of-Review）
+```
+
+### STATE.md 格式
+
+```markdown
+# Review State: {module-name}
+
+- **Phase**: [concept-check | ref-check | struct-check | coverage | design | link | code | cross-doc | claims | verify | complete]
+- **Last completed phase**: concept-check
+- **Open P0 issues**: 3 (#1, #2, #3 from FINDINGS.md)
+- **Open P1 issues**: 7
+- **Open P2 issues**: 2
+- **Convergence status**: NOT_CONVERGED (5 phases remaining)
+- **Next action**: Run ref-check phase with fresh context
+
+## Phase Completion Log
+| Phase | Date | Passes | P0 found | P1 found | P2 found |
+|-------|------|--------|----------|----------|----------|
+
+## Convergence Checklist
+- [ ] §2.1 概念准确性 — COMPLETE / 0 new P0
+- [ ] §2.2 C引用验证 — COMPLETE / 0 new P0
+- [ ] §2.3 数据结构覆盖 — COMPLETE / 0 new P0
+- [ ] §2.8 源码覆盖完整性 — COMPLETE / 0 new P0
+- [ ] §2.9 设计决策质量 — COMPLETE / 0 new P0
+- [ ] §2.10 章节链路 — COMPLETE / 0 new P0
+- [ ] Code §1-14 — COMPLETE / 0 new P0
+- [ ] 跨文档联动 — COMPLETE / 0 new P0
+- [ ] Claims-Evidence — COMPLETE / 0 new P0
+- [ ] 独立验证 — COMPLETE / PASS
+```
+
+### 收敛终止条件（必须全部满足）
+
+审查结束的唯一判定标准——不再需要用户主观判断"是不是够了"：
+
+1. **全维度覆盖**：所有 10 个维度检查文件（CONCEPT-CHECK.md 到 VERIFY-CHECK.md）均已标记 COMPLETE
+2. **P0 收敛**：最近一次完整 Pass 中，P0 新增数量 = 0
+3. **P1 收敛**：最近一次完整 Pass 中，P1 新增数量 ≤ 1（允许极少边缘案例）
+4. **验证通过**：独立验证（VERIFY-CHECK.md）结果为 PASS
+5. **FINDINGS.md 中所有 P0 问题**已被修复并验证通过（或标记为 WONTFIX+充分理由）
+
+### 增量 Review 策略
+
+> 每次 Review 必须读取 STATE.md 了解当前进度，仅检查未 COMPLETE 的维度。
+
+1. 启动时读取 `.review/{module}/STATE.md`
+2. 如果有 COMPLETE 的维度→跳过（读取对应文件总结即可，不重做验证）
+3. 如果有 UNCHECKED 的维度→执行该维度的完整验证
+4. 如果代码/文档有修改→检查修改是否影响已 COMPLETE 的维度（如有影响→标记为 NEEDS_RECHECK）
+5. 更新 STATE.md 和对应维度文件
 
 ---
 
@@ -225,3 +316,4 @@ Ch1(概念)+Ch2(源码) ──推导──▶ Ch3(设计) ──实现──▶ 
 5. typestate？→ 转换少不如 enum | 6. trait？→ 1个实现/没做过 bound=不必要；描述硬件非机制=P1
 7. pub？→ 外部需要还是懒得组织？ | 8. 注释引用？→ C 函数名/行为验证过？
 9. `unsafe` 可消除？→ 能=P1 | 10. `as` 截断安全？→ 不安全=P0 | 11. 代码实现 Ch3 设计？→ 没有=P1
+12. **Kernel SMP**？→ `Rc`/`RefCell` 跨 CPU 共享=P0；BKL 未持有=P0；spinlock 内睡眠=P0

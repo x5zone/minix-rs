@@ -9,10 +9,11 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7、每�
 
 ---
 
-## Step 0: 范围声明 + 时间预算
+## Step 0: 范围声明 + 时间预算 + 状态恢复
 
 - 声明 Review 模式和范围
 - 声明时间预算（| <200行→10-20分 | 200-500→20-40 | 500-1000→40-80 | >1000→80-120）
+- **读取状态**：检查 `.review/{module}/STATE.md` 是否存在
 
 **中间产物**：
 ```
@@ -20,6 +21,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7、每�
 - **目标文件**：xxx.md / xxx.rs
 - **Step 2.5/Step 4 是否适用**：[适用/不适用（原因）]
 - **规模**：约 N 行 | **预计**：X~Y 分钟
+- **前置状态**：STATE.md 存在 → 已完成 phase [X, Y, Z]，待完成 [A, B, C] / STATE.md 不存在 → 从零开始
 ```
 
 ---
@@ -137,6 +139,60 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7、每�
 - 每个问题标优先级（P0/P1/P2）+ 明确修改方向
 - 必须含：维度覆盖自检、最弱项自检、时间预算评估
 
+### Step 5.5: 状态写入与收敛判断
+
+> 完成当前 phase 的验证后，将结果持久化写入 `.review/{module}/` 目录。
+
+**中间产物**：
+1. 更新或创建 `.review/{module}/STATE.md`（按 [review-agent.md §STATE.md 格式](review-agent.md)）
+2. 更新或创建对应维度的检查文件（如 `.review/{module}/CONCEPT-CHECK.md`）
+3. 更新 `.review/{module}/FINDINGS.md` 追加新发现的问题（不覆盖已有已修复项）
+4. 更新 STATE.md 的 Phase Completion Log 和 Convergence Checklist
+
+**收敛判断**：
+```markdown
+### 收敛状态评估
+
+- [ ] 全维度覆盖：10/10 维度 COMPLETE
+- [ ] P0 收敛：最近 Pass 新增 P0 = 0
+- [ ] P1 收敛：最近 Pass 新增 P1 ≤ 1
+- [ ] 独立验证：VERIFY-CHECK.md = PASS（或尚未执行）
+
+**当前状态**：CONVERGED / NOT_CONVERGED (N phases remaining)
+**下一步**：[下一阶段名称] 或 [执行独立验证] 或 [审查已收敛，可结束]
+```
+
+### Step 5.6: Review Verification Protocol（独立验证）
+
+> **目的**：解决"自己审自己"的盲区。在所有维度 COMPLETE 后，在新会话中独立验证审查质量。
+> 用户指令：「验证 review」或「review of review」
+
+**执行步骤**（独立会话）：
+1. 读取 `.review/{module}/STATE.md` + `FINDINGS.md` + 原始文档/代码
+2. **随机抽样**：从 FINDINGS.md 中随机选取 20% 的已报告问题
+3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
+4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
+5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有已标记 COMPLETE 但实际未完成的维度
+
+**中间产物**（写入 `.review/{module}/VERIFY-CHECK.md`）：
+```markdown
+### Review Verification Result
+
+**抽样一致性**：X/Y = Z%
+**遗漏检查**：N 符号抽样，M 遗漏
+**收敛验证**：K/10 维度可信
+
+| 抽样问题 | FINDINGS 判定 | 独立重新判定 | 一致? |
+|---------|-------------|------------|-------|
+
+**判定**：PASS / CONCERN / FAIL
+```
+
+**判定标准**：
+- **PASS**：一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信 → 审查完成
+- **CONCERN**：一致性 70-90% → 特定维度需重新审查（标注在 STATE.md）
+- **FAIL**：一致性 < 70% 或发现关键遗漏 → 标记 STATE.md 中相关维度为 NEEDS_RECHECK
+
 ---
 
 ## Step 6: Action Item Generation（修改项生成）
@@ -167,6 +223,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 ### Step 7 产物：自检清单
 
 - [ ] Step 0 范围声明和时间预算已输出
+- [ ] Step 0 STATE.md 状态已检查
 - [ ] Step 1 源码文件清单已输出
 - [ ] Step 2 Top 3 差异已输出
 - [ ] Step 2.5 链路验证表格已输出（如适用）
@@ -181,6 +238,8 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] Step 5 维度覆盖自检表格已输出
 - [ ] Step 5 最弱项自检 4 问题已确认
 - [ ] Step 5 时间预算评估已输出
+- [ ] Step 5.5 STATE.md 和维度检查文件已写入
+- [ ] Step 5.5 收敛状态评估已输出
 - [ ] Step 6 修改项已生成（P0 必须有代码修改项）
 - [ ] 所有 grep 命令输出作为证据附在对应表格后
 ```

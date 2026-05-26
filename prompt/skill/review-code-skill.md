@@ -64,7 +64,9 @@ description: "Minix-RS Rust 代码 Review 检查清单。包含 §1-§14 全部�
 
 ## 4. 执行模型与并发
 
-> 当前单线程假设，但必须显式确认。
+> 用户态服务器假设单线程事件循环；内核模块必须考虑 SMP + BKL。
+
+### 4.1 用户态服务器检查项（VM/PM/VFS/RS/DS/INET 等）
 
 - [ ] 模块是否声明单线程假设？
 - [ ] `Sync`/`Send` 不当实现？`UnsafeCell` 前提被保证？
@@ -72,6 +74,36 @@ description: "Minix-RS Rust 代码 Review 检查清单。包含 §1-§14 全部�
 - [ ] 未来扩展多线程该设计会失效？
 - [ ] `lazy_static`/`OnceCell` 初始化顺序正确？
 - [ ] IPC 消息传递的指针通过安全 Wrapper 保证？
+
+### 4.2 内核 SMP/BKL 检查项（Kernel 模块专用）
+
+> Minix3 kernel 有 `CONFIG_SMP` + `spinlock_t big_kernel_lock`。虽然 BKL 限制临界区内最多一个 CPU，但 spinlock 的特性引入额外约束。
+
+**BKL 持有验证**：
+- [ ] 进入内核的路径是否持有 BKL？调用链上是否有 `BKL_LOCK()`？
+- [ ] BKL 临界区内是否有可能睡眠/调度/等待 IPC 的操作？→ ❌ 禁止（spinlock 内不能 sleep）
+- [ ] BKL 释放后重新获取时，共享状态是否可能已被其他 CPU 修改？→ 需检查"释放→重新获取"窗口
+- [ ] 是否有遗漏的 BKL 释放点（如函数提前 return 未调用 `BKL_UNLOCK()`）？
+
+**CPU-local 数据完整性与隔离**：
+- [ ] per-CPU 数据是否通过 `get_cpu_var()`/`put_cpu_var()` 成对访问？
+- [ ] 是否存在"读取 CPU A 的 local 变量，但当前运行在 CPU B"的路径？
+- [ ] per-CPU 数据是否被非 BKL 保护的并发操作修改？
+
+**共享状态保护**：
+- [ ] 内核全局变量（`EXTERN`/`static`）是否有明确的并发保护策略？BKL 保护 / per-CPU / `Atomic*`？
+- [ ] 是否存在"宣称 BKL 保护但实际访问时未持有 BKL"的路径？
+- [ ] `static mut` 是否通过 BKL 或 `Atomic*` 正确保护？→ Rust 中 `static mut` 本身是 unsafe，需额外论证
+
+**内存排序与可见性**：
+- [ ] BKL spinlock 的 acquire/release 语义是否提供了足够的内存排序保证？
+- [ ] 是否有依赖比 BKL 更弱的内存排序保证的代码？（如裸 `Relaxed` ordering 依赖隐式屏障）
+
+**Rust 类型系统与 SMP**：
+- [ ] `RefCell` 在内核中不能用于跨 CPU 共享数据（`RefCell: !Sync`）
+- [ ] `Rc` 不能跨 CPU/线程使用（`Rc: !Send + !Sync`）→ 如需跨 CPU 共享引用计数 → `Arc`
+- [ ] `Cell`/`RefCell` 在 per-CPU 数据中合理，但需注释"per-CPU，无并发访问"
+- [ ] `UnsafeCell` 安全论据是否从"单线程"改为"BKL 保护"或"per-CPU 隔离"或"Atomic 操作"？
 
 ---
 

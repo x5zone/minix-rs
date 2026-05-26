@@ -231,3 +231,65 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 ```
 
 **判断标准**：≥2个行为不同的实现 + 被用作 trait bound → ✅；任一不满足 → 考虑简化。
+
+### 模式25：Kernel SMP 并发违规（BKL 未持有）
+```rust
+❌ // 内核全局变量访问未受 BKL 保护
+   static mut CPU_READY: bool = false;
+   fn check_cpu_ready() -> bool {
+       unsafe { CPU_READY }  // 其他 CPU 可能正在写 CPU_READY
+   }
+
+✅ // 明确标注 BKL 保护的前提
+   /// SAFETY: Caller must hold BKL (BKL_LOCK() already acquired).
+   static mut CPU_READY: bool = false;
+   fn check_cpu_ready() -> bool {
+       // 调用者已持有 BKL，单写者保证
+       unsafe { CPU_READY }
+   }
+```
+
+### 模式26：Kernel SMP 并发违规（Rc/RefCell 跨 CPU 共享）
+```rust
+❌ use alloc::rc::Rc;
+   // Rc: !Send + !Sync，在多 CPU 内核中共享是 UB
+   static KERNEL_CONFIG: Lazy<Rc<KernelConfig>> = Lazy::new(|| Rc::new(...));
+
+✅ use alloc::sync::Arc;
+   // Arc: Send + Sync，适合跨 CPU 共享（配合 BKL 或 RwLock）
+   static KERNEL_CONFIG: Lazy<Arc<KernelConfig>> = Lazy::new(|| Arc::new(...));
+   // 或：per-CPU 数据用 Rc，但必须注释"per-CPU, no cross-CPU sharing"
+```
+
+### 模式27：Kernel SMP 并发违规（spinlock 内睡眠/调度/等待）
+```rust
+❌ BKL_LOCK();
+   let reply = ipc_sendrec(PM_PROC_NR, &msg);  // 可能 block，spinlock 内禁止！
+   BKL_UNLOCK();
+
+✅ BKL_UNLOCK();
+   let reply = ipc_sendrec(PM_PROC_NR, &msg);  // 释放 BKL 后等待 IPC
+   BKL_LOCK();
+   // 注意：重新获取 BKL 后，共享状态可能已被其他 CPU 修改
+   // 需要重新验证共享状态的 invariants
+```
+> 原因：BKL 是 spinlock（busy-wait），spinlock 内任何可能导致当前 CPU 让出执行权的操作（睡眠、调度、等待锁、等待 IPC 响应）都可能导致 deadlock。
+
+### 模式28：Kernel SMP 并发违规（per-CPU 数据被跨 CPU 访问）
+```rust
+❌ fn get_cpu_ticks(cpu_id: u32) -> u64 {
+       unsafe { PER_CPU_DATA[cpu_id as usize].ticks }
+       // 直接读取其他 CPU 的 local 数据，无保护
+   }
+
+✅ // per-CPU 数据不暴露跨 CPU 读取接口
+   fn get_my_ticks() -> u64 {
+       let cpu = get_cpu_var();
+       unsafe { PER_CPU_DATA[cpu].ticks }
+   }
+
+✅ // 如果确实需要跨 CPU 读取，使用 Atomic 类型 + 注释说明
+   struct PerCpuData {
+       ticks: AtomicU64,  // Atomic 保证跨 CPU 可见性
+   }
+```

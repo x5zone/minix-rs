@@ -17,10 +17,11 @@
 
 **核心原则**：外部语义不变，内部表达可以改变。把"隐式编码"变成"显式协议"。
 
-### 当前执行模型
+### 执行模型（按模块分层）
 
-当前 VM / PM / VFS 等服务器默认假设：
+Minix3 系统有两类不同的执行模型，Review 时必须根据模块类型选择对应假设。
 
+**A. 用户态服务器（VM/PM/VFS/RS/DS/INET 等）**：
 - **单线程事件循环**：每个服务器是独立的单线程进程
 - **无共享内存并发修改**：服务器间通过 IPC 通信，不共享内存
 - **无 SMP 并行访问**：不存在多核同时访问同一数据结构的情况
@@ -31,7 +32,14 @@
 - `!Send` / `!Sync` 是合理的（数据不跨线程）
 - `UnsafeCell` 在单线程前提下是安全的
 
-> ⚠️ 如果未来扩展为多线程，需重构状态管理。
+**B. 内核（Kernel）**：
+- **SMP 支持**：`CONFIG_SMP` 启用时，多核可同时在**内核空间**中执行
+- **BKL（Big Kernel Lock）**：全局 spinlock `big_kernel_lock`，以 `BKL_LOCK()`/`BKL_UNLOCK()` 保护临界区
+- **BKL 是 spinlock**（busy-wait）——临界区内**禁止**睡眠、调度、等待 IP
+- **CPU-local 变量**：`get_cpu_var()`/`put_cpu_var()` 用于 per-CPU 数据隔离
+- `Rc`/`RefCell` 不直接适用于跨 CPU 共享的内核数据（`Rc: !Send + !Sync`，`RefCell: !Sync`）
+- `UnsafeCell` 安全论据不能是"单线程"——必须显式论证 BKL 保护、per-CPU 隔离、或 lock-free 语义
+- 跨 CPU 共享数据结构需要 `Arc` + `Mutex`/`RwLock`、`Atomic*`、或 BKL 保护 + 注释说明
 
 ### 运行时环境约束
 
@@ -47,7 +55,7 @@
 - `std::sync` — 标准同步原语（Mutex、RwLock 等）
 - `std::collections` — 标准集合（HashMap 等，用 `alloc` 版本替代）
 - `std::io` / `std::fs` — 文件 I/O（不存在文件系统服务给 VM 用）
-- `std::thread` — 标准线程（VM 是单线程事件循环）
+- `std::thread` — 标准线程（用户态服务器是单线程事件循环；内核虽 SMP 但 `no_std` 不可用 `std::thread`，须自定义同步原语）
 
 **判定标准**：如果某段代码 `use std::`，则必须改为 `no_std` 兼容实现，
 除非该代码仅在 `#[cfg(test)]` 或 mock 中使用。

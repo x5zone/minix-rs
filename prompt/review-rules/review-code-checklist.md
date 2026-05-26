@@ -83,7 +83,9 @@
 
 ## 4. 执行模型与并发假设
 
-> 当前 VM server 假设单线程执行，但必须显式确认。
+> 用户态服务器假设单线程执行；内核模块必须考虑 SMP + BKL。
+
+### 4.1 用户态服务器检查项
 
 - [ ] 模块是否明确声明了单线程假设？
 - [ ] 是否存在 `Sync` / `Send` 的不当实现？
@@ -92,6 +94,32 @@
 - [ ] 如果未来扩展为多线程，该设计是否会失效？
 - [ ] 是否使用了 `lazy_static` / `OnceCell`？初始化顺序是否正确？
 - [ ] IPC 消息传递的指针是否通过 `Send` 约束或 Safe Wrapper 保证安全？
+
+### 4.2 内核 SMP/BKL 检查项（Kernel 模块专用）
+
+> Minix3 kernel 有 `CONFIG_SMP` + `spinlock_t big_kernel_lock`（`BKL_LOCK()`/`BKL_UNLOCK()`）。BKL 是 spinlock（busy-wait），临界区内禁止睡眠/调度。
+
+**BKL 持有完整性**：
+- [ ] 进入内核空间的每条路径是否持有 BKL？调用链上是否有对应的 `BKL_LOCK()`？
+- [ ] 是否存在 BKL 未持有的间隙（如 `BKL_UNLOCK()` 后 `BKL_LOCK()` 前）允许其他 CPU 修改共享状态？
+- [ ] BKL 临界区内是否存在睡眠、调度、等待 IPC 的操作？→ ❌ P0（spinlock 内不能 sleep/deadlock）
+- [ ] 是否存在因提前 return 或错误路径导致的 BKL 未释放？
+
+**CPU-local 数据**：
+- [ ] per-CPU 数据是否通过 `get_cpu_var()`/`put_cpu_var()` 成对访问？
+- [ ] 是否存在跨 CPU 读取 local 数据的路径？
+- [ ] per-CPU 数据是否有非 BKL 保护的并发修改？
+
+**共享状态保护**：
+- [ ] 内核全局变量/`static` 是否有明确的并发保护策略并文档说明？
+- [ ] 是否存在"宣称 BKL 保护但实际访问时未持有"的路径？
+- [ ] `static mut` 在 Rust 中是 unsafe——如何保证不产生 data race？
+
+**Rust 类型系统与 SMP 约束**：
+- [ ] `Rc<T>` 在内核中能否跨 CPU 共享？（`!Send + !Sync` → 不能）
+- [ ] `RefCell<T>` 能否跨 CPU 共享？（`!Sync` → 不能）
+- [ ] `UnsafeCell` 的安全论证是否从"单线程"改为"BKL 保护"或"per-CPU 隔离"或"Atomic 操作"？
+- [ ] 跨 CPU 共享是否需要 `Arc` + `Mutex`/`RwLock` 或 `Atomic*` 类型？
 
 ---
 

@@ -23,6 +23,9 @@ Cargo.lock
 *.swo
 *~
 
+# review state tracking (auto-generated, not committed)
+.review/
+
 .idea/
 .vscode/
 .lingma/
