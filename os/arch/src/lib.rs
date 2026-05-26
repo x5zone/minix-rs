@@ -23,12 +23,27 @@ extern crate alloc;
 pub mod paging;
 pub mod paging_ext;
 pub mod direct_map;
-
-#[cfg(feature = "x86_64")]
+pub mod protection;
+pub mod trap_entry;
+pub mod interrupt;
+pub mod exception;
+pub mod irq_manager;
+pub mod exception_dispatcher;
 pub mod x86_64;
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
+pub use protection::{ProtectionArch, Privilege, InterruptVector};
+pub use trap_entry::TrapEntryArch;
+pub use interrupt::{
+    InterruptController, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
+    NR_IRQ_VECTORS, NR_IRQ_HOOKS,
+};
+pub use exception::{ExceptionArch, FaultContext, RecoveryPoint};
+pub use irq_manager::{IrqManager, IrqError};
+pub use exception_dispatcher::{
+    ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal, KernTrapStyle,
+};
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
@@ -36,7 +51,7 @@ pub use paging::mock::MockPaging;
 #[cfg(feature = "mock")]
 pub use paging::mock::MockAsid;
 
-#[cfg(feature = "mock")]
+#[cfg(all(feature = "mock", not(feature = "x86_64")))]
 pub type CurrentPaging = MockPaging;
 
 #[cfg(feature = "x86_64")]
@@ -48,7 +63,7 @@ pub use direct_map::MockDirectMap;
 #[cfg(feature = "x86_64")]
 pub use direct_map::X86_64DirectMap;
 
-#[cfg(feature = "mock")]
+#[cfg(all(feature = "mock", not(feature = "x86_64")))]
 pub type CurrentDirectMap = MockDirectMap;
 
 #[cfg(feature = "x86_64")]

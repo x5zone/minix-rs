@@ -1,0 +1,16 @@
+[package]
+name = "boot-uefi"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = "0.33"
+minix-types = { path = "../libs/minix-types" }
+minix-arch = { path = "../arch" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

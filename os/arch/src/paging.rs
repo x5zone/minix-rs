@@ -150,6 +150,41 @@ pub trait Paging {
     where
         Self: Sized;
 
+    /// Create a page table root from a known physical page.
+    /// Used during boot when no global allocator exists.
+    ///
+    /// The caller (boot-uefi shim) allocates a free physical page from UEFI's
+    /// AllocatePages and passes it here. The implementation zero-fills it.
+    ///
+    /// C: alloc_pagetable() — pg_utils.c:123
+    ///     static u32_t pagetables[6][1024] — compile-time array
+    ///
+    /// # Architecture differences
+    ///
+    /// x86-64:   zero-fill root_page, return PML4 struct
+    /// aarch64:  zero-fill root_page, return TTBR0/TTBR1 struct
+    /// riscv64:  zero-fill root_page, return Sv39/Sv48 struct
+    fn new_empty(root_page: PhysBytes) -> Self;
+
+    /// Load root table physical address into MMU and enable paging.
+    /// After this call, all memory accesses go through page tables.
+    /// Returns the root table physical address.
+    ///
+    /// C: pg_load() + vm_enable_paging() — pg_utils.c:204,247
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure identity mapping covers the physical page containing
+    /// the current instruction pointer. Otherwise the CPU will page-fault
+    /// immediately after this call, and there is no handler to catch it.
+    ///
+    /// # Architecture differences
+    ///
+    /// x86-64:   mov cr3, root_page ; mov cr0, cr0 | PG ; mov cr0, cr0 | WP
+    /// aarch64:  msr TTBR1_EL1, root_page ; msr SCTLR_EL1, sctlr | M
+    /// riscv64:  csrw satp, (MODE << 60) | (root_page >> 12)
+    unsafe fn enable(&self) -> PhysBytes;
+
     /// Destroy this page table and release all resources.
     ///
     /// # Safety
@@ -603,6 +638,15 @@ pub mod mock {
 
     impl Paging for MockPaging {
         const PAGE_SIZE: usize = 4096;
+
+        fn new_empty(_root_page: PhysBytes) -> Self {
+            Self::new_mock().expect("MockPaging::new_empty should not fail")
+        }
+
+        unsafe fn enable(&self) -> PhysBytes {
+            // Mock: no real MMU operation.
+            PhysBytes(0)
+        }
 
         fn new() -> Result<Self, PageTableError>
         where

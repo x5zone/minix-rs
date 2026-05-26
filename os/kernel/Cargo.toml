@@ -9,17 +9,14 @@ license.workspace = true
 name = "minix_kernel"
 path = "src/lib.rs"
 
-[[bin]]
-name = "minix-kernel"
-path = "src/main.rs"
-test = false
-doctest = false
-bench = false
-
 [dependencies]
+minix-arch = { path = "../arch" }
 minix-ipc = { workspace = true }
 minix-types = { workspace = true }
 minix-mock = { workspace = true, optional = true }
+
+[dev-dependencies]
+minix-arch = { path = "../arch", features = ["mock"] }
 
 [features]
 default = ["mock"]

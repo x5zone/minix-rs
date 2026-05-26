@@ -1,25 +1,17 @@
-//! Minix-RS Kernel Entry Point
+//! Minix-RS Kernel binary stub.
 //!
-//! Kernel boot entry.
+//! This is a placeholder for the UEFI-bootable kernel binary. In production,
+//! this would be compiled as a separate `[[bin]]` with `test = false`.
+//! During development, tests run through the `lib.rs` entry points with MockPaging.
+//!
+//! To restore the binary target, add this to kernel/Cargo.toml:
+//! ```toml
+//! [[bin]]
+//! name = "minix-kernel"
+//! path = "src/main.rs"
+//! test = false
+//! ```
 
-#![no_std]
-#![no_main]
-
-use minix_kernel::init;
-use minix_kernel::run;
-use minix_kernel::PanicInfo;
-
-/// Kernel entry point.
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    init();
-    run();
-}
-
-/// Panic handler.
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // TODO: Output panic information
-    loop {}
+fn main() {
+    eprintln!("Kernel binary: build with --target x86_64-unknown-uefi");
 }

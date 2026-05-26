@@ -15,7 +15,32 @@
 use minix_types::{Endpoint, Message, VirBytes};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI8, Ordering};
 
-use crate::arch::ExtRegState;
+use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
+
+const EXT_REG_STATE_SIZE: usize = 576;
+
+#[repr(align(64))]
+#[derive(Debug, Clone)]
+pub struct ExtRegState {
+    data: [u8; EXT_REG_STATE_SIZE],
+    valid: bool,
+}
+
+impl ExtRegState {
+    pub fn new() -> Self {
+        Self { data: [0; EXT_REG_STATE_SIZE], valid: false }
+    }
+
+    pub fn is_valid(&self) -> bool { self.valid }
+
+    pub fn mark_valid(&mut self) { self.valid = true; }
+
+    pub fn invalidate(&mut self) { self.valid = false; }
+}
+
+impl Default for ExtRegState {
+    fn default() -> Self { Self::new() }
+}
 
 /// Process number type (corresponds to C's `proc_nr_t`).
 pub type ProcNr = i32;
@@ -461,6 +486,22 @@ pub struct KProcess {
     ///
     /// Only valid when `MF_EXT_REG_INITIALIZED` flag is set.
     pub p_ext_reg_state: ExtRegState,
+
+    // VM request fields (03-vm-request.md §3.4, §3.5)
+    /// Next process in vmrequest queue.
+    /// C: `p_vmrequest.nextrequestor` (struct proc *)
+    /// Design decision: §3.4 (ProcNr index replaces *proc pointer, moved from
+    /// p_vmrequest to KProcess top level alongside p_nextready/p_caller_q).
+    pub p_next_requestor: Option<ProcNr>,
+
+    /// VM suspend context.
+    /// `Some` when the process has a pending VM memory request.
+    /// `None` when no request is pending.
+    /// C: `p_vmrequest` anonymous struct (always embedded, validity controlled by RTS_VMREQUEST).
+    /// Design decision: §3.5 (Option replaces always-embedded struct + RTS_VMREQUEST flag).
+    ///
+    /// Invariant: `p_rts_flags.is_set(rts::VMREQUEST) <==> p_vm_suspend.is_some()`
+    pub p_vm_suspend: Option<VmSuspendContext>,
 }
 
 /// Maximum process name length (including trailing \0).
@@ -658,6 +699,8 @@ impl KProcess {
             p_delivermsg: Message::default(),
             p_delivermsg_vir: VirBytes::new(0),
             p_ext_reg_state: ExtRegState::new(),
+            p_next_requestor: None,
+            p_vm_suspend: None,
         }
     }
 
@@ -690,6 +733,106 @@ impl KProcess {
         self.p_accounting.reset();
     }
 
+    // ── VM suspend/resume methods (03-vm-request.md §3.5, §3.9, §3.10) ──
+
+    /// Suspend this process for a VM memory request.
+    ///
+    /// Corresponds to Minix3's `vm_suspend()` in proc.c:234-257.
+    /// Sets RTS_VMREQUEST (process not schedulable) and fills VmSuspendContext.
+    ///
+    /// Design decision: §3.5 (Option<VmSuspendContext> replaces always-embedded struct),
+    /// §3.9 (vm_suspend split: this method only sets process state, queue+notify separated).
+    ///
+    /// # Panics
+    /// Debug asserts that RTS_VMREQUEST is not already set and p_vm_suspend is None.
+    pub fn suspend_for_vm(
+        &mut self,
+        suspend_type: VmSuspendType,
+        target: Endpoint,
+        params: VmCheckParams,
+        saved_msg: Option<Message>,
+    ) {
+        debug_assert!(!self.p_rts_flags.is_set(rts::VMREQUEST));
+        debug_assert!(self.p_vm_suspend.is_none());
+
+        self.p_vm_suspend = Some(VmSuspendContext {
+            suspend_type,
+            target,
+            check_params: params,
+            state: VmSuspendState::Pending,
+            saved_msg,
+            copy_context: None,
+        });
+
+        self.p_rts_flags.set(rts::VMREQUEST);
+    }
+
+    /// Suspend this process for a VM memory request with cross-space copy context.
+    ///
+    /// Same as `suspend_for_vm` but also saves the cross-space copy context
+    /// for resumption. Used by `virtual_copy_f` / `cross_space_copy` scenarios.
+    ///
+    /// Design decision: §3.8 (merges 02 doc VmRequest as `copy_context` field).
+    pub fn suspend_for_vm_with_copy(
+        &mut self,
+        suspend_type: VmSuspendType,
+        target: Endpoint,
+        params: VmCheckParams,
+        saved_msg: Option<Message>,
+        copy_ctx: VmCopyContext,
+    ) {
+        debug_assert!(!self.p_rts_flags.is_set(rts::VMREQUEST));
+        debug_assert!(self.p_vm_suspend.is_none());
+
+        self.p_vm_suspend = Some(VmSuspendContext {
+            suspend_type,
+            target,
+            check_params: params,
+            state: VmSuspendState::Pending,
+            saved_msg,
+            copy_context: Some(copy_ctx),
+        });
+
+        self.p_rts_flags.set(rts::VMREQUEST);
+    }
+
+    /// Clear VM suspend state for this process.
+    ///
+    /// Corresponds to Minix3's `clear_memreq()` in system.c:488-503.
+    /// Called when a process exits and its pending request must be cleaned up.
+    ///
+    /// Note: Unlike the Ch4 design doc, this does NOT clear MF_KCALL_RESUME.
+    /// C's `clear_memreq()` only clears RTS_VMREQUEST and removes from the
+    /// vmrequest linked list — it does not touch MF_KCALL_RESUME.
+    /// MF_KCALL_RESUME is cleared separately in `kernel_call_resume()`
+    /// (system.c:635) after the kernel call is re-executed.
+    pub fn clear_vm_suspend(&mut self) {
+        self.p_vm_suspend = None;
+        self.p_rts_flags.clear(rts::VMREQUEST);
+    }
+
+    /// Check if this process is suspended waiting for a VM memory request.
+    ///
+    /// C: `RTS_ISSET(p, RTS_VMREQUEST)`
+    pub fn is_vm_suspended(&self) -> bool {
+        self.p_rts_flags.is_set(rts::VMREQUEST)
+    }
+
+    /// Get a reference to the VM suspend context.
+    ///
+    /// Returns `None` if the process is not VM-suspended.
+    /// Invariant: `is_vm_suspended() <==> vm_suspend_context().is_some()`
+    pub fn vm_suspend_context(&self) -> Option<&VmSuspendContext> {
+        self.p_vm_suspend.as_ref()
+    }
+
+    /// Get a mutable reference to the VM suspend context.
+    ///
+    /// Returns `None` if the process is not VM-suspended.
+    pub fn vm_suspend_context_mut(&mut self) -> Option<&mut VmSuspendContext> {
+        self.p_vm_suspend.as_mut()
+    }
+
     /// Creates child process from parent (fork).
     ///
     /// Corresponds to `*rpc = *rpp` copy in Minix3's do_fork.c with subsequent field corrections.
@@ -717,7 +860,7 @@ impl KProcess {
         let child_rts = {
             let flags = parent.p_rts_flags.load();
             let flags = flags | rts::NO_QUANTUM;
-            let flags = flags & !(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP);
+            let flags = flags & !(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP | rts::VMREQUEST);
             RtsFlags::new(flags)
         };
 
@@ -739,6 +882,7 @@ impl KProcess {
                 priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
                 quantum: Quantum::new(parent.p_sched.quantum.size_ms.load(Ordering::Acquire)),
                 cpu: AtomicU32::new(parent.p_sched.cpu.load(Ordering::Acquire)),
+                scheduler: None,
             },
             p_accounting: Accounting::new(),
             // p_time zeroed: corresponds to rpc->p_user_time=0, p_sys_time=0, p_virt_left=0, p_prof_left=0
@@ -758,6 +902,10 @@ impl KProcess {
             p_delivermsg: parent.p_delivermsg.clone(),
             p_delivermsg_vir: parent.p_delivermsg_vir,
             p_ext_reg_state: ExtRegState::new(),
+            // VM request fields: child has no pending VM request
+            // C: fork copies p_vmrequest but child never has RTS_VMREQUEST set
+            p_next_requestor: None,
+            p_vm_suspend: None,
         };
 
         // Copy extended register state if parent has initialized it
@@ -919,10 +1067,10 @@ mod tests {
     #[test]
     fn test_kprocess_priority() {
         let proc = KProcess::new(1, Endpoint(1));
-        assert_eq!(proc.get_priority(), priority::USER_Q);
+        assert_eq!(proc.get_priority(), Priority(priority::USER_Q));
 
         proc.set_priority(priority::TASK_Q);
-        assert_eq!(proc.get_priority(), priority::TASK_Q);
+        assert_eq!(proc.get_priority(), Priority(priority::TASK_Q));
     }
 
     #[test]
@@ -1109,5 +1257,177 @@ mod tests {
         assert!(!child.p_misc_flags.is_set(mf::SPROF_SEEN));
         // Inherited flag
         assert!(child.p_misc_flags.is_set(mf::REPLY_PEND));
+    }
+
+    // ── §5.1: KProcess VM suspend/resume tests ──
+
+    #[test]
+    fn test_suspend_for_vm_sets_rts_and_context() {
+        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        proc.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x1000),
+            length: minix_types::VirBytes::new(0x100),
+            write_flag: true,
+        };
+        proc.suspend_for_vm(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+        );
+
+        assert!(proc.p_rts_flags.is_set(rts::VMREQUEST));
+        assert!(proc.p_vm_suspend.is_some());
+        assert!(proc.is_vm_suspended());
+
+        let ctx = proc.vm_suspend_context().unwrap();
+        assert_eq!(ctx.suspend_type, crate::vm::VmSuspendType::KernelCall);
+        assert_eq!(ctx.state, crate::vm::VmSuspendState::Pending);
+        assert!(ctx.saved_msg.is_none());
+        assert!(ctx.copy_context.is_none());
+    }
+
+    #[test]
+    fn test_suspend_for_vm_with_copy() {
+        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        proc.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x2000),
+            length: minix_types::VirBytes::new(0x200),
+            write_flag: false,
+        };
+        let copy_ctx = crate::vm::VmCopyContext::new(
+            crate::vm::AddressRef::Process {
+                endpoint: Endpoint::from_generation_slot(1, 2),
+                offset: minix_types::VirBytes::new(0x1000),
+            },
+            crate::vm::AddressRef::Process {
+                endpoint: Endpoint::from_generation_slot(1, 3),
+                offset: minix_types::VirBytes::new(0x2000),
+            },
+            0x100,
+            crate::vm::VmFaultType::Src,
+        );
+        proc.suspend_for_vm_with_copy(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+            copy_ctx,
+        );
+
+        let ctx = proc.vm_suspend_context().unwrap();
+        assert!(ctx.copy_context.is_some());
+    }
+
+    #[test]
+    fn test_clear_vm_suspend() {
+        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        proc.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x1000),
+            length: minix_types::VirBytes::new(0x100),
+            write_flag: true,
+        };
+        proc.suspend_for_vm(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+        );
+
+        assert!(proc.is_vm_suspended());
+
+        proc.clear_vm_suspend();
+
+        assert!(!proc.is_vm_suspended());
+        assert!(!proc.p_rts_flags.is_set(rts::VMREQUEST));
+        assert!(proc.p_vm_suspend.is_none());
+        assert!(proc.vm_suspend_context().is_none());
+    }
+
+    #[test]
+    fn test_clear_vm_suspend_does_not_clear_kcall_resume() {
+        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        proc.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x1000),
+            length: minix_types::VirBytes::new(0x100),
+            write_flag: true,
+        };
+        proc.suspend_for_vm(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+        );
+        proc.p_misc_flags.set(mf::KCALL_RESUME);
+        proc.p_rts_flags.clear(rts::VMREQUEST);
+
+        proc.clear_vm_suspend();
+
+        // MF_KCALL_RESUME should NOT be cleared by clear_vm_suspend
+        // (C's clear_memreq only clears RTS_VMREQUEST, not MF_KCALL_RESUME)
+        assert!(proc.p_misc_flags.is_set(mf::KCALL_RESUME));
+    }
+
+    #[test]
+    fn test_vm_suspend_context_mut() {
+        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        proc.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x1000),
+            length: minix_types::VirBytes::new(0x100),
+            write_flag: true,
+        };
+        proc.suspend_for_vm(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+        );
+
+        let ctx = proc.vm_suspend_context_mut().unwrap();
+        ctx.state = crate::vm::VmSuspendState::Fetched;
+
+        assert_eq!(proc.vm_suspend_context().unwrap().state, crate::vm::VmSuspendState::Fetched);
+    }
+
+    #[test]
+    fn test_fork_child_has_no_vm_suspend() {
+        let mut parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        parent.p_rts_flags.clear(rts::SLOT_FREE);
+
+        let params = crate::vm::VmCheckParams {
+            start: minix_types::VirBytes::new(0x1000),
+            length: minix_types::VirBytes::new(0x100),
+            write_flag: true,
+        };
+        parent.suspend_for_vm(
+            crate::vm::VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 99),
+            params,
+            None,
+        );
+
+        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+
+        // Child should NOT inherit VM suspend state
+        assert!(!child.is_vm_suspended());
+        assert!(child.p_vm_suspend.is_none());
+        assert_eq!(child.p_next_requestor, None);
+    }
+
+    #[test]
+    fn test_is_vm_suspended_reflects_rts_flag() {
+        let proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        // New process has SLOT_FREE, not VMREQUEST
+        assert!(!proc.is_vm_suspended());
     }
 }

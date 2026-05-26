@@ -35,7 +35,8 @@
 
 pub mod types;
 pub mod ipc;
+pub mod kernel_info;
 
-// 重新导出核心类型
 pub use types::*;
 pub use ipc::*;
+pub use kernel_info::*;
