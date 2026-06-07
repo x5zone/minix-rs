@@ -53,7 +53,7 @@ pub type CpuCycles = u64;
 
 /// Number of kernel tasks.
 /// TODO: Move to a shared constant (minix-types or kernel config).
-const NR_TASKS: usize = 8;
+const NR_TASKS: usize = 5;
 
 /// Process number constants.
 /// Note: In Minix3, p_nr values are slot indices. Kernel tasks have negative
@@ -62,9 +62,11 @@ const NR_TASKS: usize = 8;
 /// The special "NONE" value belongs to Endpoint, not ProcNr.
 pub mod proc_nr {
     use super::ProcNr;
-    /// Minimum kernel task p_nr (first task in proc[]).
-    /// Actual task p_nr values range from -NR_TASKS to -1.
     pub const MIN_TASK_NR: ProcNr = -(super::NR_TASKS as ProcNr);
+    pub const IDLE: ProcNr = -4;
+    pub const CLOCK: ProcNr = -3;
+    pub const SYSTEM: ProcNr = -2;
+    pub const KERNEL: ProcNr = -1;
 }
 
 /// Runtime status flags.
@@ -413,7 +415,39 @@ impl Default for CyclesStats {
     }
 }
 
-/// Kernel process structure.
+/// CPU average statistics structure.
+/// Corresponds to C's `struct cpuavg` in type.h:80-85.
+#[derive(Debug)]
+pub struct CpuAvg {
+    pub ca_base: AtomicU64,
+    pub ca_run: AtomicU32,
+    pub ca_last: AtomicU32,
+    pub ca_avg: AtomicU32,
+}
+
+impl CpuAvg {
+    pub fn new() -> Self {
+        Self {
+            ca_base: AtomicU64::new(0),
+            ca_run: AtomicU32::new(0),
+            ca_last: AtomicU32::new(0),
+            ca_avg: AtomicU32::new(0),
+        }
+    }
+}
+
+impl Default for CpuAvg {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeferArgs {
+    pub r1: usize,
+    pub r2: usize,
+    pub r3: usize,
+}
 #[derive(Debug)]
 pub struct KProcess {
     /// Process number (slot index).
@@ -432,6 +466,14 @@ pub struct KProcess {
     pub p_time: TimeStats,
     /// Cycles statistics.
     pub p_cycles: CyclesStats,
+
+    /// CPU average statistics.
+    /// Corresponds to C's `struct cpuavg p_cpuavg`.
+    pub p_cpuavg: CpuAvg,
+
+    pub p_dequeued: AtomicU64,
+
+    pub p_defer: DeferArgs,
 
     // IPC queue pointers
     /// Next process pointer in ready queue.
@@ -488,6 +530,10 @@ pub struct KProcess {
     pub p_ext_reg_state: ExtRegState,
 
     // VM request fields (03-vm-request.md §3.4, §3.5)
+    /// Next process in vmrestart chain.
+    /// C: `p_vmrequest.nextrestart` (struct proc *)
+    pub p_next_restart: Option<ProcNr>,
+
     /// Next process in vmrequest queue.
     /// C: `p_vmrequest.nextrequestor` (struct proc *)
     /// Design decision: §3.4 (ProcNr index replaces *proc pointer, moved from
@@ -688,6 +734,9 @@ impl KProcess {
             p_accounting: Accounting::new(),
             p_time: TimeStats::new(),
             p_cycles: CyclesStats::new(),
+            p_cpuavg: CpuAvg::new(),
+            p_dequeued: AtomicU64::new(0),
+            p_defer: DeferArgs::default(),
             p_nextready: None,
             p_caller_q: None,
             p_q_link: None,
@@ -699,6 +748,7 @@ impl KProcess {
             p_delivermsg: Message::default(),
             p_delivermsg_vir: VirBytes::new(0),
             p_ext_reg_state: ExtRegState::new(),
+            p_next_restart: None,
             p_next_requestor: None,
             p_vm_suspend: None,
         }
@@ -731,6 +781,16 @@ impl KProcess {
 
     pub fn reset_accounting(&self) {
         self.p_accounting.reset();
+    }
+
+    pub fn blocked_on(&self) -> Option<Endpoint> {
+        if self.p_rts_flags.is_set(rts::SENDING) {
+            Some(self.p_sendto_e)
+        } else if self.p_rts_flags.is_set(rts::RECEIVING) {
+            Some(self.p_getfrom_e)
+        } else {
+            None
+        }
     }
 
     // ── VM suspend/resume methods (03-vm-request.md §3.5, §3.9, §3.10) ──
@@ -889,6 +949,10 @@ impl KProcess {
             p_time: TimeStats::new(),
             // p_cycles zeroed: corresponds to rpc->p_cycles=0, p_kcall_cycles=0, p_kipc_cycles=0
             p_cycles: CyclesStats::new(),
+            // p_cpuavg zeroed: child starts with fresh CPU average
+            p_cpuavg: CpuAvg::new(),
+            p_dequeued: AtomicU64::new(0),
+            p_defer: DeferArgs::default(),
             // IPC queue pointers: child is not queued, no callers, no links
             p_nextready: None,
             p_caller_q: None,
@@ -902,6 +966,7 @@ impl KProcess {
             p_delivermsg: parent.p_delivermsg.clone(),
             p_delivermsg_vir: parent.p_delivermsg_vir,
             p_ext_reg_state: ExtRegState::new(),
+            p_next_restart: None,
             // VM request fields: child has no pending VM request
             // C: fork copies p_vmrequest but child never has RTS_VMREQUEST set
             p_next_requestor: None,

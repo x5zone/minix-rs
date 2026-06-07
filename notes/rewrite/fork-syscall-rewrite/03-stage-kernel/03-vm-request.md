@@ -859,12 +859,12 @@ impl VmRequestQueue {
 
 **BKL 安全分析**（参考 00-kernel-overview §1.5）：
 
-| 操作 | BKL 状态 | 安全？ |
-|------|---------|--------|
-| `enqueue`（`vm_suspend` 中调用） | 系统调用处理全程持有 BKL | ✅ |
-| `dequeue_filtered`（`VMCTL_MEMREQ_GET` 中调用） | 系统调用处理全程持有 BKL | ✅ |
-| 链表遍历 | 系统调用处理全程持有 BKL | ✅ |
-| IPC 过滤器清除后发送 SIGKMEM（`system.c:768`） | BKL 持有 | ✅ |
+| 操作 | BKL 状态 | 安全 |
+|------|---------|------|
+| `enqueue`（`vm_suspend` 中调用） | 系统调用处理全程持有 BKL | BKL 保护 |
+| `dequeue_filtered`（`VMCTL_MEMREQ_GET` 中调用） | 系统调用处理全程持有 BKL | BKL 保护 |
+| 链表遍历 | 系统调用处理全程持有 BKL | BKL 保护 |
+| IPC 过滤器清除后发送 SIGKMEM（`system.c:768`） | BKL 持有 | BKL 保护 |
 
 `VmRequestQueue` 的所有操作都在 BKL 保护下执行，不需要额外的同步机制。但 `VmRequestQueue` 本身不应使用 `Rc`/`RefCell`——因为 BKL 释放窗口内可能有中断处理代码访问进程表（虽然不访问 vmrequest 链表，但保持类型层面的约束更安全）。
 
@@ -1061,7 +1061,7 @@ pub struct VmCopyContext {
 
 **为什么 `copy_context` 是 `Option`**：只有 `VMSTYPE_KERNELCALL` 场景下跨地址空间拷贝需要 `VmCopyContext`。`VMSTYPE_DELIVERMSG` 场景下不需要（消息投递的"拷贝"语义不同——它投递一条消息到进程的接收缓冲区，不是跨地址空间拷贝）。`Option` 允许表达"无拷贝上下文"的状态。
 
-**02 文档的 VmRequest 迁移**：`kernel/src/vm.rs` 中的 `VmRequest` 结构体应重命名为 `VmCopyContext` 并移入 `VmSuspendContext`。`VmCopyError::Suspended` 变体保留——它表示跨地址空间操作因缺页挂起的错误返回，与 `VmSuspendContext` 是不同层面的概念（错误码 vs 状态上下文）。
+**02 文档的 VmRequest 迁移**：`kernel/src/vm.rs` 中的 `VmRequest` 结构体已重命名为 `VmCopyContext` 并移入 `VmSuspendContext`。`VmCopyError::Suspended` 变体已移除——它混淆了"操作挂起"和"地址错误"两个不同语义。现在使用 `CrossSpaceResult` 类型：`CrossSpaceResult::Suspended(VmFaultType)` 表示操作因缺页挂起（对应 C 的 `VMSUSPEND`），`CrossSpaceResult::Completed(Err(VmCopyError))` 表示地址解析错误（对应 C 的 `EFAULT_SRC/DST`）。
 
 ### 3.9 vm_suspend 的 Rust 表达
 
@@ -1142,7 +1142,7 @@ pub fn vm_check_range(
         None,
     );
     queue.enqueue_and_notify(proc_nr, procs, send_sig)?;
-    Err(VmCopyError::Suspended)
+    CrossSpaceResult::Suspended(fault_type)
 }
 ```
 
@@ -1189,29 +1189,29 @@ impl KProcess {
 
 **但需要更新 `VmSuspendContext`**：如果旧进程有挂起的内存请求（`p_vm_suspend.is_some()`），新进程需要继承这个上下文。这属于 `do_update` 的进程结构复制逻辑，不属于 vmrequest 链表管理。
 
-### 3.12 VmCopyError::Suspended 与 VmSuspendContext 的关系
+### 3.12 CrossSpaceResult 与 VmSuspendContext 的关系
 
-**决策**：`VmCopyError::Suspended` 是跨地址空间操作的**错误返回值**，`VmSuspendContext` 是进程的**挂起状态上下文**。两者是不同层面的概念，不应合并。
+**决策**：`CrossSpaceResult::Suspended` 是跨地址空间操作的**挂起信号**，`VmSuspendContext` 是进程的**挂起状态上下文**。两者是不同层面的概念，不应合并。
 
-**依据**：§2.3.7 分析了 `vm_check_range()` 返回 `VMSUSPEND` 给调用者。§2.3.1 分析了 `vm_suspend()` 同时设置 `RTS_VMREQUEST` 和填充 `p_vmrequest`。02-page-table-kernel.md §3.7 定义了 `VmCopyError::Suspended`。
+**依据**：§2.3.7 分析了 `vm_check_range()` 返回 `VMSUSPEND` 给调用者。§2.3.1 分析了 `vm_suspend()` 同时设置 `RTS_VMREQUEST` 和填充 `p_vmrequest`。02-page-table-kernel.md §3.7 定义了 `CrossSpaceResult`。
 
 **数据流**：
 
 ```
 cross_space_copy / vm_check_range
     → 发现缺页
-    → 调用 suspend_for_vm() 填充 VmSuspendContext
-    → 返回 Err(VmCopyError::Suspended) 给调用者
+    → 返回 CrossSpaceResult::Suspended(VmFaultType) 给调用者
     → 调用者（kernel_call_dispatch）收到 Suspended
+    → 调用 suspend_for_vm() 填充 VmSuspendContext
     → 调用 kernel_call_finish() 保存消息
     → 进程被挂起，等待 VM 处理
 ```
 
-`VmCopyError::Suspended` 告诉调用者"操作因缺页挂起"，调用者据此执行挂起逻辑（保存消息、不回复用户进程）。`VmSuspendContext` 记录挂起的详细信息，供 VM 查询和恢复时使用。
+`CrossSpaceResult::Suspended` 告诉调用者"操作因缺页挂起"，调用者据此执行挂起逻辑（构造 VmSuspendContext、保存消息、不回复用户进程）。`VmSuspendContext` 记录挂起的详细信息，供 VM 查询和恢复时使用。
 
-**为什么不用 `Result<(), VmSuspendContext>`**：`VmSuspendContext` 已经存储在 `KProcess.p_vm_suspend` 中，如果错误返回值也携带一份，就存在两份数据。错误返回值应该只表达"发生了什么"，不携带状态——状态由进程结构体管理。
+**为什么用 `CrossSpaceResult` 而非 `Result<(), VmCopyError>`**：在 C 中，`VMSUSPEND`(-996) 和 `EFAULT_SRC/DST`(-995/-994) 是同一返回值空间的不同值，但语义完全不同——`VMSUSPEND` 触发 `vm_suspend()` 挂起流程，`EFAULT_SRC/DST` 触发正常错误返回。将它们放在同一个 `VmCopyError` 枚举中混淆了"需要恢复的正常流程"和"地址错误"。`CrossSpaceResult` 将两者分离：`Suspended` 表示"需要恢复"，`Completed(Err)` 表示"地址错误"。
 
-### 3.13 未实现清单
+### 3.13 不需要的 Minix3 符号
 
 以下 Minix3 符号在 minix-rs 中不需要实现：
 
@@ -1334,7 +1334,7 @@ pub struct VmSuspendContext {
 }
 ```
 
-**VmCopyContext**（从 02 文档 `VmRequest` 迁移）：
+**VmCopyContext**（从 02 文档 `VmRequest` 迁移，代码定义在 `os/kernel/src/vm.rs`，设计见 02-page-table-kernel.md §4.3b）：
 
 ```rust
 pub struct VmCopyContext {
@@ -1735,7 +1735,7 @@ pub fn cross_space_copy<D: DirectMapArch>(...) { ... }
 
 1. **`VmRequest` → `VmCopyContext`**：重命名，字段不变（`src`/`dst`/`bytes`/`fault_type`）
 2. **新增类型**：`VmSuspendType`、`VmCheckParams`、`VmSuspendState`、`VmCheckResult`、`VmSuspendContext`、`VmRequestQueue`、`VmCtlError`、`VmRequestHandler`
-3. **`VmCopyError::Suspended` 保留**：它表示跨地址空间操作的错误返回，与 `VmSuspendContext` 是不同层面
+3. **`VmCopyError::Suspended` 已移除**：改用 `CrossSpaceResult::Suspended(VmFaultType)` 表示操作挂起，与 `VmCopyError`（地址错误）分离
 4. **`VmFaultType` 保留**：它区分缺页方向（源/目标），用于 `VmCopyContext`
 
 **整合后的 `vm.rs` 结构**：

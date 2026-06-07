@@ -90,7 +90,7 @@ mod tests {
         let vaddr = 0xFFFF_8000_0040_1000u64;
         assert_eq!(pml4_index(vaddr), 256);
         assert_eq!(pdpt_index(vaddr), 0);
-        assert_eq!(pd_index(vaddr), 64);
+        assert_eq!(pd_index(vaddr), 2);
         assert_eq!(pt_index(vaddr), 1);
     }
 
@@ -102,7 +102,8 @@ mod tests {
         assert!(recovered.contains(PageFlags::PRESENT));
         assert!(recovered.contains(PageFlags::WRITABLE));
         assert!(recovered.contains(PageFlags::USER_ACCESSIBLE));
-        assert!(recovered.contains(PageFlags::EXECUTABLE));
+        // read_write() does NOT set EXECUTABLE — x86-64 NX bit is set
+        assert!(!recovered.contains(PageFlags::EXECUTABLE));
     }
 
     #[test]

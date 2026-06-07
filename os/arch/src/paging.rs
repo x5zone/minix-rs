@@ -36,6 +36,12 @@ bitflags::bitflags! {
         const ACCESSED        = 1 << 7;
         const DIRTY           = 1 << 8;
         const GUARD_PAGE      = 1 << 9;
+        // HUGE_PAGE: requests mapping at a larger page granularity.
+        // x86-64: PS bit in PDE/PTE (bit 7 at final level); 2MB at PDE, 1GB at PDPTE.
+        // ARM64: Contiguous bit in block descriptor.
+        // RISC-V: Not a PTE flag; huge page size determined by page table level.
+        // Actual page size is determined by the `HugePages` trait and `map()` level.
+        const HUGE_PAGE       = 1 << 10;
     }
 }
 
@@ -153,18 +159,22 @@ pub trait Paging {
     /// Create a page table root from a known physical page.
     /// Used during boot when no global allocator exists.
     ///
+    /// Unlike `new()` (which allocates the root page internally via the
+    /// kernel page allocator), this method takes a pre-allocated physical
+    /// page from the caller. During boot, UEFI's `AllocatePages` provides
+    /// this page before `ExitBootServices`; after that no allocator exists.
+    ///
     /// The caller (boot-uefi shim) allocates a free physical page from UEFI's
     /// AllocatePages and passes it here. The implementation zero-fills it.
     ///
-    /// C: alloc_pagetable() — pg_utils.c:123
-    ///     static u32_t pagetables[6][1024] — compile-time array
+    /// C: pagedir[1024] — pre_init.c:268 pg_clear()
     ///
     /// # Architecture differences
     ///
     /// x86-64:   zero-fill root_page, return PML4 struct
     /// aarch64:  zero-fill root_page, return TTBR0/TTBR1 struct
     /// riscv64:  zero-fill root_page, return Sv39/Sv48 struct
-    fn new_empty(root_page: PhysBytes) -> Self;
+    fn new_from_page(root_page: PhysBytes) -> Self;
 
     /// Load root table physical address into MMU and enable paging.
     /// After this call, all memory accesses go through page tables.
@@ -639,8 +649,8 @@ pub mod mock {
     impl Paging for MockPaging {
         const PAGE_SIZE: usize = 4096;
 
-        fn new_empty(_root_page: PhysBytes) -> Self {
-            Self::new_mock().expect("MockPaging::new_empty should not fail")
+        fn new_from_page(_root_page: PhysBytes) -> Self {
+            Self::new_mock().expect("MockPaging::new_from_page should not fail")
         }
 
         unsafe fn enable(&self) -> PhysBytes {

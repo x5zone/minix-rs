@@ -22,6 +22,7 @@ extern crate alloc;
 
 pub mod paging;
 pub mod paging_ext;
+pub mod pt_alloc;
 pub mod direct_map;
 pub mod protection;
 pub mod trap_entry;
@@ -29,7 +30,12 @@ pub mod interrupt;
 pub mod exception;
 pub mod irq_manager;
 pub mod exception_dispatcher;
+#[cfg(any(feature = "x86_64", target_arch = "x86_64"))]
 pub mod x86_64;
+#[cfg(feature = "arm64")]
+pub mod arm64;
+#[cfg(feature = "riscv64")]
+pub mod riscv64;
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
@@ -51,11 +57,17 @@ pub use paging::mock::MockPaging;
 #[cfg(feature = "mock")]
 pub use paging::mock::MockAsid;
 
-#[cfg(all(feature = "mock", not(feature = "x86_64")))]
+#[cfg(all(feature = "mock", not(any(feature = "x86_64", feature = "arm64", feature = "riscv64"))))]
 pub type CurrentPaging = MockPaging;
 
 #[cfg(feature = "x86_64")]
 pub type CurrentPaging = crate::x86_64::paging::X86_64Paging;
+
+#[cfg(feature = "arm64")]
+pub type CurrentPaging = crate::arm64::paging::AArch64Paging;
+
+#[cfg(feature = "riscv64")]
+pub type CurrentPaging = crate::riscv64::paging::Riscv64Paging;
 
 #[cfg(feature = "mock")]
 pub use direct_map::MockDirectMap;

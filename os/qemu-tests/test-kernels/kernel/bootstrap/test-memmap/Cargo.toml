@@ -1,0 +1,16 @@
+[package]
+name = "test-memmap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uefi = { version = "0.33", features = ["global_allocator"] }
+minix-arch = { workspace = true, default-features = false, features = ["x86_64"] }
+minix-types = { workspace = true }
+boot-shim = { workspace = true, features = ["uefi"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

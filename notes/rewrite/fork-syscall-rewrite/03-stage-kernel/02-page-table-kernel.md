@@ -192,6 +192,8 @@ typedef struct segframe {
 
 **ARM 对比**：ARM 架构的 `segframe_t` 使用 `p_ttbr`/`p_ttbr_v`（对应 TTBR0/TTBR1 寄存器），无 `p_kern_trap_style` 字段。
 
+**字段覆盖说明**：`segframe_t` 的 4 个字段中，`p_cr3`/`p_cr3_v` 是页表核心字段（§3.4 详细映射），`fpu_state` 和 `p_kern_trap_style` 与页表操作无关，在 minix-rs 中分别移到 `KProcess` 的其他字段中（见 03-vm-request.md §3.2 字段映射表）。
+
 #### 2.2.2 vir_addr — 虚拟地址描述（`minix/type.h:27`）
 
 ```c
@@ -440,7 +442,7 @@ int vm_check_range(struct proc *caller, struct proc *target,
 2. 否则调用 `vm_suspend` 挂起调用者，请求 VM 检查目标进程的地址范围
 3. 返回 `VMSUSPEND`，调用者被挂起直到 VM 回复
 
-**与 minix-rs 的关系**：`vm_check_range` 的语义由 `VmCopyContext`（§4.3b）+ `VmCopyError::Suspended`（§4.3）+ `VmSuspendState`（03-vm-request.md §3.3）替代。当 `cross_space_copy` 发现缺页时，返回 `VmCopyError::SrcPageFault`/`DstPageFault`，调用者（系统调用处理）根据 `vmcheck` 标志决定是否挂起。Minix3 的 `vm_suspend` 直接在内核中挂起调用者；minix-rs 将"发现缺页"和"挂起调用者"分离为两步，更清晰。
+**与 minix-rs 的关系**：`vm_check_range` 的语义由 `CrossSpaceResult::Suspended`（§4.3）+ `VmSuspendState`（03-vm-request.md §3.3）替代。当 `cross_space_copy` 发现缺页时，返回 `CrossSpaceResult::Suspended(VmFaultType)`，调用者（系统调用处理）根据 `vmcheck` 标志决定是否挂起。Minix3 的 `vm_suspend` 直接在内核中挂起调用者；minix-rs 将"发现缺页"和"挂起调用者"分离为两步，更清晰。注意：Minix3 的 `VMPTYPE_NONE`(0) 虽然在 `include/minix/vm.h:37` 中定义，但从未被使用——`vm_suspend()` 中硬编码 `req_type = VMPTYPE_CHECK`（见 03-vm-request.md §2.5.6），因此 minix-rs 不需要对应类型。
 
 #### 2.3.9 arch_do_vmctl() — VM 页表管理命令（`arch_do_vmctl.c:38`）
 
@@ -764,7 +766,7 @@ enum AddressRef {
 
 | Minix3 返回值 | 含义 | Rust 等价 |
 |-------------|------|----------|
-| `VMSUSPEND` (-996) | 操作因缺页挂起 | `VmCopyError::Suspended` |
+| `VMSUSPEND` (-996) | 操作因缺页挂起 | `CrossSpaceResult::Suspended(VmFaultType)` |
 | `EFAULT_SRC` (-995) | 源地址缺页 | `VmCopyError::SrcPageFault` |
 | `EFAULT_DST` (-994) | 目标地址缺页 | `VmCopyError::DstPageFault` |
 | `EFAULT` (14) | 地址错误（非缺页） | `VmCopyError::InvalidAddress` |
@@ -792,8 +794,8 @@ enum AddressRef {
 | 方面 | Minix3 | minix-rs |
 |------|--------|----------|
 | 并发模型 | BKL + IPI | BKL + IPI（同） |
-| 跨 CPU TLB 刷新 | `smp_schedule_vminhibit()` | 待实现（见 18-smp.md） |
-| `p_stale_tlb` 位图 | 跟踪其他 CPU 上的陈旧 TLB | 待设计 |
+| 跨 CPU TLB 刷新 | `smp_schedule_vminhibit()` | SMP IPI 机制见 18-smp.md |
+| `p_stale_tlb` 位图 | 跟踪其他 CPU 上的陈旧 TLB | 设计见 18-smp.md |
 | `RTS_VMINHIBIT` 标志 | 阻止进程在其他 CPU 上调度 | 保留（见 §4.7） |
 
 **限制**：当前设计不处理以下场景（留待 SMP 完整实现）：
@@ -1053,7 +1055,7 @@ VM 通过 `SYS_VMCTL` 系统调用向内核发送页表管理命令。minix-rs �
 
 `VMCTL_SETADDRSPACE` 的关键逻辑保留：如果目标是当前进程，立即切换地址空间；清除 `RTS_VMINHIBIT` 使进程可被调度。对应 Minix3 `setcr3()` 的步骤 2-4（§2.3.9）。
 
-**SMP 注意事项**：Minix3 在 `VMCTL_SETADDRSPACE` 处理中调用 `smp_schedule_vminhibit(p)`（`do_vmctl.c:127-133`），通知目标进程当前所在 CPU 刷新 TLB 并停止该进程。如果目标进程在其他 CPU 上运行，必须通过 IPI 使其停止后才能安全修改地址空间。minix-rs 的 SMP IPI 机制待实现（见 [18-smp.md](18-smp.md)），但 `RTS_VMINHIBIT` 标志已保留——设置此标志后，进程不会被调度到任何 CPU，等效于 Minix3 的 `smp_schedule_vminhibit` 效果。
+**SMP 注意事项**：Minix3 在 `VMCTL_SETADDRSPACE` 处理中调用 `smp_schedule_vminhibit(p)`（`do_vmctl.c:127-133`），通知目标进程当前所在 CPU 刷新 TLB 并停止该进程。如果目标进程在其他 CPU 上运行，必须通过 IPI 使其停止后才能安全修改地址空间。minix-rs 的 SMP IPI 机制见 [18-smp.md](18-smp.md)，但 `RTS_VMINHIBIT` 标志已保留——设置此标志后，进程不会被调度到任何 CPU，等效于 Minix3 的 `smp_schedule_vminhibit` 效果。
 
 ### 4.8 arch_enable_paging — VM 分页使能
 

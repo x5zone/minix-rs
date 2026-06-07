@@ -6,8 +6,8 @@
 //! # Module Organization
 //!
 //! - **02-page-table-kernel.md** types: `PageTableRef`, `AddressRef`,
-//!   `VmCopyError`, `VmFaultType`, `VmCopyContext`, `cross_space_copy`,
-//!   `cross_space_memset`
+//!   `VmCopyError`, `VmFaultType`, `CrossSpaceResult`, `VmCopyContext`,
+//!   `cross_space_copy`, `cross_space_memset`
 //! - **03-vm-request.md** types: `VmSuspendType`, `VmCheckParams`,
 //!   `VmSuspendState`, `VmCheckResult`, `VmSuspendContext`, `VmRequestQueue`,
 //!   `VmCtlError`, `VmRequestHandler`
@@ -61,18 +61,81 @@ pub enum AddressRef {
     Physical(PhysBytes),
 }
 
+/// Address-resolution error from cross-space copy operations.
+///
+/// These are genuine errors — the address is invalid or the endpoint
+/// is unknown. Contrast with `CrossSpaceResult::Suspended`, which is
+/// *not* an error but a signal that the operation needs VM assistance.
+///
+/// C source mapping:
+/// - `SrcPageFault` ← `EFAULT_SRC` (-995), memory.c:195
+/// - `DstPageFault` ← `EFAULT_DST` (-994), memory.c:196
+/// - `InvalidAddress` ← `EFAULT` (14), generic address error
+/// - `PermissionDenied` ← `EPERM` (1), from `do_safecopy.c` grant check
+/// - `UnknownEndpoint` ← `ESRCH` (3), endpoint not found
+///
+/// Note: Minix3's `VMSUSPEND` (-996) is NOT represented here. In C,
+/// `VMSUSPEND` is a separate return value that triggers `vm_suspend()`;
+/// it is not an error. See `CrossSpaceResult::Suspended`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCopyError {
     SrcPageFault,
     DstPageFault,
     InvalidAddress,
-    Suspended,
     /// Permission denied on grant access (C: `EPERM` from `do_safecopy.c`).
     /// Not returned by `virtual_copy_f`/`vm_check_range`/`vm_memset` directly,
     /// but by `sys_safecopy` which validates grant permissions before calling
     /// into the copy path.
     PermissionDenied,
     UnknownEndpoint,
+}
+
+impl core::fmt::Display for VmCopyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VmCopyError::SrcPageFault => write!(f, "source page fault (EFAULT_SRC)"),
+            VmCopyError::DstPageFault => write!(f, "destination page fault (EFAULT_DST)"),
+            VmCopyError::InvalidAddress => write!(f, "invalid address (EFAULT)"),
+            VmCopyError::PermissionDenied => write!(f, "permission denied (EPERM)"),
+            VmCopyError::UnknownEndpoint => write!(f, "unknown endpoint (ESRCH)"),
+        }
+    }
+}
+
+impl core::fmt::Display for CrossSpaceResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CrossSpaceResult::Completed(Ok(())) => write!(f, "completed successfully"),
+            CrossSpaceResult::Completed(Err(e)) => write!(f, "completed with error: {e}"),
+            CrossSpaceResult::Suspended(ft) => write!(f, "suspended due to {ft:?} page fault"),
+        }
+    }
+}
+///
+/// Separates two semantically distinct outcomes that C conflates in a
+/// single return value:
+///
+/// - **Completed(Ok)**: operation finished successfully (C: return `OK`)
+/// - **Completed(Err)**: address resolution failed (C: return `EFAULT_SRC`/`EFAULT_DST`)
+/// - **Suspended**: operation paused because a page fault occurred and
+///   VM must handle it before the operation can retry (C: return `VMSUSPEND`)
+///
+/// In Minix3 C, `virtual_copy_f` returns `VMSUSPEND`(-996) for suspend and
+/// `EFAULT_SRC`/`EFAULT_DST` for errors. These are different control flows:
+/// `VMSUSPEND` triggers `vm_suspend()` → `kernel_call_finish()` saves the
+/// message; `EFAULT_SRC/DST` triggers normal error return. Mixing them in
+/// a single `VmCopyError` enum (as the previous design did) conflates
+/// "needs recovery" with "is an error".
+///
+/// Design decision: 02-page-table-kernel.md §3.1 (Direct Map replaces
+/// temporary PDE mapping), review fix for P0 #1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossSpaceResult {
+    /// Operation completed (success or address error).
+    Completed(Result<(), VmCopyError>),
+    /// Operation suspended due to page fault; VM must handle it.
+    /// `fault_type` indicates which side faulted, for `VmCopyContext` construction.
+    Suspended(VmFaultType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +165,16 @@ impl VmCopyContext {
     }
 }
 
+/// Walk the page table to resolve a virtual address to its physical mapping.
+///
+/// Uses Direct Map to read page table entries from physical memory.
+/// Returns `Some((paddr, flags))` if the address is mapped, `None` otherwise.
+///
+/// C: vm_lookup() — memory.c:325
+///
+/// TODO: Implement arch-specific 4-level page table walk (PML4→PDPT→PD→PT).
+/// This requires QEMU integration to test against real page tables.
+/// See 02-page-table-kernel.md §4.3a for the design.
 pub fn lookup_in_table<D: DirectMapArch>(
     root_paddr: PhysBytes,
     vaddr: VirBytes,
@@ -131,28 +204,41 @@ enum ResolveError {
     UnknownEndpoint,
 }
 
-fn map_src_err(e: ResolveError) -> VmCopyError {
-    match e {
-        ResolveError::PageFault => VmCopyError::SrcPageFault,
-        ResolveError::UnknownEndpoint => VmCopyError::UnknownEndpoint,
-    }
-}
-
-fn map_dst_err(e: ResolveError) -> VmCopyError {
-    match e {
-        ResolveError::PageFault => VmCopyError::DstPageFault,
-        ResolveError::UnknownEndpoint => VmCopyError::UnknownEndpoint,
-    }
-}
-
+/// Perform a cross-address-space memory copy.
+///
+/// Resolves source and destination physical addresses via Direct Map,
+/// then copies `bytes` bytes. If address resolution encounters a page
+/// fault, returns `CrossSpaceResult::Suspended` so the caller can
+/// initiate VMREQUEST suspend/resume.
+///
+/// # Resume path
+///
+/// When `Suspended` is returned, the caller should:
+/// 1. Construct a `VmCopyContext` from the fault direction
+/// 2. Call `vm_suspend()` to enqueue the request
+/// 3. On VM reply, retry this function with the same arguments
+///
+/// C: `virtual_copy_f()` — memory.c:592
 pub fn cross_space_copy<D: DirectMapArch>(
     src: &AddressRef,
     dst: &AddressRef,
     bytes: usize,
     proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
-) -> Result<(), VmCopyError> {
-    let src_phys = resolve_physical::<D>(src, &proc_cr3).map_err(map_src_err)?;
-    let dst_phys = resolve_physical::<D>(dst, &proc_cr3).map_err(map_dst_err)?;
+) -> CrossSpaceResult {
+    let src_phys = match resolve_physical::<D>(src, &proc_cr3) {
+        Ok(p) => p,
+        Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Src),
+        Err(ResolveError::UnknownEndpoint) => {
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+        }
+    };
+    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+        Ok(p) => p,
+        Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
+        Err(ResolveError::UnknownEndpoint) => {
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+        }
+    };
 
     let src_vaddr = D::kernel_phys_to_virt(src_phys);
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
@@ -161,9 +247,10 @@ pub fn cross_space_copy<D: DirectMapArch>(
     // - src_vaddr and dst_vaddr are derived from DirectMapArch::kernel_phys_to_virt()
     //   on physical addresses returned by lookup_in_table, which are valid page-backed
     //   addresses in the Direct Map region.
-    // - The memory regions [src_vaddr, src_vaddr+bytes) and [dst_vaddr, dst_vaddr+bytes)
-    //   do not overlap because they come from different physical addresses resolved from
-    //   different AddressRef inputs.
+    // - Caller must ensure the memory regions [src_vaddr, src_vaddr+bytes) and
+    //   [dst_vaddr, dst_vaddr+bytes) do not overlap. If the same physical page is
+    //   mapped at both src and dst (e.g., shared memory), the caller must use a
+    //   copy-to-temporary-then-copy-from-temporary strategy instead.
     // - BKL ensures no concurrent mutation of these memory regions.
     // - Both regions are valid for u8 access (no alignment requirements).
     unsafe {
@@ -174,16 +261,29 @@ pub fn cross_space_copy<D: DirectMapArch>(
         );
     }
 
-    Ok(())
+    CrossSpaceResult::Completed(Ok(()))
 }
 
+/// Perform a cross-address-space memory set.
+///
+/// Resolves destination physical address via Direct Map, then fills
+/// `count` bytes with `value`. If address resolution encounters a page
+/// fault, returns `CrossSpaceResult::Suspended`.
+///
+/// C: `vm_memset()` — memory.c:526
 pub fn cross_space_memset<D: DirectMapArch>(
     dst: &AddressRef,
     value: u8,
     count: usize,
     proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
-) -> Result<(), VmCopyError> {
-    let dst_phys = resolve_physical::<D>(dst, &proc_cr3).map_err(map_dst_err)?;
+) -> CrossSpaceResult {
+    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+        Ok(p) => p,
+        Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
+        Err(ResolveError::UnknownEndpoint) => {
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+        }
+    };
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 
@@ -197,7 +297,7 @@ pub fn cross_space_memset<D: DirectMapArch>(
         core::ptr::write_bytes(dst_vaddr.0 as *mut u8, value, count);
     }
 
-    Ok(())
+    CrossSpaceResult::Completed(Ok(()))
 }
 
 pub fn copy_page_table_ref(_as: &PageTableRef) -> PageTableRef {
@@ -352,6 +452,7 @@ impl VmRequestQueue {
     /// vmrequest = caller;
     /// ```
     pub fn enqueue(&mut self, proc_nr: ProcNr, procs: &mut [KProcess]) -> bool {
+        debug_assert!((proc_nr as usize) < procs.len(), "ProcNr out of bounds");
         let proc = &mut procs[proc_nr as usize];
         proc.p_next_requestor = self.head;
         let was_empty = self.head.is_none();
@@ -463,6 +564,12 @@ fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr>
 ///
 /// Replaces Minix3's `panic()` and `ENOENT` return values in
 /// `VMCTL_MEMREQ_GET/REPLY` handlers. Design decision: §3.7.
+///
+/// # BKL requirement
+///
+/// All `VmCtlError`-returning operations execute under BKL.
+/// `VmRequestHandler` methods are called from syscall handlers
+/// which hold BKL throughout. No additional synchronization needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlError {
     /// No pending request (C: `return ENOENT` from VMCTL_MEMREQ_GET).
@@ -494,6 +601,7 @@ impl VmRequestHandler {
             true
         }).ok_or(VmCtlError::NoRequest)?;
 
+        debug_assert!((proc_nr as usize) < procs.len(), "ProcNr out of bounds");
         let proc = &mut procs[proc_nr as usize];
         let ctx = proc.p_vm_suspend.as_mut().ok_or(VmCtlError::InvalidState)?;
 
@@ -642,9 +750,18 @@ mod tests {
         assert_eq!(VmCopyError::SrcPageFault, VmCopyError::SrcPageFault);
         assert_eq!(VmCopyError::DstPageFault, VmCopyError::DstPageFault);
         assert_eq!(VmCopyError::InvalidAddress, VmCopyError::InvalidAddress);
-        assert_eq!(VmCopyError::Suspended, VmCopyError::Suspended);
         assert_eq!(VmCopyError::PermissionDenied, VmCopyError::PermissionDenied);
         assert_eq!(VmCopyError::UnknownEndpoint, VmCopyError::UnknownEndpoint);
+    }
+
+    #[test]
+    fn cross_space_result_suspended_is_separate_from_error() {
+        let suspended = CrossSpaceResult::Suspended(VmFaultType::Src);
+        assert_eq!(suspended, CrossSpaceResult::Suspended(VmFaultType::Src));
+        let completed_ok = CrossSpaceResult::Completed(Ok(()));
+        assert_eq!(completed_ok, CrossSpaceResult::Completed(Ok(())));
+        let completed_err = CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
+        assert_eq!(completed_err, CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault)));
     }
 
     #[test]
@@ -683,15 +800,15 @@ mod tests {
     }
 
     #[test]
-    fn map_src_err_maps_page_fault() {
-        assert_eq!(map_src_err(ResolveError::PageFault), VmCopyError::SrcPageFault);
-        assert_eq!(map_src_err(ResolveError::UnknownEndpoint), VmCopyError::UnknownEndpoint);
+    fn cross_space_result_src_suspended() {
+        let result = CrossSpaceResult::Suspended(VmFaultType::Src);
+        assert_eq!(result, CrossSpaceResult::Suspended(VmFaultType::Src));
     }
 
     #[test]
-    fn map_dst_err_maps_page_fault() {
-        assert_eq!(map_dst_err(ResolveError::PageFault), VmCopyError::DstPageFault);
-        assert_eq!(map_dst_err(ResolveError::UnknownEndpoint), VmCopyError::UnknownEndpoint);
+    fn cross_space_result_dst_suspended() {
+        let result = CrossSpaceResult::Suspended(VmFaultType::Dst);
+        assert_eq!(result, CrossSpaceResult::Suspended(VmFaultType::Dst));
     }
 
     #[test]

@@ -7,6 +7,74 @@
 
 ## P0：必须立即修复
 
+### 🔗 参考：中间页表页分配（kernel 侧已修复，VM 侧待接入）
+
+> **注意**：此问题在 **03-stage-kernel**（三架构 Paging 实现）中已发现并修复。VM 侧仍然全部使用 `MockPaging`，尚未接入真实架构实现，因此此问题在 VM 侧**未修复**。以下记录供 VM 未来接入时参考。
+
+**在以下文档/代码中发现并修复**：
+- `03-stage-kernel/01-multiboot-bootstrap.md` §4.3（x86-64 `map_huge` 注释中描述 `alloc_page`）
+- `os/arch/src/{x86_64,arm64,riscv64}/paging.rs`（三个架构各一份私有 `alloc_page()`）
+
+**问题**：三个架构的 Paging 实现在 `map_huge` 中需要分配中间页表页（如 PML4→PDPT→PD 中没有的层级），各实现了完全相同的私有方法：
+
+```rust
+unsafe fn alloc_page(&mut self) -> Result<u64, PageTableError> {
+    static mut NEXT_PAGE: u64 = 0x20_0000;   // ← 硬编码！
+    let page = unsafe { NEXT_PAGE };
+    unsafe { NEXT_PAGE += 0x1000 };
+    let ptr = unsafe { phys_to_ptr(page) };
+    unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+    Ok(page)
+}
+```
+
+**五个问题**：
+
+| 问题 | 说明 |
+|------|------|
+| 1. 代码重复 | 三份完全相同的代码，改一处要同步改三处 |
+| 2. 地址硬编码 | `0x20_0000` 假设"内核二进制<2MB，∴2MB以后全空"，对 hello-boot 测试成立，对真实内核不成立 |
+| 3. 恒等映射依赖 | `phys_to_ptr(pa)` 假设 VA = PA。运行时在 Direct Map 下不成立 |
+| 4. 返回值无虚拟地址 | `map_huge` 需要 VA 去清零页表页内容，只返回物理地址不够 |
+| 5. VM 不可用 | VM 的 `PhysAlloc`（buddy/bitmap）是完整分配器，不是简单 bump，VM 需要真正的 alloc/free |
+
+**根因**：Paging trait 没有为中间页表页分配定义可替换的策略。每个架构各自拍脑袋实现，且固定为 boot 阶段设计，VM 无法接入。
+
+**修复（2026-05-27）**：引入函数指针式全局分配器 `arch/src/pt_alloc.rs`：
+
+```rust
+type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
+static mut PT_ALLOC: PtAllocFn = uninit_alloc;
+
+pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
+    unsafe { PT_ALLOC() }
+}
+
+pub fn init_boot_pt_alloc(base: u64, end: u64) {
+    unsafe { BOOT_NEXT = base; BOOT_END = end; PT_ALLOC = boot_pt_alloc; }
+}
+```
+
+| 变更 | 说明 |
+|------|------|
+| 三段私有 `alloc_page` 删除 | 三架构共删除 36 行重复代码 |
+| 统一的 `alloc_pt_page()` | 返回 `(PhysBytes, VirBytes)`——boot 阶段 VA=PA，VM 阶段 VA=DM_BASE+PA |
+| 函数指针（非 enum） | 类型 `fn()` 永不带 Boot/VM 冗余信息，运行时零分支，零动态分配 |
+
+**VM 侧待办（本节即为此而写）**：
+
+VM 的 `Paging::map()` 和 `Paging::map_huge()` 未来接入真实架构实现时（不再用 MockPaging），需要：
+
+1. 在 VM 初始化时调用 `init_vm_pt_alloc(&global_vm_alloc)`，注册 VM 自己的分配器函数
+2. VM 分配器函数内部调 `VmPageAllocator::alloc_page()` + `vm_phys_to_virt()` 做 DM 转换
+3. 三个架构的 `map_huge` 已经统一为 `alloc_pt_page()`，VM 接入时**不需要改 Paging 代码**，只改初始化处
+
+**相关文件**：
+- `os/arch/src/pt_alloc.rs` — 新增，共享分配器
+- `os/arch/src/{x86_64,arm64,riscv64}/paging.rs` — 删除私有 `alloc_page`，改调 `alloc_pt_page()`
+- `os/arch/src/lib.rs` — 注册 `pt_alloc` 模块
+- `os/qemu-tests/test-kernels/hello-boot/src/main.rs` — 添加 `init_boot_pt_alloc` 调用
+
 ### ✅ 已修复：共享内存缺页处理（SharedMemory::ev_pagefault）
 
 **问题**：`SharedMemory::ev_pagefault` 返回 `NeedNewPage`（分配全新物理页），违反共享语义。共享内存缺页时应该链接到**源进程的同一物理页**，而非分配新页。
@@ -58,6 +126,15 @@
 | MockPaging → 真架构实现 | 当前仅 `MockPaging`（单元测试），缺少 `X86_64Paging` 硬件实现 | 需 arch crate 就绪 |
 | `map_kernel()` | 每个用户进程页表中映射内核地址空间 | 需 arch crate 就绪 |
 | Direct Map 扩展 | 物理内存 > 1GB 时需要扩展 Direct Map 区域 | 需 arch crate 就绪 |
+| **PageFlags GLOBAL 位知识** | `kernel_read_write()` 含 GLOBAL，boot 阶段无用但无害，VM 阶段才真正有价值 | 见下方详述 |
+
+**PageFlags GLOBAL 位 — 知识记录**：
+
+`os/arch/src/paging.rs` 中 `PageFlags::kernel_read_write()` 硬编码了 `GLOBAL` 位（`PRESENT | WRITABLE | GLOBAL`）。两阶段对 GLOBAL 的需求不同，但无需拆分：
+
+- **Boot 脚手架**：GLOBAL 无实际作用（无进程切换，CR3 不变），但也无害。无需为此拆分构造器
+- **VM 的 `map_kernel()` / Direct Map**：GLOBAL 有真正价值——每次进程切换重写 CR3，GLOBAL 让内核映射 TLB 条目不被刷掉，避免冷启动 TLB miss。这是 64 位架构的合理演进
+- **C 源码对照**：`pg_mapkernel()` 无 GLOBAL（32 位），`pt_init()` 检测 PGE 才设 Global。64 位 PGE 是标配
 
 ### MemType 回调（12-memtype.md）
 

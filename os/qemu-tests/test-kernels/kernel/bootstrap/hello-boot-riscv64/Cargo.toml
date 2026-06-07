@@ -1,0 +1,16 @@
+[package]
+name = "hello-boot-riscv64"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+minix-arch = { workspace = true, default-features = false, features = ["riscv64"] }
+minix-types = { workspace = true }
+minix-kernel = { workspace = true }
+boot-shim = { workspace = true, default-features = false, features = ["opensbi"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

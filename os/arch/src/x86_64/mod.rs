@@ -6,6 +6,7 @@ pub mod protection;
 pub mod trap_entry;
 pub mod interrupt;
 pub mod exception;
+pub mod early_console;
 
 pub use protection::{X86_64Protection, X86PrivilegeLevel};
 pub use trap_entry::X86_64TrapEntry;

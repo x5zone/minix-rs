@@ -61,8 +61,8 @@ Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定
 | 常量 | 值 | 定义位置 | 含义 |
 |------|-----|---------|------|
 | `NR_TASKS` | 5 | `minix3/minix/include/minix/com.h:56` | 内核任务数 |
-| `NR_PROCS` | 256 | `minix3/minix/include/minix/sys_config.h:8` | 最大用户进程数 |
-| `NR_SYS_PROCS` | 64 | `minix3/minix/include/minix/sys_config.h:9` | 系统特权结构数 |
+| `NR_PROCS` | 256 | `minix3/minix/include/minix/config.h:31`（别名，原始值 `_NR_PROCS` 在 `sys_config.h:8`） | 最大用户进程数 |
+| `NR_SYS_PROCS` | 64 | `minix3/minix/include/minix/config.h:32`（别名，原始值 `_NR_SYS_PROCS` 在 `sys_config.h:9`） | 系统特权结构数 |
 | `MAX_NR_TASKS` | 1023 | `minix3/minix/include/minix/com.h:55` | endpoint 布局允许的最大任务数 |
 | `PROC_NAME_LEN` | 16 | `minix3/minix/include/minix/type.h:145` | 进程名最大长度（含 `\0`） |
 | `PMAGIC` | 0xC0FFEE1 | `minix3/minix/include/minix/const.h:164` | proc 指针有效性魔数 |
@@ -111,7 +111,7 @@ Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定
 | `MF_SC_ACTIVE` | 0x100 | 系统调用追踪：正在系统调用中 |
 | `MF_SC_DEFER` | 0x200 | 系统调用追踪：延迟系统调用 |
 | `MF_SC_TRACE` | 0x400 | 系统调用追踪：触发系统调用事件 |
-| `MF_FPU_INITIALIZED` | 0x1000 | FPU 寄存器已初始化（已使用浮点） |
+| `MF_FPU_INITIALIZED` | 0x1000 | FPU 寄存器已初始化（已使用浮点）。64 位重写中更名为 `MF_EXT_REG_INITIALIZED`，因为现代 64 位架构使用扩展寄存器集（x86-64 的 XSAVE/ARM64 的 VFP/NEON），不再有独立的 FPU |
 | `MF_SENDING_FROM_KERNEL` | 0x2000 | 消息来自内核 |
 | `MF_CONTEXT_SET` | 0x4000 | 不修改上下文 |
 | `MF_SPROF_SEEN` | 0x8000 | profile 已观测此进程 |
@@ -222,7 +222,7 @@ Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定
 |------|------|------|
 | `nextrestart` | `struct proc *` | VM 重启链中下一个进程 |
 | `nextrequestor` | `struct proc *` | VM 请求链中下一个请求者 |
-| `type` | `int` | 挂起操作类型（VMSTYPE_KERNELCALL/DELIVERMSG/MAP） |
+| `type` | `int` | 挂起操作类型（VMSTYPE_SYS_NONE=0 / KERNELCALL=1 / DELIVERMSG=2 / MAP=3） |
 | `saved.reqmsg` | `message` | 挂起的请求消息 |
 | `req_type` | `int` | VM 请求类型 |
 | `target` | `endpoint_t` | VM 请求目标 |
@@ -237,7 +237,8 @@ Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定
 |------|------|------|
 | `p_found` | `int` | 一致性检查变量 |
 | `p_magic` | `int` | 有效性魔数（PMAGIC = 0xC0FFEE1） |
-| `p_defer` | `struct { r1, r2, r3 }` | 延迟系统调用参数（MF_SC_DEFER 时有效） |
+| `p_defer` | `struct { reg_t r1, r2, r3 }` | 延迟系统调用参数（MF_SC_DEFER 时有效） |
+| `p_schedules` | `int` | 调度次数（仅 `#if DEBUG_TRACE`） |
 
 #### 2.2.2 struct stackframe_s（寄存器保存帧）
 
@@ -266,7 +267,7 @@ Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定
 
 #### 2.2.3 struct segframe（段/页表帧）
 
-定义于 `minix3/minix/include/arch/i386/include/archtypes.h:32-37`，x86-32 架构：
+定义于 `minix3/minix/include/arch/i386/include/archtypes.h:32-36`，x86-32 架构：
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
@@ -349,7 +350,7 @@ void proc_init(void)
    - 设 `s_id` 为索引值
    - 建立 `ppriv_addr` 快速索引
    - 清空信号管理器
-3. 初始化 IDLE 进程：每个 CPU 一个，设置 `p_endpoint = IDLE`，`p_priv = &idle_priv`，`p_rts_flags |= RTS_PROC_STOP`（永不调度）
+3. 初始化 IDLE 进程：设置 `idle_priv.s_flags = IDL_F`；每个 CPU 一个 IDLE 进程，设置 `p_endpoint = IDLE`，`p_priv = &idle_priv`（指向共享的 `idle_priv` 特权结构），`p_rts_flags |= RTS_PROC_STOP`（永不调度），`set_idle_name(ip->p_name, cpu_index)`
 
 #### 2.3.2 RTS_SET / RTS_UNSET / RTS_SETFLAGS 宏
 
@@ -417,6 +418,11 @@ void proc_init(void)
 | `isokprocn(n)` | proc.h:272 | 检查进程号是否合法 |
 | `isemptyp(p)` | proc.h:274 | `p->p_rts_flags == RTS_SLOT_FREE` |
 | `iskernelp(p)` | proc.h:275 | `p < BEG_USER_ADDR`，判断是否为内核任务 |
+| `proc_nr(p)` | proc.h:270 | `p->p_nr`，取进程号 |
+| `RTS_ISSET(rp, f)` | proc.h:202 | `(rp->p_rts_flags & f) == f`，检查标志位是否全部置位 |
+| `isemptyn(n)` | proc.h:273 | `isemptyp(proc_addr(n))`，按进程号检查空闲 |
+| `iskerneln(n)` | proc.h:276 | `n < 0`，按进程号判断内核任务 |
+| `isusern(n)` | proc.h:278 | `n >= 0`，按进程号判断用户进程 |
 | `priv(rp)` | priv.h:82 | `rp->p_priv`，取特权结构指针 |
 | `may_send_to(rp, nr)` | priv.h:86 | 检查 IPC 发送权限 |
 
@@ -522,3 +528,441 @@ Minix3 选择用 `p_rts_flags` 位图而非枚举值表示进程状态，核心�
 - `p_stale_tlb[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]`：哪些 CPU 上有此进程的过期 TLB 条目，需在下次调度时刷新
 
 这两个字段是 SMP 特有的 CPU 亲和性和 TLB 一致性管理机制。
+
+---
+
+## 3. Rust 设计
+
+### 3.1 类型系统重映射
+
+C 的 `struct proc` 使用原始类型（`int`、`u32_t`、指针）和位图表示状态。Rust 重写利用类型系统将语义编码到类型中，使非法状态不可表达。
+
+#### 3.1.1 核心类型映射
+
+| C 类型/字段 | Rust 类型 | 设计决策 |
+|------------|----------|---------|
+| `volatile u32_t p_rts_flags` | `RtsFlags(AtomicU32)` | Newtype 封装原子操作，方法保证 Acquire/Release 语义 |
+| `volatile u32_t p_misc_flags` | `MiscFlags(AtomicU32)` | 同上 |
+| `char p_priority` | `Priority(i8)` | Newtype 带范围校验（0~15），`new()` 返回 `Option` |
+| `unsigned p_quantum_size_ms` | `Quantum { cpu_time_left: AtomicU64, size_ms: AtomicU32 }` | 封装时间片分配与消耗逻辑，CAS 保证并发安全 |
+| `struct proc *p_scheduler` | `Option<ProcNr>` | `None` = 内核默认调度（C: `NULL || self`），`Some(nr)` = 用户空间调度器 |
+| `struct proc *p_nextready` | `Option<ProcNr>` | 指针→索引，避免裸指针，与进程表配合使用 |
+| `struct proc *p_caller_q` | `Option<ProcNr>` | 同上 |
+| `struct proc *p_q_link` | `Option<ProcNr>` | 同上 |
+| `char p_name[16]` | `ProcName { data: [u8; 16] }` | 固定大小数组，`as_str()` 安全转换 |
+| `sigset_t p_pending` | `SigSet(u64)` | Newtype 封装位操作 |
+| `int p_magic` | 不映射 | C 用于运行时指针校验；Rust 用借用检查替代，编译期保证安全 |
+| `int p_found` | 不映射 | C 用于一致性检查；Rust 用类型系统替代 |
+| `struct { reg_t r1, r2, r3 } p_defer` | `DeferArgs { r1: usize, r2: usize, r3: usize }` | Newtype 封装，仅在 `MF_SC_DEFER` 时有效 |
+
+#### 3.1.2 RTS_FLAGS → bitflags（设计决策）
+
+C 用 `#define` 常量表示 RTS 标志位。Rust 使用模块常量（`rts::SLOT_FREE` 等）而非 `bitflags!` 宏，原因：
+
+1. **与 C 源码对应**：模块常量 + `RtsFlags` newtype 的组合更接近 C 的 `p_rts_flags |= flag` 模式
+2. **原子操作封装**：`RtsFlags::set()` / `clear()` 封装 `fetch_or` / `fetch_and`，比 bitflags 的位运算更安全
+3. **调度集成预留**：`RTS_SET` / `RTS_UNSET` 需要在标志位变更时触发 enqueue/dequeue，这需要回调机制，bitflags 不支持
+
+#### 3.1.3 p_vmrequest → Option<VmSuspendContext>
+
+C 的 `p_vmrequest` 是匿名嵌入结构体，通过 `RTS_VMREQUEST` 标志位判断有效性。Rust 用 `Option<VmSuspendContext>` 替代：
+
+- **不变量**：`p_rts_flags.is_set(rts::VMREQUEST) <==> p_vm_suspend.is_some()`
+- **优势**：类型系统强制"使用前检查"，消除"忘记检查标志位"的 bug
+- **详见**：`03-vm-request.md` §3.4/§3.5
+
+### 3.2 进程表设计
+
+#### 3.2.1 ProcessTable 结构
+
+C 使用全局静态数组 `proc[NR_TASKS + NR_PROCS]`，通过 `proc_addr(n)` 宏索引。Rust 封装为 `ProcessTable` 结构：
+
+```rust
+pub struct ProcessTable {
+    procs: Box<[KProcess]>,
+}
+```
+
+**设计决策**：
+
+1. **Box<[KProcess]>**（动态大小切片）而非 `[KProcess; N]`：避免栈上分配巨大数组（`KProcess` 较大，264 个槽位）。使用 `Vec` 构建后 `into_boxed_slice()` 转为堆上固定大小切片
+2. **索引方式**：`get(nr: ProcNr) -> Option<&KProcess>`，`get_mut(nr: ProcNr) -> Option<&mut KProcess>`，替代 C 的 `proc_addr(n)` 宏（无越界检查）
+3. **范围校验**：`is_valid_nr(nr)` 替代 C 的 `isokprocn(n)` 宏
+
+#### 3.2.2 索引映射
+
+C 的 `proc_addr(n)` = `&proc[NR_TASKS + n]`，其中 `n` 从 `-NR_TASKS` 到 `NR_PROCS-1`。
+
+Rust 的 `ProcessTable::get(n)` 内部转换为 `procs[(n + NR_TASKS) as usize]`，并通过 `is_valid_nr(n)` 校验范围。
+
+#### 3.2.3 特权表
+
+C 使用全局静态数组 `priv[NR_SYS_PROCS]` + `ppriv_addr[id]` 快速索引。Rust 设计：
+
+```rust
+pub struct PrivTable {
+    privs: Box<[KPriv]>,
+}
+```
+
+`KPriv` 包含大数组（`s_io_tab: [IoRange; 64]`、`s_mem_tab: [MemRange; 20]`、`s_irq_tab: [i32; 16]`），单个约 800+ 字节，64 个约 50KB+，使用 `Box<[KPriv]>` 堆分配避免栈溢出。`KPriv` 通过 `p_priv` 索引（`PrivId`）关联到 `KProcess`，替代 C 的裸指针。
+
+### 3.3 上下文帧抽象
+
+#### 3.3.1 ContextFrame trait
+
+C 的 `struct stackframe_s` 和 `struct segframe` 是架构相关的，直接嵌入 `struct proc`。Rust 通过 trait 抽象：
+
+```rust
+pub trait ContextFrame: Sized + Default {
+    fn new() -> Self;
+    fn program_counter(&self) -> usize;
+    fn set_program_counter(&mut self, pc: usize);
+    fn stack_pointer(&self) -> usize;
+    fn set_stack_pointer(&mut self, sp: usize);
+}
+```
+
+**设计决策**：
+
+1. **trait 描述"是什么"**：上下文帧能提供/设置 PC、SP 等语义操作
+2. **架构实现在 `minix-arch`**：x86_64 实现保存 64 位寄存器集，ARM64 实现保存 EL0 寄存器集
+3. **KProcess 泛型参数**：`KProcess<F: ContextFrame>` 持有架构相关的上下文帧
+
+#### 3.3.2 SegFrame trait
+
+```rust
+pub trait SegFrame: Sized + Default {
+    fn page_table_root(&self) -> PhysBytes;
+    fn set_page_table_root(&mut self, root: PhysBytes);
+    fn ext_reg_state_ptr(&self) -> *const u8;
+    fn ext_reg_state_ptr_mut(&mut self) -> *mut u8;
+}
+```
+
+替代 C 的 `struct segframe`（含 CR3、FPU 状态指针等 x86 特有字段）。
+
+### 3.4 RTS_SET/RTS_UNSET 的调度集成
+
+C 的 `RTS_SET` / `RTS_UNSET` 宏在标志位变更时自动调用 `dequeue()` / `enqueue()`。Rust 需要不同的机制：
+
+**问题**：Rust 的 `RtsFlags` 是 `KProcess` 的字段，无法直接调用全局调度函数（需要访问进程表和就绪队列）。
+
+**方案**：`RtsFlags::set()` / `clear()` 仅做原子操作，调度集成由 `ProcessTable` 的方法完成：
+
+```rust
+impl ProcessTable {
+    pub fn rts_set(&mut self, nr: ProcNr, flags: u32) {
+        let was_runnable = self.get(nr).unwrap().is_runnable();
+        self.get_mut(nr).unwrap().p_rts_flags.set(flags);
+        let is_runnable = self.get(nr).unwrap().is_runnable();
+        if was_runnable && !is_runnable {
+            self.dequeue(nr);
+        }
+    }
+
+    pub fn rts_unset(&mut self, nr: ProcNr, flags: u32) {
+        let was_runnable = self.get(nr).unwrap().is_runnable();
+        self.get_mut(nr).unwrap().p_rts_flags.clear(flags);
+        let is_runnable = self.get(nr).unwrap().is_runnable();
+        if !was_runnable && is_runnable {
+            self.enqueue(nr);
+        }
+    }
+}
+```
+
+**设计决策**：将 RTS 操作提升到 `ProcessTable` 层级，因为它们需要同时访问进程状态和调度队列。这比 C 的宏更安全——宏隐式依赖全局 `proc[]` 数组和 `enqueue()`/`dequeue()` 函数。
+
+### 3.5 P_BLOCKEDON 逻辑
+
+C 的 `P_BLOCKEDON(p)` 宏优先检查 `RTS_SENDING`。Rust 实现为 `KProcess` 方法：
+
+```rust
+impl KProcess {
+    pub fn blocked_on(&self) -> Option<Endpoint> {
+        if self.p_rts_flags.is_set(rts::SENDING) {
+            Some(self.p_sendto_e)
+        } else if self.p_rts_flags.is_set(rts::RECEIVING) {
+            Some(self.p_getfrom_e)
+        } else {
+            None
+        }
+    }
+}
+```
+
+**优先级规则**：`SENDING` 优先于 `RECEIVING`，因为 `ipc_sendrec()` 阻塞在发送阶段时 `p_getfrom_e` 可能未正确设置。
+
+### 3.6 SMP 扩展设计
+
+C 的 `#ifdef CONFIG_SMP` 条件编译在 Rust 中通过泛型/特征门控实现：
+
+```rust
+#[cfg(feature = "smp")]
+pub struct SmpFields {
+    pub cpu_mask: Bitmap<CONFIG_MAX_CPUS>,
+    pub stale_tlb: Bitmap<CONFIG_MAX_CPUS>,
+}
+
+pub struct KProcess {
+    // ... common fields ...
+    #[cfg(feature = "smp")]
+    pub p_smp: SmpFields,
+}
+```
+
+**设计决策**：使用 `cfg(feature = "smp")` 而非运行时检测，与 C 的 `#ifdef CONFIG_SMP` 语义一致。
+
+### 3.7 模块划分
+
+```
+os/kernel/src/
+├── proc.rs              # KProcess, RtsFlags, MiscFlags, Priority, Quantum, etc.
+├── proc_table.rs        # ProcessTable, PrivTable, proc_init()
+├── priv.rs              # KPriv, PrivFlags, privilege management
+└── vm.rs                # VmSuspendContext, VmCheckParams (existing)
+```
+
+`proc.rs` 定义进程结构体及其方法，`proc_table.rs` 定义进程表和全局操作，`priv.rs` 定义特权结构。
+
+---
+
+## 4. Rust 实现
+
+### 4.1 KProcess 补充字段
+
+现有 `KProcess` 缺少以下字段，需补充：
+
+| 字段 | 类型 | C 对应 | 说明 |
+|------|------|--------|------|
+| `p_dequeued` | `AtomicU64` | `clock_t p_dequeued` | 最近出队 uptime |
+| `p_defer` | `DeferArgs` | `struct { reg_t r1, r2, r3 } p_defer` | 延迟系统调用参数 |
+| `p_found` | 不映射 | `int p_found` | Rust 用类型系统替代 |
+| `p_magic` | 不映射 | `int p_magic` | Rust 用借用检查替代 |
+
+### 4.2 DeferArgs
+
+```rust
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeferArgs {
+    pub r1: usize,
+    pub r2: usize,
+    pub r3: usize,
+}
+```
+
+### 4.3 ProcessTable
+
+```rust
+pub const NR_TASKS: usize = 5;
+pub const NR_PROCS: usize = 256;
+pub const NR_SYS_PROCS: usize = 64;
+pub const PROC_TABLE_SIZE: usize = NR_TASKS + NR_PROCS;
+
+pub struct ProcessTable {
+    procs: Box<[KProcess]>,
+}
+
+impl ProcessTable {
+    pub fn new() -> Self {
+        let mut procs: Vec<KProcess> = (0..PROC_TABLE_SIZE)
+            .map(|i| {
+                let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+                let endpoint = Endpoint::from_generation_slot(0, nr);
+                KProcess::new(nr, endpoint)
+            })
+            .collect();
+
+        let idle_idx = nr_to_idx(proc_nr::IDLE).unwrap();
+        procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE);
+        procs[idle_idx].p_rts_flags.set(rts::PROC_STOP);
+        procs[idle_idx].p_name = ProcName::from_str("IDLE");
+
+        Self {
+            procs: procs.into_boxed_slice(),
+        }
+    }
+
+    pub fn get(&self, nr: ProcNr) -> Option<&KProcess> {
+        let idx = (nr as isize + NR_TASKS as isize) as usize;
+        if idx < PROC_TABLE_SIZE {
+            Some(&self.procs[idx])
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self, nr: ProcNr) -> Option<&mut KProcess> {
+        let idx = (nr as isize + NR_TASKS as isize) as usize;
+        if idx < PROC_TABLE_SIZE {
+            Some(&mut self.procs[idx])
+        } else {
+            None
+        }
+    }
+
+    pub fn is_valid_nr(nr: ProcNr) -> bool {
+        let idx = (nr as isize + NR_TASKS as isize) as usize;
+        idx < PROC_TABLE_SIZE
+    }
+
+    pub fn is_empty(&self, nr: ProcNr) -> bool {
+        self.get(nr).map_or(false, |p| p.p_rts_flags.load() == rts::SLOT_FREE)
+    }
+
+    pub fn is_kernel(nr: ProcNr) -> bool {
+        nr < 0
+    }
+}
+```
+
+### 4.4 proc_init()
+
+```rust
+impl ProcessTable {
+    pub fn init(&mut self) {
+        for (i, proc) in self.procs.iter_mut().enumerate() {
+            let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+            let endpoint = Endpoint::from_generation_slot(0, nr);
+            *proc = KProcess::new(nr, endpoint);
+        }
+
+        // IDLE process initialization (per-CPU)
+        let idle = self.get_mut(proc_nr::IDLE).unwrap();
+        idle.p_endpoint = Endpoint::IDLE;
+        idle.p_rts_flags.set(rts::PROC_STOP);
+        idle.p_name = ProcName::from_str("IDLE");
+    }
+}
+```
+
+### 4.5 blocked_on()
+
+```rust
+impl KProcess {
+    pub fn blocked_on(&self) -> Option<Endpoint> {
+        if self.p_rts_flags.is_set(rts::SENDING) {
+            Some(self.p_sendto_e)
+        } else if self.p_rts_flags.is_set(rts::RECEIVING) {
+            Some(self.p_getfrom_e)
+        } else {
+            None
+        }
+    }
+}
+```
+
+### 4.6 KPriv（特权结构）
+
+```rust
+use minix_types::Endpoint;
+use crate::proc::{ProcNr, SigSet};
+
+pub type PrivId = u16;
+pub type SysId = u16;
+
+pub mod priv_flags {
+    pub const PREEMPTIBLE: u16 = 0x002;
+    pub const BILLABLE: u16 = 0x004;
+    pub const DYN_PRIV_ID: u16 = 0x008;
+    pub const SYS_PROC: u16 = 0x010;
+    pub const CHECK_IO_PORT: u16 = 0x020;
+    pub const CHECK_IRQ: u16 = 0x040;
+    pub const CHECK_MEM: u16 = 0x080;
+    pub const ROOT_SYS_PROC: u16 = 0x100;
+    pub const VM_SYS_PROC: u16 = 0x200;
+    pub const LU_SYS_PROC: u16 = 0x400;
+    pub const RST_SYS_PROC: u16 = 0x800;
+}
+
+pub mod priv_flag_set {
+    pub const IDL_F: u16 = super::priv_flags::SYS_PROC | super::priv_flags::BILLABLE;
+    pub const TSK_F: u16 = super::priv_flags::SYS_PROC;
+    pub const SRV_F: u16 = super::priv_flags::SYS_PROC | super::priv_flags::PREEMPTIBLE;
+    pub const DSRV_F: u16 = SRV_F | super::priv_flags::DYN_PRIV_ID;
+    pub const RSYS_F: u16 = SRV_F | super::priv_flags::ROOT_SYS_PROC;
+    pub const VM_F: u16 = super::priv_flags::SYS_PROC | super::priv_flags::VM_SYS_PROC;
+    pub const USR_F: u16 = super::priv_flags::BILLABLE | super::priv_flags::PREEMPTIBLE;
+}
+
+pub const NR_TASKS: PrivId = 5;
+pub const INIT_PROC_NR: PrivId = 11;
+pub const USER_PRIV_ID: PrivId = NR_TASKS + INIT_PROC_NR;
+
+pub const NR_IO_RANGE: usize = 64;
+pub const NR_MEM_RANGE: usize = 20;
+pub const NR_IRQ: usize = 16;
+
+pub struct IoRange {
+    pub base: u32,
+    pub limit: u32,
+}
+
+pub struct MemRange {
+    pub base: u64,
+    pub limit: u64,
+}
+
+pub struct KPriv {
+    pub s_proc_nr: Option<ProcNr>,
+    pub s_id: SysId,
+    pub s_flags: u16,
+    pub s_init_flags: i32,
+    pub s_asyntab: u64,
+    pub s_asynsize: usize,
+    pub s_asynendpoint: Endpoint,
+    pub s_trap_mask: u16,
+    pub s_ipc_to: u64,
+    pub s_k_call_mask: [u32; 2],
+    pub s_sig_mgr: Endpoint,
+    pub s_bak_sig_mgr: Endpoint,
+    pub s_notify_pending: u64,
+    pub s_asyn_pending: u64,
+    pub s_int_pending: u32,
+    pub s_sig_pending: SigSet,
+    pub s_ipcf: Option<usize>,
+    pub s_alarm_timer: u64,
+    pub s_stack_guard: Option<usize>,
+    pub s_diag_sig: bool,
+    pub s_nr_io_range: i32,
+    pub s_io_tab: [IoRange; NR_IO_RANGE],
+    pub s_nr_mem_range: i32,
+    pub s_mem_tab: [MemRange; NR_MEM_RANGE],
+    pub s_nr_irq: i32,
+    pub s_irq_tab: [i32; NR_IRQ],
+    pub s_grant_table: usize,
+    pub s_grant_entries: i32,
+    pub s_grant_endpoint: Endpoint,
+    pub s_state_table: usize,
+    pub s_state_entries: i32,
+}
+```
+
+**设计决策**：
+
+1. **模块常量而非 bitflags**：`priv_flags` 模块常量 + `u16` 类型，与 `RtsFlags`/`MiscFlags` 风格统一，避免引入 `bitflags` 依赖
+2. **s_init_flags 为 i32**：C 中 `s_init_flags` 类型为 `int`，存储初始化标志值而非位图，与 `s_flags` 语义不同
+3. **s_proc_nr: Option<ProcNr>**：C 中用 `NONE`（endpoint 哨兵值 ≈ 31743）表示"无关联进程"，Rust 用 `Option` 更安全
+4. **s_k_call_mask: [u32; 2]**：C 中 `SYS_CALL_MASK_SIZE = BITMAP_CHUNKS(58) = 2`，需要 2 个 u32 覆盖 58 个系统调用
+5. **USER_PRIV_ID = 16**：C 中 `static_priv_id(ROOT_USR_PROC_NR) = NR_TASKS + INIT_PROC_NR = 5 + 11 = 16`
+6. **s_ipcf: Option<usize>**：C 中 `ipc_filter_t *s_ipcf` 是指向 ipc_filter 池的指针，Rust 用 `Option<usize>` 表示（池索引或地址），IPC 过滤器的详细类型定义将在 11-privilege.md 中补充
+7. **s_stack_guard: Option<usize>**：C 中 `reg_t *s_stack_guard` 是指向栈保护字的指针，64 位重写中用 `Option<usize>` 表示（仅内核任务使用）
+8. **IoRange/MemRange 独立结构体**：C 中 `struct io_range`（2 个 unsigned）和 `struct minix_mem_range`（2 个 phys_bytes），64 位重写中 `IoRange` 用 `u32`（I/O 端口 16 位足够），`MemRange` 用 `u64`（物理地址 64 位）
+9. **s_io_tab/s_mem_tab/s_irq_tab 固定大小数组**：C 中使用 `NR_IO_RANGE=64`、`NR_MEM_RANGE=20`、`NR_IRQ=16`，Rust 保持相同常量和数组大小
+10. **s_grant_table/s_state_table: usize**：C 中 `vir_bytes`（用户空间虚拟地址），64 位重写中为 `usize`
+
+### 4.7 与现有代码的集成
+
+现有 `proc.rs` 中的 `NR_TASKS = 8` 需要修正为 `5`（与 C 源码一致）。`KProcess` 需要补充 `p_dequeued` 和 `p_defer` 字段。
+
+**变更清单**：
+
+1. `NR_TASKS`: 8 → 5
+2. `KProcess` 增加 `p_dequeued: AtomicU64` 和 `p_defer: DeferArgs` 字段
+3. `KProcess::new()` 初始化新字段
+4. `KProcess::fork_from()` 处理新字段
+5. 新增 `blocked_on()` 方法
+6. 新增 `ProcessTable` 结构体和 `proc_init()`
+7. 新增 `KPriv` 结构体（初步）
+8. 新增 `proc_nr::IDLE` 常量

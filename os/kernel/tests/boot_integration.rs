@@ -56,7 +56,7 @@ fn boot_simulation_full_flow() {
 
     println!();
     println!("── Step 1: Create empty page table root ──");
-    let mut paging = MockPaging::new_empty(root_page);
+    let mut paging = MockPaging::new_from_page(root_page);
 
     let huge_size = MockPaging::HUGE_PAGE_SIZE as usize;
     println!("  PAGE_SIZE={} huge_granularity={} KB",

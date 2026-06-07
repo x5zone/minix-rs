@@ -13,67 +13,119 @@
 
 extern crate alloc;
 
-use minix_arch::paging::Paging;
 use minix_arch::paging_ext::HugePages;
 use minix_types::{KernelInfo, VirBytes, PhysBytes};
 use minix_arch::paging::PageFlags;
+use minix_arch::pt_alloc;
+
+/// End of identity-mapped region during boot (4 GB).
+/// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
+const IDENTITY_MAP_END: u64 = 0x1_0000_0000;
 
 pub mod vm;
 pub mod proc;
+pub mod proc_table;
+pub mod kpriv;
+pub mod sched;
+pub mod boot_alloc;
 
 pub use core::panic::PanicInfo;
 
 // ── Boot entry points ──
 
-/// Architecture-specific boot entry (called by boot-uefi after ExitBootServices).
+/// Architecture-specific boot entry (called by boot-shim after ExitBootServices).
 /// Selects the correct `Paging` implementation at compile time.
 #[cfg(target_arch = "x86_64")]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::x86_64::paging::X86_64Paging;
-    arch_boot_impl::<X86_64Paging>(kernel_info, root_page)
+    let info = arch_boot_impl::<X86_64Paging>(kernel_info, root_page);
+    kmain(info)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    use minix_arch::arm64::paging::AArch64Paging;
+    let info = arch_boot_impl::<AArch64Paging>(kernel_info, root_page);
+    kmain(info)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    use minix_arch::riscv64::paging::Riscv64Paging;
+    let info = arch_boot_impl::<Riscv64Paging>(kernel_info, root_page);
+    kmain(info)
 }
 
 #[cfg(all(test, feature = "mock"))]
 pub fn arch_boot_test(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::paging::mock::MockPaging;
-    arch_boot_impl::<MockPaging>(kernel_info, root_page)
+    let info = arch_boot_impl::<MockPaging>(kernel_info, root_page);
+    kmain(info)
 }
 
 /// Generic boot implementation — works for any `HugePages` impl.
 ///
-/// `P: HugePages` implies `P: Paging`, so we get `new_empty`, `enable`, `map`
+/// `P: HugePages` implies `P: Paging`, so we get `new_from_page`, `enable`, `map`
 /// from `Paging` plus `HUGE_PAGE_SIZE` and `map_huge` from `HugePages`.
 ///
+/// Returns `&KernelInfo` after paging is enabled, so the caller can decide
+/// what to do next (e.g., call `kmain` for the real kernel, or print PASS
+/// for a test kernel).
+///
 /// C: pg_clear() + pg_identity() + pg_mapkernel() + pg_load() + vm_enable_paging()
-///    pre_init.c:268-271, pg_utils.c:162/186/204/247
-pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    let mut paging = P::new_empty(root_page);
+///    pre_init.c:230-236, pg_utils.c:162/186/204/247
+pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
+    // Step 0: Register boot-stage page table page allocator.
+    // If the caller (e.g., a test kernel) has already registered one,
+    // skip this step — the caller's allocator may use a safer region
+    // (e.g., a bump region past the kernel image).
+    if !pt_alloc::is_registered() {
+        let base = kernel_info.memmap.first().map(|r| r.base.0).unwrap_or(0);
+        let end = base + kernel_info.memmap.first().map(|r| r.len as u64).unwrap_or(0);
+        let boot_alloc_end = core::cmp::min(base + 0x100_000, end);
+        boot_alloc::init_boot_pt_alloc(base, boot_alloc_end);
+        pt_alloc::register(boot_alloc::boot_pt_alloc);
+    }
+
+    let mut paging = P::new_from_page(root_page);
 
     let huge_size = P::HUGE_PAGE_SIZE as usize;
 
-    // Step 1: Identity mapping — VA = PA for all free physical memory.
+    // Step 1: Identity mapping — VA = PA for the first 4GB of address space.
     // C: pg_identity(&kinfo) — pg_utils.c:162
-    for region in kernel_info.memmap {
-        let mut addr = region.base.0;
-        let end = addr + region.len as u64;
-        while addr < end {
-            paging.map_huge(
-                VirBytes(addr), PhysBytes(addr),
-                huge_size, PageFlags::read_write(),
-            ).expect("identity map: map_huge failed — region is valid");
-            addr += huge_size as u64;
-        }
+    // Maps 1024 × 4MB = 4GB (C) or 4 × 1GB (x86-64) or equivalent on other archs.
+    // We must map the entire low address space, not just CONVENTIONAL memory,
+    // because UEFI loader code/data may be in LOADER_DATA/LOADER_CODE regions
+    // that are not marked CONVENTIONAL. Without covering these regions,
+    // the CPU faults immediately after the page table switch.
+    // NOTE: EXECUTABLE flag is required so the CPU can fetch instructions
+    // after the page table switch (CR3/satp/TTBR write).
+    // NOTE: We use kernel_read_write() (supervisor-only, no USER_ACCESSIBLE)
+    // because on RISC-V Sv39, a page with U=1 cannot be executed by
+    // supervisor mode unless sstatus.SUM=1. Since we haven't set SUM,
+    // identity mapping must be supervisor-only.
+    let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+    let mut addr: u64 = 0;
+    while addr < IDENTITY_MAP_END {
+        // Ignore errors — some ranges may not be backed by physical memory,
+        // but that's fine; the CPU won't access them.
+        let _ = paging.map_huge(
+            VirBytes(addr), PhysBytes(addr),
+            huge_size, id_flags,
+        );
+        addr += huge_size as u64;
     }
 
     // Step 2: Kernel high-address mapping.
     // C: pg_mapkernel() — pg_utils.c:186
+    let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
     let kern_virt = kernel_info.kern_virt_base.0;
     let kern_phys = kernel_info.kern_phys_base.0;
     let mut offset = 0u64;
     while offset < kernel_info.kern_size as u64 {
         paging.map_huge(
             VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
-            huge_size, PageFlags::kernel_read_write(),
+            huge_size, kern_flags,
         ).expect("kernel map: map_huge failed — kernel image mismatch");
         offset += huge_size as u64;
     }
@@ -82,8 +134,8 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // SAFETY: Steps 1+2 set up identity mapping covering current RIP.
     let _root_phys = unsafe { paging.enable() };
 
-    // Step 4: Enter kmain.
-    kmain(kernel_info)
+    // Return kernel_info so the caller can decide what to do next.
+    kernel_info
 }
 
 /// Kernel main — called after paging is enabled.
@@ -118,7 +170,7 @@ mod tests {
         };
 
         let root_page = PhysBytes(0x1000);
-        let mut paging = MockPaging::new_empty(root_page);
+        let mut paging = MockPaging::new_from_page(root_page);
 
         let huge_size = MockPaging::HUGE_PAGE_SIZE as usize;
 
@@ -171,7 +223,7 @@ mod tests {
             user_sp: VirBytes(0x7fff_ffff_f000),
             boot_modules: &[],
         };
-        let mut paging = MockPaging::new_empty(PhysBytes(0x1000));
+        let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
         // Identity pass should be a no-op with zero regions
         for _region in info.memmap { /* empty */ }

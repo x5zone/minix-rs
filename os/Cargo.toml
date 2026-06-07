@@ -29,6 +29,14 @@ members = [
     # 集成测试
     "tests",
     
+    # QEMU 集成测试 (kernel/bootstrap — 对应 01-multiboot-bootstrap.md)
+    "qemu-tests/test-kernels/kernel/bootstrap/hello-boot",
+    "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-memmap",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map",
+    
     # 用户态命令 - bin
     "commands/bin/cat",
     "commands/bin/cp",
@@ -68,7 +76,9 @@ minix-ipc = { path = "libs/minix-ipc" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-mock = { path = "libs/minix-mock" }
-minix-arch = { path = "arch" }
+minix-arch = { path = "arch", default-features = false }
+minix-kernel = { path = "kernel", default-features = false }
+boot-shim = { path = "boot-shim", default-features = false }
 
 # 外部依赖
 bitflags = "2.4"

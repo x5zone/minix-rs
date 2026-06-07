@@ -73,7 +73,7 @@ Minix3 将 20 个 x86 异常向量映射到 POSIX 信号（exception.c:19-39）�
 | 12 | Stack exception | SIGSEGV | 286 |
 | 13 | General protection | SIGSEGV | 286 |
 | 14 | Page fault | SIGSEGV | 386 |
-| 15 | (软件陷阱) | SIGILL | 0 |
+| 15 | (Intel 保留，未使用) | — | — |
 | 16 | Coprocessor error | SIGFPE | 386 |
 | 17 | Alignment check | SIGBUS | 386 |
 | 18 | Machine check | SIGBUS | 386 |
@@ -263,7 +263,7 @@ struct ex_s {
 };
 ```
 
-`ex_data[]` 数组（exception.c:19-39）以向量号为索引，共 20 项（向量 0-19）。向量 15 的 `msg` 为 NULL，表示"可能是软件陷阱"。
+`ex_data[]` 数组（exception.c:19-39）以向量号为索引，共 20 项（向量 0-19）。向量 15 的 `msg` 为 NULL，`name` 也为 NULL——Intel 保留此向量号，Minix3 不处理此异常。
 
 #### 2.2.3 irq_hook_t — IRQ 钩子（type.h:15-28）
 

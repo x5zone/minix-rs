@@ -122,3 +122,62 @@ pub enum RecoveryPoint {
     UserCopyMsgFailure,
     FpuRestoreFailure,
 }
+
+impl FaultContext {
+    /// Get the recovery point for this fault context.
+    ///
+    /// Maps each fault context to its corresponding recovery point.
+    /// Used by the exception handler to determine where to redirect
+    /// execution when a nested page fault occurs.
+    ///
+    /// C: exception.c:59-73 (address range comparison)
+    pub fn recovery_point(self) -> Option<RecoveryPoint> {
+        match self {
+            FaultContext::PhysCopy => Some(RecoveryPoint::PhysCopyFaultInKernel),
+            FaultContext::Memset => Some(RecoveryPoint::MemsetFaultInKernel),
+            FaultContext::UserCopyMsg => Some(RecoveryPoint::UserCopyMsgFailure),
+            FaultContext::FpuRestore => Some(RecoveryPoint::FpuRestoreFailure),
+            FaultContext::Normal => None,
+        }
+    }
+}
+
+/// Per-CPU fault context tracker.
+///
+/// Replaces C's `catch_pagefaults` global flag and address-range
+/// comparison. Before entering a recoverable operation (phys_copy,
+/// memset, etc.), the kernel sets the current `FaultContext`. On
+/// exit, it clears it back to `Normal`. If a nested page fault
+/// occurs, the exception handler reads the current context and
+/// uses `recovery_point()` to determine where to redirect execution.
+///
+/// # BKL safety
+///
+/// All modifications happen under BKL in the syscall path. The
+/// exception handler also runs under BKL (or with interrupts disabled
+/// on the current CPU). No additional synchronization is needed.
+///
+/// C: catch_pagefaults — exception.c:42
+pub struct FaultContextTracker {
+    context: FaultContext,
+}
+
+impl FaultContextTracker {
+    pub const fn new() -> Self {
+        Self {
+            context: FaultContext::Normal,
+        }
+    }
+
+    pub fn current(&self) -> FaultContext {
+        self.context
+    }
+
+    pub fn enter(&mut self, ctx: FaultContext) {
+        self.context = ctx;
+    }
+
+    pub fn leave(&mut self) {
+        self.context = FaultContext::Normal;
+    }
+}

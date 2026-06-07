@@ -101,6 +101,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static MOCK_VM_BASE: AtomicU64 = AtomicU64::new(0x0000_0000_8000_0000);
 
 fn mock_base() -> u64 {
+    // Relaxed ordering is sufficient: MockDirectMap is only used in
+    // single-threaded test code. There is no cross-CPU synchronization
+    // requirement for test configuration values.
     MOCK_VM_BASE.load(Ordering::Relaxed)
 }
 

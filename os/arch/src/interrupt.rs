@@ -43,6 +43,16 @@ impl IrqVector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqId(pub(crate) u32);
 
+impl IrqId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// IRQ notification identifier.
 ///
 /// Returned to the driver when an IRQ fires, so the driver can
@@ -51,6 +61,16 @@ pub struct IrqId(pub(crate) u32);
 /// C: hook->notify_id — type.h:25
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqNotifyId(pub(crate) u32);
+
+impl IrqNotifyId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
 
 /// IRQ policy flags.
 ///

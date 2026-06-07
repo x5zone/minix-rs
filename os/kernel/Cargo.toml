@@ -10,7 +10,7 @@ name = "minix_kernel"
 path = "src/lib.rs"
 
 [dependencies]
-minix-arch = { path = "../arch" }
+minix-arch = { path = "../arch", default-features = false }
 minix-ipc = { workspace = true }
 minix-types = { workspace = true }
 minix-mock = { workspace = true, optional = true }

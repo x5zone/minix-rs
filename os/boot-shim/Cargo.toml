@@ -1,0 +1,30 @@
+[package]
+name = "boot-shim"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = ["uefi"]
+uefi = ["dep:uefi"]
+opensbi = []
+
+[dependencies]
+minix-types = { path = "../libs/minix-types" }
+minix-arch = { path = "../arch", default-features = false }
+minix-kernel = { path = "../kernel" }
+uefi = { version = "0.33", features = ["global_allocator"], optional = true }
+
+[lib]
+test = false
+
+[[bin]]
+name = "boot-shim"
+test = false
+required-features = ["uefi"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
