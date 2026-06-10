@@ -13,7 +13,8 @@
 //! - **OS-semantic method names** (§3.3): Methods describe OS needs (reset,
 //!   init, boot_proc), not architecture-specific register names.
 
-use minix_types::{KernelInfo, VirBytes, BootModule};
+use minix_types::VirBytes;
+use minix_boot::{KernelInfo, BootModule};
 use crate::paging::Paging;
 
 /// Architecture abstraction for resetting process register state.

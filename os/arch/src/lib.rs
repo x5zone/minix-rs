@@ -20,27 +20,33 @@
 
 extern crate alloc;
 
-pub mod paging;
-pub mod paging_ext;
-pub mod pt_alloc;
-pub mod direct_map;
-pub mod protection;
-pub mod trap_entry;
-pub mod interrupt;
-pub mod exception;
-pub mod irq_manager;
-pub mod exception_dispatcher;
-pub mod clock;
-pub mod arch_init;
-pub mod proc_arch;
-pub mod post_init;
-pub mod early_console;
+pub mod arch;
+pub mod plat;
+
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 #[cfg(target_arch = "aarch64")]
 pub mod arm64;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64;
+
+// ── Backward-compatible re-exports at crate root ──
+// These keep existing `use crate::paging::...` paths valid in downstream code.
+pub use arch::paging;
+pub use arch::paging_ext;
+pub use arch::pt_alloc;
+pub use arch::direct_map;
+pub use arch::protection;
+pub use arch::trap_entry;
+pub use arch::exception;
+pub use arch::irq_manager;
+pub use arch::exception_dispatcher;
+pub use arch::clock;
+pub use arch::arch_init;
+pub use arch::proc_arch;
+pub use arch::post_init;
+pub use plat::early_console;
+pub use plat::interrupt;
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;

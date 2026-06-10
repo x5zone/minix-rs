@@ -12,7 +12,8 @@
 //! designed by analogy with the aarch64 port, following RISC-V
 //! privileged specification conventions.
 
-use minix_types::{BootModule, KernelInfo, VirBytes};
+use minix_types::VirBytes;
+use minix_boot::{BootModule, KernelInfo};
 use crate::proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
 use crate::paging::Paging;
 

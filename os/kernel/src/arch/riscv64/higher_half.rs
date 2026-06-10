@@ -15,7 +15,8 @@
 
 use crate::boot::higher_half::HigherHalf;
 use crate::kmain;
-use minix_types::{KernelInfo, VirBytes};
+use minix_boot::KernelInfo;
+use minix_types::VirBytes;
 
 /// RISC-V 64-bit higher-half transition.
 ///

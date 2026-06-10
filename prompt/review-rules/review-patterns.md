@@ -556,4 +556,84 @@ struct VmProc {
             ticks: AtomicU64,  // Atomic 保证跨 CPU 可见性
         }
 ```
+
+---
+
+## 三、跨阶段通用错误模式
+
+> 以下 5 个模式从 Boot 阶段问题提炼而来，跨阶段复用。适用于 Boot/VM/PM/VFS/INET 等所有模块。
+
+### 模式 29：外部知识误导（注释中的硬件/协议/规范错误）
+
+```markdown
+❌ 错误：x86-64 长模式下"需设置 CR4.PSE 以支持 2MB 大页"
+        // PSE 是 32 位保护模式的遗产，64 位长模式下 2MB 页由 PD.PS 位控制
+
+✅ 正确：注释中引用的外部知识必须与当前上下文匹配
+        // x86-64 长模式下，2MB 大页（PD.PS=1）和 1GB 大页（PDPT.PS=1）
+        // 均由页表项自身的 PS 位控制，不需要 CR4.PSE
+
+适用阶段：Boot（固件规范）、VM（页表硬件）、PM（进程状态机）、VFS（文件系统协议）
+```
+
+### 模式 30：通用接口含上下文特定元素
+
+```markdown
+❌ 错误：通用数据结构包含未标注的架构特定字段
+        struct KernelInfo {
+            syscall_entry: VirBytes,  // 所有架构必填，但只在 x86-64 使用
+        }
+
+✅ 正确：标注可选性或移至扩展结构
+        struct KernelInfo {
+            /// x86-64 专用：配置 LSTAR MSR。其他架构忽略。
+            syscall_entry: Option<VirBytes>,
+        }
+
+适用阶段：Boot（KernelInfo 跨架构）、VM（vmproc 跨进程类型）、VFS（vnode 跨文件系统）
+```
+
+### 模式 31：外部调用返回值被无说明忽略
+
+```markdown
+❌ 错误：固件/系统调用返回值被丢弃，无注释说明
+        let _mmap = exit_boot_services(image, map_key);  // _mmap 被丢弃
+
+✅ 正确：丢弃返回值时显式说明理由
+        let _mmap = exit_boot_services(image, map_key);
+        // _mmap 被丢弃：boot-shim 在 ExitBootServices 前已构建内存映射，
+        // 固件返回的最终映射仅用于调试，kernel 不依赖它。
+
+适用阶段：Boot（固件调用）、VM（页表操作）、PM（IPC 调用）、Drivers（设备 I/O）
+```
+
+### 模式 32：资源获取后无释放路径说明
+
+```markdown
+❌ 错误：使用泄漏手段但无回收策略说明
+        let memmap: &'static [MemoryRegion] = Box::leak(Box::new(regions));
+        // 泄漏后如何回收？未说明
+
+✅ 正确：明确声明不释放的理由或回收路径
+        let memmap: &'static [MemoryRegion] = Box::leak(Box::new(regions));
+        // 'static 生命周期：boot-shim 是"一次性"程序，kernel 启动后
+        // 通过 BootPrepareResult::boot_shim_start/len 标记区域，由 kernel
+        // 启动早期回收（对标 Minix3 C 的 add_memmap(bootstrap)）。
+
+适用阶段：Boot（bump 分配器）、VM（物理页）、PM（进程槽位）、VFS（缓冲区缓存）
+```
+
+### 模式 33：注释理由虚假或牵强
+
+```markdown
+❌ 错误：注释给出的理由在上下文中不成立
+        pub kern_size: u64,  // u64 避免 32 位目标截断
+        // 微内核不可能超过 4GB，"避免截断"不是真实原因
+
+✅ 正确：给出最真实的理由
+        pub kern_size: u64,  // 与地址类型（PhysBytes/VirBytes）保持一致，
+                             // 避免 kern_virt_base + kern_size 等运算时类型转换
+
+适用阶段：所有阶段的所有注释和设计决策
+```
 ```

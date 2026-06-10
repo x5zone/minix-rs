@@ -26,8 +26,8 @@ extern crate std;
 #[global_allocator]
 static TEST_ALLOCATOR: std::alloc::System = std::alloc::System;
 
-// Re-export the trait and result type from minix-types.
-pub use minix_types::{BootShim, BootPrepareResult};
+// Re-export the trait and result type from minix-boot.
+pub use minix_boot::{BootShim, BootPrepareResult};
 
 // Re-export the ELF parser from the shared minix-elf crate.
 // Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.

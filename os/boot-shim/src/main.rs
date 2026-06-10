@@ -19,7 +19,7 @@
 use core::panic::PanicInfo;
 use uefi::prelude::*;
 use minix_kernel::boot_alloc;
-use minix_types::BootShim;
+use minix_boot::BootShim;
 use boot_shim::UefiBootShim;
 
 extern crate alloc;

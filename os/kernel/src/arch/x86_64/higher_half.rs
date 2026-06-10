@@ -12,7 +12,8 @@
 
 use crate::boot::higher_half::HigherHalf;
 use crate::kmain;
-use minix_types::{KernelInfo, VirBytes};
+use minix_types::VirBytes;
+use minix_boot::KernelInfo;
 
 /// x86-64 higher-half transition.
 ///

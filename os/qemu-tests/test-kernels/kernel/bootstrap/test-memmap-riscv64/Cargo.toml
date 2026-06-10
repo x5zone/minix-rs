@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 minix-arch = { workspace = true, default-features = false }
 minix-types = { workspace = true }
+minix-boot = { workspace = true }
 
 [profile.dev]
 panic = "abort"

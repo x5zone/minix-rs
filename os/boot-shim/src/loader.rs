@@ -21,7 +21,8 @@
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use minix_types::{BootModule, PhysBytes, VirBytes};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::BootModule;
 
 /// Path to the kernel ELF (same convention for UEFI ESP and U-Boot FAT).
 ///

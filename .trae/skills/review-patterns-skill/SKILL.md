@@ -293,3 +293,44 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
        ticks: AtomicU64,  // Atomic 保证跨 CPU 可见性
    }
 ```
+---
+
+## 三、跨阶段通用错误模式（5个）
+
+### 模式29：外部知识误导
+```
+❌ x86-64 长模式下"需设置 CR4.PSE 以支持 2MB 大页"
+✅ x86-64 长模式下 2MB/1GB 页由页表项 PS 位控制，不需要 CR4.PSE
+适用：Boot/VM/PM/VFS 中引用的硬件/协议/规范
+```
+
+### 模式30：通用接口含上下文特定元素
+```
+❌ struct KernelInfo { syscall_entry: VirBytes } // 所有架构必填，仅 x86-64 使用
+✅ struct KernelInfo { /// x86-64 专用，其他忽略\n    syscall_entry: Option<VirBytes> }
+适用：跨架构/跨模块/跨进程类型的共享数据结构
+```
+
+### 模式31：外部调用返回值被无说明忽略
+```
+❌ let _mmap = exit_boot_services(image, map_key); // 无说明丢弃
+✅ let _mmap = exit_boot_services(image, map_key);
+   // 已提前构建映射，此返回值仅用于调试
+适用：固件/系统/库/硬件抽象的外部调用
+```
+
+### 模式32：资源获取后无释放路径说明
+```
+❌ let memmap = Box::leak(Box::new(regions)); // 泄漏后如何回收？未说明
+✅ let memmap = Box::leak(Box::new(regions));
+   // boot-shim 一次性，kernel 通过 boot_shim_start/len 回收
+适用：Boot/VM/PM/VFS 中所有资源分配
+```
+
+### 模式33：注释理由虚假或牵强
+```
+❌ pub kern_size: u64 // u64 避免 32 位截断（微内核不可能超 4GB）
+✅ pub kern_size: u64 // 与地址类型一致，避免运算时类型转换
+适用：所有阶段的所有注释和设计决策
+```
+

@@ -50,7 +50,8 @@
 
 use core::slice;
 
-use minix_types::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion, PhysBytes, VirBytes};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion};
 
 use crate::loader::{self, FileLoader};
 
@@ -321,7 +322,7 @@ pub fn build_kernel_info(
     kern_virt_base: VirBytes,
     kern_phys_base: PhysBytes,
     kern_size: u64,
-    boot_modules: &'static [minix_types::BootModule],
+    boot_modules: &'static [minix_boot::BootModule],
 ) -> KernelInfo {
     KernelInfo {
         memmap,

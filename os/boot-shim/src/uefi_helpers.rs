@@ -14,7 +14,8 @@ use alloc::vec::Vec;
 use uefi::boot::{self, AllocateType};
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryType};
-use minix_types::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion, PhysBytes, VirBytes};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion};
 
 use crate::loader::{
     self, FileLoader, KernelLoadResult,
@@ -160,7 +161,7 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 }
 
 // Re-export for backwards compatibility with the prior public surface.
-use minix_types::BootModule;
+use minix_boot::BootModule;
 
 /// Convenience wrapper around `loader::load_kernel_with_loader` for callers
 /// that want to invoke the UEFI path directly (e.g. integration tests).
@@ -181,7 +182,7 @@ mod tests {
     //! impls share the same coverage.
 
     use super::*;
-    use minix_types::BootModule;
+    use minix_boot::BootModule;
 
     #[test]
     fn test_build_kernel_info_fields() {

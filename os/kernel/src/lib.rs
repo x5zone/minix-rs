@@ -14,7 +14,8 @@
 extern crate alloc;
 
 use minix_arch::paging_ext::HugePages;
-use minix_types::{KernelInfo, VirBytes, PhysBytes};
+use minix_types::{VirBytes, PhysBytes};
+use minix_boot::KernelInfo;
 use minix_arch::paging::PageFlags;
 use minix_arch::pt_alloc;
 

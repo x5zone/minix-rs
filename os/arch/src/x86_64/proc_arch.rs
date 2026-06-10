@@ -12,7 +12,8 @@
 //! C: memory.c:722-733 (arch_proc_init)
 //! C: protect.c:388-456 (arch_boot_proc)
 
-use minix_types::{BootModule, KernelInfo, VirBytes};
+use minix_types::VirBytes;
+use minix_boot::{BootModule, KernelInfo};
 use crate::proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
 use crate::paging::Paging;
 

@@ -27,7 +27,8 @@ use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_arch::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{BootPrepareResult, KernelInfo, MemoryRegion, PhysBytes, VirBytes};
+use minix_types::{MemoryRegion, PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
 
 // ── Global allocator (bump allocator on a static heap) ──
 // UEFI targets get this from the `uefi` crate's `global_allocator` feature.

@@ -13,6 +13,7 @@ path = "src/lib.rs"
 minix-arch = { path = "../arch", default-features = false }
 minix-ipc = { workspace = true }
 minix-types = { workspace = true }
+minix-boot = { workspace = true }
 minix-mock = { workspace = true, optional = true }
 
 [dev-dependencies]

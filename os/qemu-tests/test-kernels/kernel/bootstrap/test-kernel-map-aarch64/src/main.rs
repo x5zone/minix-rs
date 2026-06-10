@@ -15,7 +15,8 @@ use minix_arch::arm64::paging::AArch64Paging;
 use minix_arch::arm64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{BootPrepareResult, KernelInfo, PhysBytes, VirBytes};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 

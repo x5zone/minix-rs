@@ -35,8 +35,6 @@
 
 pub mod types;
 pub mod ipc;
-pub mod kernel_info;
 
 pub use types::*;
 pub use ipc::*;
-pub use kernel_info::*;
