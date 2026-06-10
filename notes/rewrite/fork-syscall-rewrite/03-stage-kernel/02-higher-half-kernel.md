@@ -114,6 +114,8 @@ _kern_offset    = (_kern_vir_base - _kern_phys_base);  // 偏移 = 0xF0000000
 
 **效果**：内核的所有符号（函数地址、全局变量地址）都解析为高地址，但实际代码被 GRUB 放在低物理地址。分页启用后，CPU 通过高地址映射访问这些代码。
 
+> **演进说明**：Minix3 的链接脚本还包含 `unpaged_text/data/bss` 段组（kernel.lds:13-15）和 `usermapped/usermapped_glo` 段组（kernel.lds:17-23）。前者用于在分页启用前执行的引导代码（unpaged trampoline），minix-rs 中用 Rust 内联汇编替代了 head.S，因此不再需要 unpaged 段；后者是 Minix3 用户态段共享机制（USMAPPED 宏），在 64-bit 重写中已废弃。
+
 ARM32 的链接脚本 (`kernel/arch/earm/kernel.lds`) 使用完全相同的模式：
 
 ```c
@@ -124,11 +126,9 @@ _kern_offset    = (_kern_vir_base - _kern_phys_base);
 
 ### 2.2 head.S：从 pre_init 到 kmain 的三行关键代码
 
-x86-32 的 `head.S` (`kernel/arch/i386/head.S:78-87`)：
+x86-32 的 `head.S` (`kernel/arch/i386/head.S:80-87`)：
 
 ```asm
-        call    _C_LABEL(pre_init)       // 调用 pre_init，返回 &kinfo in %eax
-
         /* pre_init 返回后，分页已启用，但 RIP/RSP 仍在低地址 */
         mov     $k_initial_stktop, %esp  // (1) 切栈到高地址
         push    $0                       // (2) 栈终止标记
@@ -138,10 +138,9 @@ x86-32 的 `head.S` (`kernel/arch/i386/head.S:78-87`)：
 
 为什么 `call kmain` 能跳到高地址？因为链接器将 `kmain` 的地址解析为 `_kern_vir_base + offset`（高地址）。这条 `call` 指令的立即数就是高地址——链接时决定的，运行时不需要计算。
 
-ARM32 的 `head.S` (`kernel/arch/earm/head.S:34-47`)：
+ARM32 的 `head.S` (`kernel/arch/earm/head.S:41-47`)：
 
 ```asm
-        bl      _C_LABEL(pre_init)       // 调用 pre_init，返回值在 r0
         ldr     sp, =k_initial_stktop    // 切栈到高地址
         mov     r1, #0
         push    {r1}                     // 栈终止标记
@@ -176,7 +175,7 @@ _end = .;
 
 `k_initial_stktop` 指向 `_end` 附近的区域，由内核启动代码在 BSS 中预留。因为 `_end` 的 VMA 是高地址，所以 `k_initial_stktop` 自然也是高地址。
 
-**minix-rs 的替代方案**：不再使用链接脚本符号。栈顶地址作为 `stack_top: VirBytes` 参数传入 `HigherHalf::jump_to_kmain`，其值来自 `KernelInfo.kern_stack_top`。`kern_stack_top` 由 boot-shim 在构造 `KernelInfo` 时计算（例如 `kern_virt_base + kern_size + stack_size`），然后在 `arch_boot()` 中通过 `info.kern_stack_top` 传入：
+**minix-rs 的替代方案**：不再使用链接脚本符号。栈顶地址作为 `stack_top: VirBytes` 参数传入 `HigherHalf::jump_to_kmain`，其值来自 `KernelInfo.kern_stack_top`。`kern_stack_top` 由 boot-shim 在构造 `KernelInfo` 时计算（例如 `kern_virt_base + kern_size + stack_size`，其中 `kern_size: u64` 避免 32 位截断——见附录 A.5），然后在 `arch_boot()` 中通过 `info.kern_stack_top` 传入：
 
 ```rust
 // kernel/src/lib.rs
@@ -385,9 +384,9 @@ riscv64 使用不同的高地址基址，因为 Sv39 的规范地址空间划分
 
 ### 4.2 ELF 加载实现
 
-> 本节内容原位于 01-multiboot-bootstrap.md 附录 B 及 §4.5.2，因"加载"属于"链接与加载"的范畴而移入本文档。01 文档聚焦 boot-shim 的引导准备流程（内存映射、KernelInfo 构造、ExitBootServices），本文档展开 ELF 解析与段拷贝的实现细节。
+> 01 文档聚焦 boot-shim 的引导准备流程（内存映射、KernelInfo 构造、ExitBootServices）；本节展开 ELF 解析与段拷贝的实现细节。
 >
-> boot-shim 的核心职责之一是加载内核 ELF。Minix3 C 中这一步由 GRUB 的 `multiboot` 命令代劳；minix-rs 中 boot-shim 需要自己解析 ELF、按 `p_paddr` 复制 PT_LOAD 段到物理内存、清零 BSS。本节详细展开这些实现。
+> boot-shim 的核心职责之一是加载内核 ELF。Minix3 C 中这一步由 GRUB 的 `multiboot` 命令代劳；minix-rs 中 boot-shim 需要自己解析 ELF、按 `p_paddr` 复制 PT_LOAD 段到物理内存、清零 BSS。
 
 #### 4.2.1 FileLoader trait — 两端共享的抽象
 
@@ -416,6 +415,7 @@ UEFI 侧用 `SimpleFileSystem` 实现 trait；OpenSBI 侧用 `BootFileTable` 实
 ┌─────────────────────┐         ┌─────────────────────────┐
 │ UefiFileLoader      │         │ UbootFileLoader<'a>     │
 │  (SimpleFileSystem) │         │  (&BootFileTable)       │
+│ uefi_helpers.rs     │         │ opensbi_helpers.rs     │
 └─────────┬───────────┘         └────────────┬────────────┘
           │  impl FileLoader                 │  impl FileLoader
           └────────────┬─────────────────────┘
@@ -555,7 +555,7 @@ os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 
 这两个函数不依赖 UEFI 运行时，可以在标准测试环境中验证 ELF 解析、段拷贝、BSS 清零的正确性。`load_kernel_elf` 在生产代码中调用 `compute_kernel_layout` 获取布局，然后执行物理内存写入。
 
-`loader::tests` 用 `MockLoader` 验证 `load_kernel_with_loader` / `load_boot_modules_with_loader` 主流程。两端共 13 个测试，在 `cargo test --features test-all` 下全部通过。
+`loader::tests` 用 `MockLoader` 验证 `load_kernel_with_loader` / `load_boot_modules_with_loader` 主流程。共 13 个单元测试（`loader.rs` 6 个共享主流程 + `opensbi_helpers.rs` 6 个 OpenSBI 路径 + `uefi_helpers.rs` 1 个布局计算），在 `cargo test --features test-all` 下全部通过。**UEFI 路径测试覆盖不足（仅 1 个）** 是已知 gap——`load_kernel_elf` 涉及 UEFI `AllocatePages` / `SimpleFileSystem` 调用，无法在标准 `cargo test` 中覆盖，需要 QEMU 集成测试。
 
 ### 4.3 HigherHalf trait 与三架构实现
 
@@ -572,9 +572,9 @@ os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 //! 本 trait 提供架构相关的机制，切换栈指针并跳转到
 //! 内核的高虚拟地址入口点（kmain）。
 //!
-//! 对应 Minix3 head.S:78-87 (x86) / head.S:34-40 (ARM)。
+//! 对应 Minix3 head.S:80-87 (x86) / head.S:41-47 (ARM)。
 
-use minix_types::KernelInfo;
+use minix_boot::KernelInfo;
 
 /// 高半核内核切换的抽象。
 ///
@@ -606,21 +606,13 @@ pub trait HigherHalf {
 }
 ```
 
-三个架构的实现遵循同一模式：内联汇编执行切栈+跳转，通过 `options(noreturn)` 告诉编译器永不返回。
-
-| 元素 | x86-64 | aarch64 | riscv64 |
-|------|--------|---------|---------|
-| 结构体 | `X86_64HigherHalf` | `AArch64HigherHalf` | `Riscv64HigherHalf` |
-| 栈顶参数 | `in(reg) stack_top.0` | `in(reg) stack_top.0` | `in(reg) stack_top.0` |
-| kmain 符号 | `sym kmain` | `sym kmain` | `sym kmain` |
-| 参数寄存器 | `in("rdi")` | `in("x0")` | `in("a0")` |
-| `options` | `noreturn` | `noreturn` | `noreturn` |
+三个架构的实现遵循同一模式：内联汇编执行切栈+跳转，通过 `options(noreturn)` 告诉编译器永不返回。下面以 x86-64 为完整示例，aarch64 / riscv64 仅列出与 x86-64 的差异点。
 
 **x86-64 实现** (`kernel/src/arch/x86_64/higher_half.rs`)：
 
 ```rust
 use crate::boot::higher_half::HigherHalf;
-use minix_types::KernelInfo;
+use minix_boot::KernelInfo;
 
 /// x86-64 高半核切换实现。
 ///
@@ -656,97 +648,27 @@ impl HigherHalf for X86_64HigherHalf {
 }
 ```
 
-**aarch64 实现** (`kernel/src/arch/aarch64/higher_half.rs`)：
+**aarch64 差异点**（完整实现见 `kernel/src/arch/aarch64/higher_half.rs`）：
+- 加载符号地址：`ldr x1, ={kmain}`（伪指令，由汇编器放入 literal pool，再通过 `br x1` 间接跳转）。`bl` 的立即数范围不足以覆盖 kmain 符号。
+- 栈对齐需要 4 条指令：`mov x1, #-16` / `mov x2, sp` / `and x2, x2, x1` / `mov sp, x2`（aarch64 禁止 SP 作为 AND 目的寄存器，必须用临时寄存器 x2 中转）。
+- 参数寄存器：`in("x0")`（AAPCS64）。
 
-```rust
-use crate::boot::higher_half::HigherHalf;
-use minix_types::KernelInfo;
+**riscv64 差异点**（完整实现见 `kernel/src/arch/riscv64/higher_half.rs`）：
+- 加载符号地址：`la t0, {kmain}`（伪指令，展开为 `auipc + addi`，计算 PC-relative 地址）。
+- 跳转用 `jalr x0, t0, 0`，`rd=x0` 显式丢弃返回地址到 x0（避免 x1/ra 被覆盖，与 x86 的 `push 0` 等效）。
+- 参数寄存器：`in("a0")`（RISC-V ABI）。
+- 帧指针寄存器：s0（不是 x29 / rbp）。
 
-/// AArch64 高半核切换实现。
-///
-/// 与 x86-64 的区别：
-/// - 使用 `ldr =label` 伪指令加载符号地址（汇编器放入 literal pool）
-/// - 参数通过 x0 传递（AAPCS64）
-/// - 跳转用 `br`（寄存器间接跳转），而非 x86 的 `call`
-pub struct AArch64HigherHalf;
-
-impl HigherHalf for AArch64HigherHalf {
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
-        // SAFETY: 调用者保证分页已启用且两套映射都已建立。
-        // stack_top 来自 KernelInfo.kern_stack_top，是高地址虚拟地址。
-        unsafe {
-            core::arch::asm!(
-                // (1) 加载高地址栈顶到 SP
-                "mov sp, {stktop}",
-                // (2) 栈对齐到 16 字节
-                "mov x1, #-16",
-                "and sp, sp, x1",
-                // (3) 清零帧指针（x29 = FP）
-                "mov x29, #0",
-                // (4) 跳转到 kmain（x0 已由 in("x0") 约束传入 &KernelInfo）
-                "ldr x1, ={kmain}",
-                "br x1",
-                stktop = in(reg) stack_top.0,   // 运行时传入的栈顶虚拟地址
-                kmain = sym kmain,
-                in("x0") kinfo,                 // AAPCS64：第 1 参数通过 x0
-                options(noreturn)
-            );
-        }
-    }
-}
-```
-
-**riscv64 实现** (`kernel/src/arch/riscv64/higher_half.rs`)：
-
-```rust
-use crate::boot::higher_half::HigherHalf;
-use minix_types::KernelInfo;
-
-/// RISC-V 64位高半核切换实现。
-///
-/// 与 x86-64/aarch64 的区别：
-/// - `la` 伪指令展开为 auipc + addi，计算 PC-relative 地址
-/// - 参数通过 a0 传递（RISC-V ABI）
-/// - `jalr x0, t0, 0` 等价于 jmp t0（不保存返回地址到 ra/x1）
-pub struct Riscv64HigherHalf;
-
-impl HigherHalf for Riscv64HigherHalf {
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
-        // SAFETY: 调用者保证分页已启用且两套映射都已建立。
-        // stack_top 来自 KernelInfo.kern_stack_top，是高地址虚拟地址。
-        unsafe {
-            core::arch::asm!(
-                // (1) 加载高地址栈顶到 SP
-                "mv sp, {stktop}",
-                // (2) 栈对齐到 16 字节
-                "li t0, -16",
-                "and sp, sp, t0",
-                // (3) 清零帧指针（s0 = FP，RISC-V 约定）
-                "li s0, 0",
-                // (4) 跳转到 kmain（a0 已由 in("a0") 约束传入 &KernelInfo）
-                // jalr x0, t0, 0：rd=x0 表示丢弃返回地址（即不保存）
-                "la t0, {kmain}",
-                "jalr x0, t0, 0",
-                stktop = in(reg) stack_top.0,   // 运行时传入的栈顶虚拟地址
-                kmain = sym kmain,
-                in("a0") kinfo,                 // RISC-V ABI：第 1 参数通过 a0
-                options(noreturn)
-            );
-        }
-    }
-}
-
-**三架构实现差异总结**：
+**三架构差异总结**：
 
 | 差异维度 | x86-64 | aarch64 | riscv64 |
 |---------|--------|---------|---------|
-| 切栈指令 | `mov rsp, {stktop}`（寄存器加载） | `mov sp, {stktop}`（寄存器加载） | `mv sp, {stktop}`（寄存器加载） |
+| 切栈指令 | `mov rsp, {stktop}` | `mov sp, {stktop}` | `mv sp, {stktop}` |
 | 栈对齐 | `and rsp, -16` | `mov x1, #-16` + `and sp, sp, x1` | `li t0, -16` + `and sp, sp, t0` |
 | 清零帧指针 | `xor rbp, rbp` | `mov x29, #0` | `li s0, 0` |
-| 跳转指令 | `call {kmain}`（直接调用） | `ldr x1, ={kmain}` + `br x1`（寄存器间接） | `la t0, {kmain}` + `jalr x0, t0, 0`（丢弃返回地址） |
-| 参数寄存器 | `in("rdi")`（System V ABI） | `in("x0")`（AAPCS64） | `in("a0")`（RISC-V ABI） |
-| 栈顶参数来源 | `in(reg) stack_top.0`（运行时参数） | `in(reg) stack_top.0`（运行时参数） | `in(reg) stack_top.0`（运行时参数） |
-| 核心差异 | `call` 指令的立即数就是高地址，无需间接跳转 | `bl` 立即数范围不够，必须用 `br` 间接跳转 | `jalr` 的 `rd=x0` 显式丢弃返回地址，避免栈操作 |
+| 跳转指令 | `call {kmain}` | `ldr x1, ={kmain}` + `br x1` | `la t0, {kmain}` + `jalr x0, t0, 0` |
+| 参数寄存器 | `in("rdi")` | `in("x0")` | `in("a0")` |
+| 核心差异 | `call` 立即数足够大 | `bl` 范围不足 → 寄存器间接 | `jalr rd=x0` 显式丢弃返回地址 |
 
 三者的**共同模式**不变：加载高地址栈顶 → 栈对齐 → 清零帧指针 → 跳转到 kmain。差异仅在于各架构的汇编指令和调用约定，这正是 `HigherHalf` trait 存在的意义——将架构差异封装在实现中，上层代码统一调用。
 
@@ -977,7 +899,7 @@ gdb kernel.elf
 (gdb) print $pc     # 应显示 0xFFFF_FFC0_xxx_xxx
 ```
 
-### 5.3 单元测试（`cargo test`，161 个通过）
+### 5.3 单元测试（`cargo test`，约 110+ 个通过）
 
 | 测试 | 验证内容 |
 |------|---------|
