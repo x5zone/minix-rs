@@ -95,8 +95,9 @@ pub trait HugePages: Paging {
     /// Fallback huge page size when the preferred size is not available.
     const FALLBACK_HUGE_PAGE_SIZE: u64;
 
-    /// Hardware PTE flags for a huge page entry (arch-specific bit layout).
-    const PTE_HUGE_FLAGS: u64;
+    /// Hardware-specific bit that identifies a PTE as a huge-page entry
+    /// (x86_64: PS bit `1 << 7`; ARM64/RISC-V: 0 — no extra bit needed).
+    const PTE_HUGE_IDENTIFIER_BIT: u64;
 
     fn map_huge(
         &mut self,

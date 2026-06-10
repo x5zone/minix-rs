@@ -8,15 +8,21 @@ license = "MIT"
 default = ["uefi"]
 uefi = ["dep:uefi"]
 opensbi = []
+# Enable both impls for `cargo test` so loader/opensbi tests are built.
+test-all = ["uefi", "opensbi"]
 
 [dependencies]
 minix-types = { path = "../libs/minix-types" }
 minix-arch = { path = "../arch", default-features = false }
-minix-kernel = { path = "../kernel" }
-uefi = { version = "0.33", features = ["global_allocator"], optional = true }
+minix-kernel = { path = "../kernel", default-features = false }
+minix-elf = { path = "../libs/minix-elf" }
+# Note: we do NOT enable uefi's "global_allocator" feature here.
+# In production, the UEFI allocator is set up in main.rs.
+# In tests, we provide std::alloc::System as the global allocator.
+uefi = { version = "0.33", optional = true, features = ["alloc"] }
 
 [lib]
-test = false
+test = true
 
 [[bin]]
 name = "boot-shim"

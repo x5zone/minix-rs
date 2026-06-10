@@ -167,9 +167,9 @@ echo "=== QEMU Test: $ARCH — $TEST_EFI ==="
 export TMPDIR=/tmp
 timeout 30 "$QEMU" "${QEMU_ARGS[@]}" 2>&1 || true
 
-# Print serial output
+# Print serial output (sanitize binary chars for terminal display)
 if [ -f "$SERIAL_LOG" ]; then
-    cat "$SERIAL_LOG"
+    cat -v "$SERIAL_LOG"
 fi
 
 # Clean up staging directory, firmware VARS, and disk image
@@ -177,9 +177,9 @@ rm -rf "$STAGING"
 rm -f /tmp/ovmf_vars_$$.fd /tmp/aavmf_vars_$$.fd /tmp/riscv_vars_$$.fd
 rm -f "$DISK_IMG"
 
-# Check for PASS marker
+# Check for PASS marker (use strings to handle binary serial logs)
 PASSED=false
-if [ -f "$SERIAL_LOG" ] && grep -q "### TEST_RESULT: PASS" "$SERIAL_LOG"; then
+if [ -f "$SERIAL_LOG" ] && strings "$SERIAL_LOG" | grep -q "### TEST_RESULT: PASS"; then
     PASSED=true
 fi
 

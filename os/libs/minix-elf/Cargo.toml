@@ -1,0 +1,15 @@
+[package]
+name = "minix-elf"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal ELF64 parser for Minix-RS (no_std, zero-allocation)"
+license = "MIT"
+
+[lib]
+test = true
+
+[features]
+default = []
+
+[dependencies]
+# No dependencies — this is a minimal, self-contained parser.

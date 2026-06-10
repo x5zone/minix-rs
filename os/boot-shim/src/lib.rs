@@ -11,13 +11,36 @@
 //! - `uefi` feature (default): `UefiBootShim` — uses `uefi` crate
 //! - `opensbi` feature: `OpenSbiBootShim` — hardcoded QEMU virt memory map
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(test, allow(internal_features))]
 
-#[cfg(feature = "uefi")]
 extern crate alloc;
+
+#[cfg(test)]
+extern crate std;
+
+// Provide a global allocator for the test binary.
+// The kernel and its dependencies use `alloc` but are `#![no_std]`;
+// without this, the test linker would have no allocator for them.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: std::alloc::System = std::alloc::System;
 
 // Re-export the trait and result type from minix-types.
 pub use minix_types::{BootShim, BootPrepareResult};
+
+// Re-export the ELF parser from the shared minix-elf crate.
+// Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.
+pub use minix_elf;
+
+// ── Shared, firmware-agnostic loading logic ──
+//
+// The kernel/module loading pipeline is identical for every firmware
+// (parse ELF → copy segments → place modules → build KernelInfo). The
+// only thing that differs is how raw file bytes are obtained, captured by
+// the `FileLoader` trait. Both `uefi_helpers` and `opensbi_helpers`
+// implement this trait and reuse the same shared loader functions.
+pub mod loader;
 
 // ── Firmware-specific modules ──
 // Each module provides a struct that implements BootShim.

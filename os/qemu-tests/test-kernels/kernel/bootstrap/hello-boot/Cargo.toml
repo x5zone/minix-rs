@@ -5,9 +5,9 @@ edition = "2021"
 
 [dependencies]
 uefi = { version = "0.33", features = ["global_allocator"] }
-minix-arch = { workspace = true, default-features = false, features = ["x86_64"] }
+minix-arch = { workspace = true, default-features = false }
 minix-types = { workspace = true }
-minix-kernel = { workspace = true }
+minix-kernel = { workspace = true, default-features = false }
 boot-shim = { workspace = true, features = ["uefi"] }
 
 [profile.dev]

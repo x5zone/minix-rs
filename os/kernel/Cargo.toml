@@ -21,6 +21,7 @@ minix-arch = { path = "../arch", features = ["mock"] }
 [features]
 default = ["mock"]
 mock = ["dep:minix-mock"]
+qemu_test = []
 
 [profile.dev]
 opt-level = 0

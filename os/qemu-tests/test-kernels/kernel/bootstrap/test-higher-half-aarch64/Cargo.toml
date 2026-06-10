@@ -1,0 +1,17 @@
+[package]
+name = "test-higher-half-aarch64"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uefi = { version = "0.33", features = ["global_allocator"] }
+minix-arch = { workspace = true, default-features = false }
+minix-types = { workspace = true }
+minix-kernel = { workspace = true, default-features = false, features = ["qemu_test"] }
+boot-shim = { workspace = true, features = ["uefi"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

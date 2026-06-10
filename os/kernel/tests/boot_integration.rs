@@ -25,6 +25,8 @@ fn boot_simulation_full_flow() {
         kern_size: 0x400000,                              // 4MB kernel
         free_upper_idx: 256,                              // user space PML4 idx 0-255
         user_sp: VirBytes(0x0000_7fff_ffff_f000),         // user stack top
+        kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),   // kernel stack top
+        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),    // syscall entry point
         boot_modules: &[],                                // no boot modules yet
     };
 
@@ -89,7 +91,7 @@ fn boot_simulation_full_flow() {
     println!("── Step 3: Kernel high-address mapping (C: pg_mapkernel) ──");
     let mut kernel_pages = 0u64;
     let mut offset = 0u64;
-    while offset < kernel_info.kern_size as u64 {
+    while offset < kernel_info.kern_size {
         paging.map_huge(
             VirBytes(kernel_info.kern_virt_base.0 + offset),
             PhysBytes(kernel_info.kern_phys_base.0 + offset),

@@ -49,3 +49,15 @@ pub fn write_hex(val: u64) {
         write_byte(HEX[((val >> (i * 4)) & 0xf) as usize]);
     }
 }
+
+/// Zero-sized type implementing [`EarlyConsole`] for riscv64.
+///
+/// Used by architecture-independent boot code (e.g. `kmain_verify`) to emit
+/// serial output without knowing the underlying hardware details.
+pub struct Riscv64EarlyConsole;
+
+impl crate::early_console::EarlyConsole for Riscv64EarlyConsole {
+    fn write_byte(byte: u8) {
+        write_byte(byte);
+    }
+}

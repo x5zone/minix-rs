@@ -21,19 +21,32 @@
 //! The implementation lives at the call site (hello-boot, boot-uefi, VM),
 //! not in this module. This module is just the thin glue layer.
 //!
-//! # Safety
+//! # Concurrency safety
 //!
 //! The allocator is a process-wide singleton set via `register()`.
 //! Minix-RS user-space servers are single-threaded event loops, so no
-//! concurrent mutation occurs.
+//! concurrent mutation occurs. `AtomicBool` is used for `PT_REGISTERED`
+//! to avoid `static mut` (UB in Rust 2024 edition). The function pointer
+//! is wrapped in `UnsafeCell` with a `Sync` impl documented as safe under
+//! single-threaded access.
 
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use minix_types::{PhysBytes, VirBytes};
 use crate::paging::PageTableError;
 
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
-static mut PT_ALLOC: PtAllocFn = uninit_alloc;
-static mut PT_REGISTERED: bool = false;
+/// Wrapper for a function pointer stored in a static.
+/// SAFETY: `PtAllocSlot` is only written once during boot (single-threaded),
+/// and only read afterwards. `Sync` is safe because there is no concurrent
+/// mutation in the single-threaded event loop model.
+struct PtAllocSlot(UnsafeCell<PtAllocFn>);
+
+unsafe impl Sync for PtAllocSlot {}
+
+static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
+static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
     Err(PageTableError::AllocationFailed)
@@ -45,15 +58,16 @@ fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
 /// The provided function must return (phys, virt) — in boot both equal;
 /// under VM virt = DM_BASE + phys.
 pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>) {
+    // SAFETY: Single-threaded boot context; no concurrent access.
     unsafe {
-        PT_ALLOC = alloc_fn;
-        PT_REGISTERED = true;
+        core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
     }
+    PT_REGISTERED.store(true, Ordering::Relaxed);
 }
 
 /// Returns true if a page table page allocator has been registered.
 pub fn is_registered() -> bool {
-    unsafe { PT_REGISTERED }
+    PT_REGISTERED.load(Ordering::Relaxed)
 }
 
 /// Allocate a zero-filled physical page for an intermediate page table.
@@ -64,5 +78,8 @@ pub fn is_registered() -> bool {
 /// Called by `map_huge` / `map` inside Paging implementations.
 #[inline]
 pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    unsafe { PT_ALLOC() }
+    // SAFETY: Single-threaded access; the function pointer is set once
+    // via `register()` and then only read.
+    let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
+    alloc_fn()
 }

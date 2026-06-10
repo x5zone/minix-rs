@@ -9,12 +9,23 @@ use crate::paging_ext::HugePages;
 use minix_types::{PhysBytes, VirBytes};
 use core::arch::asm;
 
-const PTE_PRESENT: u64 = 1 << 0;
-const PTE_WRITABLE: u64 = 1 << 1;
-const PTE_USER: u64 = 1 << 2;
-const PTE_HUGE: u64 = 1 << 7;
-const PTE_GLOBAL: u64 = 1 << 8;
-const PTE_NX: u64 = 1 << 63;
+bitflags::bitflags! {
+    /// x86-64 page table entry flags (hardware encoding).
+    ///
+    /// This is the hardware-level PTE bit layout for Intel/AMD long mode,
+    /// separate from the OS-semantic `PageFlags`. Key differences:
+    /// - Executable is the *absence* of the NX (No-eXecute) bit (bit 63)
+    /// - PS bit (bit 7) indicates huge page at PDPT (1GB) or PD (2MB) level
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct X64PteFlags: u64 {
+        const PRESENT  = 1 << 0;   // Present
+        const WRITABLE = 1 << 1;   // Read/Write
+        const USER     = 1 << 2;   // User/Supervisor
+        const PS       = 1 << 7;   // Page Size (huge page indicator)
+        const GLOBAL   = 1 << 8;   // Global page
+        const NX       = 1 << 63;  // No Execute
+    }
+}
 
 const PML4_SHIFT: u32 = 39;
 const PDPT_SHIFT: u32 = 30;
@@ -53,13 +64,19 @@ unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
     phys as *mut u64
 }
 
+/// Translate OS-semantic `PageFlags` into x86-64 hardware PTE flags.
+///
+/// x86-64 uses inverted semantics for execute permission: the NX (No-eXecute)
+/// bit in bit 63 must be *cleared* for executable pages. All other flags
+/// use normal (set=enabled) semantics.
 fn flags_to_pte(flags: PageFlags) -> u64 {
-    let mut pte = PTE_PRESENT;
-    if flags.contains(PageFlags::WRITABLE) { pte |= PTE_WRITABLE; }
-    if flags.contains(PageFlags::USER_ACCESSIBLE) { pte |= PTE_USER; }
-    if flags.contains(PageFlags::GLOBAL) { pte |= PTE_GLOBAL; }
-    if !flags.contains(PageFlags::EXECUTABLE) { pte |= PTE_NX; }
-    pte
+    let mut pte = X64PteFlags::PRESENT;
+    if flags.contains(PageFlags::WRITABLE) { pte |= X64PteFlags::WRITABLE; }
+    if flags.contains(PageFlags::USER_ACCESSIBLE) { pte |= X64PteFlags::USER; }
+    if flags.contains(PageFlags::GLOBAL) { pte |= X64PteFlags::GLOBAL; }
+    // NX is inverted: set NX when NOT executable
+    if !flags.contains(PageFlags::EXECUTABLE) { pte |= X64PteFlags::NX; }
+    pte.bits()
 }
 
 pub struct X86_64Paging {
@@ -180,7 +197,10 @@ impl HugePages for X86_64Paging {
     const HUGE_PAGE_SIZE: u64 = 1 << 30;
     const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
-    const PTE_HUGE_FLAGS: u64 = 1 << 7;
+    /// PS bit (bit 7) indicates a huge page at PDPT level (1GB) or PD level (2MB).
+    /// The same bit position is used for both sizes; the level determines the
+    /// actual page size.
+    const PTE_HUGE_IDENTIFIER_BIT: u64 = X64PteFlags::PS.bits();
 
     fn map_huge(
         &mut self,
@@ -192,18 +212,18 @@ impl HugePages for X86_64Paging {
         let pte_flags = flags_to_pte(flags);
         let shift = if size >= 1 << 30 { PDPT_SHIFT } else { PD_SHIFT };
         // PS bit (bit 7) is the same for both 1GB (PDPT.PS) and 2MB (PD.PS) pages.
-        let huge_flag = PTE_HUGE;
+        let huge_flag = X64PteFlags::PS.bits();
 
         let pml4 = unsafe { phys_to_ptr(self.root_paddr) };
         let i4 = pml4_index(vaddr.0);
         let e4 = unsafe { read_entry(pml4, i4) };
 
-        let pdpt = if e4 & PTE_PRESENT != 0 {
+        let pdpt = if e4 & X64PteFlags::PRESENT.bits() != 0 {
             (e4 & ADDR_MASK) as *mut u64
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
             let page = phys.0;
-            unsafe { write_entry(pml4, i4, page | PTE_PRESENT | PTE_WRITABLE) };
+            unsafe { write_entry(pml4, i4, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
             unsafe { phys_to_ptr(page) }
         };
 
@@ -215,12 +235,18 @@ impl HugePages for X86_64Paging {
             return Ok(());
         }
 
-        let pd = if e3 & PTE_PRESENT != 0 && e3 & PTE_HUGE == 0 {
+        // Check if PDPT entry is already a 1GB leaf (PRESENT + PS both set).
+        // If so, demoting it would corrupt the existing mapping.
+        if e3 & X64PteFlags::PRESENT.bits() != 0 && e3 & X64PteFlags::PS.bits() != 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+
+        let pd = if e3 & X64PteFlags::PRESENT.bits() != 0 {
             (e3 & ADDR_MASK) as *mut u64
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
             let page = phys.0;
-            unsafe { write_entry(pdpt, i3, page | PTE_PRESENT | PTE_WRITABLE) };
+            unsafe { write_entry(pdpt, i3, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
             unsafe { phys_to_ptr(page) }
         };
 
@@ -230,17 +256,6 @@ impl HugePages for X86_64Paging {
     }
 
     /// Whether the CPU supports 1 GB huge pages (CPUID.80000001H:EDX.GBPAGES bit 26).
-    ///
-    /// # Register save workaround
-    ///
-    /// LLVM internally reserves `rbx` as a base pointer and rejects it as an
-    /// asm clobber operand (`error: cannot use register 'bx'`). The usual
-    /// fix — declaring `out("ebx") _` — does not work here.
-    ///
-    /// Solution: save/restore `rbx` inside the asm template via `push rbx` /
-    /// `pop rbx`, and omit `ebx` from the clobber list. This satisfies both
-    /// LLVM's register allocator and the ABI requirement that `rbx` is
-    /// callee-saved.
     fn supports_1gb_page() -> bool {
         let mut edx: u32;
         unsafe {

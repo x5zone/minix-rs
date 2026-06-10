@@ -1,0 +1,14 @@
+[package]
+name = "test-memmap-riscv64"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+minix-arch = { workspace = true, default-features = false }
+minix-types = { workspace = true }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

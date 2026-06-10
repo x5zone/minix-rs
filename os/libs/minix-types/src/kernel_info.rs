@@ -26,7 +26,8 @@ pub struct KernelInfo {
 
     /// Kernel total size in bytes.
     /// C: kern_kernlen = &_kern_size — pg_utils.c linker symbol
-    pub kern_size: usize,
+    /// Uses u64 instead of usize to avoid truncation on 32-bit targets.
+    pub kern_size: u64,
 
     /// First free page table root-level index after identity+kernel maps.
     /// C: kinfo.freepde_start = pg_mapkernel() — pre_init.c:233
@@ -37,11 +38,26 @@ pub struct KernelInfo {
     /// C: kinfo.user_sp = USR_STACKTOP — pre_init.c:156
     pub user_sp: VirBytes,
 
+    /// Kernel initial stack top (virtual address).
+    /// C: k_boot_stktop / k_initial_stktop — linker symbol, used by
+    /// tss_init(0, &k_boot_stktop) in prot_init() — protect.c:338
+    /// x86-64: TSS.sp0, aarch64: SP_EL1, riscv64: sscratch
+    pub kern_stack_top: VirBytes,
+
+    /// System call entry point (virtual address).
+    /// System call handler entry virtual address (= kern_virt_base + offset).
+    /// Kernel metadata recorded for all architectures; only x86-64 uses it
+    /// to configure LSTAR MSR. aarch64/riscv64 determine the entry at
+    /// compile time (exception/trap vector), so this field is for reference only.
+    /// C: LSTAR MSR — set by tss_init() SYSCALL MSR setup — protect.c:189-205
+    pub syscall_entry: VirBytes,
+
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: kinfo.module_list[] — pre_init.c memcpy from GRUB
     pub boot_modules: &'static [BootModule],
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub base: PhysBytes,
     pub len: usize,
@@ -93,15 +109,15 @@ pub struct BootPrepareResult {
 ///    `opensbi_helpers::alloc_root_page`.
 /// 3. **Testability**: Mock implementations can be injected for kernel unit tests.
 pub trait BootShim {
-    /// Prepare boot: discover memory, allocate pages, build KernelInfo,
-    /// exit firmware services (if applicable).
+    /// Prepare boot: discover memory, load kernel and boot modules,
+    /// allocate pages, build KernelInfo, exit firmware services.
     ///
     /// This is called exactly once, before the kernel sets up paging.
     /// After this call, firmware boot services are no longer available.
-    fn prepare_boot(
-        kern_virt_base: u64,
-        kern_phys_base: u64,
-        kern_size: usize,
-        bump_pages: usize,
-    ) -> BootPrepareResult;
+    ///
+    /// The kernel's physical/virtual base and size are determined internally
+    /// by the implementation (e.g., by parsing the kernel ELF's PT_LOAD
+    /// segments). The caller only specifies how many bump pages to allocate
+    /// for boot-stage page table construction.
+    fn prepare_boot(bump_pages: usize) -> BootPrepareResult;
 }

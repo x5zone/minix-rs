@@ -43,3 +43,15 @@ unsafe fn inb(port: u16) -> u8 {
     asm!("in al, dx", out("al") val, in("dx") port);
     val
 }
+
+/// Zero-sized type implementing [`EarlyConsole`] for x86-64.
+///
+/// Used by architecture-independent boot code (e.g. `kmain_verify`) to emit
+/// serial output without knowing the underlying hardware details.
+pub struct X86_64EarlyConsole;
+
+impl crate::early_console::EarlyConsole for X86_64EarlyConsole {
+    fn write_byte(byte: u8) {
+        write_byte(byte);
+    }
+}

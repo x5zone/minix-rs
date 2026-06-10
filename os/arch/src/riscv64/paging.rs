@@ -32,14 +32,26 @@ use crate::paging_ext::HugePages;
 use minix_types::{PhysBytes, VirBytes};
 use core::arch::asm;
 
-const PTE_V: u64 = 1 << 0;
-const PTE_R: u64 = 1 << 1;
-const PTE_W: u64 = 1 << 2;
-const PTE_X: u64 = 1 << 3;
-const PTE_U: u64 = 1 << 4;
-const PTE_G: u64 = 1 << 5;
-const PTE_A: u64 = 1 << 6;
-const PTE_D: u64 = 1 << 7;
+bitflags::bitflags! {
+    /// RISC-V Sv39 page table entry flags (hardware encoding).
+    ///
+    /// This is the hardware-level PTE bit layout, separate from the
+    /// OS-semantic `PageFlags`. Key constraints:
+    /// - W=1 requires R=1 (RISC-V Privileged Spec §4.3.1)
+    /// - R=W=X=0 indicates a non-leaf (table pointer) entry
+    /// - R=0,X=1 is execute-only (optional, requires menvcfg.CBIE)
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Sv39PteFlags: u64 {
+        const V = 1 << 0;  // Valid
+        const R = 1 << 1;  // Readable
+        const W = 1 << 2;  // Writable (requires R=1)
+        const X = 1 << 3;  // Executable
+        const U = 1 << 4;  // User mode accessible
+        const G = 1 << 5;  // Global
+        const A = 1 << 6;  // Accessed
+        const D = 1 << 7;  // Dirty
+    }
+}
 
 const L2_SHIFT: u32 = 30;
 const L1_SHIFT: u32 = 21;
@@ -62,6 +74,14 @@ fn pte_to_paddr(pte: u64) -> u64 {
     ((pte & PTE_PPN_MASK) >> 10) << 12
 }
 
+/// Check whether a PTE is a leaf entry (has any of R/W/X set).
+/// In Sv39, R=W=X=0 means non-leaf (table pointer); any of R/W/X set means leaf.
+#[inline]
+fn pte_is_leaf(pte: u64) -> bool {
+    let flags = Sv39PteFlags::from_bits_truncate(pte);
+    flags.intersects(Sv39PteFlags::R | Sv39PteFlags::W | Sv39PteFlags::X)
+}
+
 fn l2_index(vaddr: u64) -> usize {
     ((vaddr >> L2_SHIFT) & 0x1FF) as usize
 }
@@ -82,22 +102,33 @@ unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
     phys as *mut u64
 }
 
+/// Translate OS-semantic `PageFlags` into Sv39 hardware PTE flags.
+///
+/// Boot stage: all pages are readable (R=1) because:
+/// 1. RISC-V requires R=1 when W=1 (W-implies-R, Privileged Spec §4.3.1)
+/// 2. Execute-only pages (R=0,X=1) are optional and require menvcfg.CBIE;
+///    boot stage does not set this CSR, so R=1 is required for X=1 as well.
+/// 3. Boot mappings (identity + kernel) are always RWX, so R=1 is correct.
+///
+/// When runtime `map()` is implemented, this function should be revisited
+/// to support execute-only pages if the hardware supports them.
 fn flags_to_pte(flags: PageFlags) -> u64 {
-    let mut pte = PTE_V | PTE_A | PTE_D;
-    pte |= PTE_R;
+    let mut pte = Sv39PteFlags::V | Sv39PteFlags::A | Sv39PteFlags::D;
+    // R=1 always set in boot stage (see function doc above).
+    pte |= Sv39PteFlags::R;
     if flags.contains(PageFlags::WRITABLE) {
-        pte |= PTE_W;
+        pte |= Sv39PteFlags::W;
     }
     if flags.contains(PageFlags::EXECUTABLE) {
-        pte |= PTE_X;
+        pte |= Sv39PteFlags::X;
     }
     if flags.contains(PageFlags::USER_ACCESSIBLE) {
-        pte |= PTE_U;
+        pte |= Sv39PteFlags::U;
     }
     if flags.contains(PageFlags::GLOBAL) {
-        pte |= PTE_G;
+        pte |= Sv39PteFlags::G;
     }
-    pte
+    pte.bits()
 }
 
 pub struct Riscv64Paging {
@@ -217,7 +248,10 @@ impl HugePages for Riscv64Paging {
     const HUGE_PAGE_SIZE: u64 = 1 << 30;
     const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
-    const PTE_HUGE_FLAGS: u64 = 0;
+    /// RISC-V Sv39 does not use a dedicated PTE flag to indicate huge pages;
+    /// the page size is determined by which page table level the entry is at.
+    /// This constant is 0 to satisfy the `HugePages` trait interface.
+    const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;
 
     fn map_huge(
         &mut self,
@@ -233,21 +267,113 @@ impl HugePages for Riscv64Paging {
         let e2 = unsafe { read_entry(l2, i2) };
 
         if size >= 1 << 30 {
+            // 1GB huge page: write directly into the L2 (root) table.
             unsafe { write_entry(l2, i2, paddr_to_pte(paddr.0) | pte_flags) };
             return Ok(());
         }
 
-        let l1 = if e2 & PTE_V != 0 {
+        // 2MB huge page: need an L1 page table under this L2 entry.
+        let l1 = if e2 & Sv39PteFlags::V.bits() != 0 {
+            // L2 entry is valid — check whether it's a leaf or a table pointer.
+            if pte_is_leaf(e2) {
+                // L2 entry is already a 1GB leaf (R/W/X set). Demoting it to
+                // a table pointer would silently corrupt the existing 1GB mapping.
+                // Return AlreadyMapped to signal the conflict.
+                return Err(PageTableError::AlreadyMapped);
+            }
+            // Non-leaf entry: PPN points to an existing L1 page table.
             pte_to_paddr(e2) as *mut u64
         } else {
+            // Allocate a new L1 page table.
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
             let page = phys.0;
-            unsafe { write_entry(l2, i2, paddr_to_pte(page) | PTE_V) };
+            unsafe { write_entry(l2, i2, paddr_to_pte(page) | Sv39PteFlags::V.bits()) };
             unsafe { phys_to_ptr(page) }
         };
 
         let i1 = l1_index(vaddr.0);
         unsafe { write_entry(l1, i1, paddr_to_pte(paddr.0) | pte_flags) };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paddr_to_pte_roundtrip() {
+        for &paddr in &[0x8000_0000u64, 0x8020_0000, 0x0, 0x4000_0000] {
+            let pte = paddr_to_pte(paddr);
+            let recovered = pte_to_paddr(pte);
+            assert_eq!(recovered, paddr,
+                "paddr_to_pte roundtrip failed: 0x{:x} → 0x{:x} → 0x{:x}",
+                paddr, pte, recovered);
+        }
+    }
+
+    #[test]
+    fn test_flags_to_pte_kernel_read_write_exec() {
+        let flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+        let pte = flags_to_pte(flags);
+        let pte_flags = Sv39PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Sv39PteFlags::V), "PTE must be valid");
+        assert!(pte_flags.contains(Sv39PteFlags::R), "PTE must be readable (R=1 required for W=1)");
+        assert!(pte_flags.contains(Sv39PteFlags::W), "PTE must be writable");
+        assert!(pte_flags.contains(Sv39PteFlags::X), "PTE must be executable");
+        assert!(pte_flags.contains(Sv39PteFlags::A), "PTE must have Accessed flag");
+        assert!(pte_flags.contains(Sv39PteFlags::D), "PTE must have Dirty flag");
+        assert!(pte_flags.contains(Sv39PteFlags::G), "PTE must be Global");
+    }
+
+    #[test]
+    fn test_flags_to_pte_no_wx_combination() {
+        // RISC-V forbids W=1,R=0. flags_to_pte always sets R=1 (boot stage),
+        // so W=1 always implies R=1.
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
+        let pte = flags_to_pte(flags);
+        let pte_flags = Sv39PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Sv39PteFlags::R), "W=1 requires R=1 in Sv39");
+        assert!(pte_flags.contains(Sv39PteFlags::W));
+    }
+
+    #[test]
+    fn test_pte_is_leaf() {
+        // Non-leaf: V=1, R=W=X=0 (table pointer)
+        let non_leaf = Sv39PteFlags::V.bits();
+        assert!(!pte_is_leaf(non_leaf), "V-only PTE is non-leaf");
+
+        // Leaf: V=1, R=1 (readable page)
+        let leaf_r = (Sv39PteFlags::V | Sv39PteFlags::R).bits();
+        assert!(pte_is_leaf(leaf_r), "V+R PTE is leaf");
+
+        // Leaf: V=1, X=1, R=1 (execute page)
+        let leaf_rx = (Sv39PteFlags::V | Sv39PteFlags::R | Sv39PteFlags::X).bits();
+        assert!(pte_is_leaf(leaf_rx), "V+R+X PTE is leaf");
+
+        // Leaf: V=1, R+W+X (full access page)
+        let leaf_rwx = (Sv39PteFlags::V | Sv39PteFlags::R | Sv39PteFlags::W | Sv39PteFlags::X).bits();
+        assert!(pte_is_leaf(leaf_rwx), "V+R+W+X PTE is leaf");
+
+        // Invalid: V=0
+        assert!(!pte_is_leaf(0), "V=0 PTE is neither leaf nor table");
+    }
+
+    #[test]
+    fn test_l2_index_dram_base() {
+        let idx = l2_index(0x8000_0000);
+        assert_eq!(idx, 2, "DRAM_BASE should be at L2 index 2");
+    }
+
+    #[test]
+    fn test_l1_index_2mb_offset() {
+        let idx = l1_index(0x8020_0000);
+        assert_eq!(idx, 0x401, "2MB offset from DRAM_BASE should be at L1 index 0x401");
+    }
+
+    #[test]
+    fn test_paddr_to_pte_dram_base() {
+        let pte = paddr_to_pte(0x8000_0000);
+        assert_eq!(pte, 0x2000_0000, "paddr_to_pte(0x8000_0000) should be 0x2000_0000");
     }
 }

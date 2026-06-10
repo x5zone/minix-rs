@@ -29,12 +29,26 @@ use crate::paging_ext::HugePages;
 use minix_types::{PhysBytes, VirBytes};
 use core::arch::asm;
 
-const PTE_VALID: u64 = 1 << 0;
-const PTE_AP1: u64 = 1 << 5;
-const PTE_AP2: u64 = 1 << 6;
-const PTE_AF: u64 = 1 << 10;
-const PTE_N_G: u64 = 1 << 11;
-const PTE_XN: u64 = 1 << 54;
+bitflags::bitflags! {
+    /// ARM64 page table entry flags (hardware encoding, Stage 1 EL1&0).
+    ///
+    /// This is the hardware-level PTE bit layout, separate from the
+    /// OS-semantic `PageFlags`. Key differences from x86-64/RISC-V:
+    /// - Bit 1 is Type (0=block/page, 1=table), not a permission flag
+    /// - AP bits are inverted: AP2=1 means read-only, XN=1 means no-execute
+    /// - AF (Access Flag) must be set or hardware may fault
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Arm64PteFlags: u64 {
+        const VALID = 1 << 0;   // Valid
+        const TABLE = 1 << 1;   // Type: 0=block/page, 1=table
+        const AP1   = 1 << 5;   // AP[1]: 0=EL1 only, 1=EL0+EL1
+        const AP2   = 1 << 6;   // AP[2]: 0=writable, 1=read-only
+        const AF    = 1 << 10;  // Access Flag
+        const NG    = 1 << 11;  // non-Global: 0=global, 1=process-local
+        const PXN   = 1 << 53;  // Privileged Execute Never
+        const XN    = 1 << 54;  // Execute Never (EL0)
+    }
+}
 
 const L0_SHIFT: u32 = 39;
 const L1_SHIFT: u32 = 30;
@@ -66,22 +80,22 @@ unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
 }
 
 fn flags_to_pte(flags: PageFlags) -> u64 {
-    let mut pte = PTE_VALID | PTE_AF;
+    let mut pte = Arm64PteFlags::VALID | Arm64PteFlags::AF;
     // ARM64 AP[2] (bit 6): 0 = writable at EL1, 1 = read-only at EL1.
     // So we set AP2 only when the page is NOT writable.
     if !flags.contains(PageFlags::WRITABLE) {
-        pte |= PTE_AP2;
+        pte |= Arm64PteFlags::AP2;
     }
     if flags.contains(PageFlags::USER_ACCESSIBLE) {
-        pte |= PTE_AP1;
+        pte |= Arm64PteFlags::AP1;
     }
     if !flags.contains(PageFlags::GLOBAL) {
-        pte |= PTE_N_G;
+        pte |= Arm64PteFlags::NG;
     }
     if !flags.contains(PageFlags::EXECUTABLE) {
-        pte |= PTE_XN;
+        pte |= Arm64PteFlags::XN;
     }
-    pte
+    pte.bits()
 }
 
 pub struct AArch64Paging {
@@ -239,7 +253,7 @@ impl HugePages for AArch64Paging {
     const HUGE_PAGE_SIZE: u64 = 1 << 30;
     const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
-    const PTE_HUGE_FLAGS: u64 = 0;
+    const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;
 
     fn map_huge(
         &mut self,
@@ -253,12 +267,12 @@ impl HugePages for AArch64Paging {
         let l0 = unsafe { phys_to_ptr(self.root_paddr) };
         let i0 = l0_index(vaddr.0);
         let e0 = unsafe { read_entry(l0, i0) };
-        let l1 = if e0 & PTE_VALID != 0 {
+        let l1 = if e0 & Arm64PteFlags::VALID.bits() != 0 {
             (e0 & ADDR_MASK) as *mut u64
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
             let page = phys.0;
-            unsafe { write_entry(l0, i0, page | PTE_VALID | PTE_AF | (1 << 1)) };
+            unsafe { write_entry(l0, i0, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
             unsafe { phys_to_ptr(page) }
         };
 
@@ -269,17 +283,83 @@ impl HugePages for AArch64Paging {
 
         let i1 = l1_index(vaddr.0);
         let e1 = unsafe { read_entry(l1, i1) };
-        let l2 = if e1 & PTE_VALID != 0 && e1 & (1 << 1) != 0 {
+        // Check if L1 entry is already a 1GB block (Valid + !Table).
+        // If so, demoting it would corrupt the existing mapping.
+        if e1 & Arm64PteFlags::VALID.bits() != 0 && e1 & Arm64PteFlags::TABLE.bits() == 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        let l2 = if e1 & Arm64PteFlags::VALID.bits() != 0 {
             (e1 & ADDR_MASK) as *mut u64
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
             let page = phys.0;
-            unsafe { write_entry(l1, i1, page | PTE_VALID | PTE_AF | (1 << 1)) };
+            unsafe { write_entry(l1, i1, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
             unsafe { phys_to_ptr(page) }
         };
 
         let i2 = l2_index(vaddr.0);
         unsafe { write_entry(l2, i2, (paddr.0 & ADDR_MASK) | pte_flags) };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flags_to_pte_kernel_read_write() {
+        // kernel_read_write = PRESENT | WRITABLE | GLOBAL
+        let flags = PageFlags::kernel_read_write();
+        let pte = flags_to_pte(flags);
+        let pte_flags = Arm64PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Arm64PteFlags::VALID), "PTE must be valid");
+        assert!(pte_flags.contains(Arm64PteFlags::AF), "PTE must have AF set");
+        assert!(!pte_flags.contains(Arm64PteFlags::AP2), "writable page: AP2 must be 0");
+        assert!(!pte_flags.contains(Arm64PteFlags::AP1), "kernel page: AP1 must be 0 (EL1 only)");
+        assert!(!pte_flags.contains(Arm64PteFlags::NG), "global page: nG must be 0");
+        assert!(pte_flags.contains(Arm64PteFlags::XN), "non-executable: XN must be set");
+    }
+
+    #[test]
+    fn test_flags_to_pte_kernel_read_write_exec() {
+        // kernel_read_write | EXECUTABLE
+        let flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+        let pte = flags_to_pte(flags);
+        let pte_flags = Arm64PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Arm64PteFlags::VALID));
+        assert!(!pte_flags.contains(Arm64PteFlags::AP2), "writable: AP2=0");
+        assert!(!pte_flags.contains(Arm64PteFlags::XN), "executable: XN must be 0");
+    }
+
+    #[test]
+    fn test_flags_to_pte_user_accessible() {
+        let flags = PageFlags::kernel_read_write() | PageFlags::USER_ACCESSIBLE;
+        let pte = flags_to_pte(flags);
+        let pte_flags = Arm64PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Arm64PteFlags::AP1), "user accessible: AP1 must be set");
+    }
+
+    #[test]
+    fn test_flags_to_pte_read_only() {
+        // PRESENT | GLOBAL (no WRITABLE)
+        let flags = PageFlags::PRESENT | PageFlags::GLOBAL;
+        let pte = flags_to_pte(flags);
+        let pte_flags = Arm64PteFlags::from_bits_truncate(pte);
+        assert!(pte_flags.contains(Arm64PteFlags::AP2), "read-only: AP2 must be set");
+    }
+
+    #[test]
+    fn test_l1_index_high_half() {
+        // 0xFFFF_8000_0000_0000 should map to a valid L1 index
+        let idx = l1_index(0xFFFF_8000_0000_0000);
+        assert!(idx < 512, "L1 index must be < 512, got {}", idx);
+    }
+
+    #[test]
+    fn test_addr_mask_preserves_physical() {
+        let phys = 0x4020_0000u64; // aarch64 QEMU RAM + 2MB offset
+        let masked = phys & ADDR_MASK;
+        assert_eq!(masked, phys, "physical address should be preserved by ADDR_MASK");
     }
 }

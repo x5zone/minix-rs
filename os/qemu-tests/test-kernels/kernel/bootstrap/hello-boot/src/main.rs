@@ -1,13 +1,17 @@
 //! Full boot-chain test kernel — exercises the real Paging trait via UEFI.
 //!
 //! This test follows the same code path as the real kernel:
-//!   boot-shim (UEFI entry) → arch_boot_impl (paging setup) → test output
+//!   UEFI boot helpers → arch_boot_impl (paging setup) → test output
 //!
-//! It reuses the same UEFI boot helpers and kernel boot code as the real
-//! boot-shim crate, then prints PASS instead of entering kmain().
+//! ## Why not use `UefiBootShim::prepare_boot`?
 //!
-//! Compile:  cargo build -p hello-boot --target x86_64-unknown-uefi --release
-//! Run:      ./run_qemu.sh x86_64 target/x86_64-unknown-uefi/release/hello-boot.efi
+//! `UefiBootShim::prepare_boot` loads `kernel.elf` from the ESP via
+//! `FileLoader`, which requires `/EFI/minix/kernel.elf` to exist on the
+//! FAT partition. In QEMU tests, the ESP only contains the test kernel
+//! itself as `BOOTX64.EFI` — there is no separate `kernel.elf`. We
+//! therefore call `uefi_helpers` functions directly (build_memmap,
+//! alloc_root_page, alloc_bump_region) and construct `BootPrepareResult`
+//! manually. The `arch_boot_impl` path is still fully exercised.
 
 #![no_std]
 #![no_main]
@@ -18,18 +22,40 @@ use minix_arch::x86_64::paging::X86_64Paging;
 use minix_arch::x86_64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::BootShim;
-use boot_shim::UefiBootShim;
+use minix_types::{BootPrepareResult, KernelInfo, PhysBytes, VirBytes};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 #[entry]
 fn main() -> Status {
     early_console::write_str("### Booting Minix-RS hello-boot (Paging trait)...\n");
 
-    // 1. UEFI boot preparation via BootShim trait
-    let result = UefiBootShim::prepare_boot(0, 0, 0, 8);
+    // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
+    let memmap = uefi_helpers::build_memmap();
+    let root_page = uefi_helpers::alloc_root_page();
+    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(8);
+
+    let kernel_info = KernelInfo {
+        memmap,
+        kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+        kern_phys_base: PhysBytes(0x200_000),
+        kern_size: 0x200_000,
+        free_upper_idx: 0,
+        user_sp: VirBytes(0x0000_7fff_ffff_f000),
+        kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
+        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+        boot_modules: &[],
+    };
+
+    let result = BootPrepareResult {
+        kernel_info,
+        root_page,
+        bump_base,
+        bump_end,
+    };
 
     // --- Below this point, UEFI boot services are gone ---
+    uefi_helpers::exit_boot_services();
 
     // 2. Register boot-stage page table allocator
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);

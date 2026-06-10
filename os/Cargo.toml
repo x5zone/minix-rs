@@ -25,6 +25,7 @@ members = [
     "libs/minix-sys",
     "libs/minix-rt",
     "libs/minix-mock",
+    "libs/minix-elf",
     
     # 集成测试
     "tests",
@@ -34,8 +35,17 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-memmap",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64",
     
     # 用户态命令 - bin
     "commands/bin/cat",
@@ -76,6 +86,7 @@ minix-ipc = { path = "libs/minix-ipc" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-mock = { path = "libs/minix-mock" }
+minix-elf = { path = "libs/minix-elf" }
 minix-arch = { path = "arch", default-features = false }
 minix-kernel = { path = "kernel", default-features = false }
 boot-shim = { path = "boot-shim", default-features = false }

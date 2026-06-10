@@ -752,7 +752,7 @@ pub mod mock {
         const HUGE_PAGE_SIZE: u64 = 1 << 30;       // 1GB preferred
         const HUGE_PAGE_SHIFT: u32 = 30;           // 1GB shift
         const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB fallback
-        const PTE_HUGE_FLAGS: u64 = 0;             // Mock: no hardware PTE flags
+        const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;    // Mock: no hardware identifier bit
 
         fn map_huge(
             &mut self,

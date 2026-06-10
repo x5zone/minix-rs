@@ -2,11 +2,21 @@
 //!
 //! On riscv64, the boot path is:
 //!   OpenSBI firmware → this kernel (loaded via -kernel) →
-//!   OpenSbiBootShim (BootShim trait) → arch_boot_impl → test output
+//!   arch_boot_impl → test output
 //!
 //! Unlike x86_64/aarch64 which use UEFI, riscv64 uses OpenSBI directly.
 //! There is no `riscv64-unknown-uefi` Rust target, so this kernel is
 //! a bare-metal binary (not a .efi file), loaded by QEMU's -kernel flag.
+//!
+//! ## Why not use `OpenSbiBootShim::prepare_boot`?
+//!
+//! In the real boot chain (OpenSBI → U-Boot → boot-shim → kernel), U-Boot
+//! provides a `BootFileTable` via `fatload` so the boot-shim can read
+//! `kernel.elf` from the FAT partition. In this QEMU test, however, the
+//! kernel is loaded directly by QEMU's `-kernel` flag — there is no U-Boot,
+//! no FAT filesystem, and no `BootFileTable`. We therefore construct
+//! `BootPrepareResult` directly with hardcoded values, bypassing the
+//! `BootShim` trait. The `arch_boot_impl` path is still fully exercised.
 
 #![no_std]
 #![no_main]
@@ -17,8 +27,7 @@ use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_arch::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::BootShim;
-use boot_shim::OpenSbiBootShim;
+use minix_types::{BootPrepareResult, KernelInfo, MemoryRegion, PhysBytes, VirBytes};
 
 // ── Global allocator (bump allocator on a static heap) ──
 // UEFI targets get this from the `uefi` crate's `global_allocator` feature.
@@ -68,6 +77,13 @@ unsafe impl GlobalAlloc for BootAllocator {
 #[global_allocator]
 static ALLOCATOR: BootAllocator = BootAllocator;
 
+// ── QEMU virt constants ──
+
+/// QEMU virt DRAM base.
+const DRAM_BASE: u64 = 0x8000_0000;
+/// Default QEMU virt RAM size (128 MB).
+const DEFAULT_RAM_SIZE: u64 = 0x800_0000;
+
 // ── Boot assembly: set up stack pointer and jump to Rust ──
 
 core::arch::global_asm!(
@@ -88,13 +104,61 @@ core::arch::global_asm!(
 /// Stack: 64KB, placed in BSS. Top is at __stack_top.
 static mut STACK: [u8; 0x10000] = [0u8; 0x10000];
 
+/// Bump allocator state for root_page and bump_region.
+/// Placed high in DRAM to avoid clashing with the loaded kernel image.
+static mut BUMP_PTR: u64 = DRAM_BASE + 0x0200_0000; // DRAM + 32 MB
+const BUMP_END: u64 = DRAM_BASE + 0x0400_0000;       // DRAM + 64 MB
+
+/// Hardcoded memory map for QEMU virt (one CONVENTIONAL region covering DRAM).
+static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
+    base: PhysBytes(DRAM_BASE),
+    len: DEFAULT_RAM_SIZE as usize,
+}];
+
+fn bump_alloc(num_pages: usize) -> Option<u64> {
+    unsafe {
+        let need = (num_pages as u64) * 4096;
+        if BUMP_PTR + need > BUMP_END {
+            return None;
+        }
+        let addr = BUMP_PTR;
+        BUMP_PTR += need;
+        Some(addr)
+    }
+}
+
 /// Rust entry point — called by _start assembly after stack is set up.
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### Booting Minix-RS hello-boot (riscv64, Paging trait)...\n");
 
-    // 1. OpenSBI boot preparation via BootShim trait
-    let result = OpenSbiBootShim::prepare_boot(0, 0, 0, 8);
+    // 1. Construct BootPrepareResult directly (no U-Boot / BootFileTable
+    //    in the QEMU -kernel test scenario).
+    let memmap: &'static [MemoryRegion] = &MEMMAP;
+
+    let root_page = PhysBytes(bump_alloc(1).expect("bump alloc: root page"));
+    let bump_pages = 8;
+    let bump_base = bump_alloc(bump_pages).expect("bump alloc: bump region");
+    let bump_end = bump_base + (bump_pages as u64) * 4096;
+
+    let kernel_info = KernelInfo {
+        memmap,
+        kern_virt_base: VirBytes(DRAM_BASE),
+        kern_phys_base: PhysBytes(DRAM_BASE),
+        kern_size: 0x200_000, // 2 MB
+        free_upper_idx: 0,
+        user_sp: VirBytes(0x0000_003f_ffff_f000),
+        kern_stack_top: VirBytes(DRAM_BASE + 0x200_000),
+        syscall_entry: VirBytes(DRAM_BASE),
+        boot_modules: &[],
+    };
+
+    let result = BootPrepareResult {
+        kernel_info,
+        root_page,
+        bump_base,
+        bump_end,
+    };
 
     // 2. Register boot-stage page table allocator
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);

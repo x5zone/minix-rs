@@ -621,7 +621,7 @@ pub trait HugePages: Paging {
     const FALLBACK_HUGE_PAGE_SIZE: u64;
 
     /// 大页表项的硬件 PTE 标志位（各架构编码不同）
-    const PTE_HUGE_FLAGS: u64;
+    const PTE_HUGE_IDENTIFIER_BIT: u64;
 
     /// 使用大页映射
     fn map_huge(
@@ -792,7 +792,7 @@ pub trait DirectMapArch {
 
 > **Trait 与实现**：`DirectMapArch` trait 定义地址空间布局抽象（仅包含 BASE 常量和 `va ↔ pa` 算术转换）。编译时通过 `CurrentDirectMap` 类型别名选择具体实现——mock 模式下为 `MockDirectMap`（运行时通过 `set_mock_vm_base()` 可配置 VM_DIRECT_MAP_BASE 以支持无 QEMU 的纯单元测试），x86_64 模式下为 `X86_64DirectMap`。
 >
-> **与 `HugePages` 的关系**：大页参数（`HUGE_PAGE_SIZE`、`FALLBACK_HUGE_PAGE_SIZE`、`PTE_HUGE_FLAGS`、`supports_1gb_page()`）归 `HugePages` trait——它们是 MMU 硬件能力，不是地址空间布局。建立 Direct Map 映射时，大页参数从 `HugePages` 获取。`DirectMapArch` 只负责 BASE 常量和 `va ↔ pa` 算术转换。
+> **与 `HugePages` 的关系**：大页参数（`HUGE_PAGE_SIZE`、`FALLBACK_HUGE_PAGE_SIZE`、`PTE_HUGE_IDENTIFIER_BIT`、`supports_1gb_page()`）归 `HugePages` trait——它们是 MMU 硬件能力，不是地址空间布局。建立 Direct Map 映射时，大页参数从 `HugePages` 获取。`DirectMapArch` 只负责 BASE 常量和 `va ↔ pa` 算术转换。
 
 | 架构 | `VM_DIRECT_MAP_BASE` | `KERNEL_DIRECT_MAP_BASE` |
 |------|---------------------|--------------------------|
