@@ -2,7 +2,7 @@
 
 > **分类**: Kernel 运行时页表管理
 > **源码**: `minix3/minix/kernel/arch/i386/memory.c`(1020行), `arch_do_vmctl.c`(67行), `pg_utils.c`(317行)
-> **说明**: 分页开启后，内核如何管理进程页表——跨地址空间操作（Direct Map 替代临时 PDE 映射）、VM 通过 SYS_VMCTL 管理页表、内核与 VM 的地址空间协作机制。自举阶段的页表建立见 01-multiboot-bootstrap。
+> **说明**: 分页开启后，内核如何管理进程页表——跨地址空间操作（Direct Map 替代临时 PDE 映射）、VM 通过 SYS_VMCTL 管理页表、内核与 VM 的地址空间协作机制。自举阶段的页表建立见 01-boot-shim-bootstrap。
 
 ---
 
@@ -1115,7 +1115,7 @@ VM 进程首次通过 `VMCTL_SETADDRSPACE` 设置自己的页表时，内核从�
 
 ## 6. 参见
 
-- [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) — 启动阶段分页设置（Identity Mapping + 高半核映射）
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — 启动阶段分页设置（Identity Mapping + 高半核映射）
 - [02-stage-vm/06-pagetable-struct.md](../../02-stage-vm/06-pagetable-struct.md) — VM 页表数据结构（pt_t）
 - [02-stage-vm/07-pagetable-ops.md](../../02-stage-vm/07-pagetable-ops.md) — VM 页表操作（pt_mapkernel, pt_bind）
 - `os/arch/src/paging.rs` — Paging trait 定义

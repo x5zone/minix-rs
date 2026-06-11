@@ -2,8 +2,9 @@
 //!
 //! Routes incoming IPC messages to appropriate handlers.
 
-use minix_types::{PmRequest, PmResponse, PmError, Endpoint, UserSlot};
-use minix_types::{VmRequest, VmResponse, VfsRequest, VfsResponse, KernelRequest, KernelResponse};
+use minix_types::{PmRequest, PmResponse, PmError, Endpoint};
+use minix_types::{VfsRequest, VfsResponse, KernelRequest, KernelResponse};
+use minix_types::{VmForkIn, VmForkOut, VmReply};
 use crate::mproc::ProcTable;
 use crate::fork;
 
@@ -41,27 +42,27 @@ impl MessageDispatcher {
     }
 
     /// Converts fork-specific error to generic PM error.
-    fn fork_error_to_pm_error(e: fork::ForkError) -> PmError {
+    fn fork_error_to_pm_error(e: fork::ForkCoordError) -> PmError {
         match e {
-            fork::ForkError::NoProc => PmError::InvalidEndpoint,
-            fork::ForkError::NoMem => PmError::OutOfMemory,
-            fork::ForkError::InvalidEndpoint => PmError::InvalidEndpoint,
-            fork::ForkError::ProcTableFull => PmError::ProcTableFull,
-            fork::ForkError::SlotInUse => PmError::SlotInUse,
-            fork::ForkError::VmError => PmError::InternalError,
-            fork::ForkError::VfsError => PmError::InternalError,
-            fork::ForkError::KernelError => PmError::InternalError,
+            fork::ForkCoordError::NoProc => PmError::InvalidEndpoint,
+            fork::ForkCoordError::NoMem => PmError::OutOfMemory,
+            fork::ForkCoordError::InvalidEndpoint => PmError::InvalidEndpoint,
+            fork::ForkCoordError::ProcTableFull => PmError::ProcTableFull,
+            fork::ForkCoordError::SlotInUse => PmError::SlotInUse,
+            fork::ForkCoordError::VmError => PmError::InternalError,
+            fork::ForkCoordError::VfsError => PmError::InternalError,
+            fork::ForkCoordError::KernelError => PmError::InternalError,
         }
     }
 }
 
-/// Sends a request to VM service.
+/// Sends a VM_FORK request to VM service.
 ///
 /// This is a placeholder that will be implemented with actual IPC.
-pub fn send_vm_request(_request: VmRequest) -> Result<VmResponse, fork::ForkError> {
+pub fn send_vm_fork(request: VmForkIn) -> Result<VmForkOut, fork::ForkCoordError> {
     // TODO: Implement actual IPC communication
     // For now, return success for testing
-    Ok(VmResponse::ForkOk {
+    Ok(VmForkOut {
         child_endpoint: Endpoint::from_generation_slot(1, 1),
     })
 }
@@ -69,7 +70,7 @@ pub fn send_vm_request(_request: VmRequest) -> Result<VmResponse, fork::ForkErro
 /// Sends a request to VFS service.
 ///
 /// This is a placeholder that will be implemented with actual IPC.
-pub fn send_vfs_request(_request: VfsRequest) -> Result<VfsResponse, fork::ForkError> {
+pub fn send_vfs_request(_request: VfsRequest) -> Result<VfsResponse, fork::ForkCoordError> {
     // TODO: Implement actual IPC communication
     // For now, return success for testing
     Ok(VfsResponse::ForkOk)
@@ -78,7 +79,7 @@ pub fn send_vfs_request(_request: VfsRequest) -> Result<VfsResponse, fork::ForkE
 /// Sends a request to Kernel.
 ///
 /// This is a placeholder that will be implemented with actual IPC.
-pub fn send_kernel_request(_request: KernelRequest) -> Result<KernelResponse, fork::ForkError> {
+pub fn send_kernel_request(_request: KernelRequest) -> Result<KernelResponse, fork::ForkCoordError> {
     // TODO: Implement actual IPC communication
     // For now, return success for testing
     Ok(KernelResponse::ForkOk)

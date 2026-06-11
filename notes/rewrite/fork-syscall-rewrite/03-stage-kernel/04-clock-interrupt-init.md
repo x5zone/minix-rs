@@ -3,7 +3,7 @@
 > **分类**: 全局基建
 > **源码**: `minix3/minix/kernel/clock.c:48-74`, `minix3/minix/kernel/arch/i386/i8259.c:28-63`, `minix3/minix/kernel/arch/i386/arch_system.c:246-288`, `minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:22-44`, `minix3/minix/kernel/arch/earm/arch_system.c:101-132`
 > **说明**: cstart() 的后半段——init_clock + intr_init + arch_init，让内核能响应硬件事件
-> **前置**: [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — 保护模式已初始化
+> **前置**: [03-kmain-cstart.md](03-kmain-cstart.md) — 保护模式已初始化
 
 ---
 
@@ -402,12 +402,12 @@ pub trait ArchInit {
 |------|--------|---------|---------|
 | 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (CLINT MMIO) |
 | 时钟频率 | 100 Hz (可配置) | 100 Hz | 100 Hz |
-| **中断控制器 (P1-19 拆分)** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF) | **PLIC** (external) + **CLINT** (timer + software) |
+| **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF) | **PLIC** (external) + **CLINT** (timer + software) |
 | IRQ 数量 | 64 (APIC mode) | 1020 (GICv3 SPI range) | 1024 (PLIC max) |
 | arch_init | 串口 (COM1) + PMP/PMU + APIC MMIO | PMU cycle counter + bsp_init | 串口 + PMP |
 | 串口 | COM1 (I/O port 0x3F8) | PL011 (MMIO) | NS16550A (MMIO) |
 
-> **P1-19 修正**: RISC-V "中断控制器" 应明确分为 **PLIC** (external interrupts, 由 `InterruptController` trait 管理) 和 **CLINT** (timer + software interrupts, 由 `ClockArch` 管理)。前表中"RISC-V 中断控制器"列单写"PLIC + CLINT"易混淆——`ClockArch` 用 CLINT 的 mtime/mtimecmp，`InterruptController` 只用 PLIC。
+> **注**: RISC-V "中断控制器" 应明确分为 **PLIC** (external interrupts, 由 `InterruptController` trait 管理) 和 **CLINT** (timer + software interrupts, 由 `ClockArch` 管理)。前表中"RISC-V 中断控制器"列单写"PLIC + CLINT"易混淆——`ClockArch` 用 CLINT 的 mtime/mtimecmp，`InterruptController` 只用 PLIC。
 
 ---
 
@@ -641,7 +641,7 @@ impl ClockArch for AArch64ClockArch {
         unsafe {
             asm!("mrs {}, cntfrq_el0", out(reg) freq);
         }
-        // P1-15: ARM Generic Timer 模式是 absolute compare（CNTP_CVAL_EL0
+        // ARM Generic Timer 模式是 absolute compare（CNTP_CVAL_EL0
         // 是 absolute 值，不是 delta）。读当前 count，再加上 freq/hz 作为
         // 下次触发点。CNTP_CTL_EL0 bit 0 = enable, bit 1 = IMASK (masked)。
         let now: u64;
@@ -1151,7 +1151,7 @@ fn init_clock_and_interrupts() {
 
 ### 5.1 单元测试
 
-单元测试位于多个 `#[cfg(test)]` 模块中，按文件分布如下（**P1-20 验证, 2026-06-11**）：
+单元测试位于多个 `#[cfg(test)]` 模块中，按文件分布如下：
 
 | 文件 | 测试数 | 验证内容 |
 |------|-------|---------|
@@ -1274,7 +1274,7 @@ cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
 
 ## 6. 参见
 
-- [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — cstart 前半段：保护模式初始化
+- [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 前半段：保护模式初始化
 - [05-proc-init-boot-proc.md](05-proc-init-boot-proc.md) — 进程表初始化和 boot 进程加载
 - [99-global-concepts.md](99-global-concepts.md) — 全局常量和类型定义
 - `os/arch/src/interrupt.rs` — InterruptController trait 定义

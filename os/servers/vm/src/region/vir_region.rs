@@ -9,6 +9,7 @@ use super::page_state::{PageFrames, PageSlot, PageFlags, PFN_NONE, PAGE_SIZE, Pf
 use minix_types::{PhysBytes, VirBytes, UserSlot};
 use alloc::vec::Vec;
 use crate::memtype::MemType;
+use crate::phys_mem::PageAllocFlags;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,18 +23,6 @@ bitflags::bitflags! {
         const ANON = 0x100;
         const DIRECT = 0x200;
         const PREALLOC_MAP = 0x400;
-    }
-}
-
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub(crate) struct PageAllocFlags: u32 {
-        const CLEAR = 0x01;
-        const CONTIG = 0x02;
-        const ALIGN64K = 0x04;
-        const LOWER16MB = 0x08;
-        const LOWER1MB = 0x10;
-        const ALIGN16K = 0x40;
     }
 }
 

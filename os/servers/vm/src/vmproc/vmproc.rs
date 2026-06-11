@@ -150,10 +150,19 @@ impl VmProc {
     /// - All mappings have been properly unmapped, or caller accepts memory leak
     ///   (in `force_clear()` / `reap()`, regions are cleared first, so this is satisfied)
     pub(crate) unsafe fn clear(&mut self) {
+        // SAFETY: Caller guarantees this process's page table is not active on any CPU
+        // and has been unbound from any process. All mappings have been properly
+        // unmapped by the caller (via typestate transitions: force_clear/reap).
+        // vm_pt_initialized / vm_regions_initialized guards ensure we only call
+        // assume_init_mut() on fields that were actually initialized.
         if self.vm_regions_initialized {
+            // SAFETY: vm_regions_initialized is true, so vm_regions was previously
+            // initialized by init_regions(). No concurrent access (single-threaded VM).
             unsafe { self.vm_regions.assume_init_mut().clear(); }
         }
         if self.vm_pt_initialized {
+            // SAFETY: vm_pt_initialized is true, so vm_pt was previously initialized
+            // by init_page_table(). No concurrent access (single-threaded VM).
             unsafe { self.vm_pt.assume_init_mut().destroy(); }
         }
 

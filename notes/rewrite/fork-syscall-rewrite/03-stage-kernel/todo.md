@@ -7,7 +7,7 @@
 
 ## 1. Boot module 内存回收（Rust 实现）
 
-> 来源：`01-multiboot-bootstrap.md` / `01-todo.md` C 项（C 源码讲解已完成）
+> 来源：`01-boot-shim-bootstrap.md` / `01-todo.md` C 项（C 源码讲解已完成）
 
 **背景**：Minix3 的 boot module 物理内存生命周期是：`cut_memmap()` 临时切掉 → `protect.c` 解析 ELF 复制到进程空间 → `add_memmap()` 回收。C 源码已在 01 文档 §2.5 讲解完毕。
 
@@ -27,7 +27,7 @@
 
 ## 2. `ExitBootServices` 后内存映射回收 + `Box::leak` 生命周期
 
-> 来源：`01-multiboot-bootstrap.md` §4 实现详解、`uefi_helpers.rs`
+> 来源：`01-boot-shim-bootstrap.md` §4 实现详解、`uefi_helpers.rs`
 
 **问题**：
 - `uefi_helpers.rs` 中 `build_memmap()` 在 `ExitBootServices()` **之前**调用，只收集 `CONVENTIONAL` 类型区域
@@ -55,7 +55,7 @@
 ```
 test-kernels/
 ├── kernel/
-│   ├── bootstrap/      # 01-multiboot-bootstrap.md ✅ 已创建
+│   ├── bootstrap/      # 01-boot-shim-bootstrap.md ✅ 已创建
 │   ├── pagetable/      # 02-page-table-kernel.md
 │   ├── exception/      # 05-exception-interrupt.md
 │   └── ipc/            # 09-sync-ipc.md
@@ -160,3 +160,72 @@ test-kernels/
 | 4.5 调试输出 | P2 | — | ✅ 已完成 |
 
 **建议**: 4.1 和 4.3 在下一次大规模重构时统一处理（涉及 trait 设计和 API 变更）；4.2 通过文档注释解决。
+
+---
+
+## 6. 测试缺口（来自 04-tests.md 完备性分析）
+
+> 来源：`04-tests.md`（分析日期 2026-06-11）
+> 分析覆盖：03-kmain-cstart.md + 04-clock-interrupt-init.md
+> 当前 126 单元测试 + 6 QEMU 测试全部通过。
+
+### 6.1 [P1] 异常端到端测试（L4）：handler 地址为 0，异常交付未验证
+
+> 当前 IDT handler 地址全为 0（`os/arch/src/x86_64/trap_entry.rs:151`），无法验证异常交付链路。
+
+- [ ] x86_64: 触发除零异常（vector 0）→ 验证 handler 执行
+- [ ] x86_64: 触发缺页异常（vector 14）→ 验证 handler 执行
+- [ ] aarch64: 触发 SVC → 验证 VBAR_EL1 跳转到 handler
+- [ ] riscv64: 触发 ecall → 验证 stvec 跳转到 handler
+
+**范围**：此缺口属于后续"异常处理"文档的阶段。当前 03/04 文档只需证明寄存器配置正确。
+
+### 6.2 [P1] 中断端到端测试（L5）：中断交付链路未验证
+
+> QEMU GDB 脚本验证了中断控制器寄存器初始化配置，但未验证实际中断到达 → handler 执行 → EOI 完整链路。
+
+- [ ] 时钟中断到达 CPU → handler 执行 → ClockState::tick() 被调用
+- [ ] 中断完整链路：设备 → GIC/APIC/PLIC → CPU → handler → EOI
+- [ ] 中断 mask/unmask 端到端行为验证
+
+**范围**：此缺口属于后续"中断处理"文档的阶段。当前只需证明中断控制器和时钟硬件寄存器配置正确。
+
+### 6.3 [P1] init/load 顺序约束缺少测试
+
+> `ProtectionArch::load()` 必须在 `TrapEntryArch::load()` 之前的约束仅在文档中声明（03 文档 §4.1），无测试验证违反顺序的后果。
+
+**范围**：依赖 SMP 多核支持，将在 SMP 阶段补充。
+
+### 6.4 [P1] init_ap 路径验证缺失
+
+> AP 启动路径完全未测试（`init_ap` 函数未被任何测试覆盖）。
+
+**范围**：依赖 SMP 多核支持，将在 SMP 阶段补充。
+
+### 6.5 [P2] aarch64 GICv3 PPI unmask 未实现
+
+> **位置**: `os/arch/src/arm64/interrupt.rs` `unmask()` 方法
+> PPI (IRQ < 32) 的 unmask 为 TODO，需要写 GICR_ISENABLER0 寄存器。
+
+Boot 阶段仅需 SPI，不影响当前功能。后续中断处理阶段补充。
+
+### 6.6 [P2] riscv64 PLIC base 硬编码
+
+> **位置**: `os/arch/src/riscv64/interrupt.rs`
+> PLIC_BASE = 0x0C00_0000 硬编码为 QEMU virt 默认地址，未从 device tree 自动发现。有 `set_base()` 方法可手动覆盖。
+
+QEMU virt 平台已工作，后续需 device tree 解析支持。
+
+### 6.7 [P2] riscv64 PMP 仅配置 entry 0
+
+> **位置**: `os/arch/src/riscv64/arch_init.rs`
+> PMP 仅配置 entry 0 为 Allow All (NAPOT + R+W+X)，未设置区域隔离。
+
+当前简单场景足够，暂无安全隔离需求。后续需完整 PMP 配置。
+
+### 6.8 [P2] QEMU GDB 脚本未集成到 CI
+
+> **位置**: `os/arch/tests/qemu_test_{x86_64,aarch64,riscv64}.sh`
+> 三个 QEMU GDB 自动化脚本当前为手动运行，未集成到 CI pipeline。
+
+建议后续集成到 CI，每个 PR 自动验证 QEMU 寄存器初始化。

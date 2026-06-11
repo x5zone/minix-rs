@@ -12,7 +12,7 @@
 > **注意**：此问题在 **03-stage-kernel**（三架构 Paging 实现）中已发现并修复。VM 侧仍然全部使用 `MockPaging`，尚未接入真实架构实现，因此此问题在 VM 侧**未修复**。以下记录供 VM 未来接入时参考。
 
 **在以下文档/代码中发现并修复**：
-- `03-stage-kernel/01-multiboot-bootstrap.md` §4.3（x86-64 `map_huge` 注释中描述 `alloc_page`）
+- `03-stage-kernel/01-boot-shim-bootstrap.md` §4.3（x86-64 `map_huge` 注释中描述 `alloc_page`）
 - `os/arch/src/{x86_64,arm64,riscv64}/paging.rs`（三个架构各一份私有 `alloc_page()`）
 
 **问题**：三个架构的 Paging 实现在 `map_huge` 中需要分配中间页表页（如 PML4→PDPT→PD 中没有的层级），各实现了完全相同的私有方法：

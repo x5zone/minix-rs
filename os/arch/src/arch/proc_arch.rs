@@ -1,74 +1,117 @@
 //! Process architecture abstraction
 //!
 //! Defines trait interfaces for architecture-specific process operations:
-//! - `ArchProcReset`: Reset process register state to safe defaults
-//! - `ArchProcInit`: Initialize a process with a specific entry point and stack
+//! - `ArchProcReset`: Return safe default register state for a new process
+//! - `ArchProcInit`: Return initial PC, SP, and ps_strings register values
 //! - `BootProcArch`: Architecture-specific boot process initialization
 //!
 //! # Design decisions (see 05-proc-init-boot-proc.md §3)
 //!
+//! - **Pure functional trait design** (§3.1): Traits return values
+//!   (`InitialRegState`, `InitialRegs`) rather than modifying process
+//!   structs. The kernel layer owns process struct mutation.
 //! - **Three-trait split** (§3.2-3.4): `ArchProcReset` handles register
 //!   defaults, `ArchProcInit` handles entry-point setup, `BootProcArch`
 //!   handles the full boot_proc flow including VM ELF loading.
-//! - **OS-semantic method names** (§3.3): Methods describe OS needs (reset,
-//!   init, boot_proc), not architecture-specific register names.
+//! - **OS-semantic types** (§3.1): `InitialRegState` and `InitialRegs`
+//!   use OS-semantic names (status, segment_selectors, pc, sp) rather
+//!   than arch-specific register names.
 
 use minix_types::VirBytes;
 use minix_boot::{KernelInfo, BootModule};
 use crate::paging::Paging;
 
-/// Architecture abstraction for resetting process register state.
+/// Initial register state for a new process (arch_proc_reset equivalent).
 ///
-/// Called during process table initialization and when a process slot
-/// is being recycled. Sets register state to safe defaults appropriate
-/// for the architecture.
+/// Returned by `ArchProcReset::initial_reg_state()`. The kernel layer
+/// applies these values to the process's trap frame.
+///
+/// C: arch_proc_reset() sets PSW + segment selectors + FPU state
 ///
 /// # Architecture mapping
 ///
-/// | Register     | x86-64                    | ARM64              | RISC-V          |
-/// |--------------|---------------------------|--------------------|-----------------|
-/// | Status reg   | RFLAGS: IOPL=0, IF=1      | SPSR: EL0t/EL1h    | sstatus: SPP/SPIE|
-/// | CS           | USER_CS_SELECTOR          | N/A                | N/A             |
-/// | DS/SS/ES/FS/GS| USER_DS_SELECTOR         | N/A                | N/A             |
-/// | FPU/ExtReg   | Zeroed for user procs     | N/A (lazy)         | N/A (lazy)      |
+/// | Field             | x86-64                    | ARM64              | RISC-V          |
+/// |-------------------|---------------------------|--------------------|-----------------|
+/// | status            | RFLAGS: IOPL=0, IF=1      | SPSR: EL0t/EL1h    | sstatus: SPP/SPIE|
+/// | segment_selectors | CS=0x1B, DS/SS=0x23       | All zero (default) | All zero (default)|
+/// | fpu_needs_zero    | true for user procs       | false (lazy)       | false (lazy)    |
+#[derive(Debug, Clone, Copy)]
+pub struct InitialRegState {
+    /// Status register value (RFLAGS/x86-64, SPSR/aarch64, sstatus/riscv64).
+    pub status: u64,
+    /// Segment selectors (x86-64 only; zero for aarch64/riscv64).
+    pub segment_selectors: SegmentSelectors,
+    /// Whether the FPU/ExtReg state needs to be zeroed.
+    pub fpu_needs_zero: bool,
+}
+
+/// x86-64 segment selectors. aarch64/riscv64 use Default (all zero).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SegmentSelectors {
+    pub cs: u64,
+    pub ds: u64,
+    pub ss: u64,
+    pub es: u64,
+    pub fs: u64,
+    pub gs: u64,
+}
+
+/// Initial PC, SP, and ps_strings register values (arch_proc_init equivalent).
+///
+/// Returned by `ArchProcInit::init_regs()`. The kernel layer writes these
+/// into the process's trap frame.
+///
+/// C: arch_proc_init() sets pr->p_reg.pc, pr->p_reg.sp, pr->p_reg.bx/retreg/a0
+#[derive(Debug, Clone, Copy)]
+pub struct InitialRegs {
+    /// Program counter (entry point).
+    pub pc: VirBytes,
+    /// Stack pointer.
+    pub sp: VirBytes,
+    /// ps_strings register value (x86-64: rbx, aarch64: r0, riscv64: a0).
+    pub ps_strings_reg: u64,
+}
+
+/// Architecture abstraction for returning initial process register state.
+///
+/// Called during process table initialization and when a process slot
+/// is being recycled. Returns the initial register state for the arch.
 ///
 /// C: arch_proc_reset() — arch_system.c:146 (x86) / arch_system.c:42 (ARM)
 pub trait ArchProcReset {
-    /// Reset architecture-specific process state to default values.
+    /// Return the initial register state for a new process.
     ///
-    /// Sets register state to safe defaults:
-    /// - x86-64: CS/DS/SS/ES/FS/GS = USER selectors, RFLAGS = INIT_PSW
-    /// - aarch64: SPSR = EL0t (user) or EL1h (kernel task)
-    /// - riscv64: sstatus = SPP=0, SPIE=1 (user) or SPP=1, SPIE=0 (kernel)
+    /// The kernel layer applies the returned `InitialRegState` to the
+    /// process's trap frame. This separation ensures arch layer doesn't
+    /// need to know about the kernel's process struct layout.
     ///
     /// # Arguments
     ///
     /// * `is_kernel` - true for kernel tasks (p_nr < 0), false for user processes
     /// * `proc_nr` - process number, used for FPU state allocation on x86-64
-    fn reset(is_kernel: bool, proc_nr: i32);
+    fn initial_reg_state(is_kernel: bool, proc_nr: i32) -> InitialRegState;
 }
 
-/// Architecture abstraction for initializing a process with a specific
-/// entry point and stack pointer.
+/// Architecture abstraction for returning initial process PC/SP/ps_strings.
 ///
-/// Called after `ArchProcReset` to set the process's initial PC, SP,
-/// and architecture-specific argument register (ps_strings).
-///
-/// # Architecture mapping
-///
-/// | Register  | x86-64 | ARM64 | RISC-V |
-/// |-----------|--------|-------|--------|
-/// | PC        | rip    | pc    | sepc   |
-/// | SP        | rsp    | sp    | sp     |
-/// | ps_strings| rbx    | r0    | a0     |
+/// Called after `ArchProcReset` to get the process's entry point and
+/// stack pointer register values.
 ///
 /// C: arch_proc_init() — memory.c:722 (x86) / memory.c:627 (ARM)
 pub trait ArchProcInit: ArchProcReset {
-    /// Initialize a process with a specific entry point and stack pointer.
+    /// Return the initial PC, SP, and ps_strings register values.
     ///
-    /// This is a two-step operation:
-    /// 1. Call `Self::reset()` to set safe register defaults
-    /// 2. Set PC, SP, and the ps_strings argument register
+    /// The kernel layer writes these into the process's trap frame.
+    /// The caller is responsible for calling `ArchProcReset::initial_reg_state()`
+    /// first to get the base register state.
+    ///
+    /// # Architecture mapping
+    ///
+    /// | Register  | x86-64 | ARM64 | RISC-V |
+    /// |-----------|--------|-------|--------|
+    /// | PC        | rip    | pc    | sepc   |
+    /// | SP        | rsp    | sp    | sp     |
+    /// | ps_strings| rbx    | r0    | a0     |
     ///
     /// # Arguments
     ///
@@ -77,15 +120,13 @@ pub trait ArchProcInit: ArchProcReset {
     /// * `pc` - Entry point (virtual address)
     /// * `sp` - Stack pointer (virtual address)
     /// * `ps_strings` - Address of ps_strings struct on the stack
-    /// * `name` - Process name
-    fn init(
+    fn init_regs(
         is_kernel: bool,
         proc_nr: i32,
         pc: VirBytes,
         sp: VirBytes,
         ps_strings: VirBytes,
-        name: &str,
-    );
+    ) -> InitialRegs;
 }
 
 /// Result of loading a VM ELF binary into the bootstrap page table.
@@ -143,22 +184,31 @@ pub struct MockProcArch;
 
 #[cfg(feature = "mock")]
 impl ArchProcReset for MockProcArch {
-    fn reset(is_kernel: bool, proc_nr: i32) {
+    fn initial_reg_state(is_kernel: bool, proc_nr: i32) -> InitialRegState {
         let _ = (is_kernel, proc_nr);
+        InitialRegState {
+            status: 0,
+            segment_selectors: SegmentSelectors::default(),
+            fpu_needs_zero: false,
+        }
     }
 }
 
 #[cfg(feature = "mock")]
 impl ArchProcInit for MockProcArch {
-    fn init(
+    fn init_regs(
         is_kernel: bool,
         proc_nr: i32,
         pc: VirBytes,
         sp: VirBytes,
         ps_strings: VirBytes,
-        name: &str,
-    ) {
-        let _ = (is_kernel, proc_nr, pc, sp, ps_strings, name);
+    ) -> InitialRegs {
+        let _ = (is_kernel, proc_nr);
+        InitialRegs {
+            pc,
+            sp,
+            ps_strings_reg: ps_strings.0,
+        }
     }
 }
 

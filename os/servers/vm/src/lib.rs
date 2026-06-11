@@ -33,7 +33,7 @@ pub use vm_server::VmServer;
 pub(crate) use global::*;
 pub(crate) use vmproc::*;
 pub(crate) use acl::{AclState, AclMask};
-pub(crate) use fork::{ForkError, fork_region, fork_regions, cow_copy_page};
+pub(crate) use fork::{VmForkError as ForkError, fork_region, fork_regions, cow_copy_page};
 pub(crate) use alloc_stats::VmAllocStats;
 pub(crate) use critical_pool::CriticalPool;
 pub use phys_mem::BootMemRegion;

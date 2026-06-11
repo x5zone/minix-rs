@@ -22,7 +22,7 @@
 ### 1.1 断裂的精确位置
 
 ```
-01-multiboot-bootstrap.md 结束于:
+01-boot-shim-bootstrap.md 结束于:
     vm_enable_paging() → return &kinfo
 
 02-page-table-kernel.md 开始于:
@@ -223,7 +223,7 @@ os/kernel/src/lib.rs:
 | 文档 | 覆盖内容 | 缺失 |
 |------|---------|------|
 | 00-kernel-overview.md | 整体架构、启动线概览 | 只有概览，无详细展开 |
-| 01-multiboot-bootstrap.md | GRUB → pre_init → 分页开启 | head.S 三行、kmain 全部 |
+| 01-boot-shim-bootstrap.md | GRUB → pre_init → 分页开启 | head.S 三行、kmain 全部 |
 | 02-page-table-kernel.md | 运行时页表机制（createpde 等） | 运行时机制的前置条件（freepdes 从哪来？VM 怎么被 boot 的？） |
 | tmp-* 各文档 | 各子系统参考资料 | 分散在 tmp-* 中，未按时间线组织 |
 
@@ -250,7 +250,7 @@ tmp-* 文档（如 `tmp-04-protect.md`、`tmp-05-idt.md`）提供了各子系统
 ```
 03-stage-kernel/
   ├── 00-kernel-overview.md          ← 不变（整体架构概览）
-  ├── 01-multiboot-bootstrap.md      ← 小改（末尾加导航段，定位到 02-boot-bridge）
+  ├── 01-boot-shim-bootstrap.md      ← 小改（末尾加导航段，定位到 02-boot-bridge）
   ├── 02-boot-bridge.md             ← 新增（核心：从分页开启到 kmain 初始化序列结束）
   ├── 03-page-table-kernel.md       ← 改名（原 02-page-table-kernel.md，重新定位为"运行时机制"）
   ├── 04-protect-interrupt.md       ← 新增（GDT/IDT/TSS 保护模式，整合 tmp-04/05/06）

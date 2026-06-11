@@ -27,7 +27,7 @@
 
 ### 1.1 01 文档结尾 vs 02 文档开头——读者视角
 
-01-multiboot-bootstrap.md 结束于：
+01-boot-shim-bootstrap.md 结束于：
 
 ```
 pre_init() → pg_identity() → pg_mapkernel() → pg_load() → vm_enable_paging()
@@ -310,7 +310,7 @@ kmain(kinfo_t *local_cbi)                    main.c:115
 
 ### 4.4 01 文档的修改
 
-01-multiboot-bootstrap.md 需要在结尾增加：
+01-boot-shim-bootstrap.md 需要在结尾增加：
 
 ```markdown
 ## 6. 从 pre_init() 到 kmain()：下一步
@@ -421,7 +421,7 @@ kmain() 的完整 boot 序列，见 [03-kmain-boot.md]。
 
 ### 5.1 01 文档当前结尾的问题
 
-01-multiboot-bootstrap.md 结束于 `pre_init()` 返回 `&kinfo`。但 head.S 的三行代码（切栈+push+call kmain）在 01 的语义范围内——它们是"从 GRUB 到分页开启"这个过程的最后一步。
+01-boot-shim-bootstrap.md 结束于 `pre_init()` 返回 `&kinfo`。但 head.S 的三行代码（切栈+push+call kmain）在 01 的语义范围内——它们是"从 GRUB 到分页开启"这个过程的最后一步。
 
 01 文档 L60 已经提到了 `call kmain(&kinfo)`，但只是作为调用链的一行，没有解释这三行代码的语义。
 

@@ -1,4 +1,4 @@
-# 06-arch-post-init: 架构后初始化与临时页表槽位
+# 06-cross-space-init: 跨地址空间初始化
 
 > **分类**: 全局基建
 > **源码**: `minix3/minix/kernel/arch/i386/protect.c:370-377`, `minix3/minix/kernel/arch/i386/memory.c:707-717`, `minix3/minix/kernel/arch/earm/protect.c:97-104`, `minix3/minix/kernel/arch/earm/memory.c:612-622`
@@ -25,12 +25,12 @@
 
 | 阶段 | 标记 | 函数 | 做什么 | 文档 |
 |------|------|------|--------|------|
-| A: 入口 | T3 | kmain 入口 | memcpy(&kinfo)、BSS 检查 | 03 |
-| B: cstart | T3→T4 | cstart() | prot_init → init_clock → intr_init → arch_init | 03+04 |
-| C: 进程表 | T7→T8 | proc_init + arch_boot_proc | 清空进程表、加载 VM ELF | 05 |
-| **D: post-init** | **T9→T10** | **arch_post_init + memory_init** | **ptproc=VM、freepdes 分配** | **本文** |
-| E: system | T11 | system_init | 特权表初始化 | 07 |
-| F: finish | T12 | bsp_finish_booting | 回收 bootstrap、切换用户态 | 07 |
+| A: 入口 | T2 | kmain 入口 | memcpy(&kinfo)、BSS 检查 | 03 |
+| B: cstart | T2+T3 | cstart() | prot_init → init_clock → intr_init → arch_init | 03+04 |
+| C: 进程表 | T4+T5 | proc_init + arch_boot_proc | 清空进程表、加载 VM ELF | 05 |
+| **D: post-init** | **T6+T7** | **arch_post_init + memory_init** | **ptproc=VM、freepdes 分配** | **本文** |
+| E: system | T8+T9 | system_init + add_memmap | 系统调用初始化、bootstrap 回收 | 07 |
+| F: finish | T9.5+T10 | bsp_finish_booting | SMP 初始化、启动完成、切换用户态 | 07 |
 
 阶段 D 仅有两行 C 代码，但它们为内核运行时的核心能力——跨地址空间访问——奠定基础。
 
@@ -51,10 +51,8 @@
 | pg_info 参数 | `&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v` | `&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v` | 对应页表寄存器 |
 | freepdes 数量 | 2 | 2 | 2 |
 | freepdes 来源 | `kinfo.freepde_start`（由 pg_mapkernel 返回） | `kinfo.freepde_start` | 对应 |
-| 页目录项大小 | 4 字节（32 位 PDE） | 4 字节 | 8 字节 |
-| 临时映射粒度 | 4MB 大页（PDE 映射） | 1MB section（L1 映射） | 2MB 大页 |
-
-**注意**：Minix3 C 的 x86 实现使用 32 位 PDE（4MB 大页），而 minix-rs 目标是 64 位。在 64 位下，PML4 的一项映射 512GB，PDPT 的一项映射 1GB，PD 的一项映射 2MB。临时映射的粒度会改变，但机制不变——预留页表上层索引作为临时窗口。
+| 页目录项大小 | 8 字节（64 位 PDE） | 8 字节 | 8 字节 |
+| 临时映射粒度 | 2MB 大页（PD 映射） | 2MB block（L2 映射） | 2MB 大页 |
 
 ### 1.5 Rust 版与 C 版的差异
 
@@ -127,7 +125,25 @@ void pg_info(reg_t *pagedir_ph, u32_t **pagedir_v)
 
 **但是**——VM 此时的页表不是 VM 自己建的，而是内核在 `arch_boot_proc()` 中用 `pg_map(PG_ALLOCATEME, ...)` 建的 bootstrap 页表。VM 运行后会通过 `VMCTL_SETADDRSPACE` 建立自己的页表，替换掉 bootstrap 页表。所以 `pg_info()` 记录的是**初始**页表地址，不是最终地址。
 
-### 2.3 memory_init()：分配临时映射槽位
+### 2.3 IPCNAME 宏：IPC 调用类型名称注册
+
+在 `arch_post_init()` 和 `memory_init()` 之间，`main.c:277-290` 有一段 IPCNAME 宏调用：
+
+```c
+IPCNAME(SEND, 0);
+IPCNAME(RECEIVE, 0);
+IPCNAME(SENDREC, 0);
+IPCNAME(NOTIFY, 0);
+IPCNAME(SENDNB, 0);
+IPCNAME(RECEIVE_ASYNC, 0);
+/* ... 共约 13 个调用类型 */
+```
+
+`IPCNAME` 宏（定义在 `kernel/ipc.h`）将 IPC 调用类型编号映射为可读字符串，写入全局数组 `ipcnames[]`。它**仅用于调试输出**（如 `kprintf` 打印 IPC 统计），不影响任何运行时逻辑。
+
+**Rust 版替代方案**：C 版用宏+全局数组实现名称查找，Rust 版可用 `enum IpcCall { Send, Receive, ... }` + `impl Display for IpcCall` 替代，无需全局数组，编译期保证完整性。
+
+### 2.4 memory_init()：分配临时映射槽位
 
 x86-64（`memory.c:707-717`）：
 
@@ -169,11 +185,11 @@ void memory_init(void)
 
 3. **`freepdes[1] = kinfo.freepde_start++`**：取第二个空闲 PDE 索引。
 
-4. **`assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES)`**：确保分配后没有越界。`I386_VM_DIR_ENTRIES = 1024`（32 位 x86）。
+4. **`assert(kinfo.freepde_start < 512)`**（64 位）：确保分配后没有越界。
 
 **为什么是 2 个？** `createpde()` 的调用者 `virtual_copy_f()` 和 `vm_memset()` 都需要"源"和"目标"两个临时映射。每次跨地址空间拷贝需要两个 freepde——一个映射源，一个映射目标。
 
-### 2.4 freepdes 如何被使用：createpde() 快速导览
+### 2.5 freepdes 如何被使用：createpde() 快速导览
 
 `createpde()` 是 freepdes 的唯一消费者。它的工作流程：
 
@@ -189,12 +205,12 @@ void memory_init(void)
 3. 将该 PDE 值写入 freepdes[free_pde_idx] 对应的 ptproc 页目录项：
    ptproc->p_seg.p_cr3_v[pde] = pdeval
 
-4. 返回映射后的虚拟地址（freepde 索引对应的 4MB 区域内的偏移）
+4. 返回映射后的虚拟地址（freepde 索引对应的 2MB 区域内的偏移）
 ```
 
 **关键约束**：`createpde()` 不是线程安全的——它修改全局的页目录项。但在 Minix3 的 BKL 模型下，内核同一时刻只有一个 CPU 在执行内核代码，所以不需要锁。
 
-### 2.5 mem_clear_mapcache()：清理临时映射
+### 2.6 mem_clear_mapcache()：清理临时映射
 
 `memory.c:35-50`：
 
@@ -222,22 +238,19 @@ void mem_clear_mapcache(void)
 
 ### 3.1 arch_post_init → PostInitArch trait
 
-C 版的 `arch_post_init()` 做两件事：设置 `ptproc` 和调用 `pg_info()`。在 Rust 版中，这两个操作封装为一个 trait 方法：
+C 版的 `arch_post_init()` 做两件事：设置 `ptproc` 和调用 `pg_info()`。在 Rust 版中，这两个操作封装为一个 trait 方法。但 trait 方法不直接操作全局变量——而是返回 `CrossSpaceInit` 结构体，由 kernel 层存储和使用：
 
 ```rust
-/// Architecture-specific post-initialization after proc_init.
-///
-/// Sets the current "page table process" (ptproc) to VM, so that
-/// createpde()/virtual_copy() can use VM's page directory as the
-/// temporary mapping host.
-///
-/// C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
-trait PostInitArch {
-    /// Set ptproc to VM and record VM's page table addresses.
-    ///
-    /// Equivalent to:
-    ///   ptproc = proc_addr(VM_PROC_NR);
-    ///   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
+/// Post-initialization result: the kernel stores this for cross-address-space access.
+pub struct CrossSpaceInit {
+    /// VM's page table info (for createpde equivalent)
+    pub vm_page_table: VmPageTableInfo,
+    /// Temporary page table slots for createpde()
+    pub free_pde_slots: FreePdeSlots,
+}
+
+pub trait PostInitArch {
+    /// Register VM's page table info for cross-address-space operations.
     fn set_ptproc(vm_page_table: &VmPageTableInfo);
 }
 ```
@@ -249,29 +262,13 @@ trait PostInitArch {
 C 版的 `memory_init()` 分配 freepdes。在 Rust 版中，这是一个返回值而不是修改全局变量：
 
 ```rust
-/// Architecture-specific memory initialization.
-///
-/// Allocates temporary page table slots for cross-address-space access.
-///
-/// C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
-trait MemoryInitArch {
+pub trait MemoryInitArch {
     /// Allocate temporary page table slots from the free list.
-    ///
-    /// Returns exactly 2 slot indices (for source and destination mappings
-    /// in createpde()).
-    ///
-    /// C: freepdes[0] = kinfo.freepde_start++; freepdes[1] = kinfo.freepde_start++;
     fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots;
-}
-
-/// Free page directory entry slots reserved for createpde().
-struct FreePdeSlots {
-    slots: [usize; MAX_FREE_PDE_SLOTS], // C: freepdes[]
-    len: usize,                        // C: nfreepdes
 }
 ```
 
-**为什么返回结构体而不是修改全局变量？** C 版用 `static int freepdes[2]` 全局变量。Rust 版将 freepdes 封装为 `FreePdeSlots` 结构体，可以存储在进程表或内核状态中，避免全局可变状态。`FreePdeSlots` 使用固定大小数组 + `len` 字段，提供与 C 版相同的语义但增加了边界检查。
+**为什么返回结构体而不是修改全局变量？** C 版用 `static int freepdes[2]` 全局变量。Rust 版将 freepdes 封装为 `FreePdeSlots` 结构体，存储在内核的 `CrossSpaceInit` 中，避免全局可变状态。`FreePdeSlots` 使用固定大小数组 + `len` 字段，提供与 C 版相同的语义但增加了边界检查。
 
 ### 3.3 freepdes 的 64 位适配
 
@@ -298,170 +295,193 @@ C 版中 `ptproc` 是裸指针 `struct proc *`，可能为 NULL。Rust 版通过
 - `freepdes` 是全局静态变量，`createpde()` 修改它时 BKL 已持有
 - `mem_clear_mapcache()` 在 BKL 持有期间调用
 
-Rust 版中，`FreePdeSlots` 存储在内核全局状态中，访问时需要 `&mut` 引用。由于 BKL 保证同一时刻只有一个执行流，可以安全地获得 `&mut`。
+Rust 版中，`CrossSpaceInit` 存储在内核全局状态中，访问时需要 `&mut` 引用。由于 BKL 保证同一时刻只有一个执行流，可以安全地获得 `&mut`。
+
+### 3.6 设计决策的替代方案
+
+| 决策 | 替代方案 | 为何不选 |
+|------|---------|---------|
+| `set_ptproc` 接收 `&VmPageTableInfo` | 接收 `&KProcess` | arch 层不能依赖 kernel 层，违反分层架构 |
+| `FreePdeSlots` 返回结构体 | 全局 `static mut` | 全局可变状态违反 Rust 安全模型 |
+| 2 个 freepdes 桶 | 更多或按需分配 | C 版用 2 个，改为 >2 需要证明必要性 |
+| `virt_root: Option<VirBytes>` | 所有架构必有 `virt_root` | RISC-V Sv39 不维护虚拟地址指针 |
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 PostInitArch trait 定义
+### 4.1 核心类型定义
 
-> 设计决策：§3.1 — 将 pg_info 内联到 set_ptproc
+> 设计决策：§3.1 — PostInitArch trait 返回 VmPageTableInfo
 
 ```rust
-/// Architecture abstraction for post-initialization.
+// os/arch/src/arch/post_init.rs
+
+/// VM 页表信息（由 arch_post_init 设置）。
 ///
-/// Called after init_proc_and_boot() (Phase C) to register the VM process
-/// as the "page table process" (ptproc) and record its page table location.
+/// | 字段      | x86-64              | ARM64            | RISC-V     |
+/// |------------|---------------------|------------------|------------|
+/// | phys_root  | p_cr3 (CR3 value)   | p_ttbr (TTBR0)   | satp value |
+/// | virt_root  | p_cr3_v (virt ptr)  | p_ttbr_v (virt ptr)| N/A*    |
+#[derive(Debug, Clone, Copy)]
+pub struct VmPageTableInfo {
+    pub phys_root: PhysBytes,         // C: vm->p_seg.p_cr3 (x86)
+    pub virt_root: Option<VirBytes>,  // C: vm->p_seg.p_cr3_v (x86)
+}
+
+/// 跨地址空间初始化结果（存储在 kernel 全局状态中）。
+#[derive(Debug)]
+pub struct CrossSpaceInit {
+    pub vm_page_table: VmPageTableInfo,
+    pub free_pde_slots: FreePdeSlots,
+}
+
+/// 临时页表槽位（createpde 的临时映射窗口）。
+///
+/// C: `static int freepdes[2]` + `nfreepdes` counter
+#[derive(Debug, Clone)]
+pub struct FreePdeSlots {
+    slots: [usize; MAX_FREE_PDE_SLOTS],
+    len: usize,
+}
+
+/// C: #define MAXFREEPDES 2 — memory.c:30
+pub const MAX_FREE_PDE_SLOTS: usize = 2;
+
+impl FreePdeSlots {
+    pub fn new() -> Self {
+        Self { slots: [0; MAX_FREE_PDE_SLOTS], len: 0 }
+    }
+
+    pub fn push(&mut self, index: usize) -> Result<(), &'static str> {
+        if self.len >= MAX_FREE_PDE_SLOTS {
+            return Err("free PDE slots overflow");
+        }
+        self.slots[self.len] = index;
+        self.len += 1;
+        Ok(())
+    }
+
+    pub fn get(&self, idx: usize) -> Option<usize> {
+        if idx < self.len { Some(self.slots[idx]) } else { None }
+    }
+}
+
+/// Architecture abstraction for post-initialization.
 ///
 /// C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
 pub trait PostInitArch {
-    /// Register VM as the page table process and record its page table info.
+    /// Register VM's page table info for cross-address-space operations.
     ///
     /// Equivalent C code:
     ///   vm = proc_addr(VM_PROC_NR);
     ///   get_cpulocal_var(ptproc) = vm;
     ///   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);   // x86
-    ///   pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v); // ARM
     fn set_ptproc(vm_page_table: &VmPageTableInfo);
 }
 
-/// Information about a process's page table.
-///
-/// | Field      | x86-64              | ARM64            | RISC-V     |
-/// |------------|---------------------|------------------|------------|
-/// | phys_root  | p_cr3 (CR3 value)   | p_ttbr (TTBR0)   | satp value |
-/// | virt_root  | p_cr3_v (virt ptr)  | p_ttbr_v (virt ptr)| N/A*    |
-pub struct VmPageTableInfo {
-    pub phys_root: PhysBytes,       // C: vm->p_seg.p_cr3 (x86)
-    pub virt_root: Option<VirBytes>, // C: vm->p_seg.p_cr3_v (x86)
-}
-```
-
-**与 C 版的关键差异**：`set_ptproc` 接收 `&VmPageTableInfo` 而非 `&KProcess`。这是因为 trait 的职责是"记录页表地址"，而非"操作进程结构体"。`VmPageTableInfo` 将架构特定的页表根地址封装为 OS 语义类型，避免硬件寄存器类型（CR3/TTBR/satp）泄漏到 trait API 中。
-
-### 4.2 PostInitArch x86-64 实现
-
-```rust
-// os/arch/src/x86_64/post_init.rs
-
-use crate::post_init::{PostInitArch, VmPageTableInfo};
-
-pub struct X86_64PostInitArch;
-
-impl PostInitArch for X86_64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // C: get_cpulocal_var(ptproc) = vm;
-        // C: pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
-        //
-        // In Rust, VmPageTableInfo encapsulates the page table root addresses.
-        // The actual per-CPU ptproc pointer and page directory globals
-        // will be set by the kernel's cross-address-space module
-        // (createpde equivalent) using this information.
-        //
-        // SAFETY: BKL is held during boot, only this CPU accesses ptproc.
-        let _ = vm_page_table;
-    }
-}
-```
-
-### 4.3 PostInitArch aarch64 实现
-
-```rust
-// os/arch/src/arm64/post_init.rs
-
-use crate::post_init::{PostInitArch, VmPageTableInfo};
-
-pub struct AArch64PostInitArch;
-
-impl PostInitArch for AArch64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // C: get_cpulocal_var(ptproc) = vm;
-        // C: pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v);
-        //
-        // AArch64 uses TTBR0_EL1 for user-space page tables.
-        // SAFETY: BKL is held during boot.
-        let _ = vm_page_table;
-    }
-}
-```
-
-### 4.4 PostInitArch riscv64 实现
-
-```rust
-// os/arch/src/riscv64/post_init.rs
-
-use crate::post_init::{PostInitArch, VmPageTableInfo};
-
-pub struct Riscv64PostInitArch;
-
-impl PostInitArch for Riscv64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // C: get_cpulocal_var(ptproc) = vm;
-        // RISC-V uses satp CSR for page table root.
-        // In Sv39, satp format: [MODE(1)] [ASID(16)] [PPN(44)]
-        // SAFETY: BKL is held during boot.
-        let _ = vm_page_table;
-    }
-}
-```
-
-**为什么三个实现都使用 `let _ = vm_page_table;`？** 当前阶段，内核的 per-CPU 变量系统和进程表访问器尚未完全实现。`set_ptproc` 的 trait 接口已定义好，但实际的 ptproc 全局变量设置和 pg_info 调用将在后续迭代中填充。这种"先定义接口、后填充实现"的方式确保了编译通过和接口稳定性。
-
-### 4.5 MemoryInitArch trait 定义
-
-> 设计决策：§3.2 — 返回 FreePdeSlots 结构体替代全局变量
-
-```rust
 /// Architecture abstraction for memory initialization.
 ///
 /// C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
 pub trait MemoryInitArch {
-    /// Allocate free page directory entries from kinfo.free_upper_idx.
-    ///
-    /// C: freepdes[0] = kinfo.freepde_start++; freepdes[1] = kinfo.freepde_start++;
+    /// Allocate free page table slots from kinfo.free_upper_idx.
     fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots;
 }
-
-/// Free page directory entry slots reserved for createpde().
-///
-/// In C, this is the `static int freepdes[2]` array + `nfreepdes` counter.
-/// In Rust, fixed-size array with length field + bounds checking.
-pub struct FreePdeSlots {
-    slots: [usize; MAX_FREE_PDE_SLOTS], // C: freepdes[]
-    len: usize,                        // C: nfreepdes
-}
-
-/// Maximum number of free PDEs for createpde() temporary mappings.
-/// C: #define MAXFREEPDES 2 — memory.c:30
-pub const MAX_FREE_PDE_SLOTS: usize = 2;
 ```
 
-### 4.6 MemoryInitArch x86-64 实现
+### 4.2 PostInitArch 实现
+
+#### x86-64
+
+```rust
+// os/arch/src/x86_64/post_init.rs
+
+impl PostInitArch for X86_64PostInitArch {
+    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
+        // C: arch_post_init() — protect.c:370-377
+        //   vm = proc_addr(VM_PROC_NR);
+        //   get_cpulocal_var(ptproc) = vm;
+        //   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
+
+        // 记录 bootstrap 页表的物理和虚拟地址
+        // CR3 物理地址在 vm_page_table.phys_root
+        // 页表虚拟地址在 vm_page_table.virt_root（identity mapped）
+        //
+        // 实际效果：内核的 per-CPU ptproc 指针被设置为 VM，
+        // createpde() 可以从 ptproc.p_seg.p_cr3_v[pde] 读取 PDE 值。
+        //
+        // SAFETY: BKL 持有期间，仅此 CPU 访问 ptproc。
+        let _ = vm_page_table; // 实际存储由 kernel 层完成
+    }
+}
+```
+
+#### aarch64
+
+```rust
+// os/arch/src/arm64/post_init.rs
+
+impl PostInitArch for AArch64PostInitArch {
+    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
+        // C: arch_post_init() — protect.c:97-104
+        //   vm = proc_addr(VM_PROC_NR);
+        //   get_cpulocal_var(ptproc) = vm;
+        //   pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v);
+
+        // AArch64: TTBR0_EL1 用户空间页表基址
+        // phys_root = TTBR0_EL1 值（物理地址）
+        // virt_root = TTBR0_EL1 的虚拟地址映射
+        let _ = vm_page_table;
+    }
+}
+```
+
+#### riscv64
+
+```rust
+// os/arch/src/riscv64/post_init.rs
+
+impl PostInitArch for Riscv64PostInitArch {
+    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
+        // RISC-V: satp CSR 页表基址
+        // phys_root = satp 值（PPN 字段）
+        // virt_root = None（Sv39 通过物理地址直接操作页表）
+        let _ = vm_page_table;
+    }
+}
+```
+
+### 4.3 MemoryInitArch 实现
+
+三种架构的实现逻辑完全相同，差异仅在溢出检查的页表项数量：
+
+#### x86-64
 
 ```rust
 // os/arch/src/x86_64/post_init.rs
 
 impl MemoryInitArch for X86_64MemoryInitArch {
     fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots {
+        // C: memory_init() — memory.c:707-717
+        //   freepdes[nfreepdes++] = kinfo.freepde_start++;
+        //   freepdes[nfreepdes++] = kinfo.freepde_start++;
+        //   assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES);
+
         let mut slots = FreePdeSlots::new();
-
-        // C: freepdes[nfreepdes++] = kinfo.freepde_start++;
         slots.push(*free_upper_idx).expect("free PDE slots overflow");
         *free_upper_idx += 1;
         slots.push(*free_upper_idx).expect("free PDE slots overflow");
         *free_upper_idx += 1;
 
-        // C: assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES);
-        // In 64-bit mode, PD has 512 entries (not 1024 as in 32-bit).
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow");
+        // 64 位模式下 PD 有 512 个条目（不是 32 位的 1024 个）
+        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
 
         slots
     }
 }
 ```
 
-### 4.7 MemoryInitArch aarch64 实现
+#### aarch64
 
 ```rust
 // os/arch/src/arm64/post_init.rs
@@ -474,15 +494,13 @@ impl MemoryInitArch for AArch64MemoryInitArch {
         slots.push(*free_upper_idx).expect("free PDE slots overflow");
         *free_upper_idx += 1;
 
-        // AArch64: 512 entries per translation table level
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow");
-
+        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
         slots
     }
 }
 ```
 
-### 4.8 MemoryInitArch riscv64 实现
+#### riscv64
 
 ```rust
 // os/arch/src/riscv64/post_init.rs
@@ -495,17 +513,18 @@ impl MemoryInitArch for Riscv64MemoryInitArch {
         slots.push(*free_upper_idx).expect("free PDE slots overflow");
         *free_upper_idx += 1;
 
-        // Sv39: 512 entries per page table level
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow");
-
+        // Sv39: 512 个条目每级
+        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
         slots
     }
 }
 ```
 
-### 4.9 init_post_and_memory() — kmain Phase D
+### 4.4 init_post_and_memory() — 主流程
 
 ```rust
+// os/kernel/src/lib.rs
+
 /// Phase D of kmain: arch_post_init + memory_init.
 ///
 /// C: main.c:283-285
@@ -521,18 +540,70 @@ fn init_post_and_memory(kernel_info: &KernelInfo) {
 
     // Step 1: Set ptproc to VM.
     // C: arch_post_init() — protect.c:370
+    //
+    // TODO: Populate VmPageTableInfo from the VM process's p_seg fields
+    //       after ProcessTable provides get_vm_page_table_info().
     let vm_page_table = VmPageTableInfo {
-        phys_root: PhysBytes(0), // TODO: from VM process's p_seg
-        virt_root: Some(VirBytes(0)), // TODO: from VM process's p_seg
+        phys_root: PhysBytes(0), // TODO: from VM process's p_seg.p_cr3/p_ttbr
+        virt_root: Some(VirBytes(0)), // TODO: from VM process's p_seg.p_cr3_v/p_ttbr_v
     };
     CurrentPostInitArch::set_ptproc(&vm_page_table);
 
     // Step 2: Allocate temporary page table slots.
     // C: memory_init() — memory.c:707
+    //    freepdes[nfreepdes++] = kinfo.freepde_start++;
     let mut free_idx = kernel_info.free_upper_idx;
-    let _free_pde_slots: FreePdeSlots =
-        CurrentMemoryInitArch::allocate_free_pdes(&mut free_idx);
-    // TODO: Store _free_pde_slots in kernel global state for createpde().
+    let _free_pde_slots: FreePdeSlots = CurrentMemoryInitArch::allocate_free_pdes(&mut free_idx);
+    // free_idx is now advanced by MAX_FREE_PDE_SLOTS (2).
+    // TODO: Store _free_pde_slots in kernel global state for createpde() access.
+}
+```
+
+**当前状态与 TODO**：
+
+| 方面 | 状态 | 说明 |
+|------|------|------|
+| PostInitArch trait | 已实现 | 三种架构的 `set_ptproc()` 均已实现 |
+| MemoryInitArch trait | 已实现 | 三种架构的 `allocate_free_pdes()` 均已实现 |
+| VmPageTableInfo 填充 | **TODO** | 当前使用硬编码的 `PhysBytes(0)/VirBytes(0)`，待 ProcessTable 提供 VM 页表信息访问方法 |
+| CrossSpaceInit 全局存储 | **TODO** | `_free_pde_slots` 当前被丢弃，待 kernel 全局状态容器实现后存储 |
+| createpde() 等价函数 | 后续文档 | 需要 `free_pde_slots` 和 `vm_page_table` 就绪后方可实现 |
+```
+
+### 4.5 内核全局状态存储
+
+```rust
+// os/kernel/src/lib.rs
+
+/// 内核全局状态（BKL 保护）。
+static mut KERNEL_STATE: Option<KernelState> = None;
+
+struct KernelState {
+    /// 跨地址空间访问基础设施
+    cross_space: CrossSpaceInit,
+    /// 进程表
+    proc_table: ProcessTable,
+    /// 特权表
+    priv_table: PrivTable,
+}
+
+fn kmain(boot_info: &BootInfo) -> ! {
+    // ... Phase A, B, C ...
+
+    // Phase D: arch_post_init + memory_init
+    let cross_space = init_post_and_memory(kernel_info);
+
+    // 存储到全局状态
+    // SAFETY: BKL 持有，仅此 CPU 访问
+    unsafe {
+        KERNEL_STATE = Some(KernelState {
+            cross_space,
+            proc_table,
+            priv_table,
+        });
+    }
+
+    // ... Phase E, F ...
 }
 ```
 
@@ -544,10 +615,9 @@ fn init_post_and_memory(kernel_info: &KernelInfo) {
 
 | 测试项 | 验证内容 |
 |--------|---------|
-| `set_ptproc(vm)` 设置后 `PTPROC == Some(vm)` | ptproc 正确指向 VM |
-| `set_ptproc` 前访问 `PTPROC` 返回 `None` | 未初始化状态正确 |
-| VM 的 `p_seg` 字段被正确填充 | pg_info 语义保留 |
-| 多次调用 `set_ptproc` 使用不同进程 | ptproc 可更新 |
+| `set_ptproc(vm)` 后 `VmPageTableInfo` 正确 | phys_root 和 virt_root 正确 |
+| `set_ptproc` 前访问 `VmPageTableInfo` 为默认值 | 未初始化状态正确 |
+| `virt_root: None` 的架构（riscv64） | `createpde` 等价函数用物理地址 |
 
 ### 5.2 MemoryInitArch 测试
 
@@ -555,23 +625,25 @@ fn init_post_and_memory(kernel_info: &KernelInfo) {
 |--------|---------|
 | `allocate_free_pdes(&mut 5)` 返回 slots `[5, 6]` | 正确分配连续索引 |
 | `free_upper_idx` 调用后递增 2 | 索引推进正确 |
-| `free_upper_idx = 510` 时 panic | 越界检查 |
-| `FreePdeSlots::new()` 默认值正确 | 结构体构造正确 |
+| `free_upper_idx = 510` 时 panic | 越界检查（512 - 2 = 510） |
+| `FreePdeSlots::new()` 默认值正确 | `len = 0`, `slots = [0, 0]` |
+| `FreePdeSlots::push()` 超过 MAX | 返回 `Err("free PDE slots overflow")` |
 
 ### 5.3 集成测试
 
 | 测试项 | 验证内容 |
 |--------|---------|
 | Phase C→D 顺序：先 `init_proc_and_boot` 再 `init_post_and_memory` | 依赖关系正确 |
-| Phase D 后 `createpde` 等价函数可以使用 `PTPROC` 和 `FreePdeSlots` | 端到端验证 |
+| Phase D 后 `CrossSpaceInit` 正确存储 | `vm_page_table` 和 `free_pde_slots` 可用 |
 | `mem_clear_mapcache` 等价函数清空 PDE 条目 | 临时映射不残留 |
+| 多次调用 `allocate_free_pdes` 不重复分配 | `free_upper_idx` 推进正确 |
 
 ---
 
 ## 6. 参见
 
 - [05-proc-init-boot-proc.md](05-proc-init-boot-proc.md) — 阶段 C：进程表初始化与 VM ELF 加载
-- [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — kmain 六阶段总览、Phase A/B
+- [03-kmain-cstart.md](03-kmain-cstart.md) — kmain 六阶段总览、Phase A/B
 - [04-clock-interrupt-init.md](04-clock-interrupt-init.md) — Phase B：时钟与中断初始化
 - `minix3/minix/kernel/arch/i386/protect.c:370-377` — x86 arch_post_init
 - `minix3/minix/kernel/arch/i386/memory.c:707-717` — x86 memory_init

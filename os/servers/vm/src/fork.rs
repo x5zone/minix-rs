@@ -21,11 +21,11 @@ use alloc::vec::Vec;
 /// region read-only. Corresponds to Minix3 `map_copy_region()` (region.c).
 ///
 /// On `ev_reference` failure, rolls back all previously incremented refcounts
-/// and returns `ForkError`.
+/// and returns `VmForkError`.
 pub(crate) fn fork_region(
     src: &VirRegion,
     frames: &mut PageFrames,
-) -> Result<Box<VirRegion>, ForkError> {
+) -> Result<Box<VirRegion>, VmForkError> {
     let mut dst = VirRegion::new(src.vaddr, src.length, src.flags);
     dst.parent_slot = src.parent_slot;
     dst.def_memtype = src.def_memtype;
@@ -61,7 +61,7 @@ pub(crate) fn fork_region(
                                 }
                             }
                         }
-                        return Err(ForkError::from(e));
+                        return Err(VmForkError::from(e));
                     }
                 }
             }
@@ -77,7 +77,7 @@ pub(crate) fn fork_region(
 pub(crate) fn fork_regions(
     src_regions: &[&VirRegion],
     frames: &mut PageFrames,
-) -> Result<Vec<Box<VirRegion>>, ForkError> {
+) -> Result<Vec<Box<VirRegion>>, VmForkError> {
     let mut dst_regions = Vec::with_capacity(src_regions.len());
     for src in src_regions {
         match fork_region(src, frames) {
@@ -125,20 +125,20 @@ pub(crate) fn do_fork(
     frames: &mut PageFrames,
     parent_endpoint: Endpoint,
     child_slot: UserSlot,
-) -> Result<Endpoint, ForkError> {
+) -> Result<Endpoint, VmForkError> {
     let parent_slot = table
         .vm_isokendpt(parent_endpoint)
-        .map_err(|_| ForkError::InvalidEndpoint)?;
+        .map_err(|_| VmForkError::InvalidEndpoint)?;
 
     let parent = table
         .get_active(parent_slot)
-        .ok_or(ForkError::InvalidSlot)?;
+        .ok_or(VmForkError::InvalidSlot)?;
 
     assert_ne!(parent_slot, child_slot, "parent and child must occupy different slots");
 
     let empty = table
         .get_empty(child_slot)
-        .ok_or(ForkError::SlotInUse)?;
+        .ok_or(VmForkError::SlotInUse)?;
 
     let mut child = empty.activate_relaxed(Endpoint::NONE);
 
@@ -150,7 +150,7 @@ pub(crate) fn do_fork(
     );
     child.copy_acl_from(&parent);
 
-    child.init_page_table().map_err(|_| ForkError::NoMemory)?;
+    child.init_page_table().map_err(|_| VmForkError::NoMemory)?;
     child.init_regions();
 
     let parent_regions: alloc::vec::Vec<&VirRegion> = parent.regions().iter().collect();
@@ -171,8 +171,12 @@ pub(crate) fn do_fork(
 
     // SAFETY: child regions were just copied from parent with shared pages.
     // The page table is freshly created and contains only the pages mapped
-    // during fork_region.
+    // during fork_region. No other thread can access this data (single-threaded
+    // VM event loop model).
     unsafe { child.setup_cow_for_all_regions(frames); }
+    // SAFETY: page table was just populated by setup_cow_for_all_regions.
+    // All mappings point to valid physical frames with correct refcounts.
+    // Single-threaded VM ensures no concurrent modification.
     unsafe { child.write_page_table_mappings(frames); }
 
     let child_endpoint = sys_fork(parent.endpoint(), child.slot());
@@ -207,23 +211,23 @@ fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
 /// Resolve CoW for a single page within a region (fork helper).
 ///
 /// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
-/// `ForkError`.
+/// `VmForkError`.
 pub(crate) fn cow_copy_page(
     region: &mut VirRegion,
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
-) -> Result<(), ForkError> {
+) -> Result<(), VmForkError> {
     cow_resolve_core(region, frames, alloc, offset)
         .map(|_| ())
         .map_err(|e| match e {
-            crate::cow_exec_pf::CowCoreError::NoMemory => ForkError::NoMemory,
-            crate::cow_exec_pf::CowCoreError::PageNotMapped => ForkError::PageNotMapped,
+            crate::cow_exec_pf::CowCoreError::NoMemory => VmForkError::NoMemory,
+            crate::cow_exec_pf::CowCoreError::PageNotMapped => VmForkError::PageNotMapped,
         })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ForkError {
+pub(crate) enum VmForkError {
     InvalidEndpoint,
     InvalidSlot,
     SlotInUse,
@@ -232,7 +236,7 @@ pub(crate) enum ForkError {
     MemType(MemTypeError),
 }
 
-impl From<MemTypeError> for ForkError {
+impl From<MemTypeError> for VmForkError {
     fn from(e: MemTypeError) -> Self {
         Self::MemType(e)
     }
@@ -324,7 +328,7 @@ mod tests {
         struct FailOnRefMemType;
         impl MemType for FailOnRefMemType {
             fn name(&self) -> &'static str { "fail-on-ref" }
-            fn ev_pagefault(&self, _proc: &crate::vmproc::ActiveProc<'_>, _region: &mut VirRegion,
+            fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
                 _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
             ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
             fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
@@ -369,7 +373,7 @@ mod tests {
         struct FailOnSecondRefMemType;
         impl MemType for FailOnSecondRefMemType {
             fn name(&self) -> &'static str { "fail-on-2nd-ref" }
-            fn ev_pagefault(&self, _proc: &crate::vmproc::ActiveProc<'_>, _region: &mut VirRegion,
+            fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
                 _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
             ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
             fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}

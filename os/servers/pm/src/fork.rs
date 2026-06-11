@@ -2,9 +2,9 @@
 //!
 //! Implements core logic of fork system call for PM server.
 
-use minix_types::{Endpoint, UserSlot, PmError, VmRequest, VfsRequest, KernelRequest};
+use minix_types::{Endpoint, UserSlot, PmError, VmForkIn, VfsRequest, KernelRequest};
 use crate::mproc::{ProcTable, Lifecycle};
-use crate::ipc::{send_vm_request, send_vfs_request, send_kernel_request};
+use crate::ipc::{send_vm_fork, send_vfs_request, send_kernel_request};
 
 /// Forks a process.
 ///
@@ -21,13 +21,13 @@ use crate::ipc::{send_vm_request, send_vfs_request, send_kernel_request};
 pub fn handle_fork(
     table: &mut ProcTable,
     parent_endpoint: Endpoint,
-) -> Result<i32, ForkError> {
+) -> Result<i32, ForkCoordError> {
     // 1. Find parent process
     let parent_slot = find_parent_slot(table, parent_endpoint)?;
 
     // 2. Allocate child slot
     let child_slot = table.alloc_slot()
-        .ok_or(ForkError::ProcTableFull)?;
+        .ok_or(ForkCoordError::ProcTableFull)?;
 
     // 3. Generate child PID
     let child_pid = table.pid_generator.get_free_pid(table);
@@ -36,12 +36,11 @@ pub fn handle_fork(
     let child_endpoint = Endpoint::from_generation_slot(1, child_slot as i32);
 
     // 5. Request VM to copy address space
-    let vm_request = VmRequest::Fork {
+    let vm_request = VmForkIn {
         parent_endpoint,
         child_slot: UserSlot::new(child_slot),
-        child_endpoint,
     };
-    send_vm_request(vm_request)?;
+    send_vm_fork(vm_request)?;
 
     // 6. Request VFS to copy file descriptors
     let vfs_request = VfsRequest::Fork {
@@ -68,13 +67,13 @@ pub fn handle_fork(
 fn find_parent_slot(
     table: &ProcTable,
     endpoint: Endpoint,
-) -> Result<usize, ForkError> {
+) -> Result<usize, ForkCoordError> {
     for (i, proc) in table.procs.iter().enumerate() {
         if proc.endpoint() == endpoint && proc.is_in_use() {
             return Ok(i);
         }
     }
-    Err(ForkError::InvalidEndpoint)
+    Err(ForkCoordError::InvalidEndpoint)
 }
 
 /// Fork-inheritable flags mask.
@@ -156,9 +155,13 @@ fn copy_mproc(
     child.resources.intervals = [0; crate::mproc::NR_ITIMERS];
 }
 
-/// Fork error type.
+/// Fork coordination error type.
+///
+/// This error type covers the IPC coordination phase of fork (communicating
+/// with VM, VFS, and Kernel). Distinct from `mproc::fork::ForkError` which
+/// covers the slot allocation phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForkError {
+pub enum ForkCoordError {
     /// Parent process not found.
     NoProc,
     /// Out of memory.
@@ -177,17 +180,17 @@ pub enum ForkError {
     KernelError,
 }
 
-impl From<ForkError> for PmError {
-    fn from(e: ForkError) -> Self {
+impl From<ForkCoordError> for PmError {
+    fn from(e: ForkCoordError) -> Self {
         match e {
-            ForkError::NoProc => PmError::InvalidEndpoint,
-            ForkError::NoMem => PmError::OutOfMemory,
-            ForkError::InvalidEndpoint => PmError::InvalidEndpoint,
-            ForkError::ProcTableFull => PmError::ProcTableFull,
-            ForkError::SlotInUse => PmError::SlotInUse,
-            ForkError::VmError => PmError::InternalError,
-            ForkError::VfsError => PmError::InternalError,
-            ForkError::KernelError => PmError::InternalError,
+            ForkCoordError::NoProc => PmError::InvalidEndpoint,
+            ForkCoordError::NoMem => PmError::OutOfMemory,
+            ForkCoordError::InvalidEndpoint => PmError::InvalidEndpoint,
+            ForkCoordError::ProcTableFull => PmError::ProcTableFull,
+            ForkCoordError::SlotInUse => PmError::SlotInUse,
+            ForkCoordError::VmError => PmError::InternalError,
+            ForkCoordError::VfsError => PmError::InternalError,
+            ForkCoordError::KernelError => PmError::InternalError,
         }
     }
 }
@@ -242,6 +245,6 @@ mod tests {
 
         let result = handle_fork(&mut table, Endpoint::from_generation_slot(1, 0));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ForkError::InvalidEndpoint);
+        assert_eq!(result.unwrap_err(), ForkCoordError::InvalidEndpoint);
     }
 }

@@ -14,7 +14,10 @@
 
 use minix_types::VirBytes;
 use minix_boot::{BootModule, KernelInfo};
-use crate::proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
+use crate::proc_arch::{
+    ArchProcReset, ArchProcInit, BootProcArch,
+    InitialRegState, InitialRegs, SegmentSelectors, VmLoadResult,
+};
 use crate::paging::Paging;
 
 /// x86-64 process architecture implementation.
@@ -59,6 +62,7 @@ const USER_DS_SELECTOR: u64 = 0x23; // GDT index 4, RPL=3
 
 /// VM process number.
 /// C: VM_PROC_NR — minix/com.h:67
+#[allow(dead_code)]
 const VM_PROC_NR: i32 = 8;
 
 /// Default user stack size for VM (64 KB).
@@ -66,47 +70,48 @@ const VM_PROC_NR: i32 = 8;
 const VM_STACK_SIZE: usize = 64 * 1024;
 
 impl ArchProcReset for X86_64ProcArch {
-    fn reset(is_kernel: bool, proc_nr: i32) {
+    fn initial_reg_state(is_kernel: bool, proc_nr: i32) -> InitialRegState {
         // C: arch_system.c:146-192
         //
-        // In the C version, arch_proc_reset:
-        // 1. Zeroes FPU state for user processes (p_nr >= 0)
-        // 2. Clears register state (memset &reg, 0)
-        // 3. Sets PSW based on kernel/user type
-        // 4. Sets segment selectors to USER mode
-        // 5. Calls arch_proc_setcontext with KTS_FULLCONTEXT
+        // arch_proc_reset(pr):
+        // 1. For user processes (p_nr >= 0): zero FPU state
+        // 2. Clear register state (memset &reg, 0)
+        // 3. Set PSW based on kernel/user type:
+        //    - Kernel: INIT_TASK_PSW (0x1200, 32-bit; 0x1202, 64-bit)
+        //    - User:   INIT_PSW      (0x0200, 32-bit; 0x0202, 64-bit)
+        // 4. Set segment selectors: CS=USER_CS_SELECTOR, rest=USER_DS_SELECTOR
+        // 5. arch_proc_setcontext(pr, &reg, 0, KTS_FULLCONTEXT)
         //
-        // In Rust, the KProcess::new() constructor already initializes
-        // all fields to safe defaults. This function handles only the
-        // architecture-specific register state that needs to be set
-        // differently for kernel tasks vs user processes.
-        //
-        // The actual register state is stored in the trap frame
-        // (exception frame), which is populated when the process
-        // is first scheduled. The values set here are logical
-        // defaults that arch_proc_init will override.
+        // In Rust, we return the initial register state as a pure value.
+        // The kernel layer applies it to the process's trap frame.
 
-        let _ = (is_kernel, proc_nr);
-        // Register state defaults:
-        // - psw: INIT_PSW (user) or INIT_TASK_PSW (kernel)
-        // - cs: USER_CS_SELECTOR
-        // - ds/ss/es/fs/gs: USER_DS_SELECTOR
-        // - FPU state: zeroed for user processes
-        //
-        // These are applied when the process's trap frame is
-        // initialized by the exception entry code.
+        let _ = proc_nr;
+        let status = if is_kernel { INIT_TASK_PSW } else { INIT_PSW };
+        let fpu_needs_zero = !is_kernel; // C: user processes only (p_nr >= 0)
+
+        InitialRegState {
+            status,
+            segment_selectors: SegmentSelectors {
+                cs: USER_CS_SELECTOR,
+                ds: USER_DS_SELECTOR,
+                ss: USER_DS_SELECTOR,
+                es: USER_DS_SELECTOR,
+                fs: USER_DS_SELECTOR,
+                gs: USER_DS_SELECTOR,
+            },
+            fpu_needs_zero,
+        }
     }
 }
 
 impl ArchProcInit for X86_64ProcArch {
-    fn init(
+    fn init_regs(
         is_kernel: bool,
         proc_nr: i32,
         pc: VirBytes,
         sp: VirBytes,
         ps_strings: VirBytes,
-        name: &str,
-    ) {
+    ) -> InitialRegs {
         // C: memory.c:722-733
         //
         // arch_proc_init(pr, ip, sp, ps_str, name):
@@ -114,19 +119,19 @@ impl ArchProcInit for X86_64ProcArch {
         //   strlcpy(pr->p_name, name, sizeof(pr->p_name));
         //   pr->p_reg.pc = ip;
         //   pr->p_reg.sp = sp;
-        //   pr->p_reg.bx = ps_str;   // x86-64: ebx = ps_strings
+        //   pr->p_reg.bx = ps_str;   // x86-64: rbx = ps_strings
         //
-        // In Rust, the process struct is updated in place.
-        // The register state is stored in the trap frame.
+        // In Rust, we return the PC, SP, and ps_strings register values.
+        // The kernel layer calls ArchProcReset::initial_reg_state() first,
+        // then applies these values on top. The process name is set by the
+        // kernel layer (not arch responsibility).
 
-        Self::reset(is_kernel, proc_nr);
-
-        let _ = (pc, sp, ps_strings, name);
-        // Set process register state:
-        // - rip = pc (entry point)
-        // - rsp = sp (stack pointer)
-        // - rbx = ps_strings (argument to C runtime)
-        // - p_name = name
+        let _ = (is_kernel, proc_nr);
+        InitialRegs {
+            pc,                          // rip
+            sp,                          // rsp
+            ps_strings_reg: ps_strings.0, // rbx
+        }
     }
 }
 

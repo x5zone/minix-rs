@@ -13,7 +13,7 @@
 02-page-table-kernel.md 当前以**运行时机制**（createpde/lin_lin_copy/vm_memset/vm_lookup）为主体内容，
 但这些机制在 `kmain()` → `bsp_finish_booting()` → `switch_to_user()` → VM running 之后才生效。
 
-而 01-multiboot-bootstrap.md 结束于 `vm_enable_paging()`（分页开启）。读者在看完 01 后期待的是**boot 的延续**，
+而 01-boot-shim-bootstrap.md 结束于 `vm_enable_paging()`（分页开启）。读者在看完 01 后期待的是**boot 的延续**，
 而不是一个"已就绪系统中的运行时机制"。这就形成了叙事断裂——00-kernel-overview.md 承诺的"严格线性 boot 过程"
 在 01→02 之间断开。
 
@@ -344,7 +344,7 @@ fn load_segments(elf_bytes: &[u8], kern_virt_base: u64, kern_phys_base: u64)
 
 | 文档 | 当前问题 | 目标 |
 |------|---------|------|
-| **01-multiboot-bootstrap.md** | 缺 Rust 差异说明 | 加 §1.6: 无栈切换（UEFI 不需要）+ 高地址跳转待实现 |
+| **01-boot-shim-bootstrap.md** | 缺 Rust 差异说明 | 加 §1.6: 无栈切换（UEFI 不需要）+ 高地址跳转待实现 |
 | **02-page-table-kernel.md** | 运行时机制被当作 boot 续篇 | 开头声明"本文机制在 VM running 后才生效"；boot 阶段的页表操作移到 17-main-init |
 | **17-main-init.md** | 参考资料式平铺 | 重构为时间线叙事：kmain→cstart→proc_init→arch_post_init→memory_init→bsp_finish_booting |
 | **新增: 01b-bridge-to-kmain.md** | 可选 | 独立说明链接脚本、AT()、栈切换、ELF 加载机制（约 200-300 行） |
@@ -414,7 +414,7 @@ fn load_segments(elf_bytes: &[u8], kern_virt_base: u64, kern_phys_base: u64)
 - [ ] **KernelInfo.boot_modules**：填充 boot 模块的物理地址列表
 - [ ] **kmain() 实现**：空 `loop {}` 替换为真正的 boot 延续
 - [ ] **17-main-init.md 重构**：时间线叙事重写
-- [ ] **01-multiboot-bootstrap.md 补充**：加 Rust 差异说明
+- [ ] **01-boot-shim-bootstrap.md 补充**：加 Rust 差异说明
 - [ ] **02-page-table-kernel.md 声明**：加叙事定位说明
 
 ---
@@ -423,7 +423,7 @@ fn load_segments(elf_bytes: &[u8], kern_virt_base: u64, kern_phys_base: u64)
 
 ### 8.1 从 02 开始的文档已全部加 `tmp-` 前缀
 
-原 02~21 号文档（保留 02-todo、02-design、99-global-concepts、00-overview、01-multiboot-bootstrap) 均已加上 `tmp-` 前缀。
+原 02~21 号文档（保留 02-todo、02-design、99-global-concepts、00-overview、01-boot-shim-bootstrap) 均已加上 `tmp-` 前缀。
 这些文档内容本身没有错误，但叙事顺序不符合线性 boot 过程。暂不删除，作为参考资料。
 
 ### 8.2 新的线性文档映射

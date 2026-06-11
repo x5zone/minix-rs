@@ -67,48 +67,109 @@ pub mod proc_nr {
     pub const CLOCK: ProcNr = -3;
     pub const SYSTEM: ProcNr = -2;
     pub const KERNEL: ProcNr = -1;
+
+    // Boot image user process numbers.
+    // C: minix/com.h: PM_PROC_NR=0, RS_PROC_NR=1, VM_PROC_NR=8
+    pub const RS_PROC_NR: ProcNr = 1;
+    pub const VM_PROC_NR: ProcNr = 8;
 }
 
-/// Runtime status flags.
+/// Boot image dimensions.
+/// C: minix/param.h: NR_BOOT_PROCS = NR_TASKS + LAST_SPECIAL_PROC_NR + 1
+///    minix/com.h:  NR_BOOT_MODULES = INIT_PROC_NR + 1 (user-space modules only)
+pub const NR_BOOT_MODULES: usize = 12;
+pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RtsFlagsBits: u32 {
+        const SLOT_FREE = 0x01;
+        const PROC_STOP = 0x02;
+        const SENDING = 0x04;
+        const RECEIVING = 0x08;
+        const SIGNALED = 0x10;
+        const SIG_PENDING = 0x20;
+        const P_STOP = 0x40;
+        const NO_PRIV = 0x80;
+        const NO_ENDPOINT = 0x100;
+        const VMINHIBIT = 0x200;
+        const PAGEFAULT = 0x400;
+        const VMREQUEST = 0x800;
+        const VMREQTARGET = 0x1000;
+        const PREEMPTED = 0x4000;
+        const NO_QUANTUM = 0x8000;
+        const BOOTINHIBIT = 0x10000;
+    }
+}
+
+/// Legacy rts constants for backward compatibility during migration.
+/// Prefer using `RtsFlagsBits::SLOT_FREE` etc. directly.
 pub mod rts {
-    pub const SLOT_FREE: u32 = 0x01;
-    pub const PROC_STOP: u32 = 0x02;
-    pub const SENDING: u32 = 0x04;
-    pub const RECEIVING: u32 = 0x08;
-    pub const SIGNALED: u32 = 0x10;
-    pub const SIG_PENDING: u32 = 0x20;
-    pub const P_STOP: u32 = 0x40;
-    pub const NO_PRIV: u32 = 0x80;
-    pub const NO_ENDPOINT: u32 = 0x100;
-    pub const VMINHIBIT: u32 = 0x200;
-    pub const PAGEFAULT: u32 = 0x400;
-    pub const VMREQUEST: u32 = 0x800;
-    pub const VMREQTARGET: u32 = 0x1000;
-    pub const PREEMPTED: u32 = 0x4000;
-    pub const NO_QUANTUM: u32 = 0x8000;
-    pub const BOOTINHIBIT: u32 = 0x10000;
+    pub use super::RtsFlagsBits;
+    pub const SLOT_FREE: u32 = super::RtsFlagsBits::SLOT_FREE.bits();
+    pub const PROC_STOP: u32 = super::RtsFlagsBits::PROC_STOP.bits();
+    pub const SENDING: u32 = super::RtsFlagsBits::SENDING.bits();
+    pub const RECEIVING: u32 = super::RtsFlagsBits::RECEIVING.bits();
+    pub const SIGNALED: u32 = super::RtsFlagsBits::SIGNALED.bits();
+    pub const SIG_PENDING: u32 = super::RtsFlagsBits::SIG_PENDING.bits();
+    pub const P_STOP: u32 = super::RtsFlagsBits::P_STOP.bits();
+    pub const NO_PRIV: u32 = super::RtsFlagsBits::NO_PRIV.bits();
+    pub const NO_ENDPOINT: u32 = super::RtsFlagsBits::NO_ENDPOINT.bits();
+    pub const VMINHIBIT: u32 = super::RtsFlagsBits::VMINHIBIT.bits();
+    pub const PAGEFAULT: u32 = super::RtsFlagsBits::PAGEFAULT.bits();
+    pub const VMREQUEST: u32 = super::RtsFlagsBits::VMREQUEST.bits();
+    pub const VMREQTARGET: u32 = super::RtsFlagsBits::VMREQTARGET.bits();
+    pub const PREEMPTED: u32 = super::RtsFlagsBits::PREEMPTED.bits();
+    pub const NO_QUANTUM: u32 = super::RtsFlagsBits::NO_QUANTUM.bits();
+    pub const BOOTINHIBIT: u32 = super::RtsFlagsBits::BOOTINHIBIT.bits();
 }
 
-/// Miscellaneous flags.
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MiscFlagsBits: u32 {
+        const REPLY_PEND = 0x001;
+        const VIRT_TIMER = 0x002;
+        const PROF_TIMER = 0x004;
+        const KCALL_RESUME = 0x008;
+        const DELIVERMSG = 0x040;
+        const SIG_DELAY = 0x080;
+        const SC_ACTIVE = 0x100;
+        const SC_DEFER = 0x200;
+        const SC_TRACE = 0x400;
+        const EXT_REG_INITIALIZED = 0x1000;
+        const SENDING_FROM_KERNEL = 0x2000;
+        const CONTEXT_SET = 0x4000;
+        const SPROF_SEEN = 0x8000;
+        const FLUSH_TLB = 0x10000;
+        const SENDA_VM_MISS = 0x20000;
+        const STEP = 0x40000;
+        const MSGFAILED = 0x80000;
+        const NICED = 0x100000;
+    }
+}
+
+/// Legacy mf constants for backward compatibility during migration.
+/// Prefer using `MiscFlagsBits::REPLY_PEND` etc. directly.
 pub mod mf {
-    pub const REPLY_PEND: u32 = 0x001;
-    pub const VIRT_TIMER: u32 = 0x002;
-    pub const PROF_TIMER: u32 = 0x004;
-    pub const KCALL_RESUME: u32 = 0x008;
-    pub const DELIVERMSG: u32 = 0x040;
-    pub const SIG_DELAY: u32 = 0x080;
-    pub const SC_ACTIVE: u32 = 0x100;
-    pub const SC_DEFER: u32 = 0x200;
-    pub const SC_TRACE: u32 = 0x400;
-    pub const EXT_REG_INITIALIZED: u32 = 0x1000;
-    pub const SENDING_FROM_KERNEL: u32 = 0x2000;
-    pub const CONTEXT_SET: u32 = 0x4000;
-    pub const SPROF_SEEN: u32 = 0x8000;
-    pub const FLUSH_TLB: u32 = 0x10000;
-    pub const SENDA_VM_MISS: u32 = 0x20000;
-    pub const STEP: u32 = 0x40000;
-    pub const MSGFAILED: u32 = 0x80000;
-    pub const NICED: u32 = 0x100000;
+    pub use super::MiscFlagsBits;
+    pub const REPLY_PEND: u32 = super::MiscFlagsBits::REPLY_PEND.bits();
+    pub const VIRT_TIMER: u32 = super::MiscFlagsBits::VIRT_TIMER.bits();
+    pub const PROF_TIMER: u32 = super::MiscFlagsBits::PROF_TIMER.bits();
+    pub const KCALL_RESUME: u32 = super::MiscFlagsBits::KCALL_RESUME.bits();
+    pub const DELIVERMSG: u32 = super::MiscFlagsBits::DELIVERMSG.bits();
+    pub const SIG_DELAY: u32 = super::MiscFlagsBits::SIG_DELAY.bits();
+    pub const SC_ACTIVE: u32 = super::MiscFlagsBits::SC_ACTIVE.bits();
+    pub const SC_DEFER: u32 = super::MiscFlagsBits::SC_DEFER.bits();
+    pub const SC_TRACE: u32 = super::MiscFlagsBits::SC_TRACE.bits();
+    pub const EXT_REG_INITIALIZED: u32 = super::MiscFlagsBits::EXT_REG_INITIALIZED.bits();
+    pub const SENDING_FROM_KERNEL: u32 = super::MiscFlagsBits::SENDING_FROM_KERNEL.bits();
+    pub const CONTEXT_SET: u32 = super::MiscFlagsBits::CONTEXT_SET.bits();
+    pub const SPROF_SEEN: u32 = super::MiscFlagsBits::SPROF_SEEN.bits();
+    pub const FLUSH_TLB: u32 = super::MiscFlagsBits::FLUSH_TLB.bits();
+    pub const SENDA_VM_MISS: u32 = super::MiscFlagsBits::SENDA_VM_MISS.bits();
+    pub const STEP: u32 = super::MiscFlagsBits::STEP.bits();
+    pub const MSGFAILED: u32 = super::MiscFlagsBits::MSGFAILED.bits();
+    pub const NICED: u32 = super::MiscFlagsBits::NICED.bits();
 }
 
 /// Priority range constants.
@@ -121,12 +182,106 @@ pub mod priority {
 }
 
 /// Runtime status flags (wraps atomic operations).
+///
+/// Uses `RtsFlagsBits` bitflags internally for type-safe flag values.
+/// The atomic wrapper allows lock-free reads from interrupt context
+/// (BKL may not be held during timer interrupts).
 #[derive(Debug)]
 pub struct RtsFlags(AtomicU32);
 
+impl RtsFlags {
+    pub fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    pub fn with(flags: RtsFlagsBits) -> Self {
+        Self(AtomicU32::new(flags.bits()))
+    }
+
+    /// Check if a specific flag is set.
+    pub fn is_set(&self, flag: RtsFlagsBits) -> bool {
+        (self.0.load(Ordering::Acquire) & flag.bits()) != 0
+    }
+
+    /// Set specific flags.
+    pub fn set(&self, flags: RtsFlagsBits) {
+        self.0.fetch_or(flags.bits(), Ordering::AcqRel);
+    }
+
+    /// Clear specific flags.
+    pub fn unset(&self, flags: RtsFlagsBits) {
+        self.0.fetch_and(!flags.bits(), Ordering::AcqRel);
+    }
+
+    /// Get all flags as RtsFlagsBits.
+    pub fn get(&self) -> RtsFlagsBits {
+        RtsFlagsBits::from_bits_truncate(self.0.load(Ordering::Acquire))
+    }
+
+    /// Set raw value (for initialization only).
+    pub fn set_raw(&self, value: u32) {
+        self.0.store(value, Ordering::Release);
+    }
+}
+
+impl Default for RtsFlags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Miscellaneous flags (wraps atomic operations).
+///
+/// Uses `MiscFlagsBits` bitflags internally for type-safe flag values.
 #[derive(Debug)]
 pub struct MiscFlags(AtomicU32);
+
+impl MiscFlags {
+    pub fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    /// Check if a specific flag is set.
+    pub fn is_set(&self, flag: MiscFlagsBits) -> bool {
+        (self.0.load(Ordering::Acquire) & flag.bits()) != 0
+    }
+
+    /// Set specific flags.
+    pub fn set(&self, flags: MiscFlagsBits) {
+        self.0.fetch_or(flags.bits(), Ordering::AcqRel);
+    }
+
+    /// Clear specific flags.
+    pub fn unset(&self, flags: MiscFlagsBits) {
+        self.0.fetch_and(!flags.bits(), Ordering::AcqRel);
+    }
+
+    /// Alias for `unset()`. Clears specific flags.
+    pub fn clear(&self, flags: MiscFlagsBits) {
+        self.unset(flags);
+    }
+
+    /// Get all flags as MiscFlagsBits.
+    pub fn get(&self) -> MiscFlagsBits {
+        MiscFlagsBits::from_bits_truncate(self.0.load(Ordering::Acquire))
+    }
+
+    /// Create from raw flags.
+    pub fn with(flags: MiscFlagsBits) -> Self {
+        Self(AtomicU32::new(flags.bits()))
+    }
+
+    /// Load raw value.
+    pub fn load(&self) -> u32 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl Default for MiscFlags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Priority newtype (wraps validity check).
 ///
@@ -546,8 +701,34 @@ pub struct KProcess {
     /// C: `p_vmrequest` anonymous struct (always embedded, validity controlled by RTS_VMREQUEST).
     /// Design decision: §3.5 (Option replaces always-embedded struct + RTS_VMREQUEST flag).
     ///
-    /// Invariant: `p_rts_flags.is_set(rts::VMREQUEST) <==> p_vm_suspend.is_some()`
+    /// Invariant: `p_rts_flags.is_set(RtsFlagsBits::VMREQUEST) <==> p_vm_suspend.is_some()`
     pub p_vm_suspend: Option<VmSuspendContext>,
+
+    // ── Boot-time initial register state (05-proc-init-boot-proc.md §3.2, §3.3) ──
+    //
+    /// Initial PC (program counter / instruction pointer).
+    /// Set by `arch_boot_proc` / `arch_proc_init`. Consumed by the scheduler
+    /// when setting up the trap frame for first-run processes.
+    /// C: `pr->p_reg.pc` — protect.c:445 (x86), protect.c:169 (ARM)
+    pub initial_pc: VirBytes,
+
+    /// Initial SP (stack pointer).
+    /// Set by `arch_boot_proc` / `arch_proc_init`. Consumed by the scheduler
+    /// when setting up the trap frame for first-run processes.
+    /// C: `pr->p_reg.sp` — protect.c:446 (x86), protect.c:170 (ARM)
+    pub initial_sp: VirBytes,
+
+    /// Initial ps_strings register value (arch-specific: rbx on x86-64,
+    /// r0 on aarch64, a0 on riscv64). Points to the argument string block
+    /// set up by the kernel for the C runtime's crt0.
+    /// C: `pr->p_reg.bx` (x86), `pr->p_reg.retreg` (ARM) — protect.c:447/171
+    pub initial_ps_strings_reg: u64,
+
+    /// Initial status register value (PSW on x86-64, PSR on aarch64,
+    /// sstatus on riscv64). Set by `arch_proc_reset` and consumed by
+    /// the scheduler when setting up the trap frame.
+    /// C: `pr->p_reg.psw` (x86), `pr->p_reg.psr` (ARM) — arch_system.c:180/57
+    pub initial_status: u64,
 }
 
 /// Maximum process name length (including trailing \0).
@@ -669,10 +850,6 @@ impl SigSet {
 }
 
 impl RtsFlags {
-    pub fn new(value: u32) -> Self {
-        Self(AtomicU32::new(value))
-    }
-
     pub fn load(&self) -> u32 {
         self.0.load(Ordering::Acquire)
     }
@@ -685,41 +862,11 @@ impl RtsFlags {
         self.load() == 0
     }
 
-    pub fn is_set(&self, flags: u32) -> bool {
-        (self.load() & flags) == flags
-    }
-
     // TODO: RTS_SET/RTS_UNSET in Minix3 also call dequeue/enqueue when
     // the process transitions between runnable/non-runnable. Once the
     // scheduler is implemented, these methods need scheduling integration.
-    pub fn set(&self, flags: u32) {
-        self.0.fetch_or(flags, Ordering::AcqRel);
-    }
-
-    pub fn clear(&self, flags: u32) {
-        self.0.fetch_and(!flags, Ordering::AcqRel);
-    }
-}
-
-impl MiscFlags {
-    pub fn new(value: u32) -> Self {
-        Self(AtomicU32::new(value))
-    }
-
-    pub fn load(&self) -> u32 {
-        self.0.load(Ordering::Acquire)
-    }
-
-    pub fn is_set(&self, flags: u32) -> bool {
-        (self.load() & flags) == flags
-    }
-
-    pub fn set(&self, flags: u32) {
-        self.0.fetch_or(flags, Ordering::AcqRel);
-    }
-
-    pub fn clear(&self, flags: u32) {
-        self.0.fetch_and(!flags, Ordering::AcqRel);
+    pub fn clear(&self, flags: RtsFlagsBits) {
+        self.0.fetch_and(!flags.bits(), Ordering::AcqRel);
     }
 }
 
@@ -728,8 +875,8 @@ impl KProcess {
         Self {
             p_nr: nr,
             p_endpoint: endpoint,
-            p_rts_flags: RtsFlags::new(rts::SLOT_FREE),
-            p_misc_flags: MiscFlags::new(0),
+            p_rts_flags: RtsFlags::with(RtsFlagsBits::SLOT_FREE),
+            p_misc_flags: MiscFlags::new(),
             p_sched: SchedFields::new(),
             p_accounting: Accounting::new(),
             p_time: TimeStats::new(),
@@ -751,6 +898,10 @@ impl KProcess {
             p_next_restart: None,
             p_next_requestor: None,
             p_vm_suspend: None,
+            initial_pc: VirBytes::new(0),
+            initial_sp: VirBytes::new(0),
+            initial_ps_strings_reg: 0,
+            initial_status: 0,
         }
     }
 
@@ -784,13 +935,46 @@ impl KProcess {
     }
 
     pub fn blocked_on(&self) -> Option<Endpoint> {
-        if self.p_rts_flags.is_set(rts::SENDING) {
+        if self.p_rts_flags.is_set(RtsFlagsBits::SENDING) {
             Some(self.p_sendto_e)
-        } else if self.p_rts_flags.is_set(rts::RECEIVING) {
+        } else if self.p_rts_flags.is_set(RtsFlagsBits::RECEIVING) {
             Some(self.p_getfrom_e)
         } else {
             None
         }
+    }
+
+    // ── Boot-time initial register state setters (05-proc-init-boot-proc.md §3.2, §3.3) ──
+
+    /// Set process name. Corresponds to C's `strlcpy(rp->p_name, name, ...)`.
+    /// C: main.c:170, protect.c:441
+    pub fn set_boot_name(&mut self, name: &str) {
+        self.p_name = ProcName::from_str(name);
+    }
+
+    /// Set initial register state returned by `ArchProcReset::initial_reg_state()`.
+    ///
+    /// Stores the architecture-specific initial status register (PSW/PSR/sstatus)
+    /// and segment selectors (x86-64 only; zeroed on other archs).
+    ///
+    /// C: `arch_proc_reset(pr)` — arch_system.c:146-192 (x86), arch_system.c:42-60 (ARM)
+    pub fn set_boot_initial_reg_state(&mut self, status: u64, _fpu_needs_zero: bool) {
+        self.initial_status = status;
+        // FPU zeroing is handled by the arch layer when setting up the trap frame.
+        // On x86-64, fpu_needs_zero=true means the arch layer zeros the FPU save area
+        // in the exception frame before first execution.
+        // On aarch64/riscv64, FPU is lazily initialized (fpu_needs_zero is always false).
+        let _ = _fpu_needs_zero;
+    }
+
+    /// Set PC, SP, and ps_strings register values returned by `ArchProcInit::init_regs()`.
+    ///
+    /// C: `pr->p_reg.pc = ip; pr->p_reg.sp = sp; pr->p_reg.bx = ps_str;`
+    ///    — protect.c:445-447 (x86), protect.c:169-171 (ARM)
+    pub fn set_boot_pc_sp(&mut self, pc: VirBytes, sp: VirBytes, ps_strings_reg: u64) {
+        self.initial_pc = pc;
+        self.initial_sp = sp;
+        self.initial_ps_strings_reg = ps_strings_reg;
     }
 
     // ── VM suspend/resume methods (03-vm-request.md §3.5, §3.9, §3.10) ──
@@ -812,7 +996,7 @@ impl KProcess {
         params: VmCheckParams,
         saved_msg: Option<Message>,
     ) {
-        debug_assert!(!self.p_rts_flags.is_set(rts::VMREQUEST));
+        debug_assert!(!self.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
         debug_assert!(self.p_vm_suspend.is_none());
 
         self.p_vm_suspend = Some(VmSuspendContext {
@@ -824,7 +1008,7 @@ impl KProcess {
             copy_context: None,
         });
 
-        self.p_rts_flags.set(rts::VMREQUEST);
+        self.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
     }
 
     /// Suspend this process for a VM memory request with cross-space copy context.
@@ -841,7 +1025,7 @@ impl KProcess {
         saved_msg: Option<Message>,
         copy_ctx: VmCopyContext,
     ) {
-        debug_assert!(!self.p_rts_flags.is_set(rts::VMREQUEST));
+        debug_assert!(!self.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
         debug_assert!(self.p_vm_suspend.is_none());
 
         self.p_vm_suspend = Some(VmSuspendContext {
@@ -853,7 +1037,7 @@ impl KProcess {
             copy_context: Some(copy_ctx),
         });
 
-        self.p_rts_flags.set(rts::VMREQUEST);
+        self.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
     }
 
     /// Clear VM suspend state for this process.
@@ -868,14 +1052,14 @@ impl KProcess {
     /// (system.c:635) after the kernel call is re-executed.
     pub fn clear_vm_suspend(&mut self) {
         self.p_vm_suspend = None;
-        self.p_rts_flags.clear(rts::VMREQUEST);
+        self.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
     }
 
     /// Check if this process is suspended waiting for a VM memory request.
     ///
     /// C: `RTS_ISSET(p, RTS_VMREQUEST)`
     pub fn is_vm_suspended(&self) -> bool {
-        self.p_rts_flags.is_set(rts::VMREQUEST)
+        self.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST)
     }
 
     /// Get a reference to the VM suspend context.
@@ -918,19 +1102,19 @@ impl KProcess {
         // RTS_SET(rpc, RTS_NO_QUANTUM) — child not runnable until scheduled
         // RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP) — no signal inheritance
         let child_rts = {
-            let flags = parent.p_rts_flags.load();
-            let flags = flags | rts::NO_QUANTUM;
-            let flags = flags & !(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP | rts::VMREQUEST);
-            RtsFlags::new(flags)
+            let flags = parent.p_rts_flags.get();
+            let flags = flags | RtsFlagsBits::NO_QUANTUM;
+            let flags = flags & !(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP | RtsFlagsBits::VMREQUEST);
+            RtsFlags::with(flags)
         };
 
         // Copy p_misc_flags then clear timer/trace flags:
         // rpc->p_misc_flags &= ~(MF_VIRT_TIMER | MF_PROF_TIMER | MF_SC_TRACE | MF_SPROF_SEEN | MF_STEP)
         let child_mf = {
-            let flags = parent.p_misc_flags.load();
+            let flags = parent.p_misc_flags.get();
             let flags = flags
-                & !(mf::VIRT_TIMER | mf::PROF_TIMER | mf::SC_TRACE | mf::SPROF_SEEN | mf::STEP);
-            MiscFlags::new(flags)
+                & !(MiscFlagsBits::VIRT_TIMER | MiscFlagsBits::PROF_TIMER | MiscFlagsBits::SC_TRACE | MiscFlagsBits::SPROF_SEEN | MiscFlagsBits::STEP);
+            MiscFlags::with(flags)
         };
 
         let mut child = Self {
@@ -971,15 +1155,19 @@ impl KProcess {
             // C: fork copies p_vmrequest but child never has RTS_VMREQUEST set
             p_next_requestor: None,
             p_vm_suspend: None,
+            initial_pc: VirBytes::new(0),
+            initial_sp: VirBytes::new(0),
+            initial_ps_strings_reg: 0,
+            initial_status: 0,
         };
 
         // Copy extended register state if parent has initialized it
         // Corresponds to Minix3's FPU copy on i386:
         //   if(proc_used_fpu(rpp))
         //       memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state, FPU_XFP_SIZE);
-        if parent.p_misc_flags.is_set(mf::EXT_REG_INITIALIZED) {
+        if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
             child.p_ext_reg_state = parent.p_ext_reg_state.clone();
-            child.p_misc_flags.set(mf::EXT_REG_INITIALIZED);
+            child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
         }
 
         child
@@ -1011,7 +1199,7 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
     //       rpc->p_rts_flags |= RTS_NO_PRIV;
     //   }
     if parent_is_sys_proc {
-        child.p_rts_flags.set(rts::NO_PRIV);
+        child.p_rts_flags.set(RtsFlagsBits::NO_PRIV);
     }
 
     // Set VMINHIBIT if requested
@@ -1020,7 +1208,7 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
     //       RTS_SET(rpc, RTS_VMINHIBIT);
     //   }
     if flags & fork_flags::VMINHIBIT != 0 {
-        child.p_rts_flags.set(rts::VMINHIBIT);
+        child.p_rts_flags.set(RtsFlagsBits::VMINHIBIT);
     }
 
     // Add "*F" suffix to process name
@@ -1037,28 +1225,28 @@ mod tests {
 
     #[test]
     fn test_rts_flags_runnable() {
-        let flags = RtsFlags::new(0);
+        let flags = RtsFlags::new();
         assert!(flags.is_runnable());
 
-        flags.set(rts::PROC_STOP);
+        flags.set(RtsFlagsBits::PROC_STOP);
         assert!(!flags.is_runnable());
 
-        flags.clear(rts::PROC_STOP);
+        flags.clear(RtsFlagsBits::PROC_STOP);
         assert!(flags.is_runnable());
     }
 
     #[test]
     fn test_rts_flags_multiple() {
-        let flags = RtsFlags::new(0);
-        flags.set(rts::SENDING | rts::RECEIVING);
+        let flags = RtsFlags::new();
+        flags.set(RtsFlagsBits::SENDING | RtsFlagsBits::RECEIVING);
 
-        assert!(flags.is_set(rts::SENDING));
-        assert!(flags.is_set(rts::RECEIVING));
+        assert!(flags.is_set(RtsFlagsBits::SENDING));
+        assert!(flags.is_set(RtsFlagsBits::RECEIVING));
         assert!(!flags.is_runnable());
 
-        flags.clear(rts::SENDING);
-        assert!(!flags.is_set(rts::SENDING));
-        assert!(flags.is_set(rts::RECEIVING));
+        flags.clear(RtsFlagsBits::SENDING);
+        assert!(!flags.is_set(RtsFlagsBits::SENDING));
+        assert!(flags.is_set(RtsFlagsBits::RECEIVING));
     }
 
     #[test]
@@ -1072,7 +1260,7 @@ mod tests {
     #[test]
     fn test_kprocess_runnable() {
         let proc = KProcess::new(1, Endpoint(1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         assert!(proc.is_runnable());
     }
@@ -1223,7 +1411,7 @@ mod tests {
     #[test]
     fn test_fork_from_basic() {
         let parent = KProcess::new(5, Endpoint::from_generation_slot(3, 5));
-        parent.p_rts_flags.clear(rts::SLOT_FREE);
+        parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.set_priority(priority::USER_Q);
 
         let child_endpoint = Endpoint::fork_new_endpoint(
@@ -1291,37 +1479,37 @@ mod tests {
     fn test_fork_from_rts_flags_corrections() {
         // Parent has SIGNALED and SIG_PENDING set — child must NOT inherit these
         let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
-        parent.p_rts_flags.clear(rts::SLOT_FREE);
-        parent.p_rts_flags.set(rts::SIGNALED | rts::SIG_PENDING | rts::P_STOP);
+        parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        parent.p_rts_flags.set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP);
 
         let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
 
         // Child must have NO_QUANTUM set (C: RTS_SET(rpc, RTS_NO_QUANTUM))
-        assert!(child.p_rts_flags.is_set(rts::NO_QUANTUM));
+        assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
         // Child must NOT have SIGNALED, SIG_PENDING, P_STOP (C: RTS_UNSET)
-        assert!(!child.p_rts_flags.is_set(rts::SIGNALED));
-        assert!(!child.p_rts_flags.is_set(rts::SIG_PENDING));
-        assert!(!child.p_rts_flags.is_set(rts::P_STOP));
+        assert!(!child.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(!child.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        assert!(!child.p_rts_flags.is_set(RtsFlagsBits::P_STOP));
     }
 
     #[test]
     fn test_fork_from_misc_flags_corrections() {
         // Parent has VIRT_TIMER, PROF_TIMER, STEP set — child must NOT inherit
         let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
-        parent.p_misc_flags.set(mf::VIRT_TIMER | mf::PROF_TIMER | mf::STEP | mf::SC_TRACE | mf::SPROF_SEEN);
+        parent.p_misc_flags.set(MiscFlagsBits::VIRT_TIMER | MiscFlagsBits::PROF_TIMER | MiscFlagsBits::STEP | MiscFlagsBits::SC_TRACE | MiscFlagsBits::SPROF_SEEN);
         // Also set a flag that SHOULD be inherited
-        parent.p_misc_flags.set(mf::REPLY_PEND);
+        parent.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
 
         let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
 
         // Cleared flags
-        assert!(!child.p_misc_flags.is_set(mf::VIRT_TIMER));
-        assert!(!child.p_misc_flags.is_set(mf::PROF_TIMER));
-        assert!(!child.p_misc_flags.is_set(mf::STEP));
-        assert!(!child.p_misc_flags.is_set(mf::SC_TRACE));
-        assert!(!child.p_misc_flags.is_set(mf::SPROF_SEEN));
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER));
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::PROF_TIMER));
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::STEP));
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::SC_TRACE));
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::SPROF_SEEN));
         // Inherited flag
-        assert!(child.p_misc_flags.is_set(mf::REPLY_PEND));
+        assert!(child.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND));
     }
 
     // ── §5.1: KProcess VM suspend/resume tests ──
@@ -1329,7 +1517,7 @@ mod tests {
     #[test]
     fn test_suspend_for_vm_sets_rts_and_context() {
         let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x1000),
@@ -1343,7 +1531,7 @@ mod tests {
             None,
         );
 
-        assert!(proc.p_rts_flags.is_set(rts::VMREQUEST));
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
         assert!(proc.p_vm_suspend.is_some());
         assert!(proc.is_vm_suspended());
 
@@ -1357,7 +1545,7 @@ mod tests {
     #[test]
     fn test_suspend_for_vm_with_copy() {
         let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x2000),
@@ -1391,7 +1579,7 @@ mod tests {
     #[test]
     fn test_clear_vm_suspend() {
         let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x1000),
@@ -1410,7 +1598,7 @@ mod tests {
         proc.clear_vm_suspend();
 
         assert!(!proc.is_vm_suspended());
-        assert!(!proc.p_rts_flags.is_set(rts::VMREQUEST));
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
         assert!(proc.p_vm_suspend.is_none());
         assert!(proc.vm_suspend_context().is_none());
     }
@@ -1418,7 +1606,7 @@ mod tests {
     #[test]
     fn test_clear_vm_suspend_does_not_clear_kcall_resume() {
         let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x1000),
@@ -1431,20 +1619,20 @@ mod tests {
             params,
             None,
         );
-        proc.p_misc_flags.set(mf::KCALL_RESUME);
-        proc.p_rts_flags.clear(rts::VMREQUEST);
+        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
 
         proc.clear_vm_suspend();
 
         // MF_KCALL_RESUME should NOT be cleared by clear_vm_suspend
         // (C's clear_memreq only clears RTS_VMREQUEST, not MF_KCALL_RESUME)
-        assert!(proc.p_misc_flags.is_set(mf::KCALL_RESUME));
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
     #[test]
     fn test_vm_suspend_context_mut() {
         let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x1000),
@@ -1467,7 +1655,7 @@ mod tests {
     #[test]
     fn test_fork_child_has_no_vm_suspend() {
         let mut parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
-        parent.p_rts_flags.clear(rts::SLOT_FREE);
+        parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
             start: minix_types::VirBytes::new(0x1000),

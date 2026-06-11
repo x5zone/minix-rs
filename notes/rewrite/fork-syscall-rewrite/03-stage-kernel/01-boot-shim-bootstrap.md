@@ -1,4 +1,4 @@
-# 01-multiboot-bootstrap: Boot-shim 引导准备与控制权交接
+# 01-boot-shim-bootstrap: Boot-shim 引导准备与控制权交接
 
 > **分类**: Kernel 硬件发现
 > **源码**: `minix3/minix/kernel/arch/i386/pre_init.c`(243行), `pg_utils.c`(317行)
@@ -293,7 +293,7 @@ hang:
 
 Minix3 通过 `boot.cfg` 配置 GRUB 的启动行为：`multiboot /boot/.../kernel` 加载内核（GRUB 扫描 Multiboot Header 魔数），`load_mods /boot/.../mod*` 加载启动模块（PM、VM、VFS、RS 等），`rootdevname=...` 和 `bootopts=-s` 作为启动参数通过 `multiboot_info_t.mi_cmdline` 传递给内核。
 
-> **语义边界**：`boot.cfg` 描述的是"GRUB 如何从磁盘加载内核和模块到内存"——属于**链接与加载**范畴。C 版中这些操作由 GRUB 代劳，Rust 版中由 boot-shim 完成（ELF 解析、段拷贝、BSS 清零等）——UEFI 路径直接读 ESP 分区，OpenSBI 路径通过 U-Boot 预加载 + BootFileTable 间接读取，但两者的 ELF 加载主流程完全相同。详见 [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载与-fileloader-trait)。
+> **语义边界**：`boot.cfg` 描述的是"GRUB 如何从磁盘加载内核和模块到内存"——属于**链接与加载**范畴。C 版中这些操作由 GRUB 代劳，Rust 版中由 boot-shim 完成（ELF 解析、段拷贝、BSS 清零等）——UEFI 路径直接读 ESP 分区，OpenSBI 路径通过 U-Boot 预加载 + BootFileTable 间接读取，但两者的 ELF 加载主流程完全相同。详见 [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现)。
 
 **配置与源码的对应关系**（信息传递视角）：
 
@@ -415,7 +415,7 @@ typedef struct kinfo {
 | `mem_high_phys` | `add_memmap()` 更新 | 可用的最大物理地址 |
 | `module_list[]` | GRUB → 拷贝 | 启动进程二进制信息（PM/VM/VFS/RS 等） |
 | `bootstrap_start/len` | 链接器符号 | bootstrap 代码的范围，kmain 之后可以释放 |
-| `freepde_start` | `pg_mapkernel()` 返回 | 内核映射后第一个空闲 PDE——跨地址空间访问时 `createpde()` 的临时映射槽位从此分配（详见 [06](06-arch-post-init.md)） |
+| `freepde_start` | `pg_mapkernel()` 返回 | 内核映射后第一个空闲 PDE——跨地址空间访问时 `createpde()` 的临时映射槽位从此分配（详见 [06](06-cross-space-init.md)） |
 
 #### 2.2.2 `multiboot_memory_map_t`
 

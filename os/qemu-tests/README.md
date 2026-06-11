@@ -29,7 +29,7 @@ os/qemu-tests/
 ├── run_qemu.sh             # Single-test runner (takes test binary + arch)
 ├── test-kernels/
 │   └── kernel/                 # 对应 03-stage-kernel/ 文档
-│       └── bootstrap/          # 对应 01-multiboot-bootstrap.md
+│       └── bootstrap/          # 对应 01-boot-shim-bootstrap.md
 │           ├── hello-boot/             # x86_64: full boot chain (UEFI → Paging → serial)
 │           ├── test-memmap/            # x86_64: KernelInfo.memmap covers kernel region
 │           ├── test-paging-enable/     # x86_64: paging.enable() — CPU survives CR3 switch

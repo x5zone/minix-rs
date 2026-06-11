@@ -31,7 +31,7 @@ members = [
     # 集成测试
     "tests",
     
-    # QEMU 集成测试 (kernel/bootstrap — 对应 01-multiboot-bootstrap.md)
+    # QEMU 集成测试 (kernel/bootstrap — 对应 01-boot-shim-bootstrap.md)
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot",
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64",

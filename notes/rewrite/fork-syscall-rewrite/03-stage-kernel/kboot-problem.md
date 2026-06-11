@@ -9,7 +9,7 @@
 """ 我判断，这其实是一个P0级问题，对读者不友好，导致读者直接放弃。。。。必须得到妥善的解决。
 
 ```
-pre_init()                           ← 01-multiboot-bootstrap.md 结束于此
+pre_init()                           ← 01-boot-shim-bootstrap.md 结束于此
   pg_identity() → pg_mapkernel() → pg_load() → vm_enable_paging()
   return &kinfo
 

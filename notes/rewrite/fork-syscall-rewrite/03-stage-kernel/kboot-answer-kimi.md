@@ -249,7 +249,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 ### 3.2 从 01 结束到 02 开始，中间跳过了什么？
 
 ```
-01-multiboot-bootstrap.md 结束于：pre_init() → vm_enable_paging()
+01-boot-shim-bootstrap.md 结束于：pre_init() → vm_enable_paging()
 
 中间缺失（按 main.c 行号）：
   kmain() 入口           —— main.c:96-135
@@ -302,7 +302,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 **需要，但只是补充，不是重构。**
 
-01-multiboot-bootstrap.md 的叙事是正确的（GRUB → pre_init → paging）。
+01-boot-shim-bootstrap.md 的叙事是正确的（GRUB → pre_init → paging）。
 但需要在结尾增加一节，说明：
 
 1. **Rust 差异**：UEFI 不需要从 4KB 栈切换到 BSS 大栈（UEFI 栈足够大）。
@@ -322,7 +322,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 | §3 Rust 设计决策 | 独立 ELF vs rlib、诚实 VMA vs AT()、trampoline 必要性 | — |
 | §4 实现详解 | 链接脚本、ELF 加载器、恒等+高映射、asm trampoline、UEFI 读分区 | — |
 | §5 测试要点 | trampoline 后 RIP/RSP 验证、高映射可访问性 | — |
-| §6 参见 | 01-multiboot-bootstrap、03-elf-loader | — |
+| §6 参见 | 01-boot-shim-bootstrap、03-elf-loader | — |
 
 **为什么 02 必须是"桥梁"而不是"运行时机制"**：
 - 00-overview 的叙事承诺要求 02 承接 01 的结尾（分页开启）。
@@ -407,14 +407,14 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 | #4 | boot-shim 手写 ELF 加载器（~50 行） | P1 | 代码 | `os/boot-shim/src/elf_loader.rs` |
 | #5 | UEFI 读分区加载 boot 模块，填充 `KernelInfo.boot_modules` | P1 | 代码 | `os/boot-shim/src/uefi_helpers.rs` |
 | #6 | 新建 02-boot-bridge.md 文档 | P0 | 文档 | `notes/rewrite/.../02-boot-bridge.md` |
-| #7 | 修改 01-multiboot-bootstrap.md 结尾，补充 Rust 差异 + 预告 | P1 | 文档 | `notes/rewrite/.../01-multiboot-bootstrap.md` |
+| #7 | 修改 01-boot-shim-bootstrap.md 结尾，补充 Rust 差异 + 预告 | P1 | 文档 | `notes/rewrite/.../01-boot-shim-bootstrap.md` |
 | #8 | 原 02-page-table-kernel.md 移到 11-vm-runtime.md | P1 | 文档 | 重命名 |
 
 ---
 
 ## 8. 参见
 
-- [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) —— GRUB → pre_init → paging
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) —— GRUB → pre_init → paging
 - [02-design.md](02-design.md) —— 更详细的架构设计方案（含链接脚本草案、trampoline 伪代码）
 - [00-kernel-overview.md](00-kernel-overview.md) —— "严格线性 boot 过程"的承诺
 - Minix3 C 源码：

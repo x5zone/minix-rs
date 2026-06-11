@@ -30,7 +30,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::proc::{
-    priority, proc_nr, rts, CpuCycles, CpuId, KProcess, ProcNr,
+    priority, proc_nr, RtsFlagsBits, CpuCycles, KProcess, ProcNr,
 };
 
 /// Per-CPU scheduler state holding ready queue head/tail indices.
@@ -252,12 +252,11 @@ fn ms_to_cpu_time(ms: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::rts;
     use crate::proc_table::ProcessTable;
 
     fn make_runnable(table: &mut ProcessTable, nr: ProcNr, prio: i8) {
         let p = table.get_mut(nr).unwrap();
-        p.p_rts_flags.clear(rts::SLOT_FREE);
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority.store(prio, Ordering::Release);
     }
 
@@ -310,7 +309,7 @@ mod tests {
         make_runnable(&mut table, 0, priority::USER_Q);
         table.sched_enqueue(0, None, 0);
 
-        table.rts_set(0, rts::PROC_STOP);
+        table.rts_set(0, RtsFlagsBits::PROC_STOP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
@@ -360,6 +359,6 @@ mod tests {
         table.sched_enqueue(0, None, 0);
         table.sched_proc_no_time(0);
 
-        assert!(table.get(0).unwrap().p_rts_flags.is_set(rts::NO_QUANTUM));
+        assert!(table.get(0).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 }

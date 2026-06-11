@@ -15,6 +15,7 @@ minix-ipc = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
 minix-mock = { workspace = true, optional = true }
+bitflags = { workspace = true }
 
 [dev-dependencies]
 minix-arch = { path = "../arch", features = ["mock"] }

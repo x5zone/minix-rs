@@ -226,7 +226,7 @@ impl VmServer {
         rcv_sts: &IpcStatus,
         caller_slot: UserSlot,
     ) -> DispatchAction {
-        let m_type = msg.m_type;
+        let m_type = msg.m_type as u32;
         let source = msg.m_source;
 
         // Priority 1: VFS transid (main.c:131-141)
@@ -248,7 +248,7 @@ impl VmServer {
         if m_type == VM_PAGEFAULT {
             debug_assert!(
                 is_from_kernel(rcv_sts),
-                "faked VM_PAGEFAULT from {}", source
+                "faked VM_PAGEFAULT from {:?}", source
             );
             let _ = self.dispatch_pagefault(msg);
             return DispatchAction::NoReply;
@@ -288,14 +288,14 @@ impl VmServer {
 
         // 2. Register ACL for each boot service
         // C: for(i=0; i<NR_BOOT_PROCS; i++) if(rprocpub[i].in_use) map_service(&rprocpub[i]);
-        for entry in &rproctab {
+        for entry in rproctab.iter() {
             if !entry.in_use { continue; }
             let slot = table.vm_isokendpt(entry.endpoint)
                 .map_err(|_| VmError::InvalidProcess)?;
             let mut proc = table.get_active(slot)
                 .ok_or(VmError::InvalidProcess)?;
             let is_sys = !entry.is_user;
-            let mask = Some(crate::acl::AclMask::from_raw(entry.call_mask));
+            let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask as u64));
             // C: acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))
             proc.set_acl(crate::acl::AclState::acl_set(is_sys, mask));
         }
@@ -334,25 +334,27 @@ impl VmServer {
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
     /// C (main.c:147-156): do_pagefaults(&msg); continue;
     fn dispatch_pagefault(&mut self, msg: &Message) -> VmReply {
-        let request = VmPagefaultIn::decode(msg);
+        // SAFETY: Pagefault messages use the M1 format.
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        let request = VmPagefaultIn::decode(m1);
         let table = VmProcTable::get_global();
         let slot = match table.vm_isokendpt(request.endpoint) {
             Ok(s) => s,
             Err(_) => return VmReply::Error(VmError::InvalidProcess),
         };
-        let proc = match table.get_active(slot) {
+        let mut proc = match table.get_active(slot) {
             Some(p) => p,
             None => return VmReply::Error(VmError::InvalidProcess),
         };
+        let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
-        let region = match proc.regions().find(fault_addr) {
+        let region = match proc.regions_mut().find_mut(fault_addr) {
             Some(r) => r,
             None => return VmReply::Error(VmError::InvalidAddress),
         };
-        let frames = self.page_frames.as_mut()
-            .expect("page_frames not initialized");
+        let (page_alloc, frames, _cache) = self.parts_mut();
         match crate::cow_exec_pf::handle_pagefault(
-            proc, region, frames, self.page_alloc_mut(),
+            proc_endpoint, region, frames, page_alloc,
             fault_addr, request.write,
         ) {
             Ok(_action) => VmReply::Ok,
@@ -367,6 +369,17 @@ impl VmServer {
 
     pub(crate) fn page_frames_mut(&mut self) -> &mut PageFrames {
         self.page_frames.as_mut().expect("page_frames not initialized")
+    }
+
+    /// Returns mutable references to page_alloc, page_frames, and page_cache simultaneously.
+    /// This avoids double mutable borrow when dispatching VM calls that need multiple components.
+    pub(crate) fn parts_mut(
+        &mut self,
+    ) -> (&mut VmPageAllocator, &mut PageFrames, &mut PageCache) {
+        let page_alloc = &mut self.page_alloc;
+        let page_frames = self.page_frames.as_mut().expect("page_frames not initialized");
+        let page_cache = &mut self.page_cache;
+        (page_alloc, page_frames, page_cache)
     }
 
     pub(crate) fn is_initialized(&self) -> bool {
@@ -484,29 +497,34 @@ fn reply_to_errno(reply: VmReply) -> i32 {
 
 /// Encode VmReply per-service output data into the reply message fields.
 fn encode_reply_data(reply: VmReply, msg: &mut Message) {
+    // SAFETY: All VM replies use the M1 message format.
+    let m1 = unsafe { &mut msg.m_u.m_m1 };
     match reply {
-        VmReply::Fork(out) => out.encode(msg),
-        VmReply::Brk(out) => out.encode(msg),
-        VmReply::Mmap(out) => out.encode(msg),
-        VmReply::MapPhys(out) => out.encode(msg),
-        VmReply::ExecNewmem(out) => out.encode(msg),
+        VmReply::Fork(out) => out.encode(m1),
+        VmReply::Brk(out) => out.encode(m1),
+        VmReply::Mmap(out) => out.encode(m1),
+        VmReply::MapPhys(out) => out.encode(m1),
+        VmReply::ExecNewmem(out) => out.encode(m1),
         VmReply::MapCache { .. } => {}
-        VmReply::VfsMmap(out) => out.encode(msg),
-        VmReply::GetPhys { phys_addr } => { msg.m1_p1 = phys_addr.0; }
-        VmReply::GetRefcount { count } => { msg.m1_i1 = count as i32; }
+        VmReply::VfsMmap(out) => out.encode(m1),
+        VmReply::GetPhys { phys_addr } => { m1.m1p1 = phys_addr.0; }
+        VmReply::GetRefcount { count } => { m1.m1i1 = count as i32; }
         VmReply::InfoStats { page_size, total_pages, free_pages, largest_contiguous } => {
-            msg.m1_p1 = page_size;
-            msg.m1_i1 = total_pages as i32;
-            msg.m1_i2 = free_pages as i32;
-            msg.m1_i3 = largest_contiguous as i32;
+            m1.m1p1 = page_size;
+            m1.m1i1 = total_pages as i32;
+            m1.m1i2 = free_pages as i32;
+            m1.m1i3 = largest_contiguous as i32;
         }
         VmReply::InfoUsage { total, shared, text, data, stack } => {
-            msg.m1_p1 = total.0; msg.m1_p2 = shared.0;
-            msg.m1_p3 = text.0; msg.m1_p4 = data.0;
-            msg.m1_p5 = stack.0;
+            m1.m1p1 = total.0; m1.m1p2 = shared.0;
+            m1.m1p3 = text.0;
+            // Note: MessageM1 only has 3 pointer fields (m1p1..m1p3).
+            // data and stack would need an extended message format.
+            // TODO: Use proper extended message format for InfoUsage.
+            let _ = (data, stack);
         }
         VmReply::RsMemctlAddrLen { addr, len } => {
-            msg.m1_p1 = addr.0; msg.m1_i1 = len as i32;
+            m1.m1p1 = addr.0; m1.m1i1 = len as i32;
         }
         _ => {}
     }
@@ -661,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_vm_server_default() {
-        let server = VmServer::default();
+        let server = make_test_vm_server();
         assert!(!server.initialized);
     }
 

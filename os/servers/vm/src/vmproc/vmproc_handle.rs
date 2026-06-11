@@ -107,6 +107,8 @@ impl<'a> ActiveProc<'a> {
     /// # Safety
     /// Caller must ensure this process's page table is no longer in use by hardware.
     pub(crate) unsafe fn force_clear(self) -> EmptySlot<'a> {
+        // SAFETY: Caller guarantees this process's page table is no longer in use
+        // by hardware. Single-threaded VM ensures no concurrent access.
         unsafe { self.inner.clear(); }
         EmptySlot::new(self.inner)
     }
@@ -296,6 +298,8 @@ impl<'a> ActiveProc<'a> {
     /// Caller must ensure this process's page table is not currently active on any CPU.
     pub(crate) unsafe fn free_page_table(&mut self) {
         if self.inner.vm_pt_initialized {
+            // SAFETY: vm_pt_initialized is true, so vm_pt was initialized by
+            // init_page_table(). Caller guarantees page table is not active on any CPU.
             unsafe { self.inner.vm_pt.assume_init_mut().destroy(); }
             self.inner.vm_pt_initialized = false;
         }
@@ -316,6 +320,8 @@ impl<'a> ActiveProc<'a> {
     #[inline]
     pub(crate) fn page_table(&self) -> &PageTable {
         debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
+        // SAFETY: vm_pt_initialized is true (checked by debug_assert above).
+        // Single-threaded VM ensures no concurrent mutation.
         unsafe { self.inner.vm_pt.assume_init_ref() }
     }
 
@@ -326,6 +332,8 @@ impl<'a> ActiveProc<'a> {
     #[inline]
     pub(crate) fn page_table_mut(&mut self) -> &mut PageTable {
         debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
+        // SAFETY: vm_pt_initialized is true (checked by debug_assert above).
+        // &mut self ensures exclusive access.
         unsafe { self.inner.vm_pt.assume_init_mut() }
     }
 
@@ -336,6 +344,8 @@ impl<'a> ActiveProc<'a> {
     #[inline]
     pub(crate) fn regions(&self) -> &RegionMap {
         debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
+        // Single-threaded VM ensures no concurrent mutation.
         unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 

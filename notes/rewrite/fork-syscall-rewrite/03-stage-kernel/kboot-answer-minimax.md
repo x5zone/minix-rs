@@ -30,7 +30,7 @@
 |------|------|
 | `00-kernel-overview.md` L75-95 | 第 2 章明确标题"内核的启动线：从 GRUB 到第一个用户进程"——这是对**整个系列文档**的承诺 |
 | `00-kernel-overview.md` L82 | "**这就是内核的主线叙事。** Kernel 没有 VM 那种"先学 fork 再回头补自举"的转折——开机过程本身是严格线性的" |
-| `01-multiboot-bootstrap.md` L1 | 标题"从 GRUB 到分页开启"——明确告知 01 结束点 |
+| `01-boot-shim-bootstrap.md` L1 | 标题"从 GRUB 到分页开启"——明确告知 01 结束点 |
 | `02-design.md` §1.1 | 自己也承认"02 打破了这个叙事" |
 
 **我的判定**：P0。**这不是组织不好**——这是**违反了对读者的承诺**。00 已经声明"严格线性"，01 实践了承诺，02 违约。
@@ -707,7 +707,7 @@ fn main() {
 | 编号 | 标题 | 行数预估 | 角色 | 来源 |
 |------|------|---------|------|------|
 | 00 | kernel-overview | (已有) | 整体架构 | 00-kernel-overview.md |
-| 01 | multiboot-bootstrap | (已有) | GRUB/UEFI→paging enable | 01-multiboot-bootstrap.md |
+| 01 | multiboot-bootstrap | (已有) | GRUB/UEFI→paging enable | 01-boot-shim-bootstrap.md |
 | **02** | **boot-bridge** | **~600** | **从 paging enable 到 kmain 入口：trampoline + ELF 加载 + 链接脚本** | **新写** |
 | 03 | kmain-entry | ~300 | kmain 前几步：bss check + memcpy + kernel_may_alloc | 新写（从 tmp-17-main-init 抽出） |
 | 04 | cstart | ~400 | cstart: prot_init + init_clock + intr_init + arch_init 的叙事整合 | 新写（从 tmp-17-main-init 抽出 + 引用子系统文档） |
@@ -778,7 +778,7 @@ fn main() {
    ### 5.3 验证：移除恒等映射后内核仍能运行
 
 ## 6. 参见
-   - 01-multiboot-bootstrap: paging enable 之前
+   - 01-boot-shim-bootstrap: paging enable 之前
    - 03-kmain-entry: 进入 kmain 之后
    - tmp-17-main-init: kmain 详细参考（保留为参考资料）
 ```
@@ -981,7 +981,7 @@ fn main() {
 | 14 | 写 `07-arch-post-init.md` | 03-stage-kernel/07-arch-post-init.md | 3h |
 | 15 | 写 `08-bsp-finish-booting.md` | 03-stage-kernel/08-bsp-finish-booting.md | 4h |
 | 16 | 写 `09-vm-boot-negotiation.md` | 03-stage-kernel/09-vm-boot-negotiation.md | 5h |
-| 17 | 01-multiboot-bootstrap.md: 加 §1.6 Rust 差异补充 | 03-stage-kernel/01-multiboot-bootstrap.md | 1h |
+| 17 | 01-boot-shim-bootstrap.md: 加 §1.6 Rust 差异补充 | 03-stage-kernel/01-boot-shim-bootstrap.md | 1h |
 | 18 | 更新 00-kernel-overview.md §2: 加入新文档的导航 | 03-stage-kernel/00-kernel-overview.md | 1h |
 
 **小计**：~38h（约 2 周）

@@ -35,7 +35,10 @@ bitflags::bitflags! {
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub(crate) struct PageState {
-    pub(crate) refcount: u16,
+    /// Reference count for this physical page.
+    /// u32 matches Minix3's `int` refcount, avoiding overflow on 64-bit systems
+    /// where many processes may share the same page (e.g., via CoW fork).
+    pub(crate) refcount: u32,
     pub(crate) flags: PageFlags,
     _padding: u8,
 }
@@ -49,7 +52,7 @@ impl PageState {
         }
     }
 
-    pub fn refcount(&self) -> u16 {
+    pub fn refcount(&self) -> u32 {
         self.refcount
     }
 

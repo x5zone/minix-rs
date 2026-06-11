@@ -2,7 +2,7 @@
 //!
 //! MemType trait uses `PageSlot + PageFrames` instead of `PhysRegion`.
 
-use minix_types::VirBytes;
+use minix_types::{Endpoint, VirBytes};
 use minix_arch::paging::PageFlags;
 use crate::vmproc::ActiveProc;
 use crate::region::{PageFrames, PageSlot};
@@ -29,7 +29,7 @@ pub(crate) trait MemType: Send + Sync {
     // All C types implement this (no NULL). Default Handled; complex types must override.
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
         _offset: VirBytes,
@@ -51,7 +51,7 @@ pub(crate) trait MemType: Send + Sync {
     // C NULL → EINVAL (region.c:1164). Default Err(NotSupported).
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
@@ -177,7 +177,7 @@ impl MemType for AnonymousMemory {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
         frames: &mut PageFrames,
         offset: VirBytes,
@@ -222,7 +222,7 @@ impl MemType for AnonymousMemory {
 
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
@@ -266,7 +266,7 @@ impl MemType for DirectPhysical {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
         frames: &mut PageFrames,
         offset: VirBytes,
@@ -311,7 +311,7 @@ impl MemType for DirectPhysical {
 
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
@@ -347,7 +347,7 @@ impl MemType for SharedMemory {
 
     fn ev_pagefault(
         &self,
-        proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
         frames: &mut PageFrames,
         offset: VirBytes,
@@ -391,7 +391,7 @@ impl MemType for SharedMemory {
 
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
@@ -482,7 +482,7 @@ impl MemType for ContiguousAnonymous {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
         _offset: VirBytes,
@@ -501,7 +501,7 @@ impl MemType for ContiguousAnonymous {
 
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _original: &crate::region::VirRegion,
         _left: &mut crate::region::VirRegion,
         _right: &mut crate::region::VirRegion,
@@ -536,7 +536,7 @@ impl MemType for CacheMemory {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         _region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
         _offset: VirBytes,
@@ -601,7 +601,7 @@ impl MemType for MappedFile {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
         _frames: &mut PageFrames,
         offset: VirBytes,
@@ -643,7 +643,7 @@ impl MemType for MappedFile {
 
     fn ev_split(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         original: &crate::region::VirRegion,
         left: &mut crate::region::VirRegion,
         right: &mut crate::region::VirRegion,

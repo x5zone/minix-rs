@@ -20,7 +20,7 @@
 //! 2. **Invariant protection**: fork logic binds PM internal state
 //! 3. **Microkernel principle**: Other services don't need to know PM's fork implementation
 
-use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid};
+use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid, EAGAIN, ENOMEM, EINVAL};
 use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags};
 
 /// PM -> VM: Fork request message.
@@ -84,13 +84,14 @@ impl ForkError {
     /// Converts to error code.
     ///
     /// Corresponds to Minix3's `errno` values.
+    /// Note: Minix3 errno numbering differs from Linux (e.g., EAGAIN=35 in Minix3 vs 11 in Linux).
     pub fn to_errno(&self) -> i32 {
         match self {
-            Self::TableFull => 11,        // EAGAIN
-            Self::ReservedForRoot => 11,  // EAGAIN
-            Self::ResourceExhausted => 12, // ENOMEM
-            Self::VmError => 12,          // ENOMEM
-            Self::InternalError => 22,    // EINVAL
+            Self::TableFull => EAGAIN,
+            Self::ReservedForRoot => EAGAIN,
+            Self::ResourceExhausted => ENOMEM,
+            Self::VmError => ENOMEM,
+            Self::InternalError => EINVAL,
         }
     }
 }
@@ -378,10 +379,10 @@ mod tests {
     
     #[test]
     fn test_fork_error_to_errno() {
-        assert_eq!(ForkError::TableFull.to_errno(), 11);
-        assert_eq!(ForkError::ReservedForRoot.to_errno(), 11);
-        assert_eq!(ForkError::ResourceExhausted.to_errno(), 12);
-        assert_eq!(ForkError::InternalError.to_errno(), 22);
+        assert_eq!(ForkError::TableFull.to_errno(), EAGAIN);
+        assert_eq!(ForkError::ReservedForRoot.to_errno(), EAGAIN);
+        assert_eq!(ForkError::ResourceExhausted.to_errno(), ENOMEM);
+        assert_eq!(ForkError::InternalError.to_errno(), EINVAL);
     }
     
     #[test]

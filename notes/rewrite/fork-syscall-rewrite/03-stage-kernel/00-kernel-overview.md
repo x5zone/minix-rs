@@ -155,7 +155,7 @@ GRUB 跳转到 cstart(magic, ebx)
 
 | 编号 | 文档 | 覆盖的 C 源文件（行数） | 角色 |
 |------|------|----------------------|------|
-| 01 | [multiboot-bootstrap](01-multiboot-bootstrap.md) | pre_init.c(243) + pg_utils.c(317) | GRUB→内存map→大页恒等映射→开分页 |
+| 01 | [multiboot-bootstrap](01-boot-shim-bootstrap.md) | pre_init.c(243) + pg_utils.c(317) | GRUB→内存map→大页恒等映射→开分页 |
 | 02 | [page-table-kernel](02-page-table-kernel.md) | memory.c(1020) 内核页表核心 | pagedir_mappings、createpde、内核如何替 VM 操作页表 |
 | 03 | [vm-request](03-vm-request.md) | proc.h vmrequest 字段 + proc.c vmrequest 调用 | VMREQUEST 挂起/恢复机制（和 02 紧密关联） |
 

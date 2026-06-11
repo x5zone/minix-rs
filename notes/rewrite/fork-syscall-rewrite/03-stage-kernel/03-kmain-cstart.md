@@ -1,4 +1,4 @@
-# 03-kmain-entry-protection: kmain 入口与保护模式初始化
+# 03-kmain-cstart: kmain 入口与 cstart 平台初始化
 
 > **分类**: 全局基建
 > **源码**: `minix3/minix/kernel/main.c:115-147,403-481`, `minix3/minix/kernel/arch/i386/protect.c:321-367`, `minix3/minix/kernel/arch/earm/protect.c:77-93`
@@ -389,9 +389,9 @@ fn init_protection(kernel_info: &KernelInfo) {
 }
 ```
 
-> **运行时更新内核栈（P1-13）**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
+> **运行时更新内核栈**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
 > 
-> **§5.3 测试覆盖核对（P1-12/14 验证, 2026-06-11）**:
+> **§5.3 测试覆盖核对**:
 > - x86_64: `protection.rs` 15 个 + `trap_entry.rs` 15 个 = **30 个** ✓ 与 §5.3 列表一致
 > - aarch64: `protection.rs` 7 个 + `trap_entry.rs` 3 个 = **10 个** ✓ 与 §5.3 列表一致
 > - riscv64: `protection.rs` 5 个 + `trap_entry.rs` 3 个 = **8 个** ✓ 与 §5.3 列表一致

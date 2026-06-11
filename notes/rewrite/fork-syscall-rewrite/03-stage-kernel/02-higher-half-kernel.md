@@ -3,7 +3,7 @@
 > **分类**: 全局基建
 > **源码**: `minix3/minix/kernel/arch/i386/head.S`, `minix3/minix/kernel/arch/i386/kernel.lds`, `kernel/src/lib.rs`
 > **说明**: 链接脚本布局、内核 ELF 加载（ELF 解析、段拷贝、BSS 清零）、arch_boot_impl 页表映射、HigherHalf 切栈跳转——从 boot-shim 加载内核 ELF 到 kmain 的完整路径
-> **前置**: [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) — boot-shim 已完成引导准备（获取内存映射、加载内核 ELF、构造 KernelInfo、ExitBootServices），调用 arch_boot
+> **前置**: [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — boot-shim 已完成引导准备（获取内存映射、加载内核 ELF、构造 KernelInfo、ExitBootServices），调用 arch_boot
 
 ---
 
@@ -276,7 +276,7 @@ pub trait HigherHalf {
 | 参数传递 | `rdi` (System V ABI) | `x0` (AAPCS64) | `a0` (RISC-V ABI) |
 | 栈对齐 | 16 字节 | 16 字节 | 16 字节 |
 | 帧指针清零 | `xor rbp, rbp` (FP) | `mov x29, #0` (FP) | `li s0, 0` (s0-fp) |
-| 跳转前屏障 | 无（Intel SDM 隐含） | `isb` (P1-11) | `fence.i` (P1-11) |
+| 跳转前屏障 | 无（Intel SDM 隐含） | `isb` | `fence.i` |
 | 恒等映射范围 | 4GB (2MB huge pages) | 4GB (1GB block entries) | 4GB (1GB superpages) |
 | 高地址基址 | `0xFFFF_8000_0000_0000` | `0xFFFF_8000_0000_0000` | `0xFFFF_FFC0_0000_0000` |
 | 页表启用 | CR0.PG + CR3 | SCTLR.M + TTBR1 | satp.MODE + satp.PPN |
@@ -705,7 +705,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
     // Step 2: 内核高半核映射 (C: pg_mapkernel — pg_utils.c:186)
     let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
-    // **P1-10 supervisor-only mapping 注释**:
+    // supervisor-only mapping 注释:
     //   `kernel_read_write()` **不含** `USER_ACCESSIBLE`，所以三架构 PTE 都设了
     //   supervisor-only 标记：x86-64 U/S=0；aarch64 AP1=0 (EL1 only)；riscv64 U=0。
     //   这意味着 RISC-V 上即使 sstatus.SUM=0，内核仍可正常访问用户内存 —
@@ -838,7 +838,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
               ├── 栈对齐、清零帧指针
               └── call kmain  ← 高地址执行
                     │
-                    ├── cstart()     ← 详见 03-kmain-entry-protection.md
+                    ├── cstart()     ← 详见 03-kmain-cstart.md
                     ├── proc_init()  ← 详见 05-proc-init-boot-proc.md
                     └── switch_to_user()  ← 详见 07-kmain-entry-protection.md
 ```
@@ -967,7 +967,7 @@ gdb kernel.elf
 
 `kmain()` 的第一个任务是调用 `cstart()`，而 `cstart()` 的第一个调用是 `prot_init()`——建立内核自己的保护结构（GDT/IDT/TSS 或 VBAR_EL1/stvec）。这是 03 文档的内容。
 
-**→ 下一篇**: [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — kmain 入口与保护模式初始化
+**→ 下一篇**: [03-kmain-cstart.md](03-kmain-cstart.md) — kmain 入口与保护模式初始化
 
 ---
 
@@ -1242,15 +1242,15 @@ map_huge: vaddr=0xffffffc000000000 paddr=0x80000000 size=0x200000 i2=0x100 e2=0x
 ### A.6 参见
 
 - 本文档 §4.1 — 链接脚本与 Sv39 地址规范
-- [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) §4.6 — arch_boot_impl 三步操作
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §4.6 — arch_boot_impl 三步操作
 - RISC-V Privileged Specification §4.3 — Sv39 Page Table
 
 ---
 
 ## 7. 参见
 
-- [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) — boot-shim 引导准备、KernelInfo 构造、BootShim trait
-- [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — kmain 入口后的保护模式初始化
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — boot-shim 引导准备、KernelInfo 构造、BootShim trait
+- [03-kmain-cstart.md](03-kmain-cstart.md) — kmain 入口后的保护模式初始化
 - [00-kernel-overview.md](00-kernel-overview.md) — 内核整体架构概览
 - [99-global-concepts.md](99-global-concepts.md) — 全局常量和类型定义
 - `os/arch/src/paging.rs` — Paging trait 定义

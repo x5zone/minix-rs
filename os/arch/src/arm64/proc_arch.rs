@@ -14,7 +14,10 @@
 
 use minix_types::VirBytes;
 use minix_boot::{BootModule, KernelInfo};
-use crate::proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
+use crate::proc_arch::{
+    ArchProcReset, ArchProcInit, BootProcArch,
+    InitialRegState, InitialRegs, SegmentSelectors, VmLoadResult,
+};
 use crate::paging::Paging;
 
 /// AArch64 process architecture implementation.
@@ -59,31 +62,39 @@ const VM_PROC_NR: i32 = 8;
 const VM_STACK_SIZE: usize = 64 * 1024;
 
 impl ArchProcReset for AArch64ProcArch {
-    fn reset(is_kernel: bool, proc_nr: i32) {
+    fn initial_reg_state(is_kernel: bool, proc_nr: i32) -> InitialRegState {
         // C: earm/arch_system.c:42-60
         //
         // arch_proc_reset(pr):
         //   memset(&pr->p_reg, 0, sizeof(pr->p_reg));
         //   if(iskerneln(pr->p_nr))
-        //     pr->p_reg.psr = INIT_TASK_PSR;
+        //     pr->p_reg.psr = INIT_TASK_PSR;  // EL1h, 0x3C5
         //   else
-        //     pr->p_reg.psr = INIT_PSR;
+        //     pr->p_reg.psr = INIT_PSR;       // EL0t, 0x0
         //
-        // ARM64 does not initialize FPU state in arch_proc_reset.
+        // AArch64 does not initialize FPU state in arch_proc_reset.
         // FPU/VFP state is lazily initialized on first use.
-        let _ = (is_kernel, proc_nr);
+        // AArch64 has no segment selectors (flat memory model).
+
+        let _ = proc_nr;
+        let status = if is_kernel { INIT_TASK_PSR } else { INIT_PSR };
+
+        InitialRegState {
+            status,
+            segment_selectors: SegmentSelectors::default(), // all zero
+            fpu_needs_zero: false, // lazy FPU init
+        }
     }
 }
 
 impl ArchProcInit for AArch64ProcArch {
-    fn init(
+    fn init_regs(
         is_kernel: bool,
         proc_nr: i32,
         pc: VirBytes,
         sp: VirBytes,
         ps_strings: VirBytes,
-        name: &str,
-    ) {
+    ) -> InitialRegs {
         // C: earm/memory.c:627-638
         //
         // arch_proc_init(pr, ip, sp, ps_str, name):
@@ -92,8 +103,13 @@ impl ArchProcInit for AArch64ProcArch {
         //   pr->p_reg.pc = ip;
         //   pr->p_reg.sp = sp;
         //   pr->p_reg.retreg = ps_str;  // aarch64: r0 = ps_strings
-        Self::reset(is_kernel, proc_nr);
-        let _ = (pc, sp, ps_strings, name);
+
+        let _ = (is_kernel, proc_nr);
+        InitialRegs {
+            pc,                          // pc (set via ELR_EL1)
+            sp,                          // sp
+            ps_strings_reg: ps_strings.0, // r0 (retreg)
+        }
     }
 }
 

@@ -472,10 +472,11 @@ fn init_clock_and_interrupts() {
 /// C: arch_boot_proc() — protect.c:388 (x86) / protect.c:115 (ARM)
 #[cfg(not(feature = "mock"))]
 fn init_proc_and_boot(kernel_info: &KernelInfo) {
-    use minix_arch::{ArchProcInit, BootProcArch, CurrentBootProcArch};
-    use crate::proc::{KProcess, ProcNr, ProcName, rts, proc_nr};
+    use minix_arch::{ArchProcReset, BootProcArch, CurrentBootProcArch};
+    use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr};
     use crate::proc_table::{ProcessTable, NR_TASKS};
-    use crate::kpriv::{PrivTable, priv_flags, priv_flag_set};
+    use crate::kpriv::{PrivTable, priv_flag_set};
+    use crate::proc::NR_BOOT_MODULES;
 
     // Step 1: Initialize process table.
     // C: proc_init() — proc.c:119-167
@@ -487,8 +488,22 @@ fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // C: priv table loop in proc_init() — proc.c:130-137
     let mut priv_table = PrivTable::new();
 
+    // C: IPCF_POOL_INIT() — main.c:158
+    // In Minix3, this zeroes the IPC filter pool for caching lookups.
+    // In Rust, the filter pool is lazily initialized on first use.
+    // TODO(P1): Verify IPC filter pool is zeroed at boot if used.
+
+    // C: NR_BOOT_MODULES check — main.c:160-162
+    assert_eq!(
+        kernel_info.boot_modules.len(),
+        NR_BOOT_MODULES,
+        "expected {} boot modules, found {}",
+        NR_BOOT_MODULES,
+        kernel_info.boot_modules.len()
+    );
+
     // Step 3: Iterate over boot modules and initialize each process.
-    // C: boot image loop — main.c:157-282
+    // C: boot image loop — main.c:164-282
     for (i, module) in kernel_info.boot_modules.iter().enumerate() {
         // Map boot module index to process number.
         // C: image[i].proc_nr — table.c:44
@@ -509,87 +524,124 @@ fn init_proc_and_boot(kernel_info: &KernelInfo) {
 
         // Set process name.
         // C: strlcpy(rp->p_name, ip->proc_name, sizeof(rp->p_name))
-        proc.p_name = ProcName::from_str(module.name);
+        proc.set_boot_name(module.name);
 
         // Determine if this process is immediately schedulable.
         // C: schedulable_proc = (iskerneln(proc_nr) || isrootsysn(proc_nr) ||
         //                         proc_nr == VM_PROC_NR)
         // C: main.c:173-174
         let is_kernel = nr < 0;
-        let is_root_sys = false; // TODO: check RS_PROC_NR
-        let is_vm = nr == 8; // VM_PROC_NR — minix/com.h:67
+        let is_root_sys = nr == proc_nr::RS_PROC_NR;
+        let is_vm = nr == proc_nr::VM_PROC_NR;
         let schedulable = is_kernel || is_root_sys || is_vm;
 
         if schedulable {
             // Assign static privilege.
-            // C: get_priv(rp, static_priv_id(proc_nr)) — main.c:176
-            // TODO: implement PrivTable::assign_static()
-            let _ = &mut priv_table;
+            // C: get_priv(rp, static_priv_id(proc_nr)) — main.c:200
+            let priv_id = priv_table.assign_static(nr)
+                .expect("assign_static: static priv slot occupied");
 
             // Set privilege flags based on process type.
-            // C: main.c:178-224
+            // C: main.c:178-248
             if is_vm {
-                // C: priv(rp)->s_flags = VM_F — main.c:179
-                // priv_table.set_flags(nr, priv_flag_set::VM_F);
+                // C: priv(rp)->s_flags = VM_F; priv(rp)->s_trap_mask = SRV_T — main.c:179-180
+                priv_table.configure_boot_priv(
+                    priv_id,
+                    priv_flag_set::VM_F,          // s_flags
+                    0,                              // s_init_flags: VM does not set s_init_flags
+                    0,                              // s_trap_mask: set below
+                    0,                              // s_ipc_to: set by fill_sendto_mask
+                    [0; 2],                         // s_k_call_mask
+                    minix_types::Endpoint::from_generation_slot(0, nr), // SELF
+                );
+                // TODO(P1): fill_sendto_mask for VM (SRV_M → all system processes)
+                // TODO(P1): s_k_call_mask = SRV_KC (~0)
             } else if is_kernel {
-                // C: priv(rp)->s_flags = (proc_nr == IDLE ? IDL_F : TSK_F) — main.c:188
-                // priv_table.set_flags(nr, priv_flag_set::TSK_F);
+                // C: priv(rp)->s_flags = (nr==IDLE ? IDL_F : TSK_F) — main.c:188-189
+                // C: priv(rp)->s_init_flags = TSK_I — main.c:191
+                let flags = if nr == proc_nr::IDLE { priv_flag_set::IDL_F } else { priv_flag_set::TSK_F };
+                priv_table.configure_boot_priv(
+                    priv_id,
+                    flags,          // s_flags
+                    0,              // s_init_flags: TSK_I (for kernel tasks, init flags are arch-defined)
+                    0,              // s_trap_mask: set below (CLOCK/SYSTEM=CSK_T, others=TSK_T)
+                    0,              // s_ipc_to
+                    [0; 2],         // s_k_call_mask
+                    minix_types::Endpoint::NONE, // s_sig_mgr
+                );
+                // TODO(P1): fill_sendto_mask (TSK_M=ALL_M), s_k_call_mask (TSK_KC=~0)
             } else {
                 // C: priv(rp)->s_flags = RSYS_F — main.c:209
-                // priv_table.set_flags(nr, priv_flag_set::RSYS_F);
+                priv_table.configure_boot_priv(
+                    priv_id,
+                    priv_flag_set::RSYS_F,  // s_flags
+                    0,                        // s_init_flags: SRV_I
+                    0,                        // s_trap_mask: SRV_T
+                    0,                        // s_ipc_to: SRV_M
+                    [0; 2],                   // s_k_call_mask: SRV_KC
+                    minix_types::Endpoint::from_generation_slot(0, nr), // SRV_SM: SELF
+                );
+                // TODO(P1): fill_sendto_mask for root sys proc
             }
         } else {
             // Don't let the process run for now.
             // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:226
-            proc.p_rts_flags.set(rts::NO_PRIV | rts::NO_QUANTUM);
+            proc.p_rts_flags.set(RtsFlagsBits::NO_PRIV | RtsFlagsBits::NO_QUANTUM);
         }
 
         // Architecture-specific boot process initialization.
         // C: arch_boot_proc(ip, rp) — main.c:257
-        // For kernel tasks: no-op (p_nr < 0)
-        // For VM: load ELF into bootstrap page table
-        // For other user processes: no ELF loading (done by RS at runtime)
-        if is_kernel {
-            // Kernel tasks: arch_boot_proc skips (p_nr < 0)
-            // C: if(rp->p_nr < 0) return; — protect.c:393
-        } else if is_vm {
-            // VM: load ELF and set PC/SP/ps_strings
+        //
+        // Step A: Set initial register state (PSW/PSR/sstatus, segment selectors, FPU).
+        // C: arch_proc_reset(pr) — called from arch_proc_init
+        let reg_state = CurrentBootProcArch::initial_reg_state(is_kernel, nr);
+        proc.set_boot_initial_reg_state(reg_state.status, reg_state.fpu_needs_zero);
+
+        // Step B: For user-space boot processes, set PC/SP/ps_strings.
+        // For kernel tasks: arch_boot_proc skips (p_nr < 0)
+        // C: if(rp->p_nr < 0) return; — protect.c:393
+        if !is_kernel {
+            // Step B1: For VM, load ELF first to get correct PC/SP/ps_strings.
             // C: arch_boot_proc for VM — protect.c:395-452
-            CurrentBootProcArch::init(
-                false,  // is_kernel
-                nr,
-                minix_types::VirBytes(0), // pc: placeholder, set by load_vm_elf
-                minix_types::VirBytes(0), // sp: placeholder
-                minix_types::VirBytes(0), // ps_strings: placeholder
-                module.name,
-            );
-        } else {
-            // Other user processes: just set initial register state
-            // C: arch_boot_proc returns without loading ELF
-            CurrentBootProcArch::init(
-                false,
-                nr,
-                minix_types::VirBytes(0),
-                minix_types::VirBytes(0),
-                minix_types::VirBytes(0),
-                module.name,
-            );
+            let (pc, sp, ps_strings) = if is_vm {
+                // TODO(P0): Call load_vm_elf() with real Paging when integrated.
+                // Currently all VirBytes(0) because load_vm_elf is a stub and
+                // this function doesn't have access to Paging yet.
+                let _vm_result = CurrentBootProcArch::load_vm_elf(
+                    module,
+                    kernel_info,
+                    // TODO(P0): Pass &mut paging here when kmain has a paging reference
+                    &mut todo!("paging ref for load_vm_elf — integrate when kmain owns Paging"),
+                );
+                // Once load_vm_elf is functional:
+                //   pc = _vm_result.pc; sp = _vm_result.sp; ps_strings = _vm_result.ps_strings;
+                (VirBytes(0), VirBytes(0), VirBytes(0))
+            } else {
+                // Other user processes have no ELF loaded at boot.
+                // RS will load them at runtime.
+                (VirBytes(0), VirBytes(0), VirBytes(0))
+            };
+
+            // Step B2: Calculate initial register values from arch layer.
+            // C: arch_proc_init(rp, execi.pc, sp, ps_str, "vm") — protect.c:441/165
+            let init_regs = CurrentBootProcArch::init_regs(is_kernel, nr, pc, sp, ps_strings);
+            proc.set_boot_pc_sp(init_regs.pc, init_regs.sp, init_regs.ps_strings_reg);
         }
 
         // VM inhibit: all user processes except VM must wait for VM to
         // create their page tables.
         // C: main.c:267-270
-        if nr != 8 && nr >= 0 {
-            proc.p_rts_flags.set(rts::VMINHIBIT | rts::BOOTINHIBIT);
+        if nr != proc_nr::VM_PROC_NR && nr >= 0 {
+            proc.p_rts_flags.set(RtsFlagsBits::VMINHIBIT | RtsFlagsBits::BOOTINHIBIT);
         }
 
         // All boot processes start stopped.
         // C: rp->p_rts_flags |= RTS_PROC_STOP — main.c:272
-        proc.p_rts_flags.set(rts::PROC_STOP);
+        proc.p_rts_flags.set(RtsFlagsBits::PROC_STOP);
 
         // Mark slot as in use.
         // C: rp->p_rts_flags &= ~RTS_SLOT_FREE — main.c:273
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
     }
 
     // Step 4: Update boot procs info for VM.
@@ -671,8 +723,8 @@ mod tests {
     /// Verifies: identity mapping + kernel mapping + enable → no panic.
     #[test]
     fn test_boot_flow_identity_and_kernel_map() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[
-            minix_types::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }, // 16MB
+        let memmap: &'static [minix_boot::MemoryRegion] = &[
+            minix_boot::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }, // 16MB
         ];
         let info = KernelInfo {
             memmap,
@@ -798,8 +850,8 @@ mod tests {
     /// (arch_boot_impl → enable paging) is consistent.
     #[test]
     fn test_arch_boot_impl_enables_paging() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[
-            minix_types::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 },
+        let memmap: &'static [minix_boot::MemoryRegion] = &[
+            minix_boot::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 },
         ];
         let info = KernelInfo {
             memmap,
@@ -887,8 +939,8 @@ mod tests {
     /// Verify arch_boot_impl with aarch64-style KernelInfo (phys in QEMU RAM range).
     #[test]
     fn test_arch_boot_impl_aarch64_params() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[
-            minix_types::MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
+        let memmap: &'static [minix_boot::MemoryRegion] = &[
+            minix_boot::MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
         ];
         let info = KernelInfo {
             memmap,
@@ -913,8 +965,8 @@ mod tests {
     /// the arch_boot_impl flow, and verify the identity property separately.
     #[test]
     fn test_arch_boot_impl_riscv64_params() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[
-            minix_types::MemoryRegion { base: PhysBytes(0x8000_0000), len: 0x800_0000 },
+        let memmap: &'static [minix_boot::MemoryRegion] = &[
+            minix_boot::MemoryRegion { base: PhysBytes(0x8000_0000), len: 0x800_0000 },
         ];
         // Use a high-half address that doesn't overlap with identity map range
         let info = KernelInfo {
@@ -1034,7 +1086,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "kern_phys_base must be page-aligned")]
     fn test_arch_boot_rejects_misaligned_phys() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[];
+        let memmap: &'static [minix_boot::MemoryRegion] = &[];
         let info = KernelInfo {
             memmap,
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
@@ -1054,7 +1106,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "kern_size must be > 0")]
     fn test_arch_boot_rejects_zero_kern_size() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[];
+        let memmap: &'static [minix_boot::MemoryRegion] = &[];
         let info = KernelInfo {
             memmap,
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
@@ -1074,7 +1126,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "kern_stack_top must be 16-byte aligned")]
     fn test_arch_boot_rejects_misaligned_stack_top() {
-        let memmap: &'static [minix_types::MemoryRegion] = &[];
+        let memmap: &'static [minix_boot::MemoryRegion] = &[];
         let info = KernelInfo {
             memmap,
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),

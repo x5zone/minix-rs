@@ -1,7 +1,7 @@
 # 02-todo: 03-stage-kernel 启动叙事的 TODO 列表
 
 > **创建**: 2026-06-08
-> **触发**: 对 01-multiboot-bootstrap.md 和 boot-shim 加载 boot 模块机制的讨论
+> **触发**: 对 01-boot-shim-bootstrap.md 和 boot-shim 加载 boot 模块机制的讨论
 > **状态**: 讨论中，待决策
 
 ---
@@ -98,7 +98,7 @@ VM 启动后
 
 - [ ] **TODO #1: 01 文档修正 — UEFI 模块加载描述不准确**
 
-  **Priority**: P0 | **Type**: 文档事实错误 | **File**: `01-multiboot-bootstrap.md`
+  **Priority**: P0 | **Type**: 文档事实错误 | **File**: `01-boot-shim-bootstrap.md`
 
   **问题**: §1.7.1 表格中"模块加载: UEFI `ImageHandle` protocol 标准接口"——**不准确**。UEFI 的 `ImageHandle` 只加载 `.efi` 自身，不加载额外的 boot 模块。boot 模块（VM/PM/VFS/RS 等）的加载必须在 boot-shim 中显式实现（通过 `SimpleFileSystemProtocol` 读 ESP 分区，或编译时 `include_bytes!`）。
 
@@ -108,7 +108,7 @@ VM 启动后
 
 - [ ] **TODO #2: 01 文档结尾增加过渡节**
 
-  **Priority**: P0 | **Type**: 文档叙事断裂 | **File**: `01-multiboot-bootstrap.md`
+  **Priority**: P0 | **Type**: 文档叙事断裂 | **File**: `01-boot-shim-bootstrap.md`
 
   **问题**: 01 结束于 `vm_enable_paging()`，读者不知道"接下来发生什么"。需要增加过渡节说明 head.S 三行代码（切栈+跳高地址）和 kmain 的概览。
 
@@ -271,7 +271,7 @@ GRUB 通过 `boot.cfg` 中的 `load_mods` 命令把所有 boot 模块（VM/PM/VF
 
 ## 4. 参考资料
 
-- [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) — GRUB → pre_init → paging
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — GRUB → pre_init → paging
 - [02-design.md](02-design.md) — 架构设计方案（含链接脚本草案、trampoline 伪代码）
 - [00-kernel-overview.md](00-kernel-overview.md) — "严格线性 boot 过程"的承诺
 - [02-answer-kimi.md](02-answer-kimi.md) — 独立分析（含 build.rs 编译流程细节）
@@ -452,7 +452,7 @@ T18 VMSUSPEND 机制                                            ← 10 结束
 | 编号 | 文件名 | 标题 | 时间线 | 核心问题 | 预估行数 |
 |------|--------|------|--------|---------|---------|
 | **02** | `02-higher-half-kernel.md` | 内核如何到达高地址 | T0→T2 | pre_init返回后，RIP还在低地址——怎么跳到高地址的kmain？ | ~500 |
-| **03** | `03-kmain-entry-protection.md` | kmain入口与保护模式初始化 | T3→T4 | kmain拿到kinfo后第一件事是cstart()，prot_init()建立GDT/IDT/TSS | ~550 |
+| **03** | `03-kmain-cstart.md` | kmain入口与保护模式初始化 | T3→T4 | kmain拿到kinfo后第一件事是cstart()，prot_init()建立GDT/IDT/TSS | ~550 |
 | **04** | `04-clock-interrupt-init.md` | 时钟与中断初始化 | T5→T6 | cstart()的后半段：init_clock + intr_init + arch_init | ~400 |
 | **05** | `05-proc-init-boot-proc.md` | 进程表初始化与boot进程加载 | T7→T8 | proc_init清空进程表，arch_boot_proc加载VM的ELF | ~550 |
 | **06** | `06-post-init-memory.md` | arch_post_init与memory_init | T9→T10 | ptproc=VM让VM接管页表，freepdes分配是运行时机制的前置条件 | ~400 |
@@ -490,7 +490,7 @@ T18 VMSUSPEND 机制                                            ← 10 结束
 | Ch5 测试 | QEMU+GDB验证RIP在高地址 | ~20 |
 | Ch6 参见 | 引用01 | ~10 |
 
-#### 03-kmain-entry-protection.md（T3→T4）
+#### 03-kmain-cstart.md（T3→T4）
 
 **核心问题**：kmain 拿到 kinfo 后，cstart() 的 prot_init() 建立 GDT/IDT/TSS——这是后续所有中断和进程切换的基础。
 

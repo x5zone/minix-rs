@@ -19,7 +19,7 @@ use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
 use minix_arch::direct_map::DirectMapArch;
 use minix_arch::paging::PageFlags;
 
-use crate::proc::{KProcess, ProcNr, rts, mf};
+use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits};
 
 // ── 02-page-table-kernel types ──
 
@@ -635,16 +635,16 @@ impl VmRequestHandler {
 
         match ctx.suspend_type {
             VmSuspendType::KernelCall => {
-                proc.p_misc_flags.set(mf::KCALL_RESUME);
+                proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
             }
             VmSuspendType::DeliverMsg => {
-                if !proc.p_misc_flags.is_set(mf::DELIVERMSG) {
+                if !proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG) {
                     return Err(VmCtlError::InvalidState);
                 }
             }
         }
 
-        proc.p_rts_flags.clear(rts::VMREQUEST);
+        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
         Ok(())
     }
 }
@@ -661,15 +661,15 @@ impl VmRequestHandler {
 ///
 /// Design decision: §3.6 (MF_KCALL_RESUME retained as flag), §4.9.
 pub fn kernel_call_resume(caller: &mut KProcess) -> VmCheckResult {
-    debug_assert!(caller.p_misc_flags.is_set(mf::KCALL_RESUME));
-    debug_assert!(!caller.p_rts_flags.is_set(rts::VMREQUEST));
+    debug_assert!(caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
 
     let ctx = caller.p_vm_suspend.as_ref()
         .expect("MF_KCALL_RESUME set but no VmSuspendContext");
 
     match ctx.state {
         VmSuspendState::Completed(result) => {
-            caller.p_misc_flags.clear(mf::KCALL_RESUME);
+            caller.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME);
             result
         }
         VmSuspendState::Pending | VmSuspendState::Fetched => {
@@ -686,7 +686,7 @@ pub fn kernel_call_resume(caller: &mut KProcess) -> VmCheckResult {
 ///
 /// Design decision: §3.6, §4.9.
 pub fn try_deliver_message(rp: &KProcess) -> bool {
-    rp.p_misc_flags.is_set(mf::DELIVERMSG)
+    rp.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG)
 }
 
 /// Check the result of a resumed kernel call.
@@ -697,7 +697,7 @@ pub fn try_deliver_message(rp: &KProcess) -> bool {
 ///
 /// Design decision: §3.3 (VmCheckResult simplifies arbitrary errno).
 pub fn check_resumed_caller(caller: &KProcess) -> VmCheckResult {
-    if caller.p_misc_flags.is_set(mf::KCALL_RESUME) {
+    if caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME) {
         if let Some(ctx) = caller.p_vm_suspend.as_ref() {
             if let VmSuspendState::Completed(result) = ctx.state {
                 return result;
@@ -940,7 +940,7 @@ mod tests {
             KProcess::new(3, Endpoint::from_generation_slot(1, 3)),
         ];
         for proc in procs.iter_mut() {
-            proc.p_rts_flags.clear(rts::SLOT_FREE);
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
         // Each process targets the next one (circular), so endpoint_to_proc_nr can resolve
         procs[0].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 1), params, None);
@@ -955,7 +955,7 @@ mod tests {
         suspend_type: VmSuspendType,
     ) -> KProcess {
         let mut proc = KProcess::new(nr, Endpoint::from_generation_slot(1, nr));
-        proc.p_rts_flags.clear(rts::SLOT_FREE);
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let params = VmCheckParams {
             start: VirBytes::new(0x1000),
             length: VirBytes::new(0x100),
@@ -1002,8 +1002,8 @@ mod tests {
 
         let result = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
         assert!(result.is_ok());
-        assert!(!proc.p_rts_flags.is_set(rts::VMREQUEST));
-        assert!(proc.p_misc_flags.is_set(mf::KCALL_RESUME));
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
 
         let ctx = proc.p_vm_suspend.as_ref().unwrap();
         assert_eq!(ctx.state, VmSuspendState::Completed(VmCheckResult::Ok));
@@ -1059,11 +1059,11 @@ mod tests {
         let mut proc = make_vm_suspended_proc(0, VmSuspendType::DeliverMsg);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
-        proc.p_misc_flags.set(mf::DELIVERMSG);
+        proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 
         let result = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
         assert!(result.is_ok());
-        assert!(!proc.p_misc_flags.is_set(mf::KCALL_RESUME));
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
     // ── §5.1: kernel_call_resume / check_resumed_caller tests ──
@@ -1073,12 +1073,12 @@ mod tests {
         let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Ok);
-        proc.p_misc_flags.set(mf::KCALL_RESUME);
-        proc.p_rts_flags.clear(rts::VMREQUEST);
+        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
 
         let result = kernel_call_resume(&mut proc);
         assert_eq!(result, VmCheckResult::Ok);
-        assert!(!proc.p_misc_flags.is_set(mf::KCALL_RESUME));
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
     #[test]
@@ -1086,8 +1086,8 @@ mod tests {
         let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
-        proc.p_misc_flags.set(mf::KCALL_RESUME);
-        proc.p_rts_flags.clear(rts::VMREQUEST);
+        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
 
         let result = kernel_call_resume(&mut proc);
         assert_eq!(result, VmCheckResult::Fault);
@@ -1104,8 +1104,8 @@ mod tests {
         let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
-        proc.p_misc_flags.set(mf::KCALL_RESUME);
-        proc.p_rts_flags.clear(rts::VMREQUEST);
+        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
 
         assert_eq!(check_resumed_caller(&proc), VmCheckResult::Fault);
     }
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn try_deliver_message_returns_true_with_flag() {
         let mut proc = KProcess::new(0, Endpoint::from_generation_slot(1, 0));
-        proc.p_misc_flags.set(mf::DELIVERMSG);
+        proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         assert!(try_deliver_message(&proc));
     }
 

@@ -617,6 +617,82 @@ impl EncodeToM1 for VmExecNewmemOut {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Stub DecodeFromM1 / EncodeToM1 for types that use extended message formats
+// (mess_lsys_vm_mmap, etc.) — these require a dedicated message format
+// beyond MessageM1. For now, decode from M1 with best-effort field mapping.
+// TODO: Add proper message format types (e.g. MessageLsysVmMmap) and
+// implement DecodeFrom those formats instead.
+// ---------------------------------------------------------------------------
+
+impl DecodeFromM1 for VmMmapIn {
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            caller: Endpoint(m1.m1i1),
+            forwhom: Endpoint(m1.m1i2),
+            addr: VirBytes(m1.m1p1),
+            length: VirBytes(m1.m1p2),
+            prot: 0,
+            flags: 0,
+            fd: 0,
+            offset: 0,
+        }
+    }
+}
+
+impl EncodeToM1 for VmMmapOut {
+    fn encode(&self, m1: &mut MessageM1) {
+        m1.m1p1 = self.ret_addr.0;
+    }
+}
+
+impl DecodeFromM1 for VmMapPhysIn {
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            caller: Endpoint(m1.m1i1),
+            target: Endpoint(m1.m1i2),
+            phys_addr: PhysBytes(m1.m1p1),
+            length: VirBytes(m1.m1p2),
+        }
+    }
+}
+
+impl EncodeToM1 for VmMapPhysOut {
+    fn encode(&self, m1: &mut MessageM1) {
+        m1.m1p1 = self.virt_addr.0;
+    }
+}
+
+impl DecodeFromM1 for VmVfsMmapIn {
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            who: Endpoint(m1.m1i1),
+            fd: m1.m1i2,
+            offset: 0,
+            dev: 0,
+            ino: 0,
+            vaddr: VirBytes(m1.m1p1),
+            length: VirBytes(m1.m1p2),
+            flags: 0,
+            clearend: 0,
+        }
+    }
+}
+
+impl DecodeFromM1 for VmCacheIn {
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            dev: m1.m1p1,
+            dev_offset: m1.m1p2,
+            ino: 0,
+            ino_offset: 0,
+            pages: m1.m1i1 as u32,
+            flags: m1.m1i2 as u32,
+            block: 0,
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

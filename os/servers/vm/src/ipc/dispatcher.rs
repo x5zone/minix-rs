@@ -23,6 +23,11 @@ use minix_types::{
     VmMmapIn, VmMapPhysIn, VmVfsMmapIn, VmCacheIn,
     VmForkOut, VmBrkOut, VmMmapOut, VmMapPhysOut,
     VmReply, VmError,
+    Message, DecodeFromM1,
+    VM_RQ_BASE, VM_MMAP, VM_MUNMAP, VM_MAP_PHYS, VM_EXIT, VM_FORK, VM_BRK,
+    VM_WILLEXIT, VM_VFS_MMAP, VM_MAPCACHEPAGE, VM_SETCACHEPAGE,
+    VM_FORGETCACHEPAGE, VM_CLEARCACHE, VM_RS_SET_PRIV, VM_RS_PREPARE,
+    VM_RS_UPDATE, VM_RS_MEMCTL, VM_GETPHYS, VM_GETREF, VM_INFO, VM_GETRUSAGE,
 };
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
@@ -451,37 +456,40 @@ impl MessageDispatcher {
         server: &mut crate::VmServer,
     ) -> VmReply {
         let table = VmProcTable::get_global();
-        let frames = server.page_frames_mut();
-        let page_alloc = server.page_alloc_mut();
-        let cache = server.page_cache_mut();
+        let (page_alloc, frames, cache) = server.parts_mut();
 
         let vm_rq_base = VM_RQ_BASE as usize;
 
+        // All VM IPC messages use mess_1 format.
+        // SAFETY: VM messages always use the M1 format; m_type has already
+        // been validated by the caller to be a VM request number.
+        let m1 = unsafe { &msg.m_u.m_m1 };
+
         match call_nr {
             _c if _c == VM_MMAP as usize - vm_rq_base =>
-                Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(msg)),
+                Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(m1)),
             _c if _c == VM_MUNMAP as usize - vm_rq_base =>
-                Self::dispatch_munmap(table, page_alloc, frames, VmMunmapIn::decode(msg)),
+                Self::dispatch_munmap(table, page_alloc, frames, VmMunmapIn::decode(m1)),
             _c if _c == VM_MAP_PHYS as usize - vm_rq_base =>
-                Self::dispatch_map_phys(table, page_alloc, frames, VmMapPhysIn::decode(msg)),
+                Self::dispatch_map_phys(table, page_alloc, frames, VmMapPhysIn::decode(m1)),
             _c if _c == VM_EXIT as usize - vm_rq_base =>
-                Self::dispatch_exit(table, page_alloc, frames, VmExitIn::decode(msg)),
+                Self::dispatch_exit(table, page_alloc, frames, VmExitIn::decode(m1)),
             _c if _c == VM_FORK as usize - vm_rq_base =>
-                Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(msg)),
+                Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(m1)),
             _c if _c == VM_BRK as usize - vm_rq_base =>
-                Self::dispatch_brk(table, page_alloc, frames, VmBrkIn::decode(msg)),
+                Self::dispatch_brk(table, page_alloc, frames, VmBrkIn::decode(m1)),
             _c if _c == VM_WILLEXIT as usize - vm_rq_base =>
-                Self::dispatch_willexit(table, VmWillexitIn::decode(msg)),
+                Self::dispatch_willexit(table, VmWillexitIn::decode(m1)),
             _c if _c == VM_VFS_MMAP as usize - vm_rq_base =>
-                Self::dispatch_vfs_mmap(table, page_alloc, frames, VmVfsMmapIn::decode(msg)),
+                Self::dispatch_vfs_mmap(table, page_alloc, frames, VmVfsMmapIn::decode(m1)),
             _c if _c == VM_MAPCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_mapcache(table, page_alloc, frames, cache, VmCacheIn::decode(msg)),
+                Self::dispatch_mapcache(table, page_alloc, frames, cache, VmCacheIn::decode(m1)),
             _c if _c == VM_SETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_setcache(table, frames, cache, VmCacheIn::decode(msg)),
+                Self::dispatch_setcache(table, frames, cache, VmCacheIn::decode(m1)),
             _c if _c == VM_FORGETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_forgetcache(cache, frames, VmCacheIn::decode(msg)),
+                Self::dispatch_forgetcache(cache, frames, VmCacheIn::decode(m1)),
             _c if _c == VM_CLEARCACHE as usize - vm_rq_base =>
-                Self::dispatch_clearcache(cache, frames, VmCacheIn::decode(msg)),
+                Self::dispatch_clearcache(cache, frames, VmCacheIn::decode(m1)),
             // RS calls — TODO: decode helpers needed
             _c if _c == VM_RS_SET_PRIV as usize - vm_rq_base => {
                 // TODO: decode_rs_set_priv(msg)
@@ -528,14 +536,14 @@ impl MessageDispatcher {
 // Error mapping helpers — per-service error → VmError
 // ==========================================================================
 
-fn fork_error_to_vm_error(e: fork::ForkError) -> VmError {
+fn fork_error_to_vm_error(e: fork::VmForkError) -> VmError {
     match e {
-        fork::ForkError::InvalidEndpoint => VmError::InvalidProcess,
-        fork::ForkError::InvalidSlot => VmError::InvalidProcess,
-        fork::ForkError::SlotInUse => VmError::SlotInUse,
-        fork::ForkError::NoMemory => VmError::OutOfMemory,
-        fork::ForkError::PageNotMapped => VmError::PageNotMapped,
-        fork::ForkError::MemType(_) => VmError::MemType,
+        fork::VmForkError::InvalidEndpoint => VmError::InvalidProcess,
+        fork::VmForkError::InvalidSlot => VmError::InvalidProcess,
+        fork::VmForkError::SlotInUse => VmError::SlotInUse,
+        fork::VmForkError::NoMemory => VmError::OutOfMemory,
+        fork::VmForkError::PageNotMapped => VmError::PageNotMapped,
+        fork::VmForkError::MemType(_) => VmError::MemType,
     }
 }
 

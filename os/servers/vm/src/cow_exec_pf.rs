@@ -2,10 +2,9 @@
 //!
 //! Uses PageFrames + PageSlot for CoW resolution and page fault dispatch.
 
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{Endpoint, PhysBytes, VirBytes};
 use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PfnAllocError, PAGE_SIZE};
 use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
-use crate::vmproc::ActiveProc;
 use crate::phys_mem::AlignedPhysBytes;
 use crate::direct_map::vm_phys_to_virt;
 
@@ -15,7 +14,7 @@ use crate::direct_map::vm_phys_to_virt;
 /// returned `PagefaultResult`: allocate a new page, resolve CoW, or report
 /// an access violation.
 pub(crate) fn handle_pagefault(
-    proc: &ActiveProc<'_>,
+    proc_endpoint: Endpoint,
     region: &mut VirRegion,
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
@@ -27,7 +26,7 @@ pub(crate) fn handle_pagefault(
     let memtype = region.def_memtype
         .ok_or(CowError::NoMemType)?;
 
-    let result = memtype.ev_pagefault(proc, region, frames, offset, write)?;
+    let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write)?;
 
     match result {
         PagefaultResult::Handled => Ok(PagefaultAction::Handled),

@@ -18,7 +18,7 @@ x86 保护模式通过**段描述符**和**特权级**两层机制隔离内核�
 | **IDT** | Interrupt Descriptor Table | 存放异常/硬件中断/系统调用门描述符 | `idt[IDT_SIZE]`（protect.c:26） |
 | **TSS** | Task State Segment | 保存内核栈指针，用于 Ring3→Ring0 切换时自动换栈 | `tss[CONFIG_MAX_CPUS]`（protect.c:27） |
 
-**为什么需要保护模式？** 在 01-multiboot-bootstrap 阶段开启分页后，内核已拥有虚拟内存。但此时没有中断机制，没有特权隔离——任何代码都能执行 `cli`/`outb` 等特权指令。保护模式通过硬件强制实现：
+**为什么需要保护模式？** 在 01-boot-shim-bootstrap 阶段开启分页后，内核已拥有虚拟内存。但此时没有中断机制，没有特权隔离——任何代码都能执行 `cli`/`outb` 等特权指令。保护模式通过硬件强制实现：
 
 1. **段级隔离**：用户态进程使用 CPL=3 的段选择符，无法访问 CPL=0 的内核段
 2. **中断门控**：所有中断/异常通过 IDT 门描述符进入内核，门描述符的 DPL 决定是否允许用户态触发
@@ -1479,7 +1479,7 @@ fn cstart<
     // C: pg_clear() → pg_identity() → pg_mapkernel() → pg_load()
     //    — protect.c:356-358
     let mut paging = Pg::new_empty(root_page);
-    // ... identity mapping, kernel mapping (see 01-multiboot-bootstrap §4.5)
+    // ... identity mapping, kernel mapping (see 01-boot-shim-bootstrap §4.5)
     unsafe { paging.enable(); }
 
     // Phase 4: Load VM binary
@@ -1572,7 +1572,7 @@ Paging enabled (full protection + paging active)
 
 | 文档 | 关联 |
 |------|------|
-| [01-multiboot-bootstrap.md](01-multiboot-bootstrap.md) | 启动阶段页表建立（Paging trait 的 boot 使用） |
+| [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) | 启动阶段页表建立（Paging trait 的 boot 使用） |
 | [02-page-table-kernel.md](02-page-table-kernel.md) | Direct Map 消除临时 PDE 映射（ptproc/arch_post_init 消除的依据） |
 | [05-exception-interrupt.md](05-exception-interrupt.md) | 中断/异常处理（TrapEntryArch 的运行时使用） |
 | [06-proc-struct.md](06-proc-struct.md) | 进程结构（KProcess 中的保护模式相关字段） |

@@ -14,7 +14,10 @@
 
 use minix_types::VirBytes;
 use minix_boot::{BootModule, KernelInfo};
-use crate::proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
+use crate::proc_arch::{
+    ArchProcReset, ArchProcInit, BootProcArch,
+    InitialRegState, InitialRegs, SegmentSelectors, VmLoadResult,
+};
 use crate::paging::Paging;
 
 /// RISC-V 64-bit process architecture implementation.
@@ -37,30 +40,37 @@ const VM_PROC_NR: i32 = 8;
 const VM_STACK_SIZE: usize = 64 * 1024;
 
 impl ArchProcReset for Riscv64ProcArch {
-    fn reset(is_kernel: bool, proc_nr: i32) {
+    fn initial_reg_state(is_kernel: bool, proc_nr: i32) -> InitialRegState {
         // No C source — designed by analogy with aarch64.
         //
         // RISC-V arch_proc_reset:
         // 1. Clear all registers (x0-x31, f0-f31)
         // 2. Set sstatus based on kernel/user type:
         //    - Kernel: SPP=1 (return to S-mode on sret), SPIE=0
-        //    - User: SPP=0 (return to U-mode on sret), SPIE=1
+        //    - User:   SPP=0 (return to U-mode on sret), SPIE=1
         //
         // RISC-V does not have segment selectors (flat memory model).
         // FPU state is lazily initialized on first use (like ARM).
-        let _ = (is_kernel, proc_nr);
+
+        let _ = proc_nr;
+        let status = if is_kernel { INIT_TASK_SSTATUS } else { INIT_SSTATUS };
+
+        InitialRegState {
+            status,
+            segment_selectors: SegmentSelectors::default(), // all zero
+            fpu_needs_zero: false, // lazy FPU init
+        }
     }
 }
 
 impl ArchProcInit for Riscv64ProcArch {
-    fn init(
+    fn init_regs(
         is_kernel: bool,
         proc_nr: i32,
         pc: VirBytes,
         sp: VirBytes,
         ps_strings: VirBytes,
-        name: &str,
-    ) {
+    ) -> InitialRegs {
         // No C source — designed by analogy with aarch64.
         //
         // RISC-V arch_proc_init:
@@ -69,8 +79,13 @@ impl ArchProcInit for Riscv64ProcArch {
         //   pr->p_reg.pc = ip;        // sepc
         //   pr->p_reg.sp = sp;        // x2
         //   pr->p_reg.a0 = ps_str;    // x10 = ps_strings
-        Self::reset(is_kernel, proc_nr);
-        let _ = (pc, sp, ps_strings, name);
+
+        let _ = (is_kernel, proc_nr);
+        InitialRegs {
+            pc,                          // sepc
+            sp,                          // x2
+            ps_strings_reg: ps_strings.0, // a0 (x10)
+        }
     }
 }
 
