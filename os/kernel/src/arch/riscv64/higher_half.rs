@@ -35,8 +35,12 @@ impl HigherHalf for Riscv64HigherHalf {
         //   mv sp, stack_top        // switch stack to high address
         //   and sp, sp, -16         // align to 16 bytes
         //   li s0, 0                // zero frame pointer
-        //   la t0, {kmain}          // load kmain address
-        //   jalr x0, t0, 0         // jump to kmain
+        //   fence.i                 // P1-11: synchronize I-cache with writes
+        //                            // performed during paging setup
+        //   la t0, {kmain}          // load kmain address (RISC-V `la` pseudo
+        //                            // expands to `auipc + jalr` for external
+        //                            // symbols, or `auipc + addi` for PIC)
+        //   jalr x0, t0, 0          // PC <- t0 + 0 (rd=x0 discards link)
         //
         // IMPORTANT: Do NOT use a0/a7/a6 inside this asm block!
         // a0 holds kinfo (passed via in("a0") constraint), and must
@@ -47,6 +51,7 @@ impl HigherHalf for Riscv64HigherHalf {
                 "li t0, -16",
                 "and sp, sp, t0",
                 "li s0, 0",
+                "fence.i",
                 "la t0, {kmain}",
                 "jalr x0, t0, 0",
                 stktop = in(reg) stack_top.0,

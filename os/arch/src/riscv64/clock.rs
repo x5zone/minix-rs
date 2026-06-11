@@ -13,6 +13,8 @@ use crate::clock::ClockArch;
 const CLINT_MTIME: usize = 0x200_BFF8;
 
 /// CLINT mtimecmp register address for QEMU virt machine (hart 0).
+/// NOTE: On multi-hart systems, each hart has its own mtimecmp.
+/// Current implementation supports hart 0 only.
 const CLINT_MTIMECMP: usize = 0x200_4000;
 
 /// CLINT mtime frequency for QEMU virt machine (10 MHz).

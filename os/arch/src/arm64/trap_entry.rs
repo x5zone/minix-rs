@@ -22,7 +22,7 @@
 //!
 //! C: prot_init() — earm/protect.c:77 (write_vbar)
 
-use crate::trap_entry::TrapEntryArch;
+use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
 use core::arch::asm;
 
@@ -56,6 +56,11 @@ impl TrapEntryArch for AArch64TrapEntry {
         extern "C" {
             static exc_vector_table: u8;
         }
+        // SAFETY: VBAR_EL1 write is safe because:
+        // - We are at EL1 (kernel mode), required for MSR access.
+        // - exc_vector_table is a valid symbol defined in assembly,
+        //   aligned to 2KB per ARM Architecture Reference Manual.
+        // - ISB ensures the write is visible before any exception.
         unsafe {
             let vbar = &exc_vector_table as *const u8 as u64;
             asm!("msr vbar_el1, {}", in(reg) vbar);
@@ -73,7 +78,7 @@ impl TrapEntryArch for AArch64TrapEntry {
 
     fn set_handler(
         &mut self,
-        _vector: crate::protection::InterruptVector,
+        _vector: InterruptVector,
         _handler: VirBytes,
         _user_accessible: bool,
     ) {
@@ -81,5 +86,32 @@ impl TrapEntryArch for AArch64TrapEntry {
         // Dynamic handler registration is done in software by the
         // exception dispatcher, not by modifying the VBAR table.
         // This method is a no-op on ARM64.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trap_entry_init_returns_unit_struct() {
+        // AArch64TrapEntry is a unit struct — no state to verify.
+        let _entry = AArch64TrapEntry::init();
+    }
+
+    #[test]
+    fn configure_syscall_is_noop() {
+        // ARM64 uses SVC for syscalls — no MSR configuration needed.
+        // configure_syscall should not panic.
+        let mut entry = AArch64TrapEntry::init();
+        entry.configure_syscall(VirBytes::new(0xDEAD));
+    }
+
+    #[test]
+    fn set_handler_is_noop() {
+        // ARM64 uses fixed exception vector table — set_handler is no-op.
+        // Should not panic.
+        let mut entry = AArch64TrapEntry::init();
+        entry.set_handler(InterruptVector::new(14), VirBytes::new(0xBEEF), true);
     }
 }

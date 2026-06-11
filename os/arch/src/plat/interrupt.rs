@@ -166,3 +166,98 @@ pub const NR_IRQ_VECTORS: usize = 64;
 ///
 /// C: NR_IRQ_HOOKS — config.h:59/61
 pub const NR_IRQ_HOOKS: usize = 64;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_irq_vector_new() {
+        let v = IrqVector::new(32);
+        assert_eq!(v.get(), 32);
+    }
+
+    #[test]
+    fn test_irq_vector_const() {
+        const V: IrqVector = IrqVector::new(0);
+        assert_eq!(V.get(), 0);
+    }
+
+    #[test]
+    fn test_irq_vector_boundaries() {
+        let min = IrqVector::new(0);
+        let max = IrqVector::new(63);
+        assert_eq!(min.get(), 0);
+        assert_eq!(max.get(), 63);
+    }
+
+    #[test]
+    fn test_irq_vector_equality() {
+        let a = IrqVector::new(5);
+        let b = IrqVector::new(5);
+        let c = IrqVector::new(10);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_irq_id_new() {
+        let id = IrqId::new(1);
+        assert_eq!(id.get(), 1);
+    }
+
+    #[test]
+    fn test_irq_id_const() {
+        const ID: IrqId = IrqId::new(0);
+        assert_eq!(ID.get(), 0);
+    }
+
+    #[test]
+    fn test_irq_notify_id_new() {
+        let nid = IrqNotifyId::new(42);
+        assert_eq!(nid.get(), 42);
+    }
+
+    #[test]
+    fn test_irq_notify_id_const() {
+        const NID: IrqNotifyId = IrqNotifyId::new(255);
+        assert_eq!(NID.get(), 255);
+    }
+
+    #[test]
+    fn test_irq_policy_reenable() {
+        let policy = IrqPolicy::REENABLE;
+        assert!(policy.contains(IrqPolicy::REENABLE));
+        assert_eq!(policy.bits(), 0x001);
+    }
+
+    #[test]
+    fn test_irq_policy_empty() {
+        let policy = IrqPolicy::empty();
+        assert_eq!(policy.bits(), 0);
+    }
+
+    #[test]
+    fn test_nr_irq_constants() {
+        assert_eq!(NR_IRQ_VECTORS, 64);
+        assert_eq!(NR_IRQ_HOOKS, 64);
+    }
+
+    #[test]
+    fn test_irq_action_discriminants() {
+        // Ensure Completed and NotCompleted are distinct
+        assert!(matches!(IrqAction::Completed, IrqAction::Completed));
+        assert!(matches!(IrqAction::NotCompleted, IrqAction::NotCompleted));
+        assert_ne!(
+            format!("{:?}", IrqAction::Completed),
+            format!("{:?}", IrqAction::NotCompleted)
+        );
+    }
+
+    #[test]
+    fn test_irq_vector_debug_format() {
+        let v = IrqVector::new(7);
+        let debug = format!("{:?}", v);
+        assert!(debug.contains("IrqVector"));
+    }
+}

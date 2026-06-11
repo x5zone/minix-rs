@@ -34,6 +34,23 @@ pub const KERNEL_PATH: &str = "/EFI/minix/kernel.elf";
 pub const MODULES_DIR: &str = "/EFI/minix/modules";
 
 /// Boot modules to load, in order. Names match files under `MODULES_DIR`.
+///
+/// **Order semantics**: this list is the order in which the boot-shim
+/// hands the modules to the kernel. The kernel's IPC startup sequence
+/// (see `kernel/src/proc_table.rs`) consumes the list sequentially:
+/// the first module becomes the first system task, etc. The C reference
+/// order is in `minix3/minix/servers/rs/table.c::boot_image_priv_table`:
+/// `rs, vm, pm, sched, vfs, ds, tty, memory, mib, pfs, fs_imgrd, init`.
+///
+/// **Why we diverge**: in minix-rs the kernel's `proc_table` builds the
+/// same process table from `kinfo.module_list[]` (cf. `minix3/minix/kernel/main.c:171`),
+/// so the on-disk module list order is decoupled from the IPC startup
+/// order. The kernel's `proc_init` reorders them by `SYSTEM` flag
+/// priority. Therefore, the boot-shim list is alphabetical-by-category
+/// (memory managers first: `vm`, then task managers: `pm`, then file
+/// services: `vfs`, then re-incarnation: `rs`, then data services: `ds`,
+/// then network: `inet`) for readability — IPC order is a kernel
+/// concern, not a boot-shim concern.
 pub const MODULE_NAMES: &[&str] = &["vm", "pm", "vfs", "rs", "ds", "inet"];
 
 /// Result of computing the kernel's load layout from its ELF header.
@@ -164,11 +181,20 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 /// still in use. In our boot paths firmware identity-maps physical RAM
 /// during boot, and the kernel linker script guarantees non-overlapping
 /// LMA placement.
+///
+/// Overlap detection: this function now rejects ELFs whose PT_LOAD
+/// segments overlap in physical memory. Without this, a buggy or
+/// maliciously crafted ELF with overlapping LMA would silently have
+/// later segments overwrite earlier ones, with no error to the caller.
 pub unsafe fn load_segments_into_phys_memory(
     elf_data: &[u8],
 ) -> Result<(), minix_elf::ElfError> {
     let iter = minix_elf::segment_iter(elf_data)?;
-    for seg in iter {
+    let segments: Vec<_> = iter.collect();
+    if let Some(_) = first_overlapping_pair(&segments) {
+        return Err(minix_elf::ElfError::InvalidSegment);
+    }
+    for seg in &segments {
         let dest = seg.paddr as *mut u8;
         let src = &elf_data[seg.offset as usize..(seg.offset + seg.filesz) as usize];
         unsafe {
@@ -181,6 +207,24 @@ pub unsafe fn load_segments_into_phys_memory(
         }
     }
     Ok(())
+}
+
+/// Pure helper: detect the first pair of PT_LOAD segments whose physical
+/// memory ranges overlap. Returns `Some((a, b))` on the first collision,
+/// or `None` if all segments are disjoint. Exposed for unit testing.
+fn first_overlapping_pair(segments: &[minix_elf::LoadSegment]) -> Option<(usize, usize)> {
+    for (i, a) in segments.iter().enumerate() {
+        let a_end = a.paddr.saturating_add(a.memsz);
+        for (j, b) in segments.iter().enumerate().skip(i + 1) {
+            let b_end = b.paddr.saturating_add(b.memsz);
+            // Two half-open ranges [a.paddr, a_end) and [b.paddr, b_end)
+            // overlap iff a.paddr < b_end && b.paddr < a_end.
+            if a.paddr < b_end && b.paddr < a_end {
+                return Some((i, j));
+            }
+        }
+    }
+    None
 }
 
 /// Load the kernel ELF: read bytes via `loader`, compute layout, copy segments.
@@ -392,5 +436,59 @@ mod tests {
         assert_eq!(modules[0].len, 100);
         assert_eq!(modules[1].name, "pm");
         assert_eq!(modules[1].len, 200);
+    }
+
+    fn phdr(paddr: u64, memsz: u64) -> minix_elf::LoadSegment {
+        minix_elf::LoadSegment {
+            offset: 0,
+            vaddr: paddr,
+            paddr,
+            filesz: memsz,
+            memsz,
+            align: 0x1000,
+            flags: 5, // PF_R | PF_X
+        }
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_disjoint() {
+        let segs = [
+            phdr(0x1000, 0x1000),
+            phdr(0x3000, 0x1000),
+            phdr(0x5000, 0x1000),
+        ];
+        assert_eq!(first_overlapping_pair(&segs), None);
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_overlap() {
+        // Segments at 0x1000..0x2000 and 0x1800..0x2800 overlap.
+        let segs = [phdr(0x1000, 0x1000), phdr(0x1800, 0x1000)];
+        assert_eq!(first_overlapping_pair(&segs), Some((0, 1)));
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_abutting() {
+        // Segments at 0x1000..0x2000 and 0x2000..0x3000 are abutting,
+        // not overlapping. Half-open intervals [a, b) and [b, c) don't share.
+        let segs = [phdr(0x1000, 0x1000), phdr(0x2000, 0x1000)];
+        assert_eq!(first_overlapping_pair(&segs), None);
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_returns_first() {
+        // Three segments: 0 overlaps 1, 1 overlaps 2 — first is (0, 1).
+        let segs = [
+            phdr(0x1000, 0x1000),
+            phdr(0x1800, 0x1000),
+            phdr(0x2000, 0x1000),
+        ];
+        assert_eq!(first_overlapping_pair(&segs), Some((0, 1)));
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_empty() {
+        let segs: [minix_elf::LoadSegment; 0] = [];
+        assert_eq!(first_overlapping_pair(&segs), None);
     }
 }

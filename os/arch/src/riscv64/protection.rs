@@ -84,15 +84,10 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // Set sscratch to the kernel stack top.
-        // On trap from U-mode, the trap handler assembly code
-        // swaps sp and sscratch to obtain the kernel stack pointer.
-        //
-        // This is the RISC-V equivalent of x86's TSS.sp0:
-        // it provides the kernel stack for privilege transitions.
-        //
-        // C: No direct Minix3 equivalent (Minix3 has no RISC-V port).
-        // Equivalent to tss_init() setting tss.sp0 on x86.
+        // SAFETY: CSR write to sscratch is safe because:
+        // - We are in S-mode (supervisor), required for CSR access.
+        // - sscratch holds the kernel stack pointer for U→S transitions.
+        // - kernel_stack_top is a valid kernel virtual address.
         unsafe {
             asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
         }
@@ -101,9 +96,7 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
-        // Update sscratch with the new kernel stack top.
-        // This is called when switching to a different process,
-        // as each process has its own kernel stack.
+        // SAFETY: Same as init() — sscratch write in S-mode with valid address.
         unsafe {
             asm!("csrw sscratch, {}", in(reg) stack_top.get());
         }
@@ -117,11 +110,59 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        // Per-CPU initialization for Application Processors (hart).
-        // Set sscratch for this hart's kernel stack.
+        // SAFETY: Same as init() — sscratch write in S-mode with valid address.
         unsafe {
             asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
         }
         let _ = cpu_id;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn privilege_level_values() {
+        assert_eq!(Riscv64PrivilegeLevel::S_MODE.get(), 1);
+        assert_eq!(Riscv64PrivilegeLevel::U_MODE.get(), 0);
+    }
+
+    #[test]
+    fn privilege_level_roundtrip() {
+        assert_eq!(
+            Riscv64Protection::to_privilege(Riscv64PrivilegeLevel::S_MODE),
+            Privilege::Kernel
+        );
+        assert_eq!(
+            Riscv64Protection::to_privilege(Riscv64PrivilegeLevel::U_MODE),
+            Privilege::User
+        );
+        assert_eq!(
+            Riscv64Protection::from_privilege(Privilege::Kernel),
+            Riscv64PrivilegeLevel::S_MODE
+        );
+        assert_eq!(
+            Riscv64Protection::from_privilege(Privilege::User),
+            Riscv64PrivilegeLevel::U_MODE
+        );
+    }
+
+    #[test]
+    fn kernel_privilege_is_s_mode() {
+        assert_eq!(Riscv64Protection::KERNEL_PRIVILEGE, Riscv64PrivilegeLevel::S_MODE);
+    }
+
+    #[test]
+    fn user_privilege_is_u_mode() {
+        assert_eq!(Riscv64Protection::USER_PRIVILEGE, Riscv64PrivilegeLevel::U_MODE);
+    }
+
+    #[test]
+    fn protection_has_cpu_count() {
+        // Riscv64Protection only tracks cpu_count; sscratch is a hardware CSR.
+        // Verify the struct can be constructed manually.
+        let prot = Riscv64Protection { cpu_count: 1 };
+        assert_eq!(prot.cpu_count, 1);
     }
 }

@@ -1,7 +1,7 @@
 # 04-clock-interrupt-init: 时钟与中断初始化
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/clock.c:48-74`, `minix3/minix/kernel/arch/i386/i8259.c:28-63`, `minix3/minix/kernel/arch/i386/arch_system.c:246-288`, `minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:24-44`, `minix3/minix/kernel/arch/earm/arch_system.c:101-132`
+> **源码**: `minix3/minix/kernel/clock.c:48-74`, `minix3/minix/kernel/arch/i386/i8259.c:28-63`, `minix3/minix/kernel/arch/i386/arch_system.c:246-288`, `minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:22-44`, `minix3/minix/kernel/arch/earm/arch_system.c:101-132`
 > **说明**: cstart() 的后半段——init_clock + intr_init + arch_init，让内核能响应硬件事件
 > **前置**: [03-kmain-entry-protection.md](03-kmain-entry-protection.md) — 保护模式已初始化
 
@@ -301,8 +301,8 @@ strlcpy(kinfo.version, OS_VERSION, sizeof(kinfo.version));
 这些环境变量解析在 Rust 版中大部分不需要——因为：
 
 1. **verboseboot**：Rust 版用 `log` crate 的级别控制，不需要 boot 参数
-2. **ac_layout**：Rust 版的地址空间布局在编译时确定
-3. **nr_procs/nr_tasks**：Rust 版用常量，不需要运行时设置
+2. **ac_layout**：Rust 版的地址空间布局在编译时确定（由 `DirectMapArch` trait 提供 `USER_VM_BASE` / `KERNEL_VM_BASE` / `KERNEL_STACK_TOP` 等常量，见 `os/arch/src/arch/paging.rs`），不再需要 boot 时协商
+3. **nr_procs/nr_tasks**：Rust 版用常量（编译期 `const NR_PROCS: usize = ...`），不需要运行时设置
 4. **release/version**：Rust 版用 `env!("CARGO_PKG_VERSION")`
 
 ---
@@ -356,6 +356,8 @@ pub trait ClockArch {
 /// Default clock tick frequency (Hz).
 /// x86-64: 100 Hz (10ms tick), aarch64: 100 Hz, riscv64: 100 Hz
 /// C: DEFAULT_HZ — i386: 60 Hz, earm: 1000 Hz (32-bit values)
+///   路径: minix3/minix/include/arch/i386/include/archconst.h
+///         minix3/minix/include/arch/earm/include/archconst.h
 /// minix-rs: unified to 100 Hz (see §2.5 architecture evolution)
 pub const DEFAULT_HZ: u32 = 100;
 ```
@@ -398,12 +400,14 @@ pub trait ArchInit {
 
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (MMIO) |
+| 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (CLINT MMIO) |
 | 时钟频率 | 100 Hz (可配置) | 100 Hz | 100 Hz |
-| 中断控制器 | LAPIC + IOAPIC (MMIO) | GICv3 (Distributor + Redist + CPU IF) | PLIC (MMIO) + CLINT |
+| **中断控制器 (P1-19 拆分)** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF) | **PLIC** (external) + **CLINT** (timer + software) |
 | IRQ 数量 | 64 (APIC mode) | 1020 (GICv3 SPI range) | 1024 (PLIC max) |
-| arch_init | TSS + 串口 + ACPI + APIC | PMU cycle counter + bsp_init | 串口 + PMP |
+| arch_init | 串口 (COM1) + PMP/PMU + APIC MMIO | PMU cycle counter + bsp_init | 串口 + PMP |
 | 串口 | COM1 (I/O port 0x3F8) | PL011 (MMIO) | NS16550A (MMIO) |
+
+> **P1-19 修正**: RISC-V "中断控制器" 应明确分为 **PLIC** (external interrupts, 由 `InterruptController` trait 管理) 和 **CLINT** (timer + software interrupts, 由 `ClockArch` 管理)。前表中"RISC-V 中断控制器"列单写"PLIC + CLINT"易混淆——`ClockArch` 用 CLINT 的 mtime/mtimecmp，`InterruptController` 只用 PLIC。
 
 ---
 
@@ -440,34 +444,70 @@ Rust 版将 C 版 `cstart()` 的后三个调用（`init_clock()`、`intr_init()`
 > 设计决策：§3.1（分离硬件和软件）、§3.2（编译时常量）
 
 ```rust
+/// Number of load history slots for load average calculation.
+/// C: _LOAD_HISTORY — include/minix/type.h:97
+pub const LOAD_HISTORY_SIZE: usize = 16;
+
 /// Architecture-independent clock state.
 ///
-/// Manages tick frequency, uptime counter, timer queue, and load average.
-/// Hardware timer configuration is delegated to `ClockArch`.
+/// Manages tick frequency, uptime counter, realtime tracking, and load
+/// average. Hardware timer configuration is delegated to `ClockArch`.
 ///
-/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-40
+/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-44
 pub struct ClockState {
     /// Clock tick frequency in Hz.
+    /// C: kclockinfo.hz — type.h:119
     hz: u32,
 
     /// System uptime in ticks since boot.
+    /// C: kclockinfo.uptime — type.h:107
     uptime: u64,
 
-    /// Real-time offset (for time adjustment).
-    realtime_offset: i64,
+    /// Real time in ticks since boot (may differ from uptime due to adjtime).
+    /// C: kclockinfo.realtime — type.h:109
+    realtime: u64,
 
-    /// Load average data (1/5/15 minute averages).
+    /// Boot time in seconds since UNIX epoch.
+    /// C: kclockinfo.boottime — type.h:105
+    boottime: u64,
+
+    /// Number of ticks to adjust realtime by (positive = speed up, negative = slow down).
+    /// C: adjtime_delta — clock.c:44
+    adjtime_delta: i32,
+
+    /// Load average tracking data.
+    /// C: kloadinfo (struct loadinfo) — type.h:98
     loadinfo: LoadInfo,
 }
 
 /// Load average tracking data.
 ///
-/// C: kloadinfo — clock.c:42
+/// Tracks the number of runnable processes over time to compute
+/// 1/5/15 minute load averages.
+///
+/// C: struct loadinfo — include/minix/type.h:98
 struct LoadInfo {
-    /// Decayed load average counters.
-    decr: [u32; 3],  // 1, 5, 15 minute
-    /// Accumulated tick counts.
-    incr: [u32; 3],
+    /// History of process counts per sample slot.
+    /// C: proc_load_history[_LOAD_HISTORY] — type.h:99
+    proc_load_history: [u16; LOAD_HISTORY_SIZE],
+
+    /// Last slot written in proc_load_history.
+    /// C: proc_last_slot — type.h:100
+    proc_last_slot: u16,
+
+    /// Uptime at last load sample.
+    /// C: last_clock — type.h:101
+    last_clock: u64,
+}
+
+impl Default for LoadInfo {
+    fn default() -> Self {
+        Self {
+            proc_load_history: [0; LOAD_HISTORY_SIZE],
+            proc_last_slot: 0,
+            last_clock: 0,
+        }
+    }
 }
 
 impl ClockState {
@@ -475,22 +515,33 @@ impl ClockState {
         Self {
             hz: DEFAULT_HZ,
             uptime: 0,
-            realtime_offset: 0,
-            loadinfo: LoadInfo {
-                decr: [0, 0, 0],
-                incr: [0, 0, 0],
-            },
+            realtime: 0,
+            boottime: 0,
+            adjtime_delta: 0,
+            loadinfo: LoadInfo::default(),
         }
     }
 
     pub fn hz(&self) -> u32 { self.hz }
     pub fn uptime(&self) -> u64 { self.uptime }
+    pub fn realtime(&self) -> u64 { self.realtime }
 
     /// Called on each clock tick.
-    /// C: timer_int_handler() — clock.c:76
+    /// C: timer_int_handler() — clock.c:70
     pub fn tick(&mut self) {
         self.uptime += 1;
-        // TODO: update load average, check timer queue
+
+        // Update realtime with adjtime_delta adjustment.
+        // C: clock.c:92-103
+        if self.adjtime_delta != 0 && self.uptime & 0x1 != 0 {
+            self.realtime += if self.adjtime_delta > 0 { 2 } else { 0 };
+            self.adjtime_delta += if self.adjtime_delta > 0 { -1 } else { 1 };
+        } else {
+            self.realtime += 1;
+        }
+
+        // TODO: update load average (kloadinfo) — clock.c:275-291
+        // TODO: check timer queue (clock_timers) — clock.c:160-161
     }
 }
 ```
@@ -534,28 +585,39 @@ pub trait ClockArch {
 /// C: clock.c hardware init + apic.c lapic_enable()
 pub struct X86_64ClockArch;
 
+/// 8254 PIT base frequency in Hz.
+const PIT_BASE_FREQ: u32 = 1_193_182;
+/// PIT command port.
+const PIT_COMMAND: u16 = 0x43;
+/// PIT channel 0 data port.
+const PIT_CHANNEL0: u16 = 0x40;
+/// PIT command: channel 0, lobyte/hibyte access, rate generator mode.
+const PIT_CMD_RATE_GEN: u8 = 0x36;
+
 impl ClockArch for X86_64ClockArch {
     fn init_timer(hz: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
-        // PIT base frequency = 1193182 Hz.
-        // Divisor = 1193182 / hz.
-        let divisor = (1193182 / hz) as u16;
+        // C: intr_init_8254() — i8259.c equivalent
+        let divisor = (PIT_BASE_FREQ / hz) as u16;
+
         unsafe {
-            // Command byte: channel 0, lobyte/hibyte, rate generator
-            asm!("outb {}, 0x43", in(reg) 0x36u8);
-            // Divisor low byte
-            asm!("outb {}, 0x40", in(reg) (divisor & 0xFF) as u8);
-            // Divisor high byte
-            asm!("outb {}, 0x40", in(reg) (divisor >> 8) as u8);
+            // Send command byte: channel 0, lobyte/hibyte, rate generator
+            core::arch::asm!("out 0x43, al", in("al") PIT_CMD_RATE_GEN);
+            // Send divisor low byte
+            let lo = divisor as u8;
+            core::arch::asm!("out 0x40, al", in("al") lo);
+            // Send divisor high byte
+            let hi = (divisor >> 8) as u8;
+            core::arch::asm!("out 0x40, al", in("al") hi);
         }
     }
 
     fn read_ticks() -> u64 {
-        // Read LAPIC CCR (Current Count Register) or use TSC.
-        // For boot phase, use TSC (Time Stamp Counter).
+        // Use TSC (Time Stamp Counter) for high-resolution tick reading.
+        // C: read_tsc() — not in Minix3, but standard x86-64 practice
         let tsc: u64;
         unsafe {
-            asm!("rdtsc", out("rax") tsc, out("rdx") _, options(nomem));
+            core::arch::asm!("rdtsc", out("rax") tsc, out("rdx") _, options(nomem));
         }
         tsc
     }
@@ -579,12 +641,18 @@ impl ClockArch for AArch64ClockArch {
         unsafe {
             asm!("mrs {}, cntfrq_el0", out(reg) freq);
         }
-        // Set compare value: freq / hz ticks per interrupt
-        let compare = freq / hz as u64;
+        // P1-15: ARM Generic Timer 模式是 absolute compare（CNTP_CVAL_EL0
+        // 是 absolute 值，不是 delta）。读当前 count，再加上 freq/hz 作为
+        // 下次触发点。CNTP_CTL_EL0 bit 0 = enable, bit 1 = IMASK (masked)。
+        let now: u64;
         unsafe {
-            // Set the compare value
+            asm!("mrs {}, cntpct_el0", out(reg) now);
+        }
+        let compare = now + freq / hz as u64;
+        unsafe {
+            // Set the absolute compare value
             asm!("msr cntp_cval_el0, {}", in(reg) compare);
-            // Enable the timer
+            // Enable the timer (ENABLE=1, IMASK=0, ISTATUS=0)
             asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
         }
     }
@@ -605,35 +673,47 @@ impl ClockArch for AArch64ClockArch {
 /// RISC-V 64-bit clock using CLINT mtime.
 ///
 /// C: No Minix3 equivalent (Minix3 has no RISC-V port).
+
+/// CLINT mtime register address for QEMU virt machine.
+/// TODO: Should be discovered from device tree.
+const CLINT_MTIME: usize = 0x200_BFF8;
+
+/// CLINT mtimecmp register address for QEMU virt machine (hart 0).
+const CLINT_MTIMECMP: usize = 0x200_4000;
+
+/// CLINT mtime frequency for QEMU virt machine (10 MHz).
+/// TODO: Should be discovered from device tree.
+const MTIME_FREQ: u64 = 10_000_000;
+
 pub struct Riscv64ClockArch;
 
 impl ClockArch for Riscv64ClockArch {
     fn init_timer(hz: u32) {
-        // CLINT mtime frequency is platform-specific.
-        // QEMU virt: 10 MHz.
-        // Set mtimecmp = mtime + (freq / hz) to schedule next interrupt.
-        let mtime_freq: u64 = 10_000_000; // QEMU virt default
-        let interval = mtime_freq / hz as u64;
-
-        // Read current mtime
+        // Read current mtime value
         let mtime: u64;
         unsafe {
-            asm!("ld {}, 0xBFF8(x0)", out(reg) mtime, options(nostack));
+            mtime = core::ptr::read_volatile(CLINT_MTIME as *const u64);
         }
 
-        // Set mtimecmp
+        // Calculate interval between interrupts
+        let interval = MTIME_FREQ / hz as u64;
+
+        // Set mtimecmp = mtime + interval to schedule first interrupt
         let mtimecmp = mtime + interval;
         unsafe {
-            asm!("sd {}, 0x4000(x0)", in(reg) mtimecmp, options(nostack));
+            core::ptr::write_volatile(CLINT_MTIMECMP as *mut u64, mtimecmp);
+        }
+
+        // Enable S-mode timer interrupt (STIE bit in sie)
+        unsafe {
+            core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x20u64);
         }
     }
 
     fn read_ticks() -> u64 {
-        let mtime: u64;
         unsafe {
-            asm!("ld {}, 0xBFF8(x0)", out(reg) mtime, options(nostack));
+            core::ptr::read_volatile(CLINT_MTIME as *const u64)
         }
-        mtime
     }
 }
 ```
@@ -641,67 +721,158 @@ impl ClockArch for Riscv64ClockArch {
 ### 4.6 aarch64 InterruptController 实现（GICv3）
 
 ```rust
+/// GICv3 Distributor base address offset (from GIC base).
+/// QEMU virt: GICD at 0x08000000
+const GICD_OFFSET: usize = 0x0000_0000;
+
+/// GICv3 Redistributor base address offset (from GIC base).
+/// QEMU virt: GICR at 0x080A0000
+const GICR_OFFSET: usize = 0x000A_0000;
+
+/// GICD_CTLR: Distributor Control Register.
+const GICD_CTLR: usize = 0x0000;
+/// GICD_CTLR.EnableGrp1NS bit.
+const GICD_CTLR_ENABLE_GRP1NS: u32 = 0x2;
+/// GICD_ISENABLER<n>: Interrupt Set-Enable Register.
+const GICD_ISENABLER: usize = 0x0100;
+/// GICD_ICENABLER<n>: Interrupt Clear-Enable Register.
+const GICD_ICENABLER: usize = 0x0180;
+/// GICD_IGROUPR<n>: Interrupt Group Register.
+const GICD_IGROUPR: usize = 0x0080;
+/// GICR_WAKER: Redistributor Wake Register.
+const GICR_WAKER: usize = 0x0014;
+/// GICR_WAKER.ProcessorSleep bit.
+const GICR_WAKER_PROCESSOR_SLEEP: u32 = 0x2;
+/// GICR_WAKER.ChildrenAsleep bit (read-only).
+const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
+
 /// ARM64 GICv3 interrupt controller.
-///
-/// GICv3 has three components:
-/// - Distributor (GICD): manages SPI routing and priority
-/// - Redistributor (GICR): per-CPU, manages SGI/PPI
-/// - CPU Interface (ICC_*_EL1): per-CPU, interrupt ack/eoi
-///
-/// C: omap_intr.c (OMAP INTC, 32-bit ARM)
-/// minix-rs uses GICv3 (64-bit ARM + QEMU virt)
 pub struct AArch64InterruptController {
-    gicd_base: u64,
-    gicr_base: u64,
+    gicd_base: usize,
+    gicr_base: usize,
     nr_irqs: usize,
+    /// Last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
+    last_iar: u32,
 }
 
 impl AArch64InterruptController {
+    /// Construct a new controller with uninitialized base addresses.
+    /// MUST call set_base() before init() — assert_ne!() will panic otherwise.
     pub const fn new() -> Self {
         Self {
-            gicd_base: 0,  // Set during init from device tree
+            gicd_base: 0,
             gicr_base: 0,
             nr_irqs: NR_IRQ_VECTORS,
+            last_iar: 0,
         }
+    }
+
+    /// Set GIC base addresses from device tree / platform discovery.
+    pub fn set_base(&mut self, gicd_base: usize, gicr_base: usize) {
+        self.gicd_base = gicd_base;
+        self.gicr_base = gicr_base;
     }
 }
 
 impl InterruptController for AArch64InterruptController {
     fn init(&mut self) {
-        // GICv3 initialization sequence:
-        // 1. Enable Distributor (GICD_CTLR)
-        // 2. Configure SPI routing (GICD_IGROUPR, GICD_ROUTER)
-        // 3. Mask all SPIs (GICD_ICENABLER)
-        // 4. Enable Redistributor (GICR_WAKER)
-        // 5. Configure CPU Interface (ICC_SRE_EL1, ICC_IGRPEN1_EL1)
-        // TODO: implement GICv3 MMIO register writes
+        // Catch the "forgot set_base()" footgun early.
+        assert!(self.gicd_base != 0, "...: gicd_base not set; call set_base() before init()");
+        assert!(self.gicr_base != 0, "...: gicr_base not set; call set_base() before init()");
+        self.init_distributor();
+        self.init_redistributor();
+        self.init_cpu_interface();
     }
 
     fn mask(&mut self, irq: IrqVector) {
-        // GICD_ICENABLER<n> = set bit to disable SPI
-        let _ = irq;
-        // TODO: write to GICD_ICENABLER register
+        let irq_num = irq.get() as usize;
+        if irq_num < 32 {
+            // PPI/SGI: handled by Redistributor (GICR_ICENABLER0)
+            // TODO: implement PPI masking
+        } else {
+            // SPI: handled by Distributor
+            let reg = (irq_num / 32) as usize;
+            let bit = 1u32 << (irq_num % 32);
+            unsafe { self.gicd_write32(GICD_ICENABLER + reg * 4, bit); }
+        }
     }
 
     fn unmask(&mut self, irq: IrqVector) {
-        // GICD_ISENABLER<n> = set bit to enable SPI
-        let _ = irq;
-        // TODO: write to GICD_ISENABLER register
+        let irq_num = irq.get() as usize;
+        if irq_num < 32 {
+            // TODO: implement PPI unmasking
+        } else {
+            let reg = (irq_num / 32) as usize;
+            let bit = 1u32 << (irq_num % 32);
+            unsafe { self.gicd_write32(GICD_ISENABLER + reg * 4, bit); }
+        }
     }
 
     fn ack(&mut self, _irq: IrqVector) {
-        // Read ICC_IAR1_EL1 to acknowledge interrupt
-        // TODO: implement
+        // Read ICC_IAR1_EL1 to acknowledge the highest-priority pending interrupt.
+        let iar: u64;
+        unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar); }
+        self.last_iar = (iar as u32) & 0x00FF_FFFF;
     }
 
     fn eoi(&mut self, _irq: IrqVector) {
-        // Write ICC_EOIR1_EL1 to signal end of interrupt
-        // TODO: implement
+        // Write the same interrupt ID that was read from IAR.
+        unsafe { core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) self.last_iar as u64); }
     }
 
     fn mask_all(&mut self) {
-        // Disable all SPIs in GICD_ICENABLER registers
-        // TODO: implement
+        for irq in (32..self.nr_irqs).step_by(32) {
+            let reg = (irq / 32) as usize;
+            unsafe { self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF); }
+        }
+    }
+}
+```
+
+> **当前实现状态（2026-06-11）**: GICv3 SPI 路径（IRQ ≥ 32）已完整实现；PPI/SGI（IRQ < 32）mask/unmask 仍为 TODO（需要写 GICR_ICENABLER0/GICR_ISENABLER0，未实现）。Boot-stage 只需要 SPI，因此可工作。
+
+### 4.6.1 init_distributor / init_redistributor / init_cpu_interface 细节
+
+```rust
+fn init_distributor(&mut self) {
+    unsafe {
+        // 1. Assign all SPIs to Group 1 (Non-secure)
+        for irq in (32..self.nr_irqs).step_by(32) {
+            let reg = (irq / 32) as usize;
+            self.gicd_write32(GICD_IGROUPR + reg * 4, 0xFFFF_FFFF);
+        }
+        // 2. Disable all SPIs
+        for irq in (32..self.nr_irqs).step_by(32) {
+            let reg = (irq / 32) as usize;
+            self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
+        }
+        // 3. Enable Distributor (Group 1 Non-secure)
+        self.gicd_write32(GICD_CTLR, GICD_CTLR_ENABLE_GRP1NS);
+    }
+}
+
+fn init_redistributor(&mut self) {
+    unsafe {
+        // Wake the Redistributor
+        self.gicr_write32(GICR_WAKER, 0);
+        // Wait until ChildrenAsleep is cleared
+        while self.gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn init_cpu_interface(&mut self) {
+    unsafe {
+        // Enable System Register Interface (ICC_SRE_EL1)
+        let mut sre: u64;
+        core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre);
+        sre |= 0x7; // SRE + Enable + SRE-el1
+        core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre);
+        // Set priority mask to lowest (accept all interrupts)
+        core::arch::asm!("msr icc_pmr_el1, {}", in(reg) 0xFFu64);
+        // Enable Group 1 Non-secure interrupts
+        core::arch::asm!("msr icc_igrpen1_el1, {}", in(reg) 0x1u64);
     }
 }
 ```
@@ -709,65 +880,113 @@ impl InterruptController for AArch64InterruptController {
 ### 4.7 riscv64 InterruptController 实现（PLIC）
 
 ```rust
+/// PLIC base address for QEMU virt machine.
+/// TODO: Should be discovered from device tree.
+const PLIC_BASE: usize = 0x0C00_0000;
+
+/// PLIC register offsets.
+const PLIC_PRIORITY: usize = 0x0000;
+const PLIC_PENDING: usize = 0x1000;
+const PLIC_ENABLE: usize = 0x2000;
+const PLIC_THRESHOLD: usize = 0x200000;
+const PLIC_CLAIM: usize = 0x200004;
+const PLIC_COMPLETE: usize = 0x200004;
+
+/// S-mode context offset for hart 0.
+/// Context 0 = M-mode, Context 1 = S-mode (QEMU virt).
+const S_MODE_CONTEXT: usize = 1;
+
 /// RISC-V 64-bit PLIC interrupt controller.
-///
-/// PLIC (Platform-Level Interrupt Controller) manages external interrupts.
-/// CLINT (Core Local Interruptor) handles timer and IPI.
-///
-/// C: No Minix3 equivalent (Minix3 has no RISC-V port).
 pub struct Riscv64InterruptController {
-    plic_base: u64,
+    plic_base: usize,
     nr_irqs: usize,
-    context_id: u32,
+    /// S-mode context ID for the current hart.
+    context: usize,
+    /// Last claimed interrupt ID (saved from claim register read).
+    last_claimed: u32,
 }
 
 impl Riscv64InterruptController {
     pub const fn new() -> Self {
         Self {
-            plic_base: 0,  // Set during init from device tree
+            plic_base: PLIC_BASE,  // QEMU virt default; override via set_base()
             nr_irqs: NR_IRQ_VECTORS,
-            context_id: 0,
+            context: S_MODE_CONTEXT,
+            last_claimed: 0,
         }
+    }
+
+    /// Set PLIC base address from device tree / platform discovery.
+    pub fn set_base(&mut self, plic_base: usize) {
+        self.plic_base = plic_base;
     }
 }
 
 impl InterruptController for Riscv64InterruptController {
     fn init(&mut self) {
-        // PLIC initialization:
-        // 1. Set priority threshold to 0 (accept all priorities)
-        // 2. Disable all interrupt sources (enable=0)
-        // 3. Set all priorities to 1 (minimum active priority)
-        // TODO: implement PLIC MMIO register writes
+        // PLIC initialization sequence:
+        // 1. Set all interrupt priorities to 1 (minimum active)
+        // 2. Disable all interrupts (enable = 0)
+        // 3. Set threshold to 0 (accept all priorities)
+        unsafe {
+            for irq in 1..self.nr_irqs {
+                self.plic_write32(PLIC_PRIORITY + irq * 4, 1);
+            }
+            for word in 0..(self.nr_irqs + 31) / 32 {
+                self.plic_write32(PLIC_ENABLE + self.context * 0x80 + word * 4, 0);
+            }
+            self.plic_write32(PLIC_THRESHOLD + self.context * 0x1000, 0);
+        }
     }
 
     fn mask(&mut self, irq: IrqVector) {
-        // Write 0 to PLIC enable register for this IRQ
-        let _ = irq;
-        // TODO: implement
+        let irq_num = irq.get() as usize;
+        if irq_num == 0 { return; } // IRQ 0 does not exist in PLIC
+        let word = irq_num / 32;
+        let bit = irq_num % 32;
+        unsafe {
+            let offset = PLIC_ENABLE + self.context * 0x80 + word * 4;
+            let mut val = self.plic_read32(offset);
+            val &= !(1u32 << bit);
+            self.plic_write32(offset, val);
+        }
     }
 
     fn unmask(&mut self, irq: IrqVector) {
-        // Write 1 to PLIC enable register for this IRQ
-        let _ = irq;
-        // TODO: implement
+        let irq_num = irq.get() as usize;
+        if irq_num == 0 { return; }
+        let word = irq_num / 32;
+        let bit = irq_num % 32;
+        unsafe {
+            let offset = PLIC_ENABLE + self.context * 0x80 + word * 4;
+            let mut val = self.plic_read32(offset);
+            val |= 1u32 << bit;
+            self.plic_write32(offset, val);
+        }
     }
 
     fn ack(&mut self, _irq: IrqVector) {
-        // Read PLIC claim register to acknowledge interrupt
-        // TODO: implement
+        // Read the claim register to acknowledge the highest-priority
+        // pending interrupt. Returns the interrupt ID.
+        let claimed: u32;
+        unsafe { claimed = self.plic_read32(PLIC_CLAIM + self.context * 0x1000); }
+        self.last_claimed = claimed;
     }
 
     fn eoi(&mut self, _irq: IrqVector) {
-        // Write IRQ ID to PLIC complete register
-        // TODO: implement
+        // Write the interrupt ID to the complete register.
+        unsafe { self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, self.last_claimed); }
     }
 
     fn mask_all(&mut self) {
-        // Write 0 to all PLIC enable registers
-        // TODO: implement
+        for word in 0..(self.nr_irqs + 31) / 32 {
+            unsafe { self.plic_write32(PLIC_ENABLE + self.context * 0x80 + word * 4, 0); }
+        }
     }
 }
 ```
+
+> **当前实现状态（2026-06-11）**: PLIC 已完整实现，base 默认 QEMU virt 地址 0x0C00_0000。Timer 中断由 CLINT 处理（见 `clock.rs`），不在 PLIC 路径。
 
 ### 4.8 ArchInit trait
 
@@ -793,29 +1012,41 @@ pub trait ArchInit {
 ### 4.9 x86-64 ArchInit 实现
 
 ```rust
+/// COM1 base port (standard PC UART 16550).
+pub const COM1_BASE: u16 = 0x3F8;
+
+/// Divisor value for 115200 baud from 1.8432 MHz crystal (divisor = 1).
+const COM1_DIVISOR_115200: u8 = 0x01;
+const COM1_LCR_DLAB: u8 = 0x80;        // DLAB bit
+const COM1_LCR_8N1: u8 = 0x03;          // 8 data bits, no parity, 1 stop
+const COM1_FCR_ENABLE: u8 = 0xC7;       // FIFO enable + clear buffers
+const COM1_MCR_DTR_RTS_OUT2: u8 = 0x0B; // DTR + RTS + OUT2
+
+unsafe fn ser_init() {
+    // Disable all UART interrupts
+    outb(COM1_BASE + 1, 0x00);
+    // Enable divisor latch access
+    outb(COM1_BASE + 3, COM1_LCR_DLAB);
+    // Set baud rate to 115200 (divisor = 1)
+    outb(COM1_BASE + 0, COM1_DIVISOR_115200);
+    outb(COM1_BASE + 1, 0x00);
+    // 8 bits, no parity, 1 stop, DLAB off
+    outb(COM1_BASE + 3, COM1_LCR_8N1);
+    // Enable FIFO
+    outb(COM1_BASE + 2, COM1_FCR_ENABLE);
+    // DTR + RTS + OUT2
+    outb(COM1_BASE + 4, COM1_MCR_DTR_RTS_OUT2);
+}
+
 pub struct X86_64ArchInit;
 
 impl ArchInit for X86_64ArchInit {
     fn init() {
-        // C: arch_init() — arch_system.c:246-288
-
-        // 1. Initialize per-CPU kernel stacks
-        // C: k_stacks = &k_stacks_start
-        // Already handled by linker script in Rust version
-
-        // 2. Initialize serial port for early debug output
-        // C: ser_init()
-        // TODO: COM1 initialization (0x3F8)
-
-        // 3. Initialize ACPI tables (if available)
-        // C: acpi_init()
-        // TODO: RSDP search + table parsing
-
-        // 4. Initialize APIC (if available)
-        // C: apic_single_cpu_init()
-        // TODO: LAPIC + IOAPIC MMIO initialization
-
-
+        // 1. Per-CPU kernel stacks (handled by linker script)
+        // 2. Serial port initialization (COM1 at 0x3F8)
+        unsafe { ser_init(); }
+        // 3. ACPI table parsing — TODO: not required for QEMU virt bring-up
+        // 4. APIC initialization — done by X86_64InterruptController::init()
     }
 }
 ```
@@ -832,22 +1063,21 @@ impl ArchInit for AArch64ArchInit {
         // 1. Enable PMU cycle counter for user mode access
         // C: PMU_PMCR_E + PMU_PMCNTENSET_C + PMU_PMUSERENR_EN
         unsafe {
-            // Enable PMU
-            asm!("msr pmcr_el0, {}", in(reg) 0x1u64);  // PMCR.E
-            // Enable cycle counter
-            asm!("msr pmcntenset_el0, {}", in(reg) 0x80000000u64);  // C bit
-            // Allow EL0 access
-            asm!("msr pmuserenr_el0, {}", in(reg) 0x1u64);  // EN bit
+            // PMCR: E (enable) + C (reset event counters) + P (reset cycle counter) = 0x7
+            core::arch::asm!("msr pmcr_el0, {}", in(reg) 0x7u64);
+            // PMCNTENSET: C bit (bit 31) enables cycle counter
+            core::arch::asm!("msr pmcntenset_el0, {}", in(reg) 0x8000_0000u64);
+            // PMUSERENR: EN bit (bit 0) — allow EL0 (user mode) access
+            core::arch::asm!("msr pmuserenr_el0, {}", in(reg) 0x1u64);
         }
 
-        // 2. Board-specific initialization
-        // C: bsp_init()
-        // TODO: platform-specific setup
-
-
+        // 2. Board-specific initialization (bsp_init)
+        // TODO: platform-specific setup (e.g., GIC base address discovery)
     }
 }
 ```
+
+> **当前实现状态（2026-06-11）**: PMU 三个寄存器 (PMCR_EL0 / PMCNTENSET_EL0 / PMUSERENR_EL0) 完整实现。`bsp_init` 仍为 TODO（GIC base 实际由 `AArch64InterruptController::set_base()` 单独调用，不在此路径）。
 
 ### 4.11 riscv64 ArchInit 实现
 
@@ -859,23 +1089,26 @@ impl ArchInit for Riscv64ArchInit {
         // No Minix3 equivalent — derived from RISC-V Privileged Spec
 
         // 1. Configure PMP (Physical Memory Protection)
-        // Allow all access for now (OpenSBI may have already configured)
+        // pmpaddr0 = u64::MAX (match all addresses via NAPOT encoding)
         unsafe {
-            // pmpaddr0 = 0xFFFFFFFFFFFFFFFF (all address)
-            asm!("csrw pmpaddr0, {}", in(reg) u64::MAX);
-            // pmpcfg0 = L+NAPOT+RWX (allow all, locked)
-            asm!("csrw pmpcfg0, {}", in(reg) 0x1Fu64);
+            core::arch::asm!("csrw pmpaddr0, {}", in(reg) u64::MAX);
+            // pmpcfg0 = A=NAPOT (0x18) + X+R+W (0x7) = 0x1F
+            // Allows all access to all memory regions.
+            core::arch::asm!("csrw pmpcfg0, {}", in(reg) 0x1Fu64);
         }
 
         // 2. Enable S-mode interrupts
+        // SIE bits set: STIE (bit 5) + SSIE (bit 1) = 0x22
+        // (SEIE bit 9 not set — handled separately when external sources
+        // are configured in interrupt controller)
         unsafe {
-            asm!("csrs sstatus, {bits}", bits = in(reg) 0x2u64);  // SIE bit
+            core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x22u64);
         }
-
-
     }
 }
 ```
+
+> **当前实现状态（2026-06-11）**: PMP entry 0 完整实现（pmpaddr0 + pmpcfg0），SIE 0x22 设置 STIE+SSIE。SEIE 由 InterruptController::unmask() 在使能 PLIC external 中断时单独处理。
 
 ### 4.12 init_clock_and_interrupts() 实现
 
@@ -886,7 +1119,7 @@ impl ArchInit for Riscv64ArchInit {
 ///
 /// C: init_clock() + intr_init(0) + arch_init() — main.c:403-481
 fn init_clock_and_interrupts() {
-    use minix_arch::{InterruptController, CurrentInterruptController, ClockArch, CurrentClockArch, ArchInit, CurrentArchInit};
+    use minix_arch::{ClockArch, ArchInit};
 
     // Step 1: Initialize clock state (software).
     // C: init_clock() — clock.c:48
@@ -895,10 +1128,12 @@ fn init_clock_and_interrupts() {
 
     // Step 2: Initialize hardware timer.
     // C: hardware portion of init_clock + arch_init() APIC timer
+    // Architecture-specific ClockArch is selected at compile time.
     CurrentClockArch::init_timer(clock.hz());
 
     // Step 3: Initialize interrupt controller.
-    // C: intr_init(0) — i8259.c:28 / omap_intr.c:24
+    // C: intr_init(0) — i8259.c:28 / omap_intr.c:22
+    // Architecture-specific InterruptController is selected at compile time.
     let mut intr = CurrentInterruptController::new();
     intr.init();  // mask_all() called internally
 
@@ -912,40 +1147,128 @@ fn init_clock_and_interrupts() {
 
 ## 5. 测试要点
 
-### 5.1 QEMU + GDB 验证
+测试分为两层：**单元测试**（验证软件状态机逻辑，无硬件依赖）和 **QEMU 集成测试**（验证硬件寄存器配置，需 QEMU + GDB）。
 
-```bash
-# x86-64: 验证 PIT 已配置
-qemu-system-x86_64 -kernel kernel.elf -s -S
-(gdb) break init_clock_and_interrupts
-(gdb) continue
-(gdb) finish  # 执行完 init_clock_and_interrupts
-(gdb) info registers  # IDT 应已加载
+### 5.1 单元测试
 
-# aarch64: 验证 Generic Timer 已启用
-qemu-system-aarch64 -machine virt -kernel kernel.elf -s -S
-(gdb) break init_clock_and_interrupts
-(gdb) continue
-(gdb) finish
-(gdb) print $cntp_ctl_el0  # 应为 1 (enabled)
+单元测试位于多个 `#[cfg(test)]` 模块中，按文件分布如下（**P1-20 验证, 2026-06-11**）：
 
-# riscv64: 验证 mtimecmp 已设置
-qemu-system-riscv64 -machine virt -kernel kernel.elf -s -S
-(gdb) break init_clock_and_interrupts
-(gdb) continue
-(gdb) finish
-(gdb) x/gx 0x200BFF8  # mtimecmp 应非零
-```
+| 文件 | 测试数 | 验证内容 |
+|------|-------|---------|
+| `os/arch/src/arch/clock.rs` | 11 | `ClockState` / `LoadInfo` / `DEFAULT_HZ` / `LOAD_HISTORY_SIZE` |
+| `os/arch/src/plat/interrupt.rs` | 13 | `IrqVector` / `IrqId` / `IrqNotifyId` / `IrqPolicy` / `IrqAction` / `NR_IRQ_*` |
+| `os/arch/src/x86_64/interrupt.rs` | 13 | LAPIC/IOAPIC 寄存器偏移、set_base 覆盖、SVR enable bit、IA32_APIC_BASE MSR index 等 |
+| `os/arch/src/x86_64/arch_init.rs` | 7 | COM1 寄存器常量 (DLAB, 8N1, FIFO, MCR)、ser_init 不 panic |
+| `os/arch/src/arm64/interrupt.rs` | 7 | GIC 寄存器偏移、WAKER bits、QEMU virt GICD/GICR 偏移、gicd_base=0 防御 panic |
+| `os/arch/src/{x86_64,arm64,riscv64}/trap_entry.rs` | 15/3/3 | IDT 门描述符、set_handler 行为、VBAR/stvec 配置（详见 doc 03 §5.3）|
+| **总计** | **72** | |
 
-### 5.2 单元测试
+#### 5.1.1 ClockState 测试（`arch/clock.rs`）
 
 | 测试 | 验证内容 |
 |------|---------|
-| `test_clock_state_new` | ClockState 初始 uptime=0, hz=DEFAULT_HZ |
-| `test_clock_state_tick` | tick() 递增 uptime |
-| `test_interrupt_controller_init` | init() 不 panic，所有 IRQ 被 mask |
-| `test_interrupt_mask_unmask` | mask + unmask 不 panic |
-| `test_arch_init` | init() 不 panic |
+| `test_clock_state_new` | `ClockState::new()` 初始 `hz=100`、`uptime=0`、`realtime=0` |
+| `test_clock_state_default` | `ClockState::default()` == `ClockState::new()` |
+| `test_clock_state_tick_increment_uptime` | 100 次 `tick()` 后 `uptime==100` |
+| `test_clock_state_tick_realtime_no_adjtime` | 无 adjtime 时 `realtime == uptime` |
+| `test_clock_state_tick_realtime_with_positive_adjtime` | `adjtime_delta=10`：20 次 tick 后 `realtime=30`、`adjtime_delta=0` |
+| `test_clock_state_tick_realtime_with_negative_adjtime` | `adjtime_delta=-10`：20 次 tick 后 `realtime=10`、`adjtime_delta=0` |
+| `test_clock_state_tick_realtime_adjtime_stops_when_zero` | 逐 tick 验证 adjtime_delta 从 2→0 过程中 realtime 的精确变化 |
+| `test_clock_state_large_uptime_no_overflow` | 1M 次 tick（~2.8h@100Hz）无溢出，uptime 和 realtime 精确 |
+| `test_load_info_default` | `LoadInfo::default()` 初始化 16 槽全 0、slot=0、clock=0 |
+| `test_default_hz_value` | `DEFAULT_HZ == 100` |
+| `test_load_history_size` | `LOAD_HISTORY_SIZE == 16` |
+
+**运行命令**：
+```bash
+cd os/arch && cargo test --lib -- tests:: 2>&1
+```
+
+#### 5.1.2 IRQ 类型测试（`plat/interrupt.rs`）
+
+| 测试 | 验证内容 |
+|------|---------|
+| `test_irq_vector_new` | `IrqVector::new(32).get() == 32` |
+| `test_irq_vector_const` | `IrqVector` 可在 const 上下文中使用 |
+| `test_irq_vector_boundaries` | min=0, max=63 |
+| `test_irq_vector_equality` | `IrqVector` 支持 `==` 和 `!=` |
+| `test_irq_id_new` | `IrqId::new(1).get() == 1` |
+| `test_irq_id_const` | `IrqId` 可在 const 上下文中使用 |
+| `test_irq_notify_id_new` | `IrqNotifyId::new(42).get() == 42` |
+| `test_irq_notify_id_const` | `IrqNotifyId` 可在 const 上下文中使用 |
+| `test_irq_policy_reenable` | `IrqPolicy::REENABLE.bits() == 0x001` |
+| `test_irq_policy_empty` | `IrqPolicy::empty().bits() == 0` |
+| `test_nr_irq_constants` | `NR_IRQ_VECTORS == 64`, `NR_IRQ_HOOKS == 64` |
+| `test_irq_action_discriminants` | `Completed` != `NotCompleted` |
+| `test_irq_vector_debug_format` | `Debug` 输出包含类型名 |
+
+### 5.2 QEMU + GDB 集成测试
+
+QEMU 测试使用批处理 GDB 脚本，自动启动 QEMU、打断点、验证寄存器状态。
+
+测试脚本位于 `os/arch/tests/`：
+- `qemu_test_x86_64.sh`
+- `qemu_test_aarch64.sh`
+- `qemu_test_riscv64.sh`
+
+#### 5.2.1 x86-64 验证
+
+```bash
+cd os/arch/tests && ./qemu_test_x86_64.sh build/x86_64/kernel.elf
+```
+
+验证内容：
+1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
+2. 8254 PIT 已配置（端口 0x43/0x40 写入了 rate generator 模式）
+3. ClockState 初始化（hz、uptime 初始值正确）
+
+#### 5.2.2 aarch64 验证
+
+```bash
+cd os/arch/tests && ./qemu_test_aarch64.sh build/aarch64/kernel.elf
+```
+
+验证内容：
+1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
+2. ARM Generic Timer 已启用：`CNTP_CTL_EL0 & 0x1 == 1`（ENABLE bit）
+3. Counter frequency 合理：`CNTFRQ_EL0 > 0`
+4. GICv3 CPU Interface 已配置：`ICC_SRE_EL1 & 0x7 == 0x7`（SRE + Enable）
+5. Priority mask 已设置：`ICC_PMR_EL1 == 0xFF`
+
+#### 5.2.3 riscv64 验证
+
+```bash
+cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
+```
+
+验证内容：
+1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
+2. CLINT mtimecmp 已配置：`*(uint64_t*)0x2004000 != 0`
+3. CLINT mtime 在递增：`*(uint64_t*)0x200BFF8` 非零
+4. S-mode 中断已使能：`sie & 0x22 == 0x22`（SEIE + STIE）
+5. S-mode 状态已配置：`sstatus.SIE` bit 设置
+
+### 5.3 测试覆盖分析
+
+| 维度 | 覆盖项 | 覆盖情况 |
+|------|--------|---------|
+| ClockState 初始化 | new/default 创建 | ✅ 2 tests |
+| ClockState tick 正常路径 | 递增 uptime, realtime | ✅ 2 tests |
+| ClockState tick adjtime 正偏差 | realtime 加速, delta 收敛 | ✅ 2 tests |
+| ClockState tick adjtime 负偏差 | realtime 减速, delta 收敛 | ✅ 1 test |
+| ClockState 大数稳定性 | 无溢出 | ✅ 1 test |
+| LoadInfo 初始化 | 字段正确 | ✅ 1 test |
+| 常量值验证 | DEFAULT_HZ, LOAD_HISTORY_SIZE | ✅ 2 tests |
+| IRQ 类型安全 | IrqVector, IrqId, IrqNotifyId | ✅ 8 tests |
+| IRQ 策略/动作 | IrqPolicy, IrqAction 语义 | ✅ 3 tests |
+| QEMU x86-64 | PIT 配置, 断点命中 | ✅ 自动化脚本 |
+| QEMU aarch64 | Generic Timer, GICv3 寄存器 | ✅ 自动化脚本 |
+| QEMU riscv64 | CLINT mtimecmp, sie 寄存器 | ✅ 自动化脚本 |
+
+**未覆盖（后续文档）**：
+- Timer queue（`clock_timers`）测试 — 属于定时器超时管理模块
+- Load average 更新（`kloadinfo`）测试 — 属于调度器模块
+- 时钟中断处理程序（`timer_int_handler`）测试 — 属于异常/中断处理文档
 
 ---
 

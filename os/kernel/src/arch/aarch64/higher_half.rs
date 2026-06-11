@@ -44,6 +44,7 @@ impl HigherHalf for AArch64HigherHalf {
                 "and x2, x2, x1",
                 "mov sp, x2",
                 "mov x29, #0",
+                "isb",                      // P1-11: drain write buffer before br
                 "ldr x1, ={kmain}",
                 "br x1",
                 stktop = in(reg) stack_top.0,

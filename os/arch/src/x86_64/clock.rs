@@ -11,11 +11,6 @@ use crate::clock::ClockArch;
 /// 8254 PIT base frequency in Hz.
 const PIT_BASE_FREQ: u32 = 1_193_182;
 
-/// PIT command port.
-const PIT_COMMAND: u16 = 0x43;
-/// PIT channel 0 data port.
-const PIT_CHANNEL0: u16 = 0x40;
-
 /// PIT command: channel 0, lobyte/hibyte access, rate generator mode.
 const PIT_CMD_RATE_GEN: u8 = 0x36;
 
@@ -32,6 +27,11 @@ impl ClockArch for X86_64ClockArch {
     fn init_timer(hz: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
         // C: intr_init_8254() — i8259.c equivalent
+        //
+        // PIT divisor is 16-bit, so hz must be >= 19 (1193182 / 65535 ≈ 18.2).
+        // Values below 19 would overflow the divisor.
+        assert!(hz >= 19, "PIT divisor overflow: hz must be >= 19, got {}", hz);
+
         let divisor = (PIT_BASE_FREQ / hz) as u16;
 
         unsafe {
@@ -48,6 +48,17 @@ impl ClockArch for X86_64ClockArch {
 
     fn read_ticks() -> u64 {
         // Use TSC (Time Stamp Counter) for high-resolution tick reading.
+        // NOTE: TSC frequency varies across CPUs and is not calibrated here.
+        // This value should only be used for relative timing (deltas), not
+        // absolute time conversion. For absolute time, use ClockState::uptime.
+        //
+        // **Multi-core invariant**: ensure CPUID.80000007H:EDX[8] (Invariant TSC)
+        // is set on every logical CPU. Without it, TSC offsets differ across
+        // cores (due to per-core reset or warm-reset) and deltas computed
+        // across CPUs are meaningless. If Invariant TSC is unavailable, fall
+        // back to LAPIC TSC-deadline timer (which uses a per-core offset
+        // table) or HPET instead.
+        //
         // C: read_tsc() — not in Minix3, but standard x86-64 practice
         let tsc: u64;
         unsafe {

@@ -76,21 +76,42 @@ impl ProtectionArch for AArch64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // Set SP_EL1 to the kernel stack top for exception entry.
-        // When an exception occurs (IRQ/SVC/etc.), the CPU automatically
-        // switches from SP_EL0 to SP_EL1.
+        // SAFETY: MSR write to SP_EL1 is safe because:
+        // - We are executing at EL1 (kernel mode), required for MSR access.
+        // - SP_EL1 is the dedicated register for EL1 stack pointer,
+        //   used automatically on exception entry from EL0.
+        // - kernel_stack_top is a valid kernel virtual address.
         //
-        // C: prot_init() sets SP_EL1 implicitly through tss_init equivalent
+        // CRITICAL: When SPSel=1 (the default), SP_EL1 IS the current stack
+        // pointer. Writing to SP_EL1 changes the active SP immediately.
+        // We must save the old SP, write the new value, then restore SP
+        // to avoid corrupting the caller's stack frame.
         unsafe {
-            asm!("msr sp_el1, {}", in(reg) kernel_stack_top.get());
+            asm!(
+                "mov {tmp}, sp",          // save current SP
+                "msr SP_EL1, {newval}",   // write new SP_EL1 (also changes current SP!)
+                "mov sp, {tmp}",          // restore current SP from saved value
+                tmp = out(reg) _,
+                newval = in(reg) kernel_stack_top.get(),
+                options(nostack, preserves_flags),
+            );
         }
 
         Self { cpu_count: cpu_id + 1 }
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
+        // SAFETY: Same as init() — SP_EL1 write at EL1 with valid address.
+        // Must save/restore SP to avoid stack corruption (see init() comment).
         unsafe {
-            asm!("msr sp_el1, {}", in(reg) stack_top.get());
+            asm!(
+                "mov {tmp}, sp",
+                "msr SP_EL1, {newval}",
+                "mov sp, {tmp}",
+                tmp = out(reg) _,
+                newval = in(reg) stack_top.get(),
+                options(nostack, preserves_flags),
+            );
         }
     }
 
@@ -100,20 +121,95 @@ impl ProtectionArch for AArch64Protection {
         // set by init(). There is no separate "load" operation needed
         // for protection structures on ARM64.
         //
-        // Ensure instruction synchronization after any system register
-        // writes that may have occurred.
+        // SAFETY: ISB is always safe — it is an instruction synchronization
+        // barrier that ensures previous system register writes are visible.
         unsafe {
             asm!("isb");
         }
     }
 
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        // Per-CPU initialization for Application Processors.
-        // Set SP_EL1 for this CPU's exception entry stack.
+        // SAFETY: Same as init() — SP_EL1 write at EL1 with valid address.
+        // Must save/restore SP to avoid stack corruption (see init() comment).
+        // ISB ensures the write is visible before returning.
         unsafe {
-            asm!("msr sp_el1, {}", in(reg) kernel_stack_top.get());
-            asm!("isb");
+            asm!(
+                "mov {tmp}, sp",
+                "msr SP_EL1, {newval}",
+                "mov sp, {tmp}",
+                "isb",
+                tmp = out(reg) _,
+                newval = in(reg) kernel_stack_top.get(),
+                options(nostack, preserves_flags),
+            );
         }
         let _ = cpu_id;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn privilege_level_values() {
+        assert_eq!(AArch64PrivilegeLevel::EL1.get(), 1);
+        assert_eq!(AArch64PrivilegeLevel::EL0.get(), 0);
+    }
+
+    #[test]
+    fn privilege_level_roundtrip() {
+        assert_eq!(
+            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL1),
+            Privilege::Kernel
+        );
+        assert_eq!(
+            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL0),
+            Privilege::User
+        );
+        assert_eq!(
+            AArch64Protection::from_privilege(Privilege::Kernel),
+            AArch64PrivilegeLevel::EL1
+        );
+        assert_eq!(
+            AArch64Protection::from_privilege(Privilege::User),
+            AArch64PrivilegeLevel::EL0
+        );
+    }
+
+    #[test]
+    fn kernel_privilege_is_el1() {
+        assert_eq!(AArch64Protection::KERNEL_PRIVILEGE, AArch64PrivilegeLevel::EL1);
+    }
+
+    #[test]
+    fn user_privilege_is_el0() {
+        assert_eq!(AArch64Protection::USER_PRIVILEGE, AArch64PrivilegeLevel::EL0);
+    }
+
+    #[test]
+    fn el1_maps_to_kernel() {
+        assert_eq!(
+            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL1),
+            Privilege::Kernel
+        );
+    }
+
+    #[test]
+    fn el0_maps_to_user() {
+        assert_eq!(
+            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL0),
+            Privilege::User
+        );
+    }
+
+    #[test]
+    fn protection_has_cpu_count() {
+        // AArch64Protection only tracks cpu_count; SP_EL1 is a hardware register.
+        // We can verify the struct exists and init() returns a valid instance
+        // (but cannot call init() in unit tests because it uses msr SP_EL1).
+        // Instead, verify the type can be constructed manually.
+        let prot = AArch64Protection { cpu_count: 1 };
+        assert_eq!(prot.cpu_count, 1);
     }
 }

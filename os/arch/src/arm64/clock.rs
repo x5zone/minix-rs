@@ -24,16 +24,24 @@ impl ClockArch for AArch64ClockArch {
         // ARM Generic Timer is configured by firmware (TF-A/U-Boot).
         // We need to:
         // 1. Read the counter frequency from CNTFRQ_EL0
-        // 2. Calculate the compare value for the desired tick rate
-        // 3. Set CNTP_CVAL_EL0 and enable the timer
+        // 2. Read the current counter value from CNTPCT_EL0
+        // 3. Calculate the absolute compare value for the desired tick rate
+        // 4. Set CNTP_CVAL_EL0 and enable the timer
 
         let freq: u64;
         unsafe {
             core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq);
         }
 
-        // Set compare value: freq / hz ticks per interrupt
-        let compare = freq / hz as u64;
+        // Read current counter value for absolute compare calculation
+        let current_count: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) current_count);
+        }
+
+        // Set compare value: current_count + (freq / hz) ticks per interrupt
+        // CNTP_CVAL_EL0 is an absolute value, not a relative interval.
+        let compare = current_count + freq / hz as u64;
         unsafe {
             // Set the compare value for the EL1 physical timer
             core::arch::asm!("msr cntp_cval_el0, {}", in(reg) compare);

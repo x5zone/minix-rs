@@ -47,6 +47,9 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half",
     "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-protection",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64",
     
     # 用户态命令 - bin
     "commands/bin/cat",

@@ -1,89 +1,89 @@
 # 03-kmain-entry-protection: kmain 入口与保护模式初始化
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/main.c:115-147`, `minix3/minix/kernel/main.c:403-481`, `minix3/minix/kernel/arch/i386/protect.c:321-367`, `minix3/minix/kernel/arch/earm/protect.c:77-93`
-> **说明**: 从 kmain 被调用到 prot_init() 完成——内核建立保护模式基础设施
-> **前置**: [02-higher-half-kernel.md](02-higher-half-kernel.md) — trampoline 已将 CPU 切换到高地址
+> **源码**: `minix3/minix/kernel/main.c:115-147,403-481`, `minix3/minix/kernel/arch/i386/protect.c:321-367`, `minix3/minix/kernel/arch/earm/protect.c:77-93`
+> **说明**: 从 `kmain()` 入口到保护结构就绪——内核建立保护模式基础设施
+> **前置**: [02-higher-half-kernel.md](02-higher-half-kernel.md) — CPU 已切换到高地址，进入 `kmain`
 
 ---
 
-## 1. 概述
+## 1. 概念：什么是"保护结构"，内核为什么必须自己建立它
 
-### 1.0 保护结构：CPU 与 OS 之间的契约
+### 1.1 一句话
 
-03 文档的主题是 `prot_init()`——但它远不止"设置几个寄存器"。从 OS 理论的角度看，保护结构回答的是 CPU 向内核提出的三个根本问题：
+`prot_init()` 让内核从"借用固件的运行上下文"变成"拥有自己的运行上下文"。从此刻起，异常向量、特权级切换、内核栈的归属权都从固件转移到内核。
 
-> **异常来了去哪里？** → 异常向量表（IDT/VBAR_EL1/stvec）  
-> **用户态不能碰哪里？** → 页表权限位 + 段描述符（supervisor/user 隔离）  
-> **进程切换怎么安全转场？** → TSS / 栈指针切换 / 上下文保存机制
+### 1.2 三个问题
 
-这三个问题的答案构成了 CPU 与操作系统之间的**契约**。操作系统填写保护结构，告诉 CPU："当异常发生时，这是我的处理函数；当用户进程运行时，它不能碰我的内存。" 填写保护结构 = 内核**宣告自己对 CPU 的控制权**。
+任何正在运行的程序，都需要回答 CPU 的三个隐含问题：
 
-**为什么不能用固件留下的保护结构？**
+| 问题 | 缺失回答的后果 | 保护结构提供的答案 |
+|------|--------------|------------------|
+| **异常发生时的处理入口** | 任何除零、缺页、未定义指令都会让 CPU 找不到处理函数，陷入不可恢复的崩溃 | 异常向量表（x86-64 IDT / aarch64 VBAR_EL1 / riscv64 stvec） |
+| **用户态可访问的内存范围** | 用户态可读/写内核任何数据，内核无任何隔离可言 | 页表权限位 + 段描述符（x86-64 GDT 段 DPL） |
+| **用户态陷入内核时使用的栈** | CPU 继续用用户态栈保存上下文，恶意进程可借此注入数据 | 内核栈指针（x86-64 TSS.sp0 / aarch64 SP_EL1 / riscv64 sscratch） |
 
-内核在进入 `kmain()` 时，CPU 确实有正在生效的保护结构：
-- x86-64：GRUB/UEFI 的 GDT 和 IDT
-- aarch64/riscv64：UEFI/OpenSBI 的异常向量
+这三类机制的集合称为**保护结构**。保护结构是 CPU 与操作系统之间的契约：操作系统填写保护结构，向 CPU 声明上述问题的答案；CPU 在每次异常、特权级切换、系统调用时查表执行。
 
-但这些固件设置对于操作系统来说是不可信赖的，原因有三：
+### 1.3 为什么不能用固件留下的保护结构
 
-1. **生命周期**：UEFI 的 GDT 和 IDT 在 UEFI 分配的内存中。`ExitBootServices()` 后，这部分内存可能被内核作为空闲物理内存回收——如果内核分配器恰好分配了 GDT 所在的页面，下一个异常就会 triple fault。
-2. **语义不匹配**：UEFI 的 GDT 是为运行 PE32+ 程序设计的，基本只包含代码段和数据段的选择子。Minix3 内核需要 TSS（任务状态段）来支持用户态到内核态的栈切换——UEFI 的 GDT 中没有 TSS 描述符。
-3. **架构差异**：x86 用 GDT + IDT + TSS 三层结构，ARM/RISC-V 用 VBAR_EL1/stvec 单层结构。prot_init() 必须为每种架构建立其特有的一套机制。
+进入 `kmain()` 时，CPU 确实有正在生效的保护结构，但这些结构对内核不可信：
 
-**prot_init() 的哲学意义**：内核在此时刻之前一直"借用"他人的保护结构——boot-shim 使用 UEFI 的，GRUB 使用 BIOS 的。从 `prot_init()` 开始，内核有了**自己的保护结构**。这是内核从"被引导的程序"变为"操作系统的核心"的标志。
+- **生命周期不可控**：UEFI 的 GDT/IDT 位于 UEFI 运行时内存。`ExitBootServices()` 后，这部分内存可被内核作为空闲物理页回收，下一个异常就找不到处理函数。
+- **语义不匹配**：UEFI 的 GDT 为运行 PE32+ 程序设计，只含代码段和数据段选择子。Minix3 内核需要 TSS（任务状态段）实现用户态→内核态栈切换，UEFI 的 GDT 中没有 TSS 描述符。
+- **架构差异**：x86 用 GDT + IDT + TSS 三层结构；aarch64/riscv64 用单层异常向量。固件留下的保护结构无法满足内核的特权级切换需求。
 
-### 1.1 kmain 六阶段总览
+`prot_init()` 的语义：内核在此刻之前一直借用他人的保护结构（boot-shim 用 UEFI 的，GRUB 用 BIOS 的）。`prot_init()` 之后，内核拥有自己的保护结构。保护结构的所有权从固件转移到内核，是内核从"被引导的程序"转变为"操作系统的核心"的标志。
 
-02 文档结束时，CPU 已在高地址执行 `kmain()`。从 `kmain()` 入口到内核开始调度第一个用户进程，整个 boot 过程可以划分为六个阶段：
+### 1.4 kmain 的六阶段启动图景
 
-| 阶段 | 标记 | 函数 | 做什么 | 文档 |
-|------|------|------|--------|------|
-| **A: 入口** | T3 | kmain 入口 | memcpy(&kinfo)、BSS 检查、kernel_may_alloc | **本文** |
-| **B: cstart** | T3→T4 | cstart() | prot_init → init_clock → intr_init → arch_init | **本文 + 04** |
-| **C: 进程表** | T7→T8 | proc_init + arch_boot_proc | 清空进程表、加载 VM ELF | 05 |
-| **D: post-init** | T9→T10 | arch_post_init + memory_init | ptproc=VM、freepdes 分配 | 06 |
-| **E: system** | T11 | system_init | 特权表初始化 | 07 |
-| **F: finish** | T12 | bsp_finish_booting | 回收 bootstrap、切换用户态 | 07 |
+02 文档结束时，CPU 已在高地址执行 `kmain()`。从 `kmain()` 入口到内核开始调度第一个用户进程，过程分为六个阶段：
 
-本文覆盖 **阶段 A 和阶段 B 的前半部分**（prot_init）。04 文档覆盖阶段 B 的后半部分（init_clock + intr_init + arch_init）。
+| 阶段 | 关键动作 | 本质 |
+|------|---------|------|
+| **A: 入口** | 校验 kinfo、打开"内核可分配内存"闸门 | 准备运行期数据 |
+| **B: cstart** | 建立保护结构、初始化时钟、初始化中断控制器、架构相关初始化 | 从"裸机"过渡到"有保护的运行环境" |
+| **C: 进程表** | 创建进程表项、加载 boot modules 的 ELF | 准备好被调度实体 |
+| **D: post-init** | 启动 VM 进程、分配空闲页目录 | 内存管理上线 |
+| **E: system** | 初始化特权表 | 权限系统上线 |
+| **F: finish** | 回收 bootstrap 内存、切换到用户态 | 启动完成 |
 
-### 1.2 为什么 cstart 必须先于 proc_init
+本文覆盖 **A 与 B 的前半部分（保护结构）**；B 后半部分（时钟、中断、arch_init）在 04 文档展开。
 
-`cstart()` 是内核从"裸机状态"进入"有保护的状态"的桥梁。在 `cstart()` 之前：
+> **为什么 cstart 必须先于后续所有阶段**：在 cstart 之前，CPU 处于不可信状态：
+> - x86-64 没有自己的 GDT/IDT，使用 UEFI/GRUB 留下的描述符表，段选择子可能不正确
+> - aarch64/riscv64 的异常向量表基址寄存器未设置，任何异常都会 triple fault
+> - 时钟未启动，无法计时
+> - 中断控制器未初始化，无法响应硬件事件
+>
+> 一旦进入 `proc_init()`，就要开始设置进程的段寄存器（x86-64 的 CS/DS/SS）和栈指针，这些操作依赖 GDT 中的段描述符。若 GDT 未就绪，进程切换时会 GP fault。
 
-- **没有 GDT/IDT**（x86-64）：CPU 使用 GRUB/UEFI 留下的描述符表，段选择子可能不正确
-- **没有异常向量**（aarch64/riscv64）：VBAR_EL1/stvec 未设置，任何异常都会 triple fault
-- **没有时钟**：无法计时，无法调度
-- **没有中断控制器**：无法响应硬件事件
+### 1.5 prot_init 的统一抽象：两个独立的职责
 
-`proc_init()` 需要设置进程的段寄存器（x86-64 的 CS/DS/SS）和栈指针，这些操作依赖 GDT 中的段描述符。如果 GDT 未初始化，`proc_init()` 设置的段选择子就是无效的，进程切换时会 GP fault。
+虽然三种架构的 `prot_init()` 代码完全不同（x86-64 填 GDT/IDT/TSS，aarch64 写 VBAR_EL1，riscv64 写 stvec/sscratch），但它们都在做两件正交的事：
 
-因此，**cstart 必须先于 proc_init**——这是 Minix3 C 的顺序，也是 Rust 版必须保持的顺序。
+1. **建立"特权级与栈"的契约**：声明用户态陷入内核时切到哪个栈、特权级如何转换
+2. **建立"异常向量"的契约**：声明异常发生时的处理函数入口
 
-> **层级关系**：`kmain` → `cstart()`（含 `prot_init()` 等多个步骤）→ `proc_init()`。`prot_init()` 是 `cstart()` 内部的**第一步**，而 `cstart()` 整体是 `proc_init()` 的**前置条件**。下文 §1.3 展开 `prot_init()`，§1.1 表格中的阶段 B 后续步骤（clock、interrupt、arch_init）在 04 文档中展开。
+在 Rust 实现中，这两件事被抽象为两个独立 trait：
 
-### 1.3 prot_init() 做了什么
+| Trait | 回答的概念问题 | Minix3 C 中的对应 |
+|-------|--------------|------------------|
+| `ProtectionArch` | 用户态不能访问的内存范围 + 进程切换时栈的安全转场 | `tss_init()` + GDT 段描述符填充 + GDTR 加载 |
+| `TrapEntryArch` | 异常发生时的处理入口 | `idt_init()` + 异常向量表填充 + IDTR 加载 |
 
-`prot_init()` 是 `cstart()` 内部的第一个调用，负责建立保护模式的基础设施：
+> **拆分依据 1 — 加载顺序**：`ProtectionArch::load()` 必须在 `TrapEntryArch::load()` 之前，因为异常处理函数运行在内核态，需要有效的特权级和栈设置。若先加载 IDT 后加载 GDT，第一个异常会因段选择子无效而 triple fault。两个 trait 的拆分使加载顺序在类型层面显式化。
+>
+> **拆分依据 2 — 无共享代码**：两个职责在各架构上的实现完全独立，合并为单一 trait 不会减少重复代码，反而需要在方法体内用 `#[cfg(target_arch)]` 分发；拆分后每个 trait 的 impl 块按架构独立，无需方法内 cfg。
 
-| 架构 | prot_init() 做什么 | 等效硬件操作 |
-|------|-------------------|-------------|
-| x86-64 | 清零 GDT/IDT → 填充段描述符 → 设置 TSS → lgdt/lidt/ltr → 重载段寄存器 → 重建页表 | GDTR/IDTR/TR/CR3 |
-| aarch64 | 设置 VBAR_EL1 指向异常向量表 → 重建页表 | VBAR_EL1/TTBR1 |
-| riscv64 | 设置 stvec 指向 trap 向量 → 重建页表 | stvec/satp |
+### 1.6 prot_init 与之前阶段的边界
 
-**关键观察**：三种架构的 `prot_init()` 都在最后**重建页表**（`pg_clear → pg_identity → pg_mapkernel → pg_load`）。这是因为 `prot_init()` 运行在高地址，而页表是在低地址（`pre_init` 中）建立的。重建页表确保页表结构在高地址也可访问。
+`prot_init()` 不重建页表，此工作在 01 文档的 `arch_boot_impl()` 中已完成。`prot_init()` 与 `arch_boot_impl()` 的职责划分：
 
-### 1.4 Rust 版与 C 版的差异
+- **`arch_boot_impl()`**：建立页表 + 启用分页 + 切栈跳转到高地址的 `kmain`
+- **`prot_init()`**：建立保护结构（异常向量、特权级、内核栈），使 CPU 能正确响应异常
 
-| 方面 | Minix3 C | minix-rs |
-|------|---------|----------|
-| BSS 检查 | `assert(bss_test == 0)` 手动验证 | 不需要——Rust 保证静态变量零初始化 |
-| memcpy(&kinfo) | `memcpy(&kinfo, local_cbi, sizeof(kinfo))` | `kinfo` 已在 `arch_boot_impl` 中通过 `&KernelInfo` 引用传递 |
-| kernel_may_alloc | 全局 `int` 标志 | 编码为 `kmain` 的阶段状态 |
-| GDT/IDT 数据结构 | 裸 `u32[]`/`u64[]` + 宏 | `bitflags` + 强类型描述符结构体 |
-| prot_init 页表重建 | 内联在 `prot_init()` 中 | 分离到 `arch_boot_impl`（已在 01 中完成） |
+两者是**正交**的关注点：分页决定"哪些虚拟地址可访问"，保护结构决定"异常发生时的行为"。Minix3 C 把页表重建放在 `prot_init()` 末尾，是 32-bit 引导流程的历史遗留；64-bit 重写后，页表在 `arch_boot_impl()` 中已经完成，`prot_init()` 专注于保护结构。
 
 ---
 
@@ -131,7 +131,7 @@ void kmain(kinfo_t *local_cbi)
 
 3. **kernel_may_alloc = 1**：为什么需要？在 VM（虚拟内存管理器）启动之前，内核没有专门的内存分配服务。`kernel_may_alloc` 是一个全局标志，告诉内核代码"现在可以安全地调用物理内存分配器了"。在 VM 启动前（此标志为 0），任何内存分配请求都应被拒绝或 panic——因为分配器可能尚未初始化。这个标志的本质是**启动阶段的权限闸门**。Rust 版中可以用更类型安全的方式表达（如枚举 `BootPhase::Early` / `BootPhase::MayAlloc`），但语义相同。
 
-4. **cstart()**：进入保护模式初始化。这是内核从"被引导的程序"转变为"操作系统"的关键转折点——从此刻起，内核有了自己的保护结构、时钟、中断控制。
+4. **cstart()**：进入保护模式初始化及后续启动流程。cstart 内部依次调用 prot_init、init_clock、intr_init、arch_init，并解析环境变量。这是内核从"被引导的程序"转变为"操作系统"的关键转折点，从此刻起，内核有了自己的保护结构、时钟、中断控制。
 
 ### 2.2 cstart() 调用序列
 
@@ -170,9 +170,9 @@ cstart 的四个调用严格有序：
 
 4. **arch_init()**：架构特定的额外初始化。依赖前三步完成。
 
-### 2.3 prot_init() 详解：x86-64
+### 2.3 prot_init() 详解：x86
 
-`protect.c:321-367`（x86-32 版，x86-64 版语义相同但使用 64 位描述符格式）：
+`protect.c:321-367`（i386 版，64 位语义相同但使用 64 位描述符格式，GDTR.base 为 64 位）：
 
 ```c
 void prot_init(void)
@@ -188,9 +188,9 @@ void prot_init(void)
   memset(idt, 0, sizeof(idt));   // (2) 清零 IDT
 
   /* Build GDT, IDT, IDT descriptors. */
-  gdt_desc.base = (u32_t) gdt;           // (3) 设置 GDTR
+  gdt_desc.base = (u32_t) gdt;           // (3) 设置 GDTR（i386 版为 u32_t，x86-64 为 u64_t）
   gdt_desc.limit = sizeof(gdt)-1;
-  idt_desc.base = (u32_t) idt;           // (4) 设置 IDTR
+  idt_desc.base = (u32_t) idt;           // (4) 设置 IDTR（i386 版为 u32_t，x86-64 为 u64_t）
   idt_desc.limit = sizeof(idt)-1;
   tss_init(0, &k_boot_stktop);           // (5) 初始化 TSS
 
@@ -203,7 +203,7 @@ void prot_init(void)
   init_codeseg(USER_CS_INDEX, USER_PRIVILEGE);    // (9) 用户代码段
   init_dataseg(USER_DS_INDEX, USER_PRIVILEGE);    // (10) 用户数据段
 
-  prot_load_selectors();   // (11) lgdt + lldt + ltr + 重载段寄存器
+  prot_load_selectors();   // (11) lgdt + idt_init + idt_reload + lldt + ltr + 重载段寄存器
 
   /* Rebuild page tables */
   pg_clear();              // (12) 清零页表
@@ -219,12 +219,42 @@ void prot_init(void)
 
 - **步骤 1-5**：清零并设置描述符表指针。这是"准备阶段"。
 - **步骤 6-10**：填充 GDT 段描述符。64 位模式下，代码段和数据段都是 flat（base=0, limit=full），但 DPL（Descriptor Privilege Level）不同：内核段 DPL=0，用户段 DPL=3。
-- **步骤 11**：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT。
+- **步骤 11**：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`idt_init()`（填充 IDT 门描述符）、`idt_reload()`（加载 IDTR，即 `lidt`）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT 和 IDT。
+
+#### 2.3.1 idt_init() 分析
+
+`idt_init()`（protect.c:260-264）负责填充 IDT（Interrupt Descriptor Table），是异常向量表的核心初始化逻辑：
+
+```c
+static void idt_init(void)
+{
+  idt_copy_vectors_pic();                              // (a) 填充 PIC 中断向量
+  idt_copy_vectors(gate_table_exceptions,               // (b) 填充 CPU 异常向量
+    sizeof(gate_table_exceptions) / sizeof(gate_table[0]));
+}
+```
+
+**gate_table 数据结构**：每个 `gate_table` 条目定义一个 IDT 门描述符的配置：
+
+| 字段 | 含义 | 示例 |
+|------|------|------|
+| `vector` | IDT 向量号 | 0（除零错误）、14（缺页） |
+| `handler` | 处理函数地址 | `divide_error`、`page_fault` |
+| `dpl` | 描述符特权级 | 0（内核）或 3（用户可触发） |
+| `ist` | Interrupt Stack Table 索引 | 0（不使用 IST）、2（DF 使用 IST2） |
+
+**gate_table_exceptions[]**（protect.c:107-130）：CPU 异常向量，如除零（vector 0, DPL=0）、断点（vector 3, DPL=3）、缺页（vector 14, DPL=0）等。
+
+**gate_table_pic[]**（protect.c:132-152）：PIC 中断向量（vector 32-47），DPL=3（用户可通过 `int $0x20` 等触发，但实际由硬件中断使用）。
+
+在 Rust 版中，`X86_64TrapEntry::init()` 完成相同功能：用 `set_gate()` 填充 IDT 条目，DPL 和 IST 配置与 C 版 `gate_table` 一致。
 - **步骤 12-15**：重建页表。为什么需要重建？因为 `pre_init()` 在低地址建立了页表，而 `prot_init()` 在高地址运行。重建确保页表结构在高地址也可访问。**在 Rust 版中，这一步已在 `arch_boot_impl()` 中完成，不需要重复。**
 
 ### 2.4 prot_init() 详解：aarch64
 
-`earm/protect.c:77-93`：
+> **注意**：Minix3 的 ARM 版本（earm）是 32 位，代码比 64 位简化。以下分析基于 32 位 ARM C 代码，Rust 版已扩展为 64 位（aarch64）语义。
+
+`earm/protect.c:77-93`（远短于 x86-64）：
 
 ```c
 void prot_init(void)
@@ -244,7 +274,9 @@ void prot_init(void)
 
 ARM64 的 `prot_init()` 比 x86 简单得多——因为 ARM64 没有段描述符/GDT 机制。ARM64 的特权级切换由硬件自动处理（异常发生时自动切换 EL0→EL1），不需要软件设置描述符表。
 
-唯一的硬件操作是设置 `VBAR_EL1`（Vector Base Address Register），指向异常向量表。异常向量表定义了不同类型异常（SVC/IRQ/FIQ/SError）在不同特权级下的入口地址。
+硬件操作只有两个：
+1. **设置 VBAR_EL1**：`write_vbar(&exc_vector_table)`——指向异常向量表基址。异常向量表定义了不同类型异常（SVC/IRQ/FIQ/SError）在不同特权级下的入口地址。
+2. **设置 SP_EL1**（x86 的 `tss_init` 等价）：ARM64 C 代码中 `tss_init()` 设置 `SP_EL1` 为内核栈顶。当异常从 EL0 进入 EL1 时，CPU 自动从 SP_EL0 切换到 SP_EL1。在 Rust 版中，`AArch64Protection::init()` 通过 `msr sp_el1` 完成相同操作。
 
 ### 2.5 prot_init() 详解：riscv64
 
@@ -257,102 +289,57 @@ Minix3 没有 RISC-V 版本，但 RISC-V 的 `prot_init()` 语义可以从架构
 
 RISC-V 的特权级切换比 x86 简单：trap 发生时，硬件自动将 PC 保存到 sepc，将特权级保存到 sstatus.SPP，然后跳转到 stvec 指向的地址。不需要 GDT/IDT。
 
+**参考规范**:
+- RISC-V *Privileged Architecture Manual* §4.1.5 (stvec) — 决定 trap 入口地址
+- RISC-V *Privileged Architecture Manual* §4.1.6 (sscratch) — U-mode → S-mode 切换时临时寄存器
+- RISC-V *Privileged Architecture Manual* §4.1.7 (sepc) — trap 时保存 PC
+- RISC-V *Privileged Architecture Manual* §4.1.2 (sstatus) — SPP/SUM/MXR 等控制位
+
 ---
 
 ## 3. Rust 设计决策
 
-### 3.1 决策：kmain 不做 memcpy(&kinfo)
+### 3.1 决策：`kmain` 不做 memcpy(&kinfo)
 
-**Minix3 C 的做法**：`kmain` 将 `local_cbi`（栈上的 kinfo_t 拷贝）复制到全局 `kinfo`。
-
-**minix-rs 不做 memcpy**，原因：
-
-1. **`arch_boot_impl` 返回 `&KernelInfo`**：这个引用指向 boot-shim 构造的 `KernelInfo`，它已经在全局静态内存中（boot-shim 的 `KernelInfo` 是 `static` 的）
-2. **Rust 的借用规则**：`&KernelInfo` 是不可变引用，不需要拷贝就能安全共享
-3. **避免 UB**：C 的 `memcpy` 依赖 `local_cbi` 在栈上有效，而 Rust 的引用保证生命周期安全
-
-**替代方案**：kmain 接收 `&'static KernelInfo`，直接使用，不需要拷贝。
+`arch_boot_impl()` 返回 `&'static KernelInfo`，此引用指向 boot-shim 构造的静态 `KernelInfo`，生命周期贯穿整个内核运行期。Rust 的借用规则保证引用安全，memcpy 冗余。
 
 ### 3.2 决策：不做 BSS 检查
 
-**Minix3 C 的做法**：`assert(bss_test == 0)` 验证 BSS 段被正确清零。
+Rust 的 `static` 变量由语言保证零初始化；boot-shim 的 `load_segments_into_buffer()` 也清零 BSS 段。若 BSS 未清零，Rust 的 `Option<T>` 等类型会产生 UB，Rust 类型系统在编译时排除此类风险。
 
-**minix-rs 不做 BSS 检查**，原因：
+### 3.3 决策：`cstart` 拆分为两个独立函数
 
-1. **Rust 保证零初始化**：`static` 变量在 `.bss` 段中，Rust 链接器保证 `.bss` 段被清零
-2. **boot-shim 的 `load_segments_into_buffer`** 已清零 BSS 段（`memzero(bss_start, bss_end - bss_start)`）
-3. **如果 BSS 未清零，Rust 的 `Option<T>` 等类型会 UB**——这是比 assert 更严重的错误，但 Rust 的类型系统在编译时排除了这种情况
+`init_protection()` 对应本文，`init_clock_and_interrupts()` 对应 04 文档。拆分原因：
 
-### 3.3 决策：cstart 分为两个阶段
+1. **保护结构加载 vs 中断可用** 是两个不同的"启动里程碑"：`init_protection()` 之后 CPU 可响应异常；`init_clock_and_interrupts()` 之后 CPU 可响应硬件中断
+2. **文档对应**：每个函数对应一个阶段，方便分散到不同文档
 
-**Minix3 C 的做法**：`cstart()` 是一个函数，顺序调用 `prot_init → init_clock → intr_init → arch_init`。
+### 3.4 决策：GDT 描述符用 bitflags + 强类型
 
-**minix-rs 将 cstart 分为两个阶段**：
+C 用裸 `u32` 数组 + 宏位运算；Rust 用 `bitflags!` 宏。`PRESENT | DPL_RING3 | CODE | READABLE = 0xFA` 比 C 版的 `0xFA` 表达力更强，且类型不会与 `u8` 混淆。
 
-1. **`init_protection()`**：`ProtectionArch::init()` + `ProtectionArch::load()` + `TrapEntryArch::init()` + `TrapEntryArch::load()`
-2. **`init_clock_and_interrupts()`**：时钟初始化 + 中断控制器初始化 + 架构特定初始化
+### 3.5 决策：`prot_init` 不重建页表
 
-**原因**：
+minix-rs 在 `arch_boot_impl()` 已建立恒等映射 + 内核高地址映射，`prot_init()` 专注于保护结构。此处理与 C 版的语义等价，区别仅在于页表重建的执行时机。
 
-1. **`init_protection()` 是"保护模式生效"**：在 `ProtectionArch::load()` 之前，任何异常都会 triple fault。保护结构加载完成后，内核有了可靠的异常处理能力。
-2. **`init_clock_and_interrupts()` 是"中断可用"**：在 `init_clock()` + `intr_init()` 之后，内核可以响应硬件事件。
-3. **文档对应**：`init_protection()` 对应本文（03），`init_clock_and_interrupts()` 对应 04 文档。
+### 3.6 决策：抽象为两个 trait（`ProtectionArch` + `TrapEntryArch`）
 
-### 3.4 决策：GDT/IDT 描述符用 bitflags + 强类型
+| 维度 | 单一 trait + cfg | 两个 trait |
+|------|----------------|-----------|
+| 加载顺序 | 文档中说明"先 load prot 后 load trap" | 类型层面强制，`init_protection` 函数显式调用两者 |
+| 实现数量 | trait body 内堆 cfg 分支 | 每个 trait 的实现都是单一职责 |
+| 单元测试 | 测整个 trait 较复杂 | 单独测 `ProtectionArch::load()` 和 `TrapEntryArch::load()` |
+| 跨架构共性 | 共性被 cfg 淹没 | `ProtectionArch` 的接口对所有架构表达"内核栈 + 特权级"，跨架构一致性更清晰 |
 
-**Minix3 C 的做法**：GDT 描述符是 `u32` 数组，用宏设置位域：
+### 3.7 架构差异对照
 
-```c
-#define PRESENT       0x80
-#define DPL0          0x00
-#define DPL3          0x60
-#define CODE          0x18
-#define DATA          0x10
-```
-
-**minix-rs 使用 bitflags + 强类型结构体**：
-
-```rust
-bitflags::bitflags! {
-    pub struct SegmentAccess: u8 {
-        const PRESENT    = 1 << 7;
-        const DPL_RING0  = 0 << 5;
-        const DPL_RING3  = 3 << 5;
-        const CODE       = 1 << 3;
-        const DATA       = 0 << 3;
-        const READABLE   = 1 << 1;
-        const WRITABLE   = 1 << 1;
-        const ACCESSED   = 1 << 0;
-    }
-}
-```
-
-**原因**：
-
-1. **类型安全**：`SegmentAccess` 是独立类型，不会与 `u8` 混淆
-2. **可组合**：`PRESENT | DPL_RING3 | CODE | READABLE` 比 `0xFA` 更清晰
-3. **Rust 惯例**：bitflags 是 Rust 生态中处理位域的标准方式
-
-### 3.5 决策：prot_init 不重建页表
-
-**Minix3 C 的做法**：`prot_init()` 末尾调用 `pg_clear → pg_identity → pg_mapkernel → pg_load` 重建页表。
-
-**minix-rs 不在 prot_init 中重建页表**，原因：
-
-1. **已在 `arch_boot_impl()` 中完成**：01 文档中，`arch_boot_impl()` 已经建立了恒等映射和内核高地址映射，并启用了分页
-2. **避免重复工作**：C 版重建页表是因为 `pre_init()` 在低地址建立页表，`prot_init()` 在高地址运行时需要确保页表结构可访问。Rust 版的 `arch_boot_impl()` 已经在高地址映射中建立了页表
-3. **语义等价**：Rust 版的 `arch_boot_impl()` + `HigherHalf::jump_to_kmain()` 等价于 C 版的 `pre_init()` + `head.S trampoline` + `prot_init()` 中的页表重建
-
-### 3.6 架构差异对照
-
-| 方面 | x86-64 | aarch64 | riscv64 |
+| 概念 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| 保护结构 | GDT + IDT + TSS | VBAR_EL1 | stvec + sscratch |
-| 特权级 | Ring 0/3（段描述符 DPL） | EL1/EL0（异常级别） | S-mode/U-mode（sstatus.SPP） |
-| 特权切换 | SYSCALL/SYSRET（MSR） | SVC/ERET（异常向量） | ecall/sret（trap 向量） |
-| 内核栈 | TSS.sp0（硬件自动切换） | SP_EL1（异常时硬件切换） | sscratch（软件交换） |
-| 描述符数量 | GDT: 5+NR_CPUS, IDT: 256 | 无描述符表 | 无描述符表 |
-| prot_init 核心操作 | lgdt + lidt + ltr | write VBAR_EL1 | csrw stvec + sscratch |
+| 异常向量基址 | IDT（GDTR 指向）+ lidt | VBAR_EL1 | stvec |
+| 特权级 | Ring 0/3（段描述符 DPL） | EL1/EL0 | S-mode/U-mode |
+| 特权切换指令 | SYSCALL/SYSRET（MSR） | SVC/ERET | ecall/sret |
+| 内核栈指针 | TSS.sp0（硬件自动切换） | SP_EL1（异常时硬件切换） | sscratch（软件交换） |
+| 特权级抽象 | GDT 段描述符 DPL | 系统寄存器 | CSR |
 
 ---
 
@@ -379,300 +366,121 @@ Rust 版将 `prot_init()` 拆分为两个 trait 抽象：`ProtectionArch` 负责
 
 两个 trait 的顺序不可交换：`ProtectionArch::load()` 必须在 `TrapEntryArch::load()` 之前——因为异常处理函数运行在内核态，需要有效的特权级和栈设置。如果先加载 IDT 后加载 GDT，第一个异常就会因为段选择子无效而 triple fault。
 
-### 4.1 kmain 入口骨架
+### 4.1 init_protection() 的实现
 
-> 设计决策：§3.1（不做 memcpy）、§3.2（不做 BSS 检查）
-
-```rust
-/// Kernel main — called after the higher-half transition.
-///
-/// This function runs at the kernel's high virtual address.
-/// It orchestrates the six-phase boot sequence:
-///
-/// Phase A (this function): Entry — validate kinfo, allow kernel alloc
-/// Phase B: cstart — prot_init + clock + intr + arch_init
-/// Phase C: proc_init + arch_boot_proc
-/// Phase D: arch_post_init + memory_init
-/// Phase E: system_init
-/// Phase F: bsp_finish_booting + switch_to_user
-///
-/// C: main.c:115-147
-pub fn kmain(kernel_info: &KernelInfo) -> ! {
-    // Phase A: Entry
-    // C: memcpy(&kinfo, local_cbi, sizeof(kinfo)) + kernel_may_alloc = 1
-    // Rust: no memcpy needed — kernel_info is already a &KernelInfo reference
-    // Rust: no BSS check needed — Rust guarantees zero-initialization
-
-    // Phase B: cstart — protection + clock + interrupt
-    init_protection(kernel_info);        // prot_init equivalent
-    init_clock_and_interrupts();         // clock + intr + arch_init (covered in 04)
-    // Phase C: proc_init + arch_boot_proc (covered in 05)
-    // Phase D: arch_post_init + memory_init (covered in 06)
-    // Phase E: system_init (covered in 07)
-    // Phase F: bsp_finish_booting + switch_to_user (covered in 07)
-
-    loop {}
-}
-```
-
-### 4.2 init_protection()：保护模式初始化
-
-> 设计决策：§3.3（cstart 分阶段）、§3.5（不重建页表）
+> 概念：建立"特权级 + 栈"契约（`ProtectionArch`）+ 建立"异常向量"契约（`TrapEntryArch`）
 
 ```rust
-/// Phase 1 of cstart: initialize protection structures.
-///
-/// This must be the very first thing called in kmain, because
-/// without valid GDT/IDT (x86-64) or VBAR_EL1/stvec (aarch64/riscv64),
-/// any exception will cause an unrecoverable triple fault.
-///
-/// C: prot_init() — protect.c:321
 fn init_protection(kernel_info: &KernelInfo) {
-    // Step 1: Initialize protection structures (GDT/TSS on x86-64,
-    // VBAR_EL1 on aarch64, stvec/sscratch on riscv64)
+    // 步骤 1: 回答"用户态陷入内核时切到哪个栈"
+    // —— ProtectionArch::init() 写入内核栈顶到 TSS.sp0 / SP_EL1 / sscratch
     let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
+    // 步骤 2: 让"特权级 + 栈"契约生效
+    // —— x86-64 写 GDTR + ltr；aarch64/riscv64 写 SP_EL1/sscratch 后 isb
     prot.load();
 
-    // Step 2: Initialize trap entry table (IDT on x86-64,
-    // exception vectors on aarch64, trap vector on riscv64)
-    let trap = CurrentTrapEntry::init();
+    // 步骤 3: 准备"异常向量表"内容
+    let mut trap = CurrentTrapEntry::init();
+    // 步骤 4: 配置系统调用入口（仅 x86-64 写 LSTAR MSR；aarch64/riscv64 用统一异常入口）
     trap.configure_syscall(kernel_info.syscall_entry);
+    // 步骤 5: 让"异常向量"契约生效
+    // —— x86-64 写 IDTR；aarch64 写 VBAR_EL1；riscv64 写 stvec
     trap.load();
 }
 ```
 
-### 4.3 ProtectionArch trait（已有实现）
+> **运行时更新内核栈（P1-13）**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
+> 
+> **§5.3 测试覆盖核对（P1-12/14 验证, 2026-06-11）**:
+> - x86_64: `protection.rs` 15 个 + `trap_entry.rs` 15 个 = **30 个** ✓ 与 §5.3 列表一致
+> - aarch64: `protection.rs` 7 个 + `trap_entry.rs` 3 个 = **10 个** ✓ 与 §5.3 列表一致
+> - riscv64: `protection.rs` 5 个 + `trap_entry.rs` 3 个 = **8 个** ✓ 与 §5.3 列表一致
+> - `set_handler_is_noop` 测试在 aarch64/riscv64 `trap_entry.rs:111/108` 实际存在 ✓
 
-`ProtectionArch` trait 已在 `os/arch/src/protection.rs` 中定义，包含：
+**代码与概念的对应**：
 
-- `init(cpu_id, kernel_stack_top)` — 初始化保护结构
-- `set_kernel_stack(cpu_id, stack_top)` — 设置内核栈
-- `load()` — 加载到硬件
-- `init_ap(cpu_id, stack_top)` — AP 初始化
+| 代码 | §1.5 的概念问题 | 架构差异点 |
+|------|--------------|----------|
+| `CurrentProtection::init(0, kern_stack_top)` | "内核栈顶放哪里" | x86-64: TSS.sp0；aarch64: SP_EL1；riscv64: sscratch |
+| `prot.load()` | "让特权级契约生效" | x86-64: GDTR + ltr；aarch64: isb；riscv64: 无显式 load（CSR 立即生效） |
+| `CurrentTrapEntry::init()` | "异常向量表里有什么" | x86-64: IDT 门描述符；aarch64/riscv64: 异常向量表由汇编定义，软件只配置入口 |
+| `trap.configure_syscall(syscall_entry)` | "系统调用走哪个入口" | x86-64: LSTAR MSR；aarch64/riscv64: 统一异常入口，无需配置 |
+| `trap.load()` | "让异常向量生效" | x86-64: IDTR；aarch64: VBAR_EL1 + isb；riscv64: stvec |
 
-x86-64 的实现 (`os/arch/src/x86_64/protection.rs`) 已完成，包含 GDT/TSS 管理。
+### 4.2 ProtectionArch trait 抽象
 
-### 4.4 aarch64 ProtectionArch 实现
-
-ARM64 的保护机制比 x86-64 简单——没有 GDT/IDT，只有 VBAR_EL1 和 SP_EL1。
+trait 定义回答"用户态不能访问的内存范围 + 进程切换时栈的安全转场"：
 
 ```rust
-pub struct AArch64Protection {
-    cpu_count: u32,
-}
+pub trait ProtectionArch: Sized {
+    type PrivilegeLevel: Copy + Eq + Debug;
 
-impl ProtectionArch for AArch64Protection {
-    type PrivilegeLevel = AArch64PrivilegeLevel;
+    const KERNEL_PRIVILEGE: Self::PrivilegeLevel;
+    const USER_PRIVILEGE: Self::PrivilegeLevel;
 
-    const KERNEL_PRIVILEGE: AArch64PrivilegeLevel = AArch64PrivilegeLevel::EL1;
-    const USER_PRIVILEGE: AArch64PrivilegeLevel = AArch64PrivilegeLevel::EL0;
-
-    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // Set SP_EL1 to the kernel stack top for exception entry.
-        unsafe {
-            asm!("msr sp_el1, {}", in(reg) kernel_stack_top.get());
-        }
-        Self { cpu_count: cpu_id + 1 }
-    }
-
-    fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
-        unsafe {
-            asm!("msr sp_el1, {}", in(reg) stack_top.get());
-        }
-    }
-
-    fn load(&self) {
-        // VBAR_EL1 is set by TrapEntryArch::load() after the
-        // exception vector table is initialized.
-        // Instruction Synchronization Barrier ensures all prior
-        // system register writes are visible.
-        unsafe {
-            asm!("isb");
-        }
-    }
-
-    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        unsafe {
-            asm!("msr sp_el1, {}", in(reg) kernel_stack_top.get());
-        }
-    }
+    fn to_privilege(level: Self::PrivilegeLevel) -> Privilege;
+    fn from_privilege(privilege: Privilege) -> Self::PrivilegeLevel;
+    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self;
+    fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
+    fn load(&self);
+    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
 }
 ```
 
-### 4.5 riscv64 ProtectionArch 实现
+> **细节**：`PrivilegeLevel` 是 trait associated type，bound 为 `Copy + Eq + Debug`，封装架构特有的特权级表示（x86-64 `Ring(0/3)` / aarch64 `EL(0/1)` / riscv64 `Mode(S/U)`），让上层代码只接触 OS 概念（`Privilege::Kernel/User`），不直接接触硬件编码。
+>
+> **关于 `init` / `init_ap` / `load` 的语义分离**：
+> - `init()`：建立保护结构的"蓝图"，在内存中准备好 GDT 描述符、TSS、异常向量表
+> - `load()`：把蓝图写入硬件寄存器（`lgdt`/`ltr`、`msr`、`csrw`），使契约生效
+> - `init_ap()`：AP（应用处理器）启动时的初始化，与 BSP 的 `init()` 共享大部分逻辑但有少量差异（如 AP 不需要 `lgdt` 全局同步）
 
-RISC-V 的保护机制最简单——只有 sscratch（保存内核栈顶）和 sstatus（控制特权级）。
+### 4.3 TrapEntryArch trait 抽象
+
+trait 定义回答"异常来了去哪里"：
 
 ```rust
-pub struct Riscv64Protection {
-    cpu_count: u32,
-}
-
-impl ProtectionArch for Riscv64Protection {
-    type PrivilegeLevel = Riscv64PrivilegeLevel;
-
-    const KERNEL_PRIVILEGE: Riscv64PrivilegeLevel = Riscv64PrivilegeLevel::S_MODE;
-    const USER_PRIVILEGE: Riscv64PrivilegeLevel = Riscv64PrivilegeLevel::U_MODE;
-
-    fn to_privilege(level: Riscv64PrivilegeLevel) -> Privilege {
-        match level {
-            Riscv64PrivilegeLevel::S_MODE => Privilege::Kernel,
-            _ => Privilege::User,
-        }
-    }
-
-    fn from_privilege(privilege: Privilege) -> Riscv64PrivilegeLevel {
-        match privilege {
-            Privilege::Kernel => Riscv64PrivilegeLevel::S_MODE,
-            Privilege::User => Riscv64PrivilegeLevel::U_MODE,
-        }
-    }
-
-    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // Set sscratch to the kernel stack top.
-        // On trap from U-mode, the trap handler assembly code
-        // swaps sp and sscratch to obtain the kernel stack pointer.
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
-        }
-        Self { cpu_count: cpu_id + 1 }
-    }
-
-    fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) stack_top.get());
-        }
-    }
-
-    fn load(&self) {
-        // sscratch is already set by init().
-        // stvec is set by TrapEntryArch::load().
-        // CSRs take effect immediately on write.
-    }
-
-    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
-        }
-    }
+pub trait TrapEntryArch: Sized {
+    fn init() -> Self;
+    fn configure_syscall(&mut self, entry_point: VirBytes);
+    fn load(&self);
+    fn load_ap(&self);
+    fn set_handler(&mut self, vector: InterruptVector, handler: VirBytes, user_accessible: bool);
 }
 ```
 
-### 4.6 aarch64 TrapEntryArch 实现
+> **为什么 `configure_syscall` 是独立方法**：x86-64 的系统调用入口由 MSR 配置（LSTAR MSR），与 IDT 中的异常入口完全独立；aarch64/riscv64 的系统调用走统一异常入口（SVC/ecall），无需额外配置。将系统调用入口作为独立方法，使架构差异体现在方法体内，调用者无需 `#[cfg]`。
+>
+> **为什么 `set_handler` 用 `InterruptVector` 枚举**：上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
+
+### 4.4 三架构的"概念 → 代码"映射
+
+下表是概念到代码的"存在性证明"：读者无需细读代码即可验证 §1.5 的概念问题被每个架构正确回答。
+
+| 概念问题 | x86-64 | aarch64 | riscv64 |
+|---------|--------|---------|---------|
+| 内核栈顶存放 | `TSS.sp0 = kern_stack_top` | `msr sp_el1, kern_stack_top` | `csrw sscratch, kern_stack_top` |
+| 特权级生效 | `lgdt gdt_desc` + `ltr TSS_SEL` | `isb`（SP_EL1 写入后同步） | 无显式 load（CSR 写入即生效） |
+| 异常向量表内容 | IDT 256 个门描述符 | 异常向量表（汇编定义） | trap 向量（汇编定义） |
+| 异常向量表生效 | `lidt idt_desc` | `msr vbar_el1, &exc_vector_table` + `isb` | `csrw stvec, &trap_vector` |
+| 系统调用入口 | `wrmsr MSR_LSTAR, syscall_entry` | 走 SVC 异常入口（无需配置） | 走 ecall 异常入口（无需配置） |
+| 用户态陷入内核栈切换 | CPU 硬件自动用 TSS.sp0 | 异常时硬件自动用 SP_EL1 | trap handler 汇编交换 sp/sscratch |
+
+> **代码不在文档中展开**：完整实现在 `os/arch/src/{x86_64,aarch64,riscv64}/{protection,trap_entry}.rs`。文档列出代码作为概念存在性证明，足以让读者理解 §1.5 的概念问题如何被回答；完整代码细节（位编码、寄存器顺序、barrier 类型）属于实现层，不在概念文档展开。
+
+### 4.5 架构特定的类型别名
 
 ```rust
-pub struct AArch64TrapEntry;
-
-impl TrapEntryArch for AArch64TrapEntry {
-    fn init() -> Self {
-        // On ARM64, the exception vector table is defined in assembly
-        // (exc_vector_table). We just need to set VBAR_EL1 to its address.
-        Self
-    }
-
-    fn configure_syscall(&mut self, _entry_point: VirBytes) {
-        // ARM64 uses SVC instruction which goes through the same
-        // exception vector table. No separate configuration needed.
-    }
-
-    fn load(&self) {
-        extern "C" {
-            static exc_vector_table: u8;
-        }
-        unsafe {
-            let vbar = &exc_vector_table as *const u8 as u64;
-            asm!("msr vbar_el1, {}", in(reg) vbar);
-            // Instruction Synchronization Barrier: ensures VBAR_EL1
-            // write is visible to subsequent exception handling.
-            asm!("isb");
-        }
-    }
-
-    fn load_ap(&self) {
-        self.load();
-    }
-
-    fn set_handler(
-        &mut self,
-        _vector: InterruptVector,
-        _handler: VirBytes,
-        _user_accessible: bool,
-    ) {
-        // ARM64 uses a fixed exception vector table defined in assembly.
-        // Dynamic handler registration is done in software by the
-        // exception dispatcher, not by modifying the VBAR table.
-    }
-}
-```
-
-### 4.7 riscv64 TrapEntryArch 实现
-
-```rust
-pub struct Riscv64TrapEntry;
-
-impl TrapEntryArch for Riscv64TrapEntry {
-    fn init() -> Self {
-        // On RISC-V, the trap vector is defined in assembly.
-        // We just need to set stvec to its address.
-        Self
-    }
-
-    fn configure_syscall(&mut self, _entry_point: VirBytes) {
-        // RISC-V uses ecall instruction which goes through the same
-        // trap vector (stvec). No separate configuration needed.
-    }
-
-    fn load(&self) {
-        extern "C" {
-            static trap_vector: u8;
-        }
-        unsafe {
-            let stvec_addr = &trap_vector as *const u8 as usize;
-            // Set MODE=Direct (0) and BASE=trap_vector (aligned to 4)
-            asm!("csrw stvec, {}", in(reg) stvec_addr);
-        }
-    }
-
-    fn load_ap(&self) {
-        self.load();
-    }
-
-    fn set_handler(
-        &mut self,
-        _vector: InterruptVector,
-        _handler: VirBytes,
-        _user_accessible: bool,
-    ) {
-        // RISC-V uses Direct mode (all traps go to stvec BASE).
-        // Dynamic handler registration is done in software by the
-        // trap dispatcher based on scause, not by modifying stvec.
-    }
-}
-```
-
-### 4.8 CurrentProtection / CurrentTrapEntry 类型别名
-
-在 `os/arch/src/lib.rs` 中添加架构特定的类型别名：
-
-```rust
-#[cfg(feature = "x86_64")]
+#[cfg(target_arch = "x86_64")]
 pub type CurrentProtection = crate::x86_64::protection::X86_64Protection;
-
-#[cfg(feature = "arm64")]
-pub type CurrentProtection = crate::arm64::protection::AArch64Protection;
-
-#[cfg(feature = "riscv64")]
+#[cfg(target_arch = "aarch64")]
+pub type CurrentProtection = crate::aarch64::protection::AArch64Protection;
+#[cfg(target_arch = "riscv64")]
 pub type CurrentProtection = crate::riscv64::protection::Riscv64Protection;
 
-#[cfg(feature = "x86_64")]
-pub type CurrentTrapEntry = crate::x86_64::trap_entry::X86_64TrapEntry;
-
-#[cfg(feature = "arm64")]
-pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
-
-#[cfg(feature = "riscv64")]
-pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
+pub type CurrentTrapEntry = /* 同样模式 */;
 ```
+
+`CurrentProtection` / `CurrentTrapEntry` 是编译期确定的类型别名，调用者（`init_protection()`）无需 `#[cfg]` 即可获得正确的实现。
 
 ---
 
@@ -685,7 +493,7 @@ pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 qemu-system-x86_64 -kernel kernel.elf -s -S
 (gdb) break init_protection
 (gdb) continue
-(gdb) step  # 执行 prot.load()
+(gdb) step
 (gdb) info registers gdtr  # 应显示 GDT 基址在高地址
 
 # aarch64: 验证 VBAR_EL1 已设置
@@ -703,51 +511,128 @@ qemu-system-riscv64 -machine virt -kernel kernel.elf -s -S
 (gdb) print $stvec  # 应非零
 ```
 
-### 5.2 单元测试
+### 5.2 QEMU 测试内核（三架构）
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_gdt_segments_flat` | x86-64 GDT 段描述符是 flat（base=0, limit=full） |
-| `test_gdt_privilege_levels` | 内核段 DPL=0，用户段 DPL=3 |
-| `test_tss_sp0_set` | TSS.sp0 设置后可正确读取 |
-| `test_protection_init_load` | `init()` + `load()` 不 panic |
-| `test_trap_entry_init_load` | `init()` + `load()` 不 panic |
+三个架构各有独立的 QEMU 测试内核，在 `os/qemu-tests/test-kernels/kernel/bootstrap/` 下：
+
+| 测试内核 | 架构 | 验证项 | 对应 §1.2 |
+|---------|------|--------|----------|
+| `test-protection` | x86_64 | GDT 已加载（GDTR.base != 0）、IDT 已加载（IDTR.base != 0）、TSS 已加载（TR != 0）、CS/DS RPL=0 | 全部三个 |
+| `test-protection-aarch64` | aarch64 | CurrentEL=EL1、VBAR_EL1 非零、DAIF 全屏蔽、SPSel 可切换、SP_EL1 读写验证、kern_stack_top 在内核 VA 范围 | 异常向量 + 特权级 |
+| `test-protection-riscv64` | riscv64 | stvec 已设置（Direct 模式）、sscratch=kern_stack_top、sstatus 为 S-mode | 全部三个 |
+
+> **aarch64 的 SP_EL1 写入与栈保护**：经 QEMU 实测验证，`mrs HCR_EL2` 从 EL1 触发异常（HCR_EL2 不可从 EL1 直接读取），但 SP_EL1 的访问不受影响——`msr SP_EL1` 不触发异常，证明 HCR_EL2.TSP=0。此前观察到的 `msr SP_EL1` 崩溃并非 EL2 陷出导致，而是因为当 `SPSel=1`（默认值）时，SP_EL1 就是当前栈指针——写入 SP_EL1 会立即改变当前 SP，导致后续栈操作访问无效地址。修复方案：在 `msr SP_EL1` 前保存当前 SP 到通用寄存器，写入后立即用 `mov sp, saved_sp` 恢复。aarch64 测试现已包含 SP_EL1 读写验证（写入测试值后读回比对）。
+
+运行方式：
+
+```bash
+cd os/qemu-tests
+./run_qemu.sh x86_64   <path>/test-protection.efi
+./run_qemu.sh aarch64  <path>/test-protection-aarch64.efi
+./run_qemu.sh riscv64  <path>/test-protection-riscv64
+```
+
+或批量运行：
+
+```bash
+cd os/qemu-tests && ./run_all.sh
+```
+
+### 5.3 已有单元测试
+
+#### x86_64（`os/arch/src/x86_64/{protection,trap_entry}.rs`）
+
+| 测试 | 验证的概念问题 | 对应 §1.2 |
+|------|--------------|----------|
+| `tss64_size_is_104_bytes` | TSS 结构体布局符合 Intel SDM | 内核栈指针 |
+| `tss64_offsets_correct` | TSS.sp0/IST/iobase 偏移正确 | 内核栈指针 |
+| `segment_selectors_correct` | CS/DS 选择子值（0x08/0x10/0x1B/0x23）正确 | 特权级隔离 |
+| `privilege_level_roundtrip` | Ring0↔Kernel, Ring3↔User 转换正确 | 特权级隔离 |
+| `idt_entry64_size_is_16_bytes` | IDT 门描述符布局符合 Intel SDM | 异常向量 |
+| `idt_ptr_size_is_10_bytes` | IDT 指针（limit+base）布局正确 | 异常向量 |
+| `star_register_value_correct` | STAR MSR 中内核/用户段选择子位置正确 | 特权级隔离 |
+| `gdt_descriptors_have_correct_dpl` | GDT 描述符 DPL 字段（内核段=0，用户段=3） | 特权级隔离 |
+| `gdt_descriptors_are_flat_mode` | 64-bit code (L=1), page granularity (G=1) | 特权级隔离 |
+| `set_kernel_stack_updates_sp0` | `set_kernel_stack()` 写入 TSS.sp0 语义 | 内核栈指针 |
+| `set_kernel_stack_panics_on_invalid_cpu_id` | cpu_id 越界检查 | 内核栈指针 |
+| `tss_descriptor_is_64bit` | TSS 描述符类型=64-bit TSS available | 内核栈指针 |
+| `init_fills_gdt_correctly` | `init()` 填充 GDT 描述符（access byte, L bit） | 特权级隔离 |
+| `init_sets_tss_sp0` | `init()` 设置 TSS.sp0 = kernel_stack_top | 内核栈指针 |
+| `init_sets_cpu_count` | `init()` 设置 cpu_count = cpu_id + 1 | 内核栈指针 |
+| `init_creates_tss_descriptor_in_gdt` | `init()` 在 GDT 中创建 TSS 描述符 | 内核栈指针 |
+| `gdt_null_entry_is_zero` | GDT[0] = 0（null descriptor） | 特权级隔离 |
+| `tss_iobase_disables_io_bitmap` | TSS.iobase = 0x8000 禁用 I/O bitmap | 内核栈指针 |
+| `set_handler_sets_dpl_correctly` | `set_handler()` DPL=3/0 正确设置 | 异常向量 |
+| `set_handler_writes_handler_address` | `set_handler()` 地址正确拆分到 IDT 字段 | 异常向量 |
+| `gate_type_constants_correct` | 中断门=0xE, 陷阱门=0xF, Present=0x80 | 异常向量 |
+| `msr_constants_correct` | STAR/LSTAR/SFMASK/EFER MSR 地址正确 | 异常向量 |
+| `star_register_layout` | STAR SYSCALL/SYSRET CS/SS 选择子正确 | 特权级隔离 |
+| `sfmask_clears_if_on_syscall` | SFMASK 仅清除 IF (bit 9) | 特权级隔离 |
+| `idt_init_sets_exception_gates` | `init()` 设置异常/IRQ 门描述符 | 异常向量 |
+| `idt_init_breakpoint_has_dpl3` | INT3 (vector 3) DPL=3 | 异常向量 |
+| `idt_init_overflow_has_dpl3` | INTO (vector 4) DPL=3 | 异常向量 |
+| `idt_init_double_fault_uses_ist2` | Double fault (vector 8) IST=2 | 异常向量 |
+| `idt_init_nmi_uses_ist1` | NMI (vector 2) IST=1 | 异常向量 |
+| `idt_init_kernel_exceptions_have_dpl0` | 内核异常 DPL=0 | 异常向量 |
+
+#### ARM64（`os/arch/src/arm64/{protection,trap_entry}.rs`）
+
+| 测试 | 验证的概念问题 | 对应 §1.2 |
+|------|--------------|----------|
+| `privilege_level_values` | EL1=1, EL0=0 | 特权级隔离 |
+| `privilege_level_roundtrip` | EL1↔Kernel, EL0↔User 转换正确 | 特权级隔离 |
+| `kernel_privilege_is_el1` | KERNEL_PRIVILEGE = EL1 | 特权级隔离 |
+| `user_privilege_is_el0` | USER_PRIVILEGE = EL0 | 特权级隔离 |
+| `el1_maps_to_kernel` | EL1 → Privilege::Kernel | 特权级隔离 |
+| `el0_maps_to_user` | EL0 → Privilege::User | 特权级隔离 |
+| `protection_has_cpu_count` | AArch64Protection 结构体可构造 | 内核栈指针 |
+| `trap_entry_init_returns_unit_struct` | AArch64TrapEntry::init() 不 panic | 异常向量 |
+| `configure_syscall_is_noop` | ARM64 SVC 无需 MSR 配置 | 异常向量 |
+| `set_handler_is_noop` | ARM64 固定向量表，set_handler 为 no-op | 异常向量 |
+
+#### RISC-V（`os/arch/src/riscv64/{protection,trap_entry}.rs`）
+
+| 测试 | 验证的概念问题 | 对应 §1.2 |
+|------|--------------|----------|
+| `privilege_level_values` | S_MODE=1, U_MODE=0 | 特权级隔离 |
+| `privilege_level_roundtrip` | S_MODE↔Kernel, U_MODE↔User 转换正确 | 特权级隔离 |
+| `kernel_privilege_is_s_mode` | KERNEL_PRIVILEGE = S_MODE | 特权级隔离 |
+| `user_privilege_is_u_mode` | USER_PRIVILEGE = U_MODE | 特权级隔离 |
+| `protection_has_cpu_count` | Riscv64Protection 结构体可构造 | 内核栈指针 |
+| `trap_entry_init_returns_unit_struct` | Riscv64TrapEntry::init() 不 panic | 异常向量 |
+| `configure_syscall_is_noop` | RISC-V ecall 无需 CSR 配置 | 异常向量 |
+| `set_handler_is_noop` | RISC-V Direct 模式，set_handler 为 no-op | 异常向量 |
+
+### 5.4 测试缺口
+
+对照 §1.2 的三个概念问题和 §4 的实现，以下场景尚无测试覆盖：
+
+| 缺口 | 对应概念问题 | 优先级 | 说明 |
+|------|------------|--------|------|
+| init/load 顺序约束 | 全部三个概念问题 | P1 | §4.1 强调 ProtectionArch::load() 必须先于 TrapEntryArch::load()，无测试验证违反顺序的后果 |
+| `init_ap` 路径验证 | 用户态陷入内核时使用的栈 | P1 | AP 启动路径完全未测试（需要 SMP 硬件/模拟） |
+
+> **说明**：上述两项均依赖 SMP 多核支持，将在 SMP 阶段补充。
 
 ---
 
-## 5.5 过渡：从 init_protection() 到 init_clock_and_interrupts()
+## 6. 过渡：从 init_protection() 到 init_clock_and_interrupts()
 
-`init_protection()` 完成后，CPU 已处于正确的保护模式：
+`init_protection()` 完成后，CPU 已能正确响应异常和特权级切换，但中断控制器尚未初始化，时钟尚未启动。
 
-| 架构 | init_protection() 完成后的状态 |
-|------|--------------------------|
+| 架构 | init_protection() 之后的状态 |
+|------|----------------------|
 | x86-64 | GDT 已加载（GDTR）、IDT 已加载（IDTR）、TSS 已加载（TR）、CS/DS/SS/ES 正确 |
-| aarch64 | VBAR_EL1 指向异常向量表、SP_EL0 设置为用户栈 |
+| aarch64 | VBAR_EL1 指向异常向量表、SP_EL1 设置为内核栈 |
 | riscv64 | stvec 指向 trap 入口、sscratch 保存内核栈 |
 
-此时 CPU 可以安全地响应异常和中断——但中断控制器尚未初始化，时钟尚未启动。`init_clock_and_interrupts()` 接管这些工作：
+`init_clock_and_interrupts()` 接管这些工作：初始化时钟源 → 初始化中断控制器（8259A / APIC / GIC / PLIC）→ 架构特定初始化。**这一阶段必须在 `init_protection()` 之后**，因为中断控制器初始化后硬件中断可能立即到来，若 IDT/VBAR/stvec 未设置，中断会 triple fault。
 
-```
-init_protection()                init_clock_and_interrupts()
-├── ProtectionArch::init()       ├── ClockState::new()
-├── ProtectionArch::load()       ├── ClockArch::init_timer(hz)
-├── TrapEntryArch::init()        ├── InterruptController::init()
-├── TrapEntryArch::load()        └── ArchInit::init()
-└── CPU 可响应异常               └── CPU 可响应时钟中断
-```
-
-**为什么 phase2 必须在 phase1 之后**：中断控制器初始化后，硬件中断可能立即到来。如果 IDT/VBAR/stvec 尚未设置，中断触发时 CPU 无法找到处理程序，导致 triple fault。
-
-**为什么 phase2 不能在 phase1 之前**：`intr_init()` 在某些架构上需要访问 MMIO（ARM GIC、RISC-V PLIC），这些地址需要页表映射。`prot_init()` 重建页表后，MMIO 地址才可访问。
+反过来，**`init_clock_and_interrupts()` 也不能在 `init_protection()` 之前**：`intr_init()` 在某些架构上需要访问 MMIO（ARM GIC、RISC-V PLIC），这些地址需要页表映射。`prot_init()` 重建页表后，MMIO 地址才可访问。因此 `init_protection()` 和 `init_clock_and_interrupts()` 的顺序不可交换。
 
 ---
 
-## 6. 参见
+## 7. 参见
 
-- [02-higher-half-kernel.md](02-higher-half-kernel.md) — trampoline 将 CPU 切换到高地址
-- [04-clock-interrupt-init.md](04-clock-interrupt-init.md) — cstart 后半段：时钟与中断初始化
-- [99-global-concepts.md](99-global-concepts.md) — 全局常量和类型定义
-- `os/arch/src/protection.rs` — ProtectionArch trait 定义
-- `os/arch/src/trap_entry.rs` — TrapEntryArch trait 定义
-- `os/arch/src/x86_64/protection.rs` — x86-64 GDT/TSS 实现
-- `os/arch/src/x86_64/trap_entry.rs` — x86-64 IDT 实现
+- [02-higher-half-kernel.md](02-higher-half-kernel.md) — CPU 已切换到高地址
+- [04-clock-interrupt-init.md](04-clock-interrupt-init.md) — 时钟与中断控制器初始化

@@ -419,6 +419,16 @@ fn init_protection(kernel_info: &KernelInfo) {
 ///
 /// C: init_clock() + intr_init(0) + arch_init() — main.c:403-481
 /// Covered in detail in 04-clock-interrupt-init.md.
+///
+/// **Order matters** (cf. 04-clock-interrupt-init.md §1.1):
+/// 1. `init_timer` MUST run before `intr_init` because the timer
+///    routes through the interrupt controller (LAPIC LVT / GICv3
+///    PPI / PLIC external). Initializing the controller with the
+///    timer source unmasked would cause spurious interrupts.
+/// 2. `arch_init` MUST run after both because it enables the timer
+///    interrupt (e.g. x86-64 LAPIC LVT timer entry in
+///    `X86_64ArchInit::init()`) and any per-CPU interrupts (PMU,
+///    PMP) that depend on the interrupt controller being live.
 #[cfg(not(feature = "mock"))]
 fn init_clock_and_interrupts() {
     use minix_arch::{
@@ -926,6 +936,11 @@ mod tests {
     // ── Linker script constraint validation tests ──
     // These tests verify that the constants in the three architecture
     // linker scripts (link.ld) satisfy arch_boot_impl's constraints.
+    //
+    // **Per-architecture KERN_PHYS_BASE values** (from os/kernel/src/arch/*/link.ld):
+    // - x86_64:    0x0020_0000 (2 MB)
+    // - aarch64:   0x4020_0000 (QEMU virt RAM base 0x4000_0000 + 2 MB)
+    // - riscv64:   0x8020_0000 (QEMU virt DRAM base 0x8000_0000 + 2 MB)
 
     /// x86_64 linker script: KERN_VIRT_BASE = 0xFFFF800000000000, KERN_PHYS_BASE = 0x200000
     /// Verify these values satisfy arch_boot_impl constraints.

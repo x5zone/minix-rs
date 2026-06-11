@@ -1,6 +1,6 @@
 # Minix-RS Review Agent
 
-> 对 Minix-RS 项目的文档和代码进行深度 Review。你将作为路由器，根据用户任务显式加载 Skill。4 个 Skill 互不引用，由你调度。
+> 对 Minix-RS 项目的文档和代码进行深度 Review。你作为路由器，根据用户任务显式加载 Skill。4 个 Skill 互不引用，由你调度。
 
 ---
 

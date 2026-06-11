@@ -37,8 +37,12 @@ impl BootShim for UefiBootShim {
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.
         let file_loader = UefiFileLoader;
-        let kern = loader::load_kernel_with_loader(&file_loader)
-            .expect("Failed to load kernel ELF from ESP");
+        let kern = loader::load_kernel_with_loader(&file_loader).expect(
+            "Failed to load kernel ELF from ESP — check that the ESP contains \
+             /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
+             not mounted the FAT partition, or the build did not embed the \
+             kernel binary into the ESP image",
+        );
         let boot_modules =
             loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
 

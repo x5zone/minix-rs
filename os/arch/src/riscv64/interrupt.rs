@@ -60,6 +60,9 @@ pub struct Riscv64InterruptController {
     nr_irqs: usize,
     /// S-mode context ID for the current hart.
     context: usize,
+    /// Last claimed interrupt ID (saved from claim register read).
+    /// Must be written to complete register in eoi().
+    last_claimed: u32,
 }
 
 impl Riscv64InterruptController {
@@ -68,6 +71,7 @@ impl Riscv64InterruptController {
             plic_base: PLIC_BASE,
             nr_irqs: NR_IRQ_VECTORS,
             context: S_MODE_CONTEXT,
+            last_claimed: 0,
         }
     }
 
@@ -165,19 +169,20 @@ impl InterruptController for Riscv64InterruptController {
         // Read the claim register to acknowledge the highest-priority
         // pending interrupt. This returns the interrupt ID and
         // automatically clears the pending bit.
-        let _claimed: u32;
+        // Save the claimed ID for use in eoi().
+        let claimed: u32;
         unsafe {
-            _claimed = self.plic_read32(Self::claim_offset(self.context));
+            claimed = self.plic_read32(Self::claim_offset(self.context));
         }
+        self.last_claimed = claimed;
     }
 
     fn eoi(&mut self, _irq: IrqVector) {
         // Write the interrupt ID to the complete register to signal
-        // end-of-interrupt. This allows PLIC to deliver the same
-        // interrupt again.
-        // TODO: save claimed ID from ack() and write it here.
+        // end-of-interrupt. PLIC requires writing the same ID that
+        // was read from the claim register.
         unsafe {
-            self.plic_write32(Self::claim_offset(self.context), 0);
+            self.plic_write32(Self::claim_offset(self.context), self.last_claimed);
         }
     }
 

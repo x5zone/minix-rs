@@ -72,14 +72,25 @@ pub struct AArch64InterruptController {
     gicr_base: usize,
     /// Number of IRQ vectors supported.
     nr_irqs: usize,
+    /// Last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
+    /// Must be written to ICC_EOIR1_EL1 in eoi().
+    last_iar: u32,
 }
 
 impl AArch64InterruptController {
+    /// Construct a new controller with **uninitialized** base addresses.
+    ///
+    /// The returned controller is not usable until [`Self::set_base`]
+    /// has been called with addresses discovered from the device tree
+    /// (or platform constants). Calling [`InterruptController::init`]
+    /// before [`Self::set_base`] will panic (early failure to prevent
+    /// writes to physical address 0).
     pub const fn new() -> Self {
         Self {
             gicd_base: 0,
             gicr_base: 0,
             nr_irqs: NR_IRQ_VECTORS,
+            last_iar: 0,
         }
     }
 
@@ -176,6 +187,11 @@ impl AArch64InterruptController {
 impl InterruptController for AArch64InterruptController {
     fn init(&mut self) {
         // C: intr_init() — omap_intr.c:24 / GICv3 equivalent
+        // Safety net: catch the "forgot to call set_base()" footgun.
+        // Without this, GIC writes would silently target physical
+        // address 0x0 and crash the kernel.
+        assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base not set; call set_base() before init()");
+        assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base not set; call set_base() before init()");
         self.init_distributor();
         self.init_redistributor();
         self.init_cpu_interface();
@@ -217,19 +233,21 @@ impl InterruptController for AArch64InterruptController {
     fn ack(&mut self, _irq: IrqVector) {
         // Read ICC_IAR1_EL1 to acknowledge the highest-priority pending interrupt.
         // This returns the interrupt ID and marks it as "in service".
-        let _iar: u64;
+        // IAR format: [23:0] = INTID, [31:24] = priority (unused here).
+        // Save the INTID for use in eoi().
+        let iar: u64;
         unsafe {
-            core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) _iar);
+            core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar);
         }
+        self.last_iar = (iar as u32) & 0x00FF_FFFF;
     }
 
     fn eoi(&mut self, _irq: IrqVector) {
         // Write ICC_EOIR1_EL1 to signal end of interrupt processing.
-        // The interrupt ID should be written, but we can use the value
-        // saved from ack() — for now, just write 0 as placeholder.
-        // TODO: save IAR value from ack() and write it here.
+        // GICv3 requires writing the same interrupt ID that was read from IAR.
+        // C: hw_intr_ack() — hw_intr.h:24/47
         unsafe {
-            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) 0u64);
+            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) self.last_iar as u64);
         }
     }
 
@@ -242,5 +260,67 @@ impl InterruptController for AArch64InterruptController {
                 self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_has_zero_bases() {
+        // new() returns a controller that must be configured before use.
+        let ic = AArch64InterruptController::new();
+        assert_eq!(ic.gicd_base, 0);
+        assert_eq!(ic.gicr_base, 0);
+    }
+
+    #[test]
+    fn test_set_base_overrides() {
+        let mut ic = AArch64InterruptController::new();
+        ic.set_base(0x0800_0000, 0x080A_0000);
+        assert_eq!(ic.gicd_base, 0x0800_0000);
+        assert_eq!(ic.gicr_base, 0x080A_0000);
+    }
+
+    #[test]
+    #[should_panic(expected = "gicd_base not set")]
+    fn test_init_panics_when_gicd_base_unset() {
+        // Without set_base(), init() must panic instead of writing to addr 0.
+        let mut ic = AArch64InterruptController::new();
+        let _ = <AArch64InterruptController as InterruptController>::init(&mut ic);
+    }
+
+    #[test]
+    #[should_panic(expected = "gicr_base not set")]
+    fn test_init_panics_when_gicr_base_unset() {
+        // Set gicd but not gicr; init() must panic on gicr.
+        let mut ic = AArch64InterruptController::new();
+        ic.set_base(0x0800_0000, 0);
+        let _ = <AArch64InterruptController as InterruptController>::init(&mut ic);
+    }
+
+    #[test]
+    fn test_gic_register_offsets() {
+        // ARM IHI 0069H.b §4.4 Distributor register map.
+        assert_eq!(GICD_CTLR, 0x0000);
+        assert_eq!(GICD_IGROUPR, 0x0080);
+        assert_eq!(GICD_ISENABLER, 0x0100);
+        assert_eq!(GICD_ICENABLER, 0x0180);
+    }
+
+    #[test]
+    fn test_gic_waker_offsets() {
+        // ARM IHI 0069H.b §5.4.3 GICR_WAKER bit assignments.
+        assert_eq!(GICR_WAKER, 0x0014);
+        assert_eq!(GICR_WAKER_PROCESSOR_SLEEP, 0x2);
+        assert_eq!(GICR_WAKER_CHILDREN_ASLEEP, 0x4);
+    }
+
+    #[test]
+    fn test_qemu_virt_gic_offsets() {
+        // QEMU virt machine GICv3 addresses (DTB node 'intc').
+        assert_eq!(GICD_OFFSET, 0x0000_0000);
+        assert_eq!(GICR_OFFSET, 0x000A_0000);
     }
 }

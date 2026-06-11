@@ -275,6 +275,8 @@ pub trait HigherHalf {
 | 跳转方式 | `call kmain` (直接) | `br x2` (间接) | `jalr x0, x1, 0` (间接) |
 | 参数传递 | `rdi` (System V ABI) | `x0` (AAPCS64) | `a0` (RISC-V ABI) |
 | 栈对齐 | 16 字节 | 16 字节 | 16 字节 |
+| 帧指针清零 | `xor rbp, rbp` (FP) | `mov x29, #0` (FP) | `li s0, 0` (s0-fp) |
+| 跳转前屏障 | 无（Intel SDM 隐含） | `isb` (P1-11) | `fence.i` (P1-11) |
 | 恒等映射范围 | 4GB (2MB huge pages) | 4GB (1GB block entries) | 4GB (1GB superpages) |
 | 高地址基址 | `0xFFFF_8000_0000_0000` | `0xFFFF_8000_0000_0000` | `0xFFFF_FFC0_0000_0000` |
 | 页表启用 | CR0.PG + CR3 | SCTLR.M + TTBR1 | satp.MODE + satp.PPN |
@@ -291,7 +293,7 @@ pub trait HigherHalf {
 
 1. VMA 从 `KERN_VIRT_BASE` 开始——所有符号解析为高地址
 2. LMA 从 `KERN_PHYS_BASE` 开始——boot-shim 按此地址加载段
-3. 导出 `kern_virt_base`、`kern_phys_base`、`kern_size` 符号——供 KernelInfo 使用
+3. 导出 `kern_virt_base`、`kern_phys_base`、`kern_size` 符号（用 `PROVIDE`）——**但 boot-shim 实际上不读这些符号**：它从 ELF 的 PT_LOAD 段读取 `paddr`/`vaddr`/`memsz` 来构造 `KernelInfo`。`PROVIDE` 的符号是给 **kernel 自己** 用的（如测试代码用 `extern "C" { static kern_virt_base: u64; }` 直接读链接值），主要是**链接期排错**和**单测断言**。boot-shim 的 ELF 加载路径不依赖 `PROVIDE`。
 
 **x86-64 链接脚本** (`kernel/src/arch/x86_64/link.ld`)：
 
@@ -703,6 +705,13 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
     // Step 2: 内核高半核映射 (C: pg_mapkernel — pg_utils.c:186)
     let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+    // **P1-10 supervisor-only mapping 注释**:
+    //   `kernel_read_write()` **不含** `USER_ACCESSIBLE`，所以三架构 PTE 都设了
+    //   supervisor-only 标记：x86-64 U/S=0；aarch64 AP1=0 (EL1 only)；riscv64 U=0。
+    //   这意味着 RISC-V 上即使 sstatus.SUM=0，内核仍可正常访问用户内存 —
+    //   因为 S-mode 永远读 supervisor-only mapping，不需要 SUM。
+    //   **总结**: 我们用 supervisor-only mapping，不设 USER_ACCESSIBLE，sstatus.SUM
+    //   是否为 0 都不影响当前阶段。SUM 只在"内核要读 U=1 页面"时才有意义。
     let kern_virt = kernel_info.kern_virt_base.0;
     let kern_phys = kernel_info.kern_phys_base.0;
     // 当 kern_virt == kern_phys 时，Step 2 与 Step 1 完全重叠，
@@ -757,6 +766,13 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     unsafe { X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
 }
 ```
+
+> **三架构 `arch_boot()` 差异**：aarch64/riscv64 版本的 `arch_boot()` 与 x86-64 几乎完全相同，**唯一差异是 Paging 类型别名**：
+> - x86-64: `minix_arch::x86_64::paging::X86_64Paging` (PML4, 4 级)
+> - aarch64: `minix_arch::arm64::paging::AArch64Paging` (TTBR1, 4 级 L0→L3)
+> - riscv64: `minix_arch::riscv64::paging::Riscv64Paging` (Sv39, 3 级)
+>
+> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [kernel/src/lib.rs:50-87](https://example.com)。
 
 **为什么必须 `jump_to_kmain` 而不是直接 `kmain(info)`？**
 

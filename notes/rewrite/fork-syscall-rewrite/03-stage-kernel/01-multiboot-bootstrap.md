@@ -5,6 +5,8 @@
 > **说明**: 从固件（UEFI/OpenSBI）加载 boot-shim，获取内存映射、加载内核 ELF 与 boot 模块、构造 KernelInfo、退出固件服务，最后调用 `arch_boot()` 将控制权交给内核——boot-shim 的引导准备全链路
 >
 > **Minix3 C 对应**: GRUB 加载内核 → `pre_init()` 解析 multiboot 数据 → 建立恒等映射 → 开启分页。本文档覆盖 Rust 重写后等效路径的引导准备阶段。
+>
+> **路径约定**：本文档引用的所有 `minix3/...` 路径均**相对于仓库根目录**（即 `minix3/` 是仓库根的子目录）。例如 `minix3/minix/kernel/main.c` 在仓库中实际位于 `minix3/minix/kernel/main.c`。`minix3/etc/boot.cfg` 同理。
 
 ---
 
@@ -1449,6 +1451,20 @@ Boot 阶段是整个系统最脆弱的环节——页表配置错误直接导致
 - `MemoryRegion` 的重叠检测、对齐、转换为 PFN 范围 — 保证 KernelInfo 传给内核的内存描述不含重叠/未对齐区域，否则后续 `map_huge` 会映射到错误的物理页
 - `KernelInfo` 构造器从 mock UEFI mmap 构建 — 保证 boot-shim 到 kernel 的数据传递正确，KernelInfo 是两者之间唯一的契约，构造错误意味着内核基于错误的信息做所有决策
 - `Paging` mock 实现的 `new_from_page()` + `enable()` 不 panic — 保证 Paging trait 的接口契约可被实现，泛型代码 `arch_boot_impl<P>` 能正确调用，这是上层代码能工作的前提
+
+**实际测试数量（2026-06-11 验证）**:
+
+| Crate | 测试数 | 覆盖范围 |
+|-------|--------|----------|
+| `minix-elf` | 23 | `ElfError` 变体、`ProgramHeader64` 解析、PT_LOAD 迭代、边界检查、zero-filesz 段、segment flags 等 |
+| `boot-shim` (loader) | 12 | `first_overlapping_pair` (5) + `load_kernel_with_loader` (3) + `MockLoader` (2) + `load_boot_modules` (1) + panic path (1) |
+| `boot-shim` (opensbi_helpers) | 8 | `BootFileTable` 校验/查找、`entry_path_eq`、U-Boot file loader、`build_kernel_info` (riscv64 user_sp)、`bump_alloc` (正向+负向) |
+| `boot-shim` (uefi_helpers) | 1 | `build_kernel_info_fields` |
+| `boot-shim` (总计) | 20 | 上三项之和 |
+| `minix-boot` | 0 | 仅有类型定义，无运行时逻辑可测 |
+| **doc 01 路径总计** | **43** | — |
+
+**UEFI 路径测试不足**: 20 个 boot-shim 测试中仅 1 个（5%）覆盖 UEFI 路径。其余 19 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
 
 ### 5.2 集成测试（qemu-tests/）
 

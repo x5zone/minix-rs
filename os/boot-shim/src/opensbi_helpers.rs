@@ -96,6 +96,13 @@ pub const BOOT_FILE_PATH_MAX: usize = 64;
 #[derive(Clone, Copy)]
 pub struct BootFileEntry {
     /// NUL-terminated UTF-8 path, e.g. `b"/EFI/minix/kernel.elf\0"`.
+    ///
+    /// **U-Boot contract**: this field MUST be NUL-terminated within the
+    /// first `BOOT_FILE_PATH_MAX - 1` bytes. Unterminated paths are
+    /// rejected by [`entry_path_eq`] (lookup returns `None`) and the
+    /// kernel silently fails to find the file. The U-Boot boot script
+    /// in `os/boot-scripts/` is responsible for zero-padding after the
+    /// path bytes.
     pub path: [u8; BOOT_FILE_PATH_MAX],
     /// Physical address of the file bytes (set by U-Boot `fatload`).
     pub phys_addr: u64,
@@ -241,7 +248,12 @@ static mut BOOT_FILE_TABLE_PTR: usize = 0;
 /// `magic` field equals [`BOOT_FILE_TABLE_MAGIC`]. The table must remain
 /// valid for the entire boot-shim lifetime.
 pub unsafe fn install_boot_file_table(addr: u64) {
+    // Catch double-install: if a caller (e.g., a buggy trampoline) calls
+    // this twice without `boot_file_table()` clearing the pointer, we'd
+    // silently overwrite and lose track. The `debug_assert!` fires only
+    // in debug builds; release builds skip the check to avoid a load.
     // SAFETY: single-writer during early boot before secondary harts run.
+    debug_assert!(BOOT_FILE_TABLE_PTR == 0, "install_boot_file_table called twice");
     unsafe {
         BOOT_FILE_TABLE_PTR = addr as usize;
     }
@@ -274,7 +286,11 @@ static mut BUMP_PTR: u64 = MODULE_REGION_BASE;
 const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 
 fn bump_alloc(num_pages: usize) -> Option<u64> {
-    // SAFETY: single-threaded boot context.
+    // Reject zero-page requests: a successful call with num_pages == 0
+    // would return the current BUMP_PTR (a duplicate address) without
+    // advancing the pointer, breaking the "no overlap" invariant.
+    assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
+    // SAFETY: single-threaded boot context; SMP not yet started.
     unsafe {
         let need = (num_pages as u64) * 4096;
         if BUMP_PTR + need > BUMP_END {
@@ -458,5 +474,25 @@ mod tests {
         // Sv39 user-space top is below 2^38.
         assert!(info.user_sp.0 < (1u64 << 39));
         assert_eq!(info.kern_phys_base, PhysBytes(DRAM_BASE));
+    }
+
+    #[test]
+    #[should_panic(expected = "num_pages must be > 0")]
+    fn test_bump_alloc_rejects_zero_pages() {
+        // num_pages == 0 would return the current BUMP_PTR without
+        // advancing, violating the "no overlap" invariant.
+        bump_alloc(0);
+    }
+
+    #[test]
+    fn test_bump_alloc_advances_pointer() {
+        // On a fresh state (assuming no prior allocations in this test
+        // process), the first allocation returns the BUMP_PTR start.
+        // We don't assert the exact value (it depends on test ordering
+        // and may have been mutated), only that subsequent allocations
+        // return strictly increasing addresses.
+        let a = bump_alloc(1).expect("first alloc should succeed");
+        let b = bump_alloc(1).expect("second alloc should succeed");
+        assert!(b > a, "bump_alloc must return strictly increasing addresses");
     }
 }

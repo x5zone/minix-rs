@@ -19,7 +19,45 @@
 //!   Only SYSCALL/SYSRET is used on x86-64.
 
 use minix_types::VirBytes;
-use crate::protection::InterruptVector;
+
+/// Interrupt/exception vector number.
+///
+/// Wraps a u8 vector number with type safety. On x86-64, this
+/// corresponds to an IDT vector index (0-255). On ARM64/RISC-V,
+/// the meaning is architecture-specific but the type is shared.
+///
+/// C: interrupt.h:21-25, archconst.h:38-49
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptVector(pub u8);
+
+impl InterruptVector {
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+pub const DIVIDE_ERROR: InterruptVector           = InterruptVector(0);
+pub const DEBUG: InterruptVector                  = InterruptVector(1);
+pub const NMI: InterruptVector                    = InterruptVector(2);
+pub const BREAKPOINT: InterruptVector             = InterruptVector(3);
+pub const OVERFLOW: InterruptVector               = InterruptVector(4);
+pub const BOUNDS_CHECK: InterruptVector           = InterruptVector(5);
+pub const INVALID_OPCODE: InterruptVector         = InterruptVector(6);
+pub const DEVICE_NOT_AVAILABLE: InterruptVector   = InterruptVector(7);
+pub const DOUBLE_FAULT: InterruptVector           = InterruptVector(8);
+pub const COPROCESSOR_SEGMENT_OVERRUN: InterruptVector = InterruptVector(9);
+pub const INVALID_TSS: InterruptVector            = InterruptVector(10);
+pub const SEGMENT_NOT_PRESENT: InterruptVector    = InterruptVector(11);
+pub const STACK_FAULT: InterruptVector            = InterruptVector(12);
+pub const GENERAL_PROTECTION: InterruptVector     = InterruptVector(13);
+pub const PAGE_FAULT: InterruptVector             = InterruptVector(14);
+
+pub const KERN_CALL_VECTOR: InterruptVector       = InterruptVector(32);
+pub const IPC_VECTOR: InterruptVector             = InterruptVector(33);
 
 /// Architecture abstraction for trap entry configuration.
 ///

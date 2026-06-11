@@ -155,6 +155,9 @@ pub enum ElfError {
     PhdrEntryTooSmall,
     /// No PT_LOAD segments found.
     NoLoadSegments,
+    /// PT_LOAD segments overlap in physical memory.
+    /// Reason is a static label — see `LoaderError` for the dynamic message.
+    InvalidSegment,
 }
 
 // ── Parsing functions ──

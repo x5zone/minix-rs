@@ -31,21 +31,77 @@
 /// don't need 1ms ticks. 100 Hz matches typical server/desktop kernels.
 pub const DEFAULT_HZ: u32 = 100;
 
+/// Number of load history slots for load average calculation.
+///
+/// C: _LOAD_HISTORY — include/minix/type.h:97
+pub const LOAD_HISTORY_SIZE: usize = 16;
+
 /// Architecture-independent clock state.
 ///
-/// Manages tick frequency, uptime counter, and load average tracking.
-/// Hardware timer configuration is delegated to `ClockArch`.
+/// Manages tick frequency, uptime counter, realtime tracking, and load
+/// average. Hardware timer configuration is delegated to `ClockArch`.
 ///
-/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-40
+/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-44
 pub struct ClockState {
     /// Clock tick frequency in Hz.
+    /// C: kclockinfo.hz — type.h:119
     hz: u32,
 
     /// System uptime in ticks since boot.
+    /// C: kclockinfo.uptime — type.h:107
     uptime: u64,
 
-    /// Real-time offset for time adjustment (in ticks).
-    realtime_offset: i64,
+    /// Real time in ticks since boot (may differ from uptime due to adjtime).
+    /// C: kclockinfo.realtime — type.h:109
+    realtime: u64,
+
+    /// Boot time in seconds since UNIX epoch.
+    /// C: kclockinfo.boottime — type.h:105
+    boottime: u64,
+
+    /// Number of ticks to adjust realtime by (positive = speed up, negative = slow down).
+    /// C: adjtime_delta — clock.c:44
+    adjtime_delta: i32,
+
+    /// Load average tracking data.
+    /// C: kloadinfo (struct loadinfo) — type.h:98
+    loadinfo: LoadInfo,
+}
+
+/// Load average tracking data.
+///
+/// Tracks the number of runnable processes over time to compute
+/// 1/5/15 minute load averages.
+///
+/// C: struct loadinfo — include/minix/type.h:98
+struct LoadInfo {
+    /// History of process counts per sample slot.
+    /// C: proc_load_history[_LOAD_HISTORY] — type.h:99
+    proc_load_history: [u16; LOAD_HISTORY_SIZE],
+
+    /// Last slot written in proc_load_history.
+    /// C: proc_last_slot — type.h:100
+    proc_last_slot: u16,
+
+    /// Uptime at last load sample.
+    /// C: last_clock — type.h:101
+    last_clock: u64,
+}
+
+impl Default for LoadInfo {
+    fn default() -> Self {
+        Self {
+            proc_load_history: [0; LOAD_HISTORY_SIZE],
+            proc_last_slot: 0,
+            last_clock: 0,
+        }
+    }
+}
+
+impl Default for ClockState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClockState {
@@ -56,7 +112,10 @@ impl ClockState {
         Self {
             hz: DEFAULT_HZ,
             uptime: 0,
-            realtime_offset: 0,
+            realtime: 0,
+            boottime: 0,
+            adjtime_delta: 0,
+            loadinfo: LoadInfo::default(),
         }
     }
 
@@ -70,14 +129,30 @@ impl ClockState {
         self.uptime
     }
 
+    /// Get the real time in ticks since boot.
+    /// C: kclockinfo.realtime — type.h:109
+    pub fn realtime(&self) -> u64 {
+        self.realtime
+    }
+
     /// Called on each clock tick interrupt.
     ///
-    /// Updates uptime and load average tracking.
-    /// C: timer_int_handler() — clock.c:76
+    /// Updates uptime, realtime, and load average tracking.
+    /// C: timer_int_handler() — clock.c:70
     pub fn tick(&mut self) {
         self.uptime += 1;
-        // TODO: update load average (kloadinfo)
-        // TODO: check timer queue (clock_timers)
+
+        // Update realtime with adjtime_delta adjustment.
+        // C: clock.c:92-103
+        if self.adjtime_delta != 0 && self.uptime & 0x1 != 0 {
+            self.realtime += if self.adjtime_delta > 0 { 2 } else { 0 };
+            self.adjtime_delta += if self.adjtime_delta > 0 { -1 } else { 1 };
+        } else {
+            self.realtime += 1;
+        }
+
+        // TODO: update load average (kloadinfo) — clock.c:275-291
+        // TODO: check timer queue (clock_timers) — clock.c:160-161
     }
 }
 
@@ -107,4 +182,146 @@ pub trait ClockArch {
     ///
     /// Used for fine-grained timing and profiling.
     fn read_ticks() -> u64;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clock_state_new() {
+        let cs = ClockState::new();
+        assert_eq!(cs.hz(), DEFAULT_HZ);
+        assert_eq!(cs.uptime(), 0);
+        assert_eq!(cs.realtime(), 0);
+    }
+
+    #[test]
+    fn test_clock_state_default() {
+        let cs = ClockState::default();
+        assert_eq!(cs.hz(), DEFAULT_HZ);
+        assert_eq!(cs.uptime(), 0);
+        assert_eq!(cs.realtime(), 0);
+    }
+
+    #[test]
+    fn test_clock_state_tick_increment_uptime() {
+        let mut cs = ClockState::new();
+        for _ in 0..100 {
+            cs.tick();
+        }
+        assert_eq!(cs.uptime(), 100);
+    }
+
+    #[test]
+    fn test_clock_state_tick_realtime_no_adjtime() {
+        let mut cs = ClockState::new();
+        for _ in 0..10 {
+            cs.tick();
+        }
+        // Without adjtime_delta, realtime == uptime
+        assert_eq!(cs.realtime(), cs.uptime());
+    }
+
+    #[test]
+    fn test_clock_state_tick_realtime_with_positive_adjtime() {
+        let mut cs = ClockState::new();
+        cs.adjtime_delta = 10;
+
+        // Positive adjtime: every odd tick adds 2 to realtime (not 1),
+        // and adjtime_delta decreases by 1 toward 0.
+        // After 20 ticks: adjtime_delta goes 10→0
+        // Odd ticks: realtime += 2 (extra +1 each), even ticks: realtime += 1
+        // Total: 20 + 10 = 30
+        for _ in 0..20 {
+            cs.tick();
+        }
+        assert_eq!(cs.realtime(), 30);
+        assert_eq!(cs.adjtime_delta, 0);
+    }
+
+    #[test]
+    fn test_clock_state_tick_realtime_with_negative_adjtime() {
+        let mut cs = ClockState::new();
+        cs.adjtime_delta = -10;
+
+        // Negative adjtime: every odd tick, realtime += 0 (not 1),
+        // and adjtime_delta increases by 1 toward 0.
+        // After 20 ticks: adjtime_delta goes -10→0
+        // Odd ticks: realtime += 0 (skip), even ticks: realtime += 1
+        // Total: 10
+        for _ in 0..20 {
+            cs.tick();
+        }
+        assert_eq!(cs.realtime(), 10);
+        assert_eq!(cs.adjtime_delta, 0);
+    }
+
+    #[test]
+    fn test_clock_state_tick_realtime_adjtime_stops_when_zero() {
+        let mut cs = ClockState::new();
+        cs.adjtime_delta = 2;
+
+        // Tick 1 (odd): adjtime_delta > 0 → realtime += 2, adjtime_delta = 1
+        // Tick 2 (even): adjtime_delta != 0 but uptime & 0x1 == 0 → realtime += 1
+        // Tick 3 (odd): adjtime_delta > 0 → realtime += 2, adjtime_delta = 0
+        // Tick 4 (even): adjtime_delta == 0 → realtime += 1
+        // Tick 5 (odd): adjtime_delta == 0 → realtime += 1
+        cs.tick(); // tick 1
+        assert_eq!(cs.uptime, 1);
+        assert_eq!(cs.realtime, 2);
+        assert_eq!(cs.adjtime_delta, 1);
+
+        cs.tick(); // tick 2
+        assert_eq!(cs.uptime, 2);
+        assert_eq!(cs.realtime, 3);
+        assert_eq!(cs.adjtime_delta, 1);
+
+        cs.tick(); // tick 3
+        assert_eq!(cs.uptime, 3);
+        assert_eq!(cs.realtime, 5);
+        assert_eq!(cs.adjtime_delta, 0);
+
+        cs.tick(); // tick 4
+        assert_eq!(cs.uptime, 4);
+        assert_eq!(cs.realtime, 6);
+        assert_eq!(cs.adjtime_delta, 0);
+
+        cs.tick(); // tick 5
+        assert_eq!(cs.uptime, 5);
+        assert_eq!(cs.realtime, 7);
+        assert_eq!(cs.adjtime_delta, 0);
+    }
+
+    #[test]
+    fn test_clock_state_large_uptime_no_overflow() {
+        let mut cs = ClockState::new();
+        // Simulate ~1M ticks (~2.8 hours at 100 Hz)
+        for _ in 0..1_000_000 {
+            cs.tick();
+        }
+        assert_eq!(cs.uptime(), 1_000_000);
+        assert_eq!(cs.realtime(), 1_000_000);
+    }
+
+    #[test]
+    fn test_load_info_default() {
+        let li = LoadInfo::default();
+        assert_eq!(li.proc_load_history.len(), LOAD_HISTORY_SIZE);
+        assert_eq!(li.proc_last_slot, 0);
+        assert_eq!(li.last_clock, 0);
+        for &val in li.proc_load_history.iter() {
+            assert_eq!(val, 0);
+        }
+    }
+
+    #[test]
+    fn test_default_hz_value() {
+        assert_eq!(DEFAULT_HZ, 100);
+    }
+
+    #[test]
+    fn test_load_history_size() {
+        assert_eq!(LOAD_HISTORY_SIZE, 16);
+    }
 }
