@@ -48,25 +48,25 @@ pub(crate) type VfsCallbackFn = fn(
 
 #[derive(Debug)]
 pub(crate) struct VfsRequest {
-    pub request_type: VfsRequestType,
-    pub req_id: u32,
-    pub caller_endpoint: Endpoint,
-    pub fd: i32,
-    pub offset: u64,
-    pub length: u32,
-    pub callback: Option<VfsCallbackFn>,
-    pub state: Option<VfsRequestState>,
+    pub(crate) request_type: VfsRequestType,
+    pub(crate) req_id: u32,
+    pub(crate) caller_endpoint: Endpoint,
+    pub(crate) fd: i32,
+    pub(crate) offset: u64,
+    pub(crate) length: u32,
+    pub(crate) callback: Option<VfsCallbackFn>,
+    pub(crate) state: Option<VfsRequestState>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct VfsReply {
-    pub req_id: u32,
-    pub result: i32,
-    pub data_phys: Option<minix_types::PhysBytes>,
-    pub fd: i32,
-    pub dev: u64,
-    pub ino: u64,
-    pub size_pages: u64,
+    pub(crate) req_id: u32,
+    pub(crate) result: i32,
+    pub(crate) data_phys: Option<minix_types::PhysBytes>,
+    pub(crate) fd: i32,
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) size_pages: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,23 +80,9 @@ pub(crate) enum VfsQueueError {
     NoCallbackState,
 }
 
-pub(crate) trait IpcSender {
-    fn async_send(&self, dest: Endpoint, msg: &VfsCallMessage) -> Result<(), IpcError>;
-}
-
-pub(crate) struct VfsCallMessage {
-    pub req_type: VfsRequestType,
-    pub req_id: u32,
-    pub fd: i32,
-    pub endpoint: Endpoint,
-    pub offset: u64,
-    pub length: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IpcError {
-    SendFailed,
-}
+// NOTE: IpcSender trait was removed — it had no implementations and was dead code.
+// When IpcTransport is available, the VFS request send path will use that trait
+// directly rather than a separate IpcSender abstraction.
 
 pub(crate) struct VfsRequestQueue {
     queued: VecDeque<VfsRequest>,
@@ -264,7 +250,7 @@ mod tests {
 
         let active_id = queue.active.as_ref().unwrap().req_id;
 
-        let reply = VfsReply {
+        let _reply = VfsReply {
             req_id: active_id,
             result: 0,
             data_phys: None,
@@ -281,9 +267,9 @@ mod tests {
 
     #[test]
     fn test_vfs_queue_no_active_reply() {
-        let mut queue = VfsRequestQueue::new();
+        let queue = VfsRequestQueue::new();
 
-        let reply = VfsReply {
+        let _reply = VfsReply {
             req_id: 1,
             result: 0,
             data_phys: None,

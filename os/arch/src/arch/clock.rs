@@ -167,6 +167,7 @@ impl ClockState {
 /// |--------|--------|-------|--------|
 /// | `init_timer()` | 8254 PIT divisor / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | CLINT mtimecmp |
 /// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
+/// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
 ///
 /// C: init_clock() hardware portion + arch_init() APIC timer
 pub trait ClockArch {
@@ -182,6 +183,19 @@ pub trait ClockArch {
     ///
     /// Used for fine-grained timing and profiling.
     fn read_ticks() -> u64;
+
+    /// Read the CPU's Time Stamp Counter (cycle counter).
+    ///
+    /// Returns the current hardware cycle count. On x86-64 this is `rdtsc`,
+    /// on aarch64 this is `CNTPCT_EL0`, on riscv64 this is `mtime`.
+    ///
+    /// The default implementation delegates to `read_ticks()` since all
+    /// three architectures use the same hardware counter for both.
+    ///
+    /// C: `read_tsc_64()` — arch/i386/arch_clock.c / arch/earm/arch_clock.c
+    fn read_tsc() -> u64 {
+        Self::read_ticks()
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +337,16 @@ mod tests {
     #[test]
     fn test_load_history_size() {
         assert_eq!(LOAD_HISTORY_SIZE, 16);
+    }
+
+    /// Verify that `read_tsc()` default implementation delegates to `read_ticks()`.
+    #[test]
+    fn test_read_tsc_default_delegates_to_read_ticks() {
+        struct TestClock;
+        impl ClockArch for TestClock {
+            fn init_timer(_hz: u32) {}
+            fn read_ticks() -> u64 { 42 }
+        }
+        assert_eq!(TestClock::read_tsc(), 42);
     }
 }

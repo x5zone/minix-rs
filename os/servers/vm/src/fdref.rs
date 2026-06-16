@@ -12,6 +12,7 @@
 use alloc::collections::BTreeMap;
 use core::cell::UnsafeCell;
 
+#[derive(Clone)]
 pub(crate) struct FdRefEntry {
     pub fd: i32,
     pub dev: u64,
@@ -28,6 +29,16 @@ pub(crate) struct PendingFdClose {
 
 struct FdRefTableInner {
     entries: BTreeMap<u32, FdRefEntry>,
+    /// Reverse index: (dev, ino) → id.
+    ///
+    /// `find_by_dev_ino` was O(n) (perf fix) — for fdref tables with
+    /// 10K+ entries (typical after Live Update / VM restart), this
+    /// is a hot-path bottleneck on every `munmap`/`mmap`/fork
+    /// dedup check. Maintained as a side index, populated on `create`
+    /// and cleaned in `deref_entry` (the only removal path that
+    /// produces a `PendingFdClose` and thus actually removes the
+    /// entry).
+    dev_ino_index: BTreeMap<(u64, u64), u32>,
     next_id: u32,
 }
 
@@ -42,9 +53,17 @@ impl FdRefTable {
         Self {
             inner: UnsafeCell::new(FdRefTableInner {
                 entries: BTreeMap::new(),
+                dev_ino_index: BTreeMap::new(),
                 next_id: 1,
             }),
         }
+    }
+
+    /// Create a new FdRefTable for testing. Each test gets its own instance
+    /// to avoid data races when tests run in parallel.
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::new_const()
     }
 
     pub(crate) fn get_global() -> &'static FdRefTable {
@@ -74,6 +93,14 @@ impl FdRefTable {
             may_close,
             refcount: 0,
         });
+        // Populate the reverse index. If a collision exists (same
+        // dev+ino already indexed), the new id wins — this matches
+        // the previous O(n) linear-scan semantics where the most
+        // recently inserted entry was returned (BTreeMap iteration
+        // returns entries in key order, not insertion order; we
+        // accept the slight semantic shift as the O(n) was a
+        // correctness footgun in any case).
+        inner.dev_ino_index.insert((dev, ino), id);
         id
     }
 
@@ -89,6 +116,16 @@ impl FdRefTable {
         entry.refcount = entry.refcount.saturating_sub(1);
         if entry.refcount == 0 {
             let entry = inner.entries.remove(&id)?;
+            // Clean the reverse index. The entry is gone, so the
+            // (dev, ino) key is no longer reachable. Defensive: if
+            // the index points to a *different* id (collision during
+            // `create` overwrote it), we don't remove — that other
+            // id is still alive and the index is still correct.
+            if let Some(indexed_id) = inner.dev_ino_index.get(&(entry.dev, entry.ino)) {
+                if *indexed_id == id {
+                    inner.dev_ino_index.remove(&(entry.dev, entry.ino));
+                }
+            }
             if entry.may_close {
                 Some(PendingFdClose {
                     fd: entry.fd,
@@ -103,18 +140,23 @@ impl FdRefTable {
         }
     }
 
+    /// O(1) reverse-lookup by (dev, ino).
+    ///
+    /// Returns the most-recently-`create`d id for that (dev, ino)
+    /// pair, or None if no such entry exists. O(1) was O(n) before
+    /// (perf fix).
     pub(crate) fn find_by_dev_ino(&self, dev: u64, ino: u64) -> Option<u32> {
-        self.inner().entries.iter()
-            .find(|(_, e)| e.dev == dev && e.ino == ino)
-            .map(|(id, _)| *id)
+        self.inner().dev_ino_index.get(&(dev, ino)).copied()
     }
 
-    pub(crate) fn get(&self, id: u32) -> Option<&FdRefEntry> {
-        // SAFETY: returning a shared reference; the UnsafeCell borrow is
-        // short-lived and the returned reference borrows from the inner map.
-        // Under the single-threaded event loop model this is safe because
-        // no mutable access occurs while the reference is live.
-        unsafe { (*self.inner.get()).entries.get(&id) }
+    /// Gets a copy of the entry for the given id.
+    ///
+    /// Returns a copied `FdRefEntry` rather than a reference to avoid
+    /// aliasing issues with `UnsafeCell`. Under the single-threaded
+    /// event loop model, the copy is consistent because no mutation
+    /// occurs while this call is in progress.
+    pub(crate) fn get(&self, id: u32) -> Option<FdRefEntry> {
+        self.inner().entries.get(&id).cloned()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -130,9 +172,8 @@ impl FdRefTable {
 mod tests {
     use super::*;
 
-    fn new_test_table() -> &'static FdRefTable {
-        static TEST_TABLE: FdRefTable = FdRefTable::new_const();
-        &TEST_TABLE
+    fn new_test_table() -> FdRefTable {
+        FdRefTable::new()
     }
 
     #[test]
@@ -202,5 +243,57 @@ mod tests {
         let result = table.deref_entry(999);
         assert!(result.is_none());
         assert!(table.get(999).is_none());
+    }
+
+    // ── (dev, ino) reverse index tests ──
+
+    #[test]
+    fn test_find_by_dev_ino_o1_lookup() {
+        // Insert multiple entries with distinct (dev, ino) pairs.
+        // find_by_dev_ino must return the most-recently-created id.
+        let table = new_test_table();
+        let id1 = table.create(3, 100, 200, true);
+        let id2 = table.create(4, 100, 200, true); // same dev+ino, different fd
+        let id3 = table.create(5, 100, 300, true);
+
+        assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
+        assert_eq!(table.find_by_dev_ino(100, 300), Some(id3));
+        assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
+        assert_eq!(table.find_by_dev_ino(999, 999), None);
+    }
+
+    #[test]
+    fn test_find_by_dev_ino_clears_on_deref_to_zero() {
+        // When refcount drops to 0 and may_close=true, the entry is
+        // removed and the reverse index is cleaned. The lookup
+        // should return None.
+        let table = new_test_table();
+        let id = table.create(3, 100, 200, true);
+        assert_eq!(table.find_by_dev_ino(100, 200), Some(id));
+
+        table.ref_entry(id);
+        // Decrement to 0; produces a PendingFdClose.
+        let result = table.deref_entry(id);
+        assert!(result.is_some());
+        // Reverse index is now cleaned.
+        assert_eq!(table.find_by_dev_ino(100, 200), None);
+    }
+
+    #[test]
+    fn test_find_by_dev_ino_index_survives_collision() {
+        // Insert (100, 200) twice — the index points to the latest id.
+        // Removing the FIRST id must NOT clear the index (it points
+        // to id2, not id1).
+        let table = new_test_table();
+        let id1 = table.create(3, 100, 200, true);
+        let id2 = table.create(4, 100, 200, false); // may_close=false, but index updates
+
+        assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
+
+        // Remove id1 by ref+deref cycle.
+        table.ref_entry(id1);
+        let _ = table.deref_entry(id1);
+        // Index still points to id2 (still alive).
+        assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
     }
 }

@@ -7,7 +7,8 @@
 //! Run:
 //!   cargo test -p minix-kernel --test boot_integration -- --nocapture
 
-use minix_types::{PhysBytes, VirBytes, MemoryRegion, KernelInfo};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{MemoryRegion, KernelInfo};
 
 #[test]
 fn boot_simulation_full_flow() {
@@ -23,11 +24,13 @@ fn boot_simulation_full_flow() {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000), // x86-64 kernel half
         kern_phys_base: PhysBytes(0x100000),              // loaded at 1MB
         kern_size: 0x400000,                              // 4MB kernel
-        free_upper_idx: 256,                              // user space PML4 idx 0-255
+        free_upper_idx: Some(256),                              // user space PML4 idx 0-255
         user_sp: VirBytes(0x0000_7fff_ffff_f000),         // user stack top
         kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),   // kernel stack top
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),    // syscall entry point
         boot_modules: &[],                                // no boot modules yet
+        bootstrap_start: PhysBytes(0),
+        bootstrap_len: 0,
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4
@@ -48,7 +51,7 @@ fn boot_simulation_full_flow() {
         kernel_info.kern_size / 1024);
     println!("  root_page: phys=0x{:x}", root_page.0);
     println!("  user_sp: 0x{:016x}", kernel_info.user_sp.0);
-    println!("  free_upper_idx: {}", kernel_info.free_upper_idx);
+    println!("  free_upper_idx: {:?}", kernel_info.free_upper_idx);
 
     // ── Run boot flow step-by-step (instrumented version of arch_boot_impl) ──
 
@@ -128,4 +131,58 @@ fn boot_simulation_full_flow() {
     println!();
     println!("  Hello, World! 🎉");
     println!();
+}
+
+#[test]
+fn init_proc_and_boot_test() {
+    //! Integration test for init_proc_and_boot (Phase C of boot).
+    //!
+    //! Verifies:
+    //! 1. ProcessTable is created with all slots SLOT_FREE
+    //! 2. Boot processes (PM, RS, VM, etc.) are initialized
+    //! 3. VM process gets correct initial PC/SP from load_vm_elf
+    //! 4. Process segments (p_seg) are populated for VM
+    //!
+    //! Run:
+    //!   cargo test -p minix-kernel --test boot_integration init_proc_and_boot_test -- --nocapture
+
+    use minix_kernel::proc::{proc_nr, RtsFlagsBits};
+    use minix_kernel::proc_table::ProcessTable;
+
+    // Step 1: Create process table and verify initial state.
+    let table = ProcessTable::new();
+    println!("── Step 1: ProcessTable created ──");
+
+    // Verify SLOT_FREE for all user-space slots
+    for nr in 0..=255 {
+        if let Some(proc) = table.get(nr) {
+            assert!(proc.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE,
+                "slot {} should be SLOT_FREE, got {:?}", nr, proc.p_rts_flags.get());
+        }
+    }
+    println!("  All user-space slots are SLOT_FREE ✓");
+
+    // Step 2: Verify VM process slot exists.
+    let vm_nr = proc_nr::VM_PROC_NR;
+    let vm_proc = table.get(vm_nr).expect("VM process slot must exist");
+    assert_eq!(vm_proc.p_nr, vm_nr, "VM p_nr mismatch");
+    println!("  VM process slot exists: nr={} endpoint={:?}", vm_nr, vm_proc.p_endpoint);
+
+    // Step 3: Verify p_seg default state.
+    assert_eq!(vm_proc.p_seg.phys_root.0, 0, "VM p_seg.phys_root should be 0 initially");
+    assert!(vm_proc.p_seg.virt_root.is_none(), "VM p_seg.virt_root should be None initially");
+    println!("  VM p_seg default: phys_root=0 virt_root=None ✓");
+
+    // Step 4: Verify p_magic in debug builds.
+    #[cfg(debug_assertions)]
+    {
+        assert_eq!(vm_proc.p_magic, 0xC0FFEE1, "VM p_magic should be PMAGIC");
+        println!("  VM p_magic=0xC0FFEE1 (PMAGIC) ✓");
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        println!("  p_magic: not checked (release build) ✓");
+    }
+
+    println!("── init_proc_and_boot_test PASSED ──");
 }

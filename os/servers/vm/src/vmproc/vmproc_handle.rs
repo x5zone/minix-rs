@@ -11,10 +11,13 @@
 
 use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 use minix_arch::paging::Paging;
-use minix_arch::paging::{bind_to_process, map_kernel};
+use minix_arch::paging::bind_to_process;
+#[cfg(not(test))]
+use minix_arch::paging::map_kernel;
 use super::{VmFlags, vmproc::VmProc};
 use crate::pagetable::PageTable;
 use crate::region::RegionMap;
+use crate::region::VmError;
 
 /// Empty (free) slot typestate view.
 ///
@@ -60,16 +63,87 @@ impl<'a> EmptySlot<'a> {
 
     /// Activates this slot with the given endpoint (relaxed mode).
     ///
-    /// Does NOT verify endpoint/slot consistency. Use for special cases:
-    /// - Fork: child endpoint is NONE initially, set by kernel after sys_fork()
-    /// - Exec temporary slot: old endpoint may differ from temporary slot
-    /// - Tests: using arbitrary endpoints without matching slot numbers
+    /// Does NOT enforce the strict endpoint-slot pairing that `activate()`
+    /// does. Use ONLY for these specific cases (see `vmproc/mod.rs` API
+    /// safety contract for the full discussion):
+    ///
+    /// - **Fork**: child endpoint is `Endpoint::NONE` initially, set by
+    ///   the kernel after `sys_fork()` succeeds. See `fork.rs::do_fork`.
+    /// - **Exec temporary slot**: the temporary slot at index
+    ///   `VM_EXEC_TMP_SLOT` (`NR_PROCS`) may temporarily hold an endpoint
+    ///   that does not match the slot index, because exec is the only
+    ///   legitimate way to overwrite endpoint metadata.
+    /// - **Tests**: arbitrary endpoints without matching slot numbers are
+    ///   acceptable because test code does not exercise the IPC routing
+    ///   path.
+    ///
+    /// In normal cases, use `activate()` which enforces consistency.
+    ///
+    /// # Debug-build sanity checks (2026-06-13)
+    ///
+    /// Even in relaxed mode, the function performs **release-build-cheap
+    /// debug-only validation** to catch obvious misuses that would
+    /// otherwise silently corrupt downstream state:
+    ///
+    /// 1. The endpoint must be either `Endpoint::NONE` (fork's child) or
+    ///    have a slot index strictly less than `VM_PROC_COUNT`. This
+    ///    bounds the endpoint to the addressable process table — an
+    ///    endpoint with slot `>= VM_PROC_COUNT` is a bug because the
+    ///    process table cannot store it.
+    /// 2. The endpoint's slot, if non-NONE, must be either equal to
+    ///    `self.slot()` (the strict path's invariant) or equal to
+    ///    `VM_EXEC_TMP_SLOT` (the exec-rewrite path's exception). Any
+    ///    other mismatch is a programming error.
+    ///
+    /// Both checks are `debug_assert!` only and are compiled out of
+    /// release builds. The `// BKL protected`-equivalent single-threaded
+    /// VM event loop model (see `vmproc/mod.rs` module header) keeps the
+    /// race-free invariant; this is a typestate-API hardening, not a
+    /// concurrency guard.
     ///
     /// Does NOT initialize vm_pt or vm_regions - caller must initialize
     /// separately based on the specific operation (fork/exec/new).
-    ///
-    /// In normal cases, use `activate()` which enforces consistency.
     pub(crate) fn activate_relaxed(self, endpoint: Endpoint) -> ActiveProc<'a> {
+        use super::table::{VM_EXEC_TMP_SLOT, VM_PROC_COUNT};
+
+        // (2026-06-13): defence-in-depth debug-only validation.
+        // Catches: (a) endpoint with slot >= VM_PROC_COUNT (impossible
+        // process index), (b) non-NONE endpoint whose slot does not
+        // match self.slot() when self.slot() is not the exec-rewrite
+        // temporary slot. Both are programming errors that previously
+        // would have propagated silently to the fork/exec handlers.
+        //
+        // Use `is_none()` rather than `== Endpoint::NONE` so the check
+        // follows the existing convention in the codebase and is robust
+        // against any future change to Endpoint's internal representation.
+        if !endpoint.is_none() {
+            let ep_slot = endpoint.slot();
+            debug_assert!(
+                (ep_slot as usize) < VM_PROC_COUNT,
+                "activate_relaxed: endpoint slot {} >= VM_PROC_COUNT {} \
+                 (out-of-range endpoint)",
+                ep_slot,
+                VM_PROC_COUNT
+            );
+            // The exec-rewrite exception is keyed on the slot being
+            // activated (self.slot()), not on the endpoint's slot. When
+            // we are activating the exec temporary slot, we may
+            // legitimately install an endpoint whose slot differs from
+            // self.slot() — exec is the only legitimate way to overwrite
+            // endpoint metadata through a different slot index.
+            let is_exec_tmp = self.slot().get() == VM_EXEC_TMP_SLOT.get();
+            debug_assert!(
+                ep_slot as usize == self.slot().get() || is_exec_tmp,
+                "activate_relaxed: non-NONE endpoint slot {} does not match \
+                 self.slot()={} (and self.slot() is not VM_EXEC_TMP_SLOT={}, \
+                 so exec-rewrite exception does not apply; use activate() \
+                 for strict pairing)",
+                ep_slot,
+                self.slot().get(),
+                VM_EXEC_TMP_SLOT.get()
+            );
+        }
+
         self.inner.vm_flags = VmFlags::IN_USE;
         self.inner.vm_endpoint = endpoint;
         ActiveProc::new(self.inner)
@@ -170,7 +244,7 @@ impl<'a> ActiveProc<'a> {
 
     #[inline]
     pub(crate) fn acl_check(&self, call: u32) -> Result<(), minix_types::VmError> {
-        self.inner.vm_acl.acl_check(self, call)
+        self.inner.vm_acl.acl_check(self.inner.vm_endpoint, call)
     }
 
     #[inline]
@@ -253,31 +327,56 @@ impl<'a> ActiveProc<'a> {
     ///
     /// Corresponds to Minix3's `pt_new()` which calls `pt_mapkernel()`.
     pub(crate) fn init_page_table(&mut self) -> Result<(), minix_arch::paging::PageTableError> {
-        let mut pt = <PageTable as Paging>::new()?;
+        // In test builds, write a zero-initialized page table stub.
+        // X86_64Paging::new() is todo!() and new_from_page(0) would dereference
+        // null. MaybeUninit::zeroed() gives a valid bit-pattern (root_paddr=0)
+        // that is safe to reference but must not be used for real paging ops.
+        // free_region_pages skips unmap in tests via Option<&mut PageTable>.
+        #[cfg(test)]
+        {
+            self.inner.vm_pt = core::mem::MaybeUninit::zeroed();
+            self.inner.vm_pt_initialized = true;
+            return Ok(());
+        }
 
-        // Map kernel address space into this user process's page table.
-        // Kernel layout constants — in real implementation, these come from
-        // boot_info / linker symbols. For now, use mock layout.
-        const KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
-        const KERNEL_TEXT_PBASE: u64 = 0x100_0000;
-        const KERNEL_TEXT_PAGES: usize = 8;
-        const KERNEL_DATA_PAGES: usize = 8;
-        const DM_VBASE: u64 = 0xFFFF_8000_0000_0000;
-        const DM_SENTINEL_PAGES: usize = 4;
+        #[cfg(not(test))]
+        {
+            let mut pt = <PageTable as Paging>::new()?;
 
-        map_kernel(
-            &mut pt,
-            KERNEL_TEXT_VBASE,
-            KERNEL_TEXT_PBASE,
-            KERNEL_TEXT_PAGES,
-            KERNEL_DATA_PAGES,
-            DM_VBASE,
-            DM_SENTINEL_PAGES,
-        )?;
+            // Map kernel address space into this user process's page table.
+            //
+            // The kernel layout is determined once at boot (from multiboot2 /
+            // stivale2 headers or linker symbols) and stored in the global
+            // `KERNEL_LAYOUT`. Every user process page table gets the same
+            // kernel mapping — this is a fundamental x86-64 invariant.
+            //
+            // Previously (hardcoded kernel layout), these values were hardcoded constants guarded
+            // by a `hardcoded_kernel_layout` feature flag with a `compile_error!`
+            // guard. That approach acknowledged the values were wrong for real
+            // hardware but provided no mechanism to supply correct values. The
+            // current approach uses a runtime-configurable `KernelLayout` set
+            // once during `VmServer::init()`, which:
+            //   (1) removes the `compile_error!` guard (no feature gate needed),
+            //   (2) makes the code correct by construction — the layout is
+            //       explicitly supplied rather than assumed,
+            //   (3) fails fast via `kernel_layout()`'s panic if `VmServer::init()`
+            //       was not run, rather than silently mapping memory wrong.
+            let layout = crate::global::kernel_layout();
 
-        self.inner.vm_pt.write(pt);
-        self.inner.vm_pt_initialized = true;
-        Ok(())
+            map_kernel(
+                &mut pt,
+                layout.kernel_text_vbase,
+                layout.kernel_text_pbase,
+                layout.kernel_text_pages,
+                layout.kernel_data_pages,
+                layout.dm_vbase,
+                layout.dm_pages,
+            )?;
+
+            self.inner.vm_pt.write(pt);
+            self.inner.vm_pt_initialized = true;
+            Ok(())
+        }
     }
 
     /// Binds the page table to the kernel for this process.
@@ -356,6 +455,8 @@ impl<'a> ActiveProc<'a> {
     #[inline]
     pub(crate) fn regions_mut(&mut self) -> &mut RegionMap {
         debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
+        // &mut self ensures exclusive access.
         unsafe { self.inner.vm_regions.assume_init_mut() }
     }
 
@@ -388,7 +489,10 @@ impl<'a> ActiveProc<'a> {
     ///
     /// # Safety
     /// Caller must ensure page table is initialized and valid.
-    pub(crate) unsafe fn write_page_table_mappings(&mut self, frames: &crate::region::PageFrames) {
+    pub(crate) unsafe fn write_page_table_mappings(
+        &mut self,
+        frames: &crate::region::PageFrames,
+    ) -> Result<(), minix_arch::paging::PageTableError> {
         use minix_arch::paging::PageFlags;
         use minix_types::{PhysBytes, VirBytes};
 
@@ -397,45 +501,88 @@ impl<'a> ActiveProc<'a> {
         let mut mappings: alloc::vec::Vec<(VirBytes, PhysBytes, PageFlags)> = alloc::vec::Vec::new();
 
         for region in self.regions_mut().iter_mut() {
-            for (i, slot_opt) in region.physblocks.iter().enumerate() {
-                if let Some(slot) = slot_opt {
-                    if slot.is_mapped() {
-                        let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
-                        let paddr = frames.pfn_to_phys(slot.pfn);
+            for (i, slot) in region.physblocks.iter().enumerate() {
+                if slot.is_mapped() {
+                    let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
+                    let paddr = frames.pfn_to_phys(slot.pfn);
 
-                        let writable = region.is_writable()
-                            && frames.get(slot.pfn)
-                                .map(|s| s.refcount == 1)
-                                .unwrap_or(false);
-                        let flags = if writable {
-                            PageFlags::read_write()
-                        } else {
-                            PageFlags::read_only()
-                        };
+                    let writable = region.is_writable()
+                        && frames.get(slot.pfn)
+                            .map(|s| s.refcount == 1)
+                            .unwrap_or(false);
+                    let flags = if writable {
+                        PageFlags::read_write()
+                    } else {
+                        PageFlags::read_only()
+                    };
 
-                        mappings.push((vaddr, paddr, flags));
-                    }
+                    mappings.push((vaddr, paddr, flags));
                 }
             }
         }
 
         let pt = self.page_table_mut();
         for (vaddr, paddr, flags) in mappings {
-            let _ = pt.map(vaddr, paddr, flags);
+            pt.map(vaddr, paddr, flags)?;
         }
-    }
-
-    /// Adds a memory region.
-    ///
-    /// TODO: Implement region insertion into the AVL tree.
-    pub(crate) fn add_region(&mut self, _start: u64, _len: u64) -> Result<(), &'static str> {
         Ok(())
     }
 
-    /// Removes a memory region.
+    /// Adds a memory region to the process's region map.
     ///
-    /// TODO: Implement region removal from the AVL tree.
-    pub(crate) fn remove_region(&mut self, _start: u64) -> Result<(), &'static str> {
+    /// Creates an empty region (no physical pages mapped). Physical pages
+    /// are added later via `write_page_table_mappings()` or `map_page_at()`.
+    /// The page table is NOT modified here — this matches Minix3's behavior
+    /// where region insertion and page table mapping are separate steps.
+    ///
+    /// Returns `Err(VmError::InvalidParam)` if the region overlaps an existing region.
+    /// Corresponds to Minix3's region insertion in `vm_fork()` / `do_mmap()`.
+    pub(crate) fn add_region(&mut self, start: VirBytes, len: VirBytes) -> Result<(), VmError> {
+        use crate::region::{VirRegion, VrFlags};
+        let end = VirBytes(start.0 + len.0);
+        if self.regions().find_overlap(start, end).is_some() {
+            return Err(VmError::InvalidParam);
+        }
+        let region = VirRegion::new(start, len, VrFlags::empty());
+        match self.regions_mut().insert(region) {
+            Ok(None) => Ok(()),
+            Ok(Some(_)) => Err(VmError::InvalidParam),
+            Err(_) => Err(VmError::InvalidParam),
+        }
+    }
+
+    /// Removes a memory region starting at the given address.
+    ///
+    /// Unmaps all pages in the region from the page table before removing
+    /// from the region map. This prevents stale page table entries that
+    /// would allow access to freed physical memory.
+    ///
+    /// Corresponds to Minix3's region removal in `do_munmap()` / `vm_exit()`,
+    /// where `pt_writemap(vaddr, MAP_NONE, ...)` is called before removing
+    /// the region from the AVL tree.
+    pub(crate) fn remove_region(&mut self, start: VirBytes) -> Result<(), VmError> {
+        // Find the region first to get its length for page table unmap.
+        let region_len = self.regions()
+            .find(start)
+            .map(|r| r.length)
+            .ok_or(VmError::NotFound)?;
+
+        // Unmap all pages in the region from the page table.
+        // C: pt_writemap(vaddr, MAP_NONE, ...) — pagetable.c
+        const PAGE_SIZE: u64 = <PageTable as Paging>::PAGE_SIZE as u64;
+        let num_pages = (region_len.0 / PAGE_SIZE) as usize;
+        if num_pages > 0 {
+            // Ignore unmap errors — the page may not be mapped (e.g., never
+            // had physical backing), which is safe. C code also silently
+            // ignores unmapped pages in pt_writemap with MAP_NONE.
+            let _ = self.page_table_mut().unmap_range(start, num_pages);
+        }
+
+        // Remove from region map.
+        if self.regions_mut().remove(start).is_none() {
+            // Should not happen — we found it above.
+            return Err(VmError::NotFound);
+        }
         Ok(())
     }
 
@@ -445,7 +592,10 @@ impl<'a> ActiveProc<'a> {
     /// old service keeps its endpoint (clients still access via that endpoint),
     /// but gains new service's memory state (new code, new data).
     ///
-    /// Corresponds to Minix3's `swap_proc_slot()` (utility.c).
+    /// Corresponds to Minix3's `swap_proc_slot()` in `lib/libmisc/utility.c`.
+    /// The C implementation uses a per-field `memcpy` of `struct vmproc`,
+    /// which is bitwise-equivalent to a `core::ptr::swap` because `vmproc`
+    /// has no self-referential pointers or heap-owned members.
     ///
     /// # Example
     /// ```ignore
@@ -455,15 +605,76 @@ impl<'a> ActiveProc<'a> {
     /// // old_service now has new_service's memory, but keeps original endpoint
     /// ```
     pub(crate) fn swap_proc_slot(&mut self, other: &mut ActiveProc<'_>) {
+        // The Rust borrow checker guarantees `&mut self` and `&mut other`
+        // cannot alias a single `VmProc`. The typestate system further
+        // requires that two ActiveProc views cannot reference the same slot
+        // (the table's split-borrow API only yields one view per slot).
+        // Belt-and-suspenders debug assertion catches misuse early.
+        debug_assert_ne!(
+            self.slot(), other.slot(),
+            "swap_proc_slot: self and other must reference distinct slots"
+        );
+
+        // Snapshot the four fields whose identity must be preserved across
+        // the swap (endpoint + slot for each side). All other fields will
+        // be exchanged as part of the bitwise swap.
         let self_endpoint = self.inner.vm_endpoint;
         let self_slot = self.inner.vm_slot;
         let other_endpoint = other.inner.vm_endpoint;
         let other_slot = other.inner.vm_slot;
 
+        // SAFETY: `core::ptr::swap` exchanges the bitwise contents of two
+        // distinct `VmProc` slots in the global process table. Safety
+        // rests on four invariants:
+        //
+        // 1. **Distinct raw pointers** — `self.inner` and `other.inner`
+        //    point to distinct slots in the static `VM_PROC_TABLE` array.
+        //    The borrow checker (`&mut self` and `&mut other`) plus the
+        //    debug_assert above forbid aliasing.
+        //
+        // 2. **Bitwise swap safety** — every field of `VmProc` is safe
+        //    to exchange by raw bit copy:
+        //      - `vm_slot: UserSlot`, `vm_endpoint: Endpoint`,
+        //        `vm_flags: VmFlags`, `vm_acl: AclState`,
+        //        `vm_region_top / vm_total / vm_total_max: VirBytes`,
+        //        `vm_*_page_fault: u64` — all are `Copy` types.
+        //      - `vm_boot: Option<BootImage>` — `BootImage` is `Copy`
+        //        per minix-types definition.
+        //      - `vm_pt: MaybeUninit<PageTable>` — `PageTable` is a
+        //        stack-allocated value with no CR3 binding at this
+        //        point (the kernel has not yet loaded it; the previous
+        //        owner has been unbound via typestate transitions). No
+        //        heap pointers are invalidated by a bitwise move.
+        //      - `vm_regions: MaybeUninit<RegionMap>` — `RegionMap` is
+        //        a `BTreeMap<VirBytes, VirRegion>`; BTreeMap nodes are
+        //        heap-owned but their internal pointers are relative
+        //        to the `BTreeMap` value itself, so they move with
+        //        the containing struct.
+        //      - `vm_pt_initialized` / `vm_regions_initialized: bool` —
+        //        trivially `Copy`.
+        //
+        // 3. **No concurrent access** — VM is single-threaded
+        //    (documented in `lib.rs` module-level header).
+        //
+        // 4. **No hardware in-flight** — neither process's page table
+        //    is loaded in CR3 at this point. Live update requires the
+        //    caller to ensure both processes are quiescent before
+        //    invoking swap.
+        //
+        // Minix3 reference: `swap_proc_slot()` in `lib/libmisc/utility.c`,
+        // which uses `memcpy` to exchange fields; semantically equivalent
+        // because `struct vmproc` has the same ownership profile as
+        // our `VmProc` (no self-referential pointers).
+        // SAFETY: See reasoning above — both pointers are valid, properly aligned,
+        // no aliasing, no active CR3, single-threaded VM, no self-referential pointers.
         unsafe {
             core::ptr::swap(self.inner as *mut VmProc, other.inner as *mut VmProc);
         }
 
+        // Restore endpoint/slot so each typestate view's identity matches
+        // its original table position. This is the *purpose* of
+        // `swap_proc_slot`: the old service keeps its endpoint (clients
+        // still route to it) but gains the new service's memory state.
         self.inner.vm_endpoint = self_endpoint;
         self.inner.vm_slot = self_slot;
         other.inner.vm_endpoint = other_endpoint;
@@ -504,6 +715,8 @@ impl<'a> ExitingProc<'a> {
     #[inline]
     pub(crate) fn regions(&self) -> &RegionMap {
         debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed after clear()");
+        // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
+        // Single-threaded VM ensures no concurrent mutation.
         unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 
@@ -516,6 +729,8 @@ impl<'a> ExitingProc<'a> {
     /// Caller must ensure no other references to this process exist
     /// and the page table is no longer in use by hardware.
     pub(crate) unsafe fn reap(self) -> EmptySlot<'a> {
+        // SAFETY: Caller guarantees no other references to this process exist
+        // and the page table is no longer in use by hardware.
         unsafe { self.inner.clear(); }
         EmptySlot::new(self.inner)
     }
@@ -537,6 +752,100 @@ mod tests {
 
         assert!(active.flags().contains(VmFlags::IN_USE));
         assert_eq!(active.endpoint(), Endpoint::from_generation_slot(1, 10));
+    }
+
+    // ── (2026-06-13) — activate_relaxed debug_assert coverage ──
+    //
+    // These tests exercise the new debug-only validation in
+    // `activate_relaxed`. The validation guards three misuse modes:
+    //
+    // 1. None endpoint: must be accepted silently (fork's child case).
+    // 2. Matching endpoint: must be accepted silently (the strict path's
+    //    invariant also holds in relaxed mode for backwards compatibility).
+    // 3. VM_EXEC_TMP_SLOT endpoint: must be accepted silently (exec's
+    //    legitimate exception).
+    //
+    // The negative case (endpoint with slot >= VM_PROC_COUNT, or
+    // mismatched slot that is not VM_EXEC_TMP_SLOT) intentionally uses
+    // `#[should_panic]` so the test harness catches the debug_assert
+    // in debug builds; in release builds the panic won't fire and
+    // the test will fail loudly, alerting anyone running tests with
+    // release profile that the guard is disabled.
+
+    use crate::vmproc::table::{VM_EXEC_TMP_SLOT, VM_PROC_COUNT};
+
+    /// Wraps an EmptySlot for testing. Mirrors `fork.rs::do_fork` which
+    /// obtains an empty slot and calls `activate_relaxed(Endpoint::NONE)`.
+    fn get_empty_slot_for_test(slot: UserSlot) -> EmptySlot<'static> {
+        use crate::vmproc::VmProcTable;
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(slot); }
+        table.get_empty(slot).expect("slot must be empty after reset")
+    }
+
+    #[test]
+    fn test_activate_relaxed_none_endpoint() {
+        // Fork's child case: child endpoint is NONE initially.
+        let slot = UserSlot::new(10);
+        let empty = get_empty_slot_for_test(slot);
+        // Must not panic in either debug or release builds.
+        let active = empty.activate_relaxed(Endpoint::NONE);
+        assert_eq!(active.endpoint(), Endpoint::NONE);
+    }
+
+    #[test]
+    fn test_activate_relaxed_matching_endpoint() {
+        // Strict path's invariant also holds in relaxed mode.
+        let slot = UserSlot::new(11);
+        let empty = get_empty_slot_for_test(slot);
+        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+        // Must not panic — matching slot/endpoint is the canonical use.
+        let active = empty.activate_relaxed(ep);
+        assert_eq!(active.endpoint(), ep);
+    }
+
+    #[test]
+    fn test_activate_relaxed_exec_tmp_slot() {
+        // Exec-rewrite case: VM_EXEC_TMP_SLOT may hold a different endpoint.
+        let tmp_slot = VM_EXEC_TMP_SLOT;
+        let empty = get_empty_slot_for_test(tmp_slot);
+        // Endpoint whose slot is something else (e.g., slot 5) but
+        // passes because we are using VM_EXEC_TMP_SLOT — the exec
+        // path's exception.
+        let ep = Endpoint::from_generation_slot(1, 5);
+        // Must not panic — exec-rewrite exception.
+        let active = empty.activate_relaxed(ep);
+        assert_eq!(active.endpoint(), ep);
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-range endpoint")]
+    fn test_activate_relaxed_panics_on_oor_slot() {
+        // Endpoint with slot >= VM_PROC_COUNT must be rejected.
+        let slot = UserSlot::new(12);
+        let empty = get_empty_slot_for_test(slot);
+        // Build an endpoint whose slot equals VM_PROC_COUNT (just past the
+        // last valid index). This is the canonical "out of range" misuse.
+        let oor_ep = Endpoint::from_generation_slot(1, VM_PROC_COUNT as i32);
+        // This must panic in debug builds (release: the guard is
+        // compiled out and the call proceeds, which is acceptable
+        // because the existing release-build behavior was unguarded).
+        let _ = empty.activate_relaxed(oor_ep);
+    }
+
+    #[test]
+    #[should_panic(expected = "use activate() for strict pairing")]
+    fn test_activate_relaxed_panics_on_mismatched_non_exec() {
+        // Endpoint whose slot does NOT match self.slot() and is NOT
+        // VM_EXEC_TMP_SLOT must be rejected. The classic "I called
+        // activate_relaxed by mistake for a normal activation".
+        let slot = UserSlot::new(13);
+        let empty = get_empty_slot_for_test(slot);
+        // Use a different in-range slot to trigger the mismatch.
+        let wrong_ep = Endpoint::from_generation_slot(1, 14);
+        // slot is 13, ep.slot() is 14, neither matches nor is
+        // VM_EXEC_TMP_SLOT — must panic in debug.
+        let _ = empty.activate_relaxed(wrong_ep);
     }
 
     #[test]
@@ -638,5 +947,55 @@ mod tests {
 
         let empty = unsafe { active.force_clear() };
         assert_eq!(empty.slot(), slot);
+    }
+
+    // ── (2026-06-14) — swap_proc_slot SAFETY coverage ──
+    //
+    // `swap_proc_slot` is the load-bearing primitive for live update:
+    // it exchanges the contents of two VmProc slots while preserving
+    // their slot/endpoint identity. This test verifies:
+    // 1. Endpoint/slot identity is preserved across the swap.
+    // 2. Non-identity fields (vm_total) actually flow across the swap.
+    //
+    // The `debug_assert_ne!(self.slot(), other.slot())` guard inside
+    // `swap_proc_slot` is defensive — the public typestate API
+    // (`VmProcTable::get_active`) returns at most one `&mut VmProc`
+    // per slot, so the Rust borrow checker already prevents aliasing
+    // at compile time. The debug_assert catches misuse only if a
+    // future caller manually constructs aliased `&mut ActiveProc`
+    // (e.g., via `&mut *ptr` casts). Such a misuse is fundamentally
+    // UB in Rust, so we cannot write a test for it without invoking
+    // UB itself; the guard is therefore not testable from safe code.
+
+    #[test]
+    fn test_swap_proc_slot_preserves_identities() {
+        let mut a = get_active_vmproc(UserSlot::new(20));
+        let mut b = get_active_vmproc(UserSlot::new(21));
+
+        // Snapshot the identities that must be preserved.
+        let ep_a = a.endpoint();
+        let ep_b = b.endpoint();
+        let slot_a = a.slot();
+        let slot_b = b.slot();
+
+        // Make b's non-identity state distinguishable so we can verify
+        // it actually flows to a during the swap.
+        b.add_total(VirBytes(4096));
+        let b_total_before_swap = b.total().0;
+
+        // Swap
+        a.swap_proc_slot(&mut b);
+
+        // Identities preserved
+        assert_eq!(a.endpoint(), ep_a, "A's endpoint must be preserved");
+        assert_eq!(a.slot(), slot_a, "A's slot must be preserved");
+        assert_eq!(b.endpoint(), ep_b, "B's endpoint must be preserved");
+        assert_eq!(b.slot(), slot_b, "B's slot must be preserved");
+
+        // Non-identity state swapped: A now has B's total.
+        assert_eq!(
+            a.total().0, b_total_before_swap,
+            "A now has B's memory accounting state"
+        );
     }
 }

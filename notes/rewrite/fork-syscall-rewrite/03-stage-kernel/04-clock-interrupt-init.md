@@ -123,6 +123,13 @@ void init_clock(void)
 
 2. **`env_get("hz")`**：从 boot 参数获取时钟频率。Minix3 的 boot 参数由 boot monitor 传递，格式是 `key=value` 字符串。默认 `DEFAULT_HZ = 60`（x86，`i386/include/archconst.h:4`）或 `1000`（ARM，`earm/include/archconst.h:4`）。
 
+   **Rust 统一为 100 Hz 的理由**：
+   - x86 的 60 Hz 源于美国交流电频率（60 Hz），是历史遗留值，并非技术最优
+   - ARM 的 1000 Hz 提供更高精度但增加中断开销（每秒 1000 次上下文切换）
+   - 100 Hz（10ms tick）是 Linux 默认值（CONFIG_HZ=100 for server），在精度和开销之间取得平衡
+   - 统一值简化跨架构测试和调度逻辑，避免架构相关的时间常数
+   - 如需调整，可通过 `KernelInfo` 的 boot 参数在运行时覆盖
+
 3. **频率范围检查**：`kclockinfo.hz` 必须在 2~50000 之间。超出范围则使用默认值。
 
 4. **`memset(&kloadinfo, 0, ...)`**：清零负载统计结构体。`kloadinfo` 用于计算 1/5/15 分钟负载平均值。
@@ -739,6 +746,10 @@ const GICD_ISENABLER: usize = 0x0100;
 const GICD_ICENABLER: usize = 0x0180;
 /// GICD_IGROUPR<n>: Interrupt Group Register.
 const GICD_IGROUPR: usize = 0x0080;
+/// GICR_ISENABLER0: Redistributor Interrupt Set-Enable Register (SGI+PPI, INTID 0-31).
+const GICR_ISENABLER0: usize = 0x0100;
+/// GICR_ICENABLER0: Redistributor Interrupt Clear-Enable Register (SGI+PPI, INTID 0-31).
+const GICR_ICENABLER0: usize = 0x0180;
 /// GICR_WAKER: Redistributor Wake Register.
 const GICR_WAKER: usize = 0x0014;
 /// GICR_WAKER.ProcessorSleep bit.
@@ -786,24 +797,27 @@ impl InterruptController for AArch64InterruptController {
 
     fn mask(&mut self, irq: IrqVector) {
         let irq_num = irq.get() as usize;
+        let bit = 1u32 << (irq_num % 32);
         if irq_num < 32 {
             // PPI/SGI: handled by Redistributor (GICR_ICENABLER0)
-            // TODO: implement PPI masking
+            // GICv3 spec: GICR_ICENABLER0 bit N controls INTID N for this CPU.
+            unsafe { self.gicr_write32(GICR_ICENABLER0, bit); }
         } else {
             // SPI: handled by Distributor
             let reg = (irq_num / 32) as usize;
-            let bit = 1u32 << (irq_num % 32);
             unsafe { self.gicd_write32(GICD_ICENABLER + reg * 4, bit); }
         }
     }
 
     fn unmask(&mut self, irq: IrqVector) {
         let irq_num = irq.get() as usize;
+        let bit = 1u32 << (irq_num % 32);
         if irq_num < 32 {
-            // TODO: implement PPI unmasking
+            // PPI/SGI: handled by Redistributor (GICR_ISENABLER0)
+            // GICv3 spec: GICR_ISENABLER0 bit N controls INTID N for this CPU.
+            unsafe { self.gicr_write32(GICR_ISENABLER0, bit); }
         } else {
             let reg = (irq_num / 32) as usize;
-            let bit = 1u32 << (irq_num % 32);
             unsafe { self.gicd_write32(GICD_ISENABLER + reg * 4, bit); }
         }
     }
@@ -829,7 +843,7 @@ impl InterruptController for AArch64InterruptController {
 }
 ```
 
-> **当前实现状态（2026-06-11）**: GICv3 SPI 路径（IRQ ≥ 32）已完整实现；PPI/SGI（IRQ < 32）mask/unmask 仍为 TODO（需要写 GICR_ICENABLER0/GICR_ISENABLER0，未实现）。Boot-stage 只需要 SPI，因此可工作。
+> **当前实现状态（2026-06-16）**: GICv3 SPI 路径（IRQ ≥ 32）和 PPI/SGI 路径（IRQ < 32）均已完整实现。PPI/SGI 通过 Redistributor 的 `GICR_ISENABLER0`/`GICR_ICENABLER0` 寄存器控制（`os/plat/src/arm64/interrupt.rs`）。Boot-stage 只需 SPI，PPI 支持为后续中断处理阶段准备。
 
 ### 4.6.1 init_distributor / init_redistributor / init_cpu_interface 细节
 

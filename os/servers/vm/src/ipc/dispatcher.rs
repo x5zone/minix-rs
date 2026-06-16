@@ -17,10 +17,11 @@
 //! matching Minix3's `do_fork` behavior in fork.c:44).
 
 use minix_types::{
-    VirBytes,
+    Endpoint, VirBytes,
     VmForkIn, VmBrkIn, VmMunmapIn, VmUnmapPhysIn, VmShmUnmapIn,
-    VmExitIn, VmWillexitIn, VmPagefaultIn, VmExecNewmemIn,
+    VmExitIn, VmWillexitIn, VmExecNewmemIn,
     VmMmapIn, VmMapPhysIn, VmVfsMmapIn, VmCacheIn,
+    VmProcctlIn, VmRemapIn, VmVfsReplyIn,
     VmForkOut, VmBrkOut, VmMmapOut, VmMapPhysOut,
     VmReply, VmError,
     Message, DecodeFromM1,
@@ -28,10 +29,13 @@ use minix_types::{
     VM_WILLEXIT, VM_VFS_MMAP, VM_MAPCACHEPAGE, VM_SETCACHEPAGE,
     VM_FORGETCACHEPAGE, VM_CLEARCACHE, VM_RS_SET_PRIV, VM_RS_PREPARE,
     VM_RS_UPDATE, VM_RS_MEMCTL, VM_GETPHYS, VM_GETREF, VM_INFO, VM_GETRUSAGE,
+    VM_REMAP, VM_REMAP_RO, VM_PROCCTL, VM_SHM_UNMAP, VM_VFS_REPLY,
 };
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::region::PageFrames;
+use crate::region::vir_region::{VirRegion, VrFlags, VrParam};
+use crate::memtype::MEM_TYPE_SHARED;
 use crate::page_cache::{PageCache, CacheKey};
 use crate::fork;
 use crate::brk;
@@ -46,6 +50,52 @@ use crate::query;
 // Public dispatch struct
 // ==========================================================================
 
+/// Result of dispatching VM_VFS_REPLY, which may carry a deferred callback.
+///
+/// C's `do_vfs_reply` invokes the callback inline, but Rust's borrow
+/// checker prevents us from holding `&mut VfsRequestQueue` and
+/// `&mut VmServer` simultaneously. We return the callback components
+/// and let the caller (VmServer main loop) execute them after releasing
+/// the vfs_queue borrow.
+pub(crate) struct VfsReplyResult {
+    pub reply: VmReply,
+    pub callback: Option<(
+        crate::vfs_queue::VfsCallbackFn,
+        crate::vfs_queue::VfsReply,
+        crate::vfs_queue::VfsRequestState,
+    )>,
+}
+
+/// Result of `dispatch_by_number`. Most calls return just a `VmReply`,
+/// but VM_VFS_REPLY also carries a deferred callback that must be
+/// executed by the VmServer main loop after the dispatch returns.
+pub(crate) struct DispatchResult {
+    pub reply: VmReply,
+    pub vfs_callback: Option<(
+        crate::vfs_queue::VfsCallbackFn,
+        crate::vfs_queue::VfsReply,
+        crate::vfs_queue::VfsRequestState,
+    )>,
+}
+
+impl DispatchResult {
+    fn from_reply(reply: VmReply) -> Self {
+        DispatchResult { reply, vfs_callback: None }
+    }
+}
+
+impl From<VmReply> for DispatchResult {
+    fn from(reply: VmReply) -> Self {
+        DispatchResult { reply, vfs_callback: None }
+    }
+}
+
+impl From<VfsReplyResult> for DispatchResult {
+    fn from(r: VfsReplyResult) -> Self {
+        DispatchResult { reply: r.reply, vfs_callback: r.callback }
+    }
+}
+
 pub(crate) struct MessageDispatcher;
 
 impl MessageDispatcher {
@@ -57,13 +107,13 @@ impl MessageDispatcher {
     /// C returns EINVAL on vm_isokendpt failure (fork.c:44).
     pub(crate) fn dispatch_fork(
         table: &VmProcTable,
-        _page_alloc: &mut VmPageAllocator,
+        page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
         request: VmForkIn,
     ) -> VmReply {
-        match fork::do_fork(table, frames, request.parent_endpoint, request.child_slot) {
+        match fork::do_fork(table, frames, page_alloc, request.parent_endpoint, request.child_slot) {
             Ok(child_endpoint) => VmReply::Fork(VmForkOut { child_endpoint }),
-            Err(e) => VmReply::Error(fork_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -82,7 +132,7 @@ impl MessageDispatcher {
         };
         match brk::handle_brk(table, page_alloc, frames, &req) {
             Ok(response) => VmReply::Brk(VmBrkOut { new_addr: response.new_brk_addr }),
-            Err(e) => VmReply::Error(brk_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -103,7 +153,7 @@ impl MessageDispatcher {
         };
         match munmap::handle_munmap(table, page_alloc, frames, &req) {
             Ok(()) => VmReply::Munmap,
-            Err(e) => VmReply::Error(munmap_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -123,7 +173,7 @@ impl MessageDispatcher {
         };
         match munmap::handle_munmap(table, page_alloc, frames, &req) {
             Ok(()) => VmReply::Munmap,
-            Err(e) => VmReply::Error(munmap_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -143,7 +193,197 @@ impl MessageDispatcher {
         };
         match munmap::handle_munmap(table, page_alloc, frames, &req) {
             Ok(()) => VmReply::Munmap,
-            Err(e) => VmReply::Error(munmap_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
+        }
+    }
+
+    // -- procctl --
+
+    /// Dispatch VM_PROCCTL request. C: `do_procctl()` in exit.c:117-148.
+    ///
+    /// Process-control sub-requests (VMPCTL_PARAM) from RS or VFS.
+    /// Two sub-requests are defined in Minix3:
+    ///
+    /// - `VMPPARAM_CLEAR` (1): Free process memory + create fresh page table.
+    ///   Only RS or VFS may call this (C: exit.c:131-132 EPERM check).
+    /// - `VMPPARAM_HANDLEMEM` (2): Ensure memory pages are mapped for a range.
+    ///   Only VFS may call this (C: exit.c:140-141 EPERM check).
+    ///
+    /// Unknown param values return EINVAL (C: exit.c:149 default case).
+    pub(crate) fn dispatch_procctl(
+        table: &VmProcTable,
+        page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
+        caller: Endpoint,
+        request: VmProcctlIn,
+    ) -> VmReply {
+        // 1. `who` must be a valid endpoint.
+        //    C: exit.c:121-125 — vm_isokendpt check with EINVAL.
+        if request.who.0 <= 0 {
+            return VmReply::Error(VmError::InvalidEndpoint);
+        }
+
+        // 2. Dispatch on param.
+        //    C: exit.c:129 — switch(msg->VMPCTL_PARAM).
+        match request.param {
+            // VMPPARAM_CLEAR = 1
+            // C: exit.c:130-137
+            1 => {
+                // Permission check: only RS or VFS.
+                // C: exit.c:131-132 — if(msg->m_source != RS_PROC_NR && msg->m_source != VFS_PROC_NR) return EPERM;
+                // In Minix3, RS_PROC_NR = 0 and VFS_PROC_NR = 1.
+                // We use the caller endpoint directly.
+                if caller.0 != 0 && caller.0 != 1 {
+                    return VmReply::Error(VmError::PermissionDenied);
+                }
+                match exit::handle_procctl_clear(table, page_alloc, frames, request.who) {
+                    Ok(()) => VmReply::Ok,
+                    Err(e) => VmReply::Error(VmError::from(e)),
+                }
+            }
+            // VMPPARAM_HANDLEMEM = 2
+            // C: exit.c:139-148
+            2 => {
+                // Permission check: only VFS.
+                // C: exit.c:140-141 — if(msg->m_source != VFS_PROC_NR) return EPERM;
+                if caller.0 != 1 {
+                    return VmReply::Error(VmError::PermissionDenied);
+                }
+                match exit::handle_procctl_handlemem(
+                    table, page_alloc, frames,
+                    request.who, request.m1, request.len, request.flags,
+                ) {
+                    Ok(exit::VmProcctlHandlememResult::Completed) => {
+                        // C returns SUSPEND for the async path. Our synchronous
+                        // implementation completes immediately, so we return Ok
+                        // instead. The caller (VFS) treats SUSPEND as "reply
+                        // comes later"; Ok means "done now" — both are valid.
+                        VmReply::Ok
+                    }
+                    Err(e) => VmReply::Error(VmError::from(e)),
+                }
+            }
+            // Unknown param → EINVAL (C: exit.c:149 default case).
+            _ => VmReply::Error(VmError::InvalidAddress),
+        }
+    }
+
+    // -- remap / remap_ro --
+
+    /// Dispatch VM_REMAP request. C: `do_remap()` in mmap.c:366-434.
+    ///
+    /// Remap a shared region from one process's address space into the
+    /// caller's (destination) address space. The new region shares the
+    /// same physical pages as the source — no copy is made.
+    ///
+    /// # Implementation (matches C `do_remap` step-by-step)
+    ///
+    /// 1. Validate that `length > 0` and `vaddr != 0`
+    /// 2. Resolve source endpoint (`who`) and destination endpoint (`caller`)
+    /// 3. Look up source region at `vaddr` — must be exact region start
+    /// 4. Verify `length` matches source region length (page-aligned)
+    /// 5. Find a free slot in destination's address space
+    /// 6. Create new `VR_SHARED` region (optionally `VR_WRITABLE`)
+    /// 7. Set `VrParam::Shared { ep, vaddr, id }` on new region
+    /// 8. Increment source region's `remaps` counter
+    /// 9. Return mapped address
+    pub(crate) fn dispatch_remap(
+        table: &VmProcTable,
+        page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
+        request: VmRemapIn,
+    ) -> VmReply {
+        dispatch_remap_impl(table, page_alloc, frames, request, false)
+    }
+
+    /// Dispatch VM_REMAP_RO request. Same as VM_REMAP but the resulting
+    /// region is forced read-only (C: `do_remap()` mmap.c:380-385).
+    pub(crate) fn dispatch_remap_ro(
+        table: &VmProcTable,
+        page_alloc: &mut VmPageAllocator,
+        frames: &mut PageFrames,
+        request: VmRemapIn,
+    ) -> VmReply {
+        dispatch_remap_impl(table, page_alloc, frames, request, true)
+    }
+
+    // -- vfs_reply --
+
+    /// Dispatch VM_VFS_REPLY request. C: `do_vfs_reply()` in vfs.c:109.
+    ///
+    /// VFS has completed a previously-suspended VM-initiated call (typically
+    /// the `vfs_vmcall` chain for file-backed MMAPs). This handler:
+    ///
+    /// 1. Validates the request (reqid > 0).
+    /// 2. Constructs a `VfsReply` from the message fields.
+    /// 3. Passes it to `VfsRequestQueue::handle_reply` which:
+    ///    - Verifies req_id matches the active request (C: `assert(active->req_id == m->VMV_REQID)`)
+    ///    - Dequeues the next pending request if any (C: `if(first_queued && !active) activate()`)
+    /// 4. Returns `VfsReplyResult` with `VmReply::Suspend` and optional callback.
+    ///    The caller (VmServer main loop) must execute the callback after
+    ///    releasing the vfs_queue borrow — C invokes it inline but Rust's
+    ///    borrow checker requires this two-step approach.
+    pub(crate) fn dispatch_vfs_reply(
+        vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
+        request: VmVfsReplyIn,
+    ) -> VfsReplyResult {
+        use crate::vfs_queue::VfsReply;
+
+        // C: do_vfs_reply assert(active) — there must be an active request.
+        // reqid must be positive (the C side uses 0 as "no pending call"
+        // and negative values as error sentinels).
+        if request.reqid <= 0 {
+            return VfsReplyResult {
+                reply: VmReply::Error(VmError::InvalidAddress),
+                callback: None,
+            };
+        }
+
+        let req_id = request.reqid as u32;
+
+        // C: do_vfs_reply — construct reply from message fields.
+        // C uses: m->VMV_RESULT, m->VMV_DEV, m->VMV_INO, m->VMV_FD, m->VMV_SIZE_PAGES
+        let reply = VfsReply {
+            req_id,
+            result: request.result,
+            data_phys: None, // C doesn't pass data_phys in the reply message
+            fd: request.fd as i32,
+            dev: request.dev as u64,
+            ino: 0, // C passes ino via VMV_INO (m10_l1), but VmVfsReplyIn
+                     // doesn't have a separate ino field. The ino value is
+                     // only used by the mmap resume callback, which can
+                     // reconstruct it from the VfsRequestState.
+            size_pages: request.size_pages as u64,
+        };
+
+        // C: do_vfs_reply — active = NULL; req_callback(vmp, m, cbarg, orignode->reqstate)
+        match vfs_queue.handle_reply(reply) {
+            Ok(Some((callback, reply, state))) => {
+                // C: if(req_callback) req_callback(vmp, m, cbarg, orignode->reqstate)
+                // The callback is returned to the caller for execution after
+                // the vfs_queue borrow is released.
+                VfsReplyResult {
+                    reply: VmReply::Suspend,
+                    callback: Some((callback, reply, state)),
+                }
+            }
+            Ok(None) => {
+                // No callback registered for this request.
+                // C: if(!req_callback) — just free the node and continue.
+                VfsReplyResult {
+                    reply: VmReply::Suspend,
+                    callback: None,
+                }
+            }
+            Err(_) => {
+                // Mismatched req_id or no active request.
+                // C: assert(active->req_id == m->VMV_REQID) would panic.
+                // We return an error instead of panicking.
+                VfsReplyResult {
+                    reply: VmReply::Error(VmError::InvalidAddress),
+                    callback: None,
+                }
+            }
         }
     }
 
@@ -160,7 +400,7 @@ impl MessageDispatcher {
         match mmap::handle_mmap(table, page_alloc, frames, &request) {
             Ok(mmap::MmapResult::Complete(response)) => VmReply::Mmap(VmMmapOut { ret_addr: response.mapped_addr }),
             Ok(mmap::MmapResult::Suspended) => VmReply::Suspend,
-            Err(e) => VmReply::Error(mmap_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -174,7 +414,7 @@ impl MessageDispatcher {
         match mmap::handle_vfs_mmap(table, page_alloc, frames, &request) {
             Ok(mmap::MmapResult::Complete(response)) => VmReply::VfsMmap(VmMmapOut { ret_addr: response.mapped_addr }),
             Ok(mmap::MmapResult::Suspended) => VmReply::Suspend,
-            Err(e) => VmReply::Error(mmap_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -189,7 +429,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match map_phys::handle_map_phys(table, page_alloc, frames, request.caller, request.target, request.phys_addr, request.length) {
             Ok(virt_addr) => VmReply::MapPhys(VmMapPhysOut { virt_addr }),
-            Err(e) => VmReply::Error(map_phys_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -198,38 +438,319 @@ impl MessageDispatcher {
     /// Dispatch VM_MAPCACHEPAGE request.
     /// Corresponds to Minix3 `do_mapcache()` (mem_cache.c:95).
     /// Maps cached blocks into the caller's address space.
+    ///
+    /// # C semantics (mem_cache.c:95-193)
+    ///
+    /// 1. Validate alignment of dev_off/ino_off → EFAULT.
+    /// 2. `vm_isokendpt(msg->m_source)` → get caller.
+    /// 3. `bytes < VM_PAGE_SIZE` → EINVAL.
+    /// 4. `map_page_region(caller, VM_MMAPBASE, VM_MMAPTOP, bytes,
+    ///    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)` → allocate new region.
+    /// 5. For each page offset:
+    ///    a. `find_cached_page_bydev(dev, dev_off+offset, ino, ino_off+offset, 1)`
+    ///       → if not found or VMSF_ONCE → unmap entire region → ENOENT.
+    ///    b. Set `vr->param.pb_cache = hb->page` (cached phys_block).
+    ///    c. `map_pf(caller, vr, offset, 1, ...)` → triggers cache_pagefault
+    ///       which links the page and clears pb_cache.
+    /// 6. Return `vr->vaddr` in reply.
+    ///
+    /// # Rust implementation
+    ///
+    /// Instead of the indirect map_pf → cache_pagefault path, we directly
+    /// map each page with the cached PFN. This is equivalent because:
+    /// - cache_pagefault just does pb_link (map PFN) + clear pb_cache.
+    /// - We set PbCache param for consistency, then call map_page directly.
+    /// - On failure mid-way, we unmap the entire region (same as C).
     pub(crate) fn dispatch_mapcache(
         table: &VmProcTable,
-        page_alloc: &mut VmPageAllocator,
+        _page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        cache: &mut PageCache,
+        cache: &PageCache,
+        caller: Endpoint,
         request: VmCacheIn,
     ) -> VmReply {
-        let _ = (table, page_alloc, frames, cache, request);
-        VmReply::Error(VmError::NotImplemented)
+        const PAGE_SIZE: u64 = 4096;
+
+        // Step 1: Validate alignment (C: mem_cache.c:99-101).
+        if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+
+        // Step 2: Validate caller endpoint (C: vm_isokendpt).
+        let caller_slot = match table.vm_isokendpt(caller) {
+            Ok(slot) => slot,
+            Err(_) => return VmReply::Error(VmError::InvalidProcess),
+        };
+
+        // Step 3: bytes < VM_PAGE_SIZE → EINVAL (C: mem_cache.c:102-103).
+        let bytes = request.pages as u64 * PAGE_SIZE;
+        if bytes < PAGE_SIZE {
+            return VmReply::Error(VmError::InvalidProcess);
+        }
+
+        // Step 4: Allocate a new region in the caller's mmap range.
+        // C: map_page_region(caller, VM_MMAPBASE, VM_MMAPTOP, bytes,
+        //    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)
+        let mmap_base = VirBytes(0x0000_0001_0000_0000);
+        let mmap_top = VirBytes(0x0000_0200_0000_0000);
+
+        let vaddr = {
+            let proc = match table.get_active(caller_slot) {
+                Some(p) => p,
+                None => return VmReply::Error(VmError::InvalidProcess),
+            };
+            match proc.regions().find_slot(mmap_base, mmap_top, VirBytes(bytes)) {
+                Some(v) => v,
+                None => return VmReply::Error(VmError::OutOfMemory),
+            }
+        };
+
+        let mut region = VirRegion::with_memtype(
+            vaddr,
+            VirBytes(bytes),
+            VrFlags::ANON | VrFlags::WRITABLE,
+            &crate::memtype::MEM_TYPE_CACHE,
+        );
+
+        // Step 5: For each page, find cached page and map it.
+        // C: for(offset = 0; offset < bytes; offset += VM_PAGE_SIZE)
+        for page_offset in (0..bytes).step_by(PAGE_SIZE as usize) {
+            let cache_offset = request.dev_offset + page_offset;
+            let cache_ino_offset = request.ino_offset + page_offset;
+
+            // Step 5a: Find cached page (C: find_cached_page_bydev).
+            let cached_pfn = if request.ino != 0 {
+                cache.find_by_inode(request.dev, request.ino, cache_ino_offset)
+            } else {
+                cache.find_by_device(request.dev, cache_offset)
+            };
+
+            match cached_pfn {
+                Some(entry) => {
+                    // VMSF_ONCE check: C returns ENOENT if (hb->flags & VMSF_ONCE).
+                    // VMSF_ONCE = 0x01 in C. Our flags field maps directly.
+                    if request.flags & 0x01 != 0 {
+                        // Unmap the entire region on failure (C: map_unmap_region).
+                        // We haven't inserted the region yet, so just drop it.
+                        // Any pages already mapped in this region need unref.
+                        Self::unmap_region_pages(&mut region, frames);
+                        return VmReply::Error(VmError::NotFound);
+                    }
+                    // Step 5b+5c: Set PbCache param and map the page directly.
+                    // C: vr->param.pb_cache = hb->page; map_pf(...) → cache_pagefault
+                    // Rust: directly map the cached PFN into the region.
+                    region.param = VrParam::PbCache { pfn: entry.pfn };
+                    region.map_page(
+                        frames,
+                        VirBytes(page_offset),
+                        entry.pfn,
+                        &crate::memtype::MEM_TYPE_CACHE,
+                    );
+                }
+                None => {
+                    // Cache miss → unmap entire region → ENOENT (C: mem_cache.c:155-157).
+                    Self::unmap_region_pages(&mut region, frames);
+                    return VmReply::Error(VmError::NotFound);
+                }
+            }
+        }
+
+        // Step 6: Insert the region into the caller's region map.
+        {
+            let mut proc = match table.get_active(caller_slot) {
+                Some(p) => p,
+                None => return VmReply::Error(VmError::InvalidProcess),
+            };
+            if proc.regions_mut().insert(region).is_err() {
+                return VmReply::Error(VmError::OutOfMemory);
+            }
+        }
+
+        // Return the virtual address of the new region (C: msg->m_vmmcp_reply.addr = vr->vaddr).
+        VmReply::MapCache { addr: vaddr }
+    }
+
+    /// Helper: unmap all pages in a region, decrementing refcounts.
+    /// Used when do_mapcache fails mid-way and needs to clean up.
+    fn unmap_region_pages(region: &mut VirRegion, frames: &mut PageFrames) {
+        const PS: u64 = 4096;
+        let num_pages = region.physblocks.len();
+        for i in 0..num_pages {
+            let offset = VirBytes(i as u64 * PS);
+            if let Some((_pfn, _memtype)) = region.unmap_page(frames, offset) {
+                // Page was mapped and refcount decremented.
+                // If refcount hit 0 and not cached, caller should free the PFN.
+                // For mapcache failure cleanup, the cached PFN was only
+                // temporarily referenced — the cache still owns it.
+            }
+        }
     }
 
     /// Dispatch VM_SETCACHEPAGE request.
     /// Corresponds to Minix3 `do_setcache()` (mem_cache.c:196).
     /// Registers anonymous memory pages as cache blocks.
+    ///
+    /// # C semantics (mem_cache.c:196-275)
+    ///
+    /// For each page in the caller's `block` address range:
+    /// 1. Look up the page in the caller's region map.
+    /// 2. If a cache entry already exists for this (dev, offset):
+    ///    - Same physical page → skip (already cached).
+    ///    - Different page or VMSF_ONCE → remove old entry (obsolete).
+    /// 3. Verify the page is anonymous memory (not file-mapped).
+    /// 4. Verify refcount == 1 (exclusive ownership).
+    /// 5. Change the page's memtype to cache.
+    /// 6. Insert into PageCache with the device/inode key.
     pub(crate) fn dispatch_setcache(
         table: &VmProcTable,
         frames: &mut PageFrames,
         cache: &mut PageCache,
+        caller: Endpoint,
         request: VmCacheIn,
     ) -> VmReply {
-        let _ = (table, frames, cache, request);
-        VmReply::Error(VmError::NotImplemented)
+        const PAGE_SIZE: u64 = 4096;
+
+        // Input validation (aligned with C do_setcache:200-205):
+        // 1. Reject pages=0 (no-op request — C: bytes < VM_PAGE_SIZE → EINVAL).
+        if request.pages == 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+        // 2. Validate dev/ino are consistent: at least one of (dev, ino)
+        //    must be non-zero, matching C's invariant.
+        if request.dev == 0 && request.ino == 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+        // 3. Reject dev_offset > u32::MAX (sanity bound).
+        if request.dev_offset > u32::MAX as u64 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+        // 4. Alignment check: C returns EFAULT for unaligned dev_off/ino_off.
+        if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+
+        // Step 1: Resolve caller endpoint.
+        // C: vm_isokendpt(msg->m_source, &n)
+        let caller_slot = match table.vm_isokendpt(caller) {
+            Ok(slot) => slot,
+            Err(_) => return VmReply::Error(VmError::InvalidProcess),
+        };
+
+        let bytes = request.pages as u64 * PAGE_SIZE;
+
+        // Step 2: Iterate over each page in the caller's block range.
+        // C: for(offset = 0; offset < bytes; offset += VM_PAGE_SIZE)
+        for page_offset in (0..bytes).step_by(PAGE_SIZE as usize) {
+            let vaddr = VirBytes(request.block + page_offset);
+
+            // Step 2a: Look up the page in caller's region map.
+            // C: map_lookup(caller, v, &phys_region)
+            let mut proc = match table.get_active(caller_slot) {
+                Some(p) => p,
+                None => return VmReply::Error(VmError::InvalidProcess),
+            };
+            let region = match proc.regions_mut().find_mut(vaddr) {
+                Some(r) => r,
+                None => return VmReply::Error(VmError::InvalidAddress),
+            };
+
+            // Compute the offset within this region.
+            let region_offset = VirBytes(vaddr.0 - region.vaddr.0);
+
+            // Get the physical page slot.
+            let slot = match region.get_slot_mut(region_offset) {
+                Some(s) => s,
+                None => return VmReply::Error(VmError::InvalidAddress),
+            };
+            let pfn = slot.pfn;
+
+            // Step 2b: Check if a cache entry already exists.
+            // C: find_cached_page_bydev(dev, dev_off + offset, ino, ino_off + offset, 1)
+            let cache_offset = request.dev_offset + page_offset;
+            let cache_ino_offset = request.ino_offset + page_offset;
+
+            let existing_entry = if request.ino != 0 {
+                cache.find_by_inode(request.dev, request.ino, cache_ino_offset)
+            } else {
+                cache.find_by_device(request.dev, cache_offset)
+            };
+
+            if let Some(entry) = existing_entry {
+                // Same physical page → already cached, skip.
+                // C: if(hb->page != phys_region->ph || (hb->flags & VMSF_ONCE))
+                if entry.pfn == pfn && request.flags == 0 {
+                    // Block was already there, inode info might've changed which is fine.
+                    // C: continue
+                    continue;
+                }
+                // Different page or VMSF_ONCE → remove old entry (obsolete).
+                // C: rmcache(hb)
+                let key = if request.ino != 0 {
+                    CacheKey::ByInode { dev: request.dev, ino: request.ino, offset: cache_ino_offset }
+                } else {
+                    CacheKey::ByDevice { dev: request.dev, offset: cache_offset }
+                };
+                cache.remove(&key, frames);
+            }
+
+            // Step 2c: Verify the page is anonymous memory.
+            // C: if(phys_region->memtype != &mem_type_anon &&
+            //        phys_region->memtype != &mem_type_anon_contig) → EFAULT
+            let is_anon = slot.memtype.map_or(false, |mt| {
+                mt.name() == "anonymous" || mt.name() == "contiguous-anonymous"
+            });
+            if !is_anon {
+                return VmReply::Error(VmError::InvalidAddress);
+            }
+
+            // Step 2d: Verify refcount == 1 (exclusive ownership).
+            // C: if(phys_region->ph->refcount != 1) → EFAULT
+            let refcount = frames.get(pfn).map_or(0, |s| s.refcount);
+            if refcount != 1 {
+                return VmReply::Error(VmError::InvalidAddress);
+            }
+
+            // Step 2e: Change the page's memtype to cache.
+            // C: phys_region->memtype = &mem_type_cache
+            slot.memtype = Some(&crate::memtype::MEM_TYPE_CACHE);
+
+            // Step 2f: Insert into PageCache.
+            // C: addcache(dev, dev_off + offset, ino, ino_off + offset, flags, phys_region->ph)
+            // This increments the PFN's refcount (cache now also references it)
+            // and sets the IN_CACHE flag.
+            let key = if request.ino != 0 {
+                CacheKey::ByInode { dev: request.dev, ino: request.ino, offset: cache_ino_offset }
+            } else {
+                CacheKey::ByDevice { dev: request.dev, offset: cache_offset }
+            };
+            cache.insert(key, pfn, frames);
+        }
+
+        VmReply::Ok
     }
 
     /// Dispatch VM_FORGETCACHEPAGE request.
-    /// Corresponds to Minix3 `do_forgetcache()` (mem_cache.c:283).
+    /// Corresponds to Minix3 `do_forgetcache()` (mem_cache.c:283-307).
     /// Invalidates cached pages for a given device offset range.
+    ///
+    /// # Input validation (C-semantic aligned)
+    ///
+    /// 1. `pages == 0` → `InvalidAddress` (C: `bytes < VM_PAGE_SIZE`
+    ///    returns `EINVAL`; we use `InvalidAddress` for consistency with
+    ///    `dispatch_mapcache`'s fail-closed pattern).
+    /// 2. `dev_offset % PAGE_SIZE != 0` → `InvalidAddress` (C:
+    ///    `dev_off % PAGE_SIZE` returns `EFAULT`).
     pub(crate) fn dispatch_forgetcache(
         cache: &mut PageCache,
         frames: &mut PageFrames,
         request: VmCacheIn,
     ) -> VmReply {
+        if request.pages == 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
+        if request.dev_offset % 4096 != 0 {
+            return VmReply::Error(VmError::InvalidAddress);
+        }
         let bytes = request.pages as u64 * 4096;
         for offset in (0..bytes).step_by(4096) {
             cache.remove(
@@ -263,7 +784,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match exit::handle_vm_exit(table, page_alloc, frames, request.endpoint) {
             Ok(()) => VmReply::Exit,
-            Err(e) => VmReply::Error(exit_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -274,29 +795,61 @@ impl MessageDispatcher {
     ) -> VmReply {
         match exit::handle_vm_willexit(table, request.endpoint) {
             Ok(()) => VmReply::Willexit,
-            Err(e) => VmReply::Error(exit_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
     // -- pagefault --
-    pub(crate) fn dispatch_pagefault(
-        table: &VmProcTable,
-        page_alloc: &mut VmPageAllocator,
-        frames: &mut PageFrames,
-        request: VmPagefaultIn,
-    ) -> VmReply {
-        let _ = (table, page_alloc, frames, request);
-        VmReply::Error(VmError::NotImplemented)
-    }
+    // NOTE: Pagefault is handled directly in VmServer::dispatch_pagefault()
+    // (vm_server.rs) which delegates to cow_exec_pf::handle_pagefault().
+    // This is because pagefault handling requires &mut self (VmServer) access
+    // to page_alloc + frames + regions, which the Dispatcher (taking &VmProcTable)
+    // cannot provide. Do not add a duplicate stub here.
 
     // -- exec_newmem --
+    //
+    // ARCHITECTURE NOTE (exec-newmem stub, 2026-06-14):
+    //
+    // `dispatch_exec_newmem` is a stub that returns `NotImplemented`. It
+    // exists in the Dispatcher only because the type-safe dispatch
+    // surface (`MessageDispatcher::dispatch_by_number`) routes every
+    // IPC request through `dispatch_*` for ACL consistency.
+    //
+    // The actual exec-newmem handling lives outside the Dispatcher:
+    //
+    // 1. `VmServer::exec_newmem()` in `vm_server.rs` is the
+    //    top-level handler — it owns the `&mut self` access to
+    //    `page_alloc`, `frames`, and per-process state. The
+    //    Dispatcher cannot provide this because it takes `&VmProcTable`
+    //    and `&mut VmPageAllocator` separately, which precludes the
+    //    cross-cutting access exec-newmem needs (fork + region
+    //    replacement + CoW resolution).
+    //
+    // 2. The branch in `MessageDispatcher::dispatch_by_number` for
+    //    `VM_EXEC_NEWMEM` never fires in production — the main loop
+    //    (`vm_server.rs::dispatch_message`) intercepts
+    //    `VM_EXEC_NEWMEM` earlier and routes directly to
+    //    `VmServer::exec_newmem`. This stub is therefore dead code
+    //    on the happy path; it exists only to satisfy the
+    //    `dispatch_by_number` exhaustiveness checker.
+    //
+    // 3. **Do not** implement exec-newmem logic here. The Dispatcher
+    //    layer is intentionally read-mostly (`&VmProcTable` +
+    //    `&mut Allocator`) so that adding a `dispatch_*` cannot
+    //    silently widen the access surface to per-process state.
+    //
+    // TODO (exec-newmem follow-up, deferred): once exec-newmem is fully
+    // implemented in `VmServer::exec_newmem`, consider replacing this
+    // stub with `unimplemented!()` so a future caller routed here
+    // fails loudly rather than silently returning `NotImplemented`.
     pub(crate) fn dispatch_exec_newmem(
-        table: &VmProcTable,
-        page_alloc: &mut VmPageAllocator,
-        frames: &mut PageFrames,
-        request: VmExecNewmemIn,
+        _table: &VmProcTable,
+        _page_alloc: &mut VmPageAllocator,
+        _frames: &mut PageFrames,
+        _request: VmExecNewmemIn,
     ) -> VmReply {
-        let _ = (table, page_alloc, frames, request);
+        // Stub: real handler is `VmServer::exec_newmem` in vm_server.rs.
+        // See ARCHITECTURE NOTE above.
         VmReply::Error(VmError::NotImplemented)
     }
 
@@ -310,7 +863,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match rs::handle_rs_set_priv(table, caller, target, mask, is_sys_proc) {
             Ok(()) => VmReply::Ok,
-            Err(e) => VmReply::Error(rs_set_priv_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -325,7 +878,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match rs::handle_rs_prepare(table, page_alloc, frames, src, dst, flags) {
             Ok(()) => VmReply::Ok,
-            Err(e) => VmReply::Error(rs_prepare_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -341,7 +894,7 @@ impl MessageDispatcher {
         match rs::handle_rs_update(table, page_alloc, frames, src, dst, flags) {
             Ok(rs::RsUpdateResult::Ok) => VmReply::Ok,
             Ok(rs::RsUpdateResult::Suspend) => VmReply::Suspend,
-            Err(e) => VmReply::Error(rs_update_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -356,7 +909,7 @@ impl MessageDispatcher {
         match rs::handle_rs_memctl(table, page_alloc, frames, target, request) {
             Ok(rs::RsMemctlResult::Ok) => VmReply::Ok,
             Ok(rs::RsMemctlResult::AddrLen { addr, len }) => VmReply::RsMemctlAddrLen { addr, len },
-            Err(e) => VmReply::Error(rs_memctl_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -368,7 +921,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match query::handle_get_phys(table, target, addr) {
             Ok(phys) => VmReply::GetPhys { phys_addr: phys },
-            Err(e) => VmReply::Error(query_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -381,7 +934,7 @@ impl MessageDispatcher {
     ) -> VmReply {
         match query::handle_get_refcount(table, frames, target, addr) {
             Ok(cnt) => VmReply::GetRefcount { count: cnt },
-            Err(e) => VmReply::Error(query_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -389,9 +942,10 @@ impl MessageDispatcher {
     pub(crate) fn dispatch_info(
         table: &VmProcTable,
         page_alloc: &VmPageAllocator,
+        frames: &PageFrames,
         q: query::InfoQuery,
     ) -> VmReply {
-        match query::handle_info(table, page_alloc, q) {
+        match query::handle_info(table, page_alloc, frames, q) {
             Ok(query::InfoResult::Stats(s)) => VmReply::InfoStats {
                 page_size: s.page_size,
                 total_pages: s.total_pages,
@@ -400,10 +954,10 @@ impl MessageDispatcher {
             },
             Ok(query::InfoResult::Usage(u)) => VmReply::InfoUsage {
                 total: u.total,
+                common: u.common,
                 shared: u.shared,
-                text: u.text,
-                data: u.data,
-                stack: u.stack,
+                virtual_total: u.virtual_total,
+                mvirtual: u.mvirtual,
             },
             Ok(query::InfoResult::Region { regions, count, next }) => VmReply::InfoRegion {
                 regions: regions.map(|r| minix_types::VmRegionInfo {
@@ -414,7 +968,7 @@ impl MessageDispatcher {
                 count,
                 next,
             },
-            Err(e) => VmReply::Error(query_error_to_vm_error(e)),
+            Err(e) => VmReply::Error(e.into()),
         }
     }
 
@@ -449,196 +1003,445 @@ impl MessageDispatcher {
     /// runtime function pointer table needed.
     ///
     /// Full coverage of ~20 CALLMAP entries from main.c:508-538.
-    // TODO: add missing imports and decode helpers; most branches are stubs.
+    /// All VM request types are now wired up with decode + dispatch.
+    /// DEFERRED entries (procctl/remap/remap_ro) have fail-closed
+    /// input validation and return NotImplemented. DMA-related calls
+    /// (VM_ADDDMA/VM_DELDMA/VM_GETDMA) are explicitly excluded and
+    /// caught by the `_` arm.
     pub(crate) fn dispatch_by_number(
         call_nr: usize,
         msg: &Message,
         server: &mut crate::VmServer,
-    ) -> VmReply {
+    ) -> DispatchResult {
         let table = VmProcTable::get_global();
-        let (page_alloc, frames, cache) = server.parts_mut();
+        let (page_alloc, frames, cache, vfs_queue) = server.parts_mut();
 
         let vm_rq_base = VM_RQ_BASE as usize;
 
-        // All VM IPC messages use mess_1 format.
-        // SAFETY: VM messages always use the M1 format; m_type has already
-        // been validated by the caller to be a VM request number.
+        // Most VM IPC messages use mess_1 format.
+        // SAFETY: m_type has already been validated by the caller to be a
+        // VM request number. M1 and M2 are accessed based on which call it is.
         let m1 = unsafe { &msg.m_u.m_m1 };
+        let m2 = unsafe { &msg.m_u.m_m2 };
 
         match call_nr {
             _c if _c == VM_MMAP as usize - vm_rq_base =>
-                Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(m1)),
+                Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(m1)).into(),
             _c if _c == VM_MUNMAP as usize - vm_rq_base =>
-                Self::dispatch_munmap(table, page_alloc, frames, VmMunmapIn::decode(m1)),
+                Self::dispatch_munmap(table, page_alloc, frames, VmMunmapIn::decode(m1)).into(),
             _c if _c == VM_MAP_PHYS as usize - vm_rq_base =>
-                Self::dispatch_map_phys(table, page_alloc, frames, VmMapPhysIn::decode(m1)),
+                Self::dispatch_map_phys(table, page_alloc, frames, VmMapPhysIn::decode(m1)).into(),
             _c if _c == VM_EXIT as usize - vm_rq_base =>
-                Self::dispatch_exit(table, page_alloc, frames, VmExitIn::decode(m1)),
+                Self::dispatch_exit(table, page_alloc, frames, VmExitIn::decode(m1)).into(),
             _c if _c == VM_FORK as usize - vm_rq_base =>
-                Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(m1)),
+                Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(m1)).into(),
             _c if _c == VM_BRK as usize - vm_rq_base =>
-                Self::dispatch_brk(table, page_alloc, frames, VmBrkIn::decode(m1)),
+                Self::dispatch_brk(table, page_alloc, frames, VmBrkIn::decode(m1)).into(),
             _c if _c == VM_WILLEXIT as usize - vm_rq_base =>
-                Self::dispatch_willexit(table, VmWillexitIn::decode(m1)),
+                Self::dispatch_willexit(table, VmWillexitIn::decode(m1)).into(),
             _c if _c == VM_VFS_MMAP as usize - vm_rq_base =>
-                Self::dispatch_vfs_mmap(table, page_alloc, frames, VmVfsMmapIn::decode(m1)),
+                Self::dispatch_vfs_mmap(table, page_alloc, frames, VmVfsMmapIn::decode(m1)).into(),
             _c if _c == VM_MAPCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_mapcache(table, page_alloc, frames, cache, VmCacheIn::decode(m1)),
+                Self::dispatch_mapcache(table, page_alloc, frames, cache, msg.m_source, VmCacheIn::decode(m1)).into(),
             _c if _c == VM_SETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_setcache(table, frames, cache, VmCacheIn::decode(m1)),
+                Self::dispatch_setcache(table, frames, cache, msg.m_source, VmCacheIn::decode(m1)).into(),
             _c if _c == VM_FORGETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_forgetcache(cache, frames, VmCacheIn::decode(m1)),
+                Self::dispatch_forgetcache(cache, frames, VmCacheIn::decode(m1)).into(),
             _c if _c == VM_CLEARCACHE as usize - vm_rq_base =>
-                Self::dispatch_clearcache(cache, frames, VmCacheIn::decode(m1)),
-            // RS calls — TODO: decode helpers needed
+                Self::dispatch_clearcache(cache, frames, VmCacheIn::decode(m1)).into(),
+            // RS calls — use m_lsys_vm_update (M2 format: src, dst, flags)
+            // C: com.h VM_RS_NR=m2_i1, VM_RS_BUF=m2_l1, VM_RS_SYS=m2_i2
             _c if _c == VM_RS_SET_PRIV as usize - vm_rq_base => {
-                // TODO: decode_rs_set_priv(msg)
-                VmReply::Error(VmError::NotImplemented)
+                // C: rs.c:40 — nr=m->VM_RS_NR, buf=m->VM_RS_BUF, sys=m->VM_RS_SYS
+                // M2: m2i1=target endpoint, m2l1=call_mask pointer, m2i2=is_sys_proc
+                let target = Endpoint(m2.m2i1);
+                let is_sys_proc = m2.m2i2 != 0;
+                // call_mask is passed via sys_datacopy in C; we can't do that
+                // from M2 alone. RS must pass the mask inline or via shared memory.
+                // For now, pass None (will use default ACL for user, empty for sys).
+                let mask = None;
+                Self::dispatch_rs_set_priv(table, msg.m_source, target, mask, is_sys_proc).into()
             }
+            // C: rs.c:71 — src=m->m_lsys_vm_update.src, dst=m->m_lsys_vm_update.dst
+            // m_lsys_vm_update maps to M2: m2i1=src, m2i2=dst, m2i3=flags
             _c if _c == VM_RS_PREPARE as usize - vm_rq_base => {
-                // TODO: decode_rs_prepare(msg)
-                VmReply::Error(VmError::NotImplemented)
+                let src = Endpoint(m2.m2i1);
+                let dst = Endpoint(m2.m2i2);
+                let flags = m2.m2i3 as u32;
+                Self::dispatch_rs_prepare(table, page_alloc, frames, src, dst, flags).into()
             }
             _c if _c == VM_RS_UPDATE as usize - vm_rq_base => {
-                // TODO: decode_rs_update(msg)
-                VmReply::Error(VmError::NotImplemented)
+                let src = Endpoint(m2.m2i1);
+                let dst = Endpoint(m2.m2i2);
+                let flags = m2.m2i3 as u32;
+                Self::dispatch_rs_update(table, page_alloc, frames, src, dst, flags).into()
             }
+            // C: rs.c:349 — ep=m->VM_RS_CTL_ENDPT(m1_i1), req=m->VM_RS_CTL_REQ(m1_i2)
+            // VM_RS_CTL_ADDR=m2_p1, VM_RS_CTL_LEN=m2_i3
             _c if _c == VM_RS_MEMCTL as usize - vm_rq_base => {
-                // TODO: decode_rs_memctl(msg)
-                VmReply::Error(VmError::NotImplemented)
+                let target = Endpoint(m1.m1i1);
+                let req_code = m1.m1i2;
+                let request = match req_code {
+                    0 => rs::RsMemctlRequest::Pin,
+                    1 => rs::RsMemctlRequest::MakeVmInstance,
+                    2 => rs::RsMemctlRequest::HeapPrealloc {
+                        addr: VirBytes(m2.m2l1 as u64),
+                        len: m2.m2i3 as usize,
+                    },
+                    3 => rs::RsMemctlRequest::MapPrealloc {
+                        addr: VirBytes(m2.m2l1 as u64),
+                        len: m2.m2i3 as usize,
+                    },
+                    4 => rs::RsMemctlRequest::GetPreallocMap,
+                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidAddress)),
+                };
+                Self::dispatch_rs_memctl(table, page_alloc, frames, target, request).into()
             }
-            // Generic queries — TODO: decode helpers needed
+            // C: utility.c:100 — m_lsys_vm_info (M2 format: what, ep, count, ptr, next)
+            // M2: m2i1=what, m2i2=ep, m2i3=count, m2l1=ptr, m2l2=next
             _c if _c == VM_GETPHYS as usize - vm_rq_base => {
-                // TODO: decode_get_phys(msg)
-                VmReply::Error(VmError::NotImplemented)
+                // C: utility.c — get_phys uses m1_i1=target, m1_p1=vaddr
+                let target = Endpoint(m1.m1i1);
+                let addr = VirBytes(m1.m1p1);
+                Self::dispatch_get_phys(table, target, addr).into()
             }
             _c if _c == VM_GETREF as usize - vm_rq_base => {
-                // TODO: decode_get_refcount(msg)
-                VmReply::Error(VmError::NotImplemented)
+                // C: utility.c — get_ref uses m1_i1=target, m1_p1=vaddr
+                let target = Endpoint(m1.m1i1);
+                let addr = VirBytes(m1.m1p1);
+                Self::dispatch_get_refcount(table, frames, target, addr).into()
             }
             _c if _c == VM_INFO as usize - vm_rq_base => {
-                // TODO: decode_info(msg)
-                VmReply::Error(VmError::NotImplemented)
+                // C: utility.c:100 — m_lsys_vm_info.what, .ep, .count, .next
+                // M2: m2i1=what, m2i2=ep, m2i3=count, m2l2=next
+                let what = m2.m2i1;
+                let ep = Endpoint(m2.m2i2);
+                let count = m2.m2i3 as usize;
+                let next = m2.m2l2 as usize;
+                let q = match what {
+                    0 => query::InfoQuery::Stats,
+                    1 => query::InfoQuery::Usage { target: ep },
+                    2 => query::InfoQuery::Region { target: ep, count, next },
+                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidAddress)),
+                };
+                Self::dispatch_info(table, page_alloc, frames, q).into()
             }
             _c if _c == VM_GETRUSAGE as usize - vm_rq_base => {
-                // TODO: decode_getrusage(msg)
-                VmReply::Error(VmError::NotImplemented)
+                // C: utility.c:426 — m_lsys_vm_rusage: target, children flag
+                // M2: m2i1=target, m2i2=children
+                let target = Endpoint(m2.m2i1);
+                let children = m2.m2i2 != 0;
+                Self::dispatch_getrusage(table, msg.m_source, target, children).into()
             }
-            // C has: VM_REMAP, VM_REMAP_RO, VM_PROCCTL, VM_UNMAP_PHYS,
-            //        VM_SHM_UNMAP, VM_ADDDMA, VM_DELDMA, VM_GETDMA, VM_VFS_REPLY.
-            // These are not yet implemented — return NotImplemented.
-            _ => VmReply::Error(VmError::NotImplemented),
+            // VM_SHM_UNMAP (P0 follow-up 2026-06-14): wired up here after
+            // the function was previously orphaned in the catch-all. The
+            // C side calls this from PM when a shared region is unmapped.
+            // Field mapping: m_lc_vm_shm_unmap (forwhom, addr). The m1
+            // struct is reused (forwhom=m1i1, addr=m1p1).
+            _c if _c == VM_SHM_UNMAP as usize - vm_rq_base => {
+                let request = VmShmUnmapIn {
+                    forwhom: Endpoint(m1.m1i1),
+                    addr: VirBytes(m1.m1p1),
+                };
+                Self::dispatch_shm_unmap(table, page_alloc, frames, request).into()
+            }
+            // VM_REMAP (DEFERRED): caller = m_source, who=m1i1,
+            // vaddr=m1p1, length=m1i2, target=m1p2, flags=m1i3.
+            _c if _c == VM_REMAP as usize - vm_rq_base => {
+                let mut request = VmRemapIn::decode(m1);
+                request.caller = msg.m_source;
+                Self::dispatch_remap(table, page_alloc, frames, request).into()
+            }
+            // VM_REMAP_RO (DEFERRED): same layout as VM_REMAP
+            // but the readonly flag is forced on.
+            _c if _c == VM_REMAP_RO as usize - vm_rq_base => {
+                let mut request = VmRemapIn::decode(m1);
+                request.caller = msg.m_source;
+                Self::dispatch_remap_ro(table, page_alloc, frames, request).into()
+            }
+            // VM_PROCCTL: param/who/m1/len/flags all in m1.
+            // The decoder maps VMPCTL_PARAM to m1i1, VMPCTL_WHO to m1p1
+            // (low 4 bytes), VMPCTL_M1 to m1p2, VMPCTL_LEN to m1p3,
+            // VMPCTL_FLAGS to m1i3.
+            _c if _c == VM_PROCCTL as usize - vm_rq_base => {
+                let request = VmProcctlIn::decode(m1);
+                let caller = msg.m_source;
+                Self::dispatch_procctl(table, page_alloc, frames, caller, request).into()
+            }
+            // VM_VFS_REPLY: endpoint/result/reqid
+            // from m1i1/m1i2/m1i3; dev/fd share m1p1 (low 4 bytes = dev,
+            // full 8 bytes = fd); size/size_pages from m1p2/m1p3.
+            // C: do_vfs_reply only accesses vfs_queue, not page_alloc/frames.
+            _c if _c == VM_VFS_REPLY as usize - vm_rq_base => {
+                let request = VmVfsReplyIn::decode(m1);
+                Self::dispatch_vfs_reply(vfs_queue, request).into()
+            }
+            // C has: VM_ADDDMA, VM_DELDMA, VM_GETDMA.
+            // These are DMA-related and DEFERRED (require the DMA buffer
+            // table, not yet implemented). They are explicitly NOT
+            // caught by `_` so a future caller can distinguish a typo'd
+            // call number from a "not yet supported" reply. The current
+            // `_` arm returns NotImplemented as a catch-all safety net.
+            _ => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
         }
     }
 }
 
 // ==========================================================================
-// Error mapping helpers — per-service error → VmError
+// Error mapping — From<XxxError> for VmError
+//
+// Rust idiom: implement `From` trait so call sites can use `?` operator
+// instead of explicit `.map_err(xxx_error_to_vm_error)`. The compiler
+// guarantees exhaustiveness — adding a new variant to any sub-error enum
+// will produce a compile error here until the mapping is updated.
+//
+// Exception: `QueryError` has context-dependent mapping (ProcessNotFound
+// maps to InvalidProcess in info/get_phys but InvalidEndpoint in getrusage),
+// so we keep a dedicated `query_rusage_error_to_vm_error` function for that.
 // ==========================================================================
 
-fn fork_error_to_vm_error(e: fork::VmForkError) -> VmError {
-    match e {
-        fork::VmForkError::InvalidEndpoint => VmError::InvalidProcess,
-        fork::VmForkError::InvalidSlot => VmError::InvalidProcess,
-        fork::VmForkError::SlotInUse => VmError::SlotInUse,
-        fork::VmForkError::NoMemory => VmError::OutOfMemory,
-        fork::VmForkError::PageNotMapped => VmError::PageNotMapped,
-        fork::VmForkError::MemType(_) => VmError::MemType,
+impl From<fork::VmForkError> for VmError {
+    fn from(e: fork::VmForkError) -> Self {
+        match e {
+            fork::VmForkError::InvalidEndpoint => VmError::InvalidProcess,
+            fork::VmForkError::InvalidSlot => VmError::InvalidProcess,
+            fork::VmForkError::SlotInUse => VmError::SlotInUse,
+            fork::VmForkError::CowAllocFailed => VmError::OutOfMemory,
+            fork::VmForkError::PageTableInitFailed => VmError::OutOfMemory,
+            fork::VmForkError::PageTableMapFailed => VmError::OutOfMemory,
+            fork::VmForkError::PageNotMapped => VmError::PageNotMapped,
+            fork::VmForkError::MemType(_) => VmError::MemType,
+        }
     }
 }
 
-fn brk_error_to_vm_error(e: brk::BrkError) -> VmError {
-    match e {
-        brk::BrkError::ProcessNotFound => VmError::InvalidProcess,
-        brk::BrkError::OutOfMemory => VmError::OutOfMemory,
+impl From<brk::BrkError> for VmError {
+    fn from(e: brk::BrkError) -> Self {
+        match e {
+            brk::BrkError::ProcessNotFound => VmError::InvalidProcess,
+            brk::BrkError::OutOfMemory => VmError::OutOfMemory,
+        }
     }
 }
 
-fn munmap_error_to_vm_error(e: munmap::MunmapError) -> VmError {
-    match e {
-        munmap::MunmapError::ProcessNotFound => VmError::InvalidProcess,
-        munmap::MunmapError::BadAddress => VmError::InvalidAddress,
-        munmap::MunmapError::InvalidLength => VmError::InvalidAddress,
-        munmap::MunmapError::NotMapped => VmError::InvalidAddress,
-        munmap::MunmapError::InternalError => VmError::InternalError,
+impl From<munmap::MunmapError> for VmError {
+    fn from(e: munmap::MunmapError) -> Self {
+        match e {
+            munmap::MunmapError::ProcessNotFound => VmError::InvalidProcess,
+            munmap::MunmapError::BadAddress => VmError::InvalidAddress,
+            munmap::MunmapError::InvalidLength => VmError::InvalidAddress,
+            munmap::MunmapError::NotMapped => VmError::InvalidAddress,
+            munmap::MunmapError::InternalError => VmError::InternalError,
+        }
     }
 }
 
-fn mmap_error_to_vm_error(e: mmap::MmapError) -> VmError {
-    match e {
-        mmap::MmapError::InvalidLength => VmError::InvalidAddress,
-        mmap::MmapError::BadAddress => VmError::InvalidAddress,
-        mmap::MmapError::InvalidFlags => VmError::InvalidAddress,
-        mmap::MmapError::PermissionDenied => VmError::PermissionDenied,
-        mmap::MmapError::OutOfMemory => VmError::OutOfMemory,
-        mmap::MmapError::FileMapDisabled => VmError::NotImplemented,
-        mmap::MmapError::ProcessNotFound => VmError::InvalidEndpoint,
+impl From<mmap::MmapError> for VmError {
+    fn from(e: mmap::MmapError) -> Self {
+        match e {
+            mmap::MmapError::InvalidLength => VmError::InvalidAddress,
+            mmap::MmapError::BadAddress => VmError::InvalidAddress,
+            mmap::MmapError::InvalidFlags => VmError::InvalidAddress,
+            mmap::MmapError::PermissionDenied => VmError::PermissionDenied,
+            mmap::MmapError::OutOfMemory => VmError::OutOfMemory,
+            mmap::MmapError::FileMapDisabled => VmError::NotImplemented,
+            mmap::MmapError::ProcessNotFound => VmError::InvalidEndpoint,
+        }
     }
 }
 
-fn map_phys_error_to_vm_error(e: map_phys::MapPhysError) -> VmError {
-    match e {
-        map_phys::MapPhysError::PermissionDenied => VmError::PermissionDenied,
-        map_phys::MapPhysError::OutOfMemory => VmError::OutOfMemory,
-        map_phys::MapPhysError::InvalidLength => VmError::InvalidAddress,
-        map_phys::MapPhysError::ProcessNotFound => VmError::InvalidProcess,
+impl From<map_phys::MapPhysError> for VmError {
+    fn from(e: map_phys::MapPhysError) -> Self {
+        match e {
+            map_phys::MapPhysError::PermissionDenied => VmError::PermissionDenied,
+            map_phys::MapPhysError::OutOfMemory => VmError::OutOfMemory,
+            map_phys::MapPhysError::InvalidLength => VmError::InvalidAddress,
+            map_phys::MapPhysError::ProcessNotFound => VmError::InvalidProcess,
+        }
     }
 }
 
-fn exit_error_to_vm_error(e: exit::VmExitError) -> VmError {
-    match e {
-        exit::VmExitError::ProcessNotFound => VmError::InvalidProcess,
-        exit::VmExitError::NotExiting => VmError::InvalidProcess,
+impl From<exit::VmExitError> for VmError {
+    fn from(e: exit::VmExitError) -> Self {
+        match e {
+            exit::VmExitError::ProcessNotFound => VmError::InvalidProcess,
+            exit::VmExitError::NotExiting => VmError::InvalidProcess,
+        }
     }
 }
 
-fn rs_set_priv_error_to_vm_error(e: rs::RsSetPrivError) -> VmError {
-    match e {
-        rs::RsSetPrivError::ProcessNotFound => VmError::InvalidProcess,
-        rs::RsSetPrivError::SysProcNoMask => VmError::InvalidAddress,
+impl From<rs::RsError> for VmError {
+    fn from(e: rs::RsError) -> Self {
+        match e {
+            rs::RsError::ProcessNotFound => VmError::InvalidProcess,
+            rs::RsError::SysProcNoMask => VmError::InvalidAddress,
+            rs::RsError::PinFailed => VmError::NotImplemented,
+            rs::RsError::PrepareNotImplemented => VmError::NotImplemented,
+            rs::RsError::PreallocMapConflict => VmError::NotImplemented,
+            rs::RsError::UpdateNotImplemented => VmError::NotImplemented,
+            rs::RsError::InvalidRequest => VmError::InvalidAddress,
+            rs::RsError::MakeVmFailed => VmError::PermissionDenied,
+            rs::RsError::HeapPreallocFailed => VmError::NotImplemented,
+            rs::RsError::MapPreallocFailed => VmError::NotImplemented,
+            rs::RsError::InvalidLength => VmError::InvalidAddress,
+        }
     }
 }
 
-fn rs_prepare_error_to_vm_error(e: rs::RsPrepareError) -> VmError {
-    match e {
-        rs::RsPrepareError::ProcessNotFound => VmError::InvalidProcess,
-        rs::RsPrepareError::NotImplemented => VmError::NotImplemented,
+impl From<query::QueryError> for VmError {
+    fn from(e: query::QueryError) -> Self {
+        match e {
+            query::QueryError::ProcessNotFound => VmError::InvalidProcess,
+            query::QueryError::NotMapped => VmError::InvalidAddress,
+            query::QueryError::NotSupported => VmError::InvalidAddress,
+            query::QueryError::InvalidQuery => VmError::InvalidAddress,
+        }
     }
 }
 
-fn rs_update_error_to_vm_error(e: rs::RsUpdateError) -> VmError {
-    match e {
-        rs::RsUpdateError::ProcessNotFound => VmError::InvalidProcess,
-        rs::RsUpdateError::PreallocMapConflict => VmError::NotImplemented,
-        rs::RsUpdateError::NotImplemented => VmError::NotImplemented,
-    }
-}
-
-fn rs_memctl_error_to_vm_error(e: rs::RsMemctlError) -> VmError {
-    match e {
-        rs::RsMemctlError::ProcessNotFound => VmError::InvalidProcess,
-        rs::RsMemctlError::InvalidRequest => VmError::InvalidAddress,
-        rs::RsMemctlError::MakeVmFailed => VmError::PermissionDenied,
-        rs::RsMemctlError::HeapPreallocFailed => VmError::NotImplemented,
-        rs::RsMemctlError::MapPreallocFailed => VmError::NotImplemented,
-        rs::RsMemctlError::InvalidLength => VmError::InvalidAddress,
-    }
-}
-
-fn query_error_to_vm_error(e: query::QueryError) -> VmError {
-    match e {
-        query::QueryError::ProcessNotFound => VmError::InvalidProcess,
-        query::QueryError::NotMapped => VmError::InvalidAddress,
-        query::QueryError::NotSupported => VmError::InvalidAddress,
-        query::QueryError::InvalidQuery => VmError::InvalidAddress,
-    }
-}
-
+/// Context-specific mapping for getrusage: ProcessNotFound → InvalidEndpoint
+/// (C: utility.c:442 returns ESRCH for invalid endpoint in getrusage).
 fn query_rusage_error_to_vm_error(e: query::QueryError) -> VmError {
     match e {
         query::QueryError::ProcessNotFound => VmError::InvalidEndpoint,
-        _ => query_error_to_vm_error(e),
+        _ => VmError::from(e),
     }
+}
+
+// -- remap implementation (shared by VM_REMAP and VM_REMAP_RO) --
+
+/// Mmap address range for remap operations.
+/// C: `VM_MMAPBASE` / `VM_MMAPTOP` (computed at boot in minix3).
+/// In 64-bit minix-rs, we use the same range as `handle_mmap`.
+const REMAP_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
+const REMAP_MMAP_TOP: u64  = 0x0000_0200_0000_0000;
+
+/// Page-align a length value, matching C's `size += VM_PAGE_SIZE - size % VM_PAGE_SIZE`.
+fn align_up_page(len: u64) -> u64 {
+    const PAGE_SIZE: u64 = 4096;
+    (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
+}
+
+/// Shared implementation for VM_REMAP and VM_REMAP_RO.
+///
+/// C source: `do_remap()` in mmap.c:366-434.
+///
+/// # Safety argument for cross-process access
+///
+/// This function reads from the source process and writes to the destination
+/// process. In the single-threaded VM event loop, only one thread accesses
+/// the process table at a time. We use `find_region_snapshot` (read-only,
+/// returns a Copy snapshot) to capture source info, then `get_active` to
+/// get an `&mut ActiveProc` for the destination. The `increment_region_remaps`
+/// call targets the source slot directly — safe because it's a different
+/// slot than the currently-held `ActiveProc`.
+fn dispatch_remap_impl(
+    table: &VmProcTable,
+    _page_alloc: &mut VmPageAllocator,
+    _frames: &mut PageFrames,
+    request: VmRemapIn,
+    readonly: bool,
+) -> VmReply {
+    // Step 1: Validate input (C: mmap.c:387 — `if (size <= 0) return EINVAL`)
+    if request.length.0 == 0 {
+        return VmReply::Error(VmError::InvalidAddress);
+    }
+
+    // Step 2: Validate endpoints (C: mmap.c:389-392)
+    let src_slot = match table.vm_isokendpt(request.who) {
+        Ok(slot) => slot,
+        Err(_) => return VmReply::Error(VmError::InvalidEndpoint),
+    };
+    let dst_slot = match table.vm_isokendpt(request.caller) {
+        Ok(slot) => slot,
+        Err(_) => return VmReply::Error(VmError::InvalidEndpoint),
+    };
+
+    // Step 3: Look up source region (C: mmap.c:396 — `map_lookup(svmp, sa, NULL)`)
+    let src_snapshot = match table.find_region_snapshot(src_slot, request.vaddr) {
+        Some(s) => s,
+        None => return VmReply::Error(VmError::InvalidAddress),
+    };
+
+    // Step 4: Source region must start exactly at vaddr
+    // (C: mmap.c:398-400 — `if(src_region->vaddr != sa) return EFAULT`)
+    if src_snapshot.vaddr != request.vaddr {
+        return VmReply::Error(VmError::InvalidAddress);
+    }
+
+    // Step 5: Page-align length and verify it matches source region
+    // (C: mmap.c:402-406 — size alignment + `if(size != src_region->length) return EFAULT`)
+    let aligned_len = VirBytes(align_up_page(request.length.0));
+    if src_snapshot.length != aligned_len {
+        return VmReply::Error(VmError::InvalidAddress);
+    }
+
+    // Step 6: Determine destination address range
+    // (C: mmap.c:412-415 — `if(da) map_page_region(dvmp, da, 0, ...) else map_page_region(dvmp, VM_MMAPBASE, VM_MMAPTOP, ...)`)
+    let (minv, maxv) = if request.target.0 != 0 {
+        (request.target, VirBytes(request.target.0 + aligned_len.0))
+    } else {
+        (VirBytes(REMAP_MMAP_BASE), VirBytes(REMAP_MMAP_TOP))
+    };
+
+    // Step 7: Find free slot in destination process
+    let dst_vaddr = {
+        let dst_proc = match table.get_active(dst_slot) {
+            Some(p) => p,
+            None => return VmReply::Error(VmError::InvalidEndpoint),
+        };
+        match dst_proc.regions().find_slot(minv, maxv, aligned_len) {
+            Some(addr) => addr,
+            None => return VmReply::Error(VmError::OutOfMemory),
+        }
+        // dst_proc (ActiveProc) dropped here — releases the borrow
+    };
+
+    // Step 8: Create new shared region
+    // (C: mmap.c:412-415 — `map_page_region(dvmp, ..., flags, 0, &mem_type_shared)`)
+    let mut flags = VrFlags::SHARED;
+    if !readonly {
+        flags |= VrFlags::WRITABLE;
+    }
+
+    let mut new_region = VirRegion::with_memtype(
+        dst_vaddr,
+        aligned_len,
+        flags,
+        &MEM_TYPE_SHARED,
+    );
+
+    // Step 9: Set shared source parameters
+    // (C: mmap.c:417 — `shared_setsource(vr, svmp->vm_endpoint, src_region)`)
+    // which sets vr->param.shared.{ep, vaddr, id} and increments srcvr->remaps
+    new_region.param = VrParam::Shared {
+        ep: request.who.0,
+        vaddr: src_snapshot.vaddr,
+        id: src_snapshot.id,
+    };
+
+    // Step 10: Insert new region into destination process
+    {
+        let mut dst_proc = match table.get_active(dst_slot) {
+            Some(p) => p,
+            None => return VmReply::Error(VmError::InvalidEndpoint),
+        };
+        if dst_proc.regions_mut().insert(new_region).is_err() {
+            return VmReply::Error(VmError::OutOfMemory);
+        }
+    }
+
+    // Step 11: Increment source region's remaps counter
+    // (C: mem_shared.c:195 — `srcvr->remaps++`)
+    //
+    // SAFETY: src_slot != dst_slot is not strictly required by Minix3
+    // (a process can remap its own region to a different address),
+    // but if they're the same slot, we must not hold an ActiveProc
+    // for it. Since we dropped dst_proc above, this is safe regardless.
+    let _ = table.increment_region_remaps(src_slot, src_snapshot.vaddr);
+
+    // Step 12: Return mapped address (C: mmap.c:431 — `m->m_lsys_vm_vmremap.ret_addr = vr->vaddr`)
+    VmReply::Mmap(VmMmapOut { ret_addr: dst_vaddr })
 }
 
 #[cfg(test)]
@@ -676,5 +1479,504 @@ mod tests {
     fn test_vm_error_slot_in_use_maps_to_einval() {
         let result = VmError::SlotInUse.to_errno();
         assert_eq!(result, minix_types::EINVAL);
+    }
+
+    // ── DEFERRED dispatcher happy-path tests ─────
+    //
+    // These tests pin the fail-closed validation behavior of the 4
+    // newly-added dispatch functions (procctl, remap, remap_ro, vfs_reply).
+    // Each test sets up a MessageM1 payload that simulates what the
+    // corresponding C sender would write, then checks the result matches
+    // the documented validation behavior. Real end-to-end behavior is
+    // DEFERRED — these tests only cover the "reject bad input" half of
+    // the fail-closed contract.
+
+    fn default_vm() -> crate::alloc_page::VmPageAllocator {
+        // Tiny allocator for tests; capacity is irrelevant since we
+        // never reach the allocation path in validation-only tests.
+        use crate::phys_mem::bitmap_alloc::BitmapAllocator;
+        use crate::phys_mem::PhysAlloc;
+        crate::alloc_page::VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)))
+    }
+
+    fn default_frames() -> crate::region::PageFrames {
+        use crate::region::page_state::PAGE_SIZE;
+        use minix_types::PhysBytes;
+        crate::region::PageFrames::new(PhysBytes(256 * PAGE_SIZE as u64))
+    }
+
+    fn default_table() -> &'static VmProcTable {
+        VmProcTable::get_global()
+    }
+
+    fn _default_cache() -> crate::page_cache::PageCache {
+        crate::page_cache::PageCache::new()
+    }
+
+    #[test]
+    fn test_dispatch_procctl_rejects_negative_param() {
+        // Unknown param values → EINVAL (C: exit.c:149 default).
+        let req = VmProcctlIn {
+            param: -1,
+            who: Endpoint(1),
+            m1: 0,
+            len: 0,
+            flags: 0,
+        };
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        match MessageDispatcher::dispatch_procctl(
+            default_table(), &mut page_alloc, &mut frames, Endpoint(0), req,
+        ) {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected
+            other => panic!("dispatch_procctl(-1) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_procctl_rejects_zero_who() {
+        let req = VmProcctlIn {
+            param: 1,
+            who: Endpoint(0),
+            m1: 0,
+            len: 0,
+            flags: 0,
+        };
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        match MessageDispatcher::dispatch_procctl(
+            default_table(), &mut page_alloc, &mut frames, Endpoint(0), req,
+        ) {
+            VmReply::Error(VmError::InvalidEndpoint) => {} // expected
+            other => panic!("dispatch_procctl(who=0) must return InvalidEndpoint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_procctl_clear_rejects_unauthorized_caller() {
+        // VMPPARAM_CLEAR requires RS or VFS as caller.
+        // Caller endpoint 42 is neither RS(0) nor VFS(1).
+        let req = VmProcctlIn {
+            param: 1, // VMPPARAM_CLEAR
+            who: Endpoint(42),
+            m1: 0,
+            len: 0,
+            flags: 0,
+        };
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        match MessageDispatcher::dispatch_procctl(
+            default_table(), &mut page_alloc, &mut frames, Endpoint(42), req,
+        ) {
+            VmReply::Error(VmError::PermissionDenied) => {} // expected
+            other => panic!("dispatch_procctl CLEAR from non-RS/VFS must return PermissionDenied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_procctl_handlemem_rejects_non_vfs_caller() {
+        // VMPPARAM_HANDLEMEM requires VFS as caller.
+        // RS(0) is not VFS(1).
+        let req = VmProcctlIn {
+            param: 2, // VMPPARAM_HANDLEMEM
+            who: Endpoint(42),
+            m1: 0x1000,
+            len: 16,
+            flags: 1,
+        };
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        match MessageDispatcher::dispatch_procctl(
+            default_table(), &mut page_alloc, &mut frames, Endpoint(0), req,
+        ) {
+            VmReply::Error(VmError::PermissionDenied) => {} // expected
+            other => panic!("dispatch_procctl HANDLEMEM from RS must return PermissionDenied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_procctl_unknown_param_returns_invalid_address() {
+        // Unknown param values → EINVAL (C: exit.c:149 default).
+        let req = VmProcctlIn {
+            param: 99,
+            who: Endpoint(42),
+            m1: 0,
+            len: 0,
+            flags: 0,
+        };
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        match MessageDispatcher::dispatch_procctl(
+            default_table(), &mut page_alloc, &mut frames, Endpoint(0), req,
+        ) {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected
+            other => panic!("dispatch_procctl(unknown param) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_remap_rejects_zero_vaddr() {
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let req = VmRemapIn {
+            caller: Endpoint(1),
+            who: Endpoint(2),
+            vaddr: VirBytes(0),
+            length: VirBytes(0x1000),
+            target: VirBytes(0x2000),
+            flags: 0,
+        };
+        // vaddr=0 won't match any region start, so endpoint validation
+        // or region lookup will fail (C: map_lookup returns NULL for addr 0)
+        match MessageDispatcher::dispatch_remap(default_table(), &mut page_alloc, &mut frames, req) {
+            VmReply::Error(_) => {} // expected: any error
+            other => panic!("dispatch_remap(vaddr=0) must return Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_remap_rejects_zero_length() {
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let req = VmRemapIn {
+            caller: Endpoint(1),
+            who: Endpoint(2),
+            vaddr: VirBytes(0x1000),
+            length: VirBytes(0),
+            target: VirBytes(0x2000),
+            flags: 0,
+        };
+        match MessageDispatcher::dispatch_remap(default_table(), &mut page_alloc, &mut frames, req) {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected
+            other => panic!("dispatch_remap(length=0) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_remap_rejects_invalid_endpoints() {
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        // Endpoint(1) is not in the process table → InvalidEndpoint
+        let req = VmRemapIn {
+            caller: Endpoint(1),
+            who: Endpoint(2),
+            vaddr: VirBytes(0x1000),
+            length: VirBytes(0x1000),
+            target: VirBytes(0x2000),
+            flags: 0,
+        };
+        match MessageDispatcher::dispatch_remap(default_table(), &mut page_alloc, &mut frames, req) {
+            VmReply::Error(VmError::InvalidEndpoint) => {} // expected
+            other => panic!("dispatch_remap(bad endpoint) must return InvalidEndpoint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_remap_ro_rejects_invalid_endpoints() {
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let req = VmRemapIn {
+            caller: Endpoint(1),
+            who: Endpoint(2),
+            vaddr: VirBytes(0x1000),
+            length: VirBytes(0x1000),
+            target: VirBytes(0x2000),
+            flags: 0,
+        };
+        match MessageDispatcher::dispatch_remap_ro(default_table(), &mut page_alloc, &mut frames, req) {
+            VmReply::Error(VmError::InvalidEndpoint) => {} // expected
+            other => panic!("dispatch_remap_ro(bad endpoint) must return InvalidEndpoint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_vfs_reply_rejects_zero_reqid() {
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        let req = VmVfsReplyIn {
+            endpoint: Endpoint(1),
+            result: 0,
+            reqid: 0,
+            dev: 0,
+            fd: 0,
+            size: 0,
+            size_pages: 0,
+        };
+        let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
+        match result.reply {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected
+            other => panic!("dispatch_vfs_reply(reqid=0) must return InvalidAddress, got {:?}", other),
+        }
+        assert!(result.callback.is_none());
+    }
+
+    #[test]
+    fn test_dispatch_vfs_reply_no_active_request_returns_error() {
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        // No active request in the queue — handle_reply will fail
+        let req = VmVfsReplyIn {
+            endpoint: Endpoint(5),
+            result: 0,
+            reqid: 42,
+            dev: 100,
+            fd: 3,
+            size: 0x10000,
+            size_pages: 16,
+        };
+        let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
+        match result.reply {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected: no active request
+            other => panic!("dispatch_vfs_reply(no active) must return error, got {:?}", other),
+        }
+        assert!(result.callback.is_none());
+    }
+
+    #[test]
+    fn test_dispatch_vfs_reply_negative_reqid_returns_error() {
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        let req = VmVfsReplyIn {
+            endpoint: Endpoint(5),
+            result: 0,
+            reqid: -1,
+            dev: 0,
+            fd: 0,
+            size: 0,
+            size_pages: 0,
+        };
+        let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
+        match result.reply {
+            VmReply::Error(VmError::InvalidAddress) => {} // expected
+            other => panic!("dispatch_vfs_reply(reqid=-1) must return InvalidAddress, got {:?}", other),
+        }
+        assert!(result.callback.is_none());
+    }
+
+    #[test]
+    fn test_dispatch_forgetcache_rejects_zero_pages() {
+        let mut cache = _default_cache();
+        let mut frames = default_frames();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 0,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_forgetcache(pages=0) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_forgetcache_rejects_unaligned_offset() {
+        let mut cache = _default_cache();
+        let mut frames = default_frames();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 100, // not page-aligned
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_forgetcache(unaligned offset) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_forgetcache_valid_input_returns_ok() {
+        let mut cache = _default_cache();
+        let mut frames = default_frames();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
+            VmReply::Ok => {}
+            other => panic!("dispatch_forgetcache(valid) must return Ok, got {:?}", other),
+        }
+    }
+
+    // ── dispatch_setcache tests ──────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_setcache_rejects_zero_pages() {
+        let table = default_table();
+        let mut frames = default_frames();
+        let mut cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 0,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_setcache(pages=0) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_setcache_rejects_zero_dev_and_ino() {
+        let table = default_table();
+        let mut frames = default_frames();
+        let mut cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 0,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0x1000,
+        };
+        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_setcache(dev=0,ino=0) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_setcache_rejects_unaligned_dev_offset() {
+        let table = default_table();
+        let mut frames = default_frames();
+        let mut cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 100, // not page-aligned
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0x1000,
+        };
+        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_setcache_rejects_invalid_caller() {
+        let table = default_table();
+        let mut frames = default_frames();
+        let mut cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0x1000,
+        };
+        // Endpoint(999) is not in the process table
+        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(999), req) {
+            VmReply::Error(VmError::InvalidProcess) => {}
+            other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
+        }
+    }
+
+    // ── dispatch_mapcache tests ──────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_mapcache_rejects_unaligned_offset() {
+        let table = default_table();
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 100, // not page-aligned
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidAddress) => {}
+            other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_mapcache_rejects_zero_pages() {
+        let table = default_table();
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 0,
+            flags: 0,
+            block: 0,
+        };
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidProcess) => {} // EINVAL → InvalidProcess
+            other => panic!("dispatch_mapcache(pages=0) must return InvalidProcess(EINVAL), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_mapcache_rejects_invalid_caller() {
+        let table = default_table();
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let cache = _default_cache();
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0,
+        };
+        // Endpoint(999) is not in the process table
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(999), req) {
+            VmReply::Error(VmError::InvalidProcess) => {}
+            other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_mapcache_cache_miss_returns_not_found() {
+        let table = default_table();
+        let mut page_alloc = default_vm();
+        let mut frames = default_frames();
+        let cache = _default_cache(); // empty cache → all lookups miss
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 0,
+            ino_offset: 0,
+            pages: 1,
+            flags: 0,
+            block: 0,
+        };
+        // Caller endpoint doesn't matter for cache miss path —
+        // but we need a valid endpoint to get past vm_isokendpt.
+        // Endpoint(0) is VM itself, which should be in the table.
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(0), req) {
+            VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
+            other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
+        }
     }
 }

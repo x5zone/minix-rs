@@ -1,6 +1,31 @@
+//! Segment-tree-based physical page allocator.
+//!
+//! Optional backend (`segment_tree_alloc` Cargo feature). Uses a
+//! segment tree where each node stores `(max_free, left_free, right_free,
+//! len)` for the range it covers. This gives **O(log n)** allocation
+//! for both single-page and arbitrary-contiguity requests.
+//!
+//! # Algorithm
+//!
+//! - `alloc_mem(clicks, _)` walks the tree top-down: at each internal
+//!   node it picks the child with the largest contiguous free run ≥
+//!   `clicks`. Once a leaf is reached, the run is reserved and the
+//!   ancestors are updated.
+//!
+//! - `free_mem` marks the freed range as free and updates the
+//!   ancestors' `max_free` accordingly.
+//!
+//! # When to use
+//!
+//! The segment-tree backend has the **best worst-case latency** of the
+//! three backends but the **highest metadata cost**:
+//! `2 * next_power_of_two(total_pages) * sizeof((usize, usize, usize, usize))`.
+//! For VMs with > 1M total pages the buddy backend is preferred (see
+//! `BUDDY_THRESHOLD_PAGES`).
+//!
 use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
-use super::{BumpBuf, BootMemRegion, METADATA_ALIGN_PADDING};
+use super::BootMemRegion;
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +74,7 @@ fn merge(left: SegmentNode, right: SegmentNode) -> SegmentNode {
 }
 
 #[cfg(feature = "segment_tree_alloc")]
-pub struct SegmentTreeAllocator {
+pub(crate) struct SegmentTreeAllocator {
     n: usize,
     offset: usize,
     tree: &'static mut [SegmentNode],
@@ -274,6 +299,11 @@ impl PhysAllocator for SegmentTreeAllocator {
 
         if flags.contains(PageAllocFlags::CLEAR) {
             let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(mem));
+            // SAFETY: `vm_phys_to_virt` returns a valid direct-mapped virtual address
+            // for the given physical page. The address is u64-aligned (page-aligned
+            // base). `words = clicks * CLICK_SIZE / 8` does not overflow because
+            // clicks is bounded by TOTAL_PAGES and CLICK_SIZE == 4096. VM is
+            // single-threaded, so no concurrent writes to this region.
             unsafe {
                 let ptr = virt.0 as *mut u64;
                 let words = clicks * CLICK_SIZE / 8;
@@ -351,7 +381,7 @@ impl SegmentTreeAllocator {
 }
 
 #[cfg(not(feature = "segment_tree_alloc"))]
-pub struct SegmentTreeAllocator {
+pub(crate) struct SegmentTreeAllocator {
     _private: (),
 }
 

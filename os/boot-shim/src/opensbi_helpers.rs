@@ -216,6 +216,10 @@ impl BootShim for OpenSbiBootShim {
             kern.kern_phys_base,
             kern.kern_size,
             boot_modules,
+            // Bootstrap region: boot-shim occupies memory below the kernel.
+            // C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
+            PhysBytes(0), // TODO: determine boot-shim physical start from OpenSBI
+            kern.kern_phys_base.0, // boot-shim memory ends where kernel begins
         );
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
@@ -333,24 +337,32 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 }
 
 /// Build a KernelInfo struct.
+///
+/// `bootstrap_start`/`bootstrap_len` describe the boot-shim's physical
+/// memory region that the kernel should reclaim after boot completes.
+/// C: kinfo.bootstrap_start/len — pre_init.c:114-116
 pub fn build_kernel_info(
     memmap: &'static [MemoryRegion],
     kern_virt_base: VirBytes,
     kern_phys_base: PhysBytes,
     kern_size: u64,
     boot_modules: &'static [minix_boot::BootModule],
+    bootstrap_start: PhysBytes,
+    bootstrap_len: u64,
 ) -> KernelInfo {
     KernelInfo {
         memmap,
         kern_virt_base,
         kern_phys_base,
         kern_size,
-        free_upper_idx: 0,
+        free_upper_idx: None,
         // riscv64 Sv39 user address space top (2^38 - 1 aligned to page).
         user_sp: VirBytes(0x0000_003f_ffff_f000),
         kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
         syscall_entry: VirBytes(kern_virt_base.0),
         boot_modules,
+        bootstrap_start,
+        bootstrap_len,
     }
 }
 
@@ -470,6 +482,8 @@ mod tests {
             PhysBytes(DRAM_BASE),
             0x100_000,
             &[],
+            PhysBytes(0x80000000), // bootstrap_start
+            0x200000,              // bootstrap_len
         );
         // Sv39 user-space top is below 2^38.
         assert!(info.user_sp.0 < (1u64 << 39));

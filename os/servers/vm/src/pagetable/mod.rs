@@ -24,7 +24,7 @@ pub(crate) type PageTable = minix_arch::CurrentPaging;
 pub(crate) use minix_arch::paging::PageFlags;
 pub(crate) use minix_arch::paging::PageTableError;
 pub(crate) use minix_arch::paging::Paging;
-pub(crate) use vm_self_map::{vm_self_mappages, vm_self_unmappages, vm_self_unmap, vm_self_query, init_vm_self_pt};
+pub(crate) use vm_self_map::{vm_self_mappages, vm_self_unmappages, vm_self_unmap};
 
 pub(crate) fn page_align(addr: VirBytes) -> VirBytes {
     let ps = <PageTable as Paging>::PAGE_SIZE as u64;

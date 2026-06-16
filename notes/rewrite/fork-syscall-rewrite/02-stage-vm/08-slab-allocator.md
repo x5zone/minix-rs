@@ -1,6 +1,6 @@
 # 08-slab-allocator: Slab 分配器
 
-> **分类**: VM私有 ✅
+> **分类**: VM 私有
 > **源码**: [slaballoc.c](minix3/minix/servers/vm/slaballoc.c)  
 > **说明**: VM 专用的内存分配器，用于分配固定大小的对象
 
@@ -44,7 +44,7 @@ Slab 分配器是一种内存管理技术，用于高效分配固定大小的对
 
 **为什么 VM 使用 Slab 而非完全依赖 malloc？**
 
-> ⚠️ **澄清**：VM **可以**使用 malloc。VM 有自己的 `brk` 快速路径（`utility.c:_brk()`），直接调用 `alloc_mem()` 分配物理页并映射到自己的地址空间。VM 实际上也使用了 `calloc`/`realloc`/`free`（如 `region->physblocks` 数组）。
+> **澄清**：VM **可以**使用 malloc。VM 有自己的 `brk` 快速路径（`utility.c:_brk()`），直接调用 `alloc_mem()` 分配物理页并映射到自己的地址空间。VM 实际上也使用了 `calloc`/`realloc`/`free`（如 `region->physblocks` 数组）。
 > 
 > 以上是 Minix3（32 位 C 实现）的现状。Rust 版本中，Direct Map 解决了"物理页可达性"（`vm_phys_to_virt()` 直接访问），HeapArena 解决了"虚拟连续性"（预留连续 VA 区间，逐页映射物理页）。VM 不再需要 brk/sbrk，但需要 HeapArena 为 Rust 堆提供连续 VA。详见 §4.1 和 07-pagetable-ops.md §3.0.4。
 
@@ -1606,10 +1606,10 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 
 | Slab 优势 | Rust alloc 是否解决 | 机制 |
 |-----------|---------------------|------|
-| 小对象复用 | ✅ | size class + thread cache |
-| O(1) 分配 | ✅ | fast path |
-| cache locality | ✅ | arena / size class |
-| 减少碎片 | ✅ | 分级管理 |
+| 小对象复用 | 是 | size class + thread cache |
+| O(1) 分配 | 是 | fast path |
+| cache locality | 是 | arena / size class |
+| 减少碎片 | 是 | 分级管理 |
 
 关键认识：**不是放弃 slab，而是把 slab 的职责交给更成熟的分配器。** Rust 的 alloc 生态是 20+ 年工程经验的结晶，一个 200 行的私有 slab 不可能比它更好。
 
@@ -1654,7 +1654,7 @@ Rust 的 `alloc` 体系底层对接的分配器（无论是系统默认还是 je
 │  └── 内部已包含 size class、thread cache 等优化              │
 │                                                             │
 │  第 2 层：VM 数据结构                                        │
-│  ├── Box<VirRegion>      ← 虚拟内存区域                     │
+│  ├── VirRegion           ← 虚拟内存区域 (值类型, 移动语义)    │
 │  ├── Vec<PhysBlock>      ← 物理块数组                       │
 │  ├── Box<PhysRegion>     ← 物理区域映射                     │
 │  └── Box<VfsRequestNode> ← VFS 请求节点                     │
@@ -1680,7 +1680,7 @@ Minix3 slab 的核心价值不是 slab 本身，而是**将关键路径上的内
 | 路径类型 | 策略 | 示例 |
 |---------|------|------|
 | **关键路径**（page fault） | 避免动态分配，或提前预分配 | 预分配 phys_block 池 |
-| **半关键路径**（mmap/munmap） | 使用 alloc，但监控统计 | `Box<VirRegion>` |
+| **半关键路径**（mmap/munmap） | 使用 alloc，但监控统计 | `VirRegion` (值类型) |
 | **非关键路径**（进程创建） | 标准 alloc | `Vec`、`BTreeMap` |
 
 **预分配策略设计**：
@@ -2335,7 +2335,7 @@ Minix3 VM 中通过 slab 分配的结构体及其在 Rust 版本中的对应方�
 
 | Minix3 结构体 | Rust 大小 (x86_64) | 分配频率 | Rust 版本 |
 |--------------|------|---------|-----------|
-| `vir_region` | ~112B | 高（每次 mmap） | `Box<VirRegion>` |
+| `vir_region` | ~112B | 高（每次 mmap） | `VirRegion` (值类型) |
 | `phys_region` | ~48B | 高（每次映射物理页） | `Box<PhysRegion>` |
 | `phys_block` | ~24B | 极高（page fault） | `CriticalPool<PhysBlock>` |
 | `fdref` | ~32B | 低 | `Box<FdRef>` |

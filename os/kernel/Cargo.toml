@@ -11,18 +11,18 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-arch = { path = "../arch", default-features = false }
-minix-ipc = { workspace = true }
+minix-plat = { path = "../plat" }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
-minix-mock = { workspace = true, optional = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]
 minix-arch = { path = "../arch", features = ["mock"] }
+minix-plat = { path = "../plat", features = ["mock"] }
 
 [features]
 default = ["mock"]
-mock = ["dep:minix-mock"]
+mock = ["minix-arch/mock", "minix-plat/mock"]
 qemu_test = []
 
 [profile.dev]

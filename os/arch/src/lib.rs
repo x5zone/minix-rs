@@ -3,25 +3,22 @@
 //! Provides cross-architecture hardware mechanism abstractions and trait interfaces.
 //! Concrete implementations are provided by each architecture module (mock, x86_64, arm64, riscv64).
 //!
+//! # Crate structure
+//!
+//! - **CPU ISA traits** (this crate): paging, protection, trap entry, exception, clock, etc.
+//! - **Board-level platform traits** (`minix-plat`): early console, interrupt controller
+//!
 //! # Design principles
 //!
 //! 1. **Distributed definition**: Each feature module defines its own traits (e.g. paging, interrupts, timers)
 //! 2. **Centralized implementation**: All traits are implemented within the arch crate
 //! 3. **Architecture-independent**: OS code depends only on traits, not on specific hardware
-//!
-//! # Current support
-//!
-//! - `mock`: Mock hardware implementation for user-space testing
-//! - `x86_64`: x86-64 architecture (not yet implemented)
-//! - `arm64`: ARM64 architecture (not yet implemented)
-//! - `riscv64`: RISC-V 64-bit architecture (not yet implemented)
 
 #![cfg_attr(not(feature = "mock"), no_std)]
 
 extern crate alloc;
 
 pub mod arch;
-pub mod plat;
 
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
@@ -30,8 +27,16 @@ pub mod arm64;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64;
 
-// ── Backward-compatible re-exports at crate root ──
-// These keep existing `use crate::paging::...` paths valid in downstream code.
+// ── Re-export board-level platform abstractions from minix-plat ──
+pub use minix_plat::{
+    EarlyConsole, InterruptController, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
+    NR_IRQ_VECTORS, NR_IRQ_HOOKS, CurrentInterruptController, CurrentEarlyConsole,
+};
+
+#[cfg(feature = "mock")]
+pub use minix_plat::{MockInterruptController, MockEarlyConsole};
+
+// ── Backward-compatible re-exports of CPU ISA modules ──
 pub use arch::paging;
 pub use arch::paging_ext;
 pub use arch::pt_alloc;
@@ -39,25 +44,18 @@ pub use arch::direct_map;
 pub use arch::protection;
 pub use arch::trap_entry;
 pub use arch::exception;
-pub use arch::irq_manager;
 pub use arch::exception_dispatcher;
 pub use arch::clock;
 pub use arch::arch_init;
+pub use arch::arch_boot;
 pub use arch::proc_arch;
 pub use arch::post_init;
-pub use plat::early_console;
-pub use plat::interrupt;
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
 pub use protection::{ProtectionArch, Privilege, InterruptVector};
 pub use trap_entry::TrapEntryArch;
-pub use interrupt::{
-    InterruptController, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
-    NR_IRQ_VECTORS, NR_IRQ_HOOKS,
-};
 pub use exception::{ExceptionArch, FaultContext, RecoveryPoint};
-pub use irq_manager::{IrqManager, IrqError};
 pub use exception_dispatcher::{
     ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal, KernTrapStyle,
 };
@@ -65,7 +63,6 @@ pub use clock::{ClockArch, ClockState, DEFAULT_HZ};
 pub use arch_init::ArchInit;
 pub use proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
 pub use post_init::{PostInitArch, MemoryInitArch, VmPageTableInfo, FreePdeSlots, MAX_FREE_PDE_SLOTS};
-pub use early_console::EarlyConsole;
 
 #[cfg(feature = "mock")]
 pub use proc_arch::MockProcArch;
@@ -113,14 +110,6 @@ pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 
-// ── CurrentInterruptController type aliases ──
-#[cfg(target_arch = "x86_64")]
-pub type CurrentInterruptController = crate::x86_64::interrupt::X86_64InterruptController;
-#[cfg(target_arch = "aarch64")]
-pub type CurrentInterruptController = crate::arm64::interrupt::AArch64InterruptController;
-#[cfg(target_arch = "riscv64")]
-pub type CurrentInterruptController = crate::riscv64::interrupt::Riscv64InterruptController;
-
 // ── CurrentClockArch type aliases ──
 #[cfg(target_arch = "x86_64")]
 pub type CurrentClockArch = crate::x86_64::clock::X86_64ClockArch;
@@ -166,11 +155,3 @@ pub type CurrentMemoryInitArch = crate::x86_64::post_init::X86_64MemoryInitArch;
 pub type CurrentMemoryInitArch = crate::arm64::post_init::AArch64MemoryInitArch;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentMemoryInitArch = crate::riscv64::post_init::Riscv64MemoryInitArch;
-
-// ── CurrentEarlyConsole type aliases ──
-#[cfg(target_arch = "x86_64")]
-pub type CurrentEarlyConsole = crate::x86_64::early_console::X86_64EarlyConsole;
-#[cfg(target_arch = "aarch64")]
-pub type CurrentEarlyConsole = crate::arm64::early_console::AArch64EarlyConsole;
-#[cfg(target_arch = "riscv64")]
-pub type CurrentEarlyConsole = crate::riscv64::early_console::Riscv64EarlyConsole;

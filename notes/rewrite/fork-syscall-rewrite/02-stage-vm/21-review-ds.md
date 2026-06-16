@@ -325,28 +325,28 @@
 
 ## 6. 代码修改项（P0 必须有）
 
-### TODO #1: 修复 heap_prealloc brk 地址计算 ✅ 已修复
+### TODO: 修复 heap_prealloc brk 地址计算 ✅ 已修复
 - **优先级**: P0 | **类型**: 语义偏差 | **状态**: ✅ 已修复
 - **文件**: `os/servers/vm/src/rs.rs`
 - **问题**: `HeapPrealloc` 子请求将 `len` 作为绝对 brk 地址，但 C 源码计算的是 `current_brk + len`
 - **修复方案**: 使用 `active.region_top()` 获取当前 brk，计算 `VirBytes(current_brk.0 + len as u64)`
 - **验证**: ✅ 编译通过，rs::tests 9/9 通过
 
-### TODO #2: 补充 handle_get_refcount 实际引用计数 ✅ 已修复
+### TODO: 补充 handle_get_refcount 实际引用计数 ✅ 已修复
 - **优先级**: P1 | **类型**: 占位符 | **状态**: ✅ 已修复
 - **文件**: `os/servers/vm/src/query.rs` + `os/servers/vm/src/ipc/dispatcher.rs`
 - **问题**: `handle_get_refcount` 硬编码 `Ok(1u8)`
 - **修复方案**: 添加 `frames: &PageFrames` 参数，通过 `vr.physblocks[0]` 查询 `PageFrames` 中对应页的引用计数；dispatcher 同步添加 frames 参数
 - **验证**: ✅ 编译通过，query::tests 8/8 通过
 
-### TODO #3: 补充 handle_info Stats 真实统计 ✅ 已修复
+### TODO: 补充 handle_info Stats 真实统计 ✅ 已修复
 - **优先级**: P1 | **类型**: 占位符 | **状态**: ✅ 已修复
 - **文件**: `os/servers/vm/src/query.rs`
 - **问题**: `free_pages` 和 `largest_contiguous` 硬编码为 0
 - **修复方案**: 调用 `page_alloc.phys_alloc().memstats()` 获取真实的空闲页数和最大连续块
 - **验证**: ✅ 编译通过，query::tests 8/8 通过
 
-### TODO #4: 修正文档行号 ✅ 已修复
+### TODO: 修正文档行号 ✅ 已修复
 - **优先级**: P1 | **类型**: 引用错误 | **状态**: ✅ 已修复
 - **文件**: `21-vm-rs-services.md`
 - **问题**: §2.7 表格中多处行号偏差 >5 行
@@ -357,13 +357,13 @@
   - `rs_memctl_get_prealloc_map`: rs.c:349 → rs.c:329
   - `SF_VM_ROLLBACK`/`SF_VM_NOMMAP`: fsm.h → `minix/include/minix/rs.h`
 
-### TODO #5: 更新 Ch4 代码片段匹配实际实现 ✅ 已修复
+### TODO: 更新 Ch4 代码片段匹配实际实现 ✅ 已修复
 - **优先级**: P1 | **类型**: 设计-代码不一致 | **状态**: ✅ 已修复
 - **文件**: `21-vm-rs-services.md`
 - **问题**: §4.2 和 §4.3 的代码片段与 rs.rs 实际实现不一致
 - **修复方案**: 从 rs.rs 同步更新 Ch4 代码片段，包括参数类型、实现逻辑
 
-### TODO #6: 补充或移除 RsSetPrivError::DataCopyFailed ✅ 已修复
+### TODO: 补充或移除 RsSetPrivError::DataCopyFailed ✅ 已修复
 - **优先级**: P1 | **类型**: 设计-代码不一致 | **状态**: ✅ 已修复
 - **文件**: `21-vm-rs-services.md §3.2`
 - **问题**: 文档声明的 `DataCopyFailed` variant 在代码中不存在
@@ -412,4 +412,4 @@
 
 **代码质量**：rs.rs 和 query.rs 实现了核心路径，no_std 合规、无硬件泄漏、pub 克制。~~但存在一个 P0 语义偏差（heap_prealloc brk 计算）和两个 P1 占位符（get_refcount / info_stats），需要修复后才能用于生产。~~ → **已全部修复**：heap_prealloc brk 地址计算已修正、get_refcount 已接入 PageFrames、info_stats 已接入 memstats()。编译通过，测试通过。
 
-**改进优先级**：~~TODO #1（P0 立即修复）→ TODO #4（P1 行号修正）→ TODO #2, #3（P1 占位符补充）→ TODO #5, #6（P1 设计-代码同步）~~ → **全部已完成**。
+**改进优先级**：~~TODO（P0 立即修复）→ TODO（P1 行号修正）→ TODO, #3（P1 占位符补充）→ TODO, #6（P1 设计-代码同步）~~ → **全部已完成**。

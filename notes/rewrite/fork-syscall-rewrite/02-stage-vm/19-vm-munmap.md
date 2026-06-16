@@ -29,7 +29,8 @@ munmap 和 map_phys 是一对互补操作：
 |------|------|
 | 17-vm-brk | brk 收缩使用 `free_range()`，与 munmap 的 `map_subfree` 逻辑类似 |
 | 20-vm-exit | `map_free_proc()` 释放所有区域，是 munmap 的"全部取消"特例 |
-| 14-phys-region | `pb_unreferenced()` 是 munmap 释放物理页的核心 |
+| 14-cow-mechanism | `pb_unreferenced()` 解除共享引用（§2.2.3），是 munmap 释放物理页的核心 |
+| 10-phys-pagestate | `pb_unreferenced()` 完整源码分析（§2.5），refcount 语义与 PhysBlock 生命周期 |
 | 13-region-avl | AVL 树搜索、插入、删除操作 |
 | 12-vir-region | VirRegion 结构和 split 操作 |
 

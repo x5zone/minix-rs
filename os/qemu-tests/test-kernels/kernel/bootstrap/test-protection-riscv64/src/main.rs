@@ -13,7 +13,7 @@
 use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_arch::riscv64::early_console;
+use minix_plat::riscv64::early_console;
 use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
@@ -120,11 +120,13 @@ pub extern "C" fn rust_main() -> ! {
         kern_virt_base: VirBytes(DRAM_BASE),
         kern_phys_base: PhysBytes(DRAM_BASE),
         kern_size: 0x200_000,
-        free_upper_idx: 0,
+        free_upper_idx: None,
         user_sp: VirBytes(0x0000_003f_ffff_f000),
         kern_stack_top: VirBytes(DRAM_BASE + 0x200_000),
         syscall_entry: VirBytes(DRAM_BASE),
         boot_modules: &[],
+        bootstrap_start: PhysBytes(0),
+        bootstrap_len: 0,
     };
 
     let result = BootPrepareResult {

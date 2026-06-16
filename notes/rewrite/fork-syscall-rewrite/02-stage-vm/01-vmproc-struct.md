@@ -504,13 +504,17 @@ pub(crate) enum AclState {
 
 ```rust
 bitflags! {
-    pub struct VmFlags: u32 {
+    pub struct VmFlags: u8 {
         const IN_USE      = 0x001;  // 槽位包含一个进程
         const EXITING     = 0x002;  // PM 正在清理此进程
         const VM_INSTANCE = 0x010;  // 这是 VM 进程实例
     }
 }
 ```
+
+> **设计变更**: 底层类型从 `u32` 改为 `u8`。VmFlags 仅使用 3 个 bit（0x001, 0x002, 0x010），
+> `u8` 完全足够且节省内存。Minix3 C 代码使用 `int`（32-bit），但 Rust bitflags 允许
+> 精确匹配实际需求。
 
 VM 的进程状态是**多维正交**的，多个状态可以同时存在：
 
@@ -842,25 +846,25 @@ impl Default for VmProc {
 /// Only dropping an IN_USE slot is a bug.
 impl Drop for VmProc {
     fn drop(&mut self) {
-        #[cfg(not(test))]
-        {
-            panic!(
-                "VmProc should never be dropped in production — use in-place cleanup via clear()"
-            );
-        }
-
-        #[cfg(test)]
+        debug_assert!(
+            !self.vm_flags.contains(VmFlags::IN_USE),
+            "VmProc dropped while IN_USE — process table management bug. \
+             Use in-place cleanup via VmProc::clear() or typestate transitions."
+        );
+        // Defensive cleanup: if an IN_USE slot somehow reaches drop in release mode,
+        // clear it to prevent resource leaks. This is a safety net — the typestate
+        // system should prevent this from ever happening.
         if self.vm_flags.contains(VmFlags::IN_USE) {
-            panic!(
-                "VmProc dropped while IN_USE — process table management bug. \
-                 Use in-place cleanup via VmProc::clear() or typestate transitions."
-            );
+            unsafe { self.clear(); }
         }
     }
 }
 ```
 
-> **TODO**: 后续应实现内核专属的 `panic()` 函数（类似 Minix3 的 `panic()`），支持栈展开以打印触发 drop 的文件名和行号。当前 Rust 标准库的 `panic!` 在隐式 drop 场景下无法直接获取调用位置，需要依赖 panic 运行时的栈展开能力。
+> **设计变更**: Drop 实现从 `panic!` 改为 `debug_assert!` + 防御性 `clear()`。
+> 原因：`panic!` 在 release 构建中会导致不可恢复的崩溃，而 `debug_assert!`
+> 仅在 debug 构建中触发。防御性 `clear()` 确保即使在 release 中意外 drop
+> IN_USE 槽位也不会泄漏资源。typestate 系统应在正常流程中阻止这种情况。
 
 **设计说明**:
 

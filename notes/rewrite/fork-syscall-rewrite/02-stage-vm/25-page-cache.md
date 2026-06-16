@@ -430,6 +430,20 @@ Minix3 的 `phys_block.refcount` 手动管理（`addcache` 时 `++`，`rmcache` 
 
 **注意**：C 中 `do_mapcache` 未命中返回 `ENOENT`，但 `ENOENT` 在 VM 错误码中没有直接对应。Rust 中映射为 `InvalidAddress`（`EFAULT`），因为从调用者视角看，请求的缓存地址无效。这是 C→Rust 错误码映射中少数不对齐的情况，需在代码注释中说明。
 
+### 4.6 PFN 反向索引（新增，Minix3 无对应）
+
+Minix3 的 `cached_page` 结构通过指针直接引用 `phys_block`，无需反向查找。Rust PFN 模型下，物理页由 `u32` PFN 标识，需要从 PFN 反查 `CacheKey`（例如 `cache_pagefault` 需要确认某个 PFN 是否在缓存中）。
+
+**设计选择**：在 `PageCache` 中维护 `pfn_index: BTreeMap<u32, CacheKey>` 反向索引。
+
+| 方面 | 说明 |
+|------|------|
+| 语义 | First-insert-wins：同一 PFN 被多个 CacheKey 引用时，索引指向第一个插入的 key |
+| 填充 | `insert()` 使用 `entry(pfn).or_insert_with()` — 仅在 PFN 未被索引时填充 |
+| 清理 | `remove()` 和 `decrease_refcount()` — 仅当索引指向被移除的 key 时才清除（防御性：碰撞时不误删） |
+| 复杂度 | O(log n) 查找，替代原来的 O(n) 线性扫描 |
+| 测试 | 3 个测试覆盖：first-insert-wins / remove 清理 / decrease_refcount 清理 |
+
 ---
 
 ## 5. Rust 实现
@@ -456,6 +470,15 @@ pub(crate) struct PageCacheEntry {
 
 pub(crate) struct PageCache {
     entries: BTreeMap<CacheKey, PageCacheEntry>,
+    /// Reverse index: PFN → first CacheKey that mapped to that PFN.
+    ///
+    /// `find_by_pfn` was O(n) — for caches with 100K+ entries
+    /// (typical 1GB+ working set with 4K pages), this is a hot-path
+    /// bottleneck on each page-in. Maintained as a side index:
+    /// `insert` populates it (only if absent — first-insert-wins
+    /// semantics matches the previous O(n) linear scan that returned
+    /// the first match), `remove` cleans it on actual removal.
+    pfn_index: BTreeMap<u32, CacheKey>,
     lru: Vec<CacheKey>,
     total_cached: u64,
 }
@@ -469,6 +492,7 @@ pub(crate) struct PageCache {
 | `cached_page.page` | `PageCacheEntry.pfn` | 物理块指针 → PFN 索引 |
 | `cached_page.older`/`newer` | `lru: Vec<CacheKey>` | 双向链表 → Vec（简化版） |
 | `cached_pages` | `total_cached: u64` | 缓存页计数 |
+| （无对应） | `pfn_index: BTreeMap<u32, CacheKey>` | O(1) PFN 反向查找（新增，见 §4.6） |
 
 ### 5.2 核心操作
 
@@ -477,6 +501,7 @@ impl PageCache {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
+            pfn_index: BTreeMap::new(),
             lru: Vec::new(),
             total_cached: 0,
         }
@@ -496,24 +521,73 @@ impl PageCache {
 
     /// 对应 Minix3 的 addcache。
     /// 将缓存页加入索引，同时增加 PageFrames 中的引用计数。
+    /// First-insert-wins: pfn_index 只在 PFN 未被索引时填充。
     pub fn insert(&mut self, key: CacheKey, pfn: u32, frames: &mut PageFrames) {
         frames.addcache(pfn);
-        self.entries.insert(key.clone(), PageCacheEntry { pfn, refcount: 1 });
-        self.lru.push(key);
+        self.pfn_index.entry(pfn).or_insert_with(|| key.clone());
+        self.lru.push(key.clone());
+        self.entries.insert(key, PageCacheEntry { pfn, refcount: 1 });
         self.total_cached += 1;
     }
 
     /// 对应 Minix3 的 rmcache。
     /// 从索引中移除缓存页，同时减少 PageFrames 中的引用计数。
+    /// 清理 pfn_index：仅当索引指向被移除的 key 时才清除。
     pub fn remove(&mut self, key: &CacheKey, frames: &mut PageFrames) -> Option<u32> {
         if let Some(entry) = self.entries.remove(key) {
             frames.rmcache(entry.pfn);
             self.lru.retain(|k| k != key);
             self.total_cached = self.total_cached.saturating_sub(1);
+            if let Some(indexed) = self.pfn_index.get(&entry.pfn) {
+                if indexed == key {
+                    self.pfn_index.remove(&entry.pfn);
+                }
+            }
             Some(entry.pfn)
         } else {
             None
         }
+    }
+
+    /// 增加缓存页的引用计数。
+    pub fn increase_refcount(&mut self, key: &CacheKey) -> bool {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.refcount = entry.refcount.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 减少缓存页的引用计数。refcount 降为 0 时自动移除并清理 pfn_index。
+    pub fn decrease_refcount(&mut self, key: &CacheKey, frames: &mut PageFrames) -> Option<u16> {
+        if let Some(entry) = self.entries.get_mut(key) {
+            if entry.refcount > 0 {
+                entry.refcount -= 1;
+            }
+            if entry.refcount == 0 {
+                let pfn = entry.pfn;
+                frames.rmcache(pfn);
+                self.entries.remove(key);
+                self.lru.retain(|k| k != key);
+                self.total_cached = self.total_cached.saturating_sub(1);
+                if let Some(indexed) = self.pfn_index.get(&pfn) {
+                    if indexed == key {
+                        self.pfn_index.remove(&pfn);
+                    }
+                }
+                return Some(0);
+            }
+            Some(entry.refcount)
+        } else {
+            None
+        }
+    }
+
+    /// O(1) reverse-lookup by PFN (新增，Minix3 无对应)。
+    /// 返回 first-insert-wins 的 CacheKey。
+    pub fn find_by_pfn(&self, pfn: u32) -> Option<CacheKey> {
+        self.pfn_index.get(&pfn).cloned()
     }
 
     /// 对应 Minix3 的 cache_freepages。
@@ -610,8 +684,8 @@ impl MessageDispatcher {
     /// 将匿名内存标记为缓存并加入 PageCache 索引。
     pub(crate) fn dispatch_setcache(
         table: &VmProcTable,
-        cache: &mut PageCache,
         frames: &mut PageFrames,
+        cache: &mut PageCache,
         request: VmCacheIn,
     ) -> VmReply {
         // 1. 验证参数

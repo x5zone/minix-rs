@@ -437,6 +437,31 @@ void arch_boot_proc(struct boot_image *ip, struct proc *rp)
 
 6. **内存回收**：加载完成后，VM 的 boot module 物理内存被标记为空闲（`add_memmap`）。
 
+#### libexec_load_elf() C 源码分析（`libexec/exec_elf.c:122-318`）
+
+`libexec_load_elf()` 是 Minix3 的通用 ELF 加载框架，用于内核启动和用户态 `exec()`。核心流程：
+
+1. **ELF 头校验**（`elf_unpack` → `check_header` → `elf_sane`）：
+   - 验证 ELF magic（`\x7fELF`）、数据编码、版本号
+   - 拒绝动态链接 ELF（`elf_has_interpreter` 检测 PT_INTERP 段）
+   - 程序头偏移必须在第一个扇区内（`e_phoff <= 512`）
+
+2. **PT_LOAD 段遍历**（`for i in 0..e_phnum`）：
+   - 跳过非 PT_LOAD 或 `p_memsz == 0` 的段
+   - 页对齐计算：`vaddr -= page_offset; foffset -= page_offset`
+   - 对齐检查：`p_vaddr % PAGE_SIZE == p_offset % PAGE_SIZE`（否则禁用 mmap）
+   - PF_R/PF_W/PF_X 标志映射为 `mmap_prot`
+
+3. **内存分配策略**（两种路径）：
+   - **mmap 路径**（`execi->memmap`）：优先尝试 mmap 映射文件段，剩余部分用 `allocmem_ondemand`
+   - **allocmem 路径**（`allocmem_prealloc_junk`）：分配物理页 → `copymem` 复制段数据 → `clearmem` 清零页内未使用部分
+
+4. **栈分配**：`allocmem_ondemand(stacklow, stack_size)` 在最后分配
+
+5. **返回值**：`execi->pc = hdr->e_entry + load_offset; execi->load_base = startv`
+
+**Rust 对应**：`minix-elf::segment_iter()` 替代 `elf_unpack` + PT_LOAD 遍历；`Paging::map()` 替代 `pg_map(PG_ALLOCATEME)`；直接 `copy_nonoverlapping` 替代 `copymem` 回调。
+
 #### aarch64（`protect.c:115-183`）
 
 与 x86-64 版本几乎完全相同，唯一的差异在 `arch_proc_init`：

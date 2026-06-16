@@ -13,7 +13,6 @@
 //! as bit positions, eliminating duplicate definitions.
 
 use minix_types::{Endpoint, VmError};
-use crate::vmproc::ActiveProc;
 
 use minix_types::{
     VM_RQ_BASE, VM_EXIT, VM_FORK, VM_BRK, VM_EXEC_NEWMEM, VM_WILLEXIT,
@@ -90,18 +89,30 @@ impl AclState {
     ///
     /// Corresponds to Minix3's `acl_check()`.
     /// Returns `Ok(())` if allowed, `Err(VmError::PermissionDenied)` if not.
-    pub(crate) fn acl_check(&self, proc: &ActiveProc<'_>, call: u32) -> Result<(), VmError> {
-        if proc.endpoint() == Endpoint::VM {
+    ///
+    /// Takes `endpoint` rather than `&ActiveProc` — ACL checking only depends
+    /// on the caller's endpoint (to exempt VM itself) and the call number.
+    /// This decouples ACL logic from the process typestate hierarchy.
+    pub(crate) fn acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmError> {
+        if endpoint == Endpoint::VM {
             return Ok(());
         }
 
         match self {
             AclState::Uninitialized => {
-                if proc.endpoint() != Endpoint::RS {
-                    // TODO: no logging solution in no_std yet; add later.
-                    // Minix3: printf("VM: calling process %u has no ACL!\n", vmp->vm_endpoint);
+                // SECURITY FIX: Restrict to DEFAULT calls instead of allowing all.
+                // Minix3's NO_ACL allows all calls ("for now" — acl.c:44-53), but
+                // this is a known security relaxation. DEFAULT covers
+                // VM_EXIT/VM_FORK/VM_BRK/VM_EXEC_NEWMEM/VM_WILLEXIT/VM_MMAP/
+                // VM_MUNMAP — sufficient for early boot (RS needs VM_BRK) and
+                // user processes. Privileged calls (VM_MAP_PHYS, VM_RS_SET_PRIV,
+                // etc.) require explicit System(AclMask) assignment via acl_set.
+                let call_flag = AclMask::from_bits_truncate(1u64 << call);
+                if AclMask::DEFAULT.contains(call_flag) {
+                    Ok(())
+                } else {
+                    Err(VmError::PermissionDenied)
                 }
-                Ok(())
             }
             AclState::Default => {
                 let call_flag = AclMask::from_bits_truncate(1u64 << call);
@@ -181,11 +192,9 @@ impl AclState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::UserSlot;
 
-    fn get_active_proc(slot: UserSlot) -> crate::vmproc::ActiveProc<'static> {
-        crate::vmproc::test_utils::get_active_vmproc(slot)
-    }
+    /// A non-VM endpoint for testing normal ACL checks.
+    const USER_EP: Endpoint = Endpoint(100);
 
     #[test]
     fn test_acl_state_default() {
@@ -195,50 +204,54 @@ mod tests {
     #[test]
     fn test_acl_check_uninitialized() {
         let state = AclState::Uninitialized;
-        let proc = get_active_proc(UserSlot::new(20));
 
-        assert!(state.acl_check(&proc, 0).is_ok());
-        assert!(state.acl_check(&proc, 5).is_ok());
-        assert!(state.acl_check(&proc, 100).is_ok());
+        // DEFAULT calls are allowed
+        assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_BRK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MUNMAP - VM_RQ_BASE).is_ok());
+
+        // Non-DEFAULT calls are denied (security fix: default-deny policy)
+        assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_RS_SET_PRIV - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_err());
     }
 
     #[test]
     fn test_acl_check_vm_proc() {
         let state = AclState::Default;
-        let mut proc = get_active_proc(UserSlot::new(21));
-        proc.set_endpoint(Endpoint::VM);
 
-        assert!(state.acl_check(&proc, 0).is_ok());
-        assert!(state.acl_check(&proc, 100).is_ok());
+        // VM endpoint always allowed
+        assert!(state.acl_check(Endpoint::VM, 0).is_ok());
+        assert!(state.acl_check(Endpoint::VM, 100).is_ok());
     }
 
     #[test]
     fn test_acl_check_default() {
         let state = AclState::Default;
-        let proc = get_active_proc(UserSlot::new(22));
 
-        assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_BRK - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_MUNMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_BRK - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MUNMAP - VM_RQ_BASE).is_ok());
 
-        assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_err());
-        assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_err());
     }
 
     #[test]
     fn test_acl_check_system() {
         let mask = AclMask::VM_MMAP | AclMask::VM_MAP_PHYS | AclMask::VM_RS_PREPARE;
         let state = AclState::System(mask);
-        let proc = get_active_proc(UserSlot::new(23));
 
-        assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_ok());
-        assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_ok());
+        assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_ok());
 
-        assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_err());
-        assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_err());
+        assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_err());
     }
 
     #[test]

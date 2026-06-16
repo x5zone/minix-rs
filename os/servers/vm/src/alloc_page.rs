@@ -104,16 +104,42 @@ impl PfnAllocator for VmPageAllocator {
 mod tests {
     use super::*;
     use crate::phys_mem::{BitmapAllocator, BootMemRegion, PhysAllocType, bytes_to_clicks, CLICK_SIZE};
-    use crate::direct_map::vm_phys_to_virt;
+    use crate::direct_map::tests::with_custom_mock_base;
 
-    fn make_test_phys_alloc(available_pages: usize) -> PhysAlloc {
-        let mock_phys_size = available_pages * CLICK_SIZE + CLICK_SIZE;
+    /// One-time mock physical memory setup for alloc_page tests.
+    /// Uses a leaked static buffer to avoid parallel test races on mock_vm_base.
+    static ALLOC_PHYS_INIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static ALLOC_MOCK_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+    /// Run a test closure with the alloc_page mock base set correctly.
+    /// Uses the global MOCK_BASE_MUTEX to prevent parallel test interference.
+    fn with_alloc_mock_base<F: FnOnce()>(f: F) {
+        // Ensure mock physical memory is initialized before reading the base.
+        // Use a large enough default so all tests fit in the single allocation.
+        ensure_mock_phys_init(512);
+        let base = ALLOC_MOCK_BASE.load(core::sync::atomic::Ordering::SeqCst);
+        with_custom_mock_base(base, f);
+    }
+
+    fn ensure_mock_phys_init(available_pages: usize) {
+        use core::sync::atomic::Ordering;
+        if ALLOC_PHYS_INIT.swap(true, Ordering::SeqCst) {
+            return; // already initialized
+        }
+        // Always allocate enough for the largest test (512 pages)
+        let alloc_pages = 512usize.max(available_pages);
+        let mock_phys_size = alloc_pages * CLICK_SIZE + CLICK_SIZE;
         let mock_phys: alloc::vec::Vec<u8> = alloc::vec![0u8; mock_phys_size];
         let mock_phys_leaked = alloc::boxed::Box::leak(mock_phys.into_boxed_slice());
 
         let raw_base = mock_phys_leaked.as_ptr() as usize;
         let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
         minix_arch::direct_map::set_mock_vm_base(aligned_base as u64);
+        ALLOC_MOCK_BASE.store(aligned_base as u64, Ordering::SeqCst);
+    }
+
+    fn make_test_phys_alloc(available_pages: usize) -> PhysAlloc {
+        ensure_mock_phys_init(available_pages);
 
         let base = 0usize;
         let size = available_pages * CLICK_SIZE;
@@ -123,9 +149,12 @@ mod tests {
         let meta_pages = bytes_to_clicks(meta_size);
 
         let meta_phys_base = base;
-        let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
+        // Use the stored mock base directly instead of vm_phys_to_virt,
+        // which depends on the global mock_vm_base that may be clobbered by
+        // parallel tests.
+        let mock_base = ALLOC_MOCK_BASE.load(core::sync::atomic::Ordering::SeqCst);
         let metadata = unsafe {
-            core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size)
+            core::slice::from_raw_parts_mut((mock_base + meta_phys_base as u64) as *mut u8, meta_size)
         };
 
         let adjusted_base = meta_phys_base + meta_pages * CLICK_SIZE;
@@ -137,52 +166,60 @@ mod tests {
 
     #[test]
     fn test_alloc_page() {
-        let phys_alloc = make_test_phys_alloc(256);
-        let mut alloc = VmPageAllocator::new(phys_alloc);
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(256);
+            let mut alloc = VmPageAllocator::new(phys_alloc);
 
-        let (v1, p1) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
-        assert_eq!(v1.0 - p1.as_u64(), minix_arch::direct_map::mock_vm_base());
+            let (v1, p1) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
+            assert_eq!(v1.0 - p1.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
 
-        let (v2, p2) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
-        assert_ne!(p1.as_u64(), p2.as_u64());
-        assert_eq!(v2.0 - p2.as_u64(), minix_arch::direct_map::mock_vm_base());
+            let (v2, p2) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
+            assert_ne!(p1.as_u64(), p2.as_u64());
+            assert_eq!(v2.0 - p2.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
+        });
     }
 
     #[test]
     fn test_alloc_phys_and_free() {
-        let phys_alloc = make_test_phys_alloc(256);
-        let mut alloc = VmPageAllocator::new(phys_alloc);
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(256);
+            let mut alloc = VmPageAllocator::new(phys_alloc);
 
-        let p1 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
-        let p2 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
-        assert_ne!(p1, p2);
+            let p1 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+            let p2 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+            assert_ne!(p1, p2);
 
-        alloc.free_page(p1);
-        let p3 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
-        assert_eq!(p3, p1);
-        assert_ne!(p3, p2);
+            alloc.free_page(p1);
+            let p3 = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+            assert_eq!(p3, p1);
+            assert_ne!(p3, p2);
+        });
     }
 
     #[test]
     fn test_total_pages() {
-        let phys_alloc = make_test_phys_alloc(10);
-        let alloc = VmPageAllocator::new(phys_alloc);
-        assert_eq!(alloc.total_pages(), 10);
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(10);
+            let alloc = VmPageAllocator::new(phys_alloc);
+            assert_eq!(alloc.total_pages(), 10);
+        });
     }
 
     #[test]
     fn test_alloc_pages_multi() {
-        let phys_alloc = make_test_phys_alloc(256);
-        let mut alloc = VmPageAllocator::new(phys_alloc);
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(256);
+            let mut alloc = VmPageAllocator::new(phys_alloc);
 
-        let (v1, p1) = alloc.alloc_pages(4, PageAllocFlags::empty()).unwrap();
-        assert_eq!(v1.0 - p1.as_u64(), minix_arch::direct_map::mock_vm_base());
-        assert_eq!(crate::direct_map::virt_to_phys(v1), p1);
-        assert_eq!(crate::direct_map::virt_to_phys(VirBytes(v1.0 + 3 * CLICK_SIZE as u64)), AlignedPhysBytes::from_page_index(p1.page_index() + 3));
+            let (v1, p1) = alloc.alloc_pages(4, PageAllocFlags::empty()).unwrap();
+            assert_eq!(v1.0 - p1.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
+            assert_eq!(crate::direct_map::virt_to_phys(v1), p1);
+            assert_eq!(crate::direct_map::virt_to_phys(VirBytes(v1.0 + 3 * CLICK_SIZE as u64)), AlignedPhysBytes::from_page_index(p1.page_index() + 3));
 
-        let (v2, p2) = alloc.alloc_pages(2, PageAllocFlags::empty()).unwrap();
-        assert_ne!(p1, p2);
-        assert_eq!(crate::direct_map::virt_to_phys(v2), p2);
+            let (v2, p2) = alloc.alloc_pages(2, PageAllocFlags::empty()).unwrap();
+            assert_ne!(p1, p2);
+            assert_eq!(crate::direct_map::virt_to_phys(v2), p2);
+        });
     }
 
     #[test]

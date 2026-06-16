@@ -2,7 +2,7 @@
 //!
 //! Implements core logic of exec system call.
 
-use minix_ipc::Endpoint;
+use minix_types::Endpoint;
 
 /// Executes a new program.
 ///

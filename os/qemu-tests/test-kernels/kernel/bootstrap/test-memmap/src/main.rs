@@ -9,7 +9,7 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::x86_64::early_console;
+use minix_plat::x86_64::early_console;
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 

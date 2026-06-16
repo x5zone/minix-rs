@@ -1,8 +1,8 @@
 # 99-global-concepts: 系统全局概念
 
-## TODO: Endpoint Redesign 思考（待将来移入 redesign 部分）
+## Endpoint 协议设计
 
-以下内容是关于 Endpoint 协议设计的深度思考，包括与 GPT 的讨论中产生的关键洞察、设计权衡、以及未来 redesign 方向。保留所有细节，避免未来回顾时丢失上下文。
+本节梳理 Endpoint 协议设计的核心洞察、设计权衡、以及潜在的未来 redesign 方向。结论部分（§4）作为当前实现的权威依据，前置的探索（§1–§3）记录被否决的方案及其原因，方便未来回顾时理解为何不做其他选择。
 
 ---
 
@@ -637,7 +637,7 @@ ABI 层：EndpointRaw(i32) —— 完全对齐 Minix3
 
 #### 8.5 完整 Redesign 参考
 
-详见 [endpoint_redesign.md](../../redesign/endpoint_redesign.md)，包含：
+详见 [endpoint_redesign.md](../../../redesign/endpoint_redesign.md)，包含：
 - 完整的类型层次设计
 - `ProcessEndpoint` / `KernelTask` / `SpecialEndpoint` 分离
 - Capability 系统的自然延伸
@@ -649,7 +649,7 @@ ABI 层：EndpointRaw(i32) —— 完全对齐 Minix3
 
 - [系统核心概念 README](../../concepts/README.md) - 概念文档总览
 - [Endpoint 协议详解](../../concepts/endpoint.md) - 完整的协议规范
-- [Endpoint Redesign 方案](../../redesign/endpoint_redesign.md) - 类型驱动的现代设计
+- [Endpoint Redesign 方案](../../../redesign/endpoint_redesign.md) - 类型驱动的现代设计
 
 ---
 

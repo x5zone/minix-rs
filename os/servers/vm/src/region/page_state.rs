@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use minix_types::{PhysBytes, VirBytes};
 use crate::memtype::MemType;
 
-pub const PAGE_SIZE: u64 = 4096;
+pub(crate) const PAGE_SIZE: u64 = 4096;
 
 pub(crate) trait PfnAllocator {
     fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError>;
@@ -29,6 +29,10 @@ bitflags::bitflags! {
     pub(crate) struct PageFlags: u8 {
         const IN_CACHE   = 0x01;
         const PENDING_IO = 0x02;
+        /// Page is CoW (Copy-on-Write): mapped read-only, write triggers page fault.
+        /// Set by `prepare_cow()` when refcount > 1 after fork.
+        /// Equivalent to Minix3's `~PT_W` flag applied during `map_copy_region()`.
+        const COW        = 0x04;
     }
 }
 
@@ -72,7 +76,7 @@ pub(crate) struct PageSlot {
     pub(crate) memtype: Option<&'static dyn MemType>,
 }
 
-pub const PFN_NONE: u32 = u32::MAX;
+pub(crate) const PFN_NONE: u32 = u32::MAX;
 
 impl PartialEq for PageSlot {
     fn eq(&self, other: &Self) -> bool {
@@ -83,6 +87,17 @@ impl PartialEq for PageSlot {
 impl Eq for PageSlot {}
 
 impl PageSlot {
+    /// Sentinel value representing an unmapped (empty) page slot.
+    /// Uses `PFN_NONE` as the pfn sentinel, with zero offset and no memtype.
+    /// This avoids the `Option<PageSlot>` overhead (4+ bytes per slot for the
+    /// discriminant) while preserving the same semantics: `is_mapped()` returns
+    /// false for `EMPTY`, true for any real mapping.
+    pub const EMPTY: Self = Self {
+        pfn: PFN_NONE,
+        offset: VirBytes(0),
+        memtype: None,
+    };
+
     pub fn new(pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType>) -> Self {
         Self { pfn, offset, memtype }
     }
@@ -168,14 +183,10 @@ impl PageFrames {
         }
     }
 
-    // TODO: Implement verify_refcounts (documented in 10-phys-pagestate.md Ch3§3.3.5).
-    // This function should traverse all processes' VirRegions, count per-PFN references,
-    // and compare with PageFrames.refcount. Equivalent to Minix3's map_sanitycheck().
-    // Cannot be implemented in page_state.rs because it needs VmProcTable (vmproc module).
-    // Suggested location: a top-level function in vm_server.rs or a dedicated sanity module,
-    // with signature like:
-    //   fn verify_refcounts(frames: &PageFrames, table: &VmProcTable) -> Result<(), Vec<(u32, u16, u16)>>
-    // Returns Err with (pfn, expected, actual) for each mismatch.
+    // verify_refcounts is implemented in sanity.rs module.
+    // It traverses all processes' VirRegions via VmProcTable::for_each_active_region(),
+    // counts per-PFN references, and compares with PageFrames.refcount.
+    // Equivalent to Minix3's map_sanitycheck() (region.c:168-261).
 }
 
 #[cfg(test)]

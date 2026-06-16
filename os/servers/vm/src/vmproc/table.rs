@@ -9,8 +9,22 @@
 //!                           ActiveProc ──[force_clear]──────────────────────────> EmptySlot
 //! ```
 
-use minix_types::{AssumeSyncCell, Endpoint, NR_PROCS, UserSlot};
+use minix_types::{AssumeSyncCell, Endpoint, NR_PROCS, UserSlot, VirBytes};
 use super::{VmFlags, vmproc::VmProc, ActiveProc, ExitingProc, EmptySlot};
+use crate::region::VirRegion;
+
+/// Read-only snapshot of a region's key fields.
+///
+/// Used by cross-process operations (e.g. `dispatch_remap`) to capture
+/// source region info without holding a typestate view, so the destination
+/// process can be modified independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RegionSnapshot {
+    pub vaddr: VirBytes,
+    pub length: VirBytes,
+    pub id: i32,
+    pub remaps: i32,
+}
 
 /// Error type for endpoint validation.
 ///
@@ -58,7 +72,7 @@ impl VmProcTable {
     /// Caller must ensure no other references to this slot are active.
     /// This is intended for test cleanup only.
     #[cfg(test)]
-    pub(crate) unsafe fn reset_slot(&self, slot: UserSlot) {
+    pub(crate) unsafe fn reset_slot(&self, slot: UserSlot) { unsafe {
         if let Some(proc) = self.get_slot_mut(slot) {
             // Clear the slot first to avoid Drop panic on IN_USE processes
             if proc.vm_flags.contains(VmFlags::IN_USE) {
@@ -67,7 +81,7 @@ impl VmProcTable {
             // Use ptr::write to avoid triggering Drop on the old value
             core::ptr::write(proc, VmProc::vacant_with_slot(slot));
         }
-    }
+    }}
 
     // ---- Internal Helpers ----
 
@@ -89,6 +103,9 @@ impl VmProcTable {
     /// Even in single-threaded contexts, aliasing a mutable reference is UB.
     unsafe fn get_slot(&self, slot: UserSlot) -> Option<&VmProc> {
         let index = Self::check_slot(slot)?;
+        // SAFETY: Caller guarantees no mutable references to this slot are active
+        // (documented in # Safety section). Index bounds checked by check_slot().
+        // Single-threaded VM ensures no concurrent access.
         Some(unsafe { &*self.slots[index].get() })
     }
 
@@ -105,6 +122,13 @@ impl VmProcTable {
     #[allow(clippy::mut_from_ref)]
     pub(super) unsafe fn get_slot_mut(&self, slot: UserSlot) -> Option<&mut VmProc> {
         let index = Self::check_slot(slot)?;
+        // SAFETY: The caller must ensure no other reference to this slot is active.
+        // The typestate system (EmptySlot/ActiveProc/ExitingProc) enforces this at
+        // the API level — only one view can exist per slot at a time. The single-
+        // threaded VM event loop model guarantees no concurrent access from other
+        // threads. The `#[allow(clippy::mut_from_ref)]` is acceptable because
+        // `&self` is used only to locate the slot, and the typestate views provide
+        // exclusive access semantics.
         Some(unsafe { &mut *self.slots[index].get() })
     }
 
@@ -115,6 +139,9 @@ impl VmProcTable {
     /// Use this to initialize a new process in the slot.
     /// Sets the vm_slot field to the given value (Minix3's `vm_slot = i`).
     pub(crate) fn get_empty(&self, slot: UserSlot) -> Option<EmptySlot<'_>> {
+        // SAFETY: get_slot_mut requires no other references to this slot.
+        // The returned EmptySlot holds an exclusive &mut VmProc, preventing
+        // concurrent access. Single-threaded VM ensures no cross-CPU access.
         let proc = unsafe { self.get_slot_mut(slot)? };
         if !proc.vm_flags.contains(VmFlags::IN_USE) {
             proc.vm_slot = slot;
@@ -147,6 +174,9 @@ impl VmProcTable {
     ///
     /// Returns `Some` only if the process is active (IN_USE and not EXITING).
     pub(crate) fn get_active(&self, slot: UserSlot) -> Option<ActiveProc<'_>> {
+        // SAFETY: get_slot_mut requires no other references to this slot.
+        // The returned ActiveProc holds an exclusive &mut VmProc, preventing
+        // concurrent access. Single-threaded VM ensures no cross-CPU access.
         let proc = unsafe { self.get_slot_mut(slot)? };
         let vm_flags = proc.vm_flags;
         if vm_flags.contains(VmFlags::IN_USE) && !vm_flags.contains(VmFlags::EXITING) {
@@ -160,6 +190,9 @@ impl VmProcTable {
     ///
     /// Returns `Some` only if the process is exiting (IN_USE and EXITING).
     pub(crate) fn get_exiting(&self, slot: UserSlot) -> Option<ExitingProc<'_>> {
+        // SAFETY: get_slot_mut requires no other references to this slot.
+        // The returned ExitingProc holds an exclusive &mut VmProc, preventing
+        // concurrent access. Single-threaded VM ensures no cross-CPU access.
         let proc = unsafe { self.get_slot_mut(slot)? };
         let vm_flags = proc.vm_flags;
         if vm_flags.contains(VmFlags::IN_USE) && vm_flags.contains(VmFlags::EXITING) {
@@ -174,6 +207,8 @@ impl VmProcTable {
     /// Checks if the slot is in use.
     #[inline]
     pub(crate) fn is_slot_in_use(&self, slot: UserSlot) -> bool {
+        // SAFETY: get_slot returns &VmProc (shared reference). No mutation occurs.
+        // Single-threaded VM ensures no concurrent modification.
         unsafe { self.get_slot(slot) }
             .map(|proc| proc.vm_flags.contains(VmFlags::IN_USE))
             .unwrap_or(false)
@@ -186,6 +221,8 @@ impl VmProcTable {
     /// by another operation before you use it.
     pub(crate) fn find_free_slot(&self) -> Option<UserSlot> {
         for i in 0..VM_PROC_COUNT {
+            // SAFETY: Read-only access to check IN_USE flag. No mutation.
+            // Single-threaded VM ensures no concurrent modification.
             let proc = unsafe { &*self.slots[i].get() };
             if !proc.vm_flags.contains(VmFlags::IN_USE) {
                 return Some(UserSlot::new(i));
@@ -198,6 +235,8 @@ impl VmProcTable {
     pub(crate) fn used_count(&self) -> usize {
         (0..VM_PROC_COUNT)
             .filter(|&i| {
+                // SAFETY: Read-only access to check IN_USE flag. No mutation.
+                // Single-threaded VM ensures no concurrent modification.
                 let proc = unsafe { &*self.slots[i].get() };
                 proc.vm_flags.contains(VmFlags::IN_USE)
             })
@@ -234,6 +273,9 @@ impl VmProcTable {
             return Err(EndpointError::InvalidSlot);
         }
         let slot_idx = UserSlot(vm_slot as usize);
+        // SAFETY: Read-only access to check endpoint and IN_USE flag.
+        // slot_idx is bounds-checked above. Single-threaded VM ensures
+        // no concurrent modification.
         let proc = unsafe { &*self.slots[slot_idx.get()].get() };
 
         if proc.vm_endpoint != endpoint {
@@ -245,6 +287,41 @@ impl VmProcTable {
         }
 
         Ok(slot_idx)
+    }
+
+    /// Iterates over all active processes' memory regions.
+    ///
+    /// Calls `f(slot, endpoint, region)` for each `VirRegion` of each
+    /// IN_USE process that has `vm_regions_initialized == true`.
+    /// Skips processes without initialized regions.
+    ///
+    /// This is the safe external interface for region traversal,
+    /// used by `verify_refcounts` and similar sanity checks.
+    /// It does NOT expose raw `&VmProc`, preserving the typestate contract.
+    ///
+    /// Corresponds to Minix3's `ALLREGIONS` macro in `region.c:178-192`.
+    pub(crate) fn for_each_active_region<F>(&self, mut f: F)
+    where
+        F: FnMut(UserSlot, Endpoint, &VirRegion),
+    {
+        for i in 0..VM_PROC_COUNT {
+            // SAFETY: Read-only access. Index is bounds-checked.
+            // Single-threaded VM ensures no concurrent mutation.
+            let proc = unsafe { &*self.slots[i].get() };
+            if !proc.vm_flags.contains(VmFlags::IN_USE) {
+                continue;
+            }
+            if !proc.vm_regions_initialized {
+                continue;
+            }
+            // SAFETY: vm_regions_initialized is true.
+            let regions = unsafe { proc.vm_regions.assume_init_ref() };
+            let slot = proc.vm_slot;
+            let endpoint = proc.vm_endpoint;
+            for region in regions.iter() {
+                f(slot, endpoint, region);
+            }
+        }
     }
 
     /// Iterates over all used processes immutably.
@@ -278,6 +355,73 @@ impl VmProcTable {
             index: 0,
         }
     }
+
+    /// Looks up a region in the specified process by virtual address.
+    ///
+    /// Returns a snapshot of the region's key fields (vaddr, length, id, remaps)
+    /// without holding any typestate view. This is safe because:
+    /// 1. Read-only access via `AssumeSyncCell` (no mutable reference created)
+    /// 2. Single-threaded VM ensures no concurrent mutation during the read
+    /// 3. The returned `RegionSnapshot` is a Copy type — it borrows nothing
+    ///
+    /// Returns `None` if the process is not active, regions not initialized,
+    /// or no region contains the given address.
+    ///
+    /// Used by `dispatch_remap` to read source process region info before
+    /// modifying the destination process (which requires `&mut ActiveProc`).
+    pub(crate) fn find_region_snapshot(&self, slot: UserSlot, addr: VirBytes) -> Option<RegionSnapshot> {
+        // SAFETY: Read-only access. Index is bounds-checked by slot.
+        // Single-threaded VM ensures no concurrent mutation.
+        let proc = unsafe { &*self.slots[slot.get()].get() };
+        if !proc.vm_flags.contains(VmFlags::IN_USE) {
+            return None;
+        }
+        if !proc.vm_regions_initialized {
+            return None;
+        }
+        // SAFETY: vm_regions_initialized is true.
+        let regions = unsafe { proc.vm_regions.assume_init_ref() };
+        let region = regions.find(addr)?;
+        Some(RegionSnapshot {
+            vaddr: region.vaddr,
+            length: region.length,
+            id: region.id,
+            remaps: region.remaps,
+        })
+    }
+
+    /// Increments the remaps counter of the region at `addr` in process `slot`.
+    ///
+    /// This is a targeted mutation that does not consume a typestate view,
+    /// allowing the caller to hold an `ActiveProc` for a *different* slot
+    /// simultaneously. Safety relies on:
+    /// 1. `AssumeSyncCell` allows independent access to different slots
+    /// 2. Single-threaded VM ensures no concurrent access
+    /// 3. The caller must ensure `slot` is not the same slot as any
+    ///    currently-held `ActiveProc`
+    ///
+    /// Returns `Ok(())` if the region was found and updated.
+    /// Returns `Err(())` if the process/region was not found.
+    pub(crate) fn increment_region_remaps(&self, slot: UserSlot, addr: VirBytes) -> Result<(), ()> {
+        // SAFETY: We access a different slot than any currently-held ActiveProc.
+        // AssumeSyncCell allows independent access to different slots.
+        // Single-threaded VM ensures no concurrent access.
+        let proc = unsafe { &mut *self.slots[slot.get()].get() };
+        if !proc.vm_flags.contains(VmFlags::IN_USE) {
+            return Err(());
+        }
+        if !proc.vm_regions_initialized {
+            return Err(());
+        }
+        // SAFETY: vm_regions_initialized is true.
+        let regions = unsafe { proc.vm_regions.assume_init_mut() };
+        if let Some(region) = regions.get_mut(&addr) {
+            region.remaps = region.remaps.saturating_add(1);
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
 }
 
 /// Iterator over the process table.
@@ -303,6 +447,8 @@ impl<'a> Iterator for VmProcIter<'a> {
         while self.index < VM_PROC_COUNT {
             let i = self.index;
             self.index += 1;
+            // SAFETY: Read-only access via shared reference. Index is bounds-checked
+            // by the while loop condition. Single-threaded VM ensures no concurrent mutation.
             let proc = unsafe { &*self.table.slots[i].get() };
             if proc.vm_flags.contains(VmFlags::IN_USE) {
                 return Some(proc);

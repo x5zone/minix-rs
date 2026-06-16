@@ -1,14 +1,45 @@
 //! Minix-RS System Call Library.
 //!
 //! System call wrappers for user-space programs.
+//!
+//! # STUB NOTICE
+//!
+//! This crate is a **stub** — most functions are `todo!()` and will panic
+//! if called. It defines the intended API but is not yet functional.
 
 #![no_std]
 
-use minix_ipc::{Endpoint, Message, SyscallNum};
+use minix_types::{Endpoint, Message, IpcError};
+
 pub use minix_types::{Gid, Pid, Uid};
 
 /// File descriptor.
 pub type Fd = i32;
+
+// ── IPC system calls ──
+
+/// Sends a message.
+pub fn send(dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
+    todo!("send implementation")
+}
+
+/// Receives a message.
+pub fn receive(src: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
+    todo!("receive implementation")
+}
+
+/// Sends and receives (synchronous call).
+pub fn sendrec(dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
+    send(dest, msg)?;
+    receive(dest, msg)
+}
+
+/// Sends a notification.
+pub fn notify(dest: Endpoint, type_: minix_types::NotifyType) -> Result<(), IpcError> {
+    todo!("notify implementation")
+}
+
+// ── Process system calls ──
 
 /// Creates a child process.
 pub fn fork() -> Result<Pid, Errno> {
@@ -34,6 +65,8 @@ pub fn waitpid(pid: Pid, status: &mut i32, options: i32) -> Result<Pid, Errno> {
 pub fn kill(pid: Pid, sig: i32) -> Result<(), Errno> {
     todo!("kill syscall")
 }
+
+// ── File system calls ──
 
 /// Opens a file.
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {

@@ -21,7 +21,7 @@ bitflags! {
     /// assert!(!flags.contains(VmFlags::EXITING));
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct VmFlags: u32 {
+    pub struct VmFlags: u8 {
         /// Slot contains a process.
         const IN_USE = 0x001;
         /// PM is cleaning up this process.

@@ -724,8 +724,8 @@ static int map_subfree(struct vir_region *region,
 
 | 操作 | 物理页面 | 区域元数据 | Minix3 brk 行为 |
 |------|---------|-----------|----------------|
-| **扩展** | 延迟分配（缺页时） | `anon_resize` 增加 length | ✅ 真正执行 |
-| **收缩** | 不释放 | `anon_resize` 静默忽略 | ⚠️ 返回 OK 但不操作 |
+| **扩展** | 延迟分配（缺页时） | `anon_resize` 增加 length | Y 真正执行 |
+| **收缩** | 不释放 | `anon_resize` 静默忽略 | 注意: 返回 OK 但不操作 |
 
 **收缩 vs 扩展（Rust 实现）**
 

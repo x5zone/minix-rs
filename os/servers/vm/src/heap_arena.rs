@@ -31,7 +31,7 @@
 //! constructible in BSS/static context. It does not allocate through the
 //! global allocator.
 
-use minix_types::{AssumeSyncCell, PhysBytes, VirBytes};
+use minix_types::{AssumeSyncCell, PhysBytes};
 use minix_types::VirBytes as VB;
 use crate::alloc_page::VmPageAllocator;
 use crate::direct_map::{VM_HEAP_BASE, VM_HEAP_SIZE, VM_HEAP_LIMIT};
@@ -60,6 +60,7 @@ impl HeapArena {
     }
 
     pub fn limit(&self) -> u64 {
+        // SAFETY: Single-threaded VM; limit is only accessed here and in set_limit.
         unsafe { *self.limit.get() }
     }
 
@@ -124,6 +125,7 @@ impl HeapArena {
             }
         }
 
+        // SAFETY: Single-threaded VM; limit write is exclusive.
         unsafe { *self.limit.get() = new_limit; }
         Ok(old_limit)
     }
@@ -164,6 +166,7 @@ impl HeapArena {
             }
         }
 
+        // SAFETY: Single-threaded VM; limit write is exclusive.
         unsafe { *self.limit.get() = new_limit; }
         Ok(())
     }

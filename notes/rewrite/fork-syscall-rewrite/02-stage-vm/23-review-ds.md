@@ -366,13 +366,13 @@ static void mappedfile_delete(struct vir_region *region) {
 
 ## 10. 修改项
 
-### TODO #1: 删除第二个 Ch4（废弃代码段）
+### TODO: 删除第二个 Ch4（废弃代码段）
 - **优先级**: P0 | **类型**: 文档结构错误
 - **文件**: `23-vfs-interaction.md`
 - **方案**: 删除 L1328-1701（第二个 `## 4. Rust 实现详解` 及其所有子节）。该段描述的 `Arc<FdRef>` 和 `Box<dyn FnOnce>` 已被 Ch3 否决且与当前代码不符
 - **验证**: 确认删除后 Ch4 → Ch5 → Ch6 → Ch7 章节编号连续，Ch3 设计直接映射到 Ch4（第一个）实现
 
-### TODO #2: 实现 MappedFile::ev_delete 并集成 FdRefTable
+### TODO: 实现 MappedFile::ev_delete 并集成 FdRefTable
 - **优先级**: P0 | **类型**: 语义偏移（fdref 永不被释放）
 - **文件**: `os/servers/vm/src/memtype.rs`
 - **方案**: 在当前设计中 `MemType` trait 无法访问 `FdRefTable`，因此不在 `ev_delete` 内部实现，而是在 `VirRegion` 删除路径上检查区域类型：
@@ -381,13 +381,13 @@ static void mappedfile_delete(struct vir_region *region) {
   3. 若返回 `Some(PendingFdClose)` 则发送 FDCLOSE
 - **验证**: 创建文件映射区域 → 删除区域 → 确认 `deref_entry` 被调用
 
-### TODO #3: 实现 mmap 的 fdref_id 创建
+### TODO: 实现 mmap 的 fdref_id 创建
 - **优先级**: P0 | **类型**: 语义偏移（文件映射区域无 fd 引用）
 - **文件**: `os/servers/vm/src/mmap.rs`
 - **方案**: 在 `handle_vfs_mmap` 中，当创建文件映射区域时调用 `FdRefTable::create()` 创建条目，然后将 id 写入 `region.param = VrParam::File { fdref_id: Some(id), ... }`
 - **验证**: mmap 文件后检查 FdRefTable 中有对应条目，区域的 fdref_id 为 Some
 
-### TODO #4: 统一 handle_reply 签名与文档
+### TODO: 统一 handle_reply 签名与文档
 - **优先级**: P1 | **类型**: 设计-代码不一致
 - **文件**: `23-vfs-interaction.md` 或 `os/servers/vm/src/vfs_queue.rs`
 - **方案**: 二选一：
@@ -395,7 +395,7 @@ static void mappedfile_delete(struct vir_region *region) {
   - B: 修改代码使 `handle_reply` 直接调用回调（更接近 C 语义）
 - **验证**: grep 确认签名一致
 
-### TODO #5: 添加测试章节
+### TODO: 添加测试章节
 - **优先级**: P1 | **类型**: 文档结构不完整
 - **文件**: `23-vfs-interaction.md`
 - **方案**: 在 Ch6 和 Ch7 之间插入 Ch7 测试章节，内容包含：
@@ -406,7 +406,7 @@ static void mappedfile_delete(struct vir_region *region) {
   - 将现有 Ch7 → Ch8
 - **验证**: 章节结构完整（1-8）
 
-### TODO #6: 标注代码版本
+### TODO: 标注代码版本
 - **优先级**: P1 | **类型**: 可追溯性
 - **文件**: `23-vfs-interaction.md`
 - **方案**: 在所有"当前代码"处用 commit hash 或日期标注具体版本，避免"当前"一词的歧义

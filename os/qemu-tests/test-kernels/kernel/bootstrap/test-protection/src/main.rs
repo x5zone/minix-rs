@@ -14,7 +14,7 @@
 use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::x86_64::paging::X86_64Paging;
-use minix_arch::x86_64::early_console;
+use minix_plat::x86_64::early_console;
 use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
@@ -37,11 +37,13 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(0x200_000),
         kern_size: 0x200_000,
-        free_upper_idx: 0,
+        free_upper_idx: None,
         user_sp: VirBytes(0x0000_7fff_ffff_f000),
         kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules: &[],
+        bootstrap_start: PhysBytes(0),
+        bootstrap_len: 0,
     };
 
     let result = BootPrepareResult {

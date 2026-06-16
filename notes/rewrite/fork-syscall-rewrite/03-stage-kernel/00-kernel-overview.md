@@ -147,79 +147,89 @@ GRUB 跳转到 cstart(magic, ebx)
 
 ---
 
-## 3. 文档导航：01~22 的叙事逻辑
+## 3. 文档导航：01~24 的叙事逻辑
 
-### 3.1 阶段 1：硬件发现（01~03）
+> **修订说明 (2026-06-13)**: 本节早期版本引用了一组旧文件名（`03-vm-request.md`、`04-protection.md`、`05-exception-interrupt.md` 等），这些文件已重命名为现行的 24 篇文档。下表已与实际文档对齐；旧版误报（旧文件名引用）已标注并保留链接以便回溯。
+
+### 3.1 阶段 1：引导（01~02）
 
 内核是第一个运行的程序。没人给它 IPC、没人给它内存 map。它自己从 GRUB 的 multiboot 数据结构中解析一切。
 
-| 编号 | 文档 | 覆盖的 C 源文件（行数） | 角色 |
-|------|------|----------------------|------|
-| 01 | [multiboot-bootstrap](01-boot-shim-bootstrap.md) | pre_init.c(243) + pg_utils.c(317) | GRUB→内存map→大页恒等映射→开分页 |
-| 02 | [page-table-kernel](02-page-table-kernel.md) | memory.c(1020) 内核页表核心 | pagedir_mappings、createpde、内核如何替 VM 操作页表 |
-| 03 | [vm-request](03-vm-request.md) | proc.h vmrequest 字段 + proc.c vmrequest 调用 | VMREQUEST 挂起/恢复机制（和 02 紧密关联） |
+| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
+|------|------|---------------|------|
+| 01 | [boot-shim-bootstrap](01-boot-shim-bootstrap.md) | pre_init.c + pg_utils.c | GRUB→内存 map→大页恒等映射→开分页；boot-shim 移交控制权到 `arch_boot` |
+| 02 | [higher-half-kernel](02-higher-half-kernel.md) | head.S + kernel.lds | 内核 ELF 加载、链接脚本布局、`HigherHalf::jump_to_kmain` 切栈跳转 |
 
-### 3.2 阶段 2：保护与中断（04~05）
+### 3.2 阶段 2：cstart 与硬件接管（03~04）
 
-分页打开了，但还没有中断。用户进程不能碰硬件，内核需要 GDT/IDT/TSS 来保护自己。
+进入 `kmain` 后，内核建立保护模式基础设施并接管硬件中断。
 
 | 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
 |------|------|---------------|------|
-| 04 | [protection](04-protection.md) | protect.c(456) | GDT/IDT/TSS、段初始化、boot_proc 二进制加载 |
-| 05 | [exception-interrupt](05-exception-interrupt.md) | exception.c(386) + interrupt.c(177) | 异常帧、页错误转发 VM、IRQ 处理 |
+| 03 | [kmain-cstart](03-kmain-cstart.md) | main.c:115-147, 403-481 + protect.c:321-367 | 从 `kmain()` 入口到保护结构就绪（GDT/TSS/段寄存器） |
+| 04 | [clock-interrupt-init](04-clock-interrupt-init.md) | clock.c:48-74 + i8259.c + arch_system.c | `init_clock` + `intr_init` + `arch_init`，让内核响应硬件事件 |
 
-### 3.3 阶段 3：进程抽象（06~08）
+### 3.3 阶段 3：进程与跨空间（05~06）
 
-有了保护模式，内核需要管理谁在执行——进程表、调度队列、endpoint 标识。
-
-| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
-|------|------|---------------|------|
-| 06 | [proc-struct](06-proc-struct.md) | proc.h 完整结构体(~160行) + RTS/misc 标志 | struct proc 每个字段 + RTS 逐位解释 |
-| 07 | [scheduling](07-scheduling.md) | proc.c 调度部分(~700行) | pick_proc / enqueue / dequeue / switch_to_user / idle / accounting |
-| 08 | [endpoint](08-endpoint.md) | proc.c endpoint 部分(~100行) + endpoint.h | endpoint_lookup / isokendpt_f / generation 机制 |
-
-### 3.4 阶段 4：IPC（09~10）
-
-进程之间存在，还需要通信。IPC 是 Minix3 微内核的脊柱——所有服务通过消息传递协作。
+硬件就绪后，内核建立进程表并配置跨地址空间运行所需的状态。
 
 | 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
 |------|------|---------------|------|
-| 09 | [sync-ipc](09-sync-ipc.md) | proc.c: do_ipc(599~773) | SEND/RECEIVE/BOTH/NOTIFY 四个原语 |
-| 10 | [async-ipc](10-async-ipc.md) | proc.c: mini_senda / try_async / cancel_async | 异步消息传递 |
+| 05 | [proc-init-boot-proc](05-proc-init-boot-proc.md) | proc.c:119-160 + main.c:157-282 + libexec_load_elf | 清空进程表、遍历 boot image 设置特权、用 minix-elf 加载 VM ELF 到 bootstrap 页表 |
+| 06 | [cross-space-init](06-cross-space-init.md) | protect.c:370-377 + memory.c:707-717 | 设置 `ptproc` 与 `freepdes`，为运行时跨地址空间访问铺路 |
 
-### 3.5 阶段 5：特权与系统调用（11~15）
-
-进程+调度+IPC 都有了，现在来处理系统调用——这是用户态进程请求内核服务的唯一通道。
+### 3.4 阶段 4：系统初始化与 VM 启动（07~08）
 
 | 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
 |------|------|---------------|------|
-| 11 | [privilege](11-privilege.md) | priv.h(80行) + system.c 特权操作 | priv 结构体 + priv_add_irq/io/mem + 权限 mask |
-| 12 | [syscall-dispatch](12-syscall-dispatch.md) | system.c: kernel_call_dispatch + finish | do_xxx() 分发循环 + 结果回写 |
-| 13 | [syscall-memory](13-syscall-memory.md) | system.c: sys_vmctl / sys_vm_map + arch_system 相关 | VM 完成页表操作后通过 sys_vmctl 通知内核 |
-| 14 | [syscall-fork-exec](14-syscall-fork-exec.md) | system.c: sys_fork(~200行) + arch_system fork 相关 | 内核的 fork——创建 proc 结构、复制寄存器、生成 endpoint |
-| 15 | [syscall-exit-signal](15-syscall-exit-signal.md) | system.c: sys_exit/sys_kill + sig_delay_done | 退出和信号 |
+| 07 | [system-init-boot-finish](07-system-init-boot-finish.md) | system.c:168-278 + main.c:38-117 | `system_init` + `bsp_finish_booting` + 内存回收——把内核从"初始化态"带入"运行态" |
+| 08 | [vm-boot-protocol](08-vm-boot-protocol.md) | system/do_vmctl.c | VM 与内核的启动协议：`SYS_VMCTL` 请求分发表 |
 
-### 3.6 阶段 6：时间与初始化（16~17）
+### 3.5 阶段 5：调度与 IPC（09~11）
 
-| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
-|------|------|---------------|------|
-| 16 | [timer](16-timer.md) | clock.c(312) + arch_clock.c(440) | 时钟滴答、虚拟/剖面定时器、看门狗 |
-| 17 | [main-init](17-main-init.md) | main.c(522) + arch_system.c arch_init | kmain → bsp_finish_booting → announce → 开任务 |
-
-### 3.7 阶段 7：多核与补全（18~21）
+调度器和 IPC 是 Minix3 微内核的两条脊柱——所有"运行"和"通信"都依赖它们。
 
 | 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
 |------|------|---------------|------|
-| 18 | [smp](18-smp.md) | smp.c(205) + apic.c(1304) + arch_smp.c(360) | SMP 架构、AP Boot、APIC 中断 |
-| 19 | [debug-serial](19-debug-serial.md) | debug.c(563) + ser_dump_* | 内核调试基础设施 |
-| 20 | [acpi-watchdog](20-acpi-watchdog.md) | acpi.c(410) + watchdog.c + arch_watchdog | ACPI 电源管理、看门狗 |
-| 21 | [unported-symbols](21-unported-symbols.md) | 其余小文件 | 未移植函数的 ARCH 标注 |
+| 09 | [switch-to-user](09-switch-to-user.md) | proc.c:299-477 + proc.c:176-213 | `switch_to_user` + `idle`——从内核态返回用户态的最后一英里 |
+| 10 | [scheduling-primitives](10-scheduling-primitives.md) | proc.c:1595-1832 + proc.c:1893-1910 | `enqueue` / `dequeue` / `pick_proc` / `proc_no_time` 调度原语 |
+| 11 | [ipc-core](11-ipc-core.md) | proc.c:599-1590 | `mini_send` / `mini_receive` / `mini_senda` / `do_ipc`——IPC 是内核最复杂的部分（~1000 行） |
 
-### 3.8 补充：全局概念
+### 3.6 阶段 6：系统调用分发与异常（12~13）
+
+| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
+|------|------|---------------|------|
+| 12 | [syscall-dispatch](12-syscall-dispatch.md) | system.c:52-167 | `kernel_call_dispatch` + `kernel_call_finish`——`do_xxx()` 分发循环 |
+| 13 | [exception-interrupt](13-exception-interrupt.md) | exception.c + interrupt.c + clock.c:70-199 | 异常帧、页错误转发 VM、IRQ 处理 |
+
+### 3.7 阶段 7：时钟、SMP 与系统调用实现（14~20）
+
+`kernel_call_dispatch` 分发的 58 个 syscall 在 14~20 中按主题分组。
+
+| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
+|------|------|---------------|------|
+| 14 | [clock-timer](14-clock-timer.md) | clock.c + clock.h | `ClockState`、`TimerAction`、`vtimer_check`——100Hz 时钟驱动调度与闹钟 |
+| 15 | [smp](15-smp.md) | smp.c + smp.h + cpulocals.h | BKL、per-CPU 数据、IPI 跨 CPU 调度（当前为单核占位，多核见文档） |
+| 16 | [syscall-process](16-syscall-process.md) | do_fork.c + do_exec.c + do_exit.c + do_clear.c + do_runctl.c + do_schedctl.c + do_statectl.c | 进程管理调用（fork/exec/exit/clear/runctl/schedctl/statectl） |
+| 17 | [syscall-copy](17-syscall-copy.md) | do_copy.c + do_safecopy.c + do_umap.c + do_umap_remote.c + do_vumap.c + do_memset.c + do_safememset.c | 跨空间拷贝（vircopy/physcopy/umap/memset） |
+| 18 | [syscall-signal](18-syscall-signal.md) | do_kill.c + do_getksig.c + do_endksig.c + do_sigsend.c + do_sigreturn.c | 信号调用 |
+| 19 | [syscall-device](19-syscall-device.md) | do_irqctl.c + do_devio.c + do_vdevio.c | 设备调用（IRQ 注册、I/O 端口、VDEVIO） |
+| 20 | [syscall-clock](20-syscall-clock.md) | do_times.c + do_setalarm.c + do_stime.c + do_settime.c + do_vtimer.c | 时钟调用（times/setalarm/stime/settime/vtimer） |
+
+### 3.8 阶段 8：权限与跨地址空间运行时（21~24）
+
+| 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
+|------|------|---------------|------|
+| 21 | [privilege](21-privilege.md) | priv.h + system.c:274-540 | `priv` 结构体 + `priv_add_irq/io/mem` + `s_k_call_mask`/`s_ipc_to` 权限位 |
+| 22 | [ipc-filter](22-ipc-filter.md) | ipc.h + system.c:540-660 | IPC 过滤：`may_send_to` / `may_receive_from` 调用检查 |
+| 23 | [cross-space-runtime](23-cross-space-runtime.md) | syslib.h + do_copy.c + memory.c | 运行时跨空间拷贝——`SYS_DATACOPY` 宏展开为 `sys_vircopy` |
+| 24 | [misc-unported](24-misc-unported.md) | do_unused.c + do_getinfo.c + do_trace.c + do_update.c + do_profile.c | 杂项未移植 syscall |
+
+### 3.9 补充：全局概念
 
 | 编号 | 文档 | 说明 |
 |------|------|------|
-| 99 | [global-concepts](99-global-concepts.md) | 跨文档共享的全局概念（RTS 标志位完整表、priv 结构体、常量定义等） |
+| 99 | [global-concepts](99-global-concepts.md) | 跨文档共享的全局概念（`RTS` 标志位完整表、`priv` 结构体、常量定义等） |
 
 ---
 

@@ -55,6 +55,8 @@ void *vm_allocpage(phys_bytes *phys, int reason);
 
 `vm_allocpage` 一次调用同时返回虚拟地址和物理地址。**递归的根源在于 VA 的获取**——建立页表映射可能需要分配新的页表页，而分配页表页又需要建立映射，形成循环。PA 的获取（从空闲页池取页）不会递归，VA 的获取才会。
 
+> **关于底层物理页分配器**：`alloc_mem`/`free_mem` 接口背后是 `PhysAllocator` trait，VM 提供三种实现：`BitmapAllocator`（自举默认）、`BuddyAllocator`（`buddy_alloc` feature）、`SegmentTreeAllocator`（`segment_tree_alloc` feature，教学示意）。详见 [04-physical-memory.md §5](04-physical-memory.md#5-physicalallocator-trait-与三种实现)。
+
 ---
 
 ## 2. Minix3 C 源码分析

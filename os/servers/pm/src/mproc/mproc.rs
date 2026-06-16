@@ -23,7 +23,7 @@
 //! 3. **Microkernel principle**: Follows "minimum knowledge" principle, other services don't need to know PM's internal implementation
 
 use minix_types::{Pid, Endpoint, UserSlot, Clock, VirBytes};
-use minix_ipc::Message;
+use minix_types::Message;
 use crate::mproc::{Lifecycle, BlockState, WaitState, Guardianship, TraceState, TraceOptions, Credentials, SignalState};
 
 /// Maximum process name length.

@@ -2,7 +2,7 @@
 //!
 //! Implements core logic of exit system call.
 
-use minix_ipc::Endpoint;
+use minix_types::Endpoint;
 
 /// Process exit.
 ///

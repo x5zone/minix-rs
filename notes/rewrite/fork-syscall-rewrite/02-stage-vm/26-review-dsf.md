@@ -388,11 +388,11 @@
 
 | # | 描述 | 类型 | 文件 |
 |---|------|------|------|
-| TODO #1 | 修正 init_proc `boot_procs` → `&kernel_boot_info.boot_procs` + 边界检查 | P0 | §2.4 |
-| TODO #2 | 主循环 `vm_isokendpt` 错误检查 | P0 | §2.5 |
-| TODO #3 | SIGKMEM 补全 `pt_clearmapcache` | P1 | §2.7 |
-| TODO #6 | 补全 CALLMAP 从 6 到 ~20 个 | P1 | §2.2 |
-| TODO #7 | `disable.rs` → `dispatcher.rs`（需在跨文档引用中修正） | P1 | §8.1 |
+| TODO | 修正 init_proc `boot_procs` → `&kernel_boot_info.boot_procs` + 边界检查 | P0 | §2.4 |
+| TODO | 主循环 `vm_isokendpt` 错误检查 | P0 | §2.5 |
+| TODO | SIGKMEM 补全 `pt_clearmapcache` | P1 | §2.7 |
+| TODO | 补全 CALLMAP 从 6 到 ~20 个 | P1 | §2.2 |
+| TODO | `disable.rs` → `dispatcher.rs`（需在跨文档引用中修正） | P1 | §8.1 |
 | — | `enable_filemap`/`env_parse` 补充 | P1 | §2.2 |
 | — | transid/VFS 事务处理细节 | P1 | §2.5 |
 | — | `ipc_send` 错误检查 | P1 | §2.5 |

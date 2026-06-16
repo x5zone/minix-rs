@@ -852,7 +852,7 @@ if(missing_spares > 0) {
     alloc_cycle();  // 确保信号处理期间消耗的 spare pages 被补充
 }
 
-// alloc_cycle() 内部（alloc.c:227-237）：
+// alloc_cycle() 内部（alloc.c:227-246）：
 void alloc_cycle(void)
 {
     for(rq = first_reserved_inuse; rq && missing_spares > 0; rq = rq->next) {
@@ -1126,12 +1126,12 @@ static bitchunk_t free_pages_bitmap[PAGE_BITMAP_CHUNKS];          // ~128KB
 **Rust 实现**：使用 `&'static mut [T]` 而非 `Vec<T>`：
 
 ```rust
-// ❌ 错误：Vec 需要 GlobalAlloc
+// 错误：Vec 需要 GlobalAlloc
 pub struct BitmapAllocator {
     bitmap: Vec<u64>,  // 循环依赖！
 }
 
-// ✅ 正确：静态切片，从预映射内存分配
+// 正确：静态切片，从预映射内存分配
 pub struct BitmapAllocator {
     bitmap: &'static mut [u64],  // 不依赖 GlobalAlloc
 }
@@ -1143,7 +1143,7 @@ pub struct BitmapAllocator {
 
 **预映射内存**：kernel 在 VM 的页表中预先建立好映射，VM 启动时就能访问。当前设计采用 Direct Map 方案：kernel 初始页表提供 1GB direct map，VM 通过 `vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys` 直接访问物理内存。BumpBuf 从 direct map 区域中分配元数据 slice，类型安全、自动对齐。
 
-> 💡 **为什么是 Direct Map？** kernel 也可以为 VM 预先映射一些物理页（如 BSS 段，已有虚拟地址），但这些预映射只覆盖有限页面。VM 运行后需要访问新分配的物理页时，仍需通过 `vm_mappages` 动态建立映射——这又回到了递归问题。而 Direct Map 通过固定公式 `vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys` 保证了**每一个物理页都自动拥有虚拟地址**，递归无从发生。详见 [05-vm-allocpage.md](05-vm-allocpage.md)。
+> **为什么是 Direct Map？** kernel 也可以为 VM 预先映射一些物理页（如 BSS 段，已有虚拟地址），但这些预映射只覆盖有限页面。VM 运行后需要访问新分配的物理页时，仍需通过 `vm_mappages` 动态建立映射——这又回到了递归问题。而 Direct Map 通过固定公式 `vm_phys_to_virt(phys) = VM_DIRECT_MAP_BASE + phys` 保证了**每一个物理页都自动拥有虚拟地址**，递归无从发生。详见 [05-vm-allocpage.md](05-vm-allocpage.md)。
 
 **初始化流程**：
 
@@ -1337,11 +1337,11 @@ let heads: &'static mut [u32] = buf.alloc_slice(64);
 
 | 物理内存 | Bitmap 大小 | 能放进 1GB 吗 |
 |----------|------------|--------------|
-| 16GB | 512KB | ✅ |
-| 128GB | 4MB | ✅ |
-| 512GB | 16MB | ✅ |
-| 1TB | 32MB | ✅ |
-| 4TB | 128MB | ✅ |
+| 16GB | 512KB | 可以 |
+| 128GB | 4MB | 可以 |
+| 512GB | 16MB | 可以 |
+| 1TB | 32MB | 可以 |
+| 4TB | 128MB | 可以 |
 
 Bitmap 本身占用的物理页也在前 1GB 内，通过 direct map 直接读写。初始化阶段不需要额外的中间存储。但分配器迁移时可能需要搬迁——见 Phase 3 讨论。
 
@@ -1773,9 +1773,9 @@ impl SegmentTreeAllocator {
 | 维度 | 说明 |
 | -- | -- |
 | 时间复杂度 | O(log n) 分配/释放 |
-| 精确分配 | ✅ 任意大小（优于 buddy） |
+| 精确分配 | 任意大小（优于 buddy） |
 | 内存开销 | ~8x（每节点 4 个 usize，树大小 2n） |
-| 推荐度 | ❌ 不推荐生产使用 |
+| 推荐度 | 不推荐生产使用 |
 
 ### 5.6 三种实现对比
 
@@ -1783,11 +1783,11 @@ impl SegmentTreeAllocator {
 | -- | ------ | ----- | ------ |
 | **数据结构** | 位图（1 bit/页） | 阶数分组 + 空闲链表 | 完全二叉树 |
 | **时间复杂度** | O(n) 扫描 | O(log n) | O(log n) |
-| **精确分配** | ✅ 任意大小 | ❌ 向上取整到 2^n | ✅ 任意大小 |
-| **抗碎片** | ❌ 无自动合并 | ✅ buddy 自动合并 | ❌ 无自动合并 |
+| **精确分配** | 任意大小 | 向上取整到 2^n | 任意大小 |
+| **抗碎片** | 无自动合并 | buddy 自动合并 | 无自动合并 |
 | **内存开销** | 1x | ~2x | ~8x |
-| **实现复杂度** | ⭐ 低 | ⭐⭐ 中 | ⭐⭐⭐⭐ 高 |
-| **Minix3 对应** | ✅ 原始实现 | ❌ 新增 | ❌ 新增 |
+| **实现复杂度** | 低 | 中 | 高 |
+| **Minix3 对应** | 原始实现 | 新增 | 新增 |
 | **推荐场景** | 小内存系统 | 通用场景 | 教学示意 |
 
 ### 5.7 元数据大小计算

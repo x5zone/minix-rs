@@ -490,17 +490,17 @@ static void sef_cb_signal_handler(int signo)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `vm_server.rs` | ⚠️ 骨架 | `run()` 为 `loop { break; }`，缺少主循环 dispatch |
-| `global.rs` | ✅ 已实现 | `BOOT_INFO`, `TOTAL_PAGES`, `VM_INSTANCE_COUNT`, `VmAllocator` |
-| `VmProcTable` | ✅ 已实现 | `vmproc/table.rs`，`AssumeSyncCell` 后端，`get_global()` 静态访问 |
-| `VmPageAllocator` | ✅ 已实现 | `alloc_page.rs`，封装 `PhysAlloc`，支持 alloc/free/stats |
-| `PhysAllocator` | ✅ 已实现 | 位图/buddy/线段树分配器，`PhysAlloc` enum |
-| `Paging` trait | ✅ 已实现 | `pagetable/mod.rs`，页表操作 trait |
-| `MemType` trait | ✅ 已实现 | `memtype.rs`，内存类型系统 |
-| `PageCache` | ✅ 已实现 | `page_cache.rs`, 含 `CacheKey::ByDevice`/`ByBlock` |
-| `VfsRequestQueue` | ✅ 已实现 | `vfs_queue.rs`, serial activation model |
-| `MessageDispatcher` | ✅ 已实现 | `ipc/dispatcher.rs`, 编译时 match 分派 |
-| RS 握手 | ⚠️ 骨架 | `rs.rs` 实现 SET_PRIV/PREPARE/UPDATE/MEMCTL，缺 `rs_handshake()` |
+| `vm_server.rs` | 骨架 | `run()` 为 `loop { break; }`，缺少主循环 dispatch |
+| `global.rs` | 已实现 | `BOOT_INFO`, `TOTAL_PAGES`, `VM_INSTANCE_COUNT`, `VmAllocator` |
+| `VmProcTable` | 已实现 | `vmproc/table.rs`，`AssumeSyncCell` 后端，`get_global()` 静态访问 |
+| `VmPageAllocator` | 已实现 | `alloc_page.rs`，封装 `PhysAlloc`，支持 alloc/free/stats |
+| `PhysAllocator` | 已实现 | 位图/buddy/线段树分配器，`PhysAlloc` enum |
+| `Paging` trait | 已实现 | `pagetable/mod.rs`，页表操作 trait |
+| `MemType` trait | 已实现 | `memtype.rs`，内存类型系统 |
+| `PageCache` | 已实现 | `page_cache.rs`, 含 `CacheKey::ByDevice`/`ByBlock` |
+| `VfsRequestQueue` | 已实现 | `vfs_queue.rs`, serial activation model |
+| `MessageDispatcher` | 已实现 | `ipc/dispatcher.rs`, 编译时 match 分派 |
+| RS 握手 | 骨架 | `rs.rs` 实现 SET_PRIV/PREPARE/UPDATE/MEMCTL，缺 `rs_handshake()` |
 
 > 上表是"起点快照"——不是开发进度追踪，而是为了后续各节解释"为什么"和"怎么做"时有明确的参照系。
 
@@ -868,6 +868,8 @@ impl VmServer {
         let table = VmProcTable::get_global();
 
         // 1. Send RS_INIT, receive rproctab
+        // 当前 ipc_call_rs_init() 返回 Ok(RprocTab::empty())，不 panic
+        // 待 IpcTransport 实现后将返回真实的 rproctab
         let rproctab = ipc_call_rs_init()
             .map_err(|_| VmError::InternalError)?;
 

@@ -61,7 +61,7 @@
 | ptproc | cpulocal 变量 `get_cpulocal_var(ptproc)` | `PostInitArch::set_ptproc()` trait 方法 |
 | pg_info | 直接写 VM 的 `p_seg.p_cr3` / `p_seg.p_cr3_v` | `PostInitArch::set_ptproc()` 内部完成 |
 | freepdes | 全局静态数组 `static int freepdes[2]` | `MemoryInitArch::allocate_free_pdes()` 返回 `FreePdeSlots` |
-| freepde_start | `kinfo.freepde_start` | `kernel_info.free_upper_idx` |
+| freepde_start | `kinfo.freepde_start` | `kernel_info.free_upper_idx()` (returns `Option<usize>`) |
 | createpde | 全局函数，直接操作 `ptproc->p_seg.p_cr3_v[pde]` | `CrossSpaceArch` trait 方法（后续文档） |
 
 ---
@@ -552,7 +552,9 @@ fn init_post_and_memory(kernel_info: &KernelInfo) {
     // Step 2: Allocate temporary page table slots.
     // C: memory_init() — memory.c:707
     //    freepdes[nfreepdes++] = kinfo.freepde_start++;
-    let mut free_idx = kernel_info.free_upper_idx;
+    let mut free_idx = kernel_info.free_upper_idx().expect(
+        "free_upper_idx must be set by boot-shim before kernel init"
+    );
     let _free_pde_slots: FreePdeSlots = CurrentMemoryInitArch::allocate_free_pdes(&mut free_idx);
     // free_idx is now advanced by MAX_FREE_PDE_SLOTS (2).
     // TODO: Store _free_pde_slots in kernel global state for createpde() access.

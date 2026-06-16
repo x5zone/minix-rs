@@ -134,6 +134,7 @@ pt->pt_dir[pde] = (pt_phys & ARCH_VM_ADDR_MASK) | flags  // 存入页目录（�
 ```c
 // pagetable.c:pt_new ([pagetable.c:1019](minix3/minix/servers/vm/pagetable.c#L1019))
 pt->pt_virtop = 0;  // 初始化为 0，但从未被读取
+// grep 验证: `rg 'pt_virtop' minix3/minix/servers/vm/pagetable.c -n` 仅返回 1019 行写入，无读取
 
 // pagetable.c:findhole ([pagetable.c:155](minix3/minix/servers/vm/pagetable.c#L155)) - 只给 VM 自己用
 static u32_t findhole(int pages)
@@ -419,6 +420,10 @@ bitflags::bitflags! {
     /// - `EXECUTABLE`：x86-64 为 NX 位（反逻辑），ARM64 为 PXN 位（反逻辑），RISC-V 为 X 位（正逻辑）
     /// - `GLOBAL`：x86-64 为 G 位（正逻辑），ARM64 为 nG 位（反逻辑）
     /// - `WRITE_THROUGH` / `NO_CACHE`：缓存策略，各架构编码差异大
+    ///
+    /// **注意**：此 `PageFlags(u16)` 是硬件页表标志，定义在 `minix_arch::paging`。
+    /// 另有 `region::page_state::PageFlags(u8)` 是物理页状态标志（IN_CACHE/COW 等），
+    /// 两者用途不同，不要混淆。详见 10-phys-pagestate.md §3.3.2。
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct PageFlags: u16 {
         const PRESENT         = 1 << 0;

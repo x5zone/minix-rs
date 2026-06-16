@@ -27,7 +27,27 @@
 
 ### 1.2 多态设计
 
-Minix3 使用函数指针表 `mem_type_t` 实现多态，包含 15 个回调字段（完整定义见 §2.1）：
+Minix3 使用函数指针表 `mem_type_t` 实现多态，包含 **1 个 name 字段 + 14 个回调字段 = 15 个字段**（完整定义见 §2.1）。Rust 对应 `trait MemType`（见 §4.2）保持同样的 15 个方法语义，新增的 `Display::fmt` 是 trait 派生的格式化能力，不属于回调语义：
+
+| # | 回调字段 | 语义分类 | Minix3 (C) | minix-rs (Rust) |
+|---|---------|---------|------------|-----------------|
+| 1 | `name` | 元数据 | `const char *` | `fn name(&self) -> &'static str` |
+| 2 | `ev_new` | 生命周期 | `(*ev_new)(vr)` | `fn ev_new(...)` |
+| 3 | `ev_delete` | 生命周期 | `(*ev_delete)(vr)` | `fn ev_delete(...)` |
+| 4 | `ev_reference` | 物理内存 | `(*ev_reference)(pr, newpr)` | `fn ev_reference(frames, slot)` |
+| 5 | `ev_unreference` | 物理内存 | `(*ev_unreference)(pr)` | `fn ev_unreference(frames, pfn)` |
+| 6 | `ev_pagefault` | 页错误 | `(*ev_pagefault)(...)` | `fn ev_pagefault(...)` |
+| 7 | `ev_resize` | 调整 | `(*ev_resize)(vmp, vr, len)` | `fn ev_resize(...)` |
+| 8 | `ev_split` | 调整 | `(*ev_split)(vmp, vr, r1, r2)` | `fn ev_split(...)` |
+| 9 | `ev_lowshrink` | 调整 | `(*ev_lowshrink)(vr, len)` | `fn ev_low_shrink(...)` |
+| 10 | `ev_sanitycheck` | 调试 | `(*ev_sanitycheck)(...)` | `fn ev_sanitycheck(...)` |
+| 11 | `writable` | 查询 | `(*writable)(pr)` | `fn writable(...)` |
+| 12 | `ev_copy` | 生命周期 | `(*ev_copy)(vr, newvr)` | `fn ev_copy(...)` |
+| 13 | `regionid` | 查询 | `(*regionid)(vr)` | `fn region_id(...)` |
+| 14 | `refcount` | 查询 | `(*refcount)(vr)` | `fn ref_count(...)` |
+| 15 | `pt_flags` | 查询 | `(*pt_flags)(vr)` | `fn pt_flags(...)` |
+
+> **注**：C 与 Rust 的回调数量严格相等（14 个）。命名上的差异（如 `ev_lowshrink` vs `ev_low_shrink`、`regionid` vs `region_id`）是 Rust 命名约定（snake_case for methods）的体现，语义不变。Rust 中部分字段被重命名以符合 Rust API guidelines（CamelCase 转 snake_case），但与 C 的语义一一对应。
 
 ```c
 // memtype.h — 示意
@@ -783,9 +803,9 @@ if (flags & MAP_CONTIG) {
 |------|------|------|
 | 创建 | ✅ | 一次性分配连续物理内存 |
 | 访问 | ✅ | 已映射，无页错误 |
-| fork | ❌ | 会破坏物理连续性 |
-| resize | ❌ | 无法保证扩展后连续 |
-| CoW | ❌ | 会破坏物理连续性 |
+| fork | N | 会破坏物理连续性 |
+| resize | N | 无法保证扩展后连续 |
+| CoW | N | 会破坏物理连续性 |
 
 #### 2.2.4 mem_type_cache - 磁盘缓存
 
@@ -1063,7 +1083,7 @@ int do_clearcache(message *msg)
 | 创建 | ✅ | 通过 `do_setcache` 从匿名内存转换 |
 | 映射 | ✅ | 通过 `do_mapcache` 映射到文件系统 |
 | fork | ✅ | `ev_reference` 返回 OK |
-| resize | ❌ | 缓存大小固定 |
+| resize | N | 缓存大小固定 |
 | 写入 | ✅ | 物理页已分配则可写 |
 
 #### 2.2.5 mem_type_mappedfile - 文件映射
@@ -1295,8 +1315,8 @@ struct mem_type mem_type_mappedfile = {
 | 读取 | ✅ | 页错误时加载，缓存命中则直接映射 |
 | 写入 | ✅ | 通过 COW 机制，转为匿名内存 |
 | fork | ✅ | 复制映射信息，共享 fdref |
-| resize | ❌ | 不支持调整大小 |
-| 直接写 | ❌ | 必须通过 COW |
+| resize | N | 不支持调整大小 |
+| 直接写 | N | 必须通过 COW |
 
 #### 2.2.6 mem_type_shared - 共享内存
 
@@ -1635,8 +1655,8 @@ int do_remap(message *m)
 | 读取 | ✅ | 页错误时链接源区域的物理页 |
 | 写入 | ✅ | 直接写入共享物理页 |
 | fork | ✅ | 复制共享信息，增加 remaps |
-| resize | ❌ | 不支持调整大小 |
-| 独立存在 | ❌ | 必须引用源匿名内存区域 |
+| resize | N | 不支持调整大小 |
+| 独立存在 | N | 必须引用源匿名内存区域 |
 
 ### 2.3 多态操作
 
@@ -1648,10 +1668,10 @@ int do_remap(message *m)
 
 | 特性 | Minix3 | 传统 Unix |
 |------|--------|----------|
-| Swap 空间 | ❌ 无 | ✅ 有 |
-| 页面换出 | ❌ 无 | ✅ 有 |
-| Pageout 守护进程 | ❌ 无 | ✅ 有 |
-| 页面换入 | ❌ 无 | ✅ 有 |
+| Swap 空间 | N 无 | ✅ 有 |
+| 页面换出 | N 无 | ✅ 有 |
+| Pageout 守护进程 | N 无 | ✅ 有 |
+| 页面换入 | N 无 | ✅ 有 |
 | 内存压力处理 | 进程终止 | 换出页面 |
 
 **内存回收通过引用计数实现**
@@ -2028,11 +2048,11 @@ static int cow_block(struct vmproc *vmp, struct vir_region *region,
 | 内存类型 | 支持 CoW | 触发条件 |
 |---------|---------|---------|
 | `mem_type_anon` | ✅ | fork 后写入 |
-| `mem_type_directphys` | ❌ | 不支持 |
-| `mem_type_anon_contig` | ❌ | 不支持 fork |
-| `mem_type_cache` | ❌ | 不支持写入 |
+| `mem_type_directphys` | N | 不支持 |
+| `mem_type_anon_contig` | N | 不支持 fork |
+| `mem_type_cache` | N | 不支持写入 |
 | `mem_type_mappedfile` | ✅ | 写入文件映射 |
-| `mem_type_shared` | ❌ | 直接写入共享 |
+| `mem_type_shared` | N | 直接写入共享 |
 
 **性能优化**
 
@@ -2326,10 +2346,10 @@ if(pr->memtype->ev_sanitycheck)
 |------|---------|---------|---------|------|---------|---------|
 | `ev_new` | - | - | ✅ | - | - | - |
 | `ev_delete` | - | - | - | - | ✅ | ✅ |
-| `ev_reference` | - | - | ❌ | ✅ | - | - |
+| `ev_reference` | - | - | N | ✅ | - | - |
 | `ev_unreference` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `ev_pagefault` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `ev_resize` | ✅ | - | ❌ | ❌ | - | - |
+| `ev_resize` | ✅ | - | N | N | - | - |
 | `ev_split` | ✅ | - | ✅ | - | ✅ | - |
 | `ev_copy` | - | ✅ | - | - | ✅ | ✅ |
 | `ev_lowshrink` | ✅ | - | - | ✅ | ✅ | - |
@@ -2513,7 +2533,7 @@ Ch2§2.2.2 分析了 Minix3 中 `phys_pt_flags` 通过 `#if defined(__arm__)` �
 
 ### 3.8 各类型回调实现对比
 
-> ✅ = 有特化实现，默认 = 使用 trait 默认实现，❌ = 返回错误
+> Y = 有特化实现，默认 = 使用 trait 默认实现，N = 返回错误
 
 | 方法 | Anonymous | DirectPhys | Contiguous | Cache | MappedFile | Shared |
 |------|-----------|------------|------------|-------|------------|--------|
@@ -2522,14 +2542,14 @@ Ch2§2.2.2 分析了 Minix3 中 `phys_pt_flags` 通过 `#if defined(__arm__)` �
 | `ev_reference` | 默认 | 默认 | ✅ | 默认 | 默认 | 默认 |
 | `ev_unreference` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `ev_pagefault` | ✅ | ✅ | ✅ | ✅ | ✅ | 默认 |
-| `ev_resize` | 默认 | 默认 | ❌ | ❌ | 默认 | 默认 |
-| `ev_split` | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
-| `ev_copy` | 默认 | ✅ | ❌ | 默认 | ✅ | ✅ |
+| `ev_resize` | 默认 | 默认 | N | N | 默认 | 默认 |
+| `ev_split` | ✅ | N | ✅ | N | ✅ | N |
+| `ev_copy` | 默认 | ✅ | N | 默认 | ✅ | ✅ |
 | `writable` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `pt_flags` | 默认 | ✅ | ✅ | 默认 | 默认 | 默认 |
 | `region_id` | ✅ | 默认 | 默认 | 默认 | 默认 | 默认 |
 | `ref_count` | ✅ | 默认 | 默认 | 默认 | 默认 | 默认 |
-| `ev_low_shrink` | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| `ev_low_shrink` | ✅ | N | N | ✅ | ✅ | N |
 
 > **注意**：MappedFile 的 `ev_pagefault` 已设计为返回 `NeedVfsIo`（对应 Minix3 的 `SUSPEND`），缓存查找和 VFS 异步 I/O 的完整设计见 [23-vfs-interaction.md](23-vfs-interaction.md) §4.6~4.7。CacheMemory、SharedMemory 的 `ev_pagefault` 仍为 stub。
 

@@ -35,7 +35,7 @@ impl HigherHalf for Riscv64HigherHalf {
         //   mv sp, stack_top        // switch stack to high address
         //   and sp, sp, -16         // align to 16 bytes
         //   li s0, 0                // zero frame pointer
-        //   fence.i                 // P1-11: synchronize I-cache with writes
+        //   fence.i                 // synchronize I-cache with writes
         //                            // performed during paging setup
         //   la t0, {kmain}          // load kmain address (RISC-V `la` pseudo
         //                            // expands to `auipc + jalr` for external

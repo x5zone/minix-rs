@@ -33,7 +33,7 @@
 //!   (C: mmap.c:244 `if((flags&(MAP_CONTIG|MAP_PREALLOC))==MAP_CONTIG) return EINVAL`)
 
 use minix_types::{VirBytes, EINVAL, EFAULT, EPERM, ENOMEM, ENXIO, ESRCH, Endpoint, VmMmapIn, VmVfsMmapIn};
-use crate::vmproc::VmProcTable;
+use crate::vmproc::{VmProcTable, EndpointError};
 use crate::region::{VirRegion, VrFlags, VrParam, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::{MEM_TYPE_ANON, MEM_TYPE_MAPPED_FILE, MEM_TYPE_CONTIG_ANON};
@@ -109,6 +109,12 @@ impl ProtFlags {
 
 // ── Error & Response types ───────────────────────────────────────────
 
+/// Errors from VM_MMAP / VM_VFS_MMAP operations.
+///
+/// All variants map to `VmError` via `From<MmapError> for VmError`,
+/// then to C errno via `VmError::to_errno()`. Per-error `to_errno()`
+/// method is intentionally omitted — the single source of truth is
+/// `VmError::to_errno()` in `minix_types::ipc::vm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MmapError {
     ProcessNotFound,
@@ -120,17 +126,15 @@ pub(crate) enum MmapError {
     FileMapDisabled,
 }
 
-impl MmapError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            Self::InvalidLength => EINVAL,
-            Self::BadAddress => EFAULT,
-            Self::InvalidFlags => EINVAL,
-            Self::PermissionDenied => EPERM,
-            Self::OutOfMemory => ENOMEM,
-            Self::FileMapDisabled => ENXIO,
-        }
+// ── Endpoint-lookup error unification ──
+//
+// See `munmap.rs` for the full rationale. mmap callers don't distinguish
+// INVALID-slot from DEAD-endpoint at the call site — both are reported
+// to the caller as `MmapError::ProcessNotFound` (mapped to `EINVAL` by
+// the dispatcher's `From<MmapError> for VmError`).
+impl From<EndpointError> for MmapError {
+    fn from(_: EndpointError) -> Self {
+        MmapError::ProcessNotFound
     }
 }
 
@@ -191,8 +195,7 @@ pub(crate) fn handle_mmap(
     };
 
     let slot = table
-        .vm_isokendpt(target)
-        .map_err(|_| MmapError::ProcessNotFound)?;
+        .vm_isokendpt(target)?;
 
     let mut active = table
         .get_active(slot)
@@ -254,7 +257,15 @@ pub(crate) fn handle_mmap(
         };
     }
 
-    active.regions_mut().insert(region);
+    // Overlap check: for MAP_FIXED, unmap_range already cleared the range.
+    // For non-MAP_FIXED, find_slot should find a gap, but verify defensively
+    // to prevent silent region corruption (overlap defensive check).
+    if active.regions().find_overlap(vaddr, VirBytes(vaddr.0 + aligned_len.0)).is_some() {
+        return Err(MmapError::BadAddress);
+    }
+
+    active.regions_mut().insert(region)
+        .expect("mmap: overlap already checked above");
     active.add_total(aligned_len);
 
     Ok(MmapResult::Complete(MmapResponse { mapped_addr: vaddr }))
@@ -269,8 +280,7 @@ pub(crate) fn handle_vfs_mmap(
     request: &VmVfsMmapIn,
 ) -> Result<MmapResult, MmapError> {
     let slot = table
-        .vm_isokendpt(request.who)
-        .map_err(|_| MmapError::ProcessNotFound)?;
+        .vm_isokendpt(request.who)?;
 
     let mut active = table
         .get_active(slot)
@@ -306,7 +316,8 @@ pub(crate) fn handle_vfs_mmap(
         clearend: request.clearend,
     };
 
-    active.regions_mut().insert(region);
+    active.regions_mut().insert(region)
+        .expect("vfs_mmap: overlap already checked above");
     active.add_total(aligned_len);
 
     Ok(MmapResult::Complete(MmapResponse { mapped_addr: vaddr }))
@@ -336,7 +347,8 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        active.init_page_table().unwrap();
+        // Skip init_page_table() — mmap tests don't need page table access,
+        // and init_page_table() accesses mock physical memory causing SIGSEGV.
         active.init_regions();
         ep
     }
@@ -410,12 +422,14 @@ mod tests {
 
     #[test]
     fn test_mmap_error_to_errno() {
-        assert_eq!(MmapError::InvalidLength.to_errno(), EINVAL);
-        assert_eq!(MmapError::BadAddress.to_errno(), EFAULT);
-        assert_eq!(MmapError::OutOfMemory.to_errno(), ENOMEM);
-        assert_eq!(MmapError::PermissionDenied.to_errno(), EPERM);
-        assert_eq!(MmapError::FileMapDisabled.to_errno(), ENXIO);
-        assert_eq!(MmapError::ProcessNotFound.to_errno(), ESRCH);
+        // Tests the full error path: MmapError → From<MmapError> for VmError → VmError::to_errno()
+        use minix_types::{VmError, EFAULT, EINVAL, ENOMEM, EPERM, ENOSYS, ESRCH};
+        assert_eq!(VmError::from(MmapError::InvalidLength).to_errno(), EFAULT);      // InvalidLength → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(MmapError::BadAddress).to_errno(), EFAULT);         // BadAddress → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(MmapError::OutOfMemory).to_errno(), ENOMEM);        // OutOfMemory → OutOfMemory → ENOMEM
+        assert_eq!(VmError::from(MmapError::PermissionDenied).to_errno(), EPERM);    // PermissionDenied → PermissionDenied → EPERM
+        assert_eq!(VmError::from(MmapError::FileMapDisabled).to_errno(), ENOSYS);    // FileMapDisabled → NotImplemented → ENOSYS
+        assert_eq!(VmError::from(MmapError::ProcessNotFound).to_errno(), ESRCH);     // ProcessNotFound → InvalidEndpoint → ESRCH
     }
 
     #[test]

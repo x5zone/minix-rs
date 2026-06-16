@@ -40,6 +40,8 @@ vir_region (虚拟地址空间区域)
 
 三层缺一不可——vir_region 定位区域，phys_region 定位映射，phys_block 判断是否需要 CoW。三层在 fork/CoW 中的协作示例、以及整体改造思路见 [10-phys-pagestate.md §1.3-1.4](10-phys-pagestate.md#13-统一的三层系统phys_block--phys_region--vir_region)。本文档聚焦于**映射层**（phys_region + vir_region）。
 
+> **Rust 实现模型变更**：Minix3 的三层结构（phys_region + phys_block + vir_region）在 Rust 中已简化为两层：`PageSlot`（退化的 phys_region，内嵌在 VirRegion 中）+ `PageFrames`（PFN 索引的 page_state 数组，替代 phys_block）。`phys_region.rs` 已删除（死代码），不再使用独立堆分配的 PhysRegion 结构体。详见 [10-phys-pagestate.md §3.3](10-phys-pagestate.md#33-方案三pfnpage-frame-number索引模型最终方案)。
+
 ### 1.3 映射层的子问题
 
 三层结构共同解决的核心问题可分解为五个子问题（[10.md §1.4](10-phys-pagestate.md#14-五个子问题)）。其中映射层负责三个：
@@ -561,7 +563,7 @@ struct vir_region *map_page_region(struct vmproc *vmp, vir_bytes minv,
     /* 预分配后清除 VR_UNINITIALIZED 标志（后续按需分配的页需要清零） */
     USE(newregion, newregion->flags &= ~VR_UNINITIALIZED;);
 
-    /* 插入进程的区域映射表（Minix3: AVL 树 region_insert; Rust: BTreeMap.insert） */
+    /* 插入进程的区域映射表（Minix3: AVL 树 region_insert; Rust: RegionMap::insert 含 overlap 检查） */
     region_insert(&vmp->vm_regions_avl, newregion);
     return newregion;
 }
@@ -758,7 +760,7 @@ static int split_region(struct vmproc *vmp, struct vir_region *vr,
 
     /* 替换原区域：从映射表移除旧区域，插入两个新区域
      * Minix3: region_remove/region_insert 操作 AVL 树
-     * Rust: RegionMap::remove + RegionMap::insert 操作 BTreeMap */
+     * Rust: RegionMap::remove + RegionMap::insert（含 overlap 检查）操作 BTreeMap */
     region_remove(&vmp->vm_regions_avl, vr->vaddr);
     map_free(vr);   /* 释放旧区域（phys_region 已迁移，不会释放物理页） */
     region_insert(&vmp->vm_regions_avl, r1);
@@ -900,7 +902,7 @@ int map_unmap_region(struct vmproc *vmp, struct vir_region *r,
         USE(r, r->vaddr += len;);
 
         remslots = phys_slot(r->length);
-        region_insert(&vmp->vm_regions_avl, r);  /* Rust: RegionMap::insert */
+        region_insert(&vmp->vm_regions_avl, r);  /* Rust: RegionMap::insert（含 overlap 检查，此处 split 后插入不会重叠） */
 
         /* 调整剩余 phys_region 的 offset（前移 len） */
         for(voffset = len; voffset < r->length; voffset += VM_PAGE_SIZE) {
@@ -1383,7 +1385,7 @@ impl VirRegion {
 pub(crate) fn fork_region(
     src: &VirRegion,
     frames: &mut PageFrames,
-) -> Result<Box<VirRegion>, ForkError> {
+) -> Result<VirRegion, ForkError> {
     let mut dst = VirRegion::new(src.vaddr, src.length, src.flags);
     dst.def_memtype = src.def_memtype;
     dst.param = src.param.clone();
@@ -1407,7 +1409,7 @@ pub(crate) fn fork_region(
     }
 
     dst.set_writable(false);
-    Ok(Box::new(dst))
+    Ok(dst)
 }
 ```
 
@@ -1662,7 +1664,7 @@ if let Some((pfn, mt)) = pending {
 pub(crate) fn fork_region(
     src: &VirRegion,
     frames: &mut PageFrames,
-) -> Result<Box<VirRegion>, ForkError> {
+) -> Result<VirRegion, ForkError> {
     let mut dst = VirRegion::new(src.vaddr, src.length, src.flags);
     dst.def_memtype = src.def_memtype;
     dst.param = src.param.clone();
@@ -1694,7 +1696,7 @@ pub(crate) fn fork_region(
     }
 
     dst.set_writable(false);
-    Ok(Box::new(dst))
+    Ok(dst)
 }
 ```
 
@@ -1821,31 +1823,31 @@ PageSlot:
 
 ### 4.2 VirRegion 实现
 
+> 实际代码: `os/servers/vm/src/region/vir_region.rs`
+
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct VrFlags(pub u16);
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct VrFlags: u16 {
+        const WRITABLE = 0x001;
+        const PHYS64K = 0x004;
+        const LOWER16MB = 0x008;
+        const LOWER1MB = 0x010;
+        const SHARED = 0x040;
+        const UNINITIALIZED = 0x080;
+        const ANON = 0x100;
+        const DIRECT = 0x200;
+        const PREALLOC_MAP = 0x400;
+    }
+}
 
 impl VrFlags {
-    pub(crate) const WRITABLE: u16 = 0x001;
-    pub(crate) const PHYS64K: u16 = 0x004;
-    pub(crate) const LOWER16MB: u16 = 0x008;
-    pub(crate) const LOWER1MB: u16 = 0x010;
-    pub(crate) const SHARED: u16 = 0x040;
-    pub(crate) const UNINITIALIZED: u16 = 0x080;
-    pub(crate) const ANON: u16 = 0x100;
-    pub(crate) const DIRECT: u16 = 0x200;
-    pub(crate) const PREALLOC_MAP: u16 = 0x400;
-
-    pub(crate) const fn empty() -> Self { Self(0) }
-    pub(crate) const fn contains(&self, flag: u16) -> bool { (self.0 & flag) != 0 }
-    pub(crate) fn insert(&mut self, flag: u16) { self.0 |= flag; }
-    pub(crate) fn remove(&mut self, flag: u16) { self.0 &= !flag; }
-
-    pub(crate) fn to_alloc_flags(&self) -> u32 {
-        let mut af = PAF_ALIGN_64K;
-        if self.contains(Self::LOWER16MB) { af |= PAF_LOWER16MB; }
-        if self.contains(Self::LOWER1MB) { af |= PAF_LOWER1MB; }
-        if self.contains(Self::PHYS64K) { af |= PAF_ALIGN_64K; }
+    pub(crate) fn to_alloc_flags(&self) -> PageAllocFlags {
+        let mut af = PageAllocFlags::empty();
+        if self.contains(Self::PHYS64K) { af |= PageAllocFlags::ALIGN64K; }
+        if self.contains(Self::LOWER16MB) { af |= PageAllocFlags::LOWER16MB; }
+        if self.contains(Self::LOWER1MB) { af |= PageAllocFlags::LOWER1MB; }
+        if !self.contains(Self::UNINITIALIZED) { af |= PageAllocFlags::CLEAR; }
         af
     }
 }
@@ -1855,7 +1857,7 @@ pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
     PbCache { pfn: u32 },
-    File { inited: bool, offset: u64, clearend: u16 },
+    File { inited: bool, fdref_id: Option<u32>, offset: u64, clearend: u16 },
 }
 
 impl Default for VrParam {

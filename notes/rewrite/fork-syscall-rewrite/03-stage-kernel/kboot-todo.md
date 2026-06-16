@@ -96,7 +96,7 @@ VM 启动后
 
 ### P0 — 阻塞性（文档误导读者 / 代码有隐藏 bug）
 
-- [ ] **TODO #1: 01 文档修正 — UEFI 模块加载描述不准确**
+- [ ] **TODO: 01 文档修正 — UEFI 模块加载描述不准确**
 
   **Priority**: P0 | **Type**: 文档事实错误 | **File**: `01-boot-shim-bootstrap.md`
 
@@ -106,7 +106,7 @@ VM 启动后
 
   **Verify**: 对照 UEFI Spec §7.4（ImageHandle 只加载调用者指定的单个 image）和 Minix3 C 的 `boot.cfg`（GRUB `load_mods` 加载多个模块）。
 
-- [ ] **TODO #2: 01 文档结尾增加过渡节**
+- [ ] **TODO: 01 文档结尾增加过渡节**
 
   **Priority**: P0 | **Type**: 文档叙事断裂 | **File**: `01-boot-shim-bootstrap.md`
 
@@ -120,7 +120,7 @@ VM 启动后
 
   **Verify**: 对照 `minix3/minix/kernel/arch/i386/head.S:78-87` 和 `minix3/minix/kernel/main.c:96-324`。
 
-- [ ] **TODO #3: 撰写 02-boot-bridge.md（核心新文档）**
+- [ ] **TODO: 撰写 02-boot-bridge.md（核心新文档）**
 
   **Priority**: P0 | **Type**: 文档新建 | **File**: `02-boot-bridge.md`（新建）
 
@@ -136,7 +136,7 @@ VM 启动后
 
   **Verify**: 对照 `head.S`, `kernel.lds`, `main.c:96-324`, Redox bootloader 源码。
 
-- [ ] **TODO #4: 实现 trampoline（代码 P0）**
+- [ ] **TODO: 实现 trampoline（代码 P0）**
 
   **Priority**: P0 | **Type**: 代码语义缺失 | **File**: `os/kernel/src/lib.rs`, `os/kernel/src/arch/x86_64/trampoline.S`（新建）
 
@@ -150,7 +150,7 @@ VM 启动后
 
   **Verify**: QEMU + GDB 验证 RIP 在高地址，移除恒等映射后内核仍能运行。
 
-- [ ] **TODO #5: 独立 kernel ELF（代码 P0）**
+- [ ] **TODO: 独立 kernel ELF（代码 P0）**
 
   **Priority**: P0 | **Type**: 代码架构 | **File**: `os/kernel/Cargo.toml`, `os/kernel/src/link.ld`（新建）, `os/boot-shim/build.rs`
 
@@ -164,7 +164,7 @@ VM 启动后
 
   **Verify**: `readelf -l kernel.elf` 验证 VMA 是高地址，LMA 是低物理地址。
 
-- [ ] **TODO #6: boot-shim 加载 boot 模块（VM/PM/VFS/RS）**
+- [ ] **TODO: boot-shim 加载 boot 模块（VM/PM/VFS/RS）**
 
   **Priority**: P0 | **Type**: 代码语义缺失 | **File**: `os/boot-shim/src/`
 
@@ -182,7 +182,7 @@ VM 启动后
 
 ### P1 — 重要但不阻塞
 
-- [ ] **TODO #7: 撰写 03-kmain-boot.md**
+- [ ] **TODO: 撰写 03-kmain-boot.md**
 
   **Priority**: P1 | **Type**: 文档新建 | **File**: `03-kmain-boot.md`（新建）
 
@@ -192,7 +192,7 @@ VM 启动后
 
   **Verify**: 对照 `minix3/minix/kernel/main.c:96-324`。
 
-- [ ] **TODO #8: 撰写 04-vm-boot-protocol.md**
+- [ ] **TODO: 撰写 04-vm-boot-protocol.md**
 
   **Priority**: P1 | **Type**: 文档新建 | **File**: `04-vm-boot-protocol.md`（新建）
 
@@ -202,7 +202,7 @@ VM 启动后
 
   **Verify**: 对照 `minix3/minix/kernel/arch/i386/protect.c` 和 VM 侧源码。
 
-- [ ] **TODO #9: 原 02-page-table-kernel.md 重新定位为 05-runtime-cross-space.md**
+- [ ] **TODO: 原 02-page-table-kernel.md 重新定位为 05-runtime-cross-space.md**
 
   **Priority**: P1 | **Type**: 文档重组 | **File**: `02-page-table-kernel.md` → 重命名为 `05-runtime-cross-space.md`
 
@@ -210,7 +210,7 @@ VM 启动后
 
   **Fix**: 重命名为 05，在文档开头增加"前置条件"段（freepdes 来自 memory_init、ptproc 来自 arch_post_init），并引用 03-kmain-boot 和 04-vm-boot-protocol。
 
-- [ ] **TODO #10: 填写 KernelInfo.boot_modules（代码侧）**
+- [ ] **TODO: 填写 KernelInfo.boot_modules（代码侧）**
 
   **Priority**: P1 | **Type**: 代码实现 | **File**: `os/kernel/src/`, `minix-types/src/kernel_info.rs`
 
@@ -222,13 +222,13 @@ VM 启动后
 
 ### P2 — 优化
 
-- [ ] **TODO #11: 撰写 05-runtime-cross-space.md 的详细内容**
+- [ ] **TODO: 撰写 05-runtime-cross-space.md 的详细内容**
 
   **Priority**: P2 | **Type**: 文档内容 | **File**: `05-runtime-cross-space.md`（原 02）
 
   **问题**: 当前 02 的内容需要重新组织，增加前置条件说明，确保与 03 和 04 的引用关系正确。
 
-- [ ] **TODO #12: 临时文档 tmp-* 清理**
+- [ ] **TODO: 临时文档 tmp-* 清理**
 
   **Priority**: P2 | **Type**: 文档清理 | **File**: `tmp-*` 系列
 
@@ -346,7 +346,7 @@ GRUB 加载 kernel ELF 和所有 boot 模块，**全部从磁盘**。没有 `inc
 
 - [ ] **讨论项 #1**: kernel.bin 是否采用路径 A（独立 ELF + ESP 分区加载，与 VM/PM 统一）？
 - [ ] **讨论项 #2**: 如果采用路径 A，ESP 分区布局：`/EFI/BOOT/BOOTX64.EFI` (boot-shim), `/boot/kernel.elf`, `/boot/vm.bin`, `/boot/pm.bin`, ...？
-- [ ] **讨论项 #3**: TODO #5（独立 kernel ELF）和 TODO #6（boot-shim 加载 boot 模块）的代码实现是否可以合并成一个统一的 ELF 加载器？
+- [ ] **讨论项 #3**: TODO（独立 kernel ELF）和 TODO（boot-shim 加载 boot 模块）的代码实现是否可以合并成一个统一的 ELF 加载器？
 
 ### 5.8 已确认的决策
 
@@ -642,7 +642,7 @@ Minix3 C 的 head.S 用三行汇编完成切栈+跳高地址，Rust 版通过 tr
 → 详见 02-higher-half-kernel.md
 ```
 
-同时修正 §1.7.1 表格中"模块加载"行（见 §2 TODO #1）。
+同时修正 §1.7.1 表格中"模块加载"行（见 §2 TODO）。
 
 ### 7.6 时间线完整性验证
 

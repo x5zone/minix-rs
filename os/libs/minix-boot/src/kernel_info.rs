@@ -28,7 +28,12 @@ pub struct KernelInfo {
     /// First free page table root-level index after identity+kernel maps.
     /// C: kinfo.freepde_start = pg_mapkernel() — pre_init.c:233
     /// x86-64: PML4 index, aarch64: TTBR1 L0 index, riscv64: Sv39 VPN[2]
-    pub free_upper_idx: usize,
+    ///
+    /// `None` means the boot-shim has not yet computed this value.
+    /// In Minix3 C, `pg_mapkernel()` returns the index; the Rust boot-shim
+    /// currently does not compute it, so it is set to `None` and the kernel
+    /// must validate it before use.
+    pub free_upper_idx: Option<usize>,
 
     /// User-space stack top.
     /// C: kinfo.user_sp = USR_STACKTOP — pre_init.c:156
@@ -51,6 +56,27 @@ pub struct KernelInfo {
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: kinfo.module_list[] — pre_init.c memcpy from GRUB
     pub boot_modules: &'static [BootModule],
+
+    /// Physical address of the bootstrap (boot-shim) memory region.
+    /// C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
+    /// This memory is reclaimed via add_memmap() after boot completes.
+    pub bootstrap_start: PhysBytes,
+
+    /// Length of the bootstrap (boot-shim) memory region.
+    /// C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unpaged_start — pre_init.c:115-116
+    /// Added to free memory pool by add_memmap() in kmain Phase F.
+    pub bootstrap_len: u64,
+}
+
+impl KernelInfo {
+    /// Returns the first free page table root-level index after
+    /// identity+kernel maps, if it has been computed by the boot-shim.
+    ///
+    /// C: `kinfo.freepde_start` — set by `pg_mapkernel()` return value.
+    /// Returns `None` if the boot-shim has not yet computed this value.
+    pub fn free_upper_idx(&self) -> Option<usize> {
+        self.free_upper_idx
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

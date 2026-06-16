@@ -7,18 +7,17 @@
 //! # Why not just use Paging::map() directly?
 //!
 //! The Paging trait requires `&mut self`, but the global allocator (VmAllocator)
-//! only has `&self` (GlobalAlloc trait constraint). This module stores a raw
-//! pointer to VM's page table (registered during init) and provides free
-//! functions that unsafely convert it to `&mut`. This is safe because VM is
-//! single-threaded.
+//! only has `&self` (GlobalAlloc trait constraint). This module stores the page
+//! table in a module-level `Option<PageTable>` static and provides free
+//! functions that obtain `&mut PageTable` from it. This is safe because VM is
+//! single-threaded — only one mutable reference can exist at any time.
 //!
 //! # Storage stability
 //!
-//! The page table is stored in a module-level static (`VM_PAGE_TABLE_STORAGE`),
+//! The page table is stored in a module-level static (`VM_SELF_PT_STORAGE`),
 //! not inside VmServer. This ensures the page table has a stable address
-//! regardless of VmServer being moved. The pointer registered via
-//! `init_vm_self_pt()` points into this static storage and remains valid
-//! for the entire VM process lifetime.
+//! regardless of VmServer being moved. The `Option<PageTable>` is set once
+//! during init and remains `Some` for the entire VM process lifetime.
 //!
 //! # No recursion risk
 //!
@@ -26,40 +25,68 @@
 //! accessed via Direct Map (`vm_phys_to_virt(page_table_page_phys)`), not
 //! through HeapArena. Therefore there is no recursive dependency:
 //! HeapArena → vm_self_mappages → Paging::map → Direct Map (stable VA).
+//!
+//! # Design: Option<PageTable> vs AtomicPtr
+//!
+//! Previous implementation used `AtomicPtr<PageTable>` + `AtomicBool` +
+//! `AssumeSyncCell<MaybeUninit<PageTable>>` — a three-piece pattern with
+//! null-pointer sentinel (C-style) and `MaybeUninit` (unnecessary here
+//! since `Option<PageTable>` provides the same "uninitialized" state via
+//! Rust's type system). The current design:
+//!
+//! - Uses `AssumeSyncCell<Option<PageTable>>` — single static, no raw pointers,
+//!   no `MaybeUninit`, no sentinel values. `None` = not initialized, `Some(pt)`
+//!   = initialized. This is the Rust-idiomatic way to express "value may or may
+//!   not exist" without unsafe pointer manipulation.
+//! - All access goes through `get_pt_mut()` which returns `&mut PageTable`.
+//!   The `AssumeSyncCell::get_mut()` is safe because VM is single-threaded
+//!   (no concurrent `&mut` references can exist). No `unsafe` blocks needed
+//!   in the access functions — only in `init_vm_self_pt()` which writes the
+//!   `Some` value (unsafe due to `AssumeSyncCell::get()` returning a raw pointer).
 
-use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use minix_types::{AssumeSyncCell, PhysBytes, VirBytes};
 use crate::pagetable::{PageTable, PageFlags, PageTableError, Paging};
 
-static VM_SELF_PT: AtomicPtr<PageTable> = AtomicPtr::new(core::ptr::null_mut());
+/// Module-level storage for VM's own page table.
+///
+/// `None` before `init_vm_self_pt()` is called; `Some(pt)` afterwards.
+/// `AssumeSyncCell` is safe because VM is single-threaded — no concurrent
+/// access is possible.
+static VM_SELF_PT_STORAGE: AssumeSyncCell<Option<PageTable>> =
+    AssumeSyncCell::new(None);
 
-static VM_PAGE_TABLE_STORAGE: AssumeSyncCell<MaybeUninit<PageTable>> =
-    AssumeSyncCell::new(MaybeUninit::uninit());
-
-static VM_PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// Obtain a mutable reference to VM's page table.
+///
+/// # Panics
+///
+/// Panics if `init_vm_self_pt()` has not been called yet.
+fn get_pt_mut() -> &'static mut PageTable {
+    // SAFETY: VM is single-threaded (event loop model). No concurrent &mut
+    // references can exist. The AssumeSyncCell wrapper only exists to satisfy
+    // the `Sync` requirement for static items; the actual safety guarantee
+    // comes from the single-threaded execution model.
+    let opt = unsafe { &mut *VM_SELF_PT_STORAGE.get() };
+    opt.as_mut()
+        .expect("vm_self_pt: page table not initialized — call init_vm_self_pt() first")
+}
 
 /// Initialize VM's own page table in static storage.
 ///
-/// Creates a new PageTable, stores it in the module-level static,
-/// and registers the pointer. Must be called once during VmServer init,
-/// before any heap allocation that triggers HeapArena::grow().
+/// Creates a new PageTable, stores it in the module-level static.
+/// Must be called once during VmServer init, before any heap allocation
+/// that triggers HeapArena::grow().
 ///
 /// # Panics
 ///
 /// Panics if called more than once or if PageTable::new() fails.
 pub(crate) fn init_vm_self_pt() {
-    if VM_PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
-        return;
+    // SAFETY: VM is single-threaded. No concurrent access to VM_SELF_PT_STORAGE.
+    let opt = unsafe { &mut *VM_SELF_PT_STORAGE.get() };
+    if opt.is_some() {
+        panic!("init_vm_self_pt: called more than once");
     }
-
     let pt = PageTable::new().expect("init_vm_self_pt: failed to create page table");
-    unsafe {
-        core::ptr::write(VM_PAGE_TABLE_STORAGE.get(), MaybeUninit::new(pt));
-    }
-    let pt_ref = unsafe { (*VM_PAGE_TABLE_STORAGE.get()).assume_init_mut() };
-    VM_SELF_PT.store(pt_ref as *mut PageTable, Ordering::SeqCst);
-    VM_PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
+    *opt = Some(pt);
 }
 
 /// Map a single page into VM's own page table.
@@ -75,9 +102,7 @@ pub(crate) fn vm_self_mappages(
     phys: PhysBytes,
     flags: PageFlags,
 ) -> Result<(), PageTableError> {
-    let pt = VM_SELF_PT.load(Ordering::SeqCst);
-    assert!(!pt.is_null(), "vm_self_mappages: VM self page table not initialized");
-    unsafe { (*pt).map(va, phys, flags) }
+    get_pt_mut().map(va, phys, flags)
 }
 
 /// Unmap a single page from VM's own page table, returning the physical address.
@@ -89,9 +114,7 @@ pub(crate) fn vm_self_mappages(
 ///
 /// Panics if `init_vm_self_pt()` has not been called yet.
 pub(crate) fn vm_self_unmap(va: VirBytes) -> Result<PhysBytes, PageTableError> {
-    let pt = VM_SELF_PT.load(Ordering::SeqCst);
-    assert!(!pt.is_null(), "vm_self_unmap: VM self page table not initialized");
-    unsafe { (*pt).unmap(va) }
+    get_pt_mut().unmap(va)
 }
 
 /// Query a mapping in VM's own page table.
@@ -102,9 +125,7 @@ pub(crate) fn vm_self_unmap(va: VirBytes) -> Result<PhysBytes, PageTableError> {
 ///
 /// Panics if `init_vm_self_pt()` has not been called yet.
 pub(crate) fn vm_self_query(va: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-    let pt = VM_SELF_PT.load(Ordering::SeqCst);
-    assert!(!pt.is_null(), "vm_self_query: VM self page table not initialized");
-    unsafe { (*pt).query(va) }
+    get_pt_mut().query(va)
 }
 
 /// Unmap a range of pages from VM's own page table.
@@ -118,18 +139,19 @@ pub(crate) fn vm_self_unmappages(
     va_start: VirBytes,
     pages: usize,
 ) -> Result<(), PageTableError> {
-    let pt = VM_SELF_PT.load(Ordering::SeqCst);
-    assert!(!pt.is_null(), "vm_self_unmappages: VM self page table not initialized");
-    unsafe { (*pt).unmap_range(va_start, pages) }
+    get_pt_mut().unmap_range(va_start, pages)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::PhysBytes;
 
     #[test]
-    fn test_vm_self_mappages_not_initialized() {
-        assert!(VM_SELF_PT.load(Ordering::SeqCst).is_null());
+    fn test_vm_self_pt_not_initialized_by_default() {
+        // In test context, VM_SELF_PT_STORAGE starts as None.
+        // We cannot call get_pt_mut() without init — that would panic.
+        // Instead verify the storage is accessible.
+        let opt = unsafe { &*VM_SELF_PT_STORAGE.get() };
+        assert!(opt.is_none());
     }
 }

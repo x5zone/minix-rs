@@ -8,12 +8,24 @@
 //! and `do_getrusage()` (utility.c:426).
 
 use minix_types::{VirBytes, EINVAL, ESRCH, Endpoint, PhysBytes};
-use crate::vmproc::VmProcTable;
-use crate::region::{PageFrames, VrFlags};
+use crate::vmproc::{VmProcTable, EndpointError};
+use crate::region::PageFrames;
 use crate::alloc_page::VmPageAllocator;
-use crate::phys_mem::PhysMemStats;
+use crate::region::page_state::PAGE_SIZE;
 
 // ── Error type ───────────────────────────────────────────────────────
+//
+// QueryError maps to VmError via `From<QueryError> for VmError`,
+// then to C errno via `VmError::to_errno()`. The per-error `to_errno()`
+// method is intentionally omitted — the single source of truth is
+// `VmError::to_errno()` in `minix_types::ipc::vm`.
+//
+// Exception: `to_errno_for_rusage()` is context-dependent —
+// QueryError::ProcessNotFound maps to ESRCH in getrusage context
+// (C: utility.c:426) but EINVAL in other query contexts.
+// This cannot be expressed via `From<QueryError> for VmError` because
+// the mapping depends on the call site, not just the error variant.
+// The dispatcher uses `query_rusage_error_to_vm_error()` for getrusage.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryError {
@@ -24,20 +36,33 @@ pub(crate) enum QueryError {
 }
 
 impl QueryError {
-    pub(crate) fn to_errno(&self) -> i32 {
+    /// Context-dependent errno mapping for getrusage.
+    ///
+    /// C `do_getrusage()` (utility.c:426) returns ESRCH when the target
+    /// process is not found, while other query operations return EINVAL.
+    /// This cannot be unified into `From<QueryError> for VmError` because
+    /// the mapping depends on the call site.
+    pub(crate) fn to_errno_for_rusage(&self) -> i32 {
         match self {
-            Self::ProcessNotFound => EINVAL,
+            Self::ProcessNotFound => ESRCH,
             Self::NotMapped => EINVAL,
             Self::NotSupported => EINVAL,
             Self::InvalidQuery => EINVAL,
         }
     }
+}
 
-    pub(crate) fn to_errno_for_rusage(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            _ => self.to_errno(),
-        }
+// ── Endpoint-lookup error unification ──
+//
+// See `munmap.rs` for the full rationale. The same pattern is applied
+// here: `vm_isokendpt()` returns `EndpointError` (InvalidSlot or
+// DeadEndpoint), and most query handlers collapse both to
+// `QueryError::ProcessNotFound`. The getrusage context (ESRCH vs EINVAL)
+// is handled at the dispatcher's `query_rusage_error_to_vm_error` boundary,
+// not at the endpoint-lookup boundary.
+impl From<EndpointError> for QueryError {
+    fn from(_: EndpointError) -> Self {
+        QueryError::ProcessNotFound
     }
 }
 
@@ -58,13 +83,22 @@ pub(crate) struct StatsInfo {
     pub largest_contiguous: u32,
 }
 
+/// Per-process memory usage, aligned with Minix3's `struct vm_usage_info`
+/// (minix/include/minix/vm.h:48).
+///
+/// Field semantics match C's `get_usage_info()` (region.c:1395):
+/// - `total`: sum of mapped (present) page sizes across all regions
+/// - `common`: pages with refcount > 1 (shared between processes)
+/// - `shared`: common pages in regions with `VR_SHARED` flag (non-COW)
+/// - `virtual`: sum of all region lengths (total virtual address space)
+/// - `mvirtual`: virtual minus unmapped stack pages
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UsageInfo {
     pub total: VirBytes,
+    pub common: VirBytes,
     pub shared: VirBytes,
-    pub text: VirBytes,
-    pub data: VirBytes,
-    pub stack: VirBytes,
+    pub virtual_total: VirBytes,
+    pub mvirtual: VirBytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +145,7 @@ pub(crate) fn handle_get_phys(
     target: Endpoint,
     addr: VirBytes,
 ) -> Result<PhysBytes, QueryError> {
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
@@ -151,8 +184,7 @@ pub(crate) fn handle_get_refcount(
     target: Endpoint,
     addr: VirBytes,
 ) -> Result<u8, QueryError> {
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
@@ -168,7 +200,7 @@ pub(crate) fn handle_get_refcount(
     // In PFN model, refcount is tracked per-page in PageFrames.
     // Return the refcount of the first page as the region's refcount.
     let first_pfn = vr.physblocks.first()
-        .and_then(|s| s.as_ref())
+        .filter(|s| s.is_mapped())
         .map(|ps| ps.pfn);
     match first_pfn {
         Some(pfn) => {
@@ -198,6 +230,7 @@ pub(crate) fn handle_get_refcount(
 pub(crate) fn handle_info(
     table: &VmProcTable,
     page_alloc: &VmPageAllocator,
+    frames: &PageFrames,
     query: InfoQuery,
 ) -> Result<InfoResult, QueryError> {
     match query {
@@ -211,21 +244,67 @@ pub(crate) fn handle_info(
             }))
         }
         InfoQuery::Usage { target } => {
-            let slot = table.vm_isokendpt(target)
-                .map_err(|_| QueryError::ProcessNotFound)?;
+            let slot = table.vm_isokendpt(target)?;
             let active = table.get_active(slot)
                 .ok_or(QueryError::ProcessNotFound)?;
+
+            // C: get_usage_info() (region.c:1395) iterates all regions,
+            // then per-page within each region, accumulating statistics.
+            let mut total: u64 = 0;
+            let mut common: u64 = 0;
+            let mut shared: u64 = 0;
+            let mut virtual_total: u64 = 0;
+            let mut mvirtual: u64 = 0;
+
+            for vr in active.regions().iter() {
+                virtual_total = virtual_total.saturating_add(vr.length.0);
+                mvirtual = mvirtual.saturating_add(vr.length.0);
+
+                let is_shared_region = vr.flags.contains(
+                    crate::region::VrFlags::SHARED
+                );
+
+                for slot in &vr.physblocks {
+                    if !slot.is_mapped() {
+                        // C: unmapped stack pages are discounted from mvirtual.
+                        // is_stack_region() heuristic (region.c:1385):
+                        // vaddr == VM_STACKTOP - DEFAULT_STACK_LIMIT &&
+                        // length == DEFAULT_STACK_LIMIT.
+                        // In Rust, we use the same heuristic: the stack
+                        // region's end_addr() == active.region_top().
+                        if vr.end_addr() == active.region_top() {
+                            mvirtual = mvirtual.saturating_sub(PAGE_SIZE);
+                        }
+                        continue;
+                    }
+
+                    // Page is mapped → count towards total.
+                    total = total.saturating_add(PAGE_SIZE);
+
+                    // C: ph->ph->refcount > 1 → common.
+                    // We look up the refcount from PageFrames.
+                    if let Some(state) = frames.get(slot.pfn) {
+                        if state.refcount() > 1 {
+                            common = common.saturating_add(PAGE_SIZE);
+                            // C: common + VR_SHARED → shared (non-COW).
+                            if is_shared_region {
+                                shared = shared.saturating_add(PAGE_SIZE);
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok(InfoResult::Usage(UsageInfo {
-                total: active.total(),
-                shared: VirBytes(0),
-                text: VirBytes(0),
-                data: VirBytes(0),
-                stack: VirBytes(0),
+                total: VirBytes(total),
+                common: VirBytes(common),
+                shared: VirBytes(shared),
+                virtual_total: VirBytes(virtual_total),
+                mvirtual: VirBytes(mvirtual),
             }))
         }
         InfoQuery::Region { target, count, next } => {
-            let slot = table.vm_isokendpt(target)
-                .map_err(|_| QueryError::ProcessNotFound)?;
+            let slot = table.vm_isokendpt(target)?;
             let active = table.get_active(slot)
                 .ok_or(QueryError::ProcessNotFound)?;
 
@@ -286,8 +365,7 @@ pub(crate) fn handle_getrusage(
         return Ok(GetrusageResult::Ok);
     }
 
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
@@ -299,7 +377,11 @@ pub(crate) fn handle_getrusage(
             major_faults: active.major_fault(),
         }))
     } else {
-        // C: XXX TODO — children path not implemented
+        // Minix3 C also does not implement the children path (utility.c:455-461):
+        // "XXX TODO: return the fields for terminated, waited-for children
+        //  of the given process. We currently do not have this information!"
+        // C assumes PM clears the rusage struct before calling, so returning
+        // zeros is semantically equivalent to the C behavior.
         Ok(GetrusageResult::Data(ResourceUsage {
             max_rss_kb: 0,
             minor_faults: 0,
@@ -318,10 +400,13 @@ mod tests {
 
     #[test]
     fn test_query_error_errno() {
-        assert_eq!(QueryError::ProcessNotFound.to_errno(), EINVAL);
-        assert_eq!(QueryError::NotMapped.to_errno(), EINVAL);
-        assert_eq!(QueryError::NotSupported.to_errno(), EINVAL);
-        assert_eq!(QueryError::InvalidQuery.to_errno(), EINVAL);
+        // Tests the full error path: QueryError → From<QueryError> for VmError → VmError::to_errno()
+        use minix_types::{VmError, EINVAL, EFAULT, ESRCH};
+        assert_eq!(VmError::from(QueryError::ProcessNotFound).to_errno(), EINVAL);  // → InvalidProcess → EINVAL
+        assert_eq!(VmError::from(QueryError::NotMapped).to_errno(), EFAULT);        // → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(QueryError::NotSupported).to_errno(), EFAULT);     // → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(QueryError::InvalidQuery).to_errno(), EFAULT);     // → InvalidAddress → EFAULT
+        // Context-dependent mapping for getrusage (C: utility.c:426)
         assert_eq!(QueryError::ProcessNotFound.to_errno_for_rusage(), ESRCH);
     }
 
@@ -402,5 +487,63 @@ mod tests {
     fn test_is_pm() {
         assert!(is_pm(Endpoint::PM));
         assert!(!is_pm(Endpoint(100)));
+    }
+
+    #[test]
+    fn test_usage_info_fields_align_with_c() {
+        // Verify UsageInfo fields match C's struct vm_usage_info
+        // (minix/include/minix/vm.h:48):
+        //   vui_total, vui_common, vui_shared, vui_virtual, vui_mvirtual
+        let info = UsageInfo {
+            total: VirBytes(4096),
+            common: VirBytes(2048),
+            shared: VirBytes(1024),
+            virtual_total: VirBytes(8192),
+            mvirtual: VirBytes(6144),
+        };
+        assert_eq!(info.total.0, 4096);
+        assert_eq!(info.common.0, 2048);
+        assert_eq!(info.shared.0, 1024);
+        assert_eq!(info.virtual_total.0, 8192);
+        assert_eq!(info.mvirtual.0, 6144);
+    }
+
+    #[test]
+    fn test_usage_info_shared_semantics() {
+        // C semantics (region.c:1417-1420):
+        //   shared = pages where refcount > 1 AND region has VR_SHARED flag.
+        // This test verifies the field exists and can represent the C value.
+        let info = UsageInfo {
+            total: VirBytes(3 * 4096),  // 3 mapped pages
+            common: VirBytes(2 * 4096), // 2 pages with refcount > 1
+            shared: VirBytes(1 * 4096), // 1 of those 2 is VR_SHARED
+            virtual_total: VirBytes(4 * 4096),
+            mvirtual: VirBytes(4 * 4096),
+        };
+        // shared <= common (shared is a subset of common)
+        assert!(info.shared.0 <= info.common.0);
+        // common <= total (common is a subset of total mapped)
+        assert!(info.common.0 <= info.total.0);
+    }
+
+    #[test]
+    fn test_info_result_usage_construction() {
+        let usage = UsageInfo {
+            total: VirBytes(0),
+            common: VirBytes(0),
+            shared: VirBytes(0),
+            virtual_total: VirBytes(0),
+            mvirtual: VirBytes(0),
+        };
+        let result = InfoResult::Usage(usage);
+        if let InfoResult::Usage(u) = result {
+            assert_eq!(u.total.0, 0);
+            assert_eq!(u.common.0, 0);
+            assert_eq!(u.shared.0, 0);
+            assert_eq!(u.virtual_total.0, 0);
+            assert_eq!(u.mvirtual.0, 0);
+        } else {
+            panic!("expected InfoResult::Usage");
+        }
     }
 }

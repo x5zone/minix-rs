@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 minix-arch = { workspace = true, default-features = false }
+minix-plat = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
 minix-kernel = { workspace = true, default-features = false, features = ["qemu_test"] }

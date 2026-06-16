@@ -950,7 +950,7 @@ bitflags! {
 |----------|---------------|-------------|
 | 地址查找 | `find_slot(minv, maxv, length)` | `region_find_slot()` (region.c:399) |
 | 重叠检查 | `find_overlap(start, end)` | `nextvr->vaddr < offset` (break.c) |
-| 创建区域 | `insert(region)` | `map_page_region()` (region.c:463) |
+| 创建区域 | `insert(region)` → `Result` | `map_page_region()` (region.c:463) |
 | 查找区域 | `find(addr)` / `find_mut(addr)` | `map_lookup()` (region.c:616) |
 | 遍历区域 | `iter()` / `iter_mut()` | AVL 树遍历 |
 
@@ -1103,8 +1103,11 @@ fn handle_mmap(..., request: &VmMmapIn) -> Result<MmapResponse, MmapError> {
     };
 
     // 6. 创建区域: VirRegion::with_memtype + regions_mut().insert + add_total
+    // insert 内含 overlap 检查：对于 MAP_FIXED，unmap_range 已清除目标范围；
+    // 对于非 MAP_FIXED，find_slot 应找到无重叠的间隙，但 insert 会防御性检查。
     let region = VirRegion::with_memtype(vaddr, aligned_len, prot.to_vr_flags(flags), mt);
-    active.regions_mut().insert(region);
+    active.regions_mut().insert(region)
+        .expect("mmap: overlap already checked above");
     active.add_total(aligned_len);
     Ok(MmapResponse { mapped_addr: vaddr })
 }

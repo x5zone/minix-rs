@@ -12,13 +12,13 @@
 //! designed by analogy with the aarch64 port, following RISC-V
 //! privileged specification conventions.
 
-use minix_types::VirBytes;
+use minix_types::{VirBytes, PhysBytes};
 use minix_boot::{BootModule, KernelInfo};
 use crate::proc_arch::{
     ArchProcReset, ArchProcInit, BootProcArch,
     InitialRegState, InitialRegs, SegmentSelectors, VmLoadResult,
 };
-use crate::paging::Paging;
+use crate::paging::{Paging, PageFlags};
 
 /// RISC-V 64-bit process architecture implementation.
 pub struct Riscv64ProcArch;
@@ -98,16 +98,100 @@ impl BootProcArch for Riscv64ProcArch {
         // No C source — same logic as x86-64/ARM versions.
         // The ELF loading and ps_strings setup are identical
         // across architectures.
-        let _ = (module, kernel_info, paging);
+
+        // SAFETY: module.start points to the VM ELF image in physical memory.
+        // During boot, identity mapping covers this address range.
+        let image = unsafe {
+            core::slice::from_raw_parts(
+                module.start.0 as *const u8,
+                module.len,
+            )
+        };
+
+        let iter = match minix_elf::segment_iter(image) {
+            Ok(it) => it,
+            Err(_) => {
+                let stack_high = kernel_info.user_sp;
+                let sp = VirBytes(stack_high.0 - VM_STACK_SIZE as u64);
+                return VmLoadResult {
+                    pc: VirBytes(0),
+                    sp,
+                    ps_strings: VirBytes(sp.0 - 32),
+                    allocated_bytes: 0,
+                };
+            }
+        };
+
+        let entry = minix_elf::entry_point(image).unwrap_or(0);
+        let page_size = P::PAGE_SIZE as u64;
+        let mut total_allocated: usize = 0;
+
+        for seg in iter {
+            let flags = elf_flags_to_page_flags(seg.flags);
+            let vaddr_start = seg.vaddr;
+            let vaddr_end = seg.vaddr + seg.memsz;
+            let mut vaddr = vaddr_start & !(page_size - 1);
+            let mut file_offset = seg.offset;
+            let mut file_remaining = seg.filesz;
+
+            while vaddr < vaddr_end {
+                let paddr = PhysBytes(vaddr);
+                if let Ok(()) = paging.map(VirBytes(vaddr), paddr, flags) {
+                    total_allocated += page_size as usize;
+                }
+                if file_remaining > 0 {
+                    let copy_start = (vaddr - vaddr_start) as usize;
+                    let copy_len = core::cmp::min(
+                        file_remaining as usize,
+                        page_size as usize - (copy_start % page_size as usize),
+                    );
+                    if copy_start + copy_len <= seg.filesz as usize {
+                        let src_offset = file_offset as usize;
+                        let dst_ptr = vaddr as *mut u8;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                image.as_ptr().add(src_offset),
+                                dst_ptr,
+                                copy_len,
+                            );
+                        }
+                        file_offset += copy_len as u64;
+                        file_remaining -= copy_len as u64;
+                    }
+                }
+                vaddr += page_size;
+            }
+        }
 
         let stack_high = kernel_info.user_sp;
         let sp = VirBytes(stack_high.0 - VM_STACK_SIZE as u64);
+        let stack_flags = PageFlags::read_write();
+        let mut stack_addr = sp.0 & !(page_size - 1);
+        while stack_addr < stack_high.0 {
+            if let Ok(()) = paging.map(VirBytes(stack_addr), PhysBytes(stack_addr), stack_flags) {
+                total_allocated += page_size as usize;
+            }
+            stack_addr += page_size;
+        }
 
+        let ps_strings = VirBytes(sp.0 - 32);
         VmLoadResult {
-            pc: VirBytes(0),
+            pc: VirBytes(entry),
             sp,
-            ps_strings: VirBytes(sp.0 - 32),
-            allocated_bytes: 0,
+            ps_strings,
+            allocated_bytes: total_allocated,
         }
     }
+}
+
+/// Convert ELF segment flags to PageFlags.
+fn elf_flags_to_page_flags(elf_flags: u32) -> PageFlags {
+    let mut flags = PageFlags::PRESENT | PageFlags::USER_ACCESSIBLE;
+    if elf_flags & 0x2 != 0 {
+        flags |= PageFlags::WRITABLE;
+    }
+    if elf_flags & 0x1 != 0 {
+        flags |= PageFlags::EXECUTABLE;
+    }
+    flags
 }

@@ -1,3 +1,37 @@
+//! Physical memory allocator — module root.
+//!
+//! Provides the VM's physical page allocator with three interchangeable
+//! backends (`BitmapAllocator`, `BuddyAllocator`, `SegmentTreeAllocator`)
+//! behind a single `PhysAllocator` trait. The allocator is **boot-time
+//! configured** via Cargo features:
+//!
+//! - `bitmap_alloc` (default): compact bitmap, O(1) alloc, no contiguity
+//! - `buddy_alloc`: O(log n) alloc with power-of-two contiguity
+//! - `segment_tree_alloc`: O(log n) alloc with arbitrary contiguity
+//!
+//! All backends use a single trait (`PhysAllocator`) so the `PhysAlloc`
+//! enum can dispatch at runtime without `dyn` (zero-cost).
+//!
+//! Each submodule carries its own `//!` header explaining the role and
+//! the C-Rust alignment notes. This module's `PhysAlloc` dispatcher is
+//! the only place that knows about the three backends; callers use the
+//! trait and never touch the enum directly.
+//!
+//! # C Source Mapping
+//!
+//! - C `alloc.c` → `bitmap_alloc.rs` (default) or `buddy_alloc.rs`
+//! - C `alloc.c:alloc_mem` → `PhysAllocator::alloc_mem`
+//! - C `alloc.c:free_mem`   → `PhysAllocator::free_mem`
+//!
+//! # Module Structure
+//!
+//! - `types` — core types (`AlignedPhysBytes`, `PageAllocFlags`, `AllocError`)
+//! - `alloc_trait` — `PhysAllocator` trait + `PhysMemStats` struct
+//! - `bitmap_alloc` — bitmap backend (default)
+//! - `buddy_alloc` — buddy-system backend
+//! - `segment_tree_alloc` — segment-tree backend
+//! - `stats` — `MemStats` accumulator
+//! - `allocator_tests` — cross-backend parity tests
 pub(crate) mod types;
 pub(crate) mod alloc_trait;
 pub(crate) mod bitmap_alloc;
@@ -179,6 +213,7 @@ impl PhysAlloc {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub(crate) enum PhysAllocType {
     Bitmap,
     Buddy,

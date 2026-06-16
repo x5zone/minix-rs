@@ -1,7 +1,7 @@
 # 00-vm-overview: VM 整体架构概览
 
 > **分类**: VM整体层级
-> **源码**: `minix3/minix/servers/vm/`（24 个 .c 文件，198 个 C 函数）
+> **源码**: `minix3/minix/servers/vm/`（24 个 .c 文件，约 180 个 C 函数）
 > **说明**: VM 是什么、怎么工作、和谁协作——一份面向新读者的入口文档
 
 ---
@@ -24,7 +24,7 @@ Web Server                          VM Server
 
 和 Web Server 一样，VM 的核心业务逻辑就是**处理数据、响应请求**。只不过 VM 处理的是**物理页、页表、虚拟地址区域**而不是 JSON 和数据库。
 
-VM 不直接操作硬件。它看不到真正的物理内存——kernel 通过 IPC 传给它一组 `{ base, size }` 的描述数据，VM 在这些数据之上做决策：谁该得到多少内存、什么时候回收、页面之间怎么共享。
+VM 不直接操作硬件。它通过 kernel 提供的 Direct Map 间接访问物理内存（`vm_phys_to_virt()` 将物理地址映射到内核虚拟地址），但 VM 不自行管理物理地址空间布局——kernel 在启动时通过 IPC 传给它一组 `{ base, size }` 的描述数据，VM 在这些数据之上做决策：谁该得到多少内存、什么时候回收、页面之间怎么共享。
 
 ### 1.2 VM 在 Minix3 微内核中的位置
 
@@ -92,9 +92,10 @@ VM 是一个**单线程**进程。主循环（`run()`）独占 `&mut self`，每
 - `Rc` 替代 `Arc`（无跨线程共享）
 - `RefCell` 替代 `Mutex`（无并发访问）
 - `!Send` / `!Sync` 是合理的（数据不跨线程）
-- `AssumeSyncCell` 在单线程下安全
+- `AssumeSyncCell` / `UnsafeCell` 在单线程下安全（仅 VM 线程访问）
+- 进程表的 `UnsafeCell` + typestate 系统安全（单次迭代内独占访问）
 
-这条假设贯穿整个 VM 代码库。如果未来需要多线程，需要重构状态管理。
+这条假设贯穿整个 VM 代码库。违反单线程假设（如 spawn 线程、跨 async 边界共享引用）将引入 UB。详见 `lib.rs` 中的 "Single-threaded model" 文档。
 
 ### 1.5 协作关系
 

@@ -3,7 +3,10 @@
 //! Manages process virtual address space layout using a BTreeMap.
 //! Corresponds to Minix3's `vir_region` struct in `region.h`.
 //!
-//! PFN index model: uses `Vec<Option<PageSlot>>` instead of `Vec<Option<Box<PhysRegion>>>`.
+//! PFN index model: uses `Vec<PageSlot>` with `PageSlot::EMPTY` sentinel
+//! (pfn=PFN_NONE) instead of `Vec<Option<PageSlot>>`. This eliminates the
+//! Option discriminant overhead (4+ bytes per slot) while preserving the
+//! same semantics: `slot.is_mapped()` replaces `slot.is_some()`.
 
 use super::page_state::{PageFrames, PageSlot, PageFlags, PFN_NONE, PAGE_SIZE, PfnAllocator, PfnAllocError};
 use minix_types::{PhysBytes, VirBytes, UserSlot};
@@ -54,7 +57,10 @@ impl Default for VrParam {
 pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
     pub length: VirBytes,
-    pub physblocks: Vec<Option<PageSlot>>,
+    /// Per-page mapping slots. Uses `PageSlot::EMPTY` (pfn=PFN_NONE) as
+    /// sentinel for unmapped pages instead of `Option<PageSlot>`, saving
+    /// 4+ bytes of Option discriminant per slot.
+    pub physblocks: Vec<PageSlot>,
     pub flags: VrFlags,
     pub parent_slot: Option<UserSlot>,
     pub def_memtype: Option<&'static dyn MemType>,
@@ -82,7 +88,7 @@ impl core::fmt::Debug for VirRegion {
 impl VirRegion {
     pub(crate) fn new(vaddr: VirBytes, length: VirBytes, flags: VrFlags) -> Self {
         let pages = ((length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let physblocks = (0..pages).map(|_| None).collect();
+        let physblocks = alloc::vec![PageSlot::EMPTY; pages];
         Self {
             vaddr,
             length,
@@ -119,7 +125,7 @@ impl VirRegion {
         let added_pages = (extra.0 / PAGE_SIZE) as usize;
         self.physblocks.reserve(added_pages);
         for _ in 0..added_pages {
-            self.physblocks.push(None);
+            self.physblocks.push(PageSlot::EMPTY);
         }
         self.length = VirBytes(self.length.0 + extra.0);
         debug_assert_eq!(self.physblocks.len(), old_pages + added_pages);
@@ -163,7 +169,7 @@ impl VirRegion {
     ) {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         let slot = PageSlot::new(pfn, offset, Some(memtype));
-        self.physblocks[page_idx] = Some(slot);
+        self.physblocks[page_idx] = slot;
         if let Some(state) = frames.get_mut(pfn) {
             state.refcount = state.refcount.saturating_add(1);
         }
@@ -186,7 +192,7 @@ impl VirRegion {
         offset: VirBytes,
     ) -> Option<(u32, &'static dyn MemType)> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        let slot = self.physblocks[page_idx].take()?;
+        let slot = core::mem::replace(&mut self.physblocks[page_idx], PageSlot::EMPTY);
         if slot.is_mapped() {
             if let Some(state) = frames.get_mut(slot.pfn) {
                 if state.refcount > 0 {
@@ -207,18 +213,18 @@ impl VirRegion {
     pub(crate) fn map_lazy(&mut self, offset: VirBytes) {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         if page_idx < self.physblocks.len() {
-            self.physblocks[page_idx] = Some(PageSlot::new(PFN_NONE, offset, self.def_memtype));
+            self.physblocks[page_idx] = PageSlot::new(PFN_NONE, offset, self.def_memtype);
         }
     }
 
     pub(crate) fn get_slot(&self, offset: VirBytes) -> Option<&PageSlot> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        self.physblocks.get(page_idx).and_then(|opt| opt.as_ref())
+        self.physblocks.get(page_idx).filter(|s| s.is_mapped())
     }
 
     pub(crate) fn get_slot_mut(&mut self, offset: VirBytes) -> Option<&mut PageSlot> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        self.physblocks.get_mut(page_idx).and_then(|opt| opt.as_mut())
+        self.physblocks.get_mut(page_idx).filter(|s| s.is_mapped())
     }
 
     pub(crate) fn needs_cow(&self, frames: &PageFrames, offset: VirBytes) -> bool {
@@ -247,12 +253,20 @@ impl VirRegion {
         }
     }
 
-    pub(crate) fn prepare_cow(&mut self, frames: &PageFrames) {
-        // TODO: Set page table entries to read-only for all mapped writable pages.
-        // This triggers page faults on write, enabling CoW resolution.
+    pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {
+        // Mark all mapped pages with refcount > 1 as COW.
+        // This sets the COW flag on the PageState so that
+        // write_page_table_mappings() can map them read-only.
         // Equivalent to Minix3's pt_writemap() with ~PT_W flag in map_copy_region().
-        // Requires access to the page table (PageTable) to modify PTE flags.
-        let _ = (frames, &self.physblocks);
+        for slot in self.physblocks.iter() {
+            if slot.is_mapped() {
+                if let Some(state) = frames.get_mut(slot.pfn) {
+                    if state.refcount > 1 {
+                        state.flags.insert(PageFlags::COW);
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
@@ -305,13 +319,13 @@ impl VirRegion {
 
         let left_pages = (split_len.0 / PAGE_SIZE) as usize;
 
-        for (i, slot_opt) in self.physblocks.into_iter().enumerate() {
+        for (i, slot) in self.physblocks.into_iter().enumerate() {
             if i < left_pages {
-                left.physblocks[i] = slot_opt;
+                left.physblocks[i] = slot;
             } else {
                 let right_idx = i - left_pages;
                 if right_idx < right.physblocks.len() {
-                    right.physblocks[right_idx] = slot_opt;
+                    right.physblocks[right_idx] = slot;
                 }
             }
         }

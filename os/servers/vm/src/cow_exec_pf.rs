@@ -2,11 +2,14 @@
 //!
 //! Uses PageFrames + PageSlot for CoW resolution and page fault dispatch.
 
-use minix_types::{Endpoint, PhysBytes, VirBytes};
-use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PfnAllocError, PAGE_SIZE};
+use minix_types::{Endpoint, VirBytes};
+use crate::region::{VirRegion, PageFrames, PfnAllocator, PAGE_SIZE};
 use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
-use crate::phys_mem::AlignedPhysBytes;
+use crate::vmproc::VmProcTable;
+#[cfg(not(test))]
 use crate::direct_map::vm_phys_to_virt;
+#[cfg(not(test))]
+use crate::phys_mem::AlignedPhysBytes;
 
 /// VM page fault handler entry point.
 ///
@@ -20,13 +23,14 @@ pub(crate) fn handle_pagefault(
     alloc: &mut dyn PfnAllocator,
     fault_addr: VirBytes,
     write: bool,
+    table: &VmProcTable,
 ) -> Result<PagefaultAction, CowError> {
     let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
     let memtype = region.def_memtype
         .ok_or(CowError::NoMemType)?;
 
-    let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write)?;
+    let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write, table, alloc)?;
 
     match result {
         PagefaultResult::Handled => Ok(PagefaultAction::Handled),
@@ -184,6 +188,7 @@ impl From<CowCoreError> for CowError {
 
 #[cfg(not(test))]
 fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
+    debug_assert_ne!(src_pfn, dst_pfn, "copy_page_content: src and dst PFN must differ");
     // SAFETY: pfn_to_phys returns a page-aligned physical address (multiple of PAGE_SIZE).
     // AlignedPhysBytes::new_unchecked requires its argument to be page-aligned, which is
     // guaranteed by the PageFrames invariant that all PFNs map to page-aligned addresses.
@@ -255,6 +260,8 @@ mod tests {
     use super::*;
     use minix_types::PhysBytes;
     use crate::region::VrFlags;
+
+    use crate::region::PfnAllocError;
 
     struct TestAlloc { next: u32 }
     impl PfnAllocator for TestAlloc {

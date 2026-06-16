@@ -399,10 +399,11 @@ Minix3 的 `vm_acl` 字段用 `i32` 表示三种语义不同的状态，Rust 使
 /// - `System(mask)` → 系统进程 ACL 槽位
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AclState {
-    /// 未初始化状态。进程尚未被 RS 接管，暂时允许所有调用。
+    /// 未初始化状态。进程尚未被 RS 接管，仅允许 DEFAULT 范围内的调用。
     ///
     /// 这是生命周期状态，不是权限策略。
-    /// Minix3: `vm_acl == NO_ACL`
+    /// Minix3: `vm_acl == NO_ACL`（C 允许所有调用，但注释 "for now" 承认是临时放松）
+    /// Rust 改进: 限制为 DEFAULT 权限，防止未注册进程调用特权操作。
     Uninitialized,
 
     /// 默认权限。所有普通用户进程共享相同的权限配置。
@@ -436,6 +437,14 @@ pub(crate) enum AclState {
 1. **Minix3 兼容**：启动流程依赖此状态
 2. **RS 交互**：RS 在服务启动时才分配 ACL
 3. **渐进式重构**：先显式建模，再考虑消灭
+
+**Uninitialized vs Default 的权限差异**
+
+修复 C-11 安全漏洞后，`Uninitialized` 和 `Default` 的权限检查逻辑相同（都使用 `AclMask::DEFAULT`），但语义不同：
+- `Uninitialized` 是**生命周期状态**：进程尚未被 RS 管理，权限是"安全默认值"
+- `Default` 是**权限策略**：进程已被确认为普通用户进程，权限是"设计意图"
+
+保留两个状态的理由：未来 `Uninitialized` 可能需要更严格的限制（如只允许 `VM_BRK`），而 `Default` 保持不变。
 
 ### 3.3 AclMask 位标志
 
@@ -520,7 +529,7 @@ impl AclMask {
 }
 ```
 
-> `Uninitialized` 是特殊生命周期状态，`acl_check()` 直接放行不走位图，因此不需要 `ALL_ALLOWED` 常量。`mask()` 方法返回 `Option<AclMask>`，`Uninitialized` 返回 `None`：
+> `Uninitialized` 是特殊生命周期状态，`acl_check()` 使用 `AclMask::DEFAULT` 作为安全默认值（修复 C-11 后不再放行所有调用）。`mask()` 方法返回 `Option<AclMask>`，`Uninitialized` 返回 `None`（表示"尚未被显式赋权"而非"无权限"）：
 
 ```rust
     pub(crate) fn mask(&self) -> Option<AclMask> {
@@ -539,7 +548,7 @@ Minix3 的 `acl.c` 定义了 5 个函数，Rust 实现的对应关系如下：
 | Minix3 函数 | Rust 方法 | 说明 |
 |------------|----------|------|
 | `acl_init()` | `VmProc::vacant()` | 不需要独立函数。`VmProc::vacant()` 将 `vm_acl` 初始化为 `AclState::Uninitialized`，等价于 Minix3 的 `vmproc[i].vm_acl = NO_ACL`。全局 `acl_mask` 和 `acl_inuse` 数组在 Rust 中不存在（权限内联于 `AclState::System(AclMask)`），因此无需初始化。 |
-| `acl_check(vmp, call)` | `AclState::acl_check(&self, proc, call)` | 语义完全一致。见 3.5 节。 |
+| `acl_check(vmp, call)` | `AclState::acl_check(&self, endpoint, call)` | 语义一致。签名取 `endpoint` 而非 `&ActiveProc`，因为 ACL 检查仅依赖 endpoint 和 call 号。见 3.5 节。 |
 | `acl_set(vmp, mask, sys_proc)` | `AclState::acl_set(sys_proc, mask)` | 语义一致，但无需槽位管理。见 3.6 节。 |
 | `acl_fork(vmp)` | `AclState::acl_fork(&self)` | 语义完全一致。见 3.7 节。 |
 | `acl_clear(vmp)` | `AclState::acl_clear(&self)` | 语义简化：无需释放槽位。见 3.8 节。 |
@@ -552,17 +561,30 @@ impl AclState {
     ///
     /// Corresponds to Minix3's `acl_check()`.
     /// Returns `Ok(())` if allowed, `Err(VmError::PermissionDenied)` if not.
-    pub(crate) fn acl_check(&self, proc: &ActiveProc<'_>, call: u32) -> Result<(), VmError> {
-        if proc.endpoint() == Endpoint::VM {
+    ///
+    /// Takes `endpoint` rather than `&ActiveProc` — ACL checking only depends
+    /// on the caller's endpoint (to exempt VM itself) and the call number.
+    /// This decouples ACL logic from the process typestate hierarchy.
+    pub(crate) fn acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmError> {
+        if endpoint == Endpoint::VM {
             return Ok(());
         }
 
         match self {
             AclState::Uninitialized => {
-                if proc.endpoint() != Endpoint::RS {
-                    // TODO: Minix3 prints "VM: calling process %u has no ACL!"
+                // SECURITY FIX (C-11): Restrict to DEFAULT calls instead of allowing all.
+                // Minix3's NO_ACL allows all calls ("for now" — acl.c:44-53), but
+                // this is a known security relaxation. DEFAULT covers
+                // VM_EXIT/VM_FORK/VM_BRK/VM_EXEC_NEWMEM/VM_WILLEXIT/VM_MMAP/
+                // VM_MUNMAP — sufficient for early boot (RS needs VM_BRK) and
+                // user processes. Privileged calls (VM_MAP_PHYS, VM_RS_SET_PRIV,
+                // etc.) require explicit System(AclMask) assignment via acl_set.
+                let call_flag = AclMask::from_bits_truncate(1u64 << call);
+                if AclMask::DEFAULT.contains(call_flag) {
+                    Ok(())
+                } else {
+                    Err(VmError::PermissionDenied)
                 }
-                Ok(())
             }
             AclState::Default => {
                 let call_flag = AclMask::from_bits_truncate(1u64 << call);
@@ -589,8 +611,8 @@ impl AclState {
 
 | 步骤 | Minix3 C | Rust |
 |-----|----------|------|
-| VM 进程检查 | `vmp->vm_endpoint == VM_PROC_NR` | `proc.endpoint() == Endpoint::VM` |
-| NO_ACL 处理 | 打印警告，允许调用 | `Uninitialized` → 允许（TODO: 日志） |
+| VM 进程检查 | `vmp->vm_endpoint == VM_PROC_NR` | `endpoint == Endpoint::VM` |
+| NO_ACL 处理 | 打印警告，允许所有调用 ("for now") | `Uninitialized` → 仅允许 DEFAULT 范围调用（安全修复 C-11） |
 | USER_ACL 检查 | `GET_BIT(acl_mask[0], call)` | `DEFAULT.contains(from_bits_truncate(1 << call))` |
 | 系统 ACL 检查 | `GET_BIT(acl_mask[vm_acl], call)` | `mask.contains(from_bits_truncate(1 << call))` |
 | 返回值 | `OK` / `EPERM` | `Ok(())` / `Err(VmError::PermissionDenied)` |
@@ -723,7 +745,7 @@ Minix3 中 `acl_clear` 在 `acl_set` 内部被调用（先清后设），也在�
 | VmProc.acl 大小 | 4 bytes (i32) | ~16 bytes (enum + u64) |
 | 全局 ACL 表 | 64 × 2 × 4 = 512 bytes | 0 |
 | in_use 位图 | 8 bytes | 0 |
-| 权限检查 | `manager.check(&proc, call)` | `proc.acl().acl_check(&proc, call)` |
+| 权限检查 | `manager.check(&proc, call)` | `proc.acl().acl_check(proc.endpoint(), call)` |
 | Fork | `manager.fork(&parent, &mut child)` | `parent.acl().acl_fork()` |
 
 **API 变化**
@@ -741,7 +763,7 @@ match proc.acl() {
     AclState::Default => { ... }
     AclState::System(mask) => { ... }
 }
-proc.acl().acl_check(&proc, call)
+proc.acl().acl_check(proc.endpoint(), call)
 ```
 
 ---
@@ -797,7 +819,7 @@ VM（虚拟内存管理器）是 Minix3 的核心服务，负责管理所有进�
 │                      VM 服务器                               │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │ ACL 检查: AclState::check()                           │  │
-│  │ - Uninitialized: 允许所有（过渡态）                     │  │
+│  │ - Uninitialized: 仅允许 DEFAULT 范围调用（安全修复 C-11）│  │
 │  │ - Default: 只允许基本操作                               │  │
 │  │ - System(mask): 按位图检查                              │  │
 │  └───────────────────────────────────────────────────────┘  │
@@ -831,56 +853,61 @@ VM（虚拟内存管理器）是 Minix3 的核心服务，负责管理所有进�
 #[test]
 fn test_acl_check_uninitialized() {
     let state = AclState::Uninitialized;
-    let proc = get_active_proc(UserSlot::new(20));
+    const USER_EP: Endpoint = Endpoint(100);
 
-    // Uninitialized 允许所有调用
-    assert!(state.acl_check(&proc, 0).is_ok());
-    assert!(state.acl_check(&proc, 5).is_ok());
-    assert!(state.acl_check(&proc, 100).is_ok());
+    // DEFAULT calls are allowed
+    assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_BRK - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MUNMAP - VM_RQ_BASE).is_ok());
+
+    // Non-DEFAULT calls are denied (security fix: C-11)
+    assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_RS_SET_PRIV - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_err());
 }
 
 #[test]
 fn test_acl_check_vm_proc() {
     let state = AclState::Default;
-    let mut proc = get_active_proc(UserSlot::new(21));
-    proc.set_endpoint(Endpoint::VM);
 
-    // VM 进程总是允许
-    assert!(state.acl_check(&proc, 0).is_ok());
-    assert!(state.acl_check(&proc, 100).is_ok());
+    // VM endpoint always allowed
+    assert!(state.acl_check(Endpoint::VM, 0).is_ok());
+    assert!(state.acl_check(Endpoint::VM, 100).is_ok());
 }
 
 #[test]
 fn test_acl_check_default() {
     let state = AclState::Default;
-    let proc = get_active_proc(UserSlot::new(22));
+    const USER_EP: Endpoint = Endpoint(100);
 
     // Default 允许基本调用
-    assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_BRK - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_MUNMAP - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_BRK - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MUNMAP - VM_RQ_BASE).is_ok());
 
     // Default 禁止特权调用
-    assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_err());
-    assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_err());
 }
 
 #[test]
 fn test_acl_check_system() {
     let mask = AclMask::VM_MMAP | AclMask::VM_MAP_PHYS | AclMask::VM_RS_PREPARE;
     let state = AclState::System(mask);
-    let proc = get_active_proc(UserSlot::new(23));
+    const USER_EP: Endpoint = Endpoint(100);
 
     // 授权的调用
-    assert!(state.acl_check(&proc, VM_MMAP - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_MAP_PHYS - VM_RQ_BASE).is_ok());
-    assert!(state.acl_check(&proc, VM_RS_PREPARE - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MMAP - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_MAP_PHYS - VM_RQ_BASE).is_ok());
+    assert!(state.acl_check(USER_EP, VM_RS_PREPARE - VM_RQ_BASE).is_ok());
 
     // 未授权的调用
-    assert!(state.acl_check(&proc, VM_EXIT - VM_RQ_BASE).is_err());
-    assert!(state.acl_check(&proc, VM_FORK - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_EXIT - VM_RQ_BASE).is_err());
+    assert!(state.acl_check(USER_EP, VM_FORK - VM_RQ_BASE).is_err());
 }
 ```
 

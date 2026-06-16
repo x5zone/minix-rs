@@ -37,6 +37,10 @@ impl PostInitArch for X86_64PostInitArch {
         //
         // TODO: Replace with per-CPU variable accessor once SMP support is added.
         //       Currently stored as a kernel global under BKL protection.
+        //       Implementation needed:
+        //       1. Store ptproc as a static mutable pointer (protected by BKL)
+        //       2. Store vm_page_table.phys_root in a global for createpde()
+        //       3. Store vm_page_table.virt_root in a global for createpde()
 
         // C: pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
         // pg_info() writes the bootstrap page directory's physical address

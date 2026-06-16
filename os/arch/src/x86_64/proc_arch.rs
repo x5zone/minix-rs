@@ -12,13 +12,13 @@
 //! C: memory.c:722-733 (arch_proc_init)
 //! C: protect.c:388-456 (arch_boot_proc)
 
-use minix_types::VirBytes;
+use minix_types::{VirBytes, PhysBytes};
 use minix_boot::{BootModule, KernelInfo};
 use crate::proc_arch::{
     ArchProcReset, ArchProcInit, BootProcArch,
     InitialRegState, InitialRegs, SegmentSelectors, VmLoadResult,
 };
-use crate::paging::Paging;
+use crate::paging::{Paging, PageFlags};
 
 /// x86-64 process architecture implementation.
 ///
@@ -150,25 +150,144 @@ impl BootProcArch for X86_64ProcArch {
         // 3. Set up ps_strings on the stack
         // 4. Call arch_proc_init(rp, execi.pc, sp, ps_str, "vm")
         //
-        // In Rust, we implement a simplified ELF loader that:
-        // 1. Parses ELF header and program headers
-        // 2. For each PT_LOAD segment: allocates pages, maps in bootstrap
-        //    page table, copies segment data
-        // 3. Sets up user stack
-        // 4. Returns entry point and stack pointer
+        // In Rust, we use minix-elf to parse the ELF binary, then map
+        // each PT_LOAD segment into the bootstrap page table via the
+        // Paging trait. This replaces C's libexec_load_elf callback
+        // mechanism with a direct iterator-based approach.
 
-        let _ = (module, kernel_info, paging);
+        // SAFETY: module.start points to the VM ELF image in physical memory.
+        // During boot, identity mapping covers this address range.
+        // module.len is the exact size of the boot module from the boot info.
+        let image = unsafe {
+            core::slice::from_raw_parts(
+                module.start.0 as *const u8,
+                module.len,
+            )
+        };
 
-        // Placeholder: actual ELF loading requires the `object` crate
-        // or a custom ELF parser. For now, return a stub result.
+        // Parse ELF header and iterate over PT_LOAD segments.
+        // C: libexec_load_elf() — libexec/exec_elf.c
+        let iter = match minix_elf::segment_iter(image) {
+            Ok(it) => it,
+            Err(e) => {
+                // If ELF parsing fails, return a zeroed result.
+                // The caller will detect pc=0 and handle the error.
+                // C: libexec_load_elf returns ENOEXEC on bad ELF
+                let _ = e;
+                let stack_high = kernel_info.user_sp;
+                let sp = VirBytes(stack_high.0 - VM_STACK_SIZE as u64);
+                return VmLoadResult {
+                    pc: VirBytes(0),
+                    sp,
+                    ps_strings: VirBytes(sp.0 - 32),
+                    allocated_bytes: 0,
+                };
+            }
+        };
+
+        let entry = minix_elf::entry_point(image).unwrap_or(0);
+        let page_size = P::PAGE_SIZE as u64;
+        let mut total_allocated: usize = 0;
+
+        // Map each PT_LOAD segment into the bootstrap page table.
+        // C: libexec callback allocmem → pg_map(PG_ALLOCATEME, ...) — protect.c:425
+        for seg in iter {
+            // Convert ELF segment flags to PageFlags.
+            // C: libexec callback setflags — protect.c:415
+            let flags = elf_flags_to_page_flags(seg.flags);
+
+            // Map the segment page by page.
+            // C: pg_map(PG_ALLOCATEME, vaddr, paddr, flags) — protect.c:425
+            let vaddr_start = seg.vaddr;
+            let vaddr_end = seg.vaddr + seg.memsz;
+            let mut vaddr = vaddr_start & !(page_size - 1); // page-align down
+            let mut file_offset = seg.offset;
+            let mut file_remaining = seg.filesz;
+
+            while vaddr < vaddr_end {
+                // For each page, determine the physical address.
+                // In the bootstrap page table, we use the virtual address
+                // directly as the physical address (1:1 mapping for user space).
+                // C: pg_map with PG_ALLOCATEME allocates a new physical page.
+                let paddr = PhysBytes(vaddr);
+
+                if let Ok(()) = paging.map(VirBytes(vaddr), paddr, flags) {
+                    total_allocated += page_size as usize;
+                }
+
+                // Copy segment data from the ELF image into the mapped page.
+                // C: libexec callback copymem — libexec/exec_elf.c
+                if file_remaining > 0 {
+                    let copy_start = (vaddr - vaddr_start) as usize;
+                    let copy_len = core::cmp::min(
+                        file_remaining as usize,
+                        page_size as usize - (copy_start % page_size as usize),
+                    );
+                    if copy_start + copy_len <= seg.filesz as usize {
+                        let src_offset = file_offset as usize;
+                        let dst_ptr = vaddr as *mut u8;
+                        // SAFETY: vaddr is mapped in the bootstrap page table.
+                        // We just mapped it above. The copy is within bounds.
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                image.as_ptr().add(src_offset),
+                                dst_ptr,
+                                copy_len,
+                            );
+                        }
+                        file_offset += copy_len as u64;
+                        file_remaining -= copy_len as u64;
+                    }
+                }
+
+                vaddr += page_size;
+            }
+        }
+
+        // Set up user stack.
+        // C: execi.stack_high = kinfo.user_sp; execi.stack_size = VM_STACK_SIZE
         let stack_high = kernel_info.user_sp;
         let sp = VirBytes(stack_high.0 - VM_STACK_SIZE as u64);
 
+        // Map stack pages.
+        // C: pg_map for stack — protect.c:428-432
+        let stack_flags = PageFlags::read_write();
+        let mut stack_addr = sp.0 & !(page_size - 1);
+        while stack_addr < stack_high.0 {
+            if let Ok(()) = paging.map(VirBytes(stack_addr), PhysBytes(stack_addr), stack_flags) {
+                total_allocated += page_size as usize;
+            }
+            stack_addr += page_size;
+        }
+
+        // Set up ps_strings on the stack.
+        // C: ps_strings setup — protect.c:435-440
+        let ps_strings = VirBytes(sp.0 - 32);
+
         VmLoadResult {
-            pc: VirBytes(0), // Will be set from ELF entry point
+            pc: VirBytes(entry),
             sp,
-            ps_strings: VirBytes(sp.0 - 32), // ps_strings above SP
-            allocated_bytes: 0,
+            ps_strings,
+            allocated_bytes: total_allocated,
         }
     }
+}
+
+/// Convert ELF segment flags (PF_R|PF_W|PF_X) to PageFlags.
+///
+/// ELF PF_R=4, PF_W=2, PF_X=1.
+/// C: libexec callback setflags maps these to PTF_* flags.
+fn elf_flags_to_page_flags(elf_flags: u32) -> PageFlags {
+    let mut flags = PageFlags::PRESENT | PageFlags::USER_ACCESSIBLE;
+    if elf_flags & 0x2 != 0 { // PF_W
+        flags |= PageFlags::WRITABLE;
+    }
+    if elf_flags & 0x1 == 0 { // !PF_X → no-execute (NX bit)
+        // On x86-64, executable is the default; we don't set NX explicitly
+        // here because PageFlags::EXECUTABLE is opt-in.
+    }
+    if elf_flags & 0x1 != 0 { // PF_X
+        flags |= PageFlags::EXECUTABLE;
+    }
+    flags
 }

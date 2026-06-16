@@ -12,8 +12,8 @@
 //!
 //! Each process table is linked via `endpoint`.
 
-use minix_types::{Endpoint, Message, VirBytes};
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI8, Ordering};
+use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicI8, Ordering};
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
 
@@ -45,6 +45,10 @@ impl Default for ExtRegState {
 /// Process number type (corresponds to C's `proc_nr_t`).
 pub type ProcNr = i32;
 
+/// Sentinel value for "no process" in atomic queue pointers.
+/// Used by `p_nextready`, `p_caller_q`, `p_q_link` (AtomicI32).
+pub const NONE_PROC_NR: i32 = -1;
+
 /// Clock ticks type.
 pub type ClockTicks = u64;
 
@@ -52,8 +56,8 @@ pub type ClockTicks = u64;
 pub type CpuCycles = u64;
 
 /// Number of kernel tasks.
-/// TODO: Move to a shared constant (minix-types or kernel config).
-const NR_TASKS: usize = 5;
+/// Unified constant from minix_types::NR_TASKS (C: const.h:25).
+const NR_TASKS: usize = minix_types::NR_TASKS;
 
 /// Process number constants.
 /// Note: In Minix3, p_nr values are slot indices. Kernel tasks have negative
@@ -77,8 +81,46 @@ pub mod proc_nr {
 /// Boot image dimensions.
 /// C: minix/param.h: NR_BOOT_PROCS = NR_TASKS + LAST_SPECIAL_PROC_NR + 1
 ///    minix/com.h:  NR_BOOT_MODULES = INIT_PROC_NR + 1 (user-space modules only)
+///
+/// NR_BOOT_MODULES counts only user-space boot modules (DS, RS, PM, ..., INIT).
+/// Kernel tasks (ASYNCM, IDLE, CLOCK, SYSTEM, KERNEL) are hardcoded, not loaded
+/// from the multiboot module list.
+/// C: image[] in table.c has NR_BOOT_PROCS entries (kernel tasks + user modules).
+/// C: kinfo.module_list[] has only user-space modules (NR_BOOT_MODULES entries).
 pub const NR_BOOT_MODULES: usize = 12;
 pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
+
+/// Kernel task definitions (hardcoded, matching C's image[] in table.c).
+/// C: table.c — struct boot_image image[NR_BOOT_PROCS] = { ... }
+/// Kernel tasks are not loaded from multiboot modules — they are compiled
+/// into the kernel binary.
+pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS as usize] = &[
+    ("asyncm", -5),  // ASYNCM — async message completion notifications
+    ("idle",   -4),  // IDLE — runs when no other process can
+    ("clock",  -3),  // CLOCK — alarms and clock functions
+    ("system", -2),  // SYSTEM — system functionality requests
+    ("kernel", -1),  // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
+];
+
+/// User-space boot module process numbers (matching C's image[] in table.c).
+/// C: table.c — entries after kernel tasks, in boot image order.
+/// C: kinfo.module_list[i] corresponds to image[NR_TASKS + i].
+/// The proc_nr values are contiguous: DS=0, RS=1, PM=2, ..., INIT=11.
+/// C: minix/com.h — DS_PROC_NR=0, RS_PROC_NR=1, PM_PROC_NR=2, etc.
+pub const BOOT_MODULE_PROC_NRS: &[ProcNr; NR_BOOT_MODULES] = &[
+    0,   // DS_PROC_NR
+    1,   // RS_PROC_NR
+    2,   // PM_PROC_NR
+    3,   // SCHED_PROC_NR
+    4,   // VFS_PROC_NR
+    5,   // MEM_PROC_NR
+    6,   // TTY_PROC_NR
+    7,   // MIB_PROC_NR
+    8,   // VM_PROC_NR
+    9,   // PFS_PROC_NR
+    10,  // MFS_PROC_NR
+    11,  // INIT_PROC_NR
+];
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,6 +475,23 @@ impl Accounting {
         self.preempted.store(0, Ordering::Release);
     }
 
+    /// Mark this process as the current billable target (IDLE-side).
+    ///
+    /// Called from `bsp_finish_booting` step 2 (Doc 07 §3) to indicate
+    /// that until a real user process runs, accumulated time should be
+    /// billed to the IDLE kernel task.
+    ///
+    /// C: `get_cpulocal_var(bill_ptr) = get_cpulocal_var_ptr(idle_proc)` —
+    /// main.c:50.
+    ///
+    /// `record_enqueue(0)` here means "this is the initial enqueue state"
+    /// so the next `record_dequeue(now)` will credit 0 ticks to user time
+    /// (correct, since we are billing to the kernel). Real per-CPU wiring
+    /// lands with SMP/BKL; this stub is enough to make the type system happy.
+    pub fn bill_to_idle(&self) {
+        self.enter_queue.store(0, Ordering::Release);
+    }
+
     pub fn record_enqueue(&self, tsc: CpuCycles) {
         self.enter_queue.store(tsc, Ordering::Release);
     }
@@ -603,12 +662,63 @@ pub struct DeferArgs {
     pub r2: usize,
     pub r3: usize,
 }
+
+/// Process segment descriptor.
+///
+/// C: `struct segframe` — archtypes.h (x86: p_cr3/p_cr3_v, ARM: p_ttbr/p_ttbr_v)
+///
+/// In C, this is architecture-specific:
+/// - x86: `reg_t p_cr3` (page table root physical), `u32_t *p_cr3_v` (virtual)
+/// - ARM: `reg_t p_ttbr` (page table root physical), `u32_t *p_ttbr_v` (virtual)
+///
+/// In Rust, we unify both into a single struct with generic names.
+/// `phys_root` corresponds to p_cr3/p_ttbr, `virt_root` corresponds to p_cr3_v/p_ttbr_v.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessSegments {
+    /// Physical address of the page table root.
+    /// C: `p_seg.p_cr3` (x86) / `p_seg.p_ttbr` (ARM)
+    pub phys_root: PhysBytes,
+
+    /// Virtual address of the page table root (kernel-mapped).
+    /// C: `p_seg.p_cr3_v` (x86) / `p_seg.p_ttbr_v` (ARM)
+    /// `None` when the process has no private page table (kernel tasks).
+    pub virt_root: Option<VirBytes>,
+}
+
+impl Default for ProcessSegments {
+    fn default() -> Self {
+        Self {
+            phys_root: PhysBytes(0),
+            virt_root: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct KProcess {
     /// Process number (slot index).
     pub p_nr: ProcNr,
     /// Endpoint identifier.
     pub p_endpoint: Endpoint,
+    /// Process segment descriptor (page table root addresses).
+    /// C: `struct segframe p_seg` — proc.h:24
+    pub p_seg: ProcessSegments,
+
+    /// Privilege structure index.
+    /// C: `struct priv *p_priv` — proc.h:25
+    /// In C, this is a pointer to the process's privilege structure.
+    /// In Rust, we store the index into PrivTable and look up on demand.
+    /// `None` means the process has no assigned privilege (should not happen
+    /// for running processes; assigned during boot via `get_priv()`).
+    pub priv_id: Option<crate::kpriv::PrivId>,
+
+    /// Magic number for process pointer validation.
+    /// C: `int p_magic` — proc.h:127, `#define PMAGIC 0xC0FFEE1` — const.h:164
+    /// C: `proc_ptr_ok(p)` checks `(p)->p_magic == PMAGIC` — proc.h:174
+    /// In Rust, this is only present in debug builds for sanity checking.
+    #[cfg(debug_assertions)]
+    pub p_magic: u32,
+
     /// Runtime status flags.
     pub p_rts_flags: RtsFlags,
     /// Miscellaneous flags.
@@ -628,20 +738,33 @@ pub struct KProcess {
 
     pub p_dequeued: AtomicU64,
 
+    /// Last page-fault address (`CR2` on x86, `FAR` on ARM, `stval` on RISC-V).
+    /// C: implicit — read from CR2 in `pagefault()` (exception.c:59).
+    /// `None` means no pending page fault. Set by `page_fault::set_pagefault_pending`,
+    /// cleared by `page_fault::clear_pagefault_pending`.
+    pub p_fault_addr: Option<u64>,
+
     pub p_defer: DeferArgs,
 
     // IPC queue pointers
+    // SMP: These fields are accessed by the scheduler across CPUs.
+    // Using AtomicI32 with Ordering::Relaxed under BKL protection.
+    // -1 (NONE_PROC_NR) represents None, valid ProcNr values are >= 0.
+
     /// Next process pointer in ready queue.
     /// Used by scheduler to manage ready process list at same priority.
-    pub p_nextready: Option<ProcNr>,
+    /// C: `struct proc *p_nextready` — proc.h
+    pub p_nextready: AtomicI32,
 
     /// Sender queue head pointer.
     /// Points to head of process queue waiting to send message to this process.
-    pub p_caller_q: Option<ProcNr>,
+    /// C: `struct proc *p_caller_q` — proc.h
+    pub p_caller_q: AtomicI32,
 
     /// Sender queue link pointer.
     /// Links to next process in same sender queue.
-    pub p_q_link: Option<ProcNr>,
+    /// C: `struct proc *p_q_link` — proc.h
+    pub p_q_link: AtomicI32,
 
     // IPC endpoint fields
     /// Source endpoint for receiving message.
@@ -847,6 +970,12 @@ impl SigSet {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// Returns the raw u64 bitmap value.
+    /// Used for writing signal maps into IPC messages (m_sigcalls.map).
+    pub fn get(self) -> u64 {
+        self.0
+    }
 }
 
 impl RtsFlags {
@@ -862,9 +991,51 @@ impl RtsFlags {
         self.load() == 0
     }
 
-    // TODO: RTS_SET/RTS_UNSET in Minix3 also call dequeue/enqueue when
-    // the process transitions between runnable/non-runnable. Once the
-    // scheduler is implemented, these methods need scheduling integration.
+    /// Clears specific flags.
+    ///
+    /// # Two-level flag API: primitive (this method) vs scheduler-aware
+    ///
+    /// In Minix3, `RTS_SET`/`RTS_UNSET` are macros that wrap the flag
+    /// modification with `dequeue()`/`enqueue()` calls when the process
+    /// transitions between runnable and non-runnable states. The Rust
+    /// rewrite mirrors this at TWO levels:
+    ///
+    /// ## Level 1 (this method, primitive):
+    /// `RtsFlags::clear` is a pure primitive — it does NOT call the
+    /// scheduler. It is intended for hot paths where the caller knows
+    /// the flag transition does not affect runnability (e.g. clearing
+    /// `MF_REPLY_PEND` after reading a reply; clearing `MF_DELIVERMSG`
+    /// in `do_exec`). For those cases, the scheduler integration would
+    /// be a no-op anyway.
+    ///
+    /// ## Level 2 (high-level, with scheduler hook):
+    /// `ProcessTable::rts_unset` (in `proc_table.rs:130-`) is the
+    /// public API for "clear a flag and update the scheduler if the
+    /// process became runnable". It calls this primitive internally
+    /// and then calls `sched_enqueue` on the runnable transition.
+    /// This mirrors C's `RTS_UNSET` macro exactly:
+    ///
+    /// ```c
+    /// #define RTS_UNSET(rp, flags) \
+    ///     do {                                \
+    ///         if (is_runnable(rp)) clear_ipc_ref(rp, (flags)); \
+    ///         else {  RTS_UNSET(rp, flags); enqueue(rp); }     \
+    ///     } while (0)
+    /// ```
+    ///
+    /// (proc.h:142-152, paraphrased — see proc.h for exact source.)
+    ///
+    /// # When to use which
+    ///
+    /// | Use case                                  | API                  |
+    /// |-------------------------------------------|----------------------|
+    /// | IPC reply already in `p_delivermsg`        | `RtsFlags::clear`    |
+    /// | Misc flag (MF_*) transitions              | `RtsFlags::clear`    |
+    /// | SENDING/RECEIVING transitions in IPC      | `ProcessTable::rts_*` |
+    /// | PROC_STOP / SLOT_FREE / SIGNALED          | `ProcessTable::rts_*` |
+    ///
+    /// This split mirrors C's macro-level decomposition: a low-level
+    /// flag primitive plus a higher-level wrapper that adds scheduling.
     pub fn clear(&self, flags: RtsFlagsBits) {
         self.0.fetch_and(!flags.bits(), Ordering::AcqRel);
     }
@@ -875,8 +1046,13 @@ impl KProcess {
         Self {
             p_nr: nr,
             p_endpoint: endpoint,
+            p_seg: ProcessSegments::default(),
+            priv_id: None, // Assigned later via PrivTable::assign_static()
+            #[cfg(debug_assertions)]
+            p_magic: 0xC0FFEE1, // C: rp->p_magic = PMAGIC — proc.c:131
             p_rts_flags: RtsFlags::with(RtsFlagsBits::SLOT_FREE),
             p_misc_flags: MiscFlags::new(),
+            p_fault_addr: None, // No pending page fault at spawn.
             p_sched: SchedFields::new(),
             p_accounting: Accounting::new(),
             p_time: TimeStats::new(),
@@ -884,9 +1060,9 @@ impl KProcess {
             p_cpuavg: CpuAvg::new(),
             p_dequeued: AtomicU64::new(0),
             p_defer: DeferArgs::default(),
-            p_nextready: None,
-            p_caller_q: None,
-            p_q_link: None,
+            p_nextready: AtomicI32::new(NONE_PROC_NR),
+            p_caller_q: AtomicI32::new(NONE_PROC_NR),
+            p_q_link: AtomicI32::new(NONE_PROC_NR),
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
             p_pending: SigSet::empty(),
@@ -903,6 +1079,13 @@ impl KProcess {
             initial_ps_strings_reg: 0,
             initial_status: 0,
         }
+    }
+
+    /// Check if this is a kernel task (p_nr < 0).
+    /// C: iskernelp(p) = ((p) < BEG_USER_ADDR) — but Rust uses p_nr field
+    /// instead of address comparison (08-proc-macros.md §3.3).
+    pub fn is_kernel_task(&self) -> bool {
+        self.p_nr < 0
     }
 
     pub fn is_runnable(&self) -> bool {
@@ -1120,7 +1303,13 @@ impl KProcess {
         let mut child = Self {
             p_nr: child_nr,
             p_endpoint: child_endpoint,
+            p_seg: ProcessSegments::default(), // C: rpc->p_seg.p_cr3=0, p_cr3_v=NULL
+            priv_id: None, // Will be assigned USER_PRIV_ID for child (C: rpc->p_priv = priv_addr(USER_PRIV_ID))
+            #[cfg(debug_assertions)]
+            p_magic: 0xC0FFEE1, // C: rp->p_magic = PMAGIC — proc.c:131
             p_rts_flags: child_rts,
+            // Child starts with no pending page fault (C: no fork-time copy).
+            p_fault_addr: None,
             p_misc_flags: child_mf,
             p_sched: SchedFields {
                 priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
@@ -1138,9 +1327,9 @@ impl KProcess {
             p_dequeued: AtomicU64::new(0),
             p_defer: DeferArgs::default(),
             // IPC queue pointers: child is not queued, no callers, no links
-            p_nextready: None,
-            p_caller_q: None,
-            p_q_link: None,
+            p_nextready: AtomicI32::new(NONE_PROC_NR),
+            p_caller_q: AtomicI32::new(NONE_PROC_NR),
+            p_q_link: AtomicI32::new(NONE_PROC_NR),
             p_getfrom_e: parent.p_getfrom_e,
             p_sendto_e: parent.p_sendto_e,
             // p_pending cleared: corresponds to sigemptyset(&rpc->p_pending)
@@ -1441,14 +1630,14 @@ mod tests {
     #[test]
     fn test_fork_from_independent_queues() {
         let mut parent = KProcess::new(5, Endpoint(5));
-        parent.p_nextready = Some(3);
-        parent.p_caller_q = Some(7);
+        parent.p_nextready.store(3, Ordering::Relaxed);
+        parent.p_caller_q.store(7, Ordering::Relaxed);
 
         let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
 
-        assert_eq!(child.p_nextready, None);
-        assert_eq!(child.p_caller_q, None);
-        assert_eq!(child.p_q_link, None);
+        assert_eq!(child.p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(child.p_caller_q.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(child.p_q_link.load(Ordering::Relaxed), NONE_PROC_NR);
     }
 
     #[test]

@@ -113,8 +113,8 @@ VM 的 `Paging::map()` 和 `Paging::map_huge()` 未来接入真实架构实现�
 | `VM_SETCACHEPAGE` | 注册匿名内存页为缓存块 | 已 stub |
 | `VM_FORGETCACHEPAGE` | 使设备偏移范围的缓存页失效 | 已 stub（dispatcher 中已实现 dispatch_forgetcache）|
 | `VM_CLEARCACHE` | 清除设备的所有缓存页 | 已 stub（dispatcher 中已实现 dispatch_clearcache）|
-| `VM_REMAP` / `VM_REMAP_RO` | 共享内存映射（do_remap） | 需 remap 模块 |
-| `VM_PROCCTL` | 进程控制（VFS transid） | 需 VFS 事务机制 |
+| `VM_REMAP` / `VM_REMAP_RO` | 共享内存映射（do_remap） | ✅ **已实现 (2026-06-16)**: `dispatch_remap` / `dispatch_remap_ro` 完整实现 do_remap 语义 |
+| `VM_PROCCTL` | 进程控制（do_procctl） | ✅ **已实现 (2026-06-16)**: VMPPARAM_CLEAR + VMPPARAM_HANDLEMEM 完整实现 |
 | `VM_ADDDMA` / `VM_DELDMA` / `VM_GETDMA` | DMA 区域管理 | 需 DMA 模块 |
 
 > **注意**：`dispatch_forgetcache` 和 `dispatch_clearcache` 在 dispatcher.rs 中已有实现。CALLMAP 中缺失的是 RS 相关 handler 的 decode helper。
@@ -186,6 +186,7 @@ VM 的 `Paging::map()` 和 `Paging::map_huge()` 未来接入真实架构实现�
 |------|------|------|------|
 | 日志输出 | [03-acl.md](03-acl.md) L563 | `log::warn!` 不可用（no_std，`log` crate 未依赖）| 需添加 log crate 依赖或轻量日志设施 |
 | NO_ACL 处理 | [03-acl.md](03-acl.md) L593 | `Uninitialized` 允许调用（与 Minix3 行为一致）| ✅ 语义正确 |
+| ~~acl_check 过度约束~~ | acl 安全修复 | ~~`acl_check` 借用 `&ActiveProc<'_>` 过度约束~~ | ✅ 已修复: 签名改为 `acl_check(&self, endpoint: Endpoint, call: u32)` |
 
 ---
 

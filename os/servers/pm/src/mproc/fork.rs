@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn test_fork_ipc_reset() {
         let mut parent = Process::new(0, 100);
-        parent.ipc.reply = Some(minix_ipc::Message::default());
+        parent.ipc.reply = Some(minix_types::Message::default());
         parent.ipc.event_subscriber = Some(UserSlot::new(5));
         
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);

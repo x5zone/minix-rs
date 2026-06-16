@@ -5,6 +5,7 @@ members = [
     
     # 硬件抽象层
     "arch",
+    "plat",
     
     # 系统服务器（9个核心）
     "servers/pm",
@@ -22,10 +23,8 @@ members = [
     # 共享库
     "libs/minix-types",
     "libs/minix-boot",
-    "libs/minix-ipc",
     "libs/minix-sys",
     "libs/minix-rt",
-    "libs/minix-mock",
     "libs/minix-elf",
     
     # 集成测试
@@ -50,6 +49,7 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-protection",
     "qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-proc-init",
     
     # 用户态命令 - bin
     "commands/bin/cat",
@@ -87,12 +87,11 @@ repository = "https://github.com/minix-rs/os"
 # 核心库
 minix-types = { path = "libs/minix-types" }
 minix-boot = { path = "libs/minix-boot" }
-minix-ipc = { path = "libs/minix-ipc" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
-minix-mock = { path = "libs/minix-mock" }
 minix-elf = { path = "libs/minix-elf" }
 minix-arch = { path = "arch", default-features = false }
+minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }
 boot-shim = { path = "boot-shim", default-features = false }
 

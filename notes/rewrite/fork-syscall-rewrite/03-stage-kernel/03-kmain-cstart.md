@@ -243,9 +243,8 @@ static void idt_init(void)
 | `dpl` | 描述符特权级 | 0（内核）或 3（用户可触发） |
 | `ist` | Interrupt Stack Table 索引 | 0（不使用 IST）、2（DF 使用 IST2） |
 
-**gate_table_exceptions[]**（protect.c:107-130）：CPU 异常向量，如除零（vector 0, DPL=0）、断点（vector 3, DPL=3）、缺页（vector 14, DPL=0）等。
-
-**gate_table_pic[]**（protect.c:132-152）：PIC 中断向量（vector 32-47），DPL=3（用户可通过 `int $0x20` 等触发，但实际由硬件中断使用）。
+**gate_table_pic[]**（protect.c:107-125）：PIC 中断向量（vector 32-47），DPL=3（用户可通过 `int $0x20` 等触发，但实际由硬件中断使用）。
+**gate_table_exceptions[]**（protect.c:127-152）：CPU 异常向量，如除零（vector 0, DPL=0）、断点（vector 3, DPL=3）、缺页（vector 14, DPL=0）等。
 
 在 Rust 版中，`X86_64TrapEntry::init()` 完成相同功能：用 `set_gate()` 填充 IDT 条目，DPL 和 IST 配置与 C 版 `gate_table` 一致。
 - **步骤 12-15**：重建页表。为什么需要重建？因为 `pre_init()` 在低地址建立了页表，而 `prot_init()` 在高地址运行。重建确保页表结构在高地址也可访问。**在 Rust 版中，这一步已在 `arch_boot_impl()` 中完成，不需要重复。**
@@ -451,6 +450,8 @@ pub trait TrapEntryArch: Sized {
 > **为什么 `configure_syscall` 是独立方法**：x86-64 的系统调用入口由 MSR 配置（LSTAR MSR），与 IDT 中的异常入口完全独立；aarch64/riscv64 的系统调用走统一异常入口（SVC/ecall），无需额外配置。将系统调用入口作为独立方法，使架构差异体现在方法体内，调用者无需 `#[cfg]`。
 >
 > **为什么 `set_handler` 用 `InterruptVector` 枚举**：上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
+
+> **为什么 aarch64/riscv64 的 `set_handler` 是 no-op**：ARM64 使用固定异常向量表（VBAR_EL1 指向汇编定义的 16 个入口），RISC-V 使用 Direct 模式（stvec 指向统一入口）。这两种架构的中断分发在汇编层面完成，具体 handler 的路由由软件分发器在运行时完成，不需要像 x86-64 那样在 IDT 中动态修改门描述符。因此 `set_handler` 在 ARM64/RISC-V 上是空操作——硬件向量表在 `load()` 时一次性设置完毕。
 
 ### 4.4 三架构的"概念 → 代码"映射
 

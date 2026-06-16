@@ -64,7 +64,7 @@ x86 CPU 上电（实模式）
         │     └── return &kinfo
         │
         └── head.S: call kmain(&kinfo)
-              └── kmain()（main.c:103）→ 初始化进程表 → cstart() → switch_to_user()
+              └── kmain()（main.c:115）→ 初始化进程表 → cstart() → switch_to_user()
 ```
 
 **关键交接点（C 版）**：GRUB → 内核的交接通过 **Multiboot 协议**完成。内核在二进制文件头部嵌入一个 Multiboot Header（魔数 `0x1BADB002`，见 §2.0.1），GRUB 识别这个头部后就知道如何加载内核。启动完成后，GRUB 通过寄存器传递 `EAX=0x2BADB002`（确认是 Multiboot 启动）和 `EBX=multiboot_info_t 物理地址`（包含内存布局、模块列表等信息），这就是 `pre_init()` 接收到的两个参数。
@@ -774,7 +774,7 @@ pub trait HugePages: Paging {
 | 保留全部字段（1:1 翻译 `kinfo_t`） | UEFI 引导路径不产生 `mbi`/`param_buf` 等字段，强行保留需要 `Option<>` 包装，增加无意义复杂度 |
 | 保留 `mem_high_phys` 单独字段 | 可从 `memmap.last().end` 推导，冗余字段违反单一数据源原则 |
 
-`free_upper_idx` 统一起名（x86-64 = PML4 索引，aarch64 = TTBR1 L0 索引，riscv64 = VPN[2] 上界）。
+`free_upper_idx` 统一起名（x86-64 = PML4 索引，aarch64 = TTBR1 L0 索引，riscv64 = VPN[2] 上界）。类型为 `Option<usize>`：`None` 表示 boot-shim 尚未计算（C 中由 `pg_mapkernel()` 返回值设置），`Some(idx)` 表示已计算。
 
 **新增字段**（C 版 `kinfo_t` 中无直接对应，但信息来源可追溯）：
 
@@ -885,7 +885,7 @@ pub struct KernelInfo {
     pub kern_virt_base: VirBytes,               // 内核虚拟基址
     pub kern_phys_base: PhysBytes,              // 内核物理基址
     pub kern_size: u64,                         // 内核总大小（字节）。u64 与地址类型（PhysBytes/VirBytes）保持一致，避免 kern_virt_base + kern_size 等运算时类型转换
-    pub free_upper_idx: usize,                  // 页表根级第一个空闲索引（PML4 / TTBR1 L0 / VPN[2]）
+    pub free_upper_idx: Option<usize>,          // 页表根级第一个空闲索引。None = boot-shim 尚未计算（C 由 pg_mapkernel() 返回值设置）
     pub user_sp: VirBytes,                      // 用户栈顶地址
     pub kern_stack_top: VirBytes,               // 内核初始栈顶（虚拟地址），HigherHalf 切栈用
     pub syscall_entry: VirBytes,                // 系统调用处理程序入口虚拟地址（= kern_virt_base + offset）。内核元信息，所有架构一致记录；仅 x86-64 用它配置 LSTAR MSR，aarch64/riscv64 编译时确定入口，此字段仅作参考

@@ -1,3 +1,11 @@
+//! Cross-backend allocator parity tests.
+//!
+//! Verifies that all three backends (`BitmapAllocator`,
+//! `BuddyAllocator`, `SegmentTreeAllocator`) produce identical
+//! observable behavior on the same sequence of alloc/free requests.
+//! The `dyn`-free dispatch is checked at compile time by the trait
+//! impls; this module checks behavioral parity at runtime.
+//!
 use alloc::vec;
 use alloc::vec::Vec;
 use super::alloc_trait::PhysAllocator;
@@ -5,7 +13,7 @@ use super::bitmap_alloc::BitmapAllocator;
 use super::buddy_alloc::BuddyAllocator;
 #[cfg(feature = "segment_tree_alloc")]
 use super::segment_tree_alloc::SegmentTreeAllocator;
-use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
+use super::types::{PageAllocFlags, AlignedPhysBytes};
 use super::{CLICK_SIZE, BootMemRegion};
 
 fn make_regions(size_mb: usize) -> Vec<BootMemRegion> {

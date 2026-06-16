@@ -15,13 +15,19 @@
 //! which handles page faults by returning the pre-configured physical
 //! address directly — no page allocation needed.
 
-use minix_types::{Endpoint, VirBytes, PhysBytes, EPERM, EINVAL, ENOMEM, ESRCH};
-use crate::vmproc::VmProcTable;
+use minix_types::{Endpoint, VirBytes, PhysBytes};
+use crate::vmproc::{VmProcTable, EndpointError};
 use crate::region::{VirRegion, VrFlags, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_DIRECT;
 use crate::region::page_state::PAGE_SIZE;
 
+/// Errors from VM_MAP_PHYS operations.
+///
+/// All variants map to `VmError` via `From<MapPhysError> for VmError`,
+/// then to C errno via `VmError::to_errno()`. Per-error `to_errno()`
+/// method is intentionally omitted — the single source of truth is
+/// `VmError::to_errno()` in `minix_types::ipc::vm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MapPhysError {
     ProcessNotFound,
@@ -30,14 +36,12 @@ pub(crate) enum MapPhysError {
     OutOfMemory,
 }
 
-impl MapPhysError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            Self::PermissionDenied => EPERM,
-            Self::InvalidLength => EINVAL,
-            Self::OutOfMemory => ENOMEM,
-        }
+// ── Endpoint-lookup error unification ──
+//
+// See `munmap.rs` for the full rationale.
+impl From<EndpointError> for MapPhysError {
+    fn from(_: EndpointError) -> Self {
+        MapPhysError::ProcessNotFound
     }
 }
 
@@ -60,8 +64,7 @@ pub(crate) fn handle_map_phys(
     }
 
     let slot = table
-        .vm_isokendpt(target)
-        .map_err(|_| MapPhysError::ProcessNotFound)?;
+        .vm_isokendpt(target)?;
 
     let mut active = table
         .get_active(slot)
@@ -94,7 +97,8 @@ pub(crate) fn handle_map_phys(
     );
     region.param = crate::region::VrParam::Direct { phys: startaddr };
 
-    active.regions_mut().insert(region);
+    active.regions_mut().insert(region)
+        .expect("map_phys: overlap already checked above");
 
     Ok(VirBytes(vaddr.0 + offset))
 }
@@ -139,7 +143,8 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        active.init_page_table().unwrap();
+        // Skip init_page_table() — map_phys tests don't need page table access,
+        // and init_page_table() accesses mock physical memory causing SIGSEGV.
         active.init_regions();
         ep
     }
@@ -167,9 +172,11 @@ mod tests {
 
     #[test]
     fn test_map_phys_error_to_errno() {
-        assert_eq!(MapPhysError::PermissionDenied.to_errno(), EPERM);
-        assert_eq!(MapPhysError::OutOfMemory.to_errno(), ENOMEM);
-        assert_eq!(MapPhysError::InvalidLength.to_errno(), EINVAL);
-        assert_eq!(MapPhysError::ProcessNotFound.to_errno(), ESRCH);
+        // Tests the full error path: MapPhysError → From<MapPhysError> for VmError → VmError::to_errno()
+        use minix_types::{VmError, EPERM, ENOMEM, EFAULT, EINVAL};
+        assert_eq!(VmError::from(MapPhysError::PermissionDenied).to_errno(), EPERM);    // PermissionDenied → PermissionDenied → EPERM
+        assert_eq!(VmError::from(MapPhysError::OutOfMemory).to_errno(), ENOMEM);        // OutOfMemory → OutOfMemory → ENOMEM
+        assert_eq!(VmError::from(MapPhysError::InvalidLength).to_errno(), EFAULT);      // InvalidLength → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(MapPhysError::ProcessNotFound).to_errno(), EINVAL);    // ProcessNotFound → InvalidProcess → EINVAL
     }
 }

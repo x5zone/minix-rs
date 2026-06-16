@@ -56,8 +56,8 @@ fn build(release: bool) -> anyhow::Result<()> {
 
     // 编译库
     println!("📦 Building libraries...");
-    run_cargo(&["build", "-p", "minix-ipc"], release)?;
-    run_cargo(&["build", "-p", "minix-mock"], release)?;
+    run_cargo(&["build", "-p", "minix-types"], release)?;
+    run_cargo(&["build", "-p", "minix-plat"], release)?;
     run_cargo(&["build", "-p", "minix-sys"], release)?;
     run_cargo(&["build", "-p", "minix-rt"], release)?;
 

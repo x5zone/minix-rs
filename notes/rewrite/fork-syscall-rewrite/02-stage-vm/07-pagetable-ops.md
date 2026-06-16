@@ -82,7 +82,7 @@ exit 生命周期:
 
 ### 1.3 核心架构问题：内核如何访问任意进程的页目录
 
-> ⚠️ **阅读提示**: 本节描述的 `pagedir_mappings` 机制是 Minix3 在 32 位 x86 地址空间约束下的产物。minix-rs 目标为 x86-64，采用直接映射区方案（详见 3.0 节），不再使用此机制。本节粗略阅读即可，无需深究实现细节。
+> **阅读提示**: 本节描述的 `pagedir_mappings` 机制是 Minix3 在 32 位 x86 地址空间约束下的产物。minix-rs 目标为 x86-64，采用直接映射区方案（详见 3.0 节），不再使用此机制。本节粗略阅读即可，无需深究实现细节。
 
 理解 Minix3 页表操作的前提是理解一个架构层面的根本矛盾：
 
@@ -1217,10 +1217,10 @@ minix-rs 直接映射区方案下，内核将源/目标虚拟地址翻译为物�
 
 | 映射内容 | Minix3 `pt_mapkernel` | minix-rs `map_kernel` |
 |----------|----------------------|----------------------|
-| 内核代码/数据段 | ✅ 必须 | ✅ 必须 |
-| Kernel direct map（1GB huge pages, U/S=0, G=1） | ❌ 不存在 | ✅ 必须 |
-| `page_directories` 登记册 | ✅ 必须 | ❌ 不需要 |
-| `freepdes` 空闲槽位 | ✅ 必须预留 | ❌ 不需要 |
+| 内核代码/数据段 | 必须 | 必须 |
+| Kernel direct map（1GB huge pages, U/S=0, G=1） | 不存在 | 必须 |
+| `page_directories` 登记册 | 必须 | 不需要 |
+| `freepdes` 空闲槽位 | 必须预留 | 不需要 |
 
 Kernel direct map 设 Global 位（G=1），CR3 切换时不刷新这部分 TLB 条目。这是安全的，因为 kernel direct map 是"建立后只读不变量"——`map_kernel()` 建立后 VM 不再修改 kernel direct map 的 PTE/PDE/PDPT 表项。如果未来需要动态修改（如内存热插拔），需要设计显式的 TLB 刷新协议（跨核 shootdown）。但当前设计中，不变的东西不需要管理。
 
@@ -1538,9 +1538,9 @@ pub enum PageTableError {
 
 阶段 2: VM 自身页表建立（基于 kernel 提供的初始页表）
   - Paging::new()                    // 可选：如果需要替换初始页表
-  - map_kernel()                     // ⚠️ TODO（当前仅有 Mock 实现）
-  - VM direct map 扩展               // ⚠️ TODO（物理内存 > 1GB 时需要）
-  - bind_to_process()                // ✅ 已定义（Mock 中为 no-op）
+  - map_kernel()                     // TODO（当前仅有 Mock 实现）
+  - VM direct map 扩展               // TODO（物理内存 > 1GB 时需要）
+  - bind_to_process()                // 已定义（Mock 中为 no-op）
 
 阶段 3: （未来）SMP 其他 CPU 的页表同步
 ```
@@ -1699,8 +1699,8 @@ Minix3 的 `pt_clearmapcache`（§2.4.4）通过 `VMCTL_CLEARMAPCACHE` 通知内
 
 | 层级 | 机制 | 当前状态 |
 |------|------|---------|
-| 本地 CPU | `Paging::flush_tlb()` / `flush_tlb_addr()` | ✅ 已定义在 trait 中 |
-| 跨 CPU（SMP） | TLB shootdown 协议 | ❌ 未实现 |
+| 本地 CPU | `Paging::flush_tlb()` / `flush_tlb_addr()` | 已定义在 trait 中 |
+| 跨 CPU（SMP） | TLB shootdown 协议 | 未实现 |
 
 SMP TLB shootdown 不属于 `Paging` trait 或 07 的范畴——VM 运行在 ring 3，不能直接发 IPI，需要通过 syscall 请求 kernel 执行。shootdown 协议涉及 kernel 的调度器、IPI 中断处理等，属于 kernel-VM 协议设计。当前阶段（单核）不需要此协议；SMP 支持时需要设计 `sys_tlb_shootdown()` 系统调用。
 

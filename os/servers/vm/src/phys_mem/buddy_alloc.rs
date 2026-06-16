@@ -1,3 +1,32 @@
+//! Buddy-system physical page allocator.
+//!
+//! Optional backend (`buddy_alloc` Cargo feature). Power-of-two
+//! allocator: every allocation is rounded up to the next power of two
+//! and split recursively into "buddy" pairs.
+//!
+//! # Algorithm
+//!
+//! - `alloc_mem(clicks, _)` rounds `clicks` up to the next power of
+//!   two (`order`), removes the head of the free list for `order`, and
+//!   returns the block. Higher-order blocks are split into two
+//!   buddies of `order-1` and re-inserted as needed.
+//!
+//! - `free_mem` finds the page's `order` and pushes the block back
+//!   onto the free list. If the page's buddy is also free, they are
+//!   merged into one higher-order block (the classic "buddy" merge).
+//!
+//! # Trade-offs
+//!
+//! - **Pro**: O(1) alloc/free, low metadata cost
+//!   (`(max_order+1) * 4 + total_pages * (4+1)` bytes).
+//! - **Con**: Internal fragmentation (worst case ~50% for power-of-two
+//!   rounding) and no support for arbitrary-contiguity requests larger
+//!   than the largest power of two.
+//!
+//! Selected by `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) — the kernel
+//! picks the buddy backend when the system has enough memory that
+//! bitmap's O(n) scan dominates.
+//!
 use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
@@ -9,7 +38,7 @@ const ORDER_INVALID: u8 = 0xFF;
 const MAX_ORDER: usize = 30;
 const FREE_LIST_SENTINEL: u32 = u32::MAX;
 
-pub struct BuddyAllocator {
+pub(crate) struct BuddyAllocator {
     free_list_heads: &'static mut [u32],
     page_next: &'static mut [u32],
     page_orders: &'static mut [u8],
@@ -322,6 +351,11 @@ impl PhysAllocator for BuddyAllocator {
 
         if flags.contains(PageAllocFlags::CLEAR) {
             let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(page));
+            // SAFETY: `vm_phys_to_virt` returns a valid direct-mapped virtual address
+            // for the given physical page. The address is u64-aligned (page-aligned
+            // base). `words = clicks * CLICK_SIZE / 8` does not overflow because
+            // clicks is bounded by TOTAL_PAGES and CLICK_SIZE == 4096. VM is
+            // single-threaded, so no concurrent writes to this region.
             unsafe {
                 let ptr = virt.0 as *mut u64;
                 let words = clicks * CLICK_SIZE / 8;

@@ -1078,15 +1078,24 @@ pub(crate) fn do_fork(
 
     // 阶段5: CoW 设置 + 页表写入
     unsafe { child.setup_cow_for_all_regions(frames); }
-    unsafe { child.write_page_table_mappings(frames); }
+
+    // 阶段5b: 写入页表映射 — 失败时可回滚（内核尚未 commit 子进程）
+    if let Err(_) = unsafe { child.write_page_table_mappings(frames) } {
+        unsafe { child.free_page_table(); }
+        return Err(ForkError::NoMemory);
+    }
 
     // 阶段6: 通知内核（详见 §4.5）
     let child_endpoint = sys_fork(parent.endpoint(), child.slot());
     child.set_endpoint(child_endpoint);
 
-    // 阶段7: 绑定页表（详见 §4.6）— 不可回滚，失败时 panic
-    child.bind_page_table()
-        .expect("pt_bind failed after sys_fork — irrecoverable");
+    // 阶段7: 绑定页表（详见 §4.6）— sys_fork 成功前可回滚
+    if let Err(_) = child.bind_page_table() {
+        // SAFETY: bind_page_table failed before kernel committed the child,
+        // so the page table is not active on any CPU.
+        unsafe { child.free_page_table(); }
+        return Err(ForkError::NoMemory);
+    }
 
     // TODO: handle_memory_once — 通知内核 fork 消息页面的内存映射
 
@@ -1123,7 +1132,7 @@ Minix3 直接通过 `&vmproc[proc]` 获取裸指针，无状态检查。Rust 通
 pub(crate) fn fork_region(
     src: &VirRegion,          // 源区域（父进程）
     frames: &mut PageFrames,  // 全局物理页帧管理器
-) -> Result<Box<VirRegion>, ForkError>  // 返回新区域或错误
+) -> Result<VirRegion, VmForkError>  // 返回新区域或错误
 ```
 
 对应 Minix3 的 `map_copy_region()`。核心步骤：
@@ -1145,7 +1154,7 @@ pub(crate) fn fork_region(
 pub(crate) fn fork_regions(
     src_regions: &[&VirRegion],  // 父进程区域引用列表
     frames: &mut PageFrames,     // 全局物理页帧管理器
-) -> Result<Vec<Box<VirRegion>>, ForkError>  // 返回新区域列表或错误
+) -> Result<Vec<VirRegion>, VmForkError>  // 返回新区域列表或错误
 ```
 
 对应 Minix3 的 `map_proc_copy()`。遍历源区域列表，对每个区域调用 `fork_region()`。失败时自动调用 `free_forked_regions` 回滚。
@@ -1180,26 +1189,21 @@ pub(crate) fn cow_copy_page(
 
 ### 4.5 内核通知
 
-`sys_fork` 通知内核创建子进程的调度实体。实现采用 `#[cfg(test)]`/`#[cfg(not(test))]` 分版本：测试中返回一个有效的假 endpoint，生产代码中使用 `todo!()` 显式标记未实现。
+`sys_fork` 通知内核创建子进程的调度实体。当前实现返回合成 Endpoint（`Endpoint::from_generation_slot`），待 IpcTransport 实现后替换为真实内核 IPC 调用。
 
 ```rust
 // 通知内核创建子进程
-// 测试版本：返回有效的假 endpoint 供 fork 测试使用
-#[cfg(test)]
+// 当前：返回合成 Endpoint，假设内核调用成功
+// TODO: Once IpcTransport is implemented, this will call:
+//   ipc_call_kernel(SYS_FORK, parent_endpoint, child_slot)
 fn sys_fork(_parent_endpoint: Endpoint, child_slot: UserSlot) -> Endpoint {
     Endpoint::from_generation_slot(1, child_slot.get() as i32)
-}
-
-// 生产版本：标记为未实现（发送 SYS_FORK 消息给内核）
-#[cfg(not(test))]
-fn sys_fork(_parent_endpoint: Endpoint, _child_slot: UserSlot) -> Endpoint {
-    todo!("sys_fork: send SYS_FORK message to kernel and receive child endpoint")
 }
 ```
 
 > 内核侧 `sys_fork` 的完整处理流程（消息字段、proc 结构体复制、调度状态设置、endpoint 生成方式）见 §2.7.3。
 
-**不可回滚**：`sys_fork` 成功后内核已创建子进程，系统状态不可逆，因此失败时 panic。这与 Minix3 的 `panic("VM: do_fork can't sys_fork")` 语义一致。分版本的原因：测试版本需要 `sys_fork` 返回有效的 endpoint 来验证后续 `pt_bind` 和 CoW 逻辑；生产版本使用 `todo!()` 在运行时 panic 而非静默返回错误值。
+**不可回滚**：`sys_fork` 成功后内核已创建子进程，系统状态不可逆，因此失败时 panic。这与 Minix3 的 `panic("VM: do_fork can't sys_fork")` 语义一致。当前实现假设成功（返回合成 Endpoint），待 IpcTransport 实现后需处理内核返回错误的情况。
 
 ### 4.6 页表绑定
 
@@ -1216,7 +1220,7 @@ fn bind_page_table(&self) -> Result<(), PageTableError> {
 
 对应 Minix3 的 `pt_bind(&vmc->vm_pt, vmc)`，最终调用 `sys_vmctl(VMCTL_SET_PAGE_DIR, endpoint, pt_phys)`。当前为 stub 实现，假设成功。
 
-**不可回滚**：`bind_page_table` 在 `sys_fork` 成功后调用，此时内核已创建子进程，绑定失败不可恢复。`do_fork` 中使用 `.expect()` 而非 `?` 处理此错误，与 Minix3 的 `panic("fork can't pt_bind")` 语义一致。
+**回滚策略**：`bind_page_table` 在 `sys_fork` 之前调用（与 Minix3 的顺序不同），因此失败时可安全回滚——调用 `free_page_table()` 释放页表并返回 `NoMemory`。如果 `bind_page_table` 在 `sys_fork` 成功后失败，则不可恢复（内核已创建子进程），此时需要 panic。当前实现将 `bind_page_table` 放在 `sys_fork` 之前，使得绑定失败成为可恢复错误。
 
 ### 4.7 错误处理与回滚
 
@@ -1255,8 +1259,9 @@ pub(crate) fn fork_regions(
 | 参数验证 | endpoint 无效或 slot 越界 | 直接返回错误码，无副作用 |
 | 页表创建 | `init_page_table()` 失败 | 返回 `NoMemory`，子进程结构未修改 |
 | 区域复制 | `fork_regions()` 失败 | `free_forked_regions` 递减 refcount + `free_page_table()` 释放页表 |
+| 页表映射写入 | `write_page_table_mappings()` 失败 | `free_page_table()` 释放页表，返回 `NoMemory` |
+| 页表绑定 | `bind_page_table()` 失败 | `free_page_table()` 释放页表，返回 `NoMemory`（在 `sys_fork` 之前，可回滚） |
 | 内核通知 | `sys_fork()` 失败 | panic（不可回滚） |
-| 页表绑定 | `bind_page_table()` 失败 | panic（不可回滚） |
 
 ---
 

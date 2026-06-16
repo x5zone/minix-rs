@@ -51,7 +51,7 @@ VM 管理内存，VFS 管理文件。当两者交汇时——**文件映射（mm
 |------|------|
 | 19-cow-exec-pagefault | exec 缺页也需要 VFS 交互 |
 | 19-vm-munmap | munmap 文件映射区域时调用 fdref_deref → vfs_request(FDCLOSE) |
-| 14-phys-region | PhysBlock 引用计数在文件映射中的特殊处理 |
+| 10-phys-pagestate | PhysBlock 引用计数与 `pb_unreferenced()` 完整源码分析（§2.5），文件映射中 ev_unreference 的特殊处理 |
 | 12-vir-region | VrParam::File 存储文件映射参数 |
 
 ---
@@ -652,7 +652,7 @@ int do_vfs_mmap(message *m)
 - `activate()` 从 `queued` 取出第一个请求设为 `active`，通过 IPC 发送给 VFS
 - `handle_reply()` 取出 `active`，返回回调函数+状态供调用方执行，然后 `activate()` 下一个
 
-**与当前代码的差异**：~~当前 `vfs_queue.rs` 只有 `pending: VecDeque`，没有 `active` 字段，`handle_reply` 通过 `remove_by_caller(endpoint)` 查找请求而非匹配 `active`。这违反了串行语义。~~ 已修复：`VfsRequestQueue` 现在有 `active: Option<VfsRequest>` + `queued: VecDeque<VfsRequest>`，`handle_reply` 通过 `active.req_id` 匹配。
+**与当前代码的差异**：`VfsRequestQueue` 现在有 `active: Option<VfsRequest>` + `queued: VecDeque<VfsRequest>`，`handle_reply` 通过 `active.req_id` 匹配，符合串行语义。
 
 **C 源码依据**：§2.1 的 `static struct vfs_request_node *first_queued, *active;` 和 `do_vfs_reply` 中 `orignode = active` 的匹配逻辑。
 
@@ -805,7 +805,7 @@ pub(crate) enum VfsRequestType {
 }
 ```
 
-**与当前代码的差异**：~~当前 `vfs_queue.rs` 有 `ReadPage/WritePage/SyncPage/FdLookup`，其中 `WritePage` 和 `SyncPage` 在 Minix3 的 VM-VFS 交互中不存在。~~ 已修复：`VfsRequestType` 已改为 `FdLookup/FdIo/FdClose`，与 Minix3 的三种请求类型对齐。
+**与当前代码的差异**：`VfsRequestType` 已改为 `FdLookup/FdIo/FdClose`，与 Minix3 的三种请求类型对齐。
 
 ### 4.2 VfsRequestState — 回调状态枚举
 
@@ -1106,7 +1106,7 @@ impl MemType for MappedFile {
 
     fn ev_pagefault(
         &self,
-        _proc: &ActiveProc<'_>,
+        _proc_endpoint: Endpoint,
         region: &mut VirRegion,
         _frames: &mut PageFrames,
         offset: VirBytes,
@@ -1243,7 +1243,7 @@ pub(crate) enum VrParam {
 }
 ```
 
-**与当前代码的差异**：~~当前 `FileDescriptorRef` 是 `#[derive(Clone)]` 深拷贝结构体，无法表达共享引用语义。~~ 已修复：替换为 `fdref_id: Option<u32>`，`Clone` 只是复制索引值，真正的引用计数由 `FdRefTable` 管理。
+**与当前代码的差异**：`FileDescriptorRef` 已替换为 `fdref_id: Option<u32>`，`Clone` 只是复制索引值，真正的引用计数由 `FdRefTable` 管理。
 
 ### 4.9 页缓存 CacheKey + PageCacheEntry
 

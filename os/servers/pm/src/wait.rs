@@ -2,7 +2,7 @@
 //!
 //! Implements core logic of wait/waitpid system calls.
 
-use minix_ipc::Endpoint;
+use minix_types::Endpoint;
 
 /// Waits for child process.
 ///

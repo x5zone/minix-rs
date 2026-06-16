@@ -100,7 +100,7 @@ static int anon_pagefault(...) {
 
     /* 情况 2: 不需要 CoW */
     if(ph->ph->refcount < 2 || !write) {
-        return OK;    /* ← ⚠️ 内存泄漏：预分配页未释放 */
+        return OK;    /* ← 注意: 内存泄漏：预分配页未释放 */
     }
 
     /* 情况 3: 触发 CoW */
@@ -624,7 +624,7 @@ static int mappedfile_pagefault(struct vmproc *vmp, struct vir_region *region,
     /* ... 缓存查找和 VFS 请求 ... */
 
     /*
-     * ⚠️ 简化版：完整源码有 3 处 cow_block 调用点：
+     * 注意: 简化版：完整源码有 3 处 cow_block 调用点：
      *   1. cache-hit + clearend (mem_file.c:127)
      *   2. cache-hit + write    (mem_file.c:130)
      *   3. 物理页已存在 + write (mem_file.c:164)
@@ -741,7 +741,7 @@ for(p = 0; p < phys_slot(vr->length); p++) {
 }
 ```
 
-`pb_reference()` 分配新的 `phys_region`，通过 `pb_link()` 链入 `phys_block` 的引用链表（refcount++）。`ev_reference()` 通知内存类型：`cache_reference` 返回 OK，`anon_contig_reference` 返回 ENOMEM。**⚠️ C 源码 bug**：`ev_reference` 的返回值在 `map_copy_region()` 中被忽略（region.c:841-842，`if(ph->memtype->ev_reference) ph->memtype->ev_reference(ph, newph);`），因此 `anon_contig_reference` 返回 ENOMEM **并不能**阻止 fork——子进程仍然会获得共享的连续匿名内存区域。Rust 实现修复了此 bug：`fork_region()` 检查 `ev_reference` 返回值，失败时 rollback 已增加的 refcount（fork.rs:46-52）。
+`pb_reference()` 分配新的 `phys_region`，通过 `pb_link()` 链入 `phys_block` 的引用链表（refcount++）。`ev_reference()` 通知内存类型：`cache_reference` 返回 OK，`anon_contig_reference` 返回 ENOMEM。**注意: C 源码 bug**：`ev_reference` 的返回值在 `map_copy_region()` 中被忽略（region.c:841-842，`if(ph->memtype->ev_reference) ph->memtype->ev_reference(ph, newph);`），因此 `anon_contig_reference` 返回 ENOMEM **并不能**阻止 fork——子进程仍然会获得共享的连续匿名内存区域。Rust 实现修复了此 bug：`fork_region()` 检查 `ev_reference` 返回值，失败时 rollback 已增加的 refcount（fork.rs:46-52）。
 
 **2. `map_writept()` — 重写页表为只读（region.c:995, map_proc_copy_range 内）**
 
@@ -876,7 +876,7 @@ pub(crate) fn cow_resolve_core(
 ///
 /// 对应 Minix3: `struct mem_type`
 ///
-/// ⚠️ 此处为简化视图，仅列出与 CoW 直接相关的方法。
+/// 注意: 此处为简化视图，仅列出与 CoW 直接相关的方法。
 /// 完整的 MemType trait 包含 14 个方法（ev_new, ev_delete, ev_split,
 /// ev_low_shrink, ev_sanitycheck, ev_copy, pt_flags, regionid 等），
 /// 详见 12-memtype.md §3。
@@ -1249,26 +1249,26 @@ fn verify_cow_consistency(
 
 | 测试项 | 验证目标 | 预期结果 | Rust 单元测试 |
 |-------|---------|---------|-------------|
-| fork 后共享验证 | fork 不复制物理页 | 父子进程同一 vaddr 对应相同 PFN，refcount=2 | ✅ `test_fork_region_basic` |
-| fork 后页表只读 | 共享页不可写 | 父子进程页表项均不含 WRITABLE 标志 | ⚠️ 隐式（fork_region `set_writable(false)`） |
-| 写入触发 CoW | 写共享页触发复制 | 写入后 PFN 不同，原页 refcount=1，新页 refcount=1 | ✅ `test_cow_copy_page` |
-| 子进程释放后 refcount | 释放子进程减少引用 | drop(child) 后原页 refcount 从 2 降为 1 | ❌ 待实现（集成测试级） |
+| fork 后共享验证 | fork 不复制物理页 | 父子进程同一 vaddr 对应相同 PFN，refcount=2 | Y `test_fork_region_basic` |
+| fork 后页表只读 | 共享页不可写 | 父子进程页表项均不含 WRITABLE 标志 | 注意: 隐式（fork_region `set_writable(false)`） |
+| 写入触发 CoW | 写共享页触发复制 | 写入后 PFN 不同，原页 refcount=1，新页 refcount=1 | Y `test_cow_copy_page` |
+| 子进程释放后 refcount | 释放子进程减少引用 | drop(child) 后原页 refcount 从 2 降为 1 | N 待实现（集成测试级） |
 
 ### 5.2 内存节省测试
 
 | 测试项 | 验证目标 | 预期结果 | Rust 单元测试 |
 |-------|---------|---------|-------------|
-| fork 后物理内存不变 | fork 不分配新物理页 | `frames.allocated_count()` 在 fork 前后相同 | ❌ 待实现（集成测试级） |
-| CoW 按需分配 | 只有被修改的页才分配新物理页 | fork 后修改 3 页，物理页增加 3 | ❌ 待实现（集成测试级） |
-| 共享页计数 | 所有页面初始均为共享 | fork 后所有页 refcount > 1 | ❌ 待实现（集成测试级） |
+| fork 后物理内存不变 | fork 不分配新物理页 | `frames.allocated_count()` 在 fork 前后相同 | N 待实现（集成测试级） |
+| CoW 按需分配 | 只有被修改的页才分配新物理页 | fork 后修改 3 页，物理页增加 3 | N 待实现（集成测试级） |
+| 共享页计数 | 所有页面初始均为共享 | fork 后所有页 refcount > 1 | N 待实现（集成测试级） |
 
 ### 5.3 正确性测试
 
 | 测试项 | 验证目标 | 预期结果 | Rust 单元测试 |
 |-------|---------|---------|-------------|
-| 父子进程数据隔离 | CoW 后修改互不可见 | 父写 0xBB、子写 0xCC，各自读回自己的值 | ❌ 待实现（集成测试级） |
-| 多次 fork 隔离 | 多个子进程各自独立 | 父 + 子1 + 子2 各自修改后读回各自值 | ❌ 待实现（集成测试级） |
-| 部分写入 CoW | 单字节修改触发整页复制 | 修改 1 字节后，整页 4KB 被复制，未修改字节保持一致 | ❌ 待实现（集成测试级） |
+| 父子进程数据隔离 | CoW 后修改互不可见 | 父写 0xBB、子写 0xCC，各自读回自己的值 | N 待实现（集成测试级） |
+| 多次 fork 隔离 | 多个子进程各自独立 | 父 + 子1 + 子2 各自修改后读回各自值 | N 待实现（集成测试级） |
+| 部分写入 CoW | 单字节修改触发整页复制 | 修改 1 字节后，整页 4KB 被复制，未修改字节保持一致 | N 待实现（集成测试级） |
 
 ### 5.4 性能统计 (vm_bytecopies)
 

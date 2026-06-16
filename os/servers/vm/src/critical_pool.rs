@@ -1,3 +1,24 @@
+//! Pre-allocated object pool for critical-path allocations.
+//!
+//! Corresponds to Minix3's `spare_pagequeue` / `reservedqueue` mechanism
+//! (`pagetable.c:107-1155`). The C code pre-allocates spare page-table
+//! pages (`SPAREPAGES`, typically 200) so that page fault handlers never
+//! need to call `alloc_mem()` — which could itself trigger a page fault
+//! and deadlock.
+//!
+//! # Rust Design
+//!
+//! `CriticalPool<T>` is a generic pre-allocated pool: it holds `Box<T>`
+//! objects created at init time. Callers `take()` an object when needed
+//! and `restore()` it when done. `needs_refill()` signals that the pool
+//! has dropped below the minimum reserve and should be replenished.
+//!
+//! # C Source Mapping
+//!
+//! - `reservedqueue_new()` → `CriticalPool::new()`
+//! - `reservedqueue_alloc()` → `CriticalPool::take()`
+//! - `reservedqueue_add()` → `CriticalPool::restore()` / `refill()`
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 

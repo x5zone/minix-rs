@@ -16,7 +16,7 @@
 
 ### 1.2 两层物理页管理：裸物理页 vs 映射物理页
 
-> ⚠️ 阅读前文（04-physical-memory、05-vm-allocpage）的读者可能会困惑：前面那些物理页分配（`alloc_mem`、`vm_allocpages`）怎么没提到 `phys_block`？这不是遗漏，而是 VM 确实存在**两层**物理页管理，它们服务于不同场景。
+> 注意: 阅读前文（04-physical-memory、05-vm-allocpage）的读者可能会困惑：前面那些物理页分配（`alloc_mem`、`vm_allocpages`）怎么没提到 `phys_block`？这不是遗漏，而是 VM 确实存在**两层**物理页管理，它们服务于不同场景。
 
 VM 中的物理页管理分为两层：
 
@@ -308,7 +308,7 @@ flags 使用场景:
 
 | 用途 | 源码位置 | 说明 |
 |------|---------|------|
-| `pb_link` 头插法插入 | [pb.c:63-66](minix3/minix/servers/vm/pb.c) | 链表维护 |
+| `pb_link` 头插法插入 | [pb.c:61-71](minix3/minix/servers/vm/pb.c) | 链表维护 |
 | `pb_unreferenced` 从链表移除节点 | [pb.c:100-115](minix3/minix/servers/vm/pb.c) | O(n) 查找前驱 |
 | sanity check 验证 refcount 一致性 | [region.c:234-248](minix3/minix/servers/vm/region.c) | 仅调试构建 |
 | CoW 时遍历所有引用者设为只读 | — | **不存在**。`map_ph_writept` 只操作单个 `phys_region` |
@@ -375,7 +375,7 @@ void pb_free(struct phys_block *pb)
 }
 ```
 
-⚠️ `pb_free` 只能在 `refcount == 0` 时调用。两条释放路径：
+注意: `pb_free` 只能在 `refcount == 0` 时调用。两条释放路径：
 
 | 方面 | 直接调用 `pb_free()` | 通过 `pb_unreferenced()` |
 |------|----------------------|--------------------------|
@@ -788,7 +788,7 @@ bitflags::bitflags! {
 
 3. **无 ALLOCATED 标志**：物理页的"已分配/空闲"状态由 buddy/bitmap 分配器独立追踪（见 [04-physical-memory.md](04-physical-memory.md)），PageFrames 不需要重复记录。`refcount` 足以描述 PageFrames 关心的状态：`refcount > 0` 表示有引用（映射或缓存），`refcount == 0` 表示无引用。buddy 和 PageFrames 是两个不同的关注点——buddy 关心"哪些页可用"，PageFrames 关心"哪些页被引用"——不需要在 PageFrames 中重复 buddy 的信息。CoW 流程中 `buddy.alloc_page()` 与 `map_page()` 之间存在短暂窗口（refcount=0 但 buddy 认为页已分配），但 VM 是微内核用户态单线程服务器，通过 IPC 串行处理请求，此窗口不会被并发访问观察到。
 
-   > ⚠️ **异步 IPC 重入注意**：上述"单线程安全"结论**仅对同步操作成立**。文件映射缺页时，VM 必须向 VFS 发送异步读盘请求，在等待回复期间 VM 继续处理其他 IPC 请求。此时如果另一个进程映射同一 PFN，可能读到未初始化数据。`PENDING_IO` 标志用于保护此窗口：建立映射前检查 `PENDING_IO`，若设置则将当前请求挂起至该 PFN 的等待队列。
+   > 注意: **异步 IPC 重入注意**：上述"单线程安全"结论**仅对同步操作成立**。文件映射缺页时，VM 必须向 VFS 发送异步读盘请求，在等待回复期间 VM 继续处理其他 IPC 请求。此时如果另一个进程映射同一 PFN，可能读到未初始化数据。`PENDING_IO` 标志用于保护此窗口：建立映射前检查 `PENDING_IO`，若设置则将当前请求挂起至该 PFN 的等待队列。
 
    > **替代方案**：若未来需要区分"buddy 已分配但无映射引用"（如诊断工具查询物理页状态），可在 `PageFlags` 中添加 `ALLOCATED` 标志，由 `alloc_pfn`/`free_pfn` 设置/清除。当前阶段无需此标志——buddy 和 PageFrames 的状态可通过交叉查询获得。
 
@@ -1042,13 +1042,90 @@ if let Some((pfn, mt)) = pending {
 
 ## 4. 测试要点
 
-- **PageFrames 初始化**：`total_pages` 计算正确性，`Vec` 长度等于 `total_pages`，所有 `PageState` 初始 `refcount=0`、`flags=empty()`
-- **refcount 操作**：递增/递减/归零释放，`saturating_add` 在 debug 构建中断言溢出
-- **INCACHE 语义**：缓存页 refcount 额外+1，`rmcache` 时正确递减，`refcount==1 && IN_CACHE` 时可回收
-- **PFN 边界**：`pfn=u32::MAX`（PFN_NONE）、`pfn=total_pages-1`、`pfn` 越界（`get` 返回 None）
-- **verify_refcounts**：多进程多区域场景下的一致性验证
-- **错误路径**：refcount 溢出检测、`buddy.free_page` 时 refcount 非 0
-- **与 Direct Map 的协同**：`pfn_to_phys` → `vm_phys_to_virt` 链路正确性
+### 4.1 PageFrames 初始化
+
+- **测试场景**：验证 `total_pages` 计算正确性、`Vec` 长度与物理页数匹配、所有 `PageState` 初始 `refcount=0` 且无标志位
+- **代码引用**：`page_state.rs:197` `test_page_frames_init`
+- **验证方法**：创建 `PageFrames` 实例，遍历所有页状态检查初始值
+- **关键断言**：`frames.total_pages() == phys_bytes / PAGE_SIZE`，每个 `state.refcount == 0`，`!state.flags.contains(IN_CACHE)`
+
+### 4.2 PFN 与物理地址转换
+
+- **测试场景**：`pfn_to_phys` 和 `phys_to_pfn` 双向转换的正确性
+- **代码引用**：`page_state.rs:208` `test_pfn_to_phys`，`page_state.rs:216` `test_phys_to_pfn`
+- **验证方法**：对 PFN 0、1、256 等边界值验证转换结果，确认 `pfn_to_phys(pfn) == pfn * PAGE_SIZE`
+- **PFN 边界**：`PFN_NONE = u32::MAX` 表示未映射（对应 C 中 `MAP_NONE`），`pfn = total_pages - 1` 为最大有效值，越界时 `get()` 返回 `None`
+
+### 4.3 PageSlot 映射状态
+
+- **测试场景**：`PageSlot` 的 `is_mapped()` 判断，`PFN_NONE` 表示未映射
+- **代码引用**：`page_state.rs:224` `test_page_slot`
+- **验证方法**：创建有效 slot（`pfn=5`）和空 slot（`pfn=PFN_NONE`），验证 `is_mapped()` 返回值
+
+### 4.4 refcount 操作
+
+- **测试场景**：正常递增/递减、归零释放、`saturating_add` 防溢出
+- **代码引用**：`page_state.rs:246` `test_refcount_operations`
+- **验证方法**：显式修改 `refcount` 并检查结果
+- **溢出保护**：`saturating_add(1)` 在 `u16::MAX` 时不再递增，debug 构建可通过 `debug_assert!` 检测溢出（C 源码中 `u8_t` 无此保护，仅 `SANITYCHECKS` 构建检测）
+
+### 4.5 INCACHE 语义
+
+- **测试场景**：缓存页 refcount 额外 +1，`rmcache` 时正确递减，`IN_CACHE` 标志位正确设置/清除
+- **代码引用**：`page_state.rs:237` `test_incache`
+- **验证方法**：调用 `addcache(pfn)` 后检查 `refcount == 1` 且 `IN_CACHE` 已设置；调用 `rmcache(pfn)` 后检查 `refcount == 0` 且 `IN_CACHE` 已清除
+- **C 语义对齐**：对应 C 中 `addcache()` 对 `phys_block.refcount++` 和 `PBF_INCACHE` 标志设置
+
+### 4.6 CoW 场景
+
+- **测试场景 A**：fork 后共享页 `refcount=2`，写时复制分配新页，原页 `refcount` 降为 1
+  - **代码引用**：`fork.rs:506` `test_cow_copy_page`
+  - **验证方法**：映射页后设置 `refcount=2`，调用 `cow_copy_page`，验证原 PFN 的 `refcount` 降为 1，新 slot 指向不同 PFN 且 `refcount=1`
+
+- **测试场景 B**：`refcount=1` 时不触发 CoW，直接返回原页
+  - **代码引用**：`fork.rs:527` `test_cow_copy_page_no_sharing`
+  - **验证方法**：映射页后 `refcount=1`，调用 `cow_copy_page`，验证 slot 仍指向原 PFN
+
+- **测试场景 C**：`cow_resolve` 单页 CoW 解析（含 `refcount > 2` 场景）
+  - **代码引用**：`cow_exec_pf.rs:293` `test_cow_resolve`，`cow_exec_pf.rs:312` `test_cow_resolve_no_sharing`，`cow_exec_pf.rs:326` `test_cow_resolve_region`
+  - **验证方法**：`refcount=2` 时触发复制，`refcount=1` 时跳过；`cow_resolve_region` 处理多页区域中不同 refcount 的页
+
+- **测试场景 D**：`refcount=1` 快速路径（`cow_resolve_core`）
+  - **代码引用**：`cow_exec_pf.rs:348` `test_cow_resolve_core_refcount_one_fast_path`
+  - **验证方法**：`refcount=1` 时直接返回原 PFN，不分配新页
+
+### 4.7 VirRegion 与 PageFrames 协同
+
+- **测试场景 A**：`map_page` / `unmap_page` 正确操作 refcount
+  - **代码引用**：`vir_region.rs:411` `test_map_unmap_page`
+  - **验证方法**：`map_page` 后 `refcount == 1`，`unmap_page` 后 `refcount == 0`
+
+- **测试场景 B**：`needs_cow` 判断
+  - **代码引用**：`vir_region.rs:428` `test_needs_cow`
+  - **验证方法**：`refcount=1` 时 `needs_cow` 返回 `false`，`refcount=2` 时返回 `true`
+
+### 4.8 verify_refcounts 一致性验证
+
+- **测试场景**：多进程多区域场景下的一致性验证，对应 C 中 `map_sanitycheck`
+- **代码引用**：`sanity.rs:128` `test_verify_refcounts_empty`，`sanity.rs:136` `test_verify_refcounts_mismatch_detected`，`sanity.rs:150` `test_verify_refcounts_cache_only_page`，`sanity.rs:159` `test_verify_refcounts_cache_mismatch`
+- **验证方法**：
+  - 空表（无映射）应通过
+  - 手动设置 `refcount=5`（无对应映射）应检测到不匹配
+  - 仅缓存页（`IN_CACHE` + `refcount=1`）应通过
+  - `IN_CACHE` 标志设置但 `refcount=0` 应检测到不匹配
+
+### 4.9 错误路径
+
+- **refcount 溢出**：`saturating_add` 防止 `u16` 溢出回绕（C 中 `u8_t refcount++` 溢出后回绕到 0 导致物理页被错误释放，是严重 bug）
+- **fork 回滚**：`ev_reference` 失败时回滚已递增的 refcount
+  - **代码引用**：`fork.rs:542` `test_fork_rollback_on_ev_reference_error`，`fork.rs:587` `test_fork_regions_rollback_on_failure`
+  - **验证方法**：使用 `FailOnRefMemType` 使 `ev_reference` 返回 `Err(NotSupported)`，验证所有页的 `refcount` 恢复到 fork 前的值
+
+### 4.10 Direct Map 协同
+
+- **测试场景**：`pfn_to_phys` → `vm_phys_to_virt` 链路正确性，物理地址与虚拟地址的往返转换
+- **代码引用**：`direct_map.rs:75` `test_vm_phys_to_virt`，`direct_map.rs:101` `test_virt_to_phys_roundtrip`
+- **验证方法**：`vm_phys_to_virt(phys) == VM_DIRECT_MAP_BASE + phys`，`virt_to_phys(vm_phys_to_virt(phys)) == phys`
 
 ---
 

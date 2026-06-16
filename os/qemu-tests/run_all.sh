@@ -8,6 +8,7 @@
 #   4. test-kernel-map: high-half/identity mapping returns correct data
 #   5. test-higher-half: HigherHalf trait transition (stack/PC switch → kmain)
 #   6. test-protection: protection structure init (GDT/IDT/TSS, VBAR/SP_EL1, stvec/sscratch)
+#   7. test-proc-init: process table init + VM ELF loading + ptproc/freepdes (Phase C/D)
 #
 # Each test writes "### TEST_RESULT: PASS <name> ###" on success.
 set -euo pipefail
@@ -39,7 +40,7 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -67,6 +68,7 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     run_test "test-kernel-map"         x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-kernel-map.efi"
     run_test "test-higher-half"        x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-higher-half.efi"
     run_test "test-protection"         x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-protection.efi"
+    run_test "test-proc-init"          x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-proc-init.efi"
 fi
 
 # aarch64 tests

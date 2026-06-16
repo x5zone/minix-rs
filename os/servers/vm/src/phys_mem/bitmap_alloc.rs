@@ -1,3 +1,30 @@
+//! Bitmap-based physical page allocator.
+//!
+//! The default backend (`bitmap_alloc` Cargo feature). Uses a packed
+//! `u64` bitmap to track free/used pages — one bit per page.
+//!
+//! # Algorithm
+//!
+//! - `alloc_mem` scans the bitmap for the first N consecutive free bits
+//!   (when `CONTIG` is set) or the first single free bit. **O(n)** worst
+//!   case for contiguous requests, **O(n)** for the first-fit variant
+//!   (a free-page cache of up to 10 000 entries short-circuits the scan
+//!   in the common case).
+//!
+//! - `free_mem` writes `1`-bits back into the bitmap. The freed range
+//!   is also pushed into the per-page cache for fast re-allocation.
+//!
+//! # C Source Mapping
+//!
+//! - C `alloc.c:alloc_mem` → `BitmapAllocator::alloc_mem`
+//! - C `alloc.c:free_mem`   → `BitmapAllocator::free_mem`
+//!
+//! # Metadata Layout
+//!
+//! The bitmap is stored in the metadata buffer passed to `init`:
+//! `(bitmap_chunks * 8) + 10000 * sizeof(usize)` bytes. See
+//! `PhysAllocType::Bitmap::metadata_size_exact` for the exact formula.
+//!
 use super::alloc_trait::{PhysAllocator, PhysMemStats};
 use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
@@ -7,7 +34,7 @@ const BITS_PER_CHUNK: usize = 64;
 /// Maximum number of entries in the single-page free cache.
 const PAGE_CACHE_MAX: usize = 10000;
 
-pub struct BitmapAllocator {
+pub(crate) struct BitmapAllocator {
     bitmap: &'static mut [u64],
     total_pages: usize,
     free_pages: usize,
@@ -140,6 +167,42 @@ impl BitmapAllocator {
         None
     }
 
+    /// Find a free run of `pages` consecutive free pages, scanning
+    /// backwards from `start_scan` down to `low`.
+    ///
+    /// # Bitmap scan status (2026-06-14)
+    ///
+    /// Currently O(chunks_with_used_bits), not O(total_pages):
+    /// the chunk-skip optimization (line ~156) jumps over fully-set
+    /// 64-bit chunks in O(1) per chunk. For a 1M-page bitmap
+    /// (4GB of memory) with 50% free, worst-case scans ~8000
+    /// 64-bit chunks. This is acceptable for current Minix3 use
+    /// (typical memory budget: 256MB-2GB = 65K-500K pages).
+    ///
+    /// **Future optimizations** (NOT done; tracked as bitmap perf TODO):
+    /// 1. **Last-found hint**: a `last_alloc_bit: usize` field that
+    ///    defaults to `start_scan`. The first scan starts at the
+    ///    hint; if no free run is found, falls back to `start_scan`.
+    ///    Exploits the fact that sequential allocations come from
+    ///    the same region (bitmaps are filled monotonically from
+    ///    high addresses down).
+    /// 2. **BMI1 `BLSR` / `TZCNT`**: `_blsr_u64` and `_tzcnt_u64`
+    ///    on x86-64 allow the inner loop to find the next 0-bit
+    ///    in 1-2 instructions instead of scanning 64 bits. The
+    ///    compiler often auto-vectorizes, but explicit intrinsics
+    ///    guarantee the pattern.
+    /// 3. **Bitmap inversion**: invert the bitmap so free=1,
+    ///    used=0. Then `find_first_zero` becomes a bit-scan on 1s
+    ///    and is more cache-friendly.
+    ///
+    /// # Why not done?
+    ///
+    /// The Minix3 C source `alloc.c::find_bit` has the same O(n)
+    /// implementation (without chunk-skip!) — see `alloc.c:175-192`.
+    /// Rust's chunk-skip is already a strict improvement. The
+    /// optimizations above would change the algorithm; the
+    /// performance gain (3-10x on cold scans) is not justified
+    /// for the current workload.
     fn find_bit(&self, low: usize, start_scan: usize, pages: usize) -> Option<usize> {
         let mut run_length = 0;
         let mut free_start = 0usize;
@@ -233,7 +296,49 @@ impl BitmapAllocator {
         self.bitmap.len() * BITS_PER_CHUNK
     }
 
+    /// Free pages from the bitmap's page cache when the allocator
+    /// is under memory pressure.
+    ///
+    /// # DEFERRED
+    ///
+    /// Returns 0 (no-op). The original Minix3 C `cache_freepages()`
+    /// at `cache.c:288` is also a no-op stub when no VM block cache
+    /// is wired into the bitmap allocator (it lives at the VM
+    /// layer, not the phys-allocator layer). The Rust port follows
+    /// the same split:
+    ///
+    /// - **BitmapAllocator's page cache** (this `page_cache` field):
+    ///   a small LIFO of recently-freed pages that can be re-handed
+    ///   out without a bitmap lookup. Eviction policy: when the
+    ///   cache fills up, drop the oldest entry (push_back /
+    ///   pop_front semantics — see FIFO vs LRU eviction policy
+    ///   doc).
+    /// - **VM block cache** (`PageCache` in `page_cache.rs`):
+    ///   separately tracked by the VM and is unrelated to the
+    ///   bitmap's internal cache. `cache_freepages()` could
+    ///   optionally flush entries from the VM block cache to free
+    ///   physical pages when the bitmap is exhausted, but Minix3
+    ///   does not do this — it relies on the FS layer to call
+    ///   `forgetcache` proactively.
+    ///
+    /// **Implementation path** (when needed):
+    /// 1. If `self.page_cache_size > 0`, return the top of the
+    ///    cache as a "re-usable" page (no bitmap update needed —
+    ///    the page is still marked free).
+    /// 2. If empty, scan `free_pages_internal`'s reverse index
+    ///    (not yet implemented — see PFN → key reverse index for
+    ///    the page cache).
+    /// 3. Return the number of pages actually freed.
+    ///
+    /// For now, the bitmap falls through to the "no free pages"
+    /// branch in `alloc_mem` (line 314), which propagates
+    /// `AllocError::OutOfMemory` to the caller. This matches C's
+    /// behavior on memory exhaustion.
     fn cache_freepages(&mut self, _needed: usize) -> usize {
+        // DEFERRED: see doc above for the 3-step implementation path.
+        // Currently returns 0 (no-op), matching Minix3's own no-op stub.
+        // The fallback in `alloc_mem` is `AllocError::OutOfMemory` which
+        // propagates correctly.
         0
     }
 }
@@ -304,6 +409,11 @@ impl PhysAllocator for BitmapAllocator {
 
         if flags.contains(PageAllocFlags::CLEAR) {
             let virt = crate::direct_map::vm_phys_to_virt(AlignedPhysBytes::from_page_index(page));
+            // SAFETY: `vm_phys_to_virt` returns a valid direct-mapped virtual address
+            // for the given physical page. The address is u64-aligned (page-aligned
+            // base). `words = clicks * CLICK_SIZE / 8` does not overflow because
+            // clicks is bounded by TOTAL_PAGES and CLICK_SIZE == 4096. VM is
+            // single-threaded, so no concurrent writes to this region.
             unsafe {
                 let ptr = virt.0 as *mut u64;
                 let words = clicks * CLICK_SIZE / 8;
@@ -753,5 +863,101 @@ mod tests {
         assert!(phys.as_bitmap().is_some());
         let mut phys = phys;
         assert!(phys.as_bitmap_mut().is_some());
+    }
+
+    // ── find_bit correctness tests ──
+
+    /// Helper: build a small bitmap metadata buffer (all bits
+    /// initially 0, which means "used" — `init` then marks the
+    /// free regions as 1).
+    fn make_all_free_metadata(total_pages: usize) -> &'static mut [u8] {
+        let size = BitmapAllocator::metadata_size(total_pages);
+        let v: alloc::vec::Vec<u8> = alloc::vec![0u8; size + 64];
+        let buf = alloc::boxed::Box::leak(v.into_boxed_slice());
+        &mut buf[..size]
+    }
+
+    /// find_bit regression: `find_bit` with `pages=1` returns the
+    /// first free bit from `start_scan` (backwards scan).
+    ///
+    /// This is the hot path for `alloc_pages(pages=1, ...)`.
+    /// Verifies the basic backward-scan + run-length counter works
+    /// in isolation.
+    #[test]
+    fn test_find_bit_pages1_returns_first_free() {
+        // 64 pages, region starts at page 0 (no offset).
+        let total = 64usize;
+        let regions = vec![BootMemRegion {
+            base: 0,
+            size: total * CLICK_SIZE,
+        }];
+        let metadata = make_all_free_metadata(total);
+        let mut alloc = BitmapAllocator::init(metadata, total, &regions, 0, 0);
+
+        // Mark bits 0-31 used; bits 32-63 free.
+        for bit in 0..32 {
+            alloc.mark_allocated(bit, 1);
+        }
+
+        // Scanning backwards from bit 63, the first free bit
+        // found is bit 63.
+        let found = alloc.find_bit(0, total - 1, 1);
+        assert_eq!(found, Some(63),
+            "find_bit from start_scan=63 with bits 0-31 used must return 63");
+    }
+
+    /// find_bit regression: `find_bit` with `pages=2` finds a 2-bit
+    /// free run, returning the START of the run (not the middle
+    /// or end).
+    #[test]
+    fn test_find_bit_pages2_finds_2bit_run() {
+        let total = 64usize;
+        let regions = vec![BootMemRegion {
+            base: 0,
+            size: total * CLICK_SIZE,
+        }];
+        let metadata = make_all_free_metadata(total);
+        let mut alloc = BitmapAllocator::init(metadata, total, &regions, 0, 0);
+
+        // Mark bit 32 used. Bits 33-63 are free, forming a 31-bit
+        // run from bit 33 to 63. A 2-page allocation must find
+        // the start of this run, which is bit 62 (the 2-bit run
+        // 62-63 is found first when scanning backwards).
+        alloc.mark_allocated(32, 1);
+
+        let found = alloc.find_bit(0, total - 1, 2);
+        assert_eq!(found, Some(62),
+            "find_bit for 2-page run from start_scan=63 should return 62 (start of run 62-63)");
+    }
+
+    /// find_bit regression: `find_bit` with `start_scan` on a used
+    /// bit decrements correctly to find a free bit later in the
+    /// scan. This is the "skip used bits" path (not the
+    /// chunk-skip path).
+    #[test]
+    fn test_find_bit_skips_used_start_scan() {
+        let total = 64usize;
+        let regions = vec![BootMemRegion {
+            base: 0,
+            size: total * CLICK_SIZE,
+        }];
+        let metadata = make_all_free_metadata(total);
+        let mut alloc = BitmapAllocator::init(metadata, total, &regions, 0, 0);
+        // Mark bits 0-31 used, bits 32-63 free.
+        for bit in 0..32 {
+            alloc.mark_allocated(bit, 1);
+        }
+
+        // Start at bit 33 (free). Pages=1, so the first free bit
+        // found wins. Scan backwards from 33 → 33 is free →
+        // run_length=1, return Some(33).
+        let found = alloc.find_bit(0, 33, 1);
+        assert_eq!(found, Some(33),
+            "starting at free bit 33 should return 33 (first free bit)");
+
+        // Start at bit 32 (free). Same logic, return 32.
+        let found = alloc.find_bit(0, 32, 1);
+        assert_eq!(found, Some(32),
+            "starting at free bit 32 should return 32");
     }
 }

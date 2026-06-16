@@ -10,10 +10,8 @@ name = "minix-vfs"
 path = "src/main.rs"
 
 [dependencies]
-minix-ipc = { workspace = true }
-minix-sys = { workspace = true }
-minix-mock = { workspace = true }
 minix-types = { workspace = true }
+minix-sys = { workspace = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]

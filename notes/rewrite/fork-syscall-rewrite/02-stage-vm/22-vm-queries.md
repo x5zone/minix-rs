@@ -365,6 +365,15 @@ pub(crate) enum InfoQuery {
 C 源码通过修改消息字段返回结果。Rust 使用明确的返回结构体：
 
 ```rust
+pub(crate) enum InfoResult {
+    Stats(StatsInfo),
+    Usage(UsageInfo),
+    Region {
+        // Mirrors Minix3 MAX_VRI_COUNT; fixed-size array avoids allocation.
+        regions: [RegionInfo; 8], count: usize, next: usize
+    },
+}
+
 pub(crate) struct StatsInfo {
     pub page_size: u64,
     pub total_pages: u32,
@@ -373,11 +382,17 @@ pub(crate) struct StatsInfo {
 }
 
 pub(crate) struct UsageInfo {
-    pub total: VirBytes,
-    pub shared: VirBytes,
-    pub text: VirBytes,
-    pub data: VirBytes,
-    pub stack: VirBytes,
+    pub total: VirBytes,        // vui_total: sum of mapped page sizes
+    pub common: VirBytes,       // vui_common: pages with refcount > 1
+    pub shared: VirBytes,       // vui_shared: common + VR_SHARED flag
+    pub virtual_total: VirBytes, // vui_virtual: sum of all region lengths
+    pub mvirtual: VirBytes,     // vui_mvirtual: virtual minus unmapped stack pages
+}
+
+pub(crate) struct RegionInfo {
+    pub vaddr: VirBytes,
+    pub length: VirBytes,
+    pub flags: u16,
 }
 ```
 
@@ -449,8 +464,7 @@ pub(crate) fn handle_get_phys(
     target: Endpoint,
     addr: VirBytes,
 ) -> Result<PhysBytes, QueryError> {
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
@@ -458,14 +472,20 @@ pub(crate) fn handle_get_phys(
     let vr = active.regions().find(addr)
         .ok_or(QueryError::NotMapped)?;
 
-    // C: vr->vaddr != addr → EINVAL
-    if vr.vaddr() != addr {
+    // C: vr->vaddr != addr → EINVAL (must match region start exactly)
+    if vr.vaddr != addr {
         return Err(QueryError::NotMapped);
     }
 
     // C: vr->def_memtype->regionid(vr)
-    vr.phys_base_addr()
-        .ok_or(QueryError::NotSupported)
+    // In PFN model, physical base = first page's physical address.
+    // Only VR_DIRECT regions have a meaningful physical base.
+    match &vr.param {
+        crate::region::VrParam::Direct { phys } => {
+            Ok(*phys)
+        }
+        _ => Err(QueryError::NotSupported),
+    }
 }
 ```
 
@@ -476,11 +496,11 @@ pub(crate) fn handle_get_phys(
 ```rust
 pub(crate) fn handle_get_refcount(
     table: &VmProcTable,
+    frames: &PageFrames,
     target: Endpoint,
     addr: VirBytes,
 ) -> Result<u8, QueryError> {
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
@@ -488,12 +508,24 @@ pub(crate) fn handle_get_refcount(
     let vr = active.regions().find(addr)
         .ok_or(QueryError::NotMapped)?;
 
-    if vr.vaddr() != addr {
+    if vr.vaddr != addr {
         return Err(QueryError::NotMapped);
     }
 
-    vr.refcount()
-        .ok_or(QueryError::NotSupported)
+    // C: vr->def_memtype->refcount(vr)
+    // In PFN model, refcount is tracked per-page in PageFrames.
+    // Return the refcount of the first page as the region's refcount.
+    let first_pfn = vr.physblocks.first()
+        .filter(|s| s.is_mapped())
+        .map(|ps| ps.pfn);
+    match first_pfn {
+        Some(pfn) => {
+            frames.get(pfn)
+                .map(|state| state.refcount() as u8)
+                .ok_or(QueryError::NotSupported)
+        }
+        None => Err(QueryError::NotSupported),
+    }
 }
 ```
 
@@ -505,33 +537,98 @@ pub(crate) fn handle_get_refcount(
 pub(crate) fn handle_info(
     table: &VmProcTable,
     page_alloc: &VmPageAllocator,
+    frames: &PageFrames,
     query: InfoQuery,
 ) -> Result<InfoResult, QueryError> {
     match query {
         InfoQuery::Stats => {
-            let stats = page_alloc.memstats();
+            let stats = page_alloc.phys_alloc().memstats();
             Ok(InfoResult::Stats(StatsInfo {
                 page_size: 4096,
-                total_pages: stats.total,
-                free_pages: stats.free,
-                largest_contiguous: stats.largest,
+                total_pages: page_alloc.total_pages() as u32,
+                free_pages: stats.free_pages as u32,
+                largest_contiguous: stats.largest_free as u32,
             }))
         }
         InfoQuery::Usage { target } => {
-            let slot = table.vm_isokendpt(target)
-                .map_err(|_| QueryError::ProcessNotFound)?;
+            let slot = table.vm_isokendpt(target)?;
             let active = table.get_active(slot)
                 .ok_or(QueryError::ProcessNotFound)?;
-            let usage = active.memory_usage();
-            Ok(InfoResult::Usage(usage))
+            // C: get_usage_info() (region.c:1395) iterates all regions,
+            // then per-page within each region, accumulating statistics.
+            let mut total: u64 = 0;
+            let mut common: u64 = 0;
+            let mut shared: u64 = 0;
+            let mut virtual_total: u64 = 0;
+            let mut mvirtual: u64 = 0;
+            for vr in active.regions().iter() {
+                virtual_total = virtual_total.saturating_add(vr.length.0);
+                mvirtual = mvirtual.saturating_add(vr.length.0);
+                let is_shared_region = vr.flags.contains(VrFlags::SHARED);
+                for slot in &vr.physblocks {
+                    if !slot.is_mapped() {
+                        if vr.end_addr() == active.region_top() {
+                            mvirtual = mvirtual.saturating_sub(PAGE_SIZE);
+                        }
+                        continue;
+                    }
+                    total = total.saturating_add(PAGE_SIZE);
+                    if let Some(state) = frames.get(slot.pfn) {
+                        if state.refcount() > 1 {
+                            common = common.saturating_add(PAGE_SIZE);
+                            if is_shared_region {
+                                shared = shared.saturating_add(PAGE_SIZE);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(InfoResult::Usage(UsageInfo {
+                total: VirBytes(total),
+                common: VirBytes(common),
+                shared: VirBytes(shared),
+                virtual_total: VirBytes(virtual_total),
+                mvirtual: VirBytes(mvirtual),
+            }))
         }
         InfoQuery::Region { target, count, next } => {
-            let slot = table.vm_isokendpt(target)
-                .map_err(|_| QueryError::ProcessNotFound)?;
+            let slot = table.vm_isokendpt(target)?;
             let active = table.get_active(slot)
                 .ok_or(QueryError::ProcessNotFound)?;
-            let regions = active.region_info(count, next);
-            Ok(InfoResult::Region(regions))
+
+            // C uses AVL tree iteration with vaddr-based cursor (`next`).
+            // Rust uses Vec-based index cursor (`next` = array index offset).
+            let mut result = [RegionInfo {
+                vaddr: VirBytes(0),
+                length: VirBytes(0),
+                flags: 0u16,
+            }; 8];
+            let mut idx = 0;
+            let mut iter_next = next;
+            let regions = active.regions();
+
+            for (i, vr) in regions.iter().enumerate() {
+                if i < next {
+                    continue;
+                }
+                if idx >= count.min(8) {
+                    break;
+                }
+                result[idx] = RegionInfo {
+                    vaddr: vr.vaddr,
+                    length: vr.length,
+                    flags: vr.flags.bits(),
+                };
+                idx += 1;
+                iter_next = i + 1;
+            }
+
+            let has_more = regions.len() > iter_next + idx;
+            Ok(InfoResult::Region {
+                regions: result,
+                count: idx,
+                next: if has_more { iter_next + 1 } else { 0 },
+            })
         }
     }
 }
@@ -548,25 +645,24 @@ pub(crate) fn handle_getrusage(
     target: Endpoint,
     children: bool,
 ) -> Result<GetrusageResult, QueryError> {
-    // C: 非 PM 调用直接返回 OK
-    if caller != Endpoint::PM {
+    // C: if (m->m_source != PM_PROC_NR) return OK;
+    if !is_pm(caller) {
         return Ok(GetrusageResult::Ok);
     }
 
-    let slot = table.vm_isokendpt(target)
-        .map_err(|_| QueryError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(target)?;
 
     let active = table.get_active(slot)
         .ok_or(QueryError::ProcessNotFound)?;
 
     if !children {
         Ok(GetrusageResult::Data(ResourceUsage {
-            max_rss_kb: active.total_max() / 1024,
-            minor_faults: active.minor_page_faults(),
-            major_faults: active.major_page_faults(),
+            max_rss_kb: active.total_max().0 / 1024,
+            minor_faults: active.minor_fault(),
+            major_faults: active.major_fault(),
         }))
     } else {
-        // C: XXX TODO — children 路径未实现
+        // C: XXX TODO — children path not implemented
         Ok(GetrusageResult::Data(ResourceUsage {
             max_rss_kb: 0,
             minor_faults: 0,
@@ -615,12 +711,12 @@ pub(crate) fn handle_getrusage(
 
 ### 5.5 错误码映射测试
 
-| 错误 | errno |
-|------|-------|
-| ProcessNotFound (INFO/GETPHYS/GETREF) | EINVAL |
-| ProcessNotFound (GETRUSAGE) | ESRCH |
-| NotMapped | EINVAL |
-| NotSupported | EINVAL |
+| 错误 | errno | 说明 |
+|------|-------|------|
+| ProcessNotFound (INFO/GETPHYS/GETREF) | EINVAL | VmError::InvalidProcess → EINVAL |
+| ProcessNotFound (GETRUSAGE) | ESRCH | 上下文相关映射 (C: utility.c:426) |
+| NotMapped | EFAULT | VmError::InvalidAddress → EFAULT |
+| NotSupported | EFAULT | VmError::InvalidAddress → EFAULT |
 
 ---
 

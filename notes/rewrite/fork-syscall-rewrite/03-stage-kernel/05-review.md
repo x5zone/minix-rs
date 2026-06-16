@@ -389,42 +389,42 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度)" → 0处
 
 ## 8. Action Items
 
-### TODO #1: 实现 ProcArch traits 的非桩版本
+### TODO: 实现 ProcArch traits 的非桩版本
 - **Priority**: P0 | **Type**: 代码未实现设计
 - **Files**: `os/arch/src/x86_64/proc_arch.rs`, `os/arch/src/arm64/proc_arch.rs`, `os/arch/src/riscv64/proc_arch.rs`
 - **Plan**: (1) ArchProcReset: 在KProcess或trap frame上设置PSW/PSR/sstatus、x86-64设置段选择子CS/DS/SS/ES/FS/GS; (2) ArchProcInit: 调用reset后设置PC/SP/ps_strings寄存器; (3) BootProcArch::load_vm_elf: 实现ELF解析、页面分配、映射、复制、ps_strings设置
 - **Verify**: 编写§5.2-§5.4对应的单元测试，验证寄存器值正确
 
-### TODO #2: 修复 init_proc_and_boot 中VM初始化路径
+### TODO: 修复 init_proc_and_boot 中VM初始化路径
 - **Priority**: P0 | **Type**: 调用逻辑错误
 - **File**: `os/kernel/src/lib.rs`
 - **Plan**: VM分支先调用 `CurrentBootProcArch::load_vm_elf(module, kernel_info, &mut paging)` 获得 `VmLoadResult`，再传给 `CurrentBootProcArch::init(..., result.pc, result.sp, result.ps_strings, ...)`
 - **Verify**: VM进程的p_reg.pc 应等于 ELF入口点，p_reg.sp 应指向用户栈
 
-### TODO #3: 修复 is_root_sys 硬编码
+### TODO: 修复 is_root_sys 硬编码
 - **Priority**: P0 | **Type**: 逻辑缺陷
 - **File**: `os/kernel/src/lib.rs`
 - **Plan**: 定义 RS_PROC_NR 常量，将 `let is_root_sys = false;` 改为 `let is_root_sys = nr == RS_PROC_NR;`
 - **Verify**: RS进程被正确识别为schedulable
 
-### TODO #4: 修复 kernel crate 测试编译
+### TODO: 修复 kernel crate 测试编译
 - **Priority**: P0 | **Type**: 编译错误
 - **File**: `os/kernel/src/lib.rs` (测试区域)
 - **Plan**: 修复 `minix_types::MemoryRegion` 类型引用——可能是类型名变更或未重新导出。检查 `minix_types` crate 中的实际类型名
 - **Verify**: `cargo test -p minix-kernel --lib` 编译通过并运行
 
-### TODO #5: 实现 PrivTable::assign_static() 和特权标志设置
+### TODO: 实现 PrivTable::assign_static() 和特权标志设置
 - **Priority**: P1 | **Type**: 未实现
 - **Files**: `os/kernel/src/kpriv.rs`, `os/kernel/src/lib.rs`
 - **Plan**: (1) kpriv.rs中实现 `PrivTable::assign_static(proc_nr)`; (2) init_proc_and_boot中调用并设置VM_F/TSK_F/RSYS_F/s_trap_mask等
 - **Verify**: 检查VM进程的priv flags包含VM_F，IDLE的包含IDL_F
 
-### TODO #6: 补充ProcArch tests
+### TODO: 补充ProcArch tests
 - **Priority**: P1 | **Type**: 测试缺失
 - **Plan**: 按文档§5.2-§5.5编写12+个测试，覆盖三架构的reset/init/boot_proc和完整的init_proc_and_boot流程
 - **Verify**: 正常路径+边界条件+错误路径
 
-### TODO #7: 更新文档§3.1声明
+### TODO: 更新文档§3.1声明
 - **Priority**: P1 | **Type**: 文档-代码不一致
 - **File**: `05-proc-init-boot-proc.md`
 - **Plan**: 将"arch_proc_reset()的功能由KProcess::new()中的默认值实现"改为"arch_proc_reset()的功能由ArchProcReset trait在运行时调用完成，KProcess::new()仅设置进程号/endpoint/basic flags"

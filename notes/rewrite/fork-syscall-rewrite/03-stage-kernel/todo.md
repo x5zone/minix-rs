@@ -83,19 +83,20 @@ test-kernels/
 > 12 项 code-review 问题中 7 项已修复，本节列出剩余 5 项。
 > 已修复的 7 项详见 02-code.md §修复记录；01-bug.md 同步更新了 §3.2 和 §5。
 
-### 4.1 [P1] KernelInfo 字段 pub 封装
+### 4.1 [P1] KernelInfo 字段 pub 封装 — ✅ 部分完成
 
 - **类型**: 设计 / 命名 / 封装
-- **位置**: `os/libs/minix-types/src/kernel_info.rs:17-41`
+- **位置**: `os/libs/minix-boot/src/kernel_info.rs`
 - **问题**: `KernelInfo` 所有字段都是 `pub`，外部代码可以读/写所有内部状态，缺少封装边界。`free_upper_idx` 始终为 0 但没有"未初始化"语义，外部无法判断有效性。
-- **影响范围**: `arch_boot_impl`、`boot_validate_and_prepare`、各测试内核的 `main.rs`、boot-shim 的 `uefi_helpers`/`opensbi_helpers`（10+ 个文件）
-- **修复方案**:
-  - 方案 A：字段改为 `pub(crate)` + 提供 getter 方法
-  - 方案 B：使用 builder 模式构造 `KernelInfo`，构造完成后字段对外只读
-  - 方案 C：`free_upper_idx` 改为 `Option<usize>` 表示"尚未计算"
-- **风险**: 改动量大；需要评估是否需要兼容老 API（用 deprecated wrapper）
-- **验证**: `cargo check` + QEMU 测试 + `boot_integration.rs`
-- **工作量**: 中（10-20 个文件）
+- **已完成修复 (2026-06-16)**:
+  - `free_upper_idx` 类型从 `usize` 改为 `Option<usize>`，用 `None` 表示"boot-shim 尚未计算"
+  - 添加 `pub fn free_upper_idx(&self) -> Option<usize>` getter 方法
+  - boot-shim 构造时填 `None`（C 中由 `pg_mapkernel()` 返回值设置，Rust boot-shim 尚未实现此计算）
+  - kernel `init_post_and_memory` 中使用 `.expect()` 取值
+  - `misc.rs` 诊断输出使用 `.unwrap_or(0)`
+  - QEMU 测试中有意义的值填 `Some(N)`，无意义的填 `None`
+- **剩余**: 其他字段（如 `kern_size`, `user_sp` 等）仍为 `pub`，可按需逐步添加 getter
+- **验证**: `cargo check` + `cargo test` (299 passed) + `boot_integration.rs` (2 passed)
 
 ### 4.2 [P1] HigherHalf trait 单方法评估 — ✅ 已完成
 
@@ -202,12 +203,12 @@ test-kernels/
 
 **范围**：依赖 SMP 多核支持，将在 SMP 阶段补充。
 
-### 6.5 [P2] aarch64 GICv3 PPI unmask 未实现
+### 6.5 [P2] aarch64 GICv3 PPI unmask 未实现 — ✅ 已完成
 
-> **位置**: `os/arch/src/arm64/interrupt.rs` `unmask()` 方法
-> PPI (IRQ < 32) 的 unmask 为 TODO，需要写 GICR_ISENABLER0 寄存器。
-
-Boot 阶段仅需 SPI，不影响当前功能。后续中断处理阶段补充。
+> **位置**: `os/plat/src/arm64/interrupt.rs` `unmask()` / `mask()` 方法
+> PPI (IRQ < 32) 的 unmask 已实现，通过 Redistributor 的 `GICR_ISENABLER0`/`GICR_ICENABLER0` 寄存器控制。
+> 同时更新了 `InterruptController` trait 文档中的 ARM64 列，反映 PPI 路径。
+> 文档 `04-clock-interrupt-init.md` §4.6 状态说明已同步更新 (2026-06-16)。
 
 ### 6.6 [P2] riscv64 PLIC base 硬编码
 

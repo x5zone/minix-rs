@@ -30,7 +30,7 @@
 //! - `VmReply`  = unified reply enum (for dispatcher return type)
 //! - `VmError`  = shared error type (maps to errno)
 
-use crate::{Endpoint, UserSlot, VirBytes, PhysBytes, ESRCH, EINVAL, ENOMEM, EFAULT, EPERM, EIO, ENOSYS, EACCES};
+use crate::{Endpoint, UserSlot, VirBytes, PhysBytes, ESRCH, EINVAL, ENOMEM, EFAULT, EPERM, EIO, ENOSYS, EACCES, ENOENT};
 use crate::ipc::MessageM1;
 
 // ============================================================================
@@ -393,6 +393,116 @@ pub struct VmExecNewmemOut {
     pub stack_top: VirBytes,
 }
 
+// ---------------------------------------------------------------------------
+// VM_PROCCTL  (VFS → VM)  — DEFERRED
+// ---------------------------------------------------------------------------
+// C: mess_lc_vm_procctl (ipc.h, uses m9 layout in C)
+//     #define VMPCTL_PARAM  m9_l1   // operation (VMPPARAM_CLEAR/SETMCALL/...)
+//     #define VMPCTL_WHO    m9_l2   // target endpoint
+//     #define VMPCTL_M1     m9_l3   // user-space pointer (m1 sys call index)
+//     #define VMPCTL_LEN    m9_l4   // byte count
+//
+// In the 64-bit Rust rewrite, m1p1/m1p2/m1p3 occupy offsets 16/24/32 (each
+// 8 bytes), which lines up with the C 32-bit long fields at the same
+// offsets (m9_l1/l2/l3 start at offset 16 after the two 8-byte m9ull
+// fields). We use the M1 pointer fields for the wide ints and M1 integer
+// field for the small int (param). See `DecodeFromM1` impl for the exact
+// field → C-macro mapping.
+
+/// VFS → VM: process control request.
+///
+/// 64-bit layout (m1p1/m1p2/m1p3 hold the three 64-bit payload words; m1i1
+/// is repurposed for the 32-bit `param` since it is small enough):
+///
+/// | Rust field | m1 offset | C macro      | Width |
+/// |------------|-----------|--------------|-------|
+/// | `param`    | 0  (m1i1) | m9_l1        | i32   |
+/// | `who`      | 16 (m1p1) | m9_l2        | i64   |
+/// | `m1`       | 24 (m1p2) | m9_l3        | u64   |
+/// | `len`      | 32 (m1p3) | m9_l4        | i32   |
+/// | `flags`    | 12 (m1i3) | m9_l5        | i32   |
+///
+/// See `dispatch_procctl` in `os/servers/vm/src/ipc/dispatcher.rs` for
+/// the full DEFERRED implementation path (5 steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmProcctlIn {
+    /// VMPCTL_PARAM — operation code (small int).
+    pub param: i32,
+    /// VMPCTL_WHO — target endpoint.
+    pub who: Endpoint,
+    /// VMPCTL_M1 — user-space pointer or extra parameter.
+    pub m1: u64,
+    /// VMPCTL_LEN — byte count.
+    pub len: i32,
+    /// VMPCTL_FLAGS — write flag for VMPPARAM_HANDLEMEM.
+    pub flags: i32,
+}
+
+// ---------------------------------------------------------------------------
+// VM_REMAP / VM_REMAP_RO  (PM → VM)  — DEFERRED
+// ---------------------------------------------------------------------------
+// C: mess_lc_vm_remap uses m7 layout (5 ints + 2 pointers) in C. In the
+// 64-bit rewrite we use the m1i* and m1p* fields (same offsets as m7_i1..i5
+// for the ints and m7_p1/p2 for the pointers, since both layouts start
+// with five 4-byte words then pointers at offset 24/32).
+
+/// PM → VM: remap request.
+///
+/// Corresponds to Minix3 `do_remap()` in `mmap.c:374`. The `readonly`
+/// flag is set by the dispatcher (false for `VM_REMAP`, true for
+/// `VM_REMAP_RO`) based on the call number, matching the C side which
+/// uses the call number to pick the read-only branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmRemapIn {
+    /// Caller endpoint (derived from `m_source`).
+    pub caller: Endpoint,
+    /// Source endpoint whose region is being remapped.
+    pub who: Endpoint,
+    /// Virtual address in `who`'s address space.
+    pub vaddr: VirBytes,
+    /// Size of the region in bytes.
+    pub length: VirBytes,
+    /// Target address in `caller`'s address space (or 0 for any).
+    pub target: VirBytes,
+    /// Mapping flags (MAP_PRIVATE / MAP_SHARED / MAP_FIXED / ...).
+    pub flags: u32,
+}
+
+// ---------------------------------------------------------------------------
+// VM_VFS_REPLY  (VFS → VM, asynchronous)  — DEFERRED
+// ---------------------------------------------------------------------------
+// C: mess_vm_vfs_reply (ipc.h, uses m10 layout)
+//     #define VMV_ENDPOINT   m10_i1  // endpoint that completed
+//     #define VMV_RESULT     m10_i2  // result of the VFS call
+//     #define VMV_REQID      m10_i3  // request id (matches VFS_VMCALL_REQID)
+//     #define VMV_DEV        m10_i4  // device (for fd resolution)
+//     #define VMV_FD         m10_l1  // file descriptor
+//     #define VMV_SIZE       m10_l2  // total size
+//     #define VMV_SIZE_PAGES m10_l3  // size in pages
+
+/// VFS → VM: VFS call completion reply.
+///
+/// Sent by VFS in response to an outstanding VM-initiated call (typically
+/// the `vfs_vmcall` chain for file-backed mappings). The VM uses this to
+/// resume a previously suspended MMAP request and complete the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmVfsReplyIn {
+    /// Endpoint that completed the call.
+    pub endpoint: Endpoint,
+    /// Result code (0 = success, otherwise the errno from VFS).
+    pub result: i32,
+    /// Request id (matches the `reqid` from the original VM→VFS call).
+    pub reqid: i32,
+    /// Device number (for fd resolution when reopening on resume).
+    pub dev: i32,
+    /// File descriptor.
+    pub fd: i64,
+    /// Total size in bytes.
+    pub size: i64,
+    /// Total size in pages (precomputed by VFS).
+    pub size_pages: i64,
+}
+
 // ============================================================================
 // Unified Reply Type (for dispatcher return value)
 // ============================================================================
@@ -430,10 +540,10 @@ pub enum VmReply {
     },
     InfoUsage {
         total: VirBytes,
+        common: VirBytes,
         shared: VirBytes,
-        text: VirBytes,
-        data: VirBytes,
-        stack: VirBytes,
+        virtual_total: VirBytes,
+        mvirtual: VirBytes,
     },
     InfoRegion {
         regions: [VmRegionInfo; 8],
@@ -480,6 +590,9 @@ pub enum VmError {
     PageTableError,
     InternalError,
     NotImplemented,
+    /// Cache entry not found (C: ENOENT).
+    /// Returned by do_mapcache when the requested cache page does not exist.
+    NotFound,
 }
 
 impl VmError {
@@ -497,6 +610,7 @@ impl VmError {
             Self::PageTableError => EIO,
             Self::InternalError => EIO,
             Self::NotImplemented => ENOSYS,
+            Self::NotFound => ENOENT,
         }
     }
 }
@@ -614,6 +728,94 @@ impl EncodeToM1 for VmExecNewmemOut {
     fn encode(&self, m1: &mut MessageM1) {
         m1.m1i3 = self.flags;
         m1.m1p2 = self.stack_top.0;
+    }
+}
+
+// ── Decoders for the 3 DEFERRED stubs ────────────────────
+//
+// These decoders re-purpose the `m1` fields to hold the C `m7`/`m9`/`m10`
+// payload words. The mapping is documented on each struct; see
+// `dispatcher.rs::dispatch_procctl` for the corresponding layout audit.
+
+impl DecodeFromM1 for VmProcctlIn {
+    /// Decode VMPCTL_PARAM/WHO/M1/LEN/FLAGS from the m1 payload.
+    ///
+    /// Field mapping (C `mess_lc_vm_procctl` → Rust m1):
+    /// - `VMPCTL_PARAM` is a small int → stored in `m1i1` (offset 0)
+    /// - `VMPCTL_WHO` is an endpoint (i32) → stored in low 4 bytes of
+    ///   `m1p1` (offset 16, 8 bytes wide for future extension)
+    /// - `VMPCTL_M1` is a `vir_bytes` (u64) → stored in `m1p2` (offset 24)
+    /// - `VMPCTL_LEN` is an int → stored in `m1p3` low 4 bytes (offset 32)
+    /// - `VMPCTL_FLAGS` is an int → stored in `m1i3` (offset 12)
+    #[inline(always)]
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            param: m1.m1i1,
+            who: Endpoint(m1.m1p1 as i32),
+            m1: m1.m1p2,
+            len: m1.m1p3 as i32,
+            flags: m1.m1i3,
+        }
+    }
+}
+
+impl DecodeFromM1 for VmRemapIn {
+    /// Decode VM_REMAP / VM_REMAP_RO payload.
+    ///
+    /// Field mapping (C `mess_lc_vm_remap` → Rust m1):
+    /// - `caller` is derived from `m_source` and passed in separately (the
+    ///   decoder takes it as a parameter through the surrounding
+    ///   dispatcher's `msg.m_source`); we still expose it as a field for
+    ///   handler ergonomics. The decoder itself only fills the rest.
+    /// - `who` → m1.m1i1
+    /// - `vaddr` → m1.m1p1
+    /// - `length` → m1.m1i2 as u64
+    /// - `target` → m1.m1p2
+    /// - `flags` → m1.m1i3 as u32
+    #[inline(always)]
+    fn decode(m1: &MessageM1) -> Self {
+        Self {
+            // `caller` is set by `dispatch_remap` from `msg.m_source`
+            // before decoding; we use `Endpoint::NONE` as a placeholder
+            // and let the caller overwrite it.
+            caller: Endpoint::NONE,
+            who: Endpoint(m1.m1i1),
+            vaddr: VirBytes(m1.m1p1),
+            length: VirBytes(m1.m1i2 as u64),
+            target: VirBytes(m1.m1p2),
+            flags: m1.m1i3 as u32,
+        }
+    }
+}
+
+impl DecodeFromM1 for VmVfsReplyIn {
+    /// Decode VM_VFS_REPLY payload.
+    ///
+    /// Field mapping (C `mess_vm_vfs_reply` → Rust m1):
+    /// - `VMV_ENDPOINT` → m1.m1i1
+    /// - `VMV_RESULT` → m1.m1i2
+    /// - `VMV_REQID` → m1.m1i3
+    /// - `VMV_DEV` → m1.m1p1 low 4 bytes
+    /// - `VMV_FD` → m1.m1p1 (re-using the 8-byte field for fd+dev)
+    /// - `VMV_SIZE` → m1.m1p2
+    /// - `VMV_SIZE_PAGES` → m1.m1p3
+    #[inline(always)]
+    fn decode(m1: &MessageM1) -> Self {
+        // m1p1 holds both dev (i32) and fd (i64) in the C layout; we pack
+        // them as `dev = m1p1 as i32`, `fd = m1p1 as i64` — the high 4
+        // bytes overlap with the dev field of the next call. This matches
+        // the C side's m10_i4 + m10_l1 aliasing (m10_i4 is the low 4
+        // bytes of m10_l1 in little-endian).
+        let p1 = m1.m1p1;
+        Self {
+            endpoint: Endpoint(m1.m1i1),
+            result: m1.m1i2,
+            reqid: m1.m1i3,
+            dev: p1 as i32,
+            fd: p1 as i64,
+            size: m1.m1p2 as i64,
+            size_pages: m1.m1p3 as i64,
+        }
     }
 }
 

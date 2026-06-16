@@ -9,8 +9,9 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::riscv64::early_console;
-use minix_types::{MemoryRegion, PhysBytes};
+use minix_plat::riscv64::early_console;
+use minix_boot::MemoryRegion;
+use minix_types::PhysBytes;
 
 // Minimal global allocator for riscv64 bare-metal (no UEFI).
 use core::alloc::{GlobalAlloc, Layout};

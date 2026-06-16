@@ -10,24 +10,28 @@ use minix_types::VirBytes;
 use alloc::collections::BTreeMap;
 use core::ops::Bound;
 
+/// Search direction for region lookups.
+///
+/// Unlike bitflags, these are mutually exclusive — a search goes in
+/// exactly one direction. Using an enum prevents invalid combinations
+/// (e.g., LESS | GREATER) that the old bitflags-style u8 allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SearchType(u8);
-
-impl SearchType {
-    pub(crate) const EQUAL: Self = Self(1);
-    pub(crate) const LESS: Self = Self(2);
-    pub(crate) const GREATER: Self = Self(4);
-    pub(crate) const LESS_EQUAL: Self = Self(3);
-    pub(crate) const GREATER_EQUAL: Self = Self(5);
-
-    pub(crate) fn contains(&self, other: Self) -> bool {
-        (self.0 & other.0) != 0
-    }
+pub(crate) enum SearchType {
+    /// Exact match only.
+    Equal,
+    /// Strictly less than target.
+    Less,
+    /// Strictly greater than target.
+    Greater,
+    /// Less than or equal to target.
+    LessEqual,
+    /// Greater than or equal to target.
+    GreaterEqual,
 }
 
 impl Default for SearchType {
     fn default() -> Self {
-        Self::EQUAL
+        Self::Equal
     }
 }
 
@@ -71,29 +75,37 @@ impl RegionMap {
     }
 
     pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
-        if st.contains(SearchType::EQUAL) {
-            if let Some(r) = self.regions.get(&key) {
-                return Some(r);
+        match st {
+            SearchType::Equal => self.regions.get(&key),
+            SearchType::Less => self.regions.range(..key).next_back().map(|(_, r)| r),
+            SearchType::Greater => self.regions.range((Bound::Excluded(key), Bound::Unbounded)).next().map(|(_, r)| r),
+            SearchType::LessEqual => {
+                if let Some(r) = self.regions.get(&key) {
+                    Some(r)
+                } else {
+                    self.regions.range(..key).next_back().map(|(_, r)| r)
+                }
+            }
+            SearchType::GreaterEqual => {
+                if let Some(r) = self.regions.get(&key) {
+                    Some(r)
+                } else {
+                    self.regions.range((Bound::Excluded(key), Bound::Unbounded)).next().map(|(_, r)| r)
+                }
             }
         }
-
-        if st.contains(SearchType::LESS) {
-            if let Some((_, r)) = self.regions.range(..key).next_back() {
-                return Some(r);
-            }
-        }
-
-        if st.contains(SearchType::GREATER) {
-            if let Some((_, r)) = self.regions.range((Bound::Excluded(key), Bound::Unbounded)).next() {
-                return Some(r);
-            }
-        }
-
-        None
     }
 
     pub(crate) fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::LESS)
+        self.search(key, SearchType::Less)
+    }
+
+    pub(crate) fn find_by_end(&self, end_addr: VirBytes) -> Option<&VirRegion> {
+        self.regions
+            .range(..end_addr)
+            .next_back()
+            .filter(|(_, r)| r.end_addr() == end_addr)
+            .map(|(_, r)| r)
     }
 
     pub(crate) fn find_mut_by_end(&mut self, end_addr: VirBytes) -> Option<&mut VirRegion> {
@@ -108,15 +120,15 @@ impl RegionMap {
     }
 
     pub(crate) fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::GREATER)
+        self.search(key, SearchType::Greater)
     }
 
     pub(crate) fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::LESS_EQUAL)
+        self.search(key, SearchType::LessEqual)
     }
 
     pub(crate) fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::GREATER_EQUAL)
+        self.search(key, SearchType::GreaterEqual)
     }
 
     pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
@@ -166,6 +178,7 @@ impl RegionMap {
             let frstart = gap_start.max(minv);
             let frend = gap_end.min(maxv);
             if frend.0 > frstart.0 && frend.0.saturating_sub(frstart.0) >= length.0 {
+                // Page-align the gap boundaries; VM regions must be page-aligned.
                 let aligned_start = (frstart.0 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
                 let aligned_end = frend.0 & !(PAGE_SIZE - 1);
                 if aligned_end > aligned_start
@@ -173,9 +186,12 @@ impl RegionMap {
                 {
                     return Some(VirBytes(aligned_end - length.0));
                 }
-                return Some(VirBytes(frend.0 - length.0));
+                // No page-aligned fit in this gap — skip rather than returning
+                // an unaligned address (alignment fix).
+                None
+            } else {
+                None
             }
-            None
         };
 
         let mut prev_end = minv;
@@ -193,8 +209,21 @@ impl RegionMap {
         try_gap(prev_end, maxv)
     }
 
-    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion> {
-        self.regions.insert(region.vaddr, region)
+    /// Insert a region into the map.
+    ///
+    /// Returns `Err(region)` if the new region overlaps an existing region.
+    /// The caller is responsible for handling the overlap (e.g., unmapping
+    /// the overlapping range first, as MAP_FIXED does).
+    /// If the region's start address already exists, returns the old region
+    /// via `Option<VirRegion>` (BTreeMap replacement semantics).
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Result<Option<VirRegion>, VirRegion> {
+        let end = region.end_addr();
+        // Check for overlap with any existing region. BTreeMap is sorted by vaddr,
+        // so we only need to check the two nearest neighbors.
+        if let Some(_existing) = self.find_overlap(region.vaddr, end) {
+            return Err(region);
+        }
+        Ok(self.regions.insert(region.vaddr, region))
     }
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
@@ -236,13 +265,18 @@ mod tests {
         VirRegion::new(VirBytes(vaddr), VirBytes(length), VrFlags::empty())
     }
 
+    /// Helper for tests: insert and unwrap, since test regions never overlap.
+    fn insert_unwrap(map: &mut RegionMap, region: VirRegion) -> Option<VirRegion> {
+        map.insert(region).unwrap()
+    }
+
     #[test]
     fn test_insert_and_find() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
-        map.insert(make_region(0x2000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
 
         assert_eq!(map.len(), 3);
 
@@ -257,9 +291,9 @@ mod tests {
     fn test_remove() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x2000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         assert_eq!(map.len(), 3);
 
@@ -274,8 +308,8 @@ mod tests {
     fn test_find_overlap() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let overlap = map.find_overlap(VirBytes(0x1500), VirBytes(0x2500));
         assert!(overlap.is_some());
@@ -288,9 +322,9 @@ mod tests {
     fn test_traverse() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x3000, 0x1000));
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x2000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
 
         let mut addrs = alloc::vec::Vec::new();
         map.traverse(|r| addrs.push(r.vaddr));
@@ -305,9 +339,9 @@ mod tests {
     fn test_iter() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x3000, 0x1000));
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x2000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
 
         let addrs: alloc::vec::Vec<_> = map.iter().map(|r| r.vaddr).collect();
 
@@ -321,9 +355,9 @@ mod tests {
     fn test_search_type_less() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
-        map.insert(make_region(0x5000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x5000, 0x1000));
 
         let result = map.find_less(VirBytes(0x4000));
         assert!(result.is_some());
@@ -337,9 +371,9 @@ mod tests {
     fn test_search_type_greater() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
-        map.insert(make_region(0x5000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x5000, 0x1000));
 
         let result = map.find_greater(VirBytes(0x2000));
         assert!(result.is_some());
@@ -353,8 +387,8 @@ mod tests {
     fn test_search_type_less_equal() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let result = map.find_less_equal(VirBytes(0x3000));
         assert!(result.is_some());
@@ -369,8 +403,8 @@ mod tests {
     fn test_search_type_greater_equal() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let result = map.find_greater_equal(VirBytes(0x1000));
         assert!(result.is_some());
@@ -385,20 +419,21 @@ mod tests {
     fn test_find_slot_basic() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let slot = map.find_slot(VirBytes(0), VirBytes(0x10000), VirBytes(0x800));
         assert!(slot.is_some());
-        assert!(slot.unwrap().0 >= 0 && slot.unwrap().0 + 0x800 <= 0x10000);
+        let s = slot.unwrap();
+        assert!(s.0 + 0x800 <= 0x10000, "slot {:?} + 0x800 exceeds 0x10000", s);
     }
 
     #[test]
     fn test_find_slot_in_gap() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x0000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x0000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let slot = map.find_slot(VirBytes(0x1000), VirBytes(0x3000), VirBytes(0x800));
         assert!(slot.is_some());
@@ -411,8 +446,8 @@ mod tests {
     fn test_find_slot_no_space() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x0000, 0x1000));
-        map.insert(make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x0000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
 
         let slot = map.find_slot(VirBytes(0), VirBytes(0x2000), VirBytes(0x800));
         assert!(slot.is_none());
@@ -422,9 +457,9 @@ mod tests {
     fn test_find_all_overlaps() {
         let mut map = RegionMap::new();
 
-        map.insert(make_region(0x1000, 0x1000));
-        map.insert(make_region(0x2000, 0x1000));
-        map.insert(make_region(0x3000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x1000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
+        insert_unwrap(&mut map, make_region(0x3000, 0x1000));
 
         let overlaps: alloc::vec::Vec<_> = map
             .find_all_overlaps(VirBytes(0x1500), VirBytes(0x3500))
@@ -438,13 +473,61 @@ mod tests {
     }
 
     #[test]
-    fn test_search_type_flags() {
-        assert!(SearchType::LESS_EQUAL.contains(SearchType::EQUAL));
-        assert!(SearchType::LESS_EQUAL.contains(SearchType::LESS));
-        assert!(!SearchType::LESS_EQUAL.contains(SearchType::GREATER));
+    fn test_search_type_enum() {
+        // LessEqual should match exact or less
+        assert_eq!(SearchType::LessEqual, SearchType::LessEqual);
+        assert_ne!(SearchType::LessEqual, SearchType::Greater);
 
-        assert!(SearchType::GREATER_EQUAL.contains(SearchType::EQUAL));
-        assert!(SearchType::GREATER_EQUAL.contains(SearchType::GREATER));
-        assert!(!SearchType::GREATER_EQUAL.contains(SearchType::LESS));
+        // GreaterEqual should match exact or greater
+        assert_eq!(SearchType::GreaterEqual, SearchType::GreaterEqual);
+        assert_ne!(SearchType::GreaterEqual, SearchType::Less);
+
+        // Default is Equal
+        assert_eq!(SearchType::default(), SearchType::Equal);
+    }
+
+    /// Alignment regression test: find_slot must return page-aligned addresses.
+    /// When the gap boundaries are not page-aligned, the returned address
+    /// must still be page-aligned, or None if no page-aligned fit exists.
+    #[test]
+    fn test_find_slot_alignment_c09() {
+        let mut map = RegionMap::new();
+
+        // Region ends at 0x1F00 (not page-aligned end, but region vaddr is page-aligned)
+        // Actually, regions are always page-aligned, so create a gap with
+        // non-page-aligned minv/maxv to test alignment logic.
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
+
+        // Gap: [0, 0x2000). minv=0x0800 (not page-aligned), length=0x1000.
+        // Aligned start = round_up(0x0800) = 0x1000.
+        // Aligned end = round_down(0x2000) = 0x2000.
+        // Available = 0x2000 - 0x1000 = 0x1000 >= length. Should succeed.
+        let slot = map.find_slot(VirBytes(0x0800), VirBytes(0x2000), VirBytes(0x1000));
+        assert!(slot.is_some());
+        let addr = slot.unwrap();
+        assert_eq!(addr.0 % PAGE_SIZE, 0, "returned address must be page-aligned");
+        assert!(addr.0 >= 0x1000, "should start at aligned boundary 0x1000");
+        assert!(addr.0 + 0x1000 <= 0x2000);
+
+        // Gap too small after alignment: minv=0x1800, maxv=0x2000, length=0x1000.
+        // Aligned start = round_up(0x1800) = 0x2000. Aligned end = 0x2000.
+        // Available = 0. Should return None.
+        let slot = map.find_slot(VirBytes(0x1800), VirBytes(0x2000), VirBytes(0x1000));
+        assert!(slot.is_none(), "unaligned gap too small after alignment should return None");
+    }
+
+    /// Alignment regression test: find_slot returns None when only sub-page gaps exist.
+    #[test]
+    fn test_find_slot_subpage_gap_c09() {
+        let mut map = RegionMap::new();
+
+        // Two regions with only 0x800 bytes between them — less than one page.
+        insert_unwrap(&mut map, make_region(0x0000, 0x1800));
+        insert_unwrap(&mut map, make_region(0x2000, 0x1000));
+
+        // Gap is [0x1800, 0x2000) = 0x800 bytes, but after alignment:
+        // aligned_start = round_up(0x1800) = 0x2000, aligned_end = 0x2000 → 0 available.
+        let slot = map.find_slot(VirBytes(0x1800), VirBytes(0x2000), VirBytes(0x1000));
+        assert!(slot.is_none(), "sub-page gap should not yield a page-aligned slot");
     }
 }

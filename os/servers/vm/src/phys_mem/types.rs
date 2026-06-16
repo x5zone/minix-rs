@@ -1,10 +1,30 @@
+//! Core types for the physical memory allocator.
+//!
+//! Provides:
+//!
+//! - [`AlignedPhysBytes`] — a `u64` newtype that statically guarantees
+//!   page-alignment via the constructor `new()` (panics if not aligned).
+//!   The `new_unchecked` variant is for hot paths where alignment was
+//!   checked upstream; in debug builds it `debug_assert!`s the invariant.
+//!
+//! - [`PageAllocFlags`] — bitflags for allocation requests (CLEAR,
+//!   CONTIG, ALIGN64K, LOWER16MB, LOWER1MB, ALIGN16K). Mirrors the C
+//!   `ALLOC_*` flag bits in `minix/alloc.h`.
+//!
+//! - [`AllocError`] — out-of-memory and low-memory-exhausted variants.
+//!   The C side uses separate `errno` values (ENOMEM vs ENOSPC); we
+//!   preserve the distinction so the dispatcher can map them to the
+//!   correct `VmError::OutOfMemory` vs `VmError::OutOfMemory` (both
+//!   collapse to ENOMEM in the unified `VmError::to_errno()`, but the
+//!   distinction is useful for telemetry).
+//!
 use core::fmt;
 use minix_types::PhysBytes as MtPhysBytes;
 use super::CLICK_SIZE;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AlignedPhysBytes(u64);
+pub(crate) struct AlignedPhysBytes(u64);
 
 impl AlignedPhysBytes {
     pub fn new(addr: u64) -> Self {
@@ -60,7 +80,7 @@ impl TryFrom<MtPhysBytes> for AlignedPhysBytes {
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct PageAllocFlags: u32 {
+    pub(crate) struct PageAllocFlags: u32 {
         const CLEAR = 0x01;
         const CONTIG = 0x02;
         const ALIGN64K = 0x04;
@@ -77,7 +97,7 @@ impl Default for PageAllocFlags {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AllocError {
+pub(crate) enum AllocError {
     OutOfMemory,
     LowMemoryExhausted,
 }

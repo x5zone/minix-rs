@@ -5,7 +5,7 @@
 //! - `TOTAL_PAGES`: Total physical memory pages
 //! - `VM_INSTANCE_COUNT`: Number of active VM instances (for RS restart)
 
-use minix_types::{BootImage, Endpoint, NR_BOOT_PROCS, AssumeSyncCell};
+use minix_types::{BootImage, Endpoint, KernelLayout, NR_BOOT_PROCS, AssumeSyncCell};
 
 /// Boot image array - populated by kernel at startup.
 /// Corresponds to Minix3's `kernel_boot_info`.
@@ -21,11 +21,29 @@ static TOTAL_PAGES: AssumeSyncCell<usize> = AssumeSyncCell::new(0);
 /// Uses AssumeSyncCell (not AtomicU32) because VM is single-threaded.
 static VM_INSTANCE_COUNT: AssumeSyncCell<u32> = AssumeSyncCell::new(0);
 
+/// Kernel memory layout — populated once during VM server initialization.
+///
+/// Replaces the hardcoded constants previously guarded by the
+/// `hardcoded_kernel_layout` feature (hardcoded kernel layout fix). The kernel mapping is
+/// identical in every user process page table, so a single global
+/// suffices. Initialized via `set_kernel_layout()` before any
+/// `init_page_table()` call.
+///
+/// `Option<KernelLayout>` is used instead of `KernelLayout::default()`
+/// because there is no meaningful default for kernel layout — a zero
+/// layout would produce incorrect mappings. `init_page_table()`
+/// panics if the layout has not been set, failing fast rather than
+/// silently mapping memory incorrectly.
+static KERNEL_LAYOUT: AssumeSyncCell<Option<KernelLayout>> = AssumeSyncCell::new(None);
+
 /// Initializes global state with total pages.
 /// 
 /// # Safety
 /// Must be called exactly once during VM server initialization.
 pub(crate) unsafe fn init(total_pages: usize) {
+    // SAFETY: Must be called exactly once during VM startup (documented in
+    // # Safety section above). Single-threaded VM ensures no concurrent reads
+    // or writes to TOTAL_PAGES at this point.
     unsafe {
         *TOTAL_PAGES.get() = total_pages;
     }
@@ -33,11 +51,50 @@ pub(crate) unsafe fn init(total_pages: usize) {
 
 /// Returns total physical memory pages.
 pub(crate) fn total_pages() -> usize {
+    // SAFETY: Single-threaded VM; TOTAL_PAGES is initialized before first read.
     unsafe { *TOTAL_PAGES.get() }
+}
+
+/// Sets the kernel memory layout.
+///
+/// Must be called exactly once during VM server initialization, after
+/// the boot image / multiboot2 / stivale2 headers have been parsed and
+/// before any `init_page_table()` call. Subsequent calls overwrite the
+/// previous value — this is intentional to support re-initialization
+/// during testing, but production code must call this exactly once.
+///
+/// # Safety
+/// Must be called before any concurrent reader of `KERNEL_LAYOUT` exists.
+/// In practice this means before the first `init_page_table()` call,
+/// which happens during process table setup — well after `VmServer::init()`.
+pub(crate) unsafe fn set_kernel_layout(layout: KernelLayout) {
+    // SAFETY: Single-threaded VM; no concurrent access to KERNEL_LAYOUT at
+    // the point this is called (during VmServer::init, before any process
+    // page table is created).
+    unsafe {
+        *KERNEL_LAYOUT.get() = Some(layout);
+    }
+}
+
+/// Returns the kernel memory layout.
+///
+/// # Panics
+/// Panics if `set_kernel_layout()` has not been called. This is intentional:
+/// a missing kernel layout would produce incorrect page table mappings, so
+/// we fail fast rather than silently mapping memory wrong.
+pub(crate) fn kernel_layout() -> KernelLayout {
+    // SAFETY: Single-threaded VM; KERNEL_LAYOUT is initialized via
+    // set_kernel_layout() before the first init_page_table() call.
+    // The panic on None is a deliberate fail-fast guard.
+    unsafe {
+        (*KERNEL_LAYOUT.get())
+            .expect("kernel_layout() called before set_kernel_layout() — VmServer::init() was not run")
+    }
 }
 
 /// Increments VM instance count.
 pub(crate) fn inc_vm_instance() {
+    // SAFETY: Single-threaded VM; no concurrent access to VM_INSTANCE_COUNT.
     unsafe {
         *VM_INSTANCE_COUNT.get() += 1;
     }
@@ -45,6 +102,7 @@ pub(crate) fn inc_vm_instance() {
 
 /// Decrements VM instance count.
 pub(crate) fn dec_vm_instance() {
+    // SAFETY: Single-threaded VM; no concurrent access to VM_INSTANCE_COUNT.
     unsafe {
         *VM_INSTANCE_COUNT.get() -= 1;
     }
@@ -52,11 +110,13 @@ pub(crate) fn dec_vm_instance() {
 
 /// Returns current VM instance count.
 pub(crate) fn vm_instance_count() -> u32 {
+    // SAFETY: Single-threaded VM; VM_INSTANCE_COUNT is always valid to read.
     unsafe { *VM_INSTANCE_COUNT.get() }
 }
 
 /// Finds boot image by endpoint.
 pub(crate) fn find_boot_image(endpoint: Endpoint) -> Option<BootImage> {
+    // SAFETY: Single-threaded VM; BOOT_INFO is initialized before first read.
     unsafe {
         let boot_info = &*BOOT_INFO.get();
         boot_info.iter().find(|b| b.endpoint == endpoint).copied()
@@ -68,9 +128,14 @@ pub(crate) fn find_boot_image(endpoint: Endpoint) -> Option<BootImage> {
 /// # Safety
 /// Must only be called during initialization.
 pub(crate) unsafe fn set_boot_image(index: usize, image: BootImage) {
-    if index < NR_BOOT_PROCS {
-        let boot_info = &mut *BOOT_INFO.get();
-        boot_info[index] = image;
+    // SAFETY: Must only be called during initialization (documented in # Safety
+    // above). Single-threaded VM ensures no concurrent reads of BOOT_INFO.
+    // Index bounds check prevents out-of-bounds write.
+    unsafe {
+        if index < NR_BOOT_PROCS {
+            let boot_info = &mut *BOOT_INFO.get();
+            boot_info[index] = image;
+        }
     }
 }
 
@@ -113,6 +178,65 @@ mod tests {
             *VM_INSTANCE_COUNT.get() = 0;
         }
     }
+
+    #[test]
+    fn test_kernel_layout_set_and_get() {
+        // Reset to None to ensure a clean state.
+        unsafe {
+            *KERNEL_LAYOUT.get() = None;
+        }
+
+        // Before set: kernel_layout() should panic.
+        let result = std::panic::catch_unwind(|| kernel_layout());
+        assert!(result.is_err(), "kernel_layout() must panic before set_kernel_layout()");
+
+        // Set a layout.
+        let layout = KernelLayout::new(
+            0xFFFF_FFFF_8000_0000,
+            0x100_0000,
+            8,
+            8,
+            0xFFFF_8000_0000_0000,
+            4,
+        );
+        unsafe {
+            set_kernel_layout(layout);
+        }
+
+        // After set: kernel_layout() returns the stored value.
+        let got = kernel_layout();
+        assert_eq!(got, layout);
+
+        // Cleanup: reset to None so other tests are not affected.
+        unsafe {
+            *KERNEL_LAYOUT.get() = None;
+        }
+    }
+
+    #[test]
+    fn test_kernel_layout_overwrite() {
+        unsafe {
+            *KERNEL_LAYOUT.get() = None;
+        }
+
+        let a = KernelLayout::new(1, 2, 3, 4, 5, 6);
+        let b = KernelLayout::new(10, 20, 30, 40, 50, 60);
+
+        unsafe {
+            set_kernel_layout(a);
+        }
+        assert_eq!(kernel_layout(), a);
+
+        // Overwriting is allowed (for test re-initialization).
+        unsafe {
+            set_kernel_layout(b);
+        }
+        assert_eq!(kernel_layout(), b);
+
+        unsafe {
+            *KERNEL_LAYOUT.get() = None;
+        }
+    }
 }
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -147,12 +271,59 @@ pub(crate) struct VmAllocator {
     cursor: AssumeSyncCell<usize>,
 }
 
+/// Global pointer to the page allocator, set during VmServer initialization.
+///
+/// # Safety invariant
+///
+/// The `VmPageAllocator` pointed to by this static **must outlive** the
+/// `VmAllocator` (the `GLOBAL` static below). This is guaranteed by the
+/// VM lifecycle: `register_page_alloc()` is called in `VmServer::new()`
+/// and `unregister_page_alloc()` in `VmServer::drop()`. Since VmServer
+/// owns the VmPageAllocator, the allocator lives as long as VmServer,
+/// and VmServer lives as long as the VM process — which is the entire
+/// lifetime of the `GLOBAL` allocator.
 static PAGE_ALLOC_PTR: AtomicPtr<VmPageAllocator> = AtomicPtr::new(core::ptr::null_mut());
 
 static HEAP_ARENA: HeapArena = HeapArena::new();
 
 pub(crate) fn register_page_alloc(alloc: &mut VmPageAllocator) {
-    PAGE_ALLOC_PTR.store(alloc as *mut VmPageAllocator, Ordering::SeqCst);
+    let new_ptr = alloc as *mut VmPageAllocator;
+    // Use compare_exchange to detect unintended overwrites:
+    // - null → new_ptr: first registration (normal)
+    // - old_ptr == new_ptr: idempotent re-registration (safe, no-op)
+    // - old_ptr != new_ptr: different allocator being registered — likely a bug
+    //
+    // The BSS → heap transition re-registers the same allocator object
+    // (VmServer moves, but the allocator field address may change).
+    // If the pointer genuinely changes, that's a real double-init bug
+    // we want to catch rather than silently mask.
+    //
+    // SAFETY: Single-threaded VM model ensures no TOCTOU between
+    // compare_exchange and any concurrent access.
+    match PAGE_ALLOC_PTR.compare_exchange(
+        core::ptr::null_mut(),
+        new_ptr,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    ) {
+        Ok(_) => {} // First registration
+        Err(old_ptr) if old_ptr == new_ptr => {
+            // Idempotent re-registration with the same pointer — safe, no-op.
+        }
+        Err(old_ptr) => {
+            panic!(
+                "register_page_alloc: overwriting different allocator (old={:?}, new={:?}). \
+                 If this is a legitimate BSS→heap transition, the pointer should match.",
+                old_ptr, new_ptr
+            );
+        }
+    }
+}
+
+/// Unregister the global page allocator pointer.
+/// Called when VmServer is dropped to prevent dangling pointer.
+pub(crate) fn unregister_page_alloc() {
+    PAGE_ALLOC_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
 pub(crate) fn heap_arena_grow(
@@ -171,9 +342,22 @@ impl VmAllocator {
         if alloc_ptr.is_null() {
             return false;
         }
+        // SAFETY:
+        // 1. Single-threaded VM event loop: no concurrent access to PAGE_ALLOC_PTR.
+        // 2. Outlive constraint: PAGE_ALLOC_PTR is set by `register_page_alloc()`
+        //    during VmServer::new() and only cleared by `unregister_page_alloc()`
+        //    during VmServer::drop. Since VmServer owns the VmPageAllocator field,
+        //    the allocator is guaranteed to outlive all arena refills — arena
+        //    refills only happen during GlobalAlloc::alloc calls, which only
+        //    occur while VmServer is alive (the VM event loop drives all allocation).
+        // 3. The pointer is never dereferenced after unregister_page_alloc()
+        //    sets it to null (checked above).
         let alloc = unsafe { &mut *alloc_ptr };
         match HEAP_ARENA.grow(Self::ARENA_PAGES, alloc) {
             Ok(va) => {
+                // SAFETY: arena_base and cursor are UnsafeCell fields of VmAllocator.
+                // VmAllocator is a static (GLOBAL), and the single-threaded VM event
+                // loop ensures no concurrent access.
                 unsafe { *self.arena_base.get() = va as *mut u8; }
                 unsafe { *self.cursor.get() = 0; }
                 true
@@ -183,6 +367,8 @@ impl VmAllocator {
     }
 
     fn ensure_arena(&self) -> bool {
+        // SAFETY: arena_base is an UnsafeCell in a static; single-threaded VM
+        // ensures no concurrent access. Only reading to check for null.
         if unsafe { (*self.arena_base.get()).is_null() } {
             return self.refill_arena();
         }
@@ -192,39 +378,43 @@ impl VmAllocator {
 
 unsafe impl GlobalAlloc for VmAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if !self.ensure_arena() {
-            return core::ptr::null_mut();
-        }
-
-        let size = layout.size();
-        let align = layout.align();
-
-        let base = unsafe { *self.arena_base.get() };
-        let cursor = unsafe { *self.cursor.get() };
-        let ptr = unsafe { base.add(cursor) };
-        let offset = ptr.align_offset(align);
-        let alloc_start = unsafe { ptr.add(offset) };
-        let total = offset + size;
-
-        if cursor + total > Self::ARENA_BYTES {
-            if !self.refill_arena() {
+        // SAFETY: Single-threaded VM; no concurrent access to arena_base/cursor.
+        unsafe {
+            if !self.ensure_arena() {
                 return core::ptr::null_mut();
             }
-            return self.alloc(layout);
-        }
 
-        unsafe { *self.cursor.get() = cursor + total; }
-        alloc_start
+            let size = layout.size();
+            let align = layout.align();
+
+            // SAFETY: arena_base and cursor are only accessed here (single-threaded).
+            let base = *self.arena_base.get();
+            let cursor = *self.cursor.get();
+            // SAFETY: base is a valid pointer into the VM direct-mapped region;
+            // cursor is within ARENA_BYTES bounds (checked below).
+            let ptr = base.add(cursor);
+            let offset = ptr.align_offset(align);
+            // SAFETY: offset is within the arena bounds; total checked below.
+            let alloc_start = ptr.add(offset);
+            let total = offset + size;
+
+            if cursor + total > Self::ARENA_BYTES {
+                if !self.refill_arena() {
+                    return core::ptr::null_mut();
+                }
+                return self.alloc(layout);
+            }
+
+            // SAFETY: cursor write is exclusive (single-threaded).
+            *self.cursor.get() = cursor + total;
+            alloc_start
+        }
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // no-op: bump allocator does not reclaim individual objects.
-        // arena pages remain mapped in HeapArena for the VM process lifetime.
-        //
-        // This is intentional: VM server is a long-lived system service,
-        // and most dynamically allocated structures (VirRegion, PageSlot, PageState...)
-        // have lifetimes bound to the VM process. There is no "high-frequency alloc-immediate-free"
-        // temporary object pattern.
+        // SAFETY: No-op deallocator. Bump allocator does not reclaim individual
+        // objects; arena pages remain mapped for the VM process lifetime. This
+        // is intentional for a long-lived system service with stable allocations.
     }
 }
 

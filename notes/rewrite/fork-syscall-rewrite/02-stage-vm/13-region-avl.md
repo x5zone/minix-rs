@@ -723,7 +723,7 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 │                                                             │
 │   步骤 2: 检查范围                                          │
 │   - 0x400000 <= 0x401000 < 0x400000+0x3000 = 0x403000     │
-│   - ✅ 在范围内，返回该区域                                  │
+│   - Y 在范围内，返回该区域                                  │
 │                                                             │
 │   ─────────────────────────────────────────────────────     │
 │                                                             │
@@ -737,7 +737,7 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 │                                                             │
 │   步骤 2: 检查范围                                          │
 │   - 0x400000 <= 0x500000 但 0x500000 >= 0x403000          │
-│   - ❌ 不在范围内，返回 NULL                                │
+│   - [不在范围内] 返回 NULL                                │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -1129,7 +1129,7 @@ region_t *region_get_iter(region_iter *iter)
 Minix3 的 AVL 树将 `lower`/`higher`/`factor` 三个字段嵌入 `vir_region` 结构体，使用宏泛型（`cavl_if.h`/`cavl_impl.h`）生成类型特化的代码。这种方式在 C 中可行，但在 Rust 中存在以下问题：
 
 1. **侵入式节点**：`lower`/`higher` 字段使 `VirRegion` 无法独立于树结构存在，违反关注点分离
-2. **所有权复杂**：`Option<Box<VirRegion>>` 的树形所有权使得节点摘出/重挂接操作繁琐
+2. **所有权复杂**：树形所有权（如 `Option<Box<VirRegion>>`）使得节点摘出/重挂接操作繁琐
 3. **平衡维护复杂**：AVL 树的旋转操作在安全 Rust 中实现冗长，且当前实现尚未完成平衡维护
 4. **标准库可用**：`alloc::collections::BTreeMap` 在 `no_std` + `alloc` 环境下可用，提供 O(log n) 的有序映射
 
@@ -1236,8 +1236,9 @@ impl RegionMap {
     /// 空闲槽位查找（对应 Minix3: region_find_slot）
     pub(crate) fn find_slot(&self, minv: VirBytes, maxv: VirBytes, length: VirBytes) -> Option<VirBytes>;
 
-    /// 插入/删除/遍历
-    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion>;
+    /// 插入（含 overlap 检查）/删除/遍历
+    /// 返回 `Err(region)` 如果新区域与现有区域重叠。
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Result<Option<VirRegion>, VirRegion>;
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion>;
     pub(crate) fn traverse<F>(&self, f: F) where F: FnMut(&VirRegion);
     pub(crate) fn iter(&self) -> impl Iterator<Item = &VirRegion>;
@@ -1248,34 +1249,36 @@ impl RegionMap {
 
 ### 3.3 SearchType 搜索类型
 
-保留 Minix3 的搜索类型语义，便于对照：
+> **设计变更**: SearchType 从手卷 bitflags（`struct SearchType(u8)` + 位运算）
+> 改为标准 enum。原因：搜索方向是互斥的（一个搜索只能往一个方向），
+> bitflags 允许无效组合（如 `LESS | GREATER`），enum 天然禁止。
+> 这是从 C 的位编码到 Rust 类型安全的改进。
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SearchType(u8);
-
-impl SearchType {
-    pub(crate) const EQUAL: Self = Self(1);
-    pub(crate) const LESS: Self = Self(2);
-    pub(crate) const GREATER: Self = Self(4);
-    pub(crate) const LESS_EQUAL: Self = Self(3);    // EQUAL | LESS
-    pub(crate) const GREATER_EQUAL: Self = Self(5);  // EQUAL | GREATER
-
-    pub(crate) fn contains(&self, other: Self) -> bool {
-        (self.0 & other.0) != 0
-    }
+pub(crate) enum SearchType {
+    /// 精确匹配
+    Equal,
+    /// 严格小于
+    Less,
+    /// 严格大于
+    Greater,
+    /// 小于等于
+    LessEqual,
+    /// 大于等于
+    GreaterEqual,
 }
 ```
 
 与 Minix3 的对应：
 
-| Minix3 常量 | Rust 常量 | 值 |
-|-------------|----------|-----|
-| `AVL_EQUAL` | `SearchType::EQUAL` | 1 |
-| `AVL_LESS` | `SearchType::LESS` | 2 |
-| `AVL_GREATER` | `SearchType::GREATER` | 4 |
-| `AVL_LESS_EQUAL` | `SearchType::LESS_EQUAL` | 3 |
-| `AVL_GREATER_EQUAL` | `SearchType::GREATER_EQUAL` | 5 |
+| Minix3 常量 | Rust 变体 | 语义 |
+|-------------|----------|------|
+| `AVL_EQUAL` | `SearchType::Equal` | 精确匹配 |
+| `AVL_LESS` | `SearchType::Less` | 严格小于 |
+| `AVL_GREATER` | `SearchType::Greater` | 严格大于 |
+| `AVL_LESS_EQUAL` | `SearchType::LessEqual` | 小于等于 |
+| `AVL_GREATER_EQUAL` | `SearchType::GreaterEqual` | 大于等于 |
 
 ### 3.4 VirRegion 的变化
 
@@ -1345,7 +1348,7 @@ active.regions_mut().remove(vaddr);       // RegionMap::remove
 | Minix3 C 操作 | Rust RegionMap 操作 | 说明 |
 |--------------|--------------------|----|
 | `region_init(&tree)` | `RegionMap::new()` | 创建空映射表 |
-| `region_insert(&tree, r)` | `map.insert(r)` | 以 vaddr 为键插入 |
+| `region_insert(&tree, r)` | `map.insert(r)` | 以 vaddr 为键插入，重叠返回 `Err` |
 | `region_remove(&tree, key)` | `map.remove(key)` | 按键删除，返回被删除的区域 |
 | `region_subst(&tree, new)` | `map.insert(new)` | BTreeMap 的 insert 对同键自动替换，返回 `Option<VirRegion>`（旧值） |
 | `region_search(&tree, k, AVL_LESS_EQUAL)` | `map.find_less_equal(k)` | 查找 ≤ k 的最大区域 |
@@ -1399,8 +1402,19 @@ impl RegionMap {
 
 ```rust
 impl RegionMap {
-    pub(crate) fn insert(&mut self, region: VirRegion) -> Option<VirRegion> {
-        self.regions.insert(region.vaddr, region)
+    /// Insert a region into the map.
+    ///
+    /// Returns `Err(region)` if the new region overlaps an existing region.
+    /// The caller is responsible for handling the overlap (e.g., unmapping
+    /// the overlapping range first, as MAP_FIXED does).
+    /// If the region's start address already exists, returns the old region
+    /// via `Option<VirRegion>` (BTreeMap replacement semantics).
+    pub(crate) fn insert(&mut self, region: VirRegion) -> Result<Option<VirRegion>, VirRegion> {
+        let end = region.end_addr();
+        if let Some(_existing) = self.find_overlap(region.vaddr, end) {
+            return Err(region);
+        }
+        Ok(self.regions.insert(region.vaddr, region))
     }
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
@@ -1408,6 +1422,12 @@ impl RegionMap {
     }
 }
 ```
+
+> **设计变更**: `insert` 从 `Option<VirRegion>` 改为 `Result<Option<VirRegion>, VirRegion>`。
+> 原先的 `insert` 只检查 `vaddr` 键冲突（BTreeMap 语义），不检查区域范围重叠。
+> 这导致 brk 扩展或 mmap 非 MAP_FIXED 插入时可能默默覆盖相邻区域（C-18 修复）。
+> 新实现先调用 `find_overlap` 检查范围重叠，重叠时返回 `Err(region)` 让调用方处理。
+> 对于 MAP_FIXED 场景，调用方应先 `unmap_range` 清除目标范围再 `insert`。
 
 BTreeMap 的 `insert` 对同键自动替换，等价于 Minix3 的 `region_subst`。`remove` 返回被删除的值，等价于 Minix3 的 `region_remove`。
 
@@ -1418,41 +1438,41 @@ impl RegionMap {
     pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
         use core::ops::Bound;
 
-        if st.contains(SearchType::EQUAL) {
-            if let Some(r) = self.regions.get(&key) {
-                return Some(r);
+        match st {
+            SearchType::Equal => self.regions.get(&key),
+            SearchType::Less => self.regions.range(..key).next_back().map(|(_, r)| r),
+            SearchType::Greater => self.regions.range((Bound::Excluded(key), Bound::Unbounded)).next().map(|(_, r)| r),
+            SearchType::LessEqual => {
+                if let Some(r) = self.regions.get(&key) {
+                    Some(r)
+                } else {
+                    self.regions.range(..key).next_back().map(|(_, r)| r)
+                }
+            }
+            SearchType::GreaterEqual => {
+                if let Some(r) = self.regions.get(&key) {
+                    Some(r)
+                } else {
+                    self.regions.range((Bound::Excluded(key), Bound::Unbounded)).next().map(|(_, r)| r)
+                }
             }
         }
-
-        if st.contains(SearchType::LESS) {
-            if let Some((_, r)) = self.regions.range(..key).next_back() {
-                return Some(r);
-            }
-        }
-
-        if st.contains(SearchType::GREATER) {
-            if let Some((_, r)) = self.regions.range(Bound::Excluded(key), ..).next() {
-                return Some(r);
-            }
-        }
-
-        None
     }
 
     pub(crate) fn find_less(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::LESS)
+        self.search(key, SearchType::Less)
     }
 
     pub(crate) fn find_greater(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::GREATER)
+        self.search(key, SearchType::Greater)
     }
 
     pub(crate) fn find_less_equal(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::LESS_EQUAL)
+        self.search(key, SearchType::LessEqual)
     }
 
     pub(crate) fn find_greater_equal(&self, key: VirBytes) -> Option<&VirRegion> {
-        self.search(key, SearchType::GREATER_EQUAL)
+        self.search(key, SearchType::GreaterEqual)
     }
 }
 ```
@@ -1657,7 +1677,7 @@ Minix3 使用 AVL 树的原因：查找密集（缺页处理频繁），AVL 查�
 
 1. **标准库可用**：`alloc::collections::BTreeMap` 在 `no_std` + `alloc` 环境下可用，无需自实现
 2. **缓存友好**：B 树节点内多个键连续存储，减少指针跳转和缓存未命中
-3. **代码简洁**：~200 行封装代码 vs ~400 行自实现 AVL（含未完成的平衡逻辑）
+3. **代码简洁**：~200 行封装代码 vs ~400 行自实现 AVL（DEFERRED: 平衡逻辑待实现）
 4. **语义等价**：BTreeMap 提供与 AVL 树相同的 O(log n) 有序映射语义
 5. **关注点分离**：VirRegion 不再内嵌树节点字段，结构更清晰
 6. **维护成本低**：标准库负责平衡维护，无需自行实现旋转操作

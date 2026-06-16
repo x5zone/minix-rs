@@ -20,26 +20,33 @@
 //! shrinkage. Rust's `shrink_heap` actually frees physical pages and unmaps
 //! page table entries, improving memory reclamation.
 
-use minix_types::{Endpoint, UserSlot, VirBytes, ENOMEM, ESRCH};
-use crate::vmproc::{VmProcTable, ActiveProc};
-use crate::region::{VirRegion, VrFlags, RegionMap, PageFrames, PfnAllocator};
+use minix_types::{Endpoint, VirBytes};
+use crate::vmproc::{VmProcTable, ActiveProc, EndpointError};
+use crate::region::{VirRegion, VrFlags, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
-use crate::pagetable::{PageTable, Paging};
+use crate::pagetable::Paging;
 use crate::region::page_state::PAGE_SIZE;
 
+/// Errors from VM_BRK (heap resize) operations.
+///
+/// All variants map to `VmError` via `From<BrkError> for VmError`,
+/// then to C errno via `VmError::to_errno()`. Per-error `to_errno()`
+/// methods are intentionally omitted — the single source of truth is
+/// `VmError::to_errno()` in `minix_types::ipc::vm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrkError {
     ProcessNotFound,
     OutOfMemory,
 }
 
-impl BrkError {
-    pub(crate) fn to_errno(&self) -> i32 {
-        match self {
-            Self::ProcessNotFound => ESRCH,
-            Self::OutOfMemory => ENOMEM,
-        }
+// ── Endpoint-lookup error unification ──
+//
+// See `munmap.rs` for the full rationale. brk doesn't distinguish
+// INVALID-slot from DEAD-endpoint.
+impl From<EndpointError> for BrkError {
+    fn from(_: EndpointError) -> Self {
+        BrkError::ProcessNotFound
     }
 }
 
@@ -58,8 +65,7 @@ pub(crate) fn handle_brk(
     frames: &mut PageFrames,
     request: &BrkRequest,
 ) -> Result<BrkResponse, BrkError> {
-    let slot = table.vm_isokendpt(request.endpoint)
-        .map_err(|_| BrkError::ProcessNotFound)?;
+    let slot = table.vm_isokendpt(request.endpoint)?;
 
     let mut active = table.get_active(slot)
         .ok_or(BrkError::ProcessNotFound)?;
@@ -79,7 +85,7 @@ pub(crate) fn handle_brk(
 fn grow_heap(
     active: &mut ActiveProc<'_>,
     _page_alloc: &mut VmPageAllocator,
-    frames: &mut PageFrames,
+    _frames: &mut PageFrames,
     new_brk: VirBytes,
 ) -> Result<BrkResponse, BrkError> {
     let current_top = active.region_top();
@@ -109,7 +115,8 @@ fn grow_heap(
             VrFlags::WRITABLE | VrFlags::ANON,
             &MEM_TYPE_ANON,
         );
-        active.regions_mut().insert(new_region);
+        active.regions_mut().insert(new_region)
+            .expect("brk: new region should not overlap (heap grows upward)");
     }
 
     active.add_total(aligned_len);
@@ -154,20 +161,25 @@ fn shrink_heap(
                     Ok((left, right)) => {
                         let freed_len = right.length;
                         {
-                            let page_table = active.page_table_mut();
-                            crate::region::free_region_pages(right, page_table, frames, page_alloc);
+                            #[cfg(not(test))]
+                            let pt = Some(active.page_table_mut());
+                            #[cfg(test)]
+                            let pt: Option<&mut crate::pagetable::PageTable> = None;
+                            crate::region::free_region_pages(right, pt, frames, page_alloc);
                         }
                         active.sub_total(VirBytes(freed_len.0));
-                        active.regions_mut().insert(left);
+                        active.regions_mut().insert(left)
+                            .expect("brk: split left should not overlap");
                     }
                     Err(_) => {
                         active.regions_mut().insert(VirRegion::new(
                             region_vaddr, region_len, region_flags,
-                        ));
+                        )).expect("brk: re-inserted region should not overlap");
                     }
                 }
             } else {
-                active.regions_mut().insert(region);
+                active.regions_mut().insert(region)
+                    .expect("brk: unchanged region should not overlap");
             }
         }
     }
@@ -176,8 +188,11 @@ fn shrink_heap(
         if let Some(region) = active.regions_mut().remove(vaddr) {
             let freed_len = region.length;
             {
-                let page_table = active.page_table_mut();
-                crate::region::free_region_pages(region, page_table, frames, page_alloc);
+                #[cfg(not(test))]
+                let pt = Some(active.page_table_mut());
+                #[cfg(test)]
+                let pt: Option<&mut crate::pagetable::PageTable> = None;
+                crate::region::free_region_pages(region, pt, frames, page_alloc);
             }
             active.sub_total(VirBytes(freed_len.0));
         }
@@ -191,9 +206,18 @@ fn shrink_heap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::UserSlot;
     use crate::vmproc::VmProcTable;
     use crate::phys_mem::{BitmapAllocator, PhysAlloc};
     use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_SLOT: AtomicU32 = AtomicU32::new(100);
+
+    fn next_test_slot() -> UserSlot {
+        let s = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
+        UserSlot(s as usize)
+    }
 
     fn make_frames() -> PageFrames {
         PageFrames::new(minix_types::PhysBytes(256 * REGION_PAGE_SIZE as u64))
@@ -209,6 +233,8 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
+        // In test builds, init_page_table() creates a stub page table
+        // (X86_64Paging::new() is todo!(), so a zero-initialized stub is used).
         active.init_page_table().unwrap();
         active.init_regions();
         active.set_region_top(VirBytes(0x4000_0000));
@@ -217,8 +243,11 @@ mod tests {
 
     #[test]
     fn test_brk_error_to_errno() {
-        assert_eq!(BrkError::ProcessNotFound.to_errno(), ESRCH);
-        assert_eq!(BrkError::OutOfMemory.to_errno(), ENOMEM);
+        // Tests the full error path: BrkError → From<BrkError> for VmError → VmError::to_errno()
+        // This is the actual dispatch path used in production.
+        use minix_types::{VmError, EINVAL, ENOMEM};
+        assert_eq!(VmError::from(BrkError::ProcessNotFound).to_errno(), EINVAL); // ProcessNotFound → InvalidProcess → EINVAL
+        assert_eq!(VmError::from(BrkError::OutOfMemory).to_errno(), ENOMEM);    // OutOfMemory → OutOfMemory → ENOMEM
     }
 
     #[test]
@@ -227,7 +256,7 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let slot = UserSlot::new(0);
+        let slot = next_test_slot();
         let ep = init_test_process(slot);
 
         let request = BrkRequest {
@@ -246,7 +275,7 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let slot = UserSlot::new(0);
+        let slot = next_test_slot();
         let ep = init_test_process(slot);
 
         let request1 = BrkRequest {
@@ -270,7 +299,7 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let slot = UserSlot::new(0);
+        let slot = next_test_slot();
         let ep = init_test_process(slot);
 
         let request = BrkRequest {
@@ -304,7 +333,7 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let slot = UserSlot::new(0);
+        let slot = next_test_slot();
         let ep = init_test_process(slot);
 
         let grow = BrkRequest {
@@ -328,7 +357,7 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let slot = UserSlot::new(0);
+        let slot = next_test_slot();
         let ep = init_test_process(slot);
 
         let request1 = BrkRequest {
@@ -353,5 +382,46 @@ mod tests {
         let region_count_after = active.regions().len();
         assert_eq!(region_count_after, region_count_before,
             "extending at region boundary should reuse existing region, not create a new one");
+    }
+
+    /// Overlap regression test: brk must not grow into an overlapping region.
+    /// If another region exists above the heap, grow_heap must return
+    /// OutOfMemory rather than silently corrupting it.
+    #[test]
+    fn test_grow_heap_rejects_overlap_c18() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+
+        let slot = next_test_slot();
+        let ep = init_test_process(slot);
+
+        // First, grow heap to 0x4000_1000
+        let grow = BrkRequest {
+            endpoint: ep,
+            new_brk_addr: VirBytes(0x4000_1000),
+        };
+        handle_brk(table, &mut page_alloc, &mut frames, &grow).unwrap();
+
+        // Manually insert a region at 0x4000_2000 to block further growth
+        let slot_data = table.vm_isokendpt(ep).unwrap();
+        let mut active = table.get_active(slot_data).unwrap();
+        use crate::region::VrFlags;
+        let blocking = VirRegion::new(
+            VirBytes(0x4000_2000),
+            VirBytes(0x1000),
+            VrFlags::WRITABLE | VrFlags::ANON,
+        );
+        active.regions_mut().insert(blocking).unwrap();
+        drop(active);
+
+        // Try to grow heap past the blocking region — should fail
+        let overlap_grow = BrkRequest {
+            endpoint: ep,
+            new_brk_addr: VirBytes(0x4000_3000),
+        };
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &overlap_grow);
+        assert!(matches!(result, Err(BrkError::OutOfMemory)),
+            "brk must reject growth that would overlap an existing region");
     }
 }

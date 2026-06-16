@@ -2,7 +2,7 @@
 //!
 //! Implements core logic of signal system calls.
 
-use minix_ipc::Endpoint;
+use minix_types::Endpoint;
 
 /// Sends a signal.
 ///

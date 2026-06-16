@@ -411,36 +411,42 @@ bitflags::bitflags! {
 
 ### 4.5 完整的请求分发状态
 
+> **状态说明**：
+> - "已实现" = dispatch_by_number 已连接 + handler 逻辑完整
+> - "已连接/部分实现" = dispatch_by_number 已连接 M1/M2 解码，但 handler 内部有 stub（如 RS_PREPARE 返回 NotImplemented）
+> - "占位" = dispatch_by_number 已连接但 handler 返回 NotImplemented
+> - "TODO" = dispatch_by_number 未连接，走默认 NotImplemented 分支
+
 | 请求码 | Rust 处理函数 | dispatcher 方法 | 状态 |
 |--------|-------------|----------------|------|
 | `VM_FORK` | `fork::do_fork` | `dispatch_fork` | 已实现 |
 | `VM_BRK` | `brk::handle_brk` | `dispatch_brk` | 已实现 |
 | `VM_MMAP` | `mmap::handle_mmap` | `dispatch_mmap` | 已实现 |
-| `VM_VFS_MMAP` | `mmap::handle_vfs_mmap` | `dispatch_vfs_mmap` | 已实现 |
+| `VM_VFS_MMAP` | `mmap::handle_vfs_mmap` | `dispatch_vfs_mmap` | 已实现 (mmap.rs:273) |
 | `VM_MUNMAP` | `munmap::handle_munmap` | `dispatch_munmap` | 已实现 |
 | `VM_MAP_PHYS` | `map_phys::handle_map_phys` | `dispatch_map_phys` | 已实现 |
-| `VM_UNMAP_PHYS` | `munmap::handle_munmap` | `dispatch_unmap_phys` | 已实现 |
-| `VM_SHM_UNMAP` | `munmap::handle_munmap` | `dispatch_shm_unmap` | 已实现 |
+| `VM_UNMAP_PHYS` | `munmap::handle_munmap` | `dispatch_unmap_phys` | 占位（NotImplemented） |
+| `VM_SHM_UNMAP` | `munmap::handle_munmap` | `dispatch_shm_unmap` | 已连接/部分实现（fail-closed 校验 + NotImplemented，见 S-19-FU） |
 | `VM_EXIT` | `exit::handle_vm_exit` | `dispatch_exit` | 已实现 |
 | `VM_WILLEXIT` | `exit::handle_vm_willexit` | `dispatch_willexit` | 已实现 |
-| `VM_RS_SET_PRIV` | `rs::handle_rs_set_priv` | `dispatch_rs_set_priv` | 已实现 |
-| `VM_RS_PREPARE` | `rs::handle_rs_prepare` | `dispatch_rs_prepare` | 已实现 |
-| `VM_RS_UPDATE` | `rs::handle_rs_update` | `dispatch_rs_update` | 已实现 |
-| `VM_RS_MEMCTL` | `rs::handle_rs_memctl` | `dispatch_rs_memctl` | 已实现 |
-| `VM_INFO` | `query::handle_info` | `dispatch_info` | 已实现 |
-| `VM_GETPHYS` | `query::handle_get_phys` | `dispatch_get_phys` | 已实现 |
-| `VM_GETREF` | `query::handle_get_refcount` | `dispatch_get_refcount` | 已实现 |
-| `VM_GETRUSAGE` | `query::handle_getrusage` | `dispatch_getrusage` | 已实现 |
-| `VM_PAGEFAULT` | — | `dispatch_pagefault` | 占位（NotImplemented） |
+| `VM_RS_SET_PRIV` | `rs::handle_rs_set_priv` | `dispatch_rs_set_priv` | 已连接/部分实现 |
+| `VM_RS_PREPARE` | `rs::handle_rs_prepare` | `dispatch_rs_prepare` | 已连接/部分实现 |
+| `VM_RS_UPDATE` | `rs::handle_rs_update` | `dispatch_rs_update` | 已连接/部分实现 |
+| `VM_RS_MEMCTL` | `rs::handle_rs_memctl` | `dispatch_rs_memctl` | 已连接/部分实现 |
+| `VM_INFO` | `query::handle_info` | `dispatch_info` | 已连接/部分实现 |
+| `VM_GETPHYS` | `query::handle_get_phys` | `dispatch_get_phys` | 已连接/部分实现 |
+| `VM_GETREF` | `query::handle_get_refcount` | `dispatch_get_refcount` | 已连接/部分实现 |
+| `VM_GETRUSAGE` | `query::handle_getrusage` | `dispatch_getrusage` | 已连接/部分实现 |
+| `VM_PAGEFAULT` | — | `dispatch_pagefault` | 占位（VmServer 主循环处理） |
 | `VM_EXEC_NEWMEM` | — | `dispatch_exec_newmem` | 占位（NotImplemented） |
-| `VM_MAPCACHEPAGE` | — | — | TODO |
-| `VM_SETCACHEPAGE` | — | — | TODO |
-| `VM_FORGETCACHEPAGE` | — | — | TODO |
-| `VM_CLEARCACHE` | — | — | TODO |
-| `VM_VFS_REPLY` | `vfs_queue::handle_reply` | VmServer 主循环 | 已实现（异步路径） |
-| `VM_REMAP` | — | — | TODO |
-| `VM_REMAP_RO` | — | — | TODO |
-| `VM_PROCCTL` | — | — | TODO |
+| `VM_MAPCACHEPAGE` | `page_cache::handle_mapcache` | `dispatch_mapcache` | 已连接/部分实现 |
+| `VM_SETCACHEPAGE` | `page_cache::handle_setcache` | `dispatch_setcache` | 已连接/部分实现 |
+| `VM_FORGETCACHEPAGE` | `page_cache::handle_forgetcache` | `dispatch_forgetcache` | 已实现 (dispatcher.rs:231) |
+| `VM_CLEARCACHE` | `page_cache::handle_clearcache` | `dispatch_clearcache` | 已实现 (dispatcher.rs:241) |
+| `VM_VFS_REPLY` | `vfs_queue::handle_reply` | `dispatch_vfs_reply` | 已连接/部分实现（fail-closed 校验 + NotImplemented，见 S-19-FU） |
+| `VM_REMAP` | — | `dispatch_remap` | 已连接/部分实现（fail-closed 校验 + NotImplemented，见 S-19-FU） |
+| `VM_REMAP_RO` | — | `dispatch_remap_ro` | 已连接/部分实现（fail-closed 校验 + NotImplemented，见 S-19-FU） |
+| `VM_PROCCTL` | — | `dispatch_procctl` | 已连接/部分实现（fail-closed 校验 + NotImplemented，见 S-19-FU） |
 | `VM_ADDDMA` | — | — | TODO |
 | `VM_DELDMA` | — | — | TODO |
 | `VM_GETDMA` | — | — | TODO |
@@ -452,7 +458,13 @@ bitflags::bitflags! {
 ```rust
 pub fn main_loop(&mut self) {
     loop {
-        let msg = ipc_receive(ANY);
+        // IPC 收发通过 IpcTransport 策略 trait (os/servers/vm/src/ipc/transport.rs)
+        // 实现 (2026-06-13 修复 IPC stub). 旧实现是直接 panic 的 stub.
+        let (msg, _sts) = ipc_receive().expect("IPC transport must be wired");
+        // IpcTransport 抽象说明:
+        //   - 生产: KernelIpcTransport::receive (依赖 kernel IPC core)
+        //   - 测试: TestIpcTransport::receive (队列式 mock, 单元测试驱动主循环)
+        // 旧 panic 字符串已被清晰 "wiring pending kernel IPC core" 错误替代.
 
         // 1. VM_PAGEFAULT: 内核专用，不经过 dispatcher
         // 2. VM_VFS_REPLY: 异步回调，不经过 dispatcher
@@ -465,7 +477,7 @@ pub fn main_loop(&mut self) {
         };
 
         if reply != VmReply::Suspend {
-            ipc_reply(msg.m_source, reply);
+            ipc_send(msg.m_source, &reply).expect("IPC send must succeed");
         }
     }
 }

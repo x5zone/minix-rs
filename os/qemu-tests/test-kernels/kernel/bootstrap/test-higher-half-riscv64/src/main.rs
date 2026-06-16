@@ -16,11 +16,11 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::riscv64::early_console;
+use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{MemoryRegion, PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo};
+use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
 
 // ── Global allocator (bump allocator on a static heap) ──
 use core::alloc::{GlobalAlloc, Layout};
@@ -127,12 +127,14 @@ pub extern "C" fn rust_main() -> ! {
         kern_virt_base: VirBytes(kern_virt_base),
         kern_phys_base: PhysBytes(DRAM_BASE),
         kern_size,
-        free_upper_idx: 0,
+        free_upper_idx: None,
         user_sp: VirBytes(0x0000_003f_ffff_f000),
         // Stack top at end of mapped kernel region (same pattern as x86_64/aarch64).
         kern_stack_top: VirBytes(kern_virt_base + kern_size as u64),
         syscall_entry: VirBytes(kern_virt_base + 0x100_000),
         boot_modules: &[],
+        bootstrap_start: PhysBytes(0),
+        bootstrap_len: 0,
     };
 
     let result = BootPrepareResult {

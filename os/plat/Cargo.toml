@@ -1,0 +1,19 @@
+[package]
+name = "minix-plat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_plat"
+path = "src/lib.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+bitflags = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = ["mock"]
+mock = []

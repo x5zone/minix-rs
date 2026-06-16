@@ -12,9 +12,9 @@
 
 | 进程类型 | 是否缺页 | 内核处理方式 | 原因 |
 |---------|---------|------------|------|
-| **内核** | ❌ | `inkernel_disaster()` → panic | 内核使用直接物理映射，所有内存分配即映射 |
-| **VM 服务器** | ❌ | `panic("pagefault in VM")` | VM 是缺页的唯一处理者，自身缺页会死锁 |
-| **用户进程** | ✅ | 转发给 VM 处理 | VM 实现按需分页、CoW 等功能 |
+| **内核** | N | `inkernel_disaster()` → panic | 内核使用直接物理映射，所有内存分配即映射 |
+| **VM 服务器** | N | `panic("pagefault in VM")` | VM 是缺页的唯一处理者，自身缺页会死锁 |
+| **用户进程** | Y | 转发给 VM 处理 | VM 实现按需分页、CoW 等功能 |
 
 > **VM 不能缺页的根因**：VM 是页错误的唯一处理者——若 VM 自身也按需分页，处理他人缺页时可能触发自身缺页，形成死锁。因此 VM 的内存分配采用 **eager mapping** 策略：`vm_allocpage()` 先 `alloc_mem()` 获取物理页，再 `vm_mappages()` 立即映射到 VM 地址空间（`PTF_PRESENT | PTF_USER | PTF_RW`），不存在"先占虚拟地址、访问时再映射"的延迟分配。内核源码见 `kernel/arch/i386/exception.c:92-108`、`kernel/arch/earm/exception.c:72-96`。
 
@@ -155,7 +155,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
     }
 
     // 情况2: 不需要 CoW（只有一个引用或只是读操作）
-    // ⚠️ Minix3 内存泄漏：预分配的 new_page_cl 未释放，直接 return OK
+    // 注意: Minix3 内存泄漏：预分配的 new_page_cl 未释放，直接 return OK
     if(ph->ph->refcount < 2 || !write) {
         return OK;  // 内存已就绪（但 new_page_cl 泄漏）
     }
@@ -1260,7 +1260,7 @@ result = map_pf(vmp, region, offset, wr, pf_cont, &state, sizeof(state), &io);
 
 1. `alloc_mem()` 预分配新页 → 失败返回 `ENOMEM`
 2. `ph->ph->phys == MAP_NONE` → 首次访问，直接使用新页
-3. `refcount < 2 || !write` → 无需 CoW（⚠️ 预分配页泄漏）
+3. `refcount < 2 || !write` → 无需 CoW（注意: 预分配页泄漏）
 4. `refcount >= 2 && write` → 调用 `mem_cow()` 执行 CoW
 
 **mem_cow 实现**
