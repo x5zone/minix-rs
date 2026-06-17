@@ -31,8 +31,10 @@ impl ArchInit for Riscv64ArchInit {
             core::arch::asm!("csrw pmpcfg0, {}", in(reg) 0x1Fu64);
         }
 
-        // 2. Enable S-mode external and timer interrupts
-        // SIE: SEIE (bit 9) + STIE (bit 5) + SSIE (bit 1)
+        // 2. Enable S-mode timer and software interrupts
+        // SIE: STIE (bit 5) + SSIE (bit 1) = 0x22
+        // SEIE (bit 9) is left disabled here; external interrupts are enabled
+        // per-source via the PLIC when InterruptController::unmask() is called.
         unsafe {
             core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x22u64);
         }

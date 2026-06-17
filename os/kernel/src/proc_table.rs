@@ -1189,4 +1189,64 @@ mod tests {
         let result = table.vm_memreq_reply(nr, crate::vm::VmCheckResult::Ok);
         assert!(matches!(result, Err(crate::vm::VmCtlError::InvalidState)));
     }
+
+    // ── process_misc_flags tests ──
+
+    /// Test: process_misc_flags returns true and does nothing when no
+    /// interesting flags are set.
+    #[test]
+    fn test_process_misc_flags_empty_returns_true() {
+        let mut table = ProcessTable::new();
+        let nr = 0;
+        table.procs[nr as usize].p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        assert!(table.process_misc_flags(nr));
+    }
+
+    /// Test: process_misc_flags clears MF_KCALL_RESUME and keeps process
+    /// runnable (stub handler path).
+    #[test]
+    fn test_process_misc_flags_clears_kcall_resume() {
+        let mut table = ProcessTable::new();
+        let nr = 0;
+        {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        }
+        assert!(table.process_misc_flags(nr));
+        let proc = table.get(nr).unwrap();
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+    }
+
+    /// Test: process_misc_flags clears MF_DELIVERMSG and keeps process
+    /// runnable (stub handler path).
+    #[test]
+    fn test_process_misc_flags_clears_delivermsg() {
+        let mut table = ProcessTable::new();
+        let nr = 0;
+        {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+        }
+        assert!(table.process_misc_flags(nr));
+        let proc = table.get(nr).unwrap();
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// Test: process_misc_flags returns false when the process becomes
+    /// unrunnable after flag processing.
+    #[test]
+    fn test_process_misc_flags_unrunnable_returns_false() {
+        let mut table = ProcessTable::new();
+        let nr = 0;
+        {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+            // Make the process unrunnable by setting SENDing.
+            proc.p_rts_flags.set(RtsFlagsBits::SENDING);
+        }
+        assert!(!table.process_misc_flags(nr));
+    }
 }

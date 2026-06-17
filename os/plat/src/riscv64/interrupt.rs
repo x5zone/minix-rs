@@ -13,6 +13,10 @@ const PLIC_PRIORITY: usize = 0x0000;
 const PLIC_ENABLE: usize = 0x2000;
 const PLIC_THRESHOLD: usize = 0x200000;
 const PLIC_CLAIM: usize = 0x200004;
+/// PLIC complete register offset.
+/// In the PLIC spec, the complete register shares the same offset as claim:
+/// reading claims an interrupt, writing completes it.
+const PLIC_COMPLETE: usize = PLIC_CLAIM;
 
 /// S-mode context offset for hart 0.
 const S_MODE_CONTEXT: usize = 1;
@@ -113,8 +117,10 @@ impl InterruptController for Riscv64InterruptController {
     }
 
     fn eoi(&mut self, _irq: IrqVector) {
+        // Write the interrupt ID to the complete register.
+        // PLIC_COMPLETE shares the same offset as PLIC_CLAIM (write = complete).
         unsafe {
-            self.plic_write32(Self::claim_offset(self.context), self.last_claimed);
+            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, self.last_claimed);
         }
     }
 

@@ -555,11 +555,19 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     }
 }
 
-/// Initialize protection structures: GDT/IDT/TSS (x86-64), VBAR_EL1 (aarch64), stvec (riscv64).
+/// Initialize protection structures: GDT/TSS (x86-64), VBAR_EL1 (aarch64), stvec (riscv64).
 ///
-/// This must be the very first thing called in kmain, because
-/// without valid GDT/IDT (x86-64) or VBAR_EL1/stvec (aarch64/riscv64),
-/// any exception will cause an unrecoverable triple fault.
+/// This must be the very first thing called in kmain, because without valid
+/// GDT/TSS (x86-64) or VBAR_EL1/stvec (aarch64/riscv64), any exception will
+/// cause an unrecoverable triple fault.
+///
+/// Note: the IDT / VBAR_EL1 / stvec is **not** loaded here. `TrapEntryArch::init()`
+/// only prepares the descriptor table with metadata (DPL/IST/present bits);
+/// handler addresses are placeholder 0. Loading the trap table before real
+/// handlers are installed would route every exception/interrupt to address 0.
+/// The actual table is therefore initialized now to set metadata and SYSCALL MSRs,
+/// then discarded; a later boot phase will recreate it via `init()`, install real
+/// handlers with `set_handler()`, and finally `load()` it.
 ///
 /// C: prot_init() — protect.c:321 (x86) / protect.c:77 (ARM)
 #[cfg(not(feature = "mock"))]
@@ -572,12 +580,16 @@ fn init_protection(kernel_info: &KernelInfo) {
     let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
     prot.load();
 
-    // Step 2: Initialize trap entry table.
-    // x86-64: IDT + SYSCALL MSR; aarch64: VBAR_EL1; riscv64: stvec
+    // Step 2: Prepare the trap entry table metadata.
+    // x86-64: IDT metadata + SYSCALL MSR; aarch64: VBAR_EL1 metadata;
+    // riscv64: stvec metadata.
+    // C: idt_init() sets gate metadata with real handler addresses — protect.c:245-268;
+    //     Rust keeps handler addresses as 0 here; the table is recreated and loaded
+    //     in a later boot phase after real handlers are installed via set_handler().
     // C: SYSCALL MSR setup — protect.c:189-205
     let mut trap = CurrentTrapEntry::init();
     trap.configure_syscall(kernel_info.syscall_entry);
-    trap.load();
+    // Do NOT call trap.load() here — handler addresses are still 0.
 }
 
 /// Initialize clock and interrupt controller.

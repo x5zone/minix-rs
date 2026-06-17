@@ -403,14 +403,28 @@ pub trait ArchInit {
 2. **BIOS 区域不存在于 aarch64/riscv64**：`cut_memmap` 是 x86 特有的
 3. **避免架构 trait 中放架构特定逻辑**：如果 x86-64 的 `ArchInit::init()` 做 `cut_memmap`，aarch64/riscv64 的实现就不需要这个步骤——这违反了"trait 方法在所有架构上语义相同"的原则
 
-### 3.6 架构差异对照
+### 3.6 决策：本阶段不实现完整的 `clock_handler`、`intr_handle` 和 `bsp_finish_booting`
+
+**Minix3 C 的做法**：`clock_handler()`（`clock.c:281-355`）除了更新 `uptime`/`realtime`/`loadavg` 外，还更新 `bill_ptr` 和各进程的 user/sys 时间统计；`intr_handle()`（`proc.c`）做完整的中断分发；`bsp_finish_booting()`（`main.c:38-97`）设置 `kernel_may_alloc=0` 并启动 AP。
+
+**Rust 当前做法**：
+- `ClockState::tick()` 只更新软件计数（`uptime`/`realtime`/`loadavg`），不触碰调度相关统计。
+- 中断分发逻辑不在本阶段实现；`InterruptController` 只完成初始化与 mask/unmask。
+- `bsp_finish_booting()` 留到 SMP/调度初始化文档实现。
+
+**理由**：
+1. **关注点分离**：这些函数依赖进程表、调度器、SMP 状态，属于后续里程碑（05-proc-init、10-scheduling、13-exception-interrupt）。
+2. **本阶段目标单一**：让内核具备响应时钟中断和中断控制器的硬件能力即可。
+3. **文档显式标注**：避免读者误以为本阶段已完整实现完整调度循环。
+
+### 3.7 架构差异对照
 
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
 | 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (CLINT MMIO) |
 | 时钟频率 | 100 Hz (可配置) | 100 Hz | 100 Hz |
 | **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF) | **PLIC** (external) + **CLINT** (timer + software) |
-| IRQ 数量 | 64 (APIC mode) | 1020 (GICv3 SPI range) | 1024 (PLIC max) |
+| IRQ 数量 | 64 (APIC mode) | 64 (software limit) / 1020 (GICv3 SPI hardware capability) | 64 (software limit) / 1024 (PLIC max) |
 | arch_init | 串口 (COM1) + PMP/PMU + APIC MMIO | PMU cycle counter + bsp_init | 串口 + PMP |
 | 串口 | COM1 (I/O port 0x3F8) | PL011 (MMIO) | NS16550A (MMIO) |
 
@@ -605,17 +619,22 @@ impl ClockArch for X86_64ClockArch {
     fn init_timer(hz: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
         // C: intr_init_8254() — i8259.c equivalent
+        //
+        // PIT divisor is 16-bit, so hz must be >= 19 (1193182 / 65535 ≈ 18.2).
+        // Values below 19 would overflow the divisor.
+        assert!(hz >= 19, "PIT divisor overflow: hz must be >= 19, got {}", hz);
+
         let divisor = (PIT_BASE_FREQ / hz) as u16;
 
         unsafe {
             // Send command byte: channel 0, lobyte/hibyte, rate generator
-            core::arch::asm!("out 0x43, al", in("al") PIT_CMD_RATE_GEN);
+            core::arch::asm!("out dx, al", in("dx") PIT_COMMAND, in("al") PIT_CMD_RATE_GEN);
             // Send divisor low byte
             let lo = divisor as u8;
-            core::arch::asm!("out 0x40, al", in("al") lo);
+            core::arch::asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") lo);
             // Send divisor high byte
             let hi = (divisor >> 8) as u8;
-            core::arch::asm!("out 0x40, al", in("al") hi);
+            core::arch::asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") hi);
         }
     }
 
@@ -850,7 +869,10 @@ impl InterruptController for AArch64InterruptController {
 ```rust
 fn init_distributor(&mut self) {
     unsafe {
-        // 1. Assign all SPIs to Group 1 (Non-secure)
+        // 1. Assign all SPIs to Group 1 (Non-secure).
+        //    The loop starts at 32 because SGI/PPI (0..32) are per-CPU and
+        //    managed through the Redistributor, not the Distributor.
+        //    With nr_irqs = NR_IRQ_VECTORS = 64, this processes SPIs 32..63.
         for irq in (32..self.nr_irqs).step_by(32) {
             let reg = (irq / 32) as usize;
             self.gicd_write32(GICD_IGROUPR + reg * 4, 0xFFFF_FFFF);
@@ -1189,6 +1211,7 @@ fn init_clock_and_interrupts() {
 | `test_clock_state_tick_realtime_with_negative_adjtime` | `adjtime_delta=-10`：20 次 tick 后 `realtime=10`、`adjtime_delta=0` |
 | `test_clock_state_tick_realtime_adjtime_stops_when_zero` | 逐 tick 验证 adjtime_delta 从 2→0 过程中 realtime 的精确变化 |
 | `test_clock_state_large_uptime_no_overflow` | 1M 次 tick（~2.8h@100Hz）无溢出，uptime 和 realtime 精确 |
+| `test_read_tsc_default_delegates_to_read_ticks` | `ClockArch::read_tsc` 默认实现委托 `read_ticks` |
 | `test_load_info_default` | `LoadInfo::default()` 初始化 16 槽全 0、slot=0、clock=0 |
 | `test_default_hz_value` | `DEFAULT_HZ == 100` |
 | `test_load_history_size` | `LOAD_HISTORY_SIZE == 16` |

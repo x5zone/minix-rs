@@ -709,44 +709,6 @@ pub enum VmCtlResult {
     BadParam,
 }
 
-/// 地址空间切换抽象。
-///
-/// C: `switch_address_space()` / `__switch_address_space()`
-/// — klib.S:597 (x86), arch_system.c:196 (ARM)
-///
-/// 将硬件特定的页表切换操作抽象为 trait，使上层代码
-/// 不依赖具体寄存器操作（CR3/TTBR0/satp）。
-///
-/// Design decision: trait 抽象替代 C 的内联汇编（08-vm-boot-protocol.md §3）。
-pub trait PageTableSwitcher {
-    /// 切换到指定进程的页表。
-    /// C: `write_cr3(p->p_seg.p_cr3)` + TLB 刷新
-    fn switch_to(&self, cr3_phys: u64);
-
-    /// 刷新当前 TLB（重载当前页表基址寄存器）。
-    /// C: `reload_cr3()`
-    fn flush_tlb(&self);
-
-    /// 单页 TLB 失效。
-    /// C: `i386_invlpg(addr)` (x86 only)
-    fn invalidate_page(&self, addr: u64);
-}
-
-/// 用户态上下文恢复抽象。
-///
-/// C: `restore_user_context(p)` — 各架构汇编实现
-/// (x86: mpx.S, ARM: mpx.S)
-///
-/// 此函数不返回——恢复用户态寄存器后直接切换到用户态执行。
-/// 下一次内核入口（中断/异常/系统调用）会重新调用 switch_to_user()。
-///
-/// Design decision: trait 抽象替代 C 的条件编译（09-switch-to-user.md §3）。
-pub trait ContextRestore {
-    /// 恢复进程的用户态上下文并切换到用户态。
-    /// 此函数不返回。
-    fn restore(proc: &KProcess) -> !;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlError {
     /// No pending request (C: `return ENOENT` from VMCTL_MEMREQ_GET).

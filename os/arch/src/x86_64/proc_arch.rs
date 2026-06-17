@@ -291,3 +291,66 @@ fn elf_flags_to_page_flags(elf_flags: u32) -> PageFlags {
     }
     flags
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MockPaging;
+
+    #[test]
+    fn test_initial_reg_state_kernel() {
+        let state = X86_64ProcArch::initial_reg_state(true, 0);
+        assert_eq!(state.status, INIT_TASK_PSW, "kernel task PSW must be INIT_TASK_PSW");
+        assert!(!state.fpu_needs_zero, "kernel task must not require FPU zeroing");
+        assert_eq!(state.segment_selectors.cs, USER_CS_SELECTOR);
+        assert_eq!(state.segment_selectors.ds, USER_DS_SELECTOR);
+    }
+
+    #[test]
+    fn test_initial_reg_state_user() {
+        let state = X86_64ProcArch::initial_reg_state(false, 0);
+        assert_eq!(state.status, INIT_PSW, "user process PSW must be INIT_PSW");
+        assert!(state.fpu_needs_zero, "user process must require FPU zeroing");
+    }
+
+    #[test]
+    fn test_init_regs_sets_pc_sp_ps_strings() {
+        let pc = VirBytes(0x400000);
+        let sp = VirBytes(0x7fff0000);
+        let ps = VirBytes(0x7fff0000 - 32);
+        let regs = X86_64ProcArch::init_regs(false, 0, pc, sp, ps);
+        assert_eq!(regs.pc, pc);
+        assert_eq!(regs.sp, sp);
+        assert_eq!(regs.ps_strings_reg, ps.0);
+    }
+
+    #[test]
+    fn test_load_vm_elf_invalid_returns_zero_pc() {
+        // A truncated ELF magic is insufficient for parsing.
+        static BAD_ELF: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+        let module = BootModule {
+            name: "fake-vm",
+            start: PhysBytes(BAD_ELF.as_ptr() as u64),
+            len: BAD_ELF.len(),
+        };
+        static EMPTY_MEMMAP: [minix_boot::MemoryRegion; 0] = [];
+        static EMPTY_MODULES: [BootModule; 0] = [];
+        let kinfo = KernelInfo {
+            memmap: &EMPTY_MEMMAP,
+            kern_virt_base: VirBytes(0xffff_8000_0000_0000),
+            kern_phys_base: PhysBytes(0),
+            kern_size: 0,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_ffff_0000),
+            kern_stack_top: VirBytes(0),
+            syscall_entry: VirBytes(0),
+            boot_modules: &EMPTY_MODULES,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+        };
+        let mut paging = MockPaging::new().unwrap();
+        let result = X86_64ProcArch::load_vm_elf(&module, &kinfo, &mut paging);
+        assert_eq!(result.pc, VirBytes(0), "invalid ELF must produce pc=0");
+        assert!(result.sp.0 < kinfo.user_sp.0, "stack must be below user_sp");
+    }
+}

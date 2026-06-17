@@ -51,6 +51,8 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 
 `do_vmctl()` 是 `SYS_VMCTL` 系统调用的入口函数。它接收 VM 发来的消息，根据 `SVMCTL_PARAM` 字段分派到不同的处理逻辑。
 
+> **Rust 实现位置**：当前实现为 `os/kernel/src/syscall.rs` 中的 `dispatch_vmctl()`，由 `kernel_call_dispatch()` 统一分派，而不是独立的 `vm.rs::do_vmctl()` 函数。
+
 **子命令清单**：
 
 | 子命令 | 行号 | 语义 | 设置的 RTS/MF 标志 |
@@ -141,12 +143,13 @@ VM 回复请求结果。根据 `VMSTYPE_*` 类型设置不同的恢复标志：
 
 | 决策 | 选项 | 结论 | 理由 |
 |------|------|------|------|
-| switch_address_space | 直接写 CR3 vs trait 抽象 | **trait PageTableSwitcher** | 多架构支持，x86_64 写 CR3 + TLB 刷新，aarch64 写 TTBR0 |
+| switch_address_space / 页表切换 | trait 抽象 vs 推迟实现 | **当前未抽象为独立 trait** | 08 早期版本曾定义 `PageTableSwitcher`，但因无实现且非当前 VMCTL 子命令入口，已在修复中移除；地址空间切换随 09/15 调度阶段统一实现 |
 | KERN_PHYSMAP / KERN_MAP_REPLY | 保留 vs 删除 | **保留协议，64 位实现为 noop** | 64 位 direct map 已就绪，但协议层保留向后兼容 |
 | VMINHIBIT_CLEAR | 逐进程 vs 批量 | **批量** | 保持 C 语义——VM 逐个调用 |
 | vm_running 置位时机 | SETADDRSPACE 后 vs VMINHIBIT_CLEAR 后 | **SETADDRSPACE 后** | 与 C 一致 |
 | VMCTL 子命令分派 | match vs 函数指针数组 | **enum VmCtlParam + match** | 与 syscall.rs 设计一致，编译期穷尽 |
 | MEMREQ_GET/REPLY | 直接操作 vmrequest 链表 vs VmRequestQueue | **VmRequestQueue 方法** | 复用 vm.rs 已有类型 |
+| do_vmctl 代码归属 | vm.rs vs syscall.rs | **syscall.rs `dispatch_vmctl`** | 当前实现将 SYS_VMCTL 与其他内核调用统一在 `kernel_call_dispatch` 中分派 |
 
 ---
 
@@ -177,42 +180,34 @@ pub enum VmCtlParam {
 }
 ```
 
-### 4.2 trait PageTableSwitcher
+### 4.2 页表切换抽象（已移除）
 
-```rust
-/// 地址空间切换抽象。
-/// C: switch_address_space() / __switch_address_space()
-pub trait PageTableSwitcher {
-    /// 切换到进程的页表。
-    /// C: write_cr3(p->p_seg.p_cr3) + TLB 刷新
-    fn switch_to(&self, cr3_phys: u64);
-
-    /// 刷新当前 TLB。
-    /// C: reload_cr3()
-    fn flush_tlb(&self);
-
-    /// 单页 TLB 失效。
-    /// C: i386_invlpg(addr)
-    fn invalidate_page(&self, addr: u64);
-}
-```
+> 08 早期版本曾定义 `PageTableSwitcher` trait，意图将 `switch_address_space()` / `__switch_address_space()` 抽象为跨架构接口。但该 trait 没有实现，也未被任何代码使用，属于死代码。按 review 规则移除，地址空间切换将随调度阶段（09/15）统一实现。
 
 ### 4.3 do_vmctl 分派
 
 ```rust
+// os/kernel/src/syscall.rs
+
 /// 处理 SYS_VMCTL 系统调用。
 /// C: do_vmctl() — do_vmctl.c:17-173
-pub fn do_vmctl(
+///
+/// 当前实现位于 syscall.rs，由 `kernel_call_dispatch` 统一分派。
+fn dispatch_vmctl(
     caller: &mut KProcess,
-    msg: &Message,
+    msg: &mut Message,
     proc_table: &mut ProcessTable,
-    vm_req_queue: &mut VmRequestQueue,
 ) -> KcallResult {
-    // 解析 SVMCTL_PARAM + SVMCTL_WHO
-    // match VmCtlParam 分派到各子处理函数
-    // 架构特定命令通过 PageTableSwitcher trait 处理
+    // 1. 权限检查：仅 system process 可调用。
+    // 2. 解析 SVMCTL_WHO / SVMCTL_PARAM / SVMCTL_VALUE。
+    // 3. match VmCtlParam 分派到 ClearPageFault / MemReqGet /
+    //    MemReqReply / VmInhibitSet / VmInhibitClear / BootInhibitClear 等。
+    // 4. 架构特定命令（GetPdbr / SetAddrSpace / FlushTlb / InvlPg）
+    //    当前返回 ENOSYS，待后续调度/页表阶段实现。
 }
 ```
+
+> 代码归属修正：本文档早期版本假设 `do_vmctl` 在 `vm.rs` 中实现；实际代码将其放在 `syscall.rs` 作为 `dispatch_vmctl`，与其他 SYS_* 调用统一分派。
 
 ### 4.4 KERN_PHYSMAP / KERN_MAP_REPLY 的 64 位处理
 
@@ -228,21 +223,21 @@ pub fn do_vmctl(
 
 ### 5.1 单元测试
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_vmctl_clear_pagefault` | VMCTL_CLEAR_PAGEFAULT 清除 RTS_PAGEFAULT |
-| `test_vmctl_vminhibit_set_clear` | VMCTL_VMINHIBIT_SET 设置 RTS_VMINHIBIT，CLEAR 清除 |
-| `test_vmctl_bootinhibit_clear` | VMCTL_BOOTINHIBIT_CLEAR 清除 RTS_BOOTINHIBIT |
-| `test_vmctl_memreq_get_empty` | 空队列返回 ENOENT |
-| `test_vmctl_memreq_reply_kernel_call` | VMSTYPE_KERNELCALL 设置 MF_KCALL_RESUME |
-| `test_vmctl_kern_physmap_noop` | 64 位下返回物理地址本身 |
-| `test_vmctl_set_addr_space` | VMCTL_SETADDRSPACE 更新 CR3 + 清除 VMINHIBIT |
+| 测试 | 文件:行 | 验证内容 |
+|------|--------|---------|
+| `test_vmctl_param_from_u32` | `vm.rs:1295` | 合法/非法 `VmCtlParam` 转换 |
+| `test_vmctl_result_variants` | `vm.rs:1311` | `VmCtlResult` 与 C 错误码对应 |
+| `test_vm_memreq_get_empty_queue` | `proc_table.rs:1071` | 空队列返回 ENOENT |
+| `test_vm_memreq_get_dequeues_pending_request` | `proc_table.rs:1080` | MemReqGet 取出 pending 请求 |
+| `test_vm_memreq_reply_completes_request` | `proc_table.rs:1126` | MemReqReply 完成请求并设置结果 |
+| `test_vm_memreq_reply_invalid_state` | `proc_table.rs:1164` | 非法状态下回复返回错误 |
 
 ### 5.2 集成测试
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_vm_boot_protocol_sequence` | 模拟完整 VM 启动协商序列 |
+| 测试 | 文件:行 | 验证内容 |
+|------|--------|---------|
+| `test_vm_suspend_state_*` | `vm.rs` | `VmSuspendState` 状态机转换 |
+| `kernel_call_resume_*` | `vm.rs` | `kernel_call_resume` 行为 |
 
 ---
 

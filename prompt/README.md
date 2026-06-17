@@ -17,9 +17,9 @@ prompt/
 │   ├── review-core-semantics.md —  核心语义对齐（行为契约表 + IPC/生命周期契约模板）
 │   ├── review-doc-excellence.md —  文档卓越性（§4.1叙事结构 + §4.2读者体验 + §4.3教学深度 + §4.4可维护性）
 │   └── review-code-excellence.md—  代码卓越性（§15 API设计 + §16表达力 + §17性能 + §18代码即文档 + §19可测试性 + §20测试质量）
-├── skill/                   — Trae IDE 适配层（手工复制粘贴至 IDE；自动同步至 .trae/skills/）
-│   ├── review-agent-ide.md      —  智能体精简版（✅ 6,721 字符达标，见下方说明）
-│   ├── review-agent-trigger.md  —  触发器描述（何时调用 Agent，14 个示例覆盖 8 域）
+├── skill/                   — Trae IDE 适配层（手工复制粘贴至 IDE；通过下方同步命令同步至 .trae/skills/）
+│   ├── review-agent-ide.md      —  智能体精简版（✅ 6,735 字符达标，见下方说明）
+│   ├── review-agent-trigger.md  —  触发器描述（何时调用 Agent，16 个示例覆盖 8 域 + 工作流评估/修复阶段）
 │   ├── review-doc-skill.md      —  文档 Review 技能（含 §2.0 Claims-Evidence）
 │   ├── review-code-skill.md     —  代码 Review 技能（含 §4.2 Kernel SMP/BKL 并发）
 │   ├── review-patterns-skill.md —  错误模式对照技能（含测试6+卓越性7模式）
@@ -61,18 +61,18 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 | 项 | 限制 | 来源 | 当前文件 | 状态 |
 |---|------|------|---------|------|
-| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **6,721 字符（≈ 67.2%）✅ 达标，余量充足** |
+| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **6,735 字符（≈ 67.4%）✅ 达标，余量充足** |
 | Rule（规则） | 硬上限 20,000 byte；建议 ≤ 10,000 字符；token 视角约 3,000 token | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/52) | n/a（本目录无 Rule 文件） | — |
 | **Skill `name`** | ≤ **64 字符**，仅小写字母/数字/连字符（`-`），与父目录同名 | [Trae Skill 规范](https://docs.trae.ai/ide/best-practice-for-how-to-write-a-good-skill) | n/a（Trae Skill 命名规范） | — |
 | **Skill `description`** | ≤ **1024 字符**（硬限制），建议 ≤ 200 字符 | 同上 | n/a | — |
-| Agent `description`（触发器描述） | **硬上限 5,000 字符**（IDE 编辑窗口提示） | Trae IDE 实测 | `review-agent-trigger.md` | **4,344 字符 ✅**（含 14 个触发示例，覆盖全部 8 域） |
+| Agent `description`（触发器描述） | **硬上限 5,000 字符**（IDE 编辑窗口提示） | Trae IDE 实测 | `review-agent-trigger.md` | **4,913 字符 ✅**（含 16 个触发示例，覆盖全部 8 域 + 工作流评估/修复阶段） |
 | MCP 工具总数 | ≤ **40 个** | [TRAE MCP 指南](https://blog.csdn.net/2601_96144997) | n/a | — |
 | MCP 描述总字符数 | ≤ **8,000 字符**（超出丢弃） | 同上 | n/a | — |
 | 上下文窗口（最强模型） | 240,000 tokens 输入 / 32,000 tokens 输出 | [Trae 模型文档](https://docs.trae.ai/ide/models) | 全局 | — |
 
 ### `review-agent-ide.md` 的 10,000 字限制说明
 
-- **当前 6,721 字符，已达标**（硬上限 10,000 字符的 67.2%），保留充足余量以应对后续新增强制约束。
+- **当前 6,735 字符，已达标**（硬上限 10,000 字符的 67.4%），保留充足余量以应对后续新增强制约束。
 - **结构**：Agent 作为**路由器**，详细知识下沉到 8 个 Skill：
   - Core Principles 保留最核心原则；
   - Output Template、Review Process、Phased Review 详情引用 `review-process-skill.md`；
@@ -90,9 +90,9 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 ### `review-agent-trigger.md` 的限制说明
 
 - 该文件对应 Trae Agent 配置中的 **"何时调用 / trigger description"** 字段，描述 Agent 在什么场景被自动调用。
-- **硬上限 5,000 字符**（IDE 编辑窗口明确提示）。当前 4,344 字符，余量 656 字符。
-- 含 14 个 `<example>` 块，覆盖全部 8 个域的触发场景：文档/代码 review、全模块 review、Ch1&2 部分 review、链接验证、跨文档检查、覆盖率检查、核心语义验证、卓越性专项、快速扫描、分阶段 review、苏格拉底追问、验证上次 review、中文口语化触发。
-- description 部分明列 8 个域的能力 + 8 个 Skill 路由 + 13 种触发意图，确保 agent 被正确触发。
+- **硬上限 5,000 字符**（IDE 编辑窗口明确提示）。当前 4,913 字符，余量 87 字符。
+- 含 16 个 `<example>` 块，覆盖全部 8 个域的触发场景，以及工作流评估、修复阶段两个新增场景：文档/代码 review、全模块 review、Ch1&2 部分 review、链接验证、跨文档检查、覆盖率检查、核心语义验证、卓越性专项、快速扫描、分阶段 review、苏格拉底追问、验证上次 review、中文口语化触发、工作流评估、修复 review 发现。
+- description 部分明列 8 个域的能力 + 8 个 Skill 路由 + 15 种触发意图，确保 agent 被正确触发。
 - **不要盲目加 example**：每个 `<example>` 块约 200 字符，当前余量仅够再加 3 个；新增前先确认是否覆盖了真正常见的新意图。
 
 ### 架构说明
@@ -117,14 +117,14 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 1. 在 Trae IDE 打开「智能体」配置面板（右上角 → 智能体 → 创建智能体）
 2. 将 `review-agent-ide.md` 的内容**完整复制粘贴**至"提示词（Prompt）"输入框
-   - ✅ **已达标**：6,721 字符 < 10,000 硬上限，可直接粘贴。
+   - ✅ **已达标**：6,735 字符 < 10,000 硬上限，可直接粘贴。
 3. 将 `review-agent-trigger.md` 的内容**完整复制粘贴**至"何时调用"输入框
 4. 启用所需 MCP 工具（建议启用：文件系统、终端、联网搜索）
 5. 在「规则与技能」面板，将 8 个 `review-*-skill.md` 各自作为 Skill 导入（注意 Trae 的 Skill 有 `name`/`description` 字段约束，见上表）
 
-### `.trae/skills/` 自动同步说明
+### `.trae/skills/` 同步说明
 
-项目根目录的 `.trae/skills/` 是 Trae IDE 识别 Skill 的标准位置。本目录的 `prompt/skill/*.md` 已自动同步至 `.trae/skills/{skill-name}/SKILL.md`。
+项目根目录的 `.trae/skills/` 是 Trae IDE 识别 Skill 的标准位置。修改 `prompt/skill/*.md` 后，必须手动执行下方同步命令，将更新后的内容写入 `.trae/skills/{skill-name}/SKILL.md`。
 
 **同步规则**：
 - 文件名：`prompt/skill/review-{name}-skill.md` → `.trae/skills/review-{name}-skill/SKILL.md`
@@ -146,10 +146,10 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 |-------|-------------------|-------------------|------|
 | review-code-skill | 6,512 | 6,508 | 4 |
 | review-doc-skill | 8,908 | 8,904 | 4 |
-| review-patterns-skill | 13,180 | 13,176 | 4 |
-| review-process-skill | 14,013 | 14,009 | 4 |
+| review-patterns-skill | 13,269 | 13,265 | 4 |
+| review-process-skill | 16,088 | 16,084 | 4 |
 | review-core-semantics-skill | 7,293 | 7,289 | 4 |
-| review-coverage-skill | 7,246 | 7,242 | 4 |
+| review-coverage-skill | 8,032 | 8,028 | 4 |
 | review-excellence-skill | 4,991 | 4,987 | 4 |
 | review-socratic-skill | 3,171 | 3,167 | 4 |
 
@@ -157,15 +157,15 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 | 原始规则 | 转化产物 | 角色 | 当前字符 |
 |---------|---------|------|---------|
-| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 6,721 ✅ |
-| review.md | review-agent-trigger.md | Agent（触发器描述 + 14 个示例，覆盖 8 域） | 4,344 |
+| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 6,735 ✅ |
+| review.md | review-agent-trigger.md | Agent（触发器描述 + 16 个示例，覆盖 8 域 + 工作流评估/修复阶段） | 4,913 |
 | review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 8,908 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 6,512 |
-| review-patterns.md | review-patterns-skill.md | Skill（45 个错误模式；Gate D 严格通过标准） | 13,180 |
-| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + STATE.md 双路径 + Gate 证据 + VERIFY-CHECK 强制） | 14,013 |
+| review-patterns.md | review-patterns-skill.md | Skill（45 个错误模式；Gate D 严格通过标准） | 13,269 |
+| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 双路径 + Gate 证据 + VERIFY-CHECK 强制） | 16,088 |
 | review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板） | 7,293 |
 | review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.4 + 代码§15-20 卓越性） | 4,991 |
-| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map） | 7,246 |
+| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map） | 8,032 |
 | review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（8 场景追问话术模板） | 3,171 |
 | review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent | — |
 | ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md | — |

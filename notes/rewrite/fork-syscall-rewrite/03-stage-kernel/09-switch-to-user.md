@@ -171,122 +171,106 @@ static void idle(void) {
 | 决策 | 选项 | 结论 | 理由 |
 |------|------|------|------|
 | switch_to_user 返回 | 不返回（C 风格） vs 返回 Result | **不返回（! 类型）** | C 的 `restore_user_context` 不返回，Rust 用 `!` 表达 |
-| goto 模拟 | loop + continue/break vs 状态机 | **loop + continue/break** | C 的 goto 在此函数中形成 2 个跳转目标，loop 更清晰 |
-| proc_ptr | 全局变量 vs CpuLocal | **CpuLocal\<Option\<ProcNr\>\>** | SMP 安全，每 CPU 独立 |
-| idle | 内联 vs 独立函数 | **独立方法** | 与 C 一致，且 idle 有独立的地址空间切换逻辑 |
-| Misc 标志循环 | while + if-else chain vs match | **while + match** | Rust match 穷尽性检查，但需要处理优先级（按位检查） |
-| restore_user_context | 内联汇编 vs trait | **trait ContextRestore** | 多架构支持，x86 iret vs aarch64 eret |
-| 地址空间切换时机 | 选进程后立即 vs 恢复上下文前 | **选进程后立即** | 与 C 一致，delivermsg 需要正确地址空间 |
+| 当前实现状态 | 完整调度循环 vs 占位 stub | **占位 stub** | 完整调度循环依赖 10/11/13 等后续文档；当前 `lib.rs::switch_to_user()` 仅释放 BKL 后 `loop { spin_loop() }` |
+| proc_ptr | 全局变量 vs CpuLocal | **CpuLocal\<Option\<ProcNr\>\>** | SMP 安全，每 CPU 独立（设计目标） |
+| idle | 内联 vs 独立方法 | **独立方法** | 与 C 一致（设计目标） |
+| Misc 标志循环 | while + if-else chain vs match | **while + if-else chain** | 当前 `ProcessTable::process_misc_flags()` 按 C 的优先级链处理 |
+| restore_user_context | 内联汇编 vs trait | **未抽象为 trait** | 09 早期版本曾定义 `ContextRestore`，但无实现且为死代码，已移除；恢复上下文将在完整调度循环中直接调用架构入口 |
+| 地址空间切换时机 | 选进程后立即 vs 恢复上下文前 | **选进程后立即** | 与 C 一致（设计目标） |
 
 ---
 
 ## 4. 实现要点
 
-### 4.1 SwitchToUserFlow 枚举
+### 4.1 当前 switch_to_user 占位实现
 
 ```rust
-/// switch_to_user 的控制流状态。
+// os/kernel/src/lib.rs
+
+/// Entry point for the scheduling loop.
 ///
-/// C 使用 goto 在多个检查点之间跳转。
-/// Rust 使用枚举状态 + loop 模拟相同控制流。
-enum SwitchFlow {
-    /// 检查当前进程是否可运行
-    CheckCurrent,
-    /// 当前进程不可运行，选择新进程
-    PickNew,
-    /// 处理 misc 标志
-    CheckMiscFlags,
-    /// 检查时间片
-    CheckQuantum,
-    /// 恢复用户态上下文
-    RestoreContext,
+/// C: switch_to_user() in proc.c
+/// Design decision D7 (07 §3): returns `!` — never returns to caller.
+///
+/// Full implementation covered in 09-switch-to-user.md.
+///
+/// # BKL (Big Kernel Lock)
+///
+/// In C, the BKL is released in `restore_user_context()` (the last thing
+/// before returning to user mode). In Rust, we release the BKL at the
+/// top of `switch_to_user()` before the scheduling loop. This is safe
+/// because:
+///
+/// 1. The scheduling loop itself does not modify shared kernel state
+///    (it only reads per-CPU state and picks a process).
+/// 2. If a process needs kernel service (syscall, exception), the
+///    entry point re-acquires the BKL before touching shared state.
+/// 3. This matches C's pattern: BKL is released before the context
+///    switch and re-acquired on the next kernel entry.
+fn switch_to_user() -> ! {
+    // Release BKL before entering the scheduling loop.
+    // C: BKL is released implicitly by restore_user_context() which
+    // does not return. In Rust, we release explicitly before the loop.
+    crate::smp::bkl_unlock();
+
+    // Placeholder — full scheduler loop implemented in 09-switch-to-user.md.
+    loop { core::hint::spin_loop(); }
 }
 ```
 
-### 4.2 trait ContextRestore
+> 实现状态：当前 `switch_to_user()` 是占位 stub。完整调度循环（选进程、`process_misc_flags`、地址空间切换、`restore_user_context`）依赖 10/11/13 等文档的调度/IPC/异常机制完成后才能落地。
+
+### 4.2 process_misc_flags 实现
 
 ```rust
-/// 用户态上下文恢复抽象。
-/// C: restore_user_context() — 各架构汇编实现
-pub trait ContextRestore {
-    /// 恢复进程的用户态上下文并切换到用户态。
-    /// 此函数不返回（! 类型）。
-    ///
-    /// C: restore_user_context(p) — mpx.S (x86), mpx.S (ARM)
-    fn restore(proc: &KProcess) -> !;
-}
-```
+// os/kernel/src/proc_table.rs
 
-### 4.3 switch_to_user 主体
-
-```rust
-/// 调度循环入口：选择下一个可运行进程并切换到用户态。
-///
-/// C: switch_to_user() — proc.c:299-477
-///
-/// 此函数不返回。它恢复用户态上下文后直接切换到用户态执行。
-/// 下一次内核入口（中断/异常/系统调用）会重新调用此函数。
-pub fn switch_to_user<C: ContextRestore, P: PageTableSwitcher>(
-    cpu_local: &mut CpuLocal,
-    proc_table: &mut ProcessTable,
-    pt_switcher: &P,
-) -> ! {
-    let mut state = SwitchFlow::CheckCurrent;
-    loop {
-        match state {
-            SwitchFlow::CheckCurrent => { /* ... */ }
-            SwitchFlow::PickNew => { /* ... */ }
-            SwitchFlow::CheckMiscFlags => { /* ... */ }
-            SwitchFlow::CheckQuantum => { /* ... */ }
-            SwitchFlow::RestoreContext => {
-                return C::restore(proc);
-            }
-        }
-    }
-}
-```
-
-### 4.4 Misc 标志处理
-
-```rust
 /// 处理进程的 misc 标志。
 ///
 /// C: check_misc_flags 循环 — proc.c:351-405
-fn process_misc_flags(
-    proc: &mut KProcess,
-    proc_table: &mut ProcessTable,
-) -> bool {
-    // 返回 true 表示进程仍可运行，false 表示不可运行
+///
+/// 返回 true 表示进程仍可运行，false 表示不可运行（需重新选择）。
+pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
+    let interesting_flags = MiscFlagsBits::KCALL_RESUME
+        | MiscFlagsBits::DELIVERMSG
+        | MiscFlagsBits::SC_DEFER
+        | MiscFlagsBits::SC_TRACE
+        | MiscFlagsBits::SC_ACTIVE;
+
     loop {
-        let flags = proc.p_misc_flags;
-        let interesting = flags.intersects(
-            MiscFlagsBits::KCALL_RESUME
-            | MiscFlagsBits::DELIVERMSG
-            | MiscFlagsBits::SC_DEFER
-            | MiscFlagsBits::SC_TRACE
-            | MiscFlagsBits::SC_ACTIVE
-        );
-        if !interesting { break; }
+        let flags = self.get(nr).map_or(MiscFlagsBits::empty(), |p| p.p_misc_flags.get());
+        if !flags.intersects(interesting_flags) { break; }
 
         if flags.contains(MiscFlagsBits::KCALL_RESUME) {
-            kernel_call_resume(proc);
+            // TODO: wire kernel_call_resume() from vm.rs
+            self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME));
         } else if flags.contains(MiscFlagsBits::DELIVERMSG) {
-            delivermsg(proc);
+            // TODO: wire delivermsg() from ipc module
+            self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG));
         } else if flags.contains(MiscFlagsBits::SC_DEFER) {
-            arch_do_syscall(proc);
+            // TODO: wire arch_do_syscall() from arch layer
+            self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_DEFER));
         } else if flags.contains(MiscFlagsBits::SC_TRACE) {
             if !flags.contains(MiscFlagsBits::SC_ACTIVE) { break; }
-            cause_sig(proc.p_nr, Signal::SIGTRAP);
+            self.get_mut(nr).map(|p| {
+                p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE);
+            });
+            // TODO: wire cause_sig() from signal module
+            break;
         } else if flags.contains(MiscFlagsBits::SC_ACTIVE) {
-            proc.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE);
+            self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE));
             break;
         }
 
-        if !proc.is_runnable() { return false; }
+        if !self.get(nr).map_or(false, |p| p.is_runnable()) {
+            return false;
+        }
     }
     true
 }
 ```
+
+> 当前 `process_misc_flags` 仅清除对应标志，尚未调用真正的 handler（`kernel_call_resume`、`delivermsg`、`arch_do_syscall`、`cause_sig`）。在 `switch_to_user` 完整实现前，这种占位行为可防止 misc 标志导致无限循环。
 
 ---
 
@@ -294,24 +278,21 @@ fn process_misc_flags(
 
 ### 5.1 单元测试
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_switch_flow_current_runnable` | 当前进程可运行时跳过 pick_proc |
-| `test_switch_flow_preempted_enqueue_head` | PREEMPTED + 有时间片 → enqueue_head |
-| `test_switch_flow_preempted_enqueue_tail` | PREEMPTED + 无时间片 → enqueue |
-| `test_switch_flow_idle_loop` | 无可运行进程时进入 idle |
-| `test_misc_flags_kcall_resume` | MF_KCALL_RESUME 调用 kernel_call_resume |
-| `test_misc_flags_delivermsg` | MF_DELIVERMSG 调用 delivermsg |
-| `test_misc_flags_sc_defer` | MF_SC_DEFER 执行延迟系统调用 |
-| `test_misc_flags_unrunnable` | misc 处理后不可运行 → 重新选择 |
-| `test_quantum_check` | 无时间片时调用 proc_no_time |
-| `test_context_set_cleared` | 恢复前清除 MF_CONTEXT_SET |
+| 测试 | 文件:行 | 验证内容 |
+|------|--------|---------|
+| `test_process_misc_flags_empty_returns_true` | `proc_table.rs` | 无 misc 标志时返回 true |
+| `test_process_misc_flags_clears_kcall_resume` | `proc_table.rs` | MF_KCALL_RESUME 被清除 |
+| `test_process_misc_flags_clears_delivermsg` | `proc_table.rs` | MF_DELIVERMSG 被清除 |
+| `test_process_misc_flags_unrunnable_returns_false` | `proc_table.rs` | misc 处理后不可运行 → 返回 false |
+| `test_bsp_finish_booting_*` | `lib.rs` | `switch_to_user()` 在 bsp_finish_booting 中被调用且不返回 |
 
 ### 5.2 集成测试
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_full_switch_to_user_cycle` | 完整的调度循环周期 |
+| 测试 | 文件:行 | 验证内容 |
+|------|--------|---------|
+| `boot_simulation_full_flow` | `tests/boot_integration.rs` | 启动流程集成验证 |
+
+> 注：`switch_to_user()` 当前为占位 stub，完整调度循环的单元/集成测试需在 10/11/13 等机制落地后补充。
 
 ---
 

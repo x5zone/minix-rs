@@ -43,6 +43,13 @@ const GDT_ENTRIES: usize = GDT_TSS_FIRST_INDEX + MAX_CPUS;
 
 const TSS64_SIZE: usize = 104;
 
+// Number of bytes reserved at the top of each kernel stack for per-CPU
+// metadata. C reserves 2 * sizeof(reg_t): one slot for the currently
+// scheduled process pointer and one slot for the CPU id
+// (protect.c:173-181; archconst.h:146-149). For x86-64 reg_t is 64-bit,
+// so the reserved area is 16 bytes.
+const X86_64_STACK_TOP_RESERVED: usize = 2 * core::mem::size_of::<u64>();
+
 // Segment descriptor access byte encoding (Intel SDM Vol. 3A §3.4.5)
 // Bits: Present(7) | DPL(6:5) | S(4) | Type(3:0)
 const KERN_CS_ACCESS: u8 = 0x9A; // Present|DPL0|Code|Read
@@ -128,6 +135,9 @@ pub struct X86_64Protection {
     tss: [Tss64; MAX_CPUS],
     tss_desc_high: [u64; MAX_CPUS],
     cpu_count: u32,
+    /// CPU ID passed to `init()`. `load()` uses this to select the correct
+    /// TSS descriptor for the boot CPU instead of hardcoding BSP (cpu 0).
+    boot_cpu_id: u32,
 }
 
 // SAFETY: X86_64Protection is Send because:
@@ -176,7 +186,28 @@ impl X86_64Protection {
         assert!(idx < MAX_CPUS, "cpu_id {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
 
         self.tss[idx] = Tss64::zeroed();
-        self.tss[idx].sp0 = kernel_stack_top.get();
+
+        // C: tss_init() reserves the top 2 * sizeof(reg_t) bytes of the kernel
+        // stack for the currently-scheduled process pointer and the CPU id
+        // (protect.c:173-181). sp0 points to the first usable word below that
+        // reserved area.
+        let usable_top = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
+        self.tss[idx].sp0 = usable_top;
+
+        // Store the CPU id at the top of the reserved area, matching C:
+        // *((reg_t *)(sp0 + sizeof(reg_t))) = cpu
+        // This is read by the assembly trap entry to determine which CPU's
+        // stack is in use.
+        // SAFETY: kernel_stack_top is a valid, aligned virtual address at the
+        // top of the boot CPU's stack. We write only within the reserved area
+        // and run single-threaded during boot before concurrent access is
+        // possible. Skipped in unit tests because the addresses are mock values.
+        #[cfg(not(test))]
+        unsafe {
+            let cpu_id_slot = (usable_top + core::mem::size_of::<u64>() as u64) as *mut u64;
+            cpu_id_slot.write(cpu_id as u64);
+        }
+
         // iobase = 0x8000 disables I/O permission bitmap per Intel SDM Vol. 3A §7.7:
         // "If the I/O Map Base Address ≥ TSS limit, no I/O permission map exists."
         // C (i386): iobase = sizeof(struct tss_s) = 104 (no I/O bitmap in 32-bit).
@@ -217,6 +248,7 @@ impl ProtectionArch for X86_64Protection {
             tss: [Tss64::zeroed(); MAX_CPUS],
             tss_desc_high: [0u64; MAX_CPUS],
             cpu_count: 0,
+            boot_cpu_id: cpu_id,
         };
 
         prot.fill_flat_segments();
@@ -288,13 +320,10 @@ impl ProtectionArch for X86_64Protection {
                 options(nostack, preserves_flags)
             );
 
-            // 5. Load Task Register (TR) with BSP's TSS selector.
-            //    SAFETY: GDT_TSS_FIRST_INDEX points to a valid 64-bit TSS
-            //    descriptor set up by setup_tss_for_cpu(0, ...).
-            //    TODO: AP initialization must load its own TSS selector
-            //    (GDT_TSS_FIRST_INDEX + cpu_id). Currently init_ap() is
-            //    unimplemented — see TODO below.
-            let tr_sel: u16 = (GDT_TSS_FIRST_INDEX * 8) as u16;
+            // 5. Load Task Register (TR) with the boot CPU's TSS selector.
+            //    SAFETY: GDT_TSS_FIRST_INDEX + boot_cpu_id points to a valid
+            //    64-bit TSS descriptor set up by setup_tss_for_cpu().
+            let tr_sel: u16 = ((GDT_TSS_FIRST_INDEX + self.boot_cpu_id as usize) * 8) as u16;
             core::arch::asm!(
                 "ltr {0:x}",
                 in(reg) tr_sel,
@@ -308,10 +337,16 @@ impl ProtectionArch for X86_64Protection {
         }
     }
 
-    // TODO: implement AP initialization — per-CPU TSS setup + selector loading
+    // AP initialization is not yet implemented for x86-64. The trait requires
+    // the method, but SMP bringup is out of scope for the current milestone.
+    // When called, panic immediately instead of silently doing nothing —
+    // an AP with an unloaded TSS would triple-fault on its first exception.
     // C: tss_init(cpu, stack) + prot_load_selectors() — called from mpx.S
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        let _ = (cpu_id, kernel_stack_top);
+        panic!(
+            "init_ap({}) not implemented for x86-64; cannot set up TSS/selector for stack_top={:?}",
+            cpu_id, kernel_stack_top
+        );
     }
 }
 
@@ -419,19 +454,21 @@ mod tests {
     fn set_kernel_stack_updates_sp0() {
         // Verify that set_kernel_stack writes to the correct TSS entry.
         // Use addr_of! + read_unaligned because Tss64 is #[repr(C, packed)].
-        let mut prot = X86_64Protection::init(0, VirBytes::new(0x8000));
+        // init() subtracts X86_64_STACK_TOP_RESERVED from the supplied top.
+        let stack_top = 0x8000u64;
+        let mut prot = X86_64Protection::init(0, VirBytes::new(stack_top));
         let sp0_ptr = core::ptr::addr_of!(prot.tss[0].sp0);
         assert_eq!(
             unsafe { core::ptr::read_unaligned(sp0_ptr) },
-            0x8000,
-            "Initial sp0 should be 0x8000"
+            stack_top - X86_64_STACK_TOP_RESERVED as u64,
+            "Initial sp0 should be below the reserved area"
         );
 
         prot.set_kernel_stack(0, VirBytes::new(0xA000));
         assert_eq!(
             unsafe { core::ptr::read_unaligned(sp0_ptr) },
             0xA000,
-            "sp0 should be updated to 0xA000"
+            "sp0 should be updated to the caller-supplied usable top"
         );
     }
 
@@ -481,13 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn init_sets_tss_sp0() {
-        let prot = X86_64Protection::init(0, VirBytes::new(0xABCD_1234));
+    fn init_sets_tss_sp0_below_reserved_area() {
+        let stack_top = 0xABCD_1234u64;
+        let prot = X86_64Protection::init(0, VirBytes::new(stack_top));
         let sp0_ptr = core::ptr::addr_of!(prot.tss[0].sp0);
         assert_eq!(
             unsafe { core::ptr::read_unaligned(sp0_ptr) },
-            0xABCD_1234,
-            "init() must set TSS.sp0 to kernel_stack_top"
+            stack_top - X86_64_STACK_TOP_RESERVED as u64,
+            "init() must set TSS.sp0 below the X86_64_STACK_TOP_RESERVED area"
         );
     }
 

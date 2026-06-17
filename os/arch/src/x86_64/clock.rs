@@ -10,7 +10,10 @@ use crate::clock::ClockArch;
 
 /// 8254 PIT base frequency in Hz.
 const PIT_BASE_FREQ: u32 = 1_193_182;
-
+/// PIT command port (channel 0, lobyte/hibyte access).
+const PIT_COMMAND: u16 = 0x43;
+/// PIT channel 0 data port.
+const PIT_CHANNEL0: u16 = 0x40;
 /// PIT command: channel 0, lobyte/hibyte access, rate generator mode.
 const PIT_CMD_RATE_GEN: u8 = 0x36;
 
@@ -36,13 +39,13 @@ impl ClockArch for X86_64ClockArch {
 
         unsafe {
             // Send command byte: channel 0, lobyte/hibyte, rate generator
-            core::arch::asm!("out 0x43, al", in("al") PIT_CMD_RATE_GEN);
+            core::arch::asm!("out dx, al", in("dx") PIT_COMMAND, in("al") PIT_CMD_RATE_GEN);
             // Send divisor low byte
             let lo = divisor as u8;
-            core::arch::asm!("out 0x40, al", in("al") lo);
+            core::arch::asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") lo);
             // Send divisor high byte
             let hi = (divisor >> 8) as u8;
-            core::arch::asm!("out 0x40, al", in("al") hi);
+            core::arch::asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") hi);
         }
     }
 

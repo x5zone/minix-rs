@@ -148,27 +148,48 @@ impl TrapEntryArch for X86_64TrapEntry {
             idt: [IdtEntry64::empty(); IDT_ENTRIES],
         };
 
-        // TODO: handler addresses are placeholder 0 — must be set to actual
-        // trap handler entry points before load() is called. The DPL and IST
+        // Handler addresses are placeholder 0 — must be set to actual trap
+        // handler entry points before `load()` is called. The DPL and IST
         // values here match the C gate_table_exceptions[] / gate_table_pic[]
-        // configuration (protect.c:107-152).
-        entry.set_gate(0, 0, 0, 0, true);
-        entry.set_gate(1, 0, 0, 0, true);
-        entry.set_gate(2, 0, 0, 1, false);
-        entry.set_gate(3, 0, 3, 0, true);
-        entry.set_gate(4, 0, 3, 0, true);
-        entry.set_gate(5, 0, 0, 0, false);
-        entry.set_gate(6, 0, 0, 0, false);
-        entry.set_gate(7, 0, 0, 0, false);
-        entry.set_gate(8, 0, 0, 2, false);
-        entry.set_gate(10, 0, 0, 0, false);
-        entry.set_gate(11, 0, 0, 0, false);
-        entry.set_gate(12, 0, 0, 0, false);
-        entry.set_gate(13, 0, 0, 0, false);
-        entry.set_gate(14, 0, 0, 0, false);
+        // configuration (protect.c:107-152; interrupt.h:31-35).
+        //
+        // x86-64 exception vectors (0-14, 16-19):
+        //   vectors 9 and 15 are reserved in 64-bit mode and intentionally omitted.
+        entry.set_gate(0, 0, 0, 0, true);   // #DE divide error
+        entry.set_gate(1, 0, 0, 0, true);   // #DB debug
+        entry.set_gate(2, 0, 0, 1, false);  // NMI — IST1
+        entry.set_gate(3, 0, 3, 0, true);   // #BP breakpoint (user)
+        entry.set_gate(4, 0, 3, 0, true);   // #OF overflow (user)
+        entry.set_gate(5, 0, 0, 0, false);  // #BR bounds check
+        entry.set_gate(6, 0, 0, 0, false);  // #UD invalid opcode
+        entry.set_gate(7, 0, 0, 0, false);  // #NM device not available
+        entry.set_gate(8, 0, 0, 2, false);  // #DF double fault — IST2
+        entry.set_gate(10, 0, 0, 0, false); // #TS invalid TSS
+        entry.set_gate(11, 0, 0, 0, false); // #NP segment not present
+        entry.set_gate(12, 0, 0, 0, false); // #SS stack fault
+        entry.set_gate(13, 0, 0, 0, false); // #GP general protection
+        entry.set_gate(14, 0, 0, 0, false); // #PF page fault
+        entry.set_gate(16, 0, 0, 0, false); // #MF x87 FPE
+        entry.set_gate(17, 0, 0, 0, false); // #AC alignment check
+        entry.set_gate(18, 0, 0, 0, false); // #MC machine check
+        entry.set_gate(19, 0, 0, 0, false); // #XM SIMD FPE
 
+        // Soft-int syscall / IPC vectors (user-accessible).
+        // C: KERN_CALL_VECTOR_ORIG=32, IPC_VECTOR_ORIG=33,
+        //    KERN_CALL_VECTOR_UM=34, IPC_VECTOR_UM=35 (interrupt.h:31-35).
         entry.set_gate(32, 0, 3, 0, true);
         entry.set_gate(33, 0, 3, 0, true);
+        entry.set_gate(34, 0, 3, 0, true);
+        entry.set_gate(35, 0, 3, 0, true);
+
+        // 8259A PIC hardware interrupt vectors.
+        // C: VECTOR(irq) = (irq < 8 ? 0x50 : 0x70) + (irq & 7)
+        //    → vectors 0x50-0x57 (80-87) and 0x70-0x77 (112-119).
+        //    DPL = INTR_PRIVILEGE = 0.
+        for irq in 0..8 {
+            entry.set_gate(0x50 + irq, 0, 0, 0, false); // master PIC
+            entry.set_gate(0x70 + irq, 0, 0, 0, false); // slave PIC
+        }
 
         entry
     }
@@ -213,10 +234,17 @@ impl TrapEntryArch for X86_64TrapEntry {
             base: self.idt.as_ptr() as u64,
         };
 
-        // SAFETY: LIDT is safe because:
+        // SAFETY / LIFETIME CONTRACT:
+        // - `self` (and therefore `self.idt`) must remain alive and immovable
+        //   as long as the IDT is loaded. LIDT stores a pointer to this array;
+        //   if `X86_64TrapEntry` is dropped or moved after `load()`, the CPU
+        //   will reference freed/relocated memory on the next interrupt.
+        // - In the kernel this is enforced by keeping the trap entry in a
+        //   static/global location after `load()` is called.
         // - idtr points to a valid IdtPtr on the stack with correct
         //   limit (IDT size - 1) and base (IDT array address).
-        // - self.idt contains a valid IDT initialized by init().
+        // - self.idt contains a valid IDT initialized by init() and populated
+        //   with real handler addresses via set_handler().
         // - We are in kernel mode (CPL=0), which is required for LIDT.
         unsafe {
             core::arch::asm!(
@@ -362,15 +390,49 @@ mod tests {
     #[test]
     fn idt_init_sets_exception_gates() {
         let entry = X86_64TrapEntry::init();
-        // Verify that exception vectors are present (p_dpl_type has present bit)
-        for &vec in &[0u8, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14] {
+        // Verify that exception vectors are present (p_dpl_type has present bit).
+        // Vectors 9 and 15 are reserved in 64-bit mode and intentionally omitted.
+        for &vec in &[0u8, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19] {
             let p = entry.idt[vec as usize].p_dpl_type;
             assert_ne!(p & GATE_PRESENT, 0, "Vector {} must be present", vec);
         }
-        // Verify IRQ vectors 32 and 33 are present
-        for &vec in &[32u8, 33] {
+    }
+
+    #[test]
+    fn idt_init_reserved_vectors_not_present() {
+        let entry = X86_64TrapEntry::init();
+        // Vectors 9 and 15 are reserved in x86-64 long mode.
+        for &vec in &[9u8, 15] {
             let p = entry.idt[vec as usize].p_dpl_type;
-            assert_ne!(p & GATE_PRESENT, 0, "Vector {} must be present", vec);
+            assert_eq!(p & GATE_PRESENT, 0, "Vector {} must NOT be present (reserved)", vec);
+        }
+    }
+
+    #[test]
+    fn idt_init_sets_syscall_ipc_vectors() {
+        let entry = X86_64TrapEntry::init();
+        // KERN_CALL_VECTOR_ORIG=32, IPC_VECTOR_ORIG=33,
+        // KERN_CALL_VECTOR_UM=34, IPC_VECTOR_UM=35.
+        for &vec in &[32u8, 33, 34, 35] {
+            let p = entry.idt[vec as usize].p_dpl_type;
+            assert_ne!(p & GATE_PRESENT, 0, "Syscall/IPC vector {} must be present", vec);
+            let dpl = (p >> 5) & 0x3;
+            assert_eq!(dpl, 3, "Syscall/IPC vector {} must be user-accessible (DPL=3)", vec);
+        }
+    }
+
+    #[test]
+    fn idt_init_sets_pic_vectors() {
+        let entry = X86_64TrapEntry::init();
+        // C: VECTOR(irq) = (irq < 8 ? 0x50 : 0x70) + (irq & 7)
+        for irq in 0..8u8 {
+            for &base in &[0x50u8, 0x70] {
+                let vec = base + irq;
+                let p = entry.idt[vec as usize].p_dpl_type;
+                assert_ne!(p & GATE_PRESENT, 0, "PIC vector {} must be present", vec);
+                let dpl = (p >> 5) & 0x3;
+                assert_eq!(dpl, 0, "PIC vector {} must be kernel-only (DPL=0)", vec);
+            }
         }
     }
 
@@ -406,9 +468,9 @@ mod tests {
 
     #[test]
     fn idt_init_kernel_exceptions_have_dpl0() {
-        // Most exceptions (0,1,5,6,7,8,10-14) must have DPL=0.
+        // Most exceptions (0,1,5,6,7,8,10-14,16-19) must have DPL=0.
         let entry = X86_64TrapEntry::init();
-        for &vec in &[0u8, 1, 5, 6, 7, 10, 11, 12, 13, 14] {
+        for &vec in &[0u8, 1, 5, 6, 7, 10, 11, 12, 13, 14, 16, 17, 18, 19] {
             let dpl = (entry.idt[vec as usize].p_dpl_type >> 5) & 0x3;
             assert_eq!(dpl, 0, "Vector {} must have DPL=0", vec);
         }

@@ -69,3 +69,13 @@ Use this agent when reviewing documentation or code in the Minix-RS project, a R
   user: "扫一遍这个文档" / "帮我看看这段代码"
   assistant: "I'll launch the Minix-RS Review Agent to review it"
 </example>
+<example>
+  Context: User wants to evaluate and improve the agent+skill workflow itself based on a previous review log.
+  user: "根据 review 记录评估我们的工作流是否完善，并修复规则源"
+  assistant: "I'll run a workflow evaluation with the Minix-RS Review Agent and update rules/skills as needed"
+</example>
+<example>
+  Context: User wants to fix the issues discovered in a previous review, loading skills during the fix phase.
+  user: "修复上次 review 发现的 P0/P1 问题"
+  assistant: "I'll enter the Fix Phase with the Minix-RS Review Agent, load relevant skills, and apply verified fixes"
+</example>

@@ -1,7 +1,7 @@
 # 07-system-init-boot-finish: 系统调用初始化与启动完成
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/system.c:168-278`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-125`, `minix3/minix/kernel/main.c:38-117`
+> **源码**: `minix3/minix/kernel/system.c:168-289`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-121`, `minix3/minix/kernel/main.c:38-110`
 > **说明**: kmain 的最后三步——系统调用注册、bootstrap 内存回收、启动完成——把内核从"初始化态"带入"运行态"
 
 ---
@@ -39,6 +39,8 @@ T10: bsp_finish_booting()
 |------|--------|------|
 | 06: ptproc 已设置、freepdes 已分配 | T8-T10: 内核初始化完成 | 08: VM 启动后的内核-VM 协商协议 |
 
+> 注：同目录下 06 文档实际文件名为 `06-cross-space-init.md`，文中简写为“06 文档”。
+
 06 完成后，进程表和特权结构已就绪，但进程不可运行（PROC_STOP），系统调用未注册。本文档覆盖从"所有基础设施就绪"到"调度循环启动"的过渡。
 
 ### 1.4 行为规则
@@ -53,7 +55,7 @@ T10: bsp_finish_booting()
 
 ### 2.1 相关定义（常量、宏）
 
-**系统调用号定义**（`minix3/minix/include/minix/com.h:207-262`）：
+**系统调用号定义**（`minix3/minix/include/minix/com.h:207-270`）：
 
 | 常量 | 值 | 处理函数 | 类别 |
 |------|-----|---------|------|
@@ -104,7 +106,7 @@ T10: bsp_finish_booting()
 | SYS_SAFEMEMSET | KERNEL_CALL+56 | do_safememset | 拷贝 |
 | SYS_PADCONF | KERNEL_CALL+57 | do_padconf | ARM |
 
-**NR_SYS_CALLS = 58**（`com.h:262`）
+**NR_SYS_CALLS = 58**（`com.h:270`）
 
 **map() 宏**（`system.c:54-57`）：
 ```c
@@ -152,7 +154,7 @@ struct irq_hook {
 
 ### 2.3 关键函数分析
 
-#### system_init()（`system.c:168-278`）
+#### system_init()（`system.c:168-289`）
 
 **三步初始化**：
 
@@ -167,20 +169,20 @@ struct irq_hook {
 - `SYS_PADCONF` 仅 `__arm__`
 - 64 位（x86_64/aarch64/riscv64）这些调用不注册
 
-#### add_memmap()（`pg_utils.c:86-125`）
+#### add_memmap()（`pg_utils.c:86-121`）
 
 **功能**：将 bootstrap 阶段占用的物理内存区域添加到 `kinfo.memmap[]` 供 VM 管理。
 
 **关键逻辑**：
 1. **4GB 截断**（L89-92）：`addr > LIMIT` 直接返回；`addr + len > LIMIT` 截断 len
 2. **页对齐**（L97-98）：base 向上对齐，len 向下对齐到 PAGE_SIZE
-3. **断言 kernel_may_alloc**（L96）：确保在内核分配窗口内调用
-4. **查找空槽**（L100-115）：线性扫描 `memmap[]`，找到第一个 `mm_length == 0` 的槽
-5. **更新 mem_high_phys**（L116-118）：跟踪最高物理地址
+3. **断言 kernel_may_alloc**（L102）：确保在内核分配窗口内调用
+4. **查找空槽**（L106-121）：线性扫描 `memmap[]`，找到第一个 `mm_length == 0` 的槽
+5. **更新 mem_high_phys**（L123-125）：跟踪最高物理地址
 
 **32 位遗留**：`LIMIT = 0xFFFFF000`（4GB-4KB）是 Minix3 32 位地址空间限制。64 位下不需要此截断。
 
-#### bsp_finish_booting()（`main.c:38-97`）
+#### bsp_finish_booting()（`main.c:38-110`）
 
 **BSP 启动完成序列**：
 
@@ -257,7 +259,7 @@ kmain()
 | D3 | IRQ hook 池 | `Vec<Option<IrqHook>>` vs `[Option<IrqHook>; 64]` | **`[Option; NR_IRQ_HOOKS]`** | 保持 C 池语义，O(1) 索引，无堆分配 | 已实现 (irq_manager.rs) |
 | D4 | Alarm timer | 每个 priv 一个 timer struct | **保持** | per-priv 而非全局，与 C 语义一致 | m3 |
 | D5 | add_memmap 4GB 截断 | 保留 vs 删除 | **删除** | 64 位不需要 4GB 限制，Direct Map 可访问全部物理内存 | 5/5 AI 一致 |
-| D6 | vm_running 表达 | `AtomicBool` vs `CpuLocal<bool>` | **CpuLocal** | 每核独立，SMP 正确 | ds + glm |
+| D6 | vm_running 表达 | `AtomicBool` vs `CpuLocal<bool>` | **当前：全局 `AtomicBool`** | 单 BSP 启动阶段用全局原子过渡；SMP 就绪后移入 `SmpState.cpu_locals[cpu].vm_running` | ds + glm |
 | D7 | switch_to_user | 普通函数 vs 发散函数 | **`-> !`** | 类型系统表达永不返回 | m3 + kimi 一致 |
 | D8 | kernel_may_alloc | `AtomicBool` vs 编译期保证 | **运行时 AtomicBool** | C 的运行时标志无法完全消除（add_memmap 依赖它） | m3 |
 | D9 | 条件编译 syscall | `#[cfg(target_arch)]` vs trait 分发 | **match + 架构无关默认** | 不注册的 syscall 在 match 中返回 EBADCALL，无需 cfg | qwen |
@@ -282,8 +284,8 @@ kmain()
 
 /// Kernel system call number.
 ///
-/// C: `SYS_*` constants in minix/com.h:207-262
-/// C: `NR_SYS_CALLS = 58` in minix/com.h:262
+/// C: `SYS_*` constants in minix/com.h:207-270
+/// C: `NR_SYS_CALLS = 58` in minix/com.h:270
 ///
 /// Design decision D1: enum + match replaces C's call_vec[] function pointer array.
 /// Design decision D9: architecture-specific syscalls return EBADCALL on
@@ -414,10 +416,13 @@ impl TryFrom<u16> for Syscall {
 // os/kernel/src/syscall.rs (continued)
 
 use crate::proc::KProcess;
+use crate::kpriv::PrivTable;
+use crate::proc_table::ProcessTable;
+use crate::clock::ClockState;
 use minix_types::Message;
 
-/// Error codes for kernel call dispatch.
-/// C: EBADCALL, VMSUSPEND in minix/errno.h
+/// Result of a kernel call dispatch.
+/// C: EBADCALL, VMSUSPEND, EDONTREPLY in minix/errno.h
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KcallResult {
     /// Call completed with return value.
@@ -428,6 +433,9 @@ pub enum KcallResult {
     NoReply,
     /// Invalid/unimplemented syscall number.
     BadCall,
+    /// Caller does not have permission for this call.
+    /// C: `!GET_BIT(priv(caller)->s_k_call_mask, call_nr)` — system.c:107
+    CallDenied,
 }
 
 /// Dispatch a kernel system call.
@@ -438,144 +446,93 @@ pub enum KcallResult {
 /// Design decision D1: match replaces call_vec[] dispatch.
 /// Design decision D9: arch-specific syscalls return BadCall on unsupported
 /// platforms instead of being conditionally compiled out.
-pub fn kernel_call_dispatch(caller: &mut KProcess, msg: &Message) -> KcallResult {
+///
+/// # BKL
+///
+/// Acquires the Big Kernel Lock on entry. BKL is released later in
+/// `kernel_call_finish()` or `switch_to_user()`, matching C's pattern where
+/// the trap entry holds the lock across dispatch + finish.
+pub fn kernel_call_dispatch(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    priv_table: &mut PrivTable,
+    proc_table: &mut ProcessTable,
+    clock_state: &mut ClockState,
+) -> KcallResult {
+    let _ = crate::smp::bkl_lock(); // C: BKL_LOCK() in mpx.S trap entry
+
     let call_nr = msg.m_type as u16;
     let syscall = match Syscall::try_from(call_nr) {
         Ok(s) => s,
         Err(()) => return KcallResult::BadCall,
     };
 
+    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))`
+    let denied = match caller.priv_id {
+        Some(id) => match priv_table.get(id) {
+            Some(priv) => !kcall_filter_check(priv, call_nr as u32),
+            None => true,
+        },
+        None => true,
+    };
+    if denied {
+        return KcallResult::CallDenied;
+    }
+
     match syscall {
-        Syscall::Fork => dispatch_fork(caller, msg),
-        Syscall::Exec => dispatch_exec(caller, msg),
-        Syscall::Clear => dispatch_clear(caller, msg, proc_table, priv_table),
-        Syscall::Exit => dispatch_exit(caller, msg),
-        Syscall::Schedule => dispatch_schedule(caller, msg),
+        Syscall::Fork => crate::syscall_process::dispatch_fork(caller, msg, proc_table, priv_table),
+        Syscall::Exec => crate::syscall_process::dispatch_exec(caller, msg, proc_table),
+        Syscall::Clear => crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table),
+        Syscall::Exit => crate::syscall_process::dispatch_exit(caller, msg),
+        Syscall::Schedule => dispatch_schedule(caller, msg, proc_table),
         Syscall::Privctl => dispatch_privctl(caller, msg),
-        Syscall::Trace => dispatch_trace(caller, msg),
-        Syscall::Kill => dispatch_kill(caller, msg),
-        Syscall::Getksig => dispatch_getksig(caller, msg),
-        Syscall::Endksig => dispatch_endksig(caller, msg),
-        Syscall::Sigsend => dispatch_sigsend(caller, msg),
-        Syscall::Sigreturn => dispatch_sigreturn(caller, msg),
-        Syscall::Memset => dispatch_memset(caller, msg),
-        Syscall::Umap => dispatch_umap(caller, msg),
+        Syscall::Trace => dispatch_trace(caller, msg, proc_table),
+        Syscall::Kill => dispatch_kill(caller, msg, proc_table, priv_table),
+        Syscall::Getksig => dispatch_getksig(caller, msg, proc_table, priv_table),
+        Syscall::Endksig => dispatch_endksig(caller, msg, proc_table, priv_table),
+        Syscall::Sigsend => dispatch_sigsend(caller, msg, proc_table),
+        Syscall::Sigreturn => dispatch_sigreturn(caller, msg, proc_table),
+        Syscall::Memset => dispatch_memset(caller, msg, proc_table),
+        Syscall::Umap => dispatch_umap(caller, msg, proc_table),
         Syscall::Vircopy => dispatch_vircopy(caller, msg, proc_table),
         Syscall::Physcopy => dispatch_physcopy(caller, msg, proc_table),
-        Syscall::UmapRemote => dispatch_umap_remote(caller, msg),
-        Syscall::Vumap => dispatch_vumap(caller, msg),
+        Syscall::UmapRemote => dispatch_umap_remote(caller, msg, proc_table),
+        Syscall::Vumap => dispatch_vumap(caller, msg, proc_table),
         Syscall::Irqctl => dispatch_irqctl(caller, msg),
-        // D9: x86-specific syscalls — return BadCall on other architectures.
-        // On x86_64, these are implemented in the arch module.
-        Syscall::Devio => dispatch_arch_devio(caller, msg),
-        Syscall::Sdevio => dispatch_arch_sdevio(caller, msg),
-        Syscall::Vdevio => dispatch_vdevio(caller, msg),
-        Syscall::Setalarm => dispatch_setalarm(caller, msg),
-        Syscall::Times => dispatch_times(caller, msg),
-        Syscall::Getinfo => dispatch_getinfo(caller, msg),
+        // D9: x86-specific syscalls — BadCall on unsupported arch.
+        Syscall::Devio => dispatch_arch_devio(caller, msg, priv_table),
+        Syscall::Sdevio => dispatch_arch_sdevio(caller, msg, priv_table, proc_table),
+        Syscall::Vdevio => dispatch_arch_vdevio(caller, msg),
+        Syscall::Setalarm => dispatch_setalarm(caller, msg, priv_table, clock_state),
+        Syscall::Times => dispatch_times(caller, msg, proc_table),
+        Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table),
         Syscall::Abort => dispatch_abort(caller, msg),
-        Syscall::Iopenable => dispatch_arch_iopenable(caller, msg),
-        Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg),
-        Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg),
+        Syscall::Iopenable => dispatch_arch_iopenable(caller, msg, proc_table),
+        Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg, proc_table),
+        Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg, proc_table),
         Syscall::Vsafecopy => dispatch_vsafecopy(caller, msg),
-        Syscall::Setgrant => dispatch_setgrant(caller, msg),
+        Syscall::Setgrant => dispatch_setgrant(caller, msg, priv_table),
         Syscall::Readbios => dispatch_arch_readbios(caller, msg),
-        Syscall::Sprof => dispatch_sprofile(caller, msg),
-        Syscall::Stime => dispatch_stime(caller, msg),
-        Syscall::Settime => dispatch_settime(caller, msg),
+        Syscall::Sprof => dispatch_sprofile(caller, msg, proc_table),
+        Syscall::Stime => dispatch_stime(caller, msg, clock_state),
+        Syscall::Settime => dispatch_settime(caller, msg, clock_state),
         Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table),
-        Syscall::Diagctl => dispatch_diagctl(caller, msg),
-        Syscall::Vtimer => dispatch_vtimer(caller, msg),
-        Syscall::Runctl => dispatch_runctl(caller, msg),
-        Syscall::Getmcontext => dispatch_getmcontext(caller, msg),
-        Syscall::Setmcontext => dispatch_setmcontext(caller, msg),
-        Syscall::Update => dispatch_update(caller, msg),
-        Syscall::Schedctl => dispatch_schedctl(caller, msg),
-        Syscall::Statectl => dispatch_statectl(caller, msg),
-        Syscall::Safememset => dispatch_safememset(caller, msg),
-        // D9: ARM-specific — return BadCall on other architectures.
+        Syscall::Diagctl => dispatch_diagctl(caller, msg, priv_table),
+        Syscall::Vtimer => dispatch_vtimer(caller, msg, priv_table, proc_table),
+        Syscall::Runctl => dispatch_runctl(caller, msg, proc_table),
+        Syscall::Getmcontext => dispatch_getmcontext(caller, msg, proc_table),
+        Syscall::Setmcontext => dispatch_setmcontext(caller, msg, proc_table),
+        Syscall::Update => dispatch_update(caller, msg, proc_table, priv_table),
+        Syscall::Schedctl => dispatch_schedctl(caller, msg, proc_table),
+        Syscall::Statectl => dispatch_statectl(caller, msg, priv_table),
+        Syscall::Safememset => dispatch_safememset(caller, msg, proc_table, priv_table),
+        // D9: ARM-specific — BadCall on non-ARM.
         Syscall::Padconf => dispatch_arch_padconf(caller, msg),
     }
 }
-
-// ── Architecture-specific dispatch stubs ──
-// D9: These return BadCall on architectures that don't support them.
-// On supported architectures, the arch module provides real implementations.
-
-#[cfg(not(target_arch = "x86_64"))]
-fn dispatch_arch_devio(_: &mut KProcess, _: &Message) -> KcallResult {
-    KcallResult::BadCall
-}
-#[cfg(not(target_arch = "x86_64"))]
-fn dispatch_arch_sdevio(_: &mut KProcess, _: &Message) -> KcallResult {
-    KcallResult::BadCall
-}
-#[cfg(not(target_arch = "x86_64"))]
-fn dispatch_arch_iopenable(_: &mut KProcess, _: &Message) -> KcallResult {
-    KcallResult::BadCall
-}
-#[cfg(not(target_arch = "x86_64"))]
-fn dispatch_arch_readbios(_: &mut KProcess, _: &Message) -> KcallResult {
-    KcallResult::BadCall
-}
-#[cfg(not(target_arch = "arm"))]
-fn dispatch_arch_padconf(_: &mut KProcess, _: &Message) -> KcallResult {
-    KcallResult::BadCall
-}
-
-// ── Placeholder dispatch functions ──
-// TODO: Each dispatch_* function will be implemented in its corresponding
-// document (09-24). For now, they return BadCall.
-
-fn dispatch_fork(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_exec(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_clear(_: &mut KProcess, _: &Message, _: &mut ProcessTable, _: &mut PrivTable) -> KcallResult { KcallResult::BadCall }
-fn dispatch_exit(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_schedule(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_privctl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_trace(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_kill(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_getksig(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_endksig(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_sigsend(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_sigreturn(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_memset(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_umap(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vircopy(_: &mut KProcess, _: &Message, _: &mut ProcessTable) -> KcallResult { KcallResult::BadCall }
-fn dispatch_physcopy(_: &mut KProcess, _: &Message, _: &mut ProcessTable) -> KcallResult { KcallResult::BadCall }
-fn dispatch_umap_remote(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vumap(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_irqctl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vdevio(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_setalarm(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_times(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_getinfo(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_abort(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_safecopy_from(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_safecopy_to(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vsafecopy(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_setgrant(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_sprofile(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_stime(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_settime(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vmctl(caller: &mut KProcess, msg: &mut Message, proc_table: &mut ProcessTable) -> KcallResult {
-    // VmInhibitSet/Clear + ClearPageFault + BootInhibitClear 已实现
-    // MemReqGet/MemReqReply 待 VmRequestQueue 接入
-    // arch-specific (GetPdbr/SetAddrSpace/FlushTlb/InvlPg) 返回 ENOSYS
-    ...
-}
-fn dispatch_diagctl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_vtimer(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_runctl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_getmcontext(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_setmcontext(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_update(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_schedctl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_statectl(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
-fn dispatch_safememset(_: &mut KProcess, _: &Message) -> KcallResult { KcallResult::BadCall }
 ```
 
-> 设计决策 D1：match 替代 call_vec[]。D9：架构专用 syscall 在不支持平台返回 BadCall。
+> 设计决策 D1：match 替代 call_vec[]。D9：架构专用 syscall 在不支持平台返回 BadCall。当前实现已将具体子系统调用（fork/exec/clear 等）委托到 `syscall_process` 等子模块，而非返回 BadCall 的占位符。
 
 ### 4.3 编译期断言
 
@@ -596,43 +553,22 @@ const _: () = {
 };
 ```
 
-### 4.4 system_init Rust 实现
+### 4.4 system_init 的 Rust 表达
+
+C 中的 `system_init()` 做三件事：清零 `irq_hooks[]`、初始化每个 `priv` 的 alarm timer、用 `map()` 宏填充 `call_vec[]`。在 Rust 中，这三件事被分解到构造函数和类型系统里，**没有独立的 `system_init` 函数**：
+
+1. **IRQ hook 池**：`IrqManager::new()` 在构造时将所有 hook 设为 `None`。
+2. **Alarm timer**：`KPriv::new()` 在构造时清零 `s_alarm_timer`。
+3. **Call vector**：被 `enum Syscall` + `match` 替代，编译期 const assert（D2）替代 `map()` 宏的运行时 assert。
+
+`kmain` 中 Phase E（原 `system_init()` 阶段）因此只有一行注释标记该阶段，没有函数调用：
 
 ```rust
-// os/kernel/src/syscall.rs (continued)
-
-use crate::irq_manager::IrqManager;
-use crate::kpriv::KPriv;
-use minix_plat::InterruptController;
-
-/// Initialize the kernel system call subsystem.
-///
-/// C: system_init() in system.c:168-278
-///
-/// Three-step initialization:
-/// 1. IRQ hook pool: already handled by IrqManager::new() (slots = None)
-/// 2. Alarm timers: initialized per-priv in KPriv::new()
-/// 3. Call vector: replaced by enum Syscall + match (D1), no runtime registration needed
-///
-/// In Rust, steps 1 and 2 are handled by the constructors of IrqManager and KPriv.
-/// Step 3 is handled by the Syscall enum definition — the match in
-/// kernel_call_dispatch() is the "registration". Compile-time const assert
-/// (D2) replaces C's map() macro assert.
-pub fn system_init<IC: InterruptController>(_irq_mgr: &mut IrqManager<IC>) {
-    // C: irq_hooks[i].proc_nr_e = NONE
-    // Rust: IrqManager::new() already initializes all hooks to None.
-
-    // C: tmr_inittimer(&(sp->s_alarm_timer)) for each priv
-    // Rust: KPriv::new() already initializes s_alarm_timer to 0.
-
-    // C: call_vec[i] = NULL; map(SYS_*, do_*);
-    // Rust: No runtime registration needed. The Syscall enum + match
-    // in kernel_call_dispatch() serves as the "call vector".
-    // Compile-time const assert verifies all values are in range.
-}
+// os/kernel/src/lib.rs (kmain Phase E)
+// Phase E: system_init equivalent — IrqManager/KPriv/Syscall already constructed.
 ```
 
-> 设计决策 D1/D2：Rust 的 enum + match + const assert 替代 C 的 call_vec[] + map() 宏。system_init() 的三步初始化在 Rust 中由构造函数和类型系统完成。
+> 设计决策 D1/D2：Rust 的 enum + match + const assert 替代 C 的 call_vec[] + map() 宏。`system_init` 的三步初始化由构造函数和类型系统隐式完成。
 
 ### 4.5 add_memmap Rust 实现
 
@@ -650,57 +586,84 @@ pub const MAXMEMMAP: usize = 128;
 /// C: struct memory_info in minix/type.h
 #[derive(Debug, Clone, Copy)]
 pub struct MemMapEntry {
+    /// Physical base address (page-aligned).
     pub base: u64,
+    /// Length in bytes (page-aligned).
     pub length: u64,
-    pub available: bool,
+}
+
+/// Const zero entry for static initialization.
+pub const MEM_MAP_ENTRY_ZERO: MemMapEntry = MemMapEntry { base: 0, length: 0 };
+
+impl Default for MemMapEntry {
+    fn default() -> Self {
+        MEM_MAP_ENTRY_ZERO
+    }
+}
+
+impl MemMapEntry {
+    /// Whether this entry is empty (available for use).
+    /// C: mm_length == 0 check in add_memmap()
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
 }
 
 /// Add a physical memory region to the kernel's memory map.
 ///
-/// C: add_memmap() in pg_utils.c:86-125
+/// C: add_memmap() in pg_utils.c:86-121
 ///
 /// Design decision D5: 4GB truncation removed for 64-bit.
 /// The C version truncates at LIMIT=0xFFFFF000 because 32-bit Minix3
 /// cannot handle >4GB physical addresses. In 64-bit minix-rs, Direct Map
 /// can access all physical memory, so this truncation is unnecessary.
 ///
-/// Returns the index of the new entry, or an error if no slots available.
-pub fn add_memmap(kinfo: &mut KernelInfo, addr: u64, len: u64) -> Result<usize, MemMapError> {
-    // C: assert(kernel_may_alloc)
-    // Rust: This function should only be called during boot (kernel_may_alloc window).
-    // The caller is responsible for ensuring this invariant.
-
+/// # Arguments
+///
+/// * `mmap` - Memory map array to insert into
+/// * `addr` - Physical base address of the region
+/// * `len` - Length of the region in bytes
+///
+/// # Returns
+///
+/// The index of the new entry, or a `MemMapError` on failure.
+///
+/// # Safety Invariant
+///
+/// This function should only be called during boot (while `kernel_may_alloc`
+/// is true). The caller is responsible for ensuring this invariant.
+/// C: assert(kernel_may_alloc) in pg_utils.c:102
+pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> Result<usize, MemMapError> {
     // C: page alignment (roundup/rounddown)
     let page_size = 4096u64;
-    let aligned_addr = (addr + page_size - 1) & !(page_size - 1);
+    let aligned_base = (addr + page_size - 1) & !(page_size - 1);
     let aligned_end = (addr + len) & !(page_size - 1);
-    let aligned_len = aligned_end.saturating_sub(aligned_addr);
+    let aligned_len = aligned_end.saturating_sub(aligned_base);
 
     if aligned_len == 0 {
         return Err(MemMapError::ZeroLength);
     }
 
-    // C: linear scan for empty slot
-    for m in 0..MAXMEMMAP {
-        if m >= kinfo.mmap.len() || kinfo.mmap[m].len == 0 {
-            let entry = MemMapEntry {
-                base: aligned_addr,
+    // C: linear scan for empty slot (mm_length == 0)
+    for i in 0..MAXMEMMAP {
+        if mmap[i].is_empty() {
+            mmap[i] = MemMapEntry {
+                base: aligned_base,
                 length: aligned_len,
-                available: true,
             };
-            // Store in kinfo (actual storage depends on KernelInfo API)
-            // C: cbi->memmap[m] = { .mm_base_addr = addr, .mm_length = len, .mm_type = AVAILABLE }
-            // C: update mem_high_phys
-            return Ok(m);
+            return Ok(i);
         }
     }
 
     Err(MemMapError::NoSlots)
 }
 
+/// Errors from add_memmap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemMapError {
+    /// After page alignment, the region has zero length.
     ZeroLength,
+    /// No empty slots available in the memory map.
     NoSlots,
 }
 ```
@@ -730,11 +693,18 @@ pub fn vm_running() -> bool { VM_RUNNING.load(Ordering::Acquire) }
 
 /// BSP finish booting — the last step of kmain.
 ///
-/// C: bsp_finish_booting() in main.c:38-97
+/// C: bsp_finish_booting() in main.c:38-110
 ///
 /// Takes `&mut ProcessTable` so step 2 (bill_ptr = IDLE) and step 4
 /// (RTS_PROC_STOP unset for boot processes) can operate directly.
-pub fn bsp_finish_booting(proc_table: &mut ProcessTable) -> ! {
+/// Takes `&mut SmpState` for per-CPU cycle accounting and BSP identification.
+#[cfg(not(feature = "mock"))]
+fn bsp_finish_booting(
+    proc_table: &mut ProcessTable,
+    smp_state: &mut crate::smp::SmpState,
+) -> ! {
+    use crate::proc::RtsFlagsBits;
+
     // Step 1: vm_running = 0 — wired to a global atomic; per-CPU on SMP
     VM_RUNNING.store(false, Ordering::Release);
 
@@ -746,50 +716,86 @@ pub fn bsp_finish_booting(proc_table: &mut ProcessTable) -> ! {
     Console::write_str("\nMINIX-RS 0.1.0 (rust rewrite) — scheduling live\n");
 
     // Step 4: RTS_PROC_STOP unset for boot processes (skip kernel tasks)
-    for nr in 0..(NR_BOOT_PROCS - NR_TASKS) as ProcNr {
+    for nr in 0..(crate::proc::NR_BOOT_PROCS as ProcNr
+        - crate::proc_table::NR_TASKS as ProcNr)
+    {
         proc_table.rts_unset(nr, RtsFlagsBits::PROC_STOP);
     }
 
-    // Step 5: cycles_accounting_init() — TODO, deferred to P0-01
-    // Step 6: boot_cpu_init_timer — TODO, deferred to P0-15
-    // Step 7: fpu_init — per-CPU fpu_presence probe — TODO, deferred to
-    //   arch-crate plumbing.
+    // Step 5: cycles_accounting_init() — set BSP TSC baseline
+    let tsc = crate::clock::read_tsc();
+    let bsp_id = smp_state.bsp_cpu_id();
+    if let Some(bsp_local) = smp_state.cpu_local_mut(bsp_id) {
+        bsp_local.note_context_switch(tsc);
+    }
+
+    // Step 6: boot_cpu_init_timer — start the periodic tick
+    // C: boot_cpu_init_timer(system_hz) — clock.c:294.
+    // (a) `init_local_timer(freq)` was already done in Phase B via
+    //     `CurrentClockArch::init_timer(DEFAULT_HZ)`.
+    // (b) Timer IRQ handler registration is deferred until the global
+    //     IrqManager lands; for now `boot_init_timer` accepts a dummy
+    //     handler that satisfies the ArchBoot trait signature.
+    use minix_arch::CurrentClockArch;
+    CurrentClockArch::init_timer(crate::clock::DEFAULT_HZ);
+    use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot, TimerHandlerFn};
+    extern "Rust" fn dummy_timer_handler(
+        _irq: minix_plat::IrqVector,
+        _id: minix_plat::IrqId,
+    ) -> minix_plat::IrqAction {
+        minix_plat::IrqAction::Completed
+    }
+    let _ = boot_init_timer::<CurrentArchBoot>(dummy_timer_handler);
+
+    // Step 7: FPU presence probe
+    let bsp_id = smp_state.bsp_cpu_id();
+    if let Some(bsp_local) = smp_state.cpu_local_mut(bsp_id) {
+        bsp_local.fpu_presence = true;
+    }
 
     // Step 8: kernel_may_alloc = 0 — closing the boot-time alloc window
     KERNEL_MAY_ALLOC.store(false, Ordering::Release);
 
+    // Step 8.5: acquire BKL before entering the scheduling loop
+    // C: BKL is already held when coming from the trap entry; Rust acquires
+    // it here because switch_to_user() releases it before returning to user.
+    crate::smp::bkl_lock();
+
     // Step 9: switch_to_user() — never returns (=> !)
     switch_to_user()
 }
-```
 
-**实现状态**（截至 2026-06-13）：
-
-| 步骤 | 实现状态 | 说明 |
-|------|---------|------|
-| 1 `vm_running = 0` | ✅ 通过 `VM_RUNNING: AtomicBool` 全局镜像 | `lib.rs::vm_running()` 暴露给 `do_vmctl` 等读者 |
-| 2 `bill_ptr = idle_proc` | ✅ `ProcessTable::set_bill_to_idle()` | 新增方法，单元测试覆盖 (proc_table.rs §5.6) |
-| 3 `announce()` | ✅ `EarlyConsole::write_str` 打印 MINIX-RS banner | QEMU 串口可见 |
-| 4 `RTS_UNSET` × (NR_BOOT_PROCS-NR_TASKS) | ✅ `for nr in 0..(NR_BOOT_PROCS - NR_TASKS)` | 复用 `rts_unset` 自动入队 |
-| 5 `cycles_accounting_init` | ⏳ TODO | 依赖 P0-01 (BKL/SMP)，hook 点已就位 (`SmpState.cpu_local_mut(bsp)`) |
-| 6 `boot_cpu_init_timer` | ⏳ TODO | 硬件 timer 已在 Phase B 初始化；BSP 启动 tick 等待 P0-15 (中断交付验证) |
-| 7 `fpu_init` | ⏳ TODO | per-arch `fpu_presence` 探测，待 arch crate 接入 |
-| 8 `kernel_may_alloc = 0` | ✅ `KERNEL_MAY_ALLOC.store(false)` | 已实现 |
-| 9 `switch_to_user()` | ✅ stub: `loop { spin_loop() }` | 真实实现见 09-switch-to-user.md |
-
-**关键变更**：函数签名从 `fn bsp_finish_booting()` 改为 `fn bsp_finish_booting(&mut ProcessTable)`，因为步骤 2 和步骤 4 需要修改进程表。这把 Phase D→F 的 `proc_table` 生命周期从局部变量提升为跨阶段共享。
-
-**注**：原始实现 7 个 TODO 中有 4 个可以真做（步骤 1/2/3/4/8），另外 3 个（步骤 5/6/7）依赖 P0-01/P0-15，已在代码中标注并解释 deferral 原因。
-
-```rust
-/// Entry point for the scheduler loop. C: switch_to_user() in proc.c.
+/// Entry point for the scheduling loop. C: switch_to_user() in proc.c.
 /// D7: returns `!` — never returns to caller.
 fn switch_to_user() -> ! {
+    // Release BKL before entering the scheduling loop.
+    // C: BKL is released implicitly by restore_user_context() which
+    // does not return. In Rust, we release explicitly before the loop.
+    crate::smp::bkl_unlock();
+
+    // Placeholder — full scheduler loop implemented in 09-switch-to-user.md.
     loop { core::hint::spin_loop(); }
 }
 ```
 
-> 设计决策 D7：`bsp_finish_booting() -> !` 类型系统表达永不返回。D6：vm_running 用 CpuLocal。D8：kernel_may_alloc 用 AtomicBool。
+**各步骤职责与当前语义**（截至 2026-06-17）：
+
+| 步骤 | 当前语义 | 说明 |
+|------|---------|------|
+| 1 `vm_running = 0` | `VM_RUNNING: AtomicBool` 全局镜像置 false | `lib.rs::vm_running()` 暴露给 `do_vmctl` 等读者 |
+| 2 `bill_ptr = idle_proc` | `ProcessTable::set_bill_to_idle()` | 将计费指针指向 idle 进程 |
+| 3 `announce()` | `EarlyConsole::write_str` 打印 MINIX-RS banner | QEMU 串口可见 |
+| 4 `RTS_UNSET` × (NR_BOOT_PROCS-NR_TASKS) | `for nr in 0..(NR_BOOT_PROCS - NR_TASKS)` | 复用 `rts_unset` 自动入队 |
+| 5 `cycles_accounting_init` | 设置 BSP TSC baseline | 通过 `SmpState::cpu_local_mut(bsp)` |
+| 6 `boot_cpu_init_timer` | 硬件 timer 已在 Phase B 初始化；BSP handler 注册占位 | 等待全局 IrqManager 完成后补齐 |
+| 7 `fpu_init` | 标记 `fpu_presence = true` | per-CPU 字段在 `SmpState` 中 |
+| 8 `kernel_may_alloc = 0` | `KERNEL_MAY_ALLOC.store(false)` | 关闭启动期直接分配窗口 |
+| 8.5 BKL 获取 | `smp::bkl_lock()` | 进入调度循环前持有 BKL |
+| 9 `switch_to_user()` | 释放 BKL 后进入占位循环 | 真实调度循环见 09-switch-to-user.md |
+
+**关键变更**：函数签名从 `fn bsp_finish_booting()` 先后改为 `fn bsp_finish_booting(&mut ProcessTable)`，最终为 `fn bsp_finish_booting(&mut ProcessTable, &mut SmpState)`，因为步骤 2/4 需要修改进程表，步骤 5/7 需要访问 per-CPU 状态。
+
+> 设计决策 D7：`bsp_finish_booting() -> !` 类型系统表达永不返回。D6：vm_running 当前用全局 `AtomicBool`，SMP 就绪后移入 `SmpState`。D8：`kernel_may_alloc` 用 `AtomicBool`。
 
 ---
 
@@ -801,40 +807,36 @@ fn switch_to_user() -> ! {
 |------|---------------|------|
 | `test_syscall_try_from_valid` | D1: Syscall enum | 所有合法 syscall 号可转换为 enum 变体 |
 | `test_syscall_try_from_invalid` | D1: Syscall enum | 非法 syscall 号返回 Err |
-| `test_syscall_const_assert` | D2: const assert | 编译期验证所有 enum 值 < NR_SYS_CALLS |
 | `test_kernel_call_dispatch_bad_call` | D1: match dispatch | 非法 syscall 号返回 BadCall |
-| `test_kernel_call_dispatch_exhaustive` | D1: match exhaustiveness | 新增 enum 变体时编译失败（穷尽检查） |
 | `test_add_memmap_no_truncation` | D5: 删除 4GB 截断 | >4GB 地址不被截断 |
 | `test_add_memmap_alignment` | Ch2: 页对齐 | 非 4KB 对齐的地址/长度被正确对齐 |
 | `test_add_memmap_zero_length` | Ch2: 零长度检查 | 对齐后长度为 0 返回错误 |
 | `test_add_memmap_no_slots` | Ch2: 槽位耗尽 | 所有槽位已满时返回错误 |
-| `test_kernel_may_alloc_window` | D8: 分配窗口 | kmain 开始时为 true，bsp_finish_booting 后为 false |
 
 ### 5.2 静态测试
 
 | 测试 | 覆盖的设计/实现 | 说明 |
 |------|---------------|------|
-| `test_match_exhaustiveness` | D1 | 在 kernel_call_dispatch 中添加新 Syscall 变体但不加 match arm → 编译失败 |
-| `test_const_assert_range` | D2 | Syscall enum 值 >= NR_SYS_CALLS → 编译失败 |
+| 编译期穷尽检查 | D1/D2 | `Syscall` enum 新增变体而不补 `match` arm → 编译失败；`const` assert 保证所有变体值 < NR_SYS_CALLS |
 
 ### 5.3 集成测试
 
 | 测试 | 覆盖的设计/实现 | 说明 |
 |------|---------------|------|
-| `test_bsp_finish_booting_no_return` | D7: `-> !` | bsp_finish_booting 调用后不会返回到 kmain |
-| `test_boot_procs_runnable` | Ch2: PROC_STOP 解除 | bsp_finish_booting 后 boot 进程 rts_flags 不含 PROC_STOP |
+| `test_bsp_finish_booting_step_5_7_side_effects` | bsp_finish_booting 步骤 5/6/7 | 验证 cycle accounting、timer init、FPU presence 已设置 |
+| `test_bsp_finish_booting_single_cpu_only_bsp_initialized` | bsp_finish_booting BSP 唯一性 | 验证仅 BSP 被初始化 |
 
 ---
 
 ## 6. 参见
 
 - [00-kernel-overview.md](00-kernel-overview.md) — 内核整体架构
-- [06-boot-proc-init.md](06-boot-proc-init.md) — 进程表初始化（前置）
+- [06-cross-space-init.md](06-cross-space-init.md) — 进程表初始化（前置）
 - [08-vm-boot-protocol.md](08-vm-boot-protocol.md) — VM 启动后的内核-VM 协商（后续）
 - [09-switch-to-user.md](09-switch-to-user.md) — switch_to_user 详细实现
 - [12-syscall-dispatch.md](12-syscall-dispatch.md) — 系统调用分派详细实现
 - [13-exception-interrupt.md](13-exception-interrupt.md) — 异常与中断处理
-- C 源码：`minix3/minix/kernel/system.c:168-278` — system_init()
-- C 源码：`minix3/minix/kernel/main.c:38-97` — bsp_finish_booting()
-- C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:86-125` — add_memmap()
-- C 头文件：`minix3/minix/include/minix/com.h:207-262` — SYS_* 定义
+- C 源码：`minix3/minix/kernel/system.c:168-289` — system_init()
+- C 源码：`minix3/minix/kernel/main.c:38-110` — bsp_finish_booting()
+- C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:86-121` — add_memmap()
+- C 头文件：`minix3/minix/include/minix/com.h:207-270` — SYS_* 定义

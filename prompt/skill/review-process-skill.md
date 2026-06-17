@@ -62,7 +62,8 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Block
 - **读取状态（双路径）**：
   - **Trae IDE** → 读取 `notes/rewrite/{module}/.review/STATE.md`
   - **Claude Code Runtime** → 读取 `.review/{module}/STATE.md`（项目根）
-  - 若两个 STATE.md 都存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户以哪个为准。
+  - 若两个 STATE.md 都存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
+  - **`{module}` 的确定**：取目标文档所在目录的**直接父目录名**。例如 `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）和 `--output .review/kernel/...` 是**两个不同概念**，不得混用。
 
 **中间产物**：
 ```
@@ -118,6 +119,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Block
      --doc-file {target-doc-name}.md \
      --output .review/kernel/{target-doc-name}/SYMBOLS.md
    ```
+   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/kernel/{target-doc-name}/SYMBOLS.md)`。
    - `--rust-dir os`：扫描整个 `os/` 目录，避免遗漏跨 crate 实现（如 `kmain` 在 `os/kernel/src`，`ProtectionArch` 在 `os/arch/src`）。
    - `--c-dir`：服务器模块用 `minix3/minix/servers/{module}`，内核用 `minix3/minix/kernel`。
    - `--semantic-map`：对 C→Rust 改写项目必须提供语义映射表，否则 Rust 覆盖率会严重低估。
@@ -549,8 +551,8 @@ rg "impl.*{TraitName}" {rust_dir} --type rust -n
 # 3. 函数是否在声明的文件中
 rg "fn {name}" {file}
 
-# 4. 核心算法是否是 stub
-rg "spin_loop\|todo!\|unimplemented!\|unreachable!" {rust_dir} --type rust -n
+# 4. 核心算法是否是 stub（含 panic! 检查）
+rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n
 
 # 5. 文档 §4 签名是否与实际一致（逐函数对比）
 ```
@@ -565,3 +567,39 @@ rg "spin_loop\|todo!\|unimplemented!\|unreachable!" {rust_dir} --type rust -n
 | Kernel | `minix3/minix/kernel/` |
 | Drivers | `minix3/minix/drivers/` |
 | 公共头文件 | `minix3/minix/include/` |
+
+---
+
+## 五、修复阶段工作流（Fix Phase）
+
+> Review 结束后进入修复阶段时，AI 必须按本流程执行，确保修复不违反 review 规则。
+
+### 1. 修复前准备
+1. 重读 STATE.md 中的 Open Issues 列表与对应的 scan.md Issue List。
+2. 按问题类型显式加载 Skill：
+   - 代码修复（Rust） → `review-code-skill` + `review-patterns-skill`
+   - 文档修复（Markdown） → `review-doc-skill` + `review-patterns-skill`
+   - 涉及核心语义（IPC/生命周期/错误/权限/地址空间） → `review-core-semantics-skill`
+   - 涉及覆盖率/状态追踪 → `review-process-skill` + `review-coverage-skill`
+3. 对每个修复项确认：修改范围、验证方法、是否引入新的 P0/P1。
+
+### 2. 修复执行原则
+- **先 P0 后 P1/P2**：P0 全部修复并验证前，不标记收敛。
+- **文档与代码同步修**：改代码若影响 Ch4 描述，必须同步改文档；改文档若已要求代码实现，必须同步改代码。
+- **禁止引入新的违反**：修复过程中仍需满足 no_std、硬件抽象 trait、SMP/BKL、Claims-Evidence 等约束。
+- **保留证据**：每个修复项在 scan.md / STATE.md 中记录：修复日期、修改文件、验证命令输出。
+
+### 3. 修复后验证
+1. **单元测试**：`cargo test -p <crate>` 必须全部通过。
+2. **编译检查**：`cargo check` 无新增 error；新增 warning 需说明理由。
+3. **重新跑相关 Gate**：
+   - 修了代码语义 → 重新跑 Gate B（Top 5 差异表）抽样验证。
+   - 修了代码/测试 → 重新跑 Gate D（P0 必检）和 Gate E（§5 测试存在性）。
+   - 修了文档 claim → 重新跑 Gate A/C 相关部分。
+4. **更新 STATE.md**：将已修复问题从 Open 列表移入 Closed Issues，注明修复 scan/日期，更新 Convergence Checklist。
+
+### 4. 修复结束标准
+- 本次计划修复的所有 P0 已修复并验证。
+- 未修复的 P0 必须标记为 `WONTFIX` 并给出不可辩驳的理由（如架构演进明确替代）。
+- 最新一次完整 Pass：新增 P0 = 0，新增 P1 ≤ 1。
+- 完成 VERIFY-CHECK.md 后才可标记 **CONVERGED**。
