@@ -287,11 +287,11 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n
 
 ---
 
-## 三、代码错误模式
+## 四、代码错误模式
 
-> 以下模式覆盖 Rust 代码 Review 中最常见的错误类型。
+> 以下模式覆盖 Rust 代码 Review 中最常见的错误类型。共 14 个模式（基础 10 个 + Kernel SMP 4 个）。
 
-### 模式 15：裸整数表达语义（Translate 味道）
+### 模式 16：裸整数表达语义（Translate 味道）
 ```rust
 ❌ 错误：
 fn alloc_pages(count: u32, flags: u32) -> i32 {
@@ -305,7 +305,7 @@ fn alloc_pages(count: PageCount, flags: PageFlags) -> Result<PhysAddr, AllocErro
 ```
 > 原因：裸 `u32` 不表达语义，`i32` 返回负数为错误码是 C 风格。应用 newtype 和 `Result`。
 
-### 模式 16：C 式空指针/哨兵值
+### 模式 17：C 式空指针/哨兵值
 ```rust
 ❌ 错误：
 const NO_PHYS: PhysAddr = PhysAddr(0);  // 用 0 表示"无物理地址"
@@ -317,7 +317,7 @@ let phys: Option<PhysAddr> = None;
 ```
 > 原因：C 用哨兵值（0, -1, NULL）表达"不存在"，Rust 应用 `Option<T>`。
 
-### 模式 17：unsafe 滥用
+### 模式 18：unsafe 滥用
 ```rust
 ❌ 错误：
 let ptr = addr as *mut u8;
@@ -333,7 +333,7 @@ unsafe fn write_phys(addr: PhysAddr, value: u8) {
 ```
 > 原因：每个 `unsafe` 块必须有 safety 注释说明契约和调用方责任。
 
-### 模式 18：错误码不对齐
+### 模式 19：错误码不对齐
 ```rust
 ❌ 错误：
 fn vm_mappages(...) -> Result<(), Error> {
@@ -351,7 +351,7 @@ fn vm_mappages(...) -> Result<(), VmError> {
 ```
 > 原因：错误码必须与 Minix3 原始 errno 严格对应，禁止自创或合并错误语义。
 
-### 模式 19：裸 as 截断无说明
+### 模式 20：裸 as 截断无说明
 ```rust
 ❌ 错误：
 let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -364,7 +364,7 @@ let old_count = pages as u16;
 ```
 > 原因：所有可能截断的 `as` 转换必须注释说明安全性（特别是 64→32 位转换）。
 
-### 模式 20：硬件语义泄漏到 OS 层
+### 模式 21：硬件语义泄漏到 OS 层
 ```rust
 ❌ 错误：
 struct PageTable {
@@ -389,7 +389,7 @@ impl Paging for X8664Paging {
 ```
 > 原因：OS 层不感知 CR3 等具体硬件寄存器，所有硬件操作通过 trait 抽象。
 
-### 模式 21：no_std 违规
+### 模式 22：no_std 违规
 ```rust
 ❌ 错误：
 // 在 vm_main.rs 中（非 test 模块）
@@ -405,7 +405,7 @@ let map = BTreeMap::new();
 > `std::` 的使用规则：仅在 `#[cfg(test)]` 和 mock 中允许。
 > 生产代码必须 `no_std` 兼容。
 
-### 模式 22：pub 滥用
+### 模式 23：pub 滥用
 ```rust
 ❌ 错误：
 pub struct VmProc {
@@ -423,7 +423,7 @@ pub struct VmProc {
 ```
 > 口诀：「这个 pub 是因为外部需要，还是因为内部懒得组织？」
 
-### 模式 23：类型安全过度（复杂度失控）
+### 模式 24：类型安全过度（复杂度失控）
 ```rust
 ❌ 错误：
 // 每个状态都变成一个类型，导致类型爆炸
@@ -450,7 +450,7 @@ struct VmProc {
 ```
 > 原因：类型安全是有成本的。如果复杂度超过收益，降级为 enum + 运行时检查。
 
-### 模式 24：不必要的 trait 抽象
+### 模式 25：不必要的 trait 抽象
 
 ```rust
 ❌ 错误：创建 trait 但所有实现行为相同
@@ -488,7 +488,7 @@ struct VmProc {
 > 2. 是否被用作泛型约束（trait bound）？
 > 两个条件都满足 → 合理的 trait；任一不满足 → 考虑简化。
 
-### 模式 25：Kernel SMP 并发违规（BKL 未持有）
+### 模式 26：Kernel SMP 并发违规（BKL 未持有）
 
 ```rust
 ❌ 错误：内核全局变量访问未受 BKL 保护
@@ -507,7 +507,7 @@ struct VmProc {
 ```
 > 原因：内核 SMP 环境下，全局可变状态必须被 BKL、per-CPU 隔离、或 Atomic 保护。
 
-### 模式 26：Kernel SMP 并发违规（Rc/RefCell 跨 CPU 共享）
+### 模式 27：Kernel SMP 并发违规（Rc/RefCell 跨 CPU 共享）
 
 ```rust
 ❌ 错误：`Rc` 在多 CPU 内核中共享（`!Send + !Sync`）
@@ -520,7 +520,7 @@ struct VmProc {
         // 或 per-CPU 数据仍用 Rc，但必须注释"per-CPU, no cross-CPU sharing"
 ```
 
-### 模式 27：Kernel SMP 并发违规（spinlock 内睡眠/调度/等待）
+### 模式 28：Kernel SMP 并发违规（spinlock 内睡眠/调度/等待）
 
 ```rust
 ❌ 错误：BKL 内等待 IPC 响应（spinlock 内禁止 block）
@@ -537,7 +537,7 @@ struct VmProc {
 ```
 > 原因：BKL 是 spinlock（busy-wait），spinlock 内任何可能导致当前 CPU 让出执行权的操作（睡眠、调度、等待锁、等待 IPC 响应）都可能导致 deadlock。
 
-### 模式 28：Kernel SMP 并发违规（per-CPU 数据被跨 CPU 访问）
+### 模式 29：Kernel SMP 并发违规（per-CPU 数据被跨 CPU 访问）
 
 ```rust
 ❌ 错误：直接读取其他 CPU 的 local 数据，无保护
@@ -559,11 +559,11 @@ struct VmProc {
 
 ---
 
-## 三、跨阶段通用错误模式
+## 五、跨阶段通用错误模式
 
 > 以下 5 个模式从 Boot 阶段问题提炼而来，跨阶段复用。适用于 Boot/VM/PM/VFS/INET 等所有模块。
 
-### 模式 29：外部知识误导（注释中的硬件/协议/规范错误）
+### 模式 30：外部知识误导（注释中的硬件/协议/规范错误）
 
 ```markdown
 ❌ 错误：x86-64 长模式下"需设置 CR4.PSE 以支持 2MB 大页"
@@ -576,7 +576,7 @@ struct VmProc {
 适用阶段：Boot（固件规范）、VM（页表硬件）、PM（进程状态机）、VFS（文件系统协议）
 ```
 
-### 模式 30：通用接口含上下文特定元素
+### 模式 31：通用接口含上下文特定元素
 
 ```markdown
 ❌ 错误：通用数据结构包含未标注的架构特定字段
@@ -593,7 +593,7 @@ struct VmProc {
 适用阶段：Boot（KernelInfo 跨架构）、VM（vmproc 跨进程类型）、VFS（vnode 跨文件系统）
 ```
 
-### 模式 31：外部调用返回值被无说明忽略
+### 模式 32：外部调用返回值被无说明忽略
 
 ```markdown
 ❌ 错误：固件/系统调用返回值被丢弃，无注释说明
@@ -607,7 +607,7 @@ struct VmProc {
 适用阶段：Boot（固件调用）、VM（页表操作）、PM（IPC 调用）、Drivers（设备 I/O）
 ```
 
-### 模式 32：资源获取后无释放路径说明
+### 模式 33：资源获取后无释放路径说明
 
 ```markdown
 ❌ 错误：使用泄漏手段但无回收策略说明
@@ -623,7 +623,7 @@ struct VmProc {
 适用阶段：Boot（bump 分配器）、VM（物理页）、PM（进程槽位）、VFS（缓冲区缓存）
 ```
 
-### 模式 33：注释理由虚假或牵强
+### 模式 34：注释理由虚假或牵强
 
 ```markdown
 ❌ 错误：注释给出的理由在上下文中不成立
@@ -636,4 +636,270 @@ struct VmProc {
 
 适用阶段：所有阶段的所有注释和设计决策
 ```
+
+---
+
+## 六、测试错误模式
+
+> 以下模式覆盖测试 Review 中的常见错误。
+
+### 模式 35：测试未覆盖核心语义（L1 对偶缺失）
+
+```rust
+❌ 错误：核心函数 alloc_mem 无 C-Rust 对偶测试
+        // 仅测试了 Rust 内部逻辑，未对比 Minix3 行为
+        #[test]
+        fn test_alloc_mem_returns_ok() {
+            let result = alloc_mem(1024);
+            assert!(result.is_ok());
+        }
+
+✅ 正确：L1 对偶测试，验证与 Minix3 行为一致
+        #[test]
+        fn test_alloc_mem_parity_with_c() {
+            // 对比 Minix3 alloc_mem 行为：
+            // - 相同输入产生相同输出
+            // - 相同错误条件产生相同 errno
+            let result = alloc_mem(PageCount(1024));
+            // Minix3 在此输入下返回物理地址 0x10000
+            assert_eq!(result.unwrap(), PhysAddr(0x10000));
+        }
+```
+> 原因：核心函数必须有 L1 对偶测试，验证 Rust 实现与 C 行为一致。
+
+### 模式 36：Trait 契约测试缺失（L2 缺失）
+
+```rust
+❌ 错误：trait Paging 无契约测试
+        trait Paging {
+            fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags) -> Result<()>;
+        }
+        // 仅测试了 X8664Paging 的具体实现，未测试 trait 契约
+
+✅ 正确：L2 契约测试，验证所有实现满足 trait 契约
+        #[test]
+        fn test_paging_contract_map_unmap_roundtrip<P: Paging>(p: &mut P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            p.map(vaddr, paddr, PageFlags::READ).unwrap();
+            assert_eq!(p.query(vaddr), Some((paddr, PageFlags::READ)));
+            p.unmap(vaddr).unwrap();
+            assert_eq!(p.query(vaddr), None);
+        }
+```
+> 原因：trait 的所有实现必须满足统一契约，L2 测试验证这一点。
+
+### 模式 37：doctest 缺失（L3 缺失）
+
+```rust
+❌ 错误：pub 函数无 doctest
+        /// 分配物理内存
+        pub fn alloc_mem(count: PageCount) -> Result<PhysAddr, AllocError> {
+            // ...
+        }
+
+✅ 正确：pub 函数有 doctest
+        /// 分配物理内存
+        ///
+        /// # Example
+        /// ```
+        /// use minix_vm::alloc_mem;
+        /// let addr = alloc_mem(PageCount(1)).unwrap();
+        /// assert!(addr.as_u64() > 0);
+        /// ```
+        pub fn alloc_mem(count: PageCount) -> Result<PhysAddr, AllocError> {
+            // ...
+        }
+```
+> 原因：pub 函数应有 L3 doctest，既是文档也是可运行测试。
+
+### 模式 38：测试命名不表达意图
+
+```rust
+❌ 错误：测试名不表达意图
+        #[test]
+        fn test_1() { ... }
+        #[test]
+        fn test_it_works() { ... }
+        #[test]
+        fn test_alloc() { ... }
+
+✅ 正确：测试名表达意图
+        #[test]
+        fn test_alloc_mem_returns_aligned_address() { ... }
+        #[test]
+        fn test_alloc_mem_fails_when_out_of_memory() { ... }
+        #[test]
+        fn test_alloc_mem_zero_count_returns_error() { ... }
+```
+
+### 模式 39：测试仅覆盖正常路径
+
+```rust
+❌ 错误：仅测试正常路径
+        #[test]
+        fn test_map_page() {
+            let mut pt = PageTable::new();
+            pt.map(vaddr, paddr, flags).unwrap();  // 仅正常路径
+        }
+
+✅ 正确：覆盖正常、边界、错误路径
+        #[test]
+        fn test_map_page_normal() { ... }
+        #[test]
+        fn test_map_page_already_mapped_returns_error() { ... }
+        #[test]
+        fn test_map_page_unaligned_address_returns_error() { ... }
+        #[test]
+        fn test_map_page_zero_address_returns_error() { ... }
+```
+
+### 模式 40：测试依赖全局状态（flaky test）
+
+```rust
+❌ 错误：测试依赖全局状态，顺序敏感
+        static mut COUNTER: u32 = 0;
+        #[test]
+        fn test_alloc() {
+            unsafe { COUNTER += 1; }
+            let result = alloc_mem(1);
+            assert_eq!(result.unwrap(), PhysAddr(COUNTER * 4096));  // 依赖执行顺序
+        }
+
+✅ 正确：测试独立，无全局状态依赖
+        #[test]
+        fn test_alloc() {
+            let allocator = TestAllocator::new();  // 每次新建
+            let result = allocator.alloc(1);
+            assert!(result.is_ok());
+        }
+```
+
+---
+
+## 七、卓越性错误模式
+
+> 以下模式覆盖卓越性 Review 中的常见问题。详见 [review-doc-excellence.md](review-doc-excellence.md) 和 [review-code-excellence.md](review-code-excellence.md)。
+
+### 模式 41：文档叙事弧断裂（卓越性）
+
+```markdown
+❌ 错误：章节堆砌，无叙事弧
+        ## Ch1 概念
+        ## Ch2 源码分析
+        ## Ch3 设计决策
+        ## Ch4 实现
+        → 每章直接开始，无过渡，无动机说明
+
+✅ 正确：有叙事弧和动机
+        ## Ch1 概念
+        本章解决：什么是 VM 内存分配？为什么需要重新设计？
+        ## Ch2 源码分析
+        上一章定义了核心概念，本章分析 Minix3 如何实现这些概念。
+        ## Ch3 设计决策
+        Ch2 揭示了 Minix3 的几个问题（X, Y, Z），本章设计解决方案。
+```
+
+### 模式 42：文档术语未定义（卓越性）
+
+```markdown
+❌ 错误：术语首次出现无定义
+        "vmproc 的 vm_acl 字段控制地址空间权限..."
+        → vmproc、vm_acl 首次出现未定义
+
+✅ 正确：术语首次出现有定义
+        "**vmproc**（VM Process）是 VM 服务器中描述进程地址空间的结构体。
+        其 **vm_acl** 字段控制地址空间权限，取值为 -1/0/1~31。"
+```
+
+### 模式 43：代码 API 易误用（卓越性）
+
+```rust
+❌ 错误：API 允许无效状态
+        struct PageTable {
+            is_init: bool,
+            root: Option<PhysAddr>,  // is_init=true 但 root=None 是无效状态
+        }
+
+✅ 正确：用类型系统防止无效状态
+        enum PageTable {
+            Uninit,
+            Init { root: PhysAddr },
+        }
+```
+
+### 模式 44：代码错误类型不精确（卓越性）
+
+```rust
+❌ 错误：滥用 Box<dyn Error>
+        fn alloc_mem(count: PageCount) -> Result<PhysAddr, Box<dyn Error>> {
+            if count.0 == 0 {
+                return Err("zero count".into());  // 字符串错误，无类型信息
+            }
+            // ...
+        }
+
+✅ 正确：精确错误类型
+        enum AllocError {
+            ZeroCount,
+            OutOfMemory,
+            InvalidAlignment,
+        }
+        fn alloc_mem(count: PageCount) -> Result<PhysAddr, AllocError> {
+            if count.0 == 0 {
+                return Err(AllocError::ZeroCount);
+            }
+            // ...
+        }
+```
+
+### 模式 45：代码冗余注释（卓越性）
+
+```rust
+❌ 错误：注释重复代码已表达的信息
+        let x = 5;  // x 赋值为 5
+        let y = x + 1;  // y 等于 x 加 1
+
+✅ 正确：注释解释"为什么"而非"是什么"
+        let page_count = (size + PAGE_SIZE - 1) / PAGE_SIZE;  // 向上取整到页边界
+```
+
+### 模式 46：代码副作用隐藏（卓越性）
+
+```rust
+❌ 错误：看似纯函数有隐藏副作用
+        fn get_process_count() -> u32 {
+            PROCESS_COUNT += 1;  // 隐藏的副作用：递增计数器
+            PROCESS_COUNT
+        }
+
+✅ 正确：副作用显式
+        fn get_and_increment_process_count() -> u32 {
+            PROCESS_COUNT += 1;
+            PROCESS_COUNT
+        }
+        // 或分离查询和修改
+        fn get_process_count() -> u32 { PROCESS_COUNT }
+        fn increment_process_count() { PROCESS_COUNT += 1; }
+```
+
+### 模式 47：代码全局依赖未注入（卓越性）
+
+```rust
+❌ 错误：依赖全局状态，难以测试
+        fn alloc_mem(count: PageCount) -> Result<PhysAddr, AllocError> {
+            let bitmap = unsafe { &GLOBAL_BITMAP };  // 全局依赖
+            bitmap.alloc(count)
+        }
+
+✅ 正确：依赖注入
+        fn alloc_mem(
+            bitmap: &mut Bitmap,
+            count: PageCount,
+        ) -> Result<PhysAddr, AllocError> {
+            bitmap.alloc(count)
+        }
+        // 测试时可注入 mock bitmap
+```
+
 ```

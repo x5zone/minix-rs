@@ -199,6 +199,30 @@ Minix3 源码行为  >  文档描述  >  Rust 实现  >  AI 分析
 
 **永远以 Minix3 源码行为为最终真理来源**。
 
+### 核心语义验证（Ground Truth 的具体化）
+
+> **详见**：[review-core-semantics.md](review-core-semantics.md)
+
+Ground Truth 优先级需要通过**行为契约表**具体化。对每个核心函数：
+
+1. **提取 C 行为契约**：从 Minix3 源码提取输入、输出、副作用、错误码、时序、生命周期
+2. **对比 Rust 实现**：逐项验证 Rust 实现是否满足 C 行为契约
+3. **判定差异性质**：
+   - 允许的架构演进（如 errno→Result、32→64 位）→ 标注 ARCH
+   - P0 语义违反（如错误码改变、生命周期改变）→ 必须修复
+
+**核心语义不变性**（违反任一 = P0）：
+- IPC 协议不变（消息格式、调用号、参数顺序、返回值）
+- 生命周期不变（资源创建/释放的时序和条件）
+- 错误语义不变（相同输入产生相同错误码）
+- 权限语义不变（相同操作需要相同权限）
+- 地址空间语义不变（相同虚拟地址映射到相同物理地址）
+
+**覆盖率穷举**（Ground Truth 的完整性保证）：
+- 机器生成 SYMBOLS.md 骨架（确定性，无幻觉）
+- AI 补充语义判断（Rust 对应、架构演进、语义归属、行为契约、测试覆盖）
+- 详见 [review-coverage-skill.md](../skill/review-coverage-skill.md)
+
 ---
 
 ## AI 执行约束
@@ -231,6 +255,19 @@ Minix3 源码行为  >  文档描述  >  Rust 实现  >  AI 分析
 - 禁止因为"Rust 实现看起来合理"而认为"Minix3 源码可能有问题"
 - 禁止因为"文档写得很清楚"而忽略源码实际行为
 - 禁止因为"修改成本太高"而降低问题优先级
+
+### 强制 Skill 显式调用（工具级约束）
+
+> 本项约束 Agent 与 Skill 的调用方式，确保 Review 过程可审计、Skill 知识真正生效。
+
+- **必须通过 `Skill` tool 显式调用 Skill**，禁止依赖"系统 prompt 已加载"或"上下文里已有"等隐式假设。
+- Skill Invocation Log 中的每一项必须对应一次真实的 `Skill` tool 调用记录。
+- 路由决策：
+  - 文档 review → `review-doc-skill` + `review-patterns-skill`
+  - 代码 review → `review-code-skill` + `review-patterns-skill`
+  - 完整 review / 深度 review → 按 [review-process.md](review-process.md) 分阶段加载全部相关 Skill
+  - 覆盖率 / 核心语义 / 卓越性 / 流程问题 → 各自调用对应 Skill
+- 未显式调用 Skill 即输出 Review 结果 → 流程违规，结果标记 DRAFT。
 
 ### 强制自检机制（反偷懒）
 
@@ -278,11 +315,13 @@ AI 必须主动检查自己最可能漏掉的维度：
 **自检 4：跳过理由自检**
 如果 AI 跳过了某个 Step 或某个检查维度，必须在输出中明确说明跳过理由。不允许无声跳过。
 
-**自检 5：时间预算自检**
-AI 应在 Review 开始时估算本次 Review 的时间预算，并在结束时对比实际耗时：
-- 如果实际耗时 < 预算的 50% → 很可能偷懒了，必须重新检查最弱项
-- 如果实际耗时在预算的 50%~150% → 正常范围
-- 如果实际耗时 > 预算的 150% → 可能过度检查，检查是否有不必要的重复工作
+**自检 5：时间预算自检（可选）**
+AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时。时间预算的初衷是反偷懒；若其他反偷懒机制（自检 1~4、Blocker Gates、VERIFY-CHECK）已严格执行，时间预算可省略或简写。
+- 如果填写了预算：
+  - 实际耗时 < 预算的 50% → 很可能偷懒了，必须重新检查最弱项
+  - 实际耗时在预算的 50%~150% → 正常范围
+  - 实际耗时 > 预算的 150% → 可能过度检查，检查是否有不必要的重复工作
+- 如果未填写预算：必须在 scan.md 中说明 "时间预算已省略，依赖 Blocker Gates + VERIFY-CHECK 反偷懒"。
 
 **时间预算参考**：
 | 文档规模 | 预计耗时 |
@@ -292,7 +331,7 @@ AI 应在 Review 开始时估算本次 Review 的时间预算，并在结束时�
 | 500~1000 行 | 40~80 分钟 |
 | > 1000 行 | 80~120 分钟 |
 
-> 以上耗时包含 grep 搜索、源码阅读、表格输出。如果 AI 在 5 分钟内完成 500 行文档的 Review，几乎肯定偷懒了。
+> 以上耗时包含 grep 搜索、源码阅读、表格输出。如果 AI 在 5 分钟内完成 500 行文档的 Review 且未通过 Blocker Gates / VERIFY-CHECK，则视为偷懒。
 
 ---
 
@@ -323,6 +362,11 @@ AI 应在 Review 开始时估算本次 Review 的时间预算，并在结束时�
 | 代码 Review | [review-code-checklist.md](review-code-checklist.md) + [review-patterns.md](review-patterns.md) | 检查 Rewrite 质量、类型安全、硬件抽象 |
 | 完整 Review | 全部模块 | 按 [review-process.md](review-process.md) 执行 Step 1-6 |
 | 快速 Review | [review.md §快速判断口诀](#快速判断口诀) | 用判断口诀快速扫描 |
+| **卓越性专项 (Profile O)** | [review-excellence-skill.md](../skill/review-excellence-skill.md) + [review-doc-excellence.md](review-doc-excellence.md) + [review-code-excellence.md](review-code-excellence.md) | 在正确性 gate 通过后追求教科书级质量 |
+| **覆盖率专项 (Profile P)** | [review-coverage-skill.md](../skill/review-coverage-skill.md) + `tools/coverage-extract/coverage-extract.py` | 用机器穷举 + AI 补充判断 C 源/Rust 实现的覆盖完整度 |
+| **苏格拉底追问 (Profile S)** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
+
+> 详细 Profile 配置（含所有 A-P 组合）见 [review-profiles.md](review-profiles.md)
 
 ---
 
@@ -355,11 +399,11 @@ AI 应在 Review 开始时估算本次 Review 的时间预算，并在结束时�
 
 > 每次 Review 必须按以下格式输出，确保结果结构化、可追溯、可执行。
 
-### 0. 时间预算声明（Step 0 的一部分）
+### 0. 时间预算声明（Step 0 的一部分，可选）
 
 ```markdown
 - **文档规模**：约 N 行
-- **预计耗时**：X~Y 分钟（按 [时间预算参考](#时间预算参考)）
+- **预计耗时**：X~Y 分钟（按 [时间预算参考](#时间预算参考)）或 "已省略，依赖 Blocker Gates + VERIFY-CHECK 反偷懒"
 - **实际耗时**：[Review 完成后填写]
 - **耗时评估**：✅ 正常 / ⚠️ 偏短（可能偷懒）/ ⚠️ 偏长（可能过度检查）
 ```

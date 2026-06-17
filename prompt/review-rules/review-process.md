@@ -5,6 +5,82 @@
 
 ---
 
+## 〇、执行模式选择（构造 / 快速 / 深度）
+
+> **目的**：根据任务规模和精度要求，选择合适的执行模式。不同模式裁剪不同的 Step，平衡覆盖度与效率。
+
+| 模式 | 适用场景 | 执行 Step | 预计耗时 | 对应 Profile |
+|------|---------|----------|---------|-------------|
+| **构造模式（Constructive）** | 文档/代码初稿阶段，需要引导作者补全 | Step 0, 1, 1.5, 2, 5, 6 | 15~30 分钟 | A / B / G |
+| **快速模式（Quick）** | 日常 PR 审阅、时间有限的扫描 | Step 0, 1, 2, 5 | 10~20 分钟 | D |
+| **深度模式（Deep）** | 里程碑验收、关键模块完整 Review | Step 0-7（全量） | 40~120 分钟 | C / H→I→J→K / O / P |
+
+### 构造模式（Constructive）
+
+> **定位**：初稿阶段的"脚手架 Review"。不追求发现所有问题，而是帮作者建立完整骨架。
+> **特点**：以覆盖率穷举和差异提取为核心，输出"缺什么"而非"哪里错"。
+
+**执行 Step**：
+1. **Step 0**：范围声明 + 时间预算
+2. **Step 1**：源码定位（验证引用文件存在）
+3. **Step 1.5**：覆盖率穷举（生成 SYMBOLS.md，标记缺口）
+4. **Step 2**：差异提取（Top 3 语义偏差）
+5. **Step 5**：输出（聚焦缺口清单 + 补全建议）
+6. **Step 6**：修改项（P0 缺口必须生成补全项）
+
+**跳过**：Step 2.5（链路验证，初稿可能链路未建）、Step 3（逐行精确验证）、Step 3.5（细节精确）、Step 4（跨文档，初稿可能未引用）
+
+**输出重点**：
+- 覆盖率缺口清单（哪些 C 函数/结构体/宏未覆盖）
+- Top 3 语义偏差（方向性错误）
+- 补全建议（下一步应该写什么）
+
+### 快速模式（Quick）
+
+> **定位**：日常 PR 审阅的"烟雾测试"。快速发现明显 P0，不做穷举。
+> **特点**：用口诀扫描 + 差异提取，仅输出 P0。
+
+**执行 Step**：
+1. **Step 0**：范围声明 + 时间预算
+2. **Step 1**：源码定位（仅验证关键引用）
+3. **Step 2**：差异提取（Top 3）
+4. **Step 5**：输出（仅 P0 问题）
+
+**跳过**：Step 1.5（覆盖率穷举）、Step 2.5（链路验证）、Step 3（逐行验证）、Step 3.5（细节精确）、Step 4（跨文档）、Step 6（修改项，P0 在输出中直接说明）
+
+**输出重点**：
+- Top 3 语义偏差
+- P0 问题清单（仅 P0，P1/P2 不输出）
+- "建议升级到深度模式"的提示（如发现 P0 数量 > 3）
+
+### 深度模式（Deep）
+
+> **定位**：里程碑验收的"全量 Review"。执行所有 Step，穷举所有维度。
+> **特点**：每个 Step 产生完整中间产物，覆盖正确性 + 卓越性 + 覆盖率。
+
+**执行 Step**：Step 0-7 全量执行（见下方"一、AI 执行 Review 的强制步骤"）
+
+**输出重点**：
+- 全部中间产物（10 个维度的表格）
+- P0/P1/P2 完整问题清单
+- 修改项（P0 必须有代码修改项）
+- 自检清单确认
+
+**模式选择决策树**：
+```
+任务来了
+  ├─ 是初稿？ → 构造模式
+  ├─ 是日常 PR / 时间紧？ → 快速模式
+  │    └─ 发现 P0 > 3？ → 建议升级深度模式
+  └─ 是里程碑 / 关键模块？ → 深度模式
+       ├─ 文档 < 300 行 → Profile C（单次深度）
+       ├─ 文档 > 300 行 → Profile H→I→J→K（分阶段深度）
+       ├─ 正确性已过，追求卓越 → Profile O（深度+卓越性）
+       └─ 覆盖率验收 → Profile P（深度+覆盖率穷举）
+```
+
+---
+
 ## 一、AI 执行 Review 的强制步骤
 
 > 为防止 AI 在 Review 过程中"浮躁"或遗漏关键验证，必须按以下步骤执行。
@@ -12,10 +88,14 @@
 
 ### Step 0: 范围声明 + 时间预算 + 状态恢复
 
+- 按 [§〇 执行模式选择](#〇执行模式选择构造--快速--深度) 确定执行模式（构造/快速/深度）
 - 按 [review.md §Review 启动：范围声明](review.md) 声明 Review 模式和范围
-- 声明时间预算（按 [review.md §时间预算参考](review.md#时间预算参考)）
-- **读取状态**：检查 `.review/{module}/STATE.md` 是否存在，如存在则读取当前进度
-- **中间产物**：范围声明 + 时间预算声明 + 状态恢复摘要
+- 声明时间预算（可选；按 [review.md §时间预算参考](review.md#时间预算参考)）
+- **读取状态（双路径）**：
+  - **Trae IDE** → 读取 `notes/rewrite/{module}/.review/STATE.md`
+  - **Claude Code Runtime** → 读取 `.review/{module}/STATE.md`（项目根）
+  - 若两个 STATE.md 都存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
+- **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要
 
 ### Step 1: Ground Truth Lookup（源码定位）
 
@@ -35,6 +115,83 @@
 | minix3/minix/servers/vm/region.h | Ch2§2.2 | ✅ | 23-35 |
 | ... | ... | ... | ... |
 ```
+
+### Step 1.5: Coverage Enumeration（覆盖率穷举，机器+AI）
+
+> **目的**：机器生成穷举清单，AI 只负责语义判断。解决 AI "凭印象扫描"导致覆盖率不足的问题。
+> **基础**：`tools/coverage-extract/coverage-extract.py` 确定性脚本生成 SYMBOLS.md 骨架。
+> **详见**：[review-coverage-skill.md](../skill/review-coverage-skill.md)
+
+**执行步骤**：
+
+1. **机器生成 SYMBOLS.md 骨架**：
+   ```bash
+   # 模块级 — 服务器模块（vm / pm / vfs / rs / ds / inet ...）
+   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/servers/{module} \
+     --output .review/{module}/SYMBOLS.md
+
+   # 模块级 — 内核
+   python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/kernel \
+     --output .review/kernel/SYMBOLS.md
+
+   # 单文档级（推荐 doc-specific review）— 服务器模块
+   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/servers/{module} \
+     --doc-file {target-doc}.md \
+     --semantic-map tools/coverage-extract/{module}-semantic-map.json \
+     --output .review/{module}/{target-doc}/SYMBOLS.md
+
+   # 单文档级 — 内核
+   python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/kernel \
+     --doc-file {target-doc}.md \
+     --semantic-map tools/coverage-extract/kernel-semantic-map.json \
+     --output .review/kernel/{target-doc}/SYMBOLS.md
+   ```
+   脚本自动提取 C 函数/结构体/宏/枚举 + Rust pub 项 + 文档覆盖检查 + 名称匹配。
+   - `--rust-dir os`：扫描整个 `os/` 目录，避免 `kmain`/`ProtectionArch` 等跨 crate 符号遗漏。
+   - `--c-dir`：服务器模块用 `minix3/minix/servers/{module}`，内核用 `minix3/minix/kernel`。
+   - `--semantic-map`：C→Rust 改写必须提供语义映射表，否则 Rust 覆盖率会显示为 0%。
+   - `--doc-file`：限定到单篇文档，避免两篇 doc 的 coverage 数字完全相同。
+   - 若 Rust 覆盖率为 0%，必须先检查 `--rust-dir`/`--semantic-map` 是否正确，或确实缺失实现。
+
+2. **AI 补充语义判断**（5 项，每项标注 evidence [DIRECT/MEDIUM/INFERRED]）：
+   - Rust 对应关系确认（名称匹配 ≠ 语义对应）
+   - 架构演进标记（ARCH: 不需要 + 理由）
+   - 语义归属判定（以功能语义为准）
+   - 行为契约表（核心函数：输入/输出/副作用/错误码/时序）
+   - 测试覆盖补充（L1对偶/L2契约/L3 doctest）
+
+3. **更新 STATE.md Coverage Status 段**
+
+**中间产物**（必须输出）：
+```markdown
+### Step 1.5 产物：覆盖率穷举
+
+**SYMBOLS.md**: .review/{module}/SYMBOLS.md
+
+| 指标 | 数值 |
+|------|------|
+| C 符号总数 | N |
+| 文档覆盖 | M (M%) |
+| Rust 覆盖 | K (K%) |
+| 完全缺口 | G |
+| 架构演进 | A |
+
+**P0 缺口**（在语义范围内但无文档无Rust）:
+| 符号 | C 源码 | 判定 | evidence |
+|------|--------|------|----------|
+| `func_name` | file.c:N | P0 缺口 | DIRECT: rg 无结果 |
+
+**ARCH 标记**:
+| 符号 | 理由 | evidence |
+|------|------|----------|
+| `map_service` | IPC 协议演进 | INFERRED |
+```
+
+> **反幻觉**：每个覆盖判定必须先执行 grep 验证，再下结论。禁止凭印象判断"已覆盖"。
 
 ### Step 2: Diff Extraction（差异提取）
 
@@ -210,40 +367,46 @@
 
 ### Step 5.5: 状态写入与收敛判断
 
-> **目的**：将当前 phase 的验证结果持久化写入 `.review/{module}/` 目录，并判断是否收敛。
+> **目的**：将当前 phase 的验证结果持久化写入工具对应的路径，并判断是否收敛。
 
 **执行步骤**：
-1. 创建或更新 `.review/{module}/STATE.md`（参考 [review-agent.md §STATE.md](review-agent.md) 格式）
-2. 创建或更新对应维度的检查文件（如 `.review/{module}/CONCEPT-CHECK.md`）
-3. 更新 `.review/{module}/FINDINGS.md`，追加新发现的问题（不覆盖已有已修复项）
-4. 更新 STATE.md 的 Phase Completion Log 和 Convergence Checklist
-5. 输出收敛状态评估
+1. 创建或更新工具对应的 `STATE.md`：
+   - Trae IDE → `notes/rewrite/{module}/.review/STATE.md`
+   - Claude Code Runtime → `.review/{module}/STATE.md`（项目根）
+2. 创建或更新 `SYMBOLS.md`（Step 1.5 产物）到对应路径
+3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。若用户显式指定输出位置，双写到用户指定路径 + 工具默认路径。
+4. 将 scan.md 中**新发现 P0/P1/P2** 同步到 STATE.md 的 Open P0/P1/P2 列表；已修复问题移入 Closed Issues 段落。
+5. 更新 STATE.md 的 Phase Completion Log 和 Convergence Checklist
+6. 输出收敛状态评估
 
 **收敛终止条件**（全部满足才算审查完成）：
-1. 所有 10 个维度检查文件均已标记 COMPLETE
+1. scan.md 中所有维度章节标记 COMPLETE
 2. 最近一次完整 Pass 中，P0 新增数量 = 0
 3. 最近一次完整 Pass 中，P1 新增数量 ≤ 1
-4. 独立验证（VERIFY-CHECK.md）结果为 PASS
-5. FINDINGS.md 中所有 P0 已被修复并验证通过
+4. **独立验证（VERIFY-CHECK.md）结果为 PASS**（**必须完成，不能跳过**）
+5. scan.md / STATE.md 中所有 P0 已被修复并验证通过
+6. SYMBOLS.md 覆盖率穷举完成
+7. **Blocker Gates A-E 全部通过且有证据附件**
 
-### Step 5.6: Review Verification Protocol（独立验证，可选但推荐）
+### Step 5.6: Review Verification Protocol（独立验证，强制）
 
-> **目的**：解决"自己审自己"的盲区。在审查收敛后，用新会话独立验证审查质量。
+> **目的**：解决"自己审自己"的盲区。在所有维度 COMPLETE 后，必须执行独立验证才能标记 CONVERGED。
 
-**触发条件**：所有 10 个维度标记 COMPLETE + P0/P1 收敛后，用户发起「验证 review」
+**触发条件**：所有维度标记 COMPLETE + P0/P1 收敛后，**必须**执行本步骤并生成 VERIFY-CHECK.md。未执行 VERIFY-CHECK 时，状态必须为 NOT_CONVERGED。
 
 **执行方式**（独立会话中执行）：
-1. Agent 读取 `.review/{module}/STATE.md` + `FINDINGS.md` + 原始文档/代码
-2. **随机抽样**：从 FINDINGS.md 中随机选取 20% 的已报告问题
+1. Agent 读取 STATE.md + scan.md + 原始文档/代码
+2. **随机抽样**：从 scan.md Issue List 中随机选取 20% 的已报告问题
 3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **输出判定**：
-   - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate A-E 是否都附带真实证据
+7. **输出判定**：
+   - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过
    - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
    - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
 
-**输出**：写入 `.review/{module}/VERIFY-CHECK.md`
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `notes/rewrite/{module}/.review/VERIFY-CHECK.md`; Claude: `.review/{module}/VERIFY-CHECK.md`）。
 
 ### Step 6: Action Item Generation（修改项生成）
 
@@ -272,29 +435,40 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 ### Step 7: 自检清单确认（强制）
 
 > **目的**：在输出最终结果前，AI 必须逐条确认以下清单。这是防止"输出看起来完整但实际漏了关键维度"的最后一道防线。
+> **模式适配**：构造/快速模式跳过的 Step 标注"跳过（模式）"，深度模式必须全部确认。
 
 ```markdown
 ### Step 7 产物：自检清单
 
-- [ ] Step 0 范围声明和时间预算已输出
+- [ ] Step 0 执行模式已声明 + 范围声明和时间预算已输出（或已说明省略）
+- [ ] Step 0 已读取正确的 STATE.md（Trae/Claude 双路径）
 - [ ] Step 1 源码文件清单已输出
-- [ ] Step 2 Top 3 差异已输出
-- [ ] Step 2.5 链路验证表格已输出（如适用）
-- [ ] Step 3 概念准确性表格已输出
-- [ ] Step 3 C 代码引用验证表格已输出
-- [ ] Step 3 数据结构覆盖表格已输出
-- [ ] Step 3 C 源码覆盖完整性表格已输出（含覆盖率）
-- [ ] Step 3 文档风格验证表格已输出（§2.11）
-- [ ] Step 4 跨文档检查已输出
-- [ ] Step 4.1 设计决策质量表格已输出（如适用）
+- [ ] Step 1.5 覆盖率穷举已输出（SYMBOLS.md + 缺口/ARCH 判定）〔构造/深度必做，快速跳过〕
+- [ ] **Gate A**: coverage-extract.py 已运行且 scan.md 附 SYMBOLS.md 路径
+- [ ] Step 2 Top 3 差异 + Top 2 覆盖缺口已输出（8 字段行为契约表）
+- [ ] **Gate B**: Top 5 行为契约表已产出
+- [ ] Step 2.5 链路验证表格已输出（如适用）〔深度必做，构造/快速跳过〕
+- [ ] Step 3 概念准确性表格已输出〔深度必做，构造/快速跳过〕
+- [ ] Step 3 C 代码引用验证表格已输出〔深度必做，构造/快速跳过〕
+- [ ] Step 3 数据结构覆盖表格已输出〔深度必做，构造/快速跳过〕
+- [ ] Step 3 C 源码覆盖完整性表格已输出（含覆盖率）〔深度必做，构造/快速跳过〕
+- [ ] Step 3 文档风格验证表格已输出（§2.11）〔深度必做，构造/快速跳过〕
+- [ ] **Gate C**: Step 3.5 Precision Check 5 元规则检查表已产出
+- [ ] Step 4 跨文档检查已输出〔深度必做，构造/快速跳过〕
+- [ ] Step 4.1 设计决策质量表格已输出（如适用）〔深度必做，构造/快速跳过〕
+- [ ] **Gate D**: P0 必检清单 5 项已回答 ✅/❌ + grep 证据（PARTIAL=FAIL）
+- [ ] **Gate E**: §5 测试函数名已 grep 验证（若文档有 §5）
 - [ ] Step 5 维度覆盖自检表格已输出
 - [ ] Step 5 最弱项自检 4 个问题已确认
-- [ ] Step 5 时间预算评估已输出
-- [ ] Step 6 修改项已生成（P0 必须有代码修改项）
+- [ ] Step 5 时间预算评估已输出（或已说明省略）
+- [ ] Skill Invocation Log 已输出（真实 tool 调用记录）
+- [ ] Step 5.5 scan.md 单文件已写入 + STATE.md 已更新 + Open P0/P1/P2 已同步
+- [ ] Step 5.6 VERIFY-CHECK.md 已生成（收敛终止必要条件）
+- [ ] Step 6 修改项已生成（P0 必须有代码修改项）〔构造/深度必做，快速跳过〕
 - [ ] 所有 grep 命令的输出已作为证据附在对应表格后
 ```
 
-> **如果以上任何一项未完成，AI 必须回到对应 Step 重新执行，不得跳过。**
+> **如果以上任何一项未完成（且非模式跳过），AI 必须回到对应 Step 重新执行，不得跳过。**
 
 ---
 

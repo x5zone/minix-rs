@@ -14,6 +14,9 @@
 | **代码检查清单** | [review-code-checklist.md](review-code-checklist.md) |
 | **错误模式** | [review-patterns.md](review-patterns.md) |
 | **执行流程** | [review-process.md](review-process.md)（强制步骤 + 工具命令） |
+| **核心语义** | [review-core-semantics.md](review-core-semantics.md)（行为契约表 + IPC/生命周期契约） |
+| **文档卓越性** | [review-doc-excellence.md](review-doc-excellence.md)（叙事结构 + 读者体验 + 教学深度） |
+| **代码卓越性** | [review-code-excellence.md](review-code-excellence.md)（API 设计 + 表达力 + 性能 + 测试质量） |
 
 ---
 
@@ -250,6 +253,84 @@
 
 ---
 
+### Profile O：卓越性专项 Review（追求教科书级质量）
+
+**加载模块**：核心 + 文档卓越性 + 代码卓越性 + 错误模式（卓越性部分）
+
+**适用场景**：
+- 正确性 Review 通过后，追求文档教科书化、代码 redox 级质量
+- 模块即将作为参考实现对外发布
+- 关键模块需要高质量文档吸引贡献者
+- 正确性已验证，需要提升表达力和可维护性
+
+**前置条件**：建议先完成 Profile C 或分阶段 Review（H→I→J→K），确保正确性已通过。
+
+**执行流程**：
+1. 按 [review.md §Review 启动：范围声明](review.md) 声明范围（模式 B 或 C）
+2. 阅读 [review.md](review.md) 核心原则
+3. **文档卓越性**：按 [review-doc-excellence.md](review-doc-excellence.md) 逐项检查
+   - §4.1 叙事结构卓越性（叙事弧、动机、过渡、层次、聚焦）
+   - §4.2 读者体验卓越性（前置知识、可读性、示例、抽象层次）
+   - §4.3 教学深度卓越性（设计取舍、边界、失败模式、历史背景）
+   - §4.4 可维护性卓越性（一致性、可演进、文档债）
+4. **代码卓越性**：按 [review-code-excellence.md](review-code-excellence.md) 逐项检查
+   - §15 API 设计卓越性（难误用、惯用法、错误类型、层次、最小接口）
+   - §16 表达力卓越性（类型系统、编译时保证、命名、迭代器、模式匹配）
+   - §17 性能卓越性（零成本抽象、分配、缓存、批处理）
+   - §18 代码即文档（自解释、注释价值、unsafe 可见性）
+   - §19 可测试性卓越性（依赖注入、纯函数、副作用隔离）
+   - §20 测试质量卓越性（L1 对偶、L2 契约、L3 doctest、属性测试）
+5. 对照 [review-patterns.md](review-patterns.md) §六、卓越性错误模式（模式 40-46）
+6. 按 [review.md §AI Review 输出模板](review.md#ai-review-输出模板) 输出结果
+   - 问题优先级以 P1/P2 为主（正确性问题已在前期 Review 解决）
+   - 每个问题提供"现状→目标→改进路径"三段式建议
+
+**输出特点**：
+- 不再重复正确性检查（假设已通过）
+- 聚焦"如何从合格到优秀"
+- 每个建议附"为什么这样更好"的理由
+- 提供可执行的改进示例（不只是说"应该改"，而是给出改后的样子）
+
+---
+
+### Profile P：覆盖率专项 Review（穷举式覆盖验证）
+
+**加载模块**：核心 + 核心语义 + 执行流程（Step 1.5）+ 错误模式
+
+**适用场景**：
+- 怀疑文档/代码覆盖不完整（漏函数、漏结构体、漏宏）
+- 跨轮次 Review 后需要确认覆盖率无回退
+- 模块完成后做最终覆盖率验收
+- 新增 C 源码后验证 Rust 实现是否同步
+
+**执行流程**：
+1. 按 [review.md §Review 启动：范围声明](review.md) 声明范围
+2. 阅读 [review.md](review.md) 核心原则
+3. **机器生成 SYMBOLS.md 骨架**：
+   ```bash
+   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} [--rust-dir {rust_dir}]
+   ```
+4. **AI 补充语义判断**（按 [review-process.md §Step 1.5](review-process.md) 执行）：
+   - Rust 对应关系确认（名称匹配 ≠ 语义对应）
+   - 架构演进标记（ARCH: 不需要 + 理由）
+   - 语义归属判定（以功能语义为准）
+   - 行为契约表（核心函数：输入/输出/副作用/错误码/时序）
+   - 测试覆盖补充（L1对偶/L2契约/L3 doctest）
+5. **核心语义对齐**：按 [review-core-semantics.md](review-core-semantics.md) 对核心函数生成行为契约表
+6. 输出覆盖率报告：
+   - C 符号总数 / 文档覆盖 / Rust 覆盖 / 完全缺口 / 架构演进
+   - P0 缺口清单（在语义范围内但无文档无 Rust）
+   - ARCH 标记清单（不需要 Rust 对应 + 理由）
+   - 行为契约表（核心函数）
+
+**输出特点**：
+- 以表格为主，量化覆盖率
+- 每个缺口标注 evidence [DIRECT/MEDIUM/INFERRED]
+- ARCH 标记必须附理由（不能只标"不需要"）
+- 行为契约表覆盖核心函数的输入/输出/副作用/错误码/时序
+
+---
+
 ## 选择建议
 
 | 场景 | 推荐 Profile | 原因 |
@@ -262,4 +343,6 @@
 | 文档集一致性检查 | E | 专注跨文档联动问题 |
 | 设计-代码链路验证 | F | 专注章节间推导完整性和代码-设计一致性 |
 | 仅验证 Ch1&2 准确性和覆盖 | G | 轻量级，不做设计/链路层面检查 |
+| 正确性通过后追求卓越质量 | **O（卓越性专项）** | 聚焦文档教科书化 + 代码 redox 级，不重复正确性检查 |
+| 覆盖率验收/缺口排查 | **P（覆盖率专项）** | 机器穷举 + AI 语义判断，量化覆盖率 |
 | 用户只说「review xxx.md」 | A（默认） | 默认文档 Review，发现 .rs 文件时提示升级到 C 或分阶段 |
