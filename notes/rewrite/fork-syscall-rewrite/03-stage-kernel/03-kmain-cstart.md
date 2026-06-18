@@ -454,8 +454,17 @@ void prot_init(void)
 - **步骤 1-5**（`protect.c:328-336`）：清零并设置描述符表指针。这是"准备阶段"。
 - **步骤 6-10**（`protect.c:339-345`）：填充 GDT 段描述符。64 位模式下，代码段和数据段都是 flat（base=0, limit=full），但 DPL（Descriptor Privilege Level）不同：内核段 DPL=0（`INTR_PRIVILEGE`），用户段 DPL=3（`USER_PRIVILEGE`）。这一步对应 §1.4a 第一问——x86 特权级检查的依据。
 - **步骤 11**（`protect.c:350`）：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`idt_init()`（填充 IDT 门描述符）、`idt_reload()`（加载 IDTR，即 `lidt`）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT 和 IDT。
-- **步骤 12-15**（`protect.c:357-360`）：重建页表。为什么需要重建？因为 `pre_init()` 在低地址建立了页表，而 `prot_init()` 在高地址运行。重建确保页表结构在高地址也可访问。
-- **步骤 16**（`protect.c:364`）：标记 `prot_init_done = 1`，向后续代码（尤其是 AP 初始化）声明"保护结构已就绪"。
+- **步骤 12-15**（`protect.c:357-360`）：建立（重建）bootstrap 页表。`pre_init()`（`pre_init.c:217`）已经做过几乎相同的页表设置，并把 `pg_mapkernel()` 的返回值存入了 `kinfo.freepde_start`（`pre_init.c:232`）。`prot_init()` 之所以再次 `pg_clear()` + `pg_identity()` + `pg_mapkernel()`，不是因为内核映射参数变了——`kern_vir_start` / `kern_phys_start` / `kern_kernlen` 是 `pg_utils.c:14-16` 的静态变量，内容不变——而是因为：
+  1. `prot_init()` 作为保护子系统的统一初始化入口，选择从零重建页表（连同 GDT/IDT/TSS 一起），确保保护结构处于已知状态；
+  2. 重建后的页表是**内核重定位完成后**建立的官方 bootstrap 页表，后续 `arch_boot_proc()` 会把 VM 进程直接加载到这个页表里运行（`protect.c:480+`）；
+  3. 此时使用的 `kinfo` 已经经过 `kmain()` 补充（`nr_procs`、`nr_tasks`、`boot_procs` 等，`main.c:128-431`），不再只依赖 boot loader 的原始 multiboot 数据。
+  
+  具体调用：
+  - `pg_clear()` 清空页目录；
+  - `pg_identity(&kinfo)` 建立 1:1 映射（供 LAPIC、显存等需要物理地址的设备）；
+  - `pg_mapkernel()` 把内核映射到高地址；
+  - `pg_load()` 激活新页表。
+- **步骤 16**（`protect.c:364`）：标记 `prot_init_done = 1`，表示 bootstrap 页表和保护结构已就绪，可以安全启动 VM 和后续服务，AP 初始化也可以依赖这套结构。
 
 #### 2.3.1 tss_init() 分析
 
@@ -620,7 +629,7 @@ Rust 版把三问的答案抽象为两个 trait：
 | 加载顺序 | 文档中说明"先 load prot 后 load trap" | 类型层面强制，`init_protection` 函数显式调用两者 |
 | 实现数量 | trait body 内堆 cfg 分支 | 每个 trait 的实现都是单一职责 |
 | 单元测试 | 测整个 trait 较复杂 | 单独测 `ProtectionArch::load()` 和 `TrapEntryArch::load()` |
-| 跨架构共性 | 共性被 cfg 淏没 | `ProtectionArch` 的接口对所有架构表达"内核栈 + 特权级"，跨架构一致性更清晰 |
+| 跨架构共性 | 共性被 cfg 淹没 | `ProtectionArch` 的接口对所有架构表达"内核栈 + 特权级"，跨架构一致性更清晰 |
 
 ### 3.2 类型系统替代运行时标志
 
@@ -649,26 +658,77 @@ C 版 `cstart()`（`main.c:403-481`）把保护结构初始化、时钟初始化
 
 Rust 版将 `prot_init()` 拆分为两个 trait 抽象：`ProtectionArch` 负责**特权级隔离与内核栈设置**，`TrapEntryArch` 负责**异常/中断/系统调用入口**。这两个 trait 的拆分依据是 Ch2 §2.3 分析的 C 版 `prot_init()` 内部的两个独立职责——`tss_init()`（保护结构）和 `idt_init()`（异常向量）。
 
-**`ProtectionArch` 的抽象语义**：
-
-> 回答 CPU 三问中的第一问（当前什么特权级）和第三问（陷入内核用哪个栈）。
-
-- `PrivilegeLevel` 关联类型：封装架构特有的特权级表示（x86-64 Ring、ARM64 EL、RISC-V mode），避免上层代码直接接触硬件编码。
-- `init()`：建立保护结构的"蓝图"——x86-64 填充 GDT 描述符和 TSS，aarch64 设置 SP_EL1，riscv64 准备 sscratch。
-- `set_kernel_stack()`：配置特权级切换时的目标内核栈。这是安全转场的核心——用户态触发异常或系统调用时，CPU 必须知道切换到哪个栈，否则会继续使用用户态栈（已映射但不可信）。
-- `load()`：将蓝图写入硬件寄存器（`lgdt`/`ltr`、`msr` 等），从此刻起保护结构生效。
-
-**`TrapEntryArch` 的抽象语义**：
-
-> 回答 CPU 三问中的第二问（异常/syscall 跳到哪里）。
-
-- `init()`：填充异常向量表——CPU 异常（除零、页错误等）、硬件中断（PIC/IOAPIC）、系统调用入口。
-- `configure_syscall()`：配置系统调用机制。x86-64 需要写入 MSR（LSTAR/SFMASK），aarch64/riscv64 使用异常向量中的统一入口，无需额外配置。
-- `load()`：将向量表基址写入硬件寄存器（`lidt`、`msr VBAR_EL1`、`csrw stvec`），从此刻起异常和中断有去向。**本文阶段不调用 `trap.load()`**，因为 handler 地址仍为 0；真正的加载在 [13-exception-interrupt.md](13-exception-interrupt.md) 阶段 `set_handler()` 之后。
-
 两个 trait 的顺序不可交换：最终 `ProtectionArch::load()` 必须在 `TrapEntryArch::load()` 之前——因为异常处理函数运行在内核态，需要有效的特权级和栈设置。如果先加载 IDT 后加载 GDT，第一个异常就会因为段选择子无效而 triple fault。
 
-### 4.1 init_protection() 的实现
+### 4.1 ProtectionArch trait 抽象
+
+trait 定义回答 CPU 三问中的第一问（特权级）和第三问（内核栈）：
+
+```rust
+pub trait ProtectionArch: Sized {
+    type PrivilegeLevel: Copy + Eq + core::fmt::Debug;
+
+    const KERNEL_PRIVILEGE: Self::PrivilegeLevel;
+    const USER_PRIVILEGE: Self::PrivilegeLevel;
+
+    fn to_privilege(level: Self::PrivilegeLevel) -> Privilege;
+    fn from_privilege(privilege: Privilege) -> Self::PrivilegeLevel;
+    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self;
+    fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
+    fn load(&self);
+    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
+}
+```
+
+> 实现位置：`os/arch/src/arch/protection.rs:71`。
+>
+> 各方法语义：
+>
+> - `PrivilegeLevel` 关联类型：封装架构特有的特权级表示（x86-64 Ring、ARM64 EL、RISC-V mode），避免上层代码直接接触硬件编码。
+> - `to_privilege` / `from_privilege`：OS 概念 `Privilege::Kernel/User` 与架构编码之间的双向转换。
+> - `init()`：建立保护结构的"蓝图"——x86-64 填充 GDT 描述符和 TSS，aarch64 设置 SP_EL1，riscv64 准备 sscratch。
+> - `set_kernel_stack()`：配置特权级切换时的目标内核栈。这是安全转场的核心——用户态触发异常或系统调用时，CPU 必须知道切换到哪个栈，否则会继续使用用户态栈（已映射但不可信）。
+> - `load()`：将蓝图写入硬件寄存器（`lgdt`/`ltr`、`msr` 等），从此刻起保护结构生效。
+> - `init_ap()`：AP（应用处理器）启动时的初始化，与 BSP 的 `init()` 共享大部分逻辑但有少量差异（如 AP 不需要 `lgdt` 全局同步）。
+>
+> **细节**：`PrivilegeLevel` 是 trait associated type，bound 为 `Copy + Eq + Debug`，封装架构特有的特权级表示（x86-64 `Ring(0/3)` / aarch64 `EL(0/1)` / riscv64 `Mode(S/U)`），让上层代码只接触 OS 概念（`Privilege::Kernel/User`），不直接接触硬件编码。
+>
+> **关于 `init` / `init_ap` / `load` 的语义分离**：
+> - `init()`：建立保护结构的"蓝图"，在内存中准备好 GDT 描述符、TSS、异常向量表
+> - `load()`：把蓝图写入硬件寄存器（`lgdt`/`ltr`、`msr`、`csrw`），使契约生效
+> - `init_ap()`：AP（应用处理器）启动时的初始化，与 BSP 的 `init()` 共享大部分逻辑但有少量差异（如 AP 不需要 `lgdt` 全局同步）
+
+### 4.2 TrapEntryArch trait 抽象
+
+trait 定义回答 CPU 三问中的第二问（异常入口）：
+
+```rust
+pub trait TrapEntryArch: Sized {
+    fn init() -> Self;
+    fn configure_syscall(&mut self, entry_point: VirBytes);
+    fn load(&self);
+    fn load_ap(&self);
+    fn set_handler(&mut self, vector: InterruptVector, handler: VirBytes, user_accessible: bool);
+}
+```
+
+> 实现位置：`os/arch/src/arch/trap_entry.rs:76`。
+>
+> 各方法语义：
+>
+> - `init()`：填充异常向量表——CPU 异常（除零、页错误等）、硬件中断（PIC/IOAPIC）、系统调用入口。
+> - `configure_syscall()`：配置系统调用机制。x86-64 需要写入 MSR（LSTAR/SFMASK），aarch64/riscv64 使用异常向量中的统一入口，无需额外配置。
+> - `load()`：将向量表基址写入硬件寄存器（`lidt`、`msr VBAR_EL1`、`csrw stvec`），从此刻起异常和中断有去向。**本文阶段不调用 `trap.load()`**，因为 handler 地址仍为 0；真正的加载在 [13-exception-interrupt.md](13-exception-interrupt.md) 阶段 `set_handler()` 之后。
+> - `load_ap()`：AP 启动时的异常向量加载。
+> - `set_handler()`：设置具体中断/异常的处理函数。上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
+>
+> **为什么 `configure_syscall` 是独立方法**：x86-64 的系统调用入口由 MSR 配置（LSTAR MSR），与 IDT 中的异常入口完全独立；aarch64/riscv64 的系统调用走统一异常入口（SVC/ecall），无需额外配置。将系统调用入口作为独立方法，使架构差异体现在方法体内，调用者无需 `#[cfg]`。
+>
+> **为什么 `set_handler` 用 `InterruptVector` 枚举**：上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
+
+> **为什么 aarch64/riscv64 的 `set_handler` 是 no-op**：ARM64 使用固定异常向量表（VBAR_EL1 指向汇编定义的 16 个入口），RISC-V 使用 Direct 模式（stvec 指向统一入口）。这两种架构的中断分发在汇编层面完成，具体 handler 的路由由软件分发器在运行时完成，不需要像 x86-64 那样在 IDT 中动态修改门描述符。因此 `set_handler` 在 ARM64/RISC-V 上是空操作——硬件向量表在 `load()` 时一次性设置完毕。
+
+### 4.3 init_protection() 的实现
 
 > 概念：建立"特权级 + 栈"契约（`ProtectionArch`）+ 准备"异常向量"契约（`TrapEntryArch`）
 
@@ -706,57 +766,6 @@ fn init_protection(kernel_info: &KernelInfo) {
 | `CurrentTrapEntry::init()` | 第二问：异常向量表里有什么？ | x86-64: IDT 门描述符（handler 地址暂为 0，仅元数据）；aarch64/riscv64: 异常向量表由汇编定义，软件只配置入口 |
 | `trap.configure_syscall(syscall_entry)` | 第二问：系统调用走哪个入口？ | x86-64: LSTAR MSR；aarch64/riscv64: 统一异常入口，无需配置 |
 | `trap.load()`（本文不调用） | 第二问：让异常向量生效 | x86-64: IDTR；aarch64: VBAR_EL1 + isb；riscv64: stvec；推迟到 `set_handler()` 之后 |
-
-### 4.2 ProtectionArch trait 抽象
-
-trait 定义回答 CPU 三问中的第一问（特权级）和第三问（内核栈）：
-
-```rust
-pub trait ProtectionArch: Sized {
-    type PrivilegeLevel: Copy + Eq + core::fmt::Debug;
-
-    const KERNEL_PRIVILEGE: Self::PrivilegeLevel;
-    const USER_PRIVILEGE: Self::PrivilegeLevel;
-
-    fn to_privilege(level: Self::PrivilegeLevel) -> Privilege;
-    fn from_privilege(privilege: Privilege) -> Self::PrivilegeLevel;
-    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self;
-    fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
-    fn load(&self);
-    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
-}
-```
-
-> 实现位置：`os/arch/src/arch/protection.rs:71`。
->
-> **细节**：`PrivilegeLevel` 是 trait associated type，bound 为 `Copy + Eq + Debug`，封装架构特有的特权级表示（x86-64 `Ring(0/3)` / aarch64 `EL(0/1)` / riscv64 `Mode(S/U)`），让上层代码只接触 OS 概念（`Privilege::Kernel/User`），不直接接触硬件编码。
->
-> **关于 `init` / `init_ap` / `load` 的语义分离**：
-> - `init()`：建立保护结构的"蓝图"，在内存中准备好 GDT 描述符、TSS、异常向量表
-> - `load()`：把蓝图写入硬件寄存器（`lgdt`/`ltr`、`msr`、`csrw`），使契约生效
-> - `init_ap()`：AP（应用处理器）启动时的初始化，与 BSP 的 `init()` 共享大部分逻辑但有少量差异（如 AP 不需要 `lgdt` 全局同步）
-
-### 4.3 TrapEntryArch trait 抽象
-
-trait 定义回答 CPU 三问中的第二问（异常入口）：
-
-```rust
-pub trait TrapEntryArch: Sized {
-    fn init() -> Self;
-    fn configure_syscall(&mut self, entry_point: VirBytes);
-    fn load(&self);
-    fn load_ap(&self);
-    fn set_handler(&mut self, vector: InterruptVector, handler: VirBytes, user_accessible: bool);
-}
-```
-
-> 实现位置：`os/arch/src/arch/trap_entry.rs:76`。
->
-> **为什么 `configure_syscall` 是独立方法**：x86-64 的系统调用入口由 MSR 配置（LSTAR MSR），与 IDT 中的异常入口完全独立；aarch64/riscv64 的系统调用走统一异常入口（SVC/ecall），无需额外配置。将系统调用入口作为独立方法，使架构差异体现在方法体内，调用者无需 `#[cfg]`。
->
-> **为什么 `set_handler` 用 `InterruptVector` 枚举**：上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
-
-> **为什么 aarch64/riscv64 的 `set_handler` 是 no-op**：ARM64 使用固定异常向量表（VBAR_EL1 指向汇编定义的 16 个入口），RISC-V 使用 Direct 模式（stvec 指向统一入口）。这两种架构的中断分发在汇编层面完成，具体 handler 的路由由软件分发器在运行时完成，不需要像 x86-64 那样在 IDT 中动态修改门描述符。因此 `set_handler` 在 ARM64/RISC-V 上是空操作——硬件向量表在 `load()` 时一次性设置完毕。
 
 ### 4.4 三架构的"概念 → 代码"映射
 
@@ -816,7 +825,7 @@ pub type CurrentTrapEntry = /* 同样模式 */;
 
 ## 5. 测试要点
 
-> Ch1 §1.4 提出 CPU 视角三问，本节测试验证这三个答案是否正确配置。测试表的"对应"列引用 Ch1 §1.4 的三问（a/b/c），而非旧版 §1.2。
+> Ch1 §1.4 提出 CPU 视角三问，本节测试验证这三个答案是否正确配置。测试表的"对应"列引用 Ch1 §1.4 的三问（a/b/c）。
 
 ### 5.1 QEMU + GDB 验证
 
@@ -853,7 +862,7 @@ qemu-system-riscv64 -machine virt -kernel kernel.elf -s -S
 | `test-protection-aarch64` | aarch64 | CurrentEL=EL1、VBAR_EL1 非零、DAIF 全屏蔽、SPSel 可切换、SP_EL1 读写验证、kern_stack_top 在内核 VA 范围 | §1.4b 异常入口 + §1.4a 特权级 |
 | `test-protection-riscv64` | riscv64 | stvec 已设置（Direct 模式）、sscratch=kern_stack_top、sstatus 为 S-mode | 全部三问 |
 
-> **aarch64 的 SP_EL1 写入与栈保护**：经 QEMU 实测验证，`mrs HCR_EL2` 从 EL1 触发异常（HCR_EL2 不可从 EL1 直接读取），但 SP_EL1 的访问不受影响——`msr SP_EL1` 不触发异常，证明 HCR_EL2.TSP=0。此前观察到的 `msr SP_EL1` 崩溃并非 EL2 陷出导致，而是因为当 `SPSel=1`（默认值）时，SP_EL1 就是当前栈指针——写入 SP_EL1 会立即改变当前 SP，导致后续栈操作访问无效地址。修复方案：在 `msr SP_EL1` 前保存当前 SP 到通用寄存器，写入后立即用 `mov sp, saved_sp` 恢复。aarch64 测试现已包含 SP_EL1 读写验证（写入测试值后读回比对）。
+> **aarch64 的 SP_EL1 写入与栈保护**：ARM64 用 `SP_EL1` 作为异常进入时的内核栈指针。当 `SPSel=1`（默认）时，`SP_EL1` 与当前 `sp` 是同一个物理寄存器：执行 `msr SP_EL1, xN` 会立即改变当前栈指针。如果 `set_kernel_stack` / `init` 的汇编实现不先保存当前 `sp`、写完再恢复，那么这条 MSR 指令本身就会把当前栈切到尚未初始化的 `kernel_stack_top` 上，当前函数的返回地址、局部变量、寄存器保存区全部丢失，紧接着的下一条指令就会因栈无效而崩溃或返回到随机地址。正确的序列是：保存 `sp` → `msr SP_EL1, xN` → 恢复 `sp`，让当前执行流继续用旧栈，只有异常进入时才自动切换到 `SP_EL1`。`test-protection-aarch64` 包含 SP_EL1 读写验证：写入一个测试值后读回，确认新内核栈指针已正确设置。
 
 运行方式：
 
@@ -946,7 +955,7 @@ cd os/qemu-tests && ./run_all.sh
 
 | 缺口 | 对应 CPU 问题 | 优先级 | 说明 |
 |------|------------|--------|------|
-| init/load 顺序约束 | 全部三问 | P1 | §4.1 强调 ProtectionArch::load() 必须先于 TrapEntryArch::load()，无测试验证违反顺序的后果 |
+| init/load 顺序约束 | 全部三问 | P1 | §4.3 强调 ProtectionArch::load() 必须先于 TrapEntryArch::load()，无测试验证违反顺序的后果 |
 | `init_ap` 路径验证 | §1.4c 内核栈 | P1 | AP 启动路径完全未测试（需要 SMP 硬件/模拟） |
 
 > **说明**：上述两项均依赖 SMP 多核支持，将在 SMP 阶段补充。
