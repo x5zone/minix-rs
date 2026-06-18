@@ -794,7 +794,7 @@ pub type CurrentTrapEntry = /* 同样模式 */;
 
 | 差异点 | C 版行为 | Rust 版处理 | 理由 |
 |--------|---------|------------|------|
-| `kmain` memcpy(&kinfo) | `main.c:128` 拷贝 `local_cbi` 到全局 `kinfo`（栈帧会被覆盖） | `arch_boot_impl()` 返回 `&'static KernelInfo`，无需拷贝 | 借用规则保证生命周期 |
+| `kmain` memcpy(&kinfo) | `main.c:128` 拷贝 `local_cbi` 到全局 `kinfo`（`local_cbi` 是 `kmain` 参数，作用域限于 `kmain` 调用链；拷贝到全局使非 `kmain` 调用链的代码也能访问启动信息） | `arch_boot_impl()` 返回 `&'static KernelInfo`，无需拷贝 | 借用规则保证生命周期 |
 | BSS 检查 | `main.c:122-124` `assert(bss_test==0)` | 不做 | Rust `static` 语言保证零初始化；boot-shim 清零 BSS |
 | GDT 描述符位运算 | `protect.c:340-348` 裸 `u32` + 宏 | `bitflags!` 宏（`PRESENT\|DPL_RING3\|CODE\|READABLE`） | 表达力 + 类型安全 |
 | 重建页表 | `protect.c:357-362` `pg_clear/identity/mapkernel/load` | 不重建 | `arch_boot_impl()` 已建恒等+高地址映射（见 [02-higher-half-kernel.md](02-higher-half-kernel.md) §4.4） |
