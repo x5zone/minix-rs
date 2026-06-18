@@ -9,7 +9,8 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 **Execution Models**: User-space servers = single-threaded event loop (`Rc`/`RefCell` OK). Kernel = SMP + BKL (`Rc`/`RefCell` across CPUs = P0).
 **Runtime**: `#![no_std]` except `#[cfg(test)]`.
 **Hardware Abstraction (MANDATORY)**: All hardware as traits. No direct register/PTE manipulation in upper layers. No `#[cfg(target_arch)]` for behavior selection.
-**Claims-Evidence (§2.0)**: Every factual claim needs `file:line`. Unverifiable/weak claims → P0.
+**Concept Abstraction (Ch1 mandatory)**: Concept chapters organized from architecture perspective (CPU questions/system mechanisms), NOT from code perspective (function/struct/trait names). Ch1 subject = CPU/OS, not function name. Multi-arch docs give unified abstraction first.
+**Claims-Evidence (§2.0)**: Every factual claim needs `file:line`. Unverifiable/weak claims → P0. Causal chain in explanations must be technically correct (not "sounds plausible").
 
 ## AI Execution Constraints
 1. **Verify first**: grep/read source before concluding.
@@ -71,6 +72,7 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 - **Gate B**: Top 5 behavior-contract table (3 semantic drift + 2 coverage gaps).
 - **Gate C**: 5-element Precision Check table produced.
 - **Gate D**: P0 checklist 5 items answered with ✅/❌ + grep evidence. **PARTIAL = ❌ FAIL**.
+- **Gate D-6**: structure.md generated + 12-section review table (doc review only).
 - **Gate E**: §5 test names grep-verified (if doc has §5).
 
 **Evidence rule**: For every Gate, attach the actual command + output snippet in scan.md. "Gate passed" without evidence is invalid.
@@ -78,17 +80,19 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 ## Review Process
 Execute Steps 0-7 in order. Full details in [process-skill](review-process-skill.md). Mandatory artifacts:
 1. Scope + time budget + STATE.md read.
-2. Ground Truth source file list verified with `rg`.
-3. Coverage Enumeration (Step 1.5) → Gate A.
-4. Diff Extraction (Step 2) → Gate B.
-5. Link Validation (Step 2.5) for full reviews.
-6. Sanity Check + C ref verification.
-7. Precision Check (Step 3.5) → Gate C.
-8. Cross-document check.
-9. Test verification (Step 4.5) → Gate E.
-10. Output with Skill Invocation Log + Weakest Item Self-Check + Confirmation Checklist.
-11. Convergence update to STATE.md + scan.md.
-12. Verification (Step 5.6) → VERIFY-CHECK.md **before declaring CONVERGED**.
+2. **Step 0.5: structure.md generation + skeleton review (doc review mandatory) → Gate D-6**.
+3. Ground Truth source file list verified with `rg`.
+4. Coverage Enumeration (Step 1.5) → Gate A.
+5. Diff Extraction (Step 2) → Gate B.
+6. Link Validation (Step 2.5) for full reviews.
+7. Sanity Check + C ref verification.
+8. Precision Check (Step 3.5) → Gate C.
+9. **Step 3.5a: Vertical Link Check + Step 3.5b: Causal Chain Sampling (doc review mandatory)**.
+10. Cross-document check.
+11. Test verification (Step 4.5) → Gate E.
+12. Output with Skill Invocation Log + Weakest Item Self-Check + Confirmation Checklist.
+13. Convergence update to STATE.md + scan.md.
+14. Verification (Step 5.6) → VERIFY-CHECK.md **before declaring CONVERGED**.
 
 ## Starting Requirement
 Begin every review with:
@@ -114,8 +118,10 @@ Use the template in [process-skill](review-process-skill.md). Must include:
 - Action Items
 
 ## Quick Cheat-Sheet
-**Docs**: fiction/wrong C refs = P0; refs need `file:line`; arch diffs labeled; source coverage complete; design basis traceable.
+**Docs**: fiction/wrong C refs = P0; refs need `file:line`; arch diffs labeled; source coverage complete; design basis traceable; Ch1 concept-driven not implementation-driven; causal chain technically correct; arch scope labeled; meta-comments removed.
 **Code**: no `std::` outside test; HW abstracted as traits; SMP no `Rc`/`RefCell` across CPUs; BKL present; errno→Result is ARCH OK; `as` truncation = P0.
 **P0 必检**: §5 tests exist / trait has impl / function in declared file / core algorithm not stub / §4 signatures match.
 **Coverage**: run coverage-extract.py first; use `--semantic-map` for C→Rust rewrite; use `--doc-file` for per-doc stats; AI supplements 5 judgments.
 **Excellence**: after correctness gate; doc narrative/term def; code API/precise errors/DI; test L1/L2/L3.
+**structure.md**: generate before correctness check; 12 sections; Gate D-6; verifies "what reader reads" not "what doc says".
+**Patterns 48-57**: causal chain fabrication(P0) / meta-comment leakage(P1) / arch scope unlabeled(P1) / implementation-driven Ch1(P1) / one-way mental model(P1) / no unified abstraction(P1) / viewpoint drift(P2) / arch-specific overshadowing(P2) / decision-log Ch3(P1) / example knowledge leak(P2).

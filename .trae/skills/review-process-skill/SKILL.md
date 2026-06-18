@@ -1,6 +1,6 @@
 ---
 name: review-process-skill
-description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Blocker Gates、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。
+description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（A-E + D-6）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。
 ---
 
 # Minix-RS Review 执行流程
@@ -31,6 +31,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Blocke
 | **B** | Step 2 Diff Extraction | 已产出 Top 5 行为契约表（3 语义偏移 + 2 覆盖缺口，8 字段 × 5 函数） | 禁止输出 Final Review |
 | **C** | Step 3.5 Precision Check | 已产出 5 元规则检查表 | 禁止输出 Final Review |
 | **D** | P0 必检清单（见 patterns-skill §0） | 5 项已回答（✅/❌ + grep 证据） | 禁止输出 Final Review |
+| **D-6** | Step 0.5 structure.md 骨架评审（文档 Review） | structure.md 已生成 + 12 节评审表 + 失败项写入 Issue List | 禁止输出 Final Review（文档 Review） |
 | **E** | Step 4.5 Test Verification | 文档 §5 每个测试函数已 grep 验证（若文档有 §5） | 禁止输出 Final Review |
 
 **任一 Gate 未通过 → scan.md 标记 DRAFT，禁止写入 STATE.md。**
@@ -39,6 +40,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Blocke
 - scan.md 中每个 Gate 的通过声明必须附带**实际命令 + 输出片段**作为证据。
 - Gate A：附 coverage-extract.py 命令行及 stdout 覆盖率摘要。
 - Gate D：附 5 项 P0 必检的 grep/Read 证据（命令 + 结果）。
+- Gate D-6：附 structure.md 路径 + 评审表（12 节判定结果）。
 - Gate E：附每个测试函数名的 `rg "fn {name}"` 命令 + 结果表。
 - 仅有 "✅ 通过" 而无证据的 Gate 视为未通过。
 
@@ -74,6 +76,103 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Blocke
 - **规模**：约 N 行 | **预计**：X~Y 分钟
 - **前置状态**：STATE.md 存在 → 已完成 phase [X, Y, Z]，待完成 [A, B, C] / STATE.md 不存在 → 从零开始
 ```
+
+---
+
+## Step 0.5: 生成 structure.md 并评审骨架（文档 Review 强制）
+
+> **核心原则**：reviewer 必须先提取文档骨架并评审，再执行正确性检查。
+> 正确性检查验证"文档说了什么"，structure.md 验证"读者读到了什么"。两者正交。
+> **来源**：03-kmain-cstart 重构案例——正确性全过但读者读完仍不理解 prot_init() 是什么。
+> **详见**：[review-rules/review-process.md §Step 0.5](../review-rules/review-process.md)、[review-rules/review.md §5 structure.md](../review-rules/review.md)。
+
+**Step 0.5.1 生成 structure.md**（按以下模板，概念文档全量 12 节，实现文档简化为 6 节）：
+
+```markdown
+# structure.md — {文档名} 结构分析
+
+## 1. 主题思想（一句话）
+> 例：prot_init() 给 CPU 配置回答"特权级/异常入口/内核栈"三问的数据结构
+> 说不出 → P1（读者无法建立概念模型）
+
+## 2. 目标读者
+> 初学者/中级/高级 + 前置知识
+> 未声明 → P1（无法验证教学性是否匹配读者）[来源: DS]
+
+## 3. 叙事主语
+> prot_init() / CPU / 读者 / OS —— 选一个，附证据（Ch1 开篇第一句主语）
+> 主语是函数名 → P1（实现驱动）[来源: M3/Seed]
+
+## 4. 驱动方向
+> 概念驱动 / 实现驱动 / 混合 —— 附判定证据
+> 实现驱动 → P1（模式 51）[来源: 全员]
+
+## 5. 文档大纲（每章核心命题）
+| 章节 | 核心命题（一句话） | 回答的问题 | 叙事弧角色 |
+|------|------------------|-----------|-----------|
+| Ch1 | 保护结构是 CPU 三问的答案 | WHAT/WHY | 起(问题) |
+| Ch2 | Minix3 C 如何回答三问 | HOW(C) | 承(证据) |
+| Ch3 | Rust trait 如何抽象三问 | HOW(抽象) | 转(设计) |
+| Ch4 | 具体实现如何落地 | HOW(代码) | 合(落地) |
+| Ch5 | 测试如何验证 | VERIFY | 合(验证) |
+> 叙事弧缺环节 → P1；章节核心命题说不出 → P1 [来源: DS/Seed]
+
+## 6. 核心概念清单（按引入顺序）
+| 顺序 | 概念 | 来源层级(L0/L1/L2) | 依赖的概念 | 依赖已引入? | 文字行数 | 占比 |
+|------|------|-------------------|-----------|-----------|---------|------|
+| 1 | 保护 | L1 | 无 | — | 15 | 10% |
+| 2 | 特权级 | L1 | 保护 | ✅ | 20 | 13% |
+| 3 | GDT | L0 | 特权级 | ✅ | 40 | 27% |
+> 依赖倒置 → P1 [来源: DS]；L2 术语作概念定义 → P1 [来源: Kimi]；
+> 历史包袱占比 > 核心概念 → P2 [来源: DS/Seed]
+
+## 7. 跨架构统一抽象（多架构文档）
+| CPU 问题 | x86 | aarch64 | riscv64 | 文档位置 |
+|---------|-----|--------|--------|---------|
+| 当前特权级 | ring | EL | mode | §1.2 |
+| 异常入口 | IDT | VBAR | stvec | §1.4 |
+| 内核栈 | TSS.sp0 | SP_EL1 | sscratch | §1.5 |
+> 无统一抽象层 → P1（模式 53）[来源: 全员]
+
+## 8. 双向闭环完整性
+| 机制 | 进入 | 返回 | 完整? |
+|------|------|------|-------|
+| 特权级切换 | user→kernel ✅ | kernel→user ✅/❌ | |
+> 只单向 → P1（模式 52）[来源: 全员]
+
+## 9. 起承转合（叙事弧）
+> 起(问题) → 承(概念) → 转(证据/抽象) → 合(落地/验证)
+> 缺失环节标注 ❌ → P1 [来源: DS]
+
+## 10. 元注释位置标记
+| 位置 | 类型(六类之一) | 判定 |
+|------|--------------|------|
+| §1.2 L39 | 过渡类 | 删除 |
+| §1.4 L106 | 深度策略类 | 删除 |
+> >5 处 → P1（模式 49）[来源: GLM/M3/Seed]
+
+## 11. 裸概念复述测试 [来源: Seed]
+> 把 Ch1 正文中所有函数名/结构体名/trait 名用 [XXX] 替换后，
+> 核心概念是否仍能被理解？
+> 不能 → P1
+
+## 12. 纵向链路映射 [来源: Seed]
+| Ch1 概念 | Ch2 C 函数 | Ch3 Rust trait | Ch4 实现 | Ch5 测试 |
+|---------|-----------|---------------|---------|---------|
+| 特权级 | tss_init() | ProtectionArch | X8664Protection | test_privilege |
+| 异常入口 | idt_init() | TrapEntryArch | X8664TrapEntry | test_trap_entry |
+> 缺映射 → P2（要求补映射表）
+```
+
+**Step 0.5.2 评审 structure.md**（逐项判定，失败项写入 scan.md §structure.md 评审）：
+- 1-12 节每节判定 ✅/P0/P1/P2 + 证据
+- 失败项汇总为 Issue List 的 P0/P1/P2 条目
+
+**Step 0.5.3 通过门槛**：
+- structure.md 评审通过（无 P0）后才进入 Step 1（覆盖率穷举）
+- 若 structure.md 有 P0 → 在 scan.md 标注"骨架层 P0，建议先修骨架再继续"，但**不阻塞**后续 Step（用户可能希望一次性看到所有问题）
+
+**Step 0.5 产物**：structure.md（保存到与 scan.md 同目录） + 评审结果表
 
 ---
 
@@ -263,6 +362,54 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7、Blocke
 |--------|------|------|------------|
 | 3.5.1 外部知识 | vm.rs:267 | CR4.PSE 注释 | 验证 x86-64 长模式 |
 | 3.5.4 资源生命周期 | vm.rs:801 | Option 未 take() | 验证清理路径 |
+```
+
+### Step 3.5a: 纵向链路检查（Vertical Link Check，文档 Review 强制）
+
+> **目的**：Step 2.5 的 Link Validation 检查"横向链路"（Ch3→Ch4→Ch5 之间），本步骤检查"纵向链路"——Ch1 概念 → Ch3 设计决策 → Ch4 实现 → Ch5 测试 的端到端可追溯性。
+> **来源**：03-kmain-cstart 案例——Ch1 讲"保护结构"但 Ch4 实现里找不到对应类型。
+> **详见**：[review-rules/review-process.md §Step 3.5a](../review-rules/review-process.md)。
+
+**检查项**：
+1. Ch1 引入的每个核心概念 → Ch3 是否有对应设计决策？无 → P1（概念无落地）
+2. Ch3 每个设计决策 → Ch4 是否有对应实现？无 → P1（决策无实现）
+3. Ch4 每个核心类型/函数 → Ch5 测试是否覆盖？无 → P1（实现无测试）
+4. Ch5 每个测试 → 是否能追溯到 Ch3 设计决策？无 → P2（测试无设计依据）
+
+**输出格式**：
+```markdown
+### Step 3.5a 产物：纵向链路检查
+
+| Ch1 概念 | Ch3 决策 | Ch4 实现 | Ch5 测试 | 链路完整? |
+|---------|---------|---------|---------|----------|
+| 保护结构 | §3.2 ProtectionArch trait | §4.1 ProtectionArchImpl | §5.2 test_protection | ✅ |
+| CPU 三问 | §3.1 三问框架 | §4.2 prot_init | §5.1 test_three_questions | ✅ |
+| ... | ... | ... | ... | ... |
+```
+
+**判定**：链路断裂 → P1；测试无设计依据 → P2。
+
+### Step 3.5b: 因果链抽样验证（文档 Review 强制）
+
+> **目的**：从 Ch2 抽样"为什么这样设计"的解释，验证其因果链每一步是否成立。
+> **来源**：improve.md §6.3。
+> **与 §2.0.3 的关系**：§2.0.3 是全量因果链验证（所有带"因为/所以"的 claim）；本步骤是聚焦 Ch2 设计解释的抽样验证。两者互补，不重复。
+> **详见**：[review-rules/review-process.md §Step 3.5b](../review-rules/review-process.md)。
+
+**执行步骤**：
+1. 从 Ch2 抽取 5-10 个"为什么这样设计"的解释
+2. 对每个解释，识别其因果链（A→B→C→结论）
+3. 验证因果链每一步是否成立（用 C 语义/ISA 规范）
+4. 失败 → P0（模式 48 因果链编造）
+
+**输出格式**：
+```markdown
+### Step 3.5b 产物：因果链抽样验证
+
+| Ch2 位置 | 设计解释 | 因果链 | 每步成立? | 判定 |
+|---------|---------|--------|----------|------|
+| §2.3 L45 | "memcpy 必要因为栈帧被覆盖" | 栈帧被覆盖→需复制 | ❌ (C 语义错) | P0 |
+| §2.4 L78 | "refcount=0 因为初始化" | 初始化→refcount=0 | ✅ | ✅ |
 ```
 
 ---
@@ -475,6 +622,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 
 - [ ] Step 0 范围声明和时间预算已输出
 - [ ] Step 0 STATE.md 状态已检查
+- [ ] **Step 0.5 structure.md 已生成 + 评审表已输出（文档 Review）→ Gate D-6**
 - [ ] Step 1 源码文件清单已输出
 - [ ] **Gate A**: Step 1.5 覆盖率穷举已输出（SYMBOLS.md + 缺口/ARCH 判定）
 - [ ] **Gate B**: Step 2 Top 5 差异已输出（3 语义偏移 + 2 覆盖缺口 + 8 字段契约表）
@@ -485,6 +633,8 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] Step 3 C 源码覆盖完整性表格已输出（含覆盖率）
 - [ ] Step 3 文档风格验证表格已输出（§2.11）
 - [ ] **Gate C**: Step 3.5 Precision Check 5 元规则检查表已输出
+- [ ] **Step 3.5a 纵向链路检查已输出（文档 Review）**
+- [ ] **Step 3.5b 因果链抽样验证已输出（文档 Review）**
 - [ ] Step 4 跨文档检查已输出
 - [ ] Step 4.1 语义归属判定已输出（如适用）
 - [ ] Step 4.2 设计决策质量表格已输出（如适用）
@@ -496,8 +646,55 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] **Skill Invocation Log** 已输出
 - [ ] Step 5.5 STATE.md 和 scan.md 已写入（NOT 10 个维度文件）
 - [ ] Step 5.5 收敛状态评估已输出
+- [ ] **Step 5.7 Rule Discovery 已填写（是否发现新模式 ✅/❌ + 草案）**
+- [ ] **Step 7.1 收敛成本评估已输出**
 - [ ] Step 6 修改项已生成（P0 必须有代码修改项）
 - [ ] 所有 grep 命令输出作为证据附在对应表格后
+```
+
+### Step 7.1: 收敛成本警告（强制）
+
+> **目的**：防止"过度收敛"——为了把 P1 降到 0 而反复 review，成本超过收益。
+> **来源**：用户反馈"收敛成本"问题。
+> **详见**：[review-rules/review-process.md §Step 7.1](../review-rules/review-process.md)。
+
+**判定规则**（任一触发即应停止并交付）：
+1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
+2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 视为收敛，剩余 P1 转为 backlog
+3. **成本/收益比**：当前轮 review 耗时 > 上一轮 80% 但新发现问题 < 上一轮 20% → 停止
+
+**输出**：在 scan.md 末尾标注"收敛成本评估"：
+```markdown
+### 收敛成本评估
+- 当前轮次: N
+- 本轮新发现: P0=X, P1=Y, P2=Z
+- 触发停止规则: [1/2/3/无]
+- 决定: 继续收敛 / 强制交付（剩余转 backlog）
+```
+
+### Step 5.7: Rule Discovery（规则发现，强制填写）
+
+> **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
+> **详见**：[review-rules/review.md §规则演化机制](../review-rules/review.md)、[review-rules/review-process.md §Step 5.7](../review-rules/review-process.md)。
+
+**执行步骤**：
+1. 回顾本轮 review 发现的所有问题
+2. 判断是否有 ≥2 次同类新模式（现有规则未覆盖的）
+3. 若有 → 生成新模式提案（含案例、判定、归类、规则草案）
+4. 写入 scan.md §Rule Discovery 段落
+5. 用户确认后，落地到对应 rules 文件
+
+**输出格式**：
+```markdown
+### Rule Discovery
+- 本次 Review 是否发现新模式？[✅/❌]
+- 若 ✅：
+  - 新模式名: [名称]
+  - 案例: [file:line + 描述]
+  - 判定: [P0/P1/P2]
+  - 归类: [文档/代码/跨阶段/卓越性/叙事概念]
+  - 规则草案: [一句话描述]
+  - 建议落地文件: [review-patterns.md / review-doc-checklist.md / ...]
 ```
 
 ---
