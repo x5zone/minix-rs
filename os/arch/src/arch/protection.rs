@@ -1,21 +1,55 @@
-//! Protection architecture abstraction
+//! Protection abstraction: OS-level concerns of CPU protection
 //!
-//! Defines the trait interface for hardware protection mechanisms:
-//! - Privilege levels (Ring 0/3, EL0/EL1, U/S-mode)
-//! - Kernel stack setup for privilege transitions
-//! - Protection structure initialization and loading
+//! # Design principle
 //!
-//! # Design decisions (see 04-protection.md §3)
+//! This trait abstracts the **OS-level concern** of "establishing and
+//! enforcing CPU protection", hiding the **architecture-specific mechanism**
+//! (GDT/TSS on x86-64, VBAR_EL1 on aarch64, sscratch on riscv64) inside
+//! each implementation.
 //!
-//! - **Two-trait split** (§3.1): `ProtectionArch` handles "who can access what"
-//!   (access control), `TrapEntryArch` handles "how to enter the kernel"
-//!   (entry mechanism). They have different initialization order dependencies.
-//! - **OS-semantic method names** (§3.3): Methods describe OS needs, not
-//!   architecture-specific concepts. x86-64's GDT/TSS are implementation
-//!   details hidden inside `X86_64Protection`.
-//! - **PrivilegeLevel as associated type** (§3.2): Each architecture has its
-//!   own privilege level representation with hardware encoding, convertible
-//!   to the common `Privilege` enum.
+//! - **OS layer cares about WHAT**: "I want to establish protection" /
+//!   "I want to switch the kernel stack" / "I want protection to be
+//!   effective". The OS does NOT care about the concrete mechanism.
+//! - **Architecture layer handles HOW**: each `ProtectionArch` impl decides
+//!   whether to use GDT, VBAR_EL1, or sscratch. This is intentional
+//!   encapsulation, not a design choice the OS layer should be aware of.
+//!
+//! This is why we use a trait rather than `enum Arch { X86_64, ... }` +
+//! `match`: the trait enforces that **OS code never references hardware-
+//! specific types** (GDT, TSS, sscratch). A `match` over an enum would
+//! make the architecture boundaries visible at the call site, violating
+//! the "OS code is architecture-agnostic" rule.
+//!
+//! # What is abstracted (the 5 OS-level concerns)
+//!
+//! 1. **Privilege level representation** (`PrivilegeLevel` associated type)
+//!    — OS cares about "kernel vs user", not Ring/EL/Mode encodings
+//! 2. **Establish protection** (`init`)
+//!    — OS says "set up protection for this CPU"; arch decides the
+//!    mechanism (GDT/CSR registers/exception vector base)
+//! 3. **Switch kernel stack** (`set_kernel_stack`)
+//!    — OS says "when transitioning to kernel, use this stack"; arch
+//!    decides where to store it (TSS.sp0, SP_EL1, sscratch)
+//! 4. **Make protection effective** (`load`)
+//!    — OS says "write the protection config to hardware"; arch decides
+//!    the register writes (lgdt/ltr, msr, csrw)
+//! 5. **AP (application processor) startup** (`init_ap`)
+//!    — OS says "initialize a new CPU the same way as BSP"; arch handles
+//!    per-CPU differences (AP doesn't need global GDT sync)
+//!
+//! # Design rationale in design doc
+//!
+//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`:
+//! - §3.1 (Two-trait split) — why `ProtectionArch` and `TrapEntryArch` are
+//!   separate traits
+//! - §3.2 (PrivilegeLevel as associated type) — why privilege encoding is
+//!   an associated type, not a fixed enum
+//! - §3.3 (OS-semantic method names) — why methods describe OS needs, not
+//!   architecture concepts
+//! - §1.4 (CPU 视角三问) — the OS-level questions the trait answers
+//! - §1.7 (x86 为什么还保留 GDT) — why GDT/TSS still exist on x86-64
+//!   (TSS descriptor must be referenced via GDT entry — this is an ISA
+//!   constraint that is INTENTIONALLY hidden from OS code via the trait)
 
 use minix_types::VirBytes;
 

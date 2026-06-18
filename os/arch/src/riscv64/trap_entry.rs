@@ -18,6 +18,32 @@
 //!
 //! Note: Minix3 does not have a RISC-V port. The semantics are derived
 //! from the RISC-V Privileged Specification.
+//!
+//! # OS-level concerns → RISC-V mechanism mapping
+//!
+//! The `TrapEntryArch` trait exposes OS-level concerns; this file maps
+//! each to its concrete RISC-V implementation:
+//!
+//! | OS concern (trait method) | RISC-V mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (install trap entry) | Fill trap vector at `trap_vector`; single entry point with direct mode (MODE=0); handler dispatches via `scause` |
+//! | `configure_syscall` (syscall entry) | **No-op** — `ecall` uses the same trap vector as other traps (no separate MSR-style config like x86 SYSCALL) |
+//! | `load` (make trap entry effective) | `csrw stvec, ...` (write trap vector base register) — takes effect immediately on next trap |
+//! | `load_ap` (AP trap entry) | Per-CPU stvec write (each AP can have its own, or share the same vector) |
+//! | `set_handler` (install handler) | Update the `scause` dispatch table in the trap handler (NOT modifying stvec — direct mode means all traps go to same entry) |
+//!
+//! # Why RISC-V uses direct mode (MODE=0) vs vectored mode (MODE=1)
+//!
+//! | Mode | Mechanism | Trade-off |
+//! |------|-----------|-----------|
+//! | Direct (MODE=0) | All traps set pc = stvec.BASE; handler dispatches on scause | Slower dispatch (1 CSR read + compare + jump) but smaller vector (1 entry) |
+//! | Vectored (MODE=1) | Interrupts set pc = stvec.BASE + 4×cause; sync traps still use direct | Faster interrupt dispatch but requires vector table sized to all cause values |
+//!
+//! Minix-RS uses direct mode for simplicity (one entry point, one
+//! dispatch table). Vectored mode would marginally speed up interrupts
+//! at the cost of a larger vector table. See
+//! `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! §1.3 (跨特权级的统一流程) for the OS-level trap flow.
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;

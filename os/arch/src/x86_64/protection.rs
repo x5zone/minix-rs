@@ -3,12 +3,33 @@
 //! Implements `ProtectionArch` for x86-64, managing GDT (Global Descriptor
 //! Table) and TSS (Task State Segment) structures.
 //!
-//! # 64-bit long mode changes from 32-bit (see 04-protection.md §3.4)
+//! # x86-64 specific: GDT/TSS in long mode
 //!
-//! - Code/data segment descriptors are flat (base=0, limit=full address space)
+//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! §1.7 ("x86 为什么还保留 GDT") for the architectural rationale of why
+//! GDT/TSS are still required in 64-bit long mode: the TSS descriptor
+//! must be referenced via a GDT entry (an ISA constraint), so GDT cannot
+//! be eliminated entirely. This is INTENTIONALLY hidden from OS code via
+//! the `ProtectionArch` trait — the OS calls `set_kernel_stack()` and
+//! `load()`, never `lgdt` / `ltr` / TSS descriptor writes directly.
+//!
+//! # 64-bit long mode specifics
+//!
+//! - Code/data segment descriptors are flat (base=0, limit=full address
+//!   space); segment-based memory isolation is replaced by paging
 //! - LDT removed — not used in 64-bit mode
-//! - TSS is 64-bit format (no general-purpose/segment registers, adds IST1-7)
+//! - TSS is 64-bit format (no general-purpose/segment register save area,
+//!   adds IST1-7 for Interrupt Stack Table)
 //! - SYSENTER removed — only SYSCALL/SYSRET in 64-bit mode
+//!
+//! # How the OS-level concerns map to x86-64 mechanisms
+//!
+//! | OS concern (trait method) | x86-64 mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (establish protection) | Clear GDT, fill segment descriptors (DPL), create TSS |
+//! | `set_kernel_stack` (switch kernel stack) | Write TSS.sp0 |
+//! | `load` (make protection effective) | `lgdt` (GDTR) + `ltr` (TR) + reload segment registers |
+//! | `init_ap` (AP startup) | Per-CPU TSS/GDT entry, load selectors (no global GDT sync) |
 
 use crate::protection::{ProtectionArch, Privilege};
 use minix_types::VirBytes;

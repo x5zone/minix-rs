@@ -25,6 +25,30 @@
 //! Note: Minix3 does not have a RISC-V port. The semantics are derived
 //! from the RISC-V Privileged Specification and the same higher-half
 //! principle used by x86/ARM.
+//!
+//! # OS-level concerns → RISC-V mechanism mapping
+//!
+//! The `ProtectionArch` trait exposes OS-level concerns; this file maps
+//! each to its concrete RISC-V implementation:
+//!
+//! | OS concern (trait method) | RISC-V mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (establish protection) | `csrw sscratch, ...` (kernel stack swap register) — no other setup needed (sstatus.SUM is set later) |
+//! | `set_kernel_stack` (switch kernel stack) | Same `csrw sscratch, ...` — single register write |
+//! | `load` (make protection effective) | **No-op** — CSRs take effect immediately on write (no separate load step like x86 lgdt) |
+//! | `init_ap` (AP startup) | Same `csrw sscratch, ...` — AP-specific sscratch value (each CPU has its own) |
+//!
+//! # Why RISC-V uses sscratch (software stack switch) vs x86 TSS (hardware)
+//!
+//! | Approach | x86-64 (TSS) | RISC-V (sscratch) |
+//! |----------|---------------|---------------------|
+//! | Stack switch trigger | Hardware (CPU reads TSS.sp0 on ring transition) | Software (handler's first instruction: `csrrw sp, sscratch, sp`) |
+//! | Overhead per trap | 0 cycles (hardware) | 2-3 cycles (CSR swap) |
+//! | Flexibility | Fixed by ISA (sp0 is the only slot) | Programmable (handler can choose to swap or not) |
+//!
+//! RISC-V chose software swap for ISA simplicity and flexibility. The
+//! `csrrw sp, sscratch, sp` instruction is the canonical first
+//! instruction of any RISC-V trap handler.
 
 use crate::protection::{ProtectionArch, Privilege};
 use minix_types::VirBytes;

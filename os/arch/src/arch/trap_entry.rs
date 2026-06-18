@@ -1,22 +1,62 @@
-//! Trap entry architecture abstraction
+//! Trap entry abstraction: OS-level concern of "how CPU enters kernel"
 //!
-//! Defines the trait interface for trap entry configuration:
-//! - Interrupt/exception/system call entry point setup
-//! - IDT / exception vector table / trap vector management
-//! - SYSCALL/SVC/ecall entry mechanism configuration
+//! # Design principle
 //!
-//! # Design decisions (see 04-protection.md §3)
+//! This trait abstracts the **OS-level concern** of "configuring how the
+//! CPU enters the kernel in response to traps (interrupts, exceptions,
+//! system calls)", hiding the **architecture-specific mechanism** (IDT +
+//! SYSCALL MSR on x86-64, VBAR_EL1 + SVC on aarch64, stvec + ecall on
+//! riscv64) inside each implementation.
 //!
-//! - **Two-trait split** (§3.1): `TrapEntryArch` is separate from
-//!   `ProtectionArch` because "how to enter the kernel" (entry mechanism)
-//!   is a different concern from "who can access what" (access control).
-//! - **SYSCALL in TrapEntryArch** (§3.1): Although SYSCALL MSR configuration
-//!   is x86-64 specific, its semantics ("configure system call entry point")
-//!   belongs to the entry mechanism concern. ARM64/RISC-V implement
-//!   `configure_syscall()` as no-op since SVC/ecall use the same exception
-//!   vector as other traps.
-//! - **64-bit only** (§3.4): SYSENTER is not supported in 64-bit mode.
-//!   Only SYSCALL/SYSRET is used on x86-64.
+//! - **OS layer cares about WHAT**: "I want to install a handler" /
+//!   "I want trap entry to be effective" / "I want a syscall entry point".
+//!   The OS does NOT care about the concrete mechanism.
+//! - **Architecture layer handles HOW**: each `TrapEntryArch` impl decides
+//!   whether to use IDT, VBAR_EL1, or stvec. The OS code never references
+//!   these names directly.
+//!
+//! This is why we use a trait rather than `enum Arch { X86_64, ... }` +
+//! `match`: the trait enforces that **OS code never references hardware-
+//! specific types** (IDT, MSR, VBAR_EL1, stvec). A `match` over an enum
+//! would make architecture boundaries visible at the call site, violating
+//! the "OS code is architecture-agnostic" rule.
+//!
+//! # What is abstracted (the 4 OS-level concerns)
+//!
+//! 1. **Install trap entry** (`init`)
+//!    — OS says "set up the trap entry table for this CPU"; arch decides
+//!    the table format (IDT gate descriptors / exception vector base /
+//!    stvec mode)
+//! 2. **Configure syscall entry** (`configure_syscall`)
+//!    — OS says "this is the syscall entry point"; on x86-64 this writes
+//!    the SYSCALL MSR (LSTAR); on aarch64/riscv64 this is a no-op (SVC/
+//!    ecall share the same exception vector)
+//! 3. **Make trap entry effective** (`load` / `load_ap`)
+//!    — OS says "write the trap entry config to hardware"; arch decides
+//!    the register writes (lidt + isb, msr VBAR_EL1 + isb, csrw stvec)
+//! 4. **Set individual handlers** (`set_handler`)
+//!    — OS says "install handler for vector V with privilege P"; arch
+//!    decides the entry format (IDT gate / VBAR offset / stvec vector)
+//!
+//! # Special case: SYSCALL configuration
+//!
+//! Although `configure_syscall` is x86-64-specific (only x86-64 needs MSR
+//! configuration for SYSCALL entry), it lives in this trait because its
+//! **OS-level concern is generic** ("configure the syscall entry point").
+//! aarch64/riscv64 implement it as no-op because their SVC/ecall use the
+//! same exception vector as other traps — no separate configuration
+//! needed. This is the "encapsulate differences" principle in action.
+//!
+//! # Design rationale in design doc
+//!
+//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`:
+//! - §3.1 (Two-trait split) — why `TrapEntryArch` is separate from
+//!   `ProtectionArch` (entry mechanism vs access control are different
+//!   concerns with different init order)
+//! - §1.3 (跨特权级的统一流程) — the OS-level trap flow (user→kernel
+//!   transition) the trait implements
+//! - §1.4 (CPU 视角三问 / 第二问) — "异常/syscall 跳哪" is exactly what
+//!   this trait answers
 
 use minix_types::VirBytes;
 

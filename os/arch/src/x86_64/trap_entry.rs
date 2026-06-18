@@ -3,11 +3,43 @@
 //! Implements `TrapEntryArch` for x86-64, managing the IDT (Interrupt
 //! Descriptor Table) and SYSCALL MSR configuration.
 //!
-//! # 64-bit long mode changes from 32-bit (see 04-protection.md §3.4)
+//! # x86-64 specific: IDT + SYSCALL MSR
 //!
-//! - IDT gate descriptors are 16 bytes (vs 8 bytes in 32-bit mode)
-//! - IST field added to gate descriptors (Interrupt Stack Table)
+//! On x86-64, the trap entry path uses **two** distinct mechanisms that
+//! are INTENTIONALLY hidden from OS code via the `TrapEntryArch` trait:
+//!
+//! 1. **IDT** (Interrupt Descriptor Table) — handles CPU exceptions and
+//!   hardware interrupts; each IDT gate encodes (vector, handler, DPL, IST)
+//! 2. **SYSCALL MSR** (LSTAR MSR) — handles user→kernel system calls; the
+//!   MSR holds the handler address; the CPU jumps there on `syscall`
+//!
+//! This split exists because x86-64 ISA evolved SYSCALL as a separate
+//! fast path from interrupt-based trap. The OS calls `set_handler()` for
+//! exception/interrupt vectors and `configure_syscall()` for syscall
+//! entry — it never writes IDT entries or MSRs directly.
+//!
+//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! §1.3 (跨特权级的统一流程) for the OS-level trap flow these mechanisms
+//! implement.
+//!
+//! # 64-bit long mode specifics
+//!
+//! - IDT gate descriptors are 16 bytes (vs 8 bytes in 32-bit mode); the
+//!   extra space holds the upper 32 bits of the handler address and the
+//!   IST field
+//! - IST (Interrupt Stack Table) field added to gate descriptors;
+//!   allows specifying a separate stack per interrupt class
 //! - SYSENTER removed — only SYSCALL/SYSRET in 64-bit mode
+//!
+//! # How the OS-level concerns map to x86-64 mechanisms
+//!
+//! | OS concern (trait method) | x86-64 mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (install trap entry) | Fill IDT with gate_table_exceptions[] and gate_table_pic[] (handler addresses, DPL, IST) |
+//! | `configure_syscall` (syscall entry) | Write LSTAR MSR + STAR MSR + SFMASK; enable EFER.SCE |
+//! | `load` (make trap entry effective) | `lidt` (IDTR) |
+//! | `load_ap` (AP trap entry) | Per-CPU IDT reload (each AP needs its own IDTR if IDT layout differs) |
+//! | `set_handler` (install handler) | Write one IDT gate entry (handler addr + DPL + IST) |
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use crate::x86_64::protection::{KERN_CS_SELECTOR, USER_CS_SELECTOR};

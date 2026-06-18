@@ -20,6 +20,27 @@
 //! - 0x080-0x0FF: Current EL SPx (IRQ/FIQ/SError) — kernel interrupts
 //! - 0x100-0x17F: Lower EL AArch64 (SVC/IRQ/FIQ/SError) — user→kernel
 //!
+//! # OS-level concerns → ARM64 mechanism mapping
+//!
+//! The `TrapEntryArch` trait exposes OS-level concerns; this file maps
+//! each to its concrete ARM64 implementation:
+//!
+//! | OS concern (trait method) | ARM64 mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (install trap entry) | Fill exception vector table (16 entries × 128 bytes = 2KB) at `exc_vector_table`; covers 3 of 4 categories (Current EL SP0 is unused) |
+//! | `configure_syscall` (syscall entry) | **No-op** — SVC uses the same exception vector as other traps (no separate MSR-style config like x86 SYSCALL) |
+//! | `load` (make trap entry effective) | `msr VBAR_EL1, ...` (write vector base register) + `isb` (instruction sync barrier) |
+//! | `load_ap` (AP trap entry) | Per-CPU VBAR_EL1 write — each AP needs its own (exception vector base is per-CPU on ARM64) |
+//! | `set_handler` (install handler) | Update one of the 16 exception vector table entries (modify the `br` instruction in the 128-byte slot) |
+//!
+//! # Why ARM64 has 16 entries (vs x86-64's 256-entry IDT)
+//!
+//! x86-64 IDT is keyed by interrupt number (256 entries). ARM64
+//! exception vector is keyed by (exception type × source SP × source
+//! EL) — only 4×4=16 entries. This forces the handler to inspect
+//! ESR_EL1 (Exception Syndrome Register) to dispatch on specific
+//! exception numbers. Trade-off: smaller table, but slower dispatch.
+//!
 //! C: prot_init() — earm/protect.c:77 (write_vbar)
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};

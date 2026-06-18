@@ -18,6 +18,25 @@
 //! 4. Sets PSTATE.M to EL1h
 //! 5. Vectors through VBAR_EL1 + offset
 //!
+//! # OS-level concerns → ARM64 mechanism mapping
+//!
+//! The `ProtectionArch` trait exposes OS-level concerns; this file maps
+//! each to its concrete ARM64 implementation:
+//!
+//! | OS concern (trait method) | ARM64 mechanism (this file's impl) |
+//! |---------------------------|--------------------------------------|
+//! | `init` (establish protection) | `msr SP_EL1, ...` (kernel stack) — must save/restore SP because SPSel=1 makes SP_EL1 the active SP |
+//! | `set_kernel_stack` (switch kernel stack) | Same `msr SP_EL1, ...` with save/restore dance |
+//! | `load` (make protection effective) | `isb` (instruction synchronization barrier) — no separate load needed since SP_EL1 is active immediately |
+//! | `init_ap` (AP startup) | Same `msr SP_EL1, ...` + `isb` to ensure visibility on the new AP |
+//!
+//! # Why ARM64 has no GDT/TSS
+//!
+//! Unlike x86-64 (which requires GDT to reference TSS descriptor for
+//! kernel stack switches), ARM64 uses a single dedicated register
+//! (`SP_EL1`) per exception level. This eliminates the indirection
+//! table requirement and makes protection setup O(1) register writes.
+//!
 //! C: prot_init() — earm/protect.c:77
 
 use crate::protection::{ProtectionArch, Privilege};
