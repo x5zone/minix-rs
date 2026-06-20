@@ -1,0 +1,45 @@
+{
+  "_comment": "C→Rust 语义映射表（kernel 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "C 函数名/结构体/宏 → 一个或多个 Rust 限定名/方法名。匹配时会同时检查普通函数、限定名、trait 方法、结构体和常量。",
+
+  "kmain": ["kmain"],
+  "cstart": ["init_protection", "init_clock_and_interrupts"],
+  "bsp_finish_booting": ["bsp_finish_booting"],
+
+  "prot_init": ["ProtectionArch::init", "X86_64Protection::init", "AArch64Protection::init", "Riscv64Protection::init", "init_protection"],
+  "idt_init": ["TrapEntryArch::init", "X86_64TrapEntry::init", "AArch64TrapEntry::init", "Riscv64TrapEntry::init"],
+  "tss_init": ["setup_tss_for_cpu", "ProtectionArch::set_kernel_stack"],
+  "prot_load_selectors": ["ProtectionArch::load", "X86_64Protection::load"],
+
+  "init_clock": ["ClockState::new"],
+  "clock_handler": ["ClockState::tick"],
+  "DEFAULT_HZ": ["DEFAULT_HZ"],
+  "kclockinfo": ["ClockState"],
+  "kloadinfo": ["LoadInfo"],
+
+  "intr_init": ["InterruptController::init", "X86_64InterruptController::init", "AArch64InterruptController::init", "Riscv64InterruptController::init"],
+  "intr_init_8254": ["X86_64ClockArch::init_timer"],
+  "intr_handle": ["InterruptController::ack", "InterruptController::eoi"],
+
+  "arch_init": ["ArchInit::init", "X86_64ArchInit::init", "AArch64ArchInit::init", "Riscv64ArchInit::init"],
+  "arch_ser_init": ["X86_64ArchInit::ser_init", "AArch64ArchInit::ser_init", "ser_init"],
+
+  "get_board_id_by_name": ["KernelInfo::board_id", "board_id"],
+
+  "system_init": ["system_init"],
+  "memory_init": ["memory_init"],
+  "init_proc_and_boot": ["init_proc_and_boot"],
+
+  "kinfo": ["KernelInfo"],
+  "kinfo_t": ["KernelInfo"],
+  "kmess": ["Kmess"],
+  "struct boot_image": ["BootModule"],
+  "image": ["BOOT_IMAGE", "BootModule"],
+  "machine": ["Machine"],
+  "kernel_may_alloc": ["KERNEL_MAY_ALLOC"],
+
+  "env_get": ["env_get"],
+  "memcpy": ["copy_nonoverlapping", "copy_from_slice", "copy_from_slice_to"],
+  "memset": ["write_bytes", "fill"],
+  "assert": ["assert"]
+}

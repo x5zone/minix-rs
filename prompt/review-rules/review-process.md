@@ -91,11 +91,14 @@
 - 按 [§〇 执行模式选择](#〇执行模式选择构造--快速--深度) 确定执行模式（构造/快速/深度）
 - 按 [review.md §Review 启动：范围声明](review.md) 声明 Review 模式和范围
 - 声明时间预算（可选；按 [review.md §时间预算参考](review.md#时间预算参考)）
-- **读取状态（双路径）**：
-  - **Trae IDE** → 读取 `notes/rewrite/{module}/.review/STATE.md`
-  - **Claude Code Runtime** → 读取 `.review/{module}/STATE.md`（项目根）
-  - 若两个 STATE.md 都存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
-  - **`{module}` 的确定**：取目标文档所在目录的**直接父目录名**。例如 `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）和 `--output .review/kernel/...` 是**两个不同概念**，不得混用。
+- **读取状态（统一双路径，互不共享中间结果）**：
+  - **Trae IDE** → 读取 `.review/trae/{module}/STATE.md`（项目根 `.review/` 下）
+  - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`（项目根 `.review/` 下）
+  - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
+  - 若同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
+  - **`{module}` 的确定**：取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。例如 `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
+  - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py {state_path}` 校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
+  - 推荐用 `tools/review-init.sh {tool} {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录。
 - **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要
 
 ### Step 0.5: 生成 structure.md 并评审骨架（文档 Review 强制）
@@ -219,38 +222,40 @@
 
 **执行步骤**：
 
-1. **机器生成 SYMBOLS.md 骨架**：
+1. **机器生成 SYMBOLS.md 骨架**（**强制运行**，见 Gate A 强制运行规则；不允许"语义范围手动验证"代替）：
    ```bash
    # 模块级 — 服务器模块（vm / pm / vfs / rs / ds / inet ...）
-   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
-     --rust-dir os --c-dir minix3/minix/servers/{module} \
-     --output .review/{module}/SYMBOLS.md
+   #   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {rw-module} 是 rewrite 模块名
+   python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
+     --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
 
    # 模块级 — 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
-     --output .review/kernel/SYMBOLS.md
+     --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
 
    # 单文档级（推荐 doc-specific review）— 服务器模块
-   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
-     --rust-dir os --c-dir minix3/minix/servers/{module} \
+   python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
      --doc-file {target-doc}.md \
-     --semantic-map tools/coverage-extract/{module}-semantic-map.json \
-     --output .review/{module}/{target-doc}/SYMBOLS.md
+     --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
+     --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
    # 单文档级 — 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
      --doc-file {target-doc}.md \
      --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-     --output .review/kernel/{target-doc}/SYMBOLS.md
+     --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
    ```
-   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/kernel/{target-doc}/SYMBOLS.md)`。
+   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/.../SYMBOLS.md)`。
    脚本自动提取 C 函数/结构体/宏/枚举 + Rust pub 项 + 文档覆盖检查 + 名称匹配。
    - `--rust-dir os`：扫描整个 `os/` 目录，避免 `kmain`/`ProtectionArch` 等跨 crate 符号遗漏。
-   - `--c-dir`：服务器模块用 `minix3/minix/servers/{module}`，内核用 `minix3/minix/kernel`。
+   - `--c-dir`：服务器模块用 `minix3/minix/servers/{minix3-module}`，内核用 `minix3/minix/kernel`。
    - `--semantic-map`：C→Rust 改写必须提供语义映射表，否则 Rust 覆盖率会显示为 0%。
    - `--doc-file`：限定到单篇文档，避免两篇 doc 的 coverage 数字完全相同。
+   - **Gate A 强制运行规则**：运行后必须将命令 + stdout 写入 scan.md 的 `gate-evidence-A` 块（见 review-coverage-skill.md §0）。若脚本物理不可用 → 显式记录 PARTIAL 状态（≠ PASS），不允许进 Final Review。
    - 若 Rust 覆盖率为 0%，必须先检查 `--rust-dir`/`--semantic-map` 是否正确，或确实缺失实现。
 
 2. **AI 补充语义判断**（5 项，每项标注 evidence [DIRECT/MEDIUM/INFERRED]）：
@@ -266,7 +271,7 @@
 ```markdown
 ### Step 1.5 产物：覆盖率穷举
 
-**SYMBOLS.md**: .review/{module}/SYMBOLS.md
+**SYMBOLS.md**: .review/{tool}/{rw-module}/scans/SYMBOLS.md（模块级）或 .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）
 
 | 指标 | 数值 |
 |------|------|
@@ -512,23 +517,24 @@
 > **目的**：将当前 phase 的验证结果持久化写入工具对应的路径，并判断是否收敛。
 
 **执行步骤**：
-1. 创建或更新工具对应的 `STATE.md`：
-   - Trae IDE → `notes/rewrite/{module}/.review/STATE.md`
-   - Claude Code Runtime → `.review/{module}/STATE.md`（项目根）
+1. 创建或更新工具对应的 `STATE.md`（双路径，互不共享）：
+   - Trae IDE → `.review/trae/{module}/STATE.md`（项目根 `.review/` 下）
+   - Claude Code Runtime → `.review/claude/{module}/STATE.md`（项目根 `.review/` 下）
 2. 创建或更新 `SYMBOLS.md`（Step 1.5 产物）到对应路径
-3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。若用户显式指定输出位置，双写到用户指定路径 + 工具默认路径。
+3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。若用户显式指定输出位置（如交互式修复），双写到用户指定路径（被 review 文档同目录下 `{doc-stem}-trae-review.md` / `{doc-stem}-claude-report.md`）+ 工具默认路径（`scans/` 内）。双写校验见 Gate 0 Artifact Inventory。
 4. 将 scan.md 中**新发现 P0/P1/P2** 同步到 STATE.md 的 Open P0/P1/P2 列表；已修复问题移入 Closed Issues 段落。
 5. 更新 STATE.md 的 Phase Completion Log 和 Convergence Checklist
 6. 输出收敛状态评估
+7. **Severity Reconciliation 表**：若有跨轮次严重性分歧，记录降级/升级理由 + C 源/设计文档 `file:line` 证据
 
 **收敛终止条件**（全部满足才算审查完成）：
 1. scan.md 中所有维度章节标记 COMPLETE
 2. 最近一次完整 Pass 中，P0 新增数量 = 0
 3. 最近一次完整 Pass 中，P1 新增数量 ≤ 1
-4. **独立验证（VERIFY-CHECK.md）结果为 PASS**（**必须完成，不能跳过**）
+4. **Gate G 独立验证（VERIFY-CHECK.md）结果为 PASS**（**必须完成，不能跳过**）
 5. scan.md / STATE.md 中所有 P0 已被修复并验证通过
 6. SYMBOLS.md 覆盖率穷举完成
-7. **Blocker Gates A-E 全部通过且有证据附件**
+7. **Blocker Gates 0/A/B/C/D/D-6/E/G 全部通过且有 gate-evidence 附件**
 
 ### Step 5.6: Review Verification Protocol（独立验证，强制）
 
@@ -542,13 +548,13 @@
 3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **Blocker Gates 复验**：检查 scan.md 中 Gate A-E 是否都附带真实证据
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A-E+G 是否都附带真实证据（gate-evidence 块）
 7. **输出判定**：
    - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过
    - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
    - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
 
-**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `notes/rewrite/{module}/.review/VERIFY-CHECK.md`; Claude: `.review/{module}/VERIFY-CHECK.md`）。
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{module}/VERIFY-CHECK.md`; Claude: `.review/claude/{module}/VERIFY-CHECK.md`）。
 
 ### Step 6: Action Item Generation（修改项生成）
 
@@ -586,9 +592,10 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - [ ] Step 0 已读取正确的 STATE.md（Trae/Claude 双路径）
 - [ ] Step 1 源码文件清单已输出
 - [ ] Step 1.5 覆盖率穷举已输出（SYMBOLS.md + 缺口/ARCH 判定）〔构造/深度必做，快速跳过〕
-- [ ] **Gate A**: coverage-extract.py 已运行且 scan.md 附 SYMBOLS.md 路径
-- [ ] Step 2 Top 3 差异 + Top 2 覆盖缺口已输出（8 字段行为契约表）
-- [ ] **Gate B**: Top 5 行为契约表已产出
+- [ ] **Gate 0**: 制品完整性（scan.md 含 8 个 grep 可验锚段 + 标准路径文件齐全）
+- [ ] **Gate A**: coverage-extract.py 已运行且 scan.md 附 SYMBOLS.md 路径 + gate-evidence-A 块
+- [ ] Step 2 Top 3 差异 + Top 2 覆盖缺口已输出（**8 字段 × 5 函数**行为契约表）
+- [ ] **Gate B**: Top 5 行为契约表已产出（**8 字段 × 5 函数**：函数名/C行为/Rust行为/差异类型/严重度/C证据/Rust证据/Reviewer备注）
 - [ ] Step 2.5 链路验证表格已输出（如适用）〔深度必做，构造/快速跳过〕
 - [ ] Step 3 概念准确性表格已输出〔深度必做，构造/快速跳过〕
 - [ ] Step 3 C 代码引用验证表格已输出〔深度必做，构造/快速跳过〕
@@ -606,7 +613,9 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - [ ] Step 5 时间预算评估已输出（或已说明省略）
 - [ ] Skill Invocation Log 已输出（真实 tool 调用记录）
 - [ ] Step 5.5 scan.md 单文件已写入 + STATE.md 已更新 + Open P0/P1/P2 已同步
-- [ ] Step 5.6 VERIFY-CHECK.md 已生成（收敛终止必要条件）
+- [ ] **Artifact Inventory 已输出（Gate 0 校验项，含双写校验）**
+- [ ] **Severity Reconciliation 已输出（若有跨轮次严重性调和）**
+- [ ] Step 5.6 VERIFY-CHECK.md 已生成（Gate G PASS，收敛终止必要条件）
 - [ ] Step 5.7 Rule Discovery 已填写（是否发现新模式 ✅/❌ + 草案）
 - [ ] Step 6 修改项已生成（P0 必须有代码修改项）〔构造/深度必做，快速跳过〕
 - [ ] 所有 grep 命令的输出已作为证据附在对应表格后

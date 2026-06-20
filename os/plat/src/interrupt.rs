@@ -97,10 +97,20 @@ pub enum IrqAction {
 /// Manages masking, unmasking, acknowledging, and signaling end-of-interrupt
 /// for hardware interrupt lines.
 ///
+/// # Instance-based design (see `plat-design.md` §5.1)
+///
+/// `InterruptController` is **instance-based**: `new(desc)` stores parsed
+/// hardware base addresses in instance fields. This replaces the old design
+/// that hardcoded addresses per arch or required a separate `set_base()`
+/// call. Upper layers obtain the descriptor from
+/// `minix_platform::platform_desc()`.
+///
 /// # Architecture mapping
 ///
 /// | Method       | x86-64 (APIC)        | ARM64 (GICv3)      | RISC-V (PLIC)    |
 /// |-------------|----------------------|--------------------|--------------------|
+/// | `new()`     | store LAPIC+IOAPIC   | store GICD+GICR    | store PLIC base +  |
+/// |             | base from `Apic`     | base from `Gicv3`  | context from `Plic`|
 /// | `init()`    | Initialize LAPIC +   | Initialize GIC     | Initialize PLIC    |
 /// |             | IOAPIC, mask all     | distributor +      | + CLINT, mask all  |
 /// |             |                      | redistributors     |                    |
@@ -115,7 +125,20 @@ pub enum IrqAction {
 /// | `mask_all()`| IOAPIC mask all      | GICD_ICENABLER=all | PLIC threshold=max |
 ///
 /// C: hw_intr_mask/unmask/ack — hw_intr.h:22-24/45-47
-pub trait InterruptController: Sized {
+pub trait InterruptController: Sized + Send + Sync {
+    /// Create an instance from an interrupt controller descriptor.
+    ///
+    /// Stores the hardware base addresses from the descriptor into instance
+    /// fields. Called once during `init_clock_and_interrupts()` after
+    /// `PlatformContext` is initialized.
+    ///
+    /// # Panics
+    ///
+    /// May panic if `desc` does not match the architecture's expected
+    /// `InterruptControllerDesc` variant. Upper layers guarantee the
+    /// correct variant is passed.
+    fn new(desc: &minix_platform::InterruptControllerDesc) -> Self;
+
     /// Initialize the interrupt controller.
     fn init(&mut self);
 

@@ -3,7 +3,15 @@
 //! Implements `ArchInit` for RISC-V 64-bit, performing PMP configuration
 //! and S-mode interrupt enablement.
 //!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! RISC-V has no architecture-misc parameters, so `new(desc)` is a no-op
+//! constructor. The struct exists only to satisfy the instance-based trait
+//! contract.
+//!
 //! C: No Minix3 equivalent (Minix3 has no RISC-V port).
+
+use minix_platform::ArchMiscDesc;
 
 use crate::arch_init::ArchInit;
 
@@ -19,7 +27,12 @@ use crate::arch_init::ArchInit;
 pub struct Riscv64ArchInit;
 
 impl ArchInit for Riscv64ArchInit {
-    fn init() {
+    fn new(_desc: &ArchMiscDesc) -> Self {
+        // RISC-V has no architecture-misc parameters to store.
+        Self
+    }
+
+    fn init(&mut self) {
         // 1. Configure PMP (Physical Memory Protection)
         // OpenSBI may have already configured PMP entries.
         // We add a default entry that allows all access.

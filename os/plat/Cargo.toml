@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-types = { workspace = true }
+minix-platform = { workspace = true }
 bitflags = { workspace = true }
 log = { workspace = true }
 

@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 minix-arch = { path = "../arch", default-features = false }
 minix-plat = { path = "../plat" }
+minix-platform = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
 bitflags = { workspace = true }

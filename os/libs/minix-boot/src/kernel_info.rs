@@ -7,6 +7,7 @@ use minix_types::{VirBytes, PhysBytes};
 
 // ── Data structures ──
 
+#[derive(Clone, Copy)]
 pub struct KernelInfo {
     /// Free physical memory regions (kernel + modules already excluded).
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
@@ -66,6 +67,31 @@ pub struct KernelInfo {
     /// C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unpaged_start — pre_init.c:115-116
     /// Added to free memory pool by add_memmap() in kmain Phase F.
     pub bootstrap_len: u64,
+
+    /// Platform descriptor raw pointer (DTB or RSDP physical address).
+    ///
+    /// `None` means boot-shim did not provide one — kernel falls back to
+    /// `QemuVirtDesc` (dev) or panics (release). See `plat-design.md` §4.
+    ///
+    /// Phase 1: boot-shim always fills `None`. Phase 2: boot-shim locates
+    /// DTB/RSDP and fills the appropriate variant.
+    pub platform_descriptor: Option<PlatformDescriptorPtr>,
+}
+
+/// Raw platform descriptor pointer — the uninterpreted handoff from
+/// boot-shim to kernel.
+///
+/// boot-shim locates the physical address of the DTB blob or ACPI RSDP
+/// and passes it here. The kernel (`minix-platform::init_from_kinfo`)
+/// parses the pointed-to data into a structured `PlatformDesc`.
+///
+/// See `plat-design.md` §4.1.
+#[derive(Debug, Clone, Copy)]
+pub enum PlatformDescriptorPtr {
+    /// Flattened Device Tree blob physical address (ARM64 / RISC-V).
+    Dtb(PhysBytes),
+    /// ACPI RSDP physical address (x86-64).
+    Rsdp(PhysBytes),
 }
 
 impl KernelInfo {

@@ -262,21 +262,38 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase A: Entry
+    // Initialize the early console first so any boot diagnostic output
+    // uses the correct baud rate / UART configuration.
+    // C: ser_init() — originally inside arch_init(); moved to EarlyConsole trait.
+    {
+        use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+        Console::init();
+    }
+
     // C: memcpy(&kinfo, local_cbi, sizeof(kinfo)) + kernel_may_alloc = 1
-    // Rust: store the reference globally instead of memcpy.
+    // Rust: copy the KernelInfo into the global (KernelInfo is Copy).
     // SAFETY: This runs during boot (single-threaded, before BKL needed).
     //         No concurrent access possible at this point.
     unsafe {
-        KERNEL_INFO = Some(kernel_info);
+        KERNEL_INFO = Some(*kernel_info);
     }
     KERNEL_MAY_ALLOC.store(true, Ordering::Release);
+
+    // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
+    // This MUST run before init_clock_and_interrupts() because the clock,
+    // interrupt controller, and arch_init all read hardware parameters
+    // from the global platform descriptor (see plat-design.md §5.1).
+    // SAFETY: Single-threaded boot context; no concurrent access.
+    unsafe {
+        minix_platform::init_from_kinfo(kernel_info);
+    }
 
     // Phase B: cstart — protection + clock + interrupt
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 04)
 
     // Phase C: proc_init + arch_boot_proc
-    let proc_table = init_proc_and_boot(kernel_info);  // covered in 05
+    let mut proc_table = init_proc_and_boot(kernel_info);  // covered in 05
 
     // Phase C.5: IPCF_POOL_INIT — initialize IPC filter pool
     // C: IPCF_POOL_INIT() — main.c:158-162 (called after proc_init)
@@ -480,6 +497,9 @@ pub extern "C" fn kmain(kernel_info: &KernelInfo) -> ! {
 fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
 
+    // Ensure early console is initialized for test kernel output.
+    Console::init();
+
     #[cfg(target_arch = "riscv64")]
     Console::write_str("kmain_verify: reached!\n");
 
@@ -614,6 +634,11 @@ fn init_clock_and_interrupts() {
         CurrentClockArch, CurrentArchInit,
     };
     use minix_plat::{InterruptController, CurrentInterruptController};
+    use minix_platform::{platform_desc, PlatformDesc};
+
+    // Obtain the platform descriptor (initialized earlier from KernelInfo).
+    // This is the single source of truth for all hardware parameters.
+    let pd = platform_desc();
 
     // Step 1: Initialize clock state (software).
     // C: init_clock() — clock.c:48
@@ -622,16 +647,33 @@ fn init_clock_and_interrupts() {
 
     // Step 2: Initialize hardware timer.
     // C: hardware portion of init_clock + arch_init() APIC timer
-    CurrentClockArch::init_timer(clock.hz());
+    //
+    // Instance-based design (plat-design.md §5.1): construct the clock
+    // arch from the timer descriptor, then call `init_timer` on the
+    // instance. This replaces the old static `CurrentClockArch::init_timer`.
+    let mut clock_arch = CurrentClockArch::new(&pd.timer());
+    clock_arch.init_timer(clock.hz());
 
     // Step 3: Initialize interrupt controller.
     // C: intr_init(0) — i8259.c:28 / omap_intr.c:24
-    let mut intr = CurrentInterruptController::new();
+    //
+    // Instance-based design: construct the interrupt controller from the
+    // interrupt controller descriptor, then call `init` on the instance.
+    let mut intr = CurrentInterruptController::new(&pd.interrupt_controller());
     intr.init();  // mask_all() called internally
 
     // Step 4: Architecture-specific initialization.
     // C: arch_init() — arch_system.c:246 / earm/arch_system.c:101
-    CurrentArchInit::init();
+    //
+    // Instance-based design: construct the arch-init from the arch-misc
+    // descriptor, then call `init` on the instance.
+    let mut arch_init = CurrentArchInit::new(&pd.arch_misc());
+    arch_init.init();
+
+    // Suppress unused-variable warnings for `clock` (its `hz()` was consumed
+    // above) — the software ClockState will be wired into the clock
+    // subsystem in a later step.
+    let _ = clock;
 }
 
 /// Initialize process table and boot processes.
@@ -652,7 +694,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) -> crate::proc_table::Proces
     use minix_arch::{ArchProcReset, ArchProcInit, BootProcArch, CurrentBootProcArch};
     use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
     use crate::proc_table::{ProcessTable, NR_TASKS};
-    use crate::kpriv::{PrivTable, priv_flag_set};
+    use crate::kpriv::{PrivTable, priv_flag_set, K_CALL_MASK_NONE, K_CALL_MASK_ALL, IPC_TO_NONE, IPC_TO_ALL};
     use crate::proc::NR_BOOT_MODULES;
 
     // Step 1: Initialize process table.
@@ -696,8 +738,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) -> crate::proc_table::Proces
             flags,          // s_flags
             0,              // s_init_flags: TSK_I
             0,              // s_trap_mask: CLOCK/SYSTEM=CSK_T, others=TSK_T
-            0,              // s_ipc_to
-            [0; 2],         // s_k_call_mask
+            IPC_TO_NONE,    // s_ipc_to: kernel tasks cannot send IPC (C: TSK_M = NO_M)
+            K_CALL_MASK_NONE, // s_k_call_mask: kernel tasks cannot make kernel calls (C: TSK_KC = NO_C)
             minix_types::Endpoint::NONE, // s_sig_mgr
         );
 
@@ -745,24 +787,28 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) -> crate::proc_table::Proces
             // Set privilege flags based on process type.
             if is_vm {
                 // C: priv(rp)->s_flags = VM_F — main.c:179-180
+                // C: ipc_to_m = SRV_M = ALL_M — main.c:184
+                // C: kcalls = SRV_KC = ALL_C — main.c:185
                 priv_table.configure_boot_priv(
                     priv_id,
                     priv_flag_set::VM_F,
                     0,
                     0,
-                    0,
-                    [0; 2],
+                    IPC_TO_ALL,      // VM is a system service: all IPC targets allowed
+                    K_CALL_MASK_ALL, // VM is a system service: all kernel calls allowed
                     minix_types::Endpoint::from_generation_slot(0, nr),
                 );
             } else if is_root_sys {
                 // C: priv(rp)->s_flags = RSYS_F — main.c:209
+                // C: ipc_to_m = SRV_M = ALL_M — main.c:212
+                // C: kcalls = SRV_KC = ALL_C — main.c:213
                 priv_table.configure_boot_priv(
                     priv_id,
                     priv_flag_set::RSYS_F,
                     0,
                     0,
-                    0,
-                    [0; 2],
+                    IPC_TO_ALL,      // RS is the root system service: all IPC targets allowed
+                    K_CALL_MASK_ALL, // RS is the root system service: all kernel calls allowed
                     minix_types::Endpoint::from_generation_slot(0, nr),
                 );
             }
@@ -796,9 +842,23 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) -> crate::proc_table::Proces
             }
             #[cfg(not(feature = "mock"))]
             {
-                // Without MockPaging, we cannot load the ELF at boot.
-                // VM will start with default PC=0 — RS will load the
-                // real ELF later. This is a temporary limitation.
+                // DEFERRED: Real VM ELF loading at boot requires a
+                // dedicated bootstrap page table for the VM process.
+                //
+                // What is needed:
+                //   1. Allocate a fresh root page for VM's bootstrap
+                //      page table (from KernelInfo.memmap or a boot bump
+                //      allocator passed through to kmain).
+                //   2. Construct CurrentPaging::new_from_page(root_page).
+                //   3. Call CurrentBootProcArch::load_vm_elf(module, kinfo, &mut paging)
+                //      to map PT_LOAD segments 1:1 and copy segment data.
+                //   4. Store the resulting page table root somewhere accessible
+                //      to VM so it can switch to it (or pass it in the boot
+                //      protocol). This ties into the VM process page-table
+                //      ownership model, which is not yet in place.
+                //
+                // Until then, VM starts with PC=0; RS is expected to load
+                // the real VM ELF later during userspace bring-up.
                 let _ = module;
                 (VirBytes(0), VirBytes(0), VirBytes(0))
             }
@@ -948,7 +1008,7 @@ static mut FREE_MEMMAP: [memmap::MemMapEntry; memmap::MAXMEMMAP] =
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, read-only under BKL protection.
-static mut KERNEL_INFO: Option<&'static KernelInfo> = None;
+static mut KERNEL_INFO: Option<KernelInfo> = None;
 
 /// Get a reference to the global KernelInfo.
 ///
@@ -960,7 +1020,7 @@ static mut KERNEL_INFO: Option<&'static KernelInfo> = None;
 pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
     // SAFETY: After boot, KERNEL_INFO is read-only.
     // Caller is responsible for BKL synchronization.
-    unsafe { (*core::ptr::addr_of!(KERNEL_INFO)).as_ref().copied() }
+    unsafe { (*core::ptr::addr_of!(KERNEL_INFO)).as_ref() }
 }
 
 /// Populated by `init_post_and_memory()` during boot. Used by
@@ -1063,7 +1123,7 @@ fn bsp_finish_booting(
     proc_table: &mut crate::proc_table::ProcessTable,
     smp_state: &mut crate::smp::SmpState,
 ) -> ! {
-    use crate::proc::{RtsFlagsBits, proc_nr};
+    use crate::proc::{ProcNr, RtsFlagsBits, proc_nr};
 
     // Step 1: vm_running = 0
     // C: vm_running = 0 — glo.h:37
@@ -1154,8 +1214,18 @@ fn bsp_finish_booting(
     // safety net (idempotent on x86: writes the same PIT mode byte; on
     // aarch64/riscv64: re-enables the comparator without side effects
     // because the timer is already running).
-    use minix_arch::CurrentClockArch;
-    CurrentClockArch::init_timer(crate::clock::DEFAULT_HZ);
+    //
+    // Instance-based design (plat-design.md §5.1): construct a transient
+    // clock arch instance from the global platform descriptor and call
+    // `init_timer` on it. This replaces the old static
+    // `CurrentClockArch::init_timer`.
+    use minix_arch::{ClockArch, CurrentClockArch};
+    use minix_platform::{platform_desc, PlatformDesc};
+    {
+        let pd = platform_desc();
+        let mut clock_arch = CurrentClockArch::new(&pd.timer());
+        clock_arch.init_timer(crate::clock::DEFAULT_HZ);
+    }
     // Register the BSP's timer handler via the ArchBoot trait.
     // arch-abstractions: this replaces the TODO that depended on a global
     // IrqManager. Instead, we go through the ArchBoot abstraction,
@@ -1289,6 +1359,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
 
         let root_page = PhysBytes(0x1000);
@@ -1351,6 +1422,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -1431,6 +1503,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
 
@@ -1522,6 +1595,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1551,6 +1625,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1697,6 +1772,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1719,6 +1795,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1741,6 +1818,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);

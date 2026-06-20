@@ -4,6 +4,8 @@
 //! x86_64, arm64, and riscv64, used for user-space testing without
 //! real hardware.
 
+use minix_platform::InterruptControllerDesc;
+
 use crate::interrupt::{InterruptController, IrqVector};
 use crate::early_console::EarlyConsole;
 use crate::port_io::PortIo;
@@ -12,21 +14,18 @@ use crate::port_io::PortIo;
 ///
 /// Implements `InterruptController` by recording operations in logs
 /// (via `log::debug!`) instead of touching real hardware.
+///
+/// # Instance-based design
+///
+/// `new(desc)` accepts any `InterruptControllerDesc` variant (the mock
+/// does not care about the specific hardware parameters).
 pub struct MockInterruptController;
 
-impl MockInterruptController {
-    pub const fn new() -> Self {
+impl InterruptController for MockInterruptController {
+    fn new(_desc: &InterruptControllerDesc) -> Self {
         Self
     }
-}
 
-impl Default for MockInterruptController {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl InterruptController for MockInterruptController {
     fn init(&mut self) {
         log::debug!("mock InterruptController::init()");
     }

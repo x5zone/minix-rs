@@ -415,7 +415,7 @@ typedef struct kinfo {
 | `mem_high_phys` | `add_memmap()` 更新 | 可用的最大物理地址 |
 | `module_list[]` | GRUB → 拷贝 | 启动进程二进制信息（PM/VM/VFS/RS 等） |
 | `bootstrap_start/len` | 链接器符号 | bootstrap 代码的范围，kmain 之后可以释放 |
-| `freepde_start` | `pg_mapkernel()` 返回 | 内核映射后第一个空闲 PDE——跨地址空间访问时 `createpde()` 的临时映射槽位从此分配（详见 [06](06-cross-space-init.md)） |
+| `freepde_start` | `pg_mapkernel()` 返回 | 内核映射后第一个空闲 PDE——跨地址空间访问时 `createpde()` 的临时映射槽位从此分配（详见 [06](07-cross-space-init.md)） |
 
 #### 2.2.2 `multiboot_memory_map_t`
 
@@ -611,7 +611,8 @@ boot-shim crate (feature = "uefi")     boot-shim crate (feature = "opensbi")
      │ UefiBootShim::prepare_boot()          │ OpenSbiBootShim::prepare_boot()
      │   UEFI GetMemoryMap()                 │   硬编码 QEMU virt 内存映射
      │   UEFI AllocatePages()                │   bump 分配器
-     │   从 ESP 加载 kernel + boot 模块      │
+     │   从 ESP 加载 kernel + boot 模块      │   从 BootFileTable 加载 kernel + boot 模块
+     │   定位平台描述符（ACPI RSDP / DTB）   │   从 a1 寄存器获取 DTB 物理指针
      │   UEFI ExitBootServices()             │
      │   → BootPrepareResult                 │   → BootPrepareResult
      │                                       │
@@ -742,9 +743,9 @@ pub trait HugePages: Paging {
 
 **C 源码依据**：§2.2.1 `kinfo_t` — 26 字段。
 
-**决策**：Rust 保留 9 字段（`memmap`、`kern_virt_base`、`kern_phys_base`、`kern_size`、`free_upper_idx`、`user_sp`、`kern_stack_top`、`syscall_entry`、`boot_modules`）。
+**决策**：Rust 保留 12 字段（`memmap`、`kern_virt_base`、`kern_phys_base`、`kern_size`、`free_upper_idx`、`user_sp`、`kern_stack_top`、`syscall_entry`、`boot_modules`、`bootstrap_start`、`bootstrap_len`、`platform_descriptor`）。
 
-| 删除的 C 字段 | 理由 |
+| 删除/重命名的 C 字段 | 理由 |
 |--------------|------|
 | `mbi` | UEFI 不需要 raw multiboot |
 | `module_list[]` | → `boot_modules: &'static [BootModule]` |
@@ -760,12 +761,18 @@ pub trait HugePages: Paging {
 | `minix_panicing` | 独立 panic handler |
 | `user_end` | 运行时从 memmap 计算 |
 | `vir_kern_start` | → `kern_virt_base` |
-| `bootstrap_start` / `bootstrap_len` | UEFI 不区分 |
 | `boot_procs[]` | 进程管理子系统集成测试构造 |
 | `nr_procs` / `nr_tasks` | `boot_modules.len()` 或运行时计算 |
 | `release[]` / `version[]` | 尚未实现，计划通过 Cargo.toml 的 `version` 字段 + `env!("CARGO_PKG_VERSION")` 或独立版本模块提供 |
 | `vm_allocated_bytes` | 运行时从 memmap 计算 |
 | `kernel_allocated_bytes` / `kernel_allocated_bytes_dynamic` | 根据 memmap 动态计算 |
+
+**保留的 C 字段（名称微调）**：
+
+| C 字段 | Rust 字段 | 理由 |
+|--------|----------|------|
+| `bootstrap_start` | `bootstrap_start: PhysBytes` | boot-shim 仍需向内核报告自身物理范围，以便后续回收；UEFI/OpenSBI 路径目前用 `PhysBytes(0)` 占位（见 `uefi_helpers.rs:132`、`opensbi_helpers.rs:229`），但字段保留 |
+| `bootstrap_len` | `bootstrap_len: u64` | 与 `bootstrap_start` 配对，目前用 `kern_phys_base.0` 作为上界近似，后续需精确化 |
 
 **否决的替代方案**：
 
@@ -782,6 +789,7 @@ pub trait HugePages: Paging {
 |---------|------------|------|
 | `kern_stack_top` | 链接器符号 `k_initial_stktop`（head.S:80 `mov $k_initial_stktop, %esp`），C 版通过 `tss_init(0, &k_boot_stktop)` 在 `protect.c:338` 使用 | C 版通过全局链接器符号隐式传递，Rust 版将其显式纳入 `KernelInfo`，使 boot-shim → kernel 的数据传递完全通过结构体完成，不依赖链接器符号 |
 | `syscall_entry` | `protect.c:189-205` 中 LSTAR MSR 配置的入口地址 | C 版在 `prot_init()` 中硬编码计算，Rust 版将其作为元信息显式传入，便于 `arch_boot_impl` 统一配置 |
+| `platform_descriptor` | C 版 `kinfo_t` 无直接对应；信息来自 UEFI Configuration Table（ACPI RSDP/DTB）或 OpenSBI a1 寄存器 | 平台发现需要原始固件描述符指针；统一通过 `KernelInfo` 从 boot-shim 传递到 `minix-platform::init_from_kinfo`，见 `plat-design.md` §4.1 与 §6 |
 
 **`overlaps()` 的 Rust 等价**：C 源码 `overlaps()`（pre_init.c:77）检查 boot 模块是否与内核镜像重叠。UEFI 引导路径中，`boot-shim` 的 `uefi_helpers` 通过 `GetMemoryMap()` 获取的内存描述已由 UEFI 固件保证不重叠，因此不需要 Rust 等价函数。OpenSBI 路径中，U-Boot 通过 `fatload` 将 kernel/modules 预加载到指定地址，bump 分配器从 `DRAM + 32MB` 起步避开已加载区域，同样不需要重叠检测。如果未来支持非 UEFI 引导（如 coreboot），需在对应 boot-shim feature module 中实现重叠检测。
 
@@ -890,6 +898,9 @@ pub struct KernelInfo {
     pub kern_stack_top: VirBytes,               // 内核初始栈顶（虚拟地址），HigherHalf 切栈用
     pub syscall_entry: VirBytes,                // 系统调用处理程序入口虚拟地址（= kern_virt_base + offset）。内核元信息，所有架构一致记录；仅 x86-64 用它配置 LSTAR MSR，aarch64/riscv64 编译时确定入口，此字段仅作参考
     pub boot_modules: &'static [BootModule],    // 启动模块列表（PM/VM/VFS 等）
+    pub bootstrap_start: PhysBytes,             // boot-shim 自身物理起始地址（当前 UEFI/OpenSBI 路径用 PhysBytes(0) 占位）
+    pub bootstrap_len: u64,                     // boot-shim 自身物理长度（当前用 kern_phys_base.0 作为上界近似）
+    pub platform_descriptor: Option<PlatformDescriptorPtr>, // 平台描述符原始指针（ACPI RSDP / DTB），None 时内核回退到 QemuVirtDesc
 }
 
 pub struct MemoryRegion {
@@ -901,6 +912,11 @@ pub struct BootModule {
     pub name: &'static str, // 模块名（如 "pm", "vm"）
     pub start: PhysBytes,   // 物理起始地址
     pub len: usize,         // 长度（字节）
+}
+
+pub enum PlatformDescriptorPtr {
+    Dtb(PhysBytes),  // 扁平设备树（ARM64 / RISC-V）物理地址
+    Rsdp(PhysBytes), // ACPI RSDP（x86-64）物理地址
 }
 ```
 
@@ -1263,6 +1279,8 @@ kernel
 ```
 
 U-Boot 在 RISC-V 嵌入式生态中扮演 UEFI 的角色：它读取 ESP 风格的 FAT 分区，把文件加载到指定物理地址（参见 [U-Boot UEFI 文档](https://docs.u-boot.org/en/latest/develop/uefi/uefi.html) 与 [Alpine riscv64 启动指南](https://wiki.alpinelinux.org/wiki/Riscv64)）。我们让 U-Boot 替 boot-shim 完成"读文件"这一步——用 `fatload` 把 `kernel.elf` 和所有模块预加载到 RAM，并构建一个小小的 `BootFileTable`（路径 → 物理地址映射）传给 boot-shim。
+
+**平台描述符来源**：UEFI 路径通过 `uefi_helpers::find_platform_descriptor()` 扫描 UEFI Configuration Table 获取 ACPI RSDP（x86-64）或 DTB（aarch64），必须在 `ExitBootServices()` 之前调用。OpenSBI 路径通过 `opensbi_helpers::dtb_ptr()` 读取入口汇编保存的 `a1` 寄存器值获取 DTB 物理地址；两者都封装为 `PlatformDescriptorPtr` 后写入 `KernelInfo.platform_descriptor`，供 `minix-platform::init_from_kinfo()` 解析。详见 `plat-design.md` §4.1 与 §6。
 
 **boot.cmd 脚本骨架**（QEMU virt + virtio-blk + FAT）：
 

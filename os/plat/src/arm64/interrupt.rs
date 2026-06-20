@@ -2,14 +2,16 @@
 //!
 //! Implements `InterruptController` for ARM64 using GICv3 (Generic Interrupt
 //! Controller version 3).
+//!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! Hardware base addresses (GICD, GICR) are stored in instance fields,
+//! populated by `new(desc)` from `InterruptControllerDesc::Gicv3`. This
+//! replaces the previous `new()` + `set_base()` two-step pattern.
+
+use minix_platform::InterruptControllerDesc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
-
-/// GICv3 Distributor base address offset (from GIC base).
-const GICD_OFFSET: usize = 0x0000_0000;
-
-/// GICv3 Redistributor base address offset (from GIC base).
-const GICR_OFFSET: usize = 0x000A_0000;
 
 /// GICD_CTLR: Distributor Control Register.
 const GICD_CTLR: usize = 0x0000;
@@ -33,12 +35,17 @@ const GICR_ICENABLER0: usize = 0x0180;
 
 /// GICR_WAKER: Redistributor Wake Register.
 const GICR_WAKER: usize = 0x0014;
-/// GICR_WAKER.ProcessorSleep bit.
-const GICR_WAKER_PROCESSOR_SLEEP: u32 = 0x2;
 /// GICR_WAKER.ChildrenAsleep bit (read-only).
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
 
 /// ARM64 GICv3 interrupt controller.
+///
+/// # Fields
+///
+/// - `gicd_base`: GIC Distributor MMIO base, from `InterruptControllerDesc::Gicv3`.
+/// - `gicr_base`: GIC Redistributor MMIO base, from `InterruptControllerDesc::Gicv3`.
+/// - `nr_irqs`: number of IRQ vectors (from descriptor, clamped to `NR_IRQ_VECTORS`).
+/// - `last_iar`: last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
 pub struct AArch64InterruptController {
     /// GIC Distributor MMIO base address.
     gicd_base: usize,
@@ -51,21 +58,6 @@ pub struct AArch64InterruptController {
 }
 
 impl AArch64InterruptController {
-    pub const fn new() -> Self {
-        Self {
-            gicd_base: 0,
-            gicr_base: 0,
-            nr_irqs: NR_IRQ_VECTORS,
-            last_iar: 0,
-        }
-    }
-
-    /// Set GIC base addresses from device tree / platform discovery.
-    pub fn set_base(&mut self, gicd_base: usize, gicr_base: usize) {
-        self.gicd_base = gicd_base;
-        self.gicr_base = gicr_base;
-    }
-
     unsafe fn gicd_read32(&self, offset: usize) -> u32 {
         core::ptr::read_volatile((self.gicd_base + offset) as *const u32)
     }
@@ -118,9 +110,24 @@ impl AArch64InterruptController {
 }
 
 impl InterruptController for AArch64InterruptController {
+    fn new(desc: &InterruptControllerDesc) -> Self {
+        match desc {
+            InterruptControllerDesc::Gicv3 { gicd_base, gicr_base, nr_irqs, .. } => Self {
+                gicd_base: *gicd_base,
+                gicr_base: *gicr_base,
+                nr_irqs: (*nr_irqs as usize).min(NR_IRQ_VECTORS),
+                last_iar: 0,
+            },
+            _ => panic!(
+                "AArch64InterruptController::new: expected InterruptControllerDesc::Gicv3, got {:?}",
+                desc
+            ),
+        }
+    }
+
     fn init(&mut self) {
-        assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base not set; call set_base() before init()");
-        assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base not set; call set_base() before init()");
+        assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base is zero (descriptor did not provide GICD base)");
+        assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base is zero (descriptor did not provide GICR base)");
         self.init_distributor();
         self.init_redistributor();
         self.init_cpu_interface();
@@ -195,16 +202,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_has_zero_bases() {
-        let ic = AArch64InterruptController::new();
-        assert_eq!(ic.gicd_base, 0);
-        assert_eq!(ic.gicr_base, 0);
-    }
-
-    #[test]
-    fn test_set_base_overrides() {
-        let mut ic = AArch64InterruptController::new();
-        ic.set_base(0x0800_0000, 0x080A_0000);
+    fn test_new_from_gicv3_descriptor() {
+        let desc = InterruptControllerDesc::Gicv3 {
+            gicd_base: 0x0800_0000,
+            gicr_base: 0x080A_0000,
+            gicr_stride: 0x2_0000,
+            nr_irqs: 64,
+        };
+        let ic = AArch64InterruptController::new(&desc);
         assert_eq!(ic.gicd_base, 0x0800_0000);
         assert_eq!(ic.gicr_base, 0x080A_0000);
     }

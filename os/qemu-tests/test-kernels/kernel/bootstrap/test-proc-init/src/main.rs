@@ -134,6 +134,7 @@ fn main() -> Status {
         boot_modules: &BOOT_MODULES,
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
+        platform_descriptor: None,
     };
 
     let result = BootPrepareResult {

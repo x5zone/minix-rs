@@ -4,12 +4,18 @@
 //! Timer) is used as the boot-time clock source. LAPIC Timer may replace
 //! it after APIC initialization.
 //!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! Hardware parameters (PIT base frequency, LAPIC base address) are stored
+//! in instance fields, populated by `new(desc)` from `TimerDesc::Pit`.
+//! This replaces the previous hardcoded `PIT_BASE_FREQ` constant.
+//!
 //! C: clock.c hardware init + apic.c lapic_enable()
+
+use minix_platform::TimerDesc;
 
 use crate::clock::ClockArch;
 
-/// 8254 PIT base frequency in Hz.
-const PIT_BASE_FREQ: u32 = 1_193_182;
 /// PIT command port (channel 0, lobyte/hibyte access).
 const PIT_COMMAND: u16 = 0x43;
 /// PIT channel 0 data port.
@@ -23,11 +29,34 @@ const PIT_CMD_RATE_GEN: u8 = 0x36;
 /// a divisor calculated from the desired tick frequency. After APIC
 /// initialization, the LAPIC Timer may be used instead.
 ///
+/// # Fields
+///
+/// - `pit_base_freq`: 8254 PIT base frequency (Hz), from `TimerDesc::Pit`.
+/// - `lapic_base`: LAPIC MMIO base address, from `TimerDesc::Pit`.
+///   Used for LAPIC Timer setup after APIC init.
+///
 /// C: clock.c hardware init + apic.c lapic_enable()
-pub struct X86_64ClockArch;
+pub struct X86_64ClockArch {
+    pit_base_freq: u32,
+    #[allow(dead_code)]
+    lapic_base: usize,
+}
 
 impl ClockArch for X86_64ClockArch {
-    fn init_timer(hz: u32) {
+    fn new(desc: &TimerDesc) -> Self {
+        match desc {
+            TimerDesc::Pit { pit_base_freq, lapic_base } => Self {
+                pit_base_freq: *pit_base_freq,
+                lapic_base: *lapic_base,
+            },
+            _ => panic!(
+                "X86_64ClockArch::new: expected TimerDesc::Pit, got {:?}",
+                desc
+            ),
+        }
+    }
+
+    fn init_timer(&mut self, hz: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
         // C: intr_init_8254() — i8259.c equivalent
         //
@@ -35,7 +64,7 @@ impl ClockArch for X86_64ClockArch {
         // Values below 19 would overflow the divisor.
         assert!(hz >= 19, "PIT divisor overflow: hz must be >= 19, got {}", hz);
 
-        let divisor = (PIT_BASE_FREQ / hz) as u16;
+        let divisor = (self.pit_base_freq / hz) as u16;
 
         unsafe {
             // Send command byte: channel 0, lobyte/hibyte, rate generator
@@ -49,7 +78,7 @@ impl ClockArch for X86_64ClockArch {
         }
     }
 
-    fn read_ticks() -> u64 {
+    fn read_ticks(&self) -> u64 {
         // Use TSC (Time Stamp Counter) for high-resolution tick reading.
         // NOTE: TSC frequency varies across CPUs and is not calibrated here.
         // This value should only be used for relative timing (deltas), not

@@ -347,6 +347,7 @@ mod tests {
             boot_modules: &EMPTY_MODULES,
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
+            platform_descriptor: None,
         };
         let mut paging = MockPaging::new().unwrap();
         let result = X86_64ProcArch::load_vm_elf(&module, &kinfo, &mut paging);

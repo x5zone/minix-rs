@@ -210,12 +210,12 @@ test-kernels/
 > 同时更新了 `InterruptController` trait 文档中的 ARM64 列，反映 PPI 路径。
 > 文档 `04-clock-interrupt-init.md` §4.6 状态说明已同步更新 (2026-06-16)。
 
-### 6.6 [P2] riscv64 PLIC base 硬编码
+### 6.6 [P2] riscv64 PLIC base 硬编码 — ✅ 已完成
 
-> **位置**: `os/arch/src/riscv64/interrupt.rs`
+> **位置**: `os/plat/src/riscv64/interrupt.rs`
 > PLIC_BASE = 0x0C00_0000 硬编码为 QEMU virt 默认地址，未从 device tree 自动发现。有 `set_base()` 方法可手动覆盖。
 
-QEMU virt 平台已工作，后续需 device tree 解析支持。
+**2026-06-20 更新**：`DeviceTreeDesc` 已实现 RISC-V PLIC 节点解析（`os/libs/minix-platform/src/device_tree.rs`）。当 boot-shim 传入 DTB 指针时，`init_from_kinfo()` 走 DTB 解析路径，不再使用硬编码 `PLIC_BASE`；无 DTB 时才回退到 `QemuVirtDesc`。
 
 ### 6.7 [P2] riscv64 PMP 仅配置 entry 0
 
@@ -230,3 +230,71 @@ QEMU virt 平台已工作，后续需 device tree 解析支持。
 > 三个 QEMU GDB 自动化脚本当前为手动运行，未集成到 CI pipeline。
 
 建议后续集成到 CI，每个 PR 自动验证 QEMU 寄存器初始化。
+
+---
+
+## 7. PlatformDesc / 硬件发现
+
+> 来源：设备树 / ACPI 硬件发现 TODO
+
+**已完成（2026-06-20）**：
+
+| 任务 | 状态 | 实际文件 |
+|------|------|----------|
+| 设计 `PlatformDesc` trait | ✅ | `os/libs/minix-platform/src/desc.rs` |
+| 实现 `QemuVirtDesc` 兜底 | ✅ | `os/libs/minix-platform/src/qemu_virt.rs` |
+| 实现 `DeviceTreeDesc`（FDT/DTB 解析） | ✅ | `os/libs/minix-platform/src/device_tree.rs` |
+| 实现 `AcpiDesc`（最小 ACPI 解析） | ✅ | `os/libs/minix-platform/src/acpi.rs` |
+| 实现 `PlatformContext` 全局 + `init_from_kinfo()` | ✅ | `os/libs/minix-platform/src/global.rs` |
+| UEFI boot-shim 定位 RSDP/DTB | ✅ | `os/boot-shim/src/uefi_helpers.rs` |
+| OpenSBI boot-shim 保存 a1 DTB 指针 | ✅ | `os/boot-shim/src/opensbi_helpers.rs` |
+| `KernelInfo` 扩展 `platform_descriptor` 字段 | ✅ | `os/libs/minix-boot/src/kernel_info.rs` |
+
+**验证**：
+- `cargo test -p minix-platform`：19/19 通过（含 DTB/ACPI 合成表解析测试）。
+- `cargo check -p minix-platform -p minix-kernel`：通过。
+- `cargo check -p boot-shim --features test-all`：通过。
+
+**剩余偏差 / 后续扩展**：
+
+- `AcpiDesc` 当前为最小化实现：仅支持 RSDP → XSDT/RSDT → MADT，提取 LAPIC/IOAPIC base 和 CPU 拓扑。HPET、x2APIC 中断投递、Interrupt Source Override、多 IOAPIC 等尚未实现（QEMU `virt` x86_64 当前够用）。
+- 文件名 `device_tree.rs` 与设计稿 `fdt.rs` 不一致，属命名偏差，功能等价。
+
+**收益**：支持真实硬件移植时，不需要为每块板子单独修改 Rust 源码；ARM/RISC-V 换 DTB，x86 换 ACPI 表即可。
+
+---
+
+## 8. 平台发现阶段预存在问题（与本次改动无关）
+
+> 来源：Phase 2~4 实施过程中通过 `cargo build --workspace` 发现，与本次 `minix-platform` 新增代码无关。
+
+### 8.1 `test-memmap-riscv64` 编译失败
+
+- **位置**：`os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs`
+- **错误**：`use minix_plat::riscv64::early_console` → `could not find riscv64 in minix_plat`
+- **含义**：测试内核引用了一个不存在的模块路径 `minix_plat::riscv64`。可能是 `os/plat/src/riscv64` 子模块尚未创建，或测试内核的导入路径已过时。
+- **影响**：仅影响该单个测试二进制；`minix-platform` 自身、UEFI/OpenSBI boot-shim、`minix-kernel` 均不受影响。
+- **修复方向**：
+  1. 确认 `os/plat/src/riscv64/mod.rs` 是否存在；若不存在则创建。
+  2. 若模块已存在但路径不同，更新测试内核的 `use` 语句。
+  3. 若该测试已废弃，考虑移除或重命名。
+
+### 8.2 `boot-shim` 默认 target 的 `panic_impl` lang item 冲突
+
+- **位置**：`os/boot-shim`
+- **错误**：
+  - `error[E0152]: found duplicate lang item panic_impl`
+  - `error[E0425]: cannot find function arch_boot in crate minix_kernel`
+- **含义**：
+  - `boot-shim` 在默认 target 下既自己实现了 `panic_handler`，又链接了同样实现 `panic_handler` 的 crate（如 `minix-kernel` 或测试框架），导致 Rust lang item 重复。
+  - 同时 `arch_boot` 函数在当前 cfg/target 组合下不可见。
+- **影响**：
+  - `cargo check -p boot-shim`（不带 feature）失败。
+  - `cargo check -p boot-shim --features test-all` 通过，说明 `test-all` feature 的依赖/link 配置是正确的。
+- **修复方向**：
+  1. 检查 `boot-shim/Cargo.toml` 的默认 feature 是否错误地依赖了 `minix-kernel` 或测试 crate。
+  2. 检查 `boot-shim/src/main.rs` 的 `panic_handler` 是否在非测试 target 下被错误启用。
+  3. 检查 `arch_boot` 的可见性：是否只在某个 feature 或 target_arch 下暴露，而默认 target 没有。
+  4. 考虑把 `boot-shim` 的默认 target 也改为与 `--features test-all` 一致的配置，或明确区分"真实固件目标"与"测试目标"的 panic_handler 归属。
+
+**备注**：这两个问题在本次 Phase 2~4 实施前已存在，不应由本次 `minix-platform` 改动负责。后续优先处理 8.2，因为它影响 `boot-shim` 的常规构建体验。

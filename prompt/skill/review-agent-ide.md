@@ -48,34 +48,41 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 
 ## State Management: Dual-Path (Trae vs Claude)
 **Trae IDE** (manual paste, multi-AI cross-review allowed):
-- State: `notes/rewrite/{module}/.review/STATE.md`
-- Per-doc/cross-AI scans: `notes/rewrite/{module}/.review/scans/{doc}-{agent}-scan.md`
-- If user explicitly asks for another output location, dual-write to both user location AND `notes/rewrite/{module}/.review/scans/`.
+- State: `.review/trae/{module}/STATE.md` (项目根 `.review/` 下)
+- Per-doc/cross-AI scans: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
+- Bagging 聚合产物：`.review/trae/{module}/scans/AGGREGATED-{doc-stem}.md`
+- 交互式修复文档（双写）：`notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`
+- If user explicitly asks for another output location, dual-write to both user location AND `.review/trae/{module}/scans/`.
 
 **Claude Code Runtime** (auto-load, usually single review per milestone):
-- State: `.review/{module}/STATE.md` (project root)
-- Module-level scan: `.review/{module}/scan.md`
-- Verification: `.review/{module}/VERIFY-CHECK.md`
+- State: `.review/claude/{module}/STATE.md` (项目根 `.review/` 下)
+- Module-level scan: `.review/claude/{module}/{doc-stem}/scan.md`
+- Verification: `.review/claude/{module}/VERIFY-CHECK.md`
+- 最终报告（双写，可选）：`notes/rewrite/{module}/{stage}/{doc-stem}-claude-report.md`
 
 **Rules**:
-1. At Step 0, read the correct STATE.md for the tool you are running under (Trae → notes path; Claude → root path).
-2. If both exist and diverge, **do not merge them**. Log the divergence in scan.md and ask the user which is authoritative.
-3. Each STATE.md must track its own Open P0/P1/P2 lists; do not copy cross-tool findings blindly.
+1. At Step 0, read the correct STATE.md for the tool you are running under (Trae → `.review/trae/...`；Claude → `.review/claude/...`)。
+2. Trae 与 Claude **绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
+3. If both exist and diverge (same tool), **do not merge them**. Log the divergence in scan.md and ask the user which is authoritative.
+4. Each STATE.md must track its own Open P0/P1/P2 lists; do not copy cross-tool findings blindly.
+5. 推荐用 `tools/review-init.sh trae {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录。
 
 ## Convergence and State Tracking
 Maintain state in the tool-specific STATE.md path above. Details: [process-skill](review-process-skill.md).
 
-**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | Blocker Gates A-E all passed.
+**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/E/G all passed** with gate-evidence attached.
 
 ## ⛔ Blocker Gates (must all pass for Final Review)
-- **Gate A**: coverage-extract.py run + SYMBOLS.md path attached in scan.md.
-- **Gate B**: Top 5 behavior-contract table (3 semantic drift + 2 coverage gaps).
+- **Gate 0**（NEW）: 制品完整性 — 标准路径文件齐全 + scan.md 含 8 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。
+- **Gate A**: coverage-extract.py run + SYMBOLS.md 落盘 + scan.md 附 `gate-evidence-A` 块（命令 + stdout + artifact 路径）。L1 证据必须。
+- **Gate B**: Top 5 behavior-contract table (**8 字段 × 5 函数**：函数名 / C 行为 / Rust 行为 / 差异类型 / 严重度 / C 证据 / Rust 证据 / Reviewer 备注)。
 - **Gate C**: 5-element Precision Check table produced.
 - **Gate D**: P0 checklist 5 items answered with ✅/❌ + grep evidence. **PARTIAL = ❌ FAIL**.
 - **Gate D-6**: structure.md generated + 12-section review table (doc review only).
 - **Gate E**: §5 test names grep-verified (if doc has §5).
+- **Gate G**（NEW）: Step 5.6 VERIFY-CHECK.md 已产出 + 判定 PASS（一致性 ≥ 90%）。CONCERN/FAIL 不得标 CONVERGED。
 
-**Evidence rule**: For every Gate, attach the actual command + output snippet in scan.md. "Gate passed" without evidence is invalid.
+**Evidence rule**: For every Gate, attach the actual command + output snippet in `gate-evidence-{X}` block. "Gate passed" without evidence is invalid. 证据强度分级：L1（工具自动输出，Gate A/D/E 必须）/ L2（手动 grep）/ L3（语义推断，视为 FAIL）。
 
 ## Review Process
 Execute Steps 0-7 in order. Full details in [process-skill](review-process-skill.md). Mandatory artifacts:

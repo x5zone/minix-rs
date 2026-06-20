@@ -12,6 +12,13 @@
 /// architectures — they handle newline translation (`\n` → `\r\n`) and
 /// hexadecimal formatting.
 pub trait EarlyConsole {
+    /// One-time hardware initialization for the early console.
+    ///
+    /// Called once on the BSP before any output. Architectures whose console
+    /// is already usable at boot (e.g. aarch64 PL011, riscv64 SBI) use the
+    /// default no-op implementation.
+    fn init() {}
+
     /// Write a single raw byte to the console.
     fn write_byte(byte: u8);
 

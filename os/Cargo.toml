@@ -26,6 +26,7 @@ members = [
     "libs/minix-sys",
     "libs/minix-rt",
     "libs/minix-elf",
+    "libs/minix-platform",
     
     # 集成测试
     "tests",
@@ -90,6 +91,7 @@ minix-boot = { path = "libs/minix-boot" }
 minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-elf = { path = "libs/minix-elf" }
+minix-platform = { path = "libs/minix-platform" }
 minix-arch = { path = "arch", default-features = false }
 minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }
@@ -97,6 +99,10 @@ boot-shim = { path = "boot-shim", default-features = false }
 
 # 外部依赖
 bitflags = "2.4"
+
+# Device Tree Blob parser (no_std, zero-copy) — used by minix-platform
+# for DTB-based hardware discovery on ARM64/RISC-V.
+fdt = "0.1"
 
 # 构建工具
 clap = { version = "4.5", features = ["derive"] }

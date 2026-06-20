@@ -4,22 +4,18 @@
 //! Interruptor) mtime register. The mtime register is a memory-mapped
 //! counter that increments at a fixed frequency.
 //!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! Hardware parameters (CLINT mtime/mtimecmp addresses, frequency) are
+//! stored in instance fields, populated by `new(desc)` from
+//! `TimerDesc::Clint`. This replaces the previous hardcoded
+//! `CLINT_MTIME` / `CLINT_MTIMECMP` / `MTIME_FREQ` constants.
+//!
 //! C: No Minix3 equivalent (Minix3 has no RISC-V port).
 
+use minix_platform::TimerDesc;
+
 use crate::clock::ClockArch;
-
-/// CLINT mtime register address for QEMU virt machine.
-/// TODO: Should be discovered from device tree.
-const CLINT_MTIME: usize = 0x200_BFF8;
-
-/// CLINT mtimecmp register address for QEMU virt machine (hart 0).
-/// NOTE: On multi-hart systems, each hart has its own mtimecmp.
-/// Current implementation supports hart 0 only.
-const CLINT_MTIMECMP: usize = 0x200_4000;
-
-/// CLINT mtime frequency for QEMU virt machine (10 MHz).
-/// TODO: Should be discovered from device tree.
-const MTIME_FREQ: u64 = 10_000_000;
 
 /// RISC-V 64-bit clock using CLINT mtime.
 ///
@@ -30,24 +26,57 @@ const MTIME_FREQ: u64 = 10_000_000;
 /// When mtime >= mtimecmp, a timer interrupt is generated.
 /// The handler must update mtimecmp to schedule the next interrupt.
 ///
+/// # Fields
+///
+/// - `mtime_addr`: CLINT mtime register MMIO address, from `TimerDesc::Clint`.
+/// - `mtimecmp_base`: CLINT mtimecmp base address (hart 0), from `TimerDesc::Clint`.
+/// - `mtimecmp_stride`: per-hart mtimecmp spacing (SMP-ready), from `TimerDesc::Clint`.
+/// - `freq`: mtime counter frequency (Hz), from `TimerDesc::Clint`.
+///
 /// C: No Minix3 equivalent (Minix3 has no RISC-V port).
-pub struct Riscv64ClockArch;
+pub struct Riscv64ClockArch {
+    mtime_addr: usize,
+    mtimecmp_base: usize,
+    #[allow(dead_code)]
+    mtimecmp_stride: usize,
+    freq: u64,
+}
 
 impl ClockArch for Riscv64ClockArch {
-    fn init_timer(hz: u32) {
+    fn new(desc: &TimerDesc) -> Self {
+        match desc {
+            TimerDesc::Clint {
+                mtime_addr,
+                mtimecmp_base,
+                mtimecmp_stride,
+                freq,
+            } => Self {
+                mtime_addr: *mtime_addr,
+                mtimecmp_base: *mtimecmp_base,
+                mtimecmp_stride: *mtimecmp_stride,
+                freq: *freq,
+            },
+            _ => panic!(
+                "Riscv64ClockArch::new: expected TimerDesc::Clint, got {:?}",
+                desc
+            ),
+        }
+    }
+
+    fn init_timer(&mut self, hz: u32) {
         // Read current mtime value
         let mtime: u64;
         unsafe {
-            mtime = core::ptr::read_volatile(CLINT_MTIME as *const u64);
+            mtime = core::ptr::read_volatile(self.mtime_addr as *const u64);
         }
 
         // Calculate interval between interrupts
-        let interval = MTIME_FREQ / hz as u64;
+        let interval = self.freq / hz as u64;
 
         // Set mtimecmp = mtime + interval to schedule first interrupt
         let mtimecmp = mtime + interval;
         unsafe {
-            core::ptr::write_volatile(CLINT_MTIMECMP as *mut u64, mtimecmp);
+            core::ptr::write_volatile(self.mtimecmp_base as *mut u64, mtimecmp);
         }
 
         // Enable S-mode timer interrupt (STIE bit in sie)
@@ -56,9 +85,9 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
-    fn read_ticks() -> u64 {
+    fn read_ticks(&self) -> u64 {
         unsafe {
-            core::ptr::read_volatile(CLINT_MTIME as *const u64)
+            core::ptr::read_volatile(self.mtime_addr as *const u64)
         }
     }
 }

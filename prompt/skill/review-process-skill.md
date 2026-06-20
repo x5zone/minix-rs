@@ -27,22 +27,46 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 | Gate | 检查项 | 通过标准 | 未通过后果 |
 |------|--------|---------|-----------|
-| **A** | Step 1.5 Coverage Enumeration | 已运行 coverage-extract.py + scan.md 附 SYMBOLS.md 路径 | 禁止输出 Final Review |
-| **B** | Step 2 Diff Extraction | 已产出 Top 5 行为契约表（3 语义偏移 + 2 覆盖缺口，8 字段 × 5 函数） | 禁止输出 Final Review |
+| **0** | 制品完整性（输出前必检，在所有 Gate 之前） | 对每个目标文档，标准路径下文件齐全（STATE/scan/structure/SYMBOLS）；scan.md 含 8 个 grep 可验锚段（见下） | 禁止输出 Final Review |
+| **A** | Step 1.5 Coverage Enumeration | 已运行 coverage-extract.py（**强制，不允许"手动验证"代替**）+ scan.md 附 gate-evidence-A 块 + SYMBOLS.md 落盘 | 禁止输出 Final Review |
+| **B** | Step 2 Diff Extraction | 已产出 Top 5 行为契约表（3 语义偏移 + 2 覆盖缺口，**8 字段 × 5 函数**） | 禁止输出 Final Review |
 | **C** | Step 3.5 Precision Check | 已产出 5 元规则检查表 | 禁止输出 Final Review |
-| **D** | P0 必检清单（见 patterns-skill §0） | 5 项已回答（✅/❌ + grep 证据） | 禁止输出 Final Review |
+| **D** | P0 必检清单（见 patterns-skill §0） | 5 项已回答（✅/❌ + grep 证据）；**PARTIAL/⚠️/部分通过 均视为 FAIL** | 禁止输出 Final Review |
 | **D-6** | Step 0.5 structure.md 骨架评审（文档 Review） | structure.md 已生成 + 12 节评审表 + 失败项写入 Issue List | 禁止输出 Final Review（文档 Review） |
 | **E** | Step 4.5 Test Verification | 文档 §5 每个测试函数已 grep 验证（若文档有 §5） | 禁止输出 Final Review |
+| **G** | Step 5.6 VERIFY-CHECK 独立验证 | VERIFY-CHECK.md 已产出 + 判定 PASS（一致性 ≥90%）；CONCERN/FAIL 不得标 CONVERGED | 禁止标记 CONVERGED |
 
 **任一 Gate 未通过 → scan.md 标记 DRAFT，禁止写入 STATE.md。**
 
-**Gate 证据规则（新增）**：
-- scan.md 中每个 Gate 的通过声明必须附带**实际命令 + 输出片段**作为证据。
-- Gate A：附 coverage-extract.py 命令行及 stdout 覆盖率摘要。
-- Gate D：附 5 项 P0 必检的 grep/Read 证据（命令 + 结果）。
+**Gate 0 锚段校验**（scan.md 必须含以下 8 个 grep 可验锚段，缺任一 → Gate 0 FAIL）：
+```
+## Skill Invocation Log
+## Blocker Gates Status
+## Step 1: C Source Ground Truth Lookup
+## Step 1.5: Coverage Enumeration
+## Step 2: Diff Extraction
+## Step 3.5: Precision Check
+## Issue List
+## Artifact Inventory
+```
+
+**Gate 证据规则（机器可验证，gate-evidence 块）**：
+- scan.md 中每个 Gate 的通过声明必须用带标签的 `gate-evidence-{X}` 代码块附带**实际命令 + 输出片段**作为证据。仅有 "✅ 通过" 而无证据块 → 该 Gate 判 FAIL，不允许"自报 ✅"。
+- Gate A：`gate-evidence-A` 块必须含 `coverage-extract.py` + `Coverage Summary` + artifact 路径，且 `ls artifact` 成功。
+- Gate B：必须含 5 行差异表 + "行为契约" 字样（8 字段 × 5 函数）。
+- Gate D：必须含 5 项 P0 必检的 `rg`/Read 命令 + 结果（5 条）。
 - Gate D-6：附 structure.md 路径 + 评审表（12 节判定结果）。
 - Gate E：附每个测试函数名的 `rg "fn {name}"` 命令 + 结果表。
-- 仅有 "✅ 通过" 而无证据的 Gate 视为未通过。
+- Gate G：附 VERIFY-CHECK.md 路径 + 抽样一致性百分比。
+
+**证据强度分级（L1/L2/L3）**：
+| 级别 | 含义 | Gate 要求 |
+|------|------|----------|
+| **L1** | 工具自动输出（最强）— coverage-extract.py / grep / verify-line-refs.py | Gate A/D/E 必须 L1 |
+| **L2** | 手动 grep + 行号引用（中等）— 人工验证但附命令 | Gate B/C 必须 L1 或 L2 |
+| **L3** | 语义推断（最弱）— 无命令输出，仅逻辑推理 | 视为 FAIL，除非标 `MANUAL_FALLBACK` 并说明原因 |
+
+**Gate 证据评分**（合并脚本用）：命令+输出=2 分；仅输出=1 分；纯文字=0 分。低于 1 分的 Gate 标 ⚠️；Gate A/D/E 低于 1 分直接判 FAIL。
 
 **Skill Invocation Log**（mandatory in scan.md）：
 ```markdown
@@ -61,11 +85,39 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 - 按 §〇 确定执行模式（构造/快速/深度）
 - 声明 Review 模式和范围
 - 声明时间预算（可选；若填写，按 | <200行→10-20分 | 200-500→20-40 | 500-1000→40-80 | >1000→80-120 |）
-- **读取状态（双路径）**：
-  - **Trae IDE** → 读取 `notes/rewrite/{module}/.review/STATE.md`
-  - **Claude Code Runtime** → 读取 `.review/{module}/STATE.md`（项目根）
-  - 若两个 STATE.md 都存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
-  - **`{module}` 的确定**：取目标文档所在目录的**直接父目录名**。例如 `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）和 `--output .review/kernel/...` 是**两个不同概念**，不得混用。
+- **读取状态（统一双路径，互不共享中间结果）**：
+  - **Trae IDE** → 读取 `.review/trae/{module}/STATE.md`
+  - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`
+  - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。不跨工具互验；Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
+  - 若同一工具下出现两份 STATE.md 且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
+  - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
+
+- **路径变量与统一布局**（项目根 `.review/` 下分 `trae/` 与 `claude/`）：
+  - `{module}` = rewrite 模块名 = `notes/rewrite/{module}/` 的目录名（如 `fork-syscall-rewrite`）。取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。
+  - `{stage}` = 模块下的阶段子目录（如 `03-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
+  - `{doc-stem}` = 目标文档去扩展名（如 `03-kmain-cstart`）。
+  - `{agent}` = AI 模型标识（Trae 内：glm/kimi/ds/qwen/seed/...；Claude 内：m3/glm-flash）。
+  - **统一布局**（扁平 scans/，不启用 `{stage}/` 子目录，见 improve-v2 §7.2）：
+    ```
+    .review/
+    ├── trae/{module}/
+    │   ├── STATE.md                 # Trae 专属，与 claude 隔离
+    │   ├── VERIFY-CHECK.md          # Trae 专属
+    │   ├── session-plan.md          # 多 session 续审计划
+    │   └── scans/
+    │       ├── {doc-stem}-{agent}-scan.md        # 某 AI 的 scan（bagging 输入）
+    │       ├── {doc-stem}-{agent}-structure.md
+    │       ├── {doc-stem}-{agent}-SYMBOLS.md
+    │       ├── MANIFEST-{doc-stem}.md            # 该 doc 所有 agent scan 清单
+    │       └── AGGREGATED-{doc-stem}.md          # bagging 聚合后主 scan
+    └── claude/{module}/
+        ├── STATE.md                 # Claude 专属，与 trae 隔离
+        ├── VERIFY-CHECK.md          # Claude 专属
+        └── {doc-stem}/{scan,structure,SYMBOLS}.md
+    ```
+  - **双写模式**（交互式修复场景）：需交互式修复 review todo 时，除标准中间产物外，**额外**在被 review 文档同目录下写可读修复文档：Trae → `notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`；Claude → `{doc-stem}-claude-report.md`。修复文档 = 标准 scan 的可读子集 + todo 进度跟踪（按 issue ID/位置匹配的子集关系，非 checksum 一致）。
+  - **`{module}` 与覆盖率脚本 `--module` 是两个不同概念**：本路径的 `{module}` 是 rewrite 模块名；覆盖率脚本的 `--module kernel` 是 Minix3 模块名。不得混用。
+  - 推荐用 `tools/review-init.sh trae {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录，输出 Derived Paths 表。
 
 **中间产物**：
 ```
@@ -202,28 +254,29 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 **执行步骤**：
 
-1. **机器生成 SYMBOLS.md 骨架**：
+1. **机器生成 SYMBOLS.md 骨架**（Trae IDE 输出路径硬编码为 `.review/trae/` — 不要使用 `{tool}` 变量）：
    ```bash
+   # 变量说明：{minix3-module}=Minix3 模块名(vm/pm/kernel...); {rw-module}=rewrite 模块名(notes/rewrite/ 下第一级目录); {doc-stem}=目标文档去扩展名; {agent}=模型标识
    # 服务器模块（vm / pm / vfs / rs / ds / inet ...）
-   python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
-     --rust-dir os --c-dir minix3/minix/servers/{module} \
-     --semantic-map tools/coverage-extract/{module}-semantic-map.json \
+   python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
+     --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
+     --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
      --doc-file {target-doc-name}.md \
-     --output .review/{module}/{target-doc-name}/SYMBOLS.md
+     --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
    # 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
      --semantic-map tools/coverage-extract/kernel-semantic-map.json \
      --doc-file {target-doc-name}.md \
-     --output .review/kernel/{target-doc-name}/SYMBOLS.md
+     --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
    ```
-   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/kernel/{target-doc-name}/SYMBOLS.md)`。
+   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md)`。
    - `--rust-dir os`：扫描整个 `os/` 目录，避免遗漏跨 crate 实现（如 `kmain` 在 `os/kernel/src`，`ProtectionArch` 在 `os/arch/src`）。
-   - `--c-dir`：服务器模块用 `minix3/minix/servers/{module}`，内核用 `minix3/minix/kernel`。
+   - `--c-dir`：服务器模块用 `minix3/minix/servers/{minix3-module}`，内核用 `minix3/minix/kernel`。
    - `--semantic-map`：对 C→Rust 改写项目必须提供语义映射表，否则 Rust 覆盖率会严重低估。
    - `--doc-file`：当 review 单篇文档时，必须限定到该文档，确保 coverage 数字与文档一一对应。
-   - 若 `{module}-semantic-map.json` 不存在，先用空文件或从 `kernel-semantic-map.json` 裁剪。
+   - 若 `{minix3-module}-semantic-map.json` 不存在，先用空文件或从 `kernel-semantic-map.json` 裁剪。
 
 2. **AI 补充语义判断**（5 项，每项标注 evidence [DIRECT/MEDIUM/INFERRED]）：
    - Rust 对应关系确认（名称匹配 ≠ 语义对应）
@@ -238,7 +291,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 ```markdown
 ### Step 1.5 产物：覆盖率穷举（Gate A）
 
-**SYMBOLS.md**: .review/{module}/SYMBOLS.md
+**SYMBOLS.md**: .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）或 .review/trae/{rw-module}/scans/SYMBOLS.md（模块级）
 
 | 指标 | 数值 |
 |------|------|
@@ -487,17 +540,40 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 ### Step 5.5: 状态写入与收敛判断
 
-> 完成当前 phase 的验证后，将结果持久化写入工具对应的路径（见 Step 0 双路径规则）。
+> 完成当前 phase 的验证后，将结果持久化写入工具对应的路径（见 Step 0 统一布局）。**此步是强制步骤，不是可选**。即使用户约束 "read-only"，agent 也必须在 scan.md 写 "STATE 未更新原因：用户约束"，并在 STATE 追加 `## Pending Updates (blocked)` 列出应同步的 P0/P1。不允许静默跳过。
 
 **中间产物（精简版）**：
 1. 更新或创建工具对应的 `STATE.md`：
-   - Trae → `notes/rewrite/{module}/.review/STATE.md`
-   - Claude → `.review/{module}/STATE.md`
+   - Trae → `.review/trae/{module}/STATE.md`
+   - Claude → `.review/claude/{module}/STATE.md`
 2. 更新或创建 `SYMBOLS.md`（Step 1.5 机器产物）：
-   - 单文档 review → `.review/{module}/{target-doc-name}/SYMBOLS.md`
-   - 模块级 review → `.review/{module}/SYMBOLS.md`
+   - Trae 单文档 → `.review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md`
+   - Claude 单文档 → `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
 3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。
-   - 若用户显式指定输出位置，**双写**：用户指定路径 + 工具默认路径（Trae: `notes/rewrite/{module}/.review/scans/`; Claude: `.review/{module}/`）。
+   - Trae → `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
+   - Claude → `.review/claude/{module}/{doc-stem}/scan.md`
+   - **双写模式**：若需交互式修复 todo，额外在被 review 文档同目录写 `{doc-stem}-trae-review.md`（Trae）/ `{doc-stem}-claude-report.md`（Claude）。修复文档 = 标准 scan 的可读子集 + todo 进度跟踪。
+
+**Artifact Inventory**（scan.md 末尾必备，Gate 0 校验项；含双写校验）：
+```markdown
+## Artifact Inventory
+| 产物 | 预期路径 | 实际存在 | 大小 | SHA256 |
+|------|---------|---------|------|--------|
+| scan.md (标准) | .review/trae/{module}/scans/{doc-stem}-{agent}-scan.md | ✅ | 12KB | abc123… |
+| structure.md | .review/trae/{module}/scans/{doc-stem}-{agent}-structure.md | ✅ | 4KB | def456… |
+| SYMBOLS.md | .review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md | ✅ | 8KB | 789xyz… |
+| 交互式修复文档（双写，Trae） | notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md | ✅ | 6KB | ghi012… |
+```
+**双写校验**：修复文档/最终报告与 scan.md 不是 checksum 一致，而是"子集关系"——修复文档的每条 issue 必须能在 scan.md 中找到对应条目（按 ID/位置匹配），反向不要求。
+
+**Severity Reconciliation**（scan.md 必备新段，各自工具内部跨轮次调和，不跨工具）：
+```markdown
+## Severity Reconciliation
+| Issue | Prior severity (STATE) | New severity | Rationale | C-source evidence | Confirmed? |
+|-------|------------------------|--------------|-----------|-------------------|------------|
+| IDT handler=0 | P0 (06-17) | P1 (本次) | 文档 §4.3 已声明设计决策 | trap_entry.rs:175 | ✅ 降级 |
+```
+降级 P0 必须附 C 源或设计文档 `file:line` 证据；无证据则维持 P0。
 
 **STATE.md 格式**：
 
@@ -522,6 +598,19 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 - 不能仅在 Phase Completion Log 中记录；Open 列表必须实时更新。
 - 已修复的问题从 Open 列表移除，并移动到 "Closed Issues" 段落，注明修复 scan/日期。
 
+## Per-Doc Status
+| Doc | Last scan | Agent | P0 | P1 | P2 | VERIFY? |
+|-----|-----------|-------|----|----|----|---------|
+| 03-kmain-cstart | 2026-06-19 | glm | 0 | 1 | 3 | ❌ |
+| 04-clock-interrupt-init | 2026-06-19 | glm | 0 | 1 | 3 | ❌ |
+
+## Session Status
+| # | Session | 范围 | Status | Started | Completed | 产出 |
+|---|---------|------|--------|---------|-----------|------|
+| 1 | doc-03 | 1114 行 | ✅ DONE | 2026-06-19 | 2026-06-19 | scan-glm.md |
+| 2 | doc-04 | 1319 行 | ⏳ PENDING | — | — | scan-glm.md (append) |
+> 未完成 Session 标 `⏳ PENDING` + 截止位置；下个 Session 启动时读取本表 + session-plan.md 自动 resume。Session 间隔 >48h 自动标 STALE。
+
 ## Convergence Checklist
 - [ ] §2.1 概念准确性 — COMPLETE / 0 new P0
 - [ ] §2.2 C引用验证 — COMPLETE / 0 new P0
@@ -536,7 +625,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 ```
 
 **增量 Review 策略**：
-1. 启动时读取 `.review/{module}/STATE.md`
+1. Trae IDE 启动时读取 `.review/trae/{module}/STATE.md`（Claude Code Runtime 使用 `.review/claude/{module}/STATE.md`，两者隔离）
 2. COMPLETE 的维度→跳过（读 scan.md 对应章节总结即可，不重做）
 3. UNCHECKED 的维度→执行完整验证
 4. 代码/文档有修改→检查是否影响已 COMPLETE 维度（有影响→标记 NEEDS_RECHECK）
@@ -549,8 +638,8 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 - [ ] 全维度覆盖：10/10 维度 COMPLETE
 - [ ] P0 收敛：最近 Pass 新增 P0 = 0
 - [ ] P1 收敛：最近 Pass 新增 P1 ≤ 1
-- [ ] 独立验证：VERIFY-CHECK = PASS（**必须完成，不能跳过**）
-- [ ] Blocker Gates：A-E 全部通过，且每个 Gate 都有证据附件
+- [ ] 独立验证：**Gate G** VERIFY-CHECK = PASS（**必须完成，不能跳过**）
+- [ ] Blocker Gates：0/A/B/C/D/D-6/E/G 全部通过，且每个 Gate 都有 gate-evidence 附件
 
 **当前状态**：CONVERGED / NOT_CONVERGED (N phases remaining)
 **下一步**：[下一阶段名称] 或 [执行独立验证] 或 [审查已收敛，可结束]
@@ -558,27 +647,34 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 > **重要**：VERIFY-CHECK.md 是收敛终止的必要条件。未完成 VERIFY-CHECK 时，状态必须为 NOT_CONVERGED，即使 P0=0。
 
-### Step 5.6: Review Verification Protocol（独立验证）
+### Step 5.6: Review Verification Protocol（独立验证，Gate G）
 
-> **目的**：解决"自己审自己"的盲区。在所有维度 COMPLETE 后，在新会话中独立验证审查质量。
+> **目的**：解决"自己审自己"的盲区。分两阶段：VERIFY-SELF（Step 4.5 后立即自检）+ VERIFY-CROSS（收敛前独立验证）。
 > 用户指令：「验证 review」或「review of review」
+> **VERIFY-CHECK 在各自工具内部独立进行**：Trae 内可通过多 AI bagging 互为验证；Claude 内部需独立会话验证。**不跨工具互验**。
 
-**执行步骤**（独立会话）：
-1. 读取 `.review/{module}/STATE.md` + `scan.md` + 原始文档/代码
+#### VERIFY-SELF（Step 4.5 后立即执行）
+- 验证自己 review 中的 5 个 P0 检查项是否都有 grep 证据（Gate D 自检）
+- 抽样 20% 自报 Issue 反向验证（source evidence 是否充分？判定等级是否合理？）
+- 输出 self-check 表
+
+#### VERIFY-CROSS（Step 5.6 原位置，收敛前）
+**执行步骤**（独立会话 / Trae 内跨 AI 聚合）：
+1. 读取 `.review/trae/{module}/STATE.md` + `scan.md` + 原始文档/代码
 2. **随机抽样**：从 scan.md 的 Issue List 中随机选取 20% 的已报告问题
 3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有已标记 COMPLETE 但实际未完成的维度
-6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 A-E 全部 Gate
+6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A-E+G 全部 Gate（含 gate-evidence 块）
 
-**中间产物**（写入 `.review/{module}/VERIFY-CHECK.md`）：
+**中间产物**（写入 `.review/trae/{module}/VERIFY-CHECK.md`）：
 ```markdown
 ### Review Verification Result
 
 **抽样一致性**：X/Y = Z%
 **遗漏检查**：N 符号抽样，M 遗漏
 **收敛验证**：K/10 维度可信
-**Blocker Gates 复验**：A-E 全部真实通过? ✅/❌
+**Blocker Gates 复验**：0/A/B/C/D/D-6/E/G 全部真实通过? ✅/❌
 
 | 抽样问题 | scan.md 判定 | 独立重新判定 | 一致? |
 |---------|-------------|------------|-------|
@@ -587,9 +683,11 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 ```
 
 **判定标准**：
-- **PASS**：一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过 → 审查完成
-- **CONCERN**：一致性 70-90% → 特定维度需重新审查（标注在 STATE.md）
+- **PASS**：一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过 → Gate G 通过，审查完成
+- **CONCERN**：一致性 70-90% → 特定维度需重新审查（标注在 STATE.md）；Gate G 未通过，不得标 CONVERGED
 - **FAIL**：一致性 < 70% 或发现关键遗漏 → 标记 STATE.md 中相关维度为 NEEDS_RECHECK
+
+**轻量 VERIFY 入口**：任何 review 结束后若未达 CONVERGED，仍可触发轻量 VERIFY——抽样 20% 已报 issue 反向验证 + 抽样 20% 源码符号覆盖检查。STATE 的 `VERIFY` 字段细分为 `LIGHT (cross-AI)` / `FULL (independent session)`。
 
 ---
 
@@ -638,7 +736,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] Step 4 跨文档检查已输出
 - [ ] Step 4.1 语义归属判定已输出（如适用）
 - [ ] Step 4.2 设计决策质量表格已输出（如适用）
-- [ ] **Gate D**: P0 必检清单 5 项已回答（见 patterns-skill §0）
+- [ ] **Gate D**: P0 必检清单 5 项已回答（见 patterns-skill §0，PARTIAL=FAIL）
 - [ ] **Gate E**: Step 4.5 测试章节验证已输出（若文档有 §5）
 - [ ] Step 5 维度覆盖自检表格已输出
 - [ ] Step 5 最弱项自检 8 问题已确认（含 Blocker Gates）
@@ -646,6 +744,9 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] **Skill Invocation Log** 已输出
 - [ ] Step 5.5 STATE.md 和 scan.md 已写入（NOT 10 个维度文件）
 - [ ] Step 5.5 收敛状态评估已输出
+- [ ] **Artifact Inventory 已输出（Gate 0 校验项，含双写校验）**
+- [ ] **Severity Reconciliation 已输出（若有跨轮次严重性调和）**
+- [ ] **Gate G**: Step 5.6 VERIFY-CHECK 已产出（PASS；CONCERN/FAIL 不得标 CONVERGED）
 - [ ] **Step 5.7 Rule Discovery 已填写（是否发现新模式 ✅/❌ + 草案）**
 - [ ] **Step 7.1 收敛成本评估已输出**
 - [ ] Step 6 修改项已生成（P0 必须有代码修改项）

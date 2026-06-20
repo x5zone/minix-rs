@@ -309,7 +309,7 @@ KERNEL_CALL = 0x600 (per `com.h:204`)
 
 | call_nr | C 名称 | Rust Handler | 状态 |
 |---------|--------|--------------|------|
-| 0 | SYS_FORK | `syscall_process.rs:114` | ✅ Implemented (2026-06-14) | 完整 C→Rust 映射表（11 行）见 `16-syscall-process.md` §2.1 "Rust 实现现状"；遗留 FPU save/restore / sched_proc / ProcessTable 传递 3 项 DEFERRED |
+| 0 | SYS_FORK | `syscall_process.rs:114` | ✅ Implemented (2026-06-14) | 完整 C→Rust 映射表（11 行）见 `17-syscall-process.md` §2.1 "Rust 实现现状"；遗留 FPU save/restore / sched_proc / ProcessTable 传递 3 项 DEFERRED |
 | 1 | SYS_EXEC | `syscall_process.rs:161` | ⚠️ Partial |
 | 2 | SYS_CLEAR | `syscall_process.rs:335` | ⚠️ Partial→Partial++ (2026-06-16) | ✅ **(2026-06-16) 修复 P0 语义漂移**: 1) 旧代码操作 caller (PM) 而非 target — PM 调用 SYS_CLEAR 会把自己标记 SLOT_FREE! 现在正确操作 target; 2) 新增 endpoint 验证 (isokendpt → EINVAL); 3) 新增 isemptyp 提前返回; 4) 传入 ProcessTable + PrivTable, 实现 SYS_PROC privilege slot 释放 (s_proc_nr = None); 5) DEFERRED: release_address_space / IRQ hooks / clear_endpoint / reset_kernel_timer |
 | 3 | SYS_SCHEDULE | `syscall.rs:280` | ❌ BadCall (in-kernel) |

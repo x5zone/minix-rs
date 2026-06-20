@@ -14,12 +14,77 @@ use alloc::vec::Vec;
 use uefi::boot::{self, AllocateType};
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryType};
+use uefi::system;
+use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
+use uefi::Guid;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion};
+use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion, PlatformDescriptorPtr};
 
 use crate::loader::{
     self, FileLoader, KernelLoadResult,
 };
+
+/// UEFI Configuration Table GUID for the Device Tree (FDT).
+///
+/// Defined in the UEFI Specification as `EFI_DEVICE_TREE_GUID`.
+/// Not provided by the `uefi` crate, so we define it here.
+const DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f018a8d3");
+
+/// Scan the UEFI Configuration Table for the platform descriptor
+/// (ACPI RSDP on x86-64, DTB on ARM64).
+///
+/// Returns `None` if no matching entry is found — the kernel will then
+/// fall back to `QemuVirtDesc` (dev) or panic (release).
+///
+/// Must be called **before** `exit_boot_services()`, because the UEFI
+/// System Table (which holds the configuration table pointer) is only
+/// valid while boot services are available.
+fn find_platform_descriptor() -> Option<PlatformDescriptorPtr> {
+    system::with_config_table(|entries| {
+        // On x86-64, look for ACPI RSDP (prefer ACPI 2.0+).
+        // On aarch64, look for DTB first, fall back to ACPI.
+        #[cfg(target_arch = "x86_64")]
+        {
+            for e in entries {
+                if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
+                    return Some(PlatformDescriptorPtr::Rsdp(PhysBytes(
+                        e.address as u64,
+                    )));
+                }
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Prefer DTB on ARM64 UEFI systems (QEMU virt provides DTB).
+            for e in entries {
+                if e.guid == DEVICE_TREE_GUID {
+                    return Some(PlatformDescriptorPtr::Dtb(PhysBytes(
+                        e.address as u64,
+                    )));
+                }
+            }
+            // Fall back to ACPI if DTB not present.
+            for e in entries {
+                if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
+                    return Some(PlatformDescriptorPtr::Rsdp(PhysBytes(
+                        e.address as u64,
+                    )));
+                }
+            }
+        }
+
+        // On other architectures (e.g., riscv64 with UEFI — currently
+        // unsupported as a Rust target), return None and let the kernel
+        // use the QEMU fallback.
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let _ = entries;
+        }
+
+        None
+    })
+}
 
 /// UEFI implementation of `BootShim`.
 ///
@@ -46,6 +111,11 @@ impl BootShim for UefiBootShim {
         let boot_modules =
             loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
 
+        // Locate the platform descriptor (ACPI RSDP or DTB) from the UEFI
+        // configuration table. Must happen before ExitBootServices because
+        // the System Table is only valid while boot services are available.
+        let platform_descriptor = find_platform_descriptor();
+
         let kernel_info = build_kernel_info(
             memmap,
             kern.kern_virt_base,
@@ -61,6 +131,7 @@ impl BootShim for UefiBootShim {
             // boot-shim can determine its own physical footprint.
             PhysBytes(0), // TODO: determine boot-shim physical start from firmware
             kern.kern_phys_base.0, // boot-shim memory ends where kernel begins
+            platform_descriptor,
         );
 
         exit_boot_services();
@@ -126,6 +197,7 @@ pub fn build_kernel_info(
     boot_modules: &'static [BootModule],
     bootstrap_start: PhysBytes,
     bootstrap_len: u64,
+    platform_descriptor: Option<PlatformDescriptorPtr>,
 ) -> KernelInfo {
     KernelInfo {
         memmap,
@@ -139,6 +211,7 @@ pub fn build_kernel_info(
         boot_modules,
         bootstrap_start,
         bootstrap_len,
+        platform_descriptor,
     }
 }
 
@@ -225,6 +298,7 @@ mod tests {
             &MODULES,
             PhysBytes(0x100000), // bootstrap_start
             0x100000,            // bootstrap_len
+            None,                // platform_descriptor
         );
 
         assert_eq!(info.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
@@ -233,5 +307,6 @@ mod tests {
         assert_eq!(info.memmap.len(), 1);
         assert_eq!(info.boot_modules.len(), 1);
         assert_eq!(info.boot_modules[0].name, "vm");
+        assert!(info.platform_descriptor.is_none());
     }
 }

@@ -11,6 +11,7 @@ minix-types = { path = "../libs/minix-types" }
 minix-boot = { path = "../libs/minix-boot" }
 minix-elf = { path = "../libs/minix-elf" }
 minix-plat = { path = "../plat" }
+minix-platform = { path = "../libs/minix-platform" }
 bitflags = { workspace = true }
 
 [features]

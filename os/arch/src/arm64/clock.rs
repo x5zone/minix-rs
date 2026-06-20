@@ -4,7 +4,15 @@
 //! (EL1 Physical Timer). The timer frequency is provided by firmware
 //! via CNTFRQ_EL0.
 //!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! `TimerDesc::ArmGenericTimer` carries no data (frequency is read from
+//! CNTFRQ_EL0 at runtime), so `new()` is a no-op constructor. The struct
+//! exists only to satisfy the instance-based trait contract.
+//!
 //! C: earm/arch_system.c PMU init (cycle counter for user mode)
+
+use minix_platform::TimerDesc;
 
 use crate::clock::ClockArch;
 
@@ -20,7 +28,19 @@ use crate::clock::ClockArch;
 pub struct AArch64ClockArch;
 
 impl ClockArch for AArch64ClockArch {
-    fn init_timer(hz: u32) {
+    fn new(desc: &TimerDesc) -> Self {
+        // ARM Generic Timer carries no data in the descriptor — frequency
+        // is read from CNTFRQ_EL0 at runtime. We only verify the variant.
+        match desc {
+            TimerDesc::ArmGenericTimer => Self,
+            _ => panic!(
+                "AArch64ClockArch::new: expected TimerDesc::ArmGenericTimer, got {:?}",
+                desc
+            ),
+        }
+    }
+
+    fn init_timer(&mut self, hz: u32) {
         // ARM Generic Timer is configured by firmware (TF-A/U-Boot).
         // We need to:
         // 1. Read the counter frequency from CNTFRQ_EL0
@@ -50,7 +70,7 @@ impl ClockArch for AArch64ClockArch {
         }
     }
 
-    fn read_ticks() -> u64 {
+    fn read_ticks(&self) -> u64 {
         let count: u64;
         unsafe {
             core::arch::asm!("mrs {}, cntpct_el0", out(reg) count);

@@ -662,3 +662,68 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 
 **判定**：示例引入额外问题 → P2；本章开门第一个例子就有此问题 → P1。
 
+### 模式 58：跨文档阶段状态表漂移（P1）`[来源: M3]`
+
+```markdown
+❌ 错误：文档含 §N 实施状态表（"Phase 1: 待实施 / Phase 2: 待实施 / Phase 3: 待实施"），
+        但实际代码已经实现多个阶段，状态表长期未同步。
+
+        → reader 误判项目成熟度，文档与代码事实不一致。
+
+✅ 正确：每个阶段完成时，原子提交中同步更新 §N 实施状态表
+        "Phase 1: ✅ 已完成（见 file.rs:N）+ 实现要点"
+        "Phase 2: ✅ 已完成（见 file.rs:M）+ 实现要点"
+        "Phase 3: 🚧 进行中（待 issue #N）"
+```
+
+**判定**：文档含阶段状态表但与代码实现进度不符 → P1；状态表整体伪造或全部 "待实施" 但代码已实现 → P0。
+**自动检测**：`tools/review-state-validate.py` 应读取 doc §N 阶段状态表 + grep 代码 TODO/FIXME/impl 标记，输出不一致列表。
+**来源案例**：`04-platform-discovery.md:595-599` §13 阶段表原写全部"待实施"，但 `os/libs/minix-platform/src/{device_tree.rs, acpi.rs}` 已实现（已在后续修复）。
+
+### 模式 59：文档字段计数漂移（P1）`[来源: M3]`
+
+```markdown
+❌ 错误：文档 §X 写"Rust 保留 9 字段"，代码 struct 实际有 12 字段；或
+        文档代码示例只展示 8 个字段，但 struct 公有字段共 12 个。
+
+        → reader 凭文档写代码时会漏掉 4 个字段；doc-code 一致性破缺。
+
+✅ 正确：struct 字段增/删/恢复时，doc 字段计数与代码示例必须同一 commit 更新
+        "Rust 保留 12 字段（见 file.rs:N-M）"
+        代码示例展示全部字段
+```
+
+**判定**：doc §X 字段计数 ≠ 实际 struct 公有字段数；或 doc 代码示例遗漏字段 → P1。
+**三类漂移**：
+1. 字段新增未文档化（最常见，~70%）
+2. 字段保留但 doc 误标"已删除"（~20%）
+3. doc 代码示例只展示字段子集（~10%）
+
+**自动检测**：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
+**来源案例**：`01-boot-shim-bootstrap.md` §3.5 原写"9 字段"，`os/libs/minix-boot/src/kernel_info.rs` 实际 12 字段（已在后续修复）。
+
+### 模式 60：诚实显式 TODO 模式（P1，推广现有最佳实践）`[来源: M3]`
+
+```markdown
+❌ 错误：TODO 静默遗漏
+        // TODO: integrate later
+        // 文档也没提到此处未实现
+
+        → 后续维护者不知此处未完成，盲信代码"看起来对"。
+
+✅ 正确：TODO 显式 + 双向标记
+        // TODO(P0): Wire BootProcArch::load_vm_elf() into init_proc_and_boot()
+        //           for VM process — see doc §4.5 L1133-1138.
+        //           Current: placeholder (VirBytes(0), VirBytes(0), VirBytes(0)).
+        //           Fix: let vm_load = CurrentBootProcArch::load_vm_elf(...);
+
+        + 文档 §4.5 同步标 TODO + 原因 + 预期修复路径
+
+        四要素: (a) file:line 引用 (b) 严重度 P0/P1/P2 (c) 一行解释 (d) doc 章节引用
+```
+
+**判定**：TODO 注释缺少 file:line/严重度/解释/doc 引用任一项 → P1；TODO 与 doc 完全无对应 → P0（违反 Claims-Evidence）。
+**推广原因**：Doc 06 §4.5 的 4 个 TODO（1 P0 + 2 P1 + 1 P2）是金标准实践，已成可复用模板。
+**反例**：`// TODO` + `// fix later` 等无四要素注释 → P1。
+**来源案例**：`06-proc-init-boot-proc.md:1133-1170` 4 个显式 TODO + 代码注释双向同步。
+

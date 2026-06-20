@@ -17,6 +17,18 @@ pub const NR_IRQ: usize = 16;
 // C: minix/include/minix/com.h:272 — SYS_CALL_MASK_SIZE = BITMAP_CHUNKS(NR_SYS_CALLS) = 2
 pub const SYS_CALL_MASK_SIZE: usize = 2;
 
+// C: minix/include/minix/priv.h:28-29 — kernel call mask constants.
+/// No kernel calls allowed (`NO_C`). Used for kernel tasks and user processes.
+pub const K_CALL_MASK_NONE: [u32; SYS_CALL_MASK_SIZE] = [0; SYS_CALL_MASK_SIZE];
+/// All kernel calls allowed (`ALL_C`). Used for system services (VM, RS, etc.).
+pub const K_CALL_MASK_ALL: [u32; SYS_CALL_MASK_SIZE] = [0xFFFF_FFFF; SYS_CALL_MASK_SIZE];
+
+// C: minix/include/minix/priv.h:24-25 — IPC target mask constants.
+/// No IPC targets allowed (`NO_M`). Used for kernel tasks.
+pub const IPC_TO_NONE: u64 = 0;
+/// All IPC targets allowed (`ALL_M`). Used for system services (VM, RS, etc.).
+pub const IPC_TO_ALL: u64 = !0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoRange {
     pub base: u32,
@@ -419,6 +431,41 @@ mod tests {
         let priv_ = table.get(priv_id).unwrap();
         assert!(priv_.s_flags.contains(PrivFlagsBits::SYS_PROC));
         assert!(priv_.s_flags.contains(PrivFlagsBits::BILLABLE));
+    }
+
+    #[test]
+    fn test_k_call_mask_constants() {
+        // C: NO_C → all-zero mask; ALL_C → all-one mask.
+        assert_eq!(K_CALL_MASK_NONE, [0; SYS_CALL_MASK_SIZE]);
+        assert_eq!(K_CALL_MASK_ALL, [0xFFFF_FFFF; SYS_CALL_MASK_SIZE]);
+    }
+
+    #[test]
+    fn test_ipc_to_constants() {
+        // C: NO_M → 0; ALL_M → all bits set.
+        assert_eq!(IPC_TO_NONE, 0);
+        assert_eq!(IPC_TO_ALL, !0);
+    }
+
+    #[test]
+    fn test_configure_boot_priv_sets_masks() {
+        let mut table = PrivTable::new();
+        let priv_id = table.assign_static(0).unwrap();
+
+        // System services (VM/RS) get ALL_M + ALL_C.
+        table.configure_boot_priv(
+            priv_id,
+            priv_flag_set::RSYS_F,
+            0,
+            0,
+            IPC_TO_ALL,
+            K_CALL_MASK_ALL,
+            Endpoint::NONE,
+        );
+
+        let priv_ = table.get(priv_id).unwrap();
+        assert_eq!(priv_.s_ipc_to, IPC_TO_ALL);
+        assert_eq!(priv_.s_k_call_mask, K_CALL_MASK_ALL);
     }
 
     #[test]

@@ -16,8 +16,8 @@
 > **本章不讲什么**:
 > - 页表多级结构、TLB（内存管理文档范围）
 > - GDT 段描述符位级格式、IDT Gate 格式（Ch2 C 源码分析）
-> - syscall 实现细节、swapgs/MSR_LSTAR（[12-syscall.md](12-syscall.md)）
-> - trap frame 布局、IST/sscratch 交换指令细节（[13-exception-interrupt.md](13-exception-interrupt.md)）
+> - syscall 实现细节、swapgs/MSR_LSTAR（[13-syscall-dispatch.md](13-syscall-dispatch.md)）
+> - trap frame 布局、IST/sscratch 交换指令细节（[14-exception-interrupt.md](14-exception-interrupt.md)）
 >
 > 这些在后续章节展开，本章只建概念地基。
 
@@ -91,9 +91,9 @@
 
 **关键点 1（顺序修正）**：x86 读 IDT 门描述符时，CPU **同时**完成切栈（从 TSS.sp0 加载 RSP）+ 跳入口（加载门描述符里的 handler 地址），是原子操作，非"先跳再切"。aarch64 类似（EL0→EL1 时硬件切 SP_EL1 并跳 VBAR_EL1 指向的入口）。riscv64 不同：CPU 只负责跳到 stvec，切栈由 handler 第一条指令 `csrrw sp, sscratch, sp` 软件完成。流程图抽象层把"跳入口+切栈"合并为一步，三架构都成立，§1.4c 再分架构展开硬件 vs 软件。
 
-**关键点 2（保存现场统一）**：三架构"保存现场"也不统一——x86 CPU 硬件自动压入 SS:RSP:RFLAGS:CS:RIP，其余寄存器软件保存；aarch64 大部分寄存器软件保存；riscv64 全部软件保存。流程图用"保存现场"抽象表述，加注"由硬件、软件或两者协作完成，具体机制因架构而异"，细节见 [13-exception-interrupt.md](13-exception-interrupt.md)。
+**关键点 2（保存现场统一）**：三架构"保存现场"也不统一——x86 CPU 硬件自动压入 SS:RSP:RFLAGS:CS:RIP，其余寄存器软件保存；aarch64 大部分寄存器软件保存；riscv64 全部软件保存。流程图用"保存现场"抽象表述，加注"由硬件、软件或两者协作完成，具体机制因架构而异"，细节见 [14-exception-interrupt.md](14-exception-interrupt.md)。
 
-**syscall vs 异常的本质区别**（细节见 [12-syscall.md](12-syscall.md)）:
+**syscall vs 异常的本质区别**（细节见 [13-syscall-dispatch.md](13-syscall-dispatch.md)）:
 
 - 异常 = CPU 被动发现错误，用户进程"不想"进入内核
 - syscall = 用户主动、受控请求服务，是合法的特权级跨越
@@ -111,7 +111,7 @@
 | aarch64 | `eret` | 恢复 PC/PSTATE，PSTATE.M 降回 EL0 |
 | riscv64 | `sret` | 恢复 PC，sstatus.SPP 决定降回 U-mode |
 
-细节（swapgs、sscratch 二次交换、用户态恢复后的指令位置）留给 [12-syscall.md](12-syscall.md)/[13-exception-interrupt.md](13-exception-interrupt.md)。
+细节（swapgs、sscratch 二次交换、用户态恢复后的指令位置）留给 [13-syscall-dispatch.md](13-syscall-dispatch.md)/[14-exception-interrupt.md](14-exception-interrupt.md)。
 
 **为什么这个流程需要 CPU 预先配置**：切栈要知道切到哪个栈，跳入口要知道跳到哪个地址——这些答案 CPU 不会自己生成，必须 OS 预先填好。
 
@@ -124,7 +124,7 @@
 >
 > `prot_init()` 的全部工作，就是给 CPU 配置回答这三个问题的数据结构。后文三问逐一展开，每问对应 prot_init 的一类配置。
 >
-> **注**：第一问"特权级"是核心，它进一步决定可访问的内存范围（见 §1.4a）——但内存访问控制是特权级的"后果"，不是与特权级并列的独立问题。特权级是地基，页表权限位是落地手段。
+> **注**：第一问"特权级"是核心，它进一步决定可访问的内存范围（见 §1.4a）——但内存访问控制是特权级的"后果"，不是与特权级并列的独立问题。特权级是地基，页表权限位是落地手段。三架构中，页表权限位由 02 文档的 `arch_boot_impl()` 建立，本文只讨论 x86 GDT DPL 这一 prot_init 补充项。
 
 #### 1.4a 第一问：当前什么特权级？（+ 特权级如何落地为内存访问控制）
 
@@ -166,19 +166,21 @@ CPU 发起内存访问
 - **aarch64/riscv64**：prot_init 在第一问**几乎不配置**——特权级是 CPU 固定的（EL0/EL1、U/S 是硬件定义），页表权限位由 arch_boot_impl 建立（02 文档），不归 prot_init。
 - **不对等的来源**：§1.4 引子说"每问对应 prot_init 一类配置"，但第一问只在 x86 有 prot_init 配置（GDT DPL），aarch64/riscv64 在第一问 prot_init 几乎不干活。这是 x86 历史包袱（段描述符 DPL）导致的，非三架构共性。第一问的"答案"在 aarch64/riscv64 由 arch_boot_impl（页表权限位）+ CPU 硬件（固定特权级）共同提供，prot_init 只在 x86 补充段描述符 DPL。
 
+> **概念落地说明**：第一问"当前什么特权级"在 Ch1 已经回答为"CPU 硬件标签 + x86 GDT DPL"，其落地手段"页表权限位"由 02 文档的 `arch_boot_impl()` 建立。本文 §2.3 分析 x86 的 `prot_init()` 时再次覆盖 DPL 设置（`protect.c:345-348`），并在 §4.4 的"概念→代码"映射表中列出 `prot.load()` 让特权级生效；aarch64/riscv64 的页表权限位已在 02 文档完成，本文不再重复展开，但通过 §1.4a 的"三架构不对等"说明和 §1.5 三架构对照表保持链路完整。
+
 #### 1.4b 第二问：异常/syscall 发生时跳到哪里？（异常入口）
 
 **WHY**：CPU 发现异常或收到 syscall 时，自己不知道该执行哪个函数——必须有一张表告诉它"向量号 X → handler 地址 Y"。无有效入口 → triple fault（x86）/ 异常嵌套失控。
 
 **HOW（三架构）**: x86 IDT / aarch64 VBAR_EL1 / riscv64 stvec。一句话流程：CPU 发现异常 → 查向量表 → 找到 handler → 跳转。
 
-**嵌套异常用哪个栈**（细节见 [13-exception-interrupt.md](13-exception-interrupt.md)）:
+**嵌套异常用哪个栈**（细节见 [14-exception-interrupt.md](14-exception-interrupt.md)）:
 
 - x86-64：同特权级不切栈（用当前 RSP）；NMI/double-fault/MCE 用 IST（TSS 里 7 个专用栈）避免依赖可能已损坏的内核栈。
 - aarch64：EL1 再陷异常仍用 SP_EL1，需小心保存/恢复。
 - riscv64：sscratch 在内核态时存的是用户 sp，必须检测 sstatus.SPP 判断"来自用户还是内核"再决定是否交换——RISC-V trap 处理已知复杂点。
 
-**prot_init 的职责**：填充异常向量表元数据（IDT 门描述符的 DPL/IST/门类型；VBAR/stvec 指向汇编定义的向量表）。注意：handler 地址在本文阶段仍为 0，真正加载推迟到 [13-exception-interrupt.md](13-exception-interrupt.md) `set_handler()` 之后。
+**prot_init 的职责**：填充异常向量表元数据（IDT 门描述符的 DPL/IST/门类型；VBAR/stvec 指向汇编定义的向量表）。注意：handler 地址在本文阶段仍为 0，真正加载推迟到 [14-exception-interrupt.md](14-exception-interrupt.md) `set_handler()` 之后。
 
 #### 1.4c 第三问：陷入内核时用哪个栈？（跨特权级栈切换）
 
@@ -219,7 +221,7 @@ CPU 发起内存访问
 | 嵌套异常用哪个栈 | IST（专用栈） | SP_EL1（不切，同栈） | 当前 sp（不切，同栈） |
 | 返回用户态 | `iretq` | `eret` | `sret` |
 
-> **关于"嵌套异常用哪个栈"行**：三架构统一为"用哪个栈"抽象层——x86 用 IST 专用栈，aarch64/riscv64 不切栈用当前栈。"如何判断是否切栈"的细节（如 riscv64 检测 `sstatus.SPP`）见 §1.4b 文字和 [13-exception-interrupt.md](13-exception-interrupt.md)。
+> **关于"嵌套异常用哪个栈"行**：三架构统一为"用哪个栈"抽象层——x86 用 IST 专用栈，aarch64/riscv64 不切栈用当前栈。"如何判断是否切栈"的细节（如 riscv64 检测 `sstatus.SPP`）见 §1.4b 文字和 [14-exception-interrupt.md](14-exception-interrupt.md)。
 
 **统一性结论**：尽管三架构实现载体不同（GDT/IDT/TSS vs VBAR/SP_EL1 vs stvec/sscratch），但都在回答同样的 CPU 三问——保护结构本质是跨架构共性的。差异只在"用什么数据结构承载答案"，不在"要回答哪些问题"。
 
@@ -254,6 +256,8 @@ CPU 发起内存访问
 
 ### 1.8 prot_init 在六阶段启动中的位置
 
+> **测试边界**：本节给出六阶段启动全景图，帮助读者定位本文覆盖范围。本文不展开阶段 C-F 的实现细节（分别由 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)、[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 等文档覆盖），也不在本文对它们做单元测试。
+
 02 文档结束时，CPU 已在高地址执行 `kmain()`。从 `kmain()` 入口到内核开始调度第一个用户进程，过程分为六个阶段：
 
 | 阶段 | 关键动作 | 本质 |
@@ -262,7 +266,7 @@ CPU 发起内存访问
 | **B: cstart** | 建立保护结构、初始化时钟、初始化中断控制器、架构相关初始化 | 从"裸机"过渡到"有保护的运行环境" |
 | **C: 进程表** | 创建进程表项、加载 boot modules 的 ELF | 准备好被调度实体 |
 | **D: post-init** | 启动 VM 进程、分配空闲页目录 | 内存管理上线 |
-| **E: system** | 初始化特权表（对应 [07-system-init-boot-finish.md](07-system-init-boot-finish.md) 的 `system_init()`） | 权限系统上线 |
+| **E: system** | 初始化特权表（对应 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的 `system_init()`） | 权限系统上线 |
 | **F: finish** | 回收 bootstrap 内存、切换到用户态 | 启动完成 |
 
 本文覆盖 **A 与 B 的前半部分（保护结构）**；B 后半部分（时钟、中断、arch_init）在 04 文档展开。
@@ -456,7 +460,7 @@ void prot_init(void)
 - **步骤 11**（`protect.c:350`）：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`idt_init()`（填充 IDT 门描述符）、`idt_reload()`（加载 IDTR，即 `lidt`）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT 和 IDT。
 - **步骤 12-15**（`protect.c:357-360`）：建立（重建）bootstrap 页表。`pre_init()`（`pre_init.c:217`）已经做过几乎相同的页表设置，并把 `pg_mapkernel()` 的返回值存入了 `kinfo.freepde_start`（`pre_init.c:232`）。`prot_init()` 之所以再次 `pg_clear()` + `pg_identity()` + `pg_mapkernel()`，不是因为内核映射参数变了——`kern_vir_start` / `kern_phys_start` / `kern_kernlen` 是 `pg_utils.c:14-16` 的静态变量，内容不变——而是因为：
   1. `prot_init()` 作为保护子系统的统一初始化入口，选择从零重建页表（连同 GDT/IDT/TSS 一起），确保保护结构处于已知状态；
-  2. 重建后的页表是**内核重定位完成后**建立的官方 bootstrap 页表，后续 `arch_boot_proc()` 会把 VM 进程直接加载到这个页表里运行（`protect.c:480+`）；
+  2. 重建后的页表是**内核重定位完成后**建立的官方 bootstrap 页表，后续 `arch_boot_proc()` 会把 VM 进程直接加载到这个页表里运行（i386: `protect.c:388`，earm: `protect.c:115`）；
   3. 此时使用的 `kinfo` 已经经过 `kmain()` 补充（`nr_procs`、`nr_tasks`、`boot_procs` 等，`main.c:128-431`），不再只依赖 boot loader 的原始 multiboot 数据。
   
   具体调用：
@@ -492,11 +496,11 @@ int tss_init(unsigned cpu, void * kernel_stack)
 `tss_init()` 做两件事（对应 §1.4c 第三问）：
 
 1. **在 GDT 中创建 TSS 描述符**（`protect.c:160-163`）：TSS 必须通过 GDT 描述符引用（这是 §1.7 讲的"x86 架构要求"）。
-2. **填充 TSS 内容**（`protect.c:166-167`）：设置 `ss0`（ring0 栈段选择子）和 `sp0`（ring0 栈指针，在 `earm/protect.c:32` 可见类似逻辑 `t->sp0 = ((unsigned) kernel_stack) - ARM_STACK_TOP_RESERVED`）。当 ring3→ring0 切换时，CPU 硬件自动从 TSS.sp0 加载 RSP。
+2. **填充 TSS 内容**（`protect.c:166-181`）：设置 `ss0`（ring0 栈段选择子）和 `sp0`（ring0 栈指针，在 `earm/protect.c:42` 可见类似逻辑 `t->sp0 = ((unsigned) kernel_stack) - ARM_STACK_TOP_RESERVED`）。当 ring3→ring0 切换时，CPU 硬件自动从 TSS.sp0 加载 RSP。
 
 #### 2.3.2 idt_init() 分析
 
-`idt_init()`（`protect.c:260-263`）负责填充 IDT（Interrupt Descriptor Table），是异常向量表的核心初始化逻辑（对应 §1.4b 第二问）：
+`idt_init()`（`protect.c:260-263`）负责填充 IDT（Interrupt Descriptor Table），是异常向量表的核心初始化逻辑（对应 §1.4b 第二问）。本节内容**x86-64 特有**：aarch64/riscv64 没有 IDT/gate_table 中间层，异常向量表由汇编直接定义并通过 VBAR_EL1/stvec 指向。
 
 ```c
 void idt_init(void)
@@ -645,7 +649,7 @@ SMP 阶段 AP 初始化同样遵循该模式：`init_ap(cpu_id, stack_top)` 返�
 
 C 版 `cstart()`（`main.c:403-481`）把保护结构初始化、时钟初始化、中断初始化、arch_init 都放一个函数里。Rust 版拆分为 `init_protection()`（本文）和 `init_clock_and_interrupts()`（04 文档），对应两个不同的"启动里程碑"：
 
-1. **`init_protection()` 之后**：GDT/TSS/SYSCALL-MSR 生效，CPU 可安全进行系统调用；IDT 需等到 `set_handler()` 完成后才真正加载，因此异常响应在 13 文档阶段才完全可用。
+1. **`init_protection()` 之后**：GDT/TSS/SYSCALL-MSR 生效，CPU 可安全进行系统调用；IDT 需等到 `set_handler()` 完成后才真正加载，因此异常响应在 14 文档阶段才完全可用。
 2. **`init_clock_and_interrupts()` 之后**：CPU 可响应硬件中断。
 
 这两个里程碑不可交换：中断控制器初始化后硬件中断可能立即到来，保护结构（GDT/TSS/SP_EL1/sscratch）必须先就绪，否则缺少有效的内核栈与特权级上下文会 triple fault。
@@ -680,7 +684,7 @@ pub trait ProtectionArch: Sized {
 }
 ```
 
-> 实现位置：`os/arch/src/arch/protection.rs:71`。
+> 实现位置：`os/arch/src/arch/protection.rs:105`。
 >
 > 各方法语义：
 >
@@ -712,13 +716,13 @@ pub trait TrapEntryArch: Sized {
 }
 ```
 
-> 实现位置：`os/arch/src/arch/trap_entry.rs:76`。
+> 实现位置：`os/arch/src/arch/trap_entry.rs:116`。
 >
 > 各方法语义：
 >
 > - `init()`：填充异常向量表——CPU 异常（除零、页错误等）、硬件中断（PIC/IOAPIC）、系统调用入口。
 > - `configure_syscall()`：配置系统调用机制。x86-64 需要写入 MSR（LSTAR/SFMASK），aarch64/riscv64 使用异常向量中的统一入口，无需额外配置。
-> - `load()`：将向量表基址写入硬件寄存器（`lidt`、`msr VBAR_EL1`、`csrw stvec`），从此刻起异常和中断有去向。**本文阶段不调用 `trap.load()`**，因为 handler 地址仍为 0；真正的加载在 [13-exception-interrupt.md](13-exception-interrupt.md) 阶段 `set_handler()` 之后。
+> - `load()`：将向量表基址写入硬件寄存器（`lidt`、`msr VBAR_EL1`、`csrw stvec`），从此刻起异常和中断有去向。**本文阶段不调用 `trap.load()`**，因为 handler 地址仍为 0；真正的加载在 [14-exception-interrupt.md](14-exception-interrupt.md) 阶段 `set_handler()` 之后。
 > - `load_ap()`：AP 启动时的异常向量加载。
 > - `set_handler()`：设置具体中断/异常的处理函数。上层代码传 OS 概念（"时钟中断"、"页错误"），底层实现映射到架构特有的向量号。OS 概念与硬件编码完全解耦。
 >
@@ -743,19 +747,26 @@ fn init_protection(kernel_info: &KernelInfo) {
     prot.load();
 
     // 步骤 3: 准备"异常向量表"内容（handler 地址仍为 0，仅填充元数据）
-    // C: idt_init() 在这里已经填入真实 handler 地址并加载 IDT；Rust 拆分到 13 文档阶段。
+    // C: idt_init() 在这里已经填入真实 handler 地址并加载 IDT；Rust 拆分到 14 文档阶段。
     let mut trap = CurrentTrapEntry::init();
     // 步骤 4: 配置系统调用入口（仅 x86-64 写 LSTAR MSR；aarch64/riscv64 用统一异常入口）
     // C: SYSCALL MSR 设置 — protect.c:189-205
     trap.configure_syscall(kernel_info.syscall_entry);
     // 注意：本文阶段不调用 trap.load()。IDT 元数据（DPL/IST/门类型）已就绪，
     // 但 handler 地址为 0，现在加载会导致任何异常跳转到地址 0。
+    //
+    // 安全保证：init_protection() 到 set_handler() 之间，内核运行在"关中断 + 不发生异常"的
+    // 受控路径上——cstart 后续代码（init_clock_and_interrupts、proc_init 等）是顺序执行的
+    // 初始化逻辑，不触发用户态异常/中断；CPU 仍沿用 boot-shim/UEFI 留下的有效 IDT（若已存在）
+    // 或直到 set_handler() 后才启用我们自己的中断分发。因此"handler 为 0"的窗口期不会暴露。
 }
 ```
 
 > 实现位置：`os/kernel/src/lib.rs:574`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
 
 > **运行时更新内核栈**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
+
+> **返回路径说明**：Ch1 §1.3 强调保护结构是"双向门"——进入内核与返回用户态都必须受控。`ProtectionArch`/`TrapEntryArch` trait 目前只抽象了进入内核的入口配置（`load()` 让 GDT/IDT/VBAR/stvec 生效），而返回用户态的指令（x86-64 `iretq` / aarch64 `eret` / riscv64 `sret`）隐藏在具体架构的汇编 handler 中，由 [14-exception-interrupt.md](14-exception-interrupt.md) 统一实现。本文不单独设计 return-path trait，是因为返回动作与异常/中断 handler 的上下文恢复强耦合，无法在本阶段独立配置；但 trait 边界已为后续扩展预留（如需要可在 14 文档引入 `TrapReturnArch`）。
 
 **代码与 CPU 三问的对应**（Ch1 §1.4 → Ch3 §3.1 → Ch4 三层闭环）:
 
@@ -881,7 +892,7 @@ cd os/qemu-tests && ./run_all.sh
 
 ### 5.3 已有单元测试
 
-本节仅列出与 **保护结构**（`ProtectionArch` + `TrapEntryArch`）直接相关的单元测试。时钟相关 trait（`ClockArch`）的测试（例如 `test_read_tsc_default_delegates_to_read_ticks`）属于 [04-clock-interrupt-init.md](04-clock-interrupt-init.md) 的范围，不在本节展开。
+本节仅列出与 **保护结构**（`ProtectionArch` + `TrapEntryArch`）直接相关的单元测试。时钟相关 trait（`ClockArch`）的测试（例如 `test_read_tsc_default_delegates_to_read_ticks`）属于 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) 的范围，不在本节展开。
 
 #### x86_64（`os/arch/src/x86_64/{protection,trap_entry}.rs`）
 
@@ -966,7 +977,7 @@ cd os/qemu-tests && ./run_all.sh
 
 `init_protection()` 完成后，CPU 已具备正确的特权级、内核栈切换能力（x86-64 TSS、aarch64 SP_EL1、riscv64 sscratch）以及系统调用入口（x86-64 LSTAR MSR），但异常向量表（IDT/VBAR_EL1/stvec）尚未真正加载到硬件，中断控制器也尚未初始化，时钟尚未启动。
 
-> 用 Ch1 §1.4 的 CPU 三问框架看：第一问（特权级）和第三问（内核栈）已就绪；第二问（异常入口）的元数据已准备但尚未加载到硬件——真正的加载推迟到 [13-exception-interrupt.md](13-exception-interrupt.md) 阶段 `set_handler()` 之后。
+> 用 Ch1 §1.4 的 CPU 三问框架看：第一问（特权级）和第三问（内核栈）已就绪；第二问（异常入口）的元数据已准备但尚未加载到硬件——真正的加载推迟到 [14-exception-interrupt.md](14-exception-interrupt.md) 阶段 `set_handler()` 之后。
 
 | 架构 | init_protection() 之后的状态 |
 |------|----------------------|
@@ -987,9 +998,9 @@ cd os/qemu-tests && ./run_all.sh
 ## 7. 参见
 
 - [02-higher-half-kernel.md](02-higher-half-kernel.md) — CPU 已切换到高地址
-- [04-clock-interrupt-init.md](04-clock-interrupt-init.md) — 时钟与中断控制器初始化
-- [12-syscall.md](12-syscall.md) — syscall 实现细节（SYSCALL/SYSRET、swapgs、LSTAR MSR）
-- [13-exception-interrupt.md](13-exception-interrupt.md) — 异常/中断处理（trap frame、IST、sscratch 交换、`set_handler()` 加载向量表）
+- [05-clock-interrupt-init.md](05-clock-interrupt-init.md) — 时钟与中断控制器初始化
+- [13-syscall-dispatch.md](13-syscall-dispatch.md) — syscall 实现细节（SYSCALL/SYSRET、swapgs、LSTAR MSR）
+- [14-exception-interrupt.md](14-exception-interrupt.md) — 异常/中断处理（trap frame、IST、sscratch 交换、`set_handler()` 加载向量表）
 
 ---
 

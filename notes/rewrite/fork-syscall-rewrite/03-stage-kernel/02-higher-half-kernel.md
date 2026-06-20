@@ -839,7 +839,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
               └── call kmain  ← 高地址执行
                     │
                     ├── cstart()     ← 详见 03-kmain-cstart.md
-                    ├── proc_init()  ← 详见 05-proc-init-boot-proc.md
+                    ├── proc_init()  ← 详见 06-proc-init-boot-proc.md
                     └── switch_to_user()  ← 详见 07-kmain-entry-protection.md
 ```
 

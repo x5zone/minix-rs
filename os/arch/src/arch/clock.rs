@@ -151,8 +151,10 @@ impl ClockState {
             self.realtime += 1;
         }
 
-        // TODO: update load average (kloadinfo) — clock.c:275-291
-        // TODO: check timer queue (clock_timers) — clock.c:160-161
+        // Load average update and timer queue expiry are runtime tick-handler
+        // concerns, not initialization. See the clock/timer subsystem doc.
+        // C: load_update() — clock.c:260-291
+        // C: tmrs_exptimers(&clock_timers) — clock.c:160-161
     }
 }
 
@@ -161,28 +163,49 @@ impl ClockState {
 /// Each architecture implements this trait to configure its hardware
 /// timer source and provide tick-reading capability.
 ///
+/// # Instance-based design (see `plat-design.md` §5.1)
+///
+/// `ClockArch` is **instance-based**: `new(desc)` stores parsed hardware
+/// parameters (base addresses, frequencies) in instance fields. This
+/// replaces the old static-trait design that hardcoded constants per arch.
+/// Upper layers obtain the descriptor from `minix_platform::platform_desc()`.
+///
 /// # Architecture mapping
 ///
 /// | Method | x86-64 | ARM64 | RISC-V |
 /// |--------|--------|-------|--------|
+/// | `new()` | store PIT freq + LAPIC base from `TimerDesc::Pit` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `TimerDesc::Clint` |
 /// | `init_timer()` | 8254 PIT divisor / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | CLINT mtimecmp |
 /// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
 /// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
 ///
 /// C: init_clock() hardware portion + arch_init() APIC timer
-pub trait ClockArch {
+pub trait ClockArch: Sized + Send + Sync {
+    /// Create an instance from a timer descriptor.
+    ///
+    /// Stores the hardware parameters (base address, frequency) from the
+    /// descriptor into instance fields. Called once during
+    /// `init_clock_and_interrupts()` after `PlatformContext` is initialized.
+    ///
+    /// # Panics
+    ///
+    /// May panic if `desc` does not match the architecture's expected
+    /// `TimerDesc` variant (e.g. x86-64 receives `TimerDesc::Clint`).
+    /// Upper layers guarantee the correct variant is passed.
+    fn new(desc: &minix_platform::TimerDesc) -> Self;
+
     /// Configure and start the hardware timer at the given frequency.
     ///
     /// Called once during `init_clock_and_interrupts()`. After this call, the timer
     /// generates periodic interrupts at `hz` Hz.
     ///
     /// C: init_clock() hardware portion + arch_init() APIC timer
-    fn init_timer(hz: u32);
+    fn init_timer(&mut self, hz: u32);
 
     /// Read the current hardware tick count.
     ///
     /// Used for fine-grained timing and profiling.
-    fn read_ticks() -> u64;
+    fn read_ticks(&self) -> u64;
 
     /// Read the CPU's Time Stamp Counter (cycle counter).
     ///
@@ -193,8 +216,8 @@ pub trait ClockArch {
     /// three architectures use the same hardware counter for both.
     ///
     /// C: `read_tsc_64()` — arch/i386/arch_clock.c / arch/earm/arch_clock.c
-    fn read_tsc() -> u64 {
-        Self::read_ticks()
+    fn read_tsc(&self) -> u64 {
+        self.read_ticks()
     }
 }
 
@@ -342,11 +365,18 @@ mod tests {
     /// Verify that `read_tsc()` default implementation delegates to `read_ticks()`.
     #[test]
     fn test_read_tsc_default_delegates_to_read_ticks() {
-        struct TestClock;
-        impl ClockArch for TestClock {
-            fn init_timer(_hz: u32) {}
-            fn read_ticks() -> u64 { 42 }
+        struct TestClock {
+            ticks: u64,
         }
-        assert_eq!(TestClock::read_tsc(), 42);
+        impl ClockArch for TestClock {
+            fn new(_desc: &minix_platform::TimerDesc) -> Self {
+                Self { ticks: 42 }
+            }
+            fn init_timer(&mut self, _hz: u32) {}
+            fn read_ticks(&self) -> u64 { self.ticks }
+        }
+        let desc = minix_platform::TimerDesc::ArmGenericTimer;
+        let clock = TestClock::new(&desc);
+        assert_eq!(clock.read_tsc(), 42);
     }
 }

@@ -2,11 +2,17 @@
 //!
 //! Implements `InterruptController` for RISC-V 64-bit using PLIC
 //! (Platform-Level Interrupt Controller).
+//!
+//! # Instance-based design (see `plat-design.md` §5.1)
+//!
+//! Hardware base address (PLIC), context ID, and IRQ count are stored in
+//! instance fields, populated by `new(desc)` from `InterruptControllerDesc::Plic`.
+//! This replaces the previous `new()` + `set_base()` two-step pattern and the
+//! `PLIC_BASE` / `S_MODE_CONTEXT` hardcoded constants.
+
+use minix_platform::InterruptControllerDesc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
-
-/// PLIC base address for QEMU virt machine.
-const PLIC_BASE: usize = 0x0C00_0000;
 
 /// PLIC register offsets.
 const PLIC_PRIORITY: usize = 0x0000;
@@ -18,10 +24,14 @@ const PLIC_CLAIM: usize = 0x200004;
 /// reading claims an interrupt, writing completes it.
 const PLIC_COMPLETE: usize = PLIC_CLAIM;
 
-/// S-mode context offset for hart 0.
-const S_MODE_CONTEXT: usize = 1;
-
 /// RISC-V 64-bit PLIC interrupt controller.
+///
+/// # Fields
+///
+/// - `plic_base`: PLIC MMIO base, from `InterruptControllerDesc::Plic`.
+/// - `nr_irqs`: number of IRQ sources (from descriptor, clamped to `NR_IRQ_VECTORS`).
+/// - `context`: S-mode context ID for the current hart, from descriptor.
+/// - `last_claimed`: last claimed interrupt ID (saved from claim register read).
 pub struct Riscv64InterruptController {
     /// PLIC MMIO base address.
     plic_base: usize,
@@ -34,20 +44,6 @@ pub struct Riscv64InterruptController {
 }
 
 impl Riscv64InterruptController {
-    pub const fn new() -> Self {
-        Self {
-            plic_base: PLIC_BASE,
-            nr_irqs: NR_IRQ_VECTORS,
-            context: S_MODE_CONTEXT,
-            last_claimed: 0,
-        }
-    }
-
-    /// Set PLIC base address from device tree / platform discovery.
-    pub fn set_base(&mut self, plic_base: usize) {
-        self.plic_base = plic_base;
-    }
-
     fn threshold_offset(context: usize) -> usize {
         PLIC_THRESHOLD + context * 0x1000
     }
@@ -66,6 +62,21 @@ impl Riscv64InterruptController {
 }
 
 impl InterruptController for Riscv64InterruptController {
+    fn new(desc: &InterruptControllerDesc) -> Self {
+        match desc {
+            InterruptControllerDesc::Plic { plic_base, nr_irqs, context } => Self {
+                plic_base: *plic_base,
+                nr_irqs: (*nr_irqs as usize).min(NR_IRQ_VECTORS),
+                context: *context as usize,
+                last_claimed: 0,
+            },
+            _ => panic!(
+                "Riscv64InterruptController::new: expected InterruptControllerDesc::Plic, got {:?}",
+                desc
+            ),
+        }
+    }
+
     fn init(&mut self) {
         unsafe {
             for irq in 1..self.nr_irqs {

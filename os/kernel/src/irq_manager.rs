@@ -651,7 +651,7 @@ mod tests {
     }
 
     impl MockController {
-        fn new() -> Self {
+        fn new_mock() -> Self {
             Self {
                 mask_log: alloc::vec::Vec::new(),
                 unmask_log: alloc::vec::Vec::new(),
@@ -662,6 +662,9 @@ mod tests {
     }
 
     impl InterruptController for MockController {
+        fn new(_desc: &minix_platform::InterruptControllerDesc) -> Self {
+            Self::new_mock()
+        }
         fn init(&mut self) {
             self.all_masked = true;
         }
@@ -692,7 +695,7 @@ mod tests {
 
     #[test]
     fn register_and_dispatch() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
@@ -713,7 +716,7 @@ mod tests {
 
     #[test]
     fn spurious_irq() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
@@ -723,7 +726,7 @@ mod tests {
 
     #[test]
     fn multiple_hooks_same_irq() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
@@ -750,7 +753,7 @@ mod tests {
 
     #[test]
     fn not_completed_keeps_active() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
@@ -770,7 +773,7 @@ mod tests {
 
     #[test]
     fn remove_hook() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
@@ -791,7 +794,7 @@ mod tests {
 
     #[test]
     fn enable_disable_irq() {
-        let ctrl = MockController::new();
+        let ctrl = MockController::new_mock();
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 

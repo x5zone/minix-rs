@@ -10,30 +10,66 @@ description: Minix-RS 覆盖率穷举检查。使用 tools/coverage-extract/ 脚
 
 ---
 
+## 0. Gate A 强制运行规则（反造假）
+
+> **背景**：6 AI 共识（improve-v2 §1.2）——曾有 review 明确写"未运行 coverage-extract.py"，紧接着标 "✅ 通过"，直接 Gate 造假。本节堵住该漏洞。
+
+**强制规则**：
+1. **coverage-extract.py 必须运行** — 不允许"语义范围手动验证"代替。
+2. **命令行 + stdout 摘要必须写入 scan.md 的 `gate-evidence-A` 块**（见下模板）。
+3. **SYMBOLS.md 必须落到磁盘**（`.review/trae/{rw-module}/...` 标准路径；Trae IDE 硬编码 `.review/trae/`，不要使用 `{tool}` 变量），scan.md 附 `ls` 证明存在。
+4. **禁止"使用其他 AI 的 SYMBOLS.md 替代"** — 必须为本 AI 本次 review 重新生成。
+
+**降级路径**（仅当脚本物理不可用）：
+- 在 scan.md 明确记录：`⚠️ coverage-extract.py 不可用（原因：xxx），Gate A 降级为 PARTIAL`
+- **PARTIAL 状态 ≠ PASS**，不允许进 Final Review
+- 必须提供修复 plan
+
+**gate-evidence-A 块模板**（scan.md 必备，机器可校验关键字）：
+````
+```gate-evidence-A
+command: python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
+  --rust-dir os --c-dir minix3/minix/kernel \
+  --semantic-map tools/coverage-extract/kernel-semantic-map.json \
+  --doc-file {target-doc}.md \
+  --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+exit: 0
+stdout_contains: ["Found ", "C symbols", "Coverage Summary"]
+artifact: .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+artifact_exists: true
+```
+````
+校验规则（可由脚本执行）：Gate A 证据块必须含 `coverage-extract.py` + `Coverage Summary` + artifact 路径，且 `ls artifact` 成功。无证据块或关键字缺失 → Gate A 判 FAIL，不允许"自报 ✅"。
+
+**证据强度**：Gate A 必须 **L1**（工具自动输出）。L3（语义推断）视为 FAIL，除非标 `MANUAL_FALLBACK` 并说明原因（此时降级 PARTIAL）。
+
+---
+
 ## 1. 执行流程
 
 ### Step 1: 生成 SYMBOLS.md 骨架（机器）
 
 ```bash
 # 基本用法（服务器模块：vm / pm / vfs / rs / ds / inet ...）
-python3 tools/coverage-extract/coverage-extract.py <module> <doc_dir> \
+#   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {rw-module} 是 rewrite 模块名
+python3 tools/coverage-extract/coverage-extract.py {minix3-module} <doc_dir> \
   --rust-dir os \
-  --c-dir minix3/minix/servers/{module} \
-  --output .review/{module}/SYMBOLS.md
+  --c-dir minix3/minix/servers/{minix3-module} \
+  --output .review/trae/{rw-module}/scans/SYMBOLS.md
 
 # 基本用法（内核）
 python3 tools/coverage-extract/coverage-extract.py kernel <doc_dir> \
   --rust-dir os \
   --c-dir minix3/minix/kernel \
-  --output .review/kernel/SYMBOLS.md
+  --output .review/trae/{rw-module}/scans/SYMBOLS.md
 
 # 单文档用法 — 服务器模块（必须指定 --doc-file）
-python3 tools/coverage-extract/coverage-extract.py <module> <doc_dir> \
+python3 tools/coverage-extract/coverage-extract.py {minix3-module} <doc_dir> \
   --rust-dir os \
-  --c-dir minix3/minix/servers/{module} \
+  --c-dir minix3/minix/servers/{minix3-module} \
   --doc-file {target-doc}.md \
-  --semantic-map tools/coverage-extract/{module}-semantic-map.json \
-  --output .review/{module}/{target-doc}/SYMBOLS.md
+  --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
+  --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
 # 单文档用法 — 内核
 python3 tools/coverage-extract/coverage-extract.py kernel <doc_dir> \
@@ -41,7 +77,7 @@ python3 tools/coverage-extract/coverage-extract.py kernel <doc_dir> \
   --c-dir minix3/minix/kernel \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-  --output .review/kernel/{target-doc}/SYMBOLS.md
+  --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
 # 示例
 python3 tools/coverage-extract/coverage-extract.py vm \
@@ -53,12 +89,12 @@ python3 tools/coverage-extract/coverage-extract.py kernel \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file 03-kmain-cstart.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-  --output .review/03-stage-kernel/03-kmain-cstart/SYMBOLS.md
+  --output .review/trae/fork-syscall-rewrite/scans/03-kmain-cstart-glm-SYMBOLS.md
 ```
 
-> **注意**：`--c-dir` 对服务器模块是 `minix3/minix/servers/{module}`，对内核是 `minix3/minix/kernel`。
+> **注意**：`--c-dir` 对服务器模块是 `minix3/minix/servers/{minix3-module}`，对内核是 `minix3/minix/kernel`。Trae IDE 时 agent=glm/kimi/...（硬编码 `.review/trae/`，不再使用 `{tool}` 变量）。
 
-**输出**：`.review/{module}/SYMBOLS.md`（模块级）或 `.review/{module}/{doc}/SYMBOLS.md`（文档级）
+**输出**：`.review/trae/{rw-module}/scans/SYMBOLS.md`（模块级）或 `.review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md`（文档级）
 
 **关键参数说明**：
 - `--rust-dir os`：扫描整个 `os/` 目录，避免 `kmain`/`ProtectionArch` 等跨 crate 符号被遗漏。
@@ -176,12 +212,14 @@ python3 tools/coverage-extract/coverage-extract.py kernel \
 
 ### Step 3: 更新 STATE.md
 
-将覆盖率结果写入 `.review/{module}/STATE.md`：
+将覆盖率结果写入工具对应的 `STATE.md`（双路径，互不共享）：
+- **Trae** → `.review/trae/{module}/STATE.md`
+- **Claude** → `.review/claude/{module}/STATE.md`
 
 ```markdown
 ## Coverage Status
 
-- **SYMBOLS.md**: .review/vm/SYMBOLS.md (generated 2024-XX-XX)
+- **SYMBOLS.md**: .review/trae/{rw-module}/scans/SYMBOLS.md (generated YYYY-MM-DD)
 - **C 符号总数**: 351
 - **文档覆盖**: 320/351 (91.2%)
 - **Rust 覆盖**: 10/351 (2.8%, 名称匹配) / AI确认: X/351
@@ -298,7 +336,7 @@ rg "symbol_name" os/servers/{module}/src/ --type rust -n
 ```markdown
 ### Coverage Check 产物
 
-**SYMBOLS.md**: .review/{module}/SYMBOLS.md
+**SYMBOLS.md**: .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）或 .review/trae/{rw-module}/scans/SYMBOLS.md（模块级）
 **生成命令**（服务器模块示例）：
 ```bash
 python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \

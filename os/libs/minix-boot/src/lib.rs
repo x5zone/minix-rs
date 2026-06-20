@@ -11,3 +11,7 @@ pub mod boot_shim;
 
 pub use kernel_info::*;
 pub use boot_shim::*;
+
+// Re-export PlatformDescriptorPtr explicitly (it's already covered by
+// `kernel_info::*` above, but documented here for visibility).
+pub use kernel_info::PlatformDescriptorPtr;

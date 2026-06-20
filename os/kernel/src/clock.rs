@@ -26,7 +26,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use minix_types::Endpoint;
-use minix_arch::ClockArch;
 
 use crate::proc::{KProcess, MiscFlagsBits};
 
@@ -112,18 +111,29 @@ pub fn set_tsc_per_ms(cycles_per_ms: u64) {
 ///
 /// C: `read_tsc_64()` — arch/i386/arch_clock.c (x86) / arch/earm/arch_clock.c (ARM)
 ///
-/// Delegates to `minix_arch::CurrentClockArch::read_tsc()`, which reads the
-/// hardware cycle counter:
+/// Delegates to the current architecture's `ClockArch::read_tsc()`, which
+/// reads the hardware cycle counter:
 ///
 /// - **x86-64**: `rdtsc` instruction
 /// - **aarch64**: `CNTPCT_EL0` (physical counter)
 /// - **riscv64**: `mtime` (CLINT MMIO)
 ///
 /// In test builds (`cfg(test)`), returns 0 since there is no hardware counter.
+///
+/// # Instance-based design (plat-design.md §5.1)
+///
+/// Constructs a transient `CurrentClockArch` instance from the global
+/// platform descriptor's `timer()` sub-descriptor. The instance is cheap
+/// to construct (just copies a few fields) and is discarded after the
+/// read. This replaces the old static `CurrentClockArch::read_tsc()`.
 pub fn read_tsc() -> u64 {
     #[cfg(not(test))]
     {
-        minix_arch::CurrentClockArch::read_tsc()
+        use minix_arch::{ClockArch, CurrentClockArch};
+        use minix_platform::{platform_desc, PlatformDesc};
+        let pd = platform_desc();
+        let clock_arch = CurrentClockArch::new(&pd.timer());
+        clock_arch.read_tsc()
     }
     #[cfg(test)]
     {

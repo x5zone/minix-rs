@@ -51,7 +51,7 @@
 use core::slice;
 
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion};
+use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion, PlatformDescriptorPtr};
 
 use crate::loader::{self, FileLoader};
 
@@ -210,6 +210,14 @@ impl BootShim for OpenSbiBootShim {
         let boot_modules =
             loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
 
+        // OpenSBI passes the DTB physical address in register a1.
+        // The entry trampoline saves it via `install_dtb_ptr(a1)`.
+        // If no DTB was passed (e.g., unit test), this returns None
+        // and the kernel falls back to QemuVirtDesc.
+        let platform_descriptor = dtb_ptr().map(|pa| {
+            PlatformDescriptorPtr::Dtb(PhysBytes(pa))
+        });
+
         let kernel_info = build_kernel_info(
             memmap,
             kern.kern_virt_base,
@@ -220,6 +228,7 @@ impl BootShim for OpenSbiBootShim {
             // C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
             PhysBytes(0), // TODO: determine boot-shim physical start from OpenSBI
             kern.kern_phys_base.0, // boot-shim memory ends where kernel begins
+            platform_descriptor,
         );
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
@@ -279,6 +288,43 @@ pub fn boot_file_table() -> Option<&'static BootFileTable> {
         return None;
     }
     Some(table)
+}
+
+// ── DTB pointer handoff ──
+//
+// OpenSBI passes the Flattened Device Tree (DTB) physical address in
+// register `a1` to the S-mode payload. The entry trampoline is expected
+// to call `install_dtb_ptr(a1)` exactly once before invoking
+// `OpenSbiBootShim::prepare_boot`.
+
+static mut DTB_PTR: u64 = 0;
+
+/// Install the physical address of the DTB passed by OpenSBI in `a1`.
+///
+/// Must be called exactly once, before [`OpenSbiBootShim::prepare_boot`].
+/// Passing 0 is equivalent to "no DTB available" (kernel uses QEMU fallback).
+///
+/// # Safety
+///
+/// Caller must ensure `addr` points to a valid FDT blob (magic `0xD00DFEED`)
+/// if non-zero. The blob must remain valid for the entire boot-shim lifetime.
+pub unsafe fn install_dtb_ptr(addr: u64) {
+    // SAFETY: single-writer during early boot before secondary harts run.
+    debug_assert!(DTB_PTR == 0, "install_dtb_ptr called twice");
+    unsafe {
+        DTB_PTR = addr;
+    }
+}
+
+/// Return the DTB physical address passed by OpenSBI, or `None` if
+/// no DTB was installed (or was explicitly set to 0).
+pub fn dtb_ptr() -> Option<u64> {
+    // SAFETY: single-writer at install time; readers run strictly later.
+    let ptr = unsafe { DTB_PTR };
+    if ptr == 0 {
+        return None;
+    }
+    Some(ptr)
 }
 
 // ── OpenSBI helpers (no firmware to call; everything is hardcoded) ──
@@ -349,6 +395,7 @@ pub fn build_kernel_info(
     boot_modules: &'static [minix_boot::BootModule],
     bootstrap_start: PhysBytes,
     bootstrap_len: u64,
+    platform_descriptor: Option<PlatformDescriptorPtr>,
 ) -> KernelInfo {
     KernelInfo {
         memmap,
@@ -363,6 +410,7 @@ pub fn build_kernel_info(
         boot_modules,
         bootstrap_start,
         bootstrap_len,
+        platform_descriptor,
     }
 }
 
@@ -484,10 +532,12 @@ mod tests {
             &[],
             PhysBytes(0x80000000), // bootstrap_start
             0x200000,              // bootstrap_len
+            None,                  // platform_descriptor
         );
         // Sv39 user-space top is below 2^38.
         assert!(info.user_sp.0 < (1u64 << 39));
         assert_eq!(info.kern_phys_base, PhysBytes(DRAM_BASE));
+        assert!(info.platform_descriptor.is_none());
     }
 
     #[test]
