@@ -202,7 +202,7 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
             // no data_copy_vmcheck needed.
             let (privflags, initflags) = caller.priv_id
                 .and_then(|pid| priv_table.get(pid))
-                .map(|priv_| (priv_.s_flags.bits() as i32, priv_.s_init_flags))
+                .map(|priv_| (priv_.capability.s_flags.bits() as i32, priv_.capability.s_init_flags))
                 .unwrap_or((0, 0));
 
             let mut name_buf = [0u8; 44];
@@ -1083,7 +1083,7 @@ mod tests {
                 p.p_rts_flags.clear(RtsFlagsBits::RECEIVING);
                 let pid = priv_table.assign_static(slot_i32).expect("static priv slot");
                 if let Some(kpriv) = priv_table.get_mut(pid) {
-                    kpriv.s_flags = crate::kpriv::PrivFlagsBits::SYS_PROC;
+                    kpriv.capability.s_flags = crate::kpriv::PrivFlagsBits::SYS_PROC;
                 }
                 p.priv_id = Some(pid);
             }

@@ -736,36 +736,59 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 > **Step 0→3 的顺序不可调换**：先注册分配器（Step 0），否则 `map_huge` 分配中间页表页会 panic；先建映射（Step 1+2），否则切换页表后内核找不到自己；最后切换页表（Step 3），切换后脚手架生效。
 
-> **`kern_virt != kern_phys` 守卫**：当 `kern_virt_base == kern_phys_base` 时（如 identity-only 测试），Step 2 的映射目标与 Step 1 完全重叠。在 riscv64 上，这会导致 `map_huge` 用不同页大小覆盖同一 L2 条目，破坏恒等映射。详见附录 A。
+> **`kern_virt != kern_phys` 守卫（防御性编程）**：当 `kern_virt_base == kern_phys_base` 时，Step 2 的映射目标与 Step 1 完全重叠，**跳过 Step 2 是正确的**——identity mapping 已覆盖相同范围且权限相同，跳过不丢映射。当 `kern_virt_base` 与 `kern_phys_base` 不同时（生产场景），Step 2 仍照常执行。
+>
+> 守卫覆盖两类历史 bug：①identity-only 测试场景（hello-boot / test-paging-enable / test-kernel-map 三架构共用）；②riscv64 Sv39 canonical 地址错误（test-higher-half-riscv64 最初用 `0xFFFF_FC00_0000_0000` 导致 L2 槽位冲突）。两类场景均通过守卫得到合理默认。详见 [附录 A](02-higher-half-kernel.md#附录-ariscv64-identity-mapping-与-kernel-mapping-的-l2-条目覆盖)。
 
 > **与 C 源码的差异**：C 的 `pg_mapkernel()` 只设 `PRESENT | BIGPAGE | WRITE`，无 GLOBAL 位。Rust 代码中 `PageFlags::kernel_read_write()` 含 GLOBAL，boot 阶段无实际作用（无进程切换，CR3 不变）。GLOBAL 位的真正价值在 VM 的 Direct Map 中——每次进程切换重写 CR3 时避免内核映射 TLB miss。
 
-**`arch_boot()` 的实际代码** (`kernel/src/lib.rs`，x86-64 为例)：
+**`arch_boot()` 的实际代码** (`kernel/src/lib.rs:71-104`)：
 
 ```rust
-#[cfg(target_arch = "x86_64")]
+// x86-64
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::x86_64::paging::X86_64Paging;
     use crate::x86_64::higher_half::X86_64HigherHalf;
     use crate::boot::HigherHalf;
-
-    // Step 1: 建立页表、启用分页
-    // arch_boot_impl 返回时：
-    // - 恒等映射已建立（0~4GB，VA=PA）
-    // - 内核高地址映射已建立（KERN_VIRT_BASE → 物理内存）
-    // - CR3/satp/TTBR1 已加载，分页已启用
-    // - 但 RSP 仍在低地址（boot-shim 的栈）
     let info = arch_boot_impl::<X86_64Paging>(kernel_info, root_page);
-
-    // Step 2: 高半核切换
-    // 必须切栈到高地址，再调用 kmain。
-    // 如果直接 call kmain，返回地址会被压入低地址栈，
-    // 后续中断/异常需要栈操作时，若恒等映射已移除就会 crash。
     // SAFETY: arch_boot_impl 刚启用分页，两套映射都已建立，
     //         info 在高地址可访问，且只从 boot CPU 调用一次。
     unsafe { X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
 }
+
+// aarch64 / riscv64 / mock：重复同样的 3 行结构，仅类型别名不同
+// （`AArch64Paging` + `AArch64HigherHalf`、`Riscv64Paging` + `Riscv64HigherHalf`、
+//  `MockPaging` + `mock_kmain_ok()`）
 ```
+
+**两步骤为何缺一不可**：
+
+- **Step 1（`arch_boot_impl` 返回时）**：
+    - 恒等映射已建立（0~4GB，VA=PA）
+    - 内核高地址映射已建立（KERN_VIRT_BASE → 物理内存）
+    - CR3/satp/TTBR1 已加载，分页已启用
+    - **但 RSP 仍在低地址**（boot-shim 的栈）
+
+- **Step 2（`HigherHalf::jump_to_kmain`）**：
+    - 必须切栈到高地址，再调用 kmain
+    - 如果直接 `call kmain`，返回地址会被压入低地址栈
+    - 后续中断/异常需要栈操作时，若恒等映射已移除就会 crash
+
+这两步的语义边界在 §4.6 前文 "Step 0→3 的顺序不可调换" 注释块已详述：`arch_boot_impl` 是"启用分页 + 建映射"，`HigherHalf::jump_to_kmain` 是"切栈到高地址 + 转移控制权"。前者是分页机制，后者是栈控制权交接——必须分两步执行，不能合并。
+
+**为什么有 4 份 `#[cfg]` 重复**：当前 `os/arch/src/arch/arch_boot.rs:60` 的 `ArchBoot` trait 仅覆盖 timer handler 注册，**未包含** `Paging` 与 `HigherHalf` 类型。`arch_boot` 函数的统一形式本可以是：
+
+```rust
+pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    let info = arch_boot_impl::<CurrentArchPaging>(kernel_info, root_page);
+    unsafe { CurrentArchHigherHalf::jump_to_kmain(info, info.kern_stack_top) }
+}
+```
+
+通过关联类型 `type Paging; type HigherHalf;` 在 `ArchBoot`（或独立的 `ArchBootFlow`）trait 下编译期选择。但当前 4 份 `#[cfg]` 重复反映 trait 设计不完整，与 `CurrentArchBoot`、`CurrentArchInit` 类型别名的成熟模式不一致。
+
+> **TODO（review `os/arch/src/arch/arch_boot.rs` `ArchBoot` trait 时一并处理）**：把 `Paging` + `HigherHalf` 接入 trait 体系（参考 [01-boot-shim-bootstrap.md §4.4 BootShim trait](01-boot-shim-bootstrap.md#44-引导协议抽象--bootshim-trait) 的关联类型模式），消除 4 份 `#[cfg]` 重复。当前 §4.6 代码块故意保留 4 份展示，反映真实工程现状；trait 重构后将本节改写为单份 `arch_boot` 实现。
 
 > **三架构 `arch_boot()` 差异**：aarch64/riscv64 版本的 `arch_boot()` 与 x86-64 几乎完全相同，**唯一差异是 Paging 类型别名**：
 > - x86-64: `minix_arch::x86_64::paging::X86_64Paging` (PML4, 4 级)

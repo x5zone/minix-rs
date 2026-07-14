@@ -8,46 +8,36 @@
 //! 2. **Runtime** (all CPUs, BKL may be released): `platform_desc()` returns
 //!    a `&'static dyn PlatformDesc` — read-only, no synchronization needed.
 
-use core::cell::UnsafeCell;
-
 use minix_boot::{KernelInfo, PlatformDescriptorPtr};
+use minix_types::AssumeSyncCell;
 
 use crate::acpi::AcpiDesc;
 use crate::desc::PlatformDesc;
 use crate::device_tree::DeviceTreeDesc;
 use crate::qemu_virt::QemuVirtDesc;
 
-/// `Sync` wrapper around `UnsafeCell<Option<PlatformContext>>`.
-///
-/// `UnsafeCell` is not `Sync` by design (interior mutability + shared
-/// access is unsafe). We assert `Sync` manually because the access pattern
-/// is constrained: single write at boot (BKL held), read-only thereafter.
-///
-/// # Safety invariant
-///
-/// - `init()` / `init_from_kinfo()` must be called exactly once, before
-///   any CPU reads via `platform_desc()`.
-/// - After init, the cell is never mutated again.
-struct SyncPlatformCell(UnsafeCell<Option<PlatformContext>>);
-
-// SAFETY: the safety invariant above (single write at boot, read-only after)
-// is upheld by the module's public API. `init*` is `unsafe fn` requiring the
-// caller to guarantee single-threaded boot context.
-unsafe impl Sync for SyncPlatformCell {}
-
 /// Global platform context — owns the descriptor.
 ///
 /// Stored in kernel BSS as a `static`. Written once at T2.5 (single-threaded,
 /// BKL held, IRQs off), read-only thereafter.
 ///
-/// # Why a `Sync` wrapper around `UnsafeCell` not `static mut`?
+/// We use [`AssumeSyncCell`] from `minix-types` — the project's shared
+/// primitive for "single-threaded `UnsafeCell` with manual `Sync` impl".
+/// This is the same pattern VM server, heap arena, vmproc table use.
 ///
-/// - `static mut` access requires `unsafe` but provides no extra safety and
-///   is being deprecated (Rust 2024).
+/// # Why `AssumeSyncCell` and not `Mutex`/`static mut`?
+///
+/// - `static mut` requires `unsafe` at every access and provides no extra
+///   safety — and Rust 2024 further tightens the rules.
 /// - `Mutex`/`spin::Mutex` would add runtime overhead unnecessary here
 ///   (boot-only mutation, read-only runtime).
-/// - The `SyncPlatformCell` wrapper clearly documents the safety invariant.
-static PLATFORM: SyncPlatformCell = SyncPlatformCell(UnsafeCell::new(None));
+/// - `OnceLock` requires an allocator or `std`, both unavailable in `no_std`.
+///
+/// # Safety invariant
+///
+/// `init()` / `init_from_kinfo()` must be called exactly once, before any
+/// CPU reads via `platform_desc()`. After init, the cell is never mutated.
+static PLATFORM: AssumeSyncCell<Option<PlatformContext>> = AssumeSyncCell::new(None);
 
 /// Platform context — owns the descriptor.
 ///
@@ -170,7 +160,7 @@ pub unsafe fn init(desc: PlatformDescEnum) {
     // SAFETY: caller guarantees single-threaded boot context (BKL held,
     // IRQs off, no other CPU running). This is the only write to PLATFORM.
     unsafe {
-        *PLATFORM.0.get() = Some(PlatformContext { desc });
+        *PLATFORM.get() = Some(PlatformContext { desc });
     }
 }
 
@@ -250,7 +240,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
     // never mutated again. All CPUs read the `&'static` reference safely.
     // The returned reference is `&'static` because `PLATFORM` is a static.
     unsafe {
-        (*PLATFORM.0.get())
+        (*PLATFORM.get())
             .as_ref()
             .expect("platform_desc() called before init_from_kinfo()")
     }

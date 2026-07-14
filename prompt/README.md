@@ -27,6 +27,7 @@ prompt/
 │   ├── review-core-semantics-skill.md — 核心语义技能（行为契约表模板）
 │   ├── review-excellence-skill.md    — 卓越性技能（文档+代码卓越性检查流程）
 │   ├── review-coverage-skill.md      — 覆盖率技能（机器穷举 + AI 语义判断）
+│   ├── review-implementation-skill.md — 实施验证技能（design ↔ code 一致性 + §X self-review issues 追踪）
 │   └── review-socratic-skill.md      — 苏格拉底追问技能（8 场景追问话术模板）
 └── README.md                — 本文件
 ```
@@ -107,6 +108,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
     ├── 加载 ▶ review-core-semantics-skill（核心语义：行为契约表模板）
     ├── 加载 ▶ review-excellence-skill（卓越性：文档§4.1-4.4 + 代码§15-20）
     ├── 加载 ▶ review-coverage-skill（覆盖率：机器穷举 + AI 语义判断）
+    ├── 加载 ▶ review-implementation-skill（实施验证：design ↔ code 一致性 + §X self-review 追踪，按需触发）
     └── 加载 ▶ review-socratic-skill（苏格拉底追问：8 场景追问话术，按需触发）
 ```
 
@@ -134,14 +136,14 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
   ```bash
   for s in review-code-skill review-doc-skill review-patterns-skill review-process-skill \
            review-core-semantics-skill review-coverage-skill review-excellence-skill \
-           review-socratic-skill; do
+           review-implementation-skill review-socratic-skill; do
     mkdir -p ".trae/skills/$s"
     sed -E '1,/^---$/ { s/^name: "([^"]+)"/name: \1/; s/^description: "([^"]+)"/description: \1/ }' \
       "prompt/skill/$s.md" > ".trae/skills/$s/SKILL.md"
   done
   ```
 
-**当前已同步的 8 个 Skill**（2026-06-19 复测）：
+**当前已同步的 9 个 Skill**（2026-06-22 新增 review-implementation-skill）：
 | Skill | prompt/skill/ 字符 | .trae/skills/ 字符 | diff | Trae 限制 |
 |-------|-------------------|-------------------|------|----------|
 | review-code-skill | 6,512 | 6,508 | 4 | — |
@@ -151,9 +153,12 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 | review-core-semantics-skill | 7,293 | 7,289 | 4 | — |
 | review-coverage-skill | 10,020 | 10,016 | 4 | — |
 | review-excellence-skill | 7,026 | 7,022 | 4 | — |
+| **review-implementation-skill** | **TBD** | **TBD** | 4 | — |
 | review-socratic-skill | 5,179 | 5,175 | 4 | — |
 
 > **说明**：本轮 P0 修复（improve-v2 §10）后，review-process-skill.md 从 16,088 字符增长到 28,121 字符（+74.7%），review-coverage-skill.md 从 8,032 字符增长到 10,020 字符（+24.7%）。增长主因是新增 Gate 0、Gate G、gate-evidence 块模板、L1/L2/L3 证据分级、Artifact Inventory、Severity Reconciliation、Per-Doc/Session Status、VERIFY-SELF/VERIFY-CROSS 等段。Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。
+>
+> 2026-06-22 新增 **review-implementation-skill**（由 06-design-final.md 实施过程沉淀），覆盖 design ↔ code 一致性 + §X self-review issues 追踪。详见 skill 文件 §Skill 输出模板 + §Gate D-Impl。
 
 ### 规则集与 Skill 的对应关系
 
@@ -169,6 +174,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 | review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.4 + 代码§15-20 卓越性） | 7,026 |
 | review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） | 10,020 |
 | review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（8 场景追问话术模板） | 5,179 |
+| review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） | TBD |
 | review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent | — |
 | ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md | — |
 

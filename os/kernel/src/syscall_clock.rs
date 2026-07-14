@@ -206,7 +206,7 @@ pub fn dispatch_setalarm(
     let time_left = {
         let kpriv = priv_table.get(caller_priv_id);
         if let Some(kpriv) = kpriv {
-            match &kpriv.s_alarm_timer {
+            match &kpriv.runtime.s_alarm_timer {
                 None => TMR_NEVER,
                 Some(timer) => {
                     if timer.exp_time > uptime {
@@ -226,7 +226,7 @@ pub fn dispatch_setalarm(
         // Reset alarm: C: reset_kernel_timer(tp)
         let kpriv = priv_table.get_mut(caller_priv_id);
         if let Some(kpriv) = kpriv {
-            if let Some(old_timer) = kpriv.s_alarm_timer.take() {
+            if let Some(old_timer) = kpriv.runtime.s_alarm_timer.take() {
                 clock_state.reset_timer(old_timer.exp_time);
             }
         }
@@ -248,12 +248,12 @@ pub fn dispatch_setalarm(
         // Remove existing timer if any
         let kpriv = priv_table.get_mut(caller_priv_id);
         if let Some(kpriv) = kpriv {
-            if let Some(old_timer) = kpriv.s_alarm_timer.take() {
+            if let Some(old_timer) = kpriv.runtime.s_alarm_timer.take() {
                 clock_state.reset_timer(old_timer.exp_time);
             }
             // Set new timer
             clock_state.set_timer(timer.clone());
-            kpriv.s_alarm_timer = Some(timer);
+            kpriv.runtime.s_alarm_timer = Some(timer);
         }
     }
 

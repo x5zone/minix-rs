@@ -419,6 +419,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | **卓越性专项 (Profile O)** | [review-excellence-skill.md](../skill/review-excellence-skill.md) + [review-doc-excellence.md](review-doc-excellence.md) + [review-code-excellence.md](review-code-excellence.md) | 在正确性 gate 通过后追求教科书级质量 |
 | **覆盖率专项 (Profile P)** | [review-coverage-skill.md](../skill/review-coverage-skill.md) + `tools/coverage-extract/coverage-extract.py` | 用机器穷举 + AI 补充判断 C 源/Rust 实现的覆盖完整度 |
 | **苏格拉底追问 (Profile S)** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
+| **实施验证 (Profile I, 2026-06-22 新增)** | [review-implementation-skill.md](../skill/review-implementation-skill.md) | 设计 → 代码 实施验证（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试覆盖边界） |
 
 > 详细 Profile 配置（含所有 A-P 组合）见 [review-profiles.md](review-profiles.md)
 

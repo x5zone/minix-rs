@@ -15,5 +15,8 @@ pub mod exception_dispatcher;
 pub mod clock;
 pub mod arch_init;
 pub mod arch_boot;
-pub mod proc_arch;
+pub mod boot;
 pub mod post_init;
+// proc_arch was removed in 06-design-final.md; its responsibilities
+// are now split between `boot` (CpuContextArch + load_vm_elf) and
+// the kernel layer (KProcess::cpu_context field).

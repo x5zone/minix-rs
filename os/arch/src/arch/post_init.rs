@@ -225,3 +225,134 @@ impl MemoryInitArch for MockMemoryInitArch {
         slots
     }
 }
+
+// ── Unit tests (no_std-safe: pure value-type tests, no global state) ──
+//
+// These tests cover the data structure itself (FreePdeSlots) and the
+// MockMemoryInitArch allocator. The architecture-specific set_ptproc
+// implementations are exercised in their respective arch/<target>/post_init.rs
+// files (see §5.1 of 07-cross-space-init.md).
+//
+// L1 parity note (pattern 35): C's `freepdes[]` is a static array with
+// MAXFREEPDES = 2 entries. Rust's `FreePdeSlots` mirrors this with a fixed
+// capacity and bounded `push`. The MockMemoryInitArch advance-by-2 behavior
+// matches the C `kinfo.freepde_start++` semantics exactly.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── FreePdeSlots data-structure tests (L1 parity with freepdes[]) ──
+
+    /// New FreePdeSlots is empty (matches C static `freepdes[MAXFREEPDES]` = {0}).
+    #[test]
+    fn test_free_pde_slots_new_is_empty() {
+        let slots = FreePdeSlots::new();
+        assert_eq!(slots.len(), 0);
+        assert!(slots.is_empty());
+        // All slots are 0 by default (matches C's zero-init static array).
+        assert_eq!(slots.get(0), None);
+        assert_eq!(slots.get(1), None);
+    }
+
+    /// Push under capacity succeeds and tracks length (C array write semantics).
+    #[test]
+    fn test_free_pde_slots_push_succeeds_under_capacity() {
+        let mut slots = FreePdeSlots::new();
+        assert!(slots.push(7).is_ok());
+        assert_eq!(slots.len(), 1);
+        assert!(!slots.is_empty());
+        assert_eq!(slots.get(0), Some(7));
+        // Second push also succeeds (capacity = 2).
+        assert!(slots.push(11).is_ok());
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots.get(1), Some(11));
+    }
+
+    /// Third push returns Err(index) — capacity exhausted.
+    /// Matches C behavior: `freepdes[nfreepdes++]` would overflow the
+    /// static array; Rust rejects this at the type level.
+    #[test]
+    fn test_free_pde_slots_push_returns_err_when_full() {
+        let mut slots = FreePdeSlots::new();
+        slots.push(1).unwrap();
+        slots.push(2).unwrap();
+        // Third push must return Err with the index that could not be pushed.
+        let result = slots.push(3);
+        assert_eq!(result, Err(3));
+        assert_eq!(slots.len(), 2, "length must not advance on rejected push");
+    }
+
+    /// `get(idx)` returns None when idx >= len (bounds-safe access).
+    #[test]
+    fn test_free_pde_slots_get_out_of_bounds_returns_none() {
+        let mut slots = FreePdeSlots::new();
+        slots.push(42).unwrap();
+        assert_eq!(slots.get(0), Some(42));
+        assert_eq!(slots.get(1), None, "len=1 so idx=1 is out of bounds");
+        assert_eq!(slots.get(99), None, "any idx >= len is None");
+    }
+
+    /// `iter()` yields exactly the pushed indices in order.
+    #[test]
+    fn test_free_pde_slots_iter_yields_all_indices() {
+        let mut slots = FreePdeSlots::new();
+        slots.push(100).unwrap();
+        slots.push(200).unwrap();
+        let collected: alloc::vec::Vec<usize> = slots.iter().collect();
+        assert_eq!(collected, alloc::vec![100, 200]);
+    }
+
+    // ── MemoryInitArch Mock tests (L1 parity with memory.c:707-717) ──
+
+    /// Mock allocate_free_pdes reserves two consecutive PDE indices
+    /// and advances free_upper_idx by exactly 2 (matches C `freepde_start++`).
+    #[test]
+    fn test_memory_init_arch_allocates_two_consecutive_pdes() {
+        let mut idx: usize = 5;
+        let slots = MockMemoryInitArch::allocate_free_pdes(&mut idx);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots.get(0), Some(5));
+        assert_eq!(slots.get(1), Some(6));
+        assert_eq!(idx, 7, "free_upper_idx must advance by MAX_FREE_PDE_SLOTS (2)");
+    }
+
+    /// Mock allocate_free_pdes starting at 0 reserves indices 0 and 1.
+    /// (Mirrors a fresh boot where the first PDE slot is free.)
+    #[test]
+    fn test_memory_init_arch_starts_at_zero() {
+        let mut idx: usize = 0;
+        let slots = MockMemoryInitArch::allocate_free_pdes(&mut idx);
+        assert_eq!(slots.get(0), Some(0));
+        assert_eq!(slots.get(1), Some(1));
+        assert_eq!(idx, 2);
+    }
+
+    /// PostInitArch Mock accepts phys_root + virt_root without panicking.
+    /// Currently a no-op; once per-CPU ptproc storage is added (todo.md §12.2),
+    /// this test should be extended to verify the storage round-trip.
+    #[test]
+    fn test_post_init_arch_accepts_phys_and_virt() {
+        let info = VmPageTableInfo {
+            phys_root: PhysBytes(0x1000),
+            virt_root: Some(VirBytes(0xffff_8000_0000_1000)),
+        };
+        // Must not panic.
+        MockPostInitArch::set_ptproc(&info);
+    }
+
+    /// PostInitArch Mock accepts phys_root with virt_root = None
+    /// (RISC-V Sv39 has no direct-mapped virt ptr).
+    #[test]
+    fn test_post_init_arch_accepts_phys_only_no_virt() {
+        let info = VmPageTableInfo {
+            phys_root: PhysBytes(0x8000_0000),
+            virt_root: None,
+        };
+        // Must not panic.
+        MockPostInitArch::set_ptproc(&info);
+    }
+}
+
+// ── alloc import for tests (vec! macro needs alloc::vec) ──
+#[cfg(test)]
+extern crate alloc;

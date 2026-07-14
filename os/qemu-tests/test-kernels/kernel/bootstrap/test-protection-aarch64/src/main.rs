@@ -137,7 +137,7 @@ fn main() -> Status {
     early_console::write_str("\n");
 
     // Set VBAR_EL1 to our exception vector table first, so we can catch traps
-    extern "C" {
+    unsafe extern "C" {
         static exc_vector_table: u8;
         static mut exc_trap_flag: u64;
     }
@@ -304,7 +304,7 @@ fn main() -> Status {
     // The previous crash was caused by msr SP_EL1 changing the current SP
     // (when SPSel=1, SP_EL1 IS the current SP), not by EL2 trapping.
     {
-        extern "C" {
+        unsafe extern "C" {
             static exc_vector_table: u8;
         }
         let vbar = unsafe { &exc_vector_table as *const u8 as u64 };

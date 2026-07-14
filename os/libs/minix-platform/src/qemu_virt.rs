@@ -89,19 +89,48 @@ impl PlatformDesc for QemuVirtDesc {
     }
 
     fn cpu_topology(&self) -> CpuTopology {
+        const NR_CPUS: u32 = 4;
         let mut cpus = [CpuInfo::default(); MAX_CPUS];
-        cpus[0] = CpuInfo {
-            hw_id: 0,
-            #[cfg(target_arch = "aarch64")]
-            gicr_base: Some(0x080A_0000),
-            #[cfg(not(target_arch = "aarch64"))]
-            gicr_base: None,
-            #[cfg(target_arch = "riscv64")]
-            mtimecmp_addr: Some(0x200_4000),
-            #[cfg(not(target_arch = "riscv64"))]
-            mtimecmp_addr: None,
-        };
-        CpuTopology { nr_cpus: 1, bsp_id: 0, cpus }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            const MTIMECMP_BASE: usize = 0x200_4000;
+            const MTIMECMP_STRIDE: usize = 8;
+            for i in 0..NR_CPUS as usize {
+                cpus[i] = CpuInfo {
+                    hw_id: i as u64,
+                    gicr_base: None,
+                    mtimecmp_addr: Some(MTIMECMP_BASE + i * MTIMECMP_STRIDE),
+                };
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            const GICR_BASE: usize = 0x080A_0000;
+            const GICR_STRIDE: usize = 0x2_0000;
+            for i in 0..NR_CPUS as usize {
+                cpus[i] = CpuInfo {
+                    hw_id: i as u64,
+                    gicr_base: Some(GICR_BASE + i * GICR_STRIDE),
+                    mtimecmp_addr: None,
+                };
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            // QEMU q35 with `-smp 4` assigns APIC IDs 0..3 by default.
+            for i in 0..NR_CPUS as usize {
+                cpus[i] = CpuInfo {
+                    hw_id: i as u64,
+                    gicr_base: None,
+                    mtimecmp_addr: None,
+                };
+            }
+        }
+
+        CpuTopology { nr_cpus: NR_CPUS, bsp_id: 0, cpus }
     }
 
     fn arch_misc(&self) -> ArchMiscDesc {
@@ -124,12 +153,28 @@ mod tests {
     }
 
     #[test]
-    fn test_qemu_virt_cpu_topology_single_core() {
+    fn test_qemu_virt_cpu_topology_four_cores() {
         let d = QemuVirtDesc;
         let t = d.cpu_topology();
-        assert_eq!(t.nr_cpus, 1);
+        assert_eq!(t.nr_cpus, 4, "QEMU virt test config uses 4 CPUs (-smp 4)");
         assert_eq!(t.bsp_id, 0);
-        assert_eq!(t.cpus[0].hw_id, 0);
+        for i in 0..t.nr_cpus as usize {
+            assert_eq!(t.cpus[i].hw_id, i as u64);
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            assert_eq!(t.cpus[0].mtimecmp_addr, Some(0x200_4000));
+            assert_eq!(t.cpus[1].mtimecmp_addr, Some(0x200_4008));
+            assert_eq!(t.cpus[3].mtimecmp_addr, Some(0x200_4018));
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(t.cpus[0].gicr_base, Some(0x080A_0000));
+            assert_eq!(t.cpus[1].gicr_base, Some(0x080C_0000));
+            assert_eq!(t.cpus[3].gicr_base, Some(0x0810_0000));
+        }
     }
 
     #[cfg(target_arch = "riscv64")]

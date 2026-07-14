@@ -187,7 +187,7 @@ pub fn dispatch_fork(
     // Check parent's privilege flags to determine if child needs downgrade.
     let parent_is_sys_proc = caller.priv_id
         .and_then(|id| priv_table.get(id))
-        .map(|p| p.s_flags.contains(PrivFlagsBits::SYS_PROC))
+        .map(|p| p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC))
         .unwrap_or(false);
 
     // C: do_fork.c:84-87 — rpc->p_priv = priv_addr(USER_PRIV_ID)
@@ -404,7 +404,7 @@ pub fn dispatch_clear(
         if let Some(priv_id) = target.priv_id {
             if let Some(kpriv) = priv_table.get_mut(priv_id) {
                 if kpriv.is_sys_proc() {
-                    kpriv.s_proc_nr = None;
+                    kpriv.capability.s_proc_nr = None;
                 }
             }
         }
@@ -647,8 +647,8 @@ pub fn dispatch_statectl(caller: &mut KProcess, msg: &Message, priv_table: &mut 
         StatectlRequest::SetStateTable => {
             if let Some(pid) = caller.priv_id {
                 if let Some(priv_) = priv_table.get_mut(pid) {
-                    priv_.s_state_table = sc.address as usize;
-                    priv_.s_state_entries = sc.length;
+                    priv_.runtime.s_state_table = sc.address as usize;
+                    priv_.runtime.s_state_entries = sc.length;
                 }
             }
         }
@@ -660,7 +660,7 @@ pub fn dispatch_statectl(caller: &mut KProcess, msg: &Message, priv_table: &mut 
             // (matches C `add_ipc_filter` semantics — replaces, not stacks).
             if let Some(pid) = caller.priv_id {
                 if let Some(priv_) = priv_table.get_mut(pid) {
-                    if let Some(old_idx) = priv_.s_ipcf.take() {
+                    if let Some(old_idx) = priv_.mem.s_ipcf.take() {
                         crate::ipc_filter_pool().free(old_idx);
                     }
                     // Allocate a fresh blacklist slot from the pool.
@@ -668,7 +668,7 @@ pub fn dispatch_statectl(caller: &mut KProcess, msg: &Message, priv_table: &mut 
                     let new_idx = crate::ipc_filter_pool()
                         .allocate(crate::ipc_filter::IpcFilterType::Blacklist);
                     match new_idx {
-                        Some(idx) => priv_.s_ipcf = Some(idx),
+                        Some(idx) => priv_.mem.s_ipcf = Some(idx),
                         None => return KcallResult::Ok(ENOMEM),
                     }
                     // DEFERRED: populate slot.elements[0..length] from
@@ -684,13 +684,13 @@ pub fn dispatch_statectl(caller: &mut KProcess, msg: &Message, priv_table: &mut 
         StatectlRequest::AddIpcWlFilter => {
             if let Some(pid) = caller.priv_id {
                 if let Some(priv_) = priv_table.get_mut(pid) {
-                    if let Some(old_idx) = priv_.s_ipcf.take() {
+                    if let Some(old_idx) = priv_.mem.s_ipcf.take() {
                         crate::ipc_filter_pool().free(old_idx);
                     }
                     let new_idx = crate::ipc_filter_pool()
                         .allocate(crate::ipc_filter::IpcFilterType::Whitelist);
                     match new_idx {
-                        Some(idx) => priv_.s_ipcf = Some(idx),
+                        Some(idx) => priv_.mem.s_ipcf = Some(idx),
                         None => return KcallResult::Ok(ENOMEM),
                     }
                     // DEFERRED: populate slot.elements[0..length] via data_copy_vmcheck.
@@ -704,7 +704,7 @@ pub fn dispatch_statectl(caller: &mut KProcess, msg: &Message, priv_table: &mut 
                     // Free the IPC filter slot from the pool, then clear
                     // the pointer. C: IPCF_POOL_FREE_SLOT(priv(caller)->s_ipcf)
                     // followed by priv(caller)->s_ipcf = NULL.
-                    if let Some(ipcf_idx) = priv_.s_ipcf.take() {
+                    if let Some(ipcf_idx) = priv_.mem.s_ipcf.take() {
                         crate::ipc_filter_pool().free(ipcf_idx);
                     }
                 }
@@ -766,7 +766,7 @@ mod tests {
         assert_eq!(dispatch_statectl(&mut caller, &msg, &mut priv_table), KcallResult::Ok(OK));
         // Caller must now hold a non-None s_ipcf pointing into the global pool.
         let priv_ = priv_table.get(0).unwrap();
-        let slot_idx = priv_.s_ipcf.expect("AddIpcBlFilter should allocate a slot");
+        let slot_idx = priv_.mem.s_ipcf.expect("AddIpcBlFilter should allocate a slot");
         let pool_slot = crate::ipc_filter_pool().get(slot_idx)
             .expect("slot index must resolve");
         assert_eq!(
@@ -781,7 +781,7 @@ mod tests {
         let msg = build_statectl_msg(4, 0xdead_beef, 0);
         assert_eq!(dispatch_statectl(&mut caller, &msg, &mut priv_table), KcallResult::Ok(OK));
         let priv_ = priv_table.get(0).unwrap();
-        let slot_idx = priv_.s_ipcf.expect("AddIpcWlFilter should allocate a slot");
+        let slot_idx = priv_.mem.s_ipcf.expect("AddIpcWlFilter should allocate a slot");
         let pool_slot = crate::ipc_filter_pool().get(slot_idx)
             .expect("slot index must resolve");
         assert_eq!(
@@ -799,10 +799,10 @@ mod tests {
         let before_count = crate::ipc_filter_pool().allocated_count();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
         assert_eq!(dispatch_statectl(&mut caller, &msg, &mut priv_table), KcallResult::Ok(OK));
-        let first_idx = priv_table.get(0).unwrap().s_ipcf.unwrap();
+        let first_idx = priv_table.get(0).unwrap().mem.s_ipcf.unwrap();
         // Second add must not increase the allocated count.
         assert_eq!(dispatch_statectl(&mut caller, &msg, &mut priv_table), KcallResult::Ok(OK));
-        let second_idx = priv_table.get(0).unwrap().s_ipcf.unwrap();
+        let second_idx = priv_table.get(0).unwrap().mem.s_ipcf.unwrap();
         assert_eq!(crate::ipc_filter_pool().allocated_count(), before_count + 1);
         // Indices need not be identical (allocator may reuse the freed slot,
         // but the *count* must remain +1).

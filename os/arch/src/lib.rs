@@ -48,7 +48,7 @@ pub use arch::exception_dispatcher;
 pub use arch::clock;
 pub use arch::arch_init;
 pub use arch::arch_boot;
-pub use arch::proc_arch;
+pub use arch::boot;
 pub use arch::post_init;
 
 pub use paging_ext::{PagingWithId, HugePages};
@@ -61,11 +61,11 @@ pub use exception_dispatcher::{
 };
 pub use clock::{ClockArch, ClockState, DEFAULT_HZ};
 pub use arch_init::ArchInit;
-pub use proc_arch::{ArchProcReset, ArchProcInit, BootProcArch, VmLoadResult};
+pub use boot::{
+    CpuContextArch, EntrySpec, ProcKind, ProcNr,
+    VmLoadResult, VmLoadError, load_vm_elf,
+};
 pub use post_init::{PostInitArch, MemoryInitArch, VmPageTableInfo, FreePdeSlots, MAX_FREE_PDE_SLOTS};
-
-#[cfg(feature = "mock")]
-pub use proc_arch::MockProcArch;
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
@@ -126,15 +126,31 @@ pub type CurrentArchInit = crate::arm64::arch_init::AArch64ArchInit;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentArchInit = crate::riscv64::arch_init::Riscv64ArchInit;
 
-// ── CurrentBootProcArch type aliases ──
-#[cfg(all(feature = "mock", not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
-pub type CurrentBootProcArch = MockProcArch;
+// ── CurrentCpuContextArch / CpuContext / TrapFrame type aliases ──
+//
+// Replaces the old `CurrentBootProcArch` (see 06-design-final.md §3.2
+// for the renaming rationale — the abstraction is "process's CPU
+// context", not just the boot phase).
 #[cfg(target_arch = "x86_64")]
-pub type CurrentBootProcArch = crate::x86_64::proc_arch::X86_64ProcArch;
+pub type CurrentCpuContextArch = crate::x86_64::boot::X86_64CpuContextArch;
 #[cfg(target_arch = "aarch64")]
-pub type CurrentBootProcArch = crate::arm64::proc_arch::AArch64ProcArch;
+pub type CurrentCpuContextArch = crate::arm64::boot::AArch64CpuContextArch;
 #[cfg(target_arch = "riscv64")]
-pub type CurrentBootProcArch = crate::riscv64::proc_arch::Riscv64ProcArch;
+pub type CurrentCpuContextArch = crate::riscv64::boot::Riscv64CpuContextArch;
+
+#[cfg(target_arch = "x86_64")]
+pub type CurrentCpuContext = crate::x86_64::boot::X86_64CpuContext;
+#[cfg(target_arch = "aarch64")]
+pub type CurrentCpuContext = crate::arm64::boot::AArch64CpuContext;
+#[cfg(target_arch = "riscv64")]
+pub type CurrentCpuContext = crate::riscv64::boot::Riscv64CpuContext;
+
+#[cfg(target_arch = "x86_64")]
+pub type CurrentTrapFrame = crate::x86_64::exception::X86_64ExceptionFrame;
+#[cfg(target_arch = "aarch64")]
+pub type CurrentTrapFrame = crate::arm64::exception::AArch64ExceptionFrame;
+#[cfg(target_arch = "riscv64")]
+pub type CurrentTrapFrame = crate::riscv64::exception::Riscv64ExceptionFrame;
 
 // ── CurrentPostInitArch type aliases ──
 #[cfg(all(feature = "mock", not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(target_arch = "riscv64")))]

@@ -1,655 +1,525 @@
-# 07-cross-space-init: 跨地址空间初始化
+# 07-cross-space-init: 跨地址空间初始化——从临时窗口到 direct_map
 
-> **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/arch/i386/protect.c:370-377`, `minix3/minix/kernel/arch/i386/memory.c:707-717`, `minix3/minix/kernel/arch/earm/protect.c:97-104`, `minix3/minix/kernel/arch/earm/memory.c:612-622`
-> **说明**: 阶段 C 完成后，内核设置 ptproc（当前页表进程）并分配 freepdes（临时页目录项），为运行时跨地址空间访问铺路
-> **前置**: [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 进程表已初始化、VM ELF 已加载到 bootstrap 页表
+> **分类**: 全局基建（内核启动阶段 D）
+> **源码**: `minix3/minix/kernel/arch/i386/protect.c` · `minix3/minix/kernel/arch/i386/pg_utils.c` · `minix3/minix/kernel/arch/i386/memory.c`
+> **说明**: 内核如何获得"看"别的进程地址空间的能力——Minix3 用 32 位临时窗口（freepdes/ptproc），minix-rs 用 64 位 direct_map 重新表达。
+> **Redesign 依据**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-pagetable-struct.md` §3.6（direct_map 设计）、`02-stage-vm/07-pagetable-ops.md` §3.0.7（map_kernel 职责简化）
 
 ---
 
 ## 1. 概述
 
-### 1.0 ptproc 与 freepdes：内核如何"看"别人的地址空间
+### 1.0 本章讲什么
 
-内核运行在自己的地址空间中。VM 运行在 VM 的地址空间中。PM 运行在 PM 的地址空间中。那么问题来了——内核要读写 VM 的内存（比如 `lin_lin_copy`、`vm_memset`），怎么做到？
+kmain 的启动流程分为六个阶段：
 
-答案依赖于两个机制，它们正好是阶段 D 初始化的：
+| 阶段 | 名称 | 核心动作 | 文档 |
+|------|------|---------|------|
+| A | 入口 | 固件交接、栈建立 | 01-04 |
+| B | cstart | 早期硬件初始化、解析启动信息 | 05 |
+| C | 进程表初始化 | 清空进程表、加载 VM ELF | 06 |
+| **D** | **跨空间初始化** | **内核获得跨地址空间访问能力** | **07（本文）** |
+| E | 系统初始化 | 系统调用注册、子系统启动 | 08 |
+| F | 启动完成 | 调度开始、bsp_finish_booting | 08 |
 
-1. **`ptproc`**（page table process）：内核维护一个"当前活跃的页表进程"指针。当内核需要访问某个进程的地址空间时，它会临时借用 `ptproc` 的页目录项（PDE）来映射目标进程的页面。`arch_post_init()` 将 `ptproc` 设置为 VM——因为 VM 是第一个拥有完整页表的进程。
+阶段 D 要回答一个核心矛盾：**内核运行在自己的地址空间里，却要读写用户进程的内存**。IPC 消息拷贝（`lin_lin_copy`）、`vm_memset` 等内核服务都需要穿越进程隔离——目标内存不在当前页表的用户空间映射里。这就是跨地址空间访问问题。
 
-2. **`freepdes`**（free page directory entries）：内核页目录中预留的"临时映射槽位"。当 `createpde()` 需要映射一个不在当前页表中的页面时，它将目标页的 PDE 值写入 `freepdes` 指向的页目录项，通过这种"临时窗口"访问目标内存。`memory_init()` 分配 2 个这样的槽位。
+这个问题的解法随虚拟地址空间位宽演进：
 
-**这两个机制的关系**：`freepdes` 写入的是 `ptproc` 页目录中的项——所以 `ptproc` 必须先设置好，`freepdes` 才能工作。这也是为什么 `arch_post_init()` 在 `memory_init()` 之前调用。
+- **32 位时代**：虚拟地址空间只有 4GB，内核和用户共享，没有余量建立全物理内存的固定映射。解法是**临时窗口**——在当前页目录里预留 2 个槽位（freepdes），需要访问目标进程内存时，把目标页目录项（PDE）临时写入槽位，用完清掉。这是 Minix3 的方案。
+- **64 位时代**：虚拟地址空间 256TB+，有余量建立"全物理内存 → 固定虚拟地址区间"的线性映射（`va = pa + BASE`）。内核要访问任意物理内存时，直接算出 VA，MMU 按 direct map 的 PTE 解释——不需要临时窗口、不污染任何页目录、不需要清理。这是 Linux/Windows/BSD 主流内核的通用模式，也是 minix-rs 的选择。
 
-### 1.1 阶段 D 的位置
+**本章立场**：minix-rs 选择 direct_map，废弃 32 位的临时窗口机制。阶段 D 从"分配临时窗口"简化为"确认 direct_map 就绪"。
 
-| 阶段 | 标记 | 函数 | 做什么 | 文档 |
-|------|------|------|--------|------|
-| A: 入口 | T2 | kmain 入口 | memcpy(&kinfo)、BSS 检查 | 03 |
-| B: cstart | T2+T3 | cstart() | prot_init → init_clock → intr_init → arch_init | 03+04 |
-| C: 进程表 | T4+T5 | proc_init + arch_boot_proc | 清空进程表、加载 VM ELF | 05 |
-| **D: post-init** | **T6+T7** | **arch_post_init + memory_init** | **ptproc=VM、freepdes 分配** | **本文** |
-| E: system | T8+T9 | system_init + add_memmap | 系统调用初始化、bootstrap 回收 | 07 |
-| F: finish | T9.5+T10 | bsp_finish_booting | SMP 初始化、启动完成、切换用户态 | 07 |
+**目标读者**：已理解 Minix3 微内核基本结构、了解 x86 分页机制、读过 [06-proc-init-boot-proc-new.md](06-proc-init-boot-proc-new.md)（阶段 C）的开发者。
 
-阶段 D 仅有两行 C 代码，但它们为内核运行时的核心能力——跨地址空间访问——奠定基础。
+**本章不讲什么**：
 
-### 1.2 为什么 arch_post_init 必须在 arch_boot_proc 之后
+- direct_map 的完整建立过程（VM server [06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 已详述，本文仅引用）
+- `createpde()` 的运行时使用（后续 24-cross-space-runtime.md）
+- `map_kernel()` 的完整实现（VM server [07-pagetable-ops.md](../02-stage-vm/07-pagetable-ops.md) §3.0.7，本文仅讲协作关系）
 
-`arch_post_init()` 调用 `proc_addr(VM_PROC_NR)` 获取 VM 的进程指针。这个指针必须在阶段 C 的 `proc_init()` 中已经正确初始化（`p_nr`、`p_endpoint` 等字段已设置）。此外，VM 的 `p_seg.p_cr3`（页表物理地址）和 `p_seg.p_cr3_v`（页表虚拟地址）需要在 `arch_boot_proc()` 中被设置——`pg_info()` 会读取这些字段。
+### 1.1 核心矛盾：内核如何"看"别人的地址空间
 
-### 1.3 为什么 memory_init 必须在 arch_post_init 之后
+每个进程有独立页表——CR3 装的是当前进程的页表根，MMU 按 CR3 指向的页表解释虚拟地址。这是进程隔离的基础，也是 OS 核心机制。
 
-`freepdes` 写入的是 `ptproc->p_seg.p_cr3_v[pde]`——即 VM 页目录的虚拟地址。如果 `ptproc` 未设置，`createpde()` 中的 `get_cpulocal_var(ptproc)->p_seg.p_cr3_v` 将返回 NULL，导致内核崩溃。
+内核映射在每个进程的地址空间里。中断或系统调用进入 ring 0 时，CPU 必须能立即执行内核代码，所以每个进程的页表都映射了内核段（高地址区）。进程切换时，CR3 换成新进程的页表，但内核段映射始终可见——这是为什么内核能在任何进程的上下文里运行。
 
-### 1.4 三架构对照
+但内核要访问**别的**进程的用户态内存时，问题出现了：目标内存的 VA 在当前页表里没有映射（它映射在目标进程的页表里）。CPU 当前的页表解释不了这个 VA。
 
-| 方面 | x86-64 | aarch64 | riscv64 |
-|------|--------|---------|---------|
-| ptproc 字段名 | `ptproc`（cpulocal） | `ptproc`（cpulocal） | `ptproc`（cpulocal） |
-| ptproc 设置 | `get_cpulocal_var(ptproc) = vm` | `get_cpulocal_var(ptproc) = vm` | `get_cpulocal_var(ptproc) = vm` |
-| pg_info 参数 | `&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v` | `&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v` | 对应页表寄存器 |
-| freepdes 数量 | 2 | 2 | 2 |
-| freepdes 来源 | `kinfo.freepde_start`（由 pg_mapkernel 返回） | `kinfo.freepde_start` | 对应 |
-| 页目录项大小 | 8 字节（64 位 PDE） | 8 字节 | 8 字节 |
-| 临时映射粒度 | 2MB 大页（PD 映射） | 2MB block（L2 映射） | 2MB 大页 |
+> **灵魂本质**：跨地址空间访问 = "CPU 当前页表解释不了目标 VA，如何临时让它解释得了"。
 
-### 1.5 Rust 版与 C 版的差异
+这个能力是内核运行时服务的基石：IPC 消息要在进程间拷贝、`fork` 要复制父进程地址空间、`exec` 要加载新镜像——都依赖内核能读写目标进程的内存。
 
-| 方面 | Minix3 C | minix-rs |
-|------|---------|----------|
-| ptproc | cpulocal 变量 `get_cpulocal_var(ptproc)` | `PostInitArch::set_ptproc()` trait 方法 |
-| pg_info | 直接写 VM 的 `p_seg.p_cr3` / `p_seg.p_cr3_v` | `PostInitArch::set_ptproc()` 内部完成 |
-| freepdes | 全局静态数组 `static int freepdes[2]` | `MemoryInitArch::allocate_free_pdes()` 返回 `FreePdeSlots` |
-| freepde_start | `kinfo.freepde_start` | `kernel_info.free_upper_idx()` (returns `Option<usize>`) |
-| createpde | 全局函数，直接操作 `ptproc->p_seg.p_cr3_v[pde]` | `CrossSpaceArch` trait 方法（后续文档） |
+### 1.2 32 位解法：临时窗口（历史包袱）
+
+> **架构范围**：x86-32 特有设计（4MB 大页、1024 项页目录）。64 位不沿用。
+
+32 位虚拟地址空间只有 4GB，内核和用户共享，没有余量建立全物理内存的固定映射。解法是**借当前页目录开临时后门**：
+
+1. 在页目录里预留 2 个槽位（freepdes），需要访问目标进程内存时，把目标 PDE 临时写入槽位
+2. "借谁的页目录"——借当前 CPU 正在用的页目录（`ptproc` 指向它），因为 MMU 只按 CR3 装的页目录解释 VA
+3. 用完清空槽位（`mem_clear_mapcache`），防残留
+
+这个机制有三个丑陋之处：
+
+- **污染当前页目录视图**：临时写入的 PDE 改变了当前进程的地址空间视图，用完必须清理
+- **TLB 反复 flush**：每次写入/清理 PDE 都要 invalidate TLB，性能损耗
+- **4MB 粒度限制**：PDE 对应 4MB 区间，即使只访问 1 字节也要映射整段
+
+> **灵魂本质**：临时窗口 = 在别人的页目录上开两个临时后门，用完堵上。
+
+这是地址空间受限的妥协。Minix3 的 `freepdes`/`ptproc`/`createpde`/`mem_clear_mapcache` 都是这套机制的组成部分。
+
+### 1.3 64 位解法：direct_map（现代方案）
+
+> **架构范围**：三架构统一抽象（DirectMapArch trait），BASE 值各架构不同。
+
+64 位虚拟地址空间 256TB+，有余量建立"全物理内存 → 固定虚拟地址区间"的线性映射。这就是 direct_map：
+
+```
+va = pa + BASE
+```
+
+内核要访问任意物理内存时，直接 `kernel_phys_to_virt(pa)` 得到 VA，MMU 按 direct map 的 PTE 解释——不需要临时窗口、不污染任何页目录、不需要清理。
+
+**双视图地址空间**（硬件特权级要求）：同一物理内存需要两个窗口——
+
+| 窗口 | U/S 位 | 使用者 | 建立者 | 建立时机 |
+|------|--------|--------|--------|---------|
+| VM direct map | U/S=1 | VM 用户态 | kernel | 阶段 C（VM 启动前） |
+| Kernel direct map | U/S=0, G=1 | 内核态 | VM（`map_kernel`） | VM 启动后 |
+
+为什么需要两个窗口？x86-64 的 U/S 位不能同时 0 和 1。如果只有一个 direct map，要么 VM 用户态访问不了（U/S=0），要么内核安全降级（U/S=1）。两个窗口是硬件特权级的必然要求，不是冗余。
+
+> **灵魂本质**：direct_map = 给所有物理内存一个永久的虚拟地址，临时窗口的"借/还"整个消失。
+
+Minix3 全线没有 direct map（`pmap.h` 的 `PMAP_DIRECT_MAP` 宏受 `#ifdef __HAVE_DIRECT_MAP` 保护且从未定义，见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6）。direct_map 是 minix-rs 全新引入的架构演进。
+
+### 1.4 阶段 D 的位置与简化
+
+阶段 D 在 C 里是两行代码：`arch_post_init`（设 ptproc + `pg_info`）+ `memory_init`（分配 freepdes）。
+
+direct_map 下这两行的语义变化：
+
+| C 代码 | 32 位语义 | direct_map 下 |
+|--------|----------|--------------|
+| `ptproc = VM` | 记录"当前页目录是 VM 的"，freepdes 借此页目录 | 废弃——kernel 有 Kernel direct map，不借页目录 |
+| `pg_info()` | 记录 bootstrap 页表的物理/虚拟地址 | 废弃——kernel 用 `kernel_phys_to_virt` 直接访问 |
+| `memory_init` 分配 freepdes | 领取 2 个临时窗口槽位 | 废弃——direct map 是永久映射 |
+
+阶段 D 简化为：**确认 direct_map 已就绪**。VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好（详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 的 4 页初始页表结构）；阶段 D 只需确认它已就绪，无需分配任何东西。
+
+> **灵魂本质**：阶段 D 从"分配临时窗口"降级为"确认永久窗口已开"。
+
+注意：Kernel direct map 不在阶段 D 范围——它由 VM 启动后通过 `map_kernel` 建立（见 §3.4）。阶段 D 确认的是 VM direct map 就绪。
+
+### 1.5 本章小结
+
+- 跨地址空间访问是内核核心能力，解法随位宽演进
+- 32 位临时窗口（freepdes/ptproc）是地址空间受限的妥协；64 位 direct_map 是地址空间充裕的自然解
+- minix-rs 选择 direct_map，阶段 D 简化为确认 VM direct map 就绪
+- 关键不变量：direct_map 建立后只读不变（VM 不再修改 Kernel direct map 的 PTE，G=1 保证 CR3 切换不刷新 TLB）
 
 ---
 
 ## 2. C 源码分析
 
-### 2.1 arch_post_init()：设置 ptproc
+> 本章讲 Minix3 的 32 位实现，作为"被替代的历史方案"分析。所有引用均标注 `file:line`。
 
-x86-64（`protect.c:370-377`）：
+### 2.1 arch_post_init()：设置 ptproc + 记录页表地址
 
-```c
-void arch_post_init(void)
-{
-  /* Let memory mapping code know what's going on at bootstrap time */
-  struct proc *vm;
-  vm = proc_addr(VM_PROC_NR);
-  get_cpulocal_var(ptproc) = vm;
-  pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
-}
-```
-
-aarch64（`protect.c:97-104`）：
+`arch_post_init` 是阶段 D 的第一步（`minix3/minix/kernel/arch/i386/protect.c:370-377`）：
 
 ```c
 void arch_post_init(void)
 {
   struct proc *vm;
-  vm = proc_addr(VM_PROC_NR);
-  get_cpulocal_var(ptproc) = vm;
-  pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v);
+  vm = proc_addr(VM_PROC_NR);          /* 找到 VM 进程 */
+  get_cpulocal_var(ptproc) = vm;       /* ptproc = VM */
+  pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);  /* 记录页表地址 */
 }
 ```
 
-**逐行分析**：
+三步动作：
 
-1. **`vm = proc_addr(VM_PROC_NR)`**：获取 VM 进程的 `struct proc` 指针。`proc_addr()` 是一个 O(1) 查找——直接用 `p_nr` 作为数组索引。此时 VM 的进程 slot 已经在阶段 C 被 `arch_boot_proc()` 初始化过。
+1. `proc_addr(VM_PROC_NR)`：获取 VM 进程的 `struct proc`
+2. `get_cpulocal_var(ptproc) = vm`：把 VM 设为当前 CPU 的 ptproc
+3. `pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v)`：记录页表地址
 
-2. **`get_cpulocal_var(ptproc) = vm`**：将 VM 设为当前 CPU 的"页表进程"。`ptproc` 是 per-CPU 变量，定义在 `cpulocals.h:55`。它指向"当前活跃的页表所属的进程"——内核通过临时修改 `ptproc` 的页目录来映射其他进程的内存。
+**为什么是 VM**：VM 是第一个拥有完整页表的进程。从此刻到 VM 通过 `VMCTL_SETADDRSPACE` 切换到自己页表前，内核和 VM 共享 bootstrap 页表。
 
-3. **`pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v)`**：记录 bootstrap 页目录的物理地址和虚拟地址。这两个地址由 `pg_info()` 写入全局变量 `pagedir`（虚拟地址）和 `pagedir_ph`（物理地址）。
+**ptproc 是什么**：per-CPU 变量（`minix3/minix/kernel/cpulocals.h:55`），记录"当前 CR3 装的是谁"。freepdes 借此页目录放临时映射——因为 MMU 只按 CR3 装的页目录解释 VA，临时映射必须写入这个页目录才有效。
 
-**为什么是 VM？** 三个原因：
+### 2.2 pg_info()：记录 bootstrap 页表地址
 
-- VM 是第一个拥有完整页表的进程。其他进程（PM、VFS 等）还没有页表——它们的 `RTS_VMINHIBIT` 标志还设置着。
-- `createpde()` 需要一个"宿主页表"来放置临时映射——VM 的页表是唯一可用的。
-- 从此刻起到 VM 通过 `VMCTL_SETADDRSPACE` 切换到自己的真实页表之前，内核和 VM 共享 bootstrap 页表。
-
-### 2.2 pg_info()：记录页目录地址
-
-x86-64（`pg_utils.c:312-316`）：
+`pg_info` 记录 bootstrap 页表的物理/虚拟地址（`minix3/minix/kernel/arch/i386/pg_utils.c:312-316`）：
 
 ```c
-void pg_info(reg_t *pagedir_ph, u32_t **pagedir_v)
+void pg_info(phys_bytes *pagedir_ph, vir_bytes *pagedir_v)
 {
-    *pagedir_ph = vir2phys(pagedir);
-    *pagedir_v = pagedir;
+  *pagedir_ph = vir2phys(pagedir);   /* 物理地址 */
+  *pagedir_v = pagedir;              /* 虚拟地址 */
 }
 ```
 
-`pg_info()` 做的事情极其简单——把全局变量 `pagedir`（bootstrap 页目录的虚拟地址）转成物理地址，写入 VM 进程的 `p_seg.p_cr3` 和 `p_seg.p_cr3_v`。这样 VM 的进程结构体就知道了"自己的页表在哪"。
+把全局 `pagedir`（bootstrap 页目录）的物理/虚拟地址写入 VM 的 `p_seg.p_cr3`/`p_seg.p_cr3_v`。
 
-**但是**——VM 此时的页表不是 VM 自己建的，而是内核在 `arch_boot_proc()` 中用 `pg_map(PG_ALLOCATEME, ...)` 建的 bootstrap 页表。VM 运行后会通过 `VMCTL_SETADDRSPACE` 建立自己的页表，替换掉 bootstrap 页表。所以 `pg_info()` 记录的是**初始**页表地址，不是最终地址。
+VM 运行后会通过 `VMCTL_SETADDRSPACE` 替换为自己的页表，所以 `pg_info` 记录的是**初始**页表地址。后续 `createpde` 借 ptproc 的页目录时，读的就是这个地址。
 
-### 2.3 IPCNAME 宏：IPC 调用类型名称注册
+### 2.3 pg_mapkernel()：建立内核映射 + 返回 freepde_start
 
-在 `arch_post_init()` 和 `memory_init()` 之间，`main.c:277-290` 有一段 IPCNAME 宏调用：
+> **阶段归属**：`pg_mapkernel` 在 pre_init 阶段调用（`minix3/minix/kernel/arch/i386/pre_init.c:232`），比阶段 D 更早。本节讲它是为了说明 `freepde_start` 的来源——阶段 D 的 `memory_init` 要用它。
+
+`pg_mapkernel` 用 4MB 大页映射内核代码/数据段（`minix3/minix/kernel/arch/i386/pg_utils.c:186-206`）：
 
 ```c
-IPCNAME(SEND, 0);
-IPCNAME(RECEIVE, 0);
-IPCNAME(SENDREC, 0);
-IPCNAME(NOTIFY, 0);
-IPCNAME(SENDNB, 0);
-IPCNAME(RECEIVE_ASYNC, 0);
-/* ... 共约 13 个调用类型 */
+int pg_mapkernel(void)
+{
+  int pde;
+  /* 用 4MB 大页映射内核段：kern_vir_start → kern_phys_start，长度 kern_kernlen */
+  for (pde = ...; pde < ...; pde++) {
+    pagedir[pde] = ... | BIG_PAGE | ...;  /* 4MB 大页 */
+  }
+  return pde;  /* 返回映射之后的第一个空闲 PDE 索引 = freepde_start */
+}
 ```
 
-`IPCNAME` 宏（定义在 `kernel/ipc.h`）将 IPC 调用类型编号映射为可读字符串，写入全局数组 `ipcnames[]`。它**仅用于调试输出**（如 `kprintf` 打印 IPC 统计），不影响任何运行时逻辑。
-
-**Rust 版替代方案**：C 版用宏+全局数组实现名称查找，Rust 版可用 `enum IpcCall { Send, Receive, ... }` + `impl Display for IpcCall` 替代，无需全局数组，编译期保证完整性。
-
-### 2.4 memory_init()：分配临时映射槽位
-
-x86-64（`memory.c:707-717`）：
+`pre_init.c:232` 记录返回值：
 
 ```c
+kinfo.freepde_start = pg_mapkernel();
+```
+
+这是"内核映射在每个进程地址空间"的 C 实现：每个进程页表的高位 PDE 都指向内核段。`pg_mapkernel` 返回的 `freepde_start` 是内核映射之后的第一个空闲 PDE 索引——`memory_init` 从这里分配 freepdes 槽位。
+
+direct_map 下，内核映射变成 Kernel direct map（1GB huge page），`freepde_start` 不再需要。
+
+### 2.4 memory_init()：分配 freepdes
+
+`memory_init` 是阶段 D 的第二步（`minix3/minix/kernel/arch/i386/memory.c:707-717`）：
+
+```c
+static int freepdes[MAXFREEPDES];   /* memory.c:32 */
+static int nfreepdes;               /* memory.c:33 */
+
 void memory_init(void)
 {
-    assert(nfreepdes == 0);
-
-    freepdes[nfreepdes++] = kinfo.freepde_start++;
-    freepdes[nfreepdes++] = kinfo.freepde_start++;
-
-    assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES);
-    assert(nfreepdes == 2);
-    assert(nfreepdes <= MAXFREEPDES);
+  freepdes[nfreepdes++] = kinfo.freepde_start++;  /* 领取槽位 0 */
+  freepdes[nfreepdes++] = kinfo.freepde_start++;  /* 领取槽位 1 */
+  assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES);  /* 越界检查 */
 }
 ```
 
-aarch64（`memory.c:612-622`）：
+**为什么是 2 个**：`createpde` 的调用者 `virtual_copy_f`/`vm_memset` 需要源和目标两个临时映射——一次跨空间拷贝可能涉及两个不同的目标进程。
+
+`freepdes[]` 是全局静态数组（`memory.c:32`），`nfreepdes` 是已分配计数。BKL 下单 CPU 执行，无需加锁。
+
+direct_map 下，`memory_init` 整体废弃——direct map 是永久映射，不需要运行时分配槽位。
+
+### 2.5 createpde() + mem_clear_mapcache()：临时窗口的使用与清理
+
+`createpde` 是 freepdes 的唯一消费者（`minix3/minix/kernel/arch/i386/memory.c:69-145`）：
 
 ```c
-void memory_init(void)
+static phys_bytes createpde(struct proc *target, vir_bytes v)
 {
-    assert(nfreepdes == 0);
-
-    freepdes[nfreepdes++] = kinfo.freepde_start++;
-    freepdes[nfreepdes++] = kinfo.freepde_start++;
-
-    assert(kinfo.freepde_start < ARM_VM_DIR_ENTRIES);
-    assert(nfreepdes == 2);
-    assert(nfreepdes <= MAXFREEPDES);
+  if (target == get_cpulocal_var(ptproc) || iskernelproc(target)) {
+    return v;  /* 目标就是当前页目录或内核：直接返回 VA */
+  }
+  /* 否则：读目标 PDE，写入 freepdes 槽位，返回临时窗口 VA */
+  pde = ...;  /* 选一个空闲 freepde 槽位 */
+  get_cpulocal_var(ptproc)->p_seg.p_cr3_v[pde] = target->p_seg.p_cr3_v[...];
+  return <临时窗口 VA>;
 }
 ```
 
-**逐行分析**：
+`mem_clear_mapcache` 用完清空 freepdes 槽位（`memory.c:35-50`），防残留污染下次访问。
 
-1. **`assert(nfreepdes == 0)`**：确保 `memory_init()` 只被调用一次。
+**BKL 下安全性**：`createpde` 修改全局页目录项，但 BKL 保证单 CPU 执行，无并发问题。
 
-2. **`freepdes[0] = kinfo.freepde_start++`**：取第一个空闲的页目录项索引。`kinfo.freepde_start` 在 `pre_init.c:232` 中由 `pg_mapkernel()` 返回——它是内核映射之后的第一个空闲 PDE 索引。自增后 `freepde_start` 指向下一个空闲索引。
+direct_map 下，`createpde` 退化为 `kernel_phys_to_virt(pa)` 一行加法——不需要借页目录、不需要临时窗口、不需要清理。完整实现见后续 24-cross-space-runtime.md。
 
-3. **`freepdes[1] = kinfo.freepde_start++`**：取第二个空闲 PDE 索引。
+### 2.6 IPCNAME 调试宏（阶段 D 中间夹）
 
-4. **`assert(kinfo.freepde_start < 512)`**（64 位）：确保分配后没有越界。
-
-**为什么是 2 个？** `createpde()` 的调用者 `virtual_copy_f()` 和 `vm_memset()` 都需要"源"和"目标"两个临时映射。每次跨地址空间拷贝需要两个 freepde——一个映射源，一个映射目标。
-
-### 2.5 freepdes 如何被使用：createpde() 快速导览
-
-`createpde()` 是 freepdes 的唯一消费者。它的工作流程：
-
-```
-1. 检查目标进程是否就是 ptproc 或是内核
-   → 是：直接返回 linaddr（已经在页表中可见）
-   → 否：需要临时映射
-
-2. 获取目标进程的 PDE 值：
-   - 如果是进程内存：读 pr->p_seg.p_cr3_v[I386_VM_PDE(linaddr)]
-   - 如果是物理地址：构造大页 PDE 条目
-
-3. 将该 PDE 值写入 freepdes[free_pde_idx] 对应的 ptproc 页目录项：
-   ptproc->p_seg.p_cr3_v[pde] = pdeval
-
-4. 返回映射后的虚拟地址（freepde 索引对应的 2MB 区域内的偏移）
-```
-
-**关键约束**：`createpde()` 不是线程安全的——它修改全局的页目录项。但在 Minix3 的 BKL 模型下，内核同一时刻只有一个 CPU 在执行内核代码，所以不需要锁。
-
-### 2.6 mem_clear_mapcache()：清理临时映射
-
-`memory.c:35-50`：
+`main.c:277-290` 定义了 IPC 调用类型编号→字符串的映射宏，仅调试用（`proc.c:497` 打印 IPC 统计时引用）：
 
 ```c
-void mem_clear_mapcache(void)
-{
-    int i;
-    for(i = 0; i < nfreepdes; i++) {
-        struct proc *ptproc = get_cpulocal_var(ptproc);
-        int pde = freepdes[i];
-        u32_t *ptv;
-        assert(ptproc);
-        ptv = ptproc->p_seg.p_cr3_v;
-        assert(ptv);
-        ptv[pde] = 0;
-    }
-}
+#define IPCNAME(c) { c, #c }
+struct { int call; char *name; } ipc_call_names[] = {
+  IPCNAME(SEND), IPCNAME(RECEIVE), IPCNAME(SENDREC), ...
+};
 ```
 
-每次 `virtual_copy_f()` 或 `vm_memset()` 完成后，必须调用 `mem_clear_mapcache()` 清空 freepdes 对应的 PDE 条目。否则临时映射会残留，可能被后续操作误用。
+这与跨空间访问主题无关，仅因时序位置在阶段 D 中间被提及。Rust 替代：`enum IpcCall` + `impl Display`，无需全局数组。
 
 ---
 
 ## 3. Rust 设计决策
 
-### 3.1 arch_post_init → PostInitArch trait
+> 每节用"如果 X 设计，会有 Y 问题，所以用 Z"的假设性推理。
 
-C 版的 `arch_post_init()` 做两件事：设置 `ptproc` 和调用 `pg_info()`。在 Rust 版中，这两个操作封装为一个 trait 方法。但 trait 方法不直接操作全局变量——而是返回 `CrossSpaceInit` 结构体，由 kernel 层存储和使用：
+### 3.1 本质：direct_map 替代 freepdes（rewrite not translate）
 
-```rust
-/// Post-initialization result: the kernel stores this for cross-address-space access.
-pub struct CrossSpaceInit {
-    /// VM's page table info (for createpde equivalent)
-    pub vm_page_table: VmPageTableInfo,
-    /// Temporary page table slots for createpde()
-    pub free_pde_slots: FreePdeSlots,
-}
+**本质**：跨地址空间访问的解法随位宽演进，64 位下 direct_map 是自然解。
 
-pub trait PostInitArch {
-    /// Register VM's page table info for cross-address-space operations.
-    fn set_ptproc(vm_page_table: &VmPageTableInfo);
-}
-```
+**约束驱动**：64 位虚拟地址空间充裕（256TB+），可以建立全物理内存的固定映射；`no_std` 下应避免全局可变状态（`freepdes[]` 是 `static int[]`，`FREE_PDE_SLOTS` 是 `static mut`）。
 
-**为什么不用两个方法（`set_ptproc` + `pg_info`）？** 因为 `pg_info` 在 C 中是一个独立的函数，但它只被 `arch_post_init()` 调用。在 Rust 版中，`pg_info` 的逻辑内联到 `set_ptproc()` 中——减少接口面积，避免 `pg_info` 被错误地在其他地方调用。
+**假设性推理**：如果翻译 Minix3 的 freepdes/ptproc，会泄漏 32 位临时窗口模型到 64 位 OS 层——污染页目录视图、需要清理、TLB 反复 flush、4MB 粒度限制全部继承，且 64 位地址空间本可避免这些。更糟的是，64 位页表是 4 级（PML4+PDPT+PD+PT），"借页目录"的语义从 PDE 变成 PML4E，临时窗口的粒度和复杂度都上升，而 direct_map 可以让这一切消失。
 
-### 3.2 memory_init → MemoryInitArch trait
+**决策**：废弃 freepdes/ptproc/`memory_init` 整套，用 direct_map 重新表达。这是 rewrite not translate——不是改 freepdes 的实现，是换整个机制。
 
-C 版的 `memory_init()` 分配 freepdes。在 Rust 版中，这是一个返回值而不是修改全局变量：
+### 3.2 双视图地址空间：VM direct map + Kernel direct map
 
-```rust
-pub trait MemoryInitArch {
-    /// Allocate temporary page table slots from the free list.
-    fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots;
-}
-```
+**本质**：同一物理内存需要两个窗口，因为 x86-64 的 U/S 位不能同时 0 和 1。
 
-**为什么返回结构体而不是修改全局变量？** C 版用 `static int freepdes[2]` 全局变量。Rust 版将 freepdes 封装为 `FreePdeSlots` 结构体，存储在内核的 `CrossSpaceInit` 中，避免全局可变状态。`FreePdeSlots` 使用固定大小数组 + `len` 字段，提供与 C 版相同的语义但增加了边界检查。
+| 窗口 | U/S 位 | 使用者 | 建立者 | 建立时机 |
+|------|--------|--------|--------|---------|
+| VM direct map | U/S=1 | VM 用户态 | kernel | 阶段 C（VM 启动前） |
+| Kernel direct map | U/S=0, G=1 | 内核态 | VM（`map_kernel`） | VM 启动后 |
 
-### 3.3 freepdes 的 64 位适配
+**假设性推理**：如果只有一个 direct map，要么 VM 访问不了（U/S=0，用户态访问触发 fault），要么内核安全降级（U/S=1，用户态能访问内核内存）。硬件特权级要求两个窗口——这不是设计冗余，是 ISA 规范的必然。
 
-C 版的 freepdes 是 32 位 PDE 索引（0-1023）。在 64 位下，页表层级从 2 级变为 4 级：
+**关键不变量**：Kernel direct map 建立后只读不变。G=1（Global 位）保证 CR3 切换时不刷新这些 TLB 条目（`pg_utils.c:243` 的 `vm_enable_paging` 启用 PGE 后生效），跨进程访问内核内存时 TLB 命中。
 
-| 架构 | 页表层级 | 临时映射粒度 | freepde 含义 |
-|------|---------|-------------|-------------|
-| x86-32 | 2 级（PD+PT） | 4MB（PD 项直接映射） | PD 索引 |
-| x86-64 | 4 级（PML4+PDPT+PD+PT） | 2MB（PD 项映射） | PD 索引 |
-| aarch64 | 3-4 级 | 1GB/2MB | 对应层级索引 |
-| riscv64 | 3 级（Sv39） | 2MB（大页） | 对应层级索引 |
+### 3.3 对接 DirectMapArch trait（不自造 PostInitArch/MemoryInitArch）
 
-在 64 位下，临时映射的原理完全相同——在当前页目录中预留若干项作为"临时窗口"。区别只是索引位宽和映射粒度。`free_upper_idx` 在 `KernelInfo` 中已经是 `usize`，可以适配不同位宽。
+**本质**：direct_map 的核心是地址空间布局（`va = pa + BASE`），跨架构仅 BASE 不同。
 
-### 3.4 ptproc 的 Rust 类型安全
+**约束驱动**：VM server 已实现 `DirectMapArch` trait（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3），定义在架构层（`os/arch/`），kernel 和 VM 都引用。kernel 侧应直接对接，避免重复抽象。
 
-C 版中 `ptproc` 是裸指针 `struct proc *`，可能为 NULL。Rust 版通过 `VmPageTableInfo` 结构体封装页表地址信息，`virt_root` 使用 `Option<VirBytes>`——`None` 表示该架构不需要虚拟地址指针（如 RISC-V 的 Sv39 通过物理地址直接操作页表）。这样 `createpde()` 的 Rust 等价函数可以通过类型系统区分"有虚拟指针"和"没有虚拟指针"的架构。
+**假设性推理**：如果 kernel 自造 `PostInitArch`/`MemoryInitArch` trait 来表达 freepdes/ptproc 的等价物，会与 VM 层的 `DirectMapArch` 形成两套抽象，违反"硬件抽象唯一性"原则——同一个 direct_map 机制有两个 trait 定义，维护时容易漂移。
 
-### 3.5 BKL 下的安全性
+**决策**：废弃 `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo`，kernel 侧通过 `DirectMapArch::kernel_phys_to_virt(pa)` 直接访问。`DirectMapArch` 的定义位置在架构层（`os/arch/`），通过 `CurrentDirectMap` 类型别名编译期选择当前架构的实现，kernel 和 VM 共用同一套抽象。
 
-`ptproc` 和 `freepdes` 都是 BKL 保护的共享状态。在 Minix3 的 BKL 模型下：
+### 3.4 map_kernel 职责演进：内核映射的建立者
 
-- `ptproc` 是 per-CPU 变量，每个 CPU 有自己的 `ptproc`，但 BKL 保证同一时刻只有一个 CPU 在内核中
-- `freepdes` 是全局静态变量，`createpde()` 修改它时 BKL 已持有
-- `mem_clear_mapcache()` 在 BKL 持有期间调用
+**本质**：每个进程页表必须映射内核——中断/系统调用进入 ring 0 时能执行内核代码。
 
-Rust 版中，`CrossSpaceInit` 存储在内核全局状态中，访问时需要 `&mut` 引用。由于 BKL 保证同一时刻只有一个执行流，可以安全地获得 `&mut`。
+Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责：
 
-### 3.6 设计决策的替代方案
+| 映射内容 | Minix3 `pt_mapkernel` | minix-rs `map_kernel` |
+|----------|----------------------|----------------------|
+| 内核代码/数据段 | 必须 | 必须 |
+| Kernel direct map（1GB huge pages, U/S=0, G=1） | 不存在 | 必须 |
+| `page_directories` 登记册 | 必须 | 不需要 |
+| `freepdes` 空闲槽位 | 必须预留 | 不需要 |
 
-| 决策 | 替代方案 | 为何不选 |
-|------|---------|---------|
-| `set_ptproc` 接收 `&VmPageTableInfo` | 接收 `&KProcess` | arch 层不能依赖 kernel 层，违反分层架构 |
-| `FreePdeSlots` 返回结构体 | 全局 `static mut` | 全局可变状态违反 Rust 安全模型 |
-| 2 个 freepdes 桶 | 更多或按需分配 | C 版用 2 个，改为 >2 需要证明必要性 |
-| `virt_root: Option<VirBytes>` | 所有架构必有 `virt_root` | RISC-V Sv39 不维护虚拟地址指针 |
+**假设性推理**：如果保留 `page_directories` 登记册（记录"哪些进程页目录映射了内核"），会维护一套元数据——direct_map 下每个进程都有 Kernel direct map（`map_kernel` 建立），登记册冗余。如果保留 `freepdes` 槽位预留，会继承 32 位临时窗口的全部问题（见 §3.1）。
+
+**建立者时序**：
+
+- VM direct map：由 kernel 建立（阶段 C，VM 启动前）——VM 还没运行，初始页表是 VM 进程创建的前提
+- Kernel direct map：由 VM 的 `map_kernel` 建立（VM 启动后）——VM 运行后为每个进程（包括自己）的页表添加 Kernel direct map
+
+注意：`map_kernel` 是 VM server 的函数（VM 进程运行时调用），不是 kernel 函数。这与 C 的 `pg_mapkernel`（kernel 函数，pre_init 阶段）不同——`pg_mapkernel` 只映射内核段，`map_kernel` 额外建立 Kernel direct map。
+
+### 3.5 阶段 D 简化：确认 direct_map 就绪
+
+**本质**：direct_map 在阶段 C（kernel 建立 VM 初始页表）已就绪，阶段 D 从"分配临时窗口"降级为"确认就绪"。
+
+**约束驱动**：direct_map 是永久映射，不需要运行时分配/清理；但"确认就绪"是必要的安全检查——避免运行时才发现 direct map 缺失，那时定位困难。
+
+**假设性推理**：如果完全删除阶段 D，kmain 流程少一步，但失去"direct map 就绪"的显式断言点。运行时 `createpde` 等价函数（`kernel_phys_to_virt`）失败时，难定位是 direct map 没建还是访问越界。保留一个确认步骤，让 fail-fast 发生在启动阶段而非运行时。
+
+**决策**：阶段 D 保留为"确认 VM direct_map 就绪"的验证步骤，废弃 `arch_post_init` 的 ptproc/`pg_info` 和 `memory_init` 的 freepdes 分配。
+
+**时序边界**：阶段 D 确认的是 VM direct map（阶段 C 已建立）。Kernel direct map 由 VM 启动后的 `map_kernel` 建立，不在阶段 D 范围——阶段 D 时 VM 还没运行。
+
+### 3.6 废弃清单与假设性推理汇总
+
+| 废弃项 | C 对应 | 如果保留会怎样 | direct_map 替代 |
+|--------|--------|--------------|----------------|
+| ptproc per-CPU 变量 | `cpulocals.h:56` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
+| freepdes[] 数组 | `memory.c:32` | 全局可变状态 + 临时窗口全部问题 | direct map 永久映射 |
+| memory_init() | `memory.c:707` | 运行时分配槽位的逻辑冗余 | 无需分配 |
+| PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 对接 DirectMapArch |
+| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch |
+| FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无 |
+| VmPageTableInfo | `pg_info` 输出 | 记录 bootstrap 页表地址，direct map 不依赖 | kernel 用 `kernel_phys_to_virt` 直接访问 |
+| FREE_PDE_SLOTS static | `freepdes[]` | 全局可变状态 | 无 |
+| FREE_UPPER_IDX static | `kinfo.freepde_start` | 全局原子，临时窗口索引 | 无 |
+
+> 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 核心类型定义
+> 对应 Ch3 每个决策，讲具体接口/流程。本章较瘦，因为大量实现被废弃。
 
-> 设计决策：§3.1 — PostInitArch trait 返回 VmPageTableInfo
+### 4.1 DirectMapArch 接口（引用 VM 已实现）
+
+`DirectMapArch` trait 定义在架构层（`os/arch/`），VM server 和 kernel 共用（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3）：
 
 ```rust
-// os/arch/src/arch/post_init.rs
+pub trait DirectMapArch {
+    /// VM direct map 基地址（U/S=1，VM 用户态用）
+    const VM_DIRECT_MAP_BASE: u64;
+    /// Kernel direct map 基地址（U/S=0，内核态用）
+    const KERNEL_DIRECT_MAP_BASE: u64;
 
-/// VM 页表信息（由 arch_post_init 设置）。
+    /// 物理地址 → VM 用户态虚拟地址
+    fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
+        VirBytes(phys.get() + Self::VM_DIRECT_MAP_BASE)
+    }
+    /// 物理地址 → 内核态虚拟地址
+    fn kernel_phys_to_virt(phys: PhysBytes) -> VirBytes {
+        VirBytes(phys.get() + Self::KERNEL_DIRECT_MAP_BASE)
+    }
+    /// 虚拟地址 → 物理地址（反向转换）
+    fn virt_to_phys(virt: VirBytes) -> PhysBytes { ... }
+}
+```
+
+三架构 BASE 值（详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3）：
+
+| 架构 | VM_DIRECT_MAP_BASE | KERNEL_DIRECT_MAP_BASE | 说明 |
+|------|-------------------|----------------------|------|
+| x86-64 | `0x0000_0000_8000_0000` | `0xFFFF_8000_0000_0000` | VM 在 2GB 用户态低区，Kernel 在高地址区 |
+| aarch64 | `0x0000_1000_0000_0000` | `0xFFFF_8000_0000_0000` | ARM 虚拟地址空间布局 |
+| riscv64 (Sv39) | `0x0000_0010_0000_0000` | `0xFFFF_FC00_0000_0000` | Sv39 地址划分 |
+
+kernel 侧通过 `CurrentDirectMap` 类型别名编译期选择当前架构的实现：
+
+```rust
+type CurrentDirectMap = <CurrentArch as Arch>::DirectMap;
+```
+
+1GB huge page 的 CPU 支持检查（`supports_1gb_page()`）：x86-64 查 `CPUID.80000001H:EDX.GBPAGES`，不支持时回退 2MB。详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3。
+
+### 4.2 阶段 D 入口：确认 direct_map 就绪
+
+阶段 D 入口 `init_post_and_memory` 重写为确认步骤：
+
+```rust
+/// 阶段 D：确认 VM direct_map 已就绪。
 ///
-/// | 字段      | x86-64              | ARM64            | RISC-V     |
-/// |------------|---------------------|------------------|------------|
-/// | phys_root  | p_cr3 (CR3 value)   | p_ttbr (TTBR0)   | satp value |
-/// | virt_root  | p_cr3_v (virt ptr)  | p_ttbr_v (virt ptr)| N/A*    |
-#[derive(Debug, Clone, Copy)]
-pub struct VmPageTableInfo {
-    pub phys_root: PhysBytes,         // C: vm->p_seg.p_cr3 (x86)
-    pub virt_root: Option<VirBytes>,  // C: vm->p_seg.p_cr3_v (x86)
-}
-
-/// 跨地址空间初始化结果（存储在 kernel 全局状态中）。
-#[derive(Debug)]
-pub struct CrossSpaceInit {
-    pub vm_page_table: VmPageTableInfo,
-    pub free_pde_slots: FreePdeSlots,
-}
-
-/// 临时页表槽位（createpde 的临时映射窗口）。
+/// VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好
+/// （详见 VM 06-pagetable-struct.md §3.6 的 4 页初始页表结构）。
+/// 本函数只做确认，不分配任何东西。
 ///
-/// C: `static int freepdes[2]` + `nfreepdes` counter
-#[derive(Debug, Clone)]
-pub struct FreePdeSlots {
-    slots: [usize; MAX_FREE_PDE_SLOTS],
-    len: usize,
-}
+/// 废弃的 C 逻辑：
+/// - arch_post_init 的 ptproc=VM + pg_info（direct_map 不借页目录）
+/// - memory_init 的 freepdes 分配（direct_map 是永久映射）
+fn init_post_and_memory(vm_proc: &Proc) {
+    // 1. 确认 VM 进程页表 root 有效
+    assert!(vm_proc.page_table_root.is_valid(),
+            "VM page table root must be valid after stage C");
 
-/// C: #define MAXFREEPDES 2 — memory.c:30
-pub const MAX_FREE_PDE_SLOTS: usize = 2;
+    // 2. 确认 direct map base 已由 boot-shim 填充
+    assert!(CurrentDirectMap::VM_DIRECT_MAP_BASE != 0,
+            "VM direct map base must be configured");
 
-impl FreePdeSlots {
-    pub fn new() -> Self {
-        Self { slots: [0; MAX_FREE_PDE_SLOTS], len: 0 }
-    }
+    // 3. 确认 VM direct map 在 VM 页表中已建立
+    //    （阶段 C 建立，此处只验证）
+    assert!(verify_vm_direct_map_present(vm_proc),
+            "VM direct map must be present in VM page table");
 
-    pub fn push(&mut self, index: usize) -> Result<(), &'static str> {
-        if self.len >= MAX_FREE_PDE_SLOTS {
-            return Err("free PDE slots overflow");
-        }
-        self.slots[self.len] = index;
-        self.len += 1;
-        Ok(())
-    }
-
-    pub fn get(&self, idx: usize) -> Option<usize> {
-        if idx < self.len { Some(self.slots[idx]) } else { None }
-    }
-}
-
-/// Architecture abstraction for post-initialization.
-///
-/// C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
-pub trait PostInitArch {
-    /// Register VM's page table info for cross-address-space operations.
-    ///
-    /// Equivalent C code:
-    ///   vm = proc_addr(VM_PROC_NR);
-    ///   get_cpulocal_var(ptproc) = vm;
-    ///   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);   // x86
-    fn set_ptproc(vm_page_table: &VmPageTableInfo);
-}
-
-/// Architecture abstraction for memory initialization.
-///
-/// C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
-pub trait MemoryInitArch {
-    /// Allocate free page table slots from kinfo.free_upper_idx.
-    fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots;
+    // 不分配 freepdes、不设 ptproc、不记录 VmPageTableInfo
 }
 ```
 
-### 4.2 PostInitArch 实现
+**流程**：获取 VM 进程 → 确认页表 root 有效 → 确认 direct map base 已配置 → 确认 VM direct map 已存在 → 返回。
 
-#### x86-64
+**时序边界**：阶段 D 确认的是 VM direct map（阶段 C 建立）。Kernel direct map 由 VM 启动后的 `map_kernel` 建立，此处不验证——VM 还没运行。
 
-```rust
-// os/arch/src/x86_64/post_init.rs
+### 4.3 废弃的 trait/结构体清单（迁移说明）
 
-impl PostInitArch for X86_64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // C: arch_post_init() — protect.c:370-377
-        //   vm = proc_addr(VM_PROC_NR);
-        //   get_cpulocal_var(ptproc) = vm;
-        //   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);
+废弃项及其替代：
 
-        // 记录 bootstrap 页表的物理和虚拟地址
-        // CR3 物理地址在 vm_page_table.phys_root
-        // 页表虚拟地址在 vm_page_table.virt_root（identity mapped）
-        //
-        // 实际效果：内核的 per-CPU ptproc 指针被设置为 VM，
-        // createpde() 可以从 ptproc.p_seg.p_cr3_v[pde] 读取 PDE 值。
-        //
-        // SAFETY: BKL 持有期间，仅此 CPU 访问 ptproc。
-        let _ = vm_page_table; // 实际存储由 kernel 层完成
-    }
-}
-```
+| 废弃项 | 原位置 | 替代 |
+|--------|--------|------|
+| `PostInitArch` trait | `os/arch/src/arch/post_init.rs` | 无（direct_map 不需要 `set_ptproc`） |
+| `MemoryInitArch` trait | `os/arch/src/arch/post_init.rs` | 无（不分配 freepdes） |
+| `FreePdeSlots` 结构体 | `os/arch/src/arch/post_init.rs` | 无 |
+| `VmPageTableInfo` 结构体 | `os/arch/src/arch/post_init.rs` | 无（kernel 用 `DirectMapArch` 直接访问） |
+| `CrossSpaceInit` 聚合体 | `os/arch/src/arch/post_init.rs` | 无（阶段 D 不产出聚合结构） |
+| `FREE_PDE_SLOTS` static | `os/kernel/src/lib.rs` | 无 |
+| `FREE_UPPER_IDX` static | `os/kernel/src/lib.rs` | 无 |
 
-#### aarch64
+**迁移影响**：后续 24-cross-space-runtime.md 的 `createpde` 等价函数改用 `CurrentDirectMap::kernel_phys_to_virt(pa)`，不再读 freepdes 槽位。
 
-```rust
-// os/arch/src/arm64/post_init.rs
+**代码清理范围**：
 
-impl PostInitArch for AArch64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // C: arch_post_init() — protect.c:97-104
-        //   vm = proc_addr(VM_PROC_NR);
-        //   get_cpulocal_var(ptproc) = vm;
-        //   pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v);
-
-        // AArch64: TTBR0_EL1 用户空间页表基址
-        // phys_root = TTBR0_EL1 值（物理地址）
-        // virt_root = TTBR0_EL1 的虚拟地址映射
-        let _ = vm_page_table;
-    }
-}
-```
-
-#### riscv64
-
-```rust
-// os/arch/src/riscv64/post_init.rs
-
-impl PostInitArch for Riscv64PostInitArch {
-    fn set_ptproc(vm_page_table: &VmPageTableInfo) {
-        // RISC-V: satp CSR 页表基址
-        // phys_root = satp 值（PPN 字段）
-        // virt_root = None（Sv39 通过物理地址直接操作页表）
-        let _ = vm_page_table;
-    }
-}
-```
-
-### 4.3 MemoryInitArch 实现
-
-三种架构的实现逻辑完全相同，差异仅在溢出检查的页表项数量：
-
-#### x86-64
-
-```rust
-// os/arch/src/x86_64/post_init.rs
-
-impl MemoryInitArch for X86_64MemoryInitArch {
-    fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots {
-        // C: memory_init() — memory.c:707-717
-        //   freepdes[nfreepdes++] = kinfo.freepde_start++;
-        //   freepdes[nfreepdes++] = kinfo.freepde_start++;
-        //   assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES);
-
-        let mut slots = FreePdeSlots::new();
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-
-        // 64 位模式下 PD 有 512 个条目（不是 32 位的 1024 个）
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
-
-        slots
-    }
-}
-```
-
-#### aarch64
-
-```rust
-// os/arch/src/arm64/post_init.rs
-
-impl MemoryInitArch for AArch64MemoryInitArch {
-    fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots {
-        let mut slots = FreePdeSlots::new();
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
-        slots
-    }
-}
-```
-
-#### riscv64
-
-```rust
-// os/arch/src/riscv64/post_init.rs
-
-impl MemoryInitArch for Riscv64MemoryInitArch {
-    fn allocate_free_pdes(free_upper_idx: &mut usize) -> FreePdeSlots {
-        let mut slots = FreePdeSlots::new();
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-        slots.push(*free_upper_idx).expect("free PDE slots overflow");
-        *free_upper_idx += 1;
-
-        // Sv39: 512 个条目每级
-        assert!(*free_upper_idx < 512, "free_upper_idx overflow: {}", *free_upper_idx);
-        slots
-    }
-}
-```
-
-### 4.4 init_post_and_memory() — 主流程
-
-```rust
-// os/kernel/src/lib.rs
-
-/// Phase D of kmain: arch_post_init + memory_init.
-///
-/// C: main.c:283-285
-///    arch_post_init();    // protect.c:370 (x86) / protect.c:97 (ARM)
-///    memory_init();       // memory.c:707 (x86) / memory.c:612 (ARM)
-#[cfg(not(feature = "mock"))]
-fn init_post_and_memory(kernel_info: &KernelInfo) {
-    use minix_arch::{
-        PostInitArch, MemoryInitArch,
-        CurrentPostInitArch, CurrentMemoryInitArch,
-        VmPageTableInfo, FreePdeSlots,
-    };
-
-    // Step 1: Set ptproc to VM.
-    // C: arch_post_init() — protect.c:370
-    //
-    // TODO: Populate VmPageTableInfo from the VM process's p_seg fields
-    //       after ProcessTable provides get_vm_page_table_info().
-    let vm_page_table = VmPageTableInfo {
-        phys_root: PhysBytes(0), // TODO: from VM process's p_seg.p_cr3/p_ttbr
-        virt_root: Some(VirBytes(0)), // TODO: from VM process's p_seg.p_cr3_v/p_ttbr_v
-    };
-    CurrentPostInitArch::set_ptproc(&vm_page_table);
-
-    // Step 2: Allocate temporary page table slots.
-    // C: memory_init() — memory.c:707
-    //    freepdes[nfreepdes++] = kinfo.freepde_start++;
-    let mut free_idx = kernel_info.free_upper_idx().expect(
-        "free_upper_idx must be set by boot-shim before kernel init"
-    );
-    let _free_pde_slots: FreePdeSlots = CurrentMemoryInitArch::allocate_free_pdes(&mut free_idx);
-    // free_idx is now advanced by MAX_FREE_PDE_SLOTS (2).
-    // TODO: Store _free_pde_slots in kernel global state for createpde() access.
-}
-```
-
-**当前状态与 TODO**：
-
-| 方面 | 状态 | 说明 |
-|------|------|------|
-| PostInitArch trait | 已实现 | 三种架构的 `set_ptproc()` 均已实现 |
-| MemoryInitArch trait | 已实现 | 三种架构的 `allocate_free_pdes()` 均已实现 |
-| VmPageTableInfo 填充 | **TODO** | 当前使用硬编码的 `PhysBytes(0)/VirBytes(0)`，待 ProcessTable 提供 VM 页表信息访问方法 |
-| CrossSpaceInit 全局存储 | **TODO** | `_free_pde_slots` 当前被丢弃，待 kernel 全局状态容器实现后存储 |
-| createpde() 等价函数 | 后续文档 | 需要 `free_pde_slots` 和 `vm_page_table` 就绪后方可实现 |
-```
-
-### 4.5 内核全局状态存储
-
-```rust
-// os/kernel/src/lib.rs
-
-/// 内核全局状态（BKL 保护）。
-static mut KERNEL_STATE: Option<KernelState> = None;
-
-struct KernelState {
-    /// 跨地址空间访问基础设施
-    cross_space: CrossSpaceInit,
-    /// 进程表
-    proc_table: ProcessTable,
-    /// 特权表
-    priv_table: PrivTable,
-}
-
-fn kmain(boot_info: &BootInfo) -> ! {
-    // ... Phase A, B, C ...
-
-    // Phase D: arch_post_init + memory_init
-    let cross_space = init_post_and_memory(kernel_info);
-
-    // 存储到全局状态
-    // SAFETY: BKL 持有，仅此 CPU 访问
-    unsafe {
-        KERNEL_STATE = Some(KernelState {
-            cross_space,
-            proc_table,
-            priv_table,
-        });
-    }
-
-    // ... Phase E, F ...
-}
-```
+- `os/arch/src/arch/post_init.rs`：删除 `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo`/`CrossSpaceInit`
+- `os/arch/src/{x86_64,arm64,riscv64}/post_init.rs`：删除对应 impl
+- `os/kernel/src/lib.rs`：删除 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX`
 
 ---
 
 ## 5. 测试要点
 
-### 5.1 PostInitArch 测试
+> 覆盖 Ch3+Ch4 的每个核心决策。
 
-| 测试项 | 验证内容 |
-|--------|---------|
-| `set_ptproc(vm)` 后 `VmPageTableInfo` 正确 | phys_root 和 virt_root 正确 |
-| `set_ptproc` 前访问 `VmPageTableInfo` 为默认值 | 未初始化状态正确 |
-| `virt_root: None` 的架构（riscv64） | `createpde` 等价函数用物理地址 |
+### 5.1 direct_map 就绪验证
 
-### 5.2 MemoryInitArch 测试
+- **测试**：阶段 D 确认步骤能正确识别 direct map 已就绪（VM 进程页表 root 有效 + direct map base 已配置 + VM direct map 已存在）
+- **测试**：direct map 未就绪时确认步骤 panic（fail-fast，启动阶段暴露问题而非运行时）
+- **测试**：`CurrentDirectMap::kernel_phys_to_virt(pa)` 返回正确 VA（对接 `DirectMapArch` 的 mock 实现）
 
-| 测试项 | 验证内容 |
-|--------|---------|
-| `allocate_free_pdes(&mut 5)` 返回 slots `[5, 6]` | 正确分配连续索引 |
-| `free_upper_idx` 调用后递增 2 | 索引推进正确 |
-| `free_upper_idx = 510` 时 panic | 越界检查（512 - 2 = 510） |
-| `FreePdeSlots::new()` 默认值正确 | `len = 0`, `slots = [0, 0]` |
-| `FreePdeSlots::push()` 超过 MAX | 返回 `Err("free PDE slots overflow")` |
+### 5.2 废弃路径不存在的断言
 
-### 5.3 集成测试
+- **测试**：freepdes 相关代码已删除（编译期保证：`FreePdeSlots`/`PostInitArch`/`MemoryInitArch` 不存在）
+- **测试**：ptproc 相关代码已删除
+- **测试**：`VmPageTableInfo` 不存在
 
-| 测试项 | 验证内容 |
-|--------|---------|
-| Phase C→D 顺序：先 `init_proc_and_boot` 再 `init_post_and_memory` | 依赖关系正确 |
-| Phase D 后 `CrossSpaceInit` 正确存储 | `vm_page_table` 和 `free_pde_slots` 可用 |
-| `mem_clear_mapcache` 等价函数清空 PDE 条目 | 临时映射不残留 |
-| 多次调用 `allocate_free_pdes` 不重复分配 | `free_upper_idx` 推进正确 |
+废弃的验证是"不存在"而非"存在"——编译期类型系统保证。
+
+### 5.3 DirectMapArch 对接测试
+
+- **测试**：kernel 侧通过 `CurrentDirectMap` 正确调用 `vm_phys_to_virt`/`kernel_phys_to_virt`
+- **测试**：三架构 BASE 常量正确（x86-64/arm64/riscv64）
+- **测试**：1GB huge page 不支持时回退 2MB
+
+direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §5），kernel 侧仅测对接。
+
+---
+
+## 附录 A. 阶段 D 时序图（direct_map 版）
+
+```
+阶段 C: kernel 建立 VM 初始页表（含 VM direct map, 4页结构）
+        详见 VM 06-pagetable-struct.md §3.6
+  ↓
+阶段 D: 确认 VM direct_map 就绪（init_post_and_memory 简化版）
+        - 确认 VM 进程页表 root 有效
+        - 确认 direct map base 已配置
+        - 确认 VM direct map 已存在
+        - 不分配 freepdes、不设 ptproc
+  ↓
+阶段 E-F: system_init + bsp_finish_booting（见 08）
+  ↓
+VM 启动后: map_kernel 建立 Kernel direct map（U/S=0, G=1）
+           详见 VM 07-pagetable-ops.md §3.0.7
+```
+
+## 附录 B. Minix3 vs minix-rs 阶段 D 对照
+
+| 方面 | Minix3 C (32位) | minix-rs (64位 direct_map) |
+|------|----------------|---------------------------|
+| 跨空间访问机制 | freepdes 临时窗口 | direct_map 永久映射 |
+| ptproc | per-CPU 变量，记录当前页目录 | 废弃 |
+| memory_init | 分配 2 个 freepdes | 废弃 |
+| pg_info | 记录 bootstrap 页表地址 | 废弃（direct_map 不依赖） |
+| 阶段 D 内容 | 设 ptproc + 分配 freepdes | 确认 VM direct_map 就绪 |
+| 内核映射建立 | pg_mapkernel (4MB 大页, pre_init) | map_kernel (1GB huge page + Kernel direct map, VM 启动后) |
+| 建立者 | kernel (pre_init) | kernel (VM direct map, 阶段 C) + VM (Kernel direct map, 启动后) |
+| 全局可变状态 | freepdes[]/nfreepdes/kinfo.freepde_start | 无 |
 
 ---
 
 ## 6. 参见
 
-- [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 阶段 C：进程表初始化与 VM ELF 加载
-- [03-kmain-cstart.md](03-kmain-cstart.md) — kmain 六阶段总览、Phase A/B
-- [05-clock-interrupt-init.md](05-clock-interrupt-init.md) — Phase B：时钟与中断初始化
-- `minix3/minix/kernel/arch/i386/protect.c:370-377` — x86 arch_post_init
-- `minix3/minix/kernel/arch/i386/memory.c:707-717` — x86 memory_init
-- `minix3/minix/kernel/arch/i386/memory.c:35-114` — mem_clear_mapcache + createpde
-- `minix3/minix/kernel/arch/earm/protect.c:97-104` — ARM arch_post_init
-- `minix3/minix/kernel/arch/earm/memory.c:612-622` — ARM memory_init
-- `minix3/minix/kernel/cpulocals.h:55` — ptproc per-CPU 变量定义
+- [06-proc-init-boot-proc-new.md](06-proc-init-boot-proc-new.md) — 阶段 C：进程表初始化与 VM ELF 加载（含 bootstrap 页表）
+- [08-system-init-boot-finish.md](08-system-init-boot-finish.md) — 阶段 E-F：系统调用注册与启动完成
+- [24-cross-space-runtime.md](24-cross-space-runtime.md) — 运行时跨空间访问（`createpde` 等价函数 = `kernel_phys_to_virt`）
+- [02-stage-vm/06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 — direct_map 完整设计（双视图、4页结构、DirectMapArch trait）
+- [02-stage-vm/07-pagetable-ops.md](../02-stage-vm/07-pagetable-ops.md) §3.0.7 — `map_kernel` 职责简化
+- `minix3/minix/kernel/arch/i386/protect.c:370-377` — `arch_post_init`
+- `minix3/minix/kernel/arch/i386/pg_utils.c:186-206` — `pg_mapkernel`
+- `minix3/minix/kernel/arch/i386/pg_utils.c:312-316` — `pg_info`
+- `minix3/minix/kernel/arch/i386/memory.c:707-717` — `memory_init`
+- `minix3/minix/kernel/arch/i386/memory.c:35-145` — `mem_clear_mapcache` + `createpde`
+- `minix3/minix/kernel/cpulocals.h:55` — `ptproc` per-CPU 变量
+- `minix3/minix/kernel/arch/i386/pre_init.c:232` — `kinfo.freepde_start = pg_mapkernel()`

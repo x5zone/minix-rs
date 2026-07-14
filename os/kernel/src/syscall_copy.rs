@@ -1073,7 +1073,7 @@ pub fn dispatch_safememset(
     let priv_id = dst_proc.priv_id;
     let has_grant_table = priv_id
         .and_then(|pid| priv_table.get(pid))
-        .map(|priv_| priv_.s_grant_table != 0)
+        .map(|priv_| priv_.runtime.s_grant_table != 0)
         .unwrap_or(false);
     if !has_grant_table {
         // C: do_safememset.c:38-40 — printf + return EINVAL.
@@ -1570,7 +1570,7 @@ mod tests {
             // Manually set a non-zero grant_table pointer to simulate a
             // process with an initialized grant table.
             if let Some(kpriv) = priv_table.get_mut(priv_id) {
-                kpriv.s_grant_table = 1; // non-zero = "has grant table"
+                kpriv.runtime.s_grant_table = 1; // non-zero = "has grant table"
             }
             p.priv_id = Some(priv_id);
         }

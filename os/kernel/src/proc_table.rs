@@ -25,8 +25,6 @@ The kernel uses a spinlock (BKL) rather than a blocking lock because:
    since the BKL already serializes all kernel access.
 */
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use minix_types::Endpoint;
 
@@ -39,12 +37,25 @@ pub const NR_PROCS: usize = 256;
 pub const NR_SYS_PROCS: usize = 64;
 pub const PROC_TABLE_SIZE: usize = NR_TASKS + NR_PROCS;
 
+/// Raw bit value of `RtsFlagsBits::PROC_STOP` (for `const fn` table init
+/// where `bitflags::bits()` is not `const`).
+const PROC_STOP_BITS: u32 = 0x02;
+
 /// Kernel process table.
 ///
 /// Contains all process slots (kernel tasks + user processes) and the scheduler.
 /// All methods require the caller to hold the BKL (see module-level documentation).
+///
+/// # Storage (06-design-final.md §4.1)
+///
+/// `procs` is a fixed-size array `[KProcess; PROC_TABLE_SIZE]`, NOT a
+/// `Box<[KProcess]>`. This eliminates heap allocation in the boot phase
+/// (`#![no_std]` + no allocator yet) and gives a compile-time-fixed address
+/// (matching C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]` in BSS).
+///
+/// The global instance lives in `static mut PROC_TABLE` (see `lib.rs`).
 pub struct ProcessTable {
-    procs: Box<[KProcess]>,
+    procs: [KProcess; PROC_TABLE_SIZE],
     sched: Scheduler,
     /// Global VM request queue. C: `EXTERN struct proc *vmrequest` — glo.h:41.
     /// Replaces Minix3's global linked list head with a structured queue.
@@ -53,22 +64,36 @@ pub struct ProcessTable {
 }
 
 impl ProcessTable {
-    pub fn new() -> Self {
-        let mut procs: Vec<KProcess> = (0..PROC_TABLE_SIZE)
-            .map(|i| {
-                let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
-                let endpoint = Endpoint::from_generation_slot(0, nr);
-                KProcess::new(nr, endpoint)
-            })
-            .collect();
+    /// Const-constructible process table (for `static mut PROC_TABLE` init).
+    ///
+    /// All slots start as `SLOT_FREE`; the IDLE slot is marked `PROC_STOP`.
+    /// `p_nr` / `p_endpoint` are set per-slot via a `while` loop (const fn
+    /// compatible). The IDLE process name is set via `ProcName::from_array`
+    /// (const fn — `from_str` is not const).
+    ///
+    /// See `06-design-final.md` §4.1.
+    pub const fn new() -> Self {
+        let mut procs = [const { KProcess::new_zeroed() }; PROC_TABLE_SIZE];
+        let mut i = 0;
+        while i < PROC_TABLE_SIZE {
+            let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+            procs[i].p_nr = nr;
+            procs[i].p_endpoint = Endpoint::from_generation_slot(0, nr);
+            i += 1;
+        }
 
-        let idle_idx = nr_to_idx(proc_nr::IDLE).unwrap();
+        // IDLE process: set endpoint + PROC_STOP + name.
+        // C: main.c — `idle_proc.p_endpoint = IDLE; RTS_SET(idle, PROC_STOP)`.
+        let idle_idx = (proc_nr::IDLE as isize + NR_TASKS as isize) as usize;
         procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE);
-        procs[idle_idx].p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-        procs[idle_idx].p_name = ProcName::from_str("IDLE");
+        procs[idle_idx].p_rts_flags = crate::proc::RtsFlags::with_raw_bits(PROC_STOP_BITS);
+        procs[idle_idx].p_name = ProcName::from_array([
+            b'I', b'D', b'L', b'E', 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
 
         Self {
-            procs: procs.into_boxed_slice(),
+            procs,
             sched: Scheduler::new(),
             vm_request_queue: crate::vm::VmRequestQueue::new(),
         }
@@ -87,6 +112,18 @@ impl ProcessTable {
     pub fn get_mut(&mut self, nr: ProcNr) -> Option<&mut KProcess> {
         let idx = nr_to_idx(nr)?;
         Some(&mut self.procs[idx])
+    }
+
+    /// Get a process by its raw table index (0..PROC_TABLE_SIZE).
+    ///
+    /// Used by `switch_to_user`'s first-dispatch loop, which iterates all
+    /// slots without translating `ProcNr` ↔ index each time.
+    pub(crate) fn get_by_index(&self, idx: usize) -> Option<&KProcess> {
+        if idx < PROC_TABLE_SIZE {
+            Some(&self.procs[idx])
+        } else {
+            None
+        }
     }
 
     /// Check if a process number is valid (within the process table range).
@@ -274,10 +311,10 @@ impl ProcessTable {
         let target = self.get(nr)?;
         let pid = target.priv_id?;
         let priv_ = priv_table.get(pid)?;
-        Some(if priv_.s_sig_mgr == Endpoint::SELF {
+        Some(if priv_.signals.s_sig_mgr == Endpoint::SELF {
             target.p_endpoint
         } else {
-            priv_.s_sig_mgr
+            priv_.signals.s_sig_mgr
         })
     }
 
@@ -740,7 +777,11 @@ impl ProcessTable {
 ///
 /// See 08-proc-macros.md §3.6 for design rationale.
 #[inline]
-fn nr_to_idx(nr: ProcNr) -> Option<usize> {
+/// Convert a process number to a process table index.
+///
+/// C: `proc_addr(n)` returns `&proc[NR_TASKS + n]` — but Rust returns
+/// `Option<usize>` for bounds safety (08-proc-macros.md §3.1).
+const fn nr_to_idx(nr: ProcNr) -> Option<usize> {
     let offset = nr as isize + NR_TASKS as isize;
     if offset < 0 || offset as usize >= PROC_TABLE_SIZE {
         return None;
@@ -777,6 +818,30 @@ mod tests {
         assert!(table.get(-1).is_some());
         assert!(table.get(255).is_some());
         assert!(table.get(256).is_none());
+    }
+
+    #[test]
+    fn test_process_table_const_init_per_slot_nr() {
+        // 06-design-final.md §4.1: ProcessTable is `const fn`-initialized
+        // with each slot's `p_nr = i - NR_TASKS` and `p_endpoint` set.
+        let table = ProcessTable::new();
+        for i in 0..PROC_TABLE_SIZE {
+            let p = table.get_by_index(i).expect("slot must exist");
+            let expected_nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+            assert_eq!(p.p_nr, expected_nr, "slot {} p_nr mismatch", i);
+            assert!(p.p_endpoint != Endpoint::NONE,
+                "slot {} endpoint must not be NONE", i);
+        }
+    }
+
+    #[test]
+    fn test_process_table_const_init_idle_name() {
+        // IDLE slot's name must be "IDLE" (set via const fn from_array).
+        let table = ProcessTable::new();
+        let idle = table.get(proc_nr::IDLE).unwrap();
+        let name_bytes = idle.p_name.as_bytes();
+        assert_eq!(&name_bytes[..4], b"IDLE", "IDLE proc name must be 'IDLE'");
+        assert!(name_bytes[4..].iter().all(|&b| b == 0), "trailing bytes must be zero");
     }
 
     #[test]

@@ -1,5 +1,3 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use minix_types::Endpoint;
 
 use crate::proc::{ProcNr, SigSet};
@@ -115,38 +113,164 @@ pub fn is_static_priv_id(id: PrivId) -> bool {
 /// C: minix/include/minix/priv.h:14 — NULL_PRIV_ID = -1
 pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
-pub(crate) struct KPriv {
+// ── KPriv 6 substructures (06-design-final.md §12.9) ─────────────────────
+//
+// KPriv is split into 6 substructures by responsibility. Each is its own
+// `Default`/`const fn new()`-constructible type so the kernel layer can
+// pre-build `PrivTable` via `[KPriv; NR_SYS_PROCS]` instead of heap-allocating.
+//
+// Field name C-prefix `s_` is preserved for traceability to Minix3's `struct priv`.
+
+/// Identity / capability metadata (was `s_proc_nr`, `s_id`, `s_flags`,
+/// `s_init_flags`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrivCapability {
     pub(crate) s_proc_nr: Option<ProcNr>,
     pub(crate) s_id: SysId,
     pub(crate) s_flags: PrivFlagsBits,
     pub(crate) s_init_flags: i32,
+}
+
+impl Default for PrivCapability {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrivCapability {
+    /// Const-constructible zeroed capability (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self {
+            s_proc_nr: None,
+            s_id: 0,
+            s_flags: PrivFlagsBits::empty(),
+            s_init_flags: 0,
+        }
+    }
+}
+
+/// Signal bookkeeping (asynchronous table, manager, pending signals).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrivSignals {
     pub(crate) s_asyntab: u64,
     pub(crate) s_asynsize: usize,
     pub(crate) s_asynendpoint: Endpoint,
-    pub(crate) s_trap_mask: u16,
-    pub(crate) s_ipc_to: u64,
-    pub(crate) s_k_call_mask: [u32; 2],
     pub(crate) s_sig_mgr: Endpoint,
     pub(crate) s_bak_sig_mgr: Endpoint,
     pub(crate) s_notify_pending: u64,
     pub(crate) s_asyn_pending: u64,
     pub(crate) s_int_pending: u32,
     pub(crate) s_sig_pending: SigSet,
-    pub(crate) s_ipcf: Option<usize>,
-    /// Synchronous alarm timer (C: `minix_timer_t s_alarm_timer` — priv.h:48).
-    /// `None` = no alarm pending; `Some(entry)` = active alarm with expiration
-    /// time and action. Replaces C's bare `u64` sentinel: `0` meant "no alarm"
-    /// and any non-zero was a tick value (action lost). Using `Option<TimerEntry>`
-    /// enforces "非法状态不可表达" (Ch3 §D7 — Doc 21).
-    pub(crate) s_alarm_timer: Option<crate::clock::TimerEntry>,
-    pub(crate) s_stack_guard: Option<usize>,
-    pub(crate) s_diag_sig: bool,
+}
+
+impl Default for PrivSignals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrivSignals {
+    /// Const-constructible zeroed signals (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self {
+            s_asyntab: 0,
+            s_asynsize: 0,
+            s_asynendpoint: Endpoint::NONE,
+            s_sig_mgr: Endpoint::NONE,
+            s_bak_sig_mgr: Endpoint::NONE,
+            s_notify_pending: 0,
+            s_asyn_pending: 0,
+            s_int_pending: 0,
+            s_sig_pending: SigSet::empty(),
+        }
+    }
+}
+
+/// IPC allowlists (trap, ipc-to, kernel-call masks).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrivIpc {
+    pub(crate) s_trap_mask: u16,
+    pub(crate) s_ipc_to: u64,
+    pub(crate) s_k_call_mask: [u32; SYS_CALL_MASK_SIZE],
+}
+
+impl PrivIpc {
+    /// Const-constructible zeroed IPC masks (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self {
+            s_trap_mask: 0,
+            s_ipc_to: 0,
+            s_k_call_mask: [0; SYS_CALL_MASK_SIZE],
+        }
+    }
+}
+
+impl Default for PrivIpc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// I/O port + IRQ allowlists.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrivIo {
     pub(crate) s_nr_io_range: i32,
     pub(crate) s_io_tab: [IoRange; NR_IO_RANGE],
-    pub(crate) s_nr_mem_range: i32,
-    pub(crate) s_mem_tab: [MemRange; NR_MEM_RANGE],
     pub(crate) s_nr_irq: i32,
     pub(crate) s_irq_tab: [i32; NR_IRQ],
+}
+
+impl Default for PrivIo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrivIo {
+    /// Const-constructible zeroed I/O + IRQ allowlists (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self {
+            s_nr_io_range: 0,
+            s_io_tab: [IoRange::new(); NR_IO_RANGE],
+            s_nr_irq: 0,
+            s_irq_tab: [0; NR_IRQ],
+        }
+    }
+}
+
+/// Memory-range allowlists + cross-space IPC + stack guard + diag signal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrivMem {
+    pub(crate) s_nr_mem_range: i32,
+    pub(crate) s_mem_tab: [MemRange; NR_MEM_RANGE],
+    pub(crate) s_ipcf: Option<usize>,
+    pub(crate) s_stack_guard: Option<usize>,
+    pub(crate) s_diag_sig: bool,
+}
+
+impl Default for PrivMem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrivMem {
+    /// Const-constructible zeroed memory allowlists (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self {
+            s_nr_mem_range: 0,
+            s_mem_tab: [MemRange::new(); NR_MEM_RANGE],
+            s_ipcf: None,
+            s_stack_guard: None,
+            s_diag_sig: false,
+        }
+    }
+}
+
+/// Init flags + alarm timer + grant table + state table (volatile state).
+#[derive(Debug, Clone)]
+pub(crate) struct PrivRuntime {
+    pub(crate) s_alarm_timer: Option<crate::clock::TimerEntry>,
     pub(crate) s_grant_table: usize,
     pub(crate) s_grant_entries: i32,
     pub(crate) s_grant_endpoint: Endpoint,
@@ -154,35 +278,11 @@ pub(crate) struct KPriv {
     pub(crate) s_state_entries: i32,
 }
 
-impl KPriv {
-    pub fn new(id: SysId) -> Self {
+impl PrivRuntime {
+    /// Const-constructible zeroed runtime (for `const fn` table init).
+    pub const fn new() -> Self {
         Self {
-            s_proc_nr: None,
-            s_id: id,
-            s_flags: PrivFlagsBits::empty(),
-            s_init_flags: 0,
-            s_asyntab: 0,
-            s_asynsize: 0,
-            s_asynendpoint: Endpoint::NONE,
-            s_trap_mask: 0,
-            s_ipc_to: 0,
-            s_k_call_mask: [0; 2],
-            s_sig_mgr: Endpoint::NONE,
-            s_bak_sig_mgr: Endpoint::NONE,
-            s_notify_pending: 0,
-            s_asyn_pending: 0,
-            s_int_pending: 0,
-            s_sig_pending: SigSet::empty(),
-            s_ipcf: None,
             s_alarm_timer: None,
-            s_stack_guard: None,
-            s_diag_sig: false,
-            s_nr_io_range: 0,
-            s_io_tab: [IoRange::new(); NR_IO_RANGE],
-            s_nr_mem_range: 0,
-            s_mem_tab: [MemRange::new(); NR_MEM_RANGE],
-            s_nr_irq: 0,
-            s_irq_tab: [0; NR_IRQ],
             s_grant_table: 0,
             s_grant_entries: 0,
             s_grant_endpoint: Endpoint::NONE,
@@ -190,41 +290,110 @@ impl KPriv {
             s_state_entries: 0,
         }
     }
+}
+
+impl Default for PrivRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub(crate) struct KPriv {
+    pub(crate) capability: PrivCapability,
+    pub(crate) signals: PrivSignals,
+    pub(crate) ipc: PrivIpc,
+    pub(crate) io: PrivIo,
+    pub(crate) mem: PrivMem,
+    pub(crate) runtime: PrivRuntime,
+}
+
+impl KPriv {
+    pub fn new(id: SysId) -> Self {
+        Self {
+            capability: PrivCapability {
+                s_proc_nr: None,
+                s_id: id,
+                s_flags: PrivFlagsBits::empty(),
+                s_init_flags: 0,
+            },
+            signals: PrivSignals::default(),
+            ipc: PrivIpc::default(),
+            io: PrivIo::default(),
+            mem: PrivMem::default(),
+            runtime: PrivRuntime::default(),
+        }
+    }
+
+    /// Const-constructible zeroed KPriv with `s_id = id` (for `const fn`
+    /// `PrivTable::new()` / `static mut` init).
+    ///
+    /// See `06-design-final.md` §4.1 / §17.1.
+    pub const fn new_zeroed(id: SysId) -> Self {
+        Self {
+            capability: PrivCapability {
+                s_proc_nr: None,
+                s_id: id,
+                s_flags: PrivFlagsBits::empty(),
+                s_init_flags: 0,
+            },
+            signals: PrivSignals::new(),
+            ipc: PrivIpc::new(),
+            io: PrivIo::new(),
+            mem: PrivMem::new(),
+            runtime: PrivRuntime::new(),
+        }
+    }
 
     pub fn is_sys_proc(&self) -> bool {
-        self.s_flags.contains(PrivFlagsBits::SYS_PROC)
+        self.capability.s_flags.contains(PrivFlagsBits::SYS_PROC)
     }
 
     pub fn is_preemptible(&self) -> bool {
-        self.s_flags.contains(PrivFlagsBits::PREEMPTIBLE)
+        self.capability.s_flags.contains(PrivFlagsBits::PREEMPTIBLE)
     }
 
     pub fn is_billable(&self) -> bool {
-        self.s_flags.contains(PrivFlagsBits::BILLABLE)
+        self.capability.s_flags.contains(PrivFlagsBits::BILLABLE)
     }
 
     pub fn may_send_to(&self, target_id: SysId) -> bool {
         if target_id as usize >= 64 {
             return false;
         }
-        (self.s_ipc_to & (1u64 << target_id)) != 0
+        (self.ipc.s_ipc_to & (1u64 << target_id)) != 0
     }
 }
 
 pub const NR_SYS_PROCS: usize = 64;
 
+/// Kernel privilege table.
+///
+/// # Storage (06-design-final.md §4.1)
+///
+/// `privs` is a fixed-size array `[KPriv; NR_SYS_PROCS]`, NOT a
+/// `Box<[KPriv]>`. This eliminates heap allocation in the boot phase
+/// (`#![no_std]` + no allocator yet) and gives a compile-time-fixed address
+/// (matching C's `EXTERN struct priv priv[NR_SYS_PROCS]` in BSS).
+///
+/// The global instance lives in `static mut PRIV_TABLE` (see `lib.rs`).
 pub struct PrivTable {
-    privs: Box<[KPriv]>,
+    privs: [KPriv; NR_SYS_PROCS],
 }
 
 impl PrivTable {
-    pub fn new() -> Self {
-        let privs: Vec<KPriv> = (0..NR_SYS_PROCS)
-            .map(|i| KPriv::new(i as SysId))
-            .collect();
-        Self {
-            privs: privs.into_boxed_slice(),
+    /// Const-constructible privilege table (for `static mut PRIV_TABLE` init).
+    ///
+    /// Each slot starts with `s_id = i`, `s_proc_nr = None`.
+    ///
+    /// See `06-design-final.md` §4.1.
+    pub const fn new() -> Self {
+        let mut privs = [const { KPriv::new_zeroed(0) }; NR_SYS_PROCS];
+        let mut i = 0;
+        while i < NR_SYS_PROCS {
+            privs[i].capability.s_id = i as SysId;
+            i += 1;
         }
+        Self { privs }
     }
 
     pub(crate) fn get(&self, id: PrivId) -> Option<&KPriv> {
@@ -277,12 +446,12 @@ impl PrivTable {
         let priv_ = self.get_mut(priv_id)?;
 
         // C: if(priv[priv_id].s_proc_nr != NONE) return EBUSY
-        if priv_.s_proc_nr.is_some() {
+        if priv_.capability.s_proc_nr.is_some() {
             return None;
         }
 
         // C: rc->p_priv = sp; sp->s_proc_nr = proc_nr(rc)
-        priv_.s_proc_nr = Some(proc_nr);
+        priv_.capability.s_proc_nr = Some(proc_nr);
 
         Some(priv_id)
     }
@@ -303,13 +472,79 @@ impl PrivTable {
         sig_mgr: Endpoint,
     ) {
         if let Some(priv_) = self.get_mut(priv_id) {
-            priv_.s_flags = flags;
-            priv_.s_init_flags = init_flags;
-            priv_.s_trap_mask = trap_mask;
-            priv_.s_ipc_to = ipc_to;
-            priv_.s_k_call_mask = k_call_mask;
-            priv_.s_sig_mgr = sig_mgr;
+            priv_.capability.s_flags = flags;
+            priv_.capability.s_init_flags = init_flags;
+            priv_.ipc.s_trap_mask = trap_mask;
+            priv_.ipc.s_ipc_to = ipc_to;
+            priv_.ipc.s_k_call_mask = k_call_mask;
+            priv_.signals.s_sig_mgr = sig_mgr;
         }
+    }
+
+    /// Grant a capability template to a process (06-design-final.md §3.6).
+    ///
+    /// Replaces the previous two-step `assign_static` +
+    /// `configure_boot_priv` pattern with a single call. Picking one
+    /// of the 5 stock templates fills in the right flags + IPC masks
+    /// + kernel-call mask by construction; the caller cannot forget
+    /// to set the IPC mask.
+    ///
+    /// # Returns
+    /// `Ok(priv_id)` on success, `Err(CapabilityError)` on failure.
+    pub fn grant_capability(
+        &mut self,
+        proc_nr: ProcNr,
+        template: crate::capability::CapabilityTemplate,
+    ) -> Result<PrivId, crate::capability::CapabilityError> {
+        use crate::capability::CapabilityError;
+
+        let priv_id = self.assign_static(proc_nr)
+            .ok_or(CapabilityError::SlotOccupied)?;
+        let template_caps = template.capabilities();
+
+        // Translate ProcessCapability (kernel-layer abstraction) to
+        // PrivFlagsBits (Minix3 bitflags). The two are different
+        // encoding spaces; this mapping is the single source of truth.
+        let mut flags = PrivFlagsBits::empty();
+        if template_caps.contains(crate::capability::ProcessCapability::SYS_PROC) {
+            flags |= PrivFlagsBits::SYS_PROC;
+        }
+        if template_caps.contains(crate::capability::ProcessCapability::BILLABLE) {
+            flags |= PrivFlagsBits::BILLABLE;
+        }
+        if template_caps.contains(crate::capability::ProcessCapability::VM_F) {
+            flags |= PrivFlagsBits::SYS_PROC | PrivFlagsBits::VM_SYS_PROC;
+        }
+        if template_caps.contains(crate::capability::ProcessCapability::RSYS_F) {
+            flags |= PrivFlagsBits::SYS_PROC | PrivFlagsBits::PREEMPTIBLE | PrivFlagsBits::ROOT_SYS_PROC;
+        }
+        if template_caps.contains(crate::capability::ProcessCapability::IDL_F) {
+            flags |= PrivFlagsBits::SYS_PROC;
+        }
+        if template_caps.contains(crate::capability::ProcessCapability::TSK_F) {
+            flags |= PrivFlagsBits::SYS_PROC;
+        }
+
+        let trap_mask_bits = template.trap_mask().bits();
+        let ipc_to_bits = template.ipc_mask().bits();
+        let kcall_mask_bits = template.kcall_mask().bits();
+
+        // sig_mgr defaults to endpoint-of-self (matches C init).
+        let sig_mgr = Endpoint::from_generation_slot(0, proc_nr);
+
+        if let Some(priv_) = self.get_mut(priv_id) {
+            priv_.capability.s_flags = flags;
+            priv_.capability.s_init_flags = 0;
+            priv_.ipc.s_trap_mask = trap_mask_bits as u16;
+            priv_.ipc.s_ipc_to = ipc_to_bits;
+            // KCallMask.bits() is u64; pack into [u32; 2] (low word first).
+            priv_.ipc.s_k_call_mask = [
+                (kcall_mask_bits & 0xFFFF_FFFF) as u32,
+                (kcall_mask_bits >> 32) as u32,
+            ];
+            priv_.signals.s_sig_mgr = sig_mgr;
+        }
+        Ok(priv_id)
     }
 }
 
@@ -326,17 +561,17 @@ mod tests {
     #[test]
     fn test_kpriv_new() {
         let priv_ = KPriv::new(5);
-        assert_eq!(priv_.s_id, 5);
-        assert_eq!(priv_.s_proc_nr, None);
-        assert_eq!(priv_.s_flags, PrivFlagsBits::empty());
-        assert_eq!(priv_.s_k_call_mask, [0u32; 2]);
+        assert_eq!(priv_.capability.s_id, 5);
+        assert_eq!(priv_.capability.s_proc_nr, None);
+        assert_eq!(priv_.capability.s_flags, PrivFlagsBits::empty());
+        assert_eq!(priv_.ipc.s_k_call_mask, [0u32; SYS_CALL_MASK_SIZE]);
     }
 
     #[test]
     fn test_kpriv_is_sys_proc() {
         let mut priv_ = KPriv::new(0);
         assert!(!priv_.is_sys_proc());
-        priv_.s_flags = PrivFlagsBits::SYS_PROC;
+        priv_.capability.s_flags = PrivFlagsBits::SYS_PROC;
         assert!(priv_.is_sys_proc());
     }
 
@@ -346,7 +581,7 @@ mod tests {
         assert!(!priv_.is_preemptible());
         assert!(!priv_.is_billable());
 
-        priv_.s_flags = priv_flag_set::USR_F;
+        priv_.capability.s_flags = priv_flag_set::USR_F;
         assert!(priv_.is_preemptible());
         assert!(priv_.is_billable());
         assert!(!priv_.is_sys_proc()); // USR_F has no SYS_PROC
@@ -386,6 +621,20 @@ mod tests {
     }
 
     #[test]
+    fn test_priv_table_const_init_sets_per_slot_s_id() {
+        // 06-design-final.md §4.1: PrivTable is `const fn`-initialized with
+        // each slot's `s_id = i` and `s_proc_nr = None`.
+        let table = PrivTable::new();
+        for i in 0..NR_SYS_PROCS {
+            let p = table.get(i as PrivId).expect("slot must exist");
+            assert_eq!(p.capability.s_id, i as SysId,
+                "slot {} s_id mismatch", i);
+            assert!(p.capability.s_proc_nr.is_none(),
+                "slot {} must start unassigned", i);
+        }
+    }
+
+    #[test]
     fn test_priv_table_assign_static() {
         let mut table = PrivTable::new();
 
@@ -395,7 +644,7 @@ mod tests {
         let id = id.unwrap();
         // NR_TASKS=5, proc_nr=-4 → priv_id = 5 + (-4) = 1
         assert_eq!(id, 1);
-        assert_eq!(table.get(id).unwrap().s_proc_nr, Some(-4));
+        assert_eq!(table.get(id).unwrap().capability.s_proc_nr, Some(-4));
 
         // Duplicate assignment fails
         let id2 = table.assign_static(-4);
@@ -429,8 +678,8 @@ mod tests {
         );
 
         let priv_ = table.get(priv_id).unwrap();
-        assert!(priv_.s_flags.contains(PrivFlagsBits::SYS_PROC));
-        assert!(priv_.s_flags.contains(PrivFlagsBits::BILLABLE));
+        assert!(priv_.capability.s_flags.contains(PrivFlagsBits::SYS_PROC));
+        assert!(priv_.capability.s_flags.contains(PrivFlagsBits::BILLABLE));
     }
 
     #[test]
@@ -464,14 +713,14 @@ mod tests {
         );
 
         let priv_ = table.get(priv_id).unwrap();
-        assert_eq!(priv_.s_ipc_to, IPC_TO_ALL);
-        assert_eq!(priv_.s_k_call_mask, K_CALL_MASK_ALL);
+        assert_eq!(priv_.ipc.s_ipc_to, IPC_TO_ALL);
+        assert_eq!(priv_.ipc.s_k_call_mask, K_CALL_MASK_ALL);
     }
 
     #[test]
     fn test_may_send_to() {
         let mut priv_ = KPriv::new(0);
-        priv_.s_ipc_to = 1 << 5;
+        priv_.ipc.s_ipc_to = 1 << 5;
         assert!(priv_.may_send_to(5));
         assert!(!priv_.may_send_to(3));
         assert!(!priv_.may_send_to(64)); // out of range
@@ -518,7 +767,7 @@ mod tests {
         // Default state must be `None` (no alarm pending), matching C's
         // `tmr_inittimer(&sp->s_alarm_timer)` at system.c:180.
         let p = KPriv::new(0);
-        assert!(p.s_alarm_timer.is_none());
+        assert!(p.runtime.s_alarm_timer.is_none());
     }
 
     #[test]
@@ -528,14 +777,73 @@ mod tests {
         use crate::clock::{TimerAction, TimerEntry};
         use minix_types::Endpoint;
         let mut p = KPriv::new(0);
-        p.s_alarm_timer = Some(TimerEntry {
+        p.runtime.s_alarm_timer = Some(TimerEntry {
             exp_time: 1000,
             action: TimerAction::NotifyAlarm {
                 endpoint: Endpoint::NONE,
             },
         });
-        let entry = p.s_alarm_timer.as_ref().unwrap();
+        let entry = p.runtime.s_alarm_timer.as_ref().unwrap();
         assert_eq!(entry.exp_time, 1000);
         assert!(matches!(entry.action, TimerAction::NotifyAlarm { .. }));
+    }
+
+    // ── grant_capability tests (06-design-final.md §3.6) ──────────────
+
+    use crate::capability::CapabilityTemplate;
+
+    #[test]
+    fn test_grant_capability_idle() {
+        let mut table = PrivTable::new();
+        let id = table.grant_capability(-4, CapabilityTemplate::Idle).unwrap();
+        let p = table.get(id).unwrap();
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC));
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::BILLABLE));
+        assert_eq!(p.ipc.s_ipc_to, 0);
+        assert_eq!(p.ipc.s_k_call_mask, [0u32; SYS_CALL_MASK_SIZE]);
+    }
+
+    #[test]
+    fn test_grant_capability_vm() {
+        let mut table = PrivTable::new();
+        let id = table.grant_capability(8, CapabilityTemplate::Vm).unwrap();
+        let p = table.get(id).unwrap();
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC));
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::VM_SYS_PROC));
+        // VM is a system service: ALL IPC + ALL kcalls
+        assert_eq!(p.ipc.s_ipc_to, !0u64);
+        assert_eq!(p.ipc.s_k_call_mask, [0xFFFF_FFFF; SYS_CALL_MASK_SIZE]);
+    }
+
+    #[test]
+    fn test_grant_capability_root_service() {
+        let mut table = PrivTable::new();
+        let id = table.grant_capability(1, CapabilityTemplate::RootService).unwrap();
+        let p = table.get(id).unwrap();
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::ROOT_SYS_PROC));
+        assert!(p.capability.s_flags.contains(PrivFlagsBits::PREEMPTIBLE));
+        assert_eq!(p.ipc.s_ipc_to, !0u64);
+    }
+
+    #[test]
+    fn test_grant_capability_deferred_no_flags() {
+        let mut table = PrivTable::new();
+        let id = table.grant_capability(0, CapabilityTemplate::Deferred).unwrap();
+        let p = table.get(id).unwrap();
+        assert_eq!(p.capability.s_flags, PrivFlagsBits::empty());
+        assert_eq!(p.ipc.s_ipc_to, 0);
+        assert_eq!(p.ipc.s_k_call_mask, [0u32; SYS_CALL_MASK_SIZE]);
+    }
+
+    #[test]
+    fn test_grant_capability_duplicate_fails() {
+        use crate::capability::CapabilityError;
+        let mut table = PrivTable::new();
+        assert!(table.grant_capability(-4, CapabilityTemplate::Idle).is_ok());
+        // Same proc_nr again should fail (slot occupied)
+        assert_eq!(
+            table.grant_capability(-4, CapabilityTemplate::Idle),
+            Err(CapabilityError::SlotOccupied)
+        );
     }
 }

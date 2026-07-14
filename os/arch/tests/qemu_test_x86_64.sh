@@ -44,6 +44,7 @@ rm -f "${RESULT_FILE}"
 # Start QEMU with GDB stub
 qemu-system-x86_64 \
     -machine q35 \
+    -smp 4 \
     -cpu host \
     -enable-kvm \
     -kernel "${KERNEL}" \

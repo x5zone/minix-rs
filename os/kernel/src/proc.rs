@@ -15,32 +15,9 @@
 use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicI8, Ordering};
 
+use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch};
+
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
-
-const EXT_REG_STATE_SIZE: usize = 576;
-
-#[repr(align(64))]
-#[derive(Debug, Clone)]
-pub struct ExtRegState {
-    data: [u8; EXT_REG_STATE_SIZE],
-    valid: bool,
-}
-
-impl ExtRegState {
-    pub fn new() -> Self {
-        Self { data: [0; EXT_REG_STATE_SIZE], valid: false }
-    }
-
-    pub fn is_valid(&self) -> bool { self.valid }
-
-    pub fn mark_valid(&mut self) { self.valid = true; }
-
-    pub fn invalidate(&mut self) { self.valid = false; }
-}
-
-impl Default for ExtRegState {
-    fn default() -> Self { Self::new() }
-}
 
 /// Process number type (corresponds to C's `proc_nr_t`).
 pub type ProcNr = i32;
@@ -232,12 +209,18 @@ pub mod priority {
 pub struct RtsFlags(AtomicU32);
 
 impl RtsFlags {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(AtomicU32::new(0))
     }
 
     pub fn with(flags: RtsFlagsBits) -> Self {
         Self(AtomicU32::new(flags.bits()))
+    }
+
+    /// Const-constructible from raw bit value (for `const fn` table init
+    /// where `RtsFlagsBits::bits()` is not `const`).
+    pub const fn with_raw_bits(bits: u32) -> Self {
+        Self(AtomicU32::new(bits))
     }
 
     /// Check if a specific flag is set.
@@ -279,7 +262,7 @@ impl Default for RtsFlags {
 pub struct MiscFlags(AtomicU32);
 
 impl MiscFlags {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(AtomicU32::new(0))
     }
 
@@ -365,7 +348,7 @@ pub struct Quantum {
 }
 
 impl Quantum {
-    pub fn new(size_ms: u32) -> Self {
+    pub const fn new(size_ms: u32) -> Self {
         Self {
             cpu_time_left: AtomicU64::new(0),
             size_ms: AtomicU32::new(size_ms),
@@ -404,12 +387,69 @@ impl Quantum {
 /// CPU ID.
 pub type CpuId = u32;
 
+/// Maximum number of CPUs (must match `smp::MAX_CPUS`).
+///
+/// Kept here to avoid a circular `proc` → `smp` → `proc` import when
+/// `CpuMask` needs the array size.
+pub const MAX_CPUS: usize = 32;
+
+/// CPU affinity bitmap (06-design-final.md §4.2).
+///
+/// C: `p_cpu_mask[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]` — proc.h:37.
+///
+/// Bit `i` set ⇔ process may run on CPU `i`. Default = all bits set
+/// (any CPU). The scheduler must check `allows(cpu)` before enqueuing
+/// into a per-CPU ready queue.
+///
+/// Stored as `[u64; 1]` (32 bits used, 64-bit chunk for alignment).
+/// `MAX_CPUS = 32` fits in a single `u64`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuMask {
+    bits: u64,
+}
+
+impl CpuMask {
+    /// Const-constructible all-ones mask (any CPU allowed).
+    pub const fn all() -> Self {
+        // Lower MAX_CPUS bits set.
+        Self { bits: (1u64 << MAX_CPUS) - 1 }
+    }
+
+    /// Const-constructible empty mask (no CPU allowed — sentinel).
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+
+    /// Check if CPU `cpu` is allowed.
+    pub fn allows(&self, cpu: CpuId) -> bool {
+        (cpu as usize) < MAX_CPUS && (self.bits & (1u64 << cpu)) != 0
+    }
+
+    /// Allow CPU `cpu`.
+    pub fn set(&mut self, cpu: CpuId) {
+        if (cpu as usize) < MAX_CPUS {
+            self.bits |= 1u64 << cpu;
+        }
+    }
+
+    /// Disallow CPU `cpu`.
+    pub fn clear(&mut self, cpu: CpuId) {
+        if (cpu as usize) < MAX_CPUS {
+            self.bits &= !(1u64 << cpu);
+        }
+    }
+}
+
 /// Scheduling fields extension.
 #[derive(Debug)]
 pub struct SchedFields {
     pub priority: AtomicI8,
     pub quantum: Quantum,
     pub cpu: AtomicU32,
+    /// CPU affinity bitmap (06-design-final.md §4.2).
+    /// Default = all CPUs allowed. Scheduler checks `allows(cpu)` before
+    /// enqueuing into a per-CPU ready queue.
+    pub cpu_mask: CpuMask,
     /// User-space scheduler process number.
     /// `None` means kernel default scheduling (C: `p_scheduler == NULL || p_scheduler == self`).
     /// `Some(nr)` means the process at slot `nr` is the user-space scheduler.
@@ -418,11 +458,12 @@ pub struct SchedFields {
 }
 
 impl SchedFields {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             priority: AtomicI8::new(priority::USER_Q),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
+            cpu_mask: CpuMask::all(),
             scheduler: None,
         }
     }
@@ -432,6 +473,7 @@ impl SchedFields {
             priority: AtomicI8::new(priority),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
+            cpu_mask: CpuMask::all(),
             scheduler: None,
         }
     }
@@ -455,7 +497,7 @@ pub struct Accounting {
 }
 
 impl Accounting {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             enter_queue: AtomicU64::new(0),
             time_in_queue: AtomicU64::new(0),
@@ -535,7 +577,7 @@ pub struct TimeStats {
 }
 
 impl TimeStats {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             user_time: AtomicU64::new(0),
             sys_time: AtomicU64::new(0),
@@ -601,7 +643,7 @@ pub struct CyclesStats {
 }
 
 impl CyclesStats {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             total: AtomicU64::new(0),
             kcall: AtomicU64::new(0),
@@ -640,7 +682,7 @@ pub struct CpuAvg {
 }
 
 impl CpuAvg {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ca_base: AtomicU64::new(0),
             ca_run: AtomicU32::new(0),
@@ -661,6 +703,13 @@ pub struct DeferArgs {
     pub r1: usize,
     pub r2: usize,
     pub r3: usize,
+}
+
+impl DeferArgs {
+    /// Const-constructible zeroed defer args (for `const fn` table init).
+    pub const fn new() -> Self {
+        Self { r1: 0, r2: 0, r3: 0 }
+    }
 }
 
 /// Process segment descriptor.
@@ -685,12 +734,19 @@ pub struct ProcessSegments {
     pub virt_root: Option<VirBytes>,
 }
 
-impl Default for ProcessSegments {
-    fn default() -> Self {
+impl ProcessSegments {
+    /// Const-constructible zeroed segments (for `const fn` table init).
+    pub const fn new() -> Self {
         Self {
             phys_root: PhysBytes(0),
             virt_root: None,
         }
+    }
+}
+
+impl Default for ProcessSegments {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -798,14 +854,23 @@ pub struct KProcess {
     /// Virtual address of user-space message buffer.
     pub p_delivermsg_vir: VirBytes,
 
-    /// Extended register state (XSAVE area on x86-64, VFP/NEON on ARM64, F/D on RISC-V).
+    /// Architecture-private CPU context (PSW/PSR/sstatus, segment
+    /// selectors, FPU policy, ELR/sepc, SP, etc.).
     ///
-    /// Modern 64-bit architectures do not have a separate FPU. Instead, floating-point
-    /// and SIMD operations use extended registers that are part of the general context.
-    /// This field stores the architecture-specific extended register save area.
+    /// Arch-internal: the kernel layer never inspects this value's
+    /// fields. It is built by `CurrentCpuContextArch::build_cpu_context`
+    /// at boot and applied to the trap frame by
+    /// `CurrentCpuContextArch::apply_to_trap_frame` at first dispatch.
     ///
-    /// Only valid when `MF_EXT_REG_INITIALIZED` flag is set.
-    pub p_ext_reg_state: ExtRegState,
+    /// Replaces the previous `initial_pc` / `initial_sp` /
+    /// `initial_ps_strings_reg` / `initial_status` quadruple plus
+    /// `p_ext_reg_state: ExtRegState`. See `06-design-final.md` §3.2
+    /// for the rationale.
+    ///
+    /// The fixed-size `[u64; ...]` / `bool` fields are arch-private;
+    /// the trait bound `Copy + Default` lets `ProcessTable::new()`
+    /// pre-fill all slots via `const fn`.
+    pub cpu_context: CurrentCpuContext,
 
     // VM request fields (03-vm-request.md §3.4, §3.5)
     /// Next process in vmrestart chain.
@@ -829,29 +894,11 @@ pub struct KProcess {
 
     // ── Boot-time initial register state (05-proc-init-boot-proc.md §3.2, §3.3) ──
     //
-    /// Initial PC (program counter / instruction pointer).
-    /// Set by `arch_boot_proc` / `arch_proc_init`. Consumed by the scheduler
-    /// when setting up the trap frame for first-run processes.
-    /// C: `pr->p_reg.pc` — protect.c:445 (x86), protect.c:169 (ARM)
-    pub initial_pc: VirBytes,
-
-    /// Initial SP (stack pointer).
-    /// Set by `arch_boot_proc` / `arch_proc_init`. Consumed by the scheduler
-    /// when setting up the trap frame for first-run processes.
-    /// C: `pr->p_reg.sp` — protect.c:446 (x86), protect.c:170 (ARM)
-    pub initial_sp: VirBytes,
-
-    /// Initial ps_strings register value (arch-specific: rbx on x86-64,
-    /// r0 on aarch64, a0 on riscv64). Points to the argument string block
-    /// set up by the kernel for the C runtime's crt0.
-    /// C: `pr->p_reg.bx` (x86), `pr->p_reg.retreg` (ARM) — protect.c:447/171
-    pub initial_ps_strings_reg: u64,
-
-    /// Initial status register value (PSW on x86-64, PSR on aarch64,
-    /// sstatus on riscv64). Set by `arch_proc_reset` and consumed by
-    /// the scheduler when setting up the trap frame.
-    /// C: `pr->p_reg.psw` (x86), `pr->p_reg.psr` (ARM) — arch_system.c:180/57
-    pub initial_status: u64,
+    // ── Boot-time initial register state has been replaced by
+    //    `cpu_context: CurrentCpuContext` (06-design-final.md §3.2).
+    //    The four old fields (`initial_pc`, `initial_sp`,
+    //    `initial_ps_strings_reg`, `initial_status`) are gone; their
+    //    semantics live inside the arch-private `CpuContext` value.
 }
 
 /// Maximum process name length (including trailing \0).
@@ -904,6 +951,12 @@ impl ProcName {
     /// Gets raw byte array.
     pub fn as_bytes(&self) -> &[u8; PROC_NAME_LEN] {
         &self.data
+    }
+
+    /// Const-constructible name from a fixed byte array (for `const fn`
+    /// table init where `from_str` is unavailable).
+    pub const fn from_array(data: [u8; PROC_NAME_LEN]) -> Self {
+        Self { data }
     }
 }
 
@@ -1070,14 +1123,54 @@ impl KProcess {
             p_sendmsg: Message::default(),
             p_delivermsg: Message::default(),
             p_delivermsg_vir: VirBytes::new(0),
-            p_ext_reg_state: ExtRegState::new(),
             p_next_restart: None,
             p_next_requestor: None,
             p_vm_suspend: None,
-            initial_pc: VirBytes::new(0),
-            initial_sp: VirBytes::new(0),
-            initial_ps_strings_reg: 0,
-            initial_status: 0,
+            cpu_context: CurrentCpuContext::default(),
+        }
+    }
+
+    /// Const-constructible zeroed slot marked `SLOT_FREE` (for `const fn`
+    /// `ProcessTable::new()` / `static mut` init).
+    ///
+    /// `p_nr` and `p_endpoint` are sentinel values; `ProcessTable::new()`
+    /// overwrites them per-slot. `p_rts_flags` is set to `SLOT_FREE` (0x01)
+    /// using the raw bit value because `RtsFlagsBits::SLOT_FREE.bits()` is
+    /// not `const` (bitflags limitation).
+    ///
+    /// See `06-design-final.md` §4.1 (zero-heap `static mut` storage).
+    pub const fn new_zeroed() -> Self {
+        Self {
+            p_nr: 0,
+            p_endpoint: Endpoint::NONE,
+            p_seg: ProcessSegments::new(),
+            priv_id: None,
+            #[cfg(debug_assertions)]
+            p_magic: 0xC0FFEE1,
+            p_rts_flags: RtsFlags(AtomicU32::new(0x01)), // SLOT_FREE raw bits
+            p_misc_flags: MiscFlags::new(),
+            p_sched: SchedFields::new(),
+            p_accounting: Accounting::new(),
+            p_time: TimeStats::new(),
+            p_cycles: CyclesStats::new(),
+            p_cpuavg: CpuAvg::new(),
+            p_dequeued: AtomicU64::new(0),
+            p_fault_addr: None,
+            p_defer: DeferArgs::new(),
+            p_nextready: AtomicI32::new(NONE_PROC_NR),
+            p_caller_q: AtomicI32::new(NONE_PROC_NR),
+            p_q_link: AtomicI32::new(NONE_PROC_NR),
+            p_getfrom_e: Endpoint::NONE,
+            p_sendto_e: Endpoint::NONE,
+            p_pending: SigSet::empty(),
+            p_name: ProcName::new(),
+            p_sendmsg: Message::zeroed(),
+            p_delivermsg: Message::zeroed(),
+            p_delivermsg_vir: VirBytes::new(0),
+            p_next_restart: None,
+            p_next_requestor: None,
+            p_vm_suspend: None,
+            cpu_context: CurrentCpuContext::new(),
         }
     }
 
@@ -1127,7 +1220,7 @@ impl KProcess {
         }
     }
 
-    // ── Boot-time initial register state setters (05-proc-init-boot-proc.md §3.2, §3.3) ──
+    // ── Boot-time initial CPU context setter (06-design-final.md §3.2) ──
 
     /// Set process name. Corresponds to C's `strlcpy(rp->p_name, name, ...)`.
     /// C: main.c:170, protect.c:441
@@ -1135,29 +1228,29 @@ impl KProcess {
         self.p_name = ProcName::from_str(name);
     }
 
-    /// Set initial register state returned by `ArchProcReset::initial_reg_state()`.
+    /// Set the architecture-private CPU context.
     ///
-    /// Stores the architecture-specific initial status register (PSW/PSR/sstatus)
-    /// and segment selectors (x86-64 only; zeroed on other archs).
+    /// The kernel layer never inspects `cpu_context`'s fields; it just
+    /// stores the value and hands it to
+    /// `CurrentCpuContextArch::apply_to_trap_frame` at first dispatch.
+    /// Caller builds the value via
+    /// `CurrentCpuContextArch::build_cpu_context(kind, proc_nr, entry)`.
     ///
-    /// C: `arch_proc_reset(pr)` — arch_system.c:146-192 (x86), arch_system.c:42-60 (ARM)
-    pub fn set_boot_initial_reg_state(&mut self, status: u64, _fpu_needs_zero: bool) {
-        self.initial_status = status;
-        // FPU zeroing is handled by the arch layer when setting up the trap frame.
-        // On x86-64, fpu_needs_zero=true means the arch layer zeros the FPU save area
-        // in the exception frame before first execution.
-        // On aarch64/riscv64, FPU is lazily initialized (fpu_needs_zero is always false).
-        let _ = _fpu_needs_zero;
+    /// Replaces the previous `set_boot_initial_reg_state` +
+    /// `set_boot_pc_sp` pair (06-design-final.md §3.2).
+    pub fn set_boot_cpu_context(&mut self, cpu_context: CurrentCpuContext) {
+        self.cpu_context = cpu_context;
     }
 
-    /// Set PC, SP, and ps_strings register values returned by `ArchProcInit::init_regs()`.
+    /// Enable user I/O access (x86-64: set RFLAGS.IOPL = 3).
     ///
-    /// C: `pr->p_reg.pc = ip; pr->p_reg.sp = sp; pr->p_reg.bx = ps_str;`
-    ///    — protect.c:445-447 (x86), protect.c:169-171 (ARM)
-    pub fn set_boot_pc_sp(&mut self, pc: VirBytes, sp: VirBytes, ps_strings_reg: u64) {
-        self.initial_pc = pc;
-        self.initial_sp = sp;
-        self.initial_ps_strings_reg = ps_strings_reg;
+    /// This sinks the x86-64 hardware concept (RFLAGS.IOPL) entirely
+    /// into the arch layer — the kernel layer only knows about the
+    /// OS concept "enable user I/O". Other architectures are no-ops.
+    /// Replaces the previous `target.initial_status |= X86_64_IOPL_BITS`
+    /// direct write in `syscall_device.rs` (06-design-final.md §3.5).
+    pub fn enable_user_io(&mut self) {
+        <CurrentCpuContextArch as CpuContextArch>::enable_user_io(&mut self.cpu_context);
     }
 
     // ── VM suspend/resume methods (03-vm-request.md §3.5, §3.9, §3.10) ──
@@ -1315,6 +1408,8 @@ impl KProcess {
                 priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
                 quantum: Quantum::new(parent.p_sched.quantum.size_ms.load(Ordering::Acquire)),
                 cpu: AtomicU32::new(parent.p_sched.cpu.load(Ordering::Acquire)),
+                // Child inherits parent's CPU affinity (C: p_cpu_mask memcpy).
+                cpu_mask: parent.p_sched.cpu_mask,
                 scheduler: None,
             },
             p_accounting: Accounting::new(),
@@ -1338,24 +1433,31 @@ impl KProcess {
             p_sendmsg: parent.p_sendmsg.clone(),
             p_delivermsg: parent.p_delivermsg.clone(),
             p_delivermsg_vir: parent.p_delivermsg_vir,
-            p_ext_reg_state: ExtRegState::new(),
             p_next_restart: None,
             // VM request fields: child has no pending VM request
             // C: fork copies p_vmrequest but child never has RTS_VMREQUEST set
             p_next_requestor: None,
             p_vm_suspend: None,
-            initial_pc: VirBytes::new(0),
-            initial_sp: VirBytes::new(0),
-            initial_ps_strings_reg: 0,
-            initial_status: 0,
+            cpu_context: CurrentCpuContext::default(),
         };
 
-        // Copy extended register state if parent has initialized it
-        // Corresponds to Minix3's FPU copy on i386:
-        //   if(proc_used_fpu(rpp))
-        //       memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state, FPU_XFP_SIZE);
+        // Inherit extended-register / FPU state from parent if parent
+        // has touched the FPU. Each arch overrides `inherit_fpu_state`:
+        //   x86-64    → copies `fpu_policy` (LazyUserInit / KernelTask)
+        //   aarch64   → copies `fpu_enable_el0` (CPACR_EL1.FPEN policy)
+        //   riscv64   → copies `sstatus` (preserves FS field)
+        // The kernel layer is unaware of which field is copied — it
+        // only observes `EXT_REG_INITIALIZED` propagation.
+        //
+        // C: do_fork.c memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state,
+        //                     FPU_XFP_SIZE) under proc_used_fpu(rpp)
+        //
+        // See 06-design-final.md §12.5 / §15.5.
         if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
-            child.p_ext_reg_state = parent.p_ext_reg_state.clone();
+            <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
+                &mut child.cpu_context,
+                &parent.cpu_context,
+            );
             child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
         }
 
@@ -1411,6 +1513,40 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cpu_mask_default_all_allows_any_cpu() {
+        let mask = CpuMask::all();
+        assert!(mask.allows(0));
+        assert!(mask.allows(1));
+        assert!(mask.allows(MAX_CPUS as CpuId - 1));
+        // Out-of-range CPU is never allowed.
+        assert!(!mask.allows(MAX_CPUS as CpuId));
+    }
+
+    #[test]
+    fn test_cpu_mask_clear_and_set() {
+        let mut mask = CpuMask::all();
+        mask.clear(2);
+        assert!(!mask.allows(2));
+        assert!(mask.allows(0));
+        mask.set(2);
+        assert!(mask.allows(2));
+    }
+
+    #[test]
+    fn test_cpu_mask_empty_allows_nothing() {
+        let mask = CpuMask::empty();
+        assert!(!mask.allows(0));
+        assert!(!mask.allows(1));
+    }
+
+    #[test]
+    fn test_sched_fields_new_has_all_cpu_mask() {
+        let s = SchedFields::new();
+        assert!(s.cpu_mask.allows(0), "default SchedFields must allow CPU 0");
+        assert_eq!(s.cpu.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn test_rts_flags_runnable() {

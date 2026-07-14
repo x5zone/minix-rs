@@ -380,7 +380,7 @@ impl IpcEngine {
                     let caller_priv_id = procs[caller_idx].priv_id;
                     if let Some(caller_pid) = caller_priv_id {
                         if caller_pid < 64 {
-                            dst_priv.s_notify_pending |= 1u64 << caller_pid;
+                            dst_priv.signals.s_notify_pending |= 1u64 << caller_pid;
                         }
                     }
                 }
@@ -963,7 +963,7 @@ mod tests {
         // Check that bit 0 (caller's priv_id) is set in dst's s_notify_pending
         let dst_priv = priv_table.get(1).unwrap();
         assert_ne!(
-            dst_priv.s_notify_pending & (1u64 << 0), 0,
+            dst_priv.signals.s_notify_pending & (1u64 << 0), 0,
             "s_notify_pending bit 0 should be set (caller's priv_id=0)"
         );
     }

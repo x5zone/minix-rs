@@ -22,7 +22,7 @@ use minix_types::VirBytes;
 /// 64-bit: RIP/RFLAGS/RSP are 64-bit; SS/CS are 16-bit but
 /// stored in 64-bit slots for alignment.
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct X86_64ExceptionFrame {
     pub vector: u64,
     pub errcode: u64,

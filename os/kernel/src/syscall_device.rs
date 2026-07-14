@@ -135,12 +135,12 @@ fn msg_m1(msg: &Message) -> MessageM1 {
 ///
 /// C: do_irqctl.c:62-76 — `if (privp->s_flags & CHECK_IRQ)` loop.
 fn check_irq_permission(caller_priv: &KPriv, irq_vec: i32) -> bool {
-    if !caller_priv.s_flags.contains(PrivFlagsBits::CHECK_IRQ) {
+    if !caller_priv.capability.s_flags.contains(PrivFlagsBits::CHECK_IRQ) {
         return true; // No CHECK_IRQ flag → unrestricted
     }
     // C: do_irqctl.c:67-72 — scan s_irq_tab for matching vector
-    for i in 0..caller_priv.s_nr_irq as usize {
-        if i < caller_priv.s_irq_tab.len() && caller_priv.s_irq_tab[i] == irq_vec {
+    for i in 0..caller_priv.io.s_nr_irq as usize {
+        if i < caller_priv.io.s_irq_tab.len() && caller_priv.io.s_irq_tab[i] == irq_vec {
             return true;
         }
     }
@@ -351,12 +351,12 @@ pub fn dispatch_devio<PI: PortIo>(
     // C: do_devio.c:31-58 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv {
-        if priv_.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
             // C: do_devio.c:42-53 — scan s_io_tab for matching range
             let mut allowed = false;
-            for i in 0..priv_.s_nr_io_range as usize {
-                if i < priv_.s_io_tab.len() {
-                    let ior = &priv_.s_io_tab[i];
+            for i in 0..priv_.io.s_nr_io_range as usize {
+                if i < priv_.io.s_io_tab.len() {
+                    let ior = &priv_.io.s_io_tab[i];
                     // C: do_devio.c:50 — if (port >= iorp->ior_base && port+size-1 <= iorp->ior_limit)
                     if port as u32 >= ior.base && port as u32 + size as u32 - 1 <= ior.limit {
                         allowed = true;
@@ -468,23 +468,18 @@ pub fn dispatch_vdevio<PI: PortIo>(
 
 // ── SYS_IOPENABLE ──
 
-/// IOPL bits to set in RFLAGS to enable user-mode I/O port access.
-/// C: `pp->p_reg.psw |= 0x3000` — protect.c:52 (enable_iop)
-/// IOPL=3 allows ring-3 code to execute IN/OUT instructions.
-const X86_64_IOPL_BITS: u64 = 0x3000;
-
 /// Dispatch SYS_IOPENABLE (x86-only).
 ///
 /// C: `do_iopenable()` — arch/i386/do_iopenable.c
 ///
-/// Allow a user process to use I/O instructions by setting the IOPL
-/// bits in its saved RFLAGS to 3 (bits 12-13, mask 0x3000).
+/// Allow a user process to use I/O instructions. On x86-64 this sets
+/// RFLAGS.IOPL=3; on aarch64/riscv64 it is a no-op. The kernel layer
+/// only knows the OS concept "enable user I/O"; the arch layer
+/// (`CpuContextArch::enable_user_io`) decides how to encode it
+/// (06-design-final.md §3.5).
 ///
-/// C's `enable_iop()` simply does `pp->p_reg.psw |= 0x3000`.
-/// In Rust, we modify `initial_status` (the saved RFLAGS used when
-/// the process is first scheduled or context-switched in). For
-/// already-running processes, the trap frame on the kernel stack also
-/// needs updating — this is deferred until the scheduler/context-switch
+/// For already-running processes, the trap frame on the kernel stack
+/// also needs updating — this is deferred until the scheduler/context-switch
 /// path provides arch-layer access to the saved exception frame.
 pub fn dispatch_iopenable(
     caller: &mut KProcess,
@@ -517,10 +512,12 @@ pub fn dispatch_iopenable(
 
     // C: do_iopenable.c:28 — enable_iop(proc_addr(proc_nr))
     // C: enable_iop() sets IOPL=3: pp->p_reg.psw |= 0x3000
-    // In Rust, `initial_status` holds the saved RFLAGS. Setting IOPL=3
-    // allows the target process to execute IN/OUT/INS/OUTS from ring 3.
+    // The Rust rewrite sinks the RFLAGS.IOPL write into the arch layer
+    // (06-design-final.md §3.5): the kernel only knows the OS concept
+    // "enable user I/O"; the arch decides how to encode it (x86-64:
+    // RFLAGS |= 0x3000; aarch64/riscv64: no-op).
     if let Some(target) = proc_table.get_mut(target_nr) {
-        target.initial_status |= X86_64_IOPL_BITS;
+        target.enable_user_io();
     }
 
     // DEFERRED: For already-running processes, also update the RFLAGS
@@ -625,11 +622,11 @@ pub fn dispatch_sdevio<PI: PortIo>(
     // C: do_sdevio.c:102-122 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv {
-        if priv_.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
             let mut allowed = false;
-            for i in 0..priv_.s_nr_io_range as usize {
-                if i < priv_.s_io_tab.len() {
-                    let ior = &priv_.s_io_tab[i];
+            for i in 0..priv_.io.s_nr_io_range as usize {
+                if i < priv_.io.s_io_tab.len() {
+                    let ior = &priv_.io.s_io_tab[i];
                     // C: do_sdevio.c:113 — port range check
                     if port as u32 >= ior.base
                         && port as u32 + (size as u32) - 1 <= ior.limit
@@ -802,10 +799,10 @@ mod tests {
     #[test]
     fn test_check_irq_permission_with_flag_allowed() {
         let mut priv_ = KPriv::new(0);
-        priv_.s_flags = PrivFlagsBits::CHECK_IRQ;
-        priv_.s_nr_irq = 2;
-        priv_.s_irq_tab[0] = 5;
-        priv_.s_irq_tab[1] = 10;
+        priv_.capability.s_flags = PrivFlagsBits::CHECK_IRQ;
+        priv_.io.s_nr_irq = 2;
+        priv_.io.s_irq_tab[0] = 5;
+        priv_.io.s_irq_tab[1] = 10;
         assert!(check_irq_permission(&priv_, 5));
         assert!(check_irq_permission(&priv_, 10));
     }
@@ -813,9 +810,9 @@ mod tests {
     #[test]
     fn test_check_irq_permission_with_flag_denied() {
         let mut priv_ = KPriv::new(0);
-        priv_.s_flags = PrivFlagsBits::CHECK_IRQ;
-        priv_.s_nr_irq = 1;
-        priv_.s_irq_tab[0] = 5;
+        priv_.capability.s_flags = PrivFlagsBits::CHECK_IRQ;
+        priv_.io.s_nr_irq = 1;
+        priv_.io.s_irq_tab[0] = 5;
         assert!(!check_irq_permission(&priv_, 3));
         assert!(!check_irq_permission(&priv_, 10));
     }
@@ -935,9 +932,9 @@ mod tests {
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.s_flags = PrivFlagsBits::CHECK_IO_PORT;
-            priv_.s_nr_io_range = 1;
-            priv_.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.io.s_nr_io_range = 1;
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
 
         let pio = MockPortIo::new(0xFF);
@@ -962,9 +959,9 @@ mod tests {
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.s_flags = PrivFlagsBits::CHECK_IO_PORT;
-            priv_.s_nr_io_range = 1;
-            priv_.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.io.s_nr_io_range = 1;
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
 
         let pio = MockPortIo::new(0);
@@ -1018,9 +1015,10 @@ mod tests {
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         // Should succeed (not EINVAL) — SELF resolved to caller's endpoint
         assert_eq!(result, KcallResult::Ok(0));
-        // IOPL bits should be set in the target process's initial_status
-        let target = proc_table.get(0_i32).unwrap();
-        assert_ne!(target.initial_status & X86_64_IOPL_BITS, 0);
+        // IOPL enable is verified in minix-arch (x86_64::boot::tests::
+        // enable_user_io_sets_iopl) — kernel layer no longer inspects
+        // the arch-private cpu_context.psw field.
+        let _target = proc_table.get(0_i32).unwrap();
     }
 
     #[test]
@@ -1043,8 +1041,9 @@ mod tests {
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(0));
-        let target = proc_table.get(5_i32).unwrap();
-        assert_eq!(target.initial_status & X86_64_IOPL_BITS, X86_64_IOPL_BITS);
+        // IOPL enable verified in minix-arch layer (kernel layer no
+        // longer reads the arch-private cpu_context).
+        let _target = proc_table.get(5_i32).unwrap();
     }
 
     #[test]
@@ -1089,15 +1088,17 @@ mod tests {
 
     #[test]
     fn test_iopenable_iopl_bits_only_affects_bits_12_13() {
-        // Verify that enable_iop only sets IOPL bits (0x3000) and
-        // doesn't clobber other RFLAGS bits already set.
+        // The kernel-layer contract is "enable user I/O". The arch layer
+        // (x86_64) is responsible for setting RFLAGS.IOPL=3; the
+        // bit-level assertion is in `x86_64::boot::tests::
+        // enable_user_io_sets_iopl`. The kernel-layer test just verifies
+        // the syscall succeeds.
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let target_ep = Endpoint::from_generation_slot(1, 3);
         {
             let proc = proc_table.get_mut(3_i32).unwrap();
             proc.p_endpoint = target_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-            proc.initial_status = 0x0002; // Reserved bit 1 set (as an example)
         }
 
         let mut caller = KProcess::new(0_i32, Endpoint(0));
@@ -1109,9 +1110,6 @@ mod tests {
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(0));
-        let target = proc_table.get(3_i32).unwrap();
-        // IOPL=3 set, and original bit preserved
-        assert_eq!(target.initial_status, 0x3002);
     }
 
     // ── dispatch_sdevio tests ──
@@ -1268,9 +1266,9 @@ mod tests {
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.s_flags = PrivFlagsBits::CHECK_IO_PORT;
-            priv_.s_nr_io_range = 1;
-            priv_.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.io.s_nr_io_range = 1;
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
 
         let mut msg = Message::default();

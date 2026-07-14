@@ -18,7 +18,7 @@ minix-arch/
 │   ├── irq_manager     IRQ hook management (OS policy, not hardware)
 │   ├── clock           Hardware timer (PIT/LAPIC, Generic Timer, mtime)
 │   ├── arch_init       Architecture-specific early initialization
-│   ├── proc_arch       Process context: register reset, boot proc, ELF load
+│   ├── boot            Process CPU context: CpuContextArch trait, boot proc, ELF load
 │   └── post_init       Post-boot init: ptproc, freepdes, memory init
 │
 ├── plat/           # Board-level device traits (SoC/motherboard-specific)

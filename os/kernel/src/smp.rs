@@ -41,6 +41,32 @@
 //! - Timer tick handler (will be wired when clock interrupt is integrated)
 //! - IPC sendrecv suspend/resume paths
 //! - Per-CPU run queue access (per-CPU scheduling queue)
+//!
+//! # `CpuLocal` vs design `PerCpuData` (06-design-final.md §4.0.7.3)
+//!
+//! The design doc sketches a `PerCpuData` struct (proc_ptr, fpu_owner,
+//! cpu_is_idle, ready_queue, last_tsc) as the per-CPU abstraction. The
+//! implementation uses the existing `CpuLocal` type instead, which is a
+//! **superset**: it carries the same fields (under different names) plus
+//! additional Minix3 per-CPU state (bill_ptr, ptproc, idle_interrupted,
+//! pagefault_handled, fpu_presence, scheduler). Renaming `CpuLocal` →
+//! `PerCpuData` would lose traceability to C's `struct __cpu_local_vars`
+//! (cpulocals.h:67-79) and is therefore a deliberate deviation:
+//!
+//! | Design `PerCpuData` field | `CpuLocal` field        |
+//! |---------------------------|-------------------------|
+//! | `proc_ptr: AtomicPtr`     | `proc_ptr: Option<ProcNr>` |
+//! | `fpu_owner: AtomicPtr`    | `fpu_owner: Option<ProcNr>` |
+//! | `cpu_is_idle: AtomicBool` | `cpu_is_idle: bool`     |
+//! | `ready_queue: ReadyQueue` | `scheduler: Scheduler`  |
+//! | `last_tsc: AtomicU64`     | `cpu_last_tsc: u64`     |
+//!
+//! Two sub-deviations:
+//! - **`AtomicPtr` → `Option<ProcNr>`**: design uses raw pointers; impl uses
+//!   `ProcNr` indices (safer, matches §3.4's "index over pointer" rule).
+//! - **`AtomicBool`/`AtomicU64` → plain `bool`/`u64`**: BKL already
+//!   serializes all per-CPU access, so atomics are redundant inside
+//!   `CpuLocal`. (Cross-CPU IPI data in `SchedIpiData` stays atomic.)
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

@@ -125,6 +125,28 @@ impl Default for MessageUnion {
     }
 }
 
+impl MessageUnion {
+    /// Const-constructible zeroed payload (for `const fn` table init).
+    pub const fn zeroed() -> Self {
+        Self { raw: [0u8; MESSAGE_PAYLOAD_SIZE] }
+    }
+}
+
+impl Message {
+    /// Const-constructible zeroed message (for `const fn` table init).
+    ///
+    /// `m_source` is `Endpoint(0)` (slot 0); callers that need a
+    /// specific source overwrite it after construction. Used by
+    /// `KProcess::new()` so that `ProcessTable` can be a `static mut`.
+    pub const fn zeroed() -> Self {
+        Self {
+            m_source: Endpoint(0),
+            m_type: 0,
+            m_u: MessageUnion::zeroed(),
+        }
+    }
+}
+
 impl core::fmt::Debug for MessageUnion {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "MessageUnion {{ ... }}")

@@ -262,14 +262,22 @@ CPU 发起内存访问
 
 | 阶段 | 关键动作 | 本质 |
 |------|---------|------|
-| **A: 入口** | 校验 kinfo、打开"内核可分配内存"闸门 | 准备运行期数据 |
+| **A: 入口** | 保存 boot info 到 `kinfo`、BSS 检查、置 `kernel_may_alloc=1`（允许内核在 VM 启动前直接分配物理内存） | 准备运行期数据 |
 | **B: cstart** | 建立保护结构、初始化时钟、初始化中断控制器、架构相关初始化 | 从"裸机"过渡到"有保护的运行环境" |
-| **C: 进程表** | 创建进程表项、加载 boot modules 的 ELF | 准备好被调度实体 |
-| **D: post-init** | 启动 VM 进程、分配空闲页目录 | 内存管理上线 |
-| **E: system** | 初始化特权表（对应 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的 `system_init()`） | 权限系统上线 |
-| **F: finish** | 回收 bootstrap 内存、切换到用户态 | 启动完成 |
+| **C: 进程表** | 清空进程表、遍历 boot image 分配 slot、加载 VM ELF | 准备好被调度实体 |
+| **D: post-init** | `arch_post_init()`（设 ptproc=VM）、`memory_init()`（分配 freepdes 空闲页目录） | 内存管理上线 |
+| **E: system** | `system_init()`（初始化特权表）、`add_memmap()`（向 VM 传递内存映射） | 权限系统上线 |
+| **F: finish** | `bsp_finish_booting()`：SMP AP 启动、回收 bootstrap 内存、切换到用户态 | 启动完成 |
 
 本文覆盖 **A 与 B 的前半部分（保护结构）**；B 后半部分（时钟、中断、arch_init）在 04 文档展开。
+
+> **TODO（review 03 文档 D 行及后文时一并处理）**：本表 D 行 "`memory_init()` 分配 freepdes 空闲页目录" 与 C 版 `memory_init` 的描述对齐，但 minix-rs 在 64 位架构下通过 direct_map 替代了 32 位的临时窗口机制（`ptproc` + `freepdes` + `createpde` + `mem_clear_mapcache` 整套废弃），该行实质上不再反映 Rust 实现行为。详见 [07-cross-space-init.md §3.6 废弃清单](07-cross-space-init.md#36-废弃清单与假设性推理汇总)。
+>
+> 拟修改方向：把 D 行的关键动作改为反映 Rust 实现的"确认 VM direct_map 已就绪"语义；同步检查后文 [l461](03-kmain-cstart.md#L461) 关于 `kinfo.freepde_start = pg_mapkernel()` 的引用（`pre_init.c:232` 在 Rust 中整体废弃，对应 `kinfo.freepde_start` 字段不再填充）。如有需要：
+> - 直接删除后文相关引用（推荐）：minix-rs 无 `freepde_start` 概念
+> - 或替换为 `kinfo.direct_map_base`（如果有该字段）的引用
+>
+> 触发条件：本文档 review 时一并处理。本任务先立 TODO，避免直接改动跨文档关联内容。
 
 ```
 ┌─────────────┐     ┌─────────┐     ┌─────────────────────────────┐
@@ -764,9 +772,39 @@ fn init_protection(kernel_info: &KernelInfo) {
 
 > 实现位置：`os/kernel/src/lib.rs:574`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
 
+> **为什么需要 `set_kernel_stack()` 而不是 boot 阶段一次性写死栈指针**：
+>
+> `ProtectionArch::init(0, kern_stack_top)` 只在 boot 阶段写**当前 CPU**（CPU 0 / BSP）一个栈指针。但运行时有两种新情况需要更新栈指针：
+>
+> 1. **进程调度**：内核为每个进程分配独立的内核栈（每个进程的内核栈记录该进程在内核态的调用链、trap frame 等）。当 CPU 切到新进程时，**进入内核后要用这个进程专属的内核栈**——必须把栈指针切到新栈，否则不同进程的内核栈会混用而破坏隔离。
+> 2. **SMP 多核启动**：AP（CPU 1, CPU 2, ...）启动时各自需要一个栈；boot 阶段 `init()` 只处理 BSP，AP 必须单独初始化。
+>
+> 因此 `ProtectionArch` 提供三个独立接口，按场景分别调用：
+> - `init(cpu_id, stack_top)` — 首次初始化某 CPU 的保护结构（含内核栈指针）
+> - `init_ap(cpu_id, stack_top)` — AP 启动专用，与 BSP 的 `init()` 共享大部分逻辑但有少量差异（如 AP 不需要 `lgdt` 全局同步）
+> - `set_kernel_stack(cpu_id, new_stack_top)` — 运行时更新某 CPU 当前的内核栈指针（调度时反复调用）
+
 > **运行时更新内核栈**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
 
 > **返回路径说明**：Ch1 §1.3 强调保护结构是"双向门"——进入内核与返回用户态都必须受控。`ProtectionArch`/`TrapEntryArch` trait 目前只抽象了进入内核的入口配置（`load()` 让 GDT/IDT/VBAR/stvec 生效），而返回用户态的指令（x86-64 `iretq` / aarch64 `eret` / riscv64 `sret`）隐藏在具体架构的汇编 handler 中，由 [14-exception-interrupt.md](14-exception-interrupt.md) 统一实现。本文不单独设计 return-path trait，是因为返回动作与异常/中断 handler 的上下文恢复强耦合，无法在本阶段独立配置；但 trait 边界已为后续扩展预留（如需要可在 14 文档引入 `TrapReturnArch`）。
+
+> **TODO（14-exception-interrupt.md 完成后处理）**：[14-exception-interrupt.md](14-exception-interrupt.md) 文档结束（覆盖完异常/中断 handler 上下文恢复、汇编级 return-path 实现细节）后，**再次评估是否需要单独的 `TrapReturnArch` trait**。评估要点：
+> - 验证三架构汇编 handler 中 `iretq`/`eret`/`sret` 的语义是否高度对称——若差异在文档层面就讲得清楚（无需在 trait 抽象），保留 `return-path` 完全留在汇编 handler 的现状即可。
+> - 若差异在文档中讲不清楚（或新增架构时协调代价过高），引入 `TrapReturnArch` trait（与 `TrapEntryArch` 对称），把返回用户态的指令、上下文恢复序列、栈布局约束纳入 trait。
+> - 本决定对本文档 §4 trait 边界有扩展可能：若 14 文档反馈"差异显著需抽象"，需更新 §1.4a CPU 三问表格 + §4.3 抽象边界段。
+>
+> 触发条件：14 文档正式完成（含 trap frame 布局、`iretq`/`eret`/`sret` 上下文恢复细节）。当前未触发。
+
+> **TODO（补 BSS 清零针对性单元测试）**：当前 [§4.6 BSS 检查行](03-kmain-cstart.md#L845) 指出测试覆盖缺口：`os/boot-shim/src/loader.rs:387-413` 现有单元测试覆盖了 layout 计算和缺失文件 panic 行为，但**没有针对性断言 `bss_range == [0u8; bss_size]` 的测试**。建议在 `loader.rs` 测试模块里加：
+> ```rust
+> #[test]
+> fn test_bss_region_is_zeroed() {
+>     // 构造一个 PT_LOAD 段：filesz < memsz，filesz 部分填非零数据，memsz 部分未填
+>     // 调用 load_pt_load_segments_into
+>     // 断言 [filesz, memsz) 区间全部 == 0
+> }
+> ```
+> 触发条件：补 BSS 清零测试时一并处理（不强依赖某一阶段，但建议在 `os/qemu-tests/` 真实启动链验证前补齐）。
 
 **代码与 CPU 三问的对应**（Ch1 §1.4 → Ch3 §3.1 → Ch4 三层闭环）:
 
@@ -815,7 +853,7 @@ pub type CurrentTrapEntry = /* 同样模式 */;
 | 差异点 | C 版行为 | Rust 版处理 | 理由 |
 |--------|---------|------------|------|
 | `kmain` memcpy(&kinfo) | `main.c:128` 拷贝 `local_cbi` 到全局 `kinfo`（`local_cbi` 是 `kmain` 参数，作用域限于 `kmain` 调用链；拷贝到全局使非 `kmain` 调用链的代码也能访问启动信息） | `arch_boot_impl()` 返回 `&'static KernelInfo`，无需拷贝 | 借用规则保证生命周期 |
-| BSS 检查 | `main.c:122-124` `assert(bss_test==0)` | 不做 | Rust `static` 语言保证零初始化；boot-shim 清零 BSS |
+| BSS 检查 | `main.c:122-124` `assert(bss_test==0)` | 不做（功能依赖 loader） | ELF loader 在 [`load_pt_load_segments_into`（`os/boot-shim/src/loader.rs:201-206`）](os/boot-shim/src/loader.rs#L201-L206) 解析 PT_LOAD 时通过 `core::ptr::write_bytes(bss_start, 0, bss_size)` 清零 `[p_filesz, p_memsz)` 区间。Rust `static` 在 ELF 里是 **BSS 段声明**——只声明，**不**生成运行时清零指令；运行时清零完全靠 ELF loader（裸金属 boot 阶段无 OS，Rust `static` 零初始化的"语言保证"等价于"靠 bootloader"）。测试覆盖：`loader.rs:387-413` 单元测试覆盖了 layout 计算和缺失文件 panic 行为，但**未明确断言 `bss_range == [0u8; size]` 的针对性测试**——属已知测试缺口 |
 | GDT 描述符位运算 | `protect.c:340-348` 裸 `u32` + 宏 | `bitflags!` 宏（`PRESENT\|DPL_RING3\|CODE\|READABLE`） | 表达力 + 类型安全 |
 | 重建页表 | `protect.c:357-362` `pg_clear/identity/mapkernel/load` | 不重建 | `arch_boot_impl()` 已建恒等+高地址映射（见 [02-higher-half-kernel.md](02-higher-half-kernel.md) §4.4） |
 | `board_id` | `main.c:130` 设置 `machine.board_id` | 不设置 | 板级识别下放到 `arch_init()`/`plat` crate，`kmain()` 保持架构无关 |

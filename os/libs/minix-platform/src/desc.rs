@@ -114,7 +114,7 @@ pub enum ConsoleDesc {
     SbiConsole,
 }
 
-/// CPU topology (SMP-ready; Phase 1 only populates `cpus[0]`).
+/// CPU topology (SMP-ready; `QemuVirtDesc` pre-populates 4 cores for test).
 #[derive(Debug, Clone, Copy)]
 pub struct CpuTopology {
     /// Total CPU/hart count.

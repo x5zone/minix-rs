@@ -506,6 +506,8 @@ kinfo_t *pre_init(u32_t magic, u32_t ebx)
 
 1024 × 4MB 大页恒等映射。每个 PDE 设置 `PRESENT | BIGPAGE | USER | WRITE` flag。超出 `mem_high_phys` 的 PDE 额外加 `PWT | PCD`（禁用缓存）。
 
+> **PWT|PCD 辨析**：超出 `mem_high_phys` 的物理地址是 MMIO 设备寄存器或空洞（非真 DRAM），必须禁缓存（写穿透、不进 cache），否则设备读写的写后读语义与一致性会被缓存破坏而失灵。C 源码注释（`pg_utils.c:167-169`）明示："We map memory that does not correspond to physical memory as non-cacheable."
+
 > **USER flag 辨析**：`pg_identity()` 设 `I386_VM_USER`，但 boot 阶段内核运行在 Ring 0，U/S 位对访问无影响——本质上是"无所谓"的标志。有意义的 contrast 在 `pg_mapkernel()`（§2.3.6）：它**不设** `I386_VM_USER`，刻意将内核地址标记为 supervisor-only。`pg_info()` 将页目录写入 `vm->p_seg.p_cr3`，但 VM 的 `pt_init()`（`vm/pagetable.c:1284`）**显式跳过所有 BIGPAGE 条目**（"boot identity mapping (don't want)"），自己新建页目录。恒等映射从 VM 启动那一刻起就被丢弃，不会被任何 Ring 3 进程使用。
 > 
 > Rust 版本（64 位 UEFI）不设 USER flag，因为 boot-shim 页表仅在内核 boot 阶段使用，不会传递给任何用户态进程。
@@ -789,7 +791,7 @@ pub trait HugePages: Paging {
 |---------|------------|------|
 | `kern_stack_top` | 链接器符号 `k_initial_stktop`（head.S:80 `mov $k_initial_stktop, %esp`），C 版通过 `tss_init(0, &k_boot_stktop)` 在 `protect.c:338` 使用 | C 版通过全局链接器符号隐式传递，Rust 版将其显式纳入 `KernelInfo`，使 boot-shim → kernel 的数据传递完全通过结构体完成，不依赖链接器符号 |
 | `syscall_entry` | `protect.c:189-205` 中 LSTAR MSR 配置的入口地址 | C 版在 `prot_init()` 中硬编码计算，Rust 版将其作为元信息显式传入，便于 `arch_boot_impl` 统一配置 |
-| `platform_descriptor` | C 版 `kinfo_t` 无直接对应；信息来自 UEFI Configuration Table（ACPI RSDP/DTB）或 OpenSBI a1 寄存器 | 平台发现需要原始固件描述符指针；统一通过 `KernelInfo` 从 boot-shim 传递到 `minix-platform::init_from_kinfo`，见 `plat-design.md` §4.1 与 §6 |
+| `platform_descriptor` | C 版 `kinfo_t` 无直接对应；信息来自 UEFI Configuration Table（ACPI RSDP/DTB）或 OpenSBI a1 寄存器 | 平台发现需要原始固件描述符指针；通过 `KernelInfo.platform_descriptor: Option<PlatformDescriptorPtr>`（Dtb/Rsdp）从 boot-shim 传递到 `minix-platform::init_from_kinfo`，见 [04-platform-discovery.md](04-platform-discovery.md) §4.4 与 §4.6 |
 
 **`overlaps()` 的 Rust 等价**：C 源码 `overlaps()`（pre_init.c:77）检查 boot 模块是否与内核镜像重叠。UEFI 引导路径中，`boot-shim` 的 `uefi_helpers` 通过 `GetMemoryMap()` 获取的内存描述已由 UEFI 固件保证不重叠，因此不需要 Rust 等价函数。OpenSBI 路径中，U-Boot 通过 `fatload` 将 kernel/modules 预加载到指定地址，bump 分配器从 `DRAM + 32MB` 起步避开已加载区域，同样不需要重叠检测。如果未来支持非 UEFI 引导（如 coreboot），需在对应 boot-shim feature module 中实现重叠检测。
 
@@ -919,6 +921,47 @@ pub enum PlatformDescriptorPtr {
     Rsdp(PhysBytes), // ACPI RSDP（x86-64）物理地址
 }
 ```
+
+> **TODO（review 04-platform-discovery.md 时一并处理）**：当前 `PlatformDescriptorPtr { Dtb, Rsdp }` 把固件描述符的两类来源以 `pub enum` 形式直接暴露在 `KernelInfo` 公共 API 表面，与"上层代码完全屏蔽设备差异"的设计哲学有违和（详见本文档 §4.1 上方讨论）。
+>
+> 拟修改方向：拆分为 `platform_descriptor: PhysBytes`（裸指针）+ `platform_source: PlatformSource`（私有 enum，仅 `init_from_kinfo` 内部 match），或仅把 `PlatformSource` 收为 boot-shim crate 私有类型，使上层 `platform_desc()` 之后完全看不到 DTB/ACPI 来源。
+>
+> 影响范围：`os/boot-shim/src/kernel_info.rs:78-118`、`os/libs/minix-platform/src/global.rs::init_from_kinfo`、`04-platform-discovery.md` §4.4。当前由 `PlatformDescriptorPtr` 引用的所有调用点（本文档第 794、1285 行）均需同步更新。
+> 触发条件：本 review 通过 `minix-platform::init_from_kinfo` 完成首次全链路验证后、进入 §4.4 重构前。
+
+> **TODO（review 01 本文档 §4.5+ 时一并处理）**：`os/boot-shim/src/opensbi_helpers.rs:229` 留有真 TODO —— `PhysBytes(0), // TODO: determine boot-shim physical start from OpenSBI`。该字段用于 `kinfo.bootstrap_start/len` 告知 kernel "boot-shim 占用的内存请回收"，若写 0 会让 kernel 把整段 RAM 误标记为已用 / 未用。需要从 OpenSBI 的 ELF program headers（`_start` 到 `_edata`）导出符号，或在 entry trampoline 把 `a0`/`sp` 推断得到。这**是真实未完成实现**，不是 mock。
+>
+> 同节还有第 1203-1204 行注释（"riscv64 没有 UEFI 入口——它的入口是裸金属的 `_start` 汇编"）措辞过简，未区分 UEFI 不可达（`riscv64-unknown-uefi` target 不存在）/ 生产可用（OpenSBI + U-Boot fatload）/ 测试场景（QEMU `-kernel`）三个维度，触发本节重构时一并改写。
+> 触发条件：boot-shim 在 OpenSBI+U-Boot 真实启动链验证后（当前仅在 QEMU `-kernel` 测试场景验证）。
+
+> **TODO（review 02-higher-half-kernel.md §5.1 时一并处理）**：当前 02 §5.1 三架构 5 行测试对照表（hello-boot / test-memmap / test-paging-enable / test-kernel-map / test-higher-half）与本文档 §5 表存在跨文档重复——其中 hello-boot / test-memmap / test-paging-enable / test-kernel-map 本属 boot-shim 后端验证，**应只在本文档 §5 表出现**；02 §5.1 应只保留 test-higher-half 及专属的高半核一致性测试。
+>
+> 影响范围：[02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#L868-L876) 表格行 1-4（删除并提示见本文档）、行 5（保留 + 增补 Sv39 canonical 内容）。02 §5.1 表下方"运行方式"段需同步迁移到本文档 §5。
+> 触发条件：02 文档 review 时一并处理。本任务已经将本文档 §5 表对应行移除（避免冗余）。
+
+> **TODO（补 QEMU + OpenSBI + U-Boot 真实启动链集成测试）**：[§5 架构差异要点表](01-boot-shim-bootstrap.md#L1573-L1580) `kern_virt_base` 行暴露 riscv64 在 QEMU `-kernel` 测试场景下未完成 ELF 装载 + 高半核切换的临时妥协。本文档目标读者希望测试尽可能模拟生产环境，应当补一个真实生产链路的集成测试。
+>
+> **目标**：在 `os/qemu-tests/` 下新增 `test-sbi-uboot`（暂名），验证完整 OpenSBI + U-Boot + boot-shim + kernel 链路：
+>
+> 1. QEMU `-machine virt` + `-bios u-boot.bin` + `-drive file=uboot.pflash`
+> 2. U-Boot 通过 `boot.cmd` 走 `fatload` 把 `kernel.elf` 与各模块预加载到 `0x8020_0000` + 偏移地址，并构造 `BootFileTable` 写入 `a0`
+> 3. `OpenSbiBootShim::prepare_boot()` 调用全链路：U-Boot `fatload` → `BootFileTable` 解析 → ELF 装载（`load_kernel_with_loader`） → `build_kernel_info` → `arch_boot_impl`
+> 4. 验证 `kern_virt_base == 0xFFFF_FFC0_0000_0000`（Sv39 canonical high）切栈成功，最终 SP 在高地址、kernel 通过高地址执行
+>
+> **当前覆盖缺口**：`opensbi_helpers.rs::OpenSbiBootShim::prepare_boot`（[L193-L244](os/boot-shim/src/opensbi_helpers.rs#L193-L244)）的 `build_memmap`、`alloc_root_page`、`alloc_bump_region`、`build_kernel_info`、`load_boot_modules_with_loader` 等子例程在生产路径上**完全没有测试覆盖**。
+>
+> **阻塞依赖**：
+> - [os/boot-shim/src/opensbi_helpers.rs:229](os/boot-shim/src/opensbi_helpers.rs#L229) — `PhysBytes(0)` TODO 必须先解决（否则 kernel 内存回收有 bug）
+> - [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现) — riscv64 ELF 高地址链接脚本需就绪（当前仅 x86-64/aarch64 配置完整）
+>
+> **实施要素**：
+> - 构建 `u-boot.bin`（含 `CONFIG_EFI_LOADER=y` 或纯 extlinux 配置）与 `boot.cmd`（含 `fatload` + `minix_elf` 命令序列）
+> - 构建包含 `kernel.elf` + 各模块的 FAT 镜像（`mkfs.vfat` + `mcopy`）
+> - 在 `os/qemu-tests/run_all.sh` 中追加 `test-sbi-uboot` 入口
+>
+> **验收**：CI 中 `test-sbi-uboot` 通过等价于"boot-shim 全链路在 QEMU virt 上真实启动验证 OK"，并将本文档 §5 表 `kern_virt_base（当前测试场景）` 列升级为 `与生产路径一致`，删除"妥协"说明。
+> 触发条件：本 review 通过后、未实现前该 TODO 不被覆盖。
+
 
 ### 4.2 Paging trait 扩展 + HugePages trait
 
@@ -1280,7 +1323,7 @@ kernel
 
 U-Boot 在 RISC-V 嵌入式生态中扮演 UEFI 的角色：它读取 ESP 风格的 FAT 分区，把文件加载到指定物理地址（参见 [U-Boot UEFI 文档](https://docs.u-boot.org/en/latest/develop/uefi/uefi.html) 与 [Alpine riscv64 启动指南](https://wiki.alpinelinux.org/wiki/Riscv64)）。我们让 U-Boot 替 boot-shim 完成"读文件"这一步——用 `fatload` 把 `kernel.elf` 和所有模块预加载到 RAM，并构建一个小小的 `BootFileTable`（路径 → 物理地址映射）传给 boot-shim。
 
-**平台描述符来源**：UEFI 路径通过 `uefi_helpers::find_platform_descriptor()` 扫描 UEFI Configuration Table 获取 ACPI RSDP（x86-64）或 DTB（aarch64），必须在 `ExitBootServices()` 之前调用。OpenSBI 路径通过 `opensbi_helpers::dtb_ptr()` 读取入口汇编保存的 `a1` 寄存器值获取 DTB 物理地址；两者都封装为 `PlatformDescriptorPtr` 后写入 `KernelInfo.platform_descriptor`，供 `minix-platform::init_from_kinfo()` 解析。详见 `plat-design.md` §4.1 与 §6。
+**平台描述符来源**：UEFI 路径通过 `uefi_helpers::find_platform_descriptor()` 扫描 UEFI Configuration Table 获取 ACPI RSDP（x86-64）或 DTB（aarch64），必须在 `ExitBootServices()` 之前调用。OpenSBI 路径通过 `opensbi_helpers::dtb_ptr()` 读取入口汇编保存的 `a1` 寄存器值获取 DTB 物理地址；两者都封装为 `PlatformDescriptorPtr`（见 [04-platform-discovery.md](04-platform-discovery.md) §4.4）后写入 `KernelInfo.platform_descriptor`，供 `minix-platform::init_from_kinfo()`（见 §4.6 启动时序）解析。
 
 **boot.cmd 脚本骨架**（QEMU virt + virtio-blk + FAT）：
 
@@ -1543,9 +1586,8 @@ os/qemu-tests/
 | **test-memmap** | x86_64/aarch64: `uefi_helpers::build_memmap` → 断言 memmap 非空 + 有 CONVENTIONAL 区域；riscv64: 硬编码 QEMU virt DRAM 布局 → 断言覆盖 DRAM 区域 | KernelInfo.memmap 反映真实物理内存布局。若为空或遗漏内核区域，后续恒等映射会跳过内核自身，切换页表后立即崩溃 |
 | **test-paging-enable** | x86_64/aarch64: UEFI helpers → `arch_boot_impl` → 串口输出 PASS；riscv64: 直接构造 `BootPrepareResult` → `arch_boot_impl` → PASS | `paging.enable()` 后 CPU 仍能继续执行——最基本的安全断言。x86_64 切换 CR3，aarch64 使能 MMU，riscv64 写入 satp + sfence.vma |
 | **test-kernel-map** | x86_64/aarch64: `arch_boot_impl`(高半核) → 读写 sentinel 断言高低地址值一致；riscv64: `arch_boot_impl`(identity) → 读写 sentinel 断言一致 | 高半核映射语义正确。riscv64 因 `kern_virt_base == kern_phys_base`，仅验证 identity 映射 |
-| **test-higher-half** | `arch_boot_impl` → `HigherHalf::jump_to_kmain` → `kmain_verify`(SP/PC/FP) | 验证高半核切换后栈指针在高地址、帧指针为零、PC 在高地址。**详细实现与三架构差异参见 [02-higher-half-kernel.md §5.1](02-higher-half-kernel.md)** |
 
-> **三架构 QEMU 测试结果**：15/15 全部通过。`02-higher-half-kernel.md` §5.1 附有详细测试说明与 riscv64 Sv39 高地址规范分析。
+> **三架构 QEMU 测试结果**：上述 4 类测试 × 3 架构 = 12/12 全部通过。`test-higher-half`（高半核切换后 SP/FP 寄存器状态验证）由 [02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#51-qemu-集成测试三架构-1515-通过) 覆盖，合计 15/15 通过（含 riscv64 Sv39 canonical 高地址断言）。
 
 **运行方式**：`cd os/qemu-tests && bash run_all.sh`
 
@@ -1553,11 +1595,16 @@ os/qemu-tests/
 
 | 差异 | x86_64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| QEMU RAM 起始 | 0x0 | 0x4000_0000 | 0x8000_0000 |
+| QEMU DRAM 起点（OS 可用 RAM 起） | 0x0（实模式 1MB 以下被 BIOS/ROM 占，OS 从 1MB+ 起；长模式不限制） | 0x4000_0000 | 0x8000_0000 |
 | kern_phys_base | 0x200_000 | 0x4020_0000 | 0x8000_0000 |
-| kern_virt_base | 0xFFFF_8000_0000_0000 | 0xFFFF_8000_0000_0000 | 0x8000_0000 (identity) |
-| 引导方式 | UEFI (OVMF) | UEFI (QEMU_EFI) | OpenSBI |
+| kern_virt_base（生产路径） | 0xFFFF_8000_0000_0000 | 0xFFFF_8000_0000_0000 | 0xFFFF_FFC0_0000_0000（Sv39 canonical high） |
+| kern_virt_base（当前测试场景） | 0xFFFF_8000_0000_0000 | 0xFFFF_8000_0000_0000 | 0x8000_0000（QEMU `-kernel` 跳过 ELF 装载与高半核切换的妥协） |
+| 引导方式 | UEFI (OVMF) | UEFI (QEMU_EFI) | OpenSBI + U-Boot（生产）/ OpenSBI 直连（测试） |
 | 调用约定 | Windows x64 ABI | AAPCS64 | RISC-V calling convention |
+
+> **架构范围**：本表 `kern_virt_base` 行**生产路径**列反映三架构统一的"高半核"安排；**当前测试场景**列暴露了 riscv64 在 QEMU `-kernel` 直接加载下未完成 ELF 装载 + 高半核切换的临时妥协（见本文档 §4.5+ TODO 第 2 条与本文档末 TODO）。
+>
+> **RISC-V 物理地址整体从 0 起**：表格中 `0x8000_0000` 是 **DRAM（OS 可用 RAM）的起点**，不是物理地址空间起点。RISC-V 物理地址空间整体 `0x0 ~ 2^XLEN-1`（XLEN=64 即 16EB），低 2GB 区间分配给 M-mode 固件 / CLINT / PLIC / UART 等 MMIO 设备，OS 可用的 RAM 从 `0x8000_0000` 起。这与 x86-64 实模式下 `0~1MB` 被 BIOS/ROM 占满、OS 从 1MB+ 开始用，是完全类似的思路。所有主流 RISC-V SoC（包括 SiFive HiFive Unleashed、StarFive VisionFive 2）都遵循"`0x8000_0000` 起是 DRAM" 这一约定。QEMU virt 文档列出完整 MMIO 布局：[virt 机器 MMIO 区](https://www.qemu.org/docs/master/system/riscv/virt.html)（MROM/`0x0`-`0x1000`、CLINT/`0x200_0000`、PLIC/`0x0C00_0000`、NS16550A UART/`0x1000_0000`、DRAM/`0x8000_0000`）。
 
 ---
 

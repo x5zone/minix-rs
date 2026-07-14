@@ -16,7 +16,7 @@ use minix_types::PhysBytes;
 // Minimal global allocator for riscv64 bare-metal (no UEFI).
 use core::alloc::{GlobalAlloc, Layout};
 
-#[link_section = ".bss"]
+#[unsafe(link_section = ".bss")]
 static mut HEAP: [u8; 0x4000] = [0u8; 0x4000];
 
 struct BootAllocator;
@@ -76,7 +76,7 @@ core::arch::global_asm!(
     stack_top = sym STACK,
 );
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### test_memmap (riscv64): verifying memory map...\n");
 

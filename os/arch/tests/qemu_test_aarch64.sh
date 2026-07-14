@@ -54,6 +54,7 @@ fi
 # Start QEMU with GDB stub
 qemu-system-aarch64 \
     -machine virt \
+    -smp 4 \
     "${KVM_OPTS[@]}" \
     -kernel "${KERNEL}" \
     -s -S \

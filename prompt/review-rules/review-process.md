@@ -747,6 +747,7 @@ rg "SYMBOL_NAME" minix3/minix/ --type c --type h -n
    - 文档修复（Markdown） → `review-doc-skill` + `review-patterns-skill`
    - 涉及核心语义（IPC/生命周期/错误/权限/地址空间） → `review-core-semantics-skill`
    - 涉及覆盖率/状态追踪 → `review-process-skill` + `review-coverage-skill`
+   - 涉及 design → 实施验证（实施 design doc 后） → `review-implementation-skill`（2026-06-22 新增，详见 `../skill/review-implementation-skill.md` §Gate D-Impl）
 3. 对每个修复项确认：修改范围、验证方法、是否引入新的 P0/P1。
 
 ### 2. 修复执行原则

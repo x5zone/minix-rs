@@ -102,3 +102,48 @@ impl MemoryInitArch for X86_64MemoryInitArch {
         slots
     }
 }
+
+// ── x86_64-specific unit tests ──
+//
+// These tests verify architecture-specific overflow behavior and post-init
+// contract. The generic FreePdeSlots data structure tests live in
+// arch/post_init.rs; these tests cover the x86_64 panic-on-overflow
+// assertion (matching C's assert in memory.c:715).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minix_types::{PhysBytes, VirBytes};
+
+    /// Verifies that allocate_free_pdes panics when free_upper_idx is
+    /// at the overflow boundary (510 for 512-entry PD → final idx 512 >= 512).
+    ///
+    /// C: assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES) — memory.c:715
+    #[test]
+    #[should_panic(expected = "free_upper_idx overflow")]
+    fn test_allocate_free_pdes_panics_on_overflow() {
+        let mut idx: usize = 510;
+        let _ = X86_64MemoryInitArch::allocate_free_pdes(&mut idx);
+    }
+
+    /// Verifies that allocate_free_pdes succeeds at the highest valid
+    /// starting index (509 → final idx 511 < 512).
+    #[test]
+    fn test_allocate_free_pdes_at_highest_valid_index() {
+        let mut idx: usize = 509;
+        let slots = X86_64MemoryInitArch::allocate_free_pdes(&mut idx);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(idx, 511);
+    }
+
+    /// Verifies that set_ptproc accepts a valid VmPageTableInfo without
+    /// panicking. The set_ptproc implementation is a no-op placeholder
+    /// until per-CPU ptproc variable support is added (todo.md §12.2).
+    #[test]
+    fn test_set_ptproc_accepts_valid_vm_page_table_info() {
+        let info = VmPageTableInfo {
+            phys_root: PhysBytes(0x1000),
+            virt_root: Some(VirBytes(0xFFFF_8000_0010_0000)),
+        };
+        X86_64PostInitArch::set_ptproc(&info);
+    }
+}

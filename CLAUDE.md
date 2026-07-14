@@ -46,7 +46,7 @@ Each doc in `notes/rewrite/` follows:
 
 ## Review System
 
-The review system enforces structured review via 8 skills (in `prompt/skill/`, synced to `.claude/skills/` and `.trae/skills/`). Full process details: `prompt/skill/review-process-skill.md`.
+The review system enforces structured review via 9 skills (in `prompt/skill/`, synced to `.claude/skills/` and `.trae/skills/`). Full process details: `prompt/skill/review-process-skill.md`. The 9th skill `review-implementation-skill` (added 2026-06-22 from the 06-design-final.md implementation) verifies design ↔ code consistency, tracks §X self-review issues, and enforces backward-compatible refactor + test coverage boundary.
 
 ### ⛔ Explicit Skill Invocation
 You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it". The Skill Invocation Log in scan.md must reflect actual Skill tool calls, not planned/intended calls.

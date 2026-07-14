@@ -183,7 +183,7 @@ fn cause_signal(
                 if let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr) {
                     if let Some(pid) = sig_mgr_proc.priv_id {
                         if let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
-                            sig_mgr_priv.s_sig_pending.add(SIGKSIG as u8);
+                            sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
                     }
                 }

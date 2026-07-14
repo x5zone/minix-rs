@@ -629,9 +629,9 @@ fn dispatch_setgrant(caller: &mut KProcess, msg: &Message, priv_table: &mut Priv
     // C: _K_SET_GRANT_TABLE(rp, ptr, entries) — safecopies.h:104-107
     // Sets priv(rp)->s_grant_table, s_grant_entries, s_grant_endpoint.
     if let Some(priv_entry) = priv_table.get_mut(priv_id) {
-        priv_entry.s_grant_table = grant_msg.addr as usize;
-        priv_entry.s_grant_entries = grant_msg.size;
-        priv_entry.s_grant_endpoint = caller.p_endpoint;
+        priv_entry.runtime.s_grant_table = grant_msg.addr as usize;
+        priv_entry.runtime.s_grant_entries = grant_msg.size;
+        priv_entry.runtime.s_grant_endpoint = caller.p_endpoint;
         KcallResult::Ok(0)
     } else {
         KcallResult::Ok(EPERM)
@@ -915,7 +915,7 @@ fn dispatch_diagctl(caller: &mut KProcess, msg: &Message, priv_table: &mut PrivT
                     if !p.is_sys_proc() {
                         return KcallResult::Ok(EPERM);
                     }
-                    p.s_diag_sig = true;
+                    p.mem.s_diag_sig = true;
                     // C: if kmess.km_size > 0 && !kinfo.do_serial_debug: send_sig
                     // send_sig requires mini_notify (kernel IPC core), DEFERRED.
                     KcallResult::Ok(0)
@@ -936,7 +936,7 @@ fn dispatch_diagctl(caller: &mut KProcess, msg: &Message, priv_table: &mut PrivT
                     if !p.is_sys_proc() {
                         return KcallResult::Ok(EPERM);
                     }
-                    p.s_diag_sig = false;
+                    p.mem.s_diag_sig = false;
                     KcallResult::Ok(0)
                 }
                 None => KcallResult::Ok(EPERM),
@@ -1117,7 +1117,8 @@ fn dispatch_arch_vdevio(caller: &mut KProcess, msg: &Message) -> KcallResult {
 #[cfg(target_arch = "x86_64")]
 fn dispatch_arch_iopenable(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult {
     // Delegate to syscall_device::dispatch_iopenable.
-    // SELF endpoint resolution + IOPL=3 in initial_status implemented.
+    // SELF endpoint resolution + IOPL enable via
+    // CurrentCpuContextArch::enable_user_io (kernel-layer abstraction).
     // C: do_iopenable.c — SYS_IOPENABLE (x86-only)
     crate::syscall_device::dispatch_iopenable(caller, msg, proc_table)
 }

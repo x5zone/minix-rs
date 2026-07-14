@@ -98,6 +98,7 @@ case "$ARCH" in
             DISK_DRIVE="file=fat:rw:$STAGING,format=raw,media=disk"
         fi
         QEMU_ARGS=(
+            -smp 4
             -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
             -drive "if=pflash,format=raw,unit=1,file=$FW_VARS"
             -drive "$DISK_DRIVE"
@@ -121,6 +122,7 @@ case "$ARCH" in
         QEMU_ARGS=(
             -machine virt
             -cpu cortex-a72
+            -smp 4
             -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
             -drive "if=pflash,format=raw,unit=1,file=$FW_VARS"
             -drive "$DISK_DRIVE"
@@ -140,6 +142,7 @@ case "$ARCH" in
             fi
             QEMU_ARGS=(
                 -machine virt,acpi=off
+                -smp 4
                 -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
                 -drive "if=pflash,format=raw,unit=1,file=$FW_VARS"
                 -drive "$DISK_DRIVE"
@@ -150,6 +153,7 @@ case "$ARCH" in
         else
             QEMU_ARGS=(
                 -machine virt
+                -smp 4
                 -bios default
                 -kernel "$TEST_EFI"
                 -serial "file:$SERIAL_LOG"

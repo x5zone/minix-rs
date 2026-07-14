@@ -53,9 +53,9 @@ pub fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
     if call_nr as usize >= 64 {
         return false;
     }
-    // s_k_call_mask is [u32; 2], combine into u64 for easy bit testing
-    let mask = caller_priv.s_k_call_mask[0] as u64
-        | ((caller_priv.s_k_call_mask[1] as u64) << 32);
+    // s_k_call_mask is [u32; SYS_CALL_MASK_SIZE], combine into u64 for easy bit testing
+    let mask = caller_priv.ipc.s_k_call_mask[0] as u64
+        | ((caller_priv.ipc.s_k_call_mask[1] as u64) << 32);
     (mask & (1u64 << call_nr)) != 0
 }
 
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_ipc_filter_check_allowed() {
         let mut caller = KPriv::new(0);
-        caller.s_ipc_to = 1 << 5; // can send to sys_id=5
+        caller.ipc.s_ipc_to = 1 << 5; // can send to sys_id=5
 
         assert!(ipc_filter_check(&caller, 5));
         assert!(!ipc_filter_check(&caller, 3));
@@ -249,8 +249,8 @@ mod tests {
     #[test]
     fn test_kcall_filter_check() {
         let mut caller = KPriv::new(0);
-        caller.s_k_call_mask[0] = 0xFF; // allow syscalls 0-7
-        caller.s_k_call_mask[1] = 0;    // deny syscalls 32-63
+        caller.ipc.s_k_call_mask[0] = 0xFF; // allow syscalls 0-7
+        caller.ipc.s_k_call_mask[1] = 0;    // deny syscalls 32-63
 
         assert!(kcall_filter_check(&caller, 0));
         assert!(kcall_filter_check(&caller, 7));
