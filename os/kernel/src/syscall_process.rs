@@ -547,12 +547,28 @@ pub fn dispatch_schedctl(
         // Extract scheduling parameters and call sched_proc(p, ..., FALSE).
         // `niced = FALSE` matches C: do_schedctl.c:30 — sched_proc is called
         // with the literal `FALSE`, not a message field (unlike SYS_SCHEDULE).
+        //
+        // Design decision §3.8 (11-design.v1.md): convert C's i32 -1 sentinel
+        // ("keep current") to Option. Negative values other than -1 are
+        // rejected early to match C semantics (system.c:644-648).
+        let priority_opt = match priority {
+            -1 => None,
+            v if v >= 0 => Some(v as u8),
+            _ => return KcallResult::Ok(EINVAL), // priority < 0 && != -1
+        };
+        let quantum_opt = match quantum {
+            -1 => None,
+            v if v >= 1 => Some(v as u32),
+            _ => return KcallResult::Ok(EINVAL), // quantum < 1 && != -1
+        };
+        let cpu_opt = if cpu == -1 { None } else { Some(cpu as u32) };
+
         let target = match proc_table.get_mut(target_nr) {
             Some(p) => p,
             None => return KcallResult::Ok(EINVAL),
         };
-        match crate::sched::sched_proc(target, priority, quantum, cpu, false) {
-            Ok(_) => {
+        match crate::sched::sched_proc(target, crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced: false }) {
+            Ok(()) => {
                 // C: do_schedctl.c:35 — p->p_scheduler = NULL
                 // Kernel is now the scheduler; clear any user-space scheduler.
                 //

@@ -1,588 +1,622 @@
 # 11-scheduling-primitives: 调度原语与进程状态机
 
 > **分类**: Kernel 调度核心
-> **源码**: `minix3/minix/kernel/proc.c:1595-1832`（enqueue/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）
-> **前置**: 09（switch_to_user 调用这些原语）
-> **C 总行数**: ~240 行
+> **C 源码**: `minix3/minix/kernel/proc.c:1595-1832`（enqueue/enqueue_head/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）, `system.c:642-723`（sched_proc）
+> **Rust 源码**: `os/kernel/src/sched.rs`, `os/kernel/src/proc_table.rs`, `os/kernel/src/proc.rs`
+> **前置**: 06（struct proc / RTS_FLAGS）、10（switch_to_user 调用方）
 
 ---
 
 ## 1. 概述
 
-### 1.1 核心问题
+### 1.1 核心问题：进程可运行状态与调度队列的一致性
 
-内核如何管理进程的可运行状态？当进程状态变化时，如何高效地将其加入/移出调度队列？
+内核的核心职责之一是决定"下一个运行哪个进程"。这依赖两个要素：
 
-Minix3 的调度模型是**多级优先级队列**：16 个优先级队列，同优先级 FIFO。调度原语（enqueue/dequeue/pick_proc）是状态机与调度器之间的桥梁。
+1. **进程的可运行状态**——通过 `RTS_FLAGS` 位掩码表达（所有位清零 = 可运行）
+2. **就绪队列**——按优先级组织的进程链表
 
-### 1.2 进程状态机
+这两者必须始终保持一致：**一个进程在就绪队列中，当且仅当它是可运行的**。这是调度原语要维护的核心不变量（INV-1）。
 
-```
-                    ┌──────────────────────────────────────┐
-                    │          RTS_FLAGS 状态空间            │
-                    │                                      │
-   SLOT_FREE ──→ [初始化] ──→ PROC_STOP ──→ [可运行]      │
-                    │              ↑           │  ↓        │
-                    │              │      VMINHIBIT  SENDING│
-                    │              │           │  ↓        │
-                    │         NO_QUANTUM  PAGEFAULT RECEIVING│
-                    │              │           │  ↓        │
-                    │         SIGNALED    BOOTINHIBIT SIGNALED│
-                    │              │           │            │
-                    │              └─── [不可运行] ←────────┘│
-                    └──────────────────────────────────────┘
+如果违反这个不变量会发生什么？
+- 不可运行的进程留在队列中 → `pick_proc` 可能选中它 → 非法运行
+- 可运行的进程不在队列中 → 永远不会被选中 → 饿死
 
-可运行 = RTS_FLAGS == 0（所有位清零）
-不可运行 = RTS_FLAGS 的任何位被设置
-```
+调度原语（enqueue / dequeue / pick_proc / proc_no_time）就是 RTS 状态机与就绪队列之间的桥梁。每当进程状态变化时，这些原语负责原子地更新队列，维护不变量。
 
-**关键语义**：RTS_FLAGS 是位掩码，多个标志可以同时设置。进程可运行当且仅当**所有位都清零**。这意味着多个阻塞原因可以叠加，只有全部清除后进程才可运行。
+### 1.2 Minix3 调度模型：16 级优先级队列
 
-### 1.3 16 级优先级队列
+Minix3 采用**多级优先级队列**调度模型：
 
-| 队列号 | 典型用途 | 进程示例 |
-|--------|---------|---------|
-| 0 | 最高优先级（时钟、硬中断） | CLOCK, IDLE |
-| 1-3 | 系统任务 | SYSTEM, KERNEL |
-| 4-6 | 核心服务器 | VM, PM, RS |
-| 7-9 | 文件系统 | VFS |
-| 10-12 | 网络服务 | INET |
-| 13-15 | 用户进程 | 用户程序 |
+| 常量 | 值 | 含义 |
+|------|-----|------|
+| `TASK_Q` | 0 | 内核任务（最高优先级） |
+| `MAX_USER_Q` | 0 | 用户进程最高优先级 |
+| `USER_Q` | 7 | 用户进程默认优先级 |
+| `MIN_USER_Q` | 15 | 用户进程最低优先级 |
+| `NR_SCHED_QUEUES` | 16 | 队列总数 |
+
+> **反直觉说明**：优先级数值越小，优先级越高。`0` 是最高优先级，`15` 是最低。这与"数值大 = 优先级高"的直觉相反，源于 Unix `nice` 值的传统。
+
+同优先级队列内遵循 **FIFO**（先进先出）原则。调度器总是从最高优先级（0）开始扫描，取第一个非空队列的队头进程。
+
+### 1.3 与上下游文档的关系
+
+| 方向 | 文档 | 关系 |
+|------|------|------|
+| 上游 | 06-proc-init-boot-proc | `struct proc` / `RTS_FLAGS` 位定义 / `rts_set` 联动 |
+| 上游 | 10-switch-to-user | `switch_to_user` 主循环如何调用这些原语 |
+| 下游 | 12-ipc-core | `SENDING`/`RECEIVING` 标志如何触发 dequeue |
+| 下游 | 16-smp | per-CPU 队列的 SMP 扩展 |
+| 相关 | 09-vm-boot-protocol | `VMINHIBIT` 对调度的影响 |
+
+**本文档的边界**：只讲四个调度原语的机制（enqueue/dequeue/pick_proc/proc_no_time）和 `sched_proc` 参数更新。不讲调用方（10）、不讲 IPC 阻塞语义（12）、不讲 SMP 扩展（16）。
 
 ---
 
 ## 2. C 源码分析
 
-### 2.1 enqueue() — 入队
+### 2.1 数据结构：就绪队列与进程链表
 
-**源码**: `proc.c:1595-1668`
+Minix3 的就绪队列使用 **per-CPU 头尾数组 + 单链表** 组织：
 
 ```c
-void enqueue(register struct proc *rp) {
+// cpulocals.h:58-59
+EXTERN struct proc *run_q_head[NR_SCHED_QUEUES];
+EXTERN struct proc *run_q_tail[NR_SCHED_QUEUES];
+
+// proc.h: struct proc 内
+struct proc *p_nextready;  // 链表下一个指针
+int p_priority;            // 决定队列号 (0-15)
+int p_cpu;                 // 决定哪个 CPU 的队列
+```
+
+**设计要点**：
+- `run_q_head[q]` / `run_q_tail[q]` 是 per-CPU 的——每个 CPU 有自己的一组队列，避免跨 CPU 锁竞争
+- `p_nextready` 形成单链表，队尾的 `p_nextready = NULL`
+- 进程入队时用 `rp->p_cpu` 而非"当前 CPU"决定队列——这支持跨 CPU 入队（一个 CPU 可以把进程放到另一个 CPU 的队列上）
+
+### 2.2 enqueue() — 入队尾部
+
+`enqueue()`（proc.c:1595-1659）有三个职责：
+
+1. **入队**：将进程加到 `p_priority` 对应队列的尾部
+2. **抢占检查**：如果新进程优先级高于当前运行进程，且当前进程可抢占，触发抢占
+3. **记录 enter_queue**：更新 accounting 统计
+
+```c
+// proc.c:1595-1659 (简化)
+void enqueue(struct proc *rp) {
     int q = rp->p_priority;
-    rdy_head = get_cpu_var(rp->p_cpu, run_q_head);
-    rdy_tail = get_cpu_var(rp->p_cpu, run_q_tail);
+    struct proc **xpp = &(get_cpulocal_var(run_q_head)[q]);
+    // 遍历到队尾
+    while (*xpp != NULL) xpp = &(*xpp)->p_nextready;
+    *xpp = rp;
+    get_cpulocal_var(run_q_tail)[q] = rp;
 
-    if (!rdy_head[q]) {
-        rdy_head[q] = rdy_tail[q] = rp;
-        rp->p_nextready = NULL;
-    } else {
-        rdy_tail[q]->p_nextready = rp;
-        rdy_tail[q] = rp;
-        rp->p_nextready = NULL;
+    // 抢占检查
+    if (priv(rp)->s_flags & PREEMPTIBLE) {
+        struct proc *cur = get_cpulocal_var(proc_ptr);
+        if (cur->p_priority > rp->p_priority) {
+            RTS_SET(cur, RTS_PREEMPTED);
+        }
     }
 
-    // 抢占检查：新进程优先级高于当前运行进程
-    if (cpuid == rp->p_cpu) {
-        p = get_cpulocal_var(proc_ptr);
-        if ((p->p_priority > rp->p_priority) &&
-                (priv(p)->s_flags & PREEMPTIBLE))
-            RTS_SET(p, RTS_PREEMPTED);  // 会调用 dequeue()
-    }
-    // SMP：如果目标 CPU 空闲，发送 IPI 唤醒
-    else if (get_cpu_var(rp->p_cpu, cpu_is_idle)) {
-        smp_schedule(rp->p_cpu);
-    }
+    // ⚠️ C bug: enter_queue 写入当前运行进程而非被入队进程
+    get_cpulocal_var(proc_ptr)->p_accounting.enter_queue = read_tsc();
 }
 ```
 
-**关键语义**：
-- 入队到**进程所属 CPU** 的队列（`rp->p_cpu`），而非当前 CPU
-- 尾部插入，保证 FIFO 顺序
-- 入队后检查是否需要抢占当前进程
-- SMP：跨 CPU 入队时，如果目标 CPU 空闲则发送 IPI
+> **Minix3 C bug 揭示**（§3.6 设计决策依据）：
+>
+> 最后一行 `get_cpulocal_var(proc_ptr)->p_accounting.enter_queue` 写入的是**当前运行进程**（`proc_ptr`），而不是**被入队的进程**（`rp`）。
+>
+> 这导致 `time_in_queue` 统计不准确——统计的是当前进程的时间戳，而非被入队进程的时间戳。Rust 版本已修复此 bug（见 §3.6）。
 
-### 2.2 enqueue_head() — 队头入队
+### 2.3 enqueue_head() — 入队头部
 
-**源码**: `proc.c:1675-1720`
+`enqueue_head()`（proc.c:1670-1711）用于**被抢占进程重入队**：
 
 ```c
-static void enqueue_head(struct proc *rp) {
-    // 与 enqueue 相同的队列选择逻辑
-    // 但插入到队头而非队尾
-    if (!rdy_head[q]) {
-        rdy_head[q] = rdy_tail[q] = rp;
-        rp->p_nextready = NULL;
-    } else {
-        rp->p_nextready = rdy_head[q];
-        rdy_head[q] = rp;
-    }
+void enqueue_head(struct proc *rp) {
+    int q = rp->p_priority;
+    rp->p_nextready = get_cpulocal_var(run_q_head)[q];
+    get_cpulocal_var(run_q_head)[q] = rp;
+    if (get_cpulocal_var(run_q_tail)[q] == NULL)
+        get_cpulocal_var(run_q_tail)[q] = rp;
+
+    // accounting: dequeues--, preempted++
     rp->p_accounting.dequeues--;
     rp->p_accounting.preempted++;
 }
 ```
 
-**用途**：被抢占的进程重新入队时使用队头，保证公平性——它还有剩余时间片，应该优先于同优先级的其他进程。
+**为什么用队头而非队尾？** 被抢占的进程还有剩余时间片，应该优先于同优先级的新来进程。队头入队保证了这种公平性——它不会被"插队"。
 
-### 2.3 dequeue() — 出队
+### 2.4 dequeue() — 链表移除
 
-**源码**: `proc.c:1716-1780`
+`dequeue()`（proc.c:1716-1780）使用 C 的 **pointer-pointer** 惯用法遍历链表：
 
 ```c
 void dequeue(struct proc *rp) {
     int q = rp->p_priority;
-    // 遍历链表找到 rp 并移除
-    prev_xp = NULL;
-    for (xpp = &rdy_head[q]; *xpp; xpp = &(*xpp)->p_nextready) {
-        if (*xpp == rp) {
-            *xpp = (*xpp)->p_nextready;
-            if (rp == rdy_tail[q]) {
-                rdy_tail[q] = prev_xp;
-            }
-            break;
-        }
+    struct proc **xpp = &(get_cpu_var(rp->p_cpu, run_q_head)[q]);
+    struct proc *prev_xp = NULL;
+
+    while (*xpp != rp) {
         prev_xp = *xpp;
+        xpp = &(*xpp)->p_nextready;
     }
-    // 统计：记录出队时间
+    *xpp = rp->p_nextready;
+    if (get_cpu_var(rp->p_cpu, run_q_tail)[q] == rp)
+        get_cpu_var(rp->p_cpu, run_q_tail)[q] = prev_xp;
+
+    // accounting
+    rp->p_accounting.time_in_queue = read_tsc() - rp->p_accounting.enter_queue;
+    rp->p_accounting.dequeues++;
 }
 ```
 
-**关键语义**：
-- 遍历链表查找，O(n)（n = 同优先级进程数）
-- 从**进程所属 CPU** 的队列中移除
-- 更新 head/tail 指针
+**pointer-pointer 惯用法**：`struct proc **xpp` 指向链表节点的 `p_nextready` 字段。当找到目标节点时，`*xpp = rp->p_nextready` 直接修改前驱的 next 指针，无需队首特殊处理。`prev_xp` 仅用于更新 tail 指针。
 
-### 2.4 pick_proc() — 选择进程
+> Rust 如何替代这个惯用法？见 §3.4。
 
-**源码**: `proc.c:1804-1832`
+### 2.5 pick_proc() — 选进程
+
+`pick_proc()`（proc.c:1785-1813）从最高优先级扫描，取第一个非空队列队头：
 
 ```c
-static struct proc * pick_proc(void) {
-    rdy_head = get_cpulocal_var(run_q_head);
-    for (q = 0; q < NR_SCHED_QUEUES; q++) {
-        if (!(rp = rdy_head[q])) continue;
-        assert(proc_is_runnable(rp));
-        if (priv(rp)->s_flags & BILLABLE)
-            get_cpulocal_var(bill_ptr) = rp;
-        return rp;
+struct proc *pick_proc(void) {
+    for (int q = 0; q < NR_SCHED_QUEUES; q++) {
+        if (get_cpulocal_var(run_q_head)[q] != NULL) {
+            struct proc *rp = get_cpulocal_var(run_q_head)[q];
+            // BILLABLE: 更新 bill_ptr 用于时钟中断计费
+            if (priv(rp)->s_flags & BILLABLE)
+                get_cpulocal_var(bill_ptr) = rp;
+            return rp;
+        }
     }
     return NULL;
 }
 ```
 
-**关键语义**：
-- 从最高优先级（0）开始扫描
-- 返回第一个非空队列的队头进程
-- 如果是 BILLABLE 进程，更新 bill_ptr（时间统计）
-- 无可运行进程返回 NULL
+**bill_ptr 的作用**：时钟中断发生时，中断处理时间记到 `bill_ptr` 指向的进程头上。谁触发中断就记到谁头上——这是公平的 CPU 计费方式。
 
-### 2.5 proc_no_time() — 时间片用完
+### 2.6 proc_no_time() — 时间片耗尽
 
-**源码**: `proc.c:1893-1910`
+`proc_no_time()`（proc.c:1893-1910）根据调度策略分支处理：
 
 ```c
 void proc_no_time(struct proc *p) {
     if (!proc_kernel_scheduler(p) && priv(p)->s_flags & PREEMPTIBLE) {
-        notify_scheduler(p);  // 出队 + 通知调度服务器
+        // 用户调度 + 可抢占: 通知用户态调度器
+        RTS_SET(p, RTS_NO_QUANTUM);
+        sched(p);  // 发送 SCHEDULING_NO_QUANTUM 消息给 p_scheduler
     } else {
-        p->p_cpu_time_left = ms_2_cpu_time(p->p_quantum_size_ms);  // 重置时间片
+        // 内核调度: 直接重置时间片
+        p->p_cpu_time_left = ms_2_cpu_time(p->p_quantum_size_ms);
     }
 }
 ```
 
-**关键语义**：
-- 用户调度的可抢占进程：通知调度服务器（出队）
-- 内核调度或不可抢占进程：直接重置时间片
+**策略分支的本质**：
+- **用户调度的进程**（有 `p_scheduler` 指向用户态调度服务器）：时间片耗尽后，内核不直接决定新时间片，而是通知用户态调度器重新调度
+- **内核调度的进程**（`p_scheduler == NULL` 或指向自己，如 CLOCK/SYSTEM/IDLE）：不可抢占，时间片耗尽直接重置
+
+这种设计将调度策略（用户态）与调度机制（内核态）分离。
+
+### 2.7 RTS_SET / RTS_UNSET 宏的隐藏联动
+
+Minix3 的 `RTS_SET` / `RTS_UNSET` 宏不仅仅是设置标志位——它们还**自动触发 enqueue/dequeue**：
+
+```c
+// proc.h:206-215（简化展示：实际宏保存 rts_flags 旧值以避免二次读取）
+#define RTS_SET(rp, f)                                                 \
+    do {                                                               \
+        int was_runnable = proc_is_runnable(rp);                       \
+        (rp)->p_rts_flags |= (f);                                      \
+        if (was_runnable && !proc_is_runnable(rp)) dequeue(rp);        \
+    } while (0)
+
+#define RTS_UNSET(rp, f)                                               \
+    do {                                                               \
+        int was_runnable = proc_is_runnable(rp);                       \
+        (rp)->p_rts_flags &= ~(f);                                     \
+        if (!was_runnable && proc_is_runnable(rp)) enqueue(rp);        \
+    } while (0)
+```
+
+**联动的本质**：调用方无需手动维护队列一致性。只要通过宏访问标志位，不变量 INV-1（"在队列中 ⟺ 可运行"）自动维护。但如果直接 `p_rts_flags |= f`（绕过宏），队列就会不一致——这是 C 代码的脆弱性来源。
 
 ---
 
 ## 3. Rust 设计决策
 
-| 决策 | 选项 | 结论 | 理由 |
-|------|------|------|------|
-| RTS_FLAGS | u32 + 常量 vs bitflags | **bitflags!** | 编译期类型安全，位运算自文档化 |
-| 队列数据结构 | 链表 vs 数组索引 | **数组索引（ProcNr）** | 避免 unsafe 指针，链表操作通过索引实现 |
-| enqueue 抢占检查 | 内联 vs 回调 | **返回 bool** | 调用方决定是否设置 PREEMPTED |
-| per-CPU 队列 | CpuLocal vs 参数传递 | **参数传递（cpu_id）** | 显式化，避免隐式全局状态 |
-| pick_proc 返回 | 引用 vs ProcNr | **Option\<ProcNr\>** | 与 ProcessTable 索引一致 |
-| 优先级类型 | i32 vs u8 | **u8** | 0-15 范围，无需负值 |
+本章用 Rust 类型系统重新表达 C 的调度原语。每个决策都包含"为什么选 A 非 B"的取舍分析。
+
+### 3.1 队列数据结构：数组索引替代指针链表
+
+**决策**：用 `Option<ProcNr>` 替代 C 的 `struct proc *` 链表。
+
+```rust
+// sched.rs
+pub struct Scheduler {
+    run_q_head: [Option<ProcNr>; priority::NR_SCHED_QUEUES],
+    run_q_tail: [Option<ProcNr>; priority::NR_SCHED_QUEUES],
+}
+```
+
+**为什么不用指针链表？** Rust 所有权模型下，`struct proc *` 链表需要 `unsafe`（进程归 `ProcessTable` 所有，`Scheduler` 只持有引用）。用 `ProcNr`（i32 索引）+ 数组查询是安全替代——`None` 表示空槽位，`Some(nr)` 引用进程表中的进程。
+
+**ARCH 标记**：这是架构演进（ARCH-1），从 C 的指针链表改为数组索引 + 表查询。
+
+### 3.2 Scheduler struct 拆分：纯队列操作与字段更新分离
+
+**决策**：`Scheduler` 只管队列数组，`ProcessTable` 协调字段更新。
+
+```rust
+// sched.rs — Scheduler 方法返回 EnqueueInfo，不碰进程字段
+pub fn enqueue_queue_tail(&mut self, nr: ProcNr, q: usize) -> EnqueueInfo {
+    let old_tail = self.run_q_tail[q];
+    // ... 更新 head/tail
+    EnqueueInfo { queue: q, old_tail }
+}
+
+// proc_table.rs — ProcessTable 用 EnqueueInfo 更新进程字段
+pub fn sched_enqueue(&mut self, nr: ProcNr, ...) {
+    let info = self.sched.enqueue_queue_tail(nr, q);
+    // 用 info.old_tail 更新进程的 p_nextready
+}
+```
+
+**为什么拆分？** 避免**自借用**问题。如果 `Scheduler` 持有 `&ProcessTable`，那么 `&mut self.sched` + `&mut self.procs` 会违反 Rust 的借用规则（不能同时有两个 `&mut self`）。拆分后，`Scheduler` 方法返回信息（`EnqueueInfo`），`ProcessTable` 用信息更新字段——分离关注点，借用分离。
+
+### 3.3 优先级类型：Priority newtype + u8
+
+**决策**：`Priority` 是 `u8` newtype，构造时校验 `0..=15`。
+
+```rust
+// proc.rs
+pub struct Priority(u8);
+
+impl Priority {
+    pub const fn new(value: u8) -> Option<Self> {
+        if value <= priority::MIN_USER_Q {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+}
+```
+
+**为什么是 `u8` 而非 `i8`？** 优先级范围是 0-15，`u8` 自然表达"非负"。用 `i8` 会暗示负值合法——而 C 的 `-1` 哨兵不是优先级值，是 `sched_proc` 的参数语义（见 §3.8）。
+
+**替代方案拒绝**：
+- `Priority(usize)`：usize 平台相关；`u8` 足够且最小
+- `Priority(i8)`：暗示负值合法；与"优先级非负"语义矛盾
+
+### 3.4 dequeue 实现：prev + found 两次遍历
+
+**决策**：Rust 用 `prev: Option<ProcNr>` + `found: bool` 替代 C 的 pointer-pointer。
+
+```rust
+// sched.rs
+pub fn dequeue_from_queue(&mut self, nr: ProcNr, q: usize, procs: &mut [KProcess]) {
+    let mut prev: Option<ProcNr> = None;
+    let mut current = self.run_q_head[q];
+    let mut found = false;
+
+    // 第一次遍历：找节点 + 记录 prev
+    while let Some(cur_nr) = current {
+        if cur_nr == nr { found = true; break; }
+        prev = Some(cur_nr);
+        current = /* next via procs[cur_nr].p_nextready */;
+    }
+
+    // 更新前驱的 nextready 指向被删节点的后继
+    // 更新 tail（如果删的是尾节点）
+}
+```
+
+**为什么不用 pointer-pointer？** C 的 `struct proc **xpp` 在 Rust 中需要 `&mut Option<ProcNr>`，语法复杂且可读性差。两次遍历是 O(n)，但同优先级队列长度通常 < 10，性能差异可忽略。
+
+**ARCH 标记**：这是架构演进（ARCH-3），从 C 的 pointer-pointer 改为两次遍历。
+
+### 3.5 enqueue 抢占检查：内联 rts_set
+
+**决策**：抢占检查内联在 `sched_enqueue` 中，直接调用 `rts_set(PREEMPTED)`。
+
+```rust
+// proc_table.rs — sched_enqueue Phase 3
+if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
+    self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+}
+```
+
+**为什么不返回 bool 让调用方决定？** 封装更好——调用方无需关心抢占细节。`rts_set(PREEMPTED)` 自动联动 `sched_dequeue`（被抢占进程出队），保证一致性。
+
+### 3.6 enter_queue 修复：写入被入队进程
+
+**决策**：Rust 修复 Minix3 C bug，`enter_queue` 写入被入队进程而非 `proc_ptr`。
+
+```rust
+// proc_table.rs — sched_enqueue Phase 4
+// Design decision §3.6: fix Minix3 bug (C writes proc_ptr, not nr)
+let tsc = read_tsc();
+self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
+```
+
+**C bug 对比**：
+```c
+// C (proc.c:1653) — 写入当前运行进程（错误）
+get_cpulocal_var(proc_ptr)->p_accounting.enter_queue = read_tsc();
+
+// Rust (proc_table.rs:484) — 写入被入队进程（正确）
+self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
+```
+
+这是**修正性不对齐**——C 源码有 bug，Rust 修正之。注释明示 "Design decision §3.6: fix Minix3 bug"。
+
+### 3.7 IDLE 进程处理：PROC_STOP 阻止 pick_proc
+
+**决策**：IDLE 进程设 `RTS_PROC_STOP`，永不在就绪队列中。
+
+IDLE 进程不通过正常调度路径。`switch_to_user` 无就绪进程时直接调用 `idle()` 函数（见 10 文档）。IDLE 的 `RTS_PROC_STOP` 标志确保 `rts_set`/`rts_unset` 联动时不会将其入队。
+
+### 3.8 sched_proc：Option 哨兵替代 C 式 -1 + SchedParams 参数聚合
+
+**决策 1**：`sched_proc` 参数用 `Option<u8>` / `Option<u32>` 替代 C 的 `i32` + `-1`。
+
+**决策 2**：四个调度参数聚合为 `SchedParams` 结构体，将函数参数从 5 个减少到 2 个（`p` + `params`），提高 API 可读性。
+
+```rust
+// sched.rs — SchedParams 结构体
+pub struct SchedParams {
+    pub priority: Option<u8>,   // None = 保持当前（替代 C 的 -1）
+    pub quantum: Option<u32>,   // None = 保持当前
+    pub cpu: Option<u32>,       // None = 保持当前
+    pub niced: bool,
+}
+
+// sched.rs — 新签名
+pub fn sched_proc(
+    p: &mut KProcess,
+    params: SchedParams,
+) -> Result<(), SchedProcError>
+```
+
+**为什么用 Option 而非 -1 哨兵？**
+
+C 的方式：`priority: i32`，`-1` 表示"保持当前"。这导致：
+1. `Priority` 类型被污染为 `i8`（要能存 `-1`）
+2. 调用方可能误传 `-2`（合法的 `i32` 值，但语义非法）
+3. 类型系统无法防止哨兵值泄漏到优先级比较逻辑
+
+Rust 的方式：`Option<u8>`，`None` 表示"保持当前"。这：
+1. `Priority` 用 `u8`（优先级本身不需要负值）
+2. 类型系统防止"忘记检查 -1"
+3. `Option` 是 Rust 表达"可选"的惯用法
+
+**为什么用 SchedParams 聚合参数？**
+
+原 5 参数签名在调用方需要传递 4 个 `Option` + 1 个 `bool`，参数顺序易错。`SchedParams` 结构体：
+1. 命名字段消除参数顺序歧义（`priority:`, `quantum:`, `cpu:`, `niced:` 自文档化）
+2. 调用方意图更清晰（`SchedParams { priority: None, quantum: Some(100), cpu: None, niced: false }` 一目了然）
+3. 未来扩展新参数时不需修改函数签名（仅需扩展结构体字段）
+
+**ARCH 标记**：这是架构演进（ARCH-4），从 C 的 `errno` 返回改为 `Result<(), SchedProcError>`。
+
+调用方（`syscall.rs` / `syscall_process.rs`）负责将 C 消息中的 `i32` -1 哨兵转换为 `Option`，然后构造 `SchedParams`：
+
+```rust
+// syscall.rs — 转换 C i32 哨兵为 Option，构造 SchedParams
+let priority_opt = match sched.priority {
+    -1 => None,
+    v if v >= 0 => Some(v as u8),
+    _ => return KcallResult::Ok(EINVAL), // priority < 0 && != -1
+};
+// ...
+crate::sched::sched_proc(target, SchedParams {
+    priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced,
+})?;
+```
 
 ---
 
 ## 4. 实现要点
 
-### 4.1 RtsFlagsBits
+### 4.1 RtsFlagsBits / MiscFlagsBits bitflags 定义
+
+Rust 用 `bitflags!` 宏生成类型安全的位运算。16 个 RTS 位 + 18 个 MISC 位的值与 C `proc.h:142-180` 完全对齐。
 
 ```rust
+// proc.rs — RTS 标志位（节选）
 bitflags::bitflags! {
     pub struct RtsFlagsBits: u32 {
-        const SLOT_FREE    = 0x01;    // 进程槽未使用
-        const PROC_STOP    = 0x02;    // 进程被停止
-        const SENDING      = 0x04;    // 正在发送消息（阻塞）
-        const RECEIVING    = 0x08;    // 正在接收消息（阻塞）
-        const SIGNALED     = 0x10;    // 有信号待处理
-        const SIG_PENDING  = 0x20;    // 信号挂起
-        const P_STOP       = 0x40;    // PM 停止
-        const NO_PRIV      = 0x80;    // 无特权
-        const NO_ENDPOINT  = 0x100;   // 无端点
-        const VMINHIBIT    = 0x200;   // VM 抑制
-        const PAGEFAULT    = 0x400;   // 页错误
-        const VMREQUEST    = 0x800;   // VM 请求挂起
-        const VMREQTARGET  = 0x1000;  // VM 请求目标
-        const PREEMPTED    = 0x4000;  // 被抢占
-        const NO_QUANTUM   = 0x8000;  // 时间片用完
-        const BOOTINHIBIT  = 0x10000; // 启动抑制
+        const SLOT_FREE = 0x01;
+        const PROC_STOP = 0x02;
+        const SENDING = 0x04;
+        const RECEIVING = 0x08;
+        // ...
+        const PREEMPTED = 0x4000;
+        const NO_QUANTUM = 0x8000;
+        const BOOTINHIBIT = 0x10000;
     }
 }
 ```
 
-### 4.2 MiscFlagsBits
+> 完整的 16 个 RTS 位和 18 个 MISC 位定义参见 06 文档 §3.3。本文档不重复列表。
+
+`bitflags!` 的优势：编译期检查位掩码合法性，`.set()` / `.clear()` / `.is_set()` 自文档化，无需手写位运算。
+
+### 4.2 Scheduler struct 与队列操作
+
+`Scheduler` 持有 16 个队列的 head/tail 数组，提供纯队列操作（不碰进程字段）：
 
 ```rust
-bitflags::bitflags! {
-    pub struct MiscFlagsBits: u32 {
-        const DELIVERMSG    = 0x01;   // 消息待投递
-        const KCALL_RESUME  = 0x02;   // 内核调用需恢复
-        const SC_DEFER      = 0x04;   // 系统调用延迟
-        const SC_TRACE      = 0x08;   // 系统调用跟踪
-        const SC_ACTIVE     = 0x10;   // 系统调用活跃
-        // ... 其他标志
+// sched.rs
+impl Scheduler {
+    pub fn pick_proc(&self, procs: &[KProcess]) -> Option<ProcNr> {
+        // 从优先级 0 扫描到 15，取第一个非空队列队头
+        for q in 0..priority::NR_SCHED_QUEUES {
+            if let Some(nr) = self.run_q_head[q] {
+                return Some(nr);
+            }
+        }
+        None
+    }
+
+    pub fn enqueue_queue_tail(&mut self, nr: ProcNr, q: usize) -> EnqueueInfo {
+        // 更新 head/tail，返回 old_tail 供调用方更新 p_nextready
+    }
+
+    pub fn enqueue_queue_head(&mut self, nr: ProcNr, q:usize) { /* ... */ }
+
+    pub fn dequeue_from_queue(&mut self, nr: ProcNr, q: usize, procs: &mut [KProcess]) {
+        // 两次遍历：找节点 + 更新前驱指针
     }
 }
 ```
 
-### 4.3 Scheduler
+**借用分离**：`Scheduler` 方法只操作 `&mut [Option<ProcNr>]`（队列数组），不碰 `[KProcess]`（进程字段）。这避免了自借用。
+
+> **已知缺口**：Rust 实现当前未更新 `bill_ptr`（C: proc.c:1804-1809）。`set_bill_to_idle` 方法（proc_table.rs:330）仅用于 IDLE 计费初始化。完整的 bill_ptr 联动待实现（TODO）。
+
+### 4.3 ProcessTable 协调：sched_enqueue / sched_dequeue / sched_proc_no_time
+
+`ProcessTable` 包装 `Scheduler`，协调队列操作与字段更新。以 `sched_enqueue` 为例：
 
 ```rust
-pub struct Scheduler {
-    run_q_head: [Option<ProcNr>; NR_SCHED_QUEUES],
-    run_q_tail: [Option<ProcNr>; NR_SCHED_QUEUES],
+// proc_table.rs — sched_enqueue 四阶段
+pub fn sched_enqueue(&mut self, nr: ProcNr, current_nr: Option<ProcNr>, cpu_id: CpuId) {
+    // Phase 1: 队列数组更新（委托 Scheduler）
+    let info = self.sched.enqueue_queue_tail(nr, q);
+
+    // Phase 2: 进程字段更新（p_nextready）
+    self.procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
+    if let Some(tail_nr) = info.old_tail {
+        self.procs[tail_idx].p_nextready.store(nr, Ordering::Relaxed);
+    }
+
+    // Phase 3: 抢占检查（同 CPU 且高优先级）
+    if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
+        self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+    }
+
+    // Phase 4: 记录 enter_queue（§3.6: 修复 C bug）
+    self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
 }
 ```
 
-### 4.4 enqueue/dequeue 语义保证
+`sched_dequeue` 两阶段：移除队列 + accounting。`sched_enqueue_head` 三阶段：队列 + 字段 + accounting（dequeues--, preempted++）。
 
-- `enqueue()`: 进程必须可运行（assert），入队到尾部
-- `enqueue_head()`: 进程必须可运行 + 有剩余时间片，入队到头部
-- `dequeue()`: 进程必须不可运行（assert），从链表中移除
-- `pick_proc()`: 返回最高优先级队列的队头，无可运行返回 None
+### 4.4 rts_set / rts_unset 联动封装
+
+Rust 用方法封装替代 C 的宏，实现 RTS 标志修改自动触发 enqueue/dequeue：
+
+```rust
+// proc_table.rs
+pub fn rts_set(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
+    let was_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
+    self.get_mut(nr).unwrap().p_rts_flags.set(flags);
+    let is_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
+    // INV-1: 可运行 → 不可运行 → 自动出队
+    if was_runnable && !is_runnable {
+        self.sched_dequeue(nr, cpu_id);
+    }
+}
+```
+
+调用方无法绕过——必须通过 `rts_set` / `rts_unset`，保证不变量。
+
+### 4.5 sched_proc_no_time 与 notify_scheduler 联动
+
+```rust
+// proc_table.rs
+pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
+    let (kernel_scheduled, preemptible, quantum_ms) = /* 读取进程字段 */;
+
+    if !kernel_scheduled && preemptible {
+        // 用户调度 + 可抢占: rts_set(NO_QUANTUM) 自动出队
+        self.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
+        // TODO: notify_scheduler — 发送 SCHEDULING_NO_QUANTUM 消息
+        // 当前阻塞于 IPC 引擎实现（见注释）
+    } else {
+        // 内核调度: 重置 cpu_time_left
+        let total_cycles = crate::clock::ms_to_cpu_time(quantum_ms);
+        self.get_mut(nr).unwrap().p_sched.quantum.cpu_time_left.store(total_cycles, Ordering::Release);
+    }
+}
+```
+
+**notify_scheduler 当前为 TODO**：`rts_set(NO_QUANTUM)` 已正确出队，仅消息发送未实现（依赖 IPC 引擎）。这是已知的实现缺口，不影响调度正确性（进程不会非法运行，只是用户态调度器暂时收不到通知）。
+
+### 4.6 sched_proc 参数验证与字段更新
+
+`sched_proc` 9 步流程与 C `system.c:642-723` 对齐。参数通过 `SchedParams` 结构体聚合传入（§3.8）：
+
+```rust
+// sched.rs
+pub fn sched_proc(
+    p: &mut KProcess,
+    params: SchedParams,
+) -> Result<(), SchedProcError> {
+    // Step 1: 验证 priority 范围（Some(v) 时 v <= 15）
+    if let Some(v) = params.priority { if v > priority::MIN_USER_Q { return Err(InvalidArgument); } }
+    // Step 2: 验证 quantum 范围（Some(v) 时 v >= 1）
+    if let Some(v) = params.quantum { if v < 1 { return Err(InvalidArgument); } }
+    // Step 3: 验证 CPU（SMP stub，单 CPU 总是 OK）
+    // Step 4: 检测变化 → 设置 RTS_NO_QUANTUM
+    // Step 5: 应用 priority（if Some）
+    // Step 6: 应用 quantum + 重置 cpu_time_left（if Some）
+    // Step 7: 应用 CPU affinity（if Some）
+    // Step 8: 应用 niced 标志
+    // Step 9: 清除 RTS_NO_QUANTUM
+    Ok(())
+}
+```
+
+错误码与 Minix3 对齐：`EINVAL=22`（InvalidArgument）、`EBADCPU=42`（BadCpu）。
+
+> 骨架展示，完整实现见 [sched.rs:305-397](os/kernel/src/sched.rs)。
 
 ---
 
 ## 5. 测试
 
-### 5.1 单元测试
+测试覆盖核心路径，命名表达意图（非 `test_1`）：
 
-| 测试 | 验证内容 |
+| 测试函数 | 覆盖路径 | C 对应 |
+|---------|---------|--------|
+| `test_enqueue_empty_queue` | 空队列入队 | proc.c:1595 |
+| `test_enqueue_non_empty_queue` | 非空队列入队 + p_nextready 链接 | proc.c:1595 |
+| `test_enqueue_head` | 队头入队 | proc.c:1670 |
+| `test_dequeue_only_process` | 唯一进程出队（经 rts_set 联动） | proc.c:1716 |
+| `test_pick_proc_empty` | 空队列 pick → None | proc.c:1785 |
+| `test_pick_proc_highest_priority` | 高优先级优先 | proc.c:1785 |
+| `test_proc_no_time_kernel_scheduled` | 内核调度重置时间片 | proc.c:1893 |
+| `test_proc_no_time_user_scheduled_preemptible` | 用户调度设置 NO_QUANTUM | proc.c:1893 |
+| `test_sched_proc_priority_change` | priority Some(v) 更新 | system.c:684 |
+| `test_sched_proc_priority_none_keeps_value` | priority None 保持当前 | system.c:684 |
+| `test_sched_proc_priority_overflow_rejected` | priority > 15 → EINVAL | system.c:645 |
+| `test_sched_proc_quantum_update_resets_cpu_time` | quantum 更新重置 cpu_time_left | system.c:686 |
+| `test_sched_proc_quantum_zero_rejected` | quantum == 0 → EINVAL | system.c:647 |
+| `test_sched_proc_niced_flag_set/clear` | niced 标志设置/清除 | system.c:695 |
+| `test_sched_proc_cpu_update` | CPU affinity 更新 | system.c:691 |
+| `test_sched_proc_full_update_with_all_params` | 全参数端到端 | system.c:642 |
+| `test_sched_proc_error_to_errno` | 错误码映射 | EINVAL=22, EBADCPU=42 |
+
+> **§3.8 迁移说明**：`test_sched_proc_priority_negative_rejected` 已删除（`u8` 类型系统在编译期防止负值）。替换为 `test_sched_proc_priority_overflow_rejected`（运行期检查 `> 15`）。
+
+---
+
+## 6. 参见
+
+| 文档 | 关联内容 |
 |------|---------|
-| `test_rts_flags_runnable` | 所有位清零 = 可运行 |
-| `test_rts_flags_not_runnable` | 任何位设置 = 不可运行 |
-| `test_rts_flags_multiple` | 多个标志叠加，全部清除才可运行 |
-| `test_enqueue_dequeue` | 入队后 pick_proc 返回该进程 |
-| `test_enqueue_head_ordering` | enqueue_head 进程在同优先级中最先被选中 |
-| `test_pick_proc_priority` | 高优先级进程优先于低优先级 |
-| `test_pick_proc_empty` | 无可运行进程返回 None |
-| `test_proc_no_time_user` | 用户调度 + 可抢占 → 通知调度器 |
-| `test_proc_no_time_kernel` | 内核调度 → 重置时间片 |
-| `test_preempted_flag` | 高优先级入队触发低优先级进程 PREEMPTED |
-
----
-
-## 6. 补充：struct proc 进程控制块详细分析
-
-> 来源：tmp-06-proc-struct.md, draft/01~07-proc-struct-*.md
-
-### 6.1 进程表布局
-
-Minix3 的进程表是一个全局静态数组 `proc[NR_TASKS + NR_PROCS]`，定义在 `proc.h` 中：
-
-- **前 NR_TASKS 个槽位**（索引 0 ~ NR_TASKS-1）：内核任务（IDLE、CLOCK、SYSTEM 等），`p_nr` 为负数
-- **后 NR_PROCS 个槽位**（索引 NR_TASKS ~ NR_TASKS+NR_PROCS-1）：用户进程（PM、VFS、VM、INIT 等），`p_nr` 为非负数
-
-关键常量：
-- `NR_TASKS = 5`：内核任务数（ASYNCM=-5, IDLE=-4, CLOCK=-3, SYSTEM=-2, KERNEL=-1）
-- `NR_PROCS = 256`：最大用户进程数
-- `NR_SYS_PROCS = 64`：系统特权结构数
-- `PMAGIC = 0xC0FFEE1`：proc 指针有效性魔数
-
-### 6.2 struct proc 字段详解
-
-定义于 `minix3/minix/kernel/proc.h:22-137`，按功能分组：
-
-**寄存器与上下文**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_reg` | `struct stackframe_s` | 进程寄存器保存帧，上下文切换时保存/恢复 |
-| `p_seg` | `struct segframe` | 段描述符（x86 下含 CR3 页表根指针、FPU 状态） |
-
-**进程标识**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_nr` | `proc_nr_t` (int) | 进程槽位号，负数为内核任务，非负为用户进程，生命周期不变 |
-| `p_priv` | `struct priv *` | 指向特权结构，系统进程有独立实例，用户进程共享默认实例 |
-| `p_endpoint` | `endpoint_t` (int) | 含 generation 的进程标识，slot 重用时 generation 递增 |
-| `p_name` | `char[16]` | 进程名（含 `\0`） |
-| `p_magic` | `int` | 有效性魔数（PMAGIC = 0xC0FFEE1） |
-
-**运行时状态**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_rts_flags` | `volatile u32_t` | 运行时标志，== 0 时可运行 |
-| `p_misc_flags` | `volatile u32_t` | 杂项标志，不影响可运行性 |
-
-**调度信息**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_priority` | `char` | 当前优先级 |
-| `p_cpu_time_left` | `u64_t` | 剩余 CPU 时间 |
-| `p_quantum_size_ms` | `unsigned` | 分配的时间量子（毫秒） |
-| `p_scheduler` | `struct proc *` | 用户空间调度器进程，NULL 表示内核默认调度 |
-| `p_cpu` | `unsigned` | 进程运行的 CPU 编号 |
-| `p_nextready` | `struct proc *` | 就绪队列中下一个进程 |
-
-**调度统计（p_accounting）**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `enter_queue` | `u64_t` | 入队时刻（CPU 周期） |
-| `time_in_queue` | `u64_t` | 队列中等待时间 |
-| `dequeues` | `unsigned long` | 出队次数 |
-| `ipc_sync` | `unsigned long` | 同步 IPC 次数 |
-| `ipc_async` | `unsigned long` | 异步 IPC 次数 |
-| `preempted` | `unsigned long` | 被抢占次数 |
-
-**时间统计**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_dequeued` | `clock_t` | 最近一次出队的 uptime |
-| `p_user_time` | `clock_t` | 用户态时间（tick） |
-| `p_sys_time` | `clock_t` | 内核态时间（tick） |
-| `p_virt_left` | `clock_t` | 虚拟定时器剩余 tick |
-| `p_prof_left` | `clock_t` | profile 定时器剩余 tick |
-| `p_cycles` | `u64_t` | 消耗的 CPU 周期 |
-| `p_kcall_cycles` | `u64_t` | 内核调用消耗的周期 |
-| `p_kipc_cycles` | `u64_t` | IPC 消耗的周期 |
-| `p_tick_cycles` | `u64_t` | 一个 tick 内累积的周期 |
-| `p_cpuavg` | `struct cpuavg` | 运行 CPU 平均值（供 ps(1) 使用） |
-
-**IPC 消息传递**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `p_caller_q` | `struct proc *` | 向此进程发送消息的进程队列头 |
-| `p_q_link` | `struct proc *` | 发送等待队列中的链接 |
-| `p_getfrom_e` | `endpoint_t` | 想从谁接收（RECEIVING 时有效） |
-| `p_sendto_e` | `endpoint_t` | 想向谁发送（SENDING 时有效） |
-| `p_pending` | `sigset_t` | 待处理的内核信号位图 |
-| `p_sendmsg` | `message` | 发送方消息（SENDING 时有效） |
-| `p_delivermsg` | `message` | 待投递给此进程的消息（MF_DELIVERMSG 时有效） |
-| `p_delivermsg_vir` | `vir_bytes` | 消息投递目标虚拟地址 |
-
-**VM 请求（p_vmrequest）**
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `nextrestart` | `struct proc *` | VM 重启链中下一个进程 |
-| `nextrequestor` | `struct proc *` | VM 请求链中下一个请求者 |
-| `type` | `int` | 挂起操作类型（VMSTYPE_SYS_NONE=0 / KERNELCALL=1 / DELIVERMSG=2 / MAP=3） |
-| `saved.reqmsg` | `message` | 挂起的请求消息 |
-| `req_type` | `int` | VM 请求类型 |
-| `target` | `endpoint_t` | VM 请求目标 |
-| `params.check.start` | `vir_bytes` | 内存范围起始 |
-| `params.check.length` | `vir_bytes` | 内存范围长度 |
-| `params.check.writeflag` | `u8_t` | 写访问标志 |
-| `vmresult` | `int` | VM 处理结果 |
-
-### 6.3 RTS_FLAGS 完整定义
-
-| 标志位 | 值 | 含义 | 置位场景 |
-|--------|-----|------|---------|
-| `RTS_SLOT_FREE` | 0x01 | 进程槽位空闲 | 进程退出或初始化时 |
-| `RTS_PROC_STOP` | 0x02 | 进程被停止 | `sys_stop()` 或 IDLE 初始化 |
-| `RTS_SENDING` | 0x04 | 进程阻塞于发送 | `mini_send()` 目标未就绪 |
-| `RTS_RECEIVING` | 0x08 | 进程阻塞于接收 | `mini_receive()` 无消息可用 |
-| `RTS_SIGNALED` | 0x10 | 有新内核信号到达 | 信号管理器发送信号 |
-| `RTS_SIG_PENDING` | 0x20 | 信号处理中暂不可运行 | 信号处理流程中 |
-| `RTS_P_STOP` | 0x40 | 进程被追踪（ptrace） | 调试器 attach |
-| `RTS_NO_PRIV` | 0x80 | fork 的系统进程尚未获得特权 | `sys_fork()` 后特权未就绪 |
-| `RTS_NO_ENDPOINT` | 0x100 | 进程不能发送/接收消息 | endpoint 未分配 |
-| `RTS_VMINHIBIT` | 0x200 | 等待 VM 设置页表 | fork/exec 后页表未就绪 |
-| `RTS_PAGEFAULT` | 0x400 | 进程有未处理的页缺失 | 访问未映射内存 |
-| `RTS_VMREQUEST` | 0x800 | VM 内存请求的发起者 | 发起 VM 内存请求 |
-| `RTS_VMREQTARGET` | 0x1000 | VM 内存请求的目标 | 作为 VM 内存请求目标 |
-| `RTS_PREEMPTED` | 0x4000 | 被更高优先级进程抢占 | 调度时发现更高优先级 |
-| `RTS_NO_QUANTUM` | 0x8000 | 时间片用完 | 时钟中断检测到量子耗尽 |
-| `RTS_BOOTINHIBIT` | 0x10000 | 启动阶段等待 VM 就绪 | 系统启动初始化 |
-
-### 6.4 MISC_FLAGS 完整定义
-
-| 标志位 | 值 | 含义 |
-|--------|-----|------|
-| `MF_REPLY_PEND` | 0x001 | IPC_REQUEST 的回复待处理 |
-| `MF_VIRT_TIMER` | 0x002 | 进程虚拟定时器运行中 |
-| `MF_PROF_TIMER` | 0x004 | 进程 profile 定时器运行中 |
-| `MF_KCALL_RESUME` | 0x008 | 内核调用被中断需恢复 |
-| `MF_DELIVERMSG` | 0x040 | 有消息待投递给此进程 |
-| `MF_SIG_DELAY` | 0x080 | 发送完成后需发送信号 |
-| `MF_SC_ACTIVE` | 0x100 | 系统调用追踪：正在系统调用中 |
-| `MF_SC_DEFER` | 0x200 | 系统调用追踪：延迟系统调用 |
-| `MF_SC_TRACE` | 0x400 | 系统调用追踪：触发系统调用事件 |
-| `MF_FPU_INITIALIZED` | 0x1000 | FPU/扩展寄存器已初始化（64 位重写中更名为 MF_EXT_REG_INITIALIZED） |
-| `MF_SENDING_FROM_KERNEL` | 0x2000 | 消息来自内核 |
-| `MF_CONTEXT_SET` | 0x4000 | 不修改上下文 |
-| `MF_SPROF_SEEN` | 0x8000 | profile 已观测此进程 |
-| `MF_FLUSH_TLB` | 0x10000 | 运行前需刷新 TLB（SMP） |
-| `MF_SENDA_VM_MISS` | 0x20000 | 异步发送因 VM 修改地址空间而失败 |
-| `MF_STEP` | 0x40000 | 单步执行 |
-| `MF_MSGFAILED` | 0x80000 | 消息传递失败 |
-| `MF_NICED` | 0x100000 | 用户降低了进程最大优先级 |
-
-### 6.5 RTS_SET / RTS_UNSET 宏详解
-
-**RTS_SET(rp, f)**：置位标志并自动出队
-
-```c
-#define RTS_SET(rp, f)
-    do {
-        const int rts = (rp)->p_rts_flags;
-        (rp)->p_rts_flags |= (f);
-        if(rts_f_is_runnable(rts) && !proc_is_runnable(rp)) {
-            dequeue(rp);
-        }
-    } while(0)
-```
-
-先保存旧标志，置位新标志。若进程从可运行变为不可运行（旧标志为 0，新标志非 0），自动调用 `dequeue()`。
-
-**RTS_UNSET(rp, f)**：清位标志并自动入队
-
-```c
-#define RTS_UNSET(rp, f)
-    do {
-        int rts;
-        rts = (rp)->p_rts_flags;
-        (rp)->p_rts_flags &= ~(f);
-        if(!rts_f_is_runnable(rts) && proc_is_runnable(rp)) {
-            enqueue(rp);
-        }
-    } while(0)
-```
-
-先保存旧标志，清位指定标志。若进程从不可运行变为可运行（旧标志非 0，新标志为 0），自动调用 `enqueue()`。
-
-### 6.6 进程访问宏
-
-> 来源：tmp_08-proc-macros.md, draft/08-proc-macros.md
-
-**地址范围宏**：
-
-| 宏 | 含义 |
-|-----|------|
-| `BEG_PROC_ADDR` | 进程表起始地址（`&proc[0]`） |
-| `BEG_USER_ADDR` | 用户进程起始地址（`&proc[NR_TASKS]`） |
-| `END_PROC_ADDR` | 进程表结束地址（`&proc[NR_TASKS + NR_PROCS]`） |
-
-**指针/编号转换宏**：
-
-| 宏 | 定义 | 含义 |
-|-----|------|------|
-| `proc_addr(n)` | `&proc[NR_TASKS + (n)]` | 进程号 → 进程指针 |
-| `proc_nr(p)` | `p->p_nr` | 进程指针 → 进程号 |
-
-**属性检查宏**：
-
-| 宏 | 含义 |
-|-----|------|
-| `isokprocn(n)` | 检查进程号是否合法（0 <= n < NR_PROCS） |
-| `isemptyp(p)` | `p->p_rts_flags == RTS_SLOT_FREE` |
-| `iskernelp(p)` | `p < BEG_USER_ADDR`，判断是否为内核任务 |
-| `isusern(n)` | 判断进程号是否为用户进程 |
-
-### 6.7 proc_init() — 进程表初始化
-
-`minix3/minix/kernel/proc.c:119-159`
-
-**行为**：
-1. 遍历 `proc[0]` ~ `proc[NR_TASKS + NR_PROCS - 1]`，对每个槽位：
-   - 置 `p_rts_flags = RTS_SLOT_FREE`（标记空闲）
-   - 置 `p_magic = PMAGIC`
-   - 设 `p_nr` 从 `-NR_TASKS` 递增
-   - 初始化 `p_endpoint = _ENDPOINT(0, p_nr)`（generation 为 0）
-   - 清空调度器指针、优先级、时间片
-   - 调用 `arch_proc_reset(rp)` 做架构相关初始化
-2. 遍历 `priv[0]` ~ `priv[NR_SYS_PROCS - 1]`，对每个特权结构：
-   - 置 `s_proc_nr = NONE`（标记空闲）
-   - 设 `s_id` 为索引值
-   - 建立 `ppriv_addr` 快速索引
-3. 初始化 IDLE 进程：每个 CPU 一个 IDLE 进程，设置 `p_endpoint = IDLE`，`p_priv = &idle_priv`，`p_rts_flags |= RTS_PROC_STOP`（永不调度）
-
----
-
-## 7. 补充：调度详细分析
-
-> 来源：tmp-07-scheduling.md
-
-### 7.1 switch_to_user() — 切换到用户态
-
-`minix3/minix/kernel/proc.c:299-474`
-
-调度的主入口，在内核处理完中断/系统调用后调用。**不是简单的"选进程→切换"，而是一个包含多个回跳点的状态机**：
-
-1. **检查当前进程**：若当前进程仍可运行，跳到 `check_misc_flags`
-2. **处理抢占**：若当前进程被抢占（`RTS_PREEMPTED`），清除抢占标志；若清除后进程仍可运行，根据是否有剩余时间片决定 `enqueue_head` 或 `enqueue`
-3. **选择新进程**：循环调用 `pick_proc()`，若无就绪进程则 `idle()` 等待中断
-4. **切换地址空间**：`switch_address_space(p)`
-5. **处理杂项标志**（循环处理，直到所有标志清零）：
-   - `MF_KCALL_RESUME`：恢复被中断的内核调用
-   - `MF_DELIVERMSG`：投递待传递消息
-   - `MF_SC_DEFER`：执行延迟的系统调用
-   - `MF_SC_TRACE`：触发系统调用追踪事件
-   - `MF_SC_ACTIVE`：清除系统调用活跃标志
-6. **时间片检查**：若 `p_cpu_time_left == 0`，调用 `proc_no_time()`
-7. **恢复上下文**：`arch_finish_switch_to_user()` → FPU 处理 → `restore_user_context(p)`（不返回）
-
-**关键设计**：处理杂项标志时可能导致进程变为不可运行（如消息投递触发页缺失），此时需跳回重新选择进程。
-
-### 7.2 idle() — 空闲循环
-
-`minix3/minix/kernel/proc.c:176-232`
-
-当没有可运行进程时，将 CPU 置于低功耗状态等待中断：
-
-1. 设置 `proc_ptr` 为 IDLE 进程
-2. 调用 `switch_address_space_idle()` 切换到确保内核映射可用的地址空间
-3. 设置 `cpu_is_idle = 1`（SMP）
-4. BSP 上重新启动本地定时器（AP 上停止定时器）
-5. 调用 `halt_cpu()` 使 CPU 进入低功耗状态
-6. 中断唤醒后返回到 `switch_to_user` 的 `pick_proc()` 循环
-
-### 7.3 notify_scheduler() — 通知用户空间调度器
-
-`minix3/minix/kernel/proc.c:1860-1891`
-
-向进程的用户空间调度器发送 `SCHEDULING_NO_QUANTUM` 消息：
-
-1. 设置 `RTS_NO_QUANTUM` 使进程出队
-2. 构造消息，包含进程 endpoint、队列等待时间、出队次数、IPC 次数、抢占次数、CPU 编号等
-3. 重置进程调度统计 `reset_proc_accounting(p)`
-4. 通过 `mini_send()` 以内核身份发送消息给调度器
-
-### 7.4 enqueue 中 enter_queue 的特殊记录方式
-
-`enqueue()` 和 `enqueue_head()` 在记录入队时刻时，写入的是**当前运行进程**（`proc_ptr`）的 `p_accounting.enter_queue`，而非被入队进程的。这是 Minix3 的一个特殊设计，用于跟踪当前进程何时因调度事件被中断。
-
-### 7.5 指针指针（Pointer Pointer）模式
-
-`dequeue()` 使用 `struct proc **xpp` 遍历链表，无需对队首节点做特殊处理：
-
-```c
-for (xpp = &rdy_head[q]; *xpp; xpp = &(*xpp)->p_nextready) {
-    if (*xpp == rp) {
-        *xpp = (*xpp)->p_nextready;
-        break;
-    }
-}
-```
-
----
-
-## 8. 参见
-
-- [10-switch-to-user](10-switch-to-user.md) — 调用 enqueue/dequeue/pick_proc
-- [09-vm-boot-protocol](09-vm-boot-protocol.md) — VMINHIBIT 对调度的影响
-- [12-ipc-core](12-ipc-core.md) — SENDING/RECEIVING 对调度的影响
+| [06-proc-init-boot-proc](06-proc-init-boot-proc.md) | `struct proc` 完整字段 / `RTS_FLAGS` 16 位完整表 / `rts_set` 联动设计 |
+| [10-switch-to-user](10-switch-to-user.md) | `switch_to_user` 主循环如何调用 enqueue/dequeue/pick_proc / `idle()` 实现 |
+| [09-vm-boot-protocol](09-vm-boot-protocol.md) | `VMINHIBIT` 标志对调度的影响 |
+| [12-ipc-core](12-ipc-core.md) | `SENDING`/`RECEIVING` 标志如何触发 dequeue |
+| [16-smp](16-smp.md) | per-CPU 队列的 SMP 扩展 / 跨 CPU IPI 唤醒 |

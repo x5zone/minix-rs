@@ -14,7 +14,7 @@
 //! - `smp.h:12-19` — `ncpus`, `bsp_cpu_id`, `cpu_is_bsp()`
 //! - `cpulocals.h:67-79` — `struct __cpu_local_vars`
 //!
-//! # Design Decisions (15-smp.md §3)
+//! # Design Decisions (16-smp.md §3)
 //!
 //! - **D1**: `Spinlock<()>` for BKL (type-safe, avoids raw `static mut`)
 //! - **D2**: `[CpuLocal; MAX_CPUS]` fixed-size array (no_std compatible)
@@ -32,7 +32,9 @@
 //!
 //! - `kernel_call_dispatch()` — acquires BKL on syscall entry
 //! - `kernel_call_finish()` — releases BKL on syscall completion (all paths)
-//! - `handle_exception()` — acquires/releases BKL around exception handling
+//! - `ExceptionDispatcher::handle()` — acquires/releases BKL around exception
+//!   handling (BKL acquisition happens in the assembly trap entry for
+//!   user-mode exceptions; see `os/arch/src/arch/exception_dispatcher.rs`)
 //! - `kmain()` step 8.5 — acquires BKL before switch_to_user (C: main.c:149)
 //! - `switch_to_user()` — releases BKL before scheduling loop
 //! - `kernel_call_resume()` — re-acquires BKL via kernel_call_dispatch

@@ -1,7 +1,7 @@
 //! Minimal ACPI parser — extracts LAPIC/IOAPIC base addresses from MADT.
 //!
 //! Used by x86-64 when the boot-shim provides an RSDP pointer via
-//! `KernelInfo.platform_descriptor`. Implements only the tables needed for
+//! `KernelInfo.platform_sources`. Implements only the tables needed for
 //! platform hardware discovery (RSDP, XSDT/RSDT, MADT). Full ACPI (power
 //! management, AML, etc.) is out of scope — use the `acpi` crate for that.
 //!
@@ -39,6 +39,7 @@
 //! - All referenced tables (XSDT, MADT) remain valid for the duration of `parse`.
 //! - No other CPU is concurrently writing to the ACPI table memory.
 
+use crate::arch::x86_64::{ApicDesc, IsaSerialDesc, PitDesc};
 use crate::desc::*;
 use core::fmt;
 
@@ -102,13 +103,15 @@ struct MadtEntryHeader {
 
 /// Parsed ACPI descriptor — owns all extracted hardware parameters.
 ///
-/// Constructed via [`AcpiDesc::parse`] (production) or [`AcpiDesc::from_parsed`]
-/// (tests). After construction, the ACPI tables are no longer needed.
+/// Constructed via [`AcpiDesc::parse`] (production). After construction, the
+/// ACPI tables are no longer needed — all values are stored as concrete x86-64
+/// structs (`ApicDesc`, `PitDesc`, `IsaSerialDesc`) implementing the
+/// sub-descriptor traits.
 #[derive(Clone, Copy)]
 pub struct AcpiDesc {
-    ic: InterruptControllerDesc,
-    timer: TimerDesc,
-    console: Option<ConsoleDesc>,
+    ic: ApicDesc,
+    timer: PitDesc,
+    console: Option<IsaSerialDesc>,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -178,8 +181,8 @@ impl AcpiDesc {
         let (lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id) =
             unsafe { parse_madt(madt_phys) }?;
 
-        // Build the interrupt controller descriptor.
-        let ic = InterruptControllerDesc::Apic {
+        // Build the interrupt controller descriptor (concrete x86-64 type).
+        let ic = ApicDesc {
             lapic_base,
             ioapic_base,
             nr_irqs,
@@ -187,13 +190,13 @@ impl AcpiDesc {
 
         // x86-64 timer: PIT (boot) + LAPIC Timer (runtime).
         // PIT base frequency is a fixed hardware constant (1193182 Hz).
-        let timer = TimerDesc::Pit {
+        let timer = PitDesc {
             pit_base_freq: 1_193_182,
             lapic_base,
         };
 
         // Early console: COM1 (0x3F8) — standard PC AT serial port.
-        let console = Some(ConsoleDesc::IsaSerial { port_base: 0x3F8 });
+        let console = Some(IsaSerialDesc { port_base: 0x3F8 });
 
         // CPU topology.
         let mut cpu_topology = CpuTopology::default();
@@ -214,9 +217,9 @@ impl AcpiDesc {
 
     /// Construct from pre-parsed values (for tests).
     pub fn from_parsed(
-        ic: InterruptControllerDesc,
-        timer: TimerDesc,
-        console: Option<ConsoleDesc>,
+        ic: ApicDesc,
+        timer: PitDesc,
+        console: Option<IsaSerialDesc>,
         cpu_topology: CpuTopology,
     ) -> Self {
         Self { ic, timer, console, cpu_topology, arch_misc: ArchMiscDesc::default() }
@@ -224,14 +227,14 @@ impl AcpiDesc {
 }
 
 impl PlatformDesc for AcpiDesc {
-    fn interrupt_controller(&self) -> InterruptControllerDesc {
-        self.ic
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc {
+        &self.ic
     }
-    fn timer(&self) -> TimerDesc {
-        self.timer
+    fn timer(&self) -> &dyn TimerDesc {
+        &self.timer
     }
-    fn early_console(&self) -> Option<ConsoleDesc> {
-        self.console
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
+        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -512,25 +515,26 @@ mod tests {
 
     #[test]
     fn test_acpi_desc_from_parsed() {
-        let ic = InterruptControllerDesc::Apic {
+        let ic = ApicDesc {
             lapic_base: 0xFEE0_0000,
             ioapic_base: 0xFEC0_0000,
             nr_irqs: 64,
         };
-        let timer = TimerDesc::Pit {
+        let timer = PitDesc {
             pit_base_freq: 1_193_182,
             lapic_base: 0xFEE0_0000,
         };
-        let console = Some(ConsoleDesc::IsaSerial { port_base: 0x3F8 });
+        let console = Some(IsaSerialDesc { port_base: 0x3F8 });
         let desc = AcpiDesc::from_parsed(ic, timer, console, CpuTopology::default());
         assert_eq!(desc.source(), PlatformSource::Acpi);
-        match desc.interrupt_controller() {
-            InterruptControllerDesc::Apic { lapic_base, ioapic_base, .. } => {
-                assert_eq!(lapic_base, 0xFEE0_0000);
-                assert_eq!(ioapic_base, 0xFEC0_0000);
-            }
-            _ => panic!("expected Apic"),
-        }
+        // Downcast via Any to verify the concrete type.
+        let ic_ref = desc.interrupt_controller();
+        let apic = ic_ref
+            .as_any()
+            .downcast_ref::<ApicDesc>()
+            .expect("expected ApicDesc");
+        assert_eq!(apic.lapic_base, 0xFEE0_0000);
+        assert_eq!(apic.ioapic_base, 0xFEC0_0000);
     }
 
     #[test]
@@ -631,21 +635,23 @@ mod tests {
 
         // Verify extracted values.
         assert_eq!(desc.source(), PlatformSource::Acpi);
-        match desc.interrupt_controller() {
-            InterruptControllerDesc::Apic { lapic_base, ioapic_base, nr_irqs } => {
-                assert_eq!(lapic_base, 0xFEE0_0000, "LAPIC base mismatch");
-                assert_eq!(ioapic_base, 0xFEC0_0000, "IOAPIC base mismatch");
-                assert_eq!(nr_irqs, 64, "IRQ count mismatch");
-            }
-            other => panic!("expected Apic, got {:?}", other),
-        }
-        match desc.timer() {
-            TimerDesc::Pit { pit_base_freq, lapic_base } => {
-                assert_eq!(pit_base_freq, 1_193_182);
-                assert_eq!(lapic_base, 0xFEE0_0000);
-            }
-            _ => panic!("expected Pit"),
-        }
+        let ic_ref = desc.interrupt_controller();
+        let apic = ic_ref
+            .as_any()
+            .downcast_ref::<ApicDesc>()
+            .expect("expected ApicDesc");
+        assert_eq!(apic.lapic_base, 0xFEE0_0000, "LAPIC base mismatch");
+        assert_eq!(apic.ioapic_base, 0xFEC0_0000, "IOAPIC base mismatch");
+        assert_eq!(apic.nr_irqs, 64, "IRQ count mismatch");
+
+        let timer_ref = desc.timer();
+        let pit = timer_ref
+            .as_any()
+            .downcast_ref::<PitDesc>()
+            .expect("expected PitDesc");
+        assert_eq!(pit.pit_base_freq, 1_193_182);
+        assert_eq!(pit.lapic_base, 0xFEE0_0000);
+
         let topo = desc.cpu_topology();
         assert_eq!(topo.nr_cpus, 1, "should find 1 CPU");
         assert_eq!(topo.bsp_id, 0, "BSP APIC ID should be 0");

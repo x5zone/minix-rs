@@ -60,3 +60,16 @@ pub const LAST_SPECIAL_PROC_NR: usize = 11;
 /// Corresponds to Minix3's `NR_BOOT_MODULES` = `INIT_PROC_NR + 1`.
 pub const NR_BOOT_MODULES: usize = LAST_SPECIAL_PROC_NR + 1;
 
+// ── Scheduling message types ──
+//
+// C: `<minix/com.h>`:800-806 — `SCHEDULING_BASE = 0xF00`.
+// These are message `m_type` values used between the kernel and the
+// user-space scheduler (the `sched` system process).
+
+/// Base for scheduling message types. C: `SCHEDULING_BASE` — com.h:801.
+pub const SCHEDULING_BASE: i32 = 0xF00;
+
+/// Kernel → scheduler: a user-scheduled process exhausted its quantum.
+/// C: `SCHEDULING_NO_QUANTUM` — com.h:803. Payload: `MessKrnLsysSchedule`.
+pub const SCHEDULING_NO_QUANTUM: i32 = SCHEDULING_BASE + 1;
+

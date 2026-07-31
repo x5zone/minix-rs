@@ -101,7 +101,7 @@ Minix3 的 `cstart()` 调用顺序是 **prot_init → init_clock → intr_init �
 
 ### 2.1 init_clock()：时钟变量初始化
 
-`clock.c:48-74`：
+`clock.c:48-64`（函数体；L66-70 是 `timer_int_handler` 注释，不在函数内）：
 
 ```c
 void init_clock(void)
@@ -139,7 +139,7 @@ void init_clock(void)
 
 ### 2.2 intr_init()：x86-64 中断控制器初始化
 
-`i8259.c:28-63`（8259A PIC 版本）：
+`i8259.c:28-52`（8259A PIC 版本；L54-63 是 `intr_init` 之外的 `mask` 函数）：
 
 ```c
 int intr_init(const int auto_eoi)
@@ -208,7 +208,7 @@ ARM 的 `intr_init()` 比 x86 简单——只需要映射中断控制器的 MMIO
 
 ### 2.4 arch_init()：x86-64 架构特定初始化
 
-`arch_system.c:246-288`：
+`arch_system.c:246-279`（函数体；L281+ 是 `do_ser_debug` 函数）：
 
 ```c
 void arch_init(void)
@@ -369,6 +369,10 @@ pub trait ClockArch {
 /// minix-rs: 统一为 100 Hz（见 §2.5 架构演进）。
 /// 选择 100 Hz 的理由：10 ms tick 在响应延迟与上下文切换开销之间取得平衡，
 /// 且是 Linux 服务器常见配置之一（CONFIG_HZ=100），便于与现有工具/预期对齐。
+///
+/// **权威定义位置**：`os/arch/src/arch/clock.rs:32`（`os/arch` crate 内的 `pub const DEFAULT_HZ: u32 = 100`）。
+/// `os/kernel/src/clock.rs:148` 处的同值 `const` 是 `os/kernel` crate 内的独立副本（避免 `os/kernel` 反向依赖 `os/arch`），
+/// 两处值必须保持一致。修改时**先改 `os/arch/src/arch/clock.rs:32`**，再 sync 到 `os/kernel/src/clock.rs:148`。
 pub const DEFAULT_HZ: u32 = 100;
 ```
 
@@ -507,9 +511,22 @@ pub type CurrentEarlyConsole = crate::riscv64::early_console::Riscv64EarlyConsol
 
 ```rust
 /// 在中断控制器初始化之后执行的架构特定初始化。
-pub trait ArchInit {
+///
+/// `ArchInit` 采用**实例化模式**（参见 [plat-design.md §5.1](plat-design.md)）：
+/// `new(desc)` 从 `ArchMiscDesc`（ACPI 表指针、PMU 使能标志等）构造实例，
+/// `init(&mut self)` 执行架构特定的初始化操作。
+pub trait ArchInit: Sized + Send + Sync {
+    /// 从 `ArchMiscDesc` 构造实例。
+    ///
+    /// 把架构杂项参数（ACPI 表指针、PMU 使能标志等）存入实例字段。
+    /// 上层通过 `minix_platform::platform_desc().arch_misc()` 获取描述符。
+    fn new(desc: &minix_platform::ArchMiscDesc) -> Self;
+
     /// 执行架构特定初始化。
-    fn init();
+    ///
+    /// 由 `init_clock_and_interrupts()` 在 `init_clock()` 和 `intr_init()`
+    /// 完成之后调用一次。
+    fn init(&mut self);
 }
 ```
 
@@ -518,6 +535,7 @@ pub trait ArchInit {
 1. **统一接口**：三种架构的 `arch_init()` 在**启动阶段**语义相同（完成架构特定初始化），但具体实现完全不同
 2. **消除 `#ifdef`**：C 版用 `#ifdef USE_ACPI` / `#ifdef USE_APIC` 选择代码路径，Rust 用 trait 静态分派
 3. **可测试性**：mock 实现可以跳过硬件初始化
+4. **实例化模式**：把 `ArchMiscDesc` 一次性写入实例字段，避免每次 `init()` 调用时重复传递参数；与 §3.3 `InterruptController::new()` 和 §3.4 `EarlyConsole::new()` 保持一致（参见 [plat-design.md §5.1](plat-design.md) 实例化模式）
 
 > **注意：ArchInit 是“阶段抽象”而非“功能抽象”**。它回答的是“除了时钟、中断和早期控制台之外，还有什么架构特定的杂项必须在此时完成”，而不是“所有架构做同一件事”。因此：
 > - 凡是能抽象出跨架构一致语义的机制（如时钟节拍、中断路由、早期控制台），都应该有自己的 trait（`ClockArch`、`InterruptController`、`EarlyConsole`），不能塞进 `ArchInit`。
@@ -1391,15 +1409,15 @@ impl EarlyConsole for X86_64EarlyConsole {
 
 | 文件 | 测试数 | 验证内容 |
 |------|-------|---------|
-| `os/arch/src/arch/clock.rs` | 11 | `ClockState` / `LoadInfo` / `DEFAULT_HZ` / `LOAD_HISTORY_SIZE` |
-| `os/plat/src/interrupt.rs` | 13 | `IrqVector` / `IrqId` / `IrqNotifyId` / `IrqPolicy` / `IrqAction` / `NR_IRQ_*` |
+| `os/arch/src/arch/clock.rs` | 12 | `ClockState` / `LoadInfo` / `DEFAULT_HZ` / `LOAD_HISTORY_SIZE` |
+| `os/plat/src/interrupt.rs` | 10 | `IrqVector` / `IrqId` / `IrqNotifyId` / `IrqPolicy` / `IrqAction` / `NR_IRQ_*` |
 | `os/plat/src/x86_64/interrupt.rs` | 3 | LAPIC/IOAPIC 默认基址、set_base 覆盖、`IRQ0_VECTOR` |
 | `os/plat/src/x86_64/early_console.rs` | 6 | COM1 寄存器常量 (DLAB, 8N1, FIFO, MCR) |
 | `os/arch/src/x86_64/arch_init.rs` | 0 | 串口初始化由 `EarlyConsole` 负责；ACPI 解析尚未实现测试 |
-| `os/plat/src/arm64/interrupt.rs` | 4 | GIC 寄存器偏移、WAKER bits、QEMU virt GICD/GICR 偏移、gicd_base=0 防御 panic |
+| `os/plat/src/arm64/interrupt.rs` | 3 | GIC 寄存器偏移、WAKER bits、QEMU virt GICD/GICR 偏移、gicd_base=0 防御 panic |
 | `os/arch/src/{x86_64,arm64,riscv64}/trap_entry.rs` | 15/3/3 | IDT 门描述符、set_handler 行为、VBAR/stvec 配置（详见 doc 03 §5.3）|
 | `os/plat/src/early_console.rs` | 0 | trait 声明 `init`/`write_byte` 接口；`write_str`/`write_hex` 为默认方法，目前通过 `os/plat/src/mock.rs` 的 `MockEarlyConsole` 在测试构建中复用 |
-| **当前所列文件总计** | **58** | |
+| **当前所列文件总计** | **55** | |
 
 #### 5.1.1 ClockState 测试（`arch/clock.rs`）
 
@@ -1519,6 +1537,7 @@ cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
 
 - [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 前半段：保护模式初始化
 - [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 进程表初始化和 boot 进程加载
+- [16-smp.md](16-smp.md) — SMP 启动和 AP 引导（与 §3.7 `bsp_finish_booting` 范围声明呼应）
 - [99-global-concepts.md](99-global-concepts.md) — 全局常量和类型定义
 - `os/plat/src/interrupt.rs` — `InterruptController` trait 定义
 - `os/plat/src/x86_64/interrupt.rs` — x86-64 APIC 实现

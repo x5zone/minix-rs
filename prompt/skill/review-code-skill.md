@@ -190,6 +190,29 @@ description: "Minix-RS Rust 代码 Review 检查清单。包含 §1-§14 全部�
 
 ---
 
+## §1.5 Design 对齐检查
+
+> **核心**：如果 design 不抓本质（如漏掉核心概念），仅 review 代码实现无意义。这种情况应触发 Refactor（Gate H 阻断）。
+
+| 检查项 | 期望 | 状态 |
+|--------|------|------|
+| design ↔ code 一致性 | ≥80%（Step 1.6.2）| ⚠️/✅ |
+| design 是否定义核心 trait | 是 | ✅/❌ |
+| code 是否实现 design 中所有决策 | 是 | ✅/❌ |
+| design 是否抓到 Minix3 本质 | 是 | ✅/❌ |
+| 错误码策略 | 严格对齐 Minix3 | ✅/❌ |
+| `as` 截断阈值规则 | design 明文 | ✅/❌ |
+
+> **关键判定**：
+> - 一致性 ≥ 80% + design 本质正确 → ✅ 继续 review
+> - 一致性 < 80% 但 design 正确 → **code Refactor**（修 code）
+> - design 漏概念（design-missing）→ **design Refactor**（先补 design）
+> - design 抓错本质（design-wrong）→ **design Refactor 必须**（先 redesign）
+
+> **配套机制**：[review.md §Design First 原则](../review-rules/review.md) + [review-process.md §Step 1.6](../review-rules/review-process.md) + [review-process.md §Gate H design 门控](../review-rules/review-process.md)。
+
+---
+
 ## 13. 设计-代码一致性检查
 
 > 代码必须实现文档中的设计，不能各写各的。

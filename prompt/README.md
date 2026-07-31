@@ -36,11 +36,46 @@ prompt/
 
 ---
 
+## 🆕 Design-First 升级摘要（2026-07-15）
+
+> **核心机制**：引入 Design First 原则，使 design 本身成为 review 的核心 deliverable。修复"DEFERRED 逃避"问题。
+
+**主要变更**：
+1. **三层术语统一**：Rewrite / Refactor (code + design) / Architectural Evolution，废弃"Redesign"模糊用法
+2. **P0 六分类**：在原 5 类（P0-fact/code-bug/...）基础上新增 P0-test-missing + P0-design-deviation/missing/wrong
+3. **优先级链**：Minix3 源码行为 > design doc > Rust 代码 > 设计/技术文档
+4. **Gate H**：design 门控（**所有 review 模式必检，2026-07-16 扩**），含 6 项 design 对齐检查 + design 缺口清单 + IN_DESIGN 状态管理
+5. **Profile R**：设计优先模式 Review — `review xxx-design.md`（非 bagging）/ `review xxx-design-final.md`（bagging）时加载，或 Step 0 design 预检发现 design 缺失时自动触发；验证 design 完整性 + 可实现性 + design ↔ code 一致性
+6. **Review 中断协议**：当 design 缺关键决策时，4 步中断 + IN_DESIGN 状态机（替代 DEFERRED 逃避）
+7. **IN_DESIGN 时间上限**：7 天警告、30 天清理、月度审计
+8. **Pattern 63/64/65**：Design-Missing / 开发文档味 / Translate 倾向
+9. **架构演进 5 类型**（§2.0）：FPU / 中断 / 分页 / 地址空间 / 启动链 — 显式标注 ARCH
+10. **Scan 文件生命周期协议**：防止 P0-XX-1 编号泄漏到 doc/code
+11. **🆕 2026-07-16 workflow 修复**：Session #12 复盘发现 Step 0 design 预检被错误跳过
+    - **Gate H 扩为所有 review 模式必检**（原"仅完整/深度/设计优先"）
+    - **模式 69 PSMD** (Per-doc Snapshot Missing)：per-doc design/outline 快照缺失检测
+    - **模式 70 CTOS** (Cross-Turn Outdated Staleness)：TODO 列表跨轮状态陈旧检测
+    - **模式 71 DOG** (Decision Over-Generalization)：用户决策泛化误用检测
+    - **硬阻断规则**：Step 0 启动时必须跑 4 条 `ls design/{NN}-*.md`，缺失即 FAIL
+    - **工具**：`tools/design-coverage-check.sh {module}` 自动扫描所有 stage 缺失报告
+    - **STATE.md Resume Point 模板**：续 session 必含 `ls design/` 预检命令
+    - **scan.md Gate 0 锚段扩为 9 个**：新增 `§Step 0: 预检结果` 锚段
+
+**变更覆盖范围**（同 commit 同步）：
+- `prompt/review-rules/` — 9 个文件（review.md / review-process.md / review-patterns.md / review-doc-checklist.md / review-code-checklist.md / review-core-semantics.md / review-profiles.md / review-doc-excellence.md / review-code-excellence.md）
+- `prompt/skill/` — 11 个文件（review-process-skill / review-patterns-skill / review-doc-skill / review-code-skill / review-core-semantics-skill / review-coverage-skill / review-excellence-skill / review-implementation-skill / review-socratic-skill / review-agent-ide / review-agent-trigger）
+- `CLAUDE.md` — 项目根（新增 Design First 章节 + Gate H）
+- `.claude/rules/` — review-core.md / review-process.md（新增术语 + Gate H）
+- `.claude/skills/review-scan/` — SKILL.md + 5 checks/*.md（新增 Phase 2.6 + Pattern 63-65）
+- `.trae/skills/` — 9 个 subdir（自动 sed 同步，差异 4 字符）
+
+---
+
 ## review-rules/（唯一真相源）
 
 Review 规则集是项目在多轮迭代中积累的规则文档，定义了针对 Minix-RS 项目的所有 Review 要求。其逻辑顺序为：
 
-1. **review.md** — 核心框架，定义 Rewrite/Translate/Redesign 三态（原则层）。含执行模型按模块分层（用户态服务器单线程 vs 内核 SMP+BKL）、核心语义验证（Ground Truth 具体化，引用 review-core-semantics.md）。
+1. **review.md** — 核心框架，定义 **Rewrite / Refactor (code Refactor + design Refactor) / Architectural Evolution** 三层术语（原则层）。含执行模型按模块分层（用户态服务器单线程 vs 内核 SMP+BKL）、核心语义验证（Ground Truth 具体化，引用 review-core-semantics.md）、**Design First 原则 + §2.0 架构演进作为独立知识点维度 + P0 六分类（含 P0-design-deviation/missing/wrong/test-missing）**。
 2. **review-profiles.md** — 任务组合配置，决定不同场景加载哪些规则模块（策略层）。含 Profile O（卓越性专项）、Profile P（覆盖率专项）。
 3. **review-process.md** — 强制执行步骤，要求每个步骤必须产生可见中间产物（流程层）。含状态写入与收敛判断、Review Verification Protocol、§〇 执行模式选择（构造/快速/深度三模式）、Step 1.5 覆盖率穷举。
 4. **review-doc-checklist.md** — 文档维度的检查清单（文档维度层）。含 §2.0 Claims-Evidence Tracing（论文级文档质量方法论）。
@@ -73,7 +108,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 ### `review-agent-ide.md` 的 10,000 字限制说明
 
-- **当前 8,903 字符，已达标**（硬上限 10,000 字符的 89.0%），保留约 1,100 字符余量以应对后续新增强制约束。本轮 P0 修复（improve-v2 §10）后增加约 2,168 字符，主因是新增 Gate 0、Gate G、双路径状态管理、VERIFY-SELF/VERIFY-CROSS、8 字段 × 5 函数行为契约表等强制约束。**新增任何约束前先核对余量；超 10,000 字符必须触发规则精简**。
+- **当前 8,903 字符，已达标**（硬上限 10,000 字符的 89.0%），保留约 1,100 字符余量以应对后续新增强制约束。本轮修复后约 2,168 字符，主因是新增 Gate 0、Gate G、双路径状态管理、VERIFY-SELF/VERIFY-CROSS、8 字段 × 5 函数行为契约表等强制约束。**新增任何约束前先核对余量；超 10,000 字符必须触发规则精简**。
 - **结构**：Agent 作为**路由器**，详细知识下沉到 8 个 Skill：
   - Core Principles 保留最核心原则；
   - Output Template、Review Process、Phased Review 详情引用 `review-process-skill.md`；
@@ -146,17 +181,17 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 **当前已同步的 9 个 Skill**（2026-06-22 新增 review-implementation-skill）：
 | Skill | prompt/skill/ 字符 | .trae/skills/ 字符 | diff | Trae 限制 |
 |-------|-------------------|-------------------|------|----------|
-| review-code-skill | 6,512 | 6,508 | 4 | — |
-| review-doc-skill | 13,247 | 13,243 | 4 | — |
-| review-patterns-skill | 16,569 | 16,565 | 4 | — |
-| review-process-skill | 28,121 | 28,117 | 4 | — |
-| review-core-semantics-skill | 7,293 | 7,289 | 4 | — |
-| review-coverage-skill | 10,020 | 10,016 | 4 | — |
-| review-excellence-skill | 7,026 | 7,022 | 4 | — |
-| **review-implementation-skill** | **TBD** | **TBD** | 4 | — |
-| review-socratic-skill | 5,179 | 5,175 | 4 | — |
+| review-code-skill | 7,329 | 7,325 | 4 | — |
+| review-doc-skill | 13,978 | 13,974 | 4 | — |
+| review-patterns-skill | 19,870 | 19,866 | 4 | — |
+| review-process-skill | 36,087 | 36,083 | 4 | — |
+| review-core-semantics-skill | 8,464 | 8,460 | 4 | — |
+| review-coverage-skill | 10,775 | 10,771 | 4 | — |
+| review-excellence-skill | 9,220 | 9,216 | 4 | — |
+| review-implementation-skill | 5,713 | 5,709 | 4 | — |
+| review-socratic-skill | 5,696 | 5,692 | 4 | — |
 
-> **说明**：本轮 P0 修复（improve-v2 §10）后，review-process-skill.md 从 16,088 字符增长到 28,121 字符（+74.7%），review-coverage-skill.md 从 8,032 字符增长到 10,020 字符（+24.7%）。增长主因是新增 Gate 0、Gate G、gate-evidence 块模板、L1/L2/L3 证据分级、Artifact Inventory、Severity Reconciliation、Per-Doc/Session Status、VERIFY-SELF/VERIFY-CROSS 等段。Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。
+> **说明**：2026-07-16 方案 D（outline 升格）后，review-process-skill.md 增长到 36,087 字符（新增 Step 0.5.3 doc↔outline 对齐检查 + Gate H.6 + outline 持久化规则）。Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。
 >
 > 2026-06-22 新增 **review-implementation-skill**（由 06-design-final.md 实施过程沉淀），覆盖 design ↔ code 一致性 + §X self-review issues 追踪。详见 skill 文件 §Skill 输出模板 + §Gate D-Impl。
 
@@ -166,15 +201,15 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 |---------|---------|------|---------|
 | review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 8,903 ✅ |
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 16 个示例，覆盖 8 域 + 工作流评估/修复阶段） | 4,913 ✅ |
-| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 13,247 |
-| review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 6,512 |
-| review-patterns.md | review-patterns-skill.md | Skill（45 个错误模式；Gate D 严格通过标准） | 16,569 |
-| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 双路径 + Gate 证据 + Gate G VERIFY-CHECK 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级） | 28,121 |
-| review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 7,293 |
-| review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.4 + 代码§15-20 卓越性） | 7,026 |
-| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） | 10,020 |
-| review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（8 场景追问话术模板） | 5,179 |
-| review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） | TBD |
+| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 13,978 |
+| review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,329 |
+| review-patterns.md | review-patterns-skill.md | Skill（45 个错误模式；Gate D 严格通过标准） | 19,870 |
+| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 双路径 + Gate 证据 + Gate G VERIFY-CHECK 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6**） | 36,087 |
+| review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 8,464 |
+| review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.4 + 代码§15-20 卓越性） | 9,220 |
+| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） | 10,775 |
+| review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（8 场景追问话术模板） | 5,696 |
+| review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） | 5,713 |
 | review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent | — |
 | ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md | — |
 
@@ -231,7 +266,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 
 ### `.claude/rules/*.md` 的 always-on 加载
 
-- **`review-core.md`** — 始终加载。定义执行模型分用户态/内核、⛔ 禁止行为（从记忆回答/跳过检查/猜测/无输出标记 ✅/后期 check decay）、Ground Truth、Rewrite/Translate/Redesign 三态、P0/P1/P2 优先级、**强制 Skill 显式调用**、**Gate D 严格通过标准**。
+- **`review-core.md`** — 始终加载。定义执行模型分用户态/内核、⛔ 禁止行为（从记忆回答/跳过检查/猜测/无输出标记 ✅/后期 check decay）、Ground Truth、**Rewrite / Refactor (code + design) / Architectural Evolution** 三层术语、**P0 六分类（含 P0-design-deviation/missing/wrong/test-missing）**、**Design First 原则 + 优先级链 Minix3 > design > code > doc**、P0/P1/P2 优先级、**强制 Skill 显式调用**、**Gate D 严格通过标准**。
 - **`review-process.md`** — 始终加载。定义 Step 0-7 流程（Scope 声明 → C 源验证 → Diff 抽取 → Sanity Check → Precision Check → 状态写入 → VERIFY 独立验证），以及 **STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**。
 - **`fix-guard.md`** — 始终加载。定义安全修复的 4 条强制要求（读 ±5 行上下文 / grep 确认当前状态 / 一次性应用一个 fix / 写 fix-status）。
 
@@ -284,7 +319,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
     └── {doc-stem}/{scan,structure,SYMBOLS}.md
 ```
 
-> 采用**扁平 scans/ 结构**，不启用 `{stage}/` 子目录（`{doc-stem}` 已含 stage 编号前缀，足够区分；见 improve-v2 §7.2）。
+> 采用**扁平 scans/ 结构**，不启用 `{stage}/` 子目录（`{doc-stem}` 已含 stage 编号前缀，足够区分）。
 
 ### 双写模式（交互式修复场景）
 
@@ -301,6 +336,44 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 2. 如果同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
 3. 每个 STATE.md 独立维护自己的 Open P0/P1/P2 列表；新增问题必须同步进 Open 列表，已修复问题移入 Closed Issues。
 4. 收敛条件必须满足：scan.md 所有维度 COMPLETE、最近 Pass 新增 P0=0/P1≤1、Gate G VERIFY-CHECK = PASS、Blocker Gates 0/A-E+G 全部通过且有 gate-evidence 附件。
+
+### Step 0 预检硬阻断（NEW 2026-07-16）
+
+> **背景**：Session #12 复盘发现 — 即使 review-process.md §Step 0 已写"design 预检强制"，AI 仍会因"已有 CONVERGED 状态"/"incremental review"等理由错误跳过预检。Session #11 模式 69 (PSMD) 发现 04/05 缺快照时已记录此为 P0-process-violation，但缺少硬阻断机制。
+
+**强制规则**（所有 review 模式强制）：
+
+1. **必须跑 4 条 `ls`**（Step 0 启动时）：
+   ```bash
+   ls notes/rewrite/{module}/{stage}/design/{NN}-outline.v*.md
+   ls notes/rewrite/{module}/{stage}/design/{NN}-outline-review.v*.md
+   ls notes/rewrite/{module}/{stage}/design/{NN}-design.v*.md
+   ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.v*.md  # bagging only
+   ```
+   ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一）。
+
+2. **缺失判定 + 嵌入生成（2026-07-17 更新）**：
+   - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
+   - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审，不需用户确认）
+   - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
+   - **核心变更**：原"缺失 → 阻断 Step 1 + 触发附录 C/Design-First（中断）"改为"缺失 → Step 0.3 嵌入生成 → 继续 review"
+   - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用 03/04 design"为由跳过（**模式 69 PSMD 触发**）
+
+3. **存在旧快照时**：仍必须执行 v2 评估（重新产出 `.v{N+1}.md`）；旧快照仅作"前人理解"参考，**不是 ground truth**。
+
+4. **工具支持**：`tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 design/ 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
+
+5. **决策记录豁免**：仅一次性用户明确豁免；豁免必须登记在 STATE.md `§豁免列表` 段；**不可泛化**（**模式 71 DOG 触发**）。
+
+6. **STATE.md Resume Point 模板**：续 session 必含 `ls design/` 预检命令（避免续 session 跳过）。
+
+**当前快照覆盖情况**（`tools/design-coverage-check.sh fork-syscall-rewrite --stage 03-stage-kernel` 输出）：
+- Total docs: 29
+- Complete (design + outline): **3**（仅 01/02/03）
+- Missing outline (H.6 FAIL): 24
+- Missing design (H.1 FAIL): **24**
+
+**含义**：当前 fork-syscall-rewrite 模块 03-stage-kernel 阶段 **22/29 文档缺 design 快照**（01-07 已审过有快照，08-25/99/00 按需生成）。按新规则，缺失时 review 自动执行 **Step 0.3 嵌入生成**（2026-07-17 变更：原"必须先附录 C 追溯生成"改为"Step 0.3 嵌入 review 流程内生成"）。
 
 > **精简说明**：所有维度检查结果（概念/引用/结构/覆盖/设计/链路/代码/跨文档/Claims）全部并入 `scan.md` 对应章节，不再拆 10 个维度文件。
 

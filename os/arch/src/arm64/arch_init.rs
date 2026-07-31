@@ -60,7 +60,7 @@ impl ArchInit for AArch64ArchInit {
         // 2. Board-specific initialization
         // C: bsp_init()
         // Platform-specific setup (e.g., GIC base address) is now provided
-        // via PlatformDesc → InterruptControllerDesc::Gicv3, consumed by
+        // via PlatformDesc → Gicv3Desc, consumed by
         // AArch64InterruptController::new(desc).
     }
 }

@@ -23,6 +23,27 @@
 - [ ] **代码是否实现了文档 Ch3 的设计决策**：如果 Ch3 说用 typestate，代码是否真的用了？如果 Ch3 说用 enum，代码是否用了裸整数？
 - [ ] **代码是否与文档 Ch4 的实现描述一致**：函数签名、类型定义、行为语义是否匹配？
 
+### §1.5 Design 对齐检查
+
+> **核心**：如果 design 不抓本质（如漏掉核心概念），仅 review 代码实现无意义。这种情况应触发 Refactor（Gate H 阻断）。
+
+| 检查项 | 期望 | 实际 | 状态 |
+|--------|------|------|------|
+| design ↔ code 一致性 | ≥80%（Step 1.6.2）| _% | ⚠️/✅ |
+| design 是否定义核心 trait | 是 | 是/否 | ✅/❌ |
+| code 是否实现 design 中所有决策 | 是 | 是/否 | ✅/❌ |
+| design 是否抓到 Minix3 本质 | 是 | 是/否 | ✅/❌ |
+| 错误码策略 | 严格对齐 Minix3 | check | ✅/❌ |
+| `as` 截断阈值规则 | design 明文 | check | ✅/❌ |
+
+> **关键判定**：
+> - 一致性 ≥ 80% + design 本质正确 → ✅ 继续 review
+> - 一致性 < 80% 但 design 正确 → **code Refactor**（修 code）
+> - design 漏概念（design-missing）→ **design Refactor**（先补 design）
+> - design 抓错本质（design-wrong）→ **design Refactor 必须**（先 redesign）
+
+**配套机制**：[review.md §Design First 原则](review.md) + [review-process.md §Step 1.6 设计对齐检查](review-process.md) + [review-process.md §Gate H design 门控](review-process.md#gate-h-design-门控) + [review-patterns.md §模式 65 Translate 倾向](review-patterns.md)。
+
 ---
 
 ## 2. 硬件抽象检查

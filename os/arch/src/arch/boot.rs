@@ -383,7 +383,7 @@ mod tests {
             boot_modules: &EMPTY_MODULES,
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
         let result = load_vm_elf(&module, &kinfo, &mut paging);

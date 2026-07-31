@@ -51,7 +51,9 @@
 use core::slice;
 
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, BootShim, KernelInfo, MemoryRegion, PlatformDescriptorPtr};
+use minix_boot::{
+    BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource,
+};
 
 use crate::loader::{self, FileLoader};
 
@@ -214,9 +216,19 @@ impl BootShim for OpenSbiBootShim {
         // The entry trampoline saves it via `install_dtb_ptr(a1)`.
         // If no DTB was passed (e.g., unit test), this returns None
         // and the kernel falls back to QemuVirtDesc.
-        let platform_descriptor = dtb_ptr().map(|pa| {
-            PlatformDescriptorPtr::Dtb(PhysBytes(pa))
-        });
+        //
+        // On RISC-V only DTB is supported (no ACPI). The sources list is
+        // either `[DTB source]` or empty.
+        let platform_sources: &'static [PlatformDescSource] = match dtb_ptr() {
+            Some(pa) => {
+                use alloc::boxed::Box;
+                Box::leak(
+                    alloc::vec![PlatformDescSource::new(DTB, PhysBytes(pa))]
+                        .into_boxed_slice(),
+                )
+            }
+            None => &[],
+        };
 
         let kernel_info = build_kernel_info(
             memmap,
@@ -224,11 +236,28 @@ impl BootShim for OpenSbiBootShim {
             kern.kern_phys_base,
             kern.kern_size,
             boot_modules,
-            // Bootstrap region: boot-shim occupies memory below the kernel.
-            // C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
-            PhysBytes(0), // TODO: determine boot-shim physical start from OpenSBI
-            kern.kern_phys_base.0, // boot-shim memory ends where kernel begins
-            platform_descriptor,
+            // Bootstrap (unpaged kernel) region.
+            //
+            // C semantics (pre_init.c:114-116):
+            //     kinfo.bootstrap_start = &_kern_unpaged_start;
+            //     kinfo.bootstrap_len   = &_kern_unpaged_end - &_kern_unpaged_start;
+            //
+            // In Minix3 C the kernel has a small "unpaged" section that runs
+            // before paging is enabled and must remain identity-mapped; its
+            // physical range is reclaimed via add_memmap() after boot completes.
+            //
+            // Rust port design choice: the kernel is higher-half from the
+            // very first instruction — there is no separate unpaged section
+            // because we never run with paging disabled. The startup trampoline
+            // lives in boot-shim (a separate ELF loaded by U-Boot via OpenSBI),
+            // not in the kernel proper. Therefore no kernel-side memory needs
+            // to be reclaimed at this point; the previous `PhysBytes(0) + len
+            // = kern_phys_base.0` was a dangerous over-reclaim that swept up
+            // OpenSBI firmware, DTB, U-Boot image, and the boot-shim itself.
+            // See 01-boot-shim-bootstrap.md §3.5.1 for the rationale.
+            PhysBytes(0),
+            0,
+            platform_sources,
         );
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
@@ -387,6 +416,11 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 /// `bootstrap_start`/`bootstrap_len` describe the boot-shim's physical
 /// memory region that the kernel should reclaim after boot completes.
 /// C: kinfo.bootstrap_start/len — pre_init.c:114-116
+///
+/// `platform_sources` is the ordered list of firmware-provided platform
+/// descriptor sources. On RISC-V (OpenSBI) this is either `[DTB source]`
+/// or empty. The kernel tries each in order, using the first that parses
+/// successfully.
 pub fn build_kernel_info(
     memmap: &'static [MemoryRegion],
     kern_virt_base: VirBytes,
@@ -395,7 +429,7 @@ pub fn build_kernel_info(
     boot_modules: &'static [minix_boot::BootModule],
     bootstrap_start: PhysBytes,
     bootstrap_len: u64,
-    platform_descriptor: Option<PlatformDescriptorPtr>,
+    platform_sources: &'static [PlatformDescSource],
 ) -> KernelInfo {
     KernelInfo {
         memmap,
@@ -410,7 +444,7 @@ pub fn build_kernel_info(
         boot_modules,
         bootstrap_start,
         bootstrap_len,
-        platform_descriptor,
+        platform_sources,
     }
 }
 
@@ -532,12 +566,12 @@ mod tests {
             &[],
             PhysBytes(0x80000000), // bootstrap_start
             0x200000,              // bootstrap_len
-            None,                  // platform_descriptor
+            &[],                   // platform_sources (empty = no source)
         );
         // Sv39 user-space top is below 2^38.
         assert!(info.user_sp.0 < (1u64 << 39));
         assert_eq!(info.kern_phys_base, PhysBytes(DRAM_BASE));
-        assert!(info.platform_descriptor.is_none());
+        assert!(info.platform_sources.is_empty());
     }
 
     #[test]
@@ -558,5 +592,126 @@ mod tests {
         let a = bump_alloc(1).expect("first alloc should succeed");
         let b = bump_alloc(1).expect("second alloc should succeed");
         assert!(b > a, "bump_alloc must return strictly increasing addresses");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 集成测试覆盖层（单元层）
+    //
+    // 这些测试不依赖 U-Boot/OpenSBI 真实启动链，仅验证 boot-shim
+    // 的内部接口契约（memmap 形状、字段映射、bump 分配器不变量）。
+    // 真实集成测试（QEMU+OpenSBI+U-Boot）需要外部工具链 + 串口监控，
+    // 见 01-boot-shim-bootstrap.md §5.1.1 B。
+    // ─────────────────────────────────────────────────────────────────
+
+    /// `build_memmap()` 返回 OpenSBI 平台的默认 DRAM 单区域：
+    /// `[DRAM_BASE, DRAM_BASE + 128MB)`。
+    ///
+    /// **注意**：此 memmap **不排除** `MODULE_REGION_BASE = DRAM_BASE + 32MB`
+    /// 区域。boot-shim 负责报告"全部 DRAM 是 free"；内核侧的 `cut_memmap()`
+    /// （C：`pre_init.c:cut_memmap` / Rust port：TODO-04 范围内）在 handover 后
+    /// 切除 module 区域。这与 C 版语义一致——boot-shim 不感知 module 地址。
+    #[test]
+    fn test_build_memmap_default_region() {
+        let memmap = build_memmap();
+        assert_eq!(memmap.len(), 1, "OpenSBI default memmap is a single region");
+        let r = memmap[0];
+        assert_eq!(r.base, PhysBytes(DRAM_BASE));
+        assert_eq!(r.len, DEFAULT_RAM_SIZE as usize);
+        // region 覆盖 module region（DRAM_BASE + 32MB 在内部）
+        assert!(
+            r.base.0 + r.len as u64 > MODULE_REGION_BASE,
+            "memmap should cover module region (intentionally; kernel cuts later)"
+        );
+    }
+
+    /// `build_kernel_info` 8 个字段全部按入参精确映射。
+    ///
+    /// 生产路径中 `bootstrap_start/len` 始终是 `(PhysBytes(0), 0)`（见 §3.5.1）。
+    /// 此测试使用非零值仅为验证字段映射，不验证语义（语义在
+    /// `test_build_kernel_info_bootstrap_zero_means_no_reclaim` 中覆盖）。
+    #[test]
+    fn test_build_kernel_info_riscv64_fields_match_input() {
+        let modules: &'static [minix_boot::BootModule] = &[];
+        let info = build_kernel_info(
+            &[MemoryRegion {
+                base: PhysBytes(0x8000_0000),
+                len: 0x80_0000,
+            }],
+            VirBytes(0xFFFF_FFFF_8000_0000),
+            PhysBytes(0x8000_0000),
+            0x100_000,
+            modules,
+            PhysBytes(0x8000_0000),
+            0x200_000,
+            &[],
+        );
+        // memmap
+        assert_eq!(info.memmap.len(), 1);
+        assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));
+        assert_eq!(info.memmap[0].len, 0x80_0000);
+        // kern_* 字段
+        assert_eq!(info.kern_virt_base, VirBytes(0xFFFF_FFFF_8000_0000));
+        assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
+        assert_eq!(info.kern_size, 0x100_000);
+        // 派生字段
+        assert_eq!(
+            info.kern_stack_top,
+            VirBytes(0xFFFF_FFFF_8000_0000u64 + 0x100_000)
+        );
+        assert_eq!(info.syscall_entry, VirBytes(0xFFFF_FFFF_8000_0000));
+        // user_sp 仍是 Sv39 顶（与入参无关）
+        assert!(info.user_sp.0 < (1u64 << 39));
+        // module + platform_sources
+        assert_eq!(info.boot_modules.len(), 0);
+        assert!(info.platform_sources.is_empty());
+        // bootstrap 直通
+        assert_eq!(info.bootstrap_start, PhysBytes(0x8000_0000));
+        assert_eq!(info.bootstrap_len, 0x200_000);
+    }
+
+    /// 回归保护：`build_kernel_info` 接受 `(PhysBytes(0), 0)` 作为 bootstrap
+    /// 参数，且该值在 `KernelInfo` 中保持不变（no-op 回收语义，见 §3.5.1）。
+    ///
+    /// 若误用 `(PhysBytes(0), kern_phys_base.0)`，会导致 `add_memmap(0,
+    /// kern_phys_base)` 过度回收 `[0, kern_phys_base)` 整段低内存，覆盖
+    /// OpenSBI/DTB/U-Boot。本测试确保该 no-op 语义不被回归。
+    #[test]
+    fn test_build_kernel_info_bootstrap_zero_means_no_reclaim() {
+        let info = build_kernel_info(
+            &[],
+            VirBytes(0xFFFF_FFFF_8000_0000),
+            PhysBytes(DRAM_BASE),
+            0x100_000,
+            &[],
+            PhysBytes(0), // 生产路径值（见 §3.5.1）
+            0,           // 生产路径值
+            &[],
+        );
+        assert_eq!(info.bootstrap_start, PhysBytes(0));
+        assert_eq!(info.bootstrap_len, 0);
+        // 与 kern_phys_base 不相等（若相等则是 over-reclaim bug）
+        assert_ne!(info.bootstrap_len, info.kern_phys_base.0);
+    }
+
+    /// `alloc_bump_region(n)` 返回的 `(base, end)` 满足：
+    /// 1. `end - base == n * 4096`
+    /// 2. `base >= MODULE_REGION_BASE`
+    /// 3. `end <= BUMP_END`
+    #[test]
+    fn test_alloc_bump_region_round_trip() {
+        let (base, end) = alloc_bump_region(2);
+        assert_eq!(end - base, 2 * 4096, "end - base must equal n * page_size");
+        assert!(base >= MODULE_REGION_BASE, "base must be inside bump region");
+        assert!(end <= BUMP_END, "end must be inside bump region");
+    }
+
+    /// `alloc_root_page()` 返回 4KB 对齐的物理页。
+    /// root 页表地址必须页对齐，否则 Sv39 页表遍历会触发 #PF。
+    #[test]
+    fn test_alloc_root_page_is_4k_aligned() {
+        let paddr = alloc_root_page();
+        assert_eq!(paddr.0 % 4096, 0, "root page must be 4K aligned");
+        // 必须位于 bump region 内（不应超出 BUMP_END）
+        assert!(paddr.0 + 4096 <= BUMP_END, "root page must fit in bump region");
     }
 }

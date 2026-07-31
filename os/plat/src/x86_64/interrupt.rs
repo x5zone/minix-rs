@@ -6,14 +6,14 @@
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
 //! Hardware base addresses (LAPIC, IOAPIC) are stored in instance fields,
-//! populated by `new(desc)` from `InterruptControllerDesc::Apic`. This
+//! populated by `new(desc)` via `Any` downcast to `ApicDesc`. This
 //! replaces the previous `new()` + `set_base()` two-step pattern and the
 //! `DEFAULT_LAPIC_BASE` / `DEFAULT_IOAPIC_BASE` hardcoded constants.
 
 use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
 
-use minix_platform::InterruptControllerDesc;
+use minix_platform::arch::x86_64::ApicDesc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
 
@@ -90,8 +90,8 @@ unsafe fn ioapic_write_indirect(base: usize, reg: u32, value: u32) {
 /// # Fields
 ///
 /// - `nr_irq_vectors`: number of IRQ vectors (from descriptor, typically 64).
-/// - `lapic_base`: LAPIC MMIO base address, from `InterruptControllerDesc::Apic`.
-/// - `ioapic_base`: IOAPIC MMIO base address, from `InterruptControllerDesc::Apic`.
+/// - `lapic_base`: LAPIC MMIO base address, from `ApicDesc`.
+/// - `ioapic_base`: IOAPIC MMIO base address, from `ApicDesc`.
 pub struct X86_64InterruptController {
     nr_irq_vectors: usize,
     lapic_base: usize,
@@ -176,17 +176,14 @@ unsafe fn wrmsr_msr_write(msr: u32, value: u64) {
 }
 
 impl InterruptController for X86_64InterruptController {
-    fn new(desc: &InterruptControllerDesc) -> Self {
-        match desc {
-            InterruptControllerDesc::Apic { lapic_base, ioapic_base, nr_irqs } => Self {
-                nr_irq_vectors: (*nr_irqs as usize).min(NR_IRQ_VECTORS),
-                lapic_base: *lapic_base,
-                ioapic_base: *ioapic_base,
-            },
-            _ => panic!(
-                "X86_64InterruptController::new: expected InterruptControllerDesc::Apic, got {:?}",
-                desc
-            ),
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+        let apic = desc.as_any()
+            .downcast_ref::<ApicDesc>()
+            .expect("X86_64InterruptController::new: expected ApicDesc");
+        Self {
+            nr_irq_vectors: (apic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            lapic_base: apic.lapic_base,
+            ioapic_base: apic.ioapic_base,
         }
     }
 
@@ -227,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_new_from_apic_descriptor() {
-        let desc = InterruptControllerDesc::Apic {
+        let desc = ApicDesc {
             lapic_base: 0xFEE0_0000,
             ioapic_base: 0xFEC0_0000,
             nr_irqs: 64,
@@ -239,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_new_clamps_nr_irqs_to_max() {
-        let desc = InterruptControllerDesc::Apic {
+        let desc = ApicDesc {
             lapic_base: 0xFEE0_0000,
             ioapic_base: 0xFEC0_0000,
             nr_irqs: 128, // exceeds NR_IRQ_VECTORS (64)

@@ -22,7 +22,7 @@ use crate::port_io::PortIo;
 pub struct MockInterruptController;
 
 impl InterruptController for MockInterruptController {
-    fn new(_desc: &InterruptControllerDesc) -> Self {
+    fn new(_desc: &dyn InterruptControllerDesc) -> Self {
         Self
     }
 

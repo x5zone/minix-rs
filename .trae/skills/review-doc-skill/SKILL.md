@@ -1,6 +1,6 @@
 ---
-name: review-doc-skill
-description: Minix-RS 文档 Review 检查清单。包含文档结构规范、§1.Ch1 Ch1 强制骨架（9 项）、§2.0 Claims-Evidence Tracing（论文级质量，含 §2.0.3 因果链验证）、§2.1-§2.11 全部维度（概念准确性含架构范围标注/过度简化/概念来源层级、C代码引用验证、数据结构覆盖、文档与代码一致性、架构演进说明、交叉引用、图表质量、C源码覆盖完整性、设计决策质量、章节链路验证、文档风格）、§3.1-§3.8 可读性（含开篇第一句/概念正交性/示例最小化/教学模式/文档设计哲学/作者意图透明性）。当 Agent 需要检查文档(.md)质量时调用此 Skill。
+name: "review-doc-skill"
+description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、§1.Ch1 Ch1 强制骨架（9 项）、§2.0 Claims-Evidence Tracing（论文级质量，含 §2.0.3 因果链验证）、§2.1-§2.11 全部维度（概念准确性含架构范围标注/过度简化/概念来源层级、C代码引用验证、数据结构覆盖、文档与代码一致性、架构演进说明、交叉引用、图表质量、C源码覆盖完整性、设计决策质量、章节链路验证、文档风格）、§3.1-§3.8 可读性（含开篇第一句/概念正交性/示例最小化/教学模式/文档设计哲学/作者意图透明性）。当 Agent 需要检查文档(.md)质量时调用此 Skill。"
 ---
 
 # Minix-RS 文档 Review 检查清单
@@ -114,7 +114,7 @@ description: Minix-RS 文档 Review 检查清单。包含文档结构规范、§
 
 > **核心原则**：claim 有 evidence 不够，解释 claim 的 BECAUSE 部分必须技术上正确。
 > "因为 X 所以 Y" 中的 X 必须是真实机制，不是听起来合理的编造。
-> **来源**：03-kmain-cstart 案例 `local_cbi` 因果链编造。
+> 来源：03-kmain-cstart
 
 对每个带因果解释的 claim（含"因为/所以/由于/为了"的断言）：
 1. **提取因果链**：claim + 因为 M1 所以 M2
@@ -132,6 +132,27 @@ description: Minix-RS 文档 Review 检查清单。包含文档结构规范、§
 - 正确解释"local_cbi 作用域限于 kmain 调用链，非 kmain 链代码访问不到" ✅
 
 > **详见**：[review-rules/review-patterns.md](../review-rules/review-patterns.md) 模式 48（因果链编造）。
+
+### §2.0.5 Design 引用规范
+
+> **目的**：文档中引用 design 时统一格式，便于审稿人快速溯源。
+
+文档中引用 design 时，应使用以下格式：
+
+| 引用类型 | 格式 | 示例 |
+|---------|------|------|
+| design 决策 | `design.md §X.Y`（非 bagging）/ `design-final.md §X.Y`（bagging） | design.md §3.3 |
+| design vs code 一致性 | `design.md §X.Y ↔ file:line` | design.md §3.3 ↔ vm.rs:243 |
+| design 缺失 | `design.md §X.Y（缺失）` | design.md §3.3（缺失） |
+| design Refactor 触发 | `design Refactor: design.md §X.Y 错` | design Refactor: design.md §3.3 漏进程表 |
+
+**判定**：
+- ✅ 文档引用 design 且 design 存在 → 强证据
+- ⚠️ 文档引用 design 但 design 缺失 → **P0-design-missing**
+- ❌ 文档不引用 design 但属于 design 范围 → P1
+- ❌ 文档引用格式错误（无 §X.Y） → P1-process-violation
+
+> **配套机制**：[review.md §Design First 原则](../review-rules/review.md) + [review-process.md §Step 1.6 设计对齐检查](../review-rules/review-process.md) + [review-patterns.md §模式 63 Design-Missing](../review-rules/review-patterns.md)。
 
 ### 2.1 概念准确性检查（强制，不可跳过）
 
@@ -161,7 +182,7 @@ description: Minix-RS 文档 Review 检查清单。包含文档结构规范、§
 
 **Step 2.1.5：架构范围标注验证**（多架构文档强制）
 
-> **来源**：03-kmain-cstart 案例"段寄存器依赖 GDT"未标注 x86 特有。
+> 来源：03-kmain-cstart
 
 - 叙述中出现 x86 特有机制（GDT/段描述符/TSS/IDT 门/CPL）→ 必须标注"x86 特有"
 - aarch64 特有（EL/SP_EL/VBAR/PSTATE）、riscv64 特有（S/U-mode/sscratch/stvec/SPP）同理
@@ -176,7 +197,7 @@ description: Minix-RS 文档 Review 检查清单。包含文档结构规范、§
 
 **Step 2.1.7：概念来源层级检查**
 
-> **来源**：Kimi L0/L1/L2 概念来源层级。
+> 来源：Kimi 提案
 
 Ch1 术语来源分层：
 - **L0 硬件/CPU 层**：ring/EL/IDT/VBAR（CPU 规范定义）
@@ -235,6 +256,334 @@ Ch1 术语来源分层：
 
 - [ ] Rust 函数签名/参数类型/返回值是否与真实代码一致？
 - [ ] 文档描述的行为与代码实现是否一致？示例代码是否可编译？
+
+### 2.4b 代码示例 Rust 习惯用法同步检查（NEW 2026-07-30）
+
+> **目的**：检测文档代码示例是否反映当前 idiomatic Rust 写法（特别是 Rust 2024 edition 兼容）。
+> **触发条件**：文档 §3 / §4 含 Rust 代码块（` ```rust ... ``` `）。
+> **模式参考**：[review-patterns-skill 模式 73](../skill/review-patterns-skill.md#模式-73-文档代码示例-rust-2024-edition-drift)。
+
+**检查命令**：
+```bash
+# Doc-side 静态扫描
+rg "static mut" {doc}.md  # 命中非"说明性注释"位置 → P1
+
+# Rust-side 实际状态（应 0 hits）
+rg "static mut" os/ -t rust
+
+# 路径一致性
+rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {doc}.md  # 命中但路径已重组 → P1
+find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.rs"
+```
+
+**判定**：
+- 文档示例含 `static mut` 而实际代码已迁移至 `Atomic*` / `UnsafeCell` → **P1**（模式 73）
+- 文档路径引用 vs 实际 `find` 结果不一致（目录重组）→ **P1**（模式 73 子类型 b）
+- 文档示例签名/API 名称与实际不符（`fetch_add` vs `compare_exchange`）→ **P2**（模式 73 子类型 c）
+
+**修复**：
+1. 复制实际代码到文档代码块
+2. 加注释说明 Rust 2024 edition 兼容性选择
+3. 路径错误按 `find` 结果更新
+
+### 2.4c 文档路径约定一致性检查（NEW 2026-07-30, 模式 #74）
+
+> **目的**：检测文档 Rust crate 路径引用是否漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`）。
+> **触发条件**：任何 doc review（路径引用是文档基础约定）。
+> **模式参考**：[review-patterns-skill 模式 74](../skill/review-patterns-skill.md#模式-74-文档路径约定漂移)。
+
+**检查命令**：
+```bash
+# 裸路径扫描（应仅命中 minix3/... 上下文）
+rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/" {doc}.md | grep -v "minix3"
+
+# 正确路径统计
+rg "os/(kernel|boot-shim|arch|servers|libs)" {doc}.md | wc -l
+
+# 双重前缀（sed 副作用）
+rg "os/os/" {doc}.md  # 必须 0 hits
+
+# 跨文档一致性
+rg "os/kernel/src/" notes/rewrite/{module}/{stage}/01-*.md | wc -l
+rg "os/kernel/src/" notes/rewrite/{module}/{stage}/02-*.md | wc -l
+# 同一 stage 内所有 doc 的 `os/` 前缀使用率应一致
+```
+
+**判定**：
+- doc 漏 `os/` 前缀（裸 `kernel/src/` 等） → **P1**（模式 74 默认）
+- doc 仅个别遗漏（<5 处） → **P2**
+- `os/os/` 双重前缀 → **P1**（sed 副作用，必须修）
+- 跨 doc 路径风格不一致（doc 01 用 `os/`，doc 02 不用） → **P1**（模式 74b）
+
+**修复**（≤10 分钟）：
+```bash
+# 1. 批量加 os/ 前缀
+sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md
+
+# 2. 修双重前缀
+sed -i 's|os/os/|os/|g' {doc}.md
+
+# 3. 验证 minix3 C 源路径未受影响
+rg "minix3/.*kernel/src/" {doc}.md  # 应保留
+```
+
+### 2.4d 文档行号引用准确性检查（NEW 2026-07-31, Proposal #7）
+
+> **目的**：检测 doc 中 `file:line` / `file:line-line` 引用与实际代码位置是否一致。
+> **触发条件**：任何 doc review（行号引用是文档基础锚点）。
+> **模式参考**：[review-process-skill Step 1.0a-自动](../process/review-process-skill.md)。
+
+**检查命令**（自动化脚本）：
+```bash
+# 1. 抽取 doc 中所有 file:line 引用
+rg -o "(?:os/|minix3/)?[a-z_/0-9]+\.(?:rs|c|h|ld|sh|asm|S):\d+(?:-?\d+)?" {doc}.md | sort -u > /tmp/doc_lines.txt
+
+# 2. 对每个 file:line 跑 sed -n 验证
+while IFS=: read -r file line; do
+    actual=$(sed -n "${line}p" "$file" 2>/dev/null)
+    echo "${file}:${line}: ${actual}"
+done < /tmp/doc_lines.txt
+```
+
+**判定**：
+- doc 写 `protection.rs:267 (lgdt)` 但 L267 不是 lgdt → **P2 行号偏移**
+- doc 写 `protect.c:217-221` 但实际在 `arch_proto.h:217-221` → **P2 文件错位**
+- doc 写 `:574` 但代码已迁移到 `:607` → **P2 代码漂移**
+
+**已知典型偏差**（3 次 review 累计 19 处）：
+- Doc 01 (07-30): 5 处 P2 行号
+- Doc 02 (07-30): 4 处 P2 行号
+- Doc 03 (07-31): 10 处 P2 行号（§4.4 三架构概念→代码映射表集中）
+
+**修复**：逐行核对 + sed 验证 + Doc-Sync 强校验。
+
+### 2.4e "参见" 范围引用扫描（NEW 2026-07-31, 模式 #75）
+
+> **目的**：检测 doc 中"参见 X.rs:Y-Z"形式的范围引用是否覆盖到 impl 结束、行号是否偏移。
+> **背景**：Step 1.0a 行号主动抽样**只检查**单行引用（`// path:line`），**漏检**范围引用（`参见 path:line-line`）。本次 Doc 04 review 漏检 2 处 L831/L883 范围漂移。
+> **触发条件**：任何 doc review（含"参见"型引用时强制）。
+> **模式参考**：[review-process-skill Step 1.0d](../process/review-process-skill.md) + [Pattern #75](../patterns/review-patterns-skill.md)。
+
+**检查命令**：
+```bash
+# 1. 抽取"参见"型范围引用
+rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md | sort -u
+
+# 2. 验证起止行号
+for ref in $(rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md | sort -u); do
+    path=$(echo "$ref" | rg -o "[^\`]+\.rs")
+    start=$(echo "$ref" | rg -o ":[0-9]+-" | rg -o "[0-9]+")
+    end=$(echo "$ref" | rg -o "-[0-9]+" | rg -o "[0-9]+")
+    echo "=== $path:$start-$end ==="
+    sed -n "${start}p" "$path"
+done
+
+# 3. 验证上界（impl 结束位置）
+rg -n "^impl PlatformDesc for X|^impl fmt::Display" {path}
+wc -l {path}  # 当前实际行数
+```
+
+**判定**：
+- 起止 ±1 偏移 → **P2 行号偏移**
+- 上界 < 实际 impl 结束 → **P2 范围过短**
+- 起止偏移 > 1 → **P1 行号漂移**
+
+**修复**（≤5 分钟）：
+```bash
+# 1. 修正 +1 偏移
+sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
+sed -i 's|acpi.rs:110-|acpi.rs:111-|g' {doc}.md
+
+# 2. 更新上界到 impl 结束（用 rg 找出 impl 起始 + 下一项起始）
+sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
+```
+
+**已知偏差**：
+- Doc 04 (07-31): 2 处"参见"范围漂移（L831 device_tree.rs:55-399 → 56-423；L883 acpi.rs:110-248 → 111-483）
+
+### 2.4f 元注释章节 review（NEW 2026-07-31）
+
+> **目的**：doc 中常有"§11.x 元注释"章节（记录"已知缺陷纠正"），本身是元信息，**容易被 review 流程忽略**。
+> **触发条件**：任何 doc 含"已知/修订/元注释/自审/修复记录"等关键词的章节。
+> **模式参考**：[review-process-skill Step 0.5.2](../process/review-process-skill.md)。
+
+**执行**：
+```bash
+# 1. 扫描元注释章节
+rg "^\s*#{2,3}\s+.*(已知|修订|元注释|自审|修复|TODO 状态)" notes/.../{doc}.md
+
+# 2. 对每个章节，验证事实：
+#   - 文件路径 → find 验证存在
+#   - 函数/类型引用 → rg 验证存在
+#   - 行号引用 → sed -n 验证内容
+#   - 历史决策 → 验证 design/outline 快照
+```
+
+**判定**：
+- 全部事实准确 → ✅ 不记录
+- 存在错误 → 按 Pattern #66 / #73 / #75 等记录到 Issue List
+
+**已知场景**：Doc 04 (07-31) §11.1 测试函数行号 + §11.2 `proc_arch.rs:350/252/279` 已删除——主动验证通过。
+
+### 2.4g const 权威位置检查（NEW 2026-07-31, Proposal #12）
+
+> **目的**：doc 描述的 `pub const` 类型可能在多个 crate 中重复定义（如 DEFAULT_HZ 在 os/arch + os/kernel 两处独立定义）。doc 应显式说明**权威定义位置** + **同步约束**。
+> **背景**：本次 05 doc review 发现 DEFAULT_HZ 在 `os/arch/src/arch/clock.rs:32` 和 `os/kernel/src/clock.rs:148` 各定义一次。Rust 不同 crate 独立 const 不会编译错误（不同 module），所以测试不会发现。doc §3.2 应显式说明权威位置 + 修改顺序。
+> **触发条件**：任何 doc 描述跨 crate 共享的常量（HZ, PAGE_SIZE, NR_*, MAX_* 等）。
+> **模式参考**：[Pattern #76 关联](../patterns/review-patterns-skill.md) + [Proposal #12 design.md §X-Y "权威位置"段](../process/review-process-skill.md)。
+
+**检查命令**：
+```bash
+# 1. 提取 doc 中描述的 const 名
+rg "pub const \w+" {doc}.md | rg -o "\w+" | sort -u
+
+# 2. 对每个 const，验证是否跨 crate 重复定义
+for c in DEFAULT_HZ PAGE_SIZE NR_PROCS; do
+    matches=$(rg "pub const $c" os/ -t rust -l 2>&1 | wc -l)
+    if [ "$matches" -gt 1 ]; then
+        echo "⚠️ $c defined in $matches crates"
+    fi
+done
+```
+
+**判定**：
+- 单一 crate 定义 → ✅ 不记录
+- 多 crate 重复定义 + doc 显式说明权威位置 → ✅ 接受
+- 多 crate 重复定义 + doc **未**说明权威位置 → **P1 doc 缺说明**
+
+**修复**（≤5 分钟）：
+```rust
+// 在 doc §X.Y 添加注释
+/// **权威定义位置**：`os/<crate>/src/<module>.rs:NN`
+/// （`<other_crate>` crate 内的同值 `const` 是独立副本，避免跨 crate 依赖）
+/// 修改时**先改权威位置**，再 sync 到其他副本。
+pub const DEFAULT_HZ: u32 = 100;
+```
+
+**关联**：
+- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 76` + `.claude/rules/review-process.md §Step 1.0e`
+- 首次发现：05-clock-interrupt-init review 2026-07-31（DEFAULT_HZ 在 os/arch + os/kernel 两 crate 独立定义）
+
+### 2.4h 代码注释 doc 归属交叉检查（NEW 2026-07-31, 模式 #76）
+
+> **目的**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
+> **触发条件**：任何 doc review 涉及 `os/kernel/src/lib.rs` 或其他 boot 阶段 init 函数注释。
+> **模式参考**：[review-process-skill Step 1.0e](../process/review-process-skill.md) + [Pattern #76](../patterns/review-patterns-skill.md)。
+
+**检查命令**：
+```bash
+# 1. 扫描代码注释中的 doc 归属引用
+rg "covered in 0[0-9]" os/ -t rust -n
+rg "see 0[0-9]-.+\.md" os/ -t rust -n
+
+# 2. 验证 doc 编号当前状态
+ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+
+# 3. 验证目标 doc 是否存在
+for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do
+    doc_file=$(echo "$ref" | rg -o "[0-9]+-.+\.md")
+    [ ! -f "notes/.../$doc_file" ] && echo "❌ STALE: $ref"
+done
+```
+
+**判定**：
+- `(covered in NN)` 注释错位 → **P1 注释错位**
+- `see XX-doc.md` 引用已删除 doc → **P1 注释失效**
+- `see XX-doc.md` 引用已重命名 doc → **P1 注释失效**
+
+**已知过时 doc 命名映射**（05 review 发现）：
+- `04-clock-interrupt-init.md` → `05-clock-interrupt-init.md`（doc 重命名）
+- `05-exception-interrupt.md` → `14-exception-interrupt.md`（推测）
+- `06-arch-post-init.md` → `08-system-init-boot-finish.md`（推测）
+- `06-design-final.md` → `06-design.md`（bagging 重命名推测）
+- `02-page-table-kernel.md` → `02-higher-half-kernel.md`（推测）
+
+**修复**（批量 sed，需先确认重命名映射）：
+```bash
+# 1. 修 (covered in NN) 注释（按上下文判断目标 doc）
+sed -i 's|init_clock_and_interrupts.*covered in 04|init_clock_and_interrupts (covered in 05|' os/kernel/src/lib.rs
+
+# 2. 修 see XX-doc.md 注释（确认重命名映射后批量替换）
+sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/arch/{clock.rs,arch_init.rs}
+```
+
+**已知场景**：
+- Doc 05 (07-31) 发现 `os/kernel/src/lib.rs:294/298/314` 3 处 `(covered in NN)` 注释错位（已修）
+- 同时发现 9+ 处 `see XX-doc.md` 引用旧 doc 命名（超出本次 review scope，记录到 backlog）
+
+### 2.4i L3 grep 证据主动验证（NEW 2026-07-31, Doc 06 review）
+
+> **目的**：doc §5.4 等章节常含"L3 grep 证据"段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用；`rg "initial_pc|initial_sp|..." os/ --type rust -g '!*.md'` 应有 0 matches）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
+> **触发条件**：任何 doc §5 含"L3 grep 证据"/"rg 证据"/"0 matches"等关键词的章节。
+> **模式参考**：[review-process-skill Step 5.4](../process/review-process-skill.md)。
+
+**检查命令**：
+```bash
+# 1. 抽取 doc 中所有 L3 grep 段
+rg "L3 grep 证据|rg 证据|grep 验证|0 matches" {doc}.md | head -10
+
+# 2. 对每个 grep 命令实际跑一次
+for cmd in $(rg -o "rg \"[^\"]+\"" {doc}.md | sort -u); do
+    result=$(eval "$cmd os/" 2>&1 | wc -l)
+    echo "$cmd → $result matches"
+done
+
+# 3. 验证 0 matches 段（doc 显式声称 0 matches 的 grep）
+rg "0 matches|0 残留" {doc}.md
+# 对每段跑实际 grep，确认确实是 0
+```
+
+**判定**：
+- doc 声称 N matches，实际 N matches → ✅
+- doc 声称 0 matches，实际 > 0 matches → **P1 doc-code 漂移**（自证错误）
+- doc 声称 N matches，实际 ≠ N → **P2 计数偏差**
+
+**修复**（≤2 min）：
+```bash
+# 1. 重新跑 grep 确认实际数
+rg "grant_capability" os/kernel/src/lib.rs | wc -l
+
+# 2. 更新 doc 中的 L3 grep 段
+sed -i 's|→ 3 处调用（kernel task / VM / RS）|→ N 处调用（实际数）|' {doc}.md
+```
+
+**关联**：
+- 首次发现：06-proc-init-boot-proc review 2026-07-31（doc §5.4 L3 grep 证据未主动验证）
+
+### 2.4j 测试总数末段补充（NEW 2026-07-31, Doc 06 review）
+
+> **目的**：doc §5 测试章节常含"测试覆盖矩阵" + "测试函数列表"，但**无测试总数声称**。本次 review 实际跑了 `cargo test` 得到 490/120 测试，但 doc 未体现。建议 doc 末段补充"截至 YYYY-MM-DD, N 个测试通过"。
+> **触发条件**：任何 doc §5 测试章节（应有测试覆盖矩阵 + 实际测试函数列表）。
+> **模式参考**：[review-process-skill Step 5.5](../process/review-process-skill.md)。
+
+**检查命令**：
+```bash
+# 1. doc §5 是否含"测试总数"声称？
+rg "约.*\d+ 个|总计.*\d+|通过.*\d+ 个" {doc}.md | head -5
+
+# 2. 跑实际测试
+for crate in $(rg "os/[\w/]+\.rs:" {doc}.md | rg -o "os/[\w/]+" | sort -u); do
+    echo "=== $crate ==="
+    cd os && cargo test -p $(echo $crate | rg -o "[\w-]+$") --lib 2>&1 | rg "^test result"
+done
+```
+
+**判定**：
+- doc 含总数声称且与实际偏差 ≤30% → ✅ 接受
+- doc 含总数声称且偏差 >30% → **P2 测试数量失精**
+- doc 无总数声称 → ✅ N/A（**建议**末段补充测试统计段）
+
+**doc 末段建议格式**（参考 doc 03 §5）：
+```markdown
+### 5.X 测试统计（截至 YYYY-MM-DD）
+
+- `cargo test -p {crate} --manifest-path os/Cargo.toml --lib`：**N 个通过**
+- 本节列出与本模块直接相关的 M 个（子集）
+- 完整测试清单：`rg "^\s*fn test_" os/{path}`
+```
+
+**关联**：
+- 首次发现：06-proc-init-boot-proc review 2026-07-31（doc 无总数声称，但实际 610 tests 通过）
 
 ### 2.5 架构演进说明
 
@@ -376,7 +725,7 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 
 ### 3.1 文本流畅性
 - [ ] 语病/错句？长句超40字？代词指代清晰？被动语态滥用？术语一致？标点混用？
-- [ ] **开篇第一句检查** `[来源: DS]`：Ch1 开篇第一句实质性内容是否包含 2+ 个未定义术语？→ P2（读者第一句就卡住）
+- [ ] **开篇第一句检查** ：Ch1 开篇第一句实质性内容是否包含 2+ 个未定义术语？→ P2（读者第一句就卡住）
   - 反例："prot_init() 让内核从借用固件的运行上下文变成拥有自己的运行上下文"（3 个未定义术语）
   - 正例："信任边界：内核可信，用户进程不可信"（0 个未定义术语）
 
@@ -385,8 +734,8 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 
 ### 3.3 冗余控制
 - [ ] 单文档内重复>2次？跨文档重复>3行应改引用？代码注释和文字说同一件事？
-- [ ] **概念正交性** `[来源: Qwen]`：两个"并列"概念实际有因果/包含关系（如特权级 vs 页表权限位）→ P2，应调整为层次关系
-- [ ] **因果链重复** `[来源: GLM]`：同一套因果关系（A→B→C）在 2+ 节完整重讲 → P2，应拆分层次
+- [ ] **概念正交性**：两个"并列"概念实际有因果/包含关系（如特权级 vs 页表权限位）→ P2，应调整为层次关系
+- [ ] **因果链重复**：同一套因果关系（A→B→C）在 2+ 节完整重讲 → P2，应拆分层次
 - **判定**：同一概念同文档重复超2次→检查是否必要；跨文档重复超3行→简介+引用
 
 ### 3.4 读者体验
@@ -444,7 +793,7 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 
 ### 3.6 文档设计哲学（强制）
 
-> **来源**：M3 文档设计哲学提案。
+> 来源：M3 提案
 > **背景**：03 案例暴露文档"哲学不一致"——Ch1 声称概念驱动，实际从函数名出发。
 
 **Step 3.6.1 哲学选择**：抽取 Ch1 开头、Ch1 总结、Ch3 引言，判定属于：
@@ -460,7 +809,7 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 
 ### 3.7 作者意图透明性（强制）
 
-> **来源**：M3/GLM/Seed 作者意图透明性提案。
+> 来源：多 AI 提案
 > **背景**：03 案例正文出现 13+ 处"作者元注释"——暴露作者写作过程而非读者接收结果的文字。
 
 **判别口诀**："删掉这段后，读者对主题的理解是否减少？"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # review-init.sh — Minix-RS Review 初始化助手
 #
-# 用法: review-init.sh {tool} {doc-path} [agent]
+# 用法: review-init.sh {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]
 # 例:   review-init.sh trae notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md glm
-#       review-init.sh claude notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md
+#       review-init.sh trae notes/rewrite/fork-syscall-rewrite/04-platform-discovery/04-platform-discovery.md kimi --design-policy strict --require-multi-agent
 #
 # 功能:
 #   1. 从 doc-path 自动计算 {module} / {stage} / {doc-stem}
@@ -11,6 +11,9 @@
 #   3. 输出 Derived Paths 表格供 agent 在 Step 0 引用
 #   4. 若 STATE.md 已存在，运行 review-state-validate.py 预检
 #   5. 若 STATE.md 不存在，生成空 STATE.md 骨架
+#   6. **NEW 2026-07-16**: Design 存在性预检（按 --design-policy 决定 strict/optional/required）
+#   7. **NEW 2026-07-16**: --require-multi-agent 强制验证 Gate G 必须 multi-agent
+#   8. **NEW 2026-07-16**: --size-adaptive 输出 size-adaptive round 推荐
 #
 # 路径布局（见 improve-v2 §2.1.1）:
 #   .review/trae/{module}/
@@ -28,21 +31,69 @@
 
 set -euo pipefail
 
-# ===== 参数校验 =====
+# ===== 默认值 =====
+DESIGN_POLICY="strict"           # strict | optional | required
+REQUIRE_MULTI_AGENT="false"       # true | false
+SIZE_ADAPTIVE="false"             # true | false
+
+# ===== 参数校验 + 解析 =====
 if [[ $# -lt 2 ]]; then
-    echo "用法: $0 {tool} {doc-path} [agent]" >&2
+    echo "用法: $0 {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]" >&2
     echo "  tool     = trae | claude" >&2
     echo "  doc-path = 相对项目根的文档路径（如 notes/rewrite/{module}/{stage}/{doc}.md）" >&2
     echo "  agent    = AI 标识（Trae: glm/kimi/ds/qwen/seed；Claude 可省略）" >&2
+    echo "  --design-policy   = strict（默认；缺失 design 阻断 review 启动 / review 内部 Step 0.3 嵌入生成）" >&2
+    echo "                      | optional（缺失 design 仅警告，不阻断；用于跨文档复用场景）" >&2
+    echo "                      | required（缺失 design 则立即报错退出）" >&2
+    echo "  --require-multi-agent = 报告 P0≥1 时强制多 agent 验证 Gate G" >&2
+    echo "  --size-adaptive    = 输出 size-adaptive round 推荐（>1000 行文档分轮）" >&2
     exit 1
 fi
 
+# 先提取位置参数，再解析 flag 参数（支持混合顺序）
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --design-policy)
+            DESIGN_POLICY="$2"
+            shift 2
+            ;;
+        --require-multi-agent)
+            REQUIRE_MULTI_AGENT="true"
+            shift
+            ;;
+        --size-adaptive)
+            SIZE_ADAPTIVE="true"
+            shift
+            ;;
+        --help|-h)
+            echo "用法见 review-init.sh 顶部"
+            exit 0
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#POSITIONAL[@]} -lt 2 ]]; then
+    echo "❌ 位置参数不足，需要 tool + doc-path" >&2
+    exit 1
+fi
+
+set -- "${POSITIONAL[@]}"
 TOOL="$1"
 DOC_PATH="$2"
 AGENT="${3:-}"
 
 if [[ "$TOOL" != "trae" && "$TOOL" != "claude" ]]; then
     echo "❌ tool 必须是 trae 或 claude，得到: $TOOL" >&2
+    exit 1
+fi
+
+if [[ ! "$DESIGN_POLICY" =~ ^(strict|optional|required)$ ]]; then
+    echo "❌ --design-policy 必须是 strict / optional / required，得到: $DESIGN_POLICY" >&2
     exit 1
 fi
 
@@ -151,6 +202,12 @@ generate_state_skeleton() {
 - **Next action**: Run Step 0 (scope + time budget)
 - **Blocker Gates**: 0❌ A❌ B❌ C❌ D❌ D-6❌ E❌ G❌
 
+## Resume Point（NEW 2026-07-16，跨 session 续审必填）
+> 当 session 中断时强制填写，详细协议见 [review-process.md §一.附录 A.2](#)
+- **Next Session Resume Point**: —（待首次 session 设置）
+- **Last Session Status**: —
+- **必读文件清单**: scan.md + design.md + 结构脚手架（按 Step 0.5.6 6维反查决定）
+
 ## Phase Completion Log
 | Phase | Date | Passes | P0 found | P1 found | P2 found |
 |-------|------|--------|----------|----------|----------|
@@ -192,6 +249,87 @@ else
     echo "ℹ️ STATE.md 不存在，生成骨架..."
     generate_state_skeleton "$STATE_FILE" "$TOOL" "$MODULE"
     echo "✅ 已生成: $STATE_FILE"
+fi
+
+# ===== Design 存在性预检（NEW 2026-07-16）=====
+# 触发条件：完整/深度/设计优先 review 模式；review-process.md §Step 0 必须做
+echo ""
+echo "=== Design 预检（NEW Step 0 requirement）==="
+# 提取 doc 编号前两位（如 03-kmain-cstart → 03），用于匹配 {NN}-design.v{N}.md 模式
+DOC_NN="$(echo "$DOC_STEM" | cut -d- -f1)"
+DESIGN_DIR="$(dirname "$DOC_PATH_NORMALIZED")/.design"
+if [[ -d "$DESIGN_DIR" ]]; then
+    DESIGN_FILES=$(ls "$DESIGN_DIR"/"${DOC_NN}"-design*.md 2>/dev/null || true)
+    if [[ -n "$DESIGN_FILES" ]]; then
+        echo "✅ Design 已存在（policy=$DESIGN_POLICY）："
+        echo "$DESIGN_FILES" | sed 's/^/   /'
+    else
+        case "$DESIGN_POLICY" in
+            strict)
+                echo "⛔ Design MISSING（policy=strict）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
+                echo "   下一步：启动 review 后，AI 将自动执行 Step 0.3 嵌入生成（design-structure → outline → outline-review → design）"
+                echo "   详见：prompt/review-rules/review-process.md §Step 0.3 缺失即生成"
+                echo "   阻断 review 启动（exit 2）— 改用 --design-policy optional 可跳过阻断，review 内部 Step 0.3 仍会生成"
+                exit 2
+                ;;
+            optional)
+                echo "⚠️  Design MISSING（policy=optional）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
+                echo "   将仅 WARN 不阻断 review；本 review 不要求专属 design 但建议通过引用复用相邻文档 design"
+                ;;
+            required)
+                echo "⛔ Design REQUIRED（policy=required）但缺失：$DESIGN_DIR/${DOC_NN}-design.v*.md"
+                echo "   立即退出。请先生成 design 后再 review。"
+                exit 2
+                ;;
+        esac
+    fi
+else
+    echo "⚠️ Design 目录不存在：$DESIGN_DIR"
+    case "$DESIGN_POLICY" in
+        strict)
+            echo "   policy=strict：阻断 review 启动（exit 2）— 改用 --design-policy optional 跳过，review 内部 Step 0.3 仍会生成"
+            exit 2
+            ;;
+        optional)
+            echo "   policy=optional，仅警告不阻断"
+            ;;
+        required)
+            echo "   立即退出。"
+            exit 2
+            ;;
+    esac
+fi
+
+# ===== Multi-Agent 提示（NEW 2026-07-16）=====
+if [[ "$REQUIRE_MULTI_AGENT" == "true" ]]; then
+    echo ""
+    echo "=== Multi-Agent 验证（Gate G 强化）==="
+    echo "⛔ 已设置 --require-multi-agent："
+    echo "   若本 review 报告 P0 ≥ 1，Gate G 必须由不同 agent 执行 VERIFY-CHECK"
+    echo "   当前 agent: ${AGENT:-(未指定)}"
+    if [[ -z "$AGENT" ]]; then
+        echo "   ⚠️  警告：未指定 agent，同 agent 偏差风险上升"
+    fi
+fi
+
+# ===== Size-Adaptive Round 推荐（NEW 2026-07-16）=====
+if [[ "$SIZE_ADAPTIVE" == "true" ]]; then
+    DOC_LINES=$(wc -l < "$DOC_PATH_NORMALIZED")
+    echo ""
+    echo "=== Size-Adaptive Round 推荐 ==="
+    echo "文档行数: $DOC_LINES"
+    echo ""
+    echo "| 文档行数 | rounds 推荐 | 备注 |"
+    echo "|---------|------------|------|"
+    if [[ $DOC_LINES -lt 500 ]]; then
+        echo "| < 500    | 1 round（Step 0-7 一轮完成） | 小文档单轮可完成，无需分阶段 |"
+    elif [[ $DOC_LINES -lt 1501 ]]; then
+        echo "| 500-1500 | 2 rounds | R1 正确性 + R2 卓越性 |"
+    else
+        echo "| > 1500   | 4 rounds | R1 正确性 + R2 卓越性 + R3 patterns + R4 跨文档 |"
+    fi
+    echo ""
+    echo "⏸ 中断策略：若 session 内上下文 >80%，按 review-process.md §一.附录 A.2 写 Resume Point"
 fi
 
 # ===== 输出 Derived Paths 表 =====

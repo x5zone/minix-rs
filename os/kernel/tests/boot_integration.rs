@@ -31,7 +31,7 @@ fn boot_simulation_full_flow() {
         boot_modules: &[],                                // no boot modules yet
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
-        platform_descriptor: None,
+        platform_sources: &[],
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4

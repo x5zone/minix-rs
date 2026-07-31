@@ -234,21 +234,39 @@ fn has_cpu_time_left(p: &KProcess) -> bool {
     p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
 }
 
+/// Aggregated scheduling parameters for [`sched_proc`].
+///
+/// Groups the four scheduling parameters (priority, quantum, cpu, niced)
+/// into a single struct to reduce the function's parameter count from 5
+/// to 2. Mirrors the C `sched_proc()` parameter list (`system.c:642-723`)
+/// but uses Rust idioms.
+///
+/// # Design decision §3.8 (11-design.v1.md): Option replaces C's -1 sentinel
+///
+/// C uses `i32` parameters where `-1` means "keep current value". Rust uses
+/// `Option<T>` where `None` means "keep current" and `Some(v)` means "set to v".
+/// This avoids polluting the priority type with a sentinel value and is the
+/// Rust-idiomatic way to express "optional".
+///
+/// # Fields
+///
+/// * `priority` — `Some(v)` sets new priority (0..=15); `None` keeps current.
+/// * `quantum` — `Some(v)` sets new quantum in ms (>= 1); `None` keeps current.
+/// * `cpu` — `Some(v)` sets new CPU affinity; `None` keeps current (SMP stub).
+/// * `niced` — if true, set MF_NICED; if false, clear it.
+pub struct SchedParams {
+    pub priority: Option<u8>,
+    pub quantum: Option<u32>,
+    pub cpu: Option<u32>,
+    pub niced: bool,
+}
+
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
 ///
 /// Validates the parameters and applies them to the target process's
-/// `p_sched` fields. The sentinel value `-1` for any numeric field
-/// means "leave the current value unchanged" (matches C semantics).
-///
-/// # Arguments
-///
-/// * `p` — the target process.
-/// * `priority` — new priority (0..NR_SCHED_QUEUES), or -1 to keep.
-/// * `quantum` — new quantum in milliseconds (>= 1), or -1 to keep.
-/// * `cpu` — new CPU affinity (0..ncpus), or -1 to keep.
-/// * `niced` — if true, set MF_NICED; if false, clear it.
+/// `p_sched` fields.
 ///
 /// # `niced` parameter rationale
 ///
@@ -260,11 +278,17 @@ fn has_cpu_time_left(p: &KProcess) -> bool {
 /// syscall can reuse this function without API churn. Callers that match the
 /// `SYS_SCHEDCTL` path pass `false` explicitly (see `dispatch_schedule`).
 ///
+/// # Errors
+///
+/// - `InvalidArgument` (EINVAL) if `priority` is `Some(v)` with `v > 15`, or
+///   if `quantum` is `Some(v)` with `v == 0`.
+/// - `BadCpu` (EBADCPU) if the requested CPU is not ready (SMP stub; not
+///   reachable on single-CPU systems).
+///
 /// # Returns
 ///
-/// `OK` on success, or:
-/// - `EINVAL` if priority/quantum is out of range.
-/// - `EBADCPU` if the requested CPU is not ready (SMP stub).
+/// `Ok(())` on success. C returns `OK` (0); the Rust `Result` replaces the
+/// errno-style return.
 ///
 /// # SMP migration
 ///
@@ -274,34 +298,36 @@ fn has_cpu_time_left(p: &KProcess) -> bool {
 /// `smp_schedule_migrate_proc` body); we just record the new
 /// `p_cpu` field here.
 ///
-/// # Implementation status (2026-06-16)
+/// # Implementation status
 ///
-/// Steps 1-5 are implemented (validation + field updates).
-/// Step 6 (SMP migration via `smp_schedule_migrate_proc`) is DEFERRED.
+/// Steps 1-9 are implemented (validation + field updates).
+/// SMP migration via `smp_schedule_migrate_proc` is DEFERRED.
 pub fn sched_proc(
     p: &mut KProcess,
-    priority: i32,
-    quantum: i32,
-    cpu: i32,
-    niced: bool,
-) -> Result<i32, SchedProcError> {
+    params: SchedParams,
+) -> Result<(), SchedProcError> {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 
     // Step 1: validate priority range.
     // C: system.c:644-645:
     //   if ((priority < TASK_Q && priority != -1) || priority > NR_SCHED_QUEUES)
     //       return EINVAL;
-    // In Rust: TASK_Q == 0 (kernel default), NR_SCHED_QUEUES == 16.
-    // Special value -1 means "keep current".
-    if (priority < priority::TASK_Q as i32 && priority != -1) || priority > priority::NR_SCHED_QUEUES as i32 {
-        return Err(SchedProcError::InvalidArgument);
+    // In Rust: TASK_Q == 0, MIN_USER_Q == 15 (NR_SCHED_QUEUES-1).
+    // Design decision §3.8: None = keep current (replaces C's -1).
+    // u8 is always >= 0, so we only check the upper bound.
+    if let Some(v) = params.priority {
+        if v > priority::MIN_USER_Q {
+            return Err(SchedProcError::InvalidArgument);
+        }
     }
 
     // Step 2: validate quantum range.
     // C: system.c:647-648:
     //   if (quantum < 1 && quantum != -1) return EINVAL;
-    if quantum < 1 && quantum != -1 {
-        return Err(SchedProcError::InvalidArgument);
+    if let Some(v) = params.quantum {
+        if v < 1 {
+            return Err(SchedProcError::InvalidArgument);
+        }
     }
 
     // Step 3: validate CPU range (SMP stub — always OK for uniprocessor).
@@ -309,25 +335,28 @@ pub fn sched_proc(
     // rewrite uses single-threaded event loop for user-space servers,
     // so cpu_is_ready is always true. Multi-CPU servers would extend
     // here.
-    let _ = cpu;
+    let _ = params.cpu;
 
-    // Step 4: preemption hint (DEFERRED on RTS_NO_QUANTUM toggle).
+    // Step 4: preemption hint (RTS_NO_QUANTUM toggle).
     // C: system.c:668-677 sets RTS_NO_QUANTUM if the process is runnable
     // and the parameters are changing. We track this flag in the Rust
     // translation, but actual reschedule is handled by the scheduler.
-    let _priority_changed = priority != -1 && priority != p.p_sched.priority.load(Ordering::Acquire) as i32;
-    let _quantum_changed = quantum != -1;
-    if _priority_changed || _quantum_changed {
-        // RTS_NO_QUANTUM would mark "needs re-enqueue after this update".
+    let priority_changed = match params.priority {
+        Some(v) => v != p.p_sched.priority.load(Ordering::Acquire),
+        None => false,
+    };
+    let quantum_changed = params.quantum.is_some();
+    if priority_changed || quantum_changed {
+        // RTS_NO_QUANTUM marks "needs re-enqueue after this update".
         // We set it (matches C) and rely on the scheduler to clear it.
         p.p_rts_flags.set(RtsFlagsBits::NO_QUANTUM);
     }
 
-    // Step 5: apply priority (if not -1).
+    // Step 5: apply priority (if Some).
     // C: system.c:684-685:
     //   if (priority != -1) p->p_priority = priority;
-    if priority != -1 {
-        p.p_sched.priority.store(priority as i8, Ordering::Release);
+    if let Some(v) = params.priority {
+        p.p_sched.priority.store(v, Ordering::Release);
     }
 
     // Step 6: apply quantum + reset cpu_time_left.
@@ -336,10 +365,10 @@ pub fn sched_proc(
     //       p->p_quantum_size_ms = quantum;
     //       p->p_cpu_time_left = ms_2_cpu_time(quantum);
     //   }
-    if quantum != -1 {
-        p.p_sched.quantum.size_ms.store(quantum as u32, Ordering::Release);
+    if let Some(v) = params.quantum {
+        p.p_sched.quantum.size_ms.store(v, Ordering::Release);
         // Reset cpu_time_left to (quantum * TSC_PER_MS) — we use clock::ms_to_cpu_time.
-        let total_cycles = crate::clock::ms_to_cpu_time(quantum as u32);
+        let total_cycles = crate::clock::ms_to_cpu_time(v);
         p.p_sched.quantum.cpu_time_left.store(total_cycles, Ordering::Release);
     }
 
@@ -347,15 +376,15 @@ pub fn sched_proc(
     // C: system.c:691-693 (CONFIG_SMP only):
     //   if (cpu != -1) p->p_cpu = cpu;
     // On uniprocessor Rust rewrite this is a no-op (cpu is always 0).
-    if cpu != -1 {
-        p.p_sched.cpu.store(cpu as u32, Ordering::Release);
+    if let Some(v) = params.cpu {
+        p.p_sched.cpu.store(v, Ordering::Release);
     }
 
     // Step 8: apply niced flag.
     // C: system.c:695-698:
     //   if (niced) p->p_misc_flags |= MF_NICED;
     //   else p->p_misc_flags &= ~MF_NICED;
-    if niced {
+    if params.niced {
         p.p_misc_flags.set(MiscFlagsBits::NICED);
     } else {
         p.p_misc_flags.clear(MiscFlagsBits::NICED);
@@ -364,7 +393,7 @@ pub fn sched_proc(
     // Step 9: clear RTS_NO_QUANTUM after enqueue (matches C:698).
     p.p_rts_flags.clear(RtsFlagsBits::NO_QUANTUM);
 
-    Ok(0) // OK
+    Ok(())
 }
 
 /// Errors that sched_proc can return.
@@ -402,7 +431,7 @@ mod tests {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
     use crate::proc_table::ProcessTable;
 
-    fn make_runnable(table: &mut ProcessTable, nr: ProcNr, prio: i8) {
+    fn make_runnable(table: &mut ProcessTable, nr: ProcNr, prio: u8) {
         let p = table.get_mut(nr).unwrap();
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority.store(prio, Ordering::Release);
@@ -519,34 +548,36 @@ mod tests {
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        // priority 7 → 3 (higher)
-        let result = sched_proc(p, 3, -1, -1, false);
-        assert_eq!(result, Ok(0));
+        // priority 7 → 3 (higher). Design §3.8: Option<u8> replaces -1.
+        let result = sched_proc(p, SchedParams { priority: Some(3), quantum: None, cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
         assert_eq!(p.p_sched.priority.load(Ordering::Acquire), 3);
     }
 
     #[test]
-    fn test_sched_proc_priority_sentinel_keeps_value() {
-        // C: priority == -1 means "keep current".
+    fn test_sched_proc_priority_none_keeps_value() {
+        // Design §3.8: None = keep current (replaces C's -1 sentinel).
         let mut table = ProcessTable::new();
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority.store(11, Ordering::Release);
-        let result = sched_proc(p, -1, -1, -1, false);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
         // Priority unchanged.
         assert_eq!(p.p_sched.priority.load(Ordering::Acquire), 11);
     }
 
     #[test]
-    fn test_sched_proc_priority_negative_rejected() {
-        // C: system.c:644 — priority < 0 (and != -1) → EINVAL.
+    fn test_sched_proc_priority_overflow_rejected() {
+        // Design §3.8: u8 type rejects negatives at compile time.
+        // Runtime check: priority > MIN_USER_Q (15) → EINVAL.
+        // C: system.c:645 — priority > NR_SCHED_QUEUES → EINVAL.
         let mut table = ProcessTable::new();
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, -2, -1, -1, false);
+        let result = sched_proc(p, SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -557,7 +588,7 @@ mod tests {
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, 17, -1, -1, false);
+        let result = sched_proc(p, SchedParams { priority: Some(17), quantum: None, cpu: None, niced: false });
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -569,8 +600,8 @@ mod tests {
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // Set quantum to 50ms.
-        let result = sched_proc(p, -1, 50, -1, false);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: None, quantum: Some(50), cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
         assert_eq!(p.p_sched.quantum.size_ms.load(Ordering::Acquire), 50);
         // cpu_time_left should be (50 * TSC_PER_MS) — non-zero.
         assert!(p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0);
@@ -578,12 +609,12 @@ mod tests {
 
     #[test]
     fn test_sched_proc_quantum_zero_rejected() {
-        // C: system.c:647-648 — quantum < 1 (and != -1) → EINVAL.
+        // C: system.c:647-648 — quantum < 1 → EINVAL.
         let mut table = ProcessTable::new();
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, -1, 0, -1, false);
+        let result = sched_proc(p, SchedParams { priority: None, quantum: Some(0), cpu: None, niced: false });
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -594,8 +625,8 @@ mod tests {
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, -1, -1, -1, true);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: true });
+        assert_eq!(result, Ok(()));
         assert!(p.p_misc_flags.is_set(MiscFlagsBits::NICED));
     }
 
@@ -607,8 +638,8 @@ mod tests {
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_misc_flags.set(MiscFlagsBits::NICED); // pre-set
-        let result = sched_proc(p, -1, -1, -1, false);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
         assert!(!p.p_misc_flags.is_set(MiscFlagsBits::NICED));
     }
 
@@ -619,8 +650,8 @@ mod tests {
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, -1, -1, 0, false);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false });
+        assert_eq!(result, Ok(()));
         assert_eq!(p.p_sched.cpu.load(Ordering::Acquire), 0);
     }
 
@@ -644,11 +675,78 @@ mod tests {
         let p = table.get_mut(0).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        let result = sched_proc(p, 5, 100, 0, true);
-        assert_eq!(result, Ok(0));
+        let result = sched_proc(p, SchedParams { priority: Some(5), quantum: Some(100), cpu: Some(0), niced: true });
+        assert_eq!(result, Ok(()));
         assert_eq!(p.p_sched.priority.load(Ordering::Acquire), 5);
         assert_eq!(p.p_sched.quantum.size_ms.load(Ordering::Acquire), 100);
         assert_eq!(p.p_sched.cpu.load(Ordering::Acquire), 0);
         assert!(p.p_misc_flags.is_set(MiscFlagsBits::NICED));
+    }
+
+    // ── L1 C-Rust parity tests ────────────────────────────────────────
+    // These tests explicitly verify that Rust behavior matches Minix3 C
+    // behavior for the 9-step sched_proc flow (system.c:642-723).
+
+    #[test]
+    fn test_sched_proc_c_parity_step1_priority_validation() {
+        // C: system.c:644-645 — priority > NR_SCHED_QUEUES → EINVAL
+        // C: system.c:645 — if (priority > NR_SCHED_QUEUES) return EINVAL;
+        let mut table = ProcessTable::new();
+        let p = table.get_mut(0).unwrap();
+        p.p_endpoint = minix_types::Endpoint(100);
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        // C: NR_SCHED_QUEUES = 16, MIN_USER_Q = 15
+        // priority = 16 → EINVAL in both C and Rust
+        let result = sched_proc(p, SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
+        assert_eq!(result, Err(SchedProcError::InvalidArgument));
+        // priority = 15 → OK in both C and Rust
+        let p2 = table.get_mut(1).unwrap();
+        p2.p_endpoint = minix_types::Endpoint(101);
+        p2.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        let result = sched_proc(p2, SchedParams { priority: Some(15), quantum: None, cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_sched_proc_c_parity_step2_quantum_validation() {
+        // C: system.c:647-648 — quantum < 1 && quantum != -1 → EINVAL
+        let mut table = ProcessTable::new();
+        let p = table.get_mut(0).unwrap();
+        p.p_endpoint = minix_types::Endpoint(100);
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        // quantum = 0 → EINVAL in C (quantum < 1 && quantum != -1)
+        let result = sched_proc(p, SchedParams { priority: None, quantum: Some(0), cpu: None, niced: false });
+        assert_eq!(result, Err(SchedProcError::InvalidArgument));
+        // quantum = 1 → OK in C (quantum >= 1)
+        let result = sched_proc(p, SchedParams { priority: None, quantum: Some(1), cpu: None, niced: false });
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_sched_proc_c_parity_step8_niced_flag() {
+        // C: system.c:695-698 — niced sets/clears MF_NICED
+        let mut table = ProcessTable::new();
+        let p = table.get_mut(0).unwrap();
+        p.p_endpoint = minix_types::Endpoint(100);
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        // C: if (niced) p->p_misc_flags |= MF_NICED;
+        let _ = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: true });
+        assert!(p.p_misc_flags.is_set(MiscFlagsBits::NICED));
+        // C: else p->p_misc_flags &= ~MF_NICED;
+        let _ = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: false });
+        assert!(!p.p_misc_flags.is_set(MiscFlagsBits::NICED));
+    }
+
+    #[test]
+    fn test_sched_proc_c_parity_step9_no_quantum_cleared() {
+        // C: system.c:698 — RTS_NO_QUANTUM is cleared after enqueue
+        let mut table = ProcessTable::new();
+        let p = table.get_mut(0).unwrap();
+        p.p_endpoint = minix_types::Endpoint(100);
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        p.p_rts_flags.set(RtsFlagsBits::NO_QUANTUM); // pre-set
+        let _ = sched_proc(p, SchedParams { priority: Some(7), quantum: None, cpu: None, niced: false });
+        // C: after sched_proc, RTS_NO_QUANTUM should be cleared
+        assert!(!p.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 }

@@ -1,7 +1,7 @@
 # 04-platform-discovery: 平台硬件发现抽象
 
 > **分类**: 平台抽象 / 硬件发现
-> **源码**: `os/libs/minix-platform/src/desc.rs`、`os/libs/minix-platform/src/global.rs`、`os/libs/minix-platform/src/qemu_virt.rs`、`os/libs/minix-platform/src/device_tree.rs`、`os/libs/minix-platform/src/acpi.rs`、`os/libs/minix-boot/src/kernel_info.rs:78-118`、`os/boot-shim/src/uefi_helpers.rs:33-78`、`os/boot-shim/src/opensbi_helpers.rs:215-220`、`os/kernel/src/lib.rs:283-293`
+> **源码**: `os/libs/minix-boot/src/platform.rs`（`PlatformDesc`/`PlatformDescKind`/`PlatformDescSource`/子描述符 trait）、`os/libs/minix-platform/src/desc.rs`（trait re-export）、`os/libs/minix-platform/src/kind.rs`（`parse_by_kind` 分派）、`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（品牌 struct + per-arch `QemuVirtDesc`）、`os/libs/minix-platform/src/global.rs`（`PlatformContext`/`init_from_kinfo`）、`os/libs/minix-platform/src/device_tree.rs`、`os/libs/minix-platform/src/acpi.rs`、`os/libs/minix-boot/src/kernel_info.rs:81-102`、`os/boot-shim/src/uefi_helpers.rs:52-98`、`os/boot-shim/src/opensbi_helpers.rs:222-260`、`os/kernel/src/lib.rs:283-293`
 > **C 参考源码**: `minix3/minix/kernel/arch/i386/arch_system.c:246-287`（`arch_init()` 调用 `acpi_init()`）、`minix3/minix/kernel/arch/i386/acpi.c:310-342`（`acpi_init()`）、`minix3/minix/kernel/arch/earm/arch_system.c:101-132`（`arch_init()` 调用 `bsp_init()`）
 > **说明**: 内核如何在不硬编码地址的前提下，知道自己在什么硬件上运行——`PlatformDesc` trait 的设计与三架构统一抽象
 > **前置**: [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 初始化序列已建立保护结构
@@ -225,7 +225,7 @@ main()
 
 1. **职责边界清晰**：boot-shim 的本职是"固件接口桥接 + kernel 装载 + ExitBootServices"（见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)）。把 FDT/ACPI 解析塞给它，等于让"准备器"开始执行"kernel 才该做的工作"——boot-shim 从"可被 GRUB/UEFI/OpenSBI/U-Boot 替换的统一入口"膨胀成"半个 kernel"，破坏 BootShim trait 的统一抽象。
 2. **与 Minix3 C 语义对齐**：C 版的 `acpi_init()`、`bsp_init()` 都是 **kernel 内部**调用。"kernel 自己理解硬件"是微内核的职责边界。
-3. **`KernelInfo` 保持精简**：方案 A 要求 `KernelInfo` 扩展 GICD/GICR/PLIC/CLINT 等十几个字段。方案 C 只需加 **1 个字段**（`Option<PlatformDescriptorPtr>`）。
+3. **`KernelInfo` 保持精简**：方案 A 要求 `KernelInfo` 扩展 GICD/GICR/PLIC/CLINT 等十几个字段。方案 C 只需加 **1 个字段**（`platform_sources: &'static [PlatformDescSource]`）——一个有序切片，承载 `(PlatformDescKind, PhysBytes)` 这种纯数据对。切片天然支持多源共存（DTB + RSDP 共存的服务器场景），上层 KernelInfo 仍是 1 字段，没有膨胀。详见 [§3.7](#37-kernelinfo-扩展字段设计)。
 4. **可测试性**：kernel 侧解析器可在 `#[cfg(test)]` 中用 mock DTB/ACPI 字节流测试，不需要启动 QEMU。
 
 职责边界如下：
@@ -264,18 +264,74 @@ main()
 >
 > 但这个开销在本设计中**几乎可以忽略**：实际存储是 `PlatformDescEnum`，编译器对每个 `match desc.interrupt_controller() { ... }` 都能静态内联到具体变体的方法体；只有从 enum 切到 trait object 那一刻才有一次虚表查找，而这一步发生在 boot 时 init 阶段（`clock.rs:131` 等几处），不在时钟中断等热路径上。热路径上的 `read_tsc()` 拿到 enum 后就走具体类型的寄存器操作，无 vtable 查找。
 
-参见 `os/libs/minix-platform/src/desc.rs:30-45` 的 `PlatformDesc` trait 定义。
+参见 `os/libs/minix-boot/src/platform.rs:247-260` 的 `PlatformDesc` trait 定义（由 `os/libs/minix-platform/src/desc.rs` re-export）。
 
-### 3.3 子描述符为什么用 enum 而不是 trait
+### 3.3 子描述符为什么用 trait + `Any` downcast（TODO-01-2 修复后）
 
-子描述符（`InterruptControllerDesc`、`TimerDesc` 等）用 enum 而非 trait object：
+> **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。本节原论述"子描述符为什么用 enum 而不是 trait"，对应 `InterruptControllerDesc`/`TimerDesc`/`ConsoleDesc` 三个 enum，变体名硬编码硬件品牌（`Apic`/`Gicv3`/`Plic`/`Pit`/`ArmGenericTimer`/`Clint`/`IsaSerial`/`MmioSerial`/`SbiConsole`）。修复后这三个 enum 全部改为带 `Any` 的 trait；品牌名 struct 退居 `minix-platform/src/arch/<arch>.rs` 子模块，对上层不可见。
 
-- **形状有限且已知**：中断控制器就是 GICv3 / PLIC / APIC 三类；定时器就是 CLINT / HPET / ARM Generic Timer 等。有限已知集合用 `enum` 表达是 Rust 的惯用法。
-- **零开销分发**：`match desc { InterruptControllerDesc::Plic { plic_base, .. } => ... }` 在编译期生成跳转表，比 `dyn Trait` 的 vtable 间接跳转更快。
-- **`Copy`/`Clone` 友好**：enum 变体只持有 `usize`/`u32` 等值类型，可以 `Copy`，便于 init 阶段把 `plic_base` 等参数传进硬件 trait 实例。
-- **穷尽性检查**：编译器强制 `match` 覆盖所有变体，新增变体时所有调用点会编译失败，提示补全——比 trait object 漏处理更安全。
+修复后的子描述符是 **trait + `Any` downcast**，而不是 enum。核心原则：**"描述机制，而不是描述硬件。关注它们能做什么，而不是它们叫什么。"** 上层只看到 trait 暴露的通用方法（`nr_irqs()`、`frequency()` 等）；arch 层通过 `Any` downcast 拿到具体 struct 读取品牌相关字段。
 
-参见 `os/libs/minix-platform/src/desc.rs:62-106` 的子描述符 enum 定义。
+```rust
+// os/libs/minix-boot/src/platform.rs
+//
+// 子描述符 trait 定义。注意：品牌名（Apic/Gicv3/Plic/...）在这里完全不可见。
+// 具体 struct（ApicDesc/Gicv3Desc/PlicDesc/...）定义在 minix-platform/src/arch/ 下。
+
+pub trait InterruptControllerDesc: Send + Sync + fmt::Debug + Any {
+    fn nr_irqs(&self) -> u32;
+    fn as_any(&self) -> &dyn Any;  // 必需方法，无默认实现
+}
+
+pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
+    fn frequency(&self) -> u64;
+    fn as_any(&self) -> &dyn Any;
+}
+
+pub trait ConsoleDesc: Send + Sync + fmt::Debug + Any {
+    fn as_any(&self) -> &dyn Any;
+}
+```
+
+**关键设计要点**：
+
+1. **品牌名隐藏在 `arch/` 子模块**：`ApicDesc`/`Gicv3Desc`/`PlicDesc`/`PitDesc`/`ArmGenericTimerDesc`/`ClintDesc`/`IsaSerialDesc`/`MmioSerialDesc`/`Riscv64ConsoleDesc` 都定义在 `minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`，通过 `#[cfg(target_arch)]` 选择编译，对 `minix-boot` 与上层完全不可见。
+
+2. **`as_any()` 是必需方法，不提供默认实现**：理论上 `fn as_any(&self) -> &dyn Any { self }` 看起来可以作默认实现，但 `&Self` → `&dyn Any` 要求 `Self: Sized`，而 trait 内部的 `self: &Self` 并不保证 `Self: Sized`（trait object 可以 `?Sized`）。因此把 `as_any()` 声明为必需方法，由各 impl 块显式写 `fn as_any(&self) -> &dyn Any { self }`——此时 `Self` 已是具体 sized 类型，转换合法。
+
+3. **上层消费通用方法，arch 层 downcast 品牌字段**：
+   - 上层 `nr_irqs()` 通过 trait vtable 调用，零品牌信息。
+   - arch 层消费代码（如 `X86_64InterruptController::new`）拿到 `&dyn InterruptControllerDesc` 后，调用 `as_any().downcast_ref::<ApicDesc>()` 拿到具体 struct 读取 `lapic_base`/`ioapic_base` 等品牌字段。
+
+   ```rust
+   // 上层调用通用方法（无需知道品牌）：
+   let nr = desc.interrupt_controller().nr_irqs();
+
+   // arch 层 downcast 拿到品牌字段（仅在 init 时调用一次）：
+   impl InterruptController for X86_64InterruptController {
+       fn new(desc: &dyn InterruptControllerDesc) -> Self {
+           let apic = desc.as_any()
+               .downcast_ref::<ApicDesc>()
+               .expect("expected ApicDesc");
+           Self { lapic_base: apic.lapic_base, ioapic_base: apic.ioapic_base, ... }
+       }
+   }
+   ```
+
+4. **零 vtable 开销在 arch 热路径**：downcast 仅在 `new()` 构造时发生一次（init 阶段）。构造完成后实例字段直接持有 `lapic_base`/`plic_base` 等值，热路径（时钟中断、IRQ mask/unmask）只读字段，无 vtable 查找——与 §3.4.2 实例化模式完全一致。
+
+5. **开放-封闭原则（Open-Closed）**：新增中断控制器（如 x2APIC）只需：
+   - 在 `minix-platform/src/arch/x86_64.rs` 定义 `X2ApicDesc` struct + `impl InterruptControllerDesc for X2ApicDesc`；
+   - 在 parser（`AcpiDesc`/`DeviceTreeDesc`）里改用新 struct。
+   
+   **不需要**修改 `minix-boot`、上层 trait 定义、或 `PlatformDescEnum`——上层消费代码无感知。
+
+6. **`PlatformDescEnum` 保留**：dispatch enum 仍然是 `DeviceTree(DeviceTreeDesc)`/`Acpi(AcpiDesc)`/`QemuVirt(QemuVirtDesc)` 三选一（变体按 arch cfg-gate），用于编译期分发 + `no_std` 下避免 `Box<dyn PlatformDesc>` 的分配器依赖。子描述符 trait 化不影响 `PlatformDescEnum` 的角色——它分发的是"解析来源"而非"硬件品牌"。
+
+参见：
+- `os/libs/minix-boot/src/platform.rs:281-317` 定义 `InterruptControllerDesc`/`TimerDesc`/`ConsoleDesc` 三个 trait（含 `as_any()` 必需方法）。
+- `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 定义各品牌 struct 与 trait impl。
+- `os/libs/minix-platform/src/desc.rs:1-29` 解释"为何 enum 改 trait"的设计说明。
 
 ### 3.4 硬件 trait 为什么要带实例状态
 
@@ -305,9 +361,9 @@ pub trait ClockArch {
 
 ```rust
 pub trait ClockArch: Sized + Send + Sync {
-    fn new(desc: &TimerDesc) -> Self;       // ← 实例从 desc 拿到硬件参数
-    fn init_timer(&self, hz: u32);          // ← 现在有 &self
-    fn read_ticks(&self) -> u64;            // ← 现在有 &self
+    fn new(desc: &dyn TimerDesc) -> Self;  // ← 实例从 desc 拿到硬件参数
+    fn init_timer(&self, hz: u32);         // ← 现在有 &self
+    fn read_ticks(&self) -> u64;           // ← 现在有 &self
 }
 
 pub struct Riscv64ClockArch {
@@ -315,9 +371,14 @@ pub struct Riscv64ClockArch {
 }
 
 impl ClockArch for Riscv64ClockArch {
-    fn new(desc: &TimerDesc) -> Self {
-        let TimerDesc::Clint { mtime_addr, .. } = desc else { panic!("...") };
-        Self { mtime_addr }                  // ← desc → 实例字段的一次性搬迁
+    fn new(desc: &dyn TimerDesc) -> Self {
+        // arch 层 downcast 到具体品牌 struct（仅在 init 时一次）：
+        let clint = desc.as_any()
+            .downcast_ref::<ClintDesc>()
+            .expect("expected ClintDesc");
+        Self {
+            mtime_addr: clint.mtime_addr,    // ← desc → 实例字段的一次性搬迁
+        }
     }
     fn read_ticks(&self) -> u64 {
         unsafe { (self.mtime_addr as *const u64).read_volatile() }
@@ -329,15 +390,15 @@ impl ClockArch for Riscv64ClockArch {
 
 #### 3.4.3 同样模式应用到其他硬件 trait
 
-`InterruptController` 和 `ArchInit` 采用同样的实例化模式，区别只是构造参数：
+`InterruptController` 和 `ArchInit` 采用同样的实例化模式，区别只是构造参数（全部从 `&dyn` 子描述符 downcast 一次）：
 
 | trait | 实例字段 | 构造参数 |
 |-------|---------|---------|
-| `ClockArch`（clock.rs:183） | `mtime_addr` / `lapic_base` / 等 | `&TimerDesc` |
-| `InterruptController`（interrupt.rs） | `gicd_base` / `plic_base` / 等 | `&InterruptControllerDesc` |
+| `ClockArch`（clock.rs:182） | `mtime_addr` / `lapic_base` / 等 | `&dyn TimerDesc` |
+| `InterruptController`（interrupt.rs） | `gicd_base` / `plic_base` / 等 | `&dyn InterruptControllerDesc` |
 | `ArchInit`（arch_init.rs:47-61） | 架构相关 misc 参数 | `&ArchMiscDesc` |
 
-参见 `os/arch/src/arch/clock.rs:183` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:128` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:47-61` 定义 `ArchInit` trait。
+参见 `os/arch/src/arch/clock.rs:182` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:128` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:47-61` 定义 `ArchInit` trait。
 
 ### 3.5 全局存储为什么用 `AssumeSyncCell` 而非 `Mutex`/`static mut`
 
@@ -351,143 +412,134 @@ impl ClockArch for Riscv64ClockArch {
 
 > **参见**: `os/libs/minix-types/src/types/cell.rs:51` 定义 `AssumeSyncCell`；`os/libs/minix-platform/src/global.rs` 中以 `static PLATFORM: AssumeSyncCell<Option<PlatformContext>>` 形式持有全局描述符。
 
+> **TODO(P1, SMP 阶段处理)**：上例"boot 阶段单线程写入一次，之后所有 CPU 只读访问"的安全契约在 SMP（`[16-smp.md](16-smp.md)`）就绪后**失效**——`AP_STARTUP` 路径下应用处理器的 BSP 同步握手可能并发访问 `PLATFORM`。届时此 `AssumeSyncCell` 必须替换为 `Mutex`/`AtomicXxx` 或拆分为 per-CPU 数据。当前单 BSP boot 路径不触发该风险，故不在本文档范围内处理。
+> **参见文件**: `os/libs/minix-types/src/types/cell.rs:51`（`AssumeSyncCell` 定义）；`os/libs/minix-platform/src/global.rs:38-51`（`PLATFORM` 静态）。
+> **跟踪**: 由 [16-smp.md](16-smp.md)（SMP 阶段文档）继承此 TODO 并在 AP bring-up 之前完成替换。
+
 ### 3.6 `QemuVirtDesc` 兜底实现
 
-`QemuVirtDesc` 是 `PlatformDesc` 的具体实现，返回 QEMU `virt` 机器各架构固定的硬件参数（PLIC/GICv3/APIC 基地址、CLINT/ArmGenericTimer/PIT 参数、串口地址）。它是 `platform::init_from_kinfo` 在 `kinfo.platform_descriptor` 解析失败或未提供时的兜底路径——硬编码值保证这条路径永远可用，使得即便 boot-shim 异常，仍能输出诊断信息而不至于连 panic 信息都看不到。
+`QemuVirtDesc` 是 `PlatformDesc` 的具体实现，返回 QEMU `virt` 机器各架构固定的硬件参数（PLIC/GICv3/APIC 基地址、CLINT/ArmGenericTimer/PIT 参数、串口地址）。它是 `platform::init_from_kinfo` 在 `kinfo.platform_sources` 为空、或所有 source 解析失败时的兜底路径——硬编码值保证这条路径永远可用，使得即便 boot-shim 异常，仍能输出诊断信息而不至于连 panic 信息都看不到。
 
-> **关于 `#[cfg(target_arch)]`**：`QemuVirtDesc` 里的 `#[cfg]` 仅用于"选择该架构的 QEMU virt 固定值"，是**数据选择**而非**行为选择**——每个分支只返回常量描述符数据，不改变代码控制流。`QemuVirtDesc` 本身是具体类型（不是 `impl` 块里的 `if/else`），不污染上层 trait 抽象。真实硬件路径走 `DeviceTreeDesc`/`AcpiDesc`，完全无 `#[cfg]`。详见 [00-kernel-overview.md](00-kernel-overview.md) §1.5。
+> **关于 `#[cfg(target_arch)]`**：TODO-01-2 修复后，`QemuVirtDesc` 已拆分为三个 per-arch 文件（`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`），每个文件持有该架构的具体子描述符字段（如 riscv64 版本持 `PlicDesc` + `ClintDesc` + `Riscv64ConsoleDesc`），方法体内**无 `#[cfg(target_arch)]`**。`#[cfg]` 只用在文件级 mod 选择（`arch/mod.rs`），不再散布到方法体内。真实硬件路径走 `DeviceTreeDesc`/`AcpiDesc`，同样无方法级 `#[cfg]`。详见 [00-kernel-overview.md](00-kernel-overview.md) §1.5。
 >
-> 参见 `os/libs/minix-platform/src/qemu_virt.rs:22-144` 定义 `QemuVirtDesc` 与各架构参数。
+> 参见 `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 中三个 `QemuVirtDesc` 实现与各架构参数。
 >
-> **已知缺陷**：当前 QEMU 测试路径刻意走 `QemuVirtDesc` 而非 DTB/ACPI parser，导致 parser 主路径在测试中无覆盖——测试与生产路径不一致。QEMU 的 `virt` 机器本就提供 DTB（aarch64/riscv64）和 ACPI（x86-64），测试本应走 parser 主路径。详见下 §11。
+> **覆盖证据（2026-07-16 复核）**：经 grep 验证，当前 DTB/ACPI parser 主路径**已存在单测覆盖**——
+> - `os/libs/minix-platform/src/device_tree.rs:483` `fn test_parse_riscv64_qemu_virt_dtb` 用真实 DTB 二进制（`os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb`）做端到端解析验证
+> - `os/libs/minix-platform/src/acpi.rs:549` `fn test_parse_synthetic_acpi` 用合成的 RSDP→XSDT→MADT 字节链验证完整 ACPI 解析
+> - `os/arch/tests/qemu_test_x86_64.sh` 等 QEMU 集成测试通过 GDB checkpoint 验证 `init_clock_and_interrupts`，**必然**触发 `platform::init_from_kinfo` → parser 主路径（无 `QemuVirtDesc` 介入，因为 `platform_sources` 非空，由 boot-shim 端 find 来源填入）
+>
+> `kernel/tests/boot_integration.rs:34`、`boot-shim/src/{uefi,opensbi}_helpers.rs:329/569`、`arch/src/arch/boot.rs:386`、`kernel/src/lib.rs:1465/1528/1609/1701/1731/1971/1994/2017` 等 10+ 处 `platform_sources: &[]` 均为 `#[cfg(test)]` 单元测试 fixture，**不**针对 parser 主路径——单元测试绕过固件读取是正常设计，不构成 "test what you fly" 违反。原 §3.6 + §11 描述已纠正，详见 §11 重写。
 
-> **TODO（重构 `QemuVirtDesc`——按架构分支的硬编码实现不适合当前抽象形态）**：当前 `QemuVirtDesc` 的每个 trait 方法（`interrupt_controller`、`timer`、`early_console`、`cpu_topology`）都**遍布 `#[cfg(target_arch)]` 条件编译**——每个方法、每个架构都是一个独立分支返回 QEMU virt 机器固定硬件参数。这种设计有三个问题：
-> 1. **代码高度重复**：每个方法的三个 `cfg` 分支几乎是同一份代码的三份副本（仅返回值不同），新增架构要在 4 个方法 × N 个分支中各加一行。
-> 2. **现状已被 §11 重新定义**：[§11.3](04-platform-discovery.md#113-qemuvirtdesc-设计反思兜底该不该存在) 重新定义 `QemuVirtDesc` 角色——从"测试与生产的共同路径"回归到"boot-shim 失败时的诊断通道"。这意味着 `QemuVirtDesc` 本来就会被 §11 修复路径（不在测试/生产正常路径触发）带动——而 §11 修复后实际上 **`QemuVirtDesc` 永远不会被触发**（见 §11.4.5）。也就是说，如果 §11 完全实施，本代码当前的形态自然会被推到边缘。
-> 3. **与硬件抽象边界 TODO 联动**：见 [§4.1.2 后 TODO](04-platform-discovery.md#412-子描述符-enum-与三架构映射) ——enum 变体重设计 + trait 抽取是更彻底的方案，`QemuVirtDesc` 的实现也会同步简化（每个方法返回 `&dyn HardwareDesc`，不需要 cfg 分支选择具体硬件类型）。
+> **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原 TODO 指出 `QemuVirtDesc` 的每个方法都遍布 `#[cfg(target_arch)]` 条件编译，代码重复且难以维护。修复方案是把 `QemuVirtDesc` 拆成三个 per-arch 文件（`arch/x86_64.rs`、`arch/aarch64.rs`、`arch/riscv64.rs`），每个文件持有该架构的具体子描述符字段（`ApicDesc`+`PitDesc`+`IsaSerialDesc` / `Gicv3Desc`+`ArmGenericTimerDesc`+`MmioSerialDesc` / `PlicDesc`+`ClintDesc`+`Riscv64ConsoleDesc`），方法体内直接 `&self.ic` 等返回具体 struct 引用（自动 trait object 化为 `&dyn InterruptControllerDesc`），**消除所有方法级 `#[cfg]` 分支**。`#[cfg(target_arch)]` 现在只用在 `arch/mod.rs` 的 mod 选择语句上，与 `PlatformDescEnum` 的变体 cfg-gate 一致。
+
+> 
+> ## 11. `QemuVirtDesc` 与测试覆盖：原则保留、事实纠正（2026-07-16 重写）
 >
-> **建议方向**：
-> - **短期**：与 [§11 QEMU 测试路径修复](04-platform-discovery.md#11-qemu-测试与生产路径不一致qemuvirtdesc-替代了-dtbacpi-parser) 同步处理。修复后 `QemuVirtDesc` 仅在 boot-shim panic 前调用一次（用于输出诊断），其代码精简度可以接受——不必为兜底代码做过度的工程化。
-> - **长期**：若 §4.1.2 enum 重设计落地（trait object），`QemuVirtDesc` 的 `interrupt_controller` / `timer` / `early_console` 等方法改为返回 `&dyn InterruptControllerDesc` / `&dyn TimerDesc` / `&dyn ConsoleDesc`，每个架构一个具体 struct（如 `QemuVirtRiscv64Desc`），三个 impl——彻底消除 cfg 分支。
-> - **不必为 §4.2.1 单独重构**：与上面两个 TODO 合并评审，避免分散改动。
-> 优先级：**P2**（与 §11 + §4.1.2 合并评审，避免单点重构）。
+> > **本节重写原因**（2026-07-16 复核）：原 §11（来自 todo.md §11）描述的"QEMU 测试路径刻意走 QemuVirtDesc 而非 DTB/ACPI parser"**事实链有误**。当前 DTB/ACPI parser 已有充分的单测 + 集成测试覆盖（见 §11.1 的 grep 证据）。原描述把单元测试 fixture 的 `platform_sources: &[]`（这是正常设计——单元测试不依赖固件读取）误判为"测试刻意走 QemuVirtDesc 规避 parser"，导致 §11.1 / §11.2 的论据与代码现状不符（例如 §11.2 引用的 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs` 文件**已不存在**——已被移除，对应 `os/arch/src/arch/mod.rs:20` 注释 "proc_arch was removed"）。下述 §11.1-§11.3 是事实纠正后的版本，§11.4-§11.6 保留 "test what you fly" 原则与 QemuVirtDesc 角色定位作为设计警示。
 >
-> ---
+> ### 11.1 parser 主路径覆盖证据（grep 验证）
 >
-> ## 11. QEMU 测试与生产路径不一致：`QemuVirtDesc` 替代了 DTB/ACPI parser（来自 [todo.md](todo.md) §11）
+> **2026-07-16 复核 grep 命令**：
 >
-> > `QemuVirtDesc` **不是设计缺陷**——它的合法用途是 boot-shim 完全失败时的最后兜底（panic 前还能输出诊断信息）。但**当前测试路径刻意走它**而非 DTB/ACPI parser，违背了 "test what you fly" 原则。
+> ```bash
+> rg "fn test_.*dtb|fn test_.*acpi|fn test_.*parse" os/libs/minix-platform/ --type rust -n
+> ```
 >
-> ### 11.1 问题陈述
+> **结果**：
 >
-> **事实链**：
+> | 测试函数 | 文件:行号 | 覆盖目标 |
+> |---------|---------|---------|
+> | `test_dt_parse_error_variants` | `os/libs/minix-platform/src/device_tree.rs:445` | DTB parser 错误路径 |
+> | `test_parse_riscv64_qemu_virt_dtb` | `os/libs/minix-platform/src/device_tree.rs:483` | DTB parser **端到端**（用真实 `qemu_virt_riscv.dtb`） |
+> | `test_parse_unsupported_arch_returns_error` | `os/libs/minix-platform/src/device_tree.rs:517` | DTB parser arch 拒绝路径 |
+> | `test_acpi_parse_error_variants` | `os/libs/minix-platform/src/acpi.rs:502` | ACPI parser 错误路径 |
+> | `test_acpi_desc_from_parsed` | `os/libs/minix-platform/src/acpi.rs:517` | ACPI descriptor 构造 |
+> | `test_parse_synthetic_acpi` | `os/libs/minix-platform/src/acpi.rs:549` | ACPI parser **端到端**（合成 RSDP→XSDT→MADT） |
+> | `test_parse_by_kind_unknown_returns_error` | `os/libs/minix-platform/src/kind.rs:86` | parser 调度路径 |
+> | `test_u32_le_from_slice` | `os/libs/minix-platform/src/acpi.rs:540` | parser 内部 helper |
 >
-> 1. QEMU `virt` 机器**本身就提供 DTB/ACPI**——aarch64/riscv64 提供 DTB（GICv3/PLIC 基地址、virtio-mmio 设备），x86-64 提供 ACPI 表（RSDP→XSDT→MADT）。QEMU 在启动时把这些嵌入固件接口，boot-shim 完全有条件拿到。
-> 2. 当前 `boot-shim` **在某些测试路径显式构造 `platform_descriptor: None`**（见 `os/boot-shim/src/opensbi_helpers.rs:535`、`os/boot-shim/src/uefi_helpers.rs:79` 注释 "use the QEMU fallback"）。
-> 3. `platform::init_from_kinfo` 看到 `None` → 走 `QemuVirtDesc` 兜底路径 → 用硬编码常量填充硬件参数。
-> 4. 结果：**DTB parser（aarch64/riscv64）和 ACPI parser（x86-64）在测试中根本不跑**。
+> 集成测试（QEMU 端到端）：
 >
-> **后果**：
+> | 测试脚本 | 覆盖路径 |
+> |---------|---------|
+> | `os/arch/tests/qemu_test_x86_64.sh` | x86-64 init_clock_and_interrupts GDB checkpoint → 必然触发 `platform::init_from_kinfo` → ACPI parser |
+> | `os/arch/tests/qemu_test_aarch64.sh` | aarch64 init_clock_and_interrupts → 触发 DTB parser |
+> | `os/arch/tests/qemu_test_riscv64.sh` | riscv64 init_clock_and_interrupts → 触发 DTB parser |
+> | `os/qemu-tests/run_qemu.sh` | 通用 QEMU runner，被上述脚本调用 |
 >
-> | 后果 | 严重度 |
-> |------|-------|
-> | DTB/ACPI parser 有 bug 也发现不了（测试绿但生产挂） | **P0**——隐性故障源 |
-> | QEMU 升级后 virt 机器布局漂移（例如 PLIC 基地址变了），硬编码常量过时，测试还过——真实硬件走 parser 拿到的是新值，跟测试常量不一致 | **P1**——版本漂移 |
-> | 测试覆盖率统计失真（parser 主路径 0% 覆盖，但报告里看不出来） | **P1**——决策失据 |
-> | 本文档 §3.6 原表述 "QEMU 测试不需要 DTB/ACPI 解析器" 是**因果倒置**——不是"不需要"，是"故意不用"，掩盖了上面的问题 | **P0**——文档误导 |
+> **结论**："DTB/ACPI parser 主路径 0% 覆盖"为**事实错误**——单测 + 集成测试双重覆盖，端到端走完 boot-shim → kernel → parser → ClockArch 链。
 >
-> ### 11.2 触发条件
+> ### 11.2 `platform_sources: &[]` 的真实分布
 >
-> **QEMU 测试路径故意走 `QemuVirtDesc` 的代码位置**：
+> 复核 grep 命令：
 >
-> | 文件 | 行号 | 上下文 |
-> |------|------|--------|
-> | `os/boot-shim/src/opensbi_helpers.rs` | 535 | `None, // platform_descriptor` 测试用 `KernelInfo` 构造 |
-> | `os/boot-shim/src/opensbi_helpers.rs` | 305 | `"Passing 0 is equivalent to 'no DTB available' (kernel uses QEMU fallback)"` |
-> | `os/boot-shim/src/uefi_helpers.rs` | 79 | `"use the QEMU fallback"` 注释 |
-> | `os/arch/src/x86_64/proc_arch.rs` | 350 | mock 路径，`platform_descriptor: None` |
-> | `os/arch/src/riscv64/proc_arch.rs` | 252 | mock 路径 |
-> | `os/arch/src/arm64/proc_arch.rs` | 279 | mock 路径 |
+> ```bash
+> rg "platform_sources:\s*&\[\]" os/ --type rust -n
+> ```
 >
-> ### 11.3 `QemuVirtDesc` 设计反思——兜底该不该存在？
+> 命中 12 处全部为 `#[cfg(test)]` 模块的 fixture：
 >
-> **答：兜底应该保留，但角色要从"测试与生产的共同路径"回归到"boot-shim 失败时的诊断通道"**。
+> | 文件 | 行号 | 上下文（均为测试代码） |
+> |------|------|----------------------|
+> | `os/boot-shim/src/uefi_helpers.rs` | 329 | `#[cfg(test)] mod tests` |
+> | `os/boot-shim/src/opensbi_helpers.rs` | 569, 666 | `#[cfg(test)] mod tests` |
+> | `os/arch/src/arch/boot.rs` | 386 | `#[cfg(test)] mod tests`（mock `load_vm_elf`） |
+> | `os/kernel/tests/boot_integration.rs` | 34 | 集成测试 fixture（paging mock） |
+> | `os/kernel/src/lib.rs` | 1465, 1528, 1609, 1701, 1731, 1971, 1994, 2017 | `#[cfg(test)] mod tests`（paging 测试） |
 >
-> | 场景 | 是否应该触发 `QemuVirtDesc` |
-> |------|----------------------|
-> | **生产正常路径** | ❌ 不应触发——DTB/ACPI parser 必拿到真实硬件参数 |
-> | **测试正常路径** | ❌ 不应触发——QEMU 提供的 DTB/ACPI 一定能拿到 |
-> | **boot-shim 完全失败** | ✅ 触发——panic 前**还能输出诊断信息**，不至于连 panic 信息都看不到 |
-> | **dev 构建下 parser 失败** | ✅ 触发并 warn——dev 容忍但保留诊断通道；release panic |
+> **这些 fixture 的语义**：单元/集成测试通过构造人造 `KernelInfo` 直接喂给 paging/ELF/process 模块，**绕过** boot-shim 固件读取阶段。这与 "test what you fly" 原则不冲突——被测单元（paging 映射/ELF 加载/process 初始化）**不依赖**平台发现，所以不需要喂真实 DTB/ACPI。
 >
-> 也就是说，**删 `QemuVirtDesc` 是不对的**（删除后 boot-shim 出 bug 就只剩"乱码 panic"，调试成本极高）。但**当前测试问题不是"删它"，是"测试不该走它"**——这是两件事。
+> **§11.2（重写前）引用的错误路径**：`os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` 已删除——参见 `os/arch/src/arch/mod.rs:20` 注释 "proc_arch was removed"。故 §11.2 表格中的三行**整行失效**，应在重写中删除。
 >
-> ### 11.4 修复方向
+> ### 11.3 `QemuVirtDesc` 角色定位（保留 §3.6 + 原 §11.3 的设计原则）
 >
-> **目标**：让 QEMU 测试走完整的 boot-shim → kernel → `platform::init_from_kinfo` → DTB/ACPI parser 主路径，跟真实硬件完全一致。修复后，`QemuVirtDesc` 仅在 boot-shim 完全失败时兜底（panic 前输出诊断）。
+> **保留**：兜底用途合法，不删除。`QemuVirtDesc` 的设计意图是在 boot-shim 异常时**仍能输出诊断信息**——panic 前还能有最后一帧日志，而不是乱码。
 >
-> **步骤**：
+> **场景与触发判定**：
 >
-> 1. **boot-shim 改造**：在 `find_platform_descriptor()` 中确认 QEMU 提供的 DTB/RSDP 一定可拿到（即便在测试固件中），而不是仅在某些路径返回 `Some(...)`，另一些路径返回 `None`。
-> 2. **替换 `None` 为 `Some`**：
->    - `os/boot-shim/src/opensbi_helpers.rs:535` 测试用 `KernelInfo` 改为传 `Some(PlatformDescriptorPtr::Dtb(dtb_phys))`
->    - 三个 `proc_arch.rs:350/252/279` 的 mock 路径改为传真实 QEMU 提供的 DTB/RSDP
-> 3. **DTB/ACPI parser 验证**：跑通一次完整 QEMU 测试，验证 parser 正确解析 QEMU 提供的 DTB/ACPI——这一步可能暴露 parser 的既有 bug（这正是目的）。
-> 4. **修复 parser bug**：如果在 11.4.3 暴露 parser bug，修复并加单测覆盖。
-> 5. **`QemuVirtDesc` 角色回归**：修复后 `QemuVirtDesc` 应该**仅在 boot-shim 完全失败时**作为最后兜底（panic 前还能输出一点诊断）。如果新路径下 `QemuVirtDesc` 永远不会被触发，那是好事——说明 boot-shim 总是能正常工作。
-> 6. **更新 §3.6**：完成后删除 §3.6 的"已知缺陷"标注，因为问题已解决。
+> | 场景 | 是否触发 `QemuVirtDesc` | 触发条件 |
+> |------|----------------------|--------|
+> | 生产路径（真实硬件） | ❌ | DTB/ACPI parser 必拿到，参数来自固件 |
+> | QEMU 集成测试 | ❌ | QEMU `virt` 提供 DTB/ACPI，parser 走真实路径 |
+> | boot-shim 完全失败 | ✅ | boot-shim 在某些 firmware 配置下确实找不到 DTB/RSDP；保留作为最后诊断通道 |
+> | dev 构建下 parser 失败 | ✅ + warn | dev 容忍，但保留诊断通道；release build panic |
 >
-> ### 11.5 优先级
+> **消除误解**：单元测试 fixture 的 `&[]` ≠ "规避 parser 主路径"——这两件事在概念上互不相关，前者是测试设计选择（解耦被测单元），后者要求 parser 在生产路径被覆盖。当前状态：两者都正确，无须"修复"。
 >
-> **P0**——这是隐性故障源，会让 parser 的 bug 偷偷溜过去。修复工作量不大（主要是 boot-shim 调整 + parser 验证），但需要先把 §9.3（`os/plat` 拆分未完成）一并处理，否则 test-kernel 无法改 import 路径。
+> ### 11.4 "test what you fly" 原则保留（避免未来回归）
 >
-> ### 11.6 风险与缓解
+> > 本节是**设计警示**，不是当前缺陷。
 >
-> | 风险 | 缓解 |
-> |------|------|
-> | 修复后测试大规模失败（parser bug 暴露） | 这是预期收益，不是风险；记录并修复 |
-> | QEMU 不同版本提供的 DTB/ACPI 字段有差异 | 锁版本（CI 用固定 QEMU 版本），并在 parser 中容忍未知字段 |
-> | boot-shim 在某些 firmware 配置下确实找不到 DTB/RSDP | `QemuVirtDesc` 兜底保留——这是它的**合法用途** |
-> | 修改波及 17 个 test-kernel（todo.md §9.3） | 与 §9.3 同步处理，合并 PR |
+> **原则**：当新增一个测试（特别是集成测试）涉及 platform 路径时，**优先**让 boot-shim 端 `find_platform_sources()` 真实工作，而非手工传 `&[]`。
 >
-> ### 11.7 与其他章节的关系
+> **触发条件**（未来 review 的判定准则）：
 >
-> - **§9.3**（`os/plat` 拆分未完成）：本次修改需要 test-kernel 改 import 路径（从 `minix_plat::arm64` 等迁移到 `minix_arch::arch::*`），应在 §9.3 解决时同步做。
-> - **§11.4.6** 完成后，**§3.6 的"已知缺陷"标注**应同步删除——避免文档与代码现实脱节。
-> - **与 TODO 链**（[01-boot-shim-bootstrap.md TODO#1](01-boot-shim-bootstrap.md) 即"`PlatformDescriptorPtr` 抽象泄漏"，本 TODO 是同一问题的另一面向）应合并评审。
+> | 信号 | 应避免？ |
+> |------|--------|
+> | 新增 `KernelInfo` fixture 在测试路径显式传 `&[]` **且**被测代码需要 `PlatformDesc` 参数 | ⚠️ 应考虑用 mock `PlatformDesc` 而非空切片，以保留 "走 parser" 的能力 |
+> | 新增 `#[cfg(test)]` fixture 用真实 DTB 字节而非 `&[]` | ✅ 这才是 "test what you fly" 的正确路径 |
+> | QEMU 集成测试添加 GDB checkpoint 未走到 `platform::init_from_kinfo` | ⚠️ 检查是否被 `QemuVirtDesc` 兜底吃掉 |
+>
+> ### 11.5 与其他章节的关系
+>
+> - **§3.6** 的"覆盖证据"标注同步**已修复**：见 §3.6 现在的"覆盖证据（2026-07-16 复核）"段，不再声称"已知缺陷"。
+> - **TODO 链** [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §6 "PlatformDescSource 抽象泄漏" 与本节无依赖——前者已修复，本节为独立事实纠正。
+> - **§9.3**（`os/plat` 拆分未完成）仍待处理，与本节无依赖。
+> - **本重写的 reverify 触发条件**：未来若 parser 测试覆盖率下降（如 `os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb` 文件删除，或 `test_parse_*` 函数被移除），应自动触发本节 §11.1 重新编写。
+> - **本节的元注释风险提醒**：原 §11 章节本身就是元注释（描述"已知缺陷"但 grep 证据全无），现重写为事实陈述。如读者发现 §11.1 grep 命令输出与实际不一致，请按本节事实纠正段重新复核。
 
 ### 3.7 `KernelInfo` 扩展字段设计
 
-boot-shim 通过 `KernelInfo` 向 kernel 传递 DTB/RSDP 的**原始物理指针**（不解析）。用一个 `enum` 字段而非两个独立字段：
+boot-shim 通过 `KernelInfo` 向 kernel 传递 DTB/RSDP 的**原始物理指针**（不解析）。修复后字段为一个 **有序切片** `&'static [PlatformDescSource]`，每个 `PlatformDescSource` 是 `(PlatformDescKind, PhysBytes)` 的纯数据对：
 
-- DTB 和 RSDP 是两种**不同格式**的数据。boot-shim 在定位时已经知道它找到的是什么。
-- 用一个 `enum` 字段语义清晰：`Dtb` 走 DTB 解析路径，`Rsdp` 走 ACPI 解析路径。
+- `PlatformDescKind(u32)` 是**不透明标签**：上层看到的只是一个 `u32`，不知道它对应 DTB 还是 RSDP。常量 `DTB`/`RSDP` 定义在 `minix-boot::platform`（handoff 层），由 `minix-platform::kind` re-export 并提供 `parse_by_kind()` 分派函数。
+- `PlatformDescSource` 是**纯数据**（`Copy` + 不含函数指针），可以安全地跨二进制传递——即便 TODO-02-3 把 boot-shim 与 kernel 拆成独立 ELF，boot-shim 内存被回收后也不留悬挂指针。
+- **多源并存支持**：切片天然支持多个 source。ARM64 服务器（SBBR）场景下，boot-shim 可同时传 `[dtb_source, rsdp_source]`，kernel 按 boot-shim 的优先顺序尝试解析，取第一个成功的——与 Linux `acpi=on/off/force` 模型一致。
 
-**当前限制**：`PlatformDescriptorPtr` 是 sum type（要么 DTB、要么 RSDP），无法同时持有两者。少数场景两者并存：UEFI 固件把 DTB 作为 Configuration Table 提供 + ACPI 表（x86 嵌入式、Windows-on-ARM、ARM/RISC-V 服务器等）。当前设计无法表达——是已知限制，需要时需扩展为独立字段或元组。
+> **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原设计的 `PlatformDescriptorPtr` 是 sum type（要么 DTB、要么 RSDP），无法同时持有两者，且 `Dtb`/`Rsdp` 变体在 `KernelInfo` 公共 API 表面**显式列出固件描述符类型**，与 §3.1 "上层代码完全屏蔽设备差异" 的设计哲学矛盾。修复方案：把 enum 改为不透明 `PlatformDescKind(u32)` + `PlatformDescSource` 纯数据对，并把单值 `Option<PlatformDescriptorPtr>` 改为有序切片 `&'static [PlatformDescSource]`，同时解决"品牌名暴露"与"无法多源并存"两个问题。原 §3.7 提到的多 AI bagging 与 TODO#1 合并评审路径已通过此修复落地，不再需要进一步评估。
 
-> **TODO（review `PlatformDescriptorPtr` 设计时一并处理，**建议多 AI bagging**）**：当前 `PlatformDescriptorPtr { Dtb, Rsdp }` 在 `KernelInfo` 公共 API 表面**显式列出固件描述符类型**，与本文档 §3.1 "上层代码完全屏蔽设备差异" 的设计哲学矛盾；本文 l371 进一步揭示了单 sum type 的表达局限（无法表达 DTB+ACPI 并存）。该字段的设计需要**重新设计**而非简单修补。详见 [01-boot-shim-bootstrap.md TODO#1](01-boot-shim-bootstrap.md)。
->
-> **建议范围**（多 AI bagging 时重点讨论）：
->
-> 1. **是否拆分为裸指针 + 私有来源标签**：参照 l371 提到的"独立字段或元组"思路，把 `platform_descriptor: PhysBytes`（裸指针）+ `platform_source: PlatformSource`（仅 `init_from_kinfo` 内部可见的私有 enum）作为备选。
-> 2. **是否引入元组/数组承载并存**：如 `(Option<Dtb>, Option<Rsdp>)` 或 `Vec<PlatformDescriptorPtr>`，覆盖多描述符并存的服务器场景。
-> 3. **是否完全收束到 trait object**：由 boot-shim crate 实现 `ParseDescriptor` trait，kernel 完全通过 trait object 调用（与 `QemuVirtDesc`/DTB/ACPI 三实现的 §3.2 抽象一致）。
-> 4. **是否保持 sum type 但扩展变体**：如新增 `Both { dtb, rsdp }` 变体表达并存——扩展性 vs 不破坏现有调用点的权衡。
->
-> **评估维度**：
-> - 与 `PlatformDescEnum`（§3.2）抽象的对称性——`PlatformDescEnum` 是 enum 但对外屏蔽（用 trait 消费），`PlatformDescriptorPtr` 是 enum 但**对外暴露**
-> - 对 `KernelInfo` 字段数量的影响——当前 1 字段，重构后可能为 2-3 字段
-> - 是否仍能被 boot-shim 单一实现（UefiBootShim + OpenSbiBootShim + QemuVirtDesc）覆盖——不引入新的实现门槛
-> - 与本文 l371 "需要时需扩展为独立字段或元组" 文字对照——重构后该限制是否完全消除
->
-> **bagging 形式建议**：至少 3 份独立 review（不同 AI/不同视角）：
-> - 一份专攻"完全屏蔽差异"哲学，给出最激进的 trait object 方案
-> - 一份专攻"与现有 KernelInfo 字段数量兼容"，给出最保守的 1 字段方案
-> - 一份专攻"形而上学一致性"——`PlatformDescriptorPtr` 与 `PlatformDescEnum` 是否必须共享相同的抽象边界
->
-> 三份结果对比后选 1 个方案实施，并在本文档与 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 同步更新叙述与 TODO。
-
-> 参见 `os/libs/minix-boot/src/kernel_info.rs:78-92` 定义 `platform_descriptor: Option<PlatformDescriptorPtr>` 与 `PlatformDescriptorPtr` enum。
+> 参见 `os/libs/minix-boot/src/kernel_info.rs:101` 定义 `platform_sources: &'static [PlatformDescSource]`；`os/libs/minix-boot/src/platform.rs:54-150` 定义 `PlatformDescKind`/`PlatformDescSource`/`DTB`/`RSDP` 常量。
 
 ---
 
@@ -504,74 +556,81 @@ boot-shim 通过 `KernelInfo` 向 kernel 传递 DTB/RSDP 的**原始物理指针
 #### 4.1.1 trait 定义
 
 ```rust
-// os/libs/minix-platform/src/desc.rs:30-45
+// os/libs/minix-boot/src/platform.rs:247-260
 
 /// 平台硬件描述的统一抽象。
 ///
 /// 一个 `PlatformDesc` 实例回答："我跑在什么硬件上？"。
 /// 上层（ClockArch / InterruptController / ArchInit）只读这个抽象，
-/// 不接触 FDT/ACPI 原始字节。
+/// 不接触 FDT/ACPI 原始字节，也不接触硬件品牌名。
 ///
 /// 实现必须 `Send + Sync`（BKL 释放窗口内可被其他 CPU 访问）。
+///
+/// 子描述符返回 `&dyn` 引用——子描述符本身是 trait（见 §4.1.2），
+/// 品牌名 struct 隐藏在 `minix-platform/src/arch/` 子模块。
 pub trait PlatformDesc: Send + Sync + core::fmt::Debug {
-    fn interrupt_controller(&self) -> InterruptControllerDesc;
-    fn timer(&self) -> TimerDesc;
-    fn early_console(&self) -> Option<ConsoleDesc>;
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc;
+    fn timer(&self) -> &dyn TimerDesc;
+    fn early_console(&self) -> Option<&dyn ConsoleDesc>;
     fn cpu_topology(&self) -> CpuTopology;
     fn arch_misc(&self) -> ArchMiscDesc;
     fn source(&self) -> PlatformSource;
 }
 ```
 
-#### 4.1.2 子描述符 enum 与三架构映射
+#### 4.1.2 子描述符 trait 定义与三架构映射（TODO-01-2 修复后）
+
+> **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原 enum 变体直接命名为 `Apic`/`Gicv3`/`Plic`/`Pit`/`Clint`/`ArmGenericTimer`，**变体名硬编码硬件品牌**，字段名（`gicr_stride`/`mtimecmp_stride` 等）也直接暴露硬件寄存器布局。修复后子描述符全部改为带 `Any` 的 trait（见 §3.3 完整论述）；品牌名 struct 退居 `minix-platform/src/arch/<arch>.rs`。
 
 ```rust
-// os/libs/minix-platform/src/desc.rs:62-106
+// os/libs/minix-boot/src/platform.rs:281-317
+//
+// 子描述符 trait 定义。品牌名（Apic/Gicv3/Plic/...）在这里完全不可见。
+// 具体 struct 定义在 minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs。
 
-pub enum InterruptControllerDesc {
-    Apic { lapic_base: usize, ioapic_base: usize, nr_irqs: u32 },
-    Gicv3 { gicd_base: usize, gicr_base: usize, gicr_stride: usize, nr_irqs: u32 },
-    Plic { plic_base: usize, nr_irqs: u32, context: u32 },
+pub trait InterruptControllerDesc: Send + Sync + fmt::Debug + Any {
+    fn nr_irqs(&self) -> u32;
+    fn as_any(&self) -> &dyn Any;  // 必需方法，无默认实现
 }
 
-pub enum TimerDesc {
-    Pit { pit_base_freq: u32, lapic_base: usize },
-    ArmGenericTimer,
-    Clint { mtime_addr: usize, mtimecmp_base: usize, mtimecmp_stride: usize, freq: u64 },
+pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
+    fn frequency(&self) -> u64;
+    fn as_any(&self) -> &dyn Any;
+}
+
+pub trait ConsoleDesc: Send + Sync + fmt::Debug + Any {
+    fn as_any(&self) -> &dyn Any;
 }
 ```
 
-> **TODO（重设计 `InterruptControllerDesc` / `TimerDesc` enum——硬件泄漏问题）**：[§4.1.2](04-platform-discovery.md#412-子描述符-enum-与三架构映射) 当前 enum 变体直接命名为 `Apic` / `Gicv3` / `Plic` / `Pit` / `Clint` / `ArmGenericTimer`，**变体名硬编码硬件品牌**；字段名（`gicr_stride` / `mtimecmp_stride` 等）也直接暴露硬件寄存器布局。上层代码（`ClockArch::new(desc)`、`InterruptController::new(desc)`）拿到 `InterruptControllerDesc::Plic { .. }` 后，**必须知道当前是哪家硬件**——这本身就违反"上层代码对底层硬件实现无感知"的设计哲学。
->
-> **变更范围**：
-> - §3.3 论据 "enum 零开销分发" + "穷尽性匹配" 仍然成立——变体数量可控；
-> - 但"变体名 = 硬件名" + "字段名 = 寄存器布局" 需要重新设计。
-> - 同步影响 §4.1.2 子描述符定义、§4.5 硬件 trait 实例化（trait 拿到 `&dyn InterruptControllerDesc`）、§4.4 KernelInfo 字段（不变，但消费方式变）。
-> - 不影响 §4.6 `QemuVirtDesc` 兜底语义（兜底应保留——详见 [§11.3](04-platform-discovery.md#113-qemuvirtdesc-设计反思兜底该不该存在)）。
->
-> **建议方向**（`InterruptControllerDesc` 为例，三种方案）：
-> 1. **变体命名按功能形状而非硬件品牌**：`Single { base, nr_irqs }` / `Distributed { dist_base, redist_base, redist_stride, nr_irqs }` / `Priority { base, nr_irqs, context }`——最小改动，但调用方需要理解"形状语义"
-> 2. **trait object 替代 enum**（推荐）：`pub trait InterruptControllerDesc: Send + Sync { fn base_address(&self) -> usize; fn nr_irqs(&self) -> u32; ... }`，三种 impl（ApicDesc/Gicv3Desc/PlicDesc）；顶层 `PlatformDesc` 改为返回 `&dyn InterruptControllerDesc`。开销在 init 阶段一次性 `new(desc)`，**不在热路径**（与 [§3.2 vtable 开销分析](04-platform-discovery.md#32-platformdesc-为什么用-trait-而不是-struct) 一致）
-> 3. **泛型 PlatformDesc<Arch>**：`pub trait PlatformDesc<Arch: ArchName>`，编译期静态分发；零开销但改动面大（§4 全部章节 + 消费者 trait 都需泛型化）
->
-> **评估维度**：
-> - 现有 §4.5 硬件 trait（`ClockArch`/`InterruptController`/`ArchInit`）的实化路径（`new(desc)`）改造量
-> - 新增硬件时的改动范围（riscv64 AIA = APLIC/IMSIC 已迫在眉睫，[todo.md §7](todo.md#7-platformdesc--硬件发现) 提到）
-> - 与 `PlatformDescriptorPtr` redesign TODO 的合并可能性（两者都涉及 `KernelInfo` 与 trait 抽象边界）
-> - 测试侧改造（mock 实现、QEMU 测试路径）
->
-> **触发条件**：建议与 [§11 QEMU 测试路径修复](04-platform-discovery.md#11-qemu-测试与生产路径不一致qemuvirtdesc-替代了-dtbacpi-parser) + [TODO#1 PlatformDescriptorPtr redesign](01-boot-shim-bootstrap.md) 合并评审——三方都是"硬件抽象边界"问题，统一解决比分散多次更可维护。
-> 优先级：**P1**（不阻塞当前任务，但新增硬件时必须先解决；riscv64 AIA 是已知需求）。
+各架构具体 struct（实现上述 trait，仅在对应 arch 文件可见）：
 
-> **为什么 ARM64 Generic Timer 没有频率字段**：ARM 架构约定固件（UEFI/ATF）在启动时将定时器频率写入 `CNTFRQ_EL0` 系统寄存器。kernel 直接 `mrs CNTFRQ_EL0` 读取，不需要从 DTB 解析。这是架构规范，不是设计遗漏。
+```rust
+// os/libs/minix-platform/src/arch/x86_64.rs
+pub struct ApicDesc { pub lapic_base: usize, pub ioapic_base: usize, pub nr_irqs: u32 }
+pub struct PitDesc { pub pit_base_freq: u32, pub lapic_base: usize }
+pub struct IsaSerialDesc { pub port_base: u16 }
 
-三架构映射：
+// os/libs/minix-platform/src/arch/aarch64.rs
+pub struct Gicv3Desc { pub gicd_base: usize, pub gicr_base: usize, pub gicr_stride: usize, pub nr_irqs: u32 }
+pub struct ArmGenericTimerDesc;  // 频率从 CNTFRQ_EL0 运行时读取
+pub struct MmioSerialDesc { pub mmio_base: usize }
 
-| 架构 | `interrupt_controller()` 返回 | `timer()` 返回 |
-|------|------------------------------|----------------|
-| x86-64 | `InterruptControllerDesc::Apic { lapic_base, ioapic_base, .. }` | `TimerDesc::Pit { pit_base_freq, lapic_base }` |
-| aarch64 | `InterruptControllerDesc::Gicv3 { gicd_base, gicr_base, .. }` | `TimerDesc::ArmGenericTimer` |
-| riscv64 | `InterruptControllerDesc::Plic { plic_base, .. }` | `TimerDesc::Clint { mtime_addr, mtimecmp_base, freq, .. }` |
+// os/libs/minix-platform/src/arch/riscv64.rs
+pub struct PlicDesc { pub plic_base: usize, pub nr_irqs: u32, pub context: u32 }
+pub struct ClintDesc { pub mtime_addr: usize, pub mtimecmp_base: usize, pub mtimecmp_stride: usize, pub freq: u64 }
+pub struct Riscv64ConsoleDesc { /* SBI ecall 或 MMIO UART，详见源码 */ }
+```
+
+> **为什么 ARM64 Generic Timer 没有频率字段**：ARM 架构约定固件（UEFI/ATF）在启动时将定时器频率写入 `CNTFRQ_EL0` 系统寄存器。kernel 直接 `mrs CNTFRQ_EL0` 读取，不需要从 DTB 解析。`ArmGenericTimerDesc::frequency()` 返回 `0` 作为"运行时读寄存器"的哨兵值。这是架构规范，不是设计遗漏。
+
+三架构映射（消费方拿到 `&dyn` 后通过 `as_any().downcast_ref::<ConcreteDesc>()` 拿到品牌字段）：
+
+| 架构 | `interrupt_controller()` 返回的 `&dyn` | `timer()` 返回的 `&dyn` |
+|------|--------------------------------|----------------|
+| x86-64 | `&ApicDesc { lapic_base, ioapic_base, .. }` | `&PitDesc { pit_base_freq, lapic_base }` |
+| aarch64 | `&Gicv3Desc { gicd_base, gicr_base, .. }` | `&ArmGenericTimerDesc` |
+| riscv64 | `&PlicDesc { plic_base, .. }` | `&ClintDesc { mtime_addr, mtimecmp_base, freq, .. }` |
 
 #### 4.1.3 为什么 trait 需要 `source()` —— 类型擦除后的手动 RTTI
 
@@ -610,104 +669,141 @@ match desc.source() {
 
 **设计权衡**：把 `source()` 放在 `PlatformDesc` trait 里 vs 单独搞个 `HasPlatformSource` trait？前者简单（一个 trait 满足所有元信息查询），后者抽象更纯（明确区分"硬件参数"和"元信息"两层）。当前选择前者——**简洁性优先于抽象纯度**——因为元信息查询需求很低，不会演化成主要扩展点。如果未来 `source()` 衍生出 `version()`、`format_revision()` 等多种元信息查询，再考虑拆分独立 trait。
 
-> 参见 `os/libs/minix-platform/src/desc.rs:47-53` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/qemu_virt.rs:140` / `device_tree.rs:382` / `acpi.rs:242` 三处 `source()` 实现各返回自身对应变体。
+> 参见 `os/libs/minix-boot/src/platform.rs:155-163` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（行 146/140/179）+ `device_tree.rs:396` + `acpi.rs:245` 五处 `source()` 实现各返回自身对应变体。
 
 ### 4.2 `PlatformDesc` 的三种实现
 
 > **设计决策**：§3.1 选定"方案 C——boot-shim 定位原始指针，kernel 解析"。本节给出三种具体实现，对应原始指针的两种来源（DTB / ACPI）+ 一种兜底（QemuVirt）。
 
-#### 4.2.1 `QemuVirtDesc`：硬编码兜底
+#### 4.2.1 `QemuVirtDesc`：硬编码兜底（per-arch 文件）
+
+TODO-01-2 修复后，`QemuVirtDesc` 拆分为三个 per-arch 文件（`arch/x86_64.rs`、`arch/aarch64.rs`、`arch/riscv64.rs`）。每个文件持有该架构的具体子描述符字段，方法体内**无 `#[cfg(target_arch)]`**——`#[cfg]` 只用在 `arch/mod.rs` 的 mod 选择上。
+
+以 `riscv64` 为例（其他架构结构一致，仅 sub-descriptor 类型与硬编码值不同）：
 
 ```rust
-// os/libs/minix-platform/src/qemu_virt.rs:22-144
+// os/libs/minix-platform/src/arch/riscv64.rs
+//
+// 注意：本文件只在 target_arch = "riscv64" 时编译（由 arch/mod.rs 的 cfg 选择）。
+// 因此方法体内不需要再写 #[cfg(target_arch)]。
 
+use minix_boot::{
+    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
+    PlatformDesc, PlatformSource, TimerDesc,
+};
+
+// 品牌 struct 在本文件定义（对上层 minix-boot 不可见）。
+pub struct PlicDesc { pub plic_base: usize, pub nr_irqs: u32, pub context: u32 }
+pub struct ClintDesc {
+    pub mtime_addr: usize, pub mtimecmp_base: usize,
+    pub mtimecmp_stride: usize, pub freq: u64,
+}
+pub struct Riscv64ConsoleDesc { /* SBI ecall 或 MMIO UART，详见源码 */ }
+
+// 各品牌 struct 实现 trait（含 as_any() 必需方法）。
+impl InterruptControllerDesc for PlicDesc {
+    fn nr_irqs(&self) -> u32 { self.nr_irqs }
+    fn as_any(&self) -> &dyn core::any::Any { self }
+}
+impl TimerDesc for ClintDesc {
+    fn frequency(&self) -> u64 { self.freq }
+    fn as_any(&self) -> &dyn core::any::Any { self }
+}
+impl ConsoleDesc for Riscv64ConsoleDesc {
+    fn as_any(&self) -> &dyn core::any::Any { self }
+}
+
+// QEMU `virt` riscv64 兜底描述符——直接持有具体 sub-descriptor struct。
 #[derive(Debug)]
-pub struct QemuVirtDesc;
+pub struct QemuVirtDesc {
+    ic: PlicDesc,
+    timer: ClintDesc,
+    console: Riscv64ConsoleDesc,
+    cpu_topology: CpuTopology,
+    arch_misc: ArchMiscDesc,
+}
+
+impl QemuVirtDesc {
+    pub const fn new() -> Self {
+        Self {
+            ic: PlicDesc { plic_base: 0x0C00_0000, nr_irqs: 64, context: 1 },
+            timer: ClintDesc {
+                mtime_addr: 0x200_BFF8, mtimecmp_base: 0x200_4000,
+                mtimecmp_stride: 8, freq: 10_000_000,
+            },
+            console: Riscv64ConsoleDesc::sbi(),
+            cpu_topology: CpuTopology {
+                nr_cpus: 4, bsp_id: 0,
+                cpus: [CpuInfo::zero(); MAX_CPUS],  // 用 const 构造器
+            },
+            arch_misc: ArchMiscDesc::default(),
+        }
+    }
+}
+
+impl Default for QemuVirtDesc {
+    fn default() -> Self {
+        // per-CPU mtimecmp_addr 需要运行时填充（const fn 限制）。
+        let mut d = Self::new();
+        const MTIMECMP_BASE: usize = 0x200_4000;
+        const MTIMECMP_STRIDE: usize = 8;
+        for i in 0..d.cpu_topology.nr_cpus as usize {
+            d.cpu_topology.cpus[i] = CpuInfo {
+                hw_id: i as u64,
+                gicr_base: None,
+                mtimecmp_addr: Some(MTIMECMP_BASE + i * MTIMECMP_STRIDE),
+            };
+        }
+        d
+    }
+}
 
 impl PlatformDesc for QemuVirtDesc {
-    fn interrupt_controller(&self) -> InterruptControllerDesc {
-        #[cfg(target_arch = "riscv64")]
-        { InterruptControllerDesc::Plic { plic_base: 0x0C00_0000, nr_irqs: 64, context: 1 } }
-        #[cfg(target_arch = "aarch64")]
-        { InterruptControllerDesc::Gicv3 { gicd_base: 0x0800_0000, gicr_base: 0x080A_0000, gicr_stride: 0x2_0000, nr_irqs: 64 } }
-        #[cfg(target_arch = "x86_64")]
-        { InterruptControllerDesc::Apic { lapic_base: 0xFEE0_0000, ioapic_base: 0xFEC0_0000, nr_irqs: 64 } }
-    }
-
-    fn timer(&self) -> TimerDesc {
-        #[cfg(target_arch = "riscv64")]
-        { TimerDesc::Clint { mtime_addr: 0x200_BFF8, mtimecmp_base: 0x200_4000, mtimecmp_stride: 8, freq: 10_000_000 } }
-        #[cfg(target_arch = "aarch64")]
-        { TimerDesc::ArmGenericTimer }
-        #[cfg(target_arch = "x86_64")]
-        { TimerDesc::Pit { pit_base_freq: 1_193_182, lapic_base: 0xFEE0_0000 } }
-    }
-
-    fn early_console(&self) -> Option<ConsoleDesc> {
-        #[cfg(target_arch = "x86_64")]
-        { Some(ConsoleDesc::IsaSerial { port_base: 0x3F8 }) }
-        #[cfg(target_arch = "aarch64")]
-        { Some(ConsoleDesc::MmioSerial { mmio_base: 0x0900_0000 }) }
-        #[cfg(target_arch = "riscv64")]
-        { Some(ConsoleDesc::SbiConsole) }
-    }
-
-    fn cpu_topology(&self) -> CpuTopology {
-        const NR_CPUS: u32 = 4;
-        let mut cpus = [CpuInfo::default(); MAX_CPUS];
-
-        #[cfg(target_arch = "riscv64")]
-        {
-            const MTIMECMP_BASE: usize = 0x200_4000;
-            const MTIMECMP_STRIDE: usize = 8;
-            for i in 0..NR_CPUS as usize {
-                cpus[i] = CpuInfo {
-                    hw_id: i as u64,
-                    gicr_base: None,
-                    mtimecmp_addr: Some(MTIMECMP_BASE + i * MTIMECMP_STRIDE),
-                };
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            const GICR_BASE: usize = 0x080A_0000;
-            const GICR_STRIDE: usize = 0x2_0000;
-            for i in 0..NR_CPUS as usize {
-                cpus[i] = CpuInfo {
-                    hw_id: i as u64,
-                    gicr_base: Some(GICR_BASE + i * GICR_STRIDE),
-                    mtimecmp_addr: None,
-                };
-            }
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            for i in 0..NR_CPUS as usize {
-                cpus[i] = CpuInfo { hw_id: i as u64, gicr_base: None, mtimecmp_addr: None };
-            }
-        }
-
-        CpuTopology { nr_cpus: NR_CPUS, bsp_id: 0, cpus }
-    }
-
-    fn arch_misc(&self) -> ArchMiscDesc { ArchMiscDesc::default() }
+    // 返回 &dyn 引用——具体 struct 自动 trait object 化。
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc { &self.ic }
+    fn timer(&self) -> &dyn TimerDesc { &self.timer }
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> { Some(&self.console) }
+    fn cpu_topology(&self) -> CpuTopology { self.cpu_topology }
+    fn arch_misc(&self) -> ArchMiscDesc { self.arch_misc }
     fn source(&self) -> PlatformSource { PlatformSource::QemuVirt }
 }
 ```
 
+`aarch64`/`x86_64` 的 `QemuVirtDesc` 结构完全一致，区别仅在：
+- 持有的 sub-descriptor 类型不同（如 aarch64 持 `Gicv3Desc` + `ArmGenericTimerDesc` + `MmioSerialDesc`，x86_64 持 `ApicDesc` + `PitDesc` + `IsaSerialDesc`）。
+- 硬编码 MMIO 地址/频率不同（见 `arch/aarch64.rs:84-104`、`arch/x86_64.rs:87-111` 的 `new()` 实现）。
+
+参见 `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 三个 per-arch `QemuVirtDesc` 实现。
+
 #### 4.2.2 `DeviceTreeDesc` 解析器（aarch64 / riscv64）
 
 ```rust
-// os/libs/minix-platform/src/device_tree.rs:42-60
+// os/libs/minix-platform/src/device_tree.rs:56-78
+//
+// ic/timer/console 字段类型按 arch cfg-gate：riscv64 持 PlicDesc/ClintDesc/Riscv64ConsoleDesc，
+// aarch64 持 Gicv3Desc/ArmGenericTimerDesc/MmioSerialDesc。其他 arch 上 DeviceTreeDesc
+// 编译为占位结构（parse() 直接返回 UnsupportedArch）。
 
 #[derive(Clone, Copy)]
 pub struct DeviceTreeDesc {
-    ic: InterruptControllerDesc,
-    timer: TimerDesc,
-    console: Option<ConsoleDesc>,
+    /// 中断控制器描述符（arch 特化具体类型，上层只看到 &dyn InterruptControllerDesc）。
+    #[cfg(target_arch = "riscv64")]
+    ic: PlicDesc,
+    #[cfg(target_arch = "aarch64")]
+    ic: Gicv3Desc,
+    /// 定时器描述符（arch 特化）。
+    #[cfg(target_arch = "riscv64")]
+    timer: ClintDesc,
+    #[cfg(target_arch = "aarch64")]
+    timer: ArmGenericTimerDesc,
+    /// 早期控制台描述符（可选，arch 特化）。
+    #[cfg(target_arch = "riscv64")]
+    console: Option<Riscv64ConsoleDesc>,
+    #[cfg(target_arch = "aarch64")]
+    console: Option<MmioSerialDesc>,
+    /// CPU 拓扑（跨架构共用）。
     cpu_topology: CpuTopology,
+    /// 架构杂项（跨架构共用）。
     arch_misc: ArchMiscDesc,
 }
 
@@ -715,28 +811,64 @@ impl DeviceTreeDesc {
     pub unsafe fn parse(dtb_phys: usize) -> Result<Self, DtParseError> { ... }
     pub fn from_bytes(dtb: &[u8]) -> Result<Self, DtParseError> { ... }
 }
+
+// trait impl 仅在支持 DTB 的 arch 上编译（cfg-gated）。
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+impl PlatformDesc for DeviceTreeDesc {
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc { &self.ic }
+    fn timer(&self) -> &dyn TimerDesc { &self.timer }
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
+        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
+    }
+    fn cpu_topology(&self) -> CpuTopology { self.cpu_topology }
+    fn arch_misc(&self) -> ArchMiscDesc { self.arch_misc }
+    fn source(&self) -> PlatformSource { PlatformSource::DeviceTree }
+}
 ```
 
-关键设计：**eager parsing**。`Fdt` 借用 DTB 切片，但 `PlatformDesc` 必须 `'static + Send + Sync`。`parse()` 一次性遍历 FDT，把所有需要的值提取到 `usize`/`u32`/`u64` 字段中，然后丢弃 `Fdt` 借用。结果 `DeviceTreeDesc` 是 `'static` 且无需分配器。
+关键设计：**eager parsing**。`Fdt` 借用 DTB 切片，但 `PlatformDesc` 必须 `'static + Send + Sync`。`parse()` 一次性遍历 FDT，把所有需要的值提取到具体 arch sub-descriptor struct 的字段中（`PlicDesc`/`Gicv3Desc`/`ClintDesc`/`ArmGenericTimerDesc`/...），然后丢弃 `Fdt` 借用。结果 `DeviceTreeDesc` 是 `'static` 且无需分配器。
 
-> 参见 `os/libs/minix-platform/src/device_tree.rs:61-365`。
+> 参见 `os/libs/minix-platform/src/device_tree.rs:56-423`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）。
 
 #### 4.2.3 `AcpiDesc` 解析器（x86-64）
 
 ```rust
-// os/libs/minix-platform/src/acpi.rs:108-115
+// os/libs/minix-platform/src/acpi.rs:111-118
+//
+// AcpiDesc 只在 x86_64 编译（由 kind::parse_by_kind 的 cfg 选择）。
+// 字段类型直接用具体 arch struct（ApicDesc/PitDesc/IsaSerialDesc），
+// 上层只看到 &dyn InterruptControllerDesc 等 trait object。
 
 #[derive(Clone, Copy)]
 pub struct AcpiDesc {
-    ic: InterruptControllerDesc,
-    timer: TimerDesc,
-    console: Option<ConsoleDesc>,
+    ic: ApicDesc,                          // 具体 x86-64 中断控制器 struct
+    timer: PitDesc,                        // 具体 x86-64 定时器 struct
+    console: Option<IsaSerialDesc>,        // 具体 x86-64 控制台 struct
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
 
 impl AcpiDesc {
     pub unsafe fn parse(rsdp_phys: usize) -> Result<Self, AcpiParseError> { ... }
+
+    /// Construct from pre-parsed values (for tests).
+    pub fn from_parsed(
+        ic: ApicDesc,
+        timer: PitDesc,
+        console: Option<IsaSerialDesc>,
+        cpu_topology: CpuTopology,
+    ) -> Self { ... }
+}
+
+impl PlatformDesc for AcpiDesc {
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc { &self.ic }
+    fn timer(&self) -> &dyn TimerDesc { &self.timer }
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
+        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
+    }
+    fn cpu_topology(&self) -> CpuTopology { self.cpu_topology }
+    fn arch_misc(&self) -> ArchMiscDesc { self.arch_misc }
+    fn source(&self) -> PlatformSource { PlatformSource::Acpi }
 }
 ```
 
@@ -744,16 +876,18 @@ impl AcpiDesc {
 
 - LAPIC base（MADT header 的 `Local APIC Address`）。
 - IOAPIC base（第一个 `IOAPIC` 结构记录的 `ioapic_addr`）。
-- CPU 拓扑（`Processor LAPIC` 结构记录，按 `flags & 1` 判断是否启用）。
+- CPU 拓扑（`Processor LAPIC` 结构记录，按 `flags & 1` 判断是否启用；x2APIC 结构 type 9 同样处理）。
 
-> 参见 `os/libs/minix-platform/src/acpi.rs:127-225`。
+构造 `ApicDesc { lapic_base, ioapic_base, nr_irqs }` + `PitDesc { pit_base_freq: 1_193_182, lapic_base }` + `IsaSerialDesc { port_base: 0x3F8 }`，存入 `AcpiDesc` 字段。上层通过 `&dyn InterruptControllerDesc` 拿到引用，arch 层消费代码再 `as_any().downcast_ref::<ApicDesc>()` 读取 `lapic_base` 等字段。
+
+> 参见 `os/libs/minix-platform/src/acpi.rs:111-483`（含 struct 定义、RSDP/XSDT/MADT 解析、`impl PlatformDesc`）。
 
 ### 4.3 `PlatformContext` 全局存储
 
 > **设计决策**：§3.5 选定 `AssumeSyncCell` 作为"单线程全局状态"统一原语。本节给出具体实现。
 
 ```rust
-// os/libs/minix-platform/src/global.rs:40-49
+// os/libs/minix-platform/src/global.rs:44-105
 
 static PLATFORM: AssumeSyncCell<Option<PlatformContext>> = AssumeSyncCell::new(None);
 
@@ -761,8 +895,16 @@ pub struct PlatformContext {
     pub desc: PlatformDescEnum,
 }
 
+/// Compile-time-fixed dispatch enum over all descriptor sources.
+///
+/// `DeviceTree` 和 `Acpi` 变体按 arch cfg-gate（DTB 路径只在 ARM64/RISC-V 编译，
+/// ACPI 路径只在 x86-64 编译）。`QemuVirt` 变体始终存在（每 arch 都有兜底）。
+/// 注意：变体名是"解析来源"（DeviceTree/Acpi/QemuVirt），不是"硬件品牌"
+/// （Apic/Gicv3/Plic）——品牌名隐藏在 sub-descriptor 的具体 struct 里。
 pub enum PlatformDescEnum {
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     DeviceTree(DeviceTreeDesc),
+    #[cfg(target_arch = "x86_64")]
     Acpi(AcpiDesc),
     QemuVirt(QemuVirtDesc),
 }
@@ -771,7 +913,7 @@ pub enum PlatformDescEnum {
 初始化与访问 API：
 
 ```rust
-// os/libs/minix-platform/src/global.rs:159-247
+// os/libs/minix-platform/src/global.rs:185-260
 
 /// 初始化全局平台上下文。在 T2.5 阶段调用。
 pub unsafe fn init(desc: PlatformDescEnum) {
@@ -779,22 +921,31 @@ pub unsafe fn init(desc: PlatformDescEnum) {
 }
 
 /// 根据 KernelInfo 构造 PlatformDesc 并初始化全局。
+///
+/// 遍历 `kinfo.platform_sources`（boot-shim 偏好顺序），调用 `parse_by_kind()`
+/// 分派到对应解析器。**取第一个解析成功的**——Linux `acpi=on/off/force` 模型：
+/// 多源并存时按 boot-shim 给定的顺序尝试，第一个成功即用。
 pub unsafe fn init_from_kinfo(kinfo: &KernelInfo) {
-    let desc = match kinfo.platform_descriptor {
-        Some(PlatformDescriptorPtr::Dtb(pa)) => {
-            match unsafe { DeviceTreeDesc::parse(pa.0 as usize) } {
-                Ok(d) => PlatformDescEnum::DeviceTree(d),
-                Err(_e) => qemu_fallback_or_panic("DTB parse failed"),
+    let mut parsed: Option<PlatformDescEnum> = None;
+    for source in kinfo.platform_sources {
+        // SAFETY: caller guarantees each source's phys_addr points to a
+        // valid firmware table.
+        match unsafe { parse_by_kind(*source) } {
+            Ok(desc) => {
+                parsed = Some(desc);
+                break;  // 第一个成功即停止
+            }
+            Err(_e) => {
+                // 解析失败：继续尝试下一个 source（dev 构建可日志，release 静默）。
             }
         }
-        Some(PlatformDescriptorPtr::Rsdp(pa)) => {
-            match unsafe { AcpiDesc::parse(pa.0 as usize) } {
-                Ok(d) => PlatformDescEnum::Acpi(d),
-                Err(_e) => qemu_fallback_or_panic("ACPI parse failed"),
-            }
-        }
-        None => qemu_fallback_or_panic("no platform descriptor provided by boot-shim"),
+    }
+
+    let desc = match parsed {
+        Some(d) => d,
+        None => qemu_fallback_or_panic("no platform source parsed successfully"),
     };
+
     unsafe { init(desc) };
 }
 
@@ -810,46 +961,79 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 /// dev 构建 warn-and-fallback；release 构建 panic。
 fn qemu_fallback_or_panic(reason: &str) -> PlatformDescEnum {
     if cfg!(debug_assertions) {
-        PlatformDescEnum::QemuVirt(QemuVirtDesc)
+        PlatformDescEnum::QemuVirt(QemuVirtDesc::default())
     } else {
-        panic!("platform::init_from_kinfo: {} and not a dev build", reason);
+        panic!(
+            "platform::init_from_kinfo: {} and not a dev build (no QemuVirt fallback in release)",
+            reason
+        );
     }
 }
 ```
 
 `init_from_kinfo()` 的错误处理策略：
 
-- **dev 构建**（`debug_assertions` 启用）：warn-and-fallback——返回 `QemuVirtDesc`，测试不中断。
+- **dev 构建**（`debug_assertions` 启用）：warn-and-fallback——返回 `QemuVirtDesc::default()`，测试不中断。
 - **release 构建**：panic——真实硬件不能没有描述符运行。
+- **多源并存**：`platform_sources` 切片按 boot-shim 偏好顺序尝试；任意一个解析成功即用，全失败才走兜底。
 
-### 4.4 `KernelInfo` 扩展与 `PlatformDescriptorPtr`
+### 4.4 `KernelInfo` 扩展与 `PlatformDescSource`
 
-> **设计决策**：§3.7 选定 "enum 字段 + sum type 限制"。本节给出具体定义与 boot-shim 端定位方式。
+> **设计决策**：§3.7 选定 "不透明 `PlatformDescKind` + `PlatformDescSource` 切片"（TODO-01-2 修复后）。本节给出具体定义与 boot-shim 端定位方式。
 
 ```rust
-// os/libs/minix-boot/src/kernel_info.rs:11-95
+// os/libs/minix-boot/src/kernel_info.rs:81-102
 
 pub struct KernelInfo {
     // ... 现有字段保持不变 ...
 
-    /// 平台描述符原始指针（DTB 或 RSDP 的物理地址）。
-    /// `None` 表示 boot-shim 未提供（QEMU virt 兜底路径）。
-    pub platform_descriptor: Option<PlatformDescriptorPtr>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum PlatformDescriptorPtr {
-    /// Flattened Device Tree 物理地址（ARM64/RISC-V）。
-    Dtb(PhysBytes),
-    /// ACPI RSDP 物理地址（x86-64）。
-    Rsdp(PhysBytes),
+    /// 平台描述符源——不透明 handle 切片，承载 (kind, phys_addr) 纯数据对。
+    ///
+    /// 空切片表示 boot-shim 未提供（QEMU virt 兜底路径）。非空时按 boot-shim
+    /// 偏好顺序排列，kernel 取第一个解析成功的（Linux `acpi=on/off/force` 模型）。
+    pub platform_sources: &'static [PlatformDescSource],
 }
 ```
 
-boot-shim 定位原始指针的位置：
+`PlatformDescSource` 与 `PlatformDescKind` 定义在 `minix-boot::platform`：
 
-- UEFI 路径：`os/boot-shim/src/uefi_helpers.rs:33-78` 扫描 UEFI Configuration Table，x86-64 查找 ACPI GUID，aarch64 优先查找 DTB GUID。
-- RISC-V 路径：OpenSBI 在 `a1` 寄存器传递 DTB 物理地址（由 boot-shim 汇编入口保存到 `KernelInfo`）。
+```rust
+// os/libs/minix-boot/src/platform.rs:54-150
+
+/// 不透明 kind 标签（u32 包装）。上层只看到一个整数，不知道它对应 DTB 还是 RSDP。
+/// `minix-platform::kind` 模块 re-export `DTB`/`RSDP` 常量并提供 `parse_by_kind()` 分派。
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlatformDescKind(u32);
+
+/// 平台描述符源——纯数据 (kind, phys_addr)，跨二进制安全。
+#[derive(Clone, Copy)]
+pub struct PlatformDescSource {
+    kind: PlatformDescKind,
+    phys_addr: PhysBytes,
+}
+
+impl PlatformDescSource {
+    pub const fn new(kind: PlatformDescKind, phys_addr: PhysBytes) -> Self {
+        Self { kind, phys_addr }
+    }
+    pub fn kind(&self) -> PlatformDescKind { self.kind }
+    pub fn phys_addr(&self) -> PhysBytes { self.phys_addr }
+}
+
+// 已知 kind 常量（boot handoff 协议契约）。
+pub const DTB: PlatformDescKind = PlatformDescKind::new(1);  // ARM64/RISC-V
+pub const RSDP: PlatformDescKind = PlatformDescKind::new(2); // x86-64
+```
+
+boot-shim 定位原始指针的位置（`find_platform_sources()`）：
+
+- UEFI 路径：`os/boot-shim/src/uefi_helpers.rs:52-98` 扫描 UEFI Configuration Table。
+  - x86-64：查找 ACPI GUID，构造 `PlatformDescSource::new(RSDP, PhysBytes(addr))`。
+  - aarch64：**优先**查找 DTB GUID，**再**查找 ACPI GUID（DTB 在前，ACPI 兜底）——支持 SBBR 服务器场景的 DTB+ACPI 共存。
+  - riscv64：UEFI 路径暂未实现，返回空切片。
+- OpenSBI 路径（riscv64）：`os/boot-shim/src/opensbi_helpers.rs:222-260` 从 `a1` 寄存器拿 DTB 物理地址，构造 `PlatformDescSource::new(DTB, PhysBytes(addr))`，返回单元素切片。
+
+> 参见 `os/libs/minix-boot/src/platform.rs:97-104` 定义 `DTB`/`RSDP` 常量；`os/libs/minix-platform/src/kind.rs:28` re-export 这两个常量并定义 `parse_by_kind()` 分派函数。
 
 ### 4.5 硬件 trait 实例化实现（§3.4 的对应实现）
 
@@ -861,6 +1045,11 @@ boot-shim 定位原始指针的位置：
 
 ```rust
 // os/arch/src/riscv64/clock.rs
+//
+// 注意：new() 接收 &dyn TimerDesc（trait object），不是 enum。
+// arch 层通过 as_any().downcast_ref::<ClintDesc>() 拿到具体品牌 struct 读取字段。
+
+use minix_platform::arch::riscv64::ClintDesc;  // 品牌 struct 在 arch 子模块可见
 
 pub struct Riscv64ClockArch {
     mtime_addr: usize,
@@ -870,15 +1059,16 @@ pub struct Riscv64ClockArch {
 }
 
 impl ClockArch for Riscv64ClockArch {
-    fn new(desc: &TimerDesc) -> Self {
-        match desc {
-            TimerDesc::Clint { mtime_addr, mtimecmp_base, mtimecmp_stride, freq } => Self {
-                mtime_addr: *mtime_addr,
-                mtimecmp_base: *mtimecmp_base,
-                mtimecmp_stride: *mtimecmp_stride,
-                freq: *freq,
-            },
-            _ => panic!("Riscv64ClockArch::new: expected TimerDesc::Clint"),
+    fn new(desc: &dyn TimerDesc) -> Self {
+        // downcast 一次（仅在 init 阶段）：拿到具体 ClintDesc struct。
+        let clint = desc.as_any()
+            .downcast_ref::<ClintDesc>()
+            .expect("Riscv64ClockArch::new: expected ClintDesc");
+        Self {
+            mtime_addr: clint.mtime_addr,
+            mtimecmp_base: clint.mtimecmp_base,
+            mtimecmp_stride: clint.mtimecmp_stride,
+            freq: clint.freq,
         }
     }
 
@@ -895,7 +1085,7 @@ impl ClockArch for Riscv64ClockArch {
 }
 ```
 
-**实例化的好处**：实例字段持有从 `PlatformDesc` 解析出的地址，`read_ticks` 直接读字段——零额外间接（编译器可把字段 load 提到循环外）。所有基址都在 `new(desc)` 构造时一次性注入，构造后实例字段不再变更，热路径无需做任何基址检查或二次设置。
+**实例化的好处**：实例字段持有从 `PlatformDesc` 解析出的地址，`read_ticks` 直接读字段——零额外间接（编译器可把字段 load 提到循环外）。所有基址都在 `new(desc)` 构造时一次性注入（通过 `Any` downcast 从具体品牌 struct 拷贝过来），构造后实例字段不再变更，热路径无需做任何基址检查或二次设置，也无需再次 vtable 查找。
 
 #### 4.5.2 同样模式应用到其他硬件 trait
 
@@ -905,7 +1095,7 @@ impl ClockArch for Riscv64ClockArch {
 | `InterruptController` | `Riscv64Plic` / `Aarch64Gicv3` / `X86Apic` | §3.4.3 + `os/plat/src/{riscv64,aarch64,x86_64}/interrupt.rs` |
 | `ArchInit` | 各架构 `arch_init()` 函数封装为实例方法 | §3.4.3 + `os/arch/src/{riscv64,aarch64,x86_64}/arch_init.rs` |
 
-模式一致：每个实现 `new(desc: &XxxDesc) -> Self`，地址字段在构造时从子描述符 enum 拷贝到实例字段，热路径方法直接读字段，不重新解析 `PlatformDesc`。
+模式一致：每个实现 `new(desc: &dyn XxxDesc) -> Self`，构造时通过 `as_any().downcast_ref::<ConcreteDesc>()` 从具体品牌 struct 拷贝字段到实例字段；热路径方法直接读字段，不重新解析 `PlatformDesc`，也不再次 downcast。
 
 ### 4.6 启动时序：T2.5 阶段
 
@@ -963,9 +1153,9 @@ boot 阶段需要输出诊断信息，因此 early console 仍然保留。变化
 
 | 架构 | Early Console 来源 | 处理 |
 |------|-------------------|------|
-| x86-64 | `ConsoleDesc::IsaSerial { port_base }` | 由 ACPI SPCR 或 `QemuVirtDesc` 提供 |
-| aarch64 | `ConsoleDesc::MmioSerial { mmio_base }` | 由 DTB 或 `QemuVirtDesc` 提供 |
-| riscv64 | `ConsoleDesc::SbiConsole`（SBI 调用，无 MMIO） | `QemuVirtDesc` 提供固定变体 |
+| x86-64 | `IsaSerialDesc { port_base }`（实现 `ConsoleDesc` trait） | 由 ACPI SPCR 或 `QemuVirtDesc` 提供 |
+| aarch64 | `MmioSerialDesc { mmio_base }`（实现 `ConsoleDesc` trait） | 由 DTB 或 `QemuVirtDesc` 提供 |
+| riscv64 | `Riscv64ConsoleDesc::sbi()`（SBI ecall，无 MMIO）或 `::mmio(base)` | `QemuVirtDesc` 提供固定变体 |
 
 #### 4.7.3 bootstrap 路径的时序约束
 
@@ -976,16 +1166,16 @@ boot-shim 和极简 test-kernel 在 `PlatformDesc` 初始化之前就需输出�
 `PlatformDesc` 的子结构为 SMP 预留了多核信息：
 
 - `CpuTopology`：CPU 数量、每个 CPU 的 `CpuInfo`（hw_id、gicr_base、mtimecmp_addr）。
-- `InterruptControllerDesc::Gicv3`：`gicr_stride` 用于计算 per-CPU Redistributor 地址。
-- `TimerDesc::Clint`：`mtimecmp_stride` 用于计算 per-hart mtimecmp 地址。
+- ARM64 `Gicv3Desc`：`gicr_stride` 字段用于计算 per-CPU Redistributor 地址（消费方通过 `as_any().downcast_ref::<Gicv3Desc>()` 拿到）。
+- RISC-V `ClintDesc`：`mtimecmp_stride` 字段用于计算 per-hart mtimecmp 地址（消费方通过 `as_any().downcast_ref::<ClintDesc>()` 拿到）。
 
-**当前阶段**：`QemuVirtDesc` 已按 4 核编码（`nr_cpus = 4`，`cpus[0..4]` 填入各自私有地址），QEMU 测试脚本已统一加 `-smp 4`。内核启动代码仍只使用 BSP（cpu 0）；AP 启动逻辑在 [16-smp.md](16-smp.md) 实现。每个 CPU 通过 `CpuTopology.cpus[cpu_id]` 查询自己的私有信息（GICR base / mtimecmp 地址 / APIC ID）。
+**当前阶段**：`QemuVirtDesc` 已按 4 核编码（`nr_cpus = 4`，`cpus[0..4]` 填入各自私有地址），QEMU 测试脚本已统一加 `-smp 4`。内核启动代码仍只使用 BSP（cpu 0）；AP 启动逻辑在 [16-smp.md](16-smp.md) 实现。每个 CPU 通过 `CpuTopology.cpus[cpu_id]` 查询自己的私有信息（GICR base / mtimecmp 地址 / APIC ID）。`CpuInfo::zero()` const 构造器（`os/libs/minix-boot/src/platform.rs:213-220`）用于 `const fn` 上下文（如 `QemuVirtDesc::new()` 中初始化 `cpus` 数组），运行时再填充 per-CPU 字段。
 
 ### 4.9 `no_std` 约束
 
 - `minix-platform` crate 标注 `#![no_std]`（`os/libs/minix-platform/src/lib.rs:1`）。
 - 解析结果存储在 `static` 中（一次性写入，不释放）。
-- `PlatformDescEnum` 是枚举（无堆分配），`DeviceTreeDesc`/`AcpiDesc` 的字段是固定大小（`CpuTopology` 用 `[CpuInfo; MAX_CPUS]` 数组，`MAX_CPUS = 64`，见 `desc.rs:12`）。
+- `PlatformDescEnum` 是枚举（无堆分配），`DeviceTreeDesc`/`AcpiDesc` 的字段是固定大小（`CpuTopology` 用 `[CpuInfo; MAX_CPUS]` 数组，`MAX_CPUS = 64`，见 `os/libs/minix-boot/src/platform.rs:168`）。
 - Phase 3 的 FDT 解析使用 `fdt` crate（`#![no_std]` 兼容，纯 Rust 实现）。
 - Phase 4 的 ACPI 解析自研最小化（RSDP → XSDT → MADT），不使用 `std` 集合或分配器。
 
@@ -1003,7 +1193,7 @@ boot-shim 和极简 test-kernel 在 `PlatformDesc` 初始化之前就需输出�
 | **ACPI 解析测试** | 构造模拟 ACPI 表，验证 `AcpiDesc::parse` 提取的 IOAPIC base | ACPI 解析正确性 |
 | **QEMU 集成测试** | 保持现有 `qemu_test_*.sh` 通过 | 端到端不回归 |
 
-> 参见 `os/libs/minix-platform/src/desc.rs` 末尾、`os/libs/minix-platform/src/qemu_virt.rs` 末尾、`os/libs/minix-platform/src/global.rs` 末尾均包含 `#[cfg(test)]` 模块。
+> 参见 `os/libs/minix-platform/src/desc.rs` 末尾、`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 末尾、`os/libs/minix-platform/src/global.rs` 末尾均包含 `#[cfg(test)]` 模块（per-arch 测试覆盖各架构的 `QemuVirtDesc` + 品牌 struct downcast）。
 
 ---
 

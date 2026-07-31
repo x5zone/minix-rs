@@ -12,6 +12,8 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 **Concept Abstraction (Ch1 mandatory)**: Concept chapters organized from architecture perspective (CPU questions/system mechanisms), NOT from code perspective (function/struct/trait names). Ch1 subject = CPU/OS, not function name. Multi-arch docs give unified abstraction first.
 **Claims-Evidence (§2.0)**: Every factual claim needs `file:line`. Unverifiable/weak claims → P0. Causal chain in explanations must be technically correct (not "sounds plausible").
 
+**Design First**: Design is a core deliverable, not a review byproduct. Three-tier terminology: **Rewrite** (preserve external behavior) / **Refactor** (code Refactor or design Refactor, no semantic change) / **Architectural Evolution** (explicit ARCH marker required). P0 has 6 categories incl. P0-design-deviation/missing/wrong. Profile R = Design-First Review. See [review.md §2.0](../review-rules/review.md) + [review-profiles.md Profile R](../review-rules/review-profiles.md).
+
 ## AI Execution Constraints
 1. **Verify first**: grep/read source before concluding.
 2. **Contradiction=P0**: C source is ground truth.
@@ -73,7 +75,7 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 **Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/E/G all passed** with gate-evidence attached.
 
 ## ⛔ Blocker Gates (must all pass for Final Review)
-- **Gate 0**（NEW）: 制品完整性 — 标准路径文件齐全 + scan.md 含 8 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。
+- **Gate 0**（NEW, 2026-07-16 扩为 9 锚段）: 制品完整性 — 标准路径文件齐全 + scan.md 含 9 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果** / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。缺 `Step 0: 预检结果` 段 → 触发**模式 69 PSMD**。
 - **Gate A**: coverage-extract.py run + SYMBOLS.md 落盘 + scan.md 附 `gate-evidence-A` 块（命令 + stdout + artifact 路径）。L1 证据必须。
 - **Gate B**: Top 5 behavior-contract table (**8 字段 × 5 函数**：函数名 / C 行为 / Rust 行为 / 差异类型 / 严重度 / C 证据 / Rust 证据 / Reviewer 备注)。
 - **Gate C**: 5-element Precision Check table produced.
@@ -81,12 +83,13 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 - **Gate D-6**: structure.md generated + 12-section review table (doc review only).
 - **Gate E**: §5 test names grep-verified (if doc has §5).
 - **Gate G**（NEW）: Step 5.6 VERIFY-CHECK.md 已产出 + 判定 PASS（一致性 ≥ 90%）。CONCERN/FAIL 不得标 CONVERGED。
+- **Gate H**（2026-07-16 扩）: design 门控（**所有 review 模式必检**）。**不允许 N/A / [SIMPLIFIED] / "复用其他文档 design"** — 都是模式 69 PSMD 触发。详见 [process-skill §Gate H](review-process-skill.md)。
 
 **Evidence rule**: For every Gate, attach the actual command + output snippet in `gate-evidence-{X}` block. "Gate passed" without evidence is invalid. 证据强度分级：L1（工具自动输出，Gate A/D/E 必须）/ L2（手动 grep）/ L3（语义推断，视为 FAIL）。
 
 ## Review Process
 Execute Steps 0-7 in order. Full details in [process-skill](review-process-skill.md). Mandatory artifacts:
-1. Scope + time budget + STATE.md read.
+1. Scope + time budget + STATE.md read + **Step 0 预检（模式 69 PSMD 必跑）**.
 2. **Step 0.5: structure.md generation + skeleton review (doc review mandatory) → Gate D-6**.
 3. Ground Truth source file list verified with `rg`.
 4. Coverage Enumeration (Step 1.5) → Gate A.
@@ -109,6 +112,7 @@ Begin every review with:
 - **Target**: `path/to/doc.md` + `path/to/code.rs`
 - **Same-dir docs**: `path/to/same-dir/*.md`
 - **Loaded Skills**: [list each invoked Skill]
+- **Step 0 预检**: design + outline 完整性（**所有模式强制**，2026-07-16 扩）— 4 条 `ls design/{NN}-*.md` 必跑 → scan.md `§Step 0: 预检结果` 段必含。**缺失时执行 Step 0.3 嵌入生成**（不中断 review，不切换 Design-First）：outline 缺失→0.3.2，outline-review 缺失→0.3.3（AI 自审），design 缺失→0.3.4。详见 [process-skill §Step 0.3](review-process-skill.md)。
 ```
 
 ## Output Template

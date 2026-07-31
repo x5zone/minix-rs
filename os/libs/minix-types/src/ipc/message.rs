@@ -89,6 +89,9 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_irqctl: MessLsysKrnSysIrqctl,
     /// Kernel: SYS_SCHEDULE (user-space scheduler → kernel).
     pub m_lsys_krn_schedule: MessLsysKrnSchedule,
+    /// Kernel: SCHEDULING_NO_QUANTUM (kernel → user-space scheduler).
+    /// C: `mess_krn_lsys_schedule` — ipc.h:261-272.
+    pub m_krn_lsys_schedule: MessKrnLsysSchedule,
     /// Kernel: SYS_GETMCONTEXT / SYS_SETMCONTEXT.
     pub m_lsys_krn_sys_mcontext: MessLsysKrnSysMcontext,
     /// Kernel: SYS_TIMES request.
@@ -115,6 +118,9 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_sprof: MessLsysKrnSysSprof,
     /// VM_PAGEFAULT notification (kernel → VM).
     pub m_vm_pagefault: MessVmPagefault,
+    /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
+    /// C: `mess_notify m_notify` — ipc.h:2598
+    pub m_notify: crate::ipc::notify::MessNotify,
     /// Raw bytes.
     pub raw: [u8; MESSAGE_PAYLOAD_SIZE],
 }
@@ -730,6 +736,67 @@ pub struct MessLsysKrnSchedule {
     pub niced: i32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 36],
+}
+
+/// SCHEDULING_NO_QUANTUM message payload (kernel → user-space scheduler).
+///
+/// C: `mess_krn_lsys_schedule` — ipc.h:261-272. Sent by the kernel's
+/// `notify_scheduler()` (proc.c:1860-1891) when a user-scheduled process
+/// exhausts its quantum. Carries accounting stats so the user-space
+/// scheduler can make informed re-scheduling decisions.
+///
+/// # Layout (matches C `mess_krn_lsys_schedule`)
+/// ```text
+/// | Field        | Type  | Offset | C field            |
+/// |--------------|-------|--------|--------------------|
+/// | acnt_queue   | u64   | 0      | time_in_queue (ms) |
+/// | acnt_deqs    | u32   | 8      | dequeues           |
+/// | acnt_ipc_sync| u32   | 12     | ipc_sync count     |
+/// | acnt_ipc_async|u32   | 16     | ipc_async count    |
+/// | acnt_preempt | u32   | 20     | preempted count    |
+/// | acnt_cpu     | u32   | 24     | cpuid              |
+/// | acnt_cpu_load| u32   | 28     | cpu_load (0..100)  |
+/// | _padding     | 24B   | 32     | (C: uint8_t[24])   |
+/// ```
+///
+/// `acnt_queue` is `time_t` (64-bit on this target) in C — converted from
+/// `p_accounting.time_in_queue` (cycles) to milliseconds via
+/// `cpu_time_to_ms` before sending.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessKrnLsysSchedule {
+    /// Time spent in ready queue (milliseconds).
+    /// C: `time_t acnt_queue` — `cpu_time_2_ms(p->p_accounting.time_in_queue)`.
+    pub acnt_queue: u64,
+    /// Number of times dequeued. C: `unsigned long acnt_deqs`.
+    pub acnt_deqs: u32,
+    /// Synchronous IPC count. C: `unsigned long acnt_ipc_sync`.
+    pub acnt_ipc_sync: u32,
+    /// Asynchronous IPC count. C: `unsigned long acnt_ipc_async`.
+    pub acnt_ipc_async: u32,
+    /// Preemption count. C: `unsigned long acnt_preempt`.
+    pub acnt_preempt: u32,
+    /// CPU id where quantum expired. C: `uint32_t acnt_cpu`.
+    pub acnt_cpu: u32,
+    /// Instantaneous CPU load (0..100). C: `uint32_t acnt_cpu_load`.
+    pub acnt_cpu_load: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 24],
+}
+
+impl Default for MessKrnLsysSchedule {
+    fn default() -> Self {
+        Self {
+            acnt_queue: 0,
+            acnt_deqs: 0,
+            acnt_ipc_sync: 0,
+            acnt_ipc_async: 0,
+            acnt_preempt: 0,
+            acnt_cpu: 0,
+            acnt_cpu_load: 0,
+            _padding: [0; 24],
+        }
+    }
 }
 
 /// SYS_GETMCONTEXT / SYS_SETMCONTEXT message payload.

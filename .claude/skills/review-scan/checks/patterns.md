@@ -2,6 +2,7 @@
 
 > 本文件合并原 patterns/ 下 3 个文件：doc-patterns.md、cross-patterns.md、code-patterns.md。
 > **强制规则**：每个模式检查必须先执行 grep，再下结论。每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
+> **⛔ Step 0 硬阻断前置（NEW 2026-07-16）**：进入本文件任何模式检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md) + [process.md §Step 0 硬阻断规则](process.md)。**新增模式 69/70/71**（PSMD/CTOS/DOG）由本文件统一引用。
 
 ---
 
@@ -150,6 +151,33 @@ rg "\[.*\]\(.*\.md\)" TARGET -n
 
 **Pass condition**: P0/P1 模式零匹配。
 **⛔ 模式 26-29 仅适用于内核模块。用户态服务器跳过。**
+
+---
+
+### 模式 73: Doc Code Example Rust 2024 Edition Drift（NEW 2026-07-30）
+
+> **定义**：文档代码示例使用 Rust 2024 已 deprecated 的 `static mut`，实际代码已迁移至 `Atomic*` / `UnsafeCell`；或文档路径与 `find` 结果不一致（目录重组）。
+
+**检查命令**：
+```bash
+# Doc-side
+rg "static mut" {doc}.md  # 应仅在解释注释中出现
+rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {doc}.md  # 应 0 hits（实际在 arch/src/arch/）
+
+# Rust-side
+rg "static mut" os/ -t rust  # 应 0 hits（实际用 Atomic/AtomicU64/AtomicBool）
+
+# 路径一致性
+find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.rs"
+```
+
+**判定**：
+- 文档示例含 `static mut` 而实际代码无 → **P1**（模式 73a）
+- 文档路径 vs 实际路径不一致（目录重组）→ **P1**（模式 73b）
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 73`。
+
+**首次发现**：2026-07-30 01-boot-shim-bootstrap review（3 处 P1 doc-code 漂移）。
 **⛔ 模式 30-34 适用于所有模块（用户态 + 内核）。不得跳过。**
 
 ---
@@ -232,4 +260,226 @@ rg "\[.*\]\(.*\.md\)" TARGET -n
 - 模式 54-55, 57 零匹配 → P2
 **⛔ 模式 48 是 P0 必检项 — 因果链编造即 P0。**
 **⛔ 模式 51 (实现驱动概念章) 与 Check 13 (Ch1 Mandatory Skeleton) 配合使用。**
+
+---
+
+## 七、Design-First 错误模式
+
+> 对应源 [review-patterns.md §X.5](../../../../prompt/review-rules/review-patterns.md) 模式 63-65。
+> **适用 Profile R / Profile C / Profile I / Profile H-K review**（设计优先或完整 review）。
+> **失败模式**：Design doc / 代码与 design 对齐 / Review 文档自身，三类失败。
+
+| # | Pattern | 检查方法 | Anti-Pattern | Correct | P? |
+|---|---------|---------|-------------|---------|-----|
+| 63 | **Design-Missing**（设计缺口） | 遍历 doc/code 引用的 trait/方法/不变量，grep design doc（`06-design.md` 非 bagging / `06-design-final.md` bagging 等）是否定义 | doc/code 引用了 design 没说过的 trait 方法或不变量；scan.md 中 `P0-XX-1` 编号泄漏到 doc/code | design doc 显式定义所有引用的契约 | P0 |
+| 64 | **开发文档味**（Development-Doc Flavor） | `rg "本节将\|接下来我们\|首先.*然后.*最后\|步骤 1\|进度\|待完成\|已完成\|🚧\|✅" FILE -n` 统计 | doc 读起来像开发日志 / 进度跟踪 / Todo List（>5 实例） | doc 是面向读者的解释，不是面向作者的过程记录 | P1 |
+| 65 | **Translate 倾向**（Translation Tendency） | 读 doc/code 是否只翻译 Minix3 C 而无 Rust 类型系统表达 | "对应 C 中的 foo()，我们写一个 foo()"；改命名但不重表达 | 用 Rust 类型系统重新表达（newtype/enum/bitflags/trait） | P1 |
+
+**Pattern 64 扩展禁用词清单**（任一 >5 实例 → P1）：
+- 迭代叙事：`本节将 / 接下来我们 / 首先 / 然后 / 最后 / 总结一下`
+- 开发主体：`我们 / 笔者 / 开发者 / 实现者`
+- 过程动词：`编写 / 实现 / 修改 / 调整 / 优化`
+- 步骤标记：`步骤 1 / Step 1 / 第一步 / 下一步`
+- 状态标记：`TODO / FIXME / XXX / 待完成 / 已完成 / 进行中 / 进度`
+
+**Pattern 63 修复协议**：
+- 发现 design 缺关键决策 → 不能 silently 用代码填充
+- 必须：(a) 补 design 章节，或 (b) 显式标 IN_DESIGN 进入 Review 中断协议
+- 绝不允许 scan.md 中 P0-design-missing 编号（`P0-XX-1`）泄漏到 doc/code 中
+
+**Output**:
+| Pattern# | Location | Anti-Pattern Found | P? | Suggested Fix |
+|----------|---------|-------------------|----|---------------|
+
+**Pass condition**:
+- 模式 63 (Design-Missing) 零匹配 → P0（P0-design-missing 必修复或标 IN_DESIGN）
+- 模式 64-65 零匹配 → P1
+- IN_DESIGN 项数 ≤ 当前轮允许阈值（详见 [review-process-skill.md §二 IN_DESIGN 状态机](../../../../prompt/skill/review-process-skill.md)）
+
+**⛔ 模式 63 是 Design-First Review 的 P0 必检项 — design 缺失必须执行 Step 0.3 嵌入生成或显式 IN_DESIGN。**
 **⛔ 模式 58-60 是 doc-code 一致性 + TODO 规范专项；与 51/53/56 不同维度。**
+
+### 模式 74: Doc Path Convention Drift（NEW 2026-07-30）
+
+> **定义**：doc 内 Rust crate 路径漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`）。
+
+**检查命令**：
+```bash
+# Doc-side 裸路径扫描（应仅命中 minix3/... 上下文）
+rg "kernel/src/|boot-shim/src/|arch/src/" {doc}.md | grep -v "minix3"
+
+# 双重前缀（sed 副作用）
+rg "os/os/" {doc}.md  # 必须 0 hits
+
+# 跨文档一致性
+rg "os/kernel/src/" notes/rewrite/{module}/{stage}/0*-*.md | wc -l
+```
+
+**判定**：
+- 裸 `kernel/src/` 等（缺 `os/`） → **P1**（模式 74 默认）
+- `os/os/` 双重前缀 → **P1**（sed 副作用）
+
+**修复**：
+```bash
+sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md
+sed -i 's|os/os/|os/|g' {doc}.md
+```
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 74`。
+
+**首次发现**：2026-07-30 02-higher-half-kernel review（18 处路径缺 `os/` 前缀）。
+
+### 模式 75: Doc See-Also Range Drift（NEW 2026-07-31）
+
+> **定义**：doc 中"参见 X.rs:Y-Z"形式的范围引用出现两类漂移——起止行号 +1 偏移（如 :55-76 → 实际 :56-78）+ 上界范围过短（如 :55-399 → 实际 :56-523，doc 写作时文件较小未随代码演化更新）。
+
+**检查命令**（Step 1.0d 强制）：
+```bash
+# 1. 抽取"参见"型范围引用
+rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md | sort -u
+
+# 2. 验证起止行号
+for ref in $(rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md | sort -u); do
+    path=$(echo "$ref" | rg -o "[^\`]+\.rs")
+    start=$(echo "$ref" | rg -o ":[0-9]+-" | rg -o "[0-9]+")
+    sed -n "${start}p" "$path"  # 验证首行内容
+done
+
+# 3. 验证上界（impl 结束位置）
+rg -n "^impl PlatformDesc for X|^impl fmt::Display" {path}
+wc -l {path}  # 当前实际行数
+```
+
+**判定**：
+- 起止 ±1 偏移 → **P2 行号偏移**
+- 上界 < 实际 impl 结束 → **P2 范围过短**
+- 起止偏移 > 1 → **P1 行号漂移**
+
+**修复**：
+```bash
+# 1. 修正 +1 偏移
+sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
+sed -i 's|acpi.rs:110-|acpi.rs:111-|g' {doc}.md
+
+# 2. 更新上界到 impl 结束
+sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
+```
+
+**与 Step 1.0a 区分**：Step 1.0a 行号主动抽样只检查单行引用（`// path:line`），漏检范围引用（`参见 path:line-line`）。本次 04 doc review 漏检 2 处 L831/L883 顺带修复。
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 75` + `.claude/rules/review-process.md §Step 1.0d`。
+
+**首次发现**：2026-07-31 04-platform-discovery review（2 处范围漂移 L831/L883 漏检）。
+
+### 模式 76: Cross-Doc Attribution Drift（NEW 2026-07-31）
+
+> **定义**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
+
+**检查命令**（Step 1.0e 强制）：
+```bash
+# 1. 扫描代码注释中的 doc 归属引用
+rg "covered in 0[0-9]" os/ -t rust -n
+rg "see 0[0-9]-.+\.md" os/ -t rust -n
+
+# 2. 验证当前 doc 编号
+ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+
+# 3. 验证目标 doc 存在
+for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do
+    doc_file=$(echo "$ref" | rg -o "[0-9]+-.+\.md")
+    [ ! -f "notes/.../$doc_file" ] && echo "❌ STALE: $ref"
+done
+```
+
+**判定**：
+- `(covered in NN)` 注释错位 → **P1 注释错位**
+- `see XX-doc.md` 引用已删除 doc → **P1 注释失效**
+- `see XX-doc.md` 引用已重命名 doc → **P1 注释失效**
+
+**修复**（批量 sed）：
+```bash
+# 1. 修 (covered in NN) 注释
+sed -i 's|(covered in 04)|(covered in 05)|g' os/kernel/src/lib.rs
+sed -i 's|(covered in 05)|(covered in 06)|g' os/kernel/src/lib.rs
+sed -i 's|(covered in 06)|(covered in 07)|g' os/kernel/src/lib.rs
+
+# 2. 修 see XX-doc.md 注释（确认重命名映射后批量替换）
+sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/arch/{clock.rs,arch_init.rs}
+```
+
+**已知过时 doc 命名**（本次 05 review 发现）：
+- `04-clock-interrupt-init.md` → `05-clock-interrupt-init.md`
+- `05-exception-interrupt.md` → `14-exception-interrupt.md`（推测）
+- `06-arch-post-init.md` → `08-system-init-boot-finish.md`（推测）
+- `02-page-table-kernel.md` → `02-higher-half-kernel.md`（推测）
+
+**与已有模式区分**：
+- **Pattern #66** = Reference Code Path Drift（代码路径引用 `file:line` 不存在）
+- **Pattern #76** = **Cross-Doc Attribution Drift**（doc 编号/文件名引用不一致）
+
+### 模式 66 主动应用案例（NEW 2026-07-31, Doc 07 review）
+
+> **亮点**：doc 07 §5.4 显式声明"不引用 syscall_copy.rs 具体行号避免漂移传播（Pattern #66 RCPD）"—— **首个 doc 主动标注已应用 review pattern**。
+>
+> 这表明 doc 作者已具备 review pattern 意识，主动避免引入 Pattern #66 风险。
+>
+> **建议**：其他 doc 在 §5 测试章节引用行号时，可借鉴 doc 07 的做法：
+> - 显式声明"不引用 X.rs 行号，避免漂移传播"
+> - 或：使用 grep 命令而非具体行号（如"通过 `rg fn X os/Y.rs` 找到实现"）
+> - 或：行号引用加版本/时间戳（如"截至 YYYY-MM-DD, X.rs:Y"）
+>
+> **首次发现**：2026-07-31 07-cross-space-init review（`.review/claude/03-stage-kernel/07-cross-space-init/scan.md`）
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 76` + `.claude/rules/review-process.md §Step 1.0e`。
+
+**首次发现**：2026-07-31 05-clock-interrupt-init review（3 处 `(covered in NN)` + 9+ 处 `see XX-doc.md`）。
+
+### 模式 77: Code Comment Line Drift（NEW 2026-07-31）
+
+> **定义**：代码注释中引用 `file:line`（如 `// see proc_table.rs:129`）因代码增量而**漂移**（文件行号下移）。本次 08 doc review 发现 `os/kernel/src/lib.rs:1170/1181/1193` 3 处注释错位。
+
+**检查命令**（Step 1.0f 强制）：
+```bash
+# 1. 扫描所有代码注释中的 file:line 引用
+rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -n
+
+# 2. 验证实际行号
+for ref in $(rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -o); do
+    file=$(echo "$ref" | rg -o "[a-z_/0-9]+\.rs")
+    line=$(echo "$ref" | rg -o "[0-9]+")
+    actual=$(sed -n "${line}p" "$file" 2>/dev/null)
+    echo "$ref: $actual"
+done
+```
+
+**判定**：
+- 引用行号 ±1 偏移 → ✅
+- 引用行号偏差 2-5 → **P2 代码注释轻微漂移**
+- 引用行号偏差 > 5 → **P2 代码注释漂移**
+- 引用行号偏差 > 50 → **P1 代码注释显著漂移**
+
+**修复**（双修避免传递性 drift）：
+```bash
+# 1. 修代码注释（root cause）
+sed -i 's|(see proc_table.rs:129)|(see proc_table.rs:276)|' os/kernel/src/lib.rs
+
+# 2. 同步修所有复述的 doc（如果 doc 复述了错误注释）
+sed -i 's|proc_table.rs:129|proc_table.rs:276|g' notes/.../{doc}.md
+
+# 3. 验证全项目干净
+rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
+# (empty = ✅)
+```
+
+**已知偏差**（本次 08 review 发现）：
+- `os/kernel/src/lib.rs:1170` `smp.rs:80-145` → 实际 `smp.rs:135`（已修）
+- `os/kernel/src/lib.rs:1181` `smp.rs:127-132` → 实际 `smp.rs:200`（已修）
+- `os/kernel/src/lib.rs:1193` `proc_table.rs:129` → 实际 `proc_table.rs:276`（已修）
+
+**与已有模式区分**：
+- **Pattern #66** = Reference Code Path Drift（代码路径引用 `file:line` 不存在）—— Pattern #77 是 Pattern #66 的子类型（行号漂移）
+- **Pattern #77** = **Code Comment Line Drift**（**代码注释行号漂移**）—— 重点是代码注释而非 doc 引用
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 77` + `.claude/rules/review-process.md §Step 1.0f`。
+
+**首次发现**：2026-07-31 08-system-init-boot-finish review（**根因是 lib.rs 代码注释错误，doc §4.6 复述了错误注释**）。

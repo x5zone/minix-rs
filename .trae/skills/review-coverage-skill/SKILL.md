@@ -12,7 +12,7 @@ description: Minix-RS 覆盖率穷举检查。使用 tools/coverage-extract/ 脚
 
 ## 0. Gate A 强制运行规则（反造假）
 
-> **背景**：6 AI 共识（improve-v2 §1.2）——曾有 review 明确写"未运行 coverage-extract.py"，紧接着标 "✅ 通过"，直接 Gate 造假。本节堵住该漏洞。
+> **背景**：曾有 review 明确写"未运行 coverage-extract.py"，紧接着标 "✅ 通过"，直接 Gate 造假。本节堵住该漏洞。
 
 **强制规则**：
 1. **coverage-extract.py 必须运行** — 不允许"语义范围手动验证"代替。
@@ -292,8 +292,31 @@ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall
 |-------|------|
 | [review-doc-skill](review-doc-skill.md) §2.8 | 本 Skill 是 §2.8 C源码覆盖完整性的**增强版**，提供机器穷举 |
 | [review-process-skill](review-process-skill.md) Step 1.5 | 本 Skill 在 Step 1.5 执行（Ground Truth Lookup 之后） |
+| [review-process-skill](review-process-skill.md) Step 1.6 | 设计对齐检查 — 覆盖率结果需对照 design doc 的语义范围 |
 | [review-core-semantics](../review-rules/review-core-semantics.md) | 行为契约表的定义在此 Skill 中使用 |
 | [review-code-excellence](../review-rules/review-code-excellence.md) | 测试三重标准在此 Skill 中使用 |
+
+### 4.5 设计覆盖度
+
+> 配合 [review-process-skill.md Step 1.6 设计对齐检查](../skill/review-process-skill.md) 使用。
+
+**双重覆盖判定**：
+1. **C→Rust 实现覆盖**（传统 SYMBOLS.md 范围）：见上文 §1.3
+2. **Design→C 语义覆盖**：design doc 中定义的 trait/方法/不变量/错误码，在 C 源码中是否可追溯？
+
+**Design 覆盖判定**：
+```markdown
+| design 元素 | C 源码追溯 | 状态 |
+|-------------|----------|------|
+| `trait ArchInterruptController` | `interrupt_init()` 等 C 函数 | ✅ 找到 |
+| `fn dispatch_irq(&self, vec: u8)` | `put_irq_handler` 在 irq.c | ✅ 找到 |
+| 设计的不变量: "IRQ handler 不可睡眠" | C 源码是否注释？ | ⚠️ 无显式不变量声明 → P1-design-missing |
+```
+
+**Design 缺口处理**：
+- Design 写到但 C 无对应实现 → 可能 ARCH（架构演进）或 P0-design-wrong
+- Design 未写但 C 有行为 → P0-design-missing（design 未覆盖该语义）
+- 详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../skill/review-patterns-skill.md)
 
 ---
 
@@ -353,6 +376,11 @@ python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
 | Rust 覆盖 | K/N (Q%) |
 | 完全缺口 | G |
 | 架构演进 | A |
+
+**信噪比优化**（新增，2026-07-16）：单文档 review 时，coverage-extract.py 输出的 SYMBOLS.md 可能含大量与本文档无关的符号（如 02 文档 review 时 SYMBOLS.md 含 1306 个 C 符号，但 02 文档只覆盖 16 个）。AI 应优先关注以下三类符号，跳过无关符号：
+1. **文档覆盖的符号**（状态列含本文档名）→ 必须验证 Rust 对应关系
+2. **P0 缺口符号**（在本文档语义范围内但无文档无 Rust）→ 必须判定是否真的缺口
+3. **架构演进符号**（C 有 Rust 无，但属于架构差异）→ 标注 ARCH 不需要
 
 **P0 缺口**（在语义范围内但无文档无Rust）:
 | 符号 | C 源码 | 判定 | evidence |

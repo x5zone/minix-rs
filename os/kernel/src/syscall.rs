@@ -5,10 +5,10 @@
 //! - `system.c:168-278` — system_init(): IRQ hook init + alarm timer init + call_vec registration
 //! - `system.c:103-116` — kernel_call_dispatch(): call_vec[call_nr] dispatch
 //! - `system.c:58-90` — kernel_call_finish(): VMSUSPEND handling + result copy
-//! - `com.h:207-262` — SYS_* constant definitions
-//! - `com.h:262` — NR_SYS_CALLS = 58
+//! - `com.h:207-267` — SYS_* constant definitions
+//! - `com.h:270` — NR_SYS_CALLS = 58
 //!
-//! # Design Decisions (07-system-init-boot-finish.md §3)
+//! # Design Decisions (08-system-init-boot-finish.md §3)
 //!
 //! - **D1**: `enum Syscall + match` replaces C's `call_vec[]` function pointer array.
 //!   Benefits: type safety, compile-time exhaustiveness check, no function pointers.
@@ -24,7 +24,7 @@ use crate::proc_table::ProcessTable;
 use minix_types::Message;
 
 /// Total number of kernel system calls.
-/// C: NR_SYS_CALLS = 58 — minix/com.h:262
+/// C: NR_SYS_CALLS = 58 — minix/com.h:270
 pub const NR_SYS_CALLS: usize = 58;
 
 // ── Minix3 error codes used in dispatch ──
@@ -191,6 +191,23 @@ pub enum KcallResult {
     CallDenied,
 }
 
+impl KcallResult {
+    /// Returns the errno to reply with, or `None` if no reply should be sent.
+    ///
+    /// Used by `kernel_call_finish` to unify the non-VmSuspend paths:
+    /// C `kernel_call_finish` else-branch handles all non-VMSUSPEND cases
+    /// uniformly (clear saved_msg + optional reply + release BKL).
+    /// `VmSuspend` is excluded — it has its own dedicated path.
+    fn reply_code(&self) -> Option<i32> {
+        match self {
+            KcallResult::Ok(ret) => Some(*ret),
+            KcallResult::BadCall => Some(EBADREQUEST),
+            KcallResult::CallDenied => Some(ECALLDENIED),
+            KcallResult::NoReply | KcallResult::VmSuspend => None,
+        }
+    }
+}
+
 /// Dispatch a kernel system call.
 ///
 /// C: kernel_call_dispatch() in system.c:103-116
@@ -254,15 +271,13 @@ fn kernel_call_dispatch_inner(
     // Check if the caller has permission to invoke this system call.
     // Processes without an assigned privilege (priv_id == None) are denied
     // all kernel calls — this should not happen for running processes.
-    let call_denied = match caller.priv_id {
-        Some(priv_id) => {
-            match priv_table.get(priv_id) {
-                Some(caller_priv) => !kcall_filter_check(caller_priv, call_nr as u32),
-                None => true, // Invalid priv_id — deny
-            }
-        }
-        None => true, // No privilege assigned — deny
-    };
+    //
+    // Composed as `Option::and_then` + `map_or(true, ...)`:
+    //   - `None` (no priv_id, or priv_id not in table) → deny (true)
+    //   - `Some(priv)` → deny iff `kcall_filter_check` returns false
+    let call_denied = caller.priv_id
+        .and_then(|id| priv_table.get(id))
+        .map_or(true, |caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
     if call_denied {
         return KcallResult::CallDenied;
     }
@@ -446,19 +461,31 @@ fn dispatch_schedule(
     // the kernel's SYS_SCHEDCTL path (C: do_schedctl.c passes FALSE);
     // SYS_NICE is not yet wired up, so `niced` stays false for now.
     let niced = false;
-    let cpu_i32 = sched.cpu;
+
+    // Design decision §3.8 (11-design.v1.md): convert C's i32 -1 sentinel
+    // ("keep current") to Option. Negative values other than -1 are rejected
+    // early to match C semantics (system.c:644-648).
+    let priority_opt = match sched.priority {
+        -1 => None,
+        v if v >= 0 => Some(v as u8),
+        _ => return KcallResult::Ok(EINVAL), // priority < 0 && != -1
+    };
+    let quantum_opt = match sched.quantum {
+        -1 => None,
+        v if v >= 1 => Some(v as u32),
+        _ => return KcallResult::Ok(EINVAL), // quantum < 1 && != -1
+    };
+    let cpu_opt = if sched.cpu == -1 { None } else { Some(sched.cpu as u32) };
+
     let target = match proc_table.get_mut(target_nr) {
         Some(p) => p,
         None => return KcallResult::Ok(EINVAL),
     };
     match crate::sched::sched_proc(
         target,
-        sched.priority,
-        sched.quantum,
-        cpu_i32,
-        niced,
+        crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced },
     ) {
-        Ok(_) => KcallResult::Ok(0),
+        Ok(()) => KcallResult::Ok(0),
         Err(e) => KcallResult::Ok(crate::sched::sched_proc_error_to_errno(e)),
     }
 }
@@ -842,12 +869,79 @@ fn dispatch_vmctl(
             VmCtlResult::Ok(ENOSYS as i32)
         }
 
-        // ── Arch-specific commands: GetPdbr, SetAddrSpace, FlushTlb, InvlPg ──
+        // ── SetAddrSpace: switch target's page table root ──
+        // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
+        //
+        // C setcr3 (arch_do_vmctl.c:19-33) does:
+        //   1. p->p_seg.p_cr3 = cr3
+        //   2. p->p_seg.p_cr3_v = v
+        //   3. if (p == ptproc) write_cr3(p->p_seg.p_cr3)
+        //   4. if (p->p_nr == VM_PROC_NR) arch_enable_paging(p)
+        //   5. RTS_UNSET(p, RTS_VMINHIBIT)
+        //
+        // Rust implements steps 1, 2, 5 now. Step 3 (write_cr3) requires the
+        // ptproc tracking mechanism (currently a no-op placeholder in
+        // `X86_64PostInitArch::set_ptproc`) plus a non-zeroing Paging
+        // constructor — both deferred to the SMP/ptproc stage. Step 4
+        // (arch_enable_paging) is a no-op on 64-bit (paging enabled at boot).
+        //
+        // # C bug correction
+        //
+        // Minix3 C never sets `vm_running = 1` (only `main.c:47` sets it to 0).
+        // Rust corrects this: when the target is `VM_PROC_NR`, set
+        // `vm_running = true` so readers (`do_umap_remote`, `acpi`, `oxpcie`)
+        // see VM as active. See `09-vm-boot-protocol.md §3 decision4` and
+        // `lib.rs::set_vm_running` doc comment.
+        VmCtlParam::SetAddrSpace => {
+            // SVMCTL_PTROOT = m1_i3 (same field as SVMCTL_VALUE)
+            // SVMCTL_PTROOT_V = m1_p1 (virtual address of page table root)
+            let ptroot_phys = value_raw as u64; // m1_i3 (i32) → u64 physical address
+            let ptroot_virt = unsafe { msg.m_u.m_m1.m1p1 }; // m1_p1
+
+            let target = proc_table.get_mut(target_nr);
+            match target {
+                Some(p) => {
+                    // Steps 1-2: Set page table roots.
+                    // C: p->p_seg.p_cr3 = cr3; p->p_seg.p_cr3_v = v;
+                    p.p_seg.phys_root = minix_types::PhysBytes(ptroot_phys);
+                    p.p_seg.virt_root = if ptroot_virt != 0 {
+                        Some(minix_types::VirBytes(ptroot_virt))
+                    } else {
+                        None
+                    };
+
+                    // Step 3: write_cr3 — DEFERRED (requires ptproc tracking +
+                    // non-zeroing Paging constructor). On single-CPU boot with
+                    // only VM running, the scheduler will switch CR3 on the
+                    // next context switch via the arch-specific context
+                    // restore path. TODO: implement when SMP/ptproc lands.
+                    //
+                    // Step 4: arch_enable_paging — no-op on 64-bit
+                    // (paging enabled in `arch_boot_impl` via `Paging::enable`).
+
+                    // Step 5: Clear VMINHIBIT.
+                    // C: RTS_UNSET(p, RTS_VMINHIBIT) — allows scheduling.
+                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
+
+                    // C bug correction: set vm_running = true when target is VM.
+                    // C source omits this (never writes vm_running=1). Rust
+                    // corrects the omission so VM is marked as running after
+                    // it has switched to its own page table.
+                    if p.p_nr == crate::proc::proc_nr::VM_PROC_NR {
+                        crate::set_vm_running(true);
+                    }
+
+                    VmCtlResult::Ok(0)
+                }
+                None => return KcallResult::Ok(EINVAL),
+            }
+        }
+
+        // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
         // C: handled by arch_do_vmctl() in arch_do_vmctl.c:38-65
         // These require arch-specific register access (CR3/TTBR0/satp/INVLPG).
         // Return ENOSYS until arch trait provides the implementations.
         VmCtlParam::GetPdbr
-        | VmCtlParam::SetAddrSpace
         | VmCtlParam::FlushTlb
         | VmCtlParam::InvlPg => {
             VmCtlResult::Ok(ENOSYS as i32)
@@ -1138,7 +1232,7 @@ fn dispatch_arch_padconf(_: &mut KProcess, _: &Message) -> KcallResult { KcallRe
 // ── kernel_call_finish / kernel_call_resume ──
 // C: system.c:58-90 (kernel_call_finish), system.c:612-638 (kernel_call_resume)
 
-use crate::proc::MiscFlagsBits;
+use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 use minix_types::Endpoint;
 
 /// EBADREQUEST — invalid syscall number. C: com.h EBADREQUEST = 212
@@ -1187,88 +1281,94 @@ fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
 /// This matches C's pattern where BKL is released before `switch_to_user()`
 /// (or before blocking in IPC sendrecv).
 pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallResult) {
-    match result {
-        KcallResult::VmSuspend => {
-            // 保存请求消息，设置 MF_KCALL_RESUME
-            // C: caller->p_vmrequest.saved.reqmsg = *msg;
-            // C: caller->p_misc_flags |= MF_KCALL_RESUME;
-            // Rust: p_vm_suspend.saved_msg = Some(msg)
-            if let Some(ctx) = caller.p_vm_suspend.as_mut() {
-                ctx.saved_msg = Some(msg.clone());
-            }
-            caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
-
-            // Release BKL — process is suspended waiting for VM.
-            // Other CPUs can enter the kernel while we wait.
-            // kernel_call_resume() will re-acquire BKL when VM replies.
-            crate::smp::bkl_unlock();
+    // VmSuspend path: save msg + set MF_KCALL_RESUME + release BKL.
+    // C: system.c:60-63 — `if (result == VMSUSPEND) { saved.reqmsg = *msg;
+    // p_misc_flags |= MF_KCALL_RESUME; }`
+    if matches!(result, KcallResult::VmSuspend) {
+        if let Some(ctx) = caller.p_vm_suspend.as_mut() {
+            ctx.saved_msg = Some(msg.clone());
         }
-        KcallResult::Ok(ret) => {
-            // 清除保存的消息
-            // C: caller->p_vmrequest.saved.reqmsg.m_source = NONE;
-            if let Some(ctx) = caller.p_vm_suspend.as_mut() {
-                ctx.saved_msg = None;
-            }
-            // 拷贝结果到用户空间
-            // C: msg->m_source = SYSTEM; msg->m_type = result;
-            // C: copy_msg_to_user(msg, (message *)caller->p_delivermsg_vir);
-            let mut reply = msg.clone();
-            reply.m_source = Endpoint::SYSTEM;
-            reply.m_type = ret;
-            copy_msg_to_user(caller, &reply);
-
-            // Release BKL — syscall complete, returning to user mode.
-            crate::smp::bkl_unlock();
-        }
-        KcallResult::NoReply => {
-            if let Some(ctx) = caller.p_vm_suspend.as_mut() {
-                ctx.saved_msg = None;
-            }
-            // Release BKL — syscall complete (no reply).
-            crate::smp::bkl_unlock();
-        }
-        KcallResult::BadCall => {
-            // 返回错误码到用户空间
-            // C: msg->m_type = EBADREQUEST (212)
-            let mut reply = msg.clone();
-            reply.m_source = Endpoint::SYSTEM;
-            reply.m_type = EBADREQUEST;
-            copy_msg_to_user(caller, &reply);
-
-            // Release BKL — error path, returning to user mode.
-            crate::smp::bkl_unlock();
-        }
-        KcallResult::CallDenied => {
-            // 返回权限拒绝错误码到用户空间
-            // C: msg->m_type = ECALLDENIED (210) — system.c:108
-            let mut reply = msg.clone();
-            reply.m_source = Endpoint::SYSTEM;
-            reply.m_type = ECALLDENIED;
-            copy_msg_to_user(caller, &reply);
-
-            // Release BKL — error path, returning to user mode.
-            crate::smp::bkl_unlock();
-        }
+        caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        // Release BKL — process is suspended waiting for VM.
+        // Other CPUs can enter the kernel while we wait.
+        // kernel_call_resume() will re-acquire BKL when VM replies.
+        crate::smp::bkl_unlock();
+        return;
     }
+
+    // Non-VmSuspend path (Ok / NoReply / BadCall / CallDenied):
+    // C: system.c:64-89 — single else-branch handles all non-VMSUSPEND cases
+    // uniformly: clear saved_msg + optional reply + (BKL released below).
+    //
+    // Previous implementation scattered this across 4 match arms with 4×
+    // `bkl_unlock()` and 3× duplicated reply construction; the unified path
+    // also fixes a latent bug where BadCall/CallDenied skipped
+    // `saved_msg = None` cleanup (harmless in practice because BadCall/
+    // CallDenied cannot follow a VmSuspend, but diverges from C semantics).
+    if let Some(ctx) = caller.p_vm_suspend.as_mut() {
+        ctx.saved_msg = None;
+    }
+
+    if let Some(errno) = result.reply_code() {
+        let mut reply = msg.clone();
+        reply.m_source = Endpoint::SYSTEM;
+        reply.m_type = errno;
+        copy_msg_to_user(caller, &reply);
+    }
+
+    // Release BKL — syscall complete (Ok/NoReply/BadCall/CallDenied).
+    crate::smp::bkl_unlock();
 }
 
 /// Resume a previously suspended kernel call (after VM handled the page fault).
 ///
 /// C: `kernel_call_resume()` — system.c:612-638
+///
+/// # Invariants (C system.c:616-619)
+///
+/// On entry, the caller must satisfy:
+/// 1. `!RTS_SLOT_FREE` — process slot is not being recycled
+/// 2. `!RTS_VMREQUEST` — VM has finished processing the fault (flag cleared)
+/// 3. `saved_msg.m_source == caller.p_endpoint` — saved message is still
+///    sourced from this caller (not corrupted)
+///
+/// Additionally, `MF_KCALL_RESUME` must be set (set by `kernel_call_finish`
+/// VmSuspend path) — its presence proves a prior dispatch returned VmSuspend.
 pub fn kernel_call_resume(
     caller: &mut KProcess,
     priv_table: &mut PrivTable,
     proc_table: &mut crate::proc_table::ProcessTable,
     clock_state: &mut ClockState,
 ) {
-    debug_assert!(caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+    // C: system.c:616-619 — three invariants + our MF_KCALL_RESUME marker.
+    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE),
+        "kernel_call_resume: caller slot is being freed");
+    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+        "kernel_call_resume: VM has not finished processing the fault");
+    debug_assert!(caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME),
+        "kernel_call_resume: MF_KCALL_RESUME not set (no prior VmSuspend)");
 
-    let mut msg_copy = caller.p_vm_suspend.as_ref()
+    // C: system.c:619 — `saved.reqmsg.m_source == caller->p_endpoint`.
+    // The saved message must be sourced from this caller.
+    // Using `expect` instead of `unwrap_or_default` so that an invariant
+    // violation (missing p_vm_suspend or saved_msg) panics loudly rather
+    // than silently dispatching an empty message — the original
+    // `unwrap_or_default()` masked corruption bugs.
+    let saved_msg = caller.p_vm_suspend.as_ref()
         .and_then(|ctx| ctx.saved_msg.clone())
-        .unwrap_or_default();
-    caller.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME);
+        .expect("kernel_call_resume: p_vm_suspend.saved_msg must exist \
+                 (VmSuspend path in kernel_call_finish always sets it)");
+    debug_assert_eq!(saved_msg.m_source, caller.p_endpoint,
+        "kernel_call_resume: saved_msg.m_source mismatch");
 
+    let mut msg_copy = saved_msg;
+
+    // C: system.c:627-630 — re-execute the kernel call with MF_KCALL_RESUME
+    // still set so the call handler knows this is a retry. The flag is cleared
+    // *after* dispatch returns (system.c:635) so it can be set again on a
+    // subsequent VMSUSPEND within the same call.
     let result = kernel_call_dispatch(caller, &mut msg_copy, priv_table, proc_table, clock_state);
+    caller.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME);
     kernel_call_finish(caller, &msg_copy, result);
 }
 

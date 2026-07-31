@@ -26,6 +26,14 @@ Cargo.lock
 # review state tracking (auto-generated, not committed)
 .review/
 
+# design/ and tmp_design_and_todo/ folders (intermediate design snapshots, NOT formal docs)
+# - design/ contains reusable snapshots (outline/design) used as reference input for review
+# - tmp_design_and_todo/ contains early manually-generated "design" folder (deprecated, to be removed)
+# Formal docs (00-25) MUST NOT reference these paths; they are intermediate process content.
+# Both folders are chmod 700 to hide from casual browsing (formal docs are self-contained)
+**/.design/
+**/tmp_design_and_todo/
+
 .idea/
 .vscode/
 .lingma/

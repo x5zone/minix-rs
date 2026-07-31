@@ -6,13 +6,13 @@
 //!
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
-//! `TimerDesc::ArmGenericTimer` carries no data (frequency is read from
+//! `ArmGenericTimerDesc` carries no data (frequency is read from
 //! CNTFRQ_EL0 at runtime), so `new()` is a no-op constructor. The struct
 //! exists only to satisfy the instance-based trait contract.
 //!
 //! C: earm/arch_system.c PMU init (cycle counter for user mode)
 
-use minix_platform::TimerDesc;
+use minix_platform::arch::aarch64::ArmGenericTimerDesc;
 
 use crate::clock::ClockArch;
 
@@ -28,16 +28,13 @@ use crate::clock::ClockArch;
 pub struct AArch64ClockArch;
 
 impl ClockArch for AArch64ClockArch {
-    fn new(desc: &TimerDesc) -> Self {
+    fn new(desc: &dyn minix_platform::TimerDesc) -> Self {
         // ARM Generic Timer carries no data in the descriptor — frequency
-        // is read from CNTFRQ_EL0 at runtime. We only verify the variant.
-        match desc {
-            TimerDesc::ArmGenericTimer => Self,
-            _ => panic!(
-                "AArch64ClockArch::new: expected TimerDesc::ArmGenericTimer, got {:?}",
-                desc
-            ),
-        }
+        // is read from CNTFRQ_EL0 at runtime. We only verify the type.
+        desc.as_any()
+            .downcast_ref::<ArmGenericTimerDesc>()
+            .expect("AArch64ClockArch::new: expected ArmGenericTimerDesc");
+        Self
     }
 
     fn init_timer(&mut self, hz: u32) {

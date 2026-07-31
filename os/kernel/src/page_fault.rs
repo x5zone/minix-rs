@@ -47,7 +47,7 @@
 //! Each helper has a single responsibility, no side effects beyond what
 //! the name implies, and is fully unit-testable.
 
-use minix_types::{Endpoint, Message};
+use minix_types::{Endpoint, Message, VM_PAGEFAULT};
 
 use crate::proc::{KProcess, RtsFlagsBits};
 
@@ -132,21 +132,13 @@ pub fn kernel_mode_pagefault_panic_msg(
 ///
 /// Returns a fresh `Message` value with:
 /// - `m_source` = the faulting process endpoint
-/// - `m_type`   = `VM_PAGEFAULT` (placeholder 0x1D until VM constants
-///   are wired in via `ipc_op!`; this matches C's `VM_PAGEFAULT = 18`
-///   in minix/ipc.h:62).
+/// - `m_type`   = `VM_PAGEFAULT` (0xCFF = `VM_RQ_BASE + 0xFF`, defined in
+///   `minix-types/src/ipc/vm.rs:146`; VM's main loop dispatches on this
+///   exact value — see `os/servers/vm/src/vm_server.rs:436`).
 /// - `VPF_ADDR` and `VPF_FLAGS` fields populated from the trap frame.
 ///
 /// The caller is responsible for delivering the message (via the
 /// architecture-specific trap handler, `mini_send`/`async_send`).
-///
-/// # Note on VM_PAGEFAULT constant
-///
-/// This module does not import the `VM_PAGEFAULT` constant from
-/// minix-types because it lives in the IPC ops enum. Instead we use
-/// the raw numeric value `18` with a `// VM_PAGEFAULT` comment to
-/// trace back to C. When the IPC layer is fully wired, this will be
-/// replaced with `IpOpcode::VmPageFault.into()`.
 pub fn build_vm_pagefault_msg(
     proc_endpoint: Endpoint,
     fault_addr: u64,
@@ -155,17 +147,17 @@ pub fn build_vm_pagefault_msg(
     // SAFETY: `Message` is a `#[repr(C)]` union; zeroing is the
     // documented "fresh message" pattern in Minix's kernel.
     let mut msg = Message::default();
-    // Source = the faulting process's endpoint (so VM can identify
-    // which process needs page-in).
+    // C: exception.c:119 — `m_pagefault.m_source = pr->p_endpoint`
     msg.m_source = proc_endpoint;
-    // VM_PAGEFAULT — see minix/ipc.h:62. We set the message type via
-    // the VPF_ADDR / VPF_FLAGS fields (the VM-side dispatcher reads
-    // these directly). m_type is set to the IPC op magic for kernel-
-    // originated messages (FROM_KERNEL semantics).
+    // C: exception.c:120 — `m_pagefault.m_type = VM_PAGEFAULT`
     //
-    // For now we use 0 as the placeholder; this matches how
-    // `mini_send` constructs its outgoing message (the m_type is
-    // typically not consulted on the kernel-side fast path).
+    // VM_PAGEFAULT is a u32 in minix-types; m_type is i32. The cast is
+    // safe because VM_PAGEFAULT (0xCFF = 3327) fits in i32's positive
+    // range. VM's main loop checks `m_type == VM_PAGEFAULT` (vm_server.rs:436)
+    // — without this assignment, m_type stays 0 (from Message::default)
+    // and VM cannot dispatch the page-fault request.
+    msg.m_type = VM_PAGEFAULT as i32;
+    // C: exception.c:121-122 — `VPF_ADDR = pagefaultcr2; VPF_FLAGS = frame->errcode`
     msg.m_u.m_vm_pagefault.vpf_addr = fault_addr;
     msg.m_u.m_vm_pagefault.vpf_flags = error_code;
     msg
@@ -228,6 +220,10 @@ mod tests {
         // C: exception.c:119-122 — m_source / m_type / VPF_ADDR / VPF_FLAGS.
         let msg = build_vm_pagefault_msg(Endpoint(42), 0xcafe_f00d, 0x07);
         assert_eq!(msg.m_source, Endpoint(42));
+        // m_type must be VM_PAGEFAULT — VM's main loop dispatches on this
+        // exact value (vm_server.rs:436). A default m_type=0 would cause
+        // VM to silently drop the page-fault request.
+        assert_eq!(msg.m_type, VM_PAGEFAULT as i32);
         // SAFETY: `m_vm_pagefault` is the active union arm; we just wrote
         // it via `build_vm_pagefault_msg`.
         let pf = unsafe { msg.m_u.m_vm_pagefault };

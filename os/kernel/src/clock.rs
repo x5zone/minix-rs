@@ -22,7 +22,6 @@
 //! - **D8**: per-CPU callback distinguishes BSP/AP logic
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use minix_types::Endpoint;
@@ -99,6 +98,105 @@ pub fn ms_to_cpu_time(ms: u32) -> u64 {
     ms as u64 * factor
 }
 
+/// Convert CPU time cycles to milliseconds (inverse of `ms_to_cpu_time`).
+///
+/// C: `cpu_time_2_ms(cycles)` — kernel/proc.h (`cycles / tsc_per_ms[cpuid]`).
+///
+/// Used by `notify_scheduler` to report `p_accounting.time_in_queue`
+/// (accumulated in cycles) as milliseconds in the `SCHEDULING_NO_QUANTUM`
+/// message's `acnt_queue` field (proc.c:1876).
+pub fn cpu_time_to_ms(cycles: u64) -> u32 {
+    let tsc_per_ms = TSC_PER_MS.load(Ordering::Acquire);
+    let factor = if tsc_per_ms == 0 { DEFAULT_TSC_PER_MS } else { tsc_per_ms };
+    (cycles / factor) as u32
+}
+
+/// Get the current CPU id.
+///
+/// C: `cpuid` — `get_cpulocal_var(cpu)` index. In single-CPU builds this is
+/// always the BSP (0). SMP builds (16-smp.md) will read it from a CPU-local
+/// register (x86-64: GS base; aarch64: TPIDR_EL1; riscv64: scratch CSR).
+///
+/// Returns 0 until `SMP_STATE` is initialized (e.g. in test contexts).
+pub fn current_cpuid() -> u32 {
+    // SAFETY: read-only access to bsp_cpu_id. If SMP_STATE isn't init yet
+    // (test/early boot), fall back to 0.
+    unsafe {
+        crate::try_smp_state().map(|s| s.bsp_cpu_id()).unwrap_or(0)
+    }
+}
+
+/// Compute instantaneous CPU load (0..100) for the current CPU.
+///
+/// C: `cpu_load()` — arch/i386/arch_clock.c:381-415.
+///
+/// Measures the fraction of the most recent TSC interval that was NOT spent
+/// in the idle task. Reads `cpu_last_tsc` / `cpu_last_idle` from per-CPU
+/// state, computes `(tsc_delta - idle_delta) * 100 / tsc_delta`, then
+/// updates the per-CPU state for the next call.
+///
+/// Returns 0 on the first call (no baseline) or if `SMP_STATE` is not yet
+/// initialized (tests). The result is clamped to 100.
+///
+/// # Design (D-notify-scheduler / 11-scheduling-primitives.md §4.5)
+///
+/// Made possible by storing `SmpState` in the global `SMP_STATE` so that
+/// per-CPU `cpu_last_tsc` / `cpu_last_idle` are reachable from the clock
+/// tick path. The idle process's `p_cycles.total` is read from `PROC_TABLE`.
+///
+/// # Safety
+///
+/// Caller must hold the BKL (or be in single-threaded boot). Both
+/// `SMP_STATE` and `PROC_TABLE` are BKL-protected globals.
+pub fn cpu_load() -> u32 {
+    // SAFETY: caller guarantees BKL. We borrow SMP_STATE and PROC_TABLE
+    // simultaneously — they are distinct statics, so the two `&'static mut`
+    // borrows do not alias.
+    unsafe {
+        let smp = match crate::try_smp_state() {
+            Some(s) => s,
+            None => return 0,
+        };
+        let cpu = smp.bsp_cpu_id();
+        let local = match smp.cpu_local_mut(cpu) {
+            Some(l) => l,
+            None => return 0,
+        };
+        let last_tsc = local.cpu_last_tsc;
+        let idle_nr = local.idle_proc;
+
+        let current_tsc = read_tsc();
+        if last_tsc == 0 {
+            // First call: establish baseline, no load to report.
+            local.cpu_last_tsc = current_tsc;
+            let proc_table = crate::proc_table();
+            if let Some(idle) = proc_table.get(idle_nr) {
+                local.cpu_last_idle = idle.p_cycles.total.load(Ordering::Acquire);
+            }
+            return 0;
+        }
+
+        let tsc_delta = current_tsc.saturating_sub(last_tsc);
+        let proc_table = crate::proc_table();
+        let current_idle = proc_table
+            .get(idle_nr)
+            .map(|p| p.p_cycles.total.load(Ordering::Acquire))
+            .unwrap_or(0);
+        let idle_delta = current_idle.saturating_sub(local.cpu_last_idle);
+
+        // Update baseline for next call.
+        local.cpu_last_tsc = current_tsc;
+        local.cpu_last_idle = current_idle;
+
+        if tsc_delta == 0 {
+            return 0;
+        }
+        let busy = tsc_delta - idle_delta.min(tsc_delta);
+        let load = (busy * 100) / tsc_delta;
+        if load > 100 { 100 } else { load as u32 }
+    }
+}
+
 /// Set the calibrated TSC frequency (cycles per millisecond).
 ///
 /// Called once during boot after TSC calibration completes.
@@ -132,7 +230,7 @@ pub fn read_tsc() -> u64 {
         use minix_arch::{ClockArch, CurrentClockArch};
         use minix_platform::{platform_desc, PlatformDesc};
         let pd = platform_desc();
-        let clock_arch = CurrentClockArch::new(&pd.timer());
+        let clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.read_tsc()
     }
     #[cfg(test)]
@@ -167,7 +265,11 @@ const LOAD_HISTORY: usize = 12;
 /// Design decision D6: enum dispatch replaces function pointers for type safety.
 ///
 /// C: `cause_alarm(proc_nr_e)` — do_setalarm.c:73
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Maximum number of timers that can expire in a single tick.
+/// In practice, 0-3 timers expire per tick; 8 is a generous upper bound.
+const MAX_EXPIRED_TIMERS: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerAction {
     /// Notify a process via synchronous alarm.
     /// C: `cause_alarm()` → `mini_notify(CLOCK, endpoint)`
@@ -282,7 +384,9 @@ impl Default for LoadInfo {
 #[derive(Debug)]
 pub struct TimerTickResult {
     /// Actions from expired alarm timers (BSP only).
-    pub expired_alarms: Vec<TimerAction>,
+    pub expired_alarms: [Option<TimerAction>; MAX_EXPIRED_TIMERS],
+    /// Number of expired alarm timers.
+    pub expired_count: usize,
     /// Virtual/profile timer expiry for the current process, if any.
     pub vtimer_expired: Option<VtimerExpired>,
     /// Whether the current process's quantum was exhausted.
@@ -424,17 +528,19 @@ impl ClockState {
     /// Check for expired timers and collect their actions.
     ///
     /// C: `tmrs_exptimers(&clock_timers, kclockinfo.uptime, NULL)` — clock.c:165-166
-    fn check_expired_timers(&mut self) -> Vec<TimerAction> {
-        let mut expired = Vec::new();
+    fn check_expired_timers(&mut self) -> ([Option<TimerAction>; MAX_EXPIRED_TIMERS], usize) {
+        let mut expired = [None; MAX_EXPIRED_TIMERS];
+        let mut count = 0;
         while let Some((&exp_time, _)) = self.timers.first_key_value() {
             if exp_time > self.uptime {
                 break;
             }
             if let Some(entry) = self.timers.remove(&exp_time) {
-                expired.push(entry.action);
+                expired[count] = Some(entry.action);
+                count += 1;
             }
         }
-        expired
+        (expired, count)
     }
 
     // ── Tick handling ──
@@ -544,10 +650,10 @@ impl ClockState {
         // 4. BSP-only: check alarm timers
         // C: clock.c:155-167
         // D8: monomorphized — AP builds skip this entirely.
-        let expired_alarms = if P::IS_BSP {
+        let (expired_alarms, expired_count) = if P::IS_BSP {
             self.check_expired_timers()
         } else {
-            Vec::new()
+            ([None; MAX_EXPIRED_TIMERS], 0)
         };
 
         // 5. Load update (all CPUs)
@@ -561,6 +667,7 @@ impl ClockState {
 
         TimerTickResult {
             expired_alarms,
+            expired_count,
             vtimer_expired,
             quantum_exhausted,
         }
@@ -656,7 +763,7 @@ mod tests {
         let result = clock.tick_bsp(&mut proc, true, 0);
         assert_eq!(clock.uptime(), 1);
         assert_eq!(clock.realtime(), 1);
-        assert!(result.expired_alarms.is_empty());
+        assert!(result.expired_count == 0);
     }
 
     #[test]
@@ -734,9 +841,9 @@ mod tests {
 
         // Tick 3: timer expires
         let result = clock.tick_bsp(&mut proc, true, 0);
-        assert_eq!(result.expired_alarms.len(), 1);
+        assert_eq!(result.expired_count, 1);
         assert_eq!(
-            result.expired_alarms[0],
+            result.expired_alarms[0].unwrap(),
             TimerAction::NotifyAlarm {
                 endpoint: Endpoint(100)
             }

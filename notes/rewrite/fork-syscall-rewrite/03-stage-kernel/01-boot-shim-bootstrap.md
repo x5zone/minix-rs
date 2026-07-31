@@ -6,18 +6,20 @@
 >
 > **Minix3 C 对应**: GRUB 加载内核 → `pre_init()` 解析 multiboot 数据 → 建立恒等映射 → 开启分页。本文档覆盖 Rust 重写后等效路径的引导准备阶段。
 >
-> **路径约定**：本文档引用的所有 `minix3/...` 路径均**相对于仓库根目录**（即 `minix3/` 是仓库根的子目录）。例如 `minix3/minix/kernel/main.c` 在仓库中实际位于 `minix3/minix/kernel/main.c`。`minix3/etc/boot.cfg` 同理。
+> **路径约定**：本文档引用的所有 `minix3/...` 路径均**相对于仓库根目录**（即 `minix3/` 是仓库根的子目录）。例如 `minix3/minix/kernel/main.c` 在仓库中实际位于 `minix3/minix/kernel/main.c`。`minix3/etc/boot.cfg.default` 同理（Minix3 仓库只提供模板 `boot.cfg.default`，实际 `boot.cfg` 由用户基于模板创建）。
 
 ---
 
 ## 1. 概述
+
+> **目标读者**：熟悉操作系统基本概念（特权级、分页、进程切换）和 Rust 基本语法（trait、泛型、生命周期）的开发者。不需要预先了解 Minix3 C 源码——文档会解释所有引用的 C 符号。读过"自己写 OS"类书籍的读者可跳过 §1.3（启动前系统状态），直接从 §1.4 开始。
 
 ### 1.1 这是内核的第一段代码
 
 内核是操作系统中最先运行的程序——但内核并不是从零开始的。在内核之前，系统经历了两个阶段：
 
 1. **BIOS（固件）**：x86 CPU 上电后从实模式开始执行 BIOS 固件，完成硬件自检（POST），然后按照启动顺序查找可引导设备。BIOS 代码烧录在主板 ROM 中，不属于 Minix3 源码。
-2. **GRUB（引导加载器）**：BIOS 加载磁盘上的 GRUB 第一阶段，GRUB 读取自己的配置文件（Minix3 提供 `etc/boot.cfg`，见 §2.0.3），将内核二进制和启动模块加载到物理内存，切换到保护模式，然后跳转到内核入口点。GRUB 是独立的 GNU 项目，**不属于 Minix3 源码**——Minix3 只提供 GRUB 配置文件和内核侧的 Multiboot 协议头（见 §2.0.1）。
+2. **GRUB（引导加载器）**：BIOS 加载磁盘上的 GRUB 第一阶段，GRUB 读取自己的配置文件（Minix3 提供 `etc/boot.cfg.default` 模板，见 §2.0.3），将内核二进制和启动模块加载到物理内存，切换到保护模式，然后跳转到内核入口点。GRUB 是独立的 GNU 项目，**不属于 Minix3 源码**——Minix3 只提供 GRUB 配置文件模板和内核侧的 Multiboot 协议头（见 §2.0.1）。
 
 内核被 GRUB 加载到物理内存的某个位置，此时还没有分页、没有进程——一切都需要内核自己建立。
 
@@ -31,7 +33,7 @@
 
 > **本文档的语义边界**：以下链路从 GRUB 将控制权交给内核开始。minix-rs 中 boot-shim 的等效流程（UEFI/OpenSBI → boot-shim → 内核），详见 §3.1-§3.2。
 >
-> 更底层的内容（MBR → GRUB 第二阶段 → 读 `boot.cfg` → 解析 Multiboot Header）是引导加载器的职责，不属于内核源码。对于读过"自己写 OS"的读者：GRUB 的 `load_mods` / `multiboot` 命令等价于书中手写 `int 13h` + `cli` 跳转。详见附录 A。
+> 更底层的内容（MBR → GRUB 第二阶段 → 读 `boot.cfg.default` → 解析 Multiboot Header）是引导加载器的职责，不属于内核源码。对于读过"自己写 OS"的读者：GRUB 的 `load_mods` / `multiboot` 命令等价于书中手写 `int 13h` + `cli` 跳转。详见附录 A。
 
 #### 图 1：Minix3 C 启动链路（BIOS → GRUB → 内核）
 
@@ -41,7 +43,7 @@ x86 CPU 上电（实模式）
   ├── BIOS POST + 查找可引导设备
   │
   ├── GRUB 第一/二阶段加载
-  │     ├── 读取 /boot.cfg 配置（Minix3 提供）
+  │     ├── 读取 /boot.cfg.default 配置（Minix3 提供模板）
   │     ├── 加载内核二进制到物理内存
   │     ├── 加载启动模块（PM/VM/VFS/RS 等）到物理内存
   │     ├── 切换到保护模式（CR0.PE=1）
@@ -115,60 +117,14 @@ pre_init(magic, ebx)
 
 §1.4 的四个步骤是**架构无关的语义**——无论 x86 还是 ARM，内核自举都必须完成相同的事。Minix3 同时支持 x86-32 和 ARM32（earm），两者的启动代码共享相同的函数名和调用流程，语义一致，只是指令集不同（x86 汇编 vs ARM 汇编）。
 
-#### 1.5.1 汇编入口对比
+minix-rs 是 64 位重写项目，所有 C 段（`pre_init.c` / `pg_utils.c` / `mpx*` 系列）都被 Rust trait 替代，32 位对比的具体数字（4MB 大页 vs 1MB Section、Multiboot vs ATAGS 等）只对追溯 C 源码时有参考价值。正文 §1.4 已用伪代码表达"接收参数 → 建映射 → 开分页 → 交 kinfo"四步骤的不变性，这一条对 32/64 位都成立。具体的 32 位架构差异（汇编入口、引导加载器、分页机制）见 [附录 A.0 x86-32 与 ARM32 启动路径对比（历史参考）](#a0-x86-32-与-arm32-启动路径对比历史参考)：
 
-| | x86-32 (`kernel/arch/i386/head.S`) | ARM32 (`kernel/arch/earm/head.S`) |
-|---|---|---|
-| **入口** | GRUB 跳转到 `MINIX` 标签，该处指令为 `jmp multiboot_init` | U-Boot 跳转到 `MINIX` 标签，该处指令为 `b multiboot_init` |
-| **设栈** | `mov $load_stack_start, %esp` | `ldr sp, =load_stack_start` |
-| **清帧指针** | `mov $0, %ebp` | `mov fp, #0` |
-| **调用 pre_init** | `push %ebx; push %eax; call pre_init` | `bl _C_LABEL(pre_init)` |
-| **参数传递** | 栈传参：EAX=魔数, EBX=mbi 地址 | 寄存器传参：r0=argc, r1=argv（C 调用约定） |
-| **调用 kmain** | `push %eax; call kmain` | `ldr r2, =kmain; bx r2`（r0 仍持有 kinfo 指针） |
-| **临时栈** | `.data` 段 4096 字节 | `.data` 段 4096 字节 |
-
-**共同语义**：设栈 → 调 `pre_init()` → 调 `kmain()`。差异仅在于指令集和参数传递方式。
-
-#### 1.5.2 引导加载器对比
-
-| | x86-32 | ARM32 |
-|---|---|---|
-| **引导加载器** | GRUB（外部，不属于 Minix3） | U-Boot（外部，不属于 Minix3） |
-| **协议** | Multiboot（内核嵌入 Header，GRUB 识别） | ATAGS / 设备树（U-Boot 传递板级信息） |
-| **内核"名片"** | Multiboot Header（魔数 `0x1BADB002`） | 无——U-Boot 直接加载 ELF 入口点 |
-| **参数传递** | GRUB → EAX/EBX 寄存器 | U-Boot → argc/argv（C 调用约定 r0/r1） |
-| **内存信息来源** | GRUB 填充 `multiboot_info_t`（mmap、mods） | ARM `pre_init()` 自己构造 `multiboot_info_t`（硬编码地址范围） |
-| **配置文件** | `etc/boot.cfg`（Minix3 提供） | U-Boot 环境变量（板级配置，Minix3 不提供） |
-
-**关键差异**：x86 的 `multiboot_info_t` 由 GRUB 填充后传给内核；ARM 没有等价的外部引导协议，所以 ARM 的 `pre_init()` 在 `setup_mbi()` 中**自己硬编码**构造了一个 `multiboot_info_t`（模块地址 `0x82000000` 起，内存 `0x80000000` 起 256MB），让后续代码以为"GRUB 传了数据过来"。这是一个适配层（shim）。
-
-#### 1.5.3 分页机制对比
-
-两者都调用同名函数 `pg_clear()` → `pg_identity()` → `pg_mapkernel()` → `pg_load()` → `vm_enable_paging()`，语义完全一致，只是指令集不同：
-
-| 步骤 | x86-32 | ARM32 |
-|------|--------|-------|
-| **页表粒度** | 4MB 大页（PSE，CR4.PSE=1） | 1MB Section（ARM L1 页表项） |
-| **pg_identity()** | 遍历 4MB 区间，设置 PDE 的 PS 位 + 物理地址 | 遍历 1MB Section，设置 Section 描述符 + 域 + 缓存属性 |
-| **pg_mapkernel()** | 将内核物理地址映射到高虚拟地址（PDE 条目） | 将内核物理地址映射到高虚拟地址（Section 条目） |
-| **pg_load()** | `write_cr3(页目录物理地址)` | `write_ttbr0(页目录物理地址)` |
-| **vm_enable_paging()** | `CR0.PG = 1`（开启分页） | `SCTLR.M = 1`（开启 MMU）+ 使能 I/D Cache + 分支预测 |
-| **额外步骤** | 无 | ARM 需要先 `dcache_clean()`（清缓存），设置 DACR（域访问控制），设置 TTBRC（页表基址控制） |
-
-**共同语义**：清零页目录 → 建立恒等映射 → 映射内核到高地址 → 加载页表基址 → 开启分页/MMU。
-
-#### 1.5.4 架构无关的语义总结
-
-剥离硬件细节后，内核自举必须完成的事只有四件：
-
-```
-1. 接收引导参数    → 从引导加载器获取内存布局、模块列表、启动参数
-2. 建立地址映射    → 恒等映射（让当前代码继续跑）+ 内核高地址映射（为后续运行准备）
-3. 开启分页/MMU    → 从物理地址世界切换到虚拟地址世界
-4. 传递启动信息    → 将 kinfo_t 交给 kmain()，完成自举
-```
-
-这四件事的**顺序不可变**（必须先映射再开分页，否则开分页后地址空间不对代码就飞了），但**实现方式完全由架构决定**。关于 64 位重写后的差异，详见 §3。
+| 主题 | 附录位置 |
+|------|---------|
+| 汇编入口对比（head.S x86 vs ARM）| A.0.1 |
+| 引导加载器对比（GRUB vs U-Boot）| A.0.2 |
+| 分页机制对比（PDE vs Section）| A.0.3 |
+| 架构无关的语义总结（4 步骤不变性）| A.0.4 |
 
 ### 1.6 两个 C 文件的职责划分
 
@@ -189,12 +145,12 @@ pre_init(magic, ebx)
 
 #### 2.0.1 Multiboot Header — 内核告诉 GRUB "我是 Multiboot 内核"
 
-**源码**：`minix3/minix/kernel/arch/i386/head.S:47-66`
+**源码**：`minix3/minix/kernel/arch/i386/head.S:43-66`（`.balign 8` 对齐指令起，含 magic/flags/checksum/video mode）
 
 Multiboot 协议要求内核二进制文件的前 8192 字节内必须包含一个 **Multiboot Header**，否则 GRUB 不认识这个内核。这个头部是内核主动嵌入的"名片"：
 
 ```asm
-/* head.S:47-66 — Multiboot Header */
+/* head.S:43-66 — Multiboot Header（.balign 8 对齐 + magic/flags/checksum/video mode）*/
 .balign 8
 
 #define MULTIBOOT_FLAGS (MULTIBOOT_HEADER_WANT_MEMORY | MULTIBOOT_HEADER_MODS_ALIGNED)
@@ -240,7 +196,7 @@ multiboot_depth:
 
 #### 2.0.2 head.S — 汇编入口到 pre_init() 的跳板
 
-**源码**：`minix3/minix/kernel/arch/i386/head.S:36-82`
+**源码**：`minix3/minix/kernel/arch/i386/head.S:36-91`（MINIX 入口 → multiboot_init → kmain call → hang label）
 
 GRUB 跳转到内核后，最先执行的是 `head.S` 中的 `MINIX` 标签。这个汇编文件做了三件事：跳转到 `multiboot_init`、设置栈、调用 `pre_init()`。
 
@@ -251,7 +207,7 @@ MINIX:
 /* this is the entry point for the MINIX kernel */
     jmp multiboot_init          /* 直接跳转到 multiboot_init */
 
-/* head.S:47-66 — Multiboot Header（见 §2.0.1）*/
+/* head.S:43-66 — Multiboot Header（见 §2.0.1）*/
 ...
 
 /* head.S:68-82 — multiboot_init: 真正的初始化入口 */
@@ -291,13 +247,13 @@ hang:
 
 #### 2.0.3 GRUB 启动配置与模块加载
 
-Minix3 通过 `boot.cfg` 配置 GRUB 的启动行为：`multiboot /boot/.../kernel` 加载内核（GRUB 扫描 Multiboot Header 魔数），`load_mods /boot/.../mod*` 加载启动模块（PM、VM、VFS、RS 等），`rootdevname=...` 和 `bootopts=-s` 作为启动参数通过 `multiboot_info_t.mi_cmdline` 传递给内核。
+Minix3 通过 `boot.cfg.default` 模板配置 GRUB 的启动行为：`multiboot /boot/.../kernel` 加载内核（GRUB 扫描 Multiboot Header 魔数），`load_mods /boot/.../mod*` 加载启动模块（PM、VM、VFS、RS 等），`rootdevname=...` 和 `bootopts=-s` 作为启动参数通过 `multiboot_info_t.mi_cmdline` 传递给内核。
 
-> **语义边界**：`boot.cfg` 描述的是"GRUB 如何从磁盘加载内核和模块到内存"——属于**链接与加载**范畴。C 版中这些操作由 GRUB 代劳，Rust 版中由 boot-shim 完成（ELF 解析、段拷贝、BSS 清零等）——UEFI 路径直接读 ESP 分区，OpenSBI 路径通过 U-Boot 预加载 + BootFileTable 间接读取，但两者的 ELF 加载主流程完全相同。详见 [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现)。
+> **语义边界**：`boot.cfg.default` 描述的是"GRUB 如何从磁盘加载内核和模块到内存"——属于**链接与加载**范畴。C 版中这些操作由 GRUB 代劳，Rust 版中由 boot-shim 完成（ELF 解析、段拷贝、BSS 清零等）——UEFI 路径直接读 ESP 分区，OpenSBI 路径通过 U-Boot 预加载 + BootFileTable 间接读取，但两者的 ELF 加载主流程完全相同。详见 [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现)。
 
 **配置与源码的对应关系**（信息传递视角）：
 
-| boot.cfg 指令 | 传递的信息 | 内核源码消费位置 |
+| boot.cfg.default 指令 | 传递的信息 | 内核源码消费位置 |
 |--------------|----------|----------------|
 | `multiboot /boot/.../kernel` | 内核二进制被加载到某物理地址 | `head.S` 直接跳转到入口点 |
 | `load_mods /boot/.../mod*` | 模块列表 → `multiboot_info_t.mi_mods_count/addr` | `pre_init.c` `get_parameters()` 拷贝到 `kinfo.module_list[]` |
@@ -305,7 +261,7 @@ Minix3 通过 `boot.cfg` 配置 GRUB 的启动行为：`multiboot /boot/.../kern
 
 ### 2.1 相关定义
 
-> **过渡说明**：§2.0 描述了 GRUB 与内核的交互流程（Multiboot Header 识别、head.S 跳板、启动配置）。以下常量是内核 C 源码中实际识别和使用的数据定义，与 §2.0 描述的 GRUB 传递信息直接对应——例如 `MULTIBOOT_INFO_MAGIC` 是 head.S 验证的魔数，`MULTIBOOT_INFO_HAS_MMAP` 是 `multiboot_info_t` 标志位，对应 `get_parameters()` 解析的内存映射来源。
+§2.0 描述了 GRUB 与内核的交互流程（Multiboot Header 识别、head.S 跳板、启动配置）。以下常量是内核 C 源码中实际识别和使用的数据定义，与 §2.0 描述的 GRUB 传递信息直接对应——例如 `MULTIBOOT_INFO_MAGIC` 是 head.S 验证的魔数，`MULTIBOOT_INFO_HAS_MMAP` 是 `multiboot_info_t` 标志位，对应 `get_parameters()` 解析的内存映射来源。
 
 #### 2.1.1 Multiboot 常量
 
@@ -334,8 +290,7 @@ MULTIBOOT_PARAM_BUF_SIZE    ← 启动参数字符串缓冲区大小
 | `I386_VM_USER` | 0x004 | 用户可访问 |
 | `I386_VM_PWT` | 0x008 | Write-Through 缓存 |
 | `I386_VM_PCD` | 0x010 | Cache Disable |
-| `I386_VM_ACCESSED` | 0x020 | 已访问（CPU 硬件自动设置，boot 阶段不使用） |
-| `I386_VM_DIRTY` | 0x040 | 已写入（CPU 硬件自动设置，boot 阶段不使用） |
+| `I386_VM_DIRTY` | `(1L<<6) = 0x040` | 已写入（CPU 硬件自动设置，boot 阶段不使用）。Minix3 未命名 `I386_VM_ACCESSED` 常量（x86 规范 bit 5 = accessed），此处不列 |
 | `I386_VM_BIGPAGE` | 0x080 | 4MB 大页 |
 | `I386_VM_ADDR_MASK` | 0xFFFFF000 | 物理地址掩码（4KB 对齐） |
 | `I386_VM_ADDR_MASK_4MB` | 0xFFC00000 | 物理地址掩码（4MB 对齐） |
@@ -518,13 +473,13 @@ kinfo_t *pre_init(u32_t magic, u32_t ebx)
 
 #### 2.3.7 `vm_enable_paging()` — 开启分页（pg_utils.c:204）
 
-执行：清 PG+PGE → 开 PSE → 开 PG → 开 WP → 开 PGE。
+执行：清 PG + PGE + **PSE** → 开 PSE → 开 PG → 开 WP → 开 PGE。**清 PSE 这一步在 doc 早期版本中被遗漏**——pg_utils.c:223-224 先 `cr0 &= ~I386_CR0_PG; cr4 &= ~(I386_CR4_PGE | I386_CR4_PSE);`，然后 L230 重新设 `PSE`。清 PSE 是为了保证顺序：必须先清 PGE → 后开 PG → 最后开 PGE（PGE 依赖 PG 已开）。
 
 #### 2.3.8 `pg_load()` / `pg_alloc_page()` / `pg_map()`
 
 `pg_load()` 写 CR3；`pg_alloc_page()` 从 memmap 尾部取 4KB；`pg_map(phys, vaddr, vaddr_end, cbi)` 4KB 粒度映射，将 `[vaddr, vaddr_end)` 映射到从 `phys` 开始的物理地址。若 `phys == PG_ALLOCATEME`，则每个虚拟页自动分配物理页（调用 `pg_alloc_page()`）。要求 `vaddr < kern_vir_start`（仅映射低地址区）。
 
-> **未单独分析的辅助函数**：`pg_rounddown(addr)`（pg_utils.c:259）将地址向下对齐到页边界，一行实现；`pg_info(proc, cbi)`（pg_utils.c:295）将页目录物理地址写入进程的 `p_cr3` 字段，供 VM 阶段使用；`print_memmap(cbi)`（pg_utils.c:17）调试打印函数。三者均非 boot 核心逻辑，Rust 版本中 `pg_rounddown` 由 `PhysBytes`/`VirBytes` 的对齐方法替代，`pg_info` 由 `Paging` trait 内部管理，`print_memmap` 由 `log::debug!` 替代。
+> **未单独分析的辅助函数**：`pg_rounddown(addr)`（pg_utils.c:259）将地址向下对齐到页边界，一行实现；`pg_info(proc, cbi)`（pg_utils.c:312）将页目录物理地址写入进程的 `p_cr3` 字段，供 VM 阶段使用；`print_memmap(cbi)`（pg_utils.c:21）调试打印函数。三者均非 boot 核心逻辑，Rust 版本中 `pg_rounddown` 由 `PhysBytes`/`VirBytes` 的对齐方法替代，`pg_info` 由 `Paging` trait 内部管理，`print_memmap` 由 `log::debug!` 替代。
 
 ### 2.4 调用关系
 
@@ -560,7 +515,17 @@ kmain(cbi)
 
 **为什么物理内存从尾部取**：减少大块连续区域前端的碎片化。
 
-**boot module 内存的生命周期**：`pre_init()` 阶段的 `cut_memmap()` 只是临时切掉 boot module 占用的物理内存，防止后续分配器误用。这些内存不是永久占用——内核在 `protect.c` 中解析每个 module 的 ELF、把代码段/数据段复制到进程地址空间后，通过 `add_memmap()` 归还，`mod_start = mod_end = 0` 标记已回收（`protect.c:450-451`）。同样，bootstrap 代码段在 `kmain()` 后也会被回收（`main.c:301`）。<!-- TODO: 补充回收逻辑的详细分析文档引用 -->
+**boot module 内存的生命周期**：`pre_init()` 阶段的 `cut_memmap()` 只是临时切掉 boot module 占用的物理内存，防止后续分配器误用。这些内存不是永久占用——内核在 `arch/i386/protect.c` 中解析每个 module 的 ELF、把代码段/数据段复制到进程地址空间后，通过 `add_memmap()` 归还，`mod_start = mod_end = 0` 标记已回收（`arch/i386/protect.c:450-451`）。同样，bootstrap 代码段在 `kmain()` 后也会被回收（`main.c:301`）。
+
+> **回收逻辑分布**：boot module 内存的生命周期跨三个阶段，每个阶段由独立的文档处理，避免单文档承载所有细节。本节仅建立**交叉引用骨架**，具体机制分别在各自文档中讲清楚：
+>
+> | 回收阶段 | C 源码 | Rust 对应 | 详细文档 |
+> |---------|--------|----------|---------|
+> | 1. 临时切除（pre_init） | `pg_utils.c:32 cut_memmap()`（由 `pre_init.c` 调用）切掉 boot module 占用的物理内存 | `build_memmap()` 跳过 module 区域（`os/boot-shim/src/opensbi_helpers.rs:375`） | 本文档 §2.4（本节上下文） |
+> | 2. ELF 复制后回收（protect） | `arch/i386/protect.c:450-451` 解析 ELF 后 `mod_start = mod_end = 0` | `load_vm_elf` 复制段后回收（见 [06-proc-init-boot-proc.md §2.5 `arch_boot_proc()`：VM ELF 加载](06-proc-init-boot-proc.md#L756-L830)） | [06-proc-init-boot-proc.md §2.5](06-proc-init-boot-proc.md) |
+> | 3. bootstrap 段回收（finish） | `main.c:301` `add_memmap(bootstrap_start, bootstrap_len)` | `os/kernel/src/lib.rs:327-337` `add_memmap(kinfo.bootstrap_start, kinfo.bootstrap_len)`（Rust port 始终 `bootstrap_len=0`，见 §3.5.1） | [08-system-init-boot-finish.md §2.3 add_memmap()](08-system-init-boot-finish.md#L170) |
+>
+> **设计原则**：回收逻辑本质是**跨阶段**的，强行集中到一个文档会破坏叙事流。本节只承担"boot module 内存**不是永久占用**"这一认知锚点；具体机制由各文档按"何时回收 / 谁回收 / 怎么标记"三问分别回答。
 
 ---
 
@@ -584,7 +549,7 @@ kmain(cbi)
 | **参数传递** | GRUB → EAX/EBX 寄存器 | UEFI → `ImageHandle` + `SystemTable` |
 | **内存发现** | 手动遍历 `multiboot_memory_map_t` | `GetMemoryMap()` 直接返回 |
 | **模块加载** | GRUB `load_mods` + `multiboot_info_t.mi_mods` | boot-shim 通过 `SimpleFileSystemProtocol` 从 ESP 分区读取（见下方约束） |
-| **配置文件** | `etc/boot.cfg`（Minix3 提供） | UEFI Boot Manager / LoadOption |
+| **配置文件** | `etc/boot.cfg.default`（Minix3 提供模板） | UEFI Boot Manager / LoadOption |
 | **boot-shim** | 无（`head.S` + `pre_init()` 在内核内部） | 独立 crate，`BootShim` trait 分离 UEFI/OpenSBI |
 
 上表的核心差异可以概括为一句话：GRUB 代劳了"加载"，而 UEFI 只提供"接口"——加载内核和模块的工作从 GRUB 转移到了 boot-shim。这个变化不是偶然：64 位多架构内核需要统一的引导抽象，而 UEFI 恰好提供了跨平台的 API 标准。
@@ -745,7 +710,7 @@ pub trait HugePages: Paging {
 
 **C 源码依据**：§2.2.1 `kinfo_t` — 26 字段。
 
-**决策**：Rust 保留 12 字段（`memmap`、`kern_virt_base`、`kern_phys_base`、`kern_size`、`free_upper_idx`、`user_sp`、`kern_stack_top`、`syscall_entry`、`boot_modules`、`bootstrap_start`、`bootstrap_len`、`platform_descriptor`）。
+**决策**：Rust 保留 12 字段（`memmap`、`kern_virt_base`、`kern_phys_base`、`kern_size`、`free_upper_idx`、`user_sp`、`kern_stack_top`、`syscall_entry`、`boot_modules`、`bootstrap_start`、`bootstrap_len`、`platform_sources`）。
 
 | 删除/重命名的 C 字段 | 理由 |
 |--------------|------|
@@ -789,11 +754,61 @@ pub trait HugePages: Paging {
 
 | 新增字段 | C 版信息来源 | 理由 |
 |---------|------------|------|
-| `kern_stack_top` | 链接器符号 `k_initial_stktop`（head.S:80 `mov $k_initial_stktop, %esp`），C 版通过 `tss_init(0, &k_boot_stktop)` 在 `protect.c:338` 使用 | C 版通过全局链接器符号隐式传递，Rust 版将其显式纳入 `KernelInfo`，使 boot-shim → kernel 的数据传递完全通过结构体完成，不依赖链接器符号 |
-| `syscall_entry` | `protect.c:189-205` 中 LSTAR MSR 配置的入口地址 | C 版在 `prot_init()` 中硬编码计算，Rust 版将其作为元信息显式传入，便于 `arch_boot_impl` 统一配置 |
-| `platform_descriptor` | C 版 `kinfo_t` 无直接对应；信息来自 UEFI Configuration Table（ACPI RSDP/DTB）或 OpenSBI a1 寄存器 | 平台发现需要原始固件描述符指针；通过 `KernelInfo.platform_descriptor: Option<PlatformDescriptorPtr>`（Dtb/Rsdp）从 boot-shim 传递到 `minix-platform::init_from_kinfo`，见 [04-platform-discovery.md](04-platform-discovery.md) §4.4 与 §4.6 |
+| `kern_stack_top` | 链接器符号 `k_initial_stktop`（head.S:84 `mov $k_initial_stktop, %esp`），C 版通过 `tss_init(0, &k_boot_stktop)` 在 `arch/i386/protect.c:338` 使用 | C 版通过全局链接器符号隐式传递，Rust 版将其显式纳入 `KernelInfo`，使 boot-shim → kernel 的数据传递完全通过结构体完成，不依赖链接器符号 |
+| `syscall_entry` | `arch/i386/protect.c:189-205` 中 STAR MSR（AMD_MSR_STAR，32 位 AMD SYSCALL）配置的入口地址 | C 版在 `prot_init()` 中硬编码计算，Rust 版将其作为元信息显式传入，便于 `arch_boot_impl` 统一配置 |
+| `platform_sources` | C 版 `kinfo_t` 无直接对应；信息来自 UEFI Configuration Table（ACPI RSDP/DTB）或 OpenSBI a1 寄存器 | 平台发现需要原始固件描述符来源列表；`KernelInfo.platform_sources: &'static [PlatformDescSource]` 承载按 boot-shim 偏好排序的 `(PlatformDescKind, PhysBytes)` opaque 句柄列表。boot-shim 排序规则：ARM64 先 DTB 再 ACPI（SBBR 服务器支持 DTB+RSDP 共存，参考 Linux `acpi=on/off/force` 模型）；x86-64 仅 ACPI；RISC-V 仅 DTB。内核 `init_from_kinfo()` 顺序遍历，取第一个解析成功的源。`PlatformDescKind(u32)` 是 opaque 标签，跨二进制安全（纯数据，无函数指针），为 TODO-02-3 kernel 独立 ELF 铺路。详见 [04-platform-discovery.md](04-platform-discovery.md) §4.4 与 §4.6 |
 
 **`overlaps()` 的 Rust 等价**：C 源码 `overlaps()`（pre_init.c:77）检查 boot 模块是否与内核镜像重叠。UEFI 引导路径中，`boot-shim` 的 `uefi_helpers` 通过 `GetMemoryMap()` 获取的内存描述已由 UEFI 固件保证不重叠，因此不需要 Rust 等价函数。OpenSBI 路径中，U-Boot 通过 `fatload` 将 kernel/modules 预加载到指定地址，bump 分配器从 `DRAM + 32MB` 起步避开已加载区域，同样不需要重叠检测。如果未来支持非 UEFI 引导（如 coreboot），需在对应 boot-shim feature module 中实现重叠检测。
+
+#### 3.5.1 bootstrap 语义重定义：`PhysBytes(0), 0`
+
+**C 语义**（minix3/minix/kernel/arch/earm/pre_init.c:224-240）：
+
+```c
+extern char _kern_unpaged_start, _kern_unpaged_end;
+cbi->bootstrap_start = (vir_bytes) &_kern_unpaged_start;
+cbi->bootstrap_len  = (vir_bytes) &_kern_unpaged_end -
+                      (vir_bytes) &_kern_unpaged_start;
+```
+
+`_kern_unpaged_start.._kern_unpaged_end` 是 `kernel.lds` 导出的小段地址——只在 paging 启用前由 startup 代码 1:1 访问，paging 启用后即"废弃"，可归还给通用分配器。Minix3 假设 `unpaged` 段是内核内部一段 ~10KB 的代码/数据。
+
+**Rust 设计选择**：
+
+```rust
+// os/boot-shim/src/{uefi,opensbi}_helpers.rs
+PhysBytes(0),                                   // bootstrap_start = 0
+0,                                              // bootstrap_len   = 0
+```
+
+内核的 `if kernel_info.bootstrap_len > 0` 守卫（`os/kernel/src/lib.rs:334`）直接跳过 `add_memmap` 调用，不做回收。这是 no-op 回收的正确表达。
+
+**为什么不能用 `bootstrap_len = kern_phys_base.0`**：如果误将 `bootstrap_len` 设为 `kern_phys_base.0`，`add_memmap(0, kern_phys_base.0)` 会把 `[0, kern_phys_base)` **整段低内存**加入 free memmap，误回收仍在使用的区域：
+
+| 区域 | 大小 | 来源 |
+|------|------|------|
+| OpenSBI 固件本身 | ~128KB | SBI 跳板 |
+| DTB（Device Tree Blob） | 数 KB | boot-shim 不再解析，仅作为 `PlatformDescSource::new(DTB, PhysBytes(dtb_pa))` 传递物理地址；DTB blob 留在静态固件内存中，内核后续经 `DeviceTreeDesc::parse` 访问时仍占用 |
+| U-Boot 镜像（生产链） | ~1MB | fatload 预加载 |
+| boot-shim 自身 | ~1MB | 整个 Rust 二进制 |
+
+误回收这些区域会让后续的内存分配（如 VM/PM 的物理页）覆盖到仍在使用的固件结构，导致不可预测的崩溃。`test_build_kernel_info_bootstrap_zero_means_no_reclaim` 单元测试（`opensbi_helpers.rs:679`）对此不变量做回归保护。
+
+**为什么 Rust port 没有 unpaged section**：
+
+| 维度 | C 版 | Rust port |
+|------|------|-----------|
+| 启动链 | GRUB → kernel binary（包含 unpaged + paged 两段） | 固件 → boot-shim → kernel ELF（kernel 全段 paged） |
+| 第一条指令 | 在 unpaged 段（关 paging 状态） | 在 boot-shim（kernel 还没启动） |
+| paging 启用 | kernel 自己 `pg_mapkernel()` 后启用 | boot-shim 已建立完整 paging 后跳转到 kernel |
+| startup 代码归属 | 在 kernel 内的 `unpaged_*.o` 段 | 在 boot-shim（独立 ELF） |
+
+由于 boot-shim 是独立 ELF，kernel 自身**没有**需要 identity-map 的段——从指令 #1 起就在高半虚拟地址运行。所以 `_kern_unpaged_start.._kern_unpaged_end` 这段地址范围在 Rust port 中是**空集**，对应到 `bootstrap_start=PhysBytes(0), bootstrap_len=0` 正是 no-op 回收的正确表达。
+
+**保留的设计原则**：
+1. 字段保留——`KernelInfo.bootstrap_start/len` 字段不删除，与 `kinfo_t` C 版形状对称
+2. 内核守卫保留——`if bootstrap_len > 0` 守卫仍然有效，未来若 Rust port 引入 unpaged 段（例如启用 `unpaged_*.o` 启动路径）可重新激活
+3. 类型保持 `PhysBytes`/`u64`——避免在 boot-shim ↔ kernel 边界引入 `Option<>` 包装
 
 ### 3.6 4GB 截断删除（架构演进）
 
@@ -803,7 +818,7 @@ pub trait HugePages: Paging {
 
 ### 3.7 集中定义，接口维度分散
 
-`Paging` trait 定义在 `os/arch/src/paging.rs`，`HugePages` trait 定义在 `os/arch/src/paging_ext.rs`（集中定义），各架构实现在 `arch/x86_64/`、`arch/aarch64/`、`arch/riscv64/` 集中。kernel 只依赖 trait，不引用具体类型。
+`Paging` trait 定义在 `os/arch/src/arch/paging.rs`，`HugePages` trait 定义在 `os/arch/src/arch/paging_ext.rs`（集中定义），各架构实现在 `arch/x86_64/`、`arch/aarch64/`、`arch/riscv64/` 集中。kernel 只依赖 trait，不引用具体类型。
 
 "分散"体现在接口维度而非物理位置：`Paging` 是基础能力（map/unmap/query），`HugePages: Paging` 是大页扩展（map_huge/HUGE_PAGE_SIZE）。消费者按需绑定——boot 阶段用 `P: HugePages`，运行时只用 `P: Paging`。Paging 是横切关注点（vm、kernel、boot 都依赖），没有单一"最近消费者"，因此集中定义更自然。
 
@@ -900,9 +915,9 @@ pub struct KernelInfo {
     pub kern_stack_top: VirBytes,               // 内核初始栈顶（虚拟地址），HigherHalf 切栈用
     pub syscall_entry: VirBytes,                // 系统调用处理程序入口虚拟地址（= kern_virt_base + offset）。内核元信息，所有架构一致记录；仅 x86-64 用它配置 LSTAR MSR，aarch64/riscv64 编译时确定入口，此字段仅作参考
     pub boot_modules: &'static [BootModule],    // 启动模块列表（PM/VM/VFS 等）
-    pub bootstrap_start: PhysBytes,             // boot-shim 自身物理起始地址（当前 UEFI/OpenSBI 路径用 PhysBytes(0) 占位）
-    pub bootstrap_len: u64,                     // boot-shim 自身物理长度（当前用 kern_phys_base.0 作为上界近似）
-    pub platform_descriptor: Option<PlatformDescriptorPtr>, // 平台描述符原始指针（ACPI RSDP / DTB），None 时内核回退到 QemuVirtDesc
+    pub bootstrap_start: PhysBytes,             // Rust port 始终为 PhysBytes(0)；C 语义是 _kern_unpaged_start，Rust 因 higher-half 设计无 unpaged section（见 §3.5）
+    pub bootstrap_len: u64,                     // Rust port 始终为 0；C 语义是 _kern_unpaged_end - _kern_unpaged_start，Rust 配 PhysBytes(0) 使用，内核 `if bootstrap_len > 0` 守卫跳过 add_memmap
+    pub platform_sources: &'static [PlatformDescSource], // 平台描述符来源列表（按 boot-shim 偏好排序），空切片时内核回退到 QemuVirtDesc
 }
 
 pub struct MemoryRegion {
@@ -916,30 +931,32 @@ pub struct BootModule {
     pub len: usize,         // 长度（字节）
 }
 
-pub enum PlatformDescriptorPtr {
-    Dtb(PhysBytes),  // 扁平设备树（ARM64 / RISC-V）物理地址
-    Rsdp(PhysBytes), // ACPI RSDP（x86-64）物理地址
-}
+// PlatformDescSource 和 PlatformDescKind 定义在 minix-boot::platform 模块
+// （handoff 协议层）。PlatformDescKind 是 opaque u32 标签，上层不直接命名
+// DTB/RSDP；DTB/RSDP 常量由 minix-platform::kind 重导出，供 boot-shim 构造
+// PlatformDescSource 时使用。详见 04-platform-discovery.md §4.4。
 ```
 
-> **TODO（review 04-platform-discovery.md 时一并处理）**：当前 `PlatformDescriptorPtr { Dtb, Rsdp }` 把固件描述符的两类来源以 `pub enum` 形式直接暴露在 `KernelInfo` 公共 API 表面，与"上层代码完全屏蔽设备差异"的设计哲学有违和（详见本文档 §4.1 上方讨论）。
->
-> 拟修改方向：拆分为 `platform_descriptor: PhysBytes`（裸指针）+ `platform_source: PlatformSource`（私有 enum，仅 `init_from_kinfo` 内部 match），或仅把 `PlatformSource` 收为 boot-shim crate 私有类型，使上层 `platform_desc()` 之后完全看不到 DTB/ACPI 来源。
->
-> 影响范围：`os/boot-shim/src/kernel_info.rs:78-118`、`os/libs/minix-platform/src/global.rs::init_from_kinfo`、`04-platform-discovery.md` §4.4。当前由 `PlatformDescriptorPtr` 引用的所有调用点（本文档第 794、1285 行）均需同步更新。
-> 触发条件：本 review 通过 `minix-platform::init_from_kinfo` 完成首次全链路验证后、进入 §4.4 重构前。
+`platform_sources` 字段采用三层架构，分离 handoff 协议、解析分发与架构实现：
 
-> **TODO（review 01 本文档 §4.5+ 时一并处理）**：`os/boot-shim/src/opensbi_helpers.rs:229` 留有真 TODO —— `PhysBytes(0), // TODO: determine boot-shim physical start from OpenSBI`。该字段用于 `kinfo.bootstrap_start/len` 告知 kernel "boot-shim 占用的内存请回收"，若写 0 会让 kernel 把整段 RAM 误标记为已用 / 未用。需要从 OpenSBI 的 ELF program headers（`_start` 到 `_edata`）导出符号，或在 entry trampoline 把 `a0`/`sp` 推断得到。这**是真实未完成实现**，不是 mock。
->
-> 同节还有第 1203-1204 行注释（"riscv64 没有 UEFI 入口——它的入口是裸金属的 `_start` 汇编"）措辞过简，未区分 UEFI 不可达（`riscv64-unknown-uefi` target 不存在）/ 生产可用（OpenSBI + U-Boot fatload）/ 测试场景（QEMU `-kernel`）三个维度，触发本节重构时一并改写。
-> 触发条件：boot-shim 在 OpenSBI+U-Boot 真实启动链验证后（当前仅在 QEMU `-kernel` 测试场景验证）。
+| 层 | Crate | 职责 |
+|----|-------|------|
+| Handoff | `minix-boot::platform` | `PlatformDescKind(u32)` opaque 标签 + `PlatformDescSource` 句柄 + 子描述符 trait 接口 |
+| Parsing | `minix-platform::kind` | 重导出 `DTB`/`RSDP` 常量 + `parse_by_kind()` 分发 |
+| Implementation | `minix-platform::arch/` | 具体结构体（`ApicDesc`/`Gicv3Desc`/`PlicDesc`/...）实现子 trait |
 
-> **TODO（review 02-higher-half-kernel.md §5.1 时一并处理）**：当前 02 §5.1 三架构 5 行测试对照表（hello-boot / test-memmap / test-paging-enable / test-kernel-map / test-higher-half）与本文档 §5 表存在跨文档重复——其中 hello-boot / test-memmap / test-paging-enable / test-kernel-map 本属 boot-shim 后端验证，**应只在本文档 §5 表出现**；02 §5.1 应只保留 test-higher-half 及专属的高半核一致性测试。
->
-> 影响范围：[02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#L868-L876) 表格行 1-4（删除并提示见本文档）、行 5（保留 + 增补 Sv39 canonical 内容）。02 §5.1 表下方"运行方式"段需同步迁移到本文档 §5。
-> 触发条件：02 文档 review 时一并处理。本任务已经将本文档 §5 表对应行移除（避免冗余）。
+核心原则：**描述机制，而不是描述硬件。关注它们能做什么，而不是它们叫什么。** 新增硬件品牌只需在 `arch/` 子模块实现 trait，上层零改动。
 
-> **TODO（补 QEMU + OpenSBI + U-Boot 真实启动链集成测试）**：[§5 架构差异要点表](01-boot-shim-bootstrap.md#L1573-L1580) `kern_virt_base` 行暴露 riscv64 在 QEMU `-kernel` 测试场景下未完成 ELF 装载 + 高半核切换的临时妥协。本文档目标读者希望测试尽可能模拟生产环境，应当补一个真实生产链路的集成测试。
+- `KernelInfo.platform_sources: &'static [PlatformDescSource]` —— 支持多源并存（DTB + RSDP，Linux `acpi=on/off/force` 模型），内核取第一个解析成功的源
+- `PlatformDescKind(u32)` 是 opaque 标签，跨二进制安全（纯数据，无函数指针，为 TODO-02-3 kernel 独立 ELF 铺路）
+- 子描述符（`InterruptControllerDesc`/`TimerDesc`/`ConsoleDesc`）改为 trait + `Any` downcast，品牌名隐藏在 `arch/` 子模块
+- `as_any()` 是必需方法（无默认实现），因为 `&Self` → `&dyn Any` 要求 `Self: Sized`，在 trait 定义内不保证
+
+详见 [04-platform-discovery.md](04-platform-discovery.md) §4.4 与 §4.6。
+
+> **TODO（跨文档去重）** [严重度: P2 | 位置: 02-higher-half-kernel.md §5.1 L868-L876 | 本文档: §5 测试对照表]：[02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#L868-L876) 的三架构测试对照表（hello-boot / test-memmap / test-paging-enable / test-kernel-map / test-higher-half）与本文档 §5 表存在重复。其中 hello-boot / test-memmap / test-paging-enable / test-kernel-map 属 boot-shim 后端验证，应只在本文档 §5 表出现；02 §5.1 应只保留 test-higher-half 及专属的高半核一致性测试（含 Sv39 canonical 内容），"运行方式"段同步迁移到本文档 §5。
+
+> **TODO（补 QEMU + OpenSBI + U-Boot 真实启动链集成测试）** [严重度: P2 | 位置: os/boot-shim/src/opensbi_helpers.rs L193-L244 | 本文档: §5 架构差异要点表]：[§5 架构差异要点表](01-boot-shim-bootstrap.md#L1573-L1580) `kern_virt_base` 行暴露 riscv64 在 QEMU `-kernel` 测试场景下未完成 ELF 装载 + 高半核切换的临时妥协。本文档目标读者希望测试尽可能模拟生产环境，应当补一个真实生产链路的集成测试。
 >
 > **目标**：在 `os/qemu-tests/` 下新增 `test-sbi-uboot`（暂名），验证完整 OpenSBI + U-Boot + boot-shim + kernel 链路：
 >
@@ -950,9 +967,7 @@ pub enum PlatformDescriptorPtr {
 >
 > **当前覆盖缺口**：`opensbi_helpers.rs::OpenSbiBootShim::prepare_boot`（[L193-L244](os/boot-shim/src/opensbi_helpers.rs#L193-L244)）的 `build_memmap`、`alloc_root_page`、`alloc_bump_region`、`build_kernel_info`、`load_boot_modules_with_loader` 等子例程在生产路径上**完全没有测试覆盖**。
 >
-> **阻塞依赖**：
-> - [os/boot-shim/src/opensbi_helpers.rs:229](os/boot-shim/src/opensbi_helpers.rs#L229) — `PhysBytes(0)` TODO 必须先解决（否则 kernel 内存回收有 bug）
-> - [02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现) — riscv64 ELF 高地址链接脚本需就绪（当前仅 x86-64/aarch64 配置完整）
+> **前置条件**：[02-higher-half-kernel.md §4.2](02-higher-half-kernel.md#42-elf-加载实现) 的 riscv64 ELF 高地址链接脚本需就绪（当前仅 x86-64/aarch64 配置完整）。
 >
 > **实施要素**：
 > - 构建 `u-boot.bin`（含 `CONFIG_EFI_LOADER=y` 或纯 extlinux 配置）与 `boot.cmd`（含 `fatload` + `minix_elf` 命令序列）
@@ -960,14 +975,13 @@ pub enum PlatformDescriptorPtr {
 > - 在 `os/qemu-tests/run_all.sh` 中追加 `test-sbi-uboot` 入口
 >
 > **验收**：CI 中 `test-sbi-uboot` 通过等价于"boot-shim 全链路在 QEMU virt 上真实启动验证 OK"，并将本文档 §5 表 `kern_virt_base（当前测试场景）` 列升级为 `与生产路径一致`，删除"妥协"说明。
-> 触发条件：本 review 通过后、未实现前该 TODO 不被覆盖。
 
 
 ### 4.2 Paging trait 扩展 + HugePages trait
 
 > 设计决策：§3.4
-> 实际文件：`os/arch/src/paging.rs`：包含 `fn new_from_page(root_page: PhysBytes) -> Self`、`unsafe fn enable(&self) -> PhysBytes`
-> 实际文件：`os/arch/src/paging_ext.rs`：包含 `HugePages` trait（`HUGE_PAGE_SIZE`、`map_huge()` 等）
+> 实际文件：`os/arch/src/arch/paging.rs`：包含 `fn new_from_page(root_page: PhysBytes) -> Self`、`unsafe fn enable(&self) -> PhysBytes`
+> 实际文件：`os/arch/src/arch/paging_ext.rs`：包含 `HugePages` trait（`HUGE_PAGE_SIZE`、`map_huge()` 等）
 
 `Paging` trait 提供 `new_from_page`（用外部传入的物理页创建根页表）和 `enable`（加载页表基址到 MMU 并开启分页）。`HugePages: Paging` 扩展 trait 提供大页映射能力，boot 阶段通过 `P: HugePages` bound 同时访问两者。各架构汇编差异见 trait 方法文档注释（x86-64 `mov cr3`、aarch64 `msr TTBR1_EL1`、riscv64 `csrw satp`）。
 
@@ -1029,7 +1043,7 @@ impl HugePages for X86_64Paging {
 
 ### 4.3.1 页表页分配器 — pt_alloc
 
-> 实际文件：`os/arch/src/pt_alloc.rs`
+> 实际文件：`os/arch/src/arch/pt_alloc.rs`
 > 设计决策：§3.2（页表分配器与 VM 解耦）
 
 `map_huge` 在 walk 页表时，如果中间级（PML4→PDPT→PD）的页表页不存在，需要分配物理页来放新的页表。这个物理页从哪来？Boot 和 VM 的策略不同：
@@ -1042,33 +1056,67 @@ impl HugePages for X86_64Paging {
 **`pt_alloc` 只做注册和转发**，不包含任何分配器实现。它是一个薄层（~60 行）：
 
 ```rust
-// arch/src/pt_alloc.rs
-type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
-static mut PT_ALLOC: PtAllocFn = uninit_alloc;
+// os/arch/src/arch/pt_alloc.rs
+// 使用 UnsafeCell + AtomicBool 而非 static mut（Rust 2024 edition 兼容）
+use core::cell::UnsafeCell;
+use core::sync::atomic::AtomicBool;
 
-pub fn register(alloc_fn: fn() -> ...) { PT_ALLOC = alloc_fn; }
-pub fn alloc_pt_page() -> Result<...> { PT_ALLOC() }
+type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
+
+/// SAFETY: 单线程下 register() 写一次，后续只读
+struct PtAllocSlot(UnsafeCell<PtAllocFn>);
+unsafe impl Sync for PtAllocSlot {}  // SAFETY: 单线程无并发写
+
+static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
+static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+pub fn register(alloc_fn: PtAllocFn) {
+    // SAFETY: single-threaded boot, no concurrent access
+    unsafe { core::ptr::write(PT_ALLOC.0.get(), alloc_fn); }
+    PT_REGISTERED.store(true, Ordering::Relaxed);
+}
+
+pub fn is_registered() -> bool {
+    PT_REGISTERED.load(Ordering::Relaxed)
+}
+
+pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
+    // SAFETY: function pointer set once via register() then only read
+    let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
+    alloc_fn()
+}
 ```
 
 函数指针的签名是纯 `fn()`——不携带 Boot 或 VM 的冗余信息。分配器实现由调用者提供：
 
 ```rust
-// hello-boot（调用者）
-static mut BOOT_PT_NEXT: u64 = 0;
-static mut BOOT_PT_END: u64 = 0;
+// os/kernel/src/boot_alloc.rs（生产代码，调用者）
+// 使用 AtomicU64 而非 static mut（Rust 2024 edition 兼容）
+use core::sync::atomic::{AtomicU64, Ordering};
+use minix_types::{PhysBytes, VirBytes};
 
-fn boot_pt_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    unsafe {
-        if BOOT_PT_NEXT >= BOOT_PT_END { return Err(...); }
-        let pa = BOOT_PT_NEXT;
-        BOOT_PT_NEXT += 0x1000;
-        core::ptr::write_bytes(pa as *mut u64, 0, 512);
-        Ok((PhysBytes(pa), VirBytes(pa)))
-    }
+static BOOT_PT_NEXT: AtomicU64 = AtomicU64::new(0);
+static BOOT_PT_END: AtomicU64 = AtomicU64::new(0);
+
+pub fn init_boot_pt_alloc(base: u64, end: u64) {
+    BOOT_PT_NEXT.store(base, Ordering::Relaxed);
+    BOOT_PT_END.store(end, Ordering::Relaxed);
 }
 
-// 使用前注册
-unsafe { BOOT_PT_NEXT = base; BOOT_PT_END = end; }
+pub fn boot_pt_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
+    let pa = BOOT_PT_NEXT.fetch_add(0x1000, Ordering::Relaxed);
+    if pa >= BOOT_PT_END.load(Ordering::Relaxed) {
+        // 回滚 fetch_add
+        BOOT_PT_NEXT.fetch_sub(0x1000, Ordering::Relaxed);
+        return Err(PageTableError::AllocationFailed);
+    }
+    // SAFETY: pa 由 bump 分配器返回，对齐 4KB，boot 阶段 VA = PA
+    unsafe { core::ptr::write_bytes(pa as *mut u64, 0, 512) };
+    Ok((PhysBytes(pa), VirBytes(pa)))
+}
+
+// 使用前注册（boot-shim/main.rs + 测试内核）
+init_boot_pt_alloc(bump_base, bump_end);
 pt_alloc::register(boot_pt_alloc);
 
 // Paging 内部调用（三架构统一）
@@ -1323,7 +1371,7 @@ kernel
 
 U-Boot 在 RISC-V 嵌入式生态中扮演 UEFI 的角色：它读取 ESP 风格的 FAT 分区，把文件加载到指定物理地址（参见 [U-Boot UEFI 文档](https://docs.u-boot.org/en/latest/develop/uefi/uefi.html) 与 [Alpine riscv64 启动指南](https://wiki.alpinelinux.org/wiki/Riscv64)）。我们让 U-Boot 替 boot-shim 完成"读文件"这一步——用 `fatload` 把 `kernel.elf` 和所有模块预加载到 RAM，并构建一个小小的 `BootFileTable`（路径 → 物理地址映射）传给 boot-shim。
 
-**平台描述符来源**：UEFI 路径通过 `uefi_helpers::find_platform_descriptor()` 扫描 UEFI Configuration Table 获取 ACPI RSDP（x86-64）或 DTB（aarch64），必须在 `ExitBootServices()` 之前调用。OpenSBI 路径通过 `opensbi_helpers::dtb_ptr()` 读取入口汇编保存的 `a1` 寄存器值获取 DTB 物理地址；两者都封装为 `PlatformDescriptorPtr`（见 [04-platform-discovery.md](04-platform-discovery.md) §4.4）后写入 `KernelInfo.platform_descriptor`，供 `minix-platform::init_from_kinfo()`（见 §4.6 启动时序）解析。
+**平台描述符来源**：UEFI 路径通过 `uefi_helpers::find_platform_sources()` 扫描 UEFI Configuration Table 获取 ACPI RSDP（x86-64）或 DTB（aarch64），必须在 `ExitBootServices()` 之前调用。OpenSBI 路径通过 `opensbi_helpers::dtb_ptr()` 读取入口汇编保存的 `a1` 寄存器值获取 DTB 物理地址；两者都封装为 `PlatformDescSource::new(DTB/RSDP, PhysBytes(pa))`（见 [04-platform-discovery.md](04-platform-discovery.md) §4.4）后追加到 `KernelInfo.platform_sources: &'static [PlatformDescSource]`，供 `minix-platform::init_from_kinfo()`（见 §4.6 启动时序）按序解析，取第一个成功者。
 
 **boot.cmd 脚本骨架**（QEMU virt + virtio-blk + FAT）：
 
@@ -1492,8 +1540,8 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 | `pg_identity(&kinfo)` | `arch_boot_impl` Step 1 (`map_huge`) | `kernel/src/lib.rs` |
 | `pg_mapkernel()` | `arch_boot_impl` Step 2 (`map_huge`) | `kernel/src/lib.rs` |
 | `pg_load()`+`vm_enable_paging()` | `Paging::enable()` | `arch/x86_64/paging.rs` |
-| `alloc_pagetable()` | `boot_pt_alloc()`（中间页表页池） | `arch/src/pt_alloc.rs` |
-| `pg_map()` | `Paging::map()`（4KB 粒度映射） | `arch/src/paging.rs` |
+| `alloc_pagetable()` | `boot_pt_alloc()`（中间页表页池） | `arch/src/arch/pt_alloc.rs` |
+| `pg_map()` | `Paging::map()`（4KB 粒度映射） | `arch/src/arch/paging.rs` |
 
 ---
 
@@ -1513,19 +1561,50 @@ Boot 阶段是整个系统最脆弱的环节——页表配置错误直接导致
 - `KernelInfo` 构造器从 mock UEFI mmap 构建 — 保证 boot-shim 到 kernel 的数据传递正确，KernelInfo 是两者之间唯一的契约，构造错误意味着内核基于错误的信息做所有决策
 - `Paging` mock 实现的 `new_from_page()` + `enable()` 不 panic — 保证 Paging trait 的接口契约可被实现，泛型代码 `arch_boot_impl<P>` 能正确调用，这是上层代码能工作的前提
 
-**实际测试数量（2026-06-11 验证）**:
+**实际测试数量**:
 
 | Crate | 测试数 | 覆盖范围 |
 |-------|--------|----------|
 | `minix-elf` | 23 | `ElfError` 变体、`ProgramHeader64` 解析、PT_LOAD 迭代、边界检查、zero-filesz 段、segment flags 等 |
 | `boot-shim` (loader) | 12 | `first_overlapping_pair` (5) + `load_kernel_with_loader` (3) + `MockLoader` (2) + `load_boot_modules` (1) + panic path (1) |
-| `boot-shim` (opensbi_helpers) | 8 | `BootFileTable` 校验/查找、`entry_path_eq`、U-Boot file loader、`build_kernel_info` (riscv64 user_sp)、`bump_alloc` (正向+负向) |
+| `boot-shim` (opensbi_helpers) | 13 | `BootFileTable` 校验/查找、`entry_path_eq`、U-Boot file loader、`build_kernel_info` (riscv64 user_sp + 8 字段全断言 + bootstrap 零值回归保护)、`bump_alloc` (正向+负向)、`build_memmap` 默认区域、`alloc_bump_region` round-trip、`alloc_root_page` 4K 对齐 |
 | `boot-shim` (uefi_helpers) | 1 | `build_kernel_info_fields` |
-| `boot-shim` (总计) | 20 | 上三项之和 |
+| `boot-shim` (总计) | 26 | 上三项之和 |
 | `minix-boot` | 0 | 仅有类型定义，无运行时逻辑可测 |
-| **doc 01 路径总计** | **43** | — |
+| **doc 01 路径总计** | **49** | — |
 
-**UEFI 路径测试不足**: 20 个 boot-shim 测试中仅 1 个（5%）覆盖 UEFI 路径。其余 19 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
+**UEFI 路径测试不足**: 26 个 boot-shim 测试中仅 1 个（4%）覆盖 UEFI 路径。其余 25 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
+
+#### 5.1.1 集成测试覆盖层
+
+boot-shim 的测试分两层：单元层在 host 上验证内部接口契约（不依赖真实启动链），集成层验证完整 QEMU + OpenSBI + U-Boot 启动链路。
+
+| 阶段 | 描述 |
+|------|------|
+| **A. 单元层（本节）** | 验证 boot-shim 内部接口契约（memmap 形状、字段映射、bump 分配器不变量），不依赖真实启动链。新增 5 个测试（`test_build_memmap_default_region` / `test_build_kernel_info_riscv64_fields_match_input` / `test_build_kernel_info_bootstrap_zero_means_no_reclaim` / `test_alloc_bump_region_round_trip` / `test_alloc_root_page_is_4k_aligned`） |
+| **B. QEMU + OpenSBI + U-Boot 集成层** | 编译 U-Boot → `fatload` kernel ELF 到 0x80200000 → OpenSBI 跳转到 kernel → 串口捕获 `### TEST_RESULT: PASS ###`。待 QEMU 镜像 + U-Boot 工具链 + 串口监控脚本就绪（详见 §4.1 末尾 TODO） |
+
+**单元层新增测试覆盖矩阵**：
+
+| 测试 | 覆盖函数 | 关键断言 | 关联章节 |
+|------|---------|---------|---------|
+| `test_build_memmap_default_region` | `build_memmap()` | memmap 长度 = 1、base = `DRAM_BASE`、len = `DEFAULT_RAM_SIZE`、region 覆盖 module region（**有意**，kernel 侧 cut_memmap 切除） | §3.5.1 |
+| `test_build_kernel_info_riscv64_fields_match_input` | `build_kernel_info()` | 8 字段全断言（之前只测 4 个）+ Sv39 user_sp 不变 + 派生字段 kern_stack_top 正确 | — |
+| `test_build_kernel_info_bootstrap_zero_means_no_reclaim` | `build_kernel_info()` | `bootstrap_start = PhysBytes(0)`、`bootstrap_len = 0`、与 `kern_phys_base.0` **不相等**（保证 no-op 回收语义不被回归） | §3.5.1 回归保护 |
+| `test_alloc_bump_region_round_trip` | `alloc_bump_region(n)` | `end - base == n * 4096`、`base ≥ MODULE_REGION_BASE`、`end ≤ BUMP_END` | — |
+| `test_alloc_root_page_is_4k_aligned` | `alloc_root_page()` | `paddr % 4096 == 0`（Sv39 要求）、`paddr + 4096 ≤ BUMP_END` | — |
+
+**QEMU 集成层后续路径**（待 P0 基础设施就绪）：
+1. 编译 OpenSBI `fw_jump.bin`（需 riscv64-elf-gcc 工具链）
+2. 编译 U-Boot SPL + U-Boot `u-boot.bin`（需 U-Boot 源码 + defconfig）
+3. 在 `os/qemu-tests/run_qemu.sh` 添加 OpenSBI + U-Boot 启动序列：
+   ```bash
+   qemu-system-riscv64 -machine virt -nographic \
+     -bios opensbi-fw_jump.bin \
+     -kernel u-boot.bin \
+     -drive file=disk.img,format=raw  # 包含 kernel ELF + modules
+   ```
+4. 串口监控 `### TEST_RESULT: PASS ###` 后判定
 
 ### 5.2 集成测试（qemu-tests/）
 
@@ -1559,7 +1638,7 @@ os/qemu-tests/
 - **UEFI 入口逻辑**：`boot_shim::uefi_helpers`（`prepare_boot`, `build_memmap`, `exit_boot_services` 等）
 - **OpenSBI 入口逻辑**：`boot_shim::opensbi_helpers`（`prepare_boot`, `build_memmap`, `bump_alloc` 等）
 - **页表设置**：`minix_kernel::arch_boot_impl::<P>()`（恒等映射 + 高半核映射 + enable）
-- **串口输出**：`minix_arch::{x86_64,arm64,riscv64}::early_console`（`write_str`, `write_hex` 等）
+- **串口输出**：`minix_plat::{x86_64,arm64,riscv64}::early_console`（`write_str`, `write_hex` 等）；详见 [§6 启动失败与诊断](#6-启动失败与诊断)
 - **页分配器**：`minix_kernel::boot_alloc` + `minix_arch::pt_alloc`
 
 测试内核仅实现测试逻辑（断言、输出），所有共享逻辑通过 `use` 引用正式 crate。
@@ -1576,7 +1655,7 @@ os/qemu-tests/
 
 所有架构的 hello-boot 均已集成对应 Paging trait 实现（`X86_64Paging`/`AArch64Paging`/`Riscv64Paging`），走真实的 `arch_boot_impl::<P> → enable` 启动路径。x86_64/aarch64 通过 `UefiBootShim::prepare_boot` 完成引导准备；riscv64 在 QEMU `-kernel` 测试场景中直接构造 `BootPrepareResult`（因为没有 U-Boot/BootFileTable），仅验证 `arch_boot_impl` 路径。
 
-> **关于 hello-boot 的链接方式**：hello-boot 通过 `minix-kernel = { workspace = true }` 以 rlib 方式依赖内核 crate——这是测试代码的合理简化，因为 hello-boot 只需验证"boot-shim → arch_boot → 串口输出"链路能跑通，不需要 higher-half kernel。正式的 boot-shim 需要将 kernel 改为独立 ELF binary，通过 ELF 加载器解析并加载 kernel 的 PT_LOAD 段到物理内存，才能实现 trampoline 跳转到高地址。详见 02-boot-bridge.md。
+> **关于 hello-boot 的链接方式**：hello-boot 通过 `minix-kernel = { workspace = true }` 以 rlib 方式依赖内核 crate——这是测试代码的合理简化，因为 hello-boot 只需验证"boot-shim → arch_boot → 串口输出"链路能跑通，不需要 higher-half kernel。正式的 boot-shim 需要将 kernel 改为独立 ELF binary，通过 ELF 加载器解析并加载 kernel 的 PT_LOAD 段到物理内存，才能实现 trampoline 跳转到高地址。详见 [02-higher-half-kernel.md](02-higher-half-kernel.md)。
 
 测试用例（每个测试均覆盖 x86_64 / aarch64 / riscv64 三架构）：
 
@@ -1608,16 +1687,224 @@ os/qemu-tests/
 
 ---
 
-## 6. 参见
+## 6. 启动失败与诊断
+
+Boot 阶段是最容易出问题且最难调试的阶段——一旦 `arch_boot_impl::enable()` 切换 CR3/MMU/satp 失败，系统立刻崩溃，没有调试器机会；如果 boot-shim 的 `panic_handler` 是空 `loop {}`，则连 panic 信息都看不到。本章文档化启动失败模式 + 诊断基础设施 + Debug 入口。
+
+### 6.1 诊断基础设施：EarlyConsole trait
+
+| 组件 | 路径 | 职责 |
+|------|------|------|
+| `EarlyConsole` trait | `os/plat/src/early_console.rs` | 跨架构统一接口：`write_byte`（架构特定）+ `write_str`/`write_hex`（默认方法，含 `\n`→`\r\n` 转换） |
+| `X86_64EarlyConsole` | `os/plat/src/x86_64/early_console.rs` | x86-64 COM1（I/O port `0x3F8`） |
+| `AArch64EarlyConsole` | `os/plat/src/arm64/early_console.rs` | aarch64 PL011 UART（MMIO `0x0900_0000`） |
+| `Riscv64EarlyConsole` | `os/plat/src/riscv64/early_console.rs` | RISC-V SBI ecall `CONSOLE_PUTCHAR` |
+
+**关键设计点**：
+
+1. **早期可用**：trait 的 `init()` 是默认空操作。aarch64 PL011 与 RISC-V SBI 在 firmware 交权时已可用，x86-64 COM1 需要 `init()` 一次（设置波特率 / 8N1 / 启用 FIFO）。
+2. **不依赖页表**：`write_byte` 通过 I/O port（x86-64）或 MMIO（aarch64）/ ecall（RISC-V）直接输出，不经过内存映射，可在 paging 启用前后使用。
+3. **无锁**：单核 BSP 阶段不涉及多核并发，无需 spinlock。SMP 启动后由 runtime console 接管。
+4. **fallback 链**：`write_str` 默认方法处理 `\n`→`\r\n` 转换；`write_hex` 输出 16 位 0x 前缀十六进制。两者都是 trait 默认方法，跨架构复用。
+
+### 6.2 Panic 处理路径
+
+| 阶段 | Panic 处理 | 诊断输出 |
+|------|------------|---------|
+| **boot-shim** | `os/boot-shim/src/main.rs:56-59` `#[panic_handler] fn panic(_info) -> ! { loop {} }` | **当前无输出** — 仅死循环，调试需 QEMU `-d int` 查指令 |
+| **kernel**（`kmain` 之前）| 无 `#[panic_handler]`（panic = abort 在 cfg(test-all) 启用，普通 cargo build 走默认行为）| 不可观测 |
+| **kernel**（`kmain` 之后）| 由 runtime console 接管（`os/kernel/src/main.rs`）| 有完整 stack trace |
+
+**已知问题**（boot-shim panic 空 handler）：
+
+```rust
+// os/boot-shim/src/main.rs:56-59
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    loop {}
+}
+```
+
+这是 P1 占位实现——`PanicInfo` 完全被丢弃。在 UEFI 路径中，`prepare_boot()` 内任何 panic（缺 kernel ELF、ESP 分区读失败、`GetMemoryMap` 失败）都会陷入死循环，调试器只能看到 PC 卡在 `0`。
+
+**改进方向**（待 P0 基础设施就绪）：
+
+```rust
+// 期望的 panic handler（目标实现）
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    let console = minix_plat::arch::console::early_console();  // 选对应架构
+    console.write_str("\n!!! BOOT-SHIM PANIC !!!\n");
+    console.write_str("location: ");
+    console.write_str(info.location().map(|l| l.file()).unwrap_or("?"));
+    console.write_str(":");
+    console.write_hex(info.location().map(|l| l.line() as u64).unwrap_or(0));
+    console.write_str("\nmessage: ");
+    console.write_str(info.message().unwrap_or(&format_args!("no message")).as_str()?);
+    console.write_str("\n");
+    loop {}
+}
+```
+
+注意：boot-shim 阶段 `panic_handler` 必须**不调用任何分配器**（heap 未初始化），**不调用任何 UEFI/OpenSBI 接口**（可能已部分退出），只能依赖纯 CPU 操作 + EarlyConsole 直写。
+
+### 6.3 典型失败模式与诊断信号
+
+| 失败模式 | 触发位置 | 表现 | 诊断信号 |
+|---------|---------|------|---------|
+| **UEFI 协议未找到** | `uefi_helpers::prepare_boot` `LocateProtocol` | `prepare_boot` 直接 `unwrap()` panic（UEFI 不返回 error）| QEMU `-d int,cpu_reset` 查看 RIP；预期为 `protocol not found` 字样 |
+| **kernel ELF 损坏** | `loader::load_kernel_with_loader` | `parse_elf64_header` 返回 `Err(ElfError::InvalidMagic)` → `prepare_boot` panic | 串口输出 `load_kernel_with_loader_computes_layout` 测试覆盖（`boot-shim/src/loader.rs`） |
+| **boot module 缺失** | `loader::load_boot_modules_with_loader` | `loader.read(path)` 返回 `None` → 文件不存在则 `panic!` | 测试：`test_load_boot_modules_with_loader_skips_missing`（mock loader 验证 skip 语义） |
+| **bump 分配器耗尽** | `bump_alloc(n)` | `BUMP_PTR + n*4096 > BUMP_END` 时返回 `None` → 调用方 panic | 测试：`test_bump_alloc_rejects_zero_pages`（负向）；正向耗尽无测试（测试缺口，后续补） |
+| **DTB 解析失败** | `uefi_helpers::find_platform_sources` | DTB 物理地址为 0 时不构造对应 `PlatformDescSource::new(DTB, PhysBytes(0))` → `platform_sources` 中无 DTB 条目 | 串口输出 `dtb_ptr=0x0`（由 `find_platform_sources()` 可观测）|
+| **页表切换崩溃** | `arch_boot_impl::enable()` | 切换后立即 #PF / Data Abort / Instruction Access Fault | QEMU `-d int,page` 查看页表错误地址；对照 `arch_boot_impl` 是否覆盖该区间 |
+
+### 6.4 Debug 入口
+
+#### QEMU 串口捕获（最常用）
+
+```bash
+# x86_64: COM1 串口输出到 stdout
+qemu-system-x86_64 -bios OVMF.fd -drive file=disk.img -nographic \
+  -serial mon:stdio
+
+# aarch64: PL011 UART（MMIO）输出到 chardev
+qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic \
+  -chardev stdio,id=uart0 -serial chardev:uart0
+
+# riscv64: SBI CONSOLE_PUTCHAR 直送 stdout（无需额外参数）
+qemu-system-riscv64 -machine virt -nographic -bios default -kernel boot-shim.elf
+```
+
+#### QEMU GDB Stub（gdbstub）
+
+```bash
+# 1. 启动 QEMU 暂停在第一条指令
+qemu-system-riscv64 -machine virt -bios default -kernel boot-shim.elf \
+  -nographic -s -S
+
+# 2. 另一个终端连接 gdb
+gdb-multiarch boot-shim.elf
+(gdb) target remote :1234
+(gdb) b rust_main
+(gdb) c
+(gdb) p kinfo  # 打印 KernelInfo 结构体
+(gdb) info registers
+```
+
+#### QEMU 内部 trace（最详尽，定位 #PF 必备）
+
+```bash
+# -d 指定追踪项；多个项用逗号分隔
+# int: 中断 + 异常
+# page: 页表遍历
+# cpu_reset: CPU 重置原因
+qemu-system-riscv64 -machine virt -bios default -kernel boot-shim.elf \
+  -nographic -d int,page,cpu_reset -D qemu.log
+
+# qemu.log 包含每条指令的 guest PC + 物理地址访问记录
+#   #PF 错误会显示: check_exception old_mode=1 cause=1 (LOAD_ACCESS) epc=0x...
+#   对照 arch_boot_impl 映射范围，看 epc 是否在 identity / higher-half 区间内
+```
+
+#### riscv64 OpenSBI 跳板日志
+
+```bash
+# OpenSBI 自身会输出早期日志（"OpenSBI v1.x"）
+# QEMU 控制台第一条 "OpenSBI v..." 之后到 "boot-shim 首条输出" 之间
+# 是 boot-shim 接管串口前的过渡区，此区间无日志是正常的
+qemu-system-riscv64 -machine virt -bios opensbi-fw_jump.bin -nographic
+# 预期输出顺序：
+#   OpenSBI vX.Y.Z
+#   ...
+#   [boot-shim] prepare_boot starting...
+#   [boot-shim] memmap: ...
+#   [boot-shim] KernelInfo constructed, jumping to kmain
+#   [kernel] ...
+```
+
+### 6.5 已知诊断盲区（待 P0 修复）
+
+| 盲区 | 原因 | 修复方向 |
+|------|------|---------|
+| boot-shim panic 无输出 | `panic_handler` 是 `loop {}` | 见 §6.2 改进代码 |
+| bump 分配器耗尽无测试 | `bump_alloc` 没有 panic 测试 | 添加 `test_bump_alloc_out_of_memory_returns_none` |
+| `find_dtb` 失败无 fallback | `prepare_boot` 直接 panic | 增加 fallback：UEFI x86 用 ACPI 探测；RISC-V 走 OpenSBI DTB 注入 |
+| 集成测试覆盖率 | 见 §5.1.1 B | 待 QEMU+U-Boot 工具链 |
+
+---
+
+## 7. 参见
 
 - [00-kernel-overview.md](00-kernel-overview.md) — Kernel 整体架构概览
 - [02-higher-half-kernel.md](02-higher-half-kernel.md) — 链接脚本、ELF 加载、arch_boot_impl 页表映射、HigherHalf 切栈跳转
-- `os/arch/src/paging.rs` — Paging trait 定义 + PageFlags
+- `os/arch/src/arch/paging.rs` — Paging trait 定义 + PageFlags
 - `os/arch/src/x86_64/paging.rs` — x86-64 Paging 实现
+- `os/plat/src/early_console.rs` — EarlyConsole trait 定义（[§6.1](#61-诊断基础设施earlyconsole-trait)）
+- `os/plat/src/{x86_64,arm64,riscv64}/early_console.rs` — 三架构 EarlyConsole 实现
 
 ## 附录 A：UEFI 极简指南
 
 本附录只覆盖文档中出现的 UEFI 概念，不追求完整。完整规范见 [UEFI Spec](https://uefi.org/specifications)。
+
+### A.0 x86-32 与 ARM32 启动路径对比（历史参考）
+
+> 本附录为历史参考——minix-rs 是 64 位重写项目，所有 C 段已被 Rust trait 替代，32 位细节只在追溯 C 源码时有参考价值。读者应优先阅读 [正文 §1.4 架构无关语义](#14-架构无关的语义) 与 [§3 Rust 设计决策](#3-rust-设计决策)。
+
+#### A.0.1 汇编入口对比
+
+| | x86-32 (`kernel/arch/i386/head.S`) | ARM32 (`kernel/arch/earm/head.S`) |
+|---|---|---|
+| **入口** | GRUB 跳转到 `MINIX` 标签，该处指令为 `jmp multiboot_init` | U-Boot 跳转到 `MINIX` 标签，该处指令为 `b multiboot_init` |
+| **设栈** | `mov $load_stack_start, %esp` | `ldr sp, =load_stack_start` |
+| **清帧指针** | `mov $0, %ebp` | `mov fp, #0` |
+| **调用 pre_init** | `push %ebx; push %eax; call pre_init` | `bl _C_LABEL(pre_init)` |
+| **参数传递** | 栈传参：EAX=魔数, EBX=mbi 地址 | 寄存器传参：r0=argc, r1=argv（C 调用约定） |
+| **调用 kmain** | `push %eax; call kmain` | `ldr r2, =kmain; bx r2`（r0 仍持有 kinfo 指针） |
+| **临时栈** | `.data` 段 4096 字节 | `.data` 段 4096 字节 |
+
+**共同语义**：设栈 → 调 `pre_init()` → 调 `kmain()`。差异仅在于指令集和参数传递方式。
+
+#### A.0.2 引导加载器对比
+
+| | x86-32 | ARM32 |
+|---|---|---|
+| **引导加载器** | GRUB（外部，不属于 Minix3） | U-Boot（外部，不属于 Minix3） |
+| **协议** | Multiboot（内核嵌入 Header，GRUB 识别） | ATAGS / 设备树（U-Boot 传递板级信息） |
+| **内核"名片"** | Multiboot Header（魔数 `0x1BADB002`） | 无——U-Boot 直接加载 ELF 入口点 |
+| **参数传递** | GRUB → EAX/EBX 寄存器 | U-Boot → argc/argv（C 调用约定 r0/r1） |
+| **内存信息来源** | GRUB 填充 `multiboot_info_t`（mmap、mods） | ARM `pre_init()` 自己构造 `multiboot_info_t`（硬编码地址范围） |
+| **配置文件** | `etc/boot.cfg.default`（Minix3 提供模板） | U-Boot 环境变量（板级配置，Minix3 不提供） |
+
+**关键差异**：x86 的 `multiboot_info_t` 由 GRUB 填充后传给内核；ARM 没有等价的外部引导协议，所以 ARM 的 `pre_init()` 在 `setup_mbi()` 中**自己硬编码**构造了一个 `multiboot_info_t`（模块地址 `0x82000000` 起，内存 `0x80000000` 起 256MB），让后续代码以为"GRUB 传了数据过来"。这是一个适配层（shim）。
+
+#### A.0.3 分页机制对比
+
+两者都调用同名函数 `pg_clear()` → `pg_identity()` → `pg_mapkernel()` → `pg_load()` → `vm_enable_paging()`，语义完全一致，只是指令集不同：
+
+| 步骤 | x86-32 | ARM32 |
+|------|--------|-------|
+| **页表粒度** | 4MB 大页（PSE，CR4.PSE=1） | 1MB Section（ARM L1 页表项） |
+| **pg_identity()** | 遍历 4MB 区间，设置 PDE 的 PS 位 + 物理地址 | 遍历 1MB Section，设置 Section 描述符 + 域 + 缓存属性 |
+| **pg_mapkernel()** | 将内核物理地址映射到高虚拟地址（PDE 条目） | 将内核物理地址映射到高虚拟地址（Section 条目） |
+| **pg_load()** | `write_cr3(页目录物理地址)` | `write_ttbr0(页目录物理地址)` |
+| **vm_enable_paging()** | `CR0.PG = 1`（开启分页） | `SCTLR.M = 1`（开启 MMU）+ 使能 I/D Cache + 分支预测 |
+| **额外步骤** | 无 | ARM 需要先 `dcache_clean()`（清缓存），设置 DACR（域访问控制），设置 TTBRC（页表基址控制） |
+
+**共同语义**：清零页目录 → 建立恒等映射 → 映射内核到高地址 → 加载页表基址 → 开启分页/MMU。
+
+#### A.0.4 架构无关的语义总结
+
+剥离硬件细节后，内核自举必须完成的事只有四件：
+
+```
+1. 接收引导参数    → 从引导加载器获取内存布局、模块列表、启动参数
+2. 建立地址映射    → 恒等映射（让当前代码继续跑）+ 内核高地址映射（为后续运行准备）
+3. 开启分页/MMU    → 从物理地址世界切换到虚拟地址世界
+4. 传递启动信息    → 将 kinfo_t 交给 kmain()，完成自举
+```
+
+这四件事的**顺序不可变**（必须先映射再开分页，否则开分页后地址空间不对代码就飞了），但**实现方式完全由架构决定**。关于 64 位重写后的差异，详见 [正文 §3 Rust 设计决策](#3-rust-设计决策)。
 
 ### A.1 UEFI 是什么
 
@@ -1674,7 +1961,7 @@ UEFI 固件开机
 
 | Multiboot/GRUB | UEFI | 说明 |
 |----------------|------|------|
-| GRUB 读取 `boot.cfg` | UEFI Boot Manager 读取 `BootOrder` 变量 | 决定加载谁 |
+| GRUB 读取 `boot.cfg.default` | UEFI Boot Manager 读取 `BootOrder` 变量 | 决定加载谁 |
 | `multiboot /boot/kernel` | 加载 `boot.efi` | 加载可执行文件 |
 | Multiboot Header（`0x1BADB002`） | PE32+ 头（标准可执行格式） | 固件如何识别可执行文件 |
 | EAX/EBX 寄存器传参 | `ImageHandle` + `SystemTable` 参数传参 | 如何传递启动信息 |

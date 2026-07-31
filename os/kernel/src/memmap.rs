@@ -5,7 +5,7 @@
 //! - `pg_utils.c:86-125` — add_memmap(): add physical memory region to kinfo.memmap[]
 //! - `com.h` — MAXMEMMAP constant
 //!
-//! # Design Decisions (07-system-init-boot-finish.md §3)
+//! # Design Decisions (08-system-init-boot-finish.md §3)
 //!
 //! - **D5**: 4GB truncation removed for 64-bit. The C version truncates at
 //!   LIMIT=0xFFFFF000 because 32-bit Minix3 cannot handle >4GB physical addresses.
@@ -53,7 +53,7 @@ pub enum MemMapError {
 
 /// Add a physical memory region to the kernel's memory map.
 ///
-/// C: add_memmap() in pg_utils.c:86-125
+/// C: add_memmap() in pg_utils.c:86-121
 ///
 /// # Design Decision D5
 ///
@@ -61,6 +61,16 @@ pub enum MemMapError {
 /// 32-bit Minix3 cannot handle physical addresses above 4GB. In 64-bit
 /// minix-rs, Direct Map can access all physical memory, so this truncation
 /// is unnecessary and has been removed.
+///
+/// # Known Gaps (TODO)
+///
+/// The C version also updates two `kinfo` fields that this function does
+/// not handle, because `KernelInfo` is immutable (`&KernelInfo`) in Rust:
+/// - `cbi->mmap_size` (pg_utils.c:110-111) — tracks highest used memmap index
+/// - `cbi->mem_high_phys` (pg_utils.c:112-115) — tracks highest physical address
+///
+/// These must be updated by the caller (kmain Phase F) once a mutable
+/// kernel state struct is available. See 08-system-init-boot-finish.md §4.5.
 ///
 /// # Arguments
 ///
@@ -76,7 +86,7 @@ pub enum MemMapError {
 ///
 /// This function should only be called during boot (while `kernel_may_alloc`
 /// is true). The caller is responsible for ensuring this invariant.
-/// C: assert(kernel_may_alloc) in pg_utils.c:96
+/// C: assert(kernel_may_alloc) in pg_utils.c:102
 pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> Result<usize, MemMapError> {
     // C: page alignment — roundup(addr) and rounddown(addr + len)
     let page_size = 4096u64;

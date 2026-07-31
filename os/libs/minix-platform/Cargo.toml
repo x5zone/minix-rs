@@ -14,7 +14,7 @@ minix-types = { workspace = true }
 minix-boot = { workspace = true }
 # Flattened Device Tree parser (no_std, zero-copy). Used by `DeviceTreeDesc`
 # to extract CLINT/PLIC/GIC base addresses and timer frequency from a DTB
-# blob passed by the boot-shim via `KernelInfo.platform_descriptor`.
+# blob passed by the boot-shim via `KernelInfo.platform_sources`.
 fdt = { workspace = true }
 
 [features]

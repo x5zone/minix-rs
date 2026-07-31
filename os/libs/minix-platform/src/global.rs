@@ -3,17 +3,21 @@
 //! # Lifecycle
 //!
 //! 1. **T2.5** (early boot, BKL held, single-threaded): `init_from_kinfo()`
-//!    parses `KernelInfo.platform_descriptor` and writes the resulting
-//!    `PlatformDescEnum` into the global `PLATFORM` static.
+//!    iterates `KernelInfo.platform_sources`, calls `parse_by_kind()` on each,
+//!    and writes the first successfully-parsed `PlatformDescEnum` into the
+//!    global `PLATFORM` static.
 //! 2. **Runtime** (all CPUs, BKL may be released): `platform_desc()` returns
 //!    a `&'static dyn PlatformDesc` — read-only, no synchronization needed.
 
-use minix_boot::{KernelInfo, PlatformDescriptorPtr};
+use minix_boot::KernelInfo;
 use minix_types::AssumeSyncCell;
 
-use crate::acpi::AcpiDesc;
 use crate::desc::PlatformDesc;
+use crate::kind::parse_by_kind;
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use crate::device_tree::DeviceTreeDesc;
+#[cfg(target_arch = "x86_64")]
+use crate::acpi::AcpiDesc;
 use crate::qemu_virt::QemuVirtDesc;
 
 /// Global platform context — owns the descriptor.
@@ -49,13 +53,13 @@ pub struct PlatformContext {
 }
 
 impl PlatformDesc for PlatformContext {
-    fn interrupt_controller(&self) -> crate::desc::InterruptControllerDesc {
+    fn interrupt_controller(&self) -> &dyn crate::desc::InterruptControllerDesc {
         self.desc.interrupt_controller()
     }
-    fn timer(&self) -> crate::desc::TimerDesc {
+    fn timer(&self) -> &dyn crate::desc::TimerDesc {
         self.desc.timer()
     }
-    fn early_console(&self) -> Option<crate::desc::ConsoleDesc> {
+    fn early_console(&self) -> Option<&dyn crate::desc::ConsoleDesc> {
         self.desc.early_console()
     }
     fn cpu_topology(&self) -> crate::desc::CpuTopology {
@@ -81,21 +85,31 @@ impl core::fmt::Debug for PlatformContext {
 ///
 /// # Why not `Box<dyn PlatformDesc>`?
 ///
-/// - `no_std` — no allocator.
+/// - `no_std` — avoid allocator dependency at T2.5 (early boot).
 /// - Enum dispatch is zero-cost (no vtable indirection).
+///
+/// # Arch-specific variants
+///
+/// `DeviceTree` and `Acpi` variants are cfg-gated: DTB path only exists on
+/// ARM64/RISC-V, ACPI path only exists on x86-64. The `QemuVirt` variant is
+/// always present (every arch has a QEMU virt fallback).
 pub enum PlatformDescEnum {
-    /// Parsed from a Flattened Device Tree (Phase 3 — ARM64/RISC-V).
+    /// Parsed from a Flattened Device Tree (ARM64/RISC-V only).
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     DeviceTree(DeviceTreeDesc),
-    /// Parsed from ACPI tables (Phase 4 — x86-64).
+    /// Parsed from ACPI tables (x86-64 only).
+    #[cfg(target_arch = "x86_64")]
     Acpi(AcpiDesc),
-    /// Hardcoded QEMU `virt` fallback (Phase 1 — always available).
+    /// Hardcoded QEMU `virt` fallback (always available).
     QemuVirt(QemuVirtDesc),
 }
 
 impl core::fmt::Debug for PlatformDescEnum {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(_) => f.write_str("DeviceTree(...)"),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(_) => f.write_str("Acpi(...)"),
             Self::QemuVirt(_) => f.write_str("QemuVirt"),
         }
@@ -103,44 +117,56 @@ impl core::fmt::Debug for PlatformDescEnum {
 }
 
 impl PlatformDesc for PlatformDescEnum {
-    fn interrupt_controller(&self) -> crate::desc::InterruptControllerDesc {
+    fn interrupt_controller(&self) -> &dyn crate::desc::InterruptControllerDesc {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.interrupt_controller(),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(d) => d.interrupt_controller(),
             Self::QemuVirt(d) => d.interrupt_controller(),
         }
     }
-    fn timer(&self) -> crate::desc::TimerDesc {
+    fn timer(&self) -> &dyn crate::desc::TimerDesc {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.timer(),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(d) => d.timer(),
             Self::QemuVirt(d) => d.timer(),
         }
     }
-    fn early_console(&self) -> Option<crate::desc::ConsoleDesc> {
+    fn early_console(&self) -> Option<&dyn crate::desc::ConsoleDesc> {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.early_console(),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(d) => d.early_console(),
             Self::QemuVirt(d) => d.early_console(),
         }
     }
     fn cpu_topology(&self) -> crate::desc::CpuTopology {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.cpu_topology(),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(d) => d.cpu_topology(),
             Self::QemuVirt(d) => d.cpu_topology(),
         }
     }
     fn arch_misc(&self) -> crate::desc::ArchMiscDesc {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.arch_misc(),
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(d) => d.arch_misc(),
             Self::QemuVirt(d) => d.arch_misc(),
         }
     }
     fn source(&self) -> crate::desc::PlatformSource {
         match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(_) => crate::desc::PlatformSource::DeviceTree,
+            #[cfg(target_arch = "x86_64")]
             Self::Acpi(_) => crate::desc::PlatformSource::Acpi,
             Self::QemuVirt(_) => crate::desc::PlatformSource::QemuVirt,
         }
@@ -166,46 +192,49 @@ pub unsafe fn init(desc: PlatformDescEnum) {
 
 /// Initialize the global platform context from `KernelInfo`.
 ///
-/// Reads `kinfo.platform_descriptor` and dispatches:
-/// - `Some(Dtb)` → `DeviceTreeDesc::parse` (Phase 3 — ARM64/RISC-V)
-/// - `Some(Rsdp)` → `AcpiDesc::parse` (Phase 4 — currently falls back)
-/// - `None` → `QemuVirtDesc` fallback (dev: warn, release: panic)
+/// Iterates `kinfo.platform_sources` in order (boot-shim's preference) and
+/// calls [`parse_by_kind`] on each. The first source that parses successfully
+/// wins — matching Linux's `acpi=on/off/force` model where multiple firmware
+/// tables may coexist (e.g., DTB + ACPI on SBBR ARM64 servers).
+///
+/// If `platform_sources` is empty, or all sources fail to parse, falls back
+/// to `QemuVirtDesc` in dev builds (warn) or panics in release builds.
 ///
 /// # Panics
 ///
-/// Panics in release builds if no descriptor is provided. Dev builds
-/// fall back to `QemuVirtDesc` with a warning.
+/// Panics in release builds if no descriptor source parses successfully.
+/// Dev builds fall back to `QemuVirtDesc` with a warning.
 ///
 /// # Safety
 ///
 /// Delegates to [`init`] — same single-threaded boot constraint.
-/// Additionally, for the DTB path, the caller must guarantee that
-/// `kinfo.platform_descriptor` points to a valid FDT blob.
+/// Additionally, for each source, the caller must guarantee that
+/// `source.phys_addr()` points to a valid firmware table blob.
 pub unsafe fn init_from_kinfo(kinfo: &KernelInfo) {
-    let desc = match kinfo.platform_descriptor {
-        Some(PlatformDescriptorPtr::Dtb(pa)) => {
-            // Phase 3: parse DTB. On parse failure, fall back to QemuVirt
-            // in dev builds (so QEMU tests still pass with a malformed DTB)
-            // or panic in release.
-            // SAFETY: caller guarantees pa points to a valid FDT blob.
-            match unsafe { DeviceTreeDesc::parse(pa.0 as usize) } {
-                Ok(d) => PlatformDescEnum::DeviceTree(d),
-                Err(_e) => qemu_fallback_or_panic("DTB parse failed"),
+    // Try each source in boot-shim's preference order. The first that
+    // parses successfully wins.
+    let mut parsed: Option<PlatformDescEnum> = None;
+    for source in kinfo.platform_sources {
+        // SAFETY: caller guarantees each source's phys_addr points to a
+        // valid firmware table.
+        match unsafe { parse_by_kind(*source) } {
+            Ok(desc) => {
+                parsed = Some(desc);
+                break;
+            }
+            Err(_e) => {
+                // Continue to next source on parse failure.
+                // (In dev builds, log the failure; in release, silently
+                // proceed to the next source or fallback.)
             }
         }
-        Some(PlatformDescriptorPtr::Rsdp(pa)) => {
-            // Phase 4: parse ACPI. On parse failure, fall back to QemuVirt
-            // in dev builds or panic in release.
-            // SAFETY: caller guarantees pa points to a valid RSDP.
-            match unsafe { AcpiDesc::parse(pa.0 as usize) } {
-                Ok(d) => PlatformDescEnum::Acpi(d),
-                Err(_e) => qemu_fallback_or_panic("ACPI parse failed"),
-            }
-        }
-        None => {
-            qemu_fallback_or_panic("no platform descriptor provided by boot-shim")
-        }
+    }
+
+    let desc = match parsed {
+        Some(d) => d,
+        None => qemu_fallback_or_panic("no platform source parsed successfully"),
     };
+
     // SAFETY: caller guarantees single-threaded boot context.
     unsafe { init(desc) };
 }
@@ -221,7 +250,7 @@ fn qemu_fallback_or_panic(reason: &str) -> PlatformDescEnum {
         // kernel context at this early stage; the warning is best-effort.
         // Callers that have log available can check `source()` == QemuVirt.
         let _ = reason; // suppress unused warning in no-log builds
-        PlatformDescEnum::QemuVirt(QemuVirtDesc)
+        PlatformDescEnum::QemuVirt(QemuVirtDesc::default())
     } else {
         panic!(
             "platform::init_from_kinfo: {} and not a dev build (no QemuVirt fallback in release)",
@@ -252,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_qemu_virt_dispatch_via_enum() {
-        let e = PlatformDescEnum::QemuVirt(QemuVirtDesc);
+        let e = PlatformDescEnum::QemuVirt(QemuVirtDesc::default());
         assert_eq!(e.source(), crate::desc::PlatformSource::QemuVirt);
         // Verify dispatch reaches QemuVirtDesc methods
         let _ic = e.interrupt_controller();

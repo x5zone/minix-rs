@@ -7,12 +7,13 @@
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
 //! Hardware parameters (PIT base frequency, LAPIC base address) are stored
-//! in instance fields, populated by `new(desc)` from `TimerDesc::Pit`.
-//! This replaces the previous hardcoded `PIT_BASE_FREQ` constant.
+//! in instance fields, populated by `new(desc)` from the `PitDesc` sub-trait
+//! implementor (downcast via `Any`). This replaces the previous hardcoded
+//! `PIT_BASE_FREQ` constant.
 //!
 //! C: clock.c hardware init + apic.c lapic_enable()
 
-use minix_platform::TimerDesc;
+use minix_platform::arch::x86_64::PitDesc;
 
 use crate::clock::ClockArch;
 
@@ -31,8 +32,8 @@ const PIT_CMD_RATE_GEN: u8 = 0x36;
 ///
 /// # Fields
 ///
-/// - `pit_base_freq`: 8254 PIT base frequency (Hz), from `TimerDesc::Pit`.
-/// - `lapic_base`: LAPIC MMIO base address, from `TimerDesc::Pit`.
+/// - `pit_base_freq`: 8254 PIT base frequency (Hz), from `PitDesc`.
+/// - `lapic_base`: LAPIC MMIO base address, from `PitDesc`.
 ///   Used for LAPIC Timer setup after APIC init.
 ///
 /// C: clock.c hardware init + apic.c lapic_enable()
@@ -43,16 +44,13 @@ pub struct X86_64ClockArch {
 }
 
 impl ClockArch for X86_64ClockArch {
-    fn new(desc: &TimerDesc) -> Self {
-        match desc {
-            TimerDesc::Pit { pit_base_freq, lapic_base } => Self {
-                pit_base_freq: *pit_base_freq,
-                lapic_base: *lapic_base,
-            },
-            _ => panic!(
-                "X86_64ClockArch::new: expected TimerDesc::Pit, got {:?}",
-                desc
-            ),
+    fn new(desc: &dyn minix_platform::TimerDesc) -> Self {
+        let pit = desc.as_any()
+            .downcast_ref::<PitDesc>()
+            .expect("X86_64ClockArch::new: expected PitDesc");
+        Self {
+            pit_base_freq: pit.pit_base_freq,
+            lapic_base: pit.lapic_base,
         }
     }
 

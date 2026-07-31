@@ -6,11 +6,11 @@
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
 //! Hardware base address (PLIC), context ID, and IRQ count are stored in
-//! instance fields, populated by `new(desc)` from `InterruptControllerDesc::Plic`.
+//! instance fields, populated by `new(desc)` via `Any` downcast to `PlicDesc`.
 //! This replaces the previous `new()` + `set_base()` two-step pattern and the
 //! `PLIC_BASE` / `S_MODE_CONTEXT` hardcoded constants.
 
-use minix_platform::InterruptControllerDesc;
+use minix_platform::arch::riscv64::PlicDesc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
 
@@ -28,7 +28,7 @@ const PLIC_COMPLETE: usize = PLIC_CLAIM;
 ///
 /// # Fields
 ///
-/// - `plic_base`: PLIC MMIO base, from `InterruptControllerDesc::Plic`.
+/// - `plic_base`: PLIC MMIO base, from `PlicDesc`.
 /// - `nr_irqs`: number of IRQ sources (from descriptor, clamped to `NR_IRQ_VECTORS`).
 /// - `context`: S-mode context ID for the current hart, from descriptor.
 /// - `last_claimed`: last claimed interrupt ID (saved from claim register read).
@@ -62,18 +62,15 @@ impl Riscv64InterruptController {
 }
 
 impl InterruptController for Riscv64InterruptController {
-    fn new(desc: &InterruptControllerDesc) -> Self {
-        match desc {
-            InterruptControllerDesc::Plic { plic_base, nr_irqs, context } => Self {
-                plic_base: *plic_base,
-                nr_irqs: (*nr_irqs as usize).min(NR_IRQ_VECTORS),
-                context: *context as usize,
-                last_claimed: 0,
-            },
-            _ => panic!(
-                "Riscv64InterruptController::new: expected InterruptControllerDesc::Plic, got {:?}",
-                desc
-            ),
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+        let plic = desc.as_any()
+            .downcast_ref::<PlicDesc>()
+            .expect("Riscv64InterruptController::new: expected PlicDesc");
+        Self {
+            plic_base: plic.plic_base,
+            nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            context: plic.context as usize,
+            last_claimed: 0,
         }
     }
 

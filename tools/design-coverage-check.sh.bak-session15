@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# design-coverage-check.sh — 自动扫描 {module} 的 design/ 目录，对比 doc 编号，输出 per-doc snapshot 缺失报告
+# Session #12 (2026-07-16) 模式 69 (PSMD) + 模式 71 (DOG) 配套工具
+#
+# 用法：
+#   tools/design-coverage-check.sh <module> [--stage <stage>] [--json]
+#
+# 输出：
+#   - Markdown 表格（默认）：列出每个 doc 的 snapshot 状态
+#   - JSON（--json）：机器可读，便于接入 STATE.md 自动校验
+#
+# 退出码：
+#   - 0：所有 doc snapshot 完整
+#   - 1：发现缺失（missing snapshot）
+#   - 2：参数错误
+#
+# 示例：
+#   tools/design-coverage-check.sh fork-syscall-rewrite
+#   tools/design-coverage-check.sh fork-syscall-rewrite --stage 03-stage-kernel
+#   tools/design-coverage-check.sh fork-syscall-rewrite --json | jq .
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <module> [--stage <stage>] [--json]" >&2
+  exit 2
+fi
+
+MODULE="$1"
+shift
+
+STAGE_FILTER=""
+JSON_MODE="false"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stage) STAGE_FILTER="$2"; shift 2 ;;
+    --json) JSON_MODE="true"; shift ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+# Step 1: 收集所有 stage 目录
+MODULE_DIR="notes/rewrite/${MODULE}"
+if [[ ! -d "${MODULE_DIR}" ]]; then
+  echo "❌ Module directory not found: ${MODULE_DIR}" >&2
+  exit 2
+fi
+
+# Step 2: 收集所有 doc 文件（*.md）按 stage 分组
+declare -A DOCS_BY_STAGE
+
+if [[ -n "${STAGE_FILTER}" ]]; then
+  STAGES=("${STAGE_FILTER}")
+else
+  STAGES=($(ls -1 "${MODULE_DIR}" | grep -E '^[0-9]+-' || true))
+fi
+
+if [[ ${#STAGES[@]} -eq 0 ]]; then
+  echo "❌ No stages found in ${MODULE_DIR}" >&2
+  exit 2
+fi
+
+for stage in "${STAGES[@]}"; do
+  stage_dir="${MODULE_DIR}/${stage}"
+  if [[ ! -d "${stage_dir}" ]]; then
+    continue
+  fi
+  # 收集 doc 文件（排除 *-trae-review.md, *-claude-report.md 等 review 输出文档）
+  while IFS= read -r doc_file; do
+    doc_name=$(basename "${doc_file}" .md)
+    # 跳过 review 输出文档和 design/ 目录下的快照
+    if [[ "${doc_name}" =~ -trae-review$ ]] || [[ "${doc_name}" =~ -claude-report$ ]]; then
+      continue
+    fi
+    DOCS_BY_STAGE["${stage}"]+="${doc_name}|"
+  done < <(find "${stage_dir}" -maxdepth 1 -name '*.md' -type f 2>/dev/null | sort)
+done
+
+# Step 3: 对每个 doc 检查 4 类 snapshot
+TOTAL_DOCS=0
+MISSING_OUTLINE=0
+MISSING_OUTLINE_REVIEW=0
+MISSING_DESIGN=0
+MISSING_DESIGN_FINAL=0
+COMPLETE_DOCS=0
+
+# 用于 JSON 输出
+JSON_OUTPUT='{"module":"'"${MODULE}"'","stages":['
+
+FIRST_STAGE=true
+for stage in "${STAGES[@]}"; do
+  if [[ -z "${DOCS_BY_STAGE[${stage}]:-}" ]]; then
+    continue
+  fi
+  design_dir="${MODULE_DIR}/${stage}/design"
+  if [[ ! -d "${design_dir}" ]]; then
+    design_dir_status="❌ MISSING"
+  else
+    design_dir_status="✅"
+  fi
+
+  if [[ "${JSON_MODE}" == "false" ]]; then
+    echo "## Stage: ${stage} (design/: ${design_dir_status})"
+    echo ""
+    echo "| Doc | outline | outline-review | design | design-final | Status |"
+    echo "|-----|---------|----------------|--------|--------------|--------|"
+  else
+    if [[ "${FIRST_STAGE}" == "false" ]]; then
+      JSON_OUTPUT+=','
+    fi
+    JSON_OUTPUT+='{"stage":"'"${stage}"'","design_dir":"'"${design_dir_status}"'","docs":['
+    FIRST_STAGE=false
+  fi
+
+  FIRST_DOC=true
+  IFS='|' read -ra docs <<< "${DOCS_BY_STAGE[${stage}]}"
+  for doc in "${docs[@]}"; do
+    if [[ -z "${doc}" ]]; then continue; fi
+    TOTAL_DOCS=$((TOTAL_DOCS + 1))
+
+    # 提取 doc 编号（{NN}-xxx）
+    if [[ "${doc}" =~ ^([0-9]{2})- ]]; then
+      NN="${BASH_REMATCH[1]}"
+    else
+      # 不是 NN-xxx 格式（如 README），跳过
+      continue
+    fi
+
+    # 检查 snapshot 存在性
+    if [[ -d "${design_dir}" ]]; then
+      outline=$(ls "${design_dir}/${NN}-outline.v"*.md 2>/dev/null | head -1 || echo "")
+      outline_review=$(ls "${design_dir}/${NN}-outline-review.v"*.md 2>/dev/null | head -1 || echo "")
+      design=$(ls "${design_dir}/${NN}-design.v"*.md 2>/dev/null | head -1 || echo "")
+      design_final=$(ls "${design_dir}/${NN}-design-final.v"*.md 2>/dev/null | head -1 || echo "")
+    else
+      outline=""
+      outline_review=""
+      design=""
+      design_final=""
+    fi
+
+    # 状态判定
+    outline_status="❌"
+    [[ -n "${outline}" ]] && outline_status="✅ ${outline##*/}"
+    [[ -z "${outline}" ]] && MISSING_OUTLINE=$((MISSING_OUTLINE + 1))
+
+    outline_review_status="⚠️"
+    [[ -n "${outline_review}" ]] && outline_review_status="✅ ${outline_review##*/}"
+    [[ -z "${outline_review}" ]] && MISSING_OUTLINE_REVIEW=$((MISSING_OUTLINE_REVIEW + 1))
+
+    design_status="❌"
+    [[ -n "${design}" ]] && design_status="✅ ${design##*/}"
+    [[ -z "${design}" ]] && MISSING_DESIGN=$((MISSING_DESIGN + 1))
+
+    design_final_status="➖"
+    [[ -n "${design_final}" ]] && design_final_status="✅ ${design_final##*/}"
+
+    # 整体状态：仅 design 缺失即 FAIL（H.1），outline 缺失即 FAIL（H.6）
+    if [[ -z "${design}" ]] && [[ -z "${outline}" ]]; then
+      overall="❌ CRITICAL (H.1+H.6 FAIL)"
+    elif [[ -z "${design}" ]]; then
+      overall="❌ FAIL (H.1 missing)"
+    elif [[ -z "${outline}" ]]; then
+      overall="❌ FAIL (H.6 missing)"
+    else
+      overall="✅ PASS"
+      COMPLETE_DOCS=$((COMPLETE_DOCS + 1))
+    fi
+
+    if [[ "${JSON_MODE}" == "false" ]]; then
+      printf "| %s | %s | %s | %s | %s | %s |\n" \
+        "${doc}" "${outline_status}" "${outline_review_status}" "${design_status}" "${design_final_status}" "${overall}"
+    else
+      if [[ "${FIRST_DOC}" == "false" ]]; then
+        JSON_OUTPUT+=','
+      fi
+      JSON_OUTPUT+='{"doc":"'"${doc}"'","NN":"'"${NN}"'","outline":"'"${outline##*/}"'","outline_review":"'"${outline_review##*/}"'","design":"'"${design##*/}"'","design_final":"'"${design_final##*/}"'","status":"'"${overall}"'"}'
+      FIRST_DOC=false
+    fi
+  done
+
+  if [[ "${JSON_MODE}" == "true" ]]; then
+    JSON_OUTPUT+=']}'
+  fi
+  if [[ "${JSON_MODE}" == "false" ]]; then
+    echo ""
+  fi
+done
+
+# Step 4: 输出汇总
+if [[ "${JSON_MODE}" == "false" ]]; then
+  echo "## Summary"
+  echo ""
+  echo "| Metric | Count |"
+  echo "|--------|-------|"
+  echo "| Total docs | ${TOTAL_DOCS} |"
+  echo "| Complete (design + outline) | ${COMPLETE_DOCS} |"
+  echo "| Missing outline (H.6 FAIL) | ${MISSING_OUTLINE} |"
+  echo "| Missing outline-review (WARN) | ${MISSING_OUTLINE_REVIEW} |"
+  echo "| Missing design (H.1 FAIL) | ${MISSING_DESIGN} |"
+  echo ""
+  if [[ ${MISSING_DESIGN} -gt 0 ]] || [[ ${MISSING_OUTLINE} -gt 0 ]]; then
+    echo "❌ **CRITICAL**: ${MISSING_DESIGN} docs missing design, ${MISSING_OUTLINE} docs missing outline"
+    echo ""
+    echo "**触发模式 69 (PSMD)**：review 进入 Step 0 前必须先附录 C 生成缺失快照。"
+    echo ""
+    echo "**补救命令**："
+    for stage in "${STAGES[@]}"; do
+      if [[ ! -d "${MODULE_DIR}/${stage}/design" ]]; then continue; fi
+      for missing_doc in $(ls "${MODULE_DIR}/${stage}"/*.md 2>/dev/null); do
+        doc_name=$(basename "${missing_doc}" .md)
+        if [[ "${doc_name}" =~ ^([0-9]{2})- ]]; then
+          NN="${BASH_REMATCH[1]}"
+          design_dir="${MODULE_DIR}/${stage}/design"
+          if [[ ! -f "${design_dir}/${NN}-design.v1.md" ]]; then
+            echo "  - 补 ${design_dir}/${NN}-design.v1.md"
+          fi
+          if [[ ! -f "${design_dir}/${NN}-outline.v1.md" ]]; then
+            echo "  - 补 ${design_dir}/${NN}-outline.v1.md"
+          fi
+        fi
+      done
+    done
+    exit 1
+  else
+    echo "✅ **ALL DOCS COMPLETE**: design + outline 快照齐全"
+    exit 0
+  fi
+else
+  JSON_OUTPUT+=',"summary":{"total":'"${TOTAL_DOCS}"',"complete":'"${COMPLETE_DOCS}"',"missing_outline":'"${MISSING_OUTLINE}"',"missing_outline_review":'"${MISSING_OUTLINE_REVIEW}"',"missing_design":'"${MISSING_DESIGN}"'}]}'
+  echo "${JSON_OUTPUT}"
+  if [[ ${MISSING_DESIGN} -gt 0 ]] || [[ ${MISSING_OUTLINE} -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+fi

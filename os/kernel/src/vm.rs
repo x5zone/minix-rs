@@ -11,8 +11,8 @@
 //! - **03-vm-request.md** types: `VmSuspendType`, `VmCheckParams`,
 //!   `VmSuspendState`, `VmCheckResult`, `VmSuspendContext`, `VmRequestQueue`,
 //!   `VmCtlError`, `VmRequestHandler`
-//! - **08-vm-boot-protocol.md** types: `VmCtlParam`, `VmCtlResult`,
-//!   `PageTableSwitcher`
+//! - **09-vm-boot-protocol.md** types: `VmCtlParam`, `VmCtlResult`,
+//!   `VmCtlError`
 //!
 //! Design decisions are documented in 02-page-table-kernel.md §3 and
 //! 03-vm-request.md §3.
@@ -603,7 +603,7 @@ fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr>
 /// All `VmCtlError`-returning operations execute under BKL.
 /// `VmRequestHandler` methods are called from syscall handlers
 /// which hold BKL throughout. No additional synchronization needed.
-// ── 08-vm-boot-protocol types ──
+// ── 09-vm-boot-protocol types ──
 
 /// VMCTL 子命令参数。
 ///
@@ -613,7 +613,7 @@ fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr>
 /// 架构特定命令（GetPdbr, SetAddrSpace, FlushTlb, InvlPg）在
 /// `arch_do_vmctl()` 中处理（arch_do_vmctl.c:38-65）。
 ///
-/// Design decision: enum + match 替代 C 的 switch/case（08-vm-boot-protocol.md §3）。
+/// Design decision: enum + match 替代 C 的 switch/case（09-vm-boot-protocol.md §3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlParam {
     /// 清除进程的页错误标志。
@@ -1289,7 +1289,7 @@ mod tests {
         assert_eq!(ctx.state, VmSuspendState::Fetched);
     }
 
-    // ── 08-vm-boot-protocol tests ──
+    // ── 09-vm-boot-protocol tests ──
 
     #[test]
     fn test_vmctl_param_from_u32() {

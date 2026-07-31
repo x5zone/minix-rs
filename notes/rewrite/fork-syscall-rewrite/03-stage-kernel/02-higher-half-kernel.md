@@ -1,7 +1,7 @@
 # 02-higher-half-kernel: 链接、加载与高地址跳转
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/arch/i386/head.S`, `minix3/minix/kernel/arch/i386/kernel.lds`, `kernel/src/lib.rs`
+> **源码**: `minix3/minix/kernel/arch/i386/head.S`, `minix3/minix/kernel/arch/i386/kernel.lds`, `os/kernel/src/lib.rs`
 > **说明**: 链接脚本布局、内核 ELF 加载（ELF 解析、段拷贝、BSS 清零）、arch_boot_impl 页表映射、HigherHalf 切栈跳转——从 boot-shim 加载内核 ELF 到 kmain 的完整路径
 > **前置**: [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — boot-shim 已完成引导准备（获取内存映射、加载内核 ELF、构造 KernelInfo、ExitBootServices），调用 arch_boot
 
@@ -126,7 +126,7 @@ _kern_offset    = (_kern_vir_base - _kern_phys_base);
 
 ### 2.2 head.S：从 pre_init 到 kmain 的三行关键代码
 
-x86-32 的 `head.S` (`kernel/arch/i386/head.S:80-87`)：
+x86-32 的 `head.S` (`kernel/arch/i386/head.S:78-87`)（L78-82 注释 + L83-87 实际 asm 四行）：
 
 ```asm
         /* pre_init 返回后，分页已启用，但 RIP/RSP 仍在低地址 */
@@ -178,7 +178,7 @@ _end = .;
 **minix-rs 的替代方案**：不再使用链接脚本符号。栈顶地址作为 `stack_top: VirBytes` 参数传入 `HigherHalf::jump_to_kmain`，其值来自 `KernelInfo.kern_stack_top`。`kern_stack_top` 由 boot-shim 在构造 `KernelInfo` 时计算（例如 `kern_virt_base + kern_size + stack_size`，其中 `kern_size: u64` 避免 32 位截断——见附录 A.5），然后在 `arch_boot()` 中通过 `info.kern_stack_top` 传入：
 
 ```rust
-// kernel/src/lib.rs
+// os/kernel/src/lib.rs
 let info = arch_boot_impl::<PagingImpl>(kernel_info, root_page);
 unsafe { X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
 ```
@@ -218,6 +218,8 @@ kernel.elf = link(kernel.rlib + link.ld + crt0.o)
 - `kernel.rlib`：内核的 Rust 代码编译为静态库
 - `link.ld`：自定义链接脚本，设置 VMA=高地址
 - 最终链接为独立 ELF，boot-shim 加载此 ELF
+
+> **实现状态**：三架构的 `link.ld`（`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`）已就绪，但构建系统尚未接入——`os/kernel/Cargo.toml` 仍只声明 `[lib]`，缺少 `build.rs` 将 `kernel.rlib` + `link.ld` 链接为独立 ELF binary。当前测试路径（hello-boot 等）通过 `minix-kernel = { workspace = true }` 以 rlib 方式依赖内核 crate，这是测试场景的合理简化；生产路径的独立 ELF 构建是后续工作。01 文档 §5.2 已标注此约束（"正式的 boot-shim 需要将 kernel 改为独立 ELF binary"）。
 
 ### 3.3 决策：HigherHalf trait + 内联汇编
 
@@ -269,12 +271,14 @@ pub trait HigherHalf {
 
 ### 3.5 架构差异对照
 
+> **注**：本表为高层概念性对照，具体汇编指令见 §4.3 三架构差异总结表。两表必须保持一致（Step 0.5.5 跨章节一致性约束）。
+
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| 栈切换 | `mov rsp, imm64` | `mov sp, x0` (先加载到寄存器) | `li sp, imm64` (可能需要多条) |
-| 跳转方式 | `call kmain` (直接) | `br x2` (间接) | `jalr x0, x1, 0` (间接) |
+| 栈切换 | `mov rsp, {stktop}` | `mov sp, {stktop}` | `mv sp, {stktop}` |
+| 跳转方式 | `call {kmain}` (直接) | `ldr x1, ={kmain}` + `br x1` (间接) | `la t0, {kmain}` + `jalr x0, t0, 0` (间接) |
 | 参数传递 | `rdi` (System V ABI) | `x0` (AAPCS64) | `a0` (RISC-V ABI) |
-| 栈对齐 | 16 字节 | 16 字节 | 16 字节 |
+| 栈对齐 | 16 字节（`and rsp, -16` 单指令） | 16 字节（**4 指令**：SP 不能作 AND 目的，需 X2 中转） | 16 字节（`li t0, -16` + `and sp, sp, t0` 两指令） |
 | 帧指针清零 | `xor rbp, rbp` (FP) | `mov x29, #0` (FP) | `li s0, 0` (s0-fp) |
 | 跳转前屏障 | 无（Intel SDM 隐含） | `isb` | `fence.i` |
 | 恒等映射范围 | 4GB (2MB huge pages) | 4GB (1GB block entries) | 4GB (1GB superpages) |
@@ -295,7 +299,7 @@ pub trait HigherHalf {
 2. LMA 从 `KERN_PHYS_BASE` 开始——boot-shim 按此地址加载段
 3. 导出 `kern_virt_base`、`kern_phys_base`、`kern_size` 符号（用 `PROVIDE`）——**但 boot-shim 实际上不读这些符号**：它从 ELF 的 PT_LOAD 段读取 `paddr`/`vaddr`/`memsz` 来构造 `KernelInfo`。`PROVIDE` 的符号是给 **kernel 自己** 用的（如测试代码用 `extern "C" { static kern_virt_base: u64; }` 直接读链接值），主要是**链接期排错**和**单测断言**。boot-shim 的 ELF 加载路径不依赖 `PROVIDE`。
 
-**x86-64 链接脚本** (`kernel/src/arch/x86_64/link.ld`)：
+**x86-64 链接脚本** (`os/kernel/src/arch/x86_64/link.ld`)：
 
 ```ld
 OUTPUT_ARCH(i386:x86-64)
@@ -359,7 +363,7 @@ SECTIONS
 
 **关键设计**：没有 AT()。boot-shim 的 `load_segments_into_phys_memory()` 按 ELF 的 `p_paddr` 加载段。链接脚本只设置 VMA，LMA 由 boot-shim 在加载时计算。
 
-**aarch64 链接脚本** (`kernel/src/arch/aarch64/link.ld`)：
+**aarch64 链接脚本** (`os/kernel/src/arch/aarch64/link.ld`)：
 
 与 x86-64 基本相同，仅修改：
 
@@ -369,7 +373,7 @@ KERN_VIRT_BASE = 0xFFFF800000000000;
 KERN_PHYS_BASE = 0x40200000;    /* QEMU virt RAM start + 2MB (2MB-aligned for huge pages) */
 ```
 
-**riscv64 链接脚本** (`kernel/src/arch/riscv64/link.ld`)：
+**riscv64 链接脚本** (`os/kernel/src/arch/riscv64/link.ld`)：
 
 ```ld
 OUTPUT_ARCH(riscv)
@@ -565,7 +569,7 @@ os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 
 `HigherHalf` trait 抽象了分页启用后从低地址切换到高地址的跳转。trait 的优势：`arch_boot()` 可以统一调用 `HigherHalf::jump_to_kmain()`，无需关心具体架构的寄存器和指令差异。三个架构通过内联汇编实现切栈+跳转，替代了 C 中由独立汇编 trampoline 完成的职责。
 
-**trait 定义** (`kernel/src/boot/higher_half.rs`)：
+**trait 定义** (`os/kernel/src/boot/higher_half.rs`)：
 
 ```rust
 //! 高半核内核切换抽象。
@@ -574,7 +578,7 @@ os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 //! 本 trait 提供架构相关的机制，切换栈指针并跳转到
 //! 内核的高虚拟地址入口点（kmain）。
 //!
-//! 对应 Minix3 head.S:80-87 (x86) / head.S:41-47 (ARM)。
+//! 对应 Minix3 head.S:78-87 (x86) / head.S:41-47 (ARM)。
 
 use minix_boot::KernelInfo;
 
@@ -610,7 +614,7 @@ pub trait HigherHalf {
 
 三个架构的实现遵循同一模式：内联汇编执行切栈+跳转，通过 `options(noreturn)` 告诉编译器永不返回。下面以 x86-64 为完整示例，aarch64 / riscv64 仅列出与 x86-64 的差异点。
 
-**x86-64 实现** (`kernel/src/arch/x86_64/higher_half.rs`)：
+**x86-64 实现** (`os/kernel/src/arch/x86_64/higher_half.rs`)：
 
 ```rust
 use crate::boot::higher_half::HigherHalf;
@@ -650,16 +654,17 @@ impl HigherHalf for X86_64HigherHalf {
 }
 ```
 
-**aarch64 差异点**（完整实现见 `kernel/src/arch/aarch64/higher_half.rs`）：
+**aarch64 差异点**（完整实现见 `os/kernel/src/arch/aarch64/higher_half.rs`）：
 - 加载符号地址：`ldr x1, ={kmain}`（伪指令，由汇编器放入 literal pool，再通过 `br x1` 间接跳转）。`bl` 的立即数范围不足以覆盖 kmain 符号。
 - 栈对齐需要 4 条指令：`mov x1, #-16` / `mov x2, sp` / `and x2, x2, x1` / `mov sp, x2`（aarch64 禁止 SP 作为 AND 目的寄存器，必须用临时寄存器 x2 中转）。
 - 参数寄存器：`in("x0")`（AAPCS64）。
 
-**riscv64 差异点**（完整实现见 `kernel/src/arch/riscv64/higher_half.rs`）：
+**riscv64 差异点**（完整实现见 `os/kernel/src/arch/riscv64/higher_half.rs`）：
 - 加载符号地址：`la t0, {kmain}`（伪指令，展开为 `auipc + addi`，计算 PC-relative 地址）。
 - 跳转用 `jalr x0, t0, 0`，`rd=x0` 显式丢弃返回地址到 x0（避免 x1/ra 被覆盖，与 x86 的 `push 0` 等效）。
 - 参数寄存器：`in("a0")`（RISC-V ABI）。
 - 帧指针寄存器：s0（不是 x29 / rbp）。
+- **SBI ecall 安全约束**：a0 持有 kinfo 指针（通过 `in("a0")` 约束传入），必须在到达 kmain 前保持不变。asm 块内禁止使用 a0/a7/a6——SBI ecall（通过 a7 选 SBI 扩展号、a0 传参/返参）会 clobber a0，破坏 kinfo。当前 asm 块用 t0 作为加载 kmain 地址的临时寄存器，避免触碰 a0；进入 kmain 后 a0 才被消费。
 
 **三架构差异总结**：
 
@@ -685,7 +690,7 @@ boot-shim 的 `main.rs` 完成以下步骤后，将控制权交给内核：
 3. `ExitBootServices()` — 退出 UEFI/OpenSBI 固件服务
 4. `arch_boot(&kinfo, root_page)` — **进入内核**
 
-**`arch_boot_impl` 的完整实现** (`kernel/src/lib.rs`)：
+**`arch_boot_impl` 的完整实现** (`os/kernel/src/lib.rs`)：
 
 ```rust
 pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
@@ -742,7 +747,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 > **与 C 源码的差异**：C 的 `pg_mapkernel()` 只设 `PRESENT | BIGPAGE | WRITE`，无 GLOBAL 位。Rust 代码中 `PageFlags::kernel_read_write()` 含 GLOBAL，boot 阶段无实际作用（无进程切换，CR3 不变）。GLOBAL 位的真正价值在 VM 的 Direct Map 中——每次进程切换重写 CR3 时避免内核映射 TLB miss。
 
-**`arch_boot()` 的实际代码** (`kernel/src/lib.rs:71-104`)：
+**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:71-105`，三架构版本 + mock 测试入口)：
 
 ```rust
 // x86-64
@@ -788,14 +793,14 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 
 通过关联类型 `type Paging; type HigherHalf;` 在 `ArchBoot`（或独立的 `ArchBootFlow`）trait 下编译期选择。但当前 4 份 `#[cfg]` 重复反映 trait 设计不完整，与 `CurrentArchBoot`、`CurrentArchInit` 类型别名的成熟模式不一致。
 
-> **TODO（review `os/arch/src/arch/arch_boot.rs` `ArchBoot` trait 时一并处理）**：把 `Paging` + `HigherHalf` 接入 trait 体系（参考 [01-boot-shim-bootstrap.md §4.4 BootShim trait](01-boot-shim-bootstrap.md#44-引导协议抽象--bootshim-trait) 的关联类型模式），消除 4 份 `#[cfg]` 重复。当前 §4.6 代码块故意保留 4 份展示，反映真实工程现状；trait 重构后将本节改写为单份 `arch_boot` 实现。
+> **当前状态与演进方向**：`ArchBoot` trait（`os/arch/src/arch/arch_boot.rs:60`）目前仅覆盖 timer handler 注册，未包含 `Paging` 与 `HigherHalf` 关联类型。后续重构可参考 [01-boot-shim-bootstrap.md §4.4 BootShim trait](01-boot-shim-bootstrap.md#44-引导协议抽象--bootshim-trait) 的关联类型模式，将 `Paging` + `HigherHalf` 接入 trait 体系，消除 4 份 `#[cfg]` 重复。当前 §4.4 代码块保留 4 份展示，反映真实工程现状；trait 重构后将本节改写为单份 `arch_boot` 实现。
 
 > **三架构 `arch_boot()` 差异**：aarch64/riscv64 版本的 `arch_boot()` 与 x86-64 几乎完全相同，**唯一差异是 Paging 类型别名**：
 > - x86-64: `minix_arch::x86_64::paging::X86_64Paging` (PML4, 4 级)
 > - aarch64: `minix_arch::arm64::paging::AArch64Paging` (TTBR1, 4 级 L0→L3)
 > - riscv64: `minix_arch::riscv64::paging::Riscv64Paging` (Sv39, 3 级)
 >
-> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [kernel/src/lib.rs:50-87](https://example.com)。
+> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:71-105](os/kernel/src/lib.rs)。
 
 **为什么必须 `jump_to_kmain` 而不是直接 `kmain(info)`？**
 
@@ -872,9 +877,11 @@ boot-shim (UEFI/OpenSBI，低地址执行)
 
 ## 5. 测试要点
 
-### 5.1 QEMU 集成测试（三架构 15/15 通过）
+### 5.1 QEMU 集成测试：test-higher-half（三架构 3/3 通过）
 
 高半核切换是整个启动链中最脆弱的环节——栈指针、PC、帧指针任何一个错误都会导致 CPU 立即异常。QEMU 集成测试通过在真实硬件模型上运行测试内核，验证每一步的正确性。
+
+> **测试归属**：`hello-boot` / `test-memmap` / `test-paging-enable` / `test-kernel-map` 四类测试属于 boot-shim 后端验证，详见 [01-boot-shim-bootstrap.md §5.2](01-boot-shim-bootstrap.md#52-集成测试qemu-tests)。本节仅覆盖 02 专属的 `test-higher-half` 测试。合计三架构 15/15 通过（01 的 12/12 + 02 的 3/3）。
 
 **test-higher-half 测试内核**验证高半核切换后的寄存器状态：
 
@@ -892,10 +899,6 @@ arch_boot_impl → HigherHalf::jump_to_kmain → kmain (naked) → kmain_verify
 
 | 测试 | x86_64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| hello-boot | PASS | PASS | PASS |
-| test-memmap | PASS | PASS | PASS |
-| test-paging-enable | PASS | PASS | PASS |
-| test-kernel-map | PASS | PASS | PASS |
 | test-higher-half | PASS | PASS | PASS |
 
 > **riscv64 test-higher-half 说明**：riscv64 的 test-higher-half 使用 `kern_virt_base = 0xFFFF_FFC0_0000_0000`（Sv39 canonical high, VPN[2]=256），与 x86_64/aarch64 一样验证 SP 在高地址。PC 仍在低地址（QEMU `-kernel` 加载到 0x8020_0000，identity mapping 保持可访问），这与 x86_64/aarch64 的测试行为一致——三架构的 test-higher-half 都只验证 SP 和 FP，不验证 PC 跳转到高地址。真正的 PC 高地址跳转需要 boot-shim 加载 ELF 到高 VMA 后才能验证。
@@ -938,7 +941,7 @@ gdb kernel.elf
 (gdb) print $pc     # 应显示 0xFFFF_FFC0_xxx_xxx
 ```
 
-### 5.3 单元测试（`cargo test`，约 110+ 个通过）
+### 5.3 单元测试（`cargo test -p minix-kernel --lib`，464 个通过）
 
 | 测试 | 验证内容 |
 |------|---------|
@@ -949,6 +952,14 @@ gdb kernel.elf
 | `test_kernel_info_riscv64_identity` | riscv64 kern_virt_base == kern_phys_base（Sv39 identity mapping） |
 | `test_arch_boot_impl_aarch64_params` | arch_boot_impl 使用 aarch64 KernelInfo 参数正常完成 |
 | `test_arch_boot_impl_riscv64_params` | arch_boot_impl 使用 riscv64 KernelInfo 参数正常完成 |
+| `test_boot_flow_identity_and_kernel_map` | boot 流程同时建立 identity mapping + kernel high mapping |
+| `test_boot_empty_memmap` | 空 memmap 时 boot 流程的边界行为 |
+| `test_linker_script_x86_64_constraints` | x86_64 link.ld 满足 arch_boot_impl 约束（VMA/LMA/对齐） |
+| `test_linker_script_aarch64_constraints` | aarch64 link.ld 满足 arch_boot_impl 约束 |
+| `test_linker_script_riscv64_constraints` | riscv64 link.ld 满足 arch_boot_impl 约束（Sv39 canonical high） |
+| `test_arch_boot_rejects_misaligned_phys` | arch_boot 拒绝非页对齐的 kern_phys_base |
+| `test_arch_boot_rejects_zero_kern_size` | arch_boot 拒绝 kern_size = 0 |
+| `test_arch_boot_rejects_misaligned_stack_top` | arch_boot 拒绝非 16 字节对齐的 kern_stack_top |
 
 **架构特定 PTE 转换测试**：
 
@@ -983,7 +994,7 @@ gdb kernel.elf
 | 状态 | 值 |
 |------|-----|
 | RIP/PC | 内核高地址（`kmain` 入口） |
-| RSP/SP | 内核启动栈（`k_boot_stktop`） |
+| RSP/SP | 内核启动栈顶（Rust: `info.kern_stack_top`；Minix3 C 对应 `k_boot_stktop` 链接符号） |
 | 分页 | 已启用，恒等映射 + 高地址映射并存 |
 | 保护结构 | **未初始化** — 使用 GRUB/UEFI 留下的描述符表 |
 | 中断 | **未初始化** — 任何异常都会 triple fault |
@@ -1251,16 +1262,16 @@ map_huge: vaddr=0xffffffc000000000 paddr=0x80000000 size=0x200000 i2=0x100 e2=0x
 
 | 文件 | 修改内容 |
 |------|---------|
-| `kernel/src/arch/riscv64/link.ld` | `KERN_VIRT_BASE` 从 `0xFFFFFC0000000000` 改为 `0xFFFFFFC000000000` |
-| `kernel/src/lib.rs` | Step 2 添加 `if kern_virt != kern_phys` 守卫；提取 `boot_validate_and_prepare` 消除重复逻辑；移除 riscv64 临时调试输出 |
+| `os/kernel/src/arch/riscv64/link.ld` | `KERN_VIRT_BASE` 从 `0xFFFFFC0000000000` 改为 `0xFFFFFFC000000000` |
+| `os/kernel/src/lib.rs` | Step 2 添加 `if kern_virt != kern_phys` 守卫；提取 `boot_validate_and_prepare` 消除重复逻辑；移除 riscv64 临时调试输出 |
 | `arch/src/riscv64/paging.rs` | PTE 位常量改为 `Sv39PteFlags` bitflags；`map_huge` 增加 leaf 条目检测（`pte_is_leaf`）；`flags_to_pte` 添加 R=1 约束注释 |
 | `arch/src/x86_64/paging.rs` | PTE 位常量改为 `X64PteFlags` bitflags；`map_huge` 增加 1GB leaf 检测 |
 | `arch/src/arm64/paging.rs` | PTE 位常量改为 `Arm64PteFlags` bitflags；`map_huge` 增加 1GB block 检测 |
-| `kernel/src/boot_alloc.rs` | `static mut` → `AtomicU64`（避免 Rust 2024 UB） |
+| `os/kernel/src/boot_alloc.rs` | `static mut` → `AtomicU64`（避免 Rust 2024 UB） |
 | `arch/src/pt_alloc.rs` | `static mut` → `UnsafeCell` + `AtomicBool`（避免 Rust 2024 UB） |
 | `libs/minix-types/src/kernel_info.rs` | `kern_size: usize` → `kern_size: u64`（避免 32 位截断） |
 | `test-higher-half-riscv64/src/main.rs` | `kern_virt_base` 修正为 `0xFFFF_FFC0_0000_0000` |
-| `kernel/src/lib.rs` (单元测试) | `test_linker_script_riscv64_constraints` 地址修正 |
+| `os/kernel/src/lib.rs` (单元测试) | `test_linker_script_riscv64_constraints` 地址修正 |
 
 ### A.6 参见
 

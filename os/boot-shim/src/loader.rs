@@ -409,6 +409,85 @@ mod tests {
     }
 
     #[test]
+    fn test_bss_region_is_zeroed_after_load() {
+        // Construct an ELF whose first PT_LOAD has filesz < memsz.
+        // The bytes in [filesz, memsz) must be zero-filled by the loader
+        // even though no source bytes exist there (BSS contract).
+        let buf_base: u64 = 0x4000;
+        let filesz: u64 = 0x80;
+        let bss_extra: u64 = 0x180;
+        let memsz: u64 = filesz + bss_extra;
+
+        // Craft a minimal ELF with one PT_LOAD at paddr=buf_base.
+        let mut elf = vec![0u8; 0x1000];
+        elf[0] = 0x7f; elf[1] = b'E'; elf[2] = b'L'; elf[3] = b'F';
+        elf[4] = ELFCLASS64;
+        elf[5] = ELFDATA2LSB;
+        elf[6] = 1;
+        // [16..18] e_type = ET_EXEC
+        elf[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        // [18..20] e_machine = EM_X86_64 (62)
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes());
+        // [24..32] e_entry (unused, but spec-compliant)
+        elf[24..32].copy_from_slice(&0u64.to_le_bytes());
+        // [32..40] e_phoff = 64
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        // [54..56] e_phentsize = 56
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        // [56..58] e_phnum = 1
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+        // ELF header is 64 bytes, phdr table starts at offset 64.
+        // We place file bytes right after the phdr (offset 0x80) so
+        // that the file's segment bytes don't collide with the header.
+        let ph_off = 64;
+        let file_bytes_off: u64 = 0x80;
+        // p_type at ph_off+0
+        elf[ph_off..ph_off + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        // p_flags at ph_off+4: PF_R | PF_X = 5
+        elf[ph_off + 4..ph_off + 8].copy_from_slice(&5u32.to_le_bytes());
+        // p_offset at ph_off+8: file offset of file bytes
+        elf[ph_off + 8..ph_off + 16].copy_from_slice(&file_bytes_off.to_le_bytes());
+        // p_vaddr at ph_off+16: kernel sees high address
+        elf[ph_off + 16..ph_off + 24].copy_from_slice(&buf_base.to_le_bytes());
+        // p_paddr at ph_off+24: physical load address (matches buffer base)
+        elf[ph_off + 24..ph_off + 32].copy_from_slice(&buf_base.to_le_bytes());
+        // p_filesz at ph_off+32
+        elf[ph_off + 32..ph_off + 40].copy_from_slice(&filesz.to_le_bytes());
+        // p_memsz at ph_off+40: bigger than filesz by bss_extra
+        elf[ph_off + 40..ph_off + 48].copy_from_slice(&memsz.to_le_bytes());
+        // p_align at ph_off+48
+        elf[ph_off + 48..ph_off + 56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        // Pre-fill file bytes with 0xAB so we can prove the loader
+        // propagates them into [0, filesz) of the buffer unchanged.
+        for i in 0..filesz as usize {
+            elf[file_bytes_off as usize + i] = 0xAB;
+        }
+
+        // Buffer: target physical memory. Pre-fill with 0xCC so we can
+        // detect whether the loader's BSS clear reaches every byte in
+        // [filesz, memsz). Also keep one byte past memsz as a sentinel
+        // to verify the loader does NOT touch bytes beyond the segment.
+        let mut buf = vec![0xCCu8; memsz as usize + 1];
+
+        // Run the safe loader against the buffer; it must clear [filesz, memsz).
+        let count = load_segments_into_buffer(&elf, &mut buf, buf_base);
+        assert_eq!(count, 1, "exactly one PT_LOAD should be loaded");
+
+        // (a) filesz region preserved: file bytes copied as-is.
+        for i in 0..filesz as usize {
+            assert_eq!(buf[i], 0xAB, "file bytes must be preserved at offset {i}");
+        }
+        // (b) BSS region is all zero — this is the contract fix #3 asserts.
+        for i in filesz as usize..memsz as usize {
+            assert_eq!(buf[i], 0x00, "BSS byte at offset {i} must be zero, was {}", buf[i]);
+        }
+        // (c) bytes past memsz are untouched.
+        assert_eq!(buf[memsz as usize], 0xCC, "buf tail must be untouched");
+    }
+
+    #[test]
     fn test_load_boot_modules_with_loader_skips_missing() {
         // Bump allocator backed by a Vec so we don't write to real phys memory.
         // We allocate large enough that addresses are non-overlapping but

@@ -92,6 +92,29 @@ va = pa + BASE
 
 为什么需要两个窗口？x86-64 的 U/S 位不能同时 0 和 1。如果只有一个 direct map，要么 VM 用户态访问不了（U/S=0），要么内核安全降级（U/S=1）。两个窗口是硬件特权级的必然要求，不是冗余。
 
+#### 1.3.1 双视图的硬件根源（ISA U/S 位语义）
+
+> **新增**（2026-07-16，TODO-07-6）：把"为什么必须两个视图"独立成子节，便于读者抓住 ISA 必然性。
+
+x86-64 的页表项（PTE）有一个二元 U/S 位（User/Supervisor bit），定义如下：
+- **U/S=1**：PTE 被 ring 3（用户态）访问时，TLB/MMU 允许
+- **U/S=0**：PTE 仅被 ring 0（内核态）访问时，TLB/MMU 允许；用户态访问触发 #PF（page fault）
+
+**问题**：同一物理地址需要同时被 VM 用户态访问（VM 业务逻辑要读写自己的页表）和内核态访问（kernel 的 IPC 拷贝、vm_memset 等）。一个 PTE 只能设一个 U/S 位——若全部设 1，内核能访问但失去特权隔离（VM 用户态可读写内核 PTE）；若全部设 0，VM 用户态无法访问自己的页表（VM 业务依赖用户态 VA）。
+
+**解法**：同一物理内存**建立两个 PTE**，分别在两个虚拟地址区间：
+- **VM direct map**（U/S=1）：VM 进程页表里加一段 [VM_DIRECT_MAP_BASE, VM_DIRECT_MAP_BASE + physmem_size) 的 PTE 数组，U/S=1 让 VM 用户态访问
+- **Kernel direct map**（U/S=0, G=1）：所有进程页表里加一段 [KERNEL_DIRECT_MAP_BASE, + physmem_size) 的 PTE 数组，U/S=0 隔离用户态，G=1 让 CR3 切换不刷 TLB
+
+**架构差异**：
+- **x86-64**：U/S 是 PTE 第 2 位，由 CPU 在 TLB lookup 时强制检查；同物理页的两个 PTE 共享同一个内存页
+- **aarch64**：等价于 PTE 的 AP[2:1] 位（Access Permissions）；UXN/PXN 控制执行权限
+- **riscv64**：等价于 PTE 的 X/W/R 位与 SUM 位（S-mode 能访问 U-mode 内存的开关）
+
+三个 ISA 机制名不同，但**问题域相同**——必须有两个视图。直接 map 的 BASE 值三架构不同（见 §4.1），但双视图的**必然性是 ISA 规范**，不是 minix-rs 的设计选择。
+
+> **灵魂本质**：双视图 = ISA 强制（U/S 不能同时 0 和 1）+ 性能优化（G=1 跨 CR3 切换 TLB 不刷新）。
+
 > **灵魂本质**：direct_map = 给所有物理内存一个永久的虚拟地址，临时窗口的"借/还"整个消失。
 
 Minix3 全线没有 direct map（`pmap.h` 的 `PMAP_DIRECT_MAP` 宏受 `#ifdef __HAVE_DIRECT_MAP` 保护且从未定义，见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6）。direct_map 是 minix-rs 全新引入的架构演进。
@@ -113,6 +136,13 @@ direct_map 下这两行的语义变化：
 > **灵魂本质**：阶段 D 从"分配临时窗口"降级为"确认永久窗口已开"。
 
 注意：Kernel direct map 不在阶段 D 范围——它由 VM 启动后通过 `map_kernel` 建立（见 §3.4）。阶段 D 确认的是 VM direct map 就绪。
+
+> **实现状态**（2026-07-16，TODO-07-1N）：当前 `os/kernel/src/lib.rs:905-972` 的 `init_post_and_memory` 函数**仍翻译 C 旧逻辑**——
+> - 行 933 调用 `CurrentPostInitArch::set_ptproc`（应废弃）
+> - 行 960 调用 `CurrentMemoryInitArch::allocate_free_pdes`（应废弃）
+> - 行 970 写入 `FREE_PDE_SLOTS` 全局可变状态（应废弃）
+>
+> 这与本节"阶段 D 简化为确认就绪"的设计承诺直接矛盾。**修复方向**：将 lib.rs:905-972 重构为"VM direct map base != 0 + vm_proc.page_table_root.is_valid()"两条断言，删除 set_ptproc/allocate_free_pdes/FREE_PDE_SLOTS 三处调用。DirectMapArch（vm.rs:21）已接入，但 `init_post_and_memory` 自身需要清理。此修复是 **Action Item #1**（非本 session 范围，留作代码任务）。
 
 ### 1.5 本章小结
 
@@ -280,7 +310,26 @@ struct { int call; char *name; } ipc_call_names[] = {
 
 **假设性推理**：如果只有一个 direct map，要么 VM 访问不了（U/S=0，用户态访问触发 fault），要么内核安全降级（U/S=1，用户态能访问内核内存）。硬件特权级要求两个窗口——这不是设计冗余，是 ISA 规范的必然。
 
-**关键不变量**：Kernel direct map 建立后只读不变。G=1（Global 位）保证 CR3 切换时不刷新这些 TLB 条目（`pg_utils.c:243` 的 `vm_enable_paging` 启用 PGE 后生效），跨进程访问内核内存时 TLB 命中。
+**关键不变量**：Kernel direct map 建立后只读不变。
+
+**G=1（Global 位）的 TLB 行为细节**（TODO-07-5，2026-07-16 补充）：
+
+PTE 的 Global 位（bit 8）告诉 CPU："这条 PTE 的翻译对所有进程地址空间有效，CR3 切换时不要 invalidate 对应的 TLB 条目"。这有 3 个前提：
+
+1. **CR4.PGE 位必须启用**：x86-64 通过 CR4 第 7 位（PGE, Page Global Enable）开启 Global 位语义。Minix3 在 `pg_utils.c:243` 的 `vm_enable_paging()` 中设置 CR4.PGE；Rust 在 `ProtectionArch::init` 的尾段设置（架构层 `os/arch/src/x86_64/protection.rs`）。未启用 PGE 时设 G=1 = **未定义行为**（CPU 忽略 G 位但保留为未来兼容性）
+2. **PTE 必须有 G=1 + 有效 P（Present）位**：纯 G=1 但 P=0 的 PTE 仍会被 invalidate（无效条目不缓存）
+3. **TLB shootdown 影响**：即使 G=1，CPU 显式 `invlpg`（x86-64）/ `tlbi`（aarch64/riscv64）单条 invalidate 仍生效；G=1 只豁免**全局 CR3 切换**的 flush
+
+**三架构等价语义**：
+| 架构 | G 位等价 | 全局 TLB 不刷开关 | 单条 invalidate |
+|------|---------|------------------|-----------------|
+| x86-64 | PTE bit 8 | CR4.PGE | `invlpg va` |
+| aarch64 | (无显式 G 位；MAIR 索引 + contiguous 提示) | TCR.EPD0/1（禁用整个 TTBR0/1 walk cache）| `tlbi vaae1is` |
+| riscv64 | PTE bit 5 (G) | `sfence.vma` 配对 `sum` 位 | `hfence.vma va` / `sfence.vma va` |
+
+aarch64 没有真正的 G 位，但通过 `TCR.EPD0=1`（disable TTBR0 walks）+ 在 TTBR1 放 Kernel direct map 实现等价效果；CPU 实现上仍 cache 全局翻译条目。
+
+**为什么 G=1 对 direct_map 至关重要**：每次进程切换 `mov CR3, new_pdir`（x86-64）会 flush 整个非全局 TLB；若 Kernel direct map 的 PTE 没有 G=1，进程切换后内核第一次访问任何内核 VA 都触发 page walk → 2-3 级表查找 → 数十个 CPU 周期开销；G=1 让 Kernel direct map 的 TLB 条目**永远命中**，跨进程访问内核内存零开销。这是 Linux/BSD/Windows 通用做法，minix-rs 沿用。
 
 ### 3.3 对接 DirectMapArch trait（不自造 PostInitArch/MemoryInitArch）
 
@@ -334,8 +383,8 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 | freepdes[] 数组 | `memory.c:32` | 全局可变状态 + 临时窗口全部问题 | direct map 永久映射 |
 | memory_init() | `memory.c:707` | 运行时分配槽位的逻辑冗余 | 无需分配 |
 | PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 对接 DirectMapArch |
-| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch |
-| FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无 |
+| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch（**触发条件**：TODO-07-1 修复 lib.rs:905-972 之后自然废弃，详见 §1.4 实现状态块）|
+| FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无（同上触发条件）|
 | VmPageTableInfo | `pg_info` 输出 | 记录 bootstrap 页表地址，direct map 不依赖 | kernel 用 `kernel_phys_to_virt` 直接访问 |
 | FREE_PDE_SLOTS static | `freepdes[]` | 全局可变状态 | 无 |
 | FREE_UPPER_IDX static | `kinfo.freepde_start` | 全局原子，临时窗口索引 | 无 |
@@ -473,6 +522,25 @@ fn init_post_and_memory(vm_proc: &Proc) {
 - **测试**：1GB huge page 不支持时回退 2MB
 
 direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §5），kernel 侧仅测对接。
+
+### 5.4 syscall_copy stub 与 07 文档的边界（TODO-07-2 范围澄清）
+
+07 文档承诺的"direct_map 替代临时窗口"是**设计层面的承诺**——direct_map 在概念上取代了 freepdes/ptproc 机制。但**使用 direct_map 的具体代码路径**（syscall_copy.rs 的 `cross_space_copy`/`virtual_copy_vmcheck` 等）由后续文档（[18-syscall-copy.md](18-syscall-copy.md)）负责实现。
+
+**当前状态**（2026-07-16，TODO-07-2 验证）：
+- `os/kernel/src/syscall_copy.rs` 有 6 处 stub（不是 kimi 报告的 5 处，行号也全部错误）：
+  | # | 函数 | 末行 `KcallResult::Ok(OK)` | 阻塞原因 |
+  |---|------|---------------------------|---------|
+  | 1 | `safecopy_common_impl` | 行 584 | Direct Map PTE walk blocker |
+  | 2 | `dispatch_vsafecopy` | 行 664 | Direct Map PTE walk blocker |
+  | 3 | `dispatch_umap_remote_impl` | 行 829 | Direct Map PTE walk blocker |
+  | 4 | `dispatch_vumap` | 行 935 | Direct Map PTE walk blocker |
+  | 5 | `dispatch_memset` | 行 1012 | Direct Map PTE walk blocker |
+  | 6 | `dispatch_safememset` | 行 1099 | Direct Map PTE walk blocker |
+- 这些 stub **不是** 07 文档的实施缺口——07 只承诺 direct_map 抽象，stub 实现见 18 文档。
+- 07 文档读者应知道：direct_map 抽象已就绪（vm.rs:243/295 已在 cross_space_copy/memset 中调用 `DirectMapArch::kernel_phys_to_virt`），但 syscall_copy 的 stub 路径仍待 18 文档补充。
+
+**回归报告修正**：kimi/seed 报告的 5 处（行 252/374/397/416/439）**全部错误**——这些行指向已实现的 `virtual_copy_vmcheck`。07 文档不引用 syscall_copy.rs 的具体行号，避免行号漂移传播（模式 66 RCPD）。
 
 ---
 

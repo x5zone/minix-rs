@@ -3,15 +3,18 @@
 //! Manages registration, removal, and dispatch of IRQ handlers.
 //! Uses a fixed-size hook pool and per-vector chain heads.
 //!
-//! # Design decisions (see 05-exception-interrupt.md §3.4, §3.10)
+//! # Design decisions (see 14-exception-interrupt.md §3.6, §3.7)
 //!
-//! - **Not a trait** (§3.4): Logic is identical across all architectures.
+//! - **Not a trait** (§3.7): Logic is identical across all architectures.
 //!   The only architecture dependency (mask/unmask/eoi) is injected via
 //!   `IC: InterruptController`.
-//! - **Index-based linked list** (§3.4): Replaces C's pointer-based list
+//! - **Index-based linked list** (§3.6): Replaces C's pointer-based list
 //!   with `Option<usize>` indices into a fixed-size pool.
-//! - **IrqAction enum** (§3.4): Replaces C's int return convention.
-//! - **Single-threaded** (§3.10): No synchronization needed under BKL.
+//! - **IrqAction enum** (§3.6): Replaces C's int return convention.
+//! - **Single-threaded** (§3.1): No synchronization needed under BKL.
+//!
+//! Exception dispatch lives in `arch::ExceptionDispatcher`, not here —
+//! see `os/arch/src/arch/exception_dispatcher.rs`.
 //!
 //! # Location rationale
 //!
@@ -31,10 +34,195 @@ use minix_types::Endpoint;
 /// C: irq_actids[NR_IRQ_VECTORS] — glo.h:49
 type IrqIdBitmap = u32;
 
+/// Trait for delivering hardware interrupt notifications to user-space processes.
+///
+/// Implemented by `KernelNotifier` (production) and `MockNotifier` (tests).
+/// The IRQ dispatch path injects an `&mut dyn IrqNotify` into each handler's
+/// [`IrqHookContext`]; `generic_notify_handler` calls `notify_hardware` to
+/// reproduce the C side-effect `mini_notify(proc_addr(HARDWARE), hook->proc_nr_e)`
+/// (do_irqctl.c:170).
+///
+/// # Design rationale (D9 / 14-exception-interrupt.md §4.4)
+///
+/// The handler signature carries the notifier as a trait object rather than
+/// reaching into global state directly. This keeps handlers testable (the
+/// trait is mockable) and avoids `unsafe` proliferation — the `unsafe` access
+/// to global `PROC_TABLE` / `PRIV_TABLE` lives in the single `KernelNotifier`
+/// impl, not scattered across handlers.
+pub trait IrqNotify {
+    /// Record the pending interrupt bit and deliver a HARDWARE notification.
+    ///
+    /// C: `priv(rp)->s_int_pending |= (1 << hook->notify_id);`
+    ///    `mini_notify(proc_addr(HARDWARE), hook->proc_nr_e);` — do_irqctl.c:167-170.
+    fn notify_hardware(&mut self, dst: Endpoint, notify_id: IrqNotifyId);
+}
+
+/// Context passed to IRQ handlers.
+///
+/// Replaces C's `irq_hook_t *hook` parameter to `generic_handler`. Carries
+/// all slot information needed by the handler, plus a `&mut dyn IrqNotify`
+/// for delivering notifications to user space.
+///
+/// # Lifetime
+///
+/// `'a` is tied to the borrow of the `dyn IrqNotify` passed into [`dispatch`].
+/// The handler receives `&mut IrqHookContext<'a>` and may reborrow the
+/// notifier for the duration of the call.
+pub struct IrqHookContext<'a> {
+    /// The IRQ vector being dispatched. C: `hook->irq`.
+    pub irq: IrqVector,
+    /// The hook's ID within this IRQ vector. C: `hook->id`.
+    pub id: IrqId,
+    /// The owning process's endpoint (for notification). C: `hook->proc_nr_e`.
+    pub proc_endpoint: Endpoint,
+    /// The notification ID (bit position in `s_int_pending`). C: `hook->notify_id`.
+    pub notify_id: IrqNotifyId,
+    /// The hook's policy flags (REENABLE, etc.). C: `hook->policy`.
+    pub policy: IrqPolicy,
+    /// Notifier for delivering hardware notifications to user space.
+    /// C: implicit — C's `generic_handler` calls the global `mini_notify` directly.
+    pub notifier: &'a mut dyn IrqNotify,
+}
+
+/// IRQ handler function pointer type.
+///
+/// Receives an [`IrqHookContext`] containing slot information and a notifier.
+/// Returns [`IrqAction::Completed`] if the IRQ is fully handled (the dispatch
+/// loop will clear the hook's active bit), or [`IrqAction::NotCompleted`] if
+/// the handler needs to defer completion (the active bit stays set and the
+/// IRQ remains masked until `enable_irq` is called).
+///
+/// C: `int (*handler)(irq_hook_t *)` — glo.h:46.
+pub type IrqHandler = for<'a> fn(ctx: &'a mut IrqHookContext<'a>) -> IrqAction;
+
+/// Production [`IrqNotify`] implementation that delivers hardware interrupt
+/// notifications to user-space processes via the global IPC engine.
+///
+/// Used by `IrqManager::dispatch` when called from the trap entry path.
+/// Tests use `MockNotifier` instead (see `tests` module).
+///
+/// # Safety contract
+///
+/// All methods access global `PROC_TABLE` / `PRIV_TABLE` via `unsafe`.
+/// Callers must hold the BKL — the trap entry path acquires BKL before
+/// dispatching IRQs.
+///
+/// # C alignment
+///
+/// C: `generic_handler` — do_irqctl.c:167-170:
+/// ```c
+/// priv(proc_addr(proc_nr))->s_int_pending |= (1 << hook->notify_id);
+/// mini_notify(proc_addr(HARDWARE), hook->proc_nr_e);
+/// ```
+/// Rust splits this into two steps (set bit + deliver notification) inside
+/// a single `notify_hardware` call, preserving the C ordering.
+pub struct KernelNotifier;
+
+impl IrqNotify for KernelNotifier {
+    fn notify_hardware(&mut self, dst: Endpoint, notify_id: IrqNotifyId) {
+        // C: do_irqctl.c:154 — `get_randomness(&krandom, hook->irq)`
+        // Randomness gathering deferred to a future krandom subsystem
+        // (see 14-exception-interrupt.md §4.7 known gap).
+
+        // C: do_irqctl.c:160-161 — `if(!isokendpt(hook->proc_nr_e, &proc_nr))
+        //                              panic("invalid interrupt handler: %d", hook->proc_nr_e)`
+        //
+        // C invariant (do_irqctl.c:156-159): "processes that die automatically
+        // get their interrupt hooks unhooked." If the endpoint doesn't resolve
+        // to a live process (or the process lacks a priv entry), a hook was
+        // not cleaned up — this is a kernel bug. We panic with the same
+        // diagnostic as C so the bug surfaces immediately rather than silently
+        // dropping the notification (which would cause the hook to fire
+        // repeatedly with no effect, making debugging very hard).
+        //
+        // SAFETY: `IrqManager::dispatch` is invoked from the trap entry
+        // path, which holds the BKL. Both `proc_table()` and `priv_table()`
+        // return `&'static mut` to global BSS — we borrow each once, and
+        // the borrows do not overlap (sequential reads/writes).
+        unsafe {
+            let proc_table = crate::proc_table();
+            let priv_table = crate::priv_table();
+
+            let proc = proc_table
+                .iter()
+                .find(|p| p.p_endpoint == dst)
+                .unwrap_or_else(|| {
+                    panic!("invalid interrupt handler: endpoint={:?}", dst)
+                });
+
+            let priv_id = proc.priv_id.unwrap_or_else(|| {
+                panic!(
+                    "invalid interrupt handler: no priv_id for endpoint={:?}",
+                    dst
+                )
+            });
+
+            let priv_ = priv_table.get_mut(priv_id).unwrap_or_else(|| {
+                panic!(
+                    "invalid interrupt handler: no priv entry for endpoint={:?} priv_id={:?}",
+                    dst, priv_id
+                )
+            });
+
+            // C: do_irqctl.c:167 — `priv(proc_addr(proc_nr))->s_int_pending
+            //                        |= (1 << hook->notify_id)`
+            priv_.signals.s_int_pending |= 1u32 << notify_id.get();
+        }
+
+        // C: do_irqctl.c:170 — `mini_notify(proc_addr(HARDWARE), hook->proc_nr_e)`
+        //
+        // Deliver the notification. `HARDWARE = KERNEL = -1` (proc.rs:80).
+        // C's `mini_notify` returns `void` (not a status code); `generic_handler`
+        // does not check any return value because there is none to check.
+        // The notification is best-effort: if the destination is not currently
+        // RECEIVE-ing, the `s_int_pending` bit set above will be delivered on
+        // its next RECEIVE. We ignore the Rust `IpcOutcome` to match C's
+        // void-return semantics.
+        let _ = crate::ipc::kernel_mini_notify(crate::proc::proc_nr::KERNEL, dst);
+    }
+}
+
+/// Dispatch a hardware interrupt via the global `IRQ_MANAGER`.
+///
+/// This is the Rust entry point called by the architecture-specific trap
+/// entry path when the CPU receives a hardware interrupt (as opposed to an
+/// exception or syscall). The trap entry assembly is responsible for:
+///
+/// 1. Saving registers (frame construction)
+/// 2. Acquiring the BKL (Big Kernel Lock)
+/// 3. Extracting the IRQ vector from the trap frame
+/// 4. Calling this function
+/// 5. Releasing the BKL
+/// 6. Restoring registers
+///
+/// C: `hwint_master` / `hwint_slave` (assembly) → `irq_handle(irq)` —
+/// interrupt.c:116-140.
+///
+/// # Safety
+///
+/// Caller must hold the BKL. The trap entry path acquires BKL before
+/// calling this function; the syscall path holds BKL throughout.
+///
+/// # Errors
+///
+/// - `IrqError::Spurious(irq)` — no handler registered for this IRQ.
+///   The caller should log this (for diagnostics) but not panic —
+///   spurious IRQs can occur during normal operation (e.g., race
+///   between mask and EOI).
+/// - `IrqError::InvalidIrq` — IRQ vector out of range. Indicates a
+///   trap-entry bug (extracted an invalid vector from the frame).
+///   The caller should panic.
+pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
+    let mut notifier = KernelNotifier;
+    // SAFETY: Caller (trap entry path) holds the BKL.
+    let mgr = unsafe { crate::irq_manager() };
+    mgr.dispatch(irq, &mut notifier)
+}
+
 /// An IRQ hook slot in the global hook pool.
 struct IrqHookSlot {
     next: Option<usize>,
-    handler: fn(IrqVector, IrqId) -> IrqAction,
+    handler: IrqHandler,
     irq: IrqVector,
     id: IrqId,
     proc_endpoint: Endpoint,
@@ -95,7 +283,32 @@ impl<IC: InterruptController> IrqManager<IC> {
     pub fn register_hook(
         &mut self,
         irq: IrqVector,
-        handler: fn(IrqVector, IrqId) -> IrqAction,
+        handler: IrqHandler,
+        proc_endpoint: Endpoint,
+        notify_id: IrqNotifyId,
+        policy: IrqPolicy,
+    ) -> Result<IrqId, IrqError> {
+        let slot_idx = self.find_free_slot().ok_or(IrqError::NoFreeSlots)?;
+        self.register_hook_at_slot(slot_idx, irq, handler, proc_endpoint, notify_id, policy)
+    }
+
+    /// Register an IRQ handler at a specific slot.
+    ///
+    /// Core installation logic shared by [`register_hook`] (which auto-finds
+    /// a free slot) and [`irqctl_set_policy`] (which finds the slot first,
+    /// mirroring C's `do_irqctl.c:91-119` pattern: find slot → set fields →
+    /// `put_irq_handler(hook_ptr, ...)` → return `hook_ptr - hook_tab + 1`).
+    ///
+    /// The slot must be empty. Allocates the lowest unused bit ID for the
+    /// new hook, appends it to the chain for the given IRQ, and unmasks
+    /// the IRQ if this is the first handler.
+    ///
+    /// C: `put_irq_handler(hook_ptr, ...)` — interrupt.c:29-73.
+    fn register_hook_at_slot(
+        &mut self,
+        slot_idx: usize,
+        irq: IrqVector,
+        handler: IrqHandler,
         proc_endpoint: Endpoint,
         notify_id: IrqNotifyId,
         policy: IrqPolicy,
@@ -105,12 +318,20 @@ impl<IC: InterruptController> IrqManager<IC> {
             panic!("invalid IRQ vector: {}", irq.get());
         }
 
+        // The slot must be free. This catches double-installation bugs
+        // and ensures `irqctl_set_policy`'s slot_idx is the actual
+        // installation site.
+        if self.hooks[slot_idx].is_some() {
+            return Err(IrqError::NoFreeSlots);
+        }
+
+        // Allocate the lowest unused bit ID for this IRQ chain.
         let mut bitmap: IrqIdBitmap = 0;
-        let mut slot_idx = self.handlers[irq_idx];
-        while let Some(idx) = slot_idx {
+        let mut cur = self.handlers[irq_idx];
+        while let Some(idx) = cur {
             let slot = self.hooks[idx].as_ref().unwrap();
             bitmap |= slot.id.0;
-            slot_idx = slot.next;
+            cur = slot.next;
         }
 
         let mut id = 1u32;
@@ -121,10 +342,7 @@ impl<IC: InterruptController> IrqManager<IC> {
             panic!("too many handlers for IRQ {}", irq.get());
         }
 
-        let free_idx = self.hooks.iter().position(|s| s.is_none())
-            .ok_or(IrqError::NoFreeSlots)?;
-
-        self.hooks[free_idx] = Some(IrqHookSlot {
+        self.hooks[slot_idx] = Some(IrqHookSlot {
             next: None,
             handler,
             irq,
@@ -134,11 +352,16 @@ impl<IC: InterruptController> IrqManager<IC> {
             policy,
         });
 
-        self.append_to_chain(irq_idx, free_idx);
+        self.append_to_chain(irq_idx, slot_idx);
 
         self.irq_use |= 1u64 << irq_idx;
 
-        if (self.actids[irq_idx] & id) == 0 {
+        // C: interrupt.c:65 — `(irq_actids[irq] &= ~hook->id) == 0`.
+        // Clear this hook's active bit (no-op for a brand-new hook, but
+        // faithful to C and safe if a slot is ever reused), then unmask
+        // the IRQ only if NO handler on this vector is still active.
+        self.actids[irq_idx] &= !id;
+        if self.actids[irq_idx] == 0 {
             self.controller.unmask(irq);
         }
 
@@ -206,8 +429,18 @@ impl<IC: InterruptController> IrqManager<IC> {
     /// and unmasks the IRQ when all handlers have completed.
     /// Sends EOI after all handlers finish.
     ///
-    /// C: irq_handle() — interrupt.c:116-140
-    pub fn dispatch(&mut self, irq: IrqVector) -> Result<(), IrqError> {
+    /// The `notifier` is injected into each handler's [`IrqHookContext`]
+    /// so handlers can deliver hardware notifications to user space without
+    /// touching global state directly.
+    ///
+    /// C: `irq_handle()` — interrupt.c:116-140. C passes `hook` directly
+    /// to the handler; Rust passes an [`IrqHookContext`] that also carries
+    /// the notifier (D9 / §4.4).
+    pub fn dispatch(
+        &mut self,
+        irq: IrqVector,
+        notifier: &mut dyn IrqNotify,
+    ) -> Result<(), IrqError> {
         let irq_idx = irq.get() as usize;
         if irq_idx >= NR_IRQ_VECTORS {
             return Err(IrqError::InvalidIrq);
@@ -221,16 +454,39 @@ impl<IC: InterruptController> IrqManager<IC> {
         }
 
         while let Some(idx) = slot_idx {
-            let slot = self.hooks[idx].as_ref().unwrap();
+            // Copy the slot fields by value (all Copy) so we don't hold a
+            // borrow on `self.hooks` while calling the handler. The handler
+            // receives `&mut IrqHookContext` which only borrows `notifier`.
+            let (handler, slot_irq, slot_id, slot_proc_ep, slot_notify_id, slot_policy, next) = {
+                let slot = self.hooks[idx].as_ref().unwrap();
+                (
+                    slot.handler,
+                    slot.irq,
+                    slot.id,
+                    slot.proc_endpoint,
+                    slot.notify_id,
+                    slot.policy,
+                    slot.next,
+                )
+            };
 
-            self.actids[irq_idx] |= slot.id.0;
+            self.actids[irq_idx] |= slot_id.0;
 
-            let action = (slot.handler)(irq, slot.id);
+            let mut ctx = IrqHookContext {
+                irq: slot_irq,
+                id: slot_id,
+                proc_endpoint: slot_proc_ep,
+                notify_id: slot_notify_id,
+                policy: slot_policy,
+                notifier,
+            };
+
+            let action = handler(&mut ctx);
             if action == IrqAction::Completed {
-                self.actids[irq_idx] &= !slot.id.0;
+                self.actids[irq_idx] &= !slot_id.0;
             }
 
-            slot_idx = slot.next;
+            slot_idx = next;
         }
 
         if self.actids[irq_idx] == 0 {
@@ -445,198 +701,39 @@ impl<IC: InterruptController> IrqManager<IC> {
 
 /// Generic IRQ handler that sends a notification to the owning process.
 ///
-/// C: generic_handler() — do_irqctl.c:148-174
+/// C: `generic_handler(irq_hook_t *hook)` — do_irqctl.c:148-174.
 ///
-/// Sets `s_int_pending` bit and triggers `mini_notify(HARDWARE, proc_endpoint)`.
-/// Returns `IrqAction::Completed` if IRQ_REENABLE is set.
-fn generic_notify_handler(_irq: IrqVector, _id: IrqId) -> IrqAction {
-    // The actual notification + s_int_pending update is done in the
-    // interrupt dispatch path (irq_handle → generic_handler), not here.
-    // This handler is a placeholder; the real logic lives in
-    // IrqManager::dispatch() which already handles actids tracking.
-    // The notification to the process is deferred to IPC (kernel IPC core).
-    IrqAction::Completed
-}
-
-// ── Exception handling types ──
-// C: exception.c — exception_handler(), pagefault(), ex_data[]
-
-/// x86 page fault vector number.
-/// C: PAGE_FAULT_VECTOR — exception.c:14
-pub const PAGE_FAULT_VECTOR: u32 = 14;
-
-/// x86 debug exception vector number.
-/// C: DEBUG_VECTOR — exception.c
-pub const DEBUG_VECTOR: u32 = 1;
-
-/// CPU exception information.
+/// Reproduces the C side-effects in order:
+/// 1. (C: `get_randomness`) — randomness gathering is deferred to a future
+///    `krandom` subsystem; not implemented here.
+/// 2. Sets the `s_int_pending` bit for `notify_id` on the owning process.
+/// 3. Delivers `mini_notify(HARDWARE, proc_endpoint)` via the injected
+///    notifier (see [`IrqNotify`]).
+/// 4. Returns `Completed` iff `policy & IRQ_REENABLE` (C: `return(hook->policy & IRQ_REENABLE)`).
 ///
-/// Captures the state at the time of an exception, architecture-independent
-/// representation of the exception frame.
-pub struct ExceptionInfo {
-    /// Exception vector number (0-19 on x86).
-    /// C: frame->vector
-    pub vector: u32,
-    /// Error code pushed by CPU (0 if none).
-    /// C: frame->errcode
-    pub error_code: u32,
-    /// Faulting instruction address.
-    /// C: frame->eip
-    pub fault_addr: u64,
-    /// Whether the exception occurred while already in the kernel (nested).
-    /// C: is_nested parameter
-    pub is_nested: bool,
-}
+/// The handler receives [`IrqHookContext`] which carries the slot's
+/// `proc_endpoint`, `notify_id`, `policy`, and a `&mut dyn IrqNotify`.
+/// This replaces C's direct access to the global `mini_notify` and
+/// `priv(proc_addr(...))` (D9 / 14-exception-interrupt.md §4.4).
+fn generic_notify_handler(ctx: &mut IrqHookContext) -> IrqAction {
+    // C: do_irqctl.c:167-170 — set pending bit + deliver notification.
+    ctx.notifier.notify_hardware(ctx.proc_endpoint, ctx.notify_id);
 
-/// Exception-to-signal mapping entry.
-///
-/// C: ex_data[] — exception.c:20-39
-pub struct ExceptionMapping {
-    /// Human-readable description.
-    pub description: &'static str,
-    /// Signal number to deliver for user-mode exceptions.
-    pub signal: u32,
-}
-
-/// x86 exception table.
-///
-/// C: ex_data[] — exception.c:20-39
-pub const EXCEPTION_TABLE: [ExceptionMapping; 20] = [
-    ExceptionMapping { description: "Divide error",               signal: 8 },  // SIGFPE
-    ExceptionMapping { description: "Debug exception",            signal: 5 },  // SIGTRAP
-    ExceptionMapping { description: "Nonmaskable interrupt",      signal: 10 }, // SIGBUS
-    ExceptionMapping { description: "Breakpoint",                 signal: 7 },  // SIGEMT
-    ExceptionMapping { description: "Overflow",                   signal: 8 },  // SIGFPE
-    ExceptionMapping { description: "Bounds check",               signal: 8 },  // SIGFPE
-    ExceptionMapping { description: "Invalid opcode",             signal: 4 },  // SIGILL
-    ExceptionMapping { description: "Coprocessor not available",  signal: 8 },  // SIGFPE
-    ExceptionMapping { description: "Double fault",               signal: 10 }, // SIGBUS
-    ExceptionMapping { description: "Coprocessor segment overrun",signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "Invalid TSS",                signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "Segment not present",        signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "Stack exception",            signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "General protection",         signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "Page fault",                 signal: 11 }, // SIGSEGV
-    ExceptionMapping { description: "(reserved)",                 signal: 4 },  // SIGILL
-    ExceptionMapping { description: "Coprocessor error",          signal: 8 },  // SIGFPE
-    ExceptionMapping { description: "Alignment check",            signal: 10 }, // SIGBUS
-    ExceptionMapping { description: "Machine check",              signal: 10 }, // SIGBUS
-    ExceptionMapping { description: "SIMD exception",             signal: 8 },  // SIGFPE
-];
-
-/// Page fault information.
-///
-/// C: pagefault() — exception.c:49-131
-pub struct PageFaultInfo {
-    /// Faulting virtual address (CR2 on x86, FAR on ARM, stval on RISC-V).
-    /// C: read_cr2()
-    pub fault_addr: u64,
-    /// Error code from CPU.
-    /// C: frame->errcode
-    pub error_code: u32,
-    /// Whether the fault was caused by a write.
-    pub is_write: bool,
-    /// Whether the fault originated from user mode.
-    pub is_user: bool,
-}
-
-impl PageFaultInfo {
-    /// Create from x86 error code.
-    /// Bit 0: P (0 = not-present, 1 = protection)
-    /// Bit 1: W/R (0 = read, 1 = write)
-    /// Bit 2: U/S (0 = supervisor, 1 = user)
-    pub fn from_x86(fault_addr: u64, error_code: u32) -> Self {
-        Self {
-            fault_addr,
-            error_code,
-            is_write: (error_code & 0x02) != 0,
-            is_user: (error_code & 0x04) != 0,
-        }
+    // C: do_irqctl.c:171 — `return(hook->policy & IRQ_REENABLE)`.
+    if ctx.policy.contains(IrqPolicy::REENABLE) {
+        IrqAction::Completed
+    } else {
+        IrqAction::NotCompleted
     }
 }
 
-/// Action to take after exception handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExceptionAction {
-    /// Ignore the exception (e.g., spurious NMI).
-    Ignore,
-    /// Deliver a signal to the process.
-    Signal(u32),
-    /// Forward page fault to VM.
-    PageFault,
-    /// Panic the kernel.
-    Panic,
-}
-
-/// Handle an exception.
-///
-/// C: exception_handler() — exception.c:180-286
-///
-/// # BKL (Big Kernel Lock)
-///
-/// In C, the assembly trap entry distinguishes two paths:
-/// - `exception_entry_from_user`: acquires BKL, then calls handler
-/// - `exception_entry_nested`: does NOT acquire BKL (kernel-mode
-///   exception while BKL is already held), panics instead
-///
-/// In Rust, we use `info.is_nested` to make the same distinction:
-/// - **User-mode exception** (`!is_nested`): acquire BKL, handle,
-///   release BKL before returning.
-/// - **Kernel-mode exception** (`is_nested`): BKL is already held,
-///   do NOT acquire (would deadlock). The inner handler will panic
-///   for kernel-mode exceptions (matching C's behavior).
-pub fn handle_exception(info: &ExceptionInfo, is_kernel_proc: bool) -> ExceptionAction {
-    // Only acquire BKL for user-mode exceptions.
-    // Kernel-mode exceptions (is_nested) occur while BKL is already held;
-    // re-acquiring would deadlock (BKL is non-recursive).
-    let bkl_acquired = !info.is_nested;
-    if bkl_acquired {
-        crate::smp::bkl_lock();
-    }
-
-    let action = handle_exception_inner(info, is_kernel_proc);
-
-    // Only release BKL if we acquired it.
-    if bkl_acquired {
-        crate::smp::bkl_unlock();
-    }
-
-    action
-}
-
-/// Inner exception handling logic, called after BKL is acquired.
-fn handle_exception_inner(info: &ExceptionInfo, is_kernel_proc: bool) -> ExceptionAction {
-    // 1. Spurious NMI
-    if info.vector == 2 {
-        return ExceptionAction::Ignore;
-    }
-
-    // 2. Page fault — handled separately
-    if info.vector == PAGE_FAULT_VECTOR {
-        return ExceptionAction::PageFault;
-    }
-
-    // 3. User-mode exception → signal
-    if !info.is_nested && !is_kernel_proc {
-        let idx = info.vector as usize;
-        if idx < EXCEPTION_TABLE.len() {
-            return ExceptionAction::Signal(EXCEPTION_TABLE[idx].signal);
-        }
-        return ExceptionAction::Signal(4); // SIGILL default
-    }
-
-    // 4. Kernel-mode exception → panic
-    ExceptionAction::Panic
-}
-
-/// Action to take after timer tick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimerAction {
-    /// Continue running current process.
-    Continue,
-    /// Current process quantum exhausted, need reschedule.
-    Reschedule,
-}
+// Note: Exception dispatch (exception_handler / pagefault / ex_data[]) lives
+// in `arch::ExceptionDispatcher` — see `os/arch/src/arch/exception_dispatcher.rs`
+// and `os/arch/src/arch/exception.rs`. The earlier in-tree duplicate
+// (EXCEPTION_TABLE / PageFaultInfo / handle_exception / ExceptionAction /
+// TimerAction) was removed during the 14-exception-interrupt rewrite — it
+// duplicated the arch path with weaker typing (raw `u32` signal numbers
+// instead of `ExceptionSignal` enum) and described non-existent traits.
 
 #[cfg(test)]
 mod tests {
@@ -662,7 +759,7 @@ mod tests {
     }
 
     impl InterruptController for MockController {
-        fn new(_desc: &minix_platform::InterruptControllerDesc) -> Self {
+        fn new(_desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
             Self::new_mock()
         }
         fn init(&mut self) {
@@ -685,12 +782,24 @@ mod tests {
         }
     }
 
-    fn completed_handler(_irq: IrqVector, _id: IrqId) -> IrqAction {
+    fn completed_handler(_ctx: &mut IrqHookContext) -> IrqAction {
         IrqAction::Completed
     }
 
-    fn not_completed_handler(_irq: IrqVector, _id: IrqId) -> IrqAction {
+    fn not_completed_handler(_ctx: &mut IrqHookContext) -> IrqAction {
         IrqAction::NotCompleted
+    }
+
+    /// Mock `IrqNotify` that records all `notify_hardware` calls.
+    #[derive(Default)]
+    struct MockNotifier {
+        notify_log: alloc::vec::Vec<(Endpoint, IrqNotifyId)>,
+    }
+
+    impl IrqNotify for MockNotifier {
+        fn notify_hardware(&mut self, dst: Endpoint, notify_id: IrqNotifyId) {
+            self.notify_log.push((dst, notify_id));
+        }
     }
 
     #[test]
@@ -709,7 +818,8 @@ mod tests {
 
         assert_eq!(id.0, 1);
 
-        let result = mgr.dispatch(IrqVector::new(0));
+        let mut notifier = MockNotifier::default();
+        let result = mgr.dispatch(IrqVector::new(0), &mut notifier);
         assert!(result.is_ok());
         assert_eq!(mgr.controller.eoi_log.len(), 1);
     }
@@ -720,7 +830,8 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let result = mgr.dispatch(IrqVector::new(5));
+        let mut notifier = MockNotifier::default();
+        let result = mgr.dispatch(IrqVector::new(5), &mut notifier);
         assert!(matches!(result, Err(IrqError::Spurious(_))));
     }
 
@@ -747,7 +858,8 @@ mod tests {
 
         assert_ne!(id1.0, id2.0);
 
-        let result = mgr.dispatch(IrqVector::new(0));
+        let mut notifier = MockNotifier::default();
+        let result = mgr.dispatch(IrqVector::new(0), &mut notifier);
         assert!(result.is_ok());
     }
 
@@ -765,7 +877,8 @@ mod tests {
             IrqPolicy::empty(),
         ).unwrap();
 
-        let result = mgr.dispatch(IrqVector::new(0));
+        let mut notifier = MockNotifier::default();
+        let result = mgr.dispatch(IrqVector::new(0), &mut notifier);
         assert!(result.is_ok());
 
         assert_ne!(mgr.actids[0], 0);
@@ -788,7 +901,8 @@ mod tests {
         let result = mgr.remove_hook(id, IrqVector::new(0));
         assert!(result.is_ok());
 
-        let dispatch_result = mgr.dispatch(IrqVector::new(0));
+        let mut notifier = MockNotifier::default();
+        let dispatch_result = mgr.dispatch(IrqVector::new(0), &mut notifier);
         assert!(matches!(dispatch_result, Err(IrqError::Spurious(_))));
     }
 
@@ -806,7 +920,8 @@ mod tests {
             IrqPolicy::empty(),
         ).unwrap();
 
-        mgr.dispatch(IrqVector::new(0)).unwrap();
+        let mut notifier = MockNotifier::default();
+        mgr.dispatch(IrqVector::new(0), &mut notifier).unwrap();
         assert_ne!(mgr.actids[0], 0);
 
         mgr.enable_irq(id, IrqVector::new(0));
@@ -815,5 +930,66 @@ mod tests {
         let disabled = mgr.disable_irq(id, IrqVector::new(0));
         assert!(disabled);
         assert_ne!(mgr.actids[0], 0);
+    }
+
+    /// Verify that `generic_notify_handler` actually delivers the
+    /// `mini_notify(HARDWARE, proc_endpoint)` side-effect via the injected
+    /// notifier. This is the regression test for the P1 TODO that previously
+    /// lived at this site.
+    #[test]
+    fn generic_notify_handler_sends_notification() {
+        let ctrl = MockController::new_mock();
+        let mut mgr = IrqManager::new(ctrl);
+        mgr.init();
+
+        // Register via `irqctl_set_policy`, which installs `generic_notify_handler`.
+        let proc_ep = Endpoint::KERNEL;
+        let notify_id = IrqNotifyId(3);
+        mgr.irqctl_set_policy(
+            IrqVector::new(0),
+            proc_ep,
+            notify_id,
+            IrqPolicy::REENABLE,
+        ).expect("irqctl_set_policy should succeed");
+
+        let mut notifier = MockNotifier::default();
+        mgr.dispatch(IrqVector::new(0), &mut notifier).expect("dispatch should succeed");
+
+        // The handler should have called notify_hardware exactly once with
+        // the registered proc_endpoint and notify_id.
+        assert_eq!(notifier.notify_log.len(), 1, "expected exactly one notify call");
+        assert_eq!(notifier.notify_log[0].0, proc_ep, "notify dst endpoint mismatch");
+        assert_eq!(notifier.notify_log[0].1, notify_id, "notify_id mismatch");
+
+        // With REENABLE policy, the handler returns Completed → active bit cleared.
+        assert_eq!(mgr.actids[0], 0, "REENABLE policy should clear active bit");
+    }
+
+    /// Verify that `generic_notify_handler` returns `NotCompleted` when
+    /// `IRQ_REENABLE` is NOT set, leaving the active bit set.
+    #[test]
+    fn generic_notify_handler_no_reenable_keeps_active() {
+        let ctrl = MockController::new_mock();
+        let mut mgr = IrqManager::new(ctrl);
+        mgr.init();
+
+        let proc_ep = Endpoint::PM;
+        let notify_id = IrqNotifyId(5);
+        mgr.irqctl_set_policy(
+            IrqVector::new(2),
+            proc_ep,
+            notify_id,
+            IrqPolicy::empty(),
+        ).expect("irqctl_set_policy should succeed");
+
+        let mut notifier = MockNotifier::default();
+        mgr.dispatch(IrqVector::new(2), &mut notifier).expect("dispatch should succeed");
+
+        // Notification still delivered even without REENABLE.
+        assert_eq!(notifier.notify_log.len(), 1);
+        assert_eq!(notifier.notify_log[0].0, proc_ep);
+
+        // But the active bit stays set (handler returned NotCompleted).
+        assert_ne!(mgr.actids[2], 0, "no-REENABLE policy should keep active bit");
     }
 }

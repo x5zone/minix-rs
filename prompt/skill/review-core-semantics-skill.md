@@ -12,6 +12,37 @@ description: "Minix-RS Review 核心语义定义与行为契约表模板。定�
 
 ## 一、核心语义定义
 
+### 1.4 核心术语扩展
+
+> 配合 [review-core-semantics.md §1.4](../review-rules/review-core-semantics.md) 的术语统一。
+
+**Refactor 定义**（Refactor ≠ Redesign）：
+- **Refactor (代码 Refactor)**：在不改外部行为的前提下，重写代码内部表达（如改命名、抽函数、改数据结构、改错误表达）。语义范围 = 代码。
+- **Refactor (设计 Refactor)**：在不改变外部语义的前提下，修正或优化 **design 文档本身**（如细化接口、补充错误码策略、调整不变量表述、补全 trait 设计）。语义范围 = design doc。
+- 两者均**不改 IPC/生命周期/错误/权限/地址空间语义**，仅改表达层。
+
+**判定 P0 vs 设计 Refactor**：
+- 代码偏离 design 但 design 自己错了 → **设计 Refactor**（改 design）+ 代码随之对齐
+- 代码偏离 design 且 design 没错 → **P0-design-deviation**（改代码）
+- 代码未偏离 design，但 design 本身缺关键决策 → **P0-design-missing**（补 design）
+
+### 1.5 核心语义判定优先级
+
+> 当 Minix3 行为、design 文档、代码实现、文档叙事发生冲突时，按以下优先级判定：
+
+**优先级链**：`Minix3 源码行为 > design doc > Rust 代码 > 设计/技术文档`
+
+**冲突矩阵**：
+
+| # | 冲突情况 | 判定 | 处理 |
+|---|---------|------|------|
+| 1 | Minix3 与 design 不一致 | ✅ 改 design + 标 ARCH（如有架构演进） | design Refactor |
+| 2 | Minix3 与 Rust 代码不一致 | ❌ P0-core-semantics | 改代码 |
+| 3 | design 与 Rust 代码不一致 | ❌ P0-design-deviation | 改代码（design 是契约） |
+| 4 | design 缺关键决策（如未定义 trait） | ❌ P0-design-missing | 补 design，再写代码 |
+| 5 | 技术文档与 design 不一致 | ❌ P1-doc-design-drift | 改技术文档 |
+| 6 | design 自身表述模糊 | ✅ 设计 Refactor | 改 design 表述 |
+
 ### 1.1 什么是核心语义
 
 核心语义是 Minix3 模块**外部可观察行为**的精确定义：

@@ -1175,5 +1175,184 @@ pub mod mock {
             let first_dm_page = VirBytes(MOCK_DM_VBASE);
             assert!(pt.query(first_dm_page).is_some());
         }
+
+        // ── L2 trait contract tests (Paging) ──────────────────────────
+        // Generic tests that verify the Paging trait contract.
+        // Each test is parameterized over P: Paging and instantiated with
+        // MockPaging. In principle, any Paging implementation (x86-64,
+        // aarch64, riscv64) should pass these tests.
+
+        /// Contract 1: map → query returns correct (paddr, flags);
+        /// unmap → query returns None; unmap returns the physical address.
+        fn run_paging_contract_map_query_unmap<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+
+            pt.map(vaddr, paddr, flags).unwrap();
+            assert_eq!(pt.query(vaddr), Some((paddr, flags)));
+
+            let unmapped = pt.unmap(vaddr).unwrap();
+            assert_eq!(unmapped, paddr);
+            assert!(pt.query(vaddr).is_none());
+        }
+
+        #[test]
+        fn test_paging_contract_map_query_unmap() {
+            run_paging_contract_map_query_unmap(MockPaging::new().unwrap());
+        }
+
+        /// Contract 2: double map returns AlreadyMapped.
+        fn run_paging_contract_double_map<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+
+            pt.map(vaddr, paddr, flags).unwrap();
+            assert_eq!(
+                pt.map(vaddr, PhysBytes(0x3000), flags),
+                Err(PageTableError::AlreadyMapped)
+            );
+        }
+
+        #[test]
+        fn test_paging_contract_double_map() {
+            run_paging_contract_double_map(MockPaging::new().unwrap());
+        }
+
+        /// Contract 3: unmap unmapped address returns NotMapped.
+        fn run_paging_contract_unmap_unmapped<P: Paging>(mut pt: P) {
+            assert_eq!(
+                pt.unmap(VirBytes(0x1000)),
+                Err(PageTableError::NotMapped)
+            );
+        }
+
+        #[test]
+        fn test_paging_contract_unmap_unmapped() {
+            run_paging_contract_unmap_unmapped(MockPaging::new().unwrap());
+        }
+
+        /// Contract 4: remap on unmapped address creates mapping, returns None.
+        fn run_paging_contract_remap_new<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+
+            let old = pt.remap(vaddr, paddr, flags).unwrap();
+            assert!(old.is_none());
+            assert_eq!(pt.query(vaddr), Some((paddr, flags)));
+        }
+
+        #[test]
+        fn test_paging_contract_remap_new() {
+            run_paging_contract_remap_new(MockPaging::new().unwrap());
+        }
+
+        /// Contract 5: remap replaces existing mapping, returns old entry.
+        fn run_paging_contract_remap_replace<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr1 = PhysBytes(0x2000);
+            let paddr2 = PhysBytes(0x3000);
+            let flags1 = PageFlags::read_write();
+            let flags2 = PageFlags::read_only();
+
+            pt.map(vaddr, paddr1, flags1).unwrap();
+            let old = pt.remap(vaddr, paddr2, flags2).unwrap();
+            assert_eq!(old, Some((paddr1, flags1)));
+            assert_eq!(pt.query(vaddr), Some((paddr2, flags2)));
+        }
+
+        #[test]
+        fn test_paging_contract_remap_replace() {
+            run_paging_contract_remap_replace(MockPaging::new().unwrap());
+        }
+
+        /// Contract 6: unaligned virtual address returns InvalidAddress.
+        fn run_paging_contract_unaligned_vaddr<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1001); // unaligned
+            let paddr = PhysBytes(0x2000);
+            let flags = PageFlags::read_write();
+
+            assert_eq!(
+                pt.map(vaddr, paddr, flags),
+                Err(PageTableError::InvalidAddress)
+            );
+        }
+
+        #[test]
+        fn test_paging_contract_unaligned_vaddr() {
+            run_paging_contract_unaligned_vaddr(MockPaging::new().unwrap());
+        }
+
+        /// Contract 7: update_flags changes flags, query reflects new flags.
+        fn run_paging_contract_update_flags<P: Paging>(mut pt: P) {
+            let vaddr = VirBytes(0x1000);
+            let paddr = PhysBytes(0x2000);
+
+            pt.map(vaddr, paddr, PageFlags::read_write()).unwrap();
+            pt.update_flags(vaddr, PageFlags::read_only()).unwrap();
+
+            let (_, flags) = pt.query(vaddr).unwrap();
+            assert!(!flags.contains(PageFlags::WRITABLE));
+            assert!(flags.contains(PageFlags::PRESENT));
+        }
+
+        #[test]
+        fn test_paging_contract_update_flags() {
+            run_paging_contract_update_flags(MockPaging::new().unwrap());
+        }
+
+        /// Contract 8: update_flags on unmapped address returns NotMapped.
+        fn run_paging_contract_update_flags_unmapped<P: Paging>(mut pt: P) {
+            assert_eq!(
+                pt.update_flags(VirBytes(0x1000), PageFlags::read_only()),
+                Err(PageTableError::NotMapped)
+            );
+        }
+
+        #[test]
+        fn test_paging_contract_update_flags_unmapped() {
+            run_paging_contract_update_flags_unmapped(MockPaging::new().unwrap());
+        }
+
+        /// Contract 9: root_paddr returns consistent value.
+        fn run_paging_contract_root_paddr_consistent<P: Paging>(pt: P) {
+            let root1 = pt.root_paddr();
+            let root2 = pt.root_paddr();
+            assert_eq!(root1, root2);
+            assert!(root1.0 > 0);
+        }
+
+        #[test]
+        fn test_paging_contract_root_paddr_consistent() {
+            run_paging_contract_root_paddr_consistent(MockPaging::new().unwrap());
+        }
+
+        /// Contract 10: map_range all-or-nothing — partial failure leaves no mappings.
+        fn run_paging_contract_map_range_all_or_nothing<P: Paging>(mut pt: P) {
+            let flags = PageFlags::read_write();
+
+            // Pre-map page 2 of a 4-page range
+            pt.map(VirBytes(0x3000), PhysBytes(0xF000), flags).unwrap();
+
+            let result = pt.map_range(
+                VirBytes(0x1000), PhysBytes(0x2000), 4, flags,
+            );
+            assert_eq!(result, Err(PageTableError::AlreadyMapped));
+
+            // Pages 0, 1, 3 should be unmapped
+            assert!(pt.query(VirBytes(0x1000)).is_none());
+            assert!(pt.query(VirBytes(0x2000)).is_none());
+            assert!(pt.query(VirBytes(0x4000)).is_none());
+
+            // Pre-existing mapping at page 2 untouched
+            assert_eq!(pt.query(VirBytes(0x3000)), Some((PhysBytes(0xF000), flags)));
+        }
+
+        #[test]
+        fn test_paging_contract_map_range_all_or_nothing() {
+            run_paging_contract_map_range_all_or_nothing(MockPaging::new().unwrap());
+        }
     }
 }

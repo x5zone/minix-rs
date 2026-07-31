@@ -174,7 +174,7 @@ impl ClockState {
 ///
 /// | Method | x86-64 | ARM64 | RISC-V |
 /// |--------|--------|-------|--------|
-/// | `new()` | store PIT freq + LAPIC base from `TimerDesc::Pit` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `TimerDesc::Clint` |
+/// | `new()` | store PIT freq + LAPIC base from `PitDesc` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `ClintDesc` |
 /// | `init_timer()` | 8254 PIT divisor / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | CLINT mtimecmp |
 /// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
 /// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
@@ -189,10 +189,10 @@ pub trait ClockArch: Sized + Send + Sync {
     ///
     /// # Panics
     ///
-    /// May panic if `desc` does not match the architecture's expected
-    /// `TimerDesc` variant (e.g. x86-64 receives `TimerDesc::Clint`).
-    /// Upper layers guarantee the correct variant is passed.
-    fn new(desc: &minix_platform::TimerDesc) -> Self;
+    /// May panic if `desc` does not downcast to the architecture's expected
+    /// concrete `TimerDesc` implementor (e.g. x86-64 expects `PitDesc`).
+    /// Upper layers guarantee the correct type is passed.
+    fn new(desc: &dyn minix_platform::TimerDesc) -> Self;
 
     /// Configure and start the hardware timer at the given frequency.
     ///
@@ -365,17 +365,29 @@ mod tests {
     /// Verify that `read_tsc()` default implementation delegates to `read_ticks()`.
     #[test]
     fn test_read_tsc_default_delegates_to_read_ticks() {
+        use core::any::Any;
+        use minix_platform::TimerDesc;
+
+        // Local test TimerDesc implementor — avoids depending on any
+        // arch-specific submodule (which may be cfg-gated out).
+        #[derive(Debug)]
+        struct TestTimerDesc;
+        impl TimerDesc for TestTimerDesc {
+            fn frequency(&self) -> u64 { 0 }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+
         struct TestClock {
             ticks: u64,
         }
         impl ClockArch for TestClock {
-            fn new(_desc: &minix_platform::TimerDesc) -> Self {
+            fn new(_desc: &dyn TimerDesc) -> Self {
                 Self { ticks: 42 }
             }
             fn init_timer(&mut self, _hz: u32) {}
             fn read_ticks(&self) -> u64 { self.ticks }
         }
-        let desc = minix_platform::TimerDesc::ArmGenericTimer;
+        let desc = TestTimerDesc;
         let clock = TestClock::new(&desc);
         assert_eq!(clock.read_tsc(), 42);
     }

@@ -465,6 +465,47 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
     lines.append(f"| 枚举 | {len(c_symbols['enums'])} |")
     lines.append("")
 
+    # 文档作用域统计（NEW 2026-07-16）：当 --doc-file 启用时，额外输出"在目标文档语义
+    # 范围内的符号"覆盖统计。这是 review 时应看的分母，而不是全 kernel 1306 符号。
+    # 一个符号"在目标 doc 语义范围" = 至少在目标 doc 或 Rust code 中被提及。
+    if doc_file:
+        # 收集在 doc 或 Rust 中出现的所有符号的并集（=目标 doc 的语义范围）
+        semantic_symbols = set()
+        for cat in ('functions', 'structs', 'macros', 'enums', 'typedefs'):
+            for name, _, _ in c_symbols[cat]:
+                in_doc = is_in_target_doc(name)
+                in_rust = rust_coverage.get(name, False)
+                if in_doc or in_rust:
+                    semantic_symbols.add(name)
+
+        semantic_total = len(semantic_symbols)
+        semantic_doc_covered = sum(
+            1 for n in semantic_symbols if is_in_target_doc(n)
+        )
+        semantic_rust_covered = sum(
+            1 for n in semantic_symbols
+            if is_in_target_doc(n) and rust_coverage.get(n)
+        )
+        semantic_gaps = sum(
+            1 for n in semantic_symbols
+            if not is_in_target_doc(n) and not rust_coverage.get(n)
+        )
+
+        lines.append(f"### 文档作用域统计（NEW 2026-07-16）")
+        lines.append("")
+        lines.append(f"> 在文档 `{doc_file}` 语义范围内的 C 符号（=在文档或 Rust code 中至少提及一次）。"
+                     f" 这是 review 时应看的分母，而不是全 kernel {total} 符号。")
+        lines.append("")
+        lines.append(f"| 指标 | 数值（全量） | 数值（语义范围） |")
+        lines.append(f"|------|-------------|----------------|")
+        lines.append(f"| C 符号总数 | {total} | {semantic_total} |")
+        lines.append(f"| 文档覆盖 | {doc_covered}/{total} | {semantic_doc_covered}/{semantic_total} |")
+        lines.append(f"| 文档覆盖 % | {pct(doc_covered, total)}% | {pct(semantic_doc_covered, semantic_total)}% |")
+        lines.append(f"| Rust 覆盖 | {rust_covered}/{total} | {semantic_rust_covered}/{semantic_total} |")
+        lines.append(f"| Rust 覆盖 % | {pct(rust_covered, total)}% | {pct(semantic_rust_covered, semantic_total)}% |")
+        lines.append(f"| Gaps | {gaps} | {semantic_gaps} |")
+        lines.append("")
+
     # 按类别输出
     cat_titles = {
         'functions': '函数',
@@ -676,7 +717,28 @@ def main():
     print(f"Coverage Summary for {args.module}{' / ' + args.doc_file if args.doc_file else ''}:")
     print(f"  Total C symbols: {total}")
     print(f"  Doc covered: {doc_covered} ({pct(doc_covered, total)}%)")
-    print(f"  Rust covered: {rust_covered} ({pct(rust_covered, total)}%)")
+    print(f"  Rust covered (name-match): {rust_covered} ({pct(rust_covered, total)}%) [⚠️ name-match, see semantic below]")
+
+    # NEW 2026-07-16: 文档作用域统计
+    if args.doc_file:
+        semantic_symbols = set()
+        for cat in ('functions', 'structs', 'macros', 'enums', 'typedefs'):
+            for n, _, _ in c_symbols[cat]:
+                in_doc = in_target_doc(n)
+                in_rust = rust_coverage.get(n, False)
+                if in_doc or in_rust:
+                    semantic_symbols.add(n)
+        sem_total = len(semantic_symbols)
+        sem_doc = sum(1 for n in semantic_symbols if in_target_doc(n))
+        sem_rust = sum(1 for n in semantic_symbols if in_target_doc(n) and rust_coverage.get(n))
+        sem_gaps = sum(1 for n in semantic_symbols if not in_target_doc(n) and not rust_coverage.get(n))
+        print(f"")
+        print(f"  --- 文档作用域统计（NEW 2026-07-16）---")
+        print(f"  Semantic range C symbols: {sem_total}")
+        print(f"  Doc covered (semantic): {sem_doc}/{sem_total} ({pct(sem_doc, sem_total)}%)")
+        print(f"  Rust covered (semantic): {sem_rust}/{sem_total} ({pct(sem_rust, sem_total)}%)")
+        print(f"  Gaps (semantic): {sem_gaps}")
+
     print(f"  Output: {output_path}")
 
 

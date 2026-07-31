@@ -109,8 +109,9 @@ pub enum IrqAction {
 ///
 /// | Method       | x86-64 (APIC)        | ARM64 (GICv3)      | RISC-V (PLIC)    |
 /// |-------------|----------------------|--------------------|--------------------|
-/// | `new()`     | store LAPIC+IOAPIC   | store GICD+GICR    | store PLIC base +  |
-/// |             | base from `Apic`     | base from `Gicv3`  | context from `Plic`|
+/// | `new()`     | downcast to `ApicDesc`| downcast to      | downcast to        |
+/// |             | store LAPIC+IOAPIC   | `Gicv3Desc`, store | `PlicDesc`, store  |
+/// |             | base                 | GICD+GICR base     | PLIC base+context  |
 /// | `init()`    | Initialize LAPIC +   | Initialize GIC     | Initialize PLIC    |
 /// |             | IOAPIC, mask all     | distributor +      | + CLINT, mask all  |
 /// |             |                      | redistributors     |                    |
@@ -134,10 +135,10 @@ pub trait InterruptController: Sized + Send + Sync {
     ///
     /// # Panics
     ///
-    /// May panic if `desc` does not match the architecture's expected
-    /// `InterruptControllerDesc` variant. Upper layers guarantee the
-    /// correct variant is passed.
-    fn new(desc: &minix_platform::InterruptControllerDesc) -> Self;
+    /// May panic if `desc` does not downcast to the architecture's expected
+    /// concrete `InterruptControllerDesc` implementor (e.g. x86-64 expects
+    /// `ApicDesc`). Upper layers guarantee the correct type is passed.
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self;
 
     /// Initialize the interrupt controller.
     fn init(&mut self);

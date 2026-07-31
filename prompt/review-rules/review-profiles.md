@@ -331,6 +331,71 @@
 
 ---
 
+### Profile R：设计优先模式 Review
+
+> **核心定位**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。当 design 缺失/错误时，必须先有 design 再 review 实现，否则 review 出来的 P0 都是局部无效修复。本 Profile 就是为此设计。
+
+**适用场景**：
+- Rust design 缺失或严重 outdated
+- review 中发现 P0-design-missing/wrong
+- 完整重写前的 design-first 阶段
+- 用户明确指定"先看 design"
+
+**Profile = Profile D（快速） + 强制执行以下检查**：
+
+| 维度 | 强制项 | 说明 |
+|------|--------|------|
+| **Step 1.6 设计对齐检查** | 强制 | design ↔ code 一致性矩阵 + Minix3 对齐 |
+| **Gate H design 门控** | 强制 | H.1-H.5 全部 grep 验证 |
+| **Design Feedback §8** | 强制 | scan.md §8 Design Feedback 必填（design-missing/wrong/improvable/divergence）|
+| **Review 中断协议** | 强制 | 检测到 design 缺失/错误必须中断（IN_DESIGN），不能 DEFERRED 逃避 |
+| **Architecture Evolution 维度 §2.0** | 强制 | 检查演进史 + 现代硬件模型 + Rust 抽象方向 |
+
+**加载 Skill**：
+- `review-process-skill`（必须，含 §〇 设计优先模式 + Step 1.6 + Gate H + Review 中断协议）
+- `review-patterns-skill`（必须，含模式 63 Design-Missing + 模式 64 开发文档味 + 模式 65 Translate 倾向）
+- `review-doc-skill` 或 `review-code-skill`（按对象选其一）
+- `review-core-semantics-skill`（如涉及核心语义）
+
+**执行流程**（按 [review-process.md §〇 设计优先模式](review-process.md#设计优先模式design-first)）：
+1. **Step 0**：声明 design 状态（缺失/错误/可改进）
+2. **Step 0.5**：design 生成（如缺失）或 design 评审（如错误）
+3. **Step 1.5**：覆盖率穷举（验证 design 是否覆盖所有 C 概念）
+4. **Step 1.6**：design ↔ code 一致性检查
+5. **Step 2**：design vs Minix3 本质对比
+
+**跳过**：Step 2.5 / 3 / 3.5 / 4 / 4.5 / 6 / 7
+
+**输出**：
+- scan.md（含 Design Feedback §8 + 行为决策矩阵）
+- IN_DESIGN.md（如中断，参见 [review-process.md §一.附录 A](review-process.md)）
+- design.md（非 bagging，如缺失或需修正，参见 [review-process.md §Step 0.3 缺失即生成](review-process.md)）
+- design-final.md（bagging 场景，多 AI 评审合并后的定稿）
+- 不输出代码修改项（design 修复后才能决定）
+
+**与 Profile C（深度 review）的关系**：
+- Profile R 是 Profile C 的**前置**阶段
+- design 修复后可转入 Profile C
+- 不替代日常 review，而是日常 review 的前置阶段
+
+**与 Profile I（实施验证）的关系**：
+- Profile I 用于 design → code 实施过程验证
+- Profile R 用于 design 缺失/错误 → 生成/修正 design
+- 两者串联：Profile R 先生成 design，Profile I 验证实施
+
+**触发条件**（自动 + 手动）：
+- 自动触发：Step 0 design 预检找不到 `design.md`/`design-final.md`（**主入口，前移自 Step 1.6**）/ Step 1.6.2 一致性 < 80% / Step 1.6.3 出现 P0-design-missing/wrong
+- 手动触发：用户明确指定"先看 design" 或 AI 识别到"开发文档味"严重
+
+**详见**：
+- [review-process.md §〇 设计优先模式](review-process.md#设计优先模式design-first)
+- [review-process.md §Gate H design 门控](review-process.md#gate-h-design-门控)
+- [review-process.md §一.附录 A Review 中断协议](review-process.md)
+- [review-patterns.md §模式 63 Design-Missing](review-patterns.md)
+- [review.md §Design First 原则](review.md)
+
+---
+
 ## 选择建议
 
 | 场景 | 推荐 Profile | 原因 |

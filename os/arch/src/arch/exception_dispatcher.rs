@@ -5,15 +5,16 @@
 //! signals; kernel-mode exceptions in recoverable contexts redirect
 //! execution; all other kernel exceptions panic.
 //!
-//! # Design decisions (see 05-exception-interrupt.md §3.5, §3.6)
+//! # Design decisions (see 14-exception-interrupt.md §3.2, §3.4, §3.5)
 //!
-//! - **Returns ExceptionOutcome enum** (§3.5): Separates "decide what to do"
+//! - **Returns ExceptionOutcome enum** (§3.2): Separates "decide what to do"
 //!   (dispatch) from "do it" (signal/send/panic). C's exception_handler()
 //!   directly calls cause_sig()/mini_send()/inkernel_disaster().
-//! - **FaultContext enum** (§3.6): Replaces C's address-range comparison
+//! - **FaultContext enum** (§3.4): Replaces C's address-range comparison
 //!   with explicit context tracking.
-//! - **ExceptionClass enum** (§3.5): Replaces C's ex_data[] static array
-//!   with a typed classification.
+//! - **ExceptionSignal enum + classify_signal** (§3.5): Replaces C's
+//!   `ex_data[]` static array of raw signal numbers with a typed,
+//!   exhaustively-checked enum + match.
 
 use crate::exception::{ExceptionArch, FaultContext, RecoveryPoint};
 use crate::protection::InterruptVector;

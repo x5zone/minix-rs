@@ -55,6 +55,36 @@
 | 位置 | API 设计问题 | 卓越性 P? | Suggested Fix |
 |------|------------|----------|---------------|
 
+### §15.5 design-first API 设计原则
+
+> **核心立场**：API 设计应优先考虑 design 而非习惯。如果 API 与 design 偏离但与 Rust 习惯一致，需要 design Refactor（修 design）而非 code Refactor（迁就习惯）。
+
+| 维度 | 习惯驱动 ❌ | design-first 驱动 ✅ |
+|------|---------|------------------|
+| 命名 | 与 Rust 标准库一致 | 与 design 中的概念一致（如 `BootProcArch::load_vm_elf` 直接对应 design §3.4）|
+| 参数 | 传 `Option<T>` 表示可选 | 用 typestate 表达状态机（如 `Uninit → Init` 阶段不暴露 `Option`）|
+| 错误 | 用 `Box<dyn Error>` | 用 design 定义的 `VmError`（具体错误类型，含语义）|
+| 可见性 | `pub` 暴露方便 | 仅暴露 design 中的 public trait（如 `ProtectionArch` 对外，`X8664Protection` 私有）|
+| Unsafe 边界 | 必要时裸写 `unsafe` | 用 safe 包装（newtype 隐藏 unsafe，如 `PhysAddr(VirtAddr)` 强制边界检查）|
+| Trait 实现 | 倾向 `dyn` + async-trait | 倾向 `impl Trait` + 泛型（编译期单态，更具体约束）|
+
+**判定**：
+- ❌ API 与 design 偏离但与 Rust 习惯一致 → **P1-design-deviation**（强制 design 优先）
+- ⚠️ API 与 design 偏离但未找到 design 依据 → **P0-design-missing**（先补 design 再评 API）
+- ✅ API 完全反映 design 决策 → A 级 API 卓越
+
+**示例（正反对比）**：
+```rust
+// ❌ 习惯驱动：用 enum 暴露类型（违反 design.md §4.1 要求）
+pub enum PlatformDescriptorPtr { /* 暴露具体类型 */ }
+
+// ✅ design-first：用 trait object（符合 design §4.1）
+pub trait PlatformDesc { /* design 规定的接口 */ }
+pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
+```
+
+**详见**：[review.md §Design First 原则](review.md) + [review-patterns.md §模式 23 pub 滥用](review-patterns.md) + [review-patterns.md §模式 24 类型安全过度](review-patterns.md) + [review-patterns.md §模式 65 Translate 倾向](review-patterns.md)。
+
 ---
 
 ## 三、§16 表达力卓越性

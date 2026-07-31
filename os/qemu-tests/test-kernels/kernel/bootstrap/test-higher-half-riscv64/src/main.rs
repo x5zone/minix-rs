@@ -135,7 +135,7 @@ pub extern "C" fn rust_main() -> ! {
         boot_modules: &[],
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
-        platform_descriptor: None,
+        platform_sources: &[],
     };
 
     let result = BootPrepareResult {

@@ -7,13 +7,13 @@
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
 //! Hardware parameters (CLINT mtime/mtimecmp addresses, frequency) are
-//! stored in instance fields, populated by `new(desc)` from
-//! `TimerDesc::Clint`. This replaces the previous hardcoded
+//! stored in instance fields, populated by `new(desc)` via `Any` downcast
+//! to `ClintDesc`. This replaces the previous hardcoded
 //! `CLINT_MTIME` / `CLINT_MTIMECMP` / `MTIME_FREQ` constants.
 //!
 //! C: No Minix3 equivalent (Minix3 has no RISC-V port).
 
-use minix_platform::TimerDesc;
+use minix_platform::arch::riscv64::ClintDesc;
 
 use crate::clock::ClockArch;
 
@@ -28,10 +28,10 @@ use crate::clock::ClockArch;
 ///
 /// # Fields
 ///
-/// - `mtime_addr`: CLINT mtime register MMIO address, from `TimerDesc::Clint`.
-/// - `mtimecmp_base`: CLINT mtimecmp base address (hart 0), from `TimerDesc::Clint`.
-/// - `mtimecmp_stride`: per-hart mtimecmp spacing (SMP-ready), from `TimerDesc::Clint`.
-/// - `freq`: mtime counter frequency (Hz), from `TimerDesc::Clint`.
+/// - `mtime_addr`: CLINT mtime register MMIO address, from `ClintDesc`.
+/// - `mtimecmp_base`: CLINT mtimecmp base address (hart 0), from `ClintDesc`.
+/// - `mtimecmp_stride`: per-hart mtimecmp spacing (SMP-ready), from `ClintDesc`.
+/// - `freq`: mtime counter frequency (Hz), from `ClintDesc`.
 ///
 /// C: No Minix3 equivalent (Minix3 has no RISC-V port).
 pub struct Riscv64ClockArch {
@@ -43,23 +43,15 @@ pub struct Riscv64ClockArch {
 }
 
 impl ClockArch for Riscv64ClockArch {
-    fn new(desc: &TimerDesc) -> Self {
-        match desc {
-            TimerDesc::Clint {
-                mtime_addr,
-                mtimecmp_base,
-                mtimecmp_stride,
-                freq,
-            } => Self {
-                mtime_addr: *mtime_addr,
-                mtimecmp_base: *mtimecmp_base,
-                mtimecmp_stride: *mtimecmp_stride,
-                freq: *freq,
-            },
-            _ => panic!(
-                "Riscv64ClockArch::new: expected TimerDesc::Clint, got {:?}",
-                desc
-            ),
+    fn new(desc: &dyn minix_platform::TimerDesc) -> Self {
+        let clint = desc.as_any()
+            .downcast_ref::<ClintDesc>()
+            .expect("Riscv64ClockArch::new: expected ClintDesc");
+        Self {
+            mtime_addr: clint.mtime_addr,
+            mtimecmp_base: clint.mtimecmp_base,
+            mtimecmp_stride: clint.mtimecmp_stride,
+            freq: clint.freq,
         }
     }
 

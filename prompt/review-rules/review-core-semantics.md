@@ -49,13 +49,62 @@
 | 权限改变 | Minix3 检查 root，Rust 不检查 | P0 |
 | 地址空间改变 | 改变虚拟地址布局 | P0 |
 
+### 1.4 核心术语扩展（Refactor 定义）
+
+> **背景**：解决历史"Redesign 术语冲突"。本节统一术语后，跨文档沟通无歧义。
+
+#### Refactor（重构）
+
+**定义**：Rust 实现偏离 design 时，修复 Rust 代码使其回到 design 路径。Refactor 是 Rewrite 内部纠错，不涉及架构变化。
+
+**与 Rewrite 的关系**：Refactor 是 Rewrite 内部的纠错动作，不涉及架构变化。
+
+**典型场景**：
+- design 已规定用 `enum Syscall + match`，但实现用了函数指针数组
+- design 已规定用 `&'static dyn Trait`，但实现用了 `enum` 暴露类型
+- design 已规定 DirectMapArch 替代 MemoryInitArch，但实现两者并存
+
+**与 Architectural Evolution 的关系**：
+- **Refactor**（含 design Refactor 与 code Refactor）：
+  - **code Refactor**：design 不变，修 code（对应 P0-design-deviation，触发于 review Step 1.6.2）
+  - **design Refactor**：design 自身不抓本质/漏概念，先修 design 再修 code（对应 P0-design-missing/wrong，触发于 review Step 1.6.3）
+- **Architectural Evolution**：跨越 Minix3 语义边界的设计变更（如 32 位临时窗口 → 64 位 direct_map），需用户显式批准
+
+**Review 中的判定**：
+- **P0-design-deviation** → code Refactor 触发（design 正确，仅 code 偏离，修 code 回到 design）
+- **P0-design-missing** → design Refactor 候选（design 未规定，先补 design 再修 code）
+- **P0-design-wrong** → design Refactor 必须（design 本身错，先 redesign 再修 code）
+- **Architectural Evolution 候选** → 跨越 Minix3 语义边界的设计变更，升级用户裁决
+
+### 1.5 §核心语义判定优先级
+
+> **目的**：当 design 与 Minix3 C 源码矛盾时，按以下优先级判定，避免"凭印象反转优先级"。
+
+**判定优先级**（从高到低）：
+1. **Minix3 C 源码**（ground truth，优先级最高）
+2. **design.md**（非 bagging）/ **design-final.md**（bagging）（如果 design 是基于 Minix3 的合理 Rewrite）
+3. **当前 Rust 实现**（如果实现符合 design）
+4. **文档**
+
+**冲突处理（判定矩阵）**：
+
+| design vs Minix3 | code vs design | 判定 |
+|----------------|---------------|------|
+| 一致 | 偏离 | **P0-design-deviation**（code Refactor：修 code） |
+| 一致 | 一致 | ✅ PASS |
+| 不一致 | 偏离 | **P0-design-wrong**（design Refactor 必须：先修 design 再修 code） |
+| 缺失 | 缺失 | **P0-design-missing**（design Refactor：先补 design 再补 code） |
+| 缺失 | 实现但符合 Minix3 | **P0-design-missing**（补 design）|
+
+> **配套规则**：[review.md §Design First 原则](review.md) + [review.md §Ground Truth 优先级](review.md#ground-truth-优先级)。
+
 ---
 
 ## 二、全量行为契约表模板
 
 > 对每个 C 函数，定义其完整行为契约。Review 时逐项验证 Rust 实现是否满足契约。
 
-### 2.1 行为契约表字段（标准化 8 字段，improve-v2 §2.8）
+### 2.1 行为契约表字段（标准化 8 字段）
 
 > **全量行为契约表**（非核心函数）保留 11 字段供深度 review；**Top 5 行为契约表**（Gate B 必须）强制使用 8 字段模板。
 > 8 字段是 11 字段的标准化合并：边界条件并入输入契约；不变量并入时序契约。

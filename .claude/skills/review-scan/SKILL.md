@@ -34,8 +34,11 @@ You are a review orchestrator. Your job is to execute checks domain by domain, i
 | **D-6** | Phase 2.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
 | **E** | Phase 7 Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
 | **G** | Phase 9 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
+| **H** | Phase 2.6 Design Alignment Check | **所有 review 模式必检（2026-07-16 扩；原"仅完整/深度/设计优先"已废除）**：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**。**不允许 N/A / [SIMPLIFIED] / "复用其他文档 design"**（**模式 69 PSMD 触发**） | DRAFT, no STATE.md write |
 
 **Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
+
+**⛔ Gate H 不允许 N/A 判定（2026-07-16 强化；2026-07-17 更新）**：每篇文档都必须通过 Gate H 全部 6 项检查。若本文档无专属 design.md / outline.md / outline-review.md，必须**执行 Step 0.3 嵌入生成**（不切换模式，不中断 review），不得标 N/A 跳过（违反 = P0-process-violation + 模式 69 PSMD 触发）。原"切换 Design-First 模式生成"已废除——Design-First 仅用于 design-wrong（design 存在但有错误），不用于缺失场景。
 
 **Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md. "✅ Gate passed" without evidence is invalid. Evidence strength: L1 (tool/grep output) required for A/D/E; L1 or L2 for B/C; L3 inference = FAIL unless `MANUAL_FALLBACK` justified.
 
@@ -62,6 +65,25 @@ Missing this section → scan.md marked DRAFT.
    - `$MODULE` = first directory under `notes/rewrite/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
    - `$DOC_STEM` = target doc basename without extension; `$AGENT` = model id (Trae: glm/kimi/...; Claude: m3/...).
    - Use `tools/review-init.sh claude {doc-path}` to auto-compute paths and mkdir.
+4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
+   - **必须跑 4 条 `ls`**（无论何种 review 模式）：
+     ```bash
+     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-outline.v*.md
+     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-outline-review.v*.md
+     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-design.v*.md
+     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-design-final.v*.md  # bagging only
+     ```
+   - **必须跑工具扫描**：
+     ```bash
+     tools/design-coverage-check.sh $MODULE --stage $STAGE
+     ```
+   - **缺失判定 + 嵌入生成（2026-07-17）**：
+     - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
+     - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审）
+     - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
+     - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过
+   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）
+   - **豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化**（模式 71 DOG）
 
 ---
 
@@ -130,6 +152,39 @@ Generate `structure.md` (12 sections, saved alongside scan.md):
 Output: structure.md + 12-section review table + failures written to Issue List.
 
 > ⛔ **Gate D-6**: structure.md generated + 12-section review table complete + failures in Issue List. Failure → scan.md DRAFT.
+
+---
+
+## Phase 2.6: Design + outline Alignment Check — Gate H
+
+> **Precondition**: 仅 Profile R / Profile C / Profile I / Profile H-K 必检。Profile D / Profile A 可跳过。
+> **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身完整性 + 可实现性 + **outline ↔ doc 对齐**（方案 D 新增）。
+
+Phase 2.6.1 design 对齐检查（6 项）：
+1. doc/code 中的命名是否与 design 一致？
+2. doc/code 中的 trait 定义是否在 design 中有完整方法签名？
+3. doc/code 中的错误码策略是否与 design 一致？
+4. doc/code 中的不变量是否在 design 中有显式声明？
+5. doc/code 中的架构演进是否标注 ARCH？
+6. doc/code 中的 unsafe 边界是否与 design 中的安全论证一致？
+
+Phase 2.6.2 design 缺口清单（P0-design-missing）：
+- 列出所有 "design 缺但 doc/code 需要" 的项
+- 每项必须：(a) 给出补充 design 的章节引用，或 (b) 标记 IN_DESIGN 进入 Review 中断协议
+
+Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
+- IN_DESIGN = 主动承认需要先 design，非逃避
+- 时间上限：7 天警告、30 天清理
+- 月度审计：清理过期 IN_DESIGN 项
+
+Phase 2.6.4 outline 对齐检查（H.6，方案 D 新增）：
+- 检查 `notes/rewrite/{module}/{stage}/.design/{NN}-outline.md` 是否存在
+- 对照 Step 0.5.3 的 outline 偏离矩阵，确认无 P0 偏离（核心概念遗漏）
+- outline.md 缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
+
+Output: gate-evidence-H 块。
+> ⛔ **Gate H**: 6 项 design 检查 + 缺口清单 + P0-design-missing 全处置 + **H.6 outline 对齐无 P0 偏离**。Failure → scan.md DRAFT。
+> 详见 `prompt/review-rules/review-process.md` §Step 1.6 + `prompt/skill/review-patterns-skill.md` §X.5 Pattern 63 Design-Missing。
 
 ---
 

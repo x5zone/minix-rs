@@ -5,6 +5,8 @@
 
 use minix_types::{VirBytes, PhysBytes};
 
+use crate::platform::PlatformDescSource;
+
 // ── Data structures ──
 
 #[derive(Clone, Copy)]
@@ -42,7 +44,7 @@ pub struct KernelInfo {
 
     /// Kernel initial stack top (virtual address).
     /// C: k_boot_stktop / k_initial_stktop — linker symbol, used by
-    /// tss_init(0, &k_boot_stktop) in prot_init() — protect.c:338
+    /// tss_init(0, &k_boot_stktop) in prot_init() — arch/i386/protect.c:338
     /// x86-64: TSS.sp0, aarch64: SP_EL1, riscv64: sscratch
     pub kern_stack_top: VirBytes,
 
@@ -51,47 +53,54 @@ pub struct KernelInfo {
     /// Kernel metadata recorded for all architectures; only x86-64 uses it
     /// to configure LSTAR MSR. aarch64/riscv64 determine the entry at
     /// compile time (exception/trap vector), so this field is for reference only.
-    /// C: LSTAR MSR — set by tss_init() SYSCALL MSR setup — protect.c:189-205
+    /// C: STAR MSR (AMD_MSR_STAR, 32-bit AMD SYSCALL) — set by tss_init() SYSCALL
+    /// MSR setup — arch/i386/protect.c:189-205. Note: C is 32-bit, uses STAR;
+    /// Rust x86-64 long mode uses LSTAR (different MSR, same semantic role).
     pub syscall_entry: VirBytes,
 
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: kinfo.module_list[] — pre_init.c memcpy from GRUB
     pub boot_modules: &'static [BootModule],
 
-    /// Physical address of the bootstrap (boot-shim) memory region.
+    /// Physical address of the bootstrap (unpaged-kernel) memory region.
     /// C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
-    /// This memory is reclaimed via add_memmap() after boot completes.
+    /// In Minix3 C this is reclaimed via add_memmap() after boot completes.
+    /// In the Rust port the kernel runs in higher-half from the first
+    /// instruction — no separate unpaged section exists. Callers therefore
+    /// pass `(PhysBytes(0), 0)` and the kernel's `if bootstrap_len > 0`
+    /// guard skips the reclaim entirely. See 01-boot-shim-bootstrap.md
+    /// §X (TODO-01-1 fix) for the rationale.
     pub bootstrap_start: PhysBytes,
 
-    /// Length of the bootstrap (boot-shim) memory region.
+    /// Length of the bootstrap (unpaged-kernel) memory region.
     /// C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unpaged_start — pre_init.c:115-116
-    /// Added to free memory pool by add_memmap() in kmain Phase F.
+    /// In the Rust port: must be `0` (see bootstrap_start for rationale).
+    /// A non-zero value triggers add_memmap() in kmain Phase F and would
+    /// reclaim physical memory; an incorrect range would corrupt firmware
+    /// regions such as OpenSBI/DTB/U-Boot.
     pub bootstrap_len: u64,
 
-    /// Platform descriptor raw pointer (DTB or RSDP physical address).
+    /// Platform descriptor sources — opaque handles carrying firmware table
+    /// pointers (DTB, RSDP, or both). Ordered by boot-shim's preference;
+    /// the kernel takes the first source that parses successfully.
     ///
-    /// `None` means boot-shim did not provide one — kernel falls back to
-    /// `QemuVirtDesc` (dev) or panics (release). See `plat-design.md` §4.
+    /// Empty slice means boot-shim did not provide any — kernel falls back
+    /// to `QemuVirtDesc` (dev) or panics (release). See `plat-design.md` §4.
     ///
-    /// Phase 1: boot-shim always fills `None`. Phase 2: boot-shim locates
-    /// DTB/RSDP and fills the appropriate variant.
-    pub platform_descriptor: Option<PlatformDescriptorPtr>,
-}
-
-/// Raw platform descriptor pointer — the uninterpreted handoff from
-/// boot-shim to kernel.
-///
-/// boot-shim locates the physical address of the DTB blob or ACPI RSDP
-/// and passes it here. The kernel (`minix-platform::init_from_kinfo`)
-/// parses the pointed-to data into a structured `PlatformDesc`.
-///
-/// See `plat-design.md` §4.1.
-#[derive(Debug, Clone, Copy)]
-pub enum PlatformDescriptorPtr {
-    /// Flattened Device Tree blob physical address (ARM64 / RISC-V).
-    Dtb(PhysBytes),
-    /// ACPI RSDP physical address (x86-64).
-    Rsdp(PhysBytes),
+    /// # Cross-binary safety (TODO-01-2 fix, 2026-07-16)
+    ///
+    /// Each `PlatformDescSource` is pure data `(u32 kind, u64 phys_addr)` —
+    /// safe to pass from boot-shim to kernel even when they are separate
+    /// ELF binaries (TODO-02-3). No function pointers cross the boundary.
+    ///
+    /// # DTB + RSDP coexistence
+    ///
+    /// Real-world ARM64 servers (SBBR) may provide both DTB and ACPI. The
+    /// list supports this: boot-shim passes `[dtb_source, rsdp_source]` (or
+    /// `[rsdp_source, dtb_source]` if ACPI preferred). The kernel tries
+    /// each in order, using the first that parses successfully — matching
+    /// Linux's `acpi=on/off/force` model.
+    pub platform_sources: &'static [PlatformDescSource],
 }
 
 impl KernelInfo {

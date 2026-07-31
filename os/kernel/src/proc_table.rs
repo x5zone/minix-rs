@@ -472,7 +472,7 @@ impl ProcessTable {
                     cur.get_priority().get() != 0,
                 )
             };
-            let new_prio = q as i8;
+            let new_prio = q as u8;
             if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
                 self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
             }
@@ -553,49 +553,10 @@ impl ProcessTable {
         };
 
         if !kernel_scheduled && preemptible {
-            // User-scheduled + preemptible: notify scheduler
+            // User-scheduled + preemptible: dequeue + notify scheduler.
+            // C: `notify_scheduler(p)` — proc.c:1860-1891.
             self.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
-            // TODO: expand the deferral into a
-            // 4-step contract mirroring C's `sched()` macro at
-            // `proc.c:892-915`.
-            //
-            // C sends a `SCHEDULING_NO_QUANTUM` message to the
-            // scheduler process (`p->p_scheduler`) so the user-mode
-            // scheduler can re-schedule this process. The Rust
-            // rewrite is blocked on:
-            //
-            //   1. **IPC primitive**: we need `IpcEngine::notify` to
-            //      work for kernel→system-process delivery. Kernel
-            //      IPC core is in progress (partial fix from previous
-            //      round; full wiring pending).
-            //   2. **Message type**: we need a `MessSchedule` variant
-            //      in `minix-types` carrying the target proc_nr +
-            //      quantum_ms. The current kernel scheduler uses
-            //      `MessageM1` for IPC traffic which is wrong for
-            //      the 64-bit layout (see MessSchedule variant TODO).
-            //   3. **Endpoint→ProcNr resolution**: we need to
-            //      resolve `p_scheduler` (a ProcNr) to an Endpoint
-            //      for IPC. The current code only goes Endpoint→
-            //      ProcNr (partial fix adding `endpoint_to_nr`).
-            //
-            // Until all three land, the only action we take is to
-            // set RTS_NO_QUANTUM. The user-mode scheduler is
-            // expected to poll this flag (via the `getrusage`-like
-            // InfoQuery path) on a tick boundary, or to receive
-            // the same information via the per-process flags dump
-            // that `kcall_filter_check` already uses internally.
-            //
-            // Effect on the user scheduler: the scheduler's
-            // accounting will be off-by-one quantum until IPC lands.
-            // This is acceptable because the user-scheduler path is
-            // opt-in (a process sets `p_scheduler = Some(self)`)
-            // and the kernel scheduler is the default for system
-            // services.
-            //
-            // Tracking: this is the canonical example of "documented
-            // deferral" in this codebase — the contract is clear, the
-            // dependency chain is explicit, and a future implementer
-            // has the full roadmap.
+            self.notify_scheduler(nr);
         } else {
             // Kernel-scheduled or non-preemptible: reset quantum
             let cpu_time = ms_to_cpu_time(quantum_ms);
@@ -607,6 +568,110 @@ impl ProcessTable {
                 .store(cpu_time, Ordering::Release);
         }
     }
+
+    /// Send `SCHEDULING_NO_QUANTUM` to the user-space scheduler.
+    ///
+    /// C: `notify_scheduler(p)` — proc.c:1860-1891. Builds a
+    /// `mess_krn_lsys_schedule` from the depleted process's accounting,
+    /// resets the accounting, then `mini_send`s it FROM_KERNEL to
+    /// `p->p_scheduler->p_endpoint`. On `mini_send` error C panics; Rust
+    /// matches (`panic!`) because a kernel-origin send failure indicates
+    /// a kernel integrity bug.
+    ///
+    /// # Design (D-notify-scheduler / 11-scheduling-primitives.md §4.5)
+    ///
+    /// The send constructs a transient `IpcEngine` borrowing `self.procs`
+    /// + the global `PRIV_TABLE` + `KernelUserCopy`. This works in both
+    /// production (self is the global `PROC_TABLE`) and tests (self is a
+    /// local table) as long as the scheduler process is present in the
+    /// table — which tests must arrange when exercising this path.
+    ///
+    /// `cpu_load()` / `current_cpuid()` read per-CPU state from the
+    /// global `SMP_STATE` (defensive: return 0 if not initialized, e.g.
+    /// in unit tests without the full boot sequence).
+    fn notify_scheduler(&mut self, nr: ProcNr) {
+        use minix_types::ipc::{Message, MessKrnLsysSchedule};
+        use minix_types::SCHEDULING_NO_QUANTUM;
+        use crate::ipc::{IpcEngine, IpcOutcome, KernelUserCopy, SendFlags};
+
+        // Phase 1: resolve scheduler + read accounting (immutable borrow).
+        let (scheduler_nr, scheduler_ep, acnt_queue, acnt_deqs, acnt_ipc_sync,
+             acnt_ipc_async, acnt_preempt) = {
+            let p = self.get(nr).expect("notify_scheduler: invalid proc nr");
+            let scheduler_nr = match p.p_sched.scheduler {
+                Some(s) => s,
+                None => return, // kernel-scheduled: nothing to notify
+            };
+            let scheduler_ep = match self.get(scheduler_nr) {
+                Some(s) => s.p_endpoint,
+                None => return, // scheduler not in table: nothing to do
+            };
+            let acct = &p.p_accounting;
+            (
+                scheduler_nr,
+                scheduler_ep,
+                clock::cpu_time_to_ms(acct.time_in_queue.load(Ordering::Acquire)),
+                acct.dequeues.load(Ordering::Acquire),
+                acct.ipc_sync.load(Ordering::Acquire),
+                acct.ipc_async.load(Ordering::Acquire),
+                acct.preempted.load(Ordering::Acquire),
+            )
+        };
+
+        // Phase 2: build the SCHEDULING_NO_QUANTUM message.
+        // C: proc.c:1874-1882.
+        let payload = MessKrnLsysSchedule {
+            acnt_queue: acnt_queue as u64,
+            acnt_deqs,
+            acnt_ipc_sync,
+            acnt_ipc_async,
+            acnt_preempt,
+            acnt_cpu: clock::current_cpuid(),
+            acnt_cpu_load: clock::cpu_load(),
+            _padding: [0; 24],
+        };
+        let mut msg = Message::default();
+        msg.m_type = SCHEDULING_NO_QUANTUM;
+        // SAFETY: `MessKrnLsysSchedule` is `#[repr(C)]` and fits within
+        // `MESSAGE_PAYLOAD_SIZE` (compile-time asserted). We write to a
+        // zeroed `MessageUnion`, so all fields are valid.
+        unsafe {
+            msg.m_u.m_krn_lsys_schedule = payload;
+        }
+
+        // Phase 3: reset accounting (C: `reset_proc_accounting(p)` — proc.c:1885).
+        // C: proc.c:1912-1917.
+        {
+            let p = self.get_mut(nr).expect("notify_scheduler: invalid proc nr");
+            p.p_accounting.reset();
+        }
+
+        // Phase 4: mini_send FROM_KERNEL to the scheduler.
+        // C: `mini_send(p, p->p_scheduler->p_endpoint, &m_no_quantum, FROM_KERNEL)`
+        //    — proc.c:1887-1890.
+        //
+        // `m_source` is set to the depleted process's endpoint inside
+        // `IpcEngine::send` (it overwrites `m_source` with `caller_endpoint`).
+        let _ = scheduler_nr; // resolved to scheduler_ep above; nr is the caller
+        let mut engine = IpcEngine::new(
+            self.procs_slice_mut(),
+            // SAFETY: BKL held by the caller (clock tick path). The global
+            // PRIV_TABLE is statically initialized and BKL-protected.
+            unsafe { crate::priv_table() },
+            &KernelUserCopy,
+        );
+        let outcome = engine.send(nr, scheduler_ep, &msg, SendFlags::FROM_KERNEL);
+
+        // C: `if (err) panic("WARNING: Scheduling: mini_send returned %d\n", err)`.
+        // A kernel-origin send failure means the scheduler endpoint is dead
+        // or the kernel table is inconsistent — both are kernel bugs.
+        match outcome {
+            IpcOutcome::Delivered | IpcOutcome::Blocked => {}
+            IpcOutcome::Error(e) => {
+                panic!("notify_scheduler: mini_send failed for proc {:?}: {:?} (scheduler_ep={:?})", nr, e, scheduler_ep);
+            }
+        }
+    }
 }
 
 impl Default for ProcessTable {
@@ -615,14 +680,14 @@ impl Default for ProcessTable {
     }
 }
 
-// ── 09-switch-to-user methods ──
+// ── 10-switch-to-user methods ──
 
 /// switch_to_user 控制流状态。
 ///
 /// C 使用 goto 在多个检查点之间跳转（proc.c:299-477）。
 /// Rust 使用枚举状态 + loop 模拟相同控制流。
 ///
-/// Design decision: 状态机替代 goto（09-switch-to-user.md §3）。
+/// Design decision: 状态机替代 goto（10-switch-to-user.md §3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitchFlow {
     /// 检查当前进程是否可运行

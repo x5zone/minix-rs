@@ -2,7 +2,7 @@
 //!
 //! Defines the trait interface for exception frame parsing and fault recovery.
 //!
-//! # Design decisions (see 05-exception-interrupt.md §3.3, §3.6)
+//! # Design decisions (see 14-exception-interrupt.md §3.3, §3.4)
 //!
 //! - **Associated type Frame** (§3.3): Each architecture has its own exception
 //!   frame layout. A common struct would waste fields on most architectures.
@@ -10,6 +10,9 @@
 //!   is in CR2 (not in the frame). ARM64 uses FAR_EL1, RISC-V uses stval.
 //! - **set_instruction_pointer / set_return_value** (§3.3): Needed for nested
 //!   exception fault recovery — redirecting execution to a recovery point.
+//! - **FaultContext / RecoveryPoint enums** (§3.4): Replace C's address-range
+//!   comparison (`eip > phys_copy && eip < phys_copy_fault`) with explicit,
+//!   typed context tracking.
 
 use crate::protection::InterruptVector;
 use minix_types::VirBytes;

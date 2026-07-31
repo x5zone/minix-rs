@@ -1,7 +1,7 @@
 //! Device Tree Blob (DTB) descriptor — parses FDT and implements `PlatformDesc`.
 //!
 //! Used by ARM64 and RISC-V when the boot-shim provides a DTB pointer via
-//! `KernelInfo.platform_descriptor`. Extracts hardware parameters (CLINT,
+//! `KernelInfo.platform_sources`. Extracts hardware parameters (CLINT,
 //! PLIC, GIC, timer frequency, CPU topology) from the FDT without hardcoding.
 //!
 //! # Architecture coverage
@@ -18,8 +18,9 @@
 //! - The borrowed `Fdt` cannot outlive the DTB bytes — but `PlatformDesc`
 //!   must be `Send + Sync + 'static`. We solve this by **eager parsing**:
 //!   `DeviceTreeDesc::parse` walks the FDT once, extracts all needed values
-//!   into owned `usize`/`u32`/`u64` fields, then drops the `Fdt` borrow.
-//!   The resulting `DeviceTreeDesc` is `'static` and safe to store globally.
+//!   into owned `usize`/`u32`/`u64` fields (stored as concrete arch structs),
+//!   then drops the `Fdt` borrow. The resulting `DeviceTreeDesc` is `'static`
+//!   and safe to store globally.
 //!
 //! # Safety
 //!
@@ -33,20 +34,48 @@
 use crate::desc::*;
 use core::fmt;
 
+// ── Arch-specific sub-descriptor type aliases ──
+//
+// `DeviceTreeDesc` is only meaningfully used on `riscv64` and `aarch64`.
+// On other arches the struct still compiles (with placeholder field types)
+// but `parse` returns `UnsupportedArch` early. The trait impl is cfg-gated
+// to arches that actually support DTB.
+
+#[cfg(target_arch = "riscv64")]
+use crate::arch::riscv64::{ClintDesc, PlicDesc, Riscv64ConsoleDesc};
+#[cfg(target_arch = "aarch64")]
+use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc, MmioSerialDesc};
+
 /// Parsed DTB descriptor — owns all extracted hardware parameters.
 ///
 /// Constructed via [`DeviceTreeDesc::parse`] (production) or
 /// [`DeviceTreeDesc::from_parsed`] (tests). After construction, the DTB
-/// bytes are no longer needed — all values are stored as plain integers.
+/// bytes are no longer needed — all values are stored as concrete arch
+/// structs implementing the sub-descriptor traits.
 #[derive(Clone, Copy)]
 pub struct DeviceTreeDesc {
-    ic: InterruptControllerDesc,
-    timer: TimerDesc,
-    console: Option<ConsoleDesc>,
+    /// Interrupt controller descriptor (arch-specific concrete type).
+    #[cfg(target_arch = "riscv64")]
+    ic: PlicDesc,
+    #[cfg(target_arch = "aarch64")]
+    ic: Gicv3Desc,
+    /// Timer descriptor (arch-specific concrete type).
+    #[cfg(target_arch = "riscv64")]
+    timer: ClintDesc,
+    #[cfg(target_arch = "aarch64")]
+    timer: ArmGenericTimerDesc,
+    /// Early console descriptor (optional).
+    #[cfg(target_arch = "riscv64")]
+    console: Option<Riscv64ConsoleDesc>,
+    #[cfg(target_arch = "aarch64")]
+    console: Option<MmioSerialDesc>,
+    /// CPU topology.
     cpu_topology: CpuTopology,
+    /// Architecture miscellany.
     arch_misc: ArchMiscDesc,
 }
 
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 impl fmt::Debug for DeviceTreeDesc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceTreeDesc")
@@ -54,6 +83,16 @@ impl fmt::Debug for DeviceTreeDesc {
             .field("timer", &self.timer)
             .field("console", &self.console)
             .field("cpu_topology", &self.cpu_topology)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+impl fmt::Debug for DeviceTreeDesc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceTreeDesc")
+            .field("cpu_topology", &self.cpu_topology)
+            .field("arch_misc", &self.arch_misc)
             .finish_non_exhaustive()
     }
 }
@@ -66,17 +105,32 @@ impl DeviceTreeDesc {
     /// Caller must guarantee `dtb_phys` points to a valid FDT blob that
     /// remains readable for the duration of this call. See module docs.
     pub unsafe fn parse(dtb_phys: usize) -> Result<Self, DtParseError> {
-        // SAFETY: caller guarantees dtb_phys is a valid FDT pointer.
-        let fdt = unsafe { fdt::Fdt::from_ptr(dtb_phys as *const u8) }
-            .map_err(|_| DtParseError::BadFdtPointer)?;
-
-        Self::from_fdt(&fdt)
+        #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+        {
+            // SAFETY: caller guarantees dtb_phys is a valid FDT pointer.
+            let fdt = unsafe { fdt::Fdt::from_ptr(dtb_phys as *const u8) }
+                .map_err(|_| DtParseError::BadFdtPointer)?;
+            Self::from_fdt(&fdt)
+        }
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+        {
+            let _ = dtb_phys;
+            Err(DtParseError::UnsupportedArch)
+        }
     }
 
     /// Parse a DTB from a byte slice (for tests and in-memory DTB).
     pub fn from_bytes(dtb: &[u8]) -> Result<Self, DtParseError> {
-        let fdt = fdt::Fdt::new(dtb).map_err(|_| DtParseError::BadFdtPointer)?;
-        Self::from_fdt(&fdt)
+        #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+        {
+            let fdt = fdt::Fdt::new(dtb).map_err(|_| DtParseError::BadFdtPointer)?;
+            Self::from_fdt(&fdt)
+        }
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+        {
+            let _ = dtb;
+            Err(DtParseError::UnsupportedArch)
+        }
     }
 
     /// Build a `DeviceTreeDesc` from a parsed `Fdt`.
@@ -84,6 +138,7 @@ impl DeviceTreeDesc {
     /// Architecture-specific extraction is dispatched via `#[cfg]` on
     /// **data selection** (which node to look up), not behavior — see
     /// `plat-design.md` §5.2.
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     fn from_fdt(fdt: &fdt::Fdt<'_>) -> Result<Self, DtParseError> {
         let ic = Self::parse_interrupt_controller(fdt)?;
         let timer = Self::parse_timer(fdt)?;
@@ -94,32 +149,16 @@ impl DeviceTreeDesc {
         Ok(Self { ic, timer, console, cpu_topology, arch_misc })
     }
 
-    /// Construct from pre-parsed values (for tests).
-    pub fn from_parsed(
-        ic: InterruptControllerDesc,
-        timer: TimerDesc,
-        console: Option<ConsoleDesc>,
-        cpu_topology: CpuTopology,
-    ) -> Self {
-        Self { ic, timer, console, cpu_topology, arch_misc: ArchMiscDesc::default() }
-    }
-
     // ── Interrupt controller extraction ──
 
-    fn parse_interrupt_controller(fdt: &fdt::Fdt<'_>) -> Result<InterruptControllerDesc, DtParseError> {
-        #[cfg(target_arch = "riscv64")]
-        {
-            Self::parse_plic(fdt)
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            Self::parse_gic(fdt)
-        }
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-        {
-            let _ = fdt;
-            Err(DtParseError::UnsupportedArch)
-        }
+    #[cfg(target_arch = "riscv64")]
+    fn parse_interrupt_controller(fdt: &fdt::Fdt<'_>) -> Result<PlicDesc, DtParseError> {
+        Self::parse_plic(fdt)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn parse_interrupt_controller(fdt: &fdt::Fdt<'_>) -> Result<Gicv3Desc, DtParseError> {
+        Self::parse_gic(fdt)
     }
 
     /// RISC-V: locate PLIC node and extract base address + IRQ count.
@@ -135,7 +174,8 @@ impl DeviceTreeDesc {
     ///     };
     /// }
     /// ```
-    fn parse_plic(fdt: &fdt::Fdt<'_>) -> Result<InterruptControllerDesc, DtParseError> {
+    #[cfg(target_arch = "riscv64")]
+    fn parse_plic(fdt: &fdt::Fdt<'_>) -> Result<PlicDesc, DtParseError> {
         // Search for a node compatible with RISC-V PLIC.
         let plic_node = fdt
             .find_compatible(&["riscv,plic0", "sifive,plic-1.0.0"])
@@ -149,9 +189,6 @@ impl DeviceTreeDesc {
             .ok_or(DtParseError::PlicRegMissing)?;
 
         // `riscv,ndev` gives the number of external (non-software) IRQs.
-        // Total IRQ count = ndev + 16 (16 for local IRQs 0..15 in PLIC's
-        // source numbering, though PLIC starts at 1; we use ndev + 1 to
-        // cover the MSIP/MTIP edge case in QEMU virt).
         let nr_irqs = plic_node
             .property("riscv,ndev")
             .and_then(|p| p.as_usize())
@@ -159,11 +196,10 @@ impl DeviceTreeDesc {
             .unwrap_or(64);
 
         // S-mode context for hart 0 is typically context 1 in QEMU virt
-        // (M-mode = 0, S-mode = 1). We hardcode 1 for single-hart boot;
-        // SMP expansion will derive this from the IRQ extension / hart count.
+        // (M-mode = 0, S-mode = 1).
         let context = 1u32;
 
-        Ok(InterruptControllerDesc::Plic { plic_base, nr_irqs, context })
+        Ok(PlicDesc { plic_base, nr_irqs, context })
     }
 
     /// ARM64: locate GICv3 node and extract distributor + redistributor bases.
@@ -177,7 +213,8 @@ impl DeviceTreeDesc {
     ///     ...
     /// };
     /// ```
-    fn parse_gic(fdt: &fdt::Fdt<'_>) -> Result<InterruptControllerDesc, DtParseError> {
+    #[cfg(target_arch = "aarch64")]
+    fn parse_gic(fdt: &fdt::Fdt<'_>) -> Result<Gicv3Desc, DtParseError> {
         let gic_node = fdt
             .find_compatible(&["arm,gic-v3"])
             .ok_or(DtParseError::GicNotFound)?;
@@ -194,38 +231,24 @@ impl DeviceTreeDesc {
             .ok_or(DtParseError::GicRegMissing)?;
 
         // Redistributor stride: 2 × 64KB for GICv3 (RD_base + SGI_base).
-        // Standard value per ARM IHI 0069; not always in DTB.
         let gicr_stride = 0x2_0000usize;
         let nr_irqs = 64u32; // QEMU virt default; SPI count not in standard DTB prop.
 
-        Ok(InterruptControllerDesc::Gicv3 {
-            gicd_base,
-            gicr_base,
-            gicr_stride,
-            nr_irqs,
-        })
+        Ok(Gicv3Desc { gicd_base, gicr_base, gicr_stride, nr_irqs })
     }
 
     // ── Timer extraction ──
 
-    fn parse_timer(fdt: &fdt::Fdt<'_>) -> Result<TimerDesc, DtParseError> {
-        #[cfg(target_arch = "riscv64")]
-        {
-            Self::parse_clint(fdt)
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // ARM Generic Timer frequency is read from CNTFRQ_EL0 at runtime;
-            // DTB only confirms presence of the timer node. We return the
-            // variant and let the arch layer read the register.
-            let _ = fdt;
-            Ok(TimerDesc::ArmGenericTimer)
-        }
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-        {
-            let _ = fdt;
-            Err(DtParseError::UnsupportedArch)
-        }
+    #[cfg(target_arch = "riscv64")]
+    fn parse_timer(fdt: &fdt::Fdt<'_>) -> Result<ClintDesc, DtParseError> {
+        Self::parse_clint(fdt)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn parse_timer(_fdt: &fdt::Fdt<'_>) -> Result<ArmGenericTimerDesc, DtParseError> {
+        // ARM Generic Timer frequency is read from CNTFRQ_EL0 at runtime;
+        // DTB only confirms presence of the timer node.
+        Ok(ArmGenericTimerDesc)
     }
 
     /// RISC-V: locate CLINT node and extract mtime/mtimecmp addresses + frequency.
@@ -246,7 +269,8 @@ impl DeviceTreeDesc {
     /// - `MTIME` (global): base + 0xBFF8
     ///
     /// Frequency: `/cpus/timebase-frequency` (QEMU virt = 10 MHz).
-    fn parse_clint(fdt: &fdt::Fdt<'_>) -> Result<TimerDesc, DtParseError> {
+    #[cfg(target_arch = "riscv64")]
+    fn parse_clint(fdt: &fdt::Fdt<'_>) -> Result<ClintDesc, DtParseError> {
         let clint_node = fdt
             .find_compatible(&["riscv,clint0"])
             .ok_or(DtParseError::ClintNotFound)?;
@@ -270,54 +294,37 @@ impl DeviceTreeDesc {
             .map(|n| n as u64)
             .ok_or(DtParseError::TimebaseFreqMissing)?;
 
-        Ok(TimerDesc::Clint {
-            mtime_addr,
-            mtimecmp_base,
-            mtimecmp_stride,
-            freq,
-        })
+        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride, freq })
     }
 
     // ── Console extraction ──
 
-    fn parse_console(fdt: &fdt::Fdt<'_>) -> Option<ConsoleDesc> {
-        #[cfg(target_arch = "riscv64")]
-        {
-            // RISC-V QEMU virt uses SBI console by default (no MMIO UART in
-            // the standard DTB). If a UART node exists, prefer MMIO.
-            if fdt.find_compatible(&["ns16550a", "sifive,uart0"]).is_some() {
-                // UART node found; extract base. Fall back to SBI if reg missing.
-                if let Some(uart) = fdt.find_compatible(&["ns16550a", "sifive,uart0"]) {
-                    if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
-                        return Some(ConsoleDesc::MmioSerial {
-                            mmio_base: base.starting_address as usize,
-                        });
-                    }
-                }
+    #[cfg(target_arch = "riscv64")]
+    fn parse_console(fdt: &fdt::Fdt<'_>) -> Option<Riscv64ConsoleDesc> {
+        // RISC-V QEMU virt uses SBI console by default (no MMIO UART in
+        // the standard DTB). If a UART node exists, prefer MMIO.
+        if let Some(uart) = fdt.find_compatible(&["ns16550a", "sifive,uart0"]) {
+            if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
+                return Some(Riscv64ConsoleDesc::mmio(base.starting_address as usize));
             }
-            Some(ConsoleDesc::SbiConsole)
         }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // ARM64 QEMU virt uses PL011 UART at 0x0900_0000.
-            if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"]) {
-                if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
-                    return Some(ConsoleDesc::MmioSerial {
-                        mmio_base: base.starting_address as usize,
-                    });
-                }
+        Some(Riscv64ConsoleDesc::sbi())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn parse_console(fdt: &fdt::Fdt<'_>) -> Option<MmioSerialDesc> {
+        // ARM64 QEMU virt uses PL011 UART at 0x0900_0000.
+        if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"]) {
+            if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
+                return Some(MmioSerialDesc { mmio_base: base.starting_address as usize });
             }
-            None
         }
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-        {
-            let _ = fdt;
-            None
-        }
+        None
     }
 
     // ── CPU topology extraction ──
 
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     fn parse_cpu_topology(fdt: &fdt::Fdt<'_>) -> CpuTopology {
         let mut cpus = [CpuInfo::default(); MAX_CPUS];
         let mut nr_cpus = 0u32;
@@ -333,18 +340,21 @@ impl DeviceTreeDesc {
             }
 
             // Architecture-specific per-CPU fields.
-            let gicr_base = match Self::parse_interrupt_controller(fdt) {
-                Ok(InterruptControllerDesc::Gicv3 { gicr_base, gicr_stride, .. }) => {
-                    Some(gicr_base + (hw_id as usize) * gicr_stride)
-                }
-                _ => None,
+            #[cfg(target_arch = "aarch64")]
+            let gicr_base = match Self::parse_gic(fdt) {
+                Ok(g) => Some(g.gicr_base + (hw_id as usize) * g.gicr_stride),
+                Err(_) => None,
             };
-            let mtimecmp_addr = match Self::parse_timer(fdt) {
-                Ok(TimerDesc::Clint { mtimecmp_base, mtimecmp_stride, .. }) => {
-                    Some(mtimecmp_base + (hw_id as usize) * mtimecmp_stride)
-                }
-                _ => None,
+            #[cfg(not(target_arch = "aarch64"))]
+            let gicr_base = None;
+
+            #[cfg(target_arch = "riscv64")]
+            let mtimecmp_addr = match Self::parse_clint(fdt) {
+                Ok(c) => Some(c.mtimecmp_base + (hw_id as usize) * c.mtimecmp_stride),
+                Err(_) => None,
             };
+            #[cfg(not(target_arch = "riscv64"))]
+            let mtimecmp_addr = None;
 
             cpus[nr_cpus as usize] = CpuInfo {
                 hw_id,
@@ -363,15 +373,19 @@ impl DeviceTreeDesc {
     }
 }
 
+// The trait impl is only compiled on arches that support DTB.
+// On other arches, `DeviceTreeDesc` has no sub-descriptor fields and the
+// trait impl cannot be written.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 impl PlatformDesc for DeviceTreeDesc {
-    fn interrupt_controller(&self) -> InterruptControllerDesc {
-        self.ic
+    fn interrupt_controller(&self) -> &dyn InterruptControllerDesc {
+        &self.ic
     }
-    fn timer(&self) -> TimerDesc {
-        self.timer
+    fn timer(&self) -> &dyn TimerDesc {
+        &self.timer
     }
-    fn early_console(&self) -> Option<ConsoleDesc> {
-        self.console
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
+        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -450,39 +464,19 @@ mod tests {
     }
 
     #[test]
-    fn test_device_tree_desc_from_parsed() {
-        let ic = InterruptControllerDesc::Plic {
-            plic_base: 0x0C00_0000,
-            nr_irqs: 53,
-            context: 1,
-        };
-        let timer = TimerDesc::Clint {
-            mtime_addr: 0x200_BFF8,
-            mtimecmp_base: 0x200_4000,
-            mtimecmp_stride: 8,
-            freq: 10_000_000,
-        };
-        let desc = DeviceTreeDesc::from_parsed(ic, timer, None, CpuTopology::default());
-        assert_eq!(desc.source(), PlatformSource::DeviceTree);
-        match desc.interrupt_controller() {
-            InterruptControllerDesc::Plic { plic_base, .. } => {
-                assert_eq!(plic_base, 0x0C00_0000);
-            }
-            _ => panic!("expected Plic"),
-        }
+    fn test_from_bytes_bad_magic() {
+        // Empty buffer → BadFdtPointer on DTB arches, UnsupportedArch on others.
+        let r = DeviceTreeDesc::from_bytes(&[]);
+        #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+        assert!(matches!(r, Err(DtParseError::BadFdtPointer)));
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+        assert!(matches!(r, Err(DtParseError::UnsupportedArch)));
     }
 
     /// Test DTB from the `fdt` crate's test suite (RISC-V QEMU virt).
     /// Contains PLIC, CLINT, and CPU nodes with `riscv,plic0` / `riscv,clint0`
     /// compatible strings.
     static TEST_DTB: &[u8] = include_bytes!("../tests/data/qemu_virt_riscv.dtb");
-
-    #[test]
-    fn test_from_bytes_bad_magic() {
-        // Empty buffer → BadFdtPointer.
-        let r = DeviceTreeDesc::from_bytes(&[]);
-        assert!(matches!(r, Err(DtParseError::BadFdtPointer)));
-    }
 
     #[cfg(target_arch = "riscv64")]
     #[test]
@@ -493,25 +487,25 @@ mod tests {
         assert_eq!(desc.source(), PlatformSource::DeviceTree);
 
         // PLIC: base 0x0C00_0000 (from `plic@c000000`).
-        match desc.interrupt_controller() {
-            InterruptControllerDesc::Plic { plic_base, context, .. } => {
-                assert_eq!(plic_base, 0x0C00_0000, "PLIC base mismatch");
-                assert_eq!(context, 1, "S-mode context for hart 0");
-            }
-            other => panic!("expected Plic, got {:?}", other),
-        }
+        let ic = desc.interrupt_controller();
+        let plic = ic
+            .as_any()
+            .downcast_ref::<PlicDesc>()
+            .expect("expected PlicDesc");
+        assert_eq!(plic.plic_base, 0x0C00_0000, "PLIC base mismatch");
+        assert_eq!(plic.context, 1, "S-mode context for hart 0");
 
         // CLINT: mtime at base + 0xBFF8, mtimecmp at base + 0x4000.
-        match desc.timer() {
-            TimerDesc::Clint { mtime_addr, mtimecmp_base, mtimecmp_stride, freq } => {
-                // CLINT base is 0x0200_0000 (from `clint@2000000`).
-                assert_eq!(mtime_addr, 0x0200_BFF8, "mtime address mismatch");
-                assert_eq!(mtimecmp_base, 0x0200_4000, "mtimecmp base mismatch");
-                assert_eq!(mtimecmp_stride, 8, "mtimecmp stride mismatch");
-                assert!(freq > 0, "timebase frequency must be non-zero");
-            }
-            other => panic!("expected Clint, got {:?}", other),
-        }
+        let timer = desc.timer();
+        let clint = timer
+            .as_any()
+            .downcast_ref::<ClintDesc>()
+            .expect("expected ClintDesc");
+        // CLINT base is 0x0200_0000 (from `clint@2000000`).
+        assert_eq!(clint.mtime_addr, 0x0200_BFF8, "mtime address mismatch");
+        assert_eq!(clint.mtimecmp_base, 0x0200_4000, "mtimecmp base mismatch");
+        assert_eq!(clint.mtimecmp_stride, 8, "mtimecmp stride mismatch");
+        assert!(clint.freq > 0, "timebase frequency must be non-zero");
 
         // CPU topology: at least 1 CPU.
         let topo = desc.cpu_topology();

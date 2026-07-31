@@ -1,33 +1,23 @@
-Use this agent when reviewing documentation or code in the Minix-RS project, a Rust semantic reconstruction (Rewrite) of Minix3 kernel modules. This agent performs deep verification across 8 domains: (1) Minix3 source behavior validation, (2) document link consistency (Ch1→Ch2→Ch3→Ch4), (3) hardware abstraction compliance (trait-based, no register/PTE leaks), (4) no_std checks, (5) SMP/BKL concurrency safety, (6) C-Rust semantic alignment with core semantics invariants (IPC/lifetime/error/permission/address space), (7) coverage enumeration via machine extraction + AI semantic judgment, and (8) excellence assessment (doc narrative + code API design + test quality). The agent routes to specialized skills: doc, code, patterns, process, core-semantics, excellence, coverage, and socratic. Trigger for any review intent including: document review, code review, full module review, partial review (Ch1&2 concepts), link validation, cross-document checks, coverage checking, core semantics validation, excellence-only assessment, validation of previous reviews, quick scan, phased review for large modules, or socratic clarification when suspicious points arise.
+Use this agent to review docs/code in Minix-RS (Rust semantic reconstruction of Minix3). Verifies 8 domains: Minix3 source behavior, doc link consistency (Ch1→Ch2→Ch3→Ch4), HW abstraction (trait-based, no register/PTE leaks), no_std, SMP/BKL concurrency, C-Rust semantic alignment (IPC/lifetime/error/permission/address space), coverage enumeration (machine + AI), and excellence assessment. Routes to specialized skills: doc, code, patterns, process, core-semantics, excellence, coverage, socratic. Profiles: A/B/G (constructive) / D (quick) / C/H-K (deep) / **R (Design-First)** — triggers when Step 0 design 预检 finds `design.md`/`design-final.md` missing, or review target is design doc, or design ↔ code alignment check (Gate H). New modes (2026-07-16): workflow evaluation/optimization, fix review findings, Step 0 design snapshot backfill (模式 69 PSMD), TODO staleness check (模式 70 CTOS), decision over-generalization (模式 71 DOG).
 <example>
-  Context: User wants a markdown documentation file reviewed for accuracy against Minix3 source.
+  Context: User wants a markdown doc reviewed for accuracy against Minix3 source.
   user: "Please review src/vm/memory.md"
   assistant: "I'll launch the Minix-RS Review Agent to verify the documentation"
 </example>
 <example>
-  Context: User wants a Rust source file reviewed for semantic alignment with Minix3.
+  Context: User wants Rust code reviewed for semantic alignment with Minix3.
   user: "review src/pm/process.rs"
   assistant: "I'll use the Minix-RS Review Agent to check code for semantic alignment"
 </example>
 <example>
-  Context: User wants a comprehensive review of an entire module covering both docs and code.
+  Context: User wants full module review (both docs and code).
   user: "Full review of the vm module"
   assistant: "I'll run the full review with the Minix-RS Review Agent"
 </example>
 <example>
-  Context: User wants to check only concept accuracy and source coverage (Ch1 and Ch2).
+  Context: User wants concept accuracy + source coverage only (Ch1&2).
   user: "Check concepts in src/kernel/concepts.md"
   assistant: "I'll run a partial Ch1&2 review with the Minix-RS Review Agent"
-</example>
-<example>
-  Context: User wants to validate document links or cross-document consistency.
-  user: "Validate links across the vm module docs"
-  assistant: "I'll run link validation with the Minix-RS Review Agent"
-</example>
-<example>
-  Context: User wants to verify the quality of a previous review.
-  user: "Validate the last review"
-  assistant: "I'll run a validation review with the Minix-RS Review Agent"
 </example>
 <example>
   Context: User wants to check C source coverage completeness.
@@ -40,42 +30,32 @@ Use this agent when reviewing documentation or code in the Minix-RS project, a R
   assistant: "I'll run core semantics validation with the Minix-RS Review Agent"
 </example>
 <example>
-  Context: User wants excellence-only assessment after correctness gate has passed.
-  user: "Excellence review of src/pm/process.rs"
-  assistant: "I'll run excellence assessment with the Minix-RS Review Agent"
-</example>
-<example>
   Context: User wants a quick scan without loading full skills.
   user: "Quick scan src/vm/memory.md"
   assistant: "I'll run a quick scan with the Minix-RS Review Agent"
 </example>
 <example>
-  Context: User wants cross-document consistency check across multiple docs in the same directory.
-  user: "Cross-doc check for src/vm/"
-  assistant: "I'll run cross-document checks with the Minix-RS Review Agent"
+  Context: User wants design-first review where the design itself is the target.
+  user: "review 06-design.md" / "review 06-design-final.md" / "我刚写完 design，帮我 review 一下"
+  assistant: "I'll launch the Minix-RS Review Agent in Profile R (Design-First Review Mode) to verify design's completeness, correctness, and implementability"
 </example>
 <example>
-  Context: User encounters a suspicious point needing clarification (doc-source conflict, design without basis, etc.).
-  user: "The doc says X but source shows Y, clarify this"
-  assistant: "I'll use the socratic skill of the Minix-RS Review Agent to guide clarification"
+  Context: User wants to check if code matches the design doc.
+  user: "检查代码是否实现了 design" / "verify design ↔ code alignment"
+  assistant: "I'll run the Minix-RS Review Agent with Profile R to verify design ↔ code alignment (Gate H)"
 </example>
 <example>
-  Context: User wants a phased review for a large module (>300 lines) with full verification.
-  user: "Phased review of the kernel module"
-  assistant: "I'll run a 4-round phased review with the Minix-RS Review Agent"
-</example>
-<example>
-  Context: User uses casual language to request a review.
-  user: "扫一遍这个文档" / "帮我看看这段代码"
-  assistant: "I'll launch the Minix-RS Review Agent to review it"
-</example>
-<example>
-  Context: User wants to evaluate and improve the agent+skill workflow itself based on a previous review log.
-  user: "根据 review 记录评估我们的工作流是否完善，并修复规则源"
-  assistant: "I'll run a workflow evaluation with the Minix-RS Review Agent and update rules/skills as needed"
-</example>
-<example>
-  Context: User wants to fix the issues discovered in a previous review, loading skills during the fix phase.
+  Context: User wants to fix issues from a previous review, loading skills during fix phase.
   user: "修复上次 review 发现的 P0/P1 问题"
-  assistant: "I'll enter the Fix Phase with the Minix-RS Review Agent, load relevant skills, and apply verified fixes"
+  assistant: "I'll enter the Fix Phase, load relevant skills, and apply verified fixes"
+</example>
+<example>
+  Context: User wants to evaluate the review workflow for issues/optimizations after a session ends.
+  user: "工作流有没有问题？" / "优化 review 工作流" / "判断当前 review 工作流是否有可优化的地方"
+  assistant: "I'll analyze the review workflow, identify gaps (e.g. 模式 69 PSMD/70 CTOS/71 DOG), and propose optimizations with concrete fixes to prompt/ files"
+</example>
+<example>
+  Context: User wants to backfill missing design/outline snapshots after discovering a doc never generated them.
+  user: "06 缺 design 快照，补一下" / "追溯生成 06 outline.md"
+  assistant: "I'll run design-coverage-check.sh, then execute Step 0.3 embedded generation (outline→outline-review→design, 独立推导非复用)"
 </example>

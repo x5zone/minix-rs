@@ -291,11 +291,11 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 
     // Phase B: cstart — protection + clock + interrupt
     init_protection(kernel_info);        // prot_init equivalent
-    init_clock_and_interrupts();         // clock + intr + arch_init (covered in 04)
+    init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
     // Phase C: proc_init + arch_boot_proc
     // Populates the global `PROC_TABLE` / `PRIV_TABLE` statics.
-    init_proc_and_boot(kernel_info);  // covered in 05
+    init_proc_and_boot(kernel_info);  // covered in 06
 
     // Phase C.5: IPCF_POOL_INIT — initialize IPC filter pool
     // C: IPCF_POOL_INIT() — main.c:158-162 (called after proc_init)
@@ -311,19 +311,26 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase D: arch_post_init + memory_init
     // SAFETY: boot is single-threaded before BKL exists.
     let proc_table = unsafe { crate::proc_table() };
-    init_post_and_memory(kernel_info, proc_table);  // covered in 06
+    init_post_and_memory(kernel_info, proc_table);  // covered in 07
 
     // Phase E: system_init — register syscall handlers
     // C: system_init() — system.c:168-278
     // D1/D2: In Rust, enum Syscall + match + const assert replaces C's
     // call_vec[] + map() macro. IrqManager and KPriv constructors handle
     // the IRQ hook pool and alarm timer initialization respectively.
-    // See 07-system-init-boot-finish.md §4.4
+    // See 08-system-init-boot-finish.md §4.4
 
     // Phase F: add_memmap + bsp_finish_booting
     // C: add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len)
     // D5: 4GB truncation removed for 64-bit.
-    // Reclaim the bootstrap (boot-shim) physical memory region.
+    // Reclaim the bootstrap (unpaged kernel) physical memory region.
+    //
+    // In Minix3 C this reclaims the small identity-mapped unpaged section
+    // (start..end linker symbols in kernel.lds). In the Rust port this is
+    // always a no-op because the kernel is higher-half from instruction #1 —
+    // boot-shim passes `bootstrap_start=PhysBytes(0), bootstrap_len=0` and
+    // the guard skips reclaim. See TODO-01-1 in 01-boot-shim-bootstrap.md
+    // §X for the over-reclaim bug that motivated this.
     if kernel_info.bootstrap_len > 0 {
         // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here
         // during boot. kernel_may_alloc is true at this point.
@@ -374,21 +381,28 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
             }
         }
     }
-    // C: bsp_finish_booting() — main.c:38-97
+    // C: bsp_finish_booting() — main.c:38-109
     // D7: bsp_finish_booting() -> ! — never returns.
     // bsp_finish_booting takes &mut ProcessTable + &mut SmpState to
     // perform step 2 (bill_ptr = idle_proc), step 4 (RTS_PROC_STOP unset
     // for NR_BOOT_PROCS-NR_TASKS boot processes), and step 5/7
     // (cycles_accounting_init + fpu_init on the BSP's CpuLocal).
-    // See 07-system-init-boot-finish.md §4.5-4.6
+    // See 08-system-init-boot-finish.md §4.5-4.6
     //
     // The SmpState is created here (single-CPU BSP-only configuration)
-    // and passed in. SMP expansion will replace this with a real SMP
-    // discovery (AP CPUs booted before bsp_finish_booting).
-    let mut smp_state = smp::SmpState::new_single_cpu();
+    // and stored in the global `SMP_STATE` so that `cpu_load()` and
+    // `notify_scheduler()` can reach per-CPU state without it being
+    // threaded through every call site. SMP expansion (16-smp.md) will
+    // replace this with a real SMP discovery (AP CPUs booted before
+    // bsp_finish_booting).
+    //
     // SAFETY: boot is single-threaded before BKL exists.
-    let proc_table = unsafe { crate::proc_table() };
-    bsp_finish_booting(proc_table, &mut smp_state)
+    unsafe {
+        *core::ptr::addr_of_mut!(SMP_STATE) = Some(smp::SmpState::new_single_cpu());
+        let smp_state = crate::smp_state();
+        let proc_table = crate::proc_table();
+        bsp_finish_booting(proc_table, smp_state)
+    }
 }
 
 /// Minimal kmain for QEMU integration tests (feature = "qemu_test").
@@ -657,7 +671,7 @@ fn init_clock_and_interrupts() {
     // Instance-based design (plat-design.md §5.1): construct the clock
     // arch from the timer descriptor, then call `init_timer` on the
     // instance. This replaces the old static `CurrentClockArch::init_timer`.
-    let mut clock_arch = CurrentClockArch::new(&pd.timer());
+    let mut clock_arch = CurrentClockArch::new(pd.timer());
     clock_arch.init_timer(clock.hz());
 
     // Step 3: Initialize interrupt controller.
@@ -665,8 +679,18 @@ fn init_clock_and_interrupts() {
     //
     // Instance-based design: construct the interrupt controller from the
     // interrupt controller descriptor, then call `init` on the instance.
-    let mut intr = CurrentInterruptController::new(&pd.interrupt_controller());
+    // The instance is then moved into the global `IRQ_MANAGER` so that
+    // trap entry points and `bsp_finish_booting` can reach it.
+    let mut intr = CurrentInterruptController::new(pd.interrupt_controller());
     intr.init();  // mask_all() called internally
+
+    // D10: Store the interrupt controller in the global `IRQ_MANAGER`.
+    // This replaces the previous pattern of dropping `intr` after init.
+    // SAFETY: Boot is single-threaded before BKL exists; no concurrent access.
+    unsafe {
+        *core::ptr::addr_of_mut!(IRQ_MANAGER) =
+            Some(crate::irq_manager::IrqManager::new(intr));
+    }
 
     // Step 4: Architecture-specific initialization.
     // C: arch_init() — arch_system.c:246 / earm/arch_system.c:101
@@ -964,7 +988,7 @@ pub fn init_post_and_memory(kernel_info: &KernelInfo, proc_table: &crate::proc_t
     }
 }
 
-// ── Phase E-F: system_init + bsp_finish_booting (07-system-init-boot-finish.md) ──
+// ── Phase E-F: system_init + bsp_finish_booting (08-system-init-boot-finish.md) ──
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1019,6 +1043,46 @@ static mut PROC_TABLE: crate::proc_table::ProcessTable = crate::proc_table::Proc
 /// Same storage / safety model as `PROC_TABLE`. See `06-design-final.md` §4.1.
 static mut PRIV_TABLE: crate::kpriv::PrivTable = crate::kpriv::PrivTable::new();
 
+/// Global IRQ manager — owns the architecture's interrupt controller and
+/// the IRQ hook chain.
+///
+/// Initialized in `init_clock_and_interrupts` after the interrupt controller
+/// is constructed from the platform descriptor. Stored as `Option` because
+/// `InterruptController::new` is not `const fn` (it reads hardware base
+/// addresses from a descriptor).
+///
+/// # Safety
+///
+/// All access requires the BKL (or single-threaded boot before BKL exists).
+/// See `proc_table()` / `priv_table()` for the same pattern.
+///
+/// # Design (D10 / 14-exception-interrupt.md §4.4)
+///
+/// The IRQ manager is a global so that trap entry points (assembly stubs)
+/// can reach it without holding a reference in a CPU-local. This mirrors
+/// C's global `irq_hooks[]` + `irq_actids[]` + `intr_*` globals.
+static mut IRQ_MANAGER: Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> = None;
+
+/// Global SMP state — owns per-CPU `CpuLocal` (proc_ptr, bill_ptr,
+/// cpu_last_tsc, cpu_last_idle, ...) and CPU readiness flags.
+///
+/// Initialized in `init_proc_and_boot` to a single-CPU (BSP-only)
+/// configuration. SMP expansion (16-smp.md) will replace this with a real
+/// SMP discovery that boots APs before `bsp_finish_booting`.
+///
+/// # Safety
+///
+/// All access requires the BKL (or single-threaded boot before BKL exists).
+/// Same storage / safety model as `PROC_TABLE` / `PRIV_TABLE` / `IRQ_MANAGER`.
+///
+/// # Design (D-notify-scheduler / 11-scheduling-primitives.md §4.5)
+///
+/// Made global so that `cpu_load()` (clock.rs) and `notify_scheduler()`
+/// (proc_table.rs) can reach per-CPU `cpu_last_tsc` / `cpu_last_idle`
+/// without threading `&mut SmpState` through every call site. Mirrors C's
+/// `get_cpu_var_ptr(cpu, ...)` access pattern.
+static mut SMP_STATE: Option<crate::smp::SmpState> = None;
+
 /// Get a reference to the global process table.
 ///
 /// # Safety
@@ -1041,6 +1105,60 @@ pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
     // pointer dereference (not `&mut PRIV_TABLE`) to avoid the
     // `static_mut_refs` lint (Rust 2024 compatibility).
     unsafe { &mut *core::ptr::addr_of_mut!(PRIV_TABLE) }
+}
+
+/// Get a reference to the global IRQ manager.
+///
+/// # Panics
+///
+/// Panics if `IRQ_MANAGER` has not been initialized yet. Initialization
+/// happens in `init_clock_and_interrupts` (non-mock builds) or must be
+/// done manually in test setups.
+///
+/// # Safety
+///
+/// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+/// Concurrent access from multiple CPUs without BKL is a data race.
+pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+    // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
+    // pointer dereference to avoid the `static_mut_refs` lint.
+    unsafe { &mut *core::ptr::addr_of_mut!(IRQ_MANAGER) }
+        .as_mut()
+        .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
+}
+
+/// Get a reference to the global SMP state.
+///
+/// # Panics
+///
+/// Panics if `SMP_STATE` has not been initialized yet. Initialization
+/// happens in `init_proc_and_boot` (non-mock builds).
+///
+/// # Safety
+///
+/// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+/// Concurrent access from multiple CPUs without BKL is a data race.
+pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
+    // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
+    // pointer dereference to avoid the `static_mut_refs` lint.
+    unsafe { &mut *core::ptr::addr_of_mut!(SMP_STATE) }
+        .as_mut()
+        .expect("SMP_STATE not initialized — init_proc_and_boot must run first")
+}
+
+/// Try to get a reference to the global SMP state.
+///
+/// Returns `None` if `SMP_STATE` has not been initialized yet (e.g. in
+/// unit tests that exercise `ProcessTable` methods directly without the
+/// full boot sequence). Callers that can tolerate the absence (clock load
+/// measurement, cpu id readout) should prefer this over [`smp_state`].
+///
+/// # Safety
+///
+/// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
+    // SAFETY: caller guarantees BKL (or single-threaded boot).
+    unsafe { &mut *core::ptr::addr_of_mut!(SMP_STATE) }.as_mut()
 }
 
 /// Get a reference to the global KernelInfo.
@@ -1144,9 +1262,9 @@ pub(crate) fn ipc_filter_pool() -> &'static mut crate::ipc_filter::IpcFilterPool
 /// 5. Set kernel_may_alloc = false
 /// 6. Call switch_to_user() — never returns
 ///
-/// Design decision D7 (07 §3): returns `!` to express never-returning in the type system.
-/// Design decision D6 (07 §3): vm_running is CpuLocal for SMP correctness.
-/// Design decision D8 (07 §3): kernel_may_alloc uses AtomicBool.
+/// Design decision D7 (08 §3): returns `!` to express never-returning in the type system.
+/// Design decision D6 (08 §3): vm_running is CpuLocal for SMP correctness.
+/// Design decision D8 (08 §3): kernel_may_alloc uses AtomicBool.
 ///
 /// `proc_table` is the `ProcessTable` built by `init_proc_and_boot` and
 /// threaded through Phase D→F. Step 2 (bill_ptr/proc_ptr=IDLE) and
@@ -1160,14 +1278,14 @@ fn bsp_finish_booting(
 
     // Step 1: vm_running = 0
     // C: vm_running = 0 — glo.h:37
-    // Rust: vm_running lives in CpuLocal (added in Doc 15 §2.2 + smp.rs:80-145).
+    // Rust: vm_running lives in CpuLocal (added in Doc 15 §2.2 + smp.rs:135-200).
     // For the BSP (cpu 0), we mark "VM not yet running" via a single global
     // atomic — multi-CPU expansion will move it into SmpState.cpu_locals[0].
     VM_RUNNING.store(false, Ordering::Release);
 
     // Step 2: bill_ptr = proc_ptr = idle_proc
     // C: get_cpulocal_var(bill_ptr) = get_cpulocal_var_ptr(idle_proc) — main.c:50
-    // Rust: CpuLocal::set_running(IDLE) — see smp.rs:127-132.
+    // Rust: CpuLocal::set_running(IDLE) — see smp.rs:200.
     // We plumb this through the (single-CPU) SmpState when one exists. For now
     // we record the intent by setting the bill pointer inside proc_table via
     // the sched-side bookkeeping hook used by the rest of the kernel.
@@ -1183,7 +1301,7 @@ fn bsp_finish_booting(
     // C: for (i=0; i < NR_BOOT_PROCS - NR_TASKS; i++)
     //       RTS_UNSET(proc_addr(i), RTS_PROC_STOP);
     // Rust: ProcessTable::rts_unset auto-enqueues a newly-runnable process
-    // (see proc_table.rs:129). Iterate from 0 (first user boot module) up to
+    // (see proc_table.rs:276). Iterate from 0 (first user boot module) up to
     // but excluding kernel tasks (which were marked PROC_STOP during
     // init_proc_and_boot and must stay stopped — they're invoked lazily).
     // C also skips kernel tasks (the loop is `for i in 0..NR_BOOT_PROCS-NR_TASKS`).
@@ -1256,7 +1374,7 @@ fn bsp_finish_booting(
     use minix_platform::{platform_desc, PlatformDesc};
     {
         let pd = platform_desc();
-        let mut clock_arch = CurrentClockArch::new(&pd.timer());
+        let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.init_timer(crate::clock::DEFAULT_HZ);
     }
     // Register the BSP's timer handler via the ArchBoot trait.
@@ -1268,9 +1386,16 @@ fn bsp_finish_booting(
     // records the handler for test inspection.
     use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot};
     use minix_arch::arch_boot::TimerHandlerFn;
-    // The actual handler is wired by the irq_manager when an
-    // IrqManager global is added (DEFERRED). For now we pass a
-    // dummy handler that satisfies the trait signature.
+    // D10: The global `IRQ_MANAGER` is now initialized (in
+    // `init_clock_and_interrupts`), so a real `IrqManager::register_hook`
+    // call could be made here. However, the `TimerHandlerFn` signature
+    // (`fn(IrqVector, IrqId) -> IrqAction`) still uses the pre-D9 handler
+    // shape; the new `IrqHandler` signature is `fn(&mut IrqHookContext) -> IrqAction`.
+    // The arch-level `boot_init_timer` call below handles hardware-side
+    // binding (IOAPIC RTE / LVT), while the IRQ-chain registration will
+    // happen in Step 1.5.7 when the trap entry is connected to
+    // `IrqManager::dispatch`. For now we pass a dummy handler that
+    // satisfies the arch trait signature.
     extern "Rust" fn dummy_timer_handler(
         _irq: minix_plat::IrqVector,
         _id: minix_plat::IrqId,
@@ -1279,9 +1404,11 @@ fn bsp_finish_booting(
     }
     let _handler: TimerHandlerFn = dummy_timer_handler;
     let _ = boot_init_timer::<CurrentArchBoot>(dummy_timer_handler);
-    // The real wiring would then call:
-    //   irq_mgr.register_hook(IrqVector::new(0), handler, ...)
-    // but that requires IrqManager global (DEFERRED on arch-abstractions).
+    // Real IRQ-chain registration will call:
+    //   unsafe { crate::irq_manager() }.register_hook(
+    //       IrqVector::new(0), clock_irq_handler, ..., IrqPolicy::REENABLE,
+    //   );
+    // once `clock_irq_handler` (an `IrqHandler`) is implemented in Step 1.5.7.
 
     // Step 7: fpu_init() — set BSP FPU presence.
     // C: fpu_init() — arch-specific (x86: fpu.c, ARM: fpu_asm.S).
@@ -1311,7 +1438,7 @@ fn bsp_finish_booting(
     // Step 9: switch_to_user() — never returns
     // C: switch_to_user(); NOT_REACHABLE;
     // Rust: Divergent function, type `-> !`
-    // Covered in detail in 09-switch-to-user.md
+    // Covered in detail in 10-switch-to-user.md
     //
     // Suppress unused-idle warning: IDLE slot was used by step 2.
     let _ = proc_nr::IDLE;
@@ -1324,8 +1451,18 @@ fn bsp_finish_booting(
 /// keeps it as a single atomic for now; multi-CPU will move it into
 /// `SmpState.cpu_locals[cpu].vm_running` (Doc 15 §2.2 — added in smp.rs).
 ///
-/// Writers: `bsp_finish_booting` (step 1) sets it false.
+/// Writers: `bsp_finish_booting` (step 1) sets it false;
+///          `dispatch_vmctl(VMCTL_SETADDRSPACE)` sets it true when target is VM.
 /// Readers: `do_vmctl` sub-commands (Doc 23) check it before touching VM state.
+///
+/// # C bug note
+///
+/// Minix3 C source never sets `vm_running = 1` — only `main.c:47` sets it to 0.
+/// This is a C omission (the flag is read in `do_umap_remote.c:106`,
+/// `acpi.c:61,70`, `oxpcie.c:52,73` but never set true). Rust corrects this
+/// by setting `vm_running = true` in `VMCTL_SETADDRSPACE` when the target is
+/// `VM_PROC_NR`, matching the design intent documented in
+/// `09-vm-boot-protocol.md §3 decision4`.
 static VM_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Read the `vm_running` flag. C: `vm_running` — glo.h:37.
@@ -1333,12 +1470,27 @@ pub fn vm_running() -> bool {
     VM_RUNNING.load(Ordering::Acquire)
 }
 
+/// Set the `vm_running` flag.
+///
+/// Called by `dispatch_vmctl(VMCTL_SETADDRSPACE)` when VM completes its
+/// address-space switch. C: this write is missing in Minix3 (see
+/// `VM_RUNNING` doc comment for details) — Rust corrects the omission.
+///
+/// # Concurrency
+///
+/// BKL must be held by the caller (single-writer guarantee). The `Release`
+/// ordering ensures the flag is visible to other CPUs after the address-space
+/// switch is complete.
+pub fn set_vm_running(v: bool) {
+    VM_RUNNING.store(v, Ordering::Release);
+}
+
 /// Entry point for the scheduler loop.
 ///
 /// C: switch_to_user() in proc.c
-/// Design decision D7 (07 §3): returns `!` — never returns to caller.
+/// Design decision D7 (08 §3): returns `!` — never returns to caller.
 ///
-/// Full implementation covered in 09-switch-to-user.md.
+/// Full implementation covered in 10-switch-to-user.md.
 ///
 /// # BKL (Big Kernel Lock)
 ///
@@ -1377,7 +1529,7 @@ fn switch_to_user() -> ! {
         apply_boot_cpu_contexts();
     }
 
-    // Placeholder — will be implemented in 09-switch-to-user.md
+    // Placeholder — full scheduler loop implemented in 10-switch-to-user.md
     loop {
         core::hint::spin_loop();
     }
@@ -1391,7 +1543,7 @@ fn switch_to_user() -> ! {
 /// `CurrentCpuContextArch::apply_to_trap_frame(&ctx, &mut frame)`.
 ///
 /// The trap frame is a stack-local zeroed value per process; the real
-/// `restore_user_context()` (09-switch-to-user.md) will read from the
+/// `restore_user_context()` (10-switch-to-user.md) will read from the
 /// per-CPU exception stack instead. This stub exists to exercise the
 /// `apply_to_trap_frame` call site and keep the trait contract honest.
 ///
@@ -1455,7 +1607,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
 
         let root_page = PhysBytes(0x1000);
@@ -1518,7 +1670,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -1599,7 +1751,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
 
@@ -1691,7 +1843,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1721,7 +1873,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1961,7 +2113,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1984,7 +2136,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -2007,7 +2159,7 @@ mod tests {
             boot_modules: &[],
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_descriptor: None,
+            platform_sources: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);

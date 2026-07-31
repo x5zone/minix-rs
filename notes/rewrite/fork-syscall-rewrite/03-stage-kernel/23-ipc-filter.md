@@ -2,7 +2,7 @@
 
 > **分类**: 运行时基础设施
 > **源码**: `minix3/minix/kernel/ipc.h`, `minix3/minix/kernel/system.c:540-660`
-> **前置**: 21（权限——s_ipc_to, s_k_call_mask）, 11（IPC 原语——send/receive/notify）
+> **前置**: 21（权限——s_ipc_to, s_k_call_mask）, 12（IPC 原语——send/receive/notify）
 > **C 总行数**: ~200 行
 
 ---

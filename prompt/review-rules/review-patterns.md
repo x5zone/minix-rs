@@ -241,7 +241,7 @@
 # 文档 04-physical-memory.md
 #define CLICK_SIZE 4096
 
-# 文档 05-vm-allocpage.md  
+# 文档 05-vm-allocpage.md
 #define CLICK_SIZE 4096  // ❌ 重复定义，应引用 04 文档
 ```
 
@@ -351,6 +351,11 @@ unsafe fn write_phys(addr: PhysAddr, value: u8) {
 ```
 > 原因：每个 `unsafe` 块必须有 safety 注释说明契约和调用方责任。
 
+**与 design 的关系**：
+- 若 design 已规定 `unsafe` 使用规则但代码违反 → **P0-design-deviation**（code Refactor）
+- 若 design 未规定 safety 注释要求 → **P0-design-missing**（design Refactor）
+- safety 论据与 Minix3 原始假设冲突 → **P0-design-wrong**（design Refactor 必须）
+
 ### 模式 19：错误码不对齐
 ```rust
 ❌ 错误：
@@ -369,6 +374,13 @@ fn vm_mappages(...) -> Result<(), VmError> {
 ```
 > 原因：错误码必须与 Minix3 原始 errno 严格对应，禁止自创或合并错误语义。
 
+这一分类同时覆盖 `Box<dyn Error>`（Rust 标准错误）→ 应改为具体的 `VmError` 等领域错误。
+
+**与 design 的关系**：
+- 若 design 已规定错误码但 Rust 未对齐 → **P0-design-deviation**（code Refactor：修 code）
+- 若 design 未规定错误码策略但实现应规定 → **P0-design-missing**（design Refactor）
+- 若 design 规定与 Minix3 不一致 → **P0-design-wrong**（design Refactor 必须）
+
 ### 模式 20：裸 as 截断无说明
 ```rust
 ❌ 错误：
@@ -381,6 +393,11 @@ let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 let old_count = pages as u16;
 ```
 > 原因：所有可能截断的 `as` 转换必须注释说明安全性（特别是 64→32 位转换）。
+
+**与 design 的关系**：
+- 若 design 已规定 `as` 使用规则但代码裸用 → **P0-design-deviation**（code Refactor）
+- 若 design 未规定但实现需要规定 → **P0-design-missing**（design Refactor）
+- 截断阈值与 Minix3 不一致 → **P0-design-wrong**（design Refactor 必须）
 
 ### 模式 21：硬件语义泄漏到 OS 层
 ```rust
@@ -407,6 +424,11 @@ impl Paging for X8664Paging {
 ```
 > 原因：OS 层不感知 CR3 等具体硬件寄存器，所有硬件操作通过 trait 抽象。
 
+**与 design 的关系**：
+- 若 design 已规定硬件抽象但实现直接用寄存器 → **P0-design-deviation**（code Refactor）
+- 若 design 未规定硬件抽象机制 → **P0-design-missing**（design Refactor）
+- 跨架构差异未在 design 中标注 → **P0-design-wrong**（design Refactor 必须）
+
 ### 模式 22：no_std 违规
 ```rust
 ❌ 错误：
@@ -422,6 +444,11 @@ let map = BTreeMap::new();
 ```
 > `std::` 的使用规则：仅在 `#[cfg(test)]` 和 mock 中允许。
 > 生产代码必须 `no_std` 兼容。
+
+**与 design 的关系**：
+- 若 design 已规定 `no_std` 但实现用 `std::` → **P0-design-deviation**（code Refactor）
+- 若 design 未规定标准库策略 → **P0-design-missing**（design Refactor）
+- `std::` 使用违反 `no_std` 整体约束 → **P0-design-wrong**（design Refactor 必须）
 
 ### 模式 23：pub 滥用
 ```rust
@@ -926,7 +953,7 @@ struct VmProc {
 
 > 以下模式覆盖 03-kmain-cstart 重构案例暴露的叙事/概念层问题。详见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架) Ch1 骨架检查、[review.md §概念抽象原则](review.md#概念抽象原则)。
 
-### 模式 48：因果链编造（P0）`[来源: GLM(主) + M3]`
+### 模式 48：因果链编造（P0）
 
 ```markdown
 ❌ 错误：claim 正确但解释的因果链技术上错误
@@ -939,7 +966,7 @@ struct VmProc {
 **判定**：因果链机制技术上错误 → P0（即使 claim 本身正确）
 **与模式 34 边界**：模式 34 是代码注释理由虚假；本模式是文档正文因果链编造。
 
-### 模式 49：元注释泄漏（P1）`[来源: M3 + GLM + Seed]`
+### 模式 49：元注释泄漏（P1）
 
 ```markdown
 ❌ 错误：正文出现作者 narrate 写作策略的文字
@@ -955,7 +982,7 @@ struct VmProc {
 **判定**：单处 → P2；>5 处 → P1（系统性风格问题）。
 **与模式 15 区别**：模式 15 是"已实现/待实现"进度追踪；本模式是作者 narrate 写作策略。
 
-### 模式 50：架构范围未标注（P1）`[来源: GLM + M3]`
+### 模式 50：架构范围未标注（P1）
 
 ```markdown
 ❌ 错误：x86 特有机制当共性讲
@@ -968,7 +995,7 @@ struct VmProc {
 
 **判定**：未标注 → P1；ISA 寄存器角色描述错误（如 RISC-V SPP 当作"当前特权级"）→ P0。
 
-### 模式 51：实现驱动概念章（P1）`[来源: GLM(主) + M3 + Seed]`
+### 模式 51：实现驱动概念章（P1）
 
 ```markdown
 ❌ 错误：Ch1 以函数名作为概念定义的起点
@@ -983,7 +1010,7 @@ struct VmProc {
 **判定**：Ch1 开篇主语是函数名 → P1。
 **裸概念复述测试**：把 Ch1 中所有函数名/结构体名/trait 名用 `[XXX]` 替换，若核心概念仍能被理解 → ✅；若变成"调用 [XXX] 然后 [YYY]"的无意义流水账 → P1。
 
-### 模式 52：单向心智模型（P1）`[来源: GLM + M3]`
+### 模式 52：单向心智模型（P1）
 
 ```markdown
 ❌ 错误：进入类机制只讲"进入"
@@ -996,7 +1023,7 @@ struct VmProc {
 
 **判定**：进入类机制（trap/syscall/IPC）只单向 → P1。
 
-### 模式 53：跨架构共性未提取（P1）`[来源: GLM + Seed]`
+### 模式 53：跨架构共性未提取（P1）
 
 ```markdown
 ❌ 错误：多架构文档直接堆三架构细节
@@ -1012,7 +1039,7 @@ struct VmProc {
 
 **判定**：多架构文档无统一抽象层 → P1。
 
-### 模式 54：视角漂移（P2）`[来源: M3]`
+### 模式 54：视角漂移（P2）
 
 ```markdown
 ❌ 错误：同一章节主语频繁切换
@@ -1028,7 +1055,7 @@ struct VmProc {
 
 **判定**：同一章节主语频繁切换且无标注 → P2。
 
-### 模式 55：架构特有机制喧宾夺主（P2）`[来源: GLM + M3]`
+### 模式 55：架构特有机制喧宾夺主（P2）
 
 ```markdown
 ❌ 错误：架构特有遗留机制当核心讲
@@ -1041,7 +1068,7 @@ struct VmProc {
 
 **判定**：架构特有遗留机制在 Ch1 占核心篇幅 → P2。
 
-### 模式 56：决策日志体 Ch3（P1）`[来源: M3]`
+### 模式 56：决策日志体 Ch3（P1）
 
 ```markdown
 ❌ 错误：Ch3 变成决策日志
@@ -1056,7 +1083,7 @@ struct VmProc {
 
 **判定**：Ch3 只罗列决策无推理过程 → P1。
 
-### 模式 57：例子选择有"读者前置知识泄漏"（P2）`[来源: GLM]`
+### 模式 57：例子选择有"读者前置知识泄漏"（P2）
 
 ```markdown
 ❌ 错误：概念引入示例引入与核心机制无关的细节
@@ -1070,7 +1097,7 @@ struct VmProc {
 
 **判定**：示例引入额外问题 → P2；本章开门第一个例子就有此问题 → P1。
 
-### 模式 58：跨文档阶段状态表漂移（P1）`[来源: M3]`
+### 模式 58：跨文档阶段状态表漂移（P1）
 
 ```markdown
 ❌ 错误：文档含 §N 实施状态表（"Phase 1: 待实施 / Phase 2: 待实施 / Phase 3: 待实施"），
@@ -1088,7 +1115,7 @@ struct VmProc {
 **自动检测**：`tools/review-state-validate.py` 应读取 doc §N 阶段状态表 + grep 代码 TODO/FIXME/impl 标记，输出不一致列表。
 **来源案例**：`04-platform-discovery.md:595-599` §13 阶段表原写全部"待实施"，但 `os/libs/minix-platform/src/{device_tree.rs, acpi.rs}` 已实现（已在后续修复）。
 
-### 模式 59：文档字段计数漂移（P1）`[来源: M3]`
+### 模式 59：文档字段计数漂移（P1）
 
 ```markdown
 ❌ 错误：文档 §X 写"Rust 保留 9 字段"，代码 struct 实际有 12 字段；或
@@ -1110,7 +1137,7 @@ struct VmProc {
 **自动检测**：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
 **来源案例**：`01-boot-shim-bootstrap.md` §3.5 原写"9 字段"，`os/libs/minix-boot/src/kernel_info.rs` 实际 12 字段（已在后续修复）。
 
-### 模式 60：诚实显式 TODO 模式（P1，推广现有最佳实践）`[来源: M3]`
+### 模式 60：诚实显式 TODO 模式（P1，推广现有最佳实践）
 
 ```markdown
 ❌ 错误：TODO 静默遗漏
@@ -1134,3 +1161,445 @@ struct VmProc {
 **推广原因**：Doc 06 §4.5 的 4 个 TODO（1 P0 + 2 P1 + 1 P2）是金标准实践，已成可复用模板。
 **反例**：`// TODO` + `// fix later` 等无四要素注释 → P1。
 **来源案例**：`06-proc-init-boot-proc.md:1133-1170` 4 个显式 TODO + 代码注释双向同步。
+
+---
+
+### 模式 66: 参考代码路径漂移（Reference Code Path Drift, RCPD）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：TODO/issue 描述引用 file:line，但被审时期存在、review 时已不存在
+        TODO-04-2 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279`
+        实际：`06-design-final.md` 删除了 `proc_arch` 模块
+        → 多次 AI bagging 共识"P0 真实 bug"基于已删除路径，T2 严重度从 P0 降为 P1
+
+✅ 正确：TODO 验证 Step 0.7.1 path existence validation
+        1. grep `ls <file>` 或 `rg "fn <name>" <file>` 验证路径存在
+        2. 不存在 → 标"路径失效" + 触发 doc 重写而非 code 修复
+        3. 多 AI 共识必须满足"全共识 × 全部 path 存在验证通过"才采纳为真实 bug
+```
+
+**判定**：
+- TODO 描述引用已删除/重构路径导致虚假 P0 共识 → **P1 误报来源**（T2 案例：P0 → P1 降级）
+- AI/人类 review 基于"过时路径"误判问题严重度 → 同上
+- review 阶段对引用路径未做 ls/rg 验证 → 模式 66 触发
+
+**规则草案**：
+- (a) **TODO 描述必须有"path existence check"步骤**（Step 0.7.1 强制）
+- (b) **review 阶段对每条 TODO 引用的 file:line 执行 `ls -la` 或 `rg -l` 验证**
+- (c) **验证不通过** → 标"路径失效" + 触发 doc 重写而非 code 修复
+- (d) **多 AI 共识**必须经过 grep/Read 验证才采纳为真实 bug
+- (e) **任何"严重度降级"必须有 L1 证据**（`ls`/`rg` 命中或失效证明）
+
+**建议落地**：
+- [review-process.md §Step 0.7.1](../review-rules/review-process.md) 新增 path existence validation 子步骤
+- 工具：`tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line（未来实施）
+- Session #8+ 每个 review 必跑 Step 0.7.1
+
+**来源案例**：
+- 04-platform-discovery §11 (Session #8)：`0108-todo-final.md` L601-622 (TODO-04-2) 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` 三处，实际 `os/arch/src/arch/mod.rs:20` 已明确 "proc_arch was removed in 06-design-final.md"——T2 P0 严重缺陷降级为 P1 事实纠正（2 AI 共识但共识基础已删除）
+- I2 案例（2026-07-16 VERIFY-CHECK 暴露）：doc L416 引用 `global.rs:38-51`，实际 `PLATFORM` 静态在 L44——行号漂移 +6 行，P2 偏差（不影响行为但违反 file:line 精确标准）
+
+**与现有模式的关系**：
+- 模式 60（诚实显式 TODO）：互补——模式 60 关注 TODO 注释的 4 要素；模式 66 关注 TODO 描述引用的代码路径真实性
+- 模式 5（代码与文档不一致）：范围更窄——仅 doc-code；模式 66 涵盖 TODO 描述中所有 file:line 引用
+
+---
+
+### 模式 63: Design-Missing 反模式
+
+> **背景**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。如果 review 流程只发现实现问题而漏掉 design 缺失，会反复局部修复却始终漏掉核心概念。
+
+**定义**：review 流程只发现实现问题，不发现 design 缺失，导致反复局部修复却始终漏掉核心概念。
+
+**触发场景**：
+- 设计文档（design.md/design-final.md）不存在或 outdated
+- review 输出大量 P0-fact / P0-code-bug，但 P0 数量持续不收敛
+- 反复修复同一类问题（如文档结构反复调整）
+
+**典型症状**：
+- "为什么我修了又出现新问题？"——因为 design 缺失，每次修复都是局部的
+- "为什么 Ch1 和 Ch3 对不上？"——因为 Ch1 漏了某个概念，design 未定义
+- "为什么 06 文档一直不满意？"——因为 design 未抓到三类运行态实体的本质区分
+
+**判定信号**：
+- 单文档 review 中发现 ≥3 处"概念缺失"类问题
+- 多次 review 循环中同一模块的 P0 数量不减反增
+- review 输出中出现"design 未定义"标注 ≥2 次
+
+**修复路径**：
+1. 中断 review（IN_DESIGN 状态）
+2. 生成缺失的 design（用文档重写工作流 Step 1-3，参见 [review-process.md §〇 设计优先模式](review-process.md#设计优先模式design-first)）
+3. design 通过 Gate H 后恢复 review
+4. 此时 review 应能收敛
+
+**教训**：**review 不能替代 design**。先 design 后 review 是 Rust 重写场景的基本要求。
+
+> **对应 P0 类型**：P0-design-missing / P0-design-wrong（参见 [review.md §4.1 P0 六分类](review.md#41-p0-六分类v6-修正含-p0-test-missing--明确-refactor-类型)）
+
+---
+
+### 模式 64: 开发文档味反模式
+
+**定义**：文档使用"旧版→新版"、"最初→后来"、"我们改成"等迭代叙事，违反"教学材料"原则。
+
+**触发场景**：
+- 文档中含"旧版"、"最初"、"后来"、"我们改成"等关键词
+- 文档讲述开发过程而非机制本质
+- 文档使用"已实现"、"待实现"、"未完成"等状态标记
+
+**判定信号**（grep 自动检测）：
+```bash
+# 禁用词清单（命中即 P1）
+grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|FIXME" \
+    prompt/../doc.md
+```
+
+**典型症状**：
+- "我们最初用 X 实现，后来发现 Y，改成了 Z"（开发文档味）
+- "该函数已实现"（应改为确定性机制说明）
+- "下一步会实现"（应改为设计意图说明）
+
+**修复路径**：
+1. 删除"旧版→新版"叙事
+2. 删除"我们改成"等开发主体
+3. 删除"已实现/待实现"等状态标记
+4. 用"如果 X 设计会有 Y 问题，所以用 Z"替代
+5. 用确定性机制说明替代过程性描述
+
+**教训**：**文档是教学材料，不是开发迭代记录**。读者关心知识点，不关心开发过程。
+
+### 模式 64 扩展：禁用词清单
+
+| 分组 | 禁用词 | 替代模式 |
+|------|--------|---------|
+| **迭代叙事** | 旧版/最初/后来/我们改成/过去/当年/当初/之前/改成/替代/替换/替换为/升级/废弃/不再/放弃/修正 | 删除或转"如果 X 设计会有 Y 问题，所以用 Z" |
+| **开发主体** | 我/我们/本项目/当前/今后/接下来 | 改为客观描述（"代码"、"文档"）|
+| **过程性动词** | 实现/完成/添加/删除/重构（作为现状描述时）| 改为确定性机制说明 |
+| **步骤标记** | 第一步/第二步/首先/然后/接着/最后 | 删除（用结构表达）|
+| **状态标记** | 已实现/待实现/未完成/TODO/FIXME/XXX/NOTE | 删除或迁移到 design.md（非 bagging）/ design-final.md（bagging）|
+
+**grep 自动检测（增强版）**：
+```bash
+grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|FIXME|过去|当年|当初|之前|改成|替代|替换|替换为|升级|废弃|不再|放弃|修正|我|我们|本项目|今后|接下来|添加|删除|重构|第一步|第二步|首先|然后|接着|最后|XXX|NOTE" \
+    prompt/../doc.md
+```
+
+> **注意**：TODO 在代码中允许保留（标记待做事项），但禁止在文档正文中使用 TODO/已实现/待实现（与模式 15 区分）。
+
+---
+
+### 模式 65: Translate 倾向反模式
+
+> 教训回顾：——"rewrite 不是 translate"。
+
+**定义**：Rust 代码是 C 代码的 1:1 翻译，没有用 Rust 类型系统重新表达。
+
+**触发场景**：
+- Rust 函数签名与 C 函数高度相似（命名、参数顺序）
+- 用 `i32`/`u32` 替代 C 的 `int`/`unsigned int`，但语义未变（应改用 newtype）
+- 用 `Vec<T>` 替代 C 的动态数组，但生命周期管理未利用 Rust 借用
+- C 用宏/全局变量，Rust 也用宏/`static mut`（应改用 trait/const）
+- C 用函数指针数组做分派（如 call_vec），Rust 也用 `fn(...)` 数组（应改用 enum + match）
+
+**判定信号**（grep 自动检测）：
+```bash
+# 反模式信号 1：函数签名与 C 高度相似
+# 对比 C 源码和 Rust 实现，函数命名/参数顺序一致
+diff <(grep "^void\|^int\|^static.*(" *.c) <(grep "fn " *.rs)
+
+# 反模式信号 2：static mut 出现
+grep -nE "static mut" prompt/../code.rs
+
+# 反模式信号 3：函数指针数组
+grep -nE "fn\([^)]*\)\s*\[.*\]" prompt/../code.rs
+
+# 反模式信号 4：unsafe 块密度过高
+grep -c "unsafe" prompt/../code.rs
+# 期望：每 100 行代码 ≤ 1 个 unsafe
+```
+
+**典型症状**：
+- "直接翻译 Minix3 的 `call_vec[]` 函数指针数组"——应改用 `enum Syscall + match`
+- "用 `PhysBytes(u64)` 替代 C 的 `phys_bytes` typedef"——正确做法
+- "用 `PhysBytes(u64)` 直接当 `u64` 用"——这是 translate，缺少类型语义
+- "保留 `freepdes[2]` 全局数组"——应改用 typestate 表达"已分配"状态
+
+**修复路径**：
+1. 删除与 C 高度相似的函数命名（C 是 `do_fork` → Rust 不应也是 `do_fork`，应改为 `Process::fork`）
+2. 将 int/uint 改为 newtype（带语义的不透明类型）
+3. 将函数指针数组改为 enum + match（利用 Rust 穷尽检查）
+4. 将 `static mut` 全局变量改为 `const` + 受限访问
+5. 将 `unsafe` 块压缩到最小（除非必需，否则用 safe Rust 重新表达）
+
+**教训**：**Rust 重写的价值在于类型系统，不是语法转换**。如果代码看起来像 C-with-semicolons，那是一次失败的 rewrite。
+
+> **配套机制**：[review.md §核心术语 Rewrite](review.md) 定义目标、"禁止 Translate"是基本约束、模式 16/17 也是反 Translate 味道的检查项。
+
+---
+
+### 模式 67: C 函数名 vs OS 概念误判（C Function Name vs OS Concept Confusion, CFNOC）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：AI 把 C 函数名（如 `init_clock()`）误读为 OS 概念对象（如 "CLOCK task"）
+        ds (P1-4) + seed (TODO-006) 提议："05 文档提到 CLOCK task 时，读者可能不理解其与普通进程的区别"
+        实际：05 文档讨论的是 `init_clock()` C 函数（initialize clock），不是 "CLOCK task" 内核子系统
+        → 2 个 AI 共识产生 P1 误报
+
+✅ 正确：AI claim grep verification（Step 0.7.2 强制）
+        1. AI 报告中"X task" / "X subsystem" 类描述必须 `rg "X"` 验证存在
+        2. C 函数名 `xxx_init()` / `init_xxx()` 永远表示"对 xxx 的初始化动作"，不是 xxx 本身
+        3. C 全大写宏 `CLOCK_TASK` / `TASK_CLOCK` / `SYSTEM` 才表示任务类型常量
+        4. 任务作为概念对象在 Minix3 中由 `proc[NR_TASKS+N] / proc_ptr` 表示
+```
+
+**判定**：
+- AI 把"操作名"（`init_clock()`）错认为"对象名"（"CLOCK task"）→ **❌ 误报**（前提错误）
+- AI 报告中"X task" / "X subsystem" 但 `rg "X"` 0 命中 → 模式 67 触发
+
+**规则草案**：
+- (a) **AI 报告"X task/subsystem" 类描述必须 `rg "X"` 验证存在**（Step 0.7.2 强制）
+- (b) **C 函数名 `xxx_init()` / `init_xxx()`** 永远表示"对 xxx 的初始化动作"
+- (c) **C 全大写宏 `CLOCK_TASK` / `TASK_CLOCK` / `SYSTEM`** 才表示任务类型常量
+- (d) **任务作为概念对象**在 Minix3 中由 `proc[NR_TASKS+N] / proc_ptr` 表示
+- (e) **多 AI 共识 + 概念对象关键词**必须经过 grep 验证才采纳
+
+**建议落地**：
+- [review-process.md §Step 0.7.2](../review-rules/review-process.md) 新增 AI claim grep verification 子步骤
+- 工具：`tools/ai-claim-verify.sh` 一键扫描所有 "X task/subsystem" 类 AI claim（未来实施）
+
+**来源案例**：
+- 05-clock-interrupt-init Session #10：`tmp_design_and_todo/0108-todo-final.md` L680 (TODO-05-1) 由 ds (P1-4) + seed (TODO-006) 提议："05 文档提到 CLOCK task 时，读者可能不理解其与普通进程的区别"；`rg "CLOCK task\|clock task\|System Task\|Kernel Subsystem" 05-clock-interrupt-init.md` 0 命中 → 误报
+
+**与现有模式的关系**：
+- 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
+- 模式 67 (CFNOC)：关注 AI 报告引用的概念对象真实性
+- 两者都是"AI claim verification"类模式，但 66 验证路径，67 验证概念
+
+---
+
+### 模式 68: Ch2 C 源码展示 ≠ Ch4 Rust 实现误判（Doc Section Confusion, DSC）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：AI 看到 Ch2（C 源码展示章节）含 `#ifdef` 即报告"Rust 代码散落分支"
+        m3 (TODO #13) 提议："05 §2.4/§2.5 arch_init 仍有 30+ 行 ifndef CONFIG_SMP 散落分支"
+        实际：Ch2 是 C 展示章节，应保留 C 预处理指令；Rust 已用 trait 静态分派隔离
+        → 1 个 AI 提议产生 P2 误报
+
+✅ 正确：Doc chapter context awareness（Step 0.7.3 强制）
+        1. AI 报告 `#ifdef` 散落时必须区分：Ch2 C 展示（正确）/ Ch4 Rust 实现（可能问题）
+        2. 报告前必须 `rg "os/**/*.rs"` 验证 Rust 实现是否真的有 `#[cfg(...)]` / `ifndef`
+        3. 若 Rust 实现已用 trait 隔离，文档展示 C 是为了对比 Rust 的清晰度，不构成缺陷
+```
+
+**判定**：
+- AI 把 Ch2 C 源码展示误认为 Ch4 Rust 实现问题 → **❌ 误报**（章节上下文错位）
+- AI 报告 `#ifdef` / `#ifndef` 散落但 `rg "os/"` 验证无 `#[cfg(...)]` 分支 → 模式 68 触发
+
+**规则草案**：
+- (a) **AI 报告 `#ifdef` 散落必须区分章节**：Ch2 C 展示（正确）/ Ch4 Rust 实现（可能问题）
+- (b) **报告前必须 `rg "os/**/*.rs"` 验证 Rust 实现**：是否有 `#[cfg(...)]` / `ifndef`
+- (c) **若 Rust 实现已用 trait 隔离**（如 `ArchInit`、`ClockArch`），文档展示 C 是为了对比 Rust 的清晰度，**不构成缺陷**
+- (d) **章节上下文强制检查**（Step 0.7.3）：AI 报告必须明确"这是 Ch2 C 展示问题还是 Ch4 Rust 实现问题"
+
+**建议落地**：
+- [review-process.md §Step 0.7.3](../review-rules/review-process.md) 新增 doc chapter context awareness 子步骤
+- 工具：`tools/doc-chapter-classify.sh` 自动识别 doc 章节类型（Ch1/Ch2/Ch3/Ch4/Ch5）（未来实施）
+
+**来源案例**：
+- 05-clock-interrupt-init Session #10：`tmp_design_and_todo/0108-todo-final.md` L702 (TODO-05-2) 由 m3 (TODO #13) 提议："05 §2.4/§2.5 arch_init 仍有 30+ 行 ifndef CONFIG_SMP 散落分支"；`rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP\|#\[cfg\(smp\|CONFIG_SMP" os/` 仅 3 注释提及，Rust impl 无 `#[cfg(smp)]` 分支 → 误报
+
+**与现有模式的关系**：
+- 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
+- 模式 67 (CFNOC)：关注 AI 报告引用的概念对象真实性
+- 模式 68 (DSC)：关注 AI 报告引用的章节上下文真实性
+
+### 模式 69: 缺失 per-doc 快照（Per-doc Snapshot Missing, PSMD）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：AI 进入 Step 0 后以"已有 CONVERGED 状态"/"incremental review"/"复用 03/04 design"等理由
+        跳过 design + outline 预检（ls {NN}-outline.v*.md / {NN}-design.v*.md）
+        结果：scan.md Block Gates 表把 Gate H 标 "N/A" / "[SIMPLIFIED]"，但实际：
+        - 06-proc-init-boot-proc.md 自 R2 (2026-06-23) CONVERGED 后从未生成 {06}-outline.v*.md 或 {06}-design.v*.md
+        - 04/05 类似（Session #11 复盘发现）
+        - 错误标"CONVERGED"但流程违反 review-process.md §Step 0 强制规则
+
+✅ 正确：硬阻断 + Step 0 预检表 + 工具支持
+        1. Step 0 启动时**必须**跑 4 条 ls 命令，结果写入 scan.md `§Step 0 预检结果` 段
+        2. 缺失判定 + 嵌入生成（2026-07-17）：
+           - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
+           - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
+           - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
+        3. 工具 `tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 design/，输出缺失报告
+        4. STATE.md Resume Point 必含 `ls design/` 命令（避免续 session 跳过）
+```
+
+**判定**：
+- AI 跳过 `ls design/{NN}-*.md` 命令 → 模式 69 触发
+- scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL → 模式 69 触发
+- 用"已有 CONVERGED 状态"/"incremental review"为由跳过预检 → 模式 69 触发（P0-process-violation）
+- 用"复用 03/04 design"为由跳过预检 → 模式 69 触发（P0-process-violation，禁止跨文档复用）
+
+**规则草案**：
+- (a) **所有 review 模式强制预检**：Step 0 启动时**必须**跑 4 条 `ls` 命令
+- (b) **缺失即 FAIL**：无任何"复用"或"豁免"借口（除用户显式一次性豁免）
+- (c) **存在旧快照也必须重新评估**：v2 快照语义要求每次 review 重新执行 Step 0.3 产出 `.v{N+1}.md`
+- (d) **scan.md 必须含 `§Step 0 预检结果` 段**：不可省略
+- (e) **决策记录豁免仅一次性**：Session #11 用户决策"04/05 不回填"仅适用当时已 CONVERGED 的 04/05，不可泛化
+
+**建议落地**：
+- [review-process.md §Step 0 硬阻断规则](../review-rules/review-process.md) NEW 2026-07-16
+- 工具：`tools/design-coverage-check.sh {module}`（Session #12 落地）
+- 工具：`tools/todo-staleness-check.sh {todo-file}`（NEW，模式 70 配套）
+
+**来源案例**：
+- **Session #12 (06-proc-init-boot-proc.md)**：R12 review 时发现 design/ 目录只有 01/02/03 快照，06 完全没有；Session #11 模式 69 发现 04/05 缺失时已记录此为 P0-process-violation，但缺少硬阻断机制导致 Session #12 仍跳过预检。
+- **Session #11 (04/05 复盘)**：模式 69 首次发现 — 04/05 自 CONVERGED 后从未生成 {04/05}-outline.v*.md / {04/05}-design.v*.md。
+
+**与现有模式的关系**：
+- 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
+- 模式 67 (CFNOC)：关注 AI 报告引用的概念对象真实性
+- 模式 68 (DSC)：关注 AI 报告引用的章节上下文真实性
+- **模式 69 (PSMD)**：关注 review 流程本身的元数据完整性（快照存在性 + 跨文档独立性）
+
+### 模式 70: 跨轮状态陈旧（Cross-Turn Outdated Staleness, CTOS）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：AI 拿到 `tmp_design_and_todo/0108-todo-final.md` 后直接采纳所有 TODO 为真
+        结果：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表跨多轮 review 累积：
+        - TODO-06-2 假设"1 个 trait 而非 3 个"，但实际 Rust 已有 3 个 trait（前提错误）
+        - TODO-06-4 假设"TODO-01-3 阻塞"，但 TODO-01-3 早已修复接通（前提失效）
+        - TODO-06-7 假设"需 3 trait"，但 Rust 已正确实现 3 trait（已修复）
+        浪费 ~30 分钟在误报排查 + 二次 grep
+
+✅ 正确：TODO staleness check（Step 0.7.4 强制）
+        1. 对每个 TODO 描述中的"基于状态"前提（如"X 阻塞"/"Y 未实现"），用 `rg` 验证当前状态
+        2. 前提失效 → 标"前提失效，TODO 不适用" + 严重度自动降级（与模式 66 RCPD 同规则）
+        3. 批量模式：`tools/todo-staleness-check.sh {todo-file}` 自动扫描
+```
+
+**判定**：
+- `tmp_design_and_todo/` 中 TODO 数 > 5 + 含"基于..."/"依赖..."/"待..."等时间敏感词 → **必须跑** Step 0.7.4
+- TODO 描述引用"TODO-XX-N 未修复"但当前 rg 0 命中 → 前提失效，标"前提失效"
+- TODO 描述引用"待 X 完成"但当前 X 已存在 → 前提失效，标"前提失效"
+- 未跑 staleness check 即采纳全部 TODO 为真 → 模式 70 触发
+
+**规则草案**：
+- (a) **触发条件**：TODO 数 > 5 + 含时间敏感词 → 必须跑 Step 0.7.4
+- (b) **前提验证**：每个 TODO 的"基于状态"前提必须用 `rg` 验证当前状态
+- (c) **严重度降级**：P0 + 前提失效 → P1，P1 + 前提失效 → P2，P2 + 前提失效 → 误报
+- (d) **批量工具**：`tools/todo-staleness-check.sh {todo-file}` 自动输出 staleness 报告
+- (e) **TODO 强制格式**：`[P0/P1/P2] [code/doc] [factual/design] 问题描述 (file:line) (基于状态) (修复方案)`，缺字段 → TODO 不可信
+
+**建议落地**：
+- [review-process.md §Step 0.7.4 TODO Staleness Check](../review-rules/review-process.md) NEW 2026-07-16
+- 工具：`tools/todo-staleness-check.sh {todo-file}`（已落地 2026-07-17）
+
+**来源案例**：
+- **Session #12 (06-proc-init-boot-proc.md)**：`tmp_design_and_todo/0108-todo-final.md` 中 8 个 TODO-06 经 staleness check 后：
+  - 3 误报（前提错误/失效/已修复）
+  - 5 真实，其中 1 项已正确实现无需修改
+  - 实际修复 4 项，节省 ~30 分钟
+- 历史均值：Session #5-#11 TODO 误报率约 25%（5/20），Session #12 升至 37.5%（3/8）反映 TODO 列表跨轮累积问题加剧。
+
+**与现有模式的关系**：
+- 模式 66 (RCPD)：关注 TODO 描述引用的**代码路径**真实性
+- 模式 67 (CFNOC)：关注 AI 报告引用的**概念对象**真实性
+- 模式 68 (DSC)：关注 AI 报告引用的**章节上下文**真实性
+- 模式 69 (PSMD)：关注 review **流程元数据**完整性（快照存在性）
+- **模式 70 (CTOS)**：关注 TODO 列表**跨轮时间一致性**（前提失效检测）
+- **66 + 70 互补**：66 关注"代码路径在不在"，70 关注"前提状态对不对"
+
+### 模式 71: 决策泛化误用（Decision Over-Generalization, DOG）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：AI 在 Session #11 收到用户决策"04/05 不回填 design 快照"，
+        Session #12 启动时**错误泛化**为"06 也有 CONVERGED 状态 → 也跳过 design 预检"
+        实际：用户决策仅适用于 04/05，06 是新 review 文档，**不能泛化**
+        结果：Session #12 跳过 design 预检 → 06 缺快照但 scan.md 标 CONVERGED → 模式 69 PSMD 触发
+
+✅ 正确：决策记录豁免的强约束
+        1. 用户决策"X 不回填"仅适用于当时已 CONVERGED 的 X，不可泛化到后续 review 的其他文档
+        2. 任何"已有 CONVERGED 状态"豁免必须满足：
+           a) 用户当时显式说"该 doc 豁免"
+           b) 豁免仅对该 doc 有效
+           c) 豁免记录在 STATE.md `§豁免列表` 段
+        3. AI 不得自行泛化用户决策；如认为某文档需要类似豁免，必须先询问用户
+```
+
+**判定**：
+- AI 把"X 文档豁免"泛化到"Y 文档" → 模式 71 触发
+- 没有任何豁免记录在 STATE.md，但 AI 声称"已有 CONVERGED 状态" → 模式 71 触发
+- 用户决策仅指明"X"，但 AI 把范围扩大到"X+Y+Z" → 模式 71 触发
+
+**规则草案**：
+- (a) **决策仅适用当时对象**：用户决策"X 不回填"仅对 X 有效，不可泛化
+- (b) **豁免必须显式记录**：豁免必须在 STATE.md `§豁免列表` 段登记
+- (c) **泛化必须询问**：AI 认为需要类似豁免时，必须先询问用户
+- (d) **"CONVERGED 状态"不是豁免依据**：CONVERGED 是结果状态，不是豁免资格
+
+**来源案例**：
+- **Session #12**：用户 Session #11 决策"04/05 不回填"被错误泛化到 06，导致 06 缺 design 快照但仍标 CONVERGED。
+
+**与现有模式的关系**：
+- 模式 69 (PSMD)：关注 review **流程元数据**完整性
+- **模式 71 (DOG)**：关注 review **决策范围约束**（泛化误用）
+- **69 + 71 互补**：69 关注"硬阻断是否被执行"，71 关注"豁免决策是否被正确理解"
+- 三者构成"AI claim verification 三元组"：路径 + 概念 + 章节
+
+### 模式 72: 跨章节步骤数不一致（Cross-Section Step Count Mismatch, CSSCM）（NEW 2026-07-17）
+
+```markdown
+❌ 错误：文档 §2 C 源码分析列出 bsp_finish_booting 共 12 步（cpu_identify / vm_running=0 /
+        krandom_init / bill_ptr=proc_ptr=idle / announce / RTS_UNSET / cycles_accounting_init /
+        boot_cpu_init_timer / fpu_init / cpu_set_flag / kernel_may_alloc=0 / switch_to_user），
+        §4 Rust 实现章节只列 9 步，**未明确说明**为何 3 步缺失。
+        读者看到 §2 列 12 步、§4 实现 9 步，无法判断：
+        - 是 Rust 实现遗漏（P0 bug）？
+        - 是 C 步骤在 Rust 中已合并到其他步骤（设计决策）？
+        - 是 C 步骤在 64 位 Rust 中不需要（架构演进）？
+
+✅ 正确：§4 Rust 实现章节末尾添加"与 C N 步的差异说明"表格
+        | C 步骤 | C 位置 | 未实现原因 |
+        |--------|--------|----------|
+        | cpu_identify() | main.c:45 | CPU 识别在 boot-shim 阶段已完成，Rust 无需重复 |
+        | krandom_init() | main.c:62 | Rust 尚未实现内核随机数源；后续安全模块实现时补齐 |
+        | cpu_set_flag(bsp, CPU_IS_READY) | main.c:92 | Rust 用 CpuState::Ready 枚举表达，步骤 5 隐式完成 |
+```
+
+**判定**：
+- §2 列出 N 步，§4 实现 M 步（M < N），且 §4 无差异说明表 → 模式 72 触发（P1）
+- §2 列出 N 步，§4 实现 M 步（M > N），且 §4 无"Rust 新增步骤"说明 → 模式 72 触发（P1）
+- §4 有差异说明但原因空泛（如"Rust 不需要"、"架构差异"无具体说明） → 模式 72 触发（P1）
+- §2 与 §4 步骤数一致但步骤顺序重排且未说明 → 模式 72 触发（P2）
+
+**规则草案**：
+- (a) **步骤数对齐**：文档 §2 C 源码分析列出的步骤数必须与 §4 Rust 实现的步骤数一致；若不一致，必须在 §4 末尾添加"与 C N 步的差异说明"表格
+- (b) **差异分类**：每条差异必须归类为以下之一：
+  - **架构演进**（64 位 Rust 不需要，如 4GB 截断）
+  - **设计决策**（合并到其他步骤，如 `cpu_set_flag` 由枚举状态转换表达）
+  - **已知缺口**（尚未实现，需 TODO 标注 + 计划补齐时间）
+  - **C 源码 bug**（C 中多余/错误的步骤，Rust 正确省略）
+- (c) **每条差异附 C 行号**：差异表必须包含 C 源码行号，便于读者定位验证
+- (d) **不限于 §2/§4**：该规则适用于任何"分析章节 vs 实现章节"的步骤数对比（如 §2.x 子节 vs §4.x 子节）
+
+**严重度**：P1（默认）/ P0（若未实现步骤涉及安全/并发/内存管理关键路径，且未标注"已知缺口"）
+
+**来源案例**：
+- **Session #20 (08 文档 full-review)**：§2.3 列 `bsp_finish_booting` 12 步，§4.6 实现 9 步，3 步缺失未说明。Review 发现后，§4.6 添加差异说明表（3 步分别归类为"架构演进/已知缺口/设计决策"）。
+
+**与现有模式的关系**：
+- 模式 11（设计与实现脱节）：关注 design.md 与 code.rs 的整体脱节
+- 模式 60（诚实显式 TODO 模式）：关注未实现功能是否标注 TODO
+- **模式 72 (CSSCM)**：关注**文档内部** §2 与 §4 的步骤数一致性（doc 内部一致性）
+- **72 ≠ 11**：11 是 design↔code 跨制品；72 是 §2↔§4 同文档内跨章节
+- **72 ≠ 60**：60 关注"是否标注 TODO"；72 关注"是否说明步骤数差异"（已实现步骤也可能触发 72，只要步骤数对不上）
+
+**检查命令**：
+```bash
+# 提取 §2 步骤数（grep "步骤" 关键字 + 表格行）
+rg -c "^\| \d+ \|" notes/rewrite/{module}/{stage}/{doc}.md
+# 提取 §4 步骤数
+rg -c "^\| \d+ \|" notes/rewrite/{module}/{stage}/{doc}.md
+# 检查差异说明表是否存在
+rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" notes/rewrite/{module}/{stage}/{doc}.md
+```

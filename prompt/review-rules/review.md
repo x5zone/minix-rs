@@ -12,10 +12,78 @@
 | 术语 | 定义 |
 |---|---|
 | **Translate** | 1:1 翻译 C 代码，仅做语法转换。❌ 禁止 |
-| **Rewrite** | 保持外部可观察行为不变，内部用 Rust 类型系统重新表达。✅ 目标 |
-| **Redesign** | 改变系统架构、机制或协议。❌ 当前禁止 |
+| **Rewrite（重写）** | Rust 重写 Minix3，保持外部语义不变，内部用 Rust 类型系统重新表达。✅ 目标 |
+| **Architectural Evolution（架构演进）** | 改变系统架构、机制或协议（如 32→64 位、freepdes→direct_map）。⚠️ 需 Gate H 评估 |
+| **Refactor（重构）** | Rust 实现偏离 design 时，修复 Rust 代码使其回到 design 路径（code Refactor）或修复 design 自身（design Refactor）。✅ 内部纠错 |
 
 **核心原则**：外部语义不变，内部表达可以改变。把"隐式编码"变成"显式协议"。
+
+**三层工作流映射**（review-rules 自包含定义）：
+```
+Rewrite（重写）
+  └─ 实施中偏离 design → Refactor（重构）
+       ├─ code Refactor：design 正确，仅修 code（P0-design-deviation）
+       └─ design Refactor：design 自身错，先修 design 再修 code（P0-design-missing/wrong）
+  └─ 跨越 Minix3 语义边界的设计变更 → Architectural Evolution（架构演进）
+```
+
+> **术语冲突解决方案**：原"Redesign"在不同上下文含义不同，正式定义为"改变架构"即 **Architectural Evolution**，工作场景用于"修复偏离"即 **code Refactor**。详见 [review-core-semantics.md §Refactor 定义](review-core-semantics.md)。
+
+### Design First 原则（Rust 重写场景）
+
+> **背景**：Minix-RS 是 Rust 重写 Minix3，**design 本身是核心交付物之一**，不是 review 的副产品。Review 必须从 design 状态判定开始。
+
+| 概念 | 在传统 review 中 | 在 Minix-RS 中 |
+|------|---------------|---------------|
+| design 文档 | 参考 | **强制约束（design.md 非 bagging / design-final.md bagging）** |
+| design 缺失 | 不关心 | **P0-design-missing（阻断 review）** |
+| design 错误（漏概念） | 不常见 | **P0-design-wrong（触发 design Refactor）** |
+| design 更新 | 自由 | **必须 review** |
+
+**判定优先级**（从高到低）：
+1. **Minix3 C 源码**（ground truth，优先级最高）
+2. **design-final.md**（bagging 场景，多 AI 评审定稿）或 **design.md**（非 bagging 默认）
+3. **当前 Rust 实现**（如果符合 design）
+4. **文档**
+
+**Refactor 触发条件**：
+- **code Refactor 触发**（P0-design-deviation）：Step 1.6.2 一致性 < 80% 但 design 本身正确（修复 code 回到 design 路径）
+- **design Refactor 触发**（P0-design-missing/wrong）：
+  - Step 0 design 预检 `design.md/design-final.md: 缺失`（**主入口，前移自 Step 1.6**）
+  - Step 2 发现 Minix3 核心概念在 design 中无对应
+  - Step 3.5 发现 design 未覆盖的纵向链路
+  - Step 1.6.3 Minix3 对齐检查发现 design-wrong
+- **Architectural Evolution 触发**（跨越 Minix3 语义边界的设计变更）：如 32 位临时窗口 → 64 位 direct_map
+
+> **配套机制**：Step 1.6 设计对齐检查 + Gate H design 门控 + Review 中断协议（IN_DESIGN）+ Profile R 设计优先模式。详见 [review-process.md](review-process.md)。
+
+### §2.0 架构演进作为独立知识点维度
+
+> 背景：架构演进本身是知识点（如 FPU xsave→aarch64 CPACR_EL1→riscv64 sstatus.FS）
+> **回应**：review 不只检查"当前架构是否正确"，还要检查"是否讲清了演进史 + 现代硬件模型 + Rust 抽象方向"。
+
+**架构演进知识点分类（5 类必覆盖维度）**：
+
+| 演进类型 | 示例 | 文档应讲述什么 |
+|---------|------|---------------|
+| **硬件机制演进** | FPU: xsave → XSAVE → aarch64 CPACR_EL1 → riscv64 sstatus.FS | 历史包袱 → 现代硬件模型 → Rust 抽象 |
+| **中断控制器演进** | i8259 → APIC → GICv3 → PLIC | 中断路由原理 + 各架构具体实现 |
+| **分页机制演进** | 32 位 4MB 大页 → 64 位 4 级页表 → Sv39 | 位宽演进 + Rust 抽象方向 |
+| **地址空间布局演进** | freepdes 临时窗口 → direct_map | 受限空间妥协 → 充裕空间自然解 |
+| **内核加载演进** | 实模式 → 保护模式 → 长模式 → SBI | 启动链 + 各架构入口点 |
+
+**强制要求**：
+- ✅ Ch1 概念章必须有"架构演进史"小节
+- ✅ 不只讲当前架构，必须讲历史动机（"为什么 X 被 Y 取代"）
+- ✅ 必须给"现代硬件模型"的统一抽象
+- ✅ 必须标注 Rust 抽象方向
+
+**判定信号**：
+- ❌ 文档只讲当前架构不讲演进史 → P1-knowledge-incomplete
+- ❌ 文档只列函数不讲原理 → P0-implementation-driven（模式 51）
+- ✅ 含"演进史小节 + 现代模型抽象 + Rust 方向" → A 级卓越
+
+**配套修订**：[review-doc-checklist.md](review-doc-checklist.md) §1 文档质量总览增加"架构演进维度"行；[review-doc-excellence.md §4.4](review-doc-excellence.md) 增加文档组织合理性检查。
 
 ### 执行模型（按模块分层）
 
@@ -62,7 +130,7 @@ Minix3 系统有两类不同的执行模型，Review 时必须根据模块类型
 
 ### Allowed Evolution（允许的架构演进）
 
-以下变化被视为**架构演进**，而非 Redesign：
+以下变化被视为**架构演进（Architectural Evolution）**，而非 Refactor 或 Redesign：
 
 | 演进类型 | Minix3 (C/32位) | minix-rs (Rust/64位) | 说明 |
 |---------|----------------|---------------------|------|
@@ -429,10 +497,17 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 ### P0 - 阻塞性检查（必须修复）
 
-| 维度 | 检查项 |
-|------|--------|
-| 文档 | 概念错误、虚构事实；C 代码引用错误；C 源码覆盖不完整（遗漏关键函数/结构体/宏） |
-| 代码 | UB、内存安全漏洞；语义偏移；硬件语义泄漏；错误码不对齐；`std::` 违规（非 test/mock） |
+> P0 现在细分为 **六类**（P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing）。
+> 前四类是常规修复，后两类触发 **design Refactor**（参见 §4.1）。
+
+| P0 类型 | 含义 | 维度 | 检查项 |
+|--------|------|------|--------|
+| **P0-fact** | 事实错误（行号、函数名、C 代码引用）| 文档 | 概念错误、虚构事实；C 代码引用错误 |
+| **P0-code-bug** | 代码 bug（UB、内存安全、语义偏移）| 代码 | UB、内存安全漏洞；语义偏移；硬件语义泄漏；错误码不对齐；`std::` 违规（非 test/mock）|
+| **P0-design-deviation** | design 已规定但实现偏离 | 代码 | 触发 **code Refactor**（修 code 回到 design）|
+| **P0-design-missing** | design 未规定但应该有 | 设计 | 触发 **design Refactor**（先补 design 再修 code）|
+| **P0-design-wrong** | design 本身错（漏核心概念）| 设计 | 触发 **design Refactor 必须**（先 redesign 再修 code）|
+| **P0-test-missing**| 测试作为正确性证明缺失 | 测试 | 文档 §5 列出的测试无对应实现；trailing test；架构分支未覆盖 |
 
 ### P1 - 设计问题（建议修复）
 
@@ -523,10 +598,61 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 ### 4. 问题清单
 
-| 优先级 | 位置 | 问题描述 | 依据（源码/规则） | 建议修复 |
-|--------|------|---------|------------------|---------|
-| P0 | 07.md L245 | 概念错误：xxx | pagetable.c:333 | 改为：yyy |
-| P1 | 07.md L180 | 设计决策缺乏依据 | 无 Ch1&2 对应 | 补充分析或添加 TODO |
+#### 4.1 P0 六分类（含 P0-test-missing + 明确 Refactor 类型）
+
+> 从原"五分类"扩展为"六分类"，新增 **P0-test-missing**（测试作为正确性证明缺失）。
+> 区分 **code Refactor / design Refactor**——容易混淆，必须明确：
+
+| P0 类型 | 含义 | 处理方式 | 触发 Refactor 类型 |
+|--------|------|---------|------------------|
+| **P0-fact** | 事实错误（行号、函数名、引用）| 渐进修复（直接改）| 否 |
+| **P0-code-bug** | 代码 bug（编译错误、行为错误）| 渐进修复（直接改）| 否 |
+| **P0-design-deviation** | design 已规定但实现偏离 | 渐进修复（修 code 回到 design）| **code Refactor** |
+| **P0-design-missing** | design 未规定但应该有 | **design Refactor**（先补 design 再修 code）| **design Refactor** |
+| **P0-design-wrong** | design 本身错（漏核心概念、抓错本质）| **design Refactor 必须**（先 redesign 再修 code）| **design Refactor** |
+| **P0-test-missing**| 测试作为正确性证明缺失（如 §5 测试无对应实现）| 渐进修复（补测试）| 否 |
+
+> **关键判定**：
+> - 前四类（P0-fact/code-bug/design-deviation/test-missing）走标准 review 流程（scan.md → 修复）
+> - **design-deviation 触发 code Refactor**（修 code 回到 design 路径），**不阻塞 review**
+> - **design-missing/wrong 触发 design Refactor**（先修 design 再修 code），**可阻塞 review**
+> - **design-wrong 严重时升级 Architectural Evolution**（跨越 Minix3 语义边界）
+> - **P0-test-missing 必须补测试**，不允许"语义对了就不写测试"
+
+**测试覆盖度量化标准**：
+
+| 测试类型 | 最低数量 | 判定 |
+|---------|---------|------|
+| 每个 P0-design-deviation 修复 | ≥1 个单元测试 | 必须 |
+| 每个核心 trait 方法 | ≥3 个单元测试（正常/边界/错误）| 必须 |
+| 每个架构分支（x86/aarch64/riscv）| ≥1 个集成测试 | 必须 |
+| 每个跨模块调用 | ≥1 个集成测试 | 必须 |
+| 启动链（boot-shim → kernel）| ≥1 个 QEMU 端到端测试 | 必须 |
+
+**测试完备性自检清单**（每个修复必须回答）：
+```markdown
+- [ ] 修复涉及的每个分支是否都有测试？
+- [ ] 测试是否覆盖正常路径、边界、错误路径？
+- [ ] 测试是否覆盖三架构（x86-64/aarch64/riscv64）？
+- [ ] 测试是否使用 Rust 类型系统的安全保证（避免 unsafe 仅用于测试）？
+- [ ] 测试是否能在 CI 中运行（不需要 QEMU 物理机）？
+- [ ] **关键**：这些测试是否足以证明正确性？
+```
+
+**判定信号**：
+- ❌ 修复提交但未补测试 → P0-test-missing 阻断 CONVERGED
+- ⚠️ 测试覆盖 < 80% → P1-test-coverage-insufficient
+- ✅ 覆盖 ≥ 80% 且三架构测试齐全 → PASS
+
+#### 4.2 问题清单表格
+
+| 优先级 | **类型** | 位置 | 问题描述 | 依据（源码/design） | 建议修复 |
+|--------|---------|------|---------|------------------|---------|
+| P0 | design-missing | 07.md §3.3 | MemoryInitArch 未在 design 中定义 | design-final §3.3 缺 | 触发 design Refactor |
+| P0 | fact | 04.md §11 | 行号 252 实际指向已实现函数 | opensbi_helpers.rs:584 | 修正行号 |
+| P0 | design-deviation | 01.md §1.7 | 文档写 SimpleFileSystemProtocol，code 用 ImageHandle | design §3.1 vs uefi_helpers.rs:50 | 统一为前者（code Refactor）|
+| P0 | design-wrong | 03.md §2.4 | 进程表/特权表核心抽象 design 漏 | design-final §3.2 缺三类实体区分 | 触发 design Refactor 必须 |
+| P0 | test-missing | 04.md §5 | OpenSBI 启动链 6 个子例程无测试 | opensbi_helpers.rs:194-244 | 补单元测试 |
 
 ### 5. 跨文档检查
 
@@ -536,12 +662,17 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 ### 6. 最弱项自检（强制）
 
-> AI 必须回答以下 4 个问题，防止漏掉最容易跳过的维度：
+> AI 必须回答以下 **5 个问题**，防止漏掉最容易跳过的维度：
 
 1. **§2.8 C 源码覆盖完整性**：是否对每个 .c 文件执行了 grep？是否输出了覆盖表格？覆盖率多少？
 2. **§2.10 章节链路验证**：是否逐条追溯了 Ch3→Ch1&2、Ch4→Ch3、测试→Ch3+Ch4？
 3. **跨文档联动**：是否检查了同目录其他文档的重复定义和矛盾？
 4. **错误路径覆盖**：Ch2 中分析的每个错误场景，Ch3 是否都有对应设计？
+5. **Design 对齐检查**：
+   - 是否有 design ↔ code 偏离矩阵？（Step 1.6.2）
+   - 是否识别了 P0-design-missing/wrong？
+   - 是否触发了 Refactor 流程或记录了 IN_DESIGN 中断协议？
+   - Gate H 是否 PASS？
 
 ### 7. 确认清单
 
@@ -550,8 +681,65 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - [ ] 交叉引用完整
 - [ ] 无"待确认"项遗留（如有，需说明原因）
 - [ ] 所有维度覆盖自检均为 ✅（跳过的已说明理由）
-- [ ] 最弱项自检 4 个问题均已确认
+- [ ] 最弱项自检 **5** 个问题均已确认（含 Design 对齐检查，v6）
 - [ ] 时间预算评估为 ✅ 正常 或 ⚠️ 已说明原因
+
+---
+
+### 8. Design Feedback（必填，仅完整/深度 review）
+
+> 如果 review 过程中发现 design.md/design-final.md 不抓本质、漏概念、错架构，**必须在此节反馈**，不要把这些问题归入 P0 修复清单。Design 错误是 design Refactor 触发条件，不是普通修改项。
+
+| 反馈类型 | 含义 | 后续动作 |
+|---------|------|---------|
+| **design-missing** | design 未覆盖某概念 | 触发 **design Refactor**（Gate H 阻断）|
+| **design-wrong** | design 错（漏核心抽象）| **design Refactor 必须**（先修 design 再修 code）|
+| **design-improvable** | design 抓本质但可改进 | 记录，下次 design 更新时考虑 |
+| **design-code-divergence** | design 与实现严重偏离（≥30%）| 区分设计正确与否：设计正确 → code Refactor；设计错 → design Refactor 必须 |
+
+**示例**：
+```markdown
+### 8.1 Design Feedback 实例
+- **design-missing**: design.md §3 未定义"进程表"
+  - 证据：06-proc-init-boot-proc.md §1.1.3 TODO 标记三类运行态实体未区分
+  - 后续动作：触发 design Refactor，生成 IN_DESIGN.md
+- **design-wrong**: design.md §4.2 用 `enum PlatformDescriptorPtr` 但明确要求 `&'static dyn PlatformDesc`
+  - 证据：design.md §4.2
+  - 后续动作：design Refactor 必须（先修正 design 再修 code）
+```
+
+> **配套机制**：Design Feedback §8 + Gate H（[review-process.md §Gate H](review-process.md)）+ Profile R（[review-profiles.md §Profile R](review-profiles.md)）。
+
+---
+
+### §4.5 正确性 vs 卓越性分层（Layer 1/2）
+
+> 目标：规则集兼顾正确性与卓越性
+> **命名说明**：原方案用"Gate C/E"命名，但 review-process.md 已占用 Gate C（Precision Check）与 Gate E（§5 测试验证），易冲突。改用 **Layer 1/2** 分层，**不属于 Blocker Gates**，仅作为 CONVERGED 的分层判定。
+
+**双层 Layer 模型**：
+
+| 层级 | 目标 | 进入条件 | 通过条件 | 不通过后果 |
+|------|------|---------|---------|-----------|
+| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/test-missing 修复完成 + Gate H + Gate A/B/C/D/D-6/E PASS | CONVERGED 阻断 |
+| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §15.5 design-first API + §2.0 架构演进维度 ≥80% | 允许 CONVERGED 但标记 excellence-pending |
+
+**关键判定**：
+- **必须先 1 后 2**：没有正确性，卓越性无从谈起
+- **Layer 1 不通过 → Layer 2 不评估**：直接阻断 CONVERGED
+- **Layer 1 通过但 Layer 2 不通过 → 允许 CONVERGED with warning**：excellence 可后续迭代
+- **Layer 1 和 Layer 2 都通过 → 完全 CONVERGED**
+
+**CONVERGED 判定流程**：
+1. 列出 Layer 1 各项检查结果（5 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/E/G）
+2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§15.5、§2.0 架构演进）
+3. 判定：
+   - Layer 1 FAIL → NOT CONVERGED（强制修复）
+   - Layer 1 PASS + Layer 2 PASS → CONVERGED
+   - Layer 1 PASS + Layer 2 PARTIAL → CONVERGED with warning
+   - Layer 1 PASS + Layer 2 FAIL → CONVERGED with excellence-pending tag
+
+**配套修订**：[review-process.md §三 状态管理与收敛判断](review-process.md) 增加双层 Layer 判定。
 
 ---
 

@@ -13,17 +13,18 @@
 //! Each process table is linked via `endpoint`.
 
 use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicI8, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicU8, Ordering};
 
 use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch};
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
+use crate::ipc::SenderQueue;
 
 /// Process number type (corresponds to C's `proc_nr_t`).
 pub type ProcNr = i32;
 
 /// Sentinel value for "no process" in atomic queue pointers.
-/// Used by `p_nextready`, `p_caller_q`, `p_q_link` (AtomicI32).
+/// Used by `p_nextready` (AtomicI32). `caller_q` uses `SenderQueue` (VecDeque).
 pub const NONE_PROC_NR: i32 = -1;
 
 /// Clock ticks type.
@@ -191,12 +192,18 @@ pub mod mf {
     pub const NICED: u32 = super::MiscFlagsBits::NICED.bits();
 }
 
-/// Priority range constants.
+/// Priority range constants. C: minix/kernel/proc.h:135-141.
+///
+/// Design decision §3.3 (11-design.v1.md): type is `u8` (not `i8`) because
+/// the valid range 0..=15 fits in `u8` and `u8` cannot be negative, which
+/// matches the semantic that priority is never negative. The C `sched_proc`
+/// sentinel `-1` ("keep current") is NOT a priority value — it is expressed
+/// via `Option<u8>` in `sched_proc` (§3.8).
 pub mod priority {
-    pub const TASK_Q: i8 = 0;
-    pub const MAX_USER_Q: i8 = 0;
-    pub const USER_Q: i8 = 7;
-    pub const MIN_USER_Q: i8 = 15;
+    pub const TASK_Q: u8 = 0;
+    pub const MAX_USER_Q: u8 = 0;
+    pub const USER_Q: u8 = 7;
+    pub const MIN_USER_Q: u8 = 15;
     pub const NR_SCHED_QUEUES: usize = 16;
 }
 
@@ -311,25 +318,31 @@ impl Default for MiscFlags {
 /// Priority newtype (wraps validity check).
 ///
 /// Valid range: `TASK_Q(0)` to `MIN_USER_Q(15)`.
+/// Design decision §3.3 (11-design.v1.md): internal type is `u8`.
 /// The special value `-1` in Minix3's `sched_proc()` means "keep current priority"
-/// and is NOT a valid `Priority` — it is a parameter sentinel, not a priority value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Priority(i8);
+/// and is NOT a valid `Priority` — it is a parameter sentinel expressed via
+/// `Option<u8>` / `Option<Priority>` in `sched_proc` (§3.8), not encoded here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Priority(u8);
 
 impl Priority {
-    pub fn new(value: i8) -> Option<Self> {
-        if value >= priority::TASK_Q && value <= priority::MIN_USER_Q {
+    /// Construct with validation. Returns `None` if `value > MIN_USER_Q`.
+    /// Note: `u8` is always `>= 0`, so no lower bound check is needed.
+    pub const fn new(value: u8) -> Option<Self> {
+        if value <= priority::MIN_USER_Q {
             Some(Self(value))
         } else {
             None
         }
     }
 
-    pub fn get(&self) -> i8 {
+    /// Get the raw `u8` value.
+    pub const fn get(&self) -> u8 {
         self.0
     }
 
-    pub fn is_kernel(&self) -> bool {
+    /// Whether this is a kernel-task priority (`TASK_Q == 0`).
+    pub const fn is_kernel(&self) -> bool {
         self.0 == priority::TASK_Q
     }
 }
@@ -443,7 +456,7 @@ impl CpuMask {
 /// Scheduling fields extension.
 #[derive(Debug)]
 pub struct SchedFields {
-    pub priority: AtomicI8,
+    pub priority: AtomicU8,
     pub quantum: Quantum,
     pub cpu: AtomicU32,
     /// CPU affinity bitmap (06-design-final.md §4.2).
@@ -460,7 +473,7 @@ pub struct SchedFields {
 impl SchedFields {
     pub const fn new() -> Self {
         Self {
-            priority: AtomicI8::new(priority::USER_Q),
+            priority: AtomicU8::new(priority::USER_Q),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
             cpu_mask: CpuMask::all(),
@@ -468,9 +481,9 @@ impl SchedFields {
         }
     }
 
-    pub fn with_priority(priority: i8) -> Self {
+    pub fn with_priority(priority: u8) -> Self {
         Self {
-            priority: AtomicI8::new(priority),
+            priority: AtomicU8::new(priority),
             quantum: Quantum::new(200),
             cpu: AtomicU32::new(0),
             cpu_mask: CpuMask::all(),
@@ -519,7 +532,7 @@ impl Accounting {
 
     /// Mark this process as the current billable target (IDLE-side).
     ///
-    /// Called from `bsp_finish_booting` step 2 (Doc 07 §3) to indicate
+    /// Called from `bsp_finish_booting` step 2 (Doc 08 §3) to indicate
     /// that until a real user process runs, accumulated time should be
     /// billed to the IDLE kernel task.
     ///
@@ -803,7 +816,7 @@ pub struct KProcess {
     pub p_defer: DeferArgs,
 
     // IPC queue pointers
-    // SMP: These fields are accessed by the scheduler across CPUs.
+    // SMP: p_nextready is accessed by the scheduler across CPUs.
     // Using AtomicI32 with Ordering::Relaxed under BKL protection.
     // -1 (NONE_PROC_NR) represents None, valid ProcNr values are >= 0.
 
@@ -812,15 +825,13 @@ pub struct KProcess {
     /// C: `struct proc *p_nextready` — proc.h
     pub p_nextready: AtomicI32,
 
-    /// Sender queue head pointer.
-    /// Points to head of process queue waiting to send message to this process.
-    /// C: `struct proc *p_caller_q` — proc.h
-    pub p_caller_q: AtomicI32,
-
-    /// Sender queue link pointer.
-    /// Links to next process in same sender queue.
-    /// C: `struct proc *p_q_link` — proc.h
-    pub p_q_link: AtomicI32,
+    /// Sender wait queue for IPC.
+    /// Blocked senders waiting to deliver a message to this process.
+    /// C: `struct proc *p_caller_q` + `p_q_link` intrusive linked list — proc.h.
+    /// Rust: `SenderQueue` (VecDeque<ProcNr>) — design §2.5 / ARCH-2.
+    /// Owned by the process; no `p_q_link` field needed (queue storage is
+    /// internal to SenderQueue).
+    pub caller_q: SenderQueue,
 
     // IPC endpoint fields
     /// Source endpoint for receiving message.
@@ -880,7 +891,7 @@ pub struct KProcess {
     /// Next process in vmrequest queue.
     /// C: `p_vmrequest.nextrequestor` (struct proc *)
     /// Design decision: §3.4 (ProcNr index replaces *proc pointer, moved from
-    /// p_vmrequest to KProcess top level alongside p_nextready/p_caller_q).
+    /// p_vmrequest to KProcess top level alongside p_nextready/caller_q).
     pub p_next_requestor: Option<ProcNr>,
 
     /// VM suspend context.
@@ -1114,8 +1125,7 @@ impl KProcess {
             p_dequeued: AtomicU64::new(0),
             p_defer: DeferArgs::default(),
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            p_caller_q: AtomicI32::new(NONE_PROC_NR),
-            p_q_link: AtomicI32::new(NONE_PROC_NR),
+            caller_q: SenderQueue::new(),
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
             p_pending: SigSet::empty(),
@@ -1158,8 +1168,7 @@ impl KProcess {
             p_fault_addr: None,
             p_defer: DeferArgs::new(),
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            p_caller_q: AtomicI32::new(NONE_PROC_NR),
-            p_q_link: AtomicI32::new(NONE_PROC_NR),
+            caller_q: SenderQueue::new(),
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
             p_pending: SigSet::empty(),
@@ -1191,7 +1200,7 @@ impl KProcess {
     }
 
     /// Sets priority with validation. Returns false if value is out of range.
-    pub fn set_priority(&self, prio: i8) -> bool {
+    pub fn set_priority(&self, prio: u8) -> bool {
         if let Some(p) = Priority::new(prio) {
             self.p_sched.priority.store(p.get(), Ordering::Release);
             true
@@ -1202,7 +1211,7 @@ impl KProcess {
 
     /// Sets priority without validation. For internal use by sched_proc
     /// where the caller has already validated the range.
-    pub fn set_priority_unchecked(&self, prio: i8) {
+    pub fn set_priority_unchecked(&self, prio: u8) {
         self.p_sched.priority.store(prio, Ordering::Release);
     }
 
@@ -1367,7 +1376,7 @@ impl KProcess {
     /// | `p_misc_flags` | Copy then clear `VIRT_TIMER\|PROF_TIMER\|SC_TRACE\|SPROF_SEEN\|STEP` | Copy then apply same mask |
     /// | `p_time` | `virt_left=0, prof_left=0` | All zeroed (new) |
     /// | `p_pending` | `sigemptyset()` | Empty |
-    /// | `p_nextready/p_caller_q/p_q_link` | Pointer copied but child gets own queues | `None` (child not queued yet) |
+    /// | `p_nextready/caller_q` | Pointer copied but child gets own queues | `None` (child not queued yet) |
     ///
     /// # Parameters
     /// - `parent`: Reference to parent process
@@ -1405,7 +1414,7 @@ impl KProcess {
             p_fault_addr: None,
             p_misc_flags: child_mf,
             p_sched: SchedFields {
-                priority: AtomicI8::new(parent.p_sched.priority.load(Ordering::Acquire)),
+                priority: AtomicU8::new(parent.p_sched.priority.load(Ordering::Acquire)),
                 quantum: Quantum::new(parent.p_sched.quantum.size_ms.load(Ordering::Acquire)),
                 cpu: AtomicU32::new(parent.p_sched.cpu.load(Ordering::Acquire)),
                 // Child inherits parent's CPU affinity (C: p_cpu_mask memcpy).
@@ -1423,8 +1432,7 @@ impl KProcess {
             p_defer: DeferArgs::default(),
             // IPC queue pointers: child is not queued, no callers, no links
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            p_caller_q: AtomicI32::new(NONE_PROC_NR),
-            p_q_link: AtomicI32::new(NONE_PROC_NR),
+            caller_q: SenderQueue::new(),
             p_getfrom_e: parent.p_getfrom_e,
             p_sendto_e: parent.p_sendto_e,
             // p_pending cleared: corresponds to sigemptyset(&rpc->p_pending)
@@ -1592,11 +1600,14 @@ mod tests {
 
     #[test]
     fn test_priority_valid() {
+        // Design decision §3.3: Priority is u8, so negative values are
+        // rejected at the type level (cannot be constructed). The C
+        // `sched_proc` sentinel `-1` is expressed via Option<u8> (§3.8).
         assert!(Priority::new(0).is_some());
         assert!(Priority::new(7).is_some());
         assert!(Priority::new(15).is_some());
-        assert!(Priority::new(-1).is_none());
         assert!(Priority::new(16).is_none());
+        assert!(Priority::new(255).is_none());
     }
 
     #[test]
@@ -1767,13 +1778,12 @@ mod tests {
     fn test_fork_from_independent_queues() {
         let mut parent = KProcess::new(5, Endpoint(5));
         parent.p_nextready.store(3, Ordering::Relaxed);
-        parent.p_caller_q.store(7, Ordering::Relaxed);
+        parent.caller_q.push_back(7);
 
         let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
 
         assert_eq!(child.p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
-        assert_eq!(child.p_caller_q.load(Ordering::Relaxed), NONE_PROC_NR);
-        assert_eq!(child.p_q_link.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert!(child.caller_q.is_empty());
     }
 
     #[test]

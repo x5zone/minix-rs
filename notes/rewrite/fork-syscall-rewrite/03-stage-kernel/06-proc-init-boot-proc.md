@@ -76,36 +76,40 @@ CPU 本质上只有一条执行流：取指 → 译码 → 执行 → 写回，�
 | IPC 状态 | 等待的消息、阻塞队列指针 | "进程在等谁？谁在等它？" |
 | VM 状态 | 页表指针、内存映射 | "进程的地址空间长什么样？" |
 
-> **TODO（补 §1.1.3 后三类进程区分小节——消除"系统任务" vs "系统服务器" vs "内核子系统"术语混淆）**：[§1.1.3](06-proc-init-boot-proc-new.md#113-进程在内核眼中的组成) 表"五部分组成"对所有进程一视同仁，**但 Minix3 实际上把"运行态实体"分成三类，机制完全不同**——这个区分是早期 reader 最大的认知陷阱之一，也是 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) 讨论 timer 时的关键背景（CLOCK task 与普通 timer 硬件不同层）。
->
-> **拟新增小节"§1.1.4 三类运行态实体"**，给出三分法表格：
-
-> | 类别 | 特权级 | 地址空间 | Minix3 实例 | minix-rs 翻译 |
-> |------|--------|---------|-------------|---------------|
-> | **User Process（用户进程）** | Ring 3 | 独立虚拟地址空间（CR3/satp 切换） | shell、编译器、所有用户应用 | `ProcessKind::User { ... }` |
-> | **System Server（系统服务器）** | Ring 3 | 独立虚拟地址空间 | PM / VM / RS / VFS / DS / INET 等 | `ProcessKind::Server { ... }` |
-> | **Kernel Subsystem（内核子系统）** | Ring 0 | **共用 kernel image**（无独立地址空间概念；不切换 CR3） | CLOCK task、SCHED task、SYSTASK、KERNEL | `ProcessKind::KernelSubsystem { subsystem: KernelSubsystemKind, ... }` |
-
->
-> **关键澄清**（这是最容易错的概念）：
->
-> 1. **"System Task"在 Minix3 术语里严格指 kernel subsystem**——而许多教学材料（包括部分 minix 文档）把 PM/VM/RS 称为"系统任务"，其实是误用术语。**PM/VM/RS 的真名是"系统服务器"**（system server）或"用户态特殊进程"——它们在 Ring 3 运行，与普通用户进程机制相同，只是通过 `priv` 特权表获得特殊权限。
-> 2. **只有 kernel subsystem 跑 Ring 0**——SYSTASK（内核调用分发）+ CLOCK task（timer handler）两个**共用 kernel memory address space**（来自 [Minix 3 I/O 论文](http://sedici.unlp.edu.ar/bitstream/handle/10915/125322/Documento_completo.pdf-PDFA.pdf?isAllowed=y&sequence=1)）。
-> 3. **kernel subsystem 不是"页表切换"的进程**——它从来不离开 kernel image，永远在 Ring 0；调度器进入 kernel subsystem 时**不动 CR3**，只保存/恢复通用寄存器和少量特权寄存器（SP/RFLAGS 之类）。
-> 4. **三类进程在"五部分组成"中某些字段不同**：
->    - VM 状态：User/Server 有，Kernel Subsystem 没有（共用 kernel image，**不需要页表**）
->    - IPC 状态：User/Server 之间通过消息传递；Kernel Subsystem 通过直接函数调用
->    - 调度属性：Kernel Subsystem 的 priority 与 User/Server 不互通——CLOCK task 优先级最高，SCHED task 决定其他进程的调度顺序
->    - 寄存器状态：Kernel Subsystem 不需要保存 SS/RSP 全栈（kernel 已经常驻）
->
-> **与本文档的关系**：阶段 C 处理的主要是 System Server（VM 是第一个被装载的；FS/PFS/... 在阶段 E 中由 RS 服务拉起）和 Kernel Subsystem（CLOCK task、SCHED task、SYSTASK 这些其实就是内核子系统，不是从 boot image 装载的 ELF）。
->
-> **触发条件**：建议在 §1.2 概念驱动小节或后续 11-scheduling-primitives.md 文档中正式引入——本文档的 §1.1 仅作为声明占位，详细机制归调度器文档。
-> 优先级：**P1**（细节可以推迟，但 §1.1 必须有这个区分，否则后续读者按教学材料定义"系统任务"会一直被误导）。
-
 阶段 C 的工作，就是为 boot image 中的每个进程**填好这五部分**，让它们"就位但暂停"，等待后续阶段唤醒。
 
+#### 1.1.4 三类运行态实体（User Process / System Server / Kernel Subsystem）
+
+> 架构范围：**三架构共性**（仅 Ring 特权级跨架构名称不同：x86-64 ring/EL/privilege mode；本质均为"谁跑 Ring 0 共用 kernel image"）
+
+§1.1.3 的"五部分组成"对所有进程一视同仁——但 Minix3 实际上把**运行态实体**分成三类，**机制完全不同**。这个区分是早期读者最大的认知陷阱之一，也是 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) 讨论 timer 时的关键背景（CLOCK task 与普通 timer 硬件不同层）。本节正式确立三分法。
+
+**三分法总表**：
+
+| 类别 | 特权级 | 地址空间 | Minix3 实例 | minix-rs 翻译 |
+|------|--------|---------|-------------|---------------|
+| **User Process（用户进程）** | Ring 3 | 独立虚拟地址空间（CR3/satp 切换） | shell、编译器、所有用户应用 | `ProcessKind::User { ... }` |
+| **System Server（系统服务器）** | Ring 3 | 独立虚拟地址空间 | PM / VM / RS / VFS / DS / INET 等 | `ProcessKind::Server { ... }` |
+| **Kernel Subsystem（内核子系统）** | Ring 0 | **共用 kernel image**（无独立地址空间概念；不切换 CR3） | CLOCK task、SCHED task、SYSTASK、KERNEL | `ProcessKind::KernelSubsystem { subsystem: KernelSubsystemKind, ... }` |
+
+**四项关键澄清**（最易错的概念）：
+
+1. **"System Task"在 Minix3 术语里严格指 Kernel Subsystem**——许多教学材料（包括部分 Minix 文档）把 PM/VM/RS 称为"系统任务"，其实是误用术语。**PM/VM/RS 的真名是"系统服务器"**（system server）或"用户态特殊进程"——它们在 Ring 3 运行，与普通用户进程机制相同，只是通过 `priv` 特权表获得特殊权限。
+2. **只有 Kernel Subsystem 跑 Ring 0**——SYSTASK（内核调用分发）+ CLOCK task（timer handler）两个**共用 kernel memory address space**（来自 [Minix 3 I/O 论文](http://sedici.unlp.edu.ar/bitstream/handle/10915/125322/Documento_completo.pdf-PDFA.pdf?isAllowed=y&sequence=1)）。
+3. **Kernel Subsystem 不是"页表切换"的进程**——它从来不离开 kernel image，永远在 Ring 0；调度器进入 kernel Subsystem 时**不动 CR3**，只保存/恢复通用寄存器和少量特权寄存器（SP/RFLAGS 之类）。
+4. **三类进程在 §1.1.3 "五部分组成"中某些字段不同**：
+   - **VM 状态**：User/Server 有，Kernel Subsystem 没有（共用 kernel image，**不需要页表**）
+   - **IPC 状态**：User/Server 之间通过消息传递；Kernel Subsystem 通过直接函数调用
+   - **调度属性**：Kernel Subsystem 的 priority 与 User/Server 不互通——CLOCK task 优先级最高，SCHED task 决定其他进程的调度顺序
+   - **寄存器状态**：Kernel Subsystem 不需要保存 SS/RSP 全栈（kernel 已经常驻）
+
+**与本文档（阶段 C）的关系**：阶段 C 处理的主要是 System Server（VM 是第一个被装载的；FS/PFS/... 在阶段 E 中由 RS 服务拉起）和 Kernel Subsystem（CLOCK task、SCHED task、SYSTASK 这些其实就是内核子系统，不是从 boot image 装载的 ELF）。
+
+> **本节在全文中的位置**：本节建立"三类运行态实体"的概念底座。后续 [11-scheduling-primitives.md](./11-scheduling-primitives.md) 给出调度器完整设计；[16-smp.md](./16-smp.md) 给出 SMP 下 Kernel Subsystem 的并发模型；本章 §1.4 boot image 仅引用本节对 System Server/Kernel Subsystem 的区分。
+
 ### 1.2 CPU 要回答的四个问题
+
+> **与 03 文档的关系**：本文档用"四问"框架；[03-kmain-cstart.md §1.4](./03-kmain-cstart.md) 用"三问"框架。03 三问 = "当前特权级？异常/syscall 跳哪？用哪个栈？"，由 `prot_init()` 回答。**本文第四问（VM 鸡生蛋 / 第一个进程地址空间谁建）是阶段 C 特有的"运行态特化"问题，不属 03 保护结构范畴**——它是"进程首次进入 Ring 3 之前需要由内核手工准备的地址空间"，与 §1.4 "CPU 怎么进入 kernel"的特化方向相反（§1.4 是 user→kernel，本节第四问是 kernel→user 的反向配套）。
 
 boot 一个进程，本质上是让 CPU 能开始执行这个进程的代码。要做到这一点，CPU 必须回答四个问题：
 
@@ -294,6 +298,17 @@ RTS（Run-Time Status）是一个位图，记录进程当前不可运行的原�
 - NR_BOOT_MODULES：multiboot 提供的用户态模块数（不含内核 task）
 
 **schedulable 判定**：内核 task + RS + VM 立即可调度；其他用户进程需等 RS 运行时设特权。
+
+**boot image 格式与编译生成**：
+
+boot image 来自 Minix3 `kernel/table.c` 中的 `struct image image[]` 数组——编译时由 `config.h` 的 `NR_TASKS` / `NR_PROCS` 确定大小，每个条目是 `{ proc_nr, flags, proc_name, ipc_to, k_call, stack_size }`。它**不是 ELF**，只是 C 全局数组，编进 `kernel` 二进制。Rust 实现侧对应 `os/kernel/src/proc.rs:75` 的 `KERNEL_TASKS` 常量数组 + `BOOT_MODULE_PROC_NRS`（`proc.rs:88`）+ `CapabilityTemplate` 枚举（见 §3.2 / §3.4）。
+
+**multiboot 模块 vs boot image**：
+- **boot image（image[]）**：编译时硬编码进 kernel 二进制的进程清单（含 CLOCK/SYSTEM/IDLE/KERNEL 4 个内核 task + VM/PM/VFS/RS 4 个用户态 boot 模块）
+- **multiboot module list（kinfo.module_list）**：bootloader（GRUB/QEMU `-initrd`）在加载 kernel 时通过 multiboot 协议额外提供的 ELF 模块；QEMU 启动命令形如 `qemu-system-x86_64 -kernel kernel.elf -initrd vm.elf,pm.elf,vfs.elf,rs.elf`
+- **关系**：boot image 给出"进程清单"，multiboot module 给出"对应 ELF 镜像的物理地址范围"——`init_proc_and_boot()` 用 `kernel_info.boot_modules[i]` 对应 `BOOT_MODULE_PROC_NRS[i]`（见 §4.0）
+
+> **本节细节深读**：[`minix3/minix/kernel/table.c`](https://github.com/minix3/minix/blob/master/minix/kernel/table.c) 的 `image[]` 数组定义；[01-boot-shim-bootstrap.md §1.5](./01-boot-shim-bootstrap.md) 的 multiboot 模块加载协议。
 
 #### 1.4.2 VM 的"开天辟地"问题
 
@@ -1277,6 +1292,12 @@ Minix3 的 per-CPU runqueue **不是**为了并行调度，而是为了 cache �
 
 **假设性推理**：如果用 `Rc<RefCell<KProcess>>` 跨 CPU 共享，`RefCell` 的运行时借用检查不是原子操作，两个 CPU 可能同时获得 `&mut`，导致 UB。`AtomicPtr` + BKL 是 SMP 安全的唯一组合。
 
+**per-CPU 数据的 Rust 抽象**（关联 [16-smp.md §?](./16-smp.md)）：Minix3 C 用 `struct __cpu_local_vars` 存放每个 CPU 独立的 `proc_ptr` / `fpu_owner` 等局部状态。本设计用 `CpuLocal<T>`（位于 `os/kernel/src/smp.rs:45-56`）替代原 design 的 `PerCpuData` 提案——`CpuLocal<T>: !Sync` 类型系统保证 per-CPU 数据**编译期禁止跨 CPU 共享引用**，从根上消除 per-CPU 数据被并发访问的可能。Rust 实现细节见 [16-smp.md](./16-smp.md)（per-CPU 抽象 + lazy 初始化）。
+
+**BKL 类型系统强制**（关联 [16-smp.md](./16-smp.md)）：`BklSection<'a>` typed witness（`os/kernel/src/smp.rs:560-578`）把"当前持有 BKL"从注释约定升级为编译期类型证明。`smp_state_with(section, &SmpState)` 等需 `&BklSection<'_>` 的 API 自动拒绝"未持锁调用"，从根上消除"漏 BKL"问题。Rust 实现细节见 [16-smp.md](./16-smp.md)（BklSection witness 设计 + RAII vs non-RAII 取舍）。
+
+> **本节是概念索引**：详细 BKL/per-CPU/调度并行化的设计与代码见 [16-smp.md](./16-smp.md)。本章仅建立"Minix3 是 BKL 全局串行 + per-CPU 局部状态"的心智模型，避免读者在 boot 期误用 `Rc/RefCell`（SMP 跨 CPU UB）。
+
 ### 3.10 KPriv 6 子结构分组
 
 **本质**：C 的 `struct priv` 有 30+ 裸字段，缺乏内聚性。Rust 按 OS 语义分组为 6 个子结构。
@@ -1398,7 +1419,7 @@ pub fn bsp_finish_booting(proc_table: &mut ProcessTable, smp_state: &mut SmpStat
 
 ### 4.0 实现地图：init_proc_and_boot() 主流程
 
-Rust boot 主流程入口是 `init_proc_and_boot(kernel_info: &KernelInfo)`（[lib.rs:699](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），对应 C 的 `proc_init()` + main.c boot image 循环。
+Rust boot 主流程入口是 `init_proc_and_boot(kernel_info: &KernelInfo)`（[lib.rs:706](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），对应 C 的 `proc_init()` + main.c boot image 循环。
 
 ```
 init_proc_and_boot(kernel_info)
@@ -1421,7 +1442,7 @@ init_proc_and_boot(kernel_info)
 └── Step 4: boot_procs 信息已在 kernel_info 中
 ```
 
-后续 `bsp_finish_booting()`（[lib.rs:1155](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）负责唤醒：RTS_UNSET(PROC_STOP) 循环 + 时钟/FPU 初始化 + `switch_to_user()`。
+后续 `bsp_finish_booting()`（[lib.rs:1162](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）负责唤醒：RTS_UNSET(PROC_STOP) 循环 + 时钟/FPU 初始化 + `switch_to_user()`。
 
 ### 4.1 arch 层：CpuContextArch trait 实现
 
@@ -1521,7 +1542,7 @@ SMP 安全：所有方法要求持有 BKL（boot 期单线程，无需锁）。
 
 ### 4.4 kernel 层：KProcess 结构
 
-`KProcess`（[proc.rs:754](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）字段按语义分组：
+`KProcess`（[proc.rs:767](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）字段按语义分组：
 
 | 分组 | 字段 | C 对应 |
 |------|------|--------|
@@ -1532,7 +1553,7 @@ SMP 安全：所有方法要求持有 BKL（boot 期单线程，无需锁）。
 | IPC | `p_nextready`, `p_caller_q`, `p_q_link` (AtomicI32), `p_getfrom_e`, `p_sendto_e` | p_nextready, p_caller_q, p_q_link, p_getfrom_e, p_sendto_e |
 | VM | `p_seg: ProcessSegments`, `priv_id: Option<PrivId>` | p_seg, p_priv |
 
-**fork_from**（[proc.rs:1376](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）：运行时路径（非 boot 路径），创建子进程：
+**fork_from**（[proc.rs:1385](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）：运行时路径（非 boot 路径），创建子进程：
 - 继承调度属性（priority/quantum/cpu/cpu_mask）与 IPC 端点（`p_getfrom_e`/`p_sendto_e`）
 - 重置 accounting/time/cycles/cpuavg（子进程不继承父进程 CPU 时间统计）
 - 队列指针独立（`p_nextready`/`p_caller_q`/`p_q_link` = NONE）
@@ -1581,7 +1602,7 @@ pub fn grant_capability(
 
 ### 4.7 主流程：init_proc_and_boot()
 
-`init_proc_and_boot`（[lib.rs:699](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）的 Step 3a/3b 对称结构：
+`init_proc_and_boot`（[lib.rs:706](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）的 Step 3a/3b 对称结构：
 
 **Step 3a**（内核 task）：遍历 `KERNEL_TASKS`（编译期硬编码），每步：
 1. `set_boot_name(name)` — 设进程名
@@ -1602,7 +1623,7 @@ pub fn grant_capability(
 
 ### 4.8 boot→running：bsp_finish_booting
 
-`bsp_finish_booting`（[lib.rs:1155](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）是 boot 流程终点，类型 `-> !`（never returns）：
+`bsp_finish_booting`（[lib.rs:1162](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）是 boot 流程终点，类型 `-> !`（never returns）：
 
 ```
 bsp_finish_booting(proc_table, smp_state) -> !
@@ -1852,6 +1873,5 @@ Rust 的 `load_vm_elf` 用 `minix_elf` crate 解析 + `Paging` trait 方法映�
 
 **相关文档**：
 - [00-kernel-overview](file:///home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/03-stage-kernel/00-kernel-overview.md) — 内核整体架构与 BKL/SMP 模型
-- [06-design-final](file:///home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/03-stage-kernel/06-design-final.md) — 本阶段设计决策汇总
 
 

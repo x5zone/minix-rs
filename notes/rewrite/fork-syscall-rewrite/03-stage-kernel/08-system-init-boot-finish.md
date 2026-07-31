@@ -1,7 +1,7 @@
 # 08-system-init-boot-finish: 系统调用初始化与启动完成
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/system.c:168-289`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-121`, `minix3/minix/kernel/main.c:38-110`
+> **源码**: `minix3/minix/kernel/system.c:168-270`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-121`, `minix3/minix/kernel/main.c:38-109`
 > **说明**: kmain 的最后三步——系统调用注册、bootstrap 内存回收、启动完成——把内核从"初始化态"带入"运行态"
 
 ---
@@ -37,7 +37,7 @@ T10: bsp_finish_booting()
 
 | 前置 | 本文档 | 后续 |
 |------|--------|------|
-| 07: VM direct_map 已确认就绪 | T8-T10: 内核初始化完成 | 08: VM 启动后的内核-VM 协商协议 |
+| 07: VM direct_map 已确认就绪 | T8-T10: 内核初始化完成 | 09: VM 启动后的内核-VM 协商协议 |
 
 07 完成后，进程表和特权结构已就绪，VM direct_map 已确认就绪（direct_map 替代了 Minix3 的 freepdes/ptproc 临时窗口），但进程不可运行（PROC_STOP），系统调用未注册。本文档覆盖从"所有基础设施就绪"到"调度循环启动"的过渡。
 
@@ -152,7 +152,7 @@ struct irq_hook {
 
 ### 2.3 关键函数分析
 
-#### system_init()（`system.c:168-289`）
+#### system_init()（`system.c:168-270`）
 
 **三步初始化**：
 
@@ -172,15 +172,16 @@ struct irq_hook {
 **功能**：将 bootstrap 阶段占用的物理内存区域添加到 `kinfo.memmap[]` 供 VM 管理。
 
 **关键逻辑**：
-1. **4GB 截断**（L89-92）：`addr > LIMIT` 直接返回；`addr + len > LIMIT` 截断 len
-2. **页对齐**（L97-98）：base 向上对齐，len 向下对齐到 PAGE_SIZE
+1. **4GB 截断**（L89-96）：`addr > LIMIT` 直接返回；`addr + len > LIMIT` 截断 len
+2. **页对齐**（L99-100）：base 向上对齐，len 向下对齐到 PAGE_SIZE
 3. **断言 kernel_may_alloc**（L102）：确保在内核分配窗口内调用
-4. **查找空槽**（L106-121）：线性扫描 `memmap[]`，找到第一个 `mm_length == 0` 的槽
-5. **更新 mem_high_phys**（L123-125）：跟踪最高物理地址
+4. **查找空槽**（L104-118）：线性扫描 `memmap[]`，找到第一个 `mm_length == 0` 的槽
+5. **更新 mmap_size**（L110-111）：跟踪已使用的最高 memmap 索引
+6. **更新 mem_high_phys**（L112-115）：跟踪最高物理地址
 
 **32 位遗留**：`LIMIT = 0xFFFFF000`（4GB-4KB）是 Minix3 32 位地址空间限制。64 位下不需要此截断。
 
-#### bsp_finish_booting()（`main.c:38-110`）
+#### bsp_finish_booting()（`main.c:38-109`）
 
 **BSP 启动完成序列**：
 
@@ -668,6 +669,12 @@ pub enum MemMapError {
 
 > 设计决策 D5：删除 4GB 截断。64 位 Direct Map 可访问全部物理内存。
 
+**已知缺口**：C 的 `add_memmap` 还更新两个 `kinfo` 字段，Rust 未实现：
+- `mmap_size`（pg_utils.c:110-111）：跟踪已使用的最高 memmap 索引。Rust 中 `KernelInfo` 是 immutable（`&KernelInfo`），不能在此函数内修改。需由调用者（kmain Phase F）在获得可变内核状态后更新。
+- `mem_high_phys`（pg_utils.c:112-115）：跟踪最高物理地址。同上，需由调用者更新。
+
+这两个缺口不影响 boot 流程正确性（boot 期不需要这两个值），但 VM 接管后需要。标注为后续实现（09-vm-boot-protocol.md 的职责范围）。
+
 ### 4.6 bsp_finish_booting Rust 实现
 
 ```rust
@@ -691,7 +698,7 @@ pub fn vm_running() -> bool { VM_RUNNING.load(Ordering::Acquire) }
 
 /// BSP finish booting — the last step of kmain.
 ///
-/// C: bsp_finish_booting() in main.c:38-110
+/// C: bsp_finish_booting() in main.c:38-109
 ///
 /// Takes `&mut ProcessTable` so step 2 (bill_ptr = IDLE) and step 4
 /// (RTS_PROC_STOP unset for boot processes) can operate directly.
@@ -793,6 +800,16 @@ fn switch_to_user() -> ! {
 
 **关键变更**：函数签名从 `fn bsp_finish_booting()` 先后改为 `fn bsp_finish_booting(&mut ProcessTable)`，最终为 `fn bsp_finish_booting(&mut ProcessTable, &mut SmpState)`，因为步骤 2/4 需要修改进程表，步骤 5/7 需要访问 per-CPU 状态。
 
+**与 C 12 步的差异说明**：C 的 `bsp_finish_booting`（main.c:38-109）有 12 步，Rust 实现 9 步。以下 3 步未实现，各有明确原因：
+
+| C 步骤 | C 位置 | 未实现原因 |
+|--------|--------|----------|
+| `cpu_identify()` | main.c:45 | CPU 识别在 boot-shim 阶段已完成（01-boot-shim-bootstrap），Rust 无需在 bsp_finish_booting 重复 |
+| `krandom_init()` | main.c:62 | Rust 尚未实现内核随机数源；boot 阶段不需要随机数，后续安全模块实现时补齐 |
+| `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:92 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
+
+这 3 步的差异属于**架构演进**（ARCH），不是实现遗漏——每步都有 Rust 类型系统的替代方案。
+
 > 设计决策 D7：`bsp_finish_booting() -> !` 类型系统表达永不返回。D6：vm_running 当前用全局 `AtomicBool`，SMP 就绪后移入 `SmpState`。D8：`kernel_may_alloc` 用 `AtomicBool`。
 
 ---
@@ -834,7 +851,7 @@ fn switch_to_user() -> ! {
 - [10-switch-to-user.md](10-switch-to-user.md) — switch_to_user 详细实现
 - [13-syscall-dispatch.md](13-syscall-dispatch.md) — 系统调用分派详细实现
 - [14-exception-interrupt.md](14-exception-interrupt.md) — 异常与中断处理
-- C 源码：`minix3/minix/kernel/system.c:168-289` — system_init()
-- C 源码：`minix3/minix/kernel/main.c:38-110` — bsp_finish_booting()
+- C 源码：`minix3/minix/kernel/system.c:168-270` — system_init()
+- C 源码：`minix3/minix/kernel/main.c:38-109` — bsp_finish_booting()
 - C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:86-121` — add_memmap()
 - C 头文件：`minix3/minix/include/minix/com.h:207-270` — SYS_* 定义

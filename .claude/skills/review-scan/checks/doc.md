@@ -2,6 +2,7 @@
 
 > 本文件合并原 doc/00-12 共 12 个检查项，解决 attention decay 和过度拆解问题。
 > **强制规则**：每个检查必须先执行 grep/read，再下结论。每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
+> **⛔ Step 0 硬阻断前置（NEW 2026-07-16；2026-07-17 更新）**：进入本文件任何检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md) + [process.md §Step 0 硬阻断规则](process.md)。`{NN}-design.v*.md` / `{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` 缺失 → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（不中断 review，2026-07-17 变更：原"阻断 Phase 2"改为"Step 0.3 嵌入生成"）（模式 69 PSMD 触发）。
 
 ---
 
@@ -373,3 +374,35 @@
 
 **Pass condition**: Each Ch3 decision has Problem + Rationale at minimum. Alternatives + Trade-off recommended for excellence.
 **⛔ Ch3 decision without rationale → P1 (pattern 56). Ch3 as decision log (list without WHY) → P1.**
+
+---
+
+## Design-First References
+
+> Profile R / Profile C / Profile I / Profile H-K review 时，额外加载以下 Design-First 检查项。
+
+### §1.5 Design 对齐维度（5 项）
+
+| # | 检查项 | 通过条件 | 失败后果 |
+|---|-------|---------|---------|
+| 1 | doc 与 design 命名一致 | doc 命名前缀/术语与 design §X 一致 | P0-design-deviation |
+| 2 | doc 引用的 trait 在 design 有完整定义 | doc 提到的 trait 方法签名在 design §X 可找到 | P0-design-missing（Pattern 63） |
+| 3 | doc 描述的不变量在 design 有声明 | doc 中的不变量有 design §X 引用 | P0-design-missing |
+| 4 | doc 描述的架构演进标注 ARCH | Minix3 行为偏离处有 `[ARCH: ...]` 标记 | P0-design-wrong |
+| 5 | doc 引用 design 章节 | doc 关键决策有 `06-design.md §X`（非 bagging）/ `06-design-final.md §X`（bagging）引用 | P1（链路断裂） |
+
+### §2.0.5 Design 引用规范（4 种格式）
+
+| 格式 | 用途 | 示例 |
+|------|------|------|
+| `设计决策：[design §X.Y]` | 决策依据 | 设计决策：使用 trait 抽象（[design §3.2]） |
+| `详细：[design §X.Y]` | 详细描述 | 详见 [design §3.2 trait ArchInterruptController] |
+| `约束：[design §X.Y]` | 约束/不变量 | 约束：IRQ handler 不可睡眠（[design §4.1]） |
+| `[ARCH: ...]` | 架构演进标注 | `[ARCH: APIC 替代 PIC，详见 design §5.3]` |
+
+**判定规则**：
+- doc 提到 trait/方法/不变量但无 design 引用 → P0-design-missing
+- doc 引用了 design 但 design 章节不存在 → P0-design-deviation
+- `[ARCH: ...]` 格式错误 → P0-design-wrong
+
+详见 [review-doc-skill.md §2.0.5](../../../../prompt/skill/review-doc-skill.md) + [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../../prompt/skill/review-patterns-skill.md)。

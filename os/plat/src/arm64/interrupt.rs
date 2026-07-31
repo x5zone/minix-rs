@@ -6,10 +6,10 @@
 //! # Instance-based design (see `plat-design.md` §5.1)
 //!
 //! Hardware base addresses (GICD, GICR) are stored in instance fields,
-//! populated by `new(desc)` from `InterruptControllerDesc::Gicv3`. This
+//! populated by `new(desc)` via `Any` downcast to `Gicv3Desc`. This
 //! replaces the previous `new()` + `set_base()` two-step pattern.
 
-use minix_platform::InterruptControllerDesc;
+use minix_platform::arch::aarch64::Gicv3Desc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
 
@@ -42,8 +42,8 @@ const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
 ///
 /// # Fields
 ///
-/// - `gicd_base`: GIC Distributor MMIO base, from `InterruptControllerDesc::Gicv3`.
-/// - `gicr_base`: GIC Redistributor MMIO base, from `InterruptControllerDesc::Gicv3`.
+/// - `gicd_base`: GIC Distributor MMIO base, from `Gicv3Desc`.
+/// - `gicr_base`: GIC Redistributor MMIO base, from `Gicv3Desc`.
 /// - `nr_irqs`: number of IRQ vectors (from descriptor, clamped to `NR_IRQ_VECTORS`).
 /// - `last_iar`: last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
 pub struct AArch64InterruptController {
@@ -110,18 +110,15 @@ impl AArch64InterruptController {
 }
 
 impl InterruptController for AArch64InterruptController {
-    fn new(desc: &InterruptControllerDesc) -> Self {
-        match desc {
-            InterruptControllerDesc::Gicv3 { gicd_base, gicr_base, nr_irqs, .. } => Self {
-                gicd_base: *gicd_base,
-                gicr_base: *gicr_base,
-                nr_irqs: (*nr_irqs as usize).min(NR_IRQ_VECTORS),
-                last_iar: 0,
-            },
-            _ => panic!(
-                "AArch64InterruptController::new: expected InterruptControllerDesc::Gicv3, got {:?}",
-                desc
-            ),
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+        let gicv3 = desc.as_any()
+            .downcast_ref::<Gicv3Desc>()
+            .expect("AArch64InterruptController::new: expected Gicv3Desc");
+        Self {
+            gicd_base: gicv3.gicd_base,
+            gicr_base: gicv3.gicr_base,
+            nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            last_iar: 0,
         }
     }
 
@@ -203,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_new_from_gicv3_descriptor() {
-        let desc = InterruptControllerDesc::Gicv3 {
+        let desc = Gicv3Desc {
             gicd_base: 0x0800_0000,
             gicr_base: 0x080A_0000,
             gicr_stride: 0x2_0000,

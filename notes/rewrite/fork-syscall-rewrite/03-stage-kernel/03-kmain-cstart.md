@@ -265,19 +265,13 @@ CPU 发起内存访问
 | **A: 入口** | 保存 boot info 到 `kinfo`、BSS 检查、置 `kernel_may_alloc=1`（允许内核在 VM 启动前直接分配物理内存） | 准备运行期数据 |
 | **B: cstart** | 建立保护结构、初始化时钟、初始化中断控制器、架构相关初始化 | 从"裸机"过渡到"有保护的运行环境" |
 | **C: 进程表** | 清空进程表、遍历 boot image 分配 slot、加载 VM ELF | 准备好被调度实体 |
-| **D: post-init** | `arch_post_init()`（设 ptproc=VM）、`memory_init()`（分配 freepdes 空闲页目录） | 内存管理上线 |
+| **D: post-init** | `arch_post_init()`（设 ptproc=VM，但 64 位下整套 `freepdes`+`ptproc`+`createpde` 已废弃，改用 `DirectMapArch` 直接映射；详见 [07-cross-space-init.md §3.6 废弃清单](07-cross-space-init.md#36-废弃清单与假设性推理汇总)）| 内存管理上线 |
 | **E: system** | `system_init()`（初始化特权表）、`add_memmap()`（向 VM 传递内存映射） | 权限系统上线 |
 | **F: finish** | `bsp_finish_booting()`：SMP AP 启动、回收 bootstrap 内存、切换到用户态 | 启动完成 |
 
 本文覆盖 **A 与 B 的前半部分（保护结构）**；B 后半部分（时钟、中断、arch_init）在 04 文档展开。
 
-> **TODO（review 03 文档 D 行及后文时一并处理）**：本表 D 行 "`memory_init()` 分配 freepdes 空闲页目录" 与 C 版 `memory_init` 的描述对齐，但 minix-rs 在 64 位架构下通过 direct_map 替代了 32 位的临时窗口机制（`ptproc` + `freepdes` + `createpde` + `mem_clear_mapcache` 整套废弃），该行实质上不再反映 Rust 实现行为。详见 [07-cross-space-init.md §3.6 废弃清单](07-cross-space-init.md#36-废弃清单与假设性推理汇总)。
->
-> 拟修改方向：把 D 行的关键动作改为反映 Rust 实现的"确认 VM direct_map 已就绪"语义；同步检查后文 [l461](03-kmain-cstart.md#L461) 关于 `kinfo.freepde_start = pg_mapkernel()` 的引用（`pre_init.c:232` 在 Rust 中整体废弃，对应 `kinfo.freepde_start` 字段不再填充）。如有需要：
-> - 直接删除后文相关引用（推荐）：minix-rs 无 `freepde_start` 概念
-> - 或替换为 `kinfo.direct_map_base`（如果有该字段）的引用
->
-> 触发条件：本文档 review 时一并处理。本任务先立 TODO，避免直接改动跨文档关联内容。
+> **架构演进说明（D 行更新背景）**：C 版 D 行 `memory_init()` 分配 `freepdes` 空闲页目录是 32 位机制——因 4 GB 地址空间受限，需借页目录槽位做"临时窗口"挂载其他进程的页目录。minix-rs 的 64 位地址空间充裕，由 `DirectMapArch` 直接映射替代整套 `ptproc + freepdes + createpde + mem_clear_mapcache` 机制。因此 **本文档不再单独讨论 `freepdes`/`freepde_start`**，相关语义在 07 文档 [07-cross-space-init.md §3.6](07-cross-space-init.md#36-废弃清单与假设性推理汇总) 集中说明。
 
 ```
 ┌─────────────┐     ┌─────────┐     ┌─────────────────────────────┐
@@ -770,7 +764,7 @@ fn init_protection(kernel_info: &KernelInfo) {
 }
 ```
 
-> 实现位置：`os/kernel/src/lib.rs:574`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
+> 实现位置：`os/kernel/src/lib.rs:607`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
 
 > **为什么需要 `set_kernel_stack()` 而不是 boot 阶段一次性写死栈指针**：
 >
@@ -786,25 +780,57 @@ fn init_protection(kernel_info: &KernelInfo) {
 
 > **运行时更新内核栈**: 上面 `ProtectionArch::init(0, kern_stack_top)` 只在 **boot 阶段**写入 BSP（CPU 0）的内核栈。**进程调度时切换到新进程的内核栈**则通过 `ProtectionArch::set_kernel_stack(cpu_id, new_stack_top)` 单独完成——x86-64 写 `TSS.sp0`，aarch64 写 `SP_EL0`/`sscratch`，riscv64 写 `sscratch`。SMP 阶段新增 AP 初始化时也通过 `init_ap(cpu_id, stack_top)` + `set_kernel_stack()` 双步完成。
 
-> **返回路径说明**：Ch1 §1.3 强调保护结构是"双向门"——进入内核与返回用户态都必须受控。`ProtectionArch`/`TrapEntryArch` trait 目前只抽象了进入内核的入口配置（`load()` 让 GDT/IDT/VBAR/stvec 生效），而返回用户态的指令（x86-64 `iretq` / aarch64 `eret` / riscv64 `sret`）隐藏在具体架构的汇编 handler 中，由 [14-exception-interrupt.md](14-exception-interrupt.md) 统一实现。本文不单独设计 return-path trait，是因为返回动作与异常/中断 handler 的上下文恢复强耦合，无法在本阶段独立配置；但 trait 边界已为后续扩展预留（如需要可在 14 文档引入 `TrapReturnArch`）。
+> **返回路径说明**：Ch1 §1.3 强调保护结构是"双向门"——进入内核与返回用户态都必须受控。`ProtectionArch`/`TrapEntryArch` trait 抽象了进入内核的入口配置（`load()` 让 GDT/IDT/VBAR/stvec 生效）；返回用户态的指令（x86-64 `iretq` / aarch64 `eret` / riscv64 `sret`）由 [14-exception-interrupt.md](14-exception-interrupt.md) 实现，并通过 `TrapReturnArch` trait 抽象（评估结论见下方）。
 
-> **TODO（14-exception-interrupt.md 完成后处理）**：[14-exception-interrupt.md](14-exception-interrupt.md) 文档结束（覆盖完异常/中断 handler 上下文恢复、汇编级 return-path 实现细节）后，**再次评估是否需要单独的 `TrapReturnArch` trait**。评估要点：
-> - 验证三架构汇编 handler 中 `iretq`/`eret`/`sret` 的语义是否高度对称——若差异在文档层面就讲得清楚（无需在 trait 抽象），保留 `return-path` 完全留在汇编 handler 的现状即可。
-> - 若差异在文档中讲不清楚（或新增架构时协调代价过高），引入 `TrapReturnArch` trait（与 `TrapEntryArch` 对称），把返回用户态的指令、上下文恢复序列、栈布局约束纳入 trait。
-> - 本决定对本文档 §4 trait 边界有扩展可能：若 14 文档反馈"差异显著需抽象"，需更新 §1.4a CPU 三问表格 + §4.3 抽象边界段。
+> **TrapReturnArch 评估结论（2026-07-31 完成，依据 C 源码 + 当前代码状态）**：
 >
-> 触发条件：14 文档正式完成（含 trap frame 布局、`iretq`/`eret`/`sret` 上下文恢复细节）。当前未触发。
+> 触发条件复核："14 文档正式完成（含 trap frame 布局、`iretq`/`eret`/`sret` 上下文恢复细节）"。
+> - ✅ trap frame 布局：doc 14 §3.7 D7 已覆盖（`ExceptionArch::Frame` associated type，每 arch 自定义布局，`os/arch/src/arch/exception.rs:40-46`）
+> - ❌ `iretq`/`eret`/`sret` 上下文恢复细节：doc 14 §4 未覆盖 return-path asm；Rust 代码中 `restore_user_context` 仅作为注释引用（`os/kernel/src/lib.rs:1497/1510/1521/1546/1576`），无实际 asm 实现
+>
+> 评估基于 C 源码两架构的 `restore_user_context` 实现（grep 验证）：
+> - i386（`minix3/minix/kernel/arch/i386/mpx.S:434-459`）：重建 iret 栈帧（SS/SP/PSW/CS/PC）→ 恢复段寄存器（DS/ES/FS/GS）→ `RESTORE_GP_REGS` → `iret`
+> - earm（`minix3/minix/kernel/arch/earm/mpx.S:243-259`）：写 SPSR + LR → `ldm sp, {r0-r14}^` 恢复用户态寄存器 → `movs pc, lr`（ARM SVC 返回）
+>
+> 操作序列对称（恢复状态寄存器 + PC + GP regs + 返回指令），但机制差异显著：x86 通过栈推入 + 硬件弹出（`iret`），ARM 通过寄存器加载 + 软件跳转（`movs pc, lr`）。差异在文档层面可讲清，但 `switch_to_user`（`os/kernel/src/lib.rs`）调用 return-path 需统一接口——否则需 `#[cfg(target_arch)]` 在 OS 代码中选 arch，违反 §3.1 "OS 代码 arch-agnostic" 原则。
 
-> **TODO（补 BSS 清零针对性单元测试）**：当前 [§4.6 BSS 检查行](03-kmain-cstart.md#L845) 指出测试覆盖缺口：`os/boot-shim/src/loader.rs:387-413` 现有单元测试覆盖了 layout 计算和缺失文件 panic 行为，但**没有针对性断言 `bss_range == [0u8; bss_size]` 的测试**。建议在 `loader.rs` 测试模块里加：
+> **设计方案（多方案列举 + 选优）**：
+>
+> | 方案 | 描述 | 优 | 劣 |
+> |------|------|----|----|
+> | **A. 新建 `TrapReturnArch` trait** | `trait TrapReturnArch: ExceptionArch { type RegisterFile; unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> !; }` | 与 `TrapEntryArch` 对称；职责正交；OS 代码 arch-agnostic | 新增 trait；asm impl 仍需各 arch 单独写 |
+> | **B. 加 `restore_to_user` 方法到 `ExceptionArch`** | 在现有 trait 加方法 | 无新 trait；复用 Frame | 职责耦合（ExceptionArch 是"读 frame"，"返回"是执行职责） |
+> | **C. 自由函数 `arch::restore_user_context(frame, regs) -> !` + `#[cfg(target_arch)]`** | 每 arch 模块定义自由函数 | 最简单；无 trait 样板 | OS 代码需 `#[cfg]` 选择函数，违反 arch-agnostic 原则；Frame 类型 arch-specific 致签名无法统一 |
+> | **D. 加到 `CpuContextArch`** | 在 CpuContextArch 加 `restore_to_user` 方法 | 复用现有 trait | CpuContextArch 是"构建/应用初始上下文"，"返回"是运行时职责，混职责；TrapFrame 与 ExceptionArch::Frame 是两个独立类型 |
+>
+> **选定 A**：新建 `TrapReturnArch` trait。理由：
+> 1. **职责正交**：entering (`TrapEntryArch`) / parsing (`ExceptionArch`) / returning (`TrapReturnArch`) 是三个独立职责，符合 Unix "机制与策略分离"传统
+> 2. **对称性**：与 `TrapEntryArch` 对称，符合 Ch1 §1.3 "双向门"概念——进入与返回都是受控的特权级切换
+> 3. **arch-agnostic**：`switch_to_user` 通过 `CurrentTrapReturn::restore_to_user(&frame, &regs)` 调用，无 `#[cfg(target_arch)]` 散布
+> 4. **Frame 复用**：通过 `ExceptionArch` supertrait 复用 `Self::Frame`（CPU-pushed 子集：rip/cs/rflags/rsp/ss）；新增 `type RegisterFile` 表示 GP 寄存器保存区（x86-64: rax-r15 + es/fs/gs；aarch64: x0-x30；riscv64: ra-t6），与 C 源码 `p_reg` 保存区对应
+
+> **拟议签名**（trait 定义待 doc 10/14 return-path 实现阶段落地）：
 > ```rust
-> #[test]
-> fn test_bss_region_is_zeroed() {
->     // 构造一个 PT_LOAD 段：filesz < memsz，filesz 部分填非零数据，memsz 部分未填
->     // 调用 load_pt_load_segments_into
->     // 断言 [filesz, memsz) 区间全部 == 0
+> pub trait TrapReturnArch: ExceptionArch {
+>     /// 架构专属 GP 寄存器保存区（C: `p_reg` — proc.h）。
+>     type RegisterFile;
+>
+>     /// 恢复用户态寄存器并返回用户态。`switch_to_user` 的尾调用，不返回。
+>     ///
+>     /// C: restore_user_context() — arch/i386/mpx.S:434, arch/earm/mpx.S:243
+>     ///
+>     /// # Safety
+>     /// - 调用方须在调用前持 BKL（与 C `restore_user_context` 释放 BKL 的契约一致）
+>     /// - `frame` 是 CPU 推入的异常帧（rip/cs/rflags/rsp/ss）
+>     /// - `regs` 是保存的 GP 寄存器文件
+>     /// - 实现执行架构专属返回指令（`iretq`/`eret`/`sret`），不返回
+>     unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> !;
 > }
 > ```
-> 触发条件：补 BSS 清零测试时一并处理（不强依赖某一阶段，但建议在 `os/qemu-tests/` 真实启动链验证前补齐）。
+
+> **实施状态**：trait 定义与 asm 实现推迟到 doc 10/14 return-path 落地阶段。doc 10 §3 决策表（"restore_user_context | 未抽象为 trait"）已被本评估取代——trait IS warranted，但 impl 仍待 doc 10/14 完成。触发条件已部分满足（trap frame 布局 ✓），剩余条件为"`iretq`/`eret`/`sret` asm 实现就绪"。本评估对 §4 trait 边界无即时扩展——`TrapReturnArch` 在 doc 10/14 落地时再加入 `os/arch/src/arch/mod.rs` 与 `CurrentTrapReturn` type alias。
+
+> **BSS 清零针对性单元测试（已修复）**：补充针对性测试 `test_bss_region_is_zeroed_after_load`（`os/boot-shim/src/loader.rs`），断言 `load_segments_into_buffer` 调用后 `[filesz, memsz)` 全部为 0。该测试用一个最小 ELF（filesz=0x80、bss_extra=0x180）并把目标 buffer 预填 0xCC 哨兵值，确保 BSS 清零行为与 §4.6 描述一致。
 
 **代码与 CPU 三问的对应**（Ch1 §1.4 → Ch3 §3.1 → Ch4 三层闭环）:
 
@@ -822,11 +848,11 @@ fn init_protection(kernel_info: &KernelInfo) {
 
 | CPU 三问 | x86-64 | aarch64 | riscv64 |
 |---------|--------|---------|---------|
-| 1. 特权级生效 | `lgdt gdt_desc` + `ltr TSS_SEL`（`os/arch/src/x86_64/protection.rs:267`） | `isb`（SP_EL1 写入后同步，`os/arch/src/arm64/protection.rs:118`） | 无显式 load（CSR 写入即生效，`os/arch/src/riscv64/protection.rs:105`） |
-| 3. 内核栈顶存放 | `TSS.sp0 = kern_stack_top - X86_64_STACK_TOP_RESERVED`，并保留顶部 16 字节存放进程指针与 CPU id（`os/arch/src/x86_64/protection.rs:195`） | `msr SP_EL1, kern_stack_top`（`os/arch/src/arm64/protection.rs:92`） | `csrw sscratch, kern_stack_top`（`os/arch/src/riscv64/protection.rs:92`） |
+| 1. 特权级生效 | `lgdt gdt_desc` + `ltr TSS_SEL`（`os/arch/src/x86_64/protection.rs:299,349`） | `isb`（SP_EL1 写入后同步，`os/arch/src/arm64/protection.rs:146`） | 无显式 load（CSR 写入即生效，`os/arch/src/riscv64/protection.rs:116`） |
+| 3. 内核栈顶存放 | `TSS.sp0 = kern_stack_top - X86_64_STACK_TOP_RESERVED`，并保留顶部 16 字节存放进程指针与 CPU id（`os/arch/src/x86_64/protection.rs:216`，见 `setup_tss_for_cpu`） | `msr SP_EL1, kern_stack_top`（`os/arch/src/arm64/protection.rs:111`，`init` 中）+ `128`（`set_kernel_stack` 中） | `csrw sscratch, kern_stack_top`（`os/arch/src/riscv64/protection.rs:116`，`init` 中）+ `125`（`set_kernel_stack` 中） |
 | 2. 异常向量表内容 | IDT 256 个门描述符（handler 地址暂为 0，仅元数据） | 异常向量表（汇编定义） | trap 向量（汇编定义） |
-| 2. 异常向量表生效 | `lidt idt_desc`（`os/arch/src/x86_64/trap_entry.rs:251`，本文阶段不执行，推迟到 `set_handler()` 后） | `msr vbar_el1, &exc_vector_table` + `isb`（`os/arch/src/arm64/trap_entry.rs:66`） | `csrw stvec, &trap_vector`（`os/arch/src/riscv64/trap_entry.rs:66`） |
-| 2. 系统调用入口 | `wrmsr MSR_LSTAR, syscall_entry`（`os/arch/src/x86_64/trap_entry.rs:217`） | 走 SVC 异常入口（无需配置，`os/arch/src/arm64/trap_entry.rs:45`） | 走 ecall 异常入口（无需配置，`os/arch/src/riscv64/trap_entry.rs:41`） |
+| 2. 异常向量表生效 | `lidt idt_desc`（`os/arch/src/x86_64/trap_entry.rs:283`，本文阶段不执行，推迟到 `set_handler()` 后） | `msr vbar_el1, &exc_vector_table` + `isb`（`os/arch/src/arm64/trap_entry.rs:66`） | `csrw stvec, &trap_vector`（`os/arch/src/riscv64/trap_entry.rs:66`） |
+| 2. 系统调用入口 | `wrmsr MSR_LSTAR, syscall_entry`（`os/arch/src/x86_64/trap_entry.rs:249`） | 走 SVC 异常入口（无需配置，`os/arch/src/arm64/trap_entry.rs:45`） | 走 ecall 异常入口（无需配置，`os/arch/src/riscv64/trap_entry.rs:41`） |
 | 3. 用户态陷入内核栈切换 | CPU 硬件自动用 TSS.sp0 | 异常时硬件自动用 SP_EL1 | U→S 时 `sscratch` 存内核栈顶，handler 用 `csrrw` 交换 sp↔sscratch（sp=内核栈，sscratch=用户栈） |
 
 > **代码不在文档中展开**：完整实现在 `os/arch/src/{x86_64,aarch64,riscv64}/{protection,trap_entry}.rs`。文档列出代码作为概念存在性证明，足以让读者理解 Ch1 §1.4 的 CPU 三问如何被回答；完整代码细节（位编码、寄存器顺序、barrier 类型）属于实现层，不在概念文档展开。

@@ -3,6 +3,7 @@
 > 本文件定义卓越性检查，在正确性 gate 通过后执行。追求"更好"而非"正确"。
 > **详见**：[review-doc-excellence.md](../../../../prompt/review-rules/review-doc-excellence.md) + [review-code-excellence.md](../../../../prompt/review-rules/review-code-excellence.md)
 > **强制规则**：每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
+> **⛔ Step 0 硬阻断前置（NEW 2026-07-16）**：进入本文件任何卓越性检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md) + [process.md §Step 0 硬阻断规则](process.md)。
 
 ---
 
@@ -73,7 +74,7 @@
 
 > **Purpose**: 概念章节（Ch1）的骨架必须在文档中可见，让读者能快速建立心智模型；同时从 CPU/系统视角而非 OS 代码角度组织。
 > **详见**：[review-doc-excellence.md §六 §4.5](../../../../prompt/review-rules/review-doc-excellence.md) — Ch1 教学卓越性专项。
-> **来源**：Qwen 提案 + 03-kmain-cstart 案例。
+> 来源：Qwen 提案
 
 **Execute**（6 项）：
 1. **CPU/系统视角**：抽取 Ch1 开篇第一句，判定主语是 CPU/系统 还是 OS 代码/函数名。后者 → 降级（模式 51）。
@@ -189,9 +190,41 @@
 ---
 
 ## Pass condition
-
 - 文档卓越性：叙事弧完整、读者体验良好、教学深度充分
 - 代码卓越性：API 难以误用、表达力强、性能合理、自解释、可测试、测试高质量
 - 测试三重标准：L1/L2/L3 至少一项覆盖每个核心函数
 
 **⛔ 卓越性问题不降级为正确性问题。卓越性 P1 是"可以更好"，正确性 P1 是"必须修复"。**
+
+---
+
+## Design-First 卓越性扩展
+
+> 配合 [review-doc-excellence.md §4.3.5 + §4.4](../../../../prompt/review-rules/review-doc-excellence.md) + [review-code-excellence.md §15.5](../../../../prompt/review-rules/review-code-excellence.md) 使用。
+
+### 文档卓越性扩展（4 项）
+
+| 检查项 | 说明 |
+|--------|------|
+| §4.3.5 Design 视角教学深度 | 每个设计决策是否有 design 引用？是否先讲"为什么"再讲"怎么实现"？是否说明替代方案及拒绝理由？ |
+| §4.4 文档组织合理性 | 13 项组织检查（核心概念完整性 / Ch1&2:Ch3&4 平衡 / 设计决策集中度 / 章节依赖单向 / 文档拆分判定 / 跨文档一致性 等） |
+
+### 代码卓越性扩展（6 项）
+
+§15.5 design-first API 设计原则：
+1. 命名 — 与 design 一致
+2. 参数 — 严格匹配 trait 方法签名
+3. 错误 — Error 变体与 design 错误码策略一致
+4. 可见性 — pub 接口与 design 公共 API 列表一致
+5. unsafe — unsafe 边界与 design 安全论证一致
+6. trait — trait 方法与 design trait 抽象一致
+
+### 架构演进作为独立知识点维度（5 类）
+
+1. FPU 上下文处理演进（如 `FpuState` newtype 替代裸 `u32`）
+2. 中断/异常处理演进（如 APIC trait 抽象 PIC）
+3. 分页模型演进（2→4 级页表）
+4. 地址空间布局演进（32→64 位）
+5. 启动链演进（多架构启动路径统一抽象）
+
+详见 [review-excellence-skill.md](../../../../prompt/skill/review-excellence-skill.md)。

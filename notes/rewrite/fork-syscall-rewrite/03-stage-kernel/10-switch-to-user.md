@@ -1,8 +1,8 @@
 # 10-switch-to-user: 调度循环入口
 
 > **分类**: Kernel 调度核心
-> **源码**: `minix3/minix/kernel/proc.c:299-477`（switch_to_user）, `proc.c:176-213`（idle）
-> **前置**: 08（VM 启动协议完成，VM 可调度）
+> **源码**: `minix3/minix/kernel/proc.c:299-474`（switch_to_user）, `proc.c:176-229`（idle）
+> **前置**: 08（bsp_finish_booting 调用 switch_to_user）+ 09（VM 启动协议完成，VM 可调度）
 > **C 总行数**: ~180 行
 
 ---
@@ -71,9 +71,9 @@ switch_to_user()
 
 ### 2.1 switch_to_user() — 主循环
 
-**源码**: `proc.c:299-477`
+**源码**: `proc.c:299-474`
 
-**阶段 1：进程选择**（proc.c:309-345）
+**阶段 1：进程选择**（proc.c:309-344）
 
 ```c
 p = get_cpulocal_var(proc_ptr);
@@ -105,23 +105,23 @@ switch_address_space(p);
 
 在选好进程后、处理 misc 标志前切换地址空间。这确保后续的 `delivermsg()` 等操作在正确的地址空间中执行。
 
-**阶段 3：Misc 标志处理**（proc.c:351-405）
+**阶段 3：Misc 标志处理**（proc.c:350-414，`check_misc_flags:` 标签起）
 
 按优先级处理 5 种 misc 标志：
 
 | 优先级 | 标志 | 操作 | 行号 |
 |--------|------|------|------|
-| 1 | `MF_KCALL_RESUME` | `kernel_call_resume(p)` | 356-358 |
-| 2 | `MF_DELIVERMSG` | `delivermsg(p)` | 359-362 |
-| 3 | `MF_SC_DEFER` | `arch_do_syscall(p)` | 363-377 |
-| 4 | `MF_SC_TRACE` | `cause_sig(SIGTRAP)` | 378-393 |
-| 5 | `MF_SC_ACTIVE` | 清除标志，break | 394-399 |
+| 1 | `MF_KCALL_RESUME` | `kernel_call_resume(p)` | 359-361 |
+| 2 | `MF_DELIVERMSG` | `delivermsg(p)` | 362-366 |
+| 3 | `MF_SC_DEFER` | `arch_do_syscall(p)` | 367-381 |
+| 4 | `MF_SC_TRACE` | `cause_sig(SIGTRAP)` | 382-398 |
+| 5 | `MF_SC_ACTIVE` | 清除标志，break | 399-406 |
 
-**循环条件**：`while (p->p_misc_flags & (MF_KCALL_RESUME | MF_DELIVERMSG | MF_SC_DEFER | MF_SC_TRACE | MF_SC_ACTIVE))`
+**循环条件**（proc.c:354-356）：`while (p->p_misc_flags & (MF_KCALL_RESUME | MF_DELIVERMSG | MF_SC_DEFER | MF_SC_TRACE | MF_SC_ACTIVE))`
 
 每次处理完一个标志后检查进程是否仍可运行，不可运行则 `goto not_runnable_pick_new`。
 
-**阶段 4：时间片检查**（proc.c:418-424）
+**阶段 4：时间片检查**（proc.c:421-422）
 
 ```c
 if (!p->p_cpu_time_left)
@@ -130,7 +130,7 @@ if (!p->p_cpu_time_left)
 
 `proc_no_time()` 向调度服务器发送消息通知时间片用完，但不清除进程的可运行状态——调度服务器稍后会通过 `SYS_SCHEDULE` 重新设置时间片。
 
-**阶段 5：上下文恢复**（proc.c:432-477）
+**阶段 5：上下文恢复**（proc.c:437-474）
 
 ```c
 p = arch_finish_switch_to_user();
@@ -145,7 +145,7 @@ restore_user_context(p);  // 不返回
 
 ### 2.2 idle() — CPU 空闲
 
-**源码**: `proc.c:176-213`
+**源码**: `proc.c:176-229`
 
 ```c
 static void idle(void) {
@@ -153,8 +153,10 @@ static void idle(void) {
     if (priv(p)->s_flags & BILLABLE)
         get_cpulocal_var(bill_ptr) = p;
     switch_address_space_idle();
-    // BSP: restart_local_timer(); AP: stop_local_timer();
-    halt_cpu();  // STI + HLT
+    // SMP: cpu_is_idle=1; AP: stop_local_timer(); BSP: restart_local_timer();
+    context_stop(proc_addr(KERNEL));  // 开始统计 idle 时间
+    halt_cpu();  // STI + HLT（或 sprofiling 模式下轮询 idle_interrupted）
+    // idle 结束的统计不在此时做——中断返回后内核处理很多工作才回到这里
 }
 ```
 
@@ -162,6 +164,7 @@ static void idle(void) {
 - 设置当前进程为 idle 进程（用于时间统计）
 - 切换到 idle 地址空间
 - BSP 保持定时器运行（用于时钟中断唤醒），AP 停止定时器
+- `context_stop(KERNEL)` 开始 idle 时间统计（与 switch_to_user 中的 `context_stop` 配对）
 - `halt_cpu()` 执行 STI + HLT，等待下一个中断
 
 ---
@@ -175,7 +178,7 @@ static void idle(void) {
 | proc_ptr | 全局变量 vs CpuLocal | **CpuLocal\<Option\<ProcNr\>\>** | SMP 安全，每 CPU 独立（设计目标） |
 | idle | 内联 vs 独立方法 | **独立方法** | 与 C 一致（设计目标） |
 | Misc 标志循环 | while + if-else chain vs match | **while + if-else chain** | 当前 `ProcessTable::process_misc_flags()` 按 C 的优先级链处理 |
-| restore_user_context | 内联汇编 vs trait | **未抽象为 trait** | 09 早期版本曾定义 `ContextRestore`，但无实现且为死代码，已移除；恢复上下文将在完整调度循环中直接调用架构入口 |
+| restore_user_context | 内联汇编 vs trait | **抽象为 `TrapReturnArch` trait（评估结论，待落地）** | 09 早期版本曾定义 `ContextRestore` 死代码已移除；2026-07-31 doc 03 §4.3 评估结论：trait IS warranted（与 `TrapEntryArch` 对称、arch-agnostic、职责正交），拟议签名 `trait TrapReturnArch: ExceptionArch { type RegisterFile; unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> !; }`。trait 定义 + asm impl 待本文 return-path 落地时加入 `os/arch/src/arch/trap_return.rs` |
 | 地址空间切换时机 | 选进程后立即 vs 恢复上下文前 | **选进程后立即** | 与 C 一致（设计目标） |
 
 ---
@@ -184,13 +187,15 @@ static void idle(void) {
 
 ### 4.1 当前 switch_to_user 占位实现
 
+**位置**: `os/kernel/src/lib.rs:1508-...`（`fn switch_to_user() -> !`）
+
 ```rust
 // os/kernel/src/lib.rs
 
 /// Entry point for the scheduling loop.
 ///
 /// C: switch_to_user() in proc.c
-/// Design decision D7 (07 §3): returns `!` — never returns to caller.
+/// Returns `!` — never returns to caller.
 ///
 /// Full implementation covered in 10-switch-to-user.md.
 ///
@@ -211,25 +216,59 @@ fn switch_to_user() -> ! {
     // Release BKL before entering the scheduling loop.
     // C: BKL is released implicitly by restore_user_context() which
     // does not return. In Rust, we release explicitly before the loop.
-    crate::smp::bkl_unlock();
+    smp::bkl_unlock();
 
-    // Placeholder — full scheduler loop implemented in 10-switch-to-user.md.
-    loop { core::hint::spin_loop(); }
+    // First-dispatch hook: apply each boot process's `cpu_context`
+    // to its trap frame once, before the scheduling loop picks the
+    // first runnable process. The arch layer owns the trap-frame
+    // layout; the kernel only hands it the opaque `CpuContext` built
+    // during `init_proc_and_boot`.
+    //
+    // C: this work is folded into `arch_boot_proc()` + the first
+    // `restore_user_context()` in Minix3. Splitting it here keeps the
+    // arch trait's `apply_to_trap_frame` as the single sink for
+    // initial-register writes (arch returns pure value).
+    //
+    // SAFETY: boot is single-threaded (BKL just released, but no other
+    // CPU is up yet on single-CPU configs). On SMP this must move
+    // inside the per-CPU dispatch path.
+    unsafe {
+        apply_boot_cpu_contexts();
+    }
+
+    // Placeholder — full scheduler loop implemented in 10-switch-to-user.md
+    loop {
+        core::hint::spin_loop();
+    }
 }
 ```
 
-> 实现状态：当前 `switch_to_user()` 是占位 stub。完整调度循环（选进程、`process_misc_flags`、地址空间切换、`restore_user_context`）依赖 10/11/13 等文档的调度/IPC/异常机制完成后才能落地。
+**设计要点**：
+- **BKL 顶部释放**：C 在 `restore_user_context()` 隐式释放，Rust 在函数顶部显式释放（设计决策，见上方安全论证）
+- **首次分发拆分**：C 折叠在 `arch_boot_proc()` + 首次 `restore_user_context()` 中；Rust 拆分为独立的 `apply_boot_cpu_contexts()` 步骤，使 arch trait 的 `apply_to_trap_frame` 成为初始寄存器写入的唯一入口（arch 返回纯值，不写硬件）
+- **`-> !` 类型**：Rust 用类型系统表达"永不返回"，替代 C 的 `NOT_REACHABLE`
+
+> 实现状态：当前 `switch_to_user()` 是占位 stub。完整调度循环（选进程、`process_misc_flags`、地址空间切换、`restore_user_context`）依赖 11/13/14 等文档的调度/IPC/异常机制完成后才能落地。
 
 ### 4.2 process_misc_flags 实现
+
+**位置**: `os/kernel/src/proc_table.rs:714-750`（`pub fn select_next_process`）
 
 ```rust
 // os/kernel/src/proc_table.rs
 
 /// 处理进程的 misc 标志。
 ///
-/// C: check_misc_flags 循环 — proc.c:351-405
+/// C: check_misc_flags 循环 — proc.c:350-414
 ///
 /// 返回 true 表示进程仍可运行，false 表示不可运行（需重新选择）。
+///
+/// In C, each branch calls a handler function (kernel_call_resume,
+/// delivermsg, arch_do_syscall) which clears the corresponding flag.
+/// In Rust, those handlers are not yet wired into this loop, so we
+/// clear the flag explicitly after the branch to prevent an infinite
+/// loop. When the handlers are integrated, they will own the flag
+/// clearing and the explicit `clear` here can be removed.
 pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
     let interesting_flags = MiscFlagsBits::KCALL_RESUME
         | MiscFlagsBits::DELIVERMSG
@@ -239,19 +278,28 @@ pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
 
     loop {
         let flags = self.get(nr).map_or(MiscFlagsBits::empty(), |p| p.p_misc_flags.get());
-        if !flags.intersects(interesting_flags) { break; }
+        if !flags.intersects(interesting_flags) {
+            break;
+        }
 
+        // 按优先级处理（与 C 的 if-else chain 一致）
         if flags.contains(MiscFlagsBits::KCALL_RESUME) {
+            // C: kernel_call_resume(p) — clears MF_KCALL_RESUME
             // TODO: wire kernel_call_resume() from vm.rs
             self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME));
         } else if flags.contains(MiscFlagsBits::DELIVERMSG) {
+            // C: delivermsg(p) — clears MF_DELIVERMSG
             // TODO: wire delivermsg() from ipc module
             self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG));
         } else if flags.contains(MiscFlagsBits::SC_DEFER) {
+            // C: arch_do_syscall(p) — clears MF_SC_DEFER
             // TODO: wire arch_do_syscall() from arch layer
             self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_DEFER));
         } else if flags.contains(MiscFlagsBits::SC_TRACE) {
-            if !flags.contains(MiscFlagsBits::SC_ACTIVE) { break; }
+            if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
+                break;
+            }
+            // C: clears both MF_SC_TRACE and MF_SC_ACTIVE, then cause_sig
             self.get_mut(nr).map(|p| {
                 p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE);
             });
@@ -262,6 +310,7 @@ pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
             break;
         }
 
+        // 检查进程是否仍可运行
         if !self.get(nr).map_or(false, |p| p.is_runnable()) {
             return false;
         }
@@ -269,6 +318,12 @@ pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
     true
 }
 ```
+
+**设计要点**：
+- **bitflags 类型安全**：C 用裸 `u32` 位掩码，Rust 用 `MiscFlagsBits` bitflags，`contains`/`intersects`/`clear` 操作类型安全
+- **if-else chain 保留 C 优先级语义**：C 的 if-else chain 表达了 5 个标志的优先级顺序（KCALL_RESUME > DELIVERMSG > SC_DEFER > SC_TRACE > SC_ACTIVE），Rust 保留此结构以匹配 C 语义
+- **bool 返回值**：C 用 `goto not_runnable_pick_new` 跳转，Rust 用 `bool` 返回值让 caller 决定是否重新选进程（类型安全改进）
+- **占位清标志**：handler 未 wired 前，显式清标志防止无限循环；wired 后由 handler 内部清标志（与 C 一致）
 
 > 当前 `process_misc_flags` 仅清除对应标志，尚未调用真正的 handler（`kernel_call_resume`、`delivermsg`、`arch_do_syscall`、`cause_sig`）。在 `switch_to_user` 完整实现前，这种占位行为可防止 misc 标志导致无限循环。
 
@@ -298,6 +353,7 @@ pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
 
 ## 6. 参见
 
+- [08-system-init-boot-finish](08-system-init-boot-finish.md) — bsp_finish_booting 调用 switch_to_user（D7 设计决策来源）
 - [09-vm-boot-protocol](09-vm-boot-protocol.md) — switch_address_space 和 VMCTL_SETADDRSPACE
 - [11-scheduling-primitives](11-scheduling-primitives.md) — enqueue/dequeue/pick_proc
 - [12-ipc-core](12-ipc-core.md) — delivermsg 和 IPC 投递
