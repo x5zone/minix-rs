@@ -73,6 +73,10 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_vumap: MessLsysKrnSysVumap,
     /// Kernel: SYS_VSAFECOPY.
     pub m_lsys_kern_vsafecopy: MessLsysKernVsafecopy,
+    /// Kernel: SYS_UMAP / SYS_UMAP_REMOTE reply (dst_addr writeback).
+    pub m_krn_lsys_sys_umap: MessKrnLsysSysUmap,
+    /// Kernel: SYS_VUMAP reply (pcount writeback).
+    pub m_krn_lsys_sys_vumap: MessKrnLsysSysVumap,
     /// Kernel: SYS_GETINFO GET_WHOAMI reply.
     pub m_krn_lsys_sys_getwhoami: MessKrnLsysSysGetwhoami,
     /// Kernel: SYS_GETKSIG / SYS_ENDKSIG / SYS_KILL / SYS_SIGSEND / SYS_SIGRETURN.
@@ -94,6 +98,8 @@ pub union MessageUnion {
     pub m_krn_lsys_schedule: MessKrnLsysSchedule,
     /// Kernel: SYS_GETMCONTEXT / SYS_SETMCONTEXT.
     pub m_lsys_krn_sys_mcontext: MessLsysKrnSysMcontext,
+    /// Kernel: SYS_EXEC.
+    pub m_lsys_krn_sys_exec: MessLsysKrnSysExec,
     /// Kernel: SYS_TIMES request.
     pub m_lsys_krn_sys_times: MessLsysKrnSysTimes,
     /// Kernel: SYS_TIMES reply.
@@ -150,6 +156,90 @@ impl Message {
             m_type: 0,
             m_u: MessageUnion::zeroed(),
         }
+    }
+
+    // ── Safe payload accessors (FIX-08: R-04) ──
+    //
+    // These methods centralize the `debug_assert!` on `m_type` before
+    // accessing the `m_u` union. In debug builds, a mismatch panics —
+    // catching dispatch table bugs. In release builds, the check is
+    // compiled out (the dispatch table guarantees correctness).
+    //
+    // The `unsafe` union access is still inside the closure, but the
+    // `m_type` verification is guaranteed by this method. This is the
+    // "at least centralize" option from R-04's improvement plan.
+    //
+    // # Why not per-field accessors?
+    //
+    // Per-field accessors (e.g. `fn as_sys_times(&self) -> &MessLsysKrnSysTimes`)
+    // would require ~40 methods plus a syscall-constant module in
+    // minix-types (currently the `Syscall` enum lives in the kernel
+    // crate). The closure approach is generic and doesn't create a
+    // dependency cycle.
+
+    /// Access the message payload by reference after verifying `m_type`.
+    ///
+    /// # Debug-only check
+    ///
+    /// Panics if `m_type != expected_m_type` in debug builds. In release
+    /// builds, the check is a no-op — the dispatch table guarantees the
+    /// correct handler runs for each `m_type`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let req = msg.payload_ref(Syscall::Times as i32, |m| unsafe {
+    ///     &m.m_u.m_lsys_krn_sys_times
+    /// });
+    /// ```
+    #[inline]
+    pub fn payload_ref<T, F, R>(&self, expected_m_type: i32, accessor: F) -> R
+    where
+        F: FnOnce(&Self) -> R,
+    {
+        debug_assert_eq!(
+            self.m_type, expected_m_type,
+            "m_type mismatch: expected {}, got {}",
+            expected_m_type, self.m_type
+        );
+        accessor(self)
+    }
+
+    /// Access the message payload by mutable reference after verifying `m_type`.
+    ///
+    /// Same debug-only check as [`payload_ref`](Self::payload_ref).
+    #[inline]
+    pub fn payload_mut<T, F, R>(&mut self, expected_m_type: i32, accessor: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        debug_assert_eq!(
+            self.m_type, expected_m_type,
+            "m_type mismatch: expected {}, got {}",
+            expected_m_type, self.m_type
+        );
+        accessor(self)
+    }
+
+    /// Verify `m_type` matches one of several expected values (debug-only).
+    ///
+    /// For union fields shared by multiple syscalls (e.g. `m_lsys_krn_sys_copy`
+    /// is used by both `SYS_VIRCOPY` and `SYS_PHYSCOPY`).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// msg.debug_check_m_type_any(&[Syscall::Vircopy as i32, Syscall::Physcopy as i32]);
+    /// let req = unsafe { &msg.m_u.m_lsys_krn_sys_copy };
+    /// ```
+    #[inline]
+    pub fn debug_check_m_type_any(&self, expected: &[i32]) {
+        debug_assert!(
+            expected.contains(&self.m_type),
+            "m_type {} not in expected set {:?}",
+            self.m_type,
+            expected
+        );
     }
 }
 
@@ -492,6 +582,46 @@ pub struct MessLsysKrnSysVumap {
     pub _padding: [u8; 8],
 }
 
+/// SYS_UMAP / SYS_UMAP_REMOTE reply payload.
+///
+/// C: `mess_krn_lsys_sys_umap` — ipc.h:324-328
+///
+/// Only `dst_addr` is meaningful; the request fields are overwritten on reply.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessKrnLsysSysUmap {
+    /// Resolved physical address. C: `dst_addr` (phys_bytes)
+    pub dst_addr: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessKrnLsysSysUmap {
+    fn default() -> Self {
+        Self { dst_addr: 0, _padding: [0u8; 48] }
+    }
+}
+
+/// SYS_VUMAP reply payload.
+///
+/// C: `mess_krn_lsys_sys_vumap` — ipc.h:331-335
+///
+/// Only `pcount` is meaningful; the request fields are overwritten on reply.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessKrnLsysSysVumap {
+    /// Number of physical vector elements filled. C: `pcount` (int)
+    pub pcount: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessKrnLsysSysVumap {
+    fn default() -> Self {
+        Self { pcount: 0, _padding: [0u8; 52] }
+    }
+}
+
 /// SYS_VSAFECOPY message payload.
 ///
 /// C: `mess_lsys_kern_vsafecopy` — ipc.h
@@ -824,6 +954,44 @@ pub struct MessLsysKrnSysMcontext {
     pub ctx_ptr: u64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 48],
+}
+
+/// SYS_EXEC message payload.
+///
+/// C: `mess_lsys_krn_sys_exec` — ipc.h:1159-1168
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field   | Type | Offset |
+/// |---------|------|--------|
+/// | endpt   | i32  | 0      |
+/// | (pad)   | 4B   | 4      |
+/// | ip      | u64  | 8      |
+/// | stack   | u64  | 16     |
+/// | name    | u64  | 24     |
+/// | ps_str  | u64  | 32     |
+/// | padding | 16B  | 40     |
+/// ```
+///
+/// **IMPORTANT**: This layout differs from `MessageM1`. Using `m1.m1p1` for
+/// `name` is WRONG — `m1.m1p1` maps to offset 16 (`stack`), while `name` is
+/// at offset 24. Always use `MessLsysKrnSysExec` for SYS_EXEC.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessLsysKrnSysExec {
+    /// Target process endpoint. C: `endpoint_t endpt`.
+    pub endpt: i32,
+    /// New instruction pointer. C: `vir_bytes ip` (64-bit).
+    /// Auto-padded to offset 8 by `repr(C)`.
+    pub ip: u64,
+    /// New stack pointer. C: `vir_bytes stack`.
+    pub stack: u64,
+    /// Pointer to process name (in caller's address space). C: `vir_bytes name`.
+    pub name: u64,
+    /// ps_strings pointer. C: `vir_bytes ps_str`.
+    pub ps_str: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 16],
 }
 
 /// SYS_GETKSIG / SYS_ENDKSIG / SYS_KILL / SYS_SIGSEND / SYS_SIGRETURN message payload.

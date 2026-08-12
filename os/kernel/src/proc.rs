@@ -15,13 +15,50 @@
 use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicU8, Ordering};
 
-use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch};
+use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch, CurrentFpuState};
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
 use crate::ipc::SenderQueue;
 
 /// Process number type (corresponds to C's `proc_nr_t`).
-pub type ProcNr = i32;
+///
+/// Newtype wrapper providing type safety — prevents accidental mixing of
+/// process numbers with raw `i32` values. The inner `i32` is accessible via
+/// `.0` for `AtomicI32` interop (`p_nextready`) and array indexing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ProcNr(pub i32);
+
+impl ProcNr {
+    /// Create a process number from a raw `i32`.
+    pub const fn new(val: i32) -> Self { ProcNr(val) }
+}
+
+impl From<i32> for ProcNr {
+    fn from(val: i32) -> Self { ProcNr(val) }
+}
+impl From<ProcNr> for i32 {
+    fn from(nr: ProcNr) -> Self { nr.0 }
+}
+
+impl core::ops::Neg for ProcNr {
+    type Output = ProcNr;
+    fn neg(self) -> ProcNr { ProcNr(-self.0) }
+}
+impl core::ops::Add for ProcNr {
+    type Output = ProcNr;
+    fn add(self, rhs: ProcNr) -> ProcNr { ProcNr(self.0 + rhs.0) }
+}
+impl core::ops::Sub for ProcNr {
+    type Output = ProcNr;
+    fn sub(self, rhs: ProcNr) -> ProcNr { ProcNr(self.0 - rhs.0) }
+}
+
+impl core::fmt::Display for ProcNr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Sentinel value for "no process" in atomic queue pointers.
 /// Used by `p_nextready` (AtomicI32). `caller_q` uses `SenderQueue` (VecDeque).
@@ -44,16 +81,16 @@ const NR_TASKS: usize = minix_types::NR_TASKS;
 /// The special "NONE" value belongs to Endpoint, not ProcNr.
 pub mod proc_nr {
     use super::ProcNr;
-    pub const MIN_TASK_NR: ProcNr = -(super::NR_TASKS as ProcNr);
-    pub const IDLE: ProcNr = -4;
-    pub const CLOCK: ProcNr = -3;
-    pub const SYSTEM: ProcNr = -2;
-    pub const KERNEL: ProcNr = -1;
+    pub const MIN_TASK_NR: ProcNr = ProcNr(-(super::NR_TASKS as i32));
+    pub const IDLE: ProcNr = ProcNr(-4);
+    pub const CLOCK: ProcNr = ProcNr(-3);
+    pub const SYSTEM: ProcNr = ProcNr(-2);
+    pub const KERNEL: ProcNr = ProcNr(-1);
 
     // Boot image user process numbers.
     // C: minix/com.h: PM_PROC_NR=0, RS_PROC_NR=1, VM_PROC_NR=8
-    pub const RS_PROC_NR: ProcNr = 1;
-    pub const VM_PROC_NR: ProcNr = 8;
+    pub const RS_PROC_NR: ProcNr = ProcNr(1);
+    pub const VM_PROC_NR: ProcNr = ProcNr(8);
 }
 
 /// Boot image dimensions.
@@ -73,11 +110,11 @@ pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
 /// Kernel tasks are not loaded from multiboot modules — they are compiled
 /// into the kernel binary.
 pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS as usize] = &[
-    ("asyncm", -5),  // ASYNCM — async message completion notifications
-    ("idle",   -4),  // IDLE — runs when no other process can
-    ("clock",  -3),  // CLOCK — alarms and clock functions
-    ("system", -2),  // SYSTEM — system functionality requests
-    ("kernel", -1),  // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
+    ("asyncm", ProcNr(-5)),  // ASYNCM — async message completion notifications
+    ("idle",   ProcNr(-4)),  // IDLE — runs when no other process can
+    ("clock",  ProcNr(-3)),  // CLOCK — alarms and clock functions
+    ("system", ProcNr(-2)),  // SYSTEM — system functionality requests
+    ("kernel", ProcNr(-1)),  // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
 ];
 
 /// User-space boot module process numbers (matching C's image[] in table.c).
@@ -86,18 +123,18 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS as usize] = &[
 /// The proc_nr values are contiguous: DS=0, RS=1, PM=2, ..., INIT=11.
 /// C: minix/com.h — DS_PROC_NR=0, RS_PROC_NR=1, PM_PROC_NR=2, etc.
 pub const BOOT_MODULE_PROC_NRS: &[ProcNr; NR_BOOT_MODULES] = &[
-    0,   // DS_PROC_NR
-    1,   // RS_PROC_NR
-    2,   // PM_PROC_NR
-    3,   // SCHED_PROC_NR
-    4,   // VFS_PROC_NR
-    5,   // MEM_PROC_NR
-    6,   // TTY_PROC_NR
-    7,   // MIB_PROC_NR
-    8,   // VM_PROC_NR
-    9,   // PFS_PROC_NR
-    10,  // MFS_PROC_NR
-    11,  // INIT_PROC_NR
+    ProcNr(0),   // DS_PROC_NR
+    ProcNr(1),   // RS_PROC_NR
+    ProcNr(2),   // PM_PROC_NR
+    ProcNr(3),   // SCHED_PROC_NR
+    ProcNr(4),   // VFS_PROC_NR
+    ProcNr(5),   // MEM_PROC_NR
+    ProcNr(6),   // TTY_PROC_NR
+    ProcNr(7),   // MIB_PROC_NR
+    ProcNr(8),   // VM_PROC_NR
+    ProcNr(9),   // PFS_PROC_NR
+    ProcNr(10),  // MFS_PROC_NR
+    ProcNr(11),  // INIT_PROC_NR
 ];
 
 bitflags::bitflags! {
@@ -397,14 +434,60 @@ impl Quantum {
     }
 }
 
-/// CPU ID.
-pub type CpuId = u32;
-
 /// Maximum number of CPUs (must match `smp::MAX_CPUS`).
 ///
 /// Kept here to avoid a circular `proc` → `smp` → `proc` import when
 /// `CpuMask` needs the array size.
+///
+/// Defined BEFORE `CpuId` because `CpuId::new()` references it in a
+/// `const fn` (R-10).
 pub const MAX_CPUS: usize = 32;
+
+/// CPU identifier (R-10, 2026-08-12: newtype for type safety).
+///
+/// Wraps a `u32` CPU id. Use `CpuId::new(n)` to validate at construction
+/// (rejects `n >= MAX_CPUS`), or `CpuId::new_unchecked(n)` when the caller
+/// guarantees validity.
+///
+/// Sentinel: `CpuId::NONE` (`u32::MAX`) represents "no CPU" — used in
+/// scheduling queues and IPC routing when no CPU is assigned.
+///
+/// C: `bsp_cpu_id` / `cpu` — `unsigned int` in Minix3. The Rust newtype
+/// adds type safety: prevents accidental mixing with raw `u32` arithmetic
+/// results, and centralizes the `MAX_CPUS` bound check.
+///
+/// redox 对照: redox `LogicalCpuId(u32)` newtype — same pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CpuId(u32);
+
+impl CpuId {
+    /// Sentinel value representing "no CPU".
+    pub const NONE: CpuId = CpuId(u32::MAX);
+
+    /// BSP CPU id (always 0 in Minix3).
+    pub const BSP: CpuId = CpuId(0);
+
+    /// Create a validated `CpuId`. Returns `None` if `id >= MAX_CPUS`.
+    pub const fn new(id: u32) -> Option<Self> {
+        if (id as usize) < MAX_CPUS { Some(CpuId(id)) } else { None }
+    }
+
+    /// Create a `CpuId` without validation. Caller must ensure `id < MAX_CPUS`
+    /// or use `NONE` sentinel intentionally.
+    pub const fn new_unchecked(id: u32) -> Self { CpuId(id) }
+
+    /// Get the raw `u32` value.
+    pub const fn raw(self) -> u32 { self.0 }
+
+    /// Get the CPU id as a `usize` for array indexing.
+    pub const fn index(self) -> usize { self.0 as usize }
+
+    /// Is this the BSP?
+    pub const fn is_bsp(self) -> bool { self.0 == 0 }
+
+    /// Is this the "no CPU" sentinel?
+    pub const fn is_none(self) -> bool { self.0 == u32::MAX }
+}
 
 /// CPU affinity bitmap (06-design-final.md §4.2).
 ///
@@ -435,20 +518,20 @@ impl CpuMask {
 
     /// Check if CPU `cpu` is allowed.
     pub fn allows(&self, cpu: CpuId) -> bool {
-        (cpu as usize) < MAX_CPUS && (self.bits & (1u64 << cpu)) != 0
+        cpu.index() < MAX_CPUS && (self.bits & (1u64 << cpu.raw())) != 0
     }
 
     /// Allow CPU `cpu`.
     pub fn set(&mut self, cpu: CpuId) {
-        if (cpu as usize) < MAX_CPUS {
-            self.bits |= 1u64 << cpu;
+        if cpu.index() < MAX_CPUS {
+            self.bits |= 1u64 << cpu.raw();
         }
     }
 
     /// Disallow CPU `cpu`.
     pub fn clear(&mut self, cpu: CpuId) {
-        if (cpu as usize) < MAX_CPUS {
-            self.bits &= !(1u64 << cpu);
+        if cpu.index() < MAX_CPUS {
+            self.bits &= !(1u64 << cpu.raw());
         }
     }
 }
@@ -883,6 +966,24 @@ pub struct KProcess {
     /// pre-fill all slots via `const fn`.
     pub cpu_context: CurrentCpuContext,
 
+    /// FPU / extended-register state buffer.
+    ///
+    /// C: `p_seg.fpu_state[FPU_XFP_SIZE]` — kernel/proc.h.
+    ///
+    /// Stores the per-process FPU state for save/restore during context
+    /// switches (SMP migration SAVE_CTX) and signal handling (sigreturn).
+    /// Zero-initialized at process creation; saved by `FpuArch::save` when
+    /// the process releases FPU ownership; restored by `FpuArch::restore`
+    /// when the process reacquires FPU ownership or returns from a signal.
+    ///
+    /// # Sizes
+    ///
+    /// - mock (test):     0 bytes (ZST — no actual state saved)
+    /// - x86-64 (FXSAVE): 512 bytes
+    /// - aarch64 (FPSIMD): 528 bytes
+    /// - riscv64 (F/D):   264 bytes
+    pub fpu_state: CurrentFpuState,
+
     // VM request fields (03-vm-request.md §3.4, §3.5)
     /// Next process in vmrestart chain.
     /// C: `p_vmrequest.nextrestart` (struct proc *)
@@ -992,13 +1093,19 @@ impl core::fmt::Display for ProcName {
 /// Signal set type (bitmap).
 /// Corresponds to C's sigset_t, using 64 bits for 64 signals.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SigSet(u64);
 
 impl SigSet {
     /// Creates empty signal set.
     pub const fn empty() -> Self {
         Self(0)
+    }
+
+    /// Construct from a raw u64 bitmap (e.g. for IPC message fields).
+    /// Inverse of `get()`.
+    pub const fn from_raw(value: u64) -> Self {
+        Self(value)
     }
 
     /// Checks if signal is in set.
@@ -1137,6 +1244,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::default(),
+            fpu_state: CurrentFpuState::default(),
         }
     }
 
@@ -1151,7 +1259,7 @@ impl KProcess {
     /// See `06-design-final.md` §4.1 (zero-heap `static mut` storage).
     pub const fn new_zeroed() -> Self {
         Self {
-            p_nr: 0,
+            p_nr: ProcNr(0),
             p_endpoint: Endpoint::NONE,
             p_seg: ProcessSegments::new(),
             priv_id: None,
@@ -1180,6 +1288,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::new(),
+            fpu_state: CurrentFpuState::new(),
         }
     }
 
@@ -1187,7 +1296,7 @@ impl KProcess {
     /// C: iskernelp(p) = ((p) < BEG_USER_ADDR) — but Rust uses p_nr field
     /// instead of address comparison (08-proc-macros.md §3.3).
     pub fn is_kernel_task(&self) -> bool {
-        self.p_nr < 0
+        self.p_nr.0 < 0
     }
 
     pub fn is_runnable(&self) -> bool {
@@ -1447,6 +1556,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::default(),
+            fpu_state: CurrentFpuState::default(),
         };
 
         // Inherit extended-register / FPU state from parent if parent
@@ -1518,6 +1628,53 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
     child.p_name.push_suffix("*F");
 }
 
+// ── IPC status register helpers ──
+//
+// C: `IPC_STATUS_ADD_CALL` / `IPC_STATUS_ADD_FLAGS` macros — ipc.h:40-48.
+// These OR-merge status metadata into the receiver's IPC status register
+// when a message is delivered. User-space libraries read this register to
+// determine the delivery type (SEND, NOTIFY, SENDA, etc.) and whether the
+// message originated from the kernel.
+
+/// Add a call type to the process's IPC status register.
+///
+/// C: `IPC_STATUS_ADD_CALL(p, call)` — ipc.h:45-46
+///
+/// Encodes `call` into the low 6 bits of the IPC status register and
+/// OR-merges it. Skipped when `MF_REPLY_PEND` is set (SENDREC's receive
+/// phase must not overwrite the status set by the send phase).
+///
+/// # Arguments
+///
+/// * `proc` — the **receiver** process (the one getting the message delivered)
+/// * `call` — the IPC primitive that delivered the message
+pub fn ipc_status_add_call(proc: &mut KProcess, call: crate::ipc::IpcCall) {
+    // C: IPC_STATUS_ADD(p, m) — skip if MF_REPLY_PEND is set.
+    if !proc.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
+        let value = crate::ipc::ipc_status_call_to(call);
+        CurrentCpuContextArch::or_ipc_status_reg(&mut proc.cpu_context, value);
+    }
+}
+
+/// Add flags to the process's IPC status register.
+///
+/// C: `IPC_STATUS_ADD_FLAGS(p, flags)` — ipc.h:47-48
+///
+/// Encodes `flags` into bits 16+ of the IPC status register and OR-merges
+/// them. Skipped when `MF_REPLY_PEND` is set (same rationale as
+/// `ipc_status_add_call`).
+///
+/// # Arguments
+///
+/// * `proc` — the **receiver** process
+/// * `flags` — bitwise-OR of `IPC_FLG_*` constants
+pub fn ipc_status_add_flags(proc: &mut KProcess, flags: u32) {
+    if !proc.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
+        let value = crate::ipc::ipc_status_flags(flags);
+        CurrentCpuContextArch::or_ipc_status_reg(&mut proc.cpu_context, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1525,34 +1682,34 @@ mod tests {
     #[test]
     fn test_cpu_mask_default_all_allows_any_cpu() {
         let mask = CpuMask::all();
-        assert!(mask.allows(0));
-        assert!(mask.allows(1));
-        assert!(mask.allows(MAX_CPUS as CpuId - 1));
+        assert!(mask.allows(CpuId::BSP));
+        assert!(mask.allows(CpuId::new_unchecked(1)));
+        assert!(mask.allows(CpuId::new_unchecked((MAX_CPUS as u32) - 1)));
         // Out-of-range CPU is never allowed.
-        assert!(!mask.allows(MAX_CPUS as CpuId));
+        assert!(!mask.allows(CpuId::new_unchecked(MAX_CPUS as u32)));
     }
 
     #[test]
     fn test_cpu_mask_clear_and_set() {
         let mut mask = CpuMask::all();
-        mask.clear(2);
-        assert!(!mask.allows(2));
-        assert!(mask.allows(0));
-        mask.set(2);
-        assert!(mask.allows(2));
+        mask.clear(CpuId::new_unchecked(2));
+        assert!(!mask.allows(CpuId::new_unchecked(2)));
+        assert!(mask.allows(CpuId::BSP));
+        mask.set(CpuId::new_unchecked(2));
+        assert!(mask.allows(CpuId::new_unchecked(2)));
     }
 
     #[test]
     fn test_cpu_mask_empty_allows_nothing() {
         let mask = CpuMask::empty();
-        assert!(!mask.allows(0));
-        assert!(!mask.allows(1));
+        assert!(!mask.allows(CpuId::BSP));
+        assert!(!mask.allows(CpuId::new_unchecked(1)));
     }
 
     #[test]
     fn test_sched_fields_new_has_all_cpu_mask() {
         let s = SchedFields::new();
-        assert!(s.cpu_mask.allows(0), "default SchedFields must allow CPU 0");
+        assert!(s.cpu_mask.allows(CpuId::BSP), "default SchedFields must allow CPU 0");
         assert_eq!(s.cpu.load(Ordering::Relaxed), 0);
     }
 
@@ -1584,15 +1741,15 @@ mod tests {
 
     #[test]
     fn test_kprocess_new() {
-        let proc = KProcess::new(1, Endpoint(1));
+        let proc = KProcess::new(ProcNr(1), Endpoint(1));
 
-        assert_eq!(proc.p_nr, 1);
+        assert_eq!(proc.p_nr, ProcNr(1));
         assert!(!proc.is_runnable());
     }
 
     #[test]
     fn test_kprocess_runnable() {
-        let proc = KProcess::new(1, Endpoint(1));
+        let proc = KProcess::new(ProcNr(1), Endpoint(1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         assert!(proc.is_runnable());
@@ -1655,7 +1812,7 @@ mod tests {
 
     #[test]
     fn test_kprocess_priority() {
-        let proc = KProcess::new(1, Endpoint(1));
+        let proc = KProcess::new(ProcNr(1), Endpoint(1));
         assert_eq!(proc.get_priority(), Priority(priority::USER_Q));
 
         proc.set_priority(priority::TASK_Q);
@@ -1736,7 +1893,7 @@ mod tests {
 
     #[test]
     fn test_kprocess_accounting() {
-        let proc = KProcess::new(1, Endpoint(1));
+        let proc = KProcess::new(ProcNr(1), Endpoint(1));
         proc.p_accounting.record_ipc_sync();
         assert_eq!(proc.p_accounting.ipc_sync.load(Ordering::Relaxed), 1);
 
@@ -1746,16 +1903,16 @@ mod tests {
 
     #[test]
     fn test_fork_from_basic() {
-        let parent = KProcess::new(5, Endpoint::from_generation_slot(3, 5));
+        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(3, 5));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.set_priority(priority::USER_Q);
 
         let child_endpoint = Endpoint::fork_new_endpoint(
             Endpoint::from_generation_slot(0, 10), 10
         );
-        let child = KProcess::fork_from(&parent, 10, child_endpoint);
+        let child = KProcess::fork_from(&parent, ProcNr(10), child_endpoint);
 
-        assert_eq!(child.p_nr, 10);
+        assert_eq!(child.p_nr, ProcNr(10));
         assert_eq!(child.p_endpoint, child_endpoint);
         assert_eq!(child.get_priority(), parent.get_priority());
         assert_eq!(child.p_time.user_time.load(Ordering::Relaxed), 0);
@@ -1765,22 +1922,22 @@ mod tests {
 
     #[test]
     fn test_fork_from_accounting_reset() {
-        let parent = KProcess::new(5, Endpoint(5));
+        let parent = KProcess::new(ProcNr(5), Endpoint(5));
         parent.p_accounting.record_ipc_sync();
         parent.p_accounting.record_ipc_sync();
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         assert_eq!(child.p_accounting.ipc_sync.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn test_fork_from_independent_queues() {
-        let mut parent = KProcess::new(5, Endpoint(5));
+        let mut parent = KProcess::new(ProcNr(5), Endpoint(5));
         parent.p_nextready.store(3, Ordering::Relaxed);
-        parent.caller_q.push_back(7);
+        parent.caller_q.push_back(ProcNr(7));
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         assert_eq!(child.p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
         assert!(child.caller_q.is_empty());
@@ -1788,11 +1945,11 @@ mod tests {
 
     #[test]
     fn test_fork_from_inherits_ipc_endpoints() {
-        let mut parent = KProcess::new(5, Endpoint(5));
+        let mut parent = KProcess::new(ProcNr(5), Endpoint(5));
         parent.p_getfrom_e = Endpoint::PM;
         parent.p_sendto_e = Endpoint::VFS;
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         assert_eq!(child.p_getfrom_e, Endpoint::PM);
         assert_eq!(child.p_sendto_e, Endpoint::VFS);
@@ -1800,11 +1957,11 @@ mod tests {
 
     #[test]
     fn test_fork_from_cycles_reset() {
-        let parent = KProcess::new(5, Endpoint(5));
+        let parent = KProcess::new(ProcNr(5), Endpoint(5));
         parent.p_cycles.add_cycles(1000);
         parent.p_cycles.add_kcall_cycles(200);
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         assert_eq!(child.p_cycles.total.load(Ordering::Relaxed), 0);
         assert_eq!(child.p_cycles.kcall.load(Ordering::Relaxed), 0);
@@ -1813,11 +1970,11 @@ mod tests {
     #[test]
     fn test_fork_from_rts_flags_corrections() {
         // Parent has SIGNALED and SIG_PENDING set — child must NOT inherit these
-        let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.p_rts_flags.set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP);
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         // Child must have NO_QUANTUM set (C: RTS_SET(rpc, RTS_NO_QUANTUM))
         assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
@@ -1830,12 +1987,12 @@ mod tests {
     #[test]
     fn test_fork_from_misc_flags_corrections() {
         // Parent has VIRT_TIMER, PROF_TIMER, STEP set — child must NOT inherit
-        let parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
         parent.p_misc_flags.set(MiscFlagsBits::VIRT_TIMER | MiscFlagsBits::PROF_TIMER | MiscFlagsBits::STEP | MiscFlagsBits::SC_TRACE | MiscFlagsBits::SPROF_SEEN);
         // Also set a flag that SHOULD be inherited
         parent.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         // Cleared flags
         assert!(!child.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER));
@@ -1851,7 +2008,7 @@ mod tests {
 
     #[test]
     fn test_suspend_for_vm_sets_rts_and_context() {
-        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -1879,7 +2036,7 @@ mod tests {
 
     #[test]
     fn test_suspend_for_vm_with_copy() {
-        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -1913,7 +2070,7 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend() {
-        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -1940,7 +2097,7 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend_does_not_clear_kcall_resume() {
-        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -1966,7 +2123,7 @@ mod tests {
 
     #[test]
     fn test_vm_suspend_context_mut() {
-        let mut proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -1989,7 +2146,7 @@ mod tests {
 
     #[test]
     fn test_fork_child_has_no_vm_suspend() {
-        let mut parent = KProcess::new(5, Endpoint::from_generation_slot(1, 5));
+        let mut parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2004,7 +2161,7 @@ mod tests {
             None,
         );
 
-        let child = KProcess::fork_from(&parent, 10, Endpoint::from_generation_slot(1, 10));
+        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
 
         // Child should NOT inherit VM suspend state
         assert!(!child.is_vm_suspended());
@@ -2014,7 +2171,7 @@ mod tests {
 
     #[test]
     fn test_is_vm_suspended_reflects_rts_flag() {
-        let proc = KProcess::new(1, Endpoint::from_generation_slot(1, 1));
+        let proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         // New process has SLOT_FREE, not VMREQUEST
         assert!(!proc.is_vm_suspended());
     }

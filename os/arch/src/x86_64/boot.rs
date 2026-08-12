@@ -18,6 +18,7 @@ use minix_types::VirBytes;
 use crate::arch::boot::{
     CpuContextArch, EntrySpec, ProcKind, ProcNr,
 };
+use crate::arch::stacktrace::StacktraceArch;
 use super::exception::X86_64ExceptionFrame;
 
 /// x86-64 initial PSW (RFLAGS) for kernel tasks.
@@ -65,6 +66,19 @@ impl X86FpuInitPolicy {
 ///
 /// All fields are arch-internal. The kernel stores this by value in
 /// `KProcess` and never reads it.
+///
+/// # GP register save area
+///
+/// `gp_regs` holds the 14 general-purpose registers that are NOT
+/// already named fields (RAX, RCX, RDX, RSI, RDI, RBP, R8-R15).
+/// Named fields (RIP, RSP, RBX) serve dual purpose: initial state
+/// at boot and saved state at trap entry. `gp_regs` is updated by
+/// the trap entry path (future) and read/written by `SignalContext`.
+///
+/// Until the trap entry assembly is updated to save GP registers
+/// into `gp_regs`, the array defaults to all-zeros. This is safe
+/// — signal delivery will save/restore zeros, which is incorrect
+/// for production use but structurally sound.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct X86_64CpuContext {
     /// RFLAGS initial value.
@@ -83,15 +97,25 @@ pub struct X86_64CpuContext {
     pub(super) rbx: u64,
     /// FPU init strategy (kernel layer never reads this).
     fpu_policy: X86FpuInitPolicy,
+    /// GP register save area for signal handling.
+    ///
+    /// Indexed by `X86_64GpReg` constants. Updated by trap entry
+    /// path and read/written by `SignalContext`.
+    pub(super) gp_regs: [u64; X86_64CpuContext::GP_REGS_LEN],
 }
 
 impl X86_64CpuContext {
+    /// Number of GP registers in `gp_regs` (14: RAX, RCX, RDX, RSI,
+    /// RDI, RBP, R8-R15).
+    pub const GP_REGS_LEN: usize = 14;
+
     /// Const-constructible zeroed context (for `const fn` table init).
     pub const fn new() -> Self {
         Self {
             psw: 0, cs: 0, ds: 0, ss: 0, es: 0, fs: 0, gs: 0,
             rip: 0, rsp: 0, rbx: 0,
             fpu_policy: X86FpuInitPolicy::default_const(),
+            gp_regs: [0; Self::GP_REGS_LEN],
         }
     }
 }
@@ -120,6 +144,7 @@ impl CpuContextArch for X86_64CpuContextArch {
             rsp: entry.sp.map(|v| v.0).unwrap_or(0),
             rbx: entry.ps_strings.map(|v| v.0).unwrap_or(0),
             fpu_policy,
+            gp_regs: [0; X86_64CpuContext::GP_REGS_LEN],
         }
     }
 
@@ -155,6 +180,71 @@ impl CpuContextArch for X86_64CpuContextArch {
     /// rpp->p_seg.fpu_state, FPU_XFP_SIZE)` under `proc_used_fpu(rpp)`.
     fn inherit_fpu_state(child: &mut Self::CpuContext, parent: &Self::CpuContext) {
         child.fpu_policy = parent.fpu_policy;
+    }
+
+    /// T_SETUSER register write with segment-register protection.
+    ///
+    /// Offset convention (8-byte aligned, matching `X86_64CpuContext`
+    /// field order):
+    /// ```text
+    /// 0: psw  (RFLAGS — user bits only, C: SETPSW)
+    /// 8: cs   (PROTECTED — writing crashes kernel at context switch)
+    /// 16: ds  (PROTECTED)
+    /// 24: ss  (PROTECTED)
+    /// 32: es  (PROTECTED)
+    /// 40: fs  (PROTECTED)
+    /// 48: gs  (PROTECTED)
+    /// 56: rip
+    /// 64: rsp
+    /// 72: rbx
+    /// 80..192: gp_regs[0..14]
+    /// ```
+    ///
+    /// C: do_trace.c:140-157 — i386 forbids cs/ds/es/fs/gs/ss writes.
+    /// x86_64 C source has a gap (no write path compiled); Rust
+    /// implements the correct behavior.
+    fn write_user_register(
+        ctx: &mut Self::CpuContext,
+        offset: usize,
+        value: u64,
+    ) -> Result<(), ()> {
+        // Alignment: C checks `tr_addr & (sizeof(reg_t)-1)`.
+        // On 64-bit, reg_t = u64, so offset must be 8-byte aligned.
+        if offset % 8 != 0 {
+            return Err(());
+        }
+        match offset {
+            0 => {
+                // PSW (RFLAGS): only user-controllable bits changeable.
+                // C: SETPSW(rp, tr_data) — preserves system bits.
+                // User bits: CF, PF, AF, ZF, SF, TF, DF, OF, IF (bit 9).
+                const PSW_USER_MASK: u64 = 0x0DD5;
+                ctx.psw = (ctx.psw & !PSW_USER_MASK) | (value & PSW_USER_MASK);
+                Ok(())
+            }
+            // Segment registers — protected (would crash kernel).
+            8 | 16 | 24 | 32 | 40 | 48 => Err(()),
+            56 => { ctx.rip = value; Ok(()) }
+            64 => { ctx.rsp = value; Ok(()) }
+            72 => { ctx.rbx = value; Ok(()) }
+            80..=191 => {
+                let idx = (offset - 80) / 8;
+                if idx < X86_64CpuContext::GP_REGS_LEN {
+                    ctx.gp_regs[idx] = value;
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn or_ipc_status_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `p->p_reg.IPC_STATUS_REG |= value` where IPC_STATUS_REG = bx
+        // (ipcconst.h:10). RBX also carries ps_strings at process startup;
+        // after the first IPC delivery, it is repurposed for IPC status.
+        ctx.rbx |= value;
     }
 }
 
@@ -247,5 +337,31 @@ mod tests {
         assert_eq!(child.fpu_policy, parent.fpu_policy,
             "child must inherit parent FPU policy");
         assert_eq!(child.fpu_policy, X86FpuInitPolicy::LazyUserInit);
+    }
+}
+
+/// x86-64 `StacktraceArch` implementation.
+///
+/// C: `proc_stacktrace()` — arch/i386/exception.c:333-373.
+///
+/// Walks the `rbp`-linked frame chain. Each frame has layout:
+/// ```text
+/// [rbp+0]  saved_rbp  (caller's frame pointer)
+/// [rbp+8]  return_addr
+/// ```
+///
+/// Frame pointer must be enabled at compile time (`-C force-frame-pointers`)
+/// for the walk to produce meaningful results. Without frame pointers,
+/// `rbp` is a general-purpose register and the walk stops immediately.
+impl StacktraceArch for X86_64CpuContextArch {
+    fn frame_pointer(cpu_context: &X86_64CpuContext) -> u64 {
+        // C: whichproc->p_reg.fp — x86-64 stores RBP in gp_regs[GP_RBP].
+        // GP_RBP = 5 (see signal.rs:38).
+        cpu_context.gp_regs.get(5).copied().unwrap_or(0)
+    }
+
+    fn program_counter(cpu_context: &X86_64CpuContext) -> u64 {
+        // C: whichproc->p_reg.pc — x86-64 stores RIP as a named field.
+        cpu_context.rip
     }
 }

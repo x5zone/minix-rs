@@ -15,20 +15,26 @@
 //! - **D5**: Linear scan for GETKSIG (matches C, process count < 128)
 //! - **D6**: `trait SignalContext` for architecture-specific sigframe/sigcontext
 
-use minix_types::{Endpoint, Message, MessSigcalls};
+use minix_types::{Endpoint, Message, MessSigcalls, PhysBytes, VirBytes};
 
-use crate::proc::{KProcess, ProcNr, RtsFlagsBits};
+use crate::proc::{KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, SigSet};
 use crate::proc_table::ProcessTable;
 use crate::kpriv::PrivTable;
-use crate::syscall::KcallResult;
+use crate::syscall::{KcallResult, Syscall};
+use crate::cross_space::data_copy_vmcheck;
+use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
+
+use minix_arch::{
+    CurrentSignalContext, CurrentDirectMap, DirectMapArch, SignalContext, SignalInfo,
+};
 
 // ── Minix3 error codes ──
+// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Previously ENOSYS=38 here (should be 78).
+use crate::errno::*;
 
-const OK: i32 = 0;
-const EINVAL: i32 = 22;
-const EPERM: i32 = 1;
-const ENOSYS: i32 = 38;
-// EFAULT not currently used by implemented syscalls
+/// SELF endpoint sentinel. C: `SELF` — endpoint.h
+const SELF: i32 = -2;
 
 // ── Signal constants ──
 
@@ -58,17 +64,19 @@ pub const SIGKSIG: u32 = 74;
 // SELF is used via Endpoint::SELF in cause_signal/endksig/getksig
 
 // ── Signal bitmap type ──
-
-/// Signal bitmap. C: `sigset_t` — 64 signals fit in a u64.
-pub type SigSet = u64;
+//
+// `SigSet` is the newtype defined in `proc.rs` (`pub struct SigSet(u64)` with
+// `#[repr(transparent)]`). We reuse it here instead of a local alias so that
+// signal bitmaps have one canonical type across the kernel. IPC message
+// layout is preserved via `SigSet::get()` / `SigSet::from_raw()`.
 
 /// Build a signal mask for the given signal number (1-based).
 /// C: `sig_mask(sig)` — signal.h
 pub const fn sig_mask(sig_nr: u32) -> SigSet {
     if sig_nr == 0 || sig_nr as usize > NSIG {
-        0
+        SigSet::empty()
     } else {
-        1u64 << (sig_nr - 1)
+        SigSet::from_raw(1u64 << (sig_nr - 1))
     }
 }
 
@@ -77,9 +85,14 @@ pub const fn sig_mask(sig_nr: u32) -> SigSet {
 /// Read signal call fields from a message.
 /// C: `m_ptr->m_sigcalls.*` — uses mess_sigcalls union member.
 fn msg_sigcalls(msg: &Message) -> MessSigcalls {
-    // SAFETY: `m_type` has been validated by the caller to be a signal
-    // syscall (SYS_GETKSIG/SYS_ENDKSIG/SYS_KILL/SYS_SIGSEND/SYS_SIGRETURN),
-    // which uses the `m_sigcalls` variant. `#[repr(C)]` union access is sound.
+    msg.debug_check_m_type_any(&[
+        Syscall::Getksig as i32,
+        Syscall::Endksig as i32,
+        Syscall::Kill as i32,
+        Syscall::Sigsend as i32,
+        Syscall::Sigreturn as i32,
+    ]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     unsafe { msg.m_u.m_sigcalls }
 }
 
@@ -141,12 +154,10 @@ pub fn dispatch_kill(
 ///
 /// # Signal manager notification
 ///
-/// C: `cause_sig()` calls `send_sig(sig_mgr, SIGKSIG)` which eventually
-/// does `mini_notify(sig_mgr, SIGKSIG)`. This notification step is
-/// deferred until the IPC subsystem provides `mini_notify` (SignalContext trait).
-/// The state mutations (p_pending, RTS flags, s_sig_pending) are
-/// performed now so that a subsequent `dispatch_getksig` poll will
-/// observe the signal.
+/// C: `cause_sig()` calls `send_sig(sig_mgr, SIGKSIG)` which adds SIGKSIG
+/// to the signal manager's `s_sig_pending` and calls `mini_notify` to
+/// wake it up. Both steps are now implemented: `s_sig_pending` is marked
+/// inline, and `mini_notify_core` is called to deliver the notification.
 fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
@@ -159,6 +170,8 @@ fn cause_signal(
 
     // C: system.c:411 — sigaddset(&rp->p_pending, sig_nr)
     if let Some(target) = proc_table.get_mut(target_nr) {
+        // R-16 (2026-08-12): SAFETY: `sig_nr` (u32) was validated `< NSIG` (64)
+        // at the do_kill call site (syscall_signal.rs:119), so it fits in u8.
         target.p_pending.add(sig_nr as u8);
     }
 
@@ -176,17 +189,63 @@ fn cause_signal(
         // Add SIGKSIG to the signal manager's s_sig_pending.
         // C: system.c:445 — send_sig(sig_mgr, SIGKSIG)
         // send_sig() adds a notification to the signal manager's pending set.
-        // DEFERRED: full send_sig() notification requires mini_notify (SignalContext trait).
-        // For now, mark s_sig_pending so dispatch_getksig will observe it.
+        // C: send_sig — add SIGKSIG to s_sig_pending + mini_notify.
+        // s_sig_pending is marked above; mini_notify is called below.
         if let Some(sig_mgr_ep) = sig_mgr {
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep) {
                 if let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr) {
                     if let Some(pid) = sig_mgr_proc.priv_id {
                         if let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
+                            // R-16 (2026-08-12): SAFETY: `SIGKSIG` is a
+                            // compile-time `u32` constant (= 74, < 256), so
+                            // `as u8` cannot truncate.
                             sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
                     }
                 }
+            }
+        }
+
+        // C: send_sig — mini_notify(proc_addr(_ENDPOINT_P(ep)), sp->s_sig_mgr)
+        // Notify the signal manager's OWN signal manager (usually SELF → skip).
+        // mini_notify_core is idempotent (sets s_notify_pending bit), so
+        // we skip the C RTS_SIGNATURE check (not present in Rust).
+        if let Some(sig_mgr_ep) = sig_mgr {
+            // Look up the signal manager's OWN signal manager.
+            // C: sp = priv(proc_addr(sig_mgr)); sp->s_sig_mgr
+            // All read-only lookups first (capturing owned Endpoint), so the
+            // mutable borrows for mini_notify_core below start fresh.
+            let sig_mgr_mgr_ep = proc_table
+                .endpoint_to_nr(sig_mgr_ep)
+                .and_then(|nr| proc_table.get(nr))
+                .and_then(|p| p.priv_id)
+                .and_then(|pid| priv_table.get(pid))
+                .and_then(|kp| {
+                    let mgr = kp.signals.s_sig_mgr;
+                    // C: if (sp->s_sig_mgr == SELF || sp->s_sig_mgr == NONE) return;
+                    // Endpoint::NONE is ENDPOINT_SLOT_TOP-2 (a large positive
+                    // value, NOT negative), so compare against the constant
+                    // rather than checking the sign of the raw value.
+                    if mgr == Endpoint::SELF || mgr == Endpoint::NONE {
+                        None // SELF or NONE → no notification
+                    } else {
+                        Some(mgr)
+                    }
+                });
+
+            if let Some(sig_mgr_mgr_ep) = sig_mgr_mgr_ep {
+                // C: mini_notify(proc_addr(_ENDPOINT_P(ep)), sp->s_sig_mgr)
+                // Caller = signal manager, destination = signal manager's signal manager.
+                let sig_mgr_nr = match proc_table.endpoint_to_nr(sig_mgr_ep) {
+                    Some(nr) => nr,
+                    None => return,
+                };
+                let _ = crate::ipc::mini_notify_core(
+                    proc_table.procs_slice_mut(),
+                    priv_table,
+                    sig_mgr_nr,
+                    sig_mgr_mgr_ep,
+                );
             }
         }
     }
@@ -335,112 +394,64 @@ pub fn dispatch_endksig(
 }
 
 /// Signal message from user-space signal manager.
-/// C: `struct sigmsg` — sigcontext.h
+///
+/// C: `struct sigmsg` — minix/type.h:71-77
+///
+/// # Layout
+///
+/// `#[repr(C)]` with field order matching C's `struct sigmsg` so that
+/// `data_copy_vmcheck` can copy directly between user space and this
+/// struct. `SigSet` is `#[repr(transparent)]` over `u64`, matching
+/// C's `sigset_t` (8 bytes, 64 signals).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SigMsg {
-    /// Signal handler address. C: `sm_sighandler`
-    pub sighandler: u64,
-    /// Signal mask to block during handler. C: `sm_mask`
-    pub mask: SigSet,
-    /// Signal number. C: `sm_signo`
+    /// Signal number. C: `sm_signo` (int, 4 bytes)
     pub signo: u32,
-    /// Return address for sigreturn. C: `sm_sigreturn`
+    /// Signal mask to block during handler. C: `sm_mask` (sigset_t, 8 bytes)
+    pub mask: SigSet,
+    /// Signal handler address. C: `sm_sighandler` (vir_bytes, 8 bytes)
+    pub sighandler: u64,
+    /// Return address for sigreturn. C: `sm_sigreturn` (vir_bytes, 8 bytes)
     pub sigreturn: u64,
-    /// User stack pointer at signal time. C: `sm_stkptr`
+    /// User stack pointer at signal time. C: `sm_stkptr` (vir_bytes, 8 bytes)
     pub stkptr: u64,
-}
-
-/// Architecture-specific signal context operations.
-///
-/// C source has `#if defined(__i386__)` / `#if defined(__arm__)` blocks
-/// in do_sigsend.c and do_sigreturn.c for register save/restore.
-/// This trait abstracts those operations so the kernel does not
-/// depend on a specific architecture's register layout.
-///
-/// # Minix3 C Source Mapping
-///
-/// - do_sigsend.c:60-115 — build sigcontext from process registers
-/// - do_sigsend.c:130-145 — modify process registers to enter handler
-/// - do_sigreturn.c:42-80 — restore registers from sigcontext
-/// - do_sigreturn.c:82-84 — `arch_proc_setcontext()`
-///
-/// # Design Decision (18-syscall-signal.md §3 D6)
-///
-/// Each architecture implements this trait. The kernel dispatch layer
-/// calls trait methods without knowing the hardware register encoding.
-pub trait SignalContext {
-    /// Saved register state for signal delivery.
-    /// Corresponds to C's `struct sigcontext` (arch/sigcontext.h).
-    type SigContext;
-
-    /// Signal frame placed on user stack.
-    /// Corresponds to C's `struct sigframe_sigcontext` (arch/sigcontext.h).
-    type SigFrame;
-
-    /// Build a sigcontext from the process's current register state.
-    ///
-    /// C: do_sigsend.c:60-115 — fills `fr.sf_sc.sc_*` from `rp->p_reg.*`
-    fn build_sigcontext(proc: &KProcess, smsg: &SigMsg) -> Self::SigContext;
-
-    /// Build a sigframe from the sigcontext, ready to copy to user stack.
-    ///
-    /// C: do_sigsend.c:49-58, 117-118 — compute stack pointer, fill frame
-    fn build_sigframe(
-        proc: &KProcess,
-        sctx: &Self::SigContext,
-        smsg: &SigMsg,
-    ) -> Self::SigFrame;
-
-    /// Modify process registers to enter the signal handler.
-    ///
-    /// C: do_sigsend.c:130-145 — sets SP, PC, FP/LR, etc.
-    /// **MUST** be called only after the sigframe has been successfully
-    /// copied to user space (data_copy_vmcheck may VMSUSPEND).
-    fn setup_handler_entry(proc: &mut KProcess, smsg: &SigMsg, frame_addr: u64);
-
-    /// Restore process registers from a sigcontext.
-    ///
-    /// C: do_sigreturn.c:42-80 — writes `rp->p_reg.*` from `sc.sc_*`
-    fn restore_sigcontext(proc: &mut KProcess, sctx: &Self::SigContext);
-
-    /// Architecture-specific post-restore hook.
-    ///
-    /// C: do_sigreturn.c:82-84 — `arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)`
-    fn arch_setcontext(proc: &mut KProcess, trap_style: i32);
-
-    /// Get the current stack pointer of the process.
-    /// C: `arch_get_sp(rp)` — do_sigsend.c:49
-    fn get_sp(proc: &KProcess) -> u64;
-
-    /// Size of the sigframe structure for stack adjustment.
-    /// C: `sizeof(struct sigframe_sigcontext)` — do_sigsend.c:50
-    fn sigframe_size() -> usize;
 }
 
 /// Dispatch SYS_SIGSEND.
 ///
-/// C: `do_sigsend()` — do_sigsend.c
+/// C: `do_sigsend()` — do_sigsend.c:19-163
 ///
 /// POSIX-style signal delivery: build sigframe on user stack,
 /// modify registers to jump to signal handler.
 ///
-/// **Critical constraint**: register modification MUST happen after
-/// the last data_copy_vmcheck (which may VMSUSPEND).
+/// **Critical constraint** (C: do_sigsend.c:126-131 WARNING): register
+/// modification MUST happen after the last `data_copy_vmcheck` (which may
+/// VMSUSPEND). If registers are modified before the copy and the copy
+/// suspends, re-execution would corrupt the register state.
 ///
-/// # Current Status
+/// # Flow
 ///
-/// Endpoint validation and parameter extraction are implemented.
-/// The full flow (sigmsg copy, sigframe build, register modification)
-/// requires `SignalContext` trait implementation + `data_copy_vmcheck`.
-/// Returns ENOSYS until those dependencies are available.
+/// 1. Validate endpoint (C: do_sigsend.c:31-32)
+/// 2. Copy `sigmsg` from caller's user space (C: do_sigsend.c:36-39)
+/// 3. Build `SigContext` from target's `CpuContext` (C: do_sigsend.c:50-115)
+/// 4. Build `SigFrame` with computed frame address (C: do_sigsend.c:49,117-118)
+/// 5. Copy `SigFrame` to target's user stack (C: do_sigsend.c:120-125)
+/// 6. Modify target's `CpuContext` for handler entry (C: do_sigsend.c:130-145)
 pub fn dispatch_sigsend(
     caller: &mut KProcess,
     msg: &Message,
-    proc_table: &ProcessTable,
+    proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigsend.c:33-34 — extract parameters
-    let endpt = sc.endpt;      // m_sigcalls.endpt
-    let _sigctx = sc.sigctx;   // m_sigcalls.sigctx
+    let mut endpt = sc.endpt;
+    let sigctx_addr = sc.sigctx;
+
+    // C: do_sigsend.c:36-37 — SELF replacement
+    if endpt == SELF {
+        endpt = caller.p_endpoint.0;
+    }
 
     // C: do_sigsend.c:36-37 — validate endpoint
     let target_nr = match proc_table.endpoint_to_nr(Endpoint(endpt)) {
@@ -449,46 +460,176 @@ pub fn dispatch_sigsend(
     };
 
     // C: do_sigsend.c:38 — iskerneln check
-    if target_nr < 0 {
+    if target_nr.0 < 0 {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_sigsend.c:42-45 — copy sigmsg from user space
-    // DEFERRED: data_copy_vmcheck(caller, caller->p_endpoint,
-    //   sigctx, KERNEL, &smsg, sizeof(struct sigmsg))
+    // ── Step 1: Copy sigmsg from caller's user space ──
+    // C: do_sigsend.c:36-39 — data_copy_vmcheck(caller, caller_ep, sigctx, KERNEL, &smsg, sizeof)
+    let mut smsg: SigMsg = SigMsg::default();
+    {
+        let smsg_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+            &smsg as *const SigMsg as u64,
+        ));
+        let caller_endpt = caller.p_endpoint;
+        let caller_cr3 = caller.p_seg.phys_root;
+        let pt: &ProcessTable = proc_table;
+        let proc_cr3 = |ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
+        };
+        let src = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(sigctx_addr),
+        };
+        let dst = AddressRef::Physical(smsg_phys);
+        match data_copy_vmcheck(
+            caller,
+            src,
+            dst,
+            core::mem::size_of::<SigMsg>(),
+            proc_cr3,
+        ) {
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Completed(Ok(())) => {}
+        }
+    }
 
-    // C: do_sigsend.c:49-58 — compute user stack pointer
-    // C: do_sigsend.c:60-115 — build sigcontext (arch-specific, via SignalContext)
-    // C: do_sigsend.c:120-125 — copy sigframe to user stack (may VMSUSPEND!)
-    // C: do_sigsend.c:130-145 — modify registers (MUST be after copy)
+    // ── Step 2-3: Build sigcontext + sigframe from target's registers ──
+    // C: do_sigsend.c:49-118 — compute stack ptr, build sigcontext, build sigframe
+    // Idempotent: only reads CpuContext, safe to re-run after VMSUSPEND.
+    let (frame, frame_addr) = {
+        let target = match proc_table.get(target_nr) {
+            Some(p) => p,
+            None => return KcallResult::Ok(EINVAL),
+        };
+        let mut info = SignalInfo {
+            sighandler: smsg.sighandler,
+            mask: smsg.mask.get(),
+            signo: smsg.signo,
+            sigreturn: smsg.sigreturn,
+            stkptr: smsg.stkptr,
+        };
+        let sctx = CurrentSignalContext::build_sigcontext(&target.cpu_context, &mut info);
+        // C: do_sigsend.c:47 — frp = (struct sigframe_sigcontext *) smsg.sm_stkptr - 1
+        let frame_addr = info
+            .stkptr
+            .saturating_sub(CurrentSignalContext::sigframe_size() as u64);
+        let frame = CurrentSignalContext::build_sigframe(
+            &target.cpu_context,
+            &sctx,
+            &info,
+            frame_addr,
+        );
+        (frame, frame_addr)
+    };
 
-    // Full flow requires SignalContext impl + data_copy_vmcheck.
-    // Return ENOSYS to indicate the complete syscall is not yet available.
-    let _ = caller;
-    KcallResult::Ok(ENOSYS)
+    // ── Step 4: Copy sigframe to target's user stack ──
+    // C: do_sigsend.c:120-125 — data_copy_vmcheck(caller, KERNEL, &fr, endpt, frp, sizeof)
+    // May VMSUSPEND — the frame is on the kernel stack, so re-execution
+    // after resume will rebuild it idempotently.
+    {
+        let frame_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+            &frame as *const _ as u64,
+        ));
+        let caller_endpt = caller.p_endpoint;
+        let caller_cr3 = caller.p_seg.phys_root;
+        let pt: &ProcessTable = proc_table;
+        let proc_cr3 = |ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
+        };
+        let src = AddressRef::Physical(frame_phys);
+        let dst = AddressRef::Process {
+            endpoint: Endpoint(endpt),
+            offset: VirBytes(frame_addr),
+        };
+        match data_copy_vmcheck(
+            caller,
+            src,
+            dst,
+            CurrentSignalContext::sigframe_size(),
+            proc_cr3,
+        ) {
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Completed(Ok(())) => {}
+        }
+    }
+
+    // ── Step 5: Modify target registers for handler entry ──
+    // C: do_sigsend.c:130-145 — MUST be after the last data_copy_vmcheck!
+    // WARNING (C: do_sigsend.c:126-131): changes to process registers MUST
+    // be deferred until after the copy succeeds, otherwise VMSUSPEND
+    // recovery would re-execute and corrupt register state.
+    {
+        let target = match proc_table.get_mut(target_nr) {
+            Some(p) => p,
+            None => return KcallResult::Ok(EINVAL),
+        };
+        let info = SignalInfo {
+            sighandler: smsg.sighandler,
+            mask: smsg.mask.get(),
+            signo: smsg.signo,
+            sigreturn: smsg.sigreturn,
+            stkptr: smsg.stkptr,
+        };
+        CurrentSignalContext::setup_handler_entry(
+            &mut target.cpu_context,
+            &info,
+            frame_addr,
+        );
+
+        // C: do_sigsend.c:154 — `rp->p_misc_flags &= ~MF_FPU_INITIALIZED`
+        // Signal handler should get clean FPU. Clear the EXT_REG_INITIALIZED
+        // flag so the next FPU instruction traps and lazily initializes a
+        // fresh FPU state (64-bit lazy FPU model — no save/restore on
+        // signal delivery, matching C behavior).
+        target.p_misc_flags.unset(MiscFlagsBits::EXT_REG_INITIALIZED);
+    }
+
+    KcallResult::Ok(OK)
 }
 
 /// Dispatch SYS_SIGRETURN.
 ///
-/// C: `do_sigreturn()` — do_sigreturn.c
+/// C: `do_sigreturn()` — do_sigreturn.c:19-96
 ///
 /// Restore process state after signal handler returns.
 /// Copies sigcontext from user stack and restores registers.
 ///
-/// # Current Status
+/// # Flow
 ///
-/// Endpoint validation is implemented. The full flow (sigcontext copy,
-/// register restoration) requires `SignalContext` trait implementation
-/// + `data_copy`. Returns ENOSYS until those dependencies are available.
+/// 1. Validate endpoint (C: do_sigreturn.c:28-30)
+/// 2. Copy `SigContext` from target's user space (C: do_sigreturn.c:33-36)
+/// 3. Restore target's `CpuContext` from `SigContext` (C: do_sigreturn.c:42-80)
+/// 4. `arch_setcontext` with trap_style (C: do_sigreturn.c:81)
+/// 5. Check magic integrity (C: do_sigreturn.c:83)
 pub fn dispatch_sigreturn(
     caller: &mut KProcess,
     msg: &Message,
-    proc_table: &ProcessTable,
+    proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigreturn.c:29-30 — extract parameters
-    let endpt = sc.endpt;      // m_sigcalls.endpt
-    let _sigctx = sc.sigctx;   // m_sigcalls.sigctx
+    let mut endpt = sc.endpt;
+    let sigctx_addr = sc.sigctx;
+
+    // C: do_sigreturn.c:32 — SELF replacement
+    if endpt == SELF {
+        endpt = caller.p_endpoint.0;
+    }
 
     // C: do_sigreturn.c:32-33 — validate endpoint
     let target_nr = match proc_table.endpoint_to_nr(Endpoint(endpt)) {
@@ -497,21 +638,79 @@ pub fn dispatch_sigreturn(
     };
 
     // C: do_sigreturn.c:34 — iskerneln check
-    if target_nr < 0 {
+    if target_nr.0 < 0 {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_sigreturn.c:38-40 — copy sigcontext from user space
-    // DEFERRED: data_copy(endpt, sigctx, KERNEL, &sc, sizeof(sigcontext))
+    // ── Step 1: Copy sigcontext from target's user space ──
+    // C: do_sigreturn.c:33-36 — data_copy(endpt, sigctx, KERNEL, &sc, sizeof)
+    // Note: C uses data_copy (no vmcheck), but minix-rs uses data_copy_vmcheck
+    // for uniformity — the user stack may page-fault.
+    let mut sctx: <CurrentSignalContext as SignalContext>::SigContext = Default::default();
+    let sctx_size = core::mem::size_of_val(&sctx);
+    {
+        let sctx_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+            &sctx as *const _ as u64,
+        ));
+        let caller_endpt = caller.p_endpoint;
+        let caller_cr3 = caller.p_seg.phys_root;
+        let pt: &ProcessTable = proc_table;
+        let proc_cr3 = |ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
+        };
+        let src = AddressRef::Process {
+            endpoint: Endpoint(endpt),
+            offset: VirBytes(sigctx_addr),
+        };
+        let dst = AddressRef::Physical(sctx_phys);
+        match data_copy_vmcheck(caller, src, dst, sctx_size, proc_cr3) {
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Completed(Ok(())) => {}
+        }
+    }
 
-    // C: do_sigreturn.c:42-80 — restore registers (arch-specific, via SignalContext)
-    // C: do_sigreturn.c:82-84 — arch_proc_setcontext
-    // C: do_sigreturn.c:86-93 — restore FPU state
+    // ── Step 2: Restore target's registers from sigcontext ──
+    // C: do_sigreturn.c:42-80 — arch-specific register restore
+    // C: do_sigreturn.c:81 — arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)
+    {
+        let target = match proc_table.get_mut(target_nr) {
+            Some(p) => p,
+            None => return KcallResult::Ok(EINVAL),
+        };
+        CurrentSignalContext::restore_sigcontext(&mut target.cpu_context, &sctx);
+        let trap_style = CurrentSignalContext::get_trap_style(&sctx);
+        CurrentSignalContext::arch_setcontext(&mut target.cpu_context, trap_style);
+    }
 
-    // Full flow requires SignalContext impl + data_copy.
-    // Return ENOSYS to indicate the complete syscall is not yet available.
-    let _ = (caller, target_nr);
-    KcallResult::Ok(ENOSYS)
+    // C: do_sigreturn.c:83 — warn on corrupt magic (still return OK)
+    if !CurrentSignalContext::check_magic(&sctx) {
+        // C: printf("kernel sigreturn: corrupt signal context\n")
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+        Console::write_str("kernel sigreturn: corrupt signal context\n");
+    }
+
+    // C: do_sigreturn.c:85-93 — FPU state restore
+    //
+    // On 64-bit, the C source gates FPU restore with `#if defined(__i386__)`:
+    // sigreturn does NOT restore FPU state on x86-64 / aarch64 / riscv64.
+    // The 64-bit signal-delivery path (do_sigsend.c:154) clears
+    // `MF_FPU_INITIALIZED` so the signal handler gets a clean FPU via the
+    // lazy trap-on-first-FPU-instruction mechanism. Sigreturn does not
+    // restore the pre-signal FPU state — the process's FPU state after
+    // sigreturn is whatever the signal handler left it as.
+    //
+    // The `KProcess.fpu_state` buffer IS used by the SMP migration SAVE_CTX
+    // path (smp.rs:497-527), but NOT by the signal delivery/return path on
+    // 64-bit (matching C behavior).
+
+    KcallResult::Ok(OK)
 }
 
 // ── Tests ──
@@ -524,11 +723,11 @@ mod tests {
 
     #[test]
     fn test_sig_mask() {
-        assert_eq!(sig_mask(1), 1u64);
-        assert_eq!(sig_mask(2), 2u64);
-        assert_eq!(sig_mask(64), 1u64 << 63);
-        assert_eq!(sig_mask(0), 0u64);
-        assert_eq!(sig_mask(65), 0u64);
+        assert_eq!(sig_mask(1).get(), 1u64);
+        assert_eq!(sig_mask(2).get(), 2u64);
+        assert_eq!(sig_mask(64).get(), 1u64 << 63);
+        assert_eq!(sig_mask(0).get(), 0u64);
+        assert_eq!(sig_mask(65).get(), 0u64);
     }
 
     #[test]
@@ -546,44 +745,44 @@ mod tests {
 
     #[test]
     fn test_sigsend_invalid_endpoint() {
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sigsend as i32;
         // Invalid endpoint → EINVAL
-        let proc_table = ProcessTable::new();
-        let result = dispatch_sigsend(&mut caller, &msg, &proc_table);
+        let mut proc_table = ProcessTable::new();
+        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
     #[test]
     fn test_sigsend_kernel_process() {
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sigsend as i32;
         // Set endpoint to a kernel process (negative proc_nr)
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         // Kernel processes have negative proc_nr, but endpoint_to_nr
         // won't find them in the table, so we get EINVAL.
-        let result = dispatch_sigsend(&mut caller, &msg, &proc_table);
+        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
     #[test]
     fn test_sigreturn_invalid_endpoint() {
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
-        let proc_table = ProcessTable::new();
-        let result = dispatch_sigreturn(&mut caller, &msg, &proc_table);
+        msg.m_type = Syscall::Sigreturn as i32;
+        let mut proc_table = ProcessTable::new();
+        let result = dispatch_sigreturn(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
     #[test]
     fn test_sigmsg_struct() {
         let smsg = SigMsg {
-            sighandler: 0x400000,
-            mask: sig_mask(SIGABRT),
             signo: SIGABRT,
+            mask: sig_mask(SIGABRT),
+            sighandler: 0x400000,
             sigreturn: 0x401000,
             stkptr: 0x7FFFF000,
         };

@@ -160,3 +160,42 @@ pub trait ProtectionArch: Sized {
     /// C: tss_init(cpu, stack) + prot_load_selectors() — called from mpx.S
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
 }
+
+/// Mock implementation for testing — no hardware interaction (FIX-06: R-11).
+///
+/// All methods are no-ops. `PrivilegeLevel` uses `u8` to match x86-64's
+/// ring encoding (0=kernel, 3=user) for simplicity.
+#[cfg(feature = "mock")]
+pub struct MockProtection;
+
+#[cfg(feature = "mock")]
+impl ProtectionArch for MockProtection {
+    type PrivilegeLevel = u8;
+    const KERNEL_PRIVILEGE: u8 = 0;
+    const USER_PRIVILEGE: u8 = 3;
+
+    fn to_privilege(level: u8) -> Privilege {
+        if level == 0 {
+            Privilege::Kernel
+        } else {
+            Privilege::User
+        }
+    }
+
+    fn from_privilege(privilege: Privilege) -> u8 {
+        match privilege {
+            Privilege::Kernel => 0,
+            Privilege::User => 3,
+        }
+    }
+
+    fn init(_cpu_id: u32, _kernel_stack_top: VirBytes) -> Self {
+        Self
+    }
+
+    fn set_kernel_stack(&mut self, _cpu_id: u32, _stack_top: VirBytes) {}
+
+    fn load(&self) {}
+
+    fn init_ap(&self, _cpu_id: u32, _kernel_stack_top: VirBytes) {}
+}

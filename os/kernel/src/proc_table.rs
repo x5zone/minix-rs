@@ -53,7 +53,7 @@ const PROC_STOP_BITS: u32 = 0x02;
 /// (`#![no_std]` + no allocator yet) and gives a compile-time-fixed address
 /// (matching C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]` in BSS).
 ///
-/// The global instance lives in `static mut PROC_TABLE` (see `lib.rs`).
+/// The global instance lives in `static PROC_TABLE` (a `SyncUnsafeCell`, see `lib.rs`).
 pub struct ProcessTable {
     procs: [KProcess; PROC_TABLE_SIZE],
     sched: Scheduler,
@@ -64,7 +64,7 @@ pub struct ProcessTable {
 }
 
 impl ProcessTable {
-    /// Const-constructible process table (for `static mut PROC_TABLE` init).
+    /// Const-constructible process table (for `static PROC_TABLE` init).
     ///
     /// All slots start as `SLOT_FREE`; the IDLE slot is marked `PROC_STOP`.
     /// `p_nr` / `p_endpoint` are set per-slot via a `while` loop (const fn
@@ -76,16 +76,16 @@ impl ProcessTable {
         let mut procs = [const { KProcess::new_zeroed() }; PROC_TABLE_SIZE];
         let mut i = 0;
         while i < PROC_TABLE_SIZE {
-            let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+            let nr = ProcNr(i as i32 - NR_TASKS as i32);
             procs[i].p_nr = nr;
-            procs[i].p_endpoint = Endpoint::from_generation_slot(0, nr);
+            procs[i].p_endpoint = Endpoint::from_generation_slot(0, nr.0);
             i += 1;
         }
 
         // IDLE process: set endpoint + PROC_STOP + name.
         // C: main.c — `idle_proc.p_endpoint = IDLE; RTS_SET(idle, PROC_STOP)`.
-        let idle_idx = (proc_nr::IDLE as isize + NR_TASKS as isize) as usize;
-        procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE);
+        let idle_idx = (proc_nr::IDLE.0 as isize + NR_TASKS as isize) as usize;
+        procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE.0);
         procs[idle_idx].p_rts_flags = crate::proc::RtsFlags::with_raw_bits(PROC_STOP_BITS);
         procs[idle_idx].p_name = ProcName::from_array([
             b'I', b'D', b'L', b'E', 0, 0, 0, 0,
@@ -112,6 +112,32 @@ impl ProcessTable {
     pub fn get_mut(&mut self, nr: ProcNr) -> Option<&mut KProcess> {
         let idx = nr_to_idx(nr)?;
         Some(&mut self.procs[idx])
+    }
+
+    /// Swap two process table slots.
+    ///
+    /// Used by `do_update` (SYS_UPDATE) to swap src and dst proc slots.
+    /// C: `*src_rp = orig_dst_proc; *dst_rp = orig_src_proc;`
+    /// — do_update.c:130,132.
+    ///
+    /// Uses `split_at_mut` to obtain two simultaneous `&mut` references
+    /// from the same array (the borrow checker cannot prove non-aliasing
+    /// otherwise).
+    pub(crate) fn swap_slots(&mut self, a: ProcNr, b: ProcNr) -> Option<()> {
+        let ia = nr_to_idx(a)?;
+        let ib = nr_to_idx(b)?;
+        debug_assert!(ia < PROC_TABLE_SIZE && ib < PROC_TABLE_SIZE);
+        if ia == ib {
+            return Some(());
+        }
+        if ia < ib {
+            let (left, right) = self.procs.split_at_mut(ib);
+            core::mem::swap(&mut left[ia], &mut right[0]);
+        } else {
+            let (left, right) = self.procs.split_at_mut(ia);
+            core::mem::swap(&mut left[ib], &mut right[0]);
+        }
+        Some(())
     }
 
     /// Get a process by its raw table index (0..PROC_TABLE_SIZE).
@@ -143,7 +169,7 @@ impl ProcessTable {
     /// Check if a process number belongs to a kernel task.
     /// C: `iskerneln(n)` = `((n) < 0)` (08-proc-macros.md §3.1)
     pub fn is_kernel(nr: ProcNr) -> bool {
-        nr < 0
+        nr.0 < 0
     }
 
     /// Get a reference to the global VM request queue.
@@ -178,7 +204,7 @@ impl ProcessTable {
         loop {
             match current {
                 Some(idx) => {
-                    let idx = idx as usize;
+                    let idx = idx.0 as usize;
                     let proc = &self.procs[idx];
                     let next = proc.p_next_requestor;
 
@@ -217,7 +243,7 @@ impl ProcessTable {
         let params = ctx.check_params;
 
         // Convert array index back to ProcNr
-        let nr = result_idx as ProcNr - NR_TASKS as ProcNr;
+        let nr = ProcNr(result_idx as i32 - NR_TASKS as i32);
         Ok((nr, params))
     }
 
@@ -241,8 +267,11 @@ impl ProcessTable {
     /// Note: `VmRequestQueue` uses array indices internally, so we convert
     /// ProcNr to index before enqueuing.
     pub fn vm_enqueue(&mut self, proc_nr: ProcNr) -> bool {
+        // R-15 (2026-08-12): INVARIANT: `proc_nr` is a caller-validated ProcNr
+        // resolved from the process table; `nr_to_idx` only returns None for
+        // out-of-range slots, which cannot occur for an in-table ProcNr.
         let idx = nr_to_idx(proc_nr).expect("vm_enqueue: invalid ProcNr");
-        self.vm_request_queue.enqueue(idx as ProcNr, &mut self.procs)
+        self.vm_request_queue.enqueue(ProcNr(idx as i32), &mut self.procs)
     }
 
     /// Set RTS flags on a process. If the process transitions from runnable
@@ -261,8 +290,8 @@ impl ProcessTable {
                 // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's
                 // assigned CPU determines which per-CPU queue to dequeue from.
                 let cpu_id = self.get(nr)
-                    .map(|p| p.p_sched.cpu.load(Ordering::Acquire))
-                    .unwrap_or(0);
+                    .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+                    .unwrap_or(CpuId::BSP);
                 self.sched_dequeue(nr, cpu_id);
             }
         }
@@ -280,8 +309,8 @@ impl ProcessTable {
         }
         let is_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
         if !was_runnable && is_runnable {
-            let cpu_id = self.get(nr).map_or(0, |p| {
-                p.p_sched.cpu.load(Ordering::Acquire)
+            let cpu_id = self.get(nr).map_or(CpuId::BSP, |p| {
+                CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
             });
             self.sched_enqueue(nr, None, cpu_id);
         }
@@ -367,7 +396,7 @@ impl ProcessTable {
     /// `ProcessTable::sched` is removed in the SMP migration.
     ///
     /// **SMP migration path**: replace `&self.sched` with
-    /// `&smp_state.cpu_locals[cpu_id as usize].scheduler`, and remove
+    /// `&smp_state.cpu_locals[cpu_id.index()].scheduler`, and remove
     /// `self.sched` from `ProcessTable`. This requires passing `&SmpState`
     /// into this method (or making `ProcessTable` own `SmpState`).
     ///
@@ -375,18 +404,18 @@ impl ProcessTable {
     ///
     /// * `cpu_id` — CPU index (0 = BSP). Out-of-range values default to
     ///   CPU 0 (BSP fallback).
-    pub fn sched_for_cpu(&self, cpu_id: u32) -> &Scheduler {
+    pub fn sched_for_cpu(&self, cpu_id: CpuId) -> &Scheduler {
         let _ = cpu_id; // Suppress unused warning; will be used in SMP migration
-        // TODO (SMP): return &smp_state.cpu_locals[cpu_id as usize].scheduler;
+        // TODO (SMP): return &smp_state.cpu_locals[cpu_id.index()].scheduler;
         &self.sched
     }
 
     /// Get a mutable reference to the per-CPU scheduler for the given CPU.
     ///
     /// See [`sched_for_cpu`](Self::sched_for_cpu) for design rationale.
-    pub fn sched_for_cpu_mut(&mut self, cpu_id: u32) -> &mut Scheduler {
+    pub fn sched_for_cpu_mut(&mut self, cpu_id: CpuId) -> &mut Scheduler {
         let _ = cpu_id;
-        // TODO (SMP): return &mut smp_state.cpu_locals[cpu_id as usize].scheduler;
+        // TODO (SMP): return &mut smp_state.cpu_locals[cpu_id.index()].scheduler;
         &mut self.sched
     }
 
@@ -428,7 +457,7 @@ impl ProcessTable {
                     .and_then(|i| self.procs.get(i))
                     .map(|p| {
                         let v = p.p_nextready.load(Ordering::Relaxed);
-                        if v == NONE_PROC_NR { None } else { Some(v) }
+                        if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
                     })
                     .flatten();
             }
@@ -452,19 +481,27 @@ impl ProcessTable {
         {
             let procs = &mut self.procs;
             // Clear p_nextready of enqueued process
+            // R-15 (2026-08-12): INVARIANT: `nr` is a caller-validated ProcNr
+            // already resolved from the table; `nr_to_idx` cannot fail.
             let nr_idx = nr_to_idx(nr).unwrap();
             procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
 
             // Link old tail to new process
             if let Some(tail_nr) = info.old_tail {
+                // R-15 (2026-08-12): INVARIANT: `tail_nr` came from
+                // `enqueue_queue_tail`, which only returns ProcNrs already
+                // present in the table; `nr_to_idx` cannot fail.
                 let tail_idx = nr_to_idx(tail_nr).unwrap();
-                procs[tail_idx].p_nextready.store(nr, Ordering::Relaxed);
+                procs[tail_idx].p_nextready.store(nr.0, Ordering::Relaxed);
             }
         }
 
         // Phase 3: preemption check (only same CPU)
         if let Some(cur_nr) = current_nr {
             let (cur_prio, cur_cpu, cur_preemptible) = {
+                // R-15 (2026-08-12): INVARIANT: `cur_nr` is the currently-running
+                // process passed by the caller; it must be a valid in-table ProcNr,
+                // so `get()` cannot return None.
                 let cur = self.get(cur_nr).expect("sched_enqueue: invalid current nr");
                 (
                     cur.get_priority().get(),
@@ -473,7 +510,7 @@ impl ProcessTable {
                 )
             };
             let new_prio = q as u8;
-            if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
+            if cur_cpu == cpu_id.raw() && cur_prio > new_prio && cur_preemptible {
                 self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
             }
         }
@@ -481,6 +518,8 @@ impl ProcessTable {
         // Phase 4: record enter_queue for the enqueued process
         // Design decision §3.6: fix Minix3 bug
         let tsc = read_tsc();
+        // R-15 (2026-08-12): INVARIANT: `nr` was just enqueued above, so its
+        // slot exists in `self.procs`; `get_mut()` cannot return None.
         self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
     }
 
@@ -499,13 +538,17 @@ impl ProcessTable {
 
         // Phase 2: update process fields
         {
+            // R-15 (2026-08-12): INVARIANT: `nr` is a caller-validated ProcNr
+            // resolved from the table; `nr_to_idx` cannot fail.
             let nr_idx = nr_to_idx(nr).unwrap();
-            let old_head_val = old_head.unwrap_or(NONE_PROC_NR);
+            let old_head_val = old_head.map(|nr| nr.0).unwrap_or(NONE_PROC_NR);
             self.procs[nr_idx].p_nextready.store(old_head_val, Ordering::Relaxed);
         }
 
         // Phase 3: accounting (dequeues--, preempted++)
         let tsc = read_tsc();
+        // R-15 (2026-08-12): INVARIANT: `nr` was just enqueued via
+        // `enqueue_queue_head`, so its slot exists; `get_mut()` cannot return None.
         let acc = &mut self.get_mut(nr).unwrap().p_accounting;
         acc.record_enqueue(tsc);
         acc.dequeues.fetch_sub(1, Ordering::AcqRel);
@@ -531,9 +574,14 @@ impl ProcessTable {
 
         // Phase 2: accounting
         let tsc = read_tsc();
+        // R-15 (2026-08-12): INVARIANT: `nr` was validated by the caller and is
+        // present in the table (dequeue only operates on existing processes);
+        // `get_mut()` cannot return None.
         let acc = &mut self.get_mut(nr).unwrap().p_accounting;
         acc.record_dequeue(tsc);
 
+        // R-15 (2026-08-12): INVARIANT: same as above — `nr` is an in-table
+        // ProcNr; `get_mut()` cannot return None.
         self.get_mut(nr).unwrap().p_dequeued.store(
             get_monotonic(),
             Ordering::Release,
@@ -545,6 +593,9 @@ impl ProcessTable {
     /// C: `proc_no_time()` in proc.c:1893-1910.
     pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
         let (kernel_scheduled, preemptible, quantum_ms) = {
+            // R-15 (2026-08-12): INVARIANT: `nr` is a runnable process that
+            // exhausted its quantum, so it must be in the table; `get()` cannot
+            // return None.
             let p = self.get(nr).expect("sched_proc_no_time: invalid proc nr");
             let ks = p.p_sched.scheduler.is_none() || p.p_sched.scheduler == Some(p.p_nr);
             let pre = p.get_priority().get() != 0;
@@ -560,6 +611,8 @@ impl ProcessTable {
         } else {
             // Kernel-scheduled or non-preemptible: reset quantum
             let cpu_time = ms_to_cpu_time(quantum_ms);
+            // R-15 (2026-08-12): INVARIANT: `nr` was just read above in the same
+            // function and is in the table; `get_mut()` cannot return None.
             self.get_mut(nr)
                 .unwrap()
                 .p_sched
@@ -597,6 +650,9 @@ impl ProcessTable {
         // Phase 1: resolve scheduler + read accounting (immutable borrow).
         let (scheduler_nr, scheduler_ep, acnt_queue, acnt_deqs, acnt_ipc_sync,
              acnt_ipc_async, acnt_preempt) = {
+            // R-15 (2026-08-12): INVARIANT: `nr` is a process that exhausted its
+            // quantum (caller is `sched_proc_no_time`); it is in the table, so
+            // `get()` cannot return None.
             let p = self.get(nr).expect("notify_scheduler: invalid proc nr");
             let scheduler_nr = match p.p_sched.scheduler {
                 Some(s) => s,
@@ -626,7 +682,7 @@ impl ProcessTable {
             acnt_ipc_sync,
             acnt_ipc_async,
             acnt_preempt,
-            acnt_cpu: clock::current_cpuid(),
+            acnt_cpu: clock::current_cpuid().raw(),
             acnt_cpu_load: clock::cpu_load(),
             _padding: [0; 24],
         };
@@ -642,6 +698,8 @@ impl ProcessTable {
         // Phase 3: reset accounting (C: `reset_proc_accounting(p)` — proc.c:1885).
         // C: proc.c:1912-1917.
         {
+            // R-15 (2026-08-12): INVARIANT: `nr` was resolved in Phase 1 above
+            // and is in the table; `get_mut()` cannot return None.
             let p = self.get_mut(nr).expect("notify_scheduler: invalid proc nr");
             p.p_accounting.reset();
         }
@@ -668,6 +726,10 @@ impl ProcessTable {
         match outcome {
             IpcOutcome::Delivered | IpcOutcome::Blocked => {}
             IpcOutcome::Error(e) => {
+                // R-15 (2026-08-12): INVARIANT: `mini_send` with `FROM_KERNEL`
+                // can only fail if the scheduler endpoint is dead or the kernel
+                // process table is inconsistent. Both are kernel integrity bugs
+                // with no recovery path, matching C's `panic()` in proc.c:1890.
                 panic!("notify_scheduler: mini_send failed for proc {:?}: {:?} (scheduler_ep={:?})", nr, e, scheduler_ep);
             }
         }
@@ -746,7 +808,7 @@ impl ProcessTable {
         }
 
         // 阶段 3：选择最高优先级进程 (per-CPU scheduler)
-        let selected = self.sched_for_cpu(cpu_id as u32).pick_proc(self.procs_slice());
+        let selected = self.sched_for_cpu(cpu_id).pick_proc(self.procs_slice());
         (selected, SwitchFlow::CheckMiscFlags)
     }
 
@@ -760,11 +822,20 @@ impl ProcessTable {
     ///
     /// In C, each branch calls a handler function (kernel_call_resume,
     /// delivermsg, arch_do_syscall) which clears the corresponding flag.
-    /// In Rust, those handlers are not yet wired into this loop, so we
-    /// clear the flag explicitly after the branch to prevent an infinite
-    /// loop. When the handlers are integrated, they will own the flag
-    /// clearing and the explicit `clear` here can be removed.
-    pub fn process_misc_flags(&mut self, nr: ProcNr) -> bool {
+    /// In Rust:
+    /// - `DELIVERMSG` (FIX-20): wired to `crate::ipc::delivermsg`
+    /// - `KCALL_RESUME` (FIX-21): wired to `crate::vm::kernel_call_resume`
+    ///   (simple version — clears flag + reads VM result; full re-dispatch
+    ///   is done by `switch_to_user` which has access to priv_table +
+    ///   clock_state + proc_table)
+    /// - `SC_DEFER` (FIX-21): wired to `self.arch_do_syscall()`
+    /// - `SC_TRACE` / `SC_ACTIVE`: still TODO (future phase)
+    pub fn process_misc_flags(
+        &mut self,
+        nr: ProcNr,
+        user_copy: &dyn crate::ipc::UserCopy,
+        priv_table: &mut crate::kpriv::PrivTable,
+    ) -> bool {
         let interesting_flags = MiscFlagsBits::KCALL_RESUME
             | MiscFlagsBits::DELIVERMSG
             | MiscFlagsBits::SC_DEFER
@@ -779,17 +850,58 @@ impl ProcessTable {
 
             // 按优先级处理（与 C 的 if-else chain 一致）
             if flags.contains(MiscFlagsBits::KCALL_RESUME) {
-                // C: kernel_call_resume(p) — clears MF_KCALL_RESUME
-                // TODO: wire kernel_call_resume() from vm.rs
-                self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME));
+                // C: kernel_call_resume(p) — system.c:612-638.
+                // FIX-21 (Phase 1C): wired to crate::vm::kernel_call_resume
+                // (simple version — reads VM result + clears MF_KCALL_RESUME).
+                // The full re-dispatch (syscall::kernel_call_resume) is
+                // deferred to switch_to_user which has priv_table +
+                // clock_state + proc_table access. This split is a Rust
+                // design deviation from C (documented in 10-switch-to-user.md
+                // §4.2), caused by Rust's borrow checker: process_misc_flags
+                // holds &mut self, so it can't also pass self as proc_table
+                // to syscall::kernel_call_resume.
+                let result = match self.get_mut(nr) {
+                    Some(p) => crate::vm::kernel_call_resume(p),
+                    None => break,
+                };
+                // vm::kernel_call_resume clears MF_KCALL_RESUME + returns
+                // VmCheckResult. If the VM result indicates an error,
+                // the process may need SIGSEGV (future phase).
+                let _ = result; // TODO: route VmCheckResult in switch_to_user
             } else if flags.contains(MiscFlagsBits::DELIVERMSG) {
-                // C: delivermsg(p) — clears MF_DELIVERMSG
-                // TODO: wire delivermsg() from ipc module
-                self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG));
+                // C: delivermsg(p) — proc.c:263-294. Clears MF_DELIVERMSG
+                // on success or fatal failure; sets MF_MSGFAILED on first
+                // page fault (caller routes to vm_suspend).
+                // FIX-20 (Phase 1B): wired to crate::ipc::delivermsg.
+                let result = match self.get_mut(nr) {
+                    Some(p) => crate::ipc::delivermsg(p, user_copy),
+                    None => break,
+                };
+                match result {
+                    crate::ipc::DeliverResult::Delivered => {
+                        // Message copied successfully — continue loop to
+                        // process remaining flags.
+                    }
+                    crate::ipc::DeliverResult::PageFault => {
+                        // First page fault — MF_MSGFAILED already set by
+                        // delivermsg. Caller (switch_to_user) must route to
+                        // vm_suspend(VMS_PAGEFAULT).
+                        // TODO: vm_suspend(VMS_PAGEFAULT) — future phase
+                        break;
+                    }
+                    crate::ipc::DeliverResult::Segfault => {
+                        // Second consecutive fault or out-of-bounds —
+                        // delivermsg cleared MF_DELIVERMSG. Caller must
+                        // route to cause_sig(SIGSEGV).
+                        // TODO: cause_sig(SIGSEGV) — future phase
+                        break;
+                    }
+                }
             } else if flags.contains(MiscFlagsBits::SC_DEFER) {
-                // C: arch_do_syscall(p) — clears MF_SC_DEFER
-                // TODO: wire arch_do_syscall() from arch layer
-                self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_DEFER));
+                // C: arch_do_syscall(p) — arch_system.c:485 (i386) / 141 (earm)
+                // FIX-21 (Phase 1C): wired to self.arch_do_syscall().
+                // arch_do_syscall clears MF_SC_DEFER + re-dispatches IPC.
+                let _ = self.arch_do_syscall(nr, priv_table);
             } else if flags.contains(MiscFlagsBits::SC_TRACE) {
                 if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
                     break;
@@ -811,6 +923,80 @@ impl ProcessTable {
             }
         }
         true
+    }
+
+    /// Re-execute a deferred IPC syscall (after `MF_SC_DEFER`).
+    ///
+    /// C: `arch_do_syscall(p)` — arch_system.c:485 (i386) / arch_system.c:141 (earm)
+    ///
+    /// # Why this is NOT in TrapEntryArch trait
+    ///
+    /// In C, `arch_do_syscall` is arch-specific because i386 reads deferred
+    /// args from `p_defer.{r1,r2,r3}` while ARM reads from `p_reg.{retreg,r1,r2}`.
+    /// In Rust, both arches store deferred IPC args in the **unified `p_defer`
+    /// struct** (populated by the arch trap entry handler), so this function
+    /// is architecture-independent. Adding it to `TrapEntryArch` would create
+    /// 3 identical implementations, violating the "≥2 behaviorally distinct
+    /// implementations" rule (review-patterns-skill).
+    ///
+    /// # Behavior
+    ///
+    /// 1. Asserts `MF_SC_DEFER` is set (caller contract).
+    /// 2. Reads `call_nr` from `p_defer.r1` (saved by first `do_ipc` call).
+    /// 3. Clears `MF_SC_DEFER` (C: `do_ipc` proc.c:633 clears it on resume).
+    /// 4. Constructs a `Message` with `m_type = call_nr`.
+    /// 5. Calls `syscall::dispatch_ipc` with `self.procs` + caller idx.
+    ///
+    /// # BKL ownership
+    ///
+    /// Called from `process_misc_flags` which runs under BKL (held by
+    /// `switch_to_user`). `dispatch_ipc` does NOT re-acquire BKL — it's
+    /// the inner function (vs `dispatch_ipc_entry` which acquires BKL).
+    ///
+    /// # Message content note
+    ///
+    /// For `SEND`/`SENDREC`, the message content should be re-read from
+    /// user space via `p_defer.r3` (user pointer). Currently, a default
+    /// `Message` is used because the first-call path (setting `MF_SC_DEFER`
+    /// + saving user pointer) is part of syscall tracing, which is not yet
+    /// implemented. When syscall tracing is added, this will be extended.
+    pub fn arch_do_syscall(
+        &mut self,
+        nr: ProcNr,
+        priv_table: &mut crate::kpriv::PrivTable,
+    ) -> crate::syscall::KcallResult {
+        let caller_idx = match nr_to_idx(nr) {
+            Some(i) => i,
+            None => return crate::syscall::KcallResult::Ok(crate::errno::EBADCALL),
+        };
+
+        debug_assert!(
+            self.procs[caller_idx].p_misc_flags.is_set(MiscFlagsBits::SC_DEFER),
+            "arch_do_syscall: MF_SC_DEFER not set"
+        );
+
+        // Read call_nr from p_defer.r1 (saved by first do_ipc call).
+        // C: do_ipc proc.c:620 — `caller_ptr->p_defer.r1 = r1;`
+        let call_nr = self.procs[caller_idx].p_defer.r1 as i32;
+
+        // Clear MF_SC_DEFER before dispatch (C: do_ipc proc.c:633).
+        self.procs[caller_idx].p_misc_flags.clear(MiscFlagsBits::SC_DEFER);
+
+        let ipc_call = match crate::ipc::IpcCall::from_raw(call_nr) {
+            Some(c) => c,
+            None => return crate::syscall::KcallResult::Ok(crate::errno::EBADCALL),
+        };
+
+        // Construct message from p_defer.r1 (call_nr).
+        // For SEND/SENDREC, message content would be re-read from user space
+        // via p_defer.r3 — but the first-call save path is not yet wired
+        // (syscall tracing, future phase). Use default message for now.
+        let mut msg = minix_types::Message::default();
+        msg.m_type = call_nr;
+
+        // Dispatch IPC using the refactored dispatch_ipc (FIX-21):
+        // passes self.procs + caller_idx, avoiding split-borrow aliasing.
+        crate::syscall::dispatch_ipc(self.procs.as_mut_slice(), caller_idx, &msg, priv_table, ipc_call)
     }
 
     /// 检查进程时间片并处理。
@@ -846,8 +1032,12 @@ impl ProcessTable {
 ///
 /// C: `proc_addr(n)` returns `&proc[NR_TASKS + n]` — but Rust returns
 /// `Option<usize>` for bounds safety (08-proc-macros.md §3.1).
-const fn nr_to_idx(nr: ProcNr) -> Option<usize> {
-    let offset = nr as isize + NR_TASKS as isize;
+///
+/// FIX-21 (Phase 1C): made `pub(crate)` so `syscall::dispatch_ipc_entry`
+/// and `syscall::dispatch_ipc` can compute caller_idx without taking a
+/// `&mut KProcess` parameter (avoids split-borrow aliasing).
+pub(crate) const fn nr_to_idx(nr: ProcNr) -> Option<usize> {
+    let offset = nr.0 as isize + NR_TASKS as isize;
     if offset < 0 || offset as usize >= PROC_TABLE_SIZE {
         return None;
     }
@@ -875,14 +1065,15 @@ fn ms_to_cpu_time(ms: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::KernelUserCopy;
 
     #[test]
     fn test_process_table_new() {
         let table = ProcessTable::new();
-        assert!(table.get(0).is_some());
-        assert!(table.get(-1).is_some());
-        assert!(table.get(255).is_some());
-        assert!(table.get(256).is_none());
+        assert!(table.get(ProcNr(0)).is_some());
+        assert!(table.get(ProcNr(-1)).is_some());
+        assert!(table.get(ProcNr(255)).is_some());
+        assert!(table.get(ProcNr(256)).is_none());
     }
 
     #[test]
@@ -892,7 +1083,7 @@ mod tests {
         let table = ProcessTable::new();
         for i in 0..PROC_TABLE_SIZE {
             let p = table.get_by_index(i).expect("slot must exist");
-            let expected_nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+            let expected_nr = ProcNr(i as i32) - ProcNr(NR_TASKS as i32);
             assert_eq!(p.p_nr, expected_nr, "slot {} p_nr mismatch", i);
             assert!(p.p_endpoint != Endpoint::NONE,
                 "slot {} endpoint must not be NONE", i);
@@ -918,22 +1109,22 @@ mod tests {
 
     #[test]
     fn test_is_valid_nr() {
-        assert!(ProcessTable::is_valid_nr(0));
-        assert!(ProcessTable::is_valid_nr(-5));
-        assert!(ProcessTable::is_valid_nr(255));
-        assert!(!ProcessTable::is_valid_nr(256));
+        assert!(ProcessTable::is_valid_nr(ProcNr(0)));
+        assert!(ProcessTable::is_valid_nr(ProcNr(-5)));
+        assert!(ProcessTable::is_valid_nr(ProcNr(255)));
+        assert!(!ProcessTable::is_valid_nr(ProcNr(256)));
     }
 
     #[test]
     fn test_is_kernel() {
-        assert!(ProcessTable::is_kernel(-1));
-        assert!(!ProcessTable::is_kernel(0));
+        assert!(ProcessTable::is_kernel(ProcNr(-1)));
+        assert!(!ProcessTable::is_kernel(ProcNr(0)));
     }
 
     #[test]
     fn test_rts_set_unset() {
         let mut table = ProcessTable::new();
-        let nr = 1;
+        let nr = ProcNr(1);
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(table.get(nr).unwrap().is_runnable());
 
@@ -961,15 +1152,15 @@ mod tests {
         let mut table = ProcessTable::new();
 
         // Step 1: Make parent (slot 0) runnable
-        let parent_nr = 0;
+        let parent_nr = ProcNr(0);
         table.get_mut(parent_nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(table.get(parent_nr).unwrap().is_runnable());
 
         // Step 2: Create child via fork_from (read parent, create child separately)
-        let child_nr = 1;
+        let child_nr = ProcNr(1);
         let child_endpoint = Endpoint::fork_new_endpoint(
             table.get(parent_nr).unwrap().p_endpoint,
-            child_nr,
+            child_nr.0,
         );
         let child = KProcess::fork_from(
             table.get(parent_nr).unwrap(),
@@ -1009,16 +1200,16 @@ mod tests {
         let mut table = ProcessTable::new();
 
         // Set up parent as runnable
-        let parent_nr = 0;
+        let parent_nr = ProcNr(0);
         {
             let parent = table.get_mut(parent_nr).unwrap();
             parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let child_nr = 1;
+        let child_nr = ProcNr(1);
         let child_endpoint = Endpoint::fork_new_endpoint(
             table.get(parent_nr).unwrap().p_endpoint,
-            child_nr,
+            child_nr.0,
         );
         let child = KProcess::fork_from(
             table.get(parent_nr).unwrap(),
@@ -1045,7 +1236,7 @@ mod tests {
     #[test]
     fn test_rts_set_unset_multiple_flags() {
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let nr = ProcNr(0);
 
         // Make process runnable
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1072,7 +1263,7 @@ mod tests {
     #[test]
     fn test_rts_set_idempotent() {
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let nr = ProcNr(0);
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         table.rts_set(nr, RtsFlagsBits::PROC_STOP);
@@ -1092,24 +1283,24 @@ mod tests {
     #[test]
     fn test_is_valid_nr_boundaries() {
         // Below minimum kernel task number
-        assert!(!ProcessTable::is_valid_nr(-6));
+        assert!(!ProcessTable::is_valid_nr(ProcNr(-6)));
         // Minimum kernel task (ASYNCM, nr=-5)
-        assert!(ProcessTable::is_valid_nr(-5));
+        assert!(ProcessTable::is_valid_nr(ProcNr(-5)));
         // Maximum kernel task (KERNEL, nr=-1)
-        assert!(ProcessTable::is_valid_nr(-1));
+        assert!(ProcessTable::is_valid_nr(ProcNr(-1)));
         // Minimum user process (DS, nr=0)
-        assert!(ProcessTable::is_valid_nr(0));
+        assert!(ProcessTable::is_valid_nr(ProcNr(0)));
         // Maximum user process (nr=NR_PROCS-1=255)
-        assert!(ProcessTable::is_valid_nr(255));
+        assert!(ProcessTable::is_valid_nr(ProcNr(255)));
         // Beyond maximum
-        assert!(!ProcessTable::is_valid_nr(256));
+        assert!(!ProcessTable::is_valid_nr(ProcNr(256)));
     }
 
     /// §5.2: Round-trip test: nr → get → p_nr == nr.
     #[test]
     fn test_proc_nr_roundtrip() {
         let table = ProcessTable::new();
-        for nr in [-5i32, -4, -3, -2, -1, 0, 1, 100, 255] {
+        for nr in [ProcNr(-5), ProcNr(-4), ProcNr(-3), ProcNr(-2), ProcNr(-1), ProcNr(0), ProcNr(1), ProcNr(100), ProcNr(255)] {
             assert_eq!(table.get(nr).unwrap().p_nr, nr);
         }
     }
@@ -1119,7 +1310,8 @@ mod tests {
     fn test_is_empty_new_table() {
         let table = ProcessTable::new();
         // All slots except IDLE should be SLOT_FREE
-        for nr in -5i32..=255 {
+        for i in -5i32..=255 {
+            let nr = ProcNr(i);
             if nr == proc_nr::IDLE {
                 // IDLE has PROC_STOP, not SLOT_FREE
                 assert!(!table.is_empty(nr));
@@ -1133,7 +1325,7 @@ mod tests {
     #[test]
     fn test_is_empty_after_alloc() {
         let mut table = ProcessTable::new();
-        let nr = 2;
+        let nr = ProcNr(2);
         assert!(table.is_empty(nr));
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(!table.is_empty(nr));
@@ -1144,12 +1336,12 @@ mod tests {
     fn test_is_kernel_task() {
         let table = ProcessTable::new();
         // Kernel tasks
-        for nr in [-5i32, -4, -3, -2, -1] {
+        for nr in [ProcNr(-5), ProcNr(-4), ProcNr(-3), ProcNr(-2), ProcNr(-1)] {
             assert!(table.get(nr).unwrap().is_kernel_task(),
                     "nr={} should be kernel task", nr);
         }
         // User processes
-        for nr in [0i32, 1, 8, 255] {
+        for nr in [ProcNr(0), ProcNr(1), ProcNr(8), ProcNr(255)] {
             assert!(!table.get(nr).unwrap().is_kernel_task(),
                     "nr={} should not be kernel task", nr);
         }
@@ -1212,7 +1404,7 @@ mod tests {
         use minix_types::VirBytes;
 
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let nr = ProcNr(0);
         // Use the process's own endpoint as target (it exists in the table)
         let target_ep = table.get(nr).unwrap().p_endpoint;
         // Set up a process with a pending VM request
@@ -1258,7 +1450,7 @@ mod tests {
         use minix_types::{Endpoint, VirBytes};
 
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let nr = ProcNr(0);
         // Set up a process in Fetched state (as if MemReqGet was called)
         {
             let proc = table.get_mut(nr).unwrap();
@@ -1296,7 +1488,7 @@ mod tests {
         use minix_types::{Endpoint, VirBytes};
 
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let nr = ProcNr(0);
         // Process in Pending state (not Fetched)
         {
             let proc = table.get_mut(nr).unwrap();
@@ -1327,41 +1519,87 @@ mod tests {
     #[test]
     fn test_process_misc_flags_empty_returns_true() {
         let mut table = ProcessTable::new();
-        let nr = 0;
-        table.procs[nr as usize].p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        assert!(table.process_misc_flags(nr));
+        let mut priv_table = crate::kpriv::PrivTable::new();
+        let nr = ProcNr(0);
+        table.procs[nr.0 as usize].p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
     }
 
-    /// Test: process_misc_flags clears MF_KCALL_RESUME and keeps process
-    /// runnable (stub handler path).
+    /// Test: process_misc_flags KCALL_RESUME branch calls `vm::kernel_call_resume`
+    /// (FIX-21, Phase 1C). With a Completed VmSuspendState, MF_KCALL_RESUME
+    /// is cleared and the process stays runnable.
     #[test]
     fn test_process_misc_flags_clears_kcall_resume() {
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let mut priv_table = crate::kpriv::PrivTable::new();
+        let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            // Set up a Completed VmSuspendContext so vm::kernel_call_resume
+            // can read the result (FIX-21). Use suspend_for_vm then advance
+            // to Completed state (matching vm.rs test pattern).
+            proc.suspend_for_vm(
+                crate::vm::VmSuspendType::KernelCall,
+                minix_types::Endpoint::from_generation_slot(1, 99),
+                crate::vm::VmCheckParams {
+                    start: minix_types::VirBytes::new(0x1000),
+                    length: minix_types::VirBytes::new(0x100),
+                    write_flag: true,
+                },
+                None,
+            );
             proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+            proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+            // Advance to Completed state.
+            if let Some(ctx) = proc.p_vm_suspend.as_mut() {
+                ctx.state = crate::vm::VmSuspendState::Completed(crate::vm::VmCheckResult::Ok);
+            }
         }
-        assert!(table.process_misc_flags(nr));
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
         let proc = table.get(nr).unwrap();
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
-    /// Test: process_misc_flags clears MF_DELIVERMSG and keeps process
-    /// runnable (stub handler path).
+    /// Test: process_misc_flags DELIVERMSG branch calls `ipc::delivermsg`
+    /// (FIX-20, Phase 1B). With `KernelUserCopy` (no-op stub returning
+    /// `Ok(())`), the message is "delivered" successfully and
+    /// `MF_DELIVERMSG` is cleared.
     #[test]
     fn test_process_misc_flags_clears_delivermsg() {
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let mut priv_table = crate::kpriv::PrivTable::new();
+        let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         }
-        assert!(table.process_misc_flags(nr));
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
         let proc = table.get(nr).unwrap();
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        // KernelUserCopy succeeds → MF_MSGFAILED must also be clear.
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
+    }
+
+    /// Test: process_misc_flags SC_DEFER branch calls `arch_do_syscall`
+    /// (FIX-21, Phase 1C). With p_defer.r1 = SEND(1) and a valid destination,
+    /// MF_SC_DEFER is cleared and IPC is dispatched.
+    #[test]
+    fn test_process_misc_flags_clears_sc_defer() {
+        let mut table = ProcessTable::new();
+        let mut priv_table = crate::kpriv::PrivTable::new();
+        let nr = ProcNr(0);
+        {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.p_misc_flags.set(MiscFlagsBits::SC_DEFER);
+            // p_defer.r1 = 1 (SEND call_nr)
+            proc.p_defer.r1 = crate::ipc::IpcCall::Send as usize;
+        }
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+        let proc = table.get(nr).unwrap();
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
     }
 
     /// Test: process_misc_flags returns false when the process becomes
@@ -1369,14 +1607,30 @@ mod tests {
     #[test]
     fn test_process_misc_flags_unrunnable_returns_false() {
         let mut table = ProcessTable::new();
-        let nr = 0;
+        let mut priv_table = crate::kpriv::PrivTable::new();
+        let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
             // Make the process unrunnable by setting SENDing.
             proc.p_rts_flags.set(RtsFlagsBits::SENDING);
+            // Set up Completed state for vm::kernel_call_resume (FIX-21).
+            proc.suspend_for_vm(
+                crate::vm::VmSuspendType::KernelCall,
+                minix_types::Endpoint::from_generation_slot(1, 99),
+                crate::vm::VmCheckParams {
+                    start: minix_types::VirBytes::new(0x1000),
+                    length: minix_types::VirBytes::new(0x100),
+                    write_flag: true,
+                },
+                None,
+            );
+            proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+            if let Some(ctx) = proc.p_vm_suspend.as_mut() {
+                ctx.state = crate::vm::VmSuspendState::Completed(crate::vm::VmCheckResult::Ok);
+            }
         }
-        assert!(!table.process_misc_flags(nr));
+        assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
     }
 }

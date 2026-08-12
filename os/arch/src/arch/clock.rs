@@ -1,17 +1,24 @@
 //! Clock architecture abstraction
 //!
-//! Defines the trait interface for hardware timer configuration and
-//! architecture-independent clock state management.
+//! Defines the trait interface for hardware timer configuration.
 //!
-//! # Design decisions (see 04-clock-interrupt-init.md §3.1, §3.2)
+//! # Design decisions (see 05-clock-interrupt-init.md §3.1, §3.2, 15-design.md §4.5)
 //!
 //! - **ClockArch trait** (§3.1): Separates hardware timer configuration
 //!   from software clock state. Each architecture implements its own
 //!   timer source (8254 PIT / ARM Generic Timer / RISC-V mtime).
-//! - **ClockState** (§3.1): Architecture-independent software state
-//!   (tick frequency, uptime, load average). No hardware dependencies.
 //! - **DEFAULT_HZ compile-time constant** (§3.2): Replaces C's
 //!   `env_get("hz")` runtime configuration.
+//!
+//! # Quantum decrement (D9)
+//!
+//! The design (15-design.md §4.5) originally specified a `ClockArch::arch_tick()`
+//! method for quantum decrement. However, `KProcess` lives in `minix-kernel`,
+//! and `ClockArch` lives in `minix-arch` — adding `arch_tick(&mut KProcess)` would
+//! create a circular dependency. Instead, quantum decrement is implemented as a
+//! **kernel function** (`clock::decrement_quantum`) that calls `ClockArch::read_tsc()`
+//! to get the TSC delta, then applies it to `current_proc`. This preserves the D9
+//! invariant: quantum is NOT in `ClockState::tick()`.
 
 /// Default clock tick frequency in Hz.
 ///
@@ -29,134 +36,16 @@
 /// minix-rs unifies to 100 Hz: ARM's 1000 Hz was for 32-bit embedded targets
 /// with coarse timers; 64-bit platforms have high-resolution timers and
 /// don't need 1ms ticks. 100 Hz matches typical server/desktop kernels.
+///
+/// **Authoritative definition**: this is the arch-level constant. The kernel
+/// crate (`os/kernel/src/clock.rs`) has an independent copy to avoid a
+/// cross-crate dependency; modify here first, then sync.
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Number of load history slots for load average calculation.
 ///
 /// C: _LOAD_HISTORY — include/minix/type.h:97
 pub const LOAD_HISTORY_SIZE: usize = 16;
-
-/// Architecture-independent clock state.
-///
-/// Manages tick frequency, uptime counter, realtime tracking, and load
-/// average. Hardware timer configuration is delegated to `ClockArch`.
-///
-/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-44
-pub struct ClockState {
-    /// Clock tick frequency in Hz.
-    /// C: kclockinfo.hz — type.h:119
-    hz: u32,
-
-    /// System uptime in ticks since boot.
-    /// C: kclockinfo.uptime — type.h:107
-    uptime: u64,
-
-    /// Real time in ticks since boot (may differ from uptime due to adjtime).
-    /// C: kclockinfo.realtime — type.h:109
-    realtime: u64,
-
-    /// Boot time in seconds since UNIX epoch.
-    /// C: kclockinfo.boottime — type.h:105
-    boottime: u64,
-
-    /// Number of ticks to adjust realtime by (positive = speed up, negative = slow down).
-    /// C: adjtime_delta — clock.c:44
-    adjtime_delta: i32,
-
-    /// Load average tracking data.
-    /// C: kloadinfo (struct loadinfo) — type.h:98
-    loadinfo: LoadInfo,
-}
-
-/// Load average tracking data.
-///
-/// Tracks the number of runnable processes over time to compute
-/// 1/5/15 minute load averages.
-///
-/// C: struct loadinfo — include/minix/type.h:98
-struct LoadInfo {
-    /// History of process counts per sample slot.
-    /// C: proc_load_history[_LOAD_HISTORY] — type.h:99
-    proc_load_history: [u16; LOAD_HISTORY_SIZE],
-
-    /// Last slot written in proc_load_history.
-    /// C: proc_last_slot — type.h:100
-    proc_last_slot: u16,
-
-    /// Uptime at last load sample.
-    /// C: last_clock — type.h:101
-    last_clock: u64,
-}
-
-impl Default for LoadInfo {
-    fn default() -> Self {
-        Self {
-            proc_load_history: [0; LOAD_HISTORY_SIZE],
-            proc_last_slot: 0,
-            last_clock: 0,
-        }
-    }
-}
-
-impl Default for ClockState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ClockState {
-    /// Create a new clock state with default frequency.
-    ///
-    /// C: init_clock() — clock.c:48
-    pub fn new() -> Self {
-        Self {
-            hz: DEFAULT_HZ,
-            uptime: 0,
-            realtime: 0,
-            boottime: 0,
-            adjtime_delta: 0,
-            loadinfo: LoadInfo::default(),
-        }
-    }
-
-    /// Get the clock tick frequency.
-    pub fn hz(&self) -> u32 {
-        self.hz
-    }
-
-    /// Get the system uptime in ticks.
-    pub fn uptime(&self) -> u64 {
-        self.uptime
-    }
-
-    /// Get the real time in ticks since boot.
-    /// C: kclockinfo.realtime — type.h:109
-    pub fn realtime(&self) -> u64 {
-        self.realtime
-    }
-
-    /// Called on each clock tick interrupt.
-    ///
-    /// Updates uptime, realtime, and load average tracking.
-    /// C: timer_int_handler() — clock.c:70
-    pub fn tick(&mut self) {
-        self.uptime += 1;
-
-        // Update realtime with adjtime_delta adjustment.
-        // C: clock.c:92-103
-        if self.adjtime_delta != 0 && self.uptime & 0x1 != 0 {
-            self.realtime += if self.adjtime_delta > 0 { 2 } else { 0 };
-            self.adjtime_delta += if self.adjtime_delta > 0 { -1 } else { 1 };
-        } else {
-            self.realtime += 1;
-        }
-
-        // Load average update and timer queue expiry are runtime tick-handler
-        // concerns, not initialization. See the clock/timer subsystem doc.
-        // C: load_update() — clock.c:260-291
-        // C: tmrs_exptimers(&clock_timers) — clock.c:160-161
-    }
-}
 
 /// Architecture abstraction for hardware timer configuration.
 ///
@@ -216,141 +105,86 @@ pub trait ClockArch: Sized + Send + Sync {
     /// three architectures use the same hardware counter for both.
     ///
     /// C: `read_tsc_64()` — arch/i386/arch_clock.c / arch/earm/arch_clock.c
+    ///
+    /// # D9: quantum decrement
+    ///
+    /// The kernel's `clock::decrement_quantum()` calls this to compute the
+    /// TSC delta since the last tick, then decrements the current process's
+    /// `p_cpu_time_left`. This matches C's `arch_timer_int_handler()`
+    /// (arch_clock.c:326-330: `p->p_cpu_time_left -= tsc_delta`).
     fn read_tsc(&self) -> u64 {
         self.read_ticks()
     }
+
+    /// Stop the per-CPU local timer.
+    ///
+    /// Called by the SMP `ipi_halt_handler` before halting a CPU
+    /// (smp.rs:682-686). Disables the LAPIC Timer (x86-64), Generic
+    /// Timer (ARM64), or CLINT timer (RISC-V) to prevent interrupts
+    /// during the halt.
+    ///
+    /// C: `stop_local_timer()` — not a named C function; inline in
+    /// `smp_ipi_halt_handler()` (smp.c:56-61) as `lapic_stop_timer()`.
+    fn stop_local_timer(&mut self);
+
+    /// Initialize and start the statistical profiling timer.
+    ///
+    /// Called by `SYS_SPROF` with `action=PROF_START` and
+    /// `intr_type=PROF_RTC` (misc.rs:899-902). Configures a separate
+    /// timer (RTC on x86-64, or a second generic timer channel) to
+    /// generate periodic interrupts at `hz` Hz for statistical
+    /// profiling.
+    ///
+    /// Returns `Err(())` if the architecture does not support profiling
+    /// timers (e.g., RISC-V without a spare CLINT channel).
+    ///
+    /// C: `init_profile_clock(freq)` — sprofile.c:init_profile_clock
+    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()>;
+
+    /// Stop the statistical profiling timer.
+    ///
+    /// Called by `SYS_SPROF` with `action=PROF_STOP` (misc.rs:926-928).
+    /// Disables the profiling timer interrupt and returns the hardware
+    /// to normal operation.
+    ///
+    /// C: `stop_profile_clock()` — sprofile.c:stop_profile_clock
+    fn stop_profile_clock(&mut self);
+
+    /// Acknowledge a statistical profiling timer interrupt.
+    ///
+    /// Called by `profile_clock_handler` after collecting a sample, to
+    /// clear the pending interrupt on the hardware so the next tick can
+    /// fire. On x86-64 this reads RTC Register C (which clears the IRQ).
+    ///
+    /// C: `arch_ack_profile_clock()` — profile.c:123
+    fn ack_profile_clock(&mut self);
+}
+
+// ── Mock ClockArch (for tests) ──
+
+/// Mock clock implementation — all operations are no-ops.
+///
+/// Used when `feature = "mock"` is enabled (test mode). Timer operations
+/// do nothing; `read_ticks` returns 0.
+#[cfg(feature = "mock")]
+pub struct MockClockArch;
+
+#[cfg(feature = "mock")]
+impl ClockArch for MockClockArch {
+    fn new(_desc: &dyn minix_platform::TimerDesc) -> Self {
+        Self
+    }
+    fn init_timer(&mut self, _hz: u32) {}
+    fn read_ticks(&self) -> u64 { 0 }
+    fn stop_local_timer(&mut self) {}
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> { Ok(()) }
+    fn stop_profile_clock(&mut self) {}
+    fn ack_profile_clock(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clock_state_new() {
-        let cs = ClockState::new();
-        assert_eq!(cs.hz(), DEFAULT_HZ);
-        assert_eq!(cs.uptime(), 0);
-        assert_eq!(cs.realtime(), 0);
-    }
-
-    #[test]
-    fn test_clock_state_default() {
-        let cs = ClockState::default();
-        assert_eq!(cs.hz(), DEFAULT_HZ);
-        assert_eq!(cs.uptime(), 0);
-        assert_eq!(cs.realtime(), 0);
-    }
-
-    #[test]
-    fn test_clock_state_tick_increment_uptime() {
-        let mut cs = ClockState::new();
-        for _ in 0..100 {
-            cs.tick();
-        }
-        assert_eq!(cs.uptime(), 100);
-    }
-
-    #[test]
-    fn test_clock_state_tick_realtime_no_adjtime() {
-        let mut cs = ClockState::new();
-        for _ in 0..10 {
-            cs.tick();
-        }
-        // Without adjtime_delta, realtime == uptime
-        assert_eq!(cs.realtime(), cs.uptime());
-    }
-
-    #[test]
-    fn test_clock_state_tick_realtime_with_positive_adjtime() {
-        let mut cs = ClockState::new();
-        cs.adjtime_delta = 10;
-
-        // Positive adjtime: every odd tick adds 2 to realtime (not 1),
-        // and adjtime_delta decreases by 1 toward 0.
-        // After 20 ticks: adjtime_delta goes 10→0
-        // Odd ticks: realtime += 2 (extra +1 each), even ticks: realtime += 1
-        // Total: 20 + 10 = 30
-        for _ in 0..20 {
-            cs.tick();
-        }
-        assert_eq!(cs.realtime(), 30);
-        assert_eq!(cs.adjtime_delta, 0);
-    }
-
-    #[test]
-    fn test_clock_state_tick_realtime_with_negative_adjtime() {
-        let mut cs = ClockState::new();
-        cs.adjtime_delta = -10;
-
-        // Negative adjtime: every odd tick, realtime += 0 (not 1),
-        // and adjtime_delta increases by 1 toward 0.
-        // After 20 ticks: adjtime_delta goes -10→0
-        // Odd ticks: realtime += 0 (skip), even ticks: realtime += 1
-        // Total: 10
-        for _ in 0..20 {
-            cs.tick();
-        }
-        assert_eq!(cs.realtime(), 10);
-        assert_eq!(cs.adjtime_delta, 0);
-    }
-
-    #[test]
-    fn test_clock_state_tick_realtime_adjtime_stops_when_zero() {
-        let mut cs = ClockState::new();
-        cs.adjtime_delta = 2;
-
-        // Tick 1 (odd): adjtime_delta > 0 → realtime += 2, adjtime_delta = 1
-        // Tick 2 (even): adjtime_delta != 0 but uptime & 0x1 == 0 → realtime += 1
-        // Tick 3 (odd): adjtime_delta > 0 → realtime += 2, adjtime_delta = 0
-        // Tick 4 (even): adjtime_delta == 0 → realtime += 1
-        // Tick 5 (odd): adjtime_delta == 0 → realtime += 1
-        cs.tick(); // tick 1
-        assert_eq!(cs.uptime, 1);
-        assert_eq!(cs.realtime, 2);
-        assert_eq!(cs.adjtime_delta, 1);
-
-        cs.tick(); // tick 2
-        assert_eq!(cs.uptime, 2);
-        assert_eq!(cs.realtime, 3);
-        assert_eq!(cs.adjtime_delta, 1);
-
-        cs.tick(); // tick 3
-        assert_eq!(cs.uptime, 3);
-        assert_eq!(cs.realtime, 5);
-        assert_eq!(cs.adjtime_delta, 0);
-
-        cs.tick(); // tick 4
-        assert_eq!(cs.uptime, 4);
-        assert_eq!(cs.realtime, 6);
-        assert_eq!(cs.adjtime_delta, 0);
-
-        cs.tick(); // tick 5
-        assert_eq!(cs.uptime, 5);
-        assert_eq!(cs.realtime, 7);
-        assert_eq!(cs.adjtime_delta, 0);
-    }
-
-    #[test]
-    fn test_clock_state_large_uptime_no_overflow() {
-        let mut cs = ClockState::new();
-        // Simulate ~1M ticks (~2.8 hours at 100 Hz)
-        for _ in 0..1_000_000 {
-            cs.tick();
-        }
-        assert_eq!(cs.uptime(), 1_000_000);
-        assert_eq!(cs.realtime(), 1_000_000);
-    }
-
-    #[test]
-    fn test_load_info_default() {
-        let li = LoadInfo::default();
-        assert_eq!(li.proc_load_history.len(), LOAD_HISTORY_SIZE);
-        assert_eq!(li.proc_last_slot, 0);
-        assert_eq!(li.last_clock, 0);
-        for &val in li.proc_load_history.iter() {
-            assert_eq!(val, 0);
-        }
-    }
 
     #[test]
     fn test_default_hz_value() {
@@ -386,6 +220,10 @@ mod tests {
             }
             fn init_timer(&mut self, _hz: u32) {}
             fn read_ticks(&self) -> u64 { self.ticks }
+            fn stop_local_timer(&mut self) {}
+            fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> { Ok(()) }
+            fn stop_profile_clock(&mut self) {}
+            fn ack_profile_clock(&mut self) {}
         }
         let desc = TestTimerDesc;
         let clock = TestClock::new(&desc);

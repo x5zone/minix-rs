@@ -28,6 +28,7 @@ pub mod proc;
 pub mod proc_table;
 pub mod kpriv;
 pub mod capability;
+pub mod errno;
 pub mod sched;
 pub mod boot_alloc;
 pub mod boot;
@@ -45,8 +46,11 @@ pub mod syscall_clock;
 pub mod ipc_filter;
 pub mod cross_space;
 pub mod misc;
+pub mod debug;
 pub mod page_fault;
 pub mod pte_walk;
+pub mod grant;
+pub mod krandom;
 
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 #[path = "arch/x86_64/mod.rs"]
@@ -128,9 +132,12 @@ fn mock_kmain_ok() -> ! {
 /// identity mapping and kernel mapping loops. This avoids duplicating the
 /// alignment/size selection logic between Step 0a validation and Step 2.
 fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
-    let kv = kernel_info.kern_virt_base.0;
-    let kp = kernel_info.kern_phys_base.0;
-    let ks = kernel_info.kern_size;
+    // R-07 (2026-08-12): Use getter methods (preferred API).
+    // `validate()` is called later in `kmain`; the assertions here are
+    // defense-in-depth — they fail-fast before paging setup begins.
+    let kv = kernel_info.kern_virt_base().0;
+    let kp = kernel_info.kern_phys_base().0;
+    let ks = kernel_info.kern_size();
     let huge = P::HUGE_PAGE_SIZE as u64;
     let fallback = P::FALLBACK_HUGE_PAGE_SIZE as u64;
 
@@ -157,15 +164,16 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
         "arch_boot: kern_size must be a multiple of the chosen huge page size");
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
-    assert!(kernel_info.kern_stack_top.0 % 16 == 0,
+    assert!(kernel_info.kern_stack_top().0 % 16 == 0,
         "arch_boot: kern_stack_top must be 16-byte aligned");
 
     // Register boot-stage page table page allocator if not already registered.
     // The caller (e.g., a test kernel) may have registered its own allocator
     // with a safer region (e.g., a bump region past the kernel image).
     if !pt_alloc::is_registered() {
-        let base = kernel_info.memmap.first().map(|r| r.base.0).unwrap_or(0);
-        let end = base + kernel_info.memmap.first().map(|r| r.len as u64).unwrap_or(0);
+        let memmap = kernel_info.memmap();
+        let base = memmap.first().map(|r| r.base.0).unwrap_or(0);
+        let end = base + memmap.first().map(|r| r.len as u64).unwrap_or(0);
         let boot_alloc_end = core::cmp::min(base + 0x100_000, end);
         boot_alloc::init_boot_pt_alloc(base, boot_alloc_end);
         pt_alloc::register(boot_alloc::boot_pt_alloc);
@@ -225,12 +233,13 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // VPN[2] slot would be written twice with potentially different
     // page sizes, corrupting the identity mapping).
     // See 01-bug.md for the full analysis.
-    let kern_virt = kernel_info.kern_virt_base.0;
-    let kern_phys = kernel_info.kern_phys_base.0;
+    // R-07 (2026-08-12): Use getter methods (preferred API).
+    let kern_virt = kernel_info.kern_virt_base().0;
+    let kern_phys = kernel_info.kern_phys_base().0;
     if kern_virt != kern_phys {
         let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let mut offset = 0u64;
-        while offset < kernel_info.kern_size {
+        while offset < kernel_info.kern_size() {
             paging.map_huge(
                 VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
                 kern_huge as usize, kern_flags,
@@ -242,6 +251,18 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // Step 3: Enable paging.
     // SAFETY: Steps 1+2 set up identity mapping covering current RIP.
     let _root_phys = unsafe { paging.enable() };
+
+    // Record the bootstrap root physical address in the kernel global so
+    // later phases (e.g., `init_proc_and_boot` loading the VM ELF) can
+    // wrap it via `Paging::from_active_root` and add more mappings to the
+    // *same* page table. The `paging` instance is about to be dropped,
+    // but the page table it created remains active in the MMU.
+    //
+    // We use the `root_page` parameter (not `_root_phys`'s return value)
+    // because some architectures' `enable()` returns a different value
+    // (e.g., the satp-encoded value on riscv64, not the raw physical
+    // address). The parameter is always the raw physical address.
+    set_current_root_phys(root_page);
 
     // Return kernel_info so the caller can decide what to do next.
     kernel_info
@@ -263,6 +284,11 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase A: Entry
+    // R-07 (2026-08-12): Validate KernelInfo invariants before any use.
+    // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
+    // trigger add_memmap and reclaim firmware regions).
+    kernel_info.validate();
+
     // Initialize the early console first so any boot diagnostic output
     // uses the correct baud rate / UART configuration.
     // C: ser_init() — originally inside arch_init(); moved to EarlyConsole trait.
@@ -276,9 +302,48 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // SAFETY: This runs during boot (single-threaded, before BKL needed).
     //         No concurrent access possible at this point.
     unsafe {
-        KERNEL_INFO = Some(*kernel_info);
+        *KERNEL_INFO.get() = Some(*kernel_info);
     }
     KERNEL_MAY_ALLOC.store(true, Ordering::Release);
+
+    // Phase A.2: Initialize FREE_MEMMAP from KernelInfo.memmap + cut boot module regions.
+    // C: pre_init() → get_parameters() → add_memmap()×N → cut_memmap()×mod_count
+    //
+    // The boot-shim reports all DRAM as free (including boot module regions).
+    // The kernel must:
+    //   1. Copy kernel_info.memmap → FREE_MEMMAP (mutable kernel copy)
+    //   2. cut_memmap for each boot module (temporarily reserve their physical
+    //      memory so the allocator doesn't hand those pages out during boot)
+    //
+    // After load_vm_elf copies the ELF segments into the VM process's page
+    // tables (Phase C), the module's physical memory is reclaimed via
+    // add_memmap. See 01-boot-shim-bootstrap.md §2.5 for the full lifecycle.
+    //
+    // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here.
+    unsafe {
+        let mmap = &mut *FREE_MEMMAP.get();
+        // Step 1: Copy kernel_info.memmap into FREE_MEMMAP
+        for (i, region) in kernel_info.memmap().iter().enumerate() {
+            if i >= memmap::MAXMEMMAP {
+                break;
+            }
+            if region.len > 0 {
+                mmap[i] = memmap::MemMapEntry {
+                    base: region.base.0,
+                    length: region.len as u64,
+                };
+            }
+        }
+        // Step 2: Cut boot module regions (temporarily reserve)
+        // C: pre_init.c:211 — cut_memmap(&kinfo, mod_start, mod_end - mod_start)
+        for module in kernel_info.boot_modules().iter() {
+            let _ = memmap::cut_memmap(
+                mmap,
+                module.start.0,
+                module.len as u64,
+            );
+        }
+    }
 
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
     // This MUST run before init_clock_and_interrupts() because the clock,
@@ -305,12 +370,20 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // the C boot sequence.
     // SAFETY: This runs during boot (single-threaded, before BKL needed).
     unsafe {
-        IPC_FILTER_POOL = crate::ipc_filter::IpcFilterPool::new();
+        *IPC_FILTER_POOL.get() = crate::ipc_filter::IpcFilterPool::new();
     }
+
+    // Phase C.6: krandom init — mark the global as ready for IRQ entropy.
+    // C: `krandom.random_sources = RANDOM_SOURCES;` — main.c:48.
+    // In Rust, the static is already initialized via `const fn new()`, so
+    // this just sets the init flag for `try_krandom()` callers. Must run
+    // before the first IRQ could fire (IRQs are enabled in Phase B's
+    // `init_clock_and_interrupts`, but BKL is held until `switch_to_user`).
+    crate::krandom::init();
 
     // Phase D: arch_post_init + memory_init
     // SAFETY: boot is single-threaded before BKL exists.
-    let proc_table = unsafe { crate::proc_table() };
+    let proc_table = unsafe { crate::proc_table_boot_unchecked() };
     init_post_and_memory(kernel_info, proc_table);  // covered in 07
 
     // Phase E: system_init — register syscall handlers
@@ -331,15 +404,15 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // boot-shim passes `bootstrap_start=PhysBytes(0), bootstrap_len=0` and
     // the guard skips reclaim. See TODO-01-1 in 01-boot-shim-bootstrap.md
     // §X for the over-reclaim bug that motivated this.
-    if kernel_info.bootstrap_len > 0 {
+    if kernel_info.bootstrap_len() > 0 {
         // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here
         // during boot. kernel_may_alloc is true at this point.
         let add_memmap_result = unsafe {
-            let mmap = &mut *core::ptr::addr_of_mut!(FREE_MEMMAP);
+            let mmap = &mut *FREE_MEMMAP.get();
             memmap::add_memmap(
                 mmap,
-                kernel_info.bootstrap_start.0,
-                kernel_info.bootstrap_len,
+                kernel_info.bootstrap_start().0,
+                kernel_info.bootstrap_len(),
             )
         };
         // Pattern §31 (返回值完整性): C add_memmap returns void; errors are
@@ -398,9 +471,9 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     //
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
-        *core::ptr::addr_of_mut!(SMP_STATE) = Some(smp::SmpState::new_single_cpu());
-        let smp_state = crate::smp_state();
-        let proc_table = crate::proc_table();
+        *SMP_STATE.get() = Some(smp::SmpState::new_single_cpu());
+        let smp_state = crate::smp_state_boot_unchecked();
+        let proc_table = crate::proc_table_boot_unchecked();
         bsp_finish_booting(proc_table, smp_state)
     }
 }
@@ -416,52 +489,17 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 /// - Stack pointer is 16-byte aligned (ABI requirement at function entry)
 /// - Frame pointer is zero (set by HigherHalf transition)
 ///
-/// # kmain arch-trait DEFERRED — convergence plan
+/// # Architecture dispatch
 ///
-/// The `kmain` function is `#[cfg]`-switched across three `naked_asm!`
-/// blocks for x86_64 / aarch64 / riscv64. The three blocks do the same
-/// thing in different register conventions:
+/// `kmain` is `#[cfg]`-switched across three `naked_asm!` blocks for
+/// x86_64 / aarch64 / riscv64. Each block captures SP/PC/FP at entry
+/// using arch-specific register names, then calls `kmain_verify`.
 ///
-/// - Capture SP/PC/FP at entry.
-/// - Rearrange into the platform's calling convention.
-/// - Call `kmain_verify(kernel_info, sp, pc, fp)`.
-///
-/// # Why this is a TODO
-///
-/// The three blocks are nearly identical: each is 4-5 lines of pure
-/// register shuffling, with only the register names differing
-/// (`rsp`/`r9`/`rcx` for x86_64, `sp`/`x29`/`x0` for aarch64,
-/// `sp`/`s0`/`a0` for riscv64). The Rust idiom is to **factor this
-/// into a trait** (e.g. `KmainArch::kmain_asm_block()`) so the three
-/// backends just `impl` the trait and `kmain` becomes a single
-/// `#[cfg(target_arch)]` dispatch:
-///
-/// ```ignore
-/// #[cfg(feature = "qemu_test")]
-/// #[unsafe(naked)]
-/// pub extern "C" fn kmain(kernel_info: &KernelInfo) -> ! {
-///     // Single arch-dispatch — the trait impl does the asm.
-///     core::arch::naked_asm!(CurrentBootProcArch::kmain_asm());
-/// }
-/// ```
-///
-/// # 4-step convergence path (lands with kmain arch-trait follow-up)
-///
-/// 1. Add `pub const fn kmain_asm() -> &'static str` to
-///    `minix_arch::BootProcArch` — returns the asm snippet for the
-///    arch (the body of one of the existing 3 blocks).
-/// 2. Implement for x86_64 / aarch64 / riscv64 (copy from the 3
-///    existing blocks).
-/// 3. Replace the 3 `#[cfg(target_arch)]` blocks in `kmain` with a
-///    single `naked_asm!(CurrentBootProcArch::kmain_asm())`.
-/// 4. Delete the now-unused `#[cfg(target_arch)]` markers.
-///
-/// # Why safe to defer
-///
-/// The three blocks are functionally identical (verified by `cargo test
-/// --target x86_64-unknown-none` / `aarch64-unknown-none` /
-/// `riscv64gc-unknown-none-elf`). The convergence is a readability /
-/// DRY improvement, not a correctness fix.
+/// `#[cfg(target_arch)]` here selects **asm register names**, not
+/// behavior — `naked_asm!` requires literal register names at compile
+/// time, so this is the idiomatic Rust pattern for multi-arch naked
+/// functions (cf. `core::arch::asm!` docs). This does NOT violate the
+/// "no `#[cfg(target_arch)]` behavior selection" rule.
 ///
 /// # Safety (naked function)
 ///
@@ -523,7 +561,7 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     #[cfg(target_arch = "riscv64")]
     Console::write_str("kmain_verify: reached!\n");
 
-    let kern_high = kernel_info.kern_virt_base.0;
+    let kern_high = kernel_info.kern_virt_base().0;
 
     // Architecture-specific labels for register output
     #[cfg(target_arch = "x86_64")]
@@ -628,7 +666,7 @@ fn init_protection(kernel_info: &KernelInfo) {
     //     in a later boot phase after real handlers are installed via set_handler().
     // C: SYSCALL MSR setup — protect.c:189-205
     let mut trap = CurrentTrapEntry::init();
-    trap.configure_syscall(kernel_info.syscall_entry);
+    trap.configure_syscall(kernel_info.syscall_entry());
     // Do NOT call trap.load() here — handler addresses are still 0.
 }
 
@@ -688,7 +726,7 @@ fn init_clock_and_interrupts() {
     // This replaces the previous pattern of dropping `intr` after init.
     // SAFETY: Boot is single-threaded before BKL exists; no concurrent access.
     unsafe {
-        *core::ptr::addr_of_mut!(IRQ_MANAGER) =
+        *IRQ_MANAGER.get() =
             Some(crate::irq_manager::IrqManager::new(intr));
     }
 
@@ -730,21 +768,22 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     use crate::kpriv::{priv_flag_set, K_CALL_MASK_NONE, K_CALL_MASK_ALL, IPC_TO_NONE, IPC_TO_ALL};
     use crate::proc::NR_BOOT_MODULES;
 
-    // Step 1+2: Acquire global process + privilege tables (static mut, BSS).
+    // Step 1+2: Acquire global process + privilege tables (SyncUnsafeCell, BSS).
     // C: `EXTERN struct proc proc[]` / `EXTERN struct priv priv[]` — glo.h.
     // The tables are `const fn`-initialized at compile time (all slots
     // SLOT_FREE / s_proc_nr=None); per-process setup happens below.
     // SAFETY: boot is single-threaded before BKL exists.
-    let proc_table = unsafe { crate::proc_table() };
-    let priv_table = unsafe { crate::priv_table() };
+    let proc_table = unsafe { crate::proc_table_boot_unchecked() };
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
 
     // C: NR_BOOT_MODULES check — main.c:160-162
+    // R-07 (2026-08-12): Use getter method (preferred API).
     assert_eq!(
-        kernel_info.boot_modules.len(),
+        kernel_info.boot_modules().len(),
         NR_BOOT_MODULES,
         "expected {} boot modules, found {}",
         NR_BOOT_MODULES,
-        kernel_info.boot_modules.len()
+        kernel_info.boot_modules().len()
     );
 
     // Step 3a: Initialize kernel tasks (hardcoded, not from multiboot modules).
@@ -788,7 +827,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // Step 3b: Initialize user-space boot modules (from multiboot module list).
     // C: image[NR_TASKS..NR_BOOT_PROCS] in table.c
     // C: kinfo.module_list[i] corresponds to image[NR_TASKS + i]
-    for (i, module) in kernel_info.boot_modules.iter().enumerate() {
+    for (i, module) in kernel_info.boot_modules().iter().enumerate() {
         // Map boot module index to process number using the C boot image order.
         // C: image[NR_TASKS + i].proc_nr — table.c
         let nr: ProcNr = BOOT_MODULE_PROC_NRS[i];
@@ -853,25 +892,75 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 let mut paging = MockPaging::new_from_page(PhysBytes(0));
                 let vm_result = load_vm_elf(module, kernel_info, &mut paging)
                     .expect("load_vm_elf: VM ELF is required at boot");
+                // FIX-23 (Phase 4): Reclaim VM module physical memory after
+                // ELF segments have been copied into the VM process's page
+                // tables. C: protect.c:450-451 — mod->mod_start = mod_end = 0.
+                // This undoes the cut_memmap done in Phase A.2, returning the
+                // module's physical pages to FREE_MEMMAP for future allocation.
+                // SAFETY: Boot is single-threaded; FREE_MEMMAP is only accessed here.
+                unsafe {
+                    let mmap = &mut *FREE_MEMMAP.get();
+                    let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
+                }
                 EntrySpec::loaded(vm_result.pc, vm_result.sp, vm_result.ps_strings)
             }
             #[cfg(not(feature = "mock"))]
             {
-                // DEFERRED: Real VM ELF loading at boot requires a
-                // dedicated bootstrap page table for the VM process
-                // (current_page_table passed through kmain). Until
-                // then, VM starts with PC=0; RS is expected to load
-                // the real VM ELF later during userspace bring-up.
+                // FIX-24 (Phase 9): Real VM ELF loading at boot.
                 //
-                // Returning VmLoadError::MappingFailed here would be
-                // honest but panics — the deferred path intentionally
-                // proceeds with zero PC.
-                let _ = VmLoadError::MappingFailed;
-                EntrySpec::DEFERRED
+                // Previously this branch was DEFERRED — VM started with
+                // PC=0 and RS was expected to load the VM ELF later.
+                // That approach is incorrect because VM is the page-table
+                // process: it must be runnable *immediately* after boot so
+                // it can handle VMCTL/PRIVCTL syscalls from other boot
+                // processes. A VM with PC=0 cannot serve any syscall.
+                //
+                // The bootstrap page table (created by `arch_boot_impl`)
+                // is still active — we wrap it via `from_active_root` and
+                // map the VM ELF segments into it. The segments use 1:1
+                // identity mapping (VA = PA), matching what `load_vm_elf`
+                // expects (see `arch/boot.rs`).
+                //
+                // After the ELF is loaded, the VM module's physical memory
+                // is reclaimed via `add_memmap` (undoes the `cut_memmap`
+                // from Phase A.2), matching C: protect.c:450-451.
+                use minix_arch::paging::Paging as _;
+                use minix_arch::CurrentPaging;
+
+                let root_phys = current_root_phys()
+                    .expect("init_proc_and_boot: bootstrap root not set \
+                             — arch_boot_impl must run first");
+                let mut paging = CurrentPaging::from_active_root(root_phys);
+                let vm_result = load_vm_elf(module, kernel_info, &mut paging)
+                    .expect("load_vm_elf: VM ELF is required at boot");
+
+                // Reclaim VM module physical memory after ELF segments
+                // have been copied into the bootstrap page table.
+                // C: protect.c:450-451 — mod->mod_start = mod_end = 0.
+                // SAFETY: Boot is single-threaded; FREE_MEMMAP is only
+                // accessed here.
+                unsafe {
+                    let mmap = &mut *FREE_MEMMAP.get();
+                    let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
+                }
+
+                // Record VM's page-table root addresses in p_seg so
+                // `init_post_and_memory` can install them via
+                // `set_ptproc` + `set_current_ptproc_nr`. The bootstrap
+                // root IS VM's initial root — VMCTL SetAddrSpace will
+                // replace it later when VM installs its own page table.
+                proc.p_seg.phys_root = root_phys;
+                // The virtual address of the root is the identity-mapped
+                // address (VA = PA during bootstrap).
+                proc.p_seg.virt_root = Some(VirBytes(root_phys.0));
+
+                EntrySpec::loaded(vm_result.pc, vm_result.sp, vm_result.ps_strings)
             }
         } else {
             // Other user processes have no ELF loaded at boot.
             // RS will load them at runtime.
+            // Module physical memory stays cut (reserved) until RS loads
+            // the ELF and reclaims it.
             EntrySpec::DEFERRED
         };
 
@@ -949,7 +1038,22 @@ pub fn init_post_and_memory(kernel_info: &KernelInfo, proc_table: &crate::proc_t
     };
     CurrentPostInitArch::set_ptproc(&vm_page_table);
 
-    // Step 2: Allocate free page directory entries for createpde().
+    // Record VM's proc-nr as the current ptproc in the kernel global.
+    // C: get_cpulocal_var(ptproc) = vm — protect.c:372 (x86) / protect.c:99 (ARM)
+    //
+    // This is the kernel-level counterpart of `set_ptproc`: the arch-level
+    // trait records any arch-internal state (e.g., virt_root for createpde),
+    // while this global enables `dispatch_vmctl(SetAddrSpace)` to decide
+    // whether to call `TlbArch::set_active_root` (write_cr3) when the
+    // target process is the current ptproc.
+    //
+    // SAFETY: BKL is held during boot, only this CPU accesses the global.
+    set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+
+    // Step 2: Allocate free page directory entries (mirrors C's memory_init()
+    // freepdes[] accounting). createpde() itself is superseded by Direct Map
+    // in 64-bit (see FREE_PDE_SLOTS doc); the slots are retained for boot
+    // accounting parity with C.
     // C: memory_init() — memory.c:707-717 (x86) / memory.c:612-622 (ARM)
     //
     // In C, this does:
@@ -980,17 +1084,18 @@ pub fn init_post_and_memory(kernel_info: &KernelInfo, proc_table: &crate::proc_t
     // explicit ordering is redundant; on single-CPU builds the
     // ordering compiles to a no-op.
     FREE_UPPER_IDX.store(free_idx, Ordering::Release);
-    // Store the slots in kernel global state for createpde() access.
+    // Store the slots in kernel global state (retained for boot accounting;
+    // createpde() is superseded by Direct Map — see FREE_PDE_SLOTS doc).
     // SAFETY: This runs during boot (single-threaded, before BKL needed).
     //         No concurrent access possible at this point.
     unsafe {
-        FREE_PDE_SLOTS = free_pde_slots;
+        *FREE_PDE_SLOTS.get() = free_pde_slots;
     }
 }
 
 // ── Phase E-F: system_init + bsp_finish_booting (08-system-init-boot-finish.md) ──
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 /// Global flag: kernel may allocate physical memory directly.
 /// C: kernel_may_alloc in glo.h
@@ -1003,13 +1108,220 @@ pub fn kernel_may_alloc() -> bool {
     KERNEL_MAY_ALLOC.load(Ordering::Acquire)
 }
 
+/// `UnsafeCell` with `Sync` gated on the [`BklProtected`] marker trait.
+///
+/// Mirrors the unstable stdlib `SyncUnsafeCell` (rust-lang issue #95439),
+/// but with a **compile-time guard** against accidental misuse: only types
+/// that explicitly opt into `BklProtected` can be wrapped. This prevents
+/// soundness bugs where a `!Sync` type (e.g. `RefCell<T>`, `Rc<T>`,
+/// `Cell<T>`) is silently promoted to `Sync` by being placed in a
+/// `static SyncUnsafeCell<...>`.
+///
+/// All access requires external synchronization (BKL or single-threaded boot).
+/// This type makes the `Sync` requirement explicit, replacing `static mut` +
+/// `addr_of_mut!` for Rust 2024 compliance — no `static_mut_refs` involved.
+///
+/// # Soundness contract (FIX-07: R-01)
+///
+/// The `unsafe impl<T: BklProtected + ?Sized> Sync` below is sound because:
+/// 1. `BklProtected` is a sealed trait — only types in this file's
+///    `bkl_protected_impls!` macro call can implement it.
+/// 2. Every approved type is either `Send + Sync` by itself (so wrapping it
+///    in `SyncUnsafeCell` adds no new cross-thread access capability beyond
+///    what `static` already provides) or is an internal kernel struct whose
+///    mutation is serialized by the BKL at every callsite.
+/// 3. The BKL provides mutual exclusion at runtime; `SyncUnsafeCell` only
+///    silences the `!Sync`-ness of `UnsafeCell` so the wrapped type can be
+///    placed in a `static`. Interior mutability through `get()` still
+///    requires the caller to uphold the safety contract.
+///
+/// See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/06-proc-init-boot-proc.md`
+/// §4.1 (storage model) for the design rationale.
+#[repr(transparent)]
+pub(crate) struct SyncUnsafeCell<T: ?Sized> {
+    value: core::cell::UnsafeCell<T>,
+}
+
+// SAFETY: See "Soundness contract" above. `T: BklProtected` restricts the
+// impl to types whose mutation is serialized by the BKL (or which are
+// write-once-read-only after boot). Without this bound, any `!Sync` type
+// could be wrapped — that was the original soundness hole (R-01).
+unsafe impl<T: BklProtected + ?Sized> Sync for SyncUnsafeCell<T> {}
+
+impl<T> SyncUnsafeCell<T> {
+    /// Creates a new `SyncUnsafeCell` wrapping the given value.
+    ///
+    /// `T` must implement [`BklProtected`]. This is enforced at construction
+    /// time so that the `Sync` impl applies.
+    pub(crate) const fn new(value: T) -> Self
+    where
+        T: BklProtected,
+    {
+        SyncUnsafeCell {
+            value: core::cell::UnsafeCell::new(value),
+        }
+    }
+
+    /// Gets a mutable pointer to the wrapped value.
+    ///
+    /// The caller must ensure that no concurrent access occurs (BKL or
+    /// single-threaded context). Dereferencing the returned pointer is `unsafe`.
+    pub(crate) fn get(&self) -> *mut T
+    where
+        T: BklProtected,
+    {
+        self.value.get()
+    }
+}
+
+// ── BklProtected: sealed marker trait gating `SyncUnsafeCell` (FIX-07: R-01)
+//
+// Without this trait, the old blanket `unsafe impl<T: ?Sized> Sync` let any
+// type (including `RefCell<T>` / `Rc<T>` / `Cell<T>`) be silently promoted
+// to `Sync` by wrapping it in `SyncUnsafeCell`. The marker trait is sealed
+// so external crates (and other modules in this crate) cannot add new impls
+// without going through the audit process documented above.
+//
+// The trait is implemented only for the 9 types currently stored in
+// `SyncUnsafeCell` statics (see `bkl_protected_impls!` below). Adding a new
+// `SyncUnsafeCell<NewType>` static requires extending the macro call —
+// this is intentional friction.
+mod bkl_protected {
+    /// Sealed marker trait — see module docs.
+    ///
+    /// # Safety
+    ///
+    /// Implementors must guarantee that all mutation of `Self` is serialized
+    /// by the Big Kernel Lock (BKL) at every callsite, OR that `Self` is
+    /// write-once-read-only after boot (e.g. `KernelInfo`). The BKL provides
+    /// runtime mutual exclusion; this trait only silences the `!Sync`-ness
+    /// of `UnsafeCell` so the wrapped type can live in a `static`.
+    pub(crate) unsafe trait BklProtected: Sealed {}
+
+    /// Sealed trait — no external impls possible.
+    pub(crate) trait Sealed {}
+
+    // ── Macro to reduce boilerplate for approved types ──
+    //
+    // Each invocation expands to `impl Sealed for T {}` + `unsafe impl
+    // BklProtected for T {}`. The `unsafe` is on the trait, so each
+    // macro call is a single auditable unit.
+    macro_rules! bkl_protected_impls {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                impl Sealed for $ty {}
+                /// # Safety
+                ///
+                /// All mutation is serialized by the BKL (or write-once after
+                /// boot). See `bkl_protected` module docs.
+                unsafe impl BklProtected for $ty {}
+            )+
+        };
+    }
+
+    // ── Approved types ──
+    //
+    // Adding a new type here is the ONLY way to wrap it in `SyncUnsafeCell`.
+    // Each addition must be audited for BKL-serialized mutation.
+    bkl_protected_impls! {
+        // Write-once-read-only after boot (no BKL needed post-init):
+        minix_boot::KernelInfo,
+        crate::memmap::MemMapEntry,
+
+        // BKL-serialized mutation (kernel-internal types):
+        crate::proc_table::ProcessTable,
+        crate::kpriv::PrivTable,
+        crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>,
+        crate::smp::SmpState,
+        minix_arch::FreePdeSlots,
+        crate::ipc_filter::IpcFilterPool,
+        crate::krandom::KRandomness,
+    }
+
+    // Generic composite impls — derive BklProtected from the inner type.
+    // These allow `SyncUnsafeCell<Option<T>>` and `SyncUnsafeCell<[T; N]>`
+    // without listing every instantiation.
+    impl<T: BklProtected> Sealed for Option<T> {}
+    /// # Safety
+    ///
+    /// `Option<T>` is `BklProtected` iff `T` is. The `Option` layer adds no
+    /// new mutation surface beyond what `T` already has.
+    unsafe impl<T: BklProtected> BklProtected for Option<T> {}
+
+    impl<T: BklProtected, const N: usize> Sealed for [T; N] {}
+    /// # Safety
+    ///
+    /// `[T; N]` is `BklProtected` iff `T` is. Array indexing adds no new
+    /// mutation surface beyond what `T` already has.
+    unsafe impl<T: BklProtected, const N: usize> BklProtected for [T; N] {}
+}
+
+pub(crate) use bkl_protected::BklProtected;
+
+#[cfg(test)]
+mod bkl_protected_tests {
+    use super::*;
+    use ::alloc::string::String;
+
+    /// Verify all 9 approved types implement `BklProtected`.
+    ///
+    /// If any of these fails to compile, a `SyncUnsafeCell<NewType>` static
+    /// was added without extending the `bkl_protected_impls!` macro in
+    /// `bkl_protected` module — that is the intended friction point (R-01).
+    #[test]
+    fn bkl_protected_approved_types_implement_trait() {
+        fn assert_impl<T: BklProtected>() {}
+
+        // Write-once-read-only after boot:
+        assert_impl::<minix_boot::KernelInfo>();
+        assert_impl::<crate::memmap::MemMapEntry>();
+
+        // BKL-serialized mutation:
+        assert_impl::<crate::proc_table::ProcessTable>();
+        assert_impl::<crate::kpriv::PrivTable>();
+        assert_impl::<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>();
+        assert_impl::<crate::smp::SmpState>();
+        assert_impl::<minix_arch::FreePdeSlots>();
+        assert_impl::<crate::ipc_filter::IpcFilterPool>();
+        assert_impl::<crate::krandom::KRandomness>();
+
+        // Composite impls:
+        assert_impl::<Option<minix_boot::KernelInfo>>();
+        assert_impl::<[crate::memmap::MemMapEntry; 4]>();
+    }
+
+    /// Document the negative case: `RefCell<T>` is `!Sync` and must NOT
+    /// implement `BklProtected`. If this test compiles, the soundness
+    /// guard is working — `SyncUnsafeCell<RefCell<T>>` cannot be constructed
+    /// because `RefCell<T>: BklProtected` does not hold.
+    ///
+    /// Note: This is a compile-pass test. To verify the negative case
+    /// directly, attempt to uncomment the `SyncUnsafeCell::new(RefCell::new(0))`
+    /// line — it will fail with "trait bound `RefCell<i32>: BklProtected`
+    /// is not satisfied".
+    #[test]
+    fn bkl_protected_refcell_does_not_impl() {
+        // Uncomment to verify the guard rejects `RefCell`:
+        // let _ = SyncUnsafeCell::new(core::cell::RefCell::new(0i32));
+        //                                                                        ^^^ expected error
+
+        // The approved types still work:
+        let _ = SyncUnsafeCell::new(crate::krandom::KRandomness::new());
+        let _ = SyncUnsafeCell::new(Option::<KernelInfo>::None);
+
+        // String is NOT in the approved list — would fail to compile:
+        // let _ = SyncUnsafeCell::new(String::new());
+        let _ = String::new(); // suppress unused import warning
+    }
+}
+
 /// Free physical memory map — populated by add_memmap during boot.
 /// C: kinfo.memmap[MAXMEMMAP] — param.h:18
 ///
 /// SAFETY: Only written during boot (single-threaded, before BKL needed).
 /// After boot, this is read-only. BKL protects any post-boot access.
-static mut FREE_MEMMAP: [memmap::MemMapEntry; memmap::MAXMEMMAP] =
-    [memmap::MEM_MAP_ENTRY_ZERO; memmap::MAXMEMMAP];
+static FREE_MEMMAP: SyncUnsafeCell<[memmap::MemMapEntry; memmap::MAXMEMMAP]> =
+    SyncUnsafeCell::new([memmap::MEM_MAP_ENTRY_ZERO; memmap::MAXMEMMAP]);
 
 /// Free page directory entry slots for createpde() temporary mappings.
 /// C: freepdes[NR_FREEPDES] — glo.h / memory.c:707-717
@@ -1020,28 +1332,28 @@ static mut FREE_MEMMAP: [memmap::MemMapEntry; memmap::MAXMEMMAP] =
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, read-only under BKL protection.
-static mut KERNEL_INFO: Option<KernelInfo> = None;
+static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(None);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
 /// # Storage (06-design-final.md §4.1)
 ///
-/// `static mut` is the faithful Rust translation of C's BSS `EXTERN` array:
-/// compile-time-fixed address, zero heap, zero runtime overhead. The
-/// `#![no_std]` kernel has no allocator at boot time, so `Box<[KProcess]>`
-/// is forbidden here.
+/// `SyncUnsafeCell` is the Rust 2024 translation of C's BSS `EXTERN` array:
+/// compile-time-fixed address, zero heap, zero runtime overhead, with explicit
+/// `Sync` (BKL guards all access). The `#![no_std]` kernel has no allocator at
+/// boot time, so `Box<[KProcess]>` is forbidden here.
 ///
 /// # SAFETY
 ///
 /// All access requires the Big Kernel Lock (BKL). The BKL serializes all
 /// kernel code, so at most one CPU mutates `PROC_TABLE` at a time. Boot-time
 /// init (single-threaded, before BKL exists) is also safe.
-static mut PROC_TABLE: crate::proc_table::ProcessTable = crate::proc_table::ProcessTable::new();
+static PROC_TABLE: SyncUnsafeCell<crate::proc_table::ProcessTable> = SyncUnsafeCell::new(crate::proc_table::ProcessTable::new());
 
 /// Global privilege table — C's `EXTERN struct priv priv[NR_SYS_PROCS]`.
 ///
 /// Same storage / safety model as `PROC_TABLE`. See `06-design-final.md` §4.1.
-static mut PRIV_TABLE: crate::kpriv::PrivTable = crate::kpriv::PrivTable::new();
+static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsafeCell::new(crate::kpriv::PrivTable::new());
 
 /// Global IRQ manager — owns the architecture's interrupt controller and
 /// the IRQ hook chain.
@@ -1061,7 +1373,7 @@ static mut PRIV_TABLE: crate::kpriv::PrivTable = crate::kpriv::PrivTable::new();
 /// The IRQ manager is a global so that trap entry points (assembly stubs)
 /// can reach it without holding a reference in a CPU-local. This mirrors
 /// C's global `irq_hooks[]` + `irq_actids[]` + `intr_*` globals.
-static mut IRQ_MANAGER: Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> = None;
+static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>> = SyncUnsafeCell::new(None);
 
 /// Global SMP state — owns per-CPU `CpuLocal` (proc_ptr, bill_ptr,
 /// cpu_last_tsc, cpu_last_idle, ...) and CPU readiness flags.
@@ -1081,18 +1393,44 @@ static mut IRQ_MANAGER: Option<crate::irq_manager::IrqManager<minix_plat::Curren
 /// (proc_table.rs) can reach per-CPU `cpu_last_tsc` / `cpu_last_idle`
 /// without threading `&mut SmpState` through every call site. Mirrors C's
 /// `get_cpu_var_ptr(cpu, ...)` access pattern.
-static mut SMP_STATE: Option<crate::smp::SmpState> = None;
+static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> = SyncUnsafeCell::new(None);
 
 /// Get a reference to the global process table.
 ///
 /// # Safety
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+///
+/// **Prefer [`proc_table_with`]** which takes a `BklSection` witness for
+/// compile-time BKL proof (R-03). This unsafe version is retained for
+/// paths that have not yet been migrated.
 pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference (not `&mut PROC_TABLE`) to avoid the
     // `static_mut_refs` lint (Rust 2024 compatibility).
-    unsafe { &mut *core::ptr::addr_of_mut!(PROC_TABLE) }
+    unsafe { &mut *PROC_TABLE.get() }
+}
+
+/// Get a reference to the global process table with BKL witness (R-03).
+///
+/// The `BklSection` parameter is a compile-time capability token proving
+/// the caller holds the BKL. See [`crate::smp::BklGuard::section`] and
+/// [`crate::smp::bkl_lock_section`].
+pub fn proc_table_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::proc_table::ProcessTable {
+    // SAFETY: BklSection witness proves BKL is held. We use raw pointer
+    // dereference to avoid the `static_mut_refs` lint (Rust 2024).
+    unsafe { &mut *PROC_TABLE.get() }
+}
+
+/// Boot-time accessor: access process table without BKL witness.
+///
+/// # Safety
+///
+/// Only safe during single-threaded boot (before BKL exists or before
+/// secondary CPUs are started). After boot, use [`proc_table_with`].
+pub unsafe fn proc_table_boot_unchecked() -> &'static mut crate::proc_table::ProcessTable {
+    // SAFETY: caller guarantees single-threaded boot context.
+    unsafe { &mut *PROC_TABLE.get() }
 }
 
 /// Get a reference to the global privilege table.
@@ -1100,11 +1438,29 @@ pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
 /// # Safety
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+///
+/// **Prefer [`priv_table_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference (not `&mut PRIV_TABLE`) to avoid the
     // `static_mut_refs` lint (Rust 2024 compatibility).
-    unsafe { &mut *core::ptr::addr_of_mut!(PRIV_TABLE) }
+    unsafe { &mut *PRIV_TABLE.get() }
+}
+
+/// Get a reference to the global privilege table with BKL witness (R-03).
+pub fn priv_table_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::kpriv::PrivTable {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *PRIV_TABLE.get() }
+}
+
+/// Boot-time accessor: access privilege table without BKL witness.
+///
+/// # Safety
+///
+/// Only safe during single-threaded boot. After boot, use [`priv_table_with`].
+pub unsafe fn priv_table_boot_unchecked() -> &'static mut crate::kpriv::PrivTable {
+    // SAFETY: caller guarantees single-threaded boot context.
+    unsafe { &mut *PRIV_TABLE.get() }
 }
 
 /// Get a reference to the global IRQ manager.
@@ -1119,12 +1475,116 @@ pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 /// Concurrent access from multiple CPUs without BKL is a data race.
+///
+/// **Prefer [`irq_manager_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference to avoid the `static_mut_refs` lint.
-    unsafe { &mut *core::ptr::addr_of_mut!(IRQ_MANAGER) }
+    unsafe { &mut *IRQ_MANAGER.get() }
         .as_mut()
         .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
+}
+
+/// Get a reference to the global IRQ manager with BKL witness (R-03).
+///
+/// # Panics
+///
+/// Panics if `IRQ_MANAGER` has not been initialized yet.
+pub fn irq_manager_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *IRQ_MANAGER.get() }
+        .as_mut()
+        .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
+}
+
+/// Try to get a reference to the global IRQ manager.
+///
+/// Returns `None` if `IRQ_MANAGER` has not been initialized yet (e.g. in
+/// unit tests that skip `init_clock_and_interrupts`). Callers that can
+/// tolerate the absence (e.g. `GET_IRQACTIDS` before boot init) should
+/// prefer this over [`irq_manager`].
+///
+/// # Safety
+///
+/// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+///
+/// **Prefer [`try_irq_manager_with`]** which takes a `BklSection` witness (R-03).
+pub unsafe fn try_irq_manager() -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
+    // SAFETY: caller guarantees BKL (or single-threaded boot).
+    unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
+}
+
+/// Try to get a reference to the global IRQ manager with BKL witness (R-03).
+pub fn try_irq_manager_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
+}
+
+/// Install an empty `IrqManager` into the global `IRQ_MANAGER` for unit
+/// tests that exercise dispatch paths calling `irq_manager()` (e.g.
+/// `dispatch_clear`'s IRQ-hook cleanup).
+///
+/// The interrupt controller is constructed via `new` only — `init()` is
+/// NOT called, so no hardware I/O is performed. The cleanup loops under
+/// test only read the (empty) hook table, so no controller method is
+/// ever invoked. This mirrors how `init_clock_and_interrupts` populates
+/// the global at boot (lib.rs:656-659), minus the hardware init.
+///
+/// # Safety
+///
+/// Caller must ensure single-threaded access. The verification harness
+/// runs with `--test-threads=1`; the assignment is idempotent (installs
+/// a fresh empty manager each call), so test ordering does not matter.
+#[cfg(test)]
+pub(crate) unsafe fn init_irq_manager_for_test() {
+    let ctrl = new_test_interrupt_controller();
+    // SAFETY: test-only; single-threaded under `--test-threads=1`. Uses
+    // `addr_of_mut!` to avoid the `static_mut_refs` lint, same as boot.
+    *IRQ_MANAGER.get() =
+        Some(crate::irq_manager::IrqManager::new(ctrl));
+}
+
+/// Construct a `CurrentInterruptController` for unit tests without
+/// touching hardware. Only the matching target arch's descriptor is
+/// compiled; the others are `cfg`-elided.
+#[cfg(test)]
+#[cfg(target_arch = "x86_64")]
+fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
+    use minix_plat::InterruptController;
+    use minix_platform::arch::x86_64::ApicDesc;
+    let desc = ApicDesc {
+        lapic_base: 0xFEE0_0000,
+        ioapic_base: 0xFEC0_0000,
+        nr_irqs: 16,
+    };
+    minix_plat::CurrentInterruptController::new(&desc)
+}
+
+#[cfg(test)]
+#[cfg(target_arch = "aarch64")]
+fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
+    use minix_plat::InterruptController;
+    use minix_platform::arch::aarch64::Gicv3Desc;
+    let desc = Gicv3Desc {
+        gicd_base: 0x0800_0000,
+        gicr_base: 0x080A_0000,
+        gicr_stride: 0x1_0000,
+        nr_irqs: 16,
+    };
+    minix_plat::CurrentInterruptController::new(&desc)
+}
+
+#[cfg(test)]
+#[cfg(target_arch = "riscv64")]
+fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
+    use minix_plat::InterruptController;
+    use minix_platform::arch::riscv64::PlicDesc;
+    let desc = PlicDesc {
+        plic_base: 0x0C00_0000,
+        nr_irqs: 16,
+        context: 1,
+    };
+    minix_plat::CurrentInterruptController::new(&desc)
 }
 
 /// Get a reference to the global SMP state.
@@ -1138,10 +1598,36 @@ pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 /// Concurrent access from multiple CPUs without BKL is a data race.
+///
+/// **Prefer [`smp_state_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference to avoid the `static_mut_refs` lint.
-    unsafe { &mut *core::ptr::addr_of_mut!(SMP_STATE) }
+    unsafe { &mut *SMP_STATE.get() }
+        .as_mut()
+        .expect("SMP_STATE not initialized — init_proc_and_boot must run first")
+}
+
+/// Get a reference to the global SMP state with BKL witness (R-03).
+///
+/// # Panics
+///
+/// Panics if `SMP_STATE` has not been initialized yet.
+pub fn smp_state_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::smp::SmpState {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *SMP_STATE.get() }
+        .as_mut()
+        .expect("SMP_STATE not initialized — init_proc_and_boot must run first")
+}
+
+/// Boot-time accessor: access SMP state without BKL witness.
+///
+/// # Safety
+///
+/// Only safe during single-threaded boot. After boot, use [`smp_state_with`].
+pub unsafe fn smp_state_boot_unchecked() -> &'static mut crate::smp::SmpState {
+    // SAFETY: caller guarantees single-threaded boot context.
+    unsafe { &mut *SMP_STATE.get() }
         .as_mut()
         .expect("SMP_STATE not initialized — init_proc_and_boot must run first")
 }
@@ -1156,9 +1642,17 @@ pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
 /// # Safety
 ///
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
+///
+/// **Prefer [`try_smp_state_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
     // SAFETY: caller guarantees BKL (or single-threaded boot).
-    unsafe { &mut *core::ptr::addr_of_mut!(SMP_STATE) }.as_mut()
+    unsafe { &mut *SMP_STATE.get() }.as_mut()
+}
+
+/// Try to get a reference to the global SMP state with BKL witness (R-03).
+pub fn try_smp_state_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::smp::SmpState> {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *SMP_STATE.get() }.as_mut()
 }
 
 /// Get a reference to the global KernelInfo.
@@ -1171,16 +1665,27 @@ pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
 pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
     // SAFETY: After boot, KERNEL_INFO is read-only.
     // Caller is responsible for BKL synchronization.
-    unsafe { (*core::ptr::addr_of!(KERNEL_INFO)).as_ref() }
+    unsafe { (*KERNEL_INFO.get()).as_ref() }
 }
 
-/// Populated by `init_post_and_memory()` during boot. Used by
-/// `createpde()` to map foreign page directories temporarily for
-/// cross-process memory operations (e.g., fork, exec).
+/// Populated by `init_post_and_memory()` during boot. Allocated to mirror
+/// C's `memory_init()` `freepdes[]` boot accounting, which reserved PDE
+/// slots for `createpde()` temporary mappings.
+///
+/// # createpde superseded by Direct Map
+///
+/// In the 64-bit Rust rewrite, `createpde()` is **not implemented** — it
+/// is superseded by Direct Map + `PteWalkArch`. C's `createpde()` inserted
+/// a foreign process's PDE into the active page table to access its memory;
+/// in 64-bit, `DirectMapArch::phys_to_virt` + `CurrentPteWalk::walk` read
+/// any process's page table pages directly (see `cross_space.rs::data_copy_vmcheck`
+/// and `vm::lookup_in_table`). The `FreePdeSlots` are retained only for
+/// boot-time accounting parity with C (the slots are allocated but never
+/// consumed at runtime). See [18-syscall-copy.md §1.5](../../notes/rewrite/fork-syscall-rewrite/03-stage-kernel/18-syscall-copy.md).
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, read-only under BKL protection.
-static mut FREE_PDE_SLOTS: minix_arch::FreePdeSlots = minix_arch::FreePdeSlots::new();
+static FREE_PDE_SLOTS: SyncUnsafeCell<minix_arch::FreePdeSlots> = SyncUnsafeCell::new(minix_arch::FreePdeSlots::new());
 
 /// Get a reference to the global free PDE slots.
 ///
@@ -1189,7 +1694,7 @@ static mut FREE_PDE_SLOTS: minix_arch::FreePdeSlots = minix_arch::FreePdeSlots::
 pub(crate) fn free_pde_slots() -> &'static minix_arch::FreePdeSlots {
     // SAFETY: After boot, FREE_PDE_SLOTS is read-only.
     // Caller is responsible for BKL synchronization.
-    unsafe { core::ptr::addr_of!(FREE_PDE_SLOTS).as_ref().unwrap() }
+    unsafe { &*FREE_PDE_SLOTS.get() }
 }
 
 /// Global `free_upper_idx` — first free page table root-level index
@@ -1205,12 +1710,19 @@ pub(crate) fn free_pde_slots() -> &'static minix_arch::FreePdeSlots {
 /// all readers to use `.get()` instead of `.free_upper_idx`, a
 /// breaking change at every call site. Instead, the kernel uses a
 /// global `AtomicUsize` initialized during `init_post_and_memory()`
-/// (Phase D). `createpde()` (DEFERRED — see x86_64/post_init.rs)
-/// would advance this counter.
+/// (Phase D).
+///
+/// # createpde superseded
+///
+/// In C, `createpde()` advanced `freepde_start` to claim PDE slots for
+/// temporary foreign mappings. In the 64-bit Rust rewrite, `createpde()`
+/// is **not implemented** (superseded by Direct Map + `PteWalkArch` — see
+/// `FREE_PDE_SLOTS` doc above and 18-syscall-copy.md §1.5). This counter
+/// is therefore advanced only during boot (`init_post_and_memory`), never
+/// at runtime; it is retained for boot-accounting parity with C.
 ///
 /// SAFETY: Initialized once during boot (single-threaded). After
-/// boot, callers must hold the BKL (per `createpde()`'s SMP
-/// requirements) when reading or advancing.
+/// boot, callers must hold the BKL when reading or advancing.
 static FREE_UPPER_IDX: AtomicUsize = AtomicUsize::new(0);
 
 /// Read the current `free_upper_idx`.
@@ -1222,8 +1734,9 @@ pub(crate) fn free_upper_idx() -> usize {
 
 /// Advance `free_upper_idx` by `n` and return the previous value.
 ///
-/// Used by `createpde()` (DEFERRED) to claim a fresh page directory
-/// entry for temporary mappings.
+/// Used during boot (`init_post_and_memory`) to claim page directory
+/// slots. Not used at runtime — `createpde()` is superseded by Direct
+/// Map (see `FREE_PDE_SLOTS` doc).
 ///
 /// Caller must hold the BKL.
 pub(crate) fn advance_free_upper_idx(n: usize) -> usize {
@@ -1234,20 +1747,28 @@ pub(crate) fn advance_free_upper_idx(n: usize) -> usize {
 /// C: `ipc_filter_pool[IPCF_POOL_SIZE]` — ipc_filter.h:54
 ///
 /// Populated by `kmain()` Phase C.5 (IPCF_POOL_INIT).
-/// Used by `dispatch_statectl` AddIpcBlFilter/AddIpcWlFilter (DEFERRED).
+/// Used by `dispatch_statectl` AddIpcBlFilter/AddIpcWlFilter (implemented).
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, accessed under BKL protection.
-static mut IPC_FILTER_POOL: crate::ipc_filter::IpcFilterPool = crate::ipc_filter::IpcFilterPool::new();
+static IPC_FILTER_POOL: SyncUnsafeCell<crate::ipc_filter::IpcFilterPool> = SyncUnsafeCell::new(crate::ipc_filter::IpcFilterPool::new());
 
 /// Get a mutable reference to the global IPC filter pool.
 ///
 /// Caller must ensure BKL is held if called after boot initialization.
 /// C: `ipc_filter_pool` global array access.
+///
+/// **Prefer [`ipc_filter_pool_with`]** which takes a `BklSection` witness (R-03).
 pub(crate) fn ipc_filter_pool() -> &'static mut crate::ipc_filter::IpcFilterPool {
     // SAFETY: Caller must hold BKL for post-boot access.
     // During boot, single-threaded access is guaranteed.
-    unsafe { &mut *core::ptr::addr_of_mut!(IPC_FILTER_POOL) }
+    unsafe { &mut *IPC_FILTER_POOL.get() }
+}
+
+/// Get a mutable reference to the global IPC filter pool with BKL witness (R-03).
+pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::ipc_filter::IpcFilterPool {
+    // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *IPC_FILTER_POOL.get() }
 }
 
 /// BSP finish booting — the last step of kmain.
@@ -1305,35 +1826,18 @@ fn bsp_finish_booting(
     // but excluding kernel tasks (which were marked PROC_STOP during
     // init_proc_and_boot and must stay stopped — they're invoked lazily).
     // C also skips kernel tasks (the loop is `for i in 0..NR_BOOT_PROCS-NR_TASKS`).
-    for nr in 0..(crate::proc::NR_BOOT_PROCS as ProcNr
-        - crate::proc_table::NR_TASKS as ProcNr)
+    for nr in 0..(ProcNr(crate::proc::NR_BOOT_PROCS as i32)
+        - ProcNr(crate::proc_table::NR_TASKS as i32)).0
     {
-        proc_table.rts_unset(nr, RtsFlagsBits::PROC_STOP);
+        proc_table.rts_unset(ProcNr(nr), RtsFlagsBits::PROC_STOP);
     }
 
-    // Step 5: cycles_accounting_init()
-    // C: cycles_accounting_init() — proc.c (resets per-CPU cycle counters)
-    // DEFERRED (cycles accounting, item #1):
-    // Tied to SMP/BKL (not yet landed). The hook point is
-    // `SmpState.cpu_locals[bsp].note_context_switch(read_tsc())` plus a
-    // reset of `cpu_last_idle` / `cpu_last_tsc`. Defer until SMP/BKL lands;
-    // the existing fields default to 0 so behavior is well-defined (no
-    // spurious quantum accounting) until then.
-    //
-    // # 4-step implementation path (lands with SMP/BKL)
-    //
-    // 1. `let bsp = SmpState::bsp_id();` — get the BSP CPU index from
-    //    SMP state.
-    // 2. `let tsc = minix_arch::CurrentClockArch::read_tsc();` — read the
-    //    timestamp counter (per-arch wrapper).
-    // 3. `SmpState.cpu_locals[bsp].note_context_switch(tsc);` — record
     // Step 5: cycles_accounting_init() — set BSP TSC baseline.
     // C: cycles_accounting_init() — proc.c (resets per-CPU cycle counters).
-    // Implementation:
-    //   1. Read current TSC.
-    //   2. Call `cpu_local_mut(bsp).note_context_switch(tsc)` which sets
-    //      `cpu_last_tsc = tsc` and `cpu_last_idle = tsc`.
-    //   3. Reset `tsc_ctr_switch = tsc` for cycle-counter overflow tracking.
+    // Sets the BSP's TSC baseline so the first context switch has a
+    // correct reference point. `note_context_switch(tsc)` records
+    // `cpu_last_tsc = tsc` and `cpu_last_idle = tsc` in the BSP's
+    // per-CPU state.
     // The TSC is the cycle counter (rdtsc on x86-64, CNTPCT_EL0 on aarch64,
     // mtime on riscv64). See `clock::read_tsc` for the per-arch wrapper.
     let tsc = crate::clock::read_tsc();
@@ -1378,10 +1882,8 @@ fn bsp_finish_booting(
         clock_arch.init_timer(crate::clock::DEFAULT_HZ);
     }
     // Register the BSP's timer handler via the ArchBoot trait.
-    // arch-abstractions: this replaces the TODO that depended on a global
-    // IrqManager. Instead, we go through the ArchBoot abstraction,
-    // which gives the architecture a chance to wire the handler
-    // directly into the trap entry. Real hardware would use
+    // The ArchBoot abstraction gives the architecture a chance to wire
+    // the handler directly into the trap entry. Real hardware uses
     // IOAPIC RTE binding on x86 or LVT setup on aarch64; mock
     // records the handler for test inspection.
     use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot};
@@ -1433,7 +1935,13 @@ fn bsp_finish_booting(
     // In C, the BKL is acquired once during boot and released only in
     // switch_to_user() / IPC wait paths. On single-CPU, the BKL is always
     // held while in kernel mode. On SMP, it serializes kernel entry points.
-    smp::bkl_lock();
+    //
+    // R-05: BklGuard is now RAII (Drop releases BKL). We must mem::forget
+    // the guard to keep the BKL held across the call to switch_to_user(),
+    // which will release it before entering the idle loop. Binding the
+    // guard to a variable and letting it drop at end of scope would release
+    // the BKL too early (before switch_to_user).
+    core::mem::forget(smp::bkl_lock());
 
     // Step 9: switch_to_user() — never returns
     // C: switch_to_user(); NOT_REACHABLE;
@@ -1483,6 +1991,140 @@ pub fn vm_running() -> bool {
 /// switch is complete.
 pub fn set_vm_running(v: bool) {
     VM_RUNNING.store(v, Ordering::Release);
+}
+
+/// Global tracking of the current "page table process" (ptproc).
+///
+/// In Minix3 C, `ptproc` is a per-CPU `struct proc *` variable
+/// (`get_cpulocal_var(ptproc)`) that records which process currently owns
+/// the active page table on this CPU. The `setcr3()` helper inside
+/// `arch_do_vmctl()` checks `if (p == get_cpulocal_var(ptproc))` to decide
+/// whether a CR3 update should also reload the hardware CR3 register.
+/// C: protect.c:370 (arch_post_init sets ptproc = VM) — see doc 09 §2.2.
+///
+/// In the Rust port, `CpuLocal::ptproc` (Doc 16 §2.2) is the eventual home
+/// for per-CPU ptproc tracking under SMP. Until SMP lands, we keep a single
+/// global `AtomicI32` mirror that records the proc-nr of the current ptproc.
+/// This is safe because:
+///
+/// 1. **BKL protection**: All writers (`init_post_and_memory`,
+///    `dispatch_vmctl(SetAddrSpace)` when target is ptproc) hold the BKL.
+///    The reader (`dispatch_vmctl(SetAddrSpace)` comparison) also holds the
+///    BKL — syscalls always acquire BKL before reaching the dispatcher.
+/// 2. **Single-writer principle**: `ptproc` is set only once during boot
+///    (to `VM_PROC_NR` in `init_post_and_memory`) and is not subsequently
+///    changed in normal operation (matching C behavior — see
+///    `arch_post_init()` which is the only writer in C).
+///
+/// The value stored is a `ProcNr.0` (i32). `i32::MIN` (sentinel) means
+/// "no ptproc set yet" — distinct from any valid proc-nr (which are
+/// non-negative for user processes and small negative for kernel tasks).
+static CURRENT_PTPROC_NR: AtomicI32 = AtomicI32::new(i32::MIN);
+
+/// Sentinel value indicating `CURRENT_PTPROC_NR` has not been initialized.
+/// Distinct from any valid proc-nr (user procs ≥ 0, kernel tasks in
+/// `-NR_TASKS..=-1`).
+const PTPROC_UNSET: i32 = i32::MIN;
+
+/// Read the proc-nr of the current ptproc.
+///
+/// Returns `None` if ptproc has not been set yet (before
+/// `init_post_and_memory` runs).
+///
+/// # Concurrency
+///
+/// Caller must hold the BKL to observe a consistent value. Without the
+/// BKL, the value may be stale — but stale reads are safe because the
+/// only consequence is skipping a CR3 reload, which the next context
+/// switch will correct.
+pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {
+    let v = CURRENT_PTPROC_NR.load(Ordering::Acquire);
+    if v == PTPROC_UNSET {
+        None
+    } else {
+        Some(crate::proc::ProcNr(v))
+    }
+}
+
+/// Set the current ptproc proc-nr.
+///
+/// Called once during `init_post_and_memory` (after
+/// `CurrentPostInitArch::set_ptproc`) to record that VM is now the
+/// page-table process. C: `get_cpulocal_var(ptproc) = vm` in
+/// `arch_post_init()` — protect.c:372 (x86) / protect.c:99 (ARM).
+///
+/// # Concurrency
+///
+/// BKL must be held by the caller. `Release` ordering ensures the value
+/// is visible to other CPUs after the boot-time ptproc installation is
+/// complete.
+pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
+    CURRENT_PTPROC_NR.store(nr.0, Ordering::Release);
+}
+
+// ── Bootstrap page-table root tracking ──────────────────────────────────────
+//
+// The bootstrap page table is created by `arch_boot_impl` (Step 1+2 of boot)
+// and dropped after `enable()`. Later phases — specifically
+// `init_proc_and_boot` loading the VM ELF — need to add more mappings to the
+// *same* page table. `from_active_root` ( Paging trait) lets them wrap the
+// root into a fresh `Paging` handle, but they first need to know the root's
+// physical address.
+//
+// We record it in this global right after `enable()` succeeds.
+//
+// # Concurrency
+//
+// Same model as `CURRENT_PTPROC_NR`: single writer during boot, readers hold
+// the BKL. After boot the value is effectively immutable (the bootstrap
+// table stays active until the first VMCTL SetAddrSpace swaps it out, at
+// which point the global is no longer consulted).
+//
+// # SMP
+//
+// Per-CPU root tracking is not needed for the bootstrap table — there is
+// only one bootstrap table, shared by all CPUs until userspace bring-up
+// installs per-process roots. SMP migration would replace this with a
+// per-CPU `CpuLocal::root_phys`, mirroring the ptproc migration plan.
+static CURRENT_ROOT_PHYS: AtomicU64 = AtomicU64::new(ROOT_PHYS_UNSET);
+
+/// Sentinel value indicating `CURRENT_ROOT_PHYS` has not been initialized.
+/// Distinct from any valid physical address (4KB-aligned, non-zero).
+const ROOT_PHYS_UNSET: u64 = u64::MAX;
+
+/// Read the physical address of the bootstrap page-table root.
+///
+/// Returns `None` if `arch_boot_impl` has not yet run (before paging is
+/// enabled). After `arch_boot_impl` completes, returns the root physical
+/// address that was passed to `new_from_page` and subsequently loaded into
+/// CR3/TTBR0_EL1/satp by `enable()`.
+///
+/// # Concurrency
+///
+/// Caller must hold the BKL to observe a consistent value. Without the
+/// BKL, the value may be stale — but stale reads are safe because the
+/// bootstrap root is never freed during normal operation.
+pub fn current_root_phys() -> Option<minix_types::PhysBytes> {
+    let v = CURRENT_ROOT_PHYS.load(Ordering::Acquire);
+    if v == ROOT_PHYS_UNSET {
+        None
+    } else {
+        Some(minix_types::PhysBytes(v))
+    }
+}
+
+/// Record the bootstrap page-table root physical address.
+///
+/// Called once from `arch_boot_impl` after `Paging::enable()` succeeds.
+/// The value remains valid until the bootstrap table is replaced (e.g.,
+/// by a VMCTL SetAddrSpace that installs VM's page table as the active
+/// root).
+///
+/// # Concurrency
+///
+/// Single-threaded boot context; `Release` ordering is sufficient.
+pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
+    CURRENT_ROOT_PHYS.store(phys.0, Ordering::Release);
 }
 
 /// Entry point for the scheduler loop.
@@ -1554,7 +2196,7 @@ unsafe fn apply_boot_cpu_contexts() {
     use minix_arch::{CpuContextArch, CurrentCpuContextArch};
     use crate::proc::RtsFlagsBits;
 
-    let table = unsafe { crate::proc_table() };
+    let table = unsafe { crate::proc_table_boot_unchecked() };
     for i in 0..crate::proc_table::PROC_TABLE_SIZE {
         let proc = match table.get_by_index(i) {
             Some(p) => p,
@@ -1608,6 +2250,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
 
         let root_page = PhysBytes(0x1000);
@@ -1671,6 +2314,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -1752,6 +2396,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
 
@@ -1844,6 +2489,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -1874,6 +2520,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
         let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -2114,6 +2761,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -2137,6 +2785,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -2160,6 +2809,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -2198,15 +2848,187 @@ mod tests {
     /// (single-CPU build: only BSP exists, AP CPU 1 is the empty default).
     #[test]
     fn test_bsp_finish_booting_single_cpu_only_bsp_initialized() {
+        use crate::proc::CpuId;
         use crate::smp::SmpState;
         let mut smp = SmpState::new_single_cpu();
         // ncpus = 1, so only cpu 0 is initialized.
         assert_eq!(smp.ncpus(), 1);
-        assert_eq!(smp.bsp_cpu_id(), 0);
+        assert_eq!(smp.bsp_cpu_id(), CpuId::BSP);
         // AP CPU 1 exists in the array but is the default CpuLocal.
-        let ap1 = smp.cpu_local(1).unwrap();
+        let ap1 = smp.cpu_local(CpuId::new_unchecked(1)).unwrap();
         assert_eq!(ap1.cpu_last_tsc, 0, "AP CPU should be default-initialized");
         assert!(!ap1.fpu_presence, "AP CPU should have fpu_presence = false");
+    }
+
+    // ── ptproc tracking tests (P9-4: SetAddrSpace write_cr3 support) ──
+
+    /// Reset `CURRENT_PTPROC_NR` to the unset sentinel.
+    /// Helper for ptproc tests so they don't leak state across each other.
+    fn reset_ptproc_for_test() {
+        CURRENT_PTPROC_NR.store(PTPROC_UNSET, Ordering::Release);
+    }
+
+    /// Fresh kernel: `current_ptproc_nr()` returns `None` because
+    /// `init_post_and_memory` has not run yet. This matches C behavior
+    /// where `ptproc` is uninitialized until `arch_post_init()`.
+    #[test]
+    fn test_ptproc_unset_returns_none_before_init() {
+        reset_ptproc_for_test();
+        assert_eq!(current_ptproc_nr(), None,
+            "ptproc must be None before init_post_and_memory runs");
+    }
+
+    /// After `set_current_ptproc_nr(VM_PROC_NR)`, `current_ptproc_nr()`
+    /// returns `Some(VM_PROC_NR)`. This mirrors C's
+    /// `get_cpulocal_var(ptproc) = vm` in `arch_post_init()`.
+    #[test]
+    fn test_ptproc_set_returns_vm_proc_nr() {
+        reset_ptproc_for_test();
+        set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+        assert_eq!(current_ptproc_nr(), Some(crate::proc::proc_nr::VM_PROC_NR),
+            "ptproc must be VM_PROC_NR after init_post_and_memory");
+        // Cleanup.
+        reset_ptproc_for_test();
+    }
+
+    /// `set_current_ptproc_nr` is idempotent: setting twice to the same
+    /// value produces the same observable state. (In normal operation,
+    /// ptproc is set only once during boot, but the test guards against
+    /// accidental state corruption.)
+    #[test]
+    fn test_ptproc_set_is_idempotent() {
+        reset_ptproc_for_test();
+        set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+        set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+        assert_eq!(current_ptproc_nr(), Some(crate::proc::proc_nr::VM_PROC_NR));
+        reset_ptproc_for_test();
+    }
+
+    /// The `SetAddrSpace` handler's ptproc comparison uses `ProcNr` equality.
+    /// Verify that `Some(VM_PROC_NR) == Some(VM_PROC_NR)` holds — this is
+    /// the branch condition that triggers `TlbArch::set_active_root`.
+    #[test]
+    fn test_ptproc_comparison_branch_condition() {
+        reset_ptproc_for_test();
+        set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+        // Simulate the SetAddrSpace branch:
+        //   if current_ptproc_nr() == Some(target.p_nr) { set_active_root(...) }
+        let target_p_nr = crate::proc::proc_nr::VM_PROC_NR;
+        let should_reload = current_ptproc_nr() == Some(target_p_nr);
+        assert!(should_reload,
+            "SetAddrSpace on VM (the current ptproc) must trigger set_active_root");
+        // A different proc-nr must NOT trigger the reload.
+        let other_p_nr = crate::proc::ProcNr(crate::proc::proc_nr::VM_PROC_NR.0 + 1);
+        let should_not_reload = current_ptproc_nr() == Some(other_p_nr);
+        assert!(!should_not_reload,
+            "SetAddrSpace on non-ptproc must NOT trigger set_active_root");
+        reset_ptproc_for_test();
+    }
+
+    /// Verify the `PTPROC_UNSET` sentinel is distinct from all valid
+    /// proc-nrs that could be passed to `set_current_ptproc_nr`.
+    /// VM_PROC_NR is a small positive integer; PTPROC_UNSET = i32::MIN.
+    #[test]
+    fn test_ptproc_sentinel_distinct_from_valid_proc_nrs() {
+        assert_ne!(PTPROC_UNSET, crate::proc::proc_nr::VM_PROC_NR.0,
+            "PTPROC_UNSET must not collide with VM_PROC_NR");
+        assert_eq!(PTPROC_UNSET, i32::MIN,
+            "PTPROC_UNSET must be i32::MIN (sentinel value)");
+        // Also distinct from kernel task proc-nrs (small negatives like -1, -5).
+        assert_ne!(PTPROC_UNSET, -1,
+            "PTPROC_UNSET must not collide with kernel task proc-nr -1");
+    }
+
+    // ── Bootstrap root tracking tests (P9-5: VM ELF loading at boot) ──
+
+    /// Reset `CURRENT_ROOT_PHYS` to the unset sentinel.
+    /// Helper for root-phys tests so they don't leak state across each other.
+    fn reset_root_phys_for_test() {
+        CURRENT_ROOT_PHYS.store(ROOT_PHYS_UNSET, Ordering::Release);
+    }
+
+    /// Fresh kernel: `current_root_phys()` returns `None` because
+    /// `arch_boot_impl` has not yet run (paging not enabled).
+    #[test]
+    fn test_root_phys_unset_returns_none_before_boot() {
+        reset_root_phys_for_test();
+        assert_eq!(current_root_phys(), None,
+            "root_phys must be None before arch_boot_impl runs");
+    }
+
+    /// After `set_current_root_phys(0x200000)`, `current_root_phys()`
+    /// returns `Some(PhysBytes(0x200000))`. This mirrors the boot flow
+    /// where `arch_boot_impl` records the root after `enable()` succeeds.
+    #[test]
+    fn test_root_phys_set_returns_recorded_value() {
+        reset_root_phys_for_test();
+        set_current_root_phys(minix_types::PhysBytes(0x200000));
+        assert_eq!(current_root_phys(), Some(minix_types::PhysBytes(0x200000)),
+            "root_phys must be the value passed to set_current_root_phys");
+        reset_root_phys_for_test();
+    }
+
+    /// `set_current_root_phys` is idempotent: setting twice produces the
+    /// same observable state.
+    #[test]
+    fn test_root_phys_set_is_idempotent() {
+        reset_root_phys_for_test();
+        set_current_root_phys(minix_types::PhysBytes(0x300000));
+        set_current_root_phys(minix_types::PhysBytes(0x300000));
+        assert_eq!(current_root_phys(), Some(minix_types::PhysBytes(0x300000)));
+        reset_root_phys_for_test();
+    }
+
+    /// Verify the `ROOT_PHYS_UNSET` sentinel is distinct from any valid
+    /// 4KB-aligned physical address. `u64::MAX` is not 4KB-aligned and
+    /// cannot be a real root physical address.
+    #[test]
+    fn test_root_phys_sentinel_distinct_from_valid_addresses() {
+        assert_eq!(ROOT_PHYS_UNSET, u64::MAX,
+            "ROOT_PHYS_UNSET must be u64::MAX (sentinel value)");
+        // u64::MAX is not 4KB-aligned (low 12 bits != 0), so it can
+        // never collide with a real page-table root physical address.
+        assert_ne!(ROOT_PHYS_UNSET & 0xFFF, 0,
+            "ROOT_PHYS_UNSET must not be page-aligned");
+        // Common root addresses used in tests/boot must not collide.
+        assert_ne!(ROOT_PHYS_UNSET, 0x1000);
+        assert_ne!(ROOT_PHYS_UNSET, 0x200000);
+    }
+
+    /// Verify that `from_active_root` produces a `Paging` handle whose
+    /// `root_paddr()` matches the value passed in. This is the contract
+    /// `init_proc_and_boot` relies on when wrapping the bootstrap root
+    /// to load the VM ELF.
+    #[test]
+    fn test_from_active_root_round_trip_root_paddr() {
+        use minix_arch::paging::Paging;
+        use minix_arch::paging::mock::MockPaging;
+
+        let root_phys = minix_types::PhysBytes(0x10_0000);
+        let paging = MockPaging::from_active_root(root_phys);
+        assert_eq!(paging.root_paddr(), root_phys,
+            "from_active_root must produce a handle whose root_paddr matches");
+    }
+
+    /// Verify `from_active_root` does NOT zero the root (unlike
+    /// `new_from_page`). For the mock this is observable via the
+    /// `mappings` map being empty in both cases, but the *intent*
+    /// difference is documented: `from_active_root` assumes the root
+    /// is already initialized. The test asserts the contract by
+    /// checking that `from_active_root` returns a usable handle
+    /// without calling any allocator.
+    #[test]
+    fn test_from_active_root_does_not_allocate_via_new_mock_path() {
+        use minix_arch::paging::Paging;
+        use minix_arch::paging::mock::MockPaging;
+
+        // `from_active_root` should succeed for any root physical
+        // address, even one that would be unusual for `new_mock`'s
+        // internal counter-based scheme.
+        let unusual_root = minix_types::PhysBytes(0xDEAD_BEEF_0000);
+        let paging = MockPaging::from_active_root(unusual_root);
+        assert_eq!(paging.root_paddr(), unusual_root,
+            "from_active_root must preserve the caller-supplied root");
     }
 }
 

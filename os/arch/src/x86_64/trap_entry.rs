@@ -260,6 +260,27 @@ impl TrapEntryArch for X86_64TrapEntry {
         }
     }
 
+    fn configure_ipc_entry(&mut self, entry_point: VirBytes) {
+        // x86-64: Install the IPC handler as IDT vector 33 (IPC_VECTOR).
+        // This is a separate IDT gate from vector 32 (KERN_CALL_VECTOR),
+        // allowing the CPU to dispatch directly to the IPC handler when
+        // user space triggers INT 33 (or the equivalent syscall fast path).
+        //
+        // The gate is a trap gate (IF not modified) with DPL=3 so user
+        // mode can invoke it. IST=0 (no separate stack for IPC).
+        //
+        // C: protect.c:147
+        //   { ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE },
+        // where USER_PRIVILEGE = 3 (DPL=3, user accessible).
+        self.set_gate(
+            crate::trap_entry::IPC_VECTOR.get(),
+            entry_point.get(),
+            /* dpl = */ 3,
+            /* ist = */ 0,
+            /* is_trap = */ true,
+        );
+    }
+
     fn load(&self) {
         let idtr = IdtPtr {
             limit: (core::mem::size_of_val(&self.idt) - 1) as u16,
@@ -506,5 +527,53 @@ mod tests {
             let dpl = (entry.idt[vec as usize].p_dpl_type >> 5) & 0x3;
             assert_eq!(dpl, 0, "Vector {} must have DPL=0", vec);
         }
+    }
+
+    #[test]
+    fn configure_ipc_entry_sets_idt_gate_33() {
+        // Phase 1A: configure_ipc_entry must install the IPC handler as
+        // IDT vector 33 (IPC_VECTOR) with:
+        //   - DPL=3 (user accessible, so user mode can invoke IPC trap)
+        //   - IST=0 (no separate stack for IPC)
+        //   - Type=trap gate (0xF, IF not modified on entry)
+        //   - Present bit set
+        //   - Handler address correctly split across offset_low/mid/high
+        // C: protect.c:147 `{ ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE }`
+        //    where USER_PRIVILEGE = 3 (DPL=3, user accessible).
+        use crate::trap_entry::IPC_VECTOR;
+
+        let mut entry = X86_64TrapEntry::init();
+        let handler_addr: u64 = 0xFFFF_8000_0000_2000;
+        entry.configure_ipc_entry(VirBytes::new(handler_addr));
+
+        let idx = IPC_VECTOR.get() as usize; // 33
+        assert_eq!(idx, 33, "IPC_VECTOR must be 33");
+
+        // Handler address reconstructed from offset_low/mid/high
+        let reconstructed = (entry.idt[idx].offset_low as u64)
+            | ((entry.idt[idx].offset_mid as u64) << 16)
+            | ((entry.idt[idx].offset_high as u64) << 32);
+        assert_eq!(
+            reconstructed, handler_addr,
+            "configure_ipc_entry must write handler address to IDT[33]"
+        );
+
+        // DPL=3 (user accessible)
+        let dpl = (entry.idt[idx].p_dpl_type >> 5) & 0x3;
+        assert_eq!(dpl, 3, "IPC gate must have DPL=3 (user accessible)");
+
+        // IST=0 (no separate stack)
+        assert_eq!(entry.idt[idx].ist, 0, "IPC gate must use IST=0");
+
+        // Type=trap gate (0xF)
+        let gate_type = entry.idt[idx].p_dpl_type & 0xF;
+        assert_eq!(gate_type, GATE_TYPE_TRAP, "IPC gate must be a trap gate (0xF)");
+
+        // Present bit set
+        assert_ne!(
+            entry.idt[idx].p_dpl_type & GATE_PRESENT,
+            0,
+            "IPC gate must be present"
+        );
     }
 }

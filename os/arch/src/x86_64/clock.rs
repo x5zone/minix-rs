@@ -96,4 +96,104 @@ impl ClockArch for X86_64ClockArch {
         }
         tsc
     }
+
+    fn stop_local_timer(&mut self) {
+        // Disable the LAPIC Timer by clearing LVT Timer entry.
+        // LAPIC LVT Timer register offset = 0x320; bit 16 = Mask.
+        //
+        // C: smp.c:56-61 — `lapic_stop_timer()` (inline in smp_ipi_halt_handler)
+        let lapic_base = self.lapic_base as *mut u32;
+        unsafe {
+            // LVT Timer Register (offset 0x320): set Mask bit (bit 16)
+            let lvt_timer = lapic_base.add(0x320 / 4);
+            let v = core::ptr::read_volatile(lvt_timer);
+            core::ptr::write_volatile(lvt_timer, v | (1 << 16));
+        }
+    }
+
+    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()> {
+        // Statistical profiling uses the RTC (Real Time Clock) on x86-64.
+        // The RTC can generate interrupts at 2..8192 Hz via IRQ8.
+        //
+        // Rate selection (RTC register A):
+        //   0x06 = 1024 Hz, 0x07 = 512 Hz, 0x08 = 256 Hz, 0x09 = 128 Hz,
+        //   0x0A = 64 Hz, 0x0B = 32 Hz, 0x0C = 16 Hz, 0x0D = 8 Hz,
+        //   0x0E = 4 Hz, 0x0F = 2 Hz
+        //
+        // For arbitrary `hz`, pick the closest supported rate.
+        //
+        // C: sprofile.c:init_profile_clock(freq)
+        let rate = match hz {
+            0..=1 => return Err(()),
+            2 => 0x0F,
+            3..=4 => 0x0E,
+            5..=8 => 0x0D,
+            9..=16 => 0x0C,
+            17..=32 => 0x0B,
+            33..=64 => 0x0A,
+            65..=128 => 0x09,
+            129..=256 => 0x08,
+            257..=512 => 0x07,
+            _ => 0x06, // 1024 Hz for >=513
+        };
+
+        const RTC_INDEX: u16 = 0x70;
+        const RTC_DATA: u16 = 0x71;
+        const RTC_REG_A: u8 = 0x0A;
+        const RTC_REG_B: u8 = 0x0B;
+
+        unsafe {
+            // Read current Reg A, set rate bits (bits 0-3)
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_A);
+            let mut val: u8;
+            core::arch::asm!("in al, dx", in("dx") RTC_DATA, out("al") val);
+            val = (val & 0xF0) | rate;
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_A);
+            core::arch::asm!("out dx, al", in("dx") RTC_DATA, in("al") val);
+
+            // Enable periodic interrupt in Reg B (bit 6 = PIE)
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_B);
+            let mut ctrl: u8;
+            core::arch::asm!("in al, dx", in("dx") RTC_DATA, out("al") ctrl);
+            ctrl |= 0x40;
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_B);
+            core::arch::asm!("out dx, al", in("dx") RTC_DATA, in("al") ctrl);
+        }
+        Ok(())
+    }
+
+    fn stop_profile_clock(&mut self) {
+        // Disable RTC periodic interrupt by clearing Reg B bit 6 (PIE).
+        //
+        // C: sprofile.c:stop_profile_clock()
+        const RTC_INDEX: u16 = 0x70;
+        const RTC_DATA: u16 = 0x71;
+        const RTC_REG_B: u8 = 0x0B;
+
+        unsafe {
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_B);
+            let mut ctrl: u8;
+            core::arch::asm!("in al, dx", in("dx") RTC_DATA, out("al") ctrl);
+            ctrl &= !0x40;
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_B);
+            core::arch::asm!("out dx, al", in("dx") RTC_DATA, in("al") ctrl);
+        }
+    }
+
+    fn ack_profile_clock(&mut self) {
+        // Acknowledge RTC interrupt by reading Register C.
+        // The RTC IRQ is only cleared after Register C is read; without
+        // this ack, no further RTC interrupts will be generated.
+        //
+        // C: arch_ack_profile_clock() — profile.c:123
+        const RTC_INDEX: u16 = 0x70;
+        const RTC_DATA: u16 = 0x71;
+        const RTC_REG_C: u8 = 0x0C;
+
+        unsafe {
+            core::arch::asm!("out dx, al", in("dx") RTC_INDEX, in("al") RTC_REG_C);
+            let _val: u8;
+            core::arch::asm!("in al, dx", in("dx") RTC_DATA, out("al") _val);
+        }
+    }
 }

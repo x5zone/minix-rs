@@ -41,4 +41,38 @@ pub trait PortIo {
 
     /// Write a long (32-bit) to an I/O port. C: `outl(port, value)`
     fn outl(&self, port: u16, value: u32);
+
+    /// Read a block of bytes from an I/O port. C: `phys_insb(port, buf, count)`
+    ///
+    /// Default implementation loops `inb`; x86_64 can override with
+    /// `rep insb` for performance.
+    fn insb(&self, port: u16, buf: &mut [u8]) {
+        for byte in buf.iter_mut() {
+            *byte = self.inb(port);
+        }
+    }
+
+    /// Write a block of bytes to an I/O port. C: `phys_outsb(port, buf, count)`
+    ///
+    /// Default implementation loops `outb`; x86_64 can override with
+    /// `rep outsb` for performance.
+    fn outsb(&self, port: u16, buf: &[u8]) {
+        for byte in buf {
+            self.outb(port, *byte);
+        }
+    }
+
+    /// Read a block of words from an I/O port. C: `phys_insw(port, buf, count)`
+    fn insw(&self, port: u16, buf: &mut [u16]) {
+        for word in buf.iter_mut() {
+            *word = self.inw(port);
+        }
+    }
+
+    /// Write a block of words to an I/O port. C: `phys_outsw(port, buf, count)`
+    fn outsw(&self, port: u16, buf: &[u16]) {
+        for word in buf {
+            self.outw(port, *word);
+        }
+    }
 }

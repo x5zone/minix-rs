@@ -11,6 +11,7 @@
 use crate::arch::boot::{
     CpuContextArch, EntrySpec, ProcKind, ProcNr,
 };
+use crate::arch::stacktrace::StacktraceArch;
 use super::exception::Riscv64ExceptionFrame;
 
 /// Initial sstatus for kernel tasks: SPP=1 (return to S-mode on sret).
@@ -32,12 +33,24 @@ pub struct Riscv64CpuContext {
     pub(super) sp: u64,
     /// Initial a0 (x10, carries ps_strings address).
     pub(super) a0: u64,
+    /// GP register save area for signal handling (X1, X3-X9, X11-X31).
+    ///
+    /// Indexed by `Riscv64GpReg` constants. X0 is hardwired zero,
+    /// X2 (sp) and X10 (a0) are named fields.
+    /// Updated by trap entry path (future) and read/written by `SignalContext`.
+    pub(super) gp_regs: [u64; Riscv64CpuContext::GP_REGS_LEN],
 }
 
 impl Riscv64CpuContext {
+    /// Number of GP registers in `gp_regs` (30: X1, X3-X9, X11-X31).
+    pub const GP_REGS_LEN: usize = 30;
+
     /// Const-constructible zeroed context (for `const fn` table init).
     pub const fn new() -> Self {
-        Self { sstatus: 0, sepc: 0, sp: 0, a0: 0 }
+        Self {
+            sstatus: 0, sepc: 0, sp: 0, a0: 0,
+            gp_regs: [0; Self::GP_REGS_LEN],
+        }
     }
 }
 
@@ -57,6 +70,7 @@ impl CpuContextArch for Riscv64CpuContextArch {
             sepc: entry.pc.map(|v| v.0).unwrap_or(0),
             sp: entry.sp.map(|v| v.0).unwrap_or(0),
             a0: entry.ps_strings.map(|v| v.0).unwrap_or(0),
+            gp_regs: [0; Riscv64CpuContext::GP_REGS_LEN],
         }
     }
 
@@ -88,6 +102,50 @@ impl CpuContextArch for Riscv64CpuContextArch {
     /// rather than resetting to `FS=Off`.
     fn inherit_fpu_state(child: &mut Self::CpuContext, parent: &Self::CpuContext) {
         child.sstatus = parent.sstatus;
+    }
+
+    /// T_SETUSER register write.
+    ///
+    /// Offset convention (8-byte aligned, matching `Riscv64CpuContext`
+    /// field order):
+    /// ```text
+    /// 0: sstatus
+    /// 8: sepc   (PC)
+    /// 16: sp     (x2)
+    /// 24: a0     (x10, carries ps_strings)
+    /// 32..272: gp_regs[0..30]  (x1, x3-x9, x11-x31)
+    /// ```
+    fn write_user_register(
+        ctx: &mut Self::CpuContext,
+        offset: usize,
+        value: u64,
+    ) -> Result<(), ()> {
+        if offset % 8 != 0 {
+            return Err(());
+        }
+        match offset {
+            0 => { ctx.sstatus = value; Ok(()) }
+            8 => { ctx.sepc = value; Ok(()) }
+            16 => { ctx.sp = value; Ok(()) }
+            24 => { ctx.a0 = value; Ok(()) }
+            32..=271 => {
+                let idx = (offset - 32) / 8;
+                if idx < Riscv64CpuContext::GP_REGS_LEN {
+                    ctx.gp_regs[idx] = value;
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn or_ipc_status_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // No C original for riscv64. By analogy to ARM's R1 (separate from
+        // R0/retreg), we use A1/X11 — separate from A0 (retreg / ps_strings).
+        // Accessed via gp_regs[GP_A1] where GP_A1 = 8.
+        ctx.gp_regs[crate::riscv64::signal::GP_A1] |= value;
     }
 }
 

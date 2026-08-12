@@ -25,6 +25,44 @@ use crate::kpriv::PrivTable;
 /// endpoint is in `m_source` (set by the caller of `BuildNotifyMessage`).
 const NOTIFY_MESSAGE: i32 = 0x1000;
 
+// ── IPC status encoding ──
+//
+// C: `minix3/minix/include/minix/ipcconst.h:21-35` — macros for IPC status
+// code manipulation. The IPC status register stores metadata about the
+// last IPC delivery (call type + flags) so user-space libraries can
+// determine how to reply (e.g., SENDREC needs a reply, NOTIFY does not).
+
+/// Bit shift for the call-type field in the IPC status register.
+/// C: `IPC_STATUS_CALL_SHIFT` — ipcconst.h:21
+pub const IPC_STATUS_CALL_SHIFT: u32 = 0;
+
+/// Mask for the call-type field (6 bits, values 0-63).
+/// C: `IPC_STATUS_CALL_MASK` — ipcconst.h:22
+pub const IPC_STATUS_CALL_MASK: u32 = 0x3F;
+
+/// Bit shift for the flags field in the IPC status register.
+/// C: `IPC_STATUS_FLAGS_SHIFT` — ipcconst.h:32
+pub const IPC_STATUS_FLAGS_SHIFT: u32 = 16;
+
+/// Flag: message originated from the kernel on behalf of a process.
+/// Trusted message — user-space must never reply to the sender.
+/// C: `IPC_FLG_MSG_FROM_KERNEL` — ipcconst.h:28
+pub const IPC_FLG_MSG_FROM_KERNEL: u32 = 1;
+
+/// Encode an `IpcCall` value into the IPC status call field.
+/// C: `IPC_STATUS_CALL_TO(call)` — ipcconst.h:25-26
+#[inline]
+pub const fn ipc_status_call_to(call: IpcCall) -> u64 {
+    (call as u64 & IPC_STATUS_CALL_MASK as u64) << IPC_STATUS_CALL_SHIFT
+}
+
+/// Encode flags into the IPC status flags field.
+/// C: `IPC_STATUS_FLAGS(flags)` — ipcconst.h:33
+#[inline]
+pub const fn ipc_status_flags(flags: u32) -> u64 {
+    (flags as u64) << IPC_STATUS_FLAGS_SHIFT
+}
+
 // ── IPC call types ──
 
 /// IPC primitive type. C: `call_nr` in `do_ipc()` — proc.c:599.
@@ -159,6 +197,11 @@ bitflags::bitflags! {
         const NON_BLOCKING = 0x0080;
         /// Message from kernel. C: `FROM_KERNEL=0x0100` — ipc.h:12
         const FROM_KERNEL = 0x0100;
+        /// Internal: this send originates from SENDA (batch async send).
+        /// Not a C flag — Rust uses it to set the correct IPC status call
+        /// type (SENDA instead of SEND) when `send` is reused by `senda`.
+        /// C's `mini_senda` has its own delivery path; Rust reuses `send`.
+        const SENDA = 0x0001;
     }
 }
 
@@ -299,6 +342,59 @@ pub enum DeliverResult {
     Segfault,
 }
 
+/// Deliver pending message to user space.
+///
+/// Free function extracted from `IpcEngine::deliver_message` so that
+/// `ProcessTable::process_misc_flags` can call it without constructing
+/// a full `IpcEngine` (which requires `priv_table` + `procs` slice that
+/// `ProcessTable` already owns).
+///
+/// C: `delivermsg(&p)` — proc.c:263-294. Called by `process_misc_flags`
+/// (proc.c:~700) when `MF_DELIVERMSG` is set.
+///
+/// # Two-failure policy
+///
+/// - Success → clear `MF_DELIVERMSG` (+ `MF_MSGFAILED` if set).
+/// - First `PageFault` → set `MF_MSGFAILED`, return `PageFault`
+///   (caller routes to `vm_suspend(VMS_PAGEFAULT)`).
+/// - Second consecutive failure (`MF_MSGFAILED` already set) →
+///   return `Segfault` (caller routes to `cause_sig(SIGSEGV)`).
+/// - `OutOfBounds` → `Segfault` immediately.
+pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) -> DeliverResult {
+    debug_assert!(
+        proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+        "delivermsg called without MF_DELIVERMSG"
+    );
+
+    let msg = proc.p_delivermsg.clone();
+    let user_addr = proc.p_delivermsg_vir;
+
+    match user_copy.copy_msg_to_user(user_addr, &msg) {
+        Ok(()) => {
+            proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+            proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
+            DeliverResult::Delivered
+        }
+        Err(CopyError::PageFault) => {
+            if proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED) {
+                // Second consecutive failure → SIGSEGV. C: proc.c:283.
+                proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+                proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
+                DeliverResult::Segfault
+            } else {
+                // First failure → vm_suspend. C: proc.c:278.
+                proc.p_misc_flags.set(MiscFlagsBits::MSGFAILED);
+                DeliverResult::PageFault
+            }
+        }
+        Err(CopyError::OutOfBounds) => {
+            proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+            proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
+            DeliverResult::Segfault
+        }
+    }
+}
+
 // ── Async message table for SENDA (FIX-6 / AT-9) ──
 
 /// Async message table entry. C: `asynmsg_t` — proc.c:1331.
@@ -386,7 +482,7 @@ impl AsyncMessageTable {
                 caller_nr,
                 entry.target,
                 &entry.message,
-                SendFlags::FROM_KERNEL,
+                SendFlags::FROM_KERNEL | SendFlags::SENDA,
             );
             match outcome {
                 IpcOutcome::Delivered => {
@@ -477,6 +573,22 @@ impl SenderQueue {
             self.0.remove(idx)
         } else {
             None
+        }
+    }
+
+    /// Remove the first entry matching `nr` by `ProcNr` value.
+    ///
+    /// Used by `abort_proc_ipc_send` (SYS_UPDATE rollback) to unlink a
+    /// process from its send target's caller_q.
+    ///
+    /// C: `while (*xpp) { if(*xpp == rp) { *xpp = rp->p_q_link; ... } }`
+    /// — do_update.c:226-234.
+    pub fn remove_by_nr(&mut self, nr: ProcNr) -> bool {
+        if let Some(idx) = self.0.iter().position(|n| *n == nr) {
+            self.0.remove(idx);
+            true
+        } else {
+            false
         }
     }
 
@@ -626,7 +738,7 @@ impl<'a> IpcEngine<'a> {
         let caller_idx = self.idx_of(caller_nr)?;
         let caller_endpoint = self.procs[caller_idx].p_endpoint;
 
-        let mut chain: [ProcNr; PROC_TABLE_SIZE] = [NONE_PROC_NR; PROC_TABLE_SIZE];
+        let mut chain: [ProcNr; PROC_TABLE_SIZE] = [ProcNr(NONE_PROC_NR); PROC_TABLE_SIZE];
         let mut chain_len: usize = 0;
         chain[chain_len] = caller_nr;
         chain_len += 1;
@@ -728,7 +840,25 @@ impl<'a> IpcEngine<'a> {
             self.procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
             if flags.contains(SendFlags::FROM_KERNEL) {
                 self.procs[dst_idx].p_misc_flags.set(MiscFlagsBits::SENDING_FROM_KERNEL);
+                // C: proc.c:905 — `IPC_STATUS_ADD_FLAGS(dst_ptr, IPC_FLG_MSG_FROM_KERNEL)`
+                crate::proc::ipc_status_add_flags(&mut self.procs[dst_idx], IPC_FLG_MSG_FROM_KERNEL);
             }
+            // C: proc.c:911-913 — determine call type and add to IPC status.
+            //   call = (MF_REPLY_PEND ? SENDREC : (NON_BLOCKING ? SENDNB : SEND))
+            //   IPC_STATUS_ADD_CALL(dst_ptr, call)
+            //
+            // Rust extension: SENDA flag overrides to IpcCall::SendA, matching
+            // C's `mini_senda` direct delivery (proc.c:1287 sets SENDA, not SEND).
+            let delivered_call = if flags.contains(SendFlags::SENDA) {
+                IpcCall::SendA
+            } else if self.procs[caller_idx].p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
+                IpcCall::SendRec
+            } else if flags.contains(SendFlags::NON_BLOCKING) {
+                IpcCall::SendNb
+            } else {
+                IpcCall::Send
+            };
+            crate::proc::ipc_status_add_call(&mut self.procs[dst_idx], delivered_call);
             // C: `RTS_UNSET(dst, RTS_RECEIVING)` — wake up target.
             self.procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
             return IpcOutcome::Delivered;
@@ -819,6 +949,8 @@ impl<'a> IpcEngine<'a> {
                     NotifySource::from_caller_nr(notify_src),
                 );
                 self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+                // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
+                crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
                 return IpcOutcome::Delivered;
             }
         }
@@ -827,6 +959,8 @@ impl<'a> IpcEngine<'a> {
         // C: `has_pending` (ASEND) + `try_async` — proc.c:1031-1070.
         if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint) {
             self.deliver_async(caller_idx, async_src);
+            // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
+            crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
             return IpcOutcome::Delivered;
         }
 
@@ -851,6 +985,9 @@ impl<'a> IpcEngine<'a> {
             // Copy sender's cached message into caller's deliver buffer.
             let sender_msg = self.procs[sender_idx].p_sendmsg.clone();
             let sender_ep = self.procs[sender_idx].p_endpoint;
+            let sender_from_kernel = self.procs[sender_idx]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::SENDING_FROM_KERNEL);
             self.procs[caller_idx].p_delivermsg = sender_msg;
             self.procs[caller_idx].p_delivermsg.m_source = sender_ep;
             self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
@@ -858,6 +995,21 @@ impl<'a> IpcEngine<'a> {
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             // C: clear `SENDING_FROM_KERNEL` if it was set.
             self.procs[sender_idx].p_misc_flags.clear(MiscFlagsBits::SENDING_FROM_KERNEL);
+            // C: proc.c:1070-1071 — determine call type and add to IPC status.
+            //   call = (sender->p_misc_flags & MF_REPLY_PEND ? SENDREC : SEND)
+            //   IPC_STATUS_ADD_CALL(caller_ptr, call)
+            let delivered_call = if self.procs[sender_idx].p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
+                IpcCall::SendRec
+            } else {
+                IpcCall::Send
+            };
+            crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], delivered_call);
+            // C: proc.c:1077-1078 — if message was from kernel, add flag.
+            //   if (sender->p_misc_flags & MF_SENDING_FROM_KERNEL)
+            //       IPC_STATUS_ADD_FLAGS(caller_ptr, IPC_FLG_MSG_FROM_KERNEL)
+            if sender_from_kernel {
+                crate::proc::ipc_status_add_flags(&mut self.procs[caller_idx], IPC_FLG_MSG_FROM_KERNEL);
+            }
             // Clear MF_REPLY_PEND if this was a SENDREC reply delivery.
             if reply_pend {
                 self.procs[caller_idx].p_misc_flags.clear(MiscFlagsBits::REPLY_PEND);
@@ -1101,38 +1253,10 @@ impl<'a> IpcEngine<'a> {
             None => return DeliverResult::Segfault,
         };
 
-        debug_assert!(
-            self.procs[idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
-            "deliver_message called without MF_DELIVERMSG"
-        );
-
-        let msg = self.procs[idx].p_delivermsg.clone();
-        let user_addr = self.procs[idx].p_delivermsg_vir;
-
-        match self.user_copy.copy_msg_to_user(user_addr, &msg) {
-            Ok(()) => {
-                self.procs[idx].p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
-                self.procs[idx].p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
-                DeliverResult::Delivered
-            }
-            Err(CopyError::PageFault) => {
-                if self.procs[idx].p_misc_flags.is_set(MiscFlagsBits::MSGFAILED) {
-                    // Second consecutive failure → SIGSEGV. C: proc.c:283.
-                    self.procs[idx].p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
-                    self.procs[idx].p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
-                    DeliverResult::Segfault
-                } else {
-                    // First failure → vm_suspend. C: proc.c:278.
-                    self.procs[idx].p_misc_flags.set(MiscFlagsBits::MSGFAILED);
-                    DeliverResult::PageFault
-                }
-            }
-            Err(CopyError::OutOfBounds) => {
-                self.procs[idx].p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
-                self.procs[idx].p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
-                DeliverResult::Segfault
-            }
-        }
+        // Delegate to the free function `delivermsg` (FIX-20, Phase 1B).
+        // This shares the two-failure policy logic with
+        // `ProcessTable::process_misc_flags`, which also calls `delivermsg`.
+        delivermsg(&mut self.procs[idx], self.user_copy)
     }
 
     // ── Permission check ──
@@ -1215,9 +1339,10 @@ impl<'a> IpcEngine<'a> {
     ///
     /// # Skeleton
     ///
-    /// The full `do_ipc` also handles `MINIX_KERNINFO` and IPC status
-    /// encoding (`IPC_STATUS_ADD_CALL`); those are TODO and documented
-    /// in `12-ipc-core.md` §4.3.
+    /// The full `do_ipc` also handles `MINIX_KERNINFO` (not yet implemented).
+    /// IPC status encoding (`IPC_STATUS_ADD_CALL`) is implemented — see
+    /// `proc::ipc_status_add_call` / `ipc_status_add_flags`, wired into
+    /// all delivery paths (send, receive, mini_notify, senda).
     pub fn do_ipc(
         &mut self,
         caller_nr: ProcNr,
@@ -1275,7 +1400,7 @@ impl<'a> IpcEngine<'a> {
 #[inline]
 fn nr_to_idx(nr: ProcNr) -> Option<usize> {
     use crate::proc_table::NR_TASKS;
-    let offset = nr as isize + NR_TASKS as isize;
+    let offset = nr.0 as isize + NR_TASKS as isize;
     if offset < 0 || offset as usize >= PROC_TABLE_SIZE {
         return None;
     }
@@ -1419,6 +1544,8 @@ pub fn mini_notify_core(
         let src = NotifySource::from_caller_nr(caller_nr);
         build_notify_message(procs, priv_table, dst_idx, src);
         procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+        // C: proc.c:1154 — `IPC_STATUS_ADD_CALL(dst_ptr, NOTIFY)`
+        crate::proc::ipc_status_add_call(&mut procs[dst_idx], IpcCall::Notify);
         procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
         return IpcOutcome::Delivered;
     }
@@ -1479,7 +1606,7 @@ mod tests {
     /// (e.g. `KProcess::new(1, ...)` would map to index 6, panicking on
     /// a 2-element slice).
     fn test_nr(array_idx: usize) -> ProcNr {
-        array_idx as ProcNr - NR_TASKS as ProcNr
+        ProcNr(array_idx as i32 - NR_TASKS as i32)
     }
 
     /// Create a test process at `array_idx` with the given endpoint.
@@ -1550,33 +1677,33 @@ mod tests {
     fn test_sender_queue_push_pop_fifo() {
         let mut q = SenderQueue::new();
         assert!(q.is_empty());
-        q.push_back(1);
-        q.push_back(2);
-        q.push_back(3);
+        q.push_back(ProcNr(1));
+        q.push_back(ProcNr(2));
+        q.push_back(ProcNr(3));
         assert_eq!(q.len(), 3);
-        assert_eq!(q.pop_front(), Some(1));
-        assert_eq!(q.pop_front(), Some(2));
-        assert_eq!(q.pop_front(), Some(3));
+        assert_eq!(q.pop_front(), Some(ProcNr(1)));
+        assert_eq!(q.pop_front(), Some(ProcNr(2)));
+        assert_eq!(q.pop_front(), Some(ProcNr(3)));
         assert_eq!(q.pop_front(), None);
     }
 
     #[test]
     fn test_sender_queue_remove_matching_any() {
         let mut q = SenderQueue::new();
-        q.push_back(1);
-        q.push_back(2);
+        q.push_back(ProcNr(1));
+        q.push_back(ProcNr(2));
         // ANY → pop_front.
         let procs: [KProcess; 0] = [];
-        assert_eq!(q.remove_matching(&procs, Endpoint::ANY), Some(1));
+        assert_eq!(q.remove_matching(&procs, Endpoint::ANY), Some(ProcNr(1)));
         assert_eq!(q.len(), 1);
     }
 
     #[test]
     fn test_sender_queue_remove_matching_specific() {
         let mut q = SenderQueue::new();
-        q.push_back(1);
-        q.push_back(2);
-        q.push_back(3);
+        q.push_back(ProcNr(1));
+        q.push_back(ProcNr(2));
+        q.push_back(ProcNr(3));
         // Build procs slice where nr=2 → endpoint=Endpoint(99).
         let mut p1 = make_test_proc(0, Endpoint(11));
         p1.p_rts_flags = RtsFlags::new();
@@ -1604,7 +1731,7 @@ mod tests {
         let mut priv_table = PrivTable::new();
         let procs = pt.procs_slice_mut();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
-        let result = engine.detect_deadlock(IpcCall::Send, 0, Endpoint(1));
+        let result = engine.detect_deadlock(IpcCall::Send, ProcNr(0), Endpoint(1));
         assert!(result.is_none());
     }
 
@@ -1841,8 +1968,8 @@ mod tests {
         let mut pt = crate::proc_table::ProcessTable::new();
         let mut priv_table = PrivTable::new();
         // Assign priv slots so notify bitmap can be set.
-        priv_table.assign_static(-4).unwrap();
-        priv_table.assign_static(-3).unwrap();
+        priv_table.assign_static(ProcNr(-4)).unwrap();
+        priv_table.assign_static(ProcNr(-3)).unwrap();
         {
             let procs = pt.procs_slice_mut();
             let a = procs.get_mut(0).unwrap(); // nr=-4 (assuming NR_TASKS=4)
@@ -1871,8 +1998,8 @@ mod tests {
         // MF_REPLY_PEND set → notify check skipped, falls through to caller_q.
         let mut pt = crate::proc_table::ProcessTable::new();
         let mut priv_table = PrivTable::new();
-        priv_table.assign_static(-4).unwrap();
-        priv_table.assign_static(-3).unwrap();
+        priv_table.assign_static(ProcNr(-4)).unwrap();
+        priv_table.assign_static(ProcNr(-3)).unwrap();
         {
             let procs = pt.procs_slice_mut();
             let a = procs.get_mut(0).unwrap();
@@ -1936,8 +2063,8 @@ mod tests {
         // Phase 2: pending async message delivered after notify check.
         let mut pt = crate::proc_table::ProcessTable::new();
         let mut priv_table = PrivTable::new();
-        priv_table.assign_static(-4).unwrap();
-        priv_table.assign_static(-3).unwrap();
+        priv_table.assign_static(ProcNr(-4)).unwrap();
+        priv_table.assign_static(ProcNr(-3)).unwrap();
         {
             let procs = pt.procs_slice_mut();
             let a = procs.get_mut(0).unwrap();
@@ -1966,21 +2093,21 @@ mod tests {
     fn test_notify_delivers_when_target_receiving() {
         let mut pt = crate::proc_table::ProcessTable::new();
         {
-            let a = pt.get_mut(-4).unwrap();
+            let a = pt.get_mut(ProcNr(-4)).unwrap();
             a.p_rts_flags = RtsFlags::new();
         }
         {
-            let b = pt.get_mut(-3).unwrap();
+            let b = pt.get_mut(ProcNr(-3)).unwrap();
             b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
             b.p_getfrom_e = Endpoint::ANY;
         }
-        let b_endpoint = pt.get(-3).unwrap().p_endpoint;
+        let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
         let procs = pt.procs_slice_mut();
         let mut priv_table = PrivTable::new();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
-        let result = engine.notify(-4, b_endpoint);
+        let result = engine.notify(ProcNr(-4),b_endpoint);
         assert!(result.is_delivered(), "notify should deliver");
-        let b_idx = nr_to_idx(-3).unwrap();
+        let b_idx = nr_to_idx(ProcNr(-3)).unwrap();
         assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         assert!(!engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
     }
@@ -1989,22 +2116,22 @@ mod tests {
     fn test_notify_records_bitmap_when_not_receiving() {
         let mut pt = crate::proc_table::ProcessTable::new();
         {
-            let a = pt.get_mut(-4).unwrap();
+            let a = pt.get_mut(ProcNr(-4)).unwrap();
             a.p_rts_flags = RtsFlags::new();
             a.priv_id = Some(0);
         }
         {
-            let b = pt.get_mut(-3).unwrap();
+            let b = pt.get_mut(ProcNr(-3)).unwrap();
             b.p_rts_flags = RtsFlags::new();
             b.priv_id = Some(1);
         }
-        let b_endpoint = pt.get(-3).unwrap().p_endpoint;
+        let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
         let procs = pt.procs_slice_mut();
         let mut priv_table = PrivTable::new();
-        priv_table.assign_static(-4).unwrap();
-        priv_table.assign_static(-3).unwrap();
+        priv_table.assign_static(ProcNr(-4)).unwrap();
+        priv_table.assign_static(ProcNr(-3)).unwrap();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
-        let result = engine.notify(-4, b_endpoint);
+        let result = engine.notify(ProcNr(-4),b_endpoint);
         assert!(result.is_delivered());
         let dst_priv = engine.priv_table.get(1).unwrap();
         assert_ne!(
@@ -2020,7 +2147,7 @@ mod tests {
         let procs = pt.procs_slice_mut();
         let mut priv_table = PrivTable::new();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
-        let result = engine.notify(-4, Endpoint(99999));
+        let result = engine.notify(ProcNr(-4),Endpoint(99999));
         assert!(!result.is_blocked(), "notify must never block");
     }
 

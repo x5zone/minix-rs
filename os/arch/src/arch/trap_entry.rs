@@ -133,6 +133,39 @@ pub trait TrapEntryArch: Sized {
     /// C: tss_init() lines 189-205 — SYSCALL MSR setup
     fn configure_syscall(&mut self, entry_point: VirBytes);
 
+    /// Configure the IPC trap entry mechanism.
+    ///
+    /// OS-level concern: "install the entry point for IPC traps
+    /// (SEND/RECEIVE/SENDREC/NOTIFY/SENDNB/SENDA)". The arch decides
+    /// how to make this entry point reachable from user space.
+    ///
+    /// # Architecture-specific mechanism
+    ///
+    /// - **x86-64**: Set IDT vector 33 (IPC_VECTOR) to `entry_point`.
+    ///   This is a separate IDT gate from vector 32 (KERN_CALL_VECTOR),
+    ///   allowing the CPU to dispatch directly to the IPC handler without
+    ///   inspecting the message type. C: protect.c:147
+    ///   `{ ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE }`.
+    /// - **ARM64**: No-op — ARM64 uses a single SVC vector for both IPC
+    ///   and kernel-call traps. The SVC handler reads r3 at runtime
+    ///   (`KERVEC_INTR` → kernel_call, `IPCVEC_INTR` → do_ipc).
+    ///   C: earm/mpx.S:181-184.
+    /// - **RISC-V**: No-op — RISC-V uses a single ecall vector. The
+    ///   handler reads a7 (syscall number) at runtime to dispatch:
+    ///   `a7 < 17` → IPC, `a7 >= KERNEL_CALL (0x600)` → kernel_call.
+    ///   Note: Minix3 has no RISC-V port; this design follows the ARM
+    ///   software-dispatch pattern.
+    ///
+    /// # Why this is a trait method (not `#[cfg(target_arch)]`)
+    ///
+    /// Although ARM64/RISC-V implementations are no-ops, keeping this in
+    /// the trait ensures the OS code calls `configure_ipc_entry()` without
+    /// `#[cfg(target_arch)]` branching — the arch impl decides whether
+    /// to act. This follows the same pattern as `configure_syscall()`.
+    ///
+    /// C: protect.c:147 (x86 IDT gate for IPC_VECTOR_ORIG=33)
+    fn configure_ipc_entry(&mut self, entry_point: VirBytes);
+
     /// Load the trap entry table into hardware.
     ///
     /// After this call, the CPU will route interrupts, exceptions, and
@@ -161,4 +194,34 @@ pub trait TrapEntryArch: Sized {
         handler: VirBytes,
         user_accessible: bool,
     );
+}
+
+/// Mock implementation for testing — no hardware interaction (FIX-06: R-11).
+///
+/// All methods are no-ops. Allows tests to run `TrapEntryArch` code paths
+/// without touching real IDT/VBAR_EL1/stvec registers.
+#[cfg(feature = "mock")]
+pub struct MockTrapEntry;
+
+#[cfg(feature = "mock")]
+impl TrapEntryArch for MockTrapEntry {
+    fn init() -> Self {
+        Self
+    }
+
+    fn configure_syscall(&mut self, _entry_point: VirBytes) {}
+
+    fn configure_ipc_entry(&mut self, _entry_point: VirBytes) {}
+
+    fn load(&self) {}
+
+    fn load_ap(&self) {}
+
+    fn set_handler(
+        &mut self,
+        _vector: InterruptVector,
+        _handler: VirBytes,
+        _user_accessible: bool,
+    ) {
+    }
 }

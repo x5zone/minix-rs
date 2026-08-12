@@ -240,6 +240,10 @@ pub fn build_kernel_info(
         bootstrap_start,
         bootstrap_len,
         platform_sources,
+        // P9-1: UEFI load options not yet parsed into key=value pairs.
+        // Pass empty slice — kernel's GET_MONPARAMS handler copies 0 bytes
+        // to caller (matching C's behavior when param_buf[0] == '\0').
+        param_buf: &[],
     }
 }
 

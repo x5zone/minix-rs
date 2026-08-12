@@ -52,7 +52,8 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// Per-process capability bitmask (was C's `s_flags` in `priv.h:25-49`).
+    /// Per-process capability bitmask (was C's `s_flags`; field at `priv.h:24`,
+    /// flag bit values at `const.h:143-154`, predefined combos at `priv.h:36-50`).
     ///
     /// The flags are exactly the OS-level capabilities a process
     /// can hold; nothing in this enum is arch-specific.
@@ -206,7 +207,7 @@ impl CapabilityTemplate {
 // ── Mask Newtypes (§12.6) ────────────────────────────────────────
 
 /// Trap mask: bit i set ⇔ process is allowed to receive trap i.
-/// Was C's `s_trap_mask` (`priv.h:71`).
+/// Was C's `s_trap_mask` (`kernel/priv.h:34`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TrapMask(u32);
 
@@ -228,7 +229,7 @@ impl TrapMask {
 }
 
 /// IPC-target allowlist: bit i set ⇔ process is allowed to send IPC to sys_id i.
-/// Was C's `s_ipc_to` (`priv.h:73`).
+/// Was C's `s_ipc_to` (`kernel/priv.h:35`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IpcMask(u64);
 
@@ -253,7 +254,7 @@ impl IpcMask {
 }
 
 /// Kernel-call allowlist: bit i set ⇔ process is allowed to make kernel call i.
-/// Was C's `s_k_call_mask` (`priv.h:75`).
+/// Was C's `s_k_call_mask` (`kernel/priv.h:38`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KCallMask(u64);
 

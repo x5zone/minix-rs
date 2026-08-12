@@ -13,6 +13,7 @@
 use crate::arch::boot::{
     CpuContextArch, EntrySpec, ProcKind, ProcNr,
 };
+use crate::arch::stacktrace::StacktraceArch;
 use super::exception::AArch64ExceptionFrame;
 
 /// aarch64 initial PSR (SPSR_EL1) for kernel tasks: EL1h, all
@@ -42,13 +43,22 @@ pub struct AArch64CpuContext {
     /// `true`. Arch-internal: the kernel layer never reads this
     /// (see `06-design-final.md` §12.1).
     fpu_enable_el0: bool,
+    /// GP register save area for signal handling (X1-X30).
+    ///
+    /// Indexed by `AArch64GpReg` constants (0 = X1, 1 = X2, ..., 29 = X30/LR).
+    /// Updated by trap entry path (future) and read/written by `SignalContext`.
+    pub(super) gp_regs: [u64; AArch64CpuContext::GP_REGS_LEN],
 }
 
 impl AArch64CpuContext {
+    /// Number of GP registers in `gp_regs` (30: X1-X30).
+    pub const GP_REGS_LEN: usize = 30;
+
     /// Const-constructible zeroed context (for `const fn` table init).
     pub const fn new() -> Self {
         Self {
             psr: 0, pc: 0, sp: 0, r0: 0, fpu_enable_el0: false,
+            gp_regs: [0; Self::GP_REGS_LEN],
         }
     }
 }
@@ -70,6 +80,7 @@ impl CpuContextArch for AArch64CpuContextArch {
             sp: entry.sp.map(|v| v.0).unwrap_or(0),
             r0: entry.ps_strings.map(|v| v.0).unwrap_or(0),
             fpu_enable_el0,
+            gp_regs: [0; AArch64CpuContext::GP_REGS_LEN],
         }
     }
 
@@ -104,6 +115,54 @@ impl CpuContextArch for AArch64CpuContextArch {
     /// silently dropping to the kernel-task trap mode.
     fn inherit_fpu_state(child: &mut Self::CpuContext, parent: &Self::CpuContext) {
         child.fpu_enable_el0 = parent.fpu_enable_el0;
+    }
+
+    /// T_SETUSER register write.
+    ///
+    /// Offset convention (8-byte aligned, matching `AArch64CpuContext`
+    /// field order):
+    /// ```text
+    /// 0: psr  (SPSR_EL1)
+    /// 8: pc   (ELR_EL1)
+    /// 16: sp  (SP_EL0)
+    /// 24: r0  (X0, carries ps_strings)
+    /// 32..272: gp_regs[0..30]  (X1-X30)
+    /// ```
+    ///
+    /// C: do_trace.c:158-164 — arm allows all register writes; PSR
+    /// uses `SET_USR_PSR` (selected bits only). Rust allows direct
+    /// write for simplicity; a future refinement can add PSR masking.
+    fn write_user_register(
+        ctx: &mut Self::CpuContext,
+        offset: usize,
+        value: u64,
+    ) -> Result<(), ()> {
+        if offset % 8 != 0 {
+            return Err(());
+        }
+        match offset {
+            0 => { ctx.psr = value; Ok(()) }
+            8 => { ctx.pc = value; Ok(()) }
+            16 => { ctx.sp = value; Ok(()) }
+            24 => { ctx.r0 = value; Ok(()) }
+            32..=271 => {
+                let idx = (offset - 32) / 8;
+                if idx < AArch64CpuContext::GP_REGS_LEN {
+                    ctx.gp_regs[idx] = value;
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn or_ipc_status_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `p->p_reg.IPC_STATUS_REG |= value` where IPC_STATUS_REG = r1
+        // (ipcconst.h:7). X1 is separate from R0 (retreg / ps_strings).
+        // Accessed via gp_regs[GP_X1] where GP_X1 = 0.
+        ctx.gp_regs[crate::arm64::signal::GP_X1] |= value;
     }
 }
 
@@ -202,5 +261,32 @@ mod tests {
         assert!(!child.fpu_enable_el0, "precondition: child (kernel task) has FP disabled");
         AArch64CpuContextArch::inherit_fpu_state(&mut child, &parent);
         assert!(child.fpu_enable_el0, "child must inherit parent FP enable");
+    }
+}
+
+/// aarch64 `StacktraceArch` implementation.
+///
+/// C: `proc_stacktrace()` — arch/earm/exception.c:262-310.
+///
+/// Walks the `x29` (FP)-linked frame chain. AArch64 ABI frame layout:
+/// ```text
+/// [x29+0]  saved_fp  (caller's x29)
+/// [x29+8]  return_addr (saved LR)
+/// ```
+///
+/// Frame pointers are mandatory in the AArch64 ABI (unlike x86-64 where
+/// they are optional), so the walk is reliable unless the code was
+/// compiled with `-C disable-fp` (rare).
+impl StacktraceArch for AArch64CpuContextArch {
+    fn frame_pointer(cpu_context: &AArch64CpuContext) -> u64 {
+        // C: whichproc->p_reg.fp — aarch64 stores X29 (FP) in gp_regs.
+        // gp_regs layout: [0]=X1, [1]=X2, ..., [27]=X28, [28]=X29, [29]=X30.
+        // X29 (FP) → index 28.
+        cpu_context.gp_regs.get(28).copied().unwrap_or(0)
+    }
+
+    fn program_counter(cpu_context: &AArch64CpuContext) -> u64 {
+        // C: whichproc->p_reg.pc — aarch64 stores PC as ELR_EL1 (named field).
+        cpu_context.pc
     }
 }

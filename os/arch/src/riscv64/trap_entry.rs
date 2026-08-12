@@ -74,6 +74,24 @@ impl TrapEntryArch for Riscv64TrapEntry {
         // the syscall handler.
     }
 
+    fn configure_ipc_entry(&mut self, _entry_point: VirBytes) {
+        // RISC-V: No-op — IPC and kernel-call traps share the same
+        // ecall trap vector (stvec). The dispatch happens in software:
+        // the ecall handler reads a7 (syscall number register) at
+        // runtime to distinguish:
+        //   a7 < 17           → IPC (SEND=1, RECEIVE=2, ..., SENDA=16)
+        //   a7 >= KERNEL_CALL → kernel_call (SYS_FORK, SYS_EXEC, ...)
+        //
+        // This mirrors the ARM64 software-dispatch pattern. RISC-V's
+        // stvec Direct mode (MODE=0) routes all traps to a single entry
+        // point, so there is no per-vector table to configure.
+        //
+        // Note: Minix3 has no RISC-V port; this design follows the ARM
+        // pattern of software dispatch based on a register value, which
+        // is the standard approach in RISC-V OS kernels (Linux, FreeBSD,
+        // xv6-riscv all use a7 for syscall number dispatch).
+    }
+
     fn load(&self) {
         // Set stvec to the trap vector address in Direct mode (MODE=0).
         // The trap vector is defined in assembly as trap_vector.
@@ -136,5 +154,21 @@ mod tests {
         // Should not panic.
         let mut entry = Riscv64TrapEntry::init();
         entry.set_handler(InterruptVector::new(14), VirBytes::new(0xBEEF), true);
+    }
+
+    #[test]
+    fn configure_ipc_entry_is_noop_on_riscv64() {
+        // RISC-V: IPC and kernel-call traps share the same ecall trap vector
+        // (stvec Direct mode). The dispatch happens in software: the ecall
+        // handler reads a7 (syscall number register) at runtime to distinguish:
+        //   a7 < 17           → IPC (SEND=1, RECEIVE=2, ..., SENDA=16)
+        //   a7 >= KERNEL_CALL → kernel_call (SYS_FORK, SYS_EXEC, ...)
+        // Therefore configure_ipc_entry is a no-op — stvec routes all traps to
+        // a single entry point, no per-vector table to configure.
+        // Note: Minix3 has no RISC-V port; this design follows the ARM
+        // software-dispatch pattern (Linux/FreeBSD/xv6-riscv all use a7).
+        let mut entry = Riscv64TrapEntry::init();
+        // Should not panic and should not modify any state (unit struct).
+        entry.configure_ipc_entry(VirBytes::new(0xCAFE));
     }
 }

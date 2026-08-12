@@ -19,16 +19,13 @@ use minix_types::{Endpoint, Message, MessageM1, MessLsysKrnReadbios, MessLsysKrn
 use crate::irq_manager::IrqManager;
 use crate::kpriv::{KPriv, PrivFlagsBits, PrivTable};
 use crate::proc::KProcess;
-use crate::syscall::KcallResult;
+use crate::syscall::{KcallResult, Syscall};
 use minix_plat::InterruptController;
 
 // ── Minix3 error codes ──
-
-const OK: i32 = 0;
-const EINVAL: i32 = 22;
-const EPERM: i32 = 1;
-const ENOSPC: i32 = 28;
-const ENOSYS: i32 = 38;
+// Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
+// Previously ENOSYS=38 here (should be 78).
+use crate::errno::*;
 
 // ── IRQ control requests ──
 
@@ -119,8 +116,40 @@ impl IoDirection {
 /// Maximum number of IRQ hooks. C: `NR_IRQ_HOOKS` — system.h
 pub const NR_IRQ_HOOKS: usize = 64;
 
-/// Maximum VDEVIO buffer size. C: `VDEVIO_BUF_SIZE` — do_vdevio.c
-pub const VDEVIO_BUF_SIZE: usize = 1024;
+/// Maximum VDEVIO buffer size in bytes. C: `VDEVIO_BUF_SIZE` — do_vdevio.c:17
+/// C uses `char vdevio_buf[VDEVIO_BUF_SIZE]` = 64 bytes (not elements).
+pub const VDEVIO_BUF_SIZE: usize = 64;
+
+// ── VDEVIO (port, value) pair types ──
+// C: devio.h:21-23 — `pvb_pair_t`, `pvw_pair_t`, `pvl_pair_t`
+// `#[repr(C)]` matches C struct layout (with padding for alignment).
+
+/// Byte-sized (port, value) pair. C: `pvb_pair_t` — devio.h:21
+/// Layout: 2-byte port + 1-byte value + 1-byte padding = 4 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PvBytePair {
+    port: u16,
+    value: u8,
+}
+
+/// Word-sized (port, value) pair. C: `pvw_pair_t` — devio.h:22
+/// Layout: 2-byte port + 2-byte value = 4 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PvWordPair {
+    port: u16,
+    value: u16,
+}
+
+/// Long-sized (port, value) pair. C: `pvl_pair_t` — devio.h:23
+/// Layout: 2-byte port + 2-byte padding + 4-byte value = 8 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PvLongPair {
+    port: u16,
+    value: u32,
+}
 
 // ── Helper ──
 
@@ -177,12 +206,21 @@ pub fn dispatch_irqctl<IC: InterruptController>(
     irq_mgr: &mut IrqManager<IC>,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    // C: do_irqctl.c:24-25 — extract parameters
-    let request = m1.m1i1;       // m_lsys_krn_sys_irqctl.request
-    let irq_vec = m1.m1i2;       // m_lsys_krn_sys_irqctl.vector
-    let policy = m1.m1i3 as u32; // m_lsys_krn_sys_irqctl.policy
-    let hook_id = m1.m1p1 as i32; // m_lsys_krn_sys_irqctl.hook_id
+    // C: do_irqctl.c:24-25 — extract parameters from mess_lsys_krn_sys_irqctl.
+    //
+    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    //   request@0, vector@4, policy@8, hook_id@12
+    // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding for
+    // 8-byte alignment, then m1p1@16. Reading `m1p1` for `hook_id` would
+    // read offset 16 (padding) instead of offset 12 — a field-mapping bug.
+    // Always use the dedicated `MessLsysKrnSysIrqctl` variant.
+    msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let irq = unsafe { msg.m_u.m_lsys_krn_sys_irqctl };
+    let request = irq.request;
+    let irq_vec = irq.vector;
+    let policy = irq.policy as u32;
+    let hook_id = irq.hook_id;
 
     let req = match IrqctlRequest::try_from(request) {
         Ok(r) => r,
@@ -227,10 +265,12 @@ pub fn dispatch_irqctl<IC: InterruptController>(
             match irq_mgr.irqctl_set_policy(irq, caller.p_endpoint, nid, pol) {
                 Ok(new_hook_id) => {
                     // C: do_irqctl.c:108 — return hook_id in reply
-                    // Write 1-based hook_id back into the message
-                    // SAFETY: We have &mut Message; writing to the m1 variant
-                    // of the union is safe since we just read from it above.
-                    msg.m_u.m_m1.m1p1 = new_hook_id as u64;
+                    // Write the 1-based hook_id back into the message using the
+                    // dedicated irqctl variant (matches the read path above;
+                    // writing to m1p1@16 would land in padding, not hook_id@12).
+                    msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
+                    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+                    unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id = new_hook_id as i32 };
                 }
                 Err(crate::irq_manager::IrqError::NoFreeSlots) => {
                     return KcallResult::Ok(ENOSPC);
@@ -406,64 +446,235 @@ pub fn dispatch_devio<PI: PortIo>(
 ///
 /// C: `do_vdevio()` — do_vdevio.c
 ///
-/// Perform a batch of I/O port operations.
+/// Perform a batch of I/O port operations. The (port, value) pairs are
+/// copied from user space, permission-checked, executed, and (for input)
+/// copied back.
 ///
-/// # Implementation Status
+/// # Anti-translate
 ///
-/// Parameter extraction and type/direction parsing are implemented.
-/// The actual batch I/O execution requires `data_copy_vmcheck` to
-/// copy the (port, value) pair array from user space, which is
-/// deferred until the cross-space copy subsystem is available.
-/// Permission checks (CHECK_IO_PORT) are also deferred for the
-/// batch case since they need to iterate over the user-space array.
+/// C uses a static `char vdevio_buf[64]` buffer with union casts
+/// (`pvb`/`pvw`/`pvl`). Rust uses a stack `[u8; VDEVIO_BUF_SIZE]`
+/// buffer and `#[repr(C)]` struct arrays — the type system ensures
+/// correct layout without union punning.
+///
+/// C uses `data_copy(caller, user_addr, KERNEL, buf, bytes)` for the
+/// user→kernel copy. Rust uses `pte_walk::copy_from_user` which walks
+/// the caller's page table via Direct Map — no magic KERNEL endpoint.
 pub fn dispatch_vdevio<PI: PortIo>(
-    _caller: &mut KProcess,
+    caller: &mut KProcess,
     msg: &Message,
-    _port_io: &PI,
+    port_io: &PI,
+    priv_table: &PrivTable,
 ) -> KcallResult {
     let m1 = msg_m1(msg);
     // C: do_vdevio.c:44-52 — extract parameters
     let request = m1.m1i1;     // m_lsys_krn_sys_vdevio.request
-    let _vec_addr = m1.m1p1;   // m_lsys_krn_sys_vdevio.vec_addr
+    let vec_addr = m1.m1p1;    // m_lsys_krn_sys_vdevio.vec_addr
     let vec_size = m1.m1i2;    // m_lsys_krn_sys_vdevio.vec_size
 
     // C: do_vdevio.c:54-72 — parse type/direction, validate size
     let io_type = request & 0x0F0;   // _DIO_TYPEMASK
     let io_dir = request & 0x00F;    // _DIO_DIRMASK
 
-    let _size = match IoSize::from_request_mask(io_type) {
+    let size = match IoSize::from_request_mask(io_type) {
         Some(s) => s,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    let _dir = match IoDirection::from_request_mask(io_dir) {
+    let dir = match IoDirection::from_request_mask(io_dir) {
         Some(d) => d,
         None => return KcallResult::Ok(EINVAL),
     };
 
     // C: do_vdevio.c:56-58 — validate vec_size
-    if vec_size <= 0 || vec_size as usize > VDEVIO_BUF_SIZE {
+    if vec_size <= 0 {
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_vdevio.c:74-77 — copy (port,value) pairs from user
-    // DEFERRED: requires data_copy_vmcheck (cross-space copy subsystem)
+    // C: do_vdevio.c:50-64 — compute bytes = vec_size * sizeof(pair)
+    let pair_size = match size {
+        IoSize::Byte => core::mem::size_of::<PvBytePair>(),
+        IoSize::Word => core::mem::size_of::<PvWordPair>(),
+        IoSize::Long => core::mem::size_of::<PvLongPair>(),
+    };
+    let bytes = match (vec_size as usize).checked_mul(pair_size) {
+        Some(b) => b,
+        None => return KcallResult::Ok(EINVAL),
+    };
 
-    // C: do_vdevio.c:79-100 — batch permission check
-    // DEFERRED: requires the copied (port, value) array
+    // C: do_vdevio.c:65 — if (bytes > sizeof(vdevio_buf)) return E2BIG
+    if bytes > VDEVIO_BUF_SIZE {
+        return KcallResult::Ok(E2BIG);
+    }
 
-    // C: do_vdevio.c:102-139 — batch I/O execution
-    // DEFERRED: requires the copied (port, value) array
+    // C: do_vdevio.c:67-70 — copy (port,value) pairs from user
+    //
+    // Uses `data_copy_vmcheck` (arch-independent page table walk via
+    // `CurrentPteWalk`) instead of the older `copy_from_user` which
+    // hardcoded x86_64 page table walking. This also supports VM
+    // suspend/resume for lazy-allocated pages, matching C's `data_copy`.
+    use crate::cross_space::data_copy_vmcheck;
+    use crate::vm::{AddressRef, CrossSpaceResult};
+    use minix_arch::{CurrentDirectMap, DirectMapArch};
+    use minix_types::{Endpoint, VirBytes};
 
-    // C: do_vdevio.c:141-146 — copy back results for input
-    // DEFERRED: requires data_copy_vmcheck
+    let mut buf = [0u8; VDEVIO_BUF_SIZE];
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
 
-    // Parameter validation passed but batch I/O is not yet implemented.
-    // Return ENOSYS (function not implemented) rather than OK — returning OK
-    // without performing the actual I/O would be a semantic drift from C,
-    // where do_vdevio either executes the batch or returns an error.
-    // Same pattern as misc.rs dispatch_getinfo for unimplemented sub-requests.
-    KcallResult::Ok(ENOSYS)
+    let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+        buf.as_mut_ptr() as u64,
+    ));
+    let proc_cr3 = |ep: Endpoint| {
+        if ep == caller_endpt { Some(caller_cr3) } else { None }
+    };
+    let src = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(vec_addr),
+    };
+    let dst = AddressRef::Physical(dst_phys);
+
+    match data_copy_vmcheck(caller, src, dst, bytes, proc_cr3) {
+        CrossSpaceResult::Completed(Ok(())) => {}
+        CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+    }
+
+    // C: do_vdevio.c:72-100 — batch permission check
+    let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
+    if let Some(priv_) = caller_priv {
+        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+            for i in 0..vec_size as usize {
+                let port = match size {
+                    IoSize::Byte => {
+                        let pairs: &[PvBytePair] = unsafe {
+                            core::slice::from_raw_parts(buf.as_ptr() as *const PvBytePair, vec_size as usize)
+                        };
+                        pairs[i].port
+                    }
+                    IoSize::Word => {
+                        let pairs: &[PvWordPair] = unsafe {
+                            core::slice::from_raw_parts(buf.as_ptr() as *const PvWordPair, vec_size as usize)
+                        };
+                        pairs[i].port
+                    }
+                    IoSize::Long => {
+                        let pairs: &[PvLongPair] = unsafe {
+                            core::slice::from_raw_parts(buf.as_ptr() as *const PvLongPair, vec_size as usize)
+                        };
+                        pairs[i].port
+                    }
+                };
+                // C: do_vdevio.c:84-91 — scan s_io_tab for matching range
+                let mut allowed = false;
+                for j in 0..priv_.io.s_nr_io_range as usize {
+                    if j < priv_.io.s_io_tab.len() {
+                        let ior = &priv_.io.s_io_tab[j];
+                        if port as u32 >= ior.base
+                            && port as u32 + size as u32 - 1 <= ior.limit
+                        {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                }
+                if !allowed {
+                    return KcallResult::Ok(EPERM);
+                }
+            }
+        }
+    }
+
+    // C: do_vdevio.c:102-149 — perform batch I/O
+    match (dir, size) {
+        (IoDirection::Input, IoSize::Byte) => {
+            let pairs: &mut [PvBytePair] = unsafe {
+                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvBytePair, vec_size as usize)
+            };
+            for pair in pairs.iter_mut() {
+                pair.value = port_io.inb(pair.port);
+            }
+        }
+        (IoDirection::Output, IoSize::Byte) => {
+            let pairs: &[PvBytePair] = unsafe {
+                core::slice::from_raw_parts(buf.as_ptr() as *const PvBytePair, vec_size as usize)
+            };
+            for pair in pairs {
+                port_io.outb(pair.port, pair.value);
+            }
+        }
+        (IoDirection::Input, IoSize::Word) => {
+            let pairs: &mut [PvWordPair] = unsafe {
+                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvWordPair, vec_size as usize)
+            };
+            for pair in pairs.iter_mut() {
+                // C: do_vdevio.c:116 — if (port & 1) goto bad (panic)
+                if pair.port & 1 != 0 {
+                    return KcallResult::Ok(EPERM);
+                }
+                pair.value = port_io.inw(pair.port);
+            }
+        }
+        (IoDirection::Output, IoSize::Word) => {
+            let pairs: &[PvWordPair] = unsafe {
+                core::slice::from_raw_parts(buf.as_ptr() as *const PvWordPair, vec_size as usize)
+            };
+            for pair in pairs {
+                if pair.port & 1 != 0 {
+                    return KcallResult::Ok(EPERM);
+                }
+                port_io.outw(pair.port, pair.value);
+            }
+        }
+        (IoDirection::Input, IoSize::Long) => {
+            let pairs: &mut [PvLongPair] = unsafe {
+                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvLongPair, vec_size as usize)
+            };
+            for pair in pairs.iter_mut() {
+                // C: do_vdevio.c:136 — if (port & 3) goto bad (panic)
+                if pair.port & 3 != 0 {
+                    return KcallResult::Ok(EPERM);
+                }
+                pair.value = port_io.inl(pair.port);
+            }
+        }
+        (IoDirection::Output, IoSize::Long) => {
+            let pairs: &[PvLongPair] = unsafe {
+                core::slice::from_raw_parts(buf.as_ptr() as *const PvLongPair, vec_size as usize)
+            };
+            for pair in pairs {
+                if pair.port & 3 != 0 {
+                    return KcallResult::Ok(EPERM);
+                }
+                port_io.outl(pair.port, pair.value);
+            }
+        }
+    }
+
+    // C: do_vdevio.c:151-156 — copy back results for input
+    //
+    // Uses `data_copy_vmcheck` (kernel→user direction) for the same
+    // reasons as the user→kernel copy above.
+    if dir == IoDirection::Input {
+        let src_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+            buf.as_ptr() as u64,
+        ));
+        let proc_cr3 = |ep: Endpoint| {
+            if ep == caller_endpt { Some(caller_cr3) } else { None }
+        };
+        let src = AddressRef::Physical(src_phys);
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(vec_addr),
+        };
+        match data_copy_vmcheck(caller, src, dst, bytes, proc_cr3) {
+            CrossSpaceResult::Completed(Ok(())) => {}
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        }
+    }
+
+    KcallResult::Ok(OK)
 }
 
 // ── SYS_IOPENABLE ──
@@ -516,14 +727,17 @@ pub fn dispatch_iopenable(
     // (06-design-final.md §3.5): the kernel only knows the OS concept
     // "enable user I/O"; the arch decides how to encode it (x86-64:
     // RFLAGS |= 0x3000; aarch64/riscv64: no-op).
+    //
+    // In C, `p_reg` is the single register save area embedded in
+    // `struct proc` — there is no separate "exception frame on the
+    // kernel stack". `do_iopenable()` is always called from a syscall
+    // handler, so the target's registers are already saved in
+    // `p_reg`/`cpu_context`. Modifying `cpu_context.psw` here takes
+    // effect when the process returns to user mode. No additional
+    // scheduler hook is needed.
     if let Some(target) = proc_table.get_mut(target_nr) {
         target.enable_user_io();
     }
-
-    // DEFERRED: For already-running processes, also update the RFLAGS
-    // field in the exception frame on the process's kernel stack.
-    // This requires arch-layer support for accessing the saved
-    // exception frame, which will be added with the scheduler.
 
     KcallResult::Ok(0) // OK
 }
@@ -544,33 +758,31 @@ const DIO_SAFEMASK: i32 = 0xf00;
 ///
 /// # Implementation Status
 ///
-/// Parameter extraction, endpoint validation, type/direction parsing,
-/// permission check (CHECK_IO_PORT), and alignment check are implemented.
-/// The actual batch I/O transfer (`phys_insb`/`phys_outsb`/`phys_insw`/
-/// `phys_outsw`) requires:
-/// 1. `verify_grant` for safe variants (grant → physical address mapping)
-/// 2. `switch_address_space` + `virtual_copy_vmcheck` for unsafe variants
-///
-/// These are deferred until the cross-space copy subsystem is available.
-/// Returning ENOSYS (rather than OK) avoids semantic drift: C's `do_sdevio`
-/// either performs the batch I/O or returns an error — never silently
-/// succeeds without doing the work.
+/// - **Unsafe path** (non-SAFE, target == caller): fully implemented.
+///   Uses `copy_from_user` + `PortIo::insb`/`outsb`/`insw`/`outsw` +
+///   `copy_to_user`. No `switch_address_space` needed (already in caller's
+///   address space).
+/// - **SAFE path** (grant-based): fully implemented. Uses `verify_grant`
+///   to resolve the grant → granter's virtual address, then
+///   `data_copy_vmcheck` to copy between granter's buffer and a kernel
+///   buffer, performing string I/O via `PortIo` trait methods.
 pub fn dispatch_sdevio<PI: PortIo>(
     caller: &mut KProcess,
     msg: &Message,
-    _port_io: &PI,
+    port_io: &PI,
     priv_table: &PrivTable,
     proc_table: &crate::proc_table::ProcessTable,
 ) -> KcallResult {
     // C: do_sdevio.c:42-46 — extract parameters via dedicated struct
-    // SAFETY: `m_type` has been validated by the dispatcher to be SYS_SDEVIO.
+    msg.debug_check_m_type_any(&[Syscall::Sdevio as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     // Using the dedicated `MessLsysKrnSysSdevio` overlay ensures correct
     // field offsets (the generic `m1` overlay would misparse fields).
     let sdevio = unsafe { msg.m_u.m_lsys_krn_sys_sdevio };
     let request = sdevio.request;
     let port = sdevio.port;
     let vec_endpt = sdevio.vec_endpt;
-    let _vec_addr = sdevio.vec_addr;
+    let vec_addr = sdevio.vec_addr;
     let vec_size = sdevio.vec_size;
     let _offset = sdevio.offset;
 
@@ -599,7 +811,6 @@ pub fn dispatch_sdevio<PI: PortIo>(
     let req_type = request & 0x0F0;  // _DIO_TYPEMASK
 
     // C: do_sdevio.c:65-93 — safe variant handling (verify_grant)
-    // DEFERRED: requires verify_grant (grant → physical address mapping).
     // For unsafe variants, C requires the target to be the caller itself
     // (do_sdevio.c:84-90). We enforce this check here.
     let is_safe = (request & DIO_SAFEMASK) == DIO_SAFE;
@@ -609,7 +820,6 @@ pub fn dispatch_sdevio<PI: PortIo>(
             return KcallResult::Ok(EPERM);
         }
     }
-    // DEFERRED: safe variant verify_grant + address space switch
 
     // C: do_sdevio.c:95-100 — determine element size
     // SDEVIO only supports byte and word (long is not supported).
@@ -647,22 +857,204 @@ pub fn dispatch_sdevio<PI: PortIo>(
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_sdevio.c:131-153 — perform batch I/O
-    // DEFERRED: requires switch_address_space + phys_insb/phys_outsb/
-    // phys_insw/phys_outsw (cross-space batch I/O primitives).
+    // C: do_sdevio.c:131-153 — perform string I/O
     //
+    // For the unsafe (non-SAFE) path where target == caller, we are already
+    // in the caller's address space — no `switch_address_space` needed.
+    // We use `copy_from_user` to read the user buffer into a kernel buffer,
+    // perform string I/O via `PortIo::insb`/`outsb`/`insw`/`outsw`, then
+    // `copy_to_user` to write results back for input.
+    //
+    // For the SAFE path, `verify_grant` resolves the grant to the granter's
+    // virtual address, then `data_copy_vmcheck` copies between the granter's
+    // buffer and a kernel buffer.
+
     // Validate direction: C only accepts _DIO_INPUT (0x001) and _DIO_OUTPUT
     // (0x002); any other value returns EINVAL (do_sdevio.c:148-152).
-    match req_dir {
-        0x001 | 0x002 => {}
+    let is_input = match req_dir {
+        0x001 => true,   // _DIO_INPUT
+        0x002 => false,  // _DIO_OUTPUT
         _ => return KcallResult::Ok(EINVAL),
+    };
+
+    if is_safe {
+        // SAFE path: verify_grant resolves grant → granter's virtual address,
+        // then data_copy_vmcheck copies between granter's buffer and kernel.
+        use crate::grant::{verify_grant, VerifyGrantOutcome, CpFlags};
+        use crate::cross_space::data_copy_vmcheck;
+        use crate::vm::{AddressRef, CrossSpaceResult};
+        use minix_arch::{CurrentDirectMap, DirectMapArch};
+        use minix_types::VirBytes;
+
+        let total_bytes = match (vec_size as usize).checked_mul(size) {
+            Some(b) => b,
+            None => return KcallResult::Ok(EINVAL),
+        };
+        const SDEVIO_BUF_MAX: usize = 4096;
+        if total_bytes > SDEVIO_BUF_MAX {
+            return KcallResult::Ok(E2BIG);
+        }
+
+        // C: do_sdevio.c:65-72 — verify_grant
+        // Input (port→buffer): grantee writes to grant → CPF_WRITE
+        // Output (buffer→port): grantee reads from grant → CPF_READ
+        let access = if is_input { CpFlags::WRITE } else { CpFlags::READ };
+
+        let caller_endpt = caller.p_endpoint;
+        let caller_cr3 = caller.p_seg.phys_root;
+        let proc_cr3 = |endpt: Endpoint| {
+            if endpt == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                proc_table
+                    .endpoint_to_nr(endpt)
+                    .and_then(|nr| proc_table.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
+        };
+
+        let outcome = verify_grant(
+            caller,
+            target_ep,
+            caller_endpt,
+            vec_addr as i32,
+            total_bytes as u64,
+            access,
+            sdevio.offset,
+            proc_table,
+            priv_table,
+            &proc_cr3,
+        );
+
+        let grant_result = match outcome {
+            VerifyGrantOutcome::Ok(r) => r,
+            VerifyGrantOutcome::Err(e) => return KcallResult::Ok(e),
+            VerifyGrantOutcome::Suspended(_) => return KcallResult::VmSuspend,
+        };
+
+        // grant_result.offset = virtual address in granter's space.
+        // grant_result.effective_granter = endpoint of the granter.
+        let granter = grant_result.effective_granter;
+        let granter_vaddr = grant_result.offset;
+
+        let mut buf = [0u8; SDEVIO_BUF_MAX];
+        let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+            buf.as_mut_ptr() as u64,
+        ));
+
+        // For output: copy grant buffer → kernel, then write to I/O port.
+        if !is_input {
+            let src = AddressRef::Process {
+                endpoint: granter,
+                offset: granter_vaddr,
+            };
+            let dst = AddressRef::Physical(buf_phys);
+            match data_copy_vmcheck(caller, src, dst, total_bytes, &proc_cr3) {
+                CrossSpaceResult::Completed(Ok(())) => {}
+                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+            }
+        }
+
+        // Perform string I/O (shared logic with unsafe path).
+        match (is_input, size) {
+            (true, 1) => port_io.insb(port as u16, &mut buf[..total_bytes]),
+            (false, 1) => port_io.outsb(port as u16, &buf[..total_bytes]),
+            (true, 2) => {
+                let words: &mut [u16] = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        buf.as_mut_ptr() as *mut u16,
+                        vec_size as usize,
+                    )
+                };
+                port_io.insw(port as u16, words);
+            }
+            (false, 2) => {
+                let words: &[u16] = unsafe {
+                    core::slice::from_raw_parts(
+                        buf.as_ptr() as *const u16,
+                        vec_size as usize,
+                    )
+                };
+                port_io.outsw(port as u16, words);
+            }
+            _ => return KcallResult::Ok(EINVAL),
+        }
+
+        // For input: copy kernel buffer → grant buffer.
+        if is_input {
+            let src = AddressRef::Physical(buf_phys);
+            let dst = AddressRef::Process {
+                endpoint: granter,
+                offset: granter_vaddr,
+            };
+            match data_copy_vmcheck(caller, src, dst, total_bytes, &proc_cr3) {
+                CrossSpaceResult::Completed(Ok(())) => {}
+                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+            }
+        }
+
+        return KcallResult::Ok(OK);
     }
 
-    // Validate vec_size: C uses `vir_bytes count` and passes it to phys_*;
-    // a zero count would be a no-op, but we still require the cross-space
-    // copy primitive to proceed. Return ENOSYS until that is available.
-    let _ = vec_size;
-    KcallResult::Ok(ENOSYS)
+    // Unsafe path: target == caller (already verified above).
+    // Perform string I/O using copy_from_user/copy_to_user + PortIo trait.
+    use crate::pte_walk::{copy_from_user, copy_to_user};
+    use minix_types::VirBytes;
+
+    let root_paddr = caller.p_seg.phys_root;
+    let total_bytes = match (vec_size as usize).checked_mul(size) {
+        Some(b) => b,
+        None => return KcallResult::Ok(EINVAL),
+    };
+
+    // Cap buffer size to prevent stack overflow (max 4KB).
+    const SDEVIO_BUF_MAX: usize = 4096;
+    if total_bytes > SDEVIO_BUF_MAX {
+        return KcallResult::Ok(E2BIG);
+    }
+
+    let mut buf = [0u8; SDEVIO_BUF_MAX];
+
+    // For output: copy user buffer → kernel, then write to I/O port.
+    // For input: read from I/O port → kernel buffer, then copy to user.
+    if !is_input {
+        // Output: read user data first
+        match copy_from_user(root_paddr, VirBytes(vec_addr), &mut buf[..total_bytes]) {
+            Ok(()) => {}
+            Err(_) => return KcallResult::Ok(EFAULT),
+        }
+    }
+
+    // Perform string I/O
+    match (is_input, size) {
+        (true, 1) => port_io.insb(port as u16, &mut buf[..total_bytes]),
+        (false, 1) => port_io.outsb(port as u16, &buf[..total_bytes]),
+        (true, 2) => {
+            let words: &mut [u16] = unsafe {
+                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, vec_size as usize)
+            };
+            port_io.insw(port as u16, words);
+        }
+        (false, 2) => {
+            let words: &[u16] = unsafe {
+                core::slice::from_raw_parts(buf.as_ptr() as *const u16, vec_size as usize)
+            };
+            port_io.outsw(port as u16, words);
+        }
+        _ => return KcallResult::Ok(EINVAL), // _DIO_LONG not supported
+    }
+
+    if is_input {
+        // Input: copy results back to user
+        match copy_to_user(&buf[..total_bytes], root_paddr, VirBytes(vec_addr)) {
+            Ok(()) => {}
+            Err(_) => return KcallResult::Ok(EFAULT),
+        }
+    }
+
+    KcallResult::Ok(OK)
 }
 
 // ── SYS_READBIOS ──
@@ -681,30 +1073,31 @@ const UPPER_MEM_END: u64 = 0x0FFFFF;
 ///
 /// C: `do_readbios()` — arch/i386/do_readbios.c
 ///
-/// Copy data from the BIOS memory area to a user-space buffer.
+/// Copy data from the BIOS memory area to a user-space buffer. The source
+/// is a physical address (BIOS area), the destination is the caller's
+/// virtual buffer.
 ///
-/// # Implementation Status
+/// # Anti-translate
 ///
-/// Parameter extraction and BIOS memory range validation are implemented.
-/// The actual data copy (`virtual_copy_vmcheck`) is deferred until the
-/// cross-space copy subsystem is available. Returning ENOSYS (rather than
-/// OK) avoids semantic drift: C's `do_readbios` either copies the data or
-/// returns an error.
+/// C uses `virtual_copy_vmcheck(caller, &src, &dst, size)` with
+/// `src.proc_nr_e = NONE` (physical) and `dst.proc_nr_e = caller`.
+/// Rust uses Direct Map to read the physical BIOS memory, then
+/// `pte_walk::copy_to_user` to write to the caller's buffer —
+/// no magic NONE endpoint, the type system distinguishes physical
+/// (Direct Map) from user-virtual (PTE walk) addressing.
 pub fn dispatch_readbios(
-    _caller: &mut KProcess,
+    caller: &mut KProcess,
     msg: &Message,
 ) -> KcallResult {
     // C: do_readbios.c:19-22 — extract parameters via dedicated struct
-    // SAFETY: `m_type` has been validated by the dispatcher to be SYS_READBIOS.
-    // Using the dedicated `MessLsysKrnReadbios` overlay ensures correct
-    // field offsets (the generic `m1` overlay would misparse fields).
+    msg.debug_check_m_type_any(&[Syscall::Readbios as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let readbios = unsafe { msg.m_u.m_lsys_krn_readbios };
     let size = readbios.size;
     let addr = readbios.addr;
-    let _buf = readbios.buf;
+    let buf = readbios.buf;
 
     // C: do_readbios.c:26 — limit = addr + size - 1
-    // Guard against size == 0 (would underflow) and overflow.
     if size == 0 {
         return KcallResult::Ok(EINVAL);
     }
@@ -713,22 +1106,57 @@ pub fn dispatch_readbios(
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_readbios.c:31-33 — BIOS memory range check
-    // USERRANGE(a, b) = SUBRANGE(src.offset, limit, a, b)
-    //                 = VINRANGE(src.offset, a, b) && VINRANGE(limit, a, b)
-    // The request is allowed if it fits entirely within EITHER:
-    //   (BIOS_MEM_BEGIN..=BIOS_MEM_END) OR (BASE_MEM_TOP..=UPPER_MEM_END)
-    let in_bios = addr >= BIOS_MEM_BEGIN && limit <= BIOS_MEM_END;
+    // C: do_readbios.c:31-33 — BIOS memory range check.
+    // `BIOS_MEM_BEGIN == 0` so `addr >= BIOS_MEM_BEGIN` is always true for
+    // u64; only the upper bound needs checking.
+    let in_bios = limit <= BIOS_MEM_END;
     let in_upper = addr >= BASE_MEM_TOP && limit <= UPPER_MEM_END;
     if !in_bios && !in_upper {
         return KcallResult::Ok(EPERM);
     }
 
     // C: do_readbios.c:35 — virtual_copy_vmcheck(caller, &src, &dst, size)
-    // DEFERRED: requires virtual_copy_vmcheck (cross-space copy with VM
-    // assistance for fault handling). The src is physical (NONE endpoint),
-    // dst is the caller's buffer.
-    KcallResult::Ok(ENOSYS)
+    // src is physical (NONE endpoint = BIOS memory), dst is caller's buffer.
+    //
+    // Uses `data_copy_vmcheck` (arch-independent page table walk via
+    // `CurrentPteWalk`) instead of the older `copy_to_user` which hardcoded
+    // x86_64 page table walking. Also supports VM suspend/resume for
+    // lazy-allocated destination pages, matching C's `virtual_copy_vmcheck`.
+    //
+    // The copy is done page-by-page because `cross_space_copy` resolves
+    // only the first page's physical address — multi-page copies require
+    // iterating to handle non-contiguous physical mappings.
+    use crate::cross_space::data_copy_vmcheck;
+    use crate::vm::{AddressRef, CrossSpaceResult};
+    use minix_types::{Endpoint, PhysBytes, VirBytes};
+
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
+    let mut remaining = size as usize;
+    let mut src_phys = addr;
+    let mut dst_va = buf;
+
+    while remaining > 0 {
+        let chunk = core::cmp::min(remaining, 4096);
+        let proc_cr3 = |ep: Endpoint| {
+            if ep == caller_endpt { Some(caller_cr3) } else { None }
+        };
+        let src = AddressRef::Physical(PhysBytes(src_phys));
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(dst_va),
+        };
+        match data_copy_vmcheck(caller, src, dst, chunk, proc_cr3) {
+            CrossSpaceResult::Completed(Ok(())) => {}
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        }
+        src_phys += chunk as u64;
+        dst_va += chunk as u64;
+        remaining -= chunk;
+    }
+
+    KcallResult::Ok(OK)
 }
 
 // ── Tests ──
@@ -738,6 +1166,7 @@ mod tests {
     use super::*;
     use minix_types::Endpoint;
     use crate::proc::RtsFlagsBits;
+    use crate::proc::ProcNr;
 
     #[test]
     fn test_irqctl_request_try_from() {
@@ -862,7 +1291,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0;     // value (unused for input)
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // No priv_id → no CHECK_IO_PORT → allowed (C "goto doit")
         caller.priv_id = None;
 
@@ -885,7 +1314,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0x1234; // value to write
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
@@ -906,7 +1335,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0;
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
@@ -927,7 +1356,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0;
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
@@ -954,7 +1383,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0;
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
@@ -980,7 +1409,7 @@ mod tests {
             msg.m_u.m_m1.m1p1 = 0;
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
@@ -997,11 +1426,11 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         // Set up a user process at slot 0 (nr=0, endpoint=Endpoint(0))
         let caller_ep = Endpoint::from_generation_slot(1, 0);
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         caller.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // Also mark the process in the table as not-free so endpoint_to_nr finds it
         {
-            let proc = proc_table.get_mut(0_i32).unwrap();
+            let proc = proc_table.get_mut(ProcNr(0)).unwrap();
             proc.p_endpoint = caller_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
@@ -1018,7 +1447,7 @@ mod tests {
         // IOPL enable is verified in minix-arch (x86_64::boot::tests::
         // enable_user_io_sets_iopl) — kernel layer no longer inspects
         // the arch-private cpu_context.psw field.
-        let _target = proc_table.get(0_i32).unwrap();
+        let _target = proc_table.get(ProcNr(0)).unwrap();
     }
 
     #[test]
@@ -1027,12 +1456,12 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let target_ep = Endpoint::from_generation_slot(1, 5);
         {
-            let proc = proc_table.get_mut(5_i32).unwrap();
+            let proc = proc_table.get_mut(ProcNr(5)).unwrap();
             proc.p_endpoint = target_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint::from_generation_slot(1, 0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = 0;
         unsafe {
@@ -1043,13 +1472,13 @@ mod tests {
         assert_eq!(result, KcallResult::Ok(0));
         // IOPL enable verified in minix-arch layer (kernel layer no
         // longer reads the arch-private cpu_context).
-        let _target = proc_table.get(5_i32).unwrap();
+        let _target = proc_table.get(ProcNr(5)).unwrap();
     }
 
     #[test]
     fn test_iopenable_invalid_endpoint_returns_einval() {
         let mut proc_table = crate::proc_table::ProcessTable::new();
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
 
         let mut msg = Message::default();
         msg.m_type = 0;
@@ -1070,12 +1499,12 @@ mod tests {
         // ProcessTable stores tasks at indices 0..NR_TASKS
         let kernel_ep = Endpoint::from_generation_slot(1, -1_i32);
         {
-            let proc = proc_table.get_mut(-1_i32).unwrap();
+            let proc = proc_table.get_mut(ProcNr(-1)).unwrap();
             proc.p_endpoint = kernel_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
         unsafe {
@@ -1096,12 +1525,12 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let target_ep = Endpoint::from_generation_slot(1, 3);
         {
-            let proc = proc_table.get_mut(3_i32).unwrap();
+            let proc = proc_table.get_mut(ProcNr(3)).unwrap();
             proc.p_endpoint = target_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
         unsafe {
@@ -1121,7 +1550,7 @@ mod tests {
         generation: i32,
     ) -> Endpoint {
         let ep = Endpoint::from_generation_slot(generation, slot);
-        let proc = proc_table.get_mut(slot).unwrap();
+        let proc = proc_table.get_mut(ProcNr(slot)).unwrap();
         proc.p_endpoint = ep;
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         ep
@@ -1131,10 +1560,10 @@ mod tests {
     fn test_sdevio_invalid_endpoint_returns_einval() {
         // C: do_sdevio.c:56 — isokendpt fails → EINVAL
         let proc_table = crate::proc_table::ProcessTable::new();
-        let mut caller = KProcess::new(0_i32, Endpoint::from_generation_slot(1, 0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
 
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x011, // DIO_INPUT_BYTE (unsafe)
@@ -1156,14 +1585,14 @@ mod tests {
         // Kernel task at slot -1
         let kernel_ep = Endpoint::from_generation_slot(1, -1_i32);
         {
-            let proc = proc_table.get_mut(-1_i32).unwrap();
+            let proc = proc_table.get_mut(ProcNr(-1)).unwrap();
             proc.p_endpoint = kernel_ep;
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(0_i32, Endpoint::from_generation_slot(1, 0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x011, // DIO_INPUT_BYTE (unsafe)
@@ -1185,9 +1614,9 @@ mod tests {
         let _caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
         let target_ep = setup_sdevio_proc(&mut proc_table, 5, 1);
 
-        let mut caller = KProcess::new(0_i32, Endpoint::from_generation_slot(1, 0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x011, // DIO_INPUT_BYTE (unsafe, no _DIO_SAFE)
@@ -1210,9 +1639,9 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x031, // DIO_INPUT_LONG (unsafe)
@@ -1235,10 +1664,10 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         caller.priv_id = None;
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x021, // DIO_INPUT_WORD (unsafe)
@@ -1261,7 +1690,7 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         let mut priv_table = PrivTable::new();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
@@ -1272,7 +1701,7 @@ mod tests {
         }
 
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x011, // DIO_INPUT_BYTE (unsafe)
@@ -1289,19 +1718,24 @@ mod tests {
     }
 
     #[test]
-    fn test_sdevio_valid_returns_enosys() {
-        // Valid parameters pass all checks; actual I/O deferred → ENOSYS.
-        // C: do_sdevio.c:131-153 — batch I/O (deferred)
+    fn test_sdevio_safe_path_no_grant_table_returns_eperm() {
+        // Valid SAFE request passes all checks; verify_grant is called but
+        // the granter has no priv_id (no grant table) → EPERM.
+        // C: do_sdevio.c:65-93 — safe variant (verify_grant) wired.
+        //
+        // Uses _DIO_SAFE (0x100) to select the safe path. verify_grant
+        // resolves the grant via the granter's privilege table; with
+        // priv_id=None, it returns EPERM (grant.rs:386).
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         caller.priv_id = None;
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x011, // DIO_INPUT_BYTE (unsafe)
+                request: 0x111, // DIO_INPUT_BYTE | DIO_SAFE (safe path)
                 vec_endpt: Endpoint::SELF.0,
                 port: 0x60, // aligned for byte
                 vec_size: 4,
@@ -1312,7 +1746,7 @@ mod tests {
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
-        assert_eq!(result, KcallResult::Ok(ENOSYS));
+        assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
     #[test]
@@ -1321,10 +1755,10 @@ mod tests {
         let mut proc_table = crate::proc_table::ProcessTable::new();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(0_i32, caller_ep);
+        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         caller.priv_id = None;
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Sdevio as i32;
         unsafe {
             msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
                 request: 0x010, // _DIO_BYTE with direction=0 (invalid)
@@ -1346,9 +1780,9 @@ mod tests {
     #[test]
     fn test_readbios_zero_size_returns_einval() {
         // size == 0 would underflow `limit = addr + size - 1`
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Readbios as i32;
         unsafe {
             msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
                 size: 0,
@@ -1365,9 +1799,9 @@ mod tests {
     #[test]
     fn test_readbios_outside_bios_range_returns_eperm() {
         // C: do_readbios.c:31-33 — neither BIOS_MEM nor UPPER_MEM range
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Readbios as i32;
         unsafe {
             msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
                 size: 16,
@@ -1381,55 +1815,21 @@ mod tests {
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
-    #[test]
-    fn test_readbios_in_bios_mem_range_returns_enosys() {
-        // C: do_readbios.c:31 — USERRANGE(BIOS_MEM_BEGIN, BIOS_MEM_END) passes
-        // addr=0x100, size=16 → limit=0x10F, within [0x0, 0x4FF]
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
-        let mut msg = Message::default();
-        msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 16,
-                addr: 0x100,
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
-
-        let result = dispatch_readbios(&mut caller, &msg);
-        // Actual copy deferred → ENOSYS
-        assert_eq!(result, KcallResult::Ok(ENOSYS));
-    }
-
-    #[test]
-    fn test_readbios_in_upper_mem_range_returns_enosys() {
-        // C: do_readbios.c:32 — USERRANGE(BASE_MEM_TOP, UPPER_MEM_END) passes
-        // addr=0x0F0000, size=16 → limit=0x0F000F, within [0x90000, 0xFFFFF]
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
-        let mut msg = Message::default();
-        msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 16,
-                addr: 0x0F0000,
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
-
-        let result = dispatch_readbios(&mut caller, &msg);
-        assert_eq!(result, KcallResult::Ok(ENOSYS));
-    }
+    // NOTE: Valid-range readbios tests (BIOS_MEM and UPPER_MEM ranges) are
+    // omitted because dispatch_readbios now calls copy_to_user → walk_x86_64,
+    // which dereferences Direct Map addresses (0xFFFF_8000_0000_0000+) that
+    // are unmapped in host-side unit tests → SIGSEGV.
+    // Integration tests with QEMU + real page tables are required for the
+    // copy path. The validation tests below cover all error paths.
 
     #[test]
     fn test_readbios_straddling_ranges_returns_eperm() {
         // Range must fit ENTIRELY within one region.
         // addr=0x4F0, size=32 → limit=0x50F, exceeds BIOS_MEM_END (0x4FF)
         // and is below BASE_MEM_TOP (0x90000) → EPERM
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Readbios as i32;
         unsafe {
             msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
                 size: 32,
@@ -1446,9 +1846,9 @@ mod tests {
     #[test]
     fn test_readbios_overflow_returns_einval() {
         // addr + size - 1 overflows u64
-        let mut caller = KProcess::new(0_i32, Endpoint(0));
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        msg.m_type = 0;
+        msg.m_type = Syscall::Readbios as i32;
         unsafe {
             msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
                 size: 2,
@@ -1460,5 +1860,135 @@ mod tests {
 
         let result = dispatch_readbios(&mut caller, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    // ── dispatch_irqctl tests (with local IrqManager<MockIrqController>) ──
+
+    /// Minimal no-op `InterruptController` for unit-testing `dispatch_irqctl`
+    /// without real hardware. The validation paths under test return before
+    /// any controller method is invoked; the SetPolicy success path calls
+    /// `unmask` (a no-op here) when the first hook is installed.
+    struct MockIrqController;
+
+    impl InterruptController for MockIrqController {
+        fn new(_desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+            MockIrqController
+        }
+        fn init(&mut self) {}
+        fn mask(&mut self, _irq: IrqVector) {}
+        fn unmask(&mut self, _irq: IrqVector) {}
+        fn ack(&mut self, _irq: IrqVector) {}
+        fn eoi(&mut self, _irq: IrqVector) {}
+        fn mask_all(&mut self) {}
+    }
+
+    /// Build a SYS_IRQCTL message using the dedicated struct (not M1).
+    fn build_irqctl_msg(request: i32, vector: i32, policy: i32, hook_id: i32) -> Message {
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Irqctl as i32;
+        // SAFETY: m_type is set above; writing the dedicated
+        // irqctl variant is the canonical way to populate SYS_IRQCTL fields.
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_irqctl = minix_types::MessLsysKrnSysIrqctl {
+                request,
+                vector,
+                policy,
+                hook_id,
+                _padding: [0; 40],
+            };
+        }
+        msg
+    }
+
+    #[test]
+    fn test_dispatch_irqctl_rejects_unknown_request() {
+        // C: do_irqctl.c:43 — unknown request → EINVAL.
+        // Validation happens before any IrqManager access.
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = build_irqctl_msg(99, 0, 0, 0);
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = PrivTable::new();
+        let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_dispatch_irqctl_setpolicy_rejects_negative_irq() {
+        // C: do_irqctl.c:55-56 — irq_vec < 0 → EINVAL.
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = build_irqctl_msg(
+            IrqctlRequest::SetPolicy as i32,
+            -1,
+            0,
+            0,
+        );
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = PrivTable::new();
+        let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_dispatch_irqctl_setpolicy_rejects_too_high_irq() {
+        // C: do_irqctl.c:55-56 — irq_vec >= NR_IRQ_VECTORS → EINVAL.
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = build_irqctl_msg(
+            IrqctlRequest::SetPolicy as i32,
+            9999,
+            0,
+            0,
+        );
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = PrivTable::new();
+        let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_dispatch_irqctl_setpolicy_no_priv_returns_eperm() {
+        // C: do_irqctl.c:58-76 — caller without an assigned privilege (priv_id
+        // == None) cannot pass CHECK_IRQ → EPERM. Returned before any
+        // IrqManager hook operation.
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        // priv_id left as None (KProcess::new default).
+        let mut msg = build_irqctl_msg(
+            IrqctlRequest::SetPolicy as i32,
+            5, // valid vector
+            0,
+            0,
+        );
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = PrivTable::new();
+        let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EPERM));
+    }
+
+    #[test]
+    fn test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field() {
+        // C: do_irqctl.c:82-108 — successful SETPOLICY installs a hook and
+        // writes the 1-based hook_id back into the message.
+        //
+        // This test verifies the fix for the field-mapping bug: the reply
+        // hook_id must land in `m_lsys_krn_sys_irqctl.hook_id` (offset 12),
+        // NOT in `m_m1.m1p1` (offset 16, which is padding in the irqctl
+        // struct layout).
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        caller.priv_id = Some(0); // PrivTable slot 0 has no CHECK_IRQ flag → all IRQs allowed.
+        let mut msg = build_irqctl_msg(
+            IrqctlRequest::SetPolicy as i32,
+            5,   // valid vector
+            0,   // policy (no REENABLE)
+            0,   // notify_id (valid: 0..=31)
+        );
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = PrivTable::new();
+        let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
+        assert_eq!(result, KcallResult::Ok(OK));
+        // The first installed hook gets 1-based id = 1.
+        // Read back via the dedicated irqctl variant (not M1).
+        msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
+        // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+        let hook_id = unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id };
+        assert_eq!(hook_id, 1, "hook_id must be written to the dedicated irqctl field");
     }
 }

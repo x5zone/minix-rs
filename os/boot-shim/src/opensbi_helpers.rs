@@ -445,6 +445,10 @@ pub fn build_kernel_info(
         bootstrap_start,
         bootstrap_len,
         platform_sources,
+        // P9-1: SBI boot hart argument not yet parsed into key=value pairs.
+        // Pass empty slice — kernel's GET_MONPARAMS handler copies 0 bytes
+        // to caller (matching C's behavior when param_buf[0] == '\0').
+        param_buf: &[],
     }
 }
 
@@ -608,8 +612,10 @@ mod tests {
     ///
     /// **注意**：此 memmap **不排除** `MODULE_REGION_BASE = DRAM_BASE + 32MB`
     /// 区域。boot-shim 负责报告"全部 DRAM 是 free"；内核侧的 `cut_memmap()`
-    /// （C：`pre_init.c:cut_memmap` / Rust port：TODO-04 范围内）在 handover 后
-    /// 切除 module 区域。这与 C 版语义一致——boot-shim 不感知 module 地址。
+    /// （C：`pre_init.c:cut_memmap`）在 handover 后切除 module 区域。这与 C
+    /// 版语义一致——boot-shim 不感知 module 地址。`cut_memmap` 的 Rust 实现
+    /// 是内核侧 TODO（见 `todo.md §1` boot module 内存回收），不在 boot-shim
+    /// 范围内。
     #[test]
     fn test_build_memmap_default_region() {
         let memmap = build_memmap();

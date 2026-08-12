@@ -85,19 +85,21 @@ impl ExceptionArch for X86_64ExceptionFrame {
 
     fn set_return_value(frame: &mut Self::Frame, value: u64) {
         // C: pr->p_reg.retreg = pagefaultcr2 — exception.c:72
-        // In x86-64, the return value register is RAX. However, RAX
-        // is not part of the CPU-pushed exception frame — it is saved
-        // by the assembly entry point in the register save area that
-        // precedes the exception frame on the kernel stack.
         //
-        // For nested exceptions, modifying the exception frame's RIP
-        // (via set_instruction_pointer) redirects execution to a
-        // recovery point. The recovery point reads the return value
-        // from the register save area, not the exception frame.
+        // Design limitation (x86-64): RAX is NOT in the CPU-pushed exception
+        // frame (which contains only vector, errcode, rip, cs, rflags, rsp,
+        // ss). RAX is saved by the assembly entry point into the process
+        // register save area (`p_reg.retreg`), which is NOT accessible via
+        // `&mut Self::Frame`.
         //
-        // This method is a placeholder — actual return-value setting
-        // requires access to the full register save area (p_reg).
-        // TODO: Integrate with KProcess register save area when available.
+        // ARM64/RISC-V can implement this because their frames include the
+        // return register (x0 / a0) saved by assembly. On x86-64, the caller
+        // (exception handler) must set `proc.p_reg.retreg = value` directly
+        // after calling this method — matching C's `pr->p_reg.retreg` write.
+        //
+        // This method is intentionally a no-op on x86-64. It exists to
+        // satisfy the trait contract; the actual return-value write happens
+        // at the call site via `&mut KProcess`.
         let _ = (frame, value);
     }
 }

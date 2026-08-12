@@ -172,13 +172,14 @@ mod tests {
     use super::*;
     use crate::proc::proc_nr::KERNEL;
     use crate::proc::RtsFlagsBits;
+    use crate::proc::ProcNr;
     use crate::proc_table::ProcessTable;
 
     #[test]
     fn test_set_pagefault_pending_sets_flag_and_addr() {
         // C: RTS_SET(pr, RTS_PAGEFAULT) at exception.c:115.
         let mut proc_table = ProcessTable::new();
-        let proc = proc_table.get_mut(0).unwrap();
+        let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn test_clear_pagefault_pending_clears_flag_and_addr() {
         let mut proc_table = ProcessTable::new();
-        let proc = proc_table.get_mut(0).unwrap();
+        let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         set_pagefault_pending(proc, 0x1234_5678);
@@ -208,7 +209,7 @@ mod tests {
     fn test_is_pagefault_pending_default_false() {
         // A freshly-spawned process must not have RTS_PAGEFAULT set.
         let mut proc_table = ProcessTable::new();
-        let proc = proc_table.get_mut(0).unwrap();
+        let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(!is_pagefault_pending(proc));
@@ -244,7 +245,7 @@ mod tests {
     fn test_pagefault_pending_roundtrip_with_clear() {
         // End-to-end: set → query → clear → query (false).
         let mut proc_table = ProcessTable::new();
-        let proc = proc_table.get_mut(0).unwrap();
+        let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
@@ -259,7 +260,7 @@ mod tests {
         // Calling set twice should be idempotent (RTS_PAGEFAULT is a
         // single bit; setting it again is a no-op).
         let mut proc_table = ProcessTable::new();
-        let proc = proc_table.get_mut(0).unwrap();
+        let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         set_pagefault_pending(proc, 0x1000);

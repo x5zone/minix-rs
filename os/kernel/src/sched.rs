@@ -145,7 +145,7 @@ impl Scheduler {
                 .and_then(|i| procs.get(i))
                 .map(|p| {
                     let v = p.p_nextready.load(Ordering::Relaxed);
-                    if v == NONE_PROC_NR { None } else { Some(v) }
+                    if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
                 })
                 .flatten();
             link_is_head = false;
@@ -160,7 +160,7 @@ impl Scheduler {
             .and_then(|i| procs.get(i))
             .map(|p| {
                 let v = p.p_nextready.load(Ordering::Relaxed);
-                if v == NONE_PROC_NR { None } else { Some(v) }
+                if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
             })
             .flatten();
 
@@ -168,7 +168,7 @@ impl Scheduler {
             self.run_q_head[q] = next;
         } else if let Some(prev_nr) = prev {
             let prev_idx = nr_to_idx(prev_nr).unwrap();
-            procs[prev_idx].p_nextready.store(next.unwrap_or(NONE_PROC_NR), Ordering::Relaxed);
+            procs[prev_idx].p_nextready.store(next.map(|n| n.0).unwrap_or(NONE_PROC_NR), Ordering::Relaxed);
         }
 
         // Update tail if needed
@@ -192,6 +192,14 @@ impl Scheduler {
         debug_assert!(prio < priority::NR_SCHED_QUEUES);
         self.run_q_head[prio]
     }
+
+    /// Get the tail process of a priority queue (for debugging).
+    ///
+    /// Used by `debug::runqueues_ok_cpu` to verify queue invariants.
+    pub(crate) fn queue_tail_inner(&self, prio: usize) -> Option<ProcNr> {
+        debug_assert!(prio < priority::NR_SCHED_QUEUES);
+        self.run_q_tail[prio]
+    }
 }
 
 /// Information returned by `enqueue_queue_tail` for the caller to
@@ -207,7 +215,7 @@ pub struct EnqueueInfo {
 fn nr_to_idx(nr: ProcNr) -> Option<usize> {
     const NR_TASKS: isize = minix_types::NR_TASKS as isize;
     const PROC_TABLE_SIZE: usize = NR_TASKS as usize + 256;
-    let offset = nr as isize + NR_TASKS;
+    let offset = nr.0 as isize + NR_TASKS;
     if offset < 0 || offset as usize >= PROC_TABLE_SIZE {
         return None;
     }
@@ -293,15 +301,16 @@ pub struct SchedParams {
 /// # SMP migration
 ///
 /// On SMP, if the process is currently runnable on a different CPU,
-/// the scheduler must migrate it. The migration itself is left to the
-/// caller (per-CPU scheduling queue — DEFERRED on the actual
-/// `smp_schedule_migrate_proc` body); we just record the new
-/// `p_cpu` field here.
+/// the scheduler must migrate it. The migration itself is implemented
+/// by `SmpState::schedule_migrate_proc` ([smp.rs:670](file:///home/xzhao/github/minix-rs/os/kernel/src/smp.rs)):
+/// stop on current CPU → save ctx → set `p_cpu = dest_cpu` → unset RTS_PROC_STOP.
+/// This function (`sched_proc`) only records the new `p_cpu` field;
+/// `dispatch_schedule` calls `schedule_migrate_proc` when the CPU changes.
 ///
 /// # Implementation status
 ///
 /// Steps 1-9 are implemented (validation + field updates).
-/// SMP migration via `smp_schedule_migrate_proc` is DEFERRED.
+/// SMP migration via `schedule_migrate_proc` is **implemented** (smp.rs:670).
 pub fn sched_proc(
     p: &mut KProcess,
     params: SchedParams,
@@ -428,7 +437,7 @@ pub fn sched_proc_error_to_errno(err: SchedProcError) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+    use crate::proc::{CpuId, MiscFlagsBits, RtsFlagsBits};
     use crate::proc_table::ProcessTable;
 
     fn make_runnable(table: &mut ProcessTable, nr: ProcNr, prio: u8) {
@@ -440,53 +449,53 @@ mod tests {
     #[test]
     fn test_enqueue_empty_queue() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        table.sched_enqueue(0, None, 0);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
-        assert_eq!(sched.queue_head(q), Some(0));
-        assert_eq!(table.get(0).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
+        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
     }
 
     #[test]
     fn test_enqueue_non_empty_queue() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        make_runnable(&mut table, 1, priority::USER_Q);
-        table.sched_enqueue(0, None, 0);
-        table.sched_enqueue(1, None, 0);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(1),priority::USER_Q);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
-        assert_eq!(sched.queue_head(q), Some(0));
-        assert_eq!(table.get(0).unwrap().p_nextready.load(Ordering::Relaxed), 1);
-        assert_eq!(table.get(1).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
+        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), 1);
+        assert_eq!(table.get(ProcNr(1)).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
     }
 
     #[test]
     fn test_enqueue_head() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        make_runnable(&mut table, 1, priority::USER_Q);
-        table.get_mut(0).unwrap().p_sched.quantum.cpu_time_left.store(1000, Ordering::Release);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(1),priority::USER_Q);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(1000, Ordering::Release);
 
-        table.sched_enqueue(1, None, 0);
-        table.sched_enqueue_head(0, 0);
+        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.sched_enqueue_head(ProcNr(0), CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
-        assert_eq!(sched.queue_head(q), Some(0));
-        assert_eq!(table.get(0).unwrap().p_nextready.load(Ordering::Relaxed), 1);
+        assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
+        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_dequeue_only_process() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        table.sched_enqueue(0, None, 0);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
 
-        table.rts_set(0, RtsFlagsBits::PROC_STOP);
+        table.rts_set(ProcNr(0), RtsFlagsBits::PROC_STOP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
@@ -503,40 +512,40 @@ mod tests {
     #[test]
     fn test_pick_proc_highest_priority() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        make_runnable(&mut table, 2, priority::MAX_USER_Q);
-        table.sched_enqueue(0, None, 0);
-        table.sched_enqueue(2, None, 0);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(2),priority::MAX_USER_Q);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue(ProcNr(2), None, CpuId::BSP);
 
         let picked = table.scheduler().pick_proc(table.procs_slice());
-        assert_eq!(picked, Some(2));
+        assert_eq!(picked, Some(ProcNr(2)));
     }
 
     #[test]
     fn test_proc_no_time_kernel_scheduled() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        table.get_mut(0).unwrap().p_sched.scheduler = None;
-        table.get_mut(0).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
-        table.get_mut(0).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = None;
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
 
-        table.sched_proc_no_time(0);
+        table.sched_proc_no_time(ProcNr(0));
 
-        let left = table.get(0).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
+        let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
         assert!(left > 0);
     }
 
     #[test]
     fn test_proc_no_time_user_scheduled_preemptible() {
         let mut table = ProcessTable::new();
-        make_runnable(&mut table, 0, priority::USER_Q);
-        table.get_mut(0).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
-        table.get_mut(0).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
 
-        table.sched_enqueue(0, None, 0);
-        table.sched_proc_no_time(0);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_proc_no_time(ProcNr(0));
 
-        assert!(table.get(0).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 
     // ── sched_proc tests (2026-06-16) ────────────────────────────────
@@ -545,7 +554,7 @@ mod tests {
     fn test_sched_proc_priority_change() {
         // C: system.c:684-685 — priority update.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // priority 7 → 3 (higher). Design §3.8: Option<u8> replaces -1.
@@ -558,7 +567,7 @@ mod tests {
     fn test_sched_proc_priority_none_keeps_value() {
         // Design §3.8: None = keep current (replaces C's -1 sentinel).
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority.store(11, Ordering::Release);
@@ -574,7 +583,7 @@ mod tests {
         // Runtime check: priority > MIN_USER_Q (15) → EINVAL.
         // C: system.c:645 — priority > NR_SCHED_QUEUES → EINVAL.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
@@ -585,7 +594,7 @@ mod tests {
     fn test_sched_proc_priority_too_high_rejected() {
         // C: system.c:645 — priority > NR_SCHED_QUEUES → EINVAL.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: Some(17), quantum: None, cpu: None, niced: false });
@@ -596,7 +605,7 @@ mod tests {
     fn test_sched_proc_quantum_update_resets_cpu_time() {
         // C: system.c:686-689 — quantum update resets cpu_time_left.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // Set quantum to 50ms.
@@ -611,7 +620,7 @@ mod tests {
     fn test_sched_proc_quantum_zero_rejected() {
         // C: system.c:647-648 — quantum < 1 → EINVAL.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: None, quantum: Some(0), cpu: None, niced: false });
@@ -622,7 +631,7 @@ mod tests {
     fn test_sched_proc_niced_flag_set() {
         // C: system.c:695-698 — niced=true sets MF_NICED.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: None, niced: true });
@@ -634,7 +643,7 @@ mod tests {
     fn test_sched_proc_niced_flag_clear() {
         // C: niced=false clears MF_NICED.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_misc_flags.set(MiscFlagsBits::NICED); // pre-set
@@ -647,7 +656,7 @@ mod tests {
     fn test_sched_proc_cpu_update() {
         // C: system.c:691-693 (SMP) — cpu update sets p_cpu.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false });
@@ -672,7 +681,7 @@ mod tests {
     fn test_sched_proc_full_update_with_all_params() {
         // C: end-to-end — priority + quantum + cpu + niced at once.
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p, SchedParams { priority: Some(5), quantum: Some(100), cpu: Some(0), niced: true });
@@ -692,7 +701,7 @@ mod tests {
         // C: system.c:644-645 — priority > NR_SCHED_QUEUES → EINVAL
         // C: system.c:645 — if (priority > NR_SCHED_QUEUES) return EINVAL;
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // C: NR_SCHED_QUEUES = 16, MIN_USER_Q = 15
@@ -700,7 +709,7 @@ mod tests {
         let result = sched_proc(p, SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
         // priority = 15 → OK in both C and Rust
-        let p2 = table.get_mut(1).unwrap();
+        let p2 = table.get_mut(ProcNr(1)).unwrap();
         p2.p_endpoint = minix_types::Endpoint(101);
         p2.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let result = sched_proc(p2, SchedParams { priority: Some(15), quantum: None, cpu: None, niced: false });
@@ -711,7 +720,7 @@ mod tests {
     fn test_sched_proc_c_parity_step2_quantum_validation() {
         // C: system.c:647-648 — quantum < 1 && quantum != -1 → EINVAL
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // quantum = 0 → EINVAL in C (quantum < 1 && quantum != -1)
@@ -726,7 +735,7 @@ mod tests {
     fn test_sched_proc_c_parity_step8_niced_flag() {
         // C: system.c:695-698 — niced sets/clears MF_NICED
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // C: if (niced) p->p_misc_flags |= MF_NICED;
@@ -741,7 +750,7 @@ mod tests {
     fn test_sched_proc_c_parity_step9_no_quantum_cleared() {
         // C: system.c:698 — RTS_NO_QUANTUM is cleared after enqueue
         let mut table = ProcessTable::new();
-        let p = table.get_mut(0).unwrap();
+        let p = table.get_mut(ProcNr(0)).unwrap();
         p.p_endpoint = minix_types::Endpoint(100);
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_rts_flags.set(RtsFlagsBits::NO_QUANTUM); // pre-set

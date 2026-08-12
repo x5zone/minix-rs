@@ -176,6 +176,31 @@ pub trait Paging {
     /// riscv64:  zero-fill root_page, return Sv39/Sv48 struct
     fn new_from_page(root_page: PhysBytes) -> Self;
 
+    /// Wrap an already-active page table root without modifying it.
+    ///
+    /// Unlike `new_from_page` (which zero-fills the root page), this
+    /// constructor assumes the root page table is already initialized
+    /// and in use (e.g., paging has been enabled by `enable()`). It
+    /// creates a `Paging` handle that can perform `map`/`remap`/`query`
+    /// operations on the existing page table.
+    ///
+    /// # Use case
+    ///
+    /// During boot, `arch_boot_impl` creates a page table via
+    /// `new_from_page`, enables paging via `enable()`, then drops the
+    /// `Paging` instance. Later phases (e.g., `init_proc_and_boot`)
+    /// need to add more mappings to the same page table (e.g., loading
+    /// the VM ELF). `from_active_root` lets them obtain a handle to
+    /// the still-active page table without re-allocating or zeroing it.
+    ///
+    /// # Safety contract (caller responsibility)
+    ///
+    /// Caller must ensure `root_phys` points to a valid, currently-active
+    /// page table root that is accessible through the direct map. The
+    /// returned `Paging` instance must not outlive the page table it wraps
+    /// (i.e., don't call `destroy()` on it unless you own the table).
+    fn from_active_root(root_phys: PhysBytes) -> Self;
+
     /// Load root table physical address into MMU and enable paging.
     /// After this call, all memory accesses go through page tables.
     /// Returns the root table physical address.
@@ -440,8 +465,19 @@ pub fn bind_to_process(
     root_paddr: PhysBytes,
     endpoint: minix_types::Endpoint,
 ) -> Result<(), PageTableError> {
-    // TODO: call sys_vmctl_set_addrspace(endpoint, root_paddr)
-    // Currently a no-op until kernel IPC is implemented.
+    // C: pt_bind() step 5 — sys_vmctl_set_addrspace(endpoint, root_paddr)
+    //
+    // Design decision (arch→kernel boundary): The arch crate cannot call
+    // kernel IPC (`sys_vmctl_set_addrspace`) because the dependency graph
+    // is kernel → arch (not arch → kernel). The actual kernel notification
+    // is performed by the CALLER:
+    //   - VM server: `vmproc_handle.rs:bind_to_process()` call site
+    //   - Kernel boot: `paging_init()` caller in `kernel/src/lib.rs`
+    //
+    // This function validates inputs and returns Ok; the caller is
+    // responsible for invoking the kernel IPC to register the page table
+    // root with the process. This matches Minix3's layering where `pt_bind`
+    // is called from VM-side code that has access to kernel syscalls.
     let _ = root_paddr;
     let _ = endpoint;
     Ok(())
@@ -546,7 +582,6 @@ where
     } else {
         P::FALLBACK_HUGE_PAGE_SIZE
     };
-    let _ = huge_page_size; // Used in Phase 2 extension
 
     // Phase 2: VM page table setup
 
@@ -558,7 +593,11 @@ where
     // - kernel text size in pages
     // - kernel data size in pages
     //
-    // TODO: Pass kernel layout from boot_info when available
+    // FIXME: Pass kernel layout from boot_info when available (tracked in
+    //        todo.md §1 — boot module ELF loading lifecycle). The mock
+    //        constants below produce a valid-but-sentinel kernel mapping
+    //        sufficient for VM bootstrap; real boot_info plumbing is a
+    //        larger change that touches KernelInfo + boot-shim handoff.
     const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
     const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
     const MOCK_KERNEL_TEXT_PAGES: usize = 8;
@@ -578,20 +617,30 @@ where
 
     // Step 2b: Extend VM direct map if physical memory exceeds 1GB
     // The kernel-provided initial page table has 1GB direct map starting at
-    // VM_DIRECT_MAP_BASE. If total physical memory exceeds 1GB, we need to
-    // map additional 1GB (or 2MB fallback) entries.
+    // VM_DIRECT_MAP_BASE. If total physical memory exceeds 1GB, extend with
+    // additional huge page mappings so VM can access all physical memory.
     //
-    // TODO: Implement direct map extension when phys_mem > 1GB.
-    //       Algorithm:
-    //       for each additional 1GB segment beyond the initial one:
-    //         let paddr = PhysBytes(segment_index * 0x4000_0000);
-    //         let vaddr = D::vm_phys_to_virt(paddr);
-    //         pt.map_huge(vaddr, paddr, huge_page_size as usize,
-    //                     PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE)?;
+    // C: pt_init() extends the direct map — the `pt_initsize > 0` path
+    //    in memory.c that calls pg_map() for each additional huge page.
+    //
+    // Flags: read_write() = PRESENT | WRITABLE | USER_ACCESSIBLE.
+    // VM is a user-space process, so the direct map must be user-accessible.
     let initial_dm_size: u64 = 1 << 30; // 1GB
     if total_phys_bytes > initial_dm_size {
-        // TODO: Extend direct map beyond initial 1GB
-        // Requires HugePages::map_huge() support in the implementation
+        let extra_bytes = total_phys_bytes - initial_dm_size;
+        let extra_huge_pages = extra_bytes.div_ceil(huge_page_size);
+        // minix-rs is 64-bit only, so u64→usize is non-truncating.
+        let huge_page_size_usize = huge_page_size as usize;
+        for i in 0..extra_huge_pages {
+            let paddr = PhysBytes(initial_dm_size + i * huge_page_size);
+            let vaddr = D::vm_phys_to_virt(paddr);
+            pt.map_huge(
+                vaddr,
+                paddr,
+                huge_page_size_usize,
+                PageFlags::read_write(),
+            )?;
+        }
     }
 
     // Step 2c: Bind page table to VM process
@@ -651,6 +700,21 @@ pub mod mock {
 
         fn new_from_page(_root_page: PhysBytes) -> Self {
             Self::new_mock().expect("MockPaging::new_from_page should not fail")
+        }
+
+        /// Wrap an already-active root without zeroing it.
+        ///
+        /// For the mock, this is equivalent to `new_mock()` — the mock has
+        /// no real MMU state, so "wrapping an active root" just creates a
+        /// fresh mapping table. The `root_phys` parameter is recorded for
+        /// `root_paddr()` parity with real arches.
+        fn from_active_root(root_phys: PhysBytes) -> Self {
+            let id = MOCK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+            Self {
+                id,
+                mappings: BTreeMap::new(),
+                root_phys: root_phys.0,
+            }
         }
 
         unsafe fn enable(&self) -> PhysBytes {

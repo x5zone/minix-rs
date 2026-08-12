@@ -82,4 +82,36 @@ impl ClockArch for Riscv64ClockArch {
             core::ptr::read_volatile(self.mtime_addr as *const u64)
         }
     }
+
+    fn stop_local_timer(&mut self) {
+        // Disable S-mode timer interrupt by clearing STIE bit in sie,
+        // and set mtimecmp to max to prevent any pending interrupt.
+        //
+        // C: smp.c:56-61 — inline timer disable in smp_ipi_halt_handler
+        unsafe {
+            // Clear STIE (bit 5) in sie CSR
+            core::arch::asm!("csrc sie, {bits}", bits = in(reg) 0x20u64);
+            // Set mtimecmp to u64::MAX to prevent timer fire
+            core::ptr::write_volatile(self.mtimecmp_base as *mut u64, u64::MAX);
+        }
+    }
+
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> {
+        // RISC-V does not have a separate profiling timer. The CLINT
+        // mtimecmp is already used for scheduling. A second mtimecmp
+        // (if available for S-mode) could be used, but this is not
+        // standardized in the privilege spec.
+        //
+        // Return Err to indicate profiling is not available on RISC-V.
+        Err(())
+    }
+
+    fn stop_profile_clock(&mut self) {
+        // No profiling timer to stop on RISC-V.
+    }
+
+    fn ack_profile_clock(&mut self) {
+        // No profiling timer to ack on RISC-V.
+        // C: arch_ack_profile_clock() — profile.c:123
+    }
 }

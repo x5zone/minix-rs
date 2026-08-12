@@ -32,6 +32,7 @@ fn boot_simulation_full_flow() {
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
+        param_buf: &[],
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4
@@ -147,7 +148,7 @@ fn init_proc_and_boot_test() {
     //! Run:
     //!   cargo test -p minix-kernel --test boot_integration init_proc_and_boot_test -- --nocapture
 
-    use minix_kernel::proc::{proc_nr, RtsFlagsBits};
+    use minix_kernel::proc::{proc_nr, ProcNr, RtsFlagsBits};
     use minix_kernel::proc_table::ProcessTable;
 
     // Step 1: Create process table and verify initial state.
@@ -156,7 +157,7 @@ fn init_proc_and_boot_test() {
 
     // Verify SLOT_FREE for all user-space slots
     for nr in 0..=255 {
-        if let Some(proc) = table.get(nr) {
+        if let Some(proc) = table.get(ProcNr(nr)) {
             assert!(proc.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE,
                 "slot {} should be SLOT_FREE, got {:?}", nr, proc.p_rts_flags.get());
         }

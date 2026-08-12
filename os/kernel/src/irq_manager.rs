@@ -120,9 +120,9 @@ pub struct KernelNotifier;
 
 impl IrqNotify for KernelNotifier {
     fn notify_hardware(&mut self, dst: Endpoint, notify_id: IrqNotifyId) {
-        // C: do_irqctl.c:154 — `get_randomness(&krandom, hook->irq)`
-        // Randomness gathering deferred to a future krandom subsystem
-        // (see 14-exception-interrupt.md §4.7 known gap).
+        // C: do_irqctl.c:154 — `get_randomness(&krandom, hook->irq)` is
+        // called from `IrqManager::dispatch` (not here) before invoking
+        // the handler. See krandom.rs for the implementation.
 
         // C: do_irqctl.c:160-161 — `if(!isokendpt(hook->proc_nr_e, &proc_nr))
         //                              panic("invalid interrupt handler: %d", hook->proc_nr_e)`
@@ -472,6 +472,11 @@ impl<IC: InterruptController> IrqManager<IC> {
 
             self.actids[irq_idx] |= slot_id.0;
 
+            // C: do_irqctl.c:154 — `get_randomness(&krandom, hook->irq)`.
+            // Called once per hook invocation (matching C's generic_handler).
+            // Currently a no-op stub (see krandom.rs §Design Decisions D3).
+            crate::krandom::get_randomness(slot_irq.get() as i32);
+
             let mut ctx = IrqHookContext {
                 irq: slot_irq,
                 id: slot_id,
@@ -595,6 +600,37 @@ impl<IC: InterruptController> IrqManager<IC> {
         self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.id))
     }
 
+    /// Get the notify ID of a hook slot.
+    ///
+    /// C: irq_hooks[hook_id].notify_id — type.h:25
+    pub fn hook_notify_id(&self, slot_idx: usize) -> Option<IrqNotifyId> {
+        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.notify_id))
+    }
+
+    /// Get the policy flags of a hook slot.
+    ///
+    /// C: irq_hooks[hook_id].policy — type.h:26
+    pub fn hook_policy(&self, slot_idx: usize) -> Option<IrqPolicy> {
+        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.policy))
+    }
+
+    /// Get a read-only slice of the `irq_actids[]` bitmap array.
+    ///
+    /// C: `irq_actids[NR_IRQ_VECTORS]` — glo.h:49. Each entry is a bitmap
+    /// of `IrqId` bits currently in "active" state for that IRQ vector.
+    ///
+    /// Used by `SYS_GETINFO` `GET_IRQACTIDS` (do_getinfo.c:179-183) to
+    /// export the kernel's active-IRQ bitmap to user-space diagnostic
+    /// tools (e.g. `is` server's kernel dump).
+    ///
+    /// # Safety contract
+    ///
+    /// Read-only access; caller must hold the BKL to observe a consistent
+    /// snapshot (otherwise another CPU may concurrently update `actids`).
+    pub fn irq_actids(&self) -> &[IrqIdBitmap] {
+        &self.actids
+    }
+
     /// Enable an IRQ by slot index (convenience wrapper).
     ///
     /// C: enable_irq(&irq_hooks[irq_hook_id])
@@ -704,8 +740,8 @@ impl<IC: InterruptController> IrqManager<IC> {
 /// C: `generic_handler(irq_hook_t *hook)` — do_irqctl.c:148-174.
 ///
 /// Reproduces the C side-effects in order:
-/// 1. (C: `get_randomness`) — randomness gathering is deferred to a future
-///    `krandom` subsystem; not implemented here.
+/// 1. (C: `get_randomness`) — called from [`IrqManager::dispatch`] before
+///    invoking the handler. See [`crate::krandom::get_randomness`].
 /// 2. Sets the `s_int_pending` bit for `notify_id` on the owning process.
 /// 3. Delivers `mini_notify(HARDWARE, proc_endpoint)` via the injected
 ///    notifier (see [`IrqNotify`]).

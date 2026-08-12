@@ -27,7 +27,6 @@
 //!   `(u32 kind, u64 phys_addr)`, safe to pass across binary boundaries
 //!   (TODO-02-3). [`kind::parse_by_kind`] dispatches on the kind tag.
 
-pub mod acpi;
 pub mod arch;
 pub mod desc;
 pub mod device_tree;
@@ -35,6 +34,10 @@ pub mod global;
 pub mod kind;
 pub mod qemu_virt;
 
+#[cfg(target_arch = "x86_64")]
+pub mod acpi;
+
+#[cfg(target_arch = "x86_64")]
 pub use acpi::{AcpiDesc, AcpiParseError};
 pub use desc::*;
 pub use device_tree::{DeviceTreeDesc, DtParseError};

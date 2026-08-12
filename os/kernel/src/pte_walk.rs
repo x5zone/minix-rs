@@ -42,6 +42,7 @@
 use minix_arch::direct_map::DirectMapArch;
 use minix_arch::paging::PageFlags;
 use minix_arch::CurrentDirectMap;
+use minix_arch::{CurrentPteWalk, PteWalkArch};
 use minix_types::{PhysBytes, VirBytes};
 
 /// Size of a PTE entry in bytes (x86-64: 8 bytes, 64-bit PTE).
@@ -60,6 +61,16 @@ pub const PAGE_OFFSET_MASK: u64 = 0xFFF;
 /// On x86-64 with 4-level paging: bits 12-51 (40-bit physical address).
 pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
+/// Error type for user↔kernel copy operations.
+///
+/// `Fault` — page not present (lazy page not yet faulted in).
+/// The caller should set `RTS_VMSUSPEND` and retry after VM handles the fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserCopyError {
+    /// Page table walk hit a non-present entry.
+    Fault,
+}
+
 /// Read a single 8-byte PTE from physical memory via Direct Map.
 ///
 /// The PTE's physical address is converted to a kernel virtual address
@@ -75,7 +86,9 @@ pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 pub unsafe fn read_pte(paddr: PhysBytes) -> u64 {
     let vaddr = CurrentDirectMap::kernel_phys_to_virt(paddr);
     let ptr = vaddr.0 as *const u64;
-    core::ptr::read_volatile(ptr)
+    // SAFETY: caller guarantees `paddr` is a valid 8-byte aligned PTE and the
+    // Direct Map is active, so `ptr` dereferences to a valid u64 PTE slot.
+    unsafe { core::ptr::read_volatile(ptr) }
 }
 
 /// Translate a PTE's flag bits into `PageFlags`.
@@ -148,6 +161,16 @@ pub fn vaddr_indices(vaddr: VirBytes) -> [usize; 4] {
 /// Walk a 4-level page table (x86-64) to translate a virtual address
 /// to a physical address.
 ///
+/// **Note**: This function is retained for backward compatibility with
+/// existing call sites and tests. It delegates to
+/// `minix_arch::CurrentPteWalk::walk`, which selects the architecture-
+/// specific `PteWalkArch` implementor at compile time. On x86-64, this
+/// calls `X86_64PteWalk::walk` — the same logic as the former inline
+/// implementation, now living in the arch crate (`os/arch/src/x86_64/paging.rs`).
+///
+/// New code should call `minix_arch::CurrentPteWalk::walk` directly
+/// instead of this wrapper, to avoid the x86_64-specific name.
+///
 /// # Arguments
 ///
 /// * `root_paddr` — physical address of the PML4 (top-level) page.
@@ -157,66 +180,120 @@ pub fn vaddr_indices(vaddr: VirBytes) -> [usize; 4] {
 ///
 /// `Some((paddr, flags))` if the address is mapped (PRESENT), `None`
 /// if any level of the walk encounters a non-present entry.
-///
-/// # Algorithm
-///
-/// 1. Read PML4[index0] → check PRESENT → if huge, return addr + offset.
-/// 2. Read PDPT[index1] → check PRESENT → if huge (1GB), return.
-/// 3. Read PD[index2]   → check PRESENT → if huge (2MB), return.
-/// 4. Read PT[index3]   → check PRESENT → return addr + page offset.
-///
-/// # Huge page handling
-///
-/// At each level except PT (level 4), if the PRESENT bit is set AND the
-/// PS (huge) bit is set, the entry itself encodes the physical address
-/// at the larger page granularity. We then add the appropriate offset
-/// mask and return early.
 pub fn walk_x86_64(root_paddr: PhysBytes, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-    let indices = vaddr_indices(vaddr);
+    CurrentPteWalk::walk(root_paddr, vaddr)
+}
 
-    // Level 1: PML4
-    let pml4e_paddr = PhysBytes(root_paddr.get() + (indices[0] * PTE_SIZE) as u64);
-    // SAFETY: kernel has direct map set up; PML4 entry address is valid.
-    let pml4e = unsafe { read_pte(pml4e_paddr) };
-    if pml4e & 0x1 == 0 {
-        return None; // Not present
-    }
-    let pdpt_paddr = PhysBytes(pml4e & PTE_ADDR_MASK);
+/// Copy bytes from a user process's virtual address space into a kernel
+/// buffer.
+///
+/// This is the Rust equivalent of C's `data_copy(caller_ep, user_addr,
+/// KERNEL, kernel_buf, bytes)` — used by `do_vdevio`, `do_readbios`,
+/// and similar system calls that need to read user-space data into a
+/// kernel stack/static buffer.
+///
+/// Walks the caller's page table page-by-page via `walk_x86_64`, then
+/// uses the Direct Map to access each physical page.
+///
+/// # Arguments
+///
+/// * `root_paddr` — physical address of the process's PML4 root
+///   (from `proc.p_seg.phys_root`)
+/// * `user_addr` — starting virtual address in the user process
+/// * `dst` — destination kernel buffer (stack or static)
+///
+/// # Returns
+///
+/// `Ok(())` on success, `Err(CopyError::Fault)` if any page is not
+/// present (lazy page not yet faulted in).
+///
+/// # Anti-translate
+///
+/// C uses `data_copy(..., KERNEL, ...)` with a special KERNEL endpoint.
+/// Rust uses an explicit kernel buffer slice — the type system ensures
+/// the destination is kernel-accessible without a magic endpoint.
+pub fn copy_from_user(
+    root_paddr: PhysBytes,
+    user_addr: VirBytes,
+    dst: &mut [u8],
+) -> Result<(), UserCopyError> {
+    let mut remaining = dst.len();
+    let mut src_offset = user_addr.0;
+    let mut dst_offset = 0usize;
 
-    // Level 2: PDPT
-    let pdpte_paddr = PhysBytes(pdpt_paddr.get() + (indices[1] * PTE_SIZE) as u64);
-    let pdpte = unsafe { read_pte(pdpte_paddr) };
-    if pdpte & 0x1 == 0 {
-        return None;
-    }
-    // 1GB huge page check
-    if pdpte & 0x80 != 0 {
-        let paddr = PhysBytes((pdpte & !0x3FFF_FFFF) | (vaddr.0 & 0x3FFF_FFFF));
-        return Some((paddr, pte_to_page_flags(pdpte)));
-    }
-    let pd_paddr = PhysBytes(pdpte & PTE_ADDR_MASK);
+    while remaining > 0 {
+        let (phys, _flags) = walk_x86_64(root_paddr, VirBytes(src_offset))
+            .ok_or(UserCopyError::Fault)?;
+        let page_offset = (src_offset & PAGE_OFFSET_MASK) as usize;
+        let chunk = core::cmp::min(remaining, 0x1000 - page_offset);
 
-    // Level 3: PD
-    let pde_paddr = PhysBytes(pd_paddr.get() + (indices[2] * PTE_SIZE) as u64);
-    let pde = unsafe { read_pte(pde_paddr) };
-    if pde & 0x1 == 0 {
-        return None;
+        // phys already includes the page offset (from walk_x86_64), so
+        // kernel_phys_to_virt(phys) points directly to the exact byte.
+        let kv = CurrentDirectMap::kernel_phys_to_virt(phys);
+        // SAFETY: Direct Map is active; kv.0 is a valid kernel-virtual
+        // pointer to the user's physical page. The chunk does not cross
+        // a page boundary (ensured by the min calculation above).
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                kv.0 as *const u8,
+                dst[dst_offset..].as_mut_ptr(),
+                chunk,
+            );
+        }
+        src_offset += chunk as u64;
+        dst_offset += chunk;
+        remaining -= chunk;
     }
-    // 2MB huge page check
-    if pde & 0x80 != 0 {
-        let paddr = PhysBytes((pde & !0x1F_FFFF) | (vaddr.0 & 0x1F_FFFF));
-        return Some((paddr, pte_to_page_flags(pde)));
-    }
-    let pt_paddr = PhysBytes(pde & PTE_ADDR_MASK);
+    Ok(())
+}
 
-    // Level 4: PT
-    let pte_paddr = PhysBytes(pt_paddr.get() + (indices[3] * PTE_SIZE) as u64);
-    let pte = unsafe { read_pte(pte_paddr) };
-    if pte & 0x1 == 0 {
-        return None;
+/// Copy bytes from a kernel buffer into a user process's virtual address
+/// space.
+///
+/// This is the Rust equivalent of C's `data_copy(KERNEL, kernel_buf,
+/// caller_ep, user_addr, bytes)` — used by `do_vdevio` (input results),
+/// `do_readbios`, and similar system calls.
+///
+/// # Arguments
+///
+/// * `src` — source kernel buffer (stack or static)
+/// * `root_paddr` — physical address of the process's PML4 root
+/// * `user_addr` — starting virtual address in the user process
+///
+/// # Returns
+///
+/// `Ok(())` on success, `Err(CopyError::Fault)` if any page is not
+/// present.
+pub fn copy_to_user(
+    src: &[u8],
+    root_paddr: PhysBytes,
+    user_addr: VirBytes,
+) -> Result<(), UserCopyError> {
+    let mut remaining = src.len();
+    let mut src_offset = 0usize;
+    let mut dst_offset = user_addr.0;
+
+    while remaining > 0 {
+        let (phys, _flags) = walk_x86_64(root_paddr, VirBytes(dst_offset))
+            .ok_or(UserCopyError::Fault)?;
+        let page_offset = (dst_offset & PAGE_OFFSET_MASK) as usize;
+        let chunk = core::cmp::min(remaining, 0x1000 - page_offset);
+
+        let kv = CurrentDirectMap::kernel_phys_to_virt(phys);
+        // SAFETY: Direct Map is active; kv.0 is a valid kernel-virtual
+        // pointer to the user's physical page (writable via Direct Map).
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src[src_offset..].as_ptr(),
+                kv.0 as *mut u8,
+                chunk,
+            );
+        }
+        dst_offset += chunk as u64;
+        src_offset += chunk;
+        remaining -= chunk;
     }
-    let paddr = PhysBytes((pte & PTE_ADDR_MASK) | (vaddr.0 & PAGE_OFFSET_MASK));
-    Some((paddr, pte_to_page_flags(pte)))
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

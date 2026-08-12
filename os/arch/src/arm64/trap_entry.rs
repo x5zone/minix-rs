@@ -71,6 +71,26 @@ impl TrapEntryArch for AArch64TrapEntry {
         // synchronous exception).
     }
 
+    fn configure_ipc_entry(&mut self, _entry_point: VirBytes) {
+        // ARM64: No-op — IPC and kernel-call traps share the same SVC
+        // exception vector (VBAR_EL1 + 0x400). The dispatch happens in
+        // software: the SVC handler reads r3 at runtime to distinguish:
+        //   r3 == KERVEC_INTR → kernel_call_entry → kernel_call()
+        //   r3 == IPCVEC_INTR → ipc_entry → do_ipc()
+        //
+        // This mirrors the C implementation where the assembly SVC handler
+        // (earm/mpx.S:181-184) performs the register check and branches
+        // to the appropriate entry. No IDT-gate-style configuration is
+        // needed because ARM64 has no per-vector interrupt table for
+        // synchronous exceptions.
+        //
+        // C: earm/mpx.S:181-184
+        //   cmp r3, #KERVEC_INTR
+        //   beq kernel_call_entry
+        //   cmp r3, #IPCVEC_INTR
+        //   beq ipc_entry
+    }
+
     fn load(&self) {
         // Set VBAR_EL1 to the exception vector table address.
         // The table is defined in assembly as exc_vector_table.
@@ -134,5 +154,18 @@ mod tests {
         // Should not panic.
         let mut entry = AArch64TrapEntry::init();
         entry.set_handler(InterruptVector::new(14), VirBytes::new(0xBEEF), true);
+    }
+
+    #[test]
+    fn configure_ipc_entry_is_noop_on_arm64() {
+        // ARM64: IPC and kernel-call traps share the same SVC exception vector
+        // (VBAR_EL1 + 0x400). The dispatch happens in software: the SVC handler
+        // reads r3 at runtime to distinguish KERVEC_INTR vs IPCVEC_INTR.
+        // Therefore configure_ipc_entry is a no-op — no IDT-gate-style
+        // configuration is needed.
+        // C: earm/mpx.S:181-184 `cmp r3, #IPCVEC_INTR; beq ipc_entry`.
+        let mut entry = AArch64TrapEntry::init();
+        // Should not panic and should not modify any state (unit struct).
+        entry.configure_ipc_entry(VirBytes::new(0xCAFE));
     }
 }

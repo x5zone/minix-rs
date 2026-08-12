@@ -2,20 +2,35 @@
 //!
 //! # Minix3 C Source Mapping
 //!
-//! - `ipc.h` — `check_ipc_to()`, `check_k_call_mask()`, `get_sys_bit/set_sys_bit`
-//! - `ipc_filter.h` — `ipc_filter_pool[]`, `IPCF_POOL_INIT/ALLOCATE_SLOT/FREE_SLOT`
-//! - `system.c:540-660` — kernel call entry filtering
+//! - `const.h:20-27` — `get_sys_bit/set_sys_bit/unset_sys_bit` bitmap macros
+//! - `priv.h:35,38,46,86,87` — `s_ipc_to`, `s_k_call_mask`, `s_ipcf` fields;
+//!   `may_send_to`, `may_asynsend_to` macros
+//! - `ipc.h:14-22` — `WILLRECEIVE`, `CANRECEIVE` macros (receive-time filter)
+//! - `ipc.h:40-48` — `IPC_STATUS_ADD/ADD_CALL/ADD_FLAGS` macros (status report)
+//! - `ipc_filter.h` — `IPCF_NONE/BLACKLIST/WHITELIST`, `IPCF_POOL_*` macros,
+//!   `struct ipc_filter_s` (filter chain node)
+//! - `include/minix/ipc_filter.h` — `IPCF_MATCH_M_SOURCE/M_TYPE` flags,
+//!   `struct ipc_filter_el_s` (filter element), `ANY_USR/SYS/TSK` endpoints
+//! - `system.c:95-127` — `kernel_call_dispatch` (s_k_call_mask check at L111)
+//! - `system.c:803-874` — `allow_ipc_filtered_msg` (fine-grained filter chain)
 //!
-//! # Design Decisions (22-ipc-filter.md §3)
+//! # Design Decisions (23-ipc-filter.md §3)
 //!
 //! - **D1**: Inline functions instead of macros for bitmap operations
 //! - **D2**: Standalone filter functions for testability
 //! - **D3**: `u64` for s_k_call_mask (58 syscalls fit in one u64)
-//! - **D4**: Return EPERM on filter failure (matches C)
+//! - **D4**: Return false + caller EPERM on filter failure (matches C ECALLDENIED)
 //! - **D5**: `Option<IpcFilterSlot>` replaces C's `type == IPCF_NONE` sentinel.
 //!          `None` = free slot (C: `IPCF_POOL_IS_FREE_SLOT`), `Some` = allocated.
 //!          Eliminates the "type field as state flag" pattern — Rust's Option
 //!          enforces "illegal states unrepresentable".
+//! - **D6**: `Option<usize>` pool index replaces C's `*mut ipc_filter_s` raw pointer
+//! - **D7**: bitflags for IPCF_MATCH_M_SOURCE/M_TYPE (type-safe composition)
+//! - **D8**: `enum IpcFilterType { Blacklist, Whitelist }` (NONE expressed by Option)
+//! - **D9**: IPC_STATUS mechanism — see `ipc_status_add_call`/`ipc_status_add_flags`
+//!   in `proc.rs`. RECEIVE-path consumer wires status into the IPC status register
+//!   (x86-64 RBX / aarch64 X1 / riscv64 A1) on `delivermsg`/`mini_send`/`mini_notify`.
+//!   C: `IPC_STATUS_REG = bx` (i386) / `r1` (earm) — ipcconst.h:10,7.
 
 use crate::kpriv::KPriv;
 
@@ -32,7 +47,8 @@ pub const NR_SYS_CALLS: usize = 58;
 
 /// Check if a process may send IPC to a target process.
 ///
-/// C: `check_ipc_to()` — ipc.h
+/// C: `may_send_to(rp, nr)` — priv.h:86
+/// Expands to `get_sys_bit(priv(rp)->s_ipc_to, nr_to_id(nr))` (const.h:20).
 ///
 /// Checks the caller's `s_ipc_to` bitmap for the target's `s_id`.
 /// All processes with `SYS_PROC` flag have their IPC targets filtered.
@@ -44,12 +60,14 @@ pub fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool {
 
 /// Check if a process may invoke a specific kernel system call.
 ///
-/// C: `check_k_call_mask()` — ipc.h
+/// C: `GET_BIT(priv(caller)->s_k_call_mask, call_nr)` — system.c:111
+/// Bitmap primitive `GET_BIT` uses `get_sys_bit` (const.h:20).
 ///
 /// Uses the `s_k_call_mask` bitmap. Each bit corresponds to a system call number.
 /// Returns `true` if the call is permitted, `false` otherwise.
+/// C returns `ECALLDENIED` (com.h:210) on denial — see syscall.rs `KcallResult::CallDenied`.
 #[inline]
-pub fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
+pub(crate) fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
     if call_nr as usize >= 64 {
         return false;
     }
@@ -61,7 +79,7 @@ pub fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
 
 /// Set a bit in the IPC target bitmap.
 ///
-/// C: `set_sys_bit(map, id)` — ipc.h
+/// C: `set_sys_bit(map, bit)` — const.h:24
 #[inline]
 pub fn set_sys_bit(map: &mut u64, id: u16) {
     if (id as usize) < 64 {
@@ -71,7 +89,7 @@ pub fn set_sys_bit(map: &mut u64, id: u16) {
 
 /// Clear a bit in the IPC target bitmap.
 ///
-/// C: `unset_sys_bit(map, id)` — ipc.h
+/// C: `unset_sys_bit(map, bit)` — const.h:26
 #[inline]
 pub fn unset_sys_bit(map: &mut u64, id: u16) {
     if (id as usize) < 64 {
@@ -81,7 +99,7 @@ pub fn unset_sys_bit(map: &mut u64, id: u16) {
 
 /// Test a bit in the IPC target bitmap.
 ///
-/// C: `get_sys_bit(map, id)` — ipc.h
+/// C: `get_sys_bit(map, bit)` — const.h:20
 #[inline]
 pub fn get_sys_bit(map: u64, id: u16) -> bool {
     if (id as usize) >= 64 {
@@ -92,14 +110,14 @@ pub fn get_sys_bit(map: u64, id: u16) -> bool {
 
 // ── IPC Filter Pool ──
 
-/// IPC filter type. C: `IPCF_NONE/IPCF_BLACKLIST/IPCF_WHITELIST` — ipc_filter.h:30-32
+/// IPC filter type. C: `IPCF_NONE/IPCF_BLACKLIST/IPCF_WHITELIST` — ipc_filter.h:13-15
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IpcFilterType {
     Blacklist,
     Whitelist,
 }
 
-/// IPC filter element flags. C: `IPCF_MATCH_M_SOURCE/IPCF_MATCH_M_TYPE` — ipc_filter.h:20-21
+/// IPC filter element flags. C: `IPCF_MATCH_M_SOURCE/IPCF_MATCH_M_TYPE` — include/minix/ipc_filter.h:18-19
 pub(crate) struct IpcFilterElFlags;
 
 impl IpcFilterElFlags {
@@ -107,7 +125,8 @@ impl IpcFilterElFlags {
     pub const MATCH_M_TYPE: u32 = 0x2;
 }
 
-/// A single IPC filter element. C: `ipc_filter_el_s` — ipc_filter.h:24-28
+/// A single IPC filter element. C: `ipc_filter_el_s` — include/minix/ipc_filter.h:23-27
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IpcFilterElement {
     pub flags: u32,
@@ -116,10 +135,10 @@ pub(crate) struct IpcFilterElement {
 }
 
 /// Maximum number of elements per filter.
-/// C: `IPCF_MAX_ELEMENTS = NR_SYS_PROCS * 2` — ipc_filter.h:15
+/// C: `IPCF_MAX_ELEMENTS = NR_SYS_PROCS * 2` — include/minix/ipc_filter.h:15
 pub const IPCF_MAX_ELEMENTS: usize = crate::kpriv::NR_SYS_PROCS * 2;
 
-/// A single allocated IPC filter slot. C: `ipc_filter_s` — ipc_filter.h:54-62
+/// A single allocated IPC filter slot. C: `ipc_filter_s` — ipc_filter.h:43-49
 ///
 /// In C, `type == IPCF_NONE` means "free slot". In Rust, we use
 /// `Option<IpcFilterSlot>` where `None` = free, `Some` = allocated.
@@ -128,9 +147,16 @@ pub const IPCF_MAX_ELEMENTS: usize = crate::kpriv::NR_SYS_PROCS * 2;
 pub(crate) struct IpcFilterSlot {
     pub filter_type: IpcFilterType,
     pub num_elements: usize,
+    /// C: `flags` field in `ipc_filter_s` (ipc_filter.h:45). Reserved for
+    /// future filter-chain flags (IPCF_MATCH_M_SOURCE etc.). Currently
+    /// unused — filter chaining not yet implemented (FIX-02: R-13).
+    #[allow(dead_code)]
     pub flags: i32,
-    /// Index of next filter in chain, if any. C: `struct ipc_filter_s *next`.
-    /// Stored as Option<usize> index into the pool instead of a raw pointer.
+    /// Index of next filter in chain, if any. C: `struct ipc_filter_s *next`
+    /// (ipc_filter.h:48). Stored as Option<usize> index into the pool
+    /// instead of a raw pointer. Currently unused — filter chaining not
+    /// yet implemented (FIX-02: R-13).
+    #[allow(dead_code)]
     pub next: Option<usize>,
     pub elements: [IpcFilterElement; IPCF_MAX_ELEMENTS],
 }
@@ -151,7 +177,7 @@ impl IpcFilterSlot {
     }
 }
 
-/// Size of the IPC filter pool. C: `IPCF_POOL_SIZE = 2 * NR_SYS_PROCS` — ipc_filter.h:54
+/// Size of the IPC filter pool. C: `IPCF_POOL_SIZE = 2 * NR_SYS_PROCS` — ipc_filter.h:53
 const IPCF_POOL_SIZE: usize = 2 * crate::kpriv::NR_SYS_PROCS;
 
 /// IPC filter pool — a fixed-size array of filter slots.
@@ -182,7 +208,7 @@ impl IpcFilterPool {
 
     /// Allocate a filter slot of the given type.
     ///
-    /// C: `IPCF_POOL_ALLOCATE_SLOT(type, &slot)` — ipc_filter.h:62-70
+    /// C: `IPCF_POOL_ALLOCATE_SLOT(type, &slot)` — ipc_filter.h:59-70
     ///
     /// Returns `Some(index)` on success, `None` if pool is exhausted.
     /// The index can be stored in `KPriv::s_ipcf` (C: `priv->s_ipcf`).
@@ -198,7 +224,7 @@ impl IpcFilterPool {
 
     /// Free a filter slot by index.
     ///
-    /// C: `IPCF_POOL_FREE_SLOT(slot)` = `(slot)->type = IPCF_NONE` — ipc_filter.h:60
+    /// C: `IPCF_POOL_FREE_SLOT(slot)` = `(slot)->type = IPCF_NONE` — ipc_filter.h:57
     pub(crate) fn free(&mut self, index: usize) {
         if index < IPCF_POOL_SIZE {
             self.slots[index] = None;

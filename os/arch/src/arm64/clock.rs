@@ -74,4 +74,35 @@ impl ClockArch for AArch64ClockArch {
         }
         count
     }
+
+    fn stop_local_timer(&mut self) {
+        // Disable the EL1 Physical Timer by clearing CNTP_CTL_EL0.ENABLE.
+        //
+        // C: smp.c:56-61 — inline timer disable in smp_ipi_halt_handler
+        unsafe {
+            // CNTP_CTL_EL0: bit 0 = ENABLE, bit 1 = IMASK
+            // Clear ENABLE (bit 0) and set IMASK (bit 1) to suppress IRQ
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0x2u64);
+        }
+    }
+
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> {
+        // ARM64 statistical profiling uses the PMU (Performance Monitoring
+        // Unit), not a second timer channel. The PMU is not yet integrated
+        // in the arch layer — return Err to indicate the caller should
+        // fall back to PROF_NMI (which is also not yet available).
+        //
+        // C: sprofile.c:init_profile_clock(freq) — on ARM, uses PMU
+        Err(())
+    }
+
+    fn stop_profile_clock(&mut self) {
+        // PMU profiling is not yet supported on ARM64.
+        // C: sprofile.c:stop_profile_clock()
+    }
+
+    fn ack_profile_clock(&mut self) {
+        // PMU profiling is not yet supported on ARM64.
+        // C: arch_ack_profile_clock() — profile.c:123
+    }
 }

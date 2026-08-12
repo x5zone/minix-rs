@@ -20,6 +20,7 @@
 use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
 use minix_arch::direct_map::DirectMapArch;
 use minix_arch::paging::PageFlags;
+use minix_arch::PteWalkArch;
 
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits};
 
@@ -57,10 +58,24 @@ impl Default for PageTableRef {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressRef {
     Process { endpoint: Endpoint, offset: VirBytes },
     Physical(PhysBytes),
+}
+
+impl AddressRef {
+    /// Returns `(endpoint, virtual_address)` if this is a `Process` address.
+    ///
+    /// `Physical` addresses cannot page-fault (they are already resolved),
+    /// so callers use this to extract the faulting VA for `VmCheckParams`
+    /// construction. Returns `None` for `Physical`.
+    pub(crate) fn as_process(&self) -> Option<(Endpoint, VirBytes)> {
+        match self {
+            AddressRef::Process { endpoint, offset } => Some((*endpoint, *offset)),
+            AddressRef::Physical(_) => None,
+        }
+    }
 }
 
 /// Address-resolution error from cross-space copy operations.
@@ -176,32 +191,101 @@ impl VmCopyContext {
 ///
 /// # Architecture dispatch
 ///
-/// On x86-64, we delegate to `crate::pte_walk::walk_x86_64` which
-/// performs the 4-level PTE walk (PML4 → PDPT → PD → PT) via the
-/// Direct Map.
+/// Delegates to `minix_arch::CurrentPteWalk::walk`, which selects the
+/// architecture-specific `PteWalkArch` implementor at compile time:
+/// - x86-64: 4-level PTE walk (PML4 → PDPT → PD → PT)
+/// - aarch64: 4-level walk (L0 → L1 → L2 → L3)
+/// - riscv64: 3-level Sv39 walk (L2 → L1 → L0)
 ///
-/// On aarch64/RISC-V, the walk is delegated to `walk_arch64` and
-/// `walk_riscv64` respectively (DEFERRED until those arch stubs land —
-/// see 02-page-table-kernel.md §4.3a).
+/// All three implementations read PTEs via the Direct Map and share
+/// the same `walk_read` helper that powers `Paging::query`, ensuring
+/// the offline walk (used here for cross-space copy) and the live walk
+/// (used by `Paging::query`) produce identical results.
 pub fn lookup_in_table<D: DirectMapArch>(
     root_paddr: PhysBytes,
     vaddr: VirBytes,
 ) -> Option<(PhysBytes, PageFlags)> {
-    // The `<D>` parameter is kept for trait dispatch consistency, but
-    // the actual walk is delegated to `crate::pte_walk`. On x86-64
-    // (the only architecture with a working PTE walk today), we
-    // perform the walk directly. On other architectures, the helper
-    // would need its own implementation; for now, those archs return
-    // None until their PTE walk lands.
-    #[cfg(target_arch = "x86_64")]
-    {
-        crate::pte_walk::walk_x86_64(root_paddr, vaddr)
+    // The `<D>` parameter is kept for trait dispatch consistency with
+    // the rest of the cross-space copy API, which threads `DirectMapArch`
+    // through the call chain. The PTE walk itself uses
+    // `CurrentPteWalk` (which internally uses `CurrentDirectMap`) —
+    // the `<D>` parameter is not used directly here because the arch
+    // layer's walk implementation selects its own Direct Map.
+    let _ = D::KERNEL_DIRECT_MAP_BASE; // keep D used
+    minix_arch::CurrentPteWalk::walk(root_paddr, vaddr)
+}
+
+/// Base page size used by `lookup_range_in_table`.
+///
+/// All three supported architectures (x86_64, aarch64, riscv64) use 4KB
+/// base pages. This constant mirrors C's `PAGE_SIZE` — `vm_lookup_range`
+/// in Minix3 walks 4KB pages one at a time.
+const VM_LOOKUP_PAGE_SIZE: u64 = 4096;
+
+/// Walk the page table to find the largest contiguous physical range
+/// starting at `vaddr`, up to `max_bytes`.
+///
+/// C: `vm_lookup_range` — kernel/memory.c
+///
+/// Returns `Some((phys_addr, chunk))` where `chunk` is the number of
+/// contiguous bytes (≤ `max_bytes`) starting at `vaddr` that map to
+/// contiguous physical memory. Returns `None` if the first page is
+/// unmapped (matching C's `chunk == 0`).
+///
+/// # Algorithm
+///
+/// 1. Look up the first page → `phys_base`.
+/// 2. First chunk extends to the end of the current 4KB page.
+/// 3. For each subsequent page: walk `vaddr + chunk`, check if
+///    `phys == phys_base + chunk`. Stop on mismatch or unmapped page.
+///
+/// # Huge page note
+///
+/// If a huge page is encountered, the walk still returns the correct
+/// byte-level physical address, but contiguity is checked at 4KB
+/// granularity. This matches Minix3's `vm_lookup_range`, which also
+/// operates on base pages — huge pages are transparently contiguous
+/// within their block, so the check succeeds.
+pub fn lookup_range_in_table<D: DirectMapArch>(
+    root_paddr: PhysBytes,
+    vaddr: VirBytes,
+    max_bytes: usize,
+) -> Option<(PhysBytes, usize)> {
+    let _ = D::KERNEL_DIRECT_MAP_BASE; // keep D used
+
+    let (phys_base, _flags) = minix_arch::CurrentPteWalk::walk(root_paddr, vaddr)?;
+
+    if max_bytes == 0 {
+        return Some((phys_base, 0));
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = D::KERNEL_DIRECT_MAP_BASE; // keep D used
-        None
+
+    let max = max_bytes as u64;
+    let va0 = vaddr.0;
+    let page_offset = va0 % VM_LOOKUP_PAGE_SIZE;
+    // Bytes remaining in the first page.
+    let first_chunk = core::cmp::min(VM_LOOKUP_PAGE_SIZE - page_offset, max);
+    let mut chunk = first_chunk;
+
+    // Walk subsequent pages while there are bytes remaining.
+    while chunk < max {
+        let next_va = VirBytes(va0 + chunk);
+        match minix_arch::CurrentPteWalk::walk(root_paddr, next_va) {
+            Some((next_phys, _)) => {
+                // Contiguous if next_phys == phys_base + chunk.
+                if next_phys.0 == phys_base.0 + chunk {
+                    let remaining = max - chunk;
+                    let advance = core::cmp::min(VM_LOOKUP_PAGE_SIZE, remaining);
+                    chunk += advance;
+                } else {
+                    // Non-contiguous physical mapping — stop here.
+                    break;
+                }
+            }
+            None => break, // Unmapped page — stop.
+        }
     }
+
+    Some((phys_base, chunk as usize))
 }
 
 fn resolve_physical<D: DirectMapArch>(
@@ -485,8 +569,8 @@ impl VmRequestQueue {
     /// vmrequest = caller;
     /// ```
     pub fn enqueue(&mut self, proc_nr: ProcNr, procs: &mut [KProcess]) -> bool {
-        debug_assert!((proc_nr as usize) < procs.len(), "ProcNr out of bounds");
-        let proc = &mut procs[proc_nr as usize];
+        debug_assert!((proc_nr.0 as usize) < procs.len(), "ProcNr out of bounds");
+        let proc = &mut procs[proc_nr.0 as usize];
         proc.p_next_requestor = self.head;
         let was_empty = self.head.is_none();
         self.head = Some(proc_nr);
@@ -513,7 +597,7 @@ impl VmRequestQueue {
         let mut prev_nr: Option<ProcNr> = None;
 
         while let Some(nr) = current {
-            let proc = &procs[nr as usize];
+            let proc = &procs[nr.0 as usize];
             let next = proc.p_next_requestor;
 
             let target_ctx = proc.p_vm_suspend.as_ref();
@@ -521,7 +605,7 @@ impl VmRequestQueue {
                 Some(ctx) => {
                     let target_nr = endpoint_to_proc_nr(ctx.target, procs);
                     match target_nr {
-                        Some(tnr) => filter(proc, &procs[tnr as usize]),
+                        Some(tnr) => filter(proc, &procs[tnr.0 as usize]),
                         None => false,
                     }
                 }
@@ -530,11 +614,11 @@ impl VmRequestQueue {
 
             if passed {
                 if let Some(pnr) = prev_nr {
-                    procs[pnr as usize].p_next_requestor = next;
+                    procs[pnr.0 as usize].p_next_requestor = next;
                 } else {
                     self.head = next;
                 }
-                procs[nr as usize].p_next_requestor = None;
+                procs[nr.0 as usize].p_next_requestor = None;
                 return Some(nr);
             }
 
@@ -572,17 +656,17 @@ impl VmRequestQueue {
 
         while let Some(nr) = current {
             if nr == proc_nr {
-                let next = procs[nr as usize].p_next_requestor;
+                let next = procs[nr.0 as usize].p_next_requestor;
                 if let Some(pnr) = prev_nr {
-                    procs[pnr as usize].p_next_requestor = next;
+                    procs[pnr.0 as usize].p_next_requestor = next;
                 } else {
                     self.head = next;
                 }
-                procs[nr as usize].p_next_requestor = None;
+                procs[nr.0 as usize].p_next_requestor = None;
                 return true;
             }
             prev_nr = Some(nr);
-            current = procs[nr as usize].p_next_requestor;
+            current = procs[nr.0 as usize].p_next_requestor;
         }
 
         false
@@ -740,8 +824,8 @@ impl VmRequestHandler {
             true
         }).ok_or(VmCtlError::NoRequest)?;
 
-        debug_assert!((proc_nr as usize) < procs.len(), "ProcNr out of bounds");
-        let proc = &mut procs[proc_nr as usize];
+        debug_assert!((proc_nr.0 as usize) < procs.len(), "ProcNr out of bounds");
+        let proc = &mut procs[proc_nr.0 as usize];
         let ctx = proc.p_vm_suspend.as_mut().ok_or(VmCtlError::InvalidState)?;
 
         if ctx.state != VmSuspendState::Pending {
@@ -1014,11 +1098,11 @@ mod tests {
     fn vm_request_queue_enqueue_returns_was_empty() {
         let mut queue = VmRequestQueue::new();
         let mut procs = make_test_procs();
-        let was_empty = queue.enqueue(0, &mut procs);
+        let was_empty = queue.enqueue(ProcNr(0), &mut procs);
         assert!(was_empty);
         assert!(!queue.is_empty());
 
-        let was_empty2 = queue.enqueue(1, &mut procs);
+        let was_empty2 = queue.enqueue(ProcNr(1), &mut procs);
         assert!(!was_empty2);
     }
 
@@ -1034,23 +1118,23 @@ mod tests {
     fn vm_request_queue_dequeue_filtered_returns_first_match() {
         let mut queue = VmRequestQueue::new();
         let mut procs = make_test_procs();
-        queue.enqueue(0, &mut procs);
-        queue.enqueue(1, &mut procs);
+        queue.enqueue(ProcNr(0), &mut procs);
+        queue.enqueue(ProcNr(1), &mut procs);
         let result = queue.dequeue_filtered(&mut procs, |_, _| true);
-        assert_eq!(result, Some(1));
+        assert_eq!(result, Some(ProcNr(1)));
     }
 
     #[test]
     fn vm_request_queue_remove() {
         let mut queue = VmRequestQueue::new();
         let mut procs = make_test_procs();
-        queue.enqueue(0, &mut procs);
-        queue.enqueue(1, &mut procs);
-        assert!(queue.remove(0, &mut procs));
+        queue.enqueue(ProcNr(0), &mut procs);
+        queue.enqueue(ProcNr(1), &mut procs);
+        assert!(queue.remove(ProcNr(0), &mut procs));
         assert!(!queue.is_empty());
-        assert!(queue.remove(1, &mut procs));
+        assert!(queue.remove(ProcNr(1), &mut procs));
         assert!(queue.is_empty());
-        assert!(!queue.remove(0, &mut procs));
+        assert!(!queue.remove(ProcNr(0), &mut procs));
     }
 
     #[test]
@@ -1073,10 +1157,10 @@ mod tests {
             write_flag: true,
         };
         let mut procs = [
-            KProcess::new(0, Endpoint::from_generation_slot(1, 0)),
-            KProcess::new(1, Endpoint::from_generation_slot(1, 1)),
-            KProcess::new(2, Endpoint::from_generation_slot(1, 2)),
-            KProcess::new(3, Endpoint::from_generation_slot(1, 3)),
+            KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0)),
+            KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)),
+            KProcess::new(ProcNr(2), Endpoint::from_generation_slot(1, 2)),
+            KProcess::new(ProcNr(3), Endpoint::from_generation_slot(1, 3)),
         ];
         for proc in procs.iter_mut() {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1093,7 +1177,7 @@ mod tests {
         nr: ProcNr,
         suspend_type: VmSuspendType,
     ) -> KProcess {
-        let mut proc = KProcess::new(nr, Endpoint::from_generation_slot(1, nr));
+        let mut proc = KProcess::new(nr, Endpoint::from_generation_slot(1, nr.0));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let params = VmCheckParams {
             start: VirBytes::new(0x1000),
@@ -1122,7 +1206,7 @@ mod tests {
     fn vm_suspend_state_fetched_after_memreq_get() {
         let mut procs = make_test_procs();
         let mut queue = VmRequestQueue::new();
-        queue.enqueue(0, &mut procs);
+        queue.enqueue(ProcNr(0), &mut procs);
 
         let result = VmRequestHandler::memreq_get(
             &mut queue,
@@ -1135,7 +1219,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_transitions_fetched_to_completed_ok() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -1150,7 +1234,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_transitions_fetched_to_completed_fault() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -1163,7 +1247,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_rejects_pending_state() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         // state is Pending by default
         let result = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
         assert_eq!(result, Err(VmCtlError::InvalidState));
@@ -1171,7 +1255,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_rejects_completed_state() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -1184,7 +1268,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_delivermsg_requires_mf_delivermsg() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::DeliverMsg);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::DeliverMsg);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
         // MF_DELIVERMSG not set → should fail
@@ -1195,7 +1279,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_delivermsg_succeeds_with_flag() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::DeliverMsg);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::DeliverMsg);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
         proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
@@ -1209,7 +1293,7 @@ mod tests {
 
     #[test]
     fn kernel_call_resume_returns_ok_on_success() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Ok);
         proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
@@ -1222,7 +1306,7 @@ mod tests {
 
     #[test]
     fn kernel_call_resume_returns_fault_on_failure() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
         proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
@@ -1234,13 +1318,13 @@ mod tests {
 
     #[test]
     fn check_resumed_caller_returns_ok_when_no_resume() {
-        let proc = KProcess::new(0, Endpoint::from_generation_slot(1, 0));
+        let proc = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         assert_eq!(check_resumed_caller(&proc), VmCheckResult::Ok);
     }
 
     #[test]
     fn check_resumed_caller_returns_result_when_resumed() {
-        let mut proc = make_vm_suspended_proc(0, VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
         proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
@@ -1251,13 +1335,13 @@ mod tests {
 
     #[test]
     fn try_deliver_message_returns_false_without_flag() {
-        let proc = KProcess::new(0, Endpoint::from_generation_slot(1, 0));
+        let proc = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         assert!(!try_deliver_message(&proc));
     }
 
     #[test]
     fn try_deliver_message_returns_true_with_flag() {
-        let mut proc = KProcess::new(0, Endpoint::from_generation_slot(1, 0));
+        let mut proc = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         assert!(try_deliver_message(&proc));
     }
@@ -1277,12 +1361,12 @@ mod tests {
         let mut queue = VmRequestQueue::new();
         let mut procs = make_test_procs();
         // make_test_procs already sets suspend_for_vm and RTS_VMREQUEST
-        queue.enqueue(0, &mut procs);
+        queue.enqueue(ProcNr(0), &mut procs);
 
         let result = VmRequestHandler::memreq_get(&mut queue, &mut procs);
         assert!(result.is_ok());
         let (proc_nr, check_params) = result.unwrap();
-        assert_eq!(proc_nr, 0);
+        assert_eq!(proc_nr, ProcNr(0));
         assert_eq!(check_params.start, VirBytes::new(0x1000));
 
         let ctx = procs[0].p_vm_suspend.as_ref().unwrap();

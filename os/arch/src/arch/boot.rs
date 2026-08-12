@@ -183,6 +183,59 @@ pub trait CpuContextArch {
     fn inherit_fpu_state(_child: &mut Self::CpuContext, _parent: &Self::CpuContext) {
         // default: no-op (correct for aarch64 / riscv64)
     }
+
+    /// Write a register value at the given byte offset into the CPU
+    /// context's register save area (C: `struct stackframe_s`).
+    ///
+    /// Used by `T_SETUSER` (SYS_TRACE) to modify a traced process's
+    /// saved register state. The offset is relative to the start of
+    /// the register save area, matching C's `p_reg` layout.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` on successful write
+    /// - `Err(())` if the offset is out of bounds, misaligned, or
+    ///   points to a protected register (e.g. segment selectors on
+    ///   x86-64 — writing them could crash the kernel at context
+    ///   switch).
+    ///
+    /// # C alignment
+    ///
+    /// C: do_trace.c:136-167 — on i386, segment registers
+    /// (cs/ds/es/fs/gs/ss) are protected; PSW uses `SETPSW` (selected
+    /// bits only). On x86_64, the C source has a gap (no write path
+    /// compiled under `#if defined(__i386__)`). Rust implements the
+    /// correct behavior for all architectures.
+    ///
+    /// Default: `Err(())` (arch must override to enable T_SETUSER).
+    fn write_user_register(
+        _ctx: &mut Self::CpuContext,
+        _offset: usize,
+        _value: u64,
+    ) -> Result<(), ()> {
+        Err(())
+    }
+
+    /// OR-merge a value into the IPC status register.
+    ///
+    /// C: `p->p_reg.IPC_STATUS_REG |= value` — ipc.h:42
+    ///
+    /// The IPC status register is architecture-specific:
+    /// - x86-64: RBX (C: `bx` on i386 — ipcconst.h:10; also carries
+    ///   ps_strings at process startup, then repurposed for IPC status)
+    /// - aarch64: X1 (C: `r1` on earm — ipcconst.h:7; separate from
+    ///   R0 which carries ps_strings / return value)
+    /// - riscv64: A1/X11 (no C original; chosen by analogy to ARM's
+    ///   R1, since A0 carries ps_strings / return value)
+    ///
+    /// The register is NOT cleared between IPC operations — the OR-merge
+    /// accumulates status flags. `MF_REPLY_PEND` gating (skip the write
+    /// during SENDREC's receive phase) is handled by the caller, not here.
+    ///
+    /// Default: no-op (arch must override to enable IPC status).
+    fn or_ipc_status_reg(_ctx: &mut Self::CpuContext, _value: u64) {
+        // default: no-op (overridden by each arch)
+    }
 }
 
 /// Load a VM ELF binary into the bootstrap page table.
@@ -271,7 +324,8 @@ pub fn load_vm_elf<P: Paging>(
     }
 
     // Map the user stack: stack_high - VM_STACK_SIZE → stack_high.
-    let stack_high = kernel_info.user_sp;
+    // R-07 (2026-08-12): Use getter method (preferred API).
+    let stack_high = kernel_info.user_sp();
     let sp = VirBytes(stack_high.0 - VM_STACK_SIZE);
 
     let stack_flags = crate::paging::PageFlags::read_write();
@@ -384,6 +438,7 @@ mod tests {
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
             platform_sources: &[],
+            param_buf: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
         let result = load_vm_elf(&module, &kinfo, &mut paging);

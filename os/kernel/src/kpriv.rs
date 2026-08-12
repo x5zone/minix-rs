@@ -1,5 +1,6 @@
 use minix_types::Endpoint;
 
+use crate::errno::{ENOSPC, EINVAL, EBUSY};
 use crate::proc::{ProcNr, SigSet};
 use crate::proc::NR_BOOT_PROCS;
 use crate::proc_table::NR_TASKS;
@@ -100,7 +101,7 @@ pub const USER_PRIV_ID: PrivId = NR_TASKS as PrivId + INIT_PROC_NR;
 /// C: minix/include/minix/priv.h:12 — static_priv_id(n) = NR_TASKS + n
 #[inline]
 pub fn static_priv_id(proc_nr: ProcNr) -> PrivId {
-    (NR_TASKS as i32 + proc_nr) as PrivId
+    (NR_TASKS as i32 + proc_nr.0) as PrivId
 }
 
 /// C: minix/include/minix/priv.h:11 — is_static_priv_id(id)
@@ -270,7 +271,13 @@ impl PrivMem {
 /// Init flags + alarm timer + grant table + state table (volatile state).
 #[derive(Debug, Clone)]
 pub(crate) struct PrivRuntime {
-    pub(crate) s_alarm_timer: Option<crate::clock::TimerEntry>,
+    /// Synchronous alarm timer + its `TimerId` for queue management.
+    ///
+    /// `None` when no alarm is set. When `Some`, holds `(entry, id)` where
+    /// `id` is the `TimerId` returned by `ClockState::set_timer()`, used to
+    /// call `ClockState::reset_timer(id)` when the alarm is cancelled or
+    /// replaced (15-design.md §4.4).
+    pub(crate) s_alarm_timer: Option<(crate::clock::TimerEntry, crate::clock::TimerId)>,
     pub(crate) s_grant_table: usize,
     pub(crate) s_grant_entries: i32,
     pub(crate) s_grant_endpoint: Endpoint,
@@ -362,6 +369,244 @@ impl KPriv {
         }
         (self.ipc.s_ipc_to & (1u64 << target_id)) != 0
     }
+
+    /// Add an IRQ to this priv's allowlist.
+    /// C: `priv_add_irq()` — system.c:918-942.
+    ///
+    /// Sets `CHECK_IRQ` flag, deduplicates, and appends to `s_irq_tab`.
+    /// Returns `Err(())` if the table is full (`NR_IRQ` exceeded).
+    pub fn add_irq(&mut self, irq: i32) -> Result<(), ()> {
+        self.capability.s_flags |= PrivFlagsBits::CHECK_IRQ;
+        // Dedup check
+        for i in 0..self.io.s_nr_irq as usize {
+            if self.io.s_irq_tab[i] == irq {
+                return Ok(());
+            }
+        }
+        let i = self.io.s_nr_irq as usize;
+        if i >= NR_IRQ {
+            return Err(());
+        }
+        self.io.s_irq_tab[i] = irq;
+        self.io.s_nr_irq += 1;
+        Ok(())
+    }
+
+    /// Add an I/O port range to this priv's allowlist.
+    /// C: `priv_add_io()` — system.c:945-969.
+    ///
+    /// Sets `CHECK_IO_PORT` flag, deduplicates, and appends to `s_io_tab`.
+    /// Returns `Err(())` if the table is full (`NR_IO_RANGE` exceeded).
+    pub fn add_io(&mut self, ior: &IoRange) -> Result<(), ()> {
+        self.capability.s_flags |= PrivFlagsBits::CHECK_IO_PORT;
+        // Dedup check
+        for i in 0..self.io.s_nr_io_range as usize {
+            if self.io.s_io_tab[i].base == ior.base
+                && self.io.s_io_tab[i].limit == ior.limit
+            {
+                return Ok(());
+            }
+        }
+        let i = self.io.s_nr_io_range as usize;
+        if i >= NR_IO_RANGE {
+            return Err(());
+        }
+        self.io.s_io_tab[i] = *ior;
+        self.io.s_nr_io_range += 1;
+        Ok(())
+    }
+
+    /// Add a memory range to this priv's allowlist.
+    /// C: `priv_add_mem()` — system.c:973-997.
+    ///
+    /// Sets `CHECK_MEM` flag, deduplicates, and appends to `s_mem_tab`.
+    /// Returns `Err(())` if the table is full (`NR_MEM_RANGE` exceeded).
+    pub fn add_mem(&mut self, memr: &MemRange) -> Result<(), ()> {
+        self.capability.s_flags |= PrivFlagsBits::CHECK_MEM;
+        // Dedup check
+        for i in 0..self.mem.s_nr_mem_range as usize {
+            if self.mem.s_mem_tab[i].base == memr.base
+                && self.mem.s_mem_tab[i].limit == memr.limit
+            {
+                return Ok(());
+            }
+        }
+        let i = self.mem.s_nr_mem_range as usize;
+        if i >= NR_MEM_RANGE {
+            return Err(());
+        }
+        self.mem.s_mem_tab[i] = *memr;
+        self.mem.s_nr_mem_range += 1;
+        Ok(())
+    }
+
+    /// Update privilege fields from a user-supplied request struct.
+    /// C: `update_priv()` — do_privctl.c:280-368.
+    ///
+    /// Copies flags, signal managers, IRQ/I-O/memory tables (gated by
+    /// CHECK_IRQ / CHECK_IO_PORT / CHECK_MEM), trap mask, IPC target
+    /// mask, and kernel-call mask from `req` into `self`.
+    ///
+    /// Returns `Err(())` (→ EINVAL in C) if any count is out of range.
+    pub fn update_from_request(&mut self, req: &PrivUpdateRequest) -> Result<(), ()> {
+        // C: do_privctl.c:287-290 — copy flags + signal managers.
+        self.capability.s_flags = req.s_flags;
+        self.capability.s_init_flags = req.s_init_flags;
+        self.signals.s_sig_mgr = req.s_sig_mgr;
+        self.signals.s_bak_sig_mgr = req.s_bak_sig_mgr;
+
+        // C: do_privctl.c:293-305 — copy IRQs (gated by CHECK_IRQ).
+        if req.s_flags.contains(PrivFlagsBits::CHECK_IRQ) {
+            if req.s_nr_irq < 0 || req.s_nr_irq as usize > NR_IRQ {
+                return Err(());
+            }
+            self.io.s_nr_irq = req.s_nr_irq;
+            for i in 0..req.s_nr_irq as usize {
+                self.io.s_irq_tab[i] = req.s_irq_tab[i];
+            }
+        }
+
+        // C: do_privctl.c:308-322 — copy I/O ranges (gated by CHECK_IO_PORT).
+        if req.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+            if req.s_nr_io_range < 0 || req.s_nr_io_range as usize > NR_IO_RANGE {
+                return Err(());
+            }
+            self.io.s_nr_io_range = req.s_nr_io_range;
+            for i in 0..req.s_nr_io_range as usize {
+                self.io.s_io_tab[i] = req.s_io_tab[i];
+            }
+        }
+
+        // C: do_privctl.c:325-339 — copy memory ranges (gated by CHECK_MEM).
+        if req.s_flags.contains(PrivFlagsBits::CHECK_MEM) {
+            if req.s_nr_mem_range < 0 || req.s_nr_mem_range as usize > NR_MEM_RANGE {
+                return Err(());
+            }
+            self.mem.s_nr_mem_range = req.s_nr_mem_range;
+            for i in 0..req.s_nr_mem_range as usize {
+                self.mem.s_mem_tab[i] = req.s_mem_tab[i];
+            }
+        }
+
+        // C: do_privctl.c:342 — copy trap mask.
+        self.ipc.s_trap_mask = req.s_trap_mask;
+
+        // C: do_privctl.c:353 — fill_sendto_mask(rp, &priv->s_ipc_to).
+        // In Rust, s_ipc_to is a direct u64 bitmap (no separate fill step).
+        self.ipc.s_ipc_to = req.s_ipc_to;
+
+        // C: do_privctl.c:364-365 — copy kernel call mask.
+        self.ipc.s_k_call_mask = req.s_k_call_mask;
+
+        Ok(())
+    }
+
+    /// Reset all pending IPC state (used by SET_SYS after copying caller's priv).
+    /// C: do_privctl.c:121-131 — clear s_asyn_pending, s_notify_pending,
+    /// s_int_pending, s_sig_pending, s_alarm_timer, s_asyntab, s_asynsize,
+    /// s_asynendpoint, s_diag_sig.
+    pub fn reset_pending_ipc(&mut self) {
+        self.signals.s_asyn_pending = 0;
+        self.signals.s_notify_pending = 0;
+        self.signals.s_int_pending = 0;
+        self.signals.s_sig_pending = SigSet::empty();
+        self.runtime.s_alarm_timer = None;
+        self.signals.s_asyntab = 0;
+        self.signals.s_asynsize = 0;
+        self.signals.s_asynendpoint = Endpoint::NONE;
+        self.mem.s_diag_sig = false;
+    }
+
+    /// Reset all resource counters to zero (used by SET_SYS defaults).
+    /// C: do_privctl.c:156-164 — s_nr_io_range=0, s_nr_mem_range=0,
+    /// s_nr_irq=0, s_grant_table=0, s_grant_entries=0, s_grant_endpoint,
+    /// s_state_table=0, s_state_entries=0, s_ipcf=0.
+    pub fn reset_resources(&mut self, endpoint: Endpoint) {
+        self.io.s_nr_io_range = 0;
+        self.mem.s_nr_mem_range = 0;
+        self.io.s_nr_irq = 0;
+        self.runtime.s_grant_table = 0;
+        self.runtime.s_grant_entries = 0;
+        self.runtime.s_grant_endpoint = endpoint;
+        self.runtime.s_state_table = 0;
+        self.runtime.s_state_entries = 0;
+        self.mem.s_ipcf = None;
+    }
+}
+
+/// User-space-visible privilege update request.
+///
+/// This is the Rust equivalent of C's `struct priv` as passed to
+/// `SYS_PRIV_SET_SYS` / `SYS_PRIV_UPDATE_SYS` via `arg_ptr`. Unlike C's
+/// `struct priv` (which includes kernel-internal timer/pointer fields),
+/// this struct contains ONLY the fields that `update_priv` actually reads.
+///
+/// # Layout
+///
+/// `#[repr(C)]` ensures deterministic layout for cross-space `data_copy`.
+/// The user-space RS (Reincarnation Server) fills this struct and passes
+/// its address via `m_lsys_krn_sys_privctl.arg_ptr`.
+///
+/// C: `struct priv` — kernel/priv.h:21-66; `update_priv` — do_privctl.c:280-368.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PrivUpdateRequest {
+    /// C: `s_flags` — privilege flags (PREEMPTIBLE, BILLABLE, SYS_PROC, etc.)
+    pub s_flags: PrivFlagsBits,
+    /// C: `s_init_flags` — initialization flags.
+    pub s_init_flags: i32,
+    /// C: `s_sig_mgr` — signal manager endpoint.
+    pub s_sig_mgr: Endpoint,
+    /// C: `s_bak_sig_mgr` — backup signal manager endpoint.
+    pub s_bak_sig_mgr: Endpoint,
+    /// C: `s_trap_mask` — allowed system call traps.
+    pub s_trap_mask: u16,
+    /// C: `s_ipc_to` — allowed IPC destination bitmap.
+    pub s_ipc_to: u64,
+    /// C: `s_k_call_mask` — allowed kernel calls bitmap.
+    pub s_k_call_mask: [u32; SYS_CALL_MASK_SIZE],
+    /// C: `s_nr_irq` — number of valid IRQ entries (gated by CHECK_IRQ).
+    pub s_nr_irq: i32,
+    /// C: `s_irq_tab` — IRQ allowlist table.
+    pub s_irq_tab: [i32; NR_IRQ],
+    /// C: `s_nr_io_range` — number of valid I/O range entries (gated by CHECK_IO_PORT).
+    pub s_nr_io_range: i32,
+    /// C: `s_io_tab` — I/O port range allowlist table.
+    pub s_io_tab: [IoRange; NR_IO_RANGE],
+    /// C: `s_nr_mem_range` — number of valid memory range entries (gated by CHECK_MEM).
+    pub s_nr_mem_range: i32,
+    /// C: `s_mem_tab` — memory range allowlist table.
+    pub s_mem_tab: [MemRange; NR_MEM_RANGE],
+    /// C: `s_id` — privilege ID (for SET_SYS static allocation; ignored if DYN_PRIV_ID set).
+    pub s_id: SysId,
+}
+
+impl PrivUpdateRequest {
+    /// Create a zeroed request (all fields default/empty).
+    pub const fn new() -> Self {
+        Self {
+            s_flags: PrivFlagsBits::empty(),
+            s_init_flags: 0,
+            s_sig_mgr: Endpoint::NONE,
+            s_bak_sig_mgr: Endpoint::NONE,
+            s_trap_mask: 0,
+            s_ipc_to: 0,
+            s_k_call_mask: [0; SYS_CALL_MASK_SIZE],
+            s_nr_irq: 0,
+            s_irq_tab: [0; NR_IRQ],
+            s_nr_io_range: 0,
+            s_io_tab: [IoRange::new(); NR_IO_RANGE],
+            s_nr_mem_range: 0,
+            s_mem_tab: [MemRange::new(); NR_MEM_RANGE],
+            s_id: 0,
+        }
+    }
+}
+
+impl Default for PrivUpdateRequest {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub const NR_SYS_PROCS: usize = 64;
@@ -381,7 +626,7 @@ pub struct PrivTable {
 }
 
 impl PrivTable {
-    /// Const-constructible privilege table (for `static mut PRIV_TABLE` init).
+    /// Const-constructible privilege table (for `static PRIV_TABLE` init).
     ///
     /// Each slot starts with `s_id = i`, `s_proc_nr = None`.
     ///
@@ -414,6 +659,31 @@ impl PrivTable {
         }
     }
 
+    /// Swap two privilege slots.
+    ///
+    /// Used by `do_update` (SYS_UPDATE) to swap src and dst priv slots.
+    /// C: `*src_privp = orig_dst_priv; *dst_privp = orig_src_priv;`
+    /// — do_update.c:131-133.
+    ///
+    /// Uses `split_at_mut` to obtain two simultaneous `&mut` references
+    /// from the same array (the borrow checker cannot prove non-aliasing
+    /// otherwise).
+    pub(crate) fn swap_slots(&mut self, a: PrivId, b: PrivId) {
+        let ia = a as usize;
+        let ib = b as usize;
+        debug_assert!(ia < NR_SYS_PROCS && ib < NR_SYS_PROCS);
+        if ia == ib {
+            return;
+        }
+        if ia < ib {
+            let (left, right) = self.privs.split_at_mut(ib);
+            core::mem::swap(&mut left[ia], &mut right[0]);
+        } else {
+            let (left, right) = self.privs.split_at_mut(ia);
+            core::mem::swap(&mut left[ib], &mut right[0]);
+        }
+    }
+
     pub fn init(&mut self) {
         for (i, priv_) in self.privs.iter_mut().enumerate() {
             *priv_ = KPriv::new(i as SysId);
@@ -437,10 +707,10 @@ impl PrivTable {
         // For kernel tasks (proc_nr < 0), proc_nr maps to priv_id directly:
         //   IDLE=-4 → priv_id=0, CLOCK=-3 → priv_id=1, etc.
         // For user processes (proc_nr >= 0): priv_id = NR_TASKS + proc_nr
-        let priv_id = if proc_nr < 0 {
-            (NR_TASKS as i32 + proc_nr) as PrivId
+        let priv_id = if proc_nr.0 < 0 {
+            (NR_TASKS as i32 + proc_nr.0) as PrivId
         } else {
-            (NR_TASKS as PrivId + proc_nr as PrivId) as PrivId
+            (NR_TASKS as PrivId + proc_nr.0 as PrivId) as PrivId
         };
 
         let priv_ = self.get_mut(priv_id)?;
@@ -454,6 +724,54 @@ impl PrivTable {
         priv_.capability.s_proc_nr = Some(proc_nr);
 
         Some(priv_id)
+    }
+
+    /// Allocate a privilege slot for a process (static or dynamic).
+    ///
+    /// C: `get_priv()` — system.c:274-302.
+    ///
+    /// If `priv_id == NULL_PRIV_ID` (u16::MAX), scan the dynamic slot range
+    /// `[NR_BOOT_PROCS .. NR_SYS_PROCS)` for a free slot (s_proc_nr == None).
+    /// Returns `Err(ENOSPC)` if all dynamic slots are occupied.
+    ///
+    /// Otherwise, allocate the specified static slot (must be `< NR_BOOT_PROCS`
+    /// and unoccupied). Returns `Err(EINVAL)` for invalid static IDs and
+    /// `Err(EBUSY)` if the slot is already in use.
+    ///
+    /// On success, links the process to the slot: sets `s_proc_nr = proc_nr`
+    /// and returns `Ok(priv_id)`.
+    pub fn get_priv(&mut self, proc_nr: ProcNr, priv_id: PrivId) -> Result<PrivId, i32> {
+        if priv_id == NULL_PRIV_ID {
+            // C: system.c:285-287 — scan dynamic slots for a free one.
+            for i in (NR_BOOT_PROCS as PrivId)..(NR_SYS_PROCS as PrivId) {
+                if let Some(slot) = self.get(i) {
+                    if slot.capability.s_proc_nr.is_none() {
+                        // Found a free dynamic slot.
+                        if let Some(slot) = self.get_mut(i) {
+                            slot.capability.s_proc_nr = Some(proc_nr);
+                        }
+                        return Ok(i);
+                    }
+                }
+            }
+            Err(ENOSPC)
+        } else {
+            // C: system.c:289-297 — allocate static slot by id.
+            if !is_static_priv_id(priv_id) {
+                return Err(EINVAL);
+            }
+            if let Some(slot) = self.get(priv_id) {
+                if slot.capability.s_proc_nr.is_some() {
+                    return Err(EBUSY);
+                }
+            } else {
+                return Err(EINVAL);
+            }
+            if let Some(slot) = self.get_mut(priv_id) {
+                slot.capability.s_proc_nr = Some(proc_nr);
+            }
+            Ok(priv_id)
+        }
     }
 
     /// Set privilege flags, trap mask, IPC mask, kernel call mask, and
@@ -530,7 +848,7 @@ impl PrivTable {
         let kcall_mask_bits = template.kcall_mask().bits();
 
         // sig_mgr defaults to endpoint-of-self (matches C init).
-        let sig_mgr = Endpoint::from_generation_slot(0, proc_nr);
+        let sig_mgr = Endpoint::from_generation_slot(0, proc_nr.0);
 
         if let Some(priv_) = self.get_mut(priv_id) {
             priv_.capability.s_flags = flags;
@@ -539,7 +857,11 @@ impl PrivTable {
             priv_.ipc.s_ipc_to = ipc_to_bits;
             // KCallMask.bits() is u64; pack into [u32; 2] (low word first).
             priv_.ipc.s_k_call_mask = [
+                // R-16 (2026-08-12): SAFETY: `kcall_mask_bits` is u64; masking
+                // with 0xFFFF_FFFF yields the low 32 bits, which fit in u32.
                 (kcall_mask_bits & 0xFFFF_FFFF) as u32,
+                // R-16 (2026-08-12): SAFETY: the `>> 32` shifts the high 32
+                // bits into the low position, so the result fits in u32.
                 (kcall_mask_bits >> 32) as u32,
             ];
             priv_.signals.s_sig_mgr = sig_mgr;
@@ -639,15 +961,15 @@ mod tests {
         let mut table = PrivTable::new();
 
         // Assign kernel task: IDLE = -4 → priv_id = NR_TASKS + (-4) = 1
-        let id = table.assign_static(-4);
+        let id = table.assign_static(ProcNr(-4));
         assert!(id.is_some());
         let id = id.unwrap();
         // NR_TASKS=5, proc_nr=-4 → priv_id = 5 + (-4) = 1
         assert_eq!(id, 1);
-        assert_eq!(table.get(id).unwrap().capability.s_proc_nr, Some(-4));
+        assert_eq!(table.get(id).unwrap().capability.s_proc_nr, Some(ProcNr(-4)));
 
         // Duplicate assignment fails
-        let id2 = table.assign_static(-4);
+        let id2 = table.assign_static(ProcNr(-4));
         assert!(id2.is_none());
     }
 
@@ -656,7 +978,7 @@ mod tests {
         let mut table = PrivTable::new();
 
         // Assign user process: RS_PROC_NR = 1 → priv_id = NR_TASKS + 1 = 6
-        let id = table.assign_static(1);
+        let id = table.assign_static(ProcNr(1));
         assert!(id.is_some());
         let id = id.unwrap();
         assert_eq!(id, NR_TASKS as PrivId + 1);
@@ -665,7 +987,7 @@ mod tests {
     #[test]
     fn test_priv_table_configure_boot_priv() {
         let mut table = PrivTable::new();
-        let priv_id = table.assign_static(-4).unwrap();
+        let priv_id = table.assign_static(ProcNr(-4)).unwrap();
 
         table.configure_boot_priv(
             priv_id,
@@ -699,7 +1021,7 @@ mod tests {
     #[test]
     fn test_configure_boot_priv_sets_masks() {
         let mut table = PrivTable::new();
-        let priv_id = table.assign_static(0).unwrap();
+        let priv_id = table.assign_static(ProcNr(0)).unwrap();
 
         // System services (VM/RS) get ALL_M + ALL_C.
         table.configure_boot_priv(
@@ -729,9 +1051,9 @@ mod tests {
     #[test]
     fn test_static_priv_id() {
         // C: static_priv_id(n) = NR_TASKS + n
-        assert_eq!(static_priv_id(-4), 1); // IDLE: 5 + (-4) = 1
-        assert_eq!(static_priv_id(0), NR_TASKS as PrivId); // DS: 5 + 0 = 5
-        assert_eq!(static_priv_id(1), NR_TASKS as PrivId + 1); // RS: 5 + 1 = 6
+        assert_eq!(static_priv_id(ProcNr(-4)), 1); // IDLE: 5 + (-4) = 1
+        assert_eq!(static_priv_id(ProcNr(0)), NR_TASKS as PrivId); // DS: 5 + 0 = 5
+        assert_eq!(static_priv_id(ProcNr(1)), NR_TASKS as PrivId + 1); // RS: 5 + 1 = 6
     }
 
     #[test]
@@ -763,7 +1085,7 @@ mod tests {
 
     #[test]
     fn test_kpriv_alarm_timer_default_none() {
-        // Doc 21 §4.2 / Ch3 D7 promises `s_alarm_timer: Option<TimerEntry>`.
+        // Doc 21 §4.2 / Ch3 D7 promises `s_alarm_timer: Option<(TimerEntry, TimerId)>`.
         // Default state must be `None` (no alarm pending), matching C's
         // `tmr_inittimer(&sp->s_alarm_timer)` at system.c:180.
         let p = KPriv::new(0);
@@ -772,19 +1094,24 @@ mod tests {
 
     #[test]
     fn test_kpriv_alarm_timer_some_carries_action() {
-        // Unlike C's bare `u64` (which lost TimerAction), `Option<TimerEntry>`
-        // preserves both exp_time and action. This enforces "非法状态不可表达".
-        use crate::clock::{TimerAction, TimerEntry};
+        // Unlike C's bare `u64` (which lost TimerAction), the tuple
+        // `(TimerEntry, TimerId)` preserves exp_time, action, and the stable
+        // TimerId needed for reset_timer(id). This enforces "非法状态不可表达".
+        use crate::clock::{TimerAction, TimerEntry, TimerId};
         use minix_types::Endpoint;
         let mut p = KPriv::new(0);
-        p.runtime.s_alarm_timer = Some(TimerEntry {
-            exp_time: 1000,
-            action: TimerAction::NotifyAlarm {
-                endpoint: Endpoint::NONE,
+        p.runtime.s_alarm_timer = Some((
+            TimerEntry {
+                exp_time: 1000,
+                action: TimerAction::NotifyAlarm {
+                    endpoint: Endpoint::NONE,
+                },
             },
-        });
-        let entry = p.runtime.s_alarm_timer.as_ref().unwrap();
+            TimerId::new(42),
+        ));
+        let (entry, id) = p.runtime.s_alarm_timer.as_ref().unwrap();
         assert_eq!(entry.exp_time, 1000);
+        assert_eq!(id.raw(), 42);
         assert!(matches!(entry.action, TimerAction::NotifyAlarm { .. }));
     }
 
@@ -795,7 +1122,7 @@ mod tests {
     #[test]
     fn test_grant_capability_idle() {
         let mut table = PrivTable::new();
-        let id = table.grant_capability(-4, CapabilityTemplate::Idle).unwrap();
+        let id = table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle).unwrap();
         let p = table.get(id).unwrap();
         assert!(p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC));
         assert!(p.capability.s_flags.contains(PrivFlagsBits::BILLABLE));
@@ -806,7 +1133,7 @@ mod tests {
     #[test]
     fn test_grant_capability_vm() {
         let mut table = PrivTable::new();
-        let id = table.grant_capability(8, CapabilityTemplate::Vm).unwrap();
+        let id = table.grant_capability(ProcNr(8), CapabilityTemplate::Vm).unwrap();
         let p = table.get(id).unwrap();
         assert!(p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC));
         assert!(p.capability.s_flags.contains(PrivFlagsBits::VM_SYS_PROC));
@@ -818,7 +1145,7 @@ mod tests {
     #[test]
     fn test_grant_capability_root_service() {
         let mut table = PrivTable::new();
-        let id = table.grant_capability(1, CapabilityTemplate::RootService).unwrap();
+        let id = table.grant_capability(ProcNr(1), CapabilityTemplate::RootService).unwrap();
         let p = table.get(id).unwrap();
         assert!(p.capability.s_flags.contains(PrivFlagsBits::ROOT_SYS_PROC));
         assert!(p.capability.s_flags.contains(PrivFlagsBits::PREEMPTIBLE));
@@ -828,7 +1155,7 @@ mod tests {
     #[test]
     fn test_grant_capability_deferred_no_flags() {
         let mut table = PrivTable::new();
-        let id = table.grant_capability(0, CapabilityTemplate::Deferred).unwrap();
+        let id = table.grant_capability(ProcNr(0), CapabilityTemplate::Deferred).unwrap();
         let p = table.get(id).unwrap();
         assert_eq!(p.capability.s_flags, PrivFlagsBits::empty());
         assert_eq!(p.ipc.s_ipc_to, 0);
@@ -839,10 +1166,10 @@ mod tests {
     fn test_grant_capability_duplicate_fails() {
         use crate::capability::CapabilityError;
         let mut table = PrivTable::new();
-        assert!(table.grant_capability(-4, CapabilityTemplate::Idle).is_ok());
+        assert!(table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle).is_ok());
         // Same proc_nr again should fail (slot occupied)
         assert_eq!(
-            table.grant_capability(-4, CapabilityTemplate::Idle),
+            table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle),
             Err(CapabilityError::SlotOccupied)
         );
     }
