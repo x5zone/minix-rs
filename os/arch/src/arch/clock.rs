@@ -44,8 +44,9 @@ pub const DEFAULT_HZ: u32 = 100;
 
 /// Number of load history slots for load average calculation.
 ///
-/// C: _LOAD_HISTORY — include/minix/type.h:97
-pub const LOAD_HISTORY_SIZE: usize = 16;
+/// C: _LOAD_HISTORY — include/minix/type.h:95 (150 = 60s*15min/6s)
+/// 与 os/kernel/src/clock.rs 的 `LOAD_HISTORY` 保持一致（C 对齐）。
+pub const LOAD_HISTORY_SIZE: usize = 150;
 
 /// Failure configuring the statistical profiling timer.
 ///
@@ -133,7 +134,7 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Stop the per-CPU local timer.
     ///
     /// Called by the SMP `ipi_halt_handler` before halting a CPU
-    /// (smp.rs:682-686). Disables the LAPIC Timer (x86-64), Generic
+    /// (smp.rs:708). Disables the LAPIC Timer (x86-64), Generic
     /// Timer (ARM64), or CLINT timer (RISC-V) to prevent interrupts
     /// during the halt.
     ///
@@ -144,7 +145,7 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Initialize and start the statistical profiling timer.
     ///
     /// Called by `SYS_SPROF` with `action=PROF_START` and
-    /// `intr_type=PROF_RTC` (misc.rs:899-902). Configures a separate
+    /// `intr_type=PROF_RTC` (misc.rs:1854-1857). Configures a separate
     /// timer (RTC on x86-64, or a second generic timer channel) to
     /// generate periodic interrupts at `hz` Hz for statistical
     /// profiling.
@@ -158,7 +159,7 @@ pub trait ClockArch: Sized + Send + Sync {
 
     /// Stop the statistical profiling timer.
     ///
-    /// Called by `SYS_SPROF` with `action=PROF_STOP` (misc.rs:926-928).
+    /// Called by `SYS_SPROF` with `action=PROF_STOP` (misc.rs:1831-1836).
     /// Disables the profiling timer interrupt and returns the hardware
     /// to normal operation.
     ///
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_load_history_size() {
-        assert_eq!(LOAD_HISTORY_SIZE, 16);
+        assert_eq!(LOAD_HISTORY_SIZE, 150);
     }
 
     /// Verify that `read_tsc()` default implementation delegates to `read_ticks()`.

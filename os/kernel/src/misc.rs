@@ -274,12 +274,12 @@ fn msg_getinfo(msg: &Message) -> MessLsysKrnSysGetinfo {
 // ── GETINFO C-compatible structs ──
 
 /// C: `struct loadinfo` — type.h:98-102
-/// `_LOAD_HISTORY` = 180 (15 minutes / 5 seconds per slot)
+/// `_LOAD_HISTORY` = 150 (15 minutes / 6 seconds per slot)
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct LoadInfoStruct {
-    /// C: `proc_load_history[_LOAD_HISTORY]` — u16[180]
-    proc_load_history: [u16; 180],
+    /// C: `proc_load_history[_LOAD_HISTORY]` — u16[150]
+    proc_load_history: [u16; 150],
     /// C: `proc_last_slot`
     proc_last_slot: u16,
     /// C: `last_clock` — clock_t (u64 on 64-bit)
@@ -827,12 +827,12 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
             // C: do_getinfo.c:71-75 — copy load info
             let history = clock_state.load_history();
             let mut loadinfo = LoadInfoStruct {
-                proc_load_history: [0u16; 180],
+                proc_load_history: [0u16; 150],
                 proc_last_slot: 0,
                 last_clock: clock_state.uptime(),
             };
-            // Copy available history entries (Rust keeps 12; C ABI expects 180).
-            let n = history.len().min(180);
+            // Copy available history entries (Rust keeps 150; C ABI expects 150).
+            let n = history.len().min(150);
             for (i, hist_val) in history.iter().take(n).enumerate() {
                 loadinfo.proc_load_history[i] = *hist_val as u16;
             }

@@ -47,8 +47,8 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 | `timer_int_handler()` | clock.c:70-173 | 时钟中断主处理函数（软件部分） |
 | `arch_timer_int_handler()` | arch_clock.c:72-74 (i386) | i386 上为**空函数**；quantum 递减不在此 |
 | `context_stop()` | arch_clock.c:208-349 (i386) | 上下文切换路径：**quantum 递减（line 326-330，基于 TSC delta）** + cpuavg + p_cycles 记账 |
-| `kclockinfo` | clock.h | 全局时钟状态（hz, uptime, realtime, boottime） |
-| `kloadinfo` | clock.h | 负载平均历史（circular buffer） |
+| `kclockinfo` | type.h:104（glo.h:28 extern） | 全局时钟状态（hz, uptime, realtime, boottime） |
+| `kloadinfo` | type.h:98（glo.h:25 extern，usermapped） | 负载平均历史（circular buffer） |
 | `clock_timers` | clock.c:37 | 同步闹钟定时器链表（BSP only） |
 | `adjtime_delta` | clock.c:42 | adjtime 调整量（BSP only） |
 | `init_clock()` | clock.c:47-64 | 初始化时钟变量 |
@@ -87,8 +87,8 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 - `uptime` 不受影响，保持严格单调
 
 **负载平均**：
-- `proc_load_history[_LOAD_HISTORY]`：circular buffer（`_LOAD_HISTORY=12`）
-- 采样槽位按 `uptime / hz / _LOAD_UNIT_SECS` 循环（`_LOAD_UNIT_SECS=5`）
+- `proc_load_history[_LOAD_HISTORY]`：circular buffer（`_LOAD_HISTORY=150`，type.h:95）
+- 采样槽位按 `uptime / hz / _LOAD_UNIT_SECS` 循环（`_LOAD_UNIT_SECS=6`，type.h:88）
 - 每个 tick 把"就绪队列进程总数"累加到当前槽位
 
 ### 1.4 行为规则
@@ -133,10 +133,10 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 
 | 常量/宏 | 值 | 源码位置 | 说明 |
 |---------|-----|---------|------|
-| `DEFAULT_HZ` | 100 | clock.h | 默认时钟频率 |
-| `TMR_NEVER` | `LONG_MAX` | timers.h | 定时器永不触发 |
-| `_LOAD_UNIT_SECS` | 5 | clock.h | 负载采样间隔（秒） |
-| `_LOAD_HISTORY` | 12 | clock.h | 负载历史槽数 |
+| `DEFAULT_HZ` | 60 (i386) / 1000 (earm)；Rust: 100（设计选择） | include/arch/i386/include/archconst.h:4 | 默认时钟频率 |
+| `TMR_NEVER` | `((clock_t)TMRDIFF_MAX + 1)` | include/minix/timers.h:48 | 定时器永不触发 |
+| `_LOAD_UNIT_SECS` | 6 | include/minix/type.h:88 | 负载采样间隔（秒） |
+| `_LOAD_HISTORY` | 150 | include/minix/type.h:95 | 负载历史槽数（60×15/6） |
 | `VT_VIRTUAL` | 1 | com.h:420 | 虚拟定时器类型（**注意：旧文档误标为 0**） |
 | `VT_PROF` | 2 | com.h:421 | 性能分析定时器类型（**注意：旧文档误标为 1**） |
 | `MF_VIRT_TIMER` | 0x002 | proc.h | 虚拟定时器活跃标志 |
@@ -146,24 +146,26 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 
 ### 2.2 核心数据结构
 
-**`struct clockinfo`**（clock.h）—— 全局时钟状态：
+**`struct kclockinfo`**（type.h:104，glo.h:28 extern）—— 全局时钟状态：
 
 ```c
-struct clockinfo {
-    clock_t hz;           // 时钟频率（ticks/秒）
-    clock_t realtime;     // 墙上时钟（滴答数，受 adjtime 影响）
-    clock_t uptime;       // 单调时钟（滴答数，每 tick +1）
+struct kclockinfo {
     time_t boottime;      // 启动时的 UNIX 时间戳（秒）
+    clock_t uptime;       // 单调时钟（滴答数，每 tick +1，不受 adjtime 影响）
+    uint32_t _rsvd1;      // 保留（64 位 uptime 扩展）
+    clock_t realtime;     // 墙上时钟（滴答数，受 adjtime 影响）
+    uint32_t _rsvd2;      // 保留（64 位 realtime 扩展）
+    uint32_t hz;          // 时钟频率（ticks/秒）
 };
 ```
 
-**`struct loadinfo`**（clock.h）—— 负载平均历史：
+**`struct loadinfo`**（type.h:98）—— 负载平均历史：
 
 ```c
 struct loadinfo {
-    u16_t proc_last_slot;                  // 当前负载采样槽位
-    u32_t proc_load_history[_LOAD_HISTORY]; // 负载历史 circular buffer
-    clock_t last_clock;                    // 上次更新时间
+    u16_t proc_load_history[_LOAD_HISTORY]; // 负载历史 circular buffer（150 槽）
+    u16_t proc_last_slot;                   // 当前负载采样槽位
+    clock_t last_clock;                     // 上次更新时间
 };
 ```
 
@@ -194,7 +196,7 @@ struct priv {
 
 #### `init_clock()` — clock.c:47-64
 
-初始化时钟软件变量：清零 `kclockinfo`，从环境变量读取 `hz`（范围 2..=50000，默认 100），清零 `kloadinfo`。**不触碰硬件定时器**——硬件使能发生在更晚的 `bsp_finish_booting()`。
+初始化时钟软件变量：清零 `kclockinfo`，从环境变量读取 `hz`（范围 2..=50000，默认 `DEFAULT_HZ`——i386 上 60），清零 `kloadinfo`。**不触碰硬件定时器**——硬件使能发生在更晚的 `bsp_finish_booting()`。
 
 #### `timer_int_handler()` — clock.c:70-173
 
@@ -422,6 +424,8 @@ SYS_VTIMER 系统调用
 | **B. 编译时常量 + 运行时可覆盖** | `DEFAULT_HZ` + `with_hz()` | 编译期优化 + 灵活 | — |
 
 **选定 B**（保留）。理由：编译时常量 `DEFAULT_HZ=100` 满足默认场景；`with_hz(hz)` 支持 2..=50000 范围覆盖（与 C 的 `env_get("hz")` 等价）。
+
+> **注意（与 C 的差异）**：C 的 `DEFAULT_HZ` 是 **60 (i386)** / 1000 (earm)（`include/arch/i386/include/archconst.h:4`），Rust 选择 100 作为默认——**行为差异**：无 `hz` 覆盖参数时，Rust 内核以 100Hz 运行而 C 内核以 60Hz 运行（tick 频率、调度时间片、时钟精度随之不同）。这是刻意的默认值选择（D7），如需与 C 完全一致，boot 阶段用 `with_hz(60)` 指定。负载常量则**与 C 对齐**（`_LOAD_UNIT_SECS=6`、`_LOAD_HISTORY=150`，见 §2.1）。
 
 ### 3.8 决策 D8：BSP/AP 分支
 
@@ -898,7 +902,7 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Stop the per-CPU local timer.
     ///
     /// Called by the SMP `ipi_halt_handler` before halting a CPU
-    /// (smp.rs:682-686). Disables the LAPIC Timer (x86-64), Generic
+    /// (smp.rs:708). Disables the LAPIC Timer (x86-64), Generic
     /// Timer (ARM64), or CLINT timer (RISC-V) to prevent interrupts
     /// during the halt.
     ///
@@ -909,19 +913,21 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Initialize and start the statistical profiling timer.
     ///
     /// Called by `SYS_SPROF` with `action=PROF_START` and
-    /// `intr_type=PROF_RTC` (misc.rs:899-902).
+    /// `intr_type=PROF_RTC` (misc.rs:1854-1857).
     ///
     /// C: `init_profile_clock(freq)` — sprofile.c:init_profile_clock
-    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()>;
+    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>;
 
     /// Stop the statistical profiling timer.
     ///
-    /// Called by `SYS_SPROF` with `action=PROF_STOP` (misc.rs:926-928).
+    /// Called by `SYS_SPROF` with `action=PROF_STOP` (misc.rs:1831-1836).
     ///
     /// C: `stop_profile_clock()` — sprofile.c:stop_profile_clock
     fn stop_profile_clock(&mut self);
 }
 ```
+
+> `ProfileClockError`（clock.rs:57）——`init_profile_clock()` 的失败类型，唯一变体 `Unsupported`：架构无可用的性能分析定时器（RISC-V 共享 CLINT mtimecmp、ARM64 需 PMU 未集成、x86-64 的 RTC 范围排除 `hz < 2`）。
 
 **架构映射**：
 

@@ -1490,3 +1490,25 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 ✅ 准确引用（无需修）：`os/arch/src/x86_64/boot.rs:357` `(see signal.rs:38)` → `os/arch/src/x86_64/signal.rs:38` 正是 `pub(super) const GP_RBP: usize = 5;`
 
 **根因**：与 Pattern #77（doc 08 先例）相同——代码增量后注释未同步。建议批量修复脚本：`rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust` + sed 逐处验证。
+
+---
+
+## doc 15 review 发现：DEFAULT_HZ 设计差异（2026-08-14，OQ-15-1）
+
+> **状态：🟡 Open Question（待用户决定）**。doc 15 review 发现 `DEFAULT_HZ` 三方不一致：
+
+| 侧 | 值 | 位置 |
+|----|-----|------|
+| C（ground truth）| **60** (i386) / 1000 (earm) | `minix3/minix/include/arch/i386/include/archconst.h:4` |
+| Rust | 100 | `os/kernel/src/clock.rs:472` + `os/arch/src/arch/clock.rs:43` |
+| doc | 100（标注 C 对照）| §2.1 表 + §3.7 D7 注 |
+
+**影响**：无 `hz` 覆盖参数时，Rust 内核以 100Hz 运行而 C 内核以 60Hz 运行——tick 频率、调度时间片、时钟精度随之不同（**行为差异**，违反 Rewrite 严格等价）。
+
+**已做**：差异已标注（doc §3.7 D7 注 + 两处代码注释），保留 100 为设计选择。
+
+**选项**：
+- A. 保留 100（现状）——Rust 已按 100 调优；boot 时可用 `with_hz(60)` 与 C 对齐
+- B. 改为 60——与 C i386 完全一致，但影响所有依赖 100 的测试/时间片计算
+
+**关联**：Proposal #12（DEFAULT_HZ 跨 crate 重复定义的"权威位置"问题：os/arch + os/kernel 双定义，os/arch 注释已列 C 值）。

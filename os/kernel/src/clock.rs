@@ -468,20 +468,23 @@ fn decrement_quantum_in(
 // ── Constants ──
 
 /// Default clock frequency in Hz.
-/// C: `DEFAULT_HZ` — clock.h
+/// C: `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000)
+/// Rust 选择 100 作为默认（doc 15 §3.7 D7 设计决策），与 C 的 60 不同；
+/// 需与 C 完全一致时可在 boot 阶段用 `with_hz(60)` 指定。
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Timer "never expires" sentinel.
-/// C: `TMR_NEVER` = `LONG_MAX` — timers.h
+/// C: `TMR_NEVER` = `((clock_t)TMRDIFF_MAX + 1)` — include/minix/timers.h:48 (INT_MAX+1)
+/// Rust 用 `u64::MAX`——语义等价的"永不触发"哨兵。
 pub const TMR_NEVER: u64 = u64::MAX;
 
 /// Load average sampling interval in seconds.
-/// C: `_LOAD_UNIT_SECS` — clock.h
-const LOAD_UNIT_SECS: u64 = 5;
+/// C: `_LOAD_UNIT_SECS` — include/minix/type.h:88 (6)
+const LOAD_UNIT_SECS: u64 = 6;
 
 /// Number of load average history slots.
-/// C: `_LOAD_HISTORY` — clock.h
-const LOAD_HISTORY: usize = 12;
+/// C: `_LOAD_HISTORY` — include/minix/type.h:95 (150 = 60s*15min/6s)
+const LOAD_HISTORY: usize = 150;
 
 // ── Timer identity (D3) ──
 
@@ -1645,18 +1648,18 @@ mod tests {
 
     #[test]
     fn test_load_update_slot_rotation() {
-        // Slot rotates every (hz * LOAD_UNIT_SECS) ticks = 100 * 5 = 500.
+        // Slot rotates every (hz * LOAD_UNIT_SECS) ticks = 100 * 6 = 600.
         let mut clock = make_bsp_clock();
         let mut proc = make_test_proc();
 
         // Fill slot 0.
-        for _ in 0..500 {
+        for _ in 0..600 {
             clock.tick_bsp(&mut proc, None, 3);
         }
         let slot0_total: u32 = clock.load_history()[0];
 
         // Advance into slot 1.
-        for _ in 0..500 {
+        for _ in 0..600 {
             clock.tick_bsp(&mut proc, None, 7);
         }
         let slot1_total: u32 = clock.load_history()[1];
