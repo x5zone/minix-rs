@@ -105,19 +105,19 @@ switch_address_space(p);
 
 在选好进程后、处理 misc 标志前切换地址空间。这确保后续的 `delivermsg()` 等操作在正确的地址空间中执行。
 
-**阶段 3：Misc 标志处理**（proc.c:350-414，`check_misc_flags:` 标签起）
+**阶段 3：Misc 标志处理**（proc.c:351-415，`check_misc_flags:` 标签起）
 
 按优先级处理 5 种 misc 标志：
 
 | 优先级 | 标志 | 操作 | 行号 |
 |--------|------|------|------|
-| 1 | `MF_KCALL_RESUME` | `kernel_call_resume(p)` | 359-361 |
-| 2 | `MF_DELIVERMSG` | `delivermsg(p)` | 362-366 |
-| 3 | `MF_SC_DEFER` | `arch_do_syscall(p)` | 367-381 |
-| 4 | `MF_SC_TRACE` | `cause_sig(SIGTRAP)` | 382-398 |
-| 5 | `MF_SC_ACTIVE` | 清除标志，break | 399-406 |
+| 1 | `MF_KCALL_RESUME` | `kernel_call_resume(p)` | 360-361 |
+| 2 | `MF_DELIVERMSG` | `delivermsg(p)` | 363-366 |
+| 3 | `MF_SC_DEFER` | `arch_do_syscall(p)` | 368-373 |
+| 4 | `MF_SC_TRACE` | `cause_sig(SIGTRAP)` | 383-398 |
+| 5 | `MF_SC_ACTIVE` | 清除标志，break | 400-404 |
 
-**循环条件**（proc.c:354-356）：`while (p->p_misc_flags & (MF_KCALL_RESUME | MF_DELIVERMSG | MF_SC_DEFER | MF_SC_TRACE | MF_SC_ACTIVE))`
+**循环条件**（proc.c:355-357）：`while (p->p_misc_flags & (MF_KCALL_RESUME | MF_DELIVERMSG | MF_SC_DEFER | MF_SC_TRACE | MF_SC_ACTIVE))`
 
 每次处理完一个标志后检查进程是否仍可运行，不可运行则 `goto not_runnable_pick_new`。
 
@@ -187,7 +187,7 @@ static void idle(void) {
 
 ### 4.1 当前 switch_to_user 占位实现
 
-**位置**: `os/kernel/src/lib.rs:1508-...`（`fn switch_to_user() -> !`）
+**位置**: `os/kernel/src/lib.rs:2165-2193`（`fn switch_to_user() -> !`）
 
 ```rust
 // os/kernel/src/lib.rs
@@ -218,16 +218,16 @@ fn switch_to_user() -> ! {
     // does not return. In Rust, we release explicitly before the loop.
     smp::bkl_unlock();
 
-    // First-dispatch hook: apply each boot process's `cpu_context`
-    // to its trap frame once, before the scheduling loop picks the
-    // first runnable process. The arch layer owns the trap-frame
-    // layout; the kernel only hands it the opaque `CpuContext` built
-    // during `init_proc_and_boot`.
+    // First-dispatch hook (06-proc-init-boot-proc.md §3.5): apply each boot
+    // process's `cpu_context` to its trap frame once, before the
+    // scheduling loop picks the first runnable process. The arch layer
+    // owns the trap-frame layout; the kernel only hands it the opaque
+    // `CpuContext` built during `init_proc_and_boot`.
     //
     // C: this work is folded into `arch_boot_proc()` + the first
     // `restore_user_context()` in Minix3. Splitting it here keeps the
     // arch trait's `apply_to_trap_frame` as the single sink for
-    // initial-register writes (arch returns pure value).
+    // initial-register writes (§3.2 "arch returns pure value").
     //
     // SAFETY: boot is single-threaded (BKL just released, but no other
     // CPU is up yet on single-CPU configs). On SMP this must move
@@ -252,14 +252,14 @@ fn switch_to_user() -> ! {
 
 ### 4.2 process_misc_flags 实现
 
-**位置**: `os/kernel/src/proc_table.rs:833-926`（`pub fn process_misc_flags`）
+**位置**: `os/kernel/src/proc_table.rs:828-921`（`pub fn process_misc_flags`）
 
 ```rust
 // os/kernel/src/proc_table.rs
 
 /// 处理进程的 misc 标志。
 ///
-/// C: check_misc_flags 循环 — proc.c:350-414
+/// C: check_misc_flags 循环 — proc.c:351-415
 ///
 /// 返回 true 表示进程仍可运行，false 表示不可运行（需重新选择）。
 ///
@@ -293,28 +293,47 @@ pub fn process_misc_flags(
 
         // 按优先级处理（与 C 的 if-else chain 一致）
         if flags.contains(MiscFlagsBits::KCALL_RESUME) {
-            // C: kernel_call_resume(p) — system.c:612-638.
-            // FIX-21 (Phase 1C): wired to crate::vm::kernel_call_resume
             // (simple version — reads VM result + clears MF_KCALL_RESUME).
+            // The full re-dispatch (syscall::kernel_call_resume) is
+            // deferred to switch_to_user which has priv_table +
+            // clock_state + proc_table access. This split is a Rust
+            // design deviation from C (documented in 10-switch-to-user.md
+            // §4.2), caused by Rust's borrow checker: process_misc_flags
+            // holds &mut self, so it can't also pass self as proc_table
+            // to syscall::kernel_call_resume.
             let result = match self.get_mut(nr) {
                 Some(p) => crate::vm::kernel_call_resume(p),
                 None => break,
             };
+            // vm::kernel_call_resume clears MF_KCALL_RESUME + returns
+            // VmCheckResult. If the VM result indicates an error,
+            // the process may need SIGSEGV (future phase).
             let _ = result; // TODO: route VmCheckResult in switch_to_user
         } else if flags.contains(MiscFlagsBits::DELIVERMSG) {
-            // C: delivermsg(p) — proc.c:263-294.
+            // C: delivermsg(p) — proc.c:263-294. Clears MF_DELIVERMSG
+            // on success or fatal failure; sets MF_MSGFAILED on first
+            // page fault (caller routes to vm_suspend).
             // FIX-20 (Phase 1B): wired to crate::ipc::delivermsg.
             let result = match self.get_mut(nr) {
                 Some(p) => crate::ipc::delivermsg(p, user_copy),
                 None => break,
             };
             match result {
-                crate::ipc::DeliverResult::Delivered => { /* continue loop */ }
+                crate::ipc::DeliverResult::Delivered => {
+                    // Message copied successfully — continue loop to
+                    // process remaining flags.
+                }
                 crate::ipc::DeliverResult::PageFault => {
+                    // First page fault — MF_MSGFAILED already set by
+                    // delivermsg. Caller (switch_to_user) must route to
+                    // vm_suspend(VMS_PAGEFAULT).
                     // TODO: vm_suspend(VMS_PAGEFAULT) — future phase
                     break;
                 }
                 crate::ipc::DeliverResult::Segfault => {
+                    // Second consecutive fault or out-of-bounds —
+                    // delivermsg cleared MF_DELIVERMSG. Caller must
+                    // route to cause_sig(SIGSEGV).
                     // TODO: cause_sig(SIGSEGV) — future phase
                     break;
                 }
@@ -327,18 +346,17 @@ pub fn process_misc_flags(
             if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
                 break;
             }
-            self.get_mut(nr).map(|p| {
-                p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE);
-            });
+            // C: clears both MF_SC_TRACE and MF_SC_ACTIVE, then cause_sig
+            if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE); }
             // TODO: wire cause_sig() from signal module
             break;
         } else if flags.contains(MiscFlagsBits::SC_ACTIVE) {
-            self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE));
+            if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE) }
             break;
         }
 
         // 检查进程是否仍可运行
-        if !self.get(nr).map_or(false, |p| p.is_runnable()) {
+        if !self.get(nr).is_some_and(|p| p.is_runnable()) {
             return false;
         }
     }
@@ -351,12 +369,12 @@ pub fn process_misc_flags(
 - **if-else chain 保留 C 优先级语义**：C 的 if-else chain 表达了 5 个标志的优先级顺序（KCALL_RESUME > DELIVERMSG > SC_DEFER > SC_TRACE > SC_ACTIVE），Rust 保留此结构以匹配 C 语义
 - **bool 返回值**：C 用 `goto not_runnable_pick_new` 跳转，Rust 用 `bool` 返回值让 caller 决定是否重新选进程（类型安全改进）
 - **`user_copy` + `priv_table` 参数注入**：`process_misc_flags` 接受 `&dyn UserCopy` + `&mut PrivTable` 参数（FIX-20/21），避免在循环内构造完整 `IpcEngine`（`IpcEngine` 需要 `priv_table` + `procs` 切片，而 `ProcessTable` 已持有这些）
-- **KCALL_RESUME 分裂设计**（FIX-21 设计偏差）：C 的 `kernel_call_resume` 在 misc_flags 循环内做完整重新分发。Rust 分为两步：`vm::kernel_call_resume`（简单版）在循环内清标志 + 读 VM 结果；`syscall::kernel_call_resume`（完整版）由 `switch_to_user` 调用做重新分发。原因是 Rust 借用检查器：`process_misc_flags` 持有 `&mut self`，无法同时传 `self` 作为 `proc_table` 给 `syscall::kernel_call_resume`
+- **KCALL_RESUME 分裂设计**（FIX-21 设计偏差）：C 的 `kernel_call_resume` 在 misc_flags 循环内做完整重新分发。Rust 分为两步：`vm::kernel_call_resume`（简单版）在循环内清标志 + 读 VM 结果；`syscall::kernel_call_resume`（完整版）由 `switch_to_user` 调用做重新分发。原因是 Rust 借用检查器：`process_misc_flags` 持有 `&mut self`，无法同时传 `self` 作为 `proc_table` 给 `syscall::kernel_call_resume`（C: system.c:612-637）
 - **`arch_do_syscall` 非 trait 方法**（FIX-21）：C 的 `arch_do_syscall` 是 arch-specific（i386 用 `p_defer`，ARM 用 `p_reg`），Rust 统一为 `p_defer` struct，消除 arch 差异。放入 `TrapEntryArch` trait 会产生 3 个相同实现，违反"≥2 行为不同实现"规则。实现为 `ProcessTable` 方法
 
 > **接入状态**（FIX-21, Phase 1C, 2026-08-12）：
-> - `KCALL_RESUME` 分支已接入 `crate::vm::kernel_call_resume`（[vm.rs:886](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)），清标志 + 读 VM 结果。完整重新分发由 `switch_to_user` 调用 `syscall::kernel_call_resume`（[syscall.rs:1645](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）
-> - `SC_DEFER` 分支已接入 `self.arch_do_syscall()`（[proc_table.rs:963](file:///home/xzhao/github/minix-rs/os/kernel/src/proc_table.rs)），清标志 + 重新分发 IPC
+> - `KCALL_RESUME` 分支已接入 `crate::vm::kernel_call_resume`（[vm.rs:896](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)），清标志 + 读 VM 结果。完整重新分发由 `switch_to_user` 调用 `syscall::kernel_call_resume`（[syscall.rs:2622](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）
+> - `SC_DEFER` 分支已接入 `self.arch_do_syscall()`（[proc_table.rs:956](file:///home/xzhao/github/minix-rs/os/kernel/src/proc_table.rs)），清标志 + 重新分发 IPC
 > - `SC_TRACE` / `SC_ACTIVE` 仍为 TODO（future phase — 依赖 signal module）
 > - `vm_suspend(VMS_PAGEFAULT)` 和 `cause_sig(SIGSEGV)` 路由由 caller（`switch_to_user`）实现，依赖 future phase
 
