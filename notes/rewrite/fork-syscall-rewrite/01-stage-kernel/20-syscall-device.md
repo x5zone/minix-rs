@@ -1,10 +1,10 @@
 # 20-syscall-device: 设备 I/O 系统调用
 
 > **分类**: 系统调用服务
-> **C 源码**: `minix3/minix/kernel/system/do_irqctl.c` (174 行), `do_devio.c` (107 行), `do_vdevio.c` (165 行); `minix3/minix/kernel/arch/i386/do_sdevio.c` (162 行), `do_iopenable.c` (34 行), `do_readbios.c` (37 行)
-> **Rust 实现**: `os/kernel/src/syscall_device.rs` (1464 行), `os/kernel/src/irq_manager.rs`, `os/kernel/src/syscall.rs`
+> **C 源码**: `minix3/minix/kernel/system/do_irqctl.c` (174 行), `do_devio.c` (107 行), `do_vdevio.c` (165 行); `minix3/minix/kernel/arch/i386/do_sdevio.c` (163 行), `do_iopenable.c` (35 行), `do_readbios.c` (37 行)
+> **Rust 实现**: `os/kernel/src/syscall_device.rs` (1967 行), `os/kernel/src/irq_manager.rs`, `os/kernel/src/syscall.rs`
 > **覆盖**: IRQ 控制（hook 注册/启用/禁用）、单次/批量/跨进程端口 I/O、IOPL 提权、BIOS 读取、跨架构抽象
-> **前置**: [14-exception-interrupt.md](../14-exception-interrupt.md) (IRQ 入口与 IrqManager 设计), [22-privilege.md](../22-privilege.md) (CHECK_IO_PORT / CHECK_IRQ 权限), [13-syscall-dispatch.md](../13-syscall-dispatch.md) (D9 BadCall 决策), [18-syscall-copy.md](../18-syscall-copy.md) (data_copy_vmcheck / virtual_copy_vmcheck / verify_grant 依赖), [16-smp.md](../16-smp.md) (BKL 串行化)
+> **前置**: [14-exception-interrupt.md](../14-exception-interrupt.md) (IRQ 入口与 IrqManager 设计), [22-privilege.md](../22-privilege.md) (CHECK_IO_PORT / CHECK_IRQ 权限), [13-syscall-dispatch.md](../13-syscall-dispatch.md) (D9 BadCall 决策), [18-syscall-copy.md](../18-syscall-copy.md) (data_copy_vmcheck / verify_grant 依赖), [16-smp.md](../16-smp.md) (BKL 串行化)
 > **范围边界**: SYS_VMCTL 不纳入本文档——VMCTL 属内存系统调用，与设备 I/O 正交。
 
 ---
@@ -151,7 +151,7 @@
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `vdevio_buf` 静态缓冲区 | do_vdevio.c:17-20 | `char[1024]`；pvb/pvw/pvl 三种 pair cast 复用 |
+| `vdevio_buf` 静态缓冲区 | do_vdevio.c:17-20 | `char[VDEVIO_BUF_SIZE]`（config.h:63，64 字节）；pvb/pvw/pvl 三种 pair cast 复用 |
 | `do_vdevio()` | do_vdevio.c:25-164 | 解析(44-64) → size 校验(65) → 拷入(67-70) → 批量权限(72-100) → 批量 I/O(102-149) → 拷回(151-156) |
 | vec_size 校验 | do_vdevio.c:49,65 | `<=0`→EINVAL；`bytes>buf`→E2BIG |
 | 批量 `CHECK_IO_PORT` | do_vdevio.c:72-100 | 逐元素扫 `s_io_tab`；失败→EPERM |
@@ -219,7 +219,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `IrqctlRequest` enum + `TryFrom<i32>`：类型安全，`match` 编译期检查穷尽性；`TryFrom` 集中处理非法值返回 EINVAL；`#[repr(i32)]` 保证 ABI 兼容。
 - 所以用 `IrqctlRequest` enum：类型安全 + 穷尽性检查 + 集中校验。
 
-**实现**: `IrqctlRequest { SetPolicy=0, RmPolicy=1, Enable=2, Disable=3 }` + `impl TryFrom<i32>` (`syscall_device.rs:36-61`)。
+**实现**: `IrqctlRequest { SetPolicy=0, RmPolicy=1, Enable=2, Disable=3 }` + `impl TryFrom<i32>` (`syscall_device.rs:35-60`)。
 
 ### D2. I/O 端口操作：直接 in/out vs trait PortIo
 
@@ -242,9 +242,9 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 **实现**: `IrqManager<IC>` (`irq_manager.rs`) — 类型层完整；dispatch 层已接入（见 D6 与 §4.1）。
 
 > **dispatch 层接入状态**:
-> - 类型层：`IrqManager<IC>` + `dispatch_irqctl<IC>` (`syscall_device.rs:208-353`) 4 子请求完整实现
-> - dispatch 层：`syscall.rs:533-553` `dispatch_irqctl` 通过 `crate::irq_manager()` 获取全局 `IrqManager<CurrentInterruptController>` 单态并转发，BKL 保护下安全访问
-> - 接入方式：全局 BSS static `IRQ_MANAGER` + `irq_manager()` unsafe 访问器（BKL 持有为不变量），避免 `KernelState` 重构的跨文档依赖
+> - 类型层：`IrqManager<IC>` + `dispatch_irqctl<IC>` (`syscall_device.rs:203-364`) 4 子请求完整实现
+> - dispatch 层：`syscall.rs:1606-1623` 自由函数 `dispatch_irqctl` 通过 `crate::irq_manager_with(bkl_section)` 获取全局 `IrqManager<CurrentInterruptController>` 单态并转发，`BklSection` witness 编译期证明 BKL 已持有
+> - 接入方式：全局 BSS static `IRQ_MANAGER` + `irq_manager_with(bkl_section)` 访问器（`BklSection` witness = R-03 编译期能力令牌，与 `dispatch_hardware_irq` 同模式），避免 `KernelState` 重构的跨文档依赖
 
 ### D4. generic_handler：函数指针+全局 vs IrqHookContext+IrqNotify trait
 
@@ -264,7 +264,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用栈分配 `[u8; VDEVIO_BUF_SIZE]`：每个调用栈独立，无竞争；`unsafe` 仅在 cast 时；BKL 已串行化无需额外锁。
 - 所以用栈分配：no_std 友好 + SMP 安全。
 
-**实现**: `VDEVIO_BUF_SIZE = 64` (`syscall_device.rs:124`，匹配 C 的 64 字节)；`dispatch_vdevio` 已完整实现（`pte_walk::copy_from_user` + `PortIo` trait + `copy_to_user`）。
+**实现**: `VDEVIO_BUF_SIZE = 64` (`syscall_device.rs:121`，匹配 C config.h:63 的 64 字节)；`dispatch_vdevio` 已完整实现（`data_copy_vmcheck` 拷入/拷出 + `PortIo` trait 批量 I/O，见 §4.3）。
 
 ### D6. x86-only 调用：#[cfg(target_arch)] vs trait + BadCall
 
@@ -274,7 +274,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 trait + BadCall：内核 dispatch 层通过 `ArchSyscall` trait（`CurrentArchSyscall` 类型别名单一 cfg 选择），x86 转发到 `syscall_device::dispatch_*`，非 x86 返回 `BadCall`；内核主体架构无关。
 - 所以用 trait + BadCall：架构耦合集中在 arch 层，内核主体纯净。这是 D6 全局决策在设备 I/O 的应用。
 
-**实现**: `X86_64Syscall` impl `ArchSyscall` trait 覆盖 5 个方法（[syscall.rs:287-333](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L287-L333)）转发到 `syscall_device::dispatch_*`；非 x86 由 `DefaultSyscall` trait 默认方法返回 `BadCall`。
+**实现**: `X86_64Syscall` impl `ArchSyscall` trait 覆盖 5 个方法（[syscall.rs:296-344](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L296-L344)）转发到 `syscall_device::dispatch_*`；非 x86 由 `DefaultSyscall` trait 默认方法返回 `BadCall`。
 
 ### D7. I/O 类型/方向：裸位掩码 vs IoSize/IoDirection enum
 
@@ -284,108 +284,83 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `IoSize` / `IoDirection` enum + `from_request_mask`：类型安全；解码集中；`match` 穷尽性检查。
 - 所以用 enum：类型安全 + 集中解码。
 
-**实现**: `IoSize { Byte=1, Word=2, Long=4 }` + `IoDirection { Input, Output }` (`syscall_device.rs:71-115`)。
+**实现**: `IoSize { Byte=1, Word=2, Long=4 }` + `IoDirection { Input, Output }` (`syscall_device.rs:69-113`)。
 
 ---
 
 ## Ch4. 实现详解
 
-### §4.1 dispatch_irqctl（类型层完整，dispatch 层 BadCall）
+### §4.1 dispatch_irqctl（完整，专用消息结构 + BKL 接入）
 
-**类型层** — `syscall_device.rs:208-353`，4 子请求完整实现，调用 `IrqManager` 方法：
+**类型层** — `syscall_device.rs:203-364`，4 子请求完整实现，调用 `IrqManager` 方法。参数提取使用专用 `MessLsysKrnSysIrqctl` 变体（C 布局 request@0/vector@4/policy@8/hook_id@12）——M1 overlay 读 `m1p1` 会读到偏移 16 的 padding 而非 hook_id@12，与 DEVIO/VDEVIO 同属字段错位 bug 类（见 §4.2/§4.3 的 IMPORTANT 注释）：
 
 ```rust
-// C: do_irqctl.c:23-138 — SYS_IRQCTL 主入口
-pub fn dispatch_irqctl<IC: InterruptController>(
-    caller: &mut KProcess,
-    msg: &mut Message,
-    irq_mgr: &mut IrqManager<IC>,
-    priv_table: &PrivTable,
-) -> KcallResult {
-    let m1 = msg_m1(msg);
-    // C: do_irqctl.c:24-25 — 提取参数
-    let request = m1.m1i1;
-    let irq_vec = m1.m1i2;
-    let policy = m1.m1i3 as u32;
-    let hook_id = m1.m1p1 as i32;
+// C: do_irqctl.c:24-25 — 提取参数（专用变体，避免 M1 字段错位）
+msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
+// SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+let irq = unsafe { msg.m_u.m_lsys_krn_sys_irqctl };
+let request = irq.request;
+let irq_vec = irq.vector;
+let policy = irq.policy as u32;
+let hook_id = irq.hook_id;
 
-    // D1: enum + TryFrom 集中校验非法 request
-    let req = match IrqctlRequest::try_from(request) {
-        Ok(r) => r,
-        Err(()) => return KcallResult::Ok(EINVAL),
-    };
+// D1: enum + TryFrom 集中校验非法 request
+let req = match IrqctlRequest::try_from(request) {
+    Ok(r) => r,
+    Err(()) => return KcallResult::Ok(EINVAL),
+};
 
-    match req {
-        IrqctlRequest::SetPolicy => {
-            // C: do_irqctl.c:55-56 — 向量范围校验
-            if irq_vec < 0 || irq_vec as usize >= NR_IRQ_VECTORS {
-                return KcallResult::Ok(EINVAL);
+match req {
+    IrqctlRequest::SetPolicy => {
+        // C: do_irqctl.c:55-56 — 向量范围校验
+        // C: do_irqctl.c:58-76 — CHECK_IRQ 权限
+        // C: do_irqctl.c:78-79 — notify_id ≤ 31（u32 位图）
+        // C: do_irqctl.c:82-106 — 钩子池查找 + 安装
+        match irq_mgr.irqctl_set_policy(irq, caller.p_endpoint, nid, pol) {
+            Ok(new_hook_id) => {
+                // C: do_irqctl.c:108 — 写回 1-based hook_id（专用变体，
+                // 写 m1p1@16 会落在 padding 而非 hook_id@12）
+                msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
+                // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+                msg.m_u.m_lsys_krn_sys_irqctl.hook_id = new_hook_id;
             }
-            // C: do_irqctl.c:62-82 — CHECK_IRQ 权限
-            let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
-            match caller_priv {
-                None => return KcallResult::Ok(EPERM),
-                Some(priv_) => {
-                    if !check_irq_permission(priv_, irq_vec) {
-                        return KcallResult::Ok(EPERM);
-                    }
-                }
-            }
-            // C: do_irqctl.c:88 — notify_id 上限（u32 位图 → 31 位）
-            let notify_id = hook_id;
-            if notify_id > 31 { return KcallResult::Ok(EINVAL); }
-            // C: do_irqctl.c:90-108 — 钩子池查找 + 安装
-            let irq = IrqVector::new(irq_vec as u8);
-            let nid = IrqNotifyId::new(notify_id as u32);
-            let pol = if policy & IRQ_REENABLE != 0 { IrqPolicy::REENABLE }
-                      else { IrqPolicy::empty() };
-            match irq_mgr.irqctl_set_policy(irq, caller.p_endpoint, nid, pol) {
-                Ok(new_hook_id) => { msg.m_u.m_m1.m1p1 = new_hook_id as u64; }
-                Err(IrqError::NoFreeSlots) => return KcallResult::Ok(ENOSPC),
-                Err(_) => return KcallResult::Ok(EINVAL),
-            }
-        }
-        IrqctlRequest::RmPolicy | IrqctlRequest::Enable | IrqctlRequest::Disable => {
-            // C: do_irqctl.c:44-46 — hook_id 范围 + owner 检查
-            let slot_idx = (hook_id - 1) as usize;
-            if hook_id < 1 || slot_idx >= NR_IRQ_HOOKS { return KcallResult::Ok(EINVAL); }
-            match irq_mgr.hook_owner(slot_idx) {
-                None => return KcallResult::Ok(EINVAL),
-                Some(owner) => {
-                    if owner != caller.p_endpoint { return KcallResult::Ok(EPERM); }
-                }
-            }
-            match req {
-                IrqctlRequest::RmPolicy  => { let _ = irq_mgr.remove_hook_by_slot(slot_idx); }
-                IrqctlRequest::Enable    => irq_mgr.enable_irq_by_slot(slot_idx),
-                IrqctlRequest::Disable   => irq_mgr.disable_irq_by_slot(slot_idx),
-                _ => unreachable!(),
-            }
+            Err(crate::irq_manager::IrqError::NoFreeSlots) => return KcallResult::Ok(ENOSPC),
+            Err(_) => return KcallResult::Ok(EINVAL),
         }
     }
-    KcallResult::Ok(OK)
+    IrqctlRequest::RmPolicy | IrqctlRequest::Enable | IrqctlRequest::Disable => {
+        // C: do_irqctl.c:111-114 — hook_id 范围 + owner 检查
+        // C: do_irqctl.c:118-120 — remove_hook_by_slot / enable / disable
+        // ...（完整分支见源码）
+    }
 }
+KcallResult::Ok(OK)
 ```
 
-**dispatch 层** — `syscall.rs:533-597`，仅 step1-3 校验（request/vector/sys_proc），hook 链操作返回 `BadCall`：
+**dispatch 层** — `syscall.rs:1606-1623` 自由函数 `dispatch_irqctl`，经 `crate::irq_manager_with(bkl_section)` 获取全局 `IrqManager<CurrentInterruptController>` 单态并转发，由 `dispatch_ipc_entry`（`syscall.rs:481`，`Syscall::Irqctl` 分支）在持有 BKL 时调用：
 
 ```rust
-// syscall.rs:533 — SYS_IRQCTL dispatch 层（DEFERRED: BadCall）
-fn dispatch_irqctl(caller: &mut KProcess, msg: &mut Message) -> KcallResult {
-    // Step 1: request 校验（do_irqctl.c:43）
-    // Step 2: SETPOLICY 向量范围校验（do_irqctl.c:55-56）
-    // Step 3: SYS_PROC 权限软检查（do_irqctl.c:58-76 近似）
-    // DEFERRED: hook 链操作需 IrqManager<ArchIc> 接入 KernelState
-    let _ = caller;
-    KcallResult::BadCall
+// syscall.rs:1606 — SYS_IRQCTL dispatch 层（已接入，非 BadCall）
+fn dispatch_irqctl(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    priv_table: &mut PrivTable,
+    bkl_section: &crate::smp::BklSection<'_>,
+) -> KcallResult {
+    // SYS_IRQCTL dispatcher — delegates to `syscall_device::dispatch_irqctl`,
+    // acquiring the global IrqManager under BKL.
+    // The `BklSection` witness proves (at compile time) that BKL is held,
+    // making the global accessor call safe.
+    let irq_mgr = crate::irq_manager_with(bkl_section);
+    crate::syscall_device::dispatch_irqctl(caller, msg, irq_mgr, priv_table)
 }
 ```
 
-**根因**: `dispatch_irqctl` 在 `syscall.rs` 的签名是 `fn(caller, msg) -> KcallResult`，无 `&mut IrqManager<ArchIc>` 参数；`KernelState` 未持有 `IrqManager<ArchIc>` 单态。修复路径见 D3。
+**接入已解决（2026-08-14）**: 原 DEFERRED 根因（dispatch 层签名无 `&mut IrqManager<ArchIc>` 参数）已通过 `irq_manager_with(bkl_section)` 能力令牌模式解决——`BklSection` witness（R-03 编译期能力令牌，与 `irq_manager.rs:215` `dispatch_hardware_irq` 同模式）从 `dispatch_ipc_entry` 传入，证明调用点已持有 BKL，无需把 `IrqManager` 塞入 `KernelState`。测试见 §5.1（`syscall_device::tests` 5 个 `test_dispatch_irqctl_*`，用本地 `IrqManager<MockController>`）。
 
 ### §4.2 dispatch_devio（完整）
 
-`syscall_device.rs:368-446` — 完整实现 request 解码 → CHECK_IO_PORT → 对齐 → `PortIo::in/out` → 写回结果：
+`syscall_device.rs:365-454` — 完整实现 request 解码 → CHECK_IO_PORT → 对齐 → `PortIo::in/out` → 写回结果：
 
 ```rust
 pub fn dispatch_devio<PI: PortIo>(
@@ -394,10 +369,17 @@ pub fn dispatch_devio<PI: PortIo>(
     port_io: &PI,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    let request = m1.m1i1;
-    let port = m1.m1i2 as u16;
-    let value = m1.m1p1 as u32;
+    // IMPORTANT: 勿用 M1 overlay。C 结构布局是 request@0/port@4/value@8，
+    // 而 MessageM1 是 m1i1@0/m1i2@4/m1i3@8 + 4 字节 padding + m1p1@16——
+    // 读 m1p1 当 value 会读到偏移 16（padding）而非偏移 8，
+    // 与 SYS_IRQCTL 同属字段错位 bug 类。用专用 MessLsysKrnSysDevio 变体。
+    msg.debug_check_m_type_any(&[Syscall::Devio as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let devio = unsafe { msg.m_u.m_lsys_krn_sys_devio };
+    let request = devio.request;
+    let port = devio.port as u16;
+    let value = devio.value;
+
     // C: do_devio.c:26-29 — D7 enum 解码替代裸位掩码
     let io_type = request & 0x0F0;   // _DIO_TYPEMASK
     let io_dir = request & 0x00F;    // _DIO_DIRMASK
@@ -409,24 +391,10 @@ pub fn dispatch_devio<PI: PortIo>(
         Some(d) => d,
         None => return KcallResult::Ok(EINVAL),
     };
-    // C: do_devio.c:38-58 — CHECK_IO_PORT 权限扫描 s_io_tab
-    let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
-    if let Some(priv_) = caller_priv {
-        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
-            let mut allowed = false;
-            for i in 0..priv_.io.s_nr_io_range as usize {
-                if i < priv_.io.s_io_tab.len() {
-                    let ior = &priv_.io.s_io_tab[i];
-                    if port as u32 >= ior.base && port as u32 + size as u32 - 1 <= ior.limit {
-                        allowed = true; break;
-                    }
-                }
-            }
-            if !allowed { return KcallResult::Ok(EPERM); }
-        }
-    }
+    // C: do_devio.c:31-58 — CHECK_IO_PORT 权限扫描 s_io_tab
+    // ...（同 §4.2 权限扫描，无 priv → 跳过检查 = C "goto doit"）
     // C: do_devio.c:60-65 — 对齐检查
-    if port % size as u16 != 0 { return KcallResult::Ok(EPERM); }
+    if !port.is_multiple_of(size as u16) { return KcallResult::Ok(EPERM); }
     // C: do_devio.c:68-100 — D2 PortIo trait 替代 inb/outb
     match dir {
         IoDirection::Input => {
@@ -435,7 +403,11 @@ pub fn dispatch_devio<PI: PortIo>(
                 IoSize::Word => port_io.inw(port) as u32,
                 IoSize::Long => port_io.inl(port),
             };
-            msg.m_u.m_m1.m1p1 = result as u64;
+            // C: do_devio.c:71-80 — 结果写 m_krn_lsys_sys_devio.value
+            // Reply value 在偏移 0（MessKrnLsysSysDevio），不是 M1 的 m1p1@16
+            msg.debug_check_m_type_any(&[Syscall::Devio as i32]);
+            // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+            msg.m_u.m_krn_lsys_sys_devio.value = result;
         }
         IoDirection::Output => match size {
             IoSize::Byte => port_io.outb(port, value as u8),
@@ -452,49 +424,47 @@ pub fn dispatch_devio<PI: PortIo>(
 - unknown type：C default size=4（do_devio.c:35），Rust 返回 EINVAL（合理收紧——保守放行→严格拒绝）
 - PortIo trait 替代直接 `inb/outb`（D2）
 
-### §4.3 dispatch_vdevio（已实现）
+### §4.3 dispatch_vdevio（完整实现）
 
-`syscall_device.rs:466-649` — 完整实现：`copy_from_user` → 权限检查 → `PortIo` 批量 I/O → `copy_to_user`：
+`syscall_device.rs:474-699` — 完整实现：专用变体取参 → `data_copy_vmcheck` 拷入 → 批量权限检查 → `PortIo` 批量 I/O → input 模式拷回：
 
 ```rust
 pub fn dispatch_vdevio<PI: PortIo>(
-    _caller: &mut KProcess,
+    caller: &mut KProcess,
     msg: &Message,
-    _port_io: &PI,
+    port_io: &PI,
+    priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    let request = m1.m1i1;
-    let _vec_addr = m1.m1p1;
-    let vec_size = m1.m1i2;
+    // IMPORTANT: 勿用 M1 overlay。C 结构布局是 request@0/vec_size@4/
+    // vec_addr@8（vir_bytes）——M1 在偏移 8 只有 4 字节 m1i3，无法表达
+    // u64 vec_addr；读 m1p1 会读到偏移 16（padding）。用专用
+    // MessLsysKrnSysVdevio 变体。
+    msg.debug_check_m_type_any(&[Syscall::Vdevio as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let vdevio = unsafe { msg.m_u.m_lsys_krn_sys_vdevio };
+    let request = vdevio.request;
+    let vec_addr = vdevio.vec_addr;
+    let vec_size = vdevio.vec_size;
+
     // C: do_vdevio.c:54-72 — type/dir 解码（D7 enum）
-    let io_type = request & 0x0F0;
-    let io_dir = request & 0x00F;
-    let _size = match IoSize::from_request_mask(io_type) {
-        Some(s) => s,
-        None => return KcallResult::Ok(EINVAL),
-    };
-    let _dir = match IoDirection::from_request_mask(io_dir) {
-        Some(d) => d,
-        None => return KcallResult::Ok(EINVAL),
-    };
-    // C: do_vdevio.c:56-58 — vec_size 校验
-    if vec_size <= 0 || vec_size as usize > VDEVIO_BUF_SIZE {
-        return KcallResult::Ok(EINVAL);  // C 用 E2BIG，Rust 收紧为 EINVAL（E2BIG 未定义）
-    }
-    // DEFERRED（见下方汇总）
-    KcallResult::Ok(ENOSYS)
+    // C: do_vdevio.c:56-58 — vec_size <= 0 → EINVAL
+    // C: do_vdevio.c:50-64 — bytes = vec_size * sizeof(pair)（checked_mul 防溢出）
+    // C: do_vdevio.c:65 — bytes > VDEVIO_BUF_SIZE → E2BIG（对齐 C，errno.rs:49 已定义）
+
+    // C: do_vdevio.c:67-70 — data_copy_vmcheck 从用户拷入 (port,value) 对
+    // C: do_vdevio.c:72-100 — 批量 CHECK_IO_PORT（逐元素扫 s_io_tab，失败 EPERM）
+    // C: do_vdevio.c:102-149 — 批量 in/out（byte 无对齐；word/long 未对齐 → EPERM）
+    // C: do_vdevio.c:151-156 — input 模式 data_copy_vmcheck 拷回结果
+
+    KcallResult::Ok(OK)
 }
 ```
 
-**DEFERRED 项**:
-
-- `data_copy_vmcheck` 拷入/拷出（依赖跨空间拷贝子系统，见 [18-syscall-copy.md](../18-syscall-copy.md)）
-- 批量 `CHECK_IO_PORT` + 批量 in/out（依赖已拷入的数组）
-- 返回 `ENOSYS`（非 OK）避免 silent 语义漂移——C 的 `do_vdevio` 要么执行批量 I/O 要么返回错误，从不静默成功
+**实现说明**: Rust 用栈分配 `[u8; VDEVIO_BUF_SIZE]`（D5）+ `#[repr(C)]` pair 结构体数组替代 C 的 `static char vdevio_buf` + union cast（`pvb`/`pvw`/`pvl`）——类型系统保证布局正确，无 union punning。拷贝方向：用户→内核用 `data_copy_vmcheck`（`cross_space.rs`，arch 无关页表遍历 + VM suspend/resume 支持 lazy-allocated 页，匹配 C `data_copy`）；word/long 对齐违例 C 会 `panic("unaligned port")`（do_vdevio.c:160），Rust 返回 EPERM（防御性语义偏差，见 §4.9）。
 
 ### §4.4 dispatch_sdevio（已实现）
 
-`syscall_device.rs:737-1009` — 参数验证 + endpoint + CHECK_IO_PORT + 对齐完整；SAFE 路径（`verify_grant` + `data_copy_vmcheck`）与 unsafe 路径（`copy_from_user`/`copy_to_user` + `PortIo`）均已完整实现。Rust 用内核缓冲 + `PortIo` trait 方法替代 C 的 `switch_address_space` + `phys_insb/outsb/insw/outsw`，无需切换地址空间：
+`syscall_device.rs:790-1108` — 参数验证 + endpoint + CHECK_IO_PORT + 对齐完整；SAFE 路径（`verify_grant` + `data_copy_vmcheck`）与 unsafe 路径（`copy_from_user`/`copy_to_user` + `PortIo`）均已完整实现。Rust 用内核缓冲 + `PortIo` trait 方法替代 C 的 `switch_address_space` + `phys_insb/outsb/insw/outsw`，无需切换地址空间：
 
 ```rust
 pub fn dispatch_sdevio<PI: PortIo>(
@@ -510,6 +480,10 @@ pub fn dispatch_sdevio<PI: PortIo>(
     let port = sdevio.port;
     let vec_endpt = sdevio.vec_endpt;
     let vec_size = sdevio.vec_size;
+
+    // C: do_sdevio.c:62-63 — 提取方向与类型（_DIO_DIRMASK / _DIO_TYPEMASK）
+    let req_dir = request & 0x00F;
+    let req_type = request & 0x0F0;
 
     // C: do_sdevio.c:48-58 — SELF → caller；否则 isokendpt
     let target_ep = if vec_endpt == Endpoint::SELF.0 {
@@ -552,7 +526,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
     if is_safe {
         // SAFE 路径：verify_grant 解析 grant → granter 虚拟地址，
         // data_copy_vmcheck 在 granter buffer 与内核 buffer 间拷贝，
-        // PortIo 执行 insb/outsb/insw/outsw（syscall_device.rs:847-966）
+        // PortIo 执行 insb/outsb/insw/outsw（syscall_device.rs:900-1018）
         //   - output: data_copy_vmcheck(grant→kernel) → PortIo::outsb/outsw
         //   - input:  PortIo::insb/insw → data_copy_vmcheck(kernel→grant)
         // 缺页 → VmSuspend；拷贝错误 → EFAULT
@@ -560,7 +534,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
     }
     // unsafe 路径：target == caller，已在调用者地址空间
     // copy_from_user → PortIo::insb/outsb/insw/outsw → copy_to_user
-    // （syscall_device.rs:968-1009）
+    // （syscall_device.rs:1021-1077）
     KcallResult::Ok(OK)
 }
 ```
@@ -569,7 +543,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
 
 ### §4.5 dispatch_iopenable（完整实现）
 
-`syscall_device.rs:666-711` — SELF 解析 + endpoint 验证 + iskerneln + `enable_user_io()`：
+`syscall_device.rs:716-765` — SELF 解析 + endpoint 验证 + iskerneln + `enable_user_io()`：
 
 ```rust
 pub fn dispatch_iopenable(
@@ -602,12 +576,14 @@ pub fn dispatch_iopenable(
 
 **trap frame 同步（已解决）**: 先前 DEFERRED 认为运行中进程需额外同步 trap frame。经核查 C 源码 `enable_iop()` (protect.c:44-52)，C 直接修改 `pp->p_reg.psw`——`p_reg` 是嵌入 `struct proc` 的唯一寄存器保存区，不存在独立的"内核栈异常帧"。`do_iopenable()` 在 syscall handler 上下文中调用，此时目标进程寄存器已保存在 `p_reg`/`cpu_context` 中。Rust `enable_user_io()` 修改 `cpu_context.psw` 与 C 修改 `p_reg.psw` 语义等价，返回用户态时自动生效。无需 scheduler 集成或 arch trap frame 原语。
 
-### §4.6 dispatch_readbios（已实现）
+### §4.6 dispatch_readbios（完整实现）
 
-`syscall_device.rs:939-998` — 完整实现：BIOS 范围检查 + Direct Map 读取 + `copy_to_user` 写入用户缓冲：
+`syscall_device.rs:1109-1182` — 完整实现：BIOS 范围检查 + 逐页 `data_copy_vmcheck` 从物理地址拷入用户缓冲：
 
 ```rust
-pub fn dispatch_readbios(_caller: &mut KProcess, msg: &Message) -> KcallResult {
+pub fn dispatch_readbios(caller: &mut KProcess, msg: &Message) -> KcallResult {
+    msg.debug_check_m_type_any(&[Syscall::Readbios as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let readbios = unsafe { msg.m_u.m_lsys_krn_readbios };
     let size = readbios.size;
     let addr = readbios.addr;
@@ -618,20 +594,26 @@ pub fn dispatch_readbios(_caller: &mut KProcess, msg: &Message) -> KcallResult {
         None => return KcallResult::Ok(EINVAL),
     };
     // C: do_readbios.c:31-33 — USERRANGE 首尾都要在任一段范围内
-    let in_bios  = addr >= BIOS_MEM_BEGIN && limit <= BIOS_MEM_END;       // 0x0..=0x4FF
-    let in_upper = addr >= BASE_MEM_TOP   && limit <= UPPER_MEM_END;      // 0x90000..=0xFFFFF
+    // BIOS_MEM_BEGIN == 0 → 低界恒真，只需查上界
+    let in_bios  = limit <= BIOS_MEM_END;        // 0x0..=0x4FF
+    let in_upper = addr >= BASE_MEM_TOP && limit <= UPPER_MEM_END;  // 0x90000..=0xFFFFF
     if !in_bios && !in_upper { return KcallResult::Ok(EPERM); }
-    // C: do_readbios.c:36 — virtual_copy_vmcheck（src=NONE 物理地址，dst=caller buffer）
-    // DEFERRED: 依赖 virtual_copy_vmcheck（跨空间拷贝 + VM 协助缺页处理）
-    KcallResult::Ok(ENOSYS)
+    // C: do_readbios.c:36 — data_copy_vmcheck（src=物理地址，dst=caller buffer）
+    // 逐页拷贝：cross_space_copy 只解析首页物理地址，多页需迭代处理
+    // 非连续物理映射。缺页 → VmSuspend；拷贝错误 → EFAULT
+    while remaining > 0 {
+        let chunk = core::cmp::min(remaining, 4096);
+        // ... data_copy_vmcheck(Physical(src_phys), Process{caller, dst_va})
+    }
+    KcallResult::Ok(OK)
 }
 ```
 
-**DEFERRED 项**: `virtual_copy_vmcheck`（src 是物理地址 `Endpoint::NONE`，dst 是 caller buffer；见 [18-syscall-copy.md](../18-syscall-copy.md) §1.1）。返回 `ENOSYS` 避免调用者误以为读到 BIOS 数据但 buffer 未变。
+**实现说明**: 使用 `data_copy_vmcheck`（`cross_space.rs`，arch 无关页表遍历 + VM suspend/resume 支持 lazy-allocated 目标页，匹配 C `virtual_copy_vmcheck` 语义）替代旧的 `copy_to_user`（硬编码 x86_64 页表遍历）。src 是物理地址（BIOS 内存，`Endpoint::NONE`），dst 是 caller buffer。
 
 ### §4.7 PortIo trait + BadCall 架构抽象
 
-`syscall_device.rs:150-161` — PortIo re-export 自 `minix_plat`：
+`syscall_device.rs:190` — PortIo re-export 自 `minix_plat`：
 
 ```rust
 /// 架构特定的端口 I/O 操作。
@@ -643,7 +625,7 @@ pub fn dispatch_readbios(_caller: &mut KProcess, msg: &Message) -> KcallResult {
 pub use minix_plat::PortIo;
 ```
 
-`syscall.rs:234-360` — `ArchSyscall` trait + `CurrentArchSyscall` 类型别名；非 x86 由 trait 默认方法返回 `BadCall`：
+`syscall.rs:245-373` — `ArchSyscall` trait + `CurrentArchSyscall` 类型别名；非 x86 由 trait 默认方法返回 `BadCall`：
 
 ```rust
 pub trait ArchSyscall {
@@ -668,16 +650,16 @@ pub type CurrentArchSyscall = X86_64Syscall;
 
 ### §4.8 DEFERRED 汇总表
 
-| 函数 | C 位置 | 状态 | DEFERRED 理由 | 依赖 |
-|------|--------|------|--------------|------|
-| `dispatch_irqctl` (dispatch 层) | do_irqctl.c:23-138 | ✅ 已实现 | `crate::irq_manager()` 全局单态 + BKL 保护 | — |
-| `dispatch_vdevio` 批量 I/O | do_vdevio.c:67-156 | ✅ 已实现 | `pte_walk::copy_from_user` + `PortIo` + `copy_to_user` | — |
+| 函数 | C 位置 | 状态 | 实现方式 | 依赖 |
+|------|--------|------|---------|------|
+| `dispatch_irqctl` (dispatch 层) | do_irqctl.c:23-138 | ✅ 已实现 (2026-08-14) | `irq_manager_with(bkl_section)` 全局单态 + `BklSection` witness 编译期证明 BKL 持有 | — |
+| `dispatch_vdevio` 批量 I/O | do_vdevio.c:67-156 | ✅ 已实现 | `data_copy_vmcheck` 拷入/拷出 + `PortIo` 批量 I/O + 栈缓冲（D5） | — |
 | `dispatch_sdevio` 批量 I/O | do_sdevio.c:68-150 | ✅ 已实现 | `verify_grant` + `data_copy_vmcheck` + `PortIo` 内核缓冲中转替代 `switch_address_space` + `phys_*` | — |
-| `dispatch_readbios` 拷贝 | do_readbios.c:36 | ✅ 已实现 | Direct Map + `copy_to_user` | — |
+| `dispatch_readbios` 拷贝 | do_readbios.c:36 | ✅ 已实现 | 逐页 `data_copy_vmcheck`（src=物理地址，匹配 C `virtual_copy_vmcheck`） | — |
 | `dispatch_iopenable` trap frame | (Rust 独有) | ✅ 已解决 (2026-08-01) | C `p_reg` = Rust `cpu_context`；无独立内核栈异常帧；syscall handler 修改 `cpu_context.psw` 返回用户态自动生效 | — |
 | `generic_handler` get_randomness | do_irqctl.c:154 | ✅ 已实现 | `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm；KRANDOM 全局 + `try_krandom()`/`init()` 已就绪；实际熵采集在用户态 `random` 驱动。详见 [25-misc-unported.md §4.7](25-misc-unported.md) + [14-exception-interrupt.md §4.4](14-exception-interrupt.md) | /dev/random 熵池 |
 
-**anti-drift ENOSYS 决策**: DEFERRED 函数返回 `ENOSYS`（非 OK）避免 silent 语义漂移——调用者据此得知"功能未实现"，可 fallback 或报错；若返回 OK 则调用者误以为操作成功，造成难以调试的 silent failure。`dispatch_irqctl` dispatch 层返回 `BadCall`（非 ENOSYS）是因为参数校验已通过但 hook 操作无法执行——`BadCall` 表示"调用本身无法被处理"，`ENOSYS` 表示"功能未实现"，语义更精确。
+**历史 anti-drift 决策（已全部解除）**: 曾设计 DEFERRED 函数返回 `ENOSYS`（非 OK）避免 silent 语义漂移；`dispatch_irqctl` dispatch 层曾返回 `BadCall`。2026-08-14 全部 6 个 dispatcher 已完整实现并接线——`irqctl` 经 `syscall.rs:1606` 自由函数 + BKL witness，`devio/sdevio/vdevio/iopenable/readbios` 经 `X86_64Syscall`（`syscall.rs:296-344`）转发。当前无 ENOSYS/BadCall 残留。
 
 ### §4.9 anti-translate 汇总
 
@@ -698,9 +680,9 @@ pub type CurrentArchSyscall = X86_64Syscall;
 
 | 偏移点 | C 行为 | Rust 行为 | 理由 |
 |--------|--------|----------|------|
-| DEVIO unknown type | default size=4 (do_devio.c:35) | EINVAL (syscall_device.rs:343) | 保守放行 vs 严格拒绝；Rust 更安全 |
-| VDEVIO 超缓冲区 | E2BIG (do_vdevio.c:65) | EINVAL (syscall_device.rs:445) | E2BIG 在 minix-types 未定义；EINVAL 语义足够 |
-| VDEVIO word/long 对齐违例 | `panic("unaligned port")` (do_vdevio.c:160) | `assert!(port % size == 0)` | 语义对齐（kernel bug panic） |
+| DEVIO unknown type | default size=4 (do_devio.c:35) | EINVAL (syscall_device.rs:393) | 保守放行 vs 严格拒绝；Rust 更安全 |
+| VDEVIO 超缓冲区 | E2BIG (do_vdevio.c:65) | E2BIG (syscall_device.rs:529) | 语义对齐（errno.rs:49 已定义 E2BIG=7，匹配 C） |
+| VDEVIO word/long 对齐违例 | `panic("unaligned port")` (do_vdevio.c:160) | EPERM（逐元素检查，syscall_device.rs:633-635/655-657） | 语义偏差：C kernel bug panic（整个内核崩溃）；Rust 返回 EPERM（防御性，单次 syscall 失败不拖垮内核） |
 
 ---
 
@@ -708,7 +690,7 @@ pub type CurrentArchSyscall = X86_64Syscall;
 
 ### §5.1 现有测试（已实现，可 grep 验证）
 
-`syscall_device.rs` 中 36 个 `fn test_*` 函数 + `syscall.rs` 中 5 个 dispatch 层测试：
+`syscall_device.rs` 中 36 个 `fn test_*` 函数（31 类型层 + 5 dispatch 层，全部在本文件——`syscall.rs` 无 dispatch_irqctl 测试，其 wrapper 为薄转发，注释见 `syscall.rs:3157-3163`）：
 
 **类型层（syscall_device.rs）**:
 
@@ -743,12 +725,12 @@ pub type CurrentArchSyscall = X86_64Syscall;
 | `test_sdevio_invalid_direction_returns_einval` | 非法方向 → EINVAL | do_sdevio.c:151-153 |
 | `test_readbios_zero_size_returns_einval` | size=0 → EINVAL | (Rust anti-overflow) |
 | `test_readbios_outside_bios_range_returns_eperm` | 超范围 → EPERM | do_readbios.c:32-34 |
-| `test_readbios_in_bios_mem_range` | 低段范围验证通过 → 实际拷贝需 QEMU 集成测试 | ✅ 验证层已测；拷贝层需 QEMU |
-| `test_readbios_in_upper_mem_range` | 高段范围验证通过 → 实际拷贝需 QEMU 集成测试 | ✅ 验证层已测；拷贝层需 QEMU |
 | `test_readbios_straddling_ranges_returns_eperm` | 跨段 → EPERM | do_readbios.c:32-34 |
 | `test_readbios_overflow_returns_einval` | addr+size 溢出 → EINVAL | (Rust anti-overflow) |
 
-**dispatch 层（syscall.rs）** — `dispatch_irqctl` 校验路径（hook 操作 BadCall 前的 step1-3）:
+> **注**: 无 BIOS/UPPER 有效范围成功路径测试——`data_copy_vmcheck` 会解引用 Direct Map 地址（0xFFFF_8000_0000_0000+），host 单测中未映射 → SIGSEGV。拷贝路径需 QEMU 集成测试（代码 NOTE，syscall_device.rs:1798-1803）。此前的 `test_readbios_in_bios_mem_range` / `test_readbios_in_upper_mem_range` 两行不存在（虚构），已删除。
+
+**dispatch 层（syscall_device.rs:1877-1960）** — `dispatch_irqctl` 完整路径（本地 `IrqManager<MockController>`，无需全局 IRQ_MANAGER）：
 
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|
@@ -758,18 +740,18 @@ pub type CurrentArchSyscall = X86_64Syscall;
 | `test_dispatch_irqctl_setpolicy_no_priv_returns_eperm` | caller 无 priv_id → EPERM（CHECK_IRQ 校验失败） | do_irqctl.c:58-76 |
 | `test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field` | SETPOLICY 成功安装 hook + 写回 hook_id 到专用字段 | do_irqctl.c:82-108 |
 
-### §5.2 待补充测试（DEFERRED 函数实现后）
+### §5.2 覆盖缺口（2026-08-14 全量核实）
 
-| 测试函数 | 验证行为 | 依赖 |
-|---------|---------|------|
-| `test_dispatch_irqctl_setpolicy_full` | SETPOLICY 完整路径：权限→查重→安装→返回 hook_id | `IrqManager` 接入 `KernelState` |
-| `test_dispatch_irqctl_rmpolicy_owner_check` | RMPOLICY owner 校验 + 删除 | 同上 |
-| `test_dispatch_irqctl_enable_disable` | ENABLE/DISABLE owner 校验 + 调用 IC | `MockIc` 记录 mask/unmask |
-| `test_dispatch_vdevio_batch_io` | 批量 I/O 端到端：拷入→权限→执行→拷回 | ✅ 已实现（需 QEMU 测试 `pte_walk::copy_from_user`） |
-| `test_dispatch_vdevio_alignment_panic` | word/long 未对齐 panic | `#[should_panic]` |
-| `test_dispatch_sdevio_safe_grant` | safe 变体 verify_grant 映射 | ✅ 已实现（`test_sdevio_safe_path_no_grant_table_returns_eperm` 覆盖 SAFE 路径） |
-| `test_dispatch_sdevio_phys_batch` | 内核缓冲 + `PortIo::insb/outsb/insw/outsw` 批量 | ✅ 已实现（SAFE/unsafe 路径均用内核缓冲中转，无 `switch_address_space`） |
-| `test_dispatch_readbios_copy` | BIOS 拷贝端到端 | ✅ 已实现（需 QEMU 测试 `copy_to_user`） |
+| 测试函数 | 验证行为 | 实际状态 |
+|---------|---------|---------|
+| `test_dispatch_irqctl_setpolicy_full` | SETPOLICY 完整路径：权限→查重→安装→返回 hook_id | ✅ 已覆盖（`test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field`，本地 `IrqManager<MockController>`） |
+| `test_dispatch_irqctl_rmpolicy_owner_check` | RMPOLICY owner 校验 + 删除 | ⚠️ 缺口（RMPOLICY 分支无专用测试） |
+| `test_dispatch_irqctl_enable_disable` | ENABLE/DISABLE owner 校验 + 调用 IC | ⚠️ 缺口（ENABLE/DISABLE 分支无专用测试） |
+| `test_dispatch_vdevio_batch_io` | 批量 I/O 端到端：拷入→权限→执行→拷回 | ⚠️ 缺口（vdevio 无任何测试；拷入/拷回走 `data_copy_vmcheck`，需 QEMU 页表环境） |
+| `test_dispatch_vdevio_alignment_panic` | word/long 未对齐 panic | ❌ 已消除（Rust 返回 EPERM 非 panic，§4.9——`#[should_panic]` 会测错行为） |
+| `test_dispatch_sdevio_safe_grant` | safe 变体 verify_grant 映射 | ⚠️ 部分覆盖（`test_sdevio_safe_path_no_grant_table_returns_eperm` 只测 no-grant-table 拒绝路径；SAFE 成功路径需 QEMU） |
+| `test_dispatch_sdevio_phys_batch` | 内核缓冲 + `PortIo::insb/outsb/insw/outsw` 批量 | ⚠️ 缺口（SAFE/unsafe 成功路径均未测，需 QEMU 页表环境） |
+| `test_dispatch_readbios_copy` | BIOS 拷贝端到端 | ⚠️ 缺口（`data_copy_vmcheck` 解引用 Direct Map，host 单测 SIGSEGV，需 QEMU） |
 | ~~`test_dispatch_iopenable_trap_frame_sync`~~ | ~~运行中进程 trap frame 同步~~ | ~~已解除：C `p_reg` = Rust `cpu_context`，无独立异常帧，不需要此测试~~ |
 
 ### §5.3 MockPortIo 实现
@@ -797,7 +779,7 @@ impl PortIo for MockPortIo {
 - [14-exception-interrupt.md](../14-exception-interrupt.md) — IRQ 入口（hwint_master/slave）与 `IrqManager<IC>` / `IrqHookContext` / `IrqNotify` trait 完整设计
 - [22-privilege.md](../22-privilege.md) — `CHECK_IO_PORT` / `CHECK_IRQ` 权限表 + `s_io_tab[]` / `s_irq_tab[]`
 - [13-syscall-dispatch.md](../13-syscall-dispatch.md) — syscall dispatch 架构 + D9 全局 `BadCall` 决策（x86-only 调用非 x86 退化）
-- [18-syscall-copy.md](../18-syscall-copy.md) — `data_copy_vmcheck` / `virtual_copy_vmcheck` / `verify_grant`（VDEVIO/SDEVIO/READBIOS DEFERRED 依赖）
+- [18-syscall-copy.md](../18-syscall-copy.md) — `data_copy_vmcheck` / `verify_grant`（VDEVIO/SDEVIO/READBIOS 拷贝依赖；C `virtual_copy_vmcheck` 的 Rust 对应为 `data_copy_vmcheck`）
 - [16-smp.md](../16-smp.md) — BKL 串行化（dispatch 入口持锁，dispatch 函数内无睡眠，VDEVIO 栈缓冲区无竞争的依据）
 
 ### redox 对照

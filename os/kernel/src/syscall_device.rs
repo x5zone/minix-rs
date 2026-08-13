@@ -368,11 +368,21 @@ pub fn dispatch_devio<PI: PortIo>(
     port_io: &PI,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    // C: do_devio.c:22-24 — extract parameters
-    let request = m1.m1i1;     // m_lsys_krn_sys_devio.request
-    let port = m1.m1i2 as u16; // m_lsys_krn_sys_devio.port
-    let value = m1.m1p1 as u32; // m_lsys_krn_sys_devio.value
+    // C: do_devio.c:22-24 — extract parameters from mess_lsys_krn_sys_devio.
+    //
+    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    //   request@0, port@4, value@8
+    // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding,
+    // then m1p1@16. Reading `m1p1` for `value` would read offset 16
+    // (padding) instead of offset 8 — the same field-mapping bug class as
+    // SYS_IRQCTL (see dispatch_irqctl above). Always use the dedicated
+    // `MessLsysKrnSysDevio` variant.
+    msg.debug_check_m_type_any(&[Syscall::Devio as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let devio = unsafe { msg.m_u.m_lsys_krn_sys_devio };
+    let request = devio.request;
+    let port = devio.port as u16;
+    let value = devio.value;
 
     // C: do_devio.c:26-29 — parse type and direction
     let io_type = request & 0x0F0;   // _DIO_TYPEMASK
@@ -425,9 +435,11 @@ pub fn dispatch_devio<PI: PortIo>(
                 IoSize::Long => port_io.inl(port),
             };
             // C: do_devio.c:71-80 — write result to m_krn_lsys_sys_devio.value
-            // SAFETY: We have &mut Message; writing to the m1 variant
-            // of the union is safe since we just read from it above.
-            msg.m_u.m_m1.m1p1 = result as u64;
+            // Reply value lives at offset 0 (`MessKrnLsysSysDevio`), NOT at
+            // M1's `m1p1` @16 — same field-mapping reasoning as above.
+            msg.debug_check_m_type_any(&[Syscall::Devio as i32]);
+            // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+            msg.m_u.m_krn_lsys_sys_devio.value = result;
         }
         IoDirection::Output => {
             match size {
@@ -465,11 +477,22 @@ pub fn dispatch_vdevio<PI: PortIo>(
     port_io: &PI,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    // C: do_vdevio.c:44-52 — extract parameters
-    let request = m1.m1i1;     // m_lsys_krn_sys_vdevio.request
-    let vec_addr = m1.m1p1;    // m_lsys_krn_sys_vdevio.vec_addr
-    let vec_size = m1.m1i2;    // m_lsys_krn_sys_vdevio.vec_size
+    // C: do_vdevio.c:44-52 — extract parameters from mess_lsys_krn_sys_vdevio.
+    //
+    // IMPORTANT: Do NOT use the M1 overlay here. The C struct layout is:
+    //   request@0, vec_size@4, vec_addr@8 (vir_bytes)
+    // while MessageM1 has m1i1@0, m1i2@4, m1i3@8, then 4 bytes padding,
+    // then m1p1@16. Reading `m1p1` for `vec_addr` would read offset 16
+    // (padding) instead of offset 8 — the same field-mapping bug class as
+    // SYS_IRQCTL (see dispatch_irqctl above). `MessageM1` cannot express
+    // this layout at all (no u64 field at offset 8). Always use the
+    // dedicated `MessLsysKrnSysVdevio` variant.
+    msg.debug_check_m_type_any(&[Syscall::Vdevio as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let vdevio = unsafe { msg.m_u.m_lsys_krn_sys_vdevio };
+    let request = vdevio.request;
+    let vec_addr = vdevio.vec_addr;
+    let vec_size = vdevio.vec_size;
 
     // C: do_vdevio.c:54-72 — parse type/direction, validate size
     let io_type = request & 0x0F0;   // _DIO_TYPEMASK
@@ -687,9 +710,9 @@ pub fn dispatch_vdevio<PI: PortIo>(
 /// (`CpuContextArch::enable_user_io`) decides how to encode it
 /// (06-proc-init-boot-proc.md §3.5).
 ///
-/// For already-running processes, the trap frame on the kernel stack
-/// also needs updating — this is deferred until the scheduler/context-switch
-/// path provides arch-layer access to the saved exception frame.
+/// For already-running processes, the RFLAGS.IOPL change is written into
+/// the target's saved `cpu_context.psw` (see body below) — no scheduler
+/// hook is needed because the context is re-loaded on return to user mode.
 pub fn dispatch_iopenable(
     caller: &mut KProcess,
     msg: &Message,
@@ -1281,11 +1304,12 @@ mod tests {
     fn test_devio_input_byte_no_check() {
         // DIO_INPUT_BYTE = 0x011
         let mut msg = Message::default();
-        msg.m_type = 0;
-        // SAFETY: writing to m_m1 variant of the union for test setup
-        msg.m_u.m_m1.m1i1 = 0x011; // request
-        msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for byte)
-        msg.m_u.m_m1.m1p1 = 0;     // value (unused for input)
+        msg.m_type = Syscall::Devio as i32;
+        // SAFETY: writing to the dedicated devio variant of the union
+        // (matches C `mess_lsys_krn_sys_devio` layout: request@0/port@4/value@8)
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x011; // request
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;     // port (aligned for byte)
+        msg.m_u.m_lsys_krn_sys_devio.value = 0;       // value (unused for input)
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // No priv_id → no CHECK_IO_PORT → allowed (C "goto doit")
@@ -1295,18 +1319,18 @@ mod tests {
         let priv_table = PrivTable::new();
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
-        // Result written to m1p1
-        assert_eq!(unsafe { msg.m_u.m_m1.m1p1 }, 0xAB);
+        // Result written to m_krn_lsys_sys_devio.value (offset 0, C reply)
+        assert_eq!(unsafe { msg.m_u.m_krn_lsys_sys_devio.value }, 0xAB);
     }
 
     #[test]
     fn test_devio_output_word_no_check() {
         // DIO_OUTPUT_WORD = 0x022
         let mut msg = Message::default();
-        msg.m_type = 0;
-        msg.m_u.m_m1.m1i1 = 0x022; // request
-        msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for word)
-        msg.m_u.m_m1.m1p1 = 0x1234; // value to write
+        msg.m_type = Syscall::Devio as i32;
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x022; // request
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;     // port (aligned for word)
+        msg.m_u.m_lsys_krn_sys_devio.value = 0x1234;  // value to write
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1322,10 +1346,10 @@ mod tests {
     fn test_devio_alignment_check() {
         // DIO_INPUT_WORD = 0x021, port=0x61 (not word-aligned)
         let mut msg = Message::default();
-        msg.m_type = 0;
-        msg.m_u.m_m1.m1i1 = 0x021; // request
-        msg.m_u.m_m1.m1i2 = 0x61;  // port (not word-aligned)
-        msg.m_u.m_m1.m1p1 = 0;
+        msg.m_type = Syscall::Devio as i32;
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x021; // request
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x61;     // port (not word-aligned)
+        msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1341,10 +1365,10 @@ mod tests {
     fn test_devio_check_io_port_allowed() {
         // DIO_INPUT_BYTE = 0x011, port=0x60 in range [0x60, 0x6F]
         let mut msg = Message::default();
-        msg.m_type = 0;
-        msg.m_u.m_m1.m1i1 = 0x011;
-        msg.m_u.m_m1.m1i2 = 0x60;
-        msg.m_u.m_m1.m1p1 = 0;
+        msg.m_type = Syscall::Devio as i32;
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x011;
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;
+        msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
@@ -1359,17 +1383,17 @@ mod tests {
         let pio = MockPortIo::new(0xFF);
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
-        assert_eq!(unsafe { msg.m_u.m_m1.m1p1 }, 0xFF);
+        assert_eq!(unsafe { msg.m_u.m_krn_lsys_sys_devio.value }, 0xFF);
     }
 
     #[test]
     fn test_devio_check_io_port_denied() {
         // DIO_INPUT_BYTE = 0x011, port=0x80 NOT in range [0x60, 0x6F]
         let mut msg = Message::default();
-        msg.m_type = 0;
-        msg.m_u.m_m1.m1i1 = 0x011;
-        msg.m_u.m_m1.m1i2 = 0x80;
-        msg.m_u.m_m1.m1p1 = 0;
+        msg.m_type = Syscall::Devio as i32;
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x011;
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x80;
+        msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
@@ -1390,10 +1414,10 @@ mod tests {
     fn test_devio_invalid_type() {
         // Invalid io_type mask
         let mut msg = Message::default();
-        msg.m_type = 0;
-        msg.m_u.m_m1.m1i1 = 0x050; // invalid _DIO_TYPEMASK
-        msg.m_u.m_m1.m1i2 = 0x60;
-        msg.m_u.m_m1.m1p1 = 0;
+        msg.m_type = Syscall::Devio as i32;
+        msg.m_u.m_lsys_krn_sys_devio.request = 0x050; // invalid _DIO_TYPEMASK
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;
+        msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1772,9 +1796,10 @@ mod tests {
     }
 
     // NOTE: Valid-range readbios tests (BIOS_MEM and UPPER_MEM ranges) are
-    // omitted because dispatch_readbios now calls copy_to_user → walk_x86_64,
-    // which dereferences Direct Map addresses (0xFFFF_8000_0000_0000+) that
-    // are unmapped in host-side unit tests → SIGSEGV.
+    // omitted because dispatch_readbios calls data_copy_vmcheck →
+    // cross_space_copy::<CurrentDirectMap>, which dereferences Direct Map
+    // addresses (0xFFFF_8000_0000_0000+) that are unmapped in host-side
+    // unit tests → SIGSEGV.
     // Integration tests with QEMU + real page tables are required for the
     // copy path. The validation tests below cover all error paths.
 

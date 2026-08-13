@@ -309,9 +309,10 @@ impl ArchSyscall for X86_64Syscall {
         proc_table: &ProcessTable,
     ) -> KcallResult {
         // C: do_sdevio.c — SYS_SDEVIO (x86-only)
-        // Parameter extraction, endpoint validation, type/direction parsing,
-        // permission check (CHECK_IO_PORT), and alignment check are implemented.
-        // Actual batch I/O transfer is deferred (requires cross-space copy).
+        // Full implementation: parameter extraction, endpoint validation,
+        // type/direction parsing, permission check (CHECK_IO_PORT), alignment
+        // check, and batch I/O transfer (SAFE path: verify_grant +
+        // data_copy_vmcheck; unsafe path: copy_from_user/copy_to_user).
         let port_io = minix_plat::CurrentPortIo::new();
         crate::syscall_device::dispatch_sdevio(caller, msg, &port_io, priv_table, proc_table)
     }
@@ -337,8 +338,9 @@ impl ArchSyscall for X86_64Syscall {
 
     fn dispatch_readbios(caller: &mut KProcess, msg: &Message) -> KcallResult {
         // C: do_readbios.c — SYS_READBIOS (x86-only)
-        // Parameter extraction and BIOS memory range validation are implemented.
-        // Actual data copy is deferred (requires virtual_copy_vmcheck).
+        // Full implementation: parameter extraction, BIOS memory range
+        // validation, and page-by-page copy from BIOS memory via
+        // `data_copy_vmcheck` (matches C's `virtual_copy_vmcheck`).
         crate::syscall_device::dispatch_readbios(caller, msg)
     }
 }

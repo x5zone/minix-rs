@@ -114,10 +114,14 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_setgrant: MessLsysKrnSysSetgrant,
     /// Kernel: SYS_DIAGCTL request.
     pub m_lsys_krn_sys_diagctl: MessLsysKrnSysDiagctl,
-    /// Kernel: SYS_DEVIO request/reply.
+    /// Kernel: SYS_DEVIO request.
     pub m_lsys_krn_sys_devio: MessLsysKrnSysDevio,
+    /// Kernel: SYS_DEVIO reply (input result).
+    pub m_krn_lsys_sys_devio: MessKrnLsysSysDevio,
     /// Kernel: SYS_SDEVIO request (batch I/O).
     pub m_lsys_krn_sys_sdevio: MessLsysKrnSysSdevio,
+    /// Kernel: SYS_VDEVIO request (batch I/O).
+    pub m_lsys_krn_sys_vdevio: MessLsysKrnSysVdevio,
     /// Kernel: SYS_READBIOS request.
     pub m_lsys_krn_readbios: MessLsysKrnReadbios,
     /// Kernel: SYS_SPROF request.
@@ -1254,21 +1258,38 @@ pub struct MessLsysKrnSysDiagctl {
     _padding: [u8; 28],
 }
 
-/// Kernel: SYS_DEVIO request/reply.
+/// Kernel: SYS_DEVIO request.
 ///
-/// C: `mess_krn_lsys_sys_devio` in ipc.h.
-/// I/O port read/write with permission checking.
+/// C: `mess_lsys_krn_sys_devio` — ipc.h:1139-1147
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field   | Type | Offset |
+/// |---------|------|--------|
+/// | request | i32  | 0      |
+/// | port    | i32  | 4      |
+/// | value   | u32  | 8      |
+/// | padding | 44B  | 12     |
+/// ```
+///
+/// C field types are `int`/`uint32_t` — no 64-bit widening applies, so the
+/// layout matches C on both i386 and x86_64. `value` lives at offset 8,
+/// which is `MessageM1::m1i3` (NOT `m1p1` @16 — reading `m1p1` would land
+/// in padding, the same field-mapping bug class documented in
+/// `MessLsysKrnSysIrqctl`). Always use this dedicated variant for SYS_DEVIO.
+///
+/// The kernel reply uses the separate `MessKrnLsysSysDevio` (value@0).
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MessLsysKrnSysDevio {
     /// Request type + direction (_DIO_TYPEMASK | _DIO_DIRMASK).
     pub request: i32,
-    /// I/O port address.
-    pub port: u64,
-    /// Value to write (output) / value read (input, set in reply).
+    /// I/O port address. C: `int port`
+    pub port: i32,
+    /// Value to write (output). C: `uint32_t value`
     pub value: u32,
     /// Padding to 56 bytes (C: union payload size).
-    _padding: [u8; 36],
+    pub _padding: [u8; 44],
 }
 
 impl Default for MessLsysKrnSysDevio {
@@ -1277,7 +1298,81 @@ impl Default for MessLsysKrnSysDevio {
             request: 0,
             port: 0,
             value: 0,
-            _padding: [0u8; 36],
+            _padding: [0u8; 44],
+        }
+    }
+}
+
+/// Kernel: SYS_DEVIO reply.
+///
+/// C: `mess_krn_lsys_sys_devio` — ipc.h:276-280
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field   | Type | Offset |
+/// |---------|------|--------|
+/// | value   | u32  | 0      |
+/// | padding | 52B  | 4      |
+/// ```
+///
+/// Separate reply struct: the kernel writes the input result at offset 0
+/// (i.e. `MessageM1::m1i1`), NOT at `m1p1` @16.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessKrnLsysSysDevio {
+    /// Value read (input). C: `uint32_t value`
+    pub value: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessKrnLsysSysDevio {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            _padding: [0u8; 52],
+        }
+    }
+}
+
+/// Kernel: SYS_VDEVIO request (batch I/O).
+///
+/// C: `mess_lsys_krn_sys_vdevio` — ipc.h:1343-1351
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field    | Type | Offset |
+/// |----------|------|--------|
+/// | request  | i32  | 0      |
+/// | vec_size | i32  | 4      |
+/// | vec_addr | u64  | 8      |
+/// | padding  | 40B  | 16     |
+/// ```
+///
+/// C `vec_addr` is `vir_bytes` (`unsigned long`); widened to u64 per the
+/// project 64-bit convention — offset 8 is unchanged on both i386 and
+/// x86_64. `MessageM1` cannot express this layout (no u64 field at offset
+/// 8); `m1p1` @16 would misparse. Always use this dedicated variant.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessLsysKrnSysVdevio {
+    /// Request type + direction (_DIO_TYPEMASK | _DIO_DIRMASK).
+    pub request: i32,
+    /// Number of (port,value) pairs. C: `int vec_size`
+    pub vec_size: i32,
+    /// User-space pair array. C: `vir_bytes vec_addr` (pv{b,w,l}_pair_t *)
+    pub vec_addr: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLsysKrnSysVdevio {
+    fn default() -> Self {
+        Self {
+            request: 0,
+            vec_size: 0,
+            vec_addr: 0,
+            _padding: [0u8; 40],
         }
     }
 }
