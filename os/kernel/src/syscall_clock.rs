@@ -106,20 +106,20 @@ pub fn dispatch_times(
     msg: &mut Message,
     proc_table: &ProcessTable,
 ) -> KcallResult {
-    // C: do_times.c:28-29 — extract endpoint
+    // C: do_times.c:33-34 — extract endpoint (SELF replacement inline)
     msg.debug_check_m_type_any(&[Syscall::Times as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_times };
     let endpt = req.endpt;
 
-    // C: do_times.c:31 — SELF replacement
+    // C: do_times.c:33-34 — SELF replacement
     let target_endpoint = if endpt == SELF {
         caller.p_endpoint
     } else {
         Endpoint(endpt)
     };
 
-    // C: do_times.c:31-35 — if valid endpoint, read user/sys time
+    // C: do_times.c:35-38 — if valid endpoint, read user/sys time
     let (user_time, sys_time) = if target_endpoint != Endpoint::NONE {
         if let Some(proc_nr) = proc_table.endpoint_to_nr(target_endpoint) {
             // C: do_times.c:36-38 — rp = proc_addr(proc_nr)
@@ -135,11 +135,11 @@ pub fn dispatch_times(
             (0, 0)
         }
     } else {
-        // C: do_times.c:31 — if e_proc_nr == NONE, skip user/sys time
+        // C: do_times.c:35 — if e_proc_nr == NONE, skip user/sys time
         (0, 0)
     };
 
-    // C: do_times.c:39-41 — always fill these fields
+    // C: do_times.c:40-42 — always fill these fields
     let reply = MessKrnLsysSysTimes {
         boot_ticks: clock::get_monotonic(),
         real_ticks: clock::get_realtime(),
@@ -159,7 +159,7 @@ pub fn dispatch_times(
 
 /// Dispatch SYS_SETALARM.
 ///
-/// C: `do_setalarm()` — do_setalarm.c:22-78
+/// C: `do_setalarm()` — do_setalarm.c:22-64 (cause_alarm: 69-76)
 ///
 /// Set or cancel a synchronous alarm timer for a system process.
 /// The alarm fires via `mini_notify(CLOCK, endpoint)`.
@@ -178,25 +178,25 @@ pub fn dispatch_setalarm(
     priv_table: &mut PrivTable,
     clock_state: &mut ClockState,
 ) -> KcallResult {
-    // C: do_setalarm.c:35-37 — extract parameters
+    // C: do_setalarm.c:31-32 — extract parameters
     msg.debug_check_m_type_any(&[Syscall::Setalarm as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_setalarm };
     let exp_time = req.exp_time;
     let use_abs_time = req.abs_time != 0;
 
-    // C: do_setalarm.c:39 — SYS_PROC permission check
+    // C: do_setalarm.c:33 — SYS_PROC permission check
     if !caller_has_sys_proc_with_table(caller, priv_table) {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_setalarm.c:41-42 — get timer from priv structure
+    // C: do_setalarm.c:36 — get timer from priv structure
     let caller_priv_id = match caller.priv_id {
         Some(id) => id,
         None => return KcallResult::Ok(EPERM), // already checked above, defensive
     };
 
-    // C: do_setalarm.c:44-49 — return time left on previous alarm
+    // C: do_setalarm.c:39-46 — return time left on previous alarm
     let uptime = clock_state.uptime();
     let time_left = {
         let kpriv = priv_table.get(caller_priv_id);
@@ -212,16 +212,16 @@ pub fn dispatch_setalarm(
         }
     };
 
-    // C: do_setalarm.c:57-66 — set or reset timer
+    // C: do_setalarm.c:56-62 — set or reset timer
     if !use_abs_time && exp_time == 0 {
-        // Reset alarm: C: reset_kernel_timer(tp)
+        // Reset alarm: C: do_setalarm.c:57 — reset_kernel_timer(tp)
         let kpriv = priv_table.get_mut(caller_priv_id);
         if let Some(kpriv) = kpriv
             && let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
                 clock_state.reset_timer(old_id);
             }
     } else {
-        // Set alarm: C: set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint)
+        // Set alarm: C: do_setalarm.c:61 — set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint)
         let actual_exp_time = if use_abs_time {
             exp_time
         } else {
@@ -248,7 +248,7 @@ pub fn dispatch_setalarm(
         }
     }
 
-    // C: do_setalarm.c:51 — return current uptime + time_left
+    // C: do_setalarm.c:49 — return current uptime + time_left
     let reply = MessLsysKrnSysSetalarm {
         exp_time,
         time_left,
@@ -267,8 +267,8 @@ pub fn dispatch_setalarm(
 /// entry is a SYS_PROC (i.e. has `PrivFlagsBits::SYS_PROC` set).
 ///
 /// Used by `dispatch_setalarm` / `dispatch_vtimer` to gate syscalls
-/// that only system processes may invoke (Minix3: `do_setalarm.c:39`,
-/// `do_vtimer.c:35-36`).
+/// that only system processes may invoke (Minix3: `do_setalarm.c:33`,
+/// `do_vtimer.c:31`).
 ///
 /// Fail-closed: if `priv_id` is `None` we conservatively return `false`
 /// so the syscall is rejected rather than silently allowed.
@@ -334,14 +334,14 @@ pub fn dispatch_stime(
 
 /// Dispatch SYS_SETTIME.
 ///
-/// C: `do_settime()` — do_settime.c:18-57
+/// C: `do_settime()` — do_settime.c:18-58
 ///
 /// Set the real-time clock or adjust time gradually (adjtime).
 ///
 /// # Implementation
 ///
 /// Full implementation matching C `do_settime`:
-/// 1. Validate `clock_id == CLOCK_REALTIME` (C:26-27).
+/// 1. Validate `clock_id == CLOCK_REALTIME` (C:25-26).
 /// 2. If `now == 0`: adjtime mode — convert sec+nsec to ticks and
 ///    call `set_adjtime_delta()` (C:29-34).
 /// 3. If `now != 0`: set-time mode — compute `timediff_ticks` from
@@ -352,7 +352,7 @@ pub fn dispatch_settime(
     msg: &Message,
     clock_state: &mut ClockState,
 ) -> KcallResult {
-    // C: do_settime.c:21-23 — extract parameters
+    // C: do_settime.c:25-52 — parameters read inline (C has no extraction)
     msg.debug_check_m_type_any(&[Syscall::Settime as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_settime };
@@ -361,7 +361,7 @@ pub fn dispatch_settime(
     let sec = req.sec;
     let nsec = req.nsec;
 
-    // C: do_settime.c:26-27 — only CLOCK_REALTIME allowed
+    // C: do_settime.c:25-26 — only CLOCK_REALTIME allowed
     if clock_id != CLOCK_REALTIME {
         return KcallResult::Ok(EINVAL);
     }
@@ -371,7 +371,7 @@ pub fn dispatch_settime(
     // C: do_settime.c:29-34 — adjtime mode (now == 0)
     if now == 0 {
         // Convert delta from seconds + nanoseconds to ticks
-        // C: ticks = (sec * system_hz) + (nsec / (1000000000 / system_hz))
+        // C: do_settime.c:31-32 — ticks = (sec * system_hz) + (nsec / (1000000000 / system_hz))
         let ticks = (sec as i64 * hz as i64 + nsec / (1_000_000_000 / hz as i64)) as i32;
         clock_state.set_adjtime_delta(ticks);
         return KcallResult::Ok(OK);
@@ -385,7 +385,7 @@ pub fn dispatch_settime(
     // C: do_settime.c:40 — timediff_ticks = timediff * system_hz
     let timediff_ticks = timediff * hz as i64;
 
-    // C: do_settime.c:43-47 — prevent negative realtime
+    // C: do_settime.c:43-48 — prevent negative realtime
     if sec <= boottime
         || timediff_ticks < i32::MIN as i64 / 2
         || timediff_ticks > i32::MAX as i64 / 2
@@ -405,7 +405,7 @@ pub fn dispatch_settime(
 
 /// Dispatch SYS_VTIMER.
 ///
-/// C: `do_vtimer()` — do_vtimer.c:21-103
+/// C: `do_vtimer()` — do_vtimer.c:21-74 (vtimer_check: 81-103)
 ///
 /// Set and/or retrieve the value of a process's virtual or profile timer.
 ///
@@ -424,44 +424,46 @@ pub fn dispatch_vtimer(
     priv_table: &PrivTable,
     proc_table: &ProcessTable,
 ) -> KcallResult {
+    // C: do_vtimer.c:33-71 — M2 parameters read inline (VT_WHICH:33,
+    // VT_ENDPT:37, VT_SET:60, VT_VALUE:63/71)
+    msg.debug_check_m_type_any(&[Syscall::Vtimer as i32]);
     let m2 = msg_m2(msg);
-    // C: do_vtimer.c:30-33 — extract parameters
     let which = m2.m2i1;        // VT_WHICH
     let set = m2.m2i2 != 0;     // VT_SET
     let value = m2.m2l1 as u64; // VT_VALUE
     let endpt = m2.m2l2 as i32; // VT_ENDPT
 
-    // C: do_vtimer.c:35-36 — SYS_PROC permission check
+    // C: do_vtimer.c:31 — SYS_PROC permission check
     if !caller_has_sys_proc_with_table(caller, priv_table) {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_vtimer.c:38-39 — validate timer type
+    // C: do_vtimer.c:33-34 — validate timer type
     let vtype = match VtimerType::try_from(which) {
         Ok(v) => v,
         Err(()) => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vtimer.c:41-44 — SELF replacement + endpoint validation
+    // C: do_vtimer.c:37-38 — SELF replacement + endpoint validation
     let target_endpoint = if endpt == SELF {
         caller.p_endpoint
     } else {
         Endpoint(endpt)
     };
 
-    // C: do_vtimer.c:42 — isokendpt check
+    // C: do_vtimer.c:38 — isokendpt check
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vtimer.c:43-44 — rp = proc_addr(proc_nr)
+    // C: do_vtimer.c:39 — rp = proc_addr(proc_nr)
     let target = match proc_table.get(target_nr) {
         Some(rp) => rp,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vtimer.c:46-54 — determine flag and field
+    // C: do_vtimer.c:45-58 — determine flag/field + retrieve old value
     let (pt_flag, old_value) = match vtype {
         VtimerType::Virtual => {
             let flag = MiscFlagsBits::VIRT_TIMER;
@@ -483,13 +485,13 @@ pub fn dispatch_vtimer(
         }
     };
 
-    // C: do_vtimer.c:61-71 — set new value if VT_SET
+    // C: do_vtimer.c:60-69 — set new value if VT_SET
     if set {
-        // C: do_vtimer.c:62 — disable timer first
+        // C: do_vtimer.c:61 — disable timer first
         target.p_misc_flags.clear(pt_flag);
 
         if value > 0 {
-            // C: do_vtimer.c:65-66 — set new timer value + re-enable
+            // C: do_vtimer.c:63-65 — set new timer value + re-enable
             match vtype {
                 VtimerType::Virtual => {
                     target.p_time.virt_left.store(value, Ordering::Release);
@@ -500,7 +502,7 @@ pub fn dispatch_vtimer(
             }
             target.p_misc_flags.set(pt_flag);
         } else {
-            // C: do_vtimer.c:69 — clear timer value
+            // C: do_vtimer.c:66-68 — clear timer value
             match vtype {
                 VtimerType::Virtual => {
                     target.p_time.virt_left.store(0, Ordering::Release);
@@ -512,7 +514,7 @@ pub fn dispatch_vtimer(
         }
     }
 
-    // C: do_vtimer.c:73 — return old value in VT_VALUE
+    // C: do_vtimer.c:71 — return old value in VT_VALUE
     // Write old_value back into the message's m2_l1 field
     // SAFETY: `m_type == SYS_VTIMER` guarantees the M2 format is active.
     // Writing to `m_m2.m2l1` is sound per `#[repr(C)]` union layout.
@@ -587,6 +589,7 @@ mod tests {
     fn test_ksc_vtimer_non_sys_proc_returns_eperm() {
         let mut p = proc_with_priv_id(None);
         let mut msg = Message::default();
+        msg.m_type = Syscall::Vtimer as i32;
         match dispatch_vtimer(&mut p, &mut msg, &PrivTable::new(), &ProcessTable::new()) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),

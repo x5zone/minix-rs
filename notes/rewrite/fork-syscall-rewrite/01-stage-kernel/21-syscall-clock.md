@@ -2,7 +2,7 @@
 
 > **分类**: 系统调用服务
 > **C 源码**: `minix3/minix/kernel/system/do_times.c` (46 行), `do_setalarm.c` (78 行), `do_stime.c` (19 行), `do_settime.c` (58 行), `do_vtimer.c` (103 行)
-> **Rust 实现**: `os/kernel/src/syscall_clock.rs` (648 行), `os/kernel/src/clock.rs` (`ClockState`/`TimerAction`/`TimerEntry`/`TimerId`), `os/kernel/src/proc.rs` (`TimeStats`：`virt_left`/`prof_left`)
+> **Rust 实现**: `os/kernel/src/syscall_clock.rs` (641 行), `os/kernel/src/clock.rs` (`ClockState`/`TimerAction`/`TimerEntry`/`TimerId`), `os/kernel/src/proc.rs` (`TimeStats`：`virt_left`/`prof_left`)
 > **前置**: [15-clock-timer.md](15-clock-timer.md)（`ClockState`/`TimerAction`/`TimerEntry`/`TimerId` 定义），[13-syscall-dispatch.md](13-syscall-dispatch.md)，[22-privilege.md](22-privilege.md)，[17-syscall-process.md](17-syscall-process.md)，[16-smp.md](16-smp.md)
 > **no_std 约束**: `#![no_std]`（`#[cfg(test)]` 除外）；仅依赖 `alloc::collections::{BTreeSet, BTreeMap}`，无外部 crate
 
@@ -138,9 +138,9 @@
 
 ### 2.5 调用关系图
 
-**SETALARM 闹钟生命周期**：用户态 `sys_setalarm` → `dispatch_setalarm` [syscall_clock.rs:180]（SYS_PROC 检查 → 取 `s_alarm_timer` 算 time_left → `set_timer(TimerEntry{NotifyAlarm{endpoint}})` 返回 `TimerId` → 存储 `(entry, id)` 到 `priv.runtime.s_alarm_timer`）→ 时钟中断到期 → `ClockState::collect_expired_timers` [clock.rs] → `pop_expired` → `TimerAction::NotifyAlarm{endpoint}` → `mini_notify(CLOCK, endpoint)`（对应 C `cause_alarm` do_setalarm.c:75）。
+**SETALARM 闹钟生命周期**：用户态 `sys_setalarm` → `dispatch_setalarm` [syscall_clock.rs:175]（SYS_PROC 检查 → 取 `s_alarm_timer` 算 time_left → `set_timer(TimerEntry{NotifyAlarm{endpoint}})` 返回 `TimerId` → 存储 `(entry, id)` 到 `priv.runtime.s_alarm_timer`）→ 时钟中断到期 → `ClockState::collect_expired_timers` [clock.rs] → `pop_expired` → `TimerAction::NotifyAlarm{endpoint}` → `mini_notify(CLOCK, endpoint)`（对应 C `cause_alarm` do_setalarm.c:75）。
 
-**VTIMER 到期生命周期**：用户态 `sys_vtimer(VT_VIRTUAL, VT_SET, value, endpt)` → `dispatch_vtimer` [syscall_clock.rs:432]（SYS_PROC 检查 → `store(value)` 到 `virt_left` + set `VIRT_TIMER` → 返回旧值）→ 时钟中断 tick → tick handler [clock.rs] → `tick_virt_timer()` CAS 递减 `virt_left` [proc.rs:610] → 递减到 0 → SIGVTALRM（对应 C `vtimer_check` do_vtimer.c:91-95）。
+**VTIMER 到期生命周期**：用户态 `sys_vtimer(VT_VIRTUAL, VT_SET, value, endpt)` → `dispatch_vtimer` [syscall_clock.rs:421]（SYS_PROC 检查 → `store(value)` 到 `virt_left` + set `VIRT_TIMER` → 返回旧值）→ 时钟中断 tick → tick handler [clock.rs] → `tick_virt_timer()` CAS 递减 `virt_left` [proc.rs:693] → 递减到 0 → SIGVTALRM（对应 C `vtimer_check` do_vtimer.c:91-95）。
 
 ---
 
@@ -155,7 +155,7 @@
 - 如果用 `BTreeMap<u64, TimerEntry>`（exp_time 作 key）：同 exp_time 的多 timer 会覆盖——C 链表支持同 exp_time，内核场景需要。
 - 所以用 `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>` dual-index（与 15-clock-timer D2 一致）：BTreeSet 按 (exp_time, id) 排序支持到期扫描，BTreeMap 按 `TimerId` O(log N) 查找支持 `reset_timer(id)`。
 
-**实现**：`clock_state.set_timer(entry) -> TimerId` / `reset_timer(id)` (syscall_clock.rs:256,230)。`s_alarm_timer: Option<(TimerEntry, TimerId)>` 存储 id 用于后续 reset。
+**实现**：`clock_state.set_timer(entry) -> TimerId` / `reset_timer(id)` (syscall_clock.rs:246,221)。`s_alarm_timer: Option<(TimerEntry, TimerId)>` 存储 id 用于后续 reset。
 
 ### D2: cause_alarm 回调 — 函数指针 vs TimerAction enum
 
@@ -164,7 +164,7 @@
 - 如果用 trait object `Box<dyn TimerCallback>`：堆分配 + 动态分发，no_std 下需 alloc 且增加间接调用开销。
 - 所以用 `TimerAction` enum（与 15-clock-timer D6 一致）：`NotifyAlarm { endpoint }` 变体携带 endpoint，enum 分发编译期穷尽，无堆分配。
 
-**实现**：`TimerAction::NotifyAlarm { endpoint: caller.p_endpoint }` (syscall_clock.rs:243-245)。到期时 ClockState 弹出 action，dispatch 到 `mini_notify(CLOCK, endpoint)`。
+**实现**：`TimerAction::NotifyAlarm { endpoint: caller.p_endpoint }` (syscall_clock.rs:231-236)。到期时 ClockState 弹出 action，dispatch 到 `mini_notify(CLOCK, endpoint)`。
 
 ### D3: VT_WHICH 表达 — 整数 vs VtimerType enum
 
@@ -173,7 +173,7 @@
 - 如果用 `const` 常量：仍是整数，无类型安全，函数参数无法区分"任意 i32"与"vtimer 类型"。
 - 所以用 `VtimerType` enum + `TryFrom<i32>`：编译期穷尽，`try_from(which)` 返回 `Result`，非法值 `Err(()) → EINVAL`。值 `Virtual=1, Prof=2` 对齐 C `com.h:420-421`。
 
-**实现**：`enum VtimerType { Virtual=1, Prof=2 }` + `impl TryFrom<i32>` (syscall_clock.rs:46-65)。
+**实现**：`enum VtimerType { Virtual=1, Prof=2 }` + `impl TryFrom<i32>` (syscall_clock.rs:43-60)。
 
 ### D4: SETTIME adjtime — 删除 vs 保留
 
@@ -182,7 +182,7 @@
 - 如果保留但简化（不实现渐变逻辑）：`adjtime_delta` 字段无消费者，等于死代码。
 - 所以保留完整 adjtime 模式：`set_adjtime_delta(ticks)` 写入 ClockState，渐变逻辑在 15-clock-timer 的 tick handler 消费 delta。
 
-**实现**：`clock_state.set_adjtime_delta(ticks)` (syscall_clock.rs:387)，ticks = `sec*hz + nsec/(1e9/hz)` (do_settime.c:31-32)。
+**实现**：`clock_state.set_adjtime_delta(ticks)` (syscall_clock.rs:376)，ticks = `sec*hz + nsec/(1e9/hz)` (do_settime.c:31-32)。
 
 ### D5: ClockState 访问 — 全局变量 vs 参数传递（核心 anti-translate）
 
@@ -192,7 +192,7 @@
 - 如果用 trait + 全局单例：仍是全局，测试需替换全局状态，并发不安全。
 - 所以用参数传递：`dispatch_setalarm(caller, msg, priv_table: &mut PrivTable, clock_state: &mut ClockState)` 显式传入状态。测试可构造 `ClockState::new()` + `PrivTable::new()` 注入，验证 set/reset 行为。
 
-**实现**：所有 dispatch 函数接受 `&mut ClockState` / `&mut PrivTable` / `&ProcessTable` 参数 (syscall_clock.rs:180-185, 330-334, 361-365, 432-437)。`caller_has_sys_proc_with_table(caller, priv_table)` 同样参数传入 (syscall_clock.rs:293)。
+**实现**：所有 dispatch 函数接受 `&mut ClockState` / `&mut PrivTable` / `&ProcessTable` 参数 (syscall_clock.rs:175-180, 319-324, 350-355, 421-426)。`caller_has_sys_proc_with_table(caller, priv_table)` 同样参数传入 (syscall_clock.rs:282)。
 
 **与 redox 对比**：redox 用 `time::monotonic` 全局接口 + `scheme::time` 用户态驱动；minix-rs 显式传入 `ClockState` 更可测，对齐 C 的内核通知模型。
 
@@ -202,16 +202,16 @@
 - 如果用 `Cell<u64>`：`Cell` 非 `Sync`，无法跨 CPU 共享（SMP 内核硬约束），`&KProcess` 无法传递到其他 CPU。
 - 如果用 `u64` + 锁：vtimer 字段高频读写（每个 tick 递减），锁开销大且 vtimer_check 注释 (do_vtimer.c:83-88) 明确"无需锁"。
 - 如果用 `RefCell<u64>`：同 Cell，非 Sync。
-- 所以用 `AtomicU64`：`Sync` + 无锁，`compare_exchange_weak` 递减 (proc.rs:617,633)，SMP 安全。C 靠注释约定"clock handler 只递减"的并发安全，Rust 用原子操作编译期保证。
+- 所以用 `AtomicU64`：`Sync` + 无锁，`compare_exchange_weak` 递减 (proc.rs:700,716)，SMP 安全。C 靠注释约定"clock handler 只递减"的并发安全，Rust 用原子操作编译期保证。
 
-**实现**：`TimeStats.virt_left: AtomicU64` / `prof_left: AtomicU64` (proc.rs:588-589)。dispatch_vtimer 用 `load(Ordering::Relaxed)` 读 / `store(Ordering::Release)` 写 (syscall_clock.rs:480,489,506,509,517,520)。
+**实现**：`TimeStats.virt_left: AtomicU64` / `prof_left: AtomicU64` (proc.rs:671-672)。dispatch_vtimer 用 `load(Ordering::Relaxed)` 读 / `store(Ordering::Release)` 写 (syscall_clock.rs:469,478,497,500,508,511)。
 
 ### D7: vtimer_check — standalone 函数 vs tick-internal
 
 **假设性推理**：
 - 如果保留 C 的 standalone `vtimer_check(rp)` 函数 (do_vtimer.c:81-103)：需在 21 文档重复实现，但 vtimer_check 由时钟中断调用，属于 15-clock-timer 的 tick handler 职责。21 是用户态接口（set/query），15 是内核 tick 机制（递减/到期），职责分离。
 - 如果在 21 实现 vtimer_check：跨文档职责混乱，21 依赖 15 的 tick 调度。
-- 所以 vtimer_check 语义内联到 15-clock-timer 的 tick handler（与 15 D11 一致）：`tick_virt_timer()`/`tick_prof_timer()` 递减并返回是否到期 (proc.rs:610,626)，clock.rs 调用并处理 SIGVTALRM/SIGPROF。21 仅负责 set/query 接口。
+- 所以 vtimer_check 语义内联到 15-clock-timer 的 tick handler（与 15 D11 一致）：`tick_virt_timer()`/`tick_prof_timer()` 递减并返回是否到期 (proc.rs:693,709)，clock.rs 调用并处理 SIGVTALRM/SIGPROF。21 仅负责 set/query 接口。
 
 **实现**：21 文档 Ch4 标注 vtimer_check 在 15-clock-timer 实现（跨文档衔接），Ch6 参见引用 15。
 
@@ -226,18 +226,18 @@
 > 设计决策 D3：用 enum + `TryFrom<i32>` 替代 C 的整数比较，值严格对齐 `com.h:420-421`。
 
 ```rust
-// os/kernel/src/syscall_clock.rs:41-65
+// os/kernel/src/syscall_clock.rs:43-60
 
-/// Virtual timer type. C: `VT_VIRTUAL` / `VT_PROF` — com.h:420-421
+/// Virtual timer type. C: `VT_VIRTUAL` / `VT_PROF` — com.h:420-421.
 ///
-/// D3: enum replaces C's integer `VT_WHICH` for type safety.
-/// Values align with C: `VT_VIRTUAL = 1`, `VT_PROF = 2` (com.h:420-421).
+/// Values strictly align with C: `VT_VIRTUAL = 1`, `VT_PROF = 2`.
+/// `#[repr(i32)]` preserves the ABI for IPC message compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum VtimerType {
-    /// 虚拟定时器（仅计用户态时间）。C: `VT_VIRTUAL = 1` (com.h:420)
+    /// Virtual timer (counts user-mode time). C: `VT_VIRTUAL = 1`
     Virtual = 1,
-    /// 性能定时器（计用户+系统时间）。C: `VT_PROF = 2` (com.h:421)
+    /// Profile timer (counts user + system time). C: `VT_PROF = 2`
     Prof = 2,
 }
 
@@ -246,9 +246,9 @@ impl TryFrom<i32> for VtimerType {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::Virtual),   // 对齐 C VT_VIRTUAL
-            2 => Ok(Self::Prof),      // 对齐 C VT_PROF
-            _ => Err(()),             // 非法值 → EINVAL
+            1 => Ok(Self::Virtual),
+            2 => Ok(Self::Prof),
+            _ => Err(()),
         }
     }
 }
@@ -259,48 +259,75 @@ impl TryFrom<i32> for VtimerType {
 ### 4.2 dispatch_times — 时间查询（A 组）
 
 ```rust
-// os/kernel/src/syscall_clock.rs:108-163
+// os/kernel/src/syscall_clock.rs:104-158
 
-/// Dispatch SYS_TIMES. C: `do_times()` — do_times.c:22-44
+/// Dispatch SYS_TIMES.
+///
+/// C: `do_times()` — do_times.c:22-44
+///
+/// Retrieve accounting information for a process.
+///
+/// # Implementation
+///
+/// Full implementation matching C `do_times`:
+/// 1. SELF replacement: `endpt == SELF` → use `caller.p_endpoint`.
+/// 2. Endpoint validation via `ProcessTable::endpoint_to_nr()`.
+/// 3. If endpoint is valid and not NONE: read `p_user_time` + `p_sys_time`.
+/// 4. Always read `get_monotonic()`, `get_realtime()`, `get_boottime()`.
+/// 5. Pack into `MessKrnLsysSysTimes` reply overlay.
 pub fn dispatch_times(
     caller: &mut KProcess,
     msg: &mut Message,
     proc_table: &ProcessTable,
 ) -> KcallResult {
-    // C: do_times.c:28-29 — 提取 endpoint
+    // C: do_times.c:33-34 — extract endpoint (SELF replacement inline)
+    msg.debug_check_m_type_any(&[Syscall::Times as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_times };
     let endpt = req.endpt;
 
-    // C: do_times.c:33-34 — SELF 替换
+    // C: do_times.c:33-34 — SELF replacement
     let target_endpoint = if endpt == SELF {
         caller.p_endpoint
     } else {
         Endpoint(endpt)
     };
 
-    // C: do_times.c:35-38 — 若 endpoint 有效，读 user/sys time
+    // C: do_times.c:35-38 — if valid endpoint, read user/sys time
     let (user_time, sys_time) = if target_endpoint != Endpoint::NONE {
         if let Some(proc_nr) = proc_table.endpoint_to_nr(target_endpoint) {
+            // C: do_times.c:36-38 — rp = proc_addr(proc_nr)
             if let Some(rp) = proc_table.get(proc_nr) {
                 (
-                    // D6: AtomicU64 load(Relaxed) — 单字段读原子，对应 C 并发注释 do_times.c:29-32
                     rp.p_time.user_time.load(Ordering::Relaxed),
                     rp.p_time.sys_time.load(Ordering::Relaxed),
                 )
-            } else { (0, 0) }
-        } else { (0, 0) }
-    } else { (0, 0) };
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        }
+    } else {
+        // C: do_times.c:35 — if e_proc_nr == NONE, skip user/sys time
+        (0, 0)
+    };
 
-    // C: do_times.c:40-42 — 无条件填三时钟源
+    // C: do_times.c:40-42 — always fill these fields
     let reply = MessKrnLsysSysTimes {
-        boot_ticks: clock::get_monotonic(),   // do_times.c:40 — monotonic
-        real_ticks: clock::get_realtime(),    // do_times.c:41 — realtime
+        boot_ticks: clock::get_monotonic(),
+        real_ticks: clock::get_realtime(),
         user_time,
         system_time: sys_time,
-        boot_time: clock::get_boottime(),     // do_times.c:42 — boottime
+        boot_time: clock::get_boottime(),
         _padding: [0u8; 16],
     };
-    unsafe { msg.m_u.m_krn_lsys_sys_times = reply; }
+
+    // Write reply into message
+    msg.debug_check_m_type_any(&[Syscall::Times as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    msg.m_u.m_krn_lsys_sys_times = reply;
+
     KcallResult::Ok(OK)
 }
 ```
@@ -310,158 +337,225 @@ pub fn dispatch_times(
 ### 4.3 dispatch_setalarm — 同步闹钟（B 组）
 
 ```rust
-// os/kernel/src/syscall_clock.rs:180-275
+// os/kernel/src/syscall_clock.rs:175-264
 
-/// Dispatch SYS_SETALARM. C: `do_setalarm()` — do_setalarm.c:22-64
+/// Dispatch SYS_SETALARM.
+///
+/// C: `do_setalarm()` — do_setalarm.c:22-64 (cause_alarm: 69-76)
+///
+/// Set or cancel a synchronous alarm timer for a system process.
+/// The alarm fires via `mini_notify(CLOCK, endpoint)`.
+///
+/// # Implementation
+///
+/// Full implementation matching C `do_setalarm`:
+/// 1. SYS_PROC permission check via PrivTable.
+/// 2. Get `s_alarm_timer` from caller's KPriv.
+/// 3. Calculate time_left on previous alarm.
+/// 4. Return time_left and current uptime.
+/// 5. Set or reset timer in ClockState.
 pub fn dispatch_setalarm(
     caller: &mut KProcess,
     msg: &mut Message,
-    priv_table: &mut PrivTable,    // D5: 参数传入，非全局 priv()
-    clock_state: &mut ClockState,  // D5: 参数传入，非全局时钟
+    priv_table: &mut PrivTable,
+    clock_state: &mut ClockState,
 ) -> KcallResult {
-    // C: do_setalarm.c:31-32 — 提取参数
+    // C: do_setalarm.c:31-32 — extract parameters
+    msg.debug_check_m_type_any(&[Syscall::Setalarm as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_setalarm };
     let exp_time = req.exp_time;
     let use_abs_time = req.abs_time != 0;
 
-    // C: do_setalarm.c:33 — SYS_PROC 权限检查
+    // C: do_setalarm.c:33 — SYS_PROC permission check
     if !caller_has_sys_proc_with_table(caller, priv_table) {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_setalarm.c:36 — 从 priv 结构取 timer
+    // C: do_setalarm.c:36 — get timer from priv structure
     let caller_priv_id = match caller.priv_id {
         Some(id) => id,
-        None => return KcallResult::Ok(EPERM),
+        None => return KcallResult::Ok(EPERM), // already checked above, defensive
     };
 
-    // C: do_setalarm.c:39-46 — 返回上次闹钟剩余 time_left
-    let uptime = clock_state.uptime();   // C: get_monotonic()
+    // C: do_setalarm.c:39-46 — return time left on previous alarm
+    let uptime = clock_state.uptime();
     let time_left = {
         let kpriv = priv_table.get(caller_priv_id);
         if let Some(kpriv) = kpriv {
             match &kpriv.runtime.s_alarm_timer {
-                None => TMR_NEVER,                          // tmr_is_set false
+                None => TMR_NEVER,
                 Some((timer, _id)) => {
-                    if timer.exp_time > uptime {            // tmr_is_first
-                        timer.exp_time - uptime
-                    } else { 0 }                            // expired
+                    timer.exp_time.saturating_sub(uptime)
                 }
             }
-        } else { TMR_NEVER }
+        } else {
+            TMR_NEVER
+        }
     };
 
-    // C: do_setalarm.c:56-62 — set 或 reset timer
+    // C: do_setalarm.c:56-62 — set or reset timer
     if !use_abs_time && exp_time == 0 {
-        // 取消闹钟: C: reset_kernel_timer(tp) (do_setalarm.c:57)
+        // Reset alarm: C: do_setalarm.c:57 — reset_kernel_timer(tp)
         let kpriv = priv_table.get_mut(caller_priv_id);
-        if let Some(kpriv) = kpriv {
-            if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-                clock_state.reset_timer(old_id);   // D1: 用 TimerId reset，非指针
+        if let Some(kpriv) = kpriv
+            && let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
+                clock_state.reset_timer(old_id);
             }
-        }
     } else {
-        // 设置闹钟: C: set_kernel_timer(tp, exp_time, cause_alarm, endpoint) (do_setalarm.c:61)
-        let actual_exp_time = if use_abs_time { exp_time } else { uptime + exp_time };
+        // Set alarm: C: do_setalarm.c:61 — set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint)
+        let actual_exp_time = if use_abs_time {
+            exp_time
+        } else {
+            uptime + exp_time
+        };
+
         let timer = TimerEntry {
             exp_time: actual_exp_time,
-            action: TimerAction::NotifyAlarm {   // D2: enum 替代函数指针 cause_alarm
+            action: TimerAction::NotifyAlarm {
                 endpoint: caller.p_endpoint,
             },
         };
+
+        // Remove existing timer if any, then set the new one.
+        // D3: set_timer returns a TimerId that must be stored for later
+        // reset_timer(id) (15-clock-timer.md §4.4).
         let kpriv = priv_table.get_mut(caller_priv_id);
         if let Some(kpriv) = kpriv {
             if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-                clock_state.reset_timer(old_id);   // 先取消旧 timer
+                clock_state.reset_timer(old_id);
             }
-            let id = clock_state.set_timer(timer.clone());  // D1: 返回 TimerId
-            kpriv.runtime.s_alarm_timer = Some((timer, id)); // 存储 (entry, id)
+            let id = clock_state.set_timer(timer.clone());
+            kpriv.runtime.s_alarm_timer = Some((timer, id));
         }
     }
 
-    // C: do_setalarm.c:49 — 返回当前 uptime + time_left
+    // C: do_setalarm.c:49 — return current uptime + time_left
     let reply = MessLsysKrnSysSetalarm {
-        exp_time, time_left, uptime,
+        exp_time,
+        time_left,
+        uptime,
         abs_time: if use_abs_time { 1 } else { 0 },
         _padding: [0u8; 28],
     };
-    unsafe { msg.m_u.m_lsys_krn_sys_setalarm = reply; }
+    msg.debug_check_m_type_any(&[Syscall::Setalarm as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    msg.m_u.m_lsys_krn_sys_setalarm = reply;
+
     KcallResult::Ok(OK)
 }
 ```
 
 **设计要点**（D1/D2/D5 见 Ch3）：
-- time_left 三分支（`Option::None`→`TMR_NEVER`、未到期→差值、到期→0）对应 do_setalarm.c:40-46；`Option` 替代 C `tmr_is_set(tp)` 标志检查
+- time_left 对应 do_setalarm.c:40-46 三分支——`Option` 替代 C `tmr_is_set(tp)` 标志检查（`None`→`TMR_NEVER`）；未到期/到期两分支合并为 `saturating_sub`（`exp_time < uptime` → 0，语义等价 C 的 `tmr_is_first` 判断：未到期 `exp_time - uptime`、到期 0）
 - `cause_alarm` 对应：C `cause_alarm(proc_nr_e)` (do_setalarm.c:69-76) → `mini_notify(proc_addr(CLOCK), proc_nr_e)` (do_setalarm.c:75)；Rust 用 `TimerAction::NotifyAlarm { endpoint }` 携带 endpoint，ClockState 到期时 dispatch 到通知
 
 ### 4.4 dispatch_stime + dispatch_settime — 时间设置（C 组）
 
 ```rust
-// os/kernel/src/syscall_clock.rs:330-344
+// os/kernel/src/syscall_clock.rs:319-333
 
-/// Dispatch SYS_STIME. C: `do_stime()` — do_stime.c:15-18
+/// Dispatch SYS_STIME.
+///
+/// C: `do_stime()` — do_stime.c:15-18
+///
+/// Set the boot time (Unix timestamp when the system was booted).
+///
+/// # Implementation
+///
+/// Full implementation matching C `do_stime`:
+/// 1. Extract `boot_time` from `m_lsys_krn_sys_stime.boot_time`.
+/// 2. Call `ClockState::set_boottime()` which updates both the
+///    internal field and the global `CLOCK_BOOTTIME` atomic.
+/// 3. Return OK.
 pub fn dispatch_stime(
     _caller: &mut KProcess,
     msg: &Message,
-    clock_state: &mut ClockState,   // D5: 参数传入
+    clock_state: &mut ClockState,
 ) -> KcallResult {
-    // C: do_stime.c:17 — set_boottime(boot_time)
+    // C: do_stime.c:17 — set_boottime(m_ptr->m_lsys_krn_sys_stime.boot_time)
+    msg.debug_check_m_type_any(&[Syscall::Stime as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_stime };
     let boot_time = req.boot_time;
+
     clock_state.set_boottime(boot_time);
+
     KcallResult::Ok(OK)
 }
 ```
 
 ```rust
-// os/kernel/src/syscall_clock.rs:361-415
+// os/kernel/src/syscall_clock.rs:350-404
 
-/// Dispatch SYS_SETTIME. C: `do_settime()` — do_settime.c:18-57
+/// Dispatch SYS_SETTIME.
+///
+/// C: `do_settime()` — do_settime.c:18-58
+///
+/// Set the real-time clock or adjust time gradually (adjtime).
+///
+/// # Implementation
+///
+/// Full implementation matching C `do_settime`:
+/// 1. Validate `clock_id == CLOCK_REALTIME` (C:25-26).
+/// 2. If `now == 0`: adjtime mode — convert sec+nsec to ticks and
+///    call `set_adjtime_delta()` (C:29-34).
+/// 3. If `now != 0`: set-time mode — compute `timediff_ticks` from
+///    `sec - boottime`, validate range, and call `set_realtime()`
+///    (C:35-57). If boottime was wrong, correct it.
 pub fn dispatch_settime(
     _caller: &mut KProcess,
     msg: &Message,
-    clock_state: &mut ClockState,   // D5: 参数传入
+    clock_state: &mut ClockState,
 ) -> KcallResult {
+    // C: do_settime.c:25-52 — parameters read inline (C has no extraction)
+    msg.debug_check_m_type_any(&[Syscall::Settime as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let req = unsafe { &msg.m_u.m_lsys_krn_sys_settime };
     let now = req.now;
     let clock_id = req.clock_id;
     let sec = req.sec;
     let nsec = req.nsec;
 
-    // C: do_settime.c:25-26 — 仅 CLOCK_REALTIME 可改
+    // C: do_settime.c:25-26 — only CLOCK_REALTIME allowed
     if clock_id != CLOCK_REALTIME {
         return KcallResult::Ok(EINVAL);
     }
 
     let hz = clock_state.system_hz();
 
-    // C: do_settime.c:29-34 — adjtime 模式 (now == 0)
+    // C: do_settime.c:29-34 — adjtime mode (now == 0)
     if now == 0 {
-        // D4: 保留 POSIX adjtime 语义
+        // Convert delta from seconds + nanoseconds to ticks
+        // C: do_settime.c:31-32 — ticks = (sec * system_hz) + (nsec / (1000000000 / system_hz))
         let ticks = (sec as i64 * hz as i64 + nsec / (1_000_000_000 / hz as i64)) as i32;
         clock_state.set_adjtime_delta(ticks);
         return KcallResult::Ok(OK);
     }
 
-    // C: do_settime.c:37-57 — set time 模式 (now != 0)
+    // C: do_settime.c:35-57 — set time mode (now != 0)
     let boottime = clock_state.boottime();
+
+    // C: do_settime.c:39 — timediff = sec - boottime
     let timediff = sec as i64 - boottime as i64;
+    // C: do_settime.c:40 — timediff_ticks = timediff * system_hz
     let timediff_ticks = timediff * hz as i64;
 
-    // C: do_settime.c:43-48 — 防止 realtime 负值
+    // C: do_settime.c:43-48 — prevent negative realtime
     if sec <= boottime
         || timediff_ticks < i32::MIN as i64 / 2
         || timediff_ticks > i32::MAX as i64 / 2
     {
-        // boottime 可能错误，修正它
+        // C: boottime was likely wrong, try to correct it
         clock_state.set_boottime(sec);
         clock_state.set_realtime(1);
         return KcallResult::Ok(OK);
     }
 
-    // C: do_settime.c:52-55 — 计算 new realtime
+    // C: do_settime.c:51-53 — calculate new realtime in ticks
     let newclock = (timediff_ticks + nsec / (1_000_000_000 / hz as i64)) as u64;
     clock_state.set_realtime(newclock);
+
     KcallResult::Ok(OK)
 }
 ```
@@ -472,104 +566,133 @@ pub fn dispatch_settime(
 
 ### 4.5 dispatch_vtimer — 虚拟/性能定时器（D 组）
 
-> 展示真实 `AtomicU64` 代码（无占位符）。`virt_left`/`prof_left` 是 `AtomicU64` (proc.rs:588-589)，SMP 安全。
+> 展示真实 `AtomicU64` 代码（无占位符）。`virt_left`/`prof_left` 是 `AtomicU64` (proc.rs:671-672)，SMP 安全。
 
 ```rust
-// os/kernel/src/syscall_clock.rs:432-535
+// os/kernel/src/syscall_clock.rs:421-522
 
-/// Dispatch SYS_VTIMER. C: `do_vtimer()` — do_vtimer.c:21-74
+/// Dispatch SYS_VTIMER.
+///
+/// C: `do_vtimer()` — do_vtimer.c:21-74 (vtimer_check: 81-103)
+///
+/// Set and/or retrieve the value of a process's virtual or profile timer.
+///
+/// # Implementation
+///
+/// Full implementation matching C `do_vtimer`:
+/// 1. SYS_PROC permission check via PrivTable.
+/// 2. Validate timer type (VT_VIRTUAL=1 / VT_PROF=2).
+/// 3. SELF replacement + endpoint validation via ProcessTable.
+/// 4. Retrieve old value from `p_virt_left` / `p_prof_left`.
+/// 5. If VT_SET: write new value and set/clear MiscFlags.
+/// 6. Return old value in reply message.
 pub fn dispatch_vtimer(
     caller: &mut KProcess,
     msg: &mut Message,
-    priv_table: &PrivTable,     // D5: 参数传入
-    proc_table: &ProcessTable,  // D5: 参数传入
+    priv_table: &PrivTable,
+    proc_table: &ProcessTable,
 ) -> KcallResult {
+    // C: do_vtimer.c:33-71 — M2 parameters read inline (VT_WHICH:33,
+    // VT_ENDPT:37, VT_SET:60, VT_VALUE:63/71)
+    msg.debug_check_m_type_any(&[Syscall::Vtimer as i32]);
     let m2 = msg_m2(msg);
-    // C: do_vtimer.c:30-33 — 提取参数
-    let which = m2.m2i1;            // VT_WHICH
-    let set = m2.m2i2 != 0;         // VT_SET
-    let value = m2.m2l1 as u64;     // VT_VALUE
-    let endpt = m2.m2l2 as i32;     // VT_ENDPT
+    let which = m2.m2i1;        // VT_WHICH
+    let set = m2.m2i2 != 0;     // VT_SET
+    let value = m2.m2l1 as u64; // VT_VALUE
+    let endpt = m2.m2l2 as i32; // VT_ENDPT
 
-    // C: do_vtimer.c:31 — SYS_PROC 权限检查
+    // C: do_vtimer.c:31 — SYS_PROC permission check
     if !caller_has_sys_proc_with_table(caller, priv_table) {
         return KcallResult::Ok(EPERM);
     }
 
-    // C: do_vtimer.c:33-34 — 验证定时器类型
-    let vtype = match VtimerType::try_from(which) {  // D3: enum 替代整数比较
+    // C: do_vtimer.c:33-34 — validate timer type
+    let vtype = match VtimerType::try_from(which) {
         Ok(v) => v,
         Err(()) => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vtimer.c:37-39 — SELF 替换 + endpoint 校验
+    // C: do_vtimer.c:37-38 — SELF replacement + endpoint validation
     let target_endpoint = if endpt == SELF {
         caller.p_endpoint
     } else {
         Endpoint(endpt)
     };
+
+    // C: do_vtimer.c:38 — isokendpt check
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
+
+    // C: do_vtimer.c:39 — rp = proc_addr(proc_nr)
     let target = match proc_table.get(target_nr) {
         Some(rp) => rp,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vtimer.c:45-58 — 确定 flag + 读取旧值
-    // D6: 真实 AtomicU64 代码，无占位符
+    // C: do_vtimer.c:45-58 — determine flag/field + retrieve old value
     let (pt_flag, old_value) = match vtype {
         VtimerType::Virtual => {
             let flag = MiscFlagsBits::VIRT_TIMER;
             let old = if target.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER) {
-                target.p_time.virt_left.load(Ordering::Relaxed)   // 真实 AtomicU64 读
-            } else { 0 };
+                target.p_time.virt_left.load(Ordering::Relaxed)
+            } else {
+                0
+            };
             (flag, old)
         }
         VtimerType::Prof => {
             let flag = MiscFlagsBits::PROF_TIMER;
             let old = if target.p_misc_flags.is_set(MiscFlagsBits::PROF_TIMER) {
-                target.p_time.prof_left.load(Ordering::Relaxed)   // 真实 AtomicU64 读
-            } else { 0 };
+                target.p_time.prof_left.load(Ordering::Relaxed)
+            } else {
+                0
+            };
             (flag, old)
         }
     };
 
-    // C: do_vtimer.c:60-69 — 若 VT_SET 则设置新值
+    // C: do_vtimer.c:60-69 — set new value if VT_SET
     if set {
-        target.p_misc_flags.clear(pt_flag);   // C: do_vtimer.c:61 先禁用
+        // C: do_vtimer.c:61 — disable timer first
+        target.p_misc_flags.clear(pt_flag);
+
         if value > 0 {
-            // C: do_vtimer.c:64-66 — 设置新值 + 重新启用
+            // C: do_vtimer.c:63-65 — set new timer value + re-enable
             match vtype {
                 VtimerType::Virtual => {
-                    target.p_time.virt_left.store(value, Ordering::Release);  // 真实 AtomicU64 写
+                    target.p_time.virt_left.store(value, Ordering::Release);
                 }
                 VtimerType::Prof => {
-                    target.p_time.prof_left.store(value, Ordering::Release);  // 真实 AtomicU64 写
+                    target.p_time.prof_left.store(value, Ordering::Release);
                 }
             }
             target.p_misc_flags.set(pt_flag);
         } else {
-            // C: do_vtimer.c:67-68 — 清除定时器值
+            // C: do_vtimer.c:66-68 — clear timer value
             match vtype {
                 VtimerType::Virtual => {
-                    target.p_time.virt_left.store(0, Ordering::Release);  // 真实 AtomicU64 写
+                    target.p_time.virt_left.store(0, Ordering::Release);
                 }
                 VtimerType::Prof => {
-                    target.p_time.prof_left.store(0, Ordering::Release);  // 真实 AtomicU64 写
+                    target.p_time.prof_left.store(0, Ordering::Release);
                 }
             }
         }
     }
 
-    // C: do_vtimer.c:71 — 返回旧值到 VT_VALUE
-    unsafe { msg.m_u.m_m2.m2l1 = old_value as i64; }
+    // C: do_vtimer.c:71 — return old value in VT_VALUE
+    // Write old_value back into the message's m2_l1 field
+    // SAFETY: `m_type == SYS_VTIMER` guarantees the M2 format is active.
+    // Writing to `m_m2.m2l1` is sound per `#[repr(C)]` union layout.
+    msg.m_u.m_m2.m2l1 = old_value as i64;
+
     KcallResult::Ok(OK)
 }
 ```
 
-**virt_left/prof_left 定义**（跨文档引用）：`TimeStats` (proc.rs:583-590) 的 `virt_left`/`prof_left` 字段为 `AtomicU64` (proc.rs:588-589)，对应 C `p_virt_left` (do_vtimer.c:47) / `p_prof_left` (do_vtimer.c:50)。完整结构定义见 15-clock-timer。
+**virt_left/prof_left 定义**（跨文档引用）：`TimeStats` (proc.rs:668-672) 的 `virt_left`/`prof_left` 字段为 `AtomicU64` (proc.rs:671-672)，对应 C `p_virt_left` (do_vtimer.c:47) / `p_prof_left` (do_vtimer.c:50)。完整结构定义见 15-clock-timer。
 
 **设计要点**（D3/D6 见 Ch3）：
 - MiscFlagsBits bitflags：`is_set`/`set`/`clear` 替代 C 裸位操作 `p_misc_flags & pt_flag` (do_vtimer.c:54,61,65)
@@ -579,22 +702,27 @@ pub fn dispatch_vtimer(
 ### 4.6 caller_has_sys_proc_with_table — 权限检查（E 组）
 
 ```rust
-// os/kernel/src/syscall_clock.rs:293-301
+// os/kernel/src/syscall_clock.rs:282-290
 
-/// 返回 true 当且仅当 caller.priv_id 是 Some 且对应 KPriv 是 SYS_PROC。
+/// Returns true iff `caller.priv_id` is `Some` AND the matching KPriv
+/// entry is a SYS_PROC (i.e. has `PrivFlagsBits::SYS_PROC` set).
 ///
-/// C: do_setalarm.c:33, do_vtimer.c:31 — `priv(caller)->s_flags & SYS_PROC`
+/// Used by `dispatch_setalarm` / `dispatch_vtimer` to gate syscalls
+/// that only system processes may invoke (Minix3: `do_setalarm.c:33`,
+/// `do_vtimer.c:31`).
 ///
-/// D5: 接受 &PrivTable 参数（非全局 priv()），使测试可注入
-/// PrivTable::new() 覆盖 EPERM 路径。
+/// Fail-closed: if `priv_id` is `None` we conservatively return `false`
+/// so the syscall is rejected rather than silently allowed.
 ///
-/// Fail-closed: 若 priv_id 为 None，保守返回 false。
-pub(crate) fn caller_has_sys_proc_with_table(
-    caller: &KProcess,
-    priv_table: &PrivTable,
-) -> bool {
+/// # Legacy note
+///
+/// The old `caller_has_sys_proc()` used `PrivTable::new()` which created
+/// a fresh empty table — always returning `false` (fail-closed but
+/// over-rejecting). This version uses the real PrivTable passed from
+/// the dispatcher.
+pub(crate) fn caller_has_sys_proc_with_table(caller: &KProcess, priv_table: &PrivTable) -> bool {
     let Some(priv_id) = caller.priv_id else {
-        return false;   // fail-closed
+        return false;
     };
     priv_table
         .get(priv_id)
