@@ -181,7 +181,7 @@ pub fn data_copy_vmcheck(
 /// Kernel-internal cross-process memset with VM check.
 ///
 /// C: `vm_memset(caller, proc_nr, addr, pattern, count)`
-///    — `kernel/memory.c:526-577`
+///    — `arch/i386/memory.c:526-577`
 ///
 /// Fills `count` bytes in the destination address space with `value`.
 /// On page fault, sets `RTS_VMREQUEST` on `caller` (without a copy context,
