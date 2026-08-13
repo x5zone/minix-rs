@@ -1,6 +1,6 @@
 # 14-exception-interrupt: 异常与中断处理
 
-> **源码**: `minix3/minix/kernel/arch/i386/exception.c`, `minix3/minix/kernel/interrupt.c`, `minix3/minix/kernel/arch/i386/hw_intr.h`
+> **源码**: `minix3/minix/kernel/arch/i386/exception.c`, `minix3/minix/kernel/interrupt.c`, `minix3/minix/kernel/arch/i386/include/hw_intr.h`
 > **Rust 实现**: `os/arch/src/arch/exception.rs`, `os/arch/src/arch/exception_dispatcher.rs`, `os/kernel/src/irq_manager.rs`, `os/kernel/src/page_fault.rs`
 > **前置**: 03/05（保护模式 + 中断控制器基建）、10（switch_to_user 枢纽）、11（RTS 状态机）、12（IPC mini_notify）、13（sys_call 入口与 m_type 路由）
 > **下游**: 15（时钟中断与定时器）、16（SMP/BKL）
@@ -288,7 +288,7 @@ Minix3 通过宏抽象中断控制器操作（`hw_intr.h`），支持 8259A PIC 
 | **B. ExceptionDispatcher<EA> 返回 ExceptionOutcome enum** | 分流逻辑是 arch 无关结构体，泛型注入 EA: ExceptionArch，返回 enum 区分七种结果 | 分流与执行分离、enum 穷尽、可单测 | 调用方需 match outcome |
 | **C. 直接在 dispatcher 内 cause_sig/mini_send** | 与 C 一样在分流时直接执行副作用 | 与 C 一致 | dispatcher 依赖 IPC engine/proc table，循环依赖、不可单测 |
 
-**选定 B**：`ExceptionDispatcher` 只"决定做什么"，返回 `ExceptionOutcome`；实际发信号/转发 VM/panic 由调用方执行。分流逻辑放 `arch/src/arch/exception_dispatcher.rs`（arch crate 含 arch 无关抽象，依赖 `ExceptionArch` trait）。
+**选定 B**：`ExceptionDispatcher` 只"决定做什么"，返回 `ExceptionOutcome`；实际发信号/转发 VM/panic 由调用方执行。分流逻辑放 `os/arch/src/arch/exception_dispatcher.rs`（arch crate 含 arch 无关抽象，依赖 `ExceptionArch` trait）。
 
 ### 3.3 决策 D2：异常帧抽象（ExceptionArch trait）
 
@@ -330,7 +330,7 @@ Minix3 通过宏抽象中断控制器操作（`hw_intr.h`），支持 8259A PIC 
 
 ### 3.7 决策 D6：IrqManager 位置与泛型
 
-`IrqManager` 放 `kernel/src/irq_manager.rs` 而非 `arch/`——它是 OS 策略（hook 注册/分发），不是 CPU ISA 机制。唯一硬件依赖（mask/unmask/eoi）通过 `IC: InterruptController` trait 注入。这符合"机制 vs 策略分离"：trait 定义硬件机制，IrqManager 实现 OS 策略。
+`IrqManager` 放 `os/kernel/src/irq_manager.rs` 而非 `arch/`——它是 OS 策略（hook 注册/分发），不是 CPU ISA 机制。唯一硬件依赖（mask/unmask/eoi）通过 `IC: InterruptController` trait 注入。这符合"机制 vs 策略分离"：trait 定义硬件机制，IrqManager 实现 OS 策略。
 
 ### 3.8 决策 D7：页错误转发（ExceptionOutcome::ForwardToVm）
 
@@ -340,7 +340,7 @@ Minix3 通过宏抽象中断控制器操作（`hw_intr.h`），支持 8259A PIC 
 | **B. ExceptionOutcome::ForwardToVm(VmPagefaultIn)** | 分流返回 enum，调用方投递 | 分流与投递分离、可单测 | 调用方需接 page_fault.rs |
 | **C. dispatcher 内直接 mini_send** | 在 dispatcher 内发 IPC | 与 C 一致 | dispatcher 依赖 IPC engine，循环依赖、不可单测 |
 
-**选定 B**：dispatcher 只决定"转发 VM"，实际 RTS_PAGEFAULT 设置 + 消息构造在 `kernel/src/page_fault.rs` 完成（`set_pagefault_pending` + `build_vm_pagefault_msg`），`mini_send` 由汇编 trap 入口执行。旧 doc 虚构的 `trait PageFaultHandler` 不存在，已从设计删除。
+**选定 B**：dispatcher 只决定"转发 VM"，实际 RTS_PAGEFAULT 设置 + 消息构造在 `os/kernel/src/page_fault.rs` 完成（`set_pagefault_pending` + `build_vm_pagefault_msg`），`mini_send` 由汇编 trap 入口执行。旧 doc 虚构的 `trait PageFaultHandler` 不存在，已从设计删除。
 
 ### 3.9 决策 D8：timer 不在本章
 
@@ -373,7 +373,7 @@ pub trait ExceptionArch {
 }
 ```
 
-三架构 impl：x86_64（`os/arch/src/x86_64/exception.rs`，已实现，6 个测试通过）、aarch64、riscv64。`set_instruction_pointer`/`set_return_value` 用于嵌套恢复时重定向执行到恢复点。
+三架构 impl：x86_64（`os/arch/src/x86_64/exception.rs`，已实现，7 个测试通过）、aarch64、riscv64。`set_instruction_pointer`/`set_return_value` 用于嵌套恢复时重定向执行到恢复点。
 
 同文件还定义 `FaultContext`/`RecoveryPoint` enum 与 `FaultContextTracker`（per-CPU 上下文跟踪，替代 C 的 `catch_pagefaults` 全局标志 + 地址范围比较）。
 
@@ -422,6 +422,7 @@ impl FaultContext {
 
 pub enum ExceptionOutcome {
     SpuriousNmi,
+    FpuTrap,                           // 用户态 #NM（向量 7），lazy-FPU 恢复陷阱
     Signal(ExceptionSignal),
     ForwardToVm(VmPagefaultIn),       // 页错误转发 VM
     RedirectToRecovery(RecoveryPoint),// 嵌套恢复
@@ -432,7 +433,7 @@ pub enum ExceptionOutcome {
 }
 ```
 
-`ExceptionOutcome` 的七个变体完整覆盖 C `exception_handler` + `pagefault` 的所有出口路径。调用方 match 此 enum 执行实际副作用（发信号/转发 VM/panic）。
+`ExceptionOutcome` 的九个变体完整覆盖 C `exception_handler` + `pagefault` 的所有出口路径。调用方 match 此 enum 执行实际副作用（发信号/转发 VM/panic）。`FpuTrap` 对应 C `copr_not_available_handler()`（proc.c:1922-1958）：用户态进程在 CR0.TS 置位时触碰 FPU 状态触发（详见 [31-fpu-context-switching.md](31-fpu-context-switching.md)）。
 
 ### 4.4 IrqManager<IC>
 
@@ -449,7 +450,7 @@ C 的 `generic_handler(irq_hook_t *hook)` 接收 hook 指针，handler 内部直
 
 ```rust
 /// IRQ handler 函数指针类型。
-/// C: `int (*handler)(irq_hook_t *)` — glo.h:46
+/// C: `int (*handler)(irq_hook_t *)` — type.h:28
 pub type IrqHandler = for<'a> fn(ctx: &'a mut IrqHookContext<'a>) -> IrqAction;
 
 /// handler 上下文，携带 slot 信息 + 通知器引用。
@@ -474,7 +475,7 @@ pub trait IrqNotify {
 
 #### IrqManager 全局化（D10）
 
-`IrqManager<CurrentInterruptController>` 作为全局 `static IRQ_MANAGER: SyncUnsafeCell<Option<...>>` 存于 `kernel/src/lib.rs`，与 `PROC_TABLE`/`PRIV_TABLE` 同模式（BKL 保护 + `unsafe fn irq_manager()` 访问器）。在 `init_clock_and_interrupts` 中构造 IC 后移入全局。
+`IrqManager<CurrentInterruptController>` 作为全局 `static IRQ_MANAGER: SyncUnsafeCell<Option<...>>` 存于 `os/kernel/src/lib.rs`，与 `PROC_TABLE`/`PRIV_TABLE` 同模式（BKL 保护 + `unsafe fn irq_manager()` 访问器）。在 `init_clock_and_interrupts` 中构造 IC 后移入全局。
 
 Trap 入口路径通过 `dispatch_hardware_irq(irq: IrqVector)` 进入 dispatch：
 
@@ -531,7 +532,9 @@ ExceptionDispatcher::handle_page_fault
   → ExceptionOutcome::VmPageFault 分支 → panic（VM 自身缺页）
 ```
 
-`page_fault.rs` 把 C 的"设标志 + 发消息"拆成独立可测的 helper：`set_pagefault_pending`、`build_vm_pagefault_msg`、`is_pagefault_pending`、`clear_pagefault_pending`（VM 通过 SYS_VMCTL 调用）。
+`page_fault.rs` 把 C 的"设标志 + 发消息"拆成独立可测的 helper：`set_pagefault_pending`、`build_vm_pagefault_msg`、`is_pagefault_pending`、`clear_pagefault_pending`（VM 通过 SYS_VMCTL 调用）。同文件另有两个辅助函数：`kernel_mode_pagefault_panic_msg`（对应 C §2.3 内核态/VM 缺页 panic 分支，返回 panic 消息字符串，实际 `panic!` 由 trap 入口执行以附带保存的 IP/寄存器上下文）与 `last_fault_addr`（查询 `proc` 上次缺页地址，供 VM 协议恢复时核对）。
+
+> **注（接线状态，forward reference）**：上述"调用方（trap 入口）"目前**尚未接线**——`ExceptionDispatcher::handle` 与 `IrqManager::dispatch_hardware_irq` 均无生产调用方（仅 re-export + 注释引用），`ForwardToVm` 的 `endpoint` 字段当前硬编码为 `Endpoint::NONE`。trap 入口（汇编 → `exception_dispatcher.rs` 的桥接）待异常交付路径落地时加入（同 §4.8 `TrapReturnArch` 的 forward reference 状态）。各分支逻辑均已由 14 个单元测试独立验证（exception_dispatcher.rs `#[cfg(test)]`）。
 
 ### 4.7 与 C 步骤数差异说明
 
@@ -629,7 +632,7 @@ ExceptionDispatcher::handle_page_fault
 
 **特权级**：Minix3 仅用两级（`archconst.h:33-34`）：Ring 0（`INTR_PRIVILEGE`，内核+中断处理）、Ring 3（`USER_PRIVILEGE`，服务进程+用户进程）。
 
-**系统调用入口机制**（`protect.c:323-324` 通过 CPU 特性检测选择）：
+**系统调用入口机制**（`protect.c:325-328` 通过 CPU 特性检测选择）：
 
 | 机制 | CPU 特性标志 | 入口 |
 |------|-------------|------|
@@ -648,7 +651,7 @@ ExceptionDispatcher::handle_page_fault
 
 1. `minix3/minix/kernel/arch/i386/exception.c:19-283` — 异常表、pagefault、exception_handler
 2. `minix3/minix/kernel/interrupt.c:29-176` — put_irq_handler、rm_irq_handler、irq_handle、enable/disable_irq
-3. `minix3/minix/kernel/arch/i386/hw_intr.h` — 中断控制器抽象宏
+3. `minix3/minix/kernel/arch/i386/include/hw_intr.h` — 中断控制器抽象宏
 4. `minix3/minix/kernel/clock.c:70-173` — timer_int_handler（仅时间记账，quantum 递减不在此）
 5. `os/arch/src/arch/exception.rs` — ExceptionArch trait、FaultContext、RecoveryPoint
 6. `os/arch/src/arch/exception_dispatcher.rs` — ExceptionDispatcher、ExceptionOutcome、ExceptionSignal

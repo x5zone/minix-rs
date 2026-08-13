@@ -92,7 +92,7 @@ pub struct IrqHookContext<'a> {
 /// the handler needs to defer completion (the active bit stays set and the
 /// IRQ remains masked until `enable_irq` is called).
 ///
-/// C: `int (*handler)(irq_hook_t *)` — glo.h:46.
+/// C: `int (*handler)(irq_hook_t *)` — type.h:28.
 pub type IrqHandler = for<'a> fn(ctx: &'a mut IrqHookContext<'a>) -> IrqAction;
 
 /// Production [`IrqNotify`] implementation that delivers hardware interrupt
