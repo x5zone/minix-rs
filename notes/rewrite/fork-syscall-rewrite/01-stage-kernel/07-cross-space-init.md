@@ -138,12 +138,12 @@ direct_map 下这两行的语义变化：
 注意：Kernel direct map 不在阶段 D 范围——它由 VM 启动后通过 `map_kernel` 建立（见 §3.4）。阶段 D 确认的是 VM direct map 就绪。
 
 > **实现状态**（2026-07-16，TODO-07-1N）：当前 `os/kernel/src/lib.rs` 的 `init_post_and_memory` 函数**仍翻译 C 旧逻辑**——
-> - [lib.rs:993](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `CurrentPostInitArch::set_ptproc`（应废弃——记录 arch 内部状态 `virt_root` 供 createpde 用，但 createpde 已被 Direct Map 取代）
-> - [lib.rs:1005](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `set_current_ptproc_nr(VM_PROC_NR)`（**P9-4 新增，不废弃**——这是 kernel 级 ptproc 跟踪，使 `dispatch_vmctl(SetAddrSpace)` 能决定是否 reload CR3；详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）
-> - 行 960 调用 `CurrentMemoryInitArch::allocate_free_pdes`（应废弃）
-> - 行 970 写入 `FREE_PDE_SLOTS` 全局可变状态（应废弃）
+> - [lib.rs:1045](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `CurrentPostInitArch::set_ptproc`（应废弃——记录 arch 内部状态 `virt_root` 供 createpde 用，但 createpde 已被 Direct Map 取代）
+> - [lib.rs:1057](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `set_current_ptproc_nr(VM_PROC_NR)`（**P9-4 新增，不废弃**——这是 kernel 级 ptproc 跟踪，使 `dispatch_vmctl(SetAddrSpace)` 能决定是否 reload CR3；详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）
+> - 行 1087 调用 `CurrentMemoryInitArch::allocate_free_pdes`（应废弃）
+> - 行 1098 写入 `FREE_PDE_SLOTS` 全局可变状态（应废弃）
 >
-> **两层 ptproc 跟踪的区分**（P9-4 澄清）：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用——但 createpde 已被 Direct Map 取代，故应废弃）；kernel 层 `set_current_ptproc_nr`（[lib.rs:2015](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
+> **两层 ptproc 跟踪的区分**（P9-4 澄清）：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用——但 createpde 已被 Direct Map 取代，故应废弃）；kernel 层 `set_current_ptproc_nr`（[lib.rs:2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
 >
 > 这与本节"阶段 D 简化为确认就绪"的设计承诺直接矛盾。**修复方向**：将 `init_post_and_memory` 重构为"VM direct map base != 0 + vm_proc.page_table_root.is_valid()"两条断言，删除 set_ptproc/allocate_free_pdes/FREE_PDE_SLOTS 三处调用（但**保留** `set_current_ptproc_nr`）。DirectMapArch（vm.rs:21）已接入，但 `init_post_and_memory` 自身需要清理。此修复是 **Action Item #1**（非本 session 范围，留作代码任务）。
 
@@ -236,7 +236,7 @@ direct_map 下，内核映射变成 Kernel direct map（1GB huge page），`free
 
 ```c
 static int freepdes[MAXFREEPDES];   /* memory.c:32 */
-static int nfreepdes;               /* memory.c:33 */
+static int nfreepdes;               /* memory.c:29 */
 
 void memory_init(void)
 {
@@ -282,10 +282,11 @@ direct_map 下，`createpde` 退化为 `kernel_phys_to_virt(pa)` 一行加法—
 `main.c:277-290` 定义了 IPC 调用类型编号→字符串的映射宏，仅调试用（`proc.c:497` 打印 IPC 统计时引用）：
 
 ```c
-#define IPCNAME(c) { c, #c }
-struct { int call; char *name; } ipc_call_names[] = {
-  IPCNAME(SEND), IPCNAME(RECEIVE), IPCNAME(SENDREC), ...
-};
+#define IPCNAME(n) { \
+	assert((n) >= 0 && (n) <= IPCNO_HIGHEST); \
+	assert(!ipc_call_names[n]);	\
+	ipc_call_names[n] = #n; \
+}
 ```
 
 这与跨空间访问主题无关，仅因时序位置在阶段 D 中间被提及。Rust 替代：`enum IpcCall` + `impl Display`，无需全局数组。
@@ -300,7 +301,7 @@ struct { int call; char *name; } ipc_call_names[] = {
 
 **本质**：跨地址空间访问的解法随位宽演进，64 位下 direct_map 是自然解。
 
-**约束驱动**：64 位虚拟地址空间充裕（256TB+），可以建立全物理内存的固定映射；`no_std` 下应避免全局可变状态（`freepdes[]` 是 `static int[]`，`FREE_PDE_SLOTS` 是 `static mut`）。
+**约束驱动**：64 位虚拟地址空间充裕（256TB+），可以建立全物理内存的固定映射；`no_std` 下应避免全局可变状态（`freepdes[]` 是 `static int[]`，`FREE_PDE_SLOTS` 已迁移为 `SyncUnsafeCell`，非 `static mut`）。
 
 **假设性推理**：如果翻译 Minix3 的 freepdes/ptproc，会泄漏 32 位临时窗口模型到 64 位 OS 层——污染页目录视图、需要清理、TLB 反复 flush、4MB 粒度限制全部继承，且 64 位地址空间本可避免这些。更糟的是，64 位页表是 4 级（PML4+PDPT+PD+PT），"借页目录"的语义从 PDE 变成 PML4E，临时窗口的粒度和复杂度都上升，而 direct_map 可以让这一切消失。
 
@@ -323,7 +324,7 @@ struct { int call; char *name; } ipc_call_names[] = {
 
 PTE 的 Global 位（bit 8）告诉 CPU："这条 PTE 的翻译对所有进程地址空间有效，CR3 切换时不要 invalidate 对应的 TLB 条目"。这有 3 个前提：
 
-1. **CR4.PGE 位必须启用**：x86-64 通过 CR4 第 7 位（PGE, Page Global Enable）开启 Global 位语义。Minix3 在 `pg_utils.c:243` 的 `vm_enable_paging()` 中设置 CR4.PGE；Rust 在 `ProtectionArch::init` 的尾段设置（架构层 `os/arch/src/x86_64/protection.rs`）。未启用 PGE 时设 G=1 = **未定义行为**（CPU 忽略 G 位但保留为未来兼容性）
+1. **CR4.PGE 位必须启用**：x86-64 通过 CR4 第 7 位（PGE, Page Global Enable）开启 Global 位语义。Minix3 在 `pg_utils.c:243` 的 `vm_enable_paging()` 中设置 CR4.PGE（`cr4 |= I386_CR4_PGE`）。**minix-rs 当前未设置 CR4.PGE**——x86-64 的 CR4 初始化仅见于 `os/arch/src/x86_64/fpu.rs`（L88 `cr4 |= (1 << 9) | (1 << 10)`，即 OSFXSR/OSXMMEXCPT），G=1 位尚未启用，待 VM `map_kernel` 建立 Kernel direct map 时随 PTE 的 G 位一并落地。未启用 PGE 时设 G=1 = **未定义行为**（CPU 忽略 G 位但保留为未来兼容性）
 2. **PTE 必须有 G=1 + 有效 P（Present）位**：纯 G=1 但 P=0 的 PTE 仍会被 invalidate（无效条目不缓存）
 3. **TLB shootdown 影响**：即使 G=1，CPU 显式 `invlpg`（x86-64）/ `tlbi`（aarch64/riscv64）单条 invalidate 仍生效；G=1 只豁免**全局 CR3 切换**的 flush
 
@@ -386,11 +387,11 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 
 | 废弃项 | C 对应 | 如果保留会怎样 | direct_map 替代 |
 |--------|--------|--------------|----------------|
-| ptproc per-CPU 变量（createpde 用途） | `cpulocals.h:56` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
+| ptproc per-CPU 变量（createpde 用途） | `cpulocals.h:55` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
 | freepdes[] 数组 | `memory.c:32` | 全局可变状态 + 临时窗口全部问题 | direct map 永久映射 |
 | memory_init() | `memory.c:707` | 运行时分配槽位的逻辑冗余 | 无需分配 |
 | PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 对接 DirectMapArch |
-| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch（**触发条件**：TODO-07-1 修复 lib.rs:905-972 之后自然废弃，详见 §1.4 实现状态块）|
+| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch（**触发条件**：TODO-07-1 修复 lib.rs:1017-1098 之后自然废弃，详见 §1.4 实现状态块）|
 | FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无（同上触发条件）|
 | VmPageTableInfo | `pg_info` 输出 | 记录 bootstrap 页表地址，direct map 不依赖 | kernel 用 `kernel_phys_to_virt` 直接访问 |
 | FREE_PDE_SLOTS static | `freepdes[]` | 全局可变状态 | 无 |
@@ -398,9 +399,9 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 
 > 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。
 >
-> **ptproc 跟踪不全部废弃**（P9-4 澄清）：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:31）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（[lib.rs:1976](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `set_current_ptproc_nr(VM_PROC_NR)` 跟踪此用途，与 arch 层 `PostInitArch::set_ptproc`（记录 createpde 用的 `virt_root`，应废弃）分离。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md) 与 §1.4 实现状态块。
+> **ptproc 跟踪不全部废弃**（P9-4 澄清）：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:31）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（[lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `set_current_ptproc_nr(VM_PROC_NR)` 跟踪此用途，与 arch 层 `PostInitArch::set_ptproc`（记录 createpde 用的 `virt_root`，应废弃）分离。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md) 与 §1.4 实现状态块。
 
-> **内核全局状态存储模式**（废弃项之上的模式层问题）：上表废弃的 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 采用"分散全局"存储——每个全局一个 `static mut`/`AtomicUsize`，与 C 源码的全局变量一一对应。不聚合为 `KernelState` 结构体的理由（机制废弃后模式仍适用）：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化；聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局（`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）以参数形式传递，无需单一访问点。此模式是 kernel 全局的通用选择，废弃清单只删条目、不推翻模式本身；若后续出现需跨子系统原子联动的全局，再评估聚合。
+> **内核全局状态存储模式**（废弃项之上的模式层问题）：上表废弃的 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 采用"分散全局"存储——每个全局一个 `SyncUnsafeCell`/`AtomicUsize`，与 C 源码的全局变量一一对应。不聚合为 `KernelState` 结构体的理由（机制废弃后模式仍适用）：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化；聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局（`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）以参数形式传递，无需单一访问点。此模式是 kernel 全局的通用选择，废弃清单只删条目、不推翻模式本身；若后续出现需跨子系统原子联动的全局，再评估聚合。
 
 ---
 
@@ -418,6 +419,10 @@ pub trait DirectMapArch {
     const VM_DIRECT_MAP_BASE: u64;
     /// Kernel direct map 基地址（U/S=0，内核态用）
     const KERNEL_DIRECT_MAP_BASE: u64;
+    /// VM HeapArena 区域基地址（紧随 VM direct map 窗口之后）
+    const VM_HEAP_BASE: u64;
+    /// VM HeapArena 区域大小（字节）
+    const VM_HEAP_SIZE: u64;
 
     /// 物理地址 → VM 用户态虚拟地址
     fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {
@@ -427,8 +432,14 @@ pub trait DirectMapArch {
     fn kernel_phys_to_virt(phys: PhysBytes) -> VirBytes {
         VirBytes(phys.get() + Self::KERNEL_DIRECT_MAP_BASE)
     }
-    /// 虚拟地址 → 物理地址（反向转换）
-    fn virt_to_phys(virt: VirBytes) -> PhysBytes { ... }
+    /// 虚拟地址 → 物理地址（反向转换；Kernel 高半区优先判定）
+    fn virt_to_phys(virt: VirBytes) -> PhysBytes {
+        if virt.get() >= Self::KERNEL_DIRECT_MAP_BASE {
+            PhysBytes::new(virt.get() - Self::KERNEL_DIRECT_MAP_BASE)
+        } else {
+            PhysBytes::new(virt.get() - Self::VM_DIRECT_MAP_BASE)
+        }
+    }
 }
 ```
 
@@ -457,6 +468,8 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 1GB huge page 的 CPU 支持检查（`supports_1gb_page()`）：x86-64 查 `CPUID.80000001H:EDX.GBPAGES`，不支持时回退 2MB。详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3。
 
 ### 4.2 阶段 D 入口：确认 direct_map 就绪
+
+> **目标实现**（Action Item #1）：当前 `init_post_and_memory` 仍为 C 翻译版（§1.4 实现状态块），以下为重构后的目标形态。
 
 阶段 D 入口 `init_post_and_memory` 重写为确认步骤：
 
@@ -502,17 +515,16 @@ fn init_post_and_memory(vm_proc: &Proc) {
 | `MemoryInitArch` trait | `os/arch/src/arch/post_init.rs` | 无（不分配 freepdes） |
 | `FreePdeSlots` 结构体 | `os/arch/src/arch/post_init.rs` | 无 |
 | `VmPageTableInfo` 结构体 | `os/arch/src/arch/post_init.rs` | 无（kernel 用 `DirectMapArch` 直接访问） |
-| `CrossSpaceInit` 聚合体 | `os/arch/src/arch/post_init.rs` | 无（阶段 D 不产出聚合结构） |
 | `FREE_PDE_SLOTS` static | `os/kernel/src/lib.rs` | 无 |
 | `FREE_UPPER_IDX` static | `os/kernel/src/lib.rs` | 无 |
 
-> **不废弃**：kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（[lib.rs:1976/2015](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，P9-4 新增）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途）分离。详见 §3.6 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
+> **不废弃**：kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（[lib.rs:2036/2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，P9-4 新增）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途）分离。详见 §3.6 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 
 **迁移影响**：后续 24-cross-space-runtime.md 的 `createpde` 等价函数改用 `CurrentDirectMap::kernel_phys_to_virt(pa)`，不再读 freepdes 槽位。
 
 **代码清理范围**：
 
-- `os/arch/src/arch/post_init.rs`：删除 `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo`/`CrossSpaceInit`
+- `os/arch/src/arch/post_init.rs`：删除 `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo`
 - `os/arch/src/{x86_64,arm64,riscv64}/post_init.rs`：删除对应 impl
 - `os/kernel/src/lib.rs`：删除 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX`
 
@@ -529,6 +541,8 @@ fn init_post_and_memory(vm_proc: &Proc) {
 - **测试**：`CurrentDirectMap::kernel_phys_to_virt(pa)` 返回正确 VA（对接 `DirectMapArch` 的 mock 实现）
 
 ### 5.2 废弃路径不存在的断言
+
+> **状态标注**（2026-08-14）：以下为 **Action Item #1 落地后**的目标测试——当前 `FreePdeSlots`/`PostInitArch`/`MemoryInitArch`/`VmPageTableInfo` 仍存在于 `os/arch/src/arch/post_init.rs:35-206`（§1.4 实现状态块：`init_post_and_memory` 仍翻译 C 旧逻辑）。Action Item #1 重构后这些类型删除，编译期保证本节断言成立。
 
 - **测试**：freepdes 相关代码已删除（编译期保证：`FreePdeSlots`/`PostInitArch`/`MemoryInitArch` 不存在）
 - **测试**：ptproc 相关代码已删除
@@ -549,17 +563,17 @@ direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stag
 07 文档承诺的"direct_map 替代临时窗口"是**设计层面的承诺**——direct_map 在概念上取代了 freepdes/ptproc 机制。但**使用 direct_map 的具体代码路径**（syscall_copy.rs 的 `cross_space_copy`/`virtual_copy_vmcheck` 等）由后续文档（[18-syscall-copy.md](18-syscall-copy.md)）负责实现。
 
 **当前状态**（2026-07-16，TODO-07-2 验证）：
-- `os/kernel/src/syscall_copy.rs` 有 6 处 stub（不是 kimi 报告的 5 处，行号也全部错误）：
-  | # | 函数 | 末行 `KcallResult::Ok(OK)` | 阻塞原因 |
-  |---|------|---------------------------|---------|
-  | 1 | `safecopy_common_impl` | 行 584 | Direct Map PTE walk blocker |
-  | 2 | `dispatch_vsafecopy` | 行 664 | Direct Map PTE walk blocker |
-  | 3 | `dispatch_umap_remote_impl` | 行 829 | Direct Map PTE walk blocker |
-  | 4 | `dispatch_vumap` | 行 935 | Direct Map PTE walk blocker |
-  | 5 | `dispatch_memset` | 行 1012 | Direct Map PTE walk blocker |
-  | 6 | `dispatch_safememset` | 行 1099 | Direct Map PTE walk blocker |
+- `os/kernel/src/syscall_copy.rs` 有 6 处 stub（不是 kimi 报告的 5 处）：
+  | # | 函数 | 阻塞原因 |
+  |---|------|---------|
+  | 1 | `safecopy_common_impl` | Direct Map PTE walk blocker |
+  | 2 | `dispatch_vsafecopy` | Direct Map PTE walk blocker |
+  | 3 | `dispatch_umap_remote_impl` | Direct Map PTE walk blocker |
+  | 4 | `dispatch_vumap` | Direct Map PTE walk blocker |
+  | 5 | `dispatch_memset` | Direct Map PTE walk blocker |
+  | 6 | `dispatch_safememset` | Direct Map PTE walk blocker |
 - 这些 stub **不是** 07 文档的实施缺口——07 只承诺 direct_map 抽象，stub 实现见 18 文档。
-- 07 文档读者应知道：direct_map 抽象已就绪（vm.rs:243/295 已在 cross_space_copy/memset 中调用 `DirectMapArch::kernel_phys_to_virt`），但 syscall_copy 的 stub 路径仍待 18 文档补充。
+- 07 文档读者应知道：direct_map 抽象已就绪（vm.rs:348-349 / :393 已在 cross_space_copy / cross_space_memset 中调用 `DirectMapArch::kernel_phys_to_virt`），但 syscall_copy 的 stub 路径仍待 18 文档补充。
 
 **回归报告修正**：kimi/seed 报告的 5 处（行 252/374/397/416/439）**全部错误**——这些行指向已实现的 `virtual_copy_vmcheck`。07 文档不引用 syscall_copy.rs 的具体行号，避免行号漂移传播（模式 66 RCPD）。
 
