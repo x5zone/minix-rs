@@ -1472,3 +1472,21 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 - `cargo clippy`（全 workspace）：无 error
 - test-kernels 三 target 编译：19/19 × 0 errors
 - `git status`：本次改动全部为 tracked 文件修改（`git add -u` 模式提交）
+
+---
+
+## Step 1.0f 发现：代码注释行号漂移（2026-08-14，doc 04 review 顺带发现，Pattern #77）
+
+> 属于 kernel/arch 模块代码注释（非 doc 04 platform 范围），待对应 doc review（16-smp / 08 / 17-19）或独立修复时处理。
+
+| # | 位置 | 注释声称 | 实际 | 漂移 | 修复建议 |
+|---|------|---------|------|------|---------|
+| 1 | `os/kernel/src/lib.rs:1821` | `CpuLocal::set_running(IDLE) — see smp.rs:200` | set_running 在 `smp.rs:202` | +2（边界）| 200 → 202 |
+| 2 | `os/kernel/src/lib.rs:1837` | `ProcessTable::rts_unset auto-enqueues ... (see proc_table.rs:276)` | rts_unset 在 `proc_table.rs:304` | **+28** | 276 → 304 |
+| 3 | `os/kernel/src/lib.rs:1931` | `CpuLocal::fpu_presence ... (see smp.rs:134)` | fpu_presence 在 `smp.rs:161-162` | **+27** | 134 → 161 |
+| 4 | `os/kernel/src/proc_table.rs:357` | `set_running(IDLE) ... (see smp.rs:127)` | set_running 在 `smp.rs:202` | **+75** | 127 → 202 |
+| 5 | `os/kernel/src/syscall.rs:2542` | `message delivery mechanism (see vm.rs:323)` | `os/servers/vm/src/` 下**无 vm.rs**（主文件为 lib.rs/main.rs，lib.rs:323 为空行）| 文件不存在 | 改为指向实际文件或删除引用 |
+
+✅ 准确引用（无需修）：`os/arch/src/x86_64/boot.rs:357` `(see signal.rs:38)` → `os/arch/src/x86_64/signal.rs:38` 正是 `pub(super) const GP_RBP: usize = 5;`
+
+**根因**：与 Pattern #77（doc 08 先例）相同——代码增量后注释未同步。建议批量修复脚本：`rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust` + sed 逐处验证。
