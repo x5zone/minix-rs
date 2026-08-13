@@ -1053,27 +1053,34 @@ impl HugePages for X86_64Paging {
 | Boot | Bump（恒等映射区域） | VA = PA |
 | VM | 全局 `VmPageAllocator` | VA = DM_BASE + PA |
 
-**`pt_alloc` 只做注册和转发**，不包含任何分配器实现。它是一个薄层（~60 行）：
+**`pt_alloc` 只做注册和转发**，不包含任何分配器实现。它是一个薄层（~110 行）：
 
 ```rust
 // os/arch/src/arch/pt_alloc.rs
-// 使用 UnsafeCell + AtomicBool 而非 static mut（Rust 2024 edition 兼容）
 use core::cell::UnsafeCell;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
-/// SAFETY: 单线程下 register() 写一次，后续只读
+/// SAFETY: write-once-then-read-only — register() 在 boot（单线程）
+/// 或 VM init（并发前）写一次，之后只读。arch crate 服务 kernel
+/// （SMP + BKL 执行模型），安全论证不依赖"单线程"假设
 struct PtAllocSlot(UnsafeCell<PtAllocFn>);
-unsafe impl Sync for PtAllocSlot {}  // SAFETY: 单线程无并发写
+unsafe impl Sync for PtAllocSlot {}  // SAFETY: 并发阶段内容不可变
 
 static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
 static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 pub fn register(alloc_fn: PtAllocFn) {
-    // SAFETY: single-threaded boot, no concurrent access
+    // 重复注册是 boot bug——测试内核先注册时 kernel 以 is_registered() 自守卫
+    debug_assert!(
+        !PT_REGISTERED.load(Ordering::Relaxed),
+        "pt_alloc::register called twice"
+    );
+    // SAFETY: write-once contract — boot 单线程 / VM init 并发前注册
     unsafe { core::ptr::write(PT_ALLOC.0.get(), alloc_fn); }
-    PT_REGISTERED.store(true, Ordering::Relaxed);
+    // Release: 发布 fn 指针写，与 alloc_pt_page() 的 Acquire load 配对
+    PT_REGISTERED.store(true, Ordering::Release);
 }
 
 pub fn is_registered() -> bool {
@@ -1081,7 +1088,9 @@ pub fn is_registered() -> bool {
 }
 
 pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    // SAFETY: function pointer set once via register() then only read
+    // Acquire: 与 register() 的 Release store 配对，保证 fn 指针写可见
+    let _ = PT_REGISTERED.load(Ordering::Acquire);
+    // SAFETY: write-once-then-read-only — 注册后只读
     let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
     alloc_fn()
 }
@@ -1151,10 +1160,10 @@ PT_ALLOC  boot_pt_alloc                  boot_pt_alloc             vm_pt_alloc
 
 理由：boot-shim 只负责"从 ESP 加载 kernel + boot 模块、拿根页面、调 arch_boot"，页表的具体操作（包括中间页表页分配）由 kernel 完成（职责分离）；`arch_boot_impl` 兜底保障鲁棒性——即使调用方忘了注册，内核也能自动初始化。
 
-**代码位置**：`boot_pt_alloc` 定义在 `kernel/src/boot_alloc.rs`，测试内核和 boot-shim 都通过 `use minix_kernel::boot_alloc` 直接引用生产代码：
+**代码位置**：`boot_pt_alloc` 定义在 `os/kernel/src/boot_alloc.rs`，测试内核和 boot-shim 都通过 `use minix_kernel::boot_alloc` 直接引用生产代码：
 
 ```rust
-// kernel/src/boot_alloc.rs（生产代码）
+// os/kernel/src/boot_alloc.rs（生产代码）
 pub fn init_boot_pt_alloc(base: u64, end: u64) { ... }
 fn boot_pt_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> { ... }
 ```
@@ -1545,14 +1554,14 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 | C 函数 (Ch2) | Rust 实现 | 位置 |
 |-------------|----------|------|
 | `pre_init(magic, ebx)` | 不需要 — UEFI 替代 | — |
-| `get_parameters(ebx)` | `prepare_boot()` GetMemoryMap / 硬编码 memmap | `boot-shim/src/uefi_helpers.rs` 或 `opensbi_helpers.rs` |
-| GRUB `multiboot` + `load_mods` | `load_boot_modules()` 从 ESP 分区读取 | `boot-shim/src/uefi_helpers.rs` |
+| `get_parameters(ebx)` | `prepare_boot()` GetMemoryMap / 硬编码 memmap | `os/boot-shim/src/uefi_helpers.rs` 或 `opensbi_helpers.rs` |
+| GRUB `multiboot` + `load_mods` | `load_boot_modules()` 从 ESP 分区读取 | `os/boot-shim/src/uefi_helpers.rs` |
 | `pg_clear()` | `Paging::new_from_page(root_page)` | `arch/x86_64/paging.rs` |
-| `pg_identity(&kinfo)` | `arch_boot_impl` Step 1 (`map_huge`) | `kernel/src/lib.rs` |
-| `pg_mapkernel()` | `arch_boot_impl` Step 2 (`map_huge`) | `kernel/src/lib.rs` |
+| `pg_identity(&kinfo)` | `arch_boot_impl` Step 1 (`map_huge`) | `os/kernel/src/lib.rs` |
+| `pg_mapkernel()` | `arch_boot_impl` Step 2 (`map_huge`) | `os/kernel/src/lib.rs` |
 | `pg_load()`+`vm_enable_paging()` | `Paging::enable()` | `arch/x86_64/paging.rs` |
-| `alloc_pagetable()` | `boot_pt_alloc()`（中间页表页池） | `arch/src/arch/pt_alloc.rs` |
-| `pg_map()` | `Paging::map()`（4KB 粒度映射） | `arch/src/arch/paging.rs` |
+| `alloc_pagetable()` | `boot_pt_alloc()`（中间页表页池） | `os/arch/src/arch/pt_alloc.rs` |
+| `pg_map()` | `Paging::map()`（4KB 粒度映射） | `os/arch/src/arch/paging.rs` |
 
 ---
 
@@ -1581,8 +1590,8 @@ Boot 阶段是整个系统最脆弱的环节——页表配置错误直接导致
 | `boot-shim` (opensbi_helpers) | 13 | `BootFileTable` 校验/查找、`entry_path_eq`、U-Boot file loader、`build_kernel_info` (riscv64 user_sp + 8 字段全断言 + bootstrap 零值回归保护)、`bump_alloc` (正向+负向)、`build_memmap` 默认区域、`alloc_bump_region` round-trip、`alloc_root_page` 4K 对齐 |
 | `boot-shim` (uefi_helpers) | 1 | `build_kernel_info_fields` |
 | `boot-shim` (总计) | 26 | 上三项之和 |
-| `minix-boot` | 0 | 仅有类型定义，无运行时逻辑可测 |
-| **doc 01 路径总计** | **49** | — |
+| `minix-boot` | 17 | 类型定义 + 平台描述符解析（`kernel_info.rs` 9 + `platform.rs` 8）|
+| **doc 01 路径总计** | **66** | — |
 
 **UEFI 路径测试不足**: 26 个 boot-shim 测试中仅 1 个（4%）覆盖 UEFI 路径。其余 25 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
 
@@ -1764,7 +1773,7 @@ fn panic(info: &PanicInfo) -> ! {
 | 失败模式 | 触发位置 | 表现 | 诊断信号 |
 |---------|---------|------|---------|
 | **UEFI 协议未找到** | `uefi_helpers::prepare_boot` `LocateProtocol` | `prepare_boot` 直接 `unwrap()` panic（UEFI 不返回 error）| QEMU `-d int,cpu_reset` 查看 RIP；预期为 `protocol not found` 字样 |
-| **kernel ELF 损坏** | `loader::load_kernel_with_loader` | `parse_elf64_header` 返回 `Err(ElfError::InvalidMagic)` → `prepare_boot` panic | 串口输出 `load_kernel_with_loader_computes_layout` 测试覆盖（`boot-shim/src/loader.rs`） |
+| **kernel ELF 损坏** | `loader::load_kernel_with_loader` | `parse_elf64_header` 返回 `Err(ElfError::InvalidMagic)` → `prepare_boot` panic | 串口输出 `load_kernel_with_loader_computes_layout` 测试覆盖（`os/boot-shim/src/loader.rs`） |
 | **boot module 缺失** | `loader::load_boot_modules_with_loader` | `loader.read(path)` 返回 `None` → 文件不存在则 `panic!` | 测试：`test_load_boot_modules_with_loader_skips_missing`（mock loader 验证 skip 语义） |
 | **bump 分配器耗尽** | `bump_alloc(n)` | `BUMP_PTR + n*4096 > BUMP_END` 时返回 `None` → 调用方 panic | 测试：`test_bump_alloc_rejects_zero_pages`（负向）；正向耗尽无测试（测试缺口，后续补） |
 | **DTB 解析失败** | `uefi_helpers::find_platform_sources` | DTB 物理地址为 0 时不构造对应 `PlatformDescSource::new(DTB, PhysBytes(0))` → `platform_sources` 中无 DTB 条目 | 串口输出 `dtb_ptr=0x0`（由 `find_platform_sources()` 可观测）|
