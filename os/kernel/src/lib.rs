@@ -1931,8 +1931,10 @@ fn bsp_finish_booting(
     // already a `bool` field (see smp.rs:134). All three target
     // architectures (x86-64, aarch64, riscv64) have FPUs, so we set
     // the BSP's fpu_presence to `true`. The per-process FPU init is
-    // handled by `BootProcArch::initial_reg_state(fpu_needs_zero=true)`
-    // (already called for every boot process — see init_proc_and_boot).
+    // handled by `CpuContextArch::build_cpu_context` via the per-arch FPU
+    // strategy field (`fpu_policy` on x86_64, `fpu_enable_el0` on aarch64,
+    // `sstatus.FS` on riscv64 — see 06-proc-init-boot-proc.md §4.1)
+    // (already built for every boot process — see init_proc_and_boot).
     if let Some(bsp_local) = smp_state.cpu_local_mut(bsp_id) {
         bsp_local.fpu_presence = true;
     }

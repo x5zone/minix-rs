@@ -2,7 +2,7 @@
 
 > **阶段**：C（kernel stage）/ 阶段 C
 > **范围**：进程表/特权表/RTS 清空与填充、boot image 遍历、VM ELF 加载、boot→running 转换
-> **ground truth**：Minix3 源码 `minix3/minix/kernel/{proc.c,main.c,system.c,protect.c,arch/*}`
+> **ground truth**：Minix3 源码 `minix3/minix/kernel/{proc.c,main.c,system.c}` + `minix3/minix/kernel/arch/*/{protect.c,memory.c,arch_system.c}`
 > **Rust 实现**：`os/kernel/src/{proc.rs,proc_table.rs,kpriv.rs,capability.rs,lib.rs}` + `os/arch/src/{x86_64,arm64,riscv64}/boot.rs`
 > **前置文档**：[03-kmain-cstart.md](./03-kmain-cstart.md)、[05-clock-interrupt-init.md](./05-clock-interrupt-init.md)
 > **后续文档**：[07-cross-space-init.md](./07-cross-space-init.md)、[08-system-init-boot-finish.md](./08-system-init-boot-finish.md)、[10-switch-to-user.md](./10-switch-to-user.md)
@@ -301,7 +301,7 @@ RTS（Run-Time Status）是一个位图，记录进程当前不可运行的原�
 
 **boot image 格式与编译生成**：
 
-boot image 来自 Minix3 `kernel/table.c` 中的 `struct image image[]` 数组——编译时由 `config.h` 的 `NR_TASKS` / `NR_PROCS` 确定大小，每个条目是 `{ proc_nr, flags, proc_name, ipc_to, k_call, stack_size }`。它**不是 ELF**，只是 C 全局数组，编进 `kernel` 二进制。Rust 实现侧对应 `os/kernel/src/proc.rs:75` 的 `KERNEL_TASKS` 常量数组 + `BOOT_MODULE_PROC_NRS`（`proc.rs:88`）+ `CapabilityTemplate` 枚举（见 §3.2 / §3.4）。
+boot image 来自 Minix3 `kernel/table.c` 中的 `struct image image[]` 数组——编译时由 `config.h` 的 `NR_TASKS` / `NR_PROCS` 确定大小，每个条目是 `{ proc_nr, flags, proc_name, ipc_to, k_call, stack_size }`。它**不是 ELF**，只是 C 全局数组，编进 `kernel` 二进制。Rust 实现侧对应 `os/kernel/src/proc.rs:112` 的 `KERNEL_TASKS` 常量数组 + `BOOT_MODULE_PROC_NRS`（`proc.rs:125`）+ `CapabilityTemplate` 枚举（见 §3.2 / §3.4）。
 
 **multiboot 模块 vs boot image**：
 - **boot image（image[]）**：编译时硬编码进 kernel 二进制的进程清单（含 CLOCK/SYSTEM/IDLE/KERNEL 4 个内核 task + VM/PM/VFS/RS 4 个用户态 boot 模块）
@@ -631,7 +631,7 @@ for (i=0; i < NR_BOOT_PROCS; ++i) {
       priv(rp)->s_trap_mask = SRV_T;
       ipc_to_m = SRV_M;
       kcalls = SRV_KC;
-      priv(rp)->s_sig_mgr = SELF;         /* main.c:186 — VM 的 sig_mgr 是 SELF */
+      priv(rp)->s_sig_mgr = SELF;         /* main.c:208 — VM 的 sig_mgr 是 SELF */
       rp->p_priority = SRV_Q;
       rp->p_quantum_size_ms = SRV_QT;
     }
@@ -649,7 +649,7 @@ for (i=0; i < NR_BOOT_PROCS; ++i) {
       priv(rp)->s_trap_mask = SRV_T;
       ipc_to_m = SRV_M;
       kcalls = SRV_KC;
-      priv(rp)->s_sig_mgr = SRV_SM;       /* main.c:208 — RS 的 sig_mgr 是 SRV_SM=ROOT_SYS_PROC_NR */
+      priv(rp)->s_sig_mgr = SRV_SM;       /* main.c:231 — RS 的 sig_mgr 是 SRV_SM=ROOT_SYS_PROC_NR */
       rp->p_priority = SRV_Q;
       rp->p_quantum_size_ms = SRV_QT;
     }
@@ -695,7 +695,7 @@ for (i=0; i < NR_BOOT_PROCS; ++i) {
 | 内核 task | IDL_F\|TSK_F | CSK_T\|TSK_T | TSK_M | TSK_KC | — | 0（不覆写） | 0（不覆写） |
 | RS | RSYS_F | SRV_T | SRV_M | SRV_KC | **SRV_SM** | SRV_Q | SRV_QT |
 
-> **重要修正**：VM 的 `s_sig_mgr` 是 `SELF`（main.c:186），不是 PM_SM。RS 的 `s_sig_mgr` 才是 `SRV_SM=ROOT_SYS_PROC_NR`。这是旧版文档的常见错误。
+> **重要修正**：VM 的 `s_sig_mgr` 是 `SELF`（main.c:208），不是 PM_SM。RS 的 `s_sig_mgr` 才是 `SRV_SM=ROOT_SYS_PROC_NR`。这是旧版文档的常见错误。
 
 **p_priority/p_quantum_size_ms 覆写规则**：
 
@@ -1344,9 +1344,9 @@ Minix3 的 per-CPU runqueue **不是**为了并行调度，而是为了 cache �
 
 **假设性推理**：如果用 `Rc<RefCell<KProcess>>` 跨 CPU 共享，`RefCell` 的运行时借用检查不是原子操作，两个 CPU 可能同时获得 `&mut`，导致 UB。`AtomicPtr` + BKL 是 SMP 安全的唯一组合。
 
-**per-CPU 数据的 Rust 抽象**（关联 [16-smp.md §?](./16-smp.md)）：Minix3 C 用 `struct __cpu_local_vars` 存放每个 CPU 独立的 `proc_ptr` / `fpu_owner` 等局部状态。本设计用 `CpuLocal<T>`（位于 `os/kernel/src/smp.rs:45-56`）替代原 design 的 `PerCpuData` 提案——`CpuLocal<T>: !Sync` 类型系统保证 per-CPU 数据**编译期禁止跨 CPU 共享引用**，从根上消除 per-CPU 数据被并发访问的可能。Rust 实现细节见 [16-smp.md](./16-smp.md)（per-CPU 抽象 + lazy 初始化）。
+**per-CPU 数据的 Rust 抽象**（关联 [16-smp.md §?](./16-smp.md)）：Minix3 C 用 `struct __cpu_local_vars` 存放每个 CPU 独立的 `proc_ptr` / `fpu_owner` 等局部状态。本设计用 `CpuLocal<T>`（位于 `os/kernel/src/smp.rs:137`）替代原 design 的 `PerCpuData` 提案——`CpuLocal<T>: !Sync` 类型系统保证 per-CPU 数据**编译期禁止跨 CPU 共享引用**，从根上消除 per-CPU 数据被并发访问的可能。Rust 实现细节见 [16-smp.md](./16-smp.md)（per-CPU 抽象 + lazy 初始化）。
 
-**BKL 类型系统强制**（关联 [16-smp.md](./16-smp.md)）：`BklSection<'a>` typed witness（`os/kernel/src/smp.rs:560-578`）把"当前持有 BKL"从注释约定升级为编译期类型证明。`smp_state_with(section, &SmpState)` 等需 `&BklSection<'_>` 的 API 自动拒绝"未持锁调用"，从根上消除"漏 BKL"问题。Rust 实现细节见 [16-smp.md](./16-smp.md)（BklSection witness 设计 + RAII vs non-RAII 取舍）。
+**BKL 类型系统强制**（关联 [16-smp.md](./16-smp.md)）：`BklSection<'a>` typed witness（`os/kernel/src/smp.rs:867`）把"当前持有 BKL"从注释约定升级为编译期类型证明。`smp_state_with(section, &SmpState)` 等需 `&BklSection<'_>` 的 API 自动拒绝"未持锁调用"，从根上消除"漏 BKL"问题。Rust 实现细节见 [16-smp.md](./16-smp.md)（BklSection witness 设计 + RAII vs non-RAII 取舍）。
 
 > **本节是概念索引**：详细 BKL/per-CPU/调度并行化的设计与代码见 [16-smp.md](./16-smp.md)。本章仅建立"Minix3 是 BKL 全局串行 + per-CPU 局部状态"的心智模型，避免读者在 boot 期误用 `Rc/RefCell`（SMP 跨 CPU UB）。
 
@@ -1383,9 +1383,9 @@ pub struct SchedFields {
 }
 ```
 
-**p_priority/p_quantum 覆写**：C 在 boot 循环中对 VM/RS 覆写 `p_priority=SRV_Q`/`p_quantum_size_ms=SRV_QT`（main.c:215-220），内核 task 不覆写（保持 0），非 schedulable 用户进程保持 0（等 RS 运行时设）。Rust 在 `init_proc_and_boot()` 的 Step 3b 中实现同样的覆写逻辑。
+**p_priority/p_quantum 覆写**：C 在 boot 循环中对 VM/RS 覆写 `p_priority=SRV_Q`/`p_quantum_size_ms=SRV_QT`（main.c:209-210 VM / 232-233 RS），内核 task 不覆写（保持 0），非 schedulable 用户进程保持 0（等 RS 运行时设）。Rust 在 `init_proc_and_boot()` 的 Step 3b 中实现同样的覆写逻辑。
 
-**reset_proc_accounting**：C 在 boot 循环中调用 `reset_proc_accounting(rp)` 重置统计（main.c:172）。Rust 的 `Accounting`/`TimeStats`/`CyclesStats` 结构体在 `KProcess::empty_uninit()` 中 const-init 为零值，boot 期无需额外重置。
+**reset_proc_accounting**：C 在 boot 循环中调用 `reset_proc_accounting(rp)` 重置统计（main.c:186）。Rust 的 `Accounting`/`TimeStats`/`CyclesStats` 结构体在 `KProcess::empty_uninit()` 中 const-init 为零值，boot 期无需额外重置。
 
 ### 3.12 boot→running 转换设计
 
@@ -1472,7 +1472,7 @@ pub fn bsp_finish_booting(proc_table: &mut ProcessTable, smp_state: &mut SmpStat
 
 ### 4.0 实现地图：init_proc_and_boot() 主流程
 
-Rust boot 主流程入口是 `init_proc_and_boot(kernel_info: &KernelInfo)`（[lib.rs:706](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），对应 C 的 `proc_init()` + main.c boot image 循环。
+Rust boot 主流程入口是 `init_proc_and_boot(kernel_info: &KernelInfo)`（[lib.rs:767](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），对应 C 的 `proc_init()` + main.c boot image 循环。
 
 ```
 init_proc_and_boot(kernel_info)
@@ -1496,24 +1496,24 @@ init_proc_and_boot(kernel_info)
 └── Step 4: boot_procs 信息已在 kernel_info 中
 ```
 
-后续 `bsp_finish_booting()`（[lib.rs:1162](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）负责唤醒：RTS_UNSET(PROC_STOP) 循环 + 时钟/FPU 初始化 + `switch_to_user()`。
+后续 `bsp_finish_booting()`（[lib.rs:1806](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）负责唤醒：RTS_UNSET(PROC_STOP) 循环 + 时钟/FPU 初始化 + `switch_to_user()`。
 
 ### 4.1 arch 层：CpuContextArch trait 实现
 
-`CpuContextArch` trait（[boot.rs:128](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)）是 kernel 层与 arch 层的唯一接口。三架构各自实现：
+`CpuContextArch` trait（[boot.rs:142](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)）是 kernel 层与 arch 层的唯一接口。三架构各自实现：
 
 **x86_64**（[x86_64/boot.rs](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/boot.rs)）：
 
 ```rust
 pub struct X86_64CpuContext {
-    pub psw: u64,      // RFLAGS 初值（INIT_PSW / INIT_TASK_PSW）
-    pub cs: u16,       // USER_CS_SELECTOR
-    pub ds: u16,       // USER_DS_SELECTOR
-    pub ss: u16, pub es: u16, pub fs: u16, pub gs: u16,
-    pub rip: u64,      // entry.pc
-    pub rsp: u64,      // entry.sp
-    pub rbx: u64,      // entry.ps_strings（argv 指针）
-    pub fpu_policy: X86FpuInitPolicy,  // KernelTask | LazyUserInit
+    pub(super) psw: u64,   // RFLAGS 初值（INIT_PSW / INIT_TASK_PSW）
+    pub(super) cs: u64,    // USER_CS_SELECTOR
+    pub(super) ds: u64,    // USER_DS_SELECTOR
+    pub(super) ss: u64, pub(super) es: u64, pub(super) fs: u64, pub(super) gs: u64,
+    pub(super) rip: u64,   // entry.pc
+    pub(super) rsp: u64,   // entry.sp
+    pub(super) rbx: u64,   // entry.ps_strings（argv 指针）
+    fpu_policy: X86FpuInitPolicy,  // KernelTask | LazyUserInit
 }
 ```
 
@@ -1548,7 +1548,7 @@ pub struct Riscv64CpuContext {
 
 ### 4.2 arch 层：load_vm_elf 共享实现
 
-`load_vm_elf` 是 free function（[boot.rs:203](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)），非 trait 方法——三架构实现字节相同，放 trait 是假多态。
+`load_vm_elf` 是 free function（[boot.rs:271](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)），非 trait 方法——三架构实现字节相同，放 trait 是假多态。
 
 ```rust
 pub fn load_vm_elf<P: Paging>(
@@ -1566,7 +1566,7 @@ ELF 段标志映射：`PF_R|PF_W|PF_X` → `PageFlags::PRESENT | USER_ACCESSIBLE
 
 **FIX-24 (Phase 9): 真实 VM ELF 加载已实现**（mock + 非 mock 路径都已接通）。非 mock 路径通过 `Paging::from_active_root(current_root_phys())` 包装 `arch_boot_impl` 创建并激活的 bootstrap 页表，将 VM ELF 段直接映射进去（identity mapping, paddr=vaddr）。加载完成后 module 物理内存立即通过 `memmap::add_memmap` 回收（撤销 Phase A.2 的 `cut_memmap`）。VM 的 `p_seg.phys_root`/`virt_root` 也同步记录为 bootstrap 根，使随后的 `init_post_and_memory` 能将 VM 安装为 ptproc（`set_ptproc` + `set_current_ptproc_nr`）。VMCTL SetAddrSpace 在 VM 安装自己的页表后会通过 `TlbArch::set_active_root` 替换硬件根（CR3/TTBR0/satp）。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 
-**FIX-23: boot module 物理内存回收**（mock + 非 mock 路径）：`load_vm_elf` 成功返回后，`init_proc_and_boot` 立即调 `memmap::add_memmap(FREE_MEMMAP, module.start, module.len)` 把 module 的物理内存归还给 kernel 分配器（[lib.rs:901-904 mock](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) / [lib.rs:942-945 非 mock](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。C 对照：`protect.c:450-451` `mod->mod_start = mod_end = 0` 标记已消费。这撤销了 `kmain` Phase A.2 的 `cut_memmap` 临时切除（[lib.rs:326-333](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），让 module 物理页重新可用。详见 [01-boot-shim-bootstrap.md §2.5 boot module 内存生命周期](01-boot-shim-bootstrap.md)。
+**FIX-23: boot module 物理内存回收**（mock + 非 mock 路径）：`load_vm_elf` 成功返回后，`init_proc_and_boot` 立即调 `memmap::add_memmap(FREE_MEMMAP, module.start, module.len)` 把 module 的物理内存归还给 kernel 分配器（[lib.rs:909 mock](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) / [lib.rs:950 非 mock](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。C 对照：`protect.c:450-451` `mod->mod_start = mod_end = 0` 标记已消费。这撤销了 `kmain` Phase A.2 的 `cut_memmap` 临时切除（[lib.rs:344-349](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），让 module 物理页重新可用。详见 [01-boot-shim-bootstrap.md §2.5 boot module 内存生命周期](01-boot-shim-bootstrap.md)。
 
 ### 4.3 kernel 层：ProcessTable 与 PrivTable
 
@@ -1600,7 +1600,7 @@ SMP 安全：所有方法要求持有 BKL（boot 期单线程，无需锁）。
 
 ### 4.4 kernel 层：KProcess 结构
 
-`KProcess`（[proc.rs:767](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）字段按语义分组：
+`KProcess`（[proc.rs:850](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）字段按语义分组：
 
 | 分组 | 字段 | C 对应 |
 |------|------|--------|
@@ -1611,7 +1611,7 @@ SMP 安全：所有方法要求持有 BKL（boot 期单线程，无需锁）。
 | IPC | `p_nextready`, `p_caller_q`, `p_q_link` (AtomicI32), `p_getfrom_e`, `p_sendto_e` | p_nextready, p_caller_q, p_q_link, p_getfrom_e, p_sendto_e |
 | VM | `p_seg: ProcessSegments`, `priv_id: Option<PrivId>` | p_seg, p_priv |
 
-**fork_from**（[proc.rs:1385](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）：运行时路径（非 boot 路径），创建子进程：
+**fork_from**（[proc.rs:1497](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）：运行时路径（非 boot 路径），创建子进程：
 - 继承调度属性（priority/quantum/cpu/cpu_mask）与 IPC 端点（`p_getfrom_e`/`p_sendto_e`）
 - 重置 accounting/time/cycles/cpuavg（子进程不继承父进程 CPU 时间统计）
 - 队列指针独立（`p_nextready`/`p_caller_q`/`p_q_link` = NONE）
@@ -1621,7 +1621,7 @@ SMP 安全：所有方法要求持有 BKL（boot 期单线程，无需锁）。
 
 ### 4.5 kernel 层：能力授予
 
-`grant_capability`（[kpriv.rs:494](file:///home/xzhao/github/minix-rs/os/kernel/src/kpriv.rs)）是"分配+配置"原子操作，替代 C 的 `get_priv` + 散落 `s_flags`/`s_trap_mask` 赋值：
+`grant_capability`（[kpriv.rs:836](file:///home/xzhao/github/minix-rs/os/kernel/src/kpriv.rs)）是"分配+配置"原子操作，替代 C 的 `get_priv` + 散落 `s_flags`/`s_trap_mask` 赋值：
 
 ```rust
 pub fn grant_capability(
@@ -1660,7 +1660,7 @@ pub fn grant_capability(
 
 ### 4.7 主流程：init_proc_and_boot()
 
-`init_proc_and_boot`（[lib.rs:706](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）的 Step 3a/3b 对称结构：
+`init_proc_and_boot`（[lib.rs:767](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）的 Step 3a/3b 对称结构：
 
 **Step 3a**（内核 task）：遍历 `KERNEL_TASKS`（编译期硬编码），每步：
 1. `set_boot_name(name)` — 设进程名
@@ -1677,11 +1677,11 @@ pub fn grant_capability(
 6. 非 VM → `RTS_SET(VMINHIBIT|BOOTINHIBIT)` — 等 VM 建页表
 7. `RTS_SET(PROC_STOP)` + `RTS_CLEAR(SLOT_FREE)`
 
-`schedulable` 判定对应 C `iskerneln(proc_nr) || isrootsysn(proc_nr) || proc_nr == VM_PROC_NR`（main.c:173）。
+`schedulable` 判定对应 C `iskerneln(proc_nr) || isrootsysn(proc_nr) || proc_nr == VM_PROC_NR`（main.c:196）。
 
 ### 4.8 boot→running：bsp_finish_booting
 
-`bsp_finish_booting`（[lib.rs:1162](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）是 boot 流程终点，类型 `-> !`（never returns）：
+`bsp_finish_booting`（[lib.rs:1806](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）是 boot 流程终点，类型 `-> !`（never returns）：
 
 ```
 bsp_finish_booting(proc_table, smp_state) -> !
@@ -1847,11 +1847,11 @@ boot 期 panic（`assert_eq!` / `expect`）vs 运行时 `Result`：boot 期错�
 ```bash
 # grant_capability 调用点（上层应只用 grant_capability，不直接调 assign_static + configure_boot_priv）
 rg "grant_capability" os/kernel/src/lib.rs
-# → init_proc_and_boot 中 3 处调用（kernel task / VM / RS）
+# → init_proc_and_boot 中 2 处调用点（Step 3a kernel task 1 次 + Step 3b 循环内 VM/RS 各 1 次）
 
 # 旧字段 initial_pc/initial_sp 0 残留
 rg "initial_pc|initial_sp|initial_ps_strings_reg|initial_status" os/ --type rust -g '!*.md'
-# → 0 matches（旧字段已移除，改用 EntrySpec）
+# → 0 字段定义（仅 proc.rs 5 处 doc 注释说明"旧字段已移除，改用 EntrySpec"，非残留）
 ```
 
 **完整的验证不变量集**（重构完成的 4 项 grep 检查）：
@@ -1859,15 +1859,19 @@ rg "initial_pc|initial_sp|initial_ps_strings_reg|initial_status" os/ --type rust
 ```bash
 # 1. 硬件术语泄漏检查：OS 层不得出现 arch 内部类型名
 rg "SegmentSelectors|fpu_needs_zero|InitialRegState" os/kernel/src/
-# → 0 matches（这些名字只允许出现在 os/arch/src/）
+# → 0 实际引用（lib.rs:1934 曾有注释误提旧 API `BootProcArch::initial_reg_state(fpu_needs_zero=true)`，
+#   已修正为 CpuContextArch FPU 策略字段描述——这些名字只允许出现在 os/arch/src/）
 
 # 2. 旧 trait 0 残留
 rg "ArchProcReset|ArchProcInit|BootProcArch" os/ --type rust
-# → 0 matches（3 个 trait 已合并为 CpuContextArch）
+# → 1 match = os/arch/src/lib.rs:254 注释"Replaces the old CurrentBootProcArch"
+#   （grep 命中 CurrentBootProcArch 的子串，是合法迁移说明，非类型残留；
+#   3 个 trait 已合并为 CpuContextArch）
 
 # 3. boot 阶段 alloc 不可达
-rg "alloc::" os/kernel/src/ --type rust | rg "boot|init_proc"
-# → 0 matches（boot 路径不得调用分配器，见 §3.8）
+rg "alloc::" os/kernel/src/ --type rust -g '!boot_alloc.rs' | rg -v "boot_alloc::" | rg "boot|init_proc"
+# → 0 matches（boot 路径不得调用通用堆分配器，见 §3.8；boot_alloc::init_boot_pt_alloc 是
+#   boot 专用页表分配器注册（lib.rs:183-184），非通用分配）
 
 # 4. arch 抽象唯一入口：kernel 层只经 CurrentCpuContextArch 类型别名访问
 rg "CurrentCpuContextArch" os/kernel/src/
