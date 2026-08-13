@@ -1512,3 +1512,24 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 - B. 改为 60——与 C i386 完全一致，但影响所有依赖 100 的测试/时间片计算
 
 **关联**：Proposal #12（DEFAULT_HZ 跨 crate 重复定义的"权威位置"问题：os/arch + os/kernel 双定义，os/arch 注释已列 C 值）。
+
+---
+
+## D19-1: cause_signal SELF 路径致命信号子路径（SIGS_IS_LETHAL + backup 切换）DEFERRED（2026-08-14）
+
+**来源**：doc 19-syscall-signal 深度 full-review（2026-08-14，marathon round 19）
+
+**背景**：Rust `cause_signal`（syscall_signal.rs:164-251）已按 C 双路径重构：
+- **SELF 路径**（C: system.c:416）：`rp->p_endpoint == sig_mgr` 时写自身 `s_sig_pending` + `mini_notify_core` 唤醒自身（C 的 SIGKSIGSM=73 数值仅写入无内核读者的 `s_sig_pending`，无需常量）
+- **外部路径**（C: system.c:439-445）：写 `p_pending` + `RTS_SIGNALED|RTS_SIG_PENDING` + SM 的 `s_sig_pending` 置 SIGKSIG（74 超出 u64 位宽 → no-op，写记录无读者，行为保持）+ `mini_notify_core` 唤醒 SM 自身（源 = SYSTEM）
+
+**待办**：SELF 路径内 `SIGS_IS_LETHAL`（signal.h:283，SIGILL/SIGBUS/SIGFPE/SIGSEGV/SIGEMT/SIGABRT）子路径 DEFERRED（syscall_signal.rs:180-182 注释标注）：
+
+| 侧 | 行为 | 位置 |
+|----|------|------|
+| C（ground truth）| 自管理进程收到致命信号 → 有 backup：切换 `s_sig_mgr = s_bak_sig_mgr`、清 `s_bak_sig_mgr`、`RTS_UNSET(sig_mgr_rp, RTS_NO_PRIV)`、递归 `cause_sig` 重试；无 backup：`proc_stacktrace` + `panic` | system.c:417-432 |
+| Rust | 当前跳过（`当前阶段无用户态进程，自管理进程（VM/RS）收到致命信号的路径不可达`） | syscall_signal.rs:180-182 |
+
+**依赖**：`s_bak_sig_mgr` 字段接入 + `RTS_NO_PRIV` 清除 + panic 集成（设计级：需决定 Rust 内核 panic 策略）。
+
+**建议**：待用户态进程落地、信号路径可测后再实现；当前不可达路径无需占用设计决策。

@@ -33,9 +33,6 @@ use minix_arch::{
 // Previously ENOSYS=38 here (should be 78).
 use crate::errno::*;
 
-/// SELF endpoint sentinel. C: `SELF` — endpoint.h
-const SELF: i32 = -2;
-
 // ── Signal constants ──
 
 /// Number of signals. C: `_NSIG` — signal.h
@@ -111,23 +108,23 @@ pub fn dispatch_kill(
     priv_table: &mut PrivTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
-    // C: do_kill.c:25-26 — extract parameters
+    // C: do_kill.c:26,28 — m_sigcalls.sig / m_sigcalls.endpt
     let endpt = sc.endpt;    // m_sigcalls.endpt
     let sig_nr = sc.sig;     // m_sigcalls.sig
 
-    // C: do_kill.c:28-30 — validate signal number
+    // C: do_kill.c:31 — sig_nr >= _NSIG → EINVAL
     if sig_nr as usize >= NSIG {
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_kill.c:27 — isokendpt(proc_nr_e, &proc_nr)
+    // C: do_kill.c:30 — isokendpt(proc_nr_e, &proc_nr)
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_kill.c:29 — iskerneln(proc_nr) → EPERM
+    // C: do_kill.c:32 — iskerneln(proc_nr) → EPERM
     if ProcessTable::is_kernel(target_nr) {
         return KcallResult::Ok(EPERM);
     }
@@ -140,7 +137,7 @@ pub fn dispatch_kill(
 
 /// Cause a signal to be sent to a process.
 ///
-/// C: `cause_sig()` — system.c:389-426
+/// C: `cause_sig()` — system.c:389-449
 ///
 /// Adds the signal to the target's pending bitmap and marks the target
 /// as signaled. If the target was not already in the RTS_SIGNALED state,
@@ -154,45 +151,85 @@ pub fn dispatch_kill(
 ///
 /// # Signal manager notification
 ///
-/// C: `cause_sig()` calls `send_sig(sig_mgr, SIGKSIG)` which adds SIGKSIG
-/// to the signal manager's `s_sig_pending` and calls `mini_notify` to
-/// wake it up. Both steps are now implemented: `s_sig_pending` is marked
-/// inline, and `mini_notify_core` is called to deliver the notification.
+/// C: `cause_sig()` (system.c:389-449) — 双路径：
+/// - SELF 路径（`rp->p_endpoint == sig_mgr`，目标进程是自身信号管理器）：
+///   `sigaddset(&priv(rp)->s_sig_pending, sig_nr)` + `send_sig(SIGKSIGSM)` 唤醒目标自身。
+/// - 外部路径（其余）：`sigaddset(&rp->p_pending, sig_nr)` + `RTS_SIGNALED|RTS_SIG_PENDING`
+///   + `send_sig(sig_mgr, SIGKSIG)` 唤醒目标进程的信号管理器。
+///
+/// 两条路径的唤醒均经 `mini_notify_core`（源 = SYSTEM，目标 = 需被唤醒者，
+/// C: `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)` — system.c:381）实现；
+/// `s_sig_pending` 标记为写记录（内核无读者）。
+/// SIGS_IS_LETHAL 致命信号自管理路径（备份管理器切换 / panic）DEFERRED（见 todo.md）。
 fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
     proc_table: &mut ProcessTable,
     priv_table: &mut PrivTable,
 ) {
-    // C: system.c:406 — rp = proc_addr(proc_nr)
+    // C: system.c:411 — rp = proc_addr(proc_nr)
+    // C: system.c:412-413 — sig_mgr = priv(rp)->s_sig_mgr; if (sig_mgr == SELF) sig_mgr = rp->p_endpoint
+    let sig_mgr = proc_table.sig_mgr(target_nr, priv_table);
+    let target_endpoint = proc_table.get(target_nr).map(|p| p.p_endpoint);
+
+    // ── SELF 路径：目标进程是自己的信号管理器 ──
+    // C: system.c:416 — if (rp->p_endpoint == sig_mgr) → 直接自管理，不走外部通知
+    if let (Some(ep), Some(mgr)) = (target_endpoint, sig_mgr)
+        && ep == mgr
+    {
+        // C: system.c:417 — if (SIGS_IS_LETHAL(sig_nr)) → 备份管理器切换 / panic。
+        // DEFERRED: 需 s_bak_sig_mgr 切换 + RTS_NO_PRIV + panic 集成（见 01-stage-kernel/todo.md）。
+        // 当前阶段无用户态进程，自管理进程（VM/RS）收到致命信号的路径不可达。
+
+        // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)
+        // 自管理进程的信号记入其自身 s_sig_pending（内核侧写记录，无内核读者；
+        // sig_nr ≤ 64 在 Rust SigSet(u64) 位宽内）。
+        if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
+            && let Some(priv_) = priv_table.get_mut(pid)
+        {
+            priv_.signals.s_sig_pending.add(sig_nr as u8);
+        }
+
+        // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
+        // 唤醒目标自身。C 的通知数值（SIGKSIGSM=73）仅写入 s_sig_pending（无内核读者），
+        // 故 Rust 直接 mini_notify_core（源 = SYSTEM，目标 = 自身），无需 SIGKSIGSM 常量。
+        let _ = crate::ipc::mini_notify_core(
+            proc_table.procs_slice_mut(),
+            priv_table,
+            crate::proc::proc_nr::SYSTEM,
+            ep,
+        );
+        return;
+    }
+
+    // ── 外部路径：目标由外部信号管理器管理 ──
+    // C: system.c:439 — s = sigismember(&rp->p_pending, sig_nr)
+    // Rust 以 RTS_SIGNALED 判定 was_signaled + 无条件 p_pending.add：
+    // sigaddset 幂等，与 C 的 sigismember 门控语义等价。
     let was_signaled = proc_table.get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
 
-    // C: system.c:411 — sigaddset(&rp->p_pending, sig_nr)
+    // C: system.c:442 — sigaddset(&rp->p_pending, sig_nr)
     if let Some(target) = proc_table.get_mut(target_nr) {
         // R-16 (2026-08-12): SAFETY: `sig_nr` (u32) was validated `< NSIG` (64)
         // at the do_kill call site (syscall_signal.rs:119), so it fits in u8.
         target.p_pending.add(sig_nr as u8);
     }
 
-    // C: system.c:413-414 — if !RTS_ISSET(rp, RTS_SIGNALED)
+    // C: system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     if !was_signaled {
-        // C: system.c:415 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
+        // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
         proc_table.rts_set(target_nr, RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
 
-        // C: system.c:416-418 — send_sig(sig_mgr, SIGKSIG)
-        // Look up the signal manager for this process.
-        // C: system.c:399 — sig_mgr = priv(rp)->s_sig_mgr
-        // C: system.c:400 — if(sig_mgr == SELF) sig_mgr = rp->p_endpoint
-        let sig_mgr = proc_table.sig_mgr(target_nr, priv_table);
-
-        // Add SIGKSIG to the signal manager's s_sig_pending.
-        // C: system.c:445 — send_sig(sig_mgr, SIGKSIG)
-        // send_sig() adds a notification to the signal manager's pending set.
-        // C: send_sig — add SIGKSIG to s_sig_pending + mini_notify.
-        // s_sig_pending is marked above; mini_notify is called below.
-        if let Some(sig_mgr_ep) = sig_mgr
-            && let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
+        // C: system.c:445-446 — send_sig(sig_mgr, SIGKSIG) → 唤醒信号管理器
+        // send_sig (system.c:364-382): sigaddset(&priv(sig_mgr)->s_sig_pending, SIGKSIG)
+        // + mini_notify(proc_addr(SYSTEM), rp->p_endpoint) —— 通知目标是**信号管理器自身**，
+        // 源是 SYSTEM。
+        if let Some(sig_mgr_ep) = sig_mgr {
+            // C: system.c:380 — sigaddset(&priv->s_sig_pending, sig_nr)
+            // SIGKSIG=74 超出 Rust SigSet(u64) 位宽 → add 为 no-op；s_sig_pending 是
+            // 写记录（内核无读者），行为保持。
+            if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
                 && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
                     && let Some(pid) = sig_mgr_proc.priv_id
                         && let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
@@ -202,47 +239,13 @@ fn cause_signal(
                             sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
 
-        // C: send_sig — mini_notify(proc_addr(_ENDPOINT_P(ep)), sp->s_sig_mgr)
-        // Notify the signal manager's OWN signal manager (usually SELF → skip).
-        // mini_notify_core is idempotent (sets s_notify_pending bit), so
-        // we skip the C RTS_SIGNATURE check (not present in Rust).
-        if let Some(sig_mgr_ep) = sig_mgr {
-            // Look up the signal manager's OWN signal manager.
-            // C: sp = priv(proc_addr(sig_mgr)); sp->s_sig_mgr
-            // All read-only lookups first (capturing owned Endpoint), so the
-            // mutable borrows for mini_notify_core below start fresh.
-            let sig_mgr_mgr_ep = proc_table
-                .endpoint_to_nr(sig_mgr_ep)
-                .and_then(|nr| proc_table.get(nr))
-                .and_then(|p| p.priv_id)
-                .and_then(|pid| priv_table.get(pid))
-                .and_then(|kp| {
-                    let mgr = kp.signals.s_sig_mgr;
-                    // C: if (sp->s_sig_mgr == SELF || sp->s_sig_mgr == NONE) return;
-                    // Endpoint::NONE is ENDPOINT_SLOT_TOP-2 (a large positive
-                    // value, NOT negative), so compare against the constant
-                    // rather than checking the sign of the raw value.
-                    if mgr == Endpoint::SELF || mgr == Endpoint::NONE {
-                        None // SELF or NONE → no notification
-                    } else {
-                        Some(mgr)
-                    }
-                });
-
-            if let Some(sig_mgr_mgr_ep) = sig_mgr_mgr_ep {
-                // C: mini_notify(proc_addr(_ENDPOINT_P(ep)), sp->s_sig_mgr)
-                // Caller = signal manager, destination = signal manager's signal manager.
-                let sig_mgr_nr = match proc_table.endpoint_to_nr(sig_mgr_ep) {
-                    Some(nr) => nr,
-                    None => return,
-                };
-                let _ = crate::ipc::mini_notify_core(
-                    proc_table.procs_slice_mut(),
-                    priv_table,
-                    sig_mgr_nr,
-                    sig_mgr_mgr_ep,
-                );
-            }
+            // C: system.c:381 — mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
+            let _ = crate::ipc::mini_notify_core(
+                proc_table.procs_slice_mut(),
+                priv_table,
+                crate::proc::proc_nr::SYSTEM,
+                sig_mgr_ep,
+            );
         }
     }
 }
@@ -256,7 +259,7 @@ fn cause_signal(
 /// matches the caller. Returns the endpoint and pending signal map,
 /// then clears RTS_SIGNALED and p_pending.
 ///
-/// # C Semantic Alignment (do_getksig.c:22-41)
+/// # C Semantic Alignment (do_getksig.c:27-40)
 ///
 /// 1. Scan `BEG_USER_ADDR..END_PROC_ADDR` for `RTS_SIGNALED` process
 /// 2. Check `caller == priv(rp)->s_sig_mgr`
@@ -269,7 +272,7 @@ pub fn dispatch_getksig(
     proc_table: &mut ProcessTable,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    // C: do_getksig.c:22-40 — scan all user processes
+    // C: do_getksig.c:27-40 — scan all user processes
     let mut found: Option<(Endpoint, u64)> = None;
 
     for rp in proc_table.iter() {
@@ -280,11 +283,11 @@ pub fn dispatch_getksig(
         if ProcessTable::is_kernel(rp.p_nr) {
             continue;
         }
-        // C: do_getksig.c:24 — if (!RTS_ISSET(rp, RTS_SIGNALED)) continue
+        // C: do_getksig.c:28 — if (!RTS_ISSET(rp, RTS_SIGNALED)) continue
         if !rp.p_rts_flags.is_set(RtsFlagsBits::SIGNALED) {
             continue;
         }
-        // C: do_getksig.c:25 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) continue
+        // C: do_getksig.c:29 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) continue
         let sig_mgr = proc_table.sig_mgr(rp.p_nr, priv_table);
         if sig_mgr != Some(caller.p_endpoint) {
             continue;
@@ -296,15 +299,15 @@ pub fn dispatch_getksig(
     }
 
     if let Some((endpt, map)) = found {
-        // C: do_getksig.c:28-30 — write reply
+        // C: do_getksig.c:31-32 — write reply
         // m_ptr->m_sigcalls.endpt = rp->p_endpoint
         // m_ptr->m_sigcalls.map = rp->p_pending
         let target_nr = proc_table.endpoint_to_nr(endpt).unwrap();
 
         // Clear RTS_SIGNALED and p_pending on the found process.
-        // C: do_getksig.c:33 — RTS_UNSET(rp, RTS_SIGNALED)
+        // C: do_getksig.c:34 — RTS_UNSET(rp, RTS_SIGNALED)
         proc_table.rts_unset(target_nr, RtsFlagsBits::SIGNALED);
-        // C: do_getksig.c:34 — sigemptyset(&rp->p_pending)
+        // C: do_getksig.c:33 — sigemptyset(&rp->p_pending)
         if let Some(target) = proc_table.get_mut(target_nr) {
             target.p_pending.clear();
         }
@@ -318,7 +321,7 @@ pub fn dispatch_getksig(
             _padding: [0u8; 32],
         };
     } else {
-        // C: do_getksig.c:41 — m_ptr->m_sigcalls.endpt = NONE
+        // C: do_getksig.c:40 — m_ptr->m_sigcalls.endpt = NONE
         msg.m_u.m_sigcalls = MessSigcalls {
             map: 0,
             endpt: Endpoint::NONE.get(),
@@ -339,7 +342,7 @@ pub fn dispatch_getksig(
 /// Validates the caller is the signal manager for the target process,
 /// then clears RTS_SIG_PENDING if no new signals arrived.
 ///
-/// # C Semantic Alignment (do_endksig.c:28-41)
+/// # C Semantic Alignment (do_endksig.c:27-36)
 ///
 /// 1. `isokendpt(endpt, &proc_nr)` — validate endpoint → EINVAL
 /// 2. `caller->p_endpoint != priv(rp)->s_sig_mgr` — permission check → EPERM
@@ -352,10 +355,10 @@ pub fn dispatch_endksig(
     priv_table: &PrivTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
-    // C: do_endksig.c:28 — m_sigcalls.endpt
+    // C: do_endksig.c:27 — m_sigcalls.endpt
     let endpt = sc.endpt;
 
-    // Step 1: Validate endpoint. C: do_endksig.c:28 — isokendpt()
+    // Step 1: Validate endpoint. C: do_endksig.c:27 — isokendpt()
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
@@ -363,14 +366,14 @@ pub fn dispatch_endksig(
     };
 
     // Step 2: Check caller is the signal manager for the target.
-    // C: do_endksig.c:33 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) return EPERM
+    // C: do_endksig.c:31 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) return EPERM
     let sig_mgr = proc_table.sig_mgr(target_nr, priv_table);
     if sig_mgr != Some(caller.p_endpoint) {
         return KcallResult::Ok(EPERM);
     }
 
     // Step 3: Check RTS_SIG_PENDING is set.
-    // C: do_endksig.c:34 — if (!RTS_ISSET(rp, RTS_SIG_PENDING)) return EINVAL
+    // C: do_endksig.c:32 — if (!RTS_ISSET(rp, RTS_SIG_PENDING)) return EINVAL
     if !proc_table.get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING))
     {
@@ -378,7 +381,7 @@ pub fn dispatch_endksig(
     }
 
     // Step 4: If no new signal arrived, clear RTS_SIG_PENDING.
-    // C: do_endksig.c:37-38 — if (!RTS_ISSET(rp, RTS_SIGNALED))
+    // C: do_endksig.c:35-36 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     //     RTS_UNSET(rp, RTS_SIG_PENDING)
     if !proc_table.get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED))
@@ -416,7 +419,7 @@ pub struct SigMsg {
 
 /// Dispatch SYS_SIGSEND.
 ///
-/// C: `do_sigsend()` — do_sigsend.c:19-163
+/// C: `do_sigsend()` — do_sigsend.c:19-162
 ///
 /// POSIX-style signal delivery: build sigframe on user stack,
 /// modify registers to jump to signal handler.
@@ -431,31 +434,27 @@ pub struct SigMsg {
 /// 1. Validate endpoint (C: do_sigsend.c:31-32)
 /// 2. Copy `sigmsg` from caller's user space (C: do_sigsend.c:36-39)
 /// 3. Build `SigContext` from target's `CpuContext` (C: do_sigsend.c:50-115)
-/// 4. Build `SigFrame` with computed frame address (C: do_sigsend.c:49,117-118)
-/// 5. Copy `SigFrame` to target's user stack (C: do_sigsend.c:120-125)
-/// 6. Modify target's `CpuContext` for handler entry (C: do_sigsend.c:130-145)
+/// 4. Build `SigFrame` with computed frame address (C: do_sigsend.c:46-47,117-118)
+/// 5. Copy `SigFrame` to target's user stack (C: do_sigsend.c:120-124)
+/// 6. Modify target's `CpuContext` for handler entry (C: do_sigsend.c:133-135)
 pub fn dispatch_sigsend(
     caller: &mut KProcess,
     msg: &Message,
     proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
-    // C: do_sigsend.c:33-34 — extract parameters
-    let mut endpt = sc.endpt;
+    // C: do_sigsend.c:31,37 — m_sigcalls.endpt / m_sigcalls.sigctx
+    // C 无 SELF 替换：endpoint 原样传 isokendpt（负 endpoint 如 SYSTEM → EINVAL）。
+    let endpt = sc.endpt;
     let sigctx_addr = sc.sigctx;
 
-    // C: do_sigsend.c:36-37 — SELF replacement
-    if endpt == SELF {
-        endpt = caller.p_endpoint.0;
-    }
-
-    // C: do_sigsend.c:36-37 — validate endpoint
+    // C: do_sigsend.c:31 — isokendpt → EINVAL
     let target_nr = match proc_table.endpoint_to_nr(Endpoint(endpt)) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_sigsend.c:38 — iskerneln check
+    // C: do_sigsend.c:32 — iskerneln → EPERM
     if target_nr.0 < 0 {
         return KcallResult::Ok(EPERM);
     }
@@ -498,7 +497,7 @@ pub fn dispatch_sigsend(
     }
 
     // ── Step 2-3: Build sigcontext + sigframe from target's registers ──
-    // C: do_sigsend.c:49-118 — compute stack ptr, build sigcontext, build sigframe
+    // C: do_sigsend.c:46-118 — compute stack ptr, build sigcontext, build sigframe
     // Idempotent: only reads CpuContext, safe to re-run after VMSUSPEND.
     let (frame, frame_addr) = {
         let target = match proc_table.get(target_nr) {
@@ -527,7 +526,7 @@ pub fn dispatch_sigsend(
     };
 
     // ── Step 4: Copy sigframe to target's user stack ──
-    // C: do_sigsend.c:120-125 — data_copy_vmcheck(caller, KERNEL, &fr, endpt, frp, sizeof)
+    // C: do_sigsend.c:120-124 — data_copy_vmcheck(caller, KERNEL, &fr, endpt, frp, sizeof)
     // May VMSUSPEND — the frame is on the kernel stack, so re-execution
     // after resume will rebuild it idempotently.
     {
@@ -565,7 +564,7 @@ pub fn dispatch_sigsend(
     }
 
     // ── Step 5: Modify target registers for handler entry ──
-    // C: do_sigsend.c:130-145 — MUST be after the last data_copy_vmcheck!
+    // C: do_sigsend.c:133-135 — MUST be after the last data_copy_vmcheck!
     // WARNING (C: do_sigsend.c:126-131): changes to process registers MUST
     // be deferred until after the copy succeeds, otherwise VMSUSPEND
     // recovery would re-execute and corrupt register state.
@@ -587,7 +586,7 @@ pub fn dispatch_sigsend(
             frame_addr,
         );
 
-        // C: do_sigsend.c:154 — `rp->p_misc_flags &= ~MF_FPU_INITIALIZED`
+        // C: do_sigsend.c:156 — `rp->p_misc_flags &= ~MF_FPU_INITIALIZED`
         // Signal handler should get clean FPU. Clear the EXT_REG_INITIALIZED
         // flag so the next FPU instruction traps and lazily initializes a
         // fresh FPU state (64-bit lazy FPU model — no save/restore on
@@ -600,15 +599,15 @@ pub fn dispatch_sigsend(
 
 /// Dispatch SYS_SIGRETURN.
 ///
-/// C: `do_sigreturn()` — do_sigreturn.c:19-96
+/// C: `do_sigreturn()` — do_sigreturn.c:19-95
 ///
 /// Restore process state after signal handler returns.
 /// Copies sigcontext from user stack and restores registers.
 ///
 /// # Flow
 ///
-/// 1. Validate endpoint (C: do_sigreturn.c:28-30)
-/// 2. Copy `SigContext` from target's user space (C: do_sigreturn.c:33-36)
+/// 1. Validate endpoint (C: do_sigreturn.c:28-29)
+/// 2. Copy `SigContext` from target's user space (C: do_sigreturn.c:33-35)
 /// 3. Restore target's `CpuContext` from `SigContext` (C: do_sigreturn.c:42-80)
 /// 4. `arch_setcontext` with trap_style (C: do_sigreturn.c:81)
 /// 5. Check magic integrity (C: do_sigreturn.c:83)
@@ -618,28 +617,24 @@ pub fn dispatch_sigreturn(
     proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
-    // C: do_sigreturn.c:29-30 — extract parameters
-    let mut endpt = sc.endpt;
+    // C: do_sigreturn.c:28,33 — m_sigcalls.endpt / m_sigcalls.sigctx
+    // C 无 SELF 替换：endpoint 原样传 isokendpt（负 endpoint 如 SYSTEM → EINVAL）。
+    let endpt = sc.endpt;
     let sigctx_addr = sc.sigctx;
 
-    // C: do_sigreturn.c:32 — SELF replacement
-    if endpt == SELF {
-        endpt = caller.p_endpoint.0;
-    }
-
-    // C: do_sigreturn.c:32-33 — validate endpoint
+    // C: do_sigreturn.c:28 — isokendpt → EINVAL
     let target_nr = match proc_table.endpoint_to_nr(Endpoint(endpt)) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_sigreturn.c:34 — iskerneln check
+    // C: do_sigreturn.c:29 — iskerneln → EPERM
     if target_nr.0 < 0 {
         return KcallResult::Ok(EPERM);
     }
 
     // ── Step 1: Copy sigcontext from target's user space ──
-    // C: do_sigreturn.c:33-36 — data_copy(endpt, sigctx, KERNEL, &sc, sizeof)
+    // C: do_sigreturn.c:33-35 — data_copy(endpt, sigctx, KERNEL, &sc, sizeof)
     // Note: C uses data_copy (no vmcheck), but minix-rs uses data_copy_vmcheck
     // for uniformity — the user stack may page-fault.
     let sctx: <CurrentSignalContext as SignalContext>::SigContext = Default::default();
