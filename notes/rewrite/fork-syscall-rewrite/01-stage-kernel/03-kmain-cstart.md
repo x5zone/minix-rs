@@ -459,8 +459,8 @@ void prot_init(void)
 
 - **步骤 1-5**（`protect.c:328-336`）：清零并设置描述符表指针。这是"准备阶段"。
 - **步骤 6-10**（`protect.c:339-345`）：填充 GDT 段描述符。64 位模式下，代码段和数据段都是 flat（base=0, limit=full），但 DPL（Descriptor Privilege Level）不同：内核段 DPL=0（`INTR_PRIVILEGE`），用户段 DPL=3（`USER_PRIVILEGE`）。这一步对应 §1.4a 第一问——x86 特权级检查的依据。
-- **步骤 11**（`protect.c:350`）：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`idt_init()`（填充 IDT 门描述符）、`idt_reload()`（加载 IDTR，即 `lidt`）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT 和 IDT。
-- **步骤 12-15**（`protect.c:357-360`）：建立（重建）bootstrap 页表。`pre_init()`（`pre_init.c:217`）已经做过几乎相同的页表设置，并把 `pg_mapkernel()` 的返回值存入了 `kinfo.freepde_start`（`pre_init.c:232`）。`prot_init()` 之所以再次 `pg_clear()` + `pg_identity()` + `pg_mapkernel()`，不是因为内核映射参数变了——`kern_vir_start` / `kern_phys_start` / `kern_kernlen` 是 `pg_utils.c:14-16` 的静态变量，内容不变——而是因为：
+- **步骤 11**（`protect.c:353`）：`prot_load_selectors()` 执行 `lgdt`（加载 GDTR）、`idt_init()`（填充 IDT 门描述符）、`idt_reload()`（加载 IDTR，即 `lidt`）、`lldt`（加载 LDTR）、`ltr`（加载 TR）、重载所有段寄存器（CS/DS/ES/FS/GS/SS）。这是"生效阶段"——从此 CPU 使用我们自己的 GDT 和 IDT。
+- **步骤 12-15**（`protect.c:360-363`）：建立（重建）bootstrap 页表。`pre_init()`（`pre_init.c:217`）已经做过几乎相同的页表设置，并把 `pg_mapkernel()` 的返回值存入了 `kinfo.freepde_start`（`pre_init.c:232`）。`prot_init()` 之所以再次 `pg_clear()` + `pg_identity()` + `pg_mapkernel()`，不是因为内核映射参数变了——`kern_vir_start` / `kern_phys_start` / `kern_kernlen` 是 `pg_utils.c:14-16` 的静态变量，内容不变——而是因为：
   1. `prot_init()` 作为保护子系统的统一初始化入口，选择从零重建页表（连同 GDT/IDT/TSS 一起），确保保护结构处于已知状态；
   2. 重建后的页表是**内核重定位完成后**建立的官方 bootstrap 页表，后续 `arch_boot_proc()` 会把 VM 进程直接加载到这个页表里运行（i386: `protect.c:388`，earm: `protect.c:115`）；
   3. 此时使用的 `kinfo` 已经经过 `kmain()` 补充（`nr_procs`、`nr_tasks`、`boot_procs` 等，`main.c:128-431`），不再只依赖 boot loader 的原始 multiboot 数据。
@@ -512,7 +512,7 @@ void idt_init(void)
 }
 ```
 
-**gate_table 数据结构**（`arch_proto.h:217-221`）：
+**gate_table 数据结构**（`arch/i386/include/arch_proto.h:217-220`）：
 
 ```c
 struct gate_table_s {
@@ -774,7 +774,7 @@ fn init_protection(kernel_info: &KernelInfo) {
 }
 ```
 
-> 实现位置：`os/kernel/src/lib.rs:607`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
+> 实现位置：`os/kernel/src/lib.rs:657`。C 版对应 `protect.c:321`（x86）/ `protect.c:77`（ARM）。
 
 > **为什么需要 `set_kernel_stack()` 而不是 boot 阶段一次性写死栈指针**：
 >
@@ -796,7 +796,7 @@ fn init_protection(kernel_info: &KernelInfo) {
 >
 > 触发条件复核："14 文档正式完成（含 trap frame 布局、`iretq`/`eret`/`sret` 上下文恢复细节）"。
 > - ✅ trap frame 布局：doc 14 §3.7 D7 已覆盖（`ExceptionArch::Frame` associated type，每 arch 自定义布局，`os/arch/src/arch/exception.rs:40-46`）
-> - ❌ `iretq`/`eret`/`sret` 上下文恢复细节：doc 14 §4 未覆盖 return-path asm；Rust 代码中 `restore_user_context` 仅作为注释引用（`os/kernel/src/lib.rs:1497/1510/1521/1546/1576`），无实际 asm 实现
+> - ❌ `iretq`/`eret`/`sret` 上下文恢复细节：doc 14 §4 未覆盖 return-path asm；Rust 代码中 `restore_user_context` 仅作为注释引用（`os/kernel/src/lib.rs:2151/2165/2176/2201/2232`），无实际 asm 实现
 >
 > 评估基于 C 源码两架构的 `restore_user_context` 实现（grep 验证）：
 > - i386（`minix3/minix/kernel/arch/i386/mpx.S:434-459`）：重建 iret 栈帧（SS/SP/PSW/CS/PC）→ 恢复段寄存器（DS/ES/FS/GS）→ `RESTORE_GP_REGS` → `iret`
@@ -858,11 +858,11 @@ fn init_protection(kernel_info: &KernelInfo) {
 
 | CPU 三问 | x86-64 | aarch64 | riscv64 |
 |---------|--------|---------|---------|
-| 1. 特权级生效 | `lgdt gdt_desc` + `ltr TSS_SEL`（`os/arch/src/x86_64/protection.rs:299,349`） | `isb`（SP_EL1 写入后同步，`os/arch/src/arm64/protection.rs:146`） | 无显式 load（CSR 写入即生效，`os/arch/src/riscv64/protection.rs:116`） |
-| 3. 内核栈顶存放 | `TSS.sp0 = kern_stack_top - X86_64_STACK_TOP_RESERVED`，并保留顶部 16 字节存放进程指针与 CPU id（`os/arch/src/x86_64/protection.rs:216`，见 `setup_tss_for_cpu`） | `msr SP_EL1, kern_stack_top`（`os/arch/src/arm64/protection.rs:111`，`init` 中）+ `128`（`set_kernel_stack` 中） | `csrw sscratch, kern_stack_top`（`os/arch/src/riscv64/protection.rs:116`，`init` 中）+ `125`（`set_kernel_stack` 中） |
+| 1. 特权级生效 | `lgdt gdt_desc` + `ltr TSS_SEL`（`os/arch/src/x86_64/protection.rs:301,351`） | `isb`（SP_EL1 写入后同步，`os/arch/src/arm64/protection.rs:146`） | 无显式 load（CSR 写入即生效，`os/arch/src/riscv64/protection.rs:116`） |
+| 3. 内核栈顶存放 | `TSS.sp0 = kern_stack_top - X86_64_STACK_TOP_RESERVED`，并保留顶部 16 字节存放进程指针与 CPU id（`os/arch/src/x86_64/protection.rs:207`，见 `setup_tss_for_cpu`） | `msr SP_EL1, kern_stack_top`（`os/arch/src/arm64/protection.rs:111`，`init` 中）+ `128`（`set_kernel_stack` 中） | `csrw sscratch, kern_stack_top`（`os/arch/src/riscv64/protection.rs:116`，`init` 中）+ `125`（`set_kernel_stack` 中） |
 | 2. 异常向量表内容 | IDT 256 个门描述符（handler 地址暂为 0，仅元数据） | 异常向量表（汇编定义） | trap 向量（汇编定义） |
-| 2. 异常向量表生效 | `lidt idt_desc`（`os/arch/src/x86_64/trap_entry.rs:283`，本文阶段不执行，推迟到 `set_handler()` 后） | `msr vbar_el1, &exc_vector_table` + `isb`（`os/arch/src/arm64/trap_entry.rs:66`） | `csrw stvec, &trap_vector`（`os/arch/src/riscv64/trap_entry.rs:66`） |
-| 2. 系统调用入口 | `wrmsr MSR_LSTAR, syscall_entry`（`os/arch/src/x86_64/trap_entry.rs:249`） | 走 SVC 异常入口（无需配置，`os/arch/src/arm64/trap_entry.rs:45`） | 走 ecall 异常入口（无需配置，`os/arch/src/riscv64/trap_entry.rs:41`） |
+| 2. 异常向量表生效 | `lidt idt_desc`（`os/arch/src/x86_64/trap_entry.rs:304`，本文阶段不执行，推迟到 `set_handler()` 后） | `msr vbar_el1, &exc_vector_table` + `isb`（`os/arch/src/arm64/trap_entry.rs:107`） | `csrw stvec, &trap_vector`（`os/arch/src/riscv64/trap_entry.rs:109`） |
+| 2. 系统调用入口 | `wrmsr MSR_LSTAR, syscall_entry`（`os/arch/src/x86_64/trap_entry.rs:249`） | 走 SVC 异常入口（无需配置，`os/arch/src/arm64/trap_entry.rs:66`） | 走 ecall 异常入口（无需配置，`os/arch/src/riscv64/trap_entry.rs:67`） |
 | 3. 用户态陷入内核栈切换 | CPU 硬件自动用 TSS.sp0 | 异常时硬件自动用 SP_EL1 | U→S 时 `sscratch` 存内核栈顶，handler 用 `csrrw` 交换 sp↔sscratch（sp=内核栈，sscratch=用户栈） |
 
 > **代码不在文档中展开**：完整实现在 `os/arch/src/{x86_64,aarch64,riscv64}/{protection,trap_entry}.rs`。文档列出代码作为概念存在性证明，足以让读者理解 Ch1 §1.4 的 CPU 三问如何被回答；完整代码细节（位编码、寄存器顺序、barrier 类型）属于实现层，不在概念文档展开。
@@ -891,7 +891,7 @@ pub type CurrentTrapEntry = /* 同样模式 */;
 | `kmain` memcpy(&kinfo) | `main.c:128` 拷贝 `local_cbi` 到全局 `kinfo`（`local_cbi` 是 `kmain` 参数，作用域限于 `kmain` 调用链；拷贝到全局使非 `kmain` 调用链的代码也能访问启动信息） | `arch_boot_impl()` 返回 `&'static KernelInfo`，无需拷贝 | 借用规则保证生命周期 |
 | BSS 检查 | `main.c:122-124` `assert(bss_test==0)` | 不做（功能依赖 loader） | ELF loader 在 [`load_pt_load_segments_into`（`os/boot-shim/src/loader.rs:201-206`）](os/boot-shim/src/loader.rs#L201-L206) 解析 PT_LOAD 时通过 `core::ptr::write_bytes(bss_start, 0, bss_size)` 清零 `[p_filesz, p_memsz)` 区间。Rust `static` 在 ELF 里是 **BSS 段声明**——只声明，**不**生成运行时清零指令；运行时清零完全靠 ELF loader（裸金属 boot 阶段无 OS，Rust `static` 零初始化的"语言保证"等价于"靠 bootloader"）。测试覆盖：`loader.rs:387-413` 单元测试覆盖了 layout 计算和缺失文件 panic 行为，但**未明确断言 `bss_range == [0u8; size]` 的针对性测试**——属已知测试缺口 |
 | GDT 描述符位运算 | `protect.c:340-348` 裸 `u32` + 宏 | `bitflags!` 宏（`PRESENT\|DPL_RING3\|CODE\|READABLE`） | 表达力 + 类型安全 |
-| 重建页表 | `protect.c:357-362` `pg_clear/identity/mapkernel/load` | 不重建 | `arch_boot_impl()` 已建恒等+高地址映射（见 [02-higher-half-kernel.md](02-higher-half-kernel.md) §4.4） |
+| 重建页表 | `protect.c:360-363` `pg_clear/identity/mapkernel/load` | 不重建 | `arch_boot_impl()` 已建恒等+高地址映射（见 [02-higher-half-kernel.md](02-higher-half-kernel.md) §4.4） |
 | `board_id` | `main.c:130` 设置 `machine.board_id` | 不设置 | 板级识别下放到 `arch_init()`/`plat` crate，`kmain()` 保持架构无关 |
 | `boot_procs` 拷贝 | `main.c:140-141` memcpy `image[]` 到 `kinfo.boot_procs` | 不拷贝 | boot-shim 已构造 `KernelInfo.boot_modules`，`init_proc_and_boot()` 直接读引用 |
 | ARM 早期串口 | `main.c:132-134` `#ifdef __arm__ arch_ser_init()` | 统一到 `arch_init()` | `kmain()` 架构无关，早期设备初始化集中到 `arch_init()` |
@@ -1005,6 +1005,7 @@ cd os/qemu-tests && ./run_all.sh
 | `idt_init_reserved_vectors_not_present` | x86-64 保留向量 9/15 不设置门描述符 | §1.4b 异常入口 |
 | `idt_init_sets_syscall_ipc_vectors` | 向量 32-35（系统调用/IPC soft-int）已设置且 DPL=3 | §1.4b 异常入口 |
 | `idt_init_sets_pic_vectors` | 向量 80-87、112-119（PIC 硬件中断）已设置且 DPL=0 | §1.4b 异常入口 |
+| `configure_ipc_entry_sets_idt_gate_33` | `configure_ipc_entry()` 为 IDT 向量 33 设置 IPC 门（DPL=3, trap gate） | §1.4b 异常入口 |
 
 #### ARM64（`os/arch/src/arm64/{protection,trap_entry}.rs`）
 
@@ -1020,6 +1021,7 @@ cd os/qemu-tests && ./run_all.sh
 | `trap_entry_init_returns_unit_struct` | AArch64TrapEntry::init() 不 panic | §1.4b 异常入口 |
 | `configure_syscall_is_noop` | ARM64 SVC 无需 MSR 配置 | §1.4b 异常入口 |
 | `set_handler_is_noop` | ARM64 固定向量表，set_handler 为 no-op | §1.4b 异常入口 |
+| `configure_ipc_entry_is_noop_on_arm64` | ARM64 IPC 与内核调用共享 SVC 向量，configure_ipc_entry 为 no-op | §1.4b 异常入口 |
 
 #### RISC-V（`os/arch/src/riscv64/{protection,trap_entry}.rs`）
 
@@ -1033,6 +1035,7 @@ cd os/qemu-tests && ./run_all.sh
 | `trap_entry_init_returns_unit_struct` | Riscv64TrapEntry::init() 不 panic | §1.4b 异常入口 |
 | `configure_syscall_is_noop` | RISC-V ecall 无需 CSR 配置 | §1.4b 异常入口 |
 | `set_handler_is_noop` | RISC-V Direct 模式，set_handler 为 no-op | §1.4b 异常入口 |
+| `configure_ipc_entry_is_noop_on_riscv64` | RISC-V IPC 与内核调用共享 ecall 向量，configure_ipc_entry 为 no-op | §1.4b 异常入口 |
 
 ### 5.4 测试缺口
 
