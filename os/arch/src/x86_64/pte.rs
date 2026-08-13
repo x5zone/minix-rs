@@ -4,8 +4,8 @@
 //! functions for the x86-64 architecture. These are internal details of
 //! the `X86_64Paging` implementation and are not exposed to the OS layer.
 
-use crate::paging::{PageFlags, PageTableError};
-use minix_types::{PhysBytes, VirBytes};
+use crate::paging::PageFlags;
+use minix_types::PhysBytes;
 
 pub const PML4_ENTRIES: usize = 512;
 pub const PDPT_ENTRIES: usize = 512;
@@ -23,6 +23,7 @@ const PTE_WRITE_THROUGH: u64 = 1 << 3;
 const PTE_NO_CACHE: u64 = 1 << 4;
 const PTE_ACCESSED: u64 = 1 << 5;
 const PTE_DIRTY: u64 = 1 << 6;
+#[allow(dead_code)] // huge page PTE flag; not yet wired to all call sites
 const PTE_HUGE: u64 = 1 << 7;
 const PTE_GLOBAL: u64 = 1 << 8;
 const PTE_NO_EXECUTE: u64 = 1 << 63;

@@ -2,7 +2,7 @@
 //!
 //! Defines the messages exchanged between PM and other services (Kernel, VM, VFS).
 
-use crate::{Endpoint, UserSlot, EAGAIN, ENOMEM, ESRCH, EINVAL, EIO, ENOSYS};
+use crate::{Endpoint, EAGAIN, ENOMEM, ESRCH, EINVAL, EIO, ENOSYS};
 
 /// PM request message types.
 ///

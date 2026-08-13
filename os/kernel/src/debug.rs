@@ -83,16 +83,14 @@ pub fn runqueues_ok_cpu(
         }
 
         // C: debug.c:39-41 — tail->p_nextready must be None.
-        if let Some(tail_nr) = tail {
-            if let Some(tail_proc) = proc_table.get(tail_nr) {
-                if tail_proc.p_nextready.load(core::sync::atomic::Ordering::Acquire) != NONE_PROC_NR {
+        if let Some(tail_nr) = tail
+            && let Some(tail_proc) = proc_table.get(tail_nr)
+                && tail_proc.p_nextready.load(core::sync::atomic::Ordering::Acquire) != NONE_PROC_NR {
                     Console::write_str("runqueues_ok: tail->next not null in queue ");
                     Console::write_hex(q as u64);
                     Console::write_str("\n");
                     return false;
                 }
-            }
-        }
 
         // C: debug.c:43-89 — walk the queue via p_nextready.
         let mut current = head;
@@ -165,13 +163,13 @@ pub fn runqueues_ok_cpu(
     }
 
     // C: debug.c:92-103 — every runnable process must be on a queue.
-    for i in 0..PROC_TABLE_SIZE {
+    for (i, found_val) in found.iter().take(PROC_TABLE_SIZE).enumerate() {
         let nr = ProcNr(i as i32);
         if let Some(proc) = proc_table.get(nr) {
             if proc.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE) {
                 continue;
             }
-            if proc.is_runnable() && !found[i] {
+            if proc.is_runnable() && !*found_val {
                 Console::write_str("runqueues_ok: ready proc not on queue: nr=");
                 Console::write_hex(i as u64);
                 Console::write_str("\n");

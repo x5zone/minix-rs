@@ -41,6 +41,7 @@ impl X86PrivilegeLevel {
     pub(crate) const RING0: Self = Self(0);
     pub(crate) const RING3: Self = Self(3);
 
+    #[allow(dead_code)] // accessor; not yet wired to all call sites
     pub(crate) const fn get(self) -> u8 {
         self.0
     }
@@ -56,6 +57,7 @@ const GDT_TSS_FIRST_INDEX: usize = 5;
 pub(crate) const KERN_CS_SELECTOR: u16 = (GDT_KERN_CS_INDEX * 8) as u16;
 pub(crate) const KERN_DS_SELECTOR: u16 = (GDT_KERN_DS_INDEX * 8) as u16;
 pub(crate) const USER_CS_SELECTOR: u16 = ((GDT_USER_CS_INDEX * 8) | 3) as u16;
+#[allow(dead_code)] // user data segment selector; not yet wired to all call sites
 pub(crate) const USER_DS_SELECTOR: u16 = ((GDT_USER_DS_INDEX * 8) | 3) as u16;
 
 const MAX_CPUS: usize = 8;

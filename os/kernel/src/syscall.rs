@@ -452,7 +452,7 @@ fn kernel_call_dispatch_inner(
     //   - `Some(priv)` → deny iff `kcall_filter_check` returns false
     let call_denied = caller.priv_id
         .and_then(|id| priv_table.get(id))
-        .map_or(true, |caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
+        .is_none_or(|caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
     if call_denied {
         return KcallResult::CallDenied;
     }
@@ -831,7 +831,7 @@ fn copy_struct_from_user(
     bytes: usize,
 ) -> crate::vm::CrossSpaceResult {
     use minix_arch::{CurrentDirectMap, DirectMapArch};
-    use minix_types::{VirBytes, PhysBytes};
+    use minix_types::VirBytes;
     use crate::vm::AddressRef;
 
     let caller_endpt = caller.p_endpoint;
@@ -1113,15 +1113,12 @@ pub(crate) fn clear_endpoint(
     proc_table.rts_set(target_nr, RtsFlagsBits::NO_ENDPOINT);
 
     // C: system.c:552-555 — if (priv(rc)->s_flags & SYS_PROC) priv(rc)->s_asynsize = 0
-    if let Some(target) = proc_table.get(target_nr) {
-        if let Some(priv_id) = target.priv_id {
-            if let Some(kpriv) = priv_table.get_mut(priv_id) {
-                if kpriv.is_sys_proc() {
+    if let Some(target) = proc_table.get(target_nr)
+        && let Some(priv_id) = target.priv_id
+            && let Some(kpriv) = priv_table.get_mut(priv_id)
+                && kpriv.is_sys_proc() {
                     kpriv.signals.s_asynsize = 0;
                 }
-            }
-        }
-    }
 
     // C: system.c:560 — clear_ipc(rc)
     clear_ipc(proc_table, target_nr);
@@ -1423,11 +1420,10 @@ fn dispatch_privctl(
                         priv_.reset_resources(target_ep);
 
                         // C: do_privctl.c:167-172 — override with user-provided settings
-                        if arg_ptr != 0 {
-                            if priv_.update_from_request(&priv_id).is_err() {
+                        if arg_ptr != 0
+                            && priv_.update_from_request(&priv_id).is_err() {
                                 return KcallResult::Ok(EINVAL);
                             }
-                        }
                     }
                     KcallResult::Ok(0)
                 }
@@ -1758,7 +1754,7 @@ fn dispatch_vmctl(
     proc_table: &mut crate::proc_table::ProcessTable,
 ) -> KcallResult {
     use crate::vm::{VmCtlParam, VmCtlResult};
-    use minix_arch::{CurrentTlbArch, TlbArch};
+    use minix_arch::TlbArch;
     use minix_types::VirBytes;
 
     // Permission check: only system processes may call VMCTL.
@@ -2053,9 +2049,7 @@ fn dispatch_vmctl(
             //
             // SAFETY: Called from syscall dispatch context with paging
             // enabled. The target process must be valid (checked above).
-            unsafe {
-                minix_arch::CurrentTlbArch::flush_all();
-            }
+            unsafe { minix_arch::CurrentTlbArch::flush_all(); }
             VmCtlResult::Ok(0)
         }
 
@@ -2068,9 +2062,7 @@ fn dispatch_vmctl(
             // SAFETY: Called from syscall dispatch context with paging
             // enabled. The virtual address is provided by the caller
             // (VM server) and is expected to be a valid user-space address.
-            unsafe {
-                minix_arch::CurrentTlbArch::flush_addr(vaddr);
-            }
+            unsafe { minix_arch::CurrentTlbArch::flush_addr(vaddr); }
             VmCtlResult::Ok(0)
         }
 
@@ -2078,7 +2070,7 @@ fn dispatch_vmctl(
         // C: do_vmctl.c:105-118 — arch_phys_map/arch_phys_map_reply
         // These are 32-bit-only (x86 PAE) and unused on 64-bit.
         VmCtlParam::KernPhysMap | VmCtlParam::KernMapReply => {
-            VmCtlResult::Ok(ENOSYS as i32)
+            VmCtlResult::Ok(ENOSYS)
         }
     };
 
@@ -2532,8 +2524,8 @@ use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 use minix_types::Endpoint;
 
 // EBADREQUEST and ECALLDENIED now come from `crate::errno` (FIX-01: R-09).
-/// SYSTEM endpoint source for kernel replies. C: SYSTEM = -2 (proc.h)
-/// Use Endpoint::SYSTEM constant from minix-types instead of raw i32.
+// SYSTEM endpoint source for kernel replies. C: SYSTEM = -2 (proc.h)
+// Use Endpoint::SYSTEM constant from minix-types instead of raw i32.
 
 /// Copy a message to user space via the process's delivermsg buffer.
 ///
@@ -2549,7 +2541,7 @@ use minix_types::Endpoint;
 /// dispatch path, which is safer and aligns with the IPC engine's
 /// message delivery mechanism (see vm.rs:323).
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
-    caller.p_delivermsg = msg.clone();
+    caller.p_delivermsg = *msg;
     caller.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 }
 
@@ -2579,7 +2571,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
     // p_misc_flags |= MF_KCALL_RESUME; }`
     if matches!(result, KcallResult::VmSuspend) {
         if let Some(ctx) = caller.p_vm_suspend.as_mut() {
-            ctx.saved_msg = Some(msg.clone());
+            ctx.saved_msg = Some(*msg);
         }
         caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
         // Release BKL — process is suspended waiting for VM.
@@ -2603,7 +2595,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
     }
 
     if let Some(errno) = result.reply_code() {
-        let mut reply = msg.clone();
+        let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
         reply.m_type = errno;
         copy_msg_to_user(caller, &reply);
@@ -2648,7 +2640,7 @@ pub fn kernel_call_resume(
     // than silently dispatching an empty message — the original
     // `unwrap_or_default()` masked corruption bugs.
     let saved_msg = caller.p_vm_suspend.as_ref()
-        .and_then(|ctx| ctx.saved_msg.clone())
+        .and_then(|ctx| ctx.saved_msg)
         .expect("kernel_call_resume: p_vm_suspend.saved_msg must exist \
                  (VmSuspend path in kernel_call_finish always sets it)");
     debug_assert_eq!(saved_msg.m_source, caller.p_endpoint,
@@ -2786,10 +2778,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 99; // unknown request
-            msg.m_u.m_m1.m1i2 = 101; // target endpoint
-        }
+        msg.m_u.m_m1.m1i1 = 99; // unknown request
+        msg.m_u.m_m1.m1i2 = 101; // target endpoint
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -2816,10 +2806,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
-            msg.m_u.m_m1.m1i2 = 101; // target endpoint
-        }
+        msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
+        msg.m_u.m_m1.m1i2 = 101; // target endpoint
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0));
         // Verify RTS_NO_PRIV was set
@@ -2849,10 +2837,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
-            msg.m_u.m_m1.m1i2 = 101;
-        }
+        msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
+        msg.m_u.m_m1.m1i2 = 101;
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -2879,12 +2865,10 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 8; // SYS_PRIV_QUERY_MEM
-            msg.m_u.m_m1.m1i2 = 101;
-            msg.m_u.m_m1.m1p2 = 0x1000; // phys_start
-            msg.m_u.m_m1.m1p3 = 0x100;  // phys_len
-        }
+        msg.m_u.m_m1.m1i1 = 8; // SYS_PRIV_QUERY_MEM
+        msg.m_u.m_m1.m1i2 = 101;
+        msg.m_u.m_m1.m1p2 = 0x1000; // phys_start
+        msg.m_u.m_m1.m1p3 = 0x100;  // phys_len
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         // No mem ranges in USER_PRIV_ID → EPERM
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -2912,10 +2896,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 3; // SYS_PRIV_SET_SYS
-            msg.m_u.m_m1.m1i2 = 101;
-        }
+        msg.m_u.m_m1.m1i1 = 3; // SYS_PRIV_SET_SYS
+        msg.m_u.m_m1.m1i2 = 101;
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -2943,10 +2925,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 5; // SYS_PRIV_ADD_IO
-            msg.m_u.m_m1.m1i2 = 101;
-        }
+        msg.m_u.m_m1.m1i1 = 5; // SYS_PRIV_ADD_IO
+        msg.m_u.m_m1.m1i2 = 101;
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -2973,11 +2953,9 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 9; // SYS_PRIV_UPDATE_SYS
-            msg.m_u.m_m1.m1i2 = 101;
-            // m1p1 (arg_ptr) = 0 → EINVAL
-        }
+        msg.m_u.m_m1.m1i1 = 9; // SYS_PRIV_UPDATE_SYS
+        msg.m_u.m_m1.m1i2 = 101;
+        // m1p1 (arg_ptr) = 0 → EINVAL
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -3004,10 +2982,8 @@ mod tests {
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Privctl as i32;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 11; // SYS_PRIV_CLEAR_IPC_REFS
-            msg.m_u.m_m1.m1i2 = 101;
-        }
+        msg.m_u.m_m1.m1i1 = 11; // SYS_PRIV_CLEAR_IPC_REFS
+        msg.m_u.m_m1.m1i2 = 101;
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0));
     }
@@ -3021,10 +2997,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 9999; // not in proc table
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000; // ctx_ptr (ignored in validation)
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 9999; // not in proc table
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000; // ctx_ptr (ignored in validation)
         let result = dispatch_getmcontext(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -3042,10 +3016,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 50;
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 50;
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
         let result = dispatch_getmcontext(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -3063,10 +3035,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 100;
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 100;
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
         let result = dispatch_getmcontext(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
@@ -3078,10 +3048,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Setmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 9999;
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 9999;
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
         let result = dispatch_setmcontext(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -3103,10 +3071,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Setmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 50;
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 50;
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
         let result = dispatch_setmcontext(&mut caller, &msg, &proc_table);
         // No EPERM (kernel target allowed); copy suspends on unmapped page.
         assert_eq!(result, KcallResult::VmSuspend);
@@ -3125,10 +3091,8 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Setmcontext as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_mcontext.endpt = 100;
-            msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
-        }
+        msg.m_u.m_lsys_krn_sys_mcontext.endpt = 100;
+        msg.m_u.m_lsys_krn_sys_mcontext.ctx_ptr = 0x1000;
         let result = dispatch_setmcontext(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
@@ -3294,7 +3258,7 @@ mod tests {
     #[test]
     fn test_dispatch_diagctl_stacktrace_invalid_endpoint() {
         // C: do_diagctl.c:44 — isokendpt fails → EINVAL.
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let proc_table = crate::proc_table::ProcessTable::new();
         let mut priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut msg = Message::default();

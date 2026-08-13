@@ -675,7 +675,7 @@ pub type CurrentArchSyscall = X86_64Syscall;
 | `dispatch_sdevio` 批量 I/O | do_sdevio.c:68-150 | ✅ 已实现 | `verify_grant` + `data_copy_vmcheck` + `PortIo` 内核缓冲中转替代 `switch_address_space` + `phys_*` | — |
 | `dispatch_readbios` 拷贝 | do_readbios.c:36 | ✅ 已实现 | Direct Map + `copy_to_user` | — |
 | `dispatch_iopenable` trap frame | (Rust 独有) | ✅ 已解决 (2026-08-01) | C `p_reg` = Rust `cpu_context`；无独立内核栈异常帧；syscall handler 修改 `cpu_context.psw` 返回用户态自动生效 | — |
-| `generic_handler` get_randomness | do_irqctl.c:154 | 缺失 | 需 krandom 子系统 | /dev/random 熵池 |
+| `generic_handler` get_randomness | do_irqctl.c:154 | ✅ 已实现 | `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm；KRANDOM 全局 + `try_krandom()`/`init()` 已就绪；实际熵采集在用户态 `random` 驱动。详见 [25-misc-unported.md §4.7](25-misc-unported.md) + [14-exception-interrupt.md §4.4](14-exception-interrupt.md) | /dev/random 熵池 |
 
 **anti-drift ENOSYS 决策**: DEFERRED 函数返回 `ENOSYS`（非 OK）避免 silent 语义漂移——调用者据此得知"功能未实现"，可 fallback 或报错；若返回 OK 则调用者误以为操作成功，造成难以调试的 silent failure。`dispatch_irqctl` dispatch 层返回 `BadCall`（非 ENOSYS）是因为参数校验已通过但 hook 操作无法执行——`BadCall` 表示"调用本身无法被处理"，`ENOSYS` 表示"功能未实现"，语义更精确。
 

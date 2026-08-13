@@ -67,7 +67,7 @@ pub trait StacktraceArch: CpuContextArch {
         // Works for x86_64 (rbp), aarch64 (x29), riscv64 (s0) when
         // frame pointers are enabled.
         let mut fp = Self::frame_pointer(cpu_context);
-        let mut pc = Self::program_counter(cpu_context);
+        let pc = Self::program_counter(cpu_context);
         let mut count = 0;
 
         // Emit the current PC first (top of stack).

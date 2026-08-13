@@ -28,16 +28,16 @@ use minix_types::{
     MessLsysKrnSysMemset, MessSysSafememset, MessLsysKrnSysVumap, MessLsysKernVsafecopy,
 };
 
-use crate::proc::{KProcess, RtsFlagsBits};
+use crate::proc::KProcess;
 use crate::proc_table::ProcessTable;
 use crate::kpriv::PrivTable;
 use crate::syscall::{KcallResult, Syscall};
 use crate::vm::{
-    AddressRef, CrossSpaceResult, VmCopyError, VmFaultType, cross_space_copy,
+    AddressRef, CrossSpaceResult, VmCopyError, cross_space_copy,
     lookup_in_table, lookup_range_in_table,
 };
 use crate::grant::{
-    CpFlags, GrantVerifyResult, SoftFaultInfo, VerifyGrantOutcome, verify_grant,
+    CpFlags, SoftFaultInfo, VerifyGrantOutcome, verify_grant,
 };
 use minix_arch::DirectMapArch;
 
@@ -93,6 +93,7 @@ const SEGMENT_TYPE_MASK: i32 = 0xFF00;
 const SEGMENT_INDEX_MASK: i32 = 0x00FF;
 
 /// Physical segment flag. C: `PHYS_SEG` — const.h:62
+#[allow(dead_code)] // segment type constant; not yet wired to all call sites
 const PHYS_SEG: i32 = 0x0400;
 /// Local VM segment type (requires VM lookup). C: `LOCAL_VM_SEG` — const.h:64
 const LOCAL_VM_SEG: i32 = 0x1000;
@@ -101,13 +102,16 @@ const MEM_GRANT: i32 = 3;
 /// Virtual address segment index. C: `VIR_ADDR` — const.h:66
 const VIR_ADDR: i32 = 1;
 /// VM data segment = LOCAL_VM_SEG | VIR_ADDR. C: `VM_D` — const.h:67
+#[allow(dead_code)] // segment type constant; not yet wired to all call sites
 const VM_D: i32 = LOCAL_VM_SEG | VIR_ADDR;
 /// VM grant segment = LOCAL_VM_SEG | MEM_GRANT. C: `VM_GRANT` — const.h:68
+#[allow(dead_code)] // segment type constant; not yet wired to all call sites
 const VM_GRANT: i32 = LOCAL_VM_SEG | MEM_GRANT;
 
 // ── Constants ──
 
 /// Maximum indirect grant chain depth. C: `MAX_INDIRECT_DEPTH` — do_safecopy.c:25
+#[allow(dead_code)] // grant indirect chain depth limit; not yet wired to all call sites
 const MAX_INDIRECT_DEPTH: usize = 5;
 
 /// Maximum VSAFECOPY vector elements. C: `SCPVEC_NR`
@@ -262,27 +266,24 @@ fn dispatch_copy(
     // C: for(i=_SRC_; i<=_DST_; i++) { if(!isokendpt(vir_addr[i].proc_nr_e, &p)) return EINVAL; }
     // isokendpt checks: 1) proc_nr in range, 2) slot occupied, 3) generation matches.
     // ProcessTable::endpoint_to_nr() performs all three checks.
-    if src_endpt != NONE {
-        if proc_table.endpoint_to_nr(Endpoint(src_endpt)).is_none() {
+    if src_endpt != NONE
+        && proc_table.endpoint_to_nr(Endpoint(src_endpt)).is_none() {
             return KcallResult::Ok(EINVAL);
         }
-    }
-    if dst_endpt != NONE {
-        if proc_table.endpoint_to_nr(Endpoint(dst_endpt)).is_none() {
+    if dst_endpt != NONE
+        && proc_table.endpoint_to_nr(Endpoint(dst_endpt)).is_none() {
             return KcallResult::Ok(EINVAL);
         }
-    }
 
     // C: do_copy.c:61-62 — overflow check: src_addr + nr_bytes must not wrap.
     // On 64-bit, vir_bytes == phys_bytes; the check is still needed to
     // prevent `copy_nonoverlapping` from wrapping around.
-    if nr_bytes > 0 {
-        if src_addr.checked_add(nr_bytes).is_none()
-            || dst_addr.checked_add(nr_bytes).is_none()
+    if nr_bytes > 0
+        && (src_addr.checked_add(nr_bytes).is_none()
+            || dst_addr.checked_add(nr_bytes).is_none())
         {
             return KcallResult::Ok(E2BIG);
         }
-    }
 
     // Build AddressRef: NONE → Physical (raw physical address), else → Process.
     // C: do_copy.c:53 — `proc_addr[i] = NULL` when `proc_nr_e == NONE`,
@@ -548,7 +549,7 @@ fn write_soft_fault_marker(
 ) {
     // C: sfinfo.addr points to the cp_faulted field in the granter's
     // grant table entry. We write sfinfo.value (the grant ID) there.
-    let src_phys = {
+    {
         let marker = sfinfo.value;
         let dst = AddressRef::Process {
             endpoint: sfinfo.endpoint,
@@ -569,7 +570,6 @@ fn write_soft_fault_marker(
             proc_cr3,
         );
     };
-    let _ = src_phys;
 }
 
 /// Dispatch SYS_VSAFECOPY.
@@ -661,7 +661,7 @@ pub fn dispatch_vsafecopy(
         },
         AddressRef::Physical(vec_dst_phys),
         bytes,
-        &proc_cr3,
+        proc_cr3,
     );
     match copy_result {
         CrossSpaceResult::Completed(Ok(())) => {} // proceed to loop
@@ -673,9 +673,7 @@ pub fn dispatch_vsafecopy(
     }
 
     // C: do_safecopy.c:422-444 — per-element safecopy loop.
-    for i in 0..els {
-        let elem = &vec[i];
-
+    for elem in vec.iter().take(els) {
         // C: do_safecopy.c:425-435 — determine access direction + granter.
         let (access, granter) = if elem.v_from == SELF {
             (CpFlags::WRITE, elem.v_to)
@@ -827,6 +825,10 @@ fn dispatch_umap_remote_impl(
     };
 
     // C: do_umap_remote.c:57-66 — grantee validation
+    // R-18 (2026-08-13): Two distinct EINVAL checks (invalid grantee + non-grant
+    // segment type) intentionally kept separate for readability. Allowed per
+    // clippy::if_same_then_else.
+    #[allow(clippy::if_same_then_else)]
     let grantee_endpoint = if grantee == SELF {
         caller.p_endpoint
     } else if grantee == NONE || grantee == ANY {
@@ -940,9 +942,7 @@ fn dispatch_umap_remote_impl(
     // C: do_umap_remote.c:111 — m_ptr->m_krn_lsys_sys_umap.dst_addr = phys_addr.
     // SAFETY: m_type == SYS_UMAP || SYS_UMAP_REMOTE guarantees the reply
     // variant m_krn_lsys_sys_umap can be written (same union, different view).
-    unsafe {
-        msg.m_u.m_krn_lsys_sys_umap.dst_addr = phys_addr.0;
-    }
+    msg.m_u.m_krn_lsys_sys_umap.dst_addr = phys_addr.0;
 
     KcallResult::Ok(OK)
 }
@@ -1048,7 +1048,7 @@ pub fn dispatch_vumap(
         },
         AddressRef::Physical(vvec_dst_phys),
         vvec_bytes,
-        &proc_cr3,
+        proc_cr3,
     );
     match vvec_copy {
         CrossSpaceResult::Completed(Ok(())) => {}
@@ -1063,12 +1063,11 @@ pub fn dispatch_vumap(
     let mut pcount: usize = 0;
 
     // C: do_vumap.c:73-118 — per-element loop.
-    for i in 0..vcount_usize {
+    for vv in vvec.iter().take(vcount_usize) {
         if pcount >= pmax_usize {
             break;
         }
 
-        let vv = &vvec[i];
         let mut size = vv.vv_size as usize;
 
         // C: do_vumap.c:75-77 — if size <= offset → EINVAL.
@@ -1179,7 +1178,7 @@ pub fn dispatch_vumap(
             offset: VirBytes(paddr),
         },
         pvec_bytes,
-        &proc_cr3,
+        proc_cr3,
     );
 
     match pvec_copy {
@@ -1187,9 +1186,7 @@ pub fn dispatch_vumap(
             // C: do_vumap.c:128 — m_ptr->m_krn_lsys_sys_vumap.pcount = pcount.
             // SAFETY: m_type == SYS_VUMAP guarantees the reply variant
             // m_krn_lsys_sys_vumap can be written (same union, different view).
-            unsafe {
-                msg.m_u.m_krn_lsys_sys_vumap.pcount = pcount as i32;
-            }
+            msg.m_u.m_krn_lsys_sys_vumap.pcount = pcount as i32;
             KcallResult::Ok(OK)
         }
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => {
@@ -1284,11 +1281,10 @@ pub fn dispatch_memset(
     }
 
     // C: vm_memset:537-539 — endpoint_lookup for the target process.
-    if process != NONE {
-        if proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
+    if process != NONE
+        && proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
             return KcallResult::Ok(ESRCH);
         }
-    }
 
     // C: vm_memset:541 — pattern & 0xFF (truncate to single byte).
     let pattern_byte = (pattern & 0xFF) as u8;
@@ -1445,7 +1441,7 @@ pub fn dispatch_safememset(
         dst,
         pattern_byte,
         bytes as usize,
-        &proc_cr3,
+        proc_cr3,
     );
 
     match memset_result {
@@ -1538,14 +1534,12 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
         // src_endpt = 9999 is out of range / no matching process
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = 9999;
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE; // NONE is allowed
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
-            msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = 9999;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE; // NONE is allowed
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1562,14 +1556,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE; // NONE is allowed
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = 9999;
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
-            msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE; // NONE is allowed
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = 9999;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1587,14 +1579,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
-            msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         // Should NOT return EINVAL — NONE endpoints are valid (physical copy)
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_ne!(result, KcallResult::Ok(EINVAL));
@@ -1621,14 +1611,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), target_ep);
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = SELF;
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
-            msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = SELF;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         // SELF should resolve to caller's endpoint, which is valid
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_ne!(result, KcallResult::Ok(EINVAL));
@@ -1641,14 +1629,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = u64::MAX;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 1;
-            msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = u64::MAX;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 1;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(E2BIG));
     }
@@ -1669,14 +1655,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), target_ep);
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_copy.src_endpt = SELF;
-            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
-            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0x1000;
-            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
-            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0x100;
-            msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
-        }
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = SELF;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0x1000;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0x100;
+        msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         let result = dispatch_vircopy(&mut caller, &msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -1696,13 +1680,11 @@ mod tests {
         // SAFETY: All fields are simple integer types; `#[repr(C)]` layout
         // is already verified by the `test_mess_lsys_krn_sys_umap_layout`
         // test below.
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_umap.src_endpt = src_endpt;
-            msg.m_u.m_lsys_krn_sys_umap.segment = segment;
-            msg.m_u.m_lsys_krn_sys_umap.src_addr = src_addr;
-            msg.m_u.m_lsys_krn_sys_umap.dst_endpt = dst_endpt;
-            msg.m_u.m_lsys_krn_sys_umap.nr_bytes = nr_bytes;
-        }
+        msg.m_u.m_lsys_krn_sys_umap.src_endpt = src_endpt;
+        msg.m_u.m_lsys_krn_sys_umap.segment = segment;
+        msg.m_u.m_lsys_krn_sys_umap.src_addr = src_addr;
+        msg.m_u.m_lsys_krn_sys_umap.dst_endpt = dst_endpt;
+        msg.m_u.m_lsys_krn_sys_umap.nr_bytes = nr_bytes;
         msg
     }
 
@@ -1743,7 +1725,7 @@ mod tests {
         let (proc_table, _, _) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // src_endpt = 9999 is invalid.
-        let mut msg = build_umap_msg(9999, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100 as i32);
+        let mut msg = build_umap_msg(9999, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1759,7 +1741,7 @@ mod tests {
             LOCAL_VM_SEG | VIR_ADDR,
             0x1000,
             SELF,
-            0x100 as i32,
+            0x100_i32,
         );
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
@@ -1772,7 +1754,7 @@ mod tests {
         let (proc_table, _, _) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grantee = NONE is not valid for UMAP_REMOTE.
-        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, NONE, 0x100 as i32);
+        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, NONE, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1783,7 +1765,7 @@ mod tests {
         let (proc_table, _, _) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grantee = ANY is not valid for UMAP_REMOTE.
-        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, ANY, 0x100 as i32);
+        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, ANY, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1795,7 +1777,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grantee = 9999 is not in proc_table; seg_index must be MEM_GRANT for
         // a non-SELF grantee to be valid. Here seg_index = VIR_ADDR → EINVAL.
-        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, 9999, 0x100 as i32);
+        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, 9999, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1811,7 +1793,7 @@ mod tests {
             LOCAL_VM_SEG | MEM_GRANT,
             0x1000,
             target_ep.0,
-            0x100 as i32,
+            0x100_i32,
         );
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
@@ -1824,7 +1806,7 @@ mod tests {
         let (proc_table, _, _) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // segment type 0x9999 is unknown → EINVAL.
-        let mut msg = build_umap_msg(SELF, 0x9999, 0x1000, SELF, 0x100 as i32);
+        let mut msg = build_umap_msg(SELF, 0x9999, 0x1000, SELF, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1835,7 +1817,7 @@ mod tests {
         let (proc_table, _, _) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // segment = LOCAL_VM_SEG | 0x99 (bogus index) → EFAULT.
-        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | 0x99, 0x1000, SELF, 0x100 as i32);
+        let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | 0x99, 0x1000, SELF, 0x100_i32);
         let priv_table = PrivTable::new();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
@@ -1852,7 +1834,7 @@ mod tests {
             LOCAL_VM_SEG | VIR_ADDR,
             0x1000,
             SELF,
-            0x100 as i32,
+            0x100_i32,
         );
         let priv_table = PrivTable::new();
         let result = dispatch_umap(&mut caller, &mut msg, &proc_table, &priv_table);
@@ -1871,13 +1853,11 @@ mod tests {
     ) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Safememset as i32;
-        unsafe {
-            msg.m_u.m_sys_safememset.dst_endpt = dst_endpt;
-            msg.m_u.m_sys_safememset.grant_id = grant_id;
-            msg.m_u.m_sys_safememset.offset = offset;
-            msg.m_u.m_sys_safememset.pattern = pattern;
-            msg.m_u.m_sys_safememset.bytes = bytes;
-        }
+        msg.m_u.m_sys_safememset.dst_endpt = dst_endpt;
+        msg.m_u.m_sys_safememset.grant_id = grant_id;
+        msg.m_u.m_sys_safememset.offset = offset;
+        msg.m_u.m_sys_safememset.pattern = pattern;
+        msg.m_u.m_sys_safememset.bytes = bytes;
         msg
     }
 
@@ -1968,8 +1948,8 @@ mod tests {
             p.priv_id = Some(priv_id);
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        let mut msg = build_safememset_msg(200, 0, 0i64, 0xABi32, 0x100i64);
-        let result = dispatch_safememset(&mut caller, &mut msg, &proc_table, &priv_table);
+        let msg = build_safememset_msg(200, 0, 0i64, 0xABi32, 0x100i64);
+        let result = dispatch_safememset(&mut caller, &msg, &proc_table, &priv_table);
         // verify_grant reads grant entry via data_copy_vmcheck → MockPteWalk
         // returns None → Suspended → VmSuspend.
         assert_eq!(result, KcallResult::VmSuspend);
@@ -1987,13 +1967,11 @@ mod tests {
     ) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::SafecopyFrom as i32;
-        unsafe {
-            msg.m_u.m_lsys_kern_safecopy.from_to = from_to;
-            msg.m_u.m_lsys_kern_safecopy.grant_id = grant_id;
-            msg.m_u.m_lsys_kern_safecopy.offset = offset;
-            msg.m_u.m_lsys_kern_safecopy.address = address;
-            msg.m_u.m_lsys_kern_safecopy.bytes = bytes;
-        }
+        msg.m_u.m_lsys_kern_safecopy.from_to = from_to;
+        msg.m_u.m_lsys_kern_safecopy.grant_id = grant_id;
+        msg.m_u.m_lsys_kern_safecopy.offset = offset;
+        msg.m_u.m_lsys_kern_safecopy.address = address;
+        msg.m_u.m_lsys_kern_safecopy.bytes = bytes;
         msg
     }
 
@@ -2118,12 +2096,10 @@ mod tests {
     fn build_memset_msg(base: u64, count: u64, pattern: u64, process: i32) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Memset as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_memset.base = base;
-            msg.m_u.m_lsys_krn_sys_memset.count = count;
-            msg.m_u.m_lsys_krn_sys_memset.pattern = pattern;
-            msg.m_u.m_lsys_krn_sys_memset.process = process;
-        }
+        msg.m_u.m_lsys_krn_sys_memset.base = base;
+        msg.m_u.m_lsys_krn_sys_memset.count = count;
+        msg.m_u.m_lsys_krn_sys_memset.pattern = pattern;
+        msg.m_u.m_lsys_krn_sys_memset.process = process;
         msg
     }
 
@@ -2197,10 +2173,8 @@ mod tests {
     fn build_vsafecopy_msg(vec_addr: u64, vec_size: i32) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Vsafecopy as i32;
-        unsafe {
-            msg.m_u.m_lsys_kern_vsafecopy.vec_addr = vec_addr;
-            msg.m_u.m_lsys_kern_vsafecopy.vec_size = vec_size;
-        }
+        msg.m_u.m_lsys_kern_vsafecopy.vec_addr = vec_addr;
+        msg.m_u.m_lsys_kern_vsafecopy.vec_size = vec_size;
         msg
     }
 
@@ -2295,15 +2269,13 @@ mod tests {
     ) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Vumap as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_vumap.endpt = endpt;
-            msg.m_u.m_lsys_krn_sys_vumap.vaddr = vaddr;
-            msg.m_u.m_lsys_krn_sys_vumap.vcount = vcount;
-            msg.m_u.m_lsys_krn_sys_vumap.paddr = paddr;
-            msg.m_u.m_lsys_krn_sys_vumap.pmax = pmax;
-            msg.m_u.m_lsys_krn_sys_vumap.access = access;
-            msg.m_u.m_lsys_krn_sys_vumap.offset = offset;
-        }
+        msg.m_u.m_lsys_krn_sys_vumap.endpt = endpt;
+        msg.m_u.m_lsys_krn_sys_vumap.vaddr = vaddr;
+        msg.m_u.m_lsys_krn_sys_vumap.vcount = vcount;
+        msg.m_u.m_lsys_krn_sys_vumap.paddr = paddr;
+        msg.m_u.m_lsys_krn_sys_vumap.pmax = pmax;
+        msg.m_u.m_lsys_krn_sys_vumap.access = access;
+        msg.m_u.m_lsys_krn_sys_vumap.offset = offset;
         msg
     }
 

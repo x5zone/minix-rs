@@ -181,15 +181,15 @@ pub enum IpcError {
     TrapDenied,
 }
 
-/// IPC send flags. C: `minix3/minix/kernel/ipc.h:11-12`.
-///
-/// Design decision §3.4 / AT-4: `bitflags!` macro (not bare `u32`).
-///
-/// # P0 FIX (FIX-1 / FIX-2)
-///
-/// Previous code defined `NON_BLOCKING=0x01` and `FROM_KERNEL=0x02`,
-/// both wrong. The correct values aligned with C source are
-/// `NON_BLOCKING=0x0080` and `FROM_KERNEL=0x0100`.
+// IPC send flags. C: `minix3/minix/kernel/ipc.h:11-12`.
+//
+// Design decision §3.4 / AT-4: `bitflags!` macro (not bare `u32`).
+//
+// # P0 FIX (FIX-1 / FIX-2)
+//
+// Previous code defined `NON_BLOCKING=0x01` and `FROM_KERNEL=0x02`,
+// both wrong. The correct values aligned with C source are
+// `NON_BLOCKING=0x0080` and `FROM_KERNEL=0x0100`.
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SendFlags: u32 {
@@ -366,7 +366,7 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
         "delivermsg called without MF_DELIVERMSG"
     );
 
-    let msg = proc.p_delivermsg.clone();
+    let msg = proc.p_delivermsg;
     let user_addr = proc.p_delivermsg_vir;
 
     match user_copy.copy_msg_to_user(user_addr, &msg) {
@@ -562,7 +562,7 @@ impl SenderQueue {
         self.0.iter().position(|nr| {
             nr_to_idx(*nr)
                 .and_then(|idx| procs.get(idx))
-                .map_or(false, |p| p.p_endpoint == src_endpoint)
+                .is_some_and(|p| p.p_endpoint == src_endpoint)
         })
     }
 
@@ -756,10 +756,7 @@ impl<'a> IpcEngine<'a> {
             chain[chain_len] = target_nr;
             chain_len += 1;
 
-            let next_ep = match Self::blocked_on(&self.procs[target_idx]) {
-                Some(ep) => ep,
-                None => return None,
-            };
+            let next_ep = Self::blocked_on(&self.procs[target_idx])?;
 
             if next_ep == caller_endpoint {
                 if group_size == 2 {
@@ -834,7 +831,7 @@ impl<'a> IpcEngine<'a> {
                     Err(_) => return IpcOutcome::Error(IpcError::Fault),
                 }
             } else {
-                self.procs[dst_idx].p_delivermsg = msg.clone();
+                self.procs[dst_idx].p_delivermsg = *msg;
             }
             self.procs[dst_idx].p_delivermsg.m_source = caller_endpoint;
             self.procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
@@ -884,7 +881,7 @@ impl<'a> IpcEngine<'a> {
                 Err(_) => return IpcOutcome::Error(IpcError::Fault),
             }
         } else {
-            self.procs[caller_idx].p_sendmsg = msg.clone();
+            self.procs[caller_idx].p_sendmsg = *msg;
             self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::SENDING_FROM_KERNEL);
         }
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::SENDING);
@@ -942,8 +939,8 @@ impl<'a> IpcEngine<'a> {
 
         // Phase 1: pending notifications (skipped when MF_REPLY_PEND).
         // C: `has_pending` (NOTIFY) — proc.c:1000-1030.
-        if !reply_pend {
-            if let Some(notify_src) = self.take_pending_notify(caller_nr, src_endpoint) {
+        if !reply_pend
+            && let Some(notify_src) = self.take_pending_notify(caller_nr, src_endpoint) {
                 self.build_notify_message(
                     caller_idx,
                     NotifySource::from_caller_nr(notify_src),
@@ -953,7 +950,6 @@ impl<'a> IpcEngine<'a> {
                 crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
                 return IpcOutcome::Delivered;
             }
-        }
 
         // Phase 2: pending async messages.
         // C: `has_pending` (ASEND) + `try_async` — proc.c:1031-1070.
@@ -983,7 +979,7 @@ impl<'a> IpcEngine<'a> {
                 None => return IpcOutcome::Error(IpcError::DeadSrcDst),
             };
             // Copy sender's cached message into caller's deliver buffer.
-            let sender_msg = self.procs[sender_idx].p_sendmsg.clone();
+            let sender_msg = self.procs[sender_idx].p_sendmsg;
             let sender_ep = self.procs[sender_idx].p_endpoint;
             let sender_from_kernel = self.procs[sender_idx]
                 .p_misc_flags
@@ -1098,8 +1094,8 @@ impl<'a> IpcEngine<'a> {
         // Scan bits low→high (C order).
         let mut bit = 0u32;
         while bit < 64 {
-            if (bitmap & (1u64 << bit)) != 0 {
-                if let Some(sender_idx) = self.procs.iter().position(|p| p.priv_id == Some(bit as u16)) {
+            if (bitmap & (1u64 << bit)) != 0
+                && let Some(sender_idx) = self.procs.iter().position(|p| p.priv_id == Some(bit as u16)) {
                     let sender_ep = self.procs[sender_idx].p_endpoint;
                     if src_endpoint == Endpoint::ANY || src_endpoint == sender_ep {
                         // Clear the bit.
@@ -1109,7 +1105,6 @@ impl<'a> IpcEngine<'a> {
                         return Some(sender_ep);
                     }
                 }
-            }
             bit += 1;
         }
         None
@@ -1122,7 +1117,7 @@ impl<'a> IpcEngine<'a> {
     /// `senda`) into the caller's `p_delivermsg`.
     fn deliver_async(&mut self, caller_idx: usize, sender_ep: Endpoint) {
         if let Some(sender_idx) = self.idx_by_endpoint(sender_ep) {
-            let msg = self.procs[sender_idx].p_sendmsg.clone();
+            let msg = self.procs[sender_idx].p_sendmsg;
             self.procs[caller_idx].p_delivermsg = msg;
             self.procs[caller_idx].p_delivermsg.m_source = sender_ep;
             self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
@@ -1293,13 +1288,11 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Layer 2: IPC whitelist. C: `may_send_to` — ipc.h.
-        if let Some(i) = dst_idx {
-            if let Some(dst_pid) = self.procs[i].priv_id {
-                if !caller_priv.may_send_to(dst_pid) {
+        if let Some(i) = dst_idx
+            && let Some(dst_pid) = self.procs[i].priv_id
+                && !caller_priv.may_send_to(dst_pid) {
                     return Err(IpcError::CallDenied);
                 }
-            }
-        }
 
         // Layer 3: trap mask. C: `priv(caller)->s_trap_mask & (1 << call_nr)`
         // — proc.c:552. C's `short s_trap_mask` sign-extends to int for the
@@ -1480,21 +1473,19 @@ fn build_notify_message(
     match src {
         NotifySource::Hardware => {
             // C: m_notify.interrupts = priv(dst)->s_int_pending; clear it.
-            if let Some(dst_priv_id) = procs[dst_idx].priv_id {
-                if let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
+            if let Some(dst_priv_id) = procs[dst_idx].priv_id
+                && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
                     interrupts = dst_priv.signals.s_int_pending as u64;
                     dst_priv.signals.s_int_pending = 0;
                 }
-            }
         }
         NotifySource::System => {
             // C: m_notify.sigset = priv(dst)->s_sig_pending; clear it.
-            if let Some(dst_priv_id) = procs[dst_idx].priv_id {
-                if let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
+            if let Some(dst_priv_id) = procs[dst_idx].priv_id
+                && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
                     sigset = dst_priv.signals.s_sig_pending.get();
                     dst_priv.signals.s_sig_pending = crate::proc::SigSet::empty();
                 }
-            }
         }
         NotifySource::Process(_) => {
             // Regular process: only timestamp is set (C falls through switch).
@@ -1505,9 +1496,7 @@ fn build_notify_message(
     // SAFETY: MessNotify is #[repr(C)] and fits within MESSAGE_PAYLOAD_SIZE
     // (compile-time asserted in notify.rs). We're writing to a zeroed
     // MessageUnion, so all fields are valid.
-    unsafe {
-        procs[dst_idx].p_delivermsg.m_u.m_notify = MessNotify::new(timestamp, interrupts, sigset);
-    }
+    procs[dst_idx].p_delivermsg.m_u.m_notify = MessNotify::new(timestamp, interrupts, sigset);
 }
 
 /// Core notification logic — shared by `IpcEngine::notify` (syscall path)
@@ -1552,15 +1541,12 @@ pub fn mini_notify_core(
 
     // C: `priv(dst)->s_notify_pending |= (1 << priv_id(caller))` — proc.c:1165.
     // The bit position is the CALLER's priv_id, not proc_nr.
-    if let Some(caller_pid) = caller_priv_id {
-        if (caller_pid as u32) < 64 {
-            if let Some(dst_priv_id) = procs[dst_idx].priv_id {
-                if let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
+    if let Some(caller_pid) = caller_priv_id
+        && (caller_pid as u32) < 64
+            && let Some(dst_priv_id) = procs[dst_idx].priv_id
+                && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
                     dst_priv.signals.s_notify_pending |= 1u64 << caller_pid;
                 }
-            }
-        }
-    }
     // If the caller has no priv_id (user process), the notification
     // is silently dropped — matching Minix3 behavior where only
     // system processes have privilege entries. User-process
@@ -1980,7 +1966,7 @@ mod tests {
             b.p_getfrom_e = Endpoint::ANY;
             b.priv_id = Some(1);
         }
-        let b_ep = pt.procs_slice()[1].p_endpoint;
+        let _b_ep = pt.procs_slice()[1].p_endpoint;
         let b_nr = pt.procs_slice()[1].p_nr;
         let procs = pt.procs_slice_mut();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
@@ -2171,7 +2157,7 @@ mod tests {
 
     #[test]
     fn test_deliver_message_success() {
-        let mut a = make_test_proc(0, Endpoint(1));
+        let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         let mut procs = [a];
         let mut priv_table = PrivTable::new();
@@ -2184,7 +2170,7 @@ mod tests {
 
     #[test]
     fn test_deliver_message_first_page_fault() {
-        let mut a = make_test_proc(0, Endpoint(1));
+        let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         let mut procs = [a];
         let mut priv_table = PrivTable::new();
@@ -2199,7 +2185,7 @@ mod tests {
 
     #[test]
     fn test_deliver_message_second_consecutive_fault() {
-        let mut a = make_test_proc(0, Endpoint(1));
+        let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         a.p_misc_flags.set(MiscFlagsBits::MSGFAILED); // already failed once
         let mut procs = [a];

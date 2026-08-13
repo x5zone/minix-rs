@@ -239,7 +239,7 @@ pub fn read_tsc() -> u64 {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::platform_desc;
         let pd = platform_desc();
         let clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.read_tsc()
@@ -268,7 +268,7 @@ pub fn stop_local_timer() {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.stop_local_timer();
@@ -286,11 +286,15 @@ pub fn stop_local_timer() {
 /// Configures the hardware timer (PIT on x86-64, Generic Timer on ARM64,
 /// CLINT on RISC-V) to generate interrupts at `hz` Hz for statistical
 /// profiling. Returns `Err(())` if the hardware does not support profiling.
+// R-18 (2026-08-13): `()` error type is intentional — single failure mode
+// (hardware lacks profiling support), no diagnostic info to carry. Allowed
+// per clippy::result_unit_err; mirrors ClockArch trait signature.
+#[allow(clippy::result_unit_err)]
 pub fn init_profile_clock(hz: u32) -> Result<(), ()> {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.init_profile_clock(hz)
@@ -312,7 +316,7 @@ pub fn stop_profile_clock() {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.stop_profile_clock();
@@ -333,7 +337,7 @@ pub fn ack_profile_clock() {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.ack_profile_clock();
@@ -353,7 +357,7 @@ pub fn ack_profile_clock() {
 ///
 /// `context_stop()` is called from the context switch path (proc.c:208/440/1956
 /// + assembly entries mpx.S/apic_asm.S), NOT from the timer interrupt path.
-/// `arch_timer_int_handler()` in i386 is an empty function (arch_clock.c:72-74).
+///   `arch_timer_int_handler()` in i386 is an empty function (arch_clock.c:72-74).
 ///
 /// Reads the current TSC, computes the delta since the last call (stored in
 /// `CpuLocal::tsc_ctr_switch`), updates the baseline, and decrements
@@ -757,7 +761,7 @@ impl ClockState {
     /// C: `env_get("hz")` override in `init_clock()` — clock.c:56-60
     /// Range: 2..=50000 (matching C's validation).
     pub fn with_hz(hz: u32) -> Self {
-        let hz = if hz < 2 || hz > 50000 { DEFAULT_HZ } else { hz };
+        let hz = if !(2..=50000).contains(&hz) { DEFAULT_HZ } else { hz };
         let mut state = Self::new();
         state.hz = hz;
         state

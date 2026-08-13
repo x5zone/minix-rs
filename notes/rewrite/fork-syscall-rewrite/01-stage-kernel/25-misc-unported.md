@@ -388,8 +388,8 @@ pub enum GetInfoRequest {
 - `KInfo`：临时用 M4 返回 5 字段（D7）
 - `Hz`/`LoadInfo`/`Machine`/`CpuInfo`/`CpuTicks`：已实现（经 `copy_struct_to_caller<T>` + `data_copy_vmcheck` 拷贝到用户空间；详见 §4.2）。`Hz` 拷 `system_hz`；`LoadInfo` 构造 `LoadInfoStruct`（180 项 `u16` + `u16` + `u64`，`#[repr(C)]`）取自 `clock_state.load_history()`；`Machine` 构造 `MachineStruct`（`#[repr(C)]`，processors_count + bsp_id + padding + apic_enabled + acpi_rsdp + board_id）取自 SMP 状态；`CpuInfo` 构造 `CpuInfoEntry` 数组（`#[repr(C)]`，cpu_id + cpu_cycles + cpu_load）；`CpuTicks` 拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线）
 - `Proc`/`Priv`/`Regs`：endpoint 验证已实现，data_copy DEFERRED（需 C 兼容 `struct proc`/`struct priv`/`reg_t`/CpuContext 布局）
-- `RandomnessBin`：索引边界检查已实现（bin<32），data_copy DEFERRED（需 randomness bin 基础设施）
-- 其余 7 个（`Image`/`ProcTab`/`Randomness`/`MonParams`/`IrqHooks`/`PrivTab`/`IrqActids`/`IdleTsc`）：直接 `ENOSYS`（待各自基础设施；其中 `ProcTab`/`PrivTab` 有显式 `case` 但无验证，其余落入 `_ =>` catch-all）
+- `Randomness`/`RandomnessBin`：✅ 已实现（`misc.rs:1008-1054`，经 `crate::krandom::try_krandom()` + `wipe_all`/`wipe_bin` 拷贝后清零，详见 §4.7）
+- 其余 6 个（`Image`/`ProcTab`/`MonParams`/`IrqHooks`/`PrivTab`/`IrqActids`/`IdleTsc`）：直接 `ENOSYS`（待各自基础设施；其中 `ProcTab`/`PrivTab` 有显式 `case` 但无验证，其余落入 `_ =>` catch-all）
 
 ### 4.2 dispatch_getinfo 分派
 
@@ -414,8 +414,9 @@ pub fn dispatch_getinfo(
 - `CpuInfo`：构造 `CpuInfoEntry` 数组（`#[repr(C)]`，misc.rs:547-557），经 `copy_struct_to_caller` 拷贝
 - `CpuTicks`：拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线，misc.rs:511-524），经 `copy_struct_to_caller` 拷贝
 - `Proc`/`Priv`/`Regs`：验证 endpoint（`SELF` 替换 + `isokendpt`）→ `ENOSYS`（需 C 兼容 `struct proc`/`struct priv`/`reg_t` 布局）
-- `RandomnessBin`：验证 bin 索引（`0 ≤ bin < 32`）→ `ENOSYS`（需 randomness bin 基础设施）
-- `ProcTab`/`PrivTab`/`Image`/`Randomness`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`：直接 `ENOSYS`（待各自基础设施）
+- `Randomness`：✅ 已实现（`misc.rs:1008-1024`）—— 快照整个 `KRandomness`（2184 字节）后 `wipe_all()` 清零所有 bin，再 `copy_struct_to_caller` 拷贝快照到用户空间。`try_krandom()` 返回 `None` 时返回 `EINVAL`（boot 未完成）
+- `RandomnessBin`：✅ 已实现（`misc.rs:1026-1054`）—— 验证 `0 ≤ bin < RANDOM_SOURCES(16)` → `EINVAL`；`r_size < RANDOM_ELEMENTS` 时返回 `ENOENT`（bin 未满）；快照单 bin 后 `wipe_bin(bin_idx)` 清零，再 `copy_struct_to_caller` 拷贝
+- `ProcTab`/`PrivTab`/`Image`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`：直接 `ENOSYS`（待各自基础设施）
 
 **`copy_struct_to_caller<T>` 通用 helper**（misc.rs:313）：封装 `GET_*` 子请求共有的"E2BIG 检查 + `data_copy_vmcheck` 从内核栈拷到用户空间"模式。`dispatch_getinfo` 现接收 `clock_state: &ClockState` 参数（与 `dispatch_setalarm` 对齐），供 `Hz`/`LoadInfo` 读取时钟状态。
 
@@ -536,6 +537,81 @@ pub fn dispatch_unused() -> KcallResult {
 
 > design.md §D2 ↔ misc.rs:962-964
 
+### 4.7 krandom 子系统接入（GET_RANDOMNESS / GET_RANDOMNESS_BIN）
+
+`dispatch_getinfo` 的 `Randomness`/`RandomnessBin` 两条 case 已完整接入 `crate::krandom` 子系统（`os/kernel/src/krandom.rs`，327 行）。本节简述该子系统与 dispatch 的契约；详细设计与 C 行为对照见 [14-exception-interrupt.md §4.4](14-exception-interrupt.md)（IRQ 路径调用 `get_randomness` 的入口）与 [08-system-init-boot-finish.md §3](08-system-init-boot-finish.md)（`krandom::init()` 调用点）。
+
+**Minix3 C 源码映射**：
+
+| C 符号 | C 位置 | Rust 对应 | 说明 |
+|--------|--------|----------|------|
+| `struct k_randomness_bin` | include/minix/type.h:189-193 | `KRandomnessBin`（`#[repr(C)]`，136 字节） | `r_next`/`r_size`/`r_buf[64]`，字段顺序与大小严格对齐 |
+| `struct k_randomness` | include/minix/type.h:187-194 | `KRandomness`（`#[repr(C)]`，2184 字节） | `random_elements`/`random_sources`/`bin[16]` |
+| `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
+| `krandom_init()` | main.c:48,62 | `krandom::init()`（`lib.rs:382` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
+| `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | **no-op stub**，匹配 C i386/earm 实现 |
+| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1008-1024） | 快照 + `wipe_all` + 拷贝 |
+| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1026-1054） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
+
+**设计决策**（krandom.rs 文件头 D1-D4）：
+
+- **D1**: `#[repr(C)]` 结构体严格对齐 C ABI（字段顺序/大小/对齐），因为用户态 `random` 驱动通过原始字节解释这些结构。
+- **D2**: `KRANDOM` 全局用 `SyncUnsafeCell` + `addr_of_mut!`，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式。BKL 保护单写（IRQ 路径）单读（syscall 路径）。
+- **D3**: `get_randomness` 是 no-op stub，匹配 C 的 i386/earm 实现。**实际熵采集由用户态 `random` 驱动完成**（drivers/system/random/），内核仅提供 bin 容器与 `GET_RANDOMNESS` 导出接口。Rust 不在内核侧实现 RDRAND/RTSC 采集，避免架构特定代码泄漏到 kernel crate（与项目"硬件抽象为 trait"原则一致；x86 RDRAND 应在 `os/arch/src/x86_64/` 实现，当前 deferred）。
+- **D4**: `RANDOM_SOURCES = 16`、`RANDOM_ELEMENTS = 64`，匹配 `include/minix/type.h:182-183`。
+
+**dispatch_getinfo 接入点**：
+
+```rust
+// misc.rs:1008-1024 — GET_RANDOMNESS
+GetInfoRequest::Randomness => {
+    // C: do_getinfo.c:148-160 — copy entire krandom struct, then wipe all bins.
+    // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+    let krandom_snapshot = match unsafe { crate::krandom::try_krandom() } {
+        Some(kr) => { let snapshot = *kr; kr.wipe_all(); snapshot }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    return copy_struct_to_caller(caller, &krandom_snapshot, val_ptr, val_len);
+}
+
+// misc.rs:1026-1054 — GET_RANDOMNESS_BIN
+GetInfoRequest::RandomnessBin => {
+    let bin = val_len2_e;
+    if bin < 0 || bin >= crate::krandom::RANDOM_SOURCES as i32 {
+        return KcallResult::Ok(EINVAL);
+    }
+    let bin_snapshot = match unsafe { crate::krandom::try_krandom() } {
+        Some(kr) => {
+            let bin_idx = bin as usize;
+            if kr.bin[bin_idx].r_size < crate::krandom::RANDOM_ELEMENTS as i32 {
+                return KcallResult::Ok(ENOENT);  // bin not yet full
+            }
+            let snapshot = kr.bin[bin_idx];
+            kr.wipe_bin(bin_idx);
+            snapshot
+        }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    return copy_struct_to_caller(caller, &bin_snapshot, val_ptr, val_len);
+}
+```
+
+**语义对齐验证**：
+- C `do_getinfo.c:153-156` 在拷贝后 `wipe` 原数据：Rust `wipe_all()`/`wipe_bin()` 在快照后立即调用，语义一致。
+- C `do_getinfo.c:171-174` 检查 `r_size < RANDOM_ELEMENTS` 返回 `ENOENT`（bin 未满）：Rust 同样检查并返回 `ENOENT`。
+- C 用 `static struct k_randomness copy` 保留计数器：Rust 用栈上 `snapshot` 变量（BKL 保护下安全）。
+
+**测试覆盖**（krandom.rs `mod tests`，6 个）：
+
+| 测试 | 覆盖点 |
+|------|--------|
+| `test_krandomness_bin_layout` | `size_of = 136` 严格匹配 C `struct k_randomness_bin` |
+| `test_krandomness_layout` | `size_of = 2184` 严格匹配 C `struct k_randomness` |
+| `test_krandomness_new` | `random_elements = 64`、`random_sources = 16`、所有 bin 零初始化 |
+| `test_wipe_bin` | 单 bin `wipe` 后 `r_next = r_size = 0` |
+| `test_wipe_all` | 所有 bin `wipe_all` 后清零 |
+| `test_get_randomness_is_noop` | `get_randomness(3)` / `get_randomness(15)` 不 panic、不修改状态 |
+
 ---
 
 ## Ch5: 测试要点
@@ -603,8 +679,9 @@ pub fn dispatch_unused() -> KcallResult {
 | GETINFO GET_PROC/GET_PROCTAB | do_getinfo.c:GET_PROC/PROCTAB | 需 C 兼容 `struct proc` 布局（KProcess→proc 转换，~100+ 字段） | `#[repr(C)]` struct proc 设计 |
 | GETINFO GET_PRIV/GET_PRIVTAB | do_getinfo.c:GET_PRIV/PRIVTAB | 需 C 兼容 `struct priv` 布局 | `#[repr(C)]` struct priv 设计 |
 | GETINFO GET_REGS | do_getinfo.c:GET_REGS | 需 C 兼容 `reg_t`/CpuContext 布局 | `#[repr(C)]` reg_t 设计 |
-| GETINFO GET_RANDOMNESS_BIN | do_getinfo.c:GET_RANDOMNESS_BIN | 需 randomness bin 基础设施 | krandom 子系统 |
-| GETINFO 其余 | GET_IMAGE/MONPARAMS/IRQHOOKS/IRQACTIDS/IDLETSC/RANDOMNESS | 各自特定基础设施 | 子系统落地 |
+| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1008-1024`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
+| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1026-1054`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
+| GETINFO 其余 | GET_IMAGE/MONPARAMS/IRQHOOKS/IRQACTIDS/IDLETSC | 各自特定基础设施 | 子系统落地 |
 | ~~TRACE 跨地址空间拷贝~~ | do_trace.c COPYFROMPROC/COPYTOPROC | ✅ 已实现: `data_copy_vmcheck` | — |
 | ~~TRACE T_SETUSER 段寄存器保护~~ | do_trace.c:141-166 | ✅ 已实现: `CpuContextArch::write_user_register` trait 方法 + 三架构实现（x86_64 段寄存器保护 + PSW 用户位掩码；arm64/riscv64 偏移映射） | — |
 | ~~TRACE T_GETUSER priv-struct 分支~~ | do_trace.c:117-123 | ✅ 已实现: `dispatch_trace` 签名新增 `priv_table: &PrivTable`；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取；对齐 C 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑；2 个测试覆盖（正常读取 + 越界 EFAULT） | — |

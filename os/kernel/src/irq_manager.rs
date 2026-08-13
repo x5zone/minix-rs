@@ -570,7 +570,7 @@ impl<IC: InterruptController> IrqManager<IC> {
     ) -> Option<usize> {
         self.hooks.iter().position(|slot| {
             slot.as_ref()
-                .map_or(false, |s| s.proc_endpoint == proc_endpoint && s.notify_id == notify_id)
+                .is_some_and(|s| s.proc_endpoint == proc_endpoint && s.notify_id == notify_id)
         })
     }
 

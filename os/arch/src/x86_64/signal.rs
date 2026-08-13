@@ -18,7 +18,7 @@
 
 use crate::signal_context::{SignalContext, SignalInfo};
 use crate::arch::signal_context::{
-    SC_MAGIC, MF_FPU_INITIALIZED, MF_CONTEXT_SET, X86_FLAGS_USER,
+    SC_MAGIC, X86_FLAGS_USER,
     KTS_NONE,
 };
 

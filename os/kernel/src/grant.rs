@@ -284,6 +284,7 @@ pub struct GrantVerifyResult {
 // ── Endpoint sentinels ──
 
 /// C: `NONE` — endpoint.h
+#[allow(dead_code)] // endpoint sentinel constant; not yet wired to all call sites
 const NONE: i32 = -1;
 /// C: `ANY` — endpoint.h
 const ANY: i32 = -3;
@@ -345,6 +346,10 @@ const MEM_TOP: u64 = u64::MAX;
 /// C's loop `do { ... } while(g.cp_flags & CPF_INDIRECT)` is replaced
 /// with an explicit `for depth in 0..MAX_INDIRECT_DEPTH` loop that
 /// `break`s when the grant is not indirect.
+// R-18 (2026-08-13): Mirrors C `verify_grant()` signature (do_safecopy.c:41-266)
+// exactly — 10 params including 2 closures. Extracting a param struct would
+// diverge from C and hurt grep-ability. Allowed per clippy::too_many_arguments.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_grant(
     caller: &mut KProcess,
     granter: Endpoint,

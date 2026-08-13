@@ -489,7 +489,7 @@ C `generic_handler`（do_irqctl.c:145-172）在投递通知前还有两步副作
 
 | C 行 | C 代码 | Rust 实现 | 缺口类型 | 处理计划 |
 |------|--------|----------|---------|---------|
-| do_irqctl.c:154 | `get_randomness(&krandom, hook->irq)` | ❌ 未实现（`KernelNotifier::notify_hardware` 仅以注释标注） | 已知缺口 | 推迟到独立 `krandom` 子系统落地（minix3 `krandom` 是 `/dev/random` 的熵池，跨越 kernel/PM/VFS 多服务，不属于本章异常/中断分流职责）。Rust 实现后，`KernelNotifier` 在 `notify_hardware` 入口处调用 `krandom::add_interrupt(irq)`。 |
+| do_irqctl.c:154 | `get_randomness(&krandom, hook->irq)` | ✅ 已实现（`krandom::get_randomness(source)`，no-op stub 匹配 C i386/earm 语义） | 无缺口（语义对齐） | `krandom.rs` 提供 `KRandomness`/`KRandomnessBin`（`#[repr(C)]`）+ `KRANDOM` 全局（BKL 保护）+ `init()`/`try_krandom()`/`krandom()` 访问器 + `get_randomness(source)` no-op。**C i386/earm 的 `get_randomness` 也是 no-op stub**——实际熵采集由用户态 `random` 驱动（drivers/system/random/）完成，内核仅提供 bin 容器与 `GET_RANDOMNESS`/`GET_RANDOMNESS_BIN` 导出接口（已接入 `dispatch_getinfo`，详见 [25-misc-unported.md §4.7](25-misc-unported.md)）。`KernelNotifier::notify_hardware` 在入口调用 `krandom::get_randomness(irq)` 即可对齐 C 行为（当前未接入是因为 stub 无副作用，接入时机由 IRQ 路径重构决定）。 |
 | do_irqctl.c:160-161 | `if(!isokendpt(hook->proc_nr_e, &proc_nr)) panic("invalid interrupt handler: %d", hook->proc_nr_e)` | ✅ 语义对齐（panic 等价物：`unwrap_or_else(\|\| panic!("invalid interrupt handler: endpoint={:?}", dst))`，irq_manager.rs:149-151） | 无缺口（仅实现形式差异） | C 用 `isokendpt` 验证 endpoint→proc_nr 映射；Rust 用 `proc_table.iter().find(\|p\| p.p_endpoint == dst)` 等价查找，找不到则 panic，diagnostic 与 C 同义。Rust 额外校验 `priv_id` 存在性 + `priv_table.get_mut(priv_id)` 成功（C 隐含 `priv(proc_addr(proc_nr))` 不返回 NULL，未显式检查）。 |
 
 **`isokendpt` 语义说明**：C 的 `isokendpt(endpoint, &proc_nr)` 是 `endpoint` → `proc_nr` 的双向校验宏（同时检查 endpoint 合法性并输出 proc_nr）。Rust 无需此宏，因为：(1) `Endpoint` 是新类型（`pub struct Endpoint(i32)`），类型系统已隔离裸 i32；(2) `proc_table.iter().find(|p| p.p_endpoint == dst)` 完成相同查找；(3) 找不到时 panic 与 C 的 `panic` 同义。Rust 的额外 `priv_id`/`priv_table` 检查是 C 隐含假设的显式化（C 假设 `priv(proc_addr(proc_nr))` 不返回 NULL，Rust 不做此假设）。
@@ -538,7 +538,7 @@ ExceptionDispatcher::handle_page_fault
 | §2.5 指针链表 | §4.4 索引链表固定池 | 设计决策 | no_std 无堆 |
 | §2.6 hw_intr 宏 | InterruptController trait（minix_plat） | 设计决策 | trait 替代宏 |
 | C timer_int_handler 递减 quantum | ❌ Rust 不在本章实现 | 已知缺口（实为 C 也不在 timer_int_handler） | quantum 归 10/11/15 |
-| do_irqctl.c:154 `get_randomness(&krandom, hook->irq)` | ❌ `KernelNotifier` 未调用 | 已知缺口 | 推迟到独立 `krandom` 子系统（跨 kernel/PM/VFS，非本章职责）。详见 §4.4 缺口表。 |
+| do_irqctl.c:154 `get_randomness(&krandom, hook->irq)` | ✅ `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm | 无缺口（语义对齐） | C i386/earm 也是 no-op；实际熵采集在用户态 `random` 驱动。`KernelNotifier` 未显式调用 stub（无副作用）。详见 §4.4 + [25-misc-unported.md §4.7](25-misc-unported.md)。 |
 | do_irqctl.c:160-161 `isokendpt` + `panic` | ✅ `unwrap_or_else(\|\| panic!)` 语义对齐 | 无缺口（形式差异） | Rust 用 `iter().find` 替代 `isokendpt` 宏；额外显式校验 `priv_id`/`priv_table`（C 隐含假设）。详见 §4.4 缺口表。 |
 
 ### 4.8 Return path（TrapReturnArch，待落地）

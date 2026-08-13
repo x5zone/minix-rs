@@ -826,7 +826,6 @@ pub mod mock {
             flags: PageFlags,
         ) -> Result<(), PageTableError> {
             // Mock: just map as regular pages within the huge page range
-            let page_size = Self::PAGE_SIZE as u64;
             let pages = size / Self::PAGE_SIZE;
             self.map_range(vaddr, paddr, pages, flags)
         }

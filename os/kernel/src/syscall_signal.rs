@@ -15,14 +15,14 @@
 //! - **D5**: Linear scan for GETKSIG (matches C, process count < 128)
 //! - **D6**: `trait SignalContext` for architecture-specific sigframe/sigcontext
 
-use minix_types::{Endpoint, Message, MessSigcalls, PhysBytes, VirBytes};
+use minix_types::{Endpoint, Message, MessSigcalls, VirBytes};
 
 use crate::proc::{KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, SigSet};
 use crate::proc_table::ProcessTable;
 use crate::kpriv::PrivTable;
 use crate::syscall::{KcallResult, Syscall};
 use crate::cross_space::data_copy_vmcheck;
-use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
+use crate::vm::{AddressRef, CrossSpaceResult};
 
 use minix_arch::{
     CurrentSignalContext, CurrentDirectMap, DirectMapArch, SignalContext, SignalInfo,
@@ -166,7 +166,7 @@ fn cause_signal(
 ) {
     // C: system.c:406 — rp = proc_addr(proc_nr)
     let was_signaled = proc_table.get(target_nr)
-        .map_or(false, |p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
 
     // C: system.c:411 — sigaddset(&rp->p_pending, sig_nr)
     if let Some(target) = proc_table.get_mut(target_nr) {
@@ -191,20 +191,16 @@ fn cause_signal(
         // send_sig() adds a notification to the signal manager's pending set.
         // C: send_sig — add SIGKSIG to s_sig_pending + mini_notify.
         // s_sig_pending is marked above; mini_notify is called below.
-        if let Some(sig_mgr_ep) = sig_mgr {
-            if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep) {
-                if let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr) {
-                    if let Some(pid) = sig_mgr_proc.priv_id {
-                        if let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
+        if let Some(sig_mgr_ep) = sig_mgr
+            && let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
+                && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
+                    && let Some(pid) = sig_mgr_proc.priv_id
+                        && let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
                             // R-16 (2026-08-12): SAFETY: `SIGKSIG` is a
                             // compile-time `u32` constant (= 74, < 256), so
                             // `as u8` cannot truncate.
                             sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
-                    }
-                }
-            }
-        }
 
         // C: send_sig — mini_notify(proc_addr(_ENDPOINT_P(ep)), sp->s_sig_mgr)
         // Notify the signal manager's OWN signal manager (usually SELF → skip).
@@ -376,7 +372,7 @@ pub fn dispatch_endksig(
     // Step 3: Check RTS_SIG_PENDING is set.
     // C: do_endksig.c:34 — if (!RTS_ISSET(rp, RTS_SIG_PENDING)) return EINVAL
     if !proc_table.get(target_nr)
-        .map_or(false, |p| p.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING))
+        .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING))
     {
         return KcallResult::Ok(EINVAL);
     }
@@ -385,7 +381,7 @@ pub fn dispatch_endksig(
     // C: do_endksig.c:37-38 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     //     RTS_UNSET(rp, RTS_SIG_PENDING)
     if !proc_table.get(target_nr)
-        .map_or(false, |p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED))
+        .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED))
     {
         proc_table.rts_unset(target_nr, RtsFlagsBits::SIG_PENDING);
     }
@@ -466,7 +462,7 @@ pub fn dispatch_sigsend(
 
     // ── Step 1: Copy sigmsg from caller's user space ──
     // C: do_sigsend.c:36-39 — data_copy_vmcheck(caller, caller_ep, sigctx, KERNEL, &smsg, sizeof)
-    let mut smsg: SigMsg = SigMsg::default();
+    let smsg: SigMsg = SigMsg::default();
     {
         let smsg_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             &smsg as *const SigMsg as u64,
@@ -646,7 +642,7 @@ pub fn dispatch_sigreturn(
     // C: do_sigreturn.c:33-36 — data_copy(endpt, sigctx, KERNEL, &sc, sizeof)
     // Note: C uses data_copy (no vmcheck), but minix-rs uses data_copy_vmcheck
     // for uniformity — the user stack may page-fault.
-    let mut sctx: <CurrentSignalContext as SignalContext>::SigContext = Default::default();
+    let sctx: <CurrentSignalContext as SignalContext>::SigContext = Default::default();
     let sctx_size = core::mem::size_of_val(&sctx);
     {
         let sctx_phys = CurrentDirectMap::virt_to_phys(VirBytes(

@@ -21,9 +21,9 @@
 //! - **D3**: `u64` for s_k_call_mask (58 syscalls fit in one u64)
 //! - **D4**: Return false + caller EPERM on filter failure (matches C ECALLDENIED)
 //! - **D5**: `Option<IpcFilterSlot>` replaces C's `type == IPCF_NONE` sentinel.
-//!          `None` = free slot (C: `IPCF_POOL_IS_FREE_SLOT`), `Some` = allocated.
-//!          Eliminates the "type field as state flag" pattern — Rust's Option
-//!          enforces "illegal states unrepresentable".
+//!   `None` = free slot (C: `IPCF_POOL_IS_FREE_SLOT`), `Some` = allocated.
+//!   Eliminates the "type field as state flag" pattern — Rust's Option
+//!   enforces "illegal states unrepresentable".
 //! - **D6**: `Option<usize>` pool index replaces C's `*mut ipc_filter_s` raw pointer
 //! - **D7**: bitflags for IPCF_MATCH_M_SOURCE/M_TYPE (type-safe composition)
 //! - **D8**: `enum IpcFilterType { Blacklist, Whitelist }` (NONE expressed by Option)
@@ -54,7 +54,9 @@ pub const NR_SYS_CALLS: usize = 58;
 /// All processes with `SYS_PROC` flag have their IPC targets filtered.
 /// User processes share `USER_PRIV` which has limited `s_ipc_to`.
 #[inline]
-pub fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool {
+#[allow(dead_code)] // R-19 (2026-08-13): Wrapper is tested directly; will be
+                    // wired into dispatch path when IPC filter pool is enabled.
+pub(crate) fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool {
     caller_priv.may_send_to(target_sys_id)
 }
 
@@ -118,8 +120,10 @@ pub(crate) enum IpcFilterType {
 }
 
 /// IPC filter element flags. C: `IPCF_MATCH_M_SOURCE/IPCF_MATCH_M_TYPE` — include/minix/ipc_filter.h:18-19
+#[allow(dead_code)] // FIX-02 future feature; filter element flags, not yet wired
 pub(crate) struct IpcFilterElFlags;
 
+#[allow(dead_code)] // FIX-02 future feature; grouped dead_code on associated constants
 impl IpcFilterElFlags {
     pub const MATCH_M_SOURCE: u32 = 0x1;
     pub const MATCH_M_TYPE: u32 = 0x2;
@@ -145,6 +149,9 @@ pub const IPCF_MAX_ELEMENTS: usize = crate::kpriv::NR_SYS_PROCS * 2;
 /// This eliminates the sentinel-value pattern (D5).
 #[derive(Debug)]
 pub(crate) struct IpcFilterSlot {
+    /// C: `type` field in `ipc_filter_s` (ipc_filter.h:42). Stored for
+    /// debugging/introspection but not read in current filter logic.
+    #[allow(dead_code)]
     pub filter_type: IpcFilterType,
     pub num_elements: usize,
     /// C: `flags` field in `ipc_filter_s` (ipc_filter.h:45). Reserved for
@@ -232,6 +239,7 @@ impl IpcFilterPool {
     }
 
     /// Get a reference to a filter slot by index.
+    #[allow(dead_code)] // accessor for future filter lookup; not yet wired
     pub(crate) fn get(&self, index: usize) -> Option<&IpcFilterSlot> {
         self.slots.get(index).and_then(|s| s.as_ref())
     }

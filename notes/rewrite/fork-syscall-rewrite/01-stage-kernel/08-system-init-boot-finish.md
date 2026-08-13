@@ -805,7 +805,7 @@ fn switch_to_user() -> ! {
 | C 步骤 | C 位置 | 未实现原因 |
 |--------|--------|----------|
 | `cpu_identify()` | main.c:45 | CPU 识别在 boot-shim 阶段已完成（01-boot-shim-bootstrap），Rust 无需在 bsp_finish_booting 重复 |
-| `krandom_init()` | main.c:62 | Rust 尚未实现内核随机数源；boot 阶段不需要随机数，后续安全模块实现时补齐 |
+| `krandom_init()` | main.c:62 | ✅ 已实现（`krandom::init()`，`lib.rs:382` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
 | `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:92 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
 
 这 3 步的差异属于**架构演进**（ARCH），不是实现遗漏——每步都有 Rust 类型系统的替代方案。

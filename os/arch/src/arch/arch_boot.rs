@@ -41,8 +41,6 @@
 //!
 //! MockArchBoot is only used in `#[cfg(test)]` or with the `mock` feature.
 
-use minix_types::Endpoint;
-
 /// Re-export of the IRQ handler signature used by `IrqManager`.
 ///
 /// Kept here as a stable alias so callers do not need to depend on the

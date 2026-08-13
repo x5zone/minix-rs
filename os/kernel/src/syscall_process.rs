@@ -245,9 +245,7 @@ pub fn dispatch_exec(
     };
 
     // C: do_exec.c:36-37 — clear MF_DELIVERMSG on the target
-    proc_table.get_mut(target_nr).map(|rp| {
-        rp.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
-    });
+    if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG); }
 
     // C: do_exec.c:39-43 — copy process name from caller's address space
     // C: numap_local(caller, name, sizeof(rp->p_name)) + phys_byte loop
@@ -325,9 +323,7 @@ pub fn dispatch_exec(
 
     // C: do_exec.c:57-58 — clear FPU initialized flag, release FPU
     // C uses MF_FPU_INITIALIZED; Rust uses EXT_REG_INITIALIZED
-    proc_table.get_mut(target_nr).map(|rp| {
-        rp.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED);
-    });
+    if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED); }
     // release_fpu(rp) — clearing EXT_REG_INITIALIZED + lazy FPU model
     // means the next FPU instruction traps and re-initializes.
 
@@ -430,7 +426,7 @@ pub fn dispatch_clear(
     // would mark the PM's own slot as SLOT_FREE — a P0 semantic drift.
 
     // C: do_clear.c:33 — if(isemptyp(rc)) return OK
-    if proc_table.get(target_nr).map_or(true, |p| {
+    if proc_table.get(target_nr).is_none_or(|p| {
         p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE)
     }) {
         return KcallResult::Ok(OK);
@@ -451,11 +447,10 @@ pub fn dispatch_clear(
         let irq_mgr = unsafe { crate::irq_manager() };
         // Iterate all hook slots; remove those owned by the target.
         for slot in 0..crate::syscall_device::NR_IRQ_HOOKS {
-            if let Some(owner) = irq_mgr.hook_owner(slot) {
-                if owner == target_endpoint {
+            if let Some(owner) = irq_mgr.hook_owner(slot)
+                && owner == target_endpoint {
                     let _ = irq_mgr.remove_hook_by_slot(slot);
                 }
-            }
         }
     }
 
@@ -467,15 +462,13 @@ pub fn dispatch_clear(
 
     // C: do_clear.c:41-43 — reset_kernel_timer(&priv(rc)->s_alarm_timer)
     // Cancel any pending alarm timer for this process.
-    if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id) {
-        if let Some(kp) = priv_table.get_mut(pid) {
-            if let Some((_entry, timer_id)) = kp.runtime.s_alarm_timer.take() {
+    if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
+        && let Some(kp) = priv_table.get_mut(pid)
+            && let Some((_entry, timer_id)) = kp.runtime.s_alarm_timer.take() {
                 // Remove the timer from the clock's active timer chain.
                 // C: reset_kernel_timer() dequeues + reinitializes.
                 clock_state.reset_timer(timer_id);
             }
-        }
-    }
 
     // C: do_clear.c:50 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
     // Mark the TARGET slot as free so it can be reused.
@@ -490,15 +483,12 @@ pub fn dispatch_clear(
 
     // C: do_clear.c:59 — if SYS_PROC, release privilege structure
     // priv(rc)->s_proc_nr = NONE — marks the privilege slot as unassigned.
-    if let Some(target) = proc_table.get(target_nr) {
-        if let Some(priv_id) = target.priv_id {
-            if let Some(kpriv) = priv_table.get_mut(priv_id) {
-                if kpriv.is_sys_proc() {
+    if let Some(target) = proc_table.get(target_nr)
+        && let Some(priv_id) = target.priv_id
+            && let Some(kpriv) = priv_table.get_mut(priv_id)
+                && kpriv.is_sys_proc() {
                     kpriv.capability.s_proc_nr = None;
                 }
-            }
-        }
-    }
 
     KcallResult::Ok(OK)
 }
@@ -539,18 +529,13 @@ pub fn dispatch_runctl(
             if (flags & RC_DELAY) != 0 {
                 // If the target is sending or syscall-traced, set MF_SIG_DELAY
                 let target = proc_table.get(target_nr);
-                if let Some(rp) = target {
-                    if rp.p_rts_flags.is_set(RtsFlagsBits::SENDING)
-                        || rp.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER)
-                    {
-                        proc_table.get_mut(target_nr).map(|rp| {
-                            rp.p_misc_flags.set(MiscFlagsBits::SIG_DELAY);
-                        });
-                    }
-                }
+                if let Some(rp) = target
+                    && (rp.p_rts_flags.is_set(RtsFlagsBits::SENDING)
+                        || rp.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER))
+                        && let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.set(MiscFlagsBits::SIG_DELAY); }
                 // Check if SIG_DELAY was set (by us or already present)
                 let sig_delay_set = proc_table.get(target_nr)
-                    .map_or(false, |rp| rp.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+                    .is_some_and(|rp| rp.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
                 if sig_delay_set {
                     return KcallResult::Ok(EBUSY);
                 }
@@ -602,7 +587,7 @@ pub fn dispatch_runctl(
             // C: do_runctl.c:65 — assert(RTS_ISSET(rp, RTS_PROC_STOP))
             debug_assert!(
                 proc_table.get(target_nr)
-                    .map_or(false, |rp| rp.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP)),
+                    .is_some_and(|rp| rp.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP)),
                 "RC_RESUME on process without RTS_PROC_STOP: {:?}",
                 target_nr,
             );
@@ -744,7 +729,7 @@ pub fn dispatch_schedctl(
 /// - `SYS_STATE_ADD_IPC_BL_FILTER` (3): add_ipc_filter(BLACKLIST) — IMPLEMENTED
 /// - `SYS_STATE_ADD_IPC_WL_FILTER` (4): add_ipc_filter(WHITELIST) — IMPLEMENTED
 /// - `SYS_STATE_CLEAR_IPC_FILTERS` (5): clear_ipc_filters(caller) — IMPLEMENTED
-pub fn dispatch_statectl(
+pub(crate) fn dispatch_statectl(
     caller: &mut KProcess,
     msg: &Message,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -773,12 +758,11 @@ pub fn dispatch_statectl(
         }
         // C: do_statectl.c:27-30 — priv(caller)->s_state_table = address; s_state_entries = length
         StatectlRequest::SetStateTable => {
-            if let Some(pid) = caller.priv_id {
-                if let Some(priv_) = priv_table.get_mut(pid) {
+            if let Some(pid) = caller.priv_id
+                && let Some(priv_) = priv_table.get_mut(pid) {
                     priv_.runtime.s_state_table = sc.address as usize;
                     priv_.runtime.s_state_entries = sc.length;
                 }
-            }
         }
         // C: do_statectl.c:31-35 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
         StatectlRequest::AddIpcBlFilter => {
@@ -793,8 +777,8 @@ pub fn dispatch_statectl(
             // (matches C `add_ipc_filter` semantics — replaces, not stacks),
             // then allocate a fresh blacklist slot from the pool.
             // C: IPCF_POOL_ALLOCATE_SLOT(IPCF_BLACKLIST, &priv_->s_ipcf)
-            if let Some(pid) = caller.priv_id {
-                if let Some(priv_) = priv_table.get_mut(pid) {
+            if let Some(pid) = caller.priv_id
+                && let Some(priv_) = priv_table.get_mut(pid) {
                     if let Some(old_idx) = priv_.mem.s_ipcf.take() {
                         pool.free(old_idx);
                     }
@@ -805,19 +789,16 @@ pub fn dispatch_statectl(
                         None => return KcallResult::Ok(ENOMEM),
                     }
                 }
-            }
             // Element population via data_copy_vmcheck is implemented below.
 
             // Reject overly-long filter lists before copying. Free the slot
             // we just allocated to avoid a leak.
             if length > crate::ipc_filter::IPCF_MAX_ELEMENTS {
-                if let Some(pid) = caller.priv_id {
-                    if let Some(priv_) = priv_table.get_mut(pid) {
-                        if let Some(idx) = priv_.mem.s_ipcf.take() {
+                if let Some(pid) = caller.priv_id
+                    && let Some(priv_) = priv_table.get_mut(pid)
+                        && let Some(idx) = priv_.mem.s_ipcf.take() {
                             pool.free(idx);
                         }
-                    }
-                }
                 return KcallResult::Ok(EINVAL);
             }
 
@@ -860,29 +841,24 @@ pub fn dispatch_statectl(
                 match data_copy_vmcheck(caller, src, dst, copy_bytes, proc_cr3) {
                     CrossSpaceResult::Completed(Ok(())) => {
                         // Populate the filter slot with the copied elements.
-                        if let Some(pid) = caller.priv_id {
-                            if let Some(priv_) = priv_table.get_mut(pid) {
-                                if let Some(idx) = priv_.mem.s_ipcf {
-                                    if let Some(slot) =
+                        if let Some(pid) = caller.priv_id
+                            && let Some(priv_) = priv_table.get_mut(pid)
+                                && let Some(idx) = priv_.mem.s_ipcf
+                                    && let Some(slot) =
                                         pool.get_mut(idx)
                                     {
                                         slot.num_elements = length;
                                         slot.elements[..length]
                                             .copy_from_slice(&buf[..length]);
                                     }
-                                }
-                            }
-                        }
                     }
                     CrossSpaceResult::Completed(Err(_)) => {
                         // Free the slot on copy failure.
-                        if let Some(pid) = caller.priv_id {
-                            if let Some(priv_) = priv_table.get_mut(pid) {
-                                if let Some(idx) = priv_.mem.s_ipcf.take() {
+                        if let Some(pid) = caller.priv_id
+                            && let Some(priv_) = priv_table.get_mut(pid)
+                                && let Some(idx) = priv_.mem.s_ipcf.take() {
                                     pool.free(idx);
                                 }
-                            }
-                        }
                         return KcallResult::Ok(EFAULT);
                     }
                     CrossSpaceResult::Suspended(_) => {
@@ -904,8 +880,8 @@ pub fn dispatch_statectl(
             // (matches C `add_ipc_filter` semantics — replaces, not stacks),
             // then allocate a fresh whitelist slot from the pool.
             // C: IPCF_POOL_ALLOCATE_SLOT(IPCF_WHITELIST, &priv_->s_ipcf)
-            if let Some(pid) = caller.priv_id {
-                if let Some(priv_) = priv_table.get_mut(pid) {
+            if let Some(pid) = caller.priv_id
+                && let Some(priv_) = priv_table.get_mut(pid) {
                     if let Some(old_idx) = priv_.mem.s_ipcf.take() {
                         pool.free(old_idx);
                     }
@@ -916,19 +892,16 @@ pub fn dispatch_statectl(
                         None => return KcallResult::Ok(ENOMEM),
                     }
                 }
-            }
             // Element population via data_copy_vmcheck is implemented below.
 
             // Reject overly-long filter lists before copying. Free the slot
             // we just allocated to avoid a leak.
             if length > crate::ipc_filter::IPCF_MAX_ELEMENTS {
-                if let Some(pid) = caller.priv_id {
-                    if let Some(priv_) = priv_table.get_mut(pid) {
-                        if let Some(idx) = priv_.mem.s_ipcf.take() {
+                if let Some(pid) = caller.priv_id
+                    && let Some(priv_) = priv_table.get_mut(pid)
+                        && let Some(idx) = priv_.mem.s_ipcf.take() {
                             pool.free(idx);
                         }
-                    }
-                }
                 return KcallResult::Ok(EINVAL);
             }
 
@@ -971,29 +944,24 @@ pub fn dispatch_statectl(
                 match data_copy_vmcheck(caller, src, dst, copy_bytes, proc_cr3) {
                     CrossSpaceResult::Completed(Ok(())) => {
                         // Populate the filter slot with the copied elements.
-                        if let Some(pid) = caller.priv_id {
-                            if let Some(priv_) = priv_table.get_mut(pid) {
-                                if let Some(idx) = priv_.mem.s_ipcf {
-                                    if let Some(slot) =
+                        if let Some(pid) = caller.priv_id
+                            && let Some(priv_) = priv_table.get_mut(pid)
+                                && let Some(idx) = priv_.mem.s_ipcf
+                                    && let Some(slot) =
                                         pool.get_mut(idx)
                                     {
                                         slot.num_elements = length;
                                         slot.elements[..length]
                                             .copy_from_slice(&buf[..length]);
                                     }
-                                }
-                            }
-                        }
                     }
                     CrossSpaceResult::Completed(Err(_)) => {
                         // Free the slot on copy failure.
-                        if let Some(pid) = caller.priv_id {
-                            if let Some(priv_) = priv_table.get_mut(pid) {
-                                if let Some(idx) = priv_.mem.s_ipcf.take() {
+                        if let Some(pid) = caller.priv_id
+                            && let Some(priv_) = priv_table.get_mut(pid)
+                                && let Some(idx) = priv_.mem.s_ipcf.take() {
                                     pool.free(idx);
                                 }
-                            }
-                        }
                         return KcallResult::Ok(EFAULT);
                     }
                     CrossSpaceResult::Suspended(_) => {
@@ -1004,8 +972,8 @@ pub fn dispatch_statectl(
         }
         // C: do_statectl.c:41-43 — clear_ipc_filters(caller)
         StatectlRequest::ClearIpcFilters => {
-            if let Some(pid) = caller.priv_id {
-                if let Some(priv_) = priv_table.get_mut(pid) {
+            if let Some(pid) = caller.priv_id
+                && let Some(priv_) = priv_table.get_mut(pid) {
                     // Free the IPC filter slot from the pool, then clear
                     // the pointer. C: IPCF_POOL_FREE_SLOT(priv(caller)->s_ipcf)
                     // followed by priv(caller)->s_ipcf = NULL.
@@ -1013,7 +981,6 @@ pub fn dispatch_statectl(
                         pool.free(ipcf_idx);
                     }
                 }
-            }
         }
     }
 
@@ -1049,9 +1016,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Statectl as i32;
         // SAFETY: we just constructed `statectl` and `msg`; no aliasing.
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_statectl = statectl;
-        }
+        msg.m_u.m_lsys_krn_sys_statectl = statectl;
         msg
     }
 
@@ -1178,11 +1143,9 @@ mod tests {
 
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
-            msg.m_u.m_m1.m1i2 = RC_STOP;           // action = stop
-            msg.m_u.m_m1.m1i3 = 0;                  // no RC_DELAY
-        }
+        msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
+        msg.m_u.m_m1.m1i2 = RC_STOP;           // action = stop
+        msg.m_u.m_m1.m1i3 = 0;                  // no RC_DELAY
 
         let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(OK));
@@ -1202,10 +1165,8 @@ mod tests {
 
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
-            msg.m_u.m_m1.m1i2 = RC_RESUME;
-        }
+        msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
+        msg.m_u.m_m1.m1i2 = RC_RESUME;
 
         let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(OK));
@@ -1223,10 +1184,8 @@ mod tests {
 
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_endpoint.0;
-            msg.m_u.m_m1.m1i2 = 99; // invalid action
-        }
+        msg.m_u.m_m1.m1i1 = target_endpoint.0;
+        msg.m_u.m_m1.m1i2 = 99; // invalid action
 
         let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1251,10 +1210,8 @@ mod tests {
 
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = kernel_endpoint.0;
-            msg.m_u.m_m1.m1i2 = RC_STOP;
-        }
+        msg.m_u.m_m1.m1i1 = kernel_endpoint.0;
+        msg.m_u.m_m1.m1i2 = RC_STOP;
 
         let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -1277,13 +1234,11 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_exec.endpt = target_endpoint.0;
-            // name = 0 (null pointer) — data_copy_vmcheck will suspend
-            // on the page fault (source address 0 not mapped).
-        }
+        msg.m_u.m_lsys_krn_sys_exec.endpt = target_endpoint.0;
+        // name = 0 (null pointer) — data_copy_vmcheck will suspend
+        // on the page fault (source address 0 not mapped).
 
-        let result = dispatch_exec(&mut caller, &mut msg, &mut proc_table);
+        let result = dispatch_exec(&mut caller, &msg, &mut proc_table);
         // Name copy suspends (null name pointer → page fault → VmSuspend).
         // C: do_exec.c:39-43 — name copy via numap_local; fault → VMSUSPEND.
         assert_eq!(result, KcallResult::VmSuspend);
@@ -1309,11 +1264,9 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_exec.endpt = 99999; // invalid endpoint
-        }
+        msg.m_u.m_lsys_krn_sys_exec.endpt = 99999; // invalid endpoint
 
-        let result = dispatch_exec(&mut caller, &mut msg, &mut proc_table);
+        let result = dispatch_exec(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1323,9 +1276,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         // Set an endpoint that won't be found in the process table
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 99999; // invalid endpoint
-        }
+        msg.m_u.m_m1.m1i1 = 99999; // invalid endpoint
         let mut proc_table = ProcessTable::new();
         let mut priv_table = PrivTable::new();
         let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
@@ -1352,9 +1303,7 @@ mod tests {
         // Caller is a different process (e.g., PM)
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_ep.get(); // target endpoint
-        }
+        msg.m_u.m_m1.m1i1 = target_ep.get(); // target endpoint
 
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
@@ -1382,9 +1331,7 @@ mod tests {
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_ep.get();
-        }
+        msg.m_u.m_m1.m1i1 = target_ep.get();
 
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
@@ -1417,9 +1364,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Schedctl as i32;
         // SAFETY: we just constructed `sc` and `msg`; no aliasing.
-        unsafe {
-            msg.m_u.m_lsys_krn_schedctl = sc;
-        }
+        msg.m_u.m_lsys_krn_schedctl = sc;
         msg
     }
 

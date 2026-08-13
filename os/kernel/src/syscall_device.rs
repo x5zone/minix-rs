@@ -14,7 +14,7 @@
 //! - **D6**: x86-only calls return BadCall on other architectures
 
 use minix_plat::{IrqPolicy, IrqVector, IrqNotifyId, NR_IRQ_VECTORS};
-use minix_types::{Endpoint, Message, MessageM1, MessLsysKrnReadbios, MessLsysKrnSysSdevio};
+use minix_types::{Endpoint, Message, MessageM1};
 
 use crate::irq_manager::IrqManager;
 use crate::kpriv::{KPriv, PrivFlagsBits, PrivTable};
@@ -270,7 +270,7 @@ pub fn dispatch_irqctl<IC: InterruptController>(
                     // writing to m1p1@16 would land in padding, not hook_id@12).
                     msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
                     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
-                    unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id = new_hook_id as i32 };
+                    msg.m_u.m_lsys_krn_sys_irqctl.hook_id = new_hook_id;
                 }
                 Err(crate::irq_manager::IrqError::NoFreeSlots) => {
                     return KcallResult::Ok(ENOSPC);
@@ -300,7 +300,7 @@ pub fn dispatch_irqctl<IC: InterruptController>(
             }
 
             // C: do_irqctl.c:118-120 — rm_irq_handler + clear slot
-            if let Err(_) = irq_mgr.remove_hook_by_slot(slot_idx) {
+            if irq_mgr.remove_hook_by_slot(slot_idx).is_err() {
                 return KcallResult::Ok(EINVAL);
             }
         }
@@ -390,8 +390,8 @@ pub fn dispatch_devio<PI: PortIo>(
 
     // C: do_devio.c:31-58 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
-    if let Some(priv_) = caller_priv {
-        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+    if let Some(priv_) = caller_priv
+        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
             // C: do_devio.c:42-53 — scan s_io_tab for matching range
             let mut allowed = false;
             for i in 0..priv_.io.s_nr_io_range as usize {
@@ -408,12 +408,11 @@ pub fn dispatch_devio<PI: PortIo>(
                 return KcallResult::Ok(EPERM);
             }
         }
-    }
     // C: do_devio.c:33-36 — if no priv structure, goto doit (allow)
     // Rust: no priv → caller_priv is None → skip check (same as C "goto doit")
 
     // C: do_devio.c:60-65 — alignment check
-    if port % size as u16 != 0 {
+    if !port.is_multiple_of(size as u16) {
         return KcallResult::Ok(EPERM);
     }
 
@@ -542,8 +541,8 @@ pub fn dispatch_vdevio<PI: PortIo>(
 
     // C: do_vdevio.c:72-100 — batch permission check
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
-    if let Some(priv_) = caller_priv {
-        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+    if let Some(priv_) = caller_priv
+        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
             for i in 0..vec_size as usize {
                 let port = match size {
                     IoSize::Byte => {
@@ -583,7 +582,6 @@ pub fn dispatch_vdevio<PI: PortIo>(
                 }
             }
         }
-    }
 
     // C: do_vdevio.c:102-149 — perform batch I/O
     match (dir, size) {
@@ -831,8 +829,8 @@ pub fn dispatch_sdevio<PI: PortIo>(
 
     // C: do_sdevio.c:102-122 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
-    if let Some(priv_) = caller_priv {
-        if priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+    if let Some(priv_) = caller_priv
+        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
             let mut allowed = false;
             for i in 0..priv_.io.s_nr_io_range as usize {
                 if i < priv_.io.s_io_tab.len() {
@@ -850,7 +848,6 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 return KcallResult::Ok(EPERM);
             }
         }
-    }
 
     // C: do_sdevio.c:124-129 — alignment check
     if port % (size as i64) != 0 {
@@ -949,7 +946,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 offset: granter_vaddr,
             };
             let dst = AddressRef::Physical(buf_phys);
-            match data_copy_vmcheck(caller, src, dst, total_bytes, &proc_cr3) {
+            match data_copy_vmcheck(caller, src, dst, total_bytes, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {}
                 CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
                 CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -988,7 +985,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 endpoint: granter,
                 offset: granter_vaddr,
             };
-            match data_copy_vmcheck(caller, src, dst, total_bytes, &proc_cr3) {
+            match data_copy_vmcheck(caller, src, dst, total_bytes, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {}
                 CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
                 CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -1064,6 +1061,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
 /// `do_readbios` allows reading from two BIOS memory regions:
 /// 1. `BIOS_MEM_BEGIN..=BIOS_MEM_END` (0x00000..=0x004FF) — IVT + BIOS data
 /// 2. `BASE_MEM_TOP..=UPPER_MEM_END` (0x090000..=0x0FFFFF) — upper memory area
+#[allow(dead_code)] // BIOS memory start; not yet wired to all call sites
 const BIOS_MEM_BEGIN: u64 = 0x00000;
 const BIOS_MEM_END: u64 = 0x004FF;
 const BASE_MEM_TOP: u64 = 0x090000;
@@ -1164,7 +1162,7 @@ pub fn dispatch_readbios(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::Endpoint;
+    use minix_types::{Endpoint, MessLsysKrnReadbios, MessLsysKrnSysSdevio};
     use crate::proc::RtsFlagsBits;
     use crate::proc::ProcNr;
 
@@ -1285,11 +1283,9 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = 0;
         // SAFETY: writing to m_m1 variant of the union for test setup
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x011; // request
-            msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for byte)
-            msg.m_u.m_m1.m1p1 = 0;     // value (unused for input)
-        }
+        msg.m_u.m_m1.m1i1 = 0x011; // request
+        msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for byte)
+        msg.m_u.m_m1.m1p1 = 0;     // value (unused for input)
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // No priv_id → no CHECK_IO_PORT → allowed (C "goto doit")
@@ -1308,11 +1304,9 @@ mod tests {
         // DIO_OUTPUT_WORD = 0x022
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x022; // request
-            msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for word)
-            msg.m_u.m_m1.m1p1 = 0x1234; // value to write
-        }
+        msg.m_u.m_m1.m1i1 = 0x022; // request
+        msg.m_u.m_m1.m1i2 = 0x60;  // port (aligned for word)
+        msg.m_u.m_m1.m1p1 = 0x1234; // value to write
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1329,11 +1323,9 @@ mod tests {
         // DIO_INPUT_WORD = 0x021, port=0x61 (not word-aligned)
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x021; // request
-            msg.m_u.m_m1.m1i2 = 0x61;  // port (not word-aligned)
-            msg.m_u.m_m1.m1p1 = 0;
-        }
+        msg.m_u.m_m1.m1i1 = 0x021; // request
+        msg.m_u.m_m1.m1i2 = 0x61;  // port (not word-aligned)
+        msg.m_u.m_m1.m1p1 = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1350,11 +1342,9 @@ mod tests {
         // DIO_INPUT_BYTE = 0x011, port=0x60 in range [0x60, 0x6F]
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x011;
-            msg.m_u.m_m1.m1i2 = 0x60;
-            msg.m_u.m_m1.m1p1 = 0;
-        }
+        msg.m_u.m_m1.m1i1 = 0x011;
+        msg.m_u.m_m1.m1i2 = 0x60;
+        msg.m_u.m_m1.m1p1 = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
@@ -1377,11 +1367,9 @@ mod tests {
         // DIO_INPUT_BYTE = 0x011, port=0x80 NOT in range [0x60, 0x6F]
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x011;
-            msg.m_u.m_m1.m1i2 = 0x80;
-            msg.m_u.m_m1.m1p1 = 0;
-        }
+        msg.m_u.m_m1.m1i1 = 0x011;
+        msg.m_u.m_m1.m1i2 = 0x80;
+        msg.m_u.m_m1.m1p1 = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = PrivTable::new();
@@ -1403,11 +1391,9 @@ mod tests {
         // Invalid io_type mask
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 0x050; // invalid _DIO_TYPEMASK
-            msg.m_u.m_m1.m1i2 = 0x60;
-            msg.m_u.m_m1.m1p1 = 0;
-        }
+        msg.m_u.m_m1.m1i1 = 0x050; // invalid _DIO_TYPEMASK
+        msg.m_u.m_m1.m1i2 = 0x60;
+        msg.m_u.m_m1.m1p1 = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
@@ -1437,9 +1423,7 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = Endpoint::SELF.0; // endpt = SELF
-        }
+        msg.m_u.m_m1.m1i1 = Endpoint::SELF.0; // endpt = SELF
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         // Should succeed (not EINVAL) — SELF resolved to caller's endpoint
@@ -1464,9 +1448,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_ep.0; // endpt = explicit endpoint
-        }
+        msg.m_u.m_m1.m1i1 = target_ep.0; // endpt = explicit endpoint
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(0));
@@ -1482,9 +1464,7 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = 9999; // nonexistent endpoint
-        }
+        msg.m_u.m_m1.m1i1 = 9999; // nonexistent endpoint
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1507,9 +1487,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = kernel_ep.0;
-        }
+        msg.m_u.m_m1.m1i1 = kernel_ep.0;
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -1533,9 +1511,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
-        unsafe {
-            msg.m_u.m_m1.m1i1 = target_ep.0;
-        }
+        msg.m_u.m_m1.m1i1 = target_ep.0;
 
         let result = dispatch_iopenable(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(0));
@@ -1564,13 +1540,11 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x011, // DIO_INPUT_BYTE (unsafe)
-                vec_endpt: 9999, // nonexistent endpoint
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x011, // DIO_INPUT_BYTE (unsafe)
+            vec_endpt: 9999, // nonexistent endpoint
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1593,13 +1567,11 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x011, // DIO_INPUT_BYTE (unsafe)
-                vec_endpt: kernel_ep.0,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x011, // DIO_INPUT_BYTE (unsafe)
+            vec_endpt: kernel_ep.0,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1617,15 +1589,13 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x011, // DIO_INPUT_BYTE (unsafe, no _DIO_SAFE)
-                vec_endpt: target_ep.0,
-                port: 0x60,
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x011, // DIO_INPUT_BYTE (unsafe, no _DIO_SAFE)
+            vec_endpt: target_ep.0,
+            port: 0x60,
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1642,15 +1612,13 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x031, // DIO_INPUT_LONG (unsafe)
-                vec_endpt: Endpoint::SELF.0,
-                port: 0x60,
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x031, // DIO_INPUT_LONG (unsafe)
+            vec_endpt: Endpoint::SELF.0,
+            port: 0x60,
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1668,15 +1636,13 @@ mod tests {
         caller.priv_id = None;
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x021, // DIO_INPUT_WORD (unsafe)
-                vec_endpt: Endpoint::SELF.0,
-                port: 0x61, // not word-aligned
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x021, // DIO_INPUT_WORD (unsafe)
+            vec_endpt: Endpoint::SELF.0,
+            port: 0x61, // not word-aligned
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1702,15 +1668,13 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x011, // DIO_INPUT_BYTE (unsafe)
-                vec_endpt: Endpoint::SELF.0,
-                port: 0x80, // out of range [0x60, 0x6F]
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x011, // DIO_INPUT_BYTE (unsafe)
+            vec_endpt: Endpoint::SELF.0,
+            port: 0x80, // out of range [0x60, 0x6F]
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
@@ -1733,15 +1697,13 @@ mod tests {
         caller.priv_id = None;
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x111, // DIO_INPUT_BYTE | DIO_SAFE (safe path)
-                vec_endpt: Endpoint::SELF.0,
-                port: 0x60, // aligned for byte
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x111, // DIO_INPUT_BYTE | DIO_SAFE (safe path)
+            vec_endpt: Endpoint::SELF.0,
+            port: 0x60, // aligned for byte
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1759,15 +1721,13 @@ mod tests {
         caller.priv_id = None;
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-                request: 0x010, // _DIO_BYTE with direction=0 (invalid)
-                vec_endpt: Endpoint::SELF.0,
-                port: 0x60,
-                vec_size: 4,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
+            request: 0x010, // _DIO_BYTE with direction=0 (invalid)
+            vec_endpt: Endpoint::SELF.0,
+            port: 0x60,
+            vec_size: 4,
+            ..Default::default()
+        };
 
         let pio = MockPortIo::new(0);
         let priv_table = PrivTable::new();
@@ -1783,14 +1743,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 0,
-                addr: 0x100,
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
+            size: 0,
+            addr: 0x100,
+            buf: 0x1000,
+            ..Default::default()
+        };
 
         let result = dispatch_readbios(&mut caller, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1802,14 +1760,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 16,
-                addr: 0x10000, // between BIOS_MEM_END and BASE_MEM_TOP
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
+            size: 16,
+            addr: 0x10000, // between BIOS_MEM_END and BASE_MEM_TOP
+            buf: 0x1000,
+            ..Default::default()
+        };
 
         let result = dispatch_readbios(&mut caller, &msg);
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -1830,14 +1786,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 32,
-                addr: 0x4F0,
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
+            size: 32,
+            addr: 0x4F0,
+            buf: 0x1000,
+            ..Default::default()
+        };
 
         let result = dispatch_readbios(&mut caller, &msg);
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -1849,14 +1803,12 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
-        unsafe {
-            msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
-                size: 2,
-                addr: u64::MAX,
-                buf: 0x1000,
-                ..Default::default()
-            };
-        }
+        msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
+            size: 2,
+            addr: u64::MAX,
+            buf: 0x1000,
+            ..Default::default()
+        };
 
         let result = dispatch_readbios(&mut caller, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
@@ -1886,17 +1838,13 @@ mod tests {
     fn build_irqctl_msg(request: i32, vector: i32, policy: i32, hook_id: i32) -> Message {
         let mut msg = Message::default();
         msg.m_type = Syscall::Irqctl as i32;
-        // SAFETY: m_type is set above; writing the dedicated
-        // irqctl variant is the canonical way to populate SYS_IRQCTL fields.
-        unsafe {
-            msg.m_u.m_lsys_krn_sys_irqctl = minix_types::MessLsysKrnSysIrqctl {
-                request,
-                vector,
-                policy,
-                hook_id,
-                _padding: [0; 40],
-            };
-        }
+        msg.m_u.m_lsys_krn_sys_irqctl = minix_types::MessLsysKrnSysIrqctl {
+            request,
+            vector,
+            policy,
+            hook_id,
+            _padding: [0; 40],
+        };
         msg
     }
 

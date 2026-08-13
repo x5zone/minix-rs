@@ -146,17 +146,19 @@ pub fn build_vm_pagefault_msg(
 ) -> Message {
     // SAFETY: `Message` is a `#[repr(C)]` union; zeroing is the
     // documented "fresh message" pattern in Minix's kernel.
-    let mut msg = Message::default();
-    // C: exception.c:119 — `m_pagefault.m_source = pr->p_endpoint`
-    msg.m_source = proc_endpoint;
-    // C: exception.c:120 — `m_pagefault.m_type = VM_PAGEFAULT`
-    //
-    // VM_PAGEFAULT is a u32 in minix-types; m_type is i32. The cast is
-    // safe because VM_PAGEFAULT (0xCFF = 3327) fits in i32's positive
-    // range. VM's main loop checks `m_type == VM_PAGEFAULT` (vm_server.rs:436)
-    // — without this assignment, m_type stays 0 (from Message::default)
-    // and VM cannot dispatch the page-fault request.
-    msg.m_type = VM_PAGEFAULT as i32;
+    let mut msg = Message {
+        // C: exception.c:119 — `m_pagefault.m_source = pr->p_endpoint`
+        m_source: proc_endpoint,
+        // C: exception.c:120 — `m_pagefault.m_type = VM_PAGEFAULT`
+        //
+        // VM_PAGEFAULT is a u32 in minix-types; m_type is i32. The cast is
+        // safe because VM_PAGEFAULT (0xCFF = 3327) fits in i32's positive
+        // range. VM's main loop checks `m_type == VM_PAGEFAULT` (vm_server.rs:436)
+        // — without this assignment, m_type stays 0 (from Message::default)
+        // and VM cannot dispatch the page-fault request.
+        m_type: VM_PAGEFAULT as i32,
+        ..Default::default()
+    };
     // C: exception.c:121-122 — `VPF_ADDR = pagefaultcr2; VPF_FLAGS = frame->errcode`
     msg.m_u.m_vm_pagefault.vpf_addr = fault_addr;
     msg.m_u.m_vm_pagefault.vpf_flags = error_code;

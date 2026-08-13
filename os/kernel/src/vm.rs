@@ -535,6 +535,12 @@ pub struct VmRequestQueue {
     head: Option<ProcNr>,
 }
 
+impl Default for VmRequestQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VmRequestQueue {
     pub const fn new() -> Self {
         Self { head: None }
@@ -633,6 +639,10 @@ impl VmRequestQueue {
     ///
     /// Separates the "enqueue" and "notify" concerns from Minix3's combined
     /// `vm_suspend()` function. Design decision: §3.9.
+    // R-18 (2026-08-13): `()` error type delegates to `send_sig()` closure
+    // (SYS_SIGSEND to VM). Single failure mode — VM notification send failed.
+    // No diagnostic info to carry beyond "failed". Allowed per clippy.
+    #[allow(clippy::result_unit_err)]
     pub fn enqueue_and_notify(
         &mut self,
         proc_nr: ProcNr,
@@ -677,16 +687,16 @@ fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr>
     procs.iter().find(|p| p.p_endpoint == endpoint).map(|p| p.p_nr)
 }
 
-/// VMCTL error type.
-///
-/// Replaces Minix3's `panic()` and `ENOENT` return values in
-/// `VMCTL_MEMREQ_GET/REPLY` handlers. Design decision: §3.7.
-///
-/// # BKL requirement
-///
-/// All `VmCtlError`-returning operations execute under BKL.
-/// `VmRequestHandler` methods are called from syscall handlers
-/// which hold BKL throughout. No additional synchronization needed.
+// VMCTL error type.
+//
+// Replaces Minix3's `panic()` and `ENOENT` return values in
+// `VMCTL_MEMREQ_GET/REPLY` handlers. Design decision: §3.7.
+//
+// # BKL requirement
+//
+// All `VmCtlError`-returning operations execute under BKL.
+// `VmRequestHandler` methods are called from syscall handlers
+// which hold BKL throughout. No additional synchronization needed.
 // ── 09-vm-boot-protocol types ──
 
 /// VMCTL 子命令参数。
@@ -920,13 +930,11 @@ pub fn try_deliver_message(rp: &KProcess) -> bool {
 ///
 /// Design decision: §3.3 (VmCheckResult simplifies arbitrary errno).
 pub fn check_resumed_caller(caller: &KProcess) -> VmCheckResult {
-    if caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME) {
-        if let Some(ctx) = caller.p_vm_suspend.as_ref() {
-            if let VmSuspendState::Completed(result) = ctx.state {
+    if caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME)
+        && let Some(ctx) = caller.p_vm_suspend.as_ref()
+            && let VmSuspendState::Completed(result) = ctx.state {
                 return result;
             }
-        }
-    }
     VmCheckResult::Ok
 }
 
@@ -1341,7 +1349,7 @@ mod tests {
 
     #[test]
     fn try_deliver_message_returns_true_with_flag() {
-        let mut proc = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
+        let proc = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         assert!(try_deliver_message(&proc));
     }

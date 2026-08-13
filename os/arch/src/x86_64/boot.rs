@@ -13,6 +13,7 @@
 //! that "leaked" through `InitialRegState` is gone; FPU init policy is
 //! a `CpuContext` field that lives entirely inside the arch layer.
 
+#[cfg(test)]
 use minix_types::VirBytes;
 
 use crate::arch::boot::{

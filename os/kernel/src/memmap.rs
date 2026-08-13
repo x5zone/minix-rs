@@ -18,6 +18,7 @@ pub const MAXMEMMAP: usize = 128;
 /// Memory map entry representing a contiguous physical memory region.
 /// C: struct memory_info in minix/type.h
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct MemMapEntry {
     /// Physical base address (page-aligned).
     pub base: u64,
@@ -28,11 +29,6 @@ pub struct MemMapEntry {
 /// Const zero entry for static initialization.
 pub const MEM_MAP_ENTRY_ZERO: MemMapEntry = MemMapEntry { base: 0, length: 0 };
 
-impl Default for MemMapEntry {
-    fn default() -> Self {
-        Self { base: 0, length: 0 }
-    }
-}
 
 impl MemMapEntry {
     /// Whether this entry is empty (available for use).
@@ -99,9 +95,9 @@ pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> R
     }
 
     // C: linear scan for empty slot (mm_length == 0)
-    for i in 0..MAXMEMMAP {
-        if mmap[i].is_empty() {
-            mmap[i] = MemMapEntry {
+    for (i, entry) in mmap.iter_mut().enumerate() {
+        if entry.is_empty() {
+            *entry = MemMapEntry {
                 base: aligned_base,
                 length: aligned_len,
             };
@@ -279,10 +275,10 @@ mod tests {
     fn test_add_memmap_no_slots() {
         let mut mmap = empty_mmap();
         // Fill all slots
-        for i in 0..MAXMEMMAP {
-            mmap[i] = MemMapEntry { base: (i as u64) * 0x1000, length: 0x1000 };
+        for (i, slot) in mmap.iter_mut().enumerate().take(MAXMEMMAP) {
+            *slot = MemMapEntry { base: (i as u64) * 0x1000, length: 0x1000 };
         }
-        let result = add_memmap(&mut mmap, 0xFF000_0000, 0x1000);
+        let result = add_memmap(&mut mmap, 0x000F_F000_0000, 0x1000);
         assert_eq!(result, Err(MemMapError::NoSlots));
     }
 

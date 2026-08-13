@@ -12,7 +12,7 @@
 //! C: arch_post_init() — protect.c:370-377
 //! C: memory_init() — memory.c:707-717
 
-use crate::post_init::{PostInitArch, MemoryInitArch, VmPageTableInfo, FreePdeSlots, MAX_FREE_PDE_SLOTS};
+use crate::post_init::{PostInitArch, MemoryInitArch, VmPageTableInfo, FreePdeSlots};
 
 /// x86-64 post-initialization implementation.
 ///

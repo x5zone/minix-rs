@@ -18,14 +18,13 @@ use core::sync::atomic::Ordering;
 
 use minix_types::{
     Endpoint, Message,
-    MessKrnLsysSysTimes, MessLsysKrnSysSetalarm, MessLsysKrnSysSettime, MessLsysKrnSysStime,
-    MessLsysKrnSysTimes,
+    MessKrnLsysSysTimes, MessLsysKrnSysSetalarm,
     MessageM1, MessageM2,
 };
 
 use crate::clock::{self, ClockState, TimerAction, TimerEntry, TMR_NEVER};
 use crate::kpriv::{KPriv, PrivTable};
-use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits};
+use crate::proc::{KProcess, MiscFlagsBits};
 use crate::proc_table::ProcessTable;
 use crate::syscall::{KcallResult, Syscall};
 
@@ -71,6 +70,7 @@ const SELF: i32 = -2;
 
 // ── Helpers ──
 
+#[allow(dead_code)] // message accessor; unused for now
 fn msg_m1(msg: &Message) -> MessageM1 {
     // SAFETY: `m_type` has been validated by the caller to select the M1
     // format. All union variants share the same size and `#[repr(C)]`
@@ -152,7 +152,7 @@ pub fn dispatch_times(
     // Write reply into message
     msg.debug_check_m_type_any(&[Syscall::Times as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
-    unsafe { msg.m_u.m_krn_lsys_sys_times = reply; }
+    msg.m_u.m_krn_lsys_sys_times = reply;
 
     KcallResult::Ok(OK)
 }
@@ -204,11 +204,7 @@ pub fn dispatch_setalarm(
             match &kpriv.runtime.s_alarm_timer {
                 None => TMR_NEVER,
                 Some((timer, _id)) => {
-                    if timer.exp_time > uptime {
-                        timer.exp_time - uptime
-                    } else {
-                        0
-                    }
+                    timer.exp_time.saturating_sub(uptime)
                 }
             }
         } else {
@@ -220,11 +216,10 @@ pub fn dispatch_setalarm(
     if !use_abs_time && exp_time == 0 {
         // Reset alarm: C: reset_kernel_timer(tp)
         let kpriv = priv_table.get_mut(caller_priv_id);
-        if let Some(kpriv) = kpriv {
-            if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
+        if let Some(kpriv) = kpriv
+            && let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
                 clock_state.reset_timer(old_id);
             }
-        }
     } else {
         // Set alarm: C: set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint)
         let actual_exp_time = if use_abs_time {
@@ -263,7 +258,7 @@ pub fn dispatch_setalarm(
     };
     msg.debug_check_m_type_any(&[Syscall::Setalarm as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
-    unsafe { msg.m_u.m_lsys_krn_sys_setalarm = reply; }
+    msg.m_u.m_lsys_krn_sys_setalarm = reply;
 
     KcallResult::Ok(OK)
 }
@@ -521,9 +516,7 @@ pub fn dispatch_vtimer(
     // Write old_value back into the message's m2_l1 field
     // SAFETY: `m_type == SYS_VTIMER` guarantees the M2 format is active.
     // Writing to `m_m2.m2l1` is sound per `#[repr(C)]` union layout.
-    unsafe {
-        msg.m_u.m_m2.m2l1 = old_value as i64;
-    }
+    msg.m_u.m_m2.m2l1 = old_value as i64;
 
     KcallResult::Ok(OK)
 }
@@ -613,7 +606,7 @@ mod tests {
         let mut p = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 5));
         let mut msg = Message::default();
         // Set up the request: endpt = SELF
-        unsafe { msg.m_u.m_lsys_krn_sys_times.endpt = SELF };
+        msg.m_u.m_lsys_krn_sys_times.endpt = SELF;
         msg.m_type = 25; // SYS_TIMES
 
         let proc_table = ProcessTable::new();

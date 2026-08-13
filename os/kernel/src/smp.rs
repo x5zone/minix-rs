@@ -692,11 +692,10 @@ impl SmpState {
     ) {
         A::ack_ipi();
         let curr = self.cpu_locals[current_cpu.index()].proc_ptr;
-        if let Some(curr_nr) = curr {
-            if curr_nr != proc_nr::IDLE {
+        if let Some(curr_nr) = curr
+            && curr_nr != proc_nr::IDLE {
                 proc_table.rts_set(curr_nr, RtsFlagsBits::PREEMPTED);
             }
-        }
     }
 
     /// IPI halt handler: ack + stop local timer + halt CPU.
@@ -1288,7 +1287,7 @@ mod tests {
         // This test verifies the section is usable while the guard is alive.
         let guard = bkl_lock();
         {
-            let section = guard.section();
+            let _section = guard.section();
             // section is alive here, guard is alive here
             assert!(bkl_is_locked());
             // section dropped here, but guard is still alive

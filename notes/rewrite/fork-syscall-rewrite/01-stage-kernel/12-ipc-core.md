@@ -486,25 +486,45 @@ pub enum IpcOutcome {
 
 **理由**：阻塞是 IPC 的正常语义，不是错误。`IpcOutcome` 显式区分三种状态，调用方 match 处理。借鉴 02-stage-vm/24-vm-ipc-dispatch 的 `VmReply::Suspend` 模式（区分"完成"与"挂起"）。
 
-### 3.2 发送者队列：SenderQueue 封装 + 索引替代指针链表
+### 3.2 发送者队列：SenderQueue 封装 + VecDeque 替代指针链表
 
 **C 模式**：`struct proc *p_caller_q` + `p_q_link` 内嵌链表，pointer-pointer 遍历。
 
-**当前 Rust 直译陷阱**：用 `AtomicI32` 索引模拟 C 链表，仍需 unsafe 访问进程表，所有权混乱。
+**Rust 直译陷阱**：用 `AtomicI32` 索引模拟 C 链表，仍需 unsafe 访问进程表，所有权混乱——进程结构体持有 `p_caller_q`/`p_q_link` 两个 `AtomicI32` 字段模拟指针，队列操作实质是指针模拟。
 
-**设计决策**：保留 `SenderQueue` 封装，内部用 `AtomicI32` 索引（与 KProcess 字段 `p_caller_q`/`p_q_link` 对齐），但提供类型安全方法 `enqueue`/`remove`/`find_matching`。
+**设计决策**：用 `SenderQueue(VecDeque<ProcNr>)` 替代 C 的内嵌链表 + `AtomicI32` 索引。队列所有权内聚于 `SenderQueue`，`KProcess` 不再持有 `p_q_link` 字段。
 
-**理由**：完全替换为 `VecDeque<ProcNr>` 需重构 KProcess 字段（移除 `p_q_link`），影响 06 文档的字段定义。当前封装已提供类型安全，且与 C 字段布局对齐便于对照。未来如需完全 Rust 化可演进。
+```rust
+pub struct SenderQueue(VecDeque<ProcNr>);
+```
 
-### 3.3 IpcEngine 形态：当前 ZST + 未来演进
+**理由**：
+1. Rust 所有权模型禁止安全地跨 `&mut [KProcess]` 构造内嵌链表（aliasing UB）——`VecDeque` 将队列存储与进程结构体解耦，消除 unsafe。
+2. `VecDeque` 提供 O(1) `push_back`/`pop_front`，性能与 C 链表等价。
+3. `NR_PROCS` 较小（通常 256），线性扫描可接受。
+4. 消除 `p_q_link` 字段简化 `KProcess` 布局——队列存储是 `SenderQueue` 的内部细节，非进程结构体的职责。
+
+### 3.3 IpcEngine 形态：持有 &mut 借用的真实封装
 
 **C 模式**：自由函数 `mini_send(caller_ptr, ...)` 每次传 `struct proc *`。
 
-**当前 Rust**：`IpcEngine` 是 ZST 仅作命名空间，方法签名 `fn send(procs: &mut [KProcess], caller: ProcNr, ...)` 重复传 procs。
+**Rust 直译陷阱**：`IpcEngine` 作为 ZST 仅作命名空间，每个方法签名 `fn send(procs: &mut [KProcess], caller: ProcNr, ...)` 重复传 procs——这是"为了 Rust 而 Rust"的过度设计，丢失了封装性。
 
-**设计决策**：保留 ZST 形态，但方法签名集中表达 IPC 状态机。未来如需持有状态（如 async_tables）可演化为 `IpcEngine<'a> { procs: &'a mut [KProcess] }`。
+**设计决策**：`IpcEngine<'a>` 持有 `&mut [KProcess]` + `&mut PrivTable` + `&dyn UserCopy` 三个借用，方法用 `&mut self`：
 
-**理由**：当前 ZST 已能正确表达 IPC 语义，过早引入生命周期参数会增加调用方复杂度。`&mut [KProcess]` 是 BKL 的类型代理，已保证单 CPU 互斥。
+```rust
+pub struct IpcEngine<'a> {
+    procs: &'a mut [KProcess],
+    priv_table: &'a mut PrivTable,
+    user_copy: &'a dyn UserCopy,
+}
+```
+
+**理由**：
+1. `&mut [KProcess]` 是 BKL 的类型代理——Rust 借用检查器在编译期保证同一时刻只有一个可变引用，等价于 C 的 `big_kernel_lock` spinlock 语义。
+2. 消除每个方法重复传 `procs`/`priv_table` 参数，API 更简洁。
+3. `'a` 生命周期将 engine 绑定到借用域——engine 是短生命周期对象（每次 syscall dispatch 构造，返回时 drop），不会跨 syscall 存活。
+4. `user_copy: &dyn UserCopy` 注入 arch 层实现，测试用 `KernelUserCopy` stub。
 
 ### 3.4 SendFlags：bitflags! 宏替代裸 u32 + 修正常量值
 
@@ -648,6 +668,7 @@ pub trait UserCopy {
 /// IPC 调用类型。C: call_nr in do_ipc() — proc.c:599
 /// 值对齐 ipcconst.h:7-13
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum IpcCall {
     Send,       // C: SEND=1
     Receive,    // C: RECEIVE=2
@@ -681,13 +702,31 @@ bitflags::bitflags! {
     pub struct SendFlags: u32 {
         const NON_BLOCKING = 0x0080;  // C: ipc.h:11
         const FROM_KERNEL = 0x0100;   // C: ipc.h:12
+        const SENDA = 0x0001;         // Rust 内部标志：senda 复用 send 路径时区分 IPC status call 类型
     }
+}
+
+/// 死锁环描述符。C: deadlock() — proc.c:703-768
+/// direction 记录产生环的 IPC call 类型，调用方据此应用 2-cycle SEND↔RECEIVE 特例。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadlockCycle {
+    pub chain: [ProcNr; PROC_TABLE_SIZE],  // 环中进程（遍历顺序）
+    pub chain_len: usize,                   // 有效条目数
+    pub direction: DeadlockDirection,       // 环方向（SEND 或 RECEIVE）
+    pub group_size: usize,                  // 环中进程数；2 触发 SEND↔RECEIVE 检查
+}
+
+/// 死锁方向。与 IpcCall 分离，避免死锁检测器与 IPC 分派器语义耦合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadlockDirection {
+    Send,       // 发送方向环（caller 在 SENDING 等待）
+    Receive,    // 接收方向环（caller 在 RECEIVING 等待）
 }
 ```
 
 ### 4.2 IpcEngine 核心 trait/方法签名
 
-> **结构演进说明**：下方签名展示**设计意图**（方法名 + C 对应 + 参数语义）。实际代码中 `IpcEngine` 已从 unit struct 演进为 `IpcEngine<'a>` 生命周期结构体（3 字段：`procs: &'a mut [KProcess]` + `priv_table` + `user_copy`），方法从关联函数（`fn send(procs, ...)`）改为 `&mut self` 方法（`fn send(&mut self, caller_nr, ...)`）。以代码 `os/kernel/src/ipc.rs:528-535` 为源真相；本节签名作为 API 概览，参数细节以代码为准。
+**位置**: [ipc.rs:643-660](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 ```rust
 pub struct IpcEngine<'a> {
@@ -703,14 +742,18 @@ impl<'a> IpcEngine<'a> {
     /// 同步接收。C: mini_receive — proc.c:967-1117
     pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutcome;
 
+    /// 原子 SEND + RECEIVE。C: do_ipc SENDREC 分支 — proc.c:620-632
+    /// send 成功后 receive(ANY)；send 阻塞时设 MF_REPLY_PEND。
+    pub fn sendrec(&mut self, caller_nr: ProcNr, dst_endpoint: Endpoint, msg: &Message) -> IpcOutcome;
+
     /// 异步通知。C: mini_notify — proc.c:1122-1167
     pub fn notify(&mut self, caller_nr: ProcNr, dst_endpoint: Endpoint) -> IpcOutcome;
 
     /// 死锁检测。C: deadlock — proc.c:703-768
-    pub fn detect_deadlock(&self, function: IpcCall, caller_nr: ProcNr, dst_endpoint: Endpoint) -> Option<DeadlockCycle>;
+    pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endpoint: Endpoint) -> Option<DeadlockCycle>;
 
     /// 动态选字段。C: P_BLOCKEDON 宏 — proc.h:187-194
-    fn blocked_on(&self, nr: ProcNr) -> Option<Endpoint>;
+    fn blocked_on(proc_: &KProcess) -> Option<Endpoint>;
 
     /// 延迟消息投递。C: delivermsg — proc.c:263-294
     pub fn deliver_message(&mut self, nr: ProcNr) -> DeliverResult;
@@ -721,22 +764,28 @@ impl<'a> IpcEngine<'a> {
     /// 批量异步发送。C: mini_senda — proc.c:1331-1346
     /// 调用 `table.try_deliver_all(self, caller_nr)` 后始终返回 Delivered（SENDA 不阻塞）。
     pub fn senda(&mut self, caller_nr: ProcNr, table: &mut AsyncMessageTable) -> IpcOutcome;
+
+    /// IPC 权限检查。C: do_sync_ipc 权限层 — proc.c:479-597
+    pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError>;
+
+    /// IPC 入口分派。C: do_ipc — proc.c:599-698
+    pub fn do_ipc(&mut self, caller_nr: ProcNr, call: IpcCall, dst_endpoint: Endpoint, msg: &Message, flags: SendFlags, senda_table: Option<(VirBytes, usize)>) -> IpcOutcome;
 }
 ```
 
 ### 4.3 send 方法阶段划分（对齐 C 控制流）
 
 ```rust
-pub fn send(procs, caller, dst, msg, flags) -> IpcOutcome {
+pub fn send(&mut self, caller_nr: ProcNr, dst_endpoint: Endpoint, msg: &Message, flags: SendFlags) -> IpcOutcome {
     // Phase 1: 端点检查。C: proc.c:887-890
-    if dst.p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
+    if self.procs[dst_idx].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
         return IpcOutcome::Error(IpcError::DeadSrcDst);
     }
 
     // Phase 2: WILLRECEIVE 检查。C: proc.c:895
-    if Self::is_willing_to_receive(dst, caller.p_endpoint) {
+    if Self::is_willing_to_receive(&self.procs[dst_idx], caller_endpoint) {
         // 路径 A：直接投递。C: proc.c:895-923
-        // copy_from_user (或 FROM_KERNEL 直接赋值)
+        // copy_msg_from_user (或 FROM_KERNEL 直接赋值)
         // 写 p_delivermsg + MF_DELIVERMSG + RTS_UNSET(RECEIVING)
         return IpcOutcome::Delivered;
     }
@@ -745,10 +794,10 @@ pub fn send(procs, caller, dst, msg, flags) -> IpcOutcome {
     if flags.contains(SendFlags::NON_BLOCKING) {
         return IpcOutcome::Error(IpcError::NotReady);
     }
-    if Self::detect_deadlock(procs, IpcCall::Send, caller, dst).is_some() {
+    if self.detect_deadlock(IpcCall::Send, caller_nr, dst_endpoint).is_some() {
         return IpcOutcome::Error(IpcError::Deadlock);
     }
-    // 写 p_sendmsg + RTS_SET(SENDING) + p_sendto_e + 入 p_caller_q 队尾
+    // 写 p_sendmsg + RTS_SET(SENDING) + p_sendto_e + caller_q.push_back
     return IpcOutcome::Blocked;
 }
 ```
@@ -756,25 +805,26 @@ pub fn send(procs, caller, dst, msg, flags) -> IpcOutcome {
 ### 4.4 receive 方法三级检查（对齐 C 控制流）
 
 ```rust
-pub fn receive(procs, caller, src) -> IpcOutcome {
+pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutcome {
     // Phase 1: 通知检查（MF_REPLY_PEND 跳过）。C: proc.c:1000-1030
-    if !caller.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
-        if has_pending_notify(caller, src) {
+    if !reply_pend {
+        if self.take_pending_notify(caller_nr, src_endpoint).is_some() {
             // 构建通知消息 + 投递 + 清位图位
             return IpcOutcome::Delivered;
         }
     }
 
     // Phase 2: 异步消息检查。C: proc.c:1031-1070
-    if has_pending_asend(caller, src) {
-        // try_async 投递
+    if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint) {
+        // deliver_async 投递
         return IpcOutcome::Delivered;
     }
 
     // Phase 3: 同步发送者队列。C: proc.c:1071-1095
-    if let Some(sender) = SenderQueue::find_matching(procs, caller, src) {
+    let q_idx = self.procs[caller_idx].caller_q.find_matching(self.procs, src_endpoint);
+    if let Some(q_idx) = q_idx {
         // 投递 sender.p_sendmsg + MF_DELIVERMSG
-        // 唤醒 sender: RTS_UNSET(SENDING) + 出队
+        // 唤醒 sender: RTS_UNSET(SENDING) + remove_at 出队
         return IpcOutcome::Delivered;
     }
 
@@ -786,53 +836,54 @@ pub fn receive(procs, caller, src) -> IpcOutcome {
 
 ### 4.5 detect_deadlock 与 blocked_on 实现
 
+**位置**: [ipc.rs:685-783](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+
 ```rust
-fn blocked_on(procs: &[KProcess], nr: ProcNr) -> Option<Endpoint> {
-    let p = &procs[nr_to_idx(nr)?];
-    if p.p_rts_flags.is_set(RtsFlagsBits::SENDING) {
-        Some(p.p_sendto_e)
-    } else if p.p_rts_flags.is_set(RtsFlagsBits::RECEIVING) {
-        Some(p.p_getfrom_e)
+/// 动态选字段。C: P_BLOCKEDON 宏 — proc.h:187-194
+fn blocked_on(proc_: &KProcess) -> Option<Endpoint> {
+    if proc_.p_rts_flags.is_set(RtsFlagsBits::SENDING) {
+        Some(proc_.p_sendto_e)
+    } else if proc_.p_rts_flags.is_set(RtsFlagsBits::RECEIVING) {
+        Some(proc_.p_getfrom_e)
     } else {
         None
     }
 }
 
-pub fn detect_deadlock(procs, function, caller, initial_dst) -> Option<DeadlockCycle> {
-    let mut src_dst_e = initial_dst;
+pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endpoint: Endpoint)
+    -> Option<DeadlockCycle>
+{
+    let caller_idx = self.idx_of(caller_nr)?;
+    let caller_endpoint = self.procs[caller_idx].p_endpoint;
+    let mut current_ep = dst_endpoint;
     let mut group_size = 1;
-    let caller_ep = procs[nr_to_idx(caller)?].p_endpoint;
 
-    while src_dst_e != Endpoint::ANY {
-        let target = procs.iter().find(|p| p.p_endpoint == src_dst_e)?;
-        let target_nr = target.p_nr;
+    loop {
+        if current_ep == Endpoint::ANY { return None; }
+        let target_idx = self.idx_by_endpoint(current_ep)?;
         group_size += 1;
 
         // 动态选字段跟随
-        src_dst_e = match Self::blocked_on(procs, target_nr)? {
+        let next_ep = match Self::blocked_on(&self.procs[target_idx]) {
+            Some(ep) => ep,
             None => return None,  // 无依赖，无环
-            Some(e) => e,
         };
 
         // 回到起点 → 可能死锁
-        if src_dst_e == caller_ep {
+        if next_ep == caller_endpoint {
             if group_size == 2 {
                 // 2-cycle 特例：SEND↔RECEIVE 不是死锁
                 // C: (xp->p_rts_flags ^ (function << 2)) & RTS_SENDING — proc.c:746
-                let xp_rts = target.p_rts_flags.bits();
-                let function_byte = match function {
-                    IpcCall::Send | IpcCall::SendRec | IpcCall::SendNb => 1u8,
-                    IpcCall::Receive => 2u8,
-                    _ => return None,
-                };
-                if (xp_rts ^ (function_byte as u32) << 2) & RtsFlagsBits::SENDING.bits() != 0 {
+                let xp_rts = self.procs[target_idx].p_rts_flags.get().bits();
+                let function_shifted = (function as u32) << 2;
+                if (xp_rts ^ function_shifted) & RtsFlagsBits::SENDING.bits() != 0 {
                     return None;  // 请求-回复模式，不是死锁
                 }
             }
-            return Some(DeadlockCycle { /* ... */ });
+            return Some(DeadlockCycle { /* chain, direction, group_size */ });
         }
+        current_ep = next_ep;
     }
-    None
 }
 ```
 
@@ -899,31 +950,41 @@ impl IpcEngine {
 }
 ```
 
-### 4.7 check_ipc_permission 三层检查
+### 4.7 check_ipc_permission 四层检查
+
+**位置**: [ipc.rs:1275-1323](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 ```rust
-fn check_ipc_permission(procs: &[KProcess], priv_table: &PrivTable, caller: ProcNr, dst: Endpoint, call: IpcCall) -> Result<(), IpcError> {
+pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError> {
     // 层 1: 端点有效性。C: proc.c:487-495
-    let dst_proc = procs.iter().find(|p| p.p_endpoint == dst)
-        .ok_or(IpcError::DeadSrcDst)?;
-    if dst_proc.p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
-        return Err(IpcError::DeadSrcDst);
+    let dst_idx = self.idx_by_endpoint(dst_endpoint);
+    match dst_idx {
+        None => return Err(IpcError::DeadSrcDst),
+        Some(i) if self.procs[i].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) => {
+            return Err(IpcError::DeadSrcDst);
+        }
+        _ => {}
     }
 
     // 层 2: IPC 白名单。C: may_send_to — ipc.h
-    let caller_priv = priv_table.get(procs[caller_idx].priv_id)
-        .ok_or(IpcError::CallDenied)?;
-    if !may_send_to(caller_priv, dst) {
-        return Err(IpcError::CallDenied);
+    if let Some(i) = dst_idx {
+        if let Some(dst_pid) = self.procs[i].priv_id {
+            if !caller_priv.may_send_to(dst_pid) {
+                return Err(IpcError::CallDenied);
+            }
+        }
     }
 
-    // 层 3: 陷阱掩码。C: s_trap_mask & (1 << call_nr) — proc.c:520-540
-    if !caller_priv.s_trap_mask.contains_bit(call as u32) {
+    // 层 3: 陷阱掩码。C: s_trap_mask & (1 << call_nr) — proc.c:552
+    // C 的 short s_trap_mask 符号扩展为 int，SRV_T = ~0 允许 SENDA(call_nr=16)
+    let mask_extended = (caller_priv.ipc.s_trap_mask as i16) as u32;
+    let call_bit = 1u32 << (call as u32);
+    if (mask_extended & call_bit) == 0 {
         return Err(IpcError::TrapDenied);
     }
 
     // 层 4: 内核任务限制。C: proc.c:560-566
-    if is_kernel_task(caller) && call != IpcCall::SendRec {
+    if self.procs[caller_idx].is_kernel_task() && call != IpcCall::SendRec {
         return Err(IpcError::TrapDenied);
     }
 
@@ -933,38 +994,38 @@ fn check_ipc_permission(procs: &[KProcess], priv_table: &PrivTable, caller: Proc
 
 ### 4.8 do_ipc 分派
 
-> **入口前置**：`dispatch_ipc_entry`（[syscall.rs:523-550](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L523-L550)，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `dispatch_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
+**位置**: [ipc.rs:1346-1395](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+
+> **入口前置**：`dispatch_ipc_entry`（[syscall.rs:523-550](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L523-L550)，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `do_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
+
+> **SENDA 表传递**：C 通过 trap-frame 寄存器 `r3`（表指针）和 `r2`（表大小）传递 SENDA 表（proc.c:673, 683），不走消息字段。Rust API 对齐：`senda_table: Option<(VirBytes, usize)>` 是独立参数，仅在 `call == SendA` 时使用。
 
 ```rust
-pub fn do_ipc(procs: &mut [KProcess], priv_table: &mut PrivTable, caller: ProcNr, call: IpcCall, dst: Endpoint, msg: &Message) -> IpcOutcome {
-    // 权限检查
-    if let Err(e) = Self::check_ipc_permission(procs, priv_table, caller, dst, call) {
+pub fn do_ipc(
+    &mut self,
+    caller_nr: ProcNr,
+    call: IpcCall,
+    dst_endpoint: Endpoint,
+    msg: &Message,
+    flags: SendFlags,
+    senda_table: Option<(VirBytes, usize)>,
+) -> IpcOutcome {
+    // 权限检查（FIX-9）
+    if let Err(e) = self.check_ipc_permission(caller_nr, dst_endpoint, call) {
         return IpcOutcome::Error(e);
     }
 
     match call {
-        IpcCall::SendRec => {
-            // 设 MF_REPLY_PEND 阻止通知打断 RECEIVE 阶段
-            procs[caller_idx].p_misc_flags.insert(MiscFlagsBits::REPLY_PEND);
-            // fall through 到 SEND
-            let send_outcome = Self::send(procs, caller, dst, msg, SendFlags::NONE);
-            match send_outcome {
-                IpcOutcome::Delivered => {
-                    // SEND 成功，继续 RECEIVE
-                    Self::receive(procs, caller, Endpoint::ANY)
-                }
-                IpcOutcome::Blocked => IpcOutcome::Blocked,  // SEND 阻塞
-                IpcOutcome::Error(e) => IpcOutcome::Error(e),
-            }
-        }
-        IpcCall::Send => Self::send(procs, caller, dst, msg, SendFlags::NONE),
-        IpcCall::Receive => Self::receive(procs, caller, dst),
-        IpcCall::Notify => Self::notify(procs, priv_table, caller, dst),
-        IpcCall::SendNb => Self::send(procs, caller, dst, msg, SendFlags::NON_BLOCKING),
+        IpcCall::Send | IpcCall::SendNb => self.send(
+            caller_nr, dst_endpoint, msg,
+            if call == IpcCall::SendNb { flags | SendFlags::NON_BLOCKING } else { flags },
+        ),
+        IpcCall::Receive => self.receive(caller_nr, dst_endpoint),
+        IpcCall::SendRec => self.sendrec(caller_nr, dst_endpoint, msg),
+        IpcCall::Notify => self.notify(caller_nr, dst_endpoint),
         IpcCall::SendA => {
             // C: `size_t msg_size = (size_t) r2;` (proc.c:673)
             //    `return mini_senda(caller_ptr, (asynmsg_t *) r3, msg_size);` (proc.c:683)
-            // 实际代码（ipc.rs:1241-1261）以 `&mut self` 风格实现，此处用旧风格示意
             let (table_ptr, count) = match senda_table {
                 Some(tc) => tc,
                 None => return IpcOutcome::Error(IpcError::BadCall),
@@ -974,10 +1035,10 @@ pub fn do_ipc(procs: &mut [KProcess], priv_table: &mut PrivTable, caller: ProcNr
             if count > max_count {
                 return IpcOutcome::Error(IpcError::BadCall);
             }
-            match user_copy.copy_senda_table_from_user(table_ptr, count) {
+            match self.user_copy.copy_senda_table_from_user(table_ptr, count) {
                 Ok(entries) => {
                     let mut table = AsyncMessageTable::from_raw_entries(entries);
-                    Self::senda(procs, caller, &mut table)
+                    self.senda(caller_nr, &mut table)
                 }
                 Err(_) => IpcOutcome::Error(IpcError::Fault),
             }
@@ -988,22 +1049,33 @@ pub fn do_ipc(procs: &mut [KProcess], priv_table: &mut PrivTable, caller: ProcNr
 
 ### 4.9 SenderQueue 队列操作
 
+**位置**: [ipc.rs:521](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+
 ```rust
-pub struct SenderQueue;
+pub struct SenderQueue(VecDeque<ProcNr>);
 
 impl SenderQueue {
     /// 入队尾。C: while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller;
-    pub fn enqueue(procs: &mut [KProcess], dst_nr: ProcNr, sender_nr: ProcNr);
+    pub fn push_back(&mut self, nr: ProcNr) { self.0.push_back(nr); }
 
-    /// 移除指定发送者。C: *xpp = sender->p_q_link;
-    pub fn remove(procs: &mut [KProcess], dst_nr: ProcNr, sender_nr: ProcNr);
+    /// 出队头（FIFO）。
+    pub fn pop_front(&mut self) -> Option<ProcNr> { self.0.pop_front() }
 
-    /// 找匹配源端点的发送者。C: while (*xpp) { if (CANRECEIVE(...)) break; }
-    pub fn find_matching(procs: &[KProcess], dst_nr: ProcNr, src: Endpoint) -> Option<ProcNr>;
+    /// 查找匹配源端点的发送者索引（不移除）。
+    /// C: while (*xpp) { if (CANRECEIVE(...)) break; }
+    pub fn find_matching(&self, procs: &[KProcess], src: Endpoint) -> Option<usize>;
+
+    /// 按索引移除（与 find_matching 配对使用）。
+    pub fn remove_at(&mut self, idx: usize) -> Option<ProcNr>;
+
+    /// 按 ProcNr 值移除（SYS_UPDATE rollback 用）。
+    pub fn remove_by_nr(&mut self, nr: ProcNr) -> bool;
 }
 ```
 
-**实现说明**：用 `AtomicI32` 索引（与 KProcess 的 `p_caller_q`/`p_q_link` 字段对齐），保证 BKL 保护下的单 CPU 访问安全。
+**find + remove 分离的原因**：`IpcEngine::receive` 需先扫描队列查找匹配发送者（需 `&self.procs` 不可变借用查端点），再移除条目（需 `&mut self.procs[caller].caller_q` 可变借用）。合并为单个 `remove_matching` 会导致同一 `self` 同时可变和不可变借用——aliasing 冲突。分离为 `find_matching`（不可变借用结束）→ `remove_at`（可变借用开始）让借用检查器接受。
+
+**实现说明**：用 `VecDeque<ProcNr>` 存储队列，队列所有权内聚于 `SenderQueue`（每个 `KProcess` 的 `caller_q` 字段）。`KProcess` 不持有 `p_q_link` 字段——C 的内嵌链表在 Rust 中由 `VecDeque` 内部存储替代。
 
 ---
 
@@ -1017,25 +1089,28 @@ impl SenderQueue {
 | `test_send_when_target_not_receiving` | send 路径 B（阻塞入队） | proc.c:924-960 | P0 |
 | `test_send_non_blocking_returns_not_ready` | send + NON_BLOCKING | proc.c:925-927 | P0 |
 | `test_send_detects_deadlock` | send + 死锁检测 | proc.c:930-932 | P0 |
-| `test_send_from_kernel_skips_user_copy` | send + FROM_KERNEL | proc.c:903-906 | P1 |
 | `test_receive_picks_notify_first` | receive Phase 1（通知优先） | proc.c:1000-1030 | P0 |
 | `test_receive_skips_notify_when_reply_pend` | receive + MF_REPLY_PEND | proc.c:1000-1005 | P0 |
 | `test_receive_picks_async_second` | receive Phase 2（async 次之） | proc.c:1031-1070 | P0 |
 | `test_receive_picks_caller_q_last` | receive Phase 3（caller_q 最后） | proc.c:1071-1095 | P0 |
 | `test_receive_blocks_when_no_match` | receive Phase 4（阻塞） | proc.c:1096-1110 | P0 |
-| `test_receive_with_any_source` | receive + Endpoint::ANY | proc.c:1023 | P1 |
 | `test_notify_delivers_when_target_receiving` | notify 路径 A | proc.c:1122-1150 | P0 |
 | `test_notify_records_bitmap_when_not_receiving` | notify 路径 B（位图） | proc.c:1151-1167 | P0 |
 | `test_notify_never_blocks` | notify 永不阻塞 | proc.c:1122 | P0 |
-| `test_detect_deadlock_no_cycle` | 无环链 | proc.c:736-737 | P0 |
-| `test_detect_deadlock_single_cycle` | 单环死锁 | proc.c:743-764 | P0 |
-| `test_detect_deadlock_two_cycle_send_receive_not_deadlock` | 2-cycle SEND↔RECEIVE 特例 | proc.c:744-749 | P0 |
-| `test_detect_deadlock_mixed_chain` | 混合链死锁（防固定字段回归） | P0 FIX-3 验证 | P0 |
+| `test_deadlock_no_cycle_empty_table` | 无环链（空表） | proc.c:736-737 | P0 |
+| `test_deadlock_no_cycle_when_target_runnable` | 无环链（目标可运行） | proc.c:736-737 | P0 |
+| `test_deadlock_three_proc_send_cycle` | 三进程单环死锁 | proc.c:743-764 | P0 |
+| `test_deadlock_send_receive_two_cycle_not_deadlock` | 2-cycle SEND↔RECEIVE 特例 | proc.c:744-749 | P0 |
+| `test_deadlock_send_send_two_cycle_is_deadlock` | 2-cycle SEND↔SEND 死锁 | proc.c:744-749 | P0 |
+| `test_deadlock_receive_receive_two_cycle_is_deadlock` | 2-cycle RECV↔RECV 死锁 | proc.c:744-749 | P0 |
+| `test_deadlock_mixed_chain_cycle` | 混合链死锁（防固定字段回归） | P0 FIX-3 验证 | P0 |
+| `test_deadlock_send_state_mismatch` | blocked_on 动态选字段验证 | proc.h:187-194 | P0 |
 | `test_deliver_message_success` | delivermsg 成功 | proc.c:263-294 | P0 |
 | `test_deliver_message_first_page_fault` | 第 1 次页错误 → PageFault | proc.c:278 | P0 |
 | `test_deliver_message_second_consecutive_fault` | 连续两次 → Segfault | proc.c:283 | P0 |
 | `test_process_misc_flags_clears_delivermsg` | DELIVERMSG 经 `ipc::delivermsg` 拷贝成功后清除（FIX-20） | proc.c:263-294 + 350-414 | P0 |
 | `test_check_ipc_permission_kernel_task_only_sendrec` | 内核任务限制 | proc.c:560-566 | P0 |
+| `test_senda_all_delivered` | SENDA 全部投递成功 | proc.c:1331-1346 | P1 |
 | `test_dispatch_ipc_entry_routes_send_to_ipc_engine` | IPC trap 入口 → dispatch_ipc 路由 SEND | proc.c:599-697 | P0 |
 | `test_dispatch_ipc_entry_bad_call_nr_returns_ebadcall` | 无效 call_nr（0/17/255）→ EBADCALL | proc.c:602-606 | P0 |
 | `test_dispatch_ipc_entry_acquires_bkl` | 入口 acquire BKL（mem::forget guard） | mpx.S:ipc_entry BKL_LOCK | P1 |
@@ -1044,7 +1119,7 @@ impl SenderQueue {
 
 ```rust
 #[test]
-fn test_detect_deadlock_mixed_chain() {
+fn test_deadlock_mixed_chain_cycle() {
     // 设置：A send→B, B receive←C, C send→A
     // 这是固定字段检测会漏的死锁（B 在 RECEIVING 不是 SENDING，固定 SEND 字段会断链）
     let mut procs = create_test_procs(3);
@@ -1055,9 +1130,10 @@ fn test_detect_deadlock_mixed_chain() {
     set_rts(&mut procs[2], RtsFlagsBits::SENDING);
     procs[2].p_sendto_e = Endpoint(1);  // C send→A
 
-    let cycle = IpcEngine::detect_deadlock(&procs, IpcCall::Send, 1, Endpoint(2));
+    let mut engine = IpcEngine::new(&mut procs, &mut priv_table, &user_copy);
+    let cycle = engine.detect_deadlock(IpcCall::Send, ProcNr(1), Endpoint(2));
     assert!(cycle.is_some(), "mixed-chain deadlock must be detected");
-    assert_eq!(cycle.unwrap().chain.len(), 3);
+    assert_eq!(cycle.unwrap().chain_len, 3);
 }
 ```
 

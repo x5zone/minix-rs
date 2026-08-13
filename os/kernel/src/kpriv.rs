@@ -34,6 +34,12 @@ pub struct IoRange {
     pub limit: u32,
 }
 
+impl Default for IoRange {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IoRange {
     pub const fn new() -> Self {
         Self { base: 0, limit: 0 }
@@ -44,6 +50,12 @@ impl IoRange {
 pub struct MemRange {
     pub base: u64,
     pub limit: u64,
+}
+
+impl Default for MemRange {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemRange {
@@ -245,6 +257,9 @@ pub(crate) struct PrivMem {
     pub(crate) s_nr_mem_range: i32,
     pub(crate) s_mem_tab: [MemRange; NR_MEM_RANGE],
     pub(crate) s_ipcf: Option<usize>,
+    /// C: `s_stack_guard` — priv.h. Stack guard page address. Currently
+    /// stored but not read — used by future stack overflow detection.
+    #[allow(dead_code)]
     pub(crate) s_stack_guard: Option<usize>,
     pub(crate) s_diag_sig: bool,
 }
@@ -355,10 +370,16 @@ impl KPriv {
         self.capability.s_flags.contains(PrivFlagsBits::SYS_PROC)
     }
 
+    /// C: `priv(rp)->s_flags & PREEMPTIBLE` — scheduler preemption check.
+    /// Currently unused — scheduler not yet wired to check this flag.
+    #[allow(dead_code)]
     pub fn is_preemptible(&self) -> bool {
         self.capability.s_flags.contains(PrivFlagsBits::PREEMPTIBLE)
     }
 
+    /// C: `priv(rp)->s_flags & BILLABLE` — CPU time accounting check.
+    /// Currently unused — CPU accounting not yet wired.
+    #[allow(dead_code)]
     pub fn is_billable(&self) -> bool {
         self.capability.s_flags.contains(PrivFlagsBits::BILLABLE)
     }
@@ -744,15 +765,14 @@ impl PrivTable {
         if priv_id == NULL_PRIV_ID {
             // C: system.c:285-287 — scan dynamic slots for a free one.
             for i in (NR_BOOT_PROCS as PrivId)..(NR_SYS_PROCS as PrivId) {
-                if let Some(slot) = self.get(i) {
-                    if slot.capability.s_proc_nr.is_none() {
+                if let Some(slot) = self.get(i)
+                    && slot.capability.s_proc_nr.is_none() {
                         // Found a free dynamic slot.
                         if let Some(slot) = self.get_mut(i) {
                             slot.capability.s_proc_nr = Some(proc_nr);
                         }
                         return Ok(i);
                     }
-                }
             }
             Err(ENOSPC)
         } else {
@@ -779,6 +799,10 @@ impl PrivTable {
     /// privilege setup in main.c:178-248.
     ///
     /// C: main.c:178-248 (sets s_flags, s_trap_mask, s_ipc_to, s_k_call_mask, priority, quantum)
+    // R-18 (2026-08-13): Legacy 2-step API (assign_static + configure_boot_priv),
+    // replaced by grant_capability() for new callers. 8 params match C field set.
+    // Kept for internal use (grant_capability delegates to it). Allowed per clippy.
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_boot_priv(
         &mut self,
         priv_id: PrivId,
@@ -805,7 +829,7 @@ impl PrivTable {
     /// `configure_boot_priv` pattern with a single call. Picking one
     /// of the 5 stock templates fills in the right flags + IPC masks
     /// + kernel-call mask by construction; the caller cannot forget
-    /// to set the IPC mask.
+    ///   to set the IPC mask.
     ///
     /// # Returns
     /// `Ok(priv_id)` on success, `Err(CapabilityError)` on failure.

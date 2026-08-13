@@ -72,9 +72,9 @@ impl IrqNotifyId {
     }
 }
 
-/// IRQ policy flags.
-///
-/// C: IRQ_REENABLE — com.h:308
+// IRQ policy flags.
+//
+// C: IRQ_REENABLE — com.h:308
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct IrqPolicy: u32 {

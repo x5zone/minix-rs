@@ -126,7 +126,7 @@
 | G-023 | `verboseboot` | glo.h | 详细启动 | `KernelInfo::verbose` | ✅ |
 | G-024 | `ipc_call_names[]` | glo.h | IPC 调用名表 | not implemented | ❌ 调试用, 优先级低 |
 | G-025 | `lost_ticks` | glo.h | 丢失 tick 数 | `ClockState::lost_ticks` | ⚠️ Partial |
-| G-026 | `krandom` | glo.h | kernel 随机源 | not implemented | ❌ (无硬件 RNG) |
+| G-026 | `krandom` | glo.h | kernel 随机源 | ✅ `krandom.rs`（KRandomness/KRandomnessBin `#[repr(C)]` + KRANDOM 全局 + init/try_krandom/krandom 访问器 + get_randomness no-op stub 匹配 C i386/earm） | ✅（容器+导出已实现；实际熵采集在用户态 random 驱动；x86 RDRAND arch 层 deferred） |
 | G-027 | `arm_frclock` | glo.h | ARM 自由时钟 | arch-specific | ✅ (aarch64 only) |
 | G-028 | `kclockinfo` | glo.h | 时钟信息 | `KClockInfo` (minix-types) | ✅ |
 | G-029 | `minix_kerninfo` | glo.h | kernel info 结构 | `KernelInfo` | ✅ |
@@ -405,7 +405,7 @@ KERNEL_CALL = 0x600 (per `com.h:204`)
 | D-13 | C `RTS_*` 位运算 | `RtsFlags(AtomicU32)` bitflags | 类型安全 + 原子 (SMP 关键) |
 | D-14 | `endpoint` 全局变量 | `Endpoint` 类型 + `p_endpoint` 字段 | 类型化 + 字段化 |
 | D-15 | `_cpus_id` 全局 | `SmpState::cpus[]` 数组 | 类型化 |
-| D-16 | `krandom` (硬件 RNG) | 无 | x86 RDRAND 在 arch 层, 暂不导出 |
+| D-16 | `krandom` (硬件 RNG) | ✅ `krandom.rs`（容器+导出已实现，no-op stub 匹配 C i386/earm） | x86 RDRAND arch 层 deferred；实际熵采集在用户态 random 驱动 |
 | D-17 | `_free_pde_slots` 全局数组 | ✅ (2026-06-14) `static mut FREE_PDE_SLOTS` + `free_pde_slots()` 访问器 | 见 SMP/free-pde-slots audit; 已在 `init_post_and_memory` 中持久化. `static FREE_UPPER_IDX: AtomicUsize` + `free_upper_idx()` (Acquire) / `advance_free_upper_idx(n)` (AcqRel) 访问器已实现. `KernelInfo.free_upper_idx` 类型已改为 `Option<usize>` + getter 方法 (2026-06-16). 2 个新测试覆盖 |
 | D-18 | `m1.m1p1` 字段重用 | Doc 17 §1.1 重构 | 见 message-layout audit bug |
 | D-19 | `do_signal_manager` 状态机 | `SignalContext` trait 缺失 | 见 signal-manager audit; trait 定义未到位 |

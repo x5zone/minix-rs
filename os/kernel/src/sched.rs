@@ -30,7 +30,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::proc::{
-    priority, proc_nr, RtsFlagsBits, CpuCycles, KProcess, ProcNr, NONE_PROC_NR,
+    priority, KProcess, ProcNr, NONE_PROC_NR,
 };
 
 /// Per-CPU scheduler state holding ready queue head/tail indices.
@@ -41,6 +41,12 @@ use crate::proc::{
 pub struct Scheduler {
     run_q_head: [Option<ProcNr>; priority::NR_SCHED_QUEUES],
     run_q_tail: [Option<ProcNr>; priority::NR_SCHED_QUEUES],
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Scheduler {
@@ -127,7 +133,7 @@ impl Scheduler {
         q: usize,
         procs: &mut [KProcess],
     ) {
-        let mut link_idx: Option<usize> = None;
+        let _link_idx: Option<usize> = None;
         let mut link_is_head = true;
         let mut prev: Option<ProcNr> = None;
 
@@ -143,11 +149,10 @@ impl Scheduler {
             let cur_idx = nr_to_idx(cur_nr);
             current = cur_idx
                 .and_then(|i| procs.get(i))
-                .map(|p| {
+                .and_then(|p| {
                     let v = p.p_nextready.load(Ordering::Relaxed);
                     if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
-                })
-                .flatten();
+                });
             link_is_head = false;
         }
 
@@ -158,11 +163,10 @@ impl Scheduler {
         // Remove from linked list
         let next = nr_to_idx(nr)
             .and_then(|i| procs.get(i))
-            .map(|p| {
+            .and_then(|p| {
                 let v = p.p_nextready.load(Ordering::Relaxed);
                 if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
-            })
-            .flatten();
+            });
 
         if link_is_head {
             self.run_q_head[q] = next;
@@ -225,6 +229,7 @@ fn nr_to_idx(nr: ProcNr) -> Option<usize> {
 /// Check if a process is preemptible via its privilege flags.
 ///
 /// C: `priv(p)->s_flags & PREEMPTIBLE` in const.h:143.
+#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
 fn is_preemptible(p: &KProcess) -> bool {
     let prio = p.get_priority().get();
     prio != priority::TASK_Q
@@ -233,11 +238,13 @@ fn is_preemptible(p: &KProcess) -> bool {
 /// Check if a process is scheduled by the kernel (no user-space scheduler).
 ///
 /// C: `proc_kernel_scheduler(p)` macro in proc.h:178.
+#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
 fn is_kernel_scheduled(p: &KProcess) -> bool {
     p.p_sched.scheduler.is_none() || p.p_sched.scheduler == Some(p.p_nr)
 }
 
 /// Check if a process has remaining CPU time.
+#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
 fn has_cpu_time_left(p: &KProcess) -> bool {
     p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
 }
@@ -324,20 +331,18 @@ pub fn sched_proc(
     // In Rust: TASK_Q == 0, MIN_USER_Q == 15 (NR_SCHED_QUEUES-1).
     // Design decision §3.8: None = keep current (replaces C's -1).
     // u8 is always >= 0, so we only check the upper bound.
-    if let Some(v) = params.priority {
-        if v > priority::MIN_USER_Q {
+    if let Some(v) = params.priority
+        && v > priority::MIN_USER_Q {
             return Err(SchedProcError::InvalidArgument);
         }
-    }
 
     // Step 2: validate quantum range.
     // C: system.c:647-648:
     //   if (quantum < 1 && quantum != -1) return EINVAL;
-    if let Some(v) = params.quantum {
-        if v < 1 {
+    if let Some(v) = params.quantum
+        && v < 1 {
             return Err(SchedProcError::InvalidArgument);
         }
-    }
 
     // Step 3: validate CPU range (SMP stub — always OK for uniprocessor).
     // C: system.c:650-654: only relevant with CONFIG_SMP. Our Rust
@@ -437,7 +442,7 @@ pub fn sched_proc_error_to_errno(err: SchedProcError) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::{CpuId, MiscFlagsBits, RtsFlagsBits};
+    use crate::proc::{CpuId, MiscFlagsBits, RtsFlagsBits, proc_nr};
     use crate::proc_table::ProcessTable;
 
     fn make_runnable(table: &mut ProcessTable, nr: ProcNr, prio: u8) {

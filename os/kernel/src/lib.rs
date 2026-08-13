@@ -10,6 +10,11 @@
 
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+// R-19 (2026-08-13): Test helpers across syscall_*.rs build `Message` via
+// `default() + assign m_type` then fill union fields under `unsafe`.
+// Struct-literal form would still need `unsafe` for union writes — marginal
+// gain, large churn across 70+ tests. Allowed per clippy::field_reassign_with_default.
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
 extern crate alloc;
 
@@ -138,33 +143,33 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     let kv = kernel_info.kern_virt_base().0;
     let kp = kernel_info.kern_phys_base().0;
     let ks = kernel_info.kern_size();
-    let huge = P::HUGE_PAGE_SIZE as u64;
-    let fallback = P::FALLBACK_HUGE_PAGE_SIZE as u64;
+    let huge = P::HUGE_PAGE_SIZE;
+    let fallback = P::FALLBACK_HUGE_PAGE_SIZE;
 
     // kern_size must be positive
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
 
     // kern_phys_base must be page-aligned (at least 4KB)
-    assert!(kp % 0x1000 == 0, "arch_boot: kern_phys_base must be page-aligned");
+    assert!(kp.is_multiple_of(0x1000), "arch_boot: kern_phys_base must be page-aligned");
 
     // kern_virt_base must be page-aligned (at least 4KB)
-    assert!(kv % 0x1000 == 0, "arch_boot: kern_virt_base must be page-aligned");
+    assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
 
     // Choose the largest huge-page size that both bases and kern_size are aligned to.
-    let kern_huge = if kv % huge == 0 && kp % huge == 0 && ks % huge == 0 {
+    let kern_huge = if kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge) {
         huge
-    } else if kv % fallback == 0 && kp % fallback == 0 && ks % fallback == 0 {
+    } else if kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback) {
         fallback
     } else {
         panic!("arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at least FALLBACK_HUGE_PAGE_SIZE");
     };
 
     // kern_size must be a multiple of kern_huge for the mapping loop
-    assert!(ks % kern_huge == 0,
+    assert!(ks.is_multiple_of(kern_huge),
         "arch_boot: kern_size must be a multiple of the chosen huge page size");
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
-    assert!(kernel_info.kern_stack_top().0 % 16 == 0,
+    assert!(kernel_info.kern_stack_top().0.is_multiple_of(16),
         "arch_boot: kern_stack_top must be 16-byte aligned");
 
     // Register boot-stage page table page allocator if not already registered.
@@ -221,7 +226,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
             VirBytes(addr), PhysBytes(addr),
             kern_huge as usize, id_flags,
         );
-        addr += kern_huge as u64;
+        addr += kern_huge;
     }
 
     // Step 2: Kernel high-address mapping.
@@ -244,7 +249,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
                 VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
                 kern_huge as usize, kern_flags,
             ).expect("kernel map: map_huge failed — kernel image mismatch");
-            offset += kern_huge as u64;
+            offset += kern_huge;
         }
     }
 
@@ -1320,6 +1325,7 @@ mod bkl_protected_tests {
 ///
 /// SAFETY: Only written during boot (single-threaded, before BKL needed).
 /// After boot, this is read-only. BKL protects any post-boot access.
+#[allow(dead_code)] // SMP memmap infra (checklist D-17); not yet wired to all call sites
 static FREE_MEMMAP: SyncUnsafeCell<[memmap::MemMapEntry; memmap::MAXMEMMAP]> =
     SyncUnsafeCell::new([memmap::MEM_MAP_ENTRY_ZERO; memmap::MAXMEMMAP]);
 
@@ -1536,13 +1542,13 @@ pub fn try_irq_manager_with(_section: &crate::smp::BklSection<'_>) -> Option<&'s
 /// runs with `--test-threads=1`; the assignment is idempotent (installs
 /// a fresh empty manager each call), so test ordering does not matter.
 #[cfg(test)]
-pub(crate) unsafe fn init_irq_manager_for_test() {
+pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
     let ctrl = new_test_interrupt_controller();
     // SAFETY: test-only; single-threaded under `--test-threads=1`. Uses
     // `addr_of_mut!` to avoid the `static_mut_refs` lint, same as boot.
     *IRQ_MANAGER.get() =
         Some(crate::irq_manager::IrqManager::new(ctrl));
-}
+}}
 
 /// Construct a `CurrentInterruptController` for unit tests without
 /// touching hardware. Only the matching target arch's descriptor is
@@ -1685,12 +1691,14 @@ pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, read-only under BKL protection.
+#[allow(dead_code)] // SMP PDE slot mgmt (checklist D-17); retained for boot-accounting parity
 static FREE_PDE_SLOTS: SyncUnsafeCell<minix_arch::FreePdeSlots> = SyncUnsafeCell::new(minix_arch::FreePdeSlots::new());
 
 /// Get a reference to the global free PDE slots.
 ///
 /// Caller must ensure BKL is held if called after boot initialization.
 /// C: freepdes[] global array access.
+#[allow(dead_code)] // accessor for FREE_PDE_SLOTS; not yet wired to all call sites
 pub(crate) fn free_pde_slots() -> &'static minix_arch::FreePdeSlots {
     // SAFETY: After boot, FREE_PDE_SLOTS is read-only.
     // Caller is responsible for BKL synchronization.
@@ -1728,6 +1736,7 @@ static FREE_UPPER_IDX: AtomicUsize = AtomicUsize::new(0);
 /// Read the current `free_upper_idx`.
 ///
 /// Caller must hold the BKL if called after boot.
+#[allow(dead_code)] // accessor for FREE_UPPER_IDX; not yet wired to all call sites
 pub(crate) fn free_upper_idx() -> usize {
     FREE_UPPER_IDX.load(Ordering::Acquire)
 }
@@ -1739,6 +1748,7 @@ pub(crate) fn free_upper_idx() -> usize {
 /// Map (see `FREE_PDE_SLOTS` doc).
 ///
 /// Caller must hold the BKL.
+#[allow(dead_code)] // accessor for FREE_UPPER_IDX; not yet wired to all call sites
 pub(crate) fn advance_free_upper_idx(n: usize) -> usize {
     FREE_UPPER_IDX.fetch_add(n, Ordering::AcqRel)
 }
@@ -1766,6 +1776,7 @@ pub(crate) fn ipc_filter_pool() -> &'static mut crate::ipc_filter::IpcFilterPool
 }
 
 /// Get a mutable reference to the global IPC filter pool with BKL witness (R-03).
+#[allow(dead_code)] // BKL-witness accessor (FIX-09); new pattern not yet wired to all call sites
 pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::ipc_filter::IpcFilterPool {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IPC_FILTER_POOL.get() }
@@ -2147,6 +2158,7 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
 ///    entry point re-acquires the BKL before touching shared state.
 /// 3. This matches C's pattern: BKL is released before the context
 ///    switch and re-acquired on the next kernel entry.
+#[allow(dead_code)] // called from arch trap entry (asm); not visible to compiler
 fn switch_to_user() -> ! {
     // Release BKL before entering the scheduling loop.
     // C: BKL is released implicitly by restore_user_context() which
@@ -2192,6 +2204,7 @@ fn switch_to_user() -> ! {
 /// # Safety
 ///
 /// Caller must hold BKL (or be in single-threaded boot).
+#[allow(dead_code)] // boot path, called conditionally; not visible to compiler
 unsafe fn apply_boot_cpu_contexts() {
     use minix_arch::{CpuContextArch, CurrentCpuContextArch};
     use crate::proc::RtsFlagsBits;
@@ -2422,12 +2435,14 @@ mod tests {
     /// Verify that IDENTITY_MAP_END is aligned for huge-page mapping loops.
     #[test]
     fn test_identity_map_end_alignment() {
-        let huge = MockPaging::HUGE_PAGE_SIZE as u64;
-        assert!(huge > 0, "HUGE_PAGE_SIZE must be positive");
-        assert!(huge.is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two");
-        assert!(IDENTITY_MAP_END > 0, "IDENTITY_MAP_END must be positive");
+        // R-19 (2026-08-13): const assertions moved into `const {}` block so
+        // they're checked at compile time, not at test runtime.
+        const { assert!(MockPaging::HUGE_PAGE_SIZE > 0, "HUGE_PAGE_SIZE must be positive"); }
+        const { assert!(MockPaging::HUGE_PAGE_SIZE.is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two"); }
+        const { assert!(IDENTITY_MAP_END > 0, "IDENTITY_MAP_END must be positive"); }
+        let huge = MockPaging::HUGE_PAGE_SIZE;
         // IDENTITY_MAP_END / huge should be an integer (no partial pages at boundary)
-        assert!(IDENTITY_MAP_END % huge == 0,
+        assert!(IDENTITY_MAP_END.is_multiple_of(huge),
             "IDENTITY_MAP_END (0x{:x}) must be a multiple of HUGE_PAGE_SIZE (0x{:x})",
             IDENTITY_MAP_END, huge);
     }
@@ -2850,7 +2865,7 @@ mod tests {
     fn test_bsp_finish_booting_single_cpu_only_bsp_initialized() {
         use crate::proc::CpuId;
         use crate::smp::SmpState;
-        let mut smp = SmpState::new_single_cpu();
+        let smp = SmpState::new_single_cpu();
         // ncpus = 1, so only cpu 0 is initialized.
         assert_eq!(smp.ncpus(), 1);
         assert_eq!(smp.bsp_cpu_id(), CpuId::BSP);

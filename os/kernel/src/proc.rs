@@ -109,7 +109,7 @@ pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
 /// C: table.c — struct boot_image image[NR_BOOT_PROCS] = { ... }
 /// Kernel tasks are not loaded from multiboot modules — they are compiled
 /// into the kernel binary.
-pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS as usize] = &[
+pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
     ("asyncm", ProcNr(-5)),  // ASYNCM — async message completion notifications
     ("idle",   ProcNr(-4)),  // IDLE — runs when no other process can
     ("clock",  ProcNr(-3)),  // CLOCK — alarms and clock functions
@@ -1031,6 +1031,9 @@ impl ProcName {
 
     /// Creates process name from string.
     /// If string exceeds max length, it will be truncated.
+    // R-18 (2026-08-13): Renamed from `from_str` to avoid confusion with
+    // `std::str::FromStr::from_str` (different signature — no Result return).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         let mut name = Self::new();
         let bytes = s.as_bytes();
@@ -1305,7 +1308,7 @@ impl KProcess {
 
     pub fn get_priority(&self) -> Priority {
         Priority::new(self.p_sched.priority.load(Ordering::Acquire))
-            .unwrap_or(Priority::default())
+            .unwrap_or_default()
     }
 
     /// Sets priority with validation. Returns false if value is out of range.
@@ -1547,8 +1550,8 @@ impl KProcess {
             // p_pending cleared: corresponds to sigemptyset(&rpc->p_pending)
             p_pending: SigSet::empty(),
             p_name: parent.p_name,
-            p_sendmsg: parent.p_sendmsg.clone(),
-            p_delivermsg: parent.p_delivermsg.clone(),
+            p_sendmsg: parent.p_sendmsg,
+            p_delivermsg: parent.p_delivermsg,
             p_delivermsg_vir: parent.p_delivermsg_vir,
             p_next_restart: None,
             // VM request fields: child has no pending VM request

@@ -163,7 +163,7 @@ impl ProcessTable {
     /// C: `isemptyn(n)` = `isemptyp(proc_addr(n))` = `(p->p_rts_flags == RTS_SLOT_FREE)`
     /// (08-proc-macros.md §3.7)
     pub fn is_empty(&self, nr: ProcNr) -> bool {
-        self.get(nr).map_or(false, |p| p.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE)
+        self.get(nr).is_some_and(|p| p.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE)
     }
 
     /// Check if a process number belongs to a kernel task.
@@ -209,7 +209,7 @@ impl ProcessTable {
                     let next = proc.p_next_requestor;
 
                     // Check if this process has a valid VM suspend context
-                    let passed = proc.p_vm_suspend.as_ref().map_or(false, |ctx| {
+                    let passed = proc.p_vm_suspend.as_ref().is_some_and(|ctx| {
                         // Verify the process is in Pending state
                         ctx.state == VmSuspendState::Pending
                     });
@@ -280,13 +280,13 @@ impl ProcessTable {
     /// C: `RTS_SET(p, flags)` macro in proc.h — sets flags and calls
     /// `dequeue()` when the process becomes non-runnable.
     pub fn rts_set(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
-        let was_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
+        let was_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
         if let Some(p) = self.get_mut(nr) {
             p.p_rts_flags.set(flags);
         }
-        let is_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
-        if was_runnable && !is_runnable {
-            if self.is_in_scheduler(nr) {
+        let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        if was_runnable && !is_runnable
+            && self.is_in_scheduler(nr) {
                 // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's
                 // assigned CPU determines which per-CPU queue to dequeue from.
                 let cpu_id = self.get(nr)
@@ -294,7 +294,6 @@ impl ProcessTable {
                     .unwrap_or(CpuId::BSP);
                 self.sched_dequeue(nr, cpu_id);
             }
-        }
     }
 
     /// Clear RTS flags on a process. If the process transitions from
@@ -303,11 +302,11 @@ impl ProcessTable {
     /// C: `RTS_UNSET(p, flags)` macro in proc.h — clears flags and calls
     /// `enqueue()` when the process becomes runnable.
     pub fn rts_unset(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
-        let was_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
+        let was_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
         if let Some(p) = self.get_mut(nr) {
             p.p_rts_flags.clear(flags);
         }
-        let is_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
+        let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
         if !was_runnable && is_runnable {
             let cpu_id = self.get(nr).map_or(CpuId::BSP, |p| {
                 CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
@@ -455,11 +454,10 @@ impl ProcessTable {
                 let cur_idx = nr_to_idx(cur_nr);
                 current = cur_idx
                     .and_then(|i| self.procs.get(i))
-                    .map(|p| {
+                    .and_then(|p| {
                         let v = p.p_nextready.load(Ordering::Relaxed);
                         if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
-                    })
-                    .flatten();
+                    });
             }
         }
         false
@@ -635,9 +633,9 @@ impl ProcessTable {
     ///
     /// The send constructs a transient `IpcEngine` borrowing `self.procs`
     /// + the global `PRIV_TABLE` + `KernelUserCopy`. This works in both
-    /// production (self is the global `PROC_TABLE`) and tests (self is a
-    /// local table) as long as the scheduler process is present in the
-    /// table — which tests must arrange when exercising this path.
+    ///   production (self is the global `PROC_TABLE`) and tests (self is a
+    ///   local table) as long as the scheduler process is present in the
+    ///   table — which tests must arrange when exercising this path.
     ///
     /// `cpu_load()` / `current_cpuid()` read per-CPU state from the
     /// global `SMP_STATE` (defensive: return 0 if not initialized, e.g.
@@ -686,14 +684,14 @@ impl ProcessTable {
             acnt_cpu_load: clock::cpu_load(),
             _padding: [0; 24],
         };
-        let mut msg = Message::default();
-        msg.m_type = SCHEDULING_NO_QUANTUM;
+        let mut msg = Message {
+            m_type: SCHEDULING_NO_QUANTUM,
+            ..Default::default()
+        };
         // SAFETY: `MessKrnLsysSchedule` is `#[repr(C)]` and fits within
         // `MESSAGE_PAYLOAD_SIZE` (compile-time asserted). We write to a
         // zeroed `MessageUnion`, so all fields are valid.
-        unsafe {
-            msg.m_u.m_krn_lsys_schedule = payload;
-        }
+        msg.m_u.m_krn_lsys_schedule = payload;
 
         // Phase 3: reset accounting (C: `reset_proc_accounting(p)` — proc.c:1885).
         // C: proc.c:1912-1917.
@@ -779,23 +777,21 @@ impl ProcessTable {
         cpu_id: CpuId,
     ) -> (Option<ProcNr>, SwitchFlow) {
         // 阶段 1：当前进程是否可运行？
-        if let Some(nr) = current_nr {
-            if let Some(p) = self.get(nr) {
-                if p.is_runnable() {
+        if let Some(nr) = current_nr
+            && let Some(p) = self.get(nr)
+                && p.is_runnable() {
                     return (Some(nr), SwitchFlow::CheckMiscFlags);
                 }
-            }
-        }
 
         // 阶段 2：处理 PREEMPTED 进程
         if let Some(nr) = current_nr {
-            let was_preempted = self.get(nr).map_or(false, |p| {
+            let was_preempted = self.get(nr).is_some_and(|p| {
                 p.p_rts_flags.is_set(RtsFlagsBits::PREEMPTED)
             });
             if was_preempted {
                 self.rts_unset(nr, RtsFlagsBits::PREEMPTED);
-                if let Some(p) = self.get(nr) {
-                    if p.is_runnable() {
+                if let Some(p) = self.get(nr)
+                    && p.is_runnable() {
                         let has_time_left = p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0;
                         if has_time_left {
                             self.sched_enqueue_head(nr, cpu_id);
@@ -803,7 +799,6 @@ impl ProcessTable {
                             self.sched_enqueue(nr, None, cpu_id);
                         }
                     }
-                }
             }
         }
 
@@ -907,18 +902,16 @@ impl ProcessTable {
                     break;
                 }
                 // C: clears both MF_SC_TRACE and MF_SC_ACTIVE, then cause_sig
-                self.get_mut(nr).map(|p| {
-                    p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE);
-                });
+                if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE); }
                 // TODO: wire cause_sig() from signal module
                 break;
             } else if flags.contains(MiscFlagsBits::SC_ACTIVE) {
-                self.get_mut(nr).map(|p| p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE));
+                if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE) }
                 break;
             }
 
             // 检查进程是否仍可运行
-            if !self.get(nr).map_or(false, |p| p.is_runnable()) {
+            if !self.get(nr).is_some_and(|p| p.is_runnable()) {
                 return false;
             }
         }
@@ -959,7 +952,7 @@ impl ProcessTable {
     /// user space via `p_defer.r3` (user pointer). Currently, a default
     /// `Message` is used because the first-call path (setting `MF_SC_DEFER`
     /// + saving user pointer) is part of syscall tracing, which is not yet
-    /// implemented. When syscall tracing is added, this will be extended.
+    ///   implemented. When syscall tracing is added, this will be extended.
     pub fn arch_do_syscall(
         &mut self,
         nr: ProcNr,
@@ -991,8 +984,10 @@ impl ProcessTable {
         // For SEND/SENDREC, message content would be re-read from user space
         // via p_defer.r3 — but the first-call save path is not yet wired
         // (syscall tracing, future phase). Use default message for now.
-        let mut msg = minix_types::Message::default();
-        msg.m_type = call_nr;
+        let msg = minix_types::Message {
+            m_type: call_nr,
+            ..Default::default()
+        };
 
         // Dispatch IPC using the refactored dispatch_ipc (FIX-21):
         // passes self.procs + caller_idx, avoiding split-borrow aliasing.
@@ -1006,13 +1001,13 @@ impl ProcessTable {
     ///
     /// 返回 true 表示进程仍可运行，false 表示不可运行。
     pub fn check_quantum(&mut self, nr: ProcNr) -> bool {
-        let has_time_left = self.get(nr).map_or(false, |p| {
+        let has_time_left = self.get(nr).is_some_and(|p| {
             p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
         });
         if !has_time_left {
             self.sched_proc_no_time(nr);
         }
-        self.get(nr).map_or(false, |p| p.is_runnable())
+        self.get(nr).is_some_and(|p| p.is_runnable())
     }
 }
 
@@ -1175,7 +1170,9 @@ mod tests {
         assert!(!child.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE));
 
         // Place child into the table
-        table.get_mut(child_nr).map(|slot| *slot = child);
+        if let Some(slot) = table.get_mut(child_nr) {
+            *slot = child;
+        }
 
         // Step 4: Simulate VM fork completion — make child runnable
         table.rts_unset(child_nr, RtsFlagsBits::NO_QUANTUM);
