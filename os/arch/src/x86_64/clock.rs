@@ -4,7 +4,7 @@
 //! Timer) is used as the boot-time clock source. LAPIC Timer may replace
 //! it after APIC initialization.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware parameters (PIT base frequency, LAPIC base address) are stored
 //! in instance fields, populated by `new(desc)` from the `PitDesc` sub-trait

@@ -3,7 +3,7 @@
 //! Implements `ArchInit` for RISC-V 64-bit, performing PMP configuration
 //! and S-mode interrupt enablement.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! RISC-V has no architecture-misc parameters, so `new(desc)` is a no-op
 //! constructor. The struct exists only to satisfy the instance-based trait

@@ -251,7 +251,7 @@ pub type CurrentArchInit = crate::riscv64::arch_init::Riscv64ArchInit;
 
 // ── CurrentCpuContextArch / CpuContext / TrapFrame type aliases ──
 //
-// Replaces the old `CurrentBootProcArch` (see 06-design.v1.md §3.2
+// Replaces the old `CurrentBootProcArch` (see 06-proc-init-boot-proc.md §3.5
 // for the renaming rationale — the abstraction is "process's CPU
 // context", not just the boot phase).
 #[cfg(target_arch = "x86_64")]

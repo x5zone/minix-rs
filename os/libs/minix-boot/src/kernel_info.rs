@@ -85,7 +85,7 @@ pub struct KernelInfo {
     /// the kernel takes the first source that parses successfully.
     ///
     /// Empty slice means boot-shim did not provide any — kernel falls back
-    /// to `QemuVirtDesc` (dev) or panics (release). See `plat-design.md` §4.
+    /// to `QemuVirtDesc` (dev) or panics (release). See 04-platform-discovery.md §4.6.
     ///
     /// # Cross-binary safety (TODO-01-2 fix, 2026-07-16)
     ///

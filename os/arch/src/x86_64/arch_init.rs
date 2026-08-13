@@ -4,7 +4,7 @@
 //! other architecture-specific setup that is not covered by functional
 //! traits such as `InterruptController` or `EarlyConsole`.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! `new(desc)` stores the ACPI tables physical address (if provided) from
 //! `ArchMiscDesc` into an instance field. This replaces the previous

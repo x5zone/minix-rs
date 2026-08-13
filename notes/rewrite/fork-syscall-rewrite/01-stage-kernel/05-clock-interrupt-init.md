@@ -512,7 +512,7 @@ pub type CurrentEarlyConsole = crate::riscv64::early_console::Riscv64EarlyConsol
 ```rust
 /// 在中断控制器初始化之后执行的架构特定初始化。
 ///
-/// `ArchInit` 采用**实例化模式**（参见 [plat-design.md §5.1](plat-design.md)）：
+/// `ArchInit` 采用**实例化模式**（参见 [04-platform-discovery.md §3.4](04-platform-discovery.md#34-硬件-trait-为什么要带实例状态)）：
 /// `new(desc)` 从 `ArchMiscDesc`（ACPI 表指针、PMU 使能标志等）构造实例，
 /// `init(&mut self)` 执行架构特定的初始化操作。
 pub trait ArchInit: Sized + Send + Sync {
@@ -535,7 +535,7 @@ pub trait ArchInit: Sized + Send + Sync {
 1. **统一接口**：三种架构的 `arch_init()` 在**启动阶段**语义相同（完成架构特定初始化），但具体实现完全不同
 2. **消除 `#ifdef`**：C 版用 `#ifdef USE_ACPI` / `#ifdef USE_APIC` 选择代码路径，Rust 用 trait 静态分派
 3. **可测试性**：mock 实现可以跳过硬件初始化
-4. **实例化模式**：把 `ArchMiscDesc` 一次性写入实例字段，避免每次 `init()` 调用时重复传递参数；与 §3.3 `InterruptController::new()` 和 §3.4 `EarlyConsole::new()` 保持一致（参见 [plat-design.md §5.1](plat-design.md) 实例化模式）
+4. **实例化模式**：把 `ArchMiscDesc` 一次性写入实例字段，避免每次 `init()` 调用时重复传递参数；与 §3.3 `InterruptController::new()` 和 §3.4 `EarlyConsole::new()` 保持一致（参见 [04-platform-discovery.md §3.4](04-platform-discovery.md#34-硬件-trait-为什么要带实例状态) 实例化模式）
 
 > **注意：ArchInit 是“阶段抽象”而非“功能抽象”**。它回答的是“除了时钟、中断和早期控制台之外，还有什么架构特定的杂项必须在此时完成”，而不是“所有架构做同一件事”。因此：
 > - 凡是能抽象出跨架构一致语义的机制（如时钟节拍、中断路由、早期控制台），都应该有自己的 trait（`ClockArch`、`InterruptController`、`EarlyConsole`），不能塞进 `ArchInit`。
@@ -1564,7 +1564,7 @@ cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
 | IRQ 策略/动作 | IrqPolicy, IrqAction 语义 | ✅ 3 tests |
 | x86-64 APIC 构造 | `X86_64InterruptController::new(&InterruptControllerDesc::Apic)` 提取 lapic/ioapic base | ✅ 2 tests (`os/plat/src/x86_64/interrupt.rs`) |
 | aarch64 GICv3 构造 | `AArch64InterruptController::new(&InterruptControllerDesc::Gicv3)` 提取 distributor/cpuif base | ✅ 1 test (`os/plat/src/arm64/interrupt.rs`) |
-| riscv64 PLIC 构造 | `Riscv64InterruptController::new(&InterruptControllerDesc::Plic)` 提取 base | ✅ 1 test (`os/plat/src/riscv64/interrupt.rs`) |
+| riscv64 PLIC 构造 | `Riscv64InterruptController::new(&InterruptControllerDesc::Plic)` 提取 base | ✅ 2 tests (`os/plat/src/riscv64/interrupt.rs`) |
 | Mock 中断控制器 | `MockInterruptController` 提供 `InterruptController` trait 空实现，供单元测试编译 | ✅ (`os/plat/src/mock.rs`) |
 | QEMU x86-64 | PIT 配置, 断点命中 | ✅ 自动化脚本 |
 | QEMU aarch64 | Generic Timer, GICv3 寄存器 | ✅ 自动化脚本 |

@@ -5,7 +5,6 @@
 > **Rust 实现**: `os/kernel/src/clock.rs`, `os/kernel/src/syscall_clock.rs`, `os/arch/src/arch/clock.rs`
 > **说明**: 100Hz 时钟中断处理——时间记账、虚拟/性能定时器、同步闹钟、负载平均；quantum 递减归架构层
 > **前置**: 14-exception-interrupt.md, 05-clock-interrupt-init.md, 10-switch-to-user.md, 11-scheduling-primitives.md
-> **设计文档**: [`design/15-design.md`](design/15-design.md)
 > **创建**: 2026-06-13 · **重写**: 2026-07-31
 
 ---
@@ -348,7 +347,7 @@ SYS_VTIMER 系统调用
 
 ## Ch3: Rust 设计决策
 
-> **设计原则**：避免 C 代码的 translate，用 Rust 类型系统重新表达 C 的指针语义（TimerId newtype）、函数指针（TimerAction enum）、BSP/AP 分支（per-CPU 实例）。每个决策都列多方案对比，优中选优。完整方案对比见 [`design/15-design.md`](design/15-design.md) §3。
+> **设计原则**：避免 C 代码的 translate，用 Rust 类型系统重新表达 C 的指针语义（TimerId newtype）、函数指针（TimerAction enum）、BSP/AP 分支（per-CPU 实例）。每个决策都列多方案对比，优中选优。完整方案对比见 §3。
 
 ### 3.1 决策 D1：全局时钟状态封装
 
@@ -384,6 +383,8 @@ SYS_VTIMER 系统调用
 | **B. `TimerId(u64)` newtype** | stable identity | 类型安全；支持 reset(id) | 需生成 id（per-ClockState 计数器） |
 
 **选定 B**。理由：C 用 timer 指针作 stable identity（结构体地址不变），Rust 用 newtype 替代指针语义。`TimerId` 是 per-ClockState 单调递增计数器，无需全局同步（BKL 保护）。
+
+**持久性论证**（id 作为 stable identity 是否安全）：`TimerId` 是 per-ClockState 计数器，若 `ClockState` 重建则 id 会重置——但 `ClockState` 是 BKL 保护的全局状态，boot 后**不重建**，id 在系统生命周期内单调不减，因此可以充当 stable identity。Live update 等重建场景由 16-smp.md / 24-cross-space-runtime.md 处理，不在本章范围。`TimerId` 存入 `KPriv.s_alarm_timer`（字段类型变更为 `Option<(TimerEntry, TimerId)>`）无序列化风险：KPriv 不跨重启序列化（boot 时重建），Debug 输出由自动派生覆盖（tuple 实现 Debug）。
 
 ### 3.4 决策 D4：adjtime 机制
 
@@ -1123,10 +1124,6 @@ impl ClockState {
 
 - [16-smp.md](16-smp.md) — AP 定时器初始化（`app_cpu_init_timer()`）；BSP/AP 时钟职责分离
 - [21-syscall-clock.md](21-syscall-clock.md) — 时钟系统调用（SYS_SETALARM/SYS_VTIMER/SYS_STIME/SYS_SETTIME/SYS_TIMES）的用户态接口
-
-### 6.3 设计文档
-
-- [design/15-design.md](design/15-design.md) — 完整设计文档（D1-D11 多方案对比 + Self-Review Issues + 实施顺序）
 
 ### 6.4 跨文档一致性
 

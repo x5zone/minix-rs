@@ -657,7 +657,7 @@ pub fn dispatch_schedctl(
         // `niced = FALSE` matches C: do_schedctl.c:30 — sched_proc is called
         // with the literal `FALSE`, not a message field (unlike SYS_SCHEDULE).
         //
-        // Design decision §3.8 (11-design.v1.md): convert C's i32 -1 sentinel
+        // Design decision §3.8 (11-scheduling-primitives.md): convert C's i32 -1 sentinel
         // ("keep current") to Option. Negative values other than -1 are
         // rejected early to match C semantics (system.c:644-648).
         let priority_opt = match priority {

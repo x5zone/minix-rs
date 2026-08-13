@@ -353,7 +353,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
     // This MUST run before init_clock_and_interrupts() because the clock,
     // interrupt controller, and arch_init all read hardware parameters
-    // from the global platform descriptor (see plat-design.md §5.1).
+    // from the global platform descriptor (see 04-platform-discovery.md §3.4).
     // SAFETY: Single-threaded boot context; no concurrent access.
     unsafe {
         minix_platform::init_from_kinfo(kernel_info);
@@ -711,7 +711,7 @@ fn init_clock_and_interrupts() {
     // Step 2: Initialize hardware timer.
     // C: hardware portion of init_clock + arch_init() APIC timer
     //
-    // Instance-based design (plat-design.md §5.1): construct the clock
+    // Instance-based design (04-platform-discovery.md §3.4): construct the clock
     // arch from the timer descriptor, then call `init_timer` on the
     // instance. This replaces the old static `CurrentClockArch::init_timer`.
     let mut clock_arch = CurrentClockArch::new(pd.timer());
@@ -803,7 +803,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // C: schedulable_proc = iskerneln(proc_nr) — main.c:173
         // C: priv(rp)->s_flags = (nr==IDLE ? IDL_F : TSK_F) — main.c:188-189
         // C: TSK_M = NO_M (no IPC), TSK_KC = NO_C (no kernel calls).
-        // 06-design.v1.md §3.6 — grant_capability replaces assign_static
+        // 06-proc-init-boot-proc.md §3.2 — grant_capability replaces assign_static
         // + configure_boot_priv pair; template encodes flags + masks by construction.
         let template = if nr == proc_nr::IDLE {
             crate::capability::CapabilityTemplate::Idle
@@ -856,7 +856,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             // C: get_priv(rp, static_priv_id(proc_nr)) — main.c:200
             // C: priv(rp)->s_flags = VM_F (VM) or RSYS_F (RS) — main.c:179-209
             // C: ipc_to_m = SRV_M = ALL_M; kcalls = SRV_KC = ALL_C — main.c:184-213
-            // 06-design.v1.md §3.6 — single template call encodes all of these.
+            // 06-proc-init-boot-proc.md §3.2 — single template call encodes all of these.
             let template = if is_vm {
                 crate::capability::CapabilityTemplate::Vm
             } else {
@@ -877,7 +877,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // arch-layer responsibilities — the kernel never inspects
         // the fields.
         //
-        // Process kind mapping (06-design.v1.md §3.4):
+        // Process kind mapping (06-proc-init-boot-proc.md §3.4):
         //   VM_PROC_NR    → ProcKind::Vm
         //   RS_PROC_NR    → ProcKind::RootService
         //   other user    → ProcKind::UserService (RS will load ELF later)
@@ -1342,7 +1342,7 @@ static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(Non
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
-/// # Storage (06-design.v1.md §4.1)
+/// # Storage (06-proc-init-boot-proc.md §3.1)
 ///
 /// `SyncUnsafeCell` is the Rust 2024 translation of C's BSS `EXTERN` array:
 /// compile-time-fixed address, zero heap, zero runtime overhead, with explicit
@@ -1358,7 +1358,7 @@ static PROC_TABLE: SyncUnsafeCell<crate::proc_table::ProcessTable> = SyncUnsafeC
 
 /// Global privilege table — C's `EXTERN struct priv priv[NR_SYS_PROCS]`.
 ///
-/// Same storage / safety model as `PROC_TABLE`. See `06-design.v1.md` §4.1.
+/// Same storage / safety model as `PROC_TABLE`. See `06-proc-init-boot-proc.md` §3.1.
 static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsafeCell::new(crate::kpriv::PrivTable::new());
 
 /// Global IRQ manager — owns the architecture's interrupt controller and
@@ -1881,7 +1881,7 @@ fn bsp_finish_booting(
     // aarch64/riscv64: re-enables the comparator without side effects
     // because the timer is already running).
     //
-    // Instance-based design (plat-design.md §5.1): construct a transient
+    // Instance-based design (04-platform-discovery.md §3.4): construct a transient
     // clock arch instance from the global platform descriptor and call
     // `init_timer` on it. This replaces the old static
     // `CurrentClockArch::init_timer`.
@@ -2165,7 +2165,7 @@ fn switch_to_user() -> ! {
     // does not return. In Rust, we release explicitly before the loop.
     smp::bkl_unlock();
 
-    // First-dispatch hook (06-design.v1.md §3.2): apply each boot
+    // First-dispatch hook (06-proc-init-boot-proc.md §3.5): apply each boot
     // process's `cpu_context` to its trap frame once, before the
     // scheduling loop picks the first runnable process. The arch layer
     // owns the trap-frame layout; the kernel only hands it the opaque

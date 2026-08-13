@@ -229,7 +229,7 @@ pub fn set_tsc_per_ms(cycles_per_ms: u64) {
 ///
 /// In test builds (`cfg(test)`), returns 0 since there is no hardware counter.
 ///
-/// # Instance-based design (plat-design.md §5.1)
+/// # Instance-based design (04-platform-discovery.md §3.4)
 ///
 /// Constructs a transient `CurrentClockArch` instance from the global
 /// platform descriptor's `timer()` sub-descriptor. The instance is cheap
@@ -259,7 +259,7 @@ pub fn read_tsc() -> u64 {
 /// LAPIC Timer (x86-64), Generic Timer (ARM64), or CLINT timer (RISC-V) to
 /// prevent interrupts during the halt.
 ///
-/// # Instance-based design (plat-design.md §5.1)
+/// # Instance-based design (04-platform-discovery.md §3.4)
 ///
 /// Constructs a transient `CurrentClockArch` instance from the global
 /// platform descriptor, same pattern as `read_tsc()`. The instance is cheap

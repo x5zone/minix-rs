@@ -12,7 +12,7 @@
 //! scattered across 4 method bodies. The fix moves each arch's implementation
 //! into a dedicated file with file-level `#[cfg]`, satisfying the
 //! "no `#[cfg(target_arch)]` for behavior selection in upper layers" rule
-//! (see `plat-design.md` §5.2).
+//! (see 04-platform-discovery.md §4.2.2).
 
 #[cfg(target_arch = "x86_64")]
 pub use crate::arch::x86_64::QemuVirtDesc;

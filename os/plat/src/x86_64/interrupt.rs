@@ -3,7 +3,7 @@
 //! Implements `InterruptController` for x86-64 using LAPIC + IOAPIC.
 //! 8259A PIC is not supported — 64-bit systems use APIC exclusively.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware base addresses (LAPIC, IOAPIC) are stored in instance fields,
 //! populated by `new(desc)` via `Any` downcast to `ApicDesc`. This

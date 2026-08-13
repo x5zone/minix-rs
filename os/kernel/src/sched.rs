@@ -256,7 +256,7 @@ fn has_cpu_time_left(p: &KProcess) -> bool {
 /// to 2. Mirrors the C `sched_proc()` parameter list (`system.c:642-723`)
 /// but uses Rust idioms.
 ///
-/// # Design decision §3.8 (11-design.v1.md): Option replaces C's -1 sentinel
+/// # Design decision §3.8 (11-scheduling-primitives.md): Option replaces C's -1 sentinel
 ///
 /// C uses `i32` parameters where `-1` means "keep current value". Rust uses
 /// `Option<T>` where `None` means "keep current" and `Some(v)` means "set to v".

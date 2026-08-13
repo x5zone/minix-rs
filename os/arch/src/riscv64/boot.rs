@@ -19,7 +19,7 @@ const INIT_TASK_SSTATUS: u64 = 0x0000_0100;
 
 /// Initial sstatus for user processes: SPP=0, SPIE=1 (interrupts on).
 ///
-/// Named `INIT_USER_SSTATUS` per 06-design.v1.md §3.3 to distinguish
+/// Named `INIT_USER_SSTATUS` per 06-proc-init-boot-proc.md §3.4 to distinguish
 /// the user-process variant from the kernel-task variant.
 const INIT_USER_SSTATUS: u64 = 0x0000_0020;
 
@@ -94,7 +94,7 @@ impl CpuContextArch for Riscv64CpuContextArch {
     // riscv64 equivalent is sstatus.SUM, set per-process via the
     // sstatus field rather than via a global flag.
 
-    /// Inherit FPU state field from parent on fork (06-design.v1.md §D7).
+    /// Inherit FPU state field from parent on fork (06-proc-init-boot-proc.md §3.14).
     ///
     /// riscv64: the child inherits the parent's `sstatus` value so that
     /// the FS field (Off/Initial/Clean/Dirty) is preserved — a forked

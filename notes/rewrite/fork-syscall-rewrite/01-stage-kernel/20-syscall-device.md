@@ -591,7 +591,7 @@ pub fn dispatch_iopenable(
         return KcallResult::Ok(EPERM);
     }
     // C: do_iopenable.c:28 — enable_iop → pp->p_reg.psw |= 0x3000
-    // Rust: 编码下沉到 arch 层（06-design-final.md §3.5），
+    // Rust: 编码下沉到 arch 层（06-proc-init-boot-proc.md §3.5），
     //       内核层只知"enable user I/O"概念，arch 决定编码（x86: IOPL=3; ARM/RISC-V: no-op）
     if let Some(target) = proc_table.get_mut(target_nr) {
         target.enable_user_io();

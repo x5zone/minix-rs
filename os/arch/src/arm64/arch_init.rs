@@ -3,7 +3,7 @@
 //! Implements `ArchInit` for ARM64, performing PMU cycle counter
 //! enablement and board-specific initialization.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! `new(desc)` stores the PMU cycle counter enable flag from
 //! `ArchMiscDesc` into an instance field.

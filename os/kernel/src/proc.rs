@@ -231,7 +231,7 @@ pub mod mf {
 
 /// Priority range constants. C: minix/kernel/proc.h:135-141.
 ///
-/// Design decision §3.3 (11-design.v1.md): type is `u8` (not `i8`) because
+/// Design decision §3.3 (11-scheduling-primitives.md): type is `u8` (not `i8`) because
 /// the valid range 0..=15 fits in `u8` and `u8` cannot be negative, which
 /// matches the semantic that priority is never negative. The C `sched_proc`
 /// sentinel `-1` ("keep current") is NOT a priority value — it is expressed
@@ -355,7 +355,7 @@ impl Default for MiscFlags {
 /// Priority newtype (wraps validity check).
 ///
 /// Valid range: `TASK_Q(0)` to `MIN_USER_Q(15)`.
-/// Design decision §3.3 (11-design.v1.md): internal type is `u8`.
+/// Design decision §3.3 (11-scheduling-primitives.md): internal type is `u8`.
 /// The special value `-1` in Minix3's `sched_proc()` means "keep current priority"
 /// and is NOT a valid `Priority` — it is a parameter sentinel expressed via
 /// `Option<u8>` / `Option<Priority>` in `sched_proc` (§3.8), not encoded here.
@@ -489,7 +489,7 @@ impl CpuId {
     pub const fn is_none(self) -> bool { self.0 == u32::MAX }
 }
 
-/// CPU affinity bitmap (06-design.v1.md §4.2).
+/// CPU affinity bitmap (06-proc-init-boot-proc.md §3.11).
 ///
 /// C: `p_cpu_mask[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]` — proc.h:37.
 ///
@@ -542,7 +542,7 @@ pub struct SchedFields {
     pub priority: AtomicU8,
     pub quantum: Quantum,
     pub cpu: AtomicU32,
-    /// CPU affinity bitmap (06-design.v1.md §4.2).
+    /// CPU affinity bitmap (06-proc-init-boot-proc.md §3.11).
     /// Default = all CPUs allowed. Scheduler checks `allows(cpu)` before
     /// enqueuing into a per-CPU ready queue.
     pub cpu_mask: CpuMask,
@@ -958,7 +958,7 @@ pub struct KProcess {
     ///
     /// Replaces the previous `initial_pc` / `initial_sp` /
     /// `initial_ps_strings_reg` / `initial_status` quadruple plus
-    /// `p_ext_reg_state: ExtRegState`. See `06-design.v1.md` §3.2
+    /// `p_ext_reg_state: ExtRegState`. See `06-proc-init-boot-proc.md` §3.5
     /// for the rationale.
     ///
     /// The fixed-size `[u64; ...]` / `bool` fields are arch-private;
@@ -1007,7 +1007,7 @@ pub struct KProcess {
     // ── Boot-time initial register state (06-proc-init-boot-proc.md §3.2, §3.3) ──
     //
     // ── Boot-time initial register state has been replaced by
-    //    `cpu_context: CurrentCpuContext` (06-design.v1.md §3.2).
+    //    `cpu_context: CurrentCpuContext` (06-proc-init-boot-proc.md §3.5).
     //    The four old fields (`initial_pc`, `initial_sp`,
     //    `initial_ps_strings_reg`, `initial_status`) are gone; their
     //    semantics live inside the arch-private `CpuContext` value.
@@ -1259,7 +1259,7 @@ impl KProcess {
     /// using the raw bit value because `RtsFlagsBits::SLOT_FREE.bits()` is
     /// not `const` (bitflags limitation).
     ///
-    /// See `06-design.v1.md` §4.1 (zero-heap `static mut` storage).
+    /// See `06-proc-init-boot-proc.md` §3.8 (zero-heap `static mut` storage).
     pub const fn new_zeroed() -> Self {
         Self {
             p_nr: ProcNr(0),
@@ -1341,7 +1341,7 @@ impl KProcess {
         }
     }
 
-    // ── Boot-time initial CPU context setter (06-design.v1.md §3.2) ──
+    // ── Boot-time initial CPU context setter (06-proc-init-boot-proc.md §3.5) ──
 
     /// Set process name. Corresponds to C's `strlcpy(rp->p_name, name, ...)`.
     /// C: main.c:170, protect.c:441
@@ -1358,7 +1358,7 @@ impl KProcess {
     /// `CurrentCpuContextArch::build_cpu_context(kind, proc_nr, entry)`.
     ///
     /// Replaces the previous `set_boot_initial_reg_state` +
-    /// `set_boot_pc_sp` pair (06-design.v1.md §3.2).
+    /// `set_boot_pc_sp` pair (06-proc-init-boot-proc.md §3.5).
     pub fn set_boot_cpu_context(&mut self, cpu_context: CurrentCpuContext) {
         self.cpu_context = cpu_context;
     }
@@ -1369,7 +1369,7 @@ impl KProcess {
     /// into the arch layer — the kernel layer only knows about the
     /// OS concept "enable user I/O". Other architectures are no-ops.
     /// Replaces the previous `target.initial_status |= X86_64_IOPL_BITS`
-    /// direct write in `syscall_device.rs` (06-design.v1.md §3.5).
+    /// direct write in `syscall_device.rs` (06-proc-init-boot-proc.md §3.5).
     pub fn enable_user_io(&mut self) {
         <CurrentCpuContextArch as CpuContextArch>::enable_user_io(&mut self.cpu_context);
     }
@@ -1573,7 +1573,7 @@ impl KProcess {
         // C: do_fork.c memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state,
         //                     FPU_XFP_SIZE) under proc_used_fpu(rpp)
         //
-        // See 06-design.v1.md §D7.
+        // See 06-proc-init-boot-proc.md §3.14.
         if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
             <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
                 &mut child.cpu_context,

@@ -46,7 +46,7 @@ const PROC_STOP_BITS: u32 = 0x02;
 /// Contains all process slots (kernel tasks + user processes) and the scheduler.
 /// All methods require the caller to hold the BKL (see module-level documentation).
 ///
-/// # Storage (06-design.v1.md §4.1)
+/// # Storage (06-proc-init-boot-proc.md §3.1)
 ///
 /// `procs` is a fixed-size array `[KProcess; PROC_TABLE_SIZE]`, NOT a
 /// `Box<[KProcess]>`. This eliminates heap allocation in the boot phase
@@ -71,7 +71,7 @@ impl ProcessTable {
     /// compatible). The IDLE process name is set via `ProcName::from_array`
     /// (const fn — `from_str` is not const).
     ///
-    /// See `06-design.v1.md` §4.1.
+    /// See `06-proc-init-boot-proc.md` §3.1.
     pub const fn new() -> Self {
         let mut procs = [const { KProcess::new_zeroed() }; PROC_TABLE_SIZE];
         let mut i = 0;
@@ -1021,7 +1021,7 @@ impl ProcessTable {
 /// Kernel tasks (nr < 0) map to indices 0..NR_TASKS-1.
 /// User processes (nr >= 0) map to indices NR_TASKS..NR_TASKS+NR_PROCS-1.
 ///
-/// See 06-proc-init-boot-proc.md §3.6 for design rationale.
+/// See 06-proc-init-boot-proc.md §3.1 for design rationale.
 #[inline]
 /// Convert a process number to a process table index.
 ///
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_process_table_const_init_per_slot_nr() {
-        // 06-design.v1.md §4.1: ProcessTable is `const fn`-initialized
+        // 06-proc-init-boot-proc.md §3.1: ProcessTable is `const fn`-initialized
         // with each slot's `p_nr = i - NR_TASKS` and `p_endpoint` set.
         let table = ProcessTable::new();
         for i in 0..PROC_TABLE_SIZE {

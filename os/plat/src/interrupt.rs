@@ -97,7 +97,7 @@ pub enum IrqAction {
 /// Manages masking, unmasking, acknowledging, and signaling end-of-interrupt
 /// for hardware interrupt lines.
 ///
-/// # Instance-based design (see `plat-design.md` §5.1)
+/// # Instance-based design (see 04-platform-discovery.md §3.4)
 ///
 /// `InterruptController` is **instance-based**: `new(desc)` stores parsed
 /// hardware base addresses in instance fields. This replaces the old design

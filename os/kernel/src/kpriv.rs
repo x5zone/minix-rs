@@ -349,7 +349,7 @@ impl KPriv {
     /// Const-constructible zeroed KPriv with `s_id = id` (for `const fn`
     /// `PrivTable::new()` / `static mut` init).
     ///
-    /// See `06-design.v1.md` §4.1 / §17.1.
+    /// See `06-proc-init-boot-proc.md` §3.2 / §3.8.
     pub const fn new_zeroed(id: SysId) -> Self {
         Self {
             capability: PrivCapability {
@@ -634,7 +634,7 @@ pub const NR_SYS_PROCS: usize = 64;
 
 /// Kernel privilege table.
 ///
-/// # Storage (06-design.v1.md §4.1)
+/// # Storage (06-proc-init-boot-proc.md §3.2)
 ///
 /// `privs` is a fixed-size array `[KPriv; NR_SYS_PROCS]`, NOT a
 /// `Box<[KPriv]>`. This eliminates heap allocation in the boot phase
@@ -651,7 +651,7 @@ impl PrivTable {
     ///
     /// Each slot starts with `s_id = i`, `s_proc_nr = None`.
     ///
-    /// See `06-design.v1.md` §4.1.
+    /// See `06-proc-init-boot-proc.md` §3.2.
     pub const fn new() -> Self {
         let mut privs = [const { KPriv::new_zeroed(0) }; NR_SYS_PROCS];
         let mut i = 0;
@@ -823,7 +823,7 @@ impl PrivTable {
         }
     }
 
-    /// Grant a capability template to a process (06-design.v1.md §3.6).
+    /// Grant a capability template to a process (06-proc-init-boot-proc.md §3.2).
     ///
     /// Replaces the previous two-step `assign_static` +
     /// `configure_boot_priv` pattern with a single call. Picking one
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn test_priv_table_const_init_sets_per_slot_s_id() {
-        // 06-design.v1.md §4.1: PrivTable is `const fn`-initialized with
+        // 06-proc-init-boot-proc.md §3.2: PrivTable is `const fn`-initialized with
         // each slot's `s_id = i` and `s_proc_nr = None`.
         let table = PrivTable::new();
         for i in 0..NR_SYS_PROCS {
@@ -1139,7 +1139,7 @@ mod tests {
         assert!(matches!(entry.action, TimerAction::NotifyAlarm { .. }));
     }
 
-    // ── grant_capability tests (06-design.v1.md §3.6) ──────────────
+    // ── grant_capability tests (06-proc-init-boot-proc.md §3.2) ──────────────
 
     use crate::capability::CapabilityTemplate;
 

@@ -555,7 +555,7 @@ KERNEL_CALL = 0x600 (per `com.h:204`)
 
 **文档**:
 - `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/{00..30,99}-*.md`（28-30 为 2026-08-12 新增：usermapped-data / kernel-debug / kernel-profile）
-- 历史回溯 (已删除): `glm-scan.md`, `kernel-design.md`, `runtime-design-m3.md`, `kboot-*.md`
+- 历史回溯 (已删除): `glm-scan.md`, `kernel-design.md`, `runtime-design-m3.md`, `kboot-*.md`（2026-08-13 前会话）；`design/` 44 个中间产物（15~30 系列 outline/design/design-structure，2026-08-13 清理）；`tmp_design_and_todo/` 44 个中间产物（0108/06/07/kboot/plat/runtime 系列，2026-08-13~14 清理）。两目录均为废弃中间产物（Hidden Folder Convention），独有知识点已补入正式 01~30 对应章节
 
 **QEMU 测试**:
 - `os/qemu-tests/test-kernels/kernel/bootstrap/*` (18 二进制)

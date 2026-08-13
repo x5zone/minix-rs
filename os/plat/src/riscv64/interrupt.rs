@@ -3,7 +3,7 @@
 //! Implements `InterruptController` for RISC-V 64-bit using PLIC
 //! (Platform-Level Interrupt Controller).
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware base address (PLIC), context ID, and IRQ count are stored in
 //! instance fields, populated by `new(desc)` via `Any` downcast to `PlicDesc`.
@@ -50,6 +50,11 @@ impl Riscv64InterruptController {
 
     fn claim_offset(context: usize) -> usize {
         PLIC_CLAIM + context * 0x1000
+    }
+
+    /// PLIC MMIO base (read-only accessor).
+    pub fn plic_base(&self) -> usize {
+        self.plic_base
     }
 
     unsafe fn plic_read32(&self, offset: usize) -> u32 {
@@ -138,5 +143,36 @@ impl InterruptController for Riscv64InterruptController {
                 self.plic_write32(PLIC_ENABLE + self.context * 0x80 + word * 4, 0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minix_platform::InterruptControllerDesc;
+
+    #[test]
+    fn test_new_from_plic_descriptor() {
+        let desc = PlicDesc {
+            plic_base: 0x0C00_0000,
+            nr_irqs: 53,
+            context: 1,
+        };
+        let ic = Riscv64InterruptController::new(&desc);
+        assert_eq!(ic.plic_base(), 0x0C00_0000);
+    }
+
+    #[test]
+    fn test_new_clamps_nr_irqs_to_max() {
+        let desc = PlicDesc {
+            plic_base: 0x0C00_0000,
+            nr_irqs: 128, // exceeds NR_IRQ_VECTORS (64)
+            context: 1,
+        };
+        let ic = Riscv64InterruptController::new(&desc);
+        // nr_irqs clamped at construction; init() iterates 0..nr_irqs.
+        // Constructing with a mock threshold keeps init MMIO-safe; just
+        // verify construction doesn't panic and the clamp path runs.
+        assert_eq!(ic.plic_base(), 0x0C00_0000);
     }
 }

@@ -1061,6 +1061,8 @@ add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len);
 
 **边界检查强制**：C 的 `proc_addr(n)` 用数组下标直接定位，无越界检查（越界是 UB）。Rust 的 `get(nr)`/`get_mut(nr)` 返回 `Option<&KProcess>`，把"越界是 UB"变为"越界是编译期/运行期可捕获的 `None`"。
 
+**nr_to_idx：进程号 → 索引的映射函数**：`get(nr)`/`get_mut(nr)` 内部调用 `nr_to_idx(nr)`，映射公式为 `index = nr + NR_TASKS`（同 C 的 `proc_addr` 偏移：`proc_addr(n)` = `&proc[NR_TASKS + n]`）。内核 task（nr < 0）映射到 `0..NR_TASKS`；用户进程（nr ≥ 0）映射到 `NR_TASKS..NR_TASKS+NR_PROCS`。越界（`offset < 0` 或 `offset ≥ PROC_TABLE_SIZE`）返回 `None`——C 的裸索引无检查，Rust 用 `Option` 捕获。`nr_to_idx` 声明为 `pub(crate) const fn`：`const fn` 允许编译期求值（配合编译期不变量检查），`pub(crate)` 使 `syscall::dispatch_ipc_entry` 等路径无需借用 `&mut KProcess` 即可计算索引（避免 split-borrow 别名冲突，FIX-21）。
+
 **假设性推理**：如果在 boot 期用 `Box<[KProcess]>` 堆分配，会破坏零堆约束（boot 期无 `GlobalAlloc`）；如果用裸指针跨 CPU 共享 `p_nextready`，SMP 下无法证明一个 CPU 不会在另一个 CPU 读指针时释放目标进程的 slot。固定数组 + 原子索引是零堆 + SMP 安全的唯一组合。
 
 **全局存储**：`static PROC_TABLE: SyncUnsafeCell<ProcessTable>` 放在 `.kernel.bss` 段，对应 C 的 `EXTERN struct proc proc[]`。`SyncUnsafeCell`（显式 `Sync` + BKL 保护）是 Rust 2024 下 C EXTERN 语义的忠实表达——消除 `static mut`，避免 `static_mut_refs` lint，同时保持零堆与编译期固定地址（`spin::Once` 会引入 heap 分配，违反零堆）。
@@ -1114,7 +1116,19 @@ pub enum CapabilityTemplate {
 | `BOOTINHIBIT` | 等 boot 完成 | 非 VM 用户进程 |
 | `PROC_STOP` | 被停止 | 所有 boot 进程（bsp_finish_booting 清除） |
 
+**完整位集**：类型定义保留 C 的全部 16 位（`bitflags!` 16 个常量）。阶段 C 之外的位在运行时由各子系统设置，消费方文档覆盖：
+
+| 位（阶段 C 外） | 含义 | 设置场景 | 消费方文档 |
+|----------------|------|---------|-----------|
+| `SENDING` / `RECEIVING` | IPC 阻塞中 | IPC send/receive | 12-ipc-core / 13-syscall-dispatch |
+| `SIGNALED` / `SIG_PENDING` / `P_STOP` | 信号送达/待处理/停止 | 信号投递 | 17-syscall-process |
+| `NO_ENDPOINT` | 进程 slot 清理中 | `clear_endpoint` 设置，使进程不再被调度（system.c:540-572） | 17-syscall-process |
+| `PAGEFAULT` / `VMREQUEST` / `VMREQTARGET` | VM 内存交互 | 缺页/VM 请求 | 12-ipc-core |
+| `PREEMPTED` | 被抢占 | SMP/时钟抢占 | 11-scheduling-primitives |
+
 **misc_flags 与 RTS 的区别**：RTS 决定可运行性（影响调度队列），`misc_flags` 记录次要运行时状态（不影响调度）。两者分离避免"改次要状态误触发 enqueue/dequeue"。
+
+**MiscFlags 完整位集**：类型定义保留 C 的全部 18 位（`REPLY_PEND`/`VIRT_TIMER`/`PROF_TIMER`/`KCALL_RESUME`/`DELIVERMSG`/`SIG_DELAY`/`SC_ACTIVE`/`SC_DEFER`/`SC_TRACE`/`EXT_REG_INITIALIZED`/`SENDING_FROM_KERNEL`/`CONTEXT_SET`/`SPROF_SEEN`/`FLUSH_TLB`/`SENDA_VM_MISS`/`STEP`/`MSGFAILED`/`NICED`）。阶段 C 之外使用的位由消费方文档覆盖：`EXT_REG_INITIALIZED`（fork 继承，见 §3.14）、`DELIVERMSG`/`KCALL_RESUME`（消息投递/内核调用恢复，见 13-syscall-dispatch）、`NICED`（用户通过调度参数降低优先级，`sched` 调整时设置/清除，见 11-scheduling-primitives）等。
 
 ### 3.4 boot image 类型设计：ProcKind + EntrySpec
 
@@ -1147,6 +1161,8 @@ pub struct EntrySpec {
 `Option` 表达"暂未确定"——kernel task 无入口点（`EntrySpec::KERNEL_TASK` 全 None），非 VM 用户进程延后加载（`EntrySpec::DEFERRED`），VM 进程 ELF 已加载（`EntrySpec::loaded(pc, sp, ps_strings)`）。
 
 **假设性推理**：如果用 `pc: VirBytes`（非 Option），无法在类型层面区分"kernel task 无入口点"和"入口点恰好是 0"，调用方需要额外 `is_kernel: bool` 参数。`Option` 让"有无入口点"成为类型信息，编译器强制处理两种情况。
+
+**ProcKind 与 CapabilityTemplate 为什么不合并**：两者各有 5 个变体、看似一一对应（KernelTask/Vm/RootService/UserService/UserProcess），但关注点不同——`ProcKind` 是给 arch 层看的（决定初始 PSW/PSR/sstatus、段选择子、FPU 策略），`CapabilityTemplate` 是给 kernel 层看的（决定 IPC/syscall/trap 权限）。`ProcKind::KernelTask` ≠ `CapabilityTemplate::KernelTask { trap_mask }`：前者表达"运行在内核态"，后者表达"sys_proc 标志 + 有限 trap 集合"。反例：IDLE 进程是 `ProcKind::KernelTask` + `CapabilityTemplate::Idle` 的组合——角色与能力并不一一对应，合并会丢失这种组合自由度。
 
 ### 3.5 CpuContextArch trait：唯一的 arch 抽象
 
@@ -1185,9 +1201,26 @@ pub trait CpuContextArch {
 
 **命名说明**：trait 名叫 `CpuContextArch`（不是 `BootArch`），因为 `apply_to_trap_frame` 在首次调度时调用，跨越 boot + runtime 两个阶段。关联类型叫 `CpuContext`（不是 `StartupState`），因为这个值长期存储在 `KProcess` 中，不是一次性启动值。
 
+**为什么删 `p_ext_reg_state`（量化论证）**：C 的 `struct proc` 内嵌 `p_ext_reg_state: ExtRegState`（576B/进程，`FPU_XFP_SIZE` 对应 32 位 fnsave 模型）——进程表 256 槽 = **144KB 静态 BSS 浪费**，且 aarch64/riscv64 完全不需要（无 per-process FPU 保存区，见 §3.6 三架构 FPU 模型表）。Rust 版把它拆成两部分：x86-64 的 XSAVE area 下沉到 arch 私有的 `CpuContext` 关联类型（arch 自管自用），aarch64/riscv64 的 FPU 状态由 trap frame 自带（FPCR/FPSR）或 sstatus.FS 表达。删除后 KProcess 不再有与 boot 无关的 576B 固定开销，进程表内存预算从"最坏情况全架构对齐"降为"各架构实际所需"。
+
 **与 trap frame 的区分**：`CpuContext` 是进程**尚未运行**时的初始状态（arch 私有、不透明）；trap frame 是进程**正在运行/被中断**时 CPU 寄存器的保存区（OS 可见）。两者通过 `apply_to_trap_frame` 桥接。
 
+**C 函数职责重分配**：C 版 arch 层有 3 个启动函数——`arch_proc_reset()`（清零寄存器）、`arch_proc_init()`（设 PC/SP/ps_strings）、`arch_boot_proc()`（VM ELF 加载 + 状态构建）。Rust 版不照搬这个划分：C 的 3 函数划分是实现细节，Rust 按 OS 概念分成两个正交操作——"构建状态"（`build_cpu_context`）和"应用状态"（`apply_to_trap_frame`）：
+
+| C 函数 | OS 概念 | Rust 落地 |
+|--------|--------|---------|
+| `proc_init()` | 进程表初始化为全空槽 | `ProcessTable::new()` const 构造 |
+| `arch_proc_reset()` | 为新进程构建初始 CPU 状态 | `build_cpu_context(ProcKind::KernelTask, ...)` |
+| `arch_proc_init()` | 为用户进程构建带入口点的 CPU 状态 | `build_cpu_context(ProcKind::Vm, EntrySpec::loaded(...))` |
+| `arch_boot_proc()` | 加载 VM ELF + 构建启动状态 | free fn `load_vm_elf()` + `build_cpu_context()` |
+| `get_priv()` + 特权设置 | 为进程授予能力 | `PrivTable::grant_capability(nr, CapabilityTemplate::Vm)` |
+| boot image 循环 | 按角色编排所有 boot 进程 | `init_proc_and_boot()` 主流程 |
+
+注意 `build_cpu_context` 一个操作承接 C 的 reset/init 两函数：reset 对应 `ProcKind::KernelTask`（无入口点），init 对应 `ProcKind::Vm` 等（带入口点）——"构建状态"按 `ProcKind` + `EntrySpec` 区分两种形态，函数划分按 OS 概念而非按 C 实现细节。
+
 **为什么是 trait 而非 cfg-alias**：3 个架构的 `CpuContext` 字段布局完全不同（x86-64 有段选择子+XSAVE area，aarch64 有 CPACR_EL1 配置，riscv64 有 sstatus.FS），`build_cpu_context` 和 `apply_to_trap_frame` 的实现行为真的不同。trait 提供显式契约 + 支持 mock 测试（`MockCpuContextArch`）+ 零运行时开销（静态分发）。
+
+**为什么是关联类型而非通用结构体（非法状态不可表达）**：如果定义 `struct InitialRegState { status, segment_selectors, fpu_needs_zero }` 供三架构共用，则 (a) `segment_selectors` 在 aarch64/riscv64 永远全零——非法状态可表达（类型系统允许填入无意义值）；(b) `fpu_needs_zero` 在 aarch64/riscv64 永远 false——同理；(c) 所有架构被迫 import `SegmentSelectors` 类型——硬件语义泄漏到 OS 层。关联类型让每个架构定义自己的 `CpuContext`：aarch64 编译时类型系统中**根本不存在** `SegmentSelectors`，"非法状态不可表达"由类型系统强制。这是 Rust 类型设计原则（make invalid states unrepresentable）在硬件抽象上的直接应用。
 
 **enable_user_io 下沉**：x86-64 的 IOPL 位操作是硬件语义，不应泄漏到 kernel 层。通过 `enable_user_io` trait 方法下沉：x86-64 实现设 `psw |= 0x3000`，aarch64/riscv64 用 default no-op。kernel 层调用 `CurrentCpuContextArch::enable_user_io(&mut ctx)`，不接触硬件位。
 
@@ -1254,6 +1287,25 @@ pub fn load_vm_elf<P: Paging>(
 **kernel_may_alloc 窗口**：C 在 `bsp_finish_booting()` 中设 `kernel_may_alloc = 0`（main.c:105），关闭 boot 期内存分配窗口。Rust 用 `AtomicBool` 表达，boot 期为 `true`（允许内核直接分配物理内存），`bsp_finish_booting()` 后设 `false`（VM 接管内存管理）。
 
 **假设性推理**：如果在 boot 期用 `Box<[KProcess]>`，`Box::new()` 调用 `GlobalAlloc::alloc`，但 boot 期没有注册 `GlobalAlloc`（堆分配器尚未初始化），会 panic。固定数组 + const fn 是零堆的唯一可行方案。
+
+**fallback：若 `const fn` 受阻**（某些内部类型的 const default 暂时不可行时）：用 `MaybeUninit` 构造数组——先建 `[MaybeUninit<KProcess>; N]` 全 uninit，逐个 `write` 初始化，最后 transmute 为 `[KProcess; N]`：
+
+```rust
+pub fn new() -> Self {
+    let mut procs: [MaybeUninit<KProcess>; PROC_TABLE_SIZE] =
+        [const { MaybeUninit::uninit() }; PROC_TABLE_SIZE];
+    for i in 0..PROC_TABLE_SIZE {
+        let nr = (i as ProcNr) - (NR_TASKS as ProcNr);
+        let endpoint = Endpoint::from_generation_slot(0, nr);
+        procs[i].write(KProcess::new(nr, endpoint));
+    }
+    // SAFETY: all elements initialized above.
+    let procs = unsafe { core::mem::transmute::<_, [KProcess; PROC_TABLE_SIZE]>(procs) };
+    procs
+}
+```
+
+但首选仍是让 `KProcess::new()` const——fallback 的 `transmute` 让编译器无法检查未初始化风险，`MaybeUninit` 的 `write` 循环也可能漏掉槽位。
 
 ### 3.9 SMP 预留设计
 
@@ -1392,6 +1444,7 @@ pub fn bsp_finish_booting(proc_table: &mut ProcessTable, smp_state: &mut SmpStat
 - 重置 accounting/cpuavg（子进程不继承父进程的 CPU 时间统计）
 - 队列指针独立（`p_nextready` 清零，子进程未入队）
 - FPU 状态继承：`inherit_fpu_state` 把父进程 FPU 策略复制给子进程（fork 与 boot 路径的交汇点）
+- `EXT_REG_INITIALIZED` 标志继承：`MiscFlagsBits::EXT_REG_INITIALIZED` 随 fork 从父进程复制给子进程（[proc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs) `fork_from`），是 x86-64 lazy FPU 切换的关键——标记"该进程的 XSAVE area 已初始化"；`exec` 完成时清除、信号返回/mcontext 恢复时重新设置（`syscall_process.rs`）。aarch64/riscv64 不需要此标志（FPU 状态由 trap frame 自带 FPCR/FPSR 或 sstatus.FS 表达）。该标志是 boot 后运行时路径（exec/signal/fork）与 boot 期 FPU 策略（§3.6 `fpu_policy` 枚举）的衔接点
 - RTS 继承策略：子进程不继承 `SENDING`/`RECEIVING`/`PREEMPTED`；初始带 `PROC_STOP`；清 `SLOT_FREE`
 
 ### 3.15 设计决策汇总表
@@ -1800,6 +1853,28 @@ rg "grant_capability" os/kernel/src/lib.rs
 rg "initial_pc|initial_sp|initial_ps_strings_reg|initial_status" os/ --type rust -g '!*.md'
 # → 0 matches（旧字段已移除，改用 EntrySpec）
 ```
+
+**完整的验证不变量集**（重构完成的 4 项 grep 检查）：
+
+```bash
+# 1. 硬件术语泄漏检查：OS 层不得出现 arch 内部类型名
+rg "SegmentSelectors|fpu_needs_zero|InitialRegState" os/kernel/src/
+# → 0 matches（这些名字只允许出现在 os/arch/src/）
+
+# 2. 旧 trait 0 残留
+rg "ArchProcReset|ArchProcInit|BootProcArch" os/ --type rust
+# → 0 matches（3 个 trait 已合并为 CpuContextArch）
+
+# 3. boot 阶段 alloc 不可达
+rg "alloc::" os/kernel/src/ --type rust | rg "boot|init_proc"
+# → 0 matches（boot 路径不得调用分配器，见 §3.8）
+
+# 4. arch 抽象唯一入口：kernel 层只经 CurrentCpuContextArch 类型别名访问
+rg "CurrentCpuContextArch" os/kernel/src/
+# → 只出现在 trait 调用处（build_cpu_context / apply_to_trap_frame / enable_user_io）
+```
+
+检查 1 验证"硬件语义零泄漏"（§3.5/§4.1 的设计约束），检查 2 验证 trait 合并完成（旧 3 trait 只应存在于 git 历史），检查 3 验证零堆约束（§3.8），检查 4 验证 kernel 层无直接 arch 类型引用（§4.1）。
 
 ### 5.5 测试覆盖矩阵
 

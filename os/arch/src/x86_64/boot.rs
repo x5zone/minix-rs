@@ -170,7 +170,7 @@ impl CpuContextArch for X86_64CpuContextArch {
         ctx.psw |= 0x3000;
     }
 
-    /// Inherit FPU init policy from parent on fork (06-design.v1.md §D7).
+    /// Inherit FPU init policy from parent on fork (06-proc-init-boot-proc.md §3.14).
     ///
     /// x86-64: the child inherits the parent's `X86FpuInitPolicy` so that
     /// a forked user process keeps `LazyUserInit` (rather than silently

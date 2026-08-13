@@ -114,7 +114,9 @@ _kern_offset    = (_kern_vir_base - _kern_phys_base);  // 偏移 = 0xF0000000
 
 **效果**：内核的所有符号（函数地址、全局变量地址）都解析为高地址，但实际代码被 GRUB 放在低物理地址。分页启用后，CPU 通过高地址映射访问这些代码。
 
-> **演进说明**：Minix3 的链接脚本还包含 `unpaged_text/data/bss` 段组（kernel.lds:13-15）和 `usermapped/usermapped_glo` 段组（kernel.lds:17-23）。前者用于在分页启用前执行的引导代码（unpaged trampoline），minix-rs 中用 Rust 内联汇编替代了 head.S，因此不再需要 unpaged 段；后者是 Minix3 用户态段共享机制（USMAPPED 宏），在 64-bit 重写中已废弃。
+> **演进说明**：Minix3 的链接脚本还包含 `unpaged_text/data/bss` 段组（kernel.lds:13-15）和 `usermapped/usermapped_glo` 段组（kernel.lds:17-23）。后者是 Minix3 用户态段共享机制（USMAPPED 宏），在 64-bit 重写中已废弃；前者需要解释——
+>
+> **unpaged 段的存在原因**：不是所有内核代码都能跳高地址。分页**启用前**必须执行的代码（`pre_init`/`pg_identity`/`pg_mapkernel`/`vm_enable_paging` 等，`unpaged_*.o` 对象组，含入口 `__k_unpaged_MINIX`，见 `arch/i386/Makefile.inc`）必须留在低地址（恒等映射）——此时页表尚未建立，高地址映射还不存在，任何高地址取指都会立即 page fault。C 用链接脚本的 `.unpaged_text/data/bss` 段（kernel.lds:9-15，VMA=LMA=物理低地址，无 AT()）承载它们，**内核入口点本身就在 unpaged 段**。minix-rs 不需要 unpaged 段：这些职责全部位于 boot-shim（独立二进制，天然在低物理地址执行，见 01 文档 §4.2），内核 ELF 从 `kmain` 起直接位于高地址——分页开启后的跳转由 `HigherHalf::jump_to_kmain` 完成（§3.4）。
 
 ARM32 的链接脚本 (`kernel/arch/earm/kernel.lds`) 使用完全相同的模式：
 
@@ -219,6 +221,8 @@ kernel.elf = link(kernel.rlib + link.ld + crt0.o)
 - `link.ld`：自定义链接脚本，设置 VMA=高地址
 - 最终链接为独立 ELF，boot-shim 加载此 ELF
 
+> **编译期 code model 约束**：x86-64 默认 small code model 要求所有符号位于 ±2GB RIP-relative 可寻址范围内。链接到高地址后，内核镜像内部符号相互距离 < 2GB 时仍安全（镜像当前远小于 2GB）；若未来镜像膨胀或跨越大地址窗口，需显式设置 `-C code-model=large`（类似 Linux 的 `-mcmodel=kernel`、Fusion OS 的 `-mcmodel=large`），通过 `.cargo/config.toml` 的 rustflags 配置。aarch64/riscv64 的链接器模型同样有各自的高地址寻址约束。
+
 > **实现状态**：三架构的 `link.ld`（`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`）已就绪，但构建系统尚未接入——`os/kernel/Cargo.toml` 仍只声明 `[lib]`，缺少 `build.rs` 将 `kernel.rlib` + `link.ld` 链接为独立 ELF binary。当前测试路径（hello-boot 等）通过 `minix-kernel = { workspace = true }` 以 rlib 方式依赖内核 crate，这是测试场景的合理简化；生产路径的独立 ELF 构建是后续工作。01 文档 §5.2 已标注此约束（"正式的 boot-shim 需要将 kernel 改为独立 ELF binary"）。
 
 ### 3.3 决策：HigherHalf trait + 内联汇编
@@ -268,6 +272,19 @@ pub trait HigherHalf {
 1. **架构隔离**：每种架构的实现完全不同（x86-64 用 `mov rsp + call`，aarch64 用 `mov sp + br`，riscv64 用 `mv sp + jalr`），trait 将差异封装在实现中
 2. **kernel/lib.rs 统一调用**：`arch_boot_impl` 返回后调用 `HigherHalf::jump_to_kmain()`，无需 `#[cfg]`
 3. **可测试性**：mock 实现可以验证调用时序而不执行真实指令
+
+**跨系统解法对比**：trampoline 跳转是 higher-half kernel 的**硬性要求**——分页开启后恒等映射一旦移除，仍指向低地址的 RIP/RSP 立即失效（取指与栈访问都会崩溃）。同一问题在不同系统的解法各异：
+
+| 系统 | 方式 | 关键特征 |
+|------|------|---------|
+| Minix3 C | `AT()` 链接脚本 + head.S 汇编 trampoline | 同一段代码按 LMA 物理 4MB 加载、按高 VMA 执行；`AT()` 是 GNU ld 特有语法，依赖 GRUB 理解 ELF 的 p_paddr（见 §2.1，minix-rs 的取舍见 §3.1） |
+| Redox | kernel ELF 链接到高地址 + bootloader 解析 ELF 段 | 更"诚实"：kernel ELF 的 VMA 就是真实高地址，bootloader 负责拷段到低物理地址、建页表、trampoline 跳高地址 |
+| Linux | `lretq` far return | 64 位特有：一条指令同时切 CS 和 RIP 到高地址；压缩内核解压后已在高地址，无需 AT() |
+| seL4 | elfloader 加载 kernel ELF + kernel 自己准备栈 | elfloader 把 PT_LOAD 段拷到物理内存、建页表、跳 kernel entry；栈由 kernel entry 函数自己准备 |
+
+minix-rs 的路径（Redox 模式 + 内联汇编）：boot-shim 解析 PT_LOAD 段拷到物理内存（§3.2），跳转用 Rust 内联汇编而非独立汇编文件（§3.3），跨架构统一抽象由 `HigherHalf` trait 提供（§3.4）。不用 `AT()`（lld 不支持 GNU ld 特有语法 + UEFI/OpenSBI 路径无 GRUB 替你处理 LMA vs VMA，见 §3.1）；不用 `lretq`（x86 特有，ARM64/RISC-V 无对应语义）。
+
+**为什么必须切栈——地址问题而非大小问题**：Minix3 C 中切栈有双重意义——旧栈只有 4KB（`load_stack_start`，head.S 临时栈），新栈是 BSS 大栈。minix-rs 的 UEFI 路径没有"小栈"问题（UEFI 栈通常 128KB+，boot-shim 调用 `arch_boot_impl` 期间可一直用），但**切栈仍必须做**：UEFI 栈在低地址（恒等映射区），`jump_to_kmain` 后的高地址内核不用它——恒等映射一旦移除（VM 启动后），低地址栈立即失效。`kern_stack_top` 的意义不是"更大的栈"，而是"位于高地址映射区的栈"：head.S 的 `mov $k_initial_stktop, %esp` 切的是栈的**地址**，不只是大小。
 
 ### 3.5 架构差异对照
 

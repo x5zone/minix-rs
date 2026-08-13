@@ -12,7 +12,7 @@
 //! - **No memory cutting** (§3.6): Unlike C's `arch_init()` which calls
 //!   `cut_memmap()`, Rust version does not cut memory regions because
 //!   `KernelInfo.memmap` already excludes reserved regions.
-//! - **Instance-based design** (see `plat-design.md` §5.1): `new(desc)`
+//! - **Instance-based design** (see 04-platform-discovery.md §3.4): `new(desc)`
 //!   stores architecture-misc parameters (ACPI tables pointer, PMU enable)
 //!   from `ArchMiscDesc` into instance fields.
 

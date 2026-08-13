@@ -395,12 +395,6 @@ struct ClockState {
 - [15-clock-timer.md](15-clock-timer.md): `kclockinfo` → `ClockState` 内部化
 - [25-misc-unported.md](25-misc-unported.md) §2.2: GET_KINFO / GET_MACHINE / GET_LOADINFO 等子请求
 
-### 6.3 设计文档
-
-- [design/28-design.v1.md](design/28-design.v1.md): 设计决策 D1-D6 详述
-- [design/28-outline.v1.md](design/28-outline.v1.md): 文档大纲
-- [design/28-design-structure.md](design/28-design-structure.md): 知识点全集
-
 ---
 
 ## 附录 A: 结构体字段全集

@@ -342,8 +342,3 @@ C 源码 profile.c:84-86 空间检查中，`2*sizeof(struct sprof_sample)` 出�
 - [25-misc-unported.md](25-misc-unported.md) §2.5: `do_sprofile` 系统调用（用户态接口）
 - [26-watchdog.md](26-watchdog.md): NMI 机制 + `nmi_sprofile_handler`
 
-### 6.2 设计文档
-
-- [design/30-design.v1.md](design/30-design.v1.md): 设计决策 D1-D4 详述
-- [design/30-outline.v1.md](design/30-outline.v1.md): 文档大纲
-- [design/30-design-structure.md](design/30-design-structure.md): 知识点全集

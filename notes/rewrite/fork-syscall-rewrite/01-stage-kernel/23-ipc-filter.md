@@ -521,8 +521,3 @@ if call_denied {
 
 **下游（L2 过滤消费方）**：
 - [24-cross-space-runtime.md](24-cross-space-runtime.md) — `allow_ipc_filtered_memreq` 用于 VM 页错误请求过滤（依赖 L2 实现）
-
-**设计快照**：
-- [design/23-outline.v1.md](design/23-outline.v1.md) — 章节结构契约
-- [design/23-outline-review.v1.md](design/23-outline-review.v1.md) — outline 自审
-- [design/23-design.v1.md](design/23-design.v1.md) — 9 决策完整设计契约 + 行为契约表

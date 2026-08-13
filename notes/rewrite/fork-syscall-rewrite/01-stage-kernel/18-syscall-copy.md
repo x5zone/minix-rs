@@ -259,6 +259,28 @@ do_safecopy_from/to(caller, m_ptr)  [do_safecopy.c:388/377]
 
 如果 sfinfo 总是存在（C 方式，do_safecopy.c:288）：大部分场景不使用 CPF_TRY，sfinfo 字段无意义但始终占用栈空间。如果用 `Option<SoftFaultInfo>`：仅 CPF_TRY 场景构造 Some，其他场景 None；类型表达"可能不存在"语义。所以用 `Option<SoftFaultInfo>`（anti-translate）。
 
+### 差异类型汇总表（15 个核心符号的 C→Rust 映射全景）
+
+D1-D9 逐个决策的纵向总结——一眼看清每个 C 符号的 Rust 对应与差异类型：
+
+| C 符号 | C 位置 | Rust 表达 | 差异类型 |
+|--------|--------|----------|---------|
+| `verify_grant(..., *offset_result, *e_granter, *sfinfo)` | do_safecopy.c:41-51 | `GrantVerifyResult { offset, effective_granter, sfinfo }` + `VerifyGrantOutcome` enum（grant.rs:252,267） | anti-translate（结构体替代多输出参数 + 三态 enum 替代 errno/VMSUSPEND 双返回） |
+| `struct cp_sfinfo sfinfo`（总是存在） | do_safecopy.c:288,31-36 | `Option<SoftFaultInfo>` | anti-translate（Option 表达"可能不存在"，大部分场景 None） |
+| `int access`（CPF_READ/CPF_WRITE 裸位） | do_safecopy.c:46,279-281 | `CpFlags` bitflags + `SafecopyAccess` enum | 语义对齐（兼容 UMAP resolve-only 语义） |
+| `endpoint_t granter`（裸 int） | do_safecopy.c:42 | `Endpoint` newtype | 类型增强（编译期防止与其他 i32 混淆） |
+| `struct vumap_phys pvec[MAPVEC_NR]` | do_vumap.c:31 | `[VumapPhys; MAPVEC_NR]` 栈数组 | anti-translate（no_std 兼容，无 alloc） |
+| `MAX_INDIRECT_DEPTH 5` | do_safecopy.c:21 | `const MAX_INDIRECT_DEPTH: usize = 5` | 语义对齐 |
+| `do { } while (CPF_INDIRECT)` | do_safecopy.c:59,173 | `for _depth in 0..MAX_INDIRECT_DEPTH` 循环 | 语义对齐（D4：避免递归栈溢出） |
+| `do_umap` → `do_umap_remote` 委托 | do_umap.c:25-37 | `dispatch_umap` 合并 | 架构演进（D8：Rust 不需要 C 的 #if 条件编译） |
+| `createpde()` + `lin_lin_copy()` | memory.c | `kernel_phys_to_virt()` + `copy_nonoverlapping` | 架构演进（D1：Direct Map 一行加法替代临时映射） |
+| `virtual_copy_vmcheck()` | memory.c:507-535 | `data_copy_vmcheck()`（cross_space.rs:118） | 语义对齐（VA→PA 经 `lookup_in_table`，缺页 `suspend_for_vm`） |
+| `vm_memset()` | memory.c:526 | `memset_vmcheck()`（cross_space.rs:189） | 语义对齐（Direct Map + `ptr::write_bytes`，缺页 `suspend_for_vm`） |
+| `vm_lookup()` | do_umap_remote.c:94 | `lookup_in_table()`（vm.rs:204） | 语义对齐（`_table` 后缀强调页表 walk，委托 `CurrentPteWalk::walk`） |
+| `vm_lookup_range()` | do_umap_remote.c:106-109, do_vumap.c:94 | `lookup_range_in_table()`（vm.rs:249） | 语义对齐（4KB 页粒度连续性检查） |
+| `CP_FLAG_TRY` / `CPF_TRY` | do_copy.c:80 / do_safecopy.c:258 | 常量保留 + 分支保留 | 语义对齐（D6：VFS 依赖此语义，EFAULT 路径 DEFERRED） |
+| `data_copy(granter, ..., KERNEL, &g, sizeof(g))` | do_safecopy.c:121-123 | `data_copy_vmcheck` 经 `proc_cr3` 闭包 | 语义对齐（D2：拷入内核缓存避免递归 VMSUSPEND） |
+
 ---
 
 ## 4. 实现详解

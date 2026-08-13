@@ -30,6 +30,13 @@
 //! - The blob remains valid for the duration of `parse` (it does — DTB is
 //!   in static firmware memory).
 //! - No other CPU is concurrently writing to the DTB region.
+//! - Early boot identity mapping covers the physical address: during boot
+//!   the kernel enables paging with an identity mapping over the low 4 GB
+//!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:27-28`), and the
+//!   DTB lives in static firmware memory far below that bound — so the raw
+//!   physical address can be dereferenced as a virtual address (VA == PA).
+//!   If a future path hands a DTB above the identity-mapped range, `parse`
+//!   must be preceded by a temporary mapping.
 
 use crate::desc::*;
 use core::fmt;
@@ -137,7 +144,7 @@ impl DeviceTreeDesc {
     ///
     /// Architecture-specific extraction is dispatched via `#[cfg]` on
     /// **data selection** (which node to look up), not behavior — see
-    /// `plat-design.md` §5.2.
+    /// 04-platform-discovery.md §4.2.2.
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     fn from_fdt(fdt: &fdt::Fdt<'_>) -> Result<Self, DtParseError> {
         let ic = Self::parse_interrupt_controller(fdt)?;

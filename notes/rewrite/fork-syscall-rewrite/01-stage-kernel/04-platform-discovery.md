@@ -224,7 +224,7 @@ main()
 **选择方案 C**，理由：
 
 1. **职责边界清晰**：boot-shim 的本职是"固件接口桥接 + kernel 装载 + ExitBootServices"（见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)）。把 FDT/ACPI 解析塞给它，等于让"准备器"开始执行"kernel 才该做的工作"——boot-shim 从"可被 GRUB/UEFI/OpenSBI/U-Boot 替换的统一入口"膨胀成"半个 kernel"，破坏 BootShim trait 的统一抽象。
-2. **与 Minix3 C 语义对齐**：C 版的 `acpi_init()`、`bsp_init()` 都是 **kernel 内部**调用。"kernel 自己理解硬件"是微内核的职责边界。
+2. **与 Minix3 C 语义对齐**：C 版的 `acpi_init()`、`bsp_init()` 都是 **kernel 内部**调用。"kernel 自己理解硬件"是微内核的职责边界。这也是主流 OS 的统一模式：Linux 在 kernel 解析 DTB/ACPI（`of_*` / `acpi_*` 子系统）、seL4 在 kernel 的 `boot.c` 解析、Minix3 C 在 `bsp_init()` 解析——bootloader 一律只传物理指针，硬件描述由 kernel 自己读。粒度差异：Linux 把每个 device tree 节点建模成 `struct device`（支撑用户态 device model），而微内核没有用户态 device model、所有硬件 init 都在 kernel 内，一个全局 `PlatformDesc` 即足够——粗粒度是与微内核结构匹配的选择。
 3. **`KernelInfo` 保持精简**：方案 A 要求 `KernelInfo` 扩展 GICD/GICR/PLIC/CLINT 等十几个字段。方案 C 只需加 **1 个字段**（`platform_sources: &'static [PlatformDescSource]`）——一个有序切片，承载 `(PlatformDescKind, PhysBytes)` 这种纯数据对。切片天然支持多源共存（DTB + RSDP 共存的服务器场景），上层 KernelInfo 仍是 1 字段，没有膨胀。详见 [§3.7](#37-kernelinfo-扩展字段设计)。
 4. **可测试性**：kernel 侧解析器可在 `#[cfg(test)]` 中用 mock DTB/ACPI 字节流测试，不需要启动 QEMU。
 
@@ -251,6 +251,8 @@ main()
 ```
 
 ### 3.2 `PlatformDesc` 为什么用 trait 而不是 struct
+
+> 命名先决：为什么叫 `PlatformDesc`，而不是 `MachineDesc` / `BoardDesc` / `HardwareTopology`？"Machine"与 QEMU machine 概念混淆（两者语义不同）；"Board"暗示 PCB 级别，而平台描述涵盖 SoC/PC/嵌入式全谱系；"HardwareTopology"过于聚焦拓扑，遗漏中断控制器/定时器信息。"Platform" 是 OS 语境最通用的词，且与 Linux "platform device" 概念对齐。
 
 三个来源（DTB/ACPI/QEMU 兜底）需要被上层代码**统一消费**，因此定义公共接口 `PlatformDesc` trait：
 
@@ -425,7 +427,7 @@ impl ClockArch for Riscv64ClockArch {
 > 参见 `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 中三个 `QemuVirtDesc` 实现与各架构参数。
 >
 > **覆盖证据（2026-07-16 复核）**：经 grep 验证，当前 DTB/ACPI parser 主路径**已存在单测覆盖**——
-> - `os/libs/minix-platform/src/device_tree.rs:483` `fn test_parse_riscv64_qemu_virt_dtb` 用真实 DTB 二进制（`os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb`）做端到端解析验证
+> - `os/libs/minix-platform/src/device_tree.rs:490` `fn test_parse_riscv64_qemu_virt_dtb` 用真实 DTB 二进制（`os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb`）做端到端解析验证
 > - `os/libs/minix-platform/src/acpi.rs:549` `fn test_parse_synthetic_acpi` 用合成的 RSDP→XSDT→MADT 字节链验证完整 ACPI 解析
 > - `os/arch/tests/qemu_test_x86_64.sh` 等 QEMU 集成测试通过 GDB checkpoint 验证 `init_clock_and_interrupts`，**必然**触发 `platform::init_from_kinfo` → parser 主路径（无 `QemuVirtDesc` 介入，因为 `platform_sources` 非空，由 boot-shim 端 find 来源填入）
 >
@@ -450,9 +452,9 @@ impl ClockArch for Riscv64ClockArch {
 >
 > | 测试函数 | 文件:行号 | 覆盖目标 |
 > |---------|---------|---------|
-> | `test_dt_parse_error_variants` | `os/libs/minix-platform/src/device_tree.rs:445` | DTB parser 错误路径 |
-> | `test_parse_riscv64_qemu_virt_dtb` | `os/libs/minix-platform/src/device_tree.rs:483` | DTB parser **端到端**（用真实 `qemu_virt_riscv.dtb`） |
-> | `test_parse_unsupported_arch_returns_error` | `os/libs/minix-platform/src/device_tree.rs:517` | DTB parser arch 拒绝路径 |
+> | `test_dt_parse_error_variants` | `os/libs/minix-platform/src/device_tree.rs:452` | DTB parser 错误路径 |
+> | `test_parse_riscv64_qemu_virt_dtb` | `os/libs/minix-platform/src/device_tree.rs:490` | DTB parser **端到端**（用真实 `qemu_virt_riscv.dtb`） |
+> | `test_parse_unsupported_arch_returns_error` | `os/libs/minix-platform/src/device_tree.rs:524` | DTB parser arch 拒绝路径 |
 > | `test_acpi_parse_error_variants` | `os/libs/minix-platform/src/acpi.rs:502` | ACPI parser 错误路径 |
 > | `test_acpi_desc_from_parsed` | `os/libs/minix-platform/src/acpi.rs:517` | ACPI descriptor 构造 |
 > | `test_parse_synthetic_acpi` | `os/libs/minix-platform/src/acpi.rs:549` | ACPI parser **端到端**（合成 RSDP→XSDT→MADT） |
@@ -669,7 +671,7 @@ match desc.source() {
 
 **设计权衡**：把 `source()` 放在 `PlatformDesc` trait 里 vs 单独搞个 `HasPlatformSource` trait？前者简单（一个 trait 满足所有元信息查询），后者抽象更纯（明确区分"硬件参数"和"元信息"两层）。当前选择前者——**简洁性优先于抽象纯度**——因为元信息查询需求很低，不会演化成主要扩展点。如果未来 `source()` 衍生出 `version()`、`format_revision()` 等多种元信息查询，再考虑拆分独立 trait。
 
-> 参见 `os/libs/minix-boot/src/platform.rs:155-163` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（行 146/140/179）+ `device_tree.rs:396` + `acpi.rs:245` 五处 `source()` 实现各返回自身对应变体。
+> 参见 `os/libs/minix-boot/src/platform.rs:155-163` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（行 146/140/179）+ `device_tree.rs:403` + `acpi.rs:245` 五处 `source()` 实现各返回自身对应变体。
 
 ### 4.2 `PlatformDesc` 的三种实现
 
@@ -778,7 +780,7 @@ impl PlatformDesc for QemuVirtDesc {
 #### 4.2.2 `DeviceTreeDesc` 解析器（aarch64 / riscv64）
 
 ```rust
-// os/libs/minix-platform/src/device_tree.rs:56-78
+// os/libs/minix-platform/src/device_tree.rs:63-85
 //
 // ic/timer/console 字段类型按 arch cfg-gate：riscv64 持 PlicDesc/ClintDesc/Riscv64ConsoleDesc，
 // aarch64 持 Gicv3Desc/ArmGenericTimerDesc/MmioSerialDesc。其他 arch 上 DeviceTreeDesc
@@ -828,7 +830,9 @@ impl PlatformDesc for DeviceTreeDesc {
 
 关键设计：**eager parsing**。`Fdt` 借用 DTB 切片，但 `PlatformDesc` 必须 `'static + Send + Sync`。`parse()` 一次性遍历 FDT，把所有需要的值提取到具体 arch sub-descriptor struct 的字段中（`PlicDesc`/`Gicv3Desc`/`ClintDesc`/`ArmGenericTimerDesc`/...），然后丢弃 `Fdt` 借用。结果 `DeviceTreeDesc` 是 `'static` 且无需分配器。
 
-> 参见 `os/libs/minix-platform/src/device_tree.rs:56-423`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）。
+> **`dtb_phys` 为何可直接解引用**：`parse()` 把物理地址直接当虚拟地址用（`fdt::Fdt::from_ptr(dtb_phys as *const u8)`）。安全前提：boot 早期（T2.5）内核已启用分页，且恒等映射覆盖低 4GB（C `pg_identity()` 语义，见 [02-higher-half-kernel.md](02-higher-half-kernel.md)）；DTB 由 boot-shim 留在静态固件内存（低地址，远低于 4GB，见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)），VA == PA 成立。若未来 DTB 位于映射范围外（物理高端），`parse` 前需先建立临时映射——当前 UEFI/OpenSBI 路径不触发。
+
+> 参见 `os/libs/minix-platform/src/device_tree.rs:63-430`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）。
 
 #### 4.2.3 `AcpiDesc` 解析器（x86-64）
 

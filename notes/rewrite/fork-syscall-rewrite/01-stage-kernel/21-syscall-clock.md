@@ -4,7 +4,6 @@
 > **C 源码**: `minix3/minix/kernel/system/do_times.c` (46 行), `do_setalarm.c` (78 行), `do_stime.c` (19 行), `do_settime.c` (58 行), `do_vtimer.c` (103 行)
 > **Rust 实现**: `os/kernel/src/syscall_clock.rs` (648 行), `os/kernel/src/clock.rs` (`ClockState`/`TimerAction`/`TimerEntry`/`TimerId`), `os/kernel/src/proc.rs` (`TimeStats`：`virt_left`/`prof_left`)
 > **前置**: [15-clock-timer.md](15-clock-timer.md)（`ClockState`/`TimerAction`/`TimerEntry`/`TimerId` 定义），[13-syscall-dispatch.md](13-syscall-dispatch.md)，[22-privilege.md](22-privilege.md)，[17-syscall-process.md](17-syscall-process.md)，[16-smp.md](16-smp.md)
-> **设计文档**: [`design/21-design.md`](design/21-design.md)
 > **no_std 约束**: `#![no_std]`（`#[cfg(test)]` 除外）；仅依赖 `alloc::collections::{BTreeSet, BTreeMap}`，无外部 crate
 
 ---
@@ -658,13 +657,9 @@ D5 参数传递的核心收益：测试可构造 `PrivTable::with_sys_proc()` + 
 - [17-syscall-process.md](17-syscall-process.md) — 进程系统调用，`p_time`/`p_misc_flags` 字段；exit 时 vtimer 清理（✅ 已对接）
 - [16-smp.md](16-smp.md) — `AtomicU64` 的 SMP 安全性，BKL 与时钟状态访问（✅ 已对接）
 
-### 6.2 设计文档
-
-- [design/21-design.md](design/21-design.md) — 完整设计文档（D1-D7 hypothesis-driven + C↔Rust 差异矩阵 + redox 对比）
-
 ### 6.3 redox 对比
 
-详见 [design/21-design.md](design/21-design.md)：minix-rs 用参数传入 `ClockState` (D5) 替代 redox 全局 `time::` 接口、`TimerAction::NotifyAlarm` 替代信号重排队、内核 tick `AtomicU64` 递减替代用户态驱动、保留 POSIX adjtime。
+minix-rs 用参数传入 `ClockState` (D5) 替代 redox 全局 `time::` 接口、`TimerAction::NotifyAlarm` 替代信号重排队、内核 tick `AtomicU64` 递减替代用户态驱动、保留 POSIX adjtime。
 
 ---
 

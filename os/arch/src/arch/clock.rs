@@ -52,7 +52,7 @@ pub const LOAD_HISTORY_SIZE: usize = 16;
 /// Each architecture implements this trait to configure its hardware
 /// timer source and provide tick-reading capability.
 ///
-/// # Instance-based design (see `plat-design.md` §5.1)
+/// # Instance-based design (see 04-platform-discovery.md §3.4)
 ///
 /// `ClockArch` is **instance-based**: `new(desc)` stores parsed hardware
 /// parameters (base addresses, frequencies) in instance fields. This

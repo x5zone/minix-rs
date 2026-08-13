@@ -357,8 +357,3 @@ pub fn print_proc(proc: &KProcess) {
 - [12-ipc-core.md](12-ipc-core.md): IPC 核心逻辑（hook 插入点）
 - [16-smp.md](16-smp.md): SMP 调度（`runqueues_ok_all` 遍历多 CPU）
 
-### 6.2 设计文档
-
-- [design/29-design.v1.md](design/29-design.v1.md): 设计决策 D1-D4 详述
-- [design/29-outline.v1.md](design/29-outline.v1.md): 文档大纲
-- [design/29-design-structure.md](design/29-design-structure.md): 知识点全集

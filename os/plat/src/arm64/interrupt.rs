@@ -3,7 +3,7 @@
 //! Implements `InterruptController` for ARM64 using GICv3 (Generic Interrupt
 //! Controller version 3).
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware base addresses (GICD, GICR) are stored in instance fields,
 //! populated by `new(desc)` via `Any` downcast to `Gicv3Desc`. This

@@ -41,7 +41,7 @@ pub struct AArch64CpuContext {
     ///
     /// Kernel tasks have this `false`; user processes have this
     /// `true`. Arch-internal: the kernel layer never reads this
-    /// (see `06-design.v1.md` §12.1).
+    /// (see `06-proc-init-boot-proc.md` §3.6).
     fpu_enable_el0: bool,
     /// GP register save area for signal handling (X1-X30).
     ///
@@ -108,7 +108,7 @@ impl CpuContextArch for AArch64CpuContextArch {
     // aarch64 equivalent is PSTATE.PAN, set per-process via SPSR
     // rather than via a global flag.
 
-    /// Inherit FPU enable policy from parent on fork (06-design.v1.md §D7).
+    /// Inherit FPU enable policy from parent on fork (06-proc-init-boot-proc.md §3.14).
     ///
     /// aarch64: the child inherits `fpu_enable_el0` so that a forked user
     /// process keeps EL0 FP access (CPACR_EL1.FPEN=0b01) rather than

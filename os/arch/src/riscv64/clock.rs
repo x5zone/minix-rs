@@ -4,7 +4,7 @@
 //! Interruptor) mtime register. The mtime register is a memory-mapped
 //! counter that increments at a fixed frequency.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware parameters (CLINT mtime/mtimecmp addresses, frequency) are
 //! stored in instance fields, populated by `new(desc)` via `Any` downcast

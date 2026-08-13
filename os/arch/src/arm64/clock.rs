@@ -4,7 +4,7 @@
 //! (EL1 Physical Timer). The timer frequency is provided by firmware
 //! via CNTFRQ_EL0.
 //!
-//! # Instance-based design (see `plat-design.md` §5.1)
+//! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! `ArmGenericTimerDesc` carries no data (frequency is read from
 //! CNTFRQ_EL0 at runtime), so `new()` is a no-op constructor. The struct

@@ -774,7 +774,7 @@ fn dispatch_schedule(
     // SYS_NICE is not yet wired up, so `niced` stays false for now.
     let niced = false;
 
-    // Design decision §3.8 (11-design.v1.md): convert C's i32 -1 sentinel
+    // Design decision §3.8 (11-scheduling-primitives.md): convert C's i32 -1 sentinel
     // ("keep current") to Option. Negative values other than -1 are rejected
     // early to match C semantics (system.c:644-648).
     //

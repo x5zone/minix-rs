@@ -7,7 +7,7 @@
 //! addresses, timer frequencies, CPU topology) that were previously
 //! hardcoded per-architecture.
 //!
-//! # Design (see `plat-design.md`)
+//! # Design (see 04-platform-discovery.md §3.4)
 //!
 //! - **Root trait + sub-trait abstractions**: `PlatformDesc` is a trait
 //!   (supports `&dyn` and mock); sub-descriptors (`InterruptControllerDesc`,
