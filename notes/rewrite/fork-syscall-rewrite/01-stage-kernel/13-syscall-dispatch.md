@@ -1,7 +1,7 @@
 # 13-syscall-dispatch: 系统调用分派
 
 > **分类**: Kernel 系统调用分派（与 12-ipc-core 共享 sys_call 入口）
-> **源码**: `minix3/minix/kernel/system.c:52-167, 612-638`
+> **源码**: `minix3/minix/kernel/system.c:52-163, 612-637`
 > **Rust 实现**: `os/kernel/src/syscall.rs`
 > **前置**: 06（struct proc 字段）、08（system_init 调用顺序）、10（switch_to_user 入口）、11（RTS 标志）、12（do_ipc 入口与 delivermsg 延迟拷贝）
 > **下游**: 14（trap 入口与 KERNEL_CALL 归一化）、15-21（各 dispatch_* handler）、22（priv 结构与 s_k_call_mask）
@@ -81,7 +81,7 @@
     → return KcallResult（Delivered/Blocked/Error 映射见 §4.8）
 ```
 
-**KERNEL_CALL 边界声明**：C 在 `kernel_call_dispatch` 内执行 `call_nr = msg->m_type - KERNEL_CALL`（system.c:105）。Rust 将 `msg.m_type` 视为**已归一化**的 0..57 索引传入 `Syscall::try_from`，归一化责任**上移到 14 trap 入口**——这样 dispatch 签名保持纯索引输入，无需关心 ABI 偏移。这是**架构演进**：将"消息字段归一化"与"分派路由"分离，符合单一职责。
+**KERNEL_CALL 边界声明**：C 在 `kernel_call_dispatch` 内执行 `call_nr = msg->m_type - KERNEL_CALL`（system.c:103）。Rust 将 `msg.m_type` 视为**已归一化**的 0..57 索引传入 `Syscall::try_from`，归一化责任**上移到 14 trap 入口**——这样 dispatch 签名保持纯索引输入，无需关心 ABI 偏移。这是**架构演进**：将"消息字段归一化"与"分派路由"分离，符合单一职责。
 
 **IPC call_nr 边界声明**：IPC 路径中 `msg.m_type` 直接是 IPC call number（SEND=1, RECEIVE=2, ..., SENDA=16），**不经 KERNEL_CALL 偏移**。`dispatch_ipc_entry` 通过 `IpcCall::from_raw(msg.m_type)` 解码，无效值返回 `EBADCALL`。这避免了 IPC 与 SYS_* call number 共用 0..16 范围的冲突（SYS_FORK=0, SYS_EXEC=1, ...）。
 
@@ -93,7 +93,7 @@
 kernel_call_dispatch() → handler → return VmSuspend
   ↓
 kernel_call_finish() VmSuspend 分支:
-  1. 保存请求消息: caller.p_vm_suspend.saved_msg = Some(msg.clone())
+  1. 保存请求消息: caller.p_vm_suspend.saved_msg = Some(*msg)
   2. 设置标志: caller.p_misc_flags |= MF_KCALL_RESUME
   3. **release BKL** — 让其他 CPU 能进入内核
   4. 进程保持 RTS_VMREQUEST 等待 VM 回复
@@ -120,22 +120,19 @@ SMP 环境下，`kernel_call_dispatch` + `kernel_call_finish` 必须在 BKL 临�
 
 **C 的 BKL 策略**：在汇编 trap 入口（`mpx.S:kernel_call_entry_common`）acquire BKL，在 `switch_to_user()` release BKL。dispatch 与 finish 全程在 BKL 内。
 
-**Rust 的 BKL 策略**：当前为**手动 acquire/release**（非 RAII）：
+**Rust 的 BKL 策略**（R-03/R-05 落地后）：`BklGuard` 是 **RAII**（Drop 时释放），但 dispatch 路径用 `core::mem::forget(bkl_guard)` 阻止 Drop——BKL 必须保持到 `kernel_call_finish()` 显式释放。`bkl_guard.section()` 派生 `BklSection` witness，作为编译期 BKL 持有证明传给全局访问器（如 `irq_manager_with`）：
 
 | 阶段 | 函数 | BKL 操作 | 行号 |
 |------|------|---------|------|
-| 入口 | `kernel_call_dispatch` | acquire | `syscall.rs:228` |
-| 持有 | dispatch_inner + match + handler | 保持 | `syscall.rs:240-321` |
-| VmSuspend 释放 | `kernel_call_finish` VmSuspend 分支 | release | `syscall.rs:1286` |
-| 正常释放 | `kernel_call_finish` Ok 分支 | release | `syscall.rs:1303` |
-| NoReply 释放 | `kernel_call_finish` NoReply 分支 | release | `syscall.rs:1310` |
-| BadCall 释放 | `kernel_call_finish` BadCall 分支 | release | `syscall.rs:1321` |
-| CallDenied 释放 | `kernel_call_finish` CallDenied 分支 | release | `syscall.rs:1332` |
-| Resume 重新获取 | `kernel_call_resume` → `kernel_call_dispatch` | re-acquire | `syscall.rs:228`（经 dispatch） |
+| 入口 | `kernel_call_dispatch` | acquire（guard 持有 + forget）| `syscall.rs:399` |
+| 持有 | dispatch_inner + match + handler | 保持（`bkl_section` witness 传入 inner）| `syscall.rs:425-540` |
+| VmSuspend 释放 | `kernel_call_finish` VmSuspend 分支 | `bkl_unlock()` | `syscall.rs:2580` |
+| 正常释放 | `kernel_call_finish` 非 VmSuspend 末尾 | `bkl_unlock()`（Ok/NoReply/BadCall/CallDenied 统一路径）| `syscall.rs:2605` |
+| Resume 重新获取 | `kernel_call_resume` → `kernel_call_dispatch` | re-acquire（新 guard）| `syscall.rs:399`（经 dispatch） |
 
 **为什么 VmSuspend 路径要释放 BKL**？挂起期间进程等待 VM（独立进程、独立 CPU 调度），若不释放 BKL，其他 CPU 无法进入内核处理 VM 的回复——死锁。
 
-**已知缺口**：当前手动 release 易遗漏（模式 28 风险）。推荐重构 `bkl_lock()` 返回 `BklGuard`（RAII，Drop 时 release）消除手动管理。当前作为过渡。
+**RAII + forget 模式说明**：`kernel_call_dispatch` 入口 `let bkl_guard = bkl_lock()`，结束 `mem::forget(bkl_guard)`——guard 的 Drop 被抑制，BKL 的 release 责任转移到 `kernel_call_finish`（2 处 `bkl_unlock`，对应 C 的 `switch_to_user` 释放语义）。VMSUSPEND 路径释放后，`kernel_call_resume` 重新 dispatch 时 acquire 新 guard。R-05 将 guard 从纯 marker 升级为 RAII + `section()` witness，消除"手动 release 易遗漏"（原模式 28 风险）。
 
 ### 1.6 核心流程图
 
@@ -166,22 +163,22 @@ flowchart TD
 
 | 常量 | 值 | 位置 | 含义 |
 |------|---|------|------|
-| `KERNEL_CALL` | 0x600 | `com.h` | 系统调用 m_type 基址（用于 `m_type - KERNEL_CALL` 归一化） |
+| `KERNEL_CALL` | 0x600 | `com.h:205` | 系统调用 m_type 基址（用于 `m_type - KERNEL_CALL` 归一化） |
 | `NR_SYS_CALLS` | 58 | `com.h:270` | 系统调用总数 |
-| `VMSUSPEND` | -996 | `ipc.h` | handler 返回值，请求挂起让 VM 处理缺页 |
-| `EDONTREPLY` | -7 | `ipc.h` | handler 返回值，不回复调用方 |
-| `EBADREQUEST` | 212 | `errno.h` | 无效 syscall 号 |
-| `ECALLDENIED` | 210 | `errno.h` | `s_k_call_mask` 权限拒绝 |
-| `MF_KCALL_RESUME` | (bit) | `proc.h` | 标记挂起中的 kernel call，retry 时 handlers 可感知 |
-| `VMSTYPE_KERNELCALL` | (enum) | `vm.h` | 标记 `p_vmrequest.type` 为内核调用挂起 |
+| `VMSUSPEND` | -996 | `kernel/vm.h:6` | handler 返回值，请求挂起让 VM 处理缺页 |
+| `EDONTREPLY` | 203（用户态）/ -203（内核 `_SYSTEM` 下 `_SIGN` 为负）| `sys/sys/errno.h:199` | handler 返回值，不回复调用方 |
+| `EBADREQUEST` | 212 | `sys/sys/errno.h:208` | 无效 syscall 号 |
+| `ECALLDENIED` | 210 | `sys/sys/errno.h:206` | `s_k_call_mask` 权限拒绝 |
+| `MF_KCALL_RESUME` | 0x008 | `proc.h:237` | 标记挂起中的 kernel call，retry 时 handlers 可感知 |
+| `VMSTYPE_KERNELCALL` | 1 | `proc.h:99` | 标记 `p_vmrequest.type` 为内核调用挂起 |
 
 ### 2.2 核心数据结构
 
 ```c
-// system.c:53 — 函数指针数组
+// system.c:52 — 函数指针数组
 static int (*call_vec[NR_SYS_CALLS])(struct proc * caller, message *m_ptr);
 
-// system.c:54-58 — map() 宏：注册时运行时 assert 越界
+// system.c:54-57 — map() 宏：注册时运行时 assert 越界
 #define map(call_nr, handler) \
   { int call_index = call_nr-KERNEL_CALL; \
     assert(call_index >= 0 && call_index < NR_SYS_CALLS); \
@@ -273,7 +270,7 @@ static int kernel_call_dispatch(struct proc * caller, message *msg)
 
 **语义**：三段式分派——边界检查 → 权限检查 → 间接调用 handler。返回 `int`，调用方根据值判断 OK/VMSUSPEND/EDONTREPLY/EBADREQUEST/ECALLDENIED。
 
-#### 2.4.2 kernel_call_finish（system.c:58-90）
+#### 2.4.2 kernel_call_finish（system.c:59-90）
 
 ```c
 static void kernel_call_finish(struct proc * caller, message *msg, int result)
@@ -298,7 +295,7 @@ static void kernel_call_finish(struct proc * caller, message *msg, int result)
 
 **语义**：分两条路径——VmSuspend 保存上下文待 resume；其他路径构造回复消息并 `copy_msg_to_user` 投递到用户空间。`copy_msg_to_user` 失败时通过 `cause_sig` 发送 SIGSEGV。
 
-#### 2.4.3 kernel_call（system.c:136-167）
+#### 2.4.3 kernel_call（system.c:136-163）
 
 ```c
 void kernel_call(message *m_user, struct proc * caller)
@@ -324,7 +321,7 @@ void kernel_call(message *m_user, struct proc * caller)
 
 **kbill_kcall**：内核计费用全局指针，标记当前正在处理 kernel call 的进程。Rust 当前 DEFERRED（见 §6.2）。
 
-#### 2.4.4 kernel_call_resume（system.c:612-638）
+#### 2.4.4 kernel_call_resume（system.c:612-637）
 
 ```c
 void kernel_call_resume(struct proc *caller)
@@ -352,7 +349,7 @@ void kernel_call_resume(struct proc *caller)
 
 **Rust 必须对齐此时序**（见 §6.1 已修复的 P0 bug）。
 
-#### 2.4.5 system_init（system.c:168-270）
+#### 2.4.5 system_init（system.c:168-269）
 
 ```c
 void system_init(void)
@@ -394,24 +391,24 @@ Rust 等价物：`enum Syscall` 的 `#[repr(u16)]` 值即"注册"，无需 `syst
 | **D5** | `GET_BIT(priv(caller)->s_k_call_mask, call_nr)` | `kcall_filter_check` 运行时位图 | 与 C 一致，进程权限动态配置 |
 | **D6** | `#[cfg(target_arch)]` 条件注册 handler | `ArchSyscall` trait 默认方法返回 `BadCall`，各架构 ZST impl 覆盖支持的方法，`CurrentArchSyscall` 类型别名单一 cfg 选择 | 避免 `#[cfg(target_arch)]` 行为选择散落在分派 match 中（模式 14）；trait 默认方法集中架构差异 |
 | **D7** | `copy_msg_to_user` 内联 | 自由函数 `copy_msg_to_user` 复用 12 delivermsg | 与 12 一致；无过度抽象 |
-| **D8** | C 在汇编 trap 入口 acquire BKL | `kernel_call_dispatch` 入口 acquire；`finish` 统一 release（r2 重构后仅 2 处） | Rust 无汇编层 BKL wrapper；BklGuard RAII 已被 D6 拒绝（BKL 语义需显式 release/reacquire） |
+| **D8** | C 在汇编 trap 入口 acquire BKL | `kernel_call_dispatch` 入口 acquire（`BklGuard` RAII + `mem::forget`）；`finish` 统一 release（r2 重构后仅 2 处 `bkl_unlock`）| Rust 无汇编层 BKL wrapper；RAII guard 的 Drop 被 `mem::forget` 抑制，release 责任显式转移给 `finish`（R-05）；`bkl_guard.section()` 派生 `BklSection` witness 编译期证明 BKL 持有（R-03）|
 | **D9** | `kernel_call_dispatch` 内 `m_type - KERNEL_CALL` | 14 trap 入口归一化，dispatch 接收纯 0..57 索引 | 单一职责——归一化与路由分离 |
 | **D10** | `kernel_call_resume` 在 dispatch **后**清 `MF_KCALL_RESUME` | **对齐 C**（r2 补全 4 个不变量断言） | handlers retry 时仍能感知标志；不变量违反立即 panic |
 
 ### 3.2 D7：copy_msg_to_user 复用 12 delivermsg 机制
 
-**说明**：早期文档提出 `trait MessageCopier` 抽象用户空间访问，但实际代码用自由函数 `copy_msg_to_user`，直接设 `caller.p_delivermsg = msg.clone()` + `set(MF_DELIVERMSG)`。
+**说明**：早期文档提出 `trait MessageCopier` 抽象用户空间访问，但实际代码用自由函数 `copy_msg_to_user`，直接设 `caller.p_delivermsg = *msg` + `set(MF_DELIVERMSG)`。
 
 **为什么不引入 trait**？根据模式 25（不必要的 trait 抽象）：
 - **多态必要性**：仅 1 个实现——所有架构都用相同 `p_delivermsg + MF_DELIVERMSG` 机制
 - **trait bound**：从未被用作泛型约束
 - **机制 vs 策略分离**：用户空间消息投递是机制（12 已定义），不是策略
 
-**最终选择**：自由函数复用 12-ipc-core §1.3 的延迟拷贝设计。`copy_msg_to_user` 实现于 [syscall.rs:1246-1249](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1246-L1249)：
+**最终选择**：自由函数复用 12-ipc-core §1.3 的延迟拷贝设计。`copy_msg_to_user` 实现于 [syscall.rs:2543-2546](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L2543-L2546)：
 
 ```rust
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
-    caller.p_delivermsg = msg.clone();
+    caller.p_delivermsg = *msg;
     caller.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 }
 ```
@@ -420,7 +417,7 @@ fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
 
 ### 3.3 D9：KERNEL_CALL 归一化边界声明
 
-C 在 `kernel_call_dispatch` 内做 `call_nr = msg->m_type - KERNEL_CALL`（system.c:105）。Rust `kernel_call_dispatch` **不**做归一化——`Syscall::try_from(msg.m_type as u16)` 假设 `m_type` 已是 0..57 索引。
+C 在 `kernel_call_dispatch` 内做 `call_nr = msg->m_type - KERNEL_CALL`（system.c:103）。Rust `kernel_call_dispatch` **不**做归一化——`Syscall::try_from(msg.m_type as u16)` 假设 `m_type` 已是 0..57 索引。
 
 **归一化责任上移到 14 trap 入口**：这是架构演进（**ARCH 标记**），将 ABI 偏移与分派路由分离：
 - dispatch 签名保持纯索引输入，可独立测试
@@ -435,7 +432,7 @@ C 用 `#if defined(__i386__)` 条件注册 x86 特有 syscall。Rust 将所有 s
 
 **为什么不直接 `#[cfg(target_arch)]` 排除变体**？这会让 `enum Syscall` 在不同架构上有不同变体集——`match` 的穷尽检查失效，且违反硬件抽象原则（模式 14：行为选择泄漏到编译期）。
 
-**实现**（[syscall.rs:234-360](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L234-L360)）：
+**实现**（[syscall.rs:245-366](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L245-L366)）：
 
 ```rust
 pub trait ArchSyscall {
@@ -458,7 +455,7 @@ impl ArchSyscall for X86_64Syscall {
 pub type CurrentArchSyscall = X86_64Syscall;
 ```
 
-trait 默认方法在此处提供**实现**（BadCall），各架构 ZST impl 覆盖支持的方法——所有架构上 `CurrentArchSyscall::dispatch_devio` 都是合法的 dispatch 路径，只是返回值不同。x86_64 实现位于 `X86_64Syscall` impl（[syscall.rs:287-333](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L287-L333)），委托 `syscall_device::dispatch_*`。
+trait 默认方法在此处提供**实现**（BadCall），各架构 ZST impl 覆盖支持的方法——所有架构上 `CurrentArchSyscall::dispatch_devio` 都是合法的 dispatch 路径，只是返回值不同。x86_64 实现位于 `X86_64Syscall` impl（[syscall.rs:298-350](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L298-L350)），委托 `syscall_device::dispatch_*`。
 
 ---
 
@@ -466,7 +463,7 @@ trait 默认方法在此处提供**实现**（BadCall），各架构 ZST impl �
 
 ### 4.1 Syscall 枚举与 TryFrom
 
-[syscall.rs:48-159](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L48-L159)：
+[syscall.rs:65-119](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L65-L119)：
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,7 +491,7 @@ impl TryFrom<u16> for Syscall {
 **设计要点**：
 - `#[repr(u16)]` 保证 ABI 与 C 编号一致
 - 空缺号通过 `TryFrom` 返回 `Err`，dispatch 转为 `BadCall`
-- 编译期 const assert 验证范围（[syscall.rs:164-168](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L164-L168)）：
+- 编译期 const assert 验证范围（[syscall.rs:180-190](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L180-L190)）：
 
 ```rust
 const _: () = {
@@ -506,7 +503,7 @@ const _: () = {
 
 ### 4.2 KcallResult 枚举
 
-[syscall.rs:179-209](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L179-L209)：
+[syscall.rs:198-211](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L198-L211)：
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -538,7 +535,7 @@ impl KcallResult {
 
 ### 4.3 kernel_call_dispatch
 
-[syscall.rs:218-237](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L218-L237)：
+[syscall.rs:399-424](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L399-L424)：
 
 ```rust
 pub fn kernel_call_dispatch(
@@ -549,23 +546,31 @@ pub fn kernel_call_dispatch(
     clock_state: &mut ClockState,
 ) -> KcallResult {
     // Acquire BKL — C: BKL_LOCK() in mpx.S kernel_call_entry_common
-    // BklGuard is a marker (not RAII); bkl_unlock() is called in kernel_call_finish().
-    let _ = crate::smp::bkl_lock();
-
-    let result = kernel_call_dispatch_inner(caller, msg, priv_table, proc_table, clock_state);
-
-    // Note: BKL is NOT released here. It is released in kernel_call_finish().
+    // R-03: Keep the guard alive and derive a BklSection witness for
+    // compile-time BKL proof on global accessor calls (irq_manager_with, etc.).
+    // R-05: BklGuard is now RAII (Drop releases BKL). We mem::forget the
+    // guard because BKL must stay held until kernel_call_finish() releases it.
+    let bkl_guard = crate::smp::bkl_lock();
+    let result = {
+        let bkl_section = bkl_guard.section();
+        kernel_call_dispatch_inner(caller, msg, priv_table, proc_table, clock_state, &bkl_section)
+    };
+    // BKL is NOT released here — mem::forget prevents Drop from releasing.
+    // BKL is released in:
+    //   1. kernel_call_finish() — for normal completion (before switch_to_user)
+    //   2. switch_to_user() — before returning to user mode
+    core::mem::forget(bkl_guard);
     result
 }
 ```
 
 **签名差异 vs C**：Rust 增加 `proc_table: &mut ProcessTable` 与 `clock_state: &mut ClockState` 参数——C 通过全局 `proc` 数组与 `kglob` 访问，Rust 通过参数注入实现可测试性（anti-translate：避免全局状态依赖，模式 47）。
 
-**BKL acquire 时点**：在 dispatch 入口（对齐 C 在汇编 trap 入口 acquire 的语义）。inner 函数不重复 acquire。
+**BKL acquire 时点**：在 dispatch 入口（对齐 C 在汇编 trap 入口 acquire 的语义）。inner 函数不重复 acquire，但接收 `&BklSection` witness 参数（R-03）——编译期证明调用方已持有 BKL，全局访问器（`irq_manager_with` 等）要求 witness 才能访问。
 
 ### 4.4 kernel_call_dispatch_inner（权限 + 路由）
 
-[syscall.rs:239-321](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L239-L321)：
+[syscall.rs:425-540](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L425-L540)：
 
 ```rust
 fn kernel_call_dispatch_inner(
@@ -574,20 +579,23 @@ fn kernel_call_dispatch_inner(
     priv_table: &mut PrivTable,
     proc_table: &mut crate::proc_table::ProcessTable,
     clock_state: &mut ClockState,
+    bkl_section: &crate::smp::BklSection<'_>,
 ) -> KcallResult {
     let call_nr = msg.m_type as u16;
+
     let syscall = match Syscall::try_from(call_nr) {
         Ok(s) => s,
         Err(()) => return KcallResult::BadCall,
     };
 
-    // s_k_call_mask 权限检查（system.c:107）
-    // Composed as `Option::and_then` + `map_or(true, ...)`:
+    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:111
+    //
+    // Composed as `Option::and_then` + `is_none_or(...)`:
     //   - `None` (no priv_id, or priv_id not in table) → deny (true)
     //   - `Some(priv)` → deny iff `kcall_filter_check` returns false
     let call_denied = caller.priv_id
         .and_then(|id| priv_table.get(id))
-        .map_or(true, |caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
+        .is_none_or(|caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
     if call_denied {
         return KcallResult::CallDenied;
     }
@@ -605,11 +613,11 @@ fn kernel_call_dispatch_inner(
 
 **anti-translate**：C 用 `GET_BIT(priv(caller)->s_k_call_mask, call_nr)`；Rust 用 `KProcess::priv_id: Option<PrivId>` 替代 C 的 `p_priv` 指针（`None` 显式表达"未分配权限"，消除哨兵值模式 17），通过 `PrivTable::get()` 查找。
 
-**卓越性简化（r2）**：原实现用 3 层嵌套 match（10 行）表达"无 priv_id / priv_id 无效 / 权限拒绝"三种 deny 路径。重构为 `Option::and_then + map_or(true, ...)`（3 行）——语义等价但表达更紧凑，符合 Rust 惯用法（`Option` 组合子优先于显式 match）。
+**卓越性简化（r2 + R-16 更新）**：原实现用 3 层嵌套 match（10 行）表达"无 priv_id / priv_id 无效 / 权限拒绝"三种 deny 路径。重构为 `Option::and_then + is_none_or(...)`（3 行）——语义等价但表达更紧凑，符合 Rust 惯用法（`Option` 组合子优先于显式 match）。`is_none_or`（Rust 1.82+）替代原 `map_or(true, ...)`，语义更直白。**R-16 追加**：`msg.m_type as u16` 截断转换带 SAFETY 注释（合法调用号 < NR_SYS_CALLS 在 u16 范围内无损，越界值由 `try_from` 拒绝）。
 
 ### 4.5 kernel_call_finish（卓越性重构后）
 
-[syscall.rs:1288-1326](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1288-L1326)：
+[syscall.rs:2568-2621](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L2568-L2621)：
 
 ```rust
 pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallResult) {
@@ -617,7 +625,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
     // C: system.c:60-63
     if matches!(result, KcallResult::VmSuspend) {
         if let Some(ctx) = caller.p_vm_suspend.as_mut() {
-            ctx.saved_msg = Some(msg.clone());
+            ctx.saved_msg = Some(*msg);
         }
         caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
         crate::smp::bkl_unlock();
@@ -632,7 +640,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
     }
 
     if let Some(errno) = result.reply_code() {
-        let mut reply = msg.clone();
+        let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
         reply.m_type = errno;
         copy_msg_to_user(caller, &reply);
@@ -645,9 +653,9 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
 **卓越性重构（r2）**：原实现把 5 个 `KcallResult` 变体散布在 5 个 match 分支中，导致：
 - 5 处重复 `crate::smp::bkl_unlock()`
 - 4 处重复 `if let Some(ctx) = caller.p_vm_suspend.as_mut() { ctx.saved_msg = ... }`
-- 3 处重复 `let mut reply = msg.clone(); reply.m_source = ...; reply.m_type = ...; copy_msg_to_user(...)`
+- 3 处重复 `let mut reply = *msg; reply.m_source = ...; reply.m_type = ...; copy_msg_to_user(...)`
 
-重构后提取 `KcallResult::reply_code() -> Option<i32>` helper（[syscall.rs:194-209](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L194-L209)），统一非 VmSuspend 路径为单一代码块，对齐 C `system.c:64-89` 的 else-branch 统一处理。
+重构后提取 `KcallResult::reply_code() -> Option<i32>` helper（[syscall.rs:212-244](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L212-L244)），统一非 VmSuspend 路径为单一代码块，对齐 C `system.c:64-89` 的 else-branch 统一处理。
 
 **附带修复 P1 偏离**：原 `BadCall`/`CallDenied` 分支漏掉 `saved_msg = None` cleanup（与 C else-branch 不一致）。虽然实际不触发（`BadCall`/`CallDenied` 不会紧跟 `VmSuspend`），但重构后统一清理，对齐 C 语义。
 
@@ -659,7 +667,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
 
 ### 4.6 kernel_call_resume（卓越性强化后）
 
-[syscall.rs:1342-1378](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1342-L1378)：
+[syscall.rs:2622-2660](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L2622-L2660)：
 
 ```rust
 pub fn kernel_call_resume(
@@ -681,7 +689,7 @@ pub fn kernel_call_resume(
     // violation (missing p_vm_suspend or saved_msg) panics loudly rather
     // than silently dispatching an empty message.
     let saved_msg = caller.p_vm_suspend.as_ref()
-        .and_then(|ctx| ctx.saved_msg.clone())
+        .and_then(|ctx| ctx.saved_*msg)
         .expect("kernel_call_resume: p_vm_suspend.saved_msg must exist \
                  (VmSuspend path in kernel_call_finish always sets it)");
     debug_assert_eq!(saved_msg.m_source, caller.p_endpoint,
@@ -715,11 +723,11 @@ pub fn kernel_call_resume(
 
 ### 4.7 copy_msg_to_user（复用 12 delivermsg）
 
-[syscall.rs:1246-1249](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1246-L1249)：
+[syscall.rs:2543-2546](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L2543-L2546)：
 
 ```rust
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
-    caller.p_delivermsg = msg.clone();
+    caller.p_delivermsg = *msg;
     caller.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 }
 ```
@@ -732,7 +740,7 @@ fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
 
 ### 4.8 dispatch_ipc_entry（IPC trap 入口）
 
-[syscall.rs:523-557](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L523-L557)：
+[syscall.rs:541-575](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L541-L575)：
 
 ```rust
 pub fn dispatch_ipc_entry(
@@ -782,7 +790,7 @@ pub fn dispatch_ipc_entry(
 
 | 架构 | 实现位置 | 机制 |
 |------|---------|------|
-| x86-64 | [x86_64/trap_entry.rs:263-282](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/trap_entry.rs#L263-L282) | `set_gate(IPC_VECTOR=33, entry_point, dpl=3, ist=0, is_trap=true)` |
+| x86-64 | [x86_64/trap_entry.rs:263-284](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/trap_entry.rs#L263-L284) | `set_gate(IPC_VECTOR=33, entry_point, dpl=3, ist=0, is_trap=true)` |
 | aarch64 | [arm64/trap_entry.rs:74-92](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/trap_entry.rs#L74-L92) | no-op（SVC 共享向量，运行时读 `r3` 分流） |
 | riscv64 | [riscv64/trap_entry.rs:77-93](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/trap_entry.rs#L77-L93) | no-op（ecall 共享向量，运行时读 `a7` 分流） |
 
@@ -799,26 +807,26 @@ pub fn dispatch_ipc_entry(
 
 | 测试 | 验证 | 实现位置 |
 |------|------|---------|
-| `Syscall::try_from(0) == Ok(Fork)` | Fork 编号对齐 C | syscall.rs:1363 |
-| `Syscall::try_from(11) == Err(())` | 空缺号编译期排除 | syscall.rs:1371 |
-| `Syscall::try_from(58) == Err(())` | 超出范围排除 | syscall.rs:1372 |
-| `Syscall::try_from(255) == Err(())` | 大值排除 | syscall.rs:1373 |
+| `Syscall::try_from(0) == Ok(Fork)` | Fork 编号对齐 C | syscall.rs:2666 |
+| `Syscall::try_from(11) == Err(())` | 空缺号编译期排除 | syscall.rs:2674 |
+| `Syscall::try_from(58) == Err(())` | 超出范围排除 | syscall.rs:2675 |
+| `Syscall::try_from(255) == Err(())` | 大值排除 | syscall.rs:2676 |
 | `Syscall::Padconf as u16 == 57` | 上界值与 C 一致 | const assert |
 
 ### 5.2 Dispatch 路由与权限
 
 | 测试 | 验证 | 实现位置 |
 |------|------|---------|
-| `dispatch_schedule` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:1993-2002 |
-| `dispatch_schedule` 无效 endpoint → EPERM（先于 endpoint 检查） | 权限优先级 | syscall.rs:2005-2024 |
-| `dispatch_schedule` SYS_PROC caller 通过权限检查 → EINVAL（endpoint NONE） | FIX-25 回归测试：验证 `caller_has_sys_proc_with_table` 正确识别 SYS_PROC，不再被 legacy `caller_has_sys_proc` 误拒 | syscall.rs:2027-2051 |
-| `dispatch_privctl` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2019-2028 |
-| `dispatch_privctl` 未知 request → EINVAL | switch default 分支 | syscall.rs:2031-2060 |
-| `dispatch_privctl` DISALLOW 设置 `RTS_NO_PRIV` | 子命令 (2) 正常路径 | syscall.rs:2063-2093 |
-| `dispatch_privctl` DISALLOW 已设置 → EPERM | 子命令 (2) 边界 | syscall.rs:2096-2123 |
-| `dispatch_privctl` QUERY_MEM 无 mem range → EPERM | 子命令 (8) 边界 | syscall.rs:2126-2156 |
+| `dispatch_schedule` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2683-2694 |
+| `dispatch_schedule` 无效 endpoint → EPERM（先于 endpoint 检查） | 权限优先级 | syscall.rs:2696-2716 |
+| `dispatch_schedule` SYS_PROC caller 通过权限检查 → EINVAL（endpoint NONE） | FIX-25 回归测试：验证 `caller_has_sys_proc_with_table` 正确识别 SYS_PROC，不再被 legacy `caller_has_sys_proc` 误拒 | syscall.rs:2718-2744 |
+| `dispatch_privctl` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2746-2756 |
+| `dispatch_privctl` 未知 request → EINVAL | switch default 分支 | syscall.rs:2758-2786 |
+| `dispatch_privctl` DISALLOW 设置 `RTS_NO_PRIV` | 子命令 (2) 正常路径 | syscall.rs:2788-2817 |
+| `dispatch_privctl` DISALLOW 已设置 → EPERM | 子命令 (2) 边界 | syscall.rs:2819-2845 |
+| `dispatch_privctl` QUERY_MEM 无 mem range → EPERM | 子命令 (8) 边界 | syscall.rs:2847-2876 |
 | `dispatch_privctl` DEFERRED 子命令 → ENOSYS | 子命令 (3/5/6/7/9/11) | **已落地（Phase 6, 2026-08-13）** — 详见 [22-privilege.md §4.7](22-privilege.md) |
-| `dispatch_getmcontext` 无效 endpoint → EINVAL | 边界检查 | syscall.rs:1080-1100 |
+| `dispatch_getmcontext` 无效 endpoint → EINVAL | 边界检查 | syscall.rs:2994-3005 |
 | `dispatch_runctl` 各模式行为 | 多路径分支 | syscall_process 模块测试 |
 | `dispatch_statectl` IPC 过滤器分配 | 复杂路径覆盖 | syscall_process 模块测试 |
 
@@ -834,12 +842,12 @@ pub fn dispatch_ipc_entry(
 
 | 测试点 | 验证 | 实现位置 |
 |--------|------|---------|
-| `CurrentArchSyscall::dispatch_devio` 非 x86_64 (DefaultSyscall) → `BadCall` | D6 trait 默认方法 | syscall.rs:234-239 |
-| `CurrentArchSyscall::dispatch_padconf` 非 ARM (DefaultSyscall/X86_64Syscall) → `BadCall` | D6 trait 默认方法 | syscall.rs:275-278 |
+| `CurrentArchSyscall::dispatch_devio` 非 x86_64 (DefaultSyscall) → `BadCall` | D6 trait 默认方法 | syscall.rs:246-251 |
+| `CurrentArchSyscall::dispatch_padconf` 非 ARM (DefaultSyscall/X86_64Syscall) → `BadCall` | D6 trait 默认方法 | syscall.rs:290-296 |
 
 ### 5.5 测试覆盖现状
 
-当前 syscall 模块共 **147 个测试全通过**（`cargo test -p minix-kernel --lib syscall`）。覆盖 `Syscall::try_from`、`dispatch_schedule`、`dispatch_getmcontext`、`dispatch_runctl`、`dispatch_statectl`、`dispatch_sigsend` 等 handler 的正常路径与边界路径。
+当前 syscall 模块共 **160 个测试全通过 + 1 ignored**（`cargo test -p minix-kernel --lib syscall`，截至 2026-08-14）。覆盖 `Syscall::try_from`、`dispatch_schedule`、`dispatch_getmcontext`、`dispatch_runctl`、`dispatch_statectl`、`dispatch_sigsend` 等 handler 的正常路径与边界路径。
 
 **缺口**：`kernel_call_dispatch` 入口 BKL acquire 路径、`kernel_call_finish` 各分支 BKL release 路径、`kernel_call_resume` retry 行为的端到端测试当前依赖集成测试（switch_to_user 路径），单测覆盖较弱。
 
@@ -864,9 +872,9 @@ pub fn dispatch_ipc_entry(
 
 **问题**：原 Rust 实现在 dispatch 之前 clear `KCALL_RESUME`，handlers 无法感知 retry。
 
-**修复**（[syscall.rs:1342-1378](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1342-L1378)）：调整顺序——dispatch 先执行（保持 set），dispatch 返回后才 clear，对齐 C system.c:630-635。
+**修复**（[syscall.rs:2622-2660](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L2622-L2660)）：调整顺序——dispatch 先执行（保持 set），dispatch 返回后才 clear，对齐 C system.c:630-635。
 
-**验证**：`cargo test -p minix-kernel --lib syscall` 147/147 PASS。
+**验证**：`cargo test -p minix-kernel --lib syscall` 160/160 PASS（+1 ignored）。
 
 ### 6.2 r2 卓越性重构（已完成）
 
@@ -874,14 +882,14 @@ r2 回归 review 中实施了 4 项卓越性改进：
 
 | ID | 改进 | 价值 | 验证 |
 |----|------|------|------|
-| E1 | `kernel_call_finish` 提取 `KcallResult::reply_code()` helper + 统一非 VmSuspend 路径 | 消除 5×`bkl_unlock` + 4×`clear saved_msg` + 3×`build reply` 重复；修复 BadCall/CallDenied 漏 clear saved_msg 的 P1 偏离 | 147 tests PASS |
-| E2 | 补全 `kernel_call_resume` 的 4 个 VMSUSPEND 不变量断言 | 对齐 C system.c:616-619；debug build 下立即暴露不变量违反 | 147 tests PASS |
-| E3 | `kernel_call_resume` 用 `expect` 替代 `unwrap_or_default()` | 不变量违反立即 panic 而非静默用 default message | 147 tests PASS |
-| E4 | `priv_id` 检查链简化为 `Option::and_then + map_or` | 10 行 → 3 行；符合 Rust 惯用法（组合子优先于显式 match） | 147 tests PASS |
+| E1 | `kernel_call_finish` 提取 `KcallResult::reply_code()` helper + 统一非 VmSuspend 路径 | 消除 5×`bkl_unlock` + 4×`clear saved_msg` + 3×`build reply` 重复；修复 BadCall/CallDenied 漏 clear saved_msg 的 P1 偏离 | 160 tests PASS |
+| E2 | 补全 `kernel_call_resume` 的 4 个 VMSUSPEND 不变量断言 | 对齐 C system.c:616-619；debug build 下立即暴露不变量违反 | 160 tests PASS |
+| E3 | `kernel_call_resume` 用 `expect` 替代 `unwrap_or_default()` | 不变量违反立即 panic 而非静默用 default message | 160 tests PASS |
+| E4 | `priv_id` 检查链简化为 `Option::and_then + is_none_or` | 10 行 → 3 行；符合 Rust 惯用法（组合子优先于显式 match） | 160 tests PASS |
 
 **取消的改进（避免过度设计）**：
 - E5（dispatch_arch_* stub 用 macro）：已由 `ArchSyscall` trait 默认方法替代——trait 提供统一默认实现，无需 macro。
-- BklGuard RAII：D6 已明确拒绝（BKL 语义需要显式 release/reacquire 围绕阻塞操作，RAII 会隐藏 release 点）。
+- ~~BklGuard RAII~~：**已落地（R-05，2026-08-12）**——BklGuard 升级为 RAII（Drop 释放），dispatch 路径用 `mem::forget` 抑制 Drop，release 责任显式转移给 `kernel_call_finish`；`bkl_guard.section()` 派生 `BklSection` witness（R-03）编译期证明 BKL 持有。原"RAII 会隐藏 release 点"顾虑由 forget + 显式 `bkl_unlock` 解决。
 - Syscall::try_from 简化：强行简化降低可读性，当前 match 虽多但清晰、穷尽、编译器可优化。
 - KcallResult::Ok 拆分：API 变更影响 43 个 handler，避免过度设计。
 
@@ -897,7 +905,7 @@ C 在 `kernel_call` 中设置 `kbill_kcall = caller` 标记当前正在处理 ke
 
 ### 6.5 errno newtype（P2，改进方向）
 
-当前 `const EBADREQUEST: i32 = 212;` 等裸常量（[syscall.rs:1243-1245](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1243-L1245)）仍是模式 16（裸整数表达语义）。改进方向：引入 `errno` newtype 或合并到 `KcallResult` 变体。
+当前 `const EBADREQUEST: i32 = 212;` 等裸常量（[syscall.rs:2540-2542](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L1243-L1245)）仍是模式 16（裸整数表达语义）。改进方向：引入 `errno` newtype 或合并到 `KcallResult` 变体。
 
 ---
 
@@ -921,7 +929,7 @@ C 在 `kernel_call` 中设置 `kbill_kcall = caller` 标记当前正在处理 ke
 
 ### 7.3 外部参考
 
-- `minix3/minix/kernel/system.c:52-167` — `call_vec` + `kernel_call_dispatch` + `kernel_call_finish` + `kernel_call`
-- `minix3/minix/kernel/system.c:612-638` — `kernel_call_resume`
+- `minix3/minix/kernel/system.c:52-163` — `call_vec` + `kernel_call_dispatch` + `kernel_call_finish` + `kernel_call`
+- `minix3/minix/kernel/system.c:612-637` — `kernel_call_resume`
 - `minix3/minix/include/minix/com.h:207-270` — `SYS_*` 常量 + `NR_SYS_CALLS` + `KERNEL_CALL`
-- [os/kernel/src/syscall.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs) — Rust 实现（1359 行）
+- [os/kernel/src/syscall.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs) — Rust 实现（3298 行）
