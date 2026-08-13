@@ -6,7 +6,7 @@
 //! - `priv.h:35,38,46,86,87` — `s_ipc_to`, `s_k_call_mask`, `s_ipcf` fields;
 //!   `may_send_to`, `may_asynsend_to` macros
 //! - `ipc.h:14-22` — `WILLRECEIVE`, `CANRECEIVE` macros (receive-time filter)
-//! - `ipc.h:40-48` — `IPC_STATUS_ADD/ADD_CALL/ADD_FLAGS` macros (status report)
+//! - `ipc.h:25-48` — `IPC_STATUS_GET/CLEAR/ADD/ADD_CALL/ADD_FLAGS` macros (status report)
 //! - `ipc_filter.h` — `IPCF_NONE/BLACKLIST/WHITELIST`, `IPCF_POOL_*` macros,
 //!   `struct ipc_filter_s` (filter chain node)
 //! - `include/minix/ipc_filter.h` — `IPCF_MATCH_M_SOURCE/M_TYPE` flags,
@@ -40,7 +40,7 @@ use crate::kpriv::KPriv;
 pub const EPERM: i32 = 1;
 
 /// Maximum system call number for mask checking.
-/// C: `NR_SYS_CALLS` — callnr.h (58 in Minix3)
+/// C: `NR_SYS_CALLS` — com.h:270 (58 in Minix3)
 pub const NR_SYS_CALLS: usize = 58;
 
 // ── IPC filter functions ──
@@ -63,11 +63,13 @@ pub(crate) fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool 
 /// Check if a process may invoke a specific kernel system call.
 ///
 /// C: `GET_BIT(priv(caller)->s_k_call_mask, call_nr)` — system.c:111
-/// Bitmap primitive `GET_BIT` uses `get_sys_bit` (const.h:20).
+/// Bitmap primitive `GET_BIT` (bitmap.h:16) — an independent macro mapping
+/// directly into a plain `bitchunk_t` array; same expansion shape as
+/// `get_sys_bit` (const.h:20) but NOT an alias (different argument types).
 ///
 /// Uses the `s_k_call_mask` bitmap. Each bit corresponds to a system call number.
 /// Returns `true` if the call is permitted, `false` otherwise.
-/// C returns `ECALLDENIED` (com.h:210) on denial — see syscall.rs `KcallResult::CallDenied`.
+/// C returns `ECALLDENIED` (errno.h:206) on denial — see syscall.rs `KcallResult::CallDenied`.
 #[inline]
 pub(crate) fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
     if call_nr as usize >= 64 {

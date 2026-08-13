@@ -205,7 +205,7 @@ pub enum KcallResult {
     /// Invalid or unimplemented syscall number (C: EBADREQUEST = 212).
     BadCall,
     /// Caller lacks permission for this system call (C: ECALLDENIED = 210).
-    /// C: `!GET_BIT(priv(caller)->s_k_call_mask, call_nr)` — system.c:107
+    /// C: `!GET_BIT(priv(caller)->s_k_call_mask, call_nr)` — system.c:111
     CallDenied,
 }
 
@@ -444,12 +444,13 @@ fn kernel_call_dispatch_inner(
         Err(()) => return KcallResult::BadCall,
     };
 
-    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:107
+    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:111
     // Check if the caller has permission to invoke this system call.
     // Processes without an assigned privilege (priv_id == None) are denied
     // all kernel calls — this should not happen for running processes.
     //
-    // Composed as `Option::and_then` + `map_or(true, ...)`:
+    // Composed as `Option::and_then` + `is_none_or(...)`:  `is_none_or` has
+    // the same semantics as `map_or(true, ...)` (None → deny, i.e. true):
     //   - `None` (no priv_id, or priv_id not in table) → deny (true)
     //   - `Some(priv)` → deny iff `kcall_filter_check` returns false
     let call_denied = caller.priv_id
