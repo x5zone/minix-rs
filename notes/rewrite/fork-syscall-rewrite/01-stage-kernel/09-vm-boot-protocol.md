@@ -106,7 +106,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 - `VMCTL_SETADDRSPACE` 同时清除 `RTS_VMINHIBIT`——VM 设置完页表后进程立即可调度
 - 如果设置的是当前运行进程（ptproc）的 CR3，立即刷新硬件 CR3
 - 如果设置的是 VM 进程的 CR3，调用 `arch_enable_paging()` 启用分页
-- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（[os/arch/src/arch/tlb_arch.rs:135](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（[os/kernel/src/lib.rs:1976](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `current_ptproc_nr()` 访问器（[os/kernel/src/lib.rs:1994](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
+- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（[os/arch/src/arch/tlb_arch.rs:135](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（[os/kernel/src/lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `current_ptproc_nr()` 访问器（[os/kernel/src/lib.rs:2054](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
 
 ### 2.3 VMCTL_MEMREQ_GET/REPLY — VM 请求获取与回复
 
@@ -168,8 +168,9 @@ VM 回复请求结果。根据 `VMSTYPE_*` 类型设置不同的恢复标志：
 /// VMCTL 子命令参数。
 /// C: SVMCTL_PARAM 字段，minix/com.h VMCTL_* 定义
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
 pub enum VmCtlParam {
+    // 无 #[repr(u32)]：判别值经 TryFrom<i32> 显式 match 映射
+    // （vm.rs:758-779），与 C SVMCTL_PARAM (m1_i2, i32) 对应。
     ClearPageFault,     // VMCTL_CLEAR_PAGEFAULT
     MemReqGet,          // VMCTL_MEMREQ_GET
     MemReqReply,        // VMCTL_MEMREQ_REPLY
@@ -196,7 +197,7 @@ pub enum VmCtlParam {
 ### 4.3 VmCtlResult / VmCtlError 枚举
 
 ```rust
-// os/kernel/src/vm.rs:700
+// os/kernel/src/vm.rs:794
 /// VMCTL 返回值。C: do_vmctl 返回 int（OK/ENOENT/EINVAL/VMSUSPEND=−996/VMPTYPE_CHECK=1）
 pub enum VmCtlResult {
     Ok(i32),      // OK=0, ENOENT=2, EINVAL=22, VMPTYPE_CHECK=1
@@ -204,7 +205,7 @@ pub enum VmCtlResult {
     BadParam,     // arch_do_vmctl default 分支 EINVAL
 }
 
-// os/kernel/src/vm.rs:713
+// os/kernel/src/vm.rs:807
 /// VMCTL 错误分类（用于内部处理，不直接返回 VM）
 pub enum VmCtlError {
     NoRequest,       // ENOENT: vmrequest 链表无匹配
@@ -220,10 +221,10 @@ pub enum VmCtlError {
 
 ### 4.4 dispatch_vmctl 实现
 
-**位置**: `os/kernel/src/syscall.rs:665`（~200 行完整实现，由 `kernel_call_dispatch` 统一分派）
+**位置**: `os/kernel/src/syscall.rs:1751`（~350 行完整实现，由 `kernel_call_dispatch` 统一分派）
 
 ```rust
-// os/kernel/src/syscall.rs:665
+// os/kernel/src/syscall.rs:1751
 /// 处理 SYS_VMCTL 系统调用。
 /// C: do_vmctl() — do_vmctl.c:17-173
 fn dispatch_vmctl(
@@ -236,7 +237,7 @@ fn dispatch_vmctl(
     // 3. SVMCTL_WHO == SELF → caller endpoint
     // 4. isokendpt + proc_table.get_mut(target_nr)
     // 5. VmCtlParam::try_from(SVMCTL_PARAM) → BadParam 失败
-    // 6. match VmCtlParam 分派到 13 个分支：
+    // 6. match VmCtlParam 分派到 12 个 match arm（13 变体，KernPhysMap/KernMapReply 合并）：
     //    - ClearPageFault: assert→EINVAL 检查 + RTS_UNSET(PAGEFAULT)
     //    - MemReqGet: VmRequestQueue::next_request → Ok(VMPTYPE_CHECK) / ENOENT
     //    - MemReqReply: assert→EINVAL + 设置 vmresult + MF_KCALL_RESUME + RTS_UNSET(VMREQUEST)
@@ -253,12 +254,12 @@ fn dispatch_vmctl(
 
 ### 4.5 SetAddrSpace 分支实现
 
-**位置**: `os/kernel/src/syscall.rs:1967`
+**位置**: `os/kernel/src/syscall.rs:1963`
 
 对应 C 的 `setcr3()`（arch_do_vmctl.c:19-33）5 步时序：
 
 ```rust
-// os/kernel/src/syscall.rs:1967
+// os/kernel/src/syscall.rs:1963
 VmCtlParam::SetAddrSpace => {
     // SVMCTL_PTROOT = m1_i3, SVMCTL_PTROOT_V = m1_p1
     let ptroot_phys = value_raw as u64;
@@ -321,7 +322,7 @@ VmCtlParam::SetAddrSpace => {
 
 ### 4.7 GetPdbr / FlushTlb / InvlPg / ClearMapCache 实现（FIX-24, Phase 5）
 
-C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（[os/kernel/src/syscall.rs:1200-1481](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）。
+C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（[os/kernel/src/syscall.rs:1751-2098](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）。
 
 **TlbArch trait 抽象**（[os/arch/src/arch/tlb_arch.rs](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)）：
 
@@ -355,10 +356,10 @@ pub trait TlbArch {
 
 | 子命令 | C 位置 | Rust 实现 | 状态 |
 |--------|--------|----------|------|
-| `GetPdbr` | arch_do_vmctl.c:38-40 | 读 `p.p_seg.phys_root.0 as i32` | ✅ 已实现 |
-| `FlushTlb` | arch_do_vmctl.c:42-44 | `unsafe { CurrentTlbArch::flush_all(); }` | ✅ 已实现 |
-| `InvlPg` | arch_do_vmctl.c:52-54 | `unsafe { CurrentTlbArch::flush_addr(VirBytes(value_raw as u64)); }` | ✅ 已实现 |
-| `ClearMapCache` | do_vmctl.c:161-164 | `VmCtlResult::Ok(0)` — **WONTFIX**（64-bit Direct Map 无 cache table） | ✅ 已实现（no-op） |
+| `GetPdbr` | arch_do_vmctl.c:44-47 | 读 `p.p_seg.phys_root.0 as i32` | ✅ 已实现 |
+| `FlushTlb` | arch_do_vmctl.c:51-55 | `unsafe { CurrentTlbArch::flush_all(); }` | ✅ 已实现 |
+| `InvlPg` | arch_do_vmctl.c:56-60 | `unsafe { CurrentTlbArch::flush_addr(VirBytes(value_raw as u64)); }` | ✅ 已实现 |
+| `ClearMapCache` | do_vmctl.c:162-165 | `VmCtlResult::Ok(0)` — **WONTFIX**（64-bit Direct Map 无 cache table） | ✅ 已实现（no-op） |
 
 **设计决策**：
 - **为何 `TlbArch` 是关联函数而非实例方法**: TLB flush 操作当前 CPU 的 TLB，是全局资源不绑定具体 `Paging` 实例。C 的 `write_cr3`/`invlpg` 也是 free function
@@ -372,29 +373,29 @@ C 的 `setcr3()` 用指针同一性 `if (p == get_cpulocal_var(ptproc))` 判断�
 
 #### 4.8.1 CURRENT_PTPROC_NR 内核全局
 
-**位置**: [os/kernel/src/lib.rs:1976](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: [os/kernel/src/lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
 
 ```rust
-// os/kernel/src/lib.rs:1976
+// os/kernel/src/lib.rs:2036
 static CURRENT_PTPROC_NR: AtomicI32 = AtomicI32::new(i32::MIN);
 
 /// Sentinel value indicating CURRENT_PTPROC_NR has not been initialized.
 /// Distinct from any valid proc-nr (user procs ≥ 0, kernel tasks in -NR_TASKS..=-1).
-const PTPROC_UNSET: i32 = i32::MIN;  // lib.rs:1981
+const PTPROC_UNSET: i32 = i32::MIN;  // lib.rs:2041
 
 /// Read the proc-nr of the current ptproc. Returns None if not yet set.
-pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {  // lib.rs:1994
+pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {  // lib.rs:2054
     let v = CURRENT_PTPROC_NR.load(Ordering::Acquire);
     if v == PTPROC_UNSET { None } else { Some(crate::proc::ProcNr(v)) }
 }
 
 /// Set the current ptproc proc-nr. Called once during init_post_and_memory.
-pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:2015
+pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:2075
     CURRENT_PTPROC_NR.store(nr.0, Ordering::Release);
 }
 ```
 
-**初始化**：`init_post_and_memory` 在调用 arch 层 `CurrentPostInitArch::set_ptproc` 之后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（[os/kernel/src/lib.rs:1005](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。
+**初始化**：`init_post_and_memory` 在调用 arch 层 `CurrentPostInitArch::set_ptproc` 之后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（[os/kernel/src/lib.rs:1057](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。
 
 **为何用 proc-nr 比较而非指针同一性**：C 比较 `struct proc *` 指针，Rust 用 `ProcNr`（i32 进程表索引）。两者等价——proc-nrs 唯一标识 `ProcessTable` 中的进程槽位，一一对应无别名（同一 proc-nr 永远映射到同一 `KProcess`）。proc-nr 比较还避免了裸指针的不安全性，与 [16-smp.md §D8](16-smp.md) 的 per-CPU 索引设计一致（`proc_ptr`/`fpu_owner` 均用 `Option<ProcNr>`）。
 
@@ -422,29 +423,29 @@ C 的 `arch_boot_proc()` 在 boot 期间把 VM ELF 段映射进 bootstrap 页表
 
 #### 4.9.1 CURRENT_ROOT_PHYS 内核全局
 
-**位置**: [os/kernel/src/lib.rs:2043](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: [os/kernel/src/lib.rs:2103](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
 
 ```rust
-// os/kernel/src/lib.rs:2043
+// os/kernel/src/lib.rs:2103
 static CURRENT_ROOT_PHYS: AtomicU64 = AtomicU64::new(ROOT_PHYS_UNSET);
 
 /// Sentinel: u64::MAX. Distinct from any 4KB-aligned physical address.
-const ROOT_PHYS_UNSET: u64 = u64::MAX;  // lib.rs:2047
+const ROOT_PHYS_UNSET: u64 = u64::MAX;  // lib.rs:2107
 
 /// Read the bootstrap page-table root physical address.
 /// Returns None before arch_boot_impl has run.
-pub fn current_root_phys() -> Option<minix_types::PhysBytes> {  // lib.rs:2061
+pub fn current_root_phys() -> Option<minix_types::PhysBytes> {  // lib.rs:2121
     let v = CURRENT_ROOT_PHYS.load(Ordering::Acquire);
     if v == ROOT_PHYS_UNSET { None } else { Some(minix_types::PhysBytes(v)) }
 }
 
 /// Record the bootstrap root. Called from arch_boot_impl after enable().
-pub fn set_current_root_phys(phys: minix_types::PhysBytes) {  // lib.rs:2080
+pub fn set_current_root_phys(phys: minix_types::PhysBytes) {  // lib.rs:2140
     CURRENT_ROOT_PHYS.store(phys.0, Ordering::Release);
 }
 ```
 
-**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（[os/kernel/src/lib.rs:265](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
+**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（[os/kernel/src/lib.rs:270](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
 
 **Sentinel 设计**：`ROOT_PHYS_UNSET = u64::MAX` 不是 4KB 对齐（低 12 位非零），永远不可能与真实页表根物理地址冲突。
 
@@ -467,7 +468,7 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 #### 4.9.3 init_proc_and_boot 非 mock 路径
 
-**位置**: [os/kernel/src/lib.rs:907-958](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: [os/kernel/src/lib.rs:913-967](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
 
 ```rust
 // FIX-24 (Phase 9): Real VM ELF loading at boot.
@@ -508,12 +509,12 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 | 测试 | 文件:行 | 验证内容 |
 |------|--------|---------|
-| `test_root_phys_unset_returns_none_before_boot` | `lib.rs:2953` | boot 前 `current_root_phys()` 返回 None |
-| `test_root_phys_set_returns_recorded_value` | `lib.rs:2963` | `set_current_root_phys` 后能读回 |
-| `test_root_phys_set_is_idempotent` | `lib.rs:2974` | 重复 set 不破坏状态 |
-| `test_root_phys_sentinel_distinct_from_valid_addresses` | `lib.rs:2986` | `ROOT_PHYS_UNSET` 与合法地址不冲突 |
-| `test_from_active_root_round_trip_root_paddr` | `lib.rs:3003` | `from_active_root` 后 `root_paddr()` 一致 |
-| `test_from_active_root_does_not_allocate_via_new_mock_path` | `lib.rs:3021` | `from_active_root` 不走 `new_mock` 分配路径 |
+| `test_root_phys_unset_returns_none_before_boot` | `lib.rs:2971` | boot 前 `current_root_phys()` 返回 None |
+| `test_root_phys_set_returns_recorded_value` | `lib.rs:2981` | `set_current_root_phys` 后能读回 |
+| `test_root_phys_set_is_idempotent` | `lib.rs:2992` | 重复 set 不破坏状态 |
+| `test_root_phys_sentinel_distinct_from_valid_addresses` | `lib.rs:3004` | `ROOT_PHYS_UNSET` 与合法地址不冲突 |
+| `test_from_active_root_round_trip_root_paddr` | `lib.rs:3021` | `from_active_root` 后 `root_paddr()` 一致 |
+| `test_from_active_root_does_not_allocate_via_new_mock_path` | `lib.rs:3039` | `from_active_root` 不走 `new_mock` 分配路径 |
 
 ---
 
@@ -523,23 +524,23 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 | 测试 | 文件:行 | 验证内容 |
 |------|--------|---------|
-| `test_vmctl_param_from_u32` | `vm.rs:1295` | 合法/非法 `VmCtlParam` 转换 |
-| `test_vmctl_result_variants` | `vm.rs:1311` | `VmCtlResult` 与 C 错误码对应 |
-| `test_vm_memreq_get_empty_queue` | `proc_table.rs:1136` | 空队列返回 ENOENT |
-| `test_vm_memreq_get_dequeues_pending_request` | `proc_table.rs:1145` | MemReqGet 取出 pending 请求 |
-| `test_vm_memreq_reply_completes_request` | `proc_table.rs:1191` | MemReqReply 完成请求并设置结果 |
-| `test_vm_memreq_reply_invalid_state` | `proc_table.rs:1229` | 非法状态下回复返回错误 |
+| `test_vmctl_param_from_u32` | `vm.rs:1387` | 合法/非法 `VmCtlParam` 转换 |
+| `test_vmctl_result_variants` | `vm.rs:1403` | `VmCtlResult` 与 C 错误码对应 |
+| `test_vm_memreq_get_empty_queue` | `proc_table.rs:1390` | 空队列返回 ENOENT |
+| `test_vm_memreq_get_dequeues_pending_request` | `proc_table.rs:1399` | MemReqGet 取出 pending 请求 |
+| `test_vm_memreq_reply_completes_request` | `proc_table.rs:1445` | MemReqReply 完成请求并设置结果 |
+| `test_vm_memreq_reply_invalid_state` | `proc_table.rs:1483` | 非法状态下回复返回错误 |
 
 ### 5.2 集成测试
 
 | 测试 | 文件:行 | 验证内容 |
 |------|--------|---------|
-| `vm_suspend_state_pending_to_fetched` | `vm.rs:990` | `VmSuspendState` Pending→Fetched |
-| `vm_suspend_state_fetched_to_completed` | `vm.rs:999` | `VmSuspendState` Fetched→Completed |
-| `vm_suspend_state_pending_is_initial` | `vm.rs:1115` | Pending 为初始状态 |
-| `vm_suspend_state_fetched_after_memreq_get` | `vm.rs:1122` | MemReqGet 后转 Fetched |
-| `kernel_call_resume_returns_ok_on_success` | `vm.rs:1211` | `kernel_call_resume` 成功路径 |
-| `kernel_call_resume_returns_fault_on_failure` | `vm.rs:1224` | `kernel_call_resume` 失败路径 |
+| `vm_suspend_state_pending_to_fetched` | `vm.rs:1082` | `VmSuspendState` Pending→Fetched |
+| `vm_suspend_state_fetched_to_completed` | `vm.rs:1091` | `VmSuspendState` Fetched→Completed |
+| `vm_suspend_state_pending_is_initial` | `vm.rs:1207` | Pending 为初始状态 |
+| `vm_suspend_state_fetched_after_memreq_get` | `vm.rs:1214` | MemReqGet 后转 Fetched |
+| `kernel_call_resume_returns_ok_on_success` | `vm.rs:1303` | `kernel_call_resume` 成功路径 |
+| `kernel_call_resume_returns_fault_on_failure` | `vm.rs:1316` | `kernel_call_resume` 失败路径 |
 
 ---
 
@@ -552,13 +553,13 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 ### 6.1 08 委派职责（待补）
 
-08 文档 §676 委派给 09 的两个 `kinfo` 字段更新当前未在 09 实现：
+08 文档 §4.5「已知缺口」段委派给 09 的两个 `kinfo` 字段更新当前未在 09 实现：
 
-- `kinfo.mmap_size`: VM direct map 窗口大小（用于 PM/VFS 等查询 VM 地址空间布局）
-- `kinfo.mem_high_phys`: 系统最高物理地址（用于内核/VM 内存布局一致性）
+- `kinfo.mmap_size`（pg_utils.c:110-111）：memmap 数组已用条目数（`if(m >= cbi->mmap_size) cbi->mmap_size = m+1;`）
+- `kinfo.mem_high_phys`（pg_utils.c:112-115）：系统最高物理地址（`highmark = addr + len` 跟踪）
 
 **当前状态**: 这两个字段在 08 的 `bsp_finish_booting` 阶段未更新，09 的 `SetAddrSpace` 分支也未覆盖。
 
-**原因**: `mmap_size` + `mem_high_phys` 的更新依赖 VM 启动后向内核回报地址空间布局（通过 `VMCTL_KERN_MAP_REPLY` 或独立机制），而 64 位 Direct Map 模型下 `KERN_PHYSMAP`/`KERN_MAP_REPLY` 返回 ENOSYS（见 §4.6），因此这两个字段的更新路径需要单独设计。
+**原因**: C 的 `add_memmap()`（pg_utils.c:86-118）在 boot 期维护这两个字段，**与 VM 启动无关**。Rust 侧 `KernelInfo` 是 immutable（`&KernelInfo`），`add_memmap` 无法修改，需由调用者（kmain Phase F 之后的可变内核状态持有者）更新（08 doc §4.5 委派原因）。
 
-**待后续阶段补齐**: 待 VM direct map 的实际大小 + 最高物理地址在 boot 阶段确定后，在 `dispatch_vmctl` 中补充分支或通过独立 `SYS_GETINFO` 路径更新。本阶段标记为 DEFERRED。
+**待后续阶段补齐**: 待 Rust 侧获得可变内核状态后，在相应更新点补齐（或经独立 `SYS_GETINFO` 路径读取）。本阶段标记为 DEFERRED。
