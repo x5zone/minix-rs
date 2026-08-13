@@ -10,6 +10,15 @@
 >    （2026-08-14），每条带文档出处，跨文档去重。
 > 原历史归档（18 节完整内容）完整保留于 §H。
 
+## 0.1 处理状态总览（2026-08-14 修复会话）
+
+| 分类 | 处理 | 明细 |
+|------|------|------|
+| ✅ 已修复（代码落地 + 测试通过） | **3 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留） |
+| ✅ 已实现（原记录过时，非缺口） | **5 项** | D-26~D-29 GETINFO 全部 10 分支（dispatch_getinfo misc.rs:660-1121）、D-38 ②③ BKL 接入（lib.rs:1956/:2167） |
+| 📌 保持 DEFERRED（已核实依赖仍成立） | **4 项更新** | D-14（syscall.rs:2286 注释确认 + 行号更正）、D-15（NotifyAlarm 无生产调用方）、I-2（release/version 无消费方，待 MINIX_KERNINFO）、I-6（bill_ptr 调度循环仍 placeholder） |
+| ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D1/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节） |
+
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
 
 | 维度 | 现状 | 评价 |
@@ -22,7 +31,7 @@
 | 跨空间拷贝 | `cross_space_copy<D: DirectMapArch>` 泛型核心（vm.rs）+ `cross_space.rs` vmcheck 封装，职责分层 | ✅ |
 | 依赖注入 | syscall dispatch 显式传 `&mut ProcessTable` / `&PrivTable`；全局访问 33 裸 + 35 witness | ✅ 混合模式见 §A1 |
 | boot 契约 | `minix-boot::KernelInfo`（含 `validate()`）为 kernel/boot-shim 唯一契约 | ✅ |
-| 占位符 | `todo!`/`unimplemented!` = **0**；`unsafe impl Sync/Send` 全库仅 4 处真实实现（pt_alloc:46 / lib.rs:1155 / protection.rs:175-176，均有论证；F1 指出 pt_alloc 论证模型错位） | ✅ 基线 + F1 |
+| 占位符 | `todo!`/`unimplemented!` = **0**；`unsafe impl Sync/Send` 全库仅 4 处真实实现（pt_alloc:46 / lib.rs:1155 / protection.rs:175-176，均有论证） | ✅ 基线（F1 已解决） |
 | 平台发现 | `PlatformContext` write-once（AssumeSyncCell）+ `&'static dyn PlatformDesc` | ✅ 论证完整 |
 
 ## 1. 建议总览
@@ -35,10 +44,10 @@
 | C1 | kernel | 5 个 250-550 行 dispatch 大函数按语义拆分（精确测量） | P2 | ☐ |
 | D1 | kernel/全层 | errno newtype 化（消除裸 i32 常量 + 三套错误并存） | P1 | ☐ |
 | D2 | kernel | 14 个模块级错误枚举统一 errno 映射 trait | P2 | ☐ |
-| D3 | kernel/arch | `Result<(), ()>` 7 处清理（C-D-5 扩展） | P2 | ☐ |
+| D3 | kernel/arch | `Result<(), ()>` 7 处清理（C-D-5 扩展） | P2 | ✅ 已解决（2026-08-14，见 §2 D3 节） |
 | E1 | arch | 聚合 trait `Arch`（16 个细粒度 trait → 单点 `CurrentArch`） | P1 | ☐ |
-| F1 | arch | `pt_alloc` unsafe 论证模型错位（single-threaded → SMP+BKL） | P1 | ☐ |
-| F2 | arch | `pt_alloc::register` 防重复注册 + Release/Acquire 同步 | P2 | ☐ |
+| F1 | arch | `pt_alloc` unsafe 论证模型错位（single-threaded → SMP+BKL） | P1 | ✅ 已解决（2026-08-14，见 §4 F1 节） |
+| F2 | arch | `pt_alloc::register` 防重复注册 + Release/Acquire 同步 | P2 | ✅ 已解决（2026-08-14，见 §4 F2 节） |
 | G1 | 跨层 | `ProcNr` 双定义（arch `i32` alias vs kernel newtype）→ 上移 minix-types | P1 | ☐ |
 | M1 | qemu-tests | 19 个 test-kernel 重复配置 → workspace 依赖 + 模板生成 | P2 | ☐ |
 | R1 | arch | PTE 位权威位置（Paging trait 关联常量，Redox rmm `ENTRY_FLAG_*` 同款） | P2 | ☐ |
@@ -138,7 +147,7 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 消灭手写映射函数（`sched_proc_error_to_errno` sched.rs:428 等 14 行级小映射仍属可接受，但一致性应统一）——
 映射逻辑归属错误类型自身。
 
-### D3. `Result<(), ()>` 7 处清理 [P2, C-D-5 扩展]
+### D3. `Result<(), ()>` 7 处清理 [P2, C-D-5 扩展] — ✅ 已解决（2026-08-14）
 
 原 C-D-5 记录 4 处，全库实际 **7 处**：
 - `kernel/clock.rs:293` `init_profile_clock`
@@ -148,6 +157,13 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 
 建议：`write_user_register` 定义为 `Result<(), Errno>`（trait 签名级修改，三 arch + mock 同步）；
 `init_profile_clock`/`enqueue_and_notify` 返回模块级错误枚举。
+
+**解决记录（2026-08-14）**：6/7 处落地**命名错误类型**——
+- `ProfileClockError`（`os/arch/src/arch/clock.rs` trait 签名 + x86_64/arm64/riscv64/mock 同步，`Err(ProfileClockError::Unsupported)`）
+- `WriteUserRegError`（`os/arch/src/arch/boot.rs` trait 签名 + 三 arch + mock 同步，`BadAddress`/`Protected` 两变体）
+- `init_profile_clock` 返回 `Result<(), ProfileClockError>`（`os/kernel/src/clock.rs`）
+- `enqueue_and_notify`（`os/kernel/src/vm.rs:645`）按 **R-18 决策**保留 `Result<(), ()>`——单一失败模式 API，理由已文档化，为全库仅剩的 result_unit_err allow
+- 验证：172 arch + 610 kernel tests 通过，clippy 干净，`rg "TODO(C-D-5)"` = 0
 
 ## 4. Arch 层建议
 
@@ -171,7 +187,7 @@ trait 细粒度保留（mock 组合不变）。
 
 **代价**：调用点迁移 ~50-100 处；**先 OQ 确认**（细粒度直呼 vs 聚合——两者可长期并存）。
 
-### F1. `pt_alloc` unsafe 论证模型错位 [P1]
+### F1. `pt_alloc` unsafe 论证模型错位 [P1] — ✅ 已解决（2026-08-14）
 
 **现状**：`arch/pt_alloc.rs:35-40` 用 **"single-threaded event loop model"** 论证
 `unsafe impl Sync for PtAllocSlot`——但 arch crate 服务的对象是 **kernel（SMP + BKL）**，
@@ -185,7 +201,11 @@ SAFETY: 写入仅发生在 boot 单线程期（kernel lib.rs:184 注册）或 us
 ```
 同时 `register()` 与首次 `alloc_pt_page()` 之间的可见性用 Release/Acquire 保证（见 F2）。
 
-### F2. `pt_alloc::register` 防重复注册 + 同步 [P2]
+**解决记录（2026-08-14）**：模块文档 + `PtAllocSlot` SAFETY 注释已改写为 **SMP+BKL write-once-then-read-only**
+论证（`os/arch/src/arch/pt_alloc.rs:24-35` 模块文档 + `:45-52` SAFETY），并显式声明"这是 kernel（SMP+BKL）
+执行模型，不是单线程服务器模型"；Release/Acquire 可见性见 F2 解决记录。172 arch tests 通过。
+
+### F2. `pt_alloc::register` 防重复注册 + 同步 [P2] — ✅ 已解决（2026-08-14）
 
 **现状**：`register()` 无条件覆写 `PT_ALLOC`（`core::ptr::write` + `PT_REGISTERED.store(true, Relaxed)`）；
 `alloc_pt_page()` 用 Relaxed 读。测试间共享该全局（与 minix-vm `PAGE_ALLOC_PTR` 全局状态测试问题同模式）。
@@ -198,6 +218,12 @@ SAFETY: 写入仅发生在 boot 单线程期（kernel lib.rs:184 注册）或 us
 比 fn 指针更可测试（mock 可注入）。长期可将 `pt_alloc::register(fn)` 演进为
 `pt_alloc::register(impl FrameAllocator)`（trait object 或泛型）——fn 指针保持当前简单形态，
 trait 化列为 VM 阶段（页表分配器接入）一并评估。
+
+**解决记录（2026-08-14）**：
+- `register()` 增加 `debug_assert!(!PT_REGISTERED.load(Ordering::Relaxed))`——同域双注册即 boot bug
+- store 改 `Ordering::Release`、`alloc_pt_page()` load 改 `Ordering::Acquire`——fn 指针写入对观察者可见（pt_alloc.rs:74-86/:101-105）
+- "boot 域 + user-space VM 域"双注册契约已文档化
+- trait 化演进方向不变（VM 阶段评估）；172 arch tests 通过
 
 ## 5. 跨层建议
 
@@ -281,8 +307,8 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | `SIGS_IS_LETHAL` + backup 切换 |
 | D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | `SigSet::contains` 已具备，未接入 |
 | D-13 | 信号 | `sig_delay_done`（system.c:454-464） | 19 §4.7 | PM 通知接口 + `SIGSNDELAY` 常量 |
-| D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | DIAGCTL dispatch 已持借用与全局 proc_table 冲突（syscall.rs:1010-1037）；PM 下次 getksig 轮询可观察到（主用途已实现） |
-| D-15 | 时钟 | `mini_notify(CLOCK, endpoint)` 到期通知分发（TimerAction::NotifyAlarm 已定义未接线） | 21 附录 B | TimerQueue::expire 分发（clock.rs:522 仅 enum + 测试） |
+| D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | 保持 DEFERRED。已核实（2026-08-14）：借用冲突注释现存于 syscall.rs:2286（原引 :1010-1037 行号漂移，已更正）；PM getksig 轮询主用途已实现 |
+| D-15 | 时钟 | `mini_notify(CLOCK, endpoint)` 到期通知分发（TimerAction::NotifyAlarm 已定义未接线） | 21 附录 B | 保持 DEFERRED。已核实（2026-08-14）：NotifyAlarm 仅 enum 定义（clock.rs:522）+ 测试构造（:1363/:1378），tick 无生产调用方 |
 | D-16 | IPC 过滤 | `allow_ipc_filtered_msg`（system.c:803-874，L2 receive 路径偏好过滤） | 23 §4.5/Ch6 [P1] | 12-ipc-core RECEIVE 路径（当前 skeleton）后才消费方；当前 s_ipcf 字段存在但无消费方 |
 | D-17 | IPC 过滤 | `may_asynsend_to` self-send 不对称（priv.h:87） | 23 §4.5/Ch6 [P1] | 异步 IPC 路径完整接入（当前用 may_send_to 替代） |
 | D-18 | IPC 过滤 | `IPCF_EL_MATCH` 宏链（ipc_filter.h:19-41） | 23 §4.5/Ch6 [P2] | `allow_ipc_filtered_msg` 子逻辑 |
@@ -293,19 +319,19 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-23 | 跨空间 | aarch64/riscv64 PTE walk | 24 §4.6 [P2] | x86_64 优先（pte_walk::walk_x86_64 已实现） |
 | D-24 | 跨空间 | `VmSuspendContext` Map 变体未使用（当前仅 KernelCall + DeliverMsg） | 24 §4.6 [P2] | 随 IPC/message deliver 推进 |
 | D-25 | 跨空间 | 部分拷贝进度报告（`CrossSpaceResult::Suspended(fault, usize)` 扩展方向） | 24 §4.6 [P2] | 未来可扩展 |
-| D-26 | GETINFO | `GET_PROC`/`GET_PROCTAB`（do_getinfo.c） | 25 附录 | 需 C 兼容 `struct proc` 布局（KProcess→proc 转换 ~100+ 字段） |
-| D-27 | GETINFO | `GET_PRIV`/`GET_PRIVTAB` | 25 附录 | 需 C 兼容 `struct priv` 布局 |
-| D-28 | GETINFO | `GET_REGS` | 25 附录 | 需 C 兼容 `reg_t`/CpuContext 布局 |
-| D-29 | GETINFO | 其余：`GET_IMAGE`/`MONPARAMS`/`IRQHOOKS`/`IRQACTIDS`/`IDLETSC` | 25 附录 + §2.1 | 各自特定基础设施 |
+| D-26 | GETINFO | `GET_PROC`/`GET_PROCTAB`（do_getinfo.c） | 25 附录 | **✅ 已解决（2026-08-14）**：已实现为 `GetInfoRequest::Proc`/`ProcTab`（misc.rs:732/:754），非 C 布局而是 KProcess Rust 语义（rewrite 目标） |
+| D-27 | GETINFO | `GET_PRIV`/`GET_PRIVTAB` | 25 附录 | **✅ 已解决（2026-08-14）**：`Priv`/`PrivTab`（misc.rs:841/:791） |
+| D-28 | GETINFO | `GET_REGS` | 25 附录 | **✅ 已解决（2026-08-14）**：`Regs`（misc.rs:863） |
+| D-29 | GETINFO | 其余：`GET_IMAGE`/`MONPARAMS`/`IRQHOOKS`/`IRQACTIDS`/`IDLETSC` | 25 附录 + §2.1 | **✅ 已解决（2026-08-14）**：`Image`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`（misc.rs:1083/:1121/:1051/:958/:988） |
 | D-30 | UPDATE | `swap_memreq`（do_update.c:313-337） | 25 附录 | `VmRequestQueue`（D-20） |
 | D-31 | SPROF | 数据拷贝（sprof_info + 采样缓冲区 → 用户态） | 25 §4.5 | Direct Map 采样缓冲基础设施（misc.rs:1181-1184 返回 ENOSYS） |
-| D-32 | SPROF | `clean_seen_flag`（do_sprofile.c:25-31） | 25 附录 | `MF_SPROF_SEEN` flag（MiscFlags 扩展） |
+| D-32 | SPROF | `clean_seen_flag`（do_sprofile.c:25-31） | 25 附录 | **✅ 已解决（2026-08-14）**：`clean_seen_flag` helper（misc.rs:1951）+ PROF_START（:2017）/ PROF_STOP（:2149）调用（do_sprofile.c:91/:122 语义）+ 测试 test_sprof_start_clears_seen_flags |
 | D-33 | 随机数 | x86 RDRAND 熵采集（当前 kernel 侧 no-op stub 匹配 C i386/earm） | 25 §4.7 D3 | 应在 os/arch/src/x86_64/ 实现（当前 deferred）；实际熵采集由用户态 random 驱动 |
 | D-34 | VM | `kinfo.mmap_size` + `mem_high_phys` 更新（08 委派，C add_memmap 更新，Rust KernelInfo immutable） | 09 §6.1 + 08 §4 | VM direct map 实际大小 + 最高物理地址在 boot 阶段确定后，dispatch_vmctl 补充分支或独立 SYS_GETINFO 路径 |
 | D-35 | VM | `VmInhibitSet` SMP IPI（dispatch_vmctl，RTS_SET(VMINHIBIT)） | 09 §4 | SMP IPI 待实现 |
 | D-36 | SMP | `smp_init`（ACPI/MADT 表解析 + `SmpArch::boot_ap`） | 16 §4.14 | 16 文档自身 DEFERRED |
 | D-37 | SMP | `boot_lock`（smp.c:28） | 16 §4.14 | 随 smp_init（D-36）一并实现 |
-| D-38 | SMP | **BKL 接入 4 处**：exception_dispatcher::handle 需 bkl_lock() / kmain switch_to_user 前获取 / switch_to_user 调度循环前 bkl_unlock / kernel_call_resume | 16 §4.13 | 随异常处理接入一并实现（当前单核不触发，SMP 必做） |
+| D-38 | SMP | **BKL 接入 4 处**：exception_dispatcher::handle 需 bkl_lock() / kmain switch_to_user 前获取 / switch_to_user 调度循环前 bkl_unlock / kernel_call_resume | 16 §4.13 | ②③ **✅ 已解决（2026-08-14）**：lib.rs:1956 bkl_lock（switch_to_user 前）+ lib.rs:2167 bkl_unlock（调度循环前）；①④ 仍 DEFERRED（SMP 异常路径） |
 | D-39 | SMP | x86_64 `init_ap` panic 占位（protection.rs:368-370） | 16 §5.3 [P1] | AP 启动路径；占位触发后无测试（→ 见 T-2） |
 | D-40 | SMP | ptproc per-CPU 语义（PostInitArch::set_ptproc 三架构占位） | 16 §5.3 [P1] | SMP 落地后 per-CPU ptproc 跟踪 |
 | D-41 | 平台 | `PLATFORM` AssumeSyncCell SMP 替换（AP_STARTUP 并发访问时替换为 Mutex/Atomic） | 04 §3.3 TODO [P1] | SMP 就绪后失效；由 16-smp 在 AP bring-up 前完成 |
@@ -353,11 +379,11 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | # | 条目 | 文档出处 | 说明 |
 |---|------|---------|------|
 | I-1 | kernel 独立 ELF 构建（build.rs + link.ld 链接为独立 ELF binary） | 02 §4 + 01 §5.2 | 三架构 link.ld 已就绪，构建系统未接入；当前 rlib 测试路径是合理简化，生产路径后续工作 |
-| I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 计划 Cargo.toml version 字段 + `env!("CARGO_PKG_VERSION")` 或独立版本模块 |
+| I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 保持 DEFERRED。已核实（2026-08-14）：C 侧仅 main.c:432-433 赋值且无消费方（banner 直打 OS_RELEASE，main.c:344）；Rust 侧无消费方（KernelInfo 无此字段；banner 硬编码 lib.rs:1831；MINIX_KERNINFO IPC 未实现 ipc.rs:1335）→ 待 MINIX_KERNINFO 落地时实现 |
 | I-3 | riscv64 QEMU `-kernel` 场景未完成 ELF 装载 + 高半核切换（临时妥协） | 01 §5 + §4.5 TODO | 生产路径三架构统一高半核；测试场景暴露的临时妥协 |
 | I-4 | 01 §5 ↔ 02 §5.1 测试对照表跨文档去重 | 01 §5 TODO [P2] | hello-boot / test-memmap / test-paging-enable / test-kernel-map 应只在 01 出现；02 保留 test-higher-half 及专属测试 |
 | I-5 | ACPI RSDP 搜索与表解析 | 05 §3 | QEMU virt 暂不依赖；支持物理机时需实现 |
-| I-6 | `bill_ptr` 完整联动 | 11 §4 [已知缺口] | 字段已存在（smp.rs:141）+ setter（smp.rs:204），doc 声称调度期联动未实现——**待复核** |
+| I-6 | `bill_ptr` 完整联动 | 11 §4 [已知缺口] | 保持 DEFERRED。已复核（2026-08-14）：调度循环仍为 placeholder（lib.rs:2187-2189 `loop { spin_loop() }`），bill_ptr 调度期联动确未接线 |
 | I-7 | `MF_REPLY_PEND` typestate 演进评估 | 12 §3.11 TODO | 当前保留标志位（决策已定），未来评估 typestate（`SendRec<Sending> → SendRec<Receiving>`） |
 | I-8 | errno newtype（模式 16 裸整数） | 13 §6.5 [P2] | **与 §D1 同项**（架构建议），doc 13 独立提出 |
 | I-9 | D9: `s_ipcf`/`s_stack_guard` 裸 usize → `NonNull<T>` | 22 §3 [P2] | 当前对齐 C 裸指针语义（Option<usize>），redesign 阶段引入 |

@@ -14,7 +14,7 @@
 
 use minix_platform::arch::aarch64::ArmGenericTimerDesc;
 
-use crate::clock::ClockArch;
+use crate::clock::{ClockArch, ProfileClockError};
 
 /// ARM64 clock using Generic Timer.
 ///
@@ -86,14 +86,14 @@ impl ClockArch for AArch64ClockArch {
         }
     }
 
-    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> {
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> {
         // ARM64 statistical profiling uses the PMU (Performance Monitoring
         // Unit), not a second timer channel. The PMU is not yet integrated
         // in the arch layer — return Err to indicate the caller should
         // fall back to PROF_NMI (which is also not yet available).
         //
         // C: sprofile.c:init_profile_clock(freq) — on ARM, uses PMU
-        Err(())
+        Err(ProfileClockError::Unsupported)
     }
 
     fn stop_profile_clock(&mut self) {

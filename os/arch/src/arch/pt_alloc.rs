@@ -24,11 +24,15 @@
 //! # Concurrency safety
 //!
 //! The allocator is a process-wide singleton set via `register()`.
-//! Minix-RS user-space servers are single-threaded event loops, so no
-//! concurrent mutation occurs. `AtomicBool` is used for `PT_REGISTERED`
-//! to avoid `static mut` (UB in Rust 2024 edition). The function pointer
-//! is wrapped in `UnsafeCell` with a `Sync` impl documented as safe under
-//! single-threaded access.
+//! The arch crate serves the kernel (SMP + BKL), so the safety argument
+//! is **write-once then read-only**, not single-threaded: the write
+//! happens only during boot (single-threaded) or user-space VM init,
+//! before any concurrent access; after registration the function pointer
+//! is only read. `AtomicBool` is used for `PT_REGISTERED` to avoid
+//! `static mut` (UB in Rust 2024 edition); the `Sync` impl is sound
+//! because the `UnsafeCell` content is immutable during the concurrent
+//! phase. The Release store in `register()` pairs with the Acquire load
+//! in `alloc_pt_page()` to publish the fn pointer write.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -38,9 +42,14 @@ use crate::paging::PageTableError;
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
 /// Wrapper for a function pointer stored in a static.
-/// SAFETY: `PtAllocSlot` is only written once during boot (single-threaded),
-/// and only read afterwards. `Sync` is safe because there is no concurrent
-/// mutation in the single-threaded event loop model.
+/// SAFETY: write-once-then-read-only. The slot is written exactly once
+/// (`register()`), during boot (single-threaded) or user-space VM init
+/// before any concurrent access; afterwards it is only read. The
+/// `PT_REGISTERED` flag's Release/Acquire pairing publishes the write to
+/// any thread that observes `is_registered() == true`. `Sync` is sound
+/// because the `UnsafeCell` content is immutable during the concurrent
+/// phase — this is the kernel (SMP + BKL) execution model, not the
+/// single-threaded server model.
 struct PtAllocSlot(UnsafeCell<PtAllocFn>);
 
 unsafe impl Sync for PtAllocSlot {}
@@ -58,11 +67,23 @@ fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
 /// The provided function must return (phys, virt) — in boot both equal;
 /// under VM virt = DM_BASE + phys.
 pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>) {
-    // SAFETY: Single-threaded boot context; no concurrent access.
+    // Double registration within one domain is a boot bug — two allocators
+    // would fight over the singleton. (The kernel guards its own call with
+    // `is_registered()` so a test kernel may register first; the VM server
+    // registers in its own address space.)
+    debug_assert!(
+        !PT_REGISTERED.load(Ordering::Relaxed),
+        "pt_alloc::register called twice"
+    );
+    // SAFETY: write-once contract — callers register during boot
+    // (single-threaded) or user-space VM init before any concurrent
+    // access. The debug_assert above catches accidental re-registration.
     unsafe {
         core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
     }
-    PT_REGISTERED.store(true, Ordering::Relaxed);
+    // Release: publish the fn pointer write to any thread that Acquire-loads
+    // `is_registered() == true` before calling `alloc_pt_page()`.
+    PT_REGISTERED.store(true, Ordering::Release);
 }
 
 /// Returns true if a page table page allocator has been registered.
@@ -78,8 +99,12 @@ pub fn is_registered() -> bool {
 /// Called by `map_huge` / `map` inside Paging implementations.
 #[inline]
 pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    // SAFETY: Single-threaded access; the function pointer is set once
-    // via `register()` and then only read.
+    // Acquire: pairs with `register()`'s Release store — guarantees the
+    // fn pointer write is visible to this thread once registration is
+    // observed (write-once-then-read-only; see module docs).
+    let _ = PT_REGISTERED.load(Ordering::Acquire);
+    // SAFETY: write-once-then-read-only — set via `register()` before any
+    // concurrent access, then only read.
     let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
     alloc_fn()
 }

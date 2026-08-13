@@ -11,7 +11,7 @@
 //! field that the trait's `apply_to_trap_frame` consults.
 
 use crate::arch::boot::{
-    CpuContextArch, EntrySpec, ProcKind, ProcNr,
+    CpuContextArch, EntrySpec, ProcKind, ProcNr, WriteUserRegError,
 };
 use crate::arch::stacktrace::StacktraceArch;
 use super::exception::AArch64ExceptionFrame;
@@ -136,9 +136,9 @@ impl CpuContextArch for AArch64CpuContextArch {
         ctx: &mut Self::CpuContext,
         offset: usize,
         value: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), WriteUserRegError> {
         if offset % 8 != 0 {
-            return Err(());
+            return Err(WriteUserRegError::BadAddress);
         }
         match offset {
             0 => { ctx.psr = value; Ok(()) }
@@ -151,10 +151,10 @@ impl CpuContextArch for AArch64CpuContextArch {
                     ctx.gp_regs[idx] = value;
                     Ok(())
                 } else {
-                    Err(())
+                    Err(WriteUserRegError::BadAddress)
                 }
             }
-            _ => Err(()),
+            _ => Err(WriteUserRegError::BadAddress),
         }
     }
 

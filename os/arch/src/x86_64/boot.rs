@@ -17,7 +17,7 @@
 use minix_types::VirBytes;
 
 use crate::arch::boot::{
-    CpuContextArch, EntrySpec, ProcKind, ProcNr,
+    CpuContextArch, EntrySpec, ProcKind, ProcNr, WriteUserRegError,
 };
 use crate::arch::stacktrace::StacktraceArch;
 use super::exception::X86_64ExceptionFrame;
@@ -205,11 +205,11 @@ impl CpuContextArch for X86_64CpuContextArch {
         ctx: &mut Self::CpuContext,
         offset: usize,
         value: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), WriteUserRegError> {
         // Alignment: C checks `tr_addr & (sizeof(reg_t)-1)`.
         // On 64-bit, reg_t = u64, so offset must be 8-byte aligned.
         if !offset.is_multiple_of(8) {
-            return Err(());
+            return Err(WriteUserRegError::BadAddress);
         }
         match offset {
             0 => {
@@ -221,7 +221,7 @@ impl CpuContextArch for X86_64CpuContextArch {
                 Ok(())
             }
             // Segment registers — protected (would crash kernel).
-            8 | 16 | 24 | 32 | 40 | 48 => Err(()),
+            8 | 16 | 24 | 32 | 40 | 48 => Err(WriteUserRegError::Protected),
             56 => { ctx.rip = value; Ok(()) }
             64 => { ctx.rsp = value; Ok(()) }
             72 => { ctx.rbx = value; Ok(()) }
@@ -231,10 +231,10 @@ impl CpuContextArch for X86_64CpuContextArch {
                     ctx.gp_regs[idx] = value;
                     Ok(())
                 } else {
-                    Err(())
+                    Err(WriteUserRegError::BadAddress)
                 }
             }
-            _ => Err(()),
+            _ => Err(WriteUserRegError::BadAddress),
         }
     }
 

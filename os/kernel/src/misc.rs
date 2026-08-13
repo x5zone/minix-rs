@@ -1491,8 +1491,9 @@ pub fn dispatch_trace(
                     write_trace_reply_data(msg, 0);
                     KcallResult::Ok(0)
                 }
-                Some(Err(())) => {
-                    // Protected register or out-of-bounds offset.
+                Some(Err(_)) => {
+                    // WriteUserRegError::BadAddress | Protected — both map
+                    // to EFAULT, matching C's do_trace.c T_SETUSER.
                     KcallResult::Ok(EFAULT)
                 }
                 None => KcallResult::Ok(EINVAL),
@@ -1943,7 +1944,17 @@ static mut SPROF_SAMPLE_BUFFER: [u8; SAMPLE_BUFFER_SIZE] = [0; SAMPLE_BUFFER_SIZ
 /// - PROF_STOP while not running → EBUSY
 ///
 /// The actual profiling body (timer setup, data_copy) is deferred.
-pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &ProcessTable) -> KcallResult {
+/// C: `clean_seen_flag()` — do_sprofile.c:25-31. Clears `MF_SPROF_SEEN`
+/// on every proc slot (matching C's `NR_TASKS + NR_PROCS` loop), so the
+/// "first sample" gating in `profile_sample` saves proc records again for
+/// this run. Called at PROF_START (fresh state) and PROF_STOP (clean up).
+fn clean_seen_flag(proc_table: &mut ProcessTable) {
+    for p in proc_table.iter_mut() {
+        p.p_misc_flags.clear(MiscFlagsBits::SPROF_SEEN);
+    }
+}
+
+pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut ProcessTable) -> KcallResult {
     // C: do_sprofile.c — read from mess_lsys_krn_sys_sprof
     msg.debug_check_m_type_any(&[Syscall::Sprof as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
@@ -2000,10 +2011,14 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &Proce
                     // C: init_profile_clock(freq) — arch-specific timer setup.
                     match crate::clock::init_profile_clock(sprof.freq as u32) {
                         Ok(()) => {
+                            // C: do_sprofile.c:91 — clean_seen_flag() clears
+                            // MF_SPROF_SEEN before profiling starts, so
+                            // profile_sample saves proc records again this run.
+                            clean_seen_flag(proc_table);
                             // Timer started; sprofiling stays true until PROF_STOP.
                             KcallResult::Ok(0)
                         }
-                        Err(()) => {
+                        Err(_) => {
                             SPROFILING.store(false, Ordering::Release);
                             KcallResult::Ok(EINVAL)
                         }
@@ -2130,6 +2145,10 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &Proce
                     crate::vm::CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
                 }
             }
+
+            // C: do_sprofile.c:122 — clean_seen_flag() clears MF_SPROF_SEEN
+            // after the run, so a subsequent PROF_START starts fresh.
+            clean_seen_flag(proc_table);
 
             KcallResult::Ok(OK)
         }
@@ -3038,7 +3057,7 @@ mod tests {
         // C: do_getinfo.c:107-114 — GET_PROC with invalid endpoint → EINVAL.
         use crate::proc_table::ProcessTable;
 
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
@@ -3054,7 +3073,7 @@ mod tests {
         // GET_PROCTAB: chunked copy is wired. Mock PTE walk misses on the
         // very first element → VmSuspend + RTS_VMREQUEST.
         use crate::proc::RtsFlagsBits;
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
@@ -3093,7 +3112,7 @@ mod tests {
     fn test_dispatch_getinfo_privtab_wired_to_data_copy_vmcheck() {
         // GET_PRIVTAB: chunked copy is wired. First element suspends.
         use crate::proc::RtsFlagsBits;
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
@@ -3130,7 +3149,7 @@ mod tests {
         // C: do_getinfo.c:123-131 — GET_REGS with invalid endpoint → EINVAL.
         use crate::proc_table::ProcessTable;
 
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
@@ -3146,7 +3165,7 @@ mod tests {
         // C: do_getinfo.c:115-122 — GET_PRIV: same endpoint validation as GET_PROC.
         use crate::proc_table::ProcessTable;
 
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
@@ -3206,12 +3225,12 @@ fn sprof_test_teardown() {
 #[test]
     fn test_sprof_rejects_unknown_action() {
         let _lock = sprof_test_setup();
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = 99; // unknown action
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3219,14 +3238,14 @@ fn sprof_test_teardown() {
     #[test]
     fn test_sprof_start_rejects_invalid_endpoint() {
         let _lock = sprof_test_setup();
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 9999; // invalid endpoint
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3248,7 +3267,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = 99; // unknown intr_type
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3269,11 +3288,44 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         // Validation passes, init_profile_clock wired → OK (0)
         assert_eq!(result, KcallResult::Ok(0));
         // SPROFILING must remain true after successful START
         assert!(SPROFILING.load(Ordering::Acquire));
+        sprof_test_teardown();
+    }
+
+    #[test]
+    fn test_sprof_start_clears_seen_flags() {
+        // C: do_sprofile.c:91 — clean_seen_flag() clears MF_SPROF_SEEN on
+        // every proc before profiling starts, so profile_sample's
+        // "first sample" gating saves proc records again this run.
+        let _lock = sprof_test_setup();
+        let mut proc_table = ProcessTable::new();
+        let target_ep = Endpoint::from_generation_slot(1, 0);
+        if let Some(target) = proc_table.get_mut(ProcNr(0)) {
+            target.p_endpoint = target_ep;
+            target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            // Simulate a flag left set by a previous profiling run.
+            target.p_misc_flags.set(MiscFlagsBits::SPROF_SEEN);
+        }
+
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Sprof as i32;
+        msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
+        msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
+        msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        assert_eq!(result, KcallResult::Ok(0));
+
+        // clean_seen_flag ran: every proc slot's SPROF_SEEN is cleared.
+        assert!(
+            proc_table
+                .iter()
+                .all(|p| !p.p_misc_flags.is_set(MiscFlagsBits::SPROF_SEEN))
+        );
         sprof_test_teardown();
     }
 
@@ -3285,12 +3337,12 @@ fn sprof_test_teardown() {
         // returns EBUSY, not ENOSYS. To reach ENOSYS, the test must
         // pre-set SPROFILING=true to simulate a running profile.)
         let _lock = sprof_test_setup();
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3311,12 +3363,12 @@ fn sprof_test_teardown() {
         // SAFETY: BKL is held (simulated by test lock); SPROF_INFO accessed via addr_of_mut!.
         let info = core::ptr::addr_of_mut!(SPROF_INFO);
         unsafe { *info = SprofInfo::default(); }
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         // In mock mode: VmSuspend (page table walk fails).
         // On real hardware: Ok(OK) (data_copy succeeds).
         // We accept either outcome; the key assertion is that SPROFILING
@@ -3340,14 +3392,14 @@ fn sprof_test_teardown() {
         // (mimicking the timer init that would have set it).
         let _lock = sprof_test_setup();
         SPROFILING.store(true, Ordering::Release);
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 100;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3356,12 +3408,12 @@ fn sprof_test_teardown() {
     fn test_sprof_stop_without_start_returns_ebusy() {
         // C: do_sprofile.c:82 — PROF_STOP without prior PROF_START → EBUSY.
         let _lock = sprof_test_setup();
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3372,14 +3424,14 @@ fn sprof_test_teardown() {
         // SPROFILING flag must be rolled back to false so a future
         // PROF_START is not poisoned.
         let _lock = sprof_test_setup();
-        let proc_table = ProcessTable::new();
+        let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 9999; // invalid
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &proc_table);
+        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         // Verify rollback.
         assert!(!SPROFILING.load(Ordering::Acquire));

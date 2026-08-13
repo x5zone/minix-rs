@@ -47,6 +47,20 @@ pub const DEFAULT_HZ: u32 = 100;
 /// C: _LOAD_HISTORY — include/minix/type.h:97
 pub const LOAD_HISTORY_SIZE: usize = 16;
 
+/// Failure configuring the statistical profiling timer.
+///
+/// Replaces the former `Result<(), ()>` (C-D-5): a single variant today,
+/// but a named type self-documents the failure mode in the signature and
+/// leaves room for variants (e.g. a busy timer channel) without breaking
+/// callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileClockError {
+    /// The architecture has no available profiling timer: RISC-V shares
+    /// the CLINT mtimecmp with scheduling, ARM64 needs the PMU (not yet
+    /// integrated), and x86-64's RTC range excludes `hz < 2`.
+    Unsupported,
+}
+
 /// Architecture abstraction for hardware timer configuration.
 ///
 /// Each architecture implements this trait to configure its hardware
@@ -135,14 +149,12 @@ pub trait ClockArch: Sized + Send + Sync {
     /// generate periodic interrupts at `hz` Hz for statistical
     /// profiling.
     ///
-    /// Returns `Err(())` if the architecture does not support profiling
-    /// timers (e.g., RISC-V without a spare CLINT channel).
+    /// Returns `Err(ProfileClockError::Unsupported)` if the architecture
+    /// does not support profiling timers (e.g., RISC-V without a spare
+    /// CLINT channel).
     ///
     /// C: `init_profile_clock(freq)` — sprofile.c:init_profile_clock
-    // TODO(C-D-5): replace `Result<(), ()>` with a named error type
-    // (todo.md §11.4 design-level cleanup — trait contract change).
-    #[allow(clippy::result_unit_err)]
-    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()>;
+    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>;
 
     /// Stop the statistical profiling timer.
     ///
@@ -180,7 +192,7 @@ impl ClockArch for MockClockArch {
     fn init_timer(&mut self, _hz: u32) {}
     fn read_ticks(&self) -> u64 { 0 }
     fn stop_local_timer(&mut self) {}
-    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> { Ok(()) }
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> { Ok(()) }
     fn stop_profile_clock(&mut self) {}
     fn ack_profile_clock(&mut self) {}
 }
@@ -224,7 +236,7 @@ mod tests {
             fn init_timer(&mut self, _hz: u32) {}
             fn read_ticks(&self) -> u64 { self.ticks }
             fn stop_local_timer(&mut self) {}
-            fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> { Ok(()) }
+            fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> { Ok(()) }
             fn stop_profile_clock(&mut self) {}
             fn ack_profile_clock(&mut self) {}
         }

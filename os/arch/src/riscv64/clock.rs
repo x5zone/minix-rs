@@ -15,7 +15,7 @@
 
 use minix_platform::arch::riscv64::ClintDesc;
 
-use crate::clock::ClockArch;
+use crate::clock::{ClockArch, ProfileClockError};
 
 /// RISC-V 64-bit clock using CLINT mtime.
 ///
@@ -96,14 +96,14 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
-    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ()> {
+    fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> {
         // RISC-V does not have a separate profiling timer. The CLINT
         // mtimecmp is already used for scheduling. A second mtimecmp
         // (if available for S-mode) could be used, but this is not
         // standardized in the privilege spec.
         //
         // Return Err to indicate profiling is not available on RISC-V.
-        Err(())
+        Err(ProfileClockError::Unsupported)
     }
 
     fn stop_profile_clock(&mut self) {

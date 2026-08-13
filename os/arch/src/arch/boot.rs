@@ -120,6 +120,20 @@ pub enum VmLoadError {
     MappingFailed,
 }
 
+/// Why a user register write (T_SETUSER) failed.
+///
+/// Replaces the former `Result<(), ()>` (C-D-5): the arch layer knows the
+/// reason, the syscall layer decides the errno (both variants map to
+/// EFAULT today, matching C's do_trace.c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteUserRegError {
+    /// Offset is misaligned or outside the register file.
+    BadAddress,
+    /// Register is protected from user writes (segment selectors on
+    /// x86-64 — altering them could crash the kernel on restore).
+    Protected,
+}
+
 /// Arch abstraction for a process's CPU context.
 ///
 /// The associated type `CpuContext` is **arch-private** — the kernel
@@ -207,16 +221,14 @@ pub trait CpuContextArch {
     /// compiled under `#if defined(__i386__)`). Rust implements the
     /// correct behavior for all architectures.
     ///
-    /// Default: `Err(())` (arch must override to enable T_SETUSER).
-    // TODO(C-D-5): replace `Result<(), ()>` with a named error type
-    // (todo.md §11.4 design-level cleanup — trait contract change).
-    #[allow(clippy::result_unit_err)]
+    /// Default: `Err(WriteUserRegError::Protected)` (arch must override
+    /// to enable T_SETUSER).
     fn write_user_register(
         _ctx: &mut Self::CpuContext,
         _offset: usize,
         _value: u64,
-    ) -> Result<(), ()> {
-        Err(())
+    ) -> Result<(), WriteUserRegError> {
+        Err(WriteUserRegError::Protected)
     }
 
     /// OR-merge a value into the IPC status register.

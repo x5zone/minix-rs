@@ -15,7 +15,7 @@
 
 use minix_platform::arch::x86_64::PitDesc;
 
-use crate::clock::ClockArch;
+use crate::clock::{ClockArch, ProfileClockError};
 
 /// PIT command port (channel 0, lobyte/hibyte access).
 const PIT_COMMAND: u16 = 0x43;
@@ -111,7 +111,7 @@ impl ClockArch for X86_64ClockArch {
         }
     }
 
-    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()> {
+    fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError> {
         // Statistical profiling uses the RTC (Real Time Clock) on x86-64.
         // The RTC can generate interrupts at 2..8192 Hz via IRQ8.
         //
@@ -124,7 +124,7 @@ impl ClockArch for X86_64ClockArch {
         //
         // C: sprofile.c:init_profile_clock(freq)
         let rate = match hz {
-            0..=1 => return Err(()),
+            0..=1 => return Err(ProfileClockError::Unsupported),
             2 => 0x0F,
             3..=4 => 0x0E,
             5..=8 => 0x0D,

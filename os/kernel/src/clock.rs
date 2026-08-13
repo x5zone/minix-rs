@@ -285,12 +285,12 @@ pub fn stop_local_timer() {
 ///
 /// Configures the hardware timer (PIT on x86-64, Generic Timer on ARM64,
 /// CLINT on RISC-V) to generate interrupts at `hz` Hz for statistical
-/// profiling. Returns `Err(())` if the hardware does not support profiling.
-// R-18 (2026-08-13): `()` error type is intentional — single failure mode
-// (hardware lacks profiling support), no diagnostic info to carry. Allowed
-// per clippy::result_unit_err; mirrors ClockArch trait signature.
-#[allow(clippy::result_unit_err)]
-pub fn init_profile_clock(hz: u32) -> Result<(), ()> {
+/// profiling. Returns `Err(ProfileClockError::Unsupported)` if the
+/// hardware does not support profiling.
+// R-18 (2026-08-13): single failure mode (hardware lacks profiling
+// support), no diagnostic info to carry. Propagates the arch trait's
+// `ProfileClockError` (C-D-5 cleanup: named error type replaces `()`).
+pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError> {
     #[cfg(not(test))]
     {
         use minix_arch::{ClockArch, CurrentClockArch};
