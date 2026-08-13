@@ -114,9 +114,9 @@ _kern_offset    = (_kern_vir_base - _kern_phys_base);  // 偏移 = 0xF0000000
 
 **效果**：内核的所有符号（函数地址、全局变量地址）都解析为高地址，但实际代码被 GRUB 放在低物理地址。分页启用后，CPU 通过高地址映射访问这些代码。
 
-> **演进说明**：Minix3 的链接脚本还包含 `unpaged_text/data/bss` 段组（kernel.lds:13-15）和 `usermapped/usermapped_glo` 段组（kernel.lds:17-23）。后者是 Minix3 用户态段共享机制（USMAPPED 宏），在 64-bit 重写中已废弃；前者需要解释——
+> **演进说明**：Minix3 的链接脚本还包含 `unpaged_text/data/bss` 段组（kernel.lds:15-20）和 `usermapped/usermapped_glo` 段组（kernel.lds:24-28）。后者是 Minix3 用户态段共享机制（USMAPPED 宏），在 64-bit 重写中已废弃；前者需要解释——
 >
-> **unpaged 段的存在原因**：不是所有内核代码都能跳高地址。分页**启用前**必须执行的代码（`pre_init`/`pg_identity`/`pg_mapkernel`/`vm_enable_paging` 等，`unpaged_*.o` 对象组，含入口 `__k_unpaged_MINIX`，见 `arch/i386/Makefile.inc`）必须留在低地址（恒等映射）——此时页表尚未建立，高地址映射还不存在，任何高地址取指都会立即 page fault。C 用链接脚本的 `.unpaged_text/data/bss` 段（kernel.lds:9-15，VMA=LMA=物理低地址，无 AT()）承载它们，**内核入口点本身就在 unpaged 段**。minix-rs 不需要 unpaged 段：这些职责全部位于 boot-shim（独立二进制，天然在低物理地址执行，见 01 文档 §4.2），内核 ELF 从 `kmain` 起直接位于高地址——分页开启后的跳转由 `HigherHalf::jump_to_kmain` 完成（§3.4）。
+> **unpaged 段的存在原因**：不是所有内核代码都能跳高地址。分页**启用前**必须执行的代码（`pre_init`/`pg_identity`/`pg_mapkernel`/`vm_enable_paging` 等，`unpaged_*.o` 对象组，含入口 `__k_unpaged_MINIX`，见 `arch/i386/Makefile.inc`）必须留在低地址（恒等映射）——此时页表尚未建立，高地址映射还不存在，任何高地址取指都会立即 page fault。C 用链接脚本的 `.unpaged_text/data/bss` 段（kernel.lds:15-20，VMA=LMA=物理低地址，无 AT()）承载它们，**内核入口点本身就在 unpaged 段**。minix-rs 不需要 unpaged 段：这些职责全部位于 boot-shim（独立二进制，天然在低物理地址执行，见 01 文档 §4.2），内核 ELF 从 `kmain` 起直接位于高地址——分页开启后的跳转由 `HigherHalf::jump_to_kmain` 完成（§3.4）。
 
 ARM32 的链接脚本 (`kernel/arch/earm/kernel.lds`) 使用完全相同的模式：
 
@@ -567,7 +567,7 @@ image: &[u8]（整个 ELF 文件的字节）
 
 ```
 os/libs/minix-elf/src/lib.rs       — ELF 解析器实现（独立共享 crate，23 个测试）
-os/boot-shim/src/uefi_helpers.rs   — compute_kernel_layout() + load_segments_into_buffer()（6 个测试）
+os/boot-shim/src/uefi_helpers.rs   — compute_kernel_layout() + load_segments_into_buffer()（1 个测试）
 os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 ```
 
@@ -578,7 +578,7 @@ os/boot-shim/src/lib.rs            — pub use minix_elf; re-export
 
 这两个函数不依赖 UEFI 运行时，可以在标准测试环境中验证 ELF 解析、段拷贝、BSS 清零的正确性。`load_kernel_elf` 在生产代码中调用 `compute_kernel_layout` 获取布局，然后执行物理内存写入。
 
-`loader::tests` 用 `MockLoader` 验证 `load_kernel_with_loader` / `load_boot_modules_with_loader` 主流程。共 13 个单元测试（`loader.rs` 6 个共享主流程 + `opensbi_helpers.rs` 6 个 OpenSBI 路径 + `uefi_helpers.rs` 1 个布局计算），在 `cargo test --features test-all` 下全部通过。**UEFI 路径测试覆盖不足（仅 1 个）** 是已知 gap——`load_kernel_elf` 涉及 UEFI `AllocatePages` / `SimpleFileSystem` 调用，无法在标准 `cargo test` 中覆盖，需要 QEMU 集成测试。
+`loader::tests` 用 `MockLoader` 验证 `load_kernel_with_loader` / `load_boot_modules_with_loader` 主流程。共 26 个单元测试（`loader.rs` 12 个共享主流程 + `opensbi_helpers.rs` 13 个 OpenSBI 路径 + `uefi_helpers.rs` 1 个布局计算），在 `cargo test --features test-all` 下全部通过。**UEFI 路径测试覆盖不足（仅 1 个）** 是已知 gap——`load_kernel_elf` 涉及 UEFI `AllocatePages` / `SimpleFileSystem` 调用，无法在标准 `cargo test` 中覆盖，需要 QEMU 集成测试。
 
 ### 4.3 HigherHalf trait 与三架构实现
 
@@ -764,7 +764,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 > **与 C 源码的差异**：C 的 `pg_mapkernel()` 只设 `PRESENT | BIGPAGE | WRITE`，无 GLOBAL 位。Rust 代码中 `PageFlags::kernel_read_write()` 含 GLOBAL，boot 阶段无实际作用（无进程切换，CR3 不变）。GLOBAL 位的真正价值在 VM 的 Direct Map 中——每次进程切换重写 CR3 时避免内核映射 TLB miss。
 
-**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:71-105`，三架构版本 + mock 测试入口)：
+**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:80-132`，三架构版本 + mock 测试入口)：
 
 ```rust
 // x86-64
@@ -817,7 +817,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 > - aarch64: `minix_arch::arm64::paging::AArch64Paging` (TTBR1, 4 级 L0→L3)
 > - riscv64: `minix_arch::riscv64::paging::Riscv64Paging` (Sv39, 3 级)
 >
-> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:71-105](os/kernel/src/lib.rs)。
+> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:80-132](os/kernel/src/lib.rs)。
 
 **为什么必须 `jump_to_kmain` 而不是直接 `kmain(info)`？**
 
@@ -906,7 +906,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
 arch_boot_impl → HigherHalf::jump_to_kmain → kmain (naked) → kmain_verify
 ```
 
-`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain_verify` 断言：
+`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain` 与 `kmain_verify` 位于内核 `os/kernel/src/lib.rs:519-643`（`#[cfg(feature = "qemu_test")]`）——测试内核 `main.rs` 仅调用 `arch_boot`，跳转后的验证由内核侧完成。`kmain_verify` 断言：
 
 1. **SP >= kern_virt_base**：栈指针在高地址空间
 2. **SP 16 字节对齐**：满足 ABI 要求
@@ -958,7 +958,7 @@ gdb kernel.elf
 (gdb) print $pc     # 应显示 0xFFFF_FFC0_xxx_xxx
 ```
 
-### 5.3 单元测试（`cargo test -p minix-kernel --lib`，464 个通过）
+### 5.3 单元测试（`cargo test -p minix-kernel --lib`，610 个通过，截至 2026-08-14）
 
 | 测试 | 验证内容 |
 |------|---------|
@@ -1281,13 +1281,13 @@ map_huge: vaddr=0xffffffc000000000 paddr=0x80000000 size=0x200000 i2=0x100 e2=0x
 |------|---------|
 | `os/kernel/src/arch/riscv64/link.ld` | `KERN_VIRT_BASE` 从 `0xFFFFFC0000000000` 改为 `0xFFFFFFC000000000` |
 | `os/kernel/src/lib.rs` | Step 2 添加 `if kern_virt != kern_phys` 守卫；提取 `boot_validate_and_prepare` 消除重复逻辑；移除 riscv64 临时调试输出 |
-| `arch/src/riscv64/paging.rs` | PTE 位常量改为 `Sv39PteFlags` bitflags；`map_huge` 增加 leaf 条目检测（`pte_is_leaf`）；`flags_to_pte` 添加 R=1 约束注释；runtime 方法（`map`/`unmap`/`query`/`remap`/`update_flags`/`new`/`destroy`）通过 Direct Map + 3-level Sv39 walk 实现 |
-| `arch/src/x86_64/paging.rs` | PTE 位常量改为 `X64PteFlags` bitflags；`map_huge` 增加 1GB leaf 检测；runtime 方法通过 Direct Map + 4-level walk 实现 |
-| `arch/src/arm64/paging.rs` | PTE 位常量改为 `Arm64PteFlags` bitflags；`map_huge` 增加 1GB block 检测；runtime 方法通过 Direct Map + 4-level walk 实现；新增 `pte_to_flags` 逆转换 |
+| `os/arch/src/riscv64/paging.rs` | PTE 位常量改为 `Sv39PteFlags` bitflags；`map_huge` 增加 leaf 条目检测（`pte_is_leaf`）；`flags_to_pte` 添加 R=1 约束注释；runtime 方法（`map`/`unmap`/`query`/`remap`/`update_flags`/`new`/`destroy`）通过 Direct Map + 3-level Sv39 walk 实现 |
+| `os/arch/src/x86_64/paging.rs` | PTE 位常量改为 `X64PteFlags` bitflags；`map_huge` 增加 1GB leaf 检测；runtime 方法通过 Direct Map + 4-level walk 实现 |
+| `os/arch/src/arm64/paging.rs` | PTE 位常量改为 `Arm64PteFlags` bitflags；`map_huge` 增加 1GB block 检测；runtime 方法通过 Direct Map + 4-level walk 实现；新增 `pte_to_flags` 逆转换 |
 | `os/kernel/src/boot_alloc.rs` | `static mut` → `AtomicU64`（避免 Rust 2024 UB）；后封装为 `BootAlloc` 结构体（含 `next`/`end` 两个 `AtomicU64`）支持 per-test 实例（避免 `cargo test` 多线程并行时全局 `BOOT_PT_NEXT` 互染）；生产路径仍用全局 `static BOOT_ALLOC: BootAlloc` |
-| `arch/src/pt_alloc.rs` | `static mut` → `UnsafeCell` + `AtomicBool`（避免 Rust 2024 UB） |
-| `libs/minix-types/src/kernel_info.rs` | `kern_size: usize` → `kern_size: u64`（避免 32 位截断） |
-| `test-higher-half-riscv64/src/main.rs` | `kern_virt_base` 修正为 `0xFFFF_FFC0_0000_0000` |
+| `os/arch/src/arch/pt_alloc.rs` | `static mut` → `UnsafeCell` + `AtomicBool`（避免 Rust 2024 UB） |
+| `os/libs/minix-boot/src/kernel_info.rs` | `kern_size: usize` → `kern_size: u64`（避免 32 位截断） |
+| `os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs` | `kern_virt_base` 修正为 `0xFFFF_FFC0_0000_0000` |
 | `os/kernel/src/lib.rs` (单元测试) | `test_linker_script_riscv64_constraints` 地址修正 |
 
 ### A.6 参见
