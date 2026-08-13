@@ -123,7 +123,7 @@ pub fn is_static_priv_id(id: PrivId) -> bool {
     id < nr_static
 }
 
-/// C: minix/include/minix/priv.h:14 — NULL_PRIV_ID = -1
+/// C: minix/include/minix/priv.h:21 — NULL_PRIV_ID = -1
 pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 // ── KPriv 6 substructures (06-proc-init-boot-proc.md §3.10) ─────────────────────

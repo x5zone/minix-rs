@@ -10,7 +10,8 @@
 //!   root service, deferred). Replaces the previous
 //!   `assign_static` + `configure_boot_priv` two-step.
 //! - [`TrapMask`] / [`IpcMask`] / [`KCallMask`] — the three mask
-//!   Newtypes (per §12.6 — suffix `Mask` is part of the type name).
+//!   Newtypes (per 22-privilege.md §4.4 D5 — suffix `Mask` is part
+//!   of the type name).
 //!
 //! # Why templates (and not ad-hoc flag setting)
 //!
@@ -60,34 +61,35 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct ProcessCapability: u32 {
         /// Process is a system process (allowed to grant/revoke).
-        /// C: `SYS_PROC` (0x01)
+        /// Maps to C `SYS_PROC` (const.h:147) via `grant_capability`.
+        /// Bit layout here is Rust-side; C uses `0x010` (const.h:147).
         const SYS_PROC          = 0x0000_0001;
-        /// Process can be killed.
-        /// C: `KILL` (0x02)
+        /// Rust extension: process may be killed.
+        /// (No C `s_flags` bit; see 22-privilege.md §4.4 D4.)
         const KILL              = 0x0000_0002;
-        /// Process receives signals as a system process.
-        /// C: `SIGS_SYS` (0x04)
+        /// Rust extension: process receives signals as a system process.
+        /// (No C `s_flags` bit; see 22-privilege.md §4.4 D4.)
         const SIGS_SYS          = 0x0000_0004;
-        /// Process owns an ID (used by VM for memory-map ownership).
-        /// C: `OWN_ID` (0x08)
+        /// Rust extension: process owns an ID (VM memory-map ownership).
+        /// (No C `s_flags` bit; see 22-privilege.md §4.4 D4.)
         const OWN_ID            = 0x0000_0008;
         /// Process is billable (CPU time accounted).
-        /// C: `BILLABLE` (0x10)
+        /// Maps to C `BILLABLE` (const.h:144) via `grant_capability`.
         const BILLABLE          = 0x0000_0010;
         /// Process is the idle task.
-        /// C: `IDL_F` (0x20)
+        /// Maps to C `IDL_F` (priv.h:36) via `grant_capability`.
         const IDL_F             = 0x0000_0020;
         /// Process is a system service (RS / VM / etc.).
-        /// C: `SRV_F` (0x40)
+        /// Maps to C `SRV_F` (priv.h:45) via `grant_capability`.
         const SRV_F             = 0x0000_0040;
         /// Process is the root system service (RS).
-        /// C: `RSYS_F` (0x80)
+        /// Maps to C `RSYS_F` (priv.h:47) via `grant_capability`.
         const RSYS_F            = 0x0000_0080;
         /// Process is the VM server.
-        /// C: `VM_F` (0x100)
+        /// Maps to C `VM_F` (priv.h:48) via `grant_capability`.
         const VM_F              = 0x0000_0100;
-        /// Process is a kernel task (TSK_F).
-        /// C: `TSK_F` (0x200)
+        /// Process is a kernel task.
+        /// Maps to C `TSK_F` (priv.h:44) via `grant_capability`.
         const TSK_F             = 0x0000_0200;
     }
 }
@@ -165,10 +167,12 @@ impl CapabilityTemplate {
     /// Convert template to a concrete [`ProcessCapability`] set.
     pub fn capabilities(self) -> ProcessCapability {
         match self {
+            // C template mapping (priv.h:36-49): only IDL_F carries
+            // BILLABLE; TSK_F/VM_F/RSYS_F/SRV_F do not.
             Self::Idle => ProcessCapability::IDL_F | ProcessCapability::BILLABLE,
-            Self::KernelTask => ProcessCapability::TSK_F | ProcessCapability::BILLABLE,
-            Self::Vm => ProcessCapability::VM_F | ProcessCapability::SRV_F | ProcessCapability::BILLABLE,
-            Self::RootService => ProcessCapability::RSYS_F | ProcessCapability::SRV_F | ProcessCapability::BILLABLE,
+            Self::KernelTask => ProcessCapability::TSK_F,
+            Self::Vm => ProcessCapability::VM_F | ProcessCapability::SRV_F,
+            Self::RootService => ProcessCapability::RSYS_F | ProcessCapability::SRV_F,
             Self::Deferred => ProcessCapability::empty(),
         }
     }
@@ -204,7 +208,7 @@ impl CapabilityTemplate {
     }
 }
 
-// ── Mask Newtypes (§12.6) ────────────────────────────────────────
+// ── Mask Newtypes (22-privilege.md §4.4 D5) ──────────────────────
 
 /// Trap mask: bit i set ⇔ process is allowed to receive trap i.
 /// Was C's `s_trap_mask` (`kernel/priv.h:34`).

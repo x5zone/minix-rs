@@ -497,7 +497,7 @@ fn kernel_call_dispatch_inner(
         Syscall::Sprof => dispatch_sprofile(caller, msg, proc_table),
         Syscall::Stime => dispatch_stime(caller, msg, clock_state),
         Syscall::Settime => dispatch_settime(caller, msg, clock_state),
-        Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table),
+        Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table, priv_table),
         Syscall::Diagctl => dispatch_diagctl(caller, msg, priv_table, proc_table),
         Syscall::Vtimer => dispatch_vtimer(caller, msg, priv_table, proc_table),
         Syscall::Runctl => dispatch_runctl(caller, msg, proc_table),
@@ -1754,6 +1754,7 @@ fn dispatch_vmctl(
     caller: &mut KProcess,
     msg: &mut Message,
     proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &PrivTable,
 ) -> KcallResult {
     use crate::vm::{VmCtlParam, VmCtlResult};
     use minix_arch::TlbArch;
@@ -1761,7 +1762,12 @@ fn dispatch_vmctl(
 
     // Permission check: only system processes may call VMCTL.
     // C: implicit — only VM calls this, and VM always has SYS_PROC.
-    if !crate::syscall_clock::caller_has_sys_proc(caller) {
+    //
+    // FIX-25 (2026-08-14): use `caller_has_sys_proc_with_table` — the legacy
+    // `caller_has_sys_proc` builds a fresh empty `PrivTable::new()` internally
+    // and always returns false, rejecting every privileged caller (same
+    // latent bug as `dispatch_privctl`/`dispatch_schedule`, now fixed).
+    if !crate::syscall_clock::caller_has_sys_proc_with_table(caller, priv_table) {
         return KcallResult::Ok(EPERM);
     }
 
