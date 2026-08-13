@@ -136,31 +136,31 @@ pub fn dispatch_fork(
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m1 = msg_m1(msg);
-    // C: do_fork.c:44-46 — extract parent endpoint and child slot
+    // C: do_fork.c:41,44-45 — extract parent endpoint and child slot
     let parent_endpt_i = m1.m1i1; // m_lsys_krn_sys_fork.endpt
     let child_slot: ProcNr = ProcNr(m1.m1i2); // m_lsys_krn_sys_fork.slot
     let fork_flags = m1.m1i3 as u32; // m_lsys_krn_sys_fork.flags
 
     // Validate parent endpoint
-    // C: do_fork.c:44 — isokendpt(m_ptr->m_lsys_krn_sys_fork.endpt, &p_proc)
+    // C: do_fork.c:41 — isokendpt(m_ptr->m_lsys_krn_sys_fork.endpt, &p_proc)
     let _parent_ep = Endpoint(parent_endpt_i);
 
     // Validate: parent must be receiving (synchronous fork)
-    // C: do_fork.c:56-59
+    // C: do_fork.c:51
     if !caller.p_rts_flags.is_set(RtsFlagsBits::RECEIVING) {
         return KcallResult::Ok(EINVAL);
     }
 
     // Validate: child slot must be empty
-    // C: do_fork.c:48 — isemptyp(rpc)
+    // C: do_fork.c:46 — isemptyp(rpc)
     if !proc_table.is_empty(child_slot) {
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_fork.c:49 — save FPU context before copy
+    // C: do_fork.c:57 — save FPU context before copy
     // save_fpu(rpp) — handled by arch layer
 
-    // C: do_fork.c:55-57 — increment endpoint generation
+    // C: do_fork.c:59,69-72 — increment endpoint generation
     // gen = _ENDPOINT_G(rpc->p_endpoint); gen++; rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);
     // Get the child's current (old) endpoint to extract generation
     let child_old_endpoint = proc_table.get(child_slot)
@@ -168,20 +168,20 @@ pub fn dispatch_fork(
         .unwrap_or(Endpoint::from_generation_slot(0, child_slot.0));
     let child_endpoint = Endpoint::fork_new_endpoint(child_old_endpoint, child_slot.0);
 
-    // C: do_fork.c:53-54 — *rpc = *rpp (copy parent to child)
+    // C: do_fork.c:63 — *rpc = *rpp (copy parent to child)
     // Use fork_from to create child from parent with corrections.
     // C guarantees rpp == caller (parent is the one calling SYS_FORK),
     // so using caller directly is correct.
     let mut child = KProcess::fork_from(caller, child_slot, child_endpoint);
 
-    // C: do_fork.c:84-87 — if parent is SYS_PROC, downgrade child privilege
+    // C: do_fork.c:105-107 — if parent is SYS_PROC, downgrade child privilege
     // Check parent's privilege flags to determine if child needs downgrade.
     let parent_is_sys_proc = caller.priv_id
         .and_then(|id| priv_table.get(id))
         .map(|p| p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC))
         .unwrap_or(false);
 
-    // C: do_fork.c:84-87 — rpc->p_priv = priv_addr(USER_PRIV_ID)
+    // C: do_fork.c:105-107 — rpc->p_priv = priv_addr(USER_PRIV_ID)
     // All forked children get USER_PRIV_ID regardless of parent status.
     // If parent is SYS_PROC, the child also gets RTS_NO_PRIV set
     // (meaning it needs a new privilege assignment before running).
@@ -189,16 +189,16 @@ pub fn dispatch_fork(
 
     // Apply fork completion: RTS_NO_PRIV (if sys proc parent),
     // VMINHIBIT (if requested), name suffix "*F".
-    // C: do_fork.c:84-87, 93-95, 104-106
+    // C: do_fork.c:84-87,105-107,115-116
     complete_fork_setup(&mut child, parent_is_sys_proc, fork_flags);
 
     // Write child back to process table
     *proc_table.get_mut(child_slot).unwrap() = child;
 
-    // C: do_fork.c:62 — child sees pid = 0
+    // C: do_fork.c:74 — child sees pid = 0
     // rpc->p_reg.retreg = 0 — set by fork_from via p_reg initialization
 
-    // C: do_fork.c:99-100 — clear signal flags
+    // C: do_fork.c:122 — clear signal flags
     // RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP)
     // Already handled by fork_from()
 
@@ -212,7 +212,7 @@ pub fn dispatch_fork(
 
 /// Dispatch SYS_EXEC.
 ///
-/// C: `do_exec()` — do_exec.c:20-58
+/// C: `do_exec()` — do_exec.c:20-59
 ///
 /// Patches up a process after a successful exec:
 /// clears old state (delivermsg, receiving, FPU) on the **target process**
@@ -237,18 +237,18 @@ pub fn dispatch_exec(
     let exec_msg = unsafe { msg.m_u.m_lsys_krn_sys_exec };
     let endpt = exec_msg.endpt;
 
-    // C: do_exec.c:29-30 — isokendpt(endpt, &proc_nr)
+    // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr)
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_exec.c:36-37 — clear MF_DELIVERMSG on the target
+    // C: do_exec.c:32-34 — clear MF_DELIVERMSG on the target
     if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG); }
 
-    // C: do_exec.c:39-43 — copy process name from caller's address space
-    // C: numap_local(caller, name, sizeof(rp->p_name)) + phys_byte loop
+    // C: do_exec.c:37-42 — copy process name from caller's address space
+    // C: data_copy(src, dst, sizeof(rp->p_name)) + null termination (do_exec.c:43)
     {
         use crate::cross_space::data_copy_vmcheck;
         use crate::vm::{AddressRef, CrossSpaceResult};
@@ -317,11 +317,11 @@ pub fn dispatch_exec(
         }
     }
 
-    // C: do_exec.c:54 — RTS_UNSET(rp, RTS_RECEIVING)
+    // C: do_exec.c:51 — RTS_UNSET(rp, RTS_RECEIVING)
     // rts_unset automatically enqueues the process if it becomes runnable.
     proc_table.rts_unset(target_nr, RtsFlagsBits::RECEIVING);
 
-    // C: do_exec.c:57-58 — clear FPU initialized flag, release FPU
+    // C: do_exec.c:55-57 — clear FPU initialized flag, release FPU
     // C uses MF_FPU_INITIALIZED; Rust uses EXT_REG_INITIALIZED
     if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED); }
     // release_fpu(rp) — clearing EXT_REG_INITIALIZED + lazy FPU model
@@ -360,14 +360,14 @@ pub fn dispatch_exit(caller: &mut KProcess, _msg: &Message) -> KcallResult {
 ///
 /// C: `cause_sig()` — system.c:389-426
 fn cause_signal_abort(caller: &mut KProcess) {
-    // C: system.c:411 — sigaddset(&priv->s_sig_pending, sig_nr)
+    // C: system.c:433 — sigaddset(&priv->s_sig_pending, sig_nr)
     // In Rust, signal manager pending is `s_sig_pending` (KPriv), but the
     // kernel-side p_pending (KProcess) is the visible "any signal queued"
     // bitmap. We set both to mirror C's "send to signal manager" semantics
     // from the caller's perspective.
     caller.p_pending.add(SIGABRT as u8);
 
-    // C: system.c:413-414 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
+    // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
     caller
         .p_rts_flags
         .set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
@@ -410,29 +410,29 @@ pub fn dispatch_clear(
     clock_state: &mut crate::clock::ClockState,
 ) -> KcallResult {
     let m1 = msg_m1(msg);
-    // C: do_clear.c:24-25 — extract endpoint
+    // C: do_clear.c:29 — extract endpoint
     let endpt = m1.m1i1; // m_lsys_krn_sys_clear.endpt
 
-    // C: do_clear.c:27-28 — isokendpt(endpt, &exit_p)
+    // C: do_clear.c:29 — isokendpt(endpt, &exit_p)
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_clear.c:29 — rc = proc_addr(exit_p)
+    // C: do_clear.c:33 — rc = proc_addr(exit_p)
     // IMPORTANT: C operates on the TARGET process, not the caller.
     // The previous Rust code incorrectly operated on `caller`, which
     // would mark the PM's own slot as SLOT_FREE — a P0 semantic drift.
 
-    // C: do_clear.c:33 — if(isemptyp(rc)) return OK
+    // C: do_clear.c:38 — if(isemptyp(rc)) return OK
     if proc_table.get(target_nr).is_none_or(|p| {
         p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE)
     }) {
         return KcallResult::Ok(OK);
     }
 
-    // C: do_clear.c:31 — release_address_space(rc)
+    // C: do_clear.c:35 — release_address_space(rc)
     // Implemented (2026-08-13, Phase 8): clears p_seg.virt_root (the
     // kernel-virtual alias of the page directory). The actual page-table
     // reclamation is performed by VM via a separate flow.
@@ -440,7 +440,7 @@ pub fn dispatch_clear(
         crate::syscall::release_address_space(target);
     }
 
-    // C: do_clear.c:33-40 — rm_irq_handler for all hooks owned by this process.
+    // C: do_clear.c:41-46 — rm_irq_handler for all hooks owned by this process.
     // C iterates: `for (i=0; i < NR_IRQ_HOOKS; i++)` if `irq_hooks[i].proc_nr_e == rc->p_endpoint`.
     // Rust: use the global IrqManager (same accessor as dispatch_irqctl).
     {
@@ -454,13 +454,13 @@ pub fn dispatch_clear(
         }
     }
 
-    // C: do_clear.c:42 — clear_endpoint(rc)
+    // C: do_clear.c:49 — clear_endpoint(rc)
     // Implemented (2026-08-13, Phase 8): full clear_endpoint sequence —
     // RTS_NO_ENDPOINT + s_asynsize clear + clear_ipc + clear_ipc_refs +
     // clear_memreq. See `syscall::clear_endpoint` for details.
     crate::syscall::clear_endpoint(proc_table, priv_table, target_nr);
 
-    // C: do_clear.c:41-43 — reset_kernel_timer(&priv(rc)->s_alarm_timer)
+    // C: do_clear.c:52 — reset_kernel_timer(&priv(rc)->s_alarm_timer)
     // Cancel any pending alarm timer for this process.
     if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
         && let Some(kp) = priv_table.get_mut(pid)
@@ -470,18 +470,18 @@ pub fn dispatch_clear(
                 clock_state.reset_timer(timer_id);
             }
 
-    // C: do_clear.c:50 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
+    // C: do_clear.c:57 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
     // Mark the TARGET slot as free so it can be reused.
     proc_table.rts_set(target_nr, RtsFlagsBits::SLOT_FREE);
 
-    // C: do_clear.c:53 — release_fpu(rc), clear MF_FPU_INITIALIZED
+    // C: do_clear.c:60-61 — release_fpu(rc), clear MF_FPU_INITIALIZED
     // Clear the FPU initialized flag so the slot's FPU state is not
     // mistakenly used by a new process assigned to this slot.
     if let Some(target) = proc_table.get_mut(target_nr) {
         target.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED);
     }
 
-    // C: do_clear.c:59 — if SYS_PROC, release privilege structure
+    // C: do_clear.c:68 — if SYS_PROC, release privilege structure
     // priv(rc)->s_proc_nr = NONE — marks the privilege slot as unassigned.
     if let Some(target) = proc_table.get(target_nr)
         && let Some(priv_id) = target.priv_id
@@ -506,26 +506,26 @@ pub fn dispatch_runctl(
     proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let m1 = msg_m1(msg);
-    // C: do_runctl.c:34 — extract parameters
+    // C: do_runctl.c:34-35 — extract parameters
     let endpt = m1.m1i1;    // RC_ENDPT
     let action = m1.m1i2;   // RC_ACTION
     let flags = m1.m1i3;    // RC_FLAGS
 
-    // C: do_runctl.c:36 — isokendpt(m_ptr->RC_ENDPT, &proc_nr)
+    // C: do_runctl.c:30 — isokendpt(m_ptr->RC_ENDPT, &proc_nr)
     let target_endpoint = Endpoint(endpt);
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_runctl.c:37 — iskerneln(proc_nr) → EPERM
+    // C: do_runctl.c:31 — iskerneln(proc_nr) → EPERM
     if ProcessTable::is_kernel(target_nr) {
         return KcallResult::Ok(EPERM);
     }
 
     match action {
         RC_STOP => {
-            // C: do_runctl.c:45-51 — check RC_DELAY
+            // C: do_runctl.c:44-50 — check RC_DELAY
             if (flags & RC_DELAY) != 0 {
                 // If the target is sending or syscall-traced, set MF_SIG_DELAY
                 let target = proc_table.get(target_nr);
@@ -541,7 +541,7 @@ pub fn dispatch_runctl(
                 }
             }
 
-            // C: do_runctl.c:57-62 — SMP check
+            // C: do_runctl.c:55-62 — SMP check
             // if (rp->p_cpu != cpuid) { smp_schedule_stop_proc(rp); }
             // else { RTS_SET(rp, RTS_PROC_STOP); }
             //
@@ -603,7 +603,7 @@ pub fn dispatch_runctl(
 
 /// Dispatch SYS_SCHEDCTL.
 ///
-/// C: `do_schedctl()` — do_schedctl.c:9-45
+/// C: `do_schedctl()` — do_schedctl.c:7-46
 ///
 /// Set scheduling parameters for a process, or designate the caller as
 /// the user-space scheduler for a target process.
@@ -631,20 +631,20 @@ pub fn dispatch_schedctl(
     proc_table: &mut ProcessTable,
 ) -> KcallResult {
     let sc = msg_schedctl(msg);
-    // C: do_schedctl.c:11 — extract flags
+    // C: do_schedctl.c:16 — extract flags
     let flags = sc.flags;
-    // C: do_schedctl.c:12 — extract target endpoint, priority, quantum, cpu
+    // C: do_schedctl.c:23,26 — extract target endpoint, priority, quantum, cpu
     let target_endpoint = Endpoint(sc.endpoint);
     let priority = sc.priority;
     let quantum = sc.quantum;
     let cpu = sc.cpu;
 
-    // C: do_schedctl.c:14-17 — validate flags (only SCHEDCTL_FLAG_KERNEL defined)
+    // C: do_schedctl.c:16-17 — validate flags (only SCHEDCTL_FLAG_KERNEL defined)
     if flags & !SCHEDCTL_FLAG_KERNEL != 0 {
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_schedctl.c:20-21 — isokendpt(endpoint, &proc_nr)
+    // C: do_schedctl.c:23-24 — isokendpt(endpoint, &proc_nr)
     // Resolve the TARGET process (not the caller). C uses `p = proc_addr(proc_nr)`.
     let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
         Some(nr) => nr,
@@ -652,9 +652,9 @@ pub fn dispatch_schedctl(
     };
 
     if flags & SCHEDCTL_FLAG_KERNEL != 0 {
-        // C: do_schedctl.c:23-34 — kernel becomes the scheduler.
+        // C: do_schedctl.c:28-34 — kernel becomes the scheduler.
         // Extract scheduling parameters and call sched_proc(p, ..., FALSE).
-        // `niced = FALSE` matches C: do_schedctl.c:30 — sched_proc is called
+        // `niced = FALSE` matches C: do_schedctl.c:37 — sched_proc is called
         // with the literal `FALSE`, not a message field (unlike SYS_SCHEDULE).
         //
         // Design decision §3.8 (11-scheduling-primitives.md): convert C's i32 -1 sentinel
@@ -682,13 +682,13 @@ pub fn dispatch_schedctl(
         };
         match crate::sched::sched_proc(target, crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced: false }) {
             Ok(()) => {
-                // C: do_schedctl.c:35 — p->p_scheduler = NULL
+                // C: do_schedctl.c:39 — p->p_scheduler = NULL
                 // Kernel is now the scheduler; clear any user-space scheduler.
                 //
                 // # Assignment timing
                 //
                 // The C source sets `p_scheduler = NULL` **after** `sched_proc`
-                // returns OK (do_schedctl.c:30 → do_schedctl.c:35). The Rust
+                // returns OK (do_schedctl.c:37 → do_schedctl.c:39). The Rust
                 // translation preserves this order: if `sched_proc` fails we
                 // return early and leave `p_scheduler` untouched. This avoids
                 // a bug where a failed `sched_proc` (e.g. EINVAL on bad
@@ -702,7 +702,7 @@ pub fn dispatch_schedctl(
             }
         }
     } else {
-        // C: do_schedctl.c:36-37 — caller becomes the scheduler.
+        // C: do_schedctl.c:41-42 — caller becomes the scheduler.
         // p->p_scheduler = caller (store the caller's slot number, not a
         // pointer, to match Rust ownership model).
         let target = match proc_table.get_mut(target_nr) {
@@ -722,7 +722,7 @@ pub fn dispatch_schedctl(
 /// Handle state control requests: IPC filter management, IPC ref cleanup,
 /// state table setup.
 ///
-/// # C Semantic Alignment (do_statectl.c:15-49)
+/// # C Semantic Alignment (do_statectl.c:15-51)
 ///
 /// - `SYS_STATE_CLEAR_IPC_REFS` (1): clear_ipc_refs(caller, EDEADSRCDST) — IMPLEMENTED
 /// - `SYS_STATE_SET_STATE_TABLE` (2): priv(caller)->s_state_table/entries — IMPLEMENTED
@@ -745,7 +745,7 @@ pub(crate) fn dispatch_statectl(
     };
 
     match req {
-        // C: do_statectl.c:22-26 — clear_ipc_refs(caller, EDEADSRCDST)
+        // C: do_statectl.c:21-26 — clear_ipc_refs(caller, EDEADSRCDST)
         // Clears all IPC references for the caller: pending notification
         // and async message bits in all privilege slots, and wakes up any
         // processes blocked on the caller's endpoint.
@@ -756,7 +756,7 @@ pub(crate) fn dispatch_statectl(
             let caller_nr = caller.p_nr;
             crate::syscall::clear_ipc_refs(proc_table, priv_table, caller_nr, EDEADSRCDST);
         }
-        // C: do_statectl.c:27-30 — priv(caller)->s_state_table = address; s_state_entries = length
+        // C: do_statectl.c:29-30 — priv(caller)->s_state_table = address; s_state_entries = length
         StatectlRequest::SetStateTable => {
             if let Some(pid) = caller.priv_id
                 && let Some(priv_) = priv_table.get_mut(pid) {
@@ -764,7 +764,7 @@ pub(crate) fn dispatch_statectl(
                     priv_.runtime.s_state_entries = sc.length;
                 }
         }
-        // C: do_statectl.c:31-35 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
+        // C: do_statectl.c:32-36 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
         StatectlRequest::AddIpcBlFilter => {
             // Capture caller endpoint and CR3 before the mutable priv_table
             // borrow so the data_copy_vmcheck closure can reference them
@@ -803,7 +803,7 @@ pub(crate) fn dispatch_statectl(
             }
 
             // Copy filter elements from user space.
-            // C: do_statectl.c:32-33 — add_ipc_filter copies `length` elements
+            // C: do_statectl.c:34-36 — add_ipc_filter copies `length` elements
             // from user-supplied `address` array.
             if length > 0 {
                 use crate::cross_space::data_copy_vmcheck;
@@ -867,7 +867,7 @@ pub(crate) fn dispatch_statectl(
                 }
             }
         }
-        // C: do_statectl.c:36-40 — add_ipc_filter(caller, IPCF_WHITELIST, address, length)
+        // C: do_statectl.c:37-41 — add_ipc_filter(caller, IPCF_WHITELIST, address, length)
         StatectlRequest::AddIpcWlFilter => {
             // Capture caller endpoint and CR3 before the mutable priv_table
             // borrow so the data_copy_vmcheck closure can reference them
@@ -906,7 +906,7 @@ pub(crate) fn dispatch_statectl(
             }
 
             // Copy filter elements from user space.
-            // C: do_statectl.c:32-33 — add_ipc_filter copies `length` elements
+            // C: do_statectl.c:34-36 — add_ipc_filter copies `length` elements
             // from user-supplied `address` array.
             if length > 0 {
                 use crate::cross_space::data_copy_vmcheck;
@@ -970,7 +970,7 @@ pub(crate) fn dispatch_statectl(
                 }
             }
         }
-        // C: do_statectl.c:41-43 — clear_ipc_filters(caller)
+        // C: do_statectl.c:42-44 — clear_ipc_filters(caller)
         StatectlRequest::ClearIpcFilters => {
             if let Some(pid) = caller.priv_id
                 && let Some(priv_) = priv_table.get_mut(pid) {
@@ -1193,7 +1193,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_runctl_kernel_process_returns_eperm() {
-        // C: do_runctl.c:37 — iskerneln(proc_nr) → EPERM
+        // C: do_runctl.c:31 — iskerneln(proc_nr) → EPERM
         let mut proc_table = ProcessTable::new();
         // Kernel processes have negative ProcNr. The IDLE process
         // (nr = -(NR_TASKS-4) on most configs) is a kernel task.
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_exec_operates_on_target() {
-        // C: do_exec.c:29-30 — isokendpt(endpt, &proc_nr), then operate on rp
+        // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr), then operate on rp
         let mut proc_table = ProcessTable::new();
         // Set up a user-space target process (nr >= 0)
         let target_nr: ProcNr = ProcNr(0);
@@ -1240,16 +1240,16 @@ mod tests {
 
         let result = dispatch_exec(&mut caller, &msg, &mut proc_table);
         // Name copy suspends (null name pointer → page fault → VmSuspend).
-        // C: do_exec.c:39-43 — name copy via numap_local; fault → VMSUSPEND.
+        // C: do_exec.c:37-42 — name copy via data_copy; fault → VMSUSPEND.
         assert_eq!(result, KcallResult::VmSuspend);
 
-        // DELIVERMSG is cleared BEFORE the name copy (do_exec.c:36-37),
+        // DELIVERMSG is cleared BEFORE the name copy (do_exec.c:32-34),
         // so it should be cleared even though the name copy suspended.
         let target = proc_table.get(target_nr).unwrap();
         assert!(!target.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
 
         // RECEIVING and EXT_REG_INITIALIZED are cleared AFTER the name copy
-        // (do_exec.c:54,57-58), so they should still be set.
+        // (do_exec.c:51,55-57), so they should still be set.
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert!(target.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
 
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_exec_invalid_endpoint() {
-        // C: do_exec.c:29-30 — isokendpt fails → EINVAL
+        // C: do_exec.c:27,30 — isokendpt fails → EINVAL
         let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
@@ -1272,7 +1272,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_clear_invalid_endpoint_returns_einval() {
-        // C: do_clear.c:27-28 — isokendpt fails → EINVAL
+        // C: do_clear.c:29 — isokendpt fails → EINVAL
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         // Set an endpoint that won't be found in the process table
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_clear_sets_target_slot_free() {
-        // C: do_clear.c:50 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
+        // C: do_clear.c:57 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
         // The target process (not the caller) should be marked SLOT_FREE.
         let mut proc_table = ProcessTable::new();
         let mut priv_table = PrivTable::new();
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_clear_clears_ext_reg_on_target() {
-        // C: do_clear.c:53 — release_fpu(rc), clear MF_FPU_INITIALIZED
+        // C: do_clear.c:60-61 — release_fpu(rc), clear MF_FPU_INITIALIZED
         let mut proc_table = ProcessTable::new();
         let mut priv_table = PrivTable::new();
 
@@ -1381,7 +1381,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_invalid_flags() {
-        // C: do_schedctl.c:14-17 — flags & ~SCHEDCTL_FLAG_KERNEL → EINVAL
+        // C: do_schedctl.c:16-17 — flags & ~SCHEDCTL_FLAG_KERNEL → EINVAL
         let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let msg = build_schedctl_msg(0xFF, 0, 0, 0, 0);
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_invalid_endpoint_returns_einval() {
-        // C: do_schedctl.c:20-21 — isokendpt fails → EINVAL
+        // C: do_schedctl.c:23-24 — isokendpt fails → EINVAL
         let mut proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // Endpoint 99999 won't resolve in an empty process table.
@@ -1433,7 +1433,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_kernel_flag_propagates_sched_proc_error() {
-        // C: do_schedctl.c:30 — if sched_proc returns error, propagate it.
+        // C: do_schedctl.c:37 — if sched_proc returns error, propagate it.
         // Invalid priority (out of range) → EINVAL from sched_proc.
         let mut proc_table = ProcessTable::new();
         let target_nr = ProcNr(0);
@@ -1469,7 +1469,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_kernel_flag_invalid_quantum_returns_einval() {
-        // C: do_schedctl.c:30 → sched_proc validates quantum < 1 && != -1 → EINVAL.
+        // C: do_schedctl.c:37 → sched_proc validates quantum < 1 && != -1 → EINVAL.
         let mut proc_table = ProcessTable::new();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
@@ -1484,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_no_flag_sets_caller_as_scheduler_on_target() {
-        // C: do_schedctl.c:36-37 — caller becomes the scheduler.
+        // C: do_schedctl.c:41-42 — caller becomes the scheduler.
         // The TARGET's p_scheduler should be set to caller.p_nr, NOT the
         // caller's own p_scheduler.
         let mut proc_table = ProcessTable::new();
@@ -1510,7 +1510,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_schedctl_preserves_minus_one_sentinels() {
-        // C: do_schedctl.c:30 → sched_proc(p, -1, -1, -1, FALSE) keeps
+        // C: do_schedctl.c:37 → sched_proc(p, -1, -1, -1, FALSE) keeps
         // current priority/quantum/cpu unchanged.
         let mut proc_table = ProcessTable::new();
         let target_nr = ProcNr(0);
