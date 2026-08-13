@@ -1,7 +1,7 @@
 # 11-scheduling-primitives: 调度原语与进程状态机
 
 > **分类**: Kernel 调度核心
-> **C 源码**: `minix3/minix/kernel/proc.c:1595-1832`（enqueue/enqueue_head/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）, `system.c:642-723`（sched_proc）
+> **C 源码**: `minix3/minix/kernel/proc.c:1595-1813`（enqueue/enqueue_head/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）, `system.c:642-723`（sched_proc）
 > **Rust 源码**: `os/kernel/src/sched.rs`, `os/kernel/src/proc_table.rs`, `os/kernel/src/proc.rs`
 > **前置**: 06（struct proc / RTS_FLAGS）、10（switch_to_user 调用方）
 
@@ -352,7 +352,7 @@ self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
 // C (proc.c:1653) — 写入当前运行进程（错误）
 get_cpulocal_var(proc_ptr)->p_accounting.enter_queue = read_tsc();
 
-// Rust (proc_table.rs:484) — 写入被入队进程（正确）
+// Rust (proc_table.rs:521) — 写入被入队进程（正确）
 self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
 ```
 
@@ -471,7 +471,7 @@ impl Scheduler {
         // 更新 head/tail，返回 old_tail 供调用方更新 p_nextready
     }
 
-    pub fn enqueue_queue_head(&mut self, nr: ProcNr, q:usize) { /* ... */ }
+    pub fn enqueue_queue_head(&mut self, nr: ProcNr, q: usize) { /* ... */ }
 
     pub fn dequeue_from_queue(&mut self, nr: ProcNr, q: usize, procs: &mut [KProcess]) {
         // 两次遍历：找节点 + 更新前驱指针
@@ -481,7 +481,7 @@ impl Scheduler {
 
 **借用分离**：`Scheduler` 方法只操作 `&mut [Option<ProcNr>]`（队列数组），不碰 `[KProcess]`（进程字段）。这避免了自借用。
 
-> **已知缺口**：Rust 实现当前未更新 `bill_ptr`（C: proc.c:1804-1809）。`set_bill_to_idle` 方法（proc_table.rs:330）仅用于 IDLE 计费初始化。完整的 bill_ptr 联动待实现（TODO）。
+> **已知缺口**：Rust 实现当前未更新 `bill_ptr`（C: proc.c:1804-1809）。`set_bill_to_idle` 方法（proc_table.rs:358）仅用于 IDLE 计费初始化。完整的 bill_ptr 联动待实现（TODO）。
 
 ### 4.3 ProcessTable 协调：sched_enqueue / sched_dequeue / sched_proc_no_time
 
@@ -490,21 +490,41 @@ impl Scheduler {
 ```rust
 // proc_table.rs — sched_enqueue 四阶段
 pub fn sched_enqueue(&mut self, nr: ProcNr, current_nr: Option<ProcNr>, cpu_id: CpuId) {
+    let q = self.get(nr).map_or(0, |p| p.get_priority().get() as usize);
+    debug_assert!(q < 16, "sched_enqueue: priority out of range");
+
     // Phase 1: 队列数组更新（委托 Scheduler）
     let info = self.sched.enqueue_queue_tail(nr, q);
 
     // Phase 2: 进程字段更新（p_nextready）
-    self.procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
-    if let Some(tail_nr) = info.old_tail {
-        self.procs[tail_idx].p_nextready.store(nr, Ordering::Relaxed);
+    {
+        let procs = &mut self.procs;
+        let nr_idx = nr_to_idx(nr).unwrap();
+        procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
+        if let Some(tail_nr) = info.old_tail {
+            let tail_idx = nr_to_idx(tail_nr).unwrap();
+            procs[tail_idx].p_nextready.store(nr.0, Ordering::Relaxed);
+        }
     }
 
-    // Phase 3: 抢占检查（同 CPU 且高优先级）
-    if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
-        self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+    // Phase 3: 抢占检查（仅同 CPU 且高优先级）
+    if let Some(cur_nr) = current_nr {
+        let (cur_prio, cur_cpu, cur_preemptible) = {
+            let cur = self.get(cur_nr).expect("sched_enqueue: invalid current nr");
+            (
+                cur.get_priority().get(),
+                cur.p_sched.cpu.load(Ordering::Acquire),
+                cur.get_priority().get() != 0,
+            )
+        };
+        let new_prio = q as u8;
+        if cur_cpu == cpu_id.raw() && cur_prio > new_prio && cur_preemptible {
+            self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+        }
     }
 
     // Phase 4: 记录 enter_queue（§3.6: 修复 C bug）
+    let tsc = read_tsc();
     self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
 }
 ```
@@ -518,11 +538,18 @@ Rust 用方法封装替代 C 的宏，实现 RTS 标志修改自动触发 enqueu
 ```rust
 // proc_table.rs
 pub fn rts_set(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
-    let was_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
-    self.get_mut(nr).unwrap().p_rts_flags.set(flags);
-    let is_runnable = self.get(nr).map_or(false, |p| p.is_runnable());
-    // INV-1: 可运行 → 不可运行 → 自动出队
-    if was_runnable && !is_runnable {
+    let was_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+    if let Some(p) = self.get_mut(nr) {
+        p.p_rts_flags.set(flags);
+    }
+    let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+    // INV-1: 可运行 → 不可运行 → 自动出队（仅当仍在调度队列中）
+    if was_runnable && !is_runnable && self.is_in_scheduler(nr) {
+        // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's
+        // assigned CPU determines which per-CPU queue to dequeue from.
+        let cpu_id = self.get(nr)
+            .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+            .unwrap_or(CpuId::BSP);
         self.sched_dequeue(nr, cpu_id);
     }
 }
@@ -535,22 +562,33 @@ pub fn rts_set(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
 ```rust
 // proc_table.rs
 pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
-    let (kernel_scheduled, preemptible, quantum_ms) = /* 读取进程字段 */;
+    let (kernel_scheduled, preemptible, quantum_ms) = {
+        // R-15: `nr` 是耗尽时间片的可运行进程，必在表中
+        let p = self.get(nr).expect("sched_proc_no_time: invalid proc nr");
+        let ks = p.p_sched.scheduler.is_none() || p.p_sched.scheduler == Some(p.p_nr);
+        let pre = p.get_priority().get() != 0;
+        let qms = p.p_sched.quantum.size_ms.load(Ordering::Acquire);
+        (ks, pre, qms)
+    };
 
     if !kernel_scheduled && preemptible {
-        // 用户调度 + 可抢占: rts_set(NO_QUANTUM) 自动出队
+        // 用户调度 + 可抢占: rts_set(NO_QUANTUM) 自动出队 + 通知调度器
         self.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
-        // TODO: notify_scheduler — 发送 SCHEDULING_NO_QUANTUM 消息
-        // 当前阻塞于 IPC 引擎实现（见注释）
+        self.notify_scheduler(nr);
     } else {
         // 内核调度: 重置 cpu_time_left
-        let total_cycles = crate::clock::ms_to_cpu_time(quantum_ms);
-        self.get_mut(nr).unwrap().p_sched.quantum.cpu_time_left.store(total_cycles, Ordering::Release);
+        let cpu_time = crate::clock::ms_to_cpu_time(quantum_ms);
+        self.get_mut(nr)
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(cpu_time, Ordering::Release);
     }
 }
 ```
 
-**notify_scheduler 当前为 TODO**：`rts_set(NO_QUANTUM)` 已正确出队，仅消息发送未实现（依赖 IPC 引擎）。这是已知的实现缺口，不影响调度正确性（进程不会非法运行，只是用户态调度器暂时收不到通知）。
+**notify_scheduler 已实现**（proc_table.rs:643）：`rts_set(NO_QUANTUM)` 出队后，`notify_scheduler` 构建 `SCHEDULING_NO_QUANTUM` 消息（`mess_krn_lsys_schedule`，C: proc.c:1860-1891）并发送给用户态调度器。发送失败时 C panic，Rust 以 `panic!` 匹配（内核源发送失败 = 内核完整性错误）。
 
 ### 4.6 sched_proc 参数验证与字段更新
 
@@ -579,7 +617,7 @@ pub fn sched_proc(
 
 错误码与 Minix3 对齐：`EINVAL=22`（InvalidArgument）、`EBADCPU=42`（BadCpu）。
 
-> 骨架展示，完整实现见 [sched.rs:305-397](os/kernel/src/sched.rs)。
+> 骨架展示，完整实现见 [sched.rs:321-427](os/kernel/src/sched.rs)。
 
 ---
 
@@ -600,12 +638,17 @@ pub fn sched_proc(
 | `test_sched_proc_priority_change` | priority Some(v) 更新 | system.c:684 |
 | `test_sched_proc_priority_none_keeps_value` | priority None 保持当前 | system.c:684 |
 | `test_sched_proc_priority_overflow_rejected` | priority > 15 → EINVAL | system.c:645 |
+| `test_sched_proc_priority_too_high_rejected` | priority = 17 → EINVAL（越界拒绝） | system.c:645 |
 | `test_sched_proc_quantum_update_resets_cpu_time` | quantum 更新重置 cpu_time_left | system.c:686 |
 | `test_sched_proc_quantum_zero_rejected` | quantum == 0 → EINVAL | system.c:647 |
 | `test_sched_proc_niced_flag_set/clear` | niced 标志设置/清除 | system.c:695 |
 | `test_sched_proc_cpu_update` | CPU affinity 更新 | system.c:691 |
 | `test_sched_proc_full_update_with_all_params` | 全参数端到端 | system.c:642 |
 | `test_sched_proc_error_to_errno` | 错误码映射 | EINVAL=22, EBADCPU=42 |
+| `test_sched_proc_c_parity_step1_priority_validation` | C parity：priority 16 → EINVAL / 15 → OK | system.c:644-645 |
+| `test_sched_proc_c_parity_step2_quantum_validation` | C parity：quantum 0 → EINVAL / 1 → OK | system.c:647-648 |
+| `test_sched_proc_c_parity_step8_niced_flag` | C parity：niced 设置/清除 MF_NICED | system.c:695-698 |
+| `test_sched_proc_c_parity_step9_no_quantum_cleared` | C parity：sched_proc 后 RTS_NO_QUANTUM 清除 | system.c:698 |
 
 > **§3.8 迁移说明**：`test_sched_proc_priority_negative_rejected` 已删除（`u8` 类型系统在编译期防止负值）。替换为 `test_sched_proc_priority_overflow_rejected`（运行期检查 `> 15`）。
 
