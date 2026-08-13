@@ -110,7 +110,7 @@ const VM_GRANT: i32 = LOCAL_VM_SEG | MEM_GRANT;
 
 // ── Constants ──
 
-/// Maximum indirect grant chain depth. C: `MAX_INDIRECT_DEPTH` — do_safecopy.c:25
+/// Maximum indirect grant chain depth. C: `MAX_INDIRECT_DEPTH` — do_safecopy.c:21
 #[allow(dead_code)] // grant indirect chain depth limit; not yet wired to all call sites
 const MAX_INDIRECT_DEPTH: usize = 5;
 
@@ -238,7 +238,7 @@ pub fn dispatch_physcopy(
 
 /// Shared implementation for VIRCOPY and PHYSCOPY.
 ///
-/// C: do_copy.c:30-91
+/// C: do_copy.c:22-90
 fn dispatch_copy(
     caller: &mut KProcess,
     msg: &Message,
@@ -246,7 +246,7 @@ fn dispatch_copy(
 ) -> KcallResult {
     let m = msg_copy(msg);
 
-    // C: do_copy.c:39-44 — extract source and destination
+    // C: do_copy.c:51-52 — extract source and destination
     let mut src_endpt = m.src_endpt;
     let mut dst_endpt = m.dst_endpt;
     let src_addr = m.src_addr;
@@ -254,7 +254,7 @@ fn dispatch_copy(
     let nr_bytes = m.nr_bytes;
     let flags = m.flags as u32;
 
-    // C: do_copy.c:49-50 — SELF replacement
+    // C: do_copy.c:64-65 — SELF replacement
     if src_endpt == SELF {
         src_endpt = caller.p_endpoint.0;
     }
@@ -262,7 +262,7 @@ fn dispatch_copy(
         dst_endpt = caller.p_endpoint.0;
     }
 
-    // C: do_copy.c:51-58 — endpoint validation via isokendpt
+    // C: do_copy.c:66-71 — endpoint validation via isokendpt
     // C: for(i=_SRC_; i<=_DST_; i++) { if(!isokendpt(vir_addr[i].proc_nr_e, &p)) return EINVAL; }
     // isokendpt checks: 1) proc_nr in range, 2) slot occupied, 3) generation matches.
     // ProcessTable::endpoint_to_nr() performs all three checks.
@@ -275,7 +275,7 @@ fn dispatch_copy(
             return KcallResult::Ok(EINVAL);
         }
 
-    // C: do_copy.c:61-62 — overflow check: src_addr + nr_bytes must not wrap.
+    // C: do_copy.c:77 — overflow check: src_addr + nr_bytes must not wrap.
     // On 64-bit, vir_bytes == phys_bytes; the check is still needed to
     // prevent `copy_nonoverlapping` from wrapping around.
     if nr_bytes > 0
@@ -286,7 +286,7 @@ fn dispatch_copy(
         }
 
     // Build AddressRef: NONE → Physical (raw physical address), else → Process.
-    // C: do_copy.c:53 — `proc_addr[i] = NULL` when `proc_nr_e == NONE`,
+    // C: do_copy.c:66 — `proc_addr[i] = NULL` when `proc_nr_e == NONE`,
     // meaning the address is physical.
     let src = if src_endpt == NONE {
         AddressRef::Physical(PhysBytes(src_addr))
@@ -321,7 +321,7 @@ fn dispatch_copy(
         }
     };
 
-    // C: do_copy.c:64-69 — CP_FLAG_TRY handling.
+    // C: do_copy.c:80-85 — CP_FLAG_TRY handling.
     // Try-copy mode (VFS-only): calls virtual_copy_f directly (no vmcheck
     // wrapper), returns EFAULT on page fault instead of VMSUSPEND.
     // C: `if (flags & CP_FLAG_TRY) return virtual_copy_f(...) == VMSUSPEND ? EFAULT : OK;`
@@ -340,7 +340,7 @@ fn dispatch_copy(
         };
     }
 
-    // C: do_copy.c:70-72 — normal copy with VM check.
+    // C: do_copy.c:86-89 — normal copy with VM check.
     // virtual_copy_vmcheck(caller, &vir_addr[_SRC_], &vir_addr[_DST_], bytes)
     let result = crate::cross_space::data_copy_vmcheck(
         caller,
@@ -411,7 +411,7 @@ fn safecopy_common_impl(
     access: CpFlags,
 ) -> KcallResult {
     let m = msg_safecopy(msg);
-    // C: do_safecopy.c:330-336 — extract parameters
+    // C: do_safecopy.c:377-394 — extract parameters
     let granter_ep = m.from_to;
     let grant_id = m.grant_id;
     let bytes = m.bytes;
@@ -424,7 +424,7 @@ fn safecopy_common_impl(
         return KcallResult::Ok(EFAULT);
     }
 
-    // C: do_safecopy.c:73-76 — verify_grant() is called by safecopy().
+    // C: do_safecopy.c:305-306 — verify_grant() is called by safecopy().
     // Before that, we need the granter to exist (analogous to
     // endpoint_lookup in C's do_safecopy).
     if proc_table.endpoint_to_nr(Endpoint(granter_ep)).is_none() {
@@ -580,9 +580,9 @@ fn write_soft_fault_marker(
 ///
 /// # Flow
 ///
-/// 1. Validate caller endpoint + vec_size bounds (do_safecopy.c:407-414).
+/// 1. Validate caller endpoint + vec_size bounds (do_safecopy.c:407-415).
 /// 2. Copy `vscp_vec[]` from caller's user space via `data_copy_vmcheck`
-///    (do_safecopy.c:415-419).
+///    (do_safecopy.c:417-419).
 /// 3. Per-element loop (do_safecopy.c:422-444):
 ///    - `v_from == SELF` → WRITE, granter = v_to
 ///    - `v_to == SELF` → READ, granter = v_from
@@ -602,18 +602,18 @@ pub fn dispatch_vsafecopy(
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_vsafecopy(msg);
-    // C: do_safecopy.c:407 — extract vector parameters
+    // C: do_safecopy.c:407-415 — extract vector parameters
     let vec_addr = m.vec_addr;
     let vec_size = m.vec_size;
 
-    // C: do_safecopy.c:407 — `assert(src.proc_nr_e != NONE)`.
+    // C: do_safecopy.c:408 — `assert(src.proc_nr_e != NONE)`.
     // We replace the panic with an EFAULT return so a misbehaving caller
     // gets an explicit error rather than a kernel panic.
     if caller.p_endpoint.0 == NONE {
         return KcallResult::Ok(EFAULT);
     }
 
-    // C: do_safecopy.c:411-412 — `els = vec_size; bytes = els * sizeof(...)`.
+    // C: do_safecopy.c:414-415 — `els = vec_size; bytes = els * sizeof(...)`.
     if vec_size <= 0 {
         return KcallResult::Ok(EINVAL);
     }
@@ -635,7 +635,7 @@ pub fn dispatch_vsafecopy(
         v_from: 0, v_to: 0, v_gid: 0, v_bytes: 0, v_offset: 0, v_addr: 0,
     }; SCPVEC_NR];
 
-    // C: do_safecopy.c:415-419 — virtual_copy_vmcheck to copy the vector.
+    // C: do_safecopy.c:417-419 — virtual_copy_vmcheck to copy the vector.
     // src = caller@vec_addr, dst = KERNEL@vec.
     let caller_endpt = caller.p_endpoint;
     let caller_cr3 = caller.p_seg.phys_root;
@@ -753,11 +753,11 @@ pub fn dispatch_umap(
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_umap(msg);
-    // C: do_umap.c:25-37 — security check
+    // C: do_umap.c:25-36 — security check
     let seg_index = m.segment & SEGMENT_INDEX_MASK;
     let endpt = m.src_endpt;
 
-    // C: do_umap.c:33-34 — only MEM_GRANT with SELF or own grants allowed
+    // C: do_umap.c:34 — only MEM_GRANT with SELF or own grants allowed
     if seg_index != MEM_GRANT && endpt != SELF {
         return KcallResult::Ok(EPERM);
     }
@@ -784,12 +784,12 @@ pub fn dispatch_umap_remote(
 
 /// Shared implementation for UMAP and UMAP_REMOTE.
 ///
-/// C: do_umap_remote.c:35-122
+/// C: do_umap_remote.c:26-120
 ///
 /// # Flow
 ///
 /// 1. Validate source endpoint (SELF → caller; else `endpoint_to_nr`).
-/// 2. Validate grantee endpoint (do_umap_remote.c:57-66).
+/// 2. Validate grantee endpoint (do_umap_remote.c:47-55).
 /// 3. For `LOCAL_VM_SEG + MEM_GRANT`: call `verify_grant` with
 ///    `access = CpFlags::empty()` (resolve-only, no direction check) to
 ///    get the effective granter + virtual offset, then fall through to
@@ -813,7 +813,7 @@ fn dispatch_umap_remote_impl(
     let offset = m.src_addr;
     let count = m.nr_bytes;
 
-    // C: do_umap_remote.c:45-55 — endpoint validation + SELF replacement
+    // C: do_umap_remote.c:39-45 — endpoint validation + SELF replacement
     let target_endpoint = if endpt == SELF {
         caller.p_endpoint
     } else {
@@ -824,7 +824,7 @@ fn dispatch_umap_remote_impl(
         ep
     };
 
-    // C: do_umap_remote.c:57-66 — grantee validation
+    // C: do_umap_remote.c:47-55 — grantee validation
     // R-18 (2026-08-13): Two distinct EINVAL checks (invalid grantee + non-grant
     // segment type) intentionally kept separate for readability. Allowed per
     // clippy::if_same_then_else.
@@ -843,7 +843,7 @@ fn dispatch_umap_remote_impl(
         ep
     };
 
-    // C: do_umap_remote.c:69-103 — segment type dispatch
+    // C: do_umap_remote.c:57-104 — segment type dispatch
     if seg_type != LOCAL_VM_SEG {
         return KcallResult::Ok(EINVAL);
     }
@@ -898,7 +898,7 @@ fn dispatch_umap_remote_impl(
     } else if seg_index == VIR_ADDR {
         (target_endpoint, offset)
     } else {
-        // C: do_umap_remote.c:86-88 — bogus seg_index → EFAULT.
+        // C: do_umap_remote.c:86-89 — bogus seg_index → EFAULT.
         return KcallResult::Ok(EFAULT);
     };
 
@@ -972,7 +972,7 @@ pub fn dispatch_vumap(
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_vumap(msg);
-    // C: do_vumap.c:44-52 — extract parameters
+    // C: do_vumap.c:39-46 — extract parameters
     let source = m.endpt;
     let vaddr = m.vaddr;
     let vcount = m.vcount;
@@ -981,7 +981,7 @@ pub fn dispatch_vumap(
     let paddr = m.paddr;
     let pmax = m.pmax;
 
-    // C: do_vumap.c:43 — caller must have a valid endpoint.
+    // C: do_vumap.c:37 — caller must have a valid endpoint.
     let caller_endpt = caller.p_endpoint;
     if caller_endpt.0 == NONE {
         return KcallResult::Ok(EFAULT);
@@ -1002,7 +1002,7 @@ pub fn dispatch_vumap(
         _ => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_vumap.c:74 — if source != SELF, the granter must exist.
+    // C: do_vumap.c:79 — if source != SELF, the granter must exist.
     // C does this lazily inside verify_grant; we pre-check for early EINVAL.
     if source != SELF
         && source != NONE
@@ -1269,27 +1269,27 @@ pub fn dispatch_memset(
     proc_table: &ProcessTable,
 ) -> KcallResult {
     let m = msg_memset(msg);
-    // C: do_memset.c:19-27 — extract parameters
+    // C: do_memset.c:19-25 — extract parameters
     let process = m.process;
     let base = m.base;
     let pattern = m.pattern;
     let count = m.count;
 
-    // C: vm_memset:531-533 — check_resumed_caller() precondition.
+    // C: vm_memset:536-537 — check_resumed_caller() precondition.
     if caller.p_endpoint.0 == NONE {
         return KcallResult::Ok(EFAULT);
     }
 
-    // C: vm_memset:537-539 — endpoint_lookup for the target process.
+    // C: vm_memset:540-541 — endpoint_lookup for the target process.
     if process != NONE
         && proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
             return KcallResult::Ok(ESRCH);
         }
 
-    // C: vm_memset:541 — pattern & 0xFF (truncate to single byte).
+    // C: vm_memset:543 — pattern & 0xFF (truncate to single byte).
     let pattern_byte = (pattern & 0xFF) as u8;
 
-    // Zero-byte memset is a no-op (matches C vm_memset:543 early return).
+    // Zero-byte memset is a no-op (C vm_memset:553 while(left > 0) 自然处理 count=0).
     if count == 0 {
         return KcallResult::Ok(OK);
     }
@@ -1323,7 +1323,7 @@ pub fn dispatch_memset(
         }
     };
 
-    // C: vm_memset:548-577 — memset via Direct Map + PTE walk.
+    // C: vm_memset:553-580 — memset via Direct Map + PTE walk.
     let result = crate::cross_space::memset_vmcheck(
         caller,
         dst,
@@ -1349,12 +1349,12 @@ pub fn dispatch_memset(
 ///
 /// # Flow
 ///
-/// 1. Validate dst_endpt + caller endpoints (do_safememset.c:31-35).
-/// 2. Check dst process has a grant table (do_safememset.c:37-40).
+/// 1. Validate dst_endpt + caller endpoints (do_safememset.c:36-37).
+/// 2. Check dst process has a grant table (do_safememset.c:42-45).
 /// 3. Call `verify_grant(CPF_WRITE)` to resolve the address
-///    (do_safememset.c:43-48).
+///    (do_safememset.c:48-49).
 /// 4. Call `memset_vmcheck` on the resolved offset + effective granter
-///    (do_safememset.c:50).
+///    (do_safememset.c:56).
 pub fn dispatch_safememset(
     caller: &mut KProcess,
     msg: &Message,
@@ -1369,18 +1369,18 @@ pub fn dispatch_safememset(
     let pattern = m.pattern;         // SMS_PATTERN
     let bytes = m.bytes;             // SMS_BYTES
 
-    // C: do_safememset.c:31-33 — endpoint validation
+    // C: do_safememset.c:36-37 — endpoint validation (NONE check)
     if dst_endpt == NONE || caller.p_endpoint.0 == NONE {
         return KcallResult::Ok(EFAULT);
     }
 
-    // C: do_safememset.c:34-35 — endpoint_lookup
+    // C: do_safememset.c:39-40 — endpoint_lookup
     let dst_nr = match proc_table.endpoint_to_nr(Endpoint(dst_endpt)) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
 
-    // C: do_safememset.c:37-40 — privilege + grant table check.
+    // C: do_safememset.c:42-45 — privilege + grant table check.
     let dst_proc = proc_table.get(dst_nr).expect("endpoint_to_nr succeeded");
     let priv_id = dst_proc.priv_id;
     let has_grant_table = priv_id
@@ -1405,7 +1405,7 @@ pub fn dispatch_safememset(
         }
     };
 
-    // C: do_safememset.c:43-48 — verify_grant(CPF_WRITE).
+    // C: do_safememset.c:48-49 — verify_grant(CPF_WRITE).
     // C: offset/bytes are `long` in the message (m2_l1/m2_l2) but
     // vir_bytes/size_t are unsigned; cast to u64 for verify_grant.
     let grantee = caller.p_endpoint;
@@ -1428,7 +1428,7 @@ pub fn dispatch_safememset(
         VerifyGrantOutcome::Suspended(_) => return KcallResult::VmSuspend,
     };
 
-    // C: do_safememset.c:50 — vm_memset(caller, new_granter, v_offset,
+    // C: do_safememset.c:56 — vm_memset(caller, new_granter, v_offset,
     // pattern, bytes). Uses memset_vmcheck for Direct Map + VMSUSPEND.
     let pattern_byte = (pattern & 0xFF) as u8;
     let dst = AddressRef::Process {
@@ -1568,7 +1568,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_copy_accepts_none_endpoint() {
-        // C: do_copy.c:53 — if(vir_addr[i].proc_nr_e != NONE) { isokendpt... }
+        // C: do_copy.c:66 — if(vir_addr[i].proc_nr_e != NONE) { isokendpt... }
         // NONE endpoint skips validation (physical address copy).
         use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
@@ -1592,7 +1592,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_copy_self_replacement_and_valid_endpoint() {
-        // C: do_copy.c:49-50 — SELF → caller endpoint, then isokendpt
+        // C: do_copy.c:64-65 — SELF → caller endpoint, then isokendpt
         use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
         use minix_types::Endpoint;
@@ -1624,7 +1624,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_copy_overflow_returns_e2big() {
-        // C: do_copy.c:61-62 — src_addr + nr_bytes overflow → E2BIG.
+        // C: do_copy.c:77 — src_addr + nr_bytes overflow → E2BIG.
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
@@ -1641,7 +1641,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_copy_try_flag_returns_efault_on_fault() {
-        // C: do_copy.c:64-69 — CP_FLAG_TRY: VMSUSPEND → EFAULT.
+        // C: do_copy.c:80-85 — CP_FLAG_TRY: VMSUSPEND → EFAULT.
         // With a Process endpoint whose page table is empty (phys_root=0),
         // the PTE walk fails → Suspended. In try mode, this becomes EFAULT
         // instead of VmSuspend.
@@ -1709,7 +1709,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_umap_remote_self_endpoint_valid() {
-        // C: do_umap_remote.c:50 — endpt == SELF → caller's endpoint
+        // C: do_umap_remote.c:40-41 — endpt == SELF → caller's endpoint
         let (proc_table, _caller_ep, _target_ep) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // src_endpt = SELF, segment = LOCAL_VM_SEG | VIR_ADDR.
@@ -1825,7 +1825,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_umap_rejects_non_self_non_grant() {
-        // C: do_umap.c:33-34 — seg_index != MEM_GRANT && endpt != SELF → EPERM
+        // C: do_umap.c:34 — seg_index != MEM_GRANT && endpt != SELF → EPERM
         let (proc_table, _, target_ep) = make_umap_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // src_endpt = target (not SELF), seg_index = VIR_ADDR (not MEM_GRANT) → EPERM.
@@ -1863,7 +1863,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safememset_rejects_none_dst() {
-        // C: do_safememset.c:31 — dst_endpt == NONE → EFAULT
+        // C: do_safememset.c:36-37 — dst_endpt == NONE → EFAULT
         use crate::kpriv::PrivTable;
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
@@ -1875,7 +1875,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safememset_rejects_invalid_dst_endpoint() {
-        // C: do_safememset.c:34-35 — endpoint_lookup fails → EINVAL
+        // C: do_safememset.c:39-40 — endpoint_lookup fails → EINVAL
         use crate::kpriv::PrivTable;
         use crate::proc::RtsFlagsBits;
         let mut proc_table = ProcessTable::new();
@@ -1894,7 +1894,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safememset_rejects_dst_without_grant_table() {
-        // C: do_safememset.c:37-40 — priv(dst_p) && s_grant_table == NULL → EINVAL
+        // C: do_safememset.c:42-45 — priv(dst_p) && s_grant_table == NULL → EINVAL
         use crate::kpriv::PrivTable;
         use crate::proc::RtsFlagsBits;
         let mut proc_table = ProcessTable::new();
@@ -1921,7 +1921,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safememset_valid_setup_suspends_on_grant_read() {
-        // C: do_safememset.c:50 — vm_memset(caller, ...) returns OK.
+        // C: do_safememset.c:56 — vm_memset(caller, ...) returns OK.
         // verify_grant is now wired: it reads the grant entry from the
         // granter's user space via data_copy_vmcheck. In the test env,
         // MockPteWalk returns None → the copy suspends → VmSuspend.
@@ -1977,7 +1977,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safecopy_from_rejects_none_granter() {
-        // C: do_safecopy.c:284-286 — granter == NONE || grantee == NONE → EFAULT
+        // C: do_safecopy.c:290-293 — granter == NONE || grantee == NONE → EFAULT
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -1988,7 +1988,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safecopy_from_rejects_invalid_granter() {
-        // C: do_safecopy.c:73-76 — verify_grant → endpoint_lookup fails → EINVAL
+        // C: do_safecopy.c:63-67 — verify_grant → endpoint_lookup fails → EINVAL
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -2038,7 +2038,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safecopy_to_rejects_none_granter() {
-        // C: do_safecopy.c:284-286 — granter == NONE → EFAULT
+        // C: do_safecopy.c:290-293 — granter == NONE → EFAULT
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -2049,7 +2049,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_safecopy_to_rejects_invalid_granter() {
-        // C: do_safecopy.c:73-76 — endpoint_lookup fails → EINVAL
+        // C: do_safecopy.c:63-67 — endpoint_lookup fails → EINVAL
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_memset_rejects_invalid_process() {
-        // C: vm_memset:537-539 — process != NONE && !endpoint_lookup → ESRCH
+        // C: vm_memset:540-541 — process != NONE && !endpoint_lookup → ESRCH
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // process = 9999 is not in proc_table.
@@ -2116,7 +2116,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_memset_valid_process_returns_vm_suspend() {
-        // C: vm_memset:540-577 — memset in a process with no page table
+        // C: vm_memset:553-580 — memset in a process with no page table
         // (phys_root = 0) → PTE walk fails → VmSuspend.
         // This is the expected behavior when the target page is not yet
         // faulted in; VM will handle the fault and kernel_call_resume
@@ -2135,7 +2135,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_memset_physical_zero_bytes_is_noop() {
-        // C: vm_memset:543 — count == 0 is a no-op.
+        // C: vm_memset:553 — count == 0 is a no-op.
         // Physical address with count=0 returns OK without touching memory.
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -2146,7 +2146,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_memset_overflow_returns_e2big() {
-        // base + count overflow → E2BIG (matches C do_copy.c:61-62).
+        // base + count overflow → E2BIG (matches C do_copy.c:77).
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(u64::MAX, 1, 0xAB, NONE);
@@ -2156,7 +2156,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_memset_pattern_truncation_accepted() {
-        // C: vm_memset:541 — pattern & 0xFF (fold higher bits away).
+        // C: vm_memset:543 — pattern & 0xFF (fold higher bits away).
         // High-bit patterns are not rejected as invalid; the truncation
         // is internal. Use count=0 to avoid actual memory writes.
         let proc_table = ProcessTable::new();
@@ -2180,7 +2180,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vsafecopy_rejects_none_caller() {
-        // C: do_safecopy.c:407 — `assert(src.proc_nr_e != NONE)` → EFAULT
+        // C: do_safecopy.c:408 — `assert(src.proc_nr_e != NONE)` → EFAULT
         // (we replace the panic with a graceful EFAULT return).
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
@@ -2192,7 +2192,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vsafecopy_rejects_zero_vec_size() {
-        // C: do_safecopy.c:411-412 — els = 0 → no-op loop.
+        // C: do_safecopy.c:414-415 — els = 0 → no-op loop.
         // We reject it explicitly (more defensive than the C no-op).
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
@@ -2204,7 +2204,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vsafecopy_rejects_negative_vec_size() {
-        // C: do_safecopy.c:411 — els < 0 → no-op loop (signed i32).
+        // C: do_safecopy.c:414 — els < 0 → no-op loop (signed i32).
         // We reject it for clarity.
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
@@ -2216,7 +2216,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vsafecopy_rejects_overflow_vec_size() {
-        // C: do_safecopy.c:412 — `els * sizeof(vscp_vec)` overflow check.
+        // C: do_safecopy.c:415 — `els * sizeof(vscp_vec)` overflow check.
         // MAX_VSCPVEC + 1 must be rejected.
         let proc_table = ProcessTable::new();
         let priv_table = PrivTable::new();
@@ -2281,7 +2281,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_rejects_none_caller() {
-        // C: do_vumap.c:43 — caller must have a valid endpoint.
+        // C: do_vumap.c:37 — caller must have a valid endpoint.
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(NONE));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
@@ -2292,7 +2292,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_rejects_zero_vcount() {
-        // C: do_vumap.c:54 — vcount <= 0 → EINVAL
+        // C: do_vumap.c:48 — vcount <= 0 → EINVAL
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 0, 0x2000, 4, VUA_READ, 0);
@@ -2303,7 +2303,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_rejects_zero_pmax() {
-        // C: do_vumap.c:54 — pmax <= 0 → EINVAL
+        // C: do_vumap.c:48 — pmax <= 0 → EINVAL
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 0, VUA_READ, 0);
@@ -2314,7 +2314,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_rejects_unknown_access() {
-        // C: do_vumap.c:57-62 — default case in switch → EINVAL.
+        // C: do_vumap.c:59 — default case in switch → EINVAL.
         // access = 0xFF is neither VUA_READ, VUA_WRITE, nor their OR.
         let proc_table = ProcessTable::new();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
@@ -2326,7 +2326,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_rejects_invalid_source_endpoint() {
-        // C: do_vumap.c:74 — when source != SELF, the granter must exist.
+        // C: do_vumap.c:79 — when source != SELF, the granter must exist.
         use crate::proc::RtsFlagsBits;
         let mut proc_table = ProcessTable::new();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
@@ -2356,7 +2356,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_grant_source_suspends_on_copy_fault() {
-        // C: do_vumap.c:74-79 — verify_grant would be called for non-SELF
+        // C: do_vumap.c:79-87 — verify_grant would be called for non-SELF
         // source, but the vvec copy from the caller fails first
         // (MockPteWalk returns None) → Suspended → VmSuspend in the test
         // environment, before grant verification is reached.
@@ -2375,7 +2375,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_vumap_clamps_oversize_vcount() {
-        // C: do_vumap.c:55 — vcount > MAPVEC_NR is silently clamped.
+        // C: do_vumap.c:51 — vcount > MAPVEC_NR is silently clamped.
         // We don't return EINVAL; we accept and clamp (matching C). The
         // clamping/validation passes, but the actual vvec copy suspends in
         // the test environment (MockPteWalk returns None) → VmSuspend.

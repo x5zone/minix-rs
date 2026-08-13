@@ -2,7 +2,7 @@
 
 > **分类**: 系统调用服务
 > **C 源码**: `minix3/minix/kernel/system/do_copy.c` (91 行), `do_safecopy.c` (448 行), `do_umap.c` (39 行), `do_umap_remote.c` (122 行), `do_vumap.c` (131 行), `do_memset.c` (28 行), `do_safememset.c` (57 行)
-> **Rust 实现**: `os/kernel/src/syscall_copy.rs` (1971 行)
+> **Rust 实现**: `os/kernel/src/syscall_copy.rs` (2389 行)
 > **覆盖**: VIRCOPY/PHYSCOPY 直接拷贝、SAFECOPYFROM/TO/VSAFECOPY grant 授权拷贝、UMAP/UMAP_REMOTE/VUMAP 地址映射、MEMSET/SAFEMEMSET 跨空间填充、Direct Map 替代 createpde 临时映射
 > **前置**: [16-smp.md](16-smp.md)（BKL 保证 safecopy 跨 CPU 安全）, [17-syscall-process.md](17-syscall-process.md)（fork/exec 使用 vircopy 拷贝进程上下文）, [24-cross-space-runtime.md](24-cross-space-runtime.md)（VMSUSPEND 协议）
 
@@ -110,7 +110,7 @@
 
 | C 机制 | 64 位 Direct Map 替代 | 当前状态 |
 |--------|---------------------|---------|
-| `createpde()` 临时映射 | `kernel_phys_to_virt(pa)` 一行加法 | ✅ 已实现（`os/kernel/src/syscall_copy.rs:411-468`） |
+| `createpde()` 临时映射 | `kernel_phys_to_virt(pa)` 一行加法 | ✅ 已实现（`os/arch/src/arch/direct_map.rs:44` + `os/kernel/src/vm.rs:327` cross_space_copy） |
 | `lin_lin_copy()` | `memcpy(kernel_phys_to_virt(src_pa), kernel_phys_to_virt(dst_pa), n)` | ✅ 已实现；跨进程 VA→PA 经 `cross_space.rs::data_copy_vmcheck` + PTE walk，dispatch 已接入 |
 | `vm_memset()` (正常路径) | `memset(kernel_phys_to_virt(pa), pattern, n)` | ✅ 已实现；`cross_space::memset_vmcheck` 处理 VMSUSPEND，dispatch_memset 已接入 |
 | `vm_lookup()` | 保留（仍需查询页表映射 VA→PA） | ✅ 已实现三架构（`minix_arch::CurrentPteWalk::walk`，trait 分发，无 `#[cfg(target_arch)]`）；`vm::lookup_in_table` 已接入 dispatch_umap_remote |
@@ -265,7 +265,7 @@ D1-D9 逐个决策的纵向总结——一眼看清每个 C 符号的 Rust 对�
 
 | C 符号 | C 位置 | Rust 表达 | 差异类型 |
 |--------|--------|----------|---------|
-| `verify_grant(..., *offset_result, *e_granter, *sfinfo)` | do_safecopy.c:41-51 | `GrantVerifyResult { offset, effective_granter, sfinfo }` + `VerifyGrantOutcome` enum（grant.rs:252,267） | anti-translate（结构体替代多输出参数 + 三态 enum 替代 errno/VMSUSPEND 双返回） |
+| `verify_grant(..., *offset_result, *e_granter, *sfinfo)` | do_safecopy.c:41-51 | `GrantVerifyResult { offset, effective_granter, sfinfo }` + `VerifyGrantOutcome` enum（grant.rs:257-267） | anti-translate（结构体替代多输出参数 + 三态 enum 替代 errno/VMSUSPEND 双返回） |
 | `struct cp_sfinfo sfinfo`（总是存在） | do_safecopy.c:288,31-36 | `Option<SoftFaultInfo>` | anti-translate（Option 表达"可能不存在"，大部分场景 None） |
 | `int access`（CPF_READ/CPF_WRITE 裸位） | do_safecopy.c:46,279-281 | `CpFlags` bitflags + `SafecopyAccess` enum | 语义对齐（兼容 UMAP resolve-only 语义） |
 | `endpoint_t granter`（裸 int） | do_safecopy.c:42 | `Endpoint` newtype | 类型增强（编译期防止与其他 i32 混淆） |
@@ -274,8 +274,8 @@ D1-D9 逐个决策的纵向总结——一眼看清每个 C 符号的 Rust 对�
 | `do { } while (CPF_INDIRECT)` | do_safecopy.c:59,173 | `for _depth in 0..MAX_INDIRECT_DEPTH` 循环 | 语义对齐（D4：避免递归栈溢出） |
 | `do_umap` → `do_umap_remote` 委托 | do_umap.c:25-37 | `dispatch_umap` 合并 | 架构演进（D8：Rust 不需要 C 的 #if 条件编译） |
 | `createpde()` + `lin_lin_copy()` | memory.c | `kernel_phys_to_virt()` + `copy_nonoverlapping` | 架构演进（D1：Direct Map 一行加法替代临时映射） |
-| `virtual_copy_vmcheck()` | memory.c:507-535 | `data_copy_vmcheck()`（cross_space.rs:118） | 语义对齐（VA→PA 经 `lookup_in_table`，缺页 `suspend_for_vm`） |
-| `vm_memset()` | memory.c:526 | `memset_vmcheck()`（cross_space.rs:189） | 语义对齐（Direct Map + `ptr::write_bytes`，缺页 `suspend_for_vm`） |
+| `virtual_copy_vmcheck()`（宏） | proto.h:184 → `virtual_copy_f` memory.c:592-666 | `data_copy_vmcheck()`（cross_space.rs:118） | 语义对齐（VA→PA 经 `lookup_in_table`，缺页 `suspend_for_vm`） |
+| `vm_memset()` | memory.c:526-577 | `memset_vmcheck()`（cross_space.rs:193） | 语义对齐（Direct Map + `ptr::write_bytes`，缺页 `suspend_for_vm`） |
 | `vm_lookup()` | do_umap_remote.c:94 | `lookup_in_table()`（vm.rs:204） | 语义对齐（`_table` 后缀强调页表 walk，委托 `CurrentPteWalk::walk`） |
 | `vm_lookup_range()` | do_umap_remote.c:106-109, do_vumap.c:94 | `lookup_range_in_table()`（vm.rs:249） | 语义对齐（4KB 页粒度连续性检查） |
 | `CP_FLAG_TRY` / `CPF_TRY` | do_copy.c:80 / do_safecopy.c:258 | 常量保留 + 分支保留 | 语义对齐（D6：VFS 依赖此语义，EFAULT 路径 DEFERRED） |
@@ -292,20 +292,23 @@ D1-D9 逐个决策的纵向总结——一眼看清每个 C 符号的 Rust 对�
 > 设计决策：§3 D3（GrantVerifyResult）、§3 D9（Option\<SoftFaultInfo\>）、§3 D3（SafecopyAccess）
 
 ```rust
-// os/kernel/src/syscall_copy.rs:179-199
+// os/kernel/src/grant.rs:273-282
 // grant 验证结果——D3 用结构体替代 C 三个输出指针参数
 pub struct GrantVerifyResult {
-    /// 验证后的偏移量（虚拟地址空间内）。C: *offset_result
-    pub offset: u64,
+    /// 验证后的偏移量（有效授权方虚拟地址空间内）。C: *offset_result
+    pub offset: VirBytes,
     /// 真正的授权方 endpoint（magic grant 可能重定向）。C: *e_granter
-    pub granter: Endpoint,
+    pub effective_granter: Endpoint,
     /// 软故障信息（仅 CPF_TRY 场景）。D9: Option 替代 C 总是存在的 cp_sfinfo
     pub sfinfo: Option<SoftFaultInfo>,
 }
 
 // 软故障信息——C: struct cp_sfinfo (do_safecopy.c:31-36)
-#[derive(Debug, Clone)]
+// 与 GrantVerifyResult 同文件（grant.rs:239-249）
+#[derive(Debug, Clone, Default)]
 pub struct SoftFaultInfo {
+    /// C: try — 非零则仅尝试拷贝，遇故障即停（CPF_TRY）
+    pub try_copy: bool,
     pub endpoint: Endpoint,
     pub addr: u64,
     pub value: i32,
@@ -315,7 +318,7 @@ pub struct SoftFaultInfo {
 `Endpoint` 是 newtype（`pub struct Endpoint(pub i32)`），编译期防止与其他 `i32`（如 errno、grant_id）混淆——C 中 `endpoint_t` 是裸 `int`，易与其他整数混传。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:202-218
+// os/kernel/src/syscall_copy.rs:140-155
 // safecopy 访问方向——D3 用 enum 替代 C 的 CPF_READ/CPF_WRITE 裸位
 // safecopy() 的 access 参数只接受单方向（CPF_READ 或 CPF_WRITE），不接受位组合
 pub enum SafecopyAccess {
@@ -324,23 +327,30 @@ pub enum SafecopyAccess {
 }
 
 impl SafecopyAccess {
-    pub fn to_flags(self) -> u32 {
+    pub fn to_flags(self) -> CpFlags {
         match self {
-            SafecopyAccess::Read => CPF_READ,
-            SafecopyAccess::Write => CPF_WRITE,
+            SafecopyAccess::Read => CpFlags::READ,
+            SafecopyAccess::Write => CpFlags::WRITE,
         }
     }
 }
 ```
 
+`CopyError` 类型不存在——早期设计的 `virtual_copy_vmcheck` 独立错误类型已随函数移除（D8 统一错误表达）。当前错误由 `os/kernel/src/cross_space.rs` + `os/kernel/src/vm.rs` 表达：
+
 ```rust
-// os/kernel/src/syscall_copy.rs:370-376
-// virtual_copy_vmcheck 的错误变体
-pub enum CopyError {
-    Fault,   // 缺页（源/目标未映射）。C: VMSUSPEND 路径
-    TooBig,  // nr_bytes 溢出。C: E2BIG (do_copy.c:77)
+// os/kernel/src/vm.rs:98
+// 跨空间拷贝的失败原因——缺页（VMSUSPEND 路径）/ 非法地址 / grant 权限
+pub enum VmCopyError {
+    SrcPageFault,
+    DstPageFault,
+    InvalidAddress,
+    PermissionDenied,  // grant 权限（do_safecopy.c EPERM，验证层产生）
+    UnknownEndpoint,
 }
 ```
+
+调用结果统一为 `CrossSpaceResult`（Completed(Ok/Err) / Suspended(VmFaultType) / NoReply），dispatch 层以 `match` 分支映射到 `KcallResult`：`Suspended` → `VmSuspend`（VM round-trip）、`Completed(Err(UnknownEndpoint))` → `EINVAL`、其余 `Err` → `EFAULT`。
 
 ### 4.2 dispatch_copy — VIRCOPY/PHYSCOPY
 
@@ -349,7 +359,7 @@ pub enum CopyError {
 `dispatch_vircopy` 与 `dispatch_physcopy` 都是 `dispatch_copy` 的薄包装（C 中两者共用同一 handler）。dispatch 完整接入 `data_copy_vmcheck`（正常路径）+ `cross_space_copy`（CP_FLAG_TRY 路径，缺页返回 EFAULT 而非 VMSUSPEND）。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:301-363（节选关键路径）
+// os/kernel/src/syscall_copy.rs:242-366（节选关键路径）
 fn dispatch_copy(caller: &mut KProcess, msg: &Message,
                  proc_table: &ProcessTable) -> KcallResult {
     let m = msg_copy(msg);
@@ -374,7 +384,7 @@ fn dispatch_copy(caller: &mut KProcess, msg: &Message,
 
     // C: do_copy.c:80-85 — CP_FLAG_TRY 分支：VFS 专用 try-copy
     // 走 cross_space_copy，缺页返回 EFAULT 而非 VMSUSPEND，避免 VFS
-    // 内存映射文件死锁（已实现，syscall_copy.rs:340-360）
+    // 内存映射文件死锁（已实现，syscall_copy.rs:324-342）
     if flags & CP_FLAG_TRY != 0 {
         return match cross_space_copy(...) {
             CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
@@ -399,19 +409,19 @@ fn dispatch_copy(caller: &mut KProcess, msg: &Message,
 `dispatch_safecopy_from`（CPF_READ）与 `dispatch_safecopy_to`（CPF_WRITE）都委托 `safecopy_common_impl`。验证 + `verify_grant` + `data_copy_vmcheck` 拷贝均已完整实现。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:543-585（节选验证 + grant 解析 + 拷贝）
+// os/kernel/src/syscall_copy.rs:406-535（节选验证 + grant 解析 + 拷贝）
 fn safecopy_common_impl(caller: &mut KProcess, msg: &Message,
                         proc_table: &ProcessTable, access: u32) -> KcallResult {
     let m = msg_safecopy(msg);
     let granter = m.from_to;
     let grant_id = m.grant_id;
 
-    // C: do_safecopy.c:284-286 — endpoint 验证
+    // C: do_safecopy.c:290-293 — endpoint 验证（NONE 检查）
     if granter == NONE || caller.p_endpoint.0 == NONE {
         return KcallResult::Ok(EFAULT);
     }
 
-    // C: do_safecopy.c:73-76 — granter 必须存在
+    // C: do_safecopy.c:63-67 — granter 必须存在（verify_grant 内 isokendpt）
     let _granter_nr = match proc_table.endpoint_to_nr(Endpoint(granter)) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
@@ -432,7 +442,8 @@ fn safecopy_common_impl(caller: &mut KProcess, msg: &Message,
         VerifyGrantOutcome::Suspended(_) => return KcallResult::VmSuspend,
     };
 
-    // C: do_safecopy.c:321-372 — virtual_copy_vmcheck dispatch（已接入 data_copy_vmcheck）
+    // C: do_safecopy.c:335-371 — 拷贝 dispatch：CPF_TRY 走 virtual_copy（:336-370），
+    // 其余走 virtual_copy_vmcheck（:371）→ 已接入 data_copy_vmcheck
     match data_copy_vmcheck(caller, src, dst, bytes, &proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
@@ -448,7 +459,7 @@ fn safecopy_common_impl(caller: &mut KProcess, msg: &Message,
 `dispatch_umap`（do_umap.c:25-37）合并了 C 的安全检查，然后委托 `dispatch_umap_remote_impl`。dispatch 已完整接入 `verify_grant` + `lookup_in_table` + `lookup_range_in_table`（连续性检查）+ 消息回填。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:772-836（节选）
+// os/kernel/src/syscall_copy.rs:802-967（节选）
 fn dispatch_umap_remote_impl(caller: &mut KProcess, msg: &Message,
         grantee: i32, proc_table: &ProcessTable) -> KcallResult {
     let m = msg_umap(msg);
@@ -482,7 +493,7 @@ fn dispatch_umap_remote_impl(caller: &mut KProcess, msg: &Message,
                 return KcallResult::Ok(EFAULT);  // bogus seg_index
             }
             // MEM_GRANT 路径：verify_grant 解析 grant → newoffset/newep
-            //   （syscall_copy.rs:856-895，对齐 do_umap_remote.c:60-82）
+            //   （syscall_copy.rs:852-930，对齐 do_umap_remote.c:57-104）
             // VIR_ADDR 路径：直接用 offset 作 lin_addr
             // C: do_umap_remote.c:94 — vm_lookup → 已接入 lookup_in_table
             let phys_addr = match lookup_in_table::<minix_arch::CurrentDirectMap>(
@@ -511,7 +522,7 @@ fn dispatch_umap_remote_impl(caller: &mut KProcess, msg: &Message,
 验证层 + 向量拷入（`data_copy_vmcheck`）+ 逐元素 `verify_grant`/`lookup_range_in_table` + 物理向量拷出均已完整实现。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:875-937（节选验证层 + 向量拷入 + 逐元素映射）
+// os/kernel/src/syscall_copy.rs:968-1265（节选验证层 + 向量拷入 + 逐元素映射）
 pub fn dispatch_vumap(caller: &mut KProcess, msg: &Message,
                       proc_table: &ProcessTable) -> KcallResult {
     let m = msg_vumap(msg);
@@ -539,7 +550,7 @@ pub fn dispatch_vumap(caller: &mut KProcess, msg: &Message,
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_vumap.c:67-70 — data_copy_vmcheck 拷入 vvec（已实现，syscall_copy.rs:660）
+    // C: do_vumap.c:67-70 — data_copy_vmcheck 拷入 vvec（已实现，syscall_copy.rs:1014）
     let copy_result = crate::cross_space::data_copy_vmcheck(
         caller, src, dst, vcount * size_of::<VumapVir>(), &proc_cr3);
     match copy_result { /* Completed(Ok) | Suspended → VmSuspend */ }
@@ -552,35 +563,35 @@ pub fn dispatch_vumap(caller: &mut KProcess, msg: &Message,
 }
 ```
 
-> `MAPVEC_NR` 当前值为 64（`os/kernel/src/syscall_copy.rs:164`），与 C 栈数组上限对齐。`VumapPhys` 结构体（D5 栈数组元素类型）已落地，作为 `lookup_range_in_table` 输出的物理范围载体。
+> `MAPVEC_NR` 当前值为 64（`os/kernel/src/syscall_copy.rs:121`，与 C `minix3/minix/include/minix/const.h:49` 对齐），作为栈数组上限。`VumapPhys` 结构体（D5 栈数组元素类型）已落地，作为 `lookup_range_in_table` 输出的物理范围载体。
 
 ### 4.6 dispatch_memset / dispatch_safememset — MEMSET/SAFEMEMSET
 
 > 设计决策：§3 D7（保留 vm_memset 接口）。对应 C: do_memset.c:17-25, do_safememset.c:20-57。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:974-1013（dispatch_memset 节选）
+// os/kernel/src/syscall_copy.rs:1266-1357（dispatch_memset 节选）
 pub fn dispatch_memset(caller: &mut KProcess, msg: &Message,
                        proc_table: &ProcessTable) -> KcallResult {
     let m = msg_memset(msg);
     let process = m.process;
     let pattern = m.pattern;
 
-    // C: vm_memset:531-533 — caller 必须有效
+    // C: vm_memset:536-537 — caller 必须有效
     if caller.p_endpoint.0 == NONE { return KcallResult::Ok(EFAULT); }
 
-    // C: vm_memset:537-539 — process != NONE 时必须存在，否则 ESRCH
+    // C: vm_memset:540-541 — process != NONE 时必须存在，否则 ESRCH
     if process != NONE {
         if proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
             return KcallResult::Ok(ESRCH);
         }
     }
 
-    // C: vm_memset:541 — pattern & 0xFF 截断为字节
+    // C: vm_memset:543 — pattern & 0xFF 截断为字节
     let _pattern_byte = pattern & 0xFF;
 
     // C: vm_memset 主体 — 已接入 cross_space::memset_vmcheck
-    //   （Direct Map + PTE walk + VMSUSPEND，syscall_copy.rs:1273+）
+    //   （Direct Map + PTE walk + VMSUSPEND，syscall_copy.rs:1327）
     match crate::cross_space::memset_vmcheck(caller, dst, pattern_byte, count, &proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
@@ -591,38 +602,53 @@ pub fn dispatch_memset(caller: &mut KProcess, msg: &Message,
 
 `dispatch_safememset` 额外检查 grant 表：通过 `PrivTable::get(priv_id)` 取 `KPriv`，检查 `runtime.s_grant_table != 0`（对应 C `priv(dst_p)->s_grant_table`），随后调用 `verify_grant(CPF_WRITE)` + `memset_vmcheck` 完成填充（均已实现）。
 
-### 4.7 virtual_copy_vmcheck — Direct Map primitive
+### 4.7 data_copy_vmcheck — Direct Map primitive
 
 > 设计决策：§3 D1（Direct Map）。对应 C: virtual_copy_vmcheck (memory.c)。
 
-这是 Direct Map 的 primitive——步骤 3-4（PA→KV + memcpy）已实现，步骤 1-2（跨进程 VA→PA PTE walk）由 `minix_arch::CurrentPteWalk::walk` 三架构 trait 分发 + `vm::lookup_in_table` 提供，`cross_space.rs::data_copy_vmcheck` 将两者统一封装（跨进程 PTE walk + Direct Map + VMSUSPEND）。dispatch 层（dispatch_copy / dispatch_safecopy / dispatch_vsafecopy / dispatch_vumap / dispatch_memset / dispatch_safememset）均已通过 `data_copy_vmcheck` 接入此 primitive。
+这是 Direct Map 的 primitive——步骤 3-4（PA→KV + memcpy）由 `cross_space_copy::<CurrentDirectMap>` 完成，步骤 1-2（跨进程 VA→PA PTE walk）由 `minix_arch::CurrentPteWalk::walk` 三架构 trait 分发 + `vm::lookup_in_table` 提供，`cross_space.rs::data_copy_vmcheck` 将两者统一封装（跨进程 PTE walk + Direct Map + VMSUSPEND）。dispatch 层（dispatch_copy / dispatch_safecopy / dispatch_vsafecopy / dispatch_vumap / dispatch_memset / dispatch_safememset）均已通过 `data_copy_vmcheck` 接入此 primitive。
 
 ```rust
-// os/kernel/src/syscall_copy.rs:411-468（节选）
-pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
-                            nr_bytes: u64) -> Result<(), CopyError> {
-    use minix_arch::direct_map::DirectMapArch;
+// os/kernel/src/cross_space.rs:118-179（data_copy_vmcheck 全貌）
+pub fn data_copy_vmcheck(
+    caller: &mut KProcess,
+    src: AddressRef,
+    dst: AddressRef,
+    bytes: usize,
+    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+) -> CrossSpaceResult {
+    // Direct Map memcpy + PTE walk（CurrentPteWalk + lookup_in_table），
+    // 缺页返回 Suspended(fault_type)。C: virtual_copy_vmcheck (memory.c)
+    let result = cross_space_copy::<CurrentDirectMap>(&src, &dst, bytes, &proc_cr3);
 
-    if nr_bytes == 0 { return Ok(()); }  // 零字节拷贝是 no-op
-
-    // 溢出检查：src_addr + nr_bytes 不能回绕
-    let src_end = src_addr.0.checked_add(nr_bytes).ok_or(CopyError::TooBig)?;
-
-    // 必须落在 Direct Map 区域内（kernel_phys_to_virt 翻译的范围）
-    let kmap_base = minix_arch::CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-    if src_addr.0 < kmap_base || src_end < kmap_base {
-        return Err(CopyError::Fault);  // 低于 Direct Map 区域需 PTE walk
+    // 挂起：设置 RTS_VMREQUEST + 保存拷贝上下文，kernel_call_resume()
+    // 重试时恢复。内联 C 的 vm_suspend()（proc.c:234-257）。
+    if let CrossSpaceResult::Suspended(fault_type) = result {
+        let copy_ctx = VmCopyContext::new(src, dst, bytes, fault_type);
+        // 记录故障区间供 VM range check（p_vmrequest.params.check）
+        let (target, start, write_flag) = match fault_type {
+            VmFaultType::Src => {
+                let (endpt, offset) = src.as_process()
+                    .expect("Physical address cannot produce Src page fault");
+                (endpt, offset, false)
+            }
+            VmFaultType::Dst => {
+                let (endpt, offset) = dst.as_process()
+                    .expect("Physical address cannot produce Dst page fault");
+                (endpt, offset, true)
+            }
+        };
+        let check_params = crate::vm::VmCheckParams {
+            start,
+            length: VirBytes(bytes as u64),
+            write_flag,
+        };
+        // saved_msg 为 None：内核内部 helper，重试由分发层保存消息
+        caller.suspend_for_vm_with_copy(
+            VmSuspendType::KernelCall, target, check_params, None, copy_ctx);
     }
 
-    // Direct Map memcpy——仅当物理页不别名时安全
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            src_addr.0 as *const u8,
-            dst_addr.0 as *mut u8,
-            nr_bytes as usize,
-        );
-    }
-    Ok(())
+    result
 }
 ```
 
@@ -657,7 +683,7 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 
 > 所有测试函数名可 grep 验证：`rg "fn test_" os/kernel/src/syscall_copy.rs --type rust -n`
 
-### 5.1 现有测试（55 个，已实现）
+### 5.1 现有测试（54 个，已实现）
 
 **常量与布局**（8 个）:
 
@@ -670,19 +696,14 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 - `test_mess_lsys_krn_sys_umap_layout` — 消息布局 ≤ 56 字节
 - `test_vscp_vec_struct_size_matches_c_layout` — vscp_vec 结构体大小与 C 一致
 
-**virtual_copy_vmcheck**（4 个）:
-
-- `test_virtual_copy_vmcheck_zero_bytes_is_noop` — 零字节拷贝是 no-op
-- `test_virtual_copy_vmcheck_overflow_returns_too_big` — u64::MAX 返回 TooBig
-- `test_virtual_copy_vmcheck_below_kmap_returns_fault` — 低于 Direct Map 区域返回 Fault
-- `test_copy_error_variants_match_minix3` — CopyError 变体一致性
-
-**dispatch_copy**（4 个）:
+**dispatch_copy**（6 个）:
 
 - `test_dispatch_copy_rejects_invalid_src_endpoint` — 无效 src endpoint → EINVAL
 - `test_dispatch_copy_rejects_invalid_dst_endpoint` — 无效 dst endpoint → EINVAL
 - `test_dispatch_copy_accepts_none_endpoint` — NONE endpoint 不返回 EINVAL
 - `test_dispatch_copy_self_replacement_and_valid_endpoint` — SELF 替换 + 有效 endpoint
+- `test_dispatch_copy_overflow_returns_e2big` — nr_bytes 溢出 → E2BIG
+- `test_dispatch_copy_try_flag_returns_efault_on_fault` — CP_FLAG_TRY 缺页 → EFAULT（不挂起）
 
 **dispatch_umap_remote**（9 个）:
 
@@ -705,28 +726,29 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 - `test_dispatch_safememset_rejects_none_dst` — NONE dst → EFAULT
 - `test_dispatch_safememset_rejects_invalid_dst_endpoint` — 无效 dst → EINVAL
 - `test_dispatch_safememset_rejects_dst_without_grant_table` — 无 grant 表 → EINVAL
-- `test_dispatch_safememset_valid_setup_returns_ok` — 有效配置 → OK
+- `test_dispatch_safememset_valid_setup_suspends_on_grant_read` — 有效配置读 grant 表挂起（缺页）
 
 **dispatch_safecopy_from**（4 个）:
 
 - `test_dispatch_safecopy_from_rejects_none_granter` — NONE granter → EFAULT
 - `test_dispatch_safecopy_from_rejects_invalid_granter` — 无效 granter → EINVAL
 - `test_dispatch_safecopy_from_rejects_negative_grant_id` — 负 grant ID → EINVAL
-- `test_dispatch_safecopy_from_valid_setup_returns_ok` — 有效配置 → OK
+- `test_dispatch_safecopy_from_no_grant_table_returns_eperm` — granter 无 grant 表 → EPERM
 
 **dispatch_safecopy_to**（4 个）:
 
 - `test_dispatch_safecopy_to_rejects_none_granter` — NONE granter → EFAULT
 - `test_dispatch_safecopy_to_rejects_invalid_granter` — 无效 granter → EINVAL
 - `test_dispatch_safecopy_to_rejects_negative_grant_id` — 负 grant ID → EINVAL
-- `test_dispatch_safecopy_to_valid_setup_returns_ok` — 有效配置 → OK
+- `test_dispatch_safecopy_to_no_grant_table_returns_eperm` — granter 无 grant 表 → EPERM
 
-**dispatch_memset**（4 个）:
+**dispatch_memset**（5 个）:
 
 - `test_dispatch_memset_rejects_invalid_process` — 无效 process → ESRCH
-- `test_dispatch_memset_valid_process_returns_ok` — 有效 process → OK
-- `test_dispatch_memset_physical_address_returns_ok` — 物理地址（process=NONE）→ OK
-- `test_dispatch_memset_pattern_truncation_logic` — pattern & 0xFF 截断
+- `test_dispatch_memset_valid_process_returns_vm_suspend` — 有效 process 缺页 → VmSuspend
+- `test_dispatch_memset_physical_zero_bytes_is_noop` — 物理地址（process=NONE）零字节 no-op
+- `test_dispatch_memset_overflow_returns_e2big` — nr_bytes 溢出 → E2BIG
+- `test_dispatch_memset_pattern_truncation_accepted` — pattern & 0xFF 截断
 
 **dispatch_vsafecopy**（5 个）:
 
@@ -734,7 +756,7 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 - `test_dispatch_vsafecopy_rejects_zero_vec_size` — 零向量 → EINVAL
 - `test_dispatch_vsafecopy_rejects_negative_vec_size` — 负向量 → EINVAL
 - `test_dispatch_vsafecopy_rejects_overflow_vec_size` — 溢出向量 → EINVAL
-- `test_dispatch_vsafecopy_valid_setup_returns_ok` — 有效配置 → OK
+- `test_dispatch_vsafecopy_vec_copy_fails_without_real_page_tables` — 无真实页表时向量拷贝失败
 
 **dispatch_vumap**（8 个）:
 
@@ -743,8 +765,8 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 - `test_dispatch_vumap_rejects_zero_pmax` — 零 pmax → EINVAL
 - `test_dispatch_vumap_rejects_unknown_access` — 未知 access → EINVAL
 - `test_dispatch_vumap_rejects_invalid_source_endpoint` — 无效 source → EINVAL
-- `test_dispatch_vumap_self_source_returns_ok` — SELF source → OK
-- `test_dispatch_vumap_valid_grant_source_returns_ok` — 有效 grant source → OK
+- `test_dispatch_vumap_self_source_suspends_on_copy_fault` — SELF source 拷贝缺页 → VmSuspend
+- `test_dispatch_vumap_grant_source_suspends_on_copy_fault` — grant source 拷贝缺页 → VmSuspend
 - `test_dispatch_vumap_clamps_oversize_vcount` — 超大 vcount 截断到 MAPVEC_NR
 
 ### 5.2 待补充测试（端到端 / 集成测试）
@@ -758,11 +780,11 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 | `test_verify_grant_indirect_chain_depth` | 间接链超过 5 层 → ELOOP | verify_grant 间接链（已实现） |
 | `test_verify_grant_magic_redirect` | magic grant 重定向 granter | verify_grant magic（已实现） |
 | `test_verify_grant_range_exceeded` | 超出 grant 范围 → EPERM | verify_grant 范围检查（已实现） |
-| `test_virtual_copy_vmcheck_cross_process` | 跨进程 VA→PA→Direct Map→memcpy | data_copy_vmcheck（已接入 dispatch） |
+| `test_data_copy_vmcheck_cross_process` | 跨进程 VA→PA→Direct Map→memcpy | data_copy_vmcheck（已接入 dispatch） |
 | `test_vm_lookup_returns_phys_addr` | VA→PA 翻译 | lookup_in_table（已接入 dispatch） |
 | `test_vm_memset_fills_pattern` | 跨空间填充字节模式 | memset_vmcheck（已接入 dispatch） |
 
-> **测试统计**（截至 2026-08-01）：`os/kernel/src/syscall_copy.rs` 含 55 个 `fn test_*`，覆盖验证层与 Direct Map primitive。PTE walk 基础设施（`PteWalkArch` trait 三架构实现）已落地，`pte_walk.rs` 与 `cross_space.rs` 层已有测试覆盖。原 DEFERRED 的拷贝/映射层（verify_grant / vm_lookup dispatch / vm_memset dispatch）已全部实现并接入 dispatch，上表 8 个测试转为端到端集成测试目标（需 QEMU + mock grant 表构造跨进程场景）。
+> **测试统计**（截至 2026-08-14）：`os/kernel/src/syscall_copy.rs` 含 54 个 `fn test_*`，覆盖验证层与 Direct Map primitive。PTE walk 基础设施（`PteWalkArch` trait 三架构实现）已落地，`pte_walk.rs` 与 `cross_space.rs` 层已有测试覆盖。原 DEFERRED 的拷贝/映射层（verify_grant / vm_lookup dispatch / vm_memset dispatch）已全部实现并接入 dispatch，上表 8 个测试转为端到端集成测试目标（需 QEMU + mock grant 表构造跨进程场景）。
 
 ---
 
