@@ -548,7 +548,7 @@ pub fn dispatch_unused() -> KcallResult {
 | `struct k_randomness_bin` | include/minix/type.h:189-193 | `KRandomnessBin`（`#[repr(C)]`，136 字节） | `r_next`/`r_size`/`r_buf[64]`，字段顺序与大小严格对齐 |
 | `struct k_randomness` | include/minix/type.h:187-194 | `KRandomness`（`#[repr(C)]`，2184 字节） | `random_elements`/`random_sources`/`bin[16]` |
 | `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
-| `krandom_init()` | main.c:48,62 | `krandom::init()`（`lib.rs:382` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
+| `krandom_init()` | main.c:48-49（`krandom.random_sources`/`random_elements` 直接赋值，**无此函数**） | `krandom::init()`（`lib.rs:387` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
 | `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | **no-op stub**，匹配 C i386/earm 实现 |
 | `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1008-1024） | 快照 + `wipe_all` + 拷贝 |
 | `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1026-1054） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |

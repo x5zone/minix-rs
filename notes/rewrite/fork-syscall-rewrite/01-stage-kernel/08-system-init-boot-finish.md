@@ -156,9 +156,9 @@ struct irq_hook {
 
 **三步初始化**：
 
-1. **IRQ hook 池清零**（L178-180）：遍历 `irq_hooks[0..NR_IRQ_HOOKS-1]`，设 `proc_nr_e = NONE`
-2. **Alarm timer 初始化**（L182-184）：遍历 `BEG_PRIV_ADDR..END_PRIV_ADDR`，对每个 priv 调用 `tmr_inittimer()`
-3. **call_vec 注册**（L186-278）：先全部置 NULL，然后逐个 `map(SYS_*, do_*)` 注册
+1. **IRQ hook 池清零**（L173-176）：遍历 `irq_hooks[0..NR_IRQ_HOOKS-1]`，设 `proc_nr_e = NONE`
+2. **Alarm timer 初始化**（L178-181）：遍历 `BEG_PRIV_ADDR..END_PRIV_ADDR`，对每个 priv 调用 `tmr_inittimer()`
+3. **call_vec 注册**（L183-270）：先全部置 NULL，然后逐个 `map(SYS_*, do_*)` 注册
 
 **map() 宏的安全保证**：编译期 assert 确保系统调用号在 `[0, NR_SYS_CALLS)` 范围内。如果有人用了非法调用号，编译失败。
 
@@ -211,8 +211,15 @@ struct irq_hook {
 **系统调用分派**：
 ```c
 call_nr = msg->m_type - KERNEL_CALL;
-if (call_nr < 0 || call_nr >= NR_SYS_CALLS) return EBADCALL;
-result = call_vec[call_nr](caller, msg);
+
+if (call_nr < 0 || call_nr >= NR_SYS_CALLS) {  /* check call number */
+    result = EBADREQUEST;          /* illegal message type */
+}
+else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr)) {
+    result = ECALLDENIED;          /* no permission for system call */
+} else {
+    result = call_vec[call_nr](caller, msg);  /* handle the system call */
+}
 ```
 
 **VMSUSPEND 处理**（`kernel_call_finish()`，L58-90）：
@@ -421,7 +428,8 @@ use crate::clock::ClockState;
 use minix_types::Message;
 
 /// Result of a kernel call dispatch.
-/// C: EBADCALL, VMSUSPEND, EDONTREPLY in minix/errno.h
+/// C: EBADREQUEST (212), ECALLDENIED (210) — sys/sys/errno.h
+/// C: VMSUSPEND (-996) — kernel/vm.h; EDONTREPLY — sys/sys/errno.h
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KcallResult {
     /// Call completed with return value.
@@ -458,72 +466,91 @@ pub fn kernel_call_dispatch(
     proc_table: &mut ProcessTable,
     clock_state: &mut ClockState,
 ) -> KcallResult {
-    let _ = crate::smp::bkl_lock(); // C: BKL_LOCK() in mpx.S trap entry
+    // Acquire BKL — C: BKL_LOCK() in mpx.S kernel_call_entry_common.
+    // BklGuard is RAII (Drop releases BKL). We mem::forget the guard because
+    // BKL must stay held until kernel_call_finish()/switch_to_user() releases it.
+    // A BklSection witness is derived for compile-time BKL proof on global accessors.
+    let bkl_guard = crate::smp::bkl_lock();
+    let result = {
+        let bkl_section = bkl_guard.section();
+        kernel_call_dispatch_inner(caller, msg, priv_table, proc_table, clock_state, &bkl_section)
+    };
+    core::mem::forget(bkl_guard);
+    result
+}
 
+/// Inner dispatch logic, called after BKL is acquired.
+fn kernel_call_dispatch_inner(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    priv_table: &mut PrivTable,
+    proc_table: &mut ProcessTable,
+    clock_state: &mut ClockState,
+    bkl_section: &crate::smp::BklSection<'_>,
+) -> KcallResult {
     let call_nr = msg.m_type as u16;
     let syscall = match Syscall::try_from(call_nr) {
         Ok(s) => s,
         Err(()) => return KcallResult::BadCall,
     };
 
-    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))`
-    let denied = match caller.priv_id {
-        Some(id) => match priv_table.get(id) {
-            Some(priv) => !kcall_filter_check(priv, call_nr as u32),
-            None => true,
-        },
-        None => true,
-    };
-    if denied {
+    // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:107
+    // Composed as Option::and_then + is_none_or:
+    //   - None (no priv_id, or priv_id not in table) → deny
+    //   - Some(priv) → deny iff kcall_filter_check returns false
+    let call_denied = caller.priv_id
+        .and_then(|id| priv_table.get(id))
+        .is_none_or(|caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
+    if call_denied {
         return KcallResult::CallDenied;
     }
 
     match syscall {
         Syscall::Fork => crate::syscall_process::dispatch_fork(caller, msg, proc_table, priv_table),
         Syscall::Exec => crate::syscall_process::dispatch_exec(caller, msg, proc_table),
-        Syscall::Clear => crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table),
+        Syscall::Clear => crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table, clock_state),
         Syscall::Exit => crate::syscall_process::dispatch_exit(caller, msg),
-        Syscall::Schedule => dispatch_schedule(caller, msg, proc_table),
-        Syscall::Privctl => dispatch_privctl(caller, msg),
-        Syscall::Trace => dispatch_trace(caller, msg, proc_table),
+        Syscall::Schedule => dispatch_schedule(caller, msg, proc_table, priv_table),
+        Syscall::Privctl => dispatch_privctl(caller, msg, proc_table, priv_table),
+        Syscall::Trace => dispatch_trace(caller, msg, proc_table, priv_table),
         Syscall::Kill => dispatch_kill(caller, msg, proc_table, priv_table),
         Syscall::Getksig => dispatch_getksig(caller, msg, proc_table, priv_table),
         Syscall::Endksig => dispatch_endksig(caller, msg, proc_table, priv_table),
         Syscall::Sigsend => dispatch_sigsend(caller, msg, proc_table),
         Syscall::Sigreturn => dispatch_sigreturn(caller, msg, proc_table),
         Syscall::Memset => dispatch_memset(caller, msg, proc_table),
-        Syscall::Umap => dispatch_umap(caller, msg, proc_table),
+        Syscall::Umap => dispatch_umap(caller, msg, proc_table, priv_table),
         Syscall::Vircopy => dispatch_vircopy(caller, msg, proc_table),
         Syscall::Physcopy => dispatch_physcopy(caller, msg, proc_table),
-        Syscall::UmapRemote => dispatch_umap_remote(caller, msg, proc_table),
+        Syscall::UmapRemote => dispatch_umap_remote(caller, msg, proc_table, priv_table),
         Syscall::Vumap => dispatch_vumap(caller, msg, proc_table),
-        Syscall::Irqctl => dispatch_irqctl(caller, msg),
+        Syscall::Irqctl => dispatch_irqctl(caller, msg, priv_table, bkl_section),
         // D6: x86-specific syscalls — BadCall on unsupported arch.
         Syscall::Devio => CurrentArchSyscall::dispatch_devio(caller, msg, priv_table),
         Syscall::Sdevio => CurrentArchSyscall::dispatch_sdevio(caller, msg, priv_table, proc_table),
         Syscall::Vdevio => CurrentArchSyscall::dispatch_vdevio(caller, msg, priv_table),
         Syscall::Setalarm => dispatch_setalarm(caller, msg, priv_table, clock_state),
         Syscall::Times => dispatch_times(caller, msg, proc_table),
-        Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table),
+        Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table, clock_state),
         Syscall::Abort => dispatch_abort(caller, msg),
         Syscall::Iopenable => CurrentArchSyscall::dispatch_iopenable(caller, msg, proc_table),
-        Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg, proc_table),
-        Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg, proc_table),
-        Syscall::Vsafecopy => dispatch_vsafecopy(caller, msg),
+        Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg, proc_table, priv_table),
+        Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg, proc_table, priv_table),
+        Syscall::Vsafecopy => dispatch_vsafecopy(caller, msg, proc_table, priv_table),
         Syscall::Setgrant => dispatch_setgrant(caller, msg, priv_table),
         Syscall::Readbios => CurrentArchSyscall::dispatch_readbios(caller, msg),
         Syscall::Sprof => dispatch_sprofile(caller, msg, proc_table),
         Syscall::Stime => dispatch_stime(caller, msg, clock_state),
         Syscall::Settime => dispatch_settime(caller, msg, clock_state),
         Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table),
-        Syscall::Diagctl => dispatch_diagctl(caller, msg, priv_table),
+        Syscall::Diagctl => dispatch_diagctl(caller, msg, priv_table, proc_table),
         Syscall::Vtimer => dispatch_vtimer(caller, msg, priv_table, proc_table),
         Syscall::Runctl => dispatch_runctl(caller, msg, proc_table),
         Syscall::Getmcontext => dispatch_getmcontext(caller, msg, proc_table),
         Syscall::Setmcontext => dispatch_setmcontext(caller, msg, proc_table),
         Syscall::Update => dispatch_update(caller, msg, proc_table, priv_table),
         Syscall::Schedctl => dispatch_schedctl(caller, msg, proc_table),
-        Syscall::Statectl => dispatch_statectl(caller, msg, priv_table),
+        Syscall::Statectl => dispatch_statectl(caller, msg, proc_table, priv_table, crate::ipc_filter_pool()),
         Syscall::Safememset => dispatch_safememset(caller, msg, proc_table, priv_table),
         // D6: ARM-specific — BadCall on non-ARM.
         Syscall::Padconf => CurrentArchSyscall::dispatch_padconf(caller, msg),
@@ -544,11 +571,11 @@ pub fn kernel_call_dispatch(
 /// C: map() macro's assert(call_index >= 0 && call_index < NR_SYS_CALLS)
 /// Design decision D2: const assert replaces C's runtime assert in map() macro.
 const _: () = {
-    let _ = Syscall::Fork as u16;      // 0
-    let _ = Syscall::Padconf as u16;   // 57
+    // SAFETY: `Syscall` is `#[repr(u16)]`, so every discriminant is stored
+    // as a u16 and `as u16` is a lossless no-op that cannot truncate.
     assert!(Syscall::Fork as u16 == 0);
     assert!(Syscall::Padconf as u16 == 57);
-    assert!(Syscall::Padconf as u16 < NR_SYS_CALLS as u16);
+    assert!((Syscall::Padconf as u16) < (NR_SYS_CALLS as u16));
 };
 ```
 
@@ -564,7 +591,7 @@ C 中的 `system_init()` 做三件事：清零 `irq_hooks[]`、初始化每个 `
 
 ```rust
 // os/kernel/src/lib.rs (kmain Phase E)
-// Phase E: system_init equivalent — IrqManager/KPriv/Syscall already constructed.
+// Phase E: system_init — register syscall handlers
 ```
 
 > 设计决策 D1/D2：Rust 的 enum + match + const assert 替代 C 的 call_vec[] + map() 宏。`system_init` 的三步初始化由构造函数和类型系统隐式完成。
@@ -594,11 +621,8 @@ pub struct MemMapEntry {
 /// Const zero entry for static initialization.
 pub const MEM_MAP_ENTRY_ZERO: MemMapEntry = MemMapEntry { base: 0, length: 0 };
 
-impl Default for MemMapEntry {
-    fn default() -> Self {
-        MEM_MAP_ENTRY_ZERO
-    }
-}
+// (actual code: `#[derive(Default)]` on the struct — zeroed fields, same
+//  semantics as the C `mm_length == 0` empty-slot convention)
 
 impl MemMapEntry {
     /// Whether this entry is empty (available for use).
@@ -644,9 +668,9 @@ pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> R
     }
 
     // C: linear scan for empty slot (mm_length == 0)
-    for i in 0..MAXMEMMAP {
-        if mmap[i].is_empty() {
-            mmap[i] = MemMapEntry {
+    for (i, entry) in mmap.iter_mut().enumerate() {
+        if entry.is_empty() {
+            *entry = MemMapEntry {
                 base: aligned_base,
                 length: aligned_len,
             };
@@ -721,10 +745,10 @@ fn bsp_finish_booting(
     Console::write_str("\nMINIX-RS 0.1.0 (rust rewrite) — scheduling live\n");
 
     // Step 4: RTS_PROC_STOP unset for boot processes (skip kernel tasks)
-    for nr in 0..(crate::proc::NR_BOOT_PROCS as ProcNr
-        - crate::proc_table::NR_TASKS as ProcNr)
+    for nr in 0..(ProcNr(crate::proc::NR_BOOT_PROCS as i32)
+        - ProcNr(crate::proc_table::NR_TASKS as i32)).0
     {
-        proc_table.rts_unset(nr, RtsFlagsBits::PROC_STOP);
+        proc_table.rts_unset(ProcNr(nr), RtsFlagsBits::PROC_STOP);
     }
 
     // Step 5: cycles_accounting_init() — set BSP TSC baseline
@@ -741,8 +765,17 @@ fn bsp_finish_booting(
     // (b) Timer IRQ handler registration is deferred until the global
     //     IrqManager lands; for now `boot_init_timer` accepts a dummy
     //     handler that satisfies the ArchBoot trait signature.
-    use minix_arch::CurrentClockArch;
-    CurrentClockArch::init_timer(crate::clock::DEFAULT_HZ);
+    // Instance-based design (04-platform-discovery.md §3.4): construct a
+    // transient clock arch instance from the global platform descriptor.
+    use minix_arch::{ClockArch, CurrentClockArch};
+    use minix_platform::{platform_desc, PlatformDesc};
+    {
+        let pd = platform_desc();
+        let mut clock_arch = CurrentClockArch::new(pd.timer());
+        clock_arch.init_timer(crate::clock::DEFAULT_HZ);
+    }
+    // Register the BSP's timer handler via the ArchBoot trait (hardware-side
+    // binding: IOAPIC RTE on x86, LVT on aarch64; mock records for tests).
     use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot, TimerHandlerFn};
     extern "Rust" fn dummy_timer_handler(
         _irq: minix_plat::IrqVector,
@@ -750,6 +783,7 @@ fn bsp_finish_booting(
     ) -> minix_plat::IrqAction {
         minix_plat::IrqAction::Completed
     }
+    let _handler: TimerHandlerFn = dummy_timer_handler;
     let _ = boot_init_timer::<CurrentArchBoot>(dummy_timer_handler);
 
     // Step 7: FPU presence probe
@@ -764,7 +798,9 @@ fn bsp_finish_booting(
     // Step 8.5: acquire BKL before entering the scheduling loop
     // C: BKL is already held when coming from the trap entry; Rust acquires
     // it here because switch_to_user() releases it before returning to user.
-    crate::smp::bkl_lock();
+    // BklGuard is RAII (Drop releases BKL) — mem::forget keeps BKL held
+    // across switch_to_user(), which releases it before the idle loop.
+    core::mem::forget(smp::bkl_lock());
 
     // Step 9: switch_to_user() — never returns (=> !)
     switch_to_user()
@@ -805,8 +841,8 @@ fn switch_to_user() -> ! {
 | C 步骤 | C 位置 | 未实现原因 |
 |--------|--------|----------|
 | `cpu_identify()` | main.c:45 | CPU 识别在 boot-shim 阶段已完成（01-boot-shim-bootstrap），Rust 无需在 bsp_finish_booting 重复 |
-| `krandom_init()` | main.c:62 | ✅ 已实现（`krandom::init()`，`lib.rs:382` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
-| `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:92 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
+| `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:387` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
+| `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:95 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
 
 这 3 步的差异属于**架构演进**（ARCH），不是实现遗漏——每步都有 Rust 类型系统的替代方案。
 
