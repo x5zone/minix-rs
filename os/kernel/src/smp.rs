@@ -65,7 +65,7 @@ pub const MAX_CPUS: usize = 32;
 bitflags::bitflags! {
     /// CPU state flags.
     ///
-    /// C: smp.h:30-31 — `CPU_IS_BSP` / `CPU_IS_READY`
+    /// C: smp.h:32-33 — `CPU_IS_BSP` / `CPU_IS_READY`
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CpuFlags: u32 {
         /// This CPU is the bootstrap processor.
