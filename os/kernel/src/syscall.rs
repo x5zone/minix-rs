@@ -3199,7 +3199,7 @@ mod tests {
         // SEND (call_nr=1) must enter dispatch_ipc, which calls
         // check_ipc_permission. A caller without priv_id (default KProcess)
         // fails the IPC target whitelist check (s_ipc_to) → ECALLDENIED(210).
-        // C: proc.c:500-520 — may_send_to / s_ipc_to check; no priv → denied.
+        // C: proc.c:536-544 — may_send_to / s_ipc_to check; no priv → denied.
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         // p_defer.r2 = dst endpoint (required by SEND path).
         // Use a valid-looking endpoint; permission check fails before

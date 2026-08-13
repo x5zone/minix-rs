@@ -56,7 +56,7 @@ IPC 调用时，消息**不直接写入接收方用户空间**，而是分两阶
 
 ### 1.4 RECEIVE 消息来源优先级
 
-`mini_receive()` 检查三个消息来源的顺序（`proc.c:1000-1095`）：
+`mini_receive()` 检查三个消息来源的顺序（`proc.c:1000-1112`）：
 
 1. **待处理通知**（`s_notify_pending` 位图）→ 构建通知消息投递
    - 跳过条件：`MF_REPLY_PEND` 置位（SENDREC 的 RECEIVE 阶段）
@@ -209,15 +209,16 @@ int do_ipc(reg_t r1, reg_t r2, reg_t r3) {
 
 | 层 | 检查 | 失败 errno | 源码位置 |
 |---|------|-----------|---------|
-| 1 | 端点有效性 `isokendpt` | EDEADSRCDST | proc.c:487-495 |
-| 2 | IPC 目标白名单 `may_send_to` / `s_ipc_to` | ECALLDENIED | proc.c:500-520 |
-| 3 | 陷阱掩码 `s_trap_mask & (1 << call_nr)` | ETRAPDENIED | proc.c:520-540 |
-| 4 | 内核任务限制：`call_nr != SENDREC && iskerneln` | ETRAPDENIED | proc.c:560-566 |
+| 1 | 端点有效性 `isokendpt` | EDEADSRCDST | proc.c:521-527 |
+| 2 | IPC 目标白名单 `may_send_to` / `s_ipc_to` | ECALLDENIED | proc.c:536-544 |
+| 3 | 陷阱掩码 `s_trap_mask & (1 << call_nr)` | ETRAPDENIED | proc.c:552-558 |
+| 4 | 内核任务限制：`call_nr != SENDREC && call_nr != RECEIVE && iskerneln(src_dst_p)` | ETRAPDENIED | proc.c:560-566 |
 
-**内核任务只能 SENDREC**（proc.c:560-566）的设计动机：
-- 内核任务（CLOCK/SYSTEM 等）总是回复消息，单独 SEND 会让任务无法回复（任务设计为收到请求即处理即回复）
-- 内核任务不能阻塞在发送上——如果调用方只 SEND 不 RECEIVE，任务会永远阻塞
-- 因此 `do_sync_ipc` 显式拒绝内核任务的 SEND/RECEIVE 单独调用
+**对内核任务的调用只能 SENDREC 或 RECEIVE**（proc.c:560-566）的设计动机：
+- C 检查的是**目标端点**（`iskerneln(src_dst_p)`，proc.h:276 判定目标进程号 < 0 = 内核任务），**不是调用方**——调用方是谁不受此限制
+- 内核任务（CLOCK/SYSTEM 等）总是回复消息：收到请求即处理即回复，从不主动发起 IPC
+- 若调用方只 SEND 不 RECEIVE，内核任务的回复无人接收，任务会永远阻塞在发送上
+- 因此 `do_sync_ipc` 对内核任务目标的调用只允许 SENDREC（发后即收）或 RECEIVE（等任务回复），拒绝单独的 SEND
 
 ### 2.4 mini_send() — 同步发送
 
@@ -276,7 +277,7 @@ else {
 
 `mini_receive` 按优先级检查三个消息来源：
 
-**第 1 级：待处理通知**（`proc.c:1000-1030`）
+**第 1 级：待处理通知**（`proc.c:1000-1039`）
 
 ```c
 if (!(caller_ptr->p_misc_flags & MF_REPLY_PEND)) {  // SENDREC 的 RECEIVE 阶段跳过
@@ -286,7 +287,7 @@ if (!(caller_ptr->p_misc_flags & MF_REPLY_PEND)) {  // SENDREC 的 RECEIVE 阶�
 }
 ```
 
-**第 2 级：待处理异步消息**（`proc.c:1031-1070`）
+**第 2 级：待处理异步消息**（`proc.c:1040-1053`）
 
 ```c
 if (has_pending_asend(caller_ptr, src_e)) {
@@ -294,7 +295,7 @@ if (has_pending_asend(caller_ptr, src_e)) {
 }
 ```
 
-**第 3 级：同步发送者队列**（`proc.c:1071-1095`）
+**第 3 级：同步发送者队列**（`proc.c:1054-1099`）
 
 ```c
 // 遍历 p_caller_q 找匹配 src_e 的发送者
@@ -309,7 +310,7 @@ while (*xpp) {
 }
 ```
 
-**第 4 级：阻塞**（`proc.c:1096-1110`）
+**第 4 级：阻塞**（`proc.c:1100-1112`）
 
 ```c
 // 都没有 → 阻塞
@@ -648,7 +649,7 @@ pub trait UserCopy {
 
 **选定 A**：Vec-owned。理由：SENDA 调用频率低（仅 ASYNCM 进程），堆分配开销可接受；状态跟踪是正确性必需（INV-8 重试要求区分 Pending/Done/NotReady）；`alloc::Vec` 在 `no_std` 可用（`extern crate alloc`）。C: proc.c:1200-1326 `try_deliver_senda` 内部也缓存了用户表副本。
 
-**实现位置**：`os/kernel/src/ipc.rs:300-381`（`AsyncMessageEntry`/`AsyncEntryState`/`AsyncMessageTable`/`try_deliver_all`）+ `os/kernel/src/ipc.rs:1059-1064`（`IpcEngine::senda`）。
+**实现位置**：`os/kernel/src/ipc.rs:405-502`（`AsyncMessageEntry`/`AsyncEntryState`/`AsyncMessageTable`/`try_deliver_all`）+ `os/kernel/src/ipc.rs:1213-1218`（`IpcEngine::senda`）。
 
 ### 3.11 SENDREC 两阶段：保留 MF_REPLY_PEND 标志
 
@@ -684,7 +685,7 @@ pub enum IpcError {
     Deadlock,      // C: ELOCKED — proc.c:931
     DeadSrcDst,    // C: EDEADSRCDST — proc.c:889
     NotReady,      // C: ENOTREADY — proc.c:926
-    BadCall,       // C: EBADCALL — proc.c:95
+    BadCall,       // C: EBADCALL — proc.c:696
     Fault,         // C: EFAULT — proc.c:902,937
     CallDenied,    // C: ECALLDENIED — do_sync_ipc
     TrapDenied,    // C: ETRAPDENIED — do_sync_ipc
@@ -742,7 +743,7 @@ impl<'a> IpcEngine<'a> {
     /// 同步接收。C: mini_receive — proc.c:967-1117
     pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutcome;
 
-    /// 原子 SEND + RECEIVE。C: do_ipc SENDREC 分支 — proc.c:620-632
+    /// 原子 SEND + RECEIVE。C: do_ipc SENDREC 分支 — proc.c:655-666
     /// send 成功后 receive(ANY)；send 阻塞时设 MF_REPLY_PEND。
     pub fn sendrec(&mut self, caller_nr: ProcNr, dst_endpoint: Endpoint, msg: &Message) -> IpcOutcome;
 
@@ -806,7 +807,7 @@ pub fn send(&mut self, caller_nr: ProcNr, dst_endpoint: Endpoint, msg: &Message,
 
 ```rust
 pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutcome {
-    // Phase 1: 通知检查（MF_REPLY_PEND 跳过）。C: proc.c:1000-1030
+    // Phase 1: 通知检查（MF_REPLY_PEND 跳过）。C: proc.c:1000-1039
     if !reply_pend {
         if self.take_pending_notify(caller_nr, src_endpoint).is_some() {
             // 构建通知消息 + 投递 + 清位图位
@@ -814,13 +815,13 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
         }
     }
 
-    // Phase 2: 异步消息检查。C: proc.c:1031-1070
+    // Phase 2: 异步消息检查。C: proc.c:1040-1053
     if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint) {
         // deliver_async 投递
         return IpcOutcome::Delivered;
     }
 
-    // Phase 3: 同步发送者队列。C: proc.c:1071-1095
+    // Phase 3: 同步发送者队列。C: proc.c:1054-1099
     let q_idx = self.procs[caller_idx].caller_q.find_matching(self.procs, src_endpoint);
     if let Some(q_idx) = q_idx {
         // 投递 sender.p_sendmsg + MF_DELIVERMSG
@@ -828,7 +829,7 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
         return IpcOutcome::Delivered;
     }
 
-    // Phase 4: 阻塞。C: proc.c:1096-1110
+    // Phase 4: 阻塞。C: proc.c:1100-1112
     // RTS_SET(RECEIVING) + p_getfrom_e = src
     return IpcOutcome::Blocked;
 }
@@ -889,7 +890,7 @@ pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endp
 
 ### 4.6 delivermsg 自由函数实现（FIX-20, Phase 1B）
 
-**位置**: [ipc.rs:320](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: [ipc.rs:363](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 **调用方**: `ProcessTable::process_misc_flags`（[proc_table.rs:851-879](file:///home/xzhao/github/minix-rs/os/kernel/src/proc_table.rs)），当 `MF_DELIVERMSG` 置位时调用。
 
@@ -912,12 +913,12 @@ pub fn delivermsg(
         }
         Err(CopyError::PageFault) => {
             if proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED) {
-                // 第 2 次连续失败 → SIGSEGV。C: proc.c:283
+                // 第 2 次连续失败 → SIGSEGV。C: proc.c:278
                 proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
                 proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
                 DeliverResult::Segfault
             } else {
-                // 第 1 次失败 → vm_suspend。C: proc.c:278
+                // 第 1 次失败 → vm_suspend。C: proc.c:282-283
                 proc.p_misc_flags.set(MiscFlagsBits::MSGFAILED);
                 DeliverResult::PageFault
             }
@@ -952,11 +953,11 @@ impl IpcEngine {
 
 ### 4.7 check_ipc_permission 四层检查
 
-**位置**: [ipc.rs:1275-1323](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: [ipc.rs:1270-1318](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 ```rust
 pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError> {
-    // 层 1: 端点有效性。C: proc.c:487-495
+    // 层 1: 端点有效性。C: proc.c:521-527
     let dst_idx = self.idx_by_endpoint(dst_endpoint);
     match dst_idx {
         None => return Err(IpcError::DeadSrcDst),
@@ -983,8 +984,16 @@ pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, ca
         return Err(IpcError::TrapDenied);
     }
 
-    // 层 4: 内核任务限制。C: proc.c:560-566
-    if self.procs[caller_idx].is_kernel_task() && call != IpcCall::SendRec {
+    // 层 4: 内核任务限制。C: proc.c:560-566。
+    // 对内核任务目标（p_nr < 0）的调用只能 SENDREC 或 RECEIVE——
+    // 内核任务总是回复，若调用方不接收，任务可能永远阻塞。
+    // C 检查 TARGET（`iskerneln(src_dst_p)`），不是调用方：
+    // `call_nr != SENDREC && call_nr != RECEIVE && iskerneln(src_dst_p)`。
+    if call != IpcCall::SendRec
+        && call != IpcCall::Receive
+        && let Some(i) = dst_idx
+        && self.procs[i].is_kernel_task()
+    {
         return Err(IpcError::TrapDenied);
     }
 
@@ -994,7 +1003,7 @@ pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, ca
 
 ### 4.8 do_ipc 分派
 
-**位置**: [ipc.rs:1346-1395](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: [ipc.rs:1339-1388](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 > **入口前置**：`dispatch_ipc_entry`（[syscall.rs:523-550](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L523-L550)，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `do_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
 
@@ -1049,7 +1058,7 @@ pub fn do_ipc(
 
 ### 4.9 SenderQueue 队列操作
 
-**位置**: [ipc.rs:521](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: [ipc.rs:522](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
 
 ```rust
 pub struct SenderQueue(VecDeque<ProcNr>);
@@ -1089,11 +1098,11 @@ impl SenderQueue {
 | `test_send_when_target_not_receiving` | send 路径 B（阻塞入队） | proc.c:924-960 | P0 |
 | `test_send_non_blocking_returns_not_ready` | send + NON_BLOCKING | proc.c:925-927 | P0 |
 | `test_send_detects_deadlock` | send + 死锁检测 | proc.c:930-932 | P0 |
-| `test_receive_picks_notify_first` | receive Phase 1（通知优先） | proc.c:1000-1030 | P0 |
+| `test_receive_picks_notify_first` | receive Phase 1（通知优先） | proc.c:1000-1039 | P0 |
 | `test_receive_skips_notify_when_reply_pend` | receive + MF_REPLY_PEND | proc.c:1000-1005 | P0 |
-| `test_receive_picks_async_second` | receive Phase 2（async 次之） | proc.c:1031-1070 | P0 |
-| `test_receive_picks_caller_q_last` | receive Phase 3（caller_q 最后） | proc.c:1071-1095 | P0 |
-| `test_receive_blocks_when_no_match` | receive Phase 4（阻塞） | proc.c:1096-1110 | P0 |
+| `test_receive_picks_async_second` | receive Phase 2（async 次之） | proc.c:1040-1053 | P0 |
+| `test_receive_picks_caller_q_last` | receive Phase 3（caller_q 最后） | proc.c:1054-1099 | P0 |
+| `test_receive_blocks_when_no_match` | receive Phase 4（阻塞） | proc.c:1100-1112 | P0 |
 | `test_notify_delivers_when_target_receiving` | notify 路径 A | proc.c:1122-1150 | P0 |
 | `test_notify_records_bitmap_when_not_receiving` | notify 路径 B（位图） | proc.c:1151-1167 | P0 |
 | `test_notify_never_blocks` | notify 永不阻塞 | proc.c:1122 | P0 |
@@ -1106,13 +1115,13 @@ impl SenderQueue {
 | `test_deadlock_mixed_chain_cycle` | 混合链死锁（防固定字段回归） | P0 FIX-3 验证 | P0 |
 | `test_deadlock_send_state_mismatch` | blocked_on 动态选字段验证 | proc.h:187-194 | P0 |
 | `test_deliver_message_success` | delivermsg 成功 | proc.c:263-294 | P0 |
-| `test_deliver_message_first_page_fault` | 第 1 次页错误 → PageFault | proc.c:278 | P0 |
-| `test_deliver_message_second_consecutive_fault` | 连续两次 → Segfault | proc.c:283 | P0 |
-| `test_process_misc_flags_clears_delivermsg` | DELIVERMSG 经 `ipc::delivermsg` 拷贝成功后清除（FIX-20） | proc.c:263-294 + 350-414 | P0 |
-| `test_check_ipc_permission_kernel_task_only_sendrec` | 内核任务限制 | proc.c:560-566 | P0 |
+| `test_deliver_message_first_page_fault` | 第 1 次页错误 → PageFault | proc.c:282-283 | P0 |
+| `test_deliver_message_second_consecutive_fault` | 连续两次 → Segfault | proc.c:278 | P0 |
+| `test_process_misc_flags_clears_delivermsg` | DELIVERMSG 经 `ipc::delivermsg` 拷贝成功后清除（FIX-20） | proc.c:263-294 + 351-415 | P0 |
+| `test_check_ipc_permission_target_kernel_task_restriction` | 对内核任务目标仅允许 SENDREC/RECEIVE（层 4，TARGET 方向） | proc.c:560-566 | P0 |
 | `test_senda_all_delivered` | SENDA 全部投递成功 | proc.c:1331-1346 | P1 |
 | `test_dispatch_ipc_entry_routes_send_to_ipc_engine` | IPC trap 入口 → dispatch_ipc 路由 SEND | proc.c:599-697 | P0 |
-| `test_dispatch_ipc_entry_bad_call_nr_returns_ebadcall` | 无效 call_nr（0/17/255）→ EBADCALL | proc.c:602-606 | P0 |
+| `test_dispatch_ipc_entry_bad_call_nr_returns_ebadcall` | 无效 call_nr（0/17/255）→ EBADCALL | proc.c:695-696 | P0 |
 | `test_dispatch_ipc_entry_acquires_bkl` | 入口 acquire BKL（mem::forget guard） | mpx.S:ipc_entry BKL_LOCK | P1 |
 
 ### 5.2 混合链死锁测试（P0 防回归）

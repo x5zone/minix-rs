@@ -1307,8 +1307,16 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Layer 4: kernel task restriction. C: proc.c:560-566.
-        // Kernel tasks (p_nr < 0) may only invoke SENDREC.
-        if self.procs[caller_idx].is_kernel_task() && call != IpcCall::SendRec {
+        // Calls TO kernel tasks (p_nr < 0) may only be SENDREC or RECEIVE
+        // — kernel tasks always reply and may not block if the caller
+        // doesn't receive. C checks the TARGET (`iskerneln(src_dst_p)`),
+        // not the caller: `call_nr != SENDREC && call_nr != RECEIVE &&
+        // iskerneln(src_dst_p)`.
+        if call != IpcCall::SendRec
+            && call != IpcCall::Receive
+            && let Some(i) = dst_idx
+            && self.procs[i].is_kernel_task()
+        {
             return Err(IpcError::TrapDenied);
         }
 
@@ -1579,6 +1587,7 @@ pub fn kernel_mini_notify(caller_nr: ProcNr, dst_endpoint: Endpoint) -> IpcOutco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use crate::proc::RtsFlags;
     use crate::proc_table::NR_TASKS;
 
@@ -2201,33 +2210,45 @@ mod tests {
     // ── Permission check tests (P0-12-1) ──
 
     #[test]
-    fn test_check_ipc_permission_kernel_task_only_sendrec() {
-        // Kernel tasks (p_nr < 0) may only invoke SENDREC (layer 4).
+    fn test_check_ipc_permission_target_kernel_task_restriction() {
+        // Layer 4 (C: proc.c:560-566): calls TO a kernel task target
+        // (p_nr < 0) may only be SENDREC or RECEIVE — kernel tasks always
+        // reply and may not block if the caller doesn't receive. C checks
+        // the TARGET (`iskerneln(src_dst_p)`), not the caller.
         // To reach layer 4, layers 1-3 must pass: endpoint valid,
         // whitelist allows target, trap_mask allows SEND call.
-        let mut a = make_test_proc(0, Endpoint(1));
-        let mut b = make_test_proc(1, Endpoint(2));
-        a.priv_id = Some(0);
-        b.priv_id = Some(1);
-        let mut procs = [a, b];
+        let task_nr = test_nr(0);              // p_nr = -NR_TASKS (kernel task)
+        let user_nr = test_nr(NR_TASKS);       // p_nr = 0 (regular process)
+        let mut procs: Vec<KProcess> = (0..=NR_TASKS)
+            .map(|i| make_test_proc(i, Endpoint(1000 + i as i32)))
+            .collect();
+        procs[0] = make_test_proc(0, Endpoint(2));  // kernel task target
+        procs[NR_TASKS].p_endpoint = Endpoint(1);   // user's own endpoint
         let mut priv_table = PrivTable::new();
-        // assign_static: test_nr(0)=-5 → priv_id=0, test_nr(1)=-4 → priv_id=1.
-        priv_table.assign_static(test_nr(0)).unwrap();
-        priv_table.assign_static(test_nr(1)).unwrap();
-        // Configure caller's priv: allow IPC to priv_id=1, allow all traps.
+        let task_priv = priv_table.assign_static(task_nr).unwrap();
+        let user_priv = priv_table.assign_static(user_nr).unwrap();
+        procs[0].priv_id = Some(task_priv);
+        procs[NR_TASKS].priv_id = Some(user_priv);
+        // Configure caller's priv: allow IPC to task (and self), all traps.
         {
-            let caller_priv = priv_table.get_mut(0).unwrap();
-            caller_priv.ipc.s_ipc_to |= 1u64 << 1; // allow send to b (priv_id=1)
+            let caller_priv = priv_table.get_mut(user_priv).unwrap();
+            caller_priv.ipc.s_ipc_to |= (1u64 << task_priv as u32) | (1u64 << user_priv as u32);
             caller_priv.ipc.s_trap_mask = 0xFFFF;  // allow all calls including SEND
         }
         let engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
-        // SEND should be denied at layer 4: kernel task restricted to SENDREC.
-        let r = engine.check_ipc_permission(test_nr(0), Endpoint(2), IpcCall::Send);
+        // SEND to a kernel task target is denied at layer 4.
+        let r = engine.check_ipc_permission(user_nr, Endpoint(2), IpcCall::Send);
         assert_eq!(r, Err(IpcError::TrapDenied));
-        // SENDREC should pass layer 4 (kernel task allowed SENDREC).
+        // SENDREC and RECEIVE to a kernel task target pass layer 4.
         // Layer 3 trap_mask also needs SENDREC bit (bit 3); 0xFFFF covers it.
-        let r2 = engine.check_ipc_permission(test_nr(0), Endpoint(2), IpcCall::SendRec);
-        assert_eq!(r2, Ok(()), "SENDREC must be allowed for kernel tasks");
+        let r2 = engine.check_ipc_permission(user_nr, Endpoint(2), IpcCall::SendRec);
+        assert_eq!(r2, Ok(()), "SENDREC to kernel task must be allowed");
+        let r3 = engine.check_ipc_permission(user_nr, Endpoint(2), IpcCall::Receive);
+        assert_eq!(r3, Ok(()), "RECEIVE from kernel task must be allowed");
+        // SEND to a non-kernel-task target passes layer 4 (restriction
+        // applies to kernel task targets only).
+        let r4 = engine.check_ipc_permission(user_nr, Endpoint(1), IpcCall::Send);
+        assert_eq!(r4, Ok(()), "SEND to regular target must pass layer 4");
     }
 
     // ── AsyncMessageTable tests ──
