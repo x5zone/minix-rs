@@ -42,7 +42,7 @@
 //! This module is **additive** in this iteration: it defines the
 //! vocabulary but does not yet replace the existing
 //! `KPriv::s_flags` / `s_trap_mask` / `s_ipc_to` / `s_k_call_mask`
-//! fields. The plan (06-design-final.md §5 + §12.9) is to split
+//! fields. The plan (06-design.v1.md §3.3) is to split
 //! `KPriv` into 6 substructures (`capability` / `signals` / `io` /
 //! `mem` / `irq` / `runtime`), at which point `ProcessCapability`
 //! becomes the type of the `capability` substructure's flag field
@@ -122,7 +122,7 @@ impl ProcessCapability {
 /// Capability template — "starter kit" of capabilities for a category of process.
 ///
 /// Replaces the previous two-step `assign_static` +
-/// `configure_boot_priv` boot flow (06-design-final.md §3.6). Picking
+/// `configure_boot_priv` boot flow (06-design.v1.md §3.6). Picking
 /// a template once is correct by construction; you cannot forget to
 /// set the IPC mask or to deny kernel calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +142,7 @@ pub enum CapabilityTemplate {
     Deferred,
 }
 
-/// Errors returned by [`PrivTable::grant_capability`] (06-design-final.md §3.6).
+/// Errors returned by [`PrivTable::grant_capability`] (06-design.v1.md §3.6).
 ///
 /// Replaces the previous `Option<PrivId>` return, which conflated
 /// "out of slots" with "slot already occupied" and gave callers no way

@@ -604,7 +604,7 @@ pub fn virtual_copy_vmcheck(src_addr: VirBytes, dst_addr: VirBytes,
 }
 ```
 
-`DirectMapArch` 是跨架构统一抽象 trait（`os/arch/src/direct_map.rs`）：x86_64 基地址 `0xFFFF_8000_0000_0000`，aarch64/riscv64 由 MMU 配置。内核代码无 `#[cfg(target_arch)]` 行为选择。
+`DirectMapArch` 是跨架构统一抽象 trait（`os/arch/src/arch/direct_map.rs`）：x86_64 基地址 `0xFFFF_8000_0000_0000`，aarch64/riscv64 由 MMU 配置。内核代码无 `#[cfg(target_arch)]` 行为选择。
 
 ### 4.8 实现完成状态（原 DEFERRED 项已全部落地）
 

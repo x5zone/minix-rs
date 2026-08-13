@@ -2,7 +2,7 @@
 //!
 //! Defines the trait interface for hardware timer configuration.
 //!
-//! # Design decisions (see 05-clock-interrupt-init.md §3.1, §3.2, 15-design.md §4.5)
+//! # Design decisions (see 05-clock-interrupt-init.md §3.1, §3.2, 15-clock-timer.md §4.5)
 //!
 //! - **ClockArch trait** (§3.1): Separates hardware timer configuration
 //!   from software clock state. Each architecture implements its own
@@ -12,7 +12,7 @@
 //!
 //! # Quantum decrement (D9)
 //!
-//! The design (15-design.md §4.5) originally specified a `ClockArch::arch_tick()`
+//! The design (15-clock-timer.md §4.5) originally specified a `ClockArch::arch_tick()`
 //! method for quantum decrement. However, `KProcess` lives in `minix-kernel`,
 //! and `ClockArch` lives in `minix-arch` — adding `arch_tick(&mut KProcess)` would
 //! create a circular dependency. Instead, quantum decrement is implemented as a
@@ -139,6 +139,9 @@ pub trait ClockArch: Sized + Send + Sync {
     /// timers (e.g., RISC-V without a spare CLINT channel).
     ///
     /// C: `init_profile_clock(freq)` — sprofile.c:init_profile_clock
+    // TODO(C-D-5): replace `Result<(), ()>` with a named error type
+    // (todo.md §11.4 design-level cleanup — trait contract change).
+    #[allow(clippy::result_unit_err)]
     fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()>;
 
     /// Stop the statistical profiling timer.

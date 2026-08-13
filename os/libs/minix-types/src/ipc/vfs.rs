@@ -2,7 +2,7 @@
 //!
 //! Defines the messages exchanged between VFS and other services (PM, Kernel).
 
-use crate::{Endpoint, EAGAIN, ESRCH, EINVAL, EMFILE, EIO, ENOSYS};
+use crate::{EAGAIN, EINVAL, EIO, EMFILE, ENOSYS, ESRCH, Endpoint};
 
 /// VFS request message types.
 ///
@@ -72,7 +72,10 @@ mod tests {
         };
 
         match req {
-            VfsRequest::Fork { parent_endpoint, child_endpoint } => {
+            VfsRequest::Fork {
+                parent_endpoint,
+                child_endpoint,
+            } => {
                 assert_eq!(parent_endpoint, Endpoint::PM);
             }
         }

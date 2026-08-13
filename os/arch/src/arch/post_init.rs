@@ -4,7 +4,7 @@
 //! - `PostInitArch`: Architecture-specific post-initialization (arch_post_init)
 //! - `MemoryInitArch`: Architecture-specific memory initialization (memory_init)
 //!
-//! # Design decisions (see 06-arch-post-init.md §3)
+//! # Design decisions (see 08-system-init-boot-finish.md §3)
 //!
 //! - **Two-trait split** (§3.1-3.2): `PostInitArch` handles the ptproc/VM
 //!   page table registration, `MemoryInitArch` handles free page directory
@@ -104,6 +104,12 @@ pub struct FreePdeSlots {
     slots: [usize; MAX_FREE_PDE_SLOTS],
     /// Number of slots currently allocated.
     len: usize,
+}
+
+impl Default for FreePdeSlots {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FreePdeSlots {

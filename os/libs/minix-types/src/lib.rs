@@ -33,8 +33,8 @@
 //! 2. **Invariant Protection**: State transition logic is bound to complex internal service logic.
 //! 3. **Microkernel Principle**: Follows the "minimum knowledge" principle.
 
-pub mod types;
 pub mod ipc;
+pub mod types;
 
-pub use types::*;
 pub use ipc::*;
+pub use types::*;

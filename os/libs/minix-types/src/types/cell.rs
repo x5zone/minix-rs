@@ -95,7 +95,7 @@ impl<T: Copy> AssumeSyncCell<T> {
     /// Caller must ensure no mutable references are active.
     #[inline]
     pub unsafe fn get_copy(&self) -> T {
-        *self.0.get()
+        unsafe { *self.0.get() }
     }
 }
 

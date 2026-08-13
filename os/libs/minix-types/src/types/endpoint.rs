@@ -46,29 +46,29 @@ pub struct Endpoint(pub i32);
 impl Endpoint {
     // Special endpoints
     pub const NONE: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 2); // Invalid endpoint
-    pub const ANY: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 1);  // Any process
+    pub const ANY: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 1); // Any process
     pub const SELF: Endpoint = Endpoint(ENDPOINT_SLOT_TOP - 3); // Self process
 
     // Kernel tasks (-5 ~ -1)
-    pub const ASYNCM: Endpoint = Endpoint(-5);   // Async message notification
-    pub const IDLE: Endpoint = Endpoint(-4);     // Idle task
-    pub const CLOCK: Endpoint = Endpoint(-3);    // Clock task
-    pub const SYSTEM: Endpoint = Endpoint(-2);   // System task
-    pub const KERNEL: Endpoint = Endpoint(-1);   // Kernel/hardware interrupt
+    pub const ASYNCM: Endpoint = Endpoint(-5); // Async message notification
+    pub const IDLE: Endpoint = Endpoint(-4); // Idle task
+    pub const CLOCK: Endpoint = Endpoint(-3); // Clock task
+    pub const SYSTEM: Endpoint = Endpoint(-2); // System task
+    pub const KERNEL: Endpoint = Endpoint(-1); // Kernel/hardware interrupt
     pub const HARDWARE: Endpoint = Self::KERNEL; // Hardware interrupt alias
 
     // User space processes (0 ~ 11)
-    pub const PM: Endpoint = Endpoint(0);    // Process manager
-    pub const VFS: Endpoint = Endpoint(1);   // Virtual file system
-    pub const RS: Endpoint = Endpoint(2);    // Restart server
-    pub const MEM: Endpoint = Endpoint(3);   // Memory driver
+    pub const PM: Endpoint = Endpoint(0); // Process manager
+    pub const VFS: Endpoint = Endpoint(1); // Virtual file system
+    pub const RS: Endpoint = Endpoint(2); // Restart server
+    pub const MEM: Endpoint = Endpoint(3); // Memory driver
     pub const SCHED: Endpoint = Endpoint(4); // Scheduler
-    pub const TTY: Endpoint = Endpoint(5);   // TTY driver
-    pub const DS: Endpoint = Endpoint(6);    // Data store service
-    pub const MIB: Endpoint = Endpoint(7);   // Management information base service
-    pub const VM: Endpoint = Endpoint(8);    // Virtual memory manager
-    pub const PFS: Endpoint = Endpoint(9);   // Pipe file system
-    pub const MFS: Endpoint = Endpoint(10);  // Minix root file system
+    pub const TTY: Endpoint = Endpoint(5); // TTY driver
+    pub const DS: Endpoint = Endpoint(6); // Data store service
+    pub const MIB: Endpoint = Endpoint(7); // Management information base service
+    pub const VM: Endpoint = Endpoint(8); // Virtual memory manager
+    pub const PFS: Endpoint = Endpoint(9); // Pipe file system
+    pub const MFS: Endpoint = Endpoint(10); // Minix root file system
     pub const INIT: Endpoint = Endpoint(11); // Init process
 
     /// Gets the raw value (for debugging).
@@ -258,7 +258,7 @@ impl KernelSlot {
     /// Converts from UserSlot.
     #[inline(always)]
     pub const fn from_user_slot(user_slot: UserSlot) -> Self {
-        Self(user_slot.0 + MAX_NR_TASKS as usize)
+        Self(user_slot.0 + MAX_NR_TASKS)
     }
 
     /// Checks if the endpoint's slot part matches this kernel slot.
@@ -392,7 +392,10 @@ mod tests {
 
         // 内核任务的内核槽位
         let kernel_ep = Endpoint::from_generation_slot(0, -1);
-        assert_eq!(kernel_ep.to_kernel_slot().get(), (MAX_NR_TASKS - 1) as usize);
+        assert_eq!(
+            kernel_ep.to_kernel_slot().get(),
+            (MAX_NR_TASKS - 1) as usize
+        );
     }
 
     #[test]

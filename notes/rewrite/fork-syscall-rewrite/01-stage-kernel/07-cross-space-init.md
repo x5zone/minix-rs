@@ -250,6 +250,8 @@ void memory_init(void)
 
 `freepdes[]` 是全局静态数组（`memory.c:32`），`nfreepdes` 是已分配计数。BKL 下单 CPU 执行，无需加锁。
 
+**为什么必须在 arch_post_init 之后**：`createpde` 把临时映射写入 `get_cpulocal_var(ptproc)->p_seg.p_cr3_v[pde]`——即**当前 ptproc（VM）的页目录**（§2.5）。若 `arch_post_init` 未先执行，ptproc 未设置（cpulocals 零初始化，值 NULL），`get_cpulocal_var(ptproc)->p_seg.p_cr3_v` 解引用 NULL 崩溃。这是**因果依赖**而非惯例：freepdes 槽位只是索引，真正的映射载体是 ptproc 的页目录——MMU 只按 CR3 装的页目录解释 VA，临时映射必须写进它才有效。阶段 D 三步顺序（arch_post_init → pg_info → memory_init）由此强制。direct_map 下此依赖消失——内核用自己的 direct map 解释 VA，不借任何进程页目录。
+
 direct_map 下，`memory_init` 整体废弃——direct map 是永久映射，不需要运行时分配槽位。
 
 ### 2.5 createpde() + mem_clear_mapcache()：临时窗口的使用与清理
@@ -397,6 +399,8 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 > 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。
 >
 > **ptproc 跟踪不全部废弃**（P9-4 澄清）：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:31）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（[lib.rs:1976](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `set_current_ptproc_nr(VM_PROC_NR)` 跟踪此用途，与 arch 层 `PostInitArch::set_ptproc`（记录 createpde 用的 `virt_root`，应废弃）分离。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md) 与 §1.4 实现状态块。
+
+> **内核全局状态存储模式**（废弃项之上的模式层问题）：上表废弃的 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 采用"分散全局"存储——每个全局一个 `static mut`/`AtomicUsize`，与 C 源码的全局变量一一对应。不聚合为 `KernelState` 结构体的理由（机制废弃后模式仍适用）：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化；聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局（`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）以参数形式传递，无需单一访问点。此模式是 kernel 全局的通用选择，废弃清单只删条目、不推翻模式本身；若后续出现需跨子系统原子联动的全局，再评估聚合。
 
 ---
 

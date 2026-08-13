@@ -116,7 +116,7 @@
 | 用户态 I/O 提权 | RFLAGS.IOPL=3 | no-op | no-op | `CpuContextArch::enable_user_io` |
 | BIOS 数据 | 物理内存 0x0-0xFFFFF | 无 | 无 | (x86-only，BadCall on others) |
 
-> **注**: aarch64/riscv64 的 PortIo trait 实现尚未落地（MMIO 映射需 per-board 驱动）。当前 `dispatch_devio`/`dispatch_vdevio` 在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`，不会调用 PortIo 方法。x86_64 的 PortIo 实现见 [x86_64/port_io.rs](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/port_io.rs)。
+> **注**: aarch64/riscv64 的 PortIo trait 实现尚未落地（MMIO 映射需 per-board 驱动）。当前 `dispatch_devio`/`dispatch_vdevio` 在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`，不会调用 PortIo 方法。x86_64 的 PortIo 实现见 [x86_64/port_io.rs](file:///home/xzhao/github/minix-rs/os/plat/src/x86_64/port_io.rs)。
 
 **设计原则**: 内核代码（`syscall_device.rs`）只依赖 trait 方法，不出现 `#[cfg(target_arch)]` 行为选择。各架构在 arch 层提供 trait 实现。x86-only 调用在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`（参见 [13-syscall-dispatch.md](../13-syscall-dispatch.md) D6 全局决策）。
 

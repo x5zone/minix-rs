@@ -1,9 +1,10 @@
 //! Architecture-independent exception dispatcher
 //!
 //! Dispatches exceptions based on vector number and fault context.
-//! Page faults are forwarded to VM; user-mode exceptions generate
-//! signals; kernel-mode exceptions in recoverable contexts redirect
-//! execution; all other kernel exceptions panic.
+//! Page faults are forwarded to VM; user-mode #NM triggers the
+//! lazy-FPU trap (FpuTrap); user-mode exceptions generate signals;
+//! kernel-mode exceptions in recoverable contexts redirect execution;
+//! all other kernel exceptions panic.
 //!
 //! # Design decisions (see 14-exception-interrupt.md §3.2, §3.4, §3.5)
 //!
@@ -52,6 +53,11 @@ pub enum ExceptionSignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExceptionOutcome {
     SpuriousNmi,
+    /// User-mode #NM (vector 7): the process touched FPU state while
+    /// CR0.TS was set. The lazy-FPU restore stage acts on this outcome
+    /// (save previous fpu_owner, restore current process, clts).
+    /// C: copr_not_available_handler() — proc.c:1922-1958
+    FpuTrap,
     Signal(ExceptionSignal),
     ForwardToVm(VmPagefaultIn),
     RedirectToRecovery(RecoveryPoint),
@@ -119,6 +125,17 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
             return Self::handle_page_fault(frame, is_nested, is_vm, fault_ctx);
         }
 
+        // User-mode #NM (vector 7) is the lazy-FPU trap: the process touched
+        // FPU state while CR0.TS is set. C intercepts user #NM in the assembly
+        // entry (mpx.S copr_not_available) and performs the lazy FPU restore
+        // in copr_not_available_handler() (proc.c:1922); the Rust dispatcher
+        // returns FpuTrap for the FPU-restore stage to implement (see
+        // 31-fpu-context-switching.md §4.4). Kernel-mode #NM already fell
+        // through to handle_nested() above, matching C's exception_entry_nested.
+        if vector.get() == 7 && is_user {
+            return ExceptionOutcome::FpuTrap;
+        }
+
         if is_user {
             return Self::classify_signal(vector);
         }
@@ -179,7 +196,7 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
 
         // C also checks `catch_pagefaults` counter before recovering;
         // omitted here because FaultContext enum precisely tracks the
-        // recoverable context (see §3.6 in 05-exception-interrupt.md).
+        // recoverable context (see §3.6 in 14-exception-interrupt.md).
         // C: catch_pagefaults && (in_physcopy || in_memset) — exception.c:62-73
         if fault_ctx == FaultContext::PhysCopy || fault_ctx == FaultContext::Memset {
             if is_nested {
@@ -303,6 +320,29 @@ mod tests {
             &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
         );
         assert!(matches!(outcome, ExceptionOutcome::ForwardToVm(_)));
+    }
+
+    #[test]
+    fn user_nm_fpu_trap() {
+        // User-mode #NM → FpuTrap (lazy-FPU restore path).
+        let mut frame = MockFrame { vector: 7, errcode: 0, rip: 0, cs: 0x1B };
+        let outcome = ExceptionDispatcher::<MockFrame>::handle(
+            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+        );
+        assert_eq!(outcome, ExceptionOutcome::FpuTrap);
+    }
+
+    #[test]
+    fn nested_nm_panics() {
+        // Kernel-mode #NM is not a lazy-FPU trap; without an FpuRestore fault
+        // context it panics, matching C's exception_entry_nested path
+        // (mpx.S:537-552). The FpuRestore-fault case is covered separately by
+        // nested_fpu_restore().
+        let mut frame = MockFrame { vector: 7, errcode: 0, rip: 0, cs: 0x08 };
+        let outcome = ExceptionDispatcher::<MockFrame>::handle(
+            &mut frame, true, false, FaultContext::Normal, false, KernTrapStyle::None,
+        );
+        assert!(matches!(outcome, ExceptionOutcome::KernelPanic(_)));
     }
 
     #[test]

@@ -39,18 +39,18 @@ const COM1_MCR_DTR_RTS_OUT2: u8 = 0x0B;
 ///
 /// Must be called only from BSP, before any UART output or
 /// interrupt-driven serial I/O is enabled.
-unsafe fn ser_init() {
+unsafe fn ser_init() { unsafe {
     // SAFETY: COM1_BASE (0x3F8) is a well-known PC I/O port range
     // (Intel IA-PC compatible). outb to these ports is the standard
     // 16550 initialization sequence (Linux `serial8250_init_hw`).
     outb(COM1_BASE + 1, 0x00); // Disable all UART interrupts
     outb(COM1_BASE + 3, COM1_LCR_DLAB); // Enable divisor latch access
-    outb(COM1_BASE + 0, COM1_DIVISOR_115200); // Divisor low = 1
+    outb(COM1_BASE, COM1_DIVISOR_115200); // Divisor low = 1
     outb(COM1_BASE + 1, 0x00); // Divisor high = 0
     outb(COM1_BASE + 3, COM1_LCR_8N1); // 8 bits, no parity, 1 stop, DLAB off
     outb(COM1_BASE + 2, COM1_FCR_ENABLE); // Enable FIFO
     outb(COM1_BASE + 4, COM1_MCR_DTR_RTS_OUT2); // DTR + RTS + OUT2
-}
+}}
 
 /// Write a single byte to COM1, waiting for the transmit buffer to be ready.
 pub fn write_byte(byte: u8) {
@@ -79,15 +79,15 @@ pub fn write_hex(val: u64) {
     }
 }
 
-unsafe fn outb(port: u16, val: u8) {
+unsafe fn outb(port: u16, val: u8) { unsafe {
     asm!("out dx, al", in("dx") port, in("al") val);
-}
+}}
 
-unsafe fn inb(port: u16) -> u8 {
+unsafe fn inb(port: u16) -> u8 { unsafe {
     let val: u8;
     asm!("in al, dx", out("al") val, in("dx") port);
     val
-}
+}}
 
 /// Zero-sized type implementing [`EarlyConsole`] for x86-64.
 pub struct X86_64EarlyConsole;

@@ -4,7 +4,7 @@
 //! CPU context" and "apply that context to a trap frame". Also defines the
 //! shared `load_vm_elf` free function (the three architectures'
 //! implementations were previously byte-for-byte identical — see
-//! `06-design-final.md` §3.1 / §3.2 for the rationale for collapsing the
+//! `06-design.v1.md` §3.1 / §3.2 for the rationale for collapsing the
 //! older 3-trait hierarchy into a single trait + one free function).
 //!
 //! # Why `CpuContextArch` (and not `BootArch`)
@@ -23,7 +23,7 @@
 //! concepts. The Rust side collapses the three into one
 //! `build_cpu_context` (covers reset + init) and one free function
 //! `load_vm_elf` (covers the ELF-loading half of `arch_boot_proc`).
-//! See `06-design-final.md` §3.2 for the full rationale.
+//! See `06-design.v1.md` §3.2 for the full rationale.
 //!
 //! # FPU handling
 //!
@@ -31,7 +31,7 @@
 //! (XSAVE / CPACR_EL1.FPEN / sstatus.FS); they do NOT use the legacy
 //! `fnsave`/`fxrstor` model that Minix3 32-bit code translates through.
 //! FPU policy is a `CpuContext` field that the kernel layer never reads.
-//! See `06-design-final.md` §3.3.
+//! See `06-design.v1.md` §3.3.
 
 use minix_boot::{BootModule, KernelInfo};
 use minix_types::VirBytes;
@@ -111,7 +111,7 @@ pub struct VmLoadResult {
 /// Errors from `load_vm_elf`.
 ///
 /// Replaces the previous "return zero PC and let the caller figure it
-/// out" silent failure (see `06-design-final.md` §12.2).
+/// out" silent failure (see `06-design.v1.md` §12.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmLoadError {
     /// ELF header / magic invalid, or no PT_LOAD segments.
@@ -208,6 +208,9 @@ pub trait CpuContextArch {
     /// correct behavior for all architectures.
     ///
     /// Default: `Err(())` (arch must override to enable T_SETUSER).
+    // TODO(C-D-5): replace `Result<(), ()>` with a named error type
+    // (todo.md §11.4 design-level cleanup — trait contract change).
+    #[allow(clippy::result_unit_err)]
     fn write_user_register(
         _ctx: &mut Self::CpuContext,
         _offset: usize,
@@ -243,7 +246,7 @@ pub trait CpuContextArch {
 /// This is a **free function** rather than a trait method because the
 /// three architecture implementations are byte-for-byte identical
 /// (verified against `os/arch/src/{x86_64,arm64,riscv64}/proc_arch.rs`
-/// prior to refactor — see `06-design-final.md` §3.1 / §3.2). Putting
+/// prior to refactor — see `06-design.v1.md` §3.1 / §3.2). Putting
 /// it in a trait would be false polymorphism.
 ///
 /// # Errors

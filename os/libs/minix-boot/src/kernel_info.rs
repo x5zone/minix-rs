@@ -167,7 +167,7 @@ impl KernelInfo {
 
         // 3. Stack pointer must be 16-byte aligned (AAPCS64 / SysV ABI).
         assert!(
-            self.kern_stack_top.0 % 16 == 0,
+            self.kern_stack_top.0.is_multiple_of(16),
             "KernelInfo: kern_stack_top (0x{:x}) must be 16-byte aligned",
             self.kern_stack_top.0
         );

@@ -237,7 +237,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // overwriting L2 entries (especially on riscv64 where the same
     // VPN[2] slot would be written twice with potentially different
     // page sizes, corrupting the identity mapping).
-    // See 01-bug.md for the full analysis.
+    // See 02-higher-half-kernel.md for the full analysis.
     // R-07 (2026-08-12): Use getter methods (preferred API).
     let kern_virt = kernel_info.kern_virt_base().0;
     let kern_phys = kernel_info.kern_phys_base().0;
@@ -678,9 +678,9 @@ fn init_protection(kernel_info: &KernelInfo) {
 /// Initialize clock and interrupt controller.
 ///
 /// C: init_clock() + intr_init(0) + arch_init() — main.c:403-481
-/// Covered in detail in 04-clock-interrupt-init.md.
+/// Covered in detail in 05-clock-interrupt-init.md.
 ///
-/// **Order matters** (cf. 04-clock-interrupt-init.md §1.1):
+/// **Order matters** (cf. 05-clock-interrupt-init.md §1.1):
 /// 1. `init_timer` MUST run before `intr_init` because the timer
 ///    routes through the interrupt controller (LAPIC LVT / GICv3
 ///    PPI / PLIC external). Initializing the controller with the
@@ -803,7 +803,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // C: schedulable_proc = iskerneln(proc_nr) — main.c:173
         // C: priv(rp)->s_flags = (nr==IDLE ? IDL_F : TSK_F) — main.c:188-189
         // C: TSK_M = NO_M (no IPC), TSK_KC = NO_C (no kernel calls).
-        // 06-design-final.md §3.6 — grant_capability replaces assign_static
+        // 06-design.v1.md §3.6 — grant_capability replaces assign_static
         // + configure_boot_priv pair; template encodes flags + masks by construction.
         let template = if nr == proc_nr::IDLE {
             crate::capability::CapabilityTemplate::Idle
@@ -856,7 +856,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             // C: get_priv(rp, static_priv_id(proc_nr)) — main.c:200
             // C: priv(rp)->s_flags = VM_F (VM) or RSYS_F (RS) — main.c:179-209
             // C: ipc_to_m = SRV_M = ALL_M; kcalls = SRV_KC = ALL_C — main.c:184-213
-            // 06-design-final.md §3.6 — single template call encodes all of these.
+            // 06-design.v1.md §3.6 — single template call encodes all of these.
             let template = if is_vm {
                 crate::capability::CapabilityTemplate::Vm
             } else {
@@ -877,7 +877,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // arch-layer responsibilities — the kernel never inspects
         // the fields.
         //
-        // Process kind mapping (06-design-final.md §3.4):
+        // Process kind mapping (06-design.v1.md §3.4):
         //   VM_PROC_NR    → ProcKind::Vm
         //   RS_PROC_NR    → ProcKind::RootService
         //   other user    → ProcKind::UserService (RS will load ELF later)
@@ -1342,7 +1342,7 @@ static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(Non
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
-/// # Storage (06-design-final.md §4.1)
+/// # Storage (06-design.v1.md §4.1)
 ///
 /// `SyncUnsafeCell` is the Rust 2024 translation of C's BSS `EXTERN` array:
 /// compile-time-fixed address, zero heap, zero runtime overhead, with explicit
@@ -1358,7 +1358,7 @@ static PROC_TABLE: SyncUnsafeCell<crate::proc_table::ProcessTable> = SyncUnsafeC
 
 /// Global privilege table — C's `EXTERN struct priv priv[NR_SYS_PROCS]`.
 ///
-/// Same storage / safety model as `PROC_TABLE`. See `06-design-final.md` §4.1.
+/// Same storage / safety model as `PROC_TABLE`. See `06-design.v1.md` §4.1.
 static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsafeCell::new(crate::kpriv::PrivTable::new());
 
 /// Global IRQ manager — owns the architecture's interrupt controller and
@@ -1873,7 +1873,7 @@ fn bsp_finish_booting(
     //       `IrqManager::register_hook(...)` which is gated on having a
     //       global IrqManager instance (the `IrqManager<IC>` type is
     //       generic over the InterruptController, so it is not yet
-    //       available as a global — see arch-abstractions / 18-syscall-device.md).
+    //       available as a global — see arch-abstractions / 20-syscall-device.md).
     //
     // Implementation status: (a) is done. (b) is deferred until the
     // IrqManager global lands. We re-call `init_timer` here as a no-op
@@ -2165,7 +2165,7 @@ fn switch_to_user() -> ! {
     // does not return. In Rust, we release explicitly before the loop.
     smp::bkl_unlock();
 
-    // First-dispatch hook (06-design-final.md §3.2): apply each boot
+    // First-dispatch hook (06-design.v1.md §3.2): apply each boot
     // process's `cpu_context` to its trap frame once, before the
     // scheduling loop picks the first runnable process. The arch layer
     // owns the trap-frame layout; the kernel only hands it the opaque

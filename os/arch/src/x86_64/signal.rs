@@ -218,47 +218,43 @@ impl SignalContext for X86_64SignalContext {
         info.stkptr = ctx.rsp;
 
         // C: do_sigsend.c:50 — memset(&fr, 0, sizeof(fr))
-        // (Default::default() gives zero-init)
-        let mut sctx = X86_64SigContext::default();
-
-        // C: do_sigsend.c:54-69 — fill segment + GP registers
-        sctx.sc_gs = ctx.gs;
-        sctx.sc_fs = ctx.fs;
-        sctx.sc_es = ctx.es;
-        sctx.sc_ds = ctx.ds;
-        sctx.sc_rdi = ctx.gp_regs[GP_RDI];
-        sctx.sc_rsi = ctx.gp_regs[GP_RSI];
-        sctx.sc_rbp = ctx.gp_regs[GP_RBP];
-        sctx.sc_rbx = ctx.rbx;
-        sctx.sc_rdx = ctx.gp_regs[GP_RDX];
-        sctx.sc_rcx = ctx.gp_regs[GP_RCX];
-        sctx.sc_rax = ctx.gp_regs[GP_RAX];
-        sctx.sc_rip = ctx.rip;
-        sctx.sc_cs = ctx.cs;
-        sctx.sc_rflags = ctx.psw;
-        sctx.sc_rsp = ctx.rsp;
-        sctx.sc_ss = ctx.ss;
-
-        // 64-bit extension registers
-        sctx.sc_r8  = ctx.gp_regs[GP_R8];
-        sctx.sc_r9  = ctx.gp_regs[GP_R9];
-        sctx.sc_r10 = ctx.gp_regs[GP_R10];
-        sctx.sc_r11 = ctx.gp_regs[GP_R11];
-        sctx.sc_r12 = ctx.gp_regs[GP_R12];
-        sctx.sc_r13 = ctx.gp_regs[GP_R13];
-        sctx.sc_r14 = ctx.gp_regs[GP_R14];
-        sctx.sc_r15 = ctx.gp_regs[GP_R15];
-
-        // C: do_sigsend.c:113-115 — sc_mask, sc_flags, sc_magic
-        sctx.sc_mask = info.mask;
-        sctx.sc_flags = 0; // MF_FPU_INITIALIZED handled by caller
-        sctx.sc_magic = SC_MAGIC;
-
-        // C: do_sigsend.c:77 — trap_style from p_seg.p_kern_trap_style
-        // Default to KTS_NONE; caller sets if needed.
-        sctx.trap_style = KTS_NONE;
-
-        sctx
+        // All fields are set below, so no zero-init step is needed.
+        //
+        // C: do_sigsend.c:54-69 — fill segment + GP registers;
+        // :113-115 — sc_mask, sc_flags, sc_magic;
+        // :77 — trap_style (default KTS_NONE; caller sets if needed).
+        X86_64SigContext {
+            sc_gs: ctx.gs,
+            sc_fs: ctx.fs,
+            sc_es: ctx.es,
+            sc_ds: ctx.ds,
+            sc_rdi: ctx.gp_regs[GP_RDI],
+            sc_rsi: ctx.gp_regs[GP_RSI],
+            sc_rbp: ctx.gp_regs[GP_RBP],
+            sc_rbx: ctx.rbx,
+            sc_rdx: ctx.gp_regs[GP_RDX],
+            sc_rcx: ctx.gp_regs[GP_RCX],
+            sc_rax: ctx.gp_regs[GP_RAX],
+            sc_rip: ctx.rip,
+            sc_cs: ctx.cs,
+            sc_rflags: ctx.psw,
+            sc_rsp: ctx.rsp,
+            sc_ss: ctx.ss,
+            // 64-bit extension registers
+            sc_r8: ctx.gp_regs[GP_R8],
+            sc_r9: ctx.gp_regs[GP_R9],
+            sc_r10: ctx.gp_regs[GP_R10],
+            sc_r11: ctx.gp_regs[GP_R11],
+            sc_r12: ctx.gp_regs[GP_R12],
+            sc_r13: ctx.gp_regs[GP_R13],
+            sc_r14: ctx.gp_regs[GP_R14],
+            sc_r15: ctx.gp_regs[GP_R15],
+            // C: do_sigsend.c:113-115 — sc_mask, sc_flags, sc_magic
+            sc_mask: info.mask,
+            sc_flags: 0, // MF_FPU_INITIALIZED handled by caller
+            sc_magic: SC_MAGIC,
+            trap_style: KTS_NONE,
+        }
     }
 
     fn build_sigframe(

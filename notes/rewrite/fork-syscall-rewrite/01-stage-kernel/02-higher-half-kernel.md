@@ -1287,8 +1287,8 @@ map_huge: vaddr=0xffffffc000000000 paddr=0x80000000 size=0x200000 i2=0x100 e2=0x
 - [03-kmain-cstart.md](03-kmain-cstart.md) — kmain 入口后的保护模式初始化
 - [00-kernel-overview.md](00-kernel-overview.md) — 内核整体架构概览
 - [99-global-concepts.md](99-global-concepts.md) — 全局常量和类型定义
-- `os/arch/src/paging.rs` — Paging trait 定义
-- `os/arch/src/direct_map.rs` — Direct Map 地址布局
+- `os/arch/src/arch/paging.rs` — Paging trait 定义
+- `os/arch/src/arch/direct_map.rs` — Direct Map 地址布局
 - `os/arch/src/arch/pte_walk_arch.rs` — `PteWalkArch` trait：跨架构只读 PTE walk（VA→PA），三架构实现（x86_64 4-level / aarch64 4-level / riscv64 Sv39 3-level），通过 `CurrentPteWalk` 类型别名 trait 分发，供 `vm::lookup_in_table` 与跨空间拷贝使用（详见 [18-syscall-copy.md](18-syscall-copy.md) §4.7/§4.8）
 - `os/kernel/src/lib.rs` — arch_boot 入口
 - `os/boot-shim/src/loader.rs` — ELF 加载逻辑

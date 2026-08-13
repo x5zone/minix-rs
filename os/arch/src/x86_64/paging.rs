@@ -52,11 +52,11 @@ fn pd_index(vaddr: u64) -> usize {
     ((vaddr >> PD_SHIFT) & 0x1FF) as usize
 }
 
-unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 { unsafe {
     core::ptr::read_volatile(table.add(idx))
-}
+}}
 
-unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) { unsafe {
     core::ptr::write_volatile(table.add(idx), val);
     // NOTE: invlpg with address 0 is a conservative flush. For intermediate
     // page table entries (PML4/PDPT/PD), no TLB entry exists yet because
@@ -66,7 +66,7 @@ unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
     // flush is effectively a no-op. After boot, map() should use the
     // actual virtual address for correctness.
     asm!("invlpg [{}]", in(reg) 0u64, options(nostack, preserves_flags));
-}
+}}
 
 unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
     phys as *mut u64
@@ -127,9 +127,9 @@ fn phys_to_ptr_dm(phys: u64) -> *mut u64 {
 /// SAFETY: Direct Map must be active; `paddr` must be a valid 8-byte
 /// aligned PTE address.
 #[inline]
-unsafe fn read_pte_dm(paddr: u64) -> u64 {
+unsafe fn read_pte_dm(paddr: u64) -> u64 { unsafe {
     core::ptr::read_volatile(phys_to_ptr_dm(paddr))
-}
+}}
 
 /// Write a PTE at the given physical address via the Direct Map, with
 /// a conservative `invlpg` flush for the affected virtual address.
@@ -139,14 +139,14 @@ unsafe fn read_pte_dm(paddr: u64) -> u64 {
 /// PTE covers (used for TLB invalidation; pass 0 for intermediate
 /// tables where no TLB entry exists yet).
 #[inline]
-unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64) {
+unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64) { unsafe {
     core::ptr::write_volatile(phys_to_ptr_dm(paddr), value);
     // Flush any stale TLB entry for this virtual address. For intermediate
     // table entries (PML4/PDPT/PD), no leaf TLB entry exists yet, so the
     // flush is a conservative no-op. For leaf PTE entries, this ensures
     // stale mappings are evicted.
     asm!("invlpg [{}]", in(reg) vaddr_for_flush, options(nostack, preserves_flags));
-}
+}}
 
 pub struct X86_64Paging {
     root_paddr: u64,
@@ -215,7 +215,7 @@ fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
     }
 
     let pt = pde & ADDR_MASK;
-    let pt_idx = ((vaddr >> 12) & 0x1FF) as u64;
+    let pt_idx = (vaddr >> 12) & 0x1FF;
     let leaf_paddr = pt + pt_idx * 8;
     // SAFETY: see above; PT entry address is within the PT page.
     let pte = unsafe { read_pte_dm(leaf_paddr) };
@@ -320,7 +320,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
         pde & ADDR_MASK
     };
 
-    let pt_idx = ((vaddr >> 12) & 0x1FF) as u64;
+    let pt_idx = (vaddr >> 12) & 0x1FF;
     Ok(pt + pt_idx * 8)
 }
 

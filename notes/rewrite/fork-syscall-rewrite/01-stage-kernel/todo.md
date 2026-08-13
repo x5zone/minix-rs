@@ -131,7 +131,7 @@ test-kernels/
 - **问题**: 三架构的打印和断言逻辑几乎完全相同，只是 `early_console` 模块路径不同。
 - **重复模式**: 打印 `### test-higher-half ###` + 架构名 + kern_virt_base + kern_phys_base + kern_size；验证 KERN_VIRT_BASE 在 `0xFFFF_8000_0000_0000` 范围；验证 kern_phys_base < kern_virt_base；验证 kern_size 是 HUGE_PAGE_SIZE 倍数；打印 PASS/FAIL
 - **修复方案**: 采用方案 A，抽象 `EarlyConsole` trait
-  1. 在 `os/arch/src/early_console.rs` 定义 `EarlyConsole` trait，含 `write_byte` 抽象方法和 `write_str`/`write_hex` 默认方法（统一处理 `\n` → `\r\n` 和十六进制格式）
+  1. 在 `os/arch/src/early_console.rs` 定义 `EarlyConsole` trait，含 `write_byte` 抽象方法和 `write_str`/`write_hex` 默认方法（统一处理 `\n` → `\r\n` 和十六进制格式）（**落地位置更新（2026-08-13）**：trait 最终定义于 `os/plat/src/early_console.rs:14`——plat crate 持有，见 27-kernel-utility.md）
   2. 三架构 `early_console.rs` 各添加 ZST 类型（`X86_64EarlyConsole`/`AArch64EarlyConsole`/`Riscv64EarlyConsole`）实现 `EarlyConsole`
   3. `arch/src/lib.rs` 添加 `CurrentEarlyConsole` type alias，统一导出
   4. `kernel/src/lib.rs` 的 `kmain_verify` 使用 `CurrentEarlyConsole` 统一输出，仅保留 `#[cfg]` 区分寄存器标签（`RSP`/`SP` 等）和架构名，消除全部重复代码块
@@ -142,7 +142,7 @@ test-kernels/
 ### 4.4 [P2] PTE_HUGE_FLAGS 语义不明 — ✅ 已完成
 
 - **类型**: 命名
-- **位置**: `os/arch/src/paging_ext.rs:96`
+- **位置**: `os/arch/src/arch/paging_ext.rs:96`
 - **问题**: `PTE_HUGE_FLAGS: u64 = 0`（riscv64/arm64）或 `1 << 7`（x86_64），命名暗示"大页的 PTE 标志"，实际含义是"需要在 PTE 中额外设置的大页标识位"。
 - **修复**: 采用方案 A，重命名为 `PTE_HUGE_IDENTIFIER_BIT`，并补充文档注释说明各架构取值（x86_64: PS bit `1 << 7`; ARM64/RISC-V: 0）。同时更新了所有文档引用。
 - **验证**: `cargo check -p minix-arch --all-targets --all-features` 通过；`grep PTE_HUGE_FLAGS` 确认代码和文档中无遗漏（仅剩 x86_64/pte.rs 内部常量 `PTE_HUGE`，非 trait 接口）
@@ -521,6 +521,8 @@ rg "^static mut " os/ --type rust -n
 
 **QEMU 测试路径故意走 `QemuVirtDesc` 的代码位置**：
 
+> ⚠️ **RCPD 过时标注（2026-08-13, Task 4 回归）**：下表为 2026-07 分析时的位置清单，行号与文件已过时——`os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs` 已重构删除（`platform_descriptor` 已不在 arch crate）；opensbi/uefi_helpers 行号已漂移。历史记录保留，不再作为有效引用。
+
 | 文件 | 行号 | 上下文 |
 |------|------|--------|
 | `os/boot-shim/src/opensbi_helpers.rs` | 535 | `None, // platform_descriptor` 测试用 `KernelInfo` 构造 |
@@ -711,6 +713,28 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 
 **Blocker Gates**：28/29/30 三文档全部 0/A/B/C/D/D-6/E/G/H PASS
 
+## 15. Task 1 复扫（2026-08-13）：FPU 子系统缺口 → doc 31 + FpuTrap 实现
+
+> 来源：用户任务 1 重新发起——"01~30 文档关联的 rust 实现 vs minix3 C 实现，是否有遗漏？若有，新建 31,32 等补足"。
+> 2026-08-12 的 31+ 决策为"不新建"（ARCH-stub 已分散），本轮按用户要求**重新扫描**（含 28-30 引入后的复扫）。
+
+**执行结果**：
+
+| 项 | 内容 | 状态 |
+|----|------|------|
+| 复扫 | coverage-extract 重跑：1306 C 符号，doc 覆盖 446 (34.2%)，semantic gaps 0 | ✅ |
+| 缺口判定 | 唯一真实 OS 知识点缺口 = **FPU 子系统**（arch_system.c fpu 函数族 / proc.c copr_not_available_handler / exception.c enable+disable_fpu_exception / do_sigsend.c save_fpu 路径在 01-30 全部无文档）；arch/earm + arch/i386 legacy = 范围外（2026-08-12 决策）；prepare_shutdown/debug 工具 = 已记录缺口/琐碎跳过 | ✅ |
+| 新建 doc 31 | `31-fpu-context-switching.md`（Ch1 概念 6 节 / Ch2 C 全析 9 节 / Ch3 设计 6 决策 / Ch4 实现 5 节 / Ch5 测试 / Ch6 参见） | ✅ CONVERGED |
+| 快照 | `31-outline.v1.md` + `31-outline-review.v1.md` + `31-design.v1.md`（Step 0.3 嵌入生成） | ✅ |
+| 代码实现 | **FIX-31-1**：`ExceptionOutcome::FpuTrap` + vector 7 && is_user 特判 + 2 新测试（exception_dispatcher.rs）→ 167/167 tests pass | ✅ |
+| 文档同步 | doc 14 §4.2 分发片段 + §4.5 注释同步 vector 7 特判；dispatcher 过时 doc 引用修复（Pattern #76）；fpu_arch.rs 注释行号修复（Pattern #77，lib.rs:1382→:1805） | ✅ |
+| 显式缺口 | lazy-restore 主体（待异常交付路径接线）+ 信号路径 FPU 保存（D6，Task 3 候选）——31 doc §4.5 标注 | ✅（forward reference 合规） |
+| Blocker Gates | 31 文档 0/A/B/C/D/D-6/E/G/H 全 PASS；VERIFY-CHECK consistency 100% | ✅ |
+
+**遗留债务（本轮记录，不阻塞）**：docs 15/17-27/28/29/30 的 `.design/` 快照缺失
+（前 session 协议未走；28-30 的 review 产物齐全）。已登记批量豁免，Proposal #18
+（Step 0.3.3 批量补齐）待用户确认后统一执行。不可泛化为其他文档免快照（模式 71 DOG）。
+
 **新文档决策摘要**：
 
 | Doc | 决策 | 理由 |
@@ -727,6 +751,58 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 - DEFERRED 函数 — 已在现有文档中标注
 
 **Task 1 状态**：✅ **CONVERGED** — 进入 Task 2（Rust 代码改进扫描）
+
+---
+
+## 16. Task 2 反向覆盖（2026-08-13）：StacktraceArch 零文档缺口 → doc 32
+
+> 来源：用户任务 3——"kernel 相关 Rust 实现（涵盖 OS 知识点）未被 01~30 覆盖？未覆盖则补足"。
+> 方法：`find os/ -name *.rs` × 文档文件名引用交叉（systematic reverse scan）。
+
+**执行结果**：
+
+| 项 | 内容 | 状态 |
+|----|------|------|
+| 反向扫描 | 13 个未覆盖 .rs 文件分类：真实知识点缺口 1（stacktrace.rs）/ 概念已覆盖 4（errno.rs、ipc/notify.rs、types/address.rs、types/com.rs）/ 超出内核范围 4（ipc/kernel.rs 仅 PM 用、ipc/pm.rs、ipc/vfs.rs、types/{id,pid,bitmap}.rs）| ✅ |
+| 缺口判定 | **stacktrace.rs（StacktraceArch，113 行 trait + 2 impl + 默认 walk_frames 实现）有 Rust 实现零文档**——01-30 文件名 0 命中；doc 27 "util_stacktrace 未实现" 仅指内核栈 panic 版本（进程栈 proc_stacktrace 语义未覆盖）。OS 知识点 = 栈回溯机制，非 trivial | ✅ |
+| 新建 doc 32 | `32-stack-tracing.md`（409 行，自包含：Ch1 概念 6 节 / Ch2 C 5 节 / Ch3 设计 D1-D7 / Ch4 实现 5 节 / Ch5 测试 / Ch6 参见）| ✅ CONVERGED |
+| 快照 | `32-outline.v1.md` + `32-outline-review.v1.md` + `32-design.v1.md`（Step 0.3 嵌入生成）| ✅ |
+| 代码实现 | **FIX-32-1**：x86_64/boot.rs 新增 stacktrace_tests 模块 5 测试（链遍历/循环检测/读失败/上限 32/GP_RBP 索引）→ 172/172 tests pass | ✅ |
+| 文档同步 | FIX-32-2 4 处修正（trait span :41-113 / 172 passed 总数 / §5.1 缺 caps_at_max 行 / 测试数表述）| ✅ |
+| Blocker Gates | doc 32 0/A/B/C/D/D-6/E/G/H 全 PASS；VERIFY-CHECK consistency 100%（14 项 grep 重放）| ✅ |
+| 遗留 | ~~riscv64 StacktraceArch impl 缺失~~ → **FIX-32-2 已实现（2026-08-13，boot.rs:182-198，Task 3）**；DIAGCTL STACKTRACE 未接线（syscall.rs:670 ENOSYS，doc §4.5 forward reference）| ⏸ 接线仍遗留 |
+
+**Task 2 状态**：✅ **CONVERGED** — 进入 Task 3（卓越性 2nd-pass）
+
+---
+
+## 17. Task 3 卓越性 2nd-pass（2026-08-13）：clippy 清零 + Pattern #76 全量复扫
+
+> 来源：用户任务 2——"对照 Redox 与 Rust 社区最佳实践，修复所有改进点；修复一项标注一项"。
+> 原则：每个修复标注 ID + file:line + 反查维度；关联文档同步。
+
+**执行结果**：
+
+| 改进项 | 修复内容 | 状态 |
+|--------|---------|------|
+| **FIX-T3-1** clippy E0133 批量 | `minix-plat` 43 处 `unsafe_op_in_unsafe_fn`（Rust 2024）→ `cargo clippy --fix` 包 unsafe block（plat/src/x86_64/early_console.rs ×9 + interrupt.rs ×21 + 其余） | ✅ |
+| **FIX-T3-2** missing_safety_doc | `plat/src/x86_64/interrupt.rs:141-160` `lapic_id`/`ioapic_version` 补 `# Safety` 段（MMIO 地址有效性 + BKL 论证） | ✅ |
+| **FIX-T3-3** unnecessary_parens | `arch/src/x86_64/paging.rs:218,323` `((vaddr >> 12) & 0x1FF)` → `(vaddr >> 12) & 0x1FF` | ✅ |
+| **FIX-T3-4** Default impl | `arch/src/arch/post_init.rs:109-113` `FreePdeSlots` 补 `impl Default`（委托 `Self::new()`，与 FaultContextTracker 模式一致） | ✅ |
+| **FIX-T3-5** doc indent | `arch/src/x86_64/trap_entry.rs:12,14` doc list item 缩进（markdown 续行 4 空格） | ✅ |
+| **FIX-T3-6** same-type cast | `arch/src/x86_64/fpu.rs:102,120` `as *mut u8`/`as *const u8` 移除（as_mut_ptr/as_ptr 已返回目标类型） | ✅ |
+| **FIX-T3-7** field_reassign | `arch/src/x86_64/signal.rs:221-259` `build_sigcontext` 30 字段连续赋值 → struct literal 全字段显式赋值（clippy struct update no effect 证明全覆盖，语义 = 原零初始化 + 赋值） | ✅ |
+| **FIX-T3-8** result_unit_err | `arch/src/arch/clock.rs:142` `init_profile_clock` + `arch/src/arch/boot.rs:211` `write_user_register` → `#[allow(clippy::result_unit_err)]` + TODO(C-D-5) 标注（trait 契约，设计级改动不在此轮） | ✅（allow 标注） |
+| **FIX-T3-9** Pattern #76 复扫 | **90 处 doc 引用失效修复**：`06-design-final.md`×42 → `06-design.v1.md`（章节号验证 D1-D8/§2.x/§3.x/§4.x，5 处不存在章节 §5/§12.5/§12.9/§15.5 → D7/§3.3/§3.10 语义修正）；`15-design.md`×9 → `15-clock-timer.md`；编号漂移×12 类（04-clock→05、19-syscall-device→20、18-syscall-signal→19、18-syscall-device→20、17-syscall-copy→18、16-syscall-process→17、07-scheduling→11、05-exception→14、06-arch-post-init→08、05-proc-init→06、08-vm-boot→09、02-page-table→02-higher-half）；语义映射×3（`03-vm-request`→`24-cross-space-runtime` §2.7/§2.8/§4.3、`08-proc-macros`→`06-proc-init-boot-proc` §3.1/§5.2、`01-bug`→`02-higher-half-kernel` 附录 A） | ✅ |
+| **FIX-T3-10** SAFETY 注释审计 | krandom.rs try_krandom/krandom（BKL 论证 + addr_of_mut!）、misc.rs SPROF statics（BKL 论证）、arm64/smp.rs GICD_BASE（单线程早期启动论证）、boot-shim 3 处 static mut（exactly-once + # Safety）→ 全部论证齐全 | ✅ |
+| G3 信号路径 FPU 保存 | 31 doc §4.5 显式缺口（do_sigsend.c:86 save_fpu 到 sigcontext）——涉及 sigcontext 布局变化 + 传递路径接线 = 设计级新功能 | ⏸ 保持 forward reference（31 doc 已诚实标注，入 backlog） |
+
+**验证（2026-08-13）**：
+- `cargo clippy -p minix-kernel -p minix-arch -p minix-plat -p minix-types -p minix-platform -p minix-boot` → **0 warnings**（除 workspace profiles 配置层）
+- `cargo test` kernel 链全绿：609 kernel + 172 arch + 62 types + 15/17/19/2 其余
+- 全 os/ doc 引用 0 MISSING（文件存在性验证）；riscv64 qemu-tests 编译失败 = 预存在问题（stash 验证，backlog）
+
+**Task 3 状态**：✅ **COMPLETED** — 进入 Task 4（收尾回归 review 01~30）
 
 ---
 
@@ -815,15 +891,19 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 
 **说明**：Round 2 计划是 Phase 4 工作的**子集**。Phase 4 在更广范围完成 clippy 清理（kernel crate 272→0 warnings），因此 Round 2 列出的所有机械项都被一并解决，无需独立执行。
 
-### 11.3 剩余 clippy 警告分布（2026-08-13 状态）
+### 11.3 剩余 clippy 警告分布（2026-08-13 状态 → 2026-08-13 晚 Task 3 清理后）
 
 | Crate | 警告数 | 范围 | 处理建议 |
 |-------|--------|------|----------|
 | `minix-kernel` | **0** | ✅ 已清理 | — |
-| `minix-arch` | 31 | Rust 2024 `unsafe_op_in_unsafe_fn` 迁移（独立任务） | 独立 Round 3（arch 重构） |
-| `minix-types` | 14 | `clippy::all` 基础项 + Rust 2024 unsafe | 独立 Round 4 |
-| `minix-platform` | 2 | 基础项 | 独立 Round 5 |
-| `minix-boot` | 1 | 基础项 | 独立 Round 6 |
+| `minix-arch` | **0** | ✅ 已清理（Task 3：10 处，含 E0133 批量 + 括号/Default/doc-indent/cast/signal struct literal） | — |
+| `minix-plat` | **0** | ✅ 已清理（Task 3：43 处 E0133 unsafe block 批量 + 2 处 # Safety doc） | — |
+| `minix-types` | **0** | ✅ 已清理（Task 2） | — |
+| `minix-platform` | **0** | ✅ 已清理（Task 2） | — |
+| `minix-boot` | **0** | ✅ 已清理（Task 2） | — |
+| `minix-vm` | 116 | VM 服务器 crate（01-stage-kernel 范围外） | backlog（VM stage） |
+
+**验证（2026-08-13）**：`cargo clippy -p minix-kernel -p minix-arch -p minix-plat` → **0 warnings**（除 workspace profiles 配置层警告）。`cargo test` kernel 链全绿（609 kernel + 172 arch + 62 types + 其余）。
 
 ### 11.4 待启动的设计级清理（未来 Round）
 
@@ -835,7 +915,12 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 | C-D-2 | `configure_boot_priv` 参数 struct 化 | 8 个参数 → 2 个小组 | Round 3 完成 |
 | C-D-3 | `proc::from_str` → `FromStr` trait | 实现标准 trait，类型变化 | 无 |
 | C-D-4 | `syscall_copy` if_same_then_else 调查 | 确认 C 行为，合并 or 显式 `#[allow]` | 无 |
-| C-D-5 | `Result<(), ()>` → 自定义错误类型 | `vm::enqueue_and_notify` / `clock::init_profile_clock` | 无 |
+| C-D-5 | `Result<(), ()>` → 自定义错误类型 | `vm::enqueue_and_notify` / `clock::init_profile_clock` / **`arch::clock::init_profile_clock` / `arch::boot::write_user_register`（Task 3 已 `#[allow(clippy::result_unit_err)]` + TODO 标注）** | 无 |
+
+**Task 3 补充记录（2026-08-13，kernel 链 clippy 清零）**：
+- 修复项：`plat` E0133×43（--fix 批量包 unsafe block）+ `plat` missing_safety_doc×2（interrupt.rs lapic_id/ioapic_version 加 # Safety）+ `arch` 括号×2（paging.rs:218/323）+ `arch` FreePdeSlots Default（post_init.rs）+ `arch` doc-indent×2（trap_entry.rs）+ `arch` same-type cast×2（fpu.rs:102/120）+ `arch` field_reassign→struct literal（signal.rs build_sigcontext，含移除无效 `..Default::default()`）
+- 语义验证：signal.rs struct literal 全字段显式赋值 = 原 memset 零初始化 + 赋值（clippy struct update no effect 证明字段全覆盖）；所有修复 `cargo test` kernel 链全绿
+- 未修（设计级，已 allow 标注）：`Result<(), ()>`×2（arch clock/boot trait 契约，C-D-5）
 
 ### 11.5 重启 Round 2 的方式
 
@@ -846,3 +931,38 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 4. 执行后删除本章节（任务结束）
 
 **Action Item**：本节保留至所有 Round 完成
+
+## 18. Task 4 收尾回归（2026-08-13）：17 项 doc 引用修复 + 全量回归验证
+
+**范围**：回归 review 01-30 文档 + 关联 Rust 实现的收尾。发现并修复 17 项 P2 doc 引用漂移/状态过时（无 P0/P1 新发现）。
+
+**修复清单**（ID + file:line + 反查维度）：
+
+| # | ID | 文件:行 | 修复 | 反查维度 |
+|---|-----|--------|------|---------|
+| 1 | FIX-T4-1 | 04-platform-discovery.md:397/401 | `clock.rs:182` → `:72`（ClockArch trait 实际定义位置）| 维度1 outline↔doc |
+| 2 | FIX-T4-2 | 04-platform-discovery.md:401 | `interrupt.rs:128` → `:129`（InterruptController trait）| 维度1 |
+| 3 | FIX-T4-3 | 04-platform-discovery.md:432 | `boot.rs:386` → `:443`（platform_sources fixture）| 维度5 doc↔code |
+| 4 | FIX-T4-4 | 04-platform-discovery.md:432 | lib.rs fixture 行号 8 处 → :2265/2329/2411/2506/2537/2778/2802/2826 | 维度5 |
+| 5 | FIX-T4-5 | 04-platform-discovery.md:432 | helpers 329/569 描述修正：生产构造函数参数（uefi:228/opensbi:432），非测试 fixture | 维度5（事实纠正）|
+| 6 | FIX-T4-6 | 09-vm-boot-protocol.md:503 | `boot.rs:287-323` → `:290-326`（identity mapping，本 session +3 引入）| 维度6 元层 |
+| 7 | FIX-T4-7 | 25-misc-unported.md:708 | `boot.rs:211` → `:214`（write_user_register，本 session +3）| 维度6 |
+| 8 | FIX-T4-8 | 02-higher-half-kernel.md:1290 | `os/arch/src/paging.rs` → `os/arch/src/arch/paging.rs` | 维度5 |
+| 9 | FIX-T4-9 | 02-higher-half-kernel.md:1291 | `direct_map.rs` 补 `arch/` 前缀 | 维度5 |
+| 10 | FIX-T4-10 | 18-syscall-copy.md:607 | 同上 | 维度5 |
+| 11 | FIX-T4-11 | 20-syscall-device.md:119 | `os/arch/src/x86_64/port_io.rs` → `os/plat/src/x86_64/port_io.rs`（crate 错位）| 维度5 |
+| 12 | FIX-T4-12 | 01-boot-shim-bootstrap.md:1727 | `os/kernel/src/main.rs` 虚构路径 → panic=abort（Cargo.toml:32/37）+ EarlyConsole（plat）准确描述 | 维度5（虚构位置）|
+| 13 | FIX-T4-13 | todo.md:145 | `paging_ext.rs` 补 `arch/` 前缀 | 维度5 |
+| 14 | FIX-T4-14 | todo.md §4.3 | EarlyConsole 落地位置标注（方案 arch → 实际 plat）| 维度6 |
+| 15 | FIX-T4-15 | todo.md §11.2 | RCPD 过时标注（proc_arch.rs ×3 已删 + helpers 行号漂移，Pattern #66）| 维度6 |
+| 16 | FIX-T4-16 | checklist.md | syscall_signal.rs 10 处行号 → :107/266/348/437/615（perl 负向前瞻保护 P1-07/P1-08 历史记录）| 维度5 |
+| 17 | FIX-T4-17 | checklist.md F-20/F-21 | ⚠️ Partial → ✅ Complete（2026-08-01 已落地 data_copy_vmcheck + sigframe）| 维度5（状态过时）|
+
+**最终回归验证**（2026-08-13）：
+- `cargo build`：✅（minix-vm 116 warnings = 已知 backlog，VM stage 范围外）
+- `cargo clippy` kernel 链 6 crates：✅ 0 warnings（仅 workspace profiles 配置噪音）
+- `cargo test` kernel 链：**894 passed, 0 failed**（kernel 609 + arch 172 + plat 19 + types 62 + platform 15 + boot 17）
+- RCPD 复扫（Pattern #66）：100 unique `os/` 路径，5 missing 全部处置（trap_return.rs forward reference 合规 ×1 + todo.md §11.2 RCPD 标注 ×4）
+- 收敛成本评估：触发 Step 7.1 停止规则 4（zero-bias——本回归 0 新 P0/P1，仅 P2 引用修复）
+
+**backlog**（移出 Task 4 范围）：minix-vm 116 clippy warnings + riscv64 qemu-tests 编译失败（预先存在 ~250 errors）+ docs 15/17-27/28/29/30 `.design/` 快照缺失（Proposal #18 待用户确认）+ G3 信号路径 FPU 保存（doc 31 §4.5 forward reference）+ DIAGCTL STACKTRACE 接线（syscall.rs:670 ENOSYS）+ C-D-1~5 design-level cleanups（§11.4）。

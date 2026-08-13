@@ -3,7 +3,7 @@
 //! Implements `ExceptionArch` for x86-64, providing exception frame parsing
 //! and fault recovery point manipulation.
 //!
-//! # 64-bit long mode changes (see 05-exception-interrupt.md §3.7)
+//! # 64-bit long mode changes (see 14-exception-interrupt.md §3.7)
 //!
 //! - Exception frame fields are 64-bit (RIP, RFLAGS, RSP vs EIP, EFLAGS, ESP)
 //! - CPU always pushes SS/RSP on privilege level change (even in 64-bit mode)

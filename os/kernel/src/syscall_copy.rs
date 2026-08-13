@@ -14,7 +14,7 @@
 //! - `do_memset.c` — SYS_MEMSET
 //! - `do_safememset.c` — SYS_SAFEMEMSET
 //!
-//! # Design Decisions (17-syscall-copy.md §3)
+//! # Design Decisions (18-syscall-copy.md §3)
 //!
 //! - **D1**: Direct Map replaces createpde + lin_lin_copy
 //! - **D3**: `GrantVerifyResult` struct for verify_grant output

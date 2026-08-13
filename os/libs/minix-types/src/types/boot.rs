@@ -97,7 +97,11 @@ impl BootImage {
     }
 
     pub fn name(&self) -> &str {
-        let len = self.proc_name.iter().position(|&b| b == 0).unwrap_or(PROC_NAME_LEN);
+        let len = self
+            .proc_name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(PROC_NAME_LEN);
         core::str::from_utf8(&self.proc_name[..len]).unwrap_or("<invalid>")
     }
 }

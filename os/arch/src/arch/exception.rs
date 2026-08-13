@@ -165,6 +165,12 @@ pub struct FaultContextTracker {
     context: FaultContext,
 }
 
+impl Default for FaultContextTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FaultContextTracker {
     pub const fn new() -> Self {
         Self {

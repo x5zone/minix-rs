@@ -66,7 +66,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
 
     /// Initialize the FPU for the current CPU.
     ///
-    /// Called once during `bsp_finish_booting()` (kernel/src/lib.rs:1382)
+    /// Called once during `bsp_finish_booting()` (kernel/src/lib.rs:1805)
     /// and during AP boot (`smp.rs::start_ap`).
     ///
     /// C: `fpu_init()` — fpu.c (x86) / fpu_asm.S (ARM)

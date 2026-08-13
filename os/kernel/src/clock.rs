@@ -15,7 +15,7 @@
 //! - `do_vtimer.c:81-103` — `vtimer_check()`: virtual/profile timer expiry
 //! - `arch_clock.c:326-330` (i386) — `context_stop()` (context switch path): quantum decrement
 //!
-//! # Design Decisions (15-design.md §3)
+//! # Design Decisions (15-clock-timer.md §3)
 //!
 //! - **D1**: `ClockState` struct encapsulates `kclockinfo` + `kloadinfo` + `clock_timers`
 //! - **D2**: `TimerQueue` = `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>`
@@ -370,7 +370,7 @@ pub fn ack_profile_clock() {
 /// Quantum decrement is **NOT** in `ClockState::tick()` — it lives here,
 /// mirroring C's separation of `timer_int_handler()` (software tick, clock.c:70-173)
 /// from `context_stop()` (context switch path, arch_clock.c:208-349). See
-/// 15-design.md §3.9 and 15-clock-timer.md §4.9.
+/// 15-clock-timer.md §3.9 and 15-clock-timer.md §4.9.
 ///
 /// # Returns
 ///
@@ -495,7 +495,7 @@ const LOAD_HISTORY: usize = 12;
 /// `TimerId` is allocated by `ClockState::set_timer()` and returned to the
 /// caller, who must store it to later call `ClockState::reset_timer(id)`.
 ///
-/// See 15-design.md §2.2 (D3).
+/// See 15-clock-timer.md §2.2 (D3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TimerId(u64);
 
@@ -560,7 +560,7 @@ pub struct TimerEntry {
 /// silently overwrote timers with the same `exp_time` (C's linked list
 /// supports multiple timers at the same expiration time).
 ///
-/// See 15-design.md §2.3 (D2).
+/// See 15-clock-timer.md §2.3 (D2).
 #[derive(Debug, Default)]
 struct TimerQueue {
     /// Sorted by (exp_time, id) — supports O(k log N) expiry scan.
@@ -885,7 +885,7 @@ impl ClockState {
     /// instance's `is_bsp = true`. The caller must pass the billable process
     /// if the current process is not billable (D10).
     ///
-    /// See 15-design.md §4.1.
+    /// See 15-clock-timer.md §4.1.
     pub fn tick_bsp(
         &mut self,
         current_proc: &mut KProcess,

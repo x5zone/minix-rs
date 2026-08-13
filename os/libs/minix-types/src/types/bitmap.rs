@@ -34,7 +34,7 @@
 /// Maximum bitmap size (bits).
 pub const MAX_BITMAP_BITS: usize = 512;
 /// Maximum bitmap bytes.
-pub const MAX_BITMAP_BYTES: usize = (MAX_BITMAP_BITS + 7) / 8;
+pub const MAX_BITMAP_BYTES: usize = MAX_BITMAP_BITS.div_ceil(8);
 
 /// Generic bitmap.
 ///
@@ -118,7 +118,7 @@ impl Bitmap {
     /// assert_eq!(bm.byte_size(), 32);
     /// ```
     pub const fn byte_size(&self) -> usize {
-        (self.size + 7) / 8
+        self.size.div_ceil(8)
     }
 
     /// Gets the bit value at the specified position.
@@ -139,7 +139,12 @@ impl Bitmap {
     /// ```
     #[inline]
     pub fn get(&self, index: usize) -> bool {
-        assert!(index < self.size, "index {} out of bounds (size: {})", index, self.size);
+        assert!(
+            index < self.size,
+            "index {} out of bounds (size: {})",
+            index,
+            self.size
+        );
         (self.bits[index / 8] >> (index % 8)) & 1 != 0
     }
 
@@ -162,7 +167,12 @@ impl Bitmap {
     /// ```
     #[inline]
     pub fn set(&mut self, index: usize, value: bool) {
-        assert!(index < self.size, "index {} out of bounds (size: {})", index, self.size);
+        assert!(
+            index < self.size,
+            "index {} out of bounds (size: {})",
+            index,
+            self.size
+        );
         if value {
             self.bits[index / 8] |= 1 << (index % 8);
         } else {

@@ -99,7 +99,7 @@ impl FpuArch for X86_64FpuArch {
         // SAFETY: `dst` is 16-byte aligned (repr(C, align(16))).
         // Caller must hold BKL (interrupts disabled).
         unsafe {
-            let ptr = dst.data.as_mut_ptr() as *mut u8;
+            let ptr = dst.data.as_mut_ptr();
             core::arch::asm!(
                 "fxsave [{ptr}]",
                 ptr = in(reg) ptr,
@@ -117,7 +117,7 @@ impl FpuArch for X86_64FpuArch {
         // (previously saved or zero-initialized).
         // Caller must hold BKL.
         unsafe {
-            let ptr = src.data.as_ptr() as *const u8;
+            let ptr = src.data.as_ptr();
             core::arch::asm!(
                 "fxrstor [{ptr}]",
                 ptr = in(reg) ptr,

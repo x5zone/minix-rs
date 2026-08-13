@@ -46,7 +46,7 @@ const PROC_STOP_BITS: u32 = 0x02;
 /// Contains all process slots (kernel tasks + user processes) and the scheduler.
 /// All methods require the caller to hold the BKL (see module-level documentation).
 ///
-/// # Storage (06-design-final.md §4.1)
+/// # Storage (06-design.v1.md §4.1)
 ///
 /// `procs` is a fixed-size array `[KProcess; PROC_TABLE_SIZE]`, NOT a
 /// `Box<[KProcess]>`. This eliminates heap allocation in the boot phase
@@ -71,7 +71,7 @@ impl ProcessTable {
     /// compatible). The IDLE process name is set via `ProcName::from_array`
     /// (const fn — `from_str` is not const).
     ///
-    /// See `06-design-final.md` §4.1.
+    /// See `06-design.v1.md` §4.1.
     pub const fn new() -> Self {
         let mut procs = [const { KProcess::new_zeroed() }; PROC_TABLE_SIZE];
         let mut i = 0;
@@ -101,7 +101,7 @@ impl ProcessTable {
 
     /// Get a process by its logical process number.
     /// C: `proc_addr(n)` — but C version returns a raw pointer without bounds checking.
-    /// Rust returns `Option` to enforce safety (08-proc-macros.md §3.1).
+    /// Rust returns `Option` to enforce safety (06-proc-init-boot-proc.md §3.1).
     pub fn get(&self, nr: ProcNr) -> Option<&KProcess> {
         let idx = nr_to_idx(nr)?;
         Some(&self.procs[idx])
@@ -154,20 +154,20 @@ impl ProcessTable {
 
     /// Check if a process number is valid (within the process table range).
     /// C: `isokprocn(n)` — `(unsigned)((n) + NR_TASKS) < NR_PROCS + NR_TASKS`
-    /// Rust uses `nr_to_idx` internally (08-proc-macros.md §3.1).
+    /// Rust uses `nr_to_idx` internally (06-proc-init-boot-proc.md §3.1).
     pub fn is_valid_nr(nr: ProcNr) -> bool {
         nr_to_idx(nr).is_some()
     }
 
     /// Check if a process slot is free (SLOT_FREE flag set).
     /// C: `isemptyn(n)` = `isemptyp(proc_addr(n))` = `(p->p_rts_flags == RTS_SLOT_FREE)`
-    /// (08-proc-macros.md §3.7)
+    /// (06-proc-init-boot-proc.md §3.1)
     pub fn is_empty(&self, nr: ProcNr) -> bool {
         self.get(nr).is_some_and(|p| p.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE)
     }
 
     /// Check if a process number belongs to a kernel task.
-    /// C: `iskerneln(n)` = `((n) < 0)` (08-proc-macros.md §3.1)
+    /// C: `iskerneln(n)` = `((n) < 0)` (06-proc-init-boot-proc.md §3.1)
     pub fn is_kernel(nr: ProcNr) -> bool {
         nr.0 < 0
     }
@@ -316,7 +316,7 @@ impl ProcessTable {
     }
 
     /// Iterate over all process slots (kernel tasks + user processes).
-    /// C: `for (p = BEG_PROC_ADDR; p < END_PROC_ADDR; p++)` (08-proc-macros.md §3.2)
+    /// C: `for (p = BEG_PROC_ADDR; p < END_PROC_ADDR; p++)` (06-proc-init-boot-proc.md §3.2)
     pub fn iter(&self) -> impl Iterator<Item = &KProcess> {
         self.procs.iter()
     }
@@ -1021,12 +1021,12 @@ impl ProcessTable {
 /// Kernel tasks (nr < 0) map to indices 0..NR_TASKS-1.
 /// User processes (nr >= 0) map to indices NR_TASKS..NR_TASKS+NR_PROCS-1.
 ///
-/// See 08-proc-macros.md §3.6 for design rationale.
+/// See 06-proc-init-boot-proc.md §3.6 for design rationale.
 #[inline]
 /// Convert a process number to a process table index.
 ///
 /// C: `proc_addr(n)` returns `&proc[NR_TASKS + n]` — but Rust returns
-/// `Option<usize>` for bounds safety (08-proc-macros.md §3.1).
+/// `Option<usize>` for bounds safety (06-proc-init-boot-proc.md §3.1).
 ///
 /// FIX-21 (Phase 1C): made `pub(crate)` so `syscall::dispatch_ipc_entry`
 /// and `syscall::dispatch_ipc` can compute caller_idx without taking a
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_process_table_const_init_per_slot_nr() {
-        // 06-design-final.md §4.1: ProcessTable is `const fn`-initialized
+        // 06-design.v1.md §4.1: ProcessTable is `const fn`-initialized
         // with each slot's `p_nr = i - NR_TASKS` and `p_endpoint` set.
         let table = ProcessTable::new();
         for i in 0..PROC_TABLE_SIZE {
@@ -1274,7 +1274,7 @@ mod tests {
         assert!(table.get(nr).unwrap().is_runnable());
     }
 
-    // ── 08-proc-macros.md §5: Proc access macro tests ──
+    // ── 06-proc-init-boot-proc.md §5.2: Proc access macro tests ──
 
     /// §5.1: Boundary validation — is_valid_nr edge cases.
     #[test]

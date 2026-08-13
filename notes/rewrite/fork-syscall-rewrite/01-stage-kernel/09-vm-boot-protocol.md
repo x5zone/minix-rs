@@ -500,7 +500,7 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 **关键设计**：
 1. **复用 bootstrap 页表**：不在 boot 期为 VM 单独构造页表，而是把 ELF 段映射进 `arch_boot_impl` 创建并已激活的 bootstrap 页表。VM 接管这个根作为自己的初始根。VMCTL SetAddrSpace 后续会替换为 VM 自建的页表（经 `TlbArch::set_active_root` 写硬件）。
-2. **identity mapping**：`load_vm_elf` 用 VA=PA 1:1 映射段（[arch/boot.rs:287-323](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)），与 bootstrap 页表的低地址 identity mapping 一致。
+2. **identity mapping**：`load_vm_elf` 用 VA=PA 1:1 映射段（[arch/boot.rs:290-326](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)），与 bootstrap 页表的低地址 identity mapping 一致。
 3. **p_seg 同步**：VM 的 `p_seg.phys_root`/`virt_root` 记录为 bootstrap 根，使 `init_post_and_memory` 能从 `proc_table.get(VM_PROC_NR).p_seg` 读出根地址并交给 `CurrentPostInitArch::set_ptproc`。
 4. **module 内存回收**：ELF 段复制进页表后立即 `add_memmap` 回收 module 物理内存，与 mock 路径和 C 行为一致（`protect.c:450-451`）。
 

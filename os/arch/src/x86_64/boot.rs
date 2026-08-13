@@ -41,8 +41,10 @@ const USER_DS_SELECTOR: u64 = 0x23;
 
 /// x86-64 FPU init policy (arch-internal; kernel layer never reads).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 enum X86FpuInitPolicy {
     /// Kernel task: shares the kernel FPU context, no per-process init.
+    #[default]
     KernelTask,
     /// User process: XSAVE area is allocated lazily on first FP
     /// instruction (the modern XSAVE model — NOT Minix3's
@@ -50,11 +52,6 @@ enum X86FpuInitPolicy {
     LazyUserInit,
 }
 
-impl Default for X86FpuInitPolicy {
-    fn default() -> Self {
-        Self::KernelTask
-    }
-}
 
 impl X86FpuInitPolicy {
     /// Const-constructible default (for `const fn` CpuContext init).
@@ -173,7 +170,7 @@ impl CpuContextArch for X86_64CpuContextArch {
         ctx.psw |= 0x3000;
     }
 
-    /// Inherit FPU init policy from parent on fork (06-design-final.md §15.5).
+    /// Inherit FPU init policy from parent on fork (06-design.v1.md §D7).
     ///
     /// x86-64: the child inherits the parent's `X86FpuInitPolicy` so that
     /// a forked user process keeps `LazyUserInit` (rather than silently
@@ -211,7 +208,7 @@ impl CpuContextArch for X86_64CpuContextArch {
     ) -> Result<(), ()> {
         // Alignment: C checks `tr_addr & (sizeof(reg_t)-1)`.
         // On 64-bit, reg_t = u64, so offset must be 8-byte aligned.
-        if offset % 8 != 0 {
+        if !offset.is_multiple_of(8) {
             return Err(());
         }
         match offset {
@@ -364,5 +361,97 @@ impl StacktraceArch for X86_64CpuContextArch {
     fn program_counter(cpu_context: &X86_64CpuContext) -> u64 {
         // C: whichproc->p_reg.pc — x86-64 stores RIP as a named field.
         cpu_context.rip
+    }
+}
+#[cfg(test)]
+mod stacktrace_tests {
+    use super::*;
+    use crate::arch::stacktrace::{StacktraceArch, MAX_STACK_FRAMES};
+
+    /// Look up a word in a fake stack slice: `(addr, value)` pairs.
+    /// Returns `None` for addresses not present (simulates an unmapped
+    /// frame — C's PRCOPY failure path, exception.c:297-302).
+    fn read_from(stack: &[(u64, u64)]) -> impl Fn(u64) -> Option<u64> + '_ {
+        move |addr| stack.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v)
+    }
+
+    /// C: proc_stacktrace_execute — chain walk emits pc + each return address.
+    #[test]
+    fn test_stacktrace_walk_frames_emits_pc_and_chain() {
+        let mut ctx = X86_64CpuContext::new();
+        ctx.rip = 0x1000;
+        ctx.gp_regs[5] = 0x2000; // GP_RBP (signal.rs:38)
+        // Fake stack:
+        //   [0x2000]=0x4000 saved_fp   [0x2008]=0x5000 return_addr
+        //   [0x4000]=0x0    saved_fp   [0x4008]=0x6000 return_addr (stack bottom)
+        let stack = [
+            (0x2000u64, 0x4000u64), (0x2008u64, 0x5000u64),
+            (0x4000u64, 0x0000u64), (0x4008u64, 0x6000u64),
+        ];
+        let mut emitted = [0u64; 8];
+        let mut n = 0usize;
+        X86_64CpuContextArch::walk_frames(&ctx, read_from(&stack), |pc| {
+            emitted[n] = pc;
+            n += 1;
+        });
+        assert_eq!(&emitted[..n], &[0x1000, 0x5000, 0x6000]);
+    }
+
+    /// C: `v_hbp <= v_bp` cycle guard (exception.c:310-312) — stop, do not loop.
+    #[test]
+    fn test_stacktrace_walk_frames_stops_on_cycle() {
+        let mut ctx = X86_64CpuContext::new();
+        ctx.rip = 0x1000;
+        ctx.gp_regs[5] = 0x2000;
+        // Backward jump: saved_fp (0x1000) < current fp (0x2000) → corrupt.
+        let stack = [(0x2000u64, 0x1000u64), (0x2008u64, 0x5000u64)];
+        let mut n = 0usize;
+        X86_64CpuContextArch::walk_frames(&ctx, read_from(&stack), |_| n += 1);
+        assert_eq!(n, 2, "pc + one frame, then stop on cycle");
+    }
+
+    /// C: PRCOPY failure terminates the walk (exception.c:297-305).
+    #[test]
+    fn test_stacktrace_walk_frames_stops_on_fault() {
+        let mut ctx = X86_64CpuContext::new();
+        ctx.rip = 0x1000;
+        ctx.gp_regs[5] = 0x2000;
+        // saved_fp readable, return_addr slot unmapped → stop.
+        let stack = [(0x2000u64, 0x4000u64)];
+        let mut n = 0usize;
+        X86_64CpuContextArch::walk_frames(&ctx, read_from(&stack), |_| n += 1);
+        assert_eq!(n, 1, "only pc emitted; fault stops before emitting");
+    }
+
+    /// C: `n > 50` truncation (exception.c:313-316) — Rust caps at 32 (D4).
+    #[test]
+    fn test_stacktrace_walk_frames_caps_at_max() {
+        let mut ctx = X86_64CpuContext::new();
+        ctx.rip = 0x1000;
+        ctx.gp_regs[5] = 0x2000;
+        // Computed fake stack: every frame advances fp by 0x10 forever.
+        let mut emitted = 0usize;
+        X86_64CpuContextArch::walk_frames(
+            &ctx,
+            |addr| {
+                if addr % 0x10 == 0 {
+                    Some(addr + 0x10) // saved_fp
+                } else {
+                    Some(0x3000 + addr / 0x10) // return_addr
+                }
+            },
+            |_| emitted += 1,
+        );
+        // MAX_STACK_FRAMES caps the TOTAL emitted frames (pc + frames).
+        assert_eq!(emitted, MAX_STACK_FRAMES, "pc + (MAX-1) walk frames");
+    }
+
+    /// C: `p_reg.fp` — x86-64 stores RBP at gp_regs[GP_RBP=5].
+    #[test]
+    fn test_stacktrace_frame_pointer_uses_gp_regs_5() {
+        let mut ctx = X86_64CpuContext::new();
+        ctx.gp_regs[5] = 0xdead_beef;
+        assert_eq!(X86_64CpuContextArch::frame_pointer(&ctx), 0xdead_beef);
+        assert_eq!(X86_64CpuContextArch::program_counter(&ctx), 0);
     }
 }

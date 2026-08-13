@@ -237,7 +237,7 @@ pub fn dispatch_setalarm(
 
         // Remove existing timer if any, then set the new one.
         // D3: set_timer returns a TimerId that must be stored for later
-        // reset_timer(id) (15-design.md §4.4).
+        // reset_timer(id) (15-clock-timer.md §4.4).
         let kpriv = priv_table.get_mut(caller_priv_id);
         if let Some(kpriv) = kpriv {
             if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {

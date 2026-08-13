@@ -231,6 +231,7 @@ GRUB 跳转到 cstart(magic, ebx)
 ### 3.9 阶段 9：内核基础设施与调试工具（26~30）
 
 > **2026-08-12 新增**: 26-30 覆盖非主线叙事的内核基础设施——watchdog、utility、usermapped-data、debug、profile。这些是内核"正常运行"之外的工具：lockup 检测、错误报告、用户可见数据、调试验证、性能采样。
+> **2026-08-13 新增**: 31 覆盖 FPU 子系统——lazy 上下文切换 + #NM 陷阱路径（2026-08-13 Task 1 复扫发现的唯一真实 OS 知识点缺口，详见 [31-fpu-context-switching.md](31-fpu-context-switching.md)）。
 
 | 编号 | 文档 | 覆盖的 C 源文件 | 角色 |
 |------|------|---------------|------|
@@ -239,6 +240,7 @@ GRUB 跳转到 cstart(magic, ebx)
 | 28 | [usermapped-data](28-usermapped-data.md) | usermapped_data.c + arch/i386/usermapped_data_arch.c | `.usermapped` 段机制——用户可见内核数据（WONTFIX：64-bit 不保留） |
 | 29 | [kernel-debug](29-kernel-debug.md) | debug.c | 调试基础设施——runqueues_ok/rtsflagstr/BKL timing（Partial+：runqueues_ok/print_proc 已实现，BKL timing 用 debug_assert! 替代） |
 | 30 | [kernel-profile](30-kernel-profile.md) | profile.c | 统计 profile——采样时钟 + NMI profiling（Partial+：clock interface + sample collection 已实现，NMI WONTFIX） |
+| 31 | [fpu-context-switching](31-fpu-context-switching.md) | arch/i386/arch_system.c（fpu 函数族）+ proc.c（copr_not_available_handler）+ exception.c + mpx.S + do_sigsend.c | FPU 上下文切换——lazy 模型 + CR0.TS/#NM 陷阱路径 + fpu_owner 协议（完整覆盖；FpuTrap 分发已实现，lazy-restore 主体与信号路径保存为显式缺口） |
 
 ### 3.10 补充：全局概念
 

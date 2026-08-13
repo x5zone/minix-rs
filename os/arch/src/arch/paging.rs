@@ -432,7 +432,7 @@ pub fn clone_range<P: Paging>(
     let page_size = P::PAGE_SIZE as u64;
 
     // Validate alignment
-    if start.0 % page_size != 0 || end.0 % page_size != 0 {
+    if !start.0.is_multiple_of(page_size) || !end.0.is_multiple_of(page_size) {
         return Err(PageTableError::InvalidAddress);
     }
 
@@ -742,7 +742,7 @@ pub mod mock {
             let v = vaddr.0;
             let p = paddr.0;
 
-            if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
+            if !v.is_multiple_of(Self::PAGE_SIZE as u64) || !p.is_multiple_of(Self::PAGE_SIZE as u64) {
                 return Err(PageTableError::InvalidAddress);
             }
 
@@ -760,7 +760,7 @@ pub mod mock {
             let v = vaddr.0;
             let p = paddr.0;
 
-            if v % Self::PAGE_SIZE as u64 != 0 || p % Self::PAGE_SIZE as u64 != 0 {
+            if !v.is_multiple_of(Self::PAGE_SIZE as u64) || !p.is_multiple_of(Self::PAGE_SIZE as u64) {
                 return Err(PageTableError::InvalidAddress);
             }
 
@@ -772,7 +772,7 @@ pub mod mock {
         fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
             let v = vaddr.0;
 
-            if v % Self::PAGE_SIZE as u64 != 0 {
+            if !v.is_multiple_of(Self::PAGE_SIZE as u64) {
                 return Err(PageTableError::InvalidAddress);
             }
 
@@ -850,9 +850,9 @@ pub mod mock {
 
         fn free_asid(&self, _id: MockAsid) {}
 
-        unsafe fn switch_with_asid(&self, _id: MockAsid) {
+        unsafe fn switch_with_asid(&self, _id: MockAsid) { unsafe {
             self.switch();
-        }
+        }}
 
         unsafe fn flush_tlb_asid(&self, _id: MockAsid) {}
 

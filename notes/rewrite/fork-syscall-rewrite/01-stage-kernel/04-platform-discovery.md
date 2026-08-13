@@ -394,11 +394,11 @@ impl ClockArch for Riscv64ClockArch {
 
 | trait | 实例字段 | 构造参数 |
 |-------|---------|---------|
-| `ClockArch`（clock.rs:182） | `mtime_addr` / `lapic_base` / 等 | `&dyn TimerDesc` |
+| `ClockArch`（clock.rs:72） | `mtime_addr` / `lapic_base` / 等 | `&dyn TimerDesc` |
 | `InterruptController`（interrupt.rs） | `gicd_base` / `plic_base` / 等 | `&dyn InterruptControllerDesc` |
 | `ArchInit`（arch_init.rs:47-61） | 架构相关 misc 参数 | `&ArchMiscDesc` |
 
-参见 `os/arch/src/arch/clock.rs:182` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:128` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:47-61` 定义 `ArchInit` trait。
+参见 `os/arch/src/arch/clock.rs:72` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:129` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:47-61` 定义 `ArchInit` trait。
 
 ### 3.5 全局存储为什么用 `AssumeSyncCell` 而非 `Mutex`/`static mut`
 
@@ -429,7 +429,7 @@ impl ClockArch for Riscv64ClockArch {
 > - `os/libs/minix-platform/src/acpi.rs:549` `fn test_parse_synthetic_acpi` 用合成的 RSDP→XSDT→MADT 字节链验证完整 ACPI 解析
 > - `os/arch/tests/qemu_test_x86_64.sh` 等 QEMU 集成测试通过 GDB checkpoint 验证 `init_clock_and_interrupts`，**必然**触发 `platform::init_from_kinfo` → parser 主路径（无 `QemuVirtDesc` 介入，因为 `platform_sources` 非空，由 boot-shim 端 find 来源填入）
 >
-> `kernel/tests/boot_integration.rs:34`、`boot-shim/src/{uefi,opensbi}_helpers.rs:329/569`、`arch/src/arch/boot.rs:386`、`kernel/src/lib.rs:1465/1528/1609/1701/1731/1971/1994/2017` 等 10+ 处 `platform_sources: &[]` 均为 `#[cfg(test)]` 单元测试 fixture，**不**针对 parser 主路径——单元测试绕过固件读取是正常设计，不构成 "test what you fly" 违反。原 §3.6 + §11 描述已纠正，详见 §11 重写。
+> `kernel/tests/boot_integration.rs:34`、`kernel/src/lib.rs:2265/2329/2411/2506/2537/2778/2802/2826` 共 9 处 `platform_sources: &[]` 均为 `#[cfg(test)]` 单元测试 fixture，**不**针对 parser 主路径——单元测试绕过固件读取是正常设计，不构成 "test what you fly" 违反。`boot-shim/src/{uefi,opensbi}_helpers.rs:228/432` 是**生产** `KernelInfo` 构造函数的 `platform_sources` 参数（boot 期由固件发现来源后填充，见 `uefi_helpers.rs:222` / `opensbi_helpers.rs:222` 的发现逻辑）。原 §3.6 + §11 描述已纠正，详见 §11 重写。
 
 > **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原 TODO 指出 `QemuVirtDesc` 的每个方法都遍布 `#[cfg(target_arch)]` 条件编译，代码重复且难以维护。修复方案是把 `QemuVirtDesc` 拆成三个 per-arch 文件（`arch/x86_64.rs`、`arch/aarch64.rs`、`arch/riscv64.rs`），每个文件持有该架构的具体子描述符字段（`ApicDesc`+`PitDesc`+`IsaSerialDesc` / `Gicv3Desc`+`ArmGenericTimerDesc`+`MmioSerialDesc` / `PlicDesc`+`ClintDesc`+`Riscv64ConsoleDesc`），方法体内直接 `&self.ic` 等返回具体 struct 引用（自动 trait object 化为 `&dyn InterruptControllerDesc`），**消除所有方法级 `#[cfg]` 分支**。`#[cfg(target_arch)]` 现在只用在 `arch/mod.rs` 的 mod 选择语句上，与 `PlatformDescEnum` 的变体 cfg-gate 一致。
 

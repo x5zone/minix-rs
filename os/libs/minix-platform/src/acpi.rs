@@ -199,9 +199,11 @@ impl AcpiDesc {
         let console = Some(IsaSerialDesc { port_base: 0x3F8 });
 
         // CPU topology.
-        let mut cpu_topology = CpuTopology::default();
-        cpu_topology.nr_cpus = nr_cpus;
-        cpu_topology.bsp_id = bsp_id;
+        let mut cpu_topology = CpuTopology {
+            nr_cpus,
+            bsp_id,
+            ..Default::default()
+        };
         // Copy parsed CPU info into the topology array.
         let copy_count = (nr_cpus as usize).min(MAX_CPUS);
         cpu_topology.cpus[..copy_count].copy_from_slice(&cpus[..copy_count]);
@@ -303,6 +305,9 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
     None
 }
 
+/// MADT parse result: `(lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id)`.
+type MadtResult = (usize, usize, u32, [CpuInfo; MAX_CPUS], u32, u32);
+
 /// Parse the MADT (APIC) table.
 ///
 /// Returns `(lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id)`.
@@ -312,10 +317,7 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
 /// Caller must guarantee `madt_phys` points to a valid MADT.
 unsafe fn parse_madt(
     madt_phys: usize,
-) -> Result<
-    (usize, usize, u32, [CpuInfo; MAX_CPUS], u32, u32),
-    AcpiParseError,
-> {
+) -> Result<MadtResult, AcpiParseError> {
     // SAFETY: caller guarantees madt_phys is a valid MADT.
     // Read `length` via byte slice to avoid unaligned access on packed field.
     let length_bytes = unsafe {

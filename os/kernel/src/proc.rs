@@ -489,7 +489,7 @@ impl CpuId {
     pub const fn is_none(self) -> bool { self.0 == u32::MAX }
 }
 
-/// CPU affinity bitmap (06-design-final.md §4.2).
+/// CPU affinity bitmap (06-design.v1.md §4.2).
 ///
 /// C: `p_cpu_mask[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]` — proc.h:37.
 ///
@@ -542,7 +542,7 @@ pub struct SchedFields {
     pub priority: AtomicU8,
     pub quantum: Quantum,
     pub cpu: AtomicU32,
-    /// CPU affinity bitmap (06-design-final.md §4.2).
+    /// CPU affinity bitmap (06-design.v1.md §4.2).
     /// Default = all CPUs allowed. Scheduler checks `allows(cpu)` before
     /// enqueuing into a per-CPU ready queue.
     pub cpu_mask: CpuMask,
@@ -958,7 +958,7 @@ pub struct KProcess {
     ///
     /// Replaces the previous `initial_pc` / `initial_sp` /
     /// `initial_ps_strings_reg` / `initial_status` quadruple plus
-    /// `p_ext_reg_state: ExtRegState`. See `06-design-final.md` §3.2
+    /// `p_ext_reg_state: ExtRegState`. See `06-design.v1.md` §3.2
     /// for the rationale.
     ///
     /// The fixed-size `[u64; ...]` / `bool` fields are arch-private;
@@ -984,7 +984,7 @@ pub struct KProcess {
     /// - riscv64 (F/D):   264 bytes
     pub fpu_state: CurrentFpuState,
 
-    // VM request fields (03-vm-request.md §3.4, §3.5)
+    // VM request fields (24-cross-space-runtime.md §2.7)
     /// Next process in vmrestart chain.
     /// C: `p_vmrequest.nextrestart` (struct proc *)
     pub p_next_restart: Option<ProcNr>,
@@ -1004,10 +1004,10 @@ pub struct KProcess {
     /// Invariant: `p_rts_flags.is_set(RtsFlagsBits::VMREQUEST) <==> p_vm_suspend.is_some()`
     pub p_vm_suspend: Option<VmSuspendContext>,
 
-    // ── Boot-time initial register state (05-proc-init-boot-proc.md §3.2, §3.3) ──
+    // ── Boot-time initial register state (06-proc-init-boot-proc.md §3.2, §3.3) ──
     //
     // ── Boot-time initial register state has been replaced by
-    //    `cpu_context: CurrentCpuContext` (06-design-final.md §3.2).
+    //    `cpu_context: CurrentCpuContext` (06-design.v1.md §3.2).
     //    The four old fields (`initial_pc`, `initial_sp`,
     //    `initial_ps_strings_reg`, `initial_status`) are gone; their
     //    semantics live inside the arch-private `CpuContext` value.
@@ -1259,7 +1259,7 @@ impl KProcess {
     /// using the raw bit value because `RtsFlagsBits::SLOT_FREE.bits()` is
     /// not `const` (bitflags limitation).
     ///
-    /// See `06-design-final.md` §4.1 (zero-heap `static mut` storage).
+    /// See `06-design.v1.md` §4.1 (zero-heap `static mut` storage).
     pub const fn new_zeroed() -> Self {
         Self {
             p_nr: ProcNr(0),
@@ -1297,7 +1297,7 @@ impl KProcess {
 
     /// Check if this is a kernel task (p_nr < 0).
     /// C: iskernelp(p) = ((p) < BEG_USER_ADDR) — but Rust uses p_nr field
-    /// instead of address comparison (08-proc-macros.md §3.3).
+    /// instead of address comparison (06-proc-init-boot-proc.md §3.3).
     pub fn is_kernel_task(&self) -> bool {
         self.p_nr.0 < 0
     }
@@ -1341,7 +1341,7 @@ impl KProcess {
         }
     }
 
-    // ── Boot-time initial CPU context setter (06-design-final.md §3.2) ──
+    // ── Boot-time initial CPU context setter (06-design.v1.md §3.2) ──
 
     /// Set process name. Corresponds to C's `strlcpy(rp->p_name, name, ...)`.
     /// C: main.c:170, protect.c:441
@@ -1358,7 +1358,7 @@ impl KProcess {
     /// `CurrentCpuContextArch::build_cpu_context(kind, proc_nr, entry)`.
     ///
     /// Replaces the previous `set_boot_initial_reg_state` +
-    /// `set_boot_pc_sp` pair (06-design-final.md §3.2).
+    /// `set_boot_pc_sp` pair (06-design.v1.md §3.2).
     pub fn set_boot_cpu_context(&mut self, cpu_context: CurrentCpuContext) {
         self.cpu_context = cpu_context;
     }
@@ -1369,12 +1369,12 @@ impl KProcess {
     /// into the arch layer — the kernel layer only knows about the
     /// OS concept "enable user I/O". Other architectures are no-ops.
     /// Replaces the previous `target.initial_status |= X86_64_IOPL_BITS`
-    /// direct write in `syscall_device.rs` (06-design-final.md §3.5).
+    /// direct write in `syscall_device.rs` (06-design.v1.md §3.5).
     pub fn enable_user_io(&mut self) {
         <CurrentCpuContextArch as CpuContextArch>::enable_user_io(&mut self.cpu_context);
     }
 
-    // ── VM suspend/resume methods (03-vm-request.md §3.5, §3.9, §3.10) ──
+    // ── VM suspend/resume methods (24-cross-space-runtime.md §2.8, §4.3) ──
 
     /// Suspend this process for a VM memory request.
     ///
@@ -1573,7 +1573,7 @@ impl KProcess {
         // C: do_fork.c memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state,
         //                     FPU_XFP_SIZE) under proc_used_fpu(rpp)
         //
-        // See 06-design-final.md §12.5 / §15.5.
+        // See 06-design.v1.md §D7.
         if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
             <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
                 &mut child.cpu_context,

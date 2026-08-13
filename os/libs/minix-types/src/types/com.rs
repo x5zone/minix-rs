@@ -72,4 +72,3 @@ pub const SCHEDULING_BASE: i32 = 0xF00;
 /// Kernel → scheduler: a user-scheduled process exhausted its quantum.
 /// C: `SCHEDULING_NO_QUANTUM` — com.h:803. Payload: `MessKrnLsysSchedule`.
 pub const SCHEDULING_NO_QUANTUM: i32 = SCHEDULING_BASE + 1;
-

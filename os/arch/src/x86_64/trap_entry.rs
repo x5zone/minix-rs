@@ -9,9 +9,9 @@
 //! are INTENTIONALLY hidden from OS code via the `TrapEntryArch` trait:
 //!
 //! 1. **IDT** (Interrupt Descriptor Table) — handles CPU exceptions and
-//!   hardware interrupts; each IDT gate encodes (vector, handler, DPL, IST)
+//!    hardware interrupts; each IDT gate encodes (vector, handler, DPL, IST)
 //! 2. **SYSCALL MSR** (LSTAR MSR) — handles user→kernel system calls; the
-//!   MSR holds the handler address; the CPU jumps there on `syscall`
+//!    MSR holds the handler address; the CPU jumps there on `syscall`
 //!
 //! This split exists because x86-64 ISA evolved SYSCALL as a separate
 //! fast path from interrupt-based trap. The OS calls `set_handler()` for
@@ -143,7 +143,7 @@ impl X86_64TrapEntry {
 /// - Writing to certain MSRs can change CPU behavior (e.g., enabling
 ///   features, changing entry points). The caller must ensure the
 ///   write is appropriate for the current CPU state.
-unsafe fn wrmsr(msr: u32, value: u64) {
+unsafe fn wrmsr(msr: u32, value: u64) { unsafe {
     let low = value as u32;
     let high = (value >> 32) as u32;
     core::arch::asm!(
@@ -153,7 +153,7 @@ unsafe fn wrmsr(msr: u32, value: u64) {
         in("eax") low,
         options(nostack, preserves_flags),
     );
-}
+}}
 
 /// Read a 64-bit value from a Model-Specific Register.
 ///
@@ -161,7 +161,7 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 ///
 /// - `msr` must be a valid MSR index for the current CPU.
 ///   Reading an invalid MSR raises a #GP exception.
-unsafe fn rdmsr(msr: u32) -> u64 {
+unsafe fn rdmsr(msr: u32) -> u64 { unsafe {
     let low: u32;
     let high: u32;
     core::arch::asm!(
@@ -172,7 +172,7 @@ unsafe fn rdmsr(msr: u32) -> u64 {
         options(nostack, preserves_flags),
     );
     ((high as u64) << 32) | (low as u64)
-}
+}}
 
 impl TrapEntryArch for X86_64TrapEntry {
     fn init() -> Self {

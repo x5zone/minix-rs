@@ -269,6 +269,37 @@ pub const EBADCPU: i32 = 217;
 mod tests {
     use super::*;
 
+    /// Cross-crate consistency: this module is the kernel's single source
+    /// of truth; `minix-types` carries a POSIX subset for shared IPC types.
+    /// Same-named constants must never drift (2026-08-13 audit: 86/86
+    /// identical — this test locks that invariant for the core subset).
+    #[test]
+    fn errno_values_match_minix_types() {
+        for (kernel, shared) in [
+            (EPERM, minix_types::EPERM),
+            (ENOENT, minix_types::ENOENT),
+            (ESRCH, minix_types::ESRCH),
+            (EINTR, minix_types::EINTR),
+            (EIO, minix_types::EIO),
+            (ENXIO, minix_types::ENXIO),
+            (E2BIG, minix_types::E2BIG),
+            (ENOEXEC, minix_types::ENOEXEC),
+            (EBADF, minix_types::EBADF),
+            (ECHILD, minix_types::ECHILD),
+            (EDEADLK, minix_types::EDEADLK),
+            (ENOMEM, minix_types::ENOMEM),
+            (EACCES, minix_types::EACCES),
+            (EFAULT, minix_types::EFAULT),
+            (EBUSY, minix_types::EBUSY),
+            (EINVAL, minix_types::EINVAL),
+            (EAGAIN, minix_types::EAGAIN),
+            (ENOSYS, minix_types::ENOSYS),
+            (ELOOP, minix_types::ELOOP),
+        ] {
+            assert_eq!(kernel, shared, "errno drift: kernel vs minix-types");
+        }
+    }
+
     /// Verify key errno values match Minix3 `minix3/sys/sys/errno.h`.
     /// Guards against the drift bugs that motivated this module
     /// (previously `EBUSY=27`, `ENOSYS=38`, `ELOOP=40` in various files).

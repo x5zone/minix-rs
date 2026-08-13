@@ -1,7 +1,7 @@
 //! Process scheduler — multi-level priority queue with preemptive scheduling.
 //!
 //! Corresponds to Minix3's scheduling functions in `kernel/proc.c` (~700 lines).
-//! Design decisions documented in `07-scheduling.md` §3.
+//! Design decisions documented in `11-scheduling-primitives.md` §3.
 //!
 //! # Minix3 Scheduling Model
 //!
@@ -11,7 +11,7 @@
 //!   user-scheduled processes notify their scheduler, kernel-scheduled ones reset
 //! - SMP: per-CPU queues, cross-CPU enqueue wakeup, CPU affinity
 //!
-//! # Rust Design Decisions (07-scheduling.md §3)
+//! # Rust Design Decisions (11-scheduling-primitives.md §3)
 //!
 //! - §3.1: Array indices (`Option<ProcNr>`) replace pointer chains for queues
 //! - §3.2: `Scheduler` struct holds head/tail arrays; operations need `&ProcessTable`

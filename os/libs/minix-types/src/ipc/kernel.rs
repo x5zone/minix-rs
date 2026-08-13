@@ -2,7 +2,7 @@
 //!
 //! Defines the messages exchanged between Kernel and other services (PM, VM, VFS).
 
-use crate::{Endpoint, UserSlot, EAGAIN, ESRCH, EINVAL, EIO, ENOSYS};
+use crate::{EAGAIN, EINVAL, EIO, ENOSYS, ESRCH, Endpoint, UserSlot};
 
 /// Kernel system call request types.
 ///
@@ -72,7 +72,11 @@ mod tests {
         };
 
         match req {
-            KernelRequest::Fork { parent_endpoint, child_endpoint, child_slot } => {
+            KernelRequest::Fork {
+                parent_endpoint,
+                child_endpoint,
+                child_slot,
+            } => {
                 assert_eq!(parent_endpoint, Endpoint::PM);
                 assert_eq!(child_slot.get(), 1);
             }

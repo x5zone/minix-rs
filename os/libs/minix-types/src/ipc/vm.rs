@@ -30,8 +30,11 @@
 //! - `VmReply`  = unified reply enum (for dispatcher return type)
 //! - `VmError`  = shared error type (maps to errno)
 
-use crate::{Endpoint, UserSlot, VirBytes, PhysBytes, ESRCH, EINVAL, ENOMEM, EFAULT, EPERM, EIO, ENOSYS, EACCES, ENOENT};
 use crate::ipc::MessageM1;
+use crate::{
+    EACCES, EFAULT, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, EPERM, ESRCH, Endpoint, PhysBytes,
+    UserSlot, VirBytes,
+};
 
 // ============================================================================
 // VM Call Numbers
@@ -44,7 +47,7 @@ pub const VM_RQ_BASE: u32 = 0xC00;
 // --- PM calls ---
 
 /// Exit process. Sent by PM when a process exits.
-pub const VM_EXIT: u32 = VM_RQ_BASE + 0;
+pub const VM_EXIT: u32 = VM_RQ_BASE;
 
 /// Fork process. Sent by PM when a process forks.
 pub const VM_FORK: u32 = VM_RQ_BASE + 1;
@@ -521,7 +524,9 @@ pub enum VmReply {
     Brk(VmBrkOut),
     Mmap(VmMmapOut),
     MapPhys(VmMapPhysOut),
-    MapCache { addr: VirBytes },
+    MapCache {
+        addr: VirBytes,
+    },
     VfsMmap(VmMmapOut),
     Munmap,
     Exit,
@@ -529,9 +534,16 @@ pub enum VmReply {
     ExecNewmem(VmExecNewmemOut),
     Ok,
     Suspend,
-    RsMemctlAddrLen { addr: VirBytes, len: usize },
-    GetPhys { phys_addr: PhysBytes },
-    GetRefcount { count: u8 },
+    RsMemctlAddrLen {
+        addr: VirBytes,
+        len: usize,
+    },
+    GetPhys {
+        phys_addr: PhysBytes,
+    },
+    GetRefcount {
+        count: u8,
+    },
     InfoStats {
         page_size: u64,
         total_pages: u32,
@@ -975,13 +987,17 @@ mod tests {
 
     #[test]
     fn test_vm_exit_in() {
-        let req = VmExitIn { endpoint: Endpoint::PM };
+        let req = VmExitIn {
+            endpoint: Endpoint::PM,
+        };
         assert_eq!(req.endpoint, Endpoint::PM);
     }
 
     #[test]
     fn test_vm_willexit_in() {
-        let req = VmWillexitIn { endpoint: Endpoint::PM };
+        let req = VmWillexitIn {
+            endpoint: Endpoint::PM,
+        };
         assert_eq!(req.endpoint, Endpoint::PM);
     }
 

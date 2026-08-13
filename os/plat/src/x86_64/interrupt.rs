@@ -51,37 +51,37 @@ const IOAPIC_REG_REDTBL_BASE: u32 = 0x10;
 const IOAPIC_REDTBL_MASK: u32 = 1 << 16;
 
 #[inline]
-unsafe fn lapic_read(base: usize, offset: usize) -> u32 {
+unsafe fn lapic_read(base: usize, offset: usize) -> u32 { unsafe {
     read_volatile((base + offset) as *const u32)
-}
+}}
 
 #[inline]
-unsafe fn lapic_write(base: usize, offset: usize, value: u32) {
+unsafe fn lapic_write(base: usize, offset: usize, value: u32) { unsafe {
     write_volatile((base + offset) as *mut u32, value)
-}
+}}
 
-unsafe fn ioapic_read_redtbl(base: usize, irq: u8) -> u64 {
+unsafe fn ioapic_read_redtbl(base: usize, irq: u8) -> u64 { unsafe {
     let reg = IOAPIC_REG_REDTBL_BASE + 2 * (irq as u32);
     let low = ioapic_read_indirect(base, reg);
     let high = ioapic_read_indirect(base, reg + 1);
     ((high as u64) << 32) | (low as u64)
-}
+}}
 
-unsafe fn ioapic_write_redtbl(base: usize, irq: u8, value: u64) {
+unsafe fn ioapic_write_redtbl(base: usize, irq: u8, value: u64) { unsafe {
     let reg = IOAPIC_REG_REDTBL_BASE + 2 * (irq as u32);
     ioapic_write_indirect(base, reg, value as u32);
     ioapic_write_indirect(base, reg + 1, (value >> 32) as u32);
-}
+}}
 
-unsafe fn ioapic_read_indirect(base: usize, reg: u32) -> u32 {
+unsafe fn ioapic_read_indirect(base: usize, reg: u32) -> u32 { unsafe {
     write_volatile((base + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
     read_volatile((base + IOAPIC_REG_IOWIN) as *const u32)
-}
+}}
 
-unsafe fn ioapic_write_indirect(base: usize, reg: u32, value: u32) {
+unsafe fn ioapic_write_indirect(base: usize, reg: u32, value: u32) { unsafe {
     write_volatile((base + IOAPIC_REG_IOREGSEL) as *mut u32, reg);
     write_volatile((base + IOAPIC_REG_IOWIN) as *mut u32, value)
-}
+}}
 
 /// x86-64 APIC-based interrupt controller.
 ///
@@ -109,7 +109,7 @@ impl X86_64InterruptController {
         self.ioapic_base
     }
 
-    unsafe fn init_lapic(&mut self) {
+    unsafe fn init_lapic(&mut self) { unsafe {
         let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE);
         let apic_phys = apic_base & IA32_APIC_BASE_ADDR_MASK;
         if apic_phys as usize != self.lapic_base {
@@ -117,15 +117,15 @@ impl X86_64InterruptController {
         }
         wrmsr_msr_write(MSR_IA32_APIC_BASE, apic_base | IA32_APIC_BASE_EN);
         lapic_write(self.lapic_base, LAPIC_REG_SVR, LAPIC_SPURIOUS_VECTOR as u32 | LAPIC_SVR_ENABLE);
-    }
+    }}
 
-    unsafe fn init_ioapic(&mut self) {
+    unsafe fn init_ioapic(&mut self) { unsafe {
         for irq in 0..NR_IRQ_VECTORS as u8 {
             self.ioapic_set_mask(irq, true);
         }
-    }
+    }}
 
-    unsafe fn ioapic_set_mask(&mut self, irq: u8, mask: bool) {
+    unsafe fn ioapic_set_mask(&mut self, irq: u8, mask: bool) { unsafe {
         let mut entry = ioapic_read_redtbl(self.ioapic_base, irq);
         if mask {
             entry |= IOAPIC_REDTBL_MASK as u64;
@@ -133,24 +133,36 @@ impl X86_64InterruptController {
             entry &= !(IOAPIC_REDTBL_MASK as u64);
         }
         ioapic_write_redtbl(self.ioapic_base, irq, entry);
-    }
+    }}
 
-    unsafe fn lapic_eoi(&mut self) {
+    unsafe fn lapic_eoi(&mut self) { unsafe {
         lapic_write(self.lapic_base, LAPIC_REG_EOI, 0);
-    }
+    }}
 
     /// Read LAPIC ID register.
-    pub unsafe fn lapic_id(&self) -> u32 {
+    ///
+    /// # Safety
+    ///
+    /// `self.lapic_base` must be a valid LAPIC MMIO address (verified during
+    /// controller init) and the caller must hold BKL / have interrupts
+    /// disabled.
+    pub unsafe fn lapic_id(&self) -> u32 { unsafe {
         lapic_read(self.lapic_base, LAPIC_REG_ID) >> 24
-    }
+    }}
 
     /// Read IOAPIC version register.
-    pub unsafe fn ioapic_version(&self) -> u32 {
+    ///
+    /// # Safety
+    ///
+    /// `self.ioapic_base` must be a valid IOAPIC MMIO address (verified
+    /// during controller init) and the caller must hold BKL / have
+    /// interrupts disabled.
+    pub unsafe fn ioapic_version(&self) -> u32 { unsafe {
         ioapic_read_indirect(self.ioapic_base, IOAPIC_REG_VER)
-    }
+    }}
 }
 
-unsafe fn wrmsr_msr_read(msr: u32) -> u64 {
+unsafe fn wrmsr_msr_read(msr: u32) -> u64 { unsafe {
     let low: u32;
     let high: u32;
     asm!(
@@ -161,9 +173,9 @@ unsafe fn wrmsr_msr_read(msr: u32) -> u64 {
         options(nostack, preserves_flags),
     );
     ((high as u64) << 32) | (low as u64)
-}
+}}
 
-unsafe fn wrmsr_msr_write(msr: u32, value: u64) {
+unsafe fn wrmsr_msr_write(msr: u32, value: u64) { unsafe {
     let low = value as u32;
     let high = (value >> 32) as u32;
     asm!(
@@ -173,7 +185,7 @@ unsafe fn wrmsr_msr_write(msr: u32, value: u64) {
         in("eax") low,
         options(nostack, preserves_flags),
     );
-}
+}}
 
 impl InterruptController for X86_64InterruptController {
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {

@@ -4,7 +4,7 @@
 //! that must happen after protection structures and interrupt controller
 //! are initialized.
 //!
-//! # Design decisions (see 04-clock-interrupt-init.md §3.5, §3.6)
+//! # Design decisions (see 05-clock-interrupt-init.md §3.5, §3.6)
 //!
 //! - **ArchInit trait** (§3.5): Replaces C's `arch_init()` function
 //!   which was scattered with `#ifdef` conditionals. Each architecture

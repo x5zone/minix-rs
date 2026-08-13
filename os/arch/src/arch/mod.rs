@@ -23,6 +23,6 @@ pub mod boot;
 pub mod post_init;
 pub mod stacktrace;
 pub mod tlb_arch;
-// proc_arch was removed in 06-design-final.md; its responsibilities
+// proc_arch was removed in 06-design.v1.md; its responsibilities
 // are now split between `boot` (CpuContextArch + load_vm_elf) and
 // the kernel layer (KProcess::cpu_context field).

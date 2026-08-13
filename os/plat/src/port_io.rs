@@ -5,7 +5,7 @@
 //! On ARM64/RISC-V, I/O ports don't exist — the trait is implemented
 //! as no-ops and `SYS_DEVIO` returns `BadCall` at the dispatch level.
 //!
-//! # Design decisions (19-syscall-device.md §3 D2)
+//! # Design decisions (20-syscall-device.md §3 D2)
 //!
 //! - **PortIo trait**: Abstracts hardware I/O port access so that the
 //!   kernel's device I/O system calls (`SYS_DEVIO`, `SYS_VDEVIO`) do

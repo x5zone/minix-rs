@@ -17,6 +17,8 @@
 | `do_*` syscall 处理器 | 38 | 17 | 18 | 0 | 3 (2 not ported + 1 dead code) | 45% 完全实现 (SYS_TRACE/UPDATE 2026-08-01) |
 | Syscall 编号映射 (call_nr.h) | 58 | 19 | 12 | 9 | 18 (6 BadCall + 12 未实现) | 50% 实际可工作 |
 | 非 syscall C 源文件 (28-30) | 3 | 0 (1 Partial) | 1 (30-profile) | 0 | 2 (28 WONTFIX + 29 DEFERRED) | 33% Partial（2026-08-12 新增） |
+| FPU 子系统 (31) | 跨 4 文件（arch_system.c fpu 族 + proc.c copr_not_available + exception.c fpu_exception + do_sigsend.c save_fpu 路径） | 已实现（FpuTrap + doc 31 全析） | 0 | 0 | 2（lazy-restore 主体 + 信号路径 FPU 保存，forward reference） | ✅ 已覆盖（2026-08-13 新增） |
+| 栈回溯 (32) | arch/i386/exception.c proc_stacktrace 族 + system/do_diagctl.c STACKTRACE + utility.c util_stacktrace | 已实现（StacktraceArch + **3 impl（riscv64 2026-08-13 补齐）** + walk_frames 默认实现；DIAGCTL 接线 ENOSYS forward reference） | 0 | 0 | 1（DIAGCTL 接线） | ✅ 已覆盖（2026-08-13 新增） |
 | **总体** | **~260** | **~125** | **~48** | **~40** | **~47** | **~67%** |
 
 > **重要**: "未实现" ≠ "bug" — 大量未实现项是**有意省略** (e.g. 设计差异、阶段性未完成、arch-stub), 详见每项 Reason 列.
@@ -234,11 +236,11 @@
 
 | # | C Handler | C File:Line | Rust 实现 | 状态 | 备注 |
 |---|-----------|-------------|-----------|------|------|
-| F-17 | `do_kill` | do_kill.c:22-41 | `syscall_signal.rs:89` | ✅ Implemented | isokendpt + iskerneln + cause_signal (mini_notify deferred to P1-08) |
-| F-18 | `do_getksig` | do_getksig.c:20-43 | `syscall_signal.rs:110` | ✅ Implemented | ✅ (2026-06-14) 进程表扫描 + s_sig_mgr 匹配 + 返回 endpoint+map + RTS_SIGNALED 清除 + p_pending 清空; 无匹配返回 NONE; MessSigcalls 消息类型替代 MessageM1; s_sig_mgr 查找已重构为 `ProcessTable::sig_mgr()` 便捷方法 (P1-23) |
-| F-19 | `do_endksig` | do_endksig.c:19-41 | `syscall_signal.rs:132` | ✅ Implemented | ✅ (2026-06-14) P1-07 已修复: isokendpt + s_sig_mgr 校验 (EPERM) + SIG_PENDING 检查 (EINVAL) + 条件清除 SIG_PENDING; MessSigcalls 消息类型 |
-| F-20 | `do_sigsend` | do_sigsend.c:25-166 | `syscall_signal.rs:432` | ⚠️ Partial | `SignalContext` trait + `SigMsg` struct + 端点验证; DEFERRED: data_copy_vmcheck + sigframe build + register modify |
-| F-21 | `do_sigreturn` | do_sigreturn.c:20-98 | `syscall_signal.rs:480` | ⚠️ Partial | `SignalContext` trait + 端点验证; DEFERRED: data_copy + register restore |
+| F-17 | `do_kill` | do_kill.c:22-41 | `syscall_signal.rs:107` | ✅ Implemented | isokendpt + iskerneln + cause_signal (mini_notify deferred to P1-08) |
+| F-18 | `do_getksig` | do_getksig.c:20-43 | `syscall_signal.rs:266` | ✅ Implemented | ✅ (2026-06-14) 进程表扫描 + s_sig_mgr 匹配 + 返回 endpoint+map + RTS_SIGNALED 清除 + p_pending 清空; 无匹配返回 NONE; MessSigcalls 消息类型替代 MessageM1; s_sig_mgr 查找已重构为 `ProcessTable::sig_mgr()` 便捷方法 (P1-23) |
+| F-19 | `do_endksig` | do_endksig.c:19-41 | `syscall_signal.rs:348` | ✅ Implemented | ✅ (2026-06-14) P1-07 已修复: isokendpt + s_sig_mgr 校验 (EPERM) + SIG_PENDING 检查 (EINVAL) + 条件清除 SIG_PENDING; MessSigcalls 消息类型 |
+| F-20 | `do_sigsend` | do_sigsend.c:25-166 | `syscall_signal.rs:437` | ✅ Complete (2026-08-01) | data_copy_vmcheck + sigcontext/sigframe 构建 + 跨地址空间写入; VMSUSPEND 恢复 |
+| F-21 | `do_sigreturn` | do_sigreturn.c:20-98 | `syscall_signal.rs:615` | ✅ Complete (2026-08-01) | data_copy_vmcheck 拷 sigcontext + register restore; VMSUSPEND 恢复 |
 
 ### 4.4 Doc 19 — 设备 I/O (3 handlers)
 
@@ -328,11 +330,11 @@ KERNEL_CALL = 0x600 (per `com.h:204`)
 | 3 | SYS_SCHEDULE | `syscall.rs` `dispatch_schedule` | ✅ Complete (2026-08-13, FIX-25) | 4 步验证 + sched_proc() 完整调用; FIX-25 修复 latent bug (caller_has_sys_proc_with_table 替代 legacy); 3 测试 |
 | 4 | SYS_PRIVCTL | `syscall.rs` `dispatch_privctl` | ✅ Complete (2026-08-13, Phase 6) | **11/11 子命令全部实现**: 5 原有 (ALLOW/DISALLOW/YIELD/QUERY_MEM/SET_USER) + **6 Phase 6 落地 (2026-08-13)** (SET_SYS=3 via `KPriv::get_priv`+`reset_*`; ADD_IO=5/ADD_MEM=6/ADD_IRQ=7 via `copy_struct_from_user`+`KPriv::add_*`; UPDATE_SYS=9 via `KPriv::update_from_request`; CLEAR_IPC_REFS=11 via `clear_ipc_refs`). FIX-25 latent bug 修复 (caller_has_sys_proc_with_table). 9 测试. 详见 [22-privilege.md §4.7](22-privilege.md) |
 | 5 | SYS_TRACE | `misc.rs:1223` `dispatch_trace` | ✅ Complete (2026-08-01) | 13/13 request 全部实现: 5 flag 操作 + 6 跨地址空间拷贝 (data_copy_vmcheck + VmSuspend) + T_GETUSER (proc+priv 双分支) + T_SETUSER (CpuContextArch::write_user_register, 三架构). 签名 `&mut ProcessTable` + `&PrivTable`. 无 DEFERRED |
-| 6 | SYS_KILL | `syscall_signal.rs:89` | ✅ Implemented |
-| 7 | SYS_GETKSIG | `syscall_signal.rs:110` | ✅ Implemented |
-| 8 | SYS_ENDKSIG | `syscall_signal.rs:132` | ✅ Implemented |
-| 9 | SYS_SIGSEND | `syscall_signal.rs:155` | ✅ Complete (2026-08-01) | data_copy_vmcheck + sigcontext/sigframe 构建 + 跨地址空间写入; VMSUSPEND 恢复 |
-| 10 | SYS_SIGRETURN | `syscall_signal.rs:178` | ✅ Complete (2026-08-01) | data_copy_vmcheck 拷 sigcontext + register restore; VMSUSPEND 恢复 |
+| 6 | SYS_KILL | `syscall_signal.rs:107` | ✅ Implemented |
+| 7 | SYS_GETKSIG | `syscall_signal.rs:266` | ✅ Implemented |
+| 8 | SYS_ENDKSIG | `syscall_signal.rs:348` | ✅ Implemented |
+| 9 | SYS_SIGSEND | `syscall_signal.rs:437` | ✅ Complete (2026-08-01) | data_copy_vmcheck + sigcontext/sigframe 构建 + 跨地址空间写入; VMSUSPEND 恢复 |
+| 10 | SYS_SIGRETURN | `syscall_signal.rs:615` | ✅ Complete (2026-08-01) | data_copy_vmcheck 拷 sigcontext + register restore; VMSUSPEND 恢复 |
 | 11 | *(unused)* | not in Rust | ❌ WONTFIX — reserved/unused (com.h 无 SYS_* 定义, system.c call_vec[11]=NULL) |
 | 12 | *(unused)* | not in Rust | ❌ WONTFIX — reserved/unused (同上) |
 | 13 | SYS_MEMSET | `syscall_copy.rs:360` | ✅ Complete (2026-08-01) | safememset_common_impl + data_copy_vmcheck; VMSUSPEND 恢复 |

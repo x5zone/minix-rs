@@ -3,7 +3,7 @@
 //! Defines the trait interface for interrupt controller hardware operations
 //! and shared types for IRQ management.
 //!
-//! # Design decisions (see 05-exception-interrupt.md §3.2, §3.4, §3.8)
+//! # Design decisions (see 14-exception-interrupt.md §3.2, §3.4, §3.8)
 //!
 //! - **InterruptController trait** (§3.2): Abstracts mask/unmask/ack/eoi
 //!   operations. Replaces C's `hw_intr` macro with runtime polymorphism.

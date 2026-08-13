@@ -133,14 +133,18 @@ pub union MessageUnion {
 
 impl Default for MessageUnion {
     fn default() -> Self {
-        Self { raw: [0u8; MESSAGE_PAYLOAD_SIZE] }
+        Self {
+            raw: [0u8; MESSAGE_PAYLOAD_SIZE],
+        }
     }
 }
 
 impl MessageUnion {
     /// Const-constructible zeroed payload (for `const fn` table init).
     pub const fn zeroed() -> Self {
-        Self { raw: [0u8; MESSAGE_PAYLOAD_SIZE] }
+        Self {
+            raw: [0u8; MESSAGE_PAYLOAD_SIZE],
+        }
     }
 }
 
@@ -366,7 +370,11 @@ pub struct MessageM3 {
 
 impl Default for MessageM3 {
     fn default() -> Self {
-        Self { m3i1: 0, m3i2: 0, m3ca1: [0u8; 48] }
+        Self {
+            m3i1: 0,
+            m3i2: 0,
+            m3ca1: [0u8; 48],
+        }
     }
 }
 
@@ -598,7 +606,10 @@ pub struct MessKrnLsysSysUmap {
 
 impl Default for MessKrnLsysSysUmap {
     fn default() -> Self {
-        Self { dst_addr: 0, _padding: [0u8; 48] }
+        Self {
+            dst_addr: 0,
+            _padding: [0u8; 48],
+        }
     }
 }
 
@@ -618,7 +629,10 @@ pub struct MessKrnLsysSysVumap {
 
 impl Default for MessKrnLsysSysVumap {
     fn default() -> Self {
-        Self { pcount: 0, _padding: [0u8; 52] }
+        Self {
+            pcount: 0,
+            _padding: [0u8; 52],
+        }
     }
 }
 
@@ -638,7 +652,11 @@ pub struct MessLsysKernVsafecopy {
 
 impl Default for MessLsysKernVsafecopy {
     fn default() -> Self {
-        Self { vec_addr: 0, vec_size: 0, _padding: [0u8; 40] }
+        Self {
+            vec_addr: 0,
+            vec_size: 0,
+            _padding: [0u8; 40],
+        }
     }
 }
 
@@ -671,7 +689,12 @@ pub struct MessLsysKrnSysStatectl {
 
 impl Default for MessLsysKrnSysStatectl {
     fn default() -> Self {
-        Self { request: 0, address: 0, length: 0, _padding: [0u8; 36] }
+        Self {
+            request: 0,
+            address: 0,
+            length: 0,
+            _padding: [0u8; 36],
+        }
     }
 }
 
@@ -892,7 +915,7 @@ pub struct MessLsysKrnSchedule {
 /// `acnt_queue` is `time_t` (64-bit on this target) in C — converted from
 /// `p_accounting.time_in_queue` (cycles) to milliseconds via
 /// `cpu_time_to_ms` before sending.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessKrnLsysSchedule {
     /// Time spent in ready queue (milliseconds).
@@ -912,21 +935,6 @@ pub struct MessKrnLsysSchedule {
     pub acnt_cpu_load: u32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 24],
-}
-
-impl Default for MessKrnLsysSchedule {
-    fn default() -> Self {
-        Self {
-            acnt_queue: 0,
-            acnt_deqs: 0,
-            acnt_ipc_sync: 0,
-            acnt_ipc_async: 0,
-            acnt_preempt: 0,
-            acnt_cpu: 0,
-            acnt_cpu_load: 0,
-            _padding: [0; 24],
-        }
-    }
 }
 
 /// SYS_GETMCONTEXT / SYS_SETMCONTEXT message payload.
@@ -1012,7 +1020,7 @@ pub struct MessLsysKrnSysExec {
 /// **IMPORTANT**: This layout differs from `MessageM1`. Using `m1.m1i1` for
 /// `endpt` is WRONG — `m1.m1i1` maps to offset 0 (low 4 bytes of `map`),
 /// while `endpt` is at offset 8. Always use `MessSigcalls` for signal syscalls.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessSigcalls {
     /// Signal bitmap. C: `sigset_t map`
@@ -1025,12 +1033,6 @@ pub struct MessSigcalls {
     pub sigctx: u64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 32],
-}
-
-impl Default for MessSigcalls {
-    fn default() -> Self {
-        Self { map: 0, endpt: 0, sig: 0, sigctx: 0, _padding: [0u8; 32] }
-    }
 }
 
 /// SYS_GETINFO (GET_WHOAMI) reply message payload.
@@ -1104,7 +1106,7 @@ impl Default for MessLsysKrnSysTimes {
 /// | boot_time   | u64  | 32     |
 /// | padding     | 16B  | 40     |
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessKrnLsysSysTimes {
     /// Wall-clock ticks since boot. C: `clock_t real_ticks`
@@ -1121,19 +1123,6 @@ pub struct MessKrnLsysSysTimes {
     pub _padding: [u8; 16],
 }
 
-impl Default for MessKrnLsysSysTimes {
-    fn default() -> Self {
-        Self {
-            real_ticks: 0,
-            boot_ticks: 0,
-            user_time: 0,
-            system_time: 0,
-            boot_time: 0,
-            _padding: [0u8; 16],
-        }
-    }
-}
-
 /// SYS_SETALARM request/reply message payload.
 ///
 /// C: `mess_lsys_krn_sys_setalarm` — ipc.h
@@ -1148,7 +1137,7 @@ impl Default for MessKrnLsysSysTimes {
 /// | abs_time  | i32  | 24     |
 /// | padding   | 28B  | 28     |
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnSysSetalarm {
     /// Expiration time for the alarm. C: `clock_t exp_time`
@@ -1161,18 +1150,6 @@ pub struct MessLsysKrnSysSetalarm {
     pub abs_time: i32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 28],
-}
-
-impl Default for MessLsysKrnSysSetalarm {
-    fn default() -> Self {
-        Self {
-            exp_time: 0,
-            time_left: 0,
-            uptime: 0,
-            abs_time: 0,
-            _padding: [0u8; 28],
-        }
-    }
 }
 
 /// SYS_STIME request message payload.
@@ -1218,7 +1195,7 @@ impl Default for MessLsysKrnSysStime {
 /// | clock_id | i32  | 20     |
 /// | padding  | 32B  | 24     |
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnSysSettime {
     /// Time in seconds since 1970. C: `time_t sec`
@@ -1231,18 +1208,6 @@ pub struct MessLsysKrnSysSettime {
     pub clock_id: i32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 32],
-}
-
-impl Default for MessLsysKrnSysSettime {
-    fn default() -> Self {
-        Self {
-            sec: 0,
-            nsec: 0,
-            now: 0,
-            clock_id: 0,
-            _padding: [0u8; 32],
-        }
-    }
 }
 
 /// Kernel: SYS_SETGRANT request.
@@ -1262,7 +1227,11 @@ pub struct MessLsysKrnSysSetgrant {
 
 impl Default for MessLsysKrnSysSetgrant {
     fn default() -> Self {
-        Self { addr: 0, size: 0, _padding: [0u8; 44] }
+        Self {
+            addr: 0,
+            size: 0,
+            _padding: [0u8; 44],
+        }
     }
 }
 
@@ -1270,7 +1239,7 @@ impl Default for MessLsysKrnSysSetgrant {
 ///
 /// C: `mess_lsys_krn_sys_diagctl` in ipc.h.
 /// Diagnostic control: kernel message output, stack traces, signal registration.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnSysDiagctl {
     /// Request code (DIAGCTL_CODE_DIAG/STACKTRACE/REGISTER/UNREGISTER).
@@ -1283,12 +1252,6 @@ pub struct MessLsysKrnSysDiagctl {
     pub endpt: i32,
     /// Padding to 56 bytes (C: union payload size).
     _padding: [u8; 28],
-}
-
-impl Default for MessLsysKrnSysDiagctl {
-    fn default() -> Self {
-        Self { code: 0, buf: 0, len: 0, endpt: 0, _padding: [0u8; 28] }
-    }
 }
 
 /// Kernel: SYS_DEVIO request/reply.
@@ -1310,7 +1273,12 @@ pub struct MessLsysKrnSysDevio {
 
 impl Default for MessLsysKrnSysDevio {
     fn default() -> Self {
-        Self { request: 0, port: 0, value: 0, _padding: [0u8; 36] }
+        Self {
+            request: 0,
+            port: 0,
+            value: 0,
+            _padding: [0u8; 36],
+        }
     }
 }
 
@@ -1335,7 +1303,7 @@ impl Default for MessLsysKrnSysDevio {
 ///
 /// **IMPORTANT**: This layout differs from `MessageM1`. Always use
 /// `MessLsysKrnSysSdevio` for SYS_SDEVIO, not the generic `m1` overlay.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnSysSdevio {
     /// Request type + direction + safe flag. C: `int request`
@@ -1355,22 +1323,6 @@ pub struct MessLsysKrnSysSdevio {
     pub _padding: [u8; 8],
 }
 
-impl Default for MessLsysKrnSysSdevio {
-    fn default() -> Self {
-        Self {
-            request: 0,
-            _pad0: [0u8; 4],
-            port: 0,
-            vec_endpt: 0,
-            _pad1: [0u8; 4],
-            vec_addr: 0,
-            vec_size: 0,
-            offset: 0,
-            _padding: [0u8; 8],
-        }
-    }
-}
-
 /// Kernel: SYS_READBIOS request.
 ///
 /// C: `mess_lsys_krn_readbios` — ipc.h:1076-1081
@@ -1387,7 +1339,7 @@ impl Default for MessLsysKrnSysSdevio {
 ///
 /// **IMPORTANT**: This layout differs from `MessageM1`. Always use
 /// `MessLsysKrnReadbios` for SYS_READBIOS, not the generic `m1` overlay.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnReadbios {
     /// Number of bytes to copy. C: `size_t size`
@@ -1399,17 +1351,11 @@ pub struct MessLsysKrnReadbios {
     pub _padding: [u8; 32],
 }
 
-impl Default for MessLsysKrnReadbios {
-    fn default() -> Self {
-        Self { size: 0, addr: 0, buf: 0, _padding: [0u8; 32] }
-    }
-}
-
 /// Kernel: SYS_SPROF request.
 ///
 /// C: `mess_lsys_krn_sys_sprof` in ipc.h.
 /// Start/stop statistical profiling.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessLsysKrnSysSprof {
     /// Action: PROF_START (0) or PROF_STOP (1). C: `action`
@@ -1428,12 +1374,6 @@ pub struct MessLsysKrnSysSprof {
     pub mem_size: u64,
     /// Padding to 56 bytes (C: union payload size).
     _padding: [u8; 16],
-}
-
-impl Default for MessLsysKrnSysSprof {
-    fn default() -> Self {
-        Self { action: 0, freq: 0, intr_type: 0, endpt: 0, ctl_ptr: 0, mem_ptr: 0, mem_size: 0, _padding: [0u8; 16] }
-    }
 }
 
 /// VM_PAGEFAULT notification (kernel → VM).

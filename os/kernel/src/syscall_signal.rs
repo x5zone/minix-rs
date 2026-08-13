@@ -8,7 +8,7 @@
 //! - `do_sigsend.c` — SYS_SIGSEND
 //! - `do_sigreturn.c` — SYS_SIGRETURN
 //!
-//! # Design Decisions (18-syscall-signal.md §3)
+//! # Design Decisions (19-syscall-signal.md §3)
 //!
 //! - **D1**: `u64` for signal bitmap (`_NSIG = 64`)
 //! - **D4**: `cause_signal()` as KProcess method

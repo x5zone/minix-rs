@@ -19,7 +19,7 @@ const INIT_TASK_SSTATUS: u64 = 0x0000_0100;
 
 /// Initial sstatus for user processes: SPP=0, SPIE=1 (interrupts on).
 ///
-/// Named `INIT_USER_SSTATUS` per 06-design-final.md §3.3 to distinguish
+/// Named `INIT_USER_SSTATUS` per 06-design.v1.md §3.3 to distinguish
 /// the user-process variant from the kernel-task variant.
 const INIT_USER_SSTATUS: u64 = 0x0000_0020;
 
@@ -94,7 +94,7 @@ impl CpuContextArch for Riscv64CpuContextArch {
     // riscv64 equivalent is sstatus.SUM, set per-process via the
     // sstatus field rather than via a global flag.
 
-    /// Inherit FPU state field from parent on fork (06-design-final.md §15.5).
+    /// Inherit FPU state field from parent on fork (06-design.v1.md §D7).
     ///
     /// riscv64: the child inherits the parent's `sstatus` value so that
     /// the FS field (Off/Initial/Clean/Dirty) is preserved — a forked
@@ -167,6 +167,35 @@ mod sstatus {
 }
 
 use sstatus::*;
+
+/// Frame-pointer chain walk for riscv64 (s0/fp-linked frames).
+///
+/// RISC-V ABI frame layout (same 8-byte slot convention as x86-64/aarch64):
+/// ```text
+/// [s0+0]  saved_fp  (caller's s0/fp)
+/// [s0+8]  return_addr (saved ra)
+/// ```
+///
+/// Frame pointers are optional in the RISC-V ABI (like x86-64, unlike
+/// aarch64's mandatory FP), so the walk is best-effort for code compiled
+/// without frame-pointer omission.
+impl StacktraceArch for Riscv64CpuContextArch {
+    fn frame_pointer(cpu_context: &Riscv64CpuContext) -> u64 {
+        // C: whichproc->p_reg.fp — riscv64 stores s0/fp (X8) in gp_regs.
+        // gp_regs layout: [0]=X1, [1]=X3, ..., [6]=X8 (s0/fp), ...
+        // GP_S0 (X8 = s0/fp) → index 6 (signal.rs:80).
+        cpu_context
+            .gp_regs
+            .get(crate::riscv64::signal::GP_S0)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn program_counter(cpu_context: &Riscv64CpuContext) -> u64 {
+        // C: whichproc->p_reg.pc — riscv64 stores PC as sepc (named field).
+        cpu_context.sepc
+    }
+}
 
 #[cfg(test)]
 mod tests {

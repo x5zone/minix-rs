@@ -10,7 +10,7 @@
 //! - `do_schedctl.c` — SYS_SCHEDCTL
 //! - `do_statectl.c` — SYS_STATECTL
 //!
-//! # Design Decisions (16-syscall-process.md §3)
+//! # Design Decisions (17-syscall-process.md §3)
 //!
 //! - **D1**: `clone_from()` for proc struct copy (Rust semantics clear)
 //! - **D2**: `Endpoint::from_generation_slot()` for endpoint generation

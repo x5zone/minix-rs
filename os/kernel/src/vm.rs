@@ -5,17 +5,17 @@
 //!
 //! # Module Organization
 //!
-//! - **02-page-table-kernel.md** types: `PageTableRef`, `AddressRef`,
+//! - **02-higher-half-kernel.md** types: `PageTableRef`, `AddressRef`,
 //!   `VmCopyError`, `VmFaultType`, `CrossSpaceResult`, `VmCopyContext`,
 //!   `cross_space_copy`, `cross_space_memset`
-//! - **03-vm-request.md** types: `VmSuspendType`, `VmCheckParams`,
+//! - **24-cross-space-runtime.md** types: `VmSuspendType`, `VmCheckParams`,
 //!   `VmSuspendState`, `VmCheckResult`, `VmSuspendContext`, `VmRequestQueue`,
 //!   `VmCtlError`, `VmRequestHandler`
 //! - **09-vm-boot-protocol.md** types: `VmCtlParam`, `VmCtlResult`,
 //!   `VmCtlError`
 //!
-//! Design decisions are documented in 02-page-table-kernel.md §3 and
-//! 03-vm-request.md §3.
+//! Design decisions are documented in 02-higher-half-kernel.md §3 and
+//! 24-cross-space-runtime.md §3.
 
 use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
 use minix_arch::direct_map::DirectMapArch;
@@ -144,7 +144,7 @@ impl core::fmt::Display for CrossSpaceResult {
 /// a single `VmCopyError` enum (as the previous design did) conflates
 /// "needs recovery" with "is an error".
 ///
-/// Design decision: 02-page-table-kernel.md §3.1 (Direct Map replaces
+/// Design decision: 02-higher-half-kernel.md §3.1 (Direct Map replaces
 /// temporary PDE mapping), review fix for P0 #1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrossSpaceResult {
@@ -164,8 +164,8 @@ pub enum VmFaultType {
 /// Cross-address-space copy context.
 ///
 /// Records the source, destination, byte count, and fault direction for a
-/// suspended cross-space copy operation. Renamed from `VmRequest` (02-page-table-kernel.md §4.3b)
-/// to avoid confusion with `VmSuspendContext` (03-vm-request.md §3.2).
+/// suspended cross-space copy operation. Renamed from `VmRequest` (02-higher-half-kernel.md §4.3b)
+/// to avoid confusion with `VmSuspendContext` (24-cross-space-runtime.md §3.2).
 ///
 /// Design decision: §3.8 (merge with VmSuspendContext as `copy_context` field).
 #[derive(Debug)]
@@ -415,7 +415,7 @@ pub fn copy_page_table_ref(_as: &PageTableRef) -> PageTableRef {
 ///
 /// Replaces Minix3's `VMSTYPE_KERNELCALL`/`VMSTYPE_DELIVERMSG` macros.
 /// `VMSTYPE_MAP` and `VMSTYPE_SYS_NONE` are not implemented — they are
-/// unused in Minix3 (03-vm-request.md §2.5.6).
+/// unused in Minix3 (24-cross-space-runtime.md §2.5.6).
 ///
 /// Design decision: §3.1 (enum replaces VMSTYPE_* macros).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -516,7 +516,7 @@ pub struct VmSuspendContext {
 
     /// Cross-space copy context, only for KernelCall with copy operations.
     /// `None` for vm_check_range (no copy to resume) and DeliverMsg.
-    /// Migrated from 02-page-table-kernel.md `VmRequest`.
+    /// Migrated from 02-higher-half-kernel.md `VmRequest`.
     /// Design decision: §3.8
     pub copy_context: Option<VmCopyContext>,
 }
@@ -789,7 +789,7 @@ impl TryFrom<i32> for VmCtlParam {
 /// - `VMSUSPEND` (-996): 需 VM 协助
 /// - `VMPTYPE_CHECK` (1): 请求类型
 ///
-/// Design decision: enum 替代 C 的魔术数返回值（08-vm-boot-protocol.md §3）。
+/// Design decision: enum 替代 C 的魔术数返回值（09-vm-boot-protocol.md §3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmCtlResult {
     /// 操作成功，附带返回值。

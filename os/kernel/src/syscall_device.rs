@@ -7,7 +7,7 @@
 //! - `do_vdevio.c` — SYS_VDEVIO (x86-only)
 //! - `do_iopenable.c` — SYS_IOPENABLE (x86-only)
 //!
-//! # Design Decisions (19-syscall-device.md §3)
+//! # Design Decisions (20-syscall-device.md §3)
 //!
 //! - **D1**: `IrqctlRequest` enum for IRQ sub-requests
 //! - **D2**: `trait PortIo` for architecture-specific I/O
@@ -186,7 +186,7 @@ fn check_irq_permission(caller_priv: &KPriv, irq_vec: i32) -> bool {
 /// use `MockPortIo` (no-op). This follows the same pattern as
 /// `InterruptController` and `EarlyConsole`.
 ///
-/// Design: Doc 19-syscall-device.md §3 D2.
+/// Design: Doc 20-syscall-device.md §3 D2.
 pub use minix_plat::PortIo;
 
 // ── Dispatch functions ──
@@ -685,7 +685,7 @@ pub fn dispatch_vdevio<PI: PortIo>(
 /// RFLAGS.IOPL=3; on aarch64/riscv64 it is a no-op. The kernel layer
 /// only knows the OS concept "enable user I/O"; the arch layer
 /// (`CpuContextArch::enable_user_io`) decides how to encode it
-/// (06-design-final.md §3.5).
+/// (06-design.v1.md §3.5).
 ///
 /// For already-running processes, the trap frame on the kernel stack
 /// also needs updating — this is deferred until the scheduler/context-switch
@@ -722,7 +722,7 @@ pub fn dispatch_iopenable(
     // C: do_iopenable.c:28 — enable_iop(proc_addr(proc_nr))
     // C: enable_iop() sets IOPL=3: pp->p_reg.psw |= 0x3000
     // The Rust rewrite sinks the RFLAGS.IOPL write into the arch layer
-    // (06-design-final.md §3.5): the kernel only knows the OS concept
+    // (06-design.v1.md §3.5): the kernel only knows the OS concept
     // "enable user I/O"; the arch decides how to encode it (x86-64:
     // RFLAGS |= 0x3000; aarch64/riscv64: no-op).
     //

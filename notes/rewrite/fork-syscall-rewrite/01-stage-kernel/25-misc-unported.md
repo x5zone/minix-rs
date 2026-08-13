@@ -705,7 +705,7 @@ GetInfoRequest::RandomnessBin => {
 > - GET_HZ/GET_LOADINFO/GET_MACHINE/GET_CPUINFO/GET_CPUTICKS 已实现：经 `copy_struct_to_caller<T>` + `data_copy_vmcheck` 拷贝到用户空间；`LoadInfoStruct`/`MachineStruct`/`CpuInfoEntry` 均为 `#[repr(C)]`（此前返回 ENOSYS）
 > - SPROF START（PROF_RTC）→ `ClockArch::init_profile_clock(freq)` 已接线；SPROF STOP → `ClockArch::stop_profile_clock()` 已接线；PROF_NMI → `ENOSYS`（NMI 子系统 §6.3 排除）
 > - GETINFO DEFERRED 注释已更新：`data_copy_vmcheck` 已就绪，实际阻塞于 C 兼容结构体布局（struct proc/priv/reg_t 等）
-> - **T_SETUSER 已实现**: 新增 `CpuContextArch::write_user_register` trait 方法（`os/arch/src/arch/boot.rs:211`），三架构均覆盖：
+> - **T_SETUSER 已实现**: 新增 `CpuContextArch::write_user_register` trait 方法（`os/arch/src/arch/boot.rs:214`），三架构均覆盖：
 >   - x86_64 (`os/arch/src/x86_64/boot.rs`): 段寄存器（cs/ds/es/fs/gs/ss）禁止写入返回 `Err(())`；PSW (RFLAGS) 应用 `PSW_USER_MASK=0x0DD5` 用户位掩码（CF/PF/AF/ZF/SF/TF/DF/OF/IF）；其余通用寄存器按偏移直接写入
 >   - arm64 (`os/arch/src/arm64/boot.rs`): psr/pc/sp/r0 直接写入；gp_regs[0..30] 按 `(offset-32)/8` 索引写入
 >   - riscv64 (`os/arch/src/riscv64/boot.rs`): sstatus/sepc/sp/a0 直接写入；gp_regs[0..30] 同 arm64 偏移映射

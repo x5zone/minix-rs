@@ -1724,7 +1724,7 @@ Boot 阶段是最容易出问题且最难调试的阶段——一旦 `arch_boot_
 |------|------------|---------|
 | **boot-shim** | `os/boot-shim/src/main.rs:56-59` `#[panic_handler] fn panic(_info) -> ! { loop {} }` | **当前无输出** — 仅死循环，调试需 QEMU `-d int` 查指令 |
 | **kernel**（`kmain` 之前）| 无 `#[panic_handler]`（panic = abort 在 cfg(test-all) 启用，普通 cargo build 走默认行为）| 不可观测 |
-| **kernel**（`kmain` 之后）| 由 runtime console 接管（`os/kernel/src/main.rs`）| 有完整 stack trace |
+| **kernel**（`kmain` 之后）| 无 `#[panic_handler]`（lib crate，panic = abort，`os/kernel/Cargo.toml:32/37`）；panic 传播到调用方 bin 的 handler | 经 `EarlyConsole`（`os/plat/src/early_console.rs`）输出（`kmain` 已 init console）；qemu-test bin 的 handler 打印 `### PANIC ###` 后 halt |
 
 **已知问题**（boot-shim panic 空 handler）：
 

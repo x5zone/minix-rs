@@ -395,6 +395,8 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
         if is_nested { return Self::handle_nested(..); }
         // ③ 页错误
         if vector.get() == 14 { return Self::handle_page_fault(..); }
+        // ③' 用户态 #NM → FPU lazy 恢复陷阱（FpuTrap）
+        if vector.get() == 7 && is_user { return ExceptionOutcome::FpuTrap; }
         // ④ 用户态 → 信号
         if is_user { return Self::classify_signal(vector); }
         // ⑤ 内核态 → panic
@@ -404,6 +406,8 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
 ```
 
 对应 C `exception_handler` 五分支（§2.1）。`is_traced`/`kern_trap_style` 用于嵌套调试异常的特殊判断（C `exception.c:232-250`）。
+
+分支 ③' 的语义：**用户态 #NM 在 C 中于汇编层（`mpx.S copr_not_available`）就被拦截**——`copr_not_available_handler`（proc.c:1922）执行 lazy FPU 恢复后直接回用户态，根本不进 `exception_handler`。Rust 无汇编层分发，故在 dispatcher 显式特判，产出 `FpuTrap` 供 lazy 恢复主体消费。内核态 #NM 由分支 ②（nested）处理 → panic，与 C 的 `exception_entry_nested` 一致。详见 [31-fpu-context-switching.md](31-fpu-context-switching.md) §4.4。
 
 ### 4.3 FaultContext / RecoveryPoint / ExceptionOutcome
 
@@ -512,6 +516,8 @@ fn classify_signal(vector: InterruptVector) -> ExceptionOutcome {
 ```
 
 与 C `ex_data[]`（§2.4）一一对应。match 的穷尽检查保证新增向量不会遗漏。signal 数值（SIGFPE=8 等）仅在最终投递时映射。
+
+> **注（2026-08-13）**：用户态 #NM（向量 7）在进入 `classify_signal` 前已被 `handle()` 特判为 `FpuTrap`（§4.2 分支 ③'）——lazy-FPU 恢复陷阱。`7 => Fpe` 保留为兜底映射（对齐 C `ex_data[]` 静态表；防御性保留，正常用户态路径不命中）。详见 [31-fpu-context-switching.md](31-fpu-context-switching.md) §4.4。
 
 ### 4.6 页错误转发路径
 
