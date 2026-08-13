@@ -95,7 +95,7 @@ impl TrapEntryArch for Riscv64TrapEntry {
     fn load(&self) {
         // Set stvec to the trap vector address in Direct mode (MODE=0).
         // The trap vector is defined in assembly as trap_vector.
-        extern "C" {
+        unsafe extern "C" {
             static trap_vector: u8;
         }
         // SAFETY: CSR write to stvec is safe because:

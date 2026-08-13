@@ -1099,6 +1099,17 @@ pub fn bkl_unlock() {
 | `test_smp_ipi_halt_handler` | halt CPU 调用 | `SmpArch::halt_cpu` mock |
 | `test_smp_schedule_migrate_proc` | 迁移修改 p_cpu + RTS_UNSET | `schedule_sync` 多 CPU |
 
+### 5.3 从 todo.md 转移的待办（2026-08-14，todo.md 已清空）
+
+> 以下项目来自 `01-stage-kernel/todo.md`（原 §6.3/§6.4/§6.8/§12.2），属 SMP/多核语义范围，随 todo.md 清空转移至此。
+
+| 待办 | 原出处 | 当前状态 |
+|------|--------|---------|
+| init/load 顺序约束缺少测试（`init_proc_and_boot` → `init_post_and_memory` 调用顺序违反时应 panic） | todo §6.3 [P1] | 未实现 |
+| `init_ap` 路径验证缺失——x86_64 `init_ap` 仍为 `panic!` 占位（protection.rs:370），占位触发后无测试 | todo §6.4 [P1] | 未实现 |
+| QEMU GDB 脚本未集成到 CI（手动脚本） | todo §6.8 [P2] | 未实现 |
+| ptproc per-CPU 语义跟踪：`PostInitArch::set_ptproc` 三架构占位（`let _ = vm_page_table`）——Direct Map 取代 createpde 后单核语义可接受（占位有测试 + 07 doc 注释），多核 per-CPU ptproc 待 SMP 落地 | todo §12.2 [P1] | 占位（单核 OK），SMP 跟踪 |
+
 ---
 
 ## 6. 参见

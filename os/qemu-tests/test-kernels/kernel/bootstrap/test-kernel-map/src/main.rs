@@ -49,6 +49,7 @@ fn main() -> Status {
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
+        param_buf: &[],
     };
 
     let result = BootPrepareResult {

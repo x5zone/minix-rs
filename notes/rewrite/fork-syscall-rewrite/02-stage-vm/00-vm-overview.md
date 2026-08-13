@@ -360,6 +360,17 @@ VM 维护以下跨组件共享的全局变量：
 | `get_usage_info_vm` | region.c:1366 | 获取 VM 自身内存使用量，`get_usage_info()` 的内部辅助函数 | [22-vm-queries.md](22-vm-queries.md) |
 | `physregions` | region.c:1546 | 遍历 vir_region 所有 phys_region，统计已映射物理页数 | [11-region-mapping.md](11-region-mapping.md) |
 
+### 8.4 VM stage backlog（从 01-stage-kernel/todo.md 转移，2026-08-14）
+
+> 以下项目原属 `01-stage-kernel/todo.md`，因属 VM 服务器范围，随 todo.md 清空转移至此，作为 02-stage-vm 的 backlog。
+
+| 待办 | 原出处 | 当前状态 |
+|------|--------|---------|
+| 页表页分配器接入 VM 阶段（`vm_pt_alloc` / 从 VM 分配页表页的路径） | todo §4 | 未实现 |
+| minix-vm crate clippy 116 warnings（含 Rust 2024 `unsafe_op_in_unsafe_fn` 等） | todo §11.3 | 未清理 |
+| **minix-vm 15 个测试失败（pre-existing，2026-08-14 确认）**：`alloc_page::tests::{test_alloc_page, test_alloc_pages_multi}` 断言 `v1.0 - p1 == VM_DIRECT_MAP_BASE` 失败（mock allocator 返回 heap 地址 0x783c... 而非 2 GiB 直映区）+ `vir_region::tests::test_map_lazy` unwrap None + `vm_server` 7 个测试 `register_page_alloc` 覆盖 panic（`global.rs:314` PAGE_ALLOC_PTR 全局状态）。单线程亦复现（非并行问题），指向 mock 路径下 `VM_DIRECT_MAP_BASE`/全局 allocator 状态与测试假设不一致。**注意：minix-vm 116 warnings 与 15 failed 是同一 crate 的两个独立 backlog 项** | 本次发现（stash 验证 pre-existing） | 未修复 |
+| `AcpiDesc` 最小化实现扩展：HPET、x2APIC 中断投递、Interrupt Source Override、多 IOAPIC（当前 QEMU virt x86_64 够用） | todo §7 剩余偏差 | 未实现（真实硬件移植时） |
+
 ---
 
 ## 9. 参见

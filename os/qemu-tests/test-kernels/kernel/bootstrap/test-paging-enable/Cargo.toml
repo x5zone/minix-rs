@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-uefi = { version = "0.33", features = ["global_allocator"] }
+uefi = { version = "0.33", features = ["alloc"] }
+# Note: uefi "global_allocator" feature deliberately NOT enabled —
+# this test-kernel defines its own #[global_allocator]
+# (HybridAllocator). Enabling uefi's would conflict under
+# feature unification in host `cargo test` (boot-shim lib test).
 minix-arch = { workspace = true, default-features = false }
 minix-plat = { workspace = true }
 minix-types = { workspace = true }
@@ -17,3 +21,11 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[[bin]]
+name = "test-paging-enable"
+path = "src/main.rs"
+# Bare-metal firmware binary: never compile a host test harness
+# (host `cargo test` would link std → duplicate panic_impl /
+# global_allocator conflicts with uefi).
+test = false

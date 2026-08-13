@@ -94,7 +94,7 @@ impl TrapEntryArch for AArch64TrapEntry {
     fn load(&self) {
         // Set VBAR_EL1 to the exception vector table address.
         // The table is defined in assembly as exc_vector_table.
-        extern "C" {
+        unsafe extern "C" {
             static exc_vector_table: u8;
         }
         // SAFETY: VBAR_EL1 write is safe because:

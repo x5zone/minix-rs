@@ -692,10 +692,11 @@ fn init_protection(kernel_info: &KernelInfo) {
 #[cfg(not(feature = "mock"))]
 fn init_clock_and_interrupts() {
     use minix_arch::{
-        ClockState, ClockArch,
+        ClockArch,
         ArchInit,
         CurrentClockArch, CurrentArchInit,
     };
+    use crate::clock::ClockState;
     use minix_plat::{InterruptController, CurrentInterruptController};
     use minix_platform::{platform_desc, PlatformDesc};
 
@@ -819,7 +820,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // sees these values.
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             ProcKind::KernelTask,
-            nr,
+            nr.0, // arch trait takes a plain i32 (arch::boot::ProcNr = i32 alias)
             EntrySpec::KERNEL_TASK,
         );
         proc.set_boot_cpu_context(cpu_context);
@@ -971,7 +972,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
 
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             proc_kind,
-            nr,
+            nr.0, // arch trait takes a plain i32 (arch::boot::ProcNr = i32 alias)
             entry,
         );
         proc.set_boot_cpu_context(cpu_context);

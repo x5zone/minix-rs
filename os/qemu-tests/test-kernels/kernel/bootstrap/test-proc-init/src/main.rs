@@ -34,7 +34,7 @@ use uefi::prelude::*;
 // After exit_boot_services(), we use a simple bump allocator backed by BSS.
 // ProcessTable::new() uses Box/Vec which need a global allocator.
 
-#[link_section = ".bss"]
+#[unsafe(link_section = ".bss")]
 static mut HEAP: [u8; 0x200000] = [0u8; 0x200000]; // 2 MiB
 
 /// Set to true after exit_boot_services() is called.
@@ -135,6 +135,7 @@ fn main() -> Status {
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
+        param_buf: &[],
     };
 
     let result = BootPrepareResult {
@@ -165,11 +166,16 @@ fn main() -> Status {
 
     // 4. Phase C: init_proc_and_boot
     early_console::write_str("  calling init_proc_and_boot...\n");
-    let proc_table = minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    // SAFETY: single-threaded boot context in this test kernel; the
+    // kernel's own init_proc_and_boot uses the same accessor
+    // (proc_table_boot_unchecked, lib.rs:1438).
+    let proc_table = unsafe { minix_kernel::proc_table_boot_unchecked() };
     early_console::write_str("  init_proc_and_boot completed\n");
 
     // 5. Verify process table state
     use minix_kernel::proc::RtsFlagsBits;
+    use minix_kernel::proc::ProcNr;
     use minix_kernel::proc::proc_nr;
 
     // 5a. Verify: CLOCK kernel task has SLOT_FREE cleared and PROC_STOP set
@@ -227,7 +233,7 @@ fn main() -> Status {
 
     // 5d. Verify: non-VM user process (PM nr=2) has VMINHIBIT + BOOTINHIBIT
     // C: main.c:267-270 — all user procs except VM get VMINHIBIT|BOOTINHIBIT
-    let pm_proc = proc_table.get(2); // PM_PROC_NR = 2
+    let pm_proc = proc_table.get(ProcNr(2)); // PM_PROC_NR = 2
     if let Some(pm) = pm_proc {
         if !pm.p_rts_flags.is_set(RtsFlagsBits::VMINHIBIT) {
             early_console::write_str("  FAIL: PM missing VMINHIBIT\n");

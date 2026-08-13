@@ -124,7 +124,7 @@
 | G-019 | `vm_running` | glo.h:37 | VM 运行标志 | `lib::vm_running()` (atomic) | ✅ 已实现: `lib.rs::VM_RUNNING: AtomicBool` 全局镜像 + `bsp_finish_booting` 步骤 1 写入 false。SMP 时迁入 `SmpState.cpu_locals[cpu].vm_running` — see Doc 07 §4.6 / Doc 15 §2.2 (P0-08 resolved) |
 | G-020 | `catch_pagefaults` | glo.h:38 | catch pagefaults flag | `MiscFlags::CATCH_PAGEFAULTS` | ✅ |
 | G-021 | `kernel_may_alloc` | glo.h:39 | 动态分配许可 | `boot_alloc::may_alloc()` | ✅ |
-| G-022 | `image[]` | table.c | boot image 表 | `BootImage` (minix-types) | ⚠️ Partial — todo.md §1 boot module lifecycle missing |
+| G-022 | `image[]` | table.c | boot image 表 | `BootImage` (minix-types) | ✅ Partial→✅ (2026-08-14): boot module 生命周期已实现——`boot-shim/src/loader.rs:253` `load_boot_modules_with_loader` 加载模块并记录 `BootModule`（`'static` leak，todo.md §1 已解决） |
 | G-023 | `verboseboot` | glo.h | 详细启动 | `KernelInfo::verbose` | ✅ |
 | G-024 | `ipc_call_names[]` | glo.h | IPC 调用名表 | not implemented | ❌ 调试用, 优先级低 |
 | G-025 | `lost_ticks` | glo.h | 丢失 tick 数 | `ClockState::lost_ticks` | ⚠️ Partial |

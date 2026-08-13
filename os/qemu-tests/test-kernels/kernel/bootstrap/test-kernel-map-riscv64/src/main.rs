@@ -22,7 +22,7 @@ use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
 
 use core::alloc::{GlobalAlloc, Layout};
 
-#[link_section = ".bss"]
+#[unsafe(link_section = ".bss")]
 static mut HEAP: [u8; 0x10000] = [0u8; 0x10000];
 
 struct BootAllocator;
@@ -96,7 +96,7 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 /// Sentinel value written to memory, read back after mapping.
 const SENTINEL: u64 = 0xdeadbeef_cafe0002;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### test_kernel_map (riscv64): verify kernel mapping\n");
 
@@ -120,6 +120,7 @@ pub extern "C" fn rust_main() -> ! {
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
+        param_buf: &[],
     };
 
     let result = BootPrepareResult {

@@ -42,7 +42,7 @@ use core::alloc::{GlobalAlloc, Layout};
 /// 64KB static heap region for early boot allocations.
 /// This is enough for the few allocations that happen before
 /// arch_boot_impl completes (e.g., building page table structures).
-#[link_section = ".bss"]
+#[unsafe(link_section = ".bss")]
 static mut HEAP: [u8; 0x10000] = [0u8; 0x10000];
 
 struct BootAllocator;
@@ -129,7 +129,7 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 }
 
 /// Rust entry point — called by _start assembly after stack is set up.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### Booting Minix-RS hello-boot (riscv64, Paging trait)...\n");
 
@@ -155,6 +155,7 @@ pub extern "C" fn rust_main() -> ! {
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
+        param_buf: &[],
     };
 
     let result = BootPrepareResult {

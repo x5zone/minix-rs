@@ -77,8 +77,10 @@ impl CpuContextArch for Riscv64CpuContextArch {
     fn apply_to_trap_frame(ctx: &Self::CpuContext, frame: &mut Self::TrapFrame) {
         frame.sstatus = ctx.sstatus;
         frame.sepc = ctx.sepc;
-        frame.sp = ctx.sp;
-        frame.a0 = ctx.a0;
+        // RISC-V ABI register indices: x2 = sp, x10 = a0 (see
+        // Riscv64ExceptionFrame::set_return_value, exception.rs).
+        frame.regs[2] = ctx.sp;
+        frame.regs[10] = ctx.a0;
 
         // sstatus.FS = Initial so the first FP instruction traps and
         // the kernel can do lazy FPU allocation. This is the
