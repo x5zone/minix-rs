@@ -8,7 +8,7 @@ verify-check.py — Minix-RS Review 独立验证（Gate G）辅助脚本
 
 功能（对应 improve-v2 §1.4.2 VERIFY-CROSS 步骤）:
   1. 从 scan.md 提取 Issue List，随机抽样 20%
-  2. 检查 scan.md 是否含 8 个 Gate 0 必备锚段
+  2. 检查 scan.md 是否含 9 个 Gate 0 必备锚段
   3. 检查每个 Gate 的 gate-evidence-{X} 块是否存在且含关键字
   4. 从 SYMBOLS.md 抽样 20% 符号，供 reviewer 检查覆盖
   5. 生成 VERIFY-CHECK.md 骨架，含待人工填写的"反向验证"列
@@ -41,6 +41,7 @@ from datetime import datetime
 GATE0_ANCHORS = [
     "## Skill Invocation Log",
     "## Blocker Gates Status",
+    "## Step 0: 预检结果",
     "## Step 1: C Source Ground Truth Lookup",
     "## Step 1.5: Coverage Enumeration",
     "## Step 2: Diff Extraction",
@@ -58,18 +59,19 @@ GATE_EVIDENCE_KEYWORDS = {
     "D-6": [],  # structure.md 评审表
     "E": [],  # 测试函数 grep
     "G": [],  # VERIFY-CHECK 路径
+    "H": [],  # design + outline 对齐
 }
 
 # ===== Issue 提取模式 =====
 # 匹配 Issue List 表格行: | P1-1 | P1 | L459 | ... |
 ISSUE_ROW_PATTERN = re.compile(
-    r'^\|\s*(P[012]-\d+[a-z]?)\s*\|\s*(P[012])\s*\|',
+    r'^\|\s*(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\s*\|\s*(P[012])\s*\|',
     re.MULTILINE
 )
 
 # 匹配列表项: - P1-1 / ### P1-1
 ISSUE_LIST_PATTERN = re.compile(
-    r'(?:^|\n)(?:#+\s*)?(?:-\s*)?(P[012]-\d+[a-z]?)\b',
+    r'(?:^|\n)(?:#+\s*)?(?:-\s*)?(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b',
     re.MULTILINE
 )
 
@@ -98,7 +100,7 @@ def extract_issues_from_scan(scan_text):
 
 
 def check_gate0_anchors(scan_text):
-    """检查 scan.md 是否含 8 个 Gate 0 必备锚段。"""
+    """检查 scan.md 是否含 9 个 Gate 0 必备锚段。"""
     missing = []
     for anchor in GATE0_ANCHORS:
         if anchor not in scan_text:
@@ -201,7 +203,7 @@ def generate_verify_check_md(
         for anchor in gate0_missing:
             lines.append(f"   - `{anchor}`")
     else:
-        lines.append(f"✅ **PASS** — 8 个必备锚段齐全")
+        lines.append(f"✅ **PASS** — 9 个必备锚段齐全")
     lines.append(f"")
     lines.append(f"### 1.2 Gate 证据块检查")
     lines.append(f"")
@@ -377,7 +379,7 @@ def main():
             for a in gate0_missing:
                 print(f"   - {a}")
         else:
-            print("✅ 8 个锚段齐全")
+            print("✅ 9 个锚段齐全")
         print()
         print("--- Gate 证据块 ---")
         for gate in sorted(gate_evidence_results.keys()):

@@ -28,6 +28,10 @@
 #       ├── STATE.md
 #       ├── VERIFY-CHECK.md
 #       └── {doc-stem}/{scan,structure,SYMBOLS}.md
+#   .review/codex/{module}/
+#       ├── STATE.md
+#       ├── VERIFY-CHECK.md
+#       └── {doc-stem}/{scan,structure,SYMBOLS}.md
 
 set -euo pipefail
 
@@ -39,11 +43,11 @@ SIZE_ADAPTIVE="false"             # true | false
 # ===== 参数校验 + 解析 =====
 if [[ $# -lt 2 ]]; then
     echo "用法: $0 {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]" >&2
-    echo "  tool     = trae | claude" >&2
+    echo "  tool     = trae | claude | codex" >&2
     echo "  doc-path = 相对项目根的文档路径（如 notes/rewrite/{module}/{stage}/{doc}.md）" >&2
     echo "  agent    = AI 标识（Trae: glm/kimi/ds/qwen/seed；Claude 可省略）" >&2
-    echo "  --design-policy   = strict（默认；缺失 design 阻断 review 启动 / review 内部 Step 0.3 嵌入生成）" >&2
-    echo "                      | optional（缺失 design 仅警告，不阻断；用于跨文档复用场景）" >&2
+    echo "  --design-policy   = strict（默认；缺失 design 记录 Gate H FAIL，继续由 review 内部 Step 0.3 嵌入生成）" >&2
+    echo "                      | optional（缺失 design 仅警告，不阻断；仍须生成本编号快照）" >&2
     echo "                      | required（缺失 design 则立即报错退出）" >&2
     echo "  --require-multi-agent = 报告 P0≥1 时强制多 agent 验证 Gate G" >&2
     echo "  --size-adaptive    = 输出 size-adaptive round 推荐（>1000 行文档分轮）" >&2
@@ -87,8 +91,8 @@ TOOL="$1"
 DOC_PATH="$2"
 AGENT="${3:-}"
 
-if [[ "$TOOL" != "trae" && "$TOOL" != "claude" ]]; then
-    echo "❌ tool 必须是 trae 或 claude，得到: $TOOL" >&2
+if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" ]]; then
+    echo "❌ tool 必须是 trae、claude 或 codex，得到: $TOOL" >&2
     exit 1
 fi
 
@@ -200,7 +204,7 @@ generate_state_skeleton() {
 - **Open P2 issues**: 0
 - **Convergence status**: NOT_CONVERGED
 - **Next action**: Run Step 0 (scope + time budget)
-- **Blocker Gates**: 0❌ A❌ B❌ C❌ D❌ D-6❌ E❌ G❌
+- **Blocker Gates**: 0❌ A❌ B❌ C❌ D❌ D-6❌ E❌ G❌ H❌
 
 ## Resume Point（NEW 2026-07-16，跨 session 续审必填）
 > 当 session 中断时强制填写，详细协议见 [review-process.md §一.附录 A.2](#)
@@ -241,7 +245,9 @@ STATE_VALIDATE_SCRIPT="$SCRIPT_DIR/review-state-validate.py"
 if [[ -f "$STATE_FILE" ]]; then
     echo "ℹ️ STATE.md 已存在，运行预检..."
     if [[ -f "$STATE_VALIDATE_SCRIPT" ]]; then
-        python3 "$STATE_VALIDATE_SCRIPT" --state "$STATE_FILE" --project-root "$PROJECT_ROOT" || true
+        if ! python3 "$STATE_VALIDATE_SCRIPT" --state "$STATE_FILE" --scan "$SCAN_FILE" --project-root "$PROJECT_ROOT"; then
+            echo "⚠️ STATE 预检返回非零；必须在 scan.md 记录并修复，不能据此标记 CONVERGED"
+        fi
     else
         echo "⚠️ review-state-validate.py 不存在，跳过预检"
     fi
@@ -252,7 +258,7 @@ else
 fi
 
 # ===== Design 存在性预检（NEW 2026-07-16）=====
-# 触发条件：完整/深度/设计优先 review 模式；review-process.md §Step 0 必须做
+# 触发条件：所有 review 模式；review-process.md §Step 0 必须做
 echo ""
 echo "=== Design 预检（NEW Step 0 requirement）==="
 # 提取 doc 编号前两位（如 03-kmain-cstart → 03），用于匹配 {NN}-design.v{N}.md 模式
@@ -269,12 +275,11 @@ if [[ -d "$DESIGN_DIR" ]]; then
                 echo "⛔ Design MISSING（policy=strict）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
                 echo "   下一步：启动 review 后，AI 将自动执行 Step 0.3 嵌入生成（design-structure → outline → outline-review → design）"
                 echo "   详见：prompt/review-rules/review-process.md §Step 0.3 缺失即生成"
-                echo "   阻断 review 启动（exit 2）— 改用 --design-policy optional 可跳过阻断，review 内部 Step 0.3 仍会生成"
-                exit 2
+                echo "   继续进入 review；Step 0.3 必须在 review 内生成本编号快照，Gate H 暂记 FAIL"
                 ;;
             optional)
                 echo "⚠️  Design MISSING（policy=optional）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
-                echo "   将仅 WARN 不阻断 review；本 review 不要求专属 design 但建议通过引用复用相邻文档 design"
+                echo "   将仅 WARN 不阻断 review；仍须通过 Step 0.3 生成本编号快照，禁止跨文档复用 design"
                 ;;
             required)
                 echo "⛔ Design REQUIRED（policy=required）但缺失：$DESIGN_DIR/${DOC_NN}-design.v*.md"
@@ -287,11 +292,10 @@ else
     echo "⚠️ Design 目录不存在：$DESIGN_DIR"
     case "$DESIGN_POLICY" in
         strict)
-            echo "   policy=strict：阻断 review 启动（exit 2）— 改用 --design-policy optional 跳过，review 内部 Step 0.3 仍会生成"
-            exit 2
+            echo "   policy=strict：继续进入 review；Step 0.3 必须生成本编号快照，Gate H 暂记 FAIL"
             ;;
         optional)
-            echo "   policy=optional，仅警告不阻断"
+            echo "   policy=optional，仅警告不阻断；仍须生成本编号快照"
             ;;
         required)
             echo "   立即退出。"
@@ -361,6 +365,9 @@ echo ""
 if [[ "$TOOL" == "trae" ]]; then
     DOC_DIR_REL="$(dirname "$DOC_PATH_NORMALIZED")"
     DUAL_WRITE_FILE="$DOC_DIR_REL/${DOC_STEM}-trae-review.md"
+elif [[ "$TOOL" == "codex" ]]; then
+    DOC_DIR_REL="$(dirname "$DOC_PATH_NORMALIZED")"
+    DUAL_WRITE_FILE="$DOC_DIR_REL/${DOC_STEM}-codex-report.md"
 else
     DOC_DIR_REL="$(dirname "$DOC_PATH_NORMALIZED")"
     DUAL_WRITE_FILE="$DOC_DIR_REL/${DOC_STEM}-claude-report.md"
@@ -373,19 +380,33 @@ COVERAGE_SCRIPT="$SCRIPT_DIR/coverage-extract/coverage-extract.py"
 if [[ -f "$COVERAGE_SCRIPT" ]]; then
     echo "=== coverage-extract.py 命令模板（Gate A）==="
     echo ""
-    # 推断 minix3 module：kernel / vm / pm / fs / ...
+    # 推断 Minix3 module：kernel 或 servers/{module}。
     MINIX3_MODULE="kernel"
-    if [[ "$MODULE" == *"vm"* ]] || [[ "$STAGE" == *"vm"* ]]; then
+    MODULE_HINT="${MODULE} ${STAGE}"
+    if [[ "$MODULE_HINT" == *"vm"* ]]; then
         MINIX3_MODULE="vm"
-    elif [[ "$MODULE" == *"pm"* ]] || [[ "$STAGE" == *"pm"* ]]; then
+    elif [[ "$MODULE_HINT" == *"pm"* ]]; then
         MINIX3_MODULE="pm"
-    elif [[ "$MODULE" == *"fs"* ]] || [[ "$STAGE" == *"fs"* ]]; then
+    elif [[ "$MODULE_HINT" == *"vfs"* ]]; then
+        MINIX3_MODULE="vfs"
+    elif [[ "$MODULE_HINT" == *"rs"* ]]; then
+        MINIX3_MODULE="rs"
+    elif [[ "$MODULE_HINT" == *"ds"* ]]; then
+        MINIX3_MODULE="ds"
+    elif [[ "$MODULE_HINT" == *"inet"* ]]; then
+        MINIX3_MODULE="inet"
+    elif [[ "$MODULE_HINT" == *"fs"* ]]; then
         MINIX3_MODULE="fs"
+    fi
+    if [[ "$MINIX3_MODULE" == "kernel" ]]; then
+        C_DIR="minix3/minix/kernel"
+    else
+        C_DIR="minix3/minix/servers/$MINIX3_MODULE"
     fi
     DOC_DIR_FOR_COVERAGE="$(dirname "$DOC_PATH_NORMALIZED")"
     echo "python3 $COVERAGE_SCRIPT $MINIX3_MODULE \\"
     echo "  $DOC_DIR_FOR_COVERAGE \\"
-    echo "  --rust-dir os --c-dir minix3/minix/$MINIX3_MODULE \\"
+    echo "  --rust-dir os --c-dir $C_DIR \\" 
     echo "  --doc-file $DOC_FILENAME \\"
     if [[ -f "$SCRIPT_DIR/coverage-extract/${MINIX3_MODULE}-semantic-map.json" ]]; then
         echo "  --semantic-map tools/coverage-extract/${MINIX3_MODULE}-semantic-map.json \\"

@@ -88,6 +88,8 @@
 
 **冲突处理（判定矩阵）**：
 
+> **P0 六类定义详见 [review.md §P0 六分类](review.md)**。以下为 design↔code 状态到 P0 类型的映射：
+
 | design vs Minix3 | code vs design | 判定 |
 |----------------|---------------|------|
 | 一致 | 偏离 | **P0-design-deviation**（code Refactor：修 code） |

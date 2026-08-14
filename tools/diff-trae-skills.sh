@@ -117,7 +117,7 @@ echo ""
 
 # 找出所有 skill
 PROMPT_SKILLS=$(find "$PROMPT_DIR" -name "review-*-skill.md" -printf "%f\n" | sed 's/.md$//' | sort)
-TRAE_SKILLS=$(find "$TRAE_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
+TRAE_SKILLS=$(find "$TRAE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'review-*-skill' -printf "%f\n" | sort)
 
 P_COUNT=$(echo "$PROMPT_SKILLS" | wc -l)
 T_COUNT=$(echo "$TRAE_SKILLS" | wc -l)
@@ -190,7 +190,7 @@ done
 
 echo ""
 if [[ $ALL_MATCH -eq 1 ]]; then
-  echo "$(green "✅ 全部 8 个 skill 完全同步 (规范化对比)")"
+  echo "$(green "✅ 全部 ${P_COUNT} 个 skill 完全同步 (规范化对比)")"
 else
   echo "$(red "❌ 存在内容差异，运行 '$(basename "$0") <skill>' 查看详情")"
 fi

@@ -18,6 +18,7 @@ review-state-validate.py — Minix-RS Review STATE.md 预检与一致性校验
     python3 tools/review-state-validate.py --state .review/trae/{module}/STATE.md \
         --scan .review/trae/{module}/scans/{doc-stem}-{agent}-scan.md
     python3 tools/review-state-validate.py --state .review/claude/{module}/STATE.md --strict
+    python3 tools/review-state-validate.py --state .review/codex/{module}/STATE.md --strict
 
 退出码:
     0 = 全部通过
@@ -42,22 +43,24 @@ from pathlib import Path
 # 排除 URL 和明显非路径的 token
 PATH_REF_PATTERN = re.compile(
     r'(?<![\w/])('
-    r'(?:\.review|notes|tools|prompt|minix3|os)/[^\s`"\'<>\]\|]+'
+    r'(?:\.review|notes|tools|prompt|minix3|os)/[A-Za-z0-9_./{}*?+-]+'
     r'\.(?:md|py|rs|c|h|json|sh|txt|toml)'
     r')',
     re.MULTILINE
 )
 
-# Open issue 行：匹配 "- #P0-1 ..." / "- P0-1 ..." / "| P0-1 | ..." 等
+ISSUE_ID = r'P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*'
+
+# Open issue 行：匹配 "- #P0-1 ..." / "- P0-DOC-1 ..." / "| P0-DOC-1 | ..." 等
 OPEN_ISSUE_PATTERN = re.compile(
-    r'(?:^|\s)(#?P[012]-\d+[a-z]?)\b',
+    rf'(?:^|\s)(#?{ISSUE_ID})\b',
     re.MULTILINE
 )
 
 # 自述"已创建/已产出"语句
 CREATED_FILE_PATTERN = re.compile(
     r'(?:已创建|已产出|已生成|已写入|written to|created at|saved to)\s*[`:"]?\s*'
-    r'((?:\.review|notes|tools)/[^\s`"\'<>\]\|]+\.(?:md|py|rs|c|h|json|sh|txt|toml))',
+    r'((?:\.review|notes|tools)/[A-Za-z0-9_./{}*?+-]+\.(?:md|py|rs|c|h|json|sh|txt|toml))',
     re.IGNORECASE
 )
 
@@ -71,7 +74,7 @@ REQUIRED_SECTIONS = [
 
 # scan.md 中的 issue 行（更宽松，匹配表格或列表中的 P0/P1/P2 ID）
 SCAN_ISSUE_PATTERN = re.compile(
-    r'\b(P[012]-\d+[a-z]?)\b',
+    rf'\b({ISSUE_ID})\b',
     re.MULTILINE
 )
 
@@ -91,16 +94,21 @@ def extract_path_refs(text):
     return unique
 
 
+def is_template_path(path):
+    """Return True for documentation placeholders, not literal file paths."""
+    return any(token in path for token in ("{", "}", "*", "..."))
+
+
 def extract_open_issues(text):
     """从 STATE.md 的 Open P0/P1/P2 段落提取 issue ID。
 
     策略：找到 "Open P0 issues" / "Open P1 issues" / "Open P2 issues" 行，
-    从该行及其后续括号内提取 P0-N / P1-N / P2-N 形式的 ID。
+    从该行及其后续括号内提取 P0-N / P0-DOC-1 / P1-CODE-2 形式的 ID。
     """
     issues = set()
     # 匹配 "Open P0 issues: 3 (#1, #2, #3)" 或 "Open P0 issues: #P0-1, #P0-2"
     open_line_pattern = re.compile(
-        r'Open\s+P([012])\s+issues\s*:\s*([^\n]*)',
+        r'Open\s+P([012])\s+issues\s*\**\s*:\s*([^\n]*)',
         re.IGNORECASE
     )
     for match in open_line_pattern.finditer(text):
@@ -111,14 +119,15 @@ def extract_open_issues(text):
         hash_nums = re.findall(r'#(\d+)', rest)
         for n in hash_nums:
             issues.add(f"{severity}-{n}")
-        # 形式 2: "P0-1, P0-2" 直接匹配
-        explicit_ids = re.findall(rf'{severity}-(\d+[a-z]?)', rest)
-        for n in explicit_ids:
-            issues.add(f"{severity}-{n}")
+        # 形式 2: "P0-1, P0-DOC-2" 直接匹配
+        explicit_ids = re.findall(
+            rf'({severity}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)', rest
+        )
+        issues.update(explicit_ids)
 
     # 也扫描 "## Open Issues" 段落下的列表项
     open_section_pattern = re.compile(
-        r'##\s*Open\s+(?:P0|P1|P2|Issues)[^\n]*\n((?:.*\n)*?)(?=\n##|\Z)',
+        r'##\s*Open\s+(?:P0|P1|P2|Issues)[^\n]*\n([\s\S]*?)(?=\n##|\Z)',
         re.IGNORECASE
     )
     for section_match in open_section_pattern.finditer(text):
@@ -136,7 +145,7 @@ def extract_created_files(text):
         files.add(match.group(1))
     # 也匹配 Markdown 链接中的路径：[text](path/to/file.md)
     link_pattern = re.compile(
-        r'\[[^\]]*\]\(((?:\.review|notes|tools)/[^\s)]+\.(?:md|py|rs|c|h|json|sh|txt|toml))\)'
+        r'\[[^\]]*\]\(((?:\.review|notes|tools)/[A-Za-z0-9_./{}*?+-]+\.(?:md|py|rs|c|h|json|sh|txt|toml))\)'
     )
     for match in link_pattern.finditer(text):
         files.add(match.group(1))
@@ -197,7 +206,11 @@ def validate_state(state_path, scan_path=None, project_root=None):
     report.append(f"提取到 {len(path_refs)} 个路径引用")
     missing_refs = []
     existing_refs = []
+    template_refs = []
     for ref in path_refs:
+        if is_template_path(ref):
+            template_refs.append(ref)
+            continue
         # 尝试相对于 project_root 解析
         ref_path = (project_root / ref).resolve()
         if ref_path.exists():
@@ -215,7 +228,9 @@ def validate_state(state_path, scan_path=None, project_root=None):
         for ref in missing_refs:
             report.append(f"   - {ref}")
     else:
-        report.append(f"✅ 所有 {len(path_refs)} 个路径引用均存在")
+        report.append(f"✅ 所有 {len(path_refs) - len(template_refs)} 个字面路径引用均存在")
+    if template_refs:
+        report.append(f"ℹ️ 跳过 {len(template_refs)} 个模板路径引用")
     report.append("")
 
     # 3. 自述"已创建"文件存在性检查
@@ -224,6 +239,8 @@ def validate_state(state_path, scan_path=None, project_root=None):
     report.append(f"提取到 {len(created_files)} 个自述已创建文件")
     missing_created = []
     for cf in created_files:
+        if is_template_path(cf):
+            continue
         cf_path = (project_root / cf).resolve()
         if not cf_path.exists():
             alt_path = (state_path.parent / cf).resolve()
@@ -312,6 +329,8 @@ def _find_scan_md(state_path, project_root):
         → .review/trae/{module}/scans/ 下最新的 *-scan.md
       .review/claude/{module}/STATE.md
         → .review/claude/{module}/{doc-stem}/scan.md（取第一个存在的）
+      .review/codex/{module}/STATE.md
+        → .review/codex/{module}/{doc-stem}/scan.md（取第一个存在的）
     """
     state_path = Path(state_path)
     parts = state_path.parts
@@ -322,7 +341,7 @@ def _find_scan_md(state_path, project_root):
     if review_idx + 2 >= len(parts):
         return None
 
-    tool = parts[review_idx + 1]  # trae or claude
+    tool = parts[review_idx + 1]  # trae, claude, or codex
     module = parts[review_idx + 2]
 
     if tool == 'trae':
@@ -331,10 +350,10 @@ def _find_scan_md(state_path, project_root):
             scan_files = sorted(scans_dir.glob('*-scan.md'), key=lambda p: p.stat().st_mtime, reverse=True)
             if scan_files:
                 return scan_files[0]
-    elif tool == 'claude':
-        claude_module_dir = project_root / '.review' / 'claude' / module
-        if claude_module_dir.exists():
-            for doc_dir in sorted(claude_module_dir.iterdir()):
+    elif tool in {'claude', 'codex'}:
+        tool_module_dir = project_root / '.review' / tool / module
+        if tool_module_dir.exists():
+            for doc_dir in sorted(tool_module_dir.iterdir()):
                 if doc_dir.is_dir():
                     scan_file = doc_dir / 'scan.md'
                     if scan_file.exists():
@@ -356,7 +375,7 @@ def _extract_per_doc_scan_files(text):
     files = set()
     # 直接扫描文本中的 *-scan.md 引用
     scan_ref_pattern = re.compile(
-        r'((?:\.review/)?(?:trae|claude)/[^\s`"\'<>\]\|]+-scan\.md|'
+        r'((?:\.review/)?(?:trae|claude|codex)/[^\s`"\'<>\]\|]+-scan\.md|'
         r'[a-z0-9_-]+-[a-z]+-scan\.md)',
         re.IGNORECASE
     )
