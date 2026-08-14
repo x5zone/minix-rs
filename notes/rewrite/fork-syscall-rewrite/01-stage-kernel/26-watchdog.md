@@ -56,7 +56,7 @@
 |------|------|---------|------|
 | `watchdog.c` | 112 | `lockup_check` / `nmi_watchdog_handler` / `nmi_watchdog_start_profiling` / `nmi_watchdog_stop_profiling` | arch-independent 检测逻辑 |
 | `watchdog.h` | 50 | `struct arch_watchdog` + 全局变量声明 | 接口契约 |
-| `arch/i386/arch_watchdog.c` | ~180 | `arch_watchdog_init` / `arch_watchdog_stop` / `arch_watchdog_lockup` | x86 硬件接入 |
+| `arch/i386/arch_watchdog.c` | 235 | `arch_watchdog_init` / `arch_watchdog_stop` / `arch_watchdog_lockup` | x86 硬件接入 |
 
 **全局状态**（watchdog.c:10-12）：
 
@@ -83,9 +83,11 @@ static void lockup_check(struct nmi_frame * frame)
 
     // 路径 A：tick 在前进——内核还活着
     if (last_tick_count != watchdog_local_timer_ticks) {
-        if (no_ticks == 1)
+        if (no_ticks == 1) {
             printf("watchdog : kernel unlocked\n");
-        no_ticks = 0;
+            no_ticks = 0;   // 仅在恰好 1 次误报后清零（C 保守语义）
+        }
+        /* we are still ticking, everything seems good */
         last_tick_count = watchdog_local_timer_ticks;
         return;
     }
@@ -110,10 +112,9 @@ flowchart TD
     B -- 是 --> Z[跳过检测]
     B -- 否 --> C{tick 前进?<br/>last_tick_count != watchdog_local_timer_ticks}
     C -- 是 --> D{no_ticks == 1?}
-    D -- 是 --> E[打印 kernel unlocked]
-    D -- 否 --> F[no_ticks = 0]
-    E --> F
-    F --> Z
+    D -- 是 --> E[打印 kernel unlocked<br/>no_ticks = 0]
+    D -- 否 --> Z
+    E --> Z
     C -- 否 --> G[++no_ticks]
     G --> H{no_ticks == 1?}
     H -- 是 --> I[打印 possible lockup 警告]
@@ -164,6 +165,8 @@ void nmi_watchdog_handler(struct nmi_frame * frame)
 ```c
 int nmi_watchdog_start_profiling(const unsigned freq)
 {
+    int err;
+
     // 若 watchdog 未启用，先初始化 NMI 硬件
     if (!watchdog_enabled) {
         if (arch_watchdog_init())
@@ -207,7 +210,7 @@ arch 钩子声明（watchdog.h:31-36）：
 - `arch_watchdog_stop()` — 停止 NMI（`arch/i386/arch_watchdog.c:101`）
 - `arch_watchdog_lockup(frame)` — lockup 报警（`arch/i386/arch_watchdog.c:105`，打印 stacktrace + 信息）
 
-> `struct arch_watchdog` 是 C 的"函数指针表"模式——等价于 Rust trait object。x86 实现在 `arch/i386/arch_watchdog.c:178` 通过 `intel_arch_watchdog_init` 等函数填充该表。
+> `struct arch_watchdog` 是 C 的"函数指针表"模式——等价于 Rust trait object。x86 实现在 `arch/i386/arch_watchdog.c:177`（`static struct arch_watchdog intel_arch_watchdog = {...}`）通过 `intel_arch_watchdog_init` 等函数填充该表。
 
 ---
 
@@ -259,7 +262,7 @@ arch 钩子声明（watchdog.h:31-36）：
 
 ## Ch5: 测试
 
-无 Rust 测试。`PROF_NMI` 的 `ENOSYS` 返回值由 [25-misc-unported.md](25-misc-unported.md) §5.1 的 `dispatch_profile` 测试矩阵覆盖（`unknown intr` → `EINVAL` 分支不覆盖 NMI；`PROF_NMI` 单独返回 `ENOSYS`）。
+无 Rust 测试。`PROF_NMI` 的 `ENOSYS` 返回行为在代码中实现（misc.rs:2027 `ProfIntrType::Nmi` 分支），但**无专门测试覆盖**——[25-misc-unported.md](25-misc-unported.md) §5.1 的 `dispatch_profile` 测试矩阵仅覆盖 `unknown intr_type`（=99）→ `EINVAL`（`test_sprof_start_rejects_unknown_intr_type`）。NMI 子系统为 WONTFIX，故未补测试（设计排除，与 §3.1 结论一致）。
 
 ---
 
@@ -281,7 +284,7 @@ arch 钩子声明（watchdog.h:31-36）：
 
 ### 6.2 与 25-misc-unported 的关系
 
-- [25-misc-unported.md](25-misc-unported.md) 附录 DEFERRED 清单中 `SPROF PROF_NMI` 标注"NMI 子系统超范围（§6.3 排除），返回 `ENOSYS`"——这是从 `do_sprofile` 视角的排除说明
+- [25-misc-unported.md](25-misc-unported.md) 附录 DEFERRED 清单中 `SPROF PROF_NMI` 标注"NMI 子系统超范围（设计排除），返回 `ENOSYS`"——这是从 `do_sprofile` 视角的排除说明
 - 本文档补充 NMI watchdog 机制**本身**的文档化（C 分析 + WONTFIX rationale），填补 `watchdog.c` 的覆盖率缺口
 - 两者一致：NMI 子系统整体不在 64-bit 重写范围内
 

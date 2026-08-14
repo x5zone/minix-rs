@@ -2032,7 +2032,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
                     // arch-specific entry points that bypass the standard IRQ path.
                     //
                     // Minix3 itself wraps the entire `profile.c` in `#if SPROFILE`
-                    // and the NMI handler `nmi_sprofile_handler` (watchdog.c:165-198)
+                    // and the NMI handler `nmi_sprofile_handler` (profile.c:128)
                     // is a separate code path from `profile_clock_handler`.
                     //
                     // The non-NMI profile path (`ProfIntrType::Clock`) is fully
