@@ -21,7 +21,7 @@
 //! The kernel sets FPEN=0b11 at init and uses explicit save/restore
 //! during context switch (no lazy trap path).
 //!
-//! C: `fpu_asm.S` — `save_local_fpu`, `restore_fpu`, `fpu_init`
+//! C: earm arch_system.c:30-90 — fpu 族为空实现（lazy 模型在 ARM 未启用，无陷阱路径）
 
 use crate::fpu_arch::FpuArch;
 
@@ -88,7 +88,7 @@ impl FpuArch for AArch64FpuArch {
 
     fn init(&self) {
         // Enable FPSIMD access by setting CPACR_EL1.FPEN = 0b11.
-        // C: fpu_asm.S:fpu_init — `mrs x0, cpacr_el1; orr x0, x0, #0x300000; msr cpacr_el1, x0`
+        // C: earm arch_system.c:fpu_init 为空实现；Rust 侧直接操作 CPACR_EL1（FPEN=0b11）
         unsafe {
             let mut cpacr: u64;
             core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);
@@ -100,7 +100,7 @@ impl FpuArch for AArch64FpuArch {
 
     fn save(&self, dst: &mut Self::State) {
         // Save FPSIMD state: 32 Q registers + FPSR + FPCR.
-        // C: fpu_asm.S:save_local_fpu
+        // C: earm arch_system.c:save_local_fpu 为空实现；Rust 侧 stp q0..q31 显式保存
         //
         // SAFETY: `dst` is 16-byte aligned. Caller must hold BKL.
         unsafe {
@@ -135,7 +135,7 @@ impl FpuArch for AArch64FpuArch {
 
     fn restore(&self, src: &Self::State) {
         // Restore FPSIMD state: 32 Q registers + FPSR + FPCR.
-        // C: fpu_asm.S:restore_fpu
+        // C: earm arch_system.c:restore_fpu 为空实现；Rust 侧 ldp q0..q31 显式恢复
         //
         // SAFETY: `src` is 16-byte aligned and contains valid FPSIMD data.
         // Caller must hold BKL.

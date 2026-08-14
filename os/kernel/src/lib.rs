@@ -1925,7 +1925,7 @@ fn bsp_finish_booting(
     // once `clock_irq_handler` (an `IrqHandler`) is implemented in Step 1.5.7.
 
     // Step 7: fpu_init() — set BSP FPU presence.
-    // C: fpu_init() — arch-specific (x86: fpu.c, ARM: fpu_asm.S).
+    // C: fpu_init() — arch-specific (arch_system.c, i386/earm).
     // This is a global "is FPU present" probe that updates
     // `cpulocals.fpu_presence`. In Rust, `CpuLocal::fpu_presence` is
     // already a `bool` field (see smp.rs:134). All three target

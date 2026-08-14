@@ -7,7 +7,7 @@
 //!
 //! The kernel's SMP scheduling path calls `save_local_fpu` / `release_fpu`
 //! during context switches (smp.rs:496-508). In the C source these are
-//! inline assembly routines (`fpu.c` / `fpu_asm.S`). The Rust rewrite
+//! inline assembly routines (`arch_system.c` / `arch_system.c (earm)`). The Rust rewrite
 //! abstracts them through `FpuArch` so kernel code has no `#[cfg(target_arch)]`.
 //!
 //! # Architecture mapping
@@ -30,7 +30,7 @@
 //! Each architecture defines its own `State` associated type. The kernel
 //! stores this inside `KProcess` via the `CpuContext` (arch-internal).
 //!
-//! C: `fpu.c` / `fpu_asm.S` — `save_local_fpu()`, `restore_fpu()`,
+//! C: `arch_system.c` / `arch_system.c (earm)` — `save_local_fpu()`, `restore_fpu()`,
 //! `fpu_init()`, `disable_fpu_exception()`, `release_fpu()`
 
 use minix_types::PhysBytes;
@@ -69,7 +69,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// Called once during `bsp_finish_booting()` (kernel/src/lib.rs:1805)
     /// and during AP boot (`smp.rs::start_ap`).
     ///
-    /// C: `fpu_init()` — fpu.c (x86) / fpu_asm.S (ARM)
+    /// C: `fpu_init()` — arch_system.c (x86) / arch_system.c (earm) (ARM)
     fn init(&self);
 
     /// Save current FPU state to the buffer.
@@ -82,7 +82,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// Caller must hold the BKL (interrupts disabled) and ensure `dst`
     /// is 16-byte aligned and not aliased by any other live reference.
     ///
-    /// C: `save_local_fpu(p, FALSE)` — fpu.c:save_local_fpu
+    /// C: `save_local_fpu(p, FALSE)` — arch_system.c:save_local_fpu
     fn save(&self, dst: &mut Self::State);
 
     /// Restore FPU state from the buffer.
@@ -95,7 +95,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// Caller must hold the BKL and ensure `src` points to a valid
     /// `State` (previously saved or zero-initialized).
     ///
-    /// C: `restore_fpu(p)` — fpu.c:restore_fpu
+    /// C: `restore_fpu(p)` — arch_system.c:restore_fpu
     fn restore(&self, src: &Self::State);
 
     /// Enable the FPU (allow FP instructions without trapping).
@@ -122,7 +122,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// ARM64: NOP (FPSIMD exceptions are managed via FPCR, not CPACR).
     /// RISC-V: NOP (no separate exception enable for F/D).
     ///
-    /// C: `disable_fpu_exception()` — fpu.c:disable_fpu_exception
+    /// C: `disable_fpu_exception()` — arch_system.c:disable_fpu_exception
     fn disable_exception(&self);
 
     /// Check if the FPU is present on this CPU.
@@ -130,7 +130,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
     /// Returns `true` after `init()` has been called successfully.
     /// Used by the kernel to set `CpuLocal::fpu_presence`.
     ///
-    /// C: `fpu_present()` — fpu.c
+    /// C: `is_fpu()` — main.c:518（fpu_init 写入每 CPU fpu_presence，cpulocals.h:72）
     fn is_present(&self) -> bool;
 }
 

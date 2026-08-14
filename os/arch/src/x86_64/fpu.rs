@@ -2,7 +2,7 @@
 //!
 //! Implements `FpuArch` for x86-64. Uses the legacy FXSAVE/FXRSTOR
 //! instructions (512-byte state) rather than XSAVE (variable-size).
-//! This matches Minix3's `fpu.c` which uses `fxsave`/`fxrstor`.
+//! This matches Minix3's `arch_system.c` which uses `fxsave`/`fxrstor`.
 //!
 //! # FPU state buffer
 //!
@@ -20,8 +20,8 @@
 //! - CR4.OSFXSR (bit 9): OS supports FXSAVE/FXRSTOR (set = 1)
 //! - CR4.OSXMMEXCPT (bit 10): OS supports #XM exception (set = 1)
 //!
-//! C: `fpu.c` — `fpu_init()`, `save_local_fpu()`, `restore_fpu()`,
-//! `enable_fpu()`, `disable_fpu()`, `disable_fpu_exception()`
+//! C: `arch_system.c` — `fpu_init()`, `save_local_fpu()`, `restore_fpu()`,
+//! exception.c — `enable_fpu_exception()`, `disable_fpu_exception()`
 
 use crate::fpu_arch::FpuArch;
 
@@ -71,7 +71,7 @@ impl FpuArch for X86_64FpuArch {
 
     fn init(&self) {
         // Initialize CR0 and CR4 for hardware FPU support.
-        // C: fpu.c:fpu_init()
+        // C: arch_system.c:fpu_init()
         unsafe {
             // Read CR0
             let mut cr0: u64;
@@ -94,7 +94,7 @@ impl FpuArch for X86_64FpuArch {
         // FXSAVE saves the x87 FPU, MMX, and SSE state to a 512-byte area.
         // Unlike FNSAVE, FXSAVE does NOT initialize the FPU after saving.
         //
-        // C: fpu.c:save_local_fpu() — `fxsave [dst]`
+        // C: arch_system.c:save_local_fpu() — `fxsave [dst]`
         //
         // SAFETY: `dst` is 16-byte aligned (repr(C, align(16))).
         // Caller must hold BKL (interrupts disabled).
@@ -111,7 +111,7 @@ impl FpuArch for X86_64FpuArch {
     fn restore(&self, src: &Self::State) {
         // FXRSTOR restores x87 FPU, MMX, and SSE state from a 512-byte area.
         //
-        // C: fpu.c:restore_fpu() — `fxrstor [src]`
+        // C: arch_system.c:restore_fpu() — `fxrstor [src]`
         //
         // SAFETY: `src` is 16-byte aligned and contains valid FXSAVE data
         // (previously saved or zero-initialized).
@@ -151,7 +151,9 @@ impl FpuArch for X86_64FpuArch {
         // Clear CR4.OSXMMEXCPT to suppress #XM (SSE exception) during save.
         // Also CLTS to ensure FXSAVE doesn't trap.
         //
-        // C: disable_fpu_exception() — `clts; and $~0x400, %cr4`
+        // C: disable_fpu_exception() is `clts()` only (exception.c:382-385).
+        // Clearing CR4.OSXMMEXCPT is a Rust-side addition (suppress #XM
+        // during save/restore); Minix3 sets it in fpu_init and never clears.
         unsafe {
             core::arch::asm!("clts", options(nostack, preserves_flags));
             let mut cr4: u64;
