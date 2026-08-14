@@ -9,14 +9,18 @@
 > 2. **§7**：01-30 全部文档中**未完成 / DEFERRED / TODO / WONTFIX / 已知缺口**的系统收集
 >    （2026-08-14），每条带文档出处，跨文档去重。
 > 原历史归档（18 节完整内容）完整保留于 §H。
+> 2026-08-14 修复会话：Step 0.7.1 全量 grep 验证后，18 项 DEFERRED 确认为已实现（原记录过时，
+> 附 grep 证据），1 项（D-30）重新分类为设计 no-op（W-8），D-6/D-35 标注部分实现；
+> 同步更新 doc 01/23/24 过时描述。剩余 DEFERRED 依赖 SMP/VM/IPC/scheduler wiring（见 §7.1）。
 
 ## 0.1 处理状态总览（2026-08-14 修复会话）
 
 | 分类 | 处理 | 明细 |
 |------|------|------|
 | ✅ 已修复（代码落地 + 测试通过） | **3 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留） |
-| ✅ 已实现（原记录过时，非缺口） | **5 项** | D-26~D-29 GETINFO 全部 10 分支（dispatch_getinfo misc.rs:660-1121）、D-38 ②③ BKL 接入（lib.rs:1956/:2167） |
-| 📌 保持 DEFERRED（已核实依赖仍成立） | **4 项更新** | D-14（syscall.rs:2286 注释确认 + 行号更正）、D-15（NotifyAlarm 无生产调用方）、I-2（release/version 无消费方，待 MINIX_KERNINFO）、I-6（bill_ptr 调度循环仍 placeholder） |
+| ✅ 已实现（原记录过时，非缺口，2026-08-14 二次核实） | **18 项完整 + D-38 ②③ 部分** | §7.1 表 ✅ 行：D-1~D-5/D-7（dispatch_exec/clear/runctl/statectl 全部落地，含 process name 跨空间拷贝、release_address_space、clear_endpoint、SMP IPI）、D-10/D-12（cause_signal SELF 路径 mini_notify_core + 去重）、D-19（allow_ipc_filtered_memreq→dequeue_filtered）、D-21（kernel_call_resume + 2 测试）、D-22（data_copy_vmcheck VMSUSPEND 路径）、D-23（三架构 PTE walk）、D-26~D-29（GETINFO 10 分支）、D-31（sprof 数据拷贝）、D-32（clean_seen_flag）；D-38 ②③ BKL 接入（lib.rs:1956/:2167）；另有 I-4（doc 01/02 测试表去重，01 残留 TODO 标记已清理） |
+| 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1778 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
+| 📌 保持 DEFERRED（已核实依赖仍成立） | **31 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新 |
 | ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D1/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节） |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
@@ -294,41 +298,41 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 
 | # | 子系统 | 条目 | 文档出处 | 依赖 / 阻塞原因 |
 |---|--------|------|---------|----------------|
-| D-1 | 进程 | `dispatch_exec` cross-space 进程名拷贝（do_exec.c:37） | 17 §4.2/4.8 | `DataCopy` trait / VM 集成（当前 ENOSYS 占位） |
-| D-2 | 进程 | `dispatch_exec` arch_proc_init 设新 IP/SP（do_exec.c:45） | 17 §4.2/4.8 | `ArchProcInit` trait（arch 层） |
-| D-3 | 进程 | `dispatch_clear` release_address_space（do_clear.c:35） | 17 §4.4/4.8 | `VmContext` trait / VM 集成 |
-| D-4 | 进程 | `dispatch_clear` clear_endpoint（do_clear.c:49） | 17 §4.4/4.8 | `IpcEngine` trait |
-| D-5 | 进程 | `dispatch_runctl` SMP IPI 路径（do_runctl.c:55-58） | 17 §4.6/4.8 | `SmpRunctl`/`SmpArch::schedule_stop_proc`（见 16 §4.6） |
-| D-6 | 进程 | `dispatch_exit` mini_notify(sig_mgr)（do_exit.c:21） | 17 §4.3/4.8 | `SignalContext` trait + IPC |
-| D-7 | 进程 | `dispatch_statectl` ClearIpcRefs（do_statectl.c:21-25） | 17 §4.7/4.8 | `IpcEngine::cancel_async`（IPC 模块未完整接线） |
+| D-1 | 进程 | `dispatch_exec` cross-space 进程名拷贝（do_exec.c:37） | 17 §4.2/4.8 | **✅ 已解决（2026-08-14 核实）**：`data_copy_vmcheck` 跨空间拷贝 + 截断（syscall_process.rs:250-285，do_exec.c:37-43 语义） |
+| D-2 | 进程 | `dispatch_exec` arch_proc_init 设新 IP/SP（do_exec.c:45） | 17 §4.2/4.8 | **✅ 已解决（2026-08-14 核实）**：arch_proc_init 设 IP/SP + 清零部分寄存器（syscall_process.rs:293-300，do_exec.c:45-48 语义） |
+| D-3 | 进程 | `dispatch_clear` release_address_space（do_clear.c:35） | 17 §4.4/4.8 | **✅ 已解决（2026-08-14 核实）**：release_address_space（syscall.rs:1075，对应 C memory.c:986-989 单行 `p_cr3_v = NULL`） |
+| D-4 | 进程 | `dispatch_clear` clear_endpoint（do_clear.c:49） | 17 §4.4/4.8 | **✅ 已解决（2026-08-14 核实）**：clear_endpoint 完整序列（syscall.rs:1096 + syscall_process.rs:457-458，2026-08-13 Phase 8） |
+| D-5 | 进程 | `dispatch_runctl` SMP IPI 路径（do_runctl.c:55-58） | 17 §4.6/4.8 | **✅ 已解决（2026-08-14 核实）**：RC_STOP 远程路径 `smp_state.schedule_stop_proc::<CurrentSmpArch>`（syscall_process.rs:570-575，do_runctl.c:55-58 语义） |
+| D-6 | 进程 | `dispatch_exit` mini_notify(sig_mgr)（do_exit.c:21） | 17 §4.3/4.8 | **部分实现**：`cause_signal_abort` 已接线（syscall_process.rs:339+），`mini_notify(sig_mgr)` 待 `SignalContext` trait + IPC 接线 |
+| D-7 | 进程 | `dispatch_statectl` ClearIpcRefs（do_statectl.c:21-25） | 17 §4.7/4.8 | **✅ 已解决（2026-08-14 核实）**：ClearIpcRefs 分支 + clear_endpoint（syscall_process.rs:58/:732，do_statectl.c:21-25 语义） |
 | D-8 | syscall | `kernel_call()` wrapper 未实现（trap 入口 wrapper：copy_msg_from_user + p_delivermsg_vir + dispatch + finish） | 13 §6.3 [P1] | 待 trap 入口文档化（14），含 TOCTOU 防护的 copy_msg_from_user |
 | D-9 | syscall | `kbill_kcall` 内核计费标记（性能分析用） | 13 §6.4 [P2] | — |
-| D-10 | 信号 | cause_sig **SELF 路径**（system.c:416-437 自管理进程自通知） | 19 §4.7 | `SIGKSIGSM` 常量缺失（本快照 include 无定义）；部分已实现（SIGKSIG→s_sig_pending 已接，syscall_signal.rs:161） |
-| D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | `SIGS_IS_LETHAL` + backup 切换 |
-| D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | `SigSet::contains` 已具备，未接入 |
+| D-10 | 信号 | cause_sig **SELF 路径**（system.c:416-437 自管理进程自通知） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：写自身 `s_sig_pending` + `mini_notify_core` 唤醒（syscall_signal.rs:195-196；SIGKSIGSM=73 仅写入无内核读者的 s_sig_pending，无需常量） |
+| D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | `SIGS_IS_LETHAL` + backup 切换（见尾部 D19-1 段） |
+| D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：`was_signaled`（RTS_SIGNALED 判定）+ 无条件 `p_pending.add` 去重（syscall_signal.rs:209-220） |
 | D-13 | 信号 | `sig_delay_done`（system.c:454-464） | 19 §4.7 | PM 通知接口 + `SIGSNDELAY` 常量 |
 | D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | 保持 DEFERRED。已核实（2026-08-14）：借用冲突注释现存于 syscall.rs:2286（原引 :1010-1037 行号漂移，已更正）；PM getksig 轮询主用途已实现 |
 | D-15 | 时钟 | `mini_notify(CLOCK, endpoint)` 到期通知分发（TimerAction::NotifyAlarm 已定义未接线） | 21 附录 B | 保持 DEFERRED。已核实（2026-08-14）：NotifyAlarm 仅 enum 定义（clock.rs:522）+ 测试构造（:1363/:1378），tick 无生产调用方 |
 | D-16 | IPC 过滤 | `allow_ipc_filtered_msg`（system.c:803-874，L2 receive 路径偏好过滤） | 23 §4.5/Ch6 [P1] | 12-ipc-core RECEIVE 路径（当前 skeleton）后才消费方；当前 s_ipcf 字段存在但无消费方 |
 | D-17 | IPC 过滤 | `may_asynsend_to` self-send 不对称（priv.h:87） | 23 §4.5/Ch6 [P1] | 异步 IPC 路径完整接入（当前用 may_send_to 替代） |
 | D-18 | IPC 过滤 | `IPCF_EL_MATCH` 宏链（ipc_filter.h:19-41） | 23 §4.5/Ch6 [P2] | `allow_ipc_filtered_msg` 子逻辑 |
-| D-19 | IPC 过滤 | `allow_ipc_filtered_memreq`（system.c:879+，VM 页错误请求过滤） | 23 §4.5/Ch6 [P2] | VM 页错误请求路径 |
+| D-19 | IPC 过滤 | `allow_ipc_filtered_memreq`（system.c:879+，VM 页错误请求过滤） | 23 §4.5/Ch6 [P2] | **✅ 已解决（2026-08-14 核实）**：语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，MEMREQ_GET 遍历时按过滤器跳过请求） |
 | D-20 | 跨空间 | `VmRequestQueue` 全局链表 + `send_sig(SIGKMEM)` | 24 §4.6 [P1] | 随 SIGSEND 实现落地；当前 suspend_for_vm_with_copy 已设 RTS_VMREQUEST + p_vm_suspend 但未通知 VM |
-| D-21 | 跨空间 | `kernel_call_resume()` 恢复路径 | 24 §4.6 [P1] | 依赖 D-20 + 调度器集成 |
-| D-22 | 跨空间 | `dispatch_vircopy` 集成 `data_copy_vmcheck`（当前走 virtual_copy_vmcheck 未走 VMSUSPEND 路径） | 24 §4.6 [P1] | 随 SIGSEND 落地后统一切换 |
-| D-23 | 跨空间 | aarch64/riscv64 PTE walk | 24 §4.6 [P2] | x86_64 优先（pte_walk::walk_x86_64 已实现） |
+| D-21 | 跨空间 | `kernel_call_resume()` 恢复路径 | 24 §4.6 [P1] | **✅ 已解决（2026-08-14 核实）**：kernel_call_resume 完整实现（vm.rs:896）+ 2 测试（vm.rs:1303/:1316） |
+| D-22 | 跨空间 | `dispatch_vircopy` 集成 `data_copy_vmcheck`（当前走 virtual_copy_vmcheck 未走 VMSUSPEND 路径） | 24 §4.6 [P1] | **✅ 已解决（2026-08-14 核实）**：dispatch_vircopy 走 `cross_space::data_copy_vmcheck`（syscall_copy.rs:220/:344-345，VMSUSPEND 路径）；D-20 的 SIGKMEM 通知接线仍 DEFERRED |
+| D-23 | 跨空间 | aarch64/riscv64 PTE walk | 24 §4.6 [P2] | **✅ 已解决（2026-08-14 核实）**：三架构 `PteWalkArch` 完整实现——x86_64/paging.rs、arm64/paging.rs:310（4 级）、riscv64/paging.rs:334（Sv39 3 级） |
 | D-24 | 跨空间 | `VmSuspendContext` Map 变体未使用（当前仅 KernelCall + DeliverMsg） | 24 §4.6 [P2] | 随 IPC/message deliver 推进 |
 | D-25 | 跨空间 | 部分拷贝进度报告（`CrossSpaceResult::Suspended(fault, usize)` 扩展方向） | 24 §4.6 [P2] | 未来可扩展 |
 | D-26 | GETINFO | `GET_PROC`/`GET_PROCTAB`（do_getinfo.c） | 25 附录 | **✅ 已解决（2026-08-14）**：已实现为 `GetInfoRequest::Proc`/`ProcTab`（misc.rs:732/:754），非 C 布局而是 KProcess Rust 语义（rewrite 目标） |
 | D-27 | GETINFO | `GET_PRIV`/`GET_PRIVTAB` | 25 附录 | **✅ 已解决（2026-08-14）**：`Priv`/`PrivTab`（misc.rs:841/:791） |
 | D-28 | GETINFO | `GET_REGS` | 25 附录 | **✅ 已解决（2026-08-14）**：`Regs`（misc.rs:863） |
 | D-29 | GETINFO | 其余：`GET_IMAGE`/`MONPARAMS`/`IRQHOOKS`/`IRQACTIDS`/`IDLETSC` | 25 附录 + §2.1 | **✅ 已解决（2026-08-14）**：`Image`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`（misc.rs:1083/:1121/:1051/:958/:988） |
-| D-30 | UPDATE | `swap_memreq`（do_update.c:313-337） | 25 附录 | `VmRequestQueue`（D-20） |
-| D-31 | SPROF | 数据拷贝（sprof_info + 采样缓冲区 → 用户态） | 25 §4.5 | Direct Map 采样缓冲基础设施（misc.rs:1181-1184 返回 ENOSYS） |
+| D-30 | UPDATE | `swap_memreq`（do_update.c:313-337） | 25 附录 | 🟢 **设计 no-op（2026-08-14 核实）**：swap 时两个进程均不可运行 → swap 无操作（misc.rs:1778 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.6） |
+| D-31 | SPROF | 数据拷贝（sprof_info + 采样缓冲区 → 用户态） | 25 §4.5 | **✅ 已解决（2026-08-14 核实）**：info + buffer 双重 `data_copy_vmcheck`（misc.rs:2067-2070，do_sprofile.c:117-120 语义） |
 | D-32 | SPROF | `clean_seen_flag`（do_sprofile.c:25-31） | 25 附录 | **✅ 已解决（2026-08-14）**：`clean_seen_flag` helper（misc.rs:1951）+ PROF_START（:2017）/ PROF_STOP（:2149）调用（do_sprofile.c:91/:122 语义）+ 测试 test_sprof_start_clears_seen_flags |
 | D-33 | 随机数 | x86 RDRAND 熵采集（当前 kernel 侧 no-op stub 匹配 C i386/earm） | 25 §4.7 D3 | 应在 os/arch/src/x86_64/ 实现（当前 deferred）；实际熵采集由用户态 random 驱动 |
 | D-34 | VM | `kinfo.mmap_size` + `mem_high_phys` 更新（08 委派，C add_memmap 更新，Rust KernelInfo immutable） | 09 §6.1 + 08 §4 | VM direct map 实际大小 + 最高物理地址在 boot 阶段确定后，dispatch_vmctl 补充分支或独立 SYS_GETINFO 路径 |
-| D-35 | VM | `VmInhibitSet` SMP IPI（dispatch_vmctl，RTS_SET(VMINHIBIT)） | 09 §4 | SMP IPI 待实现 |
+| D-35 | VM | `VmInhibitSet` SMP IPI（dispatch_vmctl，RTS_SET(VMINHIBIT)） | 09 §4 | **部分实现（2026-08-14 核实）**：本地路径已实现（syscall.rs:1883-1903 RTS_SET(VMINHIBIT)）；SMP IPI 远程路径待实现 |
 | D-36 | SMP | `smp_init`（ACPI/MADT 表解析 + `SmpArch::boot_ap`） | 16 §4.14 | 16 文档自身 DEFERRED |
 | D-37 | SMP | `boot_lock`（smp.c:28） | 16 §4.14 | 随 smp_init（D-36）一并实现 |
 | D-38 | SMP | **BKL 接入 4 处**：exception_dispatcher::handle 需 bkl_lock() / kmain switch_to_user 前获取 / switch_to_user 调度循环前 bkl_unlock / kernel_call_resume | 16 §4.13 | ②③ **✅ 已解决（2026-08-14）**：lib.rs:1956 bkl_lock（switch_to_user 前）+ lib.rs:2167 bkl_unlock（调度循环前）；①④ 仍 DEFERRED（SMP 异常路径） |
@@ -356,6 +360,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | W-5 | 25 | SPROF `PROF_NMI` 路径 | NMI 子系统超范围（25 附录，同 26） |
 | W-6 | 09 | `ClearMapCache` → Ok(0) no-op | 64-bit Direct Map 无 cache table，匹配 C 无 cache table 架构的 no-op（09 §4.5） |
 | W-7 | 27 | kmess 缓冲体系（kmess_buf / km_buf 双缓冲 / END_OF_KMESS / send_diag_sig / SIGKMESS / DIAGCTL_CODE_REGISTER） | EarlyConsole 直接输出 + log 后端替代（27 §6.2，ARCH 演进） |
+| W-8 | 25 | `swap_memreq`（do_update.c:313-337，D-30） | 🟢 设计 no-op（2026-08-14 核实）：当前 vmrequest 链无入队路径（D-20 DEFERRED）→ 链恒空 → swap 无操作（misc.rs:1778 注释 + doc 25，与 W-6 同类）；**D-20 落地时需重审** |
 
 ### 7.3 待补充测试清单
 
@@ -367,7 +372,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | T-4 | 16 §5.3 | init_ap 路径验证（x86_64 panic 占位 protection.rs:370 触发后无测试）[P1] | 原 todo §6.4 转移 |
 | T-5 | 16 §5.3 | QEMU GDB 脚本集成 CI [P2] | 原 todo §6.8 转移（当前手动脚本） |
 | T-6 | 21 §5.2 | 8 个行为测试（STIME/SETTIME/SETALARM/VTIMER 非 EPERM 路径） | D5 参数传递使 mock 可注入 |
-| T-7 | 24 §5.2 | 6 个（data_copy_vmcheck ×3 / test_vm_request_queue_insert_remove（待实现）/ zero_byte_copy / self_replacement） | D-20..D-22 落地 |
+| T-7 | 24 §5.2 | ✅ 队列测试已落地 6 个（`vm_request_queue_new_is_empty` :1100 / `enqueue_returns_was_empty` :1106 / `dequeue_filtered_empty` :1118 / `dequeue_filtered_returns_first_match` :1126 / `remove` :1136 / `memreq_get_dequeues_and_sets_fetched` :1368，D-21 同批）；剩余 5 个（data_copy_vmcheck ×3 / zero_byte_copy / self_replacement） | 剩余项依赖 D-20 SIGKMEM 接线 |
 | T-8 | 18 §5.2 | 8 个 E2E（verify_grant / vm_lookup / vm_memset / 跨进程 PTE walk 等，原 DEFERRED 已实现，转端到端目标） | QEMU 或 mock grant 表构造真实跨进程场景 |
 | T-9 | 20 §5.2 | IRQCTL 3 个（setpolicy_full / rmpolicy_owner / enable_disable）+ vdevio 对齐 panic + readbios copy（后两者需 QEMU pte_walk/copy_to_user） | IrqManager 接入 KernelState |
 | T-10 | 01 §5 | QEMU + OpenSBI + U-Boot riscv64 真实启动链集成测试（fatload kernel ELF → OpenSBI 跳转 → 串口捕获 TEST_RESULT）[P2] | QEMU 镜像 + U-Boot 工具链 + 串口监控脚本 |
@@ -381,7 +386,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | I-1 | kernel 独立 ELF 构建（build.rs + link.ld 链接为独立 ELF binary） | 02 §4 + 01 §5.2 | 三架构 link.ld 已就绪，构建系统未接入；当前 rlib 测试路径是合理简化，生产路径后续工作 |
 | I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 保持 DEFERRED。已核实（2026-08-14）：C 侧仅 main.c:432-433 赋值且无消费方（banner 直打 OS_RELEASE，main.c:344）；Rust 侧无消费方（KernelInfo 无此字段；banner 硬编码 lib.rs:1831；MINIX_KERNINFO IPC 未实现 ipc.rs:1335）→ 待 MINIX_KERNINFO 落地时实现 |
 | I-3 | riscv64 QEMU `-kernel` 场景未完成 ELF 装载 + 高半核切换（临时妥协） | 01 §5 + §4.5 TODO | 生产路径三架构统一高半核；测试场景暴露的临时妥协 |
-| I-4 | 01 §5 ↔ 02 §5.1 测试对照表跨文档去重 | 01 §5 TODO [P2] | hello-boot / test-memmap / test-paging-enable / test-kernel-map 应只在 01 出现；02 保留 test-higher-half 及专属测试 |
+| I-4 | 01 §5 ↔ 02 §5.1 测试对照表跨文档去重 | 01 §5 TODO [P2] | **✅ 已解决（2026-08-14）**：02 §5.1 测试归属声明已落地（L901，"hello-boot 等四类归 01 §5.2，本节仅 test-higher-half，合计 15/15"）+ 01 交叉引用（L1689）；01 残留 TODO 标记已清理为已解决注 |
 | I-5 | ACPI RSDP 搜索与表解析 | 05 §3 | QEMU virt 暂不依赖；支持物理机时需实现 |
 | I-6 | `bill_ptr` 完整联动 | 11 §4 [已知缺口] | 保持 DEFERRED。已复核（2026-08-14）：调度循环仍为 placeholder（lib.rs:2187-2189 `loop { spin_loop() }`），bill_ptr 调度期联动确未接线 |
 | I-7 | `MF_REPLY_PEND` typestate 演进评估 | 12 §3.11 TODO | 当前保留标志位（决策已定），未来评估 typestate（`SendRec<Sending> → SendRec<Receiving>`） |
@@ -416,6 +421,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | 06 `EntrySpec::DEFERRED` 非 VM 进程 | ✅ 设计语义 | boot 协议（RS 运行时加载），非缺口 |
 | 08 三处 C 步骤差异（cpu_identify / krandom_init / CPU_IS_READY） | ✅ ARCH 演进 | 08 §4 差异说明表，非实现遗漏 |
 | 27 kmess 缓冲 | ✅ 演进替代 | §W-7（log crate + EarlyConsole） |
+| 25 swap_memreq（D-30） | 🟢 设计 no-op | misc.rs:1778 注释 + doc 25（2026-08-14）：vmrequest 链无入队路径 → 链恒空 → swap 无操作；与 W-6 同类，D-20 落地时重审 |
 
 
 

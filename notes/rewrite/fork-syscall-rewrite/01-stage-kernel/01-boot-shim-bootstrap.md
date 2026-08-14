@@ -954,7 +954,7 @@ pub struct BootModule {
 
 详见 [04-platform-discovery.md](04-platform-discovery.md) §4.4 与 §4.6。
 
-> **TODO（跨文档去重）** [严重度: P2 | 位置: 02-higher-half-kernel.md §5.1 L868-L876 | 本文档: §5 测试对照表]：[02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#L868-L876) 的三架构测试对照表（hello-boot / test-memmap / test-paging-enable / test-kernel-map / test-higher-half）与本文档 §5 表存在重复。其中 hello-boot / test-memmap / test-paging-enable / test-kernel-map 属 boot-shim 后端验证，应只在本文档 §5 表出现；02 §5.1 应只保留 test-higher-half 及专属的高半核一致性测试（含 Sv39 canonical 内容），"运行方式"段同步迁移到本文档 §5。
+> **已解决（2026-08-14，todo I-4）**：跨文档去重已完成——[02-higher-half-kernel.md §5.1](02-higher-half-kernel.md#51-qemu-集成测试三架构-1515-通过) 已含"测试归属"声明（hello-boot / test-memmap / test-paging-enable / test-kernel-map 归本文档 §5.2，02 仅保留 test-higher-half，合计 15/15），本文档 §5 末尾（test-higher-half 行）交叉引用 02 覆盖。
 
 > **TODO（补 QEMU + OpenSBI + U-Boot 真实启动链集成测试）** [严重度: P2 | 位置: os/boot-shim/src/opensbi_helpers.rs L193-L244 | 本文档: §5 架构差异要点表]：[§5 架构差异要点表](01-boot-shim-bootstrap.md#L1573-L1580) `kern_virt_base` 行暴露 riscv64 在 QEMU `-kernel` 测试场景下未完成 ELF 装载 + 高半核切换的临时妥协。本文档目标读者希望测试尽可能模拟生产环境，应当补一个真实生产链路的集成测试。
 >

@@ -459,7 +459,7 @@ if call_denied {
 | C 函数 | C 位置 | Rust 状态 | 依赖 |
 |--------|--------|----------|------|
 | `allow_ipc_filtered_msg` | system.c:803-874 | 未实现 | 12-ipc-core RECEIVE 路径实现后才有消费方 |
-| `allow_ipc_filtered_memreq` | system.c:879+ | 未实现 | 同上（VM 页错误请求过滤） |
+| `allow_ipc_filtered_memreq` | system.c:879+ | ✅ 已实现（2026-08-14 核实） | 语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，do_vmctl.c:37-79 遍历时按过滤器跳过请求）——C 在 MEMREQ_GET 遍历时过滤，Rust 在 `dequeue_filtered` 消费 |
 | `may_asynsend_to` 不对称 | priv.h:87 | 未实现（当前用 `may_send_to` 替代） | 异步 IPC 路径完整接入 |
 | `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | 未实现 | `allow_ipc_filtered_msg` 的子逻辑 |
 | `IPC_STATUS_*` | ipc.h:25-48 | ✅ 已实现 (P9-2) | `CpuContextArch::or_ipc_status_reg` + `proc.rs:1654-1679` + `ipc.rs` 4 路径 wire |

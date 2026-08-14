@@ -399,7 +399,7 @@ pub fn suspend_for_vm_with_copy(
 |------|--------|------|------|
 | 挂起路径未接入 `VmRequestQueue` + SIGKMEM 通知 | P1 DEFERRED | `VmRequestQueue` 已实现（vm.rs:534，`enqueue`@577 / `dequeue_filtered`@594 / `enqueue_and_notify`@646 / `remove`@663 + 测试），但 `suspend_for_vm_with_copy`（proc.rs:1417）只设置 `RTS_VMREQUEST` + `p_vm_suspend`，未调用 `enqueue_and_notify`——无 SIGKMEM 触发路径 | 随 SIGSEND 实现落地 |
 | `kernel_call_resume()` 完整重派发 | P1 DEFERRED | 简单版（vm.rs:896）已接入 `process_misc_flags`（proc_table.rs KCALL_RESUME 分支，FIX-21）；完整重派发（重新执行 `saved.reqmsg`）延迟至 `switch_to_user`（见 10-switch-to-user.md §4.2） | 随调度器集成推进 |
-| aarch64/riscv64 PTE walk | P2 DEFERRED | x86_64 优先（`pte_walk::walk_x86_64` 已实现） | 随架构实现推进 |
+| ~~aarch64/riscv64 PTE walk~~ | ~~P2 DEFERRED~~ | ✅ **已实现（2026-08-14 核实）**：三架构 `PteWalkArch` 完整实现——x86_64/paging.rs、arm64/paging.rs:310（`walk_translate` 4 级）、riscv64/paging.rs:334（Sv39 3 级） | 已解决 |
 | `VmSuspendContext` 完整三类（KERNELCALL/DELIVERMSG/MAP） | P2 DEFERRED | 当前仅 `KernelCall` + `DeliverMsg`，`Map` 未使用 | 随 IPC/message deliver 推进 |
 | 部分拷贝进度报告 | P2 WONTFIX | 代码注释已定案（cross_space.rs:139-145）：`cross_space_copy` 重试幂等（写后写同内容安全），`VmCheckParams.length` 用完整 `bytes` 是安全的；内核内部拷贝（sigframe/getinfo/diagctl）均为小拷贝，额外 VM fault 处理成本可接受 | WONTFIX（不实现） |
 
@@ -457,7 +457,7 @@ pub fn suspend_for_vm_with_copy(
 | 缺页处理 | 内核挂起 + VM 协助 | 用户态 scheme 直接处理 | 沿用 Minix3 VMREQUEST（微内核架构对齐） |
 | 返回值 | `int` (OK/EFAULT/VMSUSPEND) | `Result + 特定 Error` | `CrossSpaceResult` enum（类型层区分完成 vs 挂起） |
 | 地址抽象 | `vir_addr` struct + sentinel | scheme token + offset | `AddressRef` enum（Process/Physical） |
-| 挂起队列 | 裸指针 + `nextrequestor` | 无全局链表（per-scheme） | `VmRequestQueue` 封装（待实现） |
+| 挂起队列 | 裸指针 + `nextrequestor` | 无全局链表（per-scheme） | `VmRequestQueue` 封装已实现（vm.rs:534 + 测试）；挂起路径入队接线待实现（§4.6 首行） |
 | 内核代行缺页 | VMREQUEST 机制 | scheme 自处理（内核不代行） | 沿用 VMREQUEST（minix-rs 内核仍代行系统调用） |
 
 **关键差异**：redox 的 scheme 模型把"地址空间"抽象为 scheme token，每个 scheme 自管理内存映射；Minix3 的 VMREQUEST 是"内核代行时缺页"的恢复机制。两者解决不同问题——redox 是"谁拥有内存"，Minix3 是"内核代行时如何恢复"。minix-rs 沿用 Minix3 VMREQUEST 因为微内核架构要求内核最小化，不能自行处理缺页。
