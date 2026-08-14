@@ -317,7 +317,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 > 4. `cargo test` — 运行测试，记录失败的测试（**作为 review Step 4.2 测试覆盖度的输入**）
 > **判定**：
 > - `cargo check` 失败 → 阻断 review（先修编译错误）
-> - `cargo clippy` 警告作为 P2/P3 候选（review 决定是否升级）
+> - `cargo clippy` 警告作为 P2 候选（review 决定是否升级）
 > - **不允许**用 `cargo clippy` 替代 review 的人工判断
 
 ### Step 0: 范围声明 + 时间预算 + 状态恢复 + **design 预检**
@@ -559,250 +559,6 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 > - **禁止**：**叙事中的迭代**——"最初我们用 X，后来改成 Y，因为..."（这种叙事记录开发过程，读者关心"现在是什么"而非"曾经是什么"）
 > - **允许**：**差异矩阵中的版本对比**——design.md 附录"与旧版本的差异矩阵（v{N} vs v{N-1}）"是结构化元数据，不是叙事，记录快照版本号 + 变更点 + 变更原因（一行），不展开为段落
 > - **判定标准**：若"旧版 X → 新版 Y"在一段/一节中用 ≥3 句展开 → 迭代叙事（P1）；若仅在表格中列出 "v{N-1}: X | v{N}: Y | 原因: Z"（每项一行）→ 合规
-
-### Step 0.7: TODO 验证（若输入含 TODO 清单，新增，2026-07-16）
-
-> **目的**：当 review 输入包含外部 TODO 清单（如 `tmp_design_and_todo/0108-todo-final.md` 多 AI bagging 产物）时，TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
-> **触发条件**：用户输入包含 TODO 清单路径，或 review 目标文档含 `TODO`/`todo!`/`unimplemented!` 标记。
-
-**执行步骤**：
-1. **逐个验证 TODO 真实性**：对每个 TODO，用 grep/glob/read 交叉验证：
-   - TODO 声称的文件/函数/行号是否真实存在
-   - TODO 描述的问题是否真的存在（可能是误报）
-   - TODO 优先级是否合理（P0/P1/P2）
-2. **分类处理**：
-   - ❌ **误报**：TODO 描述的问题不存在（如事实错误、已修复）→ 标记"误报否定"，不修复
-   - ⚠️ **真实（代码任务）**：TODO 指向代码缺失（如 build.rs 缺失）→ 在文档中标注"实现状态"，不强行写代码
-   - ✅ **真实（文档任务）**：TODO 指向文档问题 → 直接修复文档
-3. **修复真实 TODO**：仅修复真实文档 TODO，代码 TODO 标注状态
-4. **喂入 Step 2**：TODO 验证过程中发现的 grep 证据（如行号、寄存器名）直接用于 Step 2 差异提取，不重复 grep
-
-**TODO 验证结果表**（必须输出到 scan.md）：
-
-| TODO | 原优先级 | 验证结论 | 证据 | 处理 |
-|------|---------|---------|------|------|
-| TODO-XX-1 | P0 | ❌ 否定 | grep 证据 | 无需修复 |
-| TODO-XX-2 | P1 | ✅ 真实 | grep 证据 | ✅ 已修复 |
-
-**时间预算**：TODO 验证计入 review 时间预算，不单独计费。预计每个 TODO 5 分钟（含 grep 验证）。
-
-**TODO 验证 vs Review 发现问题区分**（NEW 2026-07-16）：
-
-| 维度 | TODO 验证（Step 0.7） | Review 发现（Step 2+） |
-|------|---------------------|---------------------|
-| 来源 | 外部 TODO 清单（如 `0108-todo-final.md`）| Reviewer 阅读文档/代码后独立发现 |
-| 时间点 | Step 0.7 验证阶段（review 开始前） | Step 2-5 review 阶段 |
-| 输出位置 | scan.md `§Step 0.7 TODO 验证表` | scan.md `§Issue List` |
-| 标识 | `已修复：TODO-XX-N`（带原 TODO ID）| 新 issue ID（如 `P1-1` 等）|
-| 严重度约束 | 沿用 TODO 原优先级（可能过期）| 按 review 重新判定 |
-| 性质 | **修复型**（greppable + 验证存在）+ 有时间戳 | **发现型**（concept check / design check）+ 无时间戳 |
-| 证据强度 | L1 grep 验证（含修改前后行号） | L1/L2/L3（按 §3.5 evidence 分级） |
-| 必填字段 | TODO ID + 验证结论 + 证据 + 处理 | 反查来源（Step 0.5.8 强制格式）+ Location + 证据 |
-
-**强制规则**：TODO 验证的"已修复"项与 Step 2+ 的 "新发现 issue" **必须分别列在 scan.md 不同段**：
-- `§Step 0.7 产物：TODO 验证表`（已修复项）
-- `§Issue List`（Review 新发现）
-
-不可合并（TODO 修复可能跨多次 review 会重复被修复，issue 编号不应复用）。
-
-#### Step 0.7.1: Path Existence Validation（NEW 2026-07-16，模式 66 RCPD 配套）
-
-> **目的**：TODO 描述中引用的 `file:line` 必须真实存在，否则会导致虚假 P0 共识（参考 [review-patterns.md 模式 66 RCPD](../review-rules/review-patterns.md)）。
-> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述中的 `file:line` 引用执行存在性验证。
-
-**执行步骤**：
-1. **提取所有 file:line 引用**：从 TODO 描述中 grep 形如 `path/to/file.rs:NNN` 或 `path/to/file.rs:NNN-MMM` 的引用
-2. **逐项验证存在性**：
-   ```bash
-   # 文件存在性
-   ls -la <file_path>
-   # 函数/符号存在性（可选）
-   rg "fn <symbol_name>" <file_path> -n
-   # 行号范围精确验证（推荐）
-   sed -n '<start_line>,<end_line>p' <file_path>
-   ```
-3. **分类处理**：
-   - ✅ **存在** + 行号范围与 TODO 描述匹配 → 标 "valid"，进入正常验证流程
-   - ⚠️ **存在** + 行号范围偏差 >5 行 → 标 "stale line range"，需重新核对（**P2 偏差不阻塞，但需在 doc 修正**）
-   - ❌ **不存在**（文件已删除/重构/重命名）→ 标 "**path drift**"，触发 doc 重写而非 code 修复；TODO 严重度自动降级（**P0 → P1 至少**）
-4. **多 AI 共识过滤**（NEW）：
-   - 任何"多 AI 共识"必须满足"全共识 × 全部 path 存在验证通过"才采纳为真实 bug
-   - 任一共识 AI 基于 path drift → 整条 TODO 标"共识待验证"
-
-**强制格式**（scan.md §Step 0.7 必须含此表）：
-
-| TODO | 引用 file:line | ls 验证 | 偏差类型 | 处理 |
-|------|---------------|--------|---------|------|
-| TODO-04-2 | `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` | ❌ 3 个文件全部 No such file | **path drift** | 严重度 P0 → P1（doc 重写，不修 code）|
-| TODO-XX-N | `<file>:<line>` | ⚠️ 文件存在，行号偏差 ±6 | **stale line range** | 标 P2 偏差，下次 review 修正 doc |
-
-**严重度降级规则**：
-- P0 + path drift → P1（强制）
-- P1 + path drift → P2（强制）
-- P2 + path drift → 标"误报"（✅ 删除）
-- 任何严重度降级必须附 L1 证据（`ls`/`rg` 命中或失效证明）
-
-**反例**（必须避免）：
-- ❌ "TODO 描述引用 `proc_arch.rs:350`，未做 ls 验证直接采纳为 P0 真实 bug" → 模式 66 触发
-- ❌ "2 AI 共识 TODO 严重度，未验证共识基础" → 模式 66 触发
-
-**正例**（04-platform-discovery §11 Session #8 案例）：
-- ✅ `ls os/arch/src/arch/{x86_64,riscv64,arm64}/proc_arch.rs` → 3 个文件全部 No such file
-- ✅ 读 `os/arch/src/arch/mod.rs:20` 注释 "proc_arch was removed in 06-design-final.md"
-- ✅ 结论：T2 严重度 P0 → P1 降级，触发 doc §11 重写而非 code 修复
-
-**自动化建议**（未来工具）：
-- `tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line → 输出 path drift 报告
-- 可与 `coverage-extract.py` 配合使用，输出"已删除引用 + 已变更引用"两个清单
-
-#### Step 0.7.2: AI Claim Grep Verification（NEW 2026-07-16，模式 67 CFNOC 配套）
-
-> **目的**：AI 报告中引用的"概念对象"（如 "CLOCK task"、"system server"、"kernel subsystem"）必须真实存在，否则会导致虚假 P0/P1 共识（参考 [review-patterns.md 模式 67 CFNOC](../review-rules/review-patterns.md)）。
-> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述中的"概念对象关键词"执行 grep 存在性验证。
-
-**执行步骤**：
-1. **提取所有概念对象引用**：从 TODO 描述中 grep 形如 "X task" / "X subsystem" / "X server" / "X daemon" 的引用
-2. **逐项验证存在性**：
-   ```bash
-   # 概念对象存在性
-   rg -ni "X task|X subsystem|X server|X daemon" <target_doc.md>
-   rg -ni "X" minix3/minix/include/ --type c
-   rg -ni "X" minix3/minix/kernel/ --type c
-   # 函数存在性（用于区分"操作名" vs "对象名"）
-   rg "fn init_X|fn X_init" minix3/minix/ --type c -n
-   ```
-3. **分类处理**：
-   - ✅ **概念对象真实存在**（在 C 源码或 doc 中有 `proc_ptr` / `NR_TASKS+N` 等表示）→ 标 "valid concept"
-   - ⚠️ **仅有 C 函数名 `init_X()` / `X_init()`** → 标 "**operation not object**"，TODO 严重度自动降级（P0 → P1 / P1 → 误报）
-   - ❌ **完全无匹配** → 标 "**phantom concept**"，触发 doc 重写
-
-**C 函数名 vs OS 概念对象 区分规则**：
-| C 代码形式 | 含义 | 类别 |
-|-----------|------|------|
-| `void init_clock(void)` | "对 clock 的初始化动作" | **操作名**（非对象） |
-| `int clock_task(void)` | "clock 任务进程函数体" | **对象**（任务进程） |
-| `proc[NR_TASKS+N]` | "任务表中的某进程" | **对象**（进程实体） |
-| `#define CLOCK_TASK ...` | "clock 任务的索引常量" | **对象**（常量标识） |
-| `SYSTEM` / `TASK_CLOCK` | "任务类型枚举值" | **对象**（类型标识） |
-
-**强制格式**（scan.md §Step 0.7.2 必须含此表）：
-| TODO | 引用概念 | rg 验证 | 分类 | 处理 |
-|------|---------|---------|------|------|
-| TODO-05-1 | "CLOCK task" | ❌ 0 命中 | **operation not object**（`init_clock()` 是操作名）| 误报（前提错误） |
-| TODO-XX-N | "X task" | ✅ `proc_ptr` / `NR_TASKS` 命中 | valid concept | 正常验证流程 |
-
-**反例**（必须避免）：
-- ❌ "AI 报告 'CLOCK task'，未做 rg 验证直接采纳为 P1 真实问题" → 模式 67 触发
-- ❌ "2 AI 共识 TODO 严重度，未验证共识基础" → 模式 67 触发
-
-**正例**（05-clock-interrupt-init Session #10 案例）：
-- ✅ `rg "CLOCK task\|clock task\|System Task\|Kernel Subsystem" 05-clock-interrupt-init.md` → 0 命中
-- ✅ `rg "init_clock" minix3/minix/kernel/clock.c -n` → clock.c:48 是 `void init_clock(void)` 函数定义（非 "CLOCK task"）
-- ✅ 结论：F1 误报（前提错误：把 `init_clock()` 操作名错认为 "CLOCK task" 对象名）
-
-#### Step 0.7.3: Doc Chapter Context Awareness（NEW 2026-07-16，模式 68 DSC 配套）
-
-> **目的**：AI 报告中引用的 doc 章节上下文必须明确（Ch2 C 展示 vs Ch4 Rust 实现），否则会导致虚假 P0/P2 误判（参考 [review-patterns.md 模式 68 DSC](../review-rules/review-patterns.md)）。
-> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述的章节上下文做归属判定。
-
-**执行步骤**：
-1. **识别章节类型**：从 TODO 描述中识别涉及的章节（Ch1/Ch2/Ch3/Ch4/Ch5/Ch6）
-2. **判定章节性质**：
-   - **Ch1** = 概念驱动（主语 CPU/OS/机制）
-   - **Ch2** = C 源码分析（**展示** C 代码，**应保留** `#ifdef`）
-   - **Ch3** = Rust 设计决策（解释 trait/类型系统选择）
-   - **Ch4** = Rust 实现详解（**实际代码**，应避免 `#ifdef` 散落）
-   - **Ch5** = 测试要点
-3. **交叉验证 Rust 实现**：
-   ```bash
-   # 验证 Rust 端是否有散落的条件编译
-   rg "#\[cfg\(|\bifndef\b|\bifdef\b" os/ --type rust
-   rg "static mut" os/ --type rust
-   rg "fn.*#\[cfg" os/ --type rust
-   ```
-4. **分类处理**：
-   - **Ch2 引用 + Ch2 报告** → ✅ 合法（C 展示章节必须保留 C 预处理指令）
-   - **Ch2 引用 + Ch4 报告** → ⚠️ **章节错位**（DSC 模式触发）：AI 把 Ch2 C 展示错认为 Ch4 Rust 实现问题
-   - **Ch4 引用 + Rust 端 grep 0 命中** → ⚠️ **章节错位**：AI 报告"Ch4 有 #ifdef"，但 Ch4 实际无 `#[cfg]`
-   - **Ch4 引用 + Rust 端 grep 命中** → ✅ 真实问题
-
-**Doc 章节类型判定表**（自动分类）：
-| doc 章节特征 | 类型 | 应包含 |
-|------------|------|--------|
-| 标题含 "概念" / "本章聚焦" | Ch1 | 主语 = CPU/OS/机制 |
-| 标题含 "C 源码分析" / "Minix3 C 行为" | **Ch2** | C 代码块（含 `#ifdef`/`#include`）|
-| 标题含 "Rust 设计" / "决策" / "选型" | Ch3 | trait 选择 + 类型系统论证 |
-| 标题含 "实现" / "代码" / "落地" | **Ch4** | Rust 代码块（应避免 `#ifdef` 散落）|
-| 标题含 "测试" / "验证" | Ch5 | 测试列表 + QEMU 集成 |
-
-**强制格式**（scan.md §Step 0.7.3 必须含此表）：
-| TODO | 引用章节 | 章节类型 | Rust 实现 grep | 判定 | 处理 |
-|------|---------|---------|--------------|------|------|
-| TODO-05-2 | "§2.4/§2.5 arch_init" | **Ch2**（C 展示）| `rg "ifndef CONFIG_SMP" os/` 0 命中（仅 3 注释）| **章节错位**（DSC）| 误报（前提错误：Ch2 应保留 C 预处理指令） |
-| TODO-XX-N | "Ch4 code has #ifdef" | Ch4（Rust 实现）| `rg "#\[cfg\(smp" os/` 命中 | 真实问题 | 正常修复流程 |
-
-**反例**（必须避免）：
-- ❌ "AI 报告 'Ch2 §2.4 有 30+ 行 ifndef 散落'，未做章节类型判定直接采纳为 P2" → 模式 68 触发
-- ❌ "看到 #ifdef 即报告 Rust 代码散落，未区分 Ch2 展示 vs Ch4 实现" → 模式 68 触发
-
-**正例**（05-clock-interrupt-init Session #10 案例）：
-- ✅ `rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP" 05-clock-interrupt-init.md §2.4` → 命中（C 展示章节）
-- ✅ `rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP\|#\[cfg\(smp\|CONFIG_SMP" os/` → 仅 3 注释提及（os/kernel/src/{smp.rs, sched.rs}），无 `#[cfg]` 分支
-
-#### Step 0.7.4: TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
-
-> **目的**：防止 `tmp_design_and_todo/` 下 TODO 清单因跨多轮 review 累积而包含"前提失效"误报。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表引用了已修复/已接通的旧状态。
-> **触发条件**（2026-08-15 修复 A-P1-1 明确语义）：`tmp_design_and_todo/` 中 TODO 数 > 5 **且（AND）** 任一 TODO 描述含"基于..."/"依赖..."/"待..."/"阻塞"等时间敏感词 → **必须跑** Step 0.7.4。两个条件必须同时满足才触发；仅 TODO 数 > 5 但无时间敏感词不触发，仅含时间敏感词但 TODO 数 ≤ 5 不触发。
-
-**执行步骤**：
-1. **识别"基于状态"前提**：从 TODO 描述中 grep 形如下模式：
-   - "基于 TODO-XX-N 未修复"
-   - "依赖 Y 已实现/未实现"
-   - "待 X 完成"
-   - "因 Z 阻塞"
-2. **对每个前提，用 rg 验证当前状态**：
-   ```bash
-   # 例：TODO-06-4 假设 "TODO-01-3 阻塞"，验证 TODO-01-3 当前状态
-   rg "TODO-01-3" notes/rewrite/fork-syscall-rewrite/03-stage-kernel/01-kmain-cstart.md -n
-   # 如果 01 文档没有 TODO-01-3 标记 → TODO-06-4 的前提失效
-   ```
-3. **分类处理**：
-   - ✅ **前提成立** + 描述准确 → 正常 TODO 验证流程
-   - ⚠️ **前提偏差**（部分已修复/部分阻塞）→ 修正前提，TODO 重新分类
-   - ❌ **前提失效**（已修复/已接通/不存在）→ 标"前提失效，TODO 不适用" + 严重度自动降级（P0→P1，P1→P2，P2→误报）
-4. **批量模式**：当 TODO 数 ≥ 10 时，先跑 `tools/todo-staleness-check.sh {todo-file}`（NEW），自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
-
-**强制格式**（scan.md §Step 0.7.4 必须含此表）：
-
-| TODO | 引用前提 | rg 验证当前状态 | 判定 | 处理 |
-|------|---------|--------------|------|------|
-| TODO-06-2 | "1 个 trait 而非 3 个" | `rg "pub trait " os/kernel/src/process/proc.rs` 命中 3 个 trait | ❌ 前提错误（误报）| 不修复，标"前提错误" |
-| TODO-06-4 | "TODO-01-3 阻塞" | `rg "TODO-01-3" 01-kmain-cstart.md` 0 命中（已接通）| ❌ 前提失效 | 不修复，标"前提失效" |
-| TODO-06-7 | "需 3 trait" | `rg "pub trait " os/kernel/src/process/proc.rs` 已正确实现 | ✅ 前提成立 + 已修复 | 标 ✅ 已修复（无需修改）|
-
-**严重度降级规则**（与模式 66 RCPD 一致）：
-- P0 + 前提失效 → P1
-- P1 + 前提失效 → P2
-- P2 + 前提失效 → 标"误报"（✅ 删除）
-- 任何降级必须附 L1 证据（`rg` 命中或失效证明）
-
-**反例**（必须避免）：
-- ❌ "未做 staleness check 直接采纳 8 个 TODO 全部为真 → 误报率 37.5%（3/8）浪费 review 时间" → 模式 70 触发
-- ❌ "看到 TODO 标题就复制进 §Step 0.7 TODO 验证表，未验证'基于状态'前提" → 模式 70 触发
-
-**正例**（Session #12 06-proc-init-boot-proc 案例）：
-- ✅ 8 个 TODO-06 → staleness check 后 → 3 误报 + 5 真实 → 实际修复 4 项（1 项已修复）
-- ✅ 节省约 30 分钟（避免修复误报 + 二次 grep）
-
-**Step 0.7.1/0.7.2/0.7.3 关系**（AI claim verification 三元组）：
-- **0.7.1 Path Existence Validation** (RCPD)：验证 TODO 引用的代码路径是否真实存在
-- **0.7.2 AI Claim Grep Verification** (CFNOC)：验证 AI 引用的概念对象是否真实存在
-- **0.7.3 Doc Chapter Context Awareness** (DSC)：验证 AI 引用的章节上下文是否正确归属
-- 三者共同构成"AI claim verification 三元组"，覆盖 AI 报告中 3 类常见误报来源
-
----
-
-- **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要 + **design + outline 预检结果（PASS / OUTLINE_MISSING / DESIGN_MISSING / ALL_MISSING）** + **TODO 验证结果表（若执行 Step 0.7）** + **Path Existence Validation 表（若执行 Step 0.7.1）**
 
 ### Step 0.5: 生成 structure.md 并评审骨架（文档 Review 强制）
 
@@ -1101,6 +857,250 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 **禁止**：无反查来源标注的 issue → 视为"凭空产生"，严重度降级（P0 → P1，P1 → P2）。
 
 **Step 0.5 产物**：structure.md（保存到与 scan.md 同目录） + 评审结果表 + **outline 偏离矩阵**（若 outline.md 存在）+ **跨章节一致性矩阵**（Step 0.5.5 产物）+ **6 维反查矩阵**（Step 0.5.6 产物）+ **章节意图分析**（Step 0.5.7 产物，多余章节时必填）+ **issue 反查来源标注**（Step 0.5.8 产物，所有 issue 必填）
+
+### Step 0.7: TODO 验证（若输入含 TODO 清单，新增，2026-07-16）
+
+> **目的**：当 review 输入包含外部 TODO 清单（如 `tmp_design_and_todo/0108-todo-final.md` 多 AI bagging 产物）时，TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
+> **触发条件**：用户输入包含 TODO 清单路径，或 review 目标文档含 `TODO`/`todo!`/`unimplemented!` 标记。
+
+**执行步骤**：
+1. **逐个验证 TODO 真实性**：对每个 TODO，用 grep/glob/read 交叉验证：
+   - TODO 声称的文件/函数/行号是否真实存在
+   - TODO 描述的问题是否真的存在（可能是误报）
+   - TODO 优先级是否合理（P0/P1/P2）
+2. **分类处理**：
+   - ❌ **误报**：TODO 描述的问题不存在（如事实错误、已修复）→ 标记"误报否定"，不修复
+   - ⚠️ **真实（代码任务）**：TODO 指向代码缺失（如 build.rs 缺失）→ 在文档中标注"实现状态"，不强行写代码
+   - ✅ **真实（文档任务）**：TODO 指向文档问题 → 直接修复文档
+3. **修复真实 TODO**：仅修复真实文档 TODO，代码 TODO 标注状态
+4. **喂入 Step 2**：TODO 验证过程中发现的 grep 证据（如行号、寄存器名）直接用于 Step 2 差异提取，不重复 grep
+
+**TODO 验证结果表**（必须输出到 scan.md）：
+
+| TODO | 原优先级 | 验证结论 | 证据 | 处理 |
+|------|---------|---------|------|------|
+| TODO-XX-1 | P0 | ❌ 否定 | grep 证据 | 无需修复 |
+| TODO-XX-2 | P1 | ✅ 真实 | grep 证据 | ✅ 已修复 |
+
+**时间预算**：TODO 验证计入 review 时间预算，不单独计费。预计每个 TODO 5 分钟（含 grep 验证）。
+
+**TODO 验证 vs Review 发现问题区分**（NEW 2026-07-16）：
+
+| 维度 | TODO 验证（Step 0.7） | Review 发现（Step 2+） |
+|------|---------------------|---------------------|
+| 来源 | 外部 TODO 清单（如 `0108-todo-final.md`）| Reviewer 阅读文档/代码后独立发现 |
+| 时间点 | Step 0.7 验证阶段（review 开始前） | Step 2-5 review 阶段 |
+| 输出位置 | scan.md `§Step 0.7 TODO 验证表` | scan.md `§Issue List` |
+| 标识 | `已修复：TODO-XX-N`（带原 TODO ID）| 新 issue ID（如 `P1-1` 等）|
+| 严重度约束 | 沿用 TODO 原优先级（可能过期）| 按 review 重新判定 |
+| 性质 | **修复型**（greppable + 验证存在）+ 有时间戳 | **发现型**（concept check / design check）+ 无时间戳 |
+| 证据强度 | L1 grep 验证（含修改前后行号） | L1/L2/L3（按 §3.5 evidence 分级） |
+| 必填字段 | TODO ID + 验证结论 + 证据 + 处理 | 反查来源（Step 0.5.8 强制格式）+ Location + 证据 |
+
+**强制规则**：TODO 验证的"已修复"项与 Step 2+ 的 "新发现 issue" **必须分别列在 scan.md 不同段**：
+- `§Step 0.7 产物：TODO 验证表`（已修复项）
+- `§Issue List`（Review 新发现）
+
+不可合并（TODO 修复可能跨多次 review 会重复被修复，issue 编号不应复用）。
+
+#### Step 0.7.1: Path Existence Validation（NEW 2026-07-16，模式 66 RCPD 配套）
+
+> **目的**：TODO 描述中引用的 `file:line` 必须真实存在，否则会导致虚假 P0 共识（参考 [review-patterns.md 模式 66 RCPD](../review-rules/review-patterns.md)）。
+> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述中的 `file:line` 引用执行存在性验证。
+
+**执行步骤**：
+1. **提取所有 file:line 引用**：从 TODO 描述中 grep 形如 `path/to/file.rs:NNN` 或 `path/to/file.rs:NNN-MMM` 的引用
+2. **逐项验证存在性**：
+   ```bash
+   # 文件存在性
+   ls -la <file_path>
+   # 函数/符号存在性（可选）
+   rg "fn <symbol_name>" <file_path> -n
+   # 行号范围精确验证（推荐）
+   sed -n '<start_line>,<end_line>p' <file_path>
+   ```
+3. **分类处理**：
+   - ✅ **存在** + 行号范围与 TODO 描述匹配 → 标 "valid"，进入正常验证流程
+   - ⚠️ **存在** + 行号范围偏差 >5 行 → 标 "stale line range"，需重新核对（**P2 偏差不阻塞，但需在 doc 修正**）
+   - ❌ **不存在**（文件已删除/重构/重命名）→ 标 "**path drift**"，触发 doc 重写而非 code 修复；TODO 严重度自动降级（**P0 → P1 至少**）
+4. **多 AI 共识过滤**（NEW）：
+   - 任何"多 AI 共识"必须满足"全共识 × 全部 path 存在验证通过"才采纳为真实 bug
+   - 任一共识 AI 基于 path drift → 整条 TODO 标"共识待验证"
+
+**强制格式**（scan.md §Step 0.7 必须含此表）：
+
+| TODO | 引用 file:line | ls 验证 | 偏差类型 | 处理 |
+|------|---------------|--------|---------|------|
+| TODO-04-2 | `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` | ❌ 3 个文件全部 No such file | **path drift** | 严重度 P0 → P1（doc 重写，不修 code）|
+| TODO-XX-N | `<file>:<line>` | ⚠️ 文件存在，行号偏差 ±6 | **stale line range** | 标 P2 偏差，下次 review 修正 doc |
+
+**严重度降级规则**：
+- P0 + path drift → P1（强制）
+- P1 + path drift → P2（强制）
+- P2 + path drift → 标"误报"（✅ 删除）
+- 任何严重度降级必须附 L1 证据（`ls`/`rg` 命中或失效证明）
+
+**反例**（必须避免）：
+- ❌ "TODO 描述引用 `proc_arch.rs:350`，未做 ls 验证直接采纳为 P0 真实 bug" → 模式 66 触发
+- ❌ "2 AI 共识 TODO 严重度，未验证共识基础" → 模式 66 触发
+
+**正例**（04-platform-discovery §11 Session #8 案例）：
+- ✅ `ls os/arch/src/arch/{x86_64,riscv64,arm64}/proc_arch.rs` → 3 个文件全部 No such file
+- ✅ 读 `os/arch/src/arch/mod.rs:20` 注释 "proc_arch was removed in 06-design-final.md"
+- ✅ 结论：T2 严重度 P0 → P1 降级，触发 doc §11 重写而非 code 修复
+
+**自动化建议**（未来工具）：
+- `tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line → 输出 path drift 报告
+- 可与 `coverage-extract.py` 配合使用，输出"已删除引用 + 已变更引用"两个清单
+
+#### Step 0.7.2: AI Claim Grep Verification（NEW 2026-07-16，模式 67 CFNOC 配套）
+
+> **目的**：AI 报告中引用的"概念对象"（如 "CLOCK task"、"system server"、"kernel subsystem"）必须真实存在，否则会导致虚假 P0/P1 共识（参考 [review-patterns.md 模式 67 CFNOC](../review-rules/review-patterns.md)）。
+> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述中的"概念对象关键词"执行 grep 存在性验证。
+
+**执行步骤**：
+1. **提取所有概念对象引用**：从 TODO 描述中 grep 形如 "X task" / "X subsystem" / "X server" / "X daemon" 的引用
+2. **逐项验证存在性**：
+   ```bash
+   # 概念对象存在性
+   rg -ni "X task|X subsystem|X server|X daemon" <target_doc.md>
+   rg -ni "X" minix3/minix/include/ --type c
+   rg -ni "X" minix3/minix/kernel/ --type c
+   # 函数存在性（用于区分"操作名" vs "对象名"）
+   rg "fn init_X|fn X_init" minix3/minix/ --type c -n
+   ```
+3. **分类处理**：
+   - ✅ **概念对象真实存在**（在 C 源码或 doc 中有 `proc_ptr` / `NR_TASKS+N` 等表示）→ 标 "valid concept"
+   - ⚠️ **仅有 C 函数名 `init_X()` / `X_init()`** → 标 "**operation not object**"，TODO 严重度自动降级（P0 → P1 / P1 → 误报）
+   - ❌ **完全无匹配** → 标 "**phantom concept**"，触发 doc 重写
+
+**C 函数名 vs OS 概念对象 区分规则**：
+| C 代码形式 | 含义 | 类别 |
+|-----------|------|------|
+| `void init_clock(void)` | "对 clock 的初始化动作" | **操作名**（非对象） |
+| `int clock_task(void)` | "clock 任务进程函数体" | **对象**（任务进程） |
+| `proc[NR_TASKS+N]` | "任务表中的某进程" | **对象**（进程实体） |
+| `#define CLOCK_TASK ...` | "clock 任务的索引常量" | **对象**（常量标识） |
+| `SYSTEM` / `TASK_CLOCK` | "任务类型枚举值" | **对象**（类型标识） |
+
+**强制格式**（scan.md §Step 0.7.2 必须含此表）：
+| TODO | 引用概念 | rg 验证 | 分类 | 处理 |
+|------|---------|---------|------|------|
+| TODO-05-1 | "CLOCK task" | ❌ 0 命中 | **operation not object**（`init_clock()` 是操作名）| 误报（前提错误） |
+| TODO-XX-N | "X task" | ✅ `proc_ptr` / `NR_TASKS` 命中 | valid concept | 正常验证流程 |
+
+**反例**（必须避免）：
+- ❌ "AI 报告 'CLOCK task'，未做 rg 验证直接采纳为 P1 真实问题" → 模式 67 触发
+- ❌ "2 AI 共识 TODO 严重度，未验证共识基础" → 模式 67 触发
+
+**正例**（05-clock-interrupt-init Session #10 案例）：
+- ✅ `rg "CLOCK task\|clock task\|System Task\|Kernel Subsystem" 05-clock-interrupt-init.md` → 0 命中
+- ✅ `rg "init_clock" minix3/minix/kernel/clock.c -n` → clock.c:48 是 `void init_clock(void)` 函数定义（非 "CLOCK task"）
+- ✅ 结论：F1 误报（前提错误：把 `init_clock()` 操作名错认为 "CLOCK task" 对象名）
+
+#### Step 0.7.3: Doc Chapter Context Awareness（NEW 2026-07-16，模式 68 DSC 配套）
+
+> **目的**：AI 报告中引用的 doc 章节上下文必须明确（Ch2 C 展示 vs Ch4 Rust 实现），否则会导致虚假 P0/P2 误判（参考 [review-patterns.md 模式 68 DSC](../review-rules/review-patterns.md)）。
+> **触发条件**：每次执行 Step 0.7 TODO 验证时，**强制**对每条 TODO 描述的章节上下文做归属判定。
+
+**执行步骤**：
+1. **识别章节类型**：从 TODO 描述中识别涉及的章节（Ch1/Ch2/Ch3/Ch4/Ch5/Ch6）
+2. **判定章节性质**：
+   - **Ch1** = 概念驱动（主语 CPU/OS/机制）
+   - **Ch2** = C 源码分析（**展示** C 代码，**应保留** `#ifdef`）
+   - **Ch3** = Rust 设计决策（解释 trait/类型系统选择）
+   - **Ch4** = Rust 实现详解（**实际代码**，应避免 `#ifdef` 散落）
+   - **Ch5** = 测试要点
+3. **交叉验证 Rust 实现**：
+   ```bash
+   # 验证 Rust 端是否有散落的条件编译
+   rg "#\[cfg\(|\bifndef\b|\bifdef\b" os/ --type rust
+   rg "static mut" os/ --type rust
+   rg "fn.*#\[cfg" os/ --type rust
+   ```
+4. **分类处理**：
+   - **Ch2 引用 + Ch2 报告** → ✅ 合法（C 展示章节必须保留 C 预处理指令）
+   - **Ch2 引用 + Ch4 报告** → ⚠️ **章节错位**（DSC 模式触发）：AI 把 Ch2 C 展示错认为 Ch4 Rust 实现问题
+   - **Ch4 引用 + Rust 端 grep 0 命中** → ⚠️ **章节错位**：AI 报告"Ch4 有 #ifdef"，但 Ch4 实际无 `#[cfg]`
+   - **Ch4 引用 + Rust 端 grep 命中** → ✅ 真实问题
+
+**Doc 章节类型判定表**（自动分类）：
+| doc 章节特征 | 类型 | 应包含 |
+|------------|------|--------|
+| 标题含 "概念" / "本章聚焦" | Ch1 | 主语 = CPU/OS/机制 |
+| 标题含 "C 源码分析" / "Minix3 C 行为" | **Ch2** | C 代码块（含 `#ifdef`/`#include`）|
+| 标题含 "Rust 设计" / "决策" / "选型" | Ch3 | trait 选择 + 类型系统论证 |
+| 标题含 "实现" / "代码" / "落地" | **Ch4** | Rust 代码块（应避免 `#ifdef` 散落）|
+| 标题含 "测试" / "验证" | Ch5 | 测试列表 + QEMU 集成 |
+
+**强制格式**（scan.md §Step 0.7.3 必须含此表）：
+| TODO | 引用章节 | 章节类型 | Rust 实现 grep | 判定 | 处理 |
+|------|---------|---------|--------------|------|------|
+| TODO-05-2 | "§2.4/§2.5 arch_init" | **Ch2**（C 展示）| `rg "ifndef CONFIG_SMP" os/` 0 命中（仅 3 注释）| **章节错位**（DSC）| 误报（前提错误：Ch2 应保留 C 预处理指令） |
+| TODO-XX-N | "Ch4 code has #ifdef" | Ch4（Rust 实现）| `rg "#\[cfg\(smp" os/` 命中 | 真实问题 | 正常修复流程 |
+
+**反例**（必须避免）：
+- ❌ "AI 报告 'Ch2 §2.4 有 30+ 行 ifndef 散落'，未做章节类型判定直接采纳为 P2" → 模式 68 触发
+- ❌ "看到 #ifdef 即报告 Rust 代码散落，未区分 Ch2 展示 vs Ch4 实现" → 模式 68 触发
+
+**正例**（05-clock-interrupt-init Session #10 案例）：
+- ✅ `rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP" 05-clock-interrupt-init.md §2.4` → 命中（C 展示章节）
+- ✅ `rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP\|#\[cfg\(smp\|CONFIG_SMP" os/` → 仅 3 注释提及（os/kernel/src/{smp.rs, sched.rs}），无 `#[cfg]` 分支
+
+#### Step 0.7.4: TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
+
+> **目的**：防止 `tmp_design_and_todo/` 下 TODO 清单因跨多轮 review 累积而包含"前提失效"误报。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表引用了已修复/已接通的旧状态。
+> **触发条件**（2026-08-15 修复 A-P1-1 明确语义）：`tmp_design_and_todo/` 中 TODO 数 > 5 **且（AND）** 任一 TODO 描述含"基于..."/"依赖..."/"待..."/"阻塞"等时间敏感词 → **必须跑** Step 0.7.4。两个条件必须同时满足才触发；仅 TODO 数 > 5 但无时间敏感词不触发，仅含时间敏感词但 TODO 数 ≤ 5 不触发。
+
+**执行步骤**：
+1. **识别"基于状态"前提**：从 TODO 描述中 grep 形如下模式：
+   - "基于 TODO-XX-N 未修复"
+   - "依赖 Y 已实现/未实现"
+   - "待 X 完成"
+   - "因 Z 阻塞"
+2. **对每个前提，用 rg 验证当前状态**：
+   ```bash
+   # 例：TODO-06-4 假设 "TODO-01-3 阻塞"，验证 TODO-01-3 当前状态
+   rg "TODO-01-3" notes/rewrite/fork-syscall-rewrite/03-stage-kernel/01-kmain-cstart.md -n
+   # 如果 01 文档没有 TODO-01-3 标记 → TODO-06-4 的前提失效
+   ```
+3. **分类处理**：
+   - ✅ **前提成立** + 描述准确 → 正常 TODO 验证流程
+   - ⚠️ **前提偏差**（部分已修复/部分阻塞）→ 修正前提，TODO 重新分类
+   - ❌ **前提失效**（已修复/已接通/不存在）→ 标"前提失效，TODO 不适用" + 严重度自动降级（P0→P1，P1→P2，P2→误报）
+4. **批量模式**：当 TODO 数 ≥ 10 时，先跑 `tools/todo-staleness-check.sh {todo-file}`（NEW），自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
+
+**强制格式**（scan.md §Step 0.7.4 必须含此表）：
+
+| TODO | 引用前提 | rg 验证当前状态 | 判定 | 处理 |
+|------|---------|--------------|------|------|
+| TODO-06-2 | "1 个 trait 而非 3 个" | `rg "pub trait " os/kernel/src/process/proc.rs` 命中 3 个 trait | ❌ 前提错误（误报）| 不修复，标"前提错误" |
+| TODO-06-4 | "TODO-01-3 阻塞" | `rg "TODO-01-3" 01-kmain-cstart.md` 0 命中（已接通）| ❌ 前提失效 | 不修复，标"前提失效" |
+| TODO-06-7 | "需 3 trait" | `rg "pub trait " os/kernel/src/process/proc.rs` 已正确实现 | ✅ 前提成立 + 已修复 | 标 ✅ 已修复（无需修改）|
+
+**严重度降级规则**（与模式 66 RCPD 一致）：
+- P0 + 前提失效 → P1
+- P1 + 前提失效 → P2
+- P2 + 前提失效 → 标"误报"（✅ 删除）
+- 任何降级必须附 L1 证据（`rg` 命中或失效证明）
+
+**反例**（必须避免）：
+- ❌ "未做 staleness check 直接采纳 8 个 TODO 全部为真 → 误报率 37.5%（3/8）浪费 review 时间" → 模式 70 触发
+- ❌ "看到 TODO 标题就复制进 §Step 0.7 TODO 验证表，未验证'基于状态'前提" → 模式 70 触发
+
+**正例**（Session #12 06-proc-init-boot-proc 案例）：
+- ✅ 8 个 TODO-06 → staleness check 后 → 3 误报 + 5 真实 → 实际修复 4 项（1 项已修复）
+- ✅ 节省约 30 分钟（避免修复误报 + 二次 grep）
+
+**Step 0.7.1/0.7.2/0.7.3 关系**（AI claim verification 三元组）：
+- **0.7.1 Path Existence Validation** (RCPD)：验证 TODO 引用的代码路径是否真实存在
+- **0.7.2 AI Claim Grep Verification** (CFNOC)：验证 AI 引用的概念对象是否真实存在
+- **0.7.3 Doc Chapter Context Awareness** (DSC)：验证 AI 引用的章节上下文是否正确归属
+- 三者共同构成"AI claim verification 三元组"，覆盖 AI 报告中 3 类常见误报来源
+
+---
+
+- **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要 + **design + outline 预检结果（PASS / OUTLINE_MISSING / DESIGN_MISSING / ALL_MISSING）** + **TODO 验证结果表（若执行 Step 0.7）** + **Path Existence Validation 表（若执行 Step 0.7.1）**
 
 ### Step 1: Ground Truth Lookup（源码定位）
 
@@ -1839,6 +1839,34 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md   # bagging
 
 > **注意**：此检查在完整 Review（模式 C）时执行，局部 Review 时跳过。
 
+### Step 4.5: Test Verification（测试章节验证）— **Gate E**
+
+> **适用条件**（2026-08-15 修复 A-P1-2 明确触发语义）：文档含 §5 测试章节（或类似测试要点章节）时执行。触发条件为文档标题含 `^## §?5(\.|\s)|^# 5(\.|\s)|测试章节|验证章节` 任一模式；纯设计文档 / 局部 Review（仅 Ch1&2）跳过。
+
+**执行步骤**：
+1. 提取文档 §5 列出的所有测试函数名
+2. 对每个测试函数名执行 grep：
+   ```bash
+   rg "fn {test_name}" {rust_dir} --type rust -n
+   ```
+3. 判定：
+   - 存在 → ✅
+   - 不存在 → ❌ **P0（测试缺失）**
+
+**中间产物**（Gate E）：
+```markdown
+### Step 4.5 产物：测试章节验证（Gate E）
+
+| 文档 §5 测试名 | grep 命令 | grep 结果 | 判定 |
+|---------------|----------|----------|------|
+| test_vmctl_clear_pagefault | `rg "fn test_vmctl_clear_pagefault" os/` | 0 matches | ❌ P0 缺失 |
+| test_vmctl_param_from_u32 | `rg "fn test_vmctl_param_from_u32" os/` | vm.rs:1333 | ✅ 存在 |
+
+**统计**：文档承诺 N 个测试，实际存在 M 个，缺失 N-M 个 → P0
+```
+
+> **若文档无 §5**：输出 "文档无 §5 测试章节，Gate E 不适用"，不阻断。
+
 ### Step 5: Final Review Output（最终输出）
 
 - 按 [review.md §AI Review 输出模板](review.md#ai-review-输出模板) 整理所有发现
@@ -2022,7 +2050,7 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 | 层级 | 收敛条件 | 状态标记 |
 |------|---------|---------|
 | **Layer 1（Correctness）FAIL** | 任何 P0 未修复或 Gates 0/A/B/C/D/D-6/E/G/H 未通过 | **NOT CONVERGED**（强制修复）|
-| **Layer 1 PASS + Layer 2 PASS** | §4.3.5 / §4.4 / §15.5 / §2.0 全部 ≥ 80% | **CONVERGED** |
+| **Layer 1 PASS + Layer 2 PASS** | §4.3.5 / §4.4 / §16.5 / §2.0 全部 ≥ 80% | **CONVERGED** |
 | **Layer 1 PASS + Layer 2 PARTIAL** | 4 项中 1-2 项不足 80% | **CONVERGED with warning** |
 | **Layer 1 PASS + Layer 2 FAIL** | 4 项中 ≥3 项严重不足 | **CONVERGED with excellence-pending tag** |
 
@@ -2035,11 +2063,11 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 **执行方式**（独立会话中执行）：
 1. Agent 读取 STATE.md + scan.md + 原始文档/代码
 2. **随机抽样**：从 scan.md Issue List 中随机选取 20% 的已报告问题
-3.2. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
+3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
    - **2026-08-15 修复 C-P1-5（明确抽样方法）**：AI 无内置"随机"，使用**分层抽样**替代——从 Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20%。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A-E+G 是否都附带真实证据（gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/E/G/H 是否都附带真实证据（gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK（如 trae 内 glm 的 scan 由 kimi/ds 验证）。同 agent 验证时必须基于 grep 命令重放（非语义回忆），降低同 agent 系统性盲区风险。跨 agent 验证结果记入 VERIFY-CHECK.md 的"验证局限说明"段。
 8. **输出判定**：
    - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过

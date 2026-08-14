@@ -232,8 +232,8 @@
 - ✅ 13 项全有 → A 级组织
 - ⚠️ 缺 1-2 项 → B 级可接受
 - ❌ 缺 ≥3 项 → **P1-organization-incomplete**（需重构章节）
-- ❌ 违反"禁止函数名作主语" → **P0-narrative-violation**
-- ❌ "核心概念完整性"未通过 → **P0-concept-incomplete**（教训）
+- ❌ 违反"禁止函数名作主语" → **P1-narrative-violation**（与模式 51 严重度一致；P0 六分类不含此类型）
+- ❌ "核心概念完整性"未通过 → **P1-concept-incomplete**（教训；P0 六分类不含此类型）
 
 **章节结构模板**：
 ```
@@ -265,7 +265,7 @@
 **判定流程**：
 1. 列出 §4.4 矩阵判定结果
 2. 任意 1 项超阈值 → **P1-suggest-split**（建议拆分）
-3. 任意 2 项超阈值 → **P0-require-split**（必须拆分，可触发文档重组流程：拆分后原文档归档为 `.bak`，新文档重新走 §1-2 流程）
+3. 任意 2 项超阈值 → **P1-require-split**（必须拆分，可触发文档重组流程：拆分后原文档归档为 `.bak`，新文档重新走 §1-2 流程；拆分属结构改进，非正确性缺陷，故为 P1 而非 P0）
 
 ---
 
@@ -335,7 +335,9 @@ Step 3: Sanity Check (正确性)
   ↓
 Step 4: Cross-Document Check (正确性)
   ↓
-Step 4.5: Excellence Check ← 本文件
+Step 4.5: Test Verification（正确性，Gate E）
+  ↓
+卓越性检查（Layer 2 ← 本文件，见 review.md §4.5，非 Blocker Gate）
   ↓
 Step 5: Final Review Output
 ```

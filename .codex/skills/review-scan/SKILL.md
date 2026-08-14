@@ -190,7 +190,7 @@ Output: gate-evidence-H 块。
 
 Read: `.codex/skills/review-scan/checks/doc.md`
 
-Execute 15 doc checks IN ORDER. After each check, mark it done.
+Execute 16 doc checks IN ORDER. After each check, mark it done.
 - Check 00: Claims-Evidence Tracing
 - Check 01: Concept Accuracy
 - Check 02: C Code Reference Verification

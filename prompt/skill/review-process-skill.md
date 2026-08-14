@@ -80,6 +80,11 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"），而不是标 N/A 跳过。
 
+> **2026-08-15 修复 E-P2-4（允许"不适用 + 理由"例外）**：以下场景允许在 Gate H 中标"不适用 + 详细理由"，**而非默认 N/A**：
+> - **纯算法设计文档**（如 `notes/rewrite/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
+> - **历史/概念文档**（如 Minix3 C 源码导论）：纯知识介绍，无代码 → 全部 6 项可标"不适用"
+> - **判定**：review 文档分类时显式标注 `doc_category: pure_algorithm | historical | conceptual` → 允许部分 Gate H 项标"不适用 + 理由"。**不适用 ≠ 跳过**——必须在 STATE.md 中记录理由（详见 IN_DESIGN 健康度审计）
+
 **Gate 0 锚段校验**（scan.md 必须含以下 9 个 grep 可验锚段，缺任一 → Gate 0 FAIL）：
 ```
 ## Skill Invocation Log
@@ -136,6 +141,19 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 未含此章节 → scan.md 标记 DRAFT。
 
 ---
+
+## Step -0.5: 工具辅助检查（review 前置，2026-08-15 修复 B-P1-6）
+
+> **目的**：复用 `cargo` 生态工具的检查结果，避免 review 与 lint 结果矛盾。
+> **执行步骤**（仅当 review 涉及 Rust 代码时执行）：
+> 1. `cargo check` — 编译检查，确保无新 error（warning 不阻断 review）
+> 2. `cargo clippy -- -W clippy::all` — lint 检查，记录 clippy 警告列表（**作为 review Step 4 的输入**，但不替代 review）
+> 3. `cargo fmt --check` — 格式检查（仅当 review 关注代码风格时）
+> 4. `cargo test` — 运行测试，记录失败的测试（**作为 review Step 4.2 测试覆盖度的输入**）
+> **判定**：
+> - `cargo check` 失败 → 阻断 review（先修编译错误）
+> - `cargo clippy` 警告作为 P2 候选（review 决定是否升级）
+> - **不允许**用 `cargo clippy` 替代 review 的人工判断
 
 ## Step 0: 范围声明 + 时间预算 + 状态恢复
 
@@ -1009,7 +1027,7 @@ rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
 
 ## Step 1.6: 设计对齐检查（Design Alignment）— **Gate H**
 
-> **前提**：仅完整/深度/设计优先 review 模式执行此步骤。
+> **前提**：所有 review 模式都执行此步骤；快速/构造模式只可裁剪内容检查，不能跳过 Gate H。
 > **注**：design 存在性预检已在 Step 0 完成，此处为正式一致性检查。
 > **目的**：验证当前 Rust 实现的 trait/类型/架构是否与 design.md（非 bagging）/ design-final.md（bagging）一致。
 
@@ -1256,7 +1274,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging
 
 ## Step 4.5: Test Verification（测试章节验证）— **Gate E**
 
-**适用条件**：文档含 §5 测试章节（或类似测试要点章节）
+**适用条件**（2026-08-15 修复 A-P1-2 明确触发语义）：文档含 §5 测试章节（或类似测试要点章节）时执行。触发条件为文档标题含 `^## §?5(\.|\s)|^# 5(\.|\s)|测试章节|验证章节` 任一模式；纯设计文档 / 局部 Review（仅 Ch1&2）跳过。
 
 **执行步骤**：
 1. 提取文档 §5 列出的所有测试函数名
@@ -1438,11 +1456,11 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging
 #### VERIFY-CROSS（Step 5.6 原位置，收敛前）
 **执行步骤**（独立会话 / Trae 内跨 AI 聚合）：
 1. 读取 `.review/trae/{module}/STATE.md` + `scan.md` + 原始文档/代码
-2. **随机抽样**：从 scan.md 的 Issue List 中随机选取 20% 的已报告问题
+2. **分层抽样**（2026-08-15 修复 C-P1-5：AI 无内置"随机"，用分层抽样替代）：从 scan.md 的 Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20% 的已报告问题。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
 3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有已标记 COMPLETE 但实际未完成的维度
-6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A-E+G 全部 Gate（含 gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A/B/C/D/D-6/E/G/H 全部 Gate（含 gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令"。
 
 **中间产物**（写入 `.review/trae/{module}/VERIFY-CHECK.md`）：

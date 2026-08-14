@@ -365,7 +365,7 @@ Step 3: Sanity Check
 ```
 
 **具体使用**：
-- Step 2（Diff Extraction）: 使用行为契约表识别 Top 3 语义差异
+- Step 2（Diff Extraction）: 使用行为契约表识别 Top 5 语义差异（3 语义偏移 + 2 覆盖缺口，Gate B 8 字段 × 5 函数）
 - Step 3（Sanity Check）: 验证契约表的"匹配?"列
 - Step 6（Action Items）: 对 P0 违反生成具体修改项
 

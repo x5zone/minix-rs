@@ -50,6 +50,19 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 ```
 Missing this section → scan.md marked DRAFT.
 
+## Step -0.5: 工具辅助检查（review 前置，2026-08-15 修复 B-P1-6）
+
+> **目的**：复用 `cargo` 生态工具的检查结果，避免 review 与 lint 结果矛盾。
+> **执行步骤**（仅当 review 涉及 Rust 代码时执行）：
+> 1. `cargo check` — 编译检查，确保无新 error（warning 不阻断 review）
+> 2. `cargo clippy -- -W clippy::all` — lint 检查，记录 clippy 警告列表（**作为 review Step 4 的输入**，但不替代 review）
+> 3. `cargo fmt --check` — 格式检查（仅当 review 关注代码风格时）
+> 4. `cargo test` — 运行测试，记录失败的测试（**作为 review Step 4.2 测试覆盖度的输入**）
+> **判定**：
+> - `cargo check` 失败 → 阻断 review（先修编译错误）
+> - `cargo clippy` 警告作为 P2 候选（review 决定是否升级）
+> - **不允许**用 `cargo clippy` 替代 review 的人工判断
+
 ## Step 0: Scope Declaration + State Recovery
 1. **Read correct STATE.md path** (tool-isolated, never share intermediate results between tools):
    - **Trae IDE** → `.review/trae/{module}/STATE.md` (project root `.review/`)
@@ -514,37 +527,10 @@ Step 0.5.1 按 12 节模板生成 structure.md（概念文档全量 12 节，实
 11. **裸概念复述** — reader can retell core concept after reading Ch1; cannot → P1
 12. **纵向链路映射** — Ch1 concept ↔ Ch2 C code ↔ Ch3 design ↔ Ch4 impl; broken link → P1
 
-### Step 0.5.2 补充：元注释章节 review（NEW 2026-07-31）
-
-> **背景**：doc 中常有"§11.x 元注释"章节（如 04 doc §11.1-§11.6，记录"已知缺陷纠正"），本身是元信息，**容易被 review 流程忽略**。本次 04 doc review 主动检查了 §11.2 `proc_arch.rs:350/252/279` 引用 → `find` 确认已删除；§11.1 测试函数行号 → 全 grep 命中。但**这依赖 review 者的主动意识**，下次 review 应作为标准化步骤。
-
-**执行**：
-1. 扫描 doc 中的元注释章节（H2/H3 标题含"已知"/"修订"/"元注释"/"TODO 状态"/"自审"/"修复记录"等关键词）：
-   ```bash
-   rg "^\s*#{2,3}\s+.*(已知|修订|元注释|自审|修复|TODO)" notes/.../{doc}.md
-   ```
-2. 对每个元注释章节，主动验证章节中声称的事实：
-   - 文件路径 → `find` 验证存在性
-   - 函数/类型引用 → `rg` 验证存在性
-   - 行号引用 → `sed -n` 验证内容
-   - 历史决策 / 概念纠错 → 验证 design/outline 快照是否一致
-3. 输出"元注释准确性"段加入 scan.md：
-   ```markdown
-   ### 元注释章节 review
-   | 章节 | 声称 | 验证命令 | 实际 | 判定 |
-   |------|------|---------|------|------|
-   | §11.1 测试表 | device_tree.rs:445/483/517 | rg 验证 | 全部命中 | ✅ |
-   | §11.2 proc_arch.rs:350/252/279 已删除 | find os -name proc_arch.rs | 已删除 | ✅ |
-   ```
-
-**判定**：
-- 元注释章节全部事实准确 → ✅ 不记录
-- 元注释章节存在错误（行号漂移、文件不存在、概念过时）→ 按 Pattern #66 / #73 / #75 等记录到 Issue List
-
-**关联**：
-- 首次发现：04-platform-discovery review 2026-07-31（§11 元注释章节盲点，主动验证通过）
-
-Step 0.5.2 按 12 节评审表逐项判定，失败项写入 scan.md Issue List
+**Step 0.5.2 评审 structure.md**（逐项判定，失败项写入 scan.md §structure.md 评审）：
+- 1-12 节每节判定 ✅/P0/P1/P2 + 证据
+- 失败项汇总为 Issue List 的 P0/P1/P2 条目
+- **元注释章节 review**（NEW 2026-07-31）：同时主动验证文档中的元注释章节（H2/H3 标题含"已知"/"修订"/"元注释"/"自审"/"修复记录"等关键词），验证章节声称的文件/函数/行号引用 → 错误按 Pattern #66/#73/#75 记录到 Issue List（首次发现：04-platform-discovery review 2026-07-31）
 Step 0.5.4 通过门槛：structure.md 评审通过后才进入 Step 1（覆盖率穷举）
 
 **Step 0.5.5 跨章节重复内容一致性检查**（新增，2026-07-16）：
@@ -922,7 +908,7 @@ At the END of every session, output:
 - [✅] Step 3.5a: Vertical Link Check (doc review only)
 - [✅] Step 3.5b: Causal Chain Sampling (doc review only)
 - [✅] Gate D: P0 Mandatory Checklist (5 items)
-- [✅] Gate E: Step 4.5 Test Verification (if applicable)
+- [✅] Gate E: Step 4.5 Test Verification (§5 = "测试/验证"章节标题。2026-08-15 修复 A-P1-2：触发条件为文档含 `^## §?5(\.|\s)|^# 5(\.|\s)|测试章节|验证章节` 任一标题模式；纯设计文档 / 局部 Review（仅 Ch1&2）跳过；文档无 §5 → "Gate E 不适用" 不阻断）
 - [✅] Gate G: Step 5.6 VERIFY-CHECK produced and PASS
 - [✅] Step 5.7: Rule Discovery (✅/❌ + draft if ✅)
 - [✅] Step 7.1: Convergence Cost Warning assessment
@@ -972,6 +958,46 @@ STATE.md format:
 4. **Gate G: VERIFY-CHECK.md = PASS** (mandatory; do NOT mark CONVERGED without it)
 5. All P0 in scan.md fixed+verified (or WONTFIX+reason)
 6. **Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed with gate-evidence attached**
+
+## Step 5.6: Review Verification Protocol（独立验证，强制，Gate G）
+
+> **目的**：解决"自己审自己"的盲区。在所有维度 COMPLETE 后，必须执行独立验证才能标记 CONVERGED。
+
+**触发条件**：所有维度标记 COMPLETE + P0/P1 收敛后，**必须**执行本步骤并生成 VERIFY-CHECK.md。未执行 VERIFY-CHECK 时，状态必须为 NOT_CONVERGED。
+
+**执行方式**（独立会话中执行）：
+1. Agent 读取 STATE.md + scan.md + 原始文档/代码
+2. **分层抽样**（2026-08-15 修复 C-P1-5：AI 无内置"随机"，用分层抽样替代）：从 scan.md Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20% 的已报告问题。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
+3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
+4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
+5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/E/G/H 是否都附带真实证据（gate-evidence 块）
+7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK（如 trae 内 glm 的 scan 由 kimi/ds 验证）。同 agent 验证时必须基于 grep 命令重放（非语义回忆），降低同 agent 系统性盲区风险。跨 agent 验证结果记入 VERIFY-CHECK.md 的"验证局限说明"段。
+8. **输出判定**：
+   - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过
+   - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
+   - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
+
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{module}/VERIFY-CHECK.md`; Claude: `.review/claude/{module}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
+
+**Multi-Agent 强制规则（NEW 2026-07-16）**：
+
+| 报告 P0 数 | 推荐验证 agent | 阻断? |
+|-----------|---------------|-------|
+| 0 | 同 agent 可（带 grep 重放） | ❌ 不阻断 |
+| ≥ 1 | **必须跨 agent 验证** | ⛔ 阻断（不通过 Gate G） |
+
+**触发场景**：
+- 若 review 报告 P0 ≥ 1 → Gate G VERIFY-CHECK 必须由不同 agent 二次验证
+- Trae 内允许：glm → kimi / glm → ds / kimi → seed 等轮换
+- Claude 内允许：m3 review → glm-flash verify（独立 session）
+- 同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 标注"同 agent 验证，已重放 grep 命令"
+
+**工具层触发**：
+- `tools/review-init.sh --require-multi-agent` 启用（默认 false）
+- 若启用，review-init 输出"⛔ 已设置 --require-multi-agent：若本 review 报告 P0 ≥ 1，Gate G 必须由不同 agent 执行 VERIFY-CHECK"
+
+**判定**：报告 P0 ≥ 1 但 VERIFY-CHECK 由同 agent 写 → Gate G 判 FAIL → STATE.md 不得标 CONVERGED。
 
 ## Step 5.7: Rule Discovery (Mandatory)
 After completing the review, answer in scan.md `§Rule Discovery`: "Did this review discover a new pattern? ✅/❌".

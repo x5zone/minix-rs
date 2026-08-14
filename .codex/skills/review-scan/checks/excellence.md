@@ -105,12 +105,12 @@
 
 ---
 
-## 二、代码卓越性（§15-20）
+## 二、代码卓越性（§17-21）
 
 > 详见 [review-code-excellence.md](../../../../prompt/review-rules/review-code-excellence.md)
-> **模式编号映射**：§15 = 模式 43（API 易误用），§16 表达力 ↔ 模式 43/47，§17 性能 ↔ 模式 47（全局依赖），§18 = 模式 45（冗余注释），§19 = 模式 46（副作用隐藏），§20 = 模式 44（错误类型）。详见 [patterns.md §五 卓越性模式（41-47）](patterns.md)。
+> **模式编号映射**：§16 = 模式 43（API 易误用），§17 表达力 ↔ 模式 43/47，§18 性能 ↔ 模式 47（全局依赖），§19 = 模式 45（冗余注释），§20 = 模式 46（副作用隐藏），§21 = 模式 44（错误类型）。详见 [patterns.md §五 卓越性模式（41-47）](patterns.md)。
 
-### §15 API 设计卓越性
+### §16 API 设计卓越性
 
 **Execute**:
 1. 检查 API 是否难以误用（make wrong state unrepresentable）
@@ -122,7 +122,7 @@
 | 位置 | API 设计问题 | P? | Suggested Fix |
 |------|------------|----|---------------|
 
-### §16 表达力卓越性
+### §17 表达力卓越性
 
 **Execute**:
 1. 检查是否充分利用类型系统（newtype、phantom、typestate）
@@ -134,7 +134,7 @@
 | 位置 | 表达力问题 | P? | Suggested Fix |
 |------|----------|----|---------------|
 
-### §17 性能卓越性
+### §18 性能卓越性
 
 **Execute**:
 1. 检查是否有不必要的分配/拷贝
@@ -146,7 +146,7 @@
 | 位置 | 性能问题 | P? | Suggested Fix |
 |------|---------|----|---------------|
 
-### §18 代码即文档卓越性
+### §19 代码即文档卓越性
 
 **Execute**:
 1. 检查代码是否自解释（类型名、函数名表达意图）
@@ -158,7 +158,7 @@
 | 位置 | 代码即文档问题 | P? | Suggested Fix |
 |------|-------------|----|---------------|
 
-### §19 可测试性卓越性
+### §20 可测试性卓越性
 
 **Execute**:
 1. 检查代码是否易于测试（依赖注入、纯函数）
@@ -170,7 +170,7 @@
 | 位置 | 可测试性问题 | P? | Suggested Fix |
 |------|------------|----|---------------|
 
-### §20 测试质量卓越性
+### §21 测试质量卓越性
 
 **Execute**:
 1. 检查测试是否有意义（非"测试 1+1=2"）
@@ -200,7 +200,7 @@
 
 ## Design-First 卓越性扩展
 
-> 配合 [review-doc-excellence.md §4.3.5 + §4.4](../../../../prompt/review-rules/review-doc-excellence.md) + [review-code-excellence.md §15.5](../../../../prompt/review-rules/review-code-excellence.md) 使用。
+> 配合 [review-doc-excellence.md §4.3.5 + §4.4](../../../../prompt/review-rules/review-doc-excellence.md) + [review-code-excellence.md §16.5](../../../../prompt/review-rules/review-code-excellence.md) 使用。
 
 ### 文档卓越性扩展（4 项）
 
@@ -211,7 +211,7 @@
 
 ### 代码卓越性扩展（6 项）
 
-§15.5 design-first API 设计原则：
+§16.5 design-first API 设计原则：
 1. 命名 — 与 design 一致
 2. 参数 — 严格匹配 trait 方法签名
 3. 错误 — Error 变体与 design 错误码策略一致

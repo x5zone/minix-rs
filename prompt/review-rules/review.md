@@ -473,7 +473,8 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
   - 实际耗时 > 预算的 150% → 可能过度检查，检查是否有不必要的重复工作
 - 如果未填写预算：必须在 scan.md 中说明 "时间预算已省略，依赖 Blocker Gates + VERIFY-CHECK 反偷懒"。
 
-**时间预算参考**：
+### 时间预算参考
+
 | 文档规模 | 预计耗时 |
 |---------|---------|
 | < 200 行 | 10~20 分钟 |
@@ -781,18 +782,18 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 | 层级 | 目标 | 进入条件 | 通过条件 | 不通过后果 |
 |------|------|---------|---------|-----------|
-| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部 PASS | CONVERGED 阻断 |
-| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §15.5 design-first API + §2.0 架构演进维度 ≥80% | 允许 CONVERGED 但标记 excellence-pending |
+| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/design-missing/design-wrong/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部 PASS | CONVERGED 阻断 |
+| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §16.5 design-first API + §2.0 架构演进维度 ≥80% | 允许 CONVERGED 但标记 excellence-pending |
 
 **关键判定**：
 - **必须先 1 后 2**：没有正确性，卓越性无从谈起
 - **Layer 1 不通过 → Layer 2 不评估**：直接阻断 CONVERGED
-- **Layer 1 通过但 Layer 2 不通过 → 允许 CONVERGED with warning**：excellence 可后续迭代
+- **Layer 1 通过但 Layer 2 不通过 → 允许 CONVERGED**（PARTIAL → with warning / FAIL → with excellence-pending tag）：excellence 可后续迭代
 - **Layer 1 和 Layer 2 都通过 → 完全 CONVERGED**
 
 **CONVERGED 判定流程**：
 1. 列出 Layer 1 各项检查结果（5 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/E/G）
-2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§15.5、§2.0 架构演进）
+2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§16.5、§2.0 架构演进）
 3. 判定：
    - Layer 1 FAIL → NOT CONVERGED（强制修复）
    - Layer 1 PASS + Layer 2 PASS → CONVERGED
@@ -942,8 +943,8 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 ## 附录：模块清单
 
-- [review-doc-checklist.md](review-doc-checklist.md) — 文档结构规范 + 8 个检查维度
-- [review-code-checklist.md](review-code-checklist.md) — 11 个代码检查维度
+- [review-doc-checklist.md](review-doc-checklist.md) — 文档结构规范 + 检查清单（§1 结构 + §1.Ch1 概念章骨架 + §2 内容检查 + §3 可读性）
+- [review-code-checklist.md](review-code-checklist.md) — 代码检查清单（§1-§15，含 §14 C-Rust 语义对齐 + §15 细节精确性 = Gate C）
 - [review-patterns.md](review-patterns.md) — 常见错误模式（文档 + 代码 + 跨文档）
 - [review-process.md](review-process.md) — AI 强制步骤 + 工具命令
 - [review-profiles.md](review-profiles.md) — 任务组合配置（按需加载策略）

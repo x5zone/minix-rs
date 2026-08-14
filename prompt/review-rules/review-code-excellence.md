@@ -19,7 +19,7 @@
 
 ---
 
-## 二、§15 API 设计卓越性
+## 二、§16 API 设计卓越性
 
 ### 2.1 检查项
 
@@ -55,7 +55,7 @@
 | 位置 | API 设计问题 | 卓越性 P? | Suggested Fix |
 |------|------------|----------|---------------|
 
-### §15.5 design-first API 设计原则
+### §16.5 design-first API 设计原则
 
 > **核心立场**：API 设计应优先考虑 design 而非习惯。如果 API 与 design 偏离但与 Rust 习惯一致，需要 design Refactor（修 design）而非 code Refactor（迁就习惯）。
 
@@ -87,7 +87,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ---
 
-## 三、§16 表达力卓越性
+## 三、§17 表达力卓越性
 
 ### 3.1 检查项
 
@@ -132,7 +132,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ---
 
-## 四、§17 性能卓越性
+## 四、§18 性能卓越性
 
 ### 4.1 检查项
 
@@ -173,7 +173,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ---
 
-## 五、§18 代码即文档卓越性
+## 五、§19 代码即文档卓越性
 
 ### 5.1 检查项
 
@@ -214,7 +214,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ---
 
-## 六、§19 可测试性卓越性
+## 六、§20 可测试性卓越性
 
 ### 6.1 检查项
 
@@ -249,7 +249,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ---
 
-## 七、§20 测试质量卓越性
+## 七、§21 测试质量卓越性
 
 ### 7.1 测试三重标准
 
@@ -310,12 +310,12 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 ## 八、Pass condition
 
-- §15 API 设计：至少 B 级
-- §16 表达力：至少 B 级
-- §17 性能：至少 B 级
-- §18 代码即文档：至少 B 级
-- §19 可测试性：至少 B 级
-- §20 测试质量：核心函数至少 L1/L2/L3 一项覆盖
+- §16 API 设计：至少 B 级
+- §17 表达力：至少 B 级
+- §18 性能：至少 B 级
+- §19 代码即文档：至少 B 级
+- §20 可测试性：至少 B 级
+- §21 测试质量：核心函数至少 L1/L2/L3 一项覆盖
 
 **⛔ 卓越性问题不阻塞 Review 收敛。但应在 FINDINGS.md 中记录，供后续改进。**
 
@@ -337,7 +337,9 @@ Step 3: Sanity Check (正确性)
   ↓
 Step 4: Cross-Document Check (正确性)
   ↓
-Step 4.5: Excellence Check ← 本文件
+Step 4.5: Test Verification（正确性，Gate E）
+  ↓
+卓越性检查（Layer 2 ← 本文件，见 review.md §4.5，非 Blocker Gate）
   ↓
 Step 5: Final Review Output
 ```

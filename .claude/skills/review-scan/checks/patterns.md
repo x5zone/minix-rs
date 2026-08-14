@@ -187,7 +187,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 ## 四、测试错误模式（6 个）
 
 > 对应源 [review-patterns.md §六](../../../../prompt/review-rules/review-patterns.md) 模式 35-40。**适用所有模块**（用户态 + 内核）。
-> 详细执行方法见 [excellence.md §20 测试质量卓越性](excellence.md) + [process.md Step 4.5 测试验证（Gate E）](process.md)。
+> 详细执行方法见 [excellence.md §21 测试质量卓越性](excellence.md) + [process.md Step 4.5 测试验证（Gate E）](process.md)。
 
 | # | Pattern | grep Command | Anti-Pattern | Correct |
 |---|---------|-------------|-------------|---------|
@@ -210,7 +210,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 ## 五、卓越性错误模式（7 个）
 
 > 对应源 [review-patterns.md §七](../../../../prompt/review-rules/review-patterns.md) 模式 41-47。在正确性 gate 通过后执行。
-> 详细执行方法见 [excellence.md §4.1-4.4 文档卓越性 + §15-20 代码卓越性](excellence.md)。
+> 详细执行方法见 [excellence.md §4.1-4.4 文档卓越性 + §17-21 代码卓越性](excellence.md)。
 
 | # | Pattern | 检查项 | Anti-Pattern | Correct |
 |---|---------|--------|-------------|---------|

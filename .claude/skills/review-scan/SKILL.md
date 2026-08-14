@@ -192,7 +192,7 @@ Output: gate-evidence-H 块。
 
 Read: `.claude/skills/review-scan/checks/doc.md`
 
-Execute 15 doc checks IN ORDER. After each check, mark it done.
+Execute 16 doc checks IN ORDER. After each check, mark it done.
 - Check 00: Claims-Evidence Tracing
 - Check 01: Concept Accuracy
 - Check 02: C Code Reference Verification
@@ -248,10 +248,10 @@ Execute 9 pattern categories:
 - §0 P0 必检清单（Gate D，5 项）
 - 文档错误模式（15 个，1-15）
 - 跨文档联动错误模式（3 个，A-C）
-- 代码错误模式（14 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
+- 代码错误模式（10 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
 - 测试错误模式（6 个，35-40）
 - 卓越性错误模式（7 个，41-47）
-- 叙事与概念错误模式（10 个，48-57）— 因果链编造(48)为 P0
+- 叙事与概念错误模式（13 个，48-60）— 因果链编造(48)为 P0
 - Design-First 反模式（63-65）
 - Review 流程反模式（66-78）
 
