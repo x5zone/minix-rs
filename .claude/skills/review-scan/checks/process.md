@@ -613,14 +613,14 @@ python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
   --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
-  --output .review/claude/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+  --output .review/claude/{rw-module}/{doc-stem}/SYMBOLS.md
 
 # Doc-specific review (kernel)
 python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-  --output .review/claude/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+  --output .review/claude/{rw-module}/{doc-stem}/SYMBOLS.md
 ```
 > **Gate A evidence rule**: After running, write the command + stdout into a `gate-evidence-A` block in scan.md. Physical unavailability of the script → mark PARTIAL (≠ PASS), no Final Review.
 > **Directory creation**: The script auto-creates parent directories when `--output` is used.
@@ -646,8 +646,8 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md        # doc 结构
 ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
 ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
 ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
-# 最新版本软链（方便 anchor）
-ls -la notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # → *.v{N}.md
+# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
 # 工具支持（NEW，Session #12 落地）
 tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫描所有 stage 缺失报告
 ```
@@ -754,10 +754,10 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
 
 Step 1.6.1 design 存在性确认（Step 0 预检的复核）：
 ```bash
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md       # 非 bagging（持久化）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging（持久化）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（持久化可复用快照，任意版本命中）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.md`；bagging 场景产物为 `{NN}-design-final.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
 
 Step 1.6.2 design 对齐检查（6 项）：
 1. doc/code 中的命名是否与 design 一致？（无 "我用了更合理的命名"）
@@ -943,7 +943,7 @@ STATE.md format:
 - **Last completed**: <phase>
 - **Open P0/P1/P2**: N/M/K
 - **Convergence**: CONVERGED / NOT_CONVERGED (N phases left)
-- **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ (all with evidence)
+- **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ H✅ (all with evidence)
 ```
 
 **Convergence criteria** (all must pass):

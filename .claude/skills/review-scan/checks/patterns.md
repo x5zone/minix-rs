@@ -210,7 +210,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 ## 五、卓越性错误模式（7 个）
 
 > 对应源 [review-patterns.md §七](../../../../prompt/review-rules/review-patterns.md) 模式 41-47。在正确性 gate 通过后执行。
-> 详细执行方法见 [excellence.md §4.1-4.4 文档卓越性 + §17-21 代码卓越性](excellence.md)。
+> 详细执行方法见 [excellence.md §4.1-4.5 文档卓越性 + §16-21 代码卓越性](excellence.md)。
 
 | # | Pattern | 检查项 | Anti-Pattern | Correct |
 |---|---------|--------|-------------|---------|

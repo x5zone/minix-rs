@@ -1,6 +1,6 @@
 ---
 name: review-code-skill
-description: Minix-RS Rust 代码 Review 检查清单。包含 §1-§14 全部维度：Rewrite 质量、硬件抽象和 trait 设计评估、类型安全、执行模型与并发、内存模型、模块设计、命名与可追溯性、测试、注释文档、64位假设、复杂度与工程性、no_std 约束、设计-代码一致性、C-Rust 语义对齐。当 Agent 需要检查代码(.rs)质量时调用此 Skill。
+description: Minix-RS Rust 代码 Review 检查清单。包含 §1-§15 全部维度：Rewrite 质量、硬件抽象和 trait 设计评估、类型安全、执行模型与并发、内存模型、模块设计、命名与可追溯性、测试、注释文档、64位假设、复杂度与工程性、no_std 约束、设计-代码一致性、C-Rust 语义对齐、细节精确性。当 Agent 需要检查代码(.rs)质量时调用此 Skill。
 ---
 
 # Minix-RS 代码 Review 检查清单

@@ -54,7 +54,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 **Design-First 模式要点**：
 - 触发：自动（**Step 0 design 预检**找不到 `design.md`/`design-final.md`，或 Step 1.6 一致性 < 80%）+ 手动（用户指定）
-- **design 文件命名规则**：非 bagging 场景默认产物为 `{NN}-design.md`；bagging 场景（多 AI 聚合）产物为 `{NN}-design-final.md`
+- **design 文件命名规则**：非 bagging 场景默认产物为 `{NN}-design.v{N}.md`；bagging 场景（多 AI 聚合）产物为 `{NN}-design-final.v{N}.md`（保留所有历史版本，见 Step 1.6.1）
 - 输出：scan.md 含 Design Feedback §8 + IN_DESIGN.md（如中断）+ **Step 0.3 生成的 design.md**
 - 配套 Gate：必须通过 Gate H（design 门控）
 - 与日常 review 关系：Step 0.3 已嵌入所有 review 模式（2026-07-17 变更），Design-First 模式不再是独立前置
@@ -180,8 +180,8 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
     ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
     ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
-    # 最新版本软链（方便 anchor）
-    ls -la notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # → *.v{N}.md
+# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -1033,11 +1033,11 @@ rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
 
 **Step 1.6.1**：design 存在性确认（Step 0 预检的复核）
 ```bash
-# 持久化交付物（位置：notes/rewrite/{module}/{stage}/.design/）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md       # 非 bagging
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging
+# 持久化可复用快照（位置：notes/rewrite/{module}/{stage}/.design/，保留所有历史版本）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（任意版本命中）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.md`；bagging 场景产物为 `{NN}-design-final.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
 
 **Step 1.6.2**：design ↔ code 一致性矩阵
 
@@ -1065,12 +1065,12 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging
 | **DESIGN_DIVERGED_WRONG** | design ↔ code 严重偏离（≥30%）且 design 错 | design Refactor 必须 + code Refactor |
 
 > **Gate H 最小证据要求**（6 项，方案 D 新增 H.6）：
-> - **H.1**: `ls {NN}-design.md`（非 bagging）或 `ls {NN}-design-final.md`（bagging）命中（精确文件名，必须含 `{NN}-` 前缀）
+> - **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md`（非 bagging）或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md`（bagging）命中（本目录版本通配 `.v*.md`，必须含 `{NN}-` 前缀）
 > - **H.2**: 一致性矩阵 ≥ 5 行 + 一致性 ≥ 80%
 > - **H.3**: Minix3 对齐矩阵 ≥ 3 行 + 无 P0 缺失
 > - **H.4**: `rg "design-wrong" scan.md` 无命中
 > - **H.5**: `rg "code Refactor|design Refactor" scan.md` 明确区分两类
-> - **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
+> - **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
 
 详见 [review-rules/review-process.md §Step 1.6](../review-rules/review-process.md)。
 
@@ -1409,7 +1409,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md # bagging
 - [ ] P0 收敛：最近 Pass 新增 P0 = 0
 - [ ] P1 收敛：最近 Pass 新增 P1 ≤ 1
 - [ ] 独立验证：**Gate G** VERIFY-CHECK = PASS（**必须完成，不能跳过**）
-- [ ] Blocker Gates：0/A/B/C/D/D-6/E/G 全部通过，且每个 Gate 都有 gate-evidence 附件
+- [ ] Blocker Gates：0/A/B/C/D/D-6/E/G/H 全部通过，且每个 Gate 都有 gate-evidence 附件
 
 **当前状态**：CONVERGED / NOT_CONVERGED (N phases remaining)
 **下一步**：[下一阶段名称] 或 [执行独立验证] 或 [审查已收敛，可结束]

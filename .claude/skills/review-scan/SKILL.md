@@ -110,10 +110,10 @@ python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
   --doc-file $TARGET_DOC \
   --semantic-map tools/coverage-extract/$MINIX3_MODULE-semantic-map.json \
-  --output .review/claude/$MODULE/scans/$DOC_STEM-$AGENT-SYMBOLS.md
+  --output .review/claude/$MODULE/$DOC_STEM/SYMBOLS.md
 ```
 - `--rust-dir os` scans the entire `os/` tree to avoid missing cross-crate symbols.
-- `--c-dir` must be `minix3/minix/servers/$MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
+- `--c-dir` must be `minix3/minix/servers/$MINIX3_MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
 - `--semantic-map` is required for C→Rust rewrite; without it Rust coverage will be near 0% due to name mismatch.
 - `--doc-file` ensures two docs in the same module do not produce identical coverage numbers.
 - If Rust coverage is 0%, first check `--rust-dir`/`--semantic-map` correctness before treating it as a real gap.
@@ -178,9 +178,9 @@ Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
 - 月度审计：清理过期 IN_DESIGN 项
 
 Phase 2.6.4 outline 对齐检查（H.6，方案 D 新增）：
-- 检查 `notes/rewrite/{module}/{stage}/.design/{NN}-outline.md` 是否存在
+- 检查 `notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
 - 对照 Step 0.5.3 的 outline 偏离矩阵，确认无 P0 偏离（核心概念遗漏）
-- outline.md 缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
+- outline 快照缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
 
 Output: gate-evidence-H 块。
 > ⛔ **Gate H**: 6 项 design 检查 + 缺口清单 + P0-design-missing 全处置 + **H.6 outline 对齐无 P0 偏离**。Failure → scan.md DRAFT。
@@ -265,8 +265,8 @@ Read: `.claude/skills/review-scan/checks/excellence.md`
 > Excellence checks pursue "better", not "correct".
 
 Execute:
-- §4.1-4.4 文档卓越性（叙事结构 / 读者体验 / 教学深度 / 概念骨架可见性）
-- §15-20 代码卓越性（API设计 / 表达力 / 性能 / 代码即文档 / 可测试性 / 测试质量）
+- §4.1-4.5 文档卓越性（叙事结构 / 读者体验 / 教学深度 / 可维护性 / 概念教学 Ch1 专项）
+- §16-21 代码卓越性（API设计 / 表达力 / 性能 / 代码即文档 / 可测试性 / 测试质量）
 
 ---
 
@@ -326,14 +326,14 @@ STATE.md contents:
    - Findings counts (P0/P1/P2)
    - Convergence status
    - Coverage Status section (from Phase 2)
-   - **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ (all with evidence)
+   - **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ H✅ (all with evidence)
 
 **Convergence criteria**:
 - All dims COMPLETE in scan.md
 - P0 new=0, P1 new≤1
 - **Gate G: VERIFY-CHECK.md=PASS** (mandatory; do NOT mark CONVERGED without it)
 - All P0 fixed+verified (or WONTFIX+reason)
-- **Blocker Gates 0/A/B/C/D/D-6/E/G (incl. D-6 for doc review) all passed with gate-evidence attached**
+- **Blocker Gates 0/A/B/C/D/D-6/E/G/H (incl. D-6 for doc review) all passed with gate-evidence attached**
 
 ---
 
@@ -344,7 +344,7 @@ STATE.md contents:
 | `doc.md` | 文档检查清单 | 16 doc correctness checks (Check 00-15) |
 | `code.md` | code/01-16 (16 files) | 16 code correctness checks |
 | `patterns.md` | patterns/* (3 files) | 15 doc + 3 cross + 19 code patterns |
-| `excellence.md` | new | 3 doc + 6 code excellence checks |
+| `excellence.md` | new | 5 doc + 6 code excellence checks |
 | `process.md` | review-process + skip-check | Step 0-7 + meta-check + Coverage Enumeration |
 
 > **Note**: The original 31 individual check files in `doc/`, `code/`, `patterns/` subdirectories are superseded by the 5 domain files above. They are kept for reference but should not be loaded by the orchestrator. Coverage Enumeration is executed in **Phase 2** of this orchestrator and detailed in `checks/process.md` §Step 1.5.

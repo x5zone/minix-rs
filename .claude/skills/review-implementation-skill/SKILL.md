@@ -146,6 +146,25 @@ description: 设计→实施 验证技能。验证 Rust 代码正确实现 desig
 - **`review-process-skill`**：本 skill 是 Step 3.5c（概念抽象验证）的扩展
 - **`review-code-skill`**：本 skill 完成后，再用 review-code-skill 检查纯代码质量
 - **`review-patterns-skill`**：模式 48（因果链编造）+ 51（实现驱动概念章）是本 skill 的常见失败模式
+- **`review-core-semantics-skill`** §1.4-1.5：Refactor 判定 + 优先级链（Minix3 > design > code > doc）
+- **`review-process-skill`** Step 1.6：设计对齐检查 — 本 skill 的前置 Gate H 之一
+
+## Design-First 视角
+
+> 配合 [review-profiles.md Profile R](../../../prompt/review-rules/review-profiles.md) 使用。
+
+**Design-First Review 模式下，本 skill 的执行差异**：
+1. **审查重点变化**：从"代码是否符合 design"扩展到"design 本身是否完整、正确、可实现"
+2. **新检查项**：
+   - Design 文档 §3 trait/方法签名是否可实现？（编译性预检）
+   - Design 不变量是否在代码中有对应测试？
+   - Design 错误码策略是否在代码中体现？
+3. **失败模式新增**：
+   - **P0-design-missing**：design 缺关键决策（如未定义 trait 方法签名）
+   - **P0-design-wrong**：design 决策技术错误（如不安全抽象）
+   - **P0-test-missing**：design 要求测试但代码无
+
+详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../prompt/skill/review-patterns-skill.md)。
 
 ## 完成标准
 

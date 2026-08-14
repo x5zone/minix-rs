@@ -16,7 +16,7 @@
 
 ---
 
-## 一、文档卓越性（§4.1-4.3）
+## 一、文档卓越性（§4.1-4.5）
 
 > 详见 [review-doc-excellence.md](../../../../prompt/review-rules/review-doc-excellence.md)
 
@@ -105,7 +105,7 @@
 
 ---
 
-## 二、代码卓越性（§17-21）
+## 二、代码卓越性（§16-21）
 
 > 详见 [review-code-excellence.md](../../../../prompt/review-rules/review-code-excellence.md)
 > **模式编号映射**：§16 = 模式 43（API 易误用），§17 表达力 ↔ 模式 43/47，§18 性能 ↔ 模式 47（全局依赖），§19 = 模式 45（冗余注释），§20 = 模式 46（副作用隐藏），§21 = 模式 44（错误类型）。详见 [patterns.md §五 卓越性模式（41-47）](patterns.md)。

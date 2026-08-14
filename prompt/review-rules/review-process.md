@@ -347,8 +347,8 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
      ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
      ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
      ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
-    # 最新版本软链（方便 anchor）
-     ls -la notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # → *.v{N}.md
+# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -1566,14 +1566,14 @@ rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
 
 **Step 1.6.1**：design.md 存在性确认（已在 Step 0 预检，此处仅记录）
 ```bash
-# 持久化交付物（位置：notes/rewrite/{module}/{stage}/.design/）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # 非 bagging
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md   # bagging
+# 持久化可复用快照（位置：notes/rewrite/{module}/{stage}/.design/，保留所有历史版本）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging（任意版本命中）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 ```
 > **命名规则**：
-> - 非 bagging 场景默认产物：`{NN}-design.md`（如 `01-design.md`），位置 `notes/rewrite/{module}/{stage}/.design/`
-> - bagging 场景产物：`{NN}-design-final.md`（多 AI 评审合并后的定稿），位置同上
-> - 两者均可作为 Gate H 依据，优先级：design-final.md > design.md
+> - 非 bagging 场景默认产物：`{NN}-design.v{N}.md`（如 `01-design.v1.md`），位置 `notes/rewrite/{module}/{stage}/.design/`
+> - bagging 场景产物：`{NN}-design-final.v{N}.md`（多 AI 评审合并后的定稿），位置同上
+> - 两者均可作为 Gate H 依据（任一版本命中即存在），优先级：design-final 版本 > design 版本
 
 **Step 1.6.2**：design ↔ code 一致性矩阵
 
@@ -1903,19 +1903,19 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md   # bagging
 **触发条件**：所有 review 模式。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 
 **检查项**（6 项，方案 D 新增 H.6）：
-- [ ] **H.1**: design.md 存在（非 bagging 默认产物）或 design-final.md 存在（bagging 场景）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md`（非 bagging，持久化）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md`（bagging，持久化）
+- [ ] **H.1**: design 快照存在（非 bagging 默认产物）或 design-final 快照存在（bagging 场景）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md`（非 bagging，持久化可复用快照）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md`（bagging，持久化可复用快照）
   - `{NN}` 必须是**本文档编号**，禁止复用其他编号文档的 design（如 02 文档不得用 01-design.md）
   - 两者均缺失 → Gate H FAIL → **Step 0.3 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3 嵌入生成"，不切换模式）
 - [ ] **H.2**: design ↔ code 一致性 ≥ 80%（Step 1.6.2 矩阵）
 - [ ] **H.3**: design ↔ Minix3 对齐无 P0 缺失（Step 1.6.3 矩阵）
 - [ ] **H.4**: design 无 P0-design-wrong（design 错而非实现错）
 - [ ] **H.5**：design-deviation 与 design-wrong 区分清楚（避免误判 Refactor 类型）
-- [ ] **H.6**（方案 D 新增）：outline.md 存在 + doc ↔ outline 对齐无 P0 偏离（Step 0.5.3 偏离矩阵）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.md`（持久化 doc 结构契约，本文档编号）
+- [ ] **H.6**（方案 D 新增）：outline 快照存在 + doc ↔ outline 对齐无 P0 偏离（Step 0.5.3 偏离矩阵）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md`（持久化 doc 结构契约，本文档编号，任一版本命中）
   - Step 0.5.3 偏离矩阵中无 P0 偏离
-  - outline.md 缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3.2 嵌入生成"，不切换模式）
+  - outline 快照缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3.2 嵌入生成"，不切换模式）
   - 有 P0 偏离且未处置 → Gate H.6 FAIL
 
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"，不切换模式），而不是标 N/A 跳过。
@@ -1950,15 +1950,15 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md   # bagging
 - 两者独立，但都必须在 review 进入 Step 2 前通过
 
 **最小证据要求**：
-- **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md` 或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md` 必须命中（精确文件名，非通配；持久化交付物）
+- **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md` 或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md` 必须命中（本目录版本通配 `.v*.md`，与 Step 0 预检一致；持久化可复用快照，任一版本命中即通过）
 - **H.2**: 一致性矩阵输出 ≥ 5 行 + 一致性百分比 ≥ 80%（Step 1.6.2）
 - **H.3**: Minix3 对齐矩阵输出 ≥ 3 行 + 无 P0 缺失（Step 1.6.3）
 - **H.4**: `rg "design-wrong" scan.md` 无命中（或有命中但已附 design 修复计划）
 - **H.5**：`rg "code Refactor|design Refactor" scan.md` 输出明确区分两类
-- **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
+- **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
 
 **禁止**：
-- ❌ `find . -name "*design*.md"` 等通配符（易误判）
+- ❌ `find . -name "*design*.md"` 等**跨目录**通配符（易误判）——版本通配仅限本目录 `.v*.md`（与 Step 0 预检 4 条 `ls` 一致）
 - ❌ 仅"非空"作为通过条件（量化阈值缺失）
 - ❌ H.1-H.6 任一未提供 grep 输出即标 PASS
 
@@ -2541,7 +2541,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" prompt/../doc.md prompt/../code.rs
 |---------------|------------|--------|
 | IN_DESIGN.md 待 design 覆盖概念清单 | 对应 Ch1 设计决策 | 每条概念必须在 Ch1 找到对应决策 |
 | IN_DESIGN.md 当前 review 已发现问题 | 对应 Ch2 语义对齐 | 每个 P0 在 Ch2 标注修复章节 |
-| Gate H H.1（design.md 存在）| 通过 | `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md` 或 `{NN}-design-final.md` 命中（持久化）|
+| Gate H H.1（design 快照存在）| 通过 | `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md` 或 `{NN}-design-final.v*.md` 命中（持久化可复用快照）|
 | Gate H H.2（design ↔ code 一致性 ≥ 80%）| 通过 | Step 1.6.2 矩阵 |
 | Gate H H.3（design ↔ Minix3 对齐）| 通过 | Step 1.6.3 矩阵 |
 

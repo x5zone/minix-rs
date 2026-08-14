@@ -72,7 +72,7 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 ## Convergence and State Tracking
 Maintain state in the tool-specific STATE.md path above. Details: [process-skill](review-process-skill.md).
 
-**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/E/G all passed** with gate-evidence attached.
+**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed** with gate-evidence attached.
 
 ## ⛔ Blocker Gates (must all pass for Final Review)
 - **Gate 0**（NEW, 2026-07-16 扩为 9 锚段）: 制品完整性 — 标准路径文件齐全 + scan.md 含 9 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果** / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。缺 `Step 0: 预检结果` 段 → 触发**模式 69 PSMD**。

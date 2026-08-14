@@ -58,7 +58,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 | review-process-skill | (file: .codex/skills/review-process-skill/SKILL.md) | Review 执行流程：Step 0-7、Blocker Gates、中间产物格式。进入 review 执行阶段时用 |
 | review-core-semantics-skill | (file: .codex/skills/review-core-semantics-skill/SKILL.md) | 核心语义定义 + 行为契约表模板（8 字段）。Step 2 Diff Extraction 识别 Top 5 语义差异时用 |
 | review-doc-skill | (file: .codex/skills/review-doc-skill/SKILL.md) | 文档 Review 检查清单（Ch1 骨架 / Claims-Evidence / 概念准确性 / 文档-代码一致性等）。检查 .md 文档质量时用 |
-| review-code-skill | (file: .codex/skills/review-code-skill/SKILL.md) | 代码 Review 检查清单（Rewrite 质量 / 硬件抽象 / 类型安全 / SMP 并发 / no_std 等 14 维度）。检查 .rs 代码质量时用 |
+| review-code-skill | (file: .codex/skills/review-code-skill/SKILL.md) | 代码 Review 检查清单（Rewrite 质量 / 硬件抽象 / 类型安全 / SMP 并发 / no_std 等 15 维度）。检查 .rs 代码质量时用 |
 | review-patterns-skill | (file: .codex/skills/review-patterns-skill/SKILL.md) | 常见错误模式库（P0 必检清单 + 79 个文档/代码/测试/叙事/流程模式，含验证命令）。review 中对照典型错误时用 |
 | review-excellence-skill | (file: .codex/skills/review-excellence-skill/SKILL.md) | 卓越性检查（正确性 gate 通过后）：教科书级文档 + redox 级代码 |
 | review-coverage-skill | (file: .codex/skills/review-coverage-skill/SKILL.md) | 覆盖率穷举：tools/coverage-extract/ 生成 SYMBOLS.md + AI 语义判断。检查 C 源码/Rust 实现覆盖完整性时用 |

@@ -269,7 +269,7 @@ trait Paging {
 - 本次 Review 是否发现新模式？[✅/❌]
 - 新模式名/案例/归类/规则草案（若 ✅）
 
-> **详见**：[review-process.md §Step 5.7/7.5 Rule Discovery](review-process.md)
+> **详见**：[review-process.md §Step 5.7 Rule Discovery](review-process.md)
 
 ### 文档链路模型
 
@@ -792,7 +792,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - **Layer 1 和 Layer 2 都通过 → 完全 CONVERGED**
 
 **CONVERGED 判定流程**：
-1. 列出 Layer 1 各项检查结果（5 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/E/G）
+1. 列出 Layer 1 各项检查结果（6 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/E/G/H）
 2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§16.5、§2.0 架构演进）
 3. 判定：
    - Layer 1 FAIL → NOT CONVERGED（强制修复）

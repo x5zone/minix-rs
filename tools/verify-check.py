@@ -258,7 +258,7 @@ def generate_verify_check_md(
     lines.append(f"")
     lines.append(f"- [ ] STATE.md Convergence Checklist 中标记 COMPLETE 的维度均真实完成")
     lines.append(f"- [ ] STATE.md Open P0/P1/P2 列表与 scan.md Issue List 一致")
-    lines.append(f"- [ ] Blocker Gates 0/A/B/C/D/D-6/E/G 均真实通过（非自报）")
+    lines.append(f"- [ ] Blocker Gates 0/A/B/C/D/D-6/E/G/H 均真实通过（非自报）")
     lines.append(f"")
     lines.append(f"---")
     lines.append(f"")
