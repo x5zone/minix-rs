@@ -200,7 +200,7 @@ vmc->vm_flags &= VMF_INUSE;  // 只保留 INUSE，清除其他标志
 
 #### 3.2.2 vm_endpoint - 进程端点标识符
 
-> **注意**: `endpoint_t` 是全局概念，定义在 `minix/endpoint.h`。详见 [Endpoint 协议](../../concepts/endpoint.md)。
+> **注意**: `endpoint_t` 是全局概念，定义在 `minix/endpoint.h`。详见 [Endpoint 协议](../../../concepts/endpoint.md)。
 
 **在 vmproc 中的作用**:
 
@@ -470,7 +470,7 @@ VM 使用以下公共类型（定义在 `minix_types` crate）：
 | `VirBytes`  | 虚拟地址字节数 |
 | `PhysBytes` | 物理地址字节数 |
 
-> **详见**: [系统核心概念](../../concepts/README.md) 中的相关文档。
+> **详见**: [系统核心概念](../../../concepts/README.md) 中的相关文档。
 
 #### 4.1.2 VM 私有类型
 
