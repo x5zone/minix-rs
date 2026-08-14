@@ -36,9 +36,9 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 | **构造（Constructive）** | 初稿阶段，引导补全 | 0, 1, 1.5, 2, 5, 6 | 15~30 分钟 | A/B/G |
 | **快速（Quick）** | 日常 PR、时间有限 | 0, 1, 2, 5 | 10~20 分钟 | D |
 | **深度（Deep）** | 里程碑验收、关键模块 | 0-7（全量） | 40~120 分钟 | C/H→I→J→K/O/P |
-| **设计优先（Design-First）**| design 缺失/错误 | Step 0 + **Step 0.3** + Step 1.6 + 2 | 30~60 分钟 | R |
+| **设计优先（Design-First）**| design 错误（design-wrong，存在但抓错本质） | Step 0 + **Step 0.3** + Step 1.6 + 2 | 30~60 分钟 | R |
 
-**决策树**：初稿→构造；日常PR/时间紧→快速（P0>3 则升级深度）；里程碑/关键模块→深度；design 缺失/错误→设计优先（Profile R）。
+**决策树**：初稿→构造；日常PR/时间紧→快速（P0>3 则升级深度）；里程碑/关键模块→深度；design 错误（design-wrong）→设计优先（Profile R）；design 缺失→Step 0.3 嵌入生成（不切换模式，2026-07-17 变更）。
 
 **深度模式 rounds 动态化**（新增，2026-07-16）：根据文档行数决定分阶段轮次，避免小文档过度分阶段、大文档一轮过载。
 
@@ -53,7 +53,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 > **2026-08-15 修复 C-P0-4（rounds 表与决策树阈值统一）**：rounds 表阈值（<500 / 500-1500 / >1500）与决策树完全一致；500-1500 行文档分 2 rounds 但属 Profile C 单 session，> 1500 行才需 Profile H/I/J/K 多 session。**Gate H 必检**（修复 C-P0-2）已写入 rounds 表第 2 行 R1 列。
 
 **Design-First 模式要点**：
-- 触发：自动（**Step 0 design 预检**找不到 `design.md`/`design-final.md`，或 Step 1.6 一致性 < 80%）+ 手动（用户指定）
+- 触发：自动（Step 1.6 发现 design-wrong 或一致性 < 80%）+ 手动（用户指定）；design 缺失由 **Step 0.3 嵌入生成**处理（2026-07-17 变更，不触发本模式）
 - **design 文件命名规则**：非 bagging 场景默认产物为 `{NN}-design.v{N}.md`；bagging 场景（多 AI 聚合）产物为 `{NN}-design-final.v{N}.md`（保留所有历史版本，见 Step 1.6.1）
 - 输出：scan.md 含 Design Feedback §8 + IN_DESIGN.md（如中断）+ **Step 0.3 生成的 design.md**
 - 配套 Gate：必须通过 Gate H（design 门控）
@@ -66,7 +66,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 | Gate | 检查项 | 通过标准 | 未通过后果 |
 |------|--------|---------|-----------|
-| **0** | 制品完整性（输出前必检，在所有 Gate 之前） | 对每个目标文档，标准路径下文件齐全（STATE/scan/structure/SYMBOLS）；scan.md 含 8 个 grep 可验锚段（见下） | 禁止输出 Final Review |
+| **0** | 制品完整性（输出前必检，在所有 Gate 之前） | 对每个目标文档，标准路径下文件齐全（STATE/scan/structure/SYMBOLS）；scan.md 含 9 个 grep 可验锚段（见下） | 禁止输出 Final Review |
 | **A** | Step 1.5 Coverage Enumeration | 已运行 coverage-extract.py（**强制，不允许"手动验证"代替**）+ scan.md 附 gate-evidence-A 块 + SYMBOLS.md 落盘 | 禁止输出 Final Review |
 | **B** | Step 2 Diff Extraction | 已产出 Top 5 行为契约表（3 语义偏移 + 2 覆盖缺口，**8 字段 × 5 函数**） | 禁止输出 Final Review |
 | **C** | Step 3.5 Precision Check | 已产出 5 元规则检查表 | 禁止输出 Final Review |
@@ -686,8 +686,6 @@ sed -i 's|lib\.rs:1155|lib.rs:1162|g' {doc}.md
 
 ### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
 
-### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
-
 > **背景**：文档代码示例可能与实际 Rust 代码 idioms 不一致（特别是 Rust 2024 edition 迁移：`static mut` → `Atomic*` / `UnsafeCell`）。
 
 **执行**：
@@ -1059,7 +1057,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 | 状态 | 触发条件 | 后续动作 |
 |------|---------|---------|
 | **PASS** | 一致性 ≥ 80%，无 design-wrong | 进入 Step 2 |
-| **DESIGN_MISSING** | design 缺失 | 中断 review，触发 design Refactor + Design-First 模式 |
+| **DESIGN_MISSING** | design 缺失（Step 0 预检未通过）| **Step 0.3 嵌入生成**（不中断 review、不切换模式，2026-07-17 变更）|
 | **DESIGN_WRONG** | design 错（如漏核心概念） | 阻断 review，design Refactor 必须 |
 | **DESIGN_DIVERGED** | design ↔ code 严重偏离（≥30%）且 design 正确 | code Refactor（修 code） |
 | **DESIGN_DIVERGED_WRONG** | design ↔ code 严重偏离（≥30%）且 design 错 | design Refactor 必须 + code Refactor |
@@ -1419,9 +1417,12 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 
 #### Review 中断协议
 
-当 review 遇到 design 缺失/错误时，必须触发 IN_DESIGN 状态（不是 DEFERRED）：
+> **目的**：当 review 遇到 design 错误（design-wrong，design 存在但抓错本质）时，不是"放弃"也不是"DEFERRED 逃避"，而是"主动中断，等待 design"。
+> **注意（2026-07-17 变更）**：design **缺失**场景由 **Step 0.3 嵌入生成**处理（不中断 review、不触发本协议）；本协议仅用于 design **存在但有错误**（design-wrong）场景。
 
-- **触发条件**：Step 0 design 预检发现 `design.md`/`design-final.md` 缺失（**主入口，前移**）；Step 1.6 发现 design 严重 outdated；Step 2 发现 design 未覆盖 Minix3 核心概念；Step 3.5 发现 design 抓错本质
+当 review 遇到 design-wrong 时，必须触发 IN_DESIGN 状态（不是 DEFERRED）：
+
+- **触发条件**：Step 1.6 发现 design 严重 outdated 或 design-wrong（design 缺失由 Step 0.3 处理，不在此列）；Step 2 发现 design 未覆盖 Minix3 核心概念；Step 3.5 发现 design 抓错本质
 - **中断流程**：标注 scan.md 为 IN_DESIGN → 生成 IN_DESIGN.md → 不动文档/代码 → design 完成自动恢复
 - **状态机扩展**：`PENDING → IN_PROGRESS → IN_DESIGN（去 design） → RESUMED → IN_PROGRESS → CONVERGED`
 

@@ -461,7 +461,7 @@ pub const DEFAULT_HZ: u32 = 100;
 ```
 
 **关联**：
-- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 76` + `.claude/rules/review-process.md §Step 1.0e`
+- 落地依据：Proposal #12（跨 crate const 重复定义盲点；DEFAULT_HZ 案例），源规则见 [review-rules/review-doc-checklist.md §2.4g](../review-rules/review-doc-checklist.md)
 - 首次发现：05-clock-interrupt-init review 2026-07-31（DEFAULT_HZ 在 os/arch + os/kernel 两 crate 独立定义）
 
 ### 2.4h 代码注释 doc 归属交叉检查（NEW 2026-07-31, 模式 #76）
@@ -515,7 +515,7 @@ sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/a
 
 > **目的**：doc §5.4 等章节常含"L3 grep 证据"段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用；`rg "initial_pc|initial_sp|..." os/ --type rust -g '!*.md'` 应有 0 matches）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
 > **触发条件**：任何 doc §5 含"L3 grep 证据"/"rg 证据"/"0 matches"等关键词的章节。
-> **模式参考**：[review-process-skill Step 5.4](review-process-skill.md)。
+> **模式参考**：[review-rules/review-process.md §Step 4.5 测试验证（Gate E）](../review-rules/review-process.md)。
 
 **检查命令**：
 ```bash
@@ -554,7 +554,7 @@ sed -i 's|→ 3 处调用（kernel task / VM / RS）|→ N 处调用（实际数
 
 > **目的**：doc §5 测试章节常含"测试覆盖矩阵" + "测试函数列表"，但**无测试总数声称**。本次 review 实际跑了 `cargo test` 得到 490/120 测试，但 doc 未体现。建议 doc 末段补充"截至 YYYY-MM-DD, N 个测试通过"。
 > **触发条件**：任何 doc §5 测试章节（应有测试覆盖矩阵 + 实际测试函数列表）。
-> **模式参考**：[review-process-skill Step 5.5](review-process-skill.md)。
+> **模式参考**：[review-rules/review-process.md §Step 4.5 测试验证（Gate E）](../review-rules/review-process.md)。
 
 **检查命令**：
 ```bash

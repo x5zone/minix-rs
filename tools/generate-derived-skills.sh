@@ -81,6 +81,7 @@ generate_codex() {
     s|\{doc-stem\}-\{agent\}-scan\.md|{doc-stem}/scan.md|g
     s|\{doc-stem\}-\{agent\}-structure\.md|{doc-stem}/structure.md|g
     s|\{doc-stem\}-\{agent\}-SYMBOLS\.md|{doc-stem}/SYMBOLS.md|g
+    s|\{doc-stem\}-\{agent\}-design-structure\.md|{doc-stem}/design-structure.md|g
     # 工具名：Trae IDE → Codex CLI
     s|Trae IDE|Codex CLI|g
     # 工具名（运行文本）：Trae →/专属/内： → Codex
@@ -88,10 +89,21 @@ generate_codex() {
     s|Trae 专属|Codex 专属|g
     s|Trae 内：|Codex 内：|g
     s|Trae 单文档|Codex 单文档|g
+    # Codex 无 agent 概念：{agent} 变量定义行替换（仅 Trae 多 AI bagging 场景需要）
+    /AI 模型标识/c\  - **无 `{agent}` 变量**：Codex 单 session 无多 AI bagging，产物路径不含 agent 后缀（该变量仅适用于 Trae 多 AI 场景）。
     # bagging 上下文改写
     s|Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）|Codex 单 session 不使用 bagging 聚合|g
     s|Trae 内可通过多 AI bagging 互为验证；Claude 内部需独立会话验证|Codex 内部需独立会话验证（单 session）|g
     s|（独立会话 / Trae 内跨 AI 聚合）|（独立会话）|g
+    # 布局树：trae/ → codex/；删除 bagging 产物（MANIFEST/AGGREGATED）
+    s|`trae/`|`codex/`|g
+    s|├── trae/\{module\}/|├── codex/{module}/|g
+    /MANIFEST-/d
+    /AGGREGATED-/d
+    s|# 某 AI 的 scan（bagging 输入）|# 单 session 主 scan|g
+    # 双写文档工具标签（-trae-review.md → -codex-review.md 后残留的（Trae））
+    s|（双写，Trae）|（双写，Codex）|g
+    s|（Trae）|（Codex）|g
     # 双写文档：-trae-review.md → -codex-review.md
     s|-trae-review\.md|-codex-review.md|g
     # review-init.sh 参数：trae → codex

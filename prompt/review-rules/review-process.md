@@ -5,7 +5,7 @@
 
 ## 快速导航（Quick Nav）
 
-> **AI 长 session 注意力衰减时，优先用此表定位所需章节，避免线性扫描 2553 行。**
+> **AI 长 session 注意力衰减时，优先用此表定位所需章节，避免线性扫描 2676 行。**
 
 | 需要找... | 跳转到 | 行数 |
 |----------|--------|------|
@@ -65,7 +65,7 @@
 > - **Profile H/I/J/K** = 分阶段深度（**多 session**）：> 1500 行文档分 4 rounds 跨多 session 续审，每 session 仅做 1-2 步
 > - **Profile O / P** = 深度变体：O = 正确性已过追求卓越性；P = 覆盖率验收
 > - **互斥关系**：同一文档同一时刻只能选 1 个 Profile；C 与 H/I/J/K 互斥，O 与 P 互斥
-| **设计优先模式（Design-First）** | design 缺失/错误 | Step 0 + **Step 0.3** + Step 1.6 + 2 | 30~60 分钟 | R |
+| **设计优先模式（Design-First）** | design 错误（design-wrong，存在但抓错本质） | Step 0 + **Step 0.3** + Step 1.6 + 2 | 30~60 分钟 | R |
 
 **深度模式 rounds 动态化**（新增，2026-07-16）：根据文档行数决定分阶段轮次，避免小文档过度分阶段、大文档一轮过载。
 
@@ -1561,7 +1561,7 @@ rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
 
 > **前提**：所有 review 模式都执行此步骤；快速/构造模式只可裁剪内容检查，不能跳过 Gate H。
 > **目的**：验证当前 Rust 实现的 trait/类型/架构是否与 design.md 一致。
-> **触发**：design 缺失/错误 → 切换到 Profile R（Design-First 模式）。
+> **触发**：design 错误（存在但有错，design-wrong）→ 切换到 Profile R（Design-First 模式）；design 缺失 → **Step 0.3 嵌入生成**（2026-07-17 变更，不切换模式、不中断 review）。
 > **注**：design 预检已在 Step 0 完成，此处为正式一致性检查。
 
 **Step 1.6.1**：design.md 存在性确认（已在 Step 0 预检，此处仅记录）
@@ -1608,7 +1608,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 | 状态 | 触发条件 | 后续动作 |
 |------|---------|---------|
 | **PASS** | 一致性 ≥ 80%，无 design-wrong | 进入 Step 2 |
-| **DESIGN_MISSING** | design 缺失（Step 0 预检未通过）| 中断 review，触发 design Refactor + Design-First 模式（已在 Step 0 切换）|
+| **DESIGN_MISSING** | design 缺失（Step 0 预检未通过）| **Step 0.3 嵌入生成**（不中断 review、不切换模式，2026-07-17 变更）|
 | **DESIGN_WRONG** | design 错（如漏核心概念） | 阻断 review，design Refactor 必须 |
 | **DESIGN_DIVERGED** | design ↔ code 严重偏离（≥30%）且 design 正确 | code Refactor（修 code） |
 | **DESIGN_DIVERGED_WRONG** | design ↔ code 严重偏离（≥30%）且 design 错 | design Refactor 必须 + code Refactor |
@@ -1939,10 +1939,10 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 **PASS 条件**：H.1 + H.2 + H.3 + H.4 + H.5 + H.6 全部 ✅
 
 **FAIL 后果**：
-- 阻断进入 Step 2
+- design 缺失（H.1/H.6）→ **Step 0.3 嵌入生成**，不阻断、不切换模式（2026-07-17 变更）
+- design 错误（design-wrong，H.4）→ 阻断进入 Step 2
 - 触发 Refactor 流程（design Refactor / code Refactor / Architectural Evolution）
-- 记录到 scan.md 的 IN_DESIGN 状态
-- 触发 Profile R（设计优先模式）
+- design-wrong → 记录到 scan.md 的 IN_DESIGN 状态 + 触发 Profile R（设计优先模式）
 
 **与 Gate D-6 的关系**：
 - Gate D-6 检查 structure.md（单文档骨架，review 内部产物）
@@ -2230,10 +2230,11 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 
 ### §一.附录 A：Review 中断协议
 
-> **目的**：当 review 遇到 design 缺失/错误时，不是"放弃"也不是"DEFERRED 逃避"，而是"主动中断，等待 design"。
+> **目的**：当 review 遇到 design 错误（design-wrong，design 存在但抓错本质）时，不是"放弃"也不是"DEFERRED 逃避"，而是"主动中断，等待 design"。
+> **注意（2026-07-17 变更）**：design **缺失**场景由 **Step 0.3 嵌入生成**处理（不中断 review、不触发本协议）；本协议仅用于 design **存在但有错误**（design-wrong）场景。
 
 **触发条件**（任一）：
-- Step 0 design 预检检测到 design.md/design-final.md 缺失（**前移，主入口**）
+- Step 1.6 发现 design 严重 outdated 或 design-wrong（design 缺失由 Step 0.3 处理，不在此列）
 - Step 2 发现 design 未覆盖的 Minix3 核心概念
 - Step 3.5 发现 design 抓错了本质
 
@@ -2243,7 +2244,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
    ```markdown
    ## Review Status: IN_DESIGN
 
-   **Review 中断原因**: design.md 缺失
+   **Review 中断原因**: design.md 存在但 design-wrong（抓错本质）
    **中断时间**: 2026-07-15
    **设计优先级**: P0（核心阻塞）
    **恢复条件**: design.md 生成并通过 Gate H
