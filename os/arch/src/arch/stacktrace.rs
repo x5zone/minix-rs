@@ -103,9 +103,9 @@ pub trait StacktraceArch: CpuContextArch {
 
     /// Extract the frame pointer register from a CpuContext.
     ///
-    /// - x86_64: `rbp` (gp_regs[5])
-    /// - aarch64: `x29` (gp_regs[29])
-    /// - riscv64: `s0`/`fp` (gp_regs[8])
+    /// - x86_64: `rbp` (gp_regs[5], GP_RBP)
+    /// - aarch64: `x29` (gp_regs[28], X29 — layout skips X0; see arm64/boot.rs)
+    /// - riscv64: `s0`/`fp` (gp_regs[6], GP_S0 — layout skips X0/X2/X10)
     fn frame_pointer(cpu_context: &Self::CpuContext) -> u64;
 
     /// Extract the program counter from a CpuContext.
