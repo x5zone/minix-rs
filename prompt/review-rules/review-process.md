@@ -10,18 +10,18 @@
 | 需要找... | 跳转到 | 行数 |
 |----------|--------|------|
 | Review 元原则（禁止行为） | [§Review 元原则](#review-元原则) | ~24 行 |
-| 执行模式选择（构造/快速/深度/设计优先） | [§〇 执行模式选择](#〇执行模式选择构造--快速--深度--设计优先) | ~231 行 |
-| **Step 0-7 强制步骤** | [§一 AI 执行 Review 的强制步骤](#一ai-执行-review-的强制步骤) | ~193 行 |
-| structure.md 12 节骨架模板 | [§1-12 模板](#1-主题思想一句话) | ~197 行 |
-| 6 维反查矩阵 | [§6 维反查矩阵](#6-维反查矩阵step-056) | ~75 行 |
-| Issue 清单（历史问题反查来源） | [§Issue 清单](#issue-清单带反查来源) | ~895 行 |
-| IN_DESIGN 健康度审计 | [§IN_DESIGN 审计](#in_design-健康度月度审计yyyy-mm) | ~251 行 |
-| Resume Point（跨 session 续审） | [§Resume Point](#resume-point跨-session-续审入口下一-session-必读) | ~231 行 |
+| 执行模式选择（构造/快速/深度/设计优先） | [§〇 执行模式选择](#〇执行模式选择构造--快速--深度--设计优先) | ~252 行 |
+| **Step 0-7 强制步骤** | [§一 AI 执行 Review 的强制步骤](#一ai-执行-review-的强制步骤) | ~2271 行 |
+| structure.md 12 节骨架模板 | [§Step 0.5 模板](#step-05-生成-structuremd-并评审骨架文档-review-强制) | ~118 行 |
+| 6 维反查矩阵 | [§6 维反查矩阵](#step-056-6-维反查矩阵标准化反查方法新增2026-07-16) | ~61 行 |
+| Issue 清单（历史问题反查来源） | [§Issue 清单](#step-058-issue-反查来源标注新增2026-07-16) | ~21 行 |
+| IN_DESIGN 健康度审计 | [§IN_DESIGN 审计](#五附录-din_design-时间上限--月度审计) | ~59 行 |
+| Resume Point（跨 session 续审） | [§Resume Point](#一附录-a2跨-session-续审协议resume-point-标准化) | ~58 行 |
 | Review 输出格式 | [§二 Review 输出格式](#二review-输出格式) | ~14 行 |
 | Review 工具命令 | [§三 Review 工具命令](#三review-工具命令) | ~42 行 |
 | 快速判断口诀 | [§四 快速判断口诀](#四review-快速判断口诀) | ~11 行 |
 | 修复阶段工作流 | [§五 修复阶段工作流](#五修复阶段工作流fix-phase) | ~33 行 |
-| Blocker Gates 状态表 | [§收敛判断](#收敛判断) | 搜索 "Blocker Gates" |
+| Blocker Gates 状态表 | [§Step 5.5 收敛判断](#step-55-状态写入与收敛判断) | 搜索 "Blocker Gates" |
 | Gate H design 门控 | [§Gate H](#gate-h-design-门控) | 搜索 "Gate H" |
 
 ---
@@ -322,7 +322,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 
 ### Step 0: 范围声明 + 时间预算 + 状态恢复 + **design 预检**
 
-- 按 [§〇 执行模式选择](#〇执行模式选择构造--快速--深度) 确定执行模式（构造/快速/深度）
+- 按 [§〇 执行模式选择](#〇执行模式选择构造--快速--深度--设计优先) 确定执行模式（构造/快速/深度/设计优先）
 - 按 [review.md §Review 启动：范围声明](review.md) 声明 Review 模式和范围
 - 声明时间预算（可选；按 [review.md §时间预算参考](review.md#时间预算参考)）
   - **分阶段时间预算**（新增，2026-07-16）：若执行 Step 0.7 TODO 验证，时间预算分两阶段声明：
@@ -347,8 +347,8 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
      ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
      ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
      ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
-# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+    # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+    cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -1651,7 +1651,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 ### Step 2.5: Link Validation（链路验证）
 
 > **目的**：验证文档各章节之间的推导链路是否完整。链路断裂 = 设计或实现有问题。
-> 详细的链路验证规则见 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证)。
+> 详细的链路验证规则见 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证强制不可跳过)。
 
 **链路验证**：
 1. Ch3→Ch1&2：每个设计决策是否有依据？
@@ -1659,7 +1659,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 3. 测试→Ch3+Ch4：测试是否覆盖设计决策和实现细节？
 4. 代码→Ch4：代码是否与文档描述一致？
 
-**中间产物**：按 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证) 要求的 4 个表格输出。
+**中间产物**：按 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证强制不可跳过) 要求的 4 个表格输出。
 
 > **注意**：局部 Review（仅 Ch1&2）时跳过此步骤。完整 Review 时在执行 Step 4 后，结合跨文档信息做最终链路验证。
 
@@ -1812,7 +1812,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 #### 4.2 Design Quality Check（设计质量检查）
 
 > **目的**：在跨文档联动确认后，对 Ch3 设计决策做质量评估。这步依赖 Step 2.5 的链路验证结果。
-> 详细规则见 [review-doc-checklist.md §2.9](review-doc-checklist.md#29-设计决策质量检查ch3-专项)。
+> 详细规则见 [review-doc-checklist.md §2.9](review-doc-checklist.md#29-设计决策质量检查ch3-专项强制不可跳过)。
 
 1. 列出 Ch3 的所有设计决策
 2. 对每个设计决策，检查：
@@ -2043,7 +2043,7 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 ### 正确性 vs 卓越性 Layer 分层
 
 > 教训回顾：——正确性是基线，卓越性是终极目标，但必须先正确后卓越。
-> **位置**：在 Step 5.5 收敛判定中应用 Layer 1/2 分层（详见 [review.md §4.5](review.md#4.5-正确性-vs-卓越性分层layer-12)）。
+> **位置**：在 Step 5.5 收敛判定中应用 Layer 1/2 分层（详见 [review.md §4.5](review.md#45-正确性-vs-卓越性分层layer-12)）。
 
 **应用方式**：
 

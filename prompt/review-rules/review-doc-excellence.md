@@ -31,8 +31,8 @@
 | 层次清晰 | 章节层次不超过 4 级 | [DIRECT] |
 | 主题聚焦 | 每章一个主题，不混杂 | [MEDIUM] |
 | **概念骨架可见性** | Ch1 有显式核心框架（如"三问"），章末用同框架收束，后续章节引用该框架 | [DIRECT] |
-| **统一抽象先行** | 多架构文档先给统一框架再分架构展开（见 [review-doc-checklist.md §1.Ch1 1.5](review-doc-checklist.md#1ch1-ch1-强制骨架)） | [DIRECT] |
-| **双向闭环** | 进入类机制覆盖"进入"+"返回"（见 [review-doc-checklist.md §1.Ch1 1.6](review-doc-checklist.md#1ch1-ch1-强制骨架)） | [DIRECT] |
+| **统一抽象先行** | 多架构文档先给统一框架再分架构展开（见 [review-doc-checklist.md §1.Ch1 1.5](review-doc-checklist.md#1ch1-ch1-强制骨架概念章专项强制)） | [DIRECT] |
+| **双向闭环** | 进入类机制覆盖"进入"+"返回"（见 [review-doc-checklist.md §1.Ch1 1.6](review-doc-checklist.md#1ch1-ch1-强制骨架概念章专项强制)） | [DIRECT] |
 
 ### 2.2 Execute
 
@@ -271,7 +271,7 @@
 
 ## 六、§4.5 概念教学卓越性（Ch1 专项）
 
-> **前置条件**：§1.Ch1 概念驱动检查已通过（见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架)）。
+> **前置条件**：§1.Ch1 概念驱动检查已通过（见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架概念章专项强制)）。
 > **背景**：Ch1 是概念章，需要专门评估其教学卓越性，而非仅评估正确性。
 
 ### 6.1 检查项

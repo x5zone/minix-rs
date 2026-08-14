@@ -252,7 +252,7 @@ trait Paging {
 - ✅ Ch1 遵循 WHY→WHAT→HOW 顺序
 - ✅ 多架构内容先给统一抽象（如"CPU 三问"），再分架构展开
 
-> **来源**：03-kmain-cstart 重构案例。详见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架) Ch1 骨架检查、[review-patterns.md](review-patterns.md) 模式 51（实现驱动概念章）。
+> **来源**：03-kmain-cstart 重构案例。详见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架概念章专项强制) Ch1 骨架检查、[review-patterns.md](review-patterns.md) 模式 51（实现驱动概念章）。
 
 ### 规则演化机制（Rule Evolution）
 
@@ -289,7 +289,7 @@ Ch1(概念) + Ch2(源码分析) ──推导──▶ Ch3(设计决策) ──�
 2. **Ch4 必须遵循 Ch3**：每个实现细节必须对应 Ch3 的某个设计决策
 3. **测试必须覆盖 Ch3+Ch4**：每个设计决策和关键实现都应有对应的测试要点
 4. **代码必须匹配 Ch4**：Rust 代码必须与 Ch4 描述的实现一致
-5. **Ch1&2 必须完整覆盖 C 源码**：文档语义范围内的所有 Minix3 函数、结构体、宏必须被完整分析，不得遗漏。详见 [review-doc-checklist.md §2.8](review-doc-checklist.md#28-c-源码覆盖完整性检查)
+5. **Ch1&2 必须完整覆盖 C 源码**：文档语义范围内的所有 Minix3 函数、结构体、宏必须被完整分析，不得遗漏。详见 [review-doc-checklist.md §2.8](review-doc-checklist.md#28-c-源码覆盖完整性检查强制不可跳过)
 6. **Ch3&4 必须完整实现 Ch1&2 语义**：Ch1&2 中分析的每个概念、每个函数行为、每个数据结构，必须在 Ch3&4 中有对应的设计决策和实现。Ch1&2 有但 Ch3&4 无 = 语义丢失
 
 **违反链路的典型问题**：
@@ -302,7 +302,7 @@ Ch1(概念) + Ch2(源码分析) ──推导──▶ Ch3(设计决策) ──�
 
 > **各文件角色分工**：
 > - [review.md](review.md)（本文）：链路模型的原则定义
-> - [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证)：链路验证的详细检查项（维度层）
+> - [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证强制不可跳过)：链路验证的详细检查项（维度层）
 > - [review-process.md §Step 2.5](review-process.md)：链路验证的执行步骤（流程层）
 > - [review-patterns.md](review-patterns.md) 模式10~12：链路断裂的典型错误模式
 

@@ -13,13 +13,13 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 
 | 需要找... | 跳转到 | 行数 |
 |----------|--------|------|
-| 执行模式选择（构造/快速/深度/设计优先） | [§〇 执行模式选择](#〇执行模式选择构造--快速--深度) | ~33 行 |
-| Blocker Gates 状态表 | [§Blocker Gates](#⛔-blocker-gates阻断门必须通过才能输出-final-review) | 搜索 "Blocker Gates" |
-| **Step 0-7 强制步骤** | [§Step 0](#step-0-范围声明--时间预算--状态恢复) 起各 Step 节 | ~1500 行 |
-| Gate H design 门控 | [§Step 1.6 设计对齐检查](#step-16-设计对齐检查design-alignmentgate-h) | 搜索 "Gate H" |
-| structure.md 12 节骨架模板 | [§1. 主题思想](#1-主题思想一句话) 起 12 节 | ~200 行 |
-| 6 维反查矩阵 | [§Step 0.5.6 6 维反查矩阵](#step-0566-维反查矩阵新增2026-07-16) | ~50 行 |
-| Resume Point（跨 session 续审） | [§Step 0 Resume Point 模板](#statemd-resume-point-模板多-session-续审强制new-2026-07-16) | 搜索 "Resume Point" |
+| 执行模式选择（构造/快速/深度/设计优先） | [§〇 执行模式选择](#〇执行模式选择构造--快速--深度) | ~35 行 |
+| Blocker Gates 状态表 | [§Blocker Gates](#-blocker-gates阻断门必须通过才能输出-final-review) | 搜索 "Blocker Gates" |
+| **Step 0-7 强制步骤** | [§Step 0](#step-0-范围声明--时间预算--状态恢复) 起各 Step 节 | ~1451 行 |
+| Gate H design 门控 | [§Step 1.6 设计对齐检查](#step-16-设计对齐检查design-alignment-gate-h) | 搜索 "Gate H" |
+| structure.md 12 节骨架模板 | [§Step 0.5 模板](#step-05-生成-structuremd-并评审骨架文档-review-强制) 起 12 节 | ~206 行 |
+| 6 维反查矩阵 | [§Step 0.5.6 6 维反查矩阵](#step-056-6-维反查矩阵新增2026-07-16) | ~26 行 |
+| Resume Point（跨 session 续审） | [§Step 0 Resume Point 模板](#step-0-resume-point-模板多-session-续审强制new-2026-07-16) | 搜索 "Resume Point" |
 | Review 输出格式 | [§Step 5 Final Review Output](#step-5-final-review-output最终输出) | ~190 行 |
 | 收敛停止规则 | [§Step 7.1 收敛成本警告](#step-71-收敛成本警告强制) | 搜索 "Step 7.1" |
 | Review 工具命令 | [§工具命令速查](#工具命令速查) | ~67 行 |
@@ -180,8 +180,8 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
     ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
     ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
-# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+    # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+    cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -223,7 +223,7 @@ cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版
   > 4. **工具支持**：`tools/design-coverage-check.sh {module} --stage {stage}`（NEW）自动扫描所有 stage，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
   > 5. **决策记录豁免**：仅一次性用户明确豁免；豁免必须登记在 STATE.md `§豁免列表` 段；**不可泛化**（模式 71 DOG）。
 
-- **STATE.md Resume Point 模板（多 session 续审强制，NEW 2026-07-16）**：
+### Step 0 Resume Point 模板（多 session 续审强制，NEW 2026-07-16）
   > **目的**：避免续 session 跳过 Step 0 预检，导致快照缺失但 scan.md 标 CONVERGED。Session #12 真实案例：续 session 时仅读取了 5 个必读文件清单，没把 `ls design/` 列为强制预检。
   >
   > **模板**（写入 STATE.md `## Resume Point` 段）：

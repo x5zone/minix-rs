@@ -135,8 +135,8 @@
 
 **执行流程**：
 1. 列出 Ch3 的所有设计决策
-2. 逐一验证每个决策是否有 Ch1&2 的依据（见 [review-doc-checklist.md §2.9](review-doc-checklist.md#29-设计决策质量检查ch3-专项)）
-3. 逐一验证 Ch4 是否实现了 Ch3 的设计（见 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证)）
+2. 逐一验证每个决策是否有 Ch1&2 的依据（见 [review-doc-checklist.md §2.9](review-doc-checklist.md#29-设计决策质量检查ch3-专项强制不可跳过)）
+3. 逐一验证 Ch4 是否实现了 Ch3 的设计（见 [review-doc-checklist.md §2.10](review-doc-checklist.md#210-章节链路验证强制不可跳过)）
 4. 逐一验证测试章节是否覆盖了 Ch3+Ch4
 5. 逐一验证代码是否与 Ch4 一致
 6. 输出所有链路断裂点，并生成修改项（按 [review-process.md Step 6](review-process.md) 格式）

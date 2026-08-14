@@ -261,7 +261,7 @@ Ch1 术语来源分层：
 
 > **目的**：检测文档代码示例是否反映当前 idiomatic Rust 写法（特别是 Rust 2024 edition 兼容）。
 > **触发条件**：文档 §3 / §4 含 Rust 代码块（` ```rust ... ``` `）。
-> **模式参考**：[review-patterns-skill 模式 73](../../../prompt/skill/review-patterns-skill.md#模式-73-文档代码示例-rust-2024-edition-drift)。
+> **模式参考**：[review-patterns-skill 模式 73](../../../prompt/skill/review-patterns-skill.md#模式-73-文档代码示例-rust-2024-edition-driftnew-2026-07-30)。
 
 **检查命令**：
 ```bash
@@ -290,7 +290,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 > **目的**：检测文档 Rust crate 路径引用是否漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`）。
 > **触发条件**：任何 doc review（路径引用是文档基础约定）。
-> **模式参考**：[review-patterns-skill 模式 74](../../../prompt/skill/review-patterns-skill.md#模式-74-文档路径约定漂移)。
+> **模式参考**：[review-patterns-skill 模式 74](../../../prompt/skill/review-patterns-skill.md#模式-74-文档路径约定漂移doc-path-convention-drift-new-2026-07-30)。
 
 **检查命令**：
 ```bash

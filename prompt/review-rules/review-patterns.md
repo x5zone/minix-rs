@@ -953,7 +953,7 @@ struct VmProc {
 
 ## 八、叙事与概念错误模式
 
-> 以下模式覆盖 03-kmain-cstart 重构案例暴露的叙事/概念层问题。详见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架) Ch1 骨架检查、[review.md §概念抽象原则](review.md#概念抽象原则)。
+> 以下模式覆盖 03-kmain-cstart 重构案例暴露的叙事/概念层问题。详见 [review-doc-checklist.md §1.Ch1](review-doc-checklist.md#1ch1-ch1-强制骨架概念章专项强制) Ch1 骨架检查、[review.md §概念抽象原则](review.md#概念抽象原则)。
 
 ### 模式 48：因果链编造（P0）
 
@@ -1238,7 +1238,7 @@ struct VmProc {
 
 **教训**：**review 不能替代 design**。先 design 后 review 是 Rust 重写场景的基本要求。
 
-> **对应 P0 类型**：P0-design-missing / P0-design-wrong（参见 [review.md §4.1 P0 六分类](review.md#41-p0-六分类v6-修正含-p0-test-missing--明确-refactor-类型)）
+> **对应 P0 类型**：P0-design-missing / P0-design-wrong（参见 [review.md §4.1 P0 六分类](review.md#41-p0-六分类含-p0-test-missing--明确-refactor-类型)）
 
 ---
 
