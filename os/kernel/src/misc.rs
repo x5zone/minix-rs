@@ -2189,7 +2189,7 @@ pub static SPROFILING: AtomicBool = AtomicBool::new(false);
 
 /// A single profiling sample: process endpoint + program counter.
 ///
-/// C: `struct sprof_sample { endpoint_t proc; void *pc; }` — profile.h:27-30.
+/// C: `struct sprof_sample { endpoint_t proc; void *pc; }` — include/minix/profile.h:27-30.
 ///
 /// `#[repr(C)]` ensures the layout matches the C struct so the user-space
 /// profiling tool can decode the buffer. On 64-bit, `proc` (4 bytes) is
@@ -2207,7 +2207,7 @@ pub struct SprofSample {
 /// A process record: endpoint + name (saved once per process).
 ///
 /// C: `struct sprof_proc { endpoint_t proc; char name[PROC_NAME_LEN]; }`
-/// — profile.h:32-35.
+/// — include/minix/profile.h:32-35.
 ///
 /// Written to the sample buffer the first time a system process is
 /// sampled (gated by `MF_SPROF_SEEN`). The user-space profiling tool

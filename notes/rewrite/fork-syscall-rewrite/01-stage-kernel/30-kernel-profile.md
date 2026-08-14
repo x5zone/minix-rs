@@ -177,13 +177,13 @@ NMI 版本与时钟版本的区别：
 **Rust 64-bit 决策**: `ClockArch` trait 保留 `init_profile_clock` / `stop_profile_clock` 方法。
 
 **已实现**:
-- [os/kernel/src/clock.rs:285](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn init_profile_clock(hz: u32) -> Result<(), ()>`
-- [os/kernel/src/clock.rs:307](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn stop_profile_clock()`
-- [os/arch/src/x86_64/clock.rs:114](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs): `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ()>`
+- [os/kernel/src/clock.rs:293](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError>`
+- [os/kernel/src/clock.rs:315](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn stop_profile_clock()`
+- [os/arch/src/x86_64/clock.rs:114](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs): `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>`
 - [os/arch/src/x86_64/clock.rs:165](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs): `fn stop_profile_clock(&mut self)`
 - [os/arch/src/arm64/clock.rs:89](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/clock.rs): aarch64 impl
 
-**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 [misc.rs:1937](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs)）。
+**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 [misc.rs:1957](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs)）。
 
 ### 3.2 D2: 样本收集实现
 
@@ -231,7 +231,7 @@ NMI 版本与时钟版本的区别：
 
 ```rust
 /// C: `init_profile_clock()` — arch/i386/arch_clock.c
-pub fn init_profile_clock(hz: u32) -> Result<(), ()> {
+pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError> {
     // ...
     clock_arch.init_profile_clock(hz)
 }
@@ -251,20 +251,20 @@ pub fn ack_profile_clock() {
 
 x86_64 impl（[os/arch/src/x86_64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs)）配置 RTC 定时器 + 读 Register C ack。
 
-aarch64 impl（[os/arch/src/arm64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/clock.rs)）返回 `Err(())`（PMU 未集成）。
+aarch64 impl（[os/arch/src/arm64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/clock.rs)）返回 `Err(ProfileClockError::Unsupported)`（PMU 未集成）。
 
-riscv64 impl（[os/arch/src/riscv64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/clock.rs)）返回 `Err(())`（无独立 profiling 定时器）。
+riscv64 impl（[os/arch/src/riscv64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/clock.rs)）返回 `Err(ProfileClockError::Unsupported)`（无独立 profiling 定时器）。
 
 ### 4.2 样本收集
 
 [os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs)：
 
 ```rust
-/// C: `struct sprof_sample` — profile.h:27-30
+/// C: `struct sprof_sample` — include/minix/profile.h:27-30
 #[repr(C)]
 pub struct SprofSample { pub proc: i32, pub pc: u64 }
 
-/// C: `struct sprof_proc` — profile.h:32-35
+/// C: `struct sprof_proc` — include/minix/profile.h:32-35
 #[repr(C)]
 pub struct SprofProc { pub proc: i32, pub name: [u8; PROC_NAME_LEN] }
 
