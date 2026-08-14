@@ -10,7 +10,9 @@
 | # | 检查项 | grep 命令模板 | 判定标准 | 未通过 |
 |---|-------|--------------|---------|--------|
 | **1** | 文档 §5 测试是否真实存在？ | `rg "fn {test_name}" {rust_dir} --type rust -n` | 文档 §5 列出的每个测试函数必须存在；缺失/未找到→P0（测试缺失） | P0 |
-| **2** | 文档声明的 trait 是否有 ≥1 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；只有默认 impl 没有真实 arch impl 也算未通过 | P0 |
+| **2** | 文档声明的 trait 是否有 ≥2 行为不同的 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；1 impl → P1（可能死代码，trait 抽象需 ≥2 行为不同的实现）；≥2 impl → ✅ | P0/P1 |
+
+> **2026-08-15 修复 C-P1-3（0 impl 优先于测试覆盖）**：当 trait 0 impl 时，即便有测试覆盖，仍判 P0（trait 无任何实现 = 死代码 / 虚构）。判定优先级：**0 impl → P0 > 测试覆盖度判定**。判定流程：(a) 先检查 trait 是否有 ≥1 impl？否 → P0 死代码；(b) 有 impl → 检查测试覆盖度，0 测试覆盖 → P0-test-missing，< 3 测试 → P1。
 | **3** | 文档声明的函数是否在声明的文件中？ | `rg "fn {name}" {file}` | 文档说"在 file.rs 中定义 fn foo"，但 grep 无结果→P0（虚构位置）；找到但 signature 完全不符也按未通过处理 | P0 |
 | **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性 | P0/P1 |
 | **5** | 文档 §4 签名是否与实际一致？ | 逐函数对比 `rg "fn {name}" {file}` 输出 vs 文档 §4 | 参数/返回值/可见性/泛型约束不一致→P0（签名偏移）；有一项不符即整项 ❌ | P0 |
@@ -1134,7 +1136,7 @@ struct VmProc {
 2. 字段保留但 doc 误标"已删除"（~20%）
 3. doc 代码示例只展示字段子集（~10%）
 
-**自动检测**：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
+**自动检测建议**（未来实施）：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
 **来源案例**：`01-boot-shim-bootstrap.md` §3.5 原写"9 字段"，`os/libs/minix-boot/src/kernel_info.rs` 实际 12 字段（已在后续修复）。
 
 ### 模式 60：诚实显式 TODO 模式（P1，推广现有最佳实践）
@@ -1163,6 +1165,8 @@ struct VmProc {
 **来源案例**：`06-proc-init-boot-proc.md:1133-1170` 4 个显式 TODO + 代码注释双向同步。
 
 ---
+
+> **编号说明**：模式 61-62 在演进过程中合并至模式 60（诚实显式 TODO），编号保留不补，以便历史 review 报告中的"模式 61/62"引用可追溯。模式 66 因 2026-07-16 新增时插入位置靠前，未按数字顺序排列——模式按编号检索，不影响功能。
 
 ### 模式 66: 参考代码路径漂移（Reference Code Path Drift, RCPD）（NEW 2026-07-16）
 
@@ -1269,6 +1273,8 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 **教训**：**文档是教学材料，不是开发迭代记录**。读者关心知识点，不关心开发过程。
 
 ### 模式 64 扩展：禁用词清单
+
+> **编号说明**：本小节为模式 64 的扩展（禁用词清单），复用编号 64 而非新开编号，以便与模式 64 本体保持一致引用。
 
 | 分组 | 禁用词 | 替代模式 |
 |------|--------|---------|
@@ -1429,12 +1435,12 @@ grep -c "unsafe" prompt/../code.rs
            - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
            - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
            - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
-        3. 工具 `tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 design/，输出缺失报告
-        4. STATE.md Resume Point 必含 `ls design/` 命令（避免续 session 跳过）
+         3. 工具 `tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 .design/，输出缺失报告
+         4. STATE.md Resume Point 必含 `ls .design/` 命令（避免续 session 跳过）
 ```
 
 **判定**：
-- AI 跳过 `ls design/{NN}-*.md` 命令 → 模式 69 触发
+- AI 跳过 `ls .design/{NN}-*.md` 命令 → 模式 69 触发
 - scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL → 模式 69 触发
 - 用"已有 CONVERGED 状态"/"incremental review"为由跳过预检 → 模式 69 触发（P0-process-violation）
 - 用"复用 03/04 design"为由跳过预检 → 模式 69 触发（P0-process-violation，禁止跨文档复用）
@@ -1452,7 +1458,7 @@ grep -c "unsafe" prompt/../code.rs
 - 工具：`tools/todo-staleness-check.sh {todo-file}`（NEW，模式 70 配套）
 
 **来源案例**：
-- **Session #12 (06-proc-init-boot-proc.md)**：R12 review 时发现 design/ 目录只有 01/02/03 快照，06 完全没有；Session #11 模式 69 发现 04/05 缺失时已记录此为 P0-process-violation，但缺少硬阻断机制导致 Session #12 仍跳过预检。
+- **Session #12 (06-proc-init-boot-proc.md)**：R12 review 时发现 `.design/` 目录只有 01/02/03 快照，06 完全没有；Session #11 模式 69 发现 04/05 缺失时已记录此为 P0-process-violation，但缺少硬阻断机制导致 Session #12 仍跳过预检。
 - **Session #11 (04/05 复盘)**：模式 69 首次发现 — 04/05 自 CONVERGED 后从未生成 {04/05}-outline.v*.md / {04/05}-design.v*.md。
 
 **与现有模式的关系**：
@@ -1603,3 +1609,408 @@ rg -c "^\| \d+ \|" notes/rewrite/{module}/{stage}/{doc}.md
 # 检查差异说明表是否存在
 rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" notes/rewrite/{module}/{stage}/{doc}.md
 ```
+
+---
+
+### 模式 73: 文档代码示例 Rust 2024 Edition Drift（NEW 2026-07-30）
+
+**定义**：文档中的代码示例使用 Rust 2024 edition 已 deprecated 或非 idiomatic 的写法（特别是 `static mut`），但实际代码已迁移至 `Atomic*` / `UnsafeCell` / `AtomicBool` 等替代方案。导致 doc-code 示例不一致。
+
+**触发场景**：
+- 文档 §4 / §3 的代码示例含 `static mut`
+- 实际代码已用 `AtomicU64` / `AtomicBool` / `UnsafeCell<T>` 替代
+- 路径引用过时（如 `arch/src/pt_alloc.rs` → 实际 `arch/src/arch/pt_alloc.rs` 因目录重组）
+
+**典型案例**：
+```
+❌ 文档代码示例（已过时）：
+// arch/src/pt_alloc.rs
+type PtAllocFn = fn() -> Result<...>;
+static mut PT_ALLOC: PtAllocFn = uninit_alloc;
+
+// hello-boot（调用者）
+static mut BOOT_PT_NEXT: u64 = 0;
+static mut BOOT_PT_END: u64 = 0;
+
+✅ 实际代码（2026-07-30）：
+// os/arch/src/arch/pt_alloc.rs
+struct PtAllocSlot(UnsafeCell<PtAllocFn>);
+unsafe impl Sync for PtAllocSlot {}
+static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
+static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+// os/kernel/src/boot_alloc.rs
+static BOOT_PT_NEXT: AtomicU64 = AtomicU64::new(0);
+static BOOT_PT_END: AtomicU64 = AtomicU64::new(0);
+```
+
+**判定信号**：
+- `rg "static mut" {doc}` 命中非"说明性注释"位置（即实际代码示例使用 `static mut`）
+- `rg "static mut" {rust_dir} -t rust` 在 `pub fn` / 函数体内 → 0 hits（说明实际代码已迁移）
+- 文档代码示例中的路径 `find` 不到，但变体路径存在（目录重组）
+
+**严重度**：P1（默认）/ P0（若代码示例被复制作 boot-shim 模板，会导致新代码引入 Rust 2024 UB）
+
+**规则草案**：
+- (a) 文档代码示例必须反映**当前 idiomatic Rust 写法**（特别是 Rust 2024 edition 兼容性）
+- (b) 涉及同步原语（`static` 全局状态）必须用 `Atomic*` 或 `UnsafeCell<T>` + 显式 `Sync` impl
+- (c) 路径引用必须与实际仓库结构一致；目录重组后必须同步更新
+- (d) 当代码迁移发生时（`git log` 显示 `static mut` → `Atomic*` 替换），doc 必须同步更新
+
+**检查命令**：
+```bash
+# Doc-side 静态扫描
+rg "static mut" notes/rewrite/{module}/{stage}/{doc}.md --type md
+
+# Rust-side 实际状态（应 0 hits）
+rg "static mut" os/ -t rust --type-add 'rust:*.rs'
+
+# 路径一致性（doc 写 path1 vs 实际 path2）
+rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" notes/rewrite/{module}/{stage}/{doc}.md
+find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.rs"
+```
+
+**修复建议**（≤10 分钟）：
+1. 复制实际代码到文档代码块（去除 `static mut`）
+2. 加注释说明 `// Rust 2024 edition 兼容：用 UnsafeCell / AtomicBool 而非 static mut`
+3. 路径错误时按 `find` 结果更新（注意 `/arch/` 子目录等重组）
+
+**与已有模式区分**：
+- 模式 5（代码与文档不一致）= 行为层面不一致
+- 模式 59（文档字段计数漂移）= struct 字段计数错误
+- 模式 73 = **Rust 习惯用法 / 路径同步漂移**（2024 edition 升级期特有）
+
+**已知子类型**：
+- 73a: `static mut` → `Atomic*` / `UnsafeCell`
+- 73b: 路径目录重组（`X/` → `X/X/` 子目录化）
+- 73c: API 签名小升级（如 `fetch_add` 回滚 → `compare_exchange`）
+
+**首次发现**：2026-07-30 01-boot-shim-bootstrap review（`.review/claude/03-stage-kernel/01-boot-shim-bootstrap/scan.md`，Pattern #73）
+
+---
+
+### 模式 74: 文档路径约定漂移（Doc Path Convention Drift, NEW 2026-07-30）
+
+**定义**：文档内 Rust crate 路径引用缺 `os/` workspace 根前缀，与 CLAUDE.md `os/` 目录约定不一致（典型错误：`kernel/src/...` 应为 `os/kernel/src/...`）。常因 doc 在 `os/Cargo.toml` workspace 之外撰写，作者直觉省略 workspace 根。
+
+**触发场景**：
+- doc 引用 `kernel/src/...`、`arch/src/...`、`boot-shim/src/...` 等裸路径
+- 实际仓库布局为 `os/kernel/src/...`、`os/arch/src/...`、`os/boot-shim/src/...`
+- 同一 stage 不同 doc 之间路径风格不一致（如 doc 01 用 `os/`，doc 02 漏 `os/`）
+
+**典型案例**：
+```
+❌ Doc 02 引用（18 处）：`kernel/src/boot/higher_half.rs`、`kernel/src/lib.rs`、
+   `kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`
+✅ 实际路径：`os/kernel/src/boot/higher_half.rs`、`os/kernel/src/lib.rs`、
+   `os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`
+✅ 跨文档一致：doc 01 全部用 `os/xxx/src/...` 形式
+```
+
+**判定信号**：
+- `rg "kernel/src/" {doc}.md | wc -l` > 0 但 `rg "os/kernel/src/" {doc}.md | wc -l` 低（典型 18 vs 2）
+- 同一 stage 内多个 doc 的 `os/` 前缀使用率差异大
+- 新写 doc 前未比对早期 doc 的路径风格
+
+**严重度**：P1（默认）/ P2（仅个别遗漏）
+
+**规则草案**：
+- (a) **Rust crate 路径必须含 `os/` workspace 根前缀**（与 CLAUDE.md 目录布局约定一致）
+- (b) **minix3 C 源路径用 `minix3/...` 前缀**（不带 `os/`，与 Rust 路径区分）
+- (c) **跨文档统一路径约定**——新写 doc 前**必须**比对同一 stage 早期 doc 的路径风格
+- (d) **避免双重前缀**：`os/os/...` 是 sed 批量替换的常见副作用，必须 rg 复查
+
+**检查命令**：
+```bash
+# 路径约定检查（Step 1.0c NEW）
+rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/|servers/vfs/|servers/rs/" \
+    notes/rewrite/{module}/{stage}/{doc}.md
+# 应仅匹配 minix3/... 路径或 0 hits
+
+# 反向验证：os/ 前缀正确性
+rg "os/(kernel|boot-shim|arch|servers|libs)" notes/rewrite/{module}/{stage}/{doc}.md | wc -l
+# 应与该 doc 的 Rust 路径总数接近
+
+# 双重前缀检查
+rg "os/os/" notes/rewrite/{module}/{stage}/{doc}.md
+# 必须 0 hits
+```
+
+**修复建议**（≤10 分钟）：
+1. 用 `sed` 批量加 `os/` 前缀：`sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md`
+2. 复查双重前缀：`sed -i 's|os/os/|os/|g' {doc}.md`
+3. 注意不要误改 minix3 C 源路径（`rg "minix3/.*kernel/src/" doc` 验证 C 源路径未受影响）
+4. 建议在 stage 级别建立"path style baseline"——同一 stage 早期 doc 的路径风格作为参考
+
+**与已有模式区分**：
+- 模式 73a = doc code example Rust idiom drift（`static mut` → `Atomic*`）
+- 模式 73b = **路径目录重组**（`X/` → `X/X/`，如 `arch/src/` → `arch/src/arch/`）
+- 模式 73c = API 签名小升级
+- **模式 74 = workspace 根路径省略**（doc 写作时漏写 `os/`）—— 与 73b 不同，73b 是目录重组，74 是路径**引用**漂移
+
+**典型修复流程**（来自 02-higher-half-kernel review）：
+1. Pre-fix rg 统计：`rg "kernel/src/" doc | wc -l = 18`
+2. `sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md`
+3. Post-fix rg 复查：`rg "os/os/" doc` 应为 0 hits（避免 sed 双重前缀副作用）
+4. 最终验证：`rg "os/kernel/src/" doc | wc -l` 应 ≥ 18
+
+**已知子类型**：
+- 74a: 漏 `os/` workspace 根（本次 02 doc）
+- 74b: 跨 doc 路径风格不一致（doc 01 用 `os/`，doc 02 不用）
+- 74c: 双重前缀（`os/os/`，sed 副作用）
+
+**首次发现**：2026-07-30 02-higher-half-kernel review（`.review/claude/03-stage-kernel/02-higher-half-kernel/scan.md`，Pattern #74）
+
+### 模式 75: 文档"参见"范围漂移（Doc See-Also Range Drift, NEW 2026-07-31）
+
+> **背景**：doc 中"参见 X.rs:Y-Z"形式引用（行号范围）容易出现两类漂移——起止行号偏移（如 :55-76 实际 :56-78）+ **上界范围过短**（如 :55-399 实际 :56-523）。前者是 +1 行号漂移，后者是 doc 写作时文件较小、未随代码演化更新。
+
+**典型场景**：
+```markdown
+❌ 参见 `os/libs/minix-platform/src/device_tree.rs:55-399`（含 cfg-gated 字段定义、arch 特化解析函数、trait impl）
+✅ 参见 `os/libs/minix-platform/src/device_tree.rs:56-423`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）
+```
+
+**检查命令**（Step 1.0d 强制）：
+```bash
+# 1. 抽取"参见"型引用
+rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md
+
+# 2. 对每个范围验证上界是否覆盖到 impl 结束
+# 例：device_tree.rs 需覆盖到 `impl PlatformDesc` 结束 + 测试开始
+# acpi.rs 同理
+rg -n "^impl PlatformDesc for DeviceTreeDesc|^impl fmt::Display" os/libs/minix-platform/src/device_tree.rs
+# → impl PlatformDesc 起始行 + 下一个 item 起始行 = 范围上界
+```
+
+**判定**：
+- 起止行号偏移 ±1 → **P2 行号偏移**
+- 上界 < 实际 impl 结束 → **P2 范围过短**（doc 写作时文件较小，未随代码演化更新）
+- 起止偏移 > 1 → **P1 行号漂移**
+
+**修复**（≤5 分钟）：
+```bash
+# 1. 修正 +1 偏移
+sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
+
+# 2. 更新上界到当前 impl 结束
+#   需先用 rg 找出 `impl PlatformDesc for X` + 下一个 `impl`/`fn test_`/`fn parse` 的位置
+#   然后 sed 替换
+sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
+
+# 3. 验证
+rg "device_tree.rs:" {doc}.md
+wc -l os/libs/minix-platform/src/device_tree.rs  # 当前实际行数
+```
+
+**已知子类型**：
+- 75a: 参见行号 +1 偏移（如 55 → 56）
+- 75b: 参见范围上界过短（如 399 → 实际 523）
+- 75c: 参见下界偏移（少见）
+
+**与已有模式区分**：
+- **模式 73 / 74** = 路径相关漂移
+- **模式 75 = 行号 / 范围漂移**（与 Step 1.0a 主动抽样互补，但 Step 1.0a 倾向"单点行号"，75 倾向"范围引用"）
+
+**典型漏检原因**：Step 1.0a 主动抽样只检查"`// path:line`"形式的代码注释引用，**漏检"参见 path:line-line"形式的范围引用**。本次 04 doc review 即因此漏检 2 处 L831/L883 范围漂移。
+
+**首次发现**：2026-07-31 04-platform-discovery review（`.review/claude/03-stage-kernel/04-platform-discovery/scan.md`，Pattern #75）
+
+### 模式 76: 跨文档归属漂移（Cross-Doc Attribution Drift, NEW 2026-07-31）
+
+> **背景**：代码注释中"covered in NN" / "see XX-doc.md §Y"等**指向特定 doc 编号或文件名的引用**，容易因 (a) doc 编号重排 或 (b) doc 改名 而**系统性过时**。本次 05 doc review 发现 `os/kernel/src/lib.rs` 3 处 `(covered in NN)` 注释错位（实为 04/05/06 而非 05/06/07），同时发现**至少 9 处代码注释引用旧 doc 命名**（如 `04-clock-interrupt-init.md`，当前 04 实际是 `platform-discovery.md`）。
+
+**典型场景**：
+```rust
+❌ // init_clock_and_interrupts();  // (covered in 04)   ← 实际由 05 实现
+   // (covered in NN) 注释随 doc 编号重排而过时
+   // "see 04-clock-interrupt-init.md" 注释引用旧 doc 文件名
+
+✅ // 每次 doc 编号重排或改名时，跑 rg + sed 同步所有引用
+   // 或：去掉 "covered in NN" 注释，改用语义化注释（"详见 init_clock_and_interrupts 实现"）
+```
+
+**已知子类型**：
+- **76a** `(covered in NN)` 注释错位（本次 05 review 发现 3 处）
+- **76b** `see XX-doc.md` 注释引用旧 doc 文件名（本次同时发现 9+ 处，如 `04-clock-interrupt-init.md` / `05-exception-interrupt.md` / `06-arch-post-init.md` 等已过时）
+- **76c** 设计文档引用旧编号（design.md 中 `(详见 §3.2)` 等）
+
+**检查命令**（Step 1.0e 强制）：
+```bash
+# 1. 扫描代码中所有 "covered in NN" / "see NN-doc.md" 引用
+rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust -n
+
+# 2. 验证当前 doc 编号是否一致
+ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+
+# 3. 对每个引用，验证是否指向有效 doc
+for ref in $(rg "covered in 0[0-9]" os/ -t rust -o); do
+    doc_num=$(echo "$ref" | rg -o "[0-9]+")
+    doc_file=$(ls notes/.../0${doc_num}-*.md 2>/dev/null | head -1)
+    echo "$ref → $doc_file"
+done
+
+# 4. 验证 "see XX-doc.md" 注释的文件名
+for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do
+    doc_file=$(echo "$ref" | rg -o "[0-9]+-.+\.md")
+    if [ ! -f "notes/.../$doc_file" ]; then
+        echo "❌ STALE: $ref"
+    fi
+done
+```
+
+**判定**：
+- 注释错位 (covered in NN 不一致) → **P1 注释错位**
+- 注释引用已删除 doc → **P1 注释失效**
+- 注释引用已重命名 doc → **P1 注释失效**
+
+**修复**（批量 sed）：
+```bash
+# 1. 修 (covered in NN) 注释（按上下文判断目标 doc）
+sed -i 's|init_clock_and_interrupts.*covered in 04|init_clock_and_interrupts (covered in 05|' os/kernel/src/lib.rs
+
+# 2. 修 "see XX-doc.md" 注释引用（doc 改名后批量更新）
+#   例如 04-clock-interrupt-init.md → 05-clock-interrupt-init.md（doc 04 重命名为 platform-discovery）
+sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/arch/{clock.rs,arch_init.rs}
+sed -i 's|05-exception-interrupt.md|14-exception-interrupt.md|g' os/arch/src/arch/*.rs os/plat/src/interrupt.rs os/kernel/src/irq_manager.rs
+sed -i 's|06-arch-post-init.md|08-system-init-boot-finish.md|g' os/arch/src/arch/post_init.rs
+
+# 3. 验证
+rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust | wc -l  # 应等于 0
+```
+
+**与已有模式区分**：
+- **Pattern #66** = Reference Code Path Drift（代码路径引用 `file:line` 不存在）
+- **Pattern #76** = **Cross-Doc Attribution Drift**（doc 编号/文件名引用不一致）
+
+**典型漏检原因**：之前 review 只检查 doc 内容 vs 代码内容，**未深入代码注释交叉引用**。本次 05 review 是首次系统检查，发现 Pattern #76 实质化（不只是 1-2 处，而是 9+ 处）。
+
+**首次发现**：2026-07-31 05-clock-interrupt-init review（`.review/claude/03-stage-kernel/05-clock-interrupt-init/scan.md`，Pattern #76）
+
+### 模式 77: 代码注释行号漂移（Code Comment Line Drift, CCLD, NEW 2026-07-31）
+
+> **背景**：代码注释中引用的 `file:line`（如 `// see proc_table.rs:129`）可能因代码增量而**漂移**（文件行号下移）。doc 复述这些注释时，会产生**传递性 drift**（doc 错误根因在代码注释）。
+>
+> 本次 08 doc review 发现 3 处 P2 行号偏移全部源自 `os/kernel/src/lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）：
+> - `proc_table.rs:129` 实际 L276（rts_unset，+147 偏移，最大）
+> - `smp.rs:127-132` 实际 L200（set_running，+73）
+> - `smp.rs:80-145` 实际 L135（CpuLocal struct，+55）
+
+**典型场景**：
+```rust
+// Rust: ProcessTable::rts_unset auto-enqueues a newly-runnable process
+// (see proc_table.rs:129). Iterate from 0 ...
+// ❌ 实际 rts_unset 在 L276（行号漂移 +147）
+
+// Rust: CpuLocal::set_running(IDLE) — see smp.rs:127-132.
+// ❌ 实际 set_running 在 L200（+73）
+```
+
+**检查命令**（Step 1.0f 强制）：
+```bash
+# 1. 扫描所有代码注释中的 file:line 引用
+rg "see [a-z_/0-9]+\.rs:[0-9]+|see [a-z_/0-9]+\.rs:[0-9]+-[0-9]+" os/ -t rust -n
+
+# 2. 对每个引用验证实际行号
+for ref in $(rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -o); do
+    file=$(echo "$ref" | rg -o "[a-z_/0-9]+\.rs")
+    line=$(echo "$ref" | rg -o "[0-9]+")
+    actual=$(rg -n "^pub fn|^fn |^pub struct|^pub enum|^impl|^pub trait" "$file" | awk -F: -v target=$line '($1 <= target)' | tail -1)
+    echo "$ref → $actual"
+done
+```
+
+**判定**：
+- 引用行号 ±1 偏移 → ✅（允许小漂移）
+- 引用行号偏差 > 5 → **P2 代码注释漂移**
+- 引用行号偏差 > 50 → **P1 代码注释显著漂移**
+
+**修复策略**（双修避免传递性 drift）：
+```bash
+# 1. 修代码注释（root cause）
+sed -i 's|(see proc_table.rs:129)|(see proc_table.rs:276)|' os/kernel/src/lib.rs
+
+# 2. 同步修所有复述的 doc（如果 doc 复述了错误注释）
+sed -i 's|proc_table.rs:129|proc_table.rs:276|g' notes/.../{doc}.md
+
+# 3. 验证全项目干净
+rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
+# (empty = ✅)
+```
+
+**与已有模式区分**：
+- **Pattern #66** = Reference Code Path Drift（代码路径引用 `file:line` 不存在）—— Pattern #77 是 Pattern #66 的子类型（行号漂移）
+- **Pattern #73** = Doc Code Example Rust 2024 Edition Drift（Rust idiom 漂移）
+- **Pattern #75** = Doc See-Also Range Drift（doc 范围引用漂移）
+- **Pattern #77** = **Code Comment Line Drift**（**代码注释行号漂移**）—— 重点是代码注释而非 doc 引用
+
+**已知偏差**（本次 08 review 发现）：
+- `os/kernel/src/lib.rs:1170` `smp.rs:80-145` → 实际 `smp.rs:135`（已修）
+- `os/kernel/src/lib.rs:1181` `smp.rs:127-132` → 实际 `smp.rs:200`（已修）
+- `os/kernel/src/lib.rs:1193` `proc_table.rs:129` → 实际 `proc_table.rs:276`（已修）
+
+**首次发现**：2026-07-31 08-system-init-boot-finish review（`.review/claude/03-stage-kernel/08-system-init-boot-finish/scan.md`，Pattern #77）
+
+### 模式 78：C 源码 bug 未显式标注（C Source Bug Unlabeled, CSBU）（NEW 2026-08-14）
+
+**严重度**：P1
+
+**问题描述**：Rust 实现修复了 Minix3 C 源码中的 bug，但代码注释和文档中未显式标注"C 源码此处有 bug，Rust 修复方式为 X"。后续维护者看到 Rust 与 C 行为不一致时，会以为是 Rust bug 而改回去，重新引入 C 的 bug。
+
+**判定标准**：
+- Rust 代码行为与 C 源码不一致，且原因是 C 源码有 bug（非设计差异）
+- 代码注释中无 `// MINIX3 BUG:` 标注
+- 文档 §2（语义对齐）对应位置无 bug 说明
+
+**验证命令**：
+```bash
+# 查找 Rust 代码中修复了 C bug 的位置
+rg "// MINIX3 BUG:" os/ --type rust -n
+# 反向检查：Rust 与 C 行为差异处是否有标注
+rg -A5 "C source.*bug\|minix3.*bug\|原版.*bug" os/ --type rust -i -n | head -20
+```
+
+**正确示例**：
+```rust
+// MINIX3 BUG: region.c:841-842 ignores ev_reference return value
+// Rust fix: ev_copy returns Err(NotSupported) instead of silently ignoring
+fn ev_copy(&self, ...) -> Result<...> { ... }
+```
+
+**错误示例**：
+```rust
+// Rust 版本直接返回错误，不忽略返回值
+fn ev_copy(&self, ...) -> Result<...> { ... }
+// ❌ 没有标注 C 源码 bug，维护者可能"修复"回 C 的行为
+```
+
+**来源案例**：
+- `region.c:841-842` 忽略 `ev_reference` 返回值 → Rust `ev_copy` 返回 `Err(NotSupported)`
+- `enter_queue` 写入 current 而非 target process → Rust 修复为 target
+- `anon_pagefault()` 部分分支不释放 `alloc_mem()` → Rust 先检查再分配
+
+**首次发现**：2026-08-14 规则集优化过程中，从 project_memory 沉淀的多个 C bug 修复案例抽象。
+
+---
+
+## 附录：Pattern→Step 交叉引用表
+
+> **用途**：AI 在执行某 Step 时，快速找到该 Step 最相关的模式。非穷举——所有模式都可能在任何阶段触发。
+
+| Step | 最相关模式 | 模式主题 |
+|------|-----------|---------|
+| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 69 PSMD, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/快照缺失/TODO 陈旧/决策泛化 |
+| Step 0.5（structure.md） | 1-15（文档错误）, A/B/C（跨文档） | 文档基础错误 + 跨文档联动 |
+| Step 1（C 源码） | 5（代码与文档不一致）, 11（设计与实现脱节）, 78 CSBU | C-Rust 语义对齐 + C bug 标注 |
+| Step 1.5（覆盖率） | — | 覆盖率由 coverage-extract.py 穷举，模式 1-15 兜底 |
+| Step 2（Diff Extraction） | 16-20（代码质量模式）, 48（因果链编造） | Translate 味道/unsafe/errno + 因果链验证 |
+| Step 2.5（链接验证） | — | 链接由 grep 验证，无专属模式 |
+| Step 3（Sanity Check） | 21-25（语义对齐模式）, 26-29（Kernel SMP 并发）, 30（外部知识误导） | C 引用验证 + 概念准确性 + SMP 并发 |
+| Step 3.5（Precision Check） | 30-34（精度模式）, 50（arch scope 未标注） | 精度抽样 + 架构范围 |
+| Step 3.5a（纵向链路） | 51-53（链路模式） | 纵向链路完整性 |
+| Step 3.5b（因果链） | 54-57（叙事模式） | 视角漂移/架构喧宾/决策日志/知识泄漏 |
+| Step 4（跨文档联动） | 58（跨文档状态表漂移）, A/B/C（跨文档联动） | 跨文档一致性检查 |
+| Step 4.5（测试验证，Gate E） | 35-40（测试模式） | 测试存在性 |
+| Step 5（输出） | 63 Design-Missing, 64 开发文档味, 65 Translate 倾向 | Design-First + 叙事质量 |
+| Gate H（design 门控） | 63, 64, 65 | Design 缺失/开发文档味/Translate 倾向 |
+| 卓越性 | 73-77（文档漂移模式） | Edition/路径/参见/归属/注释行号 |

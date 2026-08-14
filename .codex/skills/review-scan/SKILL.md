@@ -1,7 +1,6 @@
 ---
 name: review-scan
 description: "Scan a notes/rewrite/ directory: coverage + doc + code + patterns + excellence checks, write a review report with convergence status. Use when user says review/scan/check a documentation directory."
-allowed-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Review Scan — Orchestrator
@@ -26,7 +25,7 @@ You are a review orchestrator. Your job is to execute checks domain by domain, i
 
 | Gate | Check | Pass Criteria | Fail Consequence |
 |------|-------|---------------|------------------|
-| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 8 grep-verifiable anchor sections | DRAFT, no STATE.md write |
+| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 9 grep-verifiable anchor sections | DRAFT, no STATE.md write |
 | **A** | Phase 2 Coverage Enumeration | coverage-extract.py executed + SYMBOLS.md on disk + `gate-evidence-A` block | DRAFT, no STATE.md write |
 | **B** | Phase 7 Step 2 Diff Extraction | Top 5 behavior contract table (3 语义偏移 + 2 覆盖缺口, **8 fields × 5 funcs**) | DRAFT, no STATE.md write |
 | **C** | Phase 7 Step 3.5 Precision Check | 5 meta-rules check table output | DRAFT, no STATE.md write |
@@ -58,13 +57,12 @@ Missing this section → scan.md marked DRAFT.
 ## Phase 1: Scope
 1. `ls $ARGUMENTS` — list all `.md` and `.rs` files in the target directory
 2. Output: "Found N .md files, M .rs files. Starting review."
-3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$MODULE/STATE.md` (project root `.review/`)
-   - **Claude Code Runtime** → `.review/claude/$MODULE/STATE.md` (project root `.review/`)
+3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between tools):
+   - **Codex CLI** → `.review/codex/$MODULE/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
    - `$MODULE` = first directory under `notes/rewrite/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
-   - `$DOC_STEM` = target doc basename without extension; `$AGENT` = model id (Trae: glm/kimi/...; Claude: m3/...).
-   - Use `tools/review-init.sh claude {doc-path}` to auto-compute paths and mkdir.
+   - `$DOC_STEM` = target doc basename without extension. Codex has no bagging agent suffix.
+   - Use `tools/review-init.sh codex {doc-path}` to auto-compute paths and mkdir.
 4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
    - **必须跑 4 条 `ls`**（无论何种 review 模式）：
      ```bash
@@ -94,7 +92,7 @@ Missing this section → scan.md marked DRAFT.
 > - `$MINIX3_MODULE` = the Minix3 module name (e.g. `kernel`, `vm`, `pm`, `vfs`)
 > - `$C_DIR` = `minix3/minix/kernel` if `$MINIX3_MODULE == kernel`; otherwise `minix3/minix/servers/$MINIX3_MODULE`
 > - `$TARGET_DOC` = basename if the user names a single `.md` file; otherwise leave empty for module-level coverage
-> - **Output paths are hardcoded to `.review/claude/` — this is the Claude Code Runtime Skill; do NOT use a `$TOOL` variable.**
+> - **Output paths are hardcoded to `.review/codex/` — this is the Codex CLI Skill; do not write to Trae/Claude paths.**
 >
 > See `checks/process.md` §Step 1.5 for detailed coverage rules.
 
@@ -103,17 +101,17 @@ Execute the coverage-extract script to generate SYMBOLS.md. **Gate A evidence ru
 # Module-level
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
-  --output .review/claude/$MODULE/scans/SYMBOLS.md
+  --output .review/codex/$MODULE/scans/SYMBOLS.md
 
 # Doc-specific review (recommended when user names one doc)
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
   --doc-file $TARGET_DOC \
   --semantic-map tools/coverage-extract/$MINIX3_MODULE-semantic-map.json \
-  --output .review/claude/$MODULE/scans/$DOC_STEM-$AGENT-SYMBOLS.md
+   --output .review/codex/$MODULE/$DOC_STEM/SYMBOLS.md
 ```
 - `--rust-dir os` scans the entire `os/` tree to avoid missing cross-crate symbols.
-- `--c-dir` must be `minix3/minix/servers/$MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
+- `--c-dir` must be `minix3/minix/servers/$MINIX3_MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
 - `--semantic-map` is required for C→Rust rewrite; without it Rust coverage will be near 0% due to name mismatch.
 - `--doc-file` ensures two docs in the same module do not produce identical coverage numbers.
 - If Rust coverage is 0%, first check `--rust-dir`/`--semantic-map` correctness before treating it as a real gap.
@@ -157,7 +155,7 @@ Output: structure.md + 12-section review table + failures written to Issue List.
 
 ## Phase 2.6: Design + outline Alignment Check — Gate H
 
-> **Precondition**: 仅 Profile R / Profile C / Profile I / Profile H-K 必检。Profile D / Profile A 可跳过。
+> **Precondition**: 所有 review 模式都执行。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 > **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身完整性 + 可实现性 + **outline ↔ doc 对齐**（方案 D 新增）。
 
 Phase 2.6.1 design 对齐检查（6 项）：
@@ -190,7 +188,7 @@ Output: gate-evidence-H 块。
 
 ## Phase 3: Doc Checks (for each .md file)
 
-Read: `.claude/skills/review-scan/checks/doc.md`
+Read: `.codex/skills/review-scan/checks/doc.md`
 
 Execute 15 doc checks IN ORDER. After each check, mark it done.
 - Check 00: Claims-Evidence Tracing
@@ -216,7 +214,7 @@ Execute 15 doc checks IN ORDER. After each check, mark it done.
 
 ## Phase 4: Code Checks (for each .rs file)
 
-Read: `.claude/skills/review-scan/checks/code.md`
+Read: `.codex/skills/review-scan/checks/code.md`
 
 Execute 16 code checks IN ORDER:
 - Check 01: Rewrite Quality
@@ -242,22 +240,24 @@ Execute 16 code checks IN ORDER:
 
 ## Phase 5: Pattern Checks (for each .md and .rs file)
 
-Read: `.claude/skills/review-scan/checks/patterns.md`
+Read: `.codex/skills/review-scan/checks/patterns.md`
 
-Execute 6 pattern categories:
+Execute 9 pattern categories:
 - §0 P0 必检清单（Gate D，5 项）
 - 文档错误模式（15 个，1-15）
 - 跨文档联动错误模式（3 个，A-C）
-- 代码错误模式（14 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
+- 代码错误模式（10 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
 - 测试错误模式（6 个，35-40）
 - 卓越性错误模式（7 个，41-47）
-- 叙事与概念错误模式（10 个，48-57）— 因果链编造(48)为 P0
+- 叙事与概念错误模式（13 个，48-60）— 因果链编造(48)为 P0
+- Design-First 反模式（63-65）
+- Review 流程反模式（66-78）
 
 ---
 
 ## Phase 6: Excellence Checks (after correctness gate passed)
 
-Read: `.claude/skills/review-scan/checks/excellence.md`
+Read: `.codex/skills/review-scan/checks/excellence.md`
 
 > **Precondition**: Only execute if Phase 2-5 found 0 new P0 and ≤1 new P1.
 > Excellence checks pursue "better", not "correct".
@@ -270,7 +270,7 @@ Execute:
 
 ## Phase 7: Process & Meta-Check
 
-Read: `.claude/skills/review-scan/checks/process.md`
+Read: `.codex/skills/review-scan/checks/process.md`
 
 Execute:
 - Step 0.5: structure.md Skeleton Review (Gate D-6, doc review only)
@@ -295,9 +295,8 @@ Execute:
 
 After ALL checks are done, collect findings into:
 - File: tool-specific scan path
-  - Claude default: `.review/claude/$MODULE/$DOC_STEM/scan.md`
-  - Trae default: `.review/trae/$MODULE/scans/$DOC_STEM-$AGENT-scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `notes/rewrite/$MODULE/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `notes/rewrite/$MODULE/$STAGE/$DOC_STEM-claude-report.md`).
+  - Codex default: `.review/codex/$MODULE/$DOC_STEM/scan.md`
+  - If user explicitly requests another output location, **dual-write**: user-specified path + Codex default path (`notes/rewrite/$MODULE/$STAGE/$DOC_STEM-codex-report.md`).
 - Format: Summary (P0=N, P1=M, P2=K) + per-domain findings + full progress checklist
 - **Must include**: Skill Invocation Log + Blocker Gates pass status WITH evidence + Artifact Inventory + Severity Reconciliation
 
@@ -305,17 +304,14 @@ After ALL checks are done, collect findings into:
 
 ## Phase 9: State Write & Convergence
 
-1. Create/update tool-specific STATE.md (never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$MODULE/STATE.md`
-   - **Claude Code Runtime** → `.review/claude/$MODULE/STATE.md`
+1. Create/update Codex-specific STATE.md (never share intermediate results with Trae or Claude):
+   - **Codex CLI** → `.review/codex/$MODULE/STATE.md`
 2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
 3. Update `SYMBOLS.md` (Step 1.5 machine output) to matching path:
-   - Trae: `.review/trae/$MODULE/scans/$DOC_STEM-$AGENT-SYMBOLS.md`
-   - Claude: `.review/claude/$MODULE/$DOC_STEM/SYMBOLS.md`
+    - Codex: `.review/codex/$MODULE/$DOC_STEM/SYMBOLS.md`
 4. **All dimension results → scan.md single file** (NOT 10 dimension check files). Dual-write if user explicitly specified output path.
 5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
-   - Trae: `.review/trae/$MODULE/VERIFY-CHECK.md`
-   - Claude: `.review/claude/$MODULE/VERIFY-CHECK.md`
+    - Codex: `.review/codex/$MODULE/VERIFY-CHECK.md`
 6. Output convergence assessment: CONVERGED / NOT_CONVERGED
 7. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).
 
@@ -324,14 +320,14 @@ STATE.md contents:
    - Findings counts (P0/P1/P2)
    - Convergence status
    - Coverage Status section (from Phase 2)
-   - **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ (all with evidence)
+    - **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ H✅ (all with evidence)
 
 **Convergence criteria**:
 - All dims COMPLETE in scan.md
 - P0 new=0, P1 new≤1
 - **Gate G: VERIFY-CHECK.md=PASS** (mandatory; do NOT mark CONVERGED without it)
 - All P0 fixed+verified (or WONTFIX+reason)
-- **Blocker Gates 0/A/B/C/D/D-6/E/G (incl. D-6 for doc review) all passed with gate-evidence attached**
+- **Blocker Gates 0/A/B/C/D/D-6/E/G/H (incl. D-6 for doc review) all passed with gate-evidence attached**
 
 ---
 

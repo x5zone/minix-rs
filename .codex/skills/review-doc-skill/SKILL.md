@@ -1,6 +1,6 @@
 ---
-name: "review-doc-skill"
-description: "Minix-RS 文档 Review 检查清单：Ch1 强制骨架、Claims-Evidence Tracing、概念准确性、C 代码引用验证、文档-代码一致性、架构演进、交叉引用、图表质量、章节链路、可读性等全部维度。当 Agent 需要检查文档(.md)质量时调用此 Skill。"
+name: review-doc-skill
+description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、§1.Ch1 Ch1 强制骨架（9 项）、§2.0 Claims-Evidence Tracing（论文级质量，含 §2.0.3 因果链验证）、§2.1-§2.11 全部维度（概念准确性含架构范围标注/过度简化/概念来源层级、C代码引用验证、数据结构覆盖、文档与代码一致性、架构演进说明、交叉引用、图表质量、C源码覆盖完整性、设计决策质量、章节链路验证、文档风格）、§3.1-§3.8 可读性（含开篇第一句/概念正交性/示例最小化/教学模式/文档设计哲学/作者意图透明性）。当 Agent 需要检查文档(.md)质量时调用此 Skill。"
 ---
 
 # Minix-RS 文档 Review 检查清单

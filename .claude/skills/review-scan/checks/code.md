@@ -1,181 +1,134 @@
-# Review Core — always loaded
+# code: 代码正确性检查（16 个 code check）
 
-## Execution Model (by module type)
-Review must check the correct concurrency model for the module being reviewed:
+> 本文件合并代码检查清单（源：`prompt/review-rules/review-code-checklist.md`，§1~§15），解决 attention decay 和过度拆解问题。
+> **强制规则**：每个检查必须先执行 grep/read，再下结论。每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
+> **⛔ 前置**：进入本文件任何检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md)。`{NN}-design.v*.md` / `{NN}-outline.v*.md` 缺失 → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（模式 69 PSMD 触发）。
 
-**User-space servers (VM/PM/VFS/RS/DS/INET)**: Single-threaded event loop. `Rc`/`RefCell`/`AssumeSyncCell`/`!Send`/`!Sync` reasonable. `UnsafeCell` safe under single-thread.
+---
 
-**Kernel**: SMP + BKL (Big Kernel Lock spinlock). Multi-CPU kernel execution with `CONFIG_SMP`. BKL is spinlock (busy-wait) — NO sleep/schedule/IPC inside critical section. `Rc`/`RefCell` NOT safe for cross-CPU sharing (need `Arc`+`Mutex`/`Atomic`). `UnsafeCell` safety must argue BKL-protection or per-CPU isolation, NOT "single-threaded".
+## 通用规则（适用于所有 code check）
 
-## ⛔ PROHIBITED BEHAVIORS
-1. **NEVER answer from memory.** Every claim about C code requires a grep/read result as evidence.
-2. **NEVER skip a check.** If you cannot execute it, write "UNVERIFIED: <reason>".
-3. **NEVER guess.** If uncertain, say so — do NOT fabricate.
-4. **NEVER mark a check as ✅ without output.** ZERO findings = write "Checked N items, found 0 issues." Prove the check happened.
-5. **NEVER let late checks decay.** Checks after #13 in a long session are at HIGH RISK of being ghosted. Pause before #14, re-read the rules.
+1. **先读后判**：每个判定必须先执行 grep/read 验证，再下结论。禁止凭印象判断。
+2. **Evidence 分级**：[DIRECT] grep 直接验证 / [MEDIUM] 名称匹配需语义确认 / [INFERRED] 上下文推断（标"待确认"）。
+3. **零输出禁令**：0 问题也必须写"Checked N items, found 0 issues"。
+4. **证据强制**：每个检查必须包含 grep count / file count / line range 作为证据。
+5. **Attention Decay**：code checks 是高风险被跳过项——每完成 4 个 check 后暂停，重读规则 1 和 3。
 
-## Ground Truth
-```
-Minix3 C source (minix3/) > Rust code (os/servers/) > docs (notes/) > AI analysis
-```
+---
 
-## Review Terms
-- **Translate**: 1:1 C→Rust. ❌ Forbidden.
-- **Rewrite**: Same external behavior, Rust types internally. ✅ Goal.
-- **Refactor**: 在不改外部行为前提下重写表达层。分两类：
-  - **代码 Refactor**：改命名/抽函数/改数据结构/改错误表达（语义范围 = 代码）
-  - **设计 Refactor**：修正 design doc 本身（语义范围 = design，不动代码）
-- **Architectural Evolution**: 必须显式标注 ARCH，标注在 Minix3 行为对照点 + 在 design doc + 在代码注释，三处一致。
+## Check 01: Rewrite 质量
 
-## Priority
-- **P0-fact**: C 源码事实错误（概念/grep/覆盖）
-- **P0-code-bug**: UB/内存安全/`std::` 违规/硬件语义泄漏。Kernel: `Rc`/`RefCell` 跨 CPU、BKL 未持、睡眠在自旋锁内
-- **P0-design-deviation**: 代码偏离 design 但 design 正确
-- **P0-design-missing**: design 缺关键决策（如未定义 trait 方法签名）
-- **P0-design-wrong**: design 决策技术错误（如不安全抽象）
-- **P0-test-missing**: design 要求测试但代码无
-- **P1**: Architecture diff unstated, design without basis, dev-journal style (✅❌🚧), doc-code mismatch, pub misuse, **detail imprecision** (wrong hardware claim in comment, context leak in universal struct, silently dropped returns, leaks without rationale, dubious comment reasons), **P1-design-missing** (链路断裂)
-- **P2**: Readability, naming, cross-refs, diagram quality
+> 最核心维度。发现 Translate 味道必须指出。C-Rust 语义对齐由 Check 15 单独覆盖。
 
-## Design First 原则
-- **Design 是核心 deliverable**，不是 review 的副产品
-- **方案 D（outline 升格）**：三类持久化交付物并存于 `design/` 子目录——`{NN}-outline.md`（doc 结构契约）、`{NN}-outline-review.md`（outline 批准证据）、`{NN}-design.md`/`{NN}-design-final.md`（code 设计契约）。outline 与 design 对称：design 是 code 的契约，outline 是 doc 的契约。
-- **判定优先级链**：`Minix3 源码行为 > design doc > Rust 代码 > 设计/技术文档`
-- 当 Minix3/design/code/doc 冲突时按上链判定（详见 [review-core-semantics.md §1.5](../prompt/review-rules/review-core-semantics.md)）
-- **Profile R（设计优先模式 Review）**：`review xxx-design.md`（非 bagging）/ `review xxx-design-final.md`（bagging）时加载，或 review 中发现 P0-design-wrong 时触发；验证 design 完整性 + 可实现性 + design ↔ code 一致性 + outline ↔ doc 对齐。**注意（2026-07-17）**：design/outline/outline-review **缺失**场景不再触发 Design-First，而是由 **Step 0.3 嵌入生成**处理（不切换模式）。Design-First 仅用于 design **存在但有错误**（design-wrong）场景。
+- [ ] 裸整数表达语义（应 newtype/enum）、C 式哨兵值（裸 `0`/`-1`，应用 `Option<T>`）、魔术数字、C 式 flag 组合、C 式错误码传递（应用 `Result + ?`）
+- [ ] C 宏直接翻译成 Rust 宏（应用 trait/泛型替代）；C 式数据结构未用 Rust 所有权重构
+- [ ] **错误码对齐**：`Result<T, Error>` 封装的错误码与 Minix3 errno 严格对应，禁止合并/创造新错误语义 → P0
+- [ ] **内存所有权清晰**：C 分配/释放点在 Rust 有对应 `Owner`；C"借用"未被误用为"所有权"
+- [ ] "非法状态不可表达"（invalid states unrepresentable）；无"为了 Rust 而 Rust"的过度设计
 
-## ⛔ MANDATORY: Explicit Skill Invocation
+## Check 02: 硬件抽象
 
-- **You MUST invoke Skill tools explicitly** via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it".
-- For document review: invoke `review-doc-skill` + `review-patterns-skill`
-- For code review: invoke `review-code-skill` + `review-patterns-skill`
-- For full/deep review: invoke all relevant Skills in phases per `review-process-skill`
-- The Skill Invocation Log in scan.md must reflect actual Skill tool calls, not planned/intended calls.
+> **强制规则：所有硬件都必须被抽象为 trait。** 抽象机制，而非描述硬件；描述"做什么"，而非"怎么做"。
 
-## ⛔ VERIFY-CHECK 同 Agent 局限（NEW 2026-07-30）
+- [ ] 具体硬件语义（CR3、TSS、MSR、I/O 端口）泄漏到 OS 层 → ❌ 必须拒绝（P0）
+- [ ] 硬件交互全部通过 trait 抽象；trait 描述"OS 需要什么机制"而非"硬件怎么做"
+- [ ] 数据结构含架构特定硬件字段（如 `pde` 数组）→ ❌ 应由 trait impl 内部管理
+- [ ] `#[cfg(target_arch)]` 选择硬件行为 → ❌ 应通过 trait 静态分派
+- [ ] OS 语义类型（`PageFlags`）与硬件编码分离；mock 硬件实现所有必需 trait；trait 设计考虑 x86-64/arm64/RISC-V 64 共性
 
-> **核心原则**：单 session 深度 review 中，VERIFY-CHECK 不可避免是同 agent 验证——同一 LLM 可能继承同样的 bias。
+## Check 03: Trait 设计质量
 
-### 规则
+- [ ] **多态必要性**：trait 有 ≥2 个**行为不同**的实现？0 impl → P0（死代码/虚构）；1 impl → P1（需 ≥2）
+- [ ] **trait bound 使用**：被用作泛型约束（`where T: Trait` / `impl Trait`）？从未作为 bound → P1
+- [ ] 单方法 trait：能否合并到已有 trait 或改为固有方法 + enum 分发？
+- [ ] **机制 vs 策略分离**：机制（页表映射）→ trait；策略（绑定进程地址空间）→ 上层，不应在 trait 中
+- [ ] 跨架构差异验证：方法在各架构实现相同 → 改为自由函数/固有方法/关联常量（P1）
 
-1. **同 agent 时显式标注**：scan.md / VERIFY-CHECK.md 必须显式写"⚠️ 同 agent VERIFY-CHECK（已重放 grep 命令）"，附验证局限说明段
-2. **跨 agent 优先**：条件允许时，优先由不同 agent（Trae IDE / Claude Code）独立验证；Trae ↔ Claude 互为 cross-verification
-3. **同 agent 不给 false confidence**：
-   - 若 consistency < 90%，明确写"❌ NOT PASS"，不要给"基本通过"或"轻微不一致"等模糊表述
-   - 修后再跑（post-fix）必须能提升 consistency 到 ≥ 90%
-4. **基于 grep 命令重放**：每个验证项附实际执行的 grep + 输出，可由读者手动重放验证
-5. **不可推断验证**：避免"应该如此"、"应该是"等语义回忆；只接受可重放的 grep 输出
+## Check 04: 类型安全
 
-### 已知同 agent 局限
+- [ ] typestate 真正约束状态，无绕过路径；typestate 与 flags 严格一致
+- [ ] 同一对象多 view（aliasing 问题）；`unsafe` 最小化且每块有安全契约
+- [ ] "逻辑正确但在 Rust 内存模型下是 UB"的代码；`MaybeUninit`/`UnsafeCell`/裸指针必要且正确
+- [ ] 手动 `unsafe Send`/`unsafe Sync` 有安全性论证；Drop 语义清晰
 
-| 局限类型 | 表现 | 缓解措施 |
-|---------|------|---------|
-| 路径偏差继承 | Step 1 与 Step 2 都用同一 LLM 的"路径直觉" | cross-agent 验证 + `find` 实际路径 |
-| 字段计数偏差 | 上次 review 错 9，实际 12；本次可能继承类似偏差 | grep `pub` 字段实际数量 + AI 计数交叉验证 |
-| 代码示例过时 | doc 写 `static mut`，code 已 `Atomic*` | pattern #73 检查 + grep 命令重放 |
+## Check 05: 执行模型与并发（含 Kernel SMP/BKL）
 
-### 关联
+- [ ] **用户态服务器**：单线程假设显式声明；`Sync`/`Send` 无不当实现；`UnsafeCell` 前提明确保证；未来多线程扩展不失效
+- [ ] **Kernel SMP/BKL**：进入内核每条路径持 BKL；无未持间隙；临界区内无睡眠/调度/等待 IPC（→ P0 spinlock 死锁）；无提前 return 导致 BKL 未释放
+- [ ] per-CPU 数据通过 `get_cpu_var()`/`put_cpu_var()` 成对访问，无跨 CPU 读取，无非 BKL 保护的并发修改
+- [ ] 内核共享状态：`Rc`/`RefCell` 跨 CPU → ❌（`!Send + !Sync`）；`UnsafeCell` 安全论据为"BKL 保护 / per-CPU 隔离 / Atomic"，非"单线程"；跨 CPU 共享用 `Arc + Mutex`/`Atomic`
 
-- 详见 `.claude/rules/review-process.md §Step 5.6 VERIFY-CHECK`
-- 详见 `prompt/skill/review-process-skill.md §Step 5.6`
-- 首次发现：01-boot-shim-bootstrap review 2026-07-30（consistency 71.4% → fix → 100%）
-Every scan.md MUST include this table (5 items, each with grep evidence):
-1. **§5 tests exist**: `rg "fn {test_name}" {rust_dir}` — missing → P0
-2. **trait has ≥1 impl**: `rg "impl.*{TraitName}" {rust_dir}` — 0 impl → P0
-3. **function in declared file**: `rg "fn {name}" {file}` — not found → P0
-4. **core algorithm not stub**: `rg "todo!|unimplemented!|unreachable!|panic!" {rust_dir}` — stub → P0; `panic!` in non-test code that represents unimplemented functionality or a reachable unhandled path → treat as stub/unhandled path, must be justified in comment
-5. **§4 signatures match**: compare doc §4 vs actual — mismatch → P0
+## Check 06: 内存模型与状态表达
 
-**Strict pass rule**: Each item must be ✅. **PARTIAL / ⚠️ / "部分通过" / "基本通过" counts as ❌ FAIL.** Any ❌ item means Gate D failed → scan.md DRAFT.
+- [ ] 未混淆"未初始化内存"与"逻辑无效状态"；不在未初始化内存上读字段（UB）
+- [ ] `MaybeUninit` 仅用于"空槽位"（通常误用）；Drop 用于资源释放而非状态管理
 
-## ⛔ Gate D-6: structure.md Skeleton Review (Doc Review Only)
-Before correctness checks, generate `structure.md` (12-section skeleton analysis) to verify "what the reader reads" (orthogonal to correctness). Sections: 主题思想/目标读者/叙事主语/驱动方向/文档大纲/核心概念清单/跨架构统一抽象/双向闭环/叙事弧/元注释/裸概念复述/纵向链路映射. Template: `prompt/skill/review-process-skill.md` §Step 0.5. Failure → scan.md DRAFT.
+## Check 07: 模块设计与 pub 卫生
 
-## Concept Abstraction Principle (Ch1 Docs)
-**Core principle**: Concept chapters (Ch1) must be organized from architecture perspective (CPU questions/system mechanisms), NOT from code perspective (function/struct/trait names).
+- [ ] `pub` 克制，遵守最小权限原则（口诀："这个 pub 是外部需要，还是内部懒得组织？"）
+- [ ] 模块高内聚、职责清晰；模块间依赖清晰；本应 private 却暴露的 API
 
-| Dimension | ❌ Code perspective | ✅ Architecture perspective |
-|-----------|---------------------|----------------------------|
-| Organization | trait name / function name / struct name | CPU questions / system mechanisms |
-| Ch1 subject | function name | CPU / OS / system |
-| Driving direction | HOW-only (jumps to implementation) | WHY→WHAT→HOW (concept first) |
-| Multi-arch | arch-specific first, no unified abstraction | unified abstraction first, then arch-specific |
+## Check 08: 命名与可追溯性
 
-Violation → P1 (pattern 51: 实现驱动概念章).
+- [ ] Rust 规范命名（snake_case/CamelCase）；与 Minix3 C 名称一致（便于 grep 对照）
+- [ ] 参数命名与 C 一致（`clicks` 而非 `count`、`base` 而非 `addr`）；grep C 函数名可找到对应 Rust 代码
 
-## Causal Chain Validation (P0)
-Every causal explanation ("因为 X 所以 Y") must have:
-- X verified as a **real mechanism** (grep C/Rust source for evidence)
-- X→Y technically correct (not just plausible-sounding)
+## Check 09: 测试
 
-Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (pattern 48).
+- [ ] 覆盖正常路径、边界条件、状态转换（含非法路径）；每个 `unsafe` 有安全契约测试
+- [ ] 测试验证"语义"而非"实现细节"；无无意义测试（测试标准库行为）；无跨模块冗余/错位测试
 
-## Review Process Patterns (66-74, NEW 2026-07-16/17/30)
+## Check 10: 注释与文档
 
-- **66 RCPD** (Reference Code Path Drift): TODO/issue 描述引用的 `file:line` 已不存在（重构/重命名）→ Step 0.7.1 path existence validation 必跑
-- **67 CFNOC** (C Function Name vs OS Concept Confusion): 把 C 函数名（如 `proc_init`）误读为 OS 概念对象（如 `Process`）→ Step 0.7.2 AI claim grep verification 必跑
-- **68 DSC** (Doc Section Confusion): 把 Ch2 C 源码展示误判为 Ch4 Rust 实现问题 → Step 0.7.3 doc chapter context awareness 必跑
-- **69 PSMD** (Per-doc Snapshot Missing): per-doc design/outline 快照缺失但 scan.md 标 CONVERGED → **Step 0 硬阻断** + `tools/design-coverage-check.sh`
-- **70 CTOS** (Cross-Turn Outdated Staleness): TODO 列表跨轮状态陈旧（37.5% 误报率）→ Step 0.7.4 TODO staleness check 必跑
-- **71 DOG** (Decision Over-Generalization): 把"X 文档豁免"用户决策泛化到"Y/Z 文档" → STATE.md §豁免列表 + 不可泛化原则
-- **72 CSSCM** (Cross-Section Step Count Mismatch, NEW 2026-07-17): 文档 §2 C 分析步骤数 ≠ §4 Rust 实现步骤数且无差异说明表 → P1；差异表必须分类（架构演进/设计决策/已知缺口/C bug）+ 附 C 行号。检查命令：`rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" {doc}`
-- **73 Doc Code Example Rust 2024 Edition Drift** (NEW 2026-07-30): 文档代码示例用 `static mut`（Rust 2024 已弃用），实际代码已迁移至 `Atomic*` / `UnsafeCell`；或文档路径引用与实际 `find` 结果不一致（目录重组）。检查命令：`rg "static mut" {doc}.md` + `rg "static mut" os/ -t rust`（应对比）+ `find os/arch/src -name "X.rs"`。首次发现：01-boot-shim-bootstrap review（2026-07-30）。
-- **74 Doc Path Convention Drift** (NEW 2026-07-30): 文档 Rust crate 路径引用漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`），与早期 doc 跨文档不一致 → P1。检查命令：`rg "kernel/src/" {doc}.md | wc -l` > 0（应仅匹配 minix3 C 源）+ `rg "os/kernel/src/" {doc}.md | wc -l` 低 + `rg "os/os/" {doc}.md` 应为 0。修复：`sed -i 's|kernel/src/|os/kernel/src/|g'` + `sed -i 's|os/os/|os/|g'`（避免双重前缀）。首次发现：02-higher-half-kernel review（2026-07-30）。
-- **75 Doc See-Also Range Drift** (NEW 2026-07-31): 文档"参见 X.rs:Y-Z"形式的范围引用出现两类漂移——起止行号 +1 偏移（如 :55-76 → 实际 :56-78）+ 上界范围过短（如 :55-399 → 实际 :56-523，doc 写作时文件较小未随代码演化更新）。检查命令：`rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md` + `sed -n "{start}p" {path}` 验证首行 + `rg "^impl PlatformDesc for X" {path}` 找 impl 结束位置。详细规则见 `prompt/skill/review-patterns-skill.md §模式 75` + `.claude/rules/review-process.md §Step 1.0d`。首次发现：04-platform-discovery review 2026-07-31（2 处 L831/L883 范围漂移漏检）。
+- [ ] 每个 `pub` 函数/方法/类型有 `///`；模块有 `//!`；复杂算法有"为什么"行内注释
+- [ ] **注释必须英文**；`unsafe` 有 safety 注释；关键设计决策解释"为什么不选常见方案"
+- [ ] 判定：Reviewer 需读代码才能理解 `pub` 接口用途 → 缺文档注释
 
-## ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16）
+## Check 11: 64 位假设
 
-> 每次 review 启动时**必须**执行：
-> 1. 4 条 `ls notes/rewrite/{module}/{stage}/.design/{NN}-*.v*.md`（结果写入 scan.md `§Step 0: 预检结果` 段）
-> 2. `tools/design-coverage-check.sh {module}`（自动扫描所有 stage 缺失报告）
-> 3. **缺失判定 + 嵌入生成（2026-07-17）**：`outline.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**；`outline-review.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.3 嵌入生成**（AI 自审）；`design.v*.md` 缺失 → Gate H.1 FAIL → **Step 0.3.4 嵌入生成**。**不中断 review，不切换模式**（原"阻断 Step 1 + 触发 Design-First"已废除）。
-> 4. 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD 触发**）
-> 5. 豁免必须登记在 STATE.md `§豁免列表` 段，**不可泛化**（**模式 71 DOG 触发**）
->
-> **详见**：`.claude/rules/review-process.md §Step 0 硬阻断规则` + `prompt/review-rules/review-patterns.md 模式 69/71`
+- [ ] 无 32 位残留（`u32` 作地址/大小）；`as` 有损截断（`u64 as u32`）有安全性注释 → 无注释 → P1
+- [ ] 利用了 64 位优势（更大地址空间）
 
-## Review Workflow
-1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see dual-path rule below)
-2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{module}/STATE.md`; Claude Code Runtime → `.review/claude/{module}/STATE.md`. These two paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
-3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一）
-4. Execute checks ONE AT A TIME — never batch them mentally
-5. Output a progress checklist showing each check as done/undone
-6. Collect all findings into a review report at the end
-7. **After all checks**: write STATE.md and convergence assessment
-8. **Verify Blocker Gates 0/A/B/C/D/D-6/E/G all passed WITH EVIDENCE** before marking scan.md as Final. Gate A/D/E evidence must be L1 (tool/grep output); Gate B/C may be L1 or L2; L3 inference counts as FAIL unless `MANUAL_FALLBACK` is justified.
+## Check 12: 复杂度与工程性
 
-## ⛔ Review 累积改进追踪（NEW 2026-07-31）
+- [ ] 设计不复杂于问题本身；无"理论优雅但工程不必要"；类型安全未引入过高复杂度
+- [ ] trait 无过度抽象（"为了 trait 而 trait" → P1，见 Check 03）
 
-> **目的**：避免每次 review 重复发明流程改进，记录累积效果与 Proposal 状态。
+## Check 13: no_std 约束
 
-### 累积改进表（4 次 review）
+> 详见 [review.md §运行时环境约束](../../../../prompt/review-rules/review.md)。
 
-| Review | 发现模式 | P1 | P2 | 修复成本 | 一致性 Pre→Post |
-|--------|---------|-----|-----|----------|-----------------|
-| 01-boot-shim-bootstrap (07-30) | Pattern #73 | 3 | 8 | 50 min | 71.4% → 100% |
-| 02-higher-half-kernel (07-30) | Pattern #74 | 1 | 4 | 13 min | 57.1% → 100% |
-| 03-kmain-cstart (07-31) | n/a（验证 #74 有效）| 0 | 10 | 15 min | 37.5% → 100% |
-| **04-platform-discovery (07-31)** | **Pattern #75 + Step 0.3.3 首次触发** | **0** | **2 (+2 顺带)** | **4 min** | **71.4% → 100%** |
+- [ ] `use std::`（非 `#[cfg(test)]`）→ P0；`#![no_std]` 正确设置；无需要 `std` 的第三方 crate
+- [ ] `alloc` 使用提供全局分配器实现；mock/test 用 `#[cfg(test)]` 隔离；无隐式依赖 `std`（`println!`、非 test 中 `Vec::new`）
+- [ ] 允许例外：`#[cfg(test)]` 模块 / mock（feature gate 隔离）/ build.rs
 
-### Proposal 状态
+## Check 14: 设计-代码一致性
 
-- **#7 自动化行号校验脚本**（NEW 2026-07-31）：⏸ 待用户确认后开发 `tools/review-line-check.sh`
-- **#8 测试数量准确性机制**（NEW 2026-07-31）：⏸ doc §5 强制格式 + CI 钩子
-- **#9 Double-check 关键 Finding**（NEW 2026-07-31）：✅ 已应用（03 review 中 P2-10 misread 被及时发现）
-- **#10 Pattern #75 Doc See-Also Range Drift**（NEW 2026-07-31）：✅ 已落地 + Step 1.0d 已加 review-process.md
+- [ ] Ch3 每个设计决策有代码实现（typestate→裸整数 → P0；enum→常量 → P1）；Ch4 实现描述与代码匹配（签名/类型/语义）
+- [ ] 代码→Ch3/Ch4 追溯：代码实现未描述功能 → P1（超出设计）；文档未提及类型/模式 → P1
 
-### 关键洞察
+## Check 15: C-Rust 语义对齐
 
-1. **Pattern #74 跨文档传播有效**：doc 02 发现 → 修复 → doc 03/04 自然合规（16/67 处 `os/` 前缀，0 双重前缀）
-2. **测试数量 undercount 系统性**：3 个 doc 都存在（4.2×/1.6×/1.8×），需建立机制（Proposal #8）
-3. **行号漂移是结构性弱点**：4 个 doc 都有 5-10 处 P2 偏移，需自动化（Proposal #7）
-4. **"安静的"doc 可能反映 review 走流程不深入**：doc 03 0 P1 不一定意味着 doc 完美——下次对 0 P1 doc 做反向抽查（Proposal #9）
-5. **Step 1.0a 漏检"参见"范围引用**：本次 04 doc review 即因此漏检 2 处 L831/L883 → 已加 **Step 1.0d + Pattern #75**（Proposal #10）
-6. **Step 0.3.3 嵌入生成首次触发**：04 doc outline-review.v*.md 缺失，自审路径工作正常（Gate H.6 修复）—— 但**自审不构成用户确认**，后续需 user-confirmed review 复核
+- [ ] **对齐分级**：架构层（允许不对齐，doc §2.5 标注演进理由）/ 叶函数（**必须对齐**，不对齐须注释说明原因 → P1）/ 修正性（C bug，Rust 修正，注释说明 → P1）
+- [ ] **叶函数语义**：返回值/错误码/副作用与 C 一致；不对齐有原因注释（C bug 引用位置 / Rust 类型约束 / 架构演进）
+- [ ] **C 有实现但 Rust 缺失**：确认缺失合理（默认实现行为与 C 一致）；C 有特化行为但 Rust 依赖默认 → P1
+- [ ] **注释中的 C 源码引用验证**：函数名/行为/位置引用错误 → P1/P2；C bug 修正注释含 `// MINIX3 BUG:` 标注（模式 78）
+- [ ] 架构演进导致函数消失：文档说明 + 代码注释"Minix3 有 xxx，因 [演进] 不再需要"
 
-**详见**：
-- `.claude/rules/review-process.md §Step 1.0a-自动`（Proposal #7）
-- `.claude/rules/review-process.md §Step 1.0d`（Pattern #75，Proposal #10）
-- `.claude/rules/review-process.md §Step 4.5b`（Proposal #8）
-- `.claude/rules/review-process.md §Step Double-check`（Proposal #9）
-- `.claude/rules/review-process.md §Step 0.5.2 元注释章节 review`（NEW 2026-07-31）
+## Check 16: Precision Check（细节精确性）
+
+> 5 个元规则跨阶段复用，适用于 Boot/VM/PM/VFS 等所有模块。标记可疑点，输出待人工确认清单。
+
+1. **外部知识可验证**：注释引用的硬件规范/协议/API 行为可独立验证且当前上下文成立 → 不符 → P1
+2. **通用接口纯度**：共享结构体/trait/公共 API 字段对所有消费者有语义意义；上下文特定元素显式标注（`Option<T>` / 架构扩展 / 注释）→ P1
+3. **返回值完整性**：外部调用返回值被处理；忽略时有显式"可安全丢弃"理由；关键返回值（内存映射/状态码）有替代来源 → P1
+4. **资源生命周期闭环**：每个资源获取有对应释放路径；"不释放"有显式理由（boot 一次性/静态全局/移交内核）；释放责任方明确 → P1
+5. **理由可质疑性**："为什么"解释在上下文中成立；涉及性能/安全/大小的理由有量化依据 → 明显不符 → P1（轻微）/ P0（严重误导设计决策）
+
+---
+
+## 判定汇总
+
+- 每个 Check 输出：| Check | 验证命令 | 结果 | 判定 | Evidence |
+- Gate D §0 P0 必检 5 项（test 存在 / trait ≥2 impl / 函数位置 / 算法非 stub（含 `spin_loop!`）/ §4 签名一致）为**强制**项，PARTIAL/⚠️ = ❌ FAIL
+- 任何 ❌ → scan.md DRAFT，禁止写入 STATE.md

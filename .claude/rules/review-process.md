@@ -6,7 +6,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 
 | Gate | Check | Pass Criteria | Fail Consequence |
 |------|-------|---------------|------------------|
-| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 8 grep-verifiable anchor sections | DRAFT, no STATE.md write |
+| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 9 grep-verifiable anchor sections | DRAFT, no STATE.md write |
 | **A** | Step 1.5 Coverage Enumeration | coverage-extract.py executed + SYMBOLS.md on disk + `gate-evidence-A` block in scan.md | DRAFT, no STATE.md write |
 | **B** | Step 2 Diff Extraction | Top 5 behavior contract table (3 语义偏移 + 2 覆盖缺口, **8 fields × 5 funcs**) | DRAFT, no STATE.md write |
 | **C** | Step 3.5 Precision Check | 5 meta-rules check table output | DRAFT, no STATE.md write |
@@ -14,7 +14,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 | **D-6** | Step 0.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
 | **E** | Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
 | **G** | Step 5.6 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
-| **H** | Step 1.6 Design + outline Alignment Check | 仅完整/深度/设计优先 review 必检：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**（方案 D 新增） | DRAFT, no STATE.md write |
+| **H** | Step 1.6 Design + outline Alignment Check | 所有 review 模式必检：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**（方案 D 新增） | DRAFT, no STATE.md write |
 
 **Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
 
@@ -51,14 +51,15 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 Missing this section → scan.md marked DRAFT.
 
 ## Step 0: Scope Declaration + State Recovery
-1. **Read correct STATE.md path** (tool-isolated, never share intermediate results between Trae and Claude):
+1. **Read correct STATE.md path** (tool-isolated, never share intermediate results between tools):
    - **Trae IDE** → `.review/trae/{module}/STATE.md` (project root `.review/`)
    - **Claude Code Runtime** → `.review/claude/{module}/STATE.md` (project root `.review/`)
+   - **Codex CLI** → `.review/codex/{module}/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
    - **`{module}` resolution**: use the **first directory under `notes/rewrite/`** in the target doc path. E.g. `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`. This is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
    - **`{doc-stem}`** = target doc basename without extension (e.g. `03-kmain-cstart`). **`{agent}`** = model id (Trae: glm/kimi/...; Claude: m3/...).
    - **STATE preflight**: run `tools/review-state-validate.py {state_path}` to verify referenced files exist and Open issues map to scan.md entries.
-   - **Auto-init**: `tools/review-init.sh claude {doc-path}` computes `{module}`/`{doc-stem}` and creates standard directories.
+    - **Auto-init**: use `tools/review-init.sh <tool> {doc-path}` to compute `{module}`/`{doc-stem}` and create standard directories.
 2. Output:
 ```
 - Target: <file.md> + <file.rs> (if code review)
@@ -165,11 +166,11 @@ sed -i 's|lib\.rs:1155|lib.rs:1162|g' {doc}.md
 - 首次发现：06-proc-init-boot-proc review 2026-07-31（6 处反向偏移）
 - 落地状态：⏸ 待用户确认后整合进 `tools/review-line-check.sh`
 
-### Step 5.4 L3 grep 主动验证（NEW 2026-07-31, Doc 06 review）
+### L3 grep 主动验证（源：review-doc-skill §2.4i）
 
 > **背景**：doc §5.4 等章节常含"旧 API 0 残留"等 L3 grep 验证段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
 
-**执行**（Step 5.4）：
+**执行**：
 ```bash
 # 1. 抽取 doc 中所有 L3 grep 段（"L3 grep 证据"/"rg 证据"等关键词）
 rg "L3 grep 证据|rg 证据|grep 验证|0 matches|rg \"\w+\"" {doc}.md | head -10
@@ -193,11 +194,11 @@ rg "0 matches|0 残留" {doc}.md  # 列出所有"声称 0"段
 **关联**：
 - 首次发现：06-proc-init-boot-proc review 2026-07-31（doc §5.4 L3 grep 证据未主动验证）
 
-### Step 5.5 测试总数末段补充（NEW 2026-07-31, Doc 06 review）
+### 测试总数末段补充（源：review-doc-skill §2.4j）
 
 > **背景**：doc §5 测试章节常含"测试覆盖矩阵"+ "测试函数列表"（如 doc 06 §5.5 列 21 个测试名 + §5.3 列 3 个集成测试），但**无测试总数声称**（"约 N 个通过"）。本次 review 实际跑了 `cargo test -p minix-kernel --lib` 得到 490 tests，但 doc 未体现。
 
-**执行**（Step 5.5）：
+**执行**：
 ```bash
 # 1. doc §5 是否含"测试总数"声称？
 rg "约.*\d+ 个|总计.*\d+|通过.*\d+ 个" {doc}.md | head -5
@@ -228,8 +229,6 @@ done
 
 **关联**：
 - 首次发现：06-proc-init-boot-proc review 2026-07-31（doc 无总数声称，但实际 610 tests）
-
-### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
 
 ### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
 
@@ -515,7 +514,7 @@ Step 0.5.1 按 12 节模板生成 structure.md（概念文档全量 12 节，实
 11. **裸概念复述** — reader can retell core concept after reading Ch1; cannot → P1
 12. **纵向链路映射** — Ch1 concept ↔ Ch2 C code ↔ Ch3 design ↔ Ch4 impl; broken link → P1
 
-### Step 0.5.2 元注释章节 review（NEW 2026-07-31）
+### Step 0.5.2 补充：元注释章节 review（NEW 2026-07-31）
 
 > **背景**：doc 中常有"§11.x 元注释"章节（如 04 doc §11.1-§11.6，记录"已知缺陷纠正"），本身是元信息，**容易被 review 流程忽略**。本次 04 doc review 主动检查了 §11.2 `proc_arch.rs:350/252/279` 引用 → `find` 确认已删除；§11.1 测试函数行号 → 全 grep 命中。但**这依赖 review 者的主动意识**，下次 review 应作为标准化步骤。
 
@@ -544,11 +543,9 @@ Step 0.5.1 按 12 节模板生成 structure.md（概念文档全量 12 节，实
 
 **关联**：
 - 首次发现：04-platform-discovery review 2026-07-31（§11 元注释章节盲点，主动验证通过）
-11. **裸概念复述** — reader can retell core concept after reading Ch1; cannot → P1
-12. **纵向链路映射** — Ch1 concept ↔ Ch2 C code ↔ Ch3 design ↔ Ch4 impl; broken link → P1
 
 Step 0.5.2 按 12 节评审表逐项判定，失败项写入 scan.md Issue List
-Step 0.5.3 structure.md 评审通过后才进入 Step 1（覆盖率穷举）
+Step 0.5.4 通过门槛：structure.md 评审通过后才进入 Step 1（覆盖率穷举）
 
 **Step 0.5.5 跨章节重复内容一致性检查**（新增，2026-07-16）：
 > **目的**：同一文档内多个章节描述同一事时（如 §3.5 和 §4.3 都列三架构差异表），必须保证内容一致。
@@ -653,7 +650,7 @@ Output: SYMBOLS.md path + P0 gaps + ARCH marks.
 
 ## Step 1.6: Design Alignment Check — Gate H
 
-> **Precondition**: 仅 Profile R / Profile C / Profile I / Profile H-K（完整/深度/设计优先 review）必检。Profile D / Profile A 可跳过。
+> **Precondition**: 所有 review 模式都执行。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 > **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身的完整性 + 可实现性。
 > **Note**: design 存在性预检已在 Step 0 完成（见下方 Step 0 design 预检）。此处为正式一致性检查。
 
@@ -939,18 +936,22 @@ At the END of every session, output:
 After ALL checks are done:
 1. Write/update tool-specific STATE.md (tool-isolated, never share intermediate results):
    - **Trae IDE** → `.review/trae/{module}/STATE.md`
-   - **Claude Code Runtime** → `.review/claude/{module}/STATE.md`
+    - **Claude Code Runtime** → `.review/claude/{module}/STATE.md`
+    - **Codex CLI** → `.review/codex/{module}/STATE.md`
 2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
 3. **All dimension results → scan.md single file** (NOT 10 dimension check files)
    - Trae default: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-   - Claude default: `.review/claude/{module}/{doc-stem}/scan.md`
+    - Claude default: `.review/claude/{module}/{doc-stem}/scan.md`
+    - Codex default: `.review/codex/{module}/{doc-stem}/scan.md`
    - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`; Claude report: `notes/rewrite/{module}/{stage}/{doc-stem}-claude-report.md`).
 4. Update SYMBOLS.md (Step 1.5 machine output) to matching path:
    - Trae: `.review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md`
-   - Claude: `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
+    - Claude: `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
+    - Codex: `.review/codex/{module}/{doc-stem}/SYMBOLS.md`
 5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
    - Trae: `.review/trae/{module}/VERIFY-CHECK.md`
-   - Claude: `.review/claude/{module}/VERIFY-CHECK.md`
+    - Claude: `.review/claude/{module}/VERIFY-CHECK.md`
+    - Codex: `.review/codex/{module}/VERIFY-CHECK.md`
    - **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令" + 验证局限说明段。
 6. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).
 
@@ -961,7 +962,7 @@ STATE.md format:
 - **Last completed**: <phase>
 - **Open P0/P1/P2**: N/M/K
 - **Convergence**: CONVERGED / NOT_CONVERGED (N phases left)
-- **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ (all with evidence)
+- **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ **H✅** (all with evidence, 2026-08-15 修复 C-P0-2：Gate H 明确为 Blocker Gates 之一)
 ```
 
 **Convergence criteria** (all must pass):
@@ -970,7 +971,7 @@ STATE.md format:
 3. P1 new ≤ 1
 4. **Gate G: VERIFY-CHECK.md = PASS** (mandatory; do NOT mark CONVERGED without it)
 5. All P0 in scan.md fixed+verified (or WONTFIX+reason)
-6. **Blocker Gates 0/A/B/C/D/D-6/E/G all passed with gate-evidence attached**
+6. **Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed with gate-evidence attached**
 
 ## Step 5.7: Rule Discovery (Mandatory)
 After completing the review, answer in scan.md `§Rule Discovery`: "Did this review discover a new pattern? ✅/❌".
@@ -986,7 +987,7 @@ To prevent over-convergence (chasing P1→0 across many rounds at cost exceeding
 1. **Round threshold**: same doc reviewed ≥5 rounds → force deliver, remaining P1/P2 → backlog
 2. **P1 marginal decay**: two consecutive rounds with new P1 ≤ 1 → converged, remaining P1 → backlog
 3. **Cost/benefit ratio**: current round cost >80% of previous but new findings <20% → stop
-4. **Zero-bias milestone（NEW 2026-07-31, Doc 07 review）**：首次 review 发现 0 P0/P1/P2 → review 即 PASS，强制交付，无需修复
+4. **首次零发现（漏检自检，NEW 2026-08-14）**：首次 review 0 P0/P1/P2 → 触发**漏检自检**：随机抽 3 个检查项重跑（推荐：Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付。
 
 Output in scan.md tail:
 ```
@@ -1002,6 +1003,7 @@ Output in scan.md tail:
 - 一致性 100%（无需修复）
 - **启示**：当 review 内容简单且无偏差时，应快速完成并交付，不必深挖
 - **不要**误以为 "0 偏差 = review 走流程不深入"——累积改进效果极致也可能导致 0 偏差
+- **⚠️ 规则更新（NEW 2026-08-14）**：上述"review 即 PASS，强制交付"已废弃，改为**漏检自检**（Step 7.1 规则 4）。未来首次 0 发现必须先抽 3 项重跑确认无遗漏，再交付。
 
 **关联**：详见 `prompt/skill/review-process-skill.md §Step 7.1` + `prompt/skill/review-patterns-skill.md §模式 66 RCPD`（已被 doc 07 主动应用，避免引入漂移风险）。
 

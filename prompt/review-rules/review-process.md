@@ -3,6 +3,27 @@
 > 本文档定义 AI 执行 Review 的强制步骤和工具命令。
 > 输出格式见 [review.md §AI Review 输出模板](review.md#ai-review-输出模板)，口诀见 [review.md §快速判断口诀](review.md#快速判断口诀)。
 
+## 快速导航（Quick Nav）
+
+> **AI 长 session 注意力衰减时，优先用此表定位所需章节，避免线性扫描 2553 行。**
+
+| 需要找... | 跳转到 | 行数 |
+|----------|--------|------|
+| Review 元原则（禁止行为） | [§Review 元原则](#review-元原则) | ~24 行 |
+| 执行模式选择（构造/快速/深度/设计优先） | [§〇 执行模式选择](#〇执行模式选择构造--快速--深度--设计优先) | ~231 行 |
+| **Step 0-7 强制步骤** | [§一 AI 执行 Review 的强制步骤](#一ai-执行-review-的强制步骤) | ~193 行 |
+| structure.md 12 节骨架模板 | [§1-12 模板](#1-主题思想一句话) | ~197 行 |
+| 6 维反查矩阵 | [§6 维反查矩阵](#6-维反查矩阵step-056) | ~75 行 |
+| Issue 清单（历史问题反查来源） | [§Issue 清单](#issue-清单带反查来源) | ~895 行 |
+| IN_DESIGN 健康度审计 | [§IN_DESIGN 审计](#in_design-健康度月度审计yyyy-mm) | ~251 行 |
+| Resume Point（跨 session 续审） | [§Resume Point](#resume-point跨-session-续审入口下一-session-必读) | ~231 行 |
+| Review 输出格式 | [§二 Review 输出格式](#二review-输出格式) | ~14 行 |
+| Review 工具命令 | [§三 Review 工具命令](#三review-工具命令) | ~42 行 |
+| 快速判断口诀 | [§四 快速判断口诀](#四review-快速判断口诀) | ~11 行 |
+| 修复阶段工作流 | [§五 修复阶段工作流](#五修复阶段工作流fix-phase) | ~33 行 |
+| Blocker Gates 状态表 | [§收敛判断](#收敛判断) | 搜索 "Blocker Gates" |
+| Gate H design 门控 | [§Gate H](#gate-h-design-门控) | 搜索 "Gate H" |
+
 ---
 
 ## Review 元原则
@@ -38,6 +59,12 @@
 | **构造模式（Constructive）** | 文档/代码初稿阶段，需要引导作者补全 | Step 0, 1, 1.5, 2, 5, 6 | 15~30 分钟 | A / B / G |
 | **快速模式（Quick）** | 日常 PR 审阅、时间有限的扫描 | Step 0, 1, 2, 5 | 10~20 分钟 | D |
 | **深度模式（Deep）** | 里程碑验收、关键模块完整 Review | Step 0-7（全量） | 40~120 分钟 | C / H→I→J→K / O / P |
+
+> **2026-08-15 修复 A-P1-4（明确 Profile 关系）**：
+> - **Profile C** = 单次深度（**单 session**）：500-1500 行文档分 2 rounds 内部裁剪（R1 正确性 + R2 卓越性），session 内完成
+> - **Profile H/I/J/K** = 分阶段深度（**多 session**）：> 1500 行文档分 4 rounds 跨多 session 续审，每 session 仅做 1-2 步
+> - **Profile O / P** = 深度变体：O = 正确性已过追求卓越性；P = 覆盖率验收
+> - **互斥关系**：同一文档同一时刻只能选 1 个 Profile；C 与 H/I/J/K 互斥，O 与 P 互斥
 | **设计优先模式（Design-First）** | design 缺失/错误 | Step 0 + **Step 0.3** + Step 1.6 + 2 | 30~60 分钟 | R |
 
 **深度模式 rounds 动态化**（新增，2026-07-16）：根据文档行数决定分阶段轮次，避免小文档过度分阶段、大文档一轮过载。
@@ -51,6 +78,13 @@
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
 
 **工具协助**（NEW 2026-07-16）：用 `tools/review-init.sh {tool} {doc-path} {agent} --size-adaptive` 自动统计文档行数 + 输出推荐 rounds。每个 session 启动时建议默认加 `--size-adaptive`。
+
+> **2026-08-15 修复 B-P1-4（超大规模文档策略）**：> 3000 行的超大规模文档按以下策略处理：
+> - **优先分章节拆解**：单章 ≤ 1500 行时按章节独立 review，最后合并
+> - **多 reviewer 分块**：用户显式批准后，2-3 个 reviewer 并行 review 不同章节，最后由 1 人统一 CONVERGED 判定
+> - **滚动 review**：按"Ch1&2 → Ch3 → Ch4 → Ch5" 顺序滚动，每步必须 CONVERGED 后才进入下一步
+> - **不推荐**：单 reviewer 单 session 完整 review > 3000 行文档（上下文超载 + 注意力衰减）
+> - **判定信号**：scan.md 中断时"完成度 < 50%" → 提示用户分章节或加 reviewer
 
 ### 设计优先模式（Design-First）
 
@@ -66,6 +100,11 @@
 2. **Step 0.3**：按 [§Step 0.3 缺失即生成](#step-03-缺失即生成new-2026-07-17替代原中断去附录-c) 重新生成 design.md（design Refactor 场景，产出 `.v{N+1}.md`）
    - **每次从 Step 0.3.1（design-structure）开始**，不寻找、不复用已有中间产物
    - Step 0.3.4 design.md 来源路径：仅 A（从头生成）或 C（bagging 产物），禁止 B（从 §3 提取）
+     - **2026-08-15 修复 E-P1-1（明确选择判据）**：
+       - **默认路径 A（从头生成）**：除非满足以下任一条件选 C
+       - **路径 C 触发条件**（**全部满足**）：(a) 文档已通过 bagging 多 AI 评审合并；(b) `{NN}-design-final.v{N}.md` 已存在；(c) 用户显式说明"沿用 bagging 产物"
+       - **判定流程**：检测 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md` → 若命中且用户确认 → 路径 C；否则 → 路径 A（从头生成）
+       - **禁止 B**：循环论证，用被审者自述作为审他的依据（已在 C.4 段强调）
 3. **Step 1.6**：design ↔ code 一致性检查（design.md 生成后）
 4. **Step 2**：design vs Minix3 本质对比
 
@@ -252,11 +291,14 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   ├─ 是日常 PR / 时间紧？ → 快速模式
   │    └─ 发现 P0 > 3？ → 建议升级深度模式
   └─ 是里程碑 / 关键模块？ → 深度模式
-       ├─ 文档 < 300 行 → Profile C（单次深度）
-       ├─ 文档 > 300 行 → Profile H→I→J→K（分阶段深度）
+       ├─ 文档 < 500 行 → Profile C（单次深度）
+       ├─ 文档 500-1500 行 → Profile C（单次深度，2 rounds 内部裁剪）
+       ├─ 文档 > 1500 行 → Profile H→I→J→K（分阶段深度）
        ├─ 正确性已过，追求卓越 → Profile O（深度+卓越性）
        └─ 覆盖率验收 → Profile P（深度+覆盖率穷举）
 ```
+
+> **阈值对齐说明（2026-08-15 统一）**：决策树档位与 rounds 表（<500 / 500-1500 / >1500）保持一致；500-1500 行文档虽然分 2 rounds（R1 正确性 + R2 卓越性），但**单 session 完成**（属 Profile C），不需要跨 session。仅当文档 > 1500 行时才需要 Profile H/I/J/K 分阶段（多 session）。
 
 ---
 
@@ -264,6 +306,19 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 
 > 为防止 AI 在 Review 过程中"浮躁"或遗漏关键验证，必须按以下步骤执行。
 > **关键原则**：每个 Step 必须产生**可见的中间产物**（表格、列表、grep 输出）。不允许"在脑子里过一遍"然后跳到最终输出。
+
+### Step -0.5: 工具辅助检查（review 前置，2026-08-15 修复 B-P1-6）
+
+> **目的**：复用 `cargo` 生态工具的检查结果，避免 review 与 lint 结果矛盾。
+> **执行步骤**（仅当 review 涉及 Rust 代码时执行）：
+> 1. `cargo check` — 编译检查，确保无新 error（warning 不阻断 review）
+> 2. `cargo clippy -- -W clippy::all` — lint 检查，记录 clippy 警告列表（**作为 review Step 4 的输入**，但不替代 review）
+> 3. `cargo fmt --check` — 格式检查（仅当 review 关注代码风格时）
+> 4. `cargo test` — 运行测试，记录失败的测试（**作为 review Step 4.2 测试覆盖度的输入**）
+> **判定**：
+> - `cargo check` 失败 → 阻断 review（先修编译错误）
+> - `cargo clippy` 警告作为 P2/P3 候选（review 决定是否升级）
+> - **不允许**用 `cargo clippy` 替代 review 的人工判断
 
 ### Step 0: 范围声明 + 时间预算 + 状态恢复 + **design 预检**
 
@@ -288,17 +343,22 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   - **检查命令**（v2：快照是版本化的）：
     ```bash
     # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-    ls notes/rewrite/{module}/{stage}/design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-    ls notes/rewrite/{module}/{stage}/design/{NN}-outline-review.v*.md # outline 评审快照
-    ls notes/rewrite/{module}/{stage}/design/{NN}-design.v*.md         # 非 bagging code 设计快照
-    ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.v*.md   # bagging
+     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
+     ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
+     ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
     # 最新版本软链（方便 anchor）
-    ls -la notes/rewrite/{module}/{stage}/design/{NN}-design.md         # → *.v{N}.md
+     ls -la notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # → *.v{N}.md
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
     - **无旧快照** → 首次走 Step 0.3 流程，产出 `.v1.md`。
     - **⛔ 禁止"复用其他文档 design"判定**：每篇文档必须有**本编号**的快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`，`{NN}` = 本文档编号，如 `02`）。不允许"02 文档复用 01-design.md"——快照是 per-doc 的，不是 per-module 或 per-stage 的。违反 → P0-process-violation
+
+> **2026-08-15 修复 C-P1-1（区分"快照复用"与"文档编号交叉引用"）**：
+> - **禁止**：快照复用（用 01-design.md 作为 02 文档的 design 依据）——快照是 per-doc 独立产物
+> - **允许**：文档编号交叉引用（代码注释中 `(covered in NN)` / `see NN-doc.md §Y`）——这是正常的交叉引用，每个被引用的 doc 仍需独立生成自己的快照
+> - **判定标准**：当代码注释引用 `NN-doc.md` 时，该 doc 必须有自己的 `{NN}-design.v*.md`；若 doc 不存在 → 注释失效（P1）；若 doc 存在但未生成 design → 触发 Step 0.3 嵌入生成
   - **⛔ 禁止的快照依据**（违反 = P0-process-violation）：
     - ❌ `tmp_design_and_todo/` 下任何文件（临时讨论池，非定稿）
     - ❌ `/tmp/` 下任何文件（实施稿，未走 design 流程）
@@ -317,10 +377,10 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   > **判定（新增）**：
   > 1. **必须跑 `ls`**：每次 Step 0 启动时，**必须**执行以下 4 条 ls 命令（无论何种 review 模式）：
   >    ```bash
-  >    ls notes/rewrite/{module}/{stage}/design/{NN}-outline.v*.md
-  >    ls notes/rewrite/{module}/{stage}/design/{NN}-outline-review.v*.md
-  >    ls notes/rewrite/{module}/{stage}/design/{NN}-design.v*.md
-  >    ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.v*.md  # bagging only
+   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
+   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md
+   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
+   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
   >    ```
   >    ls 输出必须写入 scan.md `§Step 0 预检结果` 段（不可省略）。
   > 2. **缺失判定 + 嵌入生成（NEW 2026-07-17，替代原"中断去附录 C"）**：
@@ -338,11 +398,11 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   >    ### §Step 0 预检结果（强制，NEW 2026-07-16）
   >    | 检查项 | ls 命令 | 结果 | 判定 |
   >    |--------|---------|------|------|
-  >    | outline 快照 | `ls design/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
-  >    | outline-review 快照 | `ls design/{NN}-outline-review.v*.md` | 无 | ❌ **缺失 → Gate H.6 FAIL** → Step 0.3.3 生成（AI 自审） |
-  >    | design 快照 | `ls design/{NN}-design.v*.md` | 无 | ❌ **缺失 → Gate H.1 FAIL** → Step 0.3.4 生成 |
+   >    | outline 快照 | `ls .design/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
+   >    | outline-review 快照 | `ls .design/{NN}-outline-review.v*.md` | 无 | ❌ **缺失 → Gate H.6 FAIL** → Step 0.3.3 生成（AI 自审） |
+   >    | design 快照 | `ls .design/{NN}-design.v*.md` | 无 | ❌ **缺失 → Gate H.1 FAIL** → Step 0.3.4 生成 |
   >    ```
-  > 5. **工具支持**：用 `tools/design-coverage-check.sh {module}`（NEW，Session #12 落地）自动扫描所有 stage 的 design/ 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
+   > 5. **工具支持**：用 `tools/design-coverage-check.sh {module}`（NEW，Session #12 落地）自动扫描所有 stage 的 `.design/` 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
   > 6. **决策记录豁免**（**仅限一次性用户明确豁免**）：如 Session #11 用户决策"04/05 不回填"，**该决策仅适用于当时已 CONVERGED 的 04/05**，**不可泛化**到后续 review 的 06/07/08/...。任何"已有 CONVERGED 状态"豁免必须满足：a) 用户当时显式说"该 doc 豁免"；b) 豁免仅对该 doc 有效；c) 豁免记录在 STATE.md `§豁免列表` 段。
 
 - **⛔ TODO 列表 staleness 预检（NEW 2026-07-16，模式 70 CTOS 配套）**：
@@ -381,10 +441,12 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 
 > ⚠️ **强制**：design-structure.md 未完成并自检前，禁止进入 Step 0.3.2。
 
-#### Step 0.3.2: 生成 outline.md（持久化产物）
+#### Step 0.3.2: 生成 outline.md（持久化可复用快照，Reusable Reference Snapshot）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/design/{NN}-outline.v{N}.md`（**持久化**，保留所有历史版本）
+> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-outline.v{N}.md`（**持久化**，保留所有历史版本；每轮 review 允许以新版本更新快照，旧版本作为参考输入而非 ground truth）
 > **首次生成**：`{NN}-outline.v1.md`；**后续 review**：`{NN}-outline.v{N+1}.md`（旧版本作参考，独立推导）
+
+> **术语说明（2026-08-15 统一）**：本节中的"持久化可复用快照"（Persisted Reusable Reference Snapshot, PRRS）是 outline / outline-review / design / design-final 四类快照的统一术语。其核心属性为：(a) **持久化**——一旦生成不删除，保留所有历史版本；(b) **可复用**——下一轮 review 可作为参考输入；(c) **允许更新**——但新版本必须基于 C 源码 + OS 理论 + Rust 代码当前状态独立推导，旧版本不被覆盖而是作为新版本并存（`.v{N}.md` 与 `.v{N+1}.md` 同时存在）；(d) **不是 ground truth**——旧快照可作"前人理解"参考，但 review 必须独立产出新版本。
 
 基于 design-structure.md 的知识点全集生成细化大纲。**若已有旧 outline，此步骤不是简单改写，而是一次 design review / Refactor**：用 C 源码 + OS 理论重新检验旧 outline，从本质出发建模。
 
@@ -408,9 +470,9 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 
 > ⚠️ **强制**：outline.md 的自检表未通过前，禁止进入 Step 0.3.3。
 
-#### Step 0.3.3: 生成 outline-review.md（持久化产物，AI 自审）
+#### Step 0.3.3: 生成 outline-review.md（持久化可复用快照，AI 自审）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/design/{NN}-outline-review.v{N}.md`（**持久化**，保留所有历史版本）
+> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v{N}.md`（**持久化可复用快照**，保留所有历史版本；每轮 review 允许以新版本更新）
 > **核心变更（2026-07-17）**：原要求"用户显式确认"改为 **AI 自审**。根因：原"用户确认"要求导致 AI 跳过 outline-review（AI 不想停下来等用户）。用户事后可挑战。
 
 对 outline.md 进行多角度 review，**必须覆盖 4 维**：
@@ -438,7 +500,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
 
 #### Step 0.3.4: 生成 design.md（持久化产物）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/design/{NN}-design.v{N}.md`（**持久化**，保留所有历史版本）
+> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md`（**持久化**，保留所有历史版本）
 > **核心变更（2026-07-17）**：原要求"用户显式确认"改为 AI 整理。用户事后可挑战。
 
 **输入**：outline.md + outline-review.md + design-structure.md
@@ -492,6 +554,11 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 6. **禁止把旧快照当作 ground truth**——快照是 input，不是 output
 7. **禁止跳过重新评估**——每轮 review 必须独立产出新版本快照
 8. **禁止"旧版/最初/后来/我们改成"等迭代叙事**（outline 和 design 中）
+
+> **2026-08-15 修复 C-P1-2（明确区分"叙事迭代"与"差异矩阵"）**：
+> - **禁止**：**叙事中的迭代**——"最初我们用 X，后来改成 Y，因为..."（这种叙事记录开发过程，读者关心"现在是什么"而非"曾经是什么"）
+> - **允许**：**差异矩阵中的版本对比**——design.md 附录"与旧版本的差异矩阵（v{N} vs v{N-1}）"是结构化元数据，不是叙事，记录快照版本号 + 变更点 + 变更原因（一行），不展开为段落
+> - **判定标准**：若"旧版 X → 新版 Y"在一段/一节中用 ≥3 句展开 → 迭代叙事（P1）；若仅在表格中列出 "v{N-1}: X | v{N}: Y | 原因: Z"（每项一行）→ 合规
 
 ### Step 0.7: TODO 验证（若输入含 TODO 清单，新增，2026-07-16）
 
@@ -685,7 +752,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 #### Step 0.7.4: TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
 
 > **目的**：防止 `tmp_design_and_todo/` 下 TODO 清单因跨多轮 review 累积而包含"前提失效"误报。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表引用了已修复/已接通的旧状态。
-> **触发条件**：`tmp_design_and_todo/` 中 TODO 数 > 5 + 任一 TODO 描述含"基于..."/"依赖..."/"待..."等时间敏感词 → **必须跑** Step 0.7.4。
+> **触发条件**（2026-08-15 修复 A-P1-1 明确语义）：`tmp_design_and_todo/` 中 TODO 数 > 5 **且（AND）** 任一 TODO 描述含"基于..."/"依赖..."/"待..."/"阻塞"等时间敏感词 → **必须跑** Step 0.7.4。两个条件必须同时满足才触发；仅 TODO 数 > 5 但无时间敏感词不触发，仅含时间敏感词但 TODO 数 ≤ 5 不触发。
 
 **执行步骤**：
 1. **识别"基于状态"前提**：从 TODO 描述中 grep 形如下模式：
@@ -726,15 +793,6 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 **正例**（Session #12 06-proc-init-boot-proc 案例）：
 - ✅ 8 个 TODO-06 → staleness check 后 → 3 误报 + 5 真实 → 实际修复 4 项（1 项已修复）
 - ✅ 节省约 30 分钟（避免修复误报 + 二次 grep）
-
-### Step 0.5: 生成 structure.md 并评审骨架（文档 Review 强制）
-- ✅ 结论：F2 误报（章节错位：Ch2 应保留 C 预处理指令；Rust 端已用 trait 静态分派隔离）
-
-**章节错位自动检测建议**（未来工具）：
-- `tools/doc-chapter-classify.sh` 自动识别 doc 章节类型（基于标题关键词 + C/Rust 代码块比例）
-- `tools/ifdef-context-check.sh` 跨章节对比：Ch2 `#ifdef` 应存在 + Ch4 `#[cfg]` 应避免
-
----
 
 **Step 0.7.1/0.7.2/0.7.3 关系**（AI claim verification 三元组）：
 - **0.7.1 Path Existence Validation** (RCPD)：验证 TODO 引用的代码路径是否真实存在
@@ -833,6 +891,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 **Step 0.5.2 评审 structure.md**（逐项判定，失败项写入 scan.md §structure.md 评审）：
 - 1-12 节每节判定 ✅/P0/P1/P2 + 证据
 - 失败项汇总为 Issue List 的 P0/P1/P2 条目
+- **元注释章节 review**（NEW 2026-07-31）：同时主动验证文档中的元注释章节（H2/H3 标题含"已知"/"修订"/"元注释"/"自审"/"修复记录"等关键词），验证章节声称的文件/函数/行号引用 → 错误按 Pattern #66/#73/#75 记录到 Issue List（首次发现：04-platform-discovery review 2026-07-31）
 
 **Step 0.5.3 doc ↔ outline 对齐检查**（方案 D 新增，仅当 outline.md 存在时执行）：
 
@@ -1062,6 +1121,357 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 | ... | ... | ... | ... |
 ```
 
+### Step 1.0a 行号主动抽样比对（NEW 2026-07-30）
+
+> **背景**：原 Step 1 仅被动比对"doc 声明的行号 vs grep 找到的位置"，但行号偏移（如 head.S:47-66 vs 实际 43-66）经常被遗漏。
+
+**执行**：
+1. 从 doc 中提取 5-10 个 `file:line` 引用（覆盖 `head.S` + `pre_init.c` + `pg_utils.c` 等关键文件）
+2. 用 `sed -n 'Np' {file}` 抽取实际行内容，确认 doc 引用的行确实包含所描述内容
+3. 验证 doc 行号范围是否覆盖完整（如 doc 写 `head.S:36-82`，但 kmain call 实际在 L87）
+
+**判定**：
+- doc 行号范围过短（遗漏关键内容）→ **P2 行号偏移**
+- doc 行号范围过长（超出实际内容）→ **P2 行号偏移**
+- doc 行号完全错位（指向其他符号）→ **P1 行号偏移**
+
+**关联**：本次 review (01-boot-shim-bootstrap 2026-07-30) 发现 4 处行号偏移（head.S:47-66 / 36-82 / pg_info:295 / print_memmap:17）。
+
+### Step 1.0a-自动 自动化行号校验脚本（NEW 2026-07-31, Proposal #7）
+
+> **背景**：3 次 review 累计发现 19 处 P2 行号偏移（Doc 01: 5 + Doc 02: 4 + Doc 03: 10）。手动抽样只能发现**被抽到的**行号，需要自动化。
+
+**工具位置**：`tools/review-line-check.sh`（建议落地）或临时 `extract_doc_lines` 函数。
+
+**实现**：
+```bash
+# 1. 抽取 doc 中所有 file:line 引用
+extract_doc_lines() {
+    rg -o "(?:os/|minix3/)?[a-z_/0-9]+\.(?:rs|c|h|ld|sh|asm|S):\d+(?:-?\d+)?" "$1" \
+       | sort -u > /tmp/doc_lines.txt
+}
+
+# 2. 对每个 file:line 跑 sed -n 验证
+verify_line() {
+    local file=$1 line=$2
+    local actual=$(sed -n "${line}p" "$file" 2>/dev/null)
+    echo "${file}:${line}: ${actual}"
+}
+
+# 3. 用法（在 review session 中）
+extract_doc_lines notes/.../{doc}.md
+# 然后扫描输出，对每个 file:line 跑 verify_line
+```
+
+**判定**：
+- 自动脚本输出 **mismatch 表格**：doc 声称的行 vs `sed -n` 实际内容
+- 偏差类型：
+  - doc 写 `:267 (lgdt)` 但 L267 不是 lgdt → **P2 行号偏移**
+  - doc 写 `protect.c:217-221` 但实际在 `arch_proto.h:217-221` → **P2 文件错位**
+  - doc 写 `:574` 但代码已迁移到 `:607` → **P2 代码漂移**
+
+**关联**：
+- 首次发现：03-kmain-cstart review (2026-07-31)，10 P2 集中在一张表内
+- 落地状态：⏸ 待用户确认后开发 `tools/review-line-check.sh`
+
+#### Step 1.0a-自动 增强：反向偏移自动重算（NEW 2026-07-31, Doc 06 review）
+
+> **背景**：6 次 review 累计发现 19+6=25 处 P2 行号偏移，其中**反向偏移**（doc 写靠前、实际靠后，如 `proc.rs:754` 实际 `767`）占多数。原因：doc 写作时文件较小，**代码增量后 doc 未同步更新行号**。**Step 1.0a-自动 + 自动重算**可消除此漂移。
+
+**增强实现**（在 `extract_doc_lines` + `verify_line` 基础上）：
+```bash
+# 1. 检测反向偏移（doc 行号 < 实际行号）
+auto_resync_line() {
+    local file=$1 claimed=$2
+    local actual=$(rg -n "^$(rg "$claimed" "$file" | head -1 | rg -o "\w+")" "$file" | head -1 | rg -o "^[0-9]+")
+    if [ -n "$actual" ] && [ "$actual" != "$claimed" ]; then
+        local delta=$((actual - claimed))
+        echo "${file}:${claimed} → ${file}:${actual} (Δ=${delta})"
+    fi
+}
+
+# 2. 批量 sed 重算（按上下文判断符号）
+#   例：proc.rs:754 → 767 (KProcess struct)
+sed -i 's|proc\.rs:754|proc.rs:767|g' {doc}.md
+sed -i 's|proc\.rs:1376|proc.rs:1385|g' {doc}.md
+sed -i 's|lib\.rs:699|lib.rs:706|g' {doc}.md
+sed -i 's|lib\.rs:1155|lib.rs:1162|g' {doc}.md
+```
+
+**已知反向偏移案例**（Doc 06 review）：
+- `proc.rs:754` → `proc.rs:767`（KProcess struct，Δ=-13）
+- `proc.rs:1376` → `proc.rs:1385`（fork_from，Δ=-9）
+- `lib.rs:699` → `lib.rs:706`（init_proc_and_boot，Δ=-7，×2 处）
+- `lib.rs:1155` → `lib.rs:1162`（bsp_finish_booting，Δ=-7，×2 处）
+
+**关联**：
+- 首次发现：06-proc-init-boot-proc review 2026-07-31（6 处反向偏移）
+- 落地状态：⏸ 待用户确认后整合进 `tools/review-line-check.sh`
+
+### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
+
+> **背景**：文档代码示例可能与实际 Rust 代码 idioms 不一致（特别是 Rust 2024 edition 迁移：`static mut` → `Atomic*` / `UnsafeCell`）。
+
+**执行**：
+1. 从 doc §3 / §4 抽取 ` ```rust ... ``` ` 代码块
+2. grep 实际代码：`rg "static mut" os/ -t rust`（应 0 hits 表示已迁移）
+3. 对比：doc 示例含 `static mut` 而实际代码无 → P1（模式 #73）
+4. 路径一致性：`rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {doc}` + `find os/arch/src -name X.rs`
+
+**判定**：
+- doc 示例 + 实际代码 + 路径三方不一致 → **P1 模式 #73**
+- 仅 doc 示例过时（实际代码正确）→ **P1 doc-code 漂移**
+- 路径重组后 doc 未更新 → **P1 子类型 b**
+
+**修复**：复制实际代码到 doc 代码块，加注释说明 Rust 2024 edition 兼容性选择。
+
+### Step 1.0c Doc Path Convention 一致性检查（NEW 2026-07-30, 模式 #74）
+
+> **背景**：文档路径引用与实际仓库路径可能不一致（doc 写作时漏写 workspace 根前缀）。本次 doc 02 review 发现 18 处路径漏 `os/` 前缀（`kernel/src/...` 应为 `os/kernel/src/...`），与 doc 01 跨文档不一致。
+
+**执行**：
+1. **裸路径扫描**：`rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/" {doc}.md`
+   - 命中非 `minix3/...` 前缀位置 → **P1**（doc 路径漂移）
+2. **正确路径统计**：`rg "os/(kernel|boot-shim|arch|servers|libs)" {doc}.md | wc -l`
+   - 应与 doc 中所有 Rust 路径引用总数接近
+3. **双重前缀检查**：`rg "os/os/" {doc}.md` 必须 0 hits（避免 sed 批量替换副作用）
+4. **跨文档一致性**：比对同一 stage 早期 doc 的路径风格（`os/` 前缀使用率）
+
+**判定**：
+- doc 漏 `os/` 前缀 → **P1**（模式 #74 默认）
+- doc 仅个别遗漏（<5 处）→ **P2**（可接受范围）
+- `os/os/` 双重前缀 → **P1**（sed 副作用，必须修）
+
+**修复**（≤10 分钟）：
+```bash
+# 1. 批量加 os/ 前缀
+sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md
+
+# 2. 修双重前缀
+sed -i 's|os/os/|os/|g' {doc}.md
+
+# 3. 验证 minix3 C 源路径未受影响
+rg "minix3/.*kernel/src/" {doc}.md  # 应保留
+```
+
+**关联**：
+- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 74`
+- 首次发现：02-higher-half-kernel review 2026-07-30（18 处路径缺 `os/`）
+
+### Step 1.0d "参见" 范围引用扫描（NEW 2026-07-31, 模式 #75）
+
+> **背景**：Step 1.0a 行号主动抽样**只检查**"`// path:line`"形式的**单行代码注释引用**，**漏检**"`参见 path:line-line`"形式的**范围引用**（典型 doc 元注释：参见 X.rs:55-399 含 XXX）。本次 04 doc review 即因此漏检 2 处范围漂移（L831 device_tree.rs:55-399 → 实际 :56-423；L883 acpi.rs:110-248 → 实际 :111-483）。
+
+**执行**：
+1. **抽取"参见"型引用**：
+   ```bash
+   rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" notes/.../{doc}.md | sort -u
+   ```
+2. **对每个范围验证起止行号**（用 `sed -n` 检查首行内容是否正确）：
+   ```bash
+   for ref in $(rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md); do
+       # 解析 path:start-end
+       path=$(echo "$ref" | rg -o "[^\`]+\.rs")
+       start=$(echo "$ref" | rg -o ":[0-9]+-" | rg -o "[0-9]+")
+       end=$(echo "$ref" | rg -o "-[0-9]+" | rg -o "[0-9]+")
+       echo "=== $path:$start-$end ==="
+       sed -n "${start}p" "$path"  # 验证首行内容
+   done
+   ```
+3. **对上界验证**：用 `rg "^impl PlatformDesc for X|^impl fmt::Display"` 找 `impl` 结束位置，对比 doc 声称的上界
+4. **修复**：起止 +1 偏移 + 上界漂移一并 sed 修复
+
+**判定**：
+- 起止行号 ±1 偏移 → **P2 行号偏移**
+- 上界 < 实际 impl 结束 → **P2 范围过短**（doc 写作时文件较小，未随代码演化更新）
+- 起止偏移 > 1 → **P1 行号漂移**
+
+**已知漏检场景**：
+- doc 中 "参见 X.rs:Y-Z" 形式的元注释引用（Step 1.0a 单点抽样漏检）
+- doc 写作时文件较小，演化后上界过短（如 :55-399 实际文件 523 行）
+- "参见"引用位置在 doc 主体（§4.x）或附录（§10+）
+
+**修复**（≤5 分钟）：
+```bash
+# 1. 修正 +1 偏移
+sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
+sed -i 's|acpi.rs:110-|acpi.rs:111-|g' {doc}.md
+
+# 2. 更新上界到 impl 结束
+rg -n "^impl PlatformDesc for DeviceTreeDesc" os/libs/minix-platform/src/device_tree.rs
+# → 找到 impl 起始行 + 下一个 impl/fn test_/fn parse 的位置 = 新上界
+sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
+
+# 3. 验证
+rg "参见" {doc}.md  # 列所有"参见"引用，逐个确认
+```
+
+**关联**：
+- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 75`
+- 首次发现：04-platform-discovery review 2026-07-31（2 处范围漂移漏检）
+
+### Step 1.0e 代码注释 doc 归属交叉检查（NEW 2026-07-31, 模式 #76）
+
+> **背景**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等**指向特定 doc 编号或文件名的引用**，容易因 (a) doc 编号重排 或 (b) doc 改名 而**系统性过时**。本次 05 doc review 发现 `os/kernel/src/lib.rs` 3 处 `(covered in NN)` 注释错位（实为 04/05/06 而非 05/06/07），同时发现**至少 9 处代码注释引用旧 doc 命名**（如 `04-clock-interrupt-init.md`、`05-exception-interrupt.md`、`06-arch-post-init.md`、`06-design-final.md`、`02-page-table-kernel.md` 等已过时）。
+>
+> 之前 4 次 review 都**未深入代码注释交叉引用**。本次 05 review 是首次系统检查，发现 Pattern #76 实质化（不只是 1-2 处，而是 9+ 处）。
+
+**执行**：
+1. **扫描所有代码注释中的 doc 归属引用**：
+   ```bash
+   # 类型 1: (covered in NN) 注释
+   rg "covered in 0[0-9]" os/ -t rust -n
+   
+   # 类型 2: see XX-doc.md 注释
+   rg "see 0[0-9]-.+\.md" os/ -t rust -n
+   
+   # 类型 3: design doc 引用 (见 §X.Y)
+   rg "见 §[0-9]+|详见 §[0-9]+" notes/.../.design/ -n
+   ```
+2. **验证当前 doc 编号是否一致**：
+   ```bash
+   ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+   ```
+3. **对每个引用，验证目标 doc 是否存在 + 内容匹配**：
+   ```bash
+   for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do
+       doc_file=$(echo "$ref" | rg -o "[0-9]+-.+\.md")
+       if [ ! -f "notes/.../$doc_file" ]; then
+           echo "❌ STALE: $ref"
+       fi
+   done
+   ```
+4. **修复**：根据上下文判断目标 doc → 批量 sed 修复
+
+**判定**：
+- `(covered in NN)` 注释错位 → **P1 注释错位**
+- `see XX-doc.md` 引用已删除 doc → **P1 注释失效**
+- `see XX-doc.md` 引用已重命名 doc → **P1 注释失效**
+- design doc 中 `§X.Y` 引用错位 → **P1 doc 内部漂移**
+
+**已知过时 doc 命名映射**（本次 05 review 发现）：
+| 旧命名 | 新命名（推测） |
+|--------|---------------|
+| `04-clock-interrupt-init.md` | `05-clock-interrupt-init.md` |
+| `05-exception-interrupt.md` | `14-exception-interrupt.md`（推测）|
+| `06-arch-post-init.md` | `08-system-init-boot-finish.md`（推测）|
+| `06-design-final.md` | `06-design.md`（bagging 重命名推测）|
+| `02-page-table-kernel.md` | `02-higher-half-kernel.md` |
+
+**修复**（批量 sed，需先确认 doc 重命名映射）：
+```bash
+# 1. 修 (covered in NN) 注释
+sed -i 's|(covered in 04)|(covered in 05)|g' os/kernel/src/lib.rs
+sed -i 's|(covered in 05)|(covered in 06)|g' os/kernel/src/lib.rs
+sed -i 's|(covered in 06)|(covered in 07)|g' os/kernel/src/lib.rs
+
+# 2. 修 see XX-doc.md 注释（确认重命名映射后批量替换）
+sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/arch/{clock.rs,arch_init.rs}
+sed -i 's|05-exception-interrupt.md|14-exception-interrupt.md|g' os/arch/src/arch/*.rs os/plat/src/interrupt.rs os/kernel/src/irq_manager.rs
+sed -i 's|06-arch-post-init.md|08-system-init-boot-finish.md|g' os/arch/src/arch/post_init.rs
+
+# 3. 验证
+rg "covered in 0[0-9]" os/ -t rust | wc -l  # 应为 0
+rg "see [0-9]+-.+\.md" os/ -t rust | wc -l  # 应为 0（除非所有引用都正确）
+```
+
+**关联**：
+- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 76`
+- 首次发现：05-clock-interrupt-init review 2026-07-31（3 处 `(covered in NN)` + 9+ 处 `see XX-doc.md`）
+- 本次 review 范围内仅修复 3 处 `(covered in NN)`；其余 9+ 处 `see XX-doc.md` 因超出本次 review scope，记录到 backlog 待后续修复
+
+### Step 1.0f 代码注释行号漂移检查（NEW 2026-07-31, 模式 #77）
+
+> **背景**：代码注释中引用的 `file:line`（如 `// see proc_table.rs:129`）可能因代码增量而**漂移**（文件行号下移）。doc 复述这些注释时，会产生**传递性 drift**（doc 错误根因在代码注释）。
+>
+> 本次 08 doc review 发现 3 处 P2 行号偏移全部源自 `os/kernel/src/lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）：
+> - `proc_table.rs:129` 实际 L276（rts_unset，+147 偏移，最大）
+> - `smp.rs:127-132` 实际 L200（set_running，+73）
+> - `smp.rs:80-145` 实际 L135（CpuLocal struct，+55）
+
+**执行**：
+1. **扫描所有代码注释中的 file:line 引用**：
+   ```bash
+   # 类型 1: see X.rs:N 注释
+   rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -n
+   
+   # 类型 2: see X.rs:N-M 范围注释
+   rg "see [a-z_/0-9]+\.rs:[0-9]+-[0-9]+" os/ -t rust -n
+   
+   # 类型 3: doc X §X.Y 交叉引用（已在 Step 1.0e 覆盖）
+   rg "see [0-9]+-.+\.md" os/ -t rust -n
+   ```
+2. **对每个引用验证实际行号**：
+   ```bash
+   for ref in $(rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -o); do
+       file=$(echo "$ref" | rg -o "[a-z_/0-9]+\.rs")
+       line=$(echo "$ref" | rg -o "[0-9]+")
+       actual=$(sed -n "${line}p" "$file" 2>/dev/null)
+       echo "$ref: $actual"
+   done
+   ```
+3. **修复策略**（双修避免传递性 drift）：
+   ```bash
+   # 1. 修代码注释（root cause）
+   sed -i 's|(see proc_table.rs:129)|(see proc_table.rs:276)|' os/kernel/src/lib.rs
+   
+   # 2. 同步修所有复述的 doc（如果 doc 复述了错误注释）
+   sed -i 's|proc_table.rs:129|proc_table.rs:276|g' notes/.../{doc}.md
+   
+   # 3. 验证全项目干净
+   rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
+   # (empty = ✅)
+   ```
+
+**判定**：
+- 引用行号 ±1 偏移 → ✅（允许小漂移）
+- 引用行号偏差 2-5 → **P2 代码注释轻微漂移**
+- 引用行号偏差 > 5 → **P2 代码注释漂移**
+- 引用行号偏差 > 50 → **P1 代码注释显著漂移**
+
+**与已有 Step 区分**：
+- **Step 1.0a** = doc 中 `file:line` 引用（doc-code 单向）
+- **Step 1.0e** = doc 中"see XX-doc.md" / "covered in NN" 引用（doc-doc 单向）
+- **Step 1.0f** = **代码注释中 `see X.rs:N` 引用**（code-code 单向）—— **重点是代码注释行号漂移**
+
+**关联**：
+- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 77`
+- 首次发现：08-system-init-boot-finish review 2026-07-31（3 处 `smp.rs:127-132`/`proc_table.rs:129`/`smp.rs:80-145`）
+
+### Step 1.0g forward reference 验证（NEW 2026-07-31, Doc 10 review）
+
+> **背景**：doc §4 可能引用未来文件（如 doc 10 §4.1 `os/arch/src/arch/trap_return.rs`），但文件尚未创建。本次 10 review 是 10 次 review 中**首次发现** doc 引用未存在的文件但显式标注 forward reference。
+>
+> 关键判断：若 doc **显式标注** "待落地" / "forward reference" / "未来"，则视为**合规**；若 doc **未标注**且引用未存在文件，则视为 P1（虚构位置）。
+
+**执行**：
+```bash
+# 1. 扫描 doc 中所有引用文件路径
+rg "os/[a-z_/0-9]+\.rs" notes/.../{doc}.md | rg -o "os/[a-z_/0-9]+\.rs" | sort -u
+
+# 2. 验证每个文件路径存在
+for path in $(rg -o "os/[a-z_/0-9]+\.rs" notes/.../{doc}.md | sort -u); do
+    [ -f "$path" ] && echo "✅ $path" || echo "❌ $path NOT FOUND"
+done
+
+# 3. 对未找到的文件，检查 doc 是否标注 forward reference
+rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
+```
+
+**判定**：
+- 文件存在 → ✅
+- 文件不存在但 doc 显式标注 "待落地" / "forward reference" / "未来" → ✅ **合规**（forward reference）
+- 文件不存在但 doc 未标注 → **P1 虚构文件位置**
+
+**已知案例**（Doc 10 review 发现）：
+- doc 10 §4.1 引用 `os/arch/src/arch/trap_return.rs`（文件不存在）
+- doc 显式标注 "trait 定义 + asm impl 待本文 return-path 落地时加入 os/arch/src/arch/trap_return.rs"
+- **判定**：✅ 合规（forward reference 透明声明）
+
+**关联**：
+- 首次发现：10-switch-to-user review 2026-07-31（§4.1 trap_return.rs forward reference）
+- 已落地：CLAUDE.md Hidden Folder Convention 已生效（10 次 review 首个完全合规 doc）
+
 ### Step 1.5: Coverage Enumeration（覆盖率穷举，机器+AI）
 
 > **目的**：机器生成穷举清单，AI 只负责语义判断。解决 AI "凭印象扫描"导致覆盖率不足的问题。
@@ -1104,6 +1514,11 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
    - `--semantic-map`：C→Rust 改写必须提供语义映射表，否则 Rust 覆盖率会显示为 0%。
    - `--doc-file`：限定到单篇文档，避免两篇 doc 的 coverage 数字完全相同。
    - **Gate A 强制运行规则**：运行后必须将命令 + stdout 写入 scan.md 的 `gate-evidence-A` 块（见 review-coverage-skill.md §0）。若脚本物理不可用 → 显式记录 PARTIAL 状态（≠ PASS），不允许进 Final Review。
+   - **2026-08-15 修复 E-P0-1（Gate A 补救路径）**：脚本不可用（环境缺 Python、缺 coverage-extract.py 等）时，**禁止直接标 PARTIAL 通过**，必须按以下补救路径之一：
+     - **路径 A（推荐）**：定位 root cause（`which python3`、`ls tools/coverage-extract/coverage-extract.py`）→ 修复工具链 → 重跑脚本
+     - **路径 B（脚本永久不可用）**：在 STATE.md `§Gate A PARTIAL 处置` 段记录：(a) 不可用原因（环境/脚本 bug）；(b) 人工覆盖范围（用 `rg` + `Read` 手工穷举的 C 符号）；(c) 人工覆盖结果与脚本预期覆盖率差异；(d) 用户确认记录。**仅当用户显式确认后可继续 review，但 scan.md 必须显式标 "Gate A: PARTIAL (人工覆盖)"**
+     - **路径 C（放弃 Gate A）**：若人工覆盖也失败 → 整个 review 暂停，待工具恢复后重跑——不允许跳过 Gate A 后标 CONVERGED
+   - **判定**：Gate A PARTIAL 必须有用户/STATE.md 双重记录，否则不允许进入 Layer 1 PASS。
    - 若 Rust 覆盖率为 0%，必须先检查 `--rust-dir`/`--semantic-map` 是否正确，或确实缺失实现。
 
 2. **AI 补充语义判断**（5 项，每项标注 evidence [DIRECT/MEDIUM/INFERRED]）：
@@ -1144,19 +1559,19 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 
 ### Step 1.6: 设计对齐检查（Design Alignment）
 
-> **前提**：仅完整/深度/设计优先模式执行此步骤。
+> **前提**：所有 review 模式都执行此步骤；快速/构造模式只可裁剪内容检查，不能跳过 Gate H。
 > **目的**：验证当前 Rust 实现的 trait/类型/架构是否与 design.md 一致。
 > **触发**：design 缺失/错误 → 切换到 Profile R（Design-First 模式）。
 > **注**：design 预检已在 Step 0 完成，此处为正式一致性检查。
 
 **Step 1.6.1**：design.md 存在性确认（已在 Step 0 预检，此处仅记录）
 ```bash
-# 持久化交付物（位置：notes/rewrite/{module}/{stage}/design/）
-ls notes/rewrite/{module}/{stage}/design/{NN}-design.md         # 非 bagging
-ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md   # bagging
+# 持久化交付物（位置：notes/rewrite/{module}/{stage}/.design/）
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md         # 非 bagging
+ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md   # bagging
 ```
 > **命名规则**：
-> - 非 bagging 场景默认产物：`{NN}-design.md`（如 `01-design.md`），位置 `notes/rewrite/{module}/{stage}/design/`
+> - 非 bagging 场景默认产物：`{NN}-design.md`（如 `01-design.md`），位置 `notes/rewrite/{module}/{stage}/.design/`
 > - bagging 场景产物：`{NN}-design-final.md`（多 AI 评审合并后的定稿），位置同上
 > - 两者均可作为 Gate H 依据，优先级：design-final.md > design.md
 
@@ -1168,6 +1583,15 @@ ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md   # bagging
 | PlatformDescriptorPtr 用 trait object | `&'static dyn PlatformDesc` | `pub enum PlatformDescriptorPtr` | ❌ 偏离 |
 | DirectMapArch 替代 MemoryInitArch | 仅保留 DirectMapArch | 两者并存 | ⚠️ 部分偏离 |
 ```
+
+> **2026-08-15 修复 E-P1-3（一致性百分比计算方法）**：
+> - **计算公式**：`consistency_pct = (✅_count + ⚠️_count * 0.5) / total_decisions * 100`
+>   - ✅ 完全一致：1.0
+>   - ⚠️ 部分偏离：0.5（设计正确但实现部分偏离；code Refactor）
+>   - ❌ 完全偏离：0（设计错 / 缺失 / 严重偏离）
+> - **PASS 阈值**：≥ 80%
+> - **失败处理**：< 80% → Step 1.6.4 状态判定为 `DESIGN_DIVERGED`（≥30% 偏离）或 `DESIGN_DIVERGED_WRONG`（设计错且严重偏离）
+> - **示例**：10 项决策，6 ✅ + 2 ⚠️ + 2 ❌ → (6 + 2*0.5) / 10 = 70% → FAIL（< 80%）
 
 **Step 1.6.3**：design ↔ Minix3 对齐检查
 
@@ -1444,17 +1868,16 @@ ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md   # bagging
 4. **Gate G 独立验证（VERIFY-CHECK.md）结果为 PASS**（**必须完成，不能跳过**）
 5. scan.md / STATE.md 中所有 P0 已被修复并验证通过
 6. SYMBOLS.md 覆盖率穷举完成
-7. **Blocker Gates 0/A/B/C/D/D-6/E/G 全部通过且有 gate-evidence 附件**
-8. **Gate H design 门控 PASS**（仅完整/深度/设计优先 review 必检）
+7. **Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部通过且有 gate-evidence 附件**（2026-08-15 修复 C-P0-2：明确 Gate H 属于 Blocker Gates 之一，所有 review 模式必检）
 
 ### Gate H: design 门控
 
-**触发条件**：仅完整/深度/设计优先 review 模式（Profile R/C/H）。
+**触发条件**：所有 review 模式。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 
 **检查项**（6 项，方案 D 新增 H.6）：
 - [ ] **H.1**: design.md 存在（非 bagging 默认产物）或 design-final.md 存在（bagging 场景）
-  - `ls notes/rewrite/{module}/{stage}/design/{NN}-design.md`（非 bagging，持久化）
-  - `ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md`（bagging，持久化）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md`（非 bagging，持久化）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md`（bagging，持久化）
   - `{NN}` 必须是**本文档编号**，禁止复用其他编号文档的 design（如 02 文档不得用 01-design.md）
   - 两者均缺失 → Gate H FAIL → **Step 0.3 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3 嵌入生成"，不切换模式）
 - [ ] **H.2**: design ↔ code 一致性 ≥ 80%（Step 1.6.2 矩阵）
@@ -1462,12 +1885,17 @@ ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md   # bagging
 - [ ] **H.4**: design 无 P0-design-wrong（design 错而非实现错）
 - [ ] **H.5**：design-deviation 与 design-wrong 区分清楚（避免误判 Refactor 类型）
 - [ ] **H.6**（方案 D 新增）：outline.md 存在 + doc ↔ outline 对齐无 P0 偏离（Step 0.5.3 偏离矩阵）
-  - `ls notes/rewrite/{module}/{stage}/design/{NN}-outline.md`（持久化 doc 结构契约，本文档编号）
+  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.md`（持久化 doc 结构契约，本文档编号）
   - Step 0.5.3 偏离矩阵中无 P0 偏离
   - outline.md 缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3.2 嵌入生成"，不切换模式）
   - 有 P0 偏离且未处置 → Gate H.6 FAIL
 
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"，不切换模式），而不是标 N/A 跳过。
+
+> **2026-08-15 修复 E-P2-4（允许"不适用 + 理由"例外）**：以下场景允许在 Gate H 中标"不适用 + 详细理由"，**而非默认 N/A**：
+> - **纯算法设计文档**（如 `notes/rewrite/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
+> - **历史/概念文档**（如 Minix3 C 源码导论）：纯知识介绍，无代码 → 全部 6 项可标"不适用"
+> - **判定**：review 文档分类时显式标注 `doc_category: pure_algorithm | historical | conceptual` → 允许部分 Gate H 项标"不适用 + 理由"。**不适用 ≠ 跳过**——必须在 STATE.md 中记录理由（详见 IN_DESIGN 健康度审计）
 
 **状态机**：
 ```
@@ -1494,12 +1922,12 @@ ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md   # bagging
 - 两者独立，但都必须在 review 进入 Step 2 前通过
 
 **最小证据要求**：
-- **H.1**: `ls notes/rewrite/{module}/{stage}/design/{NN}-design.md` 或 `ls notes/rewrite/{module}/{stage}/design/{NN}-design-final.md` 必须命中（精确文件名，非通配；持久化交付物）
+- **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md` 或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.md` 必须命中（精确文件名，非通配；持久化交付物）
 - **H.2**: 一致性矩阵输出 ≥ 5 行 + 一致性百分比 ≥ 80%（Step 1.6.2）
 - **H.3**: Minix3 对齐矩阵输出 ≥ 3 行 + 无 P0 缺失（Step 1.6.3）
 - **H.4**: `rg "design-wrong" scan.md` 无命中（或有命中但已附 design 修复计划）
 - **H.5**：`rg "code Refactor|design Refactor" scan.md` 输出明确区分两类
-- **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/design/{NN}-outline.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
+- **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
 
 **禁止**：
 - ❌ `find . -name "*design*.md"` 等通配符（易误判）
@@ -1607,7 +2035,8 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 **执行方式**（独立会话中执行）：
 1. Agent 读取 STATE.md + scan.md + 原始文档/代码
 2. **随机抽样**：从 scan.md Issue List 中随机选取 20% 的已报告问题
-3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
+3.2. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
+   - **2026-08-15 修复 C-P1-5（明确抽样方法）**：AI 无内置"随机"，使用**分层抽样**替代——从 Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20%。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
 6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A-E+G 是否都附带真实证据（gate-evidence 块）
@@ -1674,7 +2103,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - [ ] Step 0 已读取正确的 STATE.md（Trae/Claude 双路径）
 - [ ] Step 1 源码文件清单已输出
 - [ ] Step 1.5 覆盖率穷举已输出（SYMBOLS.md + 缺口/ARCH 判定）〔构造/深度必做，快速跳过〕
-- [ ] **Gate 0**: 制品完整性（scan.md 含 8 个 grep 可验锚段 + 标准路径文件齐全）
+- [ ] **Gate 0**: 制品完整性（scan.md 含 9 个 grep 可验锚段 + 标准路径文件齐全）
 - [ ] **Gate A**: coverage-extract.py 已运行且 scan.md 附 SYMBOLS.md 路径 + gate-evidence-A 块
 - [ ] Step 2 Top 3 差异 + Top 2 覆盖缺口已输出（**8 字段 × 5 函数**行为契约表）
 - [ ] **Gate B**: Top 5 行为契约表已产出（**8 字段 × 5 函数**：函数名/C行为/Rust行为/差异类型/严重度/C证据/Rust证据/Reviewer备注）
@@ -1687,10 +2116,10 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - [ ] **Gate C**: Step 3.5 Precision Check 5 元规则检查表已产出
 - [ ] Step 4 跨文档检查已输出〔深度必做，构造/快速跳过〕
 - [ ] Step 4.1 设计决策质量表格已输出（如适用）〔深度必做，构造/快速跳过〕
-- [ ] **Gate D**: P0 必检清单 5 项已回答 ✅/❌ + grep 证据（PARTIAL=FAIL）
-- [ ] **Gate D-6**: structure.md 已生成并评审（文档 Review 强制，Step 0.5 产物）
-- [ ] **Gate E**: §5 测试函数名已 grep 验证（若文档有 §5）
-- [ ] **Gate H**: design 门控 H.1-H.5 已 grep 验证（仅 Profile R/C/H）
+- **Gate D**: P0 必检清单 5 项已回答 ✅/❌ + grep 证据（PARTIAL/⚠️ 一律视为 ❌，与 [review-patterns.md §0 L19-22](review-patterns.md) 一致）
+- [ ] **Gate D-6**: structure.md 已生成并评审（文档 Review 强制，Step 0.5 产物；含 Step 0.5.1 12 节模板 + Step 0.5.2 评审 + Step 0.5.3 outline 对齐 + Step 0.5.4 通过门槛 + Step 0.5.5 跨章节一致性 + Step 0.5.6 6 维反查 + Step 0.5.7 章节意图 + Step 0.5.8 issue 反查来源）
+- [ ] **Gate E**: §5 测试函数名已 grep 验证（§5 = "测试/验证"章节标题。2026-08-15 修复 A-P1-2：触发条件为文档含 `^## §?5(\.|\s)|^# 5(\.|\s)|测试章节|验证章节` 任一标题模式；纯设计文档 / 局部 Review（仅 Ch1&2）跳过）
+- [ ] **Gate H**: design 门控 H.1-H.6 已 grep 验证（所有 review 模式）
 - [ ] Step 5 维度覆盖自检表格已输出
 - [ ] Step 5 最弱项自检 **5** 个问题已确认
 - [ ] **Layer 1/2 双层判定已输出**
@@ -1715,7 +2144,11 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 **判定规则**（任一触发即应停止并交付）：
 1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
 2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 视为收敛，剩余 P1 转为 backlog
-3. **成本/收益比**：当前轮 review 耗时 > 上一轮 80% 但新发现问题 < 上一轮 20% → 停止
+3. **成本/收益比**（2026-08-15 修复 A-P1-3 加权定义）：当前轮 review 耗时 > 上一轮 80% 但加权新发现问题 < 上一轮 20% → 停止
+   - **加权公式**：`weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
+   - **首轮不适用**：第一轮 review 没有"上一轮"基准，自动跳过此条
+   - **判定**：本轮 `weighted_new < 上一轮 weighted_new * 0.2` 且 本轮耗时 > 上一轮耗时 * 0.8 → 停止
+4. **首次零发现**：首次 review 0 P0/P1/P2 → 触发**漏检自检**：随机抽 3 个检查项重跑（推荐：Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付
 
 **输出**：在 scan.md 末尾标注"收敛成本评估"：
 ```markdown
@@ -1730,6 +2163,20 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 
 > **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
 > **详见**：[review.md §规则演化机制](review.md#规则演化机制rule-evolution)。
+
+> **2026-08-15 修复 B-P1-2（误判 P0 回退流程）**：若 review 报告的 P0 是 AI 误判或事后被证明虚假，应按以下流程回退：
+> 1. **触发场景**：
+>    - 用户反馈"P0 是误判"（如 grep 证据有误、概念引用错误）
+>    - 跨 session 验证（VERIFY-CHECK.md）发现 P0 不成立
+>    - AI 在修复时发现 P0 描述与实际不符（如 file:line 引用错位）
+> 2. **回退流程**：
+>    - **立即移除**：scan.md §Issue List 中删除该 P0
+>    - **同步 STATE.md**：从 Open P0 列表移除，移入 Closed Issues 并标 "WITHDRAWN" + 原因
+>    - **修正规则**：若是 grep 命令误用导致误判 → 写入 Rule Discovery 段
+> 3. **预防机制**：
+>    - P0 必须有 L1 grep 证据（路径存在 + 行号匹配），缺证据 → 自动降级为 P1
+>    - AI claim verification 三元组（Step 0.7.1/0.7.2/0.7.3）必须全跑，未跑 → 阻断 P0 报告
+>    - VERIFY-CHECK.md 必须抽样 20% 反向验证（Step 5.6）
 
 **执行步骤**：
 1. 回顾本轮 review 发现的所有问题
@@ -1883,11 +2330,11 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 | 脚手架 | SYMBOLS.md | `.review/{tool}/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md` | 每次重新生成，CONVERGED 后可清理 |
 | 脚手架 | VERIFY-CHECK.md | `.review/{tool}/{module}/VERIFY-CHECK.md` | 每次重新生成，CONVERGED 后可清理 |
 | 脚手架 | IN_DESIGN.md | `.review/{tool}/{module}/IN_DESIGN.md` | design 解决后删除 |
-| **可复用快照** | **outline.md**（文档结构快照）| `notes/rewrite/{module}/{stage}/design/{NN}-outline.v{N}.md` | **每轮 review 重新评估，保留所有历史版本**（`.v1.md`, `.v2.md`, ...） |
-| **可复用快照** | **outline-review.md**（快照评审记录）| `notes/rewrite/{module}/{stage}/design/{NN}-outline-review.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| **可复用快照** | **design.md**（非 bagging）| `notes/rewrite/{module}/{stage}/design/{NN}-design.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| **可复用快照** | **design-final.md**（bagging）| `notes/rewrite/{module}/{stage}/design/{NN}-design-final.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| 软链（可选） | 最新版本 | `notes/rewrite/{module}/{stage}/design/{NN}-design.md` | 指向 `.v{N}.md` 中最大 N |
+| **可复用快照** | **outline.md**（文档结构快照）| `notes/rewrite/{module}/{stage}/.design/{NN}-outline.v{N}.md` | **每轮 review 重新评估，保留所有历史版本**（`.v1.md`, `.v2.md`, ...） |
+| **可复用快照** | **outline-review.md**（快照评审记录）| `notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| **可复用快照** | **design.md**（非 bagging）| `notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| **可复用快照** | **design-final.md**（bagging）| `notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| 软链（可选） | 最新版本 | `notes/rewrite/{module}/{stage}/.design/{NN}-design.md` | 指向 `.v{N}.md` 中最大 N |
 
 > **关键区分（v2）**：**可复用快照不是 ground truth**——它们是参考输入，每轮 review 必须独立推导。snapshot.md 仅作"前人理解"参考，新快照必须基于 C 源码 + OS 理论 + Rust 代码**当前状态**独立产出。差异矩阵（v{N} vs v{N+1}）写入 scan.md，便于追踪设计演进。
 >
@@ -2038,7 +2485,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" prompt/../doc.md prompt/../code.rs
 
 #### C.5 design.md 强制格式（v2）
 
-> **位置**：`notes/rewrite/{module}/{stage}/design/{NN}-design.v{N}.md`（**v2 版本化**：每次 review 产出新版本，保留所有历史）
+> **位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md`（**v2 版本化**：每次 review 产出新版本，保留所有历史）
 > **前序产物位置**：`.review/{tool}/{module}/scans/`（脚手架，每次重新生成）
 > **软链（可选）**：`{NN}-design.md` → `{NN}-design.v{max}.md`（方便 anchor）
 
@@ -2049,7 +2496,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" prompt/../doc.md prompt/../code.rs
 > **版本**: v{N}（每次 review 重新评估，新版本独立推导）
 > **生成日期**: YYYY-MM-DD
 > **前序快照**: v{N-1}（参考输入，非 ground truth）
-> **位置**: notes/rewrite/{module}/{stage}/design/{NN}-design.v{N}.md（可复用快照，保留历史）
+> **位置**: notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md（可复用快照，保留历史）
 > **前序产物**: .review/{tool}/{module}/scans/{doc-stem}-{agent}-design-structure.md → -outline.v{N}.md → -outline-review.v{N}.md
 > **来源路径**: [A. 从头生成 / C. 从 bagging 产物转化]
 
@@ -2066,7 +2513,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" prompt/../doc.md prompt/../code.rs
 |---------------|------------|--------|
 | IN_DESIGN.md 待 design 覆盖概念清单 | 对应 Ch1 设计决策 | 每条概念必须在 Ch1 找到对应决策 |
 | IN_DESIGN.md 当前 review 已发现问题 | 对应 Ch2 语义对齐 | 每个 P0 在 Ch2 标注修复章节 |
-| Gate H H.1（design.md 存在）| 通过 | `ls notes/rewrite/{module}/{stage}/design/{NN}-design.md` 或 `{NN}-design-final.md` 命中（持久化）|
+| Gate H H.1（design.md 存在）| 通过 | `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.md` 或 `{NN}-design-final.md` 命中（持久化）|
 | Gate H H.2（design ↔ code 一致性 ≥ 80%）| 通过 | Step 1.6.2 矩阵 |
 | Gate H H.3（design ↔ Minix3 对齐）| 通过 | Step 1.6.3 矩阵 |
 

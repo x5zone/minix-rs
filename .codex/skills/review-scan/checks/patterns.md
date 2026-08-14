@@ -19,10 +19,12 @@
 | # | 检查项 | grep 命令模板 | 判定标准 | 未通过 |
 |---|-------|--------------|---------|--------|
 | **1** | 文档 §5 测试是否真实存在？ | `rg "fn {test_name}" {rust_dir} --type rust -n` | 文档 §5 列出的每个测试函数必须存在；缺失/未找到→P0 | P0 |
-| **2** | 文档声明的 trait 是否有 ≥1 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；只有默认 impl 没有真实 arch impl 也算未通过 | P0 |
+| **2** | 文档声明的 trait 是否有 ≥2 行为不同的 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；1 impl → P1（可能死代码，trait 抽象需 ≥2 行为不同的实现）；≥2 impl → ✅ | P0/P1 |
 | **3** | 文档声明的函数是否在声明的文件中？ | `rg "fn {name}" {file}` | 文档说"在 file.rs 中定义 fn foo"，但 grep 无结果→P0；找到但 signature 完全不符也按未通过处理 | P0 |
-| **4** | 核心算法是否是 stub？ | `rg "todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!` → P0；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性 | P0/P1 |
+| **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `spin_loop!`/`todo!`/`unimplemented!`/`unreachable!` → P0；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性 | P0/P1 |
 | **5** | 文档 §4 签名是否与实际一致？ | 逐函数对比 `rg "fn {name}" {file}` 输出 vs 文档 §4 | 参数/返回值/可见性/泛型约束不一致→P0；有一项不符即整项 ❌ | P0 |
+
+> **0 impl 优先于测试覆盖（2026-08-15 修复 C-P1-3）**：当 trait 0 impl 时，即便有测试覆盖，仍判 P0（trait 无任何实现 = 死代码 / 虚构）。判定流程：(a) 先检查 trait 是否有 ≥1 impl？否 → P0 死代码；(b) 有 impl → 检查测试覆盖度，0 测试覆盖 → P0-test-missing，< 3 测试 → P1。
 
 **严格通过标准**：
 - 5 项每一项必须为 ✅。
@@ -109,9 +111,9 @@ rg "\[.*\]\(.*\.md\)" TARGET -n
 
 ---
 
-## 三、代码错误模式（14 个：基础 10 + Kernel SMP 4）
+## 三、代码错误模式（19 个：基础 10 + Kernel SMP 4 + 跨阶段通用 5）
 
-### 基础代码模式（14 个）
+### 基础代码模式（10 个，16-25）
 
 | # | Pattern | grep Command | Anti-Pattern | Correct |
 |---|---------|-------------|-------------|---------|
@@ -229,9 +231,9 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 ---
 
-## 六、叙事与概念错误模式（10 个，48-57）
+## 六、叙事与概念错误模式（13 个，48-60）
 
-> 对应源 [review-patterns.md §八](../../../../prompt/review-rules/review-patterns.md) 模式 48-57。
+> 对应源 [review-patterns.md §八](../../../../prompt/review-rules/review-patterns.md) 模式 48-60。
 > **适用所有文档**（用户态 + 内核）。在 Phase 3 (Doc Checks) 和 Phase 5 (Pattern Checks) 中执行。
 
 | # | Pattern | 检查方法 | Anti-Pattern | Correct | P? |
@@ -294,7 +296,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 **Pass condition**:
 - 模式 63 (Design-Missing) 零匹配 → P0（P0-design-missing 必修复或标 IN_DESIGN）
 - 模式 64-65 零匹配 → P1
-- IN_DESIGN 项数 ≤ 当前轮允许阈值（详见 [review-process-skill.md §二 IN_DESIGN 状态机](../../../../prompt/skill/review-process-skill.md)）
+- IN_DESIGN 项数 ≤ 当前轮允许阈值（详见 [review-process.md §IN_DESIGN 状态机](../../../../prompt/review-rules/review-process.md)）
 
 **⛔ 模式 63 是 Design-First Review 的 P0 必检项 — design 缺失必须执行 Step 0.3 嵌入生成或显式 IN_DESIGN。**
 **⛔ 模式 58-60 是 doc-code 一致性 + TODO 规范专项；与 51/53/56 不同维度。**
@@ -367,7 +369,7 @@ sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
 
 **与 Step 1.0a 区分**：Step 1.0a 行号主动抽样只检查单行引用（`// path:line`），漏检范围引用（`参见 path:line-line`）。本次 04 doc review 漏检 2 处 L831/L883 顺带修复。
 
-**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 75` + `.claude/rules/review-process.md §Step 1.0d`。
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 75` + `prompt/review-rules/review-process.md §Step 1.0d`。
 
 **首次发现**：2026-07-31 04-platform-discovery review（2 处范围漂移 L831/L883 漏检）。
 
@@ -428,9 +430,9 @@ sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/a
 > - 或：使用 grep 命令而非具体行号（如"通过 `rg fn X os/Y.rs` 找到实现"）
 > - 或：行号引用加版本/时间戳（如"截至 YYYY-MM-DD, X.rs:Y"）
 >
-> **首次发现**：2026-07-31 07-cross-space-init review（`.review/claude/03-stage-kernel/07-cross-space-init/scan.md`）
+> **首次发现**：2026-07-31 07-cross-space-init review（历史参考：Doc 07 review）
 
-**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 76` + `.claude/rules/review-process.md §Step 1.0e`。
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 76` + `prompt/review-rules/review-process.md §Step 1.0e`。
 
 **首次发现**：2026-07-31 05-clock-interrupt-init review（3 处 `(covered in NN)` + 9+ 处 `see XX-doc.md`）。
 
@@ -480,6 +482,34 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 - **Pattern #66** = Reference Code Path Drift（代码路径引用 `file:line` 不存在）—— Pattern #77 是 Pattern #66 的子类型（行号漂移）
 - **Pattern #77** = **Code Comment Line Drift**（**代码注释行号漂移**）—— 重点是代码注释而非 doc 引用
 
-**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 77` + `.claude/rules/review-process.md §Step 1.0f`。
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 77` + `prompt/review-rules/review-process.md §Step 1.0f`。
 
 **首次发现**：2026-07-31 08-system-init-boot-finish review（**根因是 lib.rs 代码注释错误，doc §4.6 复述了错误注释**）。
+
+### 模式 78: C Source Bug Unlabeled (CSBU)（NEW 2026-08-14）
+
+**严重度**：P1
+
+**问题**：Rust 修复了 Minix3 C 源码 bug，但代码注释未标注 `// MINIX3 BUG:`。维护者可能"修复"回 C 的 bug。
+
+**判定标准**：
+- Rust 行为与 C 不一致，原因是 C 源码有 bug（非设计差异）
+- 代码注释无 `// MINIX3 BUG:` 标注
+- 文档 §2 对应位置无 bug 说明
+
+**验证命令**：
+```bash
+rg "// MINIX3 BUG:" os/ --type rust -n
+```
+
+**正确示例**：
+```rust
+// MINIX3 BUG: region.c:841-842 ignores ev_reference return value
+// Rust fix: ev_copy returns Err(NotSupported)
+```
+
+**来源案例**：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏。
+
+**详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 78`。
+
+**首次发现**：2026-08-14 规则集优化（从 project_memory 沉淀的多个 C bug 修复案例抽象）。

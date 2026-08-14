@@ -16,7 +16,7 @@ Review must check the correct concurrency model for the module being reviewed:
 
 ## Ground Truth
 ```
-Minix3 C source (minix3/) > Rust code (os/servers/) > docs (notes/) > AI analysis
+Minix3 C source behavior > design contract > Rust code (os/) > design/technical docs (notes/) > AI analysis
 ```
 
 ## Review Terms
@@ -81,7 +81,7 @@ Minix3 C source (minix3/) > Rust code (os/servers/) > docs (notes/) > AI analysi
 - 首次发现：01-boot-shim-bootstrap review 2026-07-30（consistency 71.4% → fix → 100%）
 Every scan.md MUST include this table (5 items, each with grep evidence):
 1. **§5 tests exist**: `rg "fn {test_name}" {rust_dir}` — missing → P0
-2. **trait has ≥1 impl**: `rg "impl.*{TraitName}" {rust_dir}` — 0 impl → P0
+2. **trait has ≥2 行为不同的 impl**: `rg "impl.*{TraitName}" {rust_dir}` — 0 impl → P0（死代码/虚构 trait）；1 impl → P1（trait 抽象需 ≥2 行为不同的实现）；≥2 impl → ✅
 3. **function in declared file**: `rg "fn {name}" {file}` — not found → P0
 4. **core algorithm not stub**: `rg "todo!|unimplemented!|unreachable!|panic!" {rust_dir}` — stub → P0; `panic!` in non-test code that represents unimplemented functionality or a reachable unhandled path → treat as stub/unhandled path, must be justified in comment
 5. **§4 signatures match**: compare doc §4 vs actual — mismatch → P0
@@ -110,7 +110,7 @@ Every causal explanation ("因为 X 所以 Y") must have:
 
 Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (pattern 48).
 
-## Review Process Patterns (66-74, NEW 2026-07-16/17/30)
+## Review Process Patterns (66-78, NEW 2026-07-16/17/30/31/08-14)
 
 - **66 RCPD** (Reference Code Path Drift): TODO/issue 描述引用的 `file:line` 已不存在（重构/重命名）→ Step 0.7.1 path existence validation 必跑
 - **67 CFNOC** (C Function Name vs OS Concept Confusion): 把 C 函数名（如 `proc_init`）误读为 OS 概念对象（如 `Process`）→ Step 0.7.2 AI claim grep verification 必跑
@@ -124,6 +124,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - **75 Doc See-Also Range Drift** (NEW 2026-07-31): 文档"参见 X.rs:Y-Z"形式的范围引用出现两类漂移——起止行号 +1 偏移（如 :55-76 → 实际 :56-78）+ 上界范围过短（如 :55-399 → 实际 :56-523，doc 写作时文件较小未随代码演化更新）。检查命令：`rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md` + `sed -n "{start}p" {path}` 验证首行 + `rg "^impl PlatformDesc for X" {path}` 找 impl 结束位置。详细规则见 `prompt/skill/review-patterns-skill.md §模式 75` + `.claude/rules/review-process.md §Step 1.0d`。首次发现：04-platform-discovery review 2026-07-31（2 处 L831/L883 范围漂移漏检）。
 - **76 Cross-Doc Attribution Drift** (NEW 2026-07-31): 代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。本次 05 review 发现 `os/kernel/src/lib.rs` 3 处 `(covered in NN)` 注释错位 + **至少 9 处 `see XX-doc.md` 引用旧 doc 命名**（`04-clock-interrupt-init.md` / `05-exception-interrupt.md` / `06-arch-post-init.md` / `06-design-final.md` / `02-page-table-kernel.md`）。检查命令：`rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust -n` + `ls notes/.../ | rg "^[0-9]+"` 验证 doc 编号 + 对每个引用验证目标 doc 是否存在。详细规则见 `prompt/skill/review-patterns-skill.md §模式 76` + `.claude/rules/review-process.md §Step 1.0e`。首次发现：05-clock-interrupt-init review 2026-07-31（3 处 `(covered in NN)` + 9+ 处 `see XX-doc.md`）。
 - **77 Code Comment Line Drift** (NEW 2026-07-31): 代码注释中引用 `file:line`（如 `// see proc_table.rs:129`）因代码增量而**漂移**（文件行号下移）。本次 08 doc review 发现 `os/kernel/src/lib.rs:1170/1181/1193` 3 处注释错位：`proc_table.rs:129` 实际 L276（+147，最大）/ `smp.rs:127-132` 实际 L200（+73）/ `smp.rs:80-145` 实际 L135（+55）。检查命令：`rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -n` + `sed -n "{line}p" {path}` 验证首行内容。修复策略：双修（修代码注释 root cause + 同步修所有复述的 doc）。详细规则见 `prompt/skill/review-patterns-skill.md §模式 77` + `.claude/rules/review-process.md §Step 1.0f`。首次发现：08-system-init-boot-finish review 2026-07-31（**根因是 lib.rs 代码注释错误，doc §4.6 复述了错误注释**）。
+- **78 CSBU** (C Source Bug Unlabeled, NEW 2026-08-14): Rust 修复了 Minix3 C 源码 bug，但代码注释未标注 `// MINIX3 BUG:`。维护者可能"修复"回 C 的 bug。判定标准：Rust 行为与 C 不一致（因 C 源码有 bug，非设计差异）+ 代码注释无 `// MINIX3 BUG:` + 文档 §2 对应位置无 bug 说明 → **P1**。检查命令：`rg "// MINIX3 BUG:" os/ --type rust -n`。正确示例：`// MINIX3 BUG: region.c:841-842 ignores ev_reference return value` + `// Rust fix: ev_copy returns Err(NotSupported)`。来源案例：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏。详细规则见 `prompt/skill/review-patterns-skill.md §模式 78`。首次发现：2026-08-14 规则集优化（从 project_memory 沉淀的多个 C bug 修复案例抽象）。
 
 ## ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16）
 
@@ -137,14 +138,14 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 > **详见**：`.claude/rules/review-process.md §Step 0 硬阻断规则` + `prompt/review-rules/review-patterns.md 模式 69/71`
 
 ## Review Workflow
-1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see dual-path rule below)
-2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{module}/STATE.md`; Claude Code Runtime → `.review/claude/{module}/STATE.md`. These two paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
-3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一）
+1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see tool-isolated path below)
+2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{module}/STATE.md`; Claude Code Runtime → `.review/claude/{module}/STATE.md`; Codex CLI → `.review/codex/{module}/STATE.md`. These paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
+3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一）
 4. Execute checks ONE AT A TIME — never batch them mentally
 5. Output a progress checklist showing each check as done/undone
 6. Collect all findings into a review report at the end
 7. **After all checks**: write STATE.md and convergence assessment
-8. **Verify Blocker Gates 0/A/B/C/D/D-6/E/G all passed WITH EVIDENCE** before marking scan.md as Final. Gate A/D/E evidence must be L1 (tool/grep output); Gate B/C may be L1 or L2; L3 inference counts as FAIL unless `MANUAL_FALLBACK` is justified.
+8. **Verify Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed WITH EVIDENCE** before marking scan.md as Final. Gate A/D/E evidence must be L1 (tool/grep output); Gate B/C may be L1 or L2; L3 inference counts as FAIL unless `MANUAL_FALLBACK` is justified.
 
 ## ⛔ Review 累积改进追踪（NEW 2026-07-31）
 
@@ -160,7 +161,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 | 04-platform-discovery (07-31) | Pattern #75 + Step 0.3.3 首次触发 | 0 | 0 | 2 (+2 顺带) | 4 min | 71.4% → 100% | — |
 | 05-clock-interrupt-init (07-31) | Pattern #76 + Step 1.0e + §2.4g | 0 | 4 | 4 | 28 min | 62.5% → 100% | — |
 | 06-proc-init-boot-proc (07-31) | n/a（验证累积改进 + 反向偏移建议）| 0 | 0 | 6 | 12 min | 50% → 100% | — |
-| 07-cross-space-init (07-31) | n/a（验证累积改进 + Step 5.4/5.5 首次跑 + Zero-bias）| 0 | 0 | 0 | 0 min | 100% ✅ | **Zero-bias #1** |
+| 07-cross-space-init (07-31) | n/a（验证累积改进 + §2.4i/§2.4j 首次跑 + Zero-bias）| 0 | 0 | 0 | 0 min | 100% ✅ | **Zero-bias #1** |
 | 08-system-init-boot-finish (07-31) | Pattern #77 + Step 1.0f + Step Double-check | 0 | 0 | 3 | 6 min | 87.5% → 100% | **首个三 snapshot 全齐 + Double-check** |
 | 09-vm-boot-protocol (07-31) | n/a（验证累积改进 + Zero-bias #2 + Perfect Link）| 0 | 0 | 0 | 0 min | 100% ✅ | **Zero-bias #2 + Perfect Link + Perfect line refs** |
 | **10-switch-to-user (07-31)** | **n/a（验证累积改进 + Hidden Folder Convention + Double-check）** | **0** | **0** | **2** | **4 min** | **75% → 100%** | **首个 Hidden Folder Convention 完全合规 doc** |
@@ -174,9 +175,9 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - **#11 Pattern #76 Cross-Doc Attribution Drift**（NEW 2026-07-31）：✅ 已落地 + Step 1.0e 已加 review-process.md
 - **#12 design.md §X-Y "权威位置"段**（NEW 2026-07-31）：⏸ 待用户确认后落地（DEFAULT_HZ 跨 crate 重复定义暴露需求）
 - **#13 Step 1.0a-自动 反向偏移自动重算**（NEW 2026-07-31，Doc 06 review）：⏸ Proposal #7 增强（auto_resync_line 函数）
-- **#14 Step 5.4 L3 grep 主动验证**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
-- **#15 Step 5.5 测试总数末段补充**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
-- **#16 Step 7.1 触发停止规则 3**（NEW 2026-07-31，Doc 07 review）：✅ 已应用（zero-bias 时强制交付）
+- **#14 L3 grep 主动验证（§2.4i）**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
+- **#15 测试总数末段补充（§2.4j）**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
+- **#16 Step 7.1 触发停止规则 3**（NEW 2026-07-31，Doc 07 review；**2026-08-14 更新为漏检自检**）：✅ 已应用（zero-bias 时触发漏检自检，原"强制交付"已废弃）
 - **#17 Pattern #66 RCPD doc 主动应用**（NEW 2026-07-31，Doc 07 review）：✅ Doc 07 §5.4 显式标注
 - **#18 Step 0.3.3 outline-review 批量补齐**（NEW 2026-07-31，Doc 07 review）：⏸ 待用户确认后统一触发 user-confirmed review（doc 04/05/06/07 都缺失）
 - **#19 Pattern #77 Code Comment Line Drift**（NEW 2026-07-31，Doc 08 review）：✅ 已落地 + Step 1.0f 已加 review-process.md
@@ -195,9 +196,9 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 7. **代码注释 doc 归属系统性过时**：05 doc review 发现 `(covered in NN)` 注释错位（3 处）+ `see XX-doc.md` 引用旧 doc 命名（9+ 处）—— **Pattern #76 实质化**（之前 4 次 review 未深入代码注释交叉）→ 已加 **Step 1.0e + Pattern #76**（Proposal #11）
 8. **跨 crate const 重复定义盲点**：DEFAULT_HZ 在 os/arch + os/kernel 两 crate 独立定义（不会编译错误）→ 已加 **"权威位置"段说明**（Proposal #12）
 9. **行号反向偏移是系统性问题（NEW）**：06 doc review 发现 6 处反向偏移（-7/-9/-13），代码增量后 doc 未同步 → **Step 1.0a-自动 + auto_resync_line**（Proposal #13 增强 Proposal #7）
-10. **§5.4 L3 grep 证据未主动验证（NEW）**：06 doc review 依赖 doc 自证 → **Step 5.4 L3 grep 主动验证**（Proposal #14 → Doc 07 验证成功）
-11. **测试总数末段补充（NEW）**：06 doc 无测试总数声称但实际 610 tests 通过 → **Step 5.5 测试总数末段补充**（Proposal #15 → Doc 07 验证成功）
-12. **Zero-bias 里程碑（NEW, Doc 07）**：7 次 review 中**首次** 0 P0/P1/P2（review 即 PASS）—— 累积改进极致效果 + **触发 Step 7.1 停止规则 3**（成本/收益比强制交付）
+10. **§5.4 L3 grep 证据未主动验证（NEW）**：06 doc review 依赖 doc 自证 → **L3 grep 主动验证（§2.4i）**（Proposal #14 → Doc 07 验证成功）
+11. **测试总数末段补充（NEW）**：06 doc 无测试总数声称但实际 610 tests 通过 → **测试总数末段补充（§2.4j）**（Proposal #15 → Doc 07 验证成功）
+12. **Zero-bias 里程碑（NEW, Doc 07）**：7 次 review 中**首次** 0 P0/P1/P2（review 即 PASS）—— 累积改进极致效果 + **触发 Step 7.1 停止规则 4**（**2026-08-14 更新为漏检自检**：原"强制交付"已废弃，改为抽 3 项重跑确认无遗漏再交付）
 13. **Doc 主动应用 Pattern #66 RCPD（NEW, Doc 07）**：doc 07 §5.4 显式声明"不引用 syscall_copy.rs 行号避免漂移传播"—— **首个 doc 主动标注已应用 review pattern**，doc 作者已具备 review pattern 意识
 14. **代码注释 doc 复述传递性 drift（NEW, Doc 08）**：08 doc review 发现 3 处 P2 行号偏移全部源自 `lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）—— doc §4.6 复述了错误注释。**根因诊断**：必须修代码注释（root cause）+ 同步修所有复述的 doc（避免传递性 drift）→ **Pattern #77 + Step 1.0f**（Proposal #19/#20，已落地）
 15. **首个 doc 三 snapshot 全齐（NEW, Doc 08）**：08 review 是 8 次 review 中**首个** tool scan ✅ PASS（outline + outline-review + design 都真实存在）—— 卓越设计维护的标志 + 不需要 Step 0.3.3 嵌入生成
@@ -212,8 +213,8 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - `.claude/rules/review-process.md §Step 4.5b`（Proposal #8 + #15）
 - `.claude/rules/review-process.md §Step Double-check`（Proposal #9）
 - `.claude/rules/review-process.md §Step 0.5.2 元注释章节 review`（NEW 2026-07-31）
-- `.claude/rules/review-process.md §Step 5.4 L3 grep 主动验证`（NEW 2026-07-31，Proposal #14，已落地）
-- `.claude/rules/review-process.md §Step 5.5 测试总数末段补充`（NEW 2026-07-31，Proposal #15，已落地）
+- `.claude/rules/review-process.md §L3 grep 主动验证（§2.4i）`（NEW 2026-07-31，Proposal #14，已落地）
+- `.claude/rules/review-process.md §测试总数末段补充（§2.4j）`（NEW 2026-07-31，Proposal #15，已落地）
 - `.claude/rules/review-process.md §Step 7.1 触发停止规则 3`（NEW 2026-07-31，Proposal #16）
 - `prompt/skill/review-doc-skill.md §2.4g const 权威位置检查`（Proposal #12）
 - `prompt/skill/review-doc-skill.md §2.4i L3 grep 主动验证`（Proposal #14，已落地）

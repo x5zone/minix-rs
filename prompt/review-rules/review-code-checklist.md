@@ -118,7 +118,7 @@
 
 ### 4.2 内核 SMP/BKL 检查项（Kernel 模块专用）
 
-> Minix3 kernel 有 `CONFIG_SMP` + `spinlock_t big_kernel_lock`（`BKL_LOCK()`/`BKL_UNLOCK()`）。BKL 是 spinlock（busy-wait），临界区内禁止睡眠/调度。
+> **核心原则**：详见 [review.md §执行模型](review.md)。以下为内核 SMP/BKL 检查项。
 
 **BKL 持有完整性**：
 - [ ] 进入内核空间的每条路径是否持有 BKL？调用链上是否有对应的 `BKL_LOCK()`？
@@ -257,7 +257,7 @@ external_module.rs  # 只能通过 view.rs 的 API 访问
 
 ## 12. no_std 约束检查
 
-> **核心原则**：除 mock 和 test 外，所有代码必须在 `no_std` 环境下运行。
+> **核心原则**：详见 [review.md §运行时环境约束](review.md#运行时环境约束)（含 no_std 约束）。以下为检查项。
 
 - [ ] 是否存在 `use std::` （非 `#[cfg(test)]` 代码中）？→ P0
 - [ ] `Cargo.toml` 中是否正确设置了 `#![no_std]`？
@@ -379,6 +379,7 @@ external_module.rs  # 只能通过 view.rs 的 API 访问
    - 返回错误码的函数（错误码不对齐 = 行为偏移）
    - 涉及内存分配/释放的函数（语义偏移 = 内存安全风险）
    - 涉及并发/锁的函数（语义偏移 = 死锁/竞态风险）
+3. **发现一个，检查同类**：如果发现某个类型的叶函数不对齐，检查同类型所有函数
 
 ---
 
@@ -426,4 +427,3 @@ external_module.rs  # 只能通过 view.rs 的 API 访问
 - [ ] 涉及性能、安全、大小限制的理由，是否有量化依据？
 
 **判定**：注释理由与实际情况明显不符 → P1（轻微）/ P0（严重误导设计决策）
-3. **发现一个，检查同类**：如果发现某个类型的叶函数不对齐，检查同类型所有函数

@@ -3,6 +3,13 @@
 > 本指南用于对 Minix-RS 项目的**文档**和**代码**进行深度 Review。
 > 适用范围：**所有 Minix3 模块**（VM、PM、VFS、Kernel、Drivers 等）
 
+> **术语表（2026-08-15 修复 D-P1-6）**：
+> - **上游/下游**：文档章节链路中，"上游"指先出现的章节（如 Ch1 → Ch3 → Ch4），"下游"指后出现的章节
+> - **同级**：同一链路层级的章节（如 Ch1 & Ch2 都为概念层）
+> - **横向**：同一章节内的对比（如 §3.5 vs §4.3 同属一个文档但描述同一主题）
+> - **纵向**：跨章节追溯（如 Ch1 概念 → Ch3 设计决策 → Ch4 实现 → Ch5 测试）
+> - **depth-first / breadth-first**：本规则集不借用算法概念，"深度"指 Step 0-7 全量，"广度"指各 Step 内多维度并查
+
 ---
 
 ## 核心原则
@@ -28,6 +35,17 @@ Rewrite（重写）
 ```
 
 > **术语冲突解决方案**：原"Redesign"在不同上下文含义不同，正式定义为"改变架构"即 **Architectural Evolution**，工作场景用于"修复偏离"即 **code Refactor**。详见 [review-core-semantics.md §Refactor 定义](review-core-semantics.md)。
+
+> **2026-08-15 修复 D-P1-5（Refactor 三分类术语层级澄清）**：
+> - **第一层（按工作目标）**：
+>   - **Rewrite**（重写）：语义重建，保持外部行为
+>   - **Refactor**（重构）：修复偏离，含 code Refactor + design Refactor（**不涉及架构变化**）
+>   - **Architectural Evolution**（架构演进）：跨越 Minix3 语义边界的设计变更（**改变架构**）
+> - **第二层（Refactor 子类）**：
+>   - **code Refactor**：design 正确但 code 偏离 → 修 code 回到 design（对应 P0-design-deviation）
+>   - **design Refactor**：design 自身错 / 漏 → 先修 design 再修 code（对应 P0-design-missing/wrong）
+> - **第三层（具体动作）**：删代码 / 改类型 / 加 trait / 重命名 / 加测试等
+> - **判定原则**：若改动跨越 Minix3 语义边界 → Architectural Evolution；若仅修复偏离（含 design 自身错） → Refactor
 
 ### Design First 原则（Rust 重写场景）
 
@@ -57,7 +75,7 @@ Rewrite（重写）
 
 > **配套机制**：Step 1.6 设计对齐检查 + Gate H design 门控 + Review 中断协议（IN_DESIGN）+ Profile R 设计优先模式。详见 [review-process.md](review-process.md)。
 
-### §2.0 架构演进作为独立知识点维度
+### §2.0 架构演进作为独立知识点维度（review.md 专属）
 
 > 背景：架构演进本身是知识点（如 FPU xsave→aarch64 CPACR_EL1→riscv64 sstatus.FS）
 > **回应**：review 不只检查"当前架构是否正确"，还要检查"是否讲清了演进史 + 现代硬件模型 + Rust 抽象方向"。
@@ -71,6 +89,14 @@ Rewrite（重写）
 | **分页机制演进** | 32 位 4MB 大页 → 64 位 4 级页表 → Sv39 | 位宽演进 + Rust 抽象方向 |
 | **地址空间布局演进** | freepdes 临时窗口 → direct_map | 受限空间妥协 → 充裕空间自然解 |
 | **内核加载演进** | 实模式 → 保护模式 → 长模式 → SBI | 启动链 + 各架构入口点 |
+
+> **2026-08-15 修复 B-P1-5（ARCH 标注机制）**：Minix-RS 是 Minix3 重写，所有设计**应有 C 源对应**。但允许引入 Minix3 没有的"纯 Rust 新功能"（如借用 checker / typestate / 零成本抽象等）。此类新增必须显式标注：
+> - **标注格式**：`[ARCH: New, 原因]` 三处一致标注（doc + design + code）
+> - **判定信号**：code 中无 `// ARCH: ...` 但使用了 Minix3 没有的 Rust 惯用法 → P1-architecture-undocumented
+> - **示例**：
+>   - `// ARCH: New, Rust 借用检查替代 C 手动 refcount`（code）
+>   - `design.md §3.2` 含 `[ARCH: New]` 段（design）
+>   - `doc §3.5` 含 `[ARCH: New]` 引用（doc）
 
 **强制要求**：
 - ✅ Ch1 概念章必须有"架构演进史"小节
@@ -316,10 +342,12 @@ struct FreeList { head: Option<Box<Node>> }
 ### Ground Truth 优先级
 
 ```
-Minix3 源码行为  >  文档描述  >  Rust 实现  >  AI 分析
+Minix3 源码行为  >  design 契约  >  Rust 实现  >  设计/技术文档  >  AI 分析
 ```
 
-**永远以 Minix3 源码行为为最终真理来源**。
+**永远以 Minix3 源码行为为最终真理来源**。这里的 design 契约是经过 C 源码对齐的
+`{NN}-design*.md` 快照；它不能覆盖 C 源码事实。普通文档和技术说明不能反过来定义
+实现语义。
 
 ### 核心语义验证（Ground Truth 的具体化）
 
@@ -486,10 +514,10 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | 快速 Review | [review.md §快速判断口诀](#快速判断口诀) | 用判断口诀快速扫描 |
 | **卓越性专项 (Profile O)** | [review-excellence-skill.md](../skill/review-excellence-skill.md) + [review-doc-excellence.md](review-doc-excellence.md) + [review-code-excellence.md](review-code-excellence.md) | 在正确性 gate 通过后追求教科书级质量 |
 | **覆盖率专项 (Profile P)** | [review-coverage-skill.md](../skill/review-coverage-skill.md) + `tools/coverage-extract/coverage-extract.py` | 用机器穷举 + AI 补充判断 C 源/Rust 实现的覆盖完整度 |
-| **苏格拉底追问 (Profile S)** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
-| **实施验证 (Profile I, 2026-06-22 新增)** | [review-implementation-skill.md](../skill/review-implementation-skill.md) | 设计 → 代码 实施验证（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试覆盖边界） |
+| **苏格拉底追问（专项，非 Profile）** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
+| **实施验证（专项，2026-06-22 新增）** | [review-implementation-skill.md](../skill/review-implementation-skill.md) | 设计 → 代码 实施验证（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试覆盖边界） |
 
-> 详细 Profile 配置（含所有 A-P 组合）见 [review-profiles.md](review-profiles.md)
+> 详细 Profile 配置（含全部 Profile A~P + R + AG）见 [review-profiles.md](review-profiles.md)
 
 ---
 
@@ -612,12 +640,28 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | **P0-design-wrong** | design 本身错（漏核心概念、抓错本质）| **design Refactor 必须**（先 redesign 再修 code）| **design Refactor** |
 | **P0-test-missing**| 测试作为正确性证明缺失（如 §5 测试无对应实现）| 渐进修复（补测试）| 否 |
 
+> **2026-08-15 修复 D-P1-1（P0-fact 含义澄清）**：P0-fact 是指**客观存在但描述/引用不符**的错误，例如：
+> - 文档写"`fn foo()` 在 `bar.rs:123`"，实际 `bar.rs:123` 是 `fn baz()` → **P0-fact**
+> - 文档写"`CLICK_SIZE = 4096`"，实际源码是 `8192` → **P0-fact**
+> - 文档写"Ch3 §3.2 设计 X"，但 §3.2 实际无相关内容 → **P0-fact**
+>
+> 与 P0-code-bug 的区别：P0-fact 不涉及代码运行时行为（编译过、能跑），仅是描述与事实不符；P0-code-bug 是代码本身有 bug（编译失败 / panic / 行为错误）。例如"代码声称调用 `fn safe_div()` 但实际调用 `fn unsafe_div()`" 是 **P0-fact**（描述错）；"`fn safe_div()` 实现有除零风险" 是 **P0-code-bug**（实现错）。
+
 > **关键判定**：
 > - 前四类（P0-fact/code-bug/design-deviation/test-missing）走标准 review 流程（scan.md → 修复）
 > - **design-deviation 触发 code Refactor**（修 code 回到 design 路径），**不阻塞 review**
 > - **design-missing/wrong 触发 design Refactor**（先修 design 再修 code），**可阻塞 review**
 > - **design-wrong 严重时升级 Architectural Evolution**（跨越 Minix3 语义边界）
 > - **P0-test-missing 必须补测试**，不允许"语义对了就不写测试"
+
+> **P0-test-missing 统一处理（2026-08-15 修复 C-P0-1）**：
+> - **定义**：测试作为正确性证明缺失（§5 列出的测试函数在 `os/` 下 grep 无结果，或核心 trait 方法 0 测试覆盖）
+> - **触发**：Step 1.5 覆盖率穷举（`SYMBOLS.md` 中"测试覆盖"列为 0/缺）
+> - **处理流程**：P0-test-missing → 在 scan.md §Issue List 中列出 → 必须生成 P0 测试修改项 → 阻断 CONVERGED（不修复不能标 CONVERGED）
+> - **与其他 P0 关系**：
+>   - 若**修复 P0-fact/code-bug/design-deviation/wrong** 后未补对应测试 → 自动升级为 P0-test-missing（双重 P0）
+>   - P0-test-missing 不阻塞 review **发现**（可在 review 中报告），但**阻断 CONVERGED**（未修复不能 CONVERGED）
+> - **不适用**：纯算法设计文档无 §5 测试章节、纯架构演进文档不要求测试覆盖
 
 **测试覆盖度量化标准**：
 
@@ -717,11 +761,27 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 > 目标：规则集兼顾正确性与卓越性
 > **命名说明**：原方案用"Gate C/E"命名，但 review-process.md 已占用 Gate C（Precision Check）与 Gate E（§5 测试验证），易冲突。改用 **Layer 1/2** 分层，**不属于 Blocker Gates**，仅作为 CONVERGED 的分层判定。
 
+> **2026-08-15 修复 D-P1-2（统一阈值参考表）**：
+
+| 阈值项 | 值 | 出处 |
+|--------|----|----|
+| Gate H.2 design ↔ code 一致性 | ≥ 80% | review-process.md §Gate H（H.2 定义） |
+| Step 5.6 抽样验证一致性 | ≥ 90% | review-process.md §Step 5.6 |
+| Layer 2 标准（4 项每项）| ≥ 80% | review.md §4.5 |
+| Step 1.6.4 DESIGN_DIVERGED 阈值 | ≥ 30% | review-process.md §Step 1.6.4 |
+| §0 P0 必检清单 5 项 | 100%（每项必须为 ✅）| review-patterns.md §0（Gate D 严格标准） |
+| Step 7.1 轮次阈值 | ≥ 5 轮 | review-process.md §Step 7.1 |
+| Step 7.1 P1 边际递减 | 连续 2 轮 ≤ 1 | review-process.md §Step 7.1 |
+| Step 7.1 成本/收益比 | 当前轮耗时 > 上一轮 80% 且加权新发现 < 上一轮 20% | review-process.md §Step 7.1 |
+| Layer 1 PASS = 所有 P0 修完 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全 PASS | — | review.md §4.5 |
+
+> **判定统一原则**（2026-08-15 修复）：所有阈值以本表为准；任何规则文件中的阈值与本表冲突 → 视为 bug 并修复本表，或在原文件中加交叉引用。
+
 **双层 Layer 模型**：
 
 | 层级 | 目标 | 进入条件 | 通过条件 | 不通过后果 |
 |------|------|---------|---------|-----------|
-| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/test-missing 修复完成 + Gate H + Gate A/B/C/D/D-6/E PASS | CONVERGED 阻断 |
+| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部 PASS | CONVERGED 阻断 |
 | **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §15.5 design-first API + §2.0 架构演进维度 ≥80% | 允许 CONVERGED 但标记 excellence-pending |
 
 **关键判定**：
@@ -813,6 +873,12 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 > 在开始任何 Review 之前，AI **必须先声明 Review 范围**，然后再加载规则集执行。这步防止 AI 在范围不清的情况下开始检查。
 
+> **2026-08-15 修复 D-P1-3（术语统一）**：规则集使用三个相关但不同的概念术语：
+> - **Profile**（[review-profiles.md](review-profiles.md)）：**模块加载策略**——决定加载哪些规则文件（核心/文档检查清单/代码检查清单/错误模式/核心语义/卓越性等）
+> - **Mode**（本节 §0.2）：**范围裁剪**——决定 review 范围（仅 Ch1&2 / 完整文档 / 文档+代码）
+> - **Task**：**用户实际任务**——AI 接受的具体指令（如 "review 04-platform-discovery.md 的 Ch3"）
+> - **关系**：Task 由用户给出 → Mode 由 Task 推导 → Profile 由 Mode + Task 推导。三者可独立选择，但需一致（如 Task=完整 review + Mode=C → Profile=C 全模块加载；Task=快速过审 + Mode=C → Profile=D 仅核心加载）
+
 ### 0.1 范围声明模板
 
 每次 Review 开始时，AI 必须先输出：
@@ -829,6 +895,8 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 ### 0.2 Review 模式说明
 
 #### 模式 A：局部 Review（仅 Ch1&2）
+
+> **2026-08-15 修复 C-P1-11（避免命名冲突）**：本节"模式 A/B/C" 与 [review-profiles.md](review-profiles.md) "Profile A/B/C" 命名相同但含义不同。本节"模式"指**范围裁剪**（局部/文档/完整），review-profiles.md "Profile" 指**模块加载策略**（文档/代码/完整/快速）。两者正交，可任意组合（如 Profile D 快速 Review + 模式 C 完整范围）。AI 看到 "Profile A" 时应理解为 review-profiles.md 的"文档 Review Profile"，看到"模式 A"时是本节的"局部 Review 模式"。
 
 - **适用场景**：用户指定「只 review 第一章和第二章」
 - **检查范围**：

@@ -18,6 +18,8 @@
 | **文档卓越性** | [review-doc-excellence.md](review-doc-excellence.md)（叙事结构 + 读者体验 + 教学深度） |
 | **代码卓越性** | [review-code-excellence.md](review-code-excellence.md)（API 设计 + 表达力 + 性能 + 测试质量） |
 
+> **2026-08-15 修复 D-P1-8（加载模块 ≠ 工作量）**：Profile 描述"加载模块"指**规则文件是否加载到 AI 上下文**，与实际 review 工作量**非线性相关**。例如 Profile C 加载全部 8 个模块，但若目标文档仅 100 行，实际工作量仅 5-10 分钟。AI 看到 Profile C 不能假设"工作量 = 全模块加载"；实际工作量取决于：(a) 目标文档大小；(b) 模式（C/H/I/J/K）；(c) 已发现的 issue 数量（参考 Step 7.1 收敛成本评估）。
+
 ---
 
 ## 任务组合
@@ -92,6 +94,14 @@
 2. 阅读 [review.md](review.md) 核心原则
 3. 使用 [review.md §快速判断口诀](review.md#快速判断口诀) 逐项自问
 4. 仅输出发现的 P0 级别问题
+
+> Profile D 只裁剪内容检查，不裁剪流程安全门：Step 0 预检、Gate 0（制品完整性）、Gate H（design 门控）仍然必须执行；未通过时只能输出 DRAFT，不能标记 CONVERGED。
+>
+> **2026-08-15 修复 A-P0-3（明确 Profile D 必检的 Gate）**：Profile D 必检以下 Blocker Gates，其余 Gate 按需抽样：
+> - ✅ **必须执行**：Step 0 预检（design/outline 状态 + 4 条 `ls` 命令）；Gate 0（scan.md 制品完整性）；Gate H（design 门控 H.1-H.6）
+> - ⚠️ **必须执行**（即便快速模式）：Gate D §0 P0 必检清单 5 项（test 存在 / trait 实现 / 函数位置 / 算法非 stub / 签名一致）—— 这 5 项是基本正确性，不应被"快速"裁剪
+> - ❌ **可裁剪**：Gate A（覆盖率穷举，Profile D 跳 SYMBOLS.md 全量）、Gate B（Top 5 行为契约表完整版）、Gate C（5 元规则 Precision Check 全量）、Gate E（§5 测试全量 grep）、Gate G（VERIFY-CHECK.md 跨 agent 验证）—— 这些是深度模式才要求的
+> - **判定**：Profile D 未通过 Step 0 预检 / Gate 0 / Gate D / Gate H → 只能 DRAFT，禁止 CONVERGED
 
 ---
 
@@ -333,10 +343,10 @@
 
 ### Profile R：设计优先模式 Review
 
-> **核心定位**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。当 design 缺失/错误时，必须先有 design 再 review 实现，否则 review 出来的 P0 都是局部无效修复。本 Profile 就是为此设计。
+> **核心定位**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。design 缺失由所有 review 模式在 Step 0.3 内嵌生成；design 已存在但错误时，使用本 Profile 先修正 design，再 review 实现。
 
 **适用场景**：
-- Rust design 缺失或严重 outdated
+- Rust design 严重 outdated 或已存在但错误
 - review 中发现 P0-design-missing/wrong
 - 完整重写前的 design-first 阶段
 - 用户明确指定"先看 design"
@@ -346,9 +356,9 @@
 | 维度 | 强制项 | 说明 |
 |------|--------|------|
 | **Step 1.6 设计对齐检查** | 强制 | design ↔ code 一致性矩阵 + Minix3 对齐 |
-| **Gate H design 门控** | 强制 | H.1-H.5 全部 grep 验证 |
+| **Gate H design 门控** | 强制 | H.1-H.6 全部 grep 验证（含 outline ↔ doc 对齐） |
 | **Design Feedback §8** | 强制 | scan.md §8 Design Feedback 必填（design-missing/wrong/improvable/divergence）|
-| **Review 中断协议** | 强制 | 检测到 design 缺失/错误必须中断（IN_DESIGN），不能 DEFERRED 逃避 |
+| **Review 中断协议** | 强制 | 检测到 design-wrong 时进入 IN_DESIGN；design 缺失走 Step 0.3，不因缺失中断 |
 | **Architecture Evolution 维度 §2.0** | 强制 | 检查演进史 + 现代硬件模型 + Rust 抽象方向 |
 
 **加载 Skill**：
@@ -358,8 +368,8 @@
 - `review-core-semantics-skill`（如涉及核心语义）
 
 **执行流程**（按 [review-process.md §〇 设计优先模式](review-process.md#设计优先模式design-first)）：
-1. **Step 0**：声明 design 状态（缺失/错误/可改进）
-2. **Step 0.5**：design 生成（如缺失）或 design 评审（如错误）
+1. **Step 0**：声明 design 状态（错误/可改进；缺失由 Step 0.3 处理）
+2. **Step 0.5**：design 评审（如错误）；缺失快照由 Step 0.3 先生成
 3. **Step 1.5**：覆盖率穷举（验证 design 是否覆盖所有 C 概念）
 4. **Step 1.6**：design ↔ code 一致性检查
 5. **Step 2**：design vs Minix3 本质对比
@@ -378,13 +388,13 @@
 - design 修复后可转入 Profile C
 - 不替代日常 review，而是日常 review 的前置阶段
 
-**与 Profile I（实施验证）的关系**：
-- Profile I 用于 design → code 实施过程验证
-- Profile R 用于 design 缺失/错误 → 生成/修正 design
-- 两者串联：Profile R 先生成 design，Profile I 验证实施
+**与实施验证专项（review-implementation-skill）的关系**：
+- 实施验证专项用于 design → code 实施过程验证
+- Profile R 用于 design-wrong → 修正 design；缺失快照由所有模式的 Step 0.3 生成
+- 两者串联：Profile R 先生成 design，实施验证专项验证实施
 
 **触发条件**（自动 + 手动）：
-- 自动触发：Step 0 design 预检找不到 `design.md`/`design-final.md`（**主入口，前移自 Step 1.6**）/ Step 1.6.2 一致性 < 80% / Step 1.6.3 出现 P0-design-missing/wrong
+- 自动触发：Step 1.6.2 一致性 < 80% / Step 1.6.3 出现 P0-design-wrong；快照缺失由 Step 0.3 内嵌处理，不切换 Profile
 - 手动触发：用户明确指定"先看 design" 或 AI 识别到"开发文档味"严重
 
 **详见**：
@@ -393,6 +403,40 @@
 - [review-process.md §一.附录 A Review 中断协议](review-process.md)
 - [review-patterns.md §模式 63 Design-Missing](review-patterns.md)
 - [review.md §Design First 原则](review.md)
+
+---
+
+### Profile AG：自动生成文档 Review（NEW 2026-08-15, 修复 B-P2-4）
+
+> **核心定位**：处理 `cargo doc` 等工具自动生成的文档（target/doc/、comment-derived docs）。此类文档**不是人工设计**，**不应按 Profile A/C 流程 review**，但需做基础正确性检查。
+
+**适用场景**：
+- 用户要求 review `target/doc/` 下的 HTML 文档
+- 自动生成的 API reference（如 `///` doc comment 生成的文档）
+- 第三方依赖文档（如 `minix_types` 的 generated rustdoc）
+
+**加载模块**：仅核心 + 错误模式（基础部分）
+
+**检查清单**（裁剪后）：
+1. **基本可读性**：HTML/Markdown 格式是否正确，链接是否失效
+2. **代码示例可用性**：`cargo doc --document-private-items` 生成的代码示例是否仍可编译
+3. **术语一致性**：跨多个 auto-gen 文档的术语是否一致（grep 验证）
+4. **链接可达性**：文档内 `[[link]]` / `[Type]` 是否指向真实类型
+
+**跳过**：
+- ❌ Step 0.5 structure.md 评审（auto-gen 文档无叙事结构）
+- ❌ Step 1.5 覆盖率穷举（auto-gen 文档覆盖率无意义）
+- ❌ Step 1.6 design 对齐（auto-gen 文档无 design 来源）
+- ❌ Step 2 差异提取（auto-gen 文档与实现无差异，差异即 bug）
+- ❌ Gate A-D 全量检查（仅检查基本正确性）
+
+**输出**：
+- 仅输出 P0（链接失效 / 代码示例编译失败）
+- P1 仅记录"建议人工撰写对应设计文档"
+
+**触发条件**：
+- 文件路径匹配 `target/doc/**/*.html` 或 `.rustdoc` 后缀
+- 用户显式声明"review cargo doc 输出"
 
 ---
 

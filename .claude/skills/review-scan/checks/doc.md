@@ -1,6 +1,6 @@
-# doc: 文档正确性检查（合并 12 个 doc check）
+# doc: 文档正确性检查（16 个 doc check，Check 00-15）
 
-> 本文件合并原 doc/00-12 共 12 个检查项，解决 attention decay 和过度拆解问题。
+> 本文件合并文档检查清单（源：`prompt/review-rules/review-doc-checklist.md`），解决 attention decay 和过度拆解问题。
 > **强制规则**：每个检查必须先执行 grep/read，再下结论。每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
 > **⛔ Step 0 硬阻断前置（NEW 2026-07-16；2026-07-17 更新）**：进入本文件任何检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md) + [process.md §Step 0 硬阻断规则](process.md)。`{NN}-design.v*.md` / `{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` 缺失 → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（不中断 review，2026-07-17 变更：原"阻断 Phase 2"改为"Step 0.3 嵌入生成"）（模式 69 PSMD 触发）。
 

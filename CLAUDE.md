@@ -19,7 +19,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 
 ## Hidden Folder Convention（NEW 2026-07-31）
 
-**`design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，**正式文档绝不引用**：
+**`.design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，**正式文档绝不引用**：
 
 - **`notes/rewrite/{module}/{stage}/.design/`**：每个 doc 的可复用快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`）。每次 review 时 AI **重新执行** Step 0.3 流程从 C 源码独立推导，旧快照作为"前人理解参考"输入（**非 ground truth**）。**正式 doc 不引用此文件夹**。
 - **`notes/rewrite/{module}/{stage}/tmp_design_and_todo/`**：早期手动生成的"design"文件夹（多 AI 设计汇总），已**废弃**。**正式 doc 不引用此文件夹**。
@@ -38,7 +38,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 - **Concept abstraction (Ch1 docs)**: Concept chapters organized from architecture perspective (CPU questions/system mechanisms), NOT from code perspective (function/struct/trait names). Ch1 subject = CPU/OS, not function name. Multi-arch docs give unified abstraction first.
 
 ## Design First
-- **Design is a core deliverable**, not a byproduct of review. Each `.design/{NN}-design.md` (non-bagging) or `design/{NN}-design-final.md` (bagging) is reviewed in **Profile R (Design-First Mode)** before any code is written against it. Design docs live in `notes/rewrite/{module}/{stage}/.design/` subdirectory.
+- **Design is a core deliverable**, not a byproduct of review. Each `.design/{NN}-design.md` (non-bagging) or `.design/{NN}-design-final.md` (bagging) is reviewed in **Profile R (Design-First Mode)** before any code is written against it. Design docs live in `notes/rewrite/{module}/{stage}/.design/` subdirectory.
 - **方案 D v2（可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时 AI **重新执行** Step 0.3 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？
 - **Step 0 design + outline 预检** (**所有 review 模式强制，2026-07-16 扩；原"full/deep/design-first only"已废除**): at Step 0, run 4 `ls` commands + `tools/design-coverage-check.sh {module}`. Snapshots `.v*.md` existence check is mandatory for ALL review modes. Existing snapshots serve as "前人理解" reference input (NOT ground truth); AI must re-execute Step 0.3 each review, producing `.v{N+1}.md`. If no snapshot exists → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（不中断 review，2026-07-17 变更：原"阻断+触发附录 C"改为"Step 0.3 嵌入生成"）。不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD + 71 DOG 触发**）。
 - **Forbidden snapshot sources** (P0-process-violation): `tmp_design_and_todo/`, `/tmp/`, doc §3 inline design (**circular argument**: §3 is review target, cannot be snapshot source), unprefixed `design.md`/`outline.md` (must have `{NN}-` prefix), cross-doc snapshots (e.g. `02` reusing `01-design.md`), **treating old snapshots as ground truth** (snapshots are input, not output).
@@ -68,7 +68,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 
 ## Ground Truth Priority
 ```
-Minix3 C source > Rust implementation > documentation > AI analysis
+Minix3 C source behavior > design contract > Rust implementation > design/technical documentation > AI analysis
 ```
 When in doubt, grep `minix3/` and read the original C code.
 
@@ -85,7 +85,7 @@ Each doc in `notes/rewrite/` follows:
 
 ## Review System
 
-The review system enforces structured review via 9 skills (in `prompt/skill/`, synced to `.claude/skills/` and `.trae/skills/`). Full process details: `prompt/skill/review-process-skill.md`. The 9th skill `review-implementation-skill` (added 2026-06-22 from the 06-design.md/06-design-final.md implementation) verifies design ↔ code consistency, tracks §X self-review issues, and enforces backward-compatible refactor + test coverage boundary.
+The review system enforces structured review via 9 domain skills (in `prompt/skill/`, adapted to `.trae/skills/` and `.codex/skills/`). Claude Code Runtime uses the `review-scan` orchestrator (`.claude/skills/review-scan/`) + `review-implementation-skill` (`.claude/skills/review-implementation-skill/`), with always-on rules in `.claude/rules/`. Full process details: `prompt/skill/review-process-skill.md`. The 9th skill `review-implementation-skill` (added 2026-06-22 from the 06-design.md/06-design-final.md implementation) verifies design ↔ code consistency, tracks §X self-review issues, and enforces backward-compatible refactor + test coverage boundary.
 
 ### ⛔ Explicit Skill Invocation
 You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it". The Skill Invocation Log in scan.md must reflect actual Skill tool calls, not planned/intended calls.
@@ -99,7 +99,7 @@ You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER
 - **Gate D-6**: structure.md skeleton review (doc review only) — structure.md generated + 12-section review table + failures in Issue List
 - **Gate E**: Test verification — §5 each test function grep-verified (if doc has §5)
 - **Gate G**: VERIFY-CHECK independent validation — VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%); CONCERN/FAIL may NOT mark CONVERGED
-- **Gate H**: Design + outline alignment check (Step 1.6) — Profile R/C/I/H-K only. Verifies doc/code matches **最新版本快照** (`.v{N}.md`) + snapshot is complete + implementable + **outline.v{N}.md exists + doc↔outline no P0 deviation** (H.6, 方案 D v2); P0-design-missing/wrong/deviation must be fixed or IN_DESIGN-tagged before CONVERGED. **⛔ Gate H 不允许 N/A 判定**：若本文档无专属快照（任何版本都不存在），必须**执行 Step 0.3 嵌入生成** `.v1.md`（不切换 Design-First，不中断 review），不得标 N/A 跳过（违反 = P0-process-violation）。
+- **Gate H**: Design + outline alignment check (Step 1.6) — **所有 review 模式必检（2026-07-16 扩）**. Verifies doc/code matches **最新版本快照** (`.v{N}.md`) + snapshot is complete + implementable + **outline.v{N}.md exists + doc↔outline no P0 deviation** (H.6, 方案 D v2); P0-design-missing/wrong/deviation must be fixed or IN_DESIGN-tagged before CONVERGED. **⛔ Gate H 不允许 N/A 判定**：若本文档无专属快照（任何版本都不存在），必须**执行 Step 0.3 嵌入生成** `.v1.md`（不切换 Design-First，不中断 review），不得标 N/A 跳过（违反 = P0-process-violation）。
 
 Any Gate failed → scan.md marked DRAFT, STATE.md not updated. **"✅ Gate passed" without attached command+output evidence is invalid.** Gate evidence strength: L1 (tool output, required for A/D/E), L2 (manual grep, acceptable for B/C), L3 (inference, treated as FAIL unless `MANUAL_FALLBACK` justified).
 
@@ -108,7 +108,7 @@ Before correctness checks, generate `structure.md` (12-section skeleton analysis
 
 ### P0 Mandatory Checklist (Gate D, see `prompt/skill/review-patterns-skill.md` §0)
 1. §5 tests exist: `rg "fn {test_name}" {rust_dir}` — missing → P0
-2. trait has ≥1 impl: `rg "impl.*{TraitName}" {rust_dir}` — 0 impl → P0
+2. trait has ≥2 行为不同的 impl: `rg "impl.*{TraitName}" {rust_dir}` — 0 impl → P0（死代码/虚构 trait）；1 impl → P1（trait 抽象需 ≥2 行为不同的实现）；≥2 impl → ✅
 3. function in declared file: `rg "fn {name}" {file}` — not found → P0
 4. core algorithm not stub: `rg "todo!|unimplemented!|unreachable!|panic!" {rust_dir}` — stub → P0; `panic!` in non-test code that represents unimplemented functionality or a reachable unhandled path → treat as stub/unhandled path, must be justified in comment
 5. §4 signatures match: compare doc §4 vs actual — mismatch → P0
@@ -123,7 +123,7 @@ Before correctness checks, generate `structure.md` (12-section skeleton analysis
 - **54 视角漂移 (P2)**: subject switches within same chapter
 - **55 架构特有机制喧宾夺主 (P2)**: arch-specific legacy overshadows core
 
-### Key Patterns (66-74, review process, NEW 2026-07-16/17/30)
+### Key Patterns (66-78, review process, NEW 2026-07-16/17/30/31/08-14)
 - **66 RCPD** (Reference Code Path Drift): TODO 描述引用的 `file:line` 已不存在 → 模式 66 + Step 0.7.1 path existence validation
 - **67 CFNOC** (C Function Name vs OS Concept Confusion): 把 C 函数名误读为 OS 概念对象 → Step 0.7.2 AI claim grep verification
 - **68 DSC** (Doc Section Confusion): 把 Ch2 C 展示误判为 Ch4 Rust 实现问题 → Step 0.7.3 doc chapter context awareness
@@ -195,8 +195,9 @@ Every scan.md MUST include a `§Rule Discovery` section answering: "Did this rev
 ### Convergence Cost Warning (Step 7.1)
 To prevent over-convergence (chasing P1→0 across many rounds), stop and deliver when ANY of these trigger:
 1. Same doc reviewed ≥5 rounds → force deliver, remaining P1/P2 → backlog
-2. Two consecutive rounds with new P1 ≤ 1 → converged, remaining P1 → backlog
+2. Two consecutive rounds with new P1 ≤ 1 → converged, remaining P1/P2 → backlog
 3. Current round cost >80% of previous but new findings <20% → stop
+4. **首次零发现（漏检自检，NEW 2026-08-14）**：首次 review 0 P0/P1/P2 → 触发**漏检自检**（随机抽 3 个检查项重跑，如 Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付。（原"review 即 PASS，强制交付"已废弃）
 
 See `prompt/skill/review-process-skill.md` §Step 7.1.
 
@@ -225,11 +226,9 @@ See `prompt/skill/review-process-skill.md` §Step 7.1.
 | **Step 0.3.3 outline-review 嵌入生成** | ✅ 首次+第二次+第三次+第四次触发（Doc 04/05/06/07） | Doc 04-07 (07-31) |
 | **§2.4g const 权威位置检查** | ✅ 已落地（review-doc-skill） | Doc 05 (07-31) |
 | **§2.4h 代码注释 doc 归属交叉检查** | ✅ 已落地（review-doc-skill，Pattern #76 配套） | Doc 05 (07-31) |
-| **§2.4i L3 grep 主动验证**（NEW 2026-07-31）| ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
-| **§2.4j 测试总数末段补充**（NEW 2026-07-31）| ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
+| **§2.4i L3 grep 主动验证**（NEW 2026-07-31）| ✅ 已落地（Doc 07 §5.4 6/6 stub 行号验证成功） | Doc 06 → Doc 07 |
+| **§2.4j 测试总数末段补充**（NEW 2026-07-31）| ✅ 已落地（Doc 07 末段 29/120 tests 补充） | Doc 06 → Doc 07 |
 | **Step 1.0a-自动 反向偏移自动重算** | ⏸ Proposal #7 增强 | Doc 06 (07-31) |
-| **Step 5.4 L3 grep 主动验证** | ✅ 已落地（Doc 07 §5.4 6/6 stub 行号验证成功） | Doc 06 → Doc 07 |
-| **Step 5.5 测试总数末段补充** | ✅ 已落地（Doc 07 末段 29/120 tests 补充） | Doc 06 → Doc 07 |
 | **Step 7.1 触发停止规则 3**（NEW 2026-07-31）| ✅ 已应用（Doc 07 review 即触发） | Doc 07 (07-31) |
 | **Pattern #66 RCPD doc 主动应用**（NEW 2026-07-31）| ✅ Doc 07 §5.4 显式应用 | Doc 07 (07-31) |
 | **Proposal #7 自动化行号校验脚本** | ⏸ 待用户确认后开发 `tools/review-line-check.sh`（**增强**：反向偏移自动重算） | Doc 03 (07-31) |
@@ -239,8 +238,8 @@ See `prompt/skill/review-process-skill.md` §Step 7.1.
 | **Proposal #11 Pattern #76 Cross-Doc Attribution Drift** | ✅ 已落地 | Doc 05 (07-31) |
 | **Proposal #12 design.md §X-Y "权威位置"段** | ⏸ 待用户确认后落地 | Doc 05 (07-31) |
 | **Proposal #13 Step 1.0a-自动 反向偏移自动重算** | ⏸ Proposal #7 增强 | Doc 06 (07-31) |
-| **Proposal #14 Step 5.4 L3 grep 主动验证** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
-| **Proposal #15 Step 5.5 测试总数末段补充** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
+| **Proposal #14 L3 grep 主动验证（§2.4i）** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
+| **Proposal #15 测试总数末段补充（§2.4j）** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
 | **Proposal #16 Step 7.1 触发停止规则 3**（NEW 2026-07-31）| ✅ 已应用 | Doc 07 (07-31) |
 | **Proposal #17 Pattern #66 RCPD doc 主动应用**（NEW 2026-07-31）| ✅ Doc 07 显式应用 | Doc 07 (07-31) |
 | **Proposal #18 Step 0.3.3 outline-review 批量补齐**（NEW 2026-07-31）| ⏸ 待用户确认后统一触发 user-confirmed review | Doc 07 (07-31) |
@@ -260,9 +259,9 @@ See `prompt/skill/review-process-skill.md` §Step 7.1.
 9. **代码注释 doc 归属系统性过时**：本次 Doc 05 发现 `(covered in NN)` 注释错位（3 处）+ `see XX-doc.md` 引用旧 doc 命名（9+ 处）—— **之前 4 次 review 都未深入代码注释交叉**
 10. **跨 crate const 重复定义盲点**：DEFAULT_HZ 在 os/arch + os/kernel 两 crate 独立定义（不会编译错误）→ 已加 **"权威位置"段说明**（Proposal #12）
 11. **行号反向偏移是系统性问题（NEW）**：本次 Doc 06 发现 6 处反向偏移（-7/-9/-13），代码增量后 doc 未同步 → **Step 1.0a-自动 + auto_resync_line**（Proposal #13 增强 Proposal #7）
-12. **§5.4 L3 grep 证据未主动验证（NEW）**：本次 Doc 06 review 依赖 doc 自证 → **Step 5.4 L3 grep 主动验证**（Proposal #14 → Doc 07 验证成功）
-13. **测试总数末段补充（NEW）**：本次 Doc 06 无测试总数声称但实际 610 tests 通过 → **Step 5.5 测试总数末段补充**（Proposal #15 → Doc 07 验证成功）
-14. **Zero-bias milestone（NEW, Doc 07）**：7 次 review 中**首次** 0 P0/P1/P2（review 即 PASS）—— 累积改进极致效果 + **触发 Step 7.1 停止规则 3**（成本/收益比强制交付）
+12. **§5.4 L3 grep 证据未主动验证（NEW）**：本次 Doc 06 review 依赖 doc 自证 → **L3 grep 主动验证（§2.4i）**（Proposal #14 → Doc 07 验证成功）
+13. **测试总数末段补充（NEW）**：本次 Doc 06 无测试总数声称但实际 610 tests 通过 → **测试总数末段补充（§2.4j）**（Proposal #15 → Doc 07 验证成功）
+14. **Zero-bias milestone（NEW, Doc 07）**：7 次 review 中**首次** 0 P0/P1/P2（review 即 PASS）—— 累积改进极致效果 + **触发 Step 7.1 停止规则 4**（**2026-08-14 更新为漏检自检**：原"强制交付"已废弃，改为抽 3 项重跑确认无遗漏再交付）
 15. **Doc 主动应用 Pattern #66 RCPD（NEW, Doc 07）**：doc 07 §5.4 显式声明"不引用 syscall_copy.rs 行号避免漂移传播（Pattern #66 RCPD）"—— **首个 doc 主动标注已应用 review pattern**，doc 作者已具备 review pattern 意识
 16. **代码注释 doc 复述传递性 drift（NEW, Doc 08）**：本次 08 review 发现 3 处 P2 行号偏移全部源自 `lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）—— doc §4.6 复述了错误注释。**根因诊断**：必须修代码注释（root cause）+ 同步修所有复述的 doc（避免传递性 drift）→ **Pattern #77 + Step 1.0f**（Proposal #19/#20，已落地）
 17. **首个 doc 三 snapshot 全齐（NEW, Doc 08）**：08 review 是 8 次 review 中**首个** tool scan ✅ PASS（outline + outline-review + design 都真实存在）—— 卓越设计维护的标志 + 不需要 Step 0.3.3 嵌入生成

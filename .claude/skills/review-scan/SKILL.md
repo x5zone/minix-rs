@@ -26,7 +26,7 @@ You are a review orchestrator. Your job is to execute checks domain by domain, i
 
 | Gate | Check | Pass Criteria | Fail Consequence |
 |------|-------|---------------|------------------|
-| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 8 grep-verifiable anchor sections | DRAFT, no STATE.md write |
+| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 9 grep-verifiable anchor sections | DRAFT, no STATE.md write |
 | **A** | Phase 2 Coverage Enumeration | coverage-extract.py executed + SYMBOLS.md on disk + `gate-evidence-A` block | DRAFT, no STATE.md write |
 | **B** | Phase 7 Step 2 Diff Extraction | Top 5 behavior contract table (3 语义偏移 + 2 覆盖缺口, **8 fields × 5 funcs**) | DRAFT, no STATE.md write |
 | **C** | Phase 7 Step 3.5 Precision Check | 5 meta-rules check table output | DRAFT, no STATE.md write |
@@ -157,7 +157,7 @@ Output: structure.md + 12-section review table + failures written to Issue List.
 
 ## Phase 2.6: Design + outline Alignment Check — Gate H
 
-> **Precondition**: 仅 Profile R / Profile C / Profile I / Profile H-K 必检。Profile D / Profile A 可跳过。
+> **Precondition**: 所有 review 模式都执行。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 > **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身完整性 + 可实现性 + **outline ↔ doc 对齐**（方案 D 新增）。
 
 Phase 2.6.1 design 对齐检查（6 项）：
@@ -244,7 +244,7 @@ Execute 16 code checks IN ORDER:
 
 Read: `.claude/skills/review-scan/checks/patterns.md`
 
-Execute 6 pattern categories:
+Execute 9 pattern categories:
 - §0 P0 必检清单（Gate D，5 项）
 - 文档错误模式（15 个，1-15）
 - 跨文档联动错误模式（3 个，A-C）
@@ -252,6 +252,8 @@ Execute 6 pattern categories:
 - 测试错误模式（6 个，35-40）
 - 卓越性错误模式（7 个，41-47）
 - 叙事与概念错误模式（10 个，48-57）— 因果链编造(48)为 P0
+- Design-First 反模式（63-65）
+- Review 流程反模式（66-78）
 
 ---
 
@@ -339,9 +341,9 @@ STATE.md contents:
 
 | Domain File | Replaces | Checks |
 |-------------|----------|--------|
-| `doc.md` | doc/00-12 (13 files) | 12 doc correctness checks |
+| `doc.md` | 文档检查清单 | 16 doc correctness checks (Check 00-15) |
 | `code.md` | code/01-16 (16 files) | 16 code correctness checks |
-| `patterns.md` | patterns/* (3 files) | 15 doc + 3 cross + 23 code patterns |
+| `patterns.md` | patterns/* (3 files) | 15 doc + 3 cross + 19 code patterns |
 | `excellence.md` | new | 3 doc + 6 code excellence checks |
 | `process.md` | review-process + skip-check | Step 0-7 + meta-check + Coverage Enumeration |
 

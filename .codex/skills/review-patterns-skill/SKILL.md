@@ -1,6 +1,6 @@
 ---
-name: "review-patterns-skill"
-description: "Minix-RS Review 常见错误模式：P0 必检清单（5 项机械化检查）、文档 15 模式、跨文档 3 模式、代码 14 模式（含 4 个 Kernel SMP 并发）、测试 6 模式、卓越性 7 模式、叙事 10 模式（48-57），附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
+name: review-patterns-skill
+description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 79 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
 ---
 
 # Minix-RS Review 常见错误模式
@@ -10,7 +10,8 @@ description: "Minix-RS Review 常见错误模式：P0 必检清单（5 项机械
 | # | 检查项 | grep 命令模板 | 判定标准 | 未通过 |
 |---|-------|--------------|---------|--------|
 | **1** | 文档 §5 测试是否真实存在？ | `rg "fn {test_name}" {rust_dir} --type rust -n` | 文档 §5 列出的每个测试函数必须存在；缺失/未找到→P0（测试缺失） | P0 |
-| **2** | 文档声明的 trait 是否有 ≥1 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；只有默认 impl 没有真实 arch impl 也算未通过 | P0 |
+| **2** | 文档声明的 trait 是否有 ≥2 行为不同的 impl？ | `rg "impl.*{TraitName}" {rust_dir} --type rust -n` | 0 impl → P0（死代码/虚构 trait）；1 impl → P1（可能死代码，trait 抽象需 ≥2 行为不同的实现）；≥2 impl → ✅ | P0/P1 |
+> **2026-08-15 修复 C-P1-3（0 impl 优先于测试覆盖）**：当 trait 0 impl 时，即便有测试覆盖，仍判 P0。判定优先级：**0 impl → P0 > 测试覆盖度判定**。 |
 | **3** | 文档声明的函数是否在声明的文件中？ | `rg "fn {name}" {file}` | 文档说"在 file.rs 中定义 fn foo"，但 grep 无结果→P0（虚构位置）；找到但 signature 完全不符也按未通过处理 | P0 |
 | **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性 | P0/P1 |
 | **5** | 文档 §4 签名是否与实际一致？ | 逐函数对比 `rg "fn {name}" {file}` 输出 vs 文档 §4 | 参数/返回值/可见性/泛型约束不一致→P0（签名偏移）；有一项不符即整项 ❌ | P0 |
@@ -20,6 +21,21 @@ description: "Minix-RS Review 常见错误模式：P0 必检清单（5 项机械
 - **出现 PARTIAL / ⚠️ / 部分通过 / "基本通过" 中的任何一种，该项按 ❌ 处理，Gate D 整体未通过。**
 - 任何一项 ❌ → scan.md 标记 DRAFT，禁止写入 STATE.md。
 - 若某项确实不适用（如文档无 §5），需明确说明原因并单独列为一行 "N/A + 原因"，不能直接跳过。
+
+### P0 六分类（2026-08-15 修复 C-P0-1 同步）
+
+> 来源：[review-rules/review.md §4.1](../review-rules/review.md) P0 六分类表。
+
+| P0 类型 | 含义 | 处理 | 触发 Refactor |
+|--------|------|------|---------------|
+| **P0-fact** | 事实错误（行号/函数名/引用与实际不符，但代码本身可运行）| 渐进修复 | 否 |
+| **P0-code-bug** | 代码 bug（编译失败 / 行为错误 / panic）| 渐进修复 | 否 |
+| **P0-design-deviation** | design 已规定但实现偏离 | 渐进修复（修 code 回到 design）| **code Refactor** |
+| **P0-design-missing** | design 未规定但应该有 | **design Refactor**（先补 design）| **design Refactor** |
+| **P0-design-wrong** | design 本身错 | **design Refactor 必须** | **design Refactor** |
+| **P0-test-missing** | 测试作为正确性证明缺失（§5 测试无对应实现 / 核心 trait 0 测试）| 渐进修复（补测试），**阻断 CONVERGED** | 否 |
+
+> **2026-08-15 修复 C-P0-1 处理要点**：P0-test-missing 不阻塞 review **发现**（可在 review 中报告），但**阻断 CONVERGED**（未修复不能 CONVERGED）。修复其他 P0 时若未补测试 → 自动升级为 P0-test-missing。
 
 **输出格式**（写入 scan.md）：
 ```markdown
@@ -787,7 +803,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 
 ---
 
-## §X.6 Review 流程反模式（模式 66-72，NEW 2026-07-16/17）
+## §X.6 Review 流程反模式（模式 66-77，NEW 2026-07-16/17/30/31）
 
 > 关注 review 流程本身的元数据完整性与 AI claim 真实性。**完整定义**：见 [review-rules/review-patterns.md](../review-rules/review-patterns.md)。
 
@@ -835,7 +851,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 **定义**：AI 以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过 design + outline 预检，导致 scan.md 标 CONVERGED 但 `{NN}-outline.v*.md` / `{NN}-design.v*.md` 实际缺失。
 
 **判定信号**：
-- AI 跳过 `ls design/{NN}-*.v*.md` 命令
+- AI 跳过 `ls .design/{NN}-*.v*.md` 命令
 - scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL
 - 用"已有 CONVERGED 状态"或"复用 03/04 design"为由跳过预检
 
@@ -1237,3 +1253,34 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 
 **首次发现**：2026-07-31 08-system-init-boot-finish review（`.review/claude/03-stage-kernel/08-system-init-boot-finish/scan.md`，Pattern #77）
 
+---
+
+### 模式 78：C 源码 bug 未显式标注（CSBU）（P1）
+
+- Rust 修复了 C 源码 bug 但未标注 `// MINIX3 BUG:` → P1
+- 验证：`rg "// MINIX3 BUG:" os/ --type rust`
+- 来源：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏
+
+---
+
+## 附录：Pattern→Step 交叉引用表
+
+> **用途**：AI 在执行某 Step 时，快速找到该 Step 最相关的模式。非穷举——所有模式都可能在任何阶段触发。
+
+| Step | 最相关模式 | 模式主题 |
+|------|-----------|---------|
+| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 69 PSMD, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/快照缺失/TODO 陈旧/决策泛化 |
+| Step 0.5（structure.md） | 1-15（文档错误）, A/B/C（跨文档） | 文档基础错误 + 跨文档联动 |
+| Step 1（C 源码） | 5（代码与文档不一致）, 11（设计与实现脱节）, 78 CSBU | C-Rust 语义对齐 + C bug 标注 |
+| Step 1.5（覆盖率） | — | 覆盖率由 coverage-extract.py 穷举，模式 1-15 兜底 |
+| Step 2（Diff Extraction） | 16-20（代码质量模式）, 48（因果链编造） | Translate 味道/unsafe/errno + 因果链验证 |
+| Step 2.5（链接验证） | — | 链接由 grep 验证，无专属模式 |
+| Step 3（Sanity Check） | 21-25（语义对齐模式）, 26-29（Kernel SMP 并发）, 30（外部知识误导） | C 引用验证 + 概念准确性 + SMP 并发 |
+| Step 3.5（Precision Check） | 30-34（精度模式）, 50（arch scope 未标注） | 精度抽样 + 架构范围 |
+| Step 3.5a（纵向链路） | 51-53（链路模式） | 纵向链路完整性 |
+| Step 3.5b（因果链） | 54-57（叙事模式） | 视角漂移/架构喧宾/决策日志/知识泄漏 |
+| Step 4（跨文档联动） | 58（跨文档状态表漂移）, A/B/C（跨文档联动） | 跨文档一致性检查 |
+| Step 4.5（测试验证，Gate E） | 35-40（测试模式） | 测试存在性 |
+| Step 5（输出） | 63 Design-Missing, 64 开发文档味, 65 Translate 倾向 | Design-First + 叙事质量 |
+| Gate H（design 门控） | 63, 64, 65 | Design 缺失/开发文档味/Translate 倾向 |
+| 卓越性 | 73-77（文档漂移模式） | Edition/路径/参见/归属/注释行号 |
