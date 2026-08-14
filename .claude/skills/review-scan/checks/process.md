@@ -70,7 +70,7 @@ Missing this section → scan.md marked DRAFT.
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
    - **`{module}` resolution**: use the **first directory under `notes/rewrite/`** in the target doc path. E.g. `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`. This is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
    - **`{doc-stem}`** = target doc basename without extension (e.g. `03-kmain-cstart`). **`{agent}`** = model id (Trae: glm/kimi/...; Claude: m3/...).
-   - **STATE preflight**: run `tools/review-state-validate.py {state_path}` to verify referenced files exist and Open issues map to scan.md entries.
+   - **STATE preflight**: run `tools/review-state-validate.py --state {state_path}` to verify referenced files exist and Open issues map to scan.md entries.
    - **Auto-init**: `tools/review-init.sh claude {doc-path}` computes `{module}`/`{doc-stem}` and creates standard directories.
 2. Output:
 ```
@@ -1007,7 +1007,10 @@ This makes the rule set self-evolving — patterns discovered in one review feed
 To prevent over-convergence (chasing P1→0 across many rounds at cost exceeding benefit), stop and deliver when ANY of these trigger:
 1. **Round threshold**: same doc reviewed ≥5 rounds → force deliver, remaining P1/P2 → backlog
 2. **P1 marginal decay**: two consecutive rounds with new P1 ≤ 1 → converged, remaining P1 → backlog
-3. **Cost/benefit ratio**: current round cost >80% of previous but new findings <20% → stop
+3. **Cost/benefit ratio** (2026-08-15 A-P1-3 weighted): current round cost >80% of previous but weighted new findings <20% → stop
+   - **Weighted formula**: `weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
+   - **First round exempt**: no previous-round baseline in round 1; this rule is skipped
+   - **Decision**: stop when `weighted_new < previous_round_weighted_new * 0.2` AND current cost > previous cost * 0.8
 4. **首次零发现（漏检自检，NEW 2026-08-14）**：首次 review 0 P0/P1/P2 → 触发**漏检自检**：随机抽 3 个检查项重跑（推荐：Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付。
 
 Output in scan.md tail:
@@ -1015,7 +1018,7 @@ Output in scan.md tail:
 ### 收敛成本评估
 - 当前轮次: N
 - 本轮新发现: P0=X, P1=Y, P2=Z
-- 触发停止规则: [1/2/3/4/无]
+- 触发停止规则: [1/2/3/无]
 - 决定: 继续收敛 / 强制交付（剩余转 backlog）
 ```
 

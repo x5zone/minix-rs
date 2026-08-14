@@ -715,7 +715,7 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 2. 字段保留但 doc 误标"已删除"（~20%）
 3. doc 代码示例只展示字段子集（~10%）
 
-**自动检测**：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
+**自动检测建议**（未来实施）：`tools/doc-freshness-check.sh` 对比 `rg "^pub " struct_file.rs` 与 doc §X 字段计数。
 **来源案例**：`01-boot-shim-bootstrap.md` §3.5 原写"9 字段"，`os/libs/minix-boot/src/kernel_info.rs` 实际 12 字段（已在后续修复）。
 
 ### 模式 60：诚实显式 TODO 模式（P1，推广现有最佳实践）

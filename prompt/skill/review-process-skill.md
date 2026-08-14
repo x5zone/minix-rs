@@ -169,7 +169,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`
   - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。不跨工具互验；Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下出现两份 STATE.md 且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
-  - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
+  - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
 - **⛔ design + outline 预检（所有 review 模式强制，前移自 Step 1.6，2026-07-16 扩）**：
   - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（如 `tmp_design_and_todo/` 下的讨论稿、`/tmp/` 下的实施稿）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
   - **方案 D 演进（v2：可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时，AI **重新执行**附录 C 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？每轮 review 重新评估是独立 review 原则的体现。
@@ -239,7 +239,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   > ### 必跑预检命令（不可跳过）
   > ```bash
   > # 1. STATE 校验
-  > tools/review-state-validate.py .review/trae/{module}/STATE.md
+  > tools/review-state-validate.py --state .review/trae/{module}/STATE.md
   >
   > # 2. design 预检（模式 69 PSMD 配套）
   > ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
@@ -1567,7 +1567,10 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 **判定规则**（任一触发即应停止并交付）：
 1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
 2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 视为收敛，剩余 P1 转为 backlog
-3. **成本/收益比**：当前轮 review 耗时 > 上一轮 80% 但新发现问题 < 上一轮 20% → 停止
+3. **成本/收益比**（2026-08-15 修复 A-P1-3 加权定义）：当前轮 review 耗时 > 上一轮 80% 但加权新发现问题 < 上一轮 20% → 停止
+   - **加权公式**：`weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
+   - **首轮不适用**：第一轮 review 没有"上一轮"基准，自动跳过此条
+   - **判定**：本轮 `weighted_new < 上一轮 weighted_new * 0.2` 且 本轮耗时 > 上一轮耗时 * 0.8 → 停止
 4. **首次零发现**：首次 review 0 P0/P1/P2 → 触发**漏检自检**：随机抽 3 个检查项重跑（推荐：Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付
 
 **输出**：在 scan.md 末尾标注"收敛成本评估"：
