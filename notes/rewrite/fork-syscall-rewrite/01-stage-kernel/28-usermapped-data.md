@@ -46,7 +46,7 @@ Minix3 32-bit 采用**共享内存映射**策略；minix-rs 64-bit 采用**系�
 
 **映射层面**（[arch/i386/memory.c:746-806](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/memory.c)）：`arch_phys_map()` 函数返回段的物理地址和长度，VM 调用此函数后用 `VMMF_USER` 标志映射到每个进程的用户地址空间。
 
-**访问层面**：用户态通过 `get_minix_kerninfo()`（[lib/libc/sys/kernel_utils.c:25](file:///home/xzhao/github/minix-rs/minix3/minix/lib/libc/sys/kernel_utils.c)）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
+**访问层面**：用户态通过 `get_minix_kerninfo()`（[lib/libc/sys/kernel_utils.c:26](file:///home/xzhao/github/minix-rs/minix3/minix/lib/libc/sys/kernel_utils.c)）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
 
 ### 1.3 IPC 入口向量表的三套机制
 
@@ -87,11 +87,11 @@ Minix3 32-bit 提供 3 种 IPC 入口机制，对应不同 x86 指令：
 | 文件 | 行数 | 核心内容 |
 |------|------|---------|
 | [usermapped_data.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/usermapped_data.c) | 15 | 8 个数据结构声明（`__section(".usermapped")`） |
-| [arch/i386/usermapped_data_arch.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_data_arch.c) | 32 | 3 个 IPC 向量表定义 |
+| [arch/i386/usermapped_data_arch.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_data_arch.c) | 33 | 3 个 IPC 向量表定义 |
 | [arch/i386/usermapped_glo_ipc.S](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S) | 108 | 3×7=21 个 IPC trampoline 函数 |
-| [arch/i386/kernel.lds](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/kernel.lds) | 36 | 链接脚本段定义（L24-28） |
+| [arch/i386/kernel.lds](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/kernel.lds) | 37 | 链接脚本段定义（L24-28） |
 | [arch/i386/memory.c:744-806](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/memory.c) | 63 | `arch_phys_map()` usermapped 段返回 |
-| [include/minix/type.h:104-244](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/type.h) | 141 | 8 个结构体定义 |
+| [include/minix/type.h:98-244](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/type.h) | 147 | §2.2 的 7 个结构体定义（`kinfo` 在 param.h；区内另夹 io_range/minix_mem_range/boot_image/memory/k_randomness 5 个辅助结构体） |
 | [include/minix/param.h:14-47](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/param.h) | 34 | `struct kinfo` 定义 |
 
 ### 2.2 8 个用户可见数据结构
@@ -168,7 +168,7 @@ usermapped_send_softint:
 ```
 
 **sysenter 版本**（Intel 快速调用，栈管理复杂）：
-- 额外 push %edx/%esi/%edi
+- 额外 push 第二个 %ebp（调用者 ebp，供 proc_stacktrace 栈回溯）+ %edx/%esi/%edi
 - `%esi` 保存恢复后的 %esp，`%edx` 保存返回 %eip
 - `movl $0f, %edx` 设置返回标签
 - `sysenter` 陷入内核，返回到 `0:` 标签
@@ -198,7 +198,7 @@ else if(index == usermapped_index) {
 }
 ```
 
-VM 调用此函数枚举所有需要映射的段，然后在进程地址空间建立映射。`VMMF_GLO` 表示全局段（所有进程共享同一映射），`VMMF_USER` 表示用户态可访问。
+VM 调用此函数枚举所有需要映射的段，然后在进程地址空间建立映射。`VMMF_USER` 使 PTE 置用户位（pagetable.c:1206）；`VMMF_GLO` 进一步置 PTE **Global 位**（`I386_VM_GLOBAL`，pagetable.c:1219）——TLB 全局页，CR3 切换/进程切换时不被冲刷。usermapped_glo 段映射到所有进程（同一物理页 + 同一虚拟地址），配合 Global 位避免频繁 TLB 失效。
 
 ---
 
@@ -234,7 +234,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **C 行为**: `struct kclockinfo kclockinfo __section(".usermapped")` 全局变量，用户态直接读取 `kclockinfo.uptime`。
 
-**Rust 64-bit 决策**: `ClockState` 结构体字段（[os/kernel/src/clock.rs:673](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs)），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
+**Rust 64-bit 决策**: `ClockState` 结构体字段（[os/kernel/src/clock.rs:708](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs)），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
 
 **理由**:
 1. 封装性——内部字段可添加验证逻辑
@@ -307,20 +307,22 @@ pub struct KernelInfo {
 
 #### ClockState（kclockinfo 内部化）
 
-[os/kernel/src/clock.rs:673](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs) 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
+[os/kernel/src/clock.rs:708](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs) 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
 
 ```rust
 struct ClockState {
     hz: u32,                    // C: kclockinfo.hz
-    uptime: AtomicU64,          // C: kclockinfo.uptime (BSP only)
-    realtime: AtomicU64,        // C: kclockinfo.realtime (BSP only)
-    boottime: AtomicI64,        // C: kclockinfo.boottime (BSP only)
+    uptime: u64,                // C: kclockinfo.uptime (BSP only)
+    realtime: u64,              // C: kclockinfo.realtime (BSP only)
+    boottime: u64,              // C: kclockinfo.boottime (BSP only)
     loadinfo: LoadInfo,         // C: kloadinfo (all CPUs)
-    // ...
+    // ...（另有 cpu_id/is_bsp/adjtime_delta/timers）
 }
 ```
 
-用户态访问通过函数封装：`get_monotonic()` / `get_realtime()` / `get_boottime()`（clock.rs:75-91），而非直接读取全局变量。
+非 `Atomic`——`ClockState` 是 per-CPU 实例（`cpu_id` 字段），全局时钟字段仅 BSP 实例写、无跨 CPU 竞争。用户态可读副本在静态 `AtomicU64`：`CLOCK_UPTIME`/`CLOCK_REALTIME`/`CLOCK_BOOTTIME`（clock.rs:46/53/60），任何上下文（BKL 内外）只读原子。
+
+用户态访问通过函数封装：`get_monotonic()` / `get_realtime()` / `get_boottime()`（clock.rs:77/85/93），而非直接读取全局变量。
 
 #### LoadInfoStruct（GET_LOADINFO 子请求）
 
@@ -347,7 +349,7 @@ struct ClockState {
 | `minix_ipcvecs_syscall` | usermapped_data_arch.c:24 | 64-bit syscall 指令（直接，无 trampoline） |
 | 21 个 trampoline 函数 | usermapped_glo_ipc.S | 64-bit syscall/ecall/hvc 直接入内核 |
 | `arch_phys_map()` usermapped 分支 | memory.c:794-806 | 不保留 |
-| `get_minix_kerninfo()` | lib/libc/sys/kernel_utils.c:25 | 不保留 |
+| `get_minix_kerninfo()` | lib/libc/sys/kernel_utils.c:26 | 不保留 |
 
 ### 4.3 替代方案对照
 
