@@ -17,7 +17,7 @@
 //! - **D1**: `#[repr(C)]` structs mirror the C ABI exactly (field order,
 //!   sizes, alignment). This is required because user-space tools (the
 //!   `random` driver) interpret the raw bytes via the C struct layout.
-//! - **D2**: The global `KRANDOM` uses `static mut` + `addr_of_mut!` —
+//! - **D2**: The global `KRANDOM` uses `SyncUnsafeCell` + `get()` —
 //!   same pattern as `PROC_TABLE` / `PRIV_TABLE` / `IRQ_MANAGER`.
 //!   Access is BKL-protected (single-writer from IRQ path, single-reader
 //!   from syscall path).
@@ -200,8 +200,8 @@ pub unsafe fn try_krandom() -> Option<&'static mut KRandomness> {
     if !KRANDOM_INIT.load(Ordering::Acquire) {
         return None;
     }
-    // SAFETY: caller guarantees BKL (or single-threaded boot). Uses
-    // `addr_of_mut!` to avoid the `static_mut_refs` lint.
+    // SAFETY: caller guarantees BKL (or single-threaded boot).
+    // `SyncUnsafeCell::get()` returns a raw pointer, avoiding `static_mut_refs`.
     Some(unsafe { &mut *KRANDOM.get() })
 }
 
