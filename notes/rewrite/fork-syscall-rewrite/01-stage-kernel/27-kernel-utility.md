@@ -37,7 +37,7 @@
 
 - `do_diagctl` 实现（见 [25-misc-unported.md](25-misc-unported.md)）——本文档只覆盖 `kputc` 被调用的机制背景
 - boot 期 console 初始化（见 [03-kmain-cstart.md](03-kmain-cstart.md) `EarlyConsole` 初始化部分）
-- 普通进程的 `exit` 系统调用（见 [16-fork-exit.md](16-fork-exit.md) `SYS_EXIT`）
+- 普通进程的 `exit` 系统调用（见 [17-syscall-process.md](17-syscall-process.md) `SYS_EXIT`）
 
 ---
 
@@ -103,8 +103,8 @@ flowchart TD
 **关键设计**：
 - **重入保护**（utility.c:26-28）：`ARE_PANICING` 魔数防止 panic 递归——若 `panic` 内部再次 `panic`（如 `printf` 本身出错），直接 `reset()` 避免无限递归
 - **`fmt == NULL` 允许**（utility.c:30）：调用方可只触发 stacktrace 而不打印消息
-- **`util_stacktrace()`**（utility.c:39）：arch-independent stack walker，打印当前栈回溯
-- **`minix_shutdown(0)`**（utility.c:49）：最终终止——发送 shutdown 消息给 PM，PM 调用 BIOS/ACPI 复位
+- **`util_stacktrace()`**（utility.c:39 调用，定义在 `libsys/stacktrace.c:17`）：帧指针链遍历打印返回地址——函数体受 `USE_SYSDEBUG` 条件编译门控（`libsys/Makefile` 中 `USE_SYSDEBUG != "no"` 时启用），默认 release 构建可能为空操作
+- **`minix_shutdown(0)`**（utility.c:49）：最终终止——禁用全部中断 + 直接打印停机消息 + `arch_shutdown(how)` 硬件复位（main.c:368-396）。panic 路径无需协商，直接交给硬件层复位
 
 ### 2.3 kputc：内核消息缓冲机制
 
@@ -122,9 +122,9 @@ void kputc(int c)
           ser_putc(c);
       }
       #endif
-      // 写入环形缓冲 km_buf（旧）
+      // 写入环形缓冲 km_buf
       kmess.km_buf[kmess.km_next] = c;
-      // 写入线性缓冲 kmess_buf（新，供用户态拉取）
+      // 写入线性缓冲 kmess_buf（供用户态拉取）
       kmess.kmess_buf[kmess.blpos] = c;
       if (kmess.km_size < sizeof(kmess.km_buf))
           kmess.km_size += 1;
@@ -145,8 +145,8 @@ void kputc(int c)
 
 | 缓冲 | 字段 | 用途 | 行为 |
 |------|------|------|------|
-| `km_buf` | `km_next` | 环形缓冲（旧） | `% _KMESS_BUF_SIZE` 取模回绕 |
-| `kmess_buf` | `blpos` | 线性缓冲（新） | 满时 `memmove` 左移丢弃最旧 |
+| `km_buf` | `km_next` | 环形消息缓冲（type.h:173 "buffer for messages"） | `% _KMESS_BUF_SIZE` 取模回绕 |
+| `kmess_buf` | `blpos` | 线性可打印副本（type.h:174 "printable copy of message buffer"，`80*25` 容量） | 满时 `memmove` 左移丢弃最旧 |
 | — | `km_size` | 累计字符数 | 上限 `sizeof(km_buf)` |
 
 **`END_OF_KMESS` 通知机制**：
@@ -191,7 +191,7 @@ void _exit(int e)
 
 **演进 rationale**：
 - C 需要手动实现 `va_start`/`vprintf` 格式化 + 重入保护 + stacktrace——Rust `panic!` 宏由编译器内建，自动处理格式化与调用点信息
-- C 的 `ARE_PANICING` 重入保护由 Rust 编译器保证——`#[panic_handler]` 不会递归调用 `panic!`
+- C 的 `ARE_PANICING` 重入保护由 halt-loop 实现天然保证——handler 内是 `loop { spin_loop }`，不经过格式化/打印路径，重入只是再次进入同一个循环，不会无限递归（C 的 `reset()` 等价物由架构复位替代）
 - C 的 `util_stacktrace()` 在 Rust 中由 `#[panic_handler]` 的 `PanicInfo` 提供 location 信息（`file:line`）
 - C 的 `minix_shutdown(0)` 在 Rust 中由 `#[panic_handler]` 的 halt-loop 替代（见 §4.1）
 
@@ -205,7 +205,7 @@ void _exit(int e)
 - C `kmess_buf` 环形缓冲是为**无 log 框架的内核**设计的——内核先缓冲，用户态日志服务定期拉取
 - Rust `EarlyConsole` trait（`os/plat/src/early_console.rs:14`）提供跨架构直接输出：boot 期即可用，无需用户态服务
 - Rust `log` crate 提供 leveled logging（`error!`/`warn!`/`info!`/`debug!`/`trace!`）+ 后端抽象——mock 平台（`os/plat/src/mock.rs`）用 `log::debug!` 记录操作
-- `do_diagctl` 的 `kputc` 路径在 Rust 中由 `EarlyConsole` 直接输出替代——消除 `END_OF_KMESS` + `send_diag_sig` 通知机制
+- `do_diagctl` 的 `kputc` 路径在 Rust 中由 `EarlyConsole` 直接输出替代（演进方向）——消除 `END_OF_KMESS` + `send_diag_sig` 通知机制（当前实现状态见 §6.4：`DIAGCTL_CODE_DIAG` 返回 ENOSYS）
 
 > **注**: minix-rs 当前未定义 `minix_kernel_log!` 宏；内核直接使用 `EarlyConsole::write_str` 输出字符串，mock 平台用 `log::debug!`。`log` crate 的接入点是 `os/plat/src/mock.rs`。
 
@@ -272,16 +272,16 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 
 | 调用点 | 场景 | C 等价 |
 |--------|------|--------|
-| `os/kernel/src/syscall.rs:697` | `SYS_ABORT` 系统调用 | C `do_abort` → `sys_abort` → `panic` |
-| `os/kernel/src/proc_table.rs:697` | `notify_scheduler` 内核发送失败 | 内部不变式违反 |
-| `os/kernel/src/vm.rs:899` | `kernel_call_resume` 状态非法 | 内部不变式违反 |
+| `os/kernel/src/syscall.rs:1681` | `SYS_ABORT` 系统调用 | C `SYS_ABORT` → `do_abort`（do_abort.c:16）→ `prepare_shutdown`（main.c:353）→ `minix_shutdown`（main.c:368） |
+| `os/kernel/src/proc_table.rs:731` | `notify_scheduler` 内核发送失败 | 内部不变式违反 |
+| `os/kernel/src/vm.rs:909` | `kernel_call_resume` 状态非法 | 内部不变式违反 |
 | `os/kernel/src/irq_manager.rs:150,154,161,318,342` | IRQ handler/vector 校验失败 | 内部不变式违反 |
 
-> `file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs`（line 697）—— `dispatch_abort` 的 `panic!("SYS_ABORT from endpoint {:?}...")`
+> `file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs`（line 1681）—— `dispatch_abort` 的 `panic!("MINIX will now be shut down ... (SYS_ABORT from endpoint {:?}...)")`
 
 **与 C `panic` 的差异**：
 - C `panic` 打印 `kernel panic:` 前缀 + stacktrace + `minix_shutdown`——Rust `panic!` 由 `#[panic_handler]` 处理，当前只 halt-loop（无消息打印）
-- C `ARE_PANICING` 重入保护由 Rust 编译器保证
+- C `ARE_PANICING` 重入保护由 halt-loop 实现天然保证（见 §3.1）
 - C `util_stacktrace()` 在 Rust 中未实现——`PanicInfo` 提供 location 但不展开栈
 
 ### 4.2 Rust kputc / log 接入
@@ -313,12 +313,12 @@ pub trait EarlyConsole {
 **内核调用点**（对应 C `kputc` 经 `printf` 调用）：
 
 ```rust
-// os/kernel/src/lib.rs:1410-1411 — announce() banner
+// os/kernel/src/lib.rs:1831 — announce() banner
 use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
 Console::write_str("\nMINIX-RS 0.1.0 (rust rewrite) — scheduling live\n");
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs`（line 1410）
+> `file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs`（line 1831）
 
 **`log` crate 接入**（mock 平台）：
 
