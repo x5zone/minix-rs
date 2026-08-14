@@ -6,7 +6,7 @@ description: "Minix-RS Review 核心语义定义与行为契约表模板。定�
 # Minix-RS Review 核心语义定义与行为契约表
 
 > 本 Skill 定义核心语义对齐标准，是 Review 的最高优先级检查项。
-> **详见**：[review-core-semantics.md](../review-rules/review-core-semantics.md)
+> **详见**：[review-core-semantics.md](../../../prompt/review-rules/review-core-semantics.md)
 
 ---
 
@@ -14,7 +14,7 @@ description: "Minix-RS Review 核心语义定义与行为契约表模板。定�
 
 ### 1.4 核心术语扩展
 
-> 配合 [review-core-semantics.md §1.4](../review-rules/review-core-semantics.md) 的术语统一。
+> 配合 [review-core-semantics.md §1.4](../../../prompt/review-rules/review-core-semantics.md) 的术语统一。
 
 **Refactor 定义**（Refactor ≠ Redesign）：
 - **Refactor (代码 Refactor)**：在不改外部行为的前提下，重写代码内部表达（如改命名、抽函数、改数据结构、改错误表达）。语义范围 = 代码。

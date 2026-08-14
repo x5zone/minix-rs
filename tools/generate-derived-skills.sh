@@ -51,10 +51,18 @@ generate_trae() {
   local src="$1"
   local dst="$2"
   # Trae: name/description 去引号
-  sed -E '1,/^---$/ {
+  # 相对链接适配：源位于 prompt/skill/（dirname 深度 2），派生位于 .trae/skills/{name}/（dirname 深度 3）
+  sed -E '
+    1,/^---$/ {
     s/^name: "([^"]+)"/name: \1/
     s/^description: "([^"]+)"/description: \1/
-  }' "$src" > "$dst"
+    }
+    # markdown 链接路径：../review-rules/ → ../../../prompt/review-rules/（两者均解析到仓库根）
+    s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+    s|]\(\.\./skill/|](../../../prompt/skill/|g
+    # 同目录 skill 链接（源内平铺）：](review-X-skill.md) → 派生布局 ../review-X-skill/SKILL.md
+    s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
+  ' "$src" > "$dst"
 }
 
 generate_codex() {
@@ -88,6 +96,10 @@ generate_codex() {
     s|-trae-review\.md|-codex-review.md|g
     # review-init.sh 参数：trae → codex
     s|review-init\.sh trae |review-init.sh codex |g
+    # 相对链接适配（与 generate_trae 相同，见上）
+    s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+    s|]\(\.\./skill/|](../../../prompt/skill/|g
+    s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
   ' "$src" > "$dst"
 }
 
@@ -111,7 +123,7 @@ main() {
 
   echo "=== Generate derived skills (target=$TARGET, check_only=$CHECK_ONLY) ==="
 
-  # Trae Agent files (no frontmatter conversion, direct copy to .trae/)
+  # Trae Agent files (no frontmatter conversion; 仅做链接路径适配)
   if [[ "$TARGET" == "all" || "$TARGET" == "trae" ]]; then
     for agent in review-agent-ide review-agent-trigger; do
       local src="prompt/skill/${agent}.md"
@@ -119,9 +131,22 @@ main() {
       [[ -f "$src" ]] || continue
       mkdir -p "$(dirname "$dst")"
       if [[ "$CHECK_ONLY" == "true" ]]; then
-        report_drift "trae/$agent" "$dst" "$src" || drift_count=$((drift_count + 1))
+        local tmp
+        tmp=$(mktemp)
+        # 与 9 个 skill 相同的链接适配（agent 无 frontmatter 转换）
+        sed -E '
+          s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+          s|]\(\.\./skill/|](../../../prompt/skill/|g
+          s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
+        ' "$src" > "$tmp"
+        report_drift "trae/$agent" "$dst" "$tmp" || drift_count=$((drift_count + 1))
+        rm -f "$tmp"
       else
-        cp "$src" "$dst"
+        sed -E '
+          s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+          s|]\(\.\./skill/|](../../../prompt/skill/|g
+          s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
+        ' "$src" > "$dst"
         echo "  GEN   trae/$agent"
       fi
     done

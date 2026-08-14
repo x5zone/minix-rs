@@ -67,7 +67,7 @@ prompt/
 - `CLAUDE.md` — 项目根（新增 Design First 章节 + Gate H）
 - `.claude/rules/` — review-core.md / review-process.md（新增术语 + Gate H）
 - `.claude/skills/review-scan/` — SKILL.md + 5 checks/*.md（新增 Phase 2.6 + Pattern 63-65）
-- `.trae/skills/` — 9 个 Skill subdir + 2 个 Agent subdir（Skill 自动同步，frontmatter 差异 4 字符）
+- `.trae/skills/` — 9 个 Skill subdir + 2 个 Agent subdir（Skill 自动同步，frontmatter 差异 + markdown 链接路径适配）
 
 ---
 
@@ -168,8 +168,8 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 | 目标 | 文件名映射 | frontmatter 差异 | 来源 |
 |------|-----------|-----------------|------|
-| `.trae/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name`/`description` **不带引号**（Trae 标准格式；与源仅差 4 字符） | `prompt/skill/` |
-| `.codex/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name` 不带引号 + `description` **双引号包裹**（Codex 硬限制 ≤1024 字符，超长触发启动校验错误）；路径/状态段适配 Codex | `prompt/skill/` + `.claude/skills/review-scan/` |
+| `.trae/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name`/`description` **不带引号**（Trae 标准格式）；**markdown 链接路径适配**（源 `prompt/skill/` 深度 2 → 派生深度 3，`../review-rules/` → `../../../prompt/review-rules/`、同目录 skill 链接 → `../{name}/SKILL.md`） | `prompt/skill/` |
+| `.codex/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name` 不带引号 + `description` **双引号包裹**（Codex 硬限制 ≤1024 字符，超长触发启动校验错误）；路径/状态段 + **markdown 链接路径适配**（同 .trae） | `prompt/skill/` + `.claude/skills/review-scan/` |
 | `.claude/skills/` | `review-scan/`（编排器 + 5 个 checks/） | 原样 | `.claude/` 独立维护（CLAUDE.md 声明派生自 prompt/，实际 review-scan 从 prompt/skill 演进） |
 
 - **自动生成命令**（推荐，从 `prompt/skill/` 一键生成 `.trae/` + `.codex/`）：
@@ -207,19 +207,19 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 **当前已同步的 9 个 Skill**（prompt → `.trae/skills/` + `.codex/skills/`，2026-08-15 复验，`generate-derived-skills.sh` 自动生成）：
 | Skill | prompt/skill/ 字符 | .trae/skills/ 字符 | .codex/skills/ 字符 | .trae diff | .codex diff\* |
 |-------|-------------------|-------------------|--------------------|-----------|--------------|
-| review-code-skill | 7,335 | 7,331 | 7,333 | 4 | +2 |
-| review-doc-skill | 24,407 | 24,403 | 24,405 | 4 | +2 |
-| review-patterns-skill | 37,934 | 37,930 | 37,932 | 4 | +2 |
-| review-process-skill | 65,034 | 65,030 | 64,929 | 4 | -101 |
-| review-core-semantics-skill | 8,464 | 8,460 | 8,462 | 4 | +2 |
-| review-coverage-skill | 11,082 | 11,078 | 11,050 | 4 | -28 |
-| review-excellence-skill | 9,220 | 9,216 | 9,218 | 4 | +2 |
-| review-implementation-skill | 5,713 | 5,709 | 5,711 | 4 | +2 |
-| review-socratic-skill | 5,696 | 5,692 | 5,694 | 4 | +2 |
+| review-code-skill | 7,335 | 7,370 | 7,372 | -35 | +2 |
+| review-doc-skill | 24,294 | 24,497 | 24,499 | -203 | +2 |
+| review-patterns-skill | 37,934 | 38,021 | 38,023 | -87 | +2 |
+| review-process-skill | 65,034 | 65,282 | 65,181 | -248 | -101 |
+| review-core-semantics-skill | 8,464 | 8,486 | 8,488 | -22 | +2 |
+| review-coverage-skill | 11,082 | 11,170 | 11,142 | -88 | -28 |
+| review-excellence-skill | 9,220 | 9,320 | 9,322 | -100 | +2 |
+| review-implementation-skill | 5,713 | 5,735 | 5,737 | -22 | +2 |
+| review-socratic-skill | 5,696 | 5,705 | 5,707 | -9 | +2 |
 
-\* `.codex` diff = codex 字符 − trae 字符；除 frontmatter 外还包含 Codex 的 `.review/codex`、无 agent、单 session 和引用路径适配（sed 规则化）。共享规则内容仍由源文件约束，并由 `tools/check-review-rules.sh` + `tools/generate-derived-skills.sh --check` 校验。
+\* `.codex` diff = codex 字符 − trae 字符；除 frontmatter 外还包含 Codex 的 `.review/codex`、无 agent、单 session 和引用路径适配（sed 规则化）。`.trae` diff = trae 字符 − prompt 字符，其中 frontmatter 去引号（-4）+ **markdown 链接路径适配**（同源链接在派生深度 3 下修正，差值随链接数变化）。共享规则内容仍由源文件约束，并由 `tools/check-review-rules.sh`（对源/派生统一归一化链接后再 diff）+ `tools/generate-derived-skills.sh --check` 校验。
 
-> **说明**：Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。字符数随累积改进持续增长——review-process-skill 自 2026-07-16 方案 D 后 36,087 → **65,034**（Step 0.5.3 doc↔outline 对齐 + Gate H.6 + 后续 Step 1.0a-g 等）；review-doc-skill **24,407**、review-patterns-skill **37,934**。**字符数以 python3 `len(open(f,encoding='utf-8').read())` 实测为准（Unicode 字符数）；`wc -m` 在非 UTF-8 locale 下数字节，会高估含中文的文件，不可靠。表格值需随同步更新。**
+> **说明**：Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。字符数随累积改进持续增长——review-process-skill 自 2026-07-16 方案 D 后 36,087 → **65,034**（Step 0.5.3 doc↔outline 对齐 + Gate H.6 + 后续 Step 1.0a-g 等）；review-doc-skill **24,294**、review-patterns-skill **37,934**。**字符数以 python3 `len(open(f,encoding='utf-8').read())` 实测为准（Unicode 字符数）；`wc -m` 在非 UTF-8 locale 下数字节，会高估含中文的文件，不可靠。表格值需随同步更新。**
 >
 > 2026-06-22 新增 **review-implementation-skill**（由 06-design-final.md 实施过程沉淀），覆盖 design ↔ code 一致性 + §X self-review issues 追踪。详见 skill 文件 §Skill 输出模板 + §Gate D-Impl。
 
@@ -229,7 +229,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 |---------|---------|------|---------|
 | review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,677 ✅（余量 323） |
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
-| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,407 |
+| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,294 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |
 | review-patterns.md | review-patterns-skill.md | Skill（79 个错误模式；Gate D 严格通过标准） | 37,934 |
 | review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） | 65,034 |

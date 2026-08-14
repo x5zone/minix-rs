@@ -58,7 +58,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 - 输出：scan.md 含 Design Feedback §8 + IN_DESIGN.md（如中断）+ **Step 0.3 生成的 design.md**
 - 配套 Gate：必须通过 Gate H（design 门控）
 - 与日常 review 关系：Step 0.3 已嵌入所有 review 模式（2026-07-17 变更），Design-First 模式不再是独立前置
-- 详见 [review-rules/review-process.md §Design-First 模式](../review-rules/review-process.md) + [§Step 0.3 缺失即生成](../review-rules/review-process.md)
+- 详见 [review-rules/review-process.md §Design-First 模式](../../../prompt/review-rules/review-process.md) + [§Step 0.3 缺失即生成](../../../prompt/review-rules/review-process.md)
 
 ---
 
@@ -199,7 +199,7 @@ cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版
     - **可复用快照 / 持久化可复用快照（PRRS, Persisted Reusable Reference Snapshot）**（outline / outline-review / design / design-final）：每次 review **重新执行 Step 0.3 流程**产出新版本（`.v{N+1}.md`），**保留所有历史版本**不覆盖。旧快照作为参考输入，新快照作为该轮 review 的依据。触发条件：**默认每轮 review 都重新评估**，无例外。
     - **2026-08-15 修复 C-P0-3（术语统一）**：PRRS 核心属性 = (a) 持久化（不删除）+ (b) 可复用（作为输入）+ (c) 允许更新（新版本并存）+ (d) 不是 ground truth（旧快照仅作参考）
     - **禁止复用旧快照作为 ground truth**：旧快照仅作"前人理解"参考；新快照必须基于 C 源码 + OS 理论 + Rust 代码**当前状态**独立推导。差异矩阵（v{N} vs v{N+1}）写入 scan.md，便于追踪设计演进。
-  - **详见**：[review-rules/review-process.md §Step 0 design + outline 预检](../review-rules/review-process.md) + [§Step 0.3 缺失即生成](../review-rules/review-process.md) + [§一.附录 C 生成规范参考](../review-rules/review-process.md)
+  - **详见**：[review-rules/review-process.md §Step 0 design + outline 预检](../../../prompt/review-rules/review-process.md) + [§Step 0.3 缺失即生成](../../../prompt/review-rules/review-process.md) + [§一.附录 C 生成规范参考](../../../prompt/review-rules/review-process.md)
 
 - **⛔ 硬阻断规则（所有 review 模式强制，NEW 2026-07-16，模式 69 + 71 配套）**：
   > **背景**：Session #12 (06-proc-init-boot-proc) 复盘发现 — 即使 Step 0 已写"design 预检强制"，AI 仍会因"已有 CONVERGED 状态"/"incremental review"等理由**错误跳过预检**。Session #11 模式 69 (PSMD) 发现 04/05 缺快照时已记录此为 P0-process-violation，但缺少硬阻断机制。
@@ -262,7 +262,7 @@ cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版
   > **⛔ 不可泛化**：用户对 X 的豁免仅适用 X，**不可**推广到 Y/Z。AI 认为需要类似豁免时必须先询问用户。
 
 - **TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）**：
-  > 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单，且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../review-rules/review-process.md)。
+  > 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单，且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../../../prompt/review-rules/review-process.md)。
   >
   > **工具支持**（未来实施）：`tools/todo-staleness-check.sh {todo-file}` 自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
 
@@ -337,7 +337,7 @@ notes/rewrite/{module}/{stage}/                     # 持久化交付物（永�
 
 **通用禁令**：禁止跳过 structure 写 outline；禁止跳过 outline-review 写 design；禁止用 §3/tmp/bak 作来源；禁止旧快照当 ground truth；禁止迭代叙事。
 
-> **详见**：[review-rules/review-process.md §Step 0.3](../review-rules/review-process.md)
+> **详见**：[review-rules/review-process.md §Step 0.3](../../../prompt/review-rules/review-process.md)
 
 ---
 
@@ -346,7 +346,7 @@ notes/rewrite/{module}/{stage}/                     # 持久化交付物（永�
 > **核心原则**：reviewer 必须先提取文档骨架并评审，再执行正确性检查。
 > 正确性检查验证"文档说了什么"，structure.md 验证"读者读到了什么"。两者正交。
 > 来源：03-kmain-cstart
-> **详见**：[review-rules/review-process.md §Step 0.5](../review-rules/review-process.md)、[review-rules/review.md §5 structure.md](../review-rules/review.md)。
+> **详见**：[review-rules/review-process.md §Step 0.5](../../../prompt/review-rules/review-process.md)、[review-rules/review.md §5 structure.md](../../../prompt/review-rules/review.md)。
 
 **Step 0.5.1 生成 structure.md**（按以下模板，概念文档全量 12 节，实现文档简化为 6 节）：
 
@@ -432,7 +432,7 @@ notes/rewrite/{module}/{stage}/                     # 持久化交付物（永�
 
 **Step 0.5.3 doc ↔ outline 对齐检查**（方案 D 新增，仅当 outline.md 存在时执行）：
 
-> **目的**：对照持久化的 outline.md（doc 结构契约），检查文档正文是否遵循大纲。发现三种偏离：遗漏 / 多余 / 顺序错位。详见 [review-rules/review-process.md §Step 0.5.3](../review-rules/review-process.md)。
+> **目的**：对照持久化的 outline.md（doc 结构契约），检查文档正文是否遵循大纲。发现三种偏离：遗漏 / 多余 / 顺序错位。详见 [review-rules/review-process.md §Step 0.5.3](../../../prompt/review-rules/review-process.md)。
 > **前提**：Step 0 预检 outline.md 存在。缺失 → 跳过本步，Gate H.6 将 FAIL。
 
 **输出偏离矩阵**（6 列 × N 行）：
@@ -955,7 +955,7 @@ rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
 ## Step 1.5: Coverage Enumeration（覆盖率穷举，机器+AI）— **Gate A**
 
 > **目的**：机器生成穷举清单，AI 只负责语义判断。解决覆盖率不足和跨轮次累积问题。
-> **详见**：[review-coverage-skill](review-coverage-skill.md)
+> **详见**：[review-coverage-skill](../review-coverage-skill/SKILL.md)
 
 **执行步骤**：
 
@@ -1072,7 +1072,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 > - **H.5**: `rg "code Refactor|design Refactor" scan.md` 明确区分两类
 > - **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
 
-详见 [review-rules/review-process.md §Step 1.6](../review-rules/review-process.md)。
+详见 [review-rules/review-process.md §Step 1.6](../../../prompt/review-rules/review-process.md)。
 
 ---
 
@@ -1082,7 +1082,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
   - **Top 3 语义偏移**：文档/代码描述与 C 行为不符（行为契约表）
   - **Top 2 覆盖缺口**：来自 Step 1.5 SYMBOLS.md 的"文档覆盖=✅ 但 Rust 覆盖=❌"符号
 - 说明：Minix3 实际行为、文档/代码中的描述、差异性质
-- 每项填写 8 字段行为契约表（见 [core-semantics-skill](review-core-semantics-skill.md)）
+- 每项填写 8 字段行为契约表（见 [core-semantics-skill](../review-core-semantics-skill/SKILL.md)）
 
 **中间产物**：
 ```markdown
@@ -1192,7 +1192,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 
 > **目的**：Step 2.5 的 Link Validation 检查"横向链路"（Ch3→Ch4→Ch5 之间），本步骤检查"纵向链路"——Ch1 概念 → Ch3 设计决策 → Ch4 实现 → Ch5 测试 的端到端可追溯性。
 > 来源：03-kmain-cstart
-> **详见**：[review-rules/review-process.md §Step 3.5a](../review-rules/review-process.md)。
+> **详见**：[review-rules/review-process.md §Step 3.5a](../../../prompt/review-rules/review-process.md)。
 
 **检查项**：
 1. Ch1 引入的每个核心概念 → Ch3 是否有对应设计决策？无 → P1（概念无落地）
@@ -1217,7 +1217,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 
 > **目的**：从 Ch2 抽样"为什么这样设计"的解释，验证其因果链每一步是否成立。
 > **与 §2.0.3 的关系**：§2.0.3 是全量因果链验证（所有带"因为/所以"的 claim）；本步骤是聚焦 Ch2 设计解释的抽样验证。两者互补，不重复。
-> **详见**：[review-rules/review-process.md §Step 3.5b](../review-rules/review-process.md)。
+> **详见**：[review-rules/review-process.md §Step 3.5b](../../../prompt/review-rules/review-process.md)。
 
 **执行步骤**：
 1. 从 Ch2 抽取 5-10 个"为什么这样设计"的解释
@@ -1425,7 +1425,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 - **中断流程**：标注 scan.md 为 IN_DESIGN → 生成 IN_DESIGN.md → 不动文档/代码 → design 完成自动恢复
 - **状态机扩展**：`PENDING → IN_PROGRESS → IN_DESIGN（去 design） → RESUMED → IN_PROGRESS → CONVERGED`
 
-详见 [review-rules/review-process.md §一.附录 A](../review-rules/review-process.md)。
+详见 [review-rules/review-process.md §一.附录 A](../../../prompt/review-rules/review-process.md)。
 
 #### 收敛判定：双层 Layer 模型
 
@@ -1440,7 +1440,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 - Layer 1 PASS + Layer 2 PARTIAL → CONVERGED with warning
 - Layer 1 PASS + Layer 2 PASS → 完全 CONVERGED
 
-详见 [review-rules/review-process.md §三 状态管理与收敛判断](../review-rules/review-process.md)。
+详见 [review-rules/review-process.md §三 状态管理与收敛判断](../../../prompt/review-rules/review-process.md)。
 
 ### Step 5.6: Review Verification Protocol（独立验证，Gate G）
 
@@ -1561,7 +1561,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 
 > **目的**：防止"过度收敛"——为了把 P1 降到 0 而反复 review，成本超过收益。
 > 来源：用户反馈
-> **详见**：[review-rules/review-process.md §Step 7.1](../review-rules/review-process.md)。
+> **详见**：[review-rules/review-process.md §Step 7.1](../../../prompt/review-rules/review-process.md)。
 
 **判定规则**（任一触发即应停止并交付）：
 1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
@@ -1581,7 +1581,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 ### Step 5.7: Rule Discovery（规则发现，强制填写）
 
 > **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
-> **详见**：[review-rules/review.md §规则演化机制](../review-rules/review.md)、[review-rules/review-process.md §Step 5.7](../review-rules/review-process.md)。
+> **详见**：[review-rules/review.md §规则演化机制](../../../prompt/review-rules/review.md)、[review-rules/review-process.md §Step 5.7](../../../prompt/review-rules/review-process.md)。
 
 **执行步骤**：
 1. 回顾本轮 review 发现的所有问题

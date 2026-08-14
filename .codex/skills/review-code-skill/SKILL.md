@@ -209,7 +209,7 @@ description: "Minix-RS Rust 代码 Review 检查清单。包含 §1-§15 全部�
 > - design 漏概念（design-missing）→ **design Refactor**（先补 design）
 > - design 抓错本质（design-wrong）→ **design Refactor 必须**（先 redesign）
 
-> **配套机制**：[review.md §Design First 原则](../review-rules/review.md) + [review-process.md §Step 1.6](../review-rules/review-process.md) + [review-process.md §Gate H design 门控](../review-rules/review-process.md)。
+> **配套机制**：[review.md §Design First 原则](../../../prompt/review-rules/review.md) + [review-process.md §Step 1.6](../../../prompt/review-rules/review-process.md) + [review-process.md §Gate H design 门控](../../../prompt/review-rules/review-process.md)。
 
 ---
 

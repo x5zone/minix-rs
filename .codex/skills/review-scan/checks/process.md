@@ -684,7 +684,7 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
 
 > 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单，且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报。
 >
-> **详见**：[prompt/review-rules/review-process.md §Step 0.7.4 TODO Staleness Check](../../prompt/review-rules/review-process.md) + [prompt/review-rules/review-patterns.md 模式 70](../../prompt/review-rules/review-patterns.md)。
+> **详见**：[prompt/review-rules/review-process.md §Step 0.7.4 TODO Staleness Check](../../../../prompt/review-rules/review-process.md) + [prompt/review-rules/review-patterns.md 模式 70](../../../../prompt/review-rules/review-patterns.md)。
 - **命名区分**：`-structure.md` = review 骨架（Step 0.5 产物，12 节）；`-design-structure.md` = design 前序（Step 0.3.1 产物，知识点全集，脚手架）。两者内容完全不同，禁止混淆。`{NN}-outline.v{N}.md` 是可复用快照（带版本号），不是脚手架。
 - **Step 0.5.3 doc ↔ outline 对齐检查**（方案 D 新增）：`outline.v{N}.md` 存在时，对照**最新版本快照**检查文档正文偏离（遗漏/多余/顺序错位），输出偏离矩阵。P0 偏离 = 核心概念遗漏。快照缺失 → Gate H.6 FAIL。
 

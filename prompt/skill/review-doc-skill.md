@@ -331,7 +331,7 @@ rg "minix3/.*kernel/src/" {doc}.md  # 应保留
 
 > **目的**：检测 doc 中 `file:line` / `file:line-line` 引用与实际代码位置是否一致。
 > **触发条件**：任何 doc review（行号引用是文档基础锚点）。
-> **模式参考**：[review-process-skill Step 1.0a-自动](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0a-自动](review-process-skill.md)。
 
 **检查命令**（自动化脚本）：
 ```bash
@@ -362,7 +362,7 @@ done < /tmp/doc_lines.txt
 > **目的**：检测 doc 中"参见 X.rs:Y-Z"形式的范围引用是否覆盖到 impl 结束、行号是否偏移。
 > **背景**：Step 1.0a 行号主动抽样**只检查**单行引用（`// path:line`），**漏检**范围引用（`参见 path:line-line`）。本次 Doc 04 review 漏检 2 处 L831/L883 范围漂移。
 > **触发条件**：任何 doc review（含"参见"型引用时强制）。
-> **模式参考**：[review-process-skill Step 1.0d](../process/review-process-skill.md) + [Pattern #75](../patterns/review-patterns-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0d](review-process-skill.md) + [Pattern #75](review-patterns-skill.md)。
 
 **检查命令**：
 ```bash
@@ -405,7 +405,7 @@ sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
 
 > **目的**：doc 中常有"§11.x 元注释"章节（记录"已知缺陷纠正"），本身是元信息，**容易被 review 流程忽略**。
 > **触发条件**：任何 doc 含"已知/修订/元注释/自审/修复记录"等关键词的章节。
-> **模式参考**：[review-process-skill Step 0.5.2](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 0.5.2](review-process-skill.md)。
 
 **执行**：
 ```bash
@@ -430,7 +430,7 @@ rg "^\s*#{2,3}\s+.*(已知|修订|元注释|自审|修复|TODO 状态)" notes/..
 > **目的**：doc 描述的 `pub const` 类型可能在多个 crate 中重复定义（如 DEFAULT_HZ 在 os/arch + os/kernel 两处独立定义）。doc 应显式说明**权威定义位置** + **同步约束**。
 > **背景**：本次 05 doc review 发现 DEFAULT_HZ 在 `os/arch/src/arch/clock.rs:32` 和 `os/kernel/src/clock.rs:148` 各定义一次。Rust 不同 crate 独立 const 不会编译错误（不同 module），所以测试不会发现。doc §3.2 应显式说明权威位置 + 修改顺序。
 > **触发条件**：任何 doc 描述跨 crate 共享的常量（HZ, PAGE_SIZE, NR_*, MAX_* 等）。
-> **模式参考**：[Pattern #76 关联](../patterns/review-patterns-skill.md) + [Proposal #12 design.md §X-Y "权威位置"段](../process/review-process-skill.md)。
+> **模式参考**：[Pattern #76 关联](review-patterns-skill.md) + [Proposal #12 design.md §X-Y "权威位置"段](review-process-skill.md)。
 
 **检查命令**：
 ```bash
@@ -468,7 +468,7 @@ pub const DEFAULT_HZ: u32 = 100;
 
 > **目的**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
 > **触发条件**：任何 doc review 涉及 `os/kernel/src/lib.rs` 或其他 boot 阶段 init 函数注释。
-> **模式参考**：[review-process-skill Step 1.0e](../process/review-process-skill.md) + [Pattern #76](../patterns/review-patterns-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0e](review-process-skill.md) + [Pattern #76](review-patterns-skill.md)。
 
 **检查命令**：
 ```bash
@@ -515,7 +515,7 @@ sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/a
 
 > **目的**：doc §5.4 等章节常含"L3 grep 证据"段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用；`rg "initial_pc|initial_sp|..." os/ --type rust -g '!*.md'` 应有 0 matches）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
 > **触发条件**：任何 doc §5 含"L3 grep 证据"/"rg 证据"/"0 matches"等关键词的章节。
-> **模式参考**：[review-process-skill Step 5.4](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 5.4](review-process-skill.md)。
 
 **检查命令**：
 ```bash
@@ -554,7 +554,7 @@ sed -i 's|→ 3 处调用（kernel task / VM / RS）|→ N 处调用（实际数
 
 > **目的**：doc §5 测试章节常含"测试覆盖矩阵" + "测试函数列表"，但**无测试总数声称**。本次 review 实际跑了 `cargo test` 得到 490/120 测试，但 doc 未体现。建议 doc 末段补充"截至 YYYY-MM-DD, N 个测试通过"。
 > **触发条件**：任何 doc §5 测试章节（应有测试覆盖矩阵 + 实际测试函数列表）。
-> **模式参考**：[review-process-skill Step 5.5](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 5.5](review-process-skill.md)。
 
 **检查命令**：
 ```bash

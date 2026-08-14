@@ -44,7 +44,7 @@ description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、�
 ### 1.Ch1 Ch1 强制骨架（概念章专项，强制）
 
 > **背景**：03-kmain-cstart 重构案例暴露 Ch1 最常见的失败模式是"主语错了"——从函数名出发总结概念，而非从"为什么需要"出发建立心智模型。
-> **详见**：[review-rules/review.md §概念抽象原则](../review-rules/review.md)、[review-rules/review-patterns.md](../review-rules/review-patterns.md) 模式 51-53。
+> **详见**：[review-rules/review.md §概念抽象原则](../../../prompt/review-rules/review.md)、[review-rules/review-patterns.md](../../../prompt/review-rules/review-patterns.md) 模式 51-53。
 
 | # | 检查项 | 通过标准 | 优先级 |
 |---|--------|---------|--------|
@@ -131,7 +131,7 @@ description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、�
 - 编造解释"调用链推进后栈帧被覆盖" ❌（C 语义上 kmain 没返回前栈帧一直在）
 - 正确解释"local_cbi 作用域限于 kmain 调用链，非 kmain 链代码访问不到" ✅
 
-> **详见**：[review-rules/review-patterns.md](../review-rules/review-patterns.md) 模式 48（因果链编造）。
+> **详见**：[review-rules/review-patterns.md](../../../prompt/review-rules/review-patterns.md) 模式 48（因果链编造）。
 
 ### §2.0.5 Design 引用规范
 
@@ -152,7 +152,7 @@ description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、�
 - ❌ 文档不引用 design 但属于 design 范围 → P1
 - ❌ 文档引用格式错误（无 §X.Y） → P1-process-violation
 
-> **配套机制**：[review.md §Design First 原则](../review-rules/review.md) + [review-process.md §Step 1.6 设计对齐检查](../review-rules/review-process.md) + [review-patterns.md §模式 63 Design-Missing](../review-rules/review-patterns.md)。
+> **配套机制**：[review.md §Design First 原则](../../../prompt/review-rules/review.md) + [review-process.md §Step 1.6 设计对齐检查](../../../prompt/review-rules/review-process.md) + [review-patterns.md §模式 63 Design-Missing](../../../prompt/review-rules/review-patterns.md)。
 
 ### 2.1 概念准确性检查（强制，不可跳过）
 
@@ -261,7 +261,7 @@ Ch1 术语来源分层：
 
 > **目的**：检测文档代码示例是否反映当前 idiomatic Rust 写法（特别是 Rust 2024 edition 兼容）。
 > **触发条件**：文档 §3 / §4 含 Rust 代码块（` ```rust ... ``` `）。
-> **模式参考**：[review-patterns-skill 模式 73](../skill/review-patterns-skill.md#模式-73-文档代码示例-rust-2024-edition-drift)。
+> **模式参考**：[review-patterns-skill 模式 73](../../../prompt/skill/review-patterns-skill.md#模式-73-文档代码示例-rust-2024-edition-drift)。
 
 **检查命令**：
 ```bash
@@ -290,7 +290,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 > **目的**：检测文档 Rust crate 路径引用是否漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`）。
 > **触发条件**：任何 doc review（路径引用是文档基础约定）。
-> **模式参考**：[review-patterns-skill 模式 74](../skill/review-patterns-skill.md#模式-74-文档路径约定漂移)。
+> **模式参考**：[review-patterns-skill 模式 74](../../../prompt/skill/review-patterns-skill.md#模式-74-文档路径约定漂移)。
 
 **检查命令**：
 ```bash
@@ -331,7 +331,7 @@ rg "minix3/.*kernel/src/" {doc}.md  # 应保留
 
 > **目的**：检测 doc 中 `file:line` / `file:line-line` 引用与实际代码位置是否一致。
 > **触发条件**：任何 doc review（行号引用是文档基础锚点）。
-> **模式参考**：[review-process-skill Step 1.0a-自动](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0a-自动](../review-process-skill/SKILL.md)。
 
 **检查命令**（自动化脚本）：
 ```bash
@@ -362,7 +362,7 @@ done < /tmp/doc_lines.txt
 > **目的**：检测 doc 中"参见 X.rs:Y-Z"形式的范围引用是否覆盖到 impl 结束、行号是否偏移。
 > **背景**：Step 1.0a 行号主动抽样**只检查**单行引用（`// path:line`），**漏检**范围引用（`参见 path:line-line`）。本次 Doc 04 review 漏检 2 处 L831/L883 范围漂移。
 > **触发条件**：任何 doc review（含"参见"型引用时强制）。
-> **模式参考**：[review-process-skill Step 1.0d](../process/review-process-skill.md) + [Pattern #75](../patterns/review-patterns-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0d](../review-process-skill/SKILL.md) + [Pattern #75](../review-patterns-skill/SKILL.md)。
 
 **检查命令**：
 ```bash
@@ -405,7 +405,7 @@ sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
 
 > **目的**：doc 中常有"§11.x 元注释"章节（记录"已知缺陷纠正"），本身是元信息，**容易被 review 流程忽略**。
 > **触发条件**：任何 doc 含"已知/修订/元注释/自审/修复记录"等关键词的章节。
-> **模式参考**：[review-process-skill Step 0.5.2](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 0.5.2](../review-process-skill/SKILL.md)。
 
 **执行**：
 ```bash
@@ -430,7 +430,7 @@ rg "^\s*#{2,3}\s+.*(已知|修订|元注释|自审|修复|TODO 状态)" notes/..
 > **目的**：doc 描述的 `pub const` 类型可能在多个 crate 中重复定义（如 DEFAULT_HZ 在 os/arch + os/kernel 两处独立定义）。doc 应显式说明**权威定义位置** + **同步约束**。
 > **背景**：本次 05 doc review 发现 DEFAULT_HZ 在 `os/arch/src/arch/clock.rs:32` 和 `os/kernel/src/clock.rs:148` 各定义一次。Rust 不同 crate 独立 const 不会编译错误（不同 module），所以测试不会发现。doc §3.2 应显式说明权威位置 + 修改顺序。
 > **触发条件**：任何 doc 描述跨 crate 共享的常量（HZ, PAGE_SIZE, NR_*, MAX_* 等）。
-> **模式参考**：[Pattern #76 关联](../patterns/review-patterns-skill.md) + [Proposal #12 design.md §X-Y "权威位置"段](../process/review-process-skill.md)。
+> **模式参考**：[Pattern #76 关联](../review-patterns-skill/SKILL.md) + [Proposal #12 design.md §X-Y "权威位置"段](../review-process-skill/SKILL.md)。
 
 **检查命令**：
 ```bash
@@ -468,7 +468,7 @@ pub const DEFAULT_HZ: u32 = 100;
 
 > **目的**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
 > **触发条件**：任何 doc review 涉及 `os/kernel/src/lib.rs` 或其他 boot 阶段 init 函数注释。
-> **模式参考**：[review-process-skill Step 1.0e](../process/review-process-skill.md) + [Pattern #76](../patterns/review-patterns-skill.md)。
+> **模式参考**：[review-process-skill Step 1.0e](../review-process-skill/SKILL.md) + [Pattern #76](../review-patterns-skill/SKILL.md)。
 
 **检查命令**：
 ```bash
@@ -515,7 +515,7 @@ sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/a
 
 > **目的**：doc §5.4 等章节常含"L3 grep 证据"段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用；`rg "initial_pc|initial_sp|..." os/ --type rust -g '!*.md'` 应有 0 matches）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
 > **触发条件**：任何 doc §5 含"L3 grep 证据"/"rg 证据"/"0 matches"等关键词的章节。
-> **模式参考**：[review-process-skill Step 5.4](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 5.4](../review-process-skill/SKILL.md)。
 
 **检查命令**：
 ```bash
@@ -554,7 +554,7 @@ sed -i 's|→ 3 处调用（kernel task / VM / RS）|→ N 处调用（实际数
 
 > **目的**：doc §5 测试章节常含"测试覆盖矩阵" + "测试函数列表"，但**无测试总数声称**。本次 review 实际跑了 `cargo test` 得到 490/120 测试，但 doc 未体现。建议 doc 末段补充"截至 YYYY-MM-DD, N 个测试通过"。
 > **触发条件**：任何 doc §5 测试章节（应有测试覆盖矩阵 + 实际测试函数列表）。
-> **模式参考**：[review-process-skill Step 5.5](../process/review-process-skill.md)。
+> **模式参考**：[review-process-skill Step 5.5](../review-process-skill/SKILL.md)。
 
 **检查命令**：
 ```bash
@@ -826,7 +826,7 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 
 **判定**：单处 → P2；>5 处 → P1（系统性风格问题）
 
-> **详见**：[review-rules/review-patterns.md](../review-rules/review-patterns.md) 模式 49（元注释泄漏）。
+> **详见**：[review-rules/review-patterns.md](../../../prompt/review-rules/review-patterns.md) 模式 49（元注释泄漏）。
 
 ### 3.8 P2 可读性检查的执行策略
 

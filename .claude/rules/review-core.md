@@ -41,7 +41,7 @@ Minix3 C source behavior > design contract > Rust code (os/) > design/technical 
 - **Design 是核心 deliverable**，不是 review 的副产品
 - **方案 D（outline 升格）**：三类持久化交付物并存于 `.design/` 子目录——`{NN}-outline.md`（doc 结构契约）、`{NN}-outline-review.md`（outline 批准证据）、`{NN}-design.md`/`{NN}-design-final.md`（code 设计契约）。outline 与 design 对称：design 是 code 的契约，outline 是 doc 的契约。
 - **判定优先级链**：`Minix3 源码行为 > design doc > Rust 代码 > 设计/技术文档`
-- 当 Minix3/design/code/doc 冲突时按上链判定（详见 [review-core-semantics.md §1.5](../prompt/review-rules/review-core-semantics.md)）
+- 当 Minix3/design/code/doc 冲突时按上链判定（详见 [review-core-semantics.md §1.5](../../prompt/review-rules/review-core-semantics.md)）
 - **Profile R（设计优先模式 Review）**：`review xxx-design.md`（非 bagging）/ `review xxx-design-final.md`（bagging）时加载，或 review 中发现 P0-design-wrong 时触发；验证 design 完整性 + 可实现性 + design ↔ code 一致性 + outline ↔ doc 对齐。**注意（2026-07-17）**：design/outline/outline-review **缺失**场景不再触发 Design-First，而是由 **Step 0.3 嵌入生成**处理（不切换模式）。Design-First 仅用于 design **存在但有错误**（design-wrong）场景。
 
 ## ⛔ MANDATORY: Explicit Skill Invocation

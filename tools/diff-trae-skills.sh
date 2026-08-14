@@ -55,7 +55,12 @@ normalize_fm() {
 
 # 规范化正文: trim 末尾空白
 normalize_body() {
-  sed -E 's/[[:space:]]+$//'
+  sed -E 's/[[:space:]]+$//' | sed -E '
+    # 链接路径适配（与 generate-derived-skills.sh 一致）：源深度 2 → 派生深度 3
+    s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+    s|]\(\.\./skill/|](../../../prompt/skill/|g
+    s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
+  '
 }
 
 if [[ -n "$TARGET" ]]; then

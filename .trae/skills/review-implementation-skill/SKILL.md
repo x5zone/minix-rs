@@ -151,7 +151,7 @@ description: 设计→实施 验证技能。验证 Rust 代码正确实现 desig
 
 ## Design-First 视角
 
-> 配合 [review-profiles.md Profile R](../review-rules/review-profiles.md) 使用。
+> 配合 [review-profiles.md Profile R](../../../prompt/review-rules/review-profiles.md) 使用。
 
 **Design-First Review 模式下，本 skill 的执行差异**：
 1. **审查重点变化**：从"代码是否符合 design"扩展到"design 本身是否完整、正确、可实现"
@@ -164,7 +164,7 @@ description: 设计→实施 验证技能。验证 Rust 代码正确实现 desig
    - **P0-design-wrong**：design 决策技术错误（如不安全抽象）
    - **P0-test-missing**：design 要求测试但代码无
 
-详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../skill/review-patterns-skill.md)。
+详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../prompt/skill/review-patterns-skill.md)。
 
 ## 完成标准
 

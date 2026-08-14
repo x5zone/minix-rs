@@ -24,7 +24,7 @@ description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和
 
 ### P0 六分类（2026-08-15 修复 C-P0-1 同步）
 
-> 来源：[review-rules/review.md §4.1](../review-rules/review.md) P0 六分类表。
+> 来源：[review-rules/review.md §4.1](../../../prompt/review-rules/review.md) P0 六分类表。
 
 | P0 类型 | 含义 | 处理 | 触发 Refactor |
 |--------|------|------|---------------|
@@ -467,7 +467,7 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 
 ## 七、卓越性错误模式（7个）
 
-> 详见 [review-doc-excellence.md](../review-rules/review-doc-excellence.md) 和 [review-code-excellence.md](../review-rules/review-code-excellence.md)
+> 详见 [review-doc-excellence.md](../../../prompt/review-rules/review-doc-excellence.md) 和 [review-code-excellence.md](../../../prompt/review-rules/review-code-excellence.md)
 
 ### 模式41：文档叙事弧断裂（卓越性）
 ```
@@ -532,7 +532,7 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 ## 八、叙事与概念错误模式（10个）
 
 > **背景**：03-kmain-cstart 重构案例暴露一批"正确性通过但教学性失败"的模式。
-> **详见**：[review-rules/review.md §概念抽象原则](../review-rules/review.md)、[review-rules/review-doc-checklist.md §1.Ch1](../review-rules/review-doc-checklist.md)。
+> **详见**：[review-rules/review.md §概念抽象原则](../../../prompt/review-rules/review.md)、[review-rules/review-doc-checklist.md §1.Ch1](../../../prompt/review-rules/review-doc-checklist.md)。
 
 ### 模式 48：因果链编造（P0）
 
@@ -748,7 +748,7 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 ## §X.5 Design-First 反模式（模式 63-65）
 
 > 原有模式（18-25）增强"与 design 的关系"段落，并新增 3 个 design 导向反模式。
-> **完整定义**：见 [review-rules/review-patterns.md](../review-rules/review-patterns.md)。
+> **完整定义**：见 [review-rules/review-patterns.md](../../../prompt/review-rules/review-patterns.md)。
 
 ### 模式 63: Design-Missing 反模式
 
@@ -805,7 +805,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 
 ## §X.6 Review 流程反模式（模式 66-77，NEW 2026-07-16/17/30/31）
 
-> 关注 review 流程本身的元数据完整性与 AI claim 真实性。**完整定义**：见 [review-rules/review-patterns.md](../review-rules/review-patterns.md)。
+> 关注 review 流程本身的元数据完整性与 AI claim 真实性。**完整定义**：见 [review-rules/review-patterns.md](../../../prompt/review-rules/review-patterns.md)。
 
 ### 模式 66: 参考代码路径漂移（Reference Code Path Drift, RCPD）
 

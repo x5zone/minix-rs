@@ -194,7 +194,7 @@ python3 tools/coverage-extract/coverage-extract.py kernel \
 | 测试对应 | test_brk.rs |
 ```
 
-详见 [review-core-semantics.md](../review-rules/review-core-semantics.md)。
+详见 [review-core-semantics.md](../../../prompt/review-rules/review-core-semantics.md)。
 
 #### 2.5 测试覆盖补充
 
@@ -290,15 +290,15 @@ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall
 
 | Skill | 关系 |
 |-------|------|
-| [review-doc-skill](review-doc-skill.md) §2.8 | 本 Skill 是 §2.8 C源码覆盖完整性的**增强版**，提供机器穷举 |
-| [review-process-skill](review-process-skill.md) Step 1.5 | 本 Skill 在 Step 1.5 执行（Ground Truth Lookup 之后） |
-| [review-process-skill](review-process-skill.md) Step 1.6 | 设计对齐检查 — 覆盖率结果需对照 design doc 的语义范围 |
-| [review-core-semantics](../review-rules/review-core-semantics.md) | 行为契约表的定义在此 Skill 中使用 |
-| [review-code-excellence](../review-rules/review-code-excellence.md) | 测试三重标准在此 Skill 中使用 |
+| [review-doc-skill](../review-doc-skill/SKILL.md) §2.8 | 本 Skill 是 §2.8 C源码覆盖完整性的**增强版**，提供机器穷举 |
+| [review-process-skill](../review-process-skill/SKILL.md) Step 1.5 | 本 Skill 在 Step 1.5 执行（Ground Truth Lookup 之后） |
+| [review-process-skill](../review-process-skill/SKILL.md) Step 1.6 | 设计对齐检查 — 覆盖率结果需对照 design doc 的语义范围 |
+| [review-core-semantics](../../../prompt/review-rules/review-core-semantics.md) | 行为契约表的定义在此 Skill 中使用 |
+| [review-code-excellence](../../../prompt/review-rules/review-code-excellence.md) | 测试三重标准在此 Skill 中使用 |
 
 ### 4.5 设计覆盖度
 
-> 配合 [review-process-skill.md Step 1.6 设计对齐检查](../skill/review-process-skill.md) 使用。
+> 配合 [review-process-skill.md Step 1.6 设计对齐检查](../../../prompt/skill/review-process-skill.md) 使用。
 
 **双重覆盖判定**：
 1. **C→Rust 实现覆盖**（传统 SYMBOLS.md 范围）：见上文 §1.3
@@ -316,7 +316,7 @@ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall
 **Design 缺口处理**：
 - Design 写到但 C 无对应实现 → 可能 ARCH（架构演进）或 P0-design-wrong
 - Design 未写但 C 有行为 → P0-design-missing（design 未覆盖该语义）
-- 详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../skill/review-patterns-skill.md)
+- 详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../prompt/skill/review-patterns-skill.md)
 
 ---
 

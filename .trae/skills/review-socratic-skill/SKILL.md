@@ -263,7 +263,7 @@ Ch3 §X 设计了 "{决策}"，但我在 Ch1&2 没找到对应的依据。
 - Design 无对应章节 → P0-design-missing（必须在 Final Review 前补 design）
 - 用户说明是架构演进 → 检查 ARCH 标注
 
-详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../skill/review-patterns-skill.md)。
+详见 [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../prompt/skill/review-patterns-skill.md)。
 
 ## 场景 12：结构骨架追问（基于 structure.md）
 

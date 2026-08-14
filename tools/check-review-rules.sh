@@ -35,6 +35,16 @@ strip_frontmatter() {
   awk '/^---$/{count++; next} count >= 2' "$1"
 }
 
+# 归一化派生链接路径（与 generate-derived-skills.sh 的 sed 适配一致）：
+# 源 prompt/skill/{name}.md（dirname 深度 2）→ 派生 .trae|.codex/skills/{name}/SKILL.md（深度 3）
+normalize_links() {
+  sed -E '
+    s|]\(\.\./review-rules/|](../../../prompt/review-rules/|g
+    s|]\(\.\./skill/|](../../../prompt/skill/|g
+    s|]\(review-([a-z-]+)-skill\.md\)|](../review-\1-skill/SKILL.md)|g
+  '
+}
+
 check_trae_skill() {
   local name="$1"
   local source="prompt/skill/${name}.md"
@@ -46,8 +56,8 @@ check_trae_skill() {
 
   source_body="$(mktemp)"
   derived_body="$(mktemp)"
-  strip_frontmatter "$source" > "$source_body"
-  strip_frontmatter "$derived" > "$derived_body"
+  strip_frontmatter "$source" | normalize_links > "$source_body"
+  strip_frontmatter "$derived" | normalize_links > "$derived_body"
   if ! diff -q "$source_body" "$derived_body" >/dev/null; then
     fail "Trae body drift: $source vs $derived"
   fi
@@ -84,8 +94,12 @@ done
 
 [[ -f ".trae/skills/review-agent-ide/SKILL.md" ]] || fail "missing Trae agent adapter"
 [[ -f ".trae/skills/review-agent-trigger/SKILL.md" ]] || fail "missing Trae trigger adapter"
-cmp -s prompt/skill/review-agent-ide.md .trae/skills/review-agent-ide/SKILL.md || fail "Trae agent drift"
-cmp -s prompt/skill/review-agent-trigger.md .trae/skills/review-agent-trigger/SKILL.md || fail "Trae trigger drift"
+for agent in review-agent-ide review-agent-trigger; do
+  if ! diff -q <(normalize_links < prompt/skill/${agent}.md) \
+                <(normalize_links < .trae/skills/${agent}/SKILL.md) >/dev/null; then
+    fail "Trae ${agent} drift"
+  fi
+done
 # Trae IDE hard limits: Agent prompt ≤ 10000 chars (auto-truncated), trigger ≤ 5000 chars.
 # Count characters via python3 (locale-independent); wc -m counts bytes under a non-UTF-8 locale.
 agent_chars=$(python3 -c 'import sys; print(len(open(sys.argv[1],encoding="utf-8").read()))' prompt/skill/review-agent-ide.md)

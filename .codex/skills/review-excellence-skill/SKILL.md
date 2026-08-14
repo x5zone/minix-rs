@@ -7,7 +7,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 > 本 Skill 定义卓越性检查标准，追求"教科书级"文档和"redox 级"代码质量。
 > **前置条件**：正确性 gate（doc/code/coverage/patterns）已通过。
-> **详见**：[review-doc-excellence.md](../review-rules/review-doc-excellence.md) + [review-code-excellence.md](../review-rules/review-code-excellence.md)
+> **详见**：[review-doc-excellence.md](../../../prompt/review-rules/review-doc-excellence.md) + [review-code-excellence.md](../../../prompt/review-rules/review-code-excellence.md)
 
 ---
 
@@ -28,7 +28,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 ### §2.0 架构演进作为独立知识点维度
 
-> 配合 [review.md §2.0 架构演进](../review-rules/review.md) 使用。
+> 配合 [review.md §2.0 架构演进](../../../prompt/review-rules/review.md) 使用。
 
 **架构演进 5 类型**（必须在文档中显式标注）：
 1. **FPU 上下文处理演进**（如 `FpuState` newtype 替代裸 `u32`）
@@ -89,7 +89,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 #### §4.3.5 Design 视角的教学深度
 
-> 配合 [review-doc-excellence.md §4.3.5](../review-rules/review-doc-excellence.md) 使用。
+> 配合 [review-doc-excellence.md §4.3.5](../../../prompt/review-rules/review-doc-excellence.md) 使用。
 
 **检查项**：
 1. **决策依据**：每个设计决策是否有 design doc 引用？（或引用 Minix3 源码？）
@@ -123,7 +123,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 #### §4.4 补充: 文档组织合理性检查矩阵
 
-> 配合 [review-doc-excellence.md §4.4](../review-rules/review-doc-excellence.md) 使用。
+> 配合 [review-doc-excellence.md §4.4](../../../prompt/review-rules/review-doc-excellence.md) 使用。
 
 **13 项组织检查**（每项独立判定）：
 
@@ -161,7 +161,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 ### §4.5 概念教学卓越性（Ch1 专项）
 
-> **前置条件**：[review-doc-checklist.md §1.Ch1](../skill/review-doc-skill.md) 概念驱动检查已通过。
+> **前置条件**：[review-doc-checklist.md §1.Ch1](../../../prompt/skill/review-doc-skill.md) 概念驱动检查已通过。
 > **背景**：Ch1 是概念章，需要专门评估其教学卓越性，而非仅评估正确性。03-kmain-cstart 案例暴露的"每个 claim 都对但整体叙事失败"是典型问题。
 
 **检查项**（6 项 + 卓越性标准）：
@@ -199,7 +199,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 - **C（合格）**：概念驱动但缺统一抽象或心智不完整
 - **D（不合格）**：实现驱动（Ch1 主语是函数名/结构体名/trait 名）
 
-**关联模式**（与 [review-patterns-skill.md 模式 51-53、55-57](../skill/review-patterns-skill.md) 对应）：
+**关联模式**（与 [review-patterns-skill.md 模式 51-53、55-57](../../../prompt/skill/review-patterns-skill.md) 对应）：
 - 模式 51 实现驱动概念章 ↔ 检查项 1（CPU/系统视角）
 - 模式 52 单向心智模型 ↔ 检查项 3（双向闭环）
 - 模式 53 跨架构共性未提取 ↔ 检查项 2（统一抽象先行）
@@ -212,7 +212,7 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 
 ### §16.5 design-first API 设计原则
 
-> 配合 [review-code-excellence.md §16.5](../review-rules/review-code-excellence.md) 使用。
+> 配合 [review-code-excellence.md §16.5](../../../prompt/review-rules/review-code-excellence.md) 使用。
 
 **6 维度检查**：
 1. **命名**：是否与 design doc 一致？是否有"我用了更合理的命名"现象？
