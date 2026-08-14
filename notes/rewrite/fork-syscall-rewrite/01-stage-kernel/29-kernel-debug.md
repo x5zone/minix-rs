@@ -74,38 +74,38 @@ Minix3 的调试功能通过预处理宏控制，生产构建中完全不编译�
 
 ### 2.3 进程信息打印
 
-[debug.c:136-311](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) 实现进程详情打印：
+[debug.c:136-312](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) 实现进程详情打印：
 
 **辅助函数**：
 - `rtsflagstr(flags)`（L136-161）: 将 RTS 标志位转为字符串（RTS_SLOT_FREE / RTS_PROC_STOP / RTS_SENDING 等 15 个标志）
 - `miscflagstr(flags)`（L163-174）: 将 misc 标志位转为字符串（MF_REPLY_PEND / MF_DELIVERMSG / MF_KCALL_RESUME）
 - `schedulerstr(scheduler)`（L176-185）: 返回调度器名称或 "KERNEL"
 - `print_proc_name(pp)`（L187-199）: 打印 `name(endpoint)` 格式
-- `print_endpoint(ep)`（L200-231）: 处理 ANY/SELF/NONE 特殊值
-- `print_sigmgr(pp)`（L233-246）: 打印信号管理器
+- `print_endpoint(ep)`（L201-232）: 处理 ANY/SELF/NONE 特殊值
+- `print_sigmgr(pp)`（L234-247）: 打印信号管理器
 
-**`print_proc(pp)`**（L248-274）: 打印进程详情，格式：
+**`print_proc(pp)`**（L249-275）: 打印进程详情，格式：
 ```
-nr: name endpoint prio priority time user/sys cycles high:low cpu pdbr rts misc sched sigmgr blocked_on
+nr: name endpoint prio time user/sys cycles high:low cpu pdbr rts misc sched sigmgr blocked_on
 ```
 
-**`print_proc_depends(pp, level)`**（L276-306）: 递归打印进程依赖链（被阻塞的进程）。`COL` 宏用 `>` 缩进表示依赖层级。递归上限 `NR_PROCS` 防止循环。
+**`print_proc_depends(pp, level)`**（L277-307）: 递归打印进程依赖链（被阻塞的进程）。`COL` 宏用 `>` 缩进表示依赖层级。递归上限 `NR_PROCS` 防止循环。
 
-**`print_proc_recursive(pp)`**（L308-311）: 入口函数，从 level 0 开始递归。
+**`print_proc_recursive(pp)`**（L309-312）: 入口函数，从 level 0 开始递归。
 
 ### 2.4 IPC 消息跟踪
 
-[debug.c:313-425](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_DUMPIPC` 条件编译块：
+[debug.c:314-426](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_DUMPIPC` 条件编译块：
 
-**`mtypename(mtype, possible_callname)`**（L314-353）: 解析消息类型名称，从 `extracted-mtype.h` 和 `extracted-errno.h` 匹配。
+**`mtypename(mtype, possible_callname)`**（L315-354）: 解析消息类型名称，从 `extracted-mtype.h` 和 `extracted-errno.h` 匹配。
 
-**`printproc(rp)`**（L355-361）: 打印 `name(slot)` 或 "kernel"。
+**`printproc(rp)`**（L356-362）: 打印 `name(slot)` 或 "kernel"。
 
-**`printparam(name, data, size)`**（L363-372）: 按大小打印参数值（char/short/int/bytes）。
+**`printparam(name, data, size)`**（L364-373）: 按大小打印参数值（char/short/int/bytes）。
 
-**`namematch(names, nnames, name)`**（L374-382）: `DEBUG_DUMPIPC_NAMES` 条件编译，名称匹配过滤。
+**`namematch(names, nnames, name)`**（L376-383）: `DEBUG_DUMPIPC_NAMES` 条件编译，名称匹配过滤。
 
-**`printmsg(msg, src, dst, operation, printparams)`**（L385-424）: 格式化打印 IPC 消息：
+**`printmsg(msg, src, dst, operation, printparams)`**（L386-425）: 格式化打印 IPC 消息：
 ```
 operation src dst mtype(mtype_hex) [params...]
 ```
@@ -113,18 +113,18 @@ operation src dst mtype(mtype_hex) [params...]
 
 ### 2.5 IPC 统计
 
-[debug.c:427-516](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_IPCSTATS` 条件编译块：
+[debug.c:428-516](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_IPCSTATS` 条件编译块：
 
 **全局状态**：
-- `messages[IPCPROCS][IPCPROCS]`（L430）: 消息计数矩阵，`IPCPROCS = NR_PROCS+1`
-- `winners[PRINTSLOTS]`（L433-435）: 前 20 名统计排行，每项含 `src/dst/messages`
-- `total` / `goodslots`（L436）: 总消息数 + 有效排行数
+- `messages[IPCPROCS][IPCPROCS]`（L431）: 消息计数矩阵，`IPCPROCS = NR_PROCS+1`
+- `winners[PRINTSLOTS]`（L434-436）: 前 20 名统计排行，每项含 `src/dst/messages`
+- `total` / `goodslots`（L437）: 总消息数 + 有效排行数
 
-**`printstats(ticks)`**（L438-450）: 打印统计结果，每秒消息数 = `system_hz * n / ticks`。
+**`printstats(ticks)`**（L439-451）: 打印统计结果，每秒消息数 = `system_hz * n / ticks`。
 
-**`sortstats()`**（L452-484）: 遍历矩阵，插入排序到 `winners[]`，维护前 20 名。
+**`sortstats()`**（L453-485）: 遍历矩阵，插入排序到 `winners[]`，维护前 20 名。
 
-**`statmsg(msg, srcp, dstp)`**（L492-515）: 统计单条消息，每 30 秒打印一次统计并重置。
+**`statmsg(msg, srcp, dstp)`**（L493-515）: 统计单条消息，每 30 秒打印一次统计并重置。
 
 ### 2.6 IPC hooks
 
@@ -145,9 +145,9 @@ operation src dst mtype(mtype_hex) [params...]
 | 宏 | 位置 | 值 | 用途 |
 |----|------|-----|------|
 | `MAX_LOOP` | debug.c:14 | `NR_PROCS + NR_TASKS` | 进程表遍历上限（防无限循环） |
-| `IPCPROCS` | debug.c:428 | `NR_PROCS+1` | IPC 统计矩阵维度（+1 为 kernel 槽） |
-| `KERNELIPC` | debug.c:429 | `NR_PROCS` | 内核调用槽位编号 |
-| `PRINTSLOTS` | debug.c:432 | `20` | 统计排行榜大小 |
+| `IPCPROCS` | debug.c:429 | `NR_PROCS+1` | IPC 统计矩阵维度（+1 为 kernel 槽） |
+| `KERNELIPC` | debug.c:430 | `NR_PROCS` | 内核调用槽位编号 |
+| `PRINTSLOTS` | debug.c:433 | `20` | 统计排行榜大小 |
 
 ---
 
@@ -161,7 +161,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 **实现内容**:
 - `runqueues_ok_cpu(smp_state, proc_table, cpu) -> bool`（[debug.rs:47](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `runqueues_ok_cpu(cpu)`（[debug.c:16-107](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `runqueues_ok(smp_state, proc_table) -> bool`（[debug.rs:192](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `runqueues_ok()`（[debug.c:121-131](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `runqueues_ok(smp_state, proc_table) -> bool`（[debug.rs:190](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `runqueues_ok()`（[debug.c:121-131](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
 
 **实现差异**:
 1. **`p_found` 改为本地 bitset**: C 在 `proc.p_found` 字段上操作（修改进程表）；Rust 使用本地 `[bool; PROC_TABLE_SIZE]` 数组避免修改进程表（保持只读检查的纯度）
@@ -181,9 +181,9 @@ operation src dst mtype(mtype_hex) [params...]
 **Rust 64-bit 决策**: 部分实现——`print_proc` 已实现；`print_proc_depends` / `print_proc_recursive` 不实现。
 
 **实现内容**:
-- `write_rts_flags(flags)`（[debug.rs:210](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `rtsflagstr(flags)`（[debug.c:136-161](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `write_misc_flags(flags)`（[debug.rs:240](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `miscflagstr(flags)`（[debug.c:163-174](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `print_proc(proc)`（[debug.rs:260](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `print_proc(pp)`（[debug.c:249-275](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `write_rts_flags(flags)`（[debug.rs:208](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `rtsflagstr(flags)`（[debug.c:136-161](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `write_misc_flags(flags)`（[debug.rs:238](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `miscflagstr(flags)`（[debug.c:163-174](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `print_proc(proc)`（[debug.rs:258](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `print_proc(pp)`（[debug.c:249-275](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
 
 **实现差异**:
 1. **直接 console 输出替代字符串返回**: C 用 `static char buf[]` 返回字符串（非线程安全）；Rust 直接走 `EarlyConsole::write_str`，无字符串分配
@@ -236,7 +236,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 #### 4.1.1 `runqueues_ok_cpu` 实现要点
 
-[debug.rs:47-184](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现单 CPU 调度队列验证：
+[debug.rs:47-189](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现单 CPU 调度队列验证：
 
 ```rust
 pub fn runqueues_ok_cpu(
@@ -252,7 +252,7 @@ pub fn runqueues_ok_cpu(
 
     for q in 0..priority::NR_SCHED_QUEUES {
         let head = scheduler.queue_head(q);
-        let tail = scheduler.queue_tail();
+        let tail = scheduler.queue_tail(q);
         // ... 6 项检查：head/tail 一致性、tail->next NULL、SLOT_FREE、runnable、priority match、double sched
     }
     // ... 检查所有 runnable 进程都在某个队列中
@@ -271,7 +271,7 @@ pub fn runqueues_ok_cpu(
 
 #### 4.1.2 `print_proc` 实现要点
 
-[debug.rs:260-273](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现：
+[debug.rs:258-269](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现：
 
 ```rust
 pub fn print_proc(proc: &KProcess) {
@@ -310,9 +310,9 @@ pub fn print_proc(proc: &KProcess) {
 | `hook_ipc_msgrecv` | debug.c:536 | ❌ WONTFIX (D3) | IPC 跟踪不实现 |
 | `hook_ipc_msgsend` | debug.c:546 | ❌ WONTFIX (D3) | IPC 跟踪不实现 |
 | `hook_ipc_clear` | debug.c:553 | ❌ WONTFIX (D3) | IPC 跟踪不实现 |
-| `IPCPROCS` | debug.c:428 | ❌ WONTFIX | IPC 统计不实现 |
-| `KERNELIPC` | debug.c:429 | ❌ WONTFIX | IPC 统计不实现 |
-| `PRINTSLOTS` | debug.c:432 | ❌ WONTFIX | IPC 统计不实现 |
+| `IPCPROCS` | debug.c:429 | ❌ WONTFIX | IPC 统计不实现 |
+| `KERNELIPC` | debug.c:430 | ❌ WONTFIX | IPC 统计不实现 |
+| `PRINTSLOTS` | debug.c:433 | ❌ WONTFIX | IPC 统计不实现 |
 
 ### 4.3 替代方案对照
 
@@ -328,13 +328,13 @@ pub fn print_proc(proc: &KProcess) {
 
 ## Ch5: 测试
 
-### 5.1 已有测试（[os/kernel/src/debug.rs:293-318](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）
+### 5.1 已有测试（[os/kernel/src/debug.rs:296-317](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）
 
 | 测试 | 位置 | 覆盖内容 | 状态 |
 |------|------|---------|------|
-| `test_write_rts_flags_empty` | debug.rs:298 | 空标志位不触发 panic | ✅ passing |
-| `test_write_rts_flags_single` | debug.rs:305 | 单个 RTS 标志位输出正确 | ✅ ignored（需 logger） |
-| `test_write_misc_flags_empty` | debug.rs:310 | 空标志位不触发 panic | ✅ passing |
+| `test_write_rts_flags_empty` | debug.rs:296 | 空标志位不触发 panic | ✅ passing |
+| `test_write_rts_flags_single` | debug.rs:303 | 单个 RTS 标志位输出正确 | ✅ ignored（需 logger） |
+| `test_write_misc_flags_empty` | debug.rs:308 | 空标志位不触发 panic | ✅ passing |
 | `test_write_misc_flags_single` | debug.rs:314 | 单个 misc 标志位输出正确 | ✅ ignored（需 logger） |
 
 ### 5.2 不需要测试（WONTFIX 项）
