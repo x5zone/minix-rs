@@ -511,7 +511,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | 局部 Review（Ch1&2） | [review-doc-checklist.md](review-doc-checklist.md) §2.1+§2.2+§2.3+§2.8 | 仅检查概念准确性、引用、源码覆盖 |
 | 文档 Review | [review-doc-checklist.md](review-doc-checklist.md) + [review-patterns.md](review-patterns.md) | 检查文档结构、概念准确性、C 源码覆盖、设计质量、可读性 |
 | 代码 Review | [review-code-checklist.md](review-code-checklist.md) + [review-patterns.md](review-patterns.md) | 检查 Rewrite 质量、类型安全、硬件抽象 |
-| 完整 Review | 全部模块 | 按 [review-process.md](review-process.md) 执行 Step 1-6 |
+| 完整 Review | 全部模块 | 按 [review-process.md](review-process.md) 执行 Step 0-7（Step 0 预检强制） |
 | 快速 Review | [review.md §快速判断口诀](#快速判断口诀) | 用判断口诀快速扫描 |
 | **卓越性专项 (Profile O)** | [review-excellence-skill.md](../skill/review-excellence-skill.md) + [review-doc-excellence.md](review-doc-excellence.md) + [review-code-excellence.md](review-code-excellence.md) | 在正确性 gate 通过后追求教科书级质量 |
 | **覆盖率专项 (Profile P)** | [review-coverage-skill.md](../skill/review-coverage-skill.md) + `tools/coverage-extract/coverage-extract.py` | 用机器穷举 + AI 补充判断 C 源/Rust 实现的覆盖完整度 |
@@ -890,7 +890,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - **目标文档**：`path/to/doc.md`
 - **关联 Rust 代码**：`path/to/code.rs`（如适用）
 - **同目录文档范围**：`path/to/same-dir/*.md`（用于跨文档检查）
-- **执行步骤**：Step 1, 3, 4  /  Step 1-6（按模式裁剪）
+- **执行步骤**：按 §0.2 各模式对应 Step 执行（Step 0 design 预检所有模式强制）
 ```
 
 ### 0.2 Review 模式说明
@@ -906,7 +906,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
   - 数据结构覆盖完整性（§2.3）
   - C 源码覆盖完整性（§2.8）
 - **不检查**：Ch3 设计决策、Ch4 实现、链路验证、代码一致性
-- **执行步骤**：Step 1（源码定位）+ Step 3（一致性检查），无需 Step 2/2.5/4/6
+- **执行步骤**：Step 0（design 预检，强制）+ Step 1（源码定位）+ Step 3（一致性检查），无需 Step 2/2.5/4/6
 - **输出**：仅输出 P0 概念/引用错误和 P1 覆盖不足问题
 
 #### 模式 B：文档 Review（完整文档）
@@ -920,7 +920,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 - **适用场景**：用户指定「review xxx.md 和相关代码」
 - **检查范围**：全部文档维度 + Rust 代码维度（UB、类型安全、命名、no_std 等）
-- **执行步骤**：Step 1-6 全量
+- **执行步骤**：Step 0-7 全量
 - **输出**：按模板 + 代码问题清单
 
 ### 0.3 模式自动判定
@@ -948,3 +948,6 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - [review-patterns.md](review-patterns.md) — 常见错误模式（文档 + 代码 + 跨文档）
 - [review-process.md](review-process.md) — AI 强制步骤 + 工具命令
 - [review-profiles.md](review-profiles.md) — 任务组合配置（按需加载策略）
+- [review-core-semantics.md](review-core-semantics.md) — 核心语义对齐（行为契约表 + IPC/生命周期契约模板）
+- [review-doc-excellence.md](review-doc-excellence.md) — 文档卓越性（§4.1-§4.4）
+- [review-code-excellence.md](review-code-excellence.md) — 代码卓越性（§16-§21）

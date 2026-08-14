@@ -72,7 +72,7 @@
 | 文档行数 | rounds 数 | 每 round 范围 | 理由 |
 |---------|----------|--------------|------|
 | < 500 行 | 1 round（全量） | Step 0-7 一轮完成 | 小文档单轮可完成，无需分阶段 |
-| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
+| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E/H）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
 | > 1500 行 | 4 rounds | R1: 正确性（Step 0-4）<br>R2: 卓越性（Step 5 + excellence）<br>R3: patterns 对照<br>R4: 跨文档 + Gate G 收敛 | 大文档需 4 轮，避免单轮 context 过载 |
 
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
@@ -382,7 +382,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
    >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
    >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
   >    ```
-  >    ls 输出必须写入 scan.md `§Step 0 预检结果` 段（不可省略）。
+  >    ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（不可省略）。
   > 2. **缺失判定 + 嵌入生成（NEW 2026-07-17，替代原"中断去附录 C"）**：
   >    - `outline.v*.md` **缺失** → **Gate H.6 FAIL** → **执行 Step 0.3.2 生成**（不中断 review，嵌入流程内）
   >    - `outline-review.v*.md` **缺失** → **Gate H.6 FAIL**（⚠️ 2026-07-17 从 WARN 升级为 FAIL，根因：原 WARN 导致 AI 总是跳过 outline-review）→ **执行 Step 0.3.3 生成**（AI 自审，不需用户确认）
@@ -393,9 +393,9 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   >    - 即使已存在 `*.v{N}.md`，**仍必须**执行 v2 评估（重新执行 Step 0.3 产出 `.v{N+1}.md`）
   >    - 旧快照的角色仅是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**
   >    - 跳过重新评估 → 模式 69 (PSMD) 触发 P0-process-violation
-  > 4. **scan.md 必须含 `§Step 0 预检结果` 段**（模板见下）：
+  > 4. **scan.md 必须含 `§Step 0: 预检结果` 段**（模板见下）：
   >    ```markdown
-  >    ### §Step 0 预检结果（强制，NEW 2026-07-16）
+  >    ## Step 0: 预检结果（design + outline 完整性，NEW 2026-07-16）
   >    | 检查项 | ls 命令 | 结果 | 判定 |
   >    |--------|---------|------|------|
    >    | outline 快照 | `ls .design/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
@@ -2095,6 +2095,45 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 
 **判定**：报告 P0 ≥ 1 但 VERIFY-CHECK 由同 agent 写 → Gate G 判 FAIL → STATE.md 不得标 CONVERGED。
 
+### Step 5.7: Rule Discovery（规则发现，强制填写）
+
+> **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
+> **详见**：[review.md §规则演化机制](review.md#规则演化机制rule-evolution)。
+
+> **2026-08-15 修复 B-P1-2（误判 P0 回退流程）**：若 review 报告的 P0 是 AI 误判或事后被证明虚假，应按以下流程回退：
+> 1. **触发场景**：
+>    - 用户反馈"P0 是误判"（如 grep 证据有误、概念引用错误）
+>    - 跨 session 验证（VERIFY-CHECK.md）发现 P0 不成立
+>    - AI 在修复时发现 P0 描述与实际不符（如 file:line 引用错位）
+> 2. **回退流程**：
+>    - **立即移除**：scan.md §Issue List 中删除该 P0
+>    - **同步 STATE.md**：从 Open P0 列表移除，移入 Closed Issues 并标 "WITHDRAWN" + 原因
+>    - **修正规则**：若是 grep 命令误用导致误判 → 写入 Rule Discovery 段
+> 3. **预防机制**：
+>    - P0 必须有 L1 grep 证据（路径存在 + 行号匹配），缺证据 → 自动降级为 P1
+>    - AI claim verification 三元组（Step 0.7.1/0.7.2/0.7.3）必须全跑，未跑 → 阻断 P0 报告
+>    - VERIFY-CHECK.md 必须抽样 20% 反向验证（Step 5.6）
+
+**执行步骤**：
+1. 回顾本轮 review 发现的所有问题
+2. 判断是否有 ≥2 次同类新模式（现有规则未覆盖的）
+3. 若有 → 生成新模式提案（含案例、判定、归类、规则草案）
+4. 写入 scan.md §Rule Discovery 段落
+5. 用户确认后，落地到对应 rules 文件
+
+**输出格式**：
+```markdown
+### Rule Discovery
+- 本次 Review 是否发现新模式？[✅/❌]
+- 若 ✅：
+  - 新模式名: [名称]
+  - 案例: [file:line + 描述]
+  - 判定: [P0/P1/P2]
+  - 归类: [文档/代码/跨阶段/卓越性/叙事概念]
+  - 规则草案: [一句话描述]
+  - 建议落地文件: [review-patterns.md / review-doc-checklist.md / ...]
+```
+
 ### Step 6: Action Item Generation（修改项生成）
 
 > **目的**：将 review 发现转化为可执行的修改项，确保代码会被实际修改。这是解决"review 完了代码不改"问题的关键步骤。
@@ -2185,45 +2224,6 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - 本轮新发现: P0=X, P1=Y, P2=Z
 - 触发停止规则: [1/2/3/无]
 - 决定: 继续收敛 / 强制交付（剩余转 backlog）
-```
-
-### Step 5.7: Rule Discovery（规则发现，强制填写）
-
-> **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
-> **详见**：[review.md §规则演化机制](review.md#规则演化机制rule-evolution)。
-
-> **2026-08-15 修复 B-P1-2（误判 P0 回退流程）**：若 review 报告的 P0 是 AI 误判或事后被证明虚假，应按以下流程回退：
-> 1. **触发场景**：
->    - 用户反馈"P0 是误判"（如 grep 证据有误、概念引用错误）
->    - 跨 session 验证（VERIFY-CHECK.md）发现 P0 不成立
->    - AI 在修复时发现 P0 描述与实际不符（如 file:line 引用错位）
-> 2. **回退流程**：
->    - **立即移除**：scan.md §Issue List 中删除该 P0
->    - **同步 STATE.md**：从 Open P0 列表移除，移入 Closed Issues 并标 "WITHDRAWN" + 原因
->    - **修正规则**：若是 grep 命令误用导致误判 → 写入 Rule Discovery 段
-> 3. **预防机制**：
->    - P0 必须有 L1 grep 证据（路径存在 + 行号匹配），缺证据 → 自动降级为 P1
->    - AI claim verification 三元组（Step 0.7.1/0.7.2/0.7.3）必须全跑，未跑 → 阻断 P0 报告
->    - VERIFY-CHECK.md 必须抽样 20% 反向验证（Step 5.6）
-
-**执行步骤**：
-1. 回顾本轮 review 发现的所有问题
-2. 判断是否有 ≥2 次同类新模式（现有规则未覆盖的）
-3. 若有 → 生成新模式提案（含案例、判定、归类、规则草案）
-4. 写入 scan.md §Rule Discovery 段落
-5. 用户确认后，落地到对应 rules 文件
-
-**输出格式**：
-```markdown
-### Rule Discovery
-- 本次 Review 是否发现新模式？[✅/❌]
-- 若 ✅：
-  - 新模式名: [名称]
-  - 案例: [file:line + 描述]
-  - 判定: [P0/P1/P2]
-  - 归类: [文档/代码/跨阶段/卓越性/叙事概念]
-  - 规则草案: [一句话描述]
-  - 建议落地文件: [review-patterns.md / review-doc-checklist.md / ...]
 ```
 
 ---
@@ -2636,7 +2636,7 @@ rg "SYMBOL_NAME" minix3/minix/ --type c --type h -n
 
 **使用时机**：
 - 快速 Review（Profile D）时，用口诀快速扫描
-- 详细 Review 时，先过一遍口诀找明显问题，再进入 Step 1-6
+- 详细 Review 时，先过一遍口诀找明显问题，再进入 Step 0-7
 
 ---
 

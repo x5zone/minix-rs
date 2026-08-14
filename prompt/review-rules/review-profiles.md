@@ -72,7 +72,7 @@
 **执行流程**：
 1. 按 [review.md §Review 启动：范围声明](review.md) 声明范围（模式 C）
 2. 阅读 [review.md](review.md) 核心原则
-3. 按 [review-process.md](review-process.md) Step 1-6 执行强制步骤
+3. 按 [review-process.md](review-process.md) Step 0-7 执行强制步骤（Step 0 design 预检强制）
 4. 文档部分：使用 [review-doc-checklist.md](review-doc-checklist.md) + [review-patterns.md](review-patterns.md)
 5. 代码部分：使用 [review-code-checklist.md](review-code-checklist.md)（含 §2.5 trait 设计质量评估）
    + [review-patterns.md](review-patterns.md)（含模式 24 不必要的 trait 抽象）

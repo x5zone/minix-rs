@@ -98,7 +98,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 ## Artifact Inventory
 ```
 
-**⛔ Gate 0 新增 `§Step 0 预检结果` 锚段**（2026-07-16，模式 69 PSMD 配套）：
+**⛔ Gate 0 新增 `§Step 0: 预检结果` 锚段**（2026-07-16，模式 69 PSMD 配套）：
 - 必含内容：4 条 `ls design/{NN}-*.md` 命令 + 输出
 - 缺失 → Gate 0 FAIL + **触发模式 69 PSMD**
 - 模板：
@@ -1431,7 +1431,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 | 层级 | 目标 | 通过条件 | 状态标记 |
 |------|------|---------|---------|
 | **Layer 1（Correctness）** | C → Rust 语义对齐 | P0 修复 + Gate H + Gate 0/A/B/C/D/D-6/E/G/H + Step 5.6 | NOT_CONVERGED if FAIL |
-| **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §15.5 + §2.0 架构演进 ≥80% | allowed CONVERGED w/ warning if PARTIAL |
+| **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §16.5 + §2.0 架构演进 ≥80% | allowed CONVERGED w/ warning if PARTIAL |
 
 **关键判定**：
 - 必须先 1 后 2（正确性优先）
@@ -1486,6 +1486,33 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 - **FAIL**：一致性 < 70% 或发现关键遗漏 → 标记 STATE.md 中相关维度为 NEEDS_RECHECK
 
 **轻量 VERIFY 入口**：任何 review 结束后若未达 CONVERGED，仍可触发轻量 VERIFY——抽样 20% 已报 issue 反向验证 + 抽样 20% 源码符号覆盖检查。STATE 的 `VERIFY` 字段细分为 `LIGHT (cross-AI)` / `FULL (independent session)`。
+
+---
+
+### Step 5.7: Rule Discovery（规则发现，强制填写）
+
+> **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
+> **详见**：[review-rules/review.md §规则演化机制](../../../prompt/review-rules/review.md)、[review-rules/review-process.md §Step 5.7](../../../prompt/review-rules/review-process.md)。
+
+**执行步骤**：
+1. 回顾本轮 review 发现的所有问题
+2. 判断是否有 ≥2 次同类新模式（现有规则未覆盖的）
+3. 若有 → 生成新模式提案（含案例、判定、归类、规则草案）
+4. 写入 scan.md §Rule Discovery 段落
+5. 用户确认后，落地到对应 rules 文件
+
+**输出格式**：
+```markdown
+### Rule Discovery
+- 本次 Review 是否发现新模式？[✅/❌]
+- 若 ✅：
+  - 新模式名: [名称]
+  - 案例: [file:line + 描述]
+  - 判定: [P0/P1/P2]
+  - 归类: [文档/代码/跨阶段/卓越性/叙事概念]
+  - 规则草案: [一句话描述]
+  - 建议落地文件: [review-patterns.md / review-doc-checklist.md / ...]
+```
 
 ---
 
@@ -1578,31 +1605,6 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - 本轮新发现: P0=X, P1=Y, P2=Z
 - 触发停止规则: [1/2/3/无]
 - 决定: 继续收敛 / 强制交付（剩余转 backlog）
-```
-
-### Step 5.7: Rule Discovery（规则发现，强制填写）
-
-> **目的**：将 review 中发现的新模式反馈到规则集，实现规则演化。
-> **详见**：[review-rules/review.md §规则演化机制](../../../prompt/review-rules/review.md)、[review-rules/review-process.md §Step 5.7](../../../prompt/review-rules/review-process.md)。
-
-**执行步骤**：
-1. 回顾本轮 review 发现的所有问题
-2. 判断是否有 ≥2 次同类新模式（现有规则未覆盖的）
-3. 若有 → 生成新模式提案（含案例、判定、归类、规则草案）
-4. 写入 scan.md §Rule Discovery 段落
-5. 用户确认后，落地到对应 rules 文件
-
-**输出格式**：
-```markdown
-### Rule Discovery
-- 本次 Review 是否发现新模式？[✅/❌]
-- 若 ✅：
-  - 新模式名: [名称]
-  - 案例: [file:line + 描述]
-  - 判定: [P0/P1/P2]
-  - 归类: [文档/代码/跨阶段/卓越性/叙事概念]
-  - 规则草案: [一句话描述]
-  - 建议落地文件: [review-patterns.md / review-doc-checklist.md / ...]
 ```
 
 ---

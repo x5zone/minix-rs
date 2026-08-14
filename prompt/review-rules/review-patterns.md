@@ -1430,7 +1430,7 @@ grep -c "unsafe" prompt/../code.rs
         - 错误标"CONVERGED"但流程违反 review-process.md §Step 0 强制规则
 
 ✅ 正确：硬阻断 + Step 0 预检表 + 工具支持
-        1. Step 0 启动时**必须**跑 4 条 ls 命令，结果写入 scan.md `§Step 0 预检结果` 段
+        1. Step 0 启动时**必须**跑 4 条 ls 命令，结果写入 scan.md `§Step 0: 预检结果` 段
         2. 缺失判定 + 嵌入生成（2026-07-17）：
            - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
            - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
@@ -1449,7 +1449,7 @@ grep -c "unsafe" prompt/../code.rs
 - (a) **所有 review 模式强制预检**：Step 0 启动时**必须**跑 4 条 `ls` 命令
 - (b) **缺失即 FAIL**：无任何"复用"或"豁免"借口（除用户显式一次性豁免）
 - (c) **存在旧快照也必须重新评估**：v2 快照语义要求每次 review 重新执行 Step 0.3 产出 `.v{N+1}.md`
-- (d) **scan.md 必须含 `§Step 0 预检结果` 段**：不可省略
+- (d) **scan.md 必须含 `§Step 0: 预检结果` 段**：不可省略
 - (e) **决策记录豁免仅一次性**：Session #11 用户决策"04/05 不回填"仅适用当时已 CONVERGED 的 04/05，不可泛化
 
 **建议落地**：

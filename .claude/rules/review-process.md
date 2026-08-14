@@ -14,7 +14,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 | **D-6** | Step 0.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
 | **E** | Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
 | **G** | Step 5.6 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
-| **H** | Step 1.6 Design + outline Alignment Check | 所有 review 模式必检：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**（方案 D 新增） | DRAFT, no STATE.md write |
+| **H** | Step 1.6 Design + outline Alignment Check | 所有 review 模式必检：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.v*.md 快照存在 + doc↔outline 无 P0 偏离**（方案 D 新增） | DRAFT, no STATE.md write |
 
 **Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
 
@@ -36,7 +36,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 | 文档行数 | rounds 数 | 每 round 范围 | 理由 |
 |---------|----------|--------------|------|
 | < 500 行 | 1 round（全量） | Step 0-7 一轮完成 | 小文档单轮可完成，无需分阶段 |
-| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
+| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E/H）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
 | > 1500 行 | 4 rounds | R1: 正确性（Step 0-4）<br>R2: 卓越性（Step 5 + excellence）<br>R3: patterns 对照<br>R4: 跨文档 + Gate G 收敛 | 大文档需 4 轮，避免单轮 context 过载 |
 
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
@@ -918,7 +918,7 @@ At the END of every session, output:
 
 ```
 
-## Step Final: State Write & Convergence
+## Step 5.5: State Write & Convergence
 After ALL checks are done:
 1. Write/update tool-specific STATE.md (tool-isolated, never share intermediate results):
    - **Trae IDE** → `.review/trae/{module}/STATE.md`
