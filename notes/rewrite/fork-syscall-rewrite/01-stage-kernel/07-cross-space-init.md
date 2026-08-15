@@ -3,7 +3,7 @@
 > **分类**: 全局基建（内核启动阶段 D）
 > **源码**: `minix3/minix/kernel/arch/i386/protect.c` · `minix3/minix/kernel/arch/i386/pg_utils.c` · `minix3/minix/kernel/arch/i386/memory.c`
 > **说明**: 内核如何获得"看"别的进程地址空间的能力——Minix3 用 32 位临时窗口（freepdes/ptproc），minix-rs 用 64 位 direct_map 重新表达。
-> **Redesign 依据**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-pagetable-struct.md` §3.6（direct_map 设计）、`02-stage-vm/07-pagetable-ops.md` §3.0.7（map_kernel 职责简化）
+> **Redesign 依据**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` §3.2（direct_map 设计）、`02-stage-vm/08-pagetable-ops.md` §3.4（map_kernel 职责简化）
 
 ---
 
@@ -35,9 +35,9 @@ kmain 的启动流程分为六个阶段：
 
 **本章不讲什么**：
 
-- direct_map 的完整建立过程（VM server [06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 已详述，本文仅引用）
+- direct_map 的完整建立过程（VM server [07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2 已详述，本文仅引用）
 - `createpde()` 的运行时使用（后续 24-cross-space-runtime.md）
-- `map_kernel()` 的完整实现（VM server [07-pagetable-ops.md](../02-stage-vm/07-pagetable-ops.md) §3.0.7，本文仅讲协作关系）
+- `map_kernel()` 的完整实现（VM server [08-pagetable-ops.md](../02-stage-vm/08-pagetable-ops.md) §3.4，本文仅讲协作关系）
 
 ### 1.1 核心矛盾：内核如何"看"别人的地址空间
 
@@ -117,7 +117,7 @@ x86-64 的页表项（PTE）有一个二元 U/S 位（User/Supervisor bit），�
 
 > **灵魂本质**：direct_map = 给所有物理内存一个永久的虚拟地址，临时窗口的"借/还"整个消失。
 
-Minix3 全线没有 direct map（`pmap.h` 的 `PMAP_DIRECT_MAP` 宏受 `#ifdef __HAVE_DIRECT_MAP` 保护且从未定义，见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6）。direct_map 是 minix-rs 全新引入的架构演进。
+Minix3 全线没有 direct map（`pmap.h` 的 `PMAP_DIRECT_MAP` 宏受 `#ifdef __HAVE_DIRECT_MAP` 保护且从未定义，见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2）。direct_map 是 minix-rs 全新引入的架构演进。
 
 ### 1.4 阶段 D 的位置与简化
 
@@ -131,7 +131,7 @@ direct_map 下这两行的语义变化：
 | `pg_info()` | 记录 bootstrap 页表的物理/虚拟地址 | 废弃——kernel 用 `kernel_phys_to_virt` 直接访问 |
 | `memory_init` 分配 freepdes | 领取 2 个临时窗口槽位 | 废弃——direct map 是永久映射 |
 
-阶段 D 简化为：**确认 direct_map 已就绪**。VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好（详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 的 4 页初始页表结构）；阶段 D 只需确认它已就绪，无需分配任何东西。
+阶段 D 简化为：**确认 direct_map 已就绪**。VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好（详见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2 的 4 页初始页表结构）；阶段 D 只需确认它已就绪，无需分配任何东西。
 
 > **灵魂本质**：阶段 D 从"分配临时窗口"降级为"确认永久窗口已开"。
 
@@ -343,7 +343,7 @@ aarch64 没有真正的 G 位，但通过 `TCR.EPD0=1`（disable TTBR0 walks）+
 
 **本质**：direct_map 的核心是地址空间布局（`va = pa + BASE`），跨架构仅 BASE 不同。
 
-**约束驱动**：VM server 已实现 `DirectMapArch` trait（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3），定义在架构层（`os/arch/`），kernel 和 VM 都引用。kernel 侧应直接对接，避免重复抽象。
+**约束驱动**：VM server 已实现 `DirectMapArch` trait（[VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2），定义在架构层（`os/arch/`），kernel 和 VM 都引用。kernel 侧应直接对接，避免重复抽象。
 
 **假设性推理**：如果 kernel 自造 `PostInitArch`/`MemoryInitArch` trait 来表达 freepdes/ptproc 的等价物，会与 VM 层的 `DirectMapArch` 形成两套抽象，违反"硬件抽象唯一性"原则——同一个 direct_map 机制有两个 trait 定义，维护时容易漂移。
 
@@ -411,7 +411,7 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 
 ### 4.1 DirectMapArch 接口（引用 VM 已实现）
 
-`DirectMapArch` trait 定义在架构层（`os/arch/`），VM server 和 kernel 共用（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3）：
+`DirectMapArch` trait 定义在架构层（`os/arch/`），VM server 和 kernel 共用（[VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2）：
 
 ```rust
 pub trait DirectMapArch {
@@ -443,7 +443,7 @@ pub trait DirectMapArch {
 }
 ```
 
-三架构 BASE 值（详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3）：
+三架构 BASE 值（详见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2）：
 
 | 架构 | VM_DIRECT_MAP_BASE | KERNEL_DIRECT_MAP_BASE | 说明 |
 |------|-------------------|----------------------|------|
@@ -465,7 +465,7 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 
 三架构的 `DirectMapArch` 实现（`X86_64DirectMap` / `AArch64DirectMap` / `Riscv64DirectMap`）均定义在 `os/arch/src/arch/direct_map.rs`，提供 `vm_phys_to_virt` / `kernel_phys_to_virt` / `virt_to_phys` 方法。arm64/riscv64 的 runtime paging 方法（`map` / `unmap` / `query` / `remap` / `update_flags` / `new` / `destroy`）通过 `kernel_phys_to_virt` 经 Direct Map 读写物理页表项，与 x86_64 实现模式一致。
 
-1GB huge page 的 CPU 支持检查（`supports_1gb_page()`）：x86-64 查 `CPUID.80000001H:EDX.GBPAGES`，不支持时回退 2MB。详见 [VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6.3。
+1GB huge page 的 CPU 支持检查（`supports_1gb_page()`）：x86-64 查 `CPUID.80000001H:EDX.GBPAGES`，不支持时回退 2MB。详见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2。
 
 ### 4.2 阶段 D 入口：确认 direct_map 就绪
 
@@ -477,7 +477,7 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 /// 阶段 D：确认 VM direct_map 已就绪。
 ///
 /// VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好
-/// （详见 VM 06-pagetable-struct.md §3.6 的 4 页初始页表结构）。
+/// （详见 VM 07-pagetable-struct.md §3.2 的 4 页初始页表结构）。
 /// 本函数只做确认，不分配任何东西。
 ///
 /// 废弃的 C 逻辑：
@@ -518,7 +518,7 @@ fn init_post_and_memory(vm_proc: &Proc) {
 | `FREE_PDE_SLOTS` static | `os/kernel/src/lib.rs` | 无 |
 | `FREE_UPPER_IDX` static | `os/kernel/src/lib.rs` | 无 |
 
-> **不废弃**：kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（[lib.rs:2036/2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，P9-4 新增）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途）分离。详见 §3.6 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
+> **不废弃**：kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（[lib.rs:2036/2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，P9-4 新增）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途）分离。详见 §3.2 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 
 **迁移影响**：后续 24-cross-space-runtime.md 的 `createpde` 等价函数改用 `CurrentDirectMap::kernel_phys_to_virt(pa)`，不再读 freepdes 槽位。
 
@@ -556,7 +556,7 @@ fn init_post_and_memory(vm_proc: &Proc) {
 - **测试**：三架构 BASE 常量正确（x86-64/arm64/riscv64）
 - **测试**：1GB huge page 不支持时回退 2MB
 
-direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §5），kernel 侧仅测对接。
+direct_map 的测试在 VM 层已覆盖（[VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §5），kernel 侧仅测对接。
 
 ### 5.4 syscall_copy stub 与 07 文档的边界（TODO-07-2 范围澄清）
 
@@ -583,7 +583,7 @@ direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stag
 
 ```
 阶段 C: kernel 建立 VM 初始页表（含 VM direct map, 4页结构）
-        详见 VM 06-pagetable-struct.md §3.6
+        详见 VM 07-pagetable-struct.md §3.2
   ↓
 阶段 D: 确认 VM direct_map 就绪（init_post_and_memory 简化版）
         - 确认 VM 进程页表 root 有效
@@ -594,7 +594,7 @@ direct_map 的测试在 VM 层已覆盖（[VM 06-pagetable-struct.md](../02-stag
 阶段 E-F: system_init + bsp_finish_booting（见 08）
   ↓
 VM 启动后: map_kernel 建立 Kernel direct map（U/S=0, G=1）
-           详见 VM 07-pagetable-ops.md §3.0.7
+           详见 VM 08-pagetable-ops.md §3.4
 ```
 
 ## 附录 B. Minix3 vs minix-rs 阶段 D 对照
@@ -617,8 +617,8 @@ VM 启动后: map_kernel 建立 Kernel direct map（U/S=0, G=1）
 - [06-proc-init-boot-proc-new.md](06-proc-init-boot-proc-new.md) — 阶段 C：进程表初始化与 VM ELF 加载（含 bootstrap 页表）
 - [08-system-init-boot-finish.md](08-system-init-boot-finish.md) — 阶段 E-F：系统调用注册与启动完成
 - [24-cross-space-runtime.md](24-cross-space-runtime.md) — 运行时跨空间访问（`createpde` 等价函数 = `kernel_phys_to_virt`）
-- [02-stage-vm/06-pagetable-struct.md](../02-stage-vm/06-pagetable-struct.md) §3.6 — direct_map 完整设计（双视图、4页结构、DirectMapArch trait）
-- [02-stage-vm/07-pagetable-ops.md](../02-stage-vm/07-pagetable-ops.md) §3.0.7 — `map_kernel` 职责简化
+- [02-stage-vm/07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2 — direct_map 完整设计（双视图、4页结构、DirectMapArch trait）
+- [02-stage-vm/08-pagetable-ops.md](../02-stage-vm/08-pagetable-ops.md) §3.4 — `map_kernel` 职责简化
 - `minix3/minix/kernel/arch/i386/protect.c:370-377` — `arch_post_init`
 - `minix3/minix/kernel/arch/i386/pg_utils.c:186-206` — `pg_mapkernel`
 - `minix3/minix/kernel/arch/i386/pg_utils.c:312-316` — `pg_info`

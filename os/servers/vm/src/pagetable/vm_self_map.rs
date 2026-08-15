@@ -1,4 +1,6 @@
-//! VM self page table mapping interface.
+//! VM self page table mapping interface ([ARCH: A-9]: Minix3 BSS spare
+//! resources `static_sparepages`/`static_sparepagedirs` evolve into a
+//! module-level `Option<PageTable>` + free-function interface).
 //!
 //! Provides `vm_self_mappages()` and `vm_self_unmappages()` for mapping
 //! physical pages into the VM process's own page table. This is used by

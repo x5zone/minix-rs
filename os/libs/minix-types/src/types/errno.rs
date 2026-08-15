@@ -85,6 +85,19 @@ pub const EPROGMISMATCH: i32 = 75;
 pub const EPROCUNAVAIL: i32 = 76;
 pub const ENOLCK: i32 = 77;
 pub const ENOSYS: i32 = 78;
+
+/// Pseudo-code: don't send a reply. C: `EDONTREPLY` — sys/errno.h:199.
+/// Not a real errno: handlers return it to suppress the main-loop reply
+/// (main.c:124-129, 06-rs-main-loop.md).
+/// Service restarted. C: `ERESTART` — sys/errno.h:196 (`_SYSTEM` 下为 -200；
+/// minix-types 采用用户态正数约定，见 03-stage-rs/99-rs-global-concepts.md §errno 符号约定).
+/// RS 用它作 `r_init_err` 的默认值（manager.c:1828，clone_slot）。
+pub const ERESTART: i32 = 200;
+pub const EDONTREPLY: i32 = 203;
+/// Generic error. C: `EGENERIC` — sys/errno.h:200.
+pub const EGENERIC: i32 = 204;
+/// Specified endpoint is not alive. C: `EDEADEPT` — sys/errno.h:211.
+pub const EDEADEPT: i32 = 215;
 pub const EFTYPE: i32 = 79;
 pub const EAUTH: i32 = 80;
 pub const ENEEDAUTH: i32 = 81;

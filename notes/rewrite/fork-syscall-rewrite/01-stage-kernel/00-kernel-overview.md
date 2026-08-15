@@ -313,20 +313,20 @@ Kernel 不独立管理进程的页表。页表的建立、修改由 VM 决策，
 
 ## 6. 与 02-stage-vm 的关系
 
-本目录应与 [../02-stage-vm](../02-stage-vm/) 交叉参照。
+本目录应与 [../02-stage-vm](../02-stage-vm/draft/) 交叉参照。
 
 | 本目录概念 | VM 侧文档 |
 |-----------|---------|
-| `sys_vmctl` 内核实现 | [26-vm-init-main.md](../02-stage-vm/26-vm-init-main.md) §4.3（VM dispatch 调用 sys_vmctl） |
-| 页错误转发 | [15-pagefault.md](../02-stage-vm/15-pagefault.md) |
-| VMREQUEST 协议 | 03-vm-request.md（本目录） + [26-vm-init-main.md](../02-stage-vm/26-vm-init-main.md) |
+| `sys_vmctl` 内核实现 | [26-vm-init-main.md](../02-stage-vm/draft/26-vm-init-main.md) §4.3（VM dispatch 调用 sys_vmctl） |
+| 页错误转发 | [15-pagefault.md](../02-stage-vm/draft/15-pagefault.md) |
+| VMREQUEST 协议 | 03-vm-request.md（本目录） + [26-vm-init-main.md](../02-stage-vm/draft/26-vm-init-main.md) |
 
 ---
 
 ## 7. 参见
 
-- [../02-stage-vm/00-vm-overview.md](../02-stage-vm/00-vm-overview.md) — VM 整体架构
-- [../02-stage-vm/26-vm-init-main.md](../02-stage-vm/26-vm-init-main.md) — VM 初始化与主循环（kernel→VM 交互）
+- [../02-stage-vm/draft/00-vm-overview.md](../02-stage-vm/draft/00-vm-overview.md) — VM 整体架构
+- [../02-stage-vm/draft/26-vm-init-main.md](../02-stage-vm/draft/26-vm-init-main.md) — VM 初始化与主循环（kernel→VM 交互）
 - `minix3/minix/kernel/kernel.h` — 内核顶层头文件
 
 ---

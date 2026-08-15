@@ -576,7 +576,7 @@ mod tests {
         // Tests the full error path: RsError → From<RsError> for VmError → VmError::to_errno()
         use minix_types::{VmError, EINVAL, ENOSYS, EPERM, EFAULT};
         assert_eq!(VmError::from(RsError::ProcessNotFound).to_errno(), EINVAL);
-        assert_eq!(VmError::from(RsError::SysProcNoMask).to_errno(), EFAULT);
+        assert_eq!(VmError::from(RsError::SysProcNoMask).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::PinFailed).to_errno(), ENOSYS);
         assert_eq!(VmError::from(RsError::PrepareNotImplemented).to_errno(), ENOSYS);
         assert_eq!(VmError::from(RsError::PreallocMapConflict).to_errno(), ENOSYS);

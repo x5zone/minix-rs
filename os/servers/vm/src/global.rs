@@ -55,6 +55,24 @@ pub(crate) fn total_pages() -> usize {
     unsafe { *TOTAL_PAGES.get() }
 }
 
+/// Adds pages to the global physical page total.
+///
+/// C: `mem_add_total_pages()` (alloc.c:281-284) — called from
+/// `init_vm()` for boot modules and the kernel's own allocations
+/// (main.c:485-495). The kernel's free list does not include boot-time
+/// modules, so the total must be calibrated after `mem_init()`.
+///
+/// # Safety
+/// Must be called during VM startup (before any concurrent reader of
+/// `TOTAL_PAGES` exists). Single-threaded VM guarantees this.
+pub(crate) unsafe fn add_total_pages(pages: usize) {
+    // SAFETY: Single-threaded VM; called during startup, before any
+    // concurrent read of TOTAL_PAGES (documented above).
+    unsafe {
+        *TOTAL_PAGES.get() += pages;
+    }
+}
+
 /// Sets the kernel memory layout.
 ///
 /// Must be called exactly once during VM server initialization, after
@@ -324,6 +342,32 @@ pub(crate) fn register_page_alloc(alloc: &mut VmPageAllocator) {
 /// Called when VmServer is dropped to prevent dangling pointer.
 pub(crate) fn unregister_page_alloc() {
     PAGE_ALLOC_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
+}
+
+/// Mutable access to the registered VM page allocator.
+///
+/// Used by allocator hooks that cannot receive `&mut VmPageAllocator` through
+/// their signature — notably `alloc_page::vm_pt_alloc()`, which is registered
+/// as a `fn()` with `minix_arch::pt_alloc::register()`.
+///
+/// # Panics
+///
+/// Panics if `register_page_alloc()` has not been called yet.
+pub(crate) fn page_alloc_mut() -> &'static mut VmPageAllocator {
+    let ptr = PAGE_ALLOC_PTR.load(Ordering::SeqCst);
+    assert!(
+        !ptr.is_null(),
+        "page_alloc_mut: page allocator not registered — call register_page_alloc() first"
+    );
+    // SAFETY: 1. Single-threaded VM event loop: no concurrent access to
+    // PAGE_ALLOC_PTR or the allocator it points to. 2. Outlive constraint:
+    // the pointer is set during VmServer::new() and cleared during
+    // VmServer::drop(); callers never dereference after it is nulled
+    // (checked above). 3. No aliasing `&mut` exists: callers of this
+    // accessor must not simultaneously hold a borrow of the same allocator
+    // (e.g. via a `VmServer` field); the allocator hooks use it at points
+    // where the event loop holds no such borrow.
+    unsafe { &mut *ptr }
 }
 
 pub(crate) fn heap_arena_grow(

@@ -9,14 +9,13 @@
 //!
 //! - [`PageAllocFlags`] — bitflags for allocation requests (CLEAR,
 //!   CONTIG, ALIGN64K, LOWER16MB, LOWER1MB, ALIGN16K). Mirrors the C
-//!   `ALLOC_*` flag bits in `minix/alloc.h`.
+//!   `PAF_*` flag bits in `minix3/minix/servers/vm/vm.h:22-27`.
 //!
 //! - [`AllocError`] — out-of-memory and low-memory-exhausted variants.
-//!   The C side uses separate `errno` values (ENOMEM vs ENOSPC); we
-//!   preserve the distinction so the dispatcher can map them to the
-//!   correct `VmError::OutOfMemory` vs `VmError::OutOfMemory` (both
-//!   collapse to ENOMEM in the unified `VmError::to_errno()`, but the
-//!   distinction is useful for telemetry).
+//!   C collapses both failure modes into `NO_MEM`; we preserve the
+//!   distinction (low-memory-exhausted vs plain OOM) for telemetry.
+//!   Both collapse to `VmError::OutOfMemory` (`to_errno() == ENOMEM`,
+//!   ipc/vm.rs:601), so the IPC-visible errno semantics match C.
 //!
 use core::fmt;
 use minix_types::PhysBytes as MtPhysBytes;

@@ -1,0 +1,266 @@
+{
+  "_comment": "C→Rust 语义映射表（vm 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "C 函数名/结构体/宏 → 一个或多个 Rust 限定名/方法名。01-vm-init-main 启动链语义范围为主，其余 doc 语义按需扩展。",
+  "main": [
+    "VmServer::run",
+    "main"
+  ],
+  "is_first_time": [
+    "BootParams::is_first_time",
+    "BootParams::placeholder"
+  ],
+  "init_vm": [
+    "VmServer::init",
+    "VmServer::new_with_boot_params"
+  ],
+  "init_proc": [
+    "VmServer::init_proc",
+    "VmServer::init_vm_slot",
+    "VmServer::init_boot_procs"
+  ],
+  "exec_bootproc": [
+    "VmServer::init_boot_procs"
+  ],
+  "clear_proc": [
+    "VmProc::clear",
+    "EmptySlot::activate"
+  ],
+  "sef_local_startup": [
+    "VmServer::rs_handshake"
+  ],
+  "sef_cb_init_fresh": [
+    "VmServer::rs_handshake"
+  ],
+  "sef_cb_init_lu_restart": [
+    "handle_rs_prepare",
+    "handle_rs_update"
+  ],
+  "sef_cb_init_vm_multi_lu": [
+    "handle_rs_update"
+  ],
+  "sef_cb_lu_state_changed": [
+    "handle_rs_update"
+  ],
+  "sef_cb_signal_handler": [
+    "is_ipc_notify"
+  ],
+  "sef_cb_init_response_rs_asyn_once": [
+    "rs_handshake"
+  ],
+  "do_sef_init_request": [
+    "VmServer::rs_handshake"
+  ],
+  "sef_receive_status": [
+    "ipc_receive"
+  ],
+  "map_service": [
+    "VmServer::rs_handshake",
+    "acl_set"
+  ],
+  "mem_add_total_pages": [
+    "global::add_total_pages",
+    "BootParams::extra_pages"
+  ],
+  "mem_init": [
+    "VmPageAllocator::new",
+    "global::init"
+  ],
+  "get_mem_chunks": [
+    "BootMemRegion"
+  ],
+  "free_mem": [
+    "VmPageAllocator::free_mem"
+  ],
+  "mmap": [
+    "VmAllocator"
+  ],
+  "munmap": [
+    "VmAllocator::dealloc"
+  ],
+  "_brk": [
+    "VmAllocator",
+    "heap_arena_grow"
+  ],
+  "alloc_mem": [
+    "VmPageAllocator::alloc"
+  ],
+  "pt_writemap": [
+    "init_page_table"
+  ],
+  "kernel_boot_info": [
+    "BootParams"
+  ],
+  "struct boot_image": [
+    "BootImage"
+  ],
+  "multiboot_module_t": [
+    "BootModule"
+  ],
+  "kernel_allocated_bytes": [
+    "KernelAllocated"
+  ],
+  "num_vm_instances": [
+    "global::vm_instance_count",
+    "global::inc_vm_instance"
+  ],
+  "VMF_VM_INSTANCE": [
+    "VmFlags::VM_INSTANCE"
+  ],
+  "NR_VM_CALLS": [
+    "NR_VM_CALLS"
+  ],
+  "VM_PROC_NR": [
+    "VM_PROC_NR"
+  ],
+  "CALLMAP": [
+    "MessageDispatcher::dispatch_by_number"
+  ],
+  "CALLNUMBER": [
+    "MessageDispatcher::dispatch_by_number"
+  ],
+  "RTS_BOOTINHIBIT": [
+    "BootParams::is_first_time"
+  ],
+  "SIGKMEM": [
+    "is_ipc_notify"
+  ],
+  "VMPPARAM_CLEAR": [
+    "dispatch_procctl"
+  ],
+  "VMPPARAM_HANDLEMEM": [
+    "dispatch_procctl"
+  ],
+  "RS_PROC_NR": [
+    "Endpoint::RS"
+  ],
+  "VFS_PROC_NR": [
+    "Endpoint::VFS"
+  ],
+  "struct vmproc": [
+    "VmProc",
+    "vmproc::VmProc"
+  ],
+  "reset_vm_rusage": [
+    "VmProc::clear"
+  ],
+  "free_proc": [
+    "VmProc::clear",
+    "ExitingProc::reap"
+  ],
+  "do_exit": [
+    "ExitingProc::reap",
+    "VmProc::clear"
+  ],
+  "do_willexit": [
+    "ActiveProc::mark_exiting"
+  ],
+  "VMF_INUSE": [
+    "VmFlags::IN_USE"
+  ],
+  "VMF_EXITING": [
+    "VmFlags::EXITING"
+  ],
+  "VMP_NR": [
+    "VM_PROC_COUNT"
+  ],
+  "VMP_EXECTMP": [
+    "VM_EXEC_TMP_SLOT"
+  ],
+  "VMSTATS": [
+    "vm_bytecopies"
+  ],
+  "NO_ACL": [
+    "AclState::Uninitialized"
+  ],
+  "USER_ACL": [
+    "AclState::Default"
+  ],
+  "FIRST_SYS_ACL": [
+    "AclState::System"
+  ],
+  "vm_region_top": [
+    "ActiveProc::region_top",
+    "ActiveProc::set_region_top"
+  ],
+  "vm_total": [
+    "ActiveProc::total",
+    "ActiveProc::add_total"
+  ],
+  "vm_total_max": [
+    "ActiveProc::total_max"
+  ],
+  "vm_minor_page_fault": [
+    "ActiveProc::minor_fault",
+    "ActiveProc::inc_minor_fault"
+  ],
+  "vm_major_page_fault": [
+    "ActiveProc::major_fault",
+    "ActiveProc::inc_major_fault"
+  ],
+  "vm_bytecopies": [
+    "vm_bytecopies"
+  ],
+  "vm_acl": [
+    "AclState",
+    "ActiveProc::acl"
+  ],
+  "vm_slot": [
+    "UserSlot"
+  ],
+  "vm_endpoint": [
+    "Endpoint"
+  ],
+  "vm_boot": [
+    "BootImage",
+    "ActiveProc::set_boot"
+  ],
+  "acl_fork": [
+    "AclState::acl_fork",
+    "ActiveProc::copy_acl_from"
+  ],
+  "vmproc": [
+    "VmProc"
+  ],
+  "vm_isokendpt": [
+    "VmProcTable::vm_isokendpt"
+  ],
+  "swap_proc_slot": [
+    "ActiveProc::swap_proc_slot"
+  ],
+  "ALLREGIONS": [
+    "VmProcTable::for_each_active_region"
+  ],
+  "_ENDPOINT_P": [
+    "Endpoint::slot"
+  ],
+  "_ENDPOINT": [
+    "Endpoint::from_generation_slot"
+  ],
+  "_ENDPOINT_G": [
+    "Endpoint::generation"
+  ],
+  "_NR_PROCS": [
+    "NR_PROCS"
+  ],
+  "acl_init": [
+    "AclState::default"
+  ],
+  "acl_check": [
+    "AclState::acl_check",
+    "ActiveProc::acl_check"
+  ],
+  "acl_set": [
+    "AclState::acl_set",
+    "ActiveProc::set_acl"
+  ],
+  "acl_clear": [
+    "AclState::acl_clear",
+    "VmProc::clear"
+  ],
+  "acl_mask": [
+    "AclMask"
+  ],
+  "acl_inuse": [
+    "AclMask"
+  ]
+}

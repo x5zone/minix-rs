@@ -485,7 +485,7 @@ pub enum IpcOutcome {
 }
 ```
 
-**理由**：阻塞是 IPC 的正常语义，不是错误。`IpcOutcome` 显式区分三种状态，调用方 match 处理。借鉴 02-stage-vm/24-vm-ipc-dispatch 的 `VmReply::Suspend` 模式（区分"完成"与"挂起"）。
+**理由**：阻塞是 IPC 的正常语义，不是错误。`IpcOutcome` 显式区分三种状态，调用方 match 处理。借鉴 02-stage-vm/draft/24-vm-ipc-dispatch 的 `VmReply::Suspend` 模式（区分"完成"与"挂起"）。
 
 ### 3.2 发送者队列：SenderQueue 封装 + VecDeque 替代指针链表
 
@@ -1157,4 +1157,4 @@ fn test_deadlock_mixed_chain_cycle() {
 - [13-syscall-dispatch](13-syscall-dispatch.md) — `do_ipc` 系统调用入口分派
 - [14-exception-interrupt](14-exception-interrupt.md) — 系统调用陷入入口
 - [23-ipc-filter](23-ipc-filter.md) — IPC 过滤详过滤机制（`s_ipcf`）
-- [02-stage-vm/24-vm-ipc-dispatch](../02-stage-vm/24-vm-ipc-dispatch.md) — VM 服务端 IPC 分派（`VmReply::Suspend` anti-translate 设计参考）
+- [02-stage-vm/24-vm-ipc-dispatch](../02-stage-vm/draft/24-vm-ipc-dispatch.md) — VM 服务端 IPC 分派（`VmReply::Suspend` anti-translate 设计参考）

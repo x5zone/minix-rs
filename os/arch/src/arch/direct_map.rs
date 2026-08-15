@@ -14,7 +14,9 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
-/// Architecture abstraction for Direct Map address space layout.
+/// Architecture abstraction for Direct Map address space layout
+/// ([ARCH: A-10]: Minix3's duplicated `ARCH_VM_*` macro families become
+/// a per-architecture trait implementation).
 ///
 /// Each architecture places its Direct Map window at a different virtual
 /// address range; this trait captures only that layout difference plus

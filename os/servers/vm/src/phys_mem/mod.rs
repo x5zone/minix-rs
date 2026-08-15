@@ -9,6 +9,11 @@
 //! - `buddy_alloc`: O(log n) alloc with power-of-two contiguity
 //! - `segment_tree_alloc`: O(log n) alloc with arbitrary contiguity
 //!
+//! [ARCH: A-5] — Minix3 has a single bitmap allocator (`alloc.c`); this
+//! module is the minix-rs architectural evolution to three interchangeable
+//! backends behind one trait (see plan.md §4 A-5 and 05-physical-memory.md
+//! §3.1/§3.3).
+//!
 //! All backends use a single trait (`PhysAllocator`) so the `PhysAlloc`
 //! enum can dispatch at runtime without `dyn` (zero-cost).
 //!

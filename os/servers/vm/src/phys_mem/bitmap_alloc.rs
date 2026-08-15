@@ -198,7 +198,7 @@ impl BitmapAllocator {
     /// # Why not done?
     ///
     /// The Minix3 C source `alloc.c::find_bit` has the same O(n)
-    /// implementation (without chunk-skip!) — see `alloc.c:175-192`.
+    /// implementation (without chunk-skip!) — see `alloc.c:369-399`.
     /// Rust's chunk-skip is already a strict improvement. The
     /// optimizations above would change the algorithm; the
     /// performance gain (3-10x on cold scans) is not justified
@@ -301,11 +301,17 @@ impl BitmapAllocator {
     ///
     /// # DEFERRED
     ///
-    /// Returns 0 (no-op). The original Minix3 C `cache_freepages()`
-    /// at `cache.c:288` is also a no-op stub when no VM block cache
-    /// is wired into the bitmap allocator (it lives at the VM
-    /// layer, not the phys-allocator layer). The Rust port follows
-    /// the same split:
+    /// Returns 0 (no-op) for now. The original Minix3 C
+    /// `cache_freepages()` at `cache.c:288` walks the VM block-cache
+    /// LRU (`lru_oldest`), reclaims single-refcount pages via
+    /// `rmcache()` + `free_mem()`, and returns how many were freed —
+    /// `alloc_mem` (alloc.c:263) retries after a successful reclaim.
+    /// The Rust port defers this reclaim path: the VM block cache
+    /// (`page_cache.rs`, 24-page-cache doc) is not yet wired into the
+    /// allocator, so on exhaustion `alloc_mem` falls through to
+    /// `AllocError::OutOfMemory` without the C "borrow pages from the
+    /// block cache" escape hatch. The split between the allocator's
+    /// own page cache and the VM block cache is:
     ///
     /// - **BitmapAllocator's page cache** (this `page_cache` field):
     ///   a small LIFO of recently-freed pages that can be re-handed
@@ -315,11 +321,9 @@ impl BitmapAllocator {
     ///   doc).
     /// - **VM block cache** (`PageCache` in `page_cache.rs`):
     ///   separately tracked by the VM and is unrelated to the
-    ///   bitmap's internal cache. `cache_freepages()` could
-    ///   optionally flush entries from the VM block cache to free
-    ///   physical pages when the bitmap is exhausted, but Minix3
-    ///   does not do this — it relies on the FS layer to call
-    ///   `forgetcache` proactively.
+    ///   bitmap's internal cache. Wiring `cache_freepages()` to flush
+    ///   entries from the VM block cache (as C does) is the deferred
+    ///   implementation step.
     ///
     /// **Implementation path** (when needed):
     /// 1. If `self.page_cache_size > 0`, return the top of the
@@ -331,14 +335,12 @@ impl BitmapAllocator {
     /// 3. Return the number of pages actually freed.
     ///
     /// For now, the bitmap falls through to the "no free pages"
-    /// branch in `alloc_mem` (line 314), which propagates
-    /// `AllocError::OutOfMemory` to the caller. This matches C's
-    /// behavior on memory exhaustion.
+    /// branch in `alloc_mem` (line 347), which propagates
+    /// `AllocError::OutOfMemory` to the caller.
     fn cache_freepages(&mut self, _needed: usize) -> usize {
         // DEFERRED: see doc above for the 3-step implementation path.
-        // Currently returns 0 (no-op), matching Minix3's own no-op stub.
-        // The fallback in `alloc_mem` is `AllocError::OutOfMemory` which
-        // propagates correctly.
+        // Currently returns 0 (no-op); the fallback in `alloc_mem` is
+        // `AllocError::OutOfMemory`, which propagates correctly.
         0
     }
 }

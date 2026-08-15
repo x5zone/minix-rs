@@ -19,6 +19,9 @@ pub(crate) mod vm_self_map;
 
 use minix_types::VirBytes;
 
+// C `pt_t` (dual-view struct) is structurally eliminated ([ARCH: A-2]):
+// the page table is a trait object whose root is a single physical page;
+// intermediate levels are allocated on demand by the arch implementation.
 pub(crate) type PageTable = minix_arch::CurrentPaging;
 
 pub(crate) use minix_arch::paging::PageFlags;

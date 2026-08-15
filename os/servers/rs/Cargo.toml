@@ -10,9 +10,17 @@ name = "minix-rs"
 path = "src/main.rs"
 
 [dependencies]
+bitflags = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 
 [lib]
 name = "minix_rs"
 path = "src/lib.rs"
+
+[features]
+default = []
+# ARCH A-11: USE_LIVEUPDATE（minix3 share/mk/bsd.own.mk:1499 默认 yes）
+# → cargo feature。默认关闭：RS 自升级依赖 10/15/16/18 机制，机制落地前该
+# 代码路径不编译（fail-closed）。见 01-rs-boot-init.md §3.6。
+live-update = []

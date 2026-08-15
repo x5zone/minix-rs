@@ -267,9 +267,15 @@ impl VmProcTable {
     /// from `DeadEndpoint` (Minix3's EDEADEPT: endpoint mismatch or not active).
     /// This distinction is important for debugging and for callers that
     /// need to differentiate between "bad endpoint encoding" and "stale endpoint".
+    ///
+    /// Note: the upper bound is `NR_PROCS` (not `VM_PROC_COUNT`), matching
+    /// Minix3's `if(*procn < 0 || *procn >= NR_PROCS) return EINVAL;`
+    /// (`utility.c:86-88`). The exec temporary slot (`VM_EXEC_TMP_SLOT`,
+    /// index `NR_PROCS`) is therefore unreachable via endpoint lookup —
+    /// an endpoint encoding that slot returns `InvalidSlot`, exactly like C.
     pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, EndpointError> {
         let vm_slot = endpoint.slot();
-        if vm_slot < 0 || vm_slot as usize >= VM_PROC_COUNT {
+        if vm_slot < 0 || vm_slot as usize >= NR_PROCS {
             return Err(EndpointError::InvalidSlot);
         }
         let slot_idx = UserSlot(vm_slot as usize);
@@ -596,6 +602,34 @@ mod tests {
 
         let old_ep = Endpoint::from_generation_slot(0, 7);
         assert_eq!(table.vm_isokendpt(old_ep), Err(EndpointError::DeadEndpoint));
+    }
+
+    #[test]
+    fn test_vm_isokendpt_out_of_range() {
+        let table = VmProcTable::get_global();
+
+        // Slot == NR_PROCS: the exec temporary slot exists in the table
+        // (VM_PROC_COUNT = NR_PROCS + 1) but is unreachable via endpoint
+        // lookup — Minix3's vm_isokendpt rejects slot >= NR_PROCS with EINVAL.
+        let exec_tmp_ep = Endpoint::from_generation_slot(1, NR_PROCS as i32);
+        assert_eq!(
+            table.vm_isokendpt(exec_tmp_ep),
+            Err(EndpointError::InvalidSlot)
+        );
+
+        // Slot == VM_PROC_COUNT: beyond the table entirely.
+        let out_of_table_ep = Endpoint::from_generation_slot(1, VM_PROC_COUNT as i32);
+        assert_eq!(
+            table.vm_isokendpt(out_of_table_ep),
+            Err(EndpointError::InvalidSlot)
+        );
+
+        // Negative slot (kernel task endpoint): EINVAL in C, InvalidSlot here.
+        let kernel_ep = Endpoint::from_generation_slot(1, -2);
+        assert_eq!(
+            table.vm_isokendpt(kernel_ep),
+            Err(EndpointError::InvalidSlot)
+        );
     }
 
     #[test]

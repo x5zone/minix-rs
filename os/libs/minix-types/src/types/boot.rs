@@ -7,7 +7,7 @@
 use crate::Endpoint;
 
 pub const PROC_NAME_LEN: usize = 16;
-pub const NR_BOOT_PROCS: usize = 32;
+pub const NR_BOOT_PROCS: usize = 17; // C: param.h — NR_TASKS(5) + LAST_SPECIAL_PROC_NR(11) + 1
 
 /// Kernel memory layout parameters used to map the kernel into each
 /// process's page table.

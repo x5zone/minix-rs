@@ -888,7 +888,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
                     └── switch_to_user()  ← 详见 07-kmain-entry-protection.md
 ```
 
-> **为什么这一切能工作？** 链接器为 `kmain` 分配 VMA（高地址），boot-shim 按 p_paddr 将代码放在 LMA（低物理地址），页表建立两者之间的映射。CPU 通过高地址窗口访问同一块物理内存——"逻辑 vs 物理"的分离是所有现代 OS 的基石，而高半核内核正是这种分离最极致的体现。详见 02-stage-vm/06-pagetable-struct.md §1.1。
+> **为什么这一切能工作？** 链接器为 `kmain` 分配 VMA（高地址），boot-shim 按 p_paddr 将代码放在 LMA（低物理地址），页表建立两者之间的映射。CPU 通过高地址窗口访问同一块物理内存——"逻辑 vs 物理"的分离是所有现代 OS 的基石，而高半核内核正是这种分离最极致的体现。详见 02-stage-vm/draft/06-pagetable-struct.md §1.1。
 
 ---
 

@@ -76,6 +76,19 @@ C_ENUM_PATTERN = re.compile(
 )
 
 
+def _is_pure_type_line(line):
+    """GNU/K&R 两行式函数定义的返回类型行：仅含类型/存储类关键字与指针星号。"""
+    if not line:
+        return False
+    # 排除含括号、分号、花括号、赋值或注释的行
+    if any(ch in line for ch in '();={}'):
+        return False
+    return re.fullmatch(
+        r'(?:static\s+|extern\s+|inline\s+)*[A-Za-z_][A-Za-z0-9_\s\*]*',
+        line
+    ) is not None
+
+
 def extract_c_symbols(c_dir):
     """从 C 源码目录提取所有函数/结构体/宏/枚举。"""
     symbols = {
@@ -104,12 +117,14 @@ def extract_c_symbols(c_dir):
                 continue
 
             # 函数定义：行首是返回类型，含函数名(参数)，不以分号结尾
+            prev_sig = ''  # 前一个非空行（用于 GNU/K&R 两行式：类型独占一行）
             for i, line in enumerate(content.splitlines(), 1):
                 stripped = line.strip()
                 if not stripped or stripped.startswith('#') or stripped.startswith('//'):
                     continue
                 # 跳过函数声明（以分号结尾）
                 if stripped.endswith(';'):
+                    prev_sig = stripped
                     continue
                 # 匹配函数定义：returntype funcname(args) {
                 m = re.match(
@@ -118,11 +133,18 @@ def extract_c_symbols(c_dir):
                     r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*\)\s*\{?\s*$',
                     stripped
                 )
-                if m:
-                    name = m.group(1)
-                    # 过滤控制关键字
-                    if name not in ('if', 'for', 'while', 'switch', 'else', 'return', 'do'):
-                        symbols['functions'].append((name, rel_path, i))
+                name = m.group(1) if m else None
+                # GNU/K&R 两行式：本行是 "name(args) {" 且前一个非空行是纯返回类型
+                if not m:
+                    m2 = re.match(
+                        r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*\)\s*\{?\s*$',
+                        stripped
+                    )
+                    if m2 and _is_pure_type_line(prev_sig):
+                        name = m2.group(1)
+                if name and name not in ('if', 'for', 'while', 'switch', 'else', 'return', 'do'):
+                    symbols['functions'].append((name, rel_path, i))
+                prev_sig = stripped
 
             # 结构体
             for m in C_STRUCT_PATTERN.finditer(content):
@@ -160,12 +182,12 @@ def extract_c_symbols(c_dir):
 # ===== Rust 符号提取 =====
 
 RUST_FN_PATTERN = re.compile(
-    r'^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)',
     re.MULTILINE
 )
 
 RUST_STRUCT_PATTERN = re.compile(
-    r'^\s*(?:pub\s+)?struct\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?struct\s+([a-zA-Z_][a-zA-Z0-9_]*)',
     re.MULTILINE
 )
 
@@ -249,7 +271,7 @@ def extract_rust_qualified_names(rust_dir):
         return qualified
 
     impl_block_pattern = re.compile(
-        r'impl\s+(?:<[^>]+>\s+)?(?:(\w+)\s+for\s+)?(\w+)\s*\{',
+        r'impl\s*(?:<[^>]*>\s*)?(?:(\w+)\s+for\s+)?(\w+)(?:\s*<[^>]*>)?\s*\{',
         re.DOTALL
     )
 

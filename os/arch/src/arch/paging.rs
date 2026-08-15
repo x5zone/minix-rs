@@ -1417,5 +1417,81 @@ pub mod mock {
         fn test_paging_contract_map_range_all_or_nothing() {
             run_paging_contract_map_range_all_or_nothing(MockPaging::new().unwrap());
         }
+
+        /// clone_range: copies all mapped pages from src to dst in [start, end),
+        /// preserving physical address and flags (C: pt_copy / pt_map_in_range).
+        #[test]
+        fn test_clone_range_basic() {
+            let mut src = MockPaging::new().unwrap();
+            let mut dst = MockPaging::new().unwrap();
+
+            let flags = PageFlags::read_write();
+            src.map(VirBytes(0x1000), PhysBytes(0x2000), flags).unwrap();
+            src.map(VirBytes(0x2000), PhysBytes(0x3000), PageFlags::read_only()).unwrap();
+            src.map(VirBytes(0x3000), PhysBytes(0x4000), flags).unwrap();
+
+            clone_range(&src, &mut dst, VirBytes(0x1000), VirBytes(0x4000)).unwrap();
+
+            assert_eq!(dst.query(VirBytes(0x1000)), Some((PhysBytes(0x2000), flags)));
+            assert_eq!(
+                dst.query(VirBytes(0x2000)),
+                Some((PhysBytes(0x3000), PageFlags::read_only()))
+            );
+            assert_eq!(dst.query(VirBytes(0x3000)), Some((PhysBytes(0x4000), flags)));
+        }
+
+        /// clone_range: skips addresses where src has no mapping
+        /// (matches C pt_map_in_range silently skipping absent PDEs/PTEs).
+        #[test]
+        fn test_clone_range_skips_unmapped() {
+            let mut src = MockPaging::new().unwrap();
+            let mut dst = MockPaging::new().unwrap();
+
+            let flags = PageFlags::read_write();
+            src.map(VirBytes(0x1000), PhysBytes(0x2000), flags).unwrap();
+            // 0x2000 intentionally left unmapped
+            src.map(VirBytes(0x3000), PhysBytes(0x4000), flags).unwrap();
+
+            clone_range(&src, &mut dst, VirBytes(0x1000), VirBytes(0x4000)).unwrap();
+
+            assert_eq!(dst.query(VirBytes(0x1000)), Some((PhysBytes(0x2000), flags)));
+            assert!(dst.query(VirBytes(0x2000)).is_none());
+            assert_eq!(dst.query(VirBytes(0x3000)), Some((PhysBytes(0x4000), flags)));
+        }
+
+        /// clone_range: returns AlreadyMapped if dst already has a mapping
+        /// (strict map semantics — dst must be empty or the caller uses remap).
+        #[test]
+        fn test_clone_range_already_mapped() {
+            let mut src = MockPaging::new().unwrap();
+            let mut dst = MockPaging::new().unwrap();
+
+            let flags = PageFlags::read_write();
+            src.map(VirBytes(0x1000), PhysBytes(0x2000), flags).unwrap();
+            dst.map(VirBytes(0x1000), PhysBytes(0x9000), flags).unwrap();
+
+            assert_eq!(
+                clone_range(&src, &mut dst, VirBytes(0x1000), VirBytes(0x2000)),
+                Err(PageTableError::AlreadyMapped)
+            );
+            // dst mapping untouched
+            assert_eq!(dst.query(VirBytes(0x1000)), Some((PhysBytes(0x9000), flags)));
+        }
+
+        /// clone_range: rejects unaligned start/end with InvalidAddress.
+        #[test]
+        fn test_clone_range_unaligned() {
+            let src = MockPaging::new().unwrap();
+            let mut dst = MockPaging::new().unwrap();
+
+            assert_eq!(
+                clone_range(&src, &mut dst, VirBytes(0x1001), VirBytes(0x2000)),
+                Err(PageTableError::InvalidAddress)
+            );
+            assert_eq!(
+                clone_range(&src, &mut dst, VirBytes(0x1000), VirBytes(0x2001)),
+                Err(PageTableError::InvalidAddress)
+            );
+        }
     }
 }

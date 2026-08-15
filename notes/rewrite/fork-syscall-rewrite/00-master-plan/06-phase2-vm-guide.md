@@ -32,7 +32,7 @@ pub fn vm_fork(
 - `EINVAL`: 无效的父进程 endpoint
 - `ENOMEM`: 内存不足
 
-**参考文档**: [../02-stage-vm/vm-fork-mock.md](../02-stage-vm/vm-fork-mock.md)
+**参考文档**: [../02-stage-vm/draft/vm-fork-mock.md](../02-stage-vm/draft/vm-fork-mock.md)
 
 ---
 
@@ -197,6 +197,6 @@ os/servers/vm/src/
 
 ## 7. 参考文档
 
-- **C 源码分析**: [../02-stage-vm/vm-fork-mock.md](../02-stage-vm/vm-fork-mock.md)
+- **C 源码分析**: [../02-stage-vm/draft/vm-fork-mock.md](../02-stage-vm/draft/vm-fork-mock.md)
 - **架构分析**: [02-architecture-analysis.md](./02-architecture-analysis.md)
 - **PM 层指南**: [06-phase1-pm-guide.md](./06-phase1-pm-guide.md)

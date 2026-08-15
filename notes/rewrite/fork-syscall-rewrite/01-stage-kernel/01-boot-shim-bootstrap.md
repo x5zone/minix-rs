@@ -648,10 +648,10 @@ pg_load() + vm_enable_paging()→ paging.enable()
 alloc_pagetable()              → 不在 trait 中（boot-shim 从 UEFI 分配 root page）
 ```
 
-**boot 阶段用到的 trait 方法**（以下仅列出 boot 阶段使用的方法，完整定义见 02-stage-vm/06-pagetable-struct.md §3.4，包括 destroy、remap、update_flags、root_paddr、switch、flush_tlb、flush_tlb_addr、map_range、unmap_range 等运行时方法）：
+**boot 阶段用到的 trait 方法**（以下仅列出 boot 阶段使用的方法，完整定义见 02-stage-vm/draft/06-pagetable-struct.md §3.4，包括 destroy、remap、update_flags、root_paddr、switch、flush_tlb、flush_tlb_addr、map_range、unmap_range 等运行时方法）：
 
 ```rust
-// Paging trait — 完整定义见 02-stage-vm/06-pagetable-struct.md §3.4
+// Paging trait — 完整定义见 02-stage-vm/draft/06-pagetable-struct.md §3.4
 pub trait Paging {
     const PAGE_SIZE: usize;
     fn new() -> Result<Self, PageTableError> where Self: Sized;
@@ -671,7 +671,7 @@ pub trait Paging {
     unsafe fn enable(&self) -> PhysBytes;
 }
 
-// HugePages trait — 完整定义见 02-stage-vm/06-pagetable-struct.md §3.4
+// HugePages trait — 完整定义见 02-stage-vm/draft/06-pagetable-struct.md §3.4
 pub trait HugePages: Paging {
     const HUGE_PAGE_SIZES: &'static [usize];
     const HUGE_PAGE_SIZE: u64;           // Direct Map 首选大页大小
@@ -690,7 +690,7 @@ pub trait HugePages: Paging {
 - `HugePages` 是 `Paging` 的超集 trait（`HugePages: Paging`），boot 阶段用 `P: HugePages` bound 即可同时访问两者
 - 所有目标架构（x86-64/ARM64/RISC-V）都实现了 `HugePages`，boot 阶段大页是必须的（C 源码 `pg_identity()` 和 `pg_mapkernel()` 都用 4MB 大页）
 - `map_huge()`、`supports_1gb_page()`、`PTE_HUGE_IDENTIFIER_BIT` 等高级操作保留在扩展 trait，保持 `Paging` 核心职责清晰
-- 详见 02-stage-vm/06-pagetable-struct.md §3.4 和 §5.3.1 的 trait 职责划分
+- 详见 02-stage-vm/draft/06-pagetable-struct.md §3.4 和 §5.3.1 的 trait 职责划分
 
 **页表分配替代 C 的静态池**：Minix3 C 使用 `pagetables[6][1024]` 静态池 + `pg_alloc_page()` 从 memmap 尾部分配。minix-rs 的 `Paging::map()` 和 `HugePages::map_huge()` 内部自行管理页表页的分配——从 `KernelInfo.memmap` 描述的空闲区域中取物理页（简单 bump 分配），通过 UEFI 留下的恒等映射写入（切换 CR3 前仍使用 UEFI 页表，详见 §4.6 `arch_boot_impl` 执行顺序）。不需要 C 的静态池，因为 64 位地址空间需要更多页表页，静态池的固定大小不再适用。
 

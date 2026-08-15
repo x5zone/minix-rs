@@ -395,8 +395,78 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | I-10 | D10: `PrivId`/`SysId` type alias → newtype | 22 §3 [P2] | 改 newtype 需更新所有 callsite，影响面大 |
 | I-11 | BIOS 启动 / 实模式 / Multiboot/GRUB legacy 路径未覆盖 | 04 §2 + 01 §3.1 | 范围声明（当前仅 UEFI x86-64/aarch64 + OpenSBI+U-Boot riscv64），非缺口 |
 | I-12 | BKL guard RAII 重构建议 | 13 §6.2 | **已被 D6 明确拒绝**（BKL 语义需显式 release/reacquire 围绕阻塞操作）；§B1 的显式 transfer API 是不同方案，待 OQ |
+| I-13 | `InterruptController` trait C-Rust 不对称分析 + `Send + Sync` 真实动机（doc 05 §3.3 缺文） | 05 §3.3 | 见下方 §7.4.1 详细背景与建议 |
 
-### 7.5 与架构建议（§1-§6）交叉引用
+### 7.4.1 [I-13] InterruptController trait：C-Rust 不对称 + `Send + Sync` 真实动机
+
+> 来源：doc 05 §3.3 review 顺带发现（2026-08-15，user-question driven）——C 源行为细节揭示 Rust trait 把两类**语义不同**的动作塞进了同一抽象。
+
+**问题陈述**
+
+`InterruptController` trait 的 6 个方法，按硬件动作的 CPU 局部性可分为两类语义：
+
+| 方法 | CPU 局部性 | 说明 | 实际硬件动作 |
+|------|----------|------|------------|
+| `init()` | BSP 独占 | 整个中断控制器初始化只跑一次（BSP 引导期间） | LAPIC + IOAPIC / GICD + GICR + CPU IF / PLIC + CLINT 一次性 setup |
+| `mask_all()` | BSP 独占 | 同样初始化阶段一次性动作 | IOAPIC mask all / GICD_ICENABLER=all / PLIC threshold=max |
+| `mask()` / `unmask()` | **全局** | 修改中断控制器内部的"路由表"（IOAPIC redirection entry, GIC GICD/GICR enable, PLIC ENABLE bit）——**一旦改，全部 CPU 看到一致结果** | x86 IOAPIC mask bit / GICD_ICENABLER / PLIC enable=0 |
+| `ack()` / `eoi()` | **per-CPU**（隐藏） | 写的是该核的 **LAPIC EOI** / **ICC_EOIR1_EL1** / **PLIC complete per-context** 寄存器——这些是 per-CPU/priv 寄存器，不能跨核写 | 印证：`x86_64::ack(_irq)` 与 `arm64::eoi(_irq)` 中 `_irq` 参数**完全被忽略**，因为这些动作不依赖具体 IRQ 号，只依赖"当前核" |
+
+**现有 trait 的设计混淆点**
+
+- `mask(IrqVector)` 与 `ack(IrqVector)` 看似同层接口（同一 trait、同形参数），但实际位于**不同语义层**——前者改全局路由表，后者写当前核私有寄存器
+- 读者若按"对称接口"理解，会错过硬件真相：以为 `Send + Sync` 表达"该类型实例可被多 CPU 同时持有"，但 `ack()` 实际写的是 per-CPU LAPIC，"多 CPU 同时调" 在硬件层不可能发生
+- doc §3.3 当前列了 "5 个问题（init/mask_all/mask/unmask/ack/eoi）"——但忽略了"per-CPU 与全局动作"的区分
+
+**`Send + Sync` 的真实动机**
+
+回答 user 问题"为什么 `InterruptController: Send + Sync`？"——三个理由叠加：
+
+1. **mask/unmask 全局可见**：否则一个 CPU 写 IOAPIC mask，另一 CPU 还以为 IRQ 是 unblocked，会读 IOAPIC 的 stale 状态。要求 trait 实例引用可安全跨线程传递，`Send + Sync` 是 Rust 表达"可跨线程共享引用"的最自然方式
+2. **ack/eoi per-CPU + trait 又要 `Send + Sync`**：这是矛盾点，但能并存因为 `Send + Sync` 让 trait 实例能**跨线程引用**，"实例字段代表什么"与"实例能否跨线程"是两个独立问题
+3. **真实并发安全不来自 trait 自身**：而是 **`BKL (Big Kernel Lock)` 在外面**保证同一时刻只有一个核在调 `InterruptController` 方法。看 `os/kernel/src/arch/.../irq_manager.rs` 调用点可确认
+
+**建议（方向 A，文档层强化）**
+
+**不动 trait**，但**在 doc 05 §3.3 末尾追加一段**：
+
+```markdown
+## 关于 Send + Sync 与 per-CPU 真相
+
+`InterruptController: Send + Sync` 看似只是 trait bound，实际表达的是
+"实例可被多个 CPU 持有引用"——而该 trait 的 6 个方法分属两类语义：
+
+| 方法层 | 实例字段意义 | 调用时机 |
+|--------|------------|---------|
+| init / mask_all | BSP 独占操作 | 仅 BSP 启动时 |
+| mask / unmask | 全局路由表（IOAPIC redirection entry 等） | BSP 启动时 + 任何 CPU 在 ISR 中 |
+| ack / eoi | 当前核私有寄存器（LAPIC EOI / ICC EOIR / PLIC context） | 任何 CPU 在 ISR 中；参数 `_irq` 被忽略 |
+
+**核心洞察**：mask 是"全局动作"（改路由表全部 CPU 看见）；
+ack/eoi 是"per-CPU 动作"（写当前核私有寄存器）。
+两套动作塞进同一 trait 是**简化抽象**而非**对称抽象**——
+实际并发安全由外面 `BKL`（`os/kernel/src/arch/.../irq_manager.rs`）保证，
+trait 的 `Send + Sync` 是引用层面的类型证明，不蕴含实例字段可多 CPU 同时变更。
+```
+
+**未来的方向 B（**不动手，仅记入 backlog**）**：把当前 trait 拆成两个：
+- `InterruptRouter: Send + Sync`（init/mask_all/mask/unmask，全局语义）
+- `InterruptAck: Send`（ack/eoi，per-CPU 语义，每核持有一个实例）
+- 上层用 `Router` + per-CPU `Ack` 组合
+
+但这是 trait 重构工作（影响 `os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs` 三个文件 + `os/kernel/src/irq_manager.rs` + doc 05/14），**不在 05-clock-interrupt-init.md 阶段范围内**。记入 backlog，作为 SMP 阶段（16-smp 之后）的可重构目标。
+
+**前置依赖**：需要先实现 `PerCpu<Ack>` 分派基础设施（每 CPU 持有一个 `InterruptAck` 实例）+ BSP/AP 启动钩子序列化。这依赖 16-smp.md 的 SMP 完整实现。
+
+**关联**
+
+- 与 §D1（errno newtype）同类——属于"trait 抽象看似对称但语义不对称"的认知陷阱
+- 与 §A1（全局访问器 witness 全覆盖）有交叉：ack/eoi 的 per-CPU 局部性可以合并到 witness 类型系统
+- doc 14 §4.8（中断交付）也提到 `irq_handle()` 中 mask→handler→unmask 的同款全局动作，需要在 §14 中同步说明
+
+**优先级**：P2（文档改进，非代码缺陷）。当前 trait 工作正常（BKL 保护），但读者心智模型建立需要明确说明。
+
+
 
 | 文档条目 | 对应架构建议 | 关系 |
 |---------|-------------|------|
@@ -1423,7 +1493,7 @@ C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-reloca
 | §1 | Boot module 内存回收（Rust 实现） | ✅ 已解决 | boot-shim 加载路径已实现，todo 过时 |
 | §2 | EBS 后映射回收 + `Box::leak` 生命周期 | ✅ 已解决 | 01-boot-shim-bootstrap §3.5.1 有意的 0/0 设计决策 |
 | §3 | qemu-tests 后续扩展 | ✅ 已解决 | 目录已演进为 22 个按功能命名 test-kernels，代码复用 + run_all.sh 就位 |
-| §4 | 页表页分配器 VM 阶段接入 | 🔀 转移 | `02-stage-vm/00-vm-overview.md` §8.4 |
+| §4 | 页表页分配器 VM 阶段接入 | 🔀 转移 | `02-stage-vm/draft/00-vm-overview.md` §8.4 |
 | §5 | code-review 未修复问题（4.1-4.5） | ✅ 已解决 | 全部完成（KernelInfo pub 封装 / HigherHalf trait / kmain_verify / PTE_HUGE_FLAGS / 调试输出） |
 | §6.1/6.2 | 异常 / 中断端到端测试（QEMU L4/L5） | 🔀 转移 | 单元层已实现（trap_entry 完整 IDT + 5 测试 / exception_dispatcher 分发测试）；QEMU E2E → `notes/TODO.md` QEMU backlog |
 | §6.3/6.4 | init/load 顺序测试 + init_ap 路径 | 🔀 转移 | `16-smp.md` §5.3（x86_64 init_ap 仍为 panic! 占位，protection.rs:370） |
@@ -1467,7 +1537,7 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 
 | 目标文档 | 追加位置 | 转移项 |
 |---------|---------|--------|
-| `02-stage-vm/00-vm-overview.md` | §8.4 | 页表页分配器 VM 阶段接入（原 §4）+ minix-vm 116 clippy warnings（原 §11.3）+ **minix-vm 15 测试失败（本次发现，pre-existing）** + AcpiDesc 最小化扩展（原 §7） |
+| `02-stage-vm/draft/00-vm-overview.md` | §8.4 | 页表页分配器 VM 阶段接入（原 §4）+ minix-vm 116 clippy warnings（原 §11.3）+ **minix-vm 15 测试失败（本次发现，pre-existing）** + AcpiDesc 最小化扩展（原 §7） |
 | `01-stage-kernel/16-smp.md` | §5.3 | init/load 顺序测试（原 §6.3）+ init_ap 路径验证（原 §6.4）+ QEMU GDB CI（原 §6.8）+ ptproc per-CPU 语义跟踪（原 §12.2，单核占位 OK） |
 | `notes/TODO.md` | kernel 设计级 backlog 段 | C-D-1~5 设计级清理（原 §11.4：verify_grant / configure_boot_priv / FromStr / if_same_then_else / Result<(),()>） |
 | `notes/TODO.md` | QEMU 集成测试 backlog 段 | 异常 E2E（原 §6.1）+ 中断 E2E（原 §6.2）+ riscv64 PMP 多 entry 增强（原 §6.7） |

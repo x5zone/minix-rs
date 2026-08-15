@@ -262,6 +262,19 @@ impl<'a> ActiveProc<'a> {
         self.inner.vm_boot = Some(boot);
     }
 
+    /// Marks this process as a VM instance.
+    ///
+    /// C: `init_vm()` — `vmproc[VM_PROC_NR].vm_flags |= VMF_VM_INSTANCE`
+    /// (main.c:578) and `num_vm_instances = 1` (main.c:574).
+    ///
+    /// The global VM-instance count is incremented here so the count
+    /// stays in sync with the flag; `VmProc::clear()` decrements it
+    /// when the slot is released.
+    pub(crate) fn mark_vm_instance(&mut self) {
+        self.inner.vm_flags |= VmFlags::VM_INSTANCE;
+        crate::global::inc_vm_instance();
+    }
+
     #[inline]
     pub(crate) fn set_region_top(&mut self, value: VirBytes) {
         self.inner.vm_region_top = value;

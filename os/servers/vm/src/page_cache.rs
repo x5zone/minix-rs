@@ -14,7 +14,7 @@
 //!
 //! # Design Decisions
 //!
-//! See `notes/rewrite/fork-syscall-rewrite/02-stage-vm/25-page-cache.md` §4.
+//! See `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/25-page-cache.md` §4.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

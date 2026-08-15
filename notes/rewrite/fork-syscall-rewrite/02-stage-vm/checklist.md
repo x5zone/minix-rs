@@ -192,8 +192,8 @@
 | # | C 宏 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|------|---------|------|-----------|------|
 | M-126 | `MAX_PAGEDIR_PDES` | pagetable.c:37 | 页目录 PDE 数 | `PageTable::MAX_PDES` | 已实现 (arch crate) |
-| M-127-M-130 | `SPAREPAGES/STATIC_SPAREPAGES/SPAREPAGEDIRS/STATIC_SPAREPAGEDIRS` | pagetable.c:60-77 | 备用页 | `CriticalPool` | 已实现 (critical_pool.rs) |
-| M-131 | `is_staticaddr(va)` | pagetable.c:85 | 静态地址判定 | `vm_self_map::is_static` | 已实现 (pagetable/vm_self_map.rs) |
+| M-127-M-130 | `SPAREPAGES/STATIC_SPAREPAGES/SPAREPAGEDIRS/STATIC_SPAREPAGEDIRS` | pagetable.c:60-77 | 备用页 | 无（Direct Map `[ARCH: A-1]` 结构消除） | 结构消除（06-page-allocator.md §3.3） |
+| M-131 | `is_staticaddr(va)` | pagetable.c:85 | 静态地址判定 | 无（[ARCH: A-1] 结构消除，无 BSS 静态页概念） | 结构消除（07-pagetable-struct.md §1.5） |
 | M-132 | `MAX_KERNMAPPINGS` | pagetable.c:87 | 内核映射数 | `MAX_KERNEL_MAPPINGS` | 已实现 (pagetable) |
 | M-133 | `FLAG` | pagetable.c:589 | 页表项标志打印宏 | `PageFlags::Display` impl | 已实现 (minix_arch::paging::PageFlags) |
 
@@ -242,7 +242,7 @@
 |---|--------|---------|------|-----------|------|
 | G-019 | `missing_sparedirs` | pagetable.c:79 | 缺失备用页目录 | `alloc_stats.missing_dirs` | 已实现 (alloc_stats.rs) |
 | G-020 | `kernmappings` | pagetable.c:94 | 内核映射数 | `pagetable::KERNMAPPINGS` | 已实现 |
-| G-021 | `vm_self_pages` | pagetable.c:34 | VM 自有页数 (static) | `vm_self_map::VM_SELF_PAGES` | 已实现 (vm_self_map.rs) |
+| G-021 | `vm_self_pages` | pagetable.c:34 | VM 自有页数 (static) | `VmAllocStats`（alloc_stats.rs，06 D4） | 已实现（06-page-allocator.md §3.4） |
 | G-022 | `kern_size/kern_start_pde/bigpage_ok` | pagetable.c:46-50 | 内核大小/起点/大页 (static) | `boot_info.kernel_*` | 已实现 (global.rs) |
 | G-023 | `vmprocess` | pagetable.c:53 | VM 自身进程槽指针 | `VmProcTable::vm_self()` | 已实现 |
 | G-024 | `global_bit` | pagetable.c:73 | 全局位 (static) | `PageFlags::GLOBAL` | 已实现 |
@@ -315,7 +315,7 @@
 | F-009 | `reservedqueue_add` | alloc.c:179 | 加入队列 | `ReservedPages::add` | 已实现 (alloc_page.rs) |
 | F-010 | `reservedqueue_fill` | alloc.c:191 | 填充队列 (static) | `ReservedPages::fill` | 已实现 (私有) |
 | F-011 | `reservedqueue_alloc` | alloc.c:206 | 队列分配 | `ReservedPages::alloc` | 已实现 (alloc_page.rs) |
-| F-012 | `alloc_cycle` | alloc.c:227 | 分配循环 | `VmPageAllocator::refill_critical_pool` | 已实现 (critical_pool.rs) + **TODO main-loop 接线**: VmServer 新增 `missing_spares: u32` 字段 + `mark_alloc_failure()` 饱和计数方法 + 主循环消费逻辑 (单线程合约文档化, 释放标志位等下次失败重置). Rust 当前只清标志位, 不实际 recycle (S-02 依赖) |
+| F-012 | `alloc_cycle` | alloc.c:227 | 分配循环 | `VmServer::alloc_cycle` + `missing_spares` 压力计数 | 已实现（主循环接线，补充体 DEFERRED 归 24；06-page-allocator.md §3.3/§4.3） |
 | F-013 | `alloc_mem` | alloc.c:242 | 分配内存 | `PhysAllocator::alloc_pages` | 已实现 (phys_mem/*) |
 | F-014 | `mem_add_total_pages` | alloc.c:281 | 加总页数 | `VmPageAllocator::add_total_pages` | 已实现 |
 | F-015 | `free_mem` | alloc.c:289 | 释放内存 | `PhysAllocator::free_pages` | 已实现 (phys_mem/*) |
@@ -485,8 +485,8 @@
 | F-155 | `pt_sanitycheck` | pagetable.c:130 | 页表健全 | 跳过 (cfg) | 跳过 |
 | F-156 | `findhole` | pagetable.c:155 | 找空位 (static) | `RegionMap::find_slot` (region_map.rs:145) | 已实现 |
 | F-157 | `vm_freepages` | pagetable.c:235 | 释放页 | `PhysAllocator::free_pages` | 已实现 |
-| F-158 | `vm_getsparepage` | pagetable.c:264 | 取备用页 (static) | `CriticalPool::take` | 已实现 (critical_pool.rs) |
-| F-159 | `vm_getsparepagedir` | pagetable.c:277 | 取备用页目录 (static) | `CriticalPool::take` | 已实现 |
+| F-158 | `vm_getsparepage` | pagetable.c:264 | 取备用页 (static) | 无（Direct Map `[ARCH: A-1]` 结构消除；`vm_pt_alloc` 直取分配器） | 结构消除（06-page-allocator.md §3.3） |
+| F-159 | `vm_getsparepagedir` | pagetable.c:277 | 取备用页目录 (static) | 无（Direct Map `[ARCH: A-1]` 结构消除） | 结构消除（06-page-allocator.md §3.3） |
 | F-160 | `vm_mappages` | pagetable.c:295 | 映射页 | `vm_self_mappages` | 已实现 (vm_self_map.rs) |
 | F-161 | `vm_allocpages` | pagetable.c:333 | 分配多页 | `VmPageAllocator::alloc_pages` | 已实现 (alloc_page.rs) |
 | F-162 | `vm_allocpage` | pagetable.c:395 | 分配单页 | `VmPageAllocator::alloc_pfn` | 已实现 |
@@ -508,7 +508,7 @@
 | F-178 | `pt_bind` | pagetable.c:1358 | 绑定页表 | `VmProc::bind_page_table` (vmproc_handle.rs:285) | 已实现 |
 | F-179 | `pt_free` | pagetable.c:1427 | 释放页表 | `VmProc::unbind_page_table` | 已实现 (vmproc_handle.rs) |
 | F-180 | `pt_mapkernel` | pagetable.c:1442 | 映射内核 | `PageTable::map_kernel` | 已实现 (arch crate) |
-| F-181 | `get_vm_self_pages` | pagetable.c:1500 | 取 VM 页数 | `vm_self_map::vm_self_pages` | 已实现 |
+| F-181 | `get_vm_self_pages` | pagetable.c:1500 | 取 VM 页数 | `VmAllocStats::self_page_count`（06 D4） | 已实现（06-page-allocator.md §3.4） |
 
 ### 4.13 pb.c (6 函数)
 
@@ -818,8 +818,8 @@
 
 ## 10. 关联产出
 
-- `02-stage-vm/TODO.md` — 既有 TODO 汇总
-- `02-stage-vm/21-review-ds.md, 23-review-ds.md, 26-review-dsf.md` — 21/23/26 历史 review
+- `02-stage-vm/draft/TODO.md` — 既有 TODO 汇总（draft/，2026-08-15 随目录重组移入）
+- `02-stage-vm/draft/21-review-ds.md, draft/23-review-ds.md, draft/26-review-dsf.md` — 21/23/26 历史 review（draft/，2026-08-15 移入；不进入新编号）
 - (历史) 深度 review 报告已合并到本 checklist (含未修复项理由)
 - `minix3/minix/servers/vm/` — C 源码 (ground truth)
 - `os/servers/vm/src/` — Rust 实现

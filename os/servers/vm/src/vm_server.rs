@@ -16,10 +16,11 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{Endpoint, UserSlot, VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, DecodeFromM1, EncodeToM1};
+use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, DecodeFromM1, EncodeToM1};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
+use crate::boot::{BootParams, VM_PROC_NR};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -39,30 +40,81 @@ pub struct VmServer {
     page_frames: Option<PageFrames>,
     vfs_queue: VfsRequestQueue,
     initialized: bool,
-    /// Counter of failed page allocations since last successful refill.
+    /// Allocation-pressure counter surfaced to the main loop.
     ///
-    /// C: `missing_spares` (alloc.c) — incremented when `alloc_pages()`
-    /// returns `NULL` (no contiguous free pages available). When > 0,
-    /// the main loop calls `alloc_cycle()` to repurpose pages from the
-    /// page cache back to the spare pool.
+    /// C: `missing_spares` (alloc.c:74) is the *reserve-queue deficit* —
+    /// incremented by `reservedqueue_alloc()` (alloc.c:216) when a spare page
+    /// is drawn and decremented by `reservedqueue_fillslot()` (alloc.c:142)
+    /// when a slot is refilled; the main loop calls `alloc_cycle()`
+    /// (alloc.c:227-237, main.c:118-119) to top the queues back up.
     ///
-    /// Rust design: this is a plain `u32` because the VM event loop
-    /// is single-threaded (no concurrent increments possible). The
-    /// `mark_alloc_failure()` / `clear_alloc_failures()` methods are
-    /// the only mutating access points, both `&mut self`-only.
+    /// Rust design: the Direct Map (`[ARCH: A-1]`) structurally eliminates the
+    /// spare queues (see 06-page-allocator.md §3.3), so this counter is
+    /// re-interpreted as *allocation-pressure accounting* — `mark_alloc_failure()`
+    /// records a page-allocation failure and the main loop's `alloc_cycle()`
+    /// hook is the replenishment opportunity (page-cache reclaim plugs in
+    /// there, DEFERRED to 24-page-cache). The C "deficit" semantics and the
+    /// Rust "pressure" semantics converge on the same observable contract:
+    /// `> 0` → the loop re-attempts memory replenishment on its next pass.
+    ///
+    /// A plain `u32` because the VM event loop is single-threaded (no
+    /// concurrent increments possible). `mark_alloc_failure()` /
+    /// `alloc_cycle()` are the only mutating access points, both
+    /// `&mut self`-only.
     missing_spares: u32,
+    /// Boot process images, copied at construction.
+    ///
+    /// C: `kernel_boot_info.boot_procs[]` (main.c:497-520). Copied from
+    /// [`BootParams`] so `init()` does not borrow external memory; the
+    /// kernel→VM boot protocol is a one-shot hand-off.
+    boot_procs: [BootImage; NR_BOOT_PROCS],
+    /// Pages to charge to the global page total during init.
+    ///
+    /// C: `mem_add_total_pages()` call points (main.c:485-495).
+    boot_extra_pages: usize,
 }
 
 impl VmServer {
     pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
-        let phys_alloc = Self::create_default_allocator(total_pages, free_regions);
+        Self::new_with_boot_params(BootParams::simple(total_pages, free_regions))
+    }
+
+    /// Production constructor — takes the full kernel→VM boot contract.
+    ///
+    /// C: `main()` (main.c:93-104) — the boot info is retrieved by
+    /// `sys_getkinfo()` and consumed by `init_vm()`. `BootParams::validate()`
+    /// mirrors the two `init_vm()` asserts (main.c:451-452).
+    pub fn new_with_boot_params(params: BootParams<'_>) -> Self {
+        params.validate();
+
+        let phys_alloc = Self::create_default_allocator(params.total_pages, params.free_regions);
         let mut page_alloc = VmPageAllocator::new(phys_alloc);
         crate::global::register_page_alloc(&mut page_alloc);
 
-        // Skip init_vm_self_pt() in test builds — X86_64Paging::new() is todo!()
-        // and tests use MockPaging which doesn't need real page table setup.
+        // Register the page-table-page allocator before any `Paging::new()` /
+        // `map()` call. C: `pt_ptalloc` draws page-table pages from
+        // `vm_allocpage` (pagetable.c:515); the VM-side hook
+        // (`alloc_page::vm_pt_alloc`) supplies them from the page allocator
+        // via the Direct Map ([ARCH: A-1], 06-page-allocator.md §3.2).
+        // The `is_registered()` guard mirrors os/kernel/src/lib.rs:178 —
+        // production never has a prior registration in the VM address space,
+        // but repeated `VmServer::new()` in tests must not panic.
+        if !minix_arch::pt_alloc::is_registered() {
+            minix_arch::pt_alloc::register(crate::alloc_page::vm_pt_alloc);
+        }
+
+        // Skip init_vm_self_pt() in test builds — tests use MockPaging
+        // (in-memory mapping table, no page table to initialize), while the
+        // production path must establish VM's own page table before any heap
+        // allocation (HeapArena::grow → vm_self_mappages).
         #[cfg(not(test))]
         init_vm_self_pt();
+
+        // Copy the boot process list (C: kernel_boot_info.boot_procs[]).
+        let mut boot_procs = [BootImage::empty(); NR_BOOT_PROCS];
+        for (i, img) in params.boot_procs.iter().take(NR_BOOT_PROCS).enumerate() {
+            boot_procs[i] = *img;
+        }
 
         Self {
             page_alloc,
@@ -71,10 +123,15 @@ impl VmServer {
             vfs_queue: VfsRequestQueue::new(),
             initialized: false,
             missing_spares: 0,
+            boot_procs,
+            boot_extra_pages: params.extra_pages(),
         }
     }
 
     fn create_default_allocator(total_pages: usize, free_regions: &[BootMemRegion]) -> PhysAlloc {
+        // [ARCH: A-5] — bootstrap backend is always the bitmap; the
+        // strategy switch (bitmap/buddy/segment-tree) happens later in
+        // relocate() (see plan.md §4 A-5, 05-physical-memory.md §3.3).
         let meta_size = BitmapAllocator::metadata_size(total_pages);
         let meta_pages = bytes_to_clicks(meta_size);
 
@@ -181,19 +238,40 @@ impl VmServer {
     }
 
     pub fn init(&mut self) {
+        // C: init_vm() — main.c:428-584. Step order mirrors C exactly:
+        //
+        //   main.c:442      sys_getkinfo; main.c:451-452 asserts → BootParams::validate() (new_with_boot_params)
+        //   main.c:455      get_mem_chunks; main.c:471 mem_init → VmServer::new (allocator construction)
+        //   main.c:457-462  memset(vmproc) + vm_slot    → compile-time vacant slots + get_empty()
+        //   main.c:465      acl_init()                  → AclState::Uninitialized (compile-time default)
+        //   main.c:468      map_region_init()           → RegionMap::new() lazily per process
+        //   main.c:474-475  init_proc(VM_PROC_NR)+pt_init → init_vm_slot() + init_vm_self_pt() (new)
+        //   main.c:480      __minix_init()              → DEFERRED (kernel IPC vectors, minix-sys)
+        //   main.c:485-495  mem_add_total_pages()       → account_boot_memory()
+        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() (exec DEFERRED)
+        //   main.c:522-572  CALLMAP                     → compile-time match (MessageDispatcher)
+        //   main.c:577-579  VM instance mark            → mark_vm_instance()
+        //
         // Relocation requires real page tables (vm_self_mappages); skipped in tests.
         #[cfg(not(test))]
         self.relocate();
 
-        // Phase 1: Memory detection — initialize global state with total page count
+        // Phase 1: Memory detection — initialize global state with total page count.
         self.init_global_state();
 
-        // Phase 2: Process table — set up boot processes from kernel boot image
-        self.init_proc_table();
+        // Phase 2a: init_proc(VM_PROC_NR) — main.c:474.
+        self.init_vm_slot();
 
-        // Phase 3: Page tables — initialize kernel page tables and direct map (reserved)
+        // Phase 2b: mem_add_total_pages() call points — main.c:485-495.
+        self.account_boot_memory();
 
-        // Initialize PageFrames after total_pages is known
+        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc DEFERRED).
+        self.init_boot_procs();
+
+        // Phase 2d: VM instance mark — main.c:577-579.
+        self.mark_vm_instance();
+
+        // Phase 3: PageFrames after total_pages is known.
         let total_phys = PhysBytes(self.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.page_frames = Some(PageFrames::new(total_phys));
 
@@ -238,11 +316,76 @@ impl VmServer {
         }
     }
 
-    fn init_proc_table(&mut self) {
-        let _table = VmProcTable::get_global();
+    /// init_proc(VM_PROC_NR) — main.c:262-283, called at main.c:474.
+    fn init_vm_slot(&self) {
+        let table = VmProcTable::get_global();
+        if let Some(ip) = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR) {
+            Self::init_proc(table, *ip);
+        }
     }
 
-    /// Records one page-allocation failure (C: `missing_spares++`).
+    /// Boot process slots — main.c:497-520.
+    ///
+    /// C also runs `exec_bootproc()` + `free_mem()` per boot process here;
+    /// both are DEFERRED (ELF loading / pagetable bind / sys_exec depend on
+    /// the kernel IPC core, minix-sys). Slot population happens now so the
+    /// process table reflects the boot image before the main loop starts.
+    fn init_boot_procs(&self) {
+        let table = VmProcTable::get_global();
+        for &ip in &self.boot_procs {
+            // C: main.c:502 — skip kernel tasks (negative proc_nr).
+            // Rust additionally skips padding entries: `boot_procs` is copied
+            // into a fixed `[BootImage; NR_BOOT_PROCS]` array, so empty slots
+            // have `endpoint == NONE` and must not be treated as processes
+            // (the C array is exactly filled, minix-types' is not).
+            if ip.proc_nr < 0 || ip.proc_nr == VM_PROC_NR || ip.endpoint.is_none() {
+                continue;
+            }
+            // C: main.c:504 — assert(ip->start_addr) for non-VM boot procs.
+            assert!(
+                ip.start_addr != 0,
+                "init_boot_procs: boot proc {} has no start_addr",
+                ip.name()
+            );
+            Self::init_proc(table, ip);
+        }
+    }
+
+    /// C: init_proc() — main.c:262-283.
+    fn init_proc(table: &'static VmProcTable, ip: BootImage) {
+        // C: main.c:272-273 — proc_nr range check (panics like C).
+        let slot = UserSlot(ip.proc_nr as usize);
+        let empty = table
+            .get_empty(slot)
+            .expect("init_proc: slot already in use");
+        // C: clear_proc() is compile-time in Rust (vacant slot); activate()
+        // sets VMF_INUSE + vm_endpoint (main.c:277-280).
+        let mut proc = empty.activate(ip.endpoint);
+        proc.set_boot(ip);
+    }
+
+    /// mem_add_total_pages() call points — main.c:485-495.
+    fn account_boot_memory(&self) {
+        if self.boot_extra_pages == 0 {
+            return;
+        }
+        // SAFETY: init() runs exactly once, single-threaded, before any
+        // concurrent reader of the global total (see global::add_total_pages).
+        unsafe {
+            crate::global::add_total_pages(self.boot_extra_pages);
+        }
+    }
+
+    /// Mark the VM slot as a VM instance — main.c:577-579.
+    fn mark_vm_instance(&self) {
+        let table = VmProcTable::get_global();
+        if let Some(mut proc) = table.get_active(UserSlot(VM_PROC_NR as usize)) {
+            proc.mark_vm_instance();
+        }
+    }
+
+    /// Records one page-allocation failure (pressure accounting, see the
+    /// `missing_spares` field docs for the C↔Rust mapping).
     ///
     /// Callers must invoke this when `VmPageAllocator::alloc_*()` returns
     /// `None` so the main loop knows to schedule an `alloc_cycle` on its
@@ -254,9 +397,27 @@ impl VmServer {
         self.missing_spares = self.missing_spares.saturating_add(1);
     }
 
-    /// Returns the current `missing_spares` count (for tests/observability).
+    /// Returns the current allocation-pressure count (for tests/observability).
     pub fn missing_spares(&self) -> u32 {
         self.missing_spares
+    }
+
+    /// C: `alloc_cycle()` (alloc.c:227-237) — main-loop replenishment hook,
+    /// invoked whenever the pressure counter is non-zero (main.c:118-119).
+    ///
+    /// C iterates the in-use reserve queues and calls `reservedqueue_fill()`,
+    /// which allocates pages from `alloc_mem()` (alloc.c:149-174); on
+    /// exhaustion `alloc_mem` itself retries after `cache_freepages()`
+    /// (alloc.c:242-279, cache.c:288).
+    ///
+    /// Rust design: the reserve queues are eliminated by the Direct Map
+    /// (`[ARCH: A-1]`, 06-page-allocator.md §3.3), so the replenishment body
+    /// is DEFERRED to 24-page-cache (cache reclaim + retry). Until then the
+    /// counter is cleared so the next failure re-arms the hook — the loop
+    /// always gets a fresh replenishment attempt per pressure episode.
+    fn alloc_cycle(&mut self) {
+        debug_assert!(self.missing_spares > 0);
+        self.missing_spares = 0;
     }
 
     pub fn run(&mut self) -> ! {
@@ -264,27 +425,8 @@ impl VmServer {
 
         loop {
             // C: if(missing_spares > 0) alloc_cycle();
-            //
-            // TODO: wire the missing_spares counter to
-            // a refill trigger. Minix3's alloc_cycle() reclaims pages from
-            // the page cache and the anonymous-region map pool, then
-            // refills the per-class spare pool. The Rust equivalent is
-            // a guarded call: only when `missing_spares > 0` AND
-            // `page_cache.len() > 0` do we actually run the cycle. The
-            // real `alloc_cycle` body is DEFERRED — the cache-reclaim
-            // path depends on the buddy allocator returning pages via
-            // `cache_freepages()`, which is itself behind the slab-free
-            // work (slab allocator TODO). For now we log the count and clear the flag
-            // so the next iteration can re-detect pressure.
             if self.missing_spares > 0 {
-                // Clear so the next iteration's failure path can re-arm.
-                // The actual refill body is DEFERRED (slab
-                // allocator is empty). No log
-                // here: VM is `no_std` and there is no `crate::log`
-                // module yet; observability comes from the
-                // `mark_alloc_failure` count exposed via the IPC
-                // `InfoQuery` reply path (alloc_cycle follow-up).
-                self.missing_spares = 0;
+                self.alloc_cycle();
             }
 
             // C: sef_receive_status(ANY, &msg, &rcv_sts)
@@ -469,8 +611,15 @@ impl VmServer {
                         c, source, caller_slot
                     );
                     let _ = (c, source);
+                    // C reply semantics: main.c:145 initializes `result = ENOSYS`
+                    // ("Out of range or restricted calls return this.") and the
+                    // ACL-denied path never overwrites it — so the caller sees
+                    // ENOSYS, not the internal EPERM that `acl_check` returned.
+                    // We mirror that exactly: `AclState::acl_check` still
+                    // returns `Err(PermissionDenied)` (EPERM, = C's acl_check),
+                    // but the *reply* errno is ENOSYS (NotImplemented).
                     return DispatchAction::Reply(
-                        VmReply::Error(VmError::PermissionDenied)
+                        VmReply::Error(VmError::NotImplemented)
                     );
                 }
             }
@@ -638,6 +787,20 @@ impl VmServer {
     }
 }
 
+impl Drop for VmServer {
+    fn drop(&mut self) {
+        // Clear the global page-allocator pointer so a subsequent VmServer
+        // (e.g. the next unit test) can register its own allocator without
+        // tripping the overwrite guard in register_page_alloc().
+        //
+        // This implements the contract documented in global.rs ("only
+        // cleared by unregister_page_alloc() in VmServer::drop"). In
+        // production the VM process lives as long as the server, so the
+        // drop path only matters for tests — but the contract must hold.
+        crate::global::unregister_page_alloc();
+    }
+}
+
 // ==========================================================================
 // IPC transport wiring — see ipc/transport.rs for the strategy trait.
 //
@@ -802,11 +965,16 @@ fn ipc_call_rs_init() -> Result<RprocTab, ()> {
     Ok(RprocTab::empty())
 }
 
-const VFS_PROC_NR: Endpoint = Endpoint(2);
-const RS_PROC_NR: Endpoint = Endpoint(1);
+// C: com.h:60-61 — VFS_PROC_NR = 1, RS_PROC_NR = 2.
+// minix-types Endpoint constants (Endpoint::VFS / Endpoint::RS) carry the
+// same values; named constants keep the C call sites greppable.
+const VFS_PROC_NR: Endpoint = Endpoint::VFS;
+const RS_PROC_NR: Endpoint = Endpoint::RS;
 const RS_INIT: u32 = 0x606;
 const VM_PAGEFAULT: u32 = 0xCFF;
-const NR_VM_CALLS: usize = 64;
+// C: com.h:769 — NR_VM_CALLS 49. The highest call is VM_RS_PREPARE
+// (VM_RQ_BASE + 48), so relative indices are 0..=48.
+const NR_VM_CALLS: usize = 49;
 
 // ==========================================================================
 // Helpers
@@ -1105,6 +1273,7 @@ impl VmServer {
 mod tests {
     use super::*;
     use crate::direct_map::tests::with_custom_mock_base;
+    use crate::boot::{BootModule, KernelAllocated};
 
     const TEST_TOTAL_PAGES: usize = 256;
 
@@ -1170,6 +1339,26 @@ mod tests {
         with_test_mock_base(|| {
             let mut server = make_test_vm_server();
             server.run();
+        });
+    }
+
+    #[test]
+    fn test_missing_spares_pressure_counter() {
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            assert_eq!(server.missing_spares(), 0);
+
+            // Allocation failures arm the pressure counter; it saturates
+            // (no wraparound) and drives the main-loop replenishment hook.
+            server.mark_alloc_failure();
+            server.mark_alloc_failure();
+            assert_eq!(server.missing_spares(), 2);
+
+            // alloc_cycle() clears the counter so the next failure re-arms
+            // the hook — observable contract: > 0 → next loop pass
+            // re-attempts replenishment (body DEFERRED to 24-page-cache).
+            server.alloc_cycle();
+            assert_eq!(server.missing_spares(), 0);
         });
     }
 
@@ -1344,6 +1533,114 @@ mod tests {
 
             let reply = server.handle_vfs_transid(VM_PROCCTL, 42, &msg);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidEndpoint)));
+        });
+    }
+
+    // ── boot / init chain tests (doc 01-vm-init-main) ──
+
+    fn vm_boot_image() -> BootImage {
+        let mut img = BootImage::empty();
+        img.proc_nr = VM_PROC_NR;
+        img.endpoint = Endpoint::VM;
+        img
+    }
+
+    /// Resets the process-table slots used by the boot-chain tests.
+    ///
+    /// The table is a process-wide static shared by the whole test suite;
+    /// resetting here makes test ordering irrelevant. Slots 8 (VM) and 9
+    /// are not used by other test modules (they use 11-17 and 100+).
+    fn reset_boot_slots() {
+        let table = VmProcTable::get_global();
+        // SAFETY: Test-only cleanup; no other references to these slots
+        // are alive at this point (slots 8/9 are used only by these tests).
+        unsafe {
+            table.reset_slot(UserSlot(VM_PROC_NR as usize));
+            table.reset_slot(UserSlot(9));
+        }
+    }
+
+    fn boot_params<'a>(
+        free_regions: &'a [BootMemRegion],
+        boot_procs: &'a [BootImage],
+        modules: &'a [BootModule],
+    ) -> BootParams<'a> {
+        BootParams {
+            total_pages: TEST_TOTAL_PAGES,
+            free_regions,
+            boot_procs,
+            modules,
+            kernel_allocated: KernelAllocated::ZERO,
+            is_first_time: true,
+        }
+    }
+
+    #[test]
+    fn test_vm_server_init_with_boot_procs() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            // Boot image: VM itself (slot 8) + a second boot proc (slot 9).
+            let mut pfs_img = BootImage::empty();
+            pfs_img.proc_nr = 9;
+            pfs_img.endpoint = Endpoint::PFS;
+            pfs_img.start_addr = 0x100_0000;
+            pfs_img.proc_name[0] = b'p';
+            pfs_img.proc_name[1] = b'f';
+            pfs_img.proc_name[2] = b's';
+            let boot_procs = [vm_boot_image(), pfs_img];
+            let regions = test_free_regions();
+
+            let mut server =
+                VmServer::new_with_boot_params(boot_params(&regions, &boot_procs, &[]));
+            server.init();
+            assert!(server.is_initialized());
+
+            // C: init_proc(VM_PROC_NR) + VMF_VM_INSTANCE (main.c:474,579).
+            let table = VmProcTable::get_global();
+            let vm = table
+                .get_active(UserSlot(VM_PROC_NR as usize))
+                .expect("VM slot should be active after init");
+            assert!(vm.is_vm_instance());
+
+            // C: boot procs loop (main.c:497-520) — boot proc slot populated.
+            let pfs = table
+                .get_active(UserSlot(9))
+                .expect("boot proc slot should be active after init");
+            assert_eq!(pfs.endpoint(), Endpoint::PFS);
+        });
+    }
+
+    #[test]
+    fn test_vm_server_init_vm_instance_count() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let before = crate::global::vm_instance_count();
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+            let mut server =
+                VmServer::new_with_boot_params(boot_params(&regions, &boot_procs, &[]));
+            server.init();
+            // C: num_vm_instances = 1 (main.c:578).
+            assert_eq!(crate::global::vm_instance_count(), before + 1);
+        });
+    }
+
+    #[test]
+    fn test_vm_server_init_accounts_boot_memory() {
+        with_test_mock_base(|| {
+            // C: main.c:485-491 — modules except the last entry are charged.
+            let modules = [
+                BootModule { start_addr: 0x2000, len: CLICK_SIZE as u64 }, // 1 page
+                BootModule { start_addr: 0x3000, len: 1 },                  // excluded (last)
+            ];
+            let regions = test_free_regions();
+            let mut server =
+                VmServer::new_with_boot_params(boot_params(&regions, &[], &modules));
+            server.init();
+            // global::init() reset the total to the allocator total; the
+            // single charged module adds exactly 1 page.
+            assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 1);
         });
     }
 }

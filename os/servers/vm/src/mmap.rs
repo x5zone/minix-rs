@@ -153,7 +153,8 @@ pub(crate) enum MmapResult {
 //   VM_MMAPBASE = VM_MMAPTOP / 2  (or VM_PAGE_SIZE in non-MAGIC builds)
 //
 // In minix-rs (64-bit), the address space is 48-bit canonical user
-// space. We reserve a generous range far from brk/stack:
+// space ([ARCH: A-6]: 32-bit scarcity → 64-bit headroom). We reserve a
+// generous range far from brk/stack:
 const MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 const MMAP_TOP: u64  = 0x0000_0200_0000_0000;
 

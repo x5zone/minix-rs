@@ -16,15 +16,23 @@ fn main() {
     // memory before main() runs, we skip the binary entirely in test mode.
     #[cfg(not(test))]
     {
-        use minix_vm::VmServer;
-        use minix_vm::BootMemRegion;
+        use minix_vm::{BootParams, VmServer};
 
-        let total_pages = 65536;
-        let base = 0x100000;
-        let size = total_pages * 4096;
-        let free_regions = [BootMemRegion { base, size }];
-        let mut server = VmServer::new(total_pages, &free_regions);
-        server.init();
+        // C: main.c:79-88 is_first_time() — fresh boot gates init_vm().
+        // Placeholder until sys_getkinfo (minix-sys) lands; values match
+        // the previous hardcoded mock (see BootParams::placeholder()).
+        let params = BootParams::placeholder();
+
+        let mut server = VmServer::new_with_boot_params(params);
+
+        // C: main.c:101-108 — if(is_first_time()) { init_vm(); __vm_init_fresh=1; }
+        if params.is_first_time {
+            server.init();
+        }
+
+        // C: sef_local_startup() — the RS_INIT handshake happens inside the
+        // main loop's priority-2 dispatch (rs_handshake), so no separate
+        // SEF startup step is needed (see doc 01-vm-init-main §3.4).
         server.run();
     }
 }

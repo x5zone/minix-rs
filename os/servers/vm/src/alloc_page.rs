@@ -11,8 +11,38 @@ use minix_types::VirBytes;
 
 use crate::alloc_stats::VmAllocStats;
 use crate::direct_map::vm_phys_to_virt;
-use crate::phys_mem::{PhysAlloc, PhysAllocator, PageAllocFlags, AllocError, AlignedPhysBytes};
+use crate::pagetable::PageTableError;
+use crate::phys_mem::{PhysAlloc, PhysAllocator, PageAllocFlags, AllocError, AlignedPhysBytes, CLICK_SIZE};
 use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
+
+/// Allocate a zero-filled physical page for an intermediate page table.
+///
+/// Registered with `minix_arch::pt_alloc::register()` during `VmServer`
+/// construction. `Paging` implementations call this via
+/// `pt_alloc::alloc_pt_page()` whenever `map()` needs a new PML4/PDPT/PD/PT
+/// page.
+///
+/// C: `vm_allocpage(&phys, VMP_PAGETABLE)` (pagetable.c:515) — page-table
+/// pages come from the VM page allocator. Minix3 must draw them from the
+/// BSS spare-page pool during init / recursion (`vm_getsparepage`,
+/// pagetable.c:264-274) because mapping a fresh page-table page required a
+/// VA from `findhole()`, which recursed. minix-rs uses the Direct Map
+/// (`[ARCH: A-1]`): the VA is a constant offset (`VM_DIRECT_MAP_BASE + phys`),
+/// so allocation is a single non-recursive path regardless of init phase.
+pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTableError> {
+    let phys = crate::global::page_alloc_mut()
+        .alloc_phys(1, PageAllocFlags::empty())
+        .map_err(|_| PageTableError::AllocationFailed)?;
+    let virt = vm_phys_to_virt(phys);
+    // Zero-fill via the Direct Map. `Paging::walk_alloc` (x86_64/paging.rs)
+    // reads PRESENT bits of freshly allocated tables and must observe zeros.
+    // SAFETY: `virt` is a page-aligned Direct Map VA of a freshly allocated,
+    // exclusively owned physical page; no aliasing reference exists.
+    unsafe {
+        core::ptr::write_bytes(virt.0 as *mut u8, 0, CLICK_SIZE);
+    }
+    Ok((minix_types::PhysBytes(phys.as_u64()), virt))
+}
 
 pub(crate) struct VmPageAllocator {
     phys_alloc: PhysAlloc,
@@ -138,6 +168,17 @@ mod tests {
         ALLOC_MOCK_BASE.store(aligned_base as u64, Ordering::SeqCst);
     }
 
+    /// The Direct Map offset in effect during `with_alloc_mock_base`.
+    ///
+    /// `vm_phys_to_virt()` in test builds adds `mock_vm_base()` — the
+    /// leaked-heap address of the mock physical memory — not the compile-time
+    /// `VM_DIRECT_MAP_BASE` constant. Assertions on the VA↔PA offset must use
+    /// this value (or the `virt_to_phys()` round-trip) to stay consistent with
+    /// the mock base currently installed.
+    fn mock_base() -> u64 {
+        ALLOC_MOCK_BASE.load(core::sync::atomic::Ordering::SeqCst)
+    }
+
     fn make_test_phys_alloc(available_pages: usize) -> PhysAlloc {
         ensure_mock_phys_init(available_pages);
 
@@ -171,11 +212,13 @@ mod tests {
             let mut alloc = VmPageAllocator::new(phys_alloc);
 
             let (v1, p1) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
-            assert_eq!(v1.0 - p1.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
+            assert_eq!(v1.0 - p1.as_u64(), mock_base());
+            assert_eq!(crate::direct_map::virt_to_phys(v1), p1);
 
             let (v2, p2) = alloc.alloc_page(PageAllocFlags::empty()).unwrap();
             assert_ne!(p1.as_u64(), p2.as_u64());
-            assert_eq!(v2.0 - p2.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
+            assert_eq!(v2.0 - p2.as_u64(), mock_base());
+            assert_eq!(crate::direct_map::virt_to_phys(v2), p2);
         });
     }
 
@@ -206,18 +249,48 @@ mod tests {
     }
 
     #[test]
+    fn test_vm_pt_alloc() {
+        // vm_pt_alloc() reaches the allocator through the global
+        // PAGE_ALLOC_PTR, so this test registers a local allocator. The
+        // MOCK_BASE_MUTEX (held by with_alloc_mock_base) serializes against
+        // the VmServer tests, which also register the global pointer.
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(64);
+            let mut alloc = VmPageAllocator::new(phys_alloc);
+            crate::global::register_page_alloc(&mut alloc);
+
+            let (phys, virt) = vm_pt_alloc().expect("pt page allocation");
+            assert_eq!(virt.0 - phys.0, mock_base());
+            assert_eq!(phys.0 % CLICK_SIZE as u64, 0);
+            // Fresh page-table pages must be zero-filled: Paging::walk_alloc
+            // (x86_64/paging.rs) reads PRESENT bits of new tables and must
+            // observe zeros.
+            // SAFETY: `virt` is the Direct Map VA of a freshly allocated,
+            // exclusively owned physical page.
+            let word = unsafe { core::ptr::read_volatile(virt.0 as *const u64) };
+            assert_eq!(word, 0);
+
+            let (phys2, _virt2) = vm_pt_alloc().expect("second pt page allocation");
+            assert_ne!(phys, phys2);
+
+            crate::global::unregister_page_alloc();
+        });
+    }
+
+    #[test]
     fn test_alloc_pages_multi() {
         with_alloc_mock_base(|| {
             let phys_alloc = make_test_phys_alloc(256);
             let mut alloc = VmPageAllocator::new(phys_alloc);
 
             let (v1, p1) = alloc.alloc_pages(4, PageAllocFlags::empty()).unwrap();
-            assert_eq!(v1.0 - p1.as_u64(), crate::direct_map::VM_DIRECT_MAP_BASE);
+            assert_eq!(v1.0 - p1.as_u64(), mock_base());
             assert_eq!(crate::direct_map::virt_to_phys(v1), p1);
             assert_eq!(crate::direct_map::virt_to_phys(VirBytes(v1.0 + 3 * CLICK_SIZE as u64)), AlignedPhysBytes::from_page_index(p1.page_index() + 3));
 
             let (v2, p2) = alloc.alloc_pages(2, PageAllocFlags::empty()).unwrap();
             assert_ne!(p1, p2);
+            assert_eq!(v2.0 - p2.as_u64(), mock_base());
             assert_eq!(crate::direct_map::virt_to_phys(v2), p2);
         });
     }

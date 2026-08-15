@@ -86,7 +86,7 @@ VM_FORK 到达（主循环 dispatch）
 | 1 | 03 | `03-vmproc-table.md` | 进程表、endpoint 验证、slot 分配 | `glo.h`、`utility.c:vm_isokendpt` | `vmproc/table.rs` | `draft/02` | 沿用 |
 | 2 访问控制与物理内存 | 04 | `04-acl.md` | ACL 初始化/检查/派生/清除 | `acl.c` | `acl.rs` | `draft/03` | 沿用 |
 | 2 | 05 | `05-physical-memory.md` | 物理内存布局、bitmap/buddy/segment-tree 分配器、保留队列、memstats | `alloc.c` | `phys_mem/*`、`alloc_stats.rs` | `draft/04` | 沿用 + 补 `get_mem_chunks` |
-| 3 页与页表 | 06 | `06-page-allocator.md` | vm_allocpage/vm_allocpages/vm_mappages、保留页池、alloc_cycle | `pagetable.c:295-395`、`alloc.c:reservedqueue_*` | `alloc_page.rs`、`critical_pool.rs` | `draft/05` | 沿用 |
+| 3 页与页表 | 06 | `06-page-allocator.md` | vm_allocpage/vm_allocpages/vm_mappages、保留页池、alloc_cycle | `pagetable.c:295-395`、`alloc.c:reservedqueue_*` | `alloc_page.rs`（含 `vm_pt_alloc`）、`global.rs`、`vm_server.rs` | `draft/05` | 沿用 + 保留页池结构消除（A-1，见 §7.3） |
 | 3 | 07 | `07-pagetable-struct.md` | pt 结构、页表层级、**Direct Map（ARCH）**、vm_self_map | `pt.h`、`arch/i386/pagetable.h`、`pagetable.c:pt_init` | `pagetable/mod.rs`、`direct_map.rs`、`pagetable/vm_self_map.rs` | `draft/06` | 沿用 + Direct Map 提升为显式章节 |
 | 3 | 08 | `08-pagetable-ops.md` | pt_new/free/bind/writemap/ptmap/mapkernel/pt_checkrange/pt_ptalloc_in_range | `pagetable.c` | `pagetable/mod.rs` | `draft/07` | 沿用 |
 | 4 自举的堆与元数据 | 09 | `09-slab-allocator.md` | slab 分配器 → HeapArena + VmAllocator（ARCH） | `slaballoc.c` | `heap_arena.rs`、`global.rs` | `draft/08` | 沿用（ARCH 已标注） |
@@ -185,7 +185,7 @@ VM_FORK 到达（主循环 dispatch）
 
 ### 3.5 测试基线（截至 2026-08-15）
 
-- `cargo test -p minix-vm --lib`：**322 passed / 15 failed**（pre-existing，集中在 `alloc_page`(2)/`region::vir_region`(1)/`vm_server`(12)，疑为 mock 全局态竞态；属代码问题，不阻断文档改写，但每篇文档 §测试 需以实际结果为准并注明基线）
+- `cargo test -p minix-vm --lib`：**347 passed / 1 failed**（基线更新：原 322/15 → 05 修复部分 + 06 修 `alloc_page` 2 个（PE-1/PE-2）+ 06 新增 2 个测试（`test_vm_pt_alloc`/`test_missing_spares_pressure_counter`）+ 删除 `critical_pool` 测试 3 个；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -218,6 +218,7 @@ VM_FORK 到达（主循环 dispatch）
 | A-8 | SEF / Live Update | `rs.c` 全量实现 | `RS_PREPARE`/`RS_UPDATE` 未实现（NotImplemented，fail-closed） | 25 | **缺口**：标注 defer + 语义契约 |
 | A-9 | VM 自映射页表 | 静态 `static_sparepagedirs` | `vm_self_map.rs` | 07 | 已实现 |
 | A-10 | 多架构 | i386 + earm 双 arch（`arch/i386/pagetable.h`、`arch/earm/pagetable.h`） | x86-64 + arm64 + riscv64 三架构 trait | 07 | 已实现（trait 抽象） |
+| A-11 | **ACL fail-closed** | `acl_check` 对 `NO_ACL` 进程放行全部调用，仅打印告警（`acl.c:44-53`，注释 "for now" 承认是临时放松） | `AclState::Uninitialized` 仅放行 `AclMask::DEFAULT` 集（`acl.rs:102-116`）——未接管进程 fail-closed，特权调用必须经 RS 显式授权 | 04 | 已实现（语义偏移，需 doc §2/§3 诚实标注） |
 
 ---
 
@@ -334,8 +335,13 @@ VM_FORK 到达（主循环 dispatch）
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
 | 00 | pending | — | 导航重写，启动主线图 |
-| 01 | pending | — | draft/26 拆分 |
-| 02~14 | pending | — | draft 素材沿用改写 |
+| 01 | reviewed | 2026-08-15 | draft/26 拆分；`.review/codex/vm/01-vm-init-main/scan.md` |
+| 02 | reviewed | 2026-08-15 | draft/01 沿用；`.review/codex/vm/02-vmproc-struct/scan.md` |
+| 03 | reviewed | 2026-08-15 | draft/02 沿用；`.review/codex/vm/03-vmproc-table/scan.md` |
+| 04 | reviewed | 2026-08-15 | `.review/codex/vm/04-acl/scan.md` |
+| 05 | reviewed | 2026-08-15 | `.review/codex/vm/05-physical-memory/scan.md` |
+| 06 | reviewed | 2026-08-15 | 写作 + 回归；`.review/codex/vm/06-page-allocator/scan.md` |
+| 07~14 | pending | — | draft 素材沿用改写 |
 | 15 | pending | — | draft/24 + draft/26 合并 |
 | 16~26 | pending | — | draft 素材沿用改写 |
 | 99 | pending | — | 常量表同步 |
@@ -394,6 +400,18 @@ rg -n 'map_memory|unmap_memory' minix3/minix/servers/vm/   # 死声明确认（�
 ```
 
 **结论**：24 个 .c 文件全部映射到新文档，无遗漏；6 类 memtype、IPC handler（含未实现的 DMA/RS-PREPARE/UPDATE）全部进入覆盖契约；ARCH 项（A-1~A-10）与 minix3 现状对照成立。**覆盖完整性通过**。
+
+### 7.3 06 写作前置设计决策：保留页池结构消除（2026-08-15）
+
+**决策**：`critical_pool.rs`（通用 `CriticalPool<T>`）删除，`reservedqueue_*` 的 Rust 消费方**不实现**，归入 `[ARCH: A-1]`（Direct Map）结构消除。
+
+**依据**（grep 实证，见 06-page-allocator.md §3.3）：
+- C 备用页池的唯一目的是打破自举循环依赖（pagetable.c:55-57 注释 "avoid a circular dependency on allocating memory and writing it into VM's page table"），且 `pt_init` 末尾被整体替换为动态页（pagetable.c:1311-1345）——它是**自举机制**，不是稳态供应。
+- minix-rs 中 VA 由 Direct Map 常量偏移给出（`VM_DIRECT_MAP_BASE + phys`），页表页分配（`alloc_page::vm_pt_alloc`，注册进 `minix_arch::pt_alloc`）从 T3 起单路径可用，循环依赖被结构性打破——`level` 计数器、`pt_init_done` 阶段切换、BSS 静态页全部消失。
+- 对照 Redox RMM / Linux：均无 VM 侧备用页池——内核早期内存恒等/直接映射 + 物理帧分配器不依赖映射子系统，与 minix-rs 同构。
+- 保留的语义：`missing_spares`（alloc.c:74）在 Rust 中重解释为**分配压力计数**（`VmServer::mark_alloc_failure`），主循环 `alloc_cycle` 钩子（main.c:118-119）保留为补充/回收机会（体 DEFERRED 归 24-page-cache）。
+
+**同步**：plan.md §2 06 行 Rust 模块列、checklist.md M-127-M-130/F-012/F-158/F-159 行、06-page-allocator.md §3.3 三处一致。
 
 ---
 

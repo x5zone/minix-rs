@@ -31,11 +31,11 @@
 extern crate alloc;
 
 pub(crate) mod global;
+pub(crate) mod boot;
 pub(crate) mod vmproc;
 pub(crate) mod acl;
 pub(crate) mod fork;
 pub(crate) mod alloc_stats;
-pub(crate) mod critical_pool;
 pub(crate) mod phys_mem;
 pub(crate) mod region;
 pub(crate) mod pagetable;
@@ -60,6 +60,7 @@ pub(crate) mod sanity;
 pub use vm_server::VmServer;
 
 pub use phys_mem::BootMemRegion;
+pub use boot::{BootModule, BootParams, KernelAllocated};
 
 
 mod vm_server;

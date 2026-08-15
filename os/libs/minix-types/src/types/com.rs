@@ -35,6 +35,19 @@ pub const MAX_NR_TASKS: usize = 1023;
 /// (determined by endpoint generation mechanism).
 pub const NR_PROCS: usize = 256;
 
+/// Maximum number of system services (server/driver slots).
+///
+/// Corresponds to Minix3's `NR_SYS_PROCS` (defined in `config.h` as
+/// `_NR_SYS_PROCS` — `sys_config.h:9`).
+///
+/// # Notes
+///
+/// This is the length of the RS `rproc`/`rprocpub` tables
+/// (`minix3/minix/servers/rs/glo.h:33-34`). It is smaller than `NR_PROCS`
+/// because only system services (servers and drivers) are registered with RS;
+/// ordinary user processes are tracked by PM's `mproc` instead.
+pub const NR_SYS_PROCS: usize = 64;
+
 /// Slots reserved for root.
 ///
 /// Corresponds to Minix3's `LAST_FEW`.
@@ -72,3 +85,36 @@ pub const SCHEDULING_BASE: i32 = 0xF00;
 /// Kernel → scheduler: a user-scheduled process exhausted its quantum.
 /// C: `SCHEDULING_NO_QUANTUM` — com.h:803. Payload: `MessKrnLsysSchedule`.
 pub const SCHEDULING_NO_QUANTUM: i32 = SCHEDULING_BASE + 1;
+
+// ── SYS_STATE_* opcodes ──
+//
+// C: `<minix/com.h>`:442-446 — the `sys_statectl` request codes used by RS
+// for IPC-filter state management (`minix3/minix/servers/rs/utility.c:266,
+// 294`). Contract: 19-rs-external-interfaces.md §2.1; dictionary:
+// 99-rs-global-concepts.md §2.4.
+
+/// Clear IPC references. C: `SYS_STATE_CLEAR_IPC_REFS` — com.h:442.
+pub const SYS_STATE_CLEAR_IPC_REFS: i32 = 1;
+/// Set the state map. C: `SYS_STATE_SET_STATE_TABLE` — com.h:443.
+pub const SYS_STATE_SET_STATE_TABLE: i32 = 2;
+/// Add an IPC blacklist filter. C: `SYS_STATE_ADD_IPC_BL_FILTER` — com.h:444.
+pub const SYS_STATE_ADD_IPC_BL_FILTER: i32 = 3;
+/// Add an IPC whitelist filter. C: `SYS_STATE_ADD_IPC_WL_FILTER` — com.h:445.
+pub const SYS_STATE_ADD_IPC_WL_FILTER: i32 = 4;
+/// Clear all IPC filters. C: `SYS_STATE_CLEAR_IPC_FILTERS` — com.h:446.
+pub const SYS_STATE_CLEAR_IPC_FILTERS: i32 = 5;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sys_state_opcodes() {
+        // C: com.h:442-446.
+        assert_eq!(SYS_STATE_CLEAR_IPC_REFS, 1);
+        assert_eq!(SYS_STATE_SET_STATE_TABLE, 2);
+        assert_eq!(SYS_STATE_ADD_IPC_BL_FILTER, 3);
+        assert_eq!(SYS_STATE_ADD_IPC_WL_FILTER, 4);
+        assert_eq!(SYS_STATE_CLEAR_IPC_FILTERS, 5);
+    }
+}

@@ -1,12 +1,12 @@
 //! VM process structure.
 
-use core::mem::MaybeUninit;
-use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
-use minix_arch::paging::Paging;
 use super::VmFlags;
 use crate::acl::AclState;
-use crate::region::RegionMap;
 use crate::pagetable::PageTable;
+use crate::region::RegionMap;
+use core::mem::MaybeUninit;
+use minix_arch::paging::Paging;
+use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 
 /// VM process structure.
 ///
@@ -118,7 +118,10 @@ impl VmProc {
     #[cfg(debug_assertions)]
     pub(crate) fn check(&self) {
         if self.vm_flags.contains(VmFlags::IN_USE) {
-            debug_assert!(!self.vm_endpoint.is_none(), "IN_USE but vm_endpoint is NONE");
+            debug_assert!(
+                !self.vm_endpoint.is_none(),
+                "IN_USE but vm_endpoint is NONE"
+            );
         }
     }
 
@@ -158,14 +161,18 @@ impl VmProc {
         if self.vm_regions_initialized {
             // SAFETY: vm_regions_initialized is true, so vm_regions was previously
             // initialized by init_regions(). No concurrent access (single-threaded VM).
-            unsafe { self.vm_regions.assume_init_mut().clear(); }
+            unsafe {
+                self.vm_regions.assume_init_mut().clear();
+            }
         }
         if self.vm_pt_initialized {
             // SAFETY: vm_pt_initialized is true, so vm_pt was previously initialized
             // by init_page_table(). No concurrent access (single-threaded VM).
             // In test builds, skip destroy() since X86_64Paging::destroy() is todo!().
             #[cfg(not(test))]
-            unsafe { self.vm_pt.assume_init_mut().destroy(); }
+            unsafe {
+                self.vm_pt.assume_init_mut().destroy();
+            }
         }
 
         if self.vm_flags.contains(VmFlags::VM_INSTANCE) {
@@ -225,7 +232,9 @@ impl Drop for VmProc {
             // should prevent this from ever happening. If an IN_USE slot reaches
             // drop, it is a bug, but we clear it to prevent resource leaks.
             // Single-threaded VM ensures no concurrent access.
-            unsafe { self.clear(); }
+            unsafe {
+                self.clear();
+            }
         }
     }
 }
@@ -325,5 +334,40 @@ mod tests {
         proc.vm_bytecopies = 1000;
 
         assert_eq!(proc.vm_bytecopies, 1000);
+    }
+
+    #[test]
+    fn test_vacant_with_slot_preserves_slot() {
+        // C: main.c:461 `vmproc[i].vm_slot = i` — the slot number is part
+        // of the vacant state, not deferred until activation.
+        let slot = UserSlot::new(42);
+        let proc = VmProc::vacant_with_slot(slot);
+
+        assert_eq!(proc.vm_slot, slot);
+        assert!(proc.vm_endpoint.is_none());
+        assert!(proc.vm_flags.is_empty());
+        assert!(!proc.vm_pt_initialized);
+        assert!(!proc.vm_regions_initialized);
+    }
+
+    #[test]
+    fn test_clear_decrements_vm_instance_count() {
+        // C: main.c:574-579 sets `num_vm_instances = 1` together with
+        // `VMF_VM_INSTANCE`; exit.c:77-79 clears both on exit. `clear()`
+        // owns the decrement so flag and counter stay in sync.
+        let proc = get_vmproc(UserSlot::new(10));
+        proc.vm_flags |= VmFlags::VM_INSTANCE;
+        crate::global::inc_vm_instance();
+        assert_eq!(crate::global::vm_instance_count(), 1);
+
+        // SAFETY: Test-only slot, no page table bound to hardware,
+        // no concurrent access (single-threaded test).
+        unsafe {
+            proc.clear();
+        }
+
+        assert!(!proc.vm_flags.contains(VmFlags::VM_INSTANCE));
+        assert!(proc.vm_flags.is_empty());
+        assert_eq!(crate::global::vm_instance_count(), 0);
     }
 }

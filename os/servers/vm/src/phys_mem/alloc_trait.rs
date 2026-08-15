@@ -19,6 +19,9 @@
 //! single static-dispatch point, so we don't need `dyn PhysAllocator`.
 //! This avoids vtable indirection on the hot allocation path.
 //!
+//! [ARCH: A-5] — single C bitmap → three-backend strategy pattern
+//! (`PhysAllocator` trait), see plan.md §4 A-5 and 05-physical-memory.md §3.1.
+//!
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,5 +39,4 @@ pub(crate) trait PhysAllocator {
 
     fn available_regions(&self, callback: &mut dyn FnMut(usize, usize));
 }
-
 

@@ -7,7 +7,7 @@
 > **相关代码**：
 > - 验证逻辑：[`minix3/minix/servers/vm/utility.c#L84-L94`](../../../../minix3/minix/servers/vm/utility.c#L84-L94) `vm_isokendpt()`
 > - 调用点：[`minix3/minix/servers/vm/fork.c#L44-L48`](../../../../minix3/minix/servers/vm/fork.c#L44-L48) `do_fork()`
-> - 文档分析：[`02-stage-vm/vmproc-design.md#L78-L96`](../../02-stage-vm/vmproc-design.md#L78-L96)
+> - 文档分析：[`02-stage-vm/vmproc-design.md#L78-L96`](../../02-stage-vm/draft/vmproc-design.md#L78-L96)
 
 ---
 

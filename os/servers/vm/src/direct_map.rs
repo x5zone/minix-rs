@@ -56,8 +56,13 @@ pub(crate) mod tests {
         let _guard = MOCK_BASE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = minix_arch::direct_map::mock_vm_base();
         minix_arch::direct_map::set_mock_vm_base(VM_DIRECT_MAP_BASE);
-        f();
+        // Restore even when the test panics (e.g. #[should_panic] tests):
+        // a leaked custom mock base would corrupt later allocator tests.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         minix_arch::direct_map::set_mock_vm_base(saved);
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     /// Run a test with a custom mock_vm_base value.
@@ -67,8 +72,13 @@ pub(crate) mod tests {
         let _guard = MOCK_BASE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = minix_arch::direct_map::mock_vm_base();
         minix_arch::direct_map::set_mock_vm_base(base);
-        f();
+        // Restore even when the test panics (e.g. #[should_panic] tests):
+        // a leaked custom mock base would corrupt later allocator tests.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         minix_arch::direct_map::set_mock_vm_base(saved);
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     #[test]

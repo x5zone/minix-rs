@@ -231,9 +231,11 @@ impl MessageDispatcher {
             1 => {
                 // Permission check: only RS or VFS.
                 // C: exit.c:131-132 — if(msg->m_source != RS_PROC_NR && msg->m_source != VFS_PROC_NR) return EPERM;
-                // In Minix3, RS_PROC_NR = 0 and VFS_PROC_NR = 1.
+                // In Minix3, PM_PROC_NR = 0, VFS_PROC_NR = 1, RS_PROC_NR = 2
+                // (com.h:59-61). Endpoint::RS/Endpoint::VFS carry the same
+                // values, so the check is written against the constants.
                 // We use the caller endpoint directly.
-                if caller.0 != 0 && caller.0 != 1 {
+                if caller != Endpoint::RS && caller != Endpoint::VFS {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
                 match exit::handle_procctl_clear(table, page_alloc, frames, request.who) {
@@ -245,8 +247,8 @@ impl MessageDispatcher {
             // C: exit.c:139-148
             2 => {
                 // Permission check: only VFS.
-                // C: exit.c:140-141 — if(msg->m_source != VFS_PROC_NR) return EPERM;
-                if caller.0 != 1 {
+                // C: exit.c:141-142 — if(msg->m_source != VFS_PROC_NR) return EPERM;
+                if caller != Endpoint::VFS {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
                 match exit::handle_procctl_handlemem(
@@ -1274,7 +1276,9 @@ impl From<rs::RsError> for VmError {
     fn from(e: rs::RsError) -> Self {
         match e {
             rs::RsError::ProcessNotFound => VmError::InvalidProcess,
-            rs::RsError::SysProcNoMask => VmError::InvalidAddress,
+            // C: rs.c:56-58 — `do_rs_set_priv` with no mask for a sys proc
+            // prints "sys procs don't share!" and returns EINVAL.
+            rs::RsError::SysProcNoMask => VmError::InvalidProcess,
             rs::RsError::PinFailed => VmError::NotImplemented,
             rs::RsError::PrepareNotImplemented => VmError::NotImplemented,
             rs::RsError::PreallocMapConflict => VmError::NotImplemented,

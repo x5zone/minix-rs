@@ -100,7 +100,8 @@ impl AclState {
 
         match self {
             AclState::Uninitialized => {
-                // SECURITY FIX: Restrict to DEFAULT calls instead of allowing all.
+                // SECURITY FIX [ARCH: A-11]: Restrict to DEFAULT calls instead
+                // of allowing all.
                 // Minix3's NO_ACL allows all calls ("for now" — acl.c:44-53), but
                 // this is a known security relaxation. DEFAULT covers
                 // VM_EXIT/VM_FORK/VM_BRK/VM_EXEC_NEWMEM/VM_WILLEXIT/VM_MMAP/
