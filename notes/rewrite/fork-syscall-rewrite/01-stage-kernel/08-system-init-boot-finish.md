@@ -762,9 +762,19 @@ fn bsp_finish_booting(
     // C: boot_cpu_init_timer(system_hz) — clock.c:294.
     // (a) `init_local_timer(freq)` was already done in Phase B via
     //     `CurrentClockArch::init_timer(DEFAULT_HZ)`.
-    // (b) Timer IRQ handler registration is deferred until the global
-    //     IrqManager lands; for now `boot_init_timer` accepts a dummy
-    //     handler that satisfies the ArchBoot trait signature.
+    // (b) Timer IRQ handler registration is deferred to the real
+    //     interrupt-dispatch path (`IrqManager::register_hook`, Step 1.5.7).
+    //     The deleted `ArchBoot::register_timer_handler` was a mock
+    //     placeholder with no readers — see 05-clock-interrupt-init.md §4.7.1.
+    // Behavior change (05-clock-interrupt-init.md §3.7): with `boot_init_timer`
+    // gone, `enable_timer_irq` is no longer called. aarch64/riscv64 are
+    // unchanged — `init_timer` above writes the same enable (CNTP_CTL_EL0
+    // Enable=1/IMASK=0, sie.STIE=1), so the timer is live with no handler
+    // yet; only x86_64 differs (LAPIC LVT Timer Mask stays 1, while the PIT
+    // remains the boot clock source). Step 1.5.7's core is the IRQ-chain
+    // registration (`IrqManager::register_hook`); x86_64 additionally calls
+    // `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()` if the
+    // LAPIC LVT timer becomes the clock source.
     // Instance-based design (04-platform-discovery.md §3.4): construct a
     // transient clock arch instance from the global platform descriptor.
     use minix_arch::{ClockArch, CurrentClockArch};
@@ -774,17 +784,6 @@ fn bsp_finish_booting(
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.init_timer(crate::clock::DEFAULT_HZ);
     }
-    // Register the BSP's timer handler via the ArchBoot trait (hardware-side
-    // binding: IOAPIC RTE on x86, LVT on aarch64; mock records for tests).
-    use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot, TimerHandlerFn};
-    extern "Rust" fn dummy_timer_handler(
-        _irq: minix_plat::IrqVector,
-        _id: minix_plat::IrqId,
-    ) -> minix_plat::IrqAction {
-        minix_plat::IrqAction::Completed
-    }
-    let _handler: TimerHandlerFn = dummy_timer_handler;
-    let _ = boot_init_timer::<CurrentArchBoot>(dummy_timer_handler);
 
     // Step 7: FPU presence probe
     let bsp_id = smp_state.bsp_cpu_id();

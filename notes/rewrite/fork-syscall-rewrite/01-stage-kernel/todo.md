@@ -180,7 +180,7 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 **建议**：定义聚合 trait：
 ```rust
 pub trait Arch: ProtectionArch + TrapEntryArch + ExceptionArch + ClockArch
-    + FpuArch + SmpArch + ArchInit + ArchBoot + PostInitArch
+    + FpuArch + SmpArch + ArchInit + TimerIrqGate + PostInitArch
     + StacktraceArch + TlbArch + PteWalkArch + DirectMapArch
     + CpuContextArch + SignalContext + Paging {}
 pub type CurrentArch = X86_64Arch;  // 单点 cfg 选择（lib.rs 已有模式）

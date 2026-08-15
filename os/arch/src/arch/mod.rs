@@ -18,7 +18,7 @@ pub mod fpu_arch;
 pub mod signal_context;
 pub mod smp;
 pub mod arch_init;
-pub mod arch_boot;
+pub mod timer_irq_gate;
 pub mod boot;
 pub mod post_init;
 pub mod stacktrace;

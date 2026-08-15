@@ -51,7 +51,7 @@ pub use arch::fpu_arch;
 pub use arch::signal_context;
 pub use arch::smp;
 pub use arch::arch_init;
-pub use arch::arch_boot;
+pub use arch::timer_irq_gate;
 pub use arch::boot;
 pub use arch::post_init;
 pub use arch::stacktrace;
@@ -73,6 +73,7 @@ pub use exception_dispatcher::{
     ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal, KernTrapStyle,
 };
 pub use clock::{ClockArch, DEFAULT_HZ};
+pub use timer_irq_gate::TimerIrqGate;
 #[cfg(feature = "mock")]
 pub use clock::MockClockArch;
 pub use fpu_arch::{FpuArch, MockFpuArch, MockFpuState};
@@ -248,6 +249,18 @@ pub type CurrentArchInit = crate::x86_64::arch_init::X86_64ArchInit;
 pub type CurrentArchInit = crate::arm64::arch_init::AArch64ArchInit;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentArchInit = crate::riscv64::arch_init::Riscv64ArchInit;
+
+// ── CurrentTimerIrqGate type aliases ──
+//
+// Selects the architecture-specific `TimerIrqGate` implementor at compile
+// time. `TimerIrqGate` has only static methods (no instance state), so the
+// selection follows the `CurrentArchInit` pattern (no mock variant).
+#[cfg(target_arch = "x86_64")]
+pub type CurrentTimerIrqGate = crate::x86_64::timer_irq_gate::X86_64TimerIrqGate;
+#[cfg(target_arch = "aarch64")]
+pub type CurrentTimerIrqGate = crate::arm64::timer_irq_gate::AArch64TimerIrqGate;
+#[cfg(target_arch = "riscv64")]
+pub type CurrentTimerIrqGate = crate::riscv64::timer_irq_gate::Riscv64TimerIrqGate;
 
 // ── CurrentCpuContextArch / CpuContext / TrapFrame type aliases ──
 //

@@ -597,6 +597,22 @@ pub trait ArchInit: Sized + Send + Sync {
 
 这些功能依赖进程表、调度器、SMP 状态，属于后续里程碑（06-proc-init、[11-scheduling-primitives.md](11-scheduling-primitives.md)、[14-exception-interrupt.md](14-exception-interrupt.md) 以及 SMP 文档），所以不在本阶段展开。
 
+**行为变更声明（2026-08-15，V3 P0-1；2026-08-15 复核修正）**：删除 `boot_init_timer`（连同 `ArchBoot` trait、`MockArchBoot` 与三个 `MOCK_*` 全局）后，`enable_timer_irq` 不再被单独调用。**逐架构核对（下表）只有 x86_64 存在真实行为差异**——aarch64/riscv64 的 `ClockArch::init_timer` 写入与旧 `enable_timer_irq` 完全相同的寄存器：
+
+| 架构 | 旧行为（boot 期间，旧 arch_boot.rs L192-230 / L291-318 / L354-378 的 enable_timer_irq） | 新行为（boot 期间） | 差异？ |
+|------|------------------------------------------------------------------------------------------|---------------------|--------|
+| x86_64 | LAPIC LVT Timer Mask bit 16 = 0 + SVR Enable bit 8 = 1 | LAPIC LVT Timer Mask 保持 1（`init_timer` 只编程 8254 PIT，不碰 LVT）；SVR Enable 仍由 `InterruptController::init`（init_lapic）置位 | ✅ 仅 LVT Mask 0→1（PIT 是 boot 时钟源，差异休眠，待 LAPIC LVT 时钟源启用才可见） |
+| aarch64 | CNTP_CTL_EL0 = Enable=1, IMASK=0 | 相同：`AArch64ClockArch::init_timer` 写 `msr cntp_ctl_el0, 1`（Enable=1, IMASK=0） | ❌ 无（timer live，可 firing，尚无 handler） |
+| riscv64 | sie.STIE bit 5 = 1 | 相同：`Riscv64ClockArch::init_timer` 执行 `csrs sie, 0x20`（STIE=1） | ❌ 无（timer live，可 firing，尚无 handler） |
+
+因此**不是**"boot 期间 timer IRQ 在三个架构全部保持 masked"：aarch64/riscv64 的 timer 在 boot 期间保持 live（与旧行为一致），可触发但尚无 handler。**Step 1.5.7 的核心是 IRQ-chain 注册**（`IrqManager::register_hook`）；仅当 x86_64 采用 LAPIC LVT Timer 作为时钟源时才需额外调用 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`（骨架见 `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6 注释）。
+
+**调用时序约束（2026-08-15，Step 0.5 / 0.5b 事实核验结论）**：`TimerIrqGate::enable_timer_irq` / `disable_timer_irq` 必须在中断控制器初始化之后调用：
+
+- **x86_64**：`X86_64InterruptController::init_lapic`（Phase B，`init_clock_and_interrupts` Step 3）设置 IA32_APIC_BASE 全局 enable bit 11 并写 SVR Enable，此后 LAPIC MMIO 才可访问（`os/plat/src/x86_64/interrupt.rs` L112-120）。核验结论：当前唯一调用点（旧 `bsp_finish_booting` Step 6）晚于 Phase B，LAPIC 已映射 → 旧 LAPIC-null fallback 删除安全；新实现未映射时 `panic!`（不再写 mock 状态）。
+- **aarch64**：`AArch64InterruptController::init`（Phase B）完成 GIC distributor 全局 enable（GICD_CTLR.EnableGrp1NS）、redistributor wake（GICR_WAKER）与 CPU interface enable（ICC_SRE_EL1 / ICC_PMR_EL1 / ICC_IGRPEN1_EL1），timer PPI 的 GIC delivery path 在 `enable_timer_irq` 之前已成立（核验过程见 §4.7.1"aarch64 真硬件路径"）。
+- **riscv64**：无前置要求（sie.STIE 是纯 supervisor CSR 写）。
+
 ### 3.8 架构差异对照
 
 | 方面 | x86-64 | aarch64 | riscv64 |
@@ -1292,48 +1308,74 @@ impl InterruptController for Riscv64InterruptController {
 
 > **实现说明**: PLIC 已实现，base 默认 QEMU virt 地址 0x0C00_0000。Timer 中断由 CLINT 处理（见 `clock.rs`），不在 PLIC 路径。
 
-### 4.7.1 ArchBoot trait：BSP 定时器 handler 注册
+### 4.7.1 TimerIrqGate trait：定时器 IRQ 的 enable/disable
 
-**位置**: [`os/arch/src/arch/arch_boot.rs`](os/arch/src/arch/arch_boot.rs)
+**位置**: [`os/arch/src/arch/timer_irq_gate.rs`](os/arch/src/arch/timer_irq_gate.rs)（trait 定义）+ [`os/arch/src/x86_64/timer_irq_gate.rs`](os/arch/src/x86_64/timer_irq_gate.rs) / [`os/arch/src/arm64/timer_irq_gate.rs`](os/arch/src/arm64/timer_irq_gate.rs) / [`os/arch/src/riscv64/timer_irq_gate.rs`](os/arch/src/riscv64/timer_irq_gate.rs)（三架构 impl）+ `os/arch/src/lib.rs` `CurrentTimerIrqGate` alias
 
-`ArchBoot` trait 封装 boot 阶段的定时器 handler 注册 + IRQ mask/unmask。对应 C 的 `boot_cpu_init_timer` + `register_local_timer_handler`（clock.c:294 / 177）。
+`TimerIrqGate` 封装"打开/关闭定时器 IRQ 投递"这对**对偶硬件操作**，对应 C 的 timer IRQ 开关（x86 LAPIC LVT Timer mask、ARM CNTP_CTL_EL0、RISC-V sie.STIE）。handler 注册（`boot_cpu_init_timer` 的 `register_local_timer_handler`，clock.c:294 / 177）**不在**此 trait 内——见下方"关于被删除的 `ArchBoot::register_timer_handler`"。
 
 ```rust
-pub trait ArchBoot {
-    fn register_timer_handler(handler: TimerHandlerFn) -> Result<(), BootError>;
+pub trait TimerIrqGate: Sized {
     fn enable_timer_irq();
     fn disable_timer_irq();
 }
 ```
 
-**三架构实现**（每架构独立完成真实硬件编程，重构前 x86_64 通过 cfg fall back 到 Mock，下方"为何重构"段有完整历史）：
+**三架构实现**（per-arch ZST，经 `CurrentTimerIrqGate` cfg alias 静态分派，不向使用方泄漏 `#[cfg]`）：
 
 | 架构 | impl 类型 | enable_timer_irq | disable_timer_irq | C 源码 |
 |------|----------|------------------|-------------------|--------|
-| x86_64 | `X86_64ArchBoot` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | apic.c:lapic_enable() + clock.c |
-| aarch64 | `AArch64ArchBoot` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | earm/clock.c:arm_timer_enable() |
-| riscv64 | `Riscv64ArchBoot` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
+| x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `apic.c:44` / `apic.c:475-477`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable，职责归属见 Follow-up 1） |
+| aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_timer.c:136/331`（32 位 ARM；aarch64 为架构演进，见 §2.5） |
+| riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
 
 **设计要点**：
-- **关联函数（无 `&self`）**：`ArchBoot` 在 trait 层级无状态，"已注册 handler" 存于 arch-specific static storage（LAPIC MMIO / 系统寄存器 / 测试用 AtomicPtr）。匹配 C 的 `register_local_timer_handler` free function 设计
-- **x86_64 LAPIC base 探测**：`lapic_base_x86_64()` 从 IA32_APIC_BASE MSR (0x1B) 读取，检查 APIC global enable bit (bit 11)。若 LAPIC 未启用返回 null，函数 fall back 到 mock 状态（boot 早期 LAPIC 未映射时使用）
-- **aarch64 不分离 GIC 编程**：GIC distributor + redistributor 由 `SmpArch::init_ap` 处理。ArchBoot 只控制 per-CPU 的 CNTP_CTL_EL0（定时器 enable/mask）
-- **riscv64 不调 SBI**：mtimecmp 由 `ClockArch::init_timer` 通过 SBI timer extension 设置。ArchBoot 只控制 S-mode 中断 enable (sie.STIE)，是 supervisor CSR write
-- **MockArchBoot 仅用于 `#[cfg(test)]` 或 `mock` feature**：`CurrentArchBoot` 在三架构目标下指向真实实现，不再 fall back 到 Mock
 
-**为何之前 x86_64 委托给 Mock**：x86_64 重构前的 `X86_64ArchBoot::enable_timer_irq` 直接调用 `MockArchBoot::enable_timer_irq`，无真实 LAPIC 编程；aarch64/riscv64 通过 `#[cfg(not(target_arch = "x86_64"))]` fall back 到 MockArchBoot。现已重写为三架构各自的硬件编程，匹配 C 的 `lapic_enable()` / `arm_timer_enable()` / `timer_init()` 行为。
+- **关联函数（无 `&self`）、无实例字段**：`TimerIrqGate` 与 `TrapEntryArch` / `ProtectionArch` 同类（纯 static 方法），trait bound 仅 `Sized`（V3 P1-3，事实核验自 capability trait bound 分布：有实例字段的 `ClockArch` / `FpuArch` 才需要 `Send + Sync`）
+- **静态分派**：调用点写 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`；target-specific `cfg` 只存在于 `os/arch/src/lib.rs` 的 `CurrentTimerIrqGate` alias（照抄 `CurrentArchInit` 模式，V4 §6.1 cfg 边界原则）
+- **生产实现不触碰测试状态**：三架构 impl 不再写任何 `MOCK_*` 全局（V2 F4 修复——旧实现真路径写 `MOCK_IRQ_ENABLED`，x86 在 LAPIC 未映射时 fall back 写 mock，属 P0-class 缺陷）
+- **x86_64 LAPIC base 探测 + 调用时序约束**：从 IA32_APIC_BASE MSR (0x1B) 读取 base 并检查 APIC global enable bit (bit 11)；未启用时 `panic!`（旧实现静默写 mock 状态）。必须在 `X86_64InterruptController::init` 之后调用（核验结论见 §3.7"调用时序约束"）
+- **riscv64 不调 SBI**：mtimecmp 由 `ClockArch::init_timer` 通过 SBI timer extension 设置。`TimerIrqGate` 只控制 S-mode 中断 enable (sie.STIE)，是 supervisor CSR write
 
-**`boot_init_timer` 便捷函数**：
+**aarch64 真硬件路径**（2026-08-15，Step 0.5b 事实核验结论）：aarch64 的 timer IRQ 投递链是 CNTP（per-CPU timer 模块）→ PPI → GIC redistributor → CPU。CNTP enable 只让 per-CPU timer 模块产生 PPI；PPI 能否到达 CPU 取决于 GIC delivery path。核验结果：**GIC delivery path 由 `AArch64InterruptController::init` 建立**（`os/plat/src/arm64/interrupt.rs`，Phase B `init_clock_and_interrupts` Step 3）——`init_distributor` 写 GICD_CTLR.EnableGrp1NS、`init_redistributor` 唤醒 GICR_WAKER、`init_cpu_interface` 写 ICC_SRE_EL1 / ICC_PMR_EL1 / **ICC_IGRPEN1_EL1=1**。因此：
 
-```rust
-pub fn boot_init_timer<AB: ArchBoot>(handler: TimerHandlerFn) -> Result<(), BootError> {
-    AB::register_timer_handler(handler)?;
-    AB::enable_timer_irq();
-    Ok(())
-}
-```
+- `TimerIrqGate` **不写 ICC_IGRPEN1_EL1**——GIC global enable 职责属于中断控制器初始化（与 x86 SVR Enable 属 LAPIC 初始化同理，见 Follow-up 1）
+- 旧注释（arch_boot.rs L39 "aarch64: CNTP_CTL_EL0 + ICC_IGRPEN1_EL1 (GIC IRQ enable)"、L272-275 "GIC 由 SmpArch::init_ap 编程"）均不准确：GIC 由 `InterruptController` 负责，`SmpArch` 只负责 IPI（GICD_SGIR / ICC_EOIR），本次平移时已修正注释
 
-对应 C `boot_cpu_init_timer(freq)` 中 `register_local_timer_handler` + IRQ unmask 两步。
+**关于被删除的 `ArchBoot::register_timer_handler`**（上下文段，V4 P2-1）：
+
+> 原 `ArchBoot::register_timer_handler` 预期将 handler 绑定到架构 timer IRQ：
+> - x86: IOAPIC RTE 绑定（IRQ 0 → LAPIC LVT Timer）
+> - aarch64: CNTP LVT 设置（per-CPU timer module）
+> - riscv64: SBI timer dispatch / sie.STIP 处理
+>
+> **已删除**（2026-08-15，V3 落地）：
+> 1. 当前为 mock 占位（旧 arch_boot.rs L180-191 / L282-289 / L345-352 实现完全一致——"未实现的一致"，不是"无差异的一致"）
+> 2. 无真实读者——26 处 `MOCK_*` 引用（`MOCK_HAS_HANDLER`×7、`MOCK_IRQ_ENABLED`×13、`MOCK_LAST_HANDLER`×6，另有 14 处 `mock_*` 辅助标识符）全部在 `arch_boot.rs` 内部，trap entry 不读它
+> 3. 真实 dispatch 未来走 `IrqManager::register_hook`（kernel 注释明确，见 `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6）
+>
+> **未来真硬件 binding 出现时**，由届时设计者决定 register 应去（**今天不预先决定**）：
+> - `ClockArch` 的 timer dispatch endpoint（如果 register 与 timer 设备编程同属）
+> - 独立 `TimerHandlerDispatch` trait（如果 register 与硬件 wiring 紧密耦合）
+> - arch crate 级 free function（如果 register 不含架构差异）
+>
+> **YAGNI 原则**：差异出现时差异本身会告诉你抽象形态。代码中仅保留一行 breadcrumb（`os/arch/src/arch/timer_irq_gate.rs` 顶部 doc-comment 指向本节）。
+
+**Follow-up 1：x86 SVR vs LVT 分离**（V3 P1-5 / V4 修订）：
+
+x86 `X86_64TimerIrqGate::enable_timer_irq` 内部混合两个语义：
+
+- **LVT Timer Mask bit 16** = 0（per-IRQ 开关）— 属于 `TimerIrqGate` 职责
+- **LAPIC SVR Enable bit 8** = 1（LAPIC 总开关）— 属于 LAPIC 初始化前置（C 中 `apic.c:lapic_enable()`；Rust 中已由 `X86_64InterruptController::init_lapic` 完成）
+
+当前实现**暂时保留合并语义**（写 SVR Enable 与 `init_lapic` 重复但幂等），不在本次重构中拆分；其职责边界作为 follow-up，由后续 LAPIC initialization 时序设计统一处理。
+
+**本次重构的元原则**（2026-08-15，V2/V3 收敛结论）：
+
+1. **trait 成员由 architecture variance 决定，不由调用时序决定**——`ArchBoot` 的命名错误在于把"boot 时序的入口"当成了"架构能力边界"。架构抽象应按子系统能力（ClockArch / TimerIrqGate / …）分，而非按调用时机。
+2. **不为 mock 写抽象，不预建假想差异的抽象**——`register_timer_handler` 的三实现是"未实现的一致"（mock 占位），不是"无差异的一致"；在真硬件 binding 出现前删除，YAGNI。
+3. **生产实现不得触碰测试状态（`MOCK_*` 全局）**——测试 mock 的 static 只存在于 `#[cfg(test)]` 或 mock 实现自身；真实现写 mock state 属 P0-class 缺陷（V2 F4）。
+4. **cfg 边界**：target-specific `cfg` 仅存在于 arch crate 的 `Current*` 选择 alias，绝不泄漏到 capability 使用方（V4 §6.1）。
 
 ### 4.8 ArchInit trait
 
@@ -1566,8 +1608,8 @@ impl EarlyConsole for X86_64EarlyConsole {
 | `os/plat/src/arm64/interrupt.rs` | 3 | GIC 寄存器偏移、WAKER bits、QEMU virt GICD/GICR 偏移、gicd_base=0 防御 panic |
 | `os/arch/src/{x86_64,arm64,riscv64}/trap_entry.rs` | 19/4/4 | IDT 门描述符、set_handler 行为、VBAR/stvec 配置（详见 doc 03 §5.3）|
 | `os/plat/src/early_console.rs` | 0 | trait 声明 `init`/`write_byte` 接口；`write_str`/`write_hex` 为默认方法，目前通过 `os/plat/src/mock.rs` 的 `MockEarlyConsole` 在测试构建中复用 |
-| `os/arch/src/arch/arch_boot.rs` | 8 | ArchBoot Mock 行为 + CurrentArchBoot 编译时验证 + 三架构 `test_*_arch_boot_compiles`（三架构各验证一次硬件编程编译通过） |
-| **当前所列文件总计** | **104** | |
+| `os/arch/src/arch/timer_irq_gate.rs` | 4 | `test_current_timer_irq_gate_compiles`（`CurrentTimerIrqGate` alias 编译检查）+ 三架构 `test_*_timer_irq_gate_compiles`（按 `target_arch` 门控，各验证一次硬件 impl 编译通过；真硬件行为由 QEMU 集成测试验证） |
+| **当前所列文件总计** | **100** | |
 
 #### 5.1.1 时钟状态与定时器测试（`os/kernel/src/clock.rs`）
 

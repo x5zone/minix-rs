@@ -799,7 +799,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 
 这两步的语义边界在 §4.6 前文 "Step 0→3 的顺序不可调换" 注释块已详述：`arch_boot_impl` 是"启用分页 + 建映射"，`HigherHalf::jump_to_kmain` 是"切栈到高地址 + 转移控制权"。前者是分页机制，后者是栈控制权交接——必须分两步执行，不能合并。
 
-**为什么有 4 份 `#[cfg]` 重复**：当前 `os/arch/src/arch/arch_boot.rs:60` 的 `ArchBoot` trait 仅覆盖 timer handler 注册，**未包含** `Paging` 与 `HigherHalf` 类型。`arch_boot` 函数的统一形式本可以是：
+**为什么有 4 份 `#[cfg]` 重复**：`arch_boot` 函数的统一形式本可以是：
 
 ```rust
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
@@ -808,9 +808,9 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 }
 ```
 
-通过关联类型 `type Paging; type HigherHalf;` 在 `ArchBoot`（或独立的 `ArchBootFlow`）trait 下编译期选择。但当前 4 份 `#[cfg]` 重复反映 trait 设计不完整，与 `CurrentArchBoot`、`CurrentArchInit` 类型别名的成熟模式不一致。
+通过关联类型 `type Paging; type HigherHalf;` 在独立的 `ArchBootFlow` trait 下编译期选择。但当前 4 份 `#[cfg]` 重复反映该聚合尚未落地。**注**：旧 `ArchBoot` trait（`os/arch/src/arch/arch_boot.rs`，仅覆盖 timer handler 注册）已于 2026-08-15 删除——"boot 时序"不是架构能力边界，timer IRQ 开关归入 `TimerIrqGate`（见 [05-clock-interrupt-init.md §4.7.1](05-clock-interrupt-init.md#471-timerirqgate-trait定时器-irq-的-enabledisable)）；此处若引入聚合 trait，应命名为表达能力边界的 `ArchBootFlow`，而非复用时序名词。
 
-> **当前状态与演进方向**：`ArchBoot` trait（`os/arch/src/arch/arch_boot.rs:60`）目前仅覆盖 timer handler 注册，未包含 `Paging` 与 `HigherHalf` 关联类型。后续重构可参考 [01-boot-shim-bootstrap.md §4.4 BootShim trait](01-boot-shim-bootstrap.md#44-引导协议抽象--bootshim-trait) 的关联类型模式，将 `Paging` + `HigherHalf` 接入 trait 体系，消除 4 份 `#[cfg]` 重复。当前 §4.4 代码块保留 4 份展示，反映真实工程现状；trait 重构后将本节改写为单份 `arch_boot` 实现。
+> **当前状态与演进方向**：timer handler 注册随 `ArchBoot` 删除而暂留空（未来真硬件 binding 出现时由设计者决定归属）；`Paging` + `HigherHalf` 的关联类型聚合仍未落地。后续重构可参考 [01-boot-shim-bootstrap.md §4.4 BootShim trait](01-boot-shim-bootstrap.md#44-引导协议抽象--bootshim-trait) 的关联类型模式，将 `Paging` + `HigherHalf` 接入 trait 体系，消除 4 份 `#[cfg]` 重复。当前 §4.4 代码块保留 4 份展示，反映真实工程现状；trait 重构后将本节改写为单份 `arch_boot` 实现。
 
 > **三架构 `arch_boot()` 差异**：aarch64/riscv64 版本的 `arch_boot()` 与 x86-64 几乎完全相同，**唯一差异是 Paging 类型别名**：
 > - x86-64: `minix_arch::x86_64::paging::X86_64Paging` (PML4, 4 级)

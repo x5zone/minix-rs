@@ -1893,36 +1893,29 @@ fn bsp_finish_booting(
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.init_timer(crate::clock::DEFAULT_HZ);
     }
-    // Register the BSP's timer handler via the ArchBoot trait.
-    // The ArchBoot abstraction gives the architecture a chance to wire
-    // the handler directly into the trap entry. Real hardware uses
-    // IOAPIC RTE binding on x86 or LVT setup on aarch64; mock
-    // records the handler for test inspection.
-    use minix_arch::arch_boot::{boot_init_timer, CurrentArchBoot};
-    use minix_arch::arch_boot::TimerHandlerFn;
-    // D10: The global `IRQ_MANAGER` is now initialized (in
-    // `init_clock_and_interrupts`), so a real `IrqManager::register_hook`
-    // call could be made here. However, the `TimerHandlerFn` signature
-    // (`fn(IrqVector, IrqId) -> IrqAction`) still uses the pre-D9 handler
-    // shape; the new `IrqHandler` signature is `fn(&mut IrqHookContext) -> IrqAction`.
-    // The arch-level `boot_init_timer` call below handles hardware-side
-    // binding (IOAPIC RTE / LVT), while the IRQ-chain registration will
-    // happen in Step 1.5.7 when the trap entry is connected to
-    // `IrqManager::dispatch`. For now we pass a dummy handler that
-    // satisfies the arch trait signature.
-    extern "Rust" fn dummy_timer_handler(
-        _irq: minix_plat::IrqVector,
-        _id: minix_plat::IrqId,
-    ) -> minix_plat::IrqAction {
-        minix_plat::IrqAction::Completed
-    }
-    let _handler: TimerHandlerFn = dummy_timer_handler;
-    let _ = boot_init_timer::<CurrentArchBoot>(dummy_timer_handler);
-    // Real IRQ-chain registration will call:
+    // Timer IRQ handler registration is deferred to the real
+    // interrupt-dispatch path (`IrqManager::register_hook`, Step 1.5.7).
+    // The deleted `ArchBoot::register_timer_handler` was a mock placeholder
+    // with no readers — trap entry never reads it, and real dispatch goes
+    // through `IrqManager`. See 05-clock-interrupt-init.md §4.7.1.
+    //
+    // Behavior change (05-clock-interrupt-init.md §3.7): with the deleted
+    // `boot_init_timer` no longer calls `enable_timer_irq`. Per-arch effect:
+    //   - x86_64: LAPIC LVT Timer Mask stays 1 (old code cleared it); the
+    //     SVR Enable bit is still set by `InterruptController::init`, and
+    //     the boot clock source is the PIT, so the difference is dormant
+    //     until the LAPIC LVT timer is adopted (Step 1.5.7).
+    //   - aarch64/riscv64: unchanged — `init_timer` above writes the same
+    //     registers the deleted `enable_timer_irq` wrote (aarch64
+    //     CNTP_CTL_EL0 Enable=1/IMASK=0, riscv64 sie.STIE=1), so the timer
+    //     is live during boot and may fire with no handler yet.
+    // Step 1.5.7's core is the IRQ-chain registration:
     //   unsafe { crate::irq_manager() }.register_hook(
     //       IrqVector::new(0), clock_irq_handler, ..., IrqPolicy::REENABLE,
     //   );
-    // once `clock_irq_handler` (an `IrqHandler`) is implemented in Step 1.5.7.
+    // plus `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()` on
+    // x86_64 if the LAPIC LVT timer becomes the clock source, once
+    // `clock_irq_handler` (an `IrqHandler`) is implemented.
 
     // Step 7: fpu_init() — set BSP FPU presence.
     // C: fpu_init() — arch-specific (arch_system.c, i386/earm).
@@ -3049,4 +3042,3 @@ mod tests {
             "from_active_root must preserve the caller-supplied root");
     }
 }
-
