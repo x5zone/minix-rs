@@ -4,8 +4,12 @@
 
 use minix_types::{Endpoint, VirBytes};
 use crate::region::{VirRegion, PageFrames, PfnAllocator, PAGE_SIZE};
-use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
+use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON, MEM_TYPE_MAPPED_FILE};
 use crate::vmproc::VmProcTable;
+use crate::page_cache::PageCache;
+use crate::vfs_queue::{VfsQueueError, VfsReply, VfsRequest, VfsRequestQueue, VfsRequestState, VfsRequestType};
+use crate::fdref::FdRefTable;
+use crate::region::VrParam;
 #[cfg(not(test))]
 use crate::direct_map::vm_phys_to_virt;
 #[cfg(not(test))]
@@ -24,13 +28,15 @@ pub(crate) fn handle_pagefault(
     fault_addr: VirBytes,
     write: bool,
     table: &VmProcTable,
+    cache: &mut PageCache,
+    vfs_queue: &mut VfsRequestQueue,
 ) -> Result<PagefaultAction, CowError> {
     let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
     let memtype = region.def_memtype
         .ok_or(CowError::NoMemType)?;
 
-    let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write, table, alloc)?;
+    let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write, table, alloc, cache)?;
 
     match result {
         PagefaultResult::Handled => Ok(PagefaultAction::Handled),
@@ -43,10 +49,119 @@ pub(crate) fn handle_pagefault(
             Ok(PagefaultAction::CowResolved)
         }
         PagefaultResult::NeedVfsIo => {
-            Ok(PagefaultAction::Suspended)
+            enqueue_fdio(proc_endpoint, region, offset, write, vfs_queue)
         }
         PagefaultResult::AccessViolation => {
             Ok(PagefaultAction::AccessViolation)
+        }
+    }
+}
+
+/// Enqueue a `FdIo` VFS request for a file-backed page fault.
+///
+/// C `mappedfile_pagefault` (mem_file.c:146-153): on a cache miss, issue
+/// `vfs_request(VMVFSREQ_FDIO, procfd, vmp, referenced_offset,
+/// VM_PAGE_SIZE, cb, NULL, state, statelen)` and return `SUSPEND` with
+/// `*io = 1`. The `procfd` is the fd recorded in the region's fdref
+/// entry; `referenced_offset` is the file offset of the faulting page.
+pub(crate) fn enqueue_fdio(
+    proc_endpoint: Endpoint,
+    region: &VirRegion,
+    offset: VirBytes,
+    write: bool,
+    vfs_queue: &mut VfsRequestQueue,
+) -> Result<PagefaultAction, CowError> {
+    // C: procfd = region->param.file.fdref->fd (mem_file.c:93)
+    let VrParam::File { fdref_id, offset: file_offset, .. } = &region.param else {
+        return Ok(PagefaultAction::AccessViolation);
+    };
+    let Some(fdref_id) = fdref_id else {
+        return Ok(PagefaultAction::AccessViolation);
+    };
+    let Some(fdref) = FdRefTable::get_global().get(*fdref_id) else {
+        return Ok(PagefaultAction::AccessViolation);
+    };
+
+    let req = VfsRequest {
+        request_type: VfsRequestType::FdIo,
+        req_id: 0, // assigned by VfsRequestQueue::request
+        caller_endpoint: proc_endpoint,
+        fd: fdref.fd,
+        offset: file_offset + offset.0,
+        length: PAGE_SIZE as u32,
+        callback: Some(mappedfile_pf_cont),
+        state: Some(VfsRequestState::FdIo {
+            region_vaddr: region.vaddr,
+            page_offset: offset,
+            write,
+            caller_endpoint: proc_endpoint,
+        }),
+    };
+    // C: vfs_request failure → ENOMEM (mem_file.c:151)
+    vfs_queue.request(req).map_err(|_| CowError::NoMemory)?;
+    Ok(PagefaultAction::Suspended)
+}
+
+/// VFS callback for page-fault-initiated `FdIo` requests.
+///
+/// C `handle_memory_continue` (pagefaults.c:170-190): when the VFS reply
+/// carries `VMV_RESULT == OK`, retry the page fault (`handle_memory_step(
+/// TRUE /*retry*/)`). The VFS side loaded the page into the VM page cache
+/// (`actual_read_write_peek` with PEEKING → `lmfs_get_block_ino` +
+/// `vm_map_cacheblock`), so the retry hits the cache and links the page
+/// instead of issuing another FDIO. On error, the faulting process is
+/// unblocked with the errno.
+pub(crate) fn mappedfile_pf_cont(
+    server: &mut crate::vm_server::VmServer,
+    reply: &VfsReply,
+    state: &VfsRequestState,
+) -> Result<(), VfsQueueError> {
+    let VfsRequestState::FdIo { region_vaddr, page_offset, write, caller_endpoint } = state else {
+        return Err(VfsQueueError::NoCallbackState);
+    };
+
+    // C: if(m->VMV_RESULT != OK) { handle_memory_final(state, m->VMV_RESULT); return; }
+    if reply.result != 0 {
+        // Transport note: delivering the errno to the faulting process
+        // (handle_memory_final → sys_vmctl / asynsend3) requires the
+        // kernel IPC transport, which is not yet wired.
+        return Ok(());
+    }
+
+    // C: r = handle_memory_step(TRUE) — retry the fault for this page.
+    let table = VmProcTable::get_global();
+    let slot = table.vm_isokendpt(*caller_endpoint).map_err(|_| VfsQueueError::InvalidFd)?;
+    let mut proc = table.get_active(slot).ok_or(VfsQueueError::InvalidFd)?;
+    let region = proc.regions_mut().find_mut(*region_vaddr)
+        .ok_or(VfsQueueError::InvalidFd)?;
+    let (page_alloc, frames, cache, vfs_queue) = server.parts_mut();
+
+    match handle_pagefault(
+        *caller_endpoint,
+        region,
+        frames,
+        page_alloc,
+        VirBytes(region_vaddr.0 + page_offset.0),
+        *write,
+        table,
+        cache,
+        vfs_queue,
+    ) {
+        Ok(PagefaultAction::Suspended) => {
+            // Another FDIO was enqueued (repeated miss); the process stays
+            // suspended until the next VFS reply.
+            Ok(())
+        }
+        Ok(_) => {
+            // Fault resolved (cache hit linked the page, or CoW ran).
+            // Unblocking the faulting process (C: handle_memory_final →
+            // sys_vmctl(VMCTL_CLEAR_PAGEFAULT)) is transport-gated.
+            Ok(())
+        }
+        Err(_) => {
+            // C: handle_memory_final(state, r) with a negative errno —
+            // transport-gated reply.
+            Ok(())
         }
     }
 }
@@ -362,5 +477,115 @@ mod tests {
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert_eq!(slot.pfn, pfn);
+    }
+
+    fn make_file_region(fdref_id: u32, file_offset: u64) -> VirRegion {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x2000), VrFlags::empty());
+        region.def_memtype = Some(&MEM_TYPE_MAPPED_FILE);
+        region.param = crate::region::VrParam::File {
+            inited: true,
+            fdref_id: Some(fdref_id),
+            offset: file_offset,
+            clearend: 0,
+        };
+        region
+    }
+
+    #[test]
+    fn test_handle_pagefault_need_vfs_io_enqueues_fdio() {
+        use crate::page_cache::PageCache;
+        use crate::vfs_queue::{VfsRequestQueue, VfsRequestType};
+
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_file_region(fdref_id, 0x5000);
+
+        // C mappedfile_pagefault: cache miss → vfs_request(VMVFSREQ_FDIO,
+        // procfd, vmp, referenced_offset, VM_PAGE_SIZE, cb, ...) → SUSPEND.
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::Suspended);
+
+        let active = queue.test_active_request().expect("FDIO request active");
+        assert_eq!(active.request_type, VfsRequestType::FdIo);
+        assert_eq!(active.fd, 7);
+        assert_eq!(active.offset, 0x5000, "referenced_offset = file offset + page offset");
+        assert_eq!(active.length, PAGE_SIZE as u32);
+        assert_eq!(
+            active.callback.map(|f| f as usize),
+            Some(mappedfile_pf_cont as usize)
+        );
+        let VfsRequestState::FdIo { region_vaddr, page_offset, write, caller_endpoint } =
+            active.state.as_ref().unwrap()
+        else {
+            panic!("expected FdIo state");
+        };
+        assert_eq!(*region_vaddr, VirBytes(0x1000));
+        assert_eq!(*page_offset, VirBytes(0));
+        assert!(!write);
+        assert_eq!(*caller_endpoint, Endpoint(100));
+    }
+
+    #[test]
+    fn test_handle_pagefault_retry_cache_hit_no_fdio_loop() {
+        use crate::page_cache::PageCache;
+        use crate::vfs_queue::{VfsReply, VfsRequestQueue};
+
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_file_region(fdref_id, 0x5000);
+
+        // First fault: cache miss → FDIO request enqueued (page suspended).
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::Suspended);
+
+        // The VFS reply consumes the active FDIO request before the retry
+        // callback runs (dispatch_vfs_reply → handle_reply → callback).
+        let active_id = queue.active_req_id().unwrap();
+        let (callback, _reply, state) = queue.handle_reply(VfsReply {
+            req_id: active_id,
+            result: 0,
+            data_phys: None,
+            fd: 7,
+            dev: 1,
+            ino: 100,
+            size_pages: 1,
+        }).unwrap().expect("FDIO callback");
+        assert_eq!(callback as usize, mappedfile_pf_cont as usize);
+        assert!(matches!(state, VfsRequestState::FdIo { .. }));
+
+        // VFS reply path populates the page cache (C: actual_read_write_peek
+        // PEEKING → lmfs_get_block_ino + vm_map_cacheblock). The retry
+        // (handle_memory_continue → handle_memory_step(TRUE)) must now hit
+        // the cache and link the page instead of enqueueing another FDIO.
+        let cached_pfn = 5;
+        // C: VFS reply path populated the cache via vm_map_cacheblock
+        // (lmfs_get_block_ino PEEKING + vm_map_cacheblock); the retry
+        // lookup is by inode offset.
+        cache.addcache(1, 0x5000, Some(100), 0x5000, false, cached_pfn, &mut frames).unwrap();
+
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::Handled);
+        let slot = region.get_slot(VirBytes(0)).unwrap();
+        assert_eq!(slot.pfn, cached_pfn);
+        assert!(queue.is_empty(), "no second FDIO may be enqueued");
     }
 }

@@ -162,6 +162,14 @@ impl VfsRequestQueue {
     pub(crate) fn queued_count(&self) -> usize {
         self.queued.len()
     }
+
+    /// Test-only accessor: peek at the currently active request without
+    /// consuming it. Cross-module tests (cow_exec_pf) verify the FDIO
+    /// request fields (fd/offset/callback) enqueued by the pagefault path.
+    #[cfg(test)]
+    pub(crate) fn test_active_request(&self) -> Option<&VfsRequest> {
+        self.active.as_ref()
+    }
 }
 
 #[cfg(test)]

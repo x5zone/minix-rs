@@ -556,6 +556,7 @@ mod tests {
             fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
                 _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
                 _table: &crate::vmproc::VmProcTable, _alloc: &mut dyn crate::region::PfnAllocator,
+                _cache: &mut crate::page_cache::PageCache,
             ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
             fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
             fn ev_reference(&self, _frames: &mut PageFrames, _slot: crate::region::PageSlot,
@@ -602,6 +603,7 @@ mod tests {
             fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
                 _frames: &mut PageFrames, _offset: VirBytes, _write: bool,
                 _table: &crate::vmproc::VmProcTable, _alloc: &mut dyn crate::region::PfnAllocator,
+                _cache: &mut crate::page_cache::PageCache,
             ) -> Result<PagefaultResult, MemTypeError> { Ok(PagefaultResult::Handled) }
             fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
             fn ev_reference(&self, _frames: &mut PageFrames, _slot: crate::region::PageSlot,

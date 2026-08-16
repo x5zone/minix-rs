@@ -790,7 +790,7 @@ mod tests {
         // test must use it too (unique dev/ino avoids cross-test collisions;
         // the entry is fully deref'd to 0, leaving no residue).
         let table = crate::fdref::FdRefTable::get_global();
-        let id = table.create(7, 0xABCD, 0x1234, true);
+        let id = table.create(7, 0xABCD, 0x1234);
         table.ref_entry(id); // one region holds one reference
         assert_eq!(table.get(id).unwrap().refcount, 1);
 

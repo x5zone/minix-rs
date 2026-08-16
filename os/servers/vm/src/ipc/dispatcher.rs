@@ -36,7 +36,7 @@ use crate::alloc_page::VmPageAllocator;
 use crate::region::PageFrames;
 use crate::region::vir_region::{VirRegion, VrFlags, VrParam};
 use crate::memtype::MEM_TYPE_SHARED;
-use crate::page_cache::{PageCache, CacheKey};
+use crate::page_cache::{PageCache, VMC_NO_INODE, VMSF_ONCE};
 use crate::fork;
 use crate::brk;
 use crate::munmap;
@@ -360,10 +360,10 @@ impl MessageDispatcher {
             data_phys: None, // C doesn't pass data_phys in the reply message
             fd: request.fd as i32,
             dev: request.dev as u64,
-            ino: 0, // C passes ino via VMV_INO (m10_l1), but VmVfsReplyIn
-                     // doesn't have a separate ino field. The ino value is
-                     // only used by the mmap resume callback, which can
-                     // reconstruct it from the VfsRequestState.
+            // C passes ino via VMV_INO (m10_l1); the mmap resume callback
+            // needs it for fdref dedup (mmap_file_cont → mmap_file → fdref
+            // dedup_or_new matches on (dev, ino)).
+            ino: request.ino as u64,
             size_pages: request.size_pages as u64,
         };
 
@@ -421,9 +421,10 @@ impl MessageDispatcher {
         table: &VmProcTable,
         page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
+        vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
         request: VmVfsMmapIn,
     ) -> VmReply {
-        match mmap::handle_vfs_mmap(table, page_alloc, frames, &request) {
+        match mmap::handle_vfs_mmap(table, page_alloc, frames, vfs_queue, &request) {
             Ok(mmap::MmapResult::Complete(response)) => VmReply::VfsMmap(VmMmapOut { ret_addr: response.mapped_addr }),
             Ok(mmap::MmapResult::Suspended) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
@@ -448,63 +449,70 @@ impl MessageDispatcher {
     // -- cache (mapcache / setcache / forgetcache / clearcache) --
 
     /// Dispatch VM_MAPCACHEPAGE request.
-    /// Corresponds to Minix3 `do_mapcache()` (mem_cache.c:95).
-    /// Maps cached blocks into the caller's address space.
+    /// Corresponds to Minix3 `do_mapcache()` (mem_cache.c:95-193).
+    /// Maps cached blocks into the caller's (the FS's) address space.
     ///
-    /// # C semantics (mem_cache.c:95-193)
+    /// # C semantics
     ///
-    /// 1. Validate alignment of dev_off/ino_off → EFAULT.
+    /// 1. Validate alignment of `dev_off`/`ino_off` → EFAULT (mem_cache.c:99-101).
     /// 2. `vm_isokendpt(msg->m_source)` → get caller.
-    /// 3. `bytes < VM_PAGE_SIZE` → EINVAL.
+    /// 3. `bytes < VM_PAGE_SIZE` → EINVAL (mem_cache.c:102-103).
     /// 4. `map_page_region(caller, VM_MMAPBASE, VM_MMAPTOP, bytes,
-    ///    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)` → allocate new region.
-    /// 5. For each page offset:
-    ///    a. `find_cached_page_bydev(dev, dev_off+offset, ino, ino_off+offset, 1)`
-    ///       → if not found or VMSF_ONCE → unmap entire region → ENOENT.
-    ///    b. Set `vr->param.pb_cache = hb->page` (cached phys_block).
-    ///    c. `map_pf(caller, vr, offset, 1, ...)` → triggers cache_pagefault
-    ///       which links the page and clears pb_cache.
-    /// 6. Return `vr->vaddr` in reply.
+    ///    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)` → allocate a fresh
+    ///    cache-memtype region (mem_cache.c:128-134).
+    /// 5. Per page: `find_cached_page_bydev(dev, dev_off+offset, ino,
+    ///    ino_off+offset, 1)` — **always the bydev lookup**, with the ino
+    ///    info used for the lazy `update_inohash`. Miss or `VMSF_ONCE`
+    ///    entry → unmap the whole region → ENOENT (mem_cache.c:147-158).
+    ///    Hit → `vr->param.pb_cache = hb->page` + `map_pf(...)` which runs
+    ///    `cache_pagefault` to link the page (mem_cache.c:159-167).
+    /// 6. Reply `vr->vaddr` (mem_cache.c:169-171).
     ///
-    /// # Rust implementation
+    /// # Rust implementation notes
     ///
-    /// Instead of the indirect map_pf → cache_pagefault path, we directly
-    /// map each page with the cached PFN. This is equivalent because:
-    /// - cache_pagefault just does pb_link (map PFN) + clear pb_cache.
-    /// - We set PbCache param for consistency, then call map_page directly.
-    /// - On failure mid-way, we unmap the entire region (same as C).
+    /// - The lookup is by device key only (C's `find_cached_page_bydev`);
+    ///   a real ino in the request lazily updates the entry's inode index.
+    /// - Instead of the indirect `map_pf` → `cache_pagefault` indirection
+    ///   (which needs a page-table walk in C), the page is linked directly
+    ///   via `VirRegion::map_page` — same refcount effect (the mapping's
+    ///   reference on the cached frame), same observable result.
+    /// - `VMSF_ONCE` is checked on the **entry** (`CachedPageRef::once`),
+    ///   not on the request flags — C reads `hb->flags & VMSF_ONCE`
+    ///   (mem_cache.c:149) and never reads `m_vmmcp.flags` in mapcache.
     pub(crate) fn dispatch_mapcache(
         table: &VmProcTable,
         _page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
-        cache: &PageCache,
+        cache: &mut PageCache,
         caller: Endpoint,
         request: VmCacheIn,
     ) -> VmReply {
         const PAGE_SIZE: u64 = 4096;
 
-        // Step 1: Validate alignment (C: mem_cache.c:99-101).
+        // Step 1: alignment (C: mem_cache.c:99-101 → EFAULT).
         if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
-        // Step 2: Validate caller endpoint (C: vm_isokendpt).
+        // Step 2: bytes < VM_PAGE_SIZE → EINVAL (C: mem_cache.c:107).
+        // Ordering note: C checks vm_isokendpt first and panics on a bogus
+        // source; Rust validates the request before resolving the caller
+        // (fail-closed), so a malformed request is rejected even when the
+        // caller is unresolvable.
+        let bytes = request.pages as u64 * PAGE_SIZE;
+        if bytes < PAGE_SIZE {
+            return VmReply::Error(VmError::InvalidParam);
+        }
+
+        // Step 3: caller endpoint (C: vm_isokendpt, mem_cache.c:105-106).
         let caller_slot = match table.vm_isokendpt(caller) {
             Ok(slot) => slot,
             Err(_) => return VmReply::Error(VmError::InvalidProcess),
         };
 
-        // Step 3: bytes < VM_PAGE_SIZE → EINVAL (C: mem_cache.c:102-103).
-        let bytes = request.pages as u64 * PAGE_SIZE;
-        if bytes < PAGE_SIZE {
-            return VmReply::Error(VmError::InvalidProcess);
-        }
-
-        // Step 4: Allocate a new region in the caller's mmap range.
-        // C: map_page_region(caller, VM_MMAPBASE, VM_MMAPTOP, bytes,
-        //    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)
-        let mmap_base = VirBytes(0x0000_0001_0000_0000);
-        let mmap_top = VirBytes(0x0000_0200_0000_0000);
+        // Step 4: allocate a cache-memtype region in the caller's mmap range.
+        let mmap_base = VirBytes(crate::mmap::MMAP_BASE);
+        let mmap_top = VirBytes(crate::mmap::MMAP_TOP);
 
         let vaddr = {
             let proc = match table.get_active(caller_slot) {
@@ -524,50 +532,28 @@ impl MessageDispatcher {
             &crate::memtype::MEM_TYPE_CACHE,
         );
 
-        // Step 5: For each page, find cached page and map it.
-        // C: for(offset = 0; offset < bytes; offset += VM_PAGE_SIZE)
+        // Step 5: per page — bydev lookup, link the cached frame, roll back
+        // the whole region on miss / one-shot (C: mem_cache.c:136-168).
         for page_offset in (0..bytes).step_by(PAGE_SIZE as usize) {
             let cache_offset = request.dev_offset + page_offset;
             let cache_ino_offset = request.ino_offset + page_offset;
+            let ino = (request.ino != VMC_NO_INODE).then_some(request.ino);
 
-            // Step 5a: Find cached page (C: find_cached_page_bydev).
-            let cached_pfn = if request.ino != 0 {
-                cache.find_by_inode(request.dev, request.ino, cache_ino_offset)
-            } else {
-                cache.find_by_device(request.dev, cache_offset)
-            };
-
-            match cached_pfn {
-                Some(entry) => {
-                    // VMSF_ONCE check: C returns ENOENT if (hb->flags & VMSF_ONCE).
-                    // VMSF_ONCE = 0x01 in C. Our flags field maps directly.
-                    if request.flags & 0x01 != 0 {
-                        // Unmap the entire region on failure (C: map_unmap_region).
-                        // We haven't inserted the region yet, so just drop it.
-                        // Any pages already mapped in this region need unref.
-                        Self::unmap_region_pages(&mut region, frames);
-                        return VmReply::Error(VmError::NotFound);
-                    }
-                    // Step 5b+5c: Set PbCache param and map the page directly.
-                    // C: vr->param.pb_cache = hb->page; map_pf(...) → cache_pagefault
-                    // Rust: directly map the cached PFN into the region.
-                    region.param = VrParam::PbCache { pfn: entry.pfn };
-                    region.map_page(
-                        frames,
-                        VirBytes(page_offset),
-                        entry.pfn,
-                        &crate::memtype::MEM_TYPE_CACHE,
-                    );
+            let hit = cache.find_by_dev(request.dev, cache_offset, ino, cache_ino_offset, true);
+            match hit {
+                Some(entry) if !entry.once => {
+                    region.map_page(frames, VirBytes(page_offset), entry.pfn, &crate::memtype::MEM_TYPE_CACHE);
                 }
-                None => {
-                    // Cache miss → unmap entire region → ENOENT (C: mem_cache.c:155-157).
+                // Miss or one-shot entry → ENOENT (C: mem_cache.c:147-158).
+                _ => {
                     Self::unmap_region_pages(&mut region, frames);
                     return VmReply::Error(VmError::NotFound);
                 }
             }
         }
 
-        // Step 6: Insert the region into the caller's region map.
+        // Step 6: insert the region into the caller's map (C:
+        // map_page_region already registered it; Rust inserts at commit).
         {
             let mut proc = match table.get_active(caller_slot) {
                 Some(p) => p,
@@ -578,7 +564,7 @@ impl MessageDispatcher {
             }
         }
 
-        // Return the virtual address of the new region (C: msg->m_vmmcp_reply.addr = vr->vaddr).
+        // Reply with the mapped address (C: msg->m_vmmcp_reply.addr, mem_cache.c:170).
         VmReply::MapCache { addr: vaddr }
     }
 
@@ -590,31 +576,37 @@ impl MessageDispatcher {
         for i in 0..num_pages {
             let offset = VirBytes(i as u64 * PS);
             if let Some((_pfn, _memtype)) = region.unmap_page(frames, offset) {
-                // Page was mapped and refcount decremented.
-                // If refcount hit 0 and not cached, caller should free the PFN.
-                // For mapcache failure cleanup, the cached PFN was only
-                // temporarily referenced — the cache still owns it.
+                // Page was mapped and refcount decremented. For mapcache
+                // failure cleanup, the cached PFN was only temporarily
+                // referenced — the cache still owns it (IN_CACHE set, so
+                // unmap_page never asks to free it).
             }
         }
     }
 
     /// Dispatch VM_SETCACHEPAGE request.
-    /// Corresponds to Minix3 `do_setcache()` (mem_cache.c:196).
-    /// Registers anonymous memory pages as cache blocks.
+    /// Corresponds to Minix3 `do_setcache()` (mem_cache.c:196-275).
+    /// Registers anonymous memory pages (owned by the calling FS) as cache
+    /// blocks.
     ///
-    /// # C semantics (mem_cache.c:196-275)
+    /// # C semantics (per page)
     ///
-    /// For each page in the caller's `block` address range:
-    /// 1. Look up the page in the caller's region map.
-    /// 2. If a cache entry already exists for this (dev, offset):
-    ///    - Same physical page → skip (already cached).
-    ///    - Different page or VMSF_ONCE → remove old entry (obsolete).
-    /// 3. Verify the page is anonymous memory (not file-mapped).
-    /// 4. Verify refcount == 1 (exclusive ownership).
-    /// 5. Change the page's memtype to cache.
-    /// 6. Insert into PageCache with the device/inode key.
+    /// 1. `map_lookup(caller, v, &phys_region)` (mem_cache.c:221-232).
+    /// 2. `find_cached_page_bydev(dev, dev_off+offset, ino, ino_off+offset,
+    ///    1)` — bydev lookup with lazy ino update (mem_cache.c:235-239).
+    /// 3. Same physical page && entry NOT `VMSF_ONCE` → continue (already
+    ///    cached; inode info might have changed, which is fine —
+    ///    mem_cache.c:240-247). Otherwise the previous entry is obsolete →
+    ///    `rmcache` (mem_cache.c:247-255).
+    /// 4. Verify the page is anon/anon-contig memory → EFAULT
+    ///    (mem_cache.c:257-261).
+    /// 5. Verify `refcount == 1` (exclusive ownership) → EFAULT
+    ///    (mem_cache.c:263-266).
+    /// 6. Switch the page's memtype to cache (mem_cache.c:268) and
+    ///    `addcache` (mem_cache.c:270-273).
     pub(crate) fn dispatch_setcache(
         table: &VmProcTable,
+        page_alloc: &mut VmPageAllocator,
         frames: &mut PageFrames,
         cache: &mut PageCache,
         caller: Endpoint,
@@ -622,41 +614,28 @@ impl MessageDispatcher {
     ) -> VmReply {
         const PAGE_SIZE: u64 = 4096;
 
-        // Input validation (aligned with C do_setcache:200-205):
-        // 1. Reject pages=0 (no-op request — C: bytes < VM_PAGE_SIZE → EINVAL).
+        // Input validation (C: mem_cache.c:198-207): bytes < PAGE_SIZE →
+        // EINVAL; unaligned dev_off/ino_off → EFAULT.
         if request.pages == 0 {
-            return VmReply::Error(VmError::InvalidAddress);
+            return VmReply::Error(VmError::InvalidParam);
         }
-        // 2. Validate dev/ino are consistent: at least one of (dev, ino)
-        //    must be non-zero, matching C's invariant.
-        if request.dev == 0 && request.ino == 0 {
-            return VmReply::Error(VmError::InvalidAddress);
-        }
-        // 3. Reject dev_offset > u32::MAX (sanity bound).
-        if request.dev_offset > u32::MAX as u64 {
-            return VmReply::Error(VmError::InvalidAddress);
-        }
-        // 4. Alignment check: C returns EFAULT for unaligned dev_off/ino_off.
         if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
-        // Step 1: Resolve caller endpoint.
-        // C: vm_isokendpt(msg->m_source, &n)
+        // Caller endpoint (C: vm_isokendpt, mem_cache.c:209-210).
         let caller_slot = match table.vm_isokendpt(caller) {
             Ok(slot) => slot,
             Err(_) => return VmReply::Error(VmError::InvalidProcess),
         };
 
         let bytes = request.pages as u64 * PAGE_SIZE;
+        let ino = (request.ino != VMC_NO_INODE).then_some(request.ino);
 
-        // Step 2: Iterate over each page in the caller's block range.
-        // C: for(offset = 0; offset < bytes; offset += VM_PAGE_SIZE)
         for page_offset in (0..bytes).step_by(PAGE_SIZE as usize) {
             let vaddr = VirBytes(request.block + page_offset);
 
-            // Step 2a: Look up the page in caller's region map.
-            // C: map_lookup(caller, v, &phys_region)
+            // Step 1: map_lookup (C: mem_cache.c:221-232).
             let mut proc = match table.get_active(caller_slot) {
                 Some(p) => p,
                 None => return VmReply::Error(VmError::InvalidProcess),
@@ -665,77 +644,60 @@ impl MessageDispatcher {
                 Some(r) => r,
                 None => return VmReply::Error(VmError::InvalidAddress),
             };
-
-            // Compute the offset within this region.
             let region_offset = VirBytes(vaddr.0 - region.vaddr.0);
-
-            // Get the physical page slot.
             let slot = match region.get_slot_mut(region_offset) {
                 Some(s) => s,
                 None => return VmReply::Error(VmError::InvalidAddress),
             };
             let pfn = slot.pfn;
 
-            // Step 2b: Check if a cache entry already exists.
-            // C: find_cached_page_bydev(dev, dev_off + offset, ino, ino_off + offset, 1)
             let cache_offset = request.dev_offset + page_offset;
             let cache_ino_offset = request.ino_offset + page_offset;
 
-            let existing_entry = if request.ino != 0 {
-                cache.find_by_inode(request.dev, request.ino, cache_ino_offset)
-            } else {
-                cache.find_by_device(request.dev, cache_offset)
-            };
-
-            if let Some(entry) = existing_entry {
-                // Same physical page → already cached, skip.
-                // C: if(hb->page != phys_region->ph || (hb->flags & VMSF_ONCE))
-                if entry.pfn == pfn && request.flags == 0 {
-                    // Block was already there, inode info might've changed which is fine.
-                    // C: continue
+            // Steps 2-3: existing entry handling (C: mem_cache.c:235-255).
+            if let Some(entry) = cache.find_by_dev(request.dev, cache_offset, ino, cache_ino_offset, true) {
+                if entry.pfn == pfn && !entry.once {
+                    // Block was already there; inode info might've changed,
+                    // which is fine (C: continue, mem_cache.c:242-246).
                     continue;
                 }
-                // Different page or VMSF_ONCE → remove old entry (obsolete).
-                // C: rmcache(hb)
-                let key = if request.ino != 0 {
-                    CacheKey::ByInode { dev: request.dev, ino: request.ino, offset: cache_ino_offset }
-                } else {
-                    CacheKey::ByDevice { dev: request.dev, offset: cache_offset }
-                };
-                cache.remove(&key, frames);
+                // Previous entry obsolete (different page, or one-shot) →
+                // drop it and re-register (C: rmcache, mem_cache.c:247-255).
+                cache.rmcache(request.dev, cache_offset, frames, page_alloc);
             }
 
-            // Step 2c: Verify the page is anonymous memory.
-            // C: if(phys_region->memtype != &mem_type_anon &&
-            //        phys_region->memtype != &mem_type_anon_contig) → EFAULT
-            let is_anon = slot.memtype.map_or(false, |mt| {
-                mt.name() == "anonymous" || mt.name() == "contiguous-anonymous"
+            // Step 4: must be anonymous memory (C: mem_cache.c:257-261 —
+            // `phys_region->memtype != &mem_type_anon && !=
+            // &mem_type_anon_contig`). Compared by static identity, not by
+            // name string.
+            let is_anon = slot.memtype.is_some_and(|mt| {
+                core::ptr::eq(mt, &crate::memtype::MEM_TYPE_ANON as &dyn crate::memtype::MemType)
+                    || core::ptr::eq(mt, &crate::memtype::MEM_TYPE_CONTIG_ANON as &dyn crate::memtype::MemType)
             });
             if !is_anon {
                 return VmReply::Error(VmError::InvalidAddress);
             }
 
-            // Step 2d: Verify refcount == 1 (exclusive ownership).
-            // C: if(phys_region->ph->refcount != 1) → EFAULT
-            let refcount = frames.get(pfn).map_or(0, |s| s.refcount);
+            // Step 5: exclusive ownership (C: refcount != 1 → EFAULT,
+            // mem_cache.c:263-266).
+            let refcount = frames.get(pfn).map_or(0, |s| s.refcount());
             if refcount != 1 {
                 return VmReply::Error(VmError::InvalidAddress);
             }
 
-            // Step 2e: Change the page's memtype to cache.
-            // C: phys_region->memtype = &mem_type_cache
+            // Step 6: switch memtype + register (C: mem_cache.c:268-273).
             slot.memtype = Some(&crate::memtype::MEM_TYPE_CACHE);
-
-            // Step 2f: Insert into PageCache.
-            // C: addcache(dev, dev_off + offset, ino, ino_off + offset, flags, phys_region->ph)
-            // This increments the PFN's refcount (cache now also references it)
-            // and sets the IN_CACHE flag.
-            let key = if request.ino != 0 {
-                CacheKey::ByInode { dev: request.dev, ino: request.ino, offset: cache_ino_offset }
-            } else {
-                CacheKey::ByDevice { dev: request.dev, offset: cache_offset }
-            };
-            cache.insert(key, pfn, frames);
+            if let Err(_) = cache.addcache(
+                request.dev,
+                cache_offset,
+                ino,
+                cache_ino_offset,
+                request.flags & VMSF_ONCE != 0,
+                pfn,
+                frames,
+            ) {
+                return VmReply::Error(VmError::InvalidParam);
+            }
         }
 
         VmReply::Ok
@@ -743,45 +705,45 @@ impl MessageDispatcher {
 
     /// Dispatch VM_FORGETCACHEPAGE request.
     /// Corresponds to Minix3 `do_forgetcache()` (mem_cache.c:283-307).
-    /// Invalidates cached pages for a given device offset range.
+    /// Invalidates cached pages for a device offset range.
     ///
-    /// # Input validation (C-semantic aligned)
-    ///
-    /// 1. `pages == 0` → `InvalidAddress` (C: `bytes < VM_PAGE_SIZE`
-    ///    returns `EINVAL`; we use `InvalidAddress` for consistency with
-    ///    `dispatch_mapcache`'s fail-closed pattern).
-    /// 2. `dev_offset % PAGE_SIZE != 0` → `InvalidAddress` (C:
-    ///    `dev_off % PAGE_SIZE` returns `EFAULT`).
+    /// C validates `bytes < VM_PAGE_SIZE` → EINVAL and unaligned `dev_off`
+    /// → EFAULT (mem_cache.c:290-296), then removes each page by device key
+    /// (mem_cache.c:299-305) without touching the LRU (touchlru=0 — the
+    /// entry is about to be removed anyway).
     pub(crate) fn dispatch_forgetcache(
         cache: &mut PageCache,
         frames: &mut PageFrames,
+        page_alloc: &mut VmPageAllocator,
         request: VmCacheIn,
     ) -> VmReply {
+        const PAGE_SIZE: u64 = 4096;
+
         if request.pages == 0 {
+            return VmReply::Error(VmError::InvalidParam);
+        }
+        if request.dev_offset % PAGE_SIZE != 0 {
             return VmReply::Error(VmError::InvalidAddress);
         }
-        if request.dev_offset % 4096 != 0 {
-            return VmReply::Error(VmError::InvalidAddress);
-        }
-        let bytes = request.pages as u64 * 4096;
-        for offset in (0..bytes).step_by(4096) {
-            cache.remove(
-                &CacheKey::ByDevice { dev: request.dev, offset: request.dev_offset + offset },
-                frames,
-            );
+
+        let bytes = request.pages as u64 * PAGE_SIZE;
+        for offset in (0..bytes).step_by(PAGE_SIZE as usize) {
+            cache.rmcache(request.dev, request.dev_offset + offset, frames, page_alloc);
         }
         VmReply::Ok
     }
 
     /// Dispatch VM_CLEARCACHE request.
-    /// Corresponds to Minix3 `do_clearcache()` (mem_cache.c:315).
-    /// Invalidates all cached pages for a given device.
+    /// Corresponds to Minix3 `do_clearcache()` (mem_cache.c:315-322).
+    /// Invalidates all cached pages of a device (FS unmount).
+    /// C performs no input validation beyond the device field itself.
     pub(crate) fn dispatch_clearcache(
         cache: &mut PageCache,
         frames: &mut PageFrames,
+        page_alloc: &mut VmPageAllocator,
         request: VmCacheIn,
     ) -> VmReply {
-        cache.clear_by_dev(request.dev, frames);
+        cache.clear_by_dev(request.dev, frames, page_alloc);
         VmReply::Ok
     }
 
@@ -923,7 +885,36 @@ impl MessageDispatcher {
             Err(e) => VmReply::Error(e.into()),
         }
     }
+}
 
+/// Decode a VM_RS_MEMCTL sub-request code into the typed request.
+///
+/// C: `do_rs_memctl` switch on `m->VM_RS_CTL_REQ` (rs.c:366-389); the
+/// default arm returns EINVAL (rs.c:386-388). (25-P0-1: unknown codes
+/// previously mapped to `VmError::InvalidAddress` → EFAULT.)
+fn decode_rs_memctl_request(
+    req_code: i32,
+    addr: u64,
+    len: i32,
+) -> Result<rs::RsMemctlRequest, VmError> {
+    match req_code {
+        0 => Ok(rs::RsMemctlRequest::Pin),
+        1 => Ok(rs::RsMemctlRequest::MakeVmInstance),
+        2 => Ok(rs::RsMemctlRequest::HeapPrealloc {
+            addr: VirBytes(addr),
+            len: len as usize,
+        }),
+        3 => Ok(rs::RsMemctlRequest::MapPrealloc {
+            addr: VirBytes(addr),
+            len: len as usize,
+        }),
+        4 => Ok(rs::RsMemctlRequest::GetPreallocMap),
+        // C: rs.c:386-388 — do_rs_memctl default arm returns EINVAL.
+        _ => Err(VmError::InvalidParam),
+    }
+}
+
+impl MessageDispatcher {
     // -- get_phys --
     pub(crate) fn dispatch_get_phys(
         table: &VmProcTable,
@@ -1059,15 +1050,15 @@ impl MessageDispatcher {
             _c if _c == VM_WILLEXIT as usize - vm_rq_base =>
                 Self::dispatch_willexit(table, VmWillexitIn::decode(m1)).into(),
             _c if _c == VM_VFS_MMAP as usize - vm_rq_base =>
-                Self::dispatch_vfs_mmap(table, page_alloc, frames, VmVfsMmapIn::decode_message(msg)).into(),
+                Self::dispatch_vfs_mmap(table, page_alloc, frames, vfs_queue, VmVfsMmapIn::decode_message(msg)).into(),
             _c if _c == VM_MAPCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_mapcache(table, page_alloc, frames, cache, msg.m_source, VmCacheIn::decode(m1)).into(),
+                Self::dispatch_mapcache(table, page_alloc, frames, cache, msg.m_source, VmCacheIn::decode_message(msg)).into(),
             _c if _c == VM_SETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_setcache(table, frames, cache, msg.m_source, VmCacheIn::decode(m1)).into(),
+                Self::dispatch_setcache(table, page_alloc, frames, cache, msg.m_source, VmCacheIn::decode_message(msg)).into(),
             _c if _c == VM_FORGETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_forgetcache(cache, frames, VmCacheIn::decode(m1)).into(),
+                Self::dispatch_forgetcache(cache, frames, page_alloc, VmCacheIn::decode_message(msg)).into(),
             _c if _c == VM_CLEARCACHE as usize - vm_rq_base =>
-                Self::dispatch_clearcache(cache, frames, VmCacheIn::decode(m1)).into(),
+                Self::dispatch_clearcache(cache, frames, page_alloc, VmCacheIn::decode_message(msg)).into(),
             // RS calls — use m_lsys_vm_update (M2 format: src, dst, flags)
             // C: com.h VM_RS_NR=m2_i1, VM_RS_BUF=m2_l1, VM_RS_SYS=m2_i2
             _c if _c == VM_RS_SET_PRIV as usize - vm_rq_base => {
@@ -1100,19 +1091,13 @@ impl MessageDispatcher {
             _c if _c == VM_RS_MEMCTL as usize - vm_rq_base => {
                 let target = Endpoint(m1.m1i1);
                 let req_code = m1.m1i2;
-                let request = match req_code {
-                    0 => rs::RsMemctlRequest::Pin,
-                    1 => rs::RsMemctlRequest::MakeVmInstance,
-                    2 => rs::RsMemctlRequest::HeapPrealloc {
-                        addr: VirBytes(m2.m2l1 as u64),
-                        len: m2.m2i3 as usize,
-                    },
-                    3 => rs::RsMemctlRequest::MapPrealloc {
-                        addr: VirBytes(m2.m2l1 as u64),
-                        len: m2.m2i3 as usize,
-                    },
-                    4 => rs::RsMemctlRequest::GetPreallocMap,
-                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidAddress)),
+                let request = match decode_rs_memctl_request(
+                    m1.m1i2,
+                    m2.m2l1 as u64,
+                    m2.m2i3,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => return DispatchResult::from_reply(VmReply::Error(e)),
                 };
                 Self::dispatch_rs_memctl(table, page_alloc, frames, vfs_queue, target, request).into()
             }
@@ -1183,12 +1168,11 @@ impl MessageDispatcher {
                 let caller = msg.m_source;
                 Self::dispatch_procctl(table, page_alloc, frames, caller, request).into()
             }
-            // VM_VFS_REPLY: endpoint/result/reqid
-            // from m1i1/m1i2/m1i3; dev/fd share m1p1 (low 4 bytes = dev,
-            // full 8 bytes = fd); size/size_pages from m1p2/m1p3.
-            // C: do_vfs_reply only accesses vfs_queue, not page_alloc/frames.
+            // VM_VFS_REPLY: decodes the m10 payload (MessVmVfsReply) via
+            // decode_message — C do_vfs_reply (vfs.c:109) only accesses
+            // vfs_queue, not page_alloc/frames.
             _c if _c == VM_VFS_REPLY as usize - vm_rq_base => {
-                let request = VmVfsReplyIn::decode(m1);
+                let request = VmVfsReplyIn::decode_message(msg);
                 Self::dispatch_vfs_reply(vfs_queue, request).into()
             }
             // C has: VM_ADDDMA, VM_DELDMA, VM_GETDMA.
@@ -1305,14 +1289,18 @@ impl From<rs::RsError> for VmError {
             // prints "sys procs don't share!" and returns EINVAL.
             rs::RsError::SysProcNoMask => VmError::InvalidProcess,
             rs::RsError::PinFailed => VmError::NotImplemented,
-            rs::RsError::PrepareNotImplemented => VmError::NotImplemented,
+            // C: real_brk() returns ENOMEM on failure (break.c:63-68).
+            rs::RsError::HeapExtendFailed => VmError::OutOfMemory,
             rs::RsError::PreallocMapConflict => VmError::NotImplemented,
             rs::RsError::UpdateNotImplemented => VmError::NotImplemented,
-            rs::RsError::InvalidRequest => VmError::InvalidAddress,
+            // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.
+            rs::RsError::InvalidRequest => VmError::InvalidParam,
             rs::RsError::MakeVmFailed => VmError::PermissionDenied,
             rs::RsError::HeapPreallocFailed => VmError::NotImplemented,
             rs::RsError::MapPreallocFailed => VmError::NotImplemented,
-            rs::RsError::InvalidLength => VmError::InvalidAddress,
+            // C: rs.c:285-288 / rs.c:305-308 — `rs_memctl_*_prealloc` return
+            // EINVAL when `*len <= 0`.
+            rs::RsError::InvalidLength => VmError::InvalidParam,
         }
     }
 }
@@ -1737,8 +1725,8 @@ mod tests {
             result: 0,
             reqid: 0,
             dev: 0,
+            ino: 0,
             fd: 0,
-            size: 0,
             size_pages: 0,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
@@ -1758,8 +1746,8 @@ mod tests {
             result: 0,
             reqid: 42,
             dev: 100,
+            ino: 7,
             fd: 3,
-            size: 0x10000,
             size_pages: 16,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
@@ -1778,8 +1766,8 @@ mod tests {
             result: 0,
             reqid: -1,
             dev: 0,
+            ino: 0,
             fd: 0,
-            size: 0,
             size_pages: 0,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(&mut vfs_queue, req);
@@ -1794,6 +1782,7 @@ mod tests {
     fn test_dispatch_forgetcache_rejects_zero_pages() {
         let mut cache = _default_cache();
         let mut frames = default_frames();
+        let mut page_alloc = default_vm();
         let req = VmCacheIn {
             dev: 1,
             dev_offset: 0,
@@ -1803,9 +1792,10 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
-            VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_forgetcache(pages=0) must return InvalidAddress, got {:?}", other),
+        // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:292-294).
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, &mut page_alloc, req) {
+            VmReply::Error(VmError::InvalidParam) => {}
+            other => panic!("dispatch_forgetcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
     }
 
@@ -1822,7 +1812,8 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
+        let mut page_alloc = default_vm();
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, &mut page_alloc, req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_forgetcache(unaligned offset) must return InvalidAddress, got {:?}", other),
         }
@@ -1841,7 +1832,8 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, req) {
+        let mut page_alloc = default_vm();
+        match MessageDispatcher::dispatch_forgetcache(&mut cache, &mut frames, &mut page_alloc, req) {
             VmReply::Ok => {}
             other => panic!("dispatch_forgetcache(valid) must return Ok, got {:?}", other),
         }
@@ -1863,14 +1855,20 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
-            VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_setcache(pages=0) must return InvalidAddress, got {:?}", other),
+        let mut page_alloc = default_vm();
+        // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:204-205).
+        match MessageDispatcher::dispatch_setcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidParam) => {}
+            other => panic!("dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
     }
 
     #[test]
-    fn test_dispatch_setcache_rejects_zero_dev_and_ino() {
+    fn test_dispatch_setcache_fails_closed_without_valid_caller() {
+        // The fresh global process table has no active processes, so any
+        // setcache fails fail-closed at the endpoint check (C: panic
+        // "bogus source" → Rust InvalidProcess). The NO_DEV guard inside
+        // addcache is covered by page_cache::tests::test_addcache_rejects_no_device.
         let table = default_table();
         let mut frames = default_frames();
         let mut cache = _default_cache();
@@ -1883,9 +1881,10 @@ mod tests {
             flags: 0,
             block: 0x1000,
         };
-        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
-            VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_setcache(dev=0,ino=0) must return InvalidAddress, got {:?}", other),
+        let mut page_alloc = default_vm();
+        match MessageDispatcher::dispatch_setcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidProcess) => {}
+            other => panic!("dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}", other),
         }
     }
 
@@ -1903,7 +1902,8 @@ mod tests {
             flags: 0,
             block: 0x1000,
         };
-        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(1), req) {
+        let mut page_alloc = default_vm();
+        match MessageDispatcher::dispatch_setcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -1924,7 +1924,8 @@ mod tests {
             block: 0x1000,
         };
         // Endpoint(999) is not in the process table
-        match MessageDispatcher::dispatch_setcache(table, &mut frames, &mut cache, Endpoint(999), req) {
+        let mut page_alloc = default_vm();
+        match MessageDispatcher::dispatch_setcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -1947,7 +1948,8 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(1), req) {
+        let mut cache = _default_cache();
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -1968,9 +1970,11 @@ mod tests {
             flags: 0,
             block: 0,
         };
-        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(1), req) {
-            VmReply::Error(VmError::InvalidProcess) => {} // EINVAL → InvalidProcess
-            other => panic!("dispatch_mapcache(pages=0) must return InvalidProcess(EINVAL), got {:?}", other),
+        let mut cache = _default_cache();
+        // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:107).
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(1), req) {
+            VmReply::Error(VmError::InvalidParam) => {}
+            other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
     }
 
@@ -1990,7 +1994,8 @@ mod tests {
             block: 0,
         };
         // Endpoint(999) is not in the process table
-        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(999), req) {
+        let mut cache = _default_cache();
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2014,9 +2019,48 @@ mod tests {
         // Caller endpoint doesn't matter for cache miss path —
         // but we need a valid endpoint to get past vm_isokendpt.
         // Endpoint(0) is VM itself, which should be in the table.
-        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &cache, Endpoint(0), req) {
+        let mut cache = _default_cache();
+        match MessageDispatcher::dispatch_mapcache(table, &mut page_alloc, &mut frames, &mut cache, Endpoint(0), req) {
             VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
             other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
         }
+    }
+
+    // ── VM_RS_MEMCTL sub-request decode (25-P0-1 regression) ─────
+
+    #[test]
+    fn test_decode_rs_memctl_unknown_req_einval() {
+        // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.
+        // 25-P0-1: unknown sub-request previously mapped to
+        // `VmError::InvalidAddress` (EFAULT); must be EINVAL.
+        let err = decode_rs_memctl_request(99, 0, 0).unwrap_err();
+        assert_eq!(err, VmError::InvalidParam);
+        assert_eq!(err.to_errno(), minix_types::EINVAL);
+    }
+
+    #[test]
+    fn test_decode_rs_memctl_all_valid_codes() {
+        // C: com.h:741-745 — VM_RS_MEM_PIN/MAKE_VM/HEAP_PREALLOC/
+        // MAP_PREALLOC/GET_PREALLOC_MAP = 0..4.
+        assert!(matches!(
+            decode_rs_memctl_request(0, 0, 0),
+            Ok(rs::RsMemctlRequest::Pin)
+        ));
+        assert!(matches!(
+            decode_rs_memctl_request(1, 0, 0),
+            Ok(rs::RsMemctlRequest::MakeVmInstance)
+        ));
+        assert!(matches!(
+            decode_rs_memctl_request(2, 0x1000, 0x2000),
+            Ok(rs::RsMemctlRequest::HeapPrealloc { addr: VirBytes(0x1000), len: 0x2000 })
+        ));
+        assert!(matches!(
+            decode_rs_memctl_request(3, 0x1000, 0x2000),
+            Ok(rs::RsMemctlRequest::MapPrealloc { addr: VirBytes(0x1000), len: 0x2000 })
+        ));
+        assert!(matches!(
+            decode_rs_memctl_request(4, 0, 0),
+            Ok(rs::RsMemctlRequest::GetPreallocMap)
+        ));
     }
 }

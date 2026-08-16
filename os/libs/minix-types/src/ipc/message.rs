@@ -145,6 +145,16 @@ pub union MessageUnion {
     /// Process-control payload (VFS/RS → VM). C: `message.m_m9` for
     /// VM_PROCCTL — `mess_9` layout (ipc.h:77-83, com.h:753-757).
     pub m_lc_vm_procctl: MessLcVmProcctl,
+    /// VFS call completion payload (VFS → VM). C: `message.m_m10` for
+    /// VM_VFS_REPLY — `mess_10` layout (ipc.h:86-92, com.h:708-714).
+    pub m_vm_vfs_reply: MessVmVfsReply,
+    /// Cache-block request payload (VFS → VM). C: `message.m_m2` for
+    /// VM_MAPCACHEPAGE / VM_SETCACHEPAGE / VM_FORGETCACHEPAGE /
+    /// VM_CLEARCACHE — `mess_vmmcp` layout (ipc.h:2383-2393).
+    pub m_vmmcp: MessVmmcp,
+    /// Cache-block map reply payload (VM → VFS) for VM_MAPCACHEPAGE.
+    /// C: `message.m_m2` — `mess_vmmcp_reply` layout (ipc.h:2396-2400).
+    pub m_vmmcp_reply: MessVmmcpReply,
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
     /// C: `mess_notify m_notify` — ipc.h:2598
     pub m_notify: crate::ipc::notify::MessNotify,
@@ -1845,6 +1855,165 @@ impl Default for MessLcVmProcctl {
             flags: 0,
             shorts: [0; 4],
             _padding: [0; 12],
+        }
+    }
+}
+
+/// VFS call completion payload (VFS → VM) for `VM_VFS_REPLY`.
+///
+/// C: `message.m_m10` — `mess_10 { uint64_t m10ull1; int m10i1..m10i4;
+/// long m10l1..m10l3; uint8_t padding[20]; }`
+/// (minix3/minix/include/minix/ipc.h:86-92). The `VMV_*` field macros
+/// alias these members (minix3/minix/include/minix/com.h:708-714).
+///
+/// Wire layout follows the 32-bit C sender (`do_vm_call`, vfs/misc.c:383-473):
+/// on i386 `long` is 4 bytes, so `VMV_ENDPOINT` is at payload offset 8,
+/// `VMV_RESULT` at 12, `VMV_REQID` at 16, `VMV_DEV` at 20, `VMV_INO` at 24,
+/// `VMV_FD` at 28, `VMV_SIZE_PAGES` at 32. The 64-bit Rust receiver reads
+/// the fields from the same offsets.
+///
+/// Do NOT decode VM_VFS_REPLY from `MessageM1` — same wire-format family as
+/// 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode read the m10
+/// payload at mess_1 offsets, shifting every field and mapping `reqid` to
+/// the real `VMV_ENDPOINT`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessVmVfsReply {
+    /// C: `mess_10.m10ull1` (payload offset 0) — unused by VM_VFS_REPLY.
+    pub ull1: u64,
+    /// Endpoint that completed the call. C: `VMV_ENDPOINT` = `m10_i1`
+    /// (payload offset 8)
+    pub endpoint: i32,
+    /// Result of the VFS call. C: `VMV_RESULT` = `m10_i2` (payload offset 12)
+    pub result: i32,
+    /// Request id (matches `VFS_VMCALL_REQID`). C: `VMV_REQID` = `m10_i3`
+    /// (payload offset 16)
+    pub reqid: i32,
+    /// Device number. C: `VMV_DEV` = `m10_i4` (payload offset 20)
+    pub dev: i32,
+    /// Inode number. C: `VMV_INO` = `m10_l1` (payload offset 24)
+    pub ino: u32,
+    /// File descriptor. C: `VMV_FD` = `m10_l2` (payload offset 28)
+    pub fd: u32,
+    /// File size in pages. C: `VMV_SIZE_PAGES` = `m10_l3` (payload offset 32)
+    pub size_pages: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 20],
+}
+
+impl Default for MessVmVfsReply {
+    fn default() -> Self {
+        Self {
+            ull1: 0,
+            endpoint: 0,
+            result: 0,
+            reqid: 0,
+            dev: 0,
+            ino: 0,
+            fd: 0,
+            size_pages: 0,
+            _padding: [0; 20],
+        }
+    }
+}
+
+/// Cache-block request payload (VFS → VM) for `VM_MAPCACHEPAGE` /
+/// `VM_SETCACHEPAGE` / `VM_FORGETCACHEPAGE` / `VM_CLEARCACHE`.
+///
+/// C: `message.m_m2` — `mess_vmmcp` (minix3/minix/include/minix/ipc.h:2383-2393):
+/// ```c
+/// typedef struct {
+///     dev_t dev;          /* 64-bit */
+///     off_t dev_offset;   /* 64-bit */
+///     off_t ino_offset;   /* 64-bit */
+///     ino_t ino;          /* 64-bit */
+///     void *block;        /* 32-bit on i386 */
+///     u32_t *flags_ptr;   /* 32-bit on i386 */
+///     u8_t pages;
+///     u8_t flags;
+///     uint8_t padding[12];
+/// } mess_vmmcp;
+/// ```
+/// Wire layout follows the 32-bit C sender (`vm_cachecall`, libsys/vm_cache.c:8-43):
+/// `dev` @0 (u64), `dev_offset` @8 (i64), `ino_offset` @16 (i64), `ino` @24
+/// (u64), `block` @32 (u32), `flags_ptr` @36 (u32), `pages` @40 (u8),
+/// `flags` @41 (u8), padding @42..56. The 64-bit Rust receiver reads the
+/// same offsets.
+///
+/// Do NOT decode cache requests from `MessageM1` — same wire-format family
+/// as 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
+/// read `dev` from `m1p1` @16 and hardcoded `ino`/`ino_offset`/`block` to 0).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessVmmcp {
+    /// Device number. C: `mess_vmmcp.dev` (payload offset 0)
+    pub dev: u64,
+    /// Offset within the device. C: `mess_vmmcp.dev_offset` (payload offset 8)
+    pub dev_offset: i64,
+    /// Offset within the inode. C: `mess_vmmcp.ino_offset` (payload offset 16)
+    pub ino_offset: i64,
+    /// Inode number (`VMC_NO_INODE` = 0 for raw device blocks).
+    /// C: `mess_vmmcp.ino` (payload offset 24)
+    pub ino: u64,
+    /// User-space block address (setcache only). C: `mess_vmmcp.block`
+    /// (payload offset 32, 32-bit pointer on i386)
+    pub block: u32,
+    /// Flags pointer (unused by VM handlers). C: `mess_vmmcp.flags_ptr`
+    /// (payload offset 36, 32-bit pointer on i386)
+    pub flags_ptr: u32,
+    /// Number of pages. C: `mess_vmmcp.pages` (payload offset 40)
+    pub pages: u8,
+    /// Flags (`VMSF_ONCE`). C: `mess_vmmcp.flags` (payload offset 41)
+    pub flags: u8,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 14],
+}
+
+impl Default for MessVmmcp {
+    fn default() -> Self {
+        Self {
+            dev: 0,
+            dev_offset: 0,
+            ino_offset: 0,
+            ino: 0,
+            block: 0,
+            flags_ptr: 0,
+            pages: 0,
+            flags: 0,
+            _padding: [0; 14],
+        }
+    }
+}
+
+/// Cache-block map reply payload (VM → VFS) for `VM_MAPCACHEPAGE`.
+///
+/// C: `message.m_m2` — `mess_vmmcp_reply` (ipc.h:2396-2400):
+/// ```c
+/// typedef struct {
+///     void *addr;          /* 32-bit on i386 */
+///     u8_t flags;
+///     uint8_t padding[51];
+/// } mess_vmmcp_reply;
+/// ```
+/// Wire layout: `addr` @0 (u32), `flags` @4 (u8), padding @5..56.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessVmmcpReply {
+    /// Mapped virtual address of the cache block in the caller's address
+    /// space. C: `mess_vmmcp_reply.addr` (payload offset 0, 32-bit pointer)
+    pub addr: u32,
+    /// Reserved reply flags. C: `mess_vmmcp_reply.flags` (payload offset 4)
+    pub flags: u8,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 51],
+}
+
+impl Default for MessVmmcpReply {
+    fn default() -> Self {
+        Self {
+            addr: 0,
+            flags: 0,
+            _padding: [0; 51],
         }
     }
 }

@@ -76,7 +76,7 @@
 |---|------|---------|------|-----------|------|
 | M-032 | `NUMBER_PHYSICAL_PAGES` | alloc.c:33 | 物理页数 | `TOTAL_PAGES` | 已实现 (global.rs) |
 | M-033 | `PAGE_BITMAP_CHUNKS` | alloc.c:34 | 位图块数 | `BitmapAllocator::chunk_count` | 已实现 (bitmap_alloc.rs) |
-| M-034 | `PAGE_CACHE_MAX` | alloc.c:36 | 页缓存上限 | `PageCache::MAX_SIZE` | 已实现 (page_cache.rs) |
+| M-034 | `PAGE_CACHE_MAX` | alloc.c:36 | 页缓存上限 | 未建模（C 编译期上限；Rust 由内存压力驱动 `free_pages`，见 24-page-cache） | 设计差异 |
 | M-035 | `page_isfree(p)` | alloc.c:54 | 测页空闲 | `BitmapAllocator::is_free(p)` | 已实现 |
 | M-036 | `RESERVEDMAGIC/MAXRESERVED*` | alloc.c:56-58 | 保留队列 | 改 `ReservedQueue` 类型 | 已实现 (reserved_pages) |
 
@@ -98,7 +98,7 @@
 
 | # | C 宏 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|------|---------|------|-----------|------|
-| M-041 | `HASHSIZE` | cache.c:21 | 哈希表大小 | `PageCache::HASH_SIZE` | 已实现 (page_cache.rs) |
+| M-041 | `HASHSIZE` | cache.c:21 | 哈希表大小 | `PageCache::by_dev`（BTreeMap 主键 + `by_ino` 辅索引，`[ARCH: A-4]`，无固定哈希桶） | 已实现 (page_cache.rs) |
 
 ### 1.8 main.c
 
@@ -253,7 +253,7 @@
 |---|--------|---------|------|-----------|------|
 | G-025 | `acl_mask/acl_inuse` | acl.c:14-15 | ACL 表 (static) | `AclState` enum (per-process) | 已实现 (acl.rs) |
 | G-026 | `fdrefs` | fdref.c:35 | fdref 链表头 (static) | `FdRefTable::entries` | 已实现 (fdref.rs) |
-| G-027 | `cache_hash_*` | cache.c:23-26 | 缓存哈希与 LRU (static) | `PageCache::hash_*` | 已实现 (page_cache.rs) |
+| G-027 | `cache_hash_*` | cache.c:23-26 | 缓存哈希与 LRU (static) | `PageCache::by_dev`/`by_ino` 双索引 + `LruList` | 已实现 (page_cache.rs) |
 | G-028 | `cached_pages` | cache.c:27 | 缓存页计数 (static) | `PageCache::total_cached` | 已实现 |
 | G-029 | `pages` | slaballoc.c:79 | slab 页数 (static) | `slab` 未实现 | 跳过 |
 | G-030 | `vfs_request_node/first_queued/active` | vfs.c:33-41 | VFS 请求节点 (static) | `VfsRequestQueue` | 已实现 (vfs_queue.rs) |
@@ -266,7 +266,7 @@
 
 | # | C 结构体 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|----------|---------|------|-----------|------|
-| S-001 | `struct cached_page` | cache.h:2 | 缓存页描述 | `PageCacheEntry` | 已实现 (page_cache.rs) |
+| S-001 | `struct cached_page` | cache.h:2 | 缓存页描述 | `CachedPage`（`ino: Option<u64>`/`once: bool`/`pfn`/`lru_node`） | 已实现 (page_cache.rs) |
 | S-002 | `avl_search_type` (enum) | cavl_if.h:24 | AVL 搜索类型 | `SearchType` (enum, 互斥方向) | 已实现 (region_map.rs) — **已从 bitflags 改为 enum** |
 | S-003 | `avl` (typedef) | cavl_if.h:67 | AVL 树 | `BTreeMap<VirBytes, VirRegion>` | 设计差异 |
 | S-004 | `iter` (typedef) | cavl_if.h:158 | AVL 迭代器 | `RegionMap::iter()` | 已实现 (region_map.rs:217) |
@@ -342,21 +342,20 @@
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| F-028 | `lru_rm` | cache.c:29 | LRU 移除 (static) | `PageCache::lru_remove` (内部) | 已实现 |
-| F-029 | `lru_add` | cache.c:52 | LRU 加入 (static) | `PageCache::lru_add` (内部) | 已实现 |
-| F-030 | `cache_lru_touch` | cache.c:70 | 触碰 LRU | `PageCache::touch` | 已实现 (page_cache.rs) |
-| F-031 | `makehash` | cache.c:76 | 哈希值 (static inline) | `PageCache::hash` | 已实现 |
+| F-028 | `lru_rm` | cache.c:29 | LRU 移除 (static) | `LruList::unlink`（page_cache.rs 内部） | 已实现 |
+| F-029 | `lru_add` | cache.c:52 | LRU 加入 (static) | `LruList::link_tail`（page_cache.rs 内部） | 已实现 |
+| F-030 | `cache_lru_touch` | cache.c:70 | 触碰 LRU | `LruList::touch` | 已实现 (page_cache.rs，O(1) 索引双链) |
+| F-031 | `makehash` | cache.c:76 | 哈希值 (static inline) | BTreeMap 键 `(dev, dev_offset)` / `(dev, ino, ino_offset)`（`[ARCH: A-4]`，无哈希函数） | 已实现 |
 | F-032 | `cache_sanitycheck_internal` | cache.c:87 | 缓存健全检查 | 跳过 (cfg) | 跳过 |
-| F-033 | `addcache_byino` | cache.c:155 | 加 ino 哈希 (static) | `PageCache::index_by_ino` | 已实现 |
-| F-034 | `update_inohash` | cache.c:164 | 更新 ino 哈希 (static) | `PageCache::update_ino_index` | 已实现 |
+| F-033 | `addcache_byino` | cache.c:155 | 加 ino 哈希 (static) | `PageCache::by_ino` 辅索引（`addcache` 内联写入） | 已实现 |
+| F-034 | `update_inohash` | cache.c:164 | 更新 ino 哈希 (static) | `PageCache::find_by_dev` 惰性 ino 更新 | 已实现 |
 | F-035 | `find_cached_page_bydev` | cache.c:176 | 按 dev 查找 | `PageCache::find_by_dev` | 已实现 (page_cache.rs) |
 | F-036 | `find_cached_page_byino` | cache.c:198 | 按 ino 查找 | `PageCache::find_by_ino` | 已实现 |
-| F-037 | `addcache` | cache.c:216 | 加缓存块 | `PageCache::insert` | 已实现 (page_cache.rs) |
-| F-038 | `rmcache` | cache.c:259 | 移除缓存块 | `PageCache::remove` | 已实现 |
-| F-039 | `cache_freepages` | cache.c:288 | 释放缓存页 | `PageCache::free_pages` | 已实现 (page_cache.rs:140, LRU eviction) + **TODO bitmap_alloc::cache_freepages DEFERRED**: BitmapAllocator 自身的 `cache_freepages` 是 no-op stub (返回 0), 与 Minix3 C `cache.c:288` 一致. 3 步实现路径展开为 doc 注释. fallback 到 `AllocError::OutOfMemory` 与 C 内存耗尽行为一致 |
-| F-039a | `find_cached_page_bypfn` | (新增) | 按 PFN 查找 | `PageCache::find_by_pfn` | ✅ **已实现**: `pfn_index: BTreeMap<u32, CacheKey>` 反向索引, first-insert-wins 语义. `insert` 用 `entry().or_insert_with()` 填充 / `remove` 和 `decrease_refcount` 清理 (防御性: 只清理指向被移除 key 的索引). 3 个测试覆盖 (first-insert-wins / remove 清理 / decrease_refcount 清理). Doc 25 §4.6 + §5.1/§5.2 已同步 |
+| F-037 | `addcache` | cache.c:216 | 加缓存块 | `PageCache::addcache`（IN_CACHE + 重复键 fail-closed） | 已实现 (page_cache.rs) |
+| F-038 | `rmcache` | cache.c:259 | 移除缓存块 | `PageCache::rmcache`（refcount==0 → `free_pfn`） | 已实现 |
+| F-039 | `cache_freepages` | cache.c:288 | 释放缓存页 | `PageCache::free_pages`（LRU 最老端扫描 refcount==1）+ `VmServer::alloc_cycle` 接线（`FREE_CACHE_BATCH=1024`，近似 alloc.c 的 `cache_freepages(clicks)`（按请求量；Rust 用固定批次 1024）） | 已实现 (2026-08-16 接线) |
 | F-040 | `clear_cache_bydev` | cache.c:313 | 清设备缓存 | `PageCache::clear_by_dev` | 已实现 (page_cache.rs) |
-| F-041 | `get_stats_info` | cache.c:328 | 取统计信息 | `PageCache::stats` | 已实现 |
+| F-041 | `get_stats_info` | cache.c:328 | 取统计信息 | `PageCache::total_cached` | 已实现 |
 
 ### 4.5 exit.c (6 函数)
 
@@ -374,10 +373,10 @@
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
 | F-048 | `fdref_sanitycheck` | fdref.c:37 | fd 健全检查 | 跳过 (cfg) | 跳过 |
-| F-049 | `fdref_new` | fdref.c:93 | 新建 fdref | `FdRefTable::new_entry` | 已实现 (fdref.rs) |
-| F-050 | `fdref_ref` | fdref.c:109 | 增加引用 | `FdRefTable::ref_entry` | 已实现 (fdref.rs:80) |
-| F-051 | `fdref_deref` | fdref.c:116 | 减少引用 | `FdRefTable::deref_entry` | 已实现 (fdref.rs:86) + **FdClose VFS request typed deferral 已完成**: `region/mod.rs:55` 已改为 `let _close: PendingFdClose = close;` (类型化保留, 避免值丢弃). 3 阶段 DEFERRED 文档: 1) IpcTransport (TODO 同源); 2) VfsRequestQueue enqueue 路径; 3) VFS dispatcher decode (ipc/dispatcher.rs:484). review-patterns-skill §模式31 (返回值完整性) 合规 + ✅ **find_by_dev_ino O(1) 索引已实现**: `FdRefTableInner` 新增 `dev_ino_index: BTreeMap<(u64, u64), u32>`, `create` 填充 (最近 create 胜出) / `deref_entry` 清理 (防御性: 只清理指向被移除 id 的索引条目). 3 个测试覆盖 (most-recent-create 胜出 / deref 清理 / collision 存活) |
-| F-052 | `fdref_dedup_or_new` | fdref.c:156 | 去重或新建 | `FdRefTable::dedup_or_new` | 已实现 (fdref.rs) |
+| F-049 | `fdref_new` | fdref.c:93 | 新建 fdref | `FdRefTable::create` + `dedup_or_new` | 已实现 (fdref.rs:78/:114；create 的 may_close 参数已于 23-P0-1c 移除，dedup 四态接管，2026-08-16) |
+| F-050 | `fdref_ref` | fdref.c:109 | 增加引用 | `FdRefTable::ref_entry` | 已实现 (fdref.rs:151，2026-08-16 行号修正) |
+| F-051 | `fdref_deref` | fdref.c:116 | 减少引用 | `FdRefTable::deref_entry` | 已实现 (fdref.rs:157，2026-08-16 行号修正) + **23-P0-1b（2026-08-16）**: 删除 entry 上 may_close 字段——refcount==0 **无条件**返回 `PendingFdClose`（对齐 fdref.c:150-153 最后引用总关 fd）；mayclosefd 只作用于 dedup 路径。+ ✅ find_by_dev_ino O(1) 反索引（dev_ino_index，deref 归零清理）+ 3 测试覆盖。+ 新增 `test_fdref_deref_always_closes_at_zero`（:261） |
+| F-052 | `fdref_dedup_or_new` | fdref.c:156 | 去重或新建 | `FdRefTable::dedup_or_new` | 已实现 (fdref.rs:114-149，2026-08-16) + **23-P0-1c**: 四态完整对齐 C（同 fd 复用 / 异 fd 同 (dev,ino) may_close 关新 fd / !may_close 继续扫精确 fd / 无匹配新建）；BTreeMap 反向迭代 = C 最近优先扫描；5 个 `test_dedup_or_new_*` 覆盖 |
 
 ### 4.7 fork.c (1 函数)
 
@@ -438,7 +437,7 @@
 | F-102 | `do_setcache` | mem_cache.c:196 | 设置缓存 | `dispatch_setcache` (dispatcher.rs:499) | ✅ 已修复 (2026-06-16): 完整实现 C do_setcache 语义 — endpoint 验证 + region 查找 + 匿名内存验证 + refcount==1 检查 + memtype 改为 cache + PageCache 插入; 已有缓存条目处理(相同页跳过/不同页替换); 4 个测试覆盖 |
 | F-103 | `do_forgetcache` | mem_cache.c:283 | 忘记缓存 | `dispatch_forgetcache` | ✅ **已实现 + C 语义对齐输入验证 (2026-06-16)**: `pages==0` → InvalidAddress (C: EINVAL); `dev_offset%4096!=0` → InvalidAddress (C: EFAULT). 3 个测试覆盖 (zero-pages / unaligned-offset / valid-returns-Ok) |
 | F-104 | `do_clearcache` | mem_cache.c:315 | 清缓存 | `dispatch_clearcache` | ✅ **已实现 (2026-06-16)**: 调用 `cache.clear_by_dev(dev, frames)` 与 C `clear_cache_bydev(dev)` 语义对齐. C 无输入验证, Rust 亦无 |
-| F-105 | `mem_type_mappedfile` | mem_file.c:30 | 文件映射类型表 | `MappedFile` + `MEM_TYPE_MAPPED_FILE` (memtype.rs:697) | 已实现 |
+| F-105 | `mem_type_mappedfile` | mem_file.c:30 | 文件映射类型表 | `MappedFile` + `MEM_TYPE_MAPPED_FILE` (memtype.rs:919/:1133) | 已实现（2026-08-16 行号修正） |
 | F-106-F-117 | mappedfile_* (12 callbacks) | mem_file.c:43-280 | 文件映射回调 (static) | `MappedFile::ev_*` | 已实现 (ev_copy/split 简化) |
 | F-118 | `mappedfile_setfile` | mem_file.c:191 | 设置文件 | `MappedFile::ev_setfile` | 已实现 |
 | F-119 | `mem_type_shared` | mem_shared.c:28 | 共享类型表 | `SharedMemory` + `MEM_TYPE_SHARED` (memtype.rs:694) | 已实现 |
@@ -618,8 +617,8 @@
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
 | F-258 | `activate` | vfs.c:43 | 激活请求 (static) | `VfsRequestQueue::activate` | 已实现 (vfs_queue.rs) |
-| F-259 | `vfs_request` | vfs.c:60 | VFS 请求 | `VfsRequestQueue::request` (vfs_queue.rs:118) | 已实现 |
-| F-260 | `do_vfs_reply` | vfs.c:109 | VFS 应答 | `dispatch_vfs_reply` (dispatcher.rs:294) | ✅ Done (2026-06-16) — reqid>0 校验 + VfsReply 构造 + VfsRequestQueue::handle_reply + 延迟回调执行(DispatchResult) + VmReply::Suspend |
+| F-259 | `vfs_request` | vfs.c:60 | VFS 请求 | `VfsRequestQueue::request` (vfs_queue.rs:107-124) | 已实现（2026-08-16 行号修正；max_queued=64 → QueueFull → ENOMEM；ID_MAX → next_id u32 wrapping；activate 串行激活，发送待 23-B1 transport） |
+| F-260 | `do_vfs_reply` | vfs.c:109 | VFS 应答 | `dispatch_vfs_reply` (dispatcher.rs:337) | ✅ Done — reqid>0 校验 + VfsReply 构造 + VfsRequestQueue::handle_reply + 延迟回调执行 + VmReply::Suspend；**23-P0-1（2026-08-16）**: VM_VFS_REPLY 改走 `MessVmVfsReply` overlay decode（message.rs:1874 + vm.rs:586），`VfsReply.ino` 传真实 ino（原硬编码 0） |
 
 ### 4.19 regionavl.c / utility2.c 等其他源
 

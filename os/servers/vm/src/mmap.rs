@@ -415,6 +415,7 @@ fn mmap_file(
     active: &mut ActiveProc<'_>,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     params: FileMapParams,
 ) -> Result<MmapResponse, MmapError> {
     // C mmap.c:91-96: page-align the file offset down; the low-order
@@ -443,15 +444,28 @@ fn mmap_file(
 
     // C: mappedfile_setfile (mem_file.c:191) — record the file identity so
     // the fdref / page-cache machinery can resolve pages (23-vfs-interaction).
+    // fdref_dedup_or_new (fdref.c:161-177) may return a pending close for a
+    // newly discovered duplicate fd (same dev+ino, different fd, may_close).
     let fdref_table = crate::fdref::FdRefTable::get_global();
-    let fdref_id = if let Some(existing_id) = fdref_table.find_by_dev_ino(params.dev, params.ino) {
-        fdref_table.ref_entry(existing_id);
-        existing_id
-    } else {
-        let id = fdref_table.create(params.fd, params.dev, params.ino, params.mayclosefd);
-        fdref_table.ref_entry(id);
-        id
-    };
+    let (fdref_id, close) =
+        fdref_table.dedup_or_new(params.fd, params.dev, params.ino, params.mayclosefd);
+    fdref_table.ref_entry(fdref_id);
+    if let Some(close) = close {
+        // C: fdref_dedup_or_new (fdref.c:167-172) sends VMVFSREQ_FDCLOSE for
+        // the duplicate fd and continues — a close failure is only a
+        // diagnostic (VFS prints it), not a mapping failure.
+        let vreq = crate::vfs_queue::VfsRequest {
+            request_type: crate::vfs_queue::VfsRequestType::FdClose,
+            req_id: 0, // assigned by the queue
+            caller_endpoint: active.endpoint(),
+            fd: close.fd,
+            offset: 0,
+            length: 0,
+            callback: None,
+            state: None,
+        };
+        let _ = vfs_queue.request(vreq);
+    }
     region.param = VrParam::File {
         inited: true,
         fdref_id: Some(fdref_id),
@@ -476,6 +490,7 @@ pub(crate) fn handle_vfs_mmap(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     request: &VmVfsMmapIn,
 ) -> Result<MmapResult, MmapError> {
     // C do_vfs_mmap (mmap.c:141): "It might be disabled"
@@ -505,7 +520,7 @@ pub(crate) fn handle_vfs_mmap(
         mayclosefd: false,
     };
 
-    let response = mmap_file(&mut active, page_alloc, frames, params)?;
+    let response = mmap_file(&mut active, page_alloc, frames, vfs_queue, params)?;
     Ok(MmapResult::Complete(response))
 }
 
@@ -543,7 +558,7 @@ pub(crate) fn mmap_file_cont(
     }
 
     let table = VmProcTable::get_global();
-    let (page_alloc, frames, _cache, _vfs_queue) = server.parts_mut();
+    let (page_alloc, frames, _cache, vfs_queue) = server.parts_mut();
 
     // C mmap_file: vmp = the target process (forwhom for THIRDPARTY).
     let flags = MmapFlags::from_bits_truncate(mmap.flags);
@@ -569,7 +584,7 @@ pub(crate) fn mmap_file_cont(
         // the original fd and the mapping may outlive it.
         mayclosefd: true,
     };
-    let _ = mmap_file(&mut active, page_alloc, frames, params)
+    let _ = mmap_file(&mut active, page_alloc, frames, vfs_queue, params)
         .map_err(|_| VfsQueueError::IoError)?;
 
     Ok(())
@@ -973,6 +988,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
         let slot = UserSlot::new(83);
         let ep = init_test_process(slot);
 
@@ -987,7 +1003,7 @@ mod tests {
             flags: 0, // read-only segment
             clearend: 0,
         };
-        match handle_vfs_mmap(table, &mut page_alloc, &mut frames, &req) {
+        match handle_vfs_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req) {
             Ok(MmapResult::Complete(resp)) => {
                 assert_eq!(resp.mapped_addr.0, 0x0000_0001_0000_4000);
                 let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
@@ -1008,6 +1024,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
         let slot = UserSlot::new(84);
         let ep = init_test_process(slot);
 
@@ -1022,7 +1039,7 @@ mod tests {
             flags: 0x8000,
             clearend: 0,
         };
-        handle_vfs_mmap(table, &mut page_alloc, &mut frames, &req).unwrap();
+        handle_vfs_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req).unwrap();
         let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
         let region = active.regions().find_overlap(
             VirBytes(0x0000_0001_0000_5000),
@@ -1038,6 +1055,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
         let slot = UserSlot::new(85);
         let ep = init_test_process(slot);
 
@@ -1052,7 +1070,7 @@ mod tests {
             flags: 0,
             clearend: 0,
         };
-        match handle_vfs_mmap(table, &mut page_alloc, &mut frames, &req) {
+        match handle_vfs_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req) {
             Ok(MmapResult::Complete(resp)) => {
                 // page_offset = 0x100 → retaddr = vaddr + 0x100
                 assert_eq!(resp.mapped_addr.0, 0x0000_0001_0000_6100);
@@ -1074,6 +1092,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
         let slot = UserSlot::new(86);
         let ep = init_test_process(slot);
 
@@ -1089,7 +1108,7 @@ mod tests {
             clearend: 0,
         };
         set_filemap_enabled(false);
-        let result = handle_vfs_mmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_vfs_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req);
         set_filemap_enabled(true);
         assert!(matches!(result, Err(MmapError::FileMapDisabled)));
     }

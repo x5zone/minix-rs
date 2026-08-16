@@ -17,7 +17,6 @@ pub(crate) struct FdRefEntry {
     pub fd: i32,
     pub dev: u64,
     pub ino: u64,
-    pub may_close: bool,
     pub refcount: u32,
 }
 
@@ -76,13 +75,7 @@ impl FdRefTable {
         unsafe { &mut *self.inner.get() }
     }
 
-    pub(crate) fn create(
-        &self,
-        fd: i32,
-        dev: u64,
-        ino: u64,
-        may_close: bool,
-    ) -> u32 {
+    pub(crate) fn create(&self, fd: i32, dev: u64, ino: u64) -> u32 {
         let inner = self.inner();
         let id = inner.next_id;
         inner.next_id += 1;
@@ -90,7 +83,6 @@ impl FdRefTable {
             fd,
             dev,
             ino,
-            may_close,
             refcount: 0,
         });
         // Populate the reverse index. If a collision exists (same
@@ -102,6 +94,58 @@ impl FdRefTable {
         // correctness footgun in any case).
         inner.dev_ino_index.insert((dev, ino), id);
         id
+    }
+
+    /// Deduplicate a new file mapping against existing fdref entries, or
+    /// create a new one. Corresponds to C `fdref_dedup_or_new` (fdref.c:161-177).
+    ///
+    /// C semantics (list scanned most-recently-created first):
+    /// - same `(dev, ino)` and same `fd` → reuse the existing entry;
+    /// - same `(dev, ino)` but different `fd` and `may_close` → the newly
+    ///   passed-in fd is a duplicate of an already-tracked file; close it
+    ///   (returned as `Some(PendingFdClose)`) and reuse the existing entry;
+    /// - same `(dev, ino)` but different `fd` and `!may_close` → keep
+    ///   scanning for an exact `fd` match (VFS-initiated mappings do not
+    ///   own their fd); if none, fall through to `create`.
+    ///
+    /// The returned id is NOT refcounted — the caller (mappedfile_setfile
+    /// equivalent) must call `ref_entry` exactly once, mirroring C's
+    /// `fdref_new` (refcount 0) followed by `fdref_ref` (refcount 1).
+    pub(crate) fn dedup_or_new(
+        &self,
+        fd: i32,
+        dev: u64,
+        ino: u64,
+        may_close: bool,
+    ) -> (u32, Option<PendingFdClose>) {
+        let inner = self.inner();
+        // C scans the singly-linked `fdrefs` list from the head, which
+        // holds the most recently created entry. BTreeMap iterates in
+        // ascending id order, so a reverse iteration is the same order.
+        for (id, entry) in inner.entries.iter().rev() {
+            if entry.dev != dev || entry.ino != ino {
+                continue;
+            }
+            if entry.fd == fd {
+                return (*id, None);
+            }
+            if may_close {
+                return (*id, Some(PendingFdClose { fd, dev, ino }));
+            }
+        }
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.entries.insert(id, FdRefEntry {
+            fd,
+            dev,
+            ino,
+            refcount: 0,
+        });
+        // Populate the reverse index. If a collision exists (same
+        // dev+ino already indexed), the new id wins — matching the
+        // most-recently-created-first scan order of C's list.
+        inner.dev_ino_index.insert((dev, ino), id);
+        (id, None)
     }
 
     pub(crate) fn ref_entry(&self, id: u32) {
@@ -126,15 +170,17 @@ impl FdRefTable {
                     inner.dev_ino_index.remove(&(entry.dev, entry.ino));
                 }
             }
-            if entry.may_close {
-                Some(PendingFdClose {
-                    fd: entry.fd,
-                    dev: entry.dev,
-                    ino: entry.ino,
-                })
-            } else {
-                None
-            }
+            // C's fdref_deref (fdref.c:116-155) ALWAYS sends VMVFSREQ_FDCLOSE
+            // when the last reference disappears — the tracked fds are all
+            // VM-owned dup'd fds (from FDLOOKUP's dupvm or exec's vmfd), so
+            // there is no other owner to close them. The `mayclosefd` flag
+            // only affects the DEDUP path (whether a newly discovered
+            // duplicate fd is closed immediately), not last-reference close.
+            Some(PendingFdClose {
+                fd: entry.fd,
+                dev: entry.dev,
+                ino: entry.ino,
+            })
         } else {
             None
         }
@@ -179,20 +225,19 @@ mod tests {
     #[test]
     fn test_fdref_create_and_get() {
         let table = new_test_table();
-        let id = table.create(3, 100, 200, true);
+        let id = table.create(3, 100, 200);
 
         let entry = table.get(id).unwrap();
         assert_eq!(entry.fd, 3);
         assert_eq!(entry.dev, 100);
         assert_eq!(entry.ino, 200);
-        assert!(entry.may_close);
         assert_eq!(entry.refcount, 0);
     }
 
     #[test]
     fn test_fdref_ref_deref_cycle() {
         let table = new_test_table();
-        let id = table.create(3, 100, 200, true);
+        let id = table.create(3, 100, 200);
 
         table.ref_entry(id);
         table.ref_entry(id);
@@ -213,20 +258,22 @@ mod tests {
     }
 
     #[test]
-    fn test_fdref_no_may_close() {
+    fn test_fdref_deref_always_closes_at_zero() {
+        // C's fdref_deref always sends FDCLOSE at refcount 0 regardless of
+        // how the entry was created — there is no per-entry "may_close".
         let table = new_test_table();
-        let id = table.create(3, 100, 200, false);
+        let id = table.create(3, 100, 200);
 
         table.ref_entry(id);
         let result = table.deref_entry(id);
-        assert!(result.is_none());
+        assert!(result.is_some());
         assert!(table.get(id).is_none());
     }
 
     #[test]
     fn test_fdref_dedup() {
         let table = new_test_table();
-        let id1 = table.create(3, 100, 200, true);
+        let id1 = table.create(3, 100, 200);
 
         let found = table.find_by_dev_ino(100, 200);
         assert_eq!(found, Some(id1));
@@ -245,16 +292,16 @@ mod tests {
         assert!(table.get(999).is_none());
     }
 
-    // ── (dev, ino) reverse index tests ──
+    // -- (dev, ino) reverse index tests --
 
     #[test]
     fn test_find_by_dev_ino_o1_lookup() {
         // Insert multiple entries with distinct (dev, ino) pairs.
         // find_by_dev_ino must return the most-recently-created id.
         let table = new_test_table();
-        let id1 = table.create(3, 100, 200, true);
-        let id2 = table.create(4, 100, 200, true); // same dev+ino, different fd
-        let id3 = table.create(5, 100, 300, true);
+        let id1 = table.create(3, 100, 200);
+        let id2 = table.create(4, 100, 200); // same dev+ino, different fd
+        let id3 = table.create(5, 100, 300);
 
         assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
         assert_eq!(table.find_by_dev_ino(100, 300), Some(id3));
@@ -264,11 +311,10 @@ mod tests {
 
     #[test]
     fn test_find_by_dev_ino_clears_on_deref_to_zero() {
-        // When refcount drops to 0 and may_close=true, the entry is
-        // removed and the reverse index is cleaned. The lookup
-        // should return None.
+        // When refcount drops to 0, the entry is removed and the reverse
+        // index is cleaned. The lookup should return None.
         let table = new_test_table();
-        let id = table.create(3, 100, 200, true);
+        let id = table.create(3, 100, 200);
         assert_eq!(table.find_by_dev_ino(100, 200), Some(id));
 
         table.ref_entry(id);
@@ -285,8 +331,8 @@ mod tests {
         // Removing the FIRST id must NOT clear the index (it points
         // to id2, not id1).
         let table = new_test_table();
-        let id1 = table.create(3, 100, 200, true);
-        let id2 = table.create(4, 100, 200, false); // may_close=false, but index updates
+        let id1 = table.create(3, 100, 200);
+        let id2 = table.create(4, 100, 200); // index points to the latest id
 
         assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
 
@@ -295,5 +341,72 @@ mod tests {
         let _ = table.deref_entry(id1);
         // Index still points to id2 (still alive).
         assert_eq!(table.find_by_dev_ino(100, 200), Some(id2));
+    }
+
+    // -- dedup_or_new semantics (C fdref_dedup_or_new, fdref.c:161-177) --
+
+    #[test]
+    fn test_dedup_or_new_same_fd_reuses() {
+        let table = new_test_table();
+        let id1 = table.create(3, 100, 200);
+
+        // Same dev+ino+fd -> reuse without a close.
+        let (id, close) = table.dedup_or_new(3, 100, 200, true);
+        assert_eq!(id, id1);
+        assert!(close.is_none());
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn test_dedup_or_new_different_fd_may_close_closes_new_fd() {
+        let table = new_test_table();
+        let id1 = table.create(3, 100, 200);
+
+        // Same dev+ino, different fd, may_close=true -> close the NEW fd
+        // (the duplicate) and reuse the existing entry.
+        let (id, close) = table.dedup_or_new(9, 100, 200, true);
+        assert_eq!(id, id1);
+        let close = close.expect("new duplicate fd must be closed");
+        assert_eq!(close.fd, 9); // the newly passed-in fd
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn test_dedup_or_new_different_fd_no_may_close_scans_for_exact_fd() {
+        let table = new_test_table();
+        let _older = table.create(5, 100, 200);
+        let _newer = table.create(7, 100, 200);
+
+        // Same dev+ino with a different fd and may_close=false: keep
+        // scanning. An older entry with the exact fd is found.
+        let (id, close) = table.dedup_or_new(5, 100, 200, false);
+        assert!(close.is_none());
+        let entry = table.get(id).unwrap();
+        assert_eq!(entry.fd, 5);
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_or_new_no_exact_fd_creates() {
+        let table = new_test_table();
+        let _id1 = table.create(3, 100, 200);
+
+        // may_close=false and no entry with the same fd -> create a new entry.
+        let (id, close) = table.dedup_or_new(9, 100, 200, false);
+        assert!(close.is_none());
+        assert_eq!(table.get(id).unwrap().fd, 9);
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_or_new_no_match_creates() {
+        let table = new_test_table();
+        let _id1 = table.create(3, 100, 200);
+
+        let (id, close) = table.dedup_or_new(4, 999, 888, true);
+        assert!(close.is_none());
+        assert_eq!(table.get(id).unwrap().fd, 4);
+        assert_eq!(table.get(id).unwrap().dev, 999);
+        assert_eq!(table.len(), 2);
     }
 }

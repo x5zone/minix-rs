@@ -6,6 +6,7 @@ use minix_types::{Endpoint, VirBytes};
 use minix_arch::paging::PageFlags;
 use crate::vmproc::{ActiveProc, VmProcTable};
 use crate::region::{PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
+use crate::page_cache::PageCache;
 
 pub(crate) trait MemType: Send + Sync {
     fn name(&self) -> &'static str;
@@ -46,6 +47,7 @@ pub(crate) trait MemType: Send + Sync {
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         Ok(PagefaultResult::Handled)
     }
@@ -245,6 +247,7 @@ impl MemType for AnonymousMemory {
         write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         let slot = region.get_slot(offset);
 
@@ -361,6 +364,7 @@ impl MemType for DirectPhysical {
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         if let crate::region::VrParam::Direct { phys: base_phys } = &region.param {
             if base_phys.0 == 0 {
@@ -469,6 +473,7 @@ impl MemType for SharedMemory {
         _write: bool,
         table: &VmProcTable,
         alloc: &mut dyn PfnAllocator,
+        _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         // Step 1: If the page is already mapped, no action needed.
         // C: mem_shared.c:139 — "if(ph->ph->phys != MAP_NONE) return OK"
@@ -755,6 +760,7 @@ impl MemType for ContiguousAnonymous {
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         panic!("contiguous anonymous pagefault: all pages are pre-allocated");
     }
@@ -832,6 +838,7 @@ impl MemType for CacheMemory {
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         // Step 1: Already mapped → no action needed.
         // C: "if(ph->ph->phys != MAP_NONE) return OK" (implicit in assert)
@@ -937,24 +944,24 @@ impl MemType for MappedFile {
     /// Determine the page-fault action for a file-backed mapping.
     ///
     /// - Uninitialized region → `NeedNewPage` (first access)
-    /// - Unmapped slot → `NeedVfsIo` (request VFS to load the page)
+    /// - Unmapped slot, cache hit → link the cached page (`Handled`,
+    ///   or `NeedCow` when the page must be copied before write)
+    /// - Unmapped slot, cache miss → `NeedVfsIo` (request VFS to load the page)
     /// - Mapped, read → `Handled`
     /// - Mapped, write → `NeedCow` (shared page must be copied before write)
     ///
-    /// Corresponds to Minix3's `mapped_pagefault()` (mem_type_mapped.c).
+    /// Corresponds to Minix3's `mappedfile_pagefault()` (mem_file.c:85-155).
     fn ev_pagefault(
         &self,
         _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
-        _frames: &mut PageFrames,
+        frames: &mut PageFrames,
         offset: VirBytes,
         write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
+        cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // _proc and _frames unused here: page table update and frame allocation
-        // happen in the VFS reply callback (mappedfile_pf_cont), not in this
-        // initial page-fault check which only determines the action needed.
         if let crate::region::VrParam::File { inited, .. } = &region.param {
             if !inited {
                 return Ok(PagefaultResult::NeedNewPage);
@@ -971,7 +978,70 @@ impl MemType for MappedFile {
                     Ok(PagefaultResult::Handled)
                 }
             }
-            _ => Ok(PagefaultResult::NeedVfsIo),
+            _ => {
+                // C mappedfile_pagefault (mem_file.c:104-145): consult the
+                // page cache before issuing an FDIO round-trip to VFS. A
+                // cache hit (normally populated by the VFS reply path via
+                // lmfs_get_block_ino + vm_map_cacheblock) links the cached
+                // page directly; only a miss suspends for VFS I/O.
+                // Copy the File param fields out first: the cache-hit path
+                // mutates `region` (map_page) below.
+                let (fdref_id, file_offset, clearend) = match &region.param {
+                    crate::region::VrParam::File { fdref_id: Some(id), offset: file_offset, clearend, .. } => {
+                        (*id, *file_offset, *clearend)
+                    }
+                    _ => return Ok(PagefaultResult::AccessViolation),
+                };
+                let Some(fdref) = crate::fdref::FdRefTable::get_global().get(fdref_id) else {
+                    return Ok(PagefaultResult::AccessViolation);
+                };
+
+                // C: referenced_offset = region->param.file.offset + ph->offset
+                let referenced_offset = file_offset + offset.0;
+                // C: find_cached_page_byino/bydev with touchlru=1
+                // (mem_file.c:104-110). A one-shot entry forces the VFS
+                // round-trip: "for one-time use pages, no caching is
+                // performed" (mem_file.c:120-131 comment) — the entry's
+                // `once` flag is the C `cp->flags & VMSF_ONCE` check.
+                let cached = if fdref.ino == crate::page_cache::VMC_NO_INODE {
+                    cache.find_by_dev(fdref.dev, referenced_offset, None, 0, true)
+                } else {
+                    cache.find_by_ino(fdref.dev, fdref.ino, referenced_offset, true)
+                };
+
+                match cached {
+                    Some(cp) if !cp.once => {
+                        // C: pb_link(ph, cp->page, ph->offset, region)
+                        // (mem_file.c:123) — the PFN model maps the cached
+                        // frame into the slot; `map_page` bumps the frame
+                        // refcount (the mapping's reference, on top of the
+                        // cache's own from addcache). No separate cache
+                        // entry refcount exists — the frame refcount is
+                        // authoritative (24-page-cache D1/D3).
+                        let pfn = cp.pfn;
+                        region.map_page(frames, offset, pfn, &MEM_TYPE_MAPPED_FILE);
+
+                        // C mem_file.c:124-138: if the faulted page is the last
+                        // (partially-mapped) page of the region, or the access
+                        // is a write, run cow_block — copy the shared cached page
+                        // into a private anon page (clearend zeroing is not yet
+                        // modeled; doc 24 §3.5 差异清单).
+                        let last_partial = {
+                            let page_end = (offset.0 + clearend as u64 + PAGE_SIZE - 1)
+                                / PAGE_SIZE * PAGE_SIZE;
+                            page_end >= region.length.0
+                        };
+                        if write || last_partial {
+                            Ok(PagefaultResult::NeedCow)
+                        } else {
+                            Ok(PagefaultResult::Handled)
+                        }
+                    }
+                    // One-shot hit or miss → VFS round-trip (C: mem_file.c:120
+                    // `!cb || !VMSF_ONCE` 的保守侧：不消费 one-shot 页)。
+                    _ => Ok(PagefaultResult::NeedVfsIo),
+                }
+            }
         }
     }
 
@@ -1146,6 +1216,201 @@ mod tests {
         assert_eq!(mf.ev_copy(&src, &mut dst), Ok(()));
     }
 
+    fn make_mapped_file_region(fdref_id: u32) -> crate::region::VirRegion {
+        let mut region = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x1000),
+            minix_types::VirBytes(0x2000),
+            crate::region::VrFlags::empty(),
+        );
+        region.def_memtype = Some(&MEM_TYPE_MAPPED_FILE);
+        region.param = crate::region::VrParam::File {
+            inited: true,
+            fdref_id: Some(fdref_id),
+            offset: 0,
+            clearend: 0,
+        };
+        region
+    }
+
+    #[test]
+    fn test_mapped_file_pagefault_uninitialized_need_new_page() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_mapped_file_region(fdref_id);
+        region.param = crate::region::VrParam::File {
+            inited: false,
+            fdref_id: Some(fdref_id),
+            offset: 0,
+            clearend: 0,
+        };
+
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::NeedNewPage));
+    }
+
+    #[test]
+    fn test_mapped_file_pagefault_cache_miss_need_vfs_io() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_mapped_file_region(fdref_id);
+
+        // Empty cache → the faulting page must be loaded through VFS.
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::NeedVfsIo));
+    }
+
+    #[test]
+    fn test_mapped_file_pagefault_cache_hit_links_page() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_mapped_file_region(fdref_id);
+
+        // A cached page at file offset 0 (C: find_cached_page_byino hit).
+        let cached_pfn = 5;
+        cache.addcache(1, 0, Some(100), 0, false, cached_pfn, &mut frames).unwrap();
+
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::Handled));
+
+        // The slot must now reference the cached PFN; the frame refcount is
+        // 2 = cache's own reference + the mapping's (C: pb_link on top of
+        // addcache's refcount++).
+        let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
+        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(frames.get(cached_pfn).unwrap().refcount(), 2);
+        assert!(frames.get(cached_pfn).unwrap().is_cached());
+    }
+
+    #[test]
+    fn test_mapped_file_pagefault_device_cache_hit() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        // Device file: ino == VMC_NO_INODE → bydev lookup (C mem_file.c:111-113).
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(9, 2, crate::page_cache::VMC_NO_INODE);
+        let mut region = make_mapped_file_region(fdref_id);
+        let cached_pfn = 6;
+        cache.addcache(2, 0, None, 0, false, cached_pfn, &mut frames).unwrap();
+
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::Handled));
+        let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
+        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(frames.get(cached_pfn).unwrap().refcount(), 2);
+    }
+
+    #[test]
+    fn test_mapped_file_pagefault_one_shot_hit_forces_vfs_io() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next;
+                self.next += 1;
+                Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = make_mapped_file_region(fdref_id);
+
+        // One-shot cached page: the fault must NOT link it — it forces the
+        // VFS round-trip (C: "for one-time use pages, no caching is
+        // performed", mem_file.c:120-131).
+        let cached_pfn = 5;
+        cache.addcache(1, 0, Some(100), 0, true, cached_pfn, &mut frames).unwrap();
+
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::NeedVfsIo));
+        assert!(region.get_slot(minix_types::VirBytes(0)).is_none());
+        // Frame refcount stays at 1 (cache only) — no mapping was added.
+        assert_eq!(frames.get(cached_pfn).unwrap().refcount(), 1);
+    }
+
     #[test]
     fn test_shared_pagefault_already_mapped() {
         // If the page is already mapped, ev_pagefault returns Handled.
@@ -1164,6 +1429,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
             minix_types::VirBytes(0x1000),
@@ -1178,7 +1444,7 @@ mod tests {
 
         let result = MEM_TYPE_SHARED.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Ok(PagefaultResult::Handled));
     }
@@ -1201,6 +1467,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
             minix_types::VirBytes(0x1000),
@@ -1212,7 +1479,7 @@ mod tests {
 
         let result = MEM_TYPE_SHARED.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
@@ -1235,6 +1502,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
             minix_types::VirBytes(0x1000),
@@ -1245,7 +1513,7 @@ mod tests {
 
         let result = MEM_TYPE_SHARED.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
@@ -1269,6 +1537,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
 
         // Pre-allocate a PFN to simulate a cached page block.
         // Use pfn=5 to avoid pfn==0 (which means "no cached page").
@@ -1289,7 +1558,7 @@ mod tests {
         // Page fault at offset 0 — should map to cached_pfn.
         let result = MEM_TYPE_CACHE.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Ok(PagefaultResult::Handled));
 
@@ -1324,6 +1593,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
 
         let pfn = alloc.alloc_pfn().unwrap();
         let mut region = crate::region::VirRegion::new(
@@ -1337,7 +1607,7 @@ mod tests {
 
         let result = MEM_TYPE_CACHE.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Ok(PagefaultResult::Handled));
         // Cache pointer should NOT be cleared (early return, no action taken).
@@ -1365,6 +1635,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
 
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
@@ -1376,7 +1647,7 @@ mod tests {
 
         let result = MEM_TYPE_CACHE.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
@@ -1399,6 +1670,7 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
         let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
 
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
@@ -1410,7 +1682,7 @@ mod tests {
 
         let result = MEM_TYPE_CACHE.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }

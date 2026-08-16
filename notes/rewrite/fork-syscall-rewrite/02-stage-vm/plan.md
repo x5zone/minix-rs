@@ -185,7 +185,7 @@ VM_FORK 到达（主循环 dispatch）
 
 ### 3.5 测试基线（截至 2026-08-16）
 
-- `cargo test -p minix-vm --lib`：**360 passed / 1 failed**（基线更新：2026-08-15 为 347/1，此后 07/08/09/13/14 各轮新增测试，2026-08-16 15 轮实测复核 360/1；定向 `ipc::dispatcher` 26 / `ipc::transport` 6 / `vm_server` 21；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
+- `cargo test -p minix-vm --lib`：**414 passed / 1 failed**（基线更新：2026-08-16 25-rs-services 轮实测复核 414/1，较 360/1 增量来自 15/19/20/21/22/24/25 各轮新增测试；定向 `rs` 18 / `ipc::dispatcher` 26 / `ipc::transport` 6 / `vm_server` 21；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -356,7 +356,11 @@ VM_FORK 到达（主循环 dispatch）
 | 18 | reviewed | 2026-08-16 | 写作 + 回归（03-P1-1 P1 闭环 + 20 处行号修复）；`.review/codex/vm/18-vm-fork/scan.md` |
 | 19 | reviewed | 2026-08-16 | 写作 + 回归（19-P1-1 wire-format P1 闭环 + 19-P1-2 ARCH A-12 三处一致 + 8 项差异清单 + 24 项 AI 判断）；`.review/codex/vm/19-vm-brk/scan.md` |
 | 20 | reviewed | 2026-08-16 | 写作 + 回归（20-P1-1 wire-format 四消息 P1 闭环 + 7 条 errno 语义修复 + 14 项差异清单 + 6 项 backlog）；`.review/codex/vm/20-vm-mmap/scan.md` |
-| 21~26 | pending | — | draft 素材沿用改写 |
+| 21 | reviewed | 2026-08-16 | 写作 + 回归（21-P0-1 memtype 门控 P0 + 21-P1-4/5 + 行号实证 + SYMBOLS 39 + VERIFY 23/23）；`.review/codex/vm/21-vm-munmap/scan.md` |
+| 22 | reviewed | 2026-08-16 | 写作 + 回归（22-P0-1/2 P0 + 22-P1-1..5 + P2 10 组 + SYMBOLS 34 + VERIFY 24/24）；`.review/codex/vm/22-vm-exit/scan.md` |
+| 23 | reviewed | 2026-08-16 | 写作 + 回归（23-P0-1/1b/1c + 23-P1-1/2 + P2 9 组 + SYMBOLS 37 + VERIFY 32/32）；`.review/codex/vm/23-vfs-interaction/scan.md` |
+| 24 | reviewed | 2026-08-16 | 写作 + 回归（24-P0-5 P0-fact cache_freepages clicks 三处一致 + 24-P1-4 + P2 组 Fix #3-#8 + SYMBOLS 48 + VERIFY 29/29）；`.review/codex/vm/24-page-cache/scan.md` |
+| 25~26 | pending | — | draft 素材沿用改写 |
 | 99 | pending | — | 常量表同步 |
 | checklist.md | pending | — | 编号/路径更新（§6 第 6 步） |
 

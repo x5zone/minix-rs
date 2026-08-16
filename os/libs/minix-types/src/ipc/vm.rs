@@ -540,15 +540,15 @@ pub struct VmRemapIn {
 }
 
 // ---------------------------------------------------------------------------
-// VM_VFS_REPLY  (VFS → VM, asynchronous)  — DEFERRED
+// VM_VFS_REPLY  (VFS → VM, asynchronous)
 // ---------------------------------------------------------------------------
-// C: mess_vm_vfs_reply (ipc.h, uses m10 layout)
+// C: message.m_m10 (mess_10 layout, ipc.h:86-92)
 //     #define VMV_ENDPOINT   m10_i1  // endpoint that completed
 //     #define VMV_RESULT     m10_i2  // result of the VFS call
 //     #define VMV_REQID      m10_i3  // request id (matches VFS_VMCALL_REQID)
 //     #define VMV_DEV        m10_i4  // device (for fd resolution)
-//     #define VMV_FD         m10_l1  // file descriptor
-//     #define VMV_SIZE       m10_l2  // total size
+//     #define VMV_INO        m10_l1  // inode number
+//     #define VMV_FD         m10_l2  // file descriptor
 //     #define VMV_SIZE_PAGES m10_l3  // size in pages
 
 /// VFS → VM: VFS call completion reply.
@@ -565,13 +565,38 @@ pub struct VmVfsReplyIn {
     /// Request id (matches the `reqid` from the original VM→VFS call).
     pub reqid: i32,
     /// Device number (for fd resolution when reopening on resume).
-    pub dev: i32,
-    /// File descriptor.
-    pub fd: i64,
-    /// Total size in bytes.
-    pub size: i64,
+    pub dev: u32,
+    /// Inode number of the mapped file (from FDLOOKUP).
+    pub ino: u32,
+    /// File descriptor (VFS's dup'd fd in the VM process).
+    pub fd: u32,
     /// Total size in pages (precomputed by VFS).
-    pub size_pages: i64,
+    pub size_pages: u32,
+}
+
+impl VmVfsReplyIn {
+    /// Decode a `VM_VFS_REPLY` message (VFS → VM).
+    ///
+    /// Reads the payload from the dedicated `m_vm_vfs_reply` overlay
+    /// (`MessVmVfsReply`, C `mess_10` layout — ipc.h:86-92, com.h:708-714).
+    /// Do NOT decode from `MessageM1`: the m10 payload starts with
+    /// `m10ull1` at offset 0, shifting every `VMV_*` field 8 bytes past the
+    /// `MessageM1` offsets (23-P0-1 wire-format family).
+    #[inline(always)]
+    pub fn decode_message(msg: &Message) -> Self {
+        // SAFETY: `m_vm_vfs_reply` is the active union arm for VM_VFS_REPLY
+        // messages (the C sender writes the m10 layout via the VMV_* macros).
+        let r = unsafe { msg.m_u.m_vm_vfs_reply };
+        Self {
+            endpoint: Endpoint(r.endpoint),
+            result: r.result,
+            reqid: r.reqid,
+            dev: r.dev as u32,
+            ino: r.ino,
+            fd: r.fd,
+            size_pages: r.size_pages,
+        }
+    }
 }
 
 // ============================================================================
@@ -896,36 +921,6 @@ impl VmRemapIn {
     }
 }
 
-impl DecodeFromM1 for VmVfsReplyIn {
-    /// Decode VM_VFS_REPLY payload.
-    ///
-    /// Field mapping (C `mess_vm_vfs_reply` → Rust m1):
-    /// - `VMV_ENDPOINT` → m1.m1i1
-    /// - `VMV_RESULT` → m1.m1i2
-    /// - `VMV_REQID` → m1.m1i3
-    /// - `VMV_DEV` → m1.m1p1 low 4 bytes
-    /// - `VMV_FD` → m1.m1p1 (re-using the 8-byte field for fd+dev)
-    /// - `VMV_SIZE` → m1.m1p2
-    /// - `VMV_SIZE_PAGES` → m1.m1p3
-    #[inline(always)]
-    fn decode(m1: &MessageM1) -> Self {
-        // m1p1 holds both dev (i32) and fd (i64) in the C layout; we pack
-        // them as `dev = m1p1 as i32`, `fd = m1p1 as i64` — the high 4
-        // bytes overlap with the dev field of the next call. This matches
-        // the C side's m10_i4 + m10_l1 aliasing (m10_i4 is the low 4
-        // bytes of m10_l1 in little-endian).
-        let p1 = m1.m1p1;
-        Self {
-            endpoint: Endpoint(m1.m1i1),
-            result: m1.m1i2,
-            reqid: m1.m1i3,
-            dev: p1 as i32,
-            fd: p1 as i64,
-            size: m1.m1p2 as i64,
-            size_pages: m1.m1p3 as i64,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // DecodeFromM1 for the reply encoders below; requests use dedicated
@@ -1040,16 +1035,37 @@ impl VmVfsMmapIn {
     }
 }
 
-impl DecodeFromM1 for VmCacheIn {
-    fn decode(m1: &MessageM1) -> Self {
+impl VmCacheIn {
+    /// Decode a cache-block request (VFS → VM).
+    ///
+    /// Reads the payload from the dedicated `m_vmmcp` union member, matching
+    /// the C wire format (`mess_vmmcp`, ipc.h:2383-2393) as sent by
+    /// `vm_cachecall` (libsys/vm_cache.c:8-43): `dev` (u64 @ 0),
+    /// `dev_offset` (i64 @ 8), `ino_offset` (i64 @ 16), `ino` (u64 @ 24),
+    /// `block` (u32 @ 32), `flags_ptr` (u32 @ 36), `pages` (u8 @ 40),
+    /// `flags` (u8 @ 41).
+    ///
+    /// Do NOT decode from `MessageM1` — same wire-format family as
+    /// 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
+    /// read `dev` from `m1p1` @16 and hardcoded `ino`/`ino_offset`/`block`
+    /// to 0, so setcache could never see the FS's inode or block address).
+    #[inline(always)]
+    pub fn decode_message(msg: &Message) -> Self {
+        // SAFETY: `m_vmmcp` is the active union arm for the four cache
+        // request types — `vm_cachecall` fills exactly these fields.
+        let v = unsafe { msg.m_u.m_vmmcp };
         Self {
-            dev: m1.m1p1,
-            dev_offset: m1.m1p2,
-            ino: 0,
-            ino_offset: 0,
-            pages: m1.m1i1 as u32,
-            flags: m1.m1i2 as u32,
-            block: 0,
+            dev: v.dev,
+            // C: `uint64_t dev_off = msg->m_vmmcp.dev_offset;` (mem_cache.c:98)
+            // — the u64 conversion is part of the C semantics (a negative
+            // sender offset wraps, and the % PAGE_SIZE alignment check then
+            // behaves identically on both sides).
+            dev_offset: v.dev_offset as u64,
+            ino_offset: v.ino_offset as u64,
+            ino: v.ino,
+            pages: v.pages as u32,
+            flags: v.flags as u32,
+            block: v.block as u64,
         }
     }
 }
@@ -1365,6 +1381,74 @@ mod tests {
         assert_eq!(req.m1, 0x1000);
         assert_eq!(req.len, 4096);
         assert_eq!(req.flags, 1);
+    }
+
+    #[test]
+    fn test_vm_vfs_reply_in_decode_message() {
+        // Wire layout is the C m10 overlay used by VFS's do_vm_call
+        // (endpoint@8/result@12/reqid@16/dev@20/ino@24/fd@28/
+        // size_pages@32, com.h:708-714). The sender writes the dedicated
+        // `m_vm_vfs_reply` union arm. The old MessageM1 decode read every
+        // field 8 bytes early (23-P0-1 wire-format family) — this test
+        // locks the overlay offsets.
+        let mut msg = Message::default();
+        unsafe {
+            msg.m_u.m_vm_vfs_reply.endpoint = 42;
+            msg.m_u.m_vm_vfs_reply.result = 5; // e.g. EIO
+            msg.m_u.m_vm_vfs_reply.reqid = 7;
+            msg.m_u.m_vm_vfs_reply.dev = 0xABCD;
+            msg.m_u.m_vm_vfs_reply.ino = 12345;
+            msg.m_u.m_vm_vfs_reply.fd = 9;
+            msg.m_u.m_vm_vfs_reply.size_pages = 16;
+        }
+
+        let req = VmVfsReplyIn::decode_message(&msg);
+        assert_eq!(req.endpoint, Endpoint(42));
+        assert_eq!(req.result, 5);
+        assert_eq!(req.reqid, 7);
+        assert_eq!(req.dev, 0xABCD);
+        assert_eq!(req.ino, 12345);
+        assert_eq!(req.fd, 9);
+        assert_eq!(req.size_pages, 16);
+    }
+
+    #[test]
+    fn test_vm_cache_in_decode_message() {
+        // Wire layout is the C m_vmmcp overlay used by vm_cachecall
+        // (dev@0/dev_offset@8/ino_offset@16/ino@24/block@32/flags_ptr@36/
+        // pages@40/flags@41, ipc.h:2383-2393). The old MessageM1 decode
+        // read dev from m1p1@16 and hardcoded ino/ino_offset/block to 0
+        // (24-P0-1 wire-format family) — this test locks the overlay
+        // offsets and the u64 wrap of a negative dev_offset.
+        let mut msg = Message::default();
+        unsafe {
+            msg.m_u.m_vmmcp.dev = 0xDEADBEEF;
+            msg.m_u.m_vmmcp.dev_offset = 0x1000;
+            msg.m_u.m_vmmcp.ino_offset = 0x2000;
+            msg.m_u.m_vmmcp.ino = 12345;
+            msg.m_u.m_vmmcp.block = 0x3000;
+            msg.m_u.m_vmmcp.pages = 3;
+            msg.m_u.m_vmmcp.flags = 1; // VMSF_ONCE
+        }
+
+        let req = VmCacheIn::decode_message(&msg);
+        assert_eq!(req.dev, 0xDEADBEEF);
+        assert_eq!(req.dev_offset, 0x1000);
+        assert_eq!(req.ino_offset, 0x2000);
+        assert_eq!(req.ino, 12345);
+        assert_eq!(req.block, 0x3000);
+        assert_eq!(req.pages, 3);
+        assert_eq!(req.flags, 1);
+
+        // Negative dev_offset from the i386 sender wraps to u64, matching
+        // C: `uint64_t dev_off = msg->m_vmmcp.dev_offset` (mem_cache.c:98).
+        let mut msg = Message::default();
+        unsafe {
+            msg.m_u.m_vmmcp.dev_offset = -4096i64;
+        }
+        let req = VmCacheIn::decode_message(&msg);
+        assert_eq!(req.dev_offset, 0xFFFF_FFFF_FFFF_F000);
+        assert_eq!(req.dev_offset % 4096, 0);
     }
 
     #[test]

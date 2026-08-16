@@ -14,7 +14,7 @@
 //! - **MEMCTL (HEAP_PREALLOC)**: Delegates to brk module.
 //! - **MEMCTL (MAP_PREALLOC)**: Delegates to mmap module.
 //! - **MEMCTL (GET_PREALLOC_MAP)**: Queries region with PREALLOC_MAP flag.
-//! - **PREPARE**: Partially implemented — validates endpoints + pins both processes' memory via `map_pin_memory`. Heap extension (`real_brk`) and `map_proc_dyn_data` are deferred.
+//! - **PREPARE**: Partially implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk`. `map_proc_dyn_data` (CoW-transfer of mmap regions) is deferred.
 //! - **UPDATE**: Partially implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection. sys_update/swap_proc_slot/swap_proc_dyn_data deferred.
 
 use minix_types::{VirBytes, Endpoint};
@@ -40,7 +40,7 @@ pub(crate) enum RsError {
 
     // ── PREPARE specific ──
     PinFailed,
-    PrepareNotImplemented,
+    HeapExtendFailed,
 
     // ── UPDATE specific ──
     PreallocMapConflict,
@@ -152,7 +152,7 @@ pub(crate) fn handle_rs_set_priv(
 /// process's heap to match the source's if needed (prevents heap exhaustion
 /// during update).
 ///
-/// # C source (rs.c:71-148)
+/// # C source (rs.c:71-145)
 ///
 /// The C implementation does 5 things in order:
 /// 1. Validate src/dst endpoints via `vm_isokendpt`
@@ -161,9 +161,10 @@ pub(crate) fn handle_rs_set_priv(
 /// 4. `map_pin_memory(dst_vmp)` — pin destination process
 /// 5. `map_proc_dyn_data(src_vmp, dst_vmp)` — map dynamic data — **not yet implemented**
 ///
-/// Steps 3 and 5 are deferred: `real_brk` requires brk module integration,
-/// and `map_proc_dyn_data` requires mmap region sharing support.
-/// Steps 1, 2, and 4 are implemented below.
+/// Steps 1-4 are implemented below. Step 5 (`map_proc_dyn_data`, the CoW
+/// transfer of mmap regions) is deferred: it requires a range-constrained
+/// region copy with page-table sync on a live process (see A-8 gap contract
+/// in the design doc / `25-rs-services.md`).
 pub(crate) fn handle_rs_prepare(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
@@ -191,9 +192,42 @@ pub(crate) fn handle_rs_prepare(
         ).map_err(|_| RsError::PinFailed)?;
     }
 
-    // Step 3 (DEFERRED): Extend dst heap to match src.
-    // C: if (src_addr > dst_addr) real_brk(dst_vmp, src_addr);
-    // Requires brk module integration. Not blocking for basic pin functionality.
+    // Step 3: Extend dst heap to match src (C: rs.c:116-126).
+    //
+    // C computes the current data-region end for both processes
+    // (`region_search(&vmp->vm_regions_avl, VM_MMAPBASE, AVL_LESS)` →
+    // `vaddr + length`) and grows dst only when src's end is higher —
+    // "better safe than sorry": the destination must not run out of heap
+    // during the live update window. minix-rs tracks the heap top as
+    // `vm_region_top` (kept in sync with the data region by brk.rs); the
+    // C-faithful `find_less(MMAP_BASE)` measure is used here so the
+    // comparison matches the C ground truth exactly. The `src > dst`
+    // guard is load-bearing: calling brk unconditionally would shrink a
+    // larger dst heap to the source's smaller size.
+    let src_data_end = {
+        let src_proc = table.get_active(src_slot)
+            .ok_or(RsError::ProcessNotFound)?;
+        let data_vr = src_proc.regions()
+            .find_less(VirBytes(crate::mmap::MMAP_BASE))
+            .ok_or(RsError::HeapExtendFailed)?;
+        data_vr.vaddr.0 + data_vr.length.0
+    };
+    let dst_data_end = {
+        let dst_proc = table.get_active(dst_slot)
+            .ok_or(RsError::ProcessNotFound)?;
+        let data_vr = dst_proc.regions()
+            .find_less(VirBytes(crate::mmap::MMAP_BASE))
+            .ok_or(RsError::HeapExtendFailed)?;
+        data_vr.vaddr.0 + data_vr.length.0
+    };
+    if src_data_end > dst_data_end {
+        let req = crate::brk::BrkRequest {
+            endpoint: dst,
+            new_brk_addr: VirBytes(src_data_end),
+        };
+        crate::brk::handle_brk(table, page_alloc, frames, &req)
+            .map_err(|_| RsError::HeapExtendFailed)?;
+    }
 
     // Step 4: Pin destination process memory.
     // C: map_pin_memory(dst_vmp)
@@ -229,7 +263,7 @@ pub(crate) fn handle_rs_prepare(
 /// 6. `swap_proc_dyn_data(src_vmp, dst_vmp, flags)` — mmap sharing (DEFERRED)
 /// 7. `pt_bind()` + reply message (DEFERRED)
 ///
-/// # C source (rs.c:150-229)
+/// # C source (rs.c:150-213)
 ///
 /// ```c
 /// int do_rs_update(message *m_ptr)
@@ -312,13 +346,19 @@ pub(crate) fn handle_rs_memctl(
 ) -> Result<RsMemctlResult, RsError> {
     let slot = table.vm_isokendpt(target)?;
 
-    let active = table.get_active(slot)
+    let mut active = table.get_active(slot)
         .ok_or(RsError::ProcessNotFound)?;
 
     match request {
         RsMemctlRequest::Pin => {
-            // C: only pins when num_vm_instances > 1.
-            // Current design: single VM instance, no-op.
+            // C: rs.c:368-371 — `if (num_vm_instances <= 1) return OK;`
+            // only actually pins when VM can recover from crashes
+            // (saves memory in the single-instance case).
+            if crate::global::vm_instance_count() <= 1 {
+                return Ok(RsMemctlResult::Ok);
+            }
+            crate::region::map_pin_memory(active.regions_mut(), frames, page_alloc)
+                .map_err(|_| RsError::PinFailed)?;
             Ok(RsMemctlResult::Ok)
         }
         RsMemctlRequest::MakeVmInstance => {
@@ -335,7 +375,12 @@ pub(crate) fn handle_rs_memctl(
             // bytes = *addr + *len, then calls real_brk(vmp, bytes).
             // Rust: compute new absolute brk = current_top + len.
             let current_brk = active.region_top();
-            let new_brk = VirBytes(current_brk.0 + len as u64);
+            // Tightening: C wraps silently (`bytes = *addr + *len` would
+            // shrink the heap on overflow); minix-rs fails closed.
+            let new_brk = current_brk.0
+                .checked_add(len as u64)
+                .map(VirBytes)
+                .ok_or(RsError::InvalidLength)?;
             let req = crate::brk::BrkRequest {
                 endpoint: target,
                 new_brk_addr: new_brk,
@@ -351,16 +396,34 @@ pub(crate) fn handle_rs_memctl(
             if len == 0 {
                 return Err(RsError::InvalidLength);
             }
-            // C: rs_memctl_map_prealloc → map_page_region()
-            // Rust: allocate anonymous region via mmap.
+            // C: rs_memctl_map_prealloc (rs.c:300-324) → map_page_region(
+            //     vmp, base, top, *len, VR_ANON|VR_WRITABLE|VR_UNINITIALIZED,
+            //     MF_PREALLOC, &mem_type_anon) then sets VR_PREALLOC_MAP.
+            // Rust: delegate to handle_mmap with the same flag set — mmap's
+            // `to_vr_flags` maps MmapFlags::PREALLOC → VrFlags::PREALLOC_MAP
+            // and MmapFlags::UNINITIALIZED → VrFlags::UNINITIALIZED.
+            // (FIX 25-R1: the previous hardcoded `0x1002` omitted both bits,
+            // so the region never carried PREALLOC_MAP and the follow-up
+            // GET_PREALLOC_MAP lookup would always miss.)
+            //
+            // C's `map_page_region` is an internal call that skips `do_mmap`'s
+            // privilege checks; `handle_mmap` gates MAP_UNINITIALIZED on an
+            // execpriv caller (VFS/RS). The semantically correct model is an
+            // RS-initiated third-party mapping for the target — exactly the
+            // C privilege model (`do_rs_memctl` is always called by RS).
             let aligned_len = VirBytes(((len as u64) + 4095) & !4095);
             let mmap_req = minix_types::VmMmapIn {
-                caller: target,
+                caller: Endpoint::RS,
                 forwhom: target,
                 addr: VirBytes(0),
                 length: aligned_len,
-                prot: 3,
-                flags: 0x1002,
+                prot: crate::mmap::ProtFlags::READ.bits()
+                    | crate::mmap::ProtFlags::WRITE.bits(),
+                flags: crate::mmap::MmapFlags::PRIVATE.bits()
+                    | crate::mmap::MmapFlags::ANONYMOUS.bits()
+                    | crate::mmap::MmapFlags::PREALLOC.bits()
+                    | crate::mmap::MmapFlags::UNINITIALIZED.bits()
+                    | crate::mmap::MmapFlags::THIRDPARTY.bits(),
                 fd: -1,
                 offset: 0,
             };
@@ -401,7 +464,7 @@ mod tests {
     use crate::vmproc::VmProcTable;
     use crate::phys_mem::{BitmapAllocator, PhysAlloc};
     use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
-    use minix_types::PhysBytes;
+    use minix_types::{PhysBytes, UserSlot};
 
     fn make_frames() -> PageFrames {
         PageFrames::new(PhysBytes(256 * REGION_PAGE_SIZE as u64))
@@ -409,6 +472,21 @@ mod tests {
 
     fn make_page_alloc() -> VmPageAllocator {
         VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)))
+    }
+
+    /// Activates a fresh process in `slot` with an initialized region map.
+    ///
+    /// Mirrors the brk/mmap test helpers: `init_page_table()` uses the
+    /// test-build stub, so no mock physical memory is touched.
+    fn init_test_process(slot: UserSlot) -> Endpoint {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(slot); }
+        let empty = table.get_empty(slot).unwrap();
+        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+        let mut active = empty.activate(ep);
+        active.init_page_table().unwrap();
+        active.init_regions();
+        ep
     }
 
     #[test]
@@ -438,6 +516,48 @@ mod tests {
     }
 
     #[test]
+    fn test_set_priv_updates_acl() {
+        let table = VmProcTable::get_global();
+        let slot = UserSlot::new(64);
+        let ep = init_test_process(slot);
+        let mask = crate::acl::AclMask::from_bits_truncate(0x1);
+
+        let result = handle_rs_set_priv(
+            table,
+            Endpoint::RS,
+            ep,
+            Some(mask),
+            false,
+        );
+        assert_eq!(result, Ok(()));
+
+        let active = table.get_active(slot).unwrap();
+        assert_eq!(active.acl(), AclState::acl_set(false, Some(mask)));
+    }
+
+    #[test]
+    fn test_set_priv_sys_proc_with_mask_ok() {
+        // C: rs.c:48-53 — a sys proc with an explicit mask is accepted.
+        let table = VmProcTable::get_global();
+        let slot = UserSlot::new(63);
+        let ep = init_test_process(slot);
+        let mask = crate::acl::AclMask::from_bits_truncate(0x3);
+
+        let result = handle_rs_set_priv(
+            table,
+            Endpoint::RS,
+            ep,
+            Some(mask),
+            true,
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            table.get_active(slot).unwrap().acl(),
+            AclState::acl_set(true, Some(mask))
+        );
+    }
+
+    #[test]
     fn test_memctl_pin_not_found() {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
@@ -452,6 +572,28 @@ mod tests {
             RsMemctlRequest::Pin,
         );
         assert_eq!(result, Err(RsError::ProcessNotFound));
+    }
+
+    #[test]
+    fn test_memctl_pin_single_instance_ok() {
+        // C: rs.c:368-371 — `num_vm_instances <= 1` → OK without pinning.
+        // The test global defaults to 0 instances, exercising the guard.
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        let slot = UserSlot::new(65);
+        let ep = init_test_process(slot);
+
+        let result = handle_rs_memctl(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            &mut vfs_queue,
+            ep,
+            RsMemctlRequest::Pin,
+        );
+        assert_eq!(result, Ok(RsMemctlResult::Ok));
     }
 
     #[test]
@@ -506,6 +648,86 @@ mod tests {
     }
 
     #[test]
+    fn test_memctl_map_prealloc_sets_prealloc_flag() {
+        // C: rs.c:313-321 — the preallocated region carries VR_PREALLOC_MAP
+        // so the follow-up GET_PREALLOC_MAP (rs.c:329-344) can find it.
+        // Regression for FIX 25-R1: the old hardcoded flags (0x1002) omitted
+        // MAP_PREALLOC, so the region never carried the flag and the
+        // follow-up lookup always missed.
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        let slot = UserSlot::new(66);
+        let ep = init_test_process(slot);
+
+        let result = handle_rs_memctl(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            &mut vfs_queue,
+            ep,
+            RsMemctlRequest::MapPrealloc { addr: VirBytes(0), len: 0x3000 },
+        );
+        let RsMemctlResult::AddrLen { addr, len } = result.unwrap() else {
+            panic!("expected AddrLen");
+        };
+        assert_ne!(addr.0, 0);
+        assert_eq!(len, 0x3000);
+
+        // The region must carry PREALLOC_MAP (else the LU handshake cannot
+        // find the preallocated range).
+        let active = table.get_active(slot).unwrap();
+        assert!(active.regions().iter()
+            .any(|vr| vr.flags.contains(VrFlags::PREALLOC_MAP)));
+
+        // GET_PREALLOC_MAP must return exactly that region.
+        let got = handle_rs_memctl(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            &mut vfs_queue,
+            ep,
+            RsMemctlRequest::GetPreallocMap,
+        );
+        assert_eq!(got, Ok(RsMemctlResult::AddrLen { addr, len }));
+    }
+
+    #[test]
+    fn test_memctl_heap_prealloc_grows_heap() {
+        // C: rs_memctl_heap_prealloc (rs.c:281-295) — *addr = current brk,
+        // bytes = *addr + *len, real_brk(vmp, bytes).
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
+        let slot = UserSlot::new(67);
+        let ep = init_test_process(slot);
+        {
+            let mut active = table.get_active(slot).unwrap();
+            active.set_region_top(VirBytes(0x4000_0000));
+        }
+
+        let result = handle_rs_memctl(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            &mut vfs_queue,
+            ep,
+            RsMemctlRequest::HeapPrealloc { addr: VirBytes(0), len: 0x2000 },
+        );
+        let RsMemctlResult::AddrLen { addr, len } = result.unwrap() else {
+            panic!("expected AddrLen");
+        };
+        assert_eq!(addr, VirBytes(0x4000_0000));
+        assert_eq!(len, 0x2000);
+        assert_eq!(
+            table.get_active(slot).unwrap().region_top(),
+            VirBytes(0x4000_2000)
+        );
+    }
+
+    #[test]
     fn test_prepare_invalid_endpoint() {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
@@ -521,6 +743,98 @@ mod tests {
             0,
         );
         assert_eq!(result, Err(RsError::ProcessNotFound));
+    }
+
+    #[test]
+    fn test_prepare_extends_dst_heap_to_src() {
+        // C: rs.c:116-126 — if src's data end > dst's, real_brk(dst, src_end).
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let src_slot = UserSlot::new(68);
+        let dst_slot = UserSlot::new(69);
+        let src = init_test_process(src_slot);
+        let dst = init_test_process(dst_slot);
+
+        // src data region [0x3000_0000, 0x5000_0000), dst [0x3000_0000, 0x4000_0000).
+        {
+            let mut proc = table.get_active(src_slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                VirBytes(0x3000_0000),
+                VirBytes(0x2000_0000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+            )).unwrap();
+            proc.set_region_top(VirBytes(0x5000_0000));
+        }
+        {
+            let mut proc = table.get_active(dst_slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                VirBytes(0x3000_0000),
+                VirBytes(0x1000_0000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+            )).unwrap();
+            proc.set_region_top(VirBytes(0x4000_0000));
+        }
+
+        let result = handle_rs_prepare(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            src,
+            dst,
+            0,
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            table.get_active(dst_slot).unwrap().region_top(),
+            VirBytes(0x5000_0000)
+        );
+    }
+
+    #[test]
+    fn test_prepare_does_not_shrink_dst_heap() {
+        // C: `if (src_addr > dst_addr)` — a larger dst heap must be left
+        // untouched (calling brk unconditionally would shrink it).
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let src_slot = UserSlot::new(70);
+        let dst_slot = UserSlot::new(71);
+        let src = init_test_process(src_slot);
+        let dst = init_test_process(dst_slot);
+
+        {
+            let mut proc = table.get_active(src_slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                VirBytes(0x3000_0000),
+                VirBytes(0x1000_0000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+            )).unwrap();
+            proc.set_region_top(VirBytes(0x4000_0000));
+        }
+        {
+            let mut proc = table.get_active(dst_slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                VirBytes(0x3000_0000),
+                VirBytes(0x3000_0000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+            )).unwrap();
+            proc.set_region_top(VirBytes(0x6000_0000));
+        }
+
+        let result = handle_rs_prepare(
+            table,
+            &mut page_alloc,
+            &mut frames,
+            src,
+            dst,
+            0,
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            table.get_active(dst_slot).unwrap().region_top(),
+            VirBytes(0x6000_0000)
+        );
     }
 
     #[test]
@@ -583,17 +897,20 @@ mod tests {
     #[test]
     fn test_error_errno_mapping() {
         // Tests the full error path: RsError → From<RsError> for VmError → VmError::to_errno()
-        use minix_types::{VmError, EINVAL, ENOSYS, EPERM, EFAULT};
+        use minix_types::{VmError, EINVAL, ENOSYS, EPERM, ENOMEM};
         assert_eq!(VmError::from(RsError::ProcessNotFound).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::SysProcNoMask).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::PinFailed).to_errno(), ENOSYS);
-        assert_eq!(VmError::from(RsError::PrepareNotImplemented).to_errno(), ENOSYS);
+        // C: real_brk() returns ENOMEM on failure (break.c:63-68).
+        assert_eq!(VmError::from(RsError::HeapExtendFailed).to_errno(), ENOMEM);
         assert_eq!(VmError::from(RsError::PreallocMapConflict).to_errno(), ENOSYS);
         assert_eq!(VmError::from(RsError::UpdateNotImplemented).to_errno(), ENOSYS);
-        assert_eq!(VmError::from(RsError::InvalidRequest).to_errno(), EFAULT);
+        // C: rs.c:386-388 — do_rs_memctl default arm returns EINVAL.
+        assert_eq!(VmError::from(RsError::InvalidRequest).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::MakeVmFailed).to_errno(), EPERM);
         assert_eq!(VmError::from(RsError::HeapPreallocFailed).to_errno(), ENOSYS);
         assert_eq!(VmError::from(RsError::MapPreallocFailed).to_errno(), ENOSYS);
-        assert_eq!(VmError::from(RsError::InvalidLength).to_errno(), EFAULT);
+        // C: rs.c:287-288 / rs.c:307-308 — *len <= 0 returns EINVAL.
+        assert_eq!(VmError::from(RsError::InvalidLength).to_errno(), EINVAL);
     }
 }

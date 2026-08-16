@@ -34,6 +34,12 @@ use minix_types::VirBytes;
 use crate::region::PageFrames;
 use minix_types::PhysBytes;
 
+/// Cache-reclaim batch size for the main-loop `alloc_cycle` hook.
+///
+/// C: `alloc_mem` retries after `cache_freepages(1024)` on exhaustion
+/// (alloc.c:242-279); the same batch is used here.
+const FREE_CACHE_BATCH: usize = 1024;
+
 pub struct VmServer {
     page_alloc: VmPageAllocator,
     page_cache: PageCache,
@@ -417,6 +423,12 @@ impl VmServer {
     /// always gets a fresh replenishment attempt per pressure episode.
     fn alloc_cycle(&mut self) {
         debug_assert!(self.missing_spares > 0);
+        // C: alloc_mem → cache_freepages(1024) 重试（alloc.c:242-279，main.c:118-119）。
+        // plan.md §7.3：补充体 DEFERRED 归 24-page-cache —— 回收页缓存后再清压力计数；
+        // 若回收后压力仍在，下一次分配失败会重新武装计数（每压力片段一次回收机会）。
+        if let Some(frames) = self.page_frames.as_mut() {
+            let _freed = self.page_cache.free_pages(FREE_CACHE_BATCH, frames, &mut self.page_alloc);
+        }
         self.missing_spares = 0;
     }
 
@@ -760,10 +772,10 @@ impl VmServer {
             Some(r) => r,
             None => return VmReply::Error(VmError::InvalidAddress),
         };
-        let (page_alloc, frames, _cache, _vfs_queue) = self.parts_mut();
+        let (page_alloc, frames, cache, vfs_queue) = self.parts_mut();
         match crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
-            fault_addr, request.write, table,
+            fault_addr, request.write, table, cache, vfs_queue,
         ) {
             Ok(_action) => VmReply::Ok,
             Err(_e) => {
@@ -948,7 +960,7 @@ fn ipc_call_rs_init() -> Result<RprocTab, ()> {
     //
     // The Rust rewrite is blocked on three DEFERRED dependencies:
     //
-    //   - IpcTransport (this crate, `ipc/transport.rs:144` is still
+    //   - IpcTransport (this crate, `ipc/transport.rs:150`/`:164` is still
     //     `unimplemented!()` for KernelIpcTransport; this depends on
     //     kernel IPC primitive).
     //   - sys_safecopyfrom syscall shim (depends on the kernel-side
@@ -1108,7 +1120,13 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
         VmReply::Mmap(out) => out.encode(m1),
         VmReply::MapPhys(out) => out.encode(m1),
         VmReply::ExecNewmem(out) => out.encode(m1),
-        VmReply::MapCache { .. } => {}
+        VmReply::MapCache { addr } => {
+            // C: msg->m_vmmcp_reply.addr = vr->vaddr (mem_cache.c:170);
+            // libminixfs reads it back in vm_map_cacheblock (libsys/vm_cache.c:47-54).
+            // SAFETY: cache replies use the m_vmmcp_reply format.
+            let reply = unsafe { &mut msg.m_u.m_vmmcp_reply };
+            reply.addr = addr.0 as u32;
+        }
         VmReply::VfsMmap(out) => out.encode(m1),
         VmReply::GetPhys { phys_addr } => { m1.m1p1 = phys_addr.0; }
         VmReply::GetRefcount { count } => { m1.m1i1 = count as i32; }
@@ -1146,7 +1164,19 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             m1.m1i3 = 0; // reserved
         }
         VmReply::RsMemctlAddrLen { addr, len } => {
-            m1.m1p1 = addr.0; m1.m1i1 = len as i32;
+            // C message layout (com.h:738-741): VM_RS_CTL_ADDR == m2_p1,
+            // VM_RS_CTL_LEN == m2_i3. In C's `mess` union, m2_p1 is at
+            // offset 40 while m1_p1/m2_l1 are at offset 24 — the minix-rs
+            // MessageM1/M2 layouts are offset-shifted vs C (see
+            // minix-types message.rs), so within this model addr→m1p1 and
+            // len→m1i3 alias the slots the request decode reads back
+            // (m2l1/m2i3). The C wire offsets differ and need a dedicated
+            // minix-types overlay when a real C RS is on the wire (A-8:
+            // transport DEFERRED). (FIX 25-R2: len was written to m1i1,
+            // i.e. the request's endpoint slot — vm_memctl would read a
+            // stale len.)
+            m1.m1p1 = addr.0;
+            m1.m1i3 = len as i32;
         }
         VmReply::InfoRegion { regions, count, next } => {
             // Minix3 C uses `sys_datacopy(VM_PROC_NR, regions_addr,
@@ -1239,23 +1269,23 @@ impl VmServer {
     pub(crate) fn handle_mapcache(&mut self, caller: Endpoint, req: VmCacheIn) -> VmReply {
         let table = VmProcTable::get_global();
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_mapcache(table, &mut self.page_alloc, frames, &self.page_cache, caller, req)
+        MessageDispatcher::dispatch_mapcache(table, &mut self.page_alloc, frames, &mut self.page_cache, caller, req)
     }
 
     pub(crate) fn handle_setcache(&mut self, caller: Endpoint, req: VmCacheIn) -> VmReply {
         let table = VmProcTable::get_global();
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_setcache(table, frames, &mut self.page_cache, caller, req)
+        MessageDispatcher::dispatch_setcache(table, &mut self.page_alloc, frames, &mut self.page_cache, caller, req)
     }
 
     pub(crate) fn handle_forgetcache(&mut self, req: VmCacheIn) -> VmReply {
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_forgetcache(&mut self.page_cache, frames, req)
+        MessageDispatcher::dispatch_forgetcache(&mut self.page_cache, frames, &mut self.page_alloc, req)
     }
 
     pub(crate) fn handle_clearcache(&mut self, req: VmCacheIn) -> VmReply {
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_clearcache(&mut self.page_cache, frames, req)
+        MessageDispatcher::dispatch_clearcache(&mut self.page_cache, frames, &mut self.page_alloc, req)
     }
 
     pub fn has_pending_vfs_requests(&self) -> bool {
@@ -1780,5 +1810,46 @@ mod tests {
             // single charged module adds exactly 1 page.
             assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 1);
         });
+    }
+
+    #[test]
+    fn test_encode_reply_rs_memctl_addr_len_slots() {
+        // 25-R2 regression: len must be written to m1i3 (the VM_RS_CTL_LEN
+        // slot), not m1i1 (the VM_RS_CTL_ENDPT slot). C: com.h:746-747 —
+        // VM_RS_CTL_ADDR=m2_p1, VM_RS_CTL_LEN=m2_i3; vm_memctl reads both
+        // back after the call.
+        let mut msg = Message::default();
+        encode_reply_data(
+            VmReply::RsMemctlAddrLen {
+                addr: VirBytes(0x1_2345_6000),
+                len: 0x3000,
+            },
+            &mut msg,
+        );
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        assert_eq!(m1.m1p1, 0x1_2345_6000);
+        assert_eq!(m1.m1i3, 0x3000);
+        // The endpoint slot must not be clobbered by the len write (25-R2).
+        assert_eq!(m1.m1i1, 0);
+    }
+
+    #[test]
+    fn test_rproctab_empty_32_slots_all_not_in_use() {
+        // D8: RprocTab is a 32-slot handshake stub — deliberately different
+        // from C's rprocpub[NR_SYS_PROCS]=64 and minix-rs NR_PROCS=256
+        // (doc §3.9); the stub shape only feeds the future handshake decode.
+        let tab = RprocTab::empty();
+        assert_eq!(tab.iter().count(), 32);
+        assert!(tab.iter().all(|e| !e.in_use));
+        assert_eq!(tab.iter().filter(|e| e.endpoint != Endpoint::NONE).count(), 0);
+    }
+
+    #[test]
+    fn test_rproctab_empty_entry_defaults() {
+        let e = RprocEntry::EMPTY;
+        assert!(!e.in_use);
+        assert_eq!(e.endpoint, Endpoint::NONE);
+        assert_eq!(e.call_mask, 0);
+        assert!(!e.is_user);
     }
 }
