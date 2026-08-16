@@ -100,32 +100,15 @@ pub fn mmap(
     todo!("mmap syscall")
 }
 
-/// Error number.
-#[derive(Debug, Clone, Copy)]
-#[repr(i32)]
-pub enum Errno {
-    Eperm = 1,
-    Enoent = 2,
-    Esrch = 3,
-    Eintr = 4,
-    Eio = 5,
-    Enxio = 6,
-    E2big = 7,
-    Enoexec = 8,
-    Ebadf = 9,
-    Echild = 10,
-    Eagain = 11,
-    Enomem = 12,
-    Eacces = 13,
-    Efault = 14,
-    Ebusy = 16,
-    Eexist = 17,
-    Exdev = 18,
-    Enodev = 19,
-    Enotdir = 20,
-    Eisdir = 21,
-    Einval = 22,
-}
+/// Error number — single shared ABI type.
+///
+/// Re-exported from `minix-types` (the Redox `redox_syscall::Error` pattern:
+/// one shared error type across the ABI boundary). The local enum previously
+/// duplicated `minix_types::Errno` with a different naming style (`Eperm`)
+/// and **lacked the RS-required values** `ENOSYS`/`EDEADEPT`/`EDONTREPLY`/
+/// `EGENERIC`/`ERESTART` (errno.h:78/211/199/200/196); two Errno types force
+/// a conversion at every `KernelApi` boundary (todo §11 N4).
+pub use minix_types::Errno;
 
 #[cfg(test)]
 mod tests {
@@ -133,7 +116,10 @@ mod tests {
 
     #[test]
     fn test_errno_values() {
-        assert_eq!(Errno::Eperm as i32, 1);
-        assert_eq!(Errno::Enoent as i32, 2);
+        assert_eq!(Errno::EPERM.to_i32(), 1);
+        assert_eq!(Errno::EINVAL.to_i32(), 22);
+        // The RS-required values the old enum lacked must be reachable from
+        // the shared type (todo §11 N4).
+        assert_eq!(Errno::ENOSYS.to_i32(), 78);
     }
 }

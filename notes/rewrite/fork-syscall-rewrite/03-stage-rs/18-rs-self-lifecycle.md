@@ -60,7 +60,7 @@ RS 被重启后的 init 回调：
 3. 新 RS 接管：`old_rs_rp = rproc_ptr[RS_PROC_NR]`、`new_rs_rp = rproc_ptr[info->old_endpoint]`；
 4. **若 update 进行中**：`SRV_IS_UPDATING(old_rs_rp)` → `end_update(ERESTART, RS_REPLY)`（16 的机制：以 ERESTART 理由结束 update）；
 5. `update_service(&old_rs_rp, &new_rs_rp, RS_DONTSWAP, 0)`——**不预换**（restart 场景下 slot 已经就位）；
-6. `init_service(new_rs_rp, SEF_INIT_RESTART, 0)`（12）；`sys_setalarm(RS_DELTA_T)` 重排周期 alarm。
+6. `init_service(new_rs_rp, SEF_INIT_RESTART, 0)`（12）；`sys_setalarm(RS_DELTA_T)` 重排周期 alarm。R14：12 的 `init_service` 建模拆为 `mark_initializing(slot, ticks)`（utility.c:19-21 的 `RS_INITIALIZING`/`alive_tm`/`check_tm` 三行变异）+ `init_message` 载荷——RS 自重启路径同样先置位再发 `RS_INIT`，否则 ready 门（request.c:477-483）拒绝。
 
 ### 2.3 sef_cb_init_lu（main.c:549-585）
 
@@ -129,6 +129,12 @@ if ((replica_rp->r_priv.s_flags & rs_flags) == rs_flags) {
 ```
 
 `update_sig_mgrs`（utility.c:387-412）：`sys_getpriv` 同步权限结构 → 设置 `s_sig_mgr = sig_mgr`、`s_bak_sig_mgr = bak_sig_mgr` → `sys_privctl(SYS_PRIV_UPDATE_SYS)` 写回内核。效果：RS 挂掉时内核自动把它的服务转给备份信号管理器（replica）。
+
+> **Rust 映射（T5，2026-08-16）**：`sched.rs::update_sig_mgrs` 拆分为纯核心 `set_sig_mgrs`
+> （接收 shell 的 `sys.getpriv` 结果，返回 `SigMgrCommit`）+ shell 提交（`privctl(UpdateSys)`）。
+> 12/16 的调用方执行顺序：`let synced = sys.getpriv(endpoint)?;` →
+> `let c = set_sig_mgrs(&mut priv_, synced, ep, sig_mgr, bak);` →
+> `sys.privctl(c.endpoint, PrivCtlOp::UpdateSys, Some(c.priv_))?;`（03 §3.7）。
 
 ---
 
@@ -199,6 +205,7 @@ if ((replica_rp->r_priv.s_flags & rs_flags) == rs_flags) {
 7. `is_rs_restart_replica`：`0x900` → true；`0x100`/`0` → false。
 8. `sig_mgr_updates`：RS-replica → `Some(({SELF, replica}, {SELF, NONE}))`；否则 None。
 9. `rollback_needs_vm_update`：`me == RS` → false；`me == PM` → true。
+10. `test_constants`：`ROOT_SYS_PROC|RST_SYS_PROC == 0x900`（const.h:79-80）、`VM_ROLLBACK == 0x080`（rs.h:198）、`UPDATING == 0x080`/`INITIALIZING == 0x040`（const.h:151,154）。
 10. 常量表：`SwapFlag` 位值、`ROOT_SYS_PROC|RST_SYS_PROC == 0x900`、`SF_VM_ROLLBACK == 0x080`。
 
 测试总数声明：本文档范围为 `self_lifecycle` 模块测试数（以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。

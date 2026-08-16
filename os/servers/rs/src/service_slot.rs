@@ -189,7 +189,7 @@ impl fmt::Display for SlotId {
 /// and copied with `strlcpy`. Fixed-size (no heap) to keep the C memory
 /// layout of the public table, which is shared via a grant
 /// (`rinit.rproctab_gid`, main.c:185).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct Label([u8; RS_MAX_LABEL_LEN]);
 
 impl Label {
@@ -198,11 +198,15 @@ impl Label {
         Self([0; RS_MAX_LABEL_LEN])
     }
 
-    /// Copies `bytes` truncated to 16 bytes (C `strlcpy` semantics, rs.h:58).
+    /// Copies `bytes` with C `strlcpy` semantics (rs.h:58): at most
+    /// `RS_MAX_LABEL_LEN - 1` bytes plus a forced trailing NUL. A full-16
+    /// input is truncated to 15 + NUL — the same shape C produces — so the
+    /// buffer is **always** NUL-terminated (N6, todo §11).
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut label = [0u8; RS_MAX_LABEL_LEN];
-        let n = bytes.len().min(RS_MAX_LABEL_LEN);
+        let n = bytes.len().min(RS_MAX_LABEL_LEN - 1);
         label[..n].copy_from_slice(&bytes[..n]);
+        label[n] = 0; // strlcpy: always terminate
         Self(label)
     }
 
@@ -211,8 +215,9 @@ impl Label {
         &self.0
     }
 
-    /// NUL-terminated string view; `None` if the buffer is not NUL-terminated
-    /// or not valid UTF-8 (fail-closed, no unsafe `str` construction).
+    /// NUL-terminated string view; `None` if the bytes are not valid UTF-8
+    /// (fail-closed, no unsafe `str` construction). The buffer is always
+    /// NUL-terminated after [`Label::from_bytes`] (N6).
     pub fn as_str(&self) -> Option<&str> {
         let len = self
             .0
@@ -223,27 +228,68 @@ impl Label {
     }
 }
 
+impl PartialEq for Label {
+    /// C: `strcmp` — the derived (whole-buffer) comparison diverged from C
+    /// when a label contained an embedded NUL followed by nonzero padding:
+    /// Rust judged it unequal, `strcmp` stops at the NUL (N6). Comparing up
+    /// to the first NUL on either side restores the C semantics.
+    fn eq(&self, other: &Self) -> bool {
+        for i in 0..RS_MAX_LABEL_LEN {
+            if self.0[i] != other.0[i] {
+                return false;
+            }
+            if self.0[i] == 0 {
+                return true;
+            }
+        }
+        true // all 16 bytes equal and nonzero (defensive; from_bytes never produces this)
+    }
+}
+
+impl Eq for Label {}
+
+impl core::hash::Hash for Label {
+    /// Hashes up to the first NUL so `Hash` agrees with the strcmp-style
+    /// `PartialEq` (equal labels must hash equal; padding bytes are not part
+    /// of the label).
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        for &b in self.0.iter().take_while(|&&b| b != 0) {
+            state.write_u8(b);
+        }
+    }
+}
+
 impl PartialEq<&str> for Label {
-    /// C: `strcmp(rpub->label, label) == 0` — manager.c:1948.
+    /// C: `strcmp(rpub->label, label) == 0` — manager.c:1948. Byte-wise
+    /// comparison (stops at the first NUL); unlike the old
+    /// `as_str() == Some(...)` version this does not require the label to be
+    /// valid UTF-8 (a non-UTF-8 label used to compare unequal to everything,
+    /// including itself — fail-open in `check_duplicates`).
     fn eq(&self, other: &&str) -> bool {
-        self.as_str() == Some(*other)
+        let rhs = other.as_bytes();
+        let mut i = 0;
+        while i < RS_MAX_LABEL_LEN {
+            if self.0[i] == 0 {
+                return i == rhs.len();
+            }
+            if i >= rhs.len() || self.0[i] != rhs[i] {
+                return false;
+            }
+            i += 1;
+        }
+        // All 16 bytes matched and are nonzero: equal only if rhs is 16 too.
+        i == rhs.len()
     }
 }
 
 // ── IO range (C: minix3/minix/include/minix/type.h:133-137) ───────────────────────────────────────
 
-/// Allowed I/O port range, backed up from the privilege structure.
-///
-/// C: `struct io_range` — `minix3/minix/include/minix/type.h:133-137`; `r_io_tab` —
-/// type.h:100. Populated by 03-rs-privilege.md; the backup lets `edit_slot`
-/// (08) rebuild `r_priv`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct IoRange {
-    /// First port of the range. C: `ior_base`.
-    pub base: u32,
-    /// Length of the range. C: `ior_limit`.
-    pub len: u32,
-}
+// Single authority: `crate::privilege::IoRange` (N9 — todo §11). The C
+// `struct io_range` backs both `s_io_tab` (kernel priv, privilege.rs) and
+// `r_io_tab` (slot backup); the deleted same-shape duplicate here forced a
+// conversion at every backup↔priv sync point (D6). The slot backup is
+// populated by 03-rs-privilege.md; `edit_slot` (08) rebuilds `r_priv` from it.
+pub use crate::privilege::IoRange;
 
 // ── PublicSlot (C: rs.h:165-183) ────────────────────────────────────────────
 
@@ -450,6 +496,74 @@ impl ServiceSlot {
     }
 }
 
+/// A typed bundle of slot-side effects produced by a decision.
+///
+/// R13: the decision modules (`monitor`/`ready`/`recovery`) compute *what*
+/// should happen to a slot and return the implied mutations as this payload;
+/// the 06/12/15 caller applies them once with [`SlotMutations::apply`] after
+/// running the action hook. C mutates `r_*` fields inline while walking its
+/// decision tree (e.g. `r_flags |= RS_NOPINGREPLY`, `r_check_tm = now` —
+/// request.c:975-1038); carrying the payload keeps the decisions pure and
+/// makes a missed mutation a compile-time gap instead of silent behaviour
+/// drift (mirrors Redox's explicit mutation-token style: side effects travel
+/// with the decision, never hidden in comments).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotMutations {
+    /// Flags to set. C: `r_flags |= ...`.
+    pub set: RFlags,
+    /// Flags to clear. C: `r_flags &= ~...`.
+    pub clear: RFlags,
+    /// New `r_init_err` value. C: `r_init_err = ...` — type.h:69.
+    pub init_err: Option<i32>,
+    /// New `r_check_tm`. C: `r_check_tm = ...`.
+    pub check_tm: Option<Clock>,
+    /// New `r_alive_tm`. C: `r_alive_tm = ...`.
+    pub alive_tm: Option<Clock>,
+    /// New `r_stop_tm`. C: `r_stop_tm = ...`.
+    pub stop_tm: Option<Clock>,
+    /// New absolute `r_backoff` value. C's `r_backoff -= 1` (request.c:976)
+    /// and `r_backoff = 1 << MIN(...)` (manager.c:1163-1174) are computed to
+    /// their new absolute value by the decision.
+    pub backoff: Option<i64>,
+}
+
+impl Default for SlotMutations {
+    fn default() -> Self {
+        Self {
+            set: RFlags::empty(),
+            clear: RFlags::empty(),
+            init_err: None,
+            check_tm: None,
+            alive_tm: None,
+            stop_tm: None,
+            backoff: None,
+        }
+    }
+}
+
+impl SlotMutations {
+    /// Applies the mutations to a slot.
+    pub fn apply(self, slot: &mut ServiceSlot) {
+        slot.flags.insert(self.set);
+        slot.flags.remove(self.clear);
+        if let Some(err) = self.init_err {
+            slot.init_err = err;
+        }
+        if let Some(tm) = self.check_tm {
+            slot.check_tm = tm;
+        }
+        if let Some(tm) = self.alive_tm {
+            slot.alive_tm = tm;
+        }
+        if let Some(tm) = self.stop_tm {
+            slot.stop_tm = tm;
+        }
+        if let Some(backoff) = self.backoff {
+            slot.backoff = backoff;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,8 +655,35 @@ mod tests {
     fn test_label_from_bytes_truncates() {
         let long = *b"this-label-is-way-too-long-for-16";
         let label = Label::from_bytes(&long);
-        assert_eq!(label.as_str(), Some("this-label-is-wa"));
+        // N6: strlcpy truncates to RS_MAX_LABEL_LEN - 1 chars + NUL, so a
+        // 16-char prefix becomes a 15-char string.
+        assert_eq!(label.as_str(), Some("this-label-is-w"));
         assert_eq!(label.as_bytes().len(), RS_MAX_LABEL_LEN);
+        // The forced terminator lands at index 15 (was garbage before N6).
+        assert_eq!(label.as_bytes()[15], 0);
+    }
+
+    #[test]
+    fn test_label_eq_strcmp_semantics() {
+        // N6: equality must stop at the first NUL (strcmp). A label carrying
+        // an embedded NUL + nonzero padding equals the bare prefix.
+        let mut raw = [0u8; RS_MAX_LABEL_LEN];
+        raw[..2].copy_from_slice(b"rs");
+        raw[2] = 0;
+        raw[3] = b'X'; // padding after the NUL
+        let padded = Label::from_bytes(&raw);
+        assert_eq!(padded, Label::from_bytes(b"rs"));
+        assert!(padded == "rs");
+        assert!(padded != "rsX");
+
+        // Non-UTF-8 label compares equal to itself (byte semantics); the old
+        // `as_str() == Some(...)` returned false for any non-UTF-8 label.
+        let mut bad = [0u8; RS_MAX_LABEL_LEN];
+        bad[0] = 0xFF;
+        let non_utf8 = Label::from_bytes(&bad);
+        assert_eq!(non_utf8, non_utf8);
+        assert!(non_utf8 != "x");
+        assert!(non_utf8.as_str().is_none());
     }
 
     #[test]
@@ -552,6 +693,10 @@ mod tests {
         raw[..3].copy_from_slice(b"rs\0");
         let label = Label::from_bytes(&raw);
         assert_eq!(label.as_str(), Some("rs"));
+
+        // A full-16 input is truncated to 15 + NUL, so as_str() still works.
+        let full = Label::from_bytes(b"0123456789abcdef");
+        assert_eq!(full.as_str(), Some("0123456789abcde"));
 
         // Invalid UTF-8 → None (fail-closed).
         let mut bad = [0xFFu8; RS_MAX_LABEL_LEN];
@@ -580,5 +725,41 @@ mod tests {
         assert_eq!(slot.old_rp, None);
         assert_eq!(slot.cmd, [0u8; MAX_COMMAND_LEN]);
         assert_eq!(slot.control, [Label::empty(); RS_NR_CONTROL]);
+    }
+
+    #[test]
+    fn test_slot_mutations_apply() {
+        // R13: the decision payload applies set/clear/field updates in one
+        // pass — the 06/12/15 caller commits exactly what the decision meant.
+        let mut slot = ServiceSlot::vacant();
+        slot.flags = RFlags::IN_USE | RFlags::INITIALIZING;
+        slot.init_err = 0;
+        slot.check_tm = 1;
+        slot.alive_tm = 2;
+        slot.stop_tm = 3;
+        slot.backoff = 4;
+
+        SlotMutations {
+            set: RFlags::NOPINGREPLY,
+            clear: RFlags::INITIALIZING,
+            init_err: Some(minix_types::EINTR),
+            check_tm: Some(10),
+            alive_tm: Some(20),
+            stop_tm: Some(0),
+            backoff: Some(7),
+        }
+        .apply(&mut slot);
+
+        assert!(slot.flags.contains(RFlags::IN_USE | RFlags::NOPINGREPLY));
+        assert!(!slot.flags.contains(RFlags::INITIALIZING));
+        assert_eq!(slot.init_err, minix_types::EINTR);
+        assert_eq!(slot.check_tm, 10);
+        assert_eq!(slot.alive_tm, 20);
+        assert_eq!(slot.stop_tm, 0);
+        assert_eq!(slot.backoff, 7);
+        // Option fields left at None keep the current value.
+        SlotMutations::default().apply(&mut slot);
+        assert_eq!(slot.init_err, minix_types::EINTR);
+        assert_eq!(slot.backoff, 7);
     }
 }

@@ -1203,7 +1203,12 @@ boot-shim 和极简 test-kernel 在 `PlatformDesc` 初始化之前就需输出�
 
 > 参见 `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 末尾与 `os/libs/minix-platform/src/global.rs` 末尾均包含 `#[cfg(test)]` 模块（per-arch 测试覆盖各架构的 `QemuVirtDesc` + 品牌 struct downcast）；`desc.rs` 仅为 trait re-export 文件（29 行），无独立测试模块。
 
----
+> **2026-08-16 P0 重构说明**：本次 review 发现并删除了 3 个 Pattern #38 测试：
+> - `os/libs/minix-platform/src/kind.rs:test_kind_constants_are_distinct` —— 新类型 trivial equal 检查
+> - `os/libs/minix-platform/src/global.rs:test_platform_desc_panics_before_init` —— 空 body placeholder（自我承认 "no-op"）
+> - 强化 `test_qemu_virt_dispatch_via_enum` 把 5 个 `let _ =` 改为真实断言
+>
+> 详见 [01-04-test-audit.md](../review/codex/01-stage-kernel/01-04-test-audit.md)。
 
 ## 6. 本章术语索引
 

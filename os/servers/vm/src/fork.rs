@@ -9,7 +9,7 @@
 //! - `do_fork`: top-level orchestration, frees page table on `fork_regions` failure
 //!   (equivalent to Minix3's `pt_free(&vmc->vm_pt)`)
 
-use minix_types::{VirBytes, Endpoint, UserSlot};
+use minix_types::{VirBytes, Endpoint, UserSlot, NR_PROCS};
 use crate::region::{VirRegion, VrFlags, PageFrames, PfnAllocator, PfnAllocError, PAGE_SIZE};
 use crate::memtype::{MemType, MemTypeError, MEM_TYPE_ANON};
 use crate::cow_exec_pf::cow_resolve_core;
@@ -199,6 +199,14 @@ pub(crate) fn do_fork(
         .ok_or(VmForkError::InvalidSlot)?;
 
     assert_ne!(parent_slot, child_slot, "parent and child must occupy different slots");
+
+    // C: fork.c:47-52 — `childproc >= NR_PROCS` → EINVAL. The exec-rewrite
+    // temp slot (`VM_EXEC_TMP_SLOT == NR_PROCS`) is not a valid fork target;
+    // only slots 0..NR_PROCS-1 are. `UserSlot` is `usize`, so C's negative
+    // check (`childproc < 0`) is structurally impossible.
+    if child_slot.get() >= NR_PROCS {
+        return Err(VmForkError::InvalidSlot);
+    }
 
     let empty = table
         .get_empty(child_slot)

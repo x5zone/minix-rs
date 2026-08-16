@@ -11,7 +11,8 @@
 //! to `ClintDesc`. This replaces the previous hardcoded
 //! `CLINT_MTIME` / `CLINT_MTIMECMP` / `MTIME_FREQ` constants.
 //!
-//! C: No Minix3 equivalent (Minix3 has no RISC-V port).
+//! C: No Minix3 equivalent (Minix3 has no RISC-V port) — architectural
+//! evolution `[ARCH: K-2]` (05-clock-interrupt-init.md §3.8).
 
 use minix_platform::arch::riscv64::ClintDesc;
 
@@ -30,14 +31,17 @@ use crate::clock::{ClockArch, ProfileClockError};
 ///
 /// - `mtime_addr`: CLINT mtime register MMIO address, from `ClintDesc`.
 /// - `mtimecmp_base`: CLINT mtimecmp base address (hart 0), from `ClintDesc`.
-/// - `mtimecmp_stride`: per-hart mtimecmp spacing (SMP-ready), from `ClintDesc`.
+///   Each hart's comparator lives at `mtimecmp_base + hart_id * mtimecmp_stride`.
+/// - `mtimecmp_stride`: per-hart mtimecmp spacing, from `ClintDesc`.
 /// - `freq`: mtime counter frequency (Hz), from `ClintDesc`.
 ///
 /// C: No Minix3 equivalent (Minix3 has no RISC-V port).
 pub struct Riscv64ClockArch {
     mtime_addr: usize,
+    /// CLINT `mtimecmp` base address (hart 0). This hart's comparator is
+    /// `mtimecmp_base + hart_id * mtimecmp_stride`.
     mtimecmp_base: usize,
-    #[allow(dead_code)]
+    /// Byte distance between consecutive harts' `mtimecmp` registers.
     mtimecmp_stride: usize,
     freq: u64,
 }
@@ -55,7 +59,7 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, cpu_id: u32) {
         // Read current mtime value
         let mtime: u64;
         unsafe {
@@ -65,10 +69,14 @@ impl ClockArch for Riscv64ClockArch {
         // Calculate interval between interrupts
         let interval = self.freq / hz as u64;
 
+        // The CLINT holds one mtimecmp per hart; the caller passes the
+        // current hart id so each CPU programs its own comparator instead
+        // of hart 0's. C: app_cpu_init_timer() — clock.c:306.
+        let mtimecmp_addr = self.mtimecmp_base + (cpu_id as usize) * self.mtimecmp_stride;
         // Set mtimecmp = mtime + interval to schedule first interrupt
         let mtimecmp = mtime + interval;
         unsafe {
-            core::ptr::write_volatile(self.mtimecmp_base as *mut u64, mtimecmp);
+            core::ptr::write_volatile(mtimecmp_addr as *mut u64, mtimecmp);
         }
 
         // Enable S-mode timer interrupt (STIE bit in sie)
@@ -83,16 +91,17 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
-    fn stop_local_timer(&mut self) {
+    fn stop_local_timer(&mut self, cpu_id: u32) {
         // Disable S-mode timer interrupt by clearing STIE bit in sie,
         // and set mtimecmp to max to prevent any pending interrupt.
         //
         // C: smp.c:56-61 — inline timer disable in smp_ipi_halt_handler
+        let mtimecmp_addr = self.mtimecmp_base + (cpu_id as usize) * self.mtimecmp_stride;
         unsafe {
             // Clear STIE (bit 5) in sie CSR
             core::arch::asm!("csrc sie, {bits}", bits = in(reg) 0x20u64);
-            // Set mtimecmp to u64::MAX to prevent timer fire
-            core::ptr::write_volatile(self.mtimecmp_base as *mut u64, u64::MAX);
+            // Set this hart's mtimecmp to u64::MAX to prevent timer fire
+            core::ptr::write_volatile(mtimecmp_addr as *mut u64, u64::MAX);
         }
     }
 

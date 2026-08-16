@@ -113,7 +113,7 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
 2. 非 detach：`sched_stop(r_scheduler, endpoint)`（461，19）+ `srv_kill(r_pid, SIGKILL)`（470，19）——让调度器放手 + 让 PM 杀掉残留进程（`r_pid == -1` 时警告跳过）；
 3. `RS_CLEANUP_SCRIPT` → 清位 + `run_script(rp)`（475-478）——跑恢复脚本；
 4. `detach` → `detach_service(rp)`（483-485，2.4）；
-5. 否则 `free_slot(rp)`（489-490）——释放槽位，**除非 `RS_REINCARNATE`**（槽位要留给 reincarnate 复用）。
+5. 否则 `free_slot(rp)`（489-490）——释放槽位，**除非 `RS_REINCARNATE`**（槽位要留给 reincarnate 复用）。R18：`free_slot` 表原语已内建 `SF_USE_COPY → free_exec`（manager.c:2100-2102），exec 镜像随槽释放（02 §3.6），非 `USE_COPY` 行由 09 的 execve 路径释放（manager.c:643-644）。
 
 ### 2.3 kill_service / crash_service：RS 主动处决（manager.c:360-399）
 
@@ -170,7 +170,7 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
 
 | 函数 | C 对应 | 语义 |
 |------|--------|------|
-| `TerminateAction` + `TerminateDecision` | manager.c:1055-1180 | 决策输出：动作 + 待置位 `set_flags` |
+| `TerminateAction` + `TerminateDecision` | manager.c:1055-1180 | 决策输出：动作 + 变异载荷 `mutations: SlotMutations`（set/clear/字段，R13） |
 | `terminate_decision(flags, sys_flags, restarts, has_script, shutting_down, is_updating)` | manager.c:1065-1178 | 完整决策树（6 输入 → 5 动作） |
 | `compute_backoff(restarts, no_bin_exp, use_copy)` | manager.c:1163-1174 | `1 << min(restarts, 62)` 封顶 30；`USE_COPY` 折叠；`NO_BIN_EXP` → 1 |
 | `script_reason(flags)` | manager.c:1195-1199 | `"restart"`/`"no-heartbeat"`/`"terminated"` |
@@ -183,7 +183,7 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
 C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFRESHING`/`RS_EXITING` 后继续走主树）；Rust 把"决策"与"置位副作用"分离：
 
 - `TerminateAction` 枚举 5 个变体，**非法状态不可表达**（例如"rollback 同时 refresh"不可能构造）；
-- `TerminateDecision.set_flags` 汇总 C 决策过程中设置的全部 `r_flags` 位，由调用方一次性应用——避免了 C 的"边走边置位"导致的中间态可观测性问题（06 的 late_reply 等消费者只看到终态）。
+- `TerminateDecision.mutations`（`SlotMutations`）汇总 C 决策过程中的全部槽位变异（置位/清位/字段写），由调用方一次性 `apply`——避免了 C 的"边走边置位"导致的中间态可观测性问题（06 的 late_reply 等消费者只看到终态）。**R13**：`set_flags` 只能表达置位，扩展为 `set`+`clear`+`init_err`+`backoff` 载荷后，`REINCARNATE` 的清除（manager.c:1147）、rollback 的 `r_init_err = ERESTART`（manager.c:1075）、backoff 分支的 `r_backoff = 1<<MIN(...)` 写入（manager.c:1163-1174）全部显式化。
 - `CleanupAll { norestart, reincarnate, core_fatal }` 携带 EXITING 分支的三个布尔上下文，`Refresh`/`Backoff { backoff }`/`Restart` 对应另三个分支。
 
 ### 3.3 更新谓词的注入
@@ -207,7 +207,7 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 
 1. **决策树顺序与 C 一致**（manager.c:1069-1178）：init 失败 → norestart → EXITING → REFRESHING → backoff/restart——顺序不可交换（例如 norestart 检测必须在 EXITING 分支之前，因为 norestart 会置 EXITING 位）。C 的全局 RUPDATE abort（1099-1102）是 16 的动作钩子，由调用方在决策前执行，不在 `terminate_decision` 内建模（§3.3）。
 2. **init 失败分支的 fall-through 语义保留**：`SF_NO_BIN_EXP` 置 `RS_REFRESHING`、其他置 `RS_EXITING` 后**继续**走主树（与 C 1078-1091 一致）；唯一提前 return 是更新中 rollback（1071-1076）。
-3. **`set_flags` 汇总**：决策过程置的位（`REFRESHING`/`EXITING`/`CLEANUP_DETACH`/`CLEANUP_SCRIPT`）全部出现在 `set_flags`，调用方一次应用；`InitUpdateRollback` 的 `set_flags` 为空。
+3. **`mutations` 汇总**：决策过程置的位（`REFRESHING`/`EXITING`/`CLEANUP_DETACH`/`CLEANUP_SCRIPT`）出现在 `mutations.set`，`InitUpdateRollback` 携带 `init_err = ERESTART`，`Backoff` 携带 `backoff = 计算值`，`CleanupAll{reincarnate:true}` 携带 `clear = REINCARNATE`——调用方一次 `apply`。
 4. **backoff 封顶**：`1 << min(restarts, 62)` 先移位再封顶 `MAX_BACKOFF`（C 顺序 manager.c:1166-1167）；`USE_COPY` 折叠仅在 `backoff > 1` 时（1168-1169）。
 5. **`late_reply_result` 是纯函数**：不读槽位 caller_request 之外的状态，四组合（DOWN/REFRESH+norestart/REFRESH/其他）全覆盖。
 6. **`cleanup_decision` 只分类**：第一段（RS_DEAD 标记/disallow/late_reply）与第二段的执行（sched_stop/srv_kill/run_script/free_slot）都是调用方动作；`detach` 时跳过 sched_stop/srv_kill（C 455-472 的语义由调用方保证）。
@@ -216,21 +216,23 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 
 ## 5. 测试要点
 
-`recovery.rs` 内测试（`cargo test -p minix-rs --lib recovery`，11 项）：
+`recovery.rs` 内测试（`cargo test -p minix-rs --lib recovery`，13 项）：
 
-1. `terminate_decision` init 失败 + `NO_BIN_EXP` → `Refresh` + `set_flags` 含 `REFRESHING`（C 1078-1086 fall-through 到 1155-1157）。
-2. init 失败（其他）→ `CleanupAll` + `set_flags` 含 `EXITING`（C 1090-1091 fall-through）。
-3. init 失败 + `is_updating` → `InitUpdateRollback`（C 1071-1076 提前 return）。
+1. `terminate_decision` init 失败 + `NO_BIN_EXP` → `Refresh` + `mutations.set` 含 `REFRESHING`（C 1078-1086 fall-through 到 1155-1157）。
+2. init 失败（其他）→ `CleanupAll` + `mutations.set` 含 `EXITING`（C 1090-1091 fall-through）。
+3. init 失败 + `is_updating` → `InitUpdateRollback` + `mutations.init_err = ERESTART`（C 1071-1076 提前 return，R13）。
 4. `NORESTART` + `DET_RESTART` + 有脚本 → `CleanupAll{norestart:true}` + 三置位（C 1105-1117）。
 5. `restarts >= MAX_DET_RESTART` → 不置 `CLEANUP_DETACH`（C 1108-1111）。
 6. `CORE_SRV` 且非 shutdown → `core_fatal:true`；shutdown 中 → false（C 1121-1123）。
-7. `REINCARNATE` → `reincarnate:true`（C 1146-1151）。
-8. `compute_backoff`：restarts 0/1/4/10（封顶 30）、`NO_BIN_EXP` → 1、`USE_COPY` 折叠（C 1163-1174）。
-9. `script_reason` 三值（C 1195-1199）。
-10. `late_reply_result` 四组合（C 1134-1135）。
-11. `cleanup_decision` 两组合（C 451-452）。
+7. `REINCARNATE` → `reincarnate:true` + `mutations.clear` 含 `REINCARNATE`（C 1146-1151，R13）。
+8. `terminate_decision` backoff 分支：`mutations.backoff` 携带计算值（含 `USE_COPY` 折叠，R13）。
+9. `compute_backoff`：restarts 0/1/4/10（封顶 30）、`NO_BIN_EXP` → 1、`USE_COPY` 折叠（C 1163-1174）。
+10. `test_compute_backoff_negative_returns_1`（R16）：负 restarts clamp → 1（不继承 C 的负移位 UB）。
+11. `script_reason` 三值（C 1195-1199）。
+12. `late_reply_result` 四组合（C 1134-1135）。
+13. `cleanup_decision` 两组合（C 451-452）。
 
-测试总数声明：本文档范围为 `recovery` 模块测试数（11 项，以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
+测试总数声明：本文档范围为 `recovery` 模块测试数（13 项，以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
 
 ---
 

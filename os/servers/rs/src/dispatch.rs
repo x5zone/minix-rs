@@ -17,8 +17,8 @@
 //! ```
 
 use minix_types::{
-    Endpoint, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_GETSYSINFO, RS_INIT, RS_LOOKUP, RS_LU_PREPARE,
-    RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
+    Endpoint, Errno, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_GETSYSINFO, RS_INIT, RS_LOOKUP,
+    RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
 };
 
 // RS message types are defined in `minix-types::ipc::rs` (ARCH A-2,
@@ -64,7 +64,9 @@ pub enum DispatchKind {
 ///
 /// C: `main()` classification — main.c:70-127. `who_p` is the sender's slot
 /// (validated by `rs_isokendpt`, 02, before classification); `call_nr` is
-/// `m.m_type`.
+/// `m.m_type`. R12: the 06 main-loop wiring must run the `isokendpt` gate
+/// (main.c:63-66) before classifying — the O(1) endpoint fast index is total
+/// (out-of-range endpoints yield `None`) but only the gate rejects them.
 pub fn classify(ipc_status: &IpcStatus, who_p: Endpoint, call_nr: i32) -> DispatchKind {
     if ipc_status.is_notify() {
         if who_p == Endpoint::CLOCK {
@@ -105,13 +107,13 @@ pub fn dispatch_request(call_nr: i32) -> DispatchResult {
     match call_nr {
         // → 13-rs-control-requests.md
         RS_UP | RS_DOWN | RS_REFRESH | RS_RESTART | RS_SHUTDOWN | RS_CLONE | RS_UNCLONE
-        | RS_EDIT => DispatchResult(minix_types::ENOSYS),
+        | RS_EDIT => DispatchResult(Errno::ENOSYS.to_i32()),
         // → 16-rs-live-update.md
-        RS_UPDATE => DispatchResult(minix_types::ENOSYS),
+        RS_UPDATE => DispatchResult(Errno::ENOSYS.to_i32()),
         // → 14-rs-query-requests.md
-        RS_SYSCTL | RS_FI | RS_GETSYSINFO | RS_LOOKUP => DispatchResult(minix_types::ENOSYS),
+        RS_SYSCTL | RS_FI | RS_GETSYSINFO | RS_LOOKUP => DispatchResult(Errno::ENOSYS.to_i32()),
         // Unknown request → ENOSYS (C default, main.c:118-121).
-        _ => DispatchResult(minix_types::ENOSYS),
+        _ => DispatchResult(Errno::ENOSYS.to_i32()),
     }
 }
 
@@ -162,7 +164,7 @@ mod tests {
         let kind = classify(&st, Endpoint::PM, 9999);
         match kind {
             DispatchKind::Request(n) => {
-                assert_eq!(dispatch_request(n), DispatchResult(minix_types::ENOSYS))
+                assert_eq!(dispatch_request(n), DispatchResult(Errno::ENOSYS.to_i32()))
             }
             other => panic!("expected Request, got {other:?}"),
         }

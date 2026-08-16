@@ -133,39 +133,25 @@ impl TrapEntryArch for AArch64TrapEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trap_entry::TrapEntryArch;
+
+    // 注：原 4 个烟雾测试（trap_entry_init_returns_unit_struct /
+    // configure_syscall_is_noop / set_handler_is_noop /
+    // configure_ipc_entry_is_noop_on_arm64）改为编译期约束检查 —— 验证
+    // AArch64TrapEntry 满足 TrapEntryArch trait bound。`set_handler` 等在
+    // ARM64 上为 noop，运行时无可观察行为；这些方法的存在与正确编译即可
+    // 替代运行时断言。
+    //
+    // 运行时正确性（异常向量表布局、VBAR_EL1 装载、SVC dispatch）由 QEMU
+    // 集成测试覆盖。
 
     #[test]
-    fn trap_entry_init_returns_unit_struct() {
-        // AArch64TrapEntry is a unit struct — no state to verify.
-        let _entry = AArch64TrapEntry::init();
-    }
-
-    #[test]
-    fn configure_syscall_is_noop() {
-        // ARM64 uses SVC for syscalls — no MSR configuration needed.
-        // configure_syscall should not panic.
-        let mut entry = AArch64TrapEntry::init();
-        entry.configure_syscall(VirBytes::new(0xDEAD));
-    }
-
-    #[test]
-    fn set_handler_is_noop() {
-        // ARM64 uses fixed exception vector table — set_handler is no-op.
-        // Should not panic.
-        let mut entry = AArch64TrapEntry::init();
-        entry.set_handler(InterruptVector::new(14), VirBytes::new(0xBEEF), true);
-    }
-
-    #[test]
-    fn configure_ipc_entry_is_noop_on_arm64() {
-        // ARM64: IPC and kernel-call traps share the same SVC exception vector
-        // (VBAR_EL1 + 0x400). The dispatch happens in software: the SVC handler
-        // reads r3 at runtime to distinguish KERVEC_INTR vs IPCVEC_INTR.
-        // Therefore configure_ipc_entry is a no-op — no IDT-gate-style
-        // configuration is needed.
-        // C: earm/mpx.S:181-184 `cmp r3, #IPCVEC_INTR; beq ipc_entry`.
-        let mut entry = AArch64TrapEntry::init();
-        // Should not panic and should not modify any state (unit struct).
-        entry.configure_ipc_entry(VirBytes::new(0xCAFE));
+    fn aarch64_trap_entry_arch_impl_satisfies_trait_bound() {
+        // Compile-time check: AArch64TrapEntry implements TrapEntryArch
+        // and satisfies its Sized bound. Replaces 4 prior smoke tests
+        // that asserted nothing observable on unit-struct APIs.
+        // Mirrors x86_64 / riscv64 trap_entry.rs patterns.
+        fn _check<T: TrapEntryArch>() {}
+        _check::<AArch64TrapEntry>();
     }
 }

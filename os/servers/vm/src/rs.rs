@@ -306,6 +306,7 @@ pub(crate) fn handle_rs_memctl(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     target: Endpoint,
     request: RsMemctlRequest,
 ) -> Result<RsMemctlResult, RsError> {
@@ -363,7 +364,7 @@ pub(crate) fn handle_rs_memctl(
                 fd: -1,
                 offset: 0,
             };
-            crate::mmap::handle_mmap(table, page_alloc, frames, &mmap_req)
+            crate::mmap::handle_mmap(table, page_alloc, frames, vfs_queue, &mmap_req)
                 .map(|result| match result {
                     crate::mmap::MmapResult::Complete(resp) => RsMemctlResult::AddrLen {
                         addr: resp.mapped_addr,
@@ -441,10 +442,12 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
         let result = handle_rs_memctl(
             table,
             &mut page_alloc,
             &mut frames,
+            &mut vfs_queue,
             Endpoint(9999),
             RsMemctlRequest::Pin,
         );
@@ -456,10 +459,12 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
         let result = handle_rs_memctl(
             table,
             &mut page_alloc,
             &mut frames,
+            &mut vfs_queue,
             Endpoint(9999),
             RsMemctlRequest::MakeVmInstance,
         );
@@ -471,10 +476,12 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
         let result = handle_rs_memctl(
             table,
             &mut page_alloc,
             &mut frames,
+            &mut vfs_queue,
             Endpoint(9999),
             RsMemctlRequest::HeapPrealloc { addr: VirBytes(0), len: 0 },
         );
@@ -486,10 +493,12 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
+        let mut vfs_queue = crate::vfs_queue::VfsRequestQueue::new();
         let result = handle_rs_memctl(
             table,
             &mut page_alloc,
             &mut frames,
+            &mut vfs_queue,
             Endpoint(9999),
             RsMemctlRequest::MapPrealloc { addr: VirBytes(0), len: 0 },
         );

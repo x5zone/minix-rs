@@ -365,9 +365,9 @@
 | F-042 | `reset_vm_rusage` | exit.c:25 | 重置 rusage (static) | `VmProc::reset_rusage` | 已实现 (vmproc.rs) |
 | F-043 | `free_proc` | exit.c:33 | 释放进程 | `VmProc::clear` | 已实现 (vmproc.rs:152) |
 | F-044 | `clear_proc` | exit.c:45 | 清进程 | `VmProc::force_clear` | 已实现 (vmproc.rs) |
-| F-045 | `do_exit` | exit.c:60 | 进程退出 | `exit::handle_vm_exit` | 已实现 (exit.rs:32) |
-| F-046 | `do_willexit` | exit.c:100 | 即将退出 | `exit::handle_vm_willexit` | 已实现 (exit.rs:57) |
-| F-047 | `do_procctl` | exit.c:117 | 进程控制 | `dispatch_procctl` | ✅ **已完整实现 (2026-06-16)**: VMPPARAM_CLEAR — free_proc+pt_new+pt_bind 等价 (释放物理页+清空regions+重建页表+绑定), RS/VFS 权限检查 (EPERM); VMPPARAM_HANDLEMEM — handle_memory_once 同步路径 (CoW 解析+页映射), VFS 权限检查; 未知 param→EINVAL。新增 `exit::handle_procctl_clear` + `handle_procctl_handlemem` + `VmProcctlError` + `VmProcctlHandlememResult`; `VmProcctlIn` 新增 `flags` 字段 (VMPCTL_FLAGS/m9_l5→m1i3); 5 个测试覆盖 (negative param / zero who / CLEAR unauthorized / HANDLEMEM non-VFS / unknown param) |
+| F-045 | `do_exit` | exit.c:60 | 进程退出 | `exit::handle_vm_exit` | 已实现 (exit.rs:42) |
+| F-046 | `do_willexit` | exit.c:100 | 即将退出 | `exit::handle_vm_willexit` | 已实现 (exit.rs:66) |
+| F-047 | `do_procctl` | exit.c:117 | 进程控制 | `dispatch_procctl` | ✅ **已完整实现 (2026-08-16)**: VMPPARAM_CLEAR — free_proc+pt_new+pt_bind 等价 (释放物理页+清空regions+重建页表+绑定), RS/VFS 权限检查 (EPERM); VMPPARAM_HANDLEMEM — handle_memory_once 同步路径 (CoW 解析+页映射; 文件后备区域→NotImplemented), VFS 权限检查; 未知 param→EINVAL。新增 `exit::handle_procctl_clear` + `handle_procctl_handlemem` + `VmProcctlError` + `VmProcctlHandlememResult`; wire format 用 `MessLcVmProcctl` m9 overlay (VMPCTL_* = m9_l1..m9_l5, 22-P1-1); errno: InvalidEndpoint→EINVAL (22-P1-2); 11 个测试覆盖 (dispatcher 5 + exit.rs procctl 5 + vm.rs decode 1) |
 
 ### 4.6 fdref.c (5 函数)
 
@@ -449,18 +449,18 @@
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| F-132 | `mmap_region` | mmap.c:36 | 映射区 (static) | `MmapRequest::allocate` | 已实现 (mmap.rs) |
+| F-132 | `mmap_region` | mmap.c:36 | 映射区 (static) | `mmap::mmap_region` (mmap.rs:226) | 已实现 |
 | F-133 | `mmap_file` | mmap.c:84 | 映射文件 (static) | `mmap::mmap_file` | 已实现 |
-| F-134 | `do_vfs_mmap` | mmap.c:135 | VFS 文件映射 | `dispatch_vfs_mmap` | **未实现 (NotImplemented)** — TODO |
-| F-135 | `mmap_file_cont` | mmap.c:160 | 映射续作 (static) | `mmap::mmap_file_continue` | 已实现 |
-| F-136 | `do_mmap` | mmap.c:200 | mmap 处理 | `mmap::handle_mmap` (mmap.rs:158) + `vm_server::handle_mmap` (vm_server.rs:552) | 已实现 |
-| F-137 | `map_perm_check` | mmap.c:284 | 权限检查 (static) | `MmapRequest::check_perm` | 已实现 |
-| F-138 | `do_map_phys` | mmap.c:310 | 映射物理 | `map_phys::handle_map_phys` (map_phys.rs:44) + `vm_server::handle_map_phys` (vm_server.rs:558) | 已实现 |
-| F-139 | `do_remap` | mmap.c:366 | 重映射 | `dispatch_remap` | **未实现 (NotImplemented)** — TODO |
+| F-134 | `do_vfs_mmap` | mmap.c:135 | VFS 文件映射 | `mmap::handle_vfs_mmap` (mmap.rs:475) + `dispatch_vfs_mmap` (dispatcher.rs:411) | 已实现（20 轮：enable_filemap 守卫 + mmap_file + MVM_WRITABLE） |
+| F-135 | `mmap_file_cont` | mmap.c:160 | 映射续作 (static) | `mmap::mmap_file_cont` (mmap.rs:525) | 已实现 |
+| F-136 | `do_mmap` | mmap.c:200 | mmap 处理 | `mmap::handle_mmap` (mmap.rs:268) + `vm_server::handle_mmap` (vm_server.rs:1226) | 已实现 |
+| F-137 | `map_perm_check` | mmap.c:284 | 权限检查 (static) | `map_phys::map_perm_check` (map_phys.rs:106) | 已实现 |
+| F-138 | `do_map_phys` | mmap.c:310 | 映射物理 | `map_phys::handle_map_phys` (map_phys.rs:48) + `vm_server::handle_map_phys` (vm_server.rs:1232) | 已实现 |
+| F-139 | `do_remap` | mmap.c:366 | 重映射 | `dispatch_remap`/`dispatch_remap_ro` → `dispatch_remap_impl` (dispatcher.rs:1347) | 已实现（20 轮：wire format + destination 字段 + errno 修复） |
 | F-140 | `do_get_phys` | mmap.c:438 | 取物理地址 | `query::handle_get_phys` | 已实现 (query.rs) |
 | F-141 | `do_get_refcount` | mmap.c:463 | 取引用数 | `query::handle_get_refcount` | 已实现 (query.rs) |
-| F-142 | `munmap_vm_lin` | mmap.c:488 | 取消线性映射 | `munmap::munmap_vm_lin` (munmap.rs:78) | 已实现 |
-| F-143 | `do_munmap` | mmap.c:512 | munmap 处理 | `munmap::handle_munmap` (munmap.rs:45) | 已实现 |
+| F-142 | `munmap_vm_lin` | mmap.c:488 | 取消线性映射 | `munmap::munmap_vm_lin` (munmap.rs:103) | 已实现 |
+| F-143 | `do_munmap` | mmap.c:512 | munmap 处理 | `munmap::handle_munmap` (munmap.rs:71) | 已实现 |
 
 ### 4.11 pagefaults.c (10 函数)
 

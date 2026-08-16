@@ -52,7 +52,7 @@ RS 侧的 `r_priv`（`type.h:88`）就是这个结构的**本地副本**——�
 | 组 | 字段 | 作用 | 谁写 |
 |----|------|------|------|
 | 身份 | `s_proc_nr`/`s_id` | 关联的进程号/priv 表索引（static priv id） | 内核（`get_priv` 分配）+ RS（static id 请求） |
-| 能力 | `s_flags`/`s_init_flags` | 策略标志（可抢占/可记账/系统服务/资源检查位）+ 初始化标志 | RS（boot 表 flags + 默认宏） |
+| 能力 | `s_flags`/`s_init_flags` | 策略标志（可抢占/可记账/系统服务/资源检查位）+ 初始化标志 | RS（boot 表 flags + 默认宏；运行时 `s_init_flags |= init_flags` 由 `ready::fold_init_flags` 建模——manager.c:953 `start_service`，replica 路径 `service_create::link_replica` manager.c:751-752，R14） |
 | 门控 | `s_trap_mask`/`s_ipc_to`/`s_k_call_mask` | 允许的陷阱/允许的 IPC 目标/允许的内核调用 | RS（默认宏 + fill_* 原语） |
 | 服务 | `s_sig_mgr`/`s_bak_sig_mgr` | 系统信号管理器（+备份） | RS（boot 默认 = RS 自己；update_sig_mgrs 运行时改） |
 | 资源 | `s_nr_io_range`/`s_io_tab`/`s_nr_mem_range`/`s_mem_tab`/`s_nr_irq`/`s_irq_tab` | I/O 端口/内存/IRQ 白名单 | 驱动经 `SYS_PRIV_ADD_*`（RS 透传，见 §2.6 defer） |
@@ -384,13 +384,17 @@ pub struct Privilege {
     pub sig_mgr: Endpoint,       // C s_sig_mgr（:40）
     pub bak_sig_mgr: Endpoint,   // C s_bak_sig_mgr（:41）
     pub io_ranges: [IoRange; NR_IO_RANGE],   // C s_io_tab（:54）—— 透传
-    pub nr_io_range: u16,        // C s_nr_io_range（:53）
+    pub nr_io_range: i32,        // C s_nr_io_range（:53，int）
     pub mem_ranges: [MemRange; NR_MEM_RANGE], // C s_mem_tab（:57）
-    pub nr_mem_range: u16,       // C s_nr_mem_range（:56）
+    pub nr_mem_range: i32,       // C s_nr_mem_range（:56，int）
     pub irqs: [u32; NR_IRQ],     // C s_irq_tab（:60）
-    pub nr_irq: u16,             // C s_nr_irq（:59）
+    pub nr_irq: i32,             // C s_nr_irq（:59，int）
 }
 ```
+
+**计数域为 `i32`（R2，2026-08-16）**：C 是 `int`（priv.h:53/56/59），且 `sys_privctl` 拒绝负值
+（do_privctl.c:308-309/319-320/330-331）——`u16` 会丢失"校验前可负"状态。`Privilege::validate()`
+（do_privctl.c 同语义，EINVAL）在 19 接线 `data_copy` 前调用，fail-closed。
 
 **不建模字段（显式列出防遗漏误报）**：`s_proc_nr`（内核关联，getpriv 读回）、`s_asyntab/s_asynsize/s_asynendpoint`（异步发送）、`s_notify_pending/s_asyn_pending/s_int_pending/s_sig_pending`（挂起状态）、`s_ipcf`（IPC filter 指针）、`s_alarm_timer`、`s_stack_guard`、`s_diag_sig`、`s_grant_*`、`s_state_*`——全部是**内核运行态**，RS 不读写（19 接线时按 C 布局序列化整块）。
 
@@ -426,14 +430,22 @@ pub fn srv_or_usr<T: Copy>(is_sys_proc: bool, srv: T, usr: T) -> T {
 pub struct CallMask(pub u64);   // 64 位：kernel 58 调用 / VM 49 调用都装得下
 
 impl CallMask {
-    pub fn from_calls(calls: &[i32], tot_nr_calls: usize, call_base: i32, is_init: bool) -> Self
+    pub fn from_calls(calls: &[i32], tot_nr_calls: usize, call_base: i32, is_init: bool)
+        -> Result<CallMask, Errno>   // N7：越界调用号 → Err(EINVAL)，fail-closed
 }
 ```
 
-- `calls == [ALL_C]` → `u64::MAX` 截断到 `tot_nr_calls` 位
+- `calls == [ALL_C]` → `u64::MAX` 截断到 `tot_nr_calls` 位（`tot_nr_calls >= 64` 时不再移位，N7）
 - 否则逐项 `set_bit(calls[i] - call_base)`；`is_init` 时先清零
 - 哨兵常量 `ALL_C=-2`/`NO_C=-1`/`NULL_C=-3`（priv.h:28-30）用显式 const
 - **理由**：C 的 `bitchunk_t[2]`（2×u32）在 Rust 里合并为 u64 更简单，位语义完全一致（58/49 位都不跨 64 位边界）；序列化边界归 19
+
+> **N7 修复（2026-08-16，todo §11）——移位越界 fail-closed**：`from_calls` 由
+> `-> CallMask` 改为 `-> Result<CallMask, Errno>`——越界调用号（`calls[i] - call_base`
+> 负数或 `>= tot_nr_calls`，可来自 RS_UP 消息）返回 `Err(EINVAL)`，替换原 `debug_assert!`
+> （release 构建下 `1u64 << offset` 按 x86 shl 语义 mask 成 `offset & 63`，静默设错位 =
+> "允许了错误的系统调用"）。`CallMask::set_bit/test_bit`、`SysMap::set/test` 增加
+> `offset/priv_id < 64` 的全构建 `assert!`（调用方先校验：from_calls / 内核 priv id 契约）。
 
 `SysMap`（s_ipc_to，64 位）同样用 `u64` newtype，位 i = priv id i 可发。`TrapMask` 用 bitflags(u16)——`SRV_T=~0` 在 u16 里是 `0xFFFF`。
 
@@ -449,28 +461,35 @@ pub struct SchedulerConfig {
     pub cpu: i32,
 }
 
-pub fn sched_init_proc(cfg: &SchedulerConfig, is_sys_proc: bool)
-    -> Result<Endpoint, i32>
+pub enum SchedAction<'a> { Skip, Start(&'a SchedulerConfig) }
+pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'_>
 ```
 
 - 断言等价（debug_assert）：`!is_sys_proc → scheduler == NONE`；`is_sys_proc → scheduler != NONE`
-- 外部调用（sched_start 的 KERNEL→sys_schedctl / 用户调度器→SCHEDULING_START）经 `KernelApi` trait（01 的 boot.rs 边界）；`KernelApi::sched_init_proc` 已存在（boot.rs:86），19 接线前 fail-closed
-- **NONE 短路契约**：`scheduler == NONE` 时 C 的 `sched_start` 直接返回 `OK` 且不发任何系统调用（sched_start.c:57-60，用户进程 INIT 场景）；Rust 侧 `sched_init_proc` 恒经 `KernelApi`，**19 接线时 KernelApi impl 必须复现该短路**（`scheduler == NONE → Ok(())` 不触内核）
-- 返回 `Endpoint`（sched_start 的 `*newscheduler_e` 输出），调用方覆盖 `ServiceSlot.scheduler`
+- 外部调用（sched_start 的 KERNEL→sys_schedctl / 用户调度器→SCHEDULING_START）经 `KernelApi` trait（01 的 boot.rs 边界）；`KernelApi::sched_init_proc(cfg: &SchedulerConfig) -> Result<Endpoint, Errno>`（S4 修复后携带全部调度参数并回传 `*newscheduler_e`）
+- **NONE 短路契约（S3 已实现，T5 拆分为决策/执行）**：`scheduler == NONE` 时 C 的 `sched_start` 直接返回 `OK` 且不发任何系统调用（sched_start.c:45-47，用户进程 INIT 场景）；Rust 侧 `sched_decision` 返回 `SchedAction::Skip`（**不触内核**，测试 `test_sched_decision_user_proc_none_skips`），shell 执行 `Start` → `sys.sched_init_proc(cfg)` 取得 `*newscheduler_e`（`SchedAction::Start` 携带完整 `&SchedulerConfig`）
+- `SchedulerConfig::boot_defaults(endpoint)` 给出 boot Step 2 的 C 默认（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/`SRV_QT=USER_QUANTUM=200`/`cpu=0`/`parent=RS`，main.c:320-322 + priv.h:88,93,98 + config.h:69,74）
 
-### 3.7 `update_sig_mgrs` 原语（D7）
+### 3.7 `update_sig_mgrs` 原语（D7，T5 后为纯核心 + 提交结构）
 
 ```rust
-pub fn update_sig_mgrs(
+pub struct SigMgrCommit<'a> {
+    pub endpoint: Endpoint,
+    pub priv_: &'a Privilege,   // 更新后的结构（更新后的 sig_mgr/bak_sig_mgr）
+}
+pub fn set_sig_mgrs(
     priv_: &mut Privilege,
-    sys: &mut dyn KernelApi,
+    synced: Privilege,          // shell 的 sys.getpriv(endpoint)? 结果
     endpoint: Endpoint,
     sig_mgr: Endpoint,      // SELF 由调用方展开为 endpoint
     bak_sig_mgr: Endpoint,
-) -> Result<(), i32>
+) -> SigMgrCommit<'_>
 ```
 
-顺序固定：`sys.getpriv(endpoint)?` → 设 `sig_mgr`/`bak_sig_mgr` → `sys.privctl(endpoint, PrivCtlOp::UpdateSys, Some(priv_))?`。`SELF` 常量展开（`sig_mgr == SELF ? endpoint : sig_mgr`）在调用方（12/16）做，本原语只接受具体 endpoint。
+顺序固定（T5 后 shell 拥有两次内核调用，核心保持纯）：`sys.getpriv(endpoint)?` → `set_sig_mgrs`
+设 `sig_mgr`/`bak_sig_mgr` 并返回 `SigMgrCommit` → shell 执行
+`sys.privctl(commit.endpoint, PrivCtlOp::UpdateSys, Some(commit.priv_))`。`SELF` 常量展开
+（`sig_mgr == SELF ? endpoint : sig_mgr`）在调用方（12/16）做，本原语只接受具体 endpoint。
 
 ### 3.8 ARCH 标注（D8）
 
@@ -530,6 +549,17 @@ pub fn boot_priv(flags: PrivFlags, endpoint_slot: i32) -> Privilege {
 
 `boot.rs` 的 Step 1 改为：装配 `Privilege` → `sys.privctl(ep, PrivCtlOp::SetSys, Some(&priv))`（RS/VM 例外）→ `sys.getpriv(ep)?` 读回并**覆盖本地**（内核改写版本）→ 存入 `ServiceSlot.priv`。
 
+> **N1/N10 修复（2026-08-16，todo §11）**：boot 表的 flags 字段改为**类型化单一权威**——
+> `BootImagePriv.flags: PrivFlags`（privilege.rs 的 `PrivFlags` + 预设组合常量）、
+> `BootImageSys.flags: SysFlags`（service_slot.rs），删除 table.rs 曾有的 u32 私有副本。
+> 背景：旧 table.rs 的 u32 副本位值**全部错误**（`SRV_F=0x014`/`RSYS_F=0x01C`/`VM_F=0x030`/
+> `USR_F=0x005`，C 真值为 `0x012`/`0x112`/`0x210`/`0x006`，priv.h:45-49 + const.h:143-153），
+> 且 `boot.rs` 的 `PrivFlags::from_bits_truncate(flags as u16)` 静默截断未知高位——
+> 两缺陷叠加让错误位值在无测试暴露下溜进 19 接线后的 `SYS_PRIV_SET_SYS`。
+> 现 `table.rs::test_priv_table_matches_c` 对 12 个表项做**精确位值断言**
+> （`RS=0x112`/`VM=0x210`/`PM…=0x012`/`INIT=0x006`），杜绝"class 级"弱断言。
+> 对照 Redox：配置是文本无位编码；Minix 的 s_flags 位编码必须单一权威 + 逐位测试。
+
 ### 4.3 ServiceSlot 接线
 
 `ServiceSlot` 增加两个字段（补齐 02 的机制归属缺口）：
@@ -556,22 +586,27 @@ pub struct PublicSlot {
 ```
 os/servers/rs/src/sched.rs
 ├─ SchedulerConfig struct（§3.6）
-├─ sched_init_proc(cfg, is_sys_proc) -> Result<Endpoint, i32>
-└─ update_sig_mgrs(priv_, sys, endpoint, sig_mgr, bak_sig_mgr) -> Result<(), i32>
+├─ SchedAction::{Skip, Start(&cfg)} + sched_decision(cfg, is_sys_proc)（T5 纯决策）
+└─ SigMgrCommit + set_sig_mgrs(priv_, synced, endpoint, sig_mgr, bak_sig_mgr)（T5 纯核心）
 ```
 
-`boot.rs` Step 2 调用 `sched_init_proc` 时从 `ServiceSlot` 构造 `SchedulerConfig`（scheduler/endpoint/RS_PROC_NR/priority/quantum/cpu）并经 `KernelApi::sched_init_proc` 发出。
+`boot.rs` Step 2 调用 `sched_init_proc` 时用 `SchedulerConfig::boot_defaults(endpoint)` 构造
+（boot 槽位尚未填充调度字段，S2 落地后改从 `ServiceSlot` 读取；两处值一致），并经
+`KernelApi::sched_init_proc` 发出（boot Step 2 是 shell，直接执行内核调用；动态服务路径经
+`sched_decision` 决策后由 19 接线层执行）。
 
 ### 4.5 KernelApi 签名变更
 
 `boot.rs` 的 `Priv` 占位结构删除，`KernelApi` 签名更新：
 
 ```rust
-fn privctl(&mut self, proc: Endpoint, op: PrivCtlOp, priv_: Option<&Privilege>) -> Result<(), i32>;
-fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32>;
+fn privctl(&mut self, proc: Endpoint, op: PrivCtlOp, priv_: Option<&Privilege>) -> Result<(), Errno>;
+fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno>;
+fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 ```
 
 `PrivCtlOp` 从 boot.rs 移到 privilege.rs（全 11 操作码）；boot.rs re-export 保持 `crate::privilege::PrivCtlOp` 兼容性。
+错误类型统一为 `Errno`（minix-types，A-12 落地，T3）。
 
 ---
 
@@ -582,27 +617,37 @@ fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32>;
 - 11 个位值逐项断言 == const.h:143-153（`PREEMPTIBLE=0x002` … `RST_SYS_PROC=0x800`）
 - 预设组合断言 == priv.h:45-50（`SRV_F=SYS_PROC|PREEMPTIBLE` 等）
 - `TrapMask::SRV_T == 0xFFFF`（u16 的 `~0`）、`USR_T` 含 SENDREC 位
+- `test_sys_map`：`SysMap` 64 位全集/单位置位/测试（`s_ipc_to` 等 sys_map_t 的类型化）
 
 ### 5.2 哨兵与 static_priv_id
 
 - `ALL_C=-2`/`NO_C=-1`/`NULL_C=-3` 常量断言
 - `static_priv_id(2) == 7`（RS，NR_TASKS=5）、`static_priv_id(11) == 16`（INIT，= USER_PRIV_ID）
+- `test_srv_or_usr`：三态选择纯函数真值（SYS→srv / USR→usr，§3.4 D4）
 
 ### 5.3 CallMask::from_calls
 
 - `[ALL_C]` → 全 1（58 位内全 1，59 位以上为 0）
 - 单调用 `[KERNEL_CALL + 4]` → 仅位 4 置位
 - `is_init=true` 先清零；`is_init=false` 时 C 不预清零（调用方须传预清零缓冲，utility.c:126-131），Rust 值类型恒新恒 0，等价于预清零（无独立测试，语义 N/A）
+- N7：越界调用号（`KERNEL_CALL+200` / `KERNEL_CALL-5`）→ `Err(EINVAL)`；`tot_nr_calls=64` 全 1 不溢出
 - `NULL_C` 截断（calls 数组含 NULL_C 停止计数）
+- `test_validate_range_counts`：`nr_io_range`/`nr_mem_range`/`nr_irq` 负数或超表限 → `Err(EINVAL)`（do_privctl.c:308-331；C int 语义负数拒绝，不包绕）
 
 ### 5.4 PrivCtlOp 判别
 
 - 11 个操作码判别值 == com.h:342-353（`Allow=1`…`ClearIpcRefs=11`）
+- `test_boot_priv_sys_proc`/`test_boot_priv_user_proc`：`Privilege::boot_priv` 的 SRV_*/USR_* 默认装配（main.c:258-280）——SYS_PROC 带 static id + `TrapMask::SRV_T` + `ipc_to=all` + sig_mgr=RS；USR 进程（INIT）id=USER_PRIV_ID + `TrapMask::USR_T` + sig_mgr=PM
 
 ### 5.5 sched_init_proc
 
-- 用户进程（!SYS_PROC）scheduler 必须 NONE（debug_assert 触发路径）
-- 系统进程 scheduler 非 NONE
+- `test_sched_decision_user_proc_none_skips`：用户进程（!SYS_PROC）scheduler 必须 NONE（debug_assert 触发路径）
+- `test_sched_decision_sys_proc_starts`：系统进程 scheduler 非 NONE
+- **NONE 短路**（S3，`test_sched_decision_user_proc_none_skips`）：`scheduler == NONE → Ok(NONE)` 且 mock 零内核调用（sched_start.c:45-47）
+- `test_sched_decision_passes_full_config`：完整配置逐字段传递（scheduler/parent/priority/quantum/cpu）
+- `test_boot_defaults_match_c`：`boot_defaults` 数值断言：KERNEL/RS/`USER_Q=7`/`USER_QUANTUM=200`/cpu=0（main.c:320-322）
+- `test_set_sig_mgrs_applies_and_commits`（T5）：纯核心应用 synced priv + 管理器并返回 commit；shell 拥有 `getpriv`（前）+ `SYS_PRIV_UPDATE_SYS`（后）两次内核调用（utility.c:393-408）
+- `test_boot_priv_sys_flags`（sanity）：`Privilege::boot_priv(SYS_PROC, …).is_sys_proc()` 编译期/行为健全
 - fail-closed 设计（非测试点）：`UnimplementedKernelApi` 的 `sched_init_proc` 显式 `unimplemented!()` panic（19 接线前生产占位；无专项 `#[should_panic]` 测试，防御路径由 Mock 不触发保证）
 
 ### 5.6 boot 集成（boot.rs 既有测试扩展）
@@ -612,7 +657,7 @@ fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32>;
 
 ### 5.7 测试统计（截至 2026-08-15）
 
-03 范围：`privilege.rs` 11 项 + `sched.rs` 4 项 = 15 项稳定值；boot 集成扩展 2 条断言（§5.6）落在 `test_init_fresh_step_order`。全 crate 计数随并行模块增长（2026-08-15 快照 181/181），不以 03 doc 承诺。
+03 范围：`privilege.rs` 12 项 + `sched.rs` 6 项 = 18 项稳定值（2026-08-16）；boot 集成扩展 2 条断言（§5.6）落在 `test_init_fresh_step_order`。全 crate 计数随并行模块增长（2026-08-16 快照 208/208），不以 03 doc 承诺。
 
 ---
 

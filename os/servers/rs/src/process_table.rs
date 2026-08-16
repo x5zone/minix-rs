@@ -14,10 +14,10 @@
 //! See 02-rs-process-table.md §4.2.
 
 use alloc::vec::Vec;
-use minix_types::{EINVAL, ENOMEM, ENOSYS, Endpoint, NR_PROCS, NR_TASKS, Pid};
+use minix_types::{Clock, Endpoint, Errno, NR_PROCS, NR_TASKS, Pid};
 
 use crate::privilege::Privilege;
-use crate::service_slot::{Label, RFlags, ServiceSlot, SlotId};
+use crate::service_slot::{Label, RFlags, RS_MAX_LABEL_LEN, ServiceSlot, SlotId, SysFlags};
 use crate::table::{BootImageDev, BootImagePriv, BootImageSys};
 
 // ── Global update descriptor (C: type.h:43-54) ─────────────────────────────
@@ -34,53 +34,6 @@ bitflags::bitflags! {
         const UPDATING = 0x080;
         /// Init after update in progress. C: `RS_INITIALIZING` — const.h:34.
         const INITIALIZING = 0x040;
-    }
-}
-
-/// Global live-update descriptor.
-///
-/// C: `struct rupdate` — `minix3/minix/servers/rs/type.h:43-54` (global:
-/// glo.h:45). Data shape only — the state machine (prepare/update/init/end)
-/// is 16-rs-live-update.md.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RupdateDescriptor {
-    /// Status flags. C: `rupdate.flags` — type.h:44.
-    pub flags: RupdateFlags,
-    /// Number of descriptors scheduled for the update. C: `num_rpupds` — type.h:45.
-    pub num_rpupds: usize,
-    /// Number of pending init ready messages. C: `num_init_ready_pending` — type.h:46.
-    pub num_init_ready_pending: usize,
-    /// Current descriptor under update. C: `curr_rpupd` — type.h:47 (ARCH A-3).
-    pub curr_rpupd: Option<SlotId>,
-    /// First descriptor scheduled. C: `first_rpupd` — type.h:48 (ARCH A-3).
-    pub first_rpupd: Option<SlotId>,
-    /// Last descriptor scheduled. C: `last_rpupd` — type.h:49 (ARCH A-3).
-    pub last_rpupd: Option<SlotId>,
-    /// VM descriptor scheduled. C: `vm_rpupd` — type.h:50 (ARCH A-3).
-    pub vm_rpupd: Option<SlotId>,
-    /// RS descriptor scheduled. C: `rs_rpupd` — type.h:51 (ARCH A-3).
-    pub rs_rpupd: Option<SlotId>,
-}
-
-impl RupdateDescriptor {
-    /// Fresh descriptor — C: `RUPDATE_INIT()` (memset 0, const.h:87).
-    pub fn new() -> Self {
-        Self {
-            flags: RupdateFlags::empty(),
-            num_rpupds: 0,
-            num_init_ready_pending: 0,
-            curr_rpupd: None,
-            first_rpupd: None,
-            last_rpupd: None,
-            vm_rpupd: None,
-            rs_rpupd: None,
-        }
-    }
-}
-
-impl Default for RupdateDescriptor {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -166,23 +119,42 @@ impl RProcTable {
     }
 
     /// Borrows a row. Panics on an out-of-range id (defensive: ids come from
-    /// this table).
+    /// this table). The explicit range guard keeps the panic point
+    /// contextual — an out-of-range id means a stale chain/endpoint-index
+    /// reference (R8 `SlotId` generations will make stale-but-in-range ids
+    /// detectable too; until then the guard covers the range half).
     pub fn get(&self, id: SlotId) -> &ServiceSlot {
+        assert!(
+            id.0 < self.slots.len(),
+            "RProcTable::get: slot {} out of range ({})",
+            id.0,
+            self.slots.len()
+        );
         &self.slots[id.0]
     }
 
     /// Mutably borrows a row. Panics on an out-of-range id (defensive).
     pub fn get_mut(&mut self, id: SlotId) -> &mut ServiceSlot {
+        assert!(
+            id.0 < self.slots.len(),
+            "RProcTable::get_mut: slot {} out of range ({})",
+            id.0,
+            self.slots.len()
+        );
         &mut self.slots[id.0]
     }
 
     /// Endpoint → row index (O(1)). C: `rproc_ptr[_ENDPOINT_P(ep)]` — glo.h:35.
     ///
     /// Kernel tasks (negative slot) and unregistered endpoints yield `None`.
+    /// Out-of-range slots (endpoint::NONE/ANY/SELF sit above `NR_PROCS` —
+    /// endpoint.rs:26-50) also yield `None`: C is saved from this indexing
+    /// panic by the `rs_isokendpt` gate at the main loop (main.c:63-66), and
+    /// the O(1) fast index must be total the same way (R12, fail-closed).
     pub fn endpoint_slot(&self, endpoint: Endpoint) -> Option<SlotId> {
         let slot = endpoint.slot();
-        if slot < 0 {
-            return None; // kernel tasks are never system services
+        if !(0..NR_PROCS as i32).contains(&slot) {
+            return None; // kernel tasks + NONE/ANY/SELF are never services
         }
         self.by_endpoint[slot as usize]
     }
@@ -191,11 +163,12 @@ impl RProcTable {
     ///
     /// C: `rproc_ptr[_ENDPOINT_P(ep)] = rp` — glo.h:35 (ARCH A-4). Used by
     /// `mark_child_created` (manager.c:596) and `swap_slot` (manager.c:1922-1925,
-    /// 10-rs-service-create.md §2.7). Kernel-task endpoints are never indexed.
+    /// 10-rs-service-create.md §2.7). Kernel-task endpoints and out-of-range
+    /// endpoints (NONE/ANY/SELF) are never indexed (R12, fail-closed).
     pub fn set_endpoint_index(&mut self, endpoint: Endpoint, id: Option<SlotId>) {
         let slot = endpoint.slot();
-        if slot < 0 {
-            return; // kernel tasks are never system services
+        if !(0..NR_PROCS as i32).contains(&slot) {
+            return; // kernel tasks + NONE/ANY/SELF are never indexed
         }
         self.by_endpoint[slot as usize] = id;
     }
@@ -206,10 +179,10 @@ impl RProcTable {
     /// `[-NR_TASKS, NR_PROCS)`; otherwise `EINVAL`. Kernel-task slots
     /// (negative) are valid here — the main loop compares `who_p` against
     /// `CLOCK` before touching the table.
-    pub fn isokendpt(endpoint: Endpoint) -> Result<i32, i32> {
+    pub fn isokendpt(endpoint: Endpoint) -> Result<i32, Errno> {
         let slot = endpoint.slot();
         if slot < -(NR_TASKS as i32) || slot >= NR_PROCS as i32 {
-            return Err(EINVAL);
+            return Err(Errno::EINVAL);
         }
         Ok(slot)
     }
@@ -219,11 +192,15 @@ impl RProcTable {
     /// C: `lookup_slot_by_label` — manager.c:1935-1954. **Filters on
     /// `RS_ACTIVE`** (only the active instance of a service is findable by
     /// label; replicas/old instances are not).
-    pub fn lookup_by_label(&self, label: &str) -> Option<SlotId> {
+    /// Looks up by a typed [`Label`] (N6): labels are byte strings compared
+    /// with strcmp semantics, so the lookup key is a `Label` — a `&str` key
+    /// could not represent a non-UTF-8 label and forced callers into
+    /// `as_str().unwrap_or("")` fail-open fallbacks (check_duplicates).
+    pub fn lookup_by_label(&self, label: &Label) -> Option<SlotId> {
         self.slots
             .iter()
             .enumerate()
-            .find(|(_, rp)| rp.flags.contains(RFlags::ACTIVE) && rp.pub_.label == label)
+            .find(|(_, rp)| rp.flags.contains(RFlags::ACTIVE) && rp.pub_.label == *label)
             .map(|(i, _)| SlotId::new(i))
     }
 
@@ -302,7 +279,11 @@ impl RProcTable {
                     return false;
                 }
                 let pub_ = &rp.pub_;
-                (0..pub_.nr_domain as usize).any(|i| pub_.domain[i] == domain)
+                // Fail closed on a corrupt count: `nr_domain > NR_DOMAIN` would
+                // panic on direct indexing (C validates at edit time, EINVAL).
+                pub_.domain
+                    .get(..pub_.nr_domain as usize)
+                    .is_some_and(|list| list.contains(&domain))
             })
             .map(|(i, _)| SlotId::new(i))
     }
@@ -326,12 +307,12 @@ impl RProcTable {
     ///
     /// C: `alloc_slot` — manager.c:2067-2083: first row without `RS_IN_USE`;
     /// `ENOMEM` when the table is full.
-    pub fn alloc_slot(&mut self) -> Result<SlotId, i32> {
+    pub fn alloc_slot(&mut self) -> Result<SlotId, Errno> {
         self.slots
             .iter()
             .position(|rp| !rp.flags.contains(RFlags::IN_USE))
             .map(SlotId::new)
-            .ok_or(ENOMEM)
+            .ok_or(Errno::ENOMEM)
     }
 
     /// Frees a row (table-level invariants only).
@@ -340,13 +321,21 @@ impl RProcTable {
     /// - `late_reply(rp, OK)` (manager.c:2097) is the 06-rs-main-loop.md
     ///   mechanism (RS_LATEREPLY); this table has no reply channel — callers
     ///   must ensure no pending late reply before freeing (invariant, doc §2.9).
-    /// - `free_exec(rp)` when `SF_USE_COPY` (manager.c:2100-2102) is the
-    ///   09-rs-exec.md mechanism; exec images are released there when it lands.
+    /// - `free_exec(rp)` when `SF_USE_COPY` (manager.c:2100-2102) drops the
+    ///   slot's exec `Arc` (09-rs-exec.md) — applied here (R18).
     ///
     /// The C clear steps (manager.c:2105-2108) are all applied: flags cleared,
     /// pid reset, `in_use` false, endpoint index removed.
     pub fn free_slot(&mut self, id: SlotId) {
         let endpoint = self.slots[id.0].pub_.endpoint;
+        // C: free_exec(rp) when SF_USE_COPY — manager.c:2100-2102. Dropping
+        // the slot's Arc frees the buffer iff it is the last holder; the
+        // flags are copied first so the borrow ends before `free_exec`
+        // reborrows the table (R18).
+        let use_copy = self.slots[id.0].pub_.sys_flags.contains(SysFlags::USE_COPY);
+        if use_copy {
+            crate::exec::free_exec(self, id);
+        }
         let slot = &mut self.slots[id.0];
         slot.pub_.in_use = false; // manager.c:2107
         slot.pub_.endpoint = Endpoint::NONE;
@@ -381,20 +370,49 @@ impl RProcTable {
         sys: &BootImageSys,
         dev: &BootImageDev,
         privilege: Privilege,
-    ) -> Result<(), i32> {
-        let slot = self.slots.get_mut(id.0).ok_or(ENOSYS)?;
+        ticks: Clock,
+    ) -> Result<(), Errno> {
+        let slot = self.slots.get_mut(id.0).ok_or(Errno::ENOSYS)?;
         if slot.flags.contains(RFlags::IN_USE) {
             // Defensive: C writes over the row unconditionally (main.c:255).
-            return Err(ENOSYS);
+            return Err(Errno::ENOSYS);
         }
         slot.pub_.label = Label::from_bytes(priv_.label.as_bytes()); // main.c:262
         slot.pub_.proc_name = proc_name; // main.c:313 (strlcpy from ip->proc_name)
-        slot.pub_.sys_flags = crate::service_slot::SysFlags::from_bits_truncate(sys.flags as u16); // main.c:301
+        // N10: `sys.flags` is the typed `SysFlags` (table.rs); the old
+        // `from_bits_truncate(flags as u16)` dropped unknown high bits.
+        slot.pub_.sys_flags = sys.flags; // main.c:301
         slot.pub_.dev_nr = dev.dev_nr; // main.c:306
         slot.pub_.endpoint = endpoint; // main.c:325
         slot.pub_.in_use = true; // main.c:345
         slot.flags = RFlags::IN_USE | RFlags::ACTIVE; // main.c:343
         slot.priv_ = privilege; // main.c:264-296 (03-rs-privilege.md)
+
+        // C: strlcpy(rp->r_cmd, ip->proc_name, sizeof(rp->r_cmd)) — main.c:308;
+        // rp->r_script[0] = '\0' — main.c:309; build_cmd_dep(rp) — main.c:310.
+        // The boot command is the process name (e.g. "/sbin/rs"); args/argc
+        // are rebuilt from it (09/10 consume these).
+        slot.cmd[..RS_MAX_LABEL_LEN].copy_from_slice(proc_name.as_bytes());
+        slot.script = [0; crate::service_slot::MAX_SCRIPT_LEN];
+        crate::service_create::rebuild_args(slot);
+
+        // C: calls = SRV_OR_USR(rp, SRV_VC, USR_VC) == ALL_C ? all_c : no_c;
+        // fill_call_mask(...) — main.c:317-319. Boot entries are all SYS_PROC,
+        // so SRV_VC = ALL_C (priv.h:78-80) → the full mask.
+        slot.pub_.vm_call_mask = crate::privilege::CallMask::all();
+
+        // C: rp->r_scheduler = SRV_OR_USR(rp, SRV_SCH, USR_SCH); ... — main.c:320-322.
+        // Boot services (SYS_PROC): SRV_SCH=KERNEL, SRV_Q=USER_Q=7,
+        // SRV_QT=USER_QUANTUM=200, cpu stays 0 (priv.h:88,93,98).
+        let sched = crate::sched::SchedulerConfig::boot_defaults(endpoint);
+        slot.scheduler = sched.scheduler;
+        slot.priority = sched.priority;
+        slot.quantum = sched.quantum;
+        slot.cpu = sched.cpu;
+
+        // C: rp->r_alive_tm = getticks() — main.c:333 (07 heartbeat baseline).
+        slot.alive_tm = ticks;
+
         let idx = endpoint.slot();
         debug_assert!(idx >= 0 && (idx as usize) < NR_PROCS);
         self.by_endpoint[idx as usize] = Some(id); // main.c:344 (ARCH A-4)
@@ -437,17 +455,18 @@ impl Default for RProcTable {
 mod tests {
     use super::*;
     use crate::privilege::PrivFlags;
-    use crate::service_slot::{SRVR_SF, SysFlags};
+    use crate::service_slot::SysFlags;
+    use alloc::sync::Arc;
 
     fn boot_priv(endpoint: Endpoint, label: &'static str) -> BootImagePriv {
         BootImagePriv {
             endpoint,
             label,
-            flags: 0,
+            flags: PrivFlags::empty(),
         }
     }
 
-    fn boot_sys(flags: u32) -> BootImageSys {
+    fn boot_sys(flags: SysFlags) -> BootImageSys {
         BootImageSys {
             endpoint: Endpoint::NONE,
             flags,
@@ -475,9 +494,10 @@ mod tests {
                 Endpoint::VFS,
                 Label::from_bytes(b"vfs"),
                 &boot_priv(Endpoint::VFS, "vfs"),
-                &boot_sys(SRVR_SF.bits() as u32),
+                &boot_sys(crate::service_slot::SRVR_SF),
                 &boot_dev(0),
                 boot_privilege(Endpoint::VFS),
+                0, // ticks (S2)
             )
             .expect("activate");
         table.get_mut(SlotId::new(0)).pid = Some(100);
@@ -492,13 +512,16 @@ mod tests {
         slot.flags = RFlags::IN_USE;
         slot.pub_.label = Label::from_bytes(b"vfs");
         slot.pub_.in_use = true;
-        assert_eq!(table.lookup_by_label("vfs"), None);
+        assert_eq!(table.lookup_by_label(&Label::from_bytes(b"vfs")), None);
 
         // ACTIVE → found.
         let slot = table.get_mut(SlotId::new(0));
         slot.flags |= RFlags::ACTIVE;
-        assert_eq!(table.lookup_by_label("vfs"), Some(SlotId::new(0)));
-        assert_eq!(table.lookup_by_label("pm"), None);
+        assert_eq!(
+            table.lookup_by_label(&Label::from_bytes(b"vfs")),
+            Some(SlotId::new(0))
+        );
+        assert_eq!(table.lookup_by_label(&Label::from_bytes(b"pm")), None);
     }
 
     #[test]
@@ -519,9 +542,10 @@ mod tests {
                 Endpoint::TTY,
                 Label::from_bytes(b"tty"),
                 &boot_priv(Endpoint::TTY, "tty"),
-                &boot_sys(0),
+                &boot_sys(SysFlags::empty()),
                 &boot_dev(5),
                 boot_privilege(Endpoint::TTY),
+                0, // ticks (S2)
             )
             .expect("activate");
         assert_eq!(table.lookup_by_dev_nr(5), Some(SlotId::new(0)));
@@ -538,9 +562,10 @@ mod tests {
                 Endpoint::DS,
                 Label::from_bytes(b"ds"),
                 &boot_priv(Endpoint::DS, "ds"),
-                &boot_sys(0),
+                &boot_sys(SysFlags::empty()),
                 &boot_dev(0),
                 boot_privilege(Endpoint::DS),
+                0, // ticks (S2)
             )
             .expect("activate");
         let slot = table.get_mut(SlotId::new(0));
@@ -553,6 +578,28 @@ mod tests {
         assert_eq!(table.lookup_by_domain(2), None);
         assert_eq!(table.lookup_by_domain(0), None); // domain <= 0 (manager.c:2020-2021)
         assert_eq!(table.lookup_by_domain(-4), None);
+    }
+
+    #[test]
+    fn test_lookup_by_domain_corrupt_count_fails_closed() {
+        // D3: a count beyond NR_DOMAIN must yield None, not panic.
+        let mut table = RProcTable::new();
+        table
+            .activate_boot_slot(
+                SlotId::new(0),
+                Endpoint::DS,
+                Label::from_bytes(b"ds"),
+                &boot_priv(Endpoint::DS, "ds"),
+                &boot_sys(SysFlags::empty()),
+                &boot_dev(0),
+                boot_privilege(Endpoint::DS),
+                0, // ticks (S2)
+            )
+            .expect("activate");
+        let slot = table.get_mut(SlotId::new(0));
+        slot.pub_.nr_domain = crate::service_slot::NR_DOMAIN as u8 + 1;
+        slot.pub_.domain[0] = 1;
+        assert_eq!(table.lookup_by_domain(1), None);
     }
 
     #[test]
@@ -593,7 +640,7 @@ mod tests {
             let id = table.alloc_slot().expect("slot");
             table.get_mut(id).flags = RFlags::IN_USE;
         }
-        assert_eq!(table.alloc_slot(), Err(ENOMEM)); // manager.c:2076-2079
+        assert_eq!(table.alloc_slot(), Err(Errno::ENOMEM)); // manager.c:2076-2079
     }
 
     #[test]
@@ -612,6 +659,32 @@ mod tests {
     }
 
     #[test]
+    fn test_free_slot_releases_use_copy_exec() {
+        // R18: C free_slot calls free_exec for SF_USE_COPY services
+        // (manager.c:2100-2102) — the slot's exec Arc is dropped, freeing the
+        // buffer when no other slot shares it (ARCH A-5, 09-rs-exec.md).
+        let mut table = table_with_one_slot();
+        let id = SlotId::new(0);
+        let shared = Arc::from(&b"\x7fELF\x02\x01"[..]);
+        table.get_mut(id).pub_.sys_flags |= SysFlags::USE_COPY;
+        table.get_mut(id).exec = Some(Arc::clone(&shared));
+
+        table.free_slot(id);
+
+        assert!(table.get(id).exec.is_none()); // free_exec'd (manager.c:2100-2102)
+        // The original Arc still owns the buffer (no double-free).
+        assert_eq!(&shared[..], b"\x7fELF\x02\x01");
+
+        // Non-USE_COPY services keep the exec image here — C frees it right
+        // after execve (manager.c:643-644), a 09-wiring concern, not one of
+        // free_slot (which only frees SF_USE_COPY, manager.c:2100-2102).
+        let mut table2 = table_with_one_slot();
+        table2.get_mut(id).exec = Some(Arc::from(&b"\x7fELF"[..]));
+        table2.free_slot(id);
+        assert!(table2.get(id).exec.is_some());
+    }
+
+    #[test]
     fn test_activate_boot_slot_indexes_endpoint() {
         let mut table = RProcTable::new();
         table
@@ -620,9 +693,10 @@ mod tests {
                 Endpoint::SCHED,
                 Label::from_bytes(b"sched"),
                 &boot_priv(Endpoint::SCHED, "sched"),
-                &boot_sys(0),
+                &boot_sys(SysFlags::empty()),
                 &boot_dev(0),
                 boot_privilege(Endpoint::SCHED),
+                0, // ticks (S2)
             )
             .expect("activate");
 
@@ -643,11 +717,12 @@ mod tests {
                 Endpoint::PM,
                 Label::from_bytes(b"pm"),
                 &boot_priv(Endpoint::PM, "pm"),
-                &boot_sys(0),
+                &boot_sys(SysFlags::empty()),
                 &boot_dev(0),
                 boot_privilege(Endpoint::PM),
+                0, // ticks (S2)
             ),
-            Err(ENOSYS) // defensive: row already IN_USE
+            Err(Errno::ENOSYS) // defensive: row already IN_USE
         );
     }
 
@@ -660,11 +735,12 @@ mod tests {
                 Endpoint::PM,
                 Label::from_bytes(b"pm"),
                 &boot_priv(Endpoint::PM, "pm"),
-                &boot_sys(0),
+                &boot_sys(SysFlags::empty()),
                 &boot_dev(0),
                 boot_privilege(Endpoint::PM),
+                0, // ticks (S2)
             ),
-            Err(ENOSYS)
+            Err(Errno::ENOSYS)
         );
     }
 
@@ -676,8 +752,8 @@ mod tests {
         assert_eq!(RProcTable::isokendpt(Endpoint::PM), Ok(0));
         assert_eq!(RProcTable::isokendpt(Endpoint::INIT), Ok(11));
         // Endpoint::NONE/ANY sit above the top of the user range.
-        assert_eq!(RProcTable::isokendpt(Endpoint::NONE), Err(EINVAL));
-        assert_eq!(RProcTable::isokendpt(Endpoint::ANY), Err(EINVAL));
+        assert_eq!(RProcTable::isokendpt(Endpoint::NONE), Err(Errno::EINVAL));
+        assert_eq!(RProcTable::isokendpt(Endpoint::ANY), Err(Errno::EINVAL));
         // Generation-wrapped slot still validates by slot (endpoint.h:68-69).
         let gen_endpoint = Endpoint::from_generation_slot(1, 5);
         assert_eq!(RProcTable::isokendpt(gen_endpoint), Ok(5));
@@ -688,6 +764,29 @@ mod tests {
         let table = RProcTable::new();
         // Negative slots are kernel tasks — never services (A-4: no index).
         assert_eq!(table.endpoint_slot(Endpoint::CLOCK), None);
+    }
+
+    #[test]
+    fn test_endpoint_slot_none_fails_closed() {
+        // R12: NONE/ANY/SELF sit above NR_PROCS (endpoint.rs:26-50) — the
+        // O(1) fast index must not index past `by_endpoint` (C is protected
+        // by `rs_isokendpt` at the main loop, main.c:63-66).
+        let mut table = RProcTable::new();
+        assert_eq!(table.endpoint_slot(Endpoint::NONE), None);
+        assert_eq!(table.endpoint_slot(Endpoint::ANY), None);
+        assert_eq!(table.endpoint_slot(Endpoint::SELF), None);
+        // The write side must be total too — a vacant clone row
+        // (Endpoint::NONE, service_create.rs) may flow into swap_slot.
+        table.set_endpoint_index(Endpoint::NONE, Some(SlotId::new(0)));
+        table.set_endpoint_index(Endpoint::ANY, None);
+        assert_eq!(table.endpoint_slot(Endpoint::NONE), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn test_get_rejects_out_of_range_id() {
+        let table = RProcTable::new();
+        let _ = table.get(SlotId::new(table.len() + 1));
     }
 
     #[test]
@@ -726,19 +825,5 @@ mod tests {
         let table = table_with_one_slot();
         let got: Vec<SlotId> = table.instances_of(SlotId::new(0)).collect();
         assert_eq!(got, vec![SlotId::new(0)]);
-    }
-
-    #[test]
-    fn test_rupdate_descriptor_new() {
-        // C: RUPDATE_INIT() — memset 0 (const.h:87).
-        let upd = RupdateDescriptor::new();
-        assert!(upd.flags.is_empty());
-        assert_eq!(upd.num_rpupds, 0);
-        assert_eq!(upd.num_init_ready_pending, 0);
-        assert_eq!(upd.curr_rpupd, None);
-        assert_eq!(upd.first_rpupd, None);
-        assert_eq!(upd.last_rpupd, None);
-        assert_eq!(upd.vm_rpupd, None);
-        assert_eq!(upd.rs_rpupd, None);
     }
 }

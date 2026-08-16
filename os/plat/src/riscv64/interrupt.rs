@@ -3,6 +3,9 @@
 //! Implements `InterruptController` for RISC-V 64-bit using PLIC
 //! (Platform-Level Interrupt Controller).
 //!
+//! Minix3 has no RISC-V port — architectural evolution `[ARCH: K-2]`
+//! (05-clock-interrupt-init.md §3.8).
+//!
 //! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware base address (PLIC), context ID, and IRQ count are stored in
@@ -170,9 +173,9 @@ mod tests {
             context: 1,
         };
         let ic = Riscv64InterruptController::new(&desc);
-        // nr_irqs clamped at construction; init() iterates 0..nr_irqs.
-        // Constructing with a mock threshold keeps init MMIO-safe; just
-        // verify construction doesn't panic and the clamp path runs.
+        // nr_irqs clamped at construction; init() iterates 1..nr_irqs so the
+        // clamp bounds MMIO access to the supported IRQ source count.
+        assert_eq!(ic.nr_irqs, NR_IRQ_VECTORS);
         assert_eq!(ic.plic_base(), 0x0C00_0000);
     }
 }

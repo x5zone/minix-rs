@@ -193,6 +193,8 @@ C 的"浅拷贝 + r_pub 恢复"是**双表布局的产物**：`rproc` 与 `rproc
 - 深拷贝修正 = 字段级改写：`init_err=ERESTART`、清 `ACTIVE`、`pid=None`、`endpoint=NONE`、`rebuild_args`、`SF_USE_COPY → exec = src.exec.clone()`（`Arc` 共享，09 A-5）、四链清空、`DYN_PRIV_ID`、清 `LU/RST`、`init_flags=0`。
 
 `sys_getpriv` 同步（manager.c:1818-1821）DEFERRED（19）——Rust 签名 `clone_slot(table, src)` 不带 kernel 参数，同步在 19 接线时于调用点完成（或用带 `&mut dyn KernelApi` 的重载）。
+（T5 定案，2026-08-16：**不用** kernel 参数重载——同步在 19 shell 完成并注入结果，纯函数层不出现
+`KernelApi`，见 99 §3.4。）
 
 ### 3.4 swap_slot 的引用交换（ARCH A-3）
 
@@ -207,9 +209,9 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 `swap_slot(table, src, dst)` 的顺序与 C 一一对应：
 
 1. `table.swap_rows(src, dst)` —— 整行交换（`Vec::swap`）；C 的"双表交换 + r_pub 恢复"折叠成一次交换；
-2. `rebuild_args` ×2（manager.c:1904-1906）；
+2. `rebuild_args` ×2（manager.c:1904-1906）——R15：`argc` 只计**完整写入** args 缓冲的 token（含 NUL），放不下的尾部 token 整体丢弃且缓冲尾保持 NUL 终止；C 的 `strcpy` 对 512 字节满缓冲本就会溢出（UB），Rust 不继承；
 3. 两行四链 `swap_index`（manager.c:1908-1916）；
-4. 两行 endpoint 的 `by_endpoint` 索引交换（manager.c:1922-1925）；
+4. 两行 endpoint 的 `by_endpoint` 索引交换（manager.c:1922-1925）——R12：`clone_slot` 产物的 `Endpoint::NONE`（manager.c:1831）在 `endpoint_slot`/`set_endpoint_index` 越界时 `None`/忽略（fail-closed，不 panic）；测试 `test_swap_slot_with_vacant_row_no_panic` 锁定；
 5. 返回 `(dst, src)`（C 的 `*src_rpp = dst_rp; *dst_rpp = src_rp`）。
 
 **RUPDATE_ITER（manager.c:1919-1921）DEFERRED（16）**：per-slot `r_upd` 描述符未建模（02 P2-3），等 16 落地时把 update 链的引用交换补进 `swap_slot`（或由 16 的调用点负责）。
@@ -250,7 +252,7 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 
 ## 5. 测试要点
 
-`service_create.rs` 内 11 项测试（`cargo test -p minix-rs --lib service_create`），覆盖：
+`service_create.rs` 内 13 项测试（`cargo test -p minix-rs --lib service_create`），覆盖：
 
 1. **preconditions**：`NEED_REPL` 无副本 → `EPERM`；prev 副本 `TERMINATED` 不算数；prev 存活（且命令非空）→ `Ok`；`NEED_COPY` 无内存副本 → `EPERM`；空命令 → `EPERM`。
 2. **mark_child_created**：endpoint/pid/`alive_tm`/`backoff=0`/`in_use`/`by_endpoint` 全量断言。
@@ -258,9 +260,11 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 4. **link_replica**：`LU_SYS_PROC` 走 new/old、普通走 next/prev、flags 落位。
 5. **activate_service**：ex 清位 + rp 置位；无 ex 分支只置位。
 6. **swap_slot**：内容交换、`by_endpoint` 跟随内容、第三槽 `c.prev_rp` 从 a 重定向到 b、返回值 `(dst, src)`。
-7. **踩坑延续**：所有测试在两次 `alloc_slot` 之间先置 `IN_USE`（02 文档化的 C 语义），否则同 id 0 导致断言全乱。
+7. **rebuild_args 满缓冲（R15）**：512 字节无 NUL 命令 → `argc` 只计完整写入 token、尾部 NUL 终止（`test_rebuild_args_full_buffer_argc`；C 的 `strcpy` 满缓冲溢出是 UB，Rust 不继承）。
+8. **vacant 行 swap（R12）**：`clone_slot` 产物的 `Endpoint::NONE` 参与 `swap_slot` 时 `by_endpoint` 越界 `None`/忽略，不 panic（`test_swap_slot_with_vacant_row_no_panic`）。
+9. **踩坑延续**：所有测试在两次 `alloc_slot` 之间先置 `IN_USE`（02 文档化的 C 语义），否则同 id 0 导致断言全乱。
 
-测试总数声明：本文档范围为 **11 项**（`service_create` 模块内）。全局 `cargo test -p minix-rs --lib` = 181 通过（随并行模块增长，以各 doc 范围为准）。
+测试总数声明：本文档范围为 **13 项**（`service_create` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
 
 ---
 

@@ -133,42 +133,23 @@ impl TrapEntryArch for Riscv64TrapEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trap_entry::TrapEntryArch;
+
+    // 注：原 4 个烟雾测试（trap_entry_init_returns_unit_struct /
+    // configure_syscall_is_noop / set_handler_is_noop /
+    // configure_ipc_entry_is_noop_on_riscv64）改为编译期约束检查 —— 验证
+    // Riscv64TrapEntry 满足 TrapEntryArch trait bound。RISC-V 上这些方法
+    // 都是 noop（unit struct + Direct-mode stvec），运行时无可观察行为；
+    // 方法的存在与正确编译即可替代运行时断言。
+    //
+    // 运行时正确性（stvec 装载、ecall dispatch）由 QEMU 集成测试覆盖。
 
     #[test]
-    fn trap_entry_init_returns_unit_struct() {
-        // Riscv64TrapEntry is a unit struct — no state to verify.
-        let _entry = Riscv64TrapEntry::init();
-    }
-
-    #[test]
-    fn configure_syscall_is_noop() {
-        // RISC-V uses ecall for syscalls — no CSR configuration needed.
-        // configure_syscall should not panic.
-        let mut entry = Riscv64TrapEntry::init();
-        entry.configure_syscall(VirBytes::new(0xDEAD));
-    }
-
-    #[test]
-    fn set_handler_is_noop() {
-        // RISC-V uses Direct mode — set_handler is no-op.
-        // Should not panic.
-        let mut entry = Riscv64TrapEntry::init();
-        entry.set_handler(InterruptVector::new(14), VirBytes::new(0xBEEF), true);
-    }
-
-    #[test]
-    fn configure_ipc_entry_is_noop_on_riscv64() {
-        // RISC-V: IPC and kernel-call traps share the same ecall trap vector
-        // (stvec Direct mode). The dispatch happens in software: the ecall
-        // handler reads a7 (syscall number register) at runtime to distinguish:
-        //   a7 < 17           → IPC (SEND=1, RECEIVE=2, ..., SENDA=16)
-        //   a7 >= KERNEL_CALL → kernel_call (SYS_FORK, SYS_EXEC, ...)
-        // Therefore configure_ipc_entry is a no-op — stvec routes all traps to
-        // a single entry point, no per-vector table to configure.
-        // Note: Minix3 has no RISC-V port; this design follows the ARM
-        // software-dispatch pattern (Linux/FreeBSD/xv6-riscv all use a7).
-        let mut entry = Riscv64TrapEntry::init();
-        // Should not panic and should not modify any state (unit struct).
-        entry.configure_ipc_entry(VirBytes::new(0xCAFE));
+    fn riscv64_trap_entry_arch_impl_satisfies_trait_bound() {
+        // Compile-time check: Riscv64TrapEntry implements TrapEntryArch
+        // and satisfies its Sized bound. Replaces 4 prior smoke tests
+        // that asserted nothing observable on unit-struct APIs.
+        fn _check<T: TrapEntryArch>() {}
+        _check::<Riscv64TrapEntry>();
     }
 }

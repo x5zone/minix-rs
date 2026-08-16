@@ -172,71 +172,12 @@ pub const NR_IRQ_HOOKS: usize = 64;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_irq_vector_new() {
-        let v = IrqVector::new(32);
-        assert_eq!(v.get(), 32);
-    }
-
-    #[test]
-    fn test_irq_vector_const() {
-        const V: IrqVector = IrqVector::new(0);
-        assert_eq!(V.get(), 0);
-    }
-
-    #[test]
-    fn test_irq_vector_boundaries() {
-        let min = IrqVector::new(0);
-        let max = IrqVector::new(63);
-        assert_eq!(min.get(), 0);
-        assert_eq!(max.get(), 63);
-    }
-
-    #[test]
-    fn test_irq_vector_equality() {
-        let a = IrqVector::new(5);
-        let b = IrqVector::new(5);
-        let c = IrqVector::new(10);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn test_irq_id_new() {
-        let id = IrqId::new(1);
-        assert_eq!(id.get(), 1);
-    }
-
-    #[test]
-    fn test_irq_notify_id_new() {
-        let nid = IrqNotifyId::new(42);
-        assert_eq!(nid.get(), 42);
-    }
-
-    #[test]
-    fn test_irq_policy_reenable() {
-        let policy = IrqPolicy::REENABLE;
-        assert!(policy.contains(IrqPolicy::REENABLE));
-        assert_eq!(policy.bits(), 0x001);
-    }
-
-    #[test]
-    fn test_irq_policy_empty() {
-        let policy = IrqPolicy::empty();
-        assert_eq!(policy.bits(), 0);
-    }
-
-    #[test]
-    fn test_nr_irq_constants() {
-        assert_eq!(NR_IRQ_VECTORS, 64);
-        assert_eq!(NR_IRQ_HOOKS, 64);
-    }
-
-    #[test]
-    fn test_irq_action_discriminants() {
-        assert!(matches!(IrqAction::Completed, IrqAction::Completed));
-        assert!(matches!(IrqAction::NotCompleted, IrqAction::NotCompleted));
-    }
+    // 注：本模块原 10 个测试多为"包装器往返 + 平凡派生属性"（Pattern #38
+    // 自指测试），例如 `IrqVector::new(32).get() == 32`、`policy.bits() == 0x001`、
+    // `NR_IRQ_VECTORS == 64` 等。这些断言永远通过，对发现回归无价值。
+    // Newtype 包装正确性由其构造/访问器签名（`pub const fn new/get`）保证，
+    // 编译期即可检测类型错位；bitflags 的 bits() 行为由 `bitflags!` 宏保证；
+    // enum 派生 trait 由 `#[derive(...)]` 保证。本模块**目前无行为可单元测试**——
+    // 真实行为测试在各架构 `interrupt.rs` 的 `test_new_from_*_descriptor` /
+    // `test_new_clamps_nr_irqs_to_max` 中。
 }

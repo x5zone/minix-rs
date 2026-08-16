@@ -19,7 +19,7 @@
 
 use crate::service_slot::{NR_IO_RANGE, NR_IRQ, NR_MEM_RANGE};
 use core::fmt;
-use minix_types::Endpoint;
+use minix_types::{Endpoint, Errno};
 
 /// Base for kernel calls to SYSTEM. C: `KERNEL_CALL` — com.h:205.
 pub const KERNEL_CALL: i32 = 0x600;
@@ -189,13 +189,21 @@ impl CallMask {
     }
 
     /// Sets the `offset`-th bit.
+    ///
+    /// Panics on `offset >= 64` in **all** builds (N7 — todo §11): the old
+    /// `1u64 << offset` silently masked the shift in release builds (x86 shl
+    /// semantics), setting the wrong bit — for a call mask that meant
+    /// "wrong syscall allowed". Callers bound-check first (`from_calls`
+    /// returns `Err(EINVAL)`; priv ids are kernel-bounded).
     pub const fn set_bit(mut self, offset: usize) -> CallMask {
+        assert!(offset < 64, "CallMask bit offset out of range");
         self.0 |= 1u64 << offset;
         self
     }
 
     /// Tests the `offset`-th bit.
     pub const fn test_bit(self, offset: usize) -> bool {
+        assert!(offset < 64, "CallMask bit offset out of range");
         self.0 & (1u64 << offset) != 0
     }
 
@@ -211,7 +219,7 @@ impl CallMask {
         tot_nr_calls: usize,
         call_base: i32,
         is_init: bool,
-    ) -> CallMask {
+    ) -> Result<CallMask, Errno> {
         // Count non-NULL_C entries (utility.c:116-121).
         let nr_calls = calls.iter().take_while(|&&c| c != NULL_C).count();
 
@@ -220,9 +228,15 @@ impl CallMask {
             let mut m = CallMask::all();
             // C fills `call_mask_size` chunks of ~0; bits beyond the call
             // space are also set there but never consulted.
-            let _ = tot_nr_calls;
-            m.0 &= (1u64 << tot_nr_calls) - 1;
-            return m;
+            // N7: `(1u64 << tot_nr_calls) - 1` overflowed at 64 bits — a
+            // future raise of NR_SYS_CALLS/NR_VM_CALLS would have wrapped.
+            let mask = if tot_nr_calls >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << tot_nr_calls) - 1
+            };
+            m.0 &= mask;
+            return Ok(m);
         }
 
         let mut m = if is_init {
@@ -234,15 +248,17 @@ impl CallMask {
         };
         for &c in calls.iter().take(nr_calls) {
             let offset = (c - call_base) as usize;
-            debug_assert!(
-                offset < tot_nr_calls,
-                "call {} out of range for base {}",
-                c,
-                call_base
-            );
+            // N7: fail closed on an out-of-range call number (was a
+            // debug-only assert — release silently set the wrong bit, which
+            // for a call mask means "wrong syscall allowed"). The call list
+            // originates from boot tables / RS_UP messages (attacker-
+            // influenceable); EINVAL instead of a panic.
+            if offset >= tot_nr_calls {
+                return Err(Errno::EINVAL);
+            }
             m = m.set_bit(offset);
         }
-        m
+        Ok(m)
     }
 }
 
@@ -268,11 +284,13 @@ impl SysMap {
 
     /// Tests the `priv_id`-th bit (`get_sys_bit` — kernel/const.h:20).
     pub const fn test(self, priv_id: usize) -> bool {
+        assert!(priv_id < 64, "SysMap priv id out of range");
         self.0 & (1u64 << priv_id) != 0
     }
 
     /// Sets the `priv_id`-th bit (`set_sys_bit` — kernel/const.h:24).
     pub const fn set(mut self, priv_id: usize) -> SysMap {
+        assert!(priv_id < 64, "SysMap priv id out of range");
         self.0 |= 1u64 << priv_id;
         self
     }
@@ -303,11 +321,7 @@ pub struct MemRange {
 /// Rust call site passes the already-computed `is_sys_proc` to break the
 /// "read the field we are about to write" cycle.
 pub const fn srv_or_usr<T: Copy>(is_sys_proc: bool, srv: T, usr: T) -> T {
-    if is_sys_proc {
-        srv
-    } else {
-        usr
-    }
+    if is_sys_proc { srv } else { usr }
 }
 
 // ── The privilege structure (C: struct priv, kernel/priv.h:21-65) ───────────
@@ -318,7 +332,7 @@ pub const fn srv_or_usr<T: Copy>(is_sys_proc: bool, srv: T, usr: T) -> T {
 /// value-embedded as `ixfer_priv_s r_priv` (`servers/rs/type.h:88`) and passes
 /// it whole to `sys_privctl` (via `data_copy`, do_privctl.c:123-126).
 /// Construction: 03-rs-privilege.md §4.2 (`boot_priv`); updates:
-/// `update_sig_mgrs` (sched.rs) and `do_edit` (08).
+/// `set_sig_mgrs` (sched.rs) and `do_edit` (08).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Privilege {
     /// Static priv id. C: `s_id` — kernel/priv.h:23.
@@ -341,16 +355,16 @@ pub struct Privilege {
     // Resource white-lists (driver-facing; RS passes them through).
     /// Allowed I/O ports. C: `s_io_tab` — kernel/priv.h:54.
     pub io_ranges: [IoRange; NR_IO_RANGE],
-    /// Number of I/O ranges. C: `s_nr_io_range` — kernel/priv.h:53.
-    pub nr_io_range: u16,
+    /// Number of I/O ranges. C: `s_nr_io_range` — kernel/priv.h:53 (`int`).
+    pub nr_io_range: i32,
     /// Allowed memory ranges. C: `s_mem_tab` — kernel/priv.h:57.
     pub mem_ranges: [MemRange; NR_MEM_RANGE],
-    /// Number of memory ranges. C: `s_nr_mem_range` — kernel/priv.h:56.
-    pub nr_mem_range: u16,
+    /// Number of memory ranges. C: `s_nr_mem_range` — kernel/priv.h:56 (`int`).
+    pub nr_mem_range: i32,
     /// Allowed IRQ lines. C: `s_irq_tab` — kernel/priv.h:60.
     pub irqs: [u32; NR_IRQ],
-    /// Number of IRQ lines. C: `s_nr_irq` — kernel/priv.h:59.
-    pub nr_irq: u16,
+    /// Number of IRQ lines. C: `s_nr_irq` — kernel/priv.h:59 (`int`).
+    pub nr_irq: i32,
 }
 
 impl Privilege {
@@ -393,7 +407,8 @@ impl Privilege {
             ipc_to: SysMap::all(),
             // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
             //   ? all_c : no_c` — boot services use the SRV_KC=ALL_C branch.
-            k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true),
+            k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
+                .expect("boot call list is a constant in range"),
             // main.c:274: `s_sig_mgr = SRV_OR_USR(rp, SRV_SM, USR_SM)` —
             //   RS (2) for system services, PM (0) for user processes.
             sig_mgr: if is_sys_proc {
@@ -414,6 +429,22 @@ impl Privilege {
     /// Is this a system process? C: `rp->r_priv.s_flags & SYS_PROC` (const.h:71).
     pub const fn is_sys_proc(&self) -> bool {
         self.flags.contains(PrivFlags::SYS_PROC)
+    }
+
+    /// Fail-closed count validation before the structure is handed to the
+    /// kernel. C: `sys_privctl` rejects negative or over-limit counts with
+    /// `EINVAL` (do_privctl.c:308-309, 319-320, 330-331); the 19 wiring calls
+    /// this before `data_copy`. The C width is `int` (priv.h:53/56/59), so
+    /// counts are `i32` here and validated at the boundary.
+    pub fn validate(&self) -> Result<(), Errno> {
+        let in_range = |v: i32, limit: usize| (0..=limit as i32).contains(&v);
+        if !in_range(self.nr_io_range, NR_IO_RANGE)
+            || !in_range(self.nr_mem_range, NR_MEM_RANGE)
+            || !in_range(self.nr_irq, NR_IRQ)
+        {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
     }
 }
 
@@ -518,11 +549,12 @@ mod tests {
     #[test]
     fn test_call_mask_from_calls() {
         // ALL_C → full mask within the call space.
-        let m = CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true);
+        let m = CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true).unwrap();
         assert_eq!(m.0, (1u64 << NR_SYS_CALLS) - 1);
 
         // Single call: bit (call - call_base).
-        let m = CallMask::from_calls(&[KERNEL_CALL + 4, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true);
+        let m = CallMask::from_calls(&[KERNEL_CALL + 4, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
+            .unwrap();
         assert!(m.test_bit(4));
         assert!(!m.test_bit(3));
 
@@ -532,9 +564,33 @@ mod tests {
             NR_SYS_CALLS,
             KERNEL_CALL,
             true,
-        );
+        )
+        .unwrap();
         assert!(m.test_bit(1));
         assert!(!m.test_bit(2));
+
+        // N7: an out-of-range call number fails closed with EINVAL instead
+        // of silently setting the wrong bit in release builds.
+        assert_eq!(
+            CallMask::from_calls(
+                &[KERNEL_CALL + 200, NULL_C],
+                NR_SYS_CALLS,
+                KERNEL_CALL,
+                true
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            CallMask::from_calls(&[KERNEL_CALL - 5, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true),
+            Err(Errno::EINVAL)
+        );
+        // A call space >= 64 bits must not shift-overflow (N7).
+        assert_eq!(
+            CallMask::from_calls(&[ALL_C, NULL_C], 64, KERNEL_CALL, true)
+                .unwrap()
+                .0,
+            u64::MAX
+        );
     }
 
     #[test]
@@ -590,5 +646,25 @@ mod tests {
         assert!(!p.is_sys_proc());
         assert_eq!(p.trap_mask, TrapMask::USR_T);
         assert_eq!(p.sig_mgr, Endpoint::PM);
+    }
+
+    #[test]
+    fn test_validate_range_counts() {
+        // C: do_privctl.c:308-309, 319-320, 330-331 — negative or over-limit
+        // counts are rejected with EINVAL; the count is `int` (priv.h:53/56/59).
+        let mut p = Privilege::vacant();
+        assert_eq!(p.validate(), Ok(())); // zeroed counts are valid
+        p.nr_io_range = NR_IO_RANGE as i32;
+        assert_eq!(p.validate(), Ok(())); // exactly the table limit
+        p.nr_io_range = NR_IO_RANGE as i32 + 1;
+        assert_eq!(p.validate(), Err(Errno::EINVAL));
+        p.nr_io_range = -1; // C int semantics: negative is rejected, not wrapped
+        assert_eq!(p.validate(), Err(Errno::EINVAL));
+        p.nr_io_range = 0;
+        p.nr_mem_range = -1;
+        assert_eq!(p.validate(), Err(Errno::EINVAL));
+        p.nr_mem_range = 0;
+        p.nr_irq = NR_IRQ as i32 + 5;
+        assert_eq!(p.validate(), Err(Errno::EINVAL));
     }
 }

@@ -106,3 +106,76 @@ pub const ENOMSG: i32 = 83;
 pub const EOVERFLOW: i32 = 84;
 pub const EILSEQ: i32 = 85;
 pub const ENOTSUP: i32 = 86;
+
+/// Type-safe errno value (ARCH A-12, 03-stage-rs/99-rs-global-concepts.md).
+///
+/// Wraps the Minix3 errno number under the user-space positive convention
+/// (the same values as the module-level `i32` constants, which remain the
+/// wire form). Convert at the message boundary with [`Errno::to_i32`] /
+/// [`Errno::from_i32`] — the Redox `mux/demux` pattern
+/// (`Ok(v) => v, Err(e) => e.to_i32()`).
+///
+/// The RS server is the first consumer (A-12); the constant set grows as
+/// other crates convert from bare `i32` errno. `EDONTREPLY` is included
+/// because RS uses it as an internal reply-suppression sentinel
+/// (main.c:124-129), not as a wire errno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Errno(i32);
+
+impl Errno {
+    /// C: `EPERM` — sys/errno.h:1.
+    pub const EPERM: Errno = Errno(EPERM);
+    /// C: `E2BIG` — sys/errno.h:7.
+    pub const E2BIG: Errno = Errno(E2BIG);
+    /// C: `ENOEXEC` — sys/errno.h:8.
+    pub const ENOEXEC: Errno = Errno(ENOEXEC);
+    /// C: `ESRCH` — sys/errno.h:3.
+    pub const ESRCH: Errno = Errno(ESRCH);
+    /// C: `EBUSY` — sys/errno.h:16.
+    pub const EBUSY: Errno = Errno(EBUSY);
+    /// C: `EINVAL` — sys/errno.h:22.
+    pub const EINVAL: Errno = Errno(EINVAL);
+    /// C: `ENOMEM` — sys/errno.h:12.
+    pub const ENOMEM: Errno = Errno(ENOMEM);
+    /// C: `ENOSYS` — sys/errno.h:78.
+    pub const ENOSYS: Errno = Errno(ENOSYS);
+    /// C: `ERESTART` — sys/errno.h:196 (positive user-space convention).
+    pub const ERESTART: Errno = Errno(ERESTART);
+    /// C: `EDONTREPLY` — sys/errno.h:199 (reply-suppression sentinel).
+    pub const EDONTREPLY: Errno = Errno(EDONTREPLY);
+    /// C: `EGENERIC` — sys/errno.h:200.
+    pub const EGENERIC: Errno = Errno(EGENERIC);
+    /// C: `EDEADEPT` — sys/errno.h:211.
+    pub const EDEADEPT: Errno = Errno(EDEADEPT);
+
+    /// Wraps a raw errno value (wire form).
+    pub const fn from_i32(value: i32) -> Self {
+        Self(value)
+    }
+
+    /// The raw errno value (wire form).
+    pub const fn to_i32(self) -> i32 {
+        self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_errno_values_match_c() {
+        // C: sys/errno.h — values are shared with the i32 constants.
+        assert_eq!(Errno::EPERM.to_i32(), EPERM);
+        assert_eq!(Errno::EINVAL.to_i32(), EINVAL);
+        assert_eq!(Errno::ENOSYS.to_i32(), ENOSYS);
+        assert_eq!(Errno::EDONTREPLY.to_i32(), EDONTREPLY);
+        assert_eq!(Errno::EDEADEPT.to_i32(), EDEADEPT);
+    }
+
+    #[test]
+    fn test_errno_roundtrip() {
+        assert_eq!(Errno::from_i32(22).to_i32(), 22);
+        assert_eq!(Errno::from_i32(78), Errno::ENOSYS);
+    }
+}

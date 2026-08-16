@@ -19,6 +19,9 @@
 
 use minix_types::Endpoint;
 
+use crate::privilege::{PrivFlags, RSYS_F, SRV_F, USR_F, VM_F};
+use crate::service_slot::{SRV_SF, SRVR_SF, SysFlags, VM_SF};
+
 /// Marks a null boot entry. C: `NULL_BOOT_NR` — const.h:61.
 pub const NULL_BOOT_NR: i32 = 17; // NR_BOOT_PROCS (minix-types boot.rs)
 
@@ -36,7 +39,10 @@ pub struct BootImagePriv {
     /// Service label (e.g. `"rs"`, `"vm"`). C: `boot_image_priv.label` (table.c).
     pub label: &'static str,
     /// Priv flags (`SYS_PROC`/`ROOT_SYS_PROC`/...). C: `boot_image_priv.flags`.
-    pub flags: u32,
+    /// Typed as [`PrivFlags`] — the single bit-value authority is
+    /// `privilege.rs` (03-rs-privilege.md §4.2); a second u32 copy here is
+    /// what produced N1's wrong bit values (see the todo §11).
+    pub flags: PrivFlags,
 }
 
 /// Flags of a boot image sys entry.
@@ -46,7 +52,10 @@ pub struct BootImagePriv {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootImageSys {
     pub endpoint: Endpoint,
-    pub flags: u32,
+    /// Service capability flags (`SF_*`). C: `boot_image_sys.flags`.
+    /// Typed as [`SysFlags`] — the single authority is `service_slot.rs`
+    /// (N10: the u32 copy here silently lost bits via `as u16` truncation).
+    pub flags: SysFlags,
 }
 
 /// Device properties of a boot image dev entry.
@@ -60,34 +69,19 @@ pub struct BootImageDev {
 
 // ── Priv flags (priv.h:45-49) ──────────────────────────────────────────────
 
-/// System services have their own priv structure. C: `SYS_PROC` — const.h:147.
-pub const SYS_PROC: u32 = 0x010;
-/// System services. C: `SRV_F` — priv.h:45.
-pub const SRV_F: u32 = SYS_PROC | 0x004; // | PREEMPTIBLE
-/// Dynamic system services. C: `DSRV_F` — priv.h:46.
-pub const DSRV_F: u32 = SRV_F | 0x002; // | DYN_PRIV_ID
-/// Root system processes. C: `RSYS_F` — priv.h:47.
-pub const RSYS_F: u32 = SRV_F | 0x008; // | ROOT_SYS_PROC
-/// VM. C: `VM_F` — priv.h:48.
-pub const VM_F: u32 = SYS_PROC | 0x020; // | VM_SYS_PROC
-/// User processes. C: `USR_F` — priv.h:49.
-pub const USR_F: u32 = 0x004 | 0x001; // BILLABLE | PREEMPTIBLE
+// Single authority: `crate::privilege::{PrivFlags, SRV_F, DSRV_F, RSYS_F,
+// VM_F, USR_F}` (privilege.rs:83-124, every bit value tested against
+// const.h). The boot table entries below reference those constants directly.
+// The deleted u32 copy had wrong values (SRV_F=0x014, RSYS_F=0x01C,
+// VM_F=0x030, USR_F=0x005 vs C truth 0x012/0x01A/0x112/0x210/0x006) and is
+// the N1 root cause — see 03-rs-privilege.md §4.2 / todo §11.
 
 // ── Sys flags (rs.h) ────────────────────────────────────────────────────────
 
-/// Core system services. C: `SF_CORE_SRV` — rs.h:191.
-pub const SF_CORE_SRV: u32 = 0x001;
-/// Service needs a replica to start. C: `SF_NEED_REPL` — rs.h:195.
-pub const SF_NEED_REPL: u32 = 0x010;
-/// Service needs synchronous boot init. C: `SF_SYNCH_BOOT` — rs.h:192.
-pub const SF_SYNCH_BOOT: u32 = 0x002;
-
-/// System services sys flags. C: `SRV_SF` — const.h:65.
-pub const SRV_SF: u32 = SF_CORE_SRV;
-/// Services needing a replica. C: `SRVR_SF` — const.h:66.
-pub const SRVR_SF: u32 = SRV_SF | SF_NEED_REPL;
-/// VM sys flags. C: `VM_SF` — const.h:68.
-pub const VM_SF: u32 = SRVR_SF;
+// Single authority: `crate::service_slot::SysFlags` + the SRV_SF/SRVR_SF/
+// DSRV_SF/VM_SF aliases (service_slot.rs:106-145). `BootImageSys.flags` is
+// the typed `SysFlags`; the deleted u32 copy is the N10 dual-track (u32→u16
+// `as` truncation dropped bits silently).
 
 /// The boot image priv table (12 entries). C: `boot_image_priv_table` — table.c:15-30.
 ///
@@ -187,7 +181,7 @@ pub static BOOT_IMAGE_SYS_TABLE: &[BootImageSys] = &[
     },
     BootImageSys {
         endpoint: Endpoint::MFS,
-        flags: 0,
+        flags: SysFlags::empty(),
     },
 ];
 
@@ -240,15 +234,33 @@ mod tests {
             assert_eq!(got.endpoint, want.0, "endpoint order must match table.c");
             assert_eq!(got.label, want.1, "label must match table.c");
         }
-        // Flags classes: first three are system-ish, INIT is a user process.
-        assert!(
-            BOOT_IMAGE_PRIV_TABLE[0].flags & SYS_PROC != 0,
-            "RS is a sys proc"
-        );
-        assert!(
-            BOOT_IMAGE_PRIV_TABLE[11].flags & SYS_PROC == 0,
-            "INIT is a user proc"
-        );
+        // Exact bit values (N1): table.c:15-30 + priv.h:45-49. The previous
+        // "class-level" assertion (SYS_PROC present/absent) could not catch
+        // wrong combination bits — SRV_F=0x012, RSYS_F=0x112, VM_F=0x210,
+        // USR_F=0x006 must hold exactly.
+        for (i, want_flags) in [
+            (0, RSYS_F), // RS: SRV_F | ROOT_SYS_PROC = 0x112
+            (1, VM_F),   // VM: SYS_PROC | VM_SYS_PROC = 0x210
+            (2, SRV_F),  // PM
+            (3, SRV_F),  // SCHED
+            (4, SRV_F),  // VFS
+            (5, SRV_F),  // DS
+            (6, SRV_F),  // TTY
+            (7, SRV_F),  // MEM
+            (8, SRV_F),  // MIB
+            (9, SRV_F),  // PFS
+            (10, SRV_F), // MFS
+            (11, USR_F), // INIT: BILLABLE | PREEMPTIBLE = 0x006
+        ] {
+            assert_eq!(
+                BOOT_IMAGE_PRIV_TABLE[i].flags, want_flags,
+                "entry {i} flags must match priv.h"
+            );
+        }
+        assert_eq!(BOOT_IMAGE_PRIV_TABLE[0].flags.bits(), 0x112, "RSYS_F");
+        assert_eq!(BOOT_IMAGE_PRIV_TABLE[1].flags.bits(), 0x210, "VM_F");
+        assert_eq!(BOOT_IMAGE_PRIV_TABLE[2].flags.bits(), 0x012, "SRV_F");
+        assert_eq!(BOOT_IMAGE_PRIV_TABLE[11].flags.bits(), 0x006, "USR_F");
     }
 
     #[test]

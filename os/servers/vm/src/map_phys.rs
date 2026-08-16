@@ -79,14 +79,12 @@ pub(crate) fn handle_map_phys(
 
     let aligned_len = VirBytes(((len_aligned.0 + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE);
 
-    // Find a free virtual address range in the mmap region
-    // In the full implementation, VM_MMAPBASE/VM_MMAPTOP are runtime values.
-    // For now, use a reasonable 64-bit mmap range.
-    let mmap_base = VirBytes(0x0000_0001_0000_0000);
-    let mmap_top = VirBytes(0x0000_0200_0000_0000);
-
+    // Find a free virtual address range in the mmap region.
+    // [ARCH: A-6] minix-rs uses the fixed 64-bit MMAP_BASE/MMAP_TOP
+    // constants (mmap.rs:203-204); C computes VM_MMAPBASE/VM_MMAPTOP at
+    // runtime from the 32-bit address space layout (vm.h:65-79).
     let vaddr = active.regions()
-        .find_slot(mmap_base, mmap_top, aligned_len)
+        .find_slot(VirBytes(crate::mmap::MMAP_BASE), VirBytes(crate::mmap::MMAP_TOP), aligned_len)
         .ok_or(MapPhysError::OutOfMemory)?;
 
     let mut region = VirRegion::with_memtype(
@@ -173,10 +171,10 @@ mod tests {
     #[test]
     fn test_map_phys_error_to_errno() {
         // Tests the full error path: MapPhysError → From<MapPhysError> for VmError → VmError::to_errno()
-        use minix_types::{VmError, EPERM, ENOMEM, EFAULT, EINVAL};
+        use minix_types::{VmError, EPERM, ENOMEM, EINVAL};
         assert_eq!(VmError::from(MapPhysError::PermissionDenied).to_errno(), EPERM);    // PermissionDenied → PermissionDenied → EPERM
         assert_eq!(VmError::from(MapPhysError::OutOfMemory).to_errno(), ENOMEM);        // OutOfMemory → OutOfMemory → ENOMEM
-        assert_eq!(VmError::from(MapPhysError::InvalidLength).to_errno(), EFAULT);      // InvalidLength → InvalidAddress → EFAULT
+        assert_eq!(VmError::from(MapPhysError::InvalidLength).to_errno(), EINVAL);      // InvalidLength → InvalidParam → EINVAL (C mmap.c:323)
         assert_eq!(VmError::from(MapPhysError::ProcessNotFound).to_errno(), EINVAL);    // ProcessNotFound → InvalidProcess → EINVAL
     }
 }

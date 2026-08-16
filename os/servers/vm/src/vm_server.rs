@@ -16,7 +16,7 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, DecodeFromM1, EncodeToM1};
+use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, EncodeToM1};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
@@ -484,7 +484,7 @@ impl VmServer {
     }
 }
 
-/// Three reply actions — maps to C main.c:172-193.
+/// Three reply actions — maps to C main.c:178-191.
 enum DispatchAction {
     Reply(VmReply),
     Suspend,
@@ -549,7 +549,7 @@ impl VmReplyForIpc {
 }
 
 impl VmServer {
-    /// Five-priority dispatch. C: main.c:131-170.
+    /// Five-priority dispatch. C: main.c:137-176.
     fn dispatch_on_msg(
         &mut self,
         msg: &Message,
@@ -559,7 +559,7 @@ impl VmServer {
         let m_type = msg.m_type as u32;
         let source = msg.m_source;
 
-        // Priority 1: VFS transid (main.c:131-141)
+        // Priority 1: VFS transid (main.c:143-148)
         if source == VFS_PROC_NR && is_vfs_fs_transid(m_type) {
             let transid = transid_extract(m_type);
             let clean_type = transid_strip(m_type);
@@ -567,14 +567,14 @@ impl VmServer {
             return DispatchAction::Reply(result);
         }
 
-        // Priority 2: RS_INIT (main.c:142-146)
+        // Priority 2: RS_INIT (main.c:149-152)
         if m_type == RS_INIT && source == RS_PROC_NR {
             self.rs_handshake()
                 .expect("rs_handshake failed");
             return DispatchAction::Suspend;
         }
 
-        // Priority 3: VM_PAGEFAULT (main.c:147-156)
+        // Priority 3: VM_PAGEFAULT (main.c:153-164)
         if m_type == VM_PAGEFAULT {
             debug_assert!(
                 is_from_kernel(rcv_sts),
@@ -584,7 +584,7 @@ impl VmServer {
             return DispatchAction::NoReply;
         }
 
-        // Priority 4: Normal VM calls (main.c:157-168)
+        // Priority 4: Normal VM calls (main.c:165-176)
         if let Some(c) = callnr(m_type) {
             // C: acl_check(&vmproc[caller_slot], c)
             let table = VmProcTable::get_global();
@@ -638,7 +638,7 @@ impl VmServer {
             };
         }
 
-        // Priority 5: Invalid request → ENOSYS (main.c:170)
+        // Priority 5: Invalid request → ENOSYS (main.c:165-166)
         DispatchAction::Reply(VmReply::Error(VmError::NotImplemented))
     }
 
@@ -719,8 +719,9 @@ impl VmServer {
         // Decode the procctl request from the message.
         // C: do_procctl reads VMPCTL_PARAM, VMPCTL_WHO, VMPCTL_M1,
         //    VMPCTL_LEN, VMPCTL_FLAGS from the message.
-        let m1 = unsafe { &msg.m_u.m_m1 };
-        let request = VmProcctlIn::decode(m1);
+        // Wire layout is the C m9 layout (param@16/who@20/m1@24/len@28/
+        // flags@32); `decode_message` reads the dedicated overlay.
+        let request = VmProcctlIn::decode_message(msg);
 
         // The caller is always VFS in this path.
         // C: main.c:143 — msg.m_source == VFS_PROC_NR is the gate.
@@ -740,9 +741,10 @@ impl VmServer {
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
     /// C (main.c:147-156): do_pagefaults(&msg); continue;
     fn dispatch_pagefault(&mut self, msg: &Message) -> VmReply {
-        // SAFETY: Pagefault messages use the M1 format.
-        let m1 = unsafe { &msg.m_u.m_m1 };
-        let request = VmPagefaultIn::decode(m1);
+        // minix-rs: the kernel packs vpf_addr/vpf_flags in the dedicated
+        // m_vm_pagefault union member (os/kernel/src/page_fault.rs:142-166);
+        // the faulting endpoint is m_source (C: pagefaults.c:242).
+        let request = VmPagefaultIn::decode_message(msg);
         let table = VmProcTable::get_global();
         let slot = match table.vm_isokendpt(request.endpoint) {
             Ok(s) => s,
@@ -935,7 +937,7 @@ fn ipc_call_rs_init() -> Result<RprocTab, ()> {
     //
     // The C source (proto.h + table.c) does this in three steps:
     //
-    //   1. Build a `mess_rs_init` message (request type RS_INIT=0x606,
+    //   1. Build a `mess_rs_init` message (request type RS_INIT=0x714,
     //      sender = VM endpoint, no payload) and send it to RS.
     //   2. Receive a `mess_rs_init_reply` from RS that contains a
     //      pointer to a `struct rprocinfo` describing the live
@@ -970,7 +972,11 @@ fn ipc_call_rs_init() -> Result<RprocTab, ()> {
 // same values; named constants keep the C call sites greppable.
 const VFS_PROC_NR: Endpoint = Endpoint::VFS;
 const RS_PROC_NR: Endpoint = Endpoint::RS;
-const RS_INIT: u32 = 0x606;
+// C: com.h:478 — RS_INIT = RS_RQ_BASE + 20 = 0x700 + 20 = 0x714.
+// minix-types `ipc::rs::RS_INIT` carries the same value; this local
+// constant keeps the C call site greppable without a minix-types dep
+// at this layer (mirrors VFS_PROC_NR/RS_PROC_NR above).
+const RS_INIT: u32 = 0x714;
 const VM_PAGEFAULT: u32 = 0xCFF;
 // C: com.h:769 — NR_VM_CALLS 49. The highest call is VM_RS_PREPARE
 // (VM_RQ_BASE + 48), so relative indices are 0..=48.
@@ -980,7 +986,7 @@ const NR_VM_CALLS: usize = 49;
 // Helpers
 // ==========================================================================
 
-/// C: CALLNUMBER(c) with bounds check. main.c:55.
+/// C: CALLNUMBER(c) with bounds check. main.c:57-59.
 fn callnr(m_type: u32) -> Option<usize> {
     let c = m_type.checked_sub(VM_RQ_BASE)?;
     if (c as usize) < NR_VM_CALLS {
@@ -1221,7 +1227,7 @@ impl VmServer {
     pub(crate) fn handle_mmap(&mut self, req: VmMmapIn) -> VmReply {
         let table = VmProcTable::get_global();
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_mmap(table, &mut self.page_alloc, frames, req)
+        MessageDispatcher::dispatch_mmap(table, &mut self.page_alloc, frames, &mut self.vfs_queue, req)
     }
 
     pub(crate) fn handle_map_phys(&mut self, req: VmMapPhysIn) -> VmReply {
@@ -1315,6 +1321,39 @@ mod tests {
     }
 
     #[test]
+    fn test_dispatch_vm_unmap_phys_wired() {
+        // 21-P1-1 regression: VM_UNMAP_PHYS previously fell through to the
+        // dispatch_by_number catch-all (NotImplemented) despite
+        // dispatch_unmap_phys existing. Now it routes to do_munmap
+        // semantics (C: CALLMAP(VM_UNMAP_PHYS, do_munmap), main.c:540).
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+            let mut msg = Message::default();
+            msg.m_source = Endpoint::MEM;
+            msg.m_type = minix_types::VM_UNMAP_PHYS as i32;
+            unsafe {
+                msg.m_u.m_lsys_vm_unmap_phys = minix_types::ipc::MessLsysVmUnmapPhys {
+                    ep: 12345, // invalid endpoint → InvalidProcess
+                    vaddr: 0x1000,
+                    ..minix_types::ipc::MessLsysVmUnmapPhys::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(
+                minix_types::VM_UNMAP_PHYS as usize - VM_RQ_BASE as usize,
+                &msg,
+                &mut server,
+            );
+            assert!(
+                !matches!(result.reply, VmReply::Error(VmError::NotImplemented)),
+                "VM_UNMAP_PHYS must be wired, not NotImplemented: {:?}",
+                result.reply
+            );
+            assert!(matches!(result.reply, VmReply::Error(VmError::InvalidProcess)));
+        });
+    }
+
+    #[test]
     fn test_vm_server_new() {
         with_test_mock_base(|| {
             let server = make_test_vm_server();
@@ -1387,6 +1426,43 @@ mod tests {
     }
 
     #[test]
+    fn test_vm_server_handle_fork_rejects_exec_tmp_slot() {
+        // C: fork.c:47-52 — child slot >= NR_PROCS (incl. the exec-rewrite
+        // temp slot VM_EXEC_TMP_SLOT == NR_PROCS) must fail with EINVAL.
+        // Regression for the missing upper-bound check (03-P1-1).
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            // Boot image: VM itself (slot 8) + a second boot proc (slot 9)
+            // to serve as a valid fork parent.
+            let mut pfs_img = BootImage::empty();
+            pfs_img.proc_nr = 9;
+            pfs_img.endpoint = Endpoint::PFS;
+            pfs_img.start_addr = 0x100_0000;
+            pfs_img.proc_name[0] = b'p';
+            pfs_img.proc_name[1] = b'f';
+            pfs_img.proc_name[2] = b's';
+            let boot_procs = [vm_boot_image(), pfs_img];
+            let regions = test_free_regions();
+            let mut server =
+                VmServer::new_with_boot_params(boot_params(&regions, &boot_procs, &[]));
+            server.init();
+
+            let request = VmForkIn {
+                parent_endpoint: Endpoint::PFS,
+                child_slot: UserSlot::new(minix_types::NR_PROCS), // exec temp slot
+            };
+
+            let reply = server.handle_fork(request);
+            assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
+
+            // Cleanup: `init()` marked the VM slot as a VM instance (bumping
+            // the global count); `clear()` (via reset_slot) owns the decrement.
+            reset_boot_slots();
+        });
+    }
+
+    #[test]
     fn test_vm_server_handle_brk_not_found() {
         with_test_mock_base(|| {
             let mut server = make_test_vm_server();
@@ -1399,6 +1475,66 @@ mod tests {
 
             let reply = server.handle_brk(request);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
+        });
+    }
+
+    #[test]
+    fn test_mmap_file_cont_creates_region() {
+        // VFS FDLOOKUP reply → mmap_file_cont must create the file-backed
+        // region in the target process (C mmap.c:160-190). The final
+        // ipc_send resume is transport-gated; the region creation is the
+        // observable part of the callback.
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(20);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+            let mut active = empty.activate(ep);
+            active.init_regions();
+
+            let mmap_req = minix_types::VmMmapIn {
+                caller: ep,
+                forwhom: Endpoint::NONE,
+                addr: VirBytes(0),
+                length: VirBytes(0x1000),
+                prot: 1, // PROT_READ
+                flags: 0x0002, // MAP_PRIVATE
+                fd: 5,
+                offset: 0,
+            };
+            let reply = crate::vfs_queue::VfsReply {
+                req_id: 1,
+                result: 0,
+                data_phys: None,
+                fd: 5,
+                dev: 0xABCD,
+                ino: 42,
+                size_pages: 1,
+            };
+            let state = crate::vfs_queue::VfsRequestState::FdLookup {
+                mmap: mmap_req,
+            };
+
+            crate::mmap::mmap_file_cont(&mut server, &reply, &state).expect("callback must succeed");
+
+            let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
+            let region = active.regions().find_overlap(
+                VirBytes(0x0000_0001_0000_0000),
+                VirBytes(0x0000_0200_0000_0000),
+            ).expect("file region must exist after mmap_file_cont");
+            assert!(!region.flags.contains(crate::region::VrFlags::ANON));
+            assert!(matches!(
+                region.param,
+                crate::region::VrParam::File { inited: true, offset: 0, .. }
+            ));
+            // read-only mapping (PROT_READ) → not writable
+            assert!(!region.flags.contains(crate::region::VrFlags::WRITABLE));
+
+            unsafe { table.reset_slot(slot); }
         });
     }
 
@@ -1522,17 +1658,19 @@ mod tests {
 
             // Build a message with VM_PROCCTL clean_type, valid transid,
             // but VmProcctlIn.who = 0 (invalid endpoint).
-            // Field mapping: m1i1=param, m1p1=who, m1p2=m1, m1p3=len, m1i3=flags
+            // Wire layout is the C m9 overlay (param@16/who@20/m1@24/
+            // len@28/flags@32, com.h:753-757).
             let mut msg = Message::default();
-            let m1 = unsafe { &mut msg.m_u.m_m1 };
-            m1.m1i1 = 1;       // VMPCTL_PARAM = VMPPARAM_CLEAR
-            m1.m1p1 = 0;       // VMPCTL_WHO = 0 (invalid)
-            m1.m1p2 = 0;       // VMPCTL_M1
-            m1.m1p3 = 0;       // VMPCTL_LEN
-            m1.m1i3 = 0;       // VMPCTL_FLAGS
+            msg.m_u.m_lc_vm_procctl.param = 1; // VMPPARAM_CLEAR
+            msg.m_u.m_lc_vm_procctl.who = 0;   // VMPCTL_WHO = 0 (invalid)
+            msg.m_u.m_lc_vm_procctl.m1 = 0;    // VMPCTL_M1
+            msg.m_u.m_lc_vm_procctl.len = 0;   // VMPCTL_LEN
+            msg.m_u.m_lc_vm_procctl.flags = 0; // VMPCTL_FLAGS
 
             let reply = server.handle_vfs_transid(VM_PROCCTL, 42, &msg);
-            assert!(matches!(reply, VmReply::Error(VmError::InvalidEndpoint)));
+            // C do_procctl collapses vm_isokendpt failures to EINVAL
+            // (exit.c:122-125) → InvalidProcess.
+            assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
         });
     }
 

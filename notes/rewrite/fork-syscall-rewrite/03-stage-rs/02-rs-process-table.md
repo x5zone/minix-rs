@@ -565,7 +565,7 @@ pub struct ServiceSlot {
 }
 ```
 
-- `SlotId` 是 `usize` newtype（槽位索引），`Option<SlotId>` 表达"无实例"。**悬垂不可能**：`SlotId` 只能来自表内有效范围（`get` 越界 panic，防御性失败而非 UB）。
+- `SlotId` 是 `usize` newtype（槽位索引），`Option<SlotId>` 表达"无实例"。**悬垂不可能**：`SlotId` 只能来自表内有效范围（`get` 越界 panic，防御性失败而非 UB；R5：panic 带上下文断言，R8 世代落地后可检出"界内但过期"id）。
 - `get_service_instances` → 迭代器（保持 C 顺序 `rp → prev → next → old → new`）：
 
 ```rust
@@ -592,6 +592,7 @@ pub struct RProcTable {
 
 - **O(1) 保持**：`by_endpoint[endpoint.slot()]`（`Endpoint::slot()` = `_ENDPOINT_P`，endpoint.rs:88-90）。
 - **无悬垂**：槽释放时同步清除索引（`free_slot`，§4.2）；内核任务（负槽号）不建索引——`endpoint_slot()` 对负槽号返回 `None`（内核任务永不为服务，`rproc_ptr` 负下标在 C 中本就是未定义行为，Rust 显式排除）。
+- **索引全量（R12）**：`endpoint_slot()`/`set_endpoint_index()` 对 `slot() ∉ [0, NR_PROCS)` 一律 `None`/忽略——`Endpoint::NONE/ANY/SELF` 的槽号在 `NR_PROCS` 之上（endpoint.rs:26-50），裸下标会越界 panic。C 靠主循环 `rs_isokendpt` 前置（main.c:63-66）保住安全；Rust 在索引层补齐（fail-closed），06 接线时 `classify` 前仍须跑 `isokendpt` 拒绝非法源（dispatch.rs 已标注）。
 - **三处一致标注**：本表 + `.design/02-design.v1.md` D5 + `process_table.rs` 注释均标注 `ARCH A-4`。
 
 ### 3.6 lookup/alloc/free 方法化（D6）
@@ -608,19 +609,19 @@ pub struct RProcTable {
 | `alloc_slot(rpp)` | `alloc_slot(&mut self) -> Result<SlotId, i32>` | 出参 → 返回值；`ENOMEM` 保留 |
 | `free_slot(rp)` | `free_slot(&mut self, SlotId)` | 指针 → 索引 |
 
-**`free_slot` 的依赖标注**（D12）：C 的 `late_reply`（manager.c:2097，机制 06）与 `free_exec`（manager.c:2101，机制 09）在本 doc 尚未落地。Rust `free_slot` 只做**表级不变量**（flags 清零、pid=None、in_use=false、索引清除），依赖以注释标注——**不静默丢弃**（调用方在 06/09 落地前需自行保证对应前置条件；文档 §2.9 已记录 C 语义）。
+**`free_slot` 的依赖标注**（D12 + R18）：C 的 `late_reply`（manager.c:2097，机制 06）本表不持有 reply 通道，调用方须保证无 pending `RS_LATEREPLY`；`free_exec`（manager.c:2100-2102，机制 09）**已在表原语内落地**——`SF_USE_COPY` 行释放时调用 `crate::exec::free_exec(table, id)` 丢弃其 exec `Arc`（先取 flags 结束借用，再 free，避免借用冲突）。非 `USE_COPY` 行的 exec 由 09 的 execve 路径释放（manager.c:643-644），不属 `free_slot`。
 
 **vacant 构造**：`ServiceSlot::vacant()` 等价于 C 的"槽清零"（表重置 main.c:230-237 的 Rust 形态）。与 C 的"依赖 `r_flags==0` 隐式空闲"不同，Rust 空槽所有字段归零（`Default`），杜绝脏数据读取。**一处有意的差异**：C 表重置把 `r_init_err` 设为 `ERESTART`（main.c:232），Rust `vacant()` 归零——因为该默认值在 `init_slot` 时重新建立（08，manager.c:1791），空槽的 `init_err` 无观察者。
 
-### 3.7 rs_isokendpt → Result<i32, i32>（D7）
+### 3.7 rs_isokendpt → Result<i32, Errno>（D7）
 
 **C**：出参 `*proc` + 返回 `OK`/`EINVAL`（utility.c:352-359）。**Rust**：
 
 ```rust
-pub fn isokendpt(endpoint: Endpoint) -> Result<i32, i32> {
+pub fn isokendpt(endpoint: Endpoint) -> Result<i32, Errno> {
     let slot = endpoint.slot();                          // C: _ENDPOINT_P — endpoint.h:68-69
     if slot < -(minix_types::NR_TASKS as i32) || slot >= minix_types::NR_PROCS as i32 {
-        return Err(minix_types::EINVAL);                 // utility.c:355-356
+        return Err(Errno::EINVAL);                       // utility.c:355-356
     }
     Ok(slot)
 }
@@ -632,17 +633,17 @@ pub fn isokendpt(endpoint: Endpoint) -> Result<i32, i32> {
 
 - **`r_pid → Option<Pid>`**（D8）：C 的 `-1 = 无进程`（type.h:63）→ `None`。`lookup_by_pid(None)` 等价 C 的 `pid<0` 提前返回。
 - **`label`/`proc_name` → `Label([u8; 16])`**（D9）：C 的 `char[RS_MAX_LABEL_LEN]` 定长 + NUL 终止（`strcmp`/`strlcpy`）。Rust newtype 提供：
-  - `from_bytes(&[u8]) -> Label`：截断到 16 字节（`strlcpy` 语义）；
+  - `from_bytes(&[u8]) -> Label`：**`strlcpy` 语义**——截断到 `RS_MAX_LABEL_LEN - 1` 字节 + 强制尾 NUL（N6 修复：旧版满 16 字节无 NUL，比较/回显与 C 的 15 字节串不一致）；
   - `as_str() -> Option<&str>`：NUL 终止 + UTF-8 校验后的视图（非法字节 → `None`，fail-closed）；
-  - `PartialEq<&str>`：供 `lookup_by_label` 使用（等价 `strcmp`）。
+  - `PartialEq`/`PartialEq<&str>`：**统一 strcmp 语义**（N6 修复：派生 16 字节整体比较在"嵌入 NUL + 填充字节"时与 C 分歧；新实现遇 NUL 截断比较，字节级、不要求 UTF-8）；`Hash` 同步只哈希到首个 NUL。`lookup_by_label` 改收 `&Label`（旧 `&str` 无法表达非 UTF-8 label，迫使调用方 `unwrap_or("")` fail-open）。
   - 用定长数组而非 `String`：**内存布局与 C 一致**（公开表经 grant 共享时有二进制兼容需求），且无堆分配。
 - **`cmd`/`args`/`script`/`ipc_list` → 定长数组**（D10）：`[u8; MAX_COMMAND_LEN]` 等，C 布局保持；填充机制归 08/05。
 - **`r_argv` 不进 struct**（D11）：`r_argv` 是指向 `r_args` **内部**的指针数组（type.h:81），移动/复制即悬垂。Rust 由 08 的**参数解析器**（按需从 `args` 迭代）替代——与 A-3 同类的"裸指针 → 安全抽象"演进，在文档与代码中显式标注。
 
-### 3.9 全局描述符：RinitState / RupdateDescriptor（D11/D13）
+### 3.9 全局描述符：RinitState / rupdate 链（D11/D13）
 
 - **`rinit` → `RinitState`**（boot.rs 既有，字段 `rproctab_gid: Option<u32>`）：完整 `sef_init_info_t` 字段表在 12 展开；本 doc 登记"创建点在 boot（main.c:185），消费在 12"。
-- **`rupdate` → `RupdateDescriptor`**（process_table.rs 新建，机制归 16）：字段 `flags`/`num_rpupds`/`num_init_ready_pending`/`curr_rpupd`/`first_rpupd`/`last_rpupd`/`vm_rpupd`/`rs_rpupd`（type.h:44-51）以 `Option<SlotId>` 表达描述符指针，`RupdateFlags` bitflags 表达 `flags`（`RS_UPDATING`/`RS_INITIALIZING` 等，const.h 复用）。**数据形状在 02，状态机在 16**。
+- **`rupdate` → `UpdateChain`（live_update.rs，16）+ `RupdateFlags`**：`UpdateChain` 是唯一的 rupdate 模型——`entries: Vec<UpdateEntry>`（每个 entry 带 `slot: SlotId`）+ `first/curr/last/vm/rs` 链索引，`len()` 对应 `num_rpupds`（type.h:45）；`RupdateFlags`（type.h:44，`RS_UPDATING`/`RS_INITIALIZING`）由 16 的状态机写入。**N8 修复（2026-08-16，todo §11）**：删除 process_table.rs 曾有的 `RupdateDescriptor` 死代码（全 crate 无生产使用者）——它和 `UpdateChain` 双建模同一 C `struct rupdate`（type.h:43-54），双源真相会在 16 落地时漂移；`UpdateChain` 内部 usize 索引是**链内位置**（entries Vec 下标），不是 `SlotId`，16 落地时如需可再加 `ChainIdx` newtype 消除误传（P2 后续）。
 
 ### 3.10 字段归属汇总
 
@@ -701,16 +702,16 @@ pub struct RProcTable {
 | 方法 | C 对照 | 语义 |
 |------|--------|------|
 | `new()` | 表重置 main.c:230-237 | 64 个 vacant 槽 + 全 `None` 索引 |
-| `get(id)`/`get_mut(id)` | `&rproc[slot_nr]` | 索引访问；越界 panic（防御性，`SlotId` 由本表产生） |
-| `lookup_by_label(&str)` | manager.c:1935 | 仅 `ACTIVE`；`Label` 比较 |
+| `get(id)`/`get_mut(id)` | `&rproc[slot_nr]` | 索引访问；越界 panic 带上下文断言（R5，防御性，`SlotId` 由本表产生） |
+| `lookup_by_label(&Label)` | manager.c:1935 | 仅 `ACTIVE`；strcmp 语义 `Label` 比较（N6） |
 | `lookup_by_pid(Pid)` | manager.c:1959 | `pid<0 → None`；`IN_USE` |
 | `lookup_by_dev_nr(u32)` | manager.c:1985 | `dev==0 → None`（C 是 `<=0`，dev_t 无符号化后 0 即无效） |
 | `lookup_by_domain(i32)` | manager.c:2013 | `dom<=0 → None`；遍历 `domain[..nr_domain]` |
 | `lookup_by_flags(RFlags)` | manager.c:2041 | 空 flags → None；任一位置位 |
 | `alloc_slot()` | manager.c:2067 | 首个 `!IN_USE`；满表 `Err(ENOMEM)` |
-| `free_slot(id)` | manager.c:2088 | 表级清理 + 索引清除；`late_reply`(06)/`free_exec`(09) 标注 |
+| `free_slot(id)` | manager.c:2088 | 表级清理 + 索引清除；`SF_USE_COPY` → `free_exec`（R18）；`late_reply`(06) 调用方前置 |
 | `activate_boot_slot(id, ep, proc_name, ...)` | main.c:255-345 | 指定槽激活（priv 表索引映射），填充 label/proc_name/sys/dev/endpoint + `IN_USE\|ACTIVE` + 索引 |
-| `endpoint_slot(ep)` | `rproc_ptr[_ENDPOINT_P(ep)]` | O(1) 反查；负槽号/未登记 → None |
+| `endpoint_slot(ep)` | `rproc_ptr[_ENDPOINT_P(ep)]` | O(1) 反查；负槽号/越界（NONE/ANY/SELF）/未登记 → None（R12） |
 | `isokendpt(ep)` | utility.c:352 | 边界校验 → `Ok(slot)`/`Err(EINVAL)` |
 | `instances_of(id)` | manager.c:1332 | `ServiceInstances` 迭代器（rp/prev/next/old/new） |
 
@@ -719,9 +720,10 @@ pub struct RProcTable {
 ```rust
 pub fn free_slot(&mut self, id: SlotId) {
     // C: late_reply(rp, OK) — manager.c:2097（机制 06-rs-main-loop.md，RS_LATEREPLY）
-    //   本表不持有 reply 通道；06 落地前调用方须保证无 pending RS_LATEREPLY。
-    // C: if(sys_flags & SF_USE_COPY) free_exec(rp) — manager.c:2100-2102（09-rs-exec.md）
-    //   exec image 由 09 的机制释放；此处只做表级清理。
+    //   本表不持有 reply 通道；调用方须保证无 pending RS_LATEREPLY。
+    // C: if(sys_flags & SF_USE_COPY) free_exec(rp) — manager.c:2100-2102（R18）
+    let use_copy = self.slots[id.0].pub_.sys_flags.contains(SysFlags::USE_COPY);
+    if use_copy { crate::exec::free_exec(self, id); }   // 先取 flags，再 free（借用顺序）
     let endpoint = self.slots[id.0].pub_.endpoint;
     let slot = &mut self.slots[id.0];
     slot.pub_.in_use = false;          // manager.c:2107
@@ -741,20 +743,32 @@ pub fn free_slot(&mut self, id: SlotId) {
 pub fn activate_boot_slot(
     &mut self, id: SlotId, endpoint: Endpoint, proc_name: Label,
     priv_: &BootImagePriv, sys: &BootImageSys, dev: &BootImageDev,
-) -> Result<(), i32> {
+    privilege: Privilege, ticks: Clock,
+) -> Result<(), Errno> {
     let slot = self.slots.get_mut(id.0).ok_or(ENOSYS)?;   // 越界 → fail-closed
     if slot.flags.contains(RFlags::IN_USE) { return Err(ENOSYS); }  // 重复激活防御
     slot.pub_.label = Label::from_bytes(priv_.label.as_bytes());  // main.c:262
     slot.pub_.proc_name = proc_name;                // main.c:313
-    slot.pub_.sys_flags = SysFlags::from_bits_truncate(sys.flags as u16);  // main.c:301
+    slot.pub_.sys_flags = sys.flags;    // main.c:301（N10：BootImageSys.flags 已是 SysFlags）
     slot.pub_.dev_nr = dev.dev_nr;                  // main.c:306
     slot.pub_.endpoint = endpoint;                  // main.c:325
     slot.pub_.in_use = true;                        // main.c:345
     slot.flags = RFlags::IN_USE | RFlags::ACTIVE;   // main.c:343
+    // S2 补全（2026-08-15，main.c:308-333）：
+    slot.cmd[..16].copy_from_slice(proc_name.as_bytes());  // strlcpy(r_cmd) — 308
+    rebuild_args(&mut slot);                          // build_cmd_dep — 310
+    slot.pub_.vm_call_mask = CallMask::all();         // SRV_VC=ALL_C — 317-319
+    slot.scheduler/priority/quantum/cpu = boot_defaults(endpoint);  // 320-322
+    slot.alive_tm = ticks;                            // getticks() — 333
     self.by_endpoint[endpoint.slot() as usize] = Some(id);  // main.c:344（A-4）
     Ok(())
 }
 ```
+
+> **S2（2026-08-15）**：此前 `cmd/script/argc/vm_call_mask/scheduler/priority/
+> quantum/alive_tm` 全部缺失——`alive_tm=0` 使心跳超时判定从启动起偏差（07），
+> `scheduler=NONE` 会在 `sched_init_proc` 的 debug_assert 下崩溃。现按 main.c:308-333
+> 逐字段补全；`getticks()` 经 `KernelApi::get_ticks`（新增，boot Step 1 注入）。
 
 ### 4.3 boot.rs 接线
 
@@ -776,7 +790,7 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 
 ## 5. 测试要点
 
-> 本节列出 `service_slot.rs`/`process_table.rs` 的测试函数（`rg "fn test_"` 可验证）。截至 2026-08-15：`cargo test -p minix-rs` 全部通过。
+> 本节列出 `service_slot.rs`/`process_table.rs` 的测试函数（`rg "fn test_"` 可验证）。截至 2026-08-16：`cargo test -p minix-rs --lib` 全部通过（208 passed / 0 failed）。
 
 ### 5.1 标志位对齐（RFlags/SysFlags）
 
@@ -790,6 +804,9 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 - `test_label_from_bytes_truncates`：>16 字节截断（`strlcpy` 语义）。
 - `test_label_as_str_nul_terminated`：NUL 终止视图；非法 UTF-8 → None。
 - `test_label_eq_str`：`PartialEq<&str>` 比较（等价 `strcmp`）。
+- `test_label_eq_strcmp_semantics`（N6）：嵌入 NUL + 填充字节 == 纯前缀；非 UTF-8 label 自等。
+- `test_vacant_slot_is_clean`：`ServiceSlot::vacant()` 构造的槽全字段归零（flags 空 / in_use false / endpoint NONE / pid None / 四链 None / cmd·control 全零）——对应 §3.6 vacant 语义。
+- `test_slot_mutations_apply`（R13）：`SlotMutations` 决策载荷一次过应用 set/clear/字段更新（06/12/15 调用方提交的恰是决策语义）。
 
 ### 5.3 槽位管理原语
 
@@ -797,27 +814,32 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 - `test_lookup_by_pid_negative`：`pid < 0` → None——manager.c:1965-1967。
 - `test_lookup_by_dev_nr_zero`：`dev_nr == 0` → None——manager.c:1992-1993（u32 化后 0 即无效）。
 - `test_lookup_by_domain`：多域遍历命中 + `domain <= 0` → None。
+- `test_lookup_by_domain_corrupt_count_fails_closed`（D3）：`nr_domain` 超 `NR_DOMAIN` → `None`（不 panic，fail-closed）。
 - `test_lookup_by_flags_any_bit`：任一位置位命中 + 空 flags → None。
 - `test_alloc_slot_roundtrip`：alloc → activate → free → alloc 复用同一槽。
 - `test_alloc_slot_full_returns_enomem`：64 槽全占用 → `Err(ENOMEM)`（manager.c:2076-2079）。
 - `test_free_slot_clears_table_state`：free 后 flags 空/pid None/in_use false/索引 None（manager.c:2105-2108）。
+- `test_free_slot_releases_use_copy_exec`（R18）：`SF_USE_COPY` 行 free 后 exec `Arc` 被释放（manager.c:2100-2102）；非 `USE_COPY` 行保留（execve 路径 09 释放）。
 - `test_activate_boot_slot_indexes_endpoint`：激活后 `endpoint_slot(ep) == Some(id)`（A-4，main.c:344）。
 - `test_activate_boot_slot_rejects_reuse`：重复激活 → Err（防御性）。
 - `test_activate_boot_slot_rejects_out_of_range`：槽号越界 → Err（fail-closed）。
 - `test_isokendpt_bounds`：`-NR_TASKS` 到 `NR_PROCS-1` 通过，越界 `EINVAL`（utility.c:356）。
 - `test_endpoint_slot_ignores_kernel_tasks`：负槽号（内核任务）不建索引（A-4）。
+- `test_endpoint_slot_none_fails_closed`（R12）：NONE/ANY/SELF 越界 → `None`，写侧忽略（不 panic）。
+- `test_get_rejects_out_of_range_id`：`get(SlotId::new(len+1))` → `#[should_panic]`（R17：越界读取是程序错误，不静默返回）。
 - `test_instances_of_order`：C 顺序 rp/prev/next/old/new（manager.c:1344-1348）。
 - `test_instances_of_unlinked`：无链槽只产出自身。
-- `test_rupdate_descriptor_new`：`RupdateDescriptor::new()` 等价 `RUPDATE_INIT()`（memset 0）。
+- ~~`test_rupdate_descriptor_new`~~（N8 已删）：`RupdateDescriptor` 移除后，`RUPDATE_INIT()` 语义由
+  `UpdateChain::new()`（live_update.rs）承担。
 
 ### 5.4 boot 集成
 
 - `test_init_fresh_populates_table`：Step 1 后 12 个 boot 槽 `IN_USE|ACTIVE`，`by_endpoint` 对每个 boot 服务命中。
 - `test_step4_sets_pid`：Step 4 后每个 boot 槽 `pid == Some(getnpid)`（main.c:426）。
 
-### 5.5 测试统计（截至 2026-08-15）
+### 5.5 测试统计（截至 2026-08-16）
 
-- **02 范围 26 项测试全部通过**（service_slot 8 + process_table 16 + boot 新增 2；`cargo test -p minix-rs --lib` 定向过滤实测 0 失败，2026-08-15）。
+- **02 范围 31 项测试全部通过**（service_slot 10 + process_table 19 + boot 集成 2；`cargo test -p minix-rs --lib` 定向过滤实测 0 失败，2026-08-16）。
 - 全局 `cargo test -p minix-rs` 通过数随 03/04/05/07 并行模块实现而变化，非本文档承诺范围（快照值以 STATE.md 注记为准）。
 - 完整清单：`rg "^\s*fn test_" os/servers/rs/src/service_slot.rs os/servers/rs/src/process_table.rs os/servers/rs/src/boot.rs`。
 

@@ -179,7 +179,7 @@ void add_forward_ipc(rp, privp)                        /* manager.c:2157 */
 
 语义要点：
 
-1. **两个伪名例外**：`"SYSTEM"` → 内核 SYSTEM 端点（所有内核任务）；`"USER"` → `INIT_PROC_NR`（= 11，所有用户进程共享的 priv）。两者的 priv id 不是静态的，需要 `sys_getpriv` 查询（manager.c:2208-2215）——Rust 侧走 `KernelApi::getpriv`。
+1. **两个伪名例外**：`"SYSTEM"` → 内核 SYSTEM 端点（所有内核任务）；`"USER"` → `INIT_PROC_NR`（= 11，所有用户进程共享的 priv）。两者的 priv id 不是静态的，需要 `sys_getpriv` 查询（manager.c:2208-2215）——T5 后由 shell 以 `priv_id_of` 闭包注入（§3.1）。
 2. **普通名按 `proc_name` 匹配**：遍历 in-use 槽，`proc_name` 相等的**全部**匹配（可能有多个副本），每个都置位（manager.c:2181-2205）。
 3. **未匹配容忍**：注释明确（manager.c:2183-2188）"It is perfectly fine if this loop does not find any matches, as the target process(es) may not have been started yet. See add_backward_ipc() below."——缺位由 backward 补。
 4. `sys_getpriv` 失败（目标端点不存在）→ 诊断 + 继续，不报错。
@@ -281,10 +281,10 @@ grep 实证：`init_privs` 在全部 C 源码中**只有 manager.c:1700 一个�
 
 ```rust
 pub struct IpcListIterator<'a> { ... }                 // get_next_name（manager.c:2115）
-pub fn add_forward_ipc(rp, table, sys) -> SysMap       // manager.c:2157
+pub fn add_forward_ipc(rp, table, priv_id_of) -> SysMap // manager.c:2157
 pub fn add_backward_ipc(target, table) -> SysMap       // manager.c:2230
-pub fn init_privs(rp, table, sys) -> SysMap            // manager.c:2300
-pub fn update_ipc_mask(rp: &mut ServiceSlot, table, sys) // init_privs + 写回 ipc_to
+pub fn init_privs(rp, table, priv_id_of) -> SysMap     // manager.c:2300
+pub fn update_ipc_mask(rp: &mut ServiceSlot, table, priv_id_of) // init_privs + 写回 ipc_to
 pub const RSS_IPC_ALL: &str = "IPC_ALL";               // rs.h:29
 pub const RSS_IPC_ALL_SYS: &str = "IPC_ALL_SYS";       // rs.h:30
 pub const USER_PRIV_ID: i32 = ...;                     // priv.h:18
@@ -293,7 +293,11 @@ pub const USER_PRIV_ID: i32 = ...;                     // priv.h:18
 设计差异：
 
 - **返回值替代写参数**：C 的 `privp` 是 `in/out` 参数（`set_sys_bit(privp->s_ipc_to, ...)`），Rust 返回新 `SysMap` 由调用方写回——纯函数可测，`update_ipc_mask` 提供组合捷径（对应 C 的"调完就提交"习惯）。
-- **`&mut dyn KernelApi` 注入**：仅 forward 的 SYSTEM/USER 例外需要（`sys_getpriv`，manager.c:2209）；backward 不需要。保持最小依赖面。
+- **`priv_id_of` 解析器注入（T5，2026-08-16）**：仅 forward 的 SYSTEM/USER 例外需要 priv id
+  （`sys_getpriv`，manager.c:2209）。shell 把查询能力以闭包注入
+  （`priv_id_of: impl FnMut(Endpoint) -> Option<PrivId>`，`None` = C 的 `sys_getpriv` 失败跳过），
+  `ipc_mask.rs` 不再 import `KernelApi`——syscall 面只出现在接线层（monitor 模式，todo §13）。
+  backward 不需要解析器。
 - **表迭代**：C 的 `for (rrp=BEG_RPROC_ADDR; rrp<END_RPROC_ADDR; rrp++)` 全表扫描 → `RProcTable::iter_in_use()`（process_table.rs，ARCH A-4 家族的只读迭代），只产出 `RS_IN_USE` 行，与 C 的 `if (!(r_flags & RS_IN_USE)) continue` 一致。
 
 ### 3.2 分词器：`IpcListIterator`（D2）
@@ -306,7 +310,10 @@ pub const USER_PRIV_ID: i32 = ...;                     // priv.h:18
 
 ### 3.3 forward/backward：借用表 + `SysMap::set`（D3）
 
-- forward 的伪名分支：`sys.getpriv(ep)` → `Privilege.id` → `map.set(id.0 as usize)`（ipc_mask.rs:104-115）；C 的 `sys_getpriv` 失败容忍（manager.c:2208-2215）→ Rust `if let Ok(...)` 静默跳过。
+- forward 的伪名分支：`priv_id_of(ep)` → `map.set(id.0 as usize)`（ipc_mask.rs:104-115）；C 的
+  `sys_getpriv` 失败容忍（manager.c:2208-2215）→ 解析器返回 `None` 静默跳过。shell 侧的映射是
+  `|ep| sys.getpriv(ep).ok().map(|p| p.id)`（19 接线，惰性——仅列表出现 SYSTEM/USER 时才查询，
+  与 C 的按需 `sys_getpriv` 一致）。
 - 普通名分支：`iter_in_use()` + `proc_name == name`（`Label` 的 `PartialEq<&str>`）→ `map.set(rrp.priv_.id.0 as usize)`（ipc_mask.rs:117-123）。
 - backward 的 `is_ipc_all_sys && privp->s_flags & SYS_PROC`（manager.c:2264-2265）→ `target.priv_.is_sys_proc()`（ipc_mask.rs:144）——`PrivFlags::SYS_PROC` 判定（03）。
 
@@ -339,7 +346,7 @@ ipc_mask.rs
 ├─ IpcListIterator（get_next_name，manager.c:2115-2152）
 │   └─ next(): 跳空白 → NUL 判定 → 词边界（空白|NUL）→ 超长跳过 → Label
 ├─ add_forward_ipc（manager.c:2157-2224）
-│   ├─ SYSTEM/USER 伪名 → getpriv → set（manager.c:2177-2180, 2208-2222）
+│   ├─ SYSTEM/USER 伪名 → priv_id_of(ep) → set（manager.c:2177-2180, 2208-2222）
 │   └─ proc_name 匹配 → set（manager.c:2181-2205）
 ├─ add_backward_ipc（manager.c:2230-2294）
 │   ├─ 空列表跳过（2252）
@@ -373,13 +380,14 @@ ipc_mask.rs
 | `test_init_privs_ipc_all` | `IPC_ALL` 含 `USER_PRIV_ID`（manager.c:2327） |
 | `test_init_privs_ipc_all_sys` | `IPC_ALL_SYS` 不含 `USER_PRIV_ID` |
 | `test_init_privs_list_forward_backward` | 普通列表 forward 置位 |
-| `test_forward_system_user` | `SYSTEM`/`USER` 伪名经 mock `getpriv` 置位 |
+| `test_forward_system_user` | `SYSTEM`/`USER` 伪名经注入的 `priv_id_of` 解析器置位（SYSTEM→4，USER→`USER_PRIV_ID`） |
 | `test_forward_unmatched_name_tolerated` | 未匹配名字 → 空位图（容忍） |
 | `test_backward_ipc_all_others` | 其他服务 `IPC_ALL` → backward 补位 |
 | `test_update_ipc_mask_writes_back` | `update_ipc_mask` 写回 `priv_.ipc_to` |
 | `test_constants` | `RSS_IPC_*` 字符串 + `USER_PRIV_ID == static_priv_id(11)` |
 
-`MockSys` 实现 `KernelApi`（getpriv 返回固定 priv id），`table()` 构造含 tty（priv id 10）/vm（priv id 13）两槽的表。
+**T5 后测试不再需要 mock**：`priv_id_of` 由测试闭包直接提供（`mock_priv_id`），`table()` 构造含
+tty（priv id 10）/vm（priv id 13）两槽的表，纯数据驱动，不依赖 `KernelApi` 实现。
 
 ---
 

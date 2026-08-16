@@ -82,6 +82,25 @@ pub(crate) trait MemType: Send + Sync {
         Err(MemTypeError::NotSupported)
     }
 
+    /// Whether `ev_split` is supported.
+    ///
+    /// C: `split_region()` requires `def_memtype->ev_split` (region.c:1164);
+    /// memtypes without the callback return EINVAL for middle-hole unmaps
+    /// (e.g. `mem_type_directphys`, `mem_type_shared`, `mem_type_cache`).
+    fn supports_split(&self) -> bool {
+        false
+    }
+
+    /// Whether `ev_low_shrink` is supported.
+    ///
+    /// C: `map_unmap_region()` low-end shrink requires
+    /// `def_memtype->ev_lowshrink` (region.c:1096); memtypes without the
+    /// callback return EINVAL for head-cut unmaps (e.g. `mem_type_directphys`,
+    /// `mem_type_shared`, `mem_type_anon_contig`).
+    fn supports_low_shrink(&self) -> bool {
+        false
+    }
+
     // C NULL → skip. No runtime checks needed in PFN model.
     fn ev_sanitycheck(
         &self,
@@ -285,6 +304,16 @@ impl MemType for AnonymousMemory {
         _len: VirBytes,
     ) -> Result<(), MemTypeError> {
         Ok(())
+    }
+
+    /// Anon regions support both splitting and low-end shrink in C
+    /// (mem_anon.c: anon_split / anon_lowshrink are no-ops).
+    fn supports_split(&self) -> bool {
+        true
+    }
+
+    fn supports_low_shrink(&self) -> bool {
+        true
     }
 }
 
@@ -749,6 +778,12 @@ impl MemType for ContiguousAnonymous {
     ) -> Result<(), MemTypeError> {
         Ok(())
     }
+
+    /// Contiguous anon supports splitting (mem_anon_contig.c: anon_contig_split
+    /// is a no-op) but has NO `ev_lowshrink` (NULL → EINVAL for head-cuts).
+    fn supports_split(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) struct CacheMemory;
@@ -860,6 +895,12 @@ impl MemType for CacheMemory {
         _len: VirBytes,
     ) -> Result<(), MemTypeError> {
         Ok(())
+    }
+
+    /// Cache regions support low-end shrink (mem_cache.c: cache_lowshrink is
+    /// a no-op) but have no `ev_split` (NULL → EINVAL for middle-hole unmaps).
+    fn supports_low_shrink(&self) -> bool {
+        true
     }
 }
 
@@ -994,6 +1035,16 @@ impl MemType for MappedFile {
             *offset += len.get();
         }
         Ok(())
+    }
+
+    /// Mapped-file regions support both splitting and low-end shrink in C
+    /// (mem_file.c: mappedfile_split / mappedfile_lowshrink).
+    fn supports_split(&self) -> bool {
+        true
+    }
+
+    fn supports_low_shrink(&self) -> bool {
+        true
     }
 
     /// Clear the file mapping state on region deletion.

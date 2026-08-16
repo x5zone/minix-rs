@@ -406,14 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn segment_selectors_correct() {
-        assert_eq!(KERN_CS_SELECTOR, 0x08);
-        assert_eq!(KERN_DS_SELECTOR, 0x10);
-        assert_eq!(USER_CS_SELECTOR, 0x1B);
-        assert_eq!(USER_DS_SELECTOR, 0x23);
-    }
-
-    #[test]
     fn privilege_level_roundtrip() {
         assert_eq!(
             X86_64Protection::to_privilege(X86PrivilegeLevel::RING0),

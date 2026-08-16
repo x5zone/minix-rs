@@ -282,20 +282,40 @@ mod tests {
     #[test]
     fn test_qemu_virt_dispatch_via_enum() {
         let e = PlatformDescEnum::QemuVirt(QemuVirtDesc::default());
+        // Verify the source identifies as QemuVirt (drives downstream
+        // arch-specific consumers).
         assert_eq!(e.source(), crate::desc::PlatformSource::QemuVirt);
-        // Verify dispatch reaches QemuVirtDesc methods
-        let _ic = e.interrupt_controller();
-        let _t = e.timer();
-        let _c = e.early_console();
-        let _topo = e.cpu_topology();
+
+        // Verify dispatch reaches QemuVirtDesc methods. The interrupt/timer
+        // methods return `&dyn ...` (always present), console returns
+        // `Option<&dyn>` (may or may not be set), and cpu_topology returns
+        // the struct by value.
+        let ic: &dyn crate::desc::InterruptControllerDesc = e.interrupt_controller();
+        let timer: &dyn crate::desc::TimerDesc = e.timer();
+        let console: Option<&dyn crate::desc::ConsoleDesc> = e.early_console();
+        let topo: minix_boot::CpuTopology = e.cpu_topology();
+        // Use each binding to ensure the compiler doesn't optimize the
+        // dispatch calls away (verifying the vtables are wired correctly).
+        let _ = (ic, timer, console, topo);
+
+        // Verify CPU topology: QemuVirtDesc default mirrors QEMU `-smp 4`
+        // (matches per-arch tests in `arch/{x86_64,aarch64,riscv64}.rs`).
+        assert_eq!(
+            topo.nr_cpus, 4,
+            "QemuVirtDesc default should have 4 CPUs (matches QEMU -smp 4)"
+        );
+        assert_eq!(topo.bsp_id, 0);
+        for i in 0..topo.nr_cpus as usize {
+            assert_eq!(
+                topo.cpus[i].hw_id, i as u64,
+                "CPU[{i}] hw_id must equal i (per-hart sequential mapping)"
+            );
+        }
     }
 
-    #[test]
-    fn test_platform_desc_panics_before_init() {
-        // Note: we cannot easily test this in-process because PLATFORM is
-        // a global static. If init() was called by another test, this would
-        // succeed. This test is a no-op placeholder documenting the contract.
-        // Real verification happens via integration tests that run in fresh
-        // processes.
-    }
+    // 注：原 `test_platform_desc_panics_before_init` 是空 body placeholder
+    // (无 assert、无行为断言)，本自我承认是 "no-op placeholder documenting
+    // the contract"。按 Pattern #38 已删除（2026-08-16 review）。
+    // 真实 INIT-before-use 验证应在进程隔离的集成测试中进行（每个测试在
+    // fresh process 跑），超出单元测试范畴。
 }

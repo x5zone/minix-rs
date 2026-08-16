@@ -105,7 +105,13 @@ static int check_request(struct rs_start *rs_start)    /* request.c:1265 */
 - **信号管理器**：`SELF` 或 0~11。
 - `check_request` 是静态函数，被 `do_up` 调用（request.c:43）——RS_UP 专属校验；RS_EDIT 不复用（编辑不改调度器为无效值）。
 
-Rust 侧 `check_request(rs_start, bsp_id, processors_count)`（slot.rs）：`machine.bsp_id`/`processors_count` 作为参数注入（01/19 的 `sys_getmachine` 结果），返回解析后的 CPU 值。测试覆盖四态 CPU 与全部越界分支。
+Rust 侧 `check_request(rs_start, bsp_id, processors_count)`（slot.rs）：`machine.bsp_id`/`processors_count` 作为参数注入（01/19 的 `sys_getmachine` 结果），返回解析后的 CPU 值。测试覆盖四态 CPU 与全部越界分支。**R13（2026-08-16）**：C 就地改写 `rs_start->rss_cpu`（request.c:1286-1296），Rust 返回解析值——12 接线**必须消费该返回值**写回槽位 `cpu`（丢弃则 `RS_CPU_BSP` 残留在槽里，调度参数错误）。
+
+> **D5 修复（2026-08-15）**：`RsStart::default` 对齐 C 调用方注入的默认值
+> （minix-service parse.c:1164-1169：`sigmgr=RS`/`scheduler=SCHED`/
+> `priority=USER_Q=7`/`quantum=USER_QUANTUM=200`/`cpu=-1`）。此前 `SELF`/`KERNEL`/
+> `quantum=1` 是"未设置"哨兵而非 C 默认，任何"先 Default 再局部填充"的路径都会得到与 C
+> 差 200 倍的调度配置且 `check_request` 无法识别（SELF/KERNEL 均合法）。
 
 ### 2.2 `copy_rs_start`/`copy_label`（manager.c:135-169）——sys_datacopy 拷贝
 
@@ -235,7 +241,16 @@ void build_cmd_dep(struct rproc *rp)                   /* manager.c:289 */
 }
 ```
 
-argv 格式：`path, arguments..., NULL`（注释 manager.c:298-299）。Rust 侧 `build_cmd_dep(cmd) -> Vec<Label>`（slot.rs）保持：空格分词、尾部空参丢弃（manager.c:309）、`ARGV_ELEMENTS-1` 上限（manager.c:311-313）。
+argv 格式：`path, arguments..., NULL`（注释 manager.c:298-299）。Rust 侧 `build_cmd_dep(cmd) -> Vec<&[u8]>`（slot.rs）保持：空格分词、尾部空参丢弃（manager.c:309）、`ARGV_ELEMENTS-1` 上限（manager.c:311-313）、**遇 NUL 停止**（manager.c:305-306，对应 C 的 `strcpy`/`while(*cmd_ptr != '\0')` 语义——固定大小 `cmd` 缓冲中 NUL 之后的 0 填充不属于命令）。
+
+> **N11 修复（2026-08-16，todo §11）——argv[0] 恒存在**：C 在解析前**无条件**
+> `r_argv[0] = r_args`（manager.c:299-300），所以空命令/纯空格命令得到 `argv = [""]`
+> （`r_argc = 1`，exec 空路径 → ENOENT）。旧 Rust 版返回空 Vec → `argc = 0`，09/10 的
+> exec 重建会走不同的失败形态。现在 `build_cmd_dep` 对无 token 输入返回 `vec![&[]]`
+> （`rebuild_args` 因此恒写 `args[0] = 0`、`argc >= 1`），与 C 对齐。测试：
+> `test_build_cmd_dep_empty_cmd_keeps_argv0`（空串/纯空格/NUL 开头三种边界）。
+
+> **S1 修复（2026-08-15）**：token 容器从 `Vec<Label>` 改为 `Vec<&[u8]>`（借用 `cmd` 切片）。C 把完整 token 字节写入 `r_args`（manager.c:301-302），argv 指向其中；`Label` 的 16 字节截断（`strlcpy` 语义）只适用于 label/域名字段，**不适用于命令与参数**——超过 16 字节的路径/参数此前被静默截断，09/10 exec 落地后必然出错。`Vec<&[u8]>` 正是 C argv 布局（指针进 `r_args`）的 Rust 等价表达。
 
 ### 2.6 `inherit_service_defaults`（manager.c:1303-1329）——副本继承
 
@@ -274,8 +289,9 @@ pub struct RsStart {
     pub period: i64, pub restarts: i64, pub asr_count: i64,
     pub cmd: [u8; MAX_COMMAND_LEN], pub cmdlen: usize,   // 指针字段 → 数组+长度
     pub ipc_list: [u8; MAX_IPC_LIST], pub ipclen: usize,
-    pub progname: Label, pub nr_control: usize, pub control: [Label; RS_NR_CONTROL],
-    pub nr_irq: usize, pub irq: [i32; RSS_NR_IRQ],
+    pub progname: Label, pub nr_control: i32, pub control: [Label; RS_NR_CONTROL],
+    pub nr_irq: i32, pub irq: [i32; RSS_NR_IRQ],
+    pub nr_io: i32, pub io: [IoRange; RSS_NR_IO],
 }
 pub struct RssFlags(bitflags);   // 20 个标志（rs.h:33-52）
 ```
@@ -284,20 +300,27 @@ pub struct RssFlags(bitflags);   // 20 个标志（rs.h:33-52）
 
 - **指针字段 → 数组 + 长度**：C 的 `char *rss_cmd`/`char *rss_ipc`/`struct rss_label` 是指向请求方地址空间的指针，Rust 用固定数组 + 长度表示"拷入后的内容"（`sys_datacopy` 的产物）。
 - **`RssFlags` 用 bitflags**：20 个标志类型安全；`RSS_*` 值断言测试防漂移。
+- **计数域用 `i32`（对齐 C `int`，R20a）**：`rss_nr_irq`/`rss_nr_io`/`rss_nr_control` 在 C 中都是
+  `int`（rs.h:122/124/136）。`i32` 保留 `edit_slot` 校验（manager.c:1486-1521）前的三态——
+  `RSS_IRQ_ALL`/`RSS_IO_ALL` 哨兵（17）、0、负值（非法）；`usize` 会把非法负值包成巨大正数，
+  与 `> NR_IRQ`/`> NR_IO_RANGE` 检查错位（R2/Fix #27 同理由，`ServiceSlot.nr_control` 已是 i32）。
+- **`rss_io` 表用 `privilege::IoRange`（N9 单一权威）**：C 的 `rss_io`（rs.h:125，匿名
+  `{unsigned base; unsigned len;}`）与内核 `struct io_range`（priv.h:13-16）同构，`edit_slot`
+  逐项拷入 `s_io_tab`（manager.c:1516-1518）。Rust 收敛为同一类型，消除 C 双表同构（D6 收敛方向）。
 - 未建模字段（PCI 表/state data/domains/script）标注 defer（A-10/17），使用时扩展。
 
 ### 3.2 `check_request` 纯函数（D2）
 
 ```rust
 pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32)
-    -> Result<i32, i32>
+    -> Result<i32, Errno>
 ```
 
 `machine.bsp_id`/`processors_count` 参数注入（`sys_getmachine` 结果，01/19），函数不触全局；返回解析后的 CPU（`RS_CPU_BSP` 的决策点）。C 的"越界 CPU 告警 + 回退 BSP"（request.c:1293）在返回值中体现。
 
 ### 3.3 `build_cmd_dep`（D3）
 
-`Vec<Label>` 返回 argv，`None` 终止符由 Vec 的末尾语义替代（`argv[argc] = NULL`，manager.c:322 不需要显式建模）。`ARGV_ELEMENTS-1` 上限（manager.c:311-313）在测试中断言。
+`Vec<&[u8]>` 返回 argv（借用 `cmd`，长度任意、不截断），`None` 终止符由 Vec 的末尾语义替代（`argv[argc] = NULL`，manager.c:322 不需要显式建模）。`ARGV_ELEMENTS-1` 上限（manager.c:311-313）与遇 NUL 停止（manager.c:305-306）均在测试中断言。
 
 ### 3.4 `edit_slot`/`init_slot` 的 sys_datacopy 依赖（D4，DEFERRED→19）
 
@@ -307,17 +330,17 @@ pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32)
 
 ## 4. 实现详解（slot.rs）
 
-模块结构（已实现，181 tests 总盘中 slot 9 个）：
+模块结构（已实现，208 tests 总盘中 slot 24 个）：
 
 ```
 slot.rs
 ├─ RSS_NR_IRQ/RSS_NR_IO/RSS_IRQ_ALL/RSS_IO_ALL（rs.h:25-28）
-├─ RS_CPU_DEFAULT/RS_CPU_BSP/NR_SCHED_QUEUES/LAST_SPECIAL_PROC_NR
+├─ RS_CPU_DEFAULT/RS_CPU_BSP/LAST_SPECIAL_PROC_NR（NR_SCHED_QUEUES 从 sched.rs 导入，N9）
 ├─ RssFlags（20 标志，rs.h:33-52）
-├─ RsStart（rs.h:104-151 子集 + Default）
+├─ RsStart（rs.h:104-151 子集 + Default；计数域 i32 + io 表 [IoRange; RSS_NR_IO]）
 ├─ check_request（request.c:1265-1308 纯化）
 ├─ build_cmd_dep（manager.c:289-323 纯化）
-└─ #[cfg(test)] 9 个测试（§5）
+└─ #[cfg(test)] 24 个测试（§5）
 ```
 
 关键不变量：
@@ -331,7 +354,7 @@ slot.rs
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs`（181 passed，slot 相关 9 个）：
+`cargo test -p minix-rs --lib`（208 passed，slot.rs 相关 14 项）：
 
 | 测试 | 覆盖 |
 |------|------|
@@ -340,8 +363,13 @@ slot.rs
 | `test_check_request_priority_quantum` | priority ≥ NR_SCHED_QUEUES / quantum ≤ 0 → EINVAL |
 | `test_check_request_cpu` | BSP→bsp_id / 正常→自身 / 越界→BSP / 负非特例→EINVAL |
 | `test_check_request_sigmgr` | SELF/PM OK；越界 EINVAL |
+| `test_rs_start_default_matches_c_caller` | Default 对齐 C 调用方：调度默认 + 资源计数/表全零（parse.c:1160） |
+| `test_rs_start_resource_counts_are_i32_like_c_int` | 计数域 i32：哨兵 17 与负值可表示（C `int` 校验前语义） |
 | `test_build_cmd_dep` | 多参数分词 |
 | `test_build_cmd_dep_trailing_spaces` | 尾部空格丢弃（manager.c:308） |
+| `test_build_cmd_dep_empty_cmd_keeps_argv0` | 空命令/纯空格/NUL 开头 → `[""]`，argc≥1（N11） |
+| `test_build_cmd_dep_stops_at_nul` | NUL 提前终止（manager.c:305-306），NUL 后填充不入参 |
+| `test_build_cmd_dep_long_token_not_truncated` | >16 字节 token 不截断（S1） |
 | `test_build_cmd_dep_argv_cap` | `ARGV_ELEMENTS-1` 上限（manager.c:311-313） |
 | `test_rss_constants` | `RSS_IRQ_ALL=17`/`RSS_IO_ALL=17`/CPU 特例值/标志位 |
 

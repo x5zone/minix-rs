@@ -254,13 +254,8 @@ mod tests {
             nr_irqs: 128, // exceeds NR_IRQ_VECTORS (64)
         };
         let ic = X86_64InterruptController::new(&desc);
-        // mask_all iterates 0..nr_irq_vectors; verify it's clamped
-        // (indirectly — we just check it doesn't panic)
-        let _ = ic.nr_irq_vectors;
-    }
-
-    #[test]
-    fn test_irq0_vector_constant() {
-        assert_eq!(IRQ0_VECTOR, 0x50);
+        // nr_irqs above the platform max must be clamped so mask_all's
+        // 0..nr_irq_vectors loop stays within the IDT vector space.
+        assert_eq!(ic.nr_irq_vectors, NR_IRQ_VECTORS);
     }
 }

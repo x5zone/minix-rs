@@ -62,7 +62,7 @@ impl FdRefTable {
     /// Create a new FdRefTable for testing. Each test gets its own instance
     /// to avoid data races when tests run in parallel.
     #[cfg(test)]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::new_const()
     }
 

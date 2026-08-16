@@ -255,6 +255,114 @@ mod tests {
             *KERNEL_LAYOUT.get() = None;
         }
     }
+
+    /// Build a page allocator over a fresh bitmap with `available_pages`
+    /// free pages (physical addresses start at 0).
+    fn make_page_alloc(available_pages: usize) -> VmPageAllocator {
+        let bitmap = crate::phys_mem::BitmapAllocator::new_for_test(available_pages);
+        VmPageAllocator::new(crate::phys_mem::PhysAlloc::Bitmap(bitmap))
+    }
+
+    /// VmAllocator with `arena_base` pointing into a leaked, page-aligned
+    /// buffer (bypasses refill for pure bump-within-arena tests).
+    fn bump_allocator_with_fake_arena(cursor: usize) -> (VmAllocator, usize) {
+        let buf: alloc::boxed::Box<[u8]> = alloc::vec![0u8; CLICK_SIZE].into_boxed_slice();
+        let leaked = alloc::boxed::Box::leak(buf);
+        let base = (leaked.as_ptr() as usize + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
+        let allocator = VmAllocator {
+            arena_base: AssumeSyncCell::new(base as *mut u8),
+            cursor: AssumeSyncCell::new(cursor),
+        };
+        (allocator, base)
+    }
+
+    #[test]
+    fn test_bump_alignment_and_no_overlap() {
+        let (allocator, base) = bump_allocator_with_fake_arena(0);
+        unsafe {
+            let p1 = allocator.alloc(Layout::from_size_align(1, 1).unwrap());
+            assert!(!p1.is_null());
+            let p2 = allocator.alloc(Layout::from_size_align(16, 8).unwrap());
+            assert!(!p2.is_null());
+            let p3 = allocator.alloc(Layout::from_size_align(32, 32).unwrap());
+            assert!(!p3.is_null());
+
+            assert_eq!(p2 as usize % 8, 0, "8-byte alignment");
+            assert_eq!(p3 as usize % 32, 0, "32-byte alignment");
+            assert!(p2 > p1 && p3 > p2, "bump must not overlap");
+            // All pointers stay within the fake arena buffer.
+            assert!(p1 as usize >= base && (p3 as usize) + 32 <= base + CLICK_SIZE);
+        }
+    }
+
+    #[test]
+    fn test_bump_oversize_returns_null() {
+        // size > ARENA_BYTES must fail fast without touching PAGE_ALLOC_PTR
+        // or growing the HeapArena (2026-08-15 guard).
+        let (allocator, _) = bump_allocator_with_fake_arena(0);
+        unsafe {
+            let p = allocator.alloc(Layout::from_size_align(VmAllocator::ARENA_BYTES + 1, 1).unwrap());
+            assert!(p.is_null());
+        }
+    }
+
+    #[test]
+    fn test_bump_refill_failure_returns_null() {
+        // Current arena has 8 bytes left; a 16-byte request cannot fit and
+        // refill fails because no page allocator is registered.
+        unregister_page_alloc();
+        let (allocator, _) = bump_allocator_with_fake_arena(VmAllocator::ARENA_BYTES - 8);
+        unsafe {
+            let p = allocator.alloc(Layout::from_size_align(16, 1).unwrap());
+            assert!(p.is_null());
+        }
+    }
+
+    #[test]
+    fn test_bump_refill_via_heap_arena() {
+        // Full chain: GLOBAL-style allocator with null arena_base →
+        // ensure_arena → refill_arena → HEAP_ARENA.grow(16) → bump.
+        crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
+        crate::pagetable::vm_self_map::init_vm_self_pt();
+        let mut page_alloc = make_page_alloc(256);
+        register_page_alloc(&mut page_alloc);
+
+        let allocator = VmAllocator {
+            arena_base: AssumeSyncCell::new(core::ptr::null_mut()),
+            cursor: AssumeSyncCell::new(0),
+        };
+        unsafe {
+            let p = allocator.alloc(Layout::from_size_align(64, 8).unwrap());
+            assert!(!p.is_null(), "refill via HeapArena must succeed");
+            let va = p as u64;
+            assert!(va >= crate::direct_map::VM_HEAP_BASE);
+            assert!(va < crate::direct_map::VM_HEAP_BASE + crate::direct_map::VM_HEAP_SIZE);
+        }
+
+        unregister_page_alloc();
+        crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
+    }
+
+    #[test]
+    fn test_register_page_alloc_idempotent() {
+        let mut page_alloc = make_page_alloc(8);
+        register_page_alloc(&mut page_alloc);
+        // Same pointer re-registration must not panic (BSS→heap defensive path).
+        register_page_alloc(&mut page_alloc);
+        unregister_page_alloc();
+    }
+
+    #[test]
+    fn test_register_page_alloc_overwrite_panics() {
+        let mut a = make_page_alloc(8);
+        let mut b = make_page_alloc(8);
+        register_page_alloc(&mut a);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            register_page_alloc(&mut b);
+        }));
+        assert!(r.is_err(), "overwriting a different allocator must panic");
+        unregister_page_alloc();
+    }
 }
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -424,12 +532,20 @@ unsafe impl GlobalAlloc for VmAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: Single-threaded VM; no concurrent access to arena_base/cursor.
         unsafe {
-            if !self.ensure_arena() {
+            let size = layout.size();
+            let align = layout.align();
+
+            // Oversize guard: a request larger than one arena cannot fit after
+            // any refill. Without this, `cursor + total > ARENA_BYTES` would
+            // refill repeatedly until the whole HeapArena (64MB) is consumed,
+            // then return null. Fail fast instead of exhausting the heap.
+            if size > Self::ARENA_BYTES {
                 return core::ptr::null_mut();
             }
 
-            let size = layout.size();
-            let align = layout.align();
+            if !self.ensure_arena() {
+                return core::ptr::null_mut();
+            }
 
             // SAFETY: arena_base and cursor are only accessed here (single-threaded).
             let base = *self.arena_base.get();

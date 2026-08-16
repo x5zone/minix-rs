@@ -147,12 +147,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn privilege_level_values() {
-        assert_eq!(Riscv64PrivilegeLevel::S_MODE.get(), 1);
-        assert_eq!(Riscv64PrivilegeLevel::U_MODE.get(), 0);
-    }
-
-    #[test]
     fn privilege_level_roundtrip() {
         assert_eq!(
             Riscv64Protection::to_privilege(Riscv64PrivilegeLevel::S_MODE),
@@ -170,16 +164,6 @@ mod tests {
             Riscv64Protection::from_privilege(Privilege::User),
             Riscv64PrivilegeLevel::U_MODE
         );
-    }
-
-    #[test]
-    fn kernel_privilege_is_s_mode() {
-        assert_eq!(Riscv64Protection::KERNEL_PRIVILEGE, Riscv64PrivilegeLevel::S_MODE);
-    }
-
-    #[test]
-    fn user_privilege_is_u_mode() {
-        assert_eq!(Riscv64Protection::USER_PRIVILEGE, Riscv64PrivilegeLevel::U_MODE);
     }
 
     #[test]

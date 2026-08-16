@@ -15,8 +15,8 @@
 //! and the SEF response normalization.
 
 use crate::sef::SefInitType;
-use crate::service_slot::{RFlags, ServiceSlot};
-use minix_types::{EINVAL, Endpoint};
+use crate::service_slot::{RFlags, ServiceSlot, SlotMutations};
+use minix_types::{Clock, Endpoint, Errno};
 
 /// C: `SEF_INIT_SCRIPT_RESTART` — sef.h:102 (`0x10`).
 pub const SEF_INIT_SCRIPT_RESTART: u32 = 0x10;
@@ -31,6 +31,29 @@ pub fn init_flags(use_script: bool, flags: u32) -> u32 {
     } else {
         flags
     }
+}
+
+/// Marks a slot as initializing before the `RS_INIT` message is sent.
+///
+/// C: `init_service` — utility.c:18-21:
+/// `r_flags |= RS_INITIALIZING; r_alive_tm = getticks();
+/// r_check_tm = r_alive_tm + 1` ("expect reply within period"). R14: this is
+/// the missing pre-send state transition — without it every `RS_INIT_READY`
+/// reply hits the `do_init_ready` gate (request.c:477-483) and is rejected.
+pub fn mark_initializing(slot: &mut ServiceSlot, ticks: Clock) {
+    slot.flags.insert(RFlags::INITIALIZING); // utility.c:19
+    slot.alive_tm = ticks; // utility.c:20
+    slot.check_tm = ticks + 1; // utility.c:21
+}
+
+/// Folds the caller's init flags into the slot's privilege structure.
+///
+/// C: `start_service` — manager.c:953: `rp->r_priv.s_init_flags |= init_flags`
+/// runs before `create_service`; the replica path is modelled by
+/// `service_create::link_replica` (manager.c:751-752). 12 must call this
+/// before publishing/starting a fresh or restarted service.
+pub fn fold_init_flags(slot: &mut ServiceSlot, init_flags: u32) {
+    slot.priv_.init_flags |= init_flags;
 }
 
 /// The `RS_INIT` message payload.
@@ -65,6 +88,7 @@ pub struct InitMessage {
 /// C: `init_service` — utility.c:49-64. `old_endpoint` and `prepare_state`
 /// are injected: C derives them from `r_old_rp`/`r_prev_rp` and the
 /// (unmodelled, 02 P2-3) `r_upd` descriptor (utility.c:33-42).
+#[allow(clippy::too_many_arguments)] // 1:1 with C init_service (utility.c:49-64); payload struct deferred to 12's call site
 pub fn init_message(
     init_type: SefInitType,
     flags: u32,
@@ -115,32 +139,84 @@ pub enum ReadyOutcome {
     FreshInitDone,
 }
 
+/// The `do_init_ready` decision plus the slot mutations it implies.
+///
+/// R13: C mutates `r_*` inline (request.c:488-525); the mutations travel as
+/// a typed payload the 12 caller applies once after the action hook
+/// (`crash_service` / `end_update` / reply).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadyDecision {
+    /// Branch to execute.
+    pub outcome: ReadyOutcome,
+    /// Slot mutations implied by the branch (R13).
+    pub mutations: SlotMutations,
+}
+
 /// C: `do_init_ready` — request.c:462-529 (pure decisions).
 ///
 /// `is_updating` = `SRV_IS_UPDATING(rp)` (16 flags); `pending` =
-/// `rupdate.num_init_ready_pending`.
+/// `rupdate.num_init_ready_pending`; `ticks` = `getticks()` (the fresh
+/// branch resets `r_alive_tm` to it, request.c:518).
 pub fn do_init_ready(
     flags: RFlags,
     result: i32,
     is_updating: bool,
     pending: usize,
-) -> ReadyOutcome {
+    ticks: Clock,
+) -> ReadyDecision {
     if !flags.contains(RFlags::INITIALIZING) {
-        return ReadyOutcome::Unexpected; // request.c:477-483
+        return ReadyDecision {
+            outcome: ReadyOutcome::Unexpected, // request.c:477-483
+            mutations: SlotMutations::default(),
+        };
     }
     if result != 0 {
         let reincarnate = result == minix_types::ERESTART && !is_updating;
-        return ReadyOutcome::InitFailed {
-            result,
-            reincarnate,
-        }; // request.c:488-497
+        return ReadyDecision {
+            outcome: ReadyOutcome::InitFailed {
+                result,
+                reincarnate,
+            }, // request.c:488-497
+            // request.c:491-492 (`|= RS_REINCARNATE`) + request.c:495
+            // (`r_init_err = result`) — carried as a typed payload (R13).
+            mutations: SlotMutations {
+                set: if reincarnate {
+                    RFlags::REINCARNATE
+                } else {
+                    RFlags::empty()
+                },
+                init_err: Some(result),
+                ..Default::default()
+            },
+        };
     }
     if is_updating {
-        ReadyOutcome::UpdateInitDone {
-            pending_remaining: pending.saturating_sub(1),
-        } // request.c:506-513
+        // C: request.c:506-513 — `rupdate.num_init_ready_pending--`; the
+        // caller keeps it > 0 (main.c:586 assert), so a 0 here is a program
+        // error, not a silent saturate.
+        debug_assert!(pending > 0, "do_init_ready: pending underflow");
+        ReadyDecision {
+            outcome: ReadyOutcome::UpdateInitDone {
+                pending_remaining: pending - 1,
+            }, // request.c:506-513
+            // request.c:509 — `r_flags |= RS_INIT_DONE`.
+            mutations: SlotMutations {
+                set: RFlags::INIT_DONE,
+                ..Default::default()
+            },
+        }
     } else {
-        ReadyOutcome::FreshInitDone // request.c:514-525
+        ReadyDecision {
+            outcome: ReadyOutcome::FreshInitDone, // request.c:514-525
+            // request.c:516-519 — `&= ~RS_INITIALIZING; r_check_tm = 0;
+            // r_alive_tm = getticks()`.
+            mutations: SlotMutations {
+                clear: RFlags::INITIALIZING,
+                check_tm: Some(0),
+                alive_tm: Some(ticks),
+                ..Default::default()
+            },
+        }
     }
 }
 
@@ -204,14 +280,14 @@ pub fn should_reply_ready(src: Endpoint) -> bool {
 ///
 /// Non-OK result propagates; otherwise the simulated RS-to-RS init runs
 /// `do_init_ready`, and `EDONTREPLY` (its normal success) becomes `OK`.
-pub fn normalize_init_response(result: i32, ready: Result<(), i32>) -> i32 {
+pub fn normalize_init_response(result: i32, ready: Result<(), Errno>) -> i32 {
     if result != 0 {
         return result;
     }
     match ready {
         Ok(()) => 0,
-        Err(minix_types::EDONTREPLY) => 0,
-        Err(e) => e,
+        Err(Errno::EDONTREPLY) => 0,
+        Err(e) => e.to_i32(),
     }
 }
 
@@ -219,11 +295,11 @@ pub fn normalize_init_response(result: i32, ready: Result<(), i32>) -> i32 {
 ///
 /// `do_upd_ready` normally returns `EDONTREPLY`; reaching the caller means
 /// the update did not happen → `EGENERIC` (sys/errno.h:200).
-pub fn normalize_lu_response(ready: Result<(), i32>) -> i32 {
+pub fn normalize_lu_response(ready: Result<(), Errno>) -> i32 {
     match ready {
         Ok(()) => 0,
-        Err(minix_types::EDONTREPLY) => minix_types::EGENERIC,
-        Err(e) => e,
+        Err(Errno::EDONTREPLY) => Errno::EGENERIC.to_i32(),
+        Err(e) => e.to_i32(),
     }
 }
 
@@ -265,45 +341,74 @@ mod tests {
     }
 
     #[test]
+    fn test_mark_initializing() {
+        // R14: C init_service — utility.c:18-21. Without this pre-send
+        // transition every RS_INIT_READY hits the do_init_ready gate.
+        let mut s = ServiceSlot::vacant();
+        mark_initializing(&mut s, 4242);
+        assert!(s.flags.contains(RFlags::INITIALIZING)); // utility.c:19
+        assert_eq!(s.alive_tm, 4242); // utility.c:20
+        assert_eq!(s.check_tm, 4243); // utility.c:21 — reply within period
+    }
+
+    #[test]
+    fn test_fold_init_flags() {
+        // R14: C start_service — manager.c:953 `s_init_flags |= init_flags`.
+        let mut s = ServiceSlot::vacant();
+        s.priv_.init_flags = 0x2;
+        fold_init_flags(&mut s, 0x10);
+        assert_eq!(s.priv_.init_flags, 0x12); // OR, not replace
+    }
+
+    #[test]
     fn test_do_init_ready_gate() {
         // C: request.c:477-483 — no RS_INITIALIZING → EINVAL.
-        assert_eq!(
-            do_init_ready(RFlags::IN_USE, 0, false, 0),
-            ReadyOutcome::Unexpected
-        );
+        let d = do_init_ready(RFlags::IN_USE, 0, false, 0, 100);
+        assert_eq!(d.outcome, ReadyOutcome::Unexpected);
+        assert_eq!(d.mutations, SlotMutations::default());
     }
 
     #[test]
     fn test_do_init_ready_failed_reincarnate() {
         // C: request.c:488-497 — ERESTART + not updating → REINCARNATE.
+        let d = do_init_ready(
+            RFlags::IN_USE | RFlags::INITIALIZING,
+            minix_types::ERESTART,
+            false,
+            0,
+            100,
+        );
         assert_eq!(
-            do_init_ready(
-                RFlags::IN_USE | RFlags::INITIALIZING,
-                minix_types::ERESTART,
-                false,
-                0
-            ),
+            d.outcome,
             ReadyOutcome::InitFailed {
                 result: minix_types::ERESTART,
                 reincarnate: true
             }
         );
+        // request.c:491-492 + 495 — REINCARNATE set, r_init_err = result.
+        assert!(d.mutations.set.contains(RFlags::REINCARNATE));
+        assert_eq!(d.mutations.init_err, Some(minix_types::ERESTART));
         // Not ERESTART → no reincarnate.
+        let d = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 5, false, 0, 100);
         assert_eq!(
-            do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 5, false, 0),
+            d.outcome,
             ReadyOutcome::InitFailed {
                 result: 5,
                 reincarnate: false
             }
         );
+        assert!(d.mutations.set.is_empty());
+        assert_eq!(d.mutations.init_err, Some(5));
         // ERESTART during update → no reincarnate (request.c:492).
+        let d = do_init_ready(
+            RFlags::IN_USE | RFlags::INITIALIZING,
+            minix_types::ERESTART,
+            true,
+            1,
+            100,
+        );
         assert_eq!(
-            do_init_ready(
-                RFlags::IN_USE | RFlags::INITIALIZING,
-                minix_types::ERESTART,
-                true,
-                1
-            ),
+            d.outcome,
             ReadyOutcome::InitFailed {
                 result: minix_types::ERESTART,
                 reincarnate: false
@@ -314,14 +419,17 @@ mod tests {
     #[test]
     fn test_do_init_ready_update_done() {
         // C: request.c:506-513 — pending decrements; 0 → end_update (16).
+        let d = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 1, 100);
         assert_eq!(
-            do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 1),
+            d.outcome,
             ReadyOutcome::UpdateInitDone {
                 pending_remaining: 0
             }
         );
+        assert!(d.mutations.set.contains(RFlags::INIT_DONE)); // request.c:509
+        let d = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 3, 100);
         assert_eq!(
-            do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 3),
+            d.outcome,
             ReadyOutcome::UpdateInitDone {
                 pending_remaining: 2
             }
@@ -331,10 +439,21 @@ mod tests {
     #[test]
     fn test_do_init_ready_fresh() {
         // C: request.c:514-525 — fresh path replies + end_srv_init.
-        assert_eq!(
-            do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, false, 99),
-            ReadyOutcome::FreshInitDone
-        );
+        let d = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, false, 99, 4242);
+        assert_eq!(d.outcome, ReadyOutcome::FreshInitDone);
+        // request.c:516-519 — clear INITIALIZING, r_check_tm = 0,
+        // r_alive_tm = getticks().
+        assert!(d.mutations.clear.contains(RFlags::INITIALIZING));
+        assert_eq!(d.mutations.check_tm, Some(0));
+        assert_eq!(d.mutations.alive_tm, Some(4242));
+    }
+
+    #[test]
+    #[should_panic(expected = "pending underflow")]
+    fn test_do_init_ready_pending_underflow_panics() {
+        // C: main.c:586 — `num_init_ready_pending > 0` before decrement; a
+        // zero pending is a program error, not a silent saturate.
+        let _ = do_init_ready(RFlags::IN_USE | RFlags::INITIALIZING, 0, true, 0, 100);
     }
 
     #[test]
@@ -385,8 +504,8 @@ mod tests {
     fn test_normalize_init_response() {
         // C: main.c:591-609 — result wins; EDONTREPLY → OK.
         assert_eq!(normalize_init_response(5, Ok(())), 5);
-        assert_eq!(normalize_init_response(0, Err(minix_types::EDONTREPLY)), 0);
-        assert_eq!(normalize_init_response(0, Err(42)), 42);
+        assert_eq!(normalize_init_response(0, Err(Errno::EDONTREPLY)), 0);
+        assert_eq!(normalize_init_response(0, Err(Errno::from_i32(42))), 42);
         assert_eq!(normalize_init_response(0, Ok(())), 0);
     }
 
@@ -394,10 +513,10 @@ mod tests {
     fn test_normalize_lu_response() {
         // C: main.c:614-626 — EDONTREPLY → EGENERIC.
         assert_eq!(
-            normalize_lu_response(Err(minix_types::EDONTREPLY)),
-            minix_types::EGENERIC
+            normalize_lu_response(Err(Errno::EDONTREPLY)),
+            Errno::EGENERIC.to_i32()
         );
-        assert_eq!(normalize_lu_response(Err(3)), 3);
+        assert_eq!(normalize_lu_response(Err(Errno::from_i32(3))), 3);
         assert_eq!(normalize_lu_response(Ok(())), 0);
     }
 }

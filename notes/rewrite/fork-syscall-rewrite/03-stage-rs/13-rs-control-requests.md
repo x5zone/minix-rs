@@ -184,7 +184,7 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 4. `stop_service`：RS endpoint → `Hangup`；其他 → `Term`；`how` 置位；`stop_tm` 记录。
 5. `shutdown_apply`：全表 IN_USE 槽 `EXITING`；返回 `true`。
 
-测试总数声明：本文档范围为 **6 项**（`request` 模块内）。全局 `cargo test -p minix-rs --lib` = 181 通过（随并行模块增长，以各 doc 范围为准）。
+测试总数声明：本文档范围为 **6 项**（`request` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
 
 ---
 

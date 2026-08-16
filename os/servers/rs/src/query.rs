@@ -10,7 +10,7 @@
 //! module owns the pure classification: which table a `SI_*` request names,
 //! the `do_lookup` name-length gate, and the `RS_SYSCTL_*` sub-type mapping.
 
-use minix_types::EINVAL;
+use minix_types::Errno;
 
 /// C: `SI_PROC_TAB` — sysinfo.h:11.
 pub const SI_PROC_TAB: i32 = 2;
@@ -41,12 +41,12 @@ pub enum GetsysinfoTable {
 ///
 /// C: `do_getsysinfo` — request.c:1112-1128; unknown `what` → `EINVAL`
 /// (request.c:1129).
-pub fn getsysinfo_table(what: i32) -> Result<GetsysinfoTable, i32> {
+pub fn getsysinfo_table(what: i32) -> Result<GetsysinfoTable, Errno> {
     match what {
         SI_PROC_TAB => Ok(GetsysinfoTable::ProcTab),
         SI_PROCPUB_TAB => Ok(GetsysinfoTable::ProcPubTab),
         SI_PROCALL_TAB => Ok(GetsysinfoTable::ProcAllTab),
-        _ => Err(EINVAL),
+        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -59,9 +59,9 @@ pub const NAME_BUF_LEN: usize = 100;
 ///
 /// C: `do_lookup` — request.c:1152-1156: `len < 2 || len >= sizeof(namebuf)`
 /// → `EINVAL` (a service label is at least 2 chars, e.g. "rs").
-pub fn lookup_name_len(len: usize) -> Result<(), i32> {
-    if len < 2 || len >= NAME_BUF_LEN {
-        Err(EINVAL)
+pub fn lookup_name_len(len: usize) -> Result<(), Errno> {
+    if !(2..NAME_BUF_LEN).contains(&len) {
+        Err(Errno::EINVAL)
     } else {
         Ok(())
     }
@@ -100,14 +100,14 @@ pub enum SysctlAction {
 /// Classifies an `RS_SYSCTL_*` sub-type.
 ///
 /// C: `do_sysctl` — request.c:1183-1222; unknown sub-type → `EINVAL`.
-pub fn classify_sysctl(request_type: i32) -> Result<SysctlAction, i32> {
+pub fn classify_sysctl(request_type: i32) -> Result<SysctlAction, Errno> {
     match request_type {
         RS_SYSCTL_SRV_STATUS => Ok(SysctlAction::PrintServices),
         RS_SYSCTL_UPD_START => Ok(SysctlAction::UpdateStart),
         RS_SYSCTL_UPD_RUN => Ok(SysctlAction::UpdateRun),
         RS_SYSCTL_UPD_STOP => Ok(SysctlAction::UpdateStop),
         RS_SYSCTL_UPD_STATUS => Ok(SysctlAction::UpdateStatus),
-        _ => Err(EINVAL),
+        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -130,18 +130,18 @@ mod tests {
             getsysinfo_table(SI_PROCALL_TAB),
             Ok(GetsysinfoTable::ProcAllTab)
         );
-        assert_eq!(getsysinfo_table(99), Err(EINVAL));
+        assert_eq!(getsysinfo_table(99), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_lookup_name_len_gate() {
         // C: request.c:1152-1156 — <2 or >= sizeof(namebuf) → EINVAL.
-        assert_eq!(lookup_name_len(0), Err(EINVAL));
-        assert_eq!(lookup_name_len(1), Err(EINVAL));
+        assert_eq!(lookup_name_len(0), Err(Errno::EINVAL));
+        assert_eq!(lookup_name_len(1), Err(Errno::EINVAL));
         assert_eq!(lookup_name_len(2), Ok(()));
         assert_eq!(lookup_name_len(99), Ok(()));
-        assert_eq!(lookup_name_len(100), Err(EINVAL));
-        assert_eq!(lookup_name_len(101), Err(EINVAL));
+        assert_eq!(lookup_name_len(100), Err(Errno::EINVAL));
+        assert_eq!(lookup_name_len(101), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -167,8 +167,8 @@ mod tests {
             classify_sysctl(RS_SYSCTL_UPD_STATUS),
             Ok(SysctlAction::UpdateStatus)
         );
-        assert_eq!(classify_sysctl(0), Err(EINVAL));
-        assert_eq!(classify_sysctl(6), Err(EINVAL));
+        assert_eq!(classify_sysctl(0), Err(Errno::EINVAL));
+        assert_eq!(classify_sysctl(6), Err(Errno::EINVAL));
     }
 
     #[test]

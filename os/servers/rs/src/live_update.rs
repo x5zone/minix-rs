@@ -16,7 +16,7 @@
 //! decisions.
 
 use alloc::vec::Vec;
-use minix_types::{EBUSY, EINVAL, Endpoint};
+use minix_types::{Endpoint, Errno};
 
 use crate::process_table::RupdateFlags;
 use crate::service_slot::SlotId;
@@ -62,6 +62,8 @@ pub const SEF_INIT_ST: u32 = 0x20;
 
 /// C: `SEF_LU_STATE_NULL` — sef.h:213.
 pub const SEF_LU_STATE_NULL: i32 = 0;
+/// C: `SEF_LU_STATE_EVAL` — sef.h:217 (evaluate-expression state).
+pub const SEF_LU_STATE_EVAL: i32 = 4;
 /// C: `SEF_LU_STATE_UNREACHABLE` — sef.h:219.
 pub const SEF_LU_STATE_UNREACHABLE: i32 = 5;
 
@@ -208,29 +210,29 @@ pub fn validate_update_request(
     prepare_only: bool,
     endpoint: Endpoint,
     prepare_state: i32,
-) -> Result<(), i32> {
+) -> Result<(), Errno> {
     if prepare_state == SEF_LU_STATE_NULL {
-        return Err(EINVAL); // request.c:648-650
+        return Err(Errno::EINVAL); // request.c:648-650
     }
     if matches!(phase, UpdatePhase::Updating | UpdatePhase::Initializing) {
-        return Err(EBUSY); // request.c:659-663
+        return Err(Errno::EBUSY); // request.c:659-663
     }
     if phase == UpdatePhase::Scheduled {
         if !batch {
-            return Err(EBUSY); // request.c:666-668
+            return Err(Errno::EBUSY); // request.c:666-668
         }
         if already_scheduled {
-            return Err(EINVAL); // request.c:669-671
+            return Err(Errno::EINVAL); // request.c:669-671
         }
     }
     if prepare_only
         && matches!(endpoint, Endpoint::VM | Endpoint::PM | Endpoint::VFS)
         && prepare_state != SEF_LU_STATE_UNREACHABLE
     {
-        return Err(EINVAL); // request.c:674-681
+        return Err(Errno::EINVAL); // request.c:674-681
     }
     if prepare_only && endpoint == Endpoint::RS {
-        return Err(EINVAL); // request.c:683-686
+        return Err(Errno::EINVAL); // request.c:683-686
     }
     Ok(())
 }
@@ -633,32 +635,32 @@ mod tests {
         // NULL prepare state → EINVAL (request.c:648-650).
         assert_eq!(
             validate_update_request(UpdatePhase::Idle, false, false, false, Endpoint::PM, 0),
-            Err(EINVAL)
+            Err(Errno::EINVAL)
         );
         // Updating → EBUSY.
         assert_eq!(
             validate_update_request(UpdatePhase::Updating, false, false, false, Endpoint::PM, 4),
-            Err(EBUSY)
+            Err(Errno::EBUSY)
         );
         // Scheduled without batch → EBUSY.
         assert_eq!(
             validate_update_request(UpdatePhase::Scheduled, false, false, false, Endpoint::PM, 4),
-            Err(EBUSY)
+            Err(Errno::EBUSY)
         );
         // Batch but service already in chain → EINVAL.
         assert_eq!(
             validate_update_request(UpdatePhase::Scheduled, true, true, false, Endpoint::PM, 4),
-            Err(EINVAL)
+            Err(Errno::EINVAL)
         );
         // Prepare-only of VM with reachable state → EINVAL.
         assert_eq!(
             validate_update_request(UpdatePhase::Idle, false, false, true, Endpoint::VM, 4),
-            Err(EINVAL)
+            Err(Errno::EINVAL)
         );
         // Prepare-only of RS → EINVAL.
         assert_eq!(
             validate_update_request(UpdatePhase::Idle, false, false, true, Endpoint::RS, 5),
-            Err(EINVAL)
+            Err(Errno::EINVAL)
         );
         // Valid request.
         assert_eq!(

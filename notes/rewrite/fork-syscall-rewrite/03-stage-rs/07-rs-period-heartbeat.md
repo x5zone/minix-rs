@@ -134,7 +134,7 @@ void do_period(m_ptr)                                /* request.c:943 */
 ```
 
 - 正常服务：`period = r_period`（槽字段，08 的 `edit_slot` 从 `rss_period` 写入）。
-- **INITIALIZING 服务**：`period = UPD_INIT_MAXTIME`（update 中）或 `RS_INIT_T`（普通初始化，10 秒）——初始化阶段给更长的宽限。
+- **INITIALIZING 服务**：`period = UPD_INIT_MAXTIME`（update 中）或 `RS_INIT_T`（普通初始化，10 秒）——初始化阶段给更长的宽限。`UPD_INIT_MAXTIME` 只有 `prepare_maxtime` 显式覆盖（≠ `RS_DEFAULT_PREPARE_MAXTIME`）时才用覆盖值，否则回落 `RS_INIT_T`（const.h:116）——默认给 LU 初始化 10 秒宽限，而非 2 秒。
 - `MAX_BACKOFF = 30`：退避上限（30 秒）；`r_backoff` 的设定在 15。
 
 ### 2.3 心跳检查与 free pass（request.c:1004-1037）
@@ -225,21 +225,32 @@ pub enum PeriodAction {                              // request.c:975-1038 分�
     PingRequest, PingTimeoutCrash, FreePass,
 }
 pub fn effective_period(rp, hz) -> i64               // request.c:965-969
+pub fn upd_init_maxtime(hz, prepare_maxtime: Option<i64>) -> i64  // const.h:116；prepare_maxtime 未建模（16 DEFERRED）→ None = C 默认分支 RS_INIT_T
+pub struct PeriodDecision { action: PeriodAction, mutations: SlotMutations }  // R13
 pub fn period_decision(now, rp, hz,
-    another_initializing: bool, is_updating: bool) -> PeriodAction  // request.c:975-1038
+    another_initializing: bool, is_updating: bool) -> PeriodDecision  // request.c:975-1038
 pub fn has_update_timed_out(now, prepare_tm, prepare_maxtime) -> bool  // update.c:386
 pub fn sigchld_cleanup(table, pid) -> Option<SigchldOutcome>         // request.c:1051-1090
 ```
 
 设计差异：
 
-- **决策与副作用分离**：C 的 `do_period` 在判定同时执行 `restart_service`/`crash_service`/`ipc_notify`；Rust 的 `period_decision` 只返回 `PeriodAction` 枚举，副作用由调用方（未来主循环集成，06/15/19）执行。纯函数可穷尽测试。
+- **决策与副作用分离**：C 的 `do_period` 在判定同时执行 `restart_service`/`crash_service`/`ipc_notify`；Rust 的 `period_decision` 只返回 `PeriodDecision { action, mutations }`，动作副作用由调用方（未来主循环集成，06/15/19）执行，**槽位变异**（`r_backoff -= 1`、`r_stop_tm = 0`、`r_check_tm = now`、`r_alive_tm/check_tm` 的 free pass、`NOPINGREPLY` + `r_init_err = EINTR`）以 `SlotMutations` 载荷显式携带（R13）——调用方 `mutations.apply(rp)` 一次提交，漏变异从"注释约定"变成编译期缺口（对照 Redox 变异权 token 风格）。
 - **`another_initializing`/`is_updating` 参数注入**：C 靠全局表查询（`lookup_slot_by_flags(RS_INITIALIZING)`，request.c:1013）与 `SRV_IS_UPDATING`（const.h:114）——Rust 把这两个判定结果作为布尔参数传入，`period_decision` 不触表（保持纯函数）。
-- **常量族函数化**：`RS_INIT_T`/`RS_DELTA_T`/`RS_DEFAULT_PREPARE_MAXTIME` 依赖运行时 `system_hz`（GET_HZ，01/19）→ `init_timeout(hz)`/`delta_t(hz)`/`default_prepare_maxtime(hz)`；`MAX_BACKOFF` 是编译期常量 30。
+- **常量族函数化**：`RS_INIT_T`/`RS_DELTA_T`/`RS_DEFAULT_PREPARE_MAXTIME` 依赖运行时 `system_hz`（GET_HZ，01/19）→ `init_timeout(hz)`/`delta_t(hz)`/`default_prepare_maxtime(hz)`；`UPD_INIT_MAXTIME` → `upd_init_maxtime(hz, prepare_maxtime: Option<i64>)`（覆盖值 ≠ 默认才生效，否则 `RS_INIT_T`——`prepare_maxtime` 未建模（16 DEFERRED），当前传 `None`）；`MAX_BACKOFF` 是编译期常量 30。
+
+> **N2 修复（2026-08-16，todo §11）**：`period_decision` 的"period 到期 → ping"分支
+> （request.c:1035-1037）必须比较**原始 `rp->r_period`**，而不是 `effective_period` 的结果。
+> 旧实现误用有效 period：对正在初始化的 boot 槽（`r_period=0`，main.c:338），C 语义是
+> 每个 `RS_DELTA_T` 都 ping 一次（`now - r_check_tm > 0` 恒真），旧 Rust 版要等
+> `RS_INIT_T`（10 秒）才 ping 一次，节律差 10 倍。`effective_period` 现在只用于
+> "answer pending 超时"（2×period，request.c:1004-1006）与 `period==0` 门
+> （request.c:972），与 C 逐分支对齐。测试：`test_initializing_zero_period_pings_every_tick`
+> 锁死该语义（INITIALIZING + r_period=0 → 每 tick `PingRequest`；非初始化 period-0 → `Nothing`）。
 
 ### 3.2 时间类型（D4）
 
-`Clock = i64`（minix-types），所有时间运算用 `i64` + `saturating_sub`（防下溢——C 的 `now - alive_tm` 无符号语义，Rust 显式饱和）。`r_pid` 用 `Option<Pid>`（`None` = -1），`pid.is_some()` 对应 C 的 `r_pid > 0`。
+`Clock = i64`（minix-types），所有时间运算用 `i64` + `saturating_sub`（防下溢——C 的 `now - alive_tm` 无符号语义，Rust 显式饱和）。`r_pid` 用 `Option<Pid>`（`None` = -1），**R19**：C 条件是严格的 `r_pid > 0`（request.c:987/1007），Rust 用 `pid.is_some_and(|p| p > 0)`——`Some(0)`（`getnpid` 落槽异常值）按"无进程" fail-closed，不触发 crash 路径。
 
 ### 3.3 sigchld 纯表操作（D3）
 
@@ -270,24 +281,27 @@ monitor.rs
 关键不变量：
 
 1. **分支互斥**：if/else if 链（request.c:975-1038）在 `PeriodAction` 上体现为单值返回——一个槽一次决策。
-2. **free pass 只救一次**：`FreePass` 返回后调用方须按 C 语义设 `alive_tm = now; check_tm = now+1`（request.c:1020-1021）。
-3. **NOPINGREPLY 终态**：`PingTimeoutCrash` 后调用方置 `NOPINGREPLY`（request.c:1024），后续 `period_decision` 对该槽返回 `Nothing`（条件 `!NOPINGREPLY`，request.c:1006）——测试断言该阻断。
+2. **free pass 只救一次**：`FreePass` 的 `mutations.alive_tm = now; check_tm = now+1`（request.c:1020-1021，R13）由载荷携带，调用方 `apply` 即完成。
+3. **NOPINGREPLY 终态**：`PingTimeoutCrash` 的 `mutations.set` 携带 `NOPINGREPLY`（request.c:1024；初始化中另有 `init_err = EINTR`，request.c:1027-1028），`apply` 后后续 `period_decision` 对该槽返回 `Nothing`（条件 `!NOPINGREPLY`，request.c:1006）——测试断言该阻断。
 4. **update 位清理集合固定**：`UPDATING|PREPARE_DONE|INIT_DONE|INIT_PENDING` 四位的清理由 `sigchld_cleanup` 保证与 C 一致（request.c:1080）。
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs`（181 passed，monitor 相关 9 个）：
+`cargo test -p minix-rs --lib`（208 passed，monitor 相关 12 个）：
 
 | 测试 | 覆盖 |
 |------|------|
 | `test_effective_period_normal` | 正常服务用 `r_period` |
-| `test_effective_period_initializing` | INITIALIZING → RS_INIT_T；INITIALIZING+UPDATING → prepare maxtime |
+| `test_effective_period_initializing` | INITIALIZING → RS_INIT_T；INITIALIZING+UPDATING → RS_INIT_T（UPD_INIT_MAXTIME 默认分支） |
+| `test_upd_init_maxtime` | None → RS_INIT_T；显式覆盖（≠ 默认）生效；== 默认回落 RS_INIT_T |
 | `test_backoff_restart` | backoff 递减（BackoffTick）→ 归零 Restart |
 | `test_stop_timeout` | SIGTERM 超 2×RS_DELTA_T → StopTimeoutCrash；窗口内 Nothing |
 | `test_ping_timeout_with_free_pass` | 超时 + 他人初始化 → FreePass；无他人 → PingTimeoutCrash；update 中无 free pass |
 | `test_ping_request` | period 到期 → PingRequest；未到期 Nothing |
+| `test_initializing_zero_period_pings_every_tick`（N2） | 初始化 + `r_period=0`（boot 槽 main.c:338）→ 每 tick Ping（request.c:1035 用原始 period 判定）；非初始化 period-0 → 无 ping（request.c:972 `period > 0` gate） |
+| `test_zero_pid_is_no_process` | `Some(0)` 不触发 stop/ping 超时 crash（R19） |
 | `test_nopingreply_blocks_crash` | NOPINGREPLY 阻断重复 crash |
 | `test_update_timeout` | prepare 超时判定 + maxtime=0 不超时 |
 | `test_sigchld_cleanup` | 实例链释放 + update_cleared + 槽位清空 |

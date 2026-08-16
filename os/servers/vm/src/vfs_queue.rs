@@ -15,7 +15,7 @@
 //! slot explicitly.
 
 use alloc::collections::VecDeque;
-use minix_types::{Endpoint, VirBytes};
+use minix_types::{Endpoint, VirBytes, VmMmapIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VfsRequestType {
@@ -27,7 +27,10 @@ pub(crate) enum VfsRequestType {
 #[derive(Debug, Clone)]
 pub(crate) enum VfsRequestState {
     FdLookup {
-        orig_fd: i32,
+        /// Original VM_MMAP request. C `mmap_file_cont` reads the original
+        /// message (`origmsg`) to recover addr/len/prot/flags/offset
+        /// (mmap.c:169-181); the Rust callback needs the same data.
+        mmap: VmMmapIn,
     },
     FdIo {
         region_vaddr: VirBytes,

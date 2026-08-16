@@ -128,6 +128,23 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_sprof: MessLsysKrnSysSprof,
     /// VM_PAGEFAULT notification (kernel → VM).
     pub m_vm_pagefault: MessVmPagefault,
+    /// BRK request (user process → VM). C: `message.m_lc_vm_brk` — ipc.h:925
+    pub m_lc_vm_brk: MessLcVmBrk,
+    /// MMAP request/reply (user process ↔ VM). C: `message.m_mmap` — ipc.h:1582
+    pub m_mmap: MessMmap,
+    /// VFS-initiated file mapping (VFS → VM). C: `message.m_vm_vfs_mmap` — ipc.h:2369
+    pub m_vm_vfs_mmap: MessVmVfsMmap,
+    /// Physical memory mapping (driver → VM). C: `message.m_lsys_vm_map_phys` — ipc.h:1504
+    pub m_lsys_vm_map_phys: MessLsysVmMapPhys,
+    /// Remap shared region (driver → VM). C: `message.m_lsys_vm_vmremap` — ipc.h:1537
+    pub m_lsys_vm_vmremap: MessLsysVmVmremap,
+    /// Unmap physical mapping (driver → VM). C: `message.m_lsys_vm_unmap_phys` — ipc.h:1521
+    pub m_lsys_vm_unmap_phys: MessLsysVmUnmapPhys,
+    /// Unmap shared memory region (process → VM). C: `message.m_lc_vm_shm_unmap` — ipc.h:934
+    pub m_lc_vm_shm_unmap: MessLcVmShmUnmap,
+    /// Process-control payload (VFS/RS → VM). C: `message.m_m9` for
+    /// VM_PROCCTL — `mess_9` layout (ipc.h:77-83, com.h:753-757).
+    pub m_lc_vm_procctl: MessLcVmProcctl,
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
     /// C: `mess_notify m_notify` — ipc.h:2598
     pub m_notify: crate::ipc::notify::MessNotify,
@@ -1501,6 +1518,333 @@ impl Default for MessVmPagefault {
             vpf_flags: 0,
             vpf_padding: 0,
             _padding: [0u8; 40],
+        }
+    }
+}
+
+/// BRK request payload (user process → VM).
+///
+/// C: `message.m_lc_vm_brk` — `mess_lc_vm_brk { void *addr; uint8_t padding[52]; }`
+/// (minix3/minix/include/minix/ipc.h:918-926).
+///
+/// libc `brk()` sends only the new break address; the caller endpoint is
+/// carried in `m_source` (kernel-set, spoof-proof) — the same convention as
+/// `VM_PAGEFAULT`. A 32-bit C sender writes `addr` at payload offset 0 and
+/// zeroes the rest (libc brk.c does `memset(&m, 0, sizeof(m))`), so the
+/// 64-bit u64 read zero-extends correctly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLcVmBrk {
+    /// New break address. C: `mess_lc_vm_brk.addr`
+    pub addr: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLcVmBrk {
+    fn default() -> Self {
+        Self {
+            addr: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
+/// MMAP request/reply payload (user process ↔ VM).
+///
+/// C: `message.m_mmap` — `mess_mmap { off_t offset; void *addr; size_t len;
+/// int prot; int flags; int fd; endpoint_t forwhom; void *retaddr;
+/// u32_t padding[5]; }` (minix3/minix/include/minix/ipc.h:1582-1592).
+///
+/// Wire layout follows the 32-bit C sender (libc `minix_mmap_for`, libc/sys/mmap.c):
+/// `offset` is 64-bit at payload offset 0; the remaining fields are 32-bit on
+/// the wire (`size_t`/`void*`/`int`/`endpoint_t` are 4 bytes on i386). The
+/// 64-bit Rust receiver zero-extends the 32-bit fields. `retaddr` is the reply
+/// field the kernel echoes back to libc after a successful map.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessMmap {
+    /// File offset. C: `mess_mmap.offset` (payload offset 0)
+    pub offset: u64,
+    /// Requested address hint. C: `mess_mmap.addr` (payload offset 8)
+    pub addr: u32,
+    /// Mapping length in bytes. C: `mess_mmap.len` (payload offset 12)
+    pub len: u32,
+    /// Protection flags (PROT_*). C: `mess_mmap.prot` (payload offset 16)
+    pub prot: i32,
+    /// Mapping flags (MAP_*). C: `mess_mmap.flags` (payload offset 20)
+    pub flags: i32,
+    /// File descriptor, -1 for anonymous. C: `mess_mmap.fd` (payload offset 24)
+    pub fd: i32,
+    /// Target endpoint for MAP_THIRDPARTY. C: `mess_mmap.forwhom` (payload offset 28)
+    pub forwhom: i32,
+    /// Reply: mapped address. C: `mess_mmap.retaddr` (payload offset 32)
+    pub retaddr: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 20],
+}
+
+impl Default for MessMmap {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            addr: 0,
+            len: 0,
+            prot: 0,
+            flags: 0,
+            fd: 0,
+            forwhom: 0,
+            retaddr: 0,
+            _padding: [0; 20],
+        }
+    }
+}
+
+/// VFS-initiated file mapping payload (VFS → VM).
+///
+/// C: `message.m_vm_vfs_mmap` — `mess_vm_vfs_mmap { off_t offset; dev_t dev;
+/// ino_t ino; endpoint_t who; u32_t vaddr; u32_t len; u32_t flags; u32_t fd;
+/// u16_t clearend; uint8_t padding[8]; }` (minix3/minix/include/minix/ipc.h:2369-2380).
+///
+/// Wire layout follows the 32-bit C sender (`minix_vfs_mmap`, libc/sys/mmap.c):
+/// the three 64-bit fields (`off_t`/`dev_t`/`ino_t`) sit at offsets 0/8/16,
+/// the 32-bit fields follow at 24-43, `clearend` at 44.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessVmVfsMmap {
+    /// File offset. C: `mess_vm_vfs_mmap.offset` (payload offset 0)
+    pub offset: u64,
+    /// Device number. C: `mess_vm_vfs_mmap.dev` (payload offset 8)
+    pub dev: u64,
+    /// Inode number. C: `mess_vm_vfs_mmap.ino` (payload offset 16)
+    pub ino: u64,
+    /// Target process endpoint. C: `mess_vm_vfs_mmap.who` (payload offset 24)
+    pub who: i32,
+    /// Virtual address to map at. C: `mess_vm_vfs_mmap.vaddr` (payload offset 28)
+    pub vaddr: u32,
+    /// Mapping length in bytes. C: `mess_vm_vfs_mmap.len` (payload offset 32)
+    pub len: u32,
+    /// Writable flag (bit 0) passed through to `mmap_file`. C: `flags` (payload offset 36)
+    pub flags: u32,
+    /// File descriptor. C: `mess_vm_vfs_mmap.fd` (payload offset 40)
+    pub fd: u32,
+    /// Zero-padding at the end of the last page (COW block). C: `clearend` (payload offset 44)
+    pub clearend: u16,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 8],
+}
+
+impl Default for MessVmVfsMmap {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            dev: 0,
+            ino: 0,
+            who: 0,
+            vaddr: 0,
+            len: 0,
+            flags: 0,
+            fd: 0,
+            clearend: 0,
+            _padding: [0; 8],
+        }
+    }
+}
+
+/// Physical memory mapping payload (driver → VM).
+///
+/// C: `message.m_lsys_vm_map_phys` — `mess_lsys_vm_map_phys { endpoint_t ep;
+/// phys_bytes phaddr; size_t len; void *reply; uint8_t padding[40]; }`
+/// (minix3/minix/include/minix/ipc.h:1504-1510).
+///
+/// Wire layout follows the 32-bit C sender (`sys_vm_map_phys` / driver libs):
+/// `ep` at offset 0, `phaddr` (`unsigned long`, 4 bytes on i386) at offset 4,
+/// `len` at offset 8, `reply` at offset 12.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLsysVmMapPhys {
+    /// Target process endpoint. C: `mess_lsys_vm_map_phys.ep` (payload offset 0)
+    pub ep: i32,
+    /// Physical address to map. C: `mess_lsys_vm_map_phys.phaddr` (payload offset 4)
+    pub phaddr: u32,
+    /// Length in bytes. C: `mess_lsys_vm_map_phys.len` (payload offset 8)
+    pub len: u32,
+    /// Reply: mapped virtual address. C: `mess_lsys_vm_map_phys.reply` (payload offset 12)
+    pub reply: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLsysVmMapPhys {
+    fn default() -> Self {
+        Self {
+            ep: 0,
+            phaddr: 0,
+            len: 0,
+            reply: 0,
+            _padding: [0; 40],
+        }
+    }
+}
+
+/// Shared-region remap payload (driver → VM).
+///
+/// C: `message.m_lsys_vm_vmremap` — `mess_lsys_vm_vmremap { endpoint_t destination;
+/// endpoint_t source; void *dest_addr; void *src_addr; size_t size;
+/// void *ret_addr; uint8_t padding[32]; }` (minix3/minix/include/minix/ipc.h:1537-1545).
+///
+/// Wire layout follows the 32-bit C sender (`vm_remap`/`vm_remap_ro`, libc/sys/mmap.c):
+/// both endpoints at offsets 0/4, both addresses at offsets 8/12, `size` at 16,
+/// `ret_addr` at 20. The destination endpoint is an explicit message field,
+/// NOT derived from `m_source` (the IPC server remaps into its client:
+/// minix3/minix/servers/ipc/shm.c:159).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLsysVmVmremap {
+    /// Destination process endpoint (receives the shared region).
+    /// C: `mess_lsys_vm_vmremap.destination` (payload offset 0)
+    pub destination: i32,
+    /// Source process endpoint (owns the region being shared).
+    /// C: `mess_lsys_vm_vmremap.source` (payload offset 4)
+    pub source: i32,
+    /// Requested destination address, 0 = anywhere. C: `dest_addr` (payload offset 8)
+    pub dest_addr: u32,
+    /// Source address, must be the start of a region. C: `src_addr` (payload offset 12)
+    pub src_addr: u32,
+    /// Size of the region. C: `mess_lsys_vm_vmremap.size` (payload offset 16)
+    pub size: u32,
+    /// Reply: mapped destination address. C: `mess_lsys_vm_vmremap.ret_addr` (payload offset 20)
+    pub ret_addr: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 32],
+}
+
+impl Default for MessLsysVmVmremap {
+    fn default() -> Self {
+        Self {
+            destination: 0,
+            source: 0,
+            dest_addr: 0,
+            src_addr: 0,
+            size: 0,
+            ret_addr: 0,
+            _padding: [0; 32],
+        }
+    }
+}
+
+/// Unmap-physical-mapping payload (driver → VM).
+///
+/// C: `message.m_lsys_vm_unmap_phys` — `mess_lsys_vm_unmap_phys { endpoint_t ep;
+/// void *vaddr; uint8_t padding[48]; }` (minix3/minix/include/minix/ipc.h:1521-1527).
+///
+/// Wire layout follows the 32-bit C sender (`vm_unmap_phys`, libc/sys/mmap.c):
+/// `ep` at offset 0, `vaddr` at offset 4. The target endpoint is an explicit
+/// message field — unlike VM_MUNMAP, the driver unmaps on behalf of another
+/// process (e.g. a device driver that mapped memory for a client).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLsysVmUnmapPhys {
+    /// Target process endpoint. C: `mess_lsys_vm_unmap_phys.ep` (payload offset 0)
+    pub ep: i32,
+    /// Virtual address to unmap. C: `mess_lsys_vm_unmap_phys.vaddr` (payload offset 4)
+    pub vaddr: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLsysVmUnmapPhys {
+    fn default() -> Self {
+        Self {
+            ep: 0,
+            vaddr: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
+/// Shared-memory-unmap payload (process → VM).
+///
+/// C: `message.m_lc_vm_shm_unmap` — `mess_lc_vm_shm_unmap { endpoint_t forwhom;
+/// void *addr; uint8_t padding[48]; }` (minix3/minix/include/minix/ipc.h:934-940).
+///
+/// Wire layout follows the 32-bit C sender (`vm_shm_unmap`, libc/sys/mmap.c):
+/// `forwhom` at offset 0, `addr` at offset 4. `forwhom` is an explicit message
+/// field so a process can unmap a shared region it mapped for another process.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLcVmShmUnmap {
+    /// Target process endpoint. C: `mess_lc_vm_shm_unmap.forwhom` (payload offset 0)
+    pub forwhom: i32,
+    /// Address of the shared region to unmap. C: `mess_lc_vm_shm_unmap.addr` (payload offset 4)
+    pub addr: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLcVmShmUnmap {
+    fn default() -> Self {
+        Self {
+            forwhom: 0,
+            addr: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
+/// Process-control payload (VFS/RS → VM) for `VM_PROCCTL`.
+///
+/// C: `message.m_m9` — `mess_9 { uint64_t m9ull1, m9ull2; long m9l1..m9l5;
+/// short m9s1..m9s4; uint8_t padding[12]; }` (minix3/minix/include/minix/ipc.h:77-83).
+/// The `VMPCTL_*` field macros alias the five longs
+/// (minix3/minix/include/minix/com.h:753-757).
+///
+/// Wire layout follows the 32-bit C sender (`vm_procctl`, libsys/vm_procctl.c;
+/// `vm_vfs_procctl_handlemem`, vfs/comm.c:198-217): on i386 `long` is 4 bytes,
+/// so `VMPCTL_PARAM` is at offset 16, `VMPCTL_WHO` at 20, `VMPCTL_M1` at 24,
+/// `VMPCTL_LEN` at 28, `VMPCTL_FLAGS` at 32. The 64-bit Rust receiver reads
+/// the 32-bit fields from the same offsets.
+///
+/// Do NOT decode VM_PROCCTL from `MessageM1` — same wire-format family as
+/// 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode re-mapped the five fields
+/// to different offsets, breaking C-layout compatibility).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MessLcVmProcctl {
+    /// C: `mess_9.m9ull1` (payload offset 0) — unused by VM_PROCCTL.
+    pub ull1: u64,
+    /// C: `mess_9.m9ull2` (payload offset 8) — unused by VM_PROCCTL.
+    pub ull2: u64,
+    /// Operation code. C: `VMPCTL_PARAM` = `m9_l1` (payload offset 16)
+    pub param: i32,
+    /// Target endpoint. C: `VMPCTL_WHO` = `m9_l2` (payload offset 20)
+    pub who: i32,
+    /// User-space pointer / extra parameter. C: `VMPCTL_M1` = `m9_l3`
+    /// (payload offset 24; `vir_bytes` is 4 bytes on i386)
+    pub m1: u32,
+    /// Byte count. C: `VMPCTL_LEN` = `m9_l4` (payload offset 28)
+    pub len: i32,
+    /// Write flag for `VMPPARAM_HANDLEMEM`. C: `VMPCTL_FLAGS` = `m9_l5`
+    /// (payload offset 32)
+    pub flags: i32,
+    /// C: `mess_9.m9s1..m9s4` (payload offset 36) — unused by VM_PROCCTL.
+    pub shorts: [i16; 4],
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 12],
+}
+
+impl Default for MessLcVmProcctl {
+    fn default() -> Self {
+        Self {
+            ull1: 0,
+            ull2: 0,
+            param: 0,
+            who: 0,
+            m1: 0,
+            len: 0,
+            flags: 0,
+            shorts: [0; 4],
+            _padding: [0; 12],
         }
     }
 }

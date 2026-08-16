@@ -10,7 +10,7 @@
 //! future main-loop integration (06).
 
 use crate::process_table::RProcTable;
-use crate::service_slot::{RFlags, ServiceSlot};
+use crate::service_slot::{RFlags, ServiceSlot, SlotMutations};
 use alloc::vec::Vec;
 use minix_types::Pid;
 
@@ -24,12 +24,22 @@ pub fn delta_t(hz: u32) -> i64 {
     hz as i64
 }
 
-/// C: `MAX_BACKOFF = 30` — const.h:51.
-pub const MAX_BACKOFF: u32 = 30;
-
 /// C: `RS_DEFAULT_PREPARE_MAXTIME = 2*RS_DELTA_T` — const.h:58.
 pub fn default_prepare_maxtime(hz: u32) -> i64 {
     2 * delta_t(hz)
+}
+
+/// C: `UPD_INIT_MAXTIME(&rp->r_upd)` — const.h:116. The update descriptor's
+/// `prepare_maxtime` override wins only when it differs from the default
+/// (`RS_DEFAULT_PREPARE_MAXTIME`); otherwise the init timeout `RS_INIT_T`
+/// applies. `prepare_maxtime` is not modelled yet (16-rs-live-update,
+/// update-descriptor timing fields DEFERRED), so callers pass `None` for the
+/// unmodelled default; the 16 wiring replaces it with the descriptor value.
+pub fn upd_init_maxtime(hz: u32, prepare_maxtime: Option<i64>) -> i64 {
+    match prepare_maxtime {
+        Some(pm) if pm != default_prepare_maxtime(hz) => pm,
+        _ => init_timeout(hz),
+    }
 }
 
 /// Per-slot decision of `do_period` for one active service.
@@ -40,22 +50,37 @@ pub fn default_prepare_maxtime(hz: u32) -> i64 {
 pub enum PeriodAction {
     /// No action for this slot.
     Nothing,
-    /// `r_backoff > 0`: decremented, still positive (request.c:975-976).
+    /// `r_backoff > 0`: decremented, still positive (request.c:975-976); the
+    /// decrement is carried as [`PeriodDecision::mutations`] (R13).
     BackoffTick,
     /// `r_backoff` hit zero → `restart_service` (request.c:977-978, 15).
     Restart,
     /// SIGTERM timeout (2×`RS_DELTA_T`) → `crash_service` (request.c:985-989, 15).
     StopTimeoutCrash,
-    /// Period expired, no answer pending → `ipc_notify` + `r_check_tm = now`
-    /// (request.c:1035-1037).
+    /// Period expired, no answer pending → `ipc_notify` (request.c:1035-1037);
+    /// `r_check_tm = now` travels in [`PeriodDecision::mutations`] (R13).
     PingRequest,
     /// Ping answer overdue (2×period) and no free pass → `crash_service`;
-    /// `NOPINGREPLY` set, `r_init_err = EINTR` if initializing
-    /// (request.c:1004-1028).
+    /// the `NOPINGREPLY` / `r_init_err = EINTR` mutations travel in
+    /// [`PeriodDecision::mutations`] (request.c:1004-1028, R13).
     PingTimeoutCrash,
     /// Ping answer overdue but another service is initializing → free pass:
-    /// `r_alive_tm = now`, `r_check_tm = now+1` (request.c:1015-1021).
+    /// the `r_alive_tm`/`r_check_tm` updates travel in
+    /// [`PeriodDecision::mutations`] (request.c:1015-1021, R13).
     FreePass,
+}
+
+/// The `do_period` decision for one slot plus the slot mutations it implies.
+///
+/// R13: C mutates `r_*` inline (request.c:975-1038); the mutations are
+/// carried as a typed payload so the 06 caller applies exactly the decision's
+/// side effects (`mutations.apply(rp)`) after the action hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeriodDecision {
+    /// Branch to execute.
+    pub action: PeriodAction,
+    /// Slot mutations implied by the branch (R13).
+    pub mutations: SlotMutations,
 }
 
 /// Computes the effective period for a slot.
@@ -66,9 +91,9 @@ pub fn effective_period(rp: &ServiceSlot, hz: u32) -> i64 {
     if rp.flags.contains(RFlags::INITIALIZING) {
         if rp.flags.contains(RFlags::UPDATING) {
             // C: `UPD_INIT_MAXTIME(&rp->r_upd)` — const.h:116. The
-            // `prepare_maxtime` override lives in the update descriptor (16);
-            // the default is `RS_DEFAULT_PREPARE_MAXTIME`.
-            default_prepare_maxtime(hz)
+            // `prepare_maxtime` override lives in the update descriptor
+            // (16, DEFERRED); unmodelled → C default branch (`RS_INIT_T`).
+            upd_init_maxtime(hz, None)
         } else {
             init_timeout(hz)
         }
@@ -89,48 +114,111 @@ pub fn period_decision(
     hz: u32,
     another_initializing: bool,
     is_updating: bool,
-) -> PeriodAction {
+) -> PeriodDecision {
     // Binary backoff: revive after MAX_BACKOFF periods of repeated exits
-    // (request.c:975-978).
+    // (request.c:975-978). The decrement is carried as the new absolute value.
     if rp.backoff > 0 {
         return if rp.backoff == 1 {
-            PeriodAction::Restart
+            PeriodDecision {
+                action: PeriodAction::Restart,
+                mutations: SlotMutations {
+                    backoff: Some(0), // r_backoff -= 1 → 0 (request.c:976)
+                    ..Default::default()
+                },
+            }
         } else {
-            PeriodAction::BackoffTick
+            PeriodDecision {
+                action: PeriodAction::BackoffTick,
+                mutations: SlotMutations {
+                    backoff: Some(rp.backoff - 1), // request.c:976
+                    ..Default::default()
+                },
+            }
         };
     }
 
     // SIGTERM without response → SIGKILL (simulated crash, request.c:985-989).
-    if rp.stop_tm > 0 && now.saturating_sub(rp.stop_tm) > 2 * delta_t(hz) && rp.pid.is_some() {
-        return PeriodAction::StopTimeoutCrash;
+    // R19: C tests `r_pid > 0` (strictly positive) — `Some(0)` is "no pid".
+    if rp.stop_tm > 0
+        && now.saturating_sub(rp.stop_tm) > 2 * delta_t(hz)
+        && rp.pid.is_some_and(|p| p > 0)
+    {
+        return PeriodDecision {
+            action: PeriodAction::StopTimeoutCrash,
+            mutations: SlotMutations {
+                stop_tm: Some(0), // request.c:988
+                ..Default::default()
+            },
+        };
     }
 
     let period = effective_period(rp, hz);
     if period == 0 {
-        return PeriodAction::Nothing; // no status checks for period-0 services
+        return PeriodDecision {
+            action: PeriodAction::Nothing, // no status checks for period-0 services
+            mutations: SlotMutations::default(),
+        };
     }
 
-    // Answer to a status request is still pending (request.c:1004).
+    // Answer to a status request is still pending (request.c:1004). R19: C
+    // requires `r_pid > 0` (request.c:1007) — a 0 pid is "no process".
     if rp.alive_tm < rp.check_tm {
         let overdue = now.saturating_sub(rp.alive_tm) > 2 * period
-            && rp.pid.is_some()
+            && rp.pid.is_some_and(|p| p > 0)
             && !rp.flags.contains(RFlags::NOPINGREPLY);
         if !overdue {
-            return PeriodAction::Nothing;
+            return PeriodDecision {
+                action: PeriodAction::Nothing,
+                mutations: SlotMutations::default(),
+            };
         }
         // Free pass while somebody else is initializing (request.c:1015-1017).
         if another_initializing && !is_updating {
-            return PeriodAction::FreePass;
+            return PeriodDecision {
+                action: PeriodAction::FreePass,
+                // request.c:1019-1020
+                mutations: SlotMutations {
+                    alive_tm: Some(now),
+                    check_tm: Some(now + 1),
+                    ..Default::default()
+                },
+            };
         }
-        return PeriodAction::PingTimeoutCrash;
+        return PeriodDecision {
+            action: PeriodAction::PingTimeoutCrash,
+            // request.c:1024 (`|= RS_NOPINGREPLY`) + request.c:1027-1028
+            // (`r_init_err = EINTR` when still initializing).
+            mutations: SlotMutations {
+                set: RFlags::NOPINGREPLY,
+                init_err: rp
+                    .flags
+                    .contains(RFlags::INITIALIZING)
+                    .then_some(minix_types::EINTR),
+                ..Default::default()
+            },
+        };
     }
 
     // No answer pending: request status when the period expired
-    // (request.c:1035-1037).
-    if now.saturating_sub(rp.check_tm) > period {
-        return PeriodAction::PingRequest;
+    // (request.c:1035-1037). N2: C compares against the **raw** `r_period`
+    // here — NOT the effective period computed at request.c:965-969. For an
+    // initializing boot slot (`r_period = 0`, main.c:338) the effective
+    // period is `RS_INIT_T`, but C pings on every tick (`now - r_check_tm
+    // > 0`); using the effective value here would stretch the ping rhythm
+    // 10× (todo §11 N2, 07-rs-period-heartbeat.md).
+    if now.saturating_sub(rp.check_tm) > rp.period {
+        return PeriodDecision {
+            action: PeriodAction::PingRequest,
+            mutations: SlotMutations {
+                check_tm: Some(now), // request.c:1036
+                ..Default::default()
+            },
+        };
     }
-    PeriodAction::Nothing
+    PeriodDecision {
+        action: PeriodAction::Nothing,
+        mutations: SlotMutations::default(),
+    }
 }
 
 /// Whether the update-preparation phase timed out.
@@ -191,6 +279,10 @@ mod tests {
         s
     }
 
+    fn action(d: PeriodDecision) -> PeriodAction {
+        d.action
+    }
+
     #[test]
     fn test_effective_period_normal() {
         let s = slot();
@@ -203,22 +295,29 @@ mod tests {
         s.flags |= RFlags::INITIALIZING;
         assert_eq!(effective_period(&s, 60), 600); // RS_INIT_T = hz*10
         s.flags |= RFlags::UPDATING;
-        assert_eq!(effective_period(&s, 60), 120); // default prepare maxtime
+        // C: UPD_INIT_MAXTIME default branch — prepare_maxtime unmodelled → RS_INIT_T.
+        assert_eq!(effective_period(&s, 60), 600);
+    }
+
+    #[test]
+    fn test_upd_init_maxtime() {
+        // C: const.h:116 — override wins only when != RS_DEFAULT_PREPARE_MAXTIME.
+        assert_eq!(upd_init_maxtime(60, None), 600); // unmodelled → RS_INIT_T
+        assert_eq!(upd_init_maxtime(60, Some(300)), 300); // explicit override
+        assert_eq!(upd_init_maxtime(60, Some(120)), 600); // == default → RS_INIT_T
     }
 
     #[test]
     fn test_backoff_restart() {
         let mut s = slot();
         s.backoff = 2;
-        assert_eq!(
-            period_decision(0, &s, 60, false, false),
-            PeriodAction::BackoffTick
-        );
+        let d = period_decision(0, &s, 60, false, false);
+        assert_eq!(d.action, PeriodAction::BackoffTick);
+        assert_eq!(d.mutations.backoff, Some(1)); // r_backoff 2 → 1
         s.backoff = 1;
-        assert_eq!(
-            period_decision(0, &s, 60, false, false),
-            PeriodAction::Restart
-        );
+        let d = period_decision(0, &s, 60, false, false);
+        assert_eq!(d.action, PeriodAction::Restart);
+        assert_eq!(d.mutations.backoff, Some(0)); // r_backoff 1 → 0
     }
 
     #[test]
@@ -226,17 +325,39 @@ mod tests {
         let mut s = slot();
         s.stop_tm = 100;
         // now = 100 + 2*hz + 1 → over 2*RS_DELTA_T (request.c:985).
-        assert_eq!(
-            period_decision(100 + 2 * 60 + 1, &s, 60, false, false),
-            PeriodAction::StopTimeoutCrash
-        );
+        let d = period_decision(100 + 2 * 60 + 1, &s, 60, false, false);
+        assert_eq!(d.action, PeriodAction::StopTimeoutCrash);
+        assert_eq!(d.mutations.stop_tm, Some(0)); // request.c:988
         // Within the window → no stop-crash; a fresh check time also
         // suppresses the ping branch.
         s.check_tm = 1000;
         s.alive_tm = 1000; // replied at check time → no ping pending
         assert_eq!(
-            period_decision(100 + 60, &s, 60, false, false),
+            action(period_decision(100 + 60, &s, 60, false, false)),
             PeriodAction::Nothing
+        );
+    }
+
+    #[test]
+    fn test_zero_pid_is_no_process() {
+        // R19: C tests `r_pid > 0` (request.c:987/1007) — `Some(0)` must not
+        // count as a live process (fail-closed, in case getnpid lands a 0).
+        let mut s = slot();
+        s.pid = Some(0);
+        s.stop_tm = 100;
+        s.check_tm = 1000; // suppress the ping branch — isolate the stop path
+        s.alive_tm = 1000;
+        assert_eq!(
+            action(period_decision(100 + 2 * 60 + 1, &s, 60, false, false)),
+            PeriodAction::Nothing // stop-timeout crash suppressed
+        );
+        let mut s2 = slot();
+        s2.pid = Some(0);
+        s2.check_tm = 10;
+        s2.alive_tm = 5;
+        assert_eq!(
+            action(period_decision(21, &s2, 60, false, false)),
+            PeriodAction::Nothing // ping-timeout crash suppressed
         );
     }
 
@@ -246,18 +367,29 @@ mod tests {
         s.check_tm = 10; // ping sent at 10
         s.alive_tm = 5; // no reply since (alive < check)
         // 2*period = 10 → at now=21 (> 10 past alive_tm) overdue.
-        assert_eq!(
-            period_decision(21, &s, 60, true, false),
-            PeriodAction::FreePass
-        );
+        let d = period_decision(21, &s, 60, true, false);
+        assert_eq!(d.action, PeriodAction::FreePass);
+        // request.c:1019-1020 — r_alive_tm = now, r_check_tm = now+1.
+        assert_eq!(d.mutations.alive_tm, Some(21));
+        assert_eq!(d.mutations.check_tm, Some(22));
         // No other initializing service → crash.
-        assert_eq!(
-            period_decision(21, &s, 60, false, false),
-            PeriodAction::PingTimeoutCrash
-        );
+        let d = period_decision(21, &s, 60, false, false);
+        assert_eq!(d.action, PeriodAction::PingTimeoutCrash);
+        // request.c:1024 — NOPINGREPLY set; the slot is not initializing
+        // here, so no r_init_err write (request.c:1027-1028).
+        assert!(d.mutations.set.contains(RFlags::NOPINGREPLY));
+        assert_eq!(d.mutations.init_err, None);
+        // Initializing slot → r_init_err = EINTR (request.c:1027-1028).
+        // The effective period is RS_INIT_T (600 at hz=60), so the overdue
+        // threshold is 2*600 — probe far enough past it.
+        let mut s_init = s.clone();
+        s_init.flags |= RFlags::INITIALIZING;
+        let d = period_decision(1300, &s_init, 60, false, false);
+        assert_eq!(d.action, PeriodAction::PingTimeoutCrash);
+        assert_eq!(d.mutations.init_err, Some(minix_types::EINTR));
         // Service updating → no free pass either.
         assert_eq!(
-            period_decision(21, &s, 60, true, true),
+            action(period_decision(21, &s, 60, true, true)),
             PeriodAction::PingTimeoutCrash
         );
     }
@@ -267,13 +399,39 @@ mod tests {
         let mut s = slot();
         s.check_tm = 10;
         s.alive_tm = 10; // replied at 10, check at 10 → not pending
-        assert_eq!(
-            period_decision(10 + 5 + 1, &s, 60, false, false),
-            PeriodAction::PingRequest
-        );
+        let d = period_decision(10 + 5 + 1, &s, 60, false, false);
+        assert_eq!(d.action, PeriodAction::PingRequest);
+        assert_eq!(d.mutations.check_tm, Some(16)); // r_check_tm = now
         // Within the period → nothing.
         assert_eq!(
-            period_decision(10 + 3, &s, 60, false, false),
+            action(period_decision(10 + 3, &s, 60, false, false)),
+            PeriodAction::Nothing
+        );
+    }
+
+    #[test]
+    fn test_initializing_zero_period_pings_every_tick() {
+        // N2: request.c:1035 compares against the raw `r_period`. A boot
+        // slot with r_period=0 (main.c:338) is pinged on every tick while
+        // initializing — the effective period (RS_INIT_T) gates the branch
+        // but does NOT set the ping rhythm.
+        let mut s = slot();
+        s.flags |= RFlags::INITIALIZING;
+        s.period = 0;
+        s.check_tm = 100;
+        s.alive_tm = 100; // no answer pending
+        assert_eq!(
+            action(period_decision(101, &s, 60, false, false)),
+            PeriodAction::PingRequest
+        );
+        // Non-initializing period-0 slot → no pings at all (request.c:972
+        // `period > 0` gate).
+        let mut s2 = slot();
+        s2.period = 0;
+        s2.check_tm = 100;
+        s2.alive_tm = 100;
+        assert_eq!(
+            action(period_decision(101, &s2, 60, false, false)),
             PeriodAction::Nothing
         );
     }
@@ -285,7 +443,7 @@ mod tests {
         s.alive_tm = 5;
         s.flags |= RFlags::NOPINGREPLY;
         assert_eq!(
-            period_decision(21, &s, 60, false, false),
+            action(period_decision(21, &s, 60, false, false)),
             PeriodAction::Nothing // NOPINGREPLY → no further pings (request.c:1006)
         );
     }

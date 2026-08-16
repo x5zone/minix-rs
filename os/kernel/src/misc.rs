@@ -834,7 +834,7 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
             // Copy available history entries (Rust keeps 150; C ABI expects 150).
             let n = history.len().min(150);
             for (i, hist_val) in history.iter().take(n).enumerate() {
-                loadinfo.proc_load_history[i] = *hist_val as u16;
+                loadinfo.proc_load_history[i] = *hist_val;
             }
             copy_struct_to_caller(caller, &loadinfo, val_ptr, val_len)
         }

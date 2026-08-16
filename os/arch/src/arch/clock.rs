@@ -24,7 +24,7 @@
 ///
 /// minix-rs uses 100 Hz (10ms tick) across all architectures.
 ///
-/// # Architecture evolution (32-bit → 64-bit)
+/// # Architecture evolution ([ARCH: K-3], 32-bit → 64-bit)
 ///
 /// | Architecture | Minix3 C (32-bit) | minix-rs (64-bit) |
 /// |-------------|-------------------|-------------------|
@@ -88,8 +88,9 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Create an instance from a timer descriptor.
     ///
     /// Stores the hardware parameters (base address, frequency) from the
-    /// descriptor into instance fields. Called once during
-    /// `init_clock_and_interrupts()` after `PlatformContext` is initialized.
+    /// descriptor into instance fields. Instances are transient: each call
+    /// site (timer init, read, stop, profile clock methods) constructs one
+    /// from `platform_desc().timer()` and drops it after use.
     ///
     /// # Panics
     ///
@@ -100,11 +101,20 @@ pub trait ClockArch: Sized + Send + Sync {
 
     /// Configure and start the hardware timer at the given frequency.
     ///
-    /// Called once during `init_clock_and_interrupts()`. After this call, the timer
-    /// generates periodic interrupts at `hz` Hz.
+    /// Called during `init_clock_and_interrupts()`; `bsp_finish_booting()`
+    /// re-calls it as an idempotent no-op safety net (re-writes the same
+    /// registers, no side effects). After this call, the timer generates
+    /// periodic interrupts at `hz` Hz.
+    ///
+    /// `cpu_id` identifies the CPU (RISC-V: hart) whose timer is configured.
+    /// Only RISC-V uses it: the CLINT is a single MMIO block with one
+    /// `mtimecmp` per hart at `mtimecmp_base + cpu_id * mtimecmp_stride`, so
+    /// the hart id is required to reach the local comparator. x86-64 (PIT +
+    /// per-CPU LAPIC) and aarch64 (CNTP_* system registers) address the
+    /// current CPU's timer implicitly and ignore the argument.
     ///
     /// C: init_clock() hardware portion + arch_init() APIC timer
-    fn init_timer(&mut self, hz: u32);
+    fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
     /// Read the current hardware tick count.
     ///
@@ -138,9 +148,12 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Timer (ARM64), or CLINT timer (RISC-V) to prevent interrupts
     /// during the halt.
     ///
+    /// `cpu_id` has the same role as in `init_timer`: RISC-V needs it to
+    /// locate this hart's `mtimecmp`; the other architectures ignore it.
+    ///
     /// C: `stop_local_timer()` — not a named C function; inline in
     /// `smp_ipi_halt_handler()` (smp.c:56-61) as `lapic_stop_timer()`.
-    fn stop_local_timer(&mut self);
+    fn stop_local_timer(&mut self, cpu_id: u32);
 
     /// Initialize and start the statistical profiling timer.
     ///
@@ -190,9 +203,9 @@ impl ClockArch for MockClockArch {
     fn new(_desc: &dyn minix_platform::TimerDesc) -> Self {
         Self
     }
-    fn init_timer(&mut self, _hz: u32) {}
+    fn init_timer(&mut self, _hz: u32, _cpu_id: u32) {}
     fn read_ticks(&self) -> u64 { 0 }
-    fn stop_local_timer(&mut self) {}
+    fn stop_local_timer(&mut self, _cpu_id: u32) {}
     fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> { Ok(()) }
     fn stop_profile_clock(&mut self) {}
     fn ack_profile_clock(&mut self) {}
@@ -234,9 +247,9 @@ mod tests {
             fn new(_desc: &dyn TimerDesc) -> Self {
                 Self { ticks: 42 }
             }
-            fn init_timer(&mut self, _hz: u32) {}
+            fn init_timer(&mut self, _hz: u32, _cpu_id: u32) {}
             fn read_ticks(&self) -> u64 { self.ticks }
-            fn stop_local_timer(&mut self) {}
+            fn stop_local_timer(&mut self, _cpu_id: u32) {}
             fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> { Ok(()) }
             fn stop_profile_clock(&mut self) {}
             fn ack_profile_clock(&mut self) {}

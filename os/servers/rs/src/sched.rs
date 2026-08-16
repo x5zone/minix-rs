@@ -3,13 +3,29 @@
 //! Mirrors `minix3/minix/servers/rs/utility.c:364-422` (`sched_init_proc`,
 //! `update_sig_mgrs`). The external syscalls (`sched_start`'s
 //! `sys_schedctl`/`SCHEDULING_START` branch, `sys_getpriv`, `sys_privctl`)
-//! go through the `KernelApi` trait (01-rs-boot-init.md); the production
-//! wiring is deferred to 19-rs-external-interfaces.md (fail-closed until
-//! then — ARCH A-12).
+//! are performed by the **shell** (the 19 wiring layer / boot Step 2); this
+//! module only holds pure decisions and effects (T5 — the monitor /
+//! functional core pattern of 07-rs-period-heartbeat.md). `KernelApi`
+//! never appears here; the production wiring is deferred to
+//! 19-rs-external-interfaces.md (fail-closed until then — ARCH A-12).
 
-use crate::boot::KernelApi;
-use crate::privilege::{PrivCtlOp, Privilege};
+use crate::privilege::Privilege;
 use minix_types::Endpoint;
+
+/// Highest priority for user processes. C: `MAX_USER_Q` — config.h:68.
+pub const MAX_USER_Q: i32 = 0;
+/// Lowest priority for user processes. C: `MIN_USER_Q` — config.h:71
+/// (`NR_SCHED_QUEUES - 1`).
+pub const MIN_USER_Q: i32 = NR_SCHED_QUEUES - 1;
+/// Default scheduling priority for services. C: `USER_Q` — config.h:69:
+/// `((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q)` = 7.
+pub const USER_Q: i32 = (MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q;
+/// Default scheduling quantum for services. C: `USER_QUANTUM` — config.h:74.
+pub const USER_QUANTUM: i32 = 200;
+/// `NR_SCHED_QUEUES` — config.h:66. Single authority (N9 — todo §11):
+/// `slot.rs`'s duplicate definition was deleted; `check_request`
+/// (request.c:1275-1279) and `MIN_USER_Q` (config.h:71) now share this one.
+pub const NR_SCHED_QUEUES: i32 = 16;
 
 /// Scheduling parameters for one service.
 ///
@@ -54,23 +70,53 @@ impl SchedulerConfig {
             cpu,
         }
     }
+
+    /// Boot-time defaults for a boot image service.
+    ///
+    /// C: main.c:320-322 — `SRV_OR_USR(rp, SRV_SCH, USR_SCH)` with
+    /// `SRV_SCH=KERNEL`, `SRV_Q=USER_Q`, `SRV_QT=USER_QUANTUM` (priv.h:88,
+    /// 93, 98). All boot priv entries are `SYS_PROC`, so the SRV_* arm wins;
+    /// `r_cpu` is left at the zero-initialized value (main.c:234, no explicit
+    /// assignment). `parent` is RS itself (utility.c:374).
+    pub fn boot_defaults(endpoint: Endpoint) -> SchedulerConfig {
+        SchedulerConfig {
+            scheduler: Endpoint::KERNEL,
+            endpoint,
+            parent: Endpoint::RS,
+            priority: USER_Q,
+            quantum: USER_QUANTUM,
+            cpu: 0,
+        }
+    }
 }
 
-/// Starts scheduling for the given process.
+/// Decision: whether the kernel should start scheduling `cfg`.
 ///
 /// C: `sched_init_proc` — `minix3/minix/servers/rs/utility.c:364-382`.
 ///
 /// Invariants (C asserts, utility.c:369-371): user processes must have no
 /// scheduler (`r_scheduler == NONE` — PM deals with them); system processes
-/// must have one. The external call is `sched_start(scheduler, endpoint,
-/// RS_PROC_NR, priority, quantum, cpu, &r_scheduler)` (sched_start.c:37-80);
-/// `sys` is the `KernelApi` boundary and returns the (possibly updated)
-/// scheduler endpoint (`*newscheduler_e`).
-pub fn sched_init_proc(
-    cfg: &SchedulerConfig,
-    is_sys_proc: bool,
-    sys: &mut dyn KernelApi,
-) -> Result<Endpoint, i32> {
+/// must have one. The shell executes the effect (T5):
+///
+/// ```text
+/// match sched_decision(&cfg, is_sys_proc) {
+///     SchedAction::Skip  => Ok(Endpoint::NONE),
+///     SchedAction::Start(c) => sys.sched_init_proc(c), // returns newscheduler_e
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedAction<'a> {
+    /// User process with no scheduler — no kernel call
+    /// (sched_start.c:45-47); the caller's scheduler stays `NONE`.
+    Skip,
+    /// Start scheduling `cfg` via `KernelApi::sched_init_proc`. The kernel
+    /// returns the scheduler that actually took over (`*newscheduler_e`,
+    /// sched_start.c:37-80 — the scheduler may forward the request).
+    Start(&'a SchedulerConfig),
+}
+
+/// C: `sched_init_proc` — utility.c:364-382. Pure decision half (T5).
+pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'_> {
     if !is_sys_proc {
         debug_assert_eq!(
             cfg.scheduler,
@@ -84,28 +130,48 @@ pub fn sched_init_proc(
             "system process must have a scheduler (utility.c:370)"
         );
     }
+    // C: sched_start — sched_start.c:45-47: no scheduler (user process) → done
+    // without any kernel call.
+    if cfg.scheduler == Endpoint::NONE {
+        return SchedAction::Skip;
+    }
     // C: sched_start(..., &rp->r_scheduler) — utility.c:372-378. The kernel
-    // API returns the scheduler that actually took over.
-    sys.sched_init_proc(cfg.endpoint)?;
-    Ok(cfg.scheduler)
+    // API returns the scheduler that actually took over (`*newscheduler_e`).
+    SchedAction::Start(cfg)
 }
 
-/// Updates the signal managers of a service.
+/// Commit effect of [`set_sig_mgrs`]: `SYS_PRIV_UPDATE_SYS`.
+///
+/// The shell executes it as
+/// `sys.privctl(c.endpoint, PrivCtlOp::UpdateSys, Some(c.priv_))`
+/// (T5 — effects are returned, not performed, by the pure layer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigMgrCommit<'a> {
+    /// C: `rpub->endpoint` — utility.c:407.
+    pub endpoint: Endpoint,
+    /// The updated priv structure (owned by the caller).
+    pub priv_: &'a Privilege,
+}
+
+/// Pure core of `update_sig_mgrs` — applies the synced privilege structure
+/// and the new signal managers, and returns the commit.
 ///
 /// C: `update_sig_mgrs` — `minix3/minix/servers/rs/utility.c:387-422`.
-/// Order is fixed: sync the priv structure from the kernel (`sys_getpriv`),
-/// set `s_sig_mgr`/`s_bak_sig_mgr`, then commit with
-/// `SYS_PRIV_UPDATE_SYS`. `SELF` expansion (`sig_mgr == SELF ? endpoint :
-/// sig_mgr`, utility.c:397-398) happens at the call site (12/16).
-pub fn update_sig_mgrs(
+/// The shell owns C's fixed order of the two kernel calls (T5):
+///
+/// 1. `sys.getpriv(endpoint)` → `synced` (utility.c:393-396);
+/// 2. execute the returned [`SigMgrCommit`] (utility.c:407-408).
+///
+/// `SELF` expansion (`sig_mgr == SELF ? endpoint : sig_mgr`,
+/// utility.c:397-398) happens at the call site (12/16).
+pub fn set_sig_mgrs(
     priv_: &mut Privilege,
-    sys: &mut dyn KernelApi,
+    synced: Privilege,
     endpoint: Endpoint,
     sig_mgr: Endpoint,
     bak_sig_mgr: Endpoint,
-) -> Result<(), i32> {
-    // utility.c:393-396: synch privilege structure with the kernel.
-    let synced = sys.getpriv(endpoint)?;
+) -> SigMgrCommit<'_> {
+    // utility.c:393-396: the shell synced the privilege structure; apply it.
     *priv_ = synced;
 
     // utility.c:399-400: set signal managers.
@@ -113,106 +179,87 @@ pub fn update_sig_mgrs(
     priv_.bak_sig_mgr = bak_sig_mgr;
 
     // utility.c:401-406: update privilege structure.
-    sys.privctl(endpoint, PrivCtlOp::UpdateSys, Some(priv_))
+    SigMgrCommit { endpoint, priv_ }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::privilege::{PrivFlags, Privilege};
-    use alloc::vec::Vec;
-
-    /// Test kernel API recording calls (same shape as boot.rs MockKernelApi).
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum Call {
-        GetPriv(Endpoint),
-        PrivCtl(Endpoint, PrivCtlOp),
-        SchedInitProc(Endpoint),
-    }
-
-    #[derive(Default)]
-    struct MockSys {
-        calls: Vec<Call>,
-    }
-
-    impl KernelApi for MockSys {
-        fn get_machine(&mut self) -> Result<crate::boot::Machine, i32> {
-            unimplemented!()
-        }
-        fn get_hz(&mut self) -> Result<u32, i32> {
-            unimplemented!()
-        }
-        fn privctl(
-            &mut self,
-            proc: Endpoint,
-            op: PrivCtlOp,
-            _priv_: Option<&Privilege>,
-        ) -> Result<(), i32> {
-            self.calls.push(Call::PrivCtl(proc, op));
-            Ok(())
-        }
-        fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32> {
-            self.calls.push(Call::GetPriv(proc));
-            Ok(Privilege::vacant())
-        }
-        fn sched_init_proc(&mut self, proc: Endpoint) -> Result<(), i32> {
-            self.calls.push(Call::SchedInitProc(proc));
-            Ok(())
-        }
-        fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, i32> {
-            unimplemented!()
-        }
-        fn getnpid(&mut self, _proc: Endpoint) -> Result<i32, i32> {
-            unimplemented!()
-        }
-        fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), i32> {
-            unimplemented!()
-        }
-    }
 
     #[test]
-    fn test_sched_init_proc_sys_proc() {
+    fn test_sched_decision_sys_proc_starts() {
         let cfg = SchedulerConfig::from_slot(Endpoint::KERNEL, Endpoint::PM, 3, 200, 0);
-        let mut sys = MockSys::default();
-        let sched = sched_init_proc(&cfg, true, &mut sys).unwrap();
-        assert_eq!(sched, Endpoint::KERNEL);
-        assert_eq!(sys.calls, vec![Call::SchedInitProc(Endpoint::PM)]);
+        match sched_decision(&cfg, true) {
+            SchedAction::Start(c) => assert_eq!(c.endpoint, Endpoint::PM),
+            SchedAction::Skip => panic!("system process with a scheduler must start"),
+        }
     }
 
     #[test]
-    fn test_sched_init_proc_user_proc_none() {
-        // User process with NONE scheduler: valid, but the C code returns OK
-        // without calling the scheduler (sched_start.c:45-47). Here the
-        // KernelApi is still invoked because the wiring is deferred; the
-        // invariant check is the important part.
+    fn test_sched_decision_user_proc_none_skips() {
+        // User process with NONE scheduler: the C code returns OK without
+        // calling the scheduler (sched_start.c:45-47) — no kernel call.
         let cfg = SchedulerConfig::from_slot(Endpoint::NONE, Endpoint::INIT, 3, 200, 0);
-        let mut sys = MockSys::default();
-        let sched = sched_init_proc(&cfg, false, &mut sys).unwrap();
-        assert_eq!(sched, Endpoint::NONE);
+        assert_eq!(sched_decision(&cfg, false), SchedAction::Skip);
     }
 
     #[test]
-    fn test_update_sig_mgrs_order() {
+    fn test_sched_decision_passes_full_config() {
+        // S4: the KernelApi receives scheduler/priority/quantum/cpu, not just
+        // the endpoint (C: sched_start.c:37-80 forwards all four).
+        let cfg = SchedulerConfig::from_slot(Endpoint::SCHED, Endpoint::VFS, 7, 200, -1);
+        match sched_decision(&cfg, true) {
+            SchedAction::Start(c) => {
+                assert_eq!(c.scheduler, Endpoint::SCHED);
+                assert_eq!(c.parent, Endpoint::RS);
+                assert_eq!(c.priority, 7);
+                assert_eq!(c.quantum, 200);
+                assert_eq!(c.cpu, -1);
+            }
+            SchedAction::Skip => panic!("system process with a scheduler must start"),
+        }
+    }
+
+    #[test]
+    fn test_boot_defaults_match_c() {
+        // C: main.c:320-322 — SRV_SCH=KERNEL (priv.h:88), SRV_Q=USER_Q
+        // (priv.h:93, config.h:69 → 7), SRV_QT=USER_QUANTUM (priv.h:98,
+        // config.h:74 → 200); parent = RS (utility.c:374); r_cpu stays 0.
+        let cfg = SchedulerConfig::boot_defaults(Endpoint::PM);
+        assert_eq!(cfg.scheduler, Endpoint::KERNEL);
+        assert_eq!(cfg.parent, Endpoint::RS);
+        assert_eq!(cfg.priority, USER_Q);
+        assert_eq!(USER_Q, 7);
+        assert_eq!(cfg.quantum, USER_QUANTUM);
+        assert_eq!(USER_QUANTUM, 200);
+        assert_eq!(cfg.cpu, 0);
+    }
+
+    #[test]
+    fn test_set_sig_mgrs_applies_and_commits() {
+        // T5: the pure core applies the synced priv + managers and returns
+        // the commit; the shell owns `sys.getpriv` (before) and the
+        // `SYS_PRIV_UPDATE_SYS` execution (after) in C's fixed order
+        // (utility.c:393-408).
         let mut priv_ = Privilege::vacant();
-        let mut sys = MockSys::default();
-        update_sig_mgrs(
+        let synced = Privilege::boot_priv(PrivFlags::SYS_PROC, Endpoint::PM.slot());
+        let synced_id = synced.id;
+        let commit = set_sig_mgrs(
             &mut priv_,
-            &mut sys,
+            synced,
             Endpoint::PM,
             Endpoint::RS,
             Endpoint::NONE,
-        )
-        .unwrap();
-        assert_eq!(
-            sys.calls,
-            vec![
-                Call::GetPriv(Endpoint::PM),
-                Call::PrivCtl(Endpoint::PM, PrivCtlOp::UpdateSys),
-            ]
         );
-        // The synced (vacant) priv has the new signal managers set.
-        assert_eq!(priv_.sig_mgr, Endpoint::RS);
-        assert_eq!(priv_.bak_sig_mgr, Endpoint::NONE);
+        // The commit borrows the caller's updated structure — read the
+        // applied values through it (the synced priv carries the id, the
+        // managers are set on top).
+        assert_eq!(commit.priv_.id, synced_id);
+        assert_eq!(commit.priv_.sig_mgr, Endpoint::RS);
+        assert_eq!(commit.priv_.bak_sig_mgr, Endpoint::NONE);
+        // The commit names the target.
+        assert_eq!(commit.endpoint, Endpoint::PM);
     }
 
     #[test]

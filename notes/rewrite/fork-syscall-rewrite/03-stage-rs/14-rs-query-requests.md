@@ -202,7 +202,7 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `lookup_slot_by_label`、`RProcTable`、`RupdateDescriptor` 数据形状
+- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `lookup_slot_by_label`、`RProcTable`、`UpdateChain` 数据形状
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md` —— `check_call_permission`（`rp=NULL` 时仅 root）
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` —— `copy_label`
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` —— 控制面（`mark_late_reply` 原语同源）

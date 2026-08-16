@@ -171,12 +171,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn privilege_level_values() {
-        assert_eq!(AArch64PrivilegeLevel::EL1.get(), 1);
-        assert_eq!(AArch64PrivilegeLevel::EL0.get(), 0);
-    }
-
-    #[test]
     fn privilege_level_roundtrip() {
         assert_eq!(
             AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL1),
@@ -193,32 +187,6 @@ mod tests {
         assert_eq!(
             AArch64Protection::from_privilege(Privilege::User),
             AArch64PrivilegeLevel::EL0
-        );
-    }
-
-    #[test]
-    fn kernel_privilege_is_el1() {
-        assert_eq!(AArch64Protection::KERNEL_PRIVILEGE, AArch64PrivilegeLevel::EL1);
-    }
-
-    #[test]
-    fn user_privilege_is_el0() {
-        assert_eq!(AArch64Protection::USER_PRIVILEGE, AArch64PrivilegeLevel::EL0);
-    }
-
-    #[test]
-    fn el1_maps_to_kernel() {
-        assert_eq!(
-            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL1),
-            Privilege::Kernel
-        );
-    }
-
-    #[test]
-    fn el0_maps_to_user() {
-        assert_eq!(
-            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL0),
-            Privilege::User
         );
     }
 

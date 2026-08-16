@@ -34,7 +34,10 @@
 use minix_types::{AssumeSyncCell, PhysBytes};
 use minix_types::VirBytes as VB;
 use crate::alloc_page::VmPageAllocator;
-use crate::direct_map::{VM_HEAP_BASE, VM_HEAP_SIZE, VM_HEAP_LIMIT};
+#[cfg(not(test))]
+use crate::direct_map::{VM_HEAP_BASE, VM_HEAP_LIMIT};
+#[cfg(test)]
+use crate::direct_map::{VM_HEAP_BASE, VM_HEAP_LIMIT, VM_HEAP_SIZE};
 use crate::pagetable::{PageFlags, PageTableError, vm_self_mappages, vm_self_unmap};
 use crate::phys_mem::{PageAllocFlags, AlignedPhysBytes, CLICK_SIZE};
 
@@ -185,6 +188,25 @@ pub(crate) enum HeapArenaError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pagetable::vm_self_map::{init_vm_self_pt, reset_vm_self_pt_for_test, vm_self_query};
+    use crate::phys_mem::{BitmapAllocator, PhysAlloc};
+
+    /// Initialize VM's own page table (MockPaging in test builds) and run
+    /// the closure, then reset the storage so the next test can re-init.
+    /// Tests execute single-threaded (RUST_TEST_THREADS=1, .cargo/config.toml).
+    fn with_vm_self_pt<F: FnOnce()>(f: F) {
+        reset_vm_self_pt_for_test();
+        init_vm_self_pt();
+        f();
+        reset_vm_self_pt_for_test();
+    }
+
+    /// Build a page allocator over a fresh bitmap with `available_pages`
+    /// free pages. Physical addresses start at 0.
+    fn make_page_alloc(available_pages: usize) -> VmPageAllocator {
+        let bitmap = BitmapAllocator::new_for_test(available_pages);
+        VmPageAllocator::new(PhysAlloc::Bitmap(bitmap))
+    }
 
     #[test]
     fn test_heap_arena_constants() {
@@ -194,5 +216,127 @@ mod tests {
         assert_eq!(arena.limit(), VM_HEAP_BASE);
         assert_eq!(arena.mapped_bytes(), 0);
         assert_eq!(arena.available_va(), VM_HEAP_SIZE);
+    }
+
+    #[test]
+    fn test_grow_advances_limit_and_maps() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(64);
+            let arena = HeapArena::new();
+
+            let va = arena.grow(2, &mut alloc).expect("grow 2 pages");
+            assert_eq!(va, VM_HEAP_BASE);
+            assert_eq!(arena.limit(), VM_HEAP_BASE + 2 * PAGE_SIZE);
+            assert_eq!(arena.mapped_bytes(), 2 * PAGE_SIZE);
+            assert_eq!(arena.available_va(), VM_HEAP_SIZE - 2 * PAGE_SIZE);
+
+            // Both VAs are mapped with user read-write permissions.
+            for i in 0..2u64 {
+                let (phys, flags) = vm_self_query(VB(VM_HEAP_BASE + i * PAGE_SIZE))
+                    .expect("grow must map the page");
+                assert!(flags.contains(crate::pagetable::PageFlags::WRITABLE));
+                assert!(phys.0 % CLICK_SIZE as u64 == 0, "phys must be page-aligned");
+            }
+
+            // Grow again: limit advances from the previous position.
+            let va2 = arena.grow(1, &mut alloc).expect("grow 1 more page");
+            assert_eq!(va2, VM_HEAP_BASE + 2 * PAGE_SIZE);
+            assert_eq!(arena.mapped_bytes(), 3 * PAGE_SIZE);
+        });
+    }
+
+    #[test]
+    fn test_grow_zero_pages_is_error() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(8);
+            let arena = HeapArena::new();
+            assert!(matches!(
+                arena.grow(0, &mut alloc),
+                Err(HeapArenaError::ZeroPages)
+            ));
+            assert_eq!(arena.limit(), VM_HEAP_BASE);
+        });
+    }
+
+    #[test]
+    fn test_grow_exhausted_reports_remaining() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(8);
+            let arena = HeapArena::new();
+            let pages = (VM_HEAP_SIZE / PAGE_SIZE) as usize + 1;
+            match arena.grow(pages, &mut alloc) {
+                Err(HeapArenaError::Exhausted { requested, available }) => {
+                    assert_eq!(requested, pages as u64 * PAGE_SIZE);
+                    assert_eq!(available, VM_HEAP_SIZE);
+                }
+                other => panic!("expected Exhausted, got {other:?}"),
+            }
+            assert_eq!(arena.limit(), VM_HEAP_BASE);
+        });
+    }
+
+    #[test]
+    fn test_grow_rolls_back_on_map_failure() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(64);
+            let arena = HeapArena::new();
+
+            // Pre-map the second target VA so grow(2) fails on page 1
+            // (MockPaging returns AlreadyMapped). grow must roll back page 0
+            // (unmap + free) and leave the limit unchanged.
+            let va1 = VB(VM_HEAP_BASE + PAGE_SIZE);
+            let pre_phys = alloc.alloc_phys(1, PageAllocFlags::empty()).unwrap();
+            crate::pagetable::vm_self_mappages(va1, PhysBytes(pre_phys.as_u64()), PageFlags::read_write())
+                .expect("pre-map second page");
+
+            match arena.grow(2, &mut alloc) {
+                Err(HeapArenaError::MapFailed(_)) => {}
+                other => panic!("expected MapFailed, got {other:?}"),
+            }
+            assert_eq!(arena.limit(), VM_HEAP_BASE, "limit must not advance on failure");
+            assert!(
+                vm_self_query(VB(VM_HEAP_BASE)).is_none(),
+                "rolled-back page must be unmapped"
+            );
+
+            // Cleanup: unmap the pre-mapped page.
+            let _ = crate::pagetable::vm_self_unmap(va1);
+        });
+    }
+
+    #[test]
+    fn test_shrink_unmaps_and_frees_pages() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(64);
+            let arena = HeapArena::new();
+
+            arena.grow(3, &mut alloc).expect("grow 3 pages");
+            let phys_before = arena.mapped_bytes();
+
+            arena.shrink(2, &mut alloc).expect("shrink 2 pages");
+            assert_eq!(arena.limit(), VM_HEAP_BASE + PAGE_SIZE);
+            assert_eq!(arena.mapped_bytes(), phys_before - 2 * PAGE_SIZE);
+            // Top two VAs are unmapped.
+            assert!(vm_self_query(VB(VM_HEAP_BASE + PAGE_SIZE)).is_none());
+            assert!(vm_self_query(VB(VM_HEAP_BASE + 2 * PAGE_SIZE)).is_none());
+            // Bottom page still mapped.
+            assert!(vm_self_query(VB(VM_HEAP_BASE)).is_some());
+        });
+    }
+
+    #[test]
+    fn test_shrink_underflow_is_error() {
+        with_vm_self_pt(|| {
+            let mut alloc = make_page_alloc(8);
+            let arena = HeapArena::new();
+            assert!(matches!(
+                arena.shrink(1, &mut alloc),
+                Err(HeapArenaError::Underflow { requested: 1, mapped: 0 })
+            ));
+            assert!(matches!(
+                arena.shrink(0, &mut alloc),
+                Err(HeapArenaError::ZeroPages)
+            ));
+        });
     }
 }

@@ -258,29 +258,38 @@ struct rproc *rp;
 `os/servers/rs/src/access.rs` 提供三个纯函数，与 C 的三个函数一一对应：
 
 ```rust
-pub fn caller_is_root(endpoint: Endpoint, sys: &mut dyn KernelApi) -> bool;
+pub fn caller_is_root(euid: Result<u32, Errno>) -> bool;
 pub fn caller_can_control(caller: Endpoint, target: &ServiceSlot, table: &RProcTable) -> bool;
 pub fn check_call_permission(
     caller: Endpoint, call: i32, rp: Option<&ServiceSlot>,
-    table: &RProcTable, updating: bool, sys: &mut dyn KernelApi,
-) -> Result<(), i32>;
+    table: &RProcTable, updating: bool, caller_euid: Result<u32, Errno>,
+) -> Result<(), Errno>;
 ```
 
 设计差异：
 
 - **`rp: Option<&ServiceSlot>`** 编码 C 的 `rp == NULL` 双语义（无目标调用 + 目标槽检查跳过），杜绝裸指针。
-- **`Result<(), i32>`** 直接映射 C 的 `int` 返回（负 errno），`OK` → `Ok(())`，EPERM/EBUSY → `Err(EPERM/EBUSY)`（A-12 fail-closed 家族）。
+- **`Result<(), Errno>`** 直接映射 C 的 `int` 返回（负 errno），`OK` → `Ok(())`，EPERM/EBUSY → `Err(EPERM/EBUSY)`（A-12 fail-closed 家族）。
 - **`updating: bool` 显式参数**：C 依赖全局 `rupdate.flags`，Rust 把全局状态作为参数注入，函数保持纯函数可测试性。调用方（主循环分发层，06）从 update 状态计算该布尔。
+- **`caller_euid` 注入（T5，2026-08-16）**：`getnuid` 查询由 **shell**（19 接线层 / 主循环分发）执行，
+  把 `Result<u32, Errno>` 传入决策函数——`access.rs` 不再 import `KernelApi`，syscall 面只出现在接线层
+  （monitor 模式，todo §13）。shell 每处权限检查做一次 `sys.getnuid(caller)`，与 C 的
+  `caller_is_root(caller)` 恒先查询一致（manager.c:91）。
 
 ### 3.2 `caller_is_root` → `KernelApi::getnuid`（D2，A-12）
 
 ```rust
-pub fn caller_is_root(endpoint: Endpoint, sys: &mut dyn KernelApi) -> bool {
-    sys.getnuid(endpoint).map(|euid| euid == 0).unwrap_or(false)
+pub fn caller_is_root(euid: Result<u32, Errno>) -> bool {
+    euid.map(|euid| euid == 0).unwrap_or(false)
 }
 ```
 
-`KernelApi::getnuid`（boot.rs:78）是 19 要接线的 PM_GETEPINFO 封装（`sys.getnuid(endpoint) → Result<u32, i32>`）。**fail-closed 语义显式化**：C 里"负 errno 强转 uid_t 永不 0"是隐式的，Rust 用 `unwrap_or(false)` 让"查询失败 → 拒绝"一目了然。测试覆盖三态：root / 非 root / getnuid 失败（access.rs tests）。
+`KernelApi::getnuid`（boot.rs:78）是 19 要接线的 PM_GETEPINFO 封装
+（`sys.getnuid(endpoint) → Result<u32, Errno>`）。**T5 后查询与决策分离**：shell 执行
+`sys.getnuid(caller)`，把 `Result` 传给纯函数。**fail-closed 语义显式化**：C 里"负 errno 强转 uid_t
+永不 0"是隐式的，Rust 用 `unwrap_or(false)` 让"查询失败 → 拒绝"一目了然。测试覆盖三态：
+root（`Ok(0)`）/ 非 root（`Ok(1000)`）/ getnuid 失败（`Err(...)`，access.rs tests），
+`check_call_permission` 层同样覆盖 fail-closed 路径。
 
 ### 3.3 `caller_can_control` → endpoint 索引 + control 列表（D3，A-4）
 
@@ -321,9 +330,9 @@ caller.control[..caller.nr_control.max(0) as usize]
 
 ```
 access.rs
-├─ caller_is_root(endpoint, sys) -> bool        // manager.c:21-34
+├─ caller_is_root(euid: Result<u32, Errno>) -> bool  // manager.c:21-34（T5：shell 注入 getnuid 结果）
 ├─ caller_can_control(caller, target, table) -> bool  // manager.c:39-76
-├─ check_call_permission(caller, call, rp, table, updating, sys) -> Result<(), i32>
+├─ check_call_permission(caller, call, rp, table, updating, caller_euid) -> Result<(), Errno>
 │   ├─ 规则 1: root || control（manager.c:91-97）
 │   ├─ 规则 2: SYS_PROC / RS_EDIT（manager.c:103-105）
 │   ├─ 规则 3: updating → EBUSY（manager.c:108-110）
@@ -336,24 +345,26 @@ access.rs
 关键不变量：
 
 1. **入口唯一性**：`check_call_permission` 是 11 个 handler 的唯一入口检查函数——不存在绕过它的第二路径（grep request.c 仅 11 处调用，§2.4）。
-2. **纯函数**：除 `KernelApi` 抽象外无 IO；表与槽均为借用参数，无全局状态。
+2. **纯函数（T5）**：无任何 IO——`getnuid` 结果由 shell 注入；表与槽均为借用参数，无全局状态。
 3. **顺序不可重排**：规则顺序是 C 语义（先权限后并发，先全局后单服务），测试断言具体错误码（EPERM vs EBUSY）保证顺序。
-4. **fail-closed 总则**：任何查询失败（getnuid Err、调用者不在表内）→ 拒绝，绝不静默放行。
+4. **fail-closed 总则**：任何查询失败（getnuid `Err`、调用者不在表内）→ 拒绝，绝不静默放行。
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs --lib access` 中 access 相关测试（access.rs `#[cfg(test)]`，4 项，4/4 已落地；全局测试数是并行模块增长快照，非承诺）：
+`cargo test -p minix-rs --lib access` 中 access 相关测试（access.rs `#[cfg(test)]`，5 项，5/5 已落地；全局测试数是并行模块增长快照，非承诺）：
 
 | 测试 | 覆盖 |
 |------|------|
-| `test_caller_is_root` | root（euid 0）→ true；非 root → false；getnuid 失败（Err）→ false（fail-closed，access.rs:203） |
+| `test_caller_is_root` | `Ok(0)` → true；`Ok(1000)` → false；`Err(...)`（getnuid 失败）→ false（fail-closed） |
 | `test_caller_can_control_policy` | 无策略 → denied；控制列表含目标 proc_name → allowed；未知调用者（不在表内）→ denied |
-| `test_check_call_permission_root` | root + 无目标（RS_UP）→ OK；非 root + 无目标 → EPERM |
+| `test_caller_can_control_corrupt_count_fails_closed`（D3） | `nr_control` 超 `RS_NR_CONTROL` → denied（不 panic，fail-closed） |
+| `test_check_call_permission_root` | root + 无目标（RS_UP）→ OK；非 root + 无目标 → EPERM；getnuid 失败 → EPERM（fail-closed） |
 | `test_check_call_permission_target_rules` | 五条目标槽规则逐条：用户进程仅 RS_EDIT / updating EBUSY / LATEREPLY EBUSY / TERMINATED 限 DOWN·RESTART / CORE_SRV 禁 DOWN（非 DOWN 调用放行） |
 
-`MockSys` 实现 `KernelApi` 录制 getnuid 结果，`table()` 构造最小 `RProcTable`（含 VFS/PM/TTY 槽），测试不依赖真实内核。
+**T5 后测试不再需要 mock**：决策函数接收查询结果（`Ok(0)`/`Ok(1000)`/`Err(...)`），`table()` 构造最小
+`RProcTable`（含 VFS/PM/TTY 槽），纯数据驱动，不依赖 `KernelApi` 实现。
 
 ---
 

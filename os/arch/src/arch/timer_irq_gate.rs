@@ -2,8 +2,9 @@
 //!
 //! Architecture-specific enable/disable of timer IRQ delivery.
 //!
-//! See 05-clock-interrupt-init.md §4.7.1 for the design rationale
-//! and the history of the deleted `ArchBoot::register_timer_handler`.
+//! See 05-clock-interrupt-init.md §3.7 (the deleted
+//! `ArchBoot::register_timer_handler`) and §4.7.2 (why handler
+//! registration is not part of this trait).
 //!
 //! # C source path
 //!
@@ -30,7 +31,7 @@
 //!   (`bsp/ti/omap_timer.c:136`). The Rust rewrite targets ARMv8-A Generic
 //!   Timer (CNTP_CTL_EL0) instead (Minix3 C is 32-bit ARM; architectural
 //!   evolution, see 05-clock-interrupt-init.md §2.5).
-//! - riscv64: no Minix3 port; RISC-V Privileged Spec 1.12 §4.1.3
+//! - riscv64: no Minix3 port ([ARCH: K-2]); RISC-V Privileged Spec 1.12 §4.1.3
 //!   (Supervisor Interrupt Registers, `sie.STIE` bit 5).
 //!
 //! # Three-architecture coverage (FIX-22, Phase 2 → TimerIrqGate)
@@ -41,14 +42,14 @@
 //!
 //! | Method | x86-64 | ARM64 | RISC-V |
 //! |--------|--------|-------|--------|
-//! | `enable_timer_irq` | LAPIC LVT Timer Mask = 0 (+ SVR Enable, see Follow-up 1 in doc §4.7.1) | CNTP_CTL_EL0 Enable=1, IMASK=0 + `isb` | `csrs sie` STIE bit 5 |
+//! | `enable_timer_irq` | LAPIC LVT Timer Mask = 0 (+ SVR Enable; SVR/LVT responsibility split, see doc §4.7.1) | CNTP_CTL_EL0 Enable=1, IMASK=0 + `isb` | `csrs sie` STIE bit 5 |
 //! | `disable_timer_irq` | LAPIC LVT Timer Mask = 1 | CNTP_CTL_EL0 Enable=0, IMASK=1 + `isb` | `csrc sie` STIE bit 5 |
 //!
 //! Timer handler *registration* is intentionally NOT part of this trait:
 //! the old `ArchBoot::register_timer_handler` was a mock placeholder with no
 //! readers (trap entry reads nothing from it; real dispatch goes through
 //! `IrqManager::register_hook`). It is deferred until a real hardware binding
-//! exists. See 05-clock-interrupt-init.md §4.7.1 for the context.
+//! exists. See 05-clock-interrupt-init.md §4.7.2 for the context.
 
 /// Open/close the timer IRQ delivery gate: the paired hardware operations.
 ///

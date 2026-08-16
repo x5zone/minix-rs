@@ -970,15 +970,13 @@ cd os/qemu-tests && ./run_all.sh
 
 #### x86_64（`os/arch/src/x86_64/{protection,trap_entry}.rs`）
 
+**ProtectionArch (`protection.rs`) — 14 项**：
+
 | 测试 | 验证的 CPU 问题 | 对应 Ch1 §1.4 |
 |------|--------------|--------------|
 | `tss64_size_is_104_bytes` | TSS 结构体布局符合 Intel SDM | §1.4c 内核栈 |
 | `tss64_offsets_correct` | TSS.sp0/IST/iobase 偏移正确 | §1.4c 内核栈 |
-| `segment_selectors_correct` | CS/DS 选择子值（0x08/0x10/0x1B/0x23）正确 | §1.4a 特权级 |
 | `privilege_level_roundtrip` | Ring0↔Kernel, Ring3↔User 转换正确 | §1.4a 特权级 |
-| `idt_entry64_size_is_16_bytes` | IDT 门描述符布局符合 Intel SDM | §1.4b 异常入口 |
-| `idt_ptr_size_is_10_bytes` | IDT 指针（limit+base）布局正确 | §1.4b 异常入口 |
-| `star_register_value_correct` | STAR MSR 中内核/用户段选择子位置正确 | §1.4a 特权级 |
 | `gdt_descriptors_have_correct_dpl` | GDT 描述符 DPL 字段（内核段=0，用户段=3） | §1.4a 特权级 |
 | `gdt_descriptors_are_flat_mode` | 64-bit code (L=1), page granularity (G=1) | §1.4a 特权级 |
 | `set_kernel_stack_updates_sp0` | `set_kernel_stack()` 写入 TSS.sp0 语义 | §1.4c 内核栈 |
@@ -990,52 +988,49 @@ cd os/qemu-tests && ./run_all.sh
 | `init_creates_tss_descriptor_in_gdt` | `init()` 在 GDT 中创建 TSS 描述符 | §1.4c 内核栈 |
 | `gdt_null_entry_is_zero` | GDT[0] = 0（null descriptor） | §1.4a 特权级 |
 | `tss_iobase_disables_io_bitmap` | TSS.iobase = 0x8000 禁用 I/O bitmap | §1.4c 内核栈 |
+
+**TrapEntryArch (`trap_entry.rs`) — 14 项**：
+
+| 测试 | 验证的 CPU 问题 | 对应 Ch1 §1.4 |
+|------|--------------|--------------|
+| `idt_entry64_size_is_16_bytes` | IDT 门描述符布局符合 Intel SDM（16 bytes） | §1.4b 异常入口 |
+| `idt_ptr_size_is_10_bytes` | IDT 指针（limit+base）布局正确（10 bytes） | §1.4b 异常入口 |
 | `set_handler_sets_dpl_correctly` | `set_handler()` DPL=3/0 正确设置 | §1.4b 异常入口 |
 | `set_handler_writes_handler_address` | `set_handler()` 地址正确拆分到 IDT 字段 | §1.4b 异常入口 |
-| `gate_type_constants_correct` | 中断门=0xE, 陷阱门=0xF, Present=0x80 | §1.4b 异常入口 |
-| `msr_constants_correct` | STAR/LSTAR/SFMASK/EFER MSR 地址正确 | §1.4b 异常入口 |
-| `star_register_layout` | STAR SYSCALL/SYSRET CS/SS 选择子正确 | §1.4a 特权级 |
-| `sfmask_clears_if_on_syscall` | SFMASK 仅清除 IF (bit 9) | §1.4a 特权级 |
 | `idt_init_sets_exception_gates` | `init()` 设置异常/IRQ 门描述符 | §1.4b 异常入口 |
+| `idt_init_reserved_vectors_not_present` | x86-64 保留向量 9/15 不设置门描述符 | §1.4b 异常入口 |
+| `idt_init_sets_syscall_ipc_vectors` | 向量 32-35（系统调用/IPC soft-int）已设置且 DPL=3 | §1.4b 异常入口 |
+| `idt_init_sets_pic_vectors` | 向量 80-87、112-119（PIC 硬件中断）已设置且 DPL=0 | §1.4b 异常入口 |
 | `idt_init_breakpoint_has_dpl3` | INT3 (vector 3) DPL=3 | §1.4b 异常入口 |
 | `idt_init_overflow_has_dpl3` | INTO (vector 4) DPL=3 | §1.4b 异常入口 |
 | `idt_init_double_fault_uses_ist2` | Double fault (vector 8) IST=2 | §1.4b 异常入口 |
 | `idt_init_nmi_uses_ist1` | NMI (vector 2) IST=1 | §1.4b 异常入口 |
 | `idt_init_kernel_exceptions_have_dpl0` | 内核异常 DPL=0 | §1.4b 异常入口 |
-| `idt_init_reserved_vectors_not_present` | x86-64 保留向量 9/15 不设置门描述符 | §1.4b 异常入口 |
-| `idt_init_sets_syscall_ipc_vectors` | 向量 32-35（系统调用/IPC soft-int）已设置且 DPL=3 | §1.4b 异常入口 |
-| `idt_init_sets_pic_vectors` | 向量 80-87、112-119（PIC 硬件中断）已设置且 DPL=0 | §1.4b 异常入口 |
 | `configure_ipc_entry_sets_idt_gate_33` | `configure_ipc_entry()` 为 IDT 向量 33 设置 IPC 门（DPL=3, trap gate） | §1.4b 异常入口 |
 
 #### ARM64（`os/arch/src/arm64/{protection,trap_entry}.rs`）
 
+**ProtectionArch — 2 项** + **TrapEntryArch — 1 项编译期验证**：
+
 | 测试 | 验证的 CPU 问题 | 对应 Ch1 §1.4 |
 |------|--------------|--------------|
-| `privilege_level_values` | EL1=1, EL0=0 | §1.4a 特权级 |
 | `privilege_level_roundtrip` | EL1↔Kernel, EL0↔User 转换正确 | §1.4a 特权级 |
-| `kernel_privilege_is_el1` | KERNEL_PRIVILEGE = EL1 | §1.4a 特权级 |
-| `user_privilege_is_el0` | USER_PRIVILEGE = EL0 | §1.4a 特权级 |
-| `el1_maps_to_kernel` | EL1 → Privilege::Kernel | §1.4a 特权级 |
-| `el0_maps_to_user` | EL0 → Privilege::User | §1.4a 特权级 |
 | `protection_has_cpu_count` | AArch64Protection 结构体可构造 | §1.4c 内核栈 |
-| `trap_entry_init_returns_unit_struct` | AArch64TrapEntry::init() 不 panic | §1.4b 异常入口 |
-| `configure_syscall_is_noop` | ARM64 SVC 无需 MSR 配置 | §1.4b 异常入口 |
-| `set_handler_is_noop` | ARM64 固定向量表，set_handler 为 no-op | §1.4b 异常入口 |
-| `configure_ipc_entry_is_noop_on_arm64` | ARM64 IPC 与内核调用共享 SVC 向量，configure_ipc_entry 为 no-op | §1.4b 异常入口 |
+| `aarch64_trap_entry_arch_impl_satisfies_trait_bound` | `AArch64TrapEntry` 满足 `TrapEntryArch` trait bound（编译期检查，单元结构上 noop 方法无法做行为测试） | §1.4b 异常入口 |
 
 #### RISC-V（`os/arch/src/riscv64/{protection,trap_entry}.rs`）
 
+**ProtectionArch — 2 项** + **TrapEntryArch — 1 项编译期验证**：
+
 | 测试 | 验证的 CPU 问题 | 对应 Ch1 §1.4 |
 |------|--------------|--------------|
-| `privilege_level_values` | S_MODE=1, U_MODE=0 | §1.4a 特权级 |
 | `privilege_level_roundtrip` | S_MODE↔Kernel, U_MODE↔User 转换正确 | §1.4a 特权级 |
-| `kernel_privilege_is_s_mode` | KERNEL_PRIVILEGE = S_MODE | §1.4a 特权级 |
-| `user_privilege_is_u_mode` | USER_PRIVILEGE = U_MODE | §1.4a 特权级 |
 | `protection_has_cpu_count` | Riscv64Protection 结构体可构造 | §1.4c 内核栈 |
-| `trap_entry_init_returns_unit_struct` | Riscv64TrapEntry::init() 不 panic | §1.4b 异常入口 |
-| `configure_syscall_is_noop` | RISC-V ecall 无需 CSR 配置 | §1.4b 异常入口 |
-| `set_handler_is_noop` | RISC-V Direct 模式，set_handler 为 no-op | §1.4b 异常入口 |
-| `configure_ipc_entry_is_noop_on_riscv64` | RISC-V IPC 与内核调用共享 ecall 向量，configure_ipc_entry 为 no-op | §1.4b 异常入口 |
+| `riscv64_trap_entry_arch_impl_satisfies_trait_bound` | `Riscv64TrapEntry` 满足 `TrapEntryArch` trait bound（编译期检查） | §1.4b 异常入口 |
+
+> **2026-08-16 修订说明**：原表格列出大量 Pattern #38 自指测试（`segment_selectors_correct` / `star_register_value_correct` / `gate_type_constants_correct` / `msr_constants_correct` / `star_register_layout` / `sfmask_clears_if_on_syscall` / `privilege_level_values` / `kernel_privilege_is_el1` / `user_privilege_is_el0` / `el1_maps_to_kernel` / `el0_maps_to_user` / `kernel_privilege_is_s_mode` / `user_privilege_is_u_mode`）及 ARM64/RISC-V 上的烟雾测试（`trap_entry_init_returns_unit_struct` / `configure_syscall_is_noop` / `set_handler_is_noop` / `configure_ipc_entry_is_noop_on_{arm64,riscv64}`）——**这些测试已被删除**（详见 [05-clock-interrupt-init review fix-status](../review/codex/01-stage-kernel/05-clock-interrupt-init/scan.md) + 本次 review 的 [01-04-test-audit.md](../review/codex/01-stage-kernel/01-04-test-audit.md)）。
+>
+> ARM64 / RISC-V 的 `set_handler` / `configure_*` 在 unit struct 上是 noop，**没有可观察行为**——故迁移为编译期 `_check<T: TrapEntryArch>()` 验证（参照 `arch/timer_irq_gate.rs` 的 `_compiles` 模式）。
 
 ### 5.4 测试缺口
 

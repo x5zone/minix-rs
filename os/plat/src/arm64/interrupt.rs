@@ -3,6 +3,10 @@
 //! Implements `InterruptController` for ARM64 using GICv3 (Generic Interrupt
 //! Controller version 3).
 //!
+//! C: Minix3 ARM (32-bit) uses the OMAP INTC (`omap_intr.c`); the aarch64
+//! target uses GICv3 — architectural evolution `[ARCH: K-1]`
+//! (05-clock-interrupt-init.md §3.8).
+//!
 //! # Instance-based design (see 04-platform-discovery.md §3.4)
 //!
 //! Hardware base addresses (GICD, GICR) are stored in instance fields,
@@ -84,7 +88,12 @@ impl AArch64InterruptController {
                 let reg = (irq / 32) as usize;
                 self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
             }
-            self.gicd_write32(GICD_CTLR, GICD_CTLR_ENABLE_GRP1NS);
+            // Enable Group 1 (NS) interrupts by setting only EnableGrp1NS.
+            // A whole-register write would clear firmware-configured bits
+            // such as ARE_NS/ARE_S (affinity routing, bits 31:30), which is
+            // destructive on real hardware — read-modify-write instead.
+            let ctlr = self.gicd_read32(GICD_CTLR) | GICD_CTLR_ENABLE_GRP1NS;
+            self.gicd_write32(GICD_CTLR, ctlr);
         }
     }
 
@@ -211,24 +220,12 @@ mod tests {
         assert_eq!(ic.gicr_base, 0x080A_0000);
     }
 
-    #[test]
-    fn test_gic_register_offsets() {
-        assert_eq!(GICD_CTLR, 0x0000);
-        assert_eq!(GICD_IGROUPR, 0x0080);
-        assert_eq!(GICD_ISENABLER, 0x0100);
-        assert_eq!(GICD_ICENABLER, 0x0180);
-        // GICv3 Redistributor SGI+PPI enable registers
-        assert_eq!(GICR_ISENABLER0, 0x0100);
-        assert_eq!(GICR_ICENABLER0, 0x0180);
-    }
-
-    #[test]
-    fn test_ppi_bit_calculation() {
-        // PPI 16 (timer): bit 16
-        assert_eq!(1u32 << (16 % 32), 0x1_0000);
-        // PPI 25 (virt timer on some platforms): bit 25
-        assert_eq!(1u32 << (25 % 32), 0x0200_0000);
-        // SGI 0: bit 0
-        assert_eq!(1u32 << (0 % 32), 0x1);
-    }
+    // 注：本文件原 3 个测试中 2 个是常量自指/平凡表达式，删除 (Pattern #38)：
+    // - `test_gic_register_offsets`：6 个 GICD/GICR 偏移常量与字面量 self-reference。
+    //   真值由 arm ARM / GICv3 spec 保证，编译期 constant eval 已确认正确。
+    //   运行时正确性（GIC 寄存器读写）由 QEMU 集成测试验证。
+    // - `test_ppi_bit_calculation`：测的是 `1u32 << (N % 32)` 这条 Rust 表达式
+    //   语义，不是项目代码。无价值。
+    //
+    // 保留 `test_new_from_gicv3_descriptor`（验证 new() 正确填充字段）。
 }

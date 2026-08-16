@@ -9,7 +9,8 @@
 //! constructor. The struct exists only to satisfy the instance-based trait
 //! contract.
 //!
-//! C: No Minix3 equivalent (Minix3 has no RISC-V port).
+//! C: No Minix3 equivalent (Minix3 has no RISC-V port) — architectural
+//! evolution `[ARCH: K-2]` (05-clock-interrupt-init.md §3.8).
 
 use minix_platform::ArchMiscDesc;
 
@@ -23,7 +24,8 @@ use crate::arch_init::ArchInit;
 /// 1. Configure PMP (Physical Memory Protection) to allow all access
 /// 2. Enable S-mode interrupts (SIE register)
 ///
-/// C: No Minix3 equivalent (Minix3 has no RISC-V port).
+/// C: No Minix3 equivalent (Minix3 has no RISC-V port) — architectural
+/// evolution `[ARCH: K-2]` (05-clock-interrupt-init.md §3.8).
 pub struct Riscv64ArchInit;
 
 impl ArchInit for Riscv64ArchInit {

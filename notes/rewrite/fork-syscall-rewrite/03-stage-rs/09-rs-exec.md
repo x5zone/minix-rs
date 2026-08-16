@@ -91,6 +91,12 @@ void free_exec(rp) {                      /* 1424 */
 
 关键点：`free_exec` 在**置空之前**扫描；共享判断只看 `RS_IN_USE` 槽（排除了刚 free 的槽）。Rust 的 `has_shared_exec` 用 `Arc::ptr_eq` 复刻同样的扫描（ARCH A-5）。
 
+> **R18（2026-08-16）**：`free_exec` 的第三个生产调用点——`free_slot` 的 `SF_USE_COPY` 分支
+> （manager.c:2100-2102）——已落进表原语（02 §3.6）：槽释放时先取 `sys_flags` 再
+> `crate::exec::free_exec(table, id)`，丢弃该槽的 exec `Arc`（非最后一个持有者则保留给共享者）。
+> 此前生产路径对 `free_exec` 零调用，被 free 的行会滞留映像直到槽被重用；现在与 C"free 即释放"
+> 语义对齐。命令路径（manager.c:642-644）仍是 09 execve 接线的调用点。
+
 ### 2.3 `edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支（manager.c:1629-1661）
 
 ```c

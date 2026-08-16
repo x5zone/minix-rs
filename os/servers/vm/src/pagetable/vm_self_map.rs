@@ -91,6 +91,17 @@ pub(crate) fn init_vm_self_pt() {
     *opt = Some(pt);
 }
 
+/// Test-only: reset the module-level storage so `init_vm_self_pt()` can be
+/// re-run by the next test. Tests execute single-threaded (RUST_TEST_THREADS=1,
+/// .cargo/config.toml), so this cannot race with a live page table.
+#[cfg(test)]
+pub(crate) fn reset_vm_self_pt_for_test() {
+    // SAFETY: Single-threaded test execution; no concurrent access.
+    unsafe {
+        *VM_SELF_PT_STORAGE.get() = None;
+    }
+}
+
 /// Map a single page into VM's own page table.
 ///
 /// Used by HeapArena to map physical pages into the contiguous VA region.
@@ -150,10 +161,21 @@ mod tests {
 
     #[test]
     fn test_vm_self_pt_not_initialized_by_default() {
-        // In test context, VM_SELF_PT_STORAGE starts as None.
-        // We cannot call get_pt_mut() without init — that would panic.
-        // Instead verify the storage is accessible.
+        // Reset first so this test is order-independent (HeapArena tests
+        // may have initialized the storage earlier in the same process).
+        reset_vm_self_pt_for_test();
         let opt = unsafe { &*VM_SELF_PT_STORAGE.get() };
         assert!(opt.is_none());
+    }
+
+    #[test]
+    fn test_init_vm_self_pt_then_reset() {
+        reset_vm_self_pt_for_test();
+        init_vm_self_pt();
+        assert!(unsafe { &*VM_SELF_PT_STORAGE.get() }.is_some());
+        // init is a one-shot: second call must panic.
+        assert!(std::panic::catch_unwind(init_vm_self_pt).is_err());
+        reset_vm_self_pt_for_test();
+        assert!(unsafe { &*VM_SELF_PT_STORAGE.get() }.is_none());
     }
 }

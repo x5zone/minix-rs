@@ -15,7 +15,7 @@
 use crate::privilege::PrivFlags;
 use crate::process_table::RProcTable;
 use crate::service_slot::{RFlags, ServiceSlot, SlotId, SysFlags};
-use minix_types::{Clock, EPERM, ERESTART, Endpoint, Pid};
+use minix_types::{Clock, ERESTART, Endpoint, Errno, Pid};
 
 /// Checks `create_service`'s dependency preconditions.
 ///
@@ -26,7 +26,7 @@ use minix_types::{Clock, EPERM, ERESTART, Endpoint, Pid};
 /// `has_replica` (manager.c:543-546): an old version (`r_old_rp`) counts; a
 /// previous replica (`r_prev_rp`) counts only when it is not `RS_TERMINATED`
 /// — a dying replica is not a usable one.
-pub fn check_create_preconditions(table: &RProcTable, rp: SlotId) -> Result<(), i32> {
+pub fn check_create_preconditions(table: &RProcTable, rp: SlotId) -> Result<(), Errno> {
     let slot = table.get(rp);
     let use_copy = slot.pub_.sys_flags.contains(SysFlags::USE_COPY);
     let has_replica = slot.old_rp.is_some()
@@ -34,13 +34,13 @@ pub fn check_create_preconditions(table: &RProcTable, rp: SlotId) -> Result<(), 
             .prev_rp
             .is_some_and(|p| !table.get(p).flags.contains(RFlags::TERMINATED));
     if !has_replica && slot.pub_.sys_flags.contains(SysFlags::NEED_REPL) {
-        return Err(EPERM); // manager.c:547-552
+        return Err(Errno::EPERM); // manager.c:547-552
     }
     if !use_copy && slot.pub_.sys_flags.contains(SysFlags::NEED_COPY) {
-        return Err(EPERM); // manager.c:555-560
+        return Err(Errno::EPERM); // manager.c:555-560
     }
     if !use_copy && slot.cmd[0] == 0 {
-        return Err(EPERM); // manager.c:563-568: strcmp(r_cmd, "") == 0
+        return Err(Errno::EPERM); // manager.c:563-568: strcmp(r_cmd, "") == 0
     }
     Ok(())
 }
@@ -79,23 +79,30 @@ pub fn mark_child_created(
 /// (manager.c:1833) and `swap_slot` (manager.c:1905-1906).
 pub fn rebuild_args(slot: &mut ServiceSlot) {
     let tokens = crate::slot::build_cmd_dep(&slot.cmd);
-    slot.argc = tokens.len() as i32;
+    let mut argc = 0i32;
     let mut off = 0usize;
     for token in &tokens {
-        // Label::from_bytes truncates at RS_MAX_LABEL_LEN and NUL-pads; the
-        // logical length is the first NUL (service_slot.rs:202-208).
-        let raw = token.as_bytes();
-        let len = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-        let bytes = &raw[..len];
-        let remaining = slot.args.len() - off;
-        let n = bytes.len().min(remaining.saturating_sub(1));
-        slot.args[off..off + n].copy_from_slice(&bytes[..n]);
-        off += n;
-        if off < slot.args.len() {
-            slot.args[off] = 0; // NUL terminator
-            off += 1;
+        // Each argv entry needs the token bytes + a NUL terminator. A token
+        // that does not fit is dropped together with the rest of the tail
+        // (R15): C's `strcpy(r_args, r_cmd)` into the fixed buffer would
+        // overflow (UB), and `argc` must only count complete entries so the
+        // flat buffer and the count stay consistent for the 09/10 rebuild.
+        let need = token.len() + 1;
+        if off + need > slot.args.len() {
+            break;
         }
+        slot.args[off..off + token.len()].copy_from_slice(token);
+        off += token.len();
+        slot.args[off] = 0; // NUL terminator
+        off += 1;
+        argc += 1;
     }
+    // Keep the tail NUL-terminated so `args` stays a well-formed string
+    // sequence even when the command did not fit.
+    if off < slot.args.len() {
+        slot.args[off] = 0;
+    }
+    slot.argc = argc;
 }
 
 /// Clones a service slot for a new instance.
@@ -108,7 +115,7 @@ pub fn rebuild_args(slot: &mut ServiceSlot) {
 /// `share_exec` re-assigns it for `SF_USE_COPY` (manager.c:1834-1835); in
 /// Rust the `ServiceSlot::clone` already shares the `Arc`, which is the same
 /// observable behaviour (ARCH A-5, 09-rs-exec.md §3.1).
-pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, i32> {
+pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, Errno> {
     let clone = table.alloc_slot()?; // manager.c:1809
     let mut c = table.get(src).clone(); // manager.c:1824-1825
     c.init_err = ERESTART; // manager.c:1828 (sys/errno.h:196, positive per minix-types)
@@ -254,7 +261,7 @@ mod tests {
         let rp = t.alloc_slot().unwrap();
         t.get_mut(rp).flags |= RFlags::IN_USE;
         t.get_mut(rp).pub_.sys_flags |= SysFlags::NEED_REPL;
-        assert_eq!(check_create_preconditions(&t, rp), Err(EPERM));
+        assert_eq!(check_create_preconditions(&t, rp), Err(Errno::EPERM));
     }
 
     #[test]
@@ -267,7 +274,7 @@ mod tests {
         let prev = t.alloc_slot().unwrap();
         t.get_mut(prev).flags |= RFlags::IN_USE | RFlags::TERMINATED;
         t.get_mut(rp).prev_rp = Some(prev);
-        assert_eq!(check_create_preconditions(&t, rp), Err(EPERM));
+        assert_eq!(check_create_preconditions(&t, rp), Err(Errno::EPERM));
     }
 
     #[test]
@@ -291,7 +298,7 @@ mod tests {
         let rp = t.alloc_slot().unwrap();
         t.get_mut(rp).flags |= RFlags::IN_USE;
         t.get_mut(rp).pub_.sys_flags |= SysFlags::NEED_COPY;
-        assert_eq!(check_create_preconditions(&t, rp), Err(EPERM));
+        assert_eq!(check_create_preconditions(&t, rp), Err(Errno::EPERM));
     }
 
     #[test]
@@ -300,7 +307,7 @@ mod tests {
         let mut t = RProcTable::new();
         let rp = t.alloc_slot().unwrap();
         t.get_mut(rp).flags |= RFlags::IN_USE;
-        assert_eq!(check_create_preconditions(&t, rp), Err(EPERM));
+        assert_eq!(check_create_preconditions(&t, rp), Err(Errno::EPERM));
     }
 
     #[test]
@@ -369,6 +376,37 @@ mod tests {
         assert_eq!(c.priv_.init_flags, 0);
         assert_eq!(c.argc, 1); // rebuild_args from "/bin/x"
         assert_eq!(t.get(src).cmd[..6], *b"/bin/x"); // source untouched
+    }
+
+    #[test]
+    fn test_rebuild_args_full_buffer_argc() {
+        // R15: a 512-byte cmd with no NUL overflows the args buffer in C
+        // (strcpy UB, manager.c:301); Rust truncates and must count only
+        // complete argv entries so `argc` matches the flat buffer content.
+        let mut s = ServiceSlot::vacant();
+        s.cmd[..6].copy_from_slice(b"/bin/a");
+        s.cmd[6] = b' ';
+        // 505 more bytes of one token: "/bin/a" (7 bytes incl. NUL) fits,
+        // the 505-byte token needs 506 more bytes — does not.
+        for b in s.cmd.iter_mut().skip(7) {
+            *b = b'b';
+        }
+
+        rebuild_args(&mut s);
+
+        assert_eq!(s.argc, 1); // only the complete "/bin/a" entry counts
+        assert_eq!(&s.args[..7], b"/bin/a\0");
+        assert_eq!(s.args[7], 0); // tail stays NUL-terminated
+
+        // A command that exactly fills the buffer keeps all tokens.
+        let mut s2 = ServiceSlot::vacant();
+        s2.cmd[..6].copy_from_slice(b"/bin/a");
+        s2.cmd[6] = b' ';
+        s2.cmd[7] = b'x'; // 1-byte token: "/bin/a\0x\0" == 9 bytes
+        rebuild_args(&mut s2);
+        assert_eq!(s2.argc, 2);
+        assert_eq!(&s2.args[..9], b"/bin/a\0x\0");
+        assert_eq!(s2.args[9], 0); // tail stays NUL-terminated
     }
 
     #[test]
@@ -454,5 +492,33 @@ mod tests {
         // the swap holds the old b content.
         assert_eq!(t.get(c).prev_rp, Some(a));
         assert_eq!(t.get(b).next_rp, Some(c));
+    }
+
+    #[test]
+    fn test_swap_slot_with_vacant_row_no_panic() {
+        // R12: a clone_slot product row has Endpoint::NONE (clone_slot sets
+        // it at manager.c:1831). swap_slot step 5 must not index past
+        // `by_endpoint` with NONE — it yields None / is ignored (fail-closed,
+        // matching C's `rs_isokendpt` protection at the main loop).
+        let mut t = RProcTable::new();
+        let a = t.alloc_slot().unwrap();
+        t.get_mut(a).flags |= RFlags::IN_USE;
+        t.get_mut(a).pub_.endpoint = Endpoint::NONE; // clone product
+        t.get_mut(a).pub_.label = Label::from_bytes(b"replica");
+        let b = t.alloc_slot().unwrap();
+        t.get_mut(b).flags |= RFlags::IN_USE;
+        t.get_mut(b).pub_.endpoint = Endpoint::VFS;
+        t.get_mut(b).pub_.label = Label::from_bytes(b"vfs");
+        t.set_endpoint_index(Endpoint::VFS, Some(b));
+
+        let (a2, b2) = swap_slot(&mut t, a, b);
+        // Contents swapped: the NONE-endpoint row now holds the VFS content.
+        assert_eq!(a2, b);
+        assert_eq!(b2, a);
+        assert_eq!(t.get(a).pub_.label, Label::from_bytes(b"vfs"));
+        assert_eq!(t.get(b).pub_.label, Label::from_bytes(b"replica"));
+        assert_eq!(t.endpoint_slot(Endpoint::VFS), Some(a));
+        // The NONE endpoint stays unindexed.
+        assert_eq!(t.endpoint_slot(Endpoint::NONE), None);
     }
 }

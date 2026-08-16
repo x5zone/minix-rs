@@ -183,9 +183,9 @@ VM_FORK 到达（主循环 dispatch）
 | 26 | 13/15 | `do_info`/`do_get_phys`/`do_get_refcount`/`do_getrusage`/`get_usage_info(_kernel)`/`get_region_info`/`map_get_phys`/`map_get_ref` | 区域生命周期（13） |
 | 99 | 无 | endpoint/generation、`VM_*`/`VMP_*` 常量、全局变量表 | 一切机制 |
 
-### 3.5 测试基线（截至 2026-08-15）
+### 3.5 测试基线（截至 2026-08-16）
 
-- `cargo test -p minix-vm --lib`：**347 passed / 1 failed**（基线更新：原 322/15 → 05 修复部分 + 06 修 `alloc_page` 2 个（PE-1/PE-2）+ 06 新增 2 个测试（`test_vm_pt_alloc`/`test_missing_spares_pressure_counter`）+ 删除 `critical_pool` 测试 3 个；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
+- `cargo test -p minix-vm --lib`：**360 passed / 1 failed**（基线更新：2026-08-15 为 347/1，此后 07/08/09/13/14 各轮新增测试，2026-08-16 15 轮实测复核 360/1；定向 `ipc::dispatcher` 26 / `ipc::transport` 6 / `vm_server` 21；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -219,6 +219,7 @@ VM_FORK 到达（主循环 dispatch）
 | A-9 | VM 自映射页表 | 静态 `static_sparepagedirs` | `vm_self_map.rs` | 07 | 已实现 |
 | A-10 | 多架构 | i386 + earm 双 arch（`arch/i386/pagetable.h`、`arch/earm/pagetable.h`） | x86-64 + arm64 + riscv64 三架构 trait | 07 | 已实现（trait 抽象） |
 | A-11 | **ACL fail-closed** | `acl_check` 对 `NO_ACL` 进程放行全部调用，仅打印告警（`acl.c:44-53`，注释 "for now" 承认是临时放松） | `AclState::Uninitialized` 仅放行 `AclMask::DEFAULT` 集（`acl.rs:102-116`）——未接管进程 fail-closed，特权调用必须经 RS 显式授权 | 04 | 已实现（语义偏移，需 doc §2/§3 诚实标注） |
+| A-12 | **memtype resize 回调并入 extend** | `ev_resize` 回调（memtype.h:21）+ 无回调时 `map_page_region` 追加（region.c:1037-1045）双路径 | `VirRegion::extend` memtype 无关通用扩展（`vir_region.rs:127-140`，push EMPTY 槽 + 改 length），memtype 回调族 resize 语义并入 | 19 | 已实现（结构简化，外部行为等价；doc §3.2/§3.6 + design 19-design.v1 D2 + 代码注释三处一致） |
 
 ---
 
@@ -341,9 +342,21 @@ VM_FORK 到达（主循环 dispatch）
 | 04 | reviewed | 2026-08-15 | `.review/codex/vm/04-acl/scan.md` |
 | 05 | reviewed | 2026-08-15 | `.review/codex/vm/05-physical-memory/scan.md` |
 | 06 | reviewed | 2026-08-15 | 写作 + 回归；`.review/codex/vm/06-page-allocator/scan.md` |
-| 07~14 | pending | — | draft 素材沿用改写 |
-| 15 | pending | — | draft/24 + draft/26 合并 |
-| 16~26 | pending | — | draft 素材沿用改写 |
+| 07 | reviewed | 2026-08-15 | 写作 + 回归；`.review/codex/vm/07-pagetable-struct/scan.md` |
+| 08 | reviewed | 2026-08-15 | 写作 + 回归；`.review/codex/vm/08-pagetable-ops/scan.md` |
+| 09 | reviewed | 2026-08-15 | 写作 + 回归；`.review/codex/vm/09-slab-allocator/scan.md` |
+| 10 | reviewed | 2026-08-15 | draft/09 沿用；`.review/codex/vm/10-vm-relocation/scan.md` |
+| 11 | reviewed | 2026-08-16 | draft/10 沿用；`.review/codex/vm/11-phys-pagestate/scan.md` |
+| 12 | reviewed | 2026-08-16 | draft/12 沿用；`.review/codex/vm/12-memtype/scan.md` |
+| 13 | reviewed | 2026-08-16 | 写作 + 回归；`.review/codex/vm/13-region-mapping/scan.md` |
+| 14 | reviewed | 2026-08-16 | 写作 + 回归；`.review/codex/vm/14-region-lookup/scan.md` |
+| 15 | reviewed | 2026-08-16 | 写作 + 回归（RS_INIT P0 修复闭环）；`.review/codex/vm/15-ipc-dispatch/scan.md` |
+| 16 | reviewed | 2026-08-16 | 写作 + 回归（wire-format P0 修复闭环）；`.review/codex/vm/16-pagefault/scan.md` |
+| 17 | reviewed | 2026-08-16 | 写作 + 回归（IN_CACHE 引用错位 P2 修复）；`.review/codex/vm/17-cow-mechanism/scan.md` |
+| 18 | reviewed | 2026-08-16 | 写作 + 回归（03-P1-1 P1 闭环 + 20 处行号修复）；`.review/codex/vm/18-vm-fork/scan.md` |
+| 19 | reviewed | 2026-08-16 | 写作 + 回归（19-P1-1 wire-format P1 闭环 + 19-P1-2 ARCH A-12 三处一致 + 8 项差异清单 + 24 项 AI 判断）；`.review/codex/vm/19-vm-brk/scan.md` |
+| 20 | reviewed | 2026-08-16 | 写作 + 回归（20-P1-1 wire-format 四消息 P1 闭环 + 7 条 errno 语义修复 + 14 项差异清单 + 6 项 backlog）；`.review/codex/vm/20-vm-mmap/scan.md` |
+| 21~26 | pending | — | draft 素材沿用改写 |
 | 99 | pending | — | 常量表同步 |
 | checklist.md | pending | — | 编号/路径更新（§6 第 6 步） |
 

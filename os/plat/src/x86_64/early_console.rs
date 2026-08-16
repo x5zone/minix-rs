@@ -53,7 +53,13 @@ unsafe fn ser_init() { unsafe {
 }}
 
 /// Write a single byte to COM1, waiting for the transmit buffer to be ready.
-pub fn write_byte(byte: u8) {
+///
+/// Private to this module: external callers go through the [`EarlyConsole`] trait
+/// method `write_byte` (or via `write_str` / `write_hex`). Naming this helper
+/// `com1_write_byte` (rather than `write_byte`) avoids the name-collision that
+/// would otherwise force Rust's name resolver to disambiguate between the trait
+/// method and a same-named free function inside the `impl` block.
+fn com1_write_byte(byte: u8) {
     unsafe {
         while (inb(COM1_BASE + 5) & 0x20) == 0 {}
         outb(COM1_BASE, byte);
@@ -64,9 +70,9 @@ pub fn write_byte(byte: u8) {
 pub fn write_str(s: &str) {
     for b in s.bytes() {
         if b == b'\n' {
-            write_byte(b'\r');
+            com1_write_byte(b'\r');
         }
-        write_byte(b);
+        com1_write_byte(b);
     }
 }
 
@@ -75,7 +81,7 @@ pub fn write_hex(val: u64) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     write_str("0x");
     for i in (0..16).rev() {
-        write_byte(HEX[((val >> (i * 4)) & 0xf) as usize]);
+        com1_write_byte(HEX[((val >> (i * 4)) & 0xf) as usize]);
     }
 }
 
@@ -99,51 +105,20 @@ impl EarlyConsole for X86_64EarlyConsole {
     }
 
     fn write_byte(byte: u8) {
-        write_byte(byte);
+        // Forward to the module-private COM1 helper. The previous implementation
+        // called a same-named free function `write_byte`, which compiled only
+        // because Rust's name resolver disambiguated in favor of the free
+        // function — fragile and surprising. Naming the helper `com1_write_byte`
+        // makes the call site explicit and removes the dependency on resolver
+        // tie-breaking.
+        com1_write_byte(byte);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_com1_base() {
-        assert_eq!(COM1_BASE, 0x3F8);
-    }
-
-    #[test]
-    fn test_com1_divisor_115200() {
-        // 1.8432 MHz / 16 / 1 = 115200 baud
-        assert_eq!(COM1_DIVISOR_115200, 0x01);
-    }
-
-    #[test]
-    fn test_com1_lcr_dlab_bit() {
-        // LCR bit 7 is DLAB.
-        assert_eq!(COM1_LCR_DLAB, 0x80);
-    }
-
-    #[test]
-    fn test_com1_lcr_8n1() {
-        // 8N1 with DLAB off = 0x03.
-        assert_eq!(COM1_LCR_8N1, 0x03);
-    }
-
-    #[test]
-    fn test_com1_fcr_enable() {
-        // FIFO enable + clear RX/TX + 14-byte trigger.
-        assert_eq!(COM1_FCR_ENABLE, 0xC7);
-    }
-
-    #[test]
-    fn test_com1_mcr_signals() {
-        // DTR + RTS + OUT2 (OUT2 enables IRQ routing).
-        assert_eq!(COM1_MCR_DTR_RTS_OUT2, 0x0B);
-    }
-
-    // Note: X86_64EarlyConsole::init() performs real COM1 I/O port writes,
-    // which segfault in a host `cargo test` process without I/O privileges.
-    // The initialization sequence is validated by the constant tests above;
-    // runtime correctness is covered by QEMU/target integration tests.
-}
+// Note: X86_64EarlyConsole::init() performs real COM1 I/O port writes,
+// which segfault in a host `cargo test` process without I/O privileges.
+// Constant values (COM1_BASE / COM1_DIVISOR_115200 / COM1_LCR_DLAB /
+// COM1_LCR_8N1 / COM1_FCR_ENABLE / COM1_MCR_DTR_RTS_OUT2) are validated
+// by their literal declarations above — tautological asserts were
+// intentionally removed (Pattern #38: trivial tests). Runtime correctness
+// is covered by QEMU/target integration tests.

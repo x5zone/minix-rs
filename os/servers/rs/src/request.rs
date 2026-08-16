@@ -15,7 +15,7 @@
 use crate::process_table::RProcTable;
 use crate::service_slot::{RFlags, ServiceSlot, SlotId};
 use crate::slot::RssFlags;
-use minix_types::{Clock, EBUSY, Endpoint};
+use minix_types::{Clock, Endpoint, Errno};
 
 /// C: `SEF_INIT_CRASH` — sef.h:98.
 pub const SEF_INIT_CRASH: u32 = 0x1;
@@ -57,18 +57,19 @@ pub fn check_duplicates(
     label: &crate::service_slot::Label,
     dev_nr: u32,
     domains: &[i32],
-) -> Result<(), i32> {
-    if table
-        .lookup_by_label(label.as_str().unwrap_or(""))
-        .is_some()
-    {
-        return Err(EBUSY); // request.c:71-75
+) -> Result<(), Errno> {
+    // N6: lookup by the typed byte-string Label. The old
+    // `label.as_str().unwrap_or("")` treated a non-UTF-8 label as the empty
+    // string — a duplicate non-UTF-8 label would compare against "" and slip
+    // through (fail-open).
+    if table.lookup_by_label(label).is_some() {
+        return Err(Errno::EBUSY); // request.c:71-75
     }
     if dev_nr > 0 && table.lookup_by_dev_nr(dev_nr).is_some() {
-        return Err(EBUSY); // request.c:76-80
+        return Err(Errno::EBUSY); // request.c:76-80
     }
     if domains.iter().any(|d| table.lookup_by_domain(*d).is_some()) {
-        return Err(EBUSY); // request.c:81-87
+        return Err(Errno::EBUSY); // request.c:81-87
     }
     Ok(())
 }
@@ -161,7 +162,7 @@ mod tests {
         t.get_mut(rp).pub_.label = Label::from_bytes(b"vm");
         assert_eq!(
             check_duplicates(&t, &Label::from_bytes(b"vm"), 0, &[]),
-            Err(EBUSY)
+            Err(Errno::EBUSY)
         );
         assert_eq!(
             check_duplicates(&t, &Label::from_bytes(b"pm"), 0, &[]),
@@ -182,11 +183,11 @@ mod tests {
         t.get_mut(rp).pub_.domain[0] = 42;
         assert_eq!(
             check_duplicates(&t, &Label::from_bytes(b"x"), 3, &[]),
-            Err(EBUSY)
+            Err(Errno::EBUSY)
         );
         assert_eq!(
             check_duplicates(&t, &Label::from_bytes(b"x"), 0, &[42]),
-            Err(EBUSY)
+            Err(Errno::EBUSY)
         );
     }
 

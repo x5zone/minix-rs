@@ -161,7 +161,12 @@ int rs_isokendpt(endpoint_t endpoint, int *proc)
 }
 ```
 
-端点槽位校验：`[-NR_TASKS, NR_PROCS)` 范围。02 §3.5 已建模为 `RProcTable::isokendpt`（process_table.rs，纯函数 `Result<i32, i32>`）。注意它只验**槽位范围**，不验槽位是否在 RS 表内——表内性由各 handler 用 `lookup_*` 系列确认。
+端点槽位校验：`[-NR_TASKS, NR_PROCS)` 范围。02 §3.5 已建模为 `RProcTable::isokendpt`（process_table.rs，纯函数 `Result<i32, Errno>`）。注意它只验**槽位范围**，不验槽位是否在 RS 表内——表内性由各 handler 用 `lookup_*` 系列确认。
+
+> **R12（2026-08-16）**：06 接线时 `classify` 前必须跑 `isokendpt`（main.c:63-66）——快速索引
+> `endpoint_slot`/`set_endpoint_index` 已对越界端点（`NONE`/`ANY`/`SELF`）fail-closed（02 §3.1），
+> 但"拒绝非法源"仍是主循环的前置职责（C 里是 panic 级别的内核状态损坏信号；Rust 骨架在
+> `classify` 后由 handler 返回 `EINVAL`，接线时按 06 语义选择 panic 或 `EINVAL`）。
 
 ### 2.4 `rs_asynsend`（utility.c:223-233）
 

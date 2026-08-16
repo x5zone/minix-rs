@@ -461,6 +461,15 @@ impl<'a> ActiveProc<'a> {
         unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 
+    /// Reset usage statistics (C `reset_vm_rusage`, exit.c:25-31).
+    ///
+    /// Called on the VMPPARAM_CLEAR path — C `free_proc()` resets
+    /// `vm_total`/`vm_total_max`/fault counters before `pt_new`.
+    #[inline]
+    pub(crate) fn reset_rusage(&mut self) {
+        self.inner.reset_rusage();
+    }
+
     /// Returns mutable reference to the memory regions.
     ///
     /// # Panics
@@ -731,6 +740,21 @@ impl<'a> ExitingProc<'a> {
         // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
         // Single-threaded VM ensures no concurrent mutation.
         unsafe { self.inner.vm_regions.assume_init_ref() }
+    }
+
+    /// Returns mutable reference to the memory regions of an exiting process.
+    ///
+    /// Used by `exit::free_process_phys` to unreference pages and run
+    /// per-region `ev_delete` before `reap()` clears the map.
+    ///
+    /// # Panics
+    /// Panics in debug mode if vm_regions has not been initialized.
+    #[inline]
+    pub(crate) fn regions_mut(&mut self) -> &mut RegionMap {
+        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
+        // &mut self ensures exclusive access.
+        unsafe { self.inner.vm_regions.assume_init_mut() }
     }
 
     /// Reaps the exiting process, releasing resources and returning the slot to empty.

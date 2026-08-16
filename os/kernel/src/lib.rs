@@ -716,7 +716,7 @@ fn init_clock_and_interrupts() {
     // arch from the timer descriptor, then call `init_timer` on the
     // instance. This replaces the old static `CurrentClockArch::init_timer`.
     let mut clock_arch = CurrentClockArch::new(pd.timer());
-    clock_arch.init_timer(clock.hz());
+    clock_arch.init_timer(clock.hz(), crate::clock::current_cpuid().raw());
 
     // Step 3: Initialize interrupt controller.
     // C: intr_init(0) — i8259.c:28 / omap_intr.c:24
@@ -1891,13 +1891,13 @@ fn bsp_finish_booting(
     {
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.init_timer(crate::clock::DEFAULT_HZ);
+        clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
     }
     // Timer IRQ handler registration is deferred to the real
     // interrupt-dispatch path (`IrqManager::register_hook`, Step 1.5.7).
     // The deleted `ArchBoot::register_timer_handler` was a mock placeholder
     // with no readers — trap entry never reads it, and real dispatch goes
-    // through `IrqManager`. See 05-clock-interrupt-init.md §4.7.1.
+    // through `IrqManager`. See 05-clock-interrupt-init.md §4.7.2.
     //
     // Behavior change (05-clock-interrupt-init.md §3.7): with the deleted
     // `boot_init_timer` no longer calls `enable_timer_irq`. Per-arch effect:

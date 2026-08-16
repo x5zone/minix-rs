@@ -117,6 +117,13 @@ impl VirRegion {
         VirBytes(self.vaddr.0 + self.length.0)
     }
 
+    /// Extend a region by `extra` bytes (page-aligned): push EMPTY page slots
+    /// and grow `length`.
+    ///
+    /// Memtype-agnostic growth. C dispatches to the memtype `ev_resize`
+    /// callback when present, else appends via `map_page_region`
+    /// (region.c:1037-1045); minix-rs folds the resize semantics into this
+    /// single operation ([ARCH: A-12], 19-vm-brk.md §3.2).
     pub(crate) fn extend(&mut self, extra: VirBytes) -> Result<(), VmError> {
         if extra.0 == 0 || extra.0 % PAGE_SIZE != 0 {
             return Err(VmError::InvalidParam);
@@ -312,8 +319,17 @@ impl VirRegion {
             }
         }
 
+        // fdref balance: one reference per live region. The original region
+        // held one reference; split consumes it without an explicit deref,
+        // so creating two regions needs exactly ONE additional reference
+        // (1 region → 2 regions, net +1). C's split_region nets the same:
+        // mappedfile_split refs both r1 and r2 (+2) while map_free(original)
+        // derefs once (−1).
+        //
+        // Previously this added two references, which left one orphaned
+        // reference per split — a head/tail cut (free one half immediately)
+        // never reached refcount 0, so VFS_FDCLOSE was never sent (21-P1-2).
         if let VrParam::File { fdref_id: Some(id), .. } = left.param {
-            crate::fdref::FdRefTable::get_global().ref_entry(id);
             crate::fdref::FdRefTable::get_global().ref_entry(id);
         }
 

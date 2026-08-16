@@ -70,7 +70,7 @@ RS 自己是 boot 服务之一，但 RS 的初始化**不是消息驱动的**（
 失败都走 `kill_service(rp, errstr, s)`（15）。
 
 **`start_service(rp, init_flags)`**（manager.c:950-982）是"完整启动编排"：
-1. `rp->r_priv.s_init_flags |= init_flags`（manager.c:959）；
+1. `rp->r_priv.s_init_flags |= init_flags`（manager.c:959）——Rust 侧 `ready::fold_init_flags(slot, init_flags)`（R14，OR 语义，测试锁定；replica 路径由 `service_create::link_replica` 承担，manager.c:751-752）；
 2. `create_service(rp)`（manager.c:960-963）——10；
 3. `activate_service(rp, NULL)`（manager.c:964）——10（无旧实例）；
 4. `publish_service(rp)`（manager.c:967-970）——11；
@@ -82,7 +82,7 @@ RS 自己是 boot 服务之一，但 RS 的初始化**不是消息驱动的**（
 
 `init_service(rp, type, flags)`（utility.c:18）：
 
-1. `r_flags |= RS_INITIALIZING`；`r_alive_tm = getticks()`；`r_check_tm = r_alive_tm + 1`（utility.c:24-26）——**期望一个 period 内回 ready**（07 的心跳超时检查以此为据）；
+1. `r_flags |= RS_INITIALIZING`；`r_alive_tm = getticks()`；`r_check_tm = r_alive_tm + 1`（utility.c:24-26）——**期望一个 period 内回 ready**（07 的心跳超时检查以此为据）。**R14**：这三行变异由 `ready::mark_initializing(slot, ticks)` 独立建模（utility.c:19-21，含测试）——此前全 crate 生产路径无一处写入 `RS_INITIALIZING`，12 接线若漏设该位，所有 ready 消息都会被 `do_init_ready` 门拒绝；
 2. **ROOT_SYS_PROC 例外**（utility.c:28-31）：RS 自己的初始化"我们做完了"——直接 `return OK`，不发消息（RS 初始化由 `sef_cb_init_fresh` 完成，01）；
 3. 推导 `old_endpoint`/`prepare_state`（utility.c:33-42）：`r_old_rp`（LU 旧版本）→ `r_upd.state_endpoint`/`r_upd.prepare_state`；否则 `r_prev_rp` → 其 endpoint；
 4. `SF_USE_SCRIPT` → `flags |= SEF_INIT_SCRIPT_RESTART`（utility.c:44-47）——脚本重启的 init 要带上标记（sef.h:102）；
@@ -124,7 +124,7 @@ do_init_ready（request.c:462-529）
        └─ 返回 EDONTREPLY（528）
 ```
 
-关键细节：**失败分支与 updating 分支都不 reply**（返回 `EDONTREPLY`，主循环不回复）；只有 fresh 成功路径 reply OK。`ERESTART`（sys/errno.h:196）特判——"服务重启"错误在非更新期要触发 `RS_REINCARNATE`（15 的复活路径）。
+关键细节：**失败分支与 updating 分支都不 reply**（返回 `EDONTREPLY`，主循环不回复）；只有 fresh 成功路径 reply OK。`ERESTART`（sys/errno.h:196）特判——"服务重启"错误在非更新期要触发 `RS_REINCARNATE`（15 的复活路径）。**R13**：C 的槽位变异（`RS_REINCARNATE` 置位 + `r_init_err = result`、`RS_INIT_DONE` 置位、fresh 的三行复位）由 `ReadyDecision.mutations`（`SlotMutations` 载荷）携带，12 接线在动作 hook（crash_service/end_update/reply）后 `apply` 一次提交。
 
 ### 2.4 do_upd_ready：update 就绪（request.c:890-938）
 
@@ -173,8 +173,10 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 | 函数 | C 对应 | 语义 |
 |------|--------|------|
 | `init_flags(use_script, flags)` | utility.c:44-47 | `SF_USE_SCRIPT → |SEF_INIT_SCRIPT_RESTART` |
+| `mark_initializing(slot, ticks)` | utility.c:19-21 | 发 RS_INIT 前：置 `INITIALIZING` + `alive_tm = ticks` + `check_tm = ticks+1`（R14） |
+| `fold_init_flags(slot, init_flags)` | manager.c:953 | `s_init_flags |= init_flags`（OR 语义，R14） |
 | `init_message(...)` | utility.c:49-60 | RS_INIT 载荷装配（`InitMessage`） |
-| `do_init_ready(flags, result, is_updating, pending)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyOutcome` |
+| `do_init_ready(flags, result, is_updating, pending, ticks)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyDecision { outcome, mutations }`（R13） |
 | `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyOutcome` |
 | `end_srv_init(rp, has_prev)` | manager.c:336-354 | 槽位收尾（restarts/prev/next） |
 | `should_reply_ready(src)` | main.c:812-815 | VM 异步例外 |
@@ -184,11 +186,12 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 
 `mess_rs_init`（ipc.h:1855-1866）映射为类型化结构：`init_type: u16`（C 的 `short`）、`rproctab_gid: Option<u32>`（02 P2-2：boot 建 grant 后才有值）、`old_endpoint: Option<Endpoint>`（fresh 时为 None）、`buff_addr: u64`/`buff_len: usize`（16 预分配 mmap 的传输槽）。C 从 `r_upd` 推导 `old_endpoint`/`prepare_state`（utility.c:33-42），Rust 由调用点注入（`r_upd` 未建模，02 P2-3）。
 
-### 3.3 ReadyOutcome 编码分支
+### 3.3 ReadyDecision 编码分支 + 变异载荷
 
-`do_init_ready` 返回 `ReadyOutcome` 枚举，四变体对应 C 的四条路径：
+`do_init_ready` 返回 `ReadyDecision`（`outcome` + `mutations: SlotMutations`），四变体对应 C 的四条路径：
 
 ```rust
+pub struct ReadyDecision { outcome: ReadyOutcome, mutations: SlotMutations }  // R13
 pub enum ReadyOutcome {
     Unexpected,                              // 门失败 → EINVAL
     InitFailed { result: i32, reincarnate: bool },  // crash（15 hook）
@@ -199,7 +202,7 @@ pub enum ReadyOutcome {
 
 `reincarnate` 的推导（`result == ERESTART && !is_updating`，request.c:492-493）是纯逻辑，在 Rust 中显式编码；`crash_service`/`end_update`/`reply` 是调用点（15/16/06）。
 
-**槽位副作用由调用点应用**：纯函数只返回决策，`RS_PREPARE_DONE`/`RS_INIT_DONE` 置位、`RS_INITIALIZING` 清除、`r_check_tm`/`r_alive_tm` 复位（request.c:508/516-518/911）在 19 组装时由 ready 分派调用点执行——与 `crash_service`/`end_update` 挂接点同层。
+**变异载荷（R13）**：C 的槽位变异随 `ReadyDecision.mutations` 携带，12 接线在动作 hook 后 `mutations.apply(rp)` 一次提交——`InitFailed` 携带 `set=REINCARNATE`（`ERESTART && !updating` 时）+ `init_err=Some(result)`（request.c:491-495）；`UpdateInitDone` 携带 `set=INIT_DONE`（request.c:509）；`FreshInitDone` 携带 `clear=INITIALIZING` + `check_tm=0` + `alive_tm=getticks()`（request.c:516-518，`ticks` 由调用点注入）。与 07（`PeriodDecision`）/15（`TerminateDecision`）的载荷风格统一。
 
 ### 3.4 EDONTREPLY 归一化
 
@@ -230,21 +233,25 @@ pub enum ReadyOutcome {
 
 ## 5. 测试要点
 
-`ready.rs` 内 12 项测试（`cargo test -p minix-rs --lib ready` 过滤含 `dispatch::test_classify_ready`，共 13 通过）：
+`ready.rs` 内 15 项测试（`cargo test -p minix-rs --lib ready` 过滤含 `dispatch::test_classify_ready`，共 16 通过）：
 
 1. `init_flags`：SF_USE_SCRIPT 置位/不置位（2 断言组）。
 2. `init_message`：type（SEF_INIT_RESTART=2）/flags/gid/old_endpoint/restarts/buff/prepare_state 全字段。
-3. `do_init_ready` 门：无 `RS_INITIALIZING` → `Unexpected`。
-4. `do_init_ready` 失败：`ERESTART`+非更新 → `reincarnate: true`；非 ERESTART → false；更新中 ERESTART → false（request.c:492-493 的三态）。
-5. `do_init_ready` 更新完成：pending 递减到 0 / 非零 → `UpdateInitDone`。
-6. `do_init_ready` fresh：→ `FreshInitDone`。
-7. `do_upd_ready` 四分支：门失败 / prepare 失败 / 还有下一个 / start_update。
-8. `end_srv_init`：has_prev → restarts+1 + prev/next 清空；无 prev → 只清 next。
-9. `should_reply_ready`：VM → false；VFS/PM → true。
-10. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
-11. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
+3. `mark_initializing`（R14）：发 RS_INIT 前置迁移——`INITIALIZING` 置位 + `alive_tm=ticks` + `check_tm=alive_tm+1`（utility.c:18-21，reply 在周期内）。
+4. `fold_init_flags`（R14）：`priv_.init_flags |= flags`（OR 非替换，manager.c:953）。
+5. `do_init_ready` 门：无 `RS_INITIALIZING` → `Unexpected`。
+6. `do_init_ready` 失败：`ERESTART`+非更新 → `reincarnate: true`；非 ERESTART → false；更新中 ERESTART → false（request.c:492-493 的三态）。
+7. `do_init_ready` 更新完成：pending 递减到 0 / 非零 → `UpdateInitDone`（R4：递减前
+   `debug_assert!(pending > 0)`——C 调用方保持 `num_init_ready_pending > 0`（main.c:586 assert），
+   underflow 是程序错误而非静默饱和；`test_do_init_ready_pending_underflow_panics` 锁死该语义）。
+8. `do_init_ready` fresh：→ `FreshInitDone`。
+9. `do_upd_ready` 四分支：门失败 / prepare 失败 / 还有下一个 / start_update。
+10. `end_srv_init`：has_prev → restarts+1 + prev/next 清空（`test_end_srv_init_bookkeeping`）；无 prev → 只清 next、restarts 保留（`test_end_srv_init_no_prev`，manager.c:354）。
+11. `should_reply_ready`：VM → false；VFS/PM → true。
+12. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
+13. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
 
-测试总数声明：本文档范围为 **12 项**（`ready` 模块内）。全局 `cargo test -p minix-rs --lib` = 181 通过（随并行模块增长，以各 doc 范围为准）。
+测试总数声明：本文档范围为 **15 项**（`ready` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
 
 ---
 

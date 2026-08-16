@@ -37,13 +37,16 @@ impl ClockArch for AArch64ClockArch {
         Self
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // ARM Generic Timer is configured by firmware (TF-A/U-Boot).
         // We need to:
         // 1. Read the counter frequency from CNTFRQ_EL0
         // 2. Read the current counter value from CNTPCT_EL0
         // 3. Calculate the absolute compare value for the desired tick rate
         // 4. Set CNTP_CVAL_EL0 and enable the timer
+        //
+        // CNTP_CVAL_EL0 / CNTP_CTL_EL0 are per-CPU system registers, so
+        // `cpu_id` is not needed — each CPU configures its own timer.
 
         let freq: u64;
         unsafe {
@@ -75,10 +78,11 @@ impl ClockArch for AArch64ClockArch {
         count
     }
 
-    fn stop_local_timer(&mut self) {
+    fn stop_local_timer(&mut self, _cpu_id: u32) {
         // Disable the EL1 Physical Timer by clearing CNTP_CTL_EL0.ENABLE.
         //
         // C: smp.c:56-61 — inline timer disable in smp_ipi_halt_handler
+        // CNTP_CTL_EL0 is a per-CPU system register; `cpu_id` is not needed.
         unsafe {
             // CNTP_CTL_EL0: bit 0 = ENABLE, bit 1 = IMASK
             // Clear ENABLE (bit 0) and set IMASK (bit 1) to suppress IRQ

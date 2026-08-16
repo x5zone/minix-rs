@@ -148,7 +148,7 @@ plan §5.4 明确 `USE_PCI` 条件编译段 defer：minix-rs 没有 PCI 驱动�
 2. `should_bind_devman`：`None` 不触发；`Some(0)` 不触发（≡ C 的 0）；`Some(5)` 触发。
 3. `unpublish_result`：DS 失败且非 shutting_down → `EIO`；PCI 失败且非 shutting_down → `EIO`；shutting_down 压制错误记录 → `OK`；devman 失败不影响结果 → `OK`。
 
-测试总数声明：本文档范围为 **5 项**（`publish` 模块内）。全局 `cargo test -p minix-rs --lib` = 181 通过（随并行模块增长，以各 doc 范围为准）。
+测试总数声明：本文档范围为 **5 项**（`publish` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
 
 ---
 

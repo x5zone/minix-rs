@@ -14,7 +14,7 @@
 use crate::process_table::RProcTable;
 use crate::service_slot::{ServiceSlot, SlotId};
 use alloc::sync::Arc;
-use minix_types::ENOEXEC;
+use minix_types::Errno;
 
 /// Validates that an image starts with a loadable 64-bit ELF header.
 ///
@@ -24,10 +24,10 @@ use minix_types::ENOEXEC;
 /// (lib/libexec/exec_elf.c). ARCH A-8: full parsing (`parse_ehdr`,
 /// `segment_iter`) lives in the `minix-elf` crate and is wired when
 /// `srv_execve`/`do_exec` land (19).
-pub fn validate_image(image: &[u8]) -> Result<(), i32> {
+pub fn validate_image(image: &[u8]) -> Result<(), Errno> {
     // Elf64_Ehdr is 64 bytes; shorter images cannot hold a valid header.
     if image.len() < 64 {
-        return Err(ENOEXEC);
+        return Err(Errno::ENOEXEC);
     }
     if image.len() >= 4 && &image[0..4] == b"\x7fELF" {
         // ELFCLASS64 + ELFDATA2LSB (exec_elf.c magic checks).
@@ -35,7 +35,7 @@ pub fn validate_image(image: &[u8]) -> Result<(), i32> {
             return Ok(());
         }
     }
-    Err(ENOEXEC)
+    Err(Errno::ENOEXEC)
 }
 
 /// Shares the exec image from `src` to `dst`.
@@ -84,7 +84,6 @@ pub fn free_exec(table: &mut RProcTable, rp_id: SlotId) {
 mod tests {
     use super::*;
     use crate::service_slot::{Label, RFlags};
-    use minix_types::Endpoint;
 
     fn slot_with_image(image: &'static [u8]) -> ServiceSlot {
         let mut s = ServiceSlot::vacant();
@@ -96,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_validate_image_rejects_tiny() {
-        assert_eq!(validate_image(&[0u8; 4]), Err(ENOEXEC));
+        assert_eq!(validate_image(&[0u8; 4]), Err(Errno::ENOEXEC));
     }
 
     #[test]

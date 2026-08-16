@@ -8,8 +8,8 @@
 //! C: Minix3's 32-bit ARM port routes the timer through the BSP
 //! (`earm/arch_clock.c:182` → `bsp_register_timer_handler`, `omap_timer.c:136`;
 //! `bsp_timer_stop` at `omap_timer.c:331`). The aarch64 rewrite targets the
-//! ARMv8-A Generic Timer (CNTP_CTL_EL0) instead — architectural evolution,
-//! see 05-clock-interrupt-init.md §2.5.
+//! ARMv8-A Generic Timer (CNTP_CTL_EL0) instead — architectural evolution
+//! ([ARCH: K-1], see 05-clock-interrupt-init.md §2.5 and §3.8).
 //!
 //! # GIC delivery path (why no ICC_IGRPEN1_EL1 here)
 //!

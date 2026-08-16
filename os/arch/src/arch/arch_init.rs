@@ -34,7 +34,7 @@
 /// | Method | x86-64 | ARM64 | RISC-V |
 /// |--------|--------|-------|--------|
 /// | `new()` | store ACPI tables ptr from `ArchMiscDesc` | store PMU flag | no-op (no misc) |
-/// | `init()` | serial (COM1) + ACPI | PMU cycle counter + bsp_init | PMP + SIE |
+/// | `init()` | ACPI | PMU cycle counter + bsp_init | PMP + SIE |
 ///
 /// Note: `ArchInit` is a *phase* trait, not a *functional* trait. It gathers
 /// architecture-specific leftovers that do not have a cross-architecture

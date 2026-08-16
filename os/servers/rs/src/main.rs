@@ -14,10 +14,11 @@ fn main() {
     // library directly).
     #[cfg(not(test))]
     {
-        use minix_rs::{RsServer, SefCallbacks, SefInitType, boot::BootTables};
+        use minix_rs::{RsServer, SefInitType, boot::BootTables};
 
-        // C: sef_local_startup() — main.c:51 (SEF callback registration, A-7).
-        let callbacks = SefCallbacks::local_startup();
+        // C: sef_local_startup() — main.c:51. The SEF callback set is the
+        // `SefCallbacks` trait implemented by `RsServer` itself (N5); there
+        // is no separate registration value to construct.
 
         // C: sys_getimage(image) — main.c:196. Placeholder until the
         // sys_getimage wiring lands (19-rs-external-interfaces.md); the
@@ -25,12 +26,19 @@ fn main() {
         // (ARCH A-13).
         let tables = BootTables::placeholder();
 
-        let mut server = RsServer::new(callbacks, tables);
+        let mut server = RsServer::new(tables);
 
         // C: sef_startup() → sef_cb_init_fresh() — main.c:151,158-494.
         // The KernelApi production impl is DEFERRED (19); the fresh-boot
-        // path fails closed until then.
-        let _ = server.init(SefInitType::Fresh);
+        // path fails closed (Err(ENOSYS)) until then. C treats boot failure
+        // as fatal (main.c:226 `panic(...)`); do not enter the main loop on
+        // an incomplete boot — an RS that never finished booting cannot
+        // manage services.
+        if let Err(e) = server.init(SefInitType::Fresh) {
+            panic!(
+                "RS boot failed: {e:?} (kernel API wiring pending — 19-rs-external-interfaces.md)"
+            );
+        }
 
         // C: main loop — main.c:50-131 (skeleton; details in 06).
         server.run();

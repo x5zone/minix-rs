@@ -78,34 +78,44 @@ CPU 本质上只有一条执行流：取指 → 译码 → 执行 → 写回，�
 
 阶段 C 的工作，就是为 boot image 中的每个进程**填好这五部分**，让它们"就位但暂停"，等待后续阶段唤醒。
 
-#### 1.1.4 三类运行态实体（User Process / System Server / Kernel Subsystem）
+#### 1.1.4 三类运行态实体（User Process / System Server / Kernel task）
 
 > 架构范围：**三架构共性**（仅 Ring 特权级跨架构名称不同：x86-64 ring/EL/privilege mode；本质均为"谁跑 Ring 0 共用 kernel image"）
+>
+> **深度版本见 [00-kernel-overview.md §1.4.1](./00-kernel-overview.md)**：那里从"执行上下文 vs 代码+状态"两个维度解释了**为什么**三类实体机制不同。本节只给三分法结论 + boot 语境下的差异，不重复机制推导。
 
-§1.1.3 的"五部分组成"对所有进程一视同仁——但 Minix3 实际上把**运行态实体**分成三类，**机制完全不同**。这个区分是早期读者最大的认知陷阱之一，也是 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) 讨论 timer 时的关键背景（CLOCK task 与普通 timer 硬件不同层）。本节正式确立三分法。
+§1.1.3 的"五部分组成"对所有进程一视同仁——但 Minix3 实际上把**运行态实体**分成三类，机制不同。这个区分是早期读者最大的认知陷阱之一，也是 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) 讨论 timer 时的关键背景（CLOCK task 与普通 timer 硬件不同层）。本节正式确立三分法。
 
 **三分法总表**：
 
-| 类别 | 特权级 | 地址空间 | Minix3 实例 | minix-rs 翻译 |
-|------|--------|---------|-------------|---------------|
-| **User Process（用户进程）** | Ring 3 | 独立虚拟地址空间（CR3/satp 切换） | shell、编译器、所有用户应用 | `ProcessKind::User { ... }` |
-| **System Server（系统服务器）** | Ring 3 | 独立虚拟地址空间 | PM / VM / RS / VFS / DS / INET 等 | `ProcessKind::Server { ... }` |
-| **Kernel Subsystem（内核子系统）** | Ring 0 | **共用 kernel image**（无独立地址空间概念；不切换 CR3） | CLOCK task、SCHED task、SYSTASK、KERNEL | `ProcessKind::KernelSubsystem { subsystem: KernelSubsystemKind, ... }` |
+| 类别 | 特权级 | 地址空间 | Minix3 实例 | boot 期形态 | minix-rs 翻译 |
+|------|--------|---------|-------------|-------------|---------------|
+| **User Process（用户进程）** | Ring 3 | 独立虚拟地址空间（CR3/satp 切换） | INIT、以及一切由 RS fork/exec 的应用 | **boot 期尚不存在**——由 RS 在阶段 E 运行时创建 | `ProcKind::UserProcess` |
+| **System Server（系统服务器）** | Ring 3 | 独立虚拟地址空间 | VM / PM / VFS / RS / DS / sched 等 | 从 multiboot 模块加载 ELF，进表待调度 | `ProcKind::{Vm, RootService, UserService}` |
+| **Kernel task（内核 task，即一般所说的 Kernel Subsystem）** | Ring 0 | **共用 kernel image**（无独立地址空间概念；不切换 CR3） | CLOCK / SYSTEM(SYSTASK) / IDLE / HARDWARE / ASYNCM | **无 ELF**，编译时内建在 kernel 镜像里，仅占 proc 槽位 | `ProcKind::KernelTask` |
 
-**四项关键澄清**（最易错的概念）：
+**三项关键澄清**（最易错的概念）：
 
-1. **"System Task"在 Minix3 术语里严格指 Kernel Subsystem**——许多教学材料（包括部分 Minix 文档）把 PM/VM/RS 称为"系统任务"，其实是误用术语。**PM/VM/RS 的真名是"系统服务器"**（system server）或"用户态特殊进程"——它们在 Ring 3 运行，与普通用户进程机制相同，只是通过 `priv` 特权表获得特殊权限。
-2. **只有 Kernel Subsystem 跑 Ring 0**——SYSTASK（内核调用分发）+ CLOCK task（timer handler）两个**共用 kernel memory address space**（来自 [Minix 3 I/O 论文](http://sedici.unlp.edu.ar/bitstream/handle/10915/125322/Documento_completo.pdf-PDFA.pdf?isAllowed=y&sequence=1)）。
-3. **Kernel Subsystem 不是"页表切换"的进程**——它从来不离开 kernel image，永远在 Ring 0；调度器进入 kernel Subsystem 时**不动 CR3**，只保存/恢复通用寄存器和少量特权寄存器（SP/RFLAGS 之类）。
-4. **三类进程在 §1.1.3 "五部分组成"中某些字段不同**：
-   - **VM 状态**：User/Server 有，Kernel Subsystem 没有（共用 kernel image，**不需要页表**）
-   - **IPC 状态**：User/Server 之间通过消息传递；Kernel Subsystem 通过直接函数调用
-   - **调度属性**：Kernel Subsystem 的 priority 与 User/Server 不互通——CLOCK task 优先级最高，SCHED task 决定其他进程的调度顺序
-   - **寄存器状态**：Kernel Subsystem 不需要保存 SS/RSP 全栈（kernel 已经常驻）
+1. **"System Task"术语严格指 Kernel task**——`NR_TASKS=5`、负 endpoint 的实体只有 ASYNCM/IDLE/CLOCK/SYSTEM/HARDWARE 五个（`table.c:44-51`）。许多教学材料（包括部分 Minix 文档）把 PM/VM/RS 称为"系统任务"，是误用术语。**PM/VM/RS 的真名是"系统服务器"**（system server）——它们在 Ring 3 运行，与普通用户进程机制相同，只是通过 `priv` 特权表获得特殊权限。**现代 Minix3 的调度策略由用户态 `sched` server 承担（`SCHED_PROC_NR` 为正 endpoint）**，它同样不是内核 task。
+2. **Kernel task 的"运行"是事件驱动的，不是独立执行流**——而且在当前现代 Minix3 实现中，**它们的 `proc` 槽位不会被调度器作为 execution context 恢复**。证据有两重：
+   - **RTS 阻断**：boot 结束时内核只清除非内核 task 的 `RTS_PROC_STOP`（`main.c:64-66`），内核 task 的这个标志（`main.c:269`）永不被解析路径触碰，`main.c:62` 注释称其为 "former kernel tasks"——`RTS_PROC_STOP` 恒置意味着 `proc_is_runnable()` 永远为 false
+   - **无恢复点**：`arch_proc_init()`（设置 PC/SP 的入口）只在 `do_exec` 路径被调用（`system/do_exec.c:45` + `arch/i386/arch_system.c:722-732`），kernel task 从未被设置执行入口——即使 RTS 阻塞被绕过，调度器也没有合法的恢复点去切到 kernel task
+   - **没有主循环实现**：当前源码中不存在 `sys_task()`/`clock_task()`，仅 `system.c:12` 残留一处注释
+   - CLOCK 的实际入口是 `clock_int_handler()`（时钟中断到来时执行，`clock.c:140-173`），SYSTASK 的实际入口是 `kernel_call()`（进程 trap 进来时查 `call_vec` 分发表，`system.c:136-163`）——这就是"共用 kernel image、不切换 CR3、不保存完整 SS/RSP 栈"这些现象的根本原因。机制推导见 [00-kernel-overview.md §1.4.1](./00-kernel-overview.md)。
+3. **IDLE 是例外**——每 CPU 一个，是唯一真正自持执行流的内核实体（无就绪进程时 `idle()` 空转等待中断，`proc.c:176-193`）。它几乎无状态，恰好反证"执行流"与"状态"是两个正交维度。
 
-**与本文档（阶段 C）的关系**：阶段 C 处理的主要是 System Server（VM 是第一个被装载的；FS/PFS/... 在阶段 E 中由 RS 服务拉起）和 Kernel Subsystem（CLOCK task、SCHED task、SYSTASK 这些其实就是内核子系统，不是从 boot image 装载的 ELF）。
+**三类实体在 §1.1.3 "五部分组成"中的差异**（boot 语境下关注这几列）：
 
-> **本节在全文中的位置**：本节建立"三类运行态实体"的概念底座。后续 [11-scheduling-primitives.md](./11-scheduling-primitives.md) 给出调度器完整设计；[16-smp.md](./16-smp.md) 给出 SMP 下 Kernel Subsystem 的并发模型；本章 §1.4 boot image 仅引用本节对 System Server/Kernel Subsystem 的区分。
+| 组成 | User / Server | Kernel task |
+|------|---------------|-------------|
+| **VM 状态** | 有（独立页表，CR3/satp 切换） | 无（共用 kernel image，不需要页表） |
+| **IPC 状态** | 有（消息传递） | 有（IPC 身份，可被 notify/send），但无独立执行流去处理——靠事件入口 |
+| **调度属性** | 有（优先级/时间片，由 sched server 决定） | 有槽位但几乎不被调度器选中（boot 后）；优先级与 User/Server 不互通 |
+| **寄存器状态** | 完整快照（SS/RSP 全栈） | 不需要保存完整用户栈（kernel 常驻，无用户态寄存器） |
+
+**与本文档（阶段 C）的关系**：§1.4 boot image 的清单**同时包含**两类实体——System Server 的 VM（第一个被装载的 ELF；PM/FS/... 在阶段 E 由 RS 服务拉起）和 Kernel task（CLOCK/SYSTEM/IDLE/HARDWARE/ASYNCM，编译时内建、无 ELF）。阶段 C 为它们填 proc 槽位、设特权，但 Kernel task 的"运行"不属于阶段 C 范畴（见 [14-exception-interrupt.md](./14-exception-interrupt.md) 与 [12-ipc-core.md](./12-ipc-core.md)）。
+
+> **本节在全文中的位置**：本节给出三分法结论，机制推导与完整执行流模型见 [00-kernel-overview.md §1.4.1](./00-kernel-overview.md)。后续 [11-scheduling-primitives.md](./11-scheduling-primitives.md) 给出调度器完整设计（含"内核 task 不可抢占、时间片耗尽直接重置"）；[16-smp.md](./16-smp.md) 给出 SMP 下 Kernel task 的并发模型；本章 §1.4 boot image 仅引用本节对 System Server/Kernel task 的区分。
 
 ### 1.2 CPU 要回答的四个问题
 
@@ -128,7 +138,7 @@ boot 一个进程，本质上是让 CPU 能开始执行这个进程的代码。�
 
 boot 一个进程时，必须设置状态寄存器的初值，决定进程**首次运行时的特权级和中断状态**。例如：
 
-- 内核 task（CLOCK/SYSTEM/IDLE）：运行在内核态，中断使能
+- 内核 task（CLOCK/SYSTEM/IDLE）：设置内核态初值（`INIT_TASK_PSW`/`INIT_TASK_PSR`，中断策略各架构不同，见 §1.2.3 三架构对照表）——但如前所述（§1.1.4），这个初值只会被"借用执行"，它们不作为独立运行实体被调度
 - 用户进程（VM/RS/普通服务）：运行在用户态，中断使能
 
 #### 1.2.2 ps_strings：参数传递的小型结构体
@@ -288,8 +298,8 @@ RTS（Run-Time Status）是一个位图，记录进程当前不可运行的原�
 
 | 类型 | 例子 | p_nr | boot 期处理 |
 |------|------|------|------------|
-| 内核 task | CLOCK/SYSTEM/IDLE | 负数 | 立即可调度，无 ELF |
-| 系统进程 | VM/PM/VFS/RS | 非负 | multiboot 提供 ELF，VM 立即加载，其他等 RS |
+| 内核 task | CLOCK/SYSTEM/IDLE/HARDWARE/ASYNCM | 负数 | 立即获静态特权（`main.c:196`），无 ELF；但 `RTS_PROC_STOP` 永不清除（`main.c:64-66`），**不会作为运行实体被调度** |
+| 系统进程 | VM/PM/VFS/RS/sched | 非负 | multiboot 提供 ELF，VM 立即加载，其他等 RS |
 | 普通用户进程 | INIT | 非负 | boot 期不存在，由 RS 运行时 fork/exec |
 
 **NR_BOOT_PROCS vs NR_BOOT_MODULES**：
@@ -304,7 +314,7 @@ RTS（Run-Time Status）是一个位图，记录进程当前不可运行的原�
 boot image 来自 Minix3 `kernel/table.c` 中的 `struct image image[]` 数组——编译时由 `config.h` 的 `NR_TASKS` / `NR_PROCS` 确定大小，每个条目是 `{ proc_nr, flags, proc_name, ipc_to, k_call, stack_size }`。它**不是 ELF**，只是 C 全局数组，编进 `kernel` 二进制。Rust 实现侧对应 `os/kernel/src/proc.rs:112` 的 `KERNEL_TASKS` 常量数组 + `BOOT_MODULE_PROC_NRS`（`proc.rs:125`）+ `CapabilityTemplate` 枚举（见 §3.2 / §3.4）。
 
 **multiboot 模块 vs boot image**：
-- **boot image（image[]）**：编译时硬编码进 kernel 二进制的进程清单（含 CLOCK/SYSTEM/IDLE/KERNEL 4 个内核 task + VM/PM/VFS/RS 4 个用户态 boot 模块）
+- **boot image（image[]）**：编译时硬编码进 kernel 二进制的进程清单（含 ASYNCM/IDLE/CLOCK/SYSTEM/HARDWARE 5 个内核 task + DS/RS/PM/SCHED/VFS/MEM/TTY/MIB/VM/PFS/MFS/INIT 12 个用户态 boot 模块）
 - **multiboot module list（kinfo.module_list）**：bootloader（GRUB/QEMU `-initrd`）在加载 kernel 时通过 multiboot 协议额外提供的 ELF 模块；QEMU 启动命令形如 `qemu-system-x86_64 -kernel kernel.elf -initrd vm.elf,pm.elf,vfs.elf,rs.elf`
 - **关系**：boot image 给出"进程清单"，multiboot module 给出"对应 ELF 镜像的物理地址范围"——`init_proc_and_boot()` 用 `kernel_info.boot_modules[i]` 对应 `BOOT_MODULE_PROC_NRS[i]`（见 §4.0）
 

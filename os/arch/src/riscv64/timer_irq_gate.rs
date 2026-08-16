@@ -4,12 +4,14 @@
 //! - `enable_timer_irq`: sets sie.STIE (S-mode Timer Interrupt Enable, bit 5)
 //! - `disable_timer_irq`: clears sie.STIE
 //!
-//! The actual timer firing is controlled by mtimecmp (set by
-//! `ClockArch::init_timer` via SBI); the CLINT/SBI firmware owns the
-//! comparator, so `TimerIrqGate` only controls the supervisor interrupt
+//! The actual timer firing is controlled by mtimecmp, written directly to
+//! the CLINT MMIO by `ClockArch::init_timer` (S-mode writes the comparator
+//! without an SBI ecall; M-mode firmware such as OpenSBI has already
+//! mapped the MMIO). `TimerIrqGate` only controls the supervisor interrupt
 //! enable bit.
 //!
-//! C: Minix3 has no riscv64 port; the reference is the RISC-V Privileged
+//! C: Minix3 has no riscv64 port ([ARCH: K-2]; architectural evolution,
+//! 05-clock-interrupt-init.md §3.8); the reference is the RISC-V Privileged
 //! Spec 1.12 §4.1.3 (Supervisor Interrupt Registers, sie.STIE).
 
 use crate::arch::timer_irq_gate::TimerIrqGate;

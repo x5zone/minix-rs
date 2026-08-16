@@ -271,7 +271,7 @@ pub fn stop_local_timer() {
         use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.stop_local_timer();
+        clock_arch.stop_local_timer(current_cpuid().raw());
     }
     #[cfg(test)]
     {
@@ -469,6 +469,7 @@ fn decrement_quantum_in(
 
 /// Default clock frequency in Hz.
 /// C: `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000)
+/// 架构演进标注：[ARCH: K-3]（doc 05-clock-interrupt-init.md §3.8：60/1000 → 100 Hz）
 /// Rust 选择 100 作为默认（doc 15 §3.7 D7 设计决策），与 C 的 60 不同；
 /// 需与 C 完全一致时可在 boot 阶段用 `with_hz(60)` 指定。
 pub const DEFAULT_HZ: u32 = 100;
@@ -647,8 +648,8 @@ pub struct LoadInfo {
     /// C: `proc_last_slot`
     proc_last_slot: u16,
     /// Load history circular buffer.
-    /// C: `proc_load_history[_LOAD_HISTORY]`
-    proc_load_history: [u32; LOAD_HISTORY],
+    /// C: `proc_load_history[_LOAD_HISTORY]` — u16[150]
+    proc_load_history: [u16; LOAD_HISTORY],
     /// Last clock tick when load was updated.
     /// C: `last_clock`
     last_clock: u64,
@@ -843,7 +844,7 @@ impl ClockState {
     }
 
     /// Get the load average history.
-    pub fn load_history(&self) -> &[u32; LOAD_HISTORY] {
+    pub fn load_history(&self) -> &[u16; LOAD_HISTORY] {
         &self.load_info.proc_load_history
     }
 
@@ -1108,7 +1109,11 @@ impl ClockState {
             self.load_info.proc_last_slot = slot;
         }
 
-        self.load_info.proc_load_history[slot as usize] += ready_count as u32;
+        // u16 与 C 的 `u16_t` 对齐；C 无符号加法回绕，这里用 wrapping_add 保持一致
+        // （实际值 = 6s 窗口内可运行进程数，远小于 65535）。
+        let slot_idx = slot as usize;
+        self.load_info.proc_load_history[slot_idx] =
+            self.load_info.proc_load_history[slot_idx].wrapping_add(ready_count as u16);
         self.load_info.last_clock = self.uptime;
     }
 }
@@ -1634,6 +1639,8 @@ mod tests {
 
     #[test]
     fn test_load_update_accumulates() {
+        // 100 ticks × 5 ready_count = 500, all in slot 0
+        // (slot rotates every hz * LOAD_UNIT_SECS = 100 * 6 = 600 ticks).
         let mut clock = make_bsp_clock();
         let mut proc = make_test_proc();
 
@@ -1642,30 +1649,54 @@ mod tests {
         }
 
         let history = clock.load_history();
-        let total: u32 = history.iter().sum();
-        assert!(total > 0);
+        let total: u32 = history.iter().map(|&v| v as u32).sum();
+        assert_eq!(total, 500, "100 ticks × 5 ready should accumulate exactly 500");
+        assert_eq!(
+            history[0], 500,
+            "all 100 ticks fall in slot 0 (rotation at tick 600)"
+        );
     }
 
     #[test]
     fn test_load_update_slot_rotation() {
-        // Slot rotates every (hz * LOAD_UNIT_SECS) ticks = 100 * 6 = 600.
+        // Slot rotates every (hz * LOAD_UNIT_SECS) = 100 * 6 = 600 ticks.
+        // At tick 600 (uptime=600), slot=(600/600) % 150 = 1 != proc_last_slot=0,
+        // so history[1] resets to 0 and the +ready_count goes to slot 1, not slot 0.
+        // Therefore slot 0 ends at 599 × 3 = 1797 (not 1800) after 600 total ticks.
         let mut clock = make_bsp_clock();
         let mut proc = make_test_proc();
 
-        // Fill slot 0.
+        // Fill slot 0 with ticks 1..600 (599 ticks @ 3 ready = 1797).
         for _ in 0..600 {
             clock.tick_bsp(&mut proc, None, 3);
         }
-        let slot0_total: u32 = clock.load_history()[0];
+        assert_eq!(
+            clock.load_history()[0],
+            1797,
+            "slot 0 should have 599 ticks × 3 = 1797 (tick 600 belongs to slot 1)"
+        );
+        // Tick 600 (the 600th tick) crosses into slot 1 with +3 ready.
+        assert_eq!(
+            clock.load_history()[1],
+            3,
+            "slot 1 should have exactly 3 from tick 600 (single tick in new slot)"
+        );
 
-        // Advance into slot 1.
-        for _ in 0..600 {
+        // Run 599 more ticks (ticks 601..=1199) all in slot 1 with 7 ready each.
+        for _ in 0..599 {
             clock.tick_bsp(&mut proc, None, 7);
         }
-        let slot1_total: u32 = clock.load_history()[1];
-
-        assert!(slot0_total > 0, "Slot 0 must have accumulated load");
-        assert!(slot1_total > 0, "Slot 1 must have accumulated load");
+        assert_eq!(
+            clock.load_history()[1],
+            3 + 599 * 7,
+            "slot 1 = 3 (from tick 600) + 599 × 7 = 4196"
+        );
+        // Slot 0 is preserved across slot changes.
+        assert_eq!(
+            clock.load_history()[0],
+            1797,
+            "slot 0 must remain unchanged after slot rotation"
+        );
     }
 
     // ── set_boottime / set_realtime ──

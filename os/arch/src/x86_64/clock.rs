@@ -54,9 +54,13 @@ impl ClockArch for X86_64ClockArch {
         }
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
         // C: intr_init_8254() — i8259.c equivalent
+        //
+        // The PIT is a single system-wide device; the per-CPU LAPIC timer
+        // (used later, and by `stop_local_timer`) is reached through the
+        // same MMIO base on every CPU, so `cpu_id` is not needed here.
         //
         // PIT divisor is 16-bit, so hz must be >= 19 (1193182 / 65535 ≈ 18.2).
         // Values below 19 would overflow the divisor.
@@ -97,9 +101,12 @@ impl ClockArch for X86_64ClockArch {
         tsc
     }
 
-    fn stop_local_timer(&mut self) {
+    fn stop_local_timer(&mut self, _cpu_id: u32) {
         // Disable the LAPIC Timer by clearing LVT Timer entry.
         // LAPIC LVT Timer register offset = 0x320; bit 16 = Mask.
+        //
+        // The LAPIC base address is the same on every CPU (each CPU sees
+        // its own LAPIC there), so `cpu_id` is not needed.
         //
         // C: smp.c:56-61 — `lapic_stop_timer()` (inline in smp_ipi_halt_handler)
         let lapic_base = self.lapic_base as *mut u32;

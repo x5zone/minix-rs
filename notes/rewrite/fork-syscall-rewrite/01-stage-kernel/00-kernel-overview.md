@@ -51,6 +51,59 @@ Kernel 是裸机程序。不存在"主循环"——内核代码总是以以下�
 2. **系统调用** → 用户态 `sys_call` → kernel_call_dispatch → do_xxx()
 3. **进程切换** → 调度器挑选下一个进程 → switch_to_user() 回用户态
 
+> 你可能会问：那 CLOCK、SYSTEM 这些"内核 task"不是有自己的执行流吗？答案是：**它们有身份（proc 槽位），但没有自己的执行流。** 这个区分是整个内核心智模型的基石，下面展开。
+
+#### 1.4.1 运行态实体：谁拥有执行流，谁只是"被执行的"
+
+> 架构范围：三架构共性（x86-64 ring / ARM EL / RISC-V privilege mode，本质均为"谁跑 Ring 0 共用 kernel image"）
+
+要理解内核的执行模型，必须把"运行态实体"的三个维度拆开——**IPC identity / scheduler identity**、**代码 + 状态（code + state）**、**execution context（可被调度器恢复的寄存器快照）**。这三者是否同时拥有，决定了实体的本质：
+
+| 实体 | IPC identity | 代码 + 状态 | 独立 execution context |
+|------|:---:|:---:|:---:|
+| **User Process** | ✅ | ✅（自己 ELF + 进程状态） | ✅（被调度器周期"接管线"） |
+| **System Server** | ✅ | ✅ | ✅（机制同上，仅 `priv` 权限不同） |
+| **CLOCK task** | ✅ | ✅（`ClockState` + `tick()`） | ❌ |
+| **SYSTEM task** | ✅ | ✅（`call_vec` + 各 `do_xxx()`） | ❌ |
+| **IDLE** | 特殊（每 CPU 一个，亲和当前 CPU） | ✅（极简） | ✅（唯一自持 execution context） |
+| **HARDWARE** | ✅（`#define HARDWARE KERNEL`） | ❌（无独立 handler） | ❌ |
+| **ASYNCM** | ✅（异步消息完成通知） | ❌（无独立 handler） | ❌ |
+
+**三类核心实体的精确定位**：
+
+- **User Process / System Server**（Ring 3）：**三者兼有**。它们是被调度器周期性"接管线"的独立执行流，拥有自己的地址空间（CR3/satp 切换）。两者机制相同，区别仅在 `priv` 特权表赋予的权限与身份（详见 [06-proc-init-boot-proc.md §1.1.4](./06-proc-init-boot-proc.md)）。
+- **Kernel task（CLOCK / SYSTEM）**（Ring 0，负 endpoint：`NR_TASKS=5`，见 `com.h:47-56`）：
+  - **有 `proc` 槽位、特权结构、IPC 身份**——所以别的进程能 `notify`/`send` 它，调度器也能"认识"它
+  - **当前现代 Minix3 实现中，它们的 `proc` 槽位不会被调度器作为 execution context 恢复**。证据链有两重：
+    - **RTS 阻断**：`main.c:64-66` 在 boot 结束时**只清除非内核 task 的 `RTS_PROC_STOP`**（`i < NR_BOOT_PROCS - NR_TASKS`），内核 task 的 `RTS_PROC_STOP`（`main.c:269`）永不被解析路径触碰——`main.c:62` 的注释直接称它们为 **"former kernel tasks"**。`RTS_PROC_STOP` 恒置意味着 `proc_is_runnable()` 永远为 false（`proc.h:216-222` 的 `RTS_UNSET` 联动也无机会触发因 RTS_PROC_STOP 解锁而自动 enqueue）
+    - **无恢复点**：`arch_proc_init()`（设置 PC/SP 的入口）只在 `do_exec` 路径被调用（见 `system/do_exec.c:45` + `arch/i386/arch_system.c:722-732`），kernel task 从未被设置执行入口——即使 RTS 阻塞被绕过，调度器也没有合法的恢复点去切到 kernel task
+  - **没有独立主循环**：当前源码中不存在 `sys_task()` / `clock_task()` 的实现（全树仅残留 `system.c:12` 一处注释提及，属历史遗留）——SYSTEM 的实际代码是 [`kernel_call()`](https://github.com/minix3/minix/blob/master/minix/kernel/system.c#L136-L163)（被进程 trap 进来时执行，查 `call_vec` 分发表后 `kernel_call_finish` 返回），CLOCK 的实际代码是 [`clock_int_handler()`](https://github.com/minix3/minix/blob/master/minix/kernel/clock.c#L140-L173)（时钟中断到来时执行）
+  - **共用 kernel image，不切换 CR3**：因为它们没有自己的地址空间，也没有"被打断后从 resume 点继续"的语义
+  - **注意"实现版本限定"**：上述"kernel task 不会被调度器选中"是当前现代 Minix3 的实现事实，而非 MINIX 架构永恒不变的定义——历史 MINIX 中 `task` 一词确实描述过有独立 execution context 的实体。这与 `proc` 身份作为 IPC addressing abstraction 这个语义正交
+- **IDLE**（每 CPU 一个）：**三维度模型的最漂亮反例**——它是唯一真正"自己持有 execution context"的内核实体。当 `pick_proc()` 找不到就绪进程时，CPU 直接进入 `idle()` 空转循环（`proc.c:176-193`）等待中断。IDLE 证明了三维度真的正交：它有 execution context 却几乎无状态可言
+- **HARDWARE / ASYNCM**：连其中两个维度都缺——它们是**纯 IPC 身份**而非子系统。HARDWARE 是"中断来源"的合成身份（`#define HARDWARE KERNEL`，`com.h:52`），ASYNCM 是异步消息完成通知的虚拟 endpoint（`com.h:47`）——这两个连 handler 都没有，因此并不像 CLOCK/SYSTEM 那样承载"事件驱动执行"
+
+**一句话心智模型**（概念层，版本无关）：
+
+> 现代 Minix3 中，`proc` 身份、execution context、code/state 是三个正交概念。User process / system server 同时拥有三者；CLOCK/SYSTEM kernel task 拥有 IPC identity 和 kernel code/state，但**不拥有可由 scheduler 独立恢复的 execution context**——其功能由 trap 或 interrupt 等 entry point 在当前 kernel execution context 中执行；IDLE 则是一个特殊的、真正拥有持续 execution context 的 kernel execution context。**"kernel task"中的 task 在现代 Minix3 中主要表达的是身份与内核服务角色，不应直接理解为 thread 或独立 execution flow。**
+
+**关于"kernel 没有自己的执行流"这一表述的精确化**：
+
+> **现代 Minix3 的 kernel 没有一条代表整个 kernel 的 persistent main execution flow**——也就是说，**不存在一个 kernel-wide persistent execution context**。但 kernel 仍然有多条**由 entry point 驱动的 execution flows**（trap/syscall entry、hardware interrupt entry、idle loop）。简言之：kernel 有 execution flows，但这不是"kernel 自己有一条主线"的执行流，而是"每次都在借用或重新进入当前 CPU 上某条已存在的 execution context"。
+
+**对照表行（`execution context` vs `execution flow`）**：
+
+| 概念 | 含义 |
+|------|------|
+| **execution context** | 可被调度器恢复的**寄存器快照 + 内核栈 + resume PC** 集合，持久存在 |
+| **execution flow** | CPU 当前沿着某条控制流**正在执行**（不一定持久） |
+
+User/Server 兼有两者（context 持久，flow 周期切到它）。CLOCK/SYSTEM kernel task 只有后者（每次借 flow 跑），没有前者。IDLE 兼有两者。
+
+> **与经典 MINIX 3 的区别**：早期 MINIX 内核 task 有真实的 `for(;;) receive()` 主循环。现代 Minix3 已把它们重构为纯事件驱动入口（见 `system.c:12-13` 注释中已不存在的 `sys_task()`）。读老教材时若遇到"task 是独立执行流"的描述，需注意这只适用于经典版本。
+
+> **术语澄清（易混点）**：有些教材（含部分 Minix 文档）把 PM/VM/RS 称为"系统任务（system task）"，是误用。PM/VM/RS 是**系统服务器（system server）**，与普通用户进程机制相同、在 Ring 3 运行。**真正的内核 task 只有 5 个**：ASYNCM/IDLE/CLOCK/SYSTEM/HARDWARE（`table.c:44-51`）。其中 HARDWARE 是"中断来源"的合成身份（`#define HARDWARE KERNEL`，`com.h:52`），ASYNCM 是异步消息完成通知的虚拟 endpoint——这两个连 handler 都没有，纯粹是 **IPC 身份**。现代 Minix3 的用户态调度器 `sched` server（`SCHED_PROC_NR`，正 endpoint）也**不属于**内核 task（详见 [06-proc-init-boot-proc.md §1.1.4](./06-proc-init-boot-proc.md)）。
+
 ### 1.5 内核执行模型约束（Rust 开发必读）
 
 > **本节是 03-stage-kernel 所有文档的共享约束**。开发内核 Rust 代码时，必须遵守以下规则，它们覆盖全局 CLAUDE.md 中的"单线程事件循环"假设。

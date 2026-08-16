@@ -12,14 +12,12 @@
 //! data shapes, the E2BIG/EINVAL/ESRCH gates and the label→endpoint
 //! resolution.
 
-use minix_types::{E2BIG, EINVAL, ESRCH, Endpoint};
+use crate::live_update::SEF_LU_STATE_EVAL;
+use minix_types::{Endpoint, Errno};
 
 /// C: `IPCF_MAX_ELEMENTS` — ipc_filter.h (`NR_SYS_PROCS` = 64, config.h:32,
 /// × 2).
 pub const IPCF_MAX_ELEMENTS: usize = 128;
-
-/// C: `RS_MAX_LABEL_LEN` — rs.h:58.
-pub const RS_MAX_LABEL_LEN: usize = 16;
 
 /// C: `sizeof(struct rs_state_data)` — rs.h:93-100, **x86-64 target layout**
 /// (fields: size 8 + ptr 8 + size 8 + int 4 + ptr 8 + size 8 + int 4 = 48,
@@ -43,9 +41,6 @@ pub const RS_IPCF_FILTER_BLOCK_SIZE: usize = IPCF_MAX_ELEMENTS * RS_IPCF_FILTER_
 
 /// C: `sizeof(ipc_filter_el_t)` — ipc_filter.h: three `int`s.
 pub const IPCF_EL_SIZE: usize = 12;
-
-/// C: `SEF_LU_STATE_EVAL` — sef.h:217 (evaluate-expression state).
-pub const SEF_LU_STATE_EVAL: i32 = 4;
 
 /// C: `VM_RS_UPDATE` — com.h:736 (`VM_RQ_BASE` = 0xC00, com.h:627, + 41).
 pub const VM_RS_UPDATE: i32 = 0xC29;
@@ -87,7 +82,11 @@ bitflags::bitflags! {
 pub struct SourceIpcFilterEl<'a> {
     /// C: `flags` — the `IPCF_*` flags.
     pub flags: IpcfFlags,
-    /// C: `m_label` — the message-source label (rs.h:90).
+    /// C: `m_label` — the message-source label (rs.h:90). UTF-8 contract
+    /// (R11): C stores raw bytes; Rust requires UTF-8 at the message
+    /// boundary (19), non-UTF-8 labels are rejected fail-closed — the DS
+    /// label namespace is service names (ASCII in practice), and
+    /// `parse::<i32>()`/`strcmp`-style matching stay type-safe.
     pub m_label: &'a str,
     /// C: `m_type` — the message type to match.
     pub m_type: i32,
@@ -113,9 +112,9 @@ pub struct IpcFilterEl {
 ///
 /// C: manager.c:190 — `src->size != sizeof(struct rs_state_data)` →
 /// `E2BIG`.
-pub fn validate_state_data_size(size: usize) -> Result<(), i32> {
+pub fn validate_state_data_size(size: usize) -> Result<(), Errno> {
     if size != RS_STATE_DATA_SIZE {
-        Err(E2BIG)
+        Err(Errno::E2BIG)
     } else {
         Ok(())
     }
@@ -126,9 +125,13 @@ pub fn validate_state_data_size(size: usize) -> Result<(), i32> {
 /// C: manager.c:196-198 — `SEF_LU_STATE_EVAL` with a missing or empty
 /// `eval_addr`/`eval_len` → `EINVAL`. Other prepare states skip eval
 /// migration entirely.
-pub fn validate_eval(prepare_state: i32, has_eval_addr: bool, eval_len: usize) -> Result<(), i32> {
+pub fn validate_eval(
+    prepare_state: i32,
+    has_eval_addr: bool,
+    eval_len: usize,
+) -> Result<(), Errno> {
     if prepare_state == SEF_LU_STATE_EVAL && (eval_len == 0 || !has_eval_addr) {
-        Err(EINVAL)
+        Err(Errno::EINVAL)
     } else {
         Ok(())
     }
@@ -138,9 +141,9 @@ pub fn validate_eval(prepare_state: i32, has_eval_addr: bool, eval_len: usize) -
 ///
 /// C: manager.c:213-216 — `ipcf_els_size % rs_ipc_filter_size` (a block is
 /// `IPCF_MAX_ELEMENTS` elements) → `E2BIG`; otherwise the block count.
-pub fn num_ipc_filter_blocks(ipcf_els_size: usize) -> Result<usize, i32> {
+pub fn num_ipc_filter_blocks(ipcf_els_size: usize) -> Result<usize, Errno> {
     if !ipcf_els_size.is_multiple_of(RS_IPCF_FILTER_BLOCK_SIZE) {
-        Err(E2BIG)
+        Err(Errno::E2BIG)
     } else {
         Ok(ipcf_els_size / RS_IPCF_FILTER_BLOCK_SIZE)
     }
@@ -164,7 +167,7 @@ pub fn ipcf_els_buff_size(num_filters: usize, src_is_vm: bool) -> usize {
 pub fn parse_label(
     label: &str,
     ds_lookup: impl Fn(&str) -> Option<Endpoint>,
-) -> Result<Endpoint, i32> {
+) -> Result<Endpoint, Errno> {
     if let Some(ep) = ds_lookup(label) {
         return Ok(ep);
     }
@@ -178,8 +181,9 @@ pub fn parse_label(
     // (manager.c:260-263). `parse::<i32>()` consumes the whole string and
     // fails on overflow, matching both checks. Empty-label divergence
     // (ARCH A-14): C's strtol("") returns 0 with no error (→ PM endpoint),
-    // Rust fails closed with ESRCH.
-    label.parse::<i32>().map(Endpoint).map_err(|_| ESRCH)
+    // Rust fails closed with ESRCH. UTF-8 divergence (R11): C matches raw
+    // bytes, Rust requires UTF-8 (fail-closed at the 19 boundary).
+    label.parse::<i32>().map(Endpoint).map_err(|_| Errno::ESRCH)
 }
 
 /// Parses one source filter element into kernel form.
@@ -190,7 +194,7 @@ pub fn parse_label(
 pub fn parse_filter_el(
     el: &SourceIpcFilterEl<'_>,
     ds_lookup: impl Fn(&str) -> Option<Endpoint>,
-) -> Result<IpcFilterEl, i32> {
+) -> Result<IpcFilterEl, Errno> {
     let m_source = if el.flags.contains(IpcfFlags::MATCH_M_SOURCE) {
         parse_label(el.m_label, ds_lookup)?
     } else {
@@ -229,17 +233,26 @@ mod tests {
     fn test_validate_state_data_size() {
         // C: manager.c:190 — size != sizeof(rs_state_data) → E2BIG.
         assert_eq!(validate_state_data_size(RS_STATE_DATA_SIZE), Ok(()));
-        assert_eq!(validate_state_data_size(0), Err(E2BIG));
-        assert_eq!(validate_state_data_size(55), Err(E2BIG));
-        assert_eq!(validate_state_data_size(57), Err(E2BIG));
+        assert_eq!(validate_state_data_size(0), Err(Errno::E2BIG));
+        assert_eq!(validate_state_data_size(55), Err(Errno::E2BIG));
+        assert_eq!(validate_state_data_size(57), Err(Errno::E2BIG));
     }
 
     #[test]
     fn test_validate_eval() {
         // C: manager.c:196-198 — EVAL + missing addr/len → EINVAL.
-        assert_eq!(validate_eval(SEF_LU_STATE_EVAL, false, 0), Err(EINVAL));
-        assert_eq!(validate_eval(SEF_LU_STATE_EVAL, true, 0), Err(EINVAL));
-        assert_eq!(validate_eval(SEF_LU_STATE_EVAL, false, 8), Err(EINVAL));
+        assert_eq!(
+            validate_eval(SEF_LU_STATE_EVAL, false, 0),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            validate_eval(SEF_LU_STATE_EVAL, true, 0),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            validate_eval(SEF_LU_STATE_EVAL, false, 8),
+            Err(Errno::EINVAL)
+        );
         assert_eq!(validate_eval(SEF_LU_STATE_EVAL, true, 8), Ok(()));
         // Non-EVAL states skip the eval migration.
         assert_eq!(validate_eval(0, false, 0), Ok(()));
@@ -254,11 +267,11 @@ mod tests {
         assert_eq!(num_ipc_filter_blocks(2 * RS_IPCF_FILTER_BLOCK_SIZE), Ok(2));
         assert_eq!(
             num_ipc_filter_blocks(RS_IPCF_FILTER_BLOCK_SIZE - 1),
-            Err(E2BIG)
+            Err(Errno::E2BIG)
         );
         assert_eq!(
             num_ipc_filter_blocks(RS_IPCF_FILTER_BLOCK_SIZE + 1),
-            Err(E2BIG)
+            Err(Errno::E2BIG)
         );
     }
 
@@ -283,10 +296,10 @@ mod tests {
         assert_eq!(parse_label("2", ds), Ok(Endpoint::RS));
         assert_eq!(parse_label("0", ds), Ok(Endpoint::PM));
         // Trailing garbage / non-numeric / overflow → ESRCH.
-        assert_eq!(parse_label("123x", ds), Err(ESRCH));
-        assert_eq!(parse_label("abc", ds), Err(ESRCH));
-        assert_eq!(parse_label("999999999999", ds), Err(ESRCH));
-        assert_eq!(parse_label("", ds), Err(ESRCH));
+        assert_eq!(parse_label("123x", ds), Err(Errno::ESRCH));
+        assert_eq!(parse_label("abc", ds), Err(Errno::ESRCH));
+        assert_eq!(parse_label("999999999999", ds), Err(Errno::ESRCH));
+        assert_eq!(parse_label("", ds), Err(Errno::ESRCH));
     }
 
     #[test]
@@ -329,7 +342,7 @@ mod tests {
             m_label: "no-such-label",
             m_type: 0,
         };
-        assert_eq!(parse_filter_el(&bad, ds), Err(ESRCH));
+        assert_eq!(parse_filter_el(&bad, ds), Err(Errno::ESRCH));
     }
 
     #[test]
@@ -357,7 +370,7 @@ mod tests {
     fn test_constants() {
         // C: ipc_filter.h + config.h:32 + rs.h:58 + sef.h:217 + com.h:736.
         assert_eq!(IPCF_MAX_ELEMENTS, 128);
-        assert_eq!(RS_MAX_LABEL_LEN, 16);
+        assert_eq!(crate::service_slot::RS_MAX_LABEL_LEN, 16);
         assert_eq!(RS_STATE_DATA_SIZE, 56);
         assert_eq!(RS_IPCF_FILTER_EL_SIZE, 24);
         assert_eq!(RS_IPCF_FILTER_BLOCK_SIZE, 3072);

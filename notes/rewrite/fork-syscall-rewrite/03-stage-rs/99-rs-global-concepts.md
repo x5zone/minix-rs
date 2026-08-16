@@ -153,11 +153,50 @@ RS 的常量分散在 4 个头文件：`const.h`（服务状态标志、时间�
 
 快照 `minix3/` 中的标识符保持规范 Minix3 名字，可 grep 实证：`error.c:26` 写 `EGENERIC`、`manager.c:766` 写 `ROOT_SYS_PROC`、`lib/libsys/sef_st.c:151` 写 `sys_getpriv`——不存在重命名。Rust 侧 `errno.rs` 的 `EGENERIC` 常量（errno.rs:98，=204）按 99 表落地；本文档与 19 均使用**规范 Minix3 名字** + 可验证行锚点。
 
+### 3.4 KernelApi 注入边界：纯决策 / shell 执行（T5，2026-08-16）
+
+RS 是**单线程事件循环**（AGENTS.md 执行模型），内核交互面收敛为一条原则——
+**syscall 面只在 shell（接线层）出现，纯函数层完全不感知 `KernelApi`**（与 Redox
+"用户态逻辑与 syscall 分离"、Rust 社区 functional-core / imperative-shell 一致）：
+
+- **查询**（`getnuid`/`getpriv`/`get_hz`/`get_ticks`）：shell 执行后把 `Result`/`Option` 传入决策函数
+  （`access::caller_is_root(euid)`、`ipc_mask::add_forward_ipc(..., priv_id_of)`）。
+- **命令**（`privctl`/`sched_init_proc`/`setalarm`）：决策函数返回效果枚举/提交结构，shell 执行
+  （`sched::sched_decision -> SchedAction`、`sched::set_sig_mgrs -> SigMgrCommit`、`monitor::period_decision
+  -> PeriodDecision { action, mutations }`）。**R13（2026-08-16）**：决策函数的**槽位副作用**统一为
+  `SlotMutations` 载荷（set/clear/字段）——`monitor`（`PeriodDecision`）、`ready`
+  （`ReadyDecision`）、`recovery`（`TerminateDecision.mutations`）三处同款，shell 在动作 hook 后
+  `mutations.apply(rp)` 一次提交；C"边走边置位"的中间态与"漏一条变异"的静默漂移成为编译期缺口
+  （对照 Redox 变异权 token：副作用随决策显式传递，不埋在注释里）。
+- **shell 清单**：boot 四步（`boot.rs`）、`RsServer.kernel` 持有者（`lib.rs`）、19 接线层、
+  `testutil::MockKernelApi`（唯一测试 mock，E1）。
+- **测试收益**：access/ipc_mask/sched 的决策函数纯数据驱动、零 mock；只有 shell 测试需要 mock。
+
 ---
 
 ## 4. 实现（minix-types 缺口补齐）
 
 `os/libs/minix-types/src/types/com.rs` 新增 `SYS_STATE_*` 段（com.h:442-446，五操作码）。其余常量已在 §3.1 权威位置落地，本模块不重复定义。
+
+> **T3 落地（2026-08-15）——`Errno` newtype（ARCH A-12 对齐）**：
+> `os/libs/minix-types/src/types/errno.rs` 在既有 `i32` 常量旁新增
+> `pub struct Errno(i32)`（`from_i32`/`to_i32` wire 面，Redox
+> `redox_syscall::Error{errno}` 同款共享 ABI 定位）。`os/servers/rs/` 全量
+> 迁移：`Result<_, i32>` → `Result<_, Errno>`，错误不再可被裸整数静默混用。
+> `Errno` 提供 RS 需要的 `EPERM/E2BIG/ENOEXEC/ESRCH/EBUSY/EINVAL/ENOMEM/ENOSYS/
+> ERESTART/EDONTREPLY/EGENERIC/EDEADEPT` 关联常量；`test_errno_values_match_c`/
+> `test_errno_roundtrip` 断言与 C 值一致。语义过载残留（`boot.rs:452` lookup
+> 失败与 `boot.rs:556` getnpid 负值均用 `ENOSYS`）在 19 接线时按 T3 的"错误域区分"
+> （内部不变式用独立 `BootError`）收敛。
+
+> **N4 修复（2026-08-16，todo §11）——minix-sys 的 Errno 统一**：`os/libs/minix-sys/src/lib.rs`
+> 原有自己的 `pub enum Errno`（22 个变体，`Eperm` 命名风格）——与 `minix_types::Errno`
+> 双类型并存，19 接线时每个 `KernelApi` 边界都要桥接；且缺 RS 必需的
+> `ENOSYS/EDEADEPT/EDONTREPLY/EGENERIC/ERESTART`（errno.h:78/211/199/200/196）。
+> 已改为 `pub use minix_types::Errno;`（re-export，单一共享 ABI 类型，Redox
+> `redox_syscall::Error{errno}` 同款定位），删除本地 enum 及其测试，新增
+> `test_errno_values` 断言共享类型可达 `EPERM/EINVAL/ENOSYS`。命令 crate
+> （`use minix_sys::*`）不受影响（无 crate 使用旧 `Eperm` 变体）。
 
 ---
 

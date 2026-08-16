@@ -10,9 +10,17 @@
 //! computation here serves dynamic services (`RS_UP` → `init_slot` →
 //! `edit_slot` → `init_privs`, manager.c:1700, 1794) and runtime edits
 //! (`do_edit` → `edit_slot`, request.c:348).
+//!
+//! # Kernel boundary (T5)
+//!
+//! The mask computation is **pure**: the only kernel query it needs is the
+//! priv id of the pseudo-names `SYSTEM`/`USER` (manager.c:2208-2215), which
+//! the shell resolves and injects as a `priv_id_of` closure. `KernelApi`
+//! never appears in this module — the syscall face lives only at the wiring
+//! layer (todo §13, T5 — the monitor / functional core pattern of
+//! 07-rs-period-heartbeat.md).
 
-use crate::boot::KernelApi;
-use crate::privilege::SysMap;
+use crate::privilege::{PrivId, SysMap};
 use crate::process_table::RProcTable;
 use crate::service_slot::{Label, RS_MAX_LABEL_LEN, ServiceSlot};
 use minix_types::Endpoint;
@@ -97,7 +105,14 @@ impl<'a> Iterator for IpcListIterator<'a> {
 /// `sys_getpriv` (manager.c:2208-2215). Any other name matches in-use table
 /// rows by `proc_name`; a missing match is **not** an error — the target may
 /// not have been started yet (manager.c:2183-2188, see `add_backward_ipc`).
-pub fn add_forward_ipc(rp: &ServiceSlot, table: &RProcTable, sys: &mut dyn KernelApi) -> SysMap {
+/// `priv_id_of` is the shell-injected resolver for the pseudo-names (T5):
+/// it maps an endpoint to its priv id (`None` = `sys_getpriv` failed — C
+/// prints a diagnostic and skips, manager.c:2209-2213).
+pub fn add_forward_ipc(
+    rp: &ServiceSlot,
+    table: &RProcTable,
+    mut priv_id_of: impl FnMut(Endpoint) -> Option<PrivId>,
+) -> SysMap {
     let mut map = SysMap::empty();
     for name in IpcListIterator::new(&rp.ipc_list) {
         let endpoint = if name == "SYSTEM" {
@@ -109,8 +124,8 @@ pub fn add_forward_ipc(rp: &ServiceSlot, table: &RProcTable, sys: &mut dyn Kerne
         };
         if let Some(ep) = endpoint {
             // C: sys_getpriv(&priv, endpoint); use priv.s_id (manager.c:2208-2215).
-            if let Ok(priv_) = sys.getpriv(ep) {
-                map = map.set(priv_.id.0 as usize);
+            if let Some(id) = priv_id_of(ep) {
+                map = map.set(id.0 as usize);
             }
             continue;
         }
@@ -165,8 +180,13 @@ pub fn add_backward_ipc(target: &ServiceSlot, table: &RProcTable) -> SysMap {
 /// 2. `IPC_ALL_SYS` — every priv id except the shared user-process
 ///    `USER_PRIV_ID` (manager.c:2325-2328).
 /// 3. Any other list — union of `add_forward_ipc` + `add_backward_ipc`
-///    (manager.c:2319-2320).
-pub fn init_privs(rp: &ServiceSlot, table: &RProcTable, sys: &mut dyn KernelApi) -> SysMap {
+///    (manager.c:2319-2320). `priv_id_of` is forwarded to
+///    [`add_forward_ipc`] (T5).
+pub fn init_privs(
+    rp: &ServiceSlot,
+    table: &RProcTable,
+    priv_id_of: impl FnMut(Endpoint) -> Option<PrivId>,
+) -> SysMap {
     let is_ipc_all = ipc_list_eq(&rp.ipc_list, RSS_IPC_ALL);
     let is_ipc_all_sys = ipc_list_eq(&rp.ipc_list, RSS_IPC_ALL_SYS);
 
@@ -179,7 +199,7 @@ pub fn init_privs(rp: &ServiceSlot, table: &RProcTable, sys: &mut dyn KernelApi)
         return map;
     }
 
-    let forward = add_forward_ipc(rp, table, sys);
+    let forward = add_forward_ipc(rp, table, priv_id_of);
     let backward = add_backward_ipc(rp, table);
     SysMap(forward.0 | backward.0)
 }
@@ -188,72 +208,32 @@ pub fn init_privs(rp: &ServiceSlot, table: &RProcTable, sys: &mut dyn KernelApi)
 ///
 /// C: `edit_slot` calls `init_privs(rp, &rp->r_priv)` (manager.c:1700) and the
 /// updated structure is submitted with `SYS_PRIV_UPDATE_SYS` (03).
-pub fn update_ipc_mask(rp: &mut ServiceSlot, table: &RProcTable, sys: &mut dyn KernelApi) {
-    rp.priv_.ipc_to = init_privs(rp, table, sys);
+/// `priv_id_of` is forwarded to [`init_privs`] (T5).
+pub fn update_ipc_mask(
+    rp: &mut ServiceSlot,
+    table: &RProcTable,
+    priv_id_of: impl FnMut(Endpoint) -> Option<PrivId>,
+) {
+    rp.priv_.ipc_to = init_privs(rp, table, priv_id_of);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boot::Machine;
-    use crate::privilege::{PrivCtlOp, PrivFlags, PrivId, Privilege};
+    use crate::privilege::PrivId;
     use crate::service_slot::{RFlags, SlotId};
     use alloc::vec::Vec;
     use minix_types::Endpoint;
 
-    /// KernelApi stub: `getpriv` returns a fixed priv id for SYSTEM/INIT.
-    struct MockSys {
-        ids: Vec<(Endpoint, i32)>,
-    }
-
-    impl MockSys {
-        fn new() -> Self {
-            Self {
-                ids: vec![
-                    (Endpoint::SYSTEM, 4), // arbitrary, C queries the kernel
-                    (Endpoint::INIT, USER_PRIV_ID),
-                ],
-            }
-        }
-    }
-
-    impl KernelApi for MockSys {
-        fn get_machine(&mut self) -> Result<Machine, i32> {
-            unimplemented!()
-        }
-        fn get_hz(&mut self) -> Result<u32, i32> {
-            unimplemented!()
-        }
-        fn privctl(
-            &mut self,
-            _proc: Endpoint,
-            _op: PrivCtlOp,
-            _priv_: Option<&Privilege>,
-        ) -> Result<(), i32> {
-            unimplemented!()
-        }
-        fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32> {
-            self.ids
-                .iter()
-                .find(|(ep, _)| *ep == proc)
-                .map(|(_, id)| {
-                    let mut p = Privilege::boot_priv(PrivFlags::SYS_PROC, 0);
-                    p.id = PrivId(*id);
-                    p
-                })
-                .ok_or(-1)
-        }
-        fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, i32> {
-            unimplemented!()
-        }
-        fn sched_init_proc(&mut self, _proc: Endpoint) -> Result<(), i32> {
-            unimplemented!()
-        }
-        fn getnpid(&mut self, _proc: Endpoint) -> Result<i32, i32> {
-            unimplemented!()
-        }
-        fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), i32> {
-            unimplemented!()
+    /// Shell-injected priv-id resolver for the SYSTEM/USER pseudo-names
+    /// (T5): the values mirror the deleted `MockSys` (SYSTEM → 4,
+    /// INIT → `USER_PRIV_ID`); anything else resolves to `None` (the C
+    /// `sys_getpriv` failure skip, manager.c:2209-2213).
+    fn mock_priv_id(ep: Endpoint) -> Option<PrivId> {
+        match ep {
+            Endpoint::SYSTEM => Some(PrivId(4)),
+            Endpoint::INIT => Some(PrivId(USER_PRIV_ID)),
+            _ => None,
         }
     }
 
@@ -310,9 +290,8 @@ mod tests {
     #[test]
     fn test_init_privs_ipc_all() {
         let (t, a, _) = table();
-        let sys = &mut MockSys::new();
         let s = slot(b"IPC_ALL\0");
-        let map = init_privs(&s, &t, sys);
+        let map = init_privs(&s, &t, mock_priv_id);
         // IPC_ALL includes the shared user priv id (manager.c:2325-2328).
         assert!(map.test(USER_PRIV_ID as usize));
         assert!(map.test(10));
@@ -322,9 +301,8 @@ mod tests {
     #[test]
     fn test_init_privs_ipc_all_sys() {
         let (t, a, _) = table();
-        let sys = &mut MockSys::new();
         let s = slot(b"IPC_ALL_SYS\0");
-        let map = init_privs(&s, &t, sys);
+        let map = init_privs(&s, &t, mock_priv_id);
         // IPC_ALL_SYS excludes USER_PRIV_ID but includes system privs.
         assert!(!map.test(USER_PRIV_ID as usize));
         assert!(map.test(10));
@@ -334,10 +312,9 @@ mod tests {
     #[test]
     fn test_init_privs_list_forward_backward() {
         let (t, _, b) = table();
-        let sys = &mut MockSys::new();
         // tty's list names vm → forward sets bit for vm's priv id (13).
         let s = slot(b"vm\0");
-        let map = init_privs(&s, &t, sys);
+        let map = init_privs(&s, &t, mock_priv_id);
         assert!(map.test(13));
         assert!(!map.test(10));
         let _ = b;
@@ -346,28 +323,25 @@ mod tests {
     #[test]
     fn test_forward_system_user() {
         let (t, _, _) = table();
-        let sys = &mut MockSys::new();
         let s = slot(b"SYSTEM USER\0");
-        let map = init_privs(&s, &t, sys);
-        assert!(map.test(4)); // SYSTEM priv id from mock
+        let map = init_privs(&s, &t, mock_priv_id);
+        assert!(map.test(4)); // SYSTEM priv id from the injected resolver
         assert!(map.test(USER_PRIV_ID as usize)); // USER → INIT's priv id
     }
 
     #[test]
     fn test_forward_unmatched_name_tolerated() {
         let (t, _, _) = table();
-        let sys = &mut MockSys::new();
         // A name with no matching slot is fine — target may start later
         // (manager.c:2183-2188); backward IPC covers it when it does.
         let s = slot(b"not-yet-started\0");
-        let map = init_privs(&s, &t, sys);
+        let map = init_privs(&s, &t, mock_priv_id);
         assert_eq!(map, SysMap::empty());
     }
 
     #[test]
     fn test_backward_ipc_all_others() {
         let (t, _, _) = table();
-        let sys = &mut MockSys::new();
         // vm's list is IPC_ALL → backward sets vm's bit on tty's mask.
         let mut vm = t.get(SlotId::new(1)).clone();
         vm.ipc_list[..8].copy_from_slice(b"IPC_ALL\0");
@@ -383,18 +357,17 @@ mod tests {
         t2.get_mut(b2).priv_.id = PrivId(13);
         t2.get_mut(b2).ipc_list[..8].copy_from_slice(b"IPC_ALL\0");
         let tty = t2.get(a).clone();
-        let map = init_privs(&tty, &t2, sys);
+        let map = init_privs(&tty, &t2, mock_priv_id);
         assert!(map.test(13)); // from vm's IPC_ALL via backward
         let _ = vm;
     }
 
     #[test]
     fn test_update_ipc_mask_writes_back() {
-        let (mut t, _, _) = table();
-        let sys = &mut MockSys::new();
+        let (t, _, _) = table();
         let mut s = t.get(SlotId::new(0)).clone();
         s.ipc_list[..3].copy_from_slice(b"vm\0");
-        update_ipc_mask(&mut s, &t, sys);
+        update_ipc_mask(&mut s, &t, mock_priv_id);
         assert!(s.priv_.ipc_to.test(13));
     }
 

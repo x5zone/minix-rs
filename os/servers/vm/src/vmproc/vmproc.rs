@@ -114,6 +114,18 @@ impl VmProc {
         self.vm_flags.contains(VmFlags::VM_INSTANCE)
     }
 
+    /// Resets usage statistics.
+    ///
+    /// Corresponds to Minix3's `reset_vm_rusage()` (exit.c:25-31), called by
+    /// both `free_proc()` and `clear_proc()`. Shared by `VmProc::clear()` and
+    /// the VMPPARAM_CLEAR path (`ActiveProc::reset_rusage`).
+    pub(crate) fn reset_rusage(&mut self) {
+        self.vm_total = VirBytes::new(0);
+        self.vm_total_max = VirBytes::new(0);
+        self.vm_minor_page_fault = 0;
+        self.vm_major_page_fault = 0;
+    }
+
     /// Debug invariant check (runtime assertion).
     #[cfg(debug_assertions)]
     pub(crate) fn check(&self) {
@@ -187,10 +199,7 @@ impl VmProc {
         self.vm_regions_initialized = false;
 
         self.vm_region_top = VirBytes::new(0);
-        self.vm_total = VirBytes::default();
-        self.vm_total_max = VirBytes::default();
-        self.vm_minor_page_fault = 0;
-        self.vm_major_page_fault = 0;
+        self.reset_rusage();
 
         #[cfg(feature = "vmstats")]
         {

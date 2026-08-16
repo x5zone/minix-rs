@@ -71,16 +71,16 @@ CPU 只有一个 INT 引脚（或一个 IRQ 线），但设备有几十个。中
 | `intr_init(0)` | 初始化中断控制器：8259A（PIC）/APIC/GIC/PLIC，mask 所有 IRQ | prot_init（IDT/VBAR/stvec 已加载） |
 | `arch_init()` | 架构特定初始化：栈分配、APIC（本地高级可编程中断控制器）、ACPI（硬件配置/电源管理表）、PMU（性能监控单元）等架构相关设置 | init_clock（提供 `system_hz`）+ intr_init（中断控制器已初始化） |
 
-> **注意**：这里的"tick 频率"不是 CPU 主频，而是 OS 希望定时器每秒产生多少次 tick。Minix3 C 在不同架构上选择不同默认值（x86 默认 60 Hz、ARM 默认 1000 Hz，来源同上）；minix-rs 统一为 100 Hz（详见 §2.5）。硬件定时器本身的输入时钟频率（如 x86 PIT 的 1.193 MHz、ARM Generic Timer 的 CNTFRQ、RISC-V `mtime` 的 `sbi_set_timer` 接口）由架构代码在运行时通过 CPUID/设备树/固件获取，再据此计算分频器；HZ 只是一个策略值。
+> **注意**：这里的"tick 频率"不是 CPU 主频，而是 OS 希望定时器每秒产生多少次 tick。Minix3 C 在不同架构上选择不同默认值（x86 默认 60 Hz、ARM 默认 1000 Hz，来源同上）；minix-rs 统一为 100 Hz（详见 §2.5）。硬件定时器本身的输入时钟频率（如 x86 PIT 的 1.193 MHz、ARM Generic Timer 的 CNTFRQ、RISC-V `mtime`（CLINT MMIO））由架构代码在运行时通过 CPUID/设备树/固件获取，再据此计算分频器；HZ 只是一个策略值。
 
 ### 1.3 三架构对照
 
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
-| 时钟源 | 8254 PIT / LAPIC Timer | ARM Generic Timer（`CNTFRQ_EL0` 读频率） | RISC-V `mtime` + `mtimecmp`（S-mode 通过 SBI `sbi_set_timer` 间接访问） |
+| 时钟源 | 8254 PIT / LAPIC Timer | ARM Generic Timer（`CNTFRQ_EL0` 读频率） | RISC-V `mtime` + `mtimecmp`（CLINT MMIO，S-mode 直接写） |
 | 时钟中断 | IRQ 0 → IDT vector 0x50（`include/arch/i386/include/interrupt.h:17` `IRQ0_VECTOR=0x50`） | GIC PPI 27（Generic Timer 物理 PPI，私有外设中断，每个 CPU 一份） | S-mode 定时器中断 → `stvec`（RISC-V Privileged Spec，`sip.STIP=1` 触发，无固定向量号，由 `stvec` 指定 handler 入口） |
 | 中断控制器 | LAPIC + IOAPIC（x86 APIC 规范） | GICv3：GICD（Distributor）+ GICR（Redistributor）+ CPU Interface（`ICC_*_EL1` 系统寄存器） | PLIC（外部设备中断）+ CLINT（Core-Local Interruptor，含 `mtimecmp`/software interrupt，`sifive/clint` 规范） |
-| intr_init | 初始化 8259A 或 APIC | 映射 OMAP INTC / 初始化 GIC（GICv3 GICD/GICR 建表 + `ICC_SRE_EL1.SRE=1`） | 初始化 PLIC（`enable` 位 + 优先级阈值）+ CLINT 基地址映射 |
+| intr_init | 初始化 8259A 或 APIC | 初始化 GICv3（GICD/GICR 建表 + `ICC_SRE_EL1.SRE=1`；OMAP INTC 为 32 位 ARM 的 C 行为 [ARCH: K-1]，见 §2.3） | 初始化 PLIC（`enable` 位 + 优先级阈值 [ARCH: K-2]；CLINT 由 `ClockArch` 管理，见 §3.8 注） |
 | arch_init | TSS（任务状态段）/APIC/ACPI/BIOS mem cut | TSS（软件抽象，保存 sp0）/PMU（性能监控单元）/bsp_init | PMP（Physical Memory Protection，`pmpaddr0-15`+`pmpcfg0-3` 配置内核地址空间访问权限） |
 
 > **注**：x86-64 的 `TSS` 是硬件任务状态段，详见 [03-kmain-cstart.md](03-kmain-cstart.md) §1.4c；ARM 端口虽然也有同名 `tss_init()`/`struct tss_s`，但它**不是硬件 TSS**，只是一个软件抽象，里面只存一个 `sp0`（中断时用的内核栈指针），外加在栈顶记录 CPU id。
@@ -137,7 +137,7 @@ void init_clock(void)
 
 **关键观察**：`init_clock()` 只初始化**软件变量**，不触碰硬件。硬件定时器（8254 PIT / LAPIC Timer / ARM Generic Timer）的配置发生在更晚的 `bsp_finish_booting()` 中（`bsp_finish_booting` 函数体定义在 `main.c:38`，其内部调用 `boot_cpu_init_timer(system_hz)` 的那行在 `main.c:73`，函数定义见 `clock.c:294`）。
 
-此处注册的中断 handler 是 `timer_int_handler()`（`clock.c:70`，直接在 IRQ 入口被调用），它会在适当时机 `notify` 一个内核子系统 **CLOCK task**——CLOCK task 是 Kernel Subsystem 三分法（见 [06-proc-init-boot-proc.md §1.1.3](06-proc-init-boot-proc.md#1113-进程在内核眼中的组成)）中的一员，Ring 0、共用 kernel image、无独立地址空间，由内核在 build 时静态 link 进去、优先级最高；负责处理 `setitimer`/`alarm`/`utime` 等用户态定时请求并按 tick 推进 `kclockinfo.uptime`。本节只覆盖硬件 IRQ 准备——CLOCK task 抽象层、timer handler 跨界协议、定时器队列语义等见 [15-clock-timer.md §1.1](15-clock-timer.md#11-时钟中断在内核生命周期中的角色) 与 [15-clock-timer.md Ch2](15-clock-timer.md#ch2-c-源码分析)。
+此处注册的中断 handler 是 `timer_int_handler()`（`clock.c:70`，直接在 IRQ 入口被调用），它在当前上下文里完成 tick 推进、时间账务、虚拟定时器递减，并"在适当时机 notify 内核 task **CLOCK**"——但要注意，CLOCK 的 proc 身份（`com.h:49`）只是 notify 的名义目标，**不存在一个独立运行的"CLOCK 线程"去接收并处理这些通知**。CLOCK 属于三类运行态实体中的 Kernel task（详见 [06-proc-init-boot-proc.md §1.1.4](06-proc-init-boot-proc.md#114-三类运行态实体)）：Ring 0、共用 kernel image、无独立地址空间、编译时静态 link 进内核；它没有独立主循环，实际时钟逻辑全在 `timer_int_handler()` / `tmrs_exptimers()` 这条中断路径上同步执行（含 `setitimer`/`alarm`/`utime` 等用户态定时请求的处理与 `kclockinfo.uptime` 的推进）。本节只覆盖硬件 IRQ 准备——timer handler 跨界协议、定时器队列语义等见 [15-clock-timer.md §1.1](15-clock-timer.md#11-时钟中断在内核生命周期中的角色) 与 [15-clock-timer.md Ch2](15-clock-timer.md#ch2-c-源码分析)。
 
 ### 2.2 intr_init()：x86-64 中断控制器初始化
 
@@ -206,7 +206,7 @@ int intr_init(const int auto_eoi)
 
 ARM 的 `intr_init()` 比 x86 简单——只需要映射中断控制器的 MMIO 基地址。实际的 GIC 初始化在后续步骤完成。
 
-**注意**：这是 Minix3 ARM（32 位）的实现。ARM64 通常使用 GICv3，初始化序列不同（需要初始化 Distributor、Redistributor 和 CPU Interface），但语义相同——都是配置中断路由并屏蔽所有 IRQ。
+**注意**：这是 Minix3 ARM（32 位）的实现。minix-rs 的 aarch64 目标用 GICv3 取代 OMAP INTC（`[ARCH: K-1]`，见 §3.8 标注），初始化序列不同（需要初始化 Distributor、Redistributor 和 CPU Interface），但语义相同——都是配置中断路由并屏蔽所有 IRQ。
 
 ### 2.4 arch_init()：x86-64 架构特定初始化
 
@@ -345,7 +345,7 @@ pub trait ClockArch: Sized + Send + Sync {
     fn new(desc: &dyn minix_platform::TimerDesc) -> Self;
 
     /// 配置并启动硬件定时器。
-    fn init_timer(&mut self, hz: u32);
+    fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
     /// 读取当前 tick 计数。
     fn read_ticks(&self) -> u64;
@@ -358,14 +358,14 @@ pub trait ClockArch: Sized + Send + Sync {
 2. **可测试性**：`ClockState` 可以在 mock 环境中测试，不需要真实硬件
 3. **架构差异**：x86-64 用 8254 PIT / LAPIC Timer，aarch64 用 Generic Timer，riscv64 用 mtime——硬件配置完全不同
 4. **`Send + Sync`（SMP 边界）**：先解释 Rust 类型层含义——
-   - **`Send`** 表达"该类型的**所有权**可以跨越线程边界转移"（例如 BSP 构造完一个 `X86_64ClockArch`，可以 `move` 进 `PerCpuClockState[cpu_id]`）
+   - **`Send`** 表达"该类型的**所有权**可以跨越线程边界转移"。`ClockArch` 实例是**瞬态的**：调用点从全局平台描述符（`platform_desc().timer()`）构造一个 `CurrentClockArch`，完成硬件定时器操作后即丢弃，并不存在"每核存一份实例"的存储结构
    - **`Sync`** 表达"该类型的**共享引用 `&T`** 可以跨越线程边界传递"（`&T: Send` 当且仅当 `T: Sync`——这是 Rust 类型系统中的等价关系，不是 `Sync` 的"额外含义")
    - 二者**都不保证"`&self` 跨线程调用方法时的线程安全"**——Rust 的 Send/Sync 是**引用可传递性**的标记，不是访问同步的标记；具体同步由 Mutex / Atomic / BKL 等显式原语承担。
 
    回到 `ClockArch: Send + Sync`：
-   - **为什么需要 `Send`**：每核持有一份 `ClockArch` 实例（BSP 构造完后 move 进 `PerCpuClockState` 各 slot），所有权要能跨线程转移
+   - **为什么需要 `Send`**：定时器配置必须落在**当前 CPU** 自己的定时器上（RISC-V 的 CLINT `mtimecmp` 按 hart 编址），调用点通过 `current_cpuid()`（读 `SMP_STATE` 的 `bsp_cpu_id`）把 `cpu_id` 显式传给 `init_timer`/`stop_local_timer`。`Send` 约束保证实例所有权在 SMP 场景下可以跨线程转移（当前单核实现每次调用都从描述符现构造，不持有跨线程实例）
    - **为什么需要 `Sync`**：在某些代码路径上需要 `&ClockArch` 引用（如统一封装层、高层 API 接收 `&dyn ClockArch`）
-   - **为什么不需要锁**：硬件寄存器本身是 per-CPU 的（LAPIC Timer、ARM Generic Timer、CLINT mtimecmp 每核一份），多核"同时读自己那份"互不干扰；`init_timer(&mut self)` 是 BSP 独占的一次性动作（在 `init_clock_and_interrupts` 内完成），不走并发路径。**Send/Sync 在这里是"per-CPU 物理隔离 + 引用可传递"的语义编码**，而不是"并发数据结构"的声明——具体同步责任在调用点的 BKL 与 per-CPU 数据结构（`PerCpuClockState`）
+   - **为什么不需要锁**：硬件寄存器本身是 per-CPU 的（LAPIC Timer、ARM Generic Timer、CLINT mtimecmp 每核一份），多核"同时读自己那份"互不干扰；`init_timer(&mut self)` 只编程本 CPU 的定时器（`cpu_id` 参数显式指定），调用点都在 boot 单线程阶段（`init_clock_and_interrupts`，以及 `bsp_finish_booting` Step 6 的幂等 no-op 重调），不走并发路径。**Send/Sync 在这里是"per-CPU 物理隔离 + 引用可传递"的语义编码**，而不是"并发数据结构"的声明——具体同步责任在调用点的 BKL 与 per-CPU 数据（`SMP_STATE` 的 `CpuLocal`，见 16-smp.md §4.3）
    - **对照 `!Sync` 反例**：标准库的 `Rc<T>` 没有实现 Sync（多线程共享同一引用计数会数据竞争）；裸 `RefCell<T>` 没有 Sync（borrow 计数器非原子）。这两类"线程不安全"的类型在 kernel crate 内也被严格隔离——SMP 代码用 `Arc<Mutex<T>>` 或 `Arc<Atomic*>` 替代
 
 
@@ -386,7 +386,7 @@ pub trait ClockArch: Sized + Send + Sync {
 /// C: DEFAULT_HZ — i386: 60 Hz，earm: 1000 Hz（32 位值）
 ///   路径：minix3/minix/include/arch/i386/include/archconst.h
 ///         minix3/minix/include/arch/earm/include/archconst.h
-/// minix-rs: 统一为 100 Hz（见 §2.5 架构演进）。
+/// minix-rs: 统一为 100 Hz（[ARCH: K-3]，见 §3.8 标注）。
 /// 选择 100 Hz 的理由：10 ms tick 在响应延迟与上下文切换开销之间取得平衡，
 /// 且是 Linux 服务器常见配置之一（CONFIG_HZ=100），便于与现有工具/预期对齐。
 ///
@@ -570,7 +570,7 @@ pub trait ArchInit: Sized + Send + Sync {
 1. **统一接口**：三种架构的 `arch_init()` 在**启动阶段**语义相同（完成架构特定初始化），但具体实现完全不同
 2. **消除 `#ifdef`**：C 版用 `#ifdef USE_ACPI` / `#ifdef USE_APIC` 选择代码路径，Rust 用 trait 静态分派
 3. **可测试性**：mock 实现可以跳过硬件初始化
-4. **实例化模式**：把 `ArchMiscDesc` 一次性写入实例字段，避免每次 `init()` 调用时重复传递参数；与 §3.3 `InterruptController::new()` 和 §3.4 `EarlyConsole::new()` 保持一致（参见 [04-platform-discovery.md §3.4](04-platform-discovery.md#34-硬件-trait-为什么要带实例状态) 实例化模式）
+4. **实例化模式**：把 `ArchMiscDesc` 一次性写入实例字段，避免每次 `init()` 调用时重复传递参数；与 §3.3 `InterruptController::new()` 和 §3.4 `EarlyConsole::init()` 保持一致（参见 [04-platform-discovery.md §3.4](04-platform-discovery.md#34-硬件-trait-为什么要带实例状态) 实例化模式）
 
 > **注意：ArchInit 是“阶段抽象”而非“功能抽象”**。它回答的是“除了时钟、中断和早期控制台之外，还有什么架构特定的杂项必须在此时完成”，而不是“所有架构做同一件事”。因此：
 > - 凡是能抽象出跨架构一致语义的机制（如时钟节拍、中断路由、早期控制台），都应该有自己的 trait（`ClockArch`、`InterruptController`、`EarlyConsole`），不能塞进 `ArchInit`。
@@ -591,7 +591,7 @@ pub trait ArchInit: Sized + Send + Sync {
 **Minix3 C 的做法**：`timer_int_handler()`（`clock.c:70-173`）除了更新 `uptime`/`realtime`/`loadavg` 外，还更新 `bill_ptr` 和各进程的 user/sys 时间统计；`irq_handle()`（`interrupt.c:116-158`，旧注释中的 `intr_handle` 与汇编标签 `intr_handle` 都指向同一函数）做完整的中断分发（mask 当前 IRQ、查 `irq_handlers[]` 表、调用注册 handler，最后 `unmask`）；`bsp_finish_booting()`（`main.c:38-109`）使能定时器中断（`boot_cpu_init_timer`）、初始化 FPU、设置 `kernel_may_alloc=0` 并移交用户态。
 
 **Rust 当前做法**：本阶段只让内核具备响应时钟中断和中断控制器的硬件能力，因此：
-- `ClockState::tick()` 只更新软件计数（`uptime`/`realtime`/`loadavg`），调度统计（`bill_ptr`、进程 user/sys 时间、定时器队列）留到 [11-scheduling-primitives.md](11-scheduling-primitives.md)；
+- `ClockState::tick()` 已实现软件计数与记账：`uptime`/`realtime`/`loadavg` 更新、进程 user/sys 时间、虚拟/档案定时器到期、BSP 到期 alarm 定时器处理（详见 §4.1）；quantum 递减不在 `tick()` 内（由 `clock::decrement_quantum()` 处理，D9），基于 quantum 的调度决策留到 [11-scheduling-primitives.md](11-scheduling-primitives.md)；
 - `InterruptController` 只完成初始化与 mask/unmask，完整中断分发逻辑（`intr_handle()`）留到 [14-exception-interrupt.md](14-exception-interrupt.md)；
 - `bsp_finish_booting()`（定时器中断使能、FPU 初始化、`kernel_may_alloc=0`、用户态移交）留到 SMP/调度初始化文档（注：AP 启动在 C 中位于 `arch_smp.c` 的 `smp_start_aps()`，不在 `bsp_finish_booting()` 内）。
 
@@ -605,12 +605,12 @@ pub trait ArchInit: Sized + Send + Sync {
 | aarch64 | CNTP_CTL_EL0 = Enable=1, IMASK=0 | 相同：`AArch64ClockArch::init_timer` 写 `msr cntp_ctl_el0, 1`（Enable=1, IMASK=0） | ❌ 无（timer live，可 firing，尚无 handler） |
 | riscv64 | sie.STIE bit 5 = 1 | 相同：`Riscv64ClockArch::init_timer` 执行 `csrs sie, 0x20`（STIE=1） | ❌ 无（timer live，可 firing，尚无 handler） |
 
-因此**不是**"boot 期间 timer IRQ 在三个架构全部保持 masked"：aarch64/riscv64 的 timer 在 boot 期间保持 live（与旧行为一致），可触发但尚无 handler。**Step 1.5.7 的核心是 IRQ-chain 注册**（`IrqManager::register_hook`）；仅当 x86_64 采用 LAPIC LVT Timer 作为时钟源时才需额外调用 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`（骨架见 `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6 注释）。
+因此**不是**"boot 期间 timer IRQ 在三个架构全部保持 masked"：aarch64/riscv64 的 timer 在 boot 期间保持 live（与旧行为一致），可触发但尚无 handler。timer IRQ 在 boot 期间的核心动作是 IRQ-chain 注册（`IrqManager::register_hook`）；仅当 x86_64 采用 LAPIC LVT Timer 作为时钟源时才需额外调用 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`（骨架见 `os/kernel/src/lib.rs` `bsp_finish_booting` 注释）。
 
-**调用时序约束（2026-08-15，Step 0.5 / 0.5b 事实核验结论）**：`TimerIrqGate::enable_timer_irq` / `disable_timer_irq` 必须在中断控制器初始化之后调用：
+**调用时序约束**：`TimerIrqGate::enable_timer_irq` / `disable_timer_irq` 必须在中断控制器初始化之后调用：
 
-- **x86_64**：`X86_64InterruptController::init_lapic`（Phase B，`init_clock_and_interrupts` Step 3）设置 IA32_APIC_BASE 全局 enable bit 11 并写 SVR Enable，此后 LAPIC MMIO 才可访问（`os/plat/src/x86_64/interrupt.rs` L112-120）。核验结论：当前唯一调用点（旧 `bsp_finish_booting` Step 6）晚于 Phase B，LAPIC 已映射 → 旧 LAPIC-null fallback 删除安全；新实现未映射时 `panic!`（不再写 mock 状态）。
-- **aarch64**：`AArch64InterruptController::init`（Phase B）完成 GIC distributor 全局 enable（GICD_CTLR.EnableGrp1NS）、redistributor wake（GICR_WAKER）与 CPU interface enable（ICC_SRE_EL1 / ICC_PMR_EL1 / ICC_IGRPEN1_EL1），timer PPI 的 GIC delivery path 在 `enable_timer_irq` 之前已成立（核验过程见 §4.7.1"aarch64 真硬件路径"）。
+- **x86_64**：`X86_64InterruptController::init_lapic`（`os/plat/src/x86_64/interrupt.rs` L112-120）设置 IA32_APIC_BASE 全局 enable bit 11 并写 SVR Enable，此后 LAPIC MMIO 才可访问。`bsp_finish_booting`（TimerIrqGate 的唯一调用点）晚于该步骤，LAPIC 必已映射 → 旧 LAPIC-null fallback 删除安全；新实现未映射时 `panic!`（不再写 mock 状态）。
+- **aarch64**：`AArch64InterruptController::init` 完成 GIC distributor 全局 enable（GICD_CTLR.EnableGrp1NS）、redistributor wake（GICR_WAKER）与 CPU interface enable（ICC_SRE_EL1 / ICC_PMR_EL1 / ICC_IGRPEN1_EL1），timer PPI 的 GIC delivery path 在 `enable_timer_irq` 之前已成立。
 - **riscv64**：无前置要求（sie.STIE 是纯 supervisor CSR 写）。
 
 ### 3.8 架构差异对照
@@ -618,14 +618,22 @@ pub trait ArchInit: Sized + Send + Sync {
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
 | 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (CLINT MMIO) |
-| 时钟频率 | 100 Hz (可配置) | 100 Hz | 100 Hz |
-| **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF) | **PLIC** (external) + **CLINT** (timer + software) |
+| 时钟频率 | 100 Hz (可配置, [ARCH: K-3]) | 100 Hz | 100 Hz |
+| **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF, [ARCH: K-1]) | **PLIC** (external) + **CLINT** (timer + software, [ARCH: K-2]) |
 | IRQ 数量 | 64 (APIC mode) | 64 (software limit) / 1020 (GICv3 SPI hardware capability) | 64 (software limit) / 1024 (PLIC max) |
 | `EarlyConsole::init()` | COM1 UART 配置（115200 8N1 + FIFO） | 默认空实现 | 默认空实现 |
 | `EarlyConsole::write_byte()` | COM1 I/O port `0x3F8` | PL011 MMIO `0x0900_0000` | SBI `console_putchar` ecall |
 | arch_init | ACPI（APIC 由 `InterruptController` 负责，串口由 `EarlyConsole` 负责） | PMU cycle counter + bsp_init | PMP + SIE |
 
 > **注**: RISC-V "中断控制器" 应明确分为 **PLIC** (external interrupts, 由 `InterruptController` trait 管理) 和 **CLINT** (timer + software interrupts, 由 `ClockArch` 管理)。前表中"RISC-V 中断控制器"列单写"PLIC + CLINT"易混淆——`ClockArch` 用 CLINT 的 mtime/mtimecmp，`InterruptController` 只用 PLIC。
+
+> **架构演进标注（[ARCH: ...]）**：本节涉及的架构演进按三处一致标注（本文档 + design 快照 + 代码注释），每项给出 Minix3 现状与 minix-rs 演进，读者无需跳出本文档：
+>
+> | 标注 | 演进 | Minix3 现状 | minix-rs |
+> |------|------|-------------|----------|
+> | `[ARCH: K-1]` | aarch64 中断路径 OMAP INTC → GICv3 | 32 位 ARM 用 OMAP INTC（`omap_intr.c:24-40`）+ BSP timer（`omap_timer.c`），见 §2.3 | ARMv8-A GICv3（GICD/GICR + CPU interface）+ Generic Timer（CNTP），见 §4.6/§4.7 |
+> | `[ARCH: K-2]` | riscv64 全新架构 | Minix3 无 RISC-V 移植 | 对标 RISC-V Privileged Spec 1.12：CLINT mtime/mtimecmp + PLIC + `sie.STIE` + PMP，见 §4.5/§4.8/§4.12 |
+> | `[ARCH: K-3]` | 时钟频率统一 100 Hz | i386 `DEFAULT_HZ=60`、earm `DEFAULT_HZ=1000`（`archconst.h:4`），boot 参数可调 | 三架构统一编译期常量 100 Hz（`os/arch/src/arch/clock.rs:43`），见 §3.2 |
 
 ---
 
@@ -638,7 +646,7 @@ Rust 版将 C 版 `cstart()` 的后三个调用（`init_clock()`、`intr_init()`
 > 回答"谁来打节拍、多快打一次"。
 
 - `new(desc)`：从 `TimerDesc` 提取硬件参数（PIT 基准频率、LAPIC 基址、mtime/mtimecmp 地址、频率）存入实例字段。
-- `init_timer(&mut self, hz)`：配置硬件定时器以 `hz` Hz 的频率产生周期性中断。x86-64 使用 PIT（可编程间隔定时器）或 LAPIC timer，aarch64 使用 ARM Generic Timer（CNTP_* 寄存器），riscv64 使用 CLINT mtimecmp。
+- `init_timer(&mut self, hz, cpu_id)`：配置硬件定时器以 `hz` Hz 的频率产生周期性中断。x86-64 使用 PIT（可编程间隔定时器）或 LAPIC timer，aarch64 使用 ARM Generic Timer（CNTP_* 寄存器），riscv64 使用 CLINT mtimecmp——CLINT 每 hart 一份 mtimecmp，`cpu_id`（riscv64 上即 hart id）用于定位本核的比较器，其余架构忽略。
 - `read_ticks(&self)`：读取硬件 tick 计数，用于精细计时和性能分析。
 
 **`InterruptController` 的抽象语义**：
@@ -678,110 +686,524 @@ Rust 版将 C 版 `cstart()` 的后三个调用（`init_clock()`、`intr_init()`
 ### 4.1 ClockState：架构无关的时钟状态
 
 > 设计决策：§3.1（分离硬件和软件）、§3.2（编译时常量）
+>
+> **位置**：`os/kernel/src/clock.rs`（**kernel 层**，非 arch 层）；硬件定时器配置在 `os/arch/src/{arch}/clock.rs` 中的 `ClockArch::init_timer`
+
+`ClockState` 把 C 版的**三份全局状态**收进一个结构体：`kclockinfo`（tick 频率、uptime、realtime、boottime、adjtime_delta）+ `kloadinfo`（平均负载采样）+ `clock_timers`（定时器队列）。所有字段由 **BKL** 保护——时钟中断处理路径持有 BKL 进入 `tick()`，因此结构体不需要内部可变性。
+
+与 C 版的关键差异是**每 CPU 一份实例**：
+
+- **BSP 实例**（`is_bsp = true`）：拥有全局时间（`uptime`/`realtime`/`boottime`）、`adjtime_delta` 和 BSP-only 的定时器队列；
+- **AP 实例**（`is_bsp = false`）：只跟踪本地负载，时间字段恒为 0，`set_timer` 会 panic（编程错误）。
+
+C 版用 `cpu_is_bsp(cpuid)` 在运行时判断，Rust 用结构体字段 `is_bsp` 在运行时分支（§3.1 的 D8 决策）——单镜像代码，BSP/AP 靠实例区分，不需要编译期 const generic。
+
+#### 4.1.1 常量与全局时间镜像
+
+**常量**：`DEFAULT_HZ` 与 `TMR_NEVER` 是 `pub`；`LOAD_UNIT_SECS`/`LOAD_HISTORY` 是模块私有。`DEFAULT_HZ` 的权威定义在 arch 层（`os/arch/src/arch/clock.rs:43`，kernel 层是独立副本，见 §3.2）；`LOAD_HISTORY_SIZE` 同样在 arch 层（`os/arch/src/arch/clock.rs:49`），kernel 层的私有 `LOAD_HISTORY` 与它同值（150）。
 
 ```rust
-/// 负载历史采样槽数量，用于计算平均负载。
-/// C: _LOAD_HISTORY — include/minix/type.h:97
-pub const LOAD_HISTORY_SIZE: usize = 16;
+/// 默认时钟频率（Hz）。
+/// C: DEFAULT_HZ — archconst.h:4（i386=60）/ earm=1000；Rust 统一 100（§3.2）
+pub const DEFAULT_HZ: u32 = 100;
 
-/// 架构无关的时钟状态。
+/// 定时器"永不触发"哨兵。
+/// C: TMR_NEVER = TMRDIFF_MAX + 1 — timers.h:48；Rust 用 u64::MAX（语义等价）
+pub const TMR_NEVER: u64 = u64::MAX;
+
+/// 负载采样窗口（秒）。
+/// C: _LOAD_UNIT_SECS — type.h:88（6）
+const LOAD_UNIT_SECS: u64 = 6;
+
+/// 负载历史槽数量。
+/// C: _LOAD_HISTORY — type.h:95（150 = 60s × 15min / 6s）
+const LOAD_HISTORY: usize = 150;
+```
+
+**全局时间镜像**：调度器代码拿不到 `&ClockState`（把引用穿过整个调度调用链代价太大），因此 BSP 每次 tick 时把 `uptime`/`realtime`/`boottime` 同步进三个 `AtomicU64` 全局，`get_monotonic()`/`get_realtime()`/`get_boottime()` 在任意上下文（持锁或不持锁）都能原子读取。C 版等价物是 `kclockinfo` 的全局变量直接可读。
+
+```rust
+/// 单调 uptime（tick 数），由 BSP tick handler 更新。
+/// C: kclockinfo.uptime — 全局变量，get_monotonic() 读取（clock.c:203）
+static CLOCK_UPTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 启动以来的墙钟 tick 数，由 BSP tick handler 更新。
+/// C: kclockinfo.realtime — get_realtime() 读取（clock.c:178）
+static CLOCK_REALTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 启动时间（UNIX 纪元秒），由 SYS_STIME 设置。
+/// C: kclockinfo.boottime — get_boottime() 读取（clock.c:220）
+static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+```
+
+#### 4.1.2 定时器身份、动作与队列
+
+C 版定时器是 `minix_timer_t *` 侵入式链表：`set_kernel_timer(tp, ...)` / `reset_kernel_timer(tp)` 以结构体指针为稳定身份。Rust 不能沿用指针（定时器不再是侵入式链表节点），于是引入三个类型（对应 15-clock-timer.md 的 D3/D5/D6 决策）：
+
+- `TimerId(u64)`：稳定身份，每 `ClockState` 单调递增分配，替代 C 的指针身份；
+- `TimerEntry`：到期时间 + 动作（替代链表节点）；
+- `TimerAction`：到期动作枚举，替代 C 的 `tmr_func_t` 函数指针 + `tmr_arg` 整数；当前只有 `NotifyAlarm`（对应 `cause_alarm()` → `mini_notify(CLOCK, endpoint)`），`KernelCallback` 变体因无调用者被删除（YAGNI）。
+
+```rust
+/// 定时器稳定身份，替代 C 的 `minix_timer_t *tp` 指针。
 ///
-/// 管理 tick 频率、运行时间计数、实时时间跟踪和平均负载。
-/// 硬件定时器配置委托给 `ClockArch`。
-///
-/// C: kclockinfo + kloadinfo + clock_timers — clock.c:33-44
-pub struct ClockState {
-    /// tick 频率，单位 Hz。
-    /// C: kclockinfo.hz — type.h:119
-    hz: u32,
+/// C 以定时器结构体指针作为 set/reset 的稳定身份
+/// （set_kernel_timer(tp, ...) / reset_kernel_timer(tp)）。Rust 不能使用
+/// 指针（定时器不是侵入式链表节点），所以用包裹每-ClockState 单调计数器的
+/// newtype。`TimerId` 由 `ClockState::set_timer()` 分配并返回给调用者，
+/// 调用者保存它以便之后调用 `ClockState::reset_timer(id)`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TimerId(u64);
 
-    /// 系统启动以来的运行时间，单位 tick。
-    /// C: kclockinfo.uptime — type.h:107
-    uptime: u64,
+impl TimerId {
+    /// 从原始计数值构造 TimerId。
+    pub const fn new(id: u64) -> Self { Self(id) }
 
-    /// 系统启动以来的实时时间，单位 tick（可能因 adjtime 与 uptime 不同）。
-    /// C: kclockinfo.realtime — type.h:109
-    realtime: u64,
-
-    /// 启动时间，UNIX 纪元以来的秒数。
-    /// C: kclockinfo.boottime — type.h:105
-    boottime: u64,
-
-    /// 调整 realtime 的 tick 数（正数加速，负数减速）。
-    /// C: adjtime_delta — clock.c:44
-    adjtime_delta: i32,
-
-    /// 平均负载跟踪数据。
-    /// C: kloadinfo (struct loadinfo) — type.h:98
-    loadinfo: LoadInfo,
+    /// 返回原始计数值。
+    pub fn raw(self) -> u64 { self.0 }
 }
 
-/// 平均负载跟踪数据。
+/// 定时器到期时执行的动作。
 ///
-/// 跟踪可运行进程数随时间的变化，用于计算 1/5/15 分钟平均负载。
+/// 替代 C 的 `tmr_func_t` 函数指针 + `tmr_arg` 整数。
+/// 设计决策 D6：用枚举分发替代函数指针以获得类型安全。
 ///
-/// C: struct loadinfo — include/minix/type.h:98
-struct LoadInfo {
-    /// 每个采样槽中的进程数历史。
-    /// C: proc_load_history[_LOAD_HISTORY] — type.h:99
-    proc_load_history: [u16; LOAD_HISTORY_SIZE],
+/// C: cause_alarm(proc_nr_e) — do_setalarm.c:69-76
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerAction {
+    /// 通过同步 alarm 通知进程。
+    /// C: cause_alarm() → mini_notify(CLOCK, endpoint)
+    NotifyAlarm { endpoint: Endpoint },
+    // KernelCallback 变体已删除（YAGNI）：无调用者的死代码。
+    // 若将来需要内核内部定时器回调（如看门狗或 profile timer），
+    // 在此添加新变体并在 TimerQueue::expire() 中接线分发。
+}
 
-    /// `proc_load_history` 中最后写入的槽位。
-    /// C: proc_last_slot — type.h:100
+/// 定时器队列中的一个条目。
+///
+/// 替代 C 的 `minix_timer_t` 链表节点。
+/// 设计决策 D5：存进 `TimerQueue`（BTreeSet + BTreeMap）而非指针链表。
+///
+/// C: timers.h — struct minix_timer
+#[derive(Debug, Clone)]
+pub struct TimerEntry {
+    /// 到期时间（单调 tick 数）。C: tmr_exp_time
+    pub exp_time: u64,
+    /// 到期动作。替代 C 的 tmr_func_t 回调。
+    pub action: TimerAction,
+}
+```
+
+队列本体是**双索引结构**（D2 决策），替代 C 的 `clock_timers` 链表：
+
+- `by_expiry: BTreeSet<(exp_time, TimerId)>`：按到期时间排序，`pop_expired()` 做 O(k log N) 到期扫描；
+- `by_id: BTreeMap<TimerId, TimerEntry>`：按 id O(log N) 查找，供 `reset_timer(id)` 使用；
+- `next_id`：每 `ClockState` 的单调 id 计数器。
+
+选 `BTreeMap` 而非 `HashMap`，因为 `HashMap` 不在 `alloc::collections`（引入需要 `hashbrown` crate）。双索引同时修复了单 `BTreeMap<u64, _>` 会静默覆盖同一 `exp_time` 定时器的问题——C 的链表允许同一到期时间挂多个定时器。
+
+```rust
+/// 带稳定身份 + 排序到期的 alarm 定时器队列。
+///
+/// 替代 C 的 `minix_timer_t *clock_timers` 链表（clock.c:37）。
+///
+/// 设计决策 D2：双索引数据结构。
+#[derive(Debug, Default)]
+struct TimerQueue {
+    /// 按 (exp_time, id) 排序——支持 O(k log N) 到期扫描。
+    by_expiry: BTreeSet<(u64, TimerId)>,
+    /// 按 TimerId 查找——支持 O(log N) 的 reset_timer(id)。
+    /// 用 BTreeMap 而非 HashMap，因为 HashMap 不在 alloc::collections。
+    by_id: BTreeMap<TimerId, TimerEntry>,
+    /// 下一个 TimerId 计数器（每 ClockState 单调）。
+    next_id: u64,
+}
+
+impl TimerQueue {
+    /// 插入一个定时器条目。返回分配的 TimerId。
+    /// C: tmrs_settimer() — timers.h（插入链表）
+    fn insert(&mut self, entry: TimerEntry) -> TimerId {
+        let id = TimerId(self.next_id);
+        self.next_id += 1;
+        self.by_expiry.insert((entry.exp_time, id));
+        self.by_id.insert(id, entry);
+        id
+    }
+
+    /// 按 TimerId 移除定时器。返回被移除的条目（若存在）。
+    /// C: tmrs_clrtimer() — timers.h（按指针从链表移除）
+    fn remove(&mut self, id: TimerId) -> Option<TimerEntry> {
+        let entry = self.by_id.remove(&id)?;
+        self.by_expiry.remove(&(entry.exp_time, id));
+        Some(entry)
+    }
+
+    /// 弹出下一个已到期（exp_time <= now）的定时器。
+    /// C: tmr_has_expired() + tmrs_exptimers() — timers.h / clock.c:159-161
+    /// 最早的定时器未到期时返回 None。
+    fn pop_expired(&mut self, now: u64) -> Option<TimerEntry> {
+        let first = self.by_expiry.iter().next().copied()?;
+        if first.0 > now {
+            return None;
+        }
+        self.by_expiry.remove(&first);
+        self.by_id.remove(&first.1)
+    }
+}
+```
+
+#### 4.1.3 平均负载状态（LoadInfo）
+
+```rust
+/// 平均负载跟踪状态。
+///
+/// C: struct loadinfo kloadinfo — clock.h
+#[derive(Debug)]
+pub struct LoadInfo {
+    /// 当前负载采样槽索引。
+    /// C: proc_last_slot
     proc_last_slot: u16,
-
-    /// 上次采样时的 uptime。
-    /// C: last_clock — type.h:101
+    /// 负载历史环形缓冲。
+    /// C: proc_load_history[_LOAD_HISTORY] — u16[150]
+    proc_load_history: [u16; LOAD_HISTORY],
+    /// 上次负载更新的时钟 tick。
+    /// C: last_clock
     last_clock: u64,
 }
 
-impl Default for LoadInfo {
-    fn default() -> Self {
+impl LoadInfo {
+    pub const fn new() -> Self {
         Self {
-            proc_load_history: [0; LOAD_HISTORY_SIZE],
             proc_last_slot: 0,
+            proc_load_history: [0; LOAD_HISTORY],
             last_clock: 0,
         }
     }
 }
 
+impl Default for LoadInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+
+字段与 C `struct loadinfo`（`include/minix/type.h:98-102`）一一对应：`proc_last_slot: u16` ↔ `u16_t proc_last_slot`；`proc_load_history: [u16; 150]` ↔ `u16_t proc_load_history[_LOAD_HISTORY]`；`last_clock: u64` ↔ `clock_t last_clock`。**类型宽度与 C 严格对齐（`u16`）**，累加用 `wrapping_add` 匹配 C 无符号回绕（见 §4.1.6）。
+
+#### 4.1.4 tick 结果（TimerTickResult / VtimerExpired）
+
+`tick()` 返回两类"需要调用者处理的副作用"：到期 alarm 定时器的动作列表 + 当前（或记账）进程的虚拟/档案定时器到期状态。**它不包含 `quantum_exhausted`**——quantum 递减由 `clock::decrement_quantum()` 单独处理（§3.7 D9），不在 `tick()` 内；C 版等价物是 `context_stop()`（arch_clock.c:326-330）在上下文切换路径做的递减，同样独立于 `timer_int_handler()`。
+
+```rust
+/// 虚拟/档案定时器到期检查结果。
+/// C: vtimer_check() — do_vtimer.c:81-103
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VtimerExpired {
+    /// 虚拟定时器到期 → SIGVTALRM。C: VT_VIRTUAL (0)
+    Virtual,
+    /// 档案定时器到期 → SIGPROF。C: VT_PROF (1)
+    Prof,
+}
+
+/// `ClockState::tick()` 处理一次定时器中断后返回的结果。
+///
+/// 包含调用者必须处理的到期 alarm 动作列表（例如通过 mini_notify 发通知），
+/// 以及当前（或记账）进程的虚拟/档案定时器到期状态。
+///
+/// **不包含 quantum_exhausted** —— quantum 递减由 clock::decrement_quantum()
+/// 处理（D9），不在 ClockState::tick() 内。
+#[derive(Debug, Default)]
+pub struct TimerTickResult {
+    /// 到期 alarm 定时器的动作（BSP only）。
+    /// C: tmrs_exptimers() 输出 — clock.c:159-161
+    pub expired_alarms: Vec<TimerAction>,
+    /// 当前或记账进程的虚拟/档案定时器到期状态。
+    /// C: vtimer_check() 输出 — do_vtimer.c:81-103
+    pub vtimer_expired: Option<VtimerExpired>,
+}
+```
+
+#### 4.1.5 ClockState：结构与构造
+
+```rust
+/// 全局时钟状态，等价于 C 的 kclockinfo + kloadinfo + clock_timers。
+///
+/// 所有字段由 BKL 保护。时钟 handler 在 BKL 下运行，无需内部可变性。
+///
+/// 设计决策 D1：封装为结构体以获得所有权清晰性。
+/// 设计决策 D8：per-CPU 实例 + is_bsp 标志（替代 PerCpuTick const generic——
+/// SMP 单镜像需要运行时 BSP/AP 区分，而非编译期）。
+///
+/// C: clock.h — struct clockinfo kclockinfo + struct loadinfo kloadinfo
+/// C: clock.c:37 — static minix_timer_t *clock_timers（BSP only）
+#[derive(Debug)]
+pub struct ClockState {
+    /// 本实例所属的 CPU id。C: cpuid — get_cpulocal_var(cpu)
+    cpu_id: CpuId,
+    /// 是否为 BSP 实例（拥有全局时间 + alarm 定时器）。
+    /// C: cpu_is_bsp(cpuid) — clock.c:91
+    is_bsp: bool,
+    /// 时钟频率（Hz）。C: kclockinfo.hz
+    hz: u32,
+    /// 启动以来的单调 tick 数。C: kclockinfo.uptime（BSP only）
+    uptime: u64,
+    /// 启动以来的墙钟 tick 数（受 adjtime 影响）。C: kclockinfo.realtime（BSP only）
+    realtime: u64,
+    /// 启动时间（UNIX 纪元秒）。C: kclockinfo.boottime（BSP only）
+    boottime: u64,
+    /// 时间调整增量（正=加速，负=减速）。C: adjtime_delta（clock.c:42，BSP only）
+    adjtime_delta: i32,
+    /// 同步 alarm 定时器队列（BSP only）。
+    /// C: clock_timers（clock.c:37）
+    /// 设计决策 D2：TimerQueue（BTreeSet + BTreeMap）替代链表。
+    timers: TimerQueue,
+    /// 平均负载信息。C: kloadinfo（所有 CPU）
+    load_info: LoadInfo,
+}
+
 impl ClockState {
+    /// 用默认频率（100Hz）创建 BSP ClockState。
+    /// C: init_clock() — clock.c:47-64
     pub fn new() -> Self {
+        Self::new_for_cpu(CpuId::BSP, true)
+    }
+
+    /// 为指定 CPU 创建 ClockState。
+    ///
+    /// BSP 实例 is_bsp = true（拥有全局时间 + alarm 定时器）；
+    /// AP 实例 is_bsp = false（只跟踪本地负载）。
+    ///
+    /// C: boot_cpu_init_timer()（BSP）/ app_cpu_init_timer()（AP）— clock.c:294-312
+    pub fn new_for_cpu(cpu_id: CpuId, is_bsp: bool) -> Self {
         Self {
+            cpu_id,
+            is_bsp,
             hz: DEFAULT_HZ,
             uptime: 0,
             realtime: 0,
             boottime: 0,
             adjtime_delta: 0,
-            loadinfo: LoadInfo::default(),
+            timers: TimerQueue::default(),
+            load_info: LoadInfo::new(),
         }
     }
 
-    pub fn hz(&self) -> u32 { self.hz }
-    pub fn uptime(&self) -> u64 { self.uptime }
-    pub fn realtime(&self) -> u64 { self.realtime }
+    /// 用自定义频率创建 BSP ClockState。
+    ///
+    /// C: init_clock() 里的 env_get("hz") 覆盖 — clock.c:56-60
+    /// 范围 2..=50000（与 C 的校验一致），越界回退 DEFAULT_HZ。
+    pub fn with_hz(hz: u32) -> Self {
+        let hz = if !(2..=50000).contains(&hz) { DEFAULT_HZ } else { hz };
+        let mut state = Self::new();
+        state.hz = hz;
+        state
+    }
 
-    /// 每个时钟 tick 调用。
-    /// C: timer_int_handler() — clock.c:70
-    pub fn tick(&mut self) {
+    /// 设置内核定时器。返回 TimerId 供之后 reset。
+    ///
+    /// C: set_kernel_timer() — clock.c:229-240
+    ///
+    /// # Panics
+    ///
+    /// 在 AP 实例上调用会 panic（alarm 定时器 BSP-only）。这是编程错误：
+    /// AP 不拥有全局定时器队列。
+    pub fn set_timer(&mut self, entry: TimerEntry) -> TimerId {
+        assert!(self.is_bsp, "set_timer called on AP ClockState (timers are BSP-only)");
+        self.timers.insert(entry)
+    }
+
+    /// 按 TimerId 重置（移除）内核定时器。
+    ///
+    /// C: reset_kernel_timer() — clock.c:245-255
+    ///
+    /// 返回被移除的条目，未找到（或这是 AP 实例，没有定时器）时返回 None。
+    pub fn reset_timer(&mut self, id: TimerId) -> Option<TimerEntry> {
+        if !self.is_bsp { return None; }
+        self.timers.remove(id)
+    }
+}
+```
+
+其余访问器都是单行读取，语义与 C 的全局访问函数一一对应：
+
+| 方法 | 签名 | C 等价物 | 说明 |
+|------|------|---------|------|
+| `hz()` | `-> u32` | `kclockinfo.hz` / `system_hz` | 时钟频率 |
+| `system_hz()` | `-> i32` | `system_hz` | 供 do_settime.c 做 tick 换算 |
+| `uptime()` | `-> u64` | `get_monotonic()` — clock.c:203 | AP 恒 0 |
+| `realtime()` | `-> u64` | `get_realtime()` — clock.c:178 | AP 恒 0 |
+| `boottime()` | `-> u64` | `get_boottime()` — clock.c:220 | AP 恒 0 |
+| `cpu_id()` | `-> CpuId` | `get_cpulocal_var(cpu)` | 本实例所属 CPU |
+| `is_bsp()` | `-> bool` | `cpu_is_bsp(cpuid)` | BSP/AP 区分 |
+| `set_boottime(u64)` | `&mut self` | `set_boottime()` — clock.c:212 | BSP-only；同步 `CLOCK_BOOTTIME` |
+| `set_realtime(u64)` | `&mut self` | `set_realtime()` — clock.c:187 | BSP-only；同步 `CLOCK_REALTIME` |
+| `set_adjtime_delta(i32)` | `&mut self` | `set_adjtime_delta()` — clock.c:195 | BSP-only |
+| `adjtime_delta()` | `-> i32` | `adjtime_delta` — clock.c:42 | AP 恒 0 |
+| `load_history()` | `-> &[u16; LOAD_HISTORY]` | `kloadinfo.proc_load_history` | 负载历史（只读） |
+
+`set_boottime`/`set_realtime` 在写字段的同时把新值同步进全局镜像（§4.1.1），保证 `get_boottime()`/`get_realtime()` 立即可见。
+
+#### 4.1.6 tick 语义：tick_bsp / tick_ap / tick_with / tick / load_update
+
+`tick()` 是主时钟中断处理函数，按 `hz` 频率调用。**BKL 前置条件**：调用方必须已持有 BKL——C 版 BKL 在 `context_stop()`（trap 入口汇编）获取，Rust 版由中断入口负责。`tick()` 内部**不**获取 BKL，原因有二：它可能从已持锁的 syscall 路径进入（BKL 不可重入，重复获取会死锁）；C 的模式就是"调用方持锁"，而非"被调方取锁"。
+
+三个入口方法的关系：
+
+- `tick_bsp()` / `tick_ap()`：`tick()` 的便捷包装，用 `debug_assert!` 校验 `is_bsp` 状态后直接委托；
+- `tick_with()`：**零分配热路径变体**——对每个到期定时器内联调用 `on_expired` 回调，不产生 `Vec` 堆分配；生产中断处理器优先使用；
+- `tick()`：包装 `tick_with`，用 `Vec::with_capacity(4)` 收集到期动作（测试与便捷代码用，避免首次 push 的再分配）。
+
+```rust
+/// 零分配版 tick，供热路径使用。
+///
+/// 不在 Vec 中收集到期 alarm（push 会堆分配），而是对每个到期定时器
+/// 内联调用 on_expired 回调。生产中断处理器应优先使用本变体；
+/// 测试和便捷代码可用返回 TimerTickResult（含 Vec<TimerAction>）的 tick()。
+pub fn tick_with<F>(
+    &mut self,
+    current_proc: &mut KProcess,
+    billp: Option<&mut KProcess>,
+    ready_count: usize,
+    mut on_expired: F,
+) -> Option<VtimerExpired>
+where
+    F: FnMut(TimerAction),
+{
+    // 1. BSP-only：更新 uptime 和 realtime（含 adjtime）
+    //    C: clock.c:91-104；D8：运行时按 self.is_bsp 分支。
+    if self.is_bsp {
         self.uptime += 1;
+        CLOCK_UPTIME.store(self.uptime, Ordering::Release);
 
-        // 根据 adjtime_delta 调整 realtime。
-        // C: clock.c:92-103
-        if self.adjtime_delta != 0 && self.uptime & 0x1 != 0 {
+        if self.adjtime_delta != 0 && (self.uptime & 0x1) != 0 {
             self.realtime += if self.adjtime_delta > 0 { 2 } else { 0 };
             self.adjtime_delta += if self.adjtime_delta > 0 { -1 } else { 1 };
         } else {
             self.realtime += 1;
         }
+        CLOCK_REALTIME.store(self.realtime, Ordering::Release);
+    }
 
-        // 平均负载更新与定时器队列到期检查属于运行时 tick 处理逻辑，
-        // 不在初始化阶段展开。详见 [15-clock-timer.md §4.3]。
-        // C: load_update() — clock.c:260-291
-        // C: tmrs_exptimers(&clock_timers) — clock.c:160-161
+    // 2. 时间记账：给当前进程记用户时间。
+    //    C: clock.c:116 — p->p_user_time++
+    current_proc.p_time.add_user_time(1);
+
+    // 3. 递减当前进程的虚拟/档案定时器。
+    //    C: clock.c:128-133
+    let mut vtimer_expired = None;
+
+    if current_proc.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER) {
+        let expired = current_proc.p_time.tick_virt_timer();
+        if expired {
+            vtimer_expired = Some(VtimerExpired::Virtual);
+        }
+    }
+    if current_proc.p_misc_flags.is_set(MiscFlagsBits::PROF_TIMER) {
+        let expired = current_proc.p_time.tick_prof_timer();
+        if expired && vtimer_expired.is_none() {
+            vtimer_expired = Some(VtimerExpired::Prof);
+        }
+    }
+
+    // 4. 记账进程（当前进程不可记账时）。
+    //    C: clock.c:118-120 — if (!BILLABLE) billp->p_sys_time++
+    //    C: clock.c:134-138 — if (!BILLABLE) billp->p_prof_left--
+    //    C: clock.c:147-148 — if (p != billp) vtimer_check(billp)
+    //    D10：调用方显式传 billp。
+    if let Some(billp) = billp {
+        billp.p_time.add_sys_time(1);
+        if billp.p_misc_flags.is_set(MiscFlagsBits::PROF_TIMER) {
+            let expired = billp.p_time.tick_prof_timer();
+            if expired && vtimer_expired.is_none() {
+                vtimer_expired = Some(VtimerExpired::Prof);
+            }
+        }
+    }
+
+    // 5. BSP-only：对每个到期 alarm 定时器调用回调。
+    //    C: clock.c:153-161 — if (cpu_is_bsp) tmrs_exptimers(...)
+    //    R-06：零分配——用回调而非 Vec::push。
+    if self.is_bsp {
+        while let Some(entry) = self.timers.pop_expired(self.uptime) {
+            on_expired(entry.action);
+        }
+    }
+
+    // 6. 负载更新（所有 CPU）。
+    //    C: clock.c:151 — load_update()
+    self.load_update(ready_count);
+
+    vtimer_expired
+}
+```
+
+六步与 C `timer_int_handler()`（clock.c:70-173）逐步对应：
+
+| 步骤 | Rust | C |
+|------|------|---|
+| 1 | BSP 更新 `uptime`/`realtime`（adjtime 调整）+ 同步全局镜像 | clock.c:91-104 |
+| 2 | 当前进程 `p_time.add_user_time(1)` | clock.c:116 `p->p_user_time++` |
+| 3 | 当前进程 VIRT/PROF 定时器递减，到期记 `VtimerExpired` | clock.c:128-133 |
+| 4 | 记账进程 `sys_time` + PROF 定时器递减（`billp` 非 None 时） | clock.c:118-120 / 134-138 |
+| 5 | BSP 弹出并处理到期 alarm 定时器 | clock.c:153-161 `tmrs_exptimers` |
+| 6 | `load_update()`（所有 CPU） | clock.c:151 |
+
+`tick()` 只是把第 5 步的动作收集进 `Vec` 再包成 `TimerTickResult`：
+
+```rust
+pub fn tick(
+    &mut self,
+    current_proc: &mut KProcess,
+    billp: Option<&mut KProcess>,
+    ready_count: usize,
+) -> TimerTickResult {
+    // 委托 tick_with，用 Vec 收集器。
+    // 预分配容量 4 避免首次 push 再分配；每个 tick 典型的到期定时器
+    // 数量是 0-2 个，容量 4 覆盖常见情形。
+    let mut expired_alarms = Vec::with_capacity(4);
+    let vtimer_expired = self.tick_with(
+        current_proc,
+        billp,
+        ready_count,
+        |action| expired_alarms.push(action),
+    );
+
+    // 注意：quantum 递减不在这里（D9）。
+    // C: context_stop() — arch_clock.c:326-330 按 TSC delta 递减
+    // p_cpu_time_left；Rust 由 clock::decrement_quantum() 处理，
+    // 调用方在本方法返回后单独调用。
+
+    TimerTickResult {
+        expired_alarms,
+        vtimer_expired,
     }
 }
 ```
+
+**`load_update()`（所有 CPU，每个 tick 调用）**：负载历史是**每 6 秒一个采样槽**的环形缓冲（150 槽 = 15 分钟窗口）。槽位由 `slot = (uptime / hz / 6) % 150` 计算；**换槽时先把新槽清零再累加**（每 6s 窗口内累加同槽位，而不是每 tick 轮转），累加用 `wrapping_add` 匹配 C 的 `u16_t` 无符号回绕。与 C `load_update()`（clock.c:260-292）逐行对应。
+
+```rust
+/// 更新平均负载跟踪。
+///
+/// C: load_update() — clock.c:260-292
+fn load_update(&mut self, ready_count: usize) {
+    let slot = ((self.uptime / self.hz as u64 / LOAD_UNIT_SECS) % LOAD_HISTORY as u64) as u16;
+
+    if slot != self.load_info.proc_last_slot {
+        self.load_info.proc_load_history[slot as usize] = 0;
+        self.load_info.proc_last_slot = slot;
+    }
+
+    // u16 与 C 的 u16_t 对齐；C 无符号加法回绕，这里用 wrapping_add 保持一致
+    // （实际值 = 6s 窗口内可运行进程数，远小于 65535）。
+    let slot_idx = slot as usize;
+    self.load_info.proc_load_history[slot_idx] =
+        self.load_info.proc_load_history[slot_idx].wrapping_add(ready_count as u16);
+    self.load_info.last_clock = self.uptime;
+}
+```
+
+**quantum 递减不在 `tick()` 内（D9）**：C 版在 `context_stop()`（arch_clock.c:326-330，上下文切换路径）按 TSC delta 递减 `p_cpu_time_left`，与 `timer_int_handler()` 分开；Rust 对应 `clock::decrement_quantum()`，由调用方在 `tick()` 返回后单独调用。因此 `TimerTickResult` 没有 `QuantumExpired` 变体——这与 §3.7 的边界声明一致：tick 负责计数、记账与到期处理，quantum 递减与基于它的调度决策属于 `clock::decrement_quantum()` 和 [11-scheduling-primitives.md](11-scheduling-primitives.md) 的范畴。
 
 ### 4.2 ClockArch trait
 
@@ -795,7 +1217,7 @@ impl ClockState {
 ///
 /// | 架构 | 定时器源 | 频率寄存器 | 计数寄存器 |
 /// |------|---------|-----------|-----------|
-/// | x86-64 | 8254 PIT / LAPIC Timer | PIT divisor | LAPIC CCR |
+/// | x86-64 | 8254 PIT / LAPIC Timer | PIT divisor | TSC |
 /// | aarch64 | Generic Timer | CNTFRQ_EL0 | CNTPCT_EL0 |
 /// | riscv64 | CLINT mtime | mtimecmp | mtime |
 ///
@@ -809,11 +1231,18 @@ pub trait ClockArch: Sized + Send + Sync {
 
     /// 按给定频率配置并启动硬件定时器。
     ///
-    /// 在 `init_clock_and_interrupts()` 中调用一次。调用后定时器以 `hz` Hz
-    /// 产生周期性中断。
+    /// 首次在 `init_clock_and_interrupts()` 中配置；`bsp_finish_booting()`
+    /// 的 Step 6 会以幂等 no-op 安全网的形式再调用一次（重复写同一组
+    /// 寄存器，无副作用）。调用后定时器以 `hz` Hz 产生周期性中断。
+    ///
+    /// `cpu_id` 是当前 CPU 的编号（RISC-V 上即 hart id）。只有 riscv64
+    /// 会用到它：CLINT 是全局 MMIO 块，每个 hart 的 `mtimecmp` 位于
+    /// `mtimecmp_base + cpu_id * mtimecmp_stride`，必须按 hart 寻址才能
+    /// 配置本核的定时器。x86-64（PIT + 每核 LAPIC）与 aarch64
+    /// （CNTP_* 系统寄存器）天然访问当前 CPU 自己的定时器，忽略该参数。
     ///
     /// C: init_clock() 硬件部分 + arch_init() APIC timer
-    fn init_timer(&mut self, hz: u32);
+    fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
     /// 读取当前硬件 tick 计数。
     ///
@@ -828,7 +1257,10 @@ pub trait ClockArch: Sized + Send + Sync {
     /// 停止本地定时器（SMP AP 停顿时使用）。
     ///
     /// C: smp.c:56-61 — `lapic_stop_timer()` 内联于 `smp_ipi_halt_handler`
-    fn stop_local_timer(&mut self);
+    ///
+    /// `cpu_id` 与 `init_timer` 相同：riscv64 用它定位本 hart 的
+    /// `mtimecmp`（写 `u64::MAX` 屏蔽中断），其余架构忽略。
+    fn stop_local_timer(&mut self, cpu_id: u32);
 
     /// 初始化统计 profiling 时钟。
     ///
@@ -880,12 +1312,16 @@ impl ClockArch for X86_64ClockArch {
         }
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // 把 8254 PIT channel 0 配置为周期性模式。
         // C: intr_init_8254() — i8259.c 等价实现
         //
         // PIT divisor 是 16 位，因此 hz 必须 >= 19 (1193182 / 65535 ≈ 18.2)。
         // 低于 19 会导致 divisor 溢出。
+        //
+        // PIT 是系统级设备；LAPIC 定时器（`stop_local_timer` 用到）在每个
+        // CPU 上看到的是同一个 MMIO 基址——各 CPU 的 LAPIC 是"同址异核"的，
+        // 因此不需要 `cpu_id`。
         assert!(hz >= 19, "PIT divisor overflow: hz must be >= 19, got {}", hz);
 
         let divisor = (self.pit_base_freq / hz) as u16;
@@ -932,33 +1368,36 @@ impl ClockArch for AArch64ClockArch {
         Self
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // ARM Generic Timer 由固件（TF-A/U-Boot）配置好。
         // 这里只需使能 EL1 physical timer 并设置比较值。
+        //
+        // CNTP_CVAL_EL0 / CNTP_CTL_EL0 是每核系统寄存器，天然指向当前
+        // CPU 自己的定时器，因此不需要 `cpu_id`。
         let freq: u64;
         unsafe {
-            asm!("mrs {}, cntfrq_el0", out(reg) freq);
+            core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq);
         }
         // ARM Generic Timer 是 absolute compare 模式（CNTP_CVAL_EL0
         // 是绝对值，不是 delta）。读当前 count，再加上 freq/hz 作为
         // 下次触发点。CNTP_CTL_EL0 bit 0 = enable, bit 1 = IMASK（屏蔽）。
         let now: u64;
         unsafe {
-            asm!("mrs {}, cntpct_el0", out(reg) now);
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) now);
         }
         let compare = now + freq / hz as u64;
         unsafe {
             // 设置绝对比较值
-            asm!("msr cntp_cval_el0, {}", in(reg) compare);
+            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) compare);
             // 使能定时器（ENABLE=1, IMASK=0, ISTATUS=0）
-            asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
         }
     }
 
     fn read_ticks(&self) -> u64 {
         let count: u64;
         unsafe {
-            asm!("mrs {}, cntpct_el0", out(reg) count);
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) count);
         }
         count
     }
@@ -967,16 +1406,19 @@ impl ClockArch for AArch64ClockArch {
 
 ### 4.5 riscv64 ClockArch 实现
 
+Minix3 没有 RISC-V 移植，本实现是全新架构（`[ARCH: K-2]`，见 §3.8 标注）：直接用 CLINT mtime/mtimecmp（MMIO，M-mode 固件如 OpenSBI 已映射）。
+
 ```rust
 /// RISC-V 64 位时钟，使用 CLINT mtime。
 ///
-/// C: 无 Minix3 对应实现（Minix3 没有 RISC-V 端口）。
+/// C: 无 Minix3 对应实现（Minix3 没有 RISC-V 端口 [ARCH: K-2]，见 §3.8 标注）。
 pub struct Riscv64ClockArch {
     /// CLINT mtime 寄存器 MMIO 地址（来自 `ClintDesc`）。
     mtime_addr: usize,
     /// CLINT mtimecmp 基地址（hart 0，来自 `ClintDesc`）。
+    /// 当前 hart 的比较器位于 `mtimecmp_base + hart_id * mtimecmp_stride`。
     mtimecmp_base: usize,
-    /// 每 hart 的 mtimecmp 间距（SMP-ready，来自 `ClintDesc`）。
+    /// 相邻两个 hart 的 mtimecmp 之间的字节间距（来自 `ClintDesc`）。
     mtimecmp_stride: usize,
     /// mtime 计数器频率，单位 Hz（来自 `ClintDesc`）。
     freq: u64,
@@ -998,7 +1440,7 @@ impl ClockArch for Riscv64ClockArch {
         }
     }
 
-    fn init_timer(&mut self, hz: u32) {
+    fn init_timer(&mut self, hz: u32, cpu_id: u32) {
         // 读取当前 mtime 值
         let mtime: u64;
         unsafe {
@@ -1008,10 +1450,15 @@ impl ClockArch for Riscv64ClockArch {
         // 计算两次中断之间的间隔
         let interval = self.freq / hz as u64;
 
+        // CLINT 每个 hart 有一份 mtimecmp，调用方传入当前 hart id，
+        // 各核配置自己的比较器，而不是都写 hart 0 的。
+        // C: app_cpu_init_timer() — clock.c:306
+        let mtimecmp_addr = self.mtimecmp_base + (cpu_id as usize) * self.mtimecmp_stride;
+
         // 设置 mtimecmp = mtime + interval，安排第一次中断
         let mtimecmp = mtime + interval;
         unsafe {
-            core::ptr::write_volatile(self.mtimecmp_base as *mut u64, mtimecmp);
+            core::ptr::write_volatile(mtimecmp_addr as *mut u64, mtimecmp);
         }
 
         // 使能 S-mode 定时器中断（sie 中的 STIE 位）
@@ -1030,15 +1477,9 @@ impl ClockArch for Riscv64ClockArch {
 
 ### 4.6 aarch64 InterruptController 实现（GICv3）
 
+Minix3 ARM（32 位）用 OMAP INTC（`omap_intr.c`），本实现针对 ARMv8-A GICv3（`[ARCH: K-1]`，见 §3.8 标注）：GICD（Distributor）+ GICR（Redistributor）+ CPU interface。
+
 ```rust
-/// GICv3 Distributor 基地址偏移（相对于 GIC 基址）。
-/// QEMU virt: GICD 位于 0x08000000
-const GICD_OFFSET: usize = 0x0000_0000;
-
-/// GICv3 Redistributor 基地址偏移（相对于 GIC 基址）。
-/// QEMU virt: GICR 位于 0x080A0000
-const GICR_OFFSET: usize = 0x000A_0000;
-
 /// GICD_CTLR：Distributor 控制寄存器。
 const GICD_CTLR: usize = 0x0000;
 /// GICD_CTLR.EnableGrp1NS 位。
@@ -1055,14 +1496,14 @@ const GICR_ISENABLER0: usize = 0x0100;
 const GICR_ICENABLER0: usize = 0x0180;
 /// GICR_WAKER：Redistributor 唤醒寄存器。
 const GICR_WAKER: usize = 0x0014;
-/// GICR_WAKER.ProcessorSleep 位。
-const GICR_WAKER_PROCESSOR_SLEEP: u32 = 0x2;
 /// GICR_WAKER.ChildrenAsleep 位（只读）。
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
 
 /// ARM64 GICv3 中断控制器。
 pub struct AArch64InterruptController {
+    /// GIC Distributor MMIO 基址（QEMU virt 0x0800_0000，来自 Gicv3Desc）。
     gicd_base: usize,
+    /// GIC Redistributor MMIO 基址（QEMU virt 0x080A_0000，来自 Gicv3Desc）。
     gicr_base: usize,
     nr_irqs: usize,
     /// 上次应答的中断 ID（从 ICC_IAR1_EL1 读取保存）。
@@ -1070,29 +1511,29 @@ pub struct AArch64InterruptController {
 }
 
 impl AArch64InterruptController {
-    /// 构造一个基地址未初始化的控制器。
-    /// 必须在 `init()` 前调用 `set_base()`，否则 `assert_ne!()` 会 panic。
-    pub const fn new() -> Self {
+    // 私有构造：仅由 `InterruptController::new(desc)` 调用。
+    // `set_base()` 不再保留——所有参数均从 `desc.downcast_ref::<Gicv3Desc>()` 获取。
+}
+
+impl InterruptController for AArch64InterruptController {
+    /// 从 `InterruptControllerDesc` 单步构造（Gicv3Desc downcast 提取 gicd_base / gicr_base）。
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+        let gicv3 = desc
+            .as_any()
+            .downcast_ref::<Gicv3Desc>()
+            .expect("AArch64InterruptController::new: expected Gicv3Desc");
         Self {
-            gicd_base: 0,
-            gicr_base: 0,
-            nr_irqs: NR_IRQ_VECTORS,
+            gicd_base: gicv3.gicd_base,
+            gicr_base: gicv3.gicr_base,
+            nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
             last_iar: 0,
         }
     }
 
-    /// 从设备树/平台发现设置 GIC 基地址。
-    pub fn set_base(&mut self, gicd_base: usize, gicr_base: usize) {
-        self.gicd_base = gicd_base;
-        self.gicr_base = gicr_base;
-    }
-}
-
-impl InterruptController for AArch64InterruptController {
     fn init(&mut self) {
-        // 尽早拦截“忘记 set_base()”的错误。
-        assert!(self.gicd_base != 0, "...: gicd_base not set; call set_base() before init()");
-        assert!(self.gicr_base != 0, "...: gicr_base not set; call set_base() before init()");
+        // 防御：若 desc 未提供非零 base，拦截此错误（不应到达此分支）。
+        assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base is zero (descriptor did not provide GICD base)");
+        assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base is zero (descriptor did not provide GICR base)");
         self.init_distributor();
         self.init_redistributor();
         self.init_cpu_interface();
@@ -1166,8 +1607,12 @@ fn init_distributor(&mut self) {
             let reg = (irq / 32) as usize;
             self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
         }
-        // 3. 使能 Distributor（Group 1 Non-secure）
-        self.gicd_write32(GICD_CTLR, GICD_CTLR_ENABLE_GRP1NS);
+        // 3. 使能 Distributor（Group 1 Non-secure）。
+        //    只置 EnableGrp1NS 位：GICD_CTLR 还含固件配置的位
+        //    （如 ARE_NS/ARE_S，bit 31:30，选择 affinity routing），
+        //    整寄存器写会清掉它们，真机上具破坏性 —— 读-改-写保留。
+        let ctlr = self.gicd_read32(GICD_CTLR) | GICD_CTLR_ENABLE_GRP1NS);
+        self.gicd_write32(GICD_CTLR, ctlr);
     }
 }
 
@@ -1197,52 +1642,95 @@ fn init_cpu_interface(&mut self) {
 }
 ```
 
-### 4.7 riscv64 InterruptController 实现（PLIC）
+### 4.7 TimerIrqGate trait：定时器 IRQ 的 enable/disable
+
+**位置**: [`os/arch/src/arch/timer_irq_gate.rs`](os/arch/src/arch/timer_irq_gate.rs)（trait 定义）+ [`os/arch/src/x86_64/timer_irq_gate.rs`](os/arch/src/x86_64/timer_irq_gate.rs) / [`os/arch/src/arm64/timer_irq_gate.rs`](os/arch/src/arm64/timer_irq_gate.rs) / [`os/arch/src/riscv64/timer_irq_gate.rs`](os/arch/src/riscv64/timer_irq_gate.rs)（三架构 impl）+ `os/arch/src/lib.rs` `CurrentTimerIrqGate` alias
+
+**职责**：本 trait 控制 timer 中断**在 CPU 入口的硬件投递**——允许或屏蔽 timer 触发的中断到达 trap 入口。对应 C 中的 timer IRQ 开关硬件位：
+
+- x86：LAPIC LVT Timer mask bit（offset `0x320` bit 16）
+- aarch64：`CNTP_CTL_EL0`（`Enable=1, IMASK=0` ↔ `Enable=0, IMASK=1`）
+- riscv64：`sie.STIE`（CSR `sie` bit 5）
+
+**职责边界（正交性原则）**：本 trait 只控制"是否允许 timer 中断到达 CPU 入口"，**不包含** handler 注册——handler 与 trap 入口的绑定由 `IrqManager::register_hook` 完成（见 `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6，与 `bsp_init_clock` 的 `register_local_timer_handler`，`clock.c:294` / `arch_clock.c:177` 同源）。两件事各自独立：timer IRQ enable/disable 与 handler 注册是两条正交链路，调用顺序与归属彼此无关。
 
 ```rust
-/// QEMU virt 机器的 PLIC 基地址。
-/// 当前硬编码；支持正式硬件时需从设备树获取。
-const PLIC_BASE: usize = 0x0C00_0000;
+pub trait TimerIrqGate: Sized {
+    fn enable_timer_irq();
+    fn disable_timer_irq();
+}
+```
 
+**三架构实现**（per-arch ZST，经 `CurrentTimerIrqGate` cfg alias 静态分派，不向使用方泄漏 `#[cfg]`）：
+
+| 架构 | impl 类型 | enable_timer_irq | disable_timer_irq | C 源码 |
+|------|----------|------------------|-------------------|--------|
+| x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `apic.c:44` / `apic.c:475-477`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable 职责归属见 §4.7.1） |
+| aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_intr.c:22-44`（32 位 ARM；aarch64 为架构演进 [ARCH: K-1]，见 §2.5） |
+| riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植 [ARCH: K-2]；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
+
+**设计要点**：
+
+- **关联函数（无 `&self`）、无实例字段**：`TimerIrqGate` 与 `TrapEntryArch` / `ProtectionArch` 同类（纯 static 方法），trait bound 仅 `Sized`——`Send + Sync` 由 trait 中的实例字段触发，有实例字段的 `ClockArch` / `FpuArch` 才需要
+- **静态分派**：调用点写 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`；target-specific `cfg` 只存在于 `os/arch/src/lib.rs` 的 `CurrentTimerIrqGate` alias（照抄 `CurrentArchInit` 模式）
+- **x86_64 LAPIC base 探测**：从 IA32_APIC_BASE MSR (`0x1B`) 读取 base，同时检查 APIC global enable bit（bit 11）；未启用时 `panic!`——这表明调用方跳过了 `X86_64InterruptController::init` 中的 LAPIC 启用步骤
+- **riscv64 不调 SBI**：`ClockArch::init_timer` 直接写 CLINT mtimecmp MMIO（M-mode 固件如 OpenSBI 已映射该 MMIO；S-mode 下未通过 ecall）。`TimerIrqGate` 只控制 S-mode 中断 enable (sie.STIE)，是 supervisor CSR write
+
+#### 4.7.1 aarch64 真硬件路径与职责边界
+
+aarch64 timer IRQ 投递链是 CNTP（per-CPU timer 模块）→ PPI → GIC redistributor → CPU。`CNTP_CTL_EL0.Enable` 仅让 per-CPU timer 模块产生 PPI；PPI 能否到达 CPU 取决于 GIC delivery path（`GICD_CTLR.EnableGrp1NS` + `GICR_WAKER` wake + `ICC_IGRPEN1_EL1=1`），由 `AArch64InterruptController::init` 建立（`os/plat/src/arm64/interrupt.rs`）。
+
+因此本 trait 的职责边界为：
+
+- `TimerIrqGate` **不写 ICC_IGRPEN1_EL1**——GIC global enable 属于中断控制器初始化（`InterruptController::init`，与 `SmpArch::init_ap` 仅负责 IPI（GICD_SGIR / ICC_EOIR）的职责正交）
+- 与 x86 LAPIC 同理：x86 SVR Enable（`SVR` bit 8）属于 LAPIC 初始化（`apic.c:lapic_enable()`；Rust 中由 `X86_64InterruptController::init_lapic` 完成），LVT Timer Mask（`0x320` bit 16）属于 `TimerIrqGate`。当前 `X86_64TimerIrqGate::enable_timer_irq` 同时写两处（与 `init_lapic` 重复但幂等），拆分时机由后续 LAPIC 初始化时序设计统一处理。
+
+#### 4.7.2 handler 注册不在此 trait（YAGNI）
+
+`TimerIrqGate` 不提供 handler 注册。handler 与 trap 入口的绑定由 `IrqManager::register_hook` 完成（`os/kernel/src/lib.rs` `bsp_finish_booting`，与 `bsp_init_clock` 的 `register_local_timer_handler`，`clock.c:294` / `arch_clock.c:177` 同源）。**理由**：handler register 的硬件 wiring 在三架构上形态不一（x86 IOAPIC RTE 绑定、aarch64 CNTP LVT 设置、riscv64 SBI timer dispatch），但真硬件 binding 出现之前没有任何真实读者。在差异出现之前预建抽象只会得到"未实现的一致"，抽象形态由届时差异本身决定。代码中保留 `os/arch/src/arch/timer_irq_gate.rs` 顶部 doc-comment 一行 breadcrumb 指向本节作为定位指针。
+
+### 4.8 riscv64 InterruptController 实现（PLIC）
+
+Minix3 没有 RISC-V 移植，PLIC 实现对标 RISC-V PLIC 规范（`[ARCH: K-2]`，见 §3.8 标注）：外部设备中断经 PLIC 路由，时钟/软件中断由 CLINT 负责（`ClockArch` 管理）。
+
+```rust
 /// PLIC 寄存器偏移。
 const PLIC_PRIORITY: usize = 0x0000;
-const PLIC_PENDING: usize = 0x1000;
 const PLIC_ENABLE: usize = 0x2000;
 const PLIC_THRESHOLD: usize = 0x200000;
 const PLIC_CLAIM: usize = 0x200004;
-const PLIC_COMPLETE: usize = 0x200004;
-
-/// hart 0 的 S-mode context 偏移。
-/// Context 0 = M-mode，Context 1 = S-mode（QEMU virt）。
-const S_MODE_CONTEXT: usize = 1;
+/// complete 寄存器与 claim 共用同一偏移：读 = claim，写 = complete。
+const PLIC_COMPLETE: usize = PLIC_CLAIM;
 
 /// RISC-V 64 位 PLIC 中断控制器。
 pub struct Riscv64InterruptController {
     plic_base: usize,
     nr_irqs: usize,
-    /// 当前 hart 的 S-mode context ID。
+    /// 当前 hart 的 S-mode context ID（来自 PlicDesc；QEMU virt S-mode = 1）。
     context: usize,
     /// 上次 claim 的中断 ID（从 claim 寄存器读取保存）。
     last_claimed: u32,
 }
 
 impl Riscv64InterruptController {
-    pub const fn new() -> Self {
-        Self {
-            plic_base: PLIC_BASE,  // QEMU virt 默认值；可通过 set_base() 覆盖
-            nr_irqs: NR_IRQ_VECTORS,
-            context: S_MODE_CONTEXT,
-            last_claimed: 0,
-        }
-    }
-
-    /// 从设备树/平台发现设置 PLIC 基地址。
-    pub fn set_base(&mut self, plic_base: usize) {
-        self.plic_base = plic_base;
-    }
+    // 私有构造：仅由 `InterruptController::new(desc)` 调用。
+    // `set_base()` 不再保留——PLIC base 由 `desc.downcast_ref::<PlicDesc>()` 提供。
 }
 
 impl InterruptController for Riscv64InterruptController {
+    /// 从 `InterruptControllerDesc` 单步构造（PlicDesc downcast 提取 plic_base）。
+    fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
+        let plic = desc
+            .as_any()
+            .downcast_ref::<PlicDesc>()
+            .expect("Riscv64InterruptController::new: expected PlicDesc");
+        Self {
+            plic_base: plic.plic_base,
+            nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            context: plic.context as usize,
+            last_claimed: 0,
+        }
+    }
     fn init(&mut self) {
         // PLIC 初始化序列：
         // 1. 把所有中断优先级设为 1（最低有效优先级）
@@ -1306,78 +1794,9 @@ impl InterruptController for Riscv64InterruptController {
 }
 ```
 
-> **实现说明**: PLIC 已实现，base 默认 QEMU virt 地址 0x0C00_0000。Timer 中断由 CLINT 处理（见 `clock.rs`），不在 PLIC 路径。
+> **实现说明**: PLIC 已实现，base 由 `PlicDesc.plic_base` 提供（QEMU virt = 0x0C00_0000）。Timer 中断由 CLINT 处理（见 `clock.rs`），不在 PLIC 路径。
 
-### 4.7.1 TimerIrqGate trait：定时器 IRQ 的 enable/disable
-
-**位置**: [`os/arch/src/arch/timer_irq_gate.rs`](os/arch/src/arch/timer_irq_gate.rs)（trait 定义）+ [`os/arch/src/x86_64/timer_irq_gate.rs`](os/arch/src/x86_64/timer_irq_gate.rs) / [`os/arch/src/arm64/timer_irq_gate.rs`](os/arch/src/arm64/timer_irq_gate.rs) / [`os/arch/src/riscv64/timer_irq_gate.rs`](os/arch/src/riscv64/timer_irq_gate.rs)（三架构 impl）+ `os/arch/src/lib.rs` `CurrentTimerIrqGate` alias
-
-`TimerIrqGate` 封装"打开/关闭定时器 IRQ 投递"这对**对偶硬件操作**，对应 C 的 timer IRQ 开关（x86 LAPIC LVT Timer mask、ARM CNTP_CTL_EL0、RISC-V sie.STIE）。handler 注册（`boot_cpu_init_timer` 的 `register_local_timer_handler`，clock.c:294 / 177）**不在**此 trait 内——见下方"关于被删除的 `ArchBoot::register_timer_handler`"。
-
-```rust
-pub trait TimerIrqGate: Sized {
-    fn enable_timer_irq();
-    fn disable_timer_irq();
-}
-```
-
-**三架构实现**（per-arch ZST，经 `CurrentTimerIrqGate` cfg alias 静态分派，不向使用方泄漏 `#[cfg]`）：
-
-| 架构 | impl 类型 | enable_timer_irq | disable_timer_irq | C 源码 |
-|------|----------|------------------|-------------------|--------|
-| x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `apic.c:44` / `apic.c:475-477`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable，职责归属见 Follow-up 1） |
-| aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_timer.c:136/331`（32 位 ARM；aarch64 为架构演进，见 §2.5） |
-| riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
-
-**设计要点**：
-
-- **关联函数（无 `&self`）、无实例字段**：`TimerIrqGate` 与 `TrapEntryArch` / `ProtectionArch` 同类（纯 static 方法），trait bound 仅 `Sized`（V3 P1-3，事实核验自 capability trait bound 分布：有实例字段的 `ClockArch` / `FpuArch` 才需要 `Send + Sync`）
-- **静态分派**：调用点写 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`；target-specific `cfg` 只存在于 `os/arch/src/lib.rs` 的 `CurrentTimerIrqGate` alias（照抄 `CurrentArchInit` 模式，V4 §6.1 cfg 边界原则）
-- **生产实现不触碰测试状态**：三架构 impl 不再写任何 `MOCK_*` 全局（V2 F4 修复——旧实现真路径写 `MOCK_IRQ_ENABLED`，x86 在 LAPIC 未映射时 fall back 写 mock，属 P0-class 缺陷）
-- **x86_64 LAPIC base 探测 + 调用时序约束**：从 IA32_APIC_BASE MSR (0x1B) 读取 base 并检查 APIC global enable bit (bit 11)；未启用时 `panic!`（旧实现静默写 mock 状态）。必须在 `X86_64InterruptController::init` 之后调用（核验结论见 §3.7"调用时序约束"）
-- **riscv64 不调 SBI**：mtimecmp 由 `ClockArch::init_timer` 通过 SBI timer extension 设置。`TimerIrqGate` 只控制 S-mode 中断 enable (sie.STIE)，是 supervisor CSR write
-
-**aarch64 真硬件路径**（2026-08-15，Step 0.5b 事实核验结论）：aarch64 的 timer IRQ 投递链是 CNTP（per-CPU timer 模块）→ PPI → GIC redistributor → CPU。CNTP enable 只让 per-CPU timer 模块产生 PPI；PPI 能否到达 CPU 取决于 GIC delivery path。核验结果：**GIC delivery path 由 `AArch64InterruptController::init` 建立**（`os/plat/src/arm64/interrupt.rs`，Phase B `init_clock_and_interrupts` Step 3）——`init_distributor` 写 GICD_CTLR.EnableGrp1NS、`init_redistributor` 唤醒 GICR_WAKER、`init_cpu_interface` 写 ICC_SRE_EL1 / ICC_PMR_EL1 / **ICC_IGRPEN1_EL1=1**。因此：
-
-- `TimerIrqGate` **不写 ICC_IGRPEN1_EL1**——GIC global enable 职责属于中断控制器初始化（与 x86 SVR Enable 属 LAPIC 初始化同理，见 Follow-up 1）
-- 旧注释（arch_boot.rs L39 "aarch64: CNTP_CTL_EL0 + ICC_IGRPEN1_EL1 (GIC IRQ enable)"、L272-275 "GIC 由 SmpArch::init_ap 编程"）均不准确：GIC 由 `InterruptController` 负责，`SmpArch` 只负责 IPI（GICD_SGIR / ICC_EOIR），本次平移时已修正注释
-
-**关于被删除的 `ArchBoot::register_timer_handler`**（上下文段，V4 P2-1）：
-
-> 原 `ArchBoot::register_timer_handler` 预期将 handler 绑定到架构 timer IRQ：
-> - x86: IOAPIC RTE 绑定（IRQ 0 → LAPIC LVT Timer）
-> - aarch64: CNTP LVT 设置（per-CPU timer module）
-> - riscv64: SBI timer dispatch / sie.STIP 处理
->
-> **已删除**（2026-08-15，V3 落地）：
-> 1. 当前为 mock 占位（旧 arch_boot.rs L180-191 / L282-289 / L345-352 实现完全一致——"未实现的一致"，不是"无差异的一致"）
-> 2. 无真实读者——26 处 `MOCK_*` 引用（`MOCK_HAS_HANDLER`×7、`MOCK_IRQ_ENABLED`×13、`MOCK_LAST_HANDLER`×6，另有 14 处 `mock_*` 辅助标识符）全部在 `arch_boot.rs` 内部，trap entry 不读它
-> 3. 真实 dispatch 未来走 `IrqManager::register_hook`（kernel 注释明确，见 `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6）
->
-> **未来真硬件 binding 出现时**，由届时设计者决定 register 应去（**今天不预先决定**）：
-> - `ClockArch` 的 timer dispatch endpoint（如果 register 与 timer 设备编程同属）
-> - 独立 `TimerHandlerDispatch` trait（如果 register 与硬件 wiring 紧密耦合）
-> - arch crate 级 free function（如果 register 不含架构差异）
->
-> **YAGNI 原则**：差异出现时差异本身会告诉你抽象形态。代码中仅保留一行 breadcrumb（`os/arch/src/arch/timer_irq_gate.rs` 顶部 doc-comment 指向本节）。
-
-**Follow-up 1：x86 SVR vs LVT 分离**（V3 P1-5 / V4 修订）：
-
-x86 `X86_64TimerIrqGate::enable_timer_irq` 内部混合两个语义：
-
-- **LVT Timer Mask bit 16** = 0（per-IRQ 开关）— 属于 `TimerIrqGate` 职责
-- **LAPIC SVR Enable bit 8** = 1（LAPIC 总开关）— 属于 LAPIC 初始化前置（C 中 `apic.c:lapic_enable()`；Rust 中已由 `X86_64InterruptController::init_lapic` 完成）
-
-当前实现**暂时保留合并语义**（写 SVR Enable 与 `init_lapic` 重复但幂等），不在本次重构中拆分；其职责边界作为 follow-up，由后续 LAPIC initialization 时序设计统一处理。
-
-**本次重构的元原则**（2026-08-15，V2/V3 收敛结论）：
-
-1. **trait 成员由 architecture variance 决定，不由调用时序决定**——`ArchBoot` 的命名错误在于把"boot 时序的入口"当成了"架构能力边界"。架构抽象应按子系统能力（ClockArch / TimerIrqGate / …）分，而非按调用时机。
-2. **不为 mock 写抽象，不预建假想差异的抽象**——`register_timer_handler` 的三实现是"未实现的一致"（mock 占位），不是"无差异的一致"；在真硬件 binding 出现前删除，YAGNI。
-3. **生产实现不得触碰测试状态（`MOCK_*` 全局）**——测试 mock 的 static 只存在于 `#[cfg(test)]` 或 mock 实现自身；真实现写 mock state 属 P0-class 缺陷（V2 F4）。
-4. **cfg 边界**：target-specific `cfg` 仅存在于 arch crate 的 `Current*` 选择 alias，绝不泄漏到 capability 使用方（V4 §6.1）。
-
-### 4.8 ArchInit trait
+### 4.9 ArchInit trait
 
 > 设计决策：§3.5（ArchInit trait）、§3.6（不做内存裁剪）
 
@@ -1387,27 +1806,61 @@ x86 `X86_64TimerIrqGate::enable_timer_irq` 内部混合两个语义：
 /// 这个 trait 封装了 Minix3 C 的 `arch_init()` 函数，
 /// 负责在保护结构和中断控制器初始化完成后进行硬件相关设置。
 ///
+/// 实例化设计：每个架构是一个**带字段**的类型，由 `new(desc)` 从 `ArchMiscDesc`
+/// 构造，再调用 `init(&mut self)`。带字段而非 ZST 是因为——
+///   - 部分实现需要从 `ArchMiscDesc` 读取运行时参数（如 x86 ACPI 表地址、
+///     aarch64 PMU cycle counter 是否可用），这些无法在编译期固化。
+///   - trait bound `Send + Sync` 隐含了"拥有非 `Copy` 数据的所有权要求"。
+///
 /// C: arch_init() — arch/i386/arch_system.c:246 / earm/arch_system.c:101
-pub trait ArchInit {
+pub trait ArchInit: Sized + Send + Sync {
+    /// 从 `ArchMiscDesc` 构造实例。
+    ///
+    /// 不同架构从 `desc` 读取不同字段（`desc.acpi_tables()` /
+    /// `desc.pmu_cycle_counter()` 等），因此签名固定为 `&ArchMiscDesc`。
+    fn new(desc: &minix_platform::ArchMiscDesc) -> Self;
+
     /// 执行架构特定初始化。
     ///
     /// 在 `init_clock_and_interrupts()` 中调用一次，位于 `init_clock()` 和
     /// `intr_init()` 完成之后。
-    fn init();
+    fn init(&mut self);
 }
 ```
 
-### 4.9 x86-64 ArchInit 实现
+**调用方式**：
 
 ```rust
-pub struct X86_64ArchInit;
+use minix_arch::{ArchInit, CurrentArchInit};
+let mut arch_init = CurrentArchInit::new(&pd.arch_misc());
+arch_init.init();
+```
+
+### 4.10 x86-64 ArchInit 实现
+
+```rust
+pub struct X86_64ArchInit {
+    /// ACPI 表基地址（由 `ArchMiscDesc.acpi_tables()` 提供）。
+    /// QEMU virt 启动阶段不使用；支持物理机时按 RSDP 搜索结果填入。
+    acpi_tables: Option<usize>,
+}
 
 impl ArchInit for X86_64ArchInit {
-    fn init() {
+    fn new(desc: &minix_platform::ArchMiscDesc) -> Self {
+        Self {
+            acpi_tables: desc.acpi_tables(),
+        }
+    }
+
+    fn init(&mut self) {
         // 1. 每 CPU 内核栈（由链接脚本处理）
 
-        // 2. ACPI 表解析
-        //    QEMU virt 启动阶段暂不依赖；支持物理机时需实现 RSDP 搜索与表解析。
+        // 2. ACPI 表解析（当前未启用；QEMU virt 不依赖 ACPI）
+        if let Some(rsdp_addr) = self.acpi_tables {
+            // TODO: 解析 RSDP → RSDT/XSDT → MADT（FADT/MCFG/...）
+            //       见 [08-system-init-boot-finish.md §4.x]
+            let _ = rsdp_addr;
+        }
 
         // APIC 初始化由 X86_64InterruptController::init() 完成。
         // COM1 串口初始化由 X86_64EarlyConsole::init() 完成。
@@ -1415,43 +1868,63 @@ impl ArchInit for X86_64ArchInit {
 }
 ```
 
-### 4.10 aarch64 ArchInit 实现
+### 4.11 aarch64 ArchInit 实现
 
 ```rust
-pub struct AArch64ArchInit;
+pub struct AArch64ArchInit {
+    /// 是否使能 PMU cycle counter（用户态 `gettime()` 性能计数器读依赖）。
+    /// 由 `ArchMiscDesc.pmu_cycle_counter()` 决定。
+    pmu_cycle_counter: bool,
+}
 
 impl ArchInit for AArch64ArchInit {
-    fn init() {
+    fn new(desc: &minix_platform::ArchMiscDesc) -> Self {
+        Self {
+            pmu_cycle_counter: desc.pmu_cycle_counter(),
+        }
+    }
+
+    fn init(&mut self) {
         // C: arch_init() — earm/arch_system.c:101-132
 
-        // 1. 使用户态可以访问 PMU cycle counter
+        // 1. PMU cycle counter（用户态可见）
+        //    仅在 `pmu_cycle_counter == true` 时初始化；当前所有平台描述符
+        //    （含 QEMU virt）均为 `false`，本阶段实际不初始化。C 版
+        //    earm/arch_system.c:101-132 无条件启用，描述符门控是刻意设计。
         // C: PMU_PMCR_E + PMU_PMCNTENSET_C + PMU_PMUSERENR_EN
-        unsafe {
-            // PMCR：E（使能）+ C（复位事件计数器）+ P（复位 cycle counter）= 0x7
-            core::arch::asm!("msr pmcr_el0, {}", in(reg) 0x7u64);
-            // PMCNTENSET：C 位（bit 31）使能 cycle counter
-            core::arch::asm!("msr pmcntenset_el0, {}", in(reg) 0x8000_0000u64);
-            // PMUSERENR：EN 位（bit 0）— 允许 EL0（用户态）访问
-            core::arch::asm!("msr pmuserenr_el0, {}", in(reg) 0x1u64);
+        if self.pmu_cycle_counter {
+            unsafe {
+                // PMCR：E（使能）+ C（复位事件计数器）+ P（复位 cycle counter）= 0x7
+                core::arch::asm!("msr pmcr_el0, {}", in(reg) 0x7u64);
+                // PMCNTENSET：C 位（bit 31）使能 cycle counter
+                core::arch::asm!("msr pmcntenset_el0, {}", in(reg) 0x8000_0000u64);
+                // PMUSERENR：EN 位（bit 0）— 允许 EL0（用户态）访问
+                core::arch::asm!("msr pmuserenr_el0, {}", in(reg) 0x1u64);
+            }
         }
 
         // 2. 板级相关初始化（bsp_init）
         //    平台相关设置（例如 GIC 基地址发现）在正式硬件上需补充。
-        //    当前 QEMU virt 中，GIC base 由 `AArch64InterruptController::set_base()`
-        //    单独传入，不经过此路径。
+        //    当前 QEMU virt 中，GIC base 由 `AArch64InterruptController::new()` 从
+        //    `desc.interrupt_controller()` 单独传入，不经过此路径。
     }
 }
 ```
 
-> **实现说明**: PMU 三个寄存器 (PMCR_EL0 / PMCNTENSET_EL0 / PMUSERENR_EL0) 已实现；`bsp_init` 中的 GIC base 发现由 `AArch64InterruptController::set_base()` 单独处理，不在 `ArchInit::init()` 路径内。
+> **实现说明**: PMU 三个寄存器 (PMCR_EL0 / PMCNTENSET_EL0 / PMUSERENR_EL0) 已实现；`bsp_init` 中的 GIC base 由 `AArch64InterruptController::new(desc)` 从 `Gicv3Desc` 单步构造传入，不在 `ArchInit::init()` 路径内。
 
-### 4.11 riscv64 ArchInit 实现
+### 4.12 riscv64 ArchInit 实现
 
 ```rust
+/// riscv64 无需外部运行时参数 —— riscv64 是 ZST。
 pub struct Riscv64ArchInit;
 
 impl ArchInit for Riscv64ArchInit {
-    fn init() {
+    fn new(_desc: &minix_platform::ArchMiscDesc) -> Self {
+        Self
+    }
+
+    fn init(&mut self) {
         // 无 Minix3 对应实现 —— 来自 RISC-V Privileged Spec
 
         // 1. 配置 PMP（Physical Memory Protection）
@@ -1476,7 +1949,7 @@ impl ArchInit for Riscv64ArchInit {
 
 > **实现说明**: PMP entry 0 已实现（pmpaddr0 + pmpcfg0），SIE 0x22 设置 STIE+SSIE。SEIE 由 InterruptController::unmask() 在使能 PLIC external 中断时单独处理。
 
-### 4.12 init_clock_and_interrupts() 实现
+### 4.13 init_clock_and_interrupts() 实现
 
 > 设计决策：§3.1~§3.6、§4.1（实例化 trait）
 
@@ -1488,7 +1961,7 @@ fn init_clock_and_interrupts() {
     use minix_arch::{ClockArch, ArchInit};
     use minix_platform::{platform_desc, PlatformDesc};
 
-    // 平台描述符在 Phase A.5 已由 KernelInfo 初始化。
+    // 平台描述符在 boot 早期已由 KernelInfo 初始化。
     // 所有硬件参数（定时器、中断控制器、架构杂项）均从此获取。
     let pd = platform_desc();
 
@@ -1509,6 +1982,15 @@ fn init_clock_and_interrupts() {
     let mut intr = CurrentInterruptController::new(&pd.interrupt_controller());
     intr.init();  // 内部会调用 mask_all()
 
+    // 步骤 3.5：将中断控制器存入全局 IRQ_MANAGER，而不是 init 后丢弃。
+    // trap 入口与 bsp_finish_booting 需要经 IRQ_MANAGER 访问中断控制器
+    // （IrqManager::register_hook 负责把 handler 绑定到 trap 入口）。
+    // SAFETY: boot 阶段在 BKL 存在前是单线程，无并发访问。
+    unsafe {
+        *IRQ_MANAGER.get() =
+            Some(crate::irq_manager::IrqManager::new(intr));
+    }
+
     // 步骤 4：架构特定初始化。
     // C: arch_init() — arch_system.c:246 / earm/arch_system.c:101
     // 实例化设计：从 arch_misc 描述符构造 ArchInit，再调用 init。
@@ -1519,7 +2001,7 @@ fn init_clock_and_interrupts() {
 }
 ```
 
-### 4.13 EarlyConsole 实现（x86-64）
+### 4.14 EarlyConsole 实现（x86-64）
 
 > 设计决策：§3.4
 
@@ -1568,6 +2050,13 @@ unsafe fn ser_init() {
     outb(COM1_BASE + 4, COM1_MCR_DTR_RTS_OUT2); // DTR + RTS + OUT2
 }
 
+fn com1_write_byte(byte: u8) {
+    unsafe {
+        while (inb(COM1_BASE + 5) & 0x20) == 0 {}
+        outb(COM1_BASE, byte);
+    }
+}
+
 pub struct X86_64EarlyConsole;
 
 impl EarlyConsole for X86_64EarlyConsole {
@@ -1577,13 +2066,13 @@ impl EarlyConsole for X86_64EarlyConsole {
     }
 
     fn write_byte(byte: u8) {
-        unsafe {
-            while (inb(COM1_BASE + 5) & 0x20) == 0 {}
-            outb(COM1_BASE, byte);
-        }
+        // 转发给模块私有 helper（忙等 + outb 在 com1_write_byte 内）。
+        com1_write_byte(byte);
     }
 }
 ```
+
+> **实现要点**：COM1 字节写入统一由模块私有函数 `com1_write_byte` 承担（忙等 THR 空 + `outb`）。trait 方法 `write_byte` 直接转发给它，`write_str` / `write_hex` 内部同样走 `com1_write_byte`——helper 命名为 `com1_write_byte` 而非与 trait 方法同名的 `write_byte`，避免名称解析歧义。
 
 `kmain()` 和 `kmain_verify()` 在入口首先调用 `CurrentEarlyConsole::init()`，随后所有诊断输出都走 `CurrentEarlyConsole::write_*`。
 
@@ -1591,7 +2080,7 @@ impl EarlyConsole for X86_64EarlyConsole {
 
 ## 5. 测试要点
 
-测试分为两层：**单元测试**（验证软件状态机逻辑，无硬件依赖）和 **QEMU 集成测试**（验证硬件寄存器配置，需 QEMU + GDB）。
+测试当前覆盖**单元测试**（验证软件状态机逻辑，无硬件依赖）。QEMU + GDB 硬件集成测试脚本（验证 8254 PIT / Generic Timer / CLINT 等硬件寄存器配置）已存在于 `os/arch/tests/qemu_test_{x86_64,aarch64,riscv64,x86_64_procd}.sh`（含 QEMU/GDB 前置检查、GDB checkpoint、退出码 0/1/2），但运行需要目标 `kernel.elf` 构建产物与 QEMU/GDB 环境，端到端执行尚未接入 CI——见 §5.2 末尾"未覆盖（后续文档）"。
 
 ### 5.1 单元测试
 
@@ -1601,19 +2090,25 @@ impl EarlyConsole for X86_64EarlyConsole {
 |------|-------|---------|
 | `os/arch/src/arch/clock.rs` | 3 | `ClockArch` trait 默认方法（`read_tsc` 委托）+ `DEFAULT_HZ` / `LOAD_HISTORY_SIZE` 常量 |
 | `os/kernel/src/clock.rs` | 44 | `ClockState` / `LoadInfo` / adjtime / billp 记账 / 虚拟定时器 / 定时器队列 / load 更新 / decrement_quantum（详见 §5.1.1）|
-| `os/plat/src/interrupt.rs` | 10 | `IrqVector` / `IrqId` / `IrqNotifyId` / `IrqPolicy` / `IrqAction` / `NR_IRQ_*` |
-| `os/plat/src/x86_64/interrupt.rs` | 3 | LAPIC/IOAPIC 默认基址、set_base 覆盖、`IRQ0_VECTOR` |
-| `os/plat/src/x86_64/early_console.rs` | 6 | COM1 寄存器常量 (DLAB, 8N1, FIFO, MCR) |
+| `os/plat/src/interrupt.rs` | 0 | 原 10 个 newtype/bitflags/enum 派生属性测试为 Pattern #38 自指测试，已删除。Newtype/bitflags/enum 正确性由类型签名、宏、派生 trait 编译期保证；真实行为测试在各架构 `interrupt.rs` 的 `test_new_from_*_descriptor` 中。 |
+| `os/plat/src/x86_64/interrupt.rs` | 2 | `X86_64InterruptController::new()` 构造（验证 `lapic_base` / `ioapic_base` 字段注入 + clamp 边界）|
+| `os/plat/src/x86_64/early_console.rs` | 0 | 原 6 个 COM1 寄存器常量自指测试已删除（常量在声明位置天然正确）。运行时初始化需待 QEMU 集成测试 |
 | `os/arch/src/x86_64/arch_init.rs` | 0 | 串口初始化由 `EarlyConsole` 负责；ACPI 解析尚未实现测试 |
-| `os/plat/src/arm64/interrupt.rs` | 3 | GIC 寄存器偏移、WAKER bits、QEMU virt GICD/GICR 偏移、gicd_base=0 防御 panic |
-| `os/arch/src/{x86_64,arm64,riscv64}/trap_entry.rs` | 19/4/4 | IDT 门描述符、set_handler 行为、VBAR/stvec 配置（详见 doc 03 §5.3）|
+| `os/plat/src/arm64/interrupt.rs` | 1 | `AArch64InterruptController::new()` 构造 |
+| `os/plat/src/riscv64/interrupt.rs` | 2 | `Riscv64InterruptController::new()` 构造 |
+| `os/arch/src/x86_64/trap_entry.rs` | 14 | IDT 门描述符 `size_of`、set_handler 行为、IDT init、STAR/LSTAR/SFMASK/SYSCALL/SYSRET layout（详见 doc 03 §5.3）|
+| `os/arch/src/{arm64,riscv64}/trap_entry.rs` | 1 + 1 | 各 1 个编译期 trait bound 检查 (`_check<T: TrapEntryArch>()`)。原 4 个 unit-struct 烟雾测试已迁移为编译期约束 |
 | `os/plat/src/early_console.rs` | 0 | trait 声明 `init`/`write_byte` 接口；`write_str`/`write_hex` 为默认方法，目前通过 `os/plat/src/mock.rs` 的 `MockEarlyConsole` 在测试构建中复用 |
-| `os/arch/src/arch/timer_irq_gate.rs` | 4 | `test_current_timer_irq_gate_compiles`（`CurrentTimerIrqGate` alias 编译检查）+ 三架构 `test_*_timer_irq_gate_compiles`（按 `target_arch` 门控，各验证一次硬件 impl 编译通过；真硬件行为由 QEMU 集成测试验证） |
-| **当前所列文件总计** | **100** | |
+| `os/arch/src/arch/timer_irq_gate.rs` | 4 | `test_current_timer_irq_gate_compiles`（`CurrentTimerIrqGate` alias 编译检查）+ 三架构 `test_*_timer_irq_gate_compiles`（按 `target_arch` 门控，各验证一次硬件 impl 编译通过）；真硬件行为需待 QEMU + GDB 集成测试脚本（见 §5.2 "未覆盖"） |
+| **当前所列文件总计** | **72** | |
+
+> **统计口径说明**：§5.1 上方表格按**文件**维度统计每个 `#[cfg(test)]` 模块的 `#[test]` 函数总数；§5.2 表格按**功能**维度分类统计。各架构 `interrupt.rs` 在 §5.1 含全部测试（如 aarch64 1 = 构造），§5.2 仅计入"该架构中断控制器构造"维度。
+>
+> **2026-08-16 P0 重构说明**：原 doc 声称 100 tests；本次 review 发现 48 个为虚假/烟雾测试（Pattern #38 自指测试 + unit struct noop 烟雾测试），删除后真实行为测试数 = 72。详见 `.review/codex/01-stage-kernel/05-clock-interrupt-init/test-audit.md`。
 
 #### 5.1.1 时钟状态与定时器测试（`os/kernel/src/clock.rs`）
 
-> 注：`ClockState` / `LoadInfo` / `DEFAULT_HZ` / `LOAD_HISTORY_SIZE` 的**权威定义位于 `os/kernel/src/clock.rs`**（内核态时钟状态机，与 `os/arch/src/arch/clock.rs` 的 `ClockArch` 硬件抽象分离，分层决策见 §3.1）。`arch/clock.rs` 仅剩 3 个常量/trait 默认方法测试（`test_default_hz_value` / `test_load_history_size` / `test_read_tsc_default_delegates_to_read_ticks`）。
+> 注：`ClockState` / `LoadInfo` 的权威定义位于 `os/kernel/src/clock.rs`（内核态时钟状态机，与 `os/arch/src/arch/clock.rs` 的 `ClockArch` 硬件抽象分离，分层决策见 §3.1）；`DEFAULT_HZ` / `LOAD_HISTORY_SIZE` 的权威定义位于 `os/arch/src/arch/clock.rs:43,49`，`os/kernel/src/clock.rs:474` 的同值 `DEFAULT_HZ` 与私有 `LOAD_HISTORY`（L487）是独立副本（修改先改 arch 再 sync，见 §3.2）。`arch/clock.rs` 的 3 个测试（`test_default_hz_value` / `test_load_history_size` / `test_read_tsc_default_delegates_to_read_ticks`）验证的正是 arch 层常量与 `read_tsc` 默认委托。
 
 **ClockState 初始化与 tick 行为**：
 
@@ -1699,71 +2194,22 @@ impl EarlyConsole for X86_64EarlyConsole {
 cd os/kernel && cargo test --lib clock 2>&1
 ```
 
-#### 5.1.2 IRQ 类型测试（`plat/interrupt.rs`）
+#### 5.1.2 IRQ 共享类型测试（`plat/interrupt.rs`）
 
-| 测试 | 验证内容 |
-|------|---------|
-| `test_irq_vector_new` | `IrqVector::new(32).get() == 32` |
-| `test_irq_vector_const` | `IrqVector` 可在 const 上下文中使用 |
-| `test_irq_vector_boundaries` | min=0, max=63 |
-| `test_irq_vector_equality` | `IrqVector` 支持 `==` 和 `!=` |
-| `test_irq_id_new` | `IrqId::new(1).get() == 1` |
-| `test_irq_id_const` | `IrqId` 可在 const 上下文中使用 |
-| `test_irq_notify_id_new` | `IrqNotifyId::new(42).get() == 42` |
-| `test_irq_notify_id_const` | `IrqNotifyId` 可在 const 上下文中使用 |
-| `test_irq_policy_reenable` | `IrqPolicy::REENABLE.bits() == 0x001` |
-| `test_irq_policy_empty` | `IrqPolicy::empty().bits() == 0` |
-| `test_nr_irq_constants` | `NR_IRQ_VECTORS == 64`, `NR_IRQ_HOOKS == 64` |
-| `test_irq_action_discriminants` | `Completed` != `NotCompleted` |
-| `test_irq_vector_debug_format` | `Debug` 输出包含类型名 |
+`os/plat/src/interrupt.rs` 当前**无 `#[test]` 函数**——原 10 个测试（`test_irq_vector_new/const/boundaries/equality` / `test_irq_id_new` / `test_irq_notify_id_new` / `test_irq_policy_reenable/empty` / `test_nr_irq_constants` / `test_irq_action_discriminants`）于 2026-08-16 删除（Pattern #38 自指测试）。
 
-### 5.2 QEMU + GDB 集成测试
+**删除理由**：这些测试断言类型包装器的往返或编译期已保证的属性——
+- `IrqVector::new(32).get() == 32` 仅测构造器+访问器的对称 round-trip，由 `pub const fn new` / `pub const fn get` 签名保证
+- `bitflags!` 宏的 `bits()` 行为由宏本身保证
+- enum `#[derive(...)]` 派生的 `PartialEq` / `Debug` 由宏展开保证
 
-QEMU 测试使用批处理 GDB 脚本，自动启动 QEMU、打断点、验证寄存器状态。
+**真实行为覆盖**：
+- 各架构 `interrupt.rs` 的 `test_new_from_*_descriptor`（验证 `ApicDesc` / `Gicv3Desc` / `PlicDesc` 字段注入）
+- 各架构的 `test_new_clamps_nr_irqs_to_max`（验证 `nr_irqs` clamp 边界）
 
-测试脚本位于 `os/arch/tests/`：
-- `qemu_test_x86_64.sh`
-- `qemu_test_aarch64.sh`
-- `qemu_test_riscv64.sh`
+**取舍说明**：保留这些 self-reference 测试的代价是**虚增测试数 + 误导读者**，收益是零（新行为无法被它们捕获）。文档显式说明这些"理论测试" 删除，使测试数与 doc §5.1 表格保持一致。
 
-#### 5.2.1 x86-64 验证
-
-```bash
-cd os/arch/tests && ./qemu_test_x86_64.sh build/x86_64/kernel.elf
-```
-
-验证内容：
-1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
-2. 8254 PIT 已配置（端口 0x43/0x40 写入了 rate generator 模式）
-3. ClockState 初始化（hz、uptime 初始值正确）
-
-#### 5.2.2 aarch64 验证
-
-```bash
-cd os/arch/tests && ./qemu_test_aarch64.sh build/aarch64/kernel.elf
-```
-
-验证内容：
-1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
-2. ARM Generic Timer 已启用：`CNTP_CTL_EL0 & 0x1 == 1`（ENABLE bit）
-3. Counter frequency 合理：`CNTFRQ_EL0 > 0`
-4. GICv3 CPU Interface 已配置：`ICC_SRE_EL1 & 0x7 == 0x7`（SRE + Enable）
-5. Priority mask 已设置：`ICC_PMR_EL1 == 0xFF`
-
-#### 5.2.3 riscv64 验证
-
-```bash
-cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
-```
-
-验证内容：
-1. `init_clock_and_interrupts()` 断点命中 — 确认执行路径正确
-2. CLINT mtimecmp 已配置：`*(uint64_t*)0x2004000 != 0`
-3. CLINT mtime 在递增：`*(uint64_t*)0x200BFF8` 非零
-4. S-mode 中断已使能：`sie & 0x22 == 0x22`（SEIE + STIE）
-5. S-mode 状态已配置：`sstatus.SIE` bit 设置
-
-### 5.3 测试覆盖分析
+### 5.2 测试覆盖分析
 
 | 维度 | 覆盖项 | 覆盖情况 |
 |------|--------|---------|
@@ -1778,24 +2224,24 @@ cd os/arch/tests && ./qemu_test_riscv64.sh build/riscv64/kernel.elf
 | boottime/realtime | set_boottime/set_realtime/AP no-op | ✅ 3 tests |
 | misc | 用户时间记账、测试构建 read_tsc=0 | ✅ 2 tests |
 | 常量值验证 | DEFAULT_HZ, LOAD_HISTORY_SIZE（`arch/clock.rs`） | ✅ 2 tests |
-| IRQ 类型安全 | IrqVector, IrqId, IrqNotifyId | ✅ 8 tests |
-| IRQ 策略/动作 | IrqPolicy, IrqAction 语义 | ✅ 3 tests |
+| IRQ 共享类型编译期正确性 | IrqVector / IrqId / IrqNotifyId newtype、`bitflags!` 派生、enum `derive(*)` 行为 | ✅ 编译期保证（原 self-reference 测试已删除，详见 §5.1.2）|
+| IRQ 策略/动作 | IrqPolicy / IrqAction bitflags & enum 派生属性 | ✅ 编译期保证（自指测试已删除）|
 | x86-64 APIC 构造 | `X86_64InterruptController::new(&InterruptControllerDesc::Apic)` 提取 lapic/ioapic base | ✅ 2 tests (`os/plat/src/x86_64/interrupt.rs`) |
 | aarch64 GICv3 构造 | `AArch64InterruptController::new(&InterruptControllerDesc::Gicv3)` 提取 distributor/cpuif base | ✅ 1 test (`os/plat/src/arm64/interrupt.rs`) |
 | riscv64 PLIC 构造 | `Riscv64InterruptController::new(&InterruptControllerDesc::Plic)` 提取 base | ✅ 2 tests (`os/plat/src/riscv64/interrupt.rs`) |
 | Mock 中断控制器 | `MockInterruptController` 提供 `InterruptController` trait 空实现，供单元测试编译 | ✅ (`os/plat/src/mock.rs`) |
-| QEMU x86-64 | PIT 配置, 断点命中 | ✅ 自动化脚本 |
-| QEMU aarch64 | Generic Timer, GICv3 寄存器 | ✅ 自动化脚本 |
-| QEMU riscv64 | CLINT mtimecmp, sie 寄存器 | ✅ 自动化脚本 |
+| trap_entry 表层 (x86-64/arm64/riscv64) | IDT 门描述符大小与字段、`set_handler` 行为、`STAR`/`LSTAR`/`SFMASK` 寄存器值、VBAR/stvec 配置、PIC/syscall/IPC vector 初始化（详见 doc 03 §5.3） | ✅ 14 + 1 + 1 = 16 tests |
 
 **未覆盖（后续文档）**：
 - Load average 计算（`kloadinfo`）测试 — 槽位更新已测（`test_load_update_*`），计算逻辑属于调度器模块
 - 时钟中断处理程序（`timer_int_handler`）测试 — 属于异常/中断处理文档（doc 15-clock-timer）
+- QEMU + GDB 硬件集成测试 — `os/arch/tests/qemu_test_*.sh` 四个脚本已实现（QEMU/GDB 前置检查、GDB checkpoint、退出码 0/1/2），但尚未端到端运行：需目标 `kernel.elf` 构建产物与 QEMU/GDB 环境；运行后覆盖 8254 PIT / Generic Timer / CLINT / GICv3 等硬件寄存器配置的真实行为
 
 ---
 
 ## 6. 参见
 
+- [02-higher-half-kernel.md](02-higher-half-kernel.md) — 更高半内核映射（clock 初始化的前置条件：内核虚拟地址 + 物理地址映射就绪后才可启动 timer）
 - [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 前半段：保护模式初始化
 - [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 进程表初始化和 boot 进程加载
 - [16-smp.md](16-smp.md) — SMP 启动和 AP 引导（与 §3.7 `bsp_finish_booting` 范围声明呼应）

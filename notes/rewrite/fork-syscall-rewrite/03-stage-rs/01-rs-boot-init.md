@@ -294,7 +294,7 @@ static void sef_local_startup()
   }
 ```
 
-- **计数核对**（main.c:225-227）：boot 映像表中系统服务数必须等于 RS 自身 priv 表中系统服务数——这是"RS 的表与内核的表一致"的启动协议完整性检查。`iskerneln` 按端点号判断内核任务（负端点）。
+- **计数核对**（main.c:225-227）：boot 映像表中系统服务数必须等于 RS 自身 priv 表中系统服务数——这是"RS 的表与内核的表一致"的启动协议完整性检查。`iskerneln` 按端点号判断内核任务（负端点）。**R17（2026-08-16）**：`validate_tables` 另校验每行 `endpoint.slot() == proc_nr`——内核 boot 表端点由 `_ENDPOINT(0, proc_nr)` 派生（main.c:196），手写 placeholder 若错位会 boot 错端点；`boot_img` 的 16 字节名钳制（`len.min(16)` 的 const 求值版本）使超长名不再以晦涩的 const 越界编译错误暴露。
 - **表重置**（main.c:230-237）：把 `rproc`/`rprocpub` 全表清零（`r_flags=0`、`r_init_err=ERESTART`、`in_use=FALSE`、`old/new_endpoint=NONE`）。进程表字段语义归 02；这里只标注调用点。
 
 #### 2.3.3 Step 1：逐服务设置 priv/sys/dev 属性（main.c:244-346）
@@ -648,23 +648,32 @@ pub fn lookup_dev<'a>(table: &'a [BootImageDev], ep: Endpoint) -> &'a BootImageD
 
 ### 3.3 SEF 回调注册表：SefCallbacks（对应 §2.2，ARCH A-7）
 
-**C**：`sef_setcb_*` 全局函数指针 + `sef_startup()` 状态机（libsys/sef.c）。**Rust**：用户态 SEF 抽象（A-7：RS 先行实现并复用至 PM/VFS）建模为**显式回调结构体**：
+**C**：`sef_setcb_*` 全局函数指针 + `sef_startup()` 状态机（libsys/sef.c），回调体靠全局变量访问
+`rproc[]`/`rupdate`。**Rust**：用户态 SEF 抽象（A-7：RS 先行实现并复用至 PM/VFS）建模为
+**trait**（N5 修复，2026-08-16——原 fn 指针结构体无法携带服务器状态，12/18/06 的回调体
+将拿不到 `&mut ServerState`；trait 化让回调成为状态机方法，`&mut self` 正是单线程用户态模型）：
 
 ```rust
-pub struct SefCallbacks {
-    pub init_fresh: SefInitCb,      // C: sef_setcb_init_fresh (main.c:139)
-    pub init_restart: SefInitCb,    // main.c:140 → 18
-    pub init_lu: SefInitCb,         // main.c:141 → 18
-    pub init_response: SefMsgCb,    // main.c:144 → 12
-    pub lu_response: SefMsgCb,      // main.c:145 → 12
-    pub signal_handler: SefSignalCb,// main.c:148 → 06
-    pub signal_manager: SefSignalMgrCb, // main.c:149 → 06
+pub trait SefCallbacks {
+    fn init_fresh(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>;
+    fn init_restart(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>; // → 18
+    fn init_lu(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>;      // → 18
+    fn init_response(&mut self, m: &Message) -> Result<i32, Errno>;  // → 12
+    fn lu_response(&mut self, m: &Message) -> Result<i32, Errno>;    // → 12
+    fn signal_handler(&mut self, signo: i32);                        // → 06
+    fn signal_manager(&mut self, signo: i32, exec: i32) -> i32;      // → 06
 }
 ```
 
-- `SefInitCb = fn(SefInitType, &SefInitInfo) -> Result<i32, Errno>`——`SefInitType::{Fresh, Lu, Restart}` 对应 `SEF_INIT_FRESH=0/LU=1/RESTART=2`（sef.h:93-95）。
-- **注册表 = 数据，启动 = 方法**：`SefCallbacks::local_startup()` 返回完整注册表（对应 `sef_local_startup`，main.c:136-152）；`SefCallbacks::startup(...)` 对应 `sef_startup()` 的 init **消息**分派（从 IPC 收到 `RS_INIT` 后按 `info.init_type` 调 `init_fresh`/`init_lu`/`init_restart`）。**消息接收/拦截机制归 12**（`do_init_ready`/`sef_cb_init_response`）；`RsServer::init(Fresh)` 直接驱动 `BootInit::init_fresh`（§3.4），不经 `startup()`——两条路径（boot 直驱 vs SEF_INIT 消息分派）在 12 落地后合并。本文档只交付注册表与类型。
-- **与 VM 01 §3.4 的简化对齐**：VM 用 `rs_handshake()` 替代 SEF 框架（`02-stage-vm/01-vm-init-main.md` §3.4）；RS 是 SEF 的**提供方**（其余服务的 init 协议由 RS 实现），必须保留完整的回调表语义，但同样去掉 C 的全局函数指针——回调表作为 `RsServer` 的字段传递。
+- `SefInitType::{Fresh, Lu, Restart}` 对应 `SEF_INIT_FRESH=0/LU=1/RESTART=2`（sef.h:93-95）。
+- **实现者是 `RsServer` 本身**：`impl SefCallbacks for RsServer`。`RsServer::init(init_type)` 对应
+  `sef_startup()` 的分派（main.c:151）——按 `init_type` 路由到 `init_fresh`/`init_lu`/
+  `init_restart`；`init_fresh` 即四步 boot（§3.4）。**消息接收/拦截机制归 12**
+  （`do_init_ready`/`sef_cb_init_response`）；主循环的 RS_INIT 分支（12）直接调 trait 方法，
+  回调体经 `&mut self` 拿到 `RsServer` 状态。12/18/06 未落地的 6 个方法在 `RsServer` 上
+  fail-closed（`Err(ENOSYS)`/`ENOSYS.to_i32()`），`signal_handler` 保留 `unimplemented!`
+  （无 Result 通道，T7 门禁带 06 契约）。
+- **与 VM 01 §3.4 的简化对齐**：VM 用 `rs_handshake()` 替代 SEF 框架（`02-stage-vm/01-vm-init-main.md` §3.4）；RS 是 SEF 的**提供方**（其余服务的 init 协议由 RS 实现），必须保留完整的回调集语义；trait 化去掉 C 的全局函数指针且不引入"注册值 + 回调体无法触达状态"的中间形态。
 
 ### 3.4 四步 boot 类型化：BootInit 状态机（对应 §2.3）
 
@@ -673,6 +682,7 @@ pub struct SefCallbacks {
 ```rust
 pub struct BootInit<'a> {
     tables: BootTables<'a>,     // C: sys_getimage 拷贝 + 三静态表（§3.1）
+    machine: Machine,           // C: machine（main.c:53 sys_getmachine，N3）
     rinit: RinitState,          // C: rinit.rproctab_gid（§2.3.1，消费在 12）
     slots: Vec<ServiceSlot>,    // C: rproc/rprocpub 表（字段语义归 02；本模块只做生命周期编排）
     shutting_down: bool,        // C: shutting_down（main.c:193）
@@ -693,6 +703,26 @@ impl BootInit<'_> {
 
 **外部 syscall 面**：`KernelApi` trait（§3.5）。四步内部只调用 trait 方法，生产实现最终接线 `minix-sys`（19），测试用 mock 记录调用序列。
 
+> **T1 修复（2026-08-15）——状态 handover**：C 的 boot 状态就是运行期状态（`glo.h` 全局：
+> `rproc[]`/`system_hz`/`shutting_down`/`rinit`，boot 后继续存活）。Rust 侧 `BootInit` 增加
+> `into_state(self) -> ServerState<'a>`（**消费 self**，boot 后旧机器不可再改）；`RsServer` 持有
+> `boot: Option<BootInit>` + `state: Option<ServerState>`，`init(Fresh)` 成功后将状态移交，
+> `run()`/主循环（06）经单一访问器 `RsServer::state()` 读取 `table`/`system_hz`/`shutting_down`——
+> 避免"5+ getter 垃圾场"方案。typestate（`BootInit<Fresh>` → `RsRunning`）记为 06 接线时的备选。
+
+> **N3 修复（2026-08-16，todo §11）——machine 纳入 ServerState**：`ServerState` 增加
+> `machine: Machine` 字段；`step0_prepare` 在启动期一次性 `sys.get_machine()?`
+> （对齐 C main.c:53 的位置——`sef_local_startup` 之后、主循环之前），经 `into_state`
+> 移交运行期。`check_request` 的 CPU 亲和解析（request.c:1286-1296，`RS_CPU_BSP`/
+> 越界回退）读这个快照，而不是在主循环里临时查询（C 是一次性启动快照语义）。
+> 对照 Redox：daemon 的 CPU 拓扑经 scheme 按需查询（`sysinfo`），无启动期全局快照；
+> Minix RS 是启动期快照，Rust 显式建模为 `ServerState` 字段。
+
+> **T6 修复（2026-08-15）——Step 2/3 fail-closed**：Step 2 对 `SF_SYNCH_BOOT` 服务不再计入
+> `nr_uncaught_init_srvs`（C 是同步 `catch_boot_init_ready`，main.c:390-392；12 落地前显式
+> `Err(ENOSYS)`）；Step 3 在计数 > 0 时显式 `Err(ENOSYS)`（C 阻塞接收 = fail-closed，main.c:401-407），
+> 不再"假装收完"。boot 测试改走私有 step 方法直接驱动各步，并新增 SYNCH_BOOT/Step 3 fail-closed 断言。
+
 ### 3.5 外部 syscall 面：KernelApi trait（对应 §2.1/§2.3，外部契约归 19）
 
 C 的 `sys_getmachine`/`sys_getinfo`/`sys_privctl`/`sys_getpriv`/`sys_setalarm`/`getnpid`/`sched_init_proc`/`srv_fork` 等（§2 各调用点）是 libsys 自由函数。Rust 侧**本模块不直接调用 `minix-sys`**（其 stub 未实现，`os/libs/minix-sys/src/lib.rs`），而是定义窄接口：
@@ -703,15 +733,33 @@ pub trait KernelApi {
     fn get_hz(&mut self) -> Result<u32, Errno>;
     fn privctl(&mut self, proc: Endpoint, op: PrivCtlOp, priv_: Option<&Priv>) -> Result<(), Errno>;
     fn getpriv(&mut self, proc: Endpoint) -> Result<Priv, Errno>;
-    fn sched_init_proc(&mut self, proc: Endpoint) -> Result<(), Errno>;
+    fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
     fn getnpid(&mut self, proc: Endpoint) -> Result<i32, Errno>;
     fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno>;
 }
 ```
 
+> **S4 修复（2026-08-15）**：`sched_init_proc` 签名从 `(proc: Endpoint) -> Result<(), Errno>` 改为
+> `(cfg: &SchedulerConfig) -> Result<Endpoint, Errno>` —— C 的 `sched_start`（sched_start.c:37-80）
+> 需要 scheduler/priority/quantum/cpu 全部四个参数，且回写 `*newscheduler_e`（可能被转发到别的
+> 调度器）。`SchedulerConfig`（sched.rs）携带全部参数；boot Step 2 用 `SchedulerConfig::boot_defaults`
+> 构造（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/`SRV_QT=USER_QUANTUM=200`，priv.h:88,93,98 + config.h:69,74）。
+> NONE 调度器短路（sched_start.c:45-47）在纯函数 `sched::sched_decision` 内实现，不触内核
+> （T5 修复，2026-08-16）：`sched_init_proc` 的"决策 + 执行"拆分为
+> `sched_decision(cfg, is_sys_proc) -> SchedAction::{Skip, Start(&cfg)}`，shell（boot Step 2 /
+> 19 接线）执行 `Start` → `sys.sched_init_proc(cfg)` 并取得 `*newscheduler_e`。
+
 理由：
 - **依赖倒置**：boot 编排逻辑与 syscall 实现解耦；`minix-sys` 落地后实现 `KernelApi`（接线归 19），测试用 `MockKernelApi`。
-- **fail-closed**：生产未接线时，`KernelApi` 的占位实现 `unimplemented!()` panic（显式失败），不静默吞错（A-12）。
+- **T5 注入边界（2026-08-16）**：`KernelApi` 只在 shell 出现——boot 四步（本模块）、
+  `RsServer.kernel` 持有者（lib.rs）与 19 接线层。纯决策模块（access/ipc_mask/sched/ready/
+  recovery/monitor）不 import `KernelApi`：查询结果（`getnuid`/`getpriv`）由 shell 注入，
+  命令（`privctl`/`sched_init_proc`/`setalarm`）由 shell 执行（monitor 模式，todo §13）。
+  测试 mock 收敛为单一共享 `testutil::MockKernelApi`（E1，todo §13）。
+- **fail-closed（T2 修复）**：trait 无默认实现（编译期强制每个 impl 全量实现）；生产占位
+  `UnimplementedKernelApi` 每个方法返回 `Err(Errno::ENOSYS)`，**不 panic**——RS 是 root system
+  process，panic = 整机不可用（内核不重启 RS，`RSYS_F`）；返回 `Err` 让缺口在调用点可见且进程存活。
+  入口 `main.rs` 对 boot 失败显式 panic（C 的 boot 错误同样 `panic`，main.c:226），不吞错误。
 - 每个方法对应 C 调用点：`get_machine`（main.c:53）、`get_hz`（main.c:181）、`privctl`（main.c:287/379/478/485）、`getpriv`（main.c:294）、`sched_init_proc`（main.c:376/482）、`getnpid`（main.c:426）、`setalarm`（main.c:433）。
 
 ### 3.6 USE_LIVEUPDATE：cargo feature（对应 §2.3.7，ARCH A-11）
@@ -765,18 +813,27 @@ pub fn classify(ipc_status: &IpcStatus, who_p: Endpoint, call_nr: i32) -> Dispat
 fn main() {
     #[cfg(not(test))]
     {
-        use minix_rs::{RsServer, SefCallbacks, boot::BootTables};
+        use minix_rs::{RsServer, SefInitType, boot::BootTables};
 
-        // C: main.c:51 sef_local_startup() —— 回调注册表（§3.3）
-        let callbacks = SefCallbacks::local_startup();
+        // C: main.c:51 sef_local_startup() —— SEF 回调集是 RsServer 实现的
+        // trait（N5，§3.3），无独立注册值要构造。
 
         // C: main.c:53 sys_getmachine() —— 机器信息（KernelApi 接线归 19）
         // C: main.c:196 sys_getimage() —— boot 映像（§3.1，当前占位注入）
         let tables = BootTables::placeholder();   // 生产替换点：sys_getimage 落地后
 
-        let mut server = RsServer::new(callbacks, tables);
-        let _ = server.init(SefInitType::Fresh);  // C: sef_startup()→sef_cb_init_fresh()（§3.4 四步 boot）
-        server.run();                             // 主循环（骨架，§3.8；细节归 06）
+        let mut server = RsServer::new(tables);
+
+        // C: sef_startup()→sef_cb_init_fresh()——main.c:151,158-494（§3.4 四步 boot）。
+        // KernelApi 生产接线 DEFERRED（19）；此前 fresh boot 路径 fail-closed（Err(ENOSYS)）。
+        // C 视 boot 失败为致命（main.c:226 panic）——boot 未完成不得进入主循环。
+        if let Err(e) = server.init(SefInitType::Fresh) {
+            panic!(
+                "RS boot failed: {e:?} (kernel API wiring pending — 19-rs-external-interfaces.md)"
+            );
+        }
+
+        server.run();                             // C: main loop——main.c:50-131（骨架，§3.8；细节归 06）
     }
 }
 ```
@@ -794,10 +851,20 @@ pub mod table;      // §4.3：boot 三表（A-13）
 pub mod boot;       // §4.4：BootInit 四步状态机
 pub mod sef;        // §4.5：SEF 回调注册表（A-7）
 pub mod dispatch;   // §4.6：主循环分类骨架
+// 其余 pub mod（access/exec/ipc_mask/live_update/monitor/privilege/process_table/
+// publish/query/ready/recovery/request/sched/self_lifecycle/service_create/
+// service_slot/slot/state_data）为 02-19 对应模块的 forward-declare，共 22 个。
 
-pub struct RsServer { callbacks: SefCallbacks, boot: boot::BootInit<'static> }
+pub struct RsServer {
+    boot: Option<boot::BootInit<'static>>,  // init(Fresh) 成功后消费（T1）
+    state: Option<ServerState<'static>>,    // C 全局：rproc[]/system_hz/shutting_down/rinit
+    kernel: Box<dyn KernelApi>,             // 生产接线归 19；默认 fail-closed
+}
 impl RsServer {
-    pub fn new(callbacks: SefCallbacks, tables: BootTables<'static>) -> Self { ... }
+    pub fn new(tables: BootTables<'static>) -> Self { ... }   // kernel = UnimplementedKernelApi
+    pub fn with_kernel(tables: BootTables<'static>, kernel: Box<dyn KernelApi>) -> Self { ... }
+    pub fn init(&mut self, init_type: SefInitType) -> Result<i32, Errno> { ... }  // §3.4 分派
+    pub fn state(&self) -> Option<&ServerState<'static>> { ... }  // T1 handover 访问器
     pub fn run(&mut self) -> ! { ... }   // 主循环骨架（§3.8）
 }
 ```
@@ -833,8 +900,10 @@ impl RsServer {
 ### 4.5 `os/servers/rs/src/sef.rs`（对应 §2.2，A-7）
 
 - `SefInitType::{Fresh, Lu, Restart}` + `SefInitInfo`（对应 `sef_init_info_t`，sef.h:53；字段语义在 12 展开）。
-- `SefCallbacks` 7 字段结构体 + `local_startup()` 构造完整注册表（对应 main.c:139-149）。
-- `SefCallbacks::startup()`：对应 `sef_startup()`——启动期从 IPC 接收 `RS_INIT`，按 `info.init_type` 分派 `init_fresh`/`init_lu`/`init_restart`。**消息接收机制归 12**（RS 主循环的 `RS_INIT` 分支）；本模块只定义分派类型。
+- `SefCallbacks` 7 方法 trait（N5，§3.3），由 `RsServer` 实现（lib.rs）；不再有
+  `local_startup()`/`startup()`——`RsServer::init(init_type)` 对应 `sef_startup()` 的分派：
+  启动期从 IPC 接收 `RS_INIT` 后按 `info.init_type` 调 `init_fresh`/`init_lu`/
+  `init_restart`。**消息接收机制归 12**（RS 主循环的 `RS_INIT` 分支）；本模块只定义分派类型。
 
 ### 4.6 `os/servers/rs/src/dispatch.rs`（对应 §2.1 分类骨架）
 
@@ -847,7 +916,7 @@ impl RsServer {
 
 ## 5. 测试要点
 
-> 基线：`cargo test -p minix-rs` = **23 passed / 0 failed**（2026-08-15 实测）。测试覆盖四步 boot 顺序、表查找、SEF 注册表、dispatch 分类。
+> 基线：`cargo test -p minix-rs --lib` = **208 passed / 0 failed**（2026-08-16 实测，全 crate）。01 范围四模块 29 项（boot 18 + table 3 + sef 1 + dispatch 7）。测试覆盖四步 boot 顺序、表查找、SEF 回调 fail-closed、dispatch 分类。
 
 ### 5.1 table.rs 测试（§2.7，A-13）
 
@@ -864,27 +933,35 @@ impl RsServer {
 | `test_init_fresh_step_order` | `MockKernelApi` 记录调用序列：step1 privctl(SetSys)×10（RS/VM 跳过）→ step2 sched×10+Allow×10 → step4 getnpid×12+setalarm(100)；顺序与 C 一致（main.c:158-433） |
 | `test_step1_skips_privctl_for_rs_vm` | RS/VM 跳过 `privctl(SetSys)`（main.c:285-291 例外） |
 | `test_validate_tables_mismatch` | image 表与 priv 表系统服务数不一致 → Err（对应 main.c:225-227 panic） |
+| `test_validate_tables_rejects_proc_nr_endpoint_mismatch` | 单行 `proc_nr != endpoint.slot()` → Err（R17，fail-closed） |
+| `test_boot_img_truncates_long_name` | >16 字节名称钳制到字段（R17，不再 const 越界） |
 | `test_lookup_image_not_found` | `lookup_image` 未命中 → `LookupError::ImageTable`（对应 main.c:731 panic） |
 | `test_lookup_priv_found` / `test_lookup_priv_not_found` | `lookup_priv` 命中 / 未命中 → `LookupError::PrivTable`（对应 main.c:746） |
 | `test_lookup_sys_default_fallback` / `test_lookup_dev_default_fallback` | sys/dev 未命中返回默认条目（对应 main.c:753-762,768-777） |
 | `test_placeholder_tables_valid` | `BootTables::placeholder()` 通过 `validate_tables()`（对应 main.c:200-237） |
+| `test_unimplemented_kernel_api_fails_closed` | 生产占位 `KernelApi` 全接口 fail-closed（`Err(ENOSYS)`，T2：RS 是根系统进程，panic = 系统级 outage） |
+| `test_init_fresh_populates_table` | Step 1 后 12 个 boot 服务占 slot 0..11 且 `IN_USE|ACTIVE`，A-4 索引命中；非 boot slot 保持空闲（对应 main.c:244-346） |
+| `test_step4_sets_pid` | Step 4 每个 boot slot 携带 `getnpid` 返回的 pid（对应 main.c:426；mock 返回 100） |
+| `test_step3_fails_closed_when_init_ready_pending` | T6：有未收 init-ready 时 Step 3 fail-closed（`Err(ENOSYS)`，对应 main.c:401-407 的阻塞 receive 语义） |
+| `test_step2_synch_boot_fails_closed` | T6：`SF_SYNCH_BOOT` 服务同步 catch 未接线时 fail-closed（对应 main.c:390-392），不得静默跳过 sync |
+| `test_rs_server_handover_after_fresh_init` | T1：fresh boot 完成后运行时状态归 server 所有（`state()` 可达 table/hz/shutting_down），machine 快照随 boot→run 交接存活；boot 机器被消费（无双重所有权） |
+| `test_boot_slot_populates_s2_fields` | S2：boot slot 携带 cmd/args/argc/vm_call_mask/scheduler/priority/quantum/alive_tm（对应 main.c:308-333，07/09/10 依赖） |
 
 ### 5.3 sef.rs / dispatch.rs 测试（§2.2/§2.1，A-7）
 
 | 测试 | 覆盖 |
 |------|------|
-| `test_local_startup_registers_all` | `local_startup()` 填满 7 回调表且占位回调 fail-closed（对应 main.c:139-149） |
-| `test_startup_dispatches_fresh` / `_lu` / `_restart` | `startup()` 按 `SefInitType` 分派对应回调（对应 sef.h:93-95） |
-| `test_msg_cb_type_is_callable` | 消息回调类型签名编译期检查 |
+| `test_deferred_callbacks_fail_closed` | 12/18/06 未接线的回调（`init_restart`/`init_lu`/`init_response`/`lu_response`/`signal_manager`）全部 fail-closed（`Err(ENOSYS)`，T2） |
 | `test_classify_clock_notify` | `is_notify` + `CLOCK` → `ClockNotify`（对应 main.c:80-83） |
 | `test_classify_heartbeat_notify` | 非 CLOCK 通知 → `HeartbeatNotify`（对应 main.c:85-91） |
 | `test_classify_ready` | `RS_INIT`/`RS_LU_PREPARE` → `InitReady`/`LuPrepareReady`（对应 main.c:116-117） |
 | `test_classify_request` / `test_classify_request_unknown` | 请求分类；未知调用号 → `dispatch_request` 返回 `ENOSYS`（对应 main.c:118-121） |
+| `test_dispatch_result_reply_suppression` | `DispatchResult(EDONTREPLY)` 抑制 reply 路径（对应 main.c:124-129） |
 | `test_rs_constants_match_c` | 15 个 RS 消息常量与 com.h:465-482 一致 |
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs` 实测 **23 passed / 0 failed**（2026-08-15）。全部测试可 grep 验证：`rg "fn test_" os/servers/rs/src/` = 23 处。
+`cargo test -p minix-rs --lib` 实测 **208 passed / 0 failed**（2026-08-16）。全部测试可 grep 验证：`rg "fn test_" os/servers/rs/src/` = 209 处（含非测试方法 `CallMask::test_bit` 1 处，privilege.rs:205；实际测试 208）。01 范围四模块共 29 项：boot.rs 18、table.rs 3、sef.rs 1、dispatch.rs 7。
 
 ## 6. 过渡
 

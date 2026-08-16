@@ -77,12 +77,6 @@ mod tests {
     use minix_types::PhysBytes;
 
     #[test]
-    fn test_kind_constants_are_distinct() {
-        assert_ne!(DTB, RSDP);
-        assert_ne!(DTB.raw(), RSDP.raw());
-    }
-
-    #[test]
     fn test_parse_by_kind_unknown_returns_error() {
         let unknown = PlatformDescSource::new(PlatformDescKind::new(999), PhysBytes(0));
         // SAFETY: phys_addr=0 is not dereferenced because the kind is unknown

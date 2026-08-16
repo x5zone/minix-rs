@@ -7,7 +7,7 @@
 
 use minix_types::Endpoint;
 use crate::vmproc::{VmProcTable, EndpointError};
-use crate::region::{RegionMap, PageFrames, PageFlags, PFN_NONE, PfnAllocator};
+use crate::region::{RegionMap, PageFrames, PageFlags, PfnAllocator};
 use crate::alloc_page::VmPageAllocator;
 
 /// Errors from VM_EXIT / VM_WILLEXIT operations.
@@ -47,10 +47,10 @@ pub(crate) fn handle_vm_exit(
 ) -> Result<(), VmExitError> {
     let slot = table.vm_isokendpt(endpoint)?;
 
-    let exiting = table.get_exiting(slot)
+    let mut exiting = table.get_exiting(slot)
         .ok_or(VmExitError::NotExiting)?;
 
-    free_process_phys(exiting.regions(), frames, page_alloc);
+    free_process_phys(exiting.regions_mut(), frames, page_alloc);
 
     // SAFETY: Single-threaded VM ensures no concurrent access to this slot.
     // reap() restores the VmProc slot to vacant state (empty typestate).
@@ -77,11 +77,14 @@ pub(crate) fn handle_vm_willexit(
     Ok(())
 }
 
-/// Release physical pages for all regions in the exiting process.
+/// Release physical pages for all regions of a process.
 ///
 /// Corresponds to Minix3's map_free_proc() → map_free() → map_subfree() →
 /// pb_unreferenced() → ev_unreference() → free_mem() chain (region.c:589-602,
-/// region.c:568-585, region.c:527-563, pb.c:96-133, mem_anon.c:56-62).
+/// region.c:568-585, region.c:527-563, pb.c:96-133, mem_anon.c:56-62),
+/// plus the per-region ev_delete / fdref_deref step (C map_free →
+/// `if(region->def_memtype->ev_delete) ev_delete(region)` → for file regions
+/// mappedfile_delete → fdref_deref, mem_file.c:280-287).
 ///
 /// For each mapped PageSlot: decrements PageFrames refcount (equivalent to
 /// Minix3's pb.refcount--), calls the MemType ev_unreference callback,
@@ -91,13 +94,29 @@ pub(crate) fn handle_vm_willexit(
 /// NOTE: ev_unreference in the PFN model is a no-op for anonymous/direct
 /// memory — the caller is responsible for both refcount decrement and
 /// physical page freeing. This separation of concerns is documented in
-/// §3.2 of 20-vm-exit.md.
+/// §3.2 of 22-vm-exit.md.
 fn free_process_phys(
-    regions: &RegionMap,
+    regions: &mut RegionMap,
     frames: &mut PageFrames,
     page_alloc: &mut VmPageAllocator,
 ) {
-    for region in regions.iter() {
+    for region in regions.iter_mut() {
+        // Capture the fdref id before ev_delete clears it, mirroring the
+        // munmap path (`free_region_pages`, region/mod.rs): fdref balance is
+        // restored per region regardless of memtype.
+        let fdref_id = if let crate::region::VrParam::File { fdref_id: Some(id), .. } = &region.param {
+            Some(*id)
+        } else {
+            None
+        };
+
+        // C: map_free → if(region->def_memtype->ev_delete) ev_delete(region)
+        // (region.c:578-580). File regions reset inited/fdref_id here.
+        if let Some(mt) = region.def_memtype {
+            mt.ev_delete(&mut *region);
+        }
+
+        // C: map_subfree → pb_unreferenced per mapped page (region.c:527-563).
         for slot in &region.physblocks {
             if slot.is_mapped() {
                 if let Some(mt) = slot.memtype {
@@ -115,6 +134,15 @@ fn free_process_phys(
                     page_alloc.free_pfn(slot.pfn);
                 }
             }
+        }
+
+        // C: mappedfile_delete → fdref_deref (mem_file.c:280-287). The
+        // VFS_FDCLOSE send is DEFERRED (doc 23) — the pending close is
+        // captured locally so the fdref refcount semantics stay correct.
+        if let Some(id) = fdref_id
+            && let Some(close) = crate::fdref::FdRefTable::get_global().deref_entry(id)
+        {
+            let _close: crate::fdref::PendingFdClose = close;
         }
     }
 }
@@ -145,11 +173,14 @@ pub(crate) fn handle_procctl_clear(
 
     // Step 1: Free physical pages for all regions.
     // C: free_proc(vmp) → map_free_proc(vmp)
-    free_process_phys(proc.regions(), frames, page_alloc);
+    free_process_phys(proc.regions_mut(), frames, page_alloc);
 
-    // Step 2: Clear region map.
-    // C: free_proc → region_init(&vmp->vm_regions_avl)
+    // Step 2: Clear region map + reset usage stats.
+    // C: free_proc → region_init(&vmp->vm_regions_avl) +
+    //    vm_region_top = 0 + reset_vm_rusage(vmp) (exit.c:39-43)
     proc.regions_mut().clear();
+    proc.set_region_top(minix_types::VirBytes::new(0));
+    proc.reset_rusage();
 
     // Step 3: Free old page table and create a new one.
     // C: pt_free(&vmp->vm_pt); pt_new(&vmp->vm_pt)
@@ -199,6 +230,19 @@ pub(crate) fn handle_procctl_handlemem(
         return Err(VmProcctlError::InvalidAddress);
     }
 
+    // Design D4 (22-design.v1.md): file-backed HANDLEMEM requires VFS to
+    // provide pages — C SUSPENDs and continues via VM_VFS_REPLY
+    // (exit.c:144-148). The VFS callback machinery is not wired yet
+    // (backlog B1, doc 23) — fail explicitly with NotImplemented instead of
+    // silently succeeding. The check covers the region at the range start;
+    // mixed anon/file ranges are handled when the full SUSPEND/VM_VFS_REPLY
+    // path lands (doc 23).
+    if let Some(region) = proc.regions().find(minix_types::VirBytes(mem))
+        && matches!(region.param, crate::region::VrParam::File { .. })
+    {
+        return Err(VmProcctlError::NotImplemented);
+    }
+
     let mem = minix_types::VirBytes(mem);
     let length = minix_types::VirBytes(len as u64);
     let writable = wrflag != 0;
@@ -218,8 +262,8 @@ pub(crate) fn handle_procctl_handlemem(
         Ok(()) => {
             // C returns SUSPEND for the async path, but our synchronous
             // handle_memory_once completes immediately for anonymous memory.
-            // For file-backed regions, C would SUSPEND; we return NotImplemented
-            // since we can't handle VFS callbacks yet.
+            // File-backed regions were already rejected with NotImplemented
+            // above (C would SUSPEND waiting for VFS-provided pages).
             //
             // However, handle_memory_once already succeeds for anonymous pages,
             // which is the common case for VMPPARAM_HANDLEMEM (VFS is asking
@@ -259,7 +303,9 @@ pub(crate) enum VmProcctlError {
 impl From<VmProcctlError> for minix_types::VmError {
     fn from(e: VmProcctlError) -> Self {
         match e {
-            VmProcctlError::InvalidEndpoint => minix_types::VmError::InvalidEndpoint,
+            // C `do_procctl()` collapses both vm_isokendpt failure modes to
+            // EINVAL (exit.c:122-125). `InvalidProcess` maps to EINVAL.
+            VmProcctlError::InvalidEndpoint => minix_types::VmError::InvalidProcess,
             VmProcctlError::ProcessNotFound => minix_types::VmError::InvalidProcess,
             VmProcctlError::PermissionDenied => minix_types::VmError::PermissionDenied,
             VmProcctlError::InvalidAddress => minix_types::VmError::InvalidAddress,
@@ -316,6 +362,94 @@ mod tests {
         use minix_types::{VmError, EINVAL};
         assert_eq!(VmError::from(VmExitError::ProcessNotFound).to_errno(), EINVAL);
         assert_eq!(VmError::from(VmExitError::NotExiting).to_errno(), EINVAL);
+    }
+
+    #[test]
+    fn test_procctl_error_to_errno() {
+        use minix_types::{VmError, EINVAL, EPERM, EFAULT};
+        // C do_procctl collapses vm_isokendpt failures to EINVAL
+        // (exit.c:122-125).
+        assert_eq!(VmError::from(VmProcctlError::InvalidEndpoint).to_errno(), EINVAL);
+        assert_eq!(VmError::from(VmProcctlError::ProcessNotFound).to_errno(), EINVAL);
+        // C: exit.c:131-132/:141-142 — unauthorized callers → EPERM.
+        assert_eq!(VmError::from(VmProcctlError::PermissionDenied).to_errno(), EPERM);
+        // HANDLEMEM guard: len<=0 → InvalidAddress (EFAULT).
+        assert_eq!(VmError::from(VmProcctlError::InvalidAddress).to_errno(), EFAULT);
+    }
+
+    #[test]
+    fn test_procctl_handlemem_rejects_non_positive_len() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let slot = UserSlot::new(53);
+        let ep = init_test_process(slot);
+
+        // len <= 0 is rejected before any region lookup (defensive
+        // hardening — C would SUSPEND and reply OK for len==0 via the
+        // empty handle_memory_step loop; see 22-vm-exit.md §3 D5).
+        let result = handle_procctl_handlemem(
+            table, &mut page_alloc, &mut frames, ep, 0x1000, 0, 1,
+        );
+        assert!(matches!(result, Err(VmProcctlError::InvalidAddress)));
+    }
+
+    #[test]
+    fn test_procctl_handlemem_process_not_found() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+
+        let result = handle_procctl_handlemem(
+            table, &mut page_alloc, &mut frames, Endpoint::NONE, 0x1000, 16, 1,
+        );
+        assert!(matches!(result, Err(VmProcctlError::InvalidEndpoint)));
+    }
+
+    #[test]
+    fn test_procctl_clear_process_not_found() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+
+        // Invalid endpoint → EINVAL (C exit.c:122-125). Does not reach the
+        // page-table path (which needs real paging, B4 backlog).
+        let result = handle_procctl_clear(
+            table, &mut page_alloc, &mut frames, Endpoint::NONE,
+        );
+        assert!(matches!(result, Err(VmProcctlError::InvalidEndpoint)));
+    }
+
+    #[test]
+    fn test_procctl_handlemem_file_backed_not_implemented() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let slot = UserSlot::new(54);
+        let ep = init_test_process(slot);
+
+        // Insert a file-backed region (VrParam::File) at 0x1000.
+        let mut region = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x1000),
+            minix_types::VirBytes(0x1000),
+            crate::region::VrFlags::WRITABLE,
+        );
+        region.param = crate::region::VrParam::File {
+            inited: false,
+            fdref_id: None,
+            offset: 0,
+            clearend: 0,
+        };
+        let mut active = table.get_active(slot).unwrap();
+        active.regions_mut().insert(region).unwrap();
+
+        // File-backed HANDLEMEM needs VFS-provided pages (C: SUSPEND +
+        // VM_VFS_REPLY, exit.c:144-148); not wired yet → NotImplemented
+        // (ENOSYS). Design D4 (22-design.v1.md).
+        let result = handle_procctl_handlemem(
+            table, &mut page_alloc, &mut frames, ep, 0x1000, 16, 1,
+        );
+        assert!(matches!(result, Err(VmProcctlError::NotImplemented)));
     }
 
     #[test]

@@ -28,6 +28,8 @@
 
 extern crate alloc;
 
+use minix_types::Errno;
+
 pub mod access;
 pub mod boot;
 pub mod dispatch;
@@ -50,6 +52,8 @@ pub mod service_slot;
 pub mod slot;
 pub mod state_data;
 pub mod table;
+#[cfg(test)]
+mod testutil;
 
 pub use access::{caller_can_control, caller_is_root, check_call_permission};
 pub use boot::{BootInit, BootTables, KernelApi, Machine};
@@ -62,17 +66,18 @@ pub use live_update::{
     validate_update_request, vm_default_prealloc,
 };
 pub use monitor::{
-    PeriodAction, delta_t, effective_period, has_update_timed_out, init_timeout, period_decision,
-    sigchld_cleanup,
+    PeriodAction, PeriodDecision, delta_t, effective_period, has_update_timed_out, init_timeout,
+    period_decision, sigchld_cleanup,
 };
 pub use privilege::{PrivCtlOp, Privilege};
-pub use process_table::{RProcTable, RupdateDescriptor, RupdateFlags, ServiceInstances};
+pub use process_table::{RProcTable, RupdateFlags, ServiceInstances};
 pub use publish::{should_bind_devman, should_map_driver, should_set_pci_acl, unpublish_result};
 pub use query::{
     GetsysinfoTable, SysctlAction, classify_sysctl, getsysinfo_table, lookup_name_len,
 };
 pub use ready::{
-    InitMessage, ReadyOutcome, do_init_ready, do_upd_ready, end_srv_init, init_message,
+    InitMessage, ReadyDecision, ReadyOutcome, do_init_ready, do_upd_ready, end_srv_init,
+    fold_init_flags, init_message, mark_initializing,
 };
 pub use recovery::{
     CleanupDecision, TerminateAction, TerminateDecision, cleanup_decision, compute_backoff,
@@ -94,7 +99,7 @@ pub use service_create::{
 pub use service_slot::{
     ARGV_ELEMENTS, IMM_SF, Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_NR_ARGS, MAX_SCRIPT_LEN,
     NR_DOMAIN, NR_IO_RANGE, NR_IRQ, NR_MEM_RANGE, PublicSlot, RFlags, RS_MAX_LABEL_LEN,
-    RS_NR_CONTROL, SRV_SF, SRVR_SF, ServiceSlot, SlotId, SysFlags, VM_SF,
+    RS_NR_CONTROL, SRV_SF, SRVR_SF, ServiceSlot, SlotId, SlotMutations, SysFlags, VM_SF,
 };
 pub use slot::{RsStart, RssFlags, build_cmd_dep, check_request};
 pub use state_data::{
@@ -110,62 +115,93 @@ pub use state_data::{
 /// the main-loop skeleton (classification in [`dispatch`]; mechanisms in
 /// 06-rs-main-loop.md).
 pub struct RsServer {
-    // Held for the SEF_INIT *message* dispatch path (12-rs-init-run.md):
-    // `RsServer::init` drives the fresh boot directly via `BootInit`, so the
-    // registered callback table is not read until the main loop's RS_INIT
-    // branch merges the two paths (doc §3.3).
-    #[allow(dead_code)]
-    callbacks: SefCallbacks,
-    boot: BootInit<'static>,
+    /// The boot machine. Consumed by [`RsServer::init`] (`Fresh`): the
+    /// runtime state is handed over to [`RsServer::state`] (T1 — 01-rs-boot-
+    /// init.md §3.4), so the main loop reaches the table/hz without a getter
+    /// dump on `BootInit`.
+    boot: Option<BootInit<'static>>,
+    /// Runtime server state after boot (C globals: `rproc[]`/`system_hz`/
+    /// `shutting_down`/`rinit` — glo.h). `None` until the fresh boot
+    /// completes; [`RsServer::run`] fails closed on a missing state.
+    state: Option<ServerState<'static>>,
     kernel: alloc::boxed::Box<dyn KernelApi>,
 }
 
+/// Runtime server state handed over by the boot (T1).
+///
+/// C: the boot globals keep living after boot (glo.h): the service table
+/// (`rproc[]`/`rprocpub[]`), `system_hz`, `shutting_down` and the init
+/// descriptor `rinit`. The main loop (06) reads these directly — `do_period`
+/// needs `system_hz` + `table`, the RS_DOWN sweep needs `shutting_down`.
+#[derive(Debug)]
+pub struct ServerState<'a> {
+    /// Boot tables (priv/sys/dev + image) — ARCH A-13.
+    pub tables: BootTables<'a>,
+    /// C: `machine` — main.c:53 (`sys_getmachine`, glo.h). Startup-time
+    /// machine snapshot; `check_request` resolves `RS_CPU_BSP`/oversubscribed
+    /// cpu against it (request.c:1286-1296). Fetched once at boot, not
+    /// per-request (N3 — todo §11).
+    pub machine: boot::Machine,
+    /// C: `rinit` — main.c:185 (grant consumed by 12).
+    pub rinit: boot::RinitState,
+    /// C: `rproc[]`/`rprocpub[]` service table.
+    pub table: process_table::RProcTable,
+    /// C: `shutting_down` — main.c:193.
+    pub shutting_down: bool,
+    /// C: `system_hz` — main.c:181.
+    pub system_hz: u32,
+    /// C: `nr_uncaught_init_srvs` — main.c:349-406 (consumed by 12).
+    pub nr_uncaught_init_srvs: usize,
+}
+
 impl RsServer {
-    /// Creates the server with the full SEF callback table and boot tables.
+    /// Creates the server with the boot tables.
     ///
-    /// C: `sef_local_startup()` (main.c:51) + `sys_getimage` (main.c:196)
-    /// results. The kernel API is fail-closed (`UnimplementedKernelApi`)
-    /// until the `minix-sys` wiring lands (19).
-    pub fn new(callbacks: SefCallbacks, tables: BootTables<'static>) -> Self {
-        Self::with_kernel(
-            callbacks,
-            tables,
-            alloc::boxed::Box::new(boot::UnimplementedKernelApi),
-        )
+    /// C: `sys_getimage` (main.c:196) result. The SEF callback set is the
+    /// [`SefCallbacks`] trait implemented by `RsServer` itself (N5 — no
+    /// separate registration value to construct, main.c:51). The kernel API
+    /// is fail-closed (`UnimplementedKernelApi`) until the `minix-sys`
+    /// wiring lands (19).
+    pub fn new(tables: BootTables<'static>) -> Self {
+        Self::with_kernel(tables, alloc::boxed::Box::new(boot::UnimplementedKernelApi))
     }
 
     /// Creates the server with an injected kernel API (tests / wiring).
     pub fn with_kernel(
-        callbacks: SefCallbacks,
         tables: BootTables<'static>,
         kernel: alloc::boxed::Box<dyn KernelApi>,
     ) -> Self {
         Self {
-            callbacks,
-            boot: BootInit::new(tables),
+            boot: Some(BootInit::new(tables)),
+            state: None,
             kernel,
         }
     }
 
     /// Runs the SEF startup and the 4-step boot.
     ///
-    /// C: `sef_startup()` → `sef_cb_init_fresh()` — main.c:151, 158-494. The
-    /// fresh init IS the 4-step boot ([`BootInit::init_fresh`]); the SEF_INIT
-    /// *message* path (receive + [`SefCallbacks::startup`] dispatch by init
-    /// type) belongs to the main loop's RS_INIT branch (12-rs-init-run.md).
-    /// LU/restart inits are DEFERRED until 18 lands; they fail closed.
-    pub fn init(&mut self, init_type: SefInitType) -> Result<i32, i32> {
+    /// C: `sef_startup()` → callback dispatch — main.c:151. The init type
+    /// routes through the [`SefCallbacks`] trait methods implemented by
+    /// `RsServer` (N5): `Fresh` → [`SefCallbacks::init_fresh`] (the 4-step
+    /// boot); `Lu`/`Restart` fail closed until 18 lands. The SEF_INIT
+    /// *message* receive belongs to the main loop's RS_INIT branch
+    /// (12-rs-init-run.md); this method is the dispatch half.
+    pub fn init(&mut self, init_type: SefInitType) -> Result<i32, Errno> {
+        let info = SefInitInfo::default();
         match init_type {
-            SefInitType::Fresh => {
-                self.boot.init_fresh(self.kernel.as_mut())?;
-                Ok(0) // C: sef_startup() returns OK after the fresh init.
-            }
-            SefInitType::Lu | SefInitType::Restart => {
-                // C: sef_cb_init_lu / sef_cb_init_restart — 18-rs-self-lifecycle.md.
-                // DEFERRED until 18 lands; fail closed.
-                Err(minix_types::ENOSYS)
-            }
+            SefInitType::Fresh => self.init_fresh(init_type, &info),
+            SefInitType::Lu => self.init_lu(init_type, &info),
+            SefInitType::Restart => self.init_restart(init_type, &info),
         }
+    }
+
+    /// The post-boot runtime state, if the fresh boot completed.
+    ///
+    /// T1: the main loop (06) reads `system_hz`/`table`/`shutting_down`
+    /// through this single accessor — the alternative (5+ getters on
+    /// `BootInit`) is explicitly avoided.
+    pub fn state(&self) -> Option<&ServerState<'static>> {
+        self.state.as_ref()
     }
 
     /// Runs the main loop.
@@ -175,12 +211,21 @@ impl RsServer {
     /// dispatch. The receive primitive is DEFERRED (06-rs-main-loop.md); the
     /// loop fails closed until then.
     pub fn run(&mut self) -> ! {
+        // T1: the main loop operates on the post-boot runtime state. Fail
+        // closed (loudly) if boot never completed — an RS that has not
+        // finished booting cannot manage services.
+        if self.state.is_none() {
+            panic!("run() requires a completed fresh boot (init(Fresh))");
+        }
         loop {
             // C: rs_idle_period() — main.c:59 (06).
             // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833 (06).
             let (msg, rcv_sts) = self.get_work();
             let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type);
             // C: message dispatch — main.c:70-127 (mechanisms in 06/07/12-16).
+            // 06 wiring: `do_period` reads `state.system_hz`/`state.table`;
+            // the RS_DOWN sweep reads/writes `state.shutting_down`.
+            let _ = (self.state.as_ref(), _kind);
         }
     }
 
@@ -189,9 +234,62 @@ impl RsServer {
     /// until then.
     fn get_work(&mut self) -> (minix_types::Message, dispatch::IpcStatus) {
         let mut msg = minix_types::Message::default();
-        minix_sys::receive(minix_types::Endpoint::ANY, &mut msg)
-            .expect("ipc_receive() failed (receive primitive DEFERRED: 06-rs-main-loop.md)");
-        // C: the ipc_status word — com.h:92 (is_ipc_notify). Full parsing: 06.
-        (msg, dispatch::IpcStatus { flags: 0 })
+        // C: sef_receive_status(ANY, &msg, &ipc_status) — main.c:826-833.
+        // T4: there is no real ipc_status until receive lands — fabricating
+        // `flags: 0` here would misclassify future notify messages (notify
+        // bits set) as plain requests once the primitive exists. Fail closed
+        // loudly instead; the status word arrives with the receive
+        // implementation (06-rs-main-loop.md).
+        let _ = minix_sys::receive(minix_types::Endpoint::ANY, &mut msg);
+        todo!("get_work: receive primitive DEFERRED (06-rs-main-loop.md)")
+    }
+}
+
+impl SefCallbacks for RsServer {
+    /// C: `sef_cb_init_fresh` — main.c:158-494. The fresh init IS the 4-step
+    /// boot; the boot state is handed over to [`RsServer::state`] (T1).
+    fn init_fresh(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
+        let boot = self.boot.as_mut().expect("boot machine present");
+        boot.init_fresh(self.kernel.as_mut())?;
+        // T1 handover: the boot state becomes the runtime state.
+        self.state = Some(self.boot.take().expect("boot machine present").into_state());
+        Ok(0) // C: sef_startup() returns OK after the fresh init.
+    }
+
+    /// C: `sef_cb_init_restart` — main.c:140. DEFERRED until 18 lands; fail
+    /// closed (18-rs-self-lifecycle.md).
+    fn init_restart(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    /// C: `sef_cb_init_lu` — main.c:141. DEFERRED until 18 lands; fail
+    /// closed (18-rs-self-lifecycle.md).
+    fn init_lu(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    /// C: `sef_cb_init_response` — main.c:144. DEFERRED until 12 lands; fail
+    /// closed (12-rs-init-run.md).
+    fn init_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    /// C: `sef_cb_lu_response` — main.c:145. DEFERRED until 12 lands; fail
+    /// closed (12-rs-init-run.md).
+    fn lu_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    /// C: `sef_cb_signal_handler` — main.c:148. Unreachable until the main
+    /// loop lands (06); no Result channel to fail closed through, so keep the
+    /// loud marker (06-rs-main-loop.md, T7 gate).
+    fn signal_handler(&mut self, _signo: i32) {
+        unimplemented!("sef_cb_signal_handler body: 06-rs-main-loop.md (unreachable until 06)")
+    }
+
+    /// C: `sef_cb_signal_manager` — main.c:149. DEFERRED until 06 lands;
+    /// fail closed, no panic (06-rs-main-loop.md).
+    fn signal_manager(&mut self, _signo: i32, _exec: i32) -> i32 {
+        Errno::ENOSYS.to_i32()
     }
 }

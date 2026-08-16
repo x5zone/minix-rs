@@ -12,7 +12,7 @@
 //! helpers: backoff computation, script reason, late-reply result and the
 //! two-phase cleanup classification.
 
-use crate::service_slot::{RFlags, SysFlags};
+use crate::service_slot::{RFlags, SlotMutations, SysFlags};
 
 /// C: `MAX_DET_RESTART` — const.h:25 (maximum number of detached restarts).
 pub const MAX_DET_RESTART: i32 = 10;
@@ -24,8 +24,8 @@ pub const MAX_BACKOFF: i64 = 30;
 /// The `terminate_service` branch to execute.
 ///
 /// C: `terminate_service` — manager.c:1055-1180. Hooks are stated per
-/// variant; the slot flag mutations are returned separately in
-/// [`TerminateDecision::set_flags`].
+/// variant; the slot mutations are returned separately in
+/// [`TerminateDecision::mutations`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminateAction {
     /// Init failure during an update → roll back (manager.c:1071-1076;
@@ -54,8 +54,9 @@ pub enum TerminateAction {
 pub struct TerminateDecision {
     /// Branch to execute.
     pub action: TerminateAction,
-    /// Slot flags to set (C mutates `r_flags` inline while walking the tree).
-    pub set_flags: RFlags,
+    /// Slot mutations implied by the branch (R13). C mutates `r_*` inline
+    /// while walking the tree; the 15 caller applies exactly these once.
+    pub mutations: SlotMutations,
 }
 
 /// Walks the `terminate_service` decision tree.
@@ -77,6 +78,7 @@ pub fn terminate_decision(
     is_updating: bool,
 ) -> TerminateDecision {
     let mut set = RFlags::empty();
+    let mut clear = RFlags::empty();
     let mut flags = flags;
 
     // Init-failure branches (manager.c:1067-1091). C only *sets* flags here
@@ -88,7 +90,13 @@ pub fn terminate_decision(
         if is_updating {
             return TerminateDecision {
                 action: TerminateAction::InitUpdateRollback,
-                set_flags: RFlags::empty(),
+                // manager.c:1075 — `r_init_err = ERESTART` after the
+                // `end_update(rp->r_init_err, RS_REPLY)` hook (16) consumed
+                // the previous value.
+                mutations: SlotMutations {
+                    init_err: Some(minix_types::ERESTART),
+                    ..Default::default()
+                },
             };
         }
         if sys_flags.contains(SysFlags::NO_BIN_EXP) {
@@ -116,38 +124,58 @@ pub fn terminate_decision(
     if flags.contains(RFlags::EXITING) {
         let core_fatal = sys_flags.contains(SysFlags::CORE_SRV) && !shutting_down; // manager.c:1123-1126
         let reincarnate = flags.contains(RFlags::REINCARNATE); // manager.c:1146-1151
+        if reincarnate {
+            // manager.c:1147 — `r_flags &= ~RS_REINCARNATE` before
+            // `reincarnate_service`; set_flags cannot express a clear, so the
+            // mutation payload carries it (R13).
+            clear = RFlags::REINCARNATE;
+        }
         return TerminateDecision {
             action: TerminateAction::CleanupAll {
                 norestart,
                 reincarnate,
                 core_fatal,
             },
-            set_flags: set,
+            mutations: SlotMutations {
+                set,
+                clear,
+                ..Default::default()
+            },
         };
     }
     if flags.contains(RFlags::REFRESHING) {
         return TerminateDecision {
             action: TerminateAction::Refresh,
-            set_flags: set,
+            mutations: SlotMutations {
+                set,
+                ..Default::default()
+            },
         };
     }
 
     // Unexpected exit (manager.c:1158-1179).
     if restarts > 0 {
+        let backoff = compute_backoff(
+            restarts,
+            sys_flags.contains(SysFlags::NO_BIN_EXP),
+            sys_flags.contains(SysFlags::USE_COPY),
+        );
         return TerminateDecision {
-            action: TerminateAction::Backoff {
-                backoff: compute_backoff(
-                    restarts,
-                    sys_flags.contains(SysFlags::NO_BIN_EXP),
-                    sys_flags.contains(SysFlags::USE_COPY),
-                ),
+            action: TerminateAction::Backoff { backoff },
+            // manager.c:1163-1174 — C writes `r_backoff = 1 << MIN(...)` etc.
+            mutations: SlotMutations {
+                set,
+                backoff: Some(backoff),
+                ..Default::default()
             },
-            set_flags: set,
         };
     }
     TerminateDecision {
         action: TerminateAction::Restart,
-        set_flags: set,
+        mutations: SlotMutations {
+            set,
+            ..Default::default()
+        },
     }
 }
 
@@ -161,7 +189,10 @@ pub fn compute_backoff(restarts: i32, no_bin_exp: bool, use_copy: bool) -> i64 {
     if no_bin_exp {
         return 1; // manager.c:1171-1173
     }
-    let shift = restarts.min((BACKOFF_BITS - 2) as i32) as u32;
+    // Clamp negative restarts to 0: C's `1 << MIN(restarts, BACKOFF_BITS-2)`
+    // (manager.c:1164) is UB for a negative shift; `terminate_decision`
+    // only calls this with `restarts > 0`, but the pub API must fail closed.
+    let shift = restarts.max(0).min((BACKOFF_BITS - 2) as i32) as u32;
     let mut backoff = 1i64 << shift;
     backoff = backoff.min(MAX_BACKOFF); // manager.c:1167
     if use_copy && backoff > 1 {
@@ -240,7 +271,7 @@ mod tests {
             false,
         );
         assert_eq!(d.action, TerminateAction::Refresh);
-        assert!(d.set_flags.contains(RFlags::REFRESHING));
+        assert!(d.mutations.set.contains(RFlags::REFRESHING));
     }
 
     #[test]
@@ -262,7 +293,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(d.set_flags.contains(RFlags::EXITING));
+        assert!(d.mutations.set.contains(RFlags::EXITING));
     }
 
     #[test]
@@ -277,7 +308,9 @@ mod tests {
             true,
         );
         assert_eq!(d.action, TerminateAction::InitUpdateRollback);
-        assert!(d.set_flags.is_empty());
+        // manager.c:1075 — r_init_err = ERESTART travels as the payload.
+        assert!(d.mutations.set.is_empty());
+        assert_eq!(d.mutations.init_err, Some(minix_types::ERESTART));
     }
 
     #[test]
@@ -291,9 +324,9 @@ mod tests {
             false,
             false,
         );
-        assert!(d.set_flags.contains(RFlags::EXITING));
-        assert!(d.set_flags.contains(RFlags::CLEANUP_DETACH));
-        assert!(d.set_flags.contains(RFlags::CLEANUP_SCRIPT));
+        assert!(d.mutations.set.contains(RFlags::EXITING));
+        assert!(d.mutations.set.contains(RFlags::CLEANUP_DETACH));
+        assert!(d.mutations.set.contains(RFlags::CLEANUP_SCRIPT));
         assert!(matches!(
             d.action,
             TerminateAction::CleanupAll {
@@ -314,8 +347,8 @@ mod tests {
             false,
             false,
         );
-        assert!(d.set_flags.contains(RFlags::EXITING));
-        assert!(!d.set_flags.contains(RFlags::CLEANUP_DETACH));
+        assert!(d.mutations.set.contains(RFlags::EXITING));
+        assert!(!d.mutations.set.contains(RFlags::CLEANUP_DETACH));
     }
 
     #[test]
@@ -372,6 +405,23 @@ mod tests {
                 ..
             }
         ));
+        // manager.c:1147 — `r_flags &= ~RS_REINCARNATE` before reincarnating
+        // (R13: the payload carries the clear — set_flags could not).
+        assert!(d.mutations.clear.contains(RFlags::REINCARNATE));
+    }
+
+    #[test]
+    fn test_terminate_backoff_writes_slot() {
+        // manager.c:1163-1174 — C writes `r_backoff = 1 << MIN(...)`,
+        // capped, then collapses to 1 for SF_USE_COPY; the mutation payload
+        // carries the computed value so the 15 wiring cannot forget it.
+        let d = terminate_decision(RFlags::IN_USE, SysFlags::empty(), 4, false, false, false);
+        assert!(matches!(d.action, TerminateAction::Backoff { backoff: 16 }));
+        assert_eq!(d.mutations.backoff, Some(16));
+        // SF_USE_COPY collapses to 1 (manager.c:1168-1169).
+        let d = terminate_decision(RFlags::IN_USE, SysFlags::USE_COPY, 4, false, false, false);
+        assert!(matches!(d.action, TerminateAction::Backoff { backoff: 1 }));
+        assert_eq!(d.mutations.backoff, Some(1));
     }
 
     #[test]
@@ -384,6 +434,18 @@ mod tests {
         assert_eq!(compute_backoff(3, true, false), 1); // SF_NO_BIN_EXP
         // SF_USE_COPY: backoff > 1 collapses to 1 (manager.c:1168-1169).
         assert_eq!(compute_backoff(3, false, true), 1);
+    }
+
+    #[test]
+    fn test_compute_backoff_negative_returns_1() {
+        // Negative restarts are unreachable from `terminate_decision` (the
+        // `restarts > 0` gate, manager.c:1160), but C's
+        // `1 << MIN(restarts, BACKOFF_BITS-2)` (manager.c:1164) is UB for a
+        // negative shift; the pub API must fail closed, not inherit the UB.
+        assert_eq!(compute_backoff(-1, false, false), 1);
+        assert_eq!(compute_backoff(-100, false, false), 1);
+        assert_eq!(compute_backoff(-1, true, false), 1); // SF_NO_BIN_EXP
+        assert_eq!(compute_backoff(-1, false, true), 1); // SF_USE_COPY
     }
 
     #[test]

@@ -327,7 +327,6 @@ impl TrapEntryArch for X86_64TrapEntry {
 mod tests {
     use super::*;
     use crate::trap_entry::{PAGE_FAULT, DOUBLE_FAULT};
-    use crate::x86_64::protection::{KERN_DS_SELECTOR, USER_DS_SELECTOR};
 
     #[test]
     fn idt_entry64_size_is_16_bytes() {
@@ -345,14 +344,6 @@ mod tests {
             10,
             "IdtPtr must be 10 bytes: 2-byte limit + 8-byte base"
         );
-    }
-
-    #[test]
-    fn star_register_value_correct() {
-        let star = (KERN_CS_SELECTOR as u64) << 32
-                 | (USER_CS_SELECTOR as u64) << 48;
-        assert_eq!(star & 0xFFFF_0000_0000_0000, 0x001B_0000_0000_0000, "STAR[48:63] = USER_CS_SELECTOR");
-        assert_eq!(star & 0x0000_FFFF_0000_0000, 0x0000_0008_0000_0000, "STAR[32:47] = KERN_CS_SELECTOR");
     }
 
     #[test]
@@ -394,50 +385,6 @@ mod tests {
             | ((entry.idt[pf_idx].offset_mid as u64) << 16)
             | ((entry.idt[pf_idx].offset_high as u64) << 32);
         assert_eq!(reconstructed, handler_addr, "Handler address must be correctly split across IDT entry fields");
-    }
-
-    #[test]
-    fn gate_type_constants_correct() {
-        assert_eq!(GATE_TYPE_INTERRUPT, 0xE, "Interrupt gate type = 0xE");
-        assert_eq!(GATE_TYPE_TRAP, 0xF, "Trap gate type = 0xF");
-        assert_eq!(GATE_PRESENT, 0x80, "Present bit = 0x80");
-    }
-
-    #[test]
-    fn msr_constants_correct() {
-        assert_eq!(MSR_STAR, 0xC0000081, "STAR MSR address");
-        assert_eq!(MSR_LSTAR, 0xC0000082, "LSTAR MSR address");
-        assert_eq!(MSR_SFMASK, 0xC0000084, "SFMASK MSR address");
-        assert_eq!(MSR_EFER, 0xC0000080, "EFER MSR address");
-        assert_eq!(EFER_SCE, 0x1, "EFER.SCE bit");
-        assert_eq!(SFMASK_CLEAR_IF, 0x200, "SFMASK IF bit (bit 9)");
-    }
-
-    #[test]
-    fn star_register_layout() {
-        // STAR[32:47] = SYSCALL CS (KERN_CS_SELECTOR = 0x08)
-        // STAR[48:63] = SYSRET CS (USER_CS_SELECTOR = 0x1B)
-        let star = (KERN_CS_SELECTOR as u64) << 32
-                 | (USER_CS_SELECTOR as u64) << 48;
-        // SYSCALL: CS = STAR[32:47] + 0, SS = STAR[32:47] + 8
-        let syscall_cs = ((star >> 32) & 0xFFFF) as u16;
-        let syscall_ss = (syscall_cs + 8) as u16;
-        assert_eq!(syscall_cs, KERN_CS_SELECTOR, "SYSCALL CS = KERN_CS_SELECTOR");
-        assert_eq!(syscall_ss, KERN_DS_SELECTOR, "SYSCALL SS = KERN_DS_SELECTOR");
-        // SYSRET: CS = STAR[48:63] + 0, SS = STAR[48:63] + 8
-        let sysret_cs = ((star >> 48) & 0xFFFF) as u16;
-        let sysret_ss = (sysret_cs + 8) as u16;
-        assert_eq!(sysret_cs, USER_CS_SELECTOR, "SYSRET CS = USER_CS_SELECTOR");
-        assert_eq!(sysret_ss, USER_DS_SELECTOR, "SYSRET SS = USER_DS_SELECTOR");
-    }
-
-    #[test]
-    fn sfmask_clears_if_on_syscall() {
-        // SFMASK_CLEAR_IF = 0x200 = bit 9 (IF)
-        // On SYSCALL, RFLAGS &= ~SFMASK, so IF is cleared.
-        assert_eq!(SFMASK_CLEAR_IF & (1 << 9), 1 << 9, "SFMASK must clear IF (bit 9)");
-        // Only IF bit is set in our SFMASK — no other flags are cleared.
-        assert_eq!(SFMASK_CLEAR_IF, 1 << 9, "SFMASK should only clear IF");
     }
 
     #[test]

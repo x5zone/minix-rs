@@ -23,11 +23,12 @@
 //! wired to `minix-sys` in 19-rs-external-interfaces.md (currently
 //! DEFERRED — `minix-sys` is a stub); tests use `MockKernelApi`.
 
-use minix_types::{BootImage, ENOSYS, Endpoint, Pid};
+use minix_types::{BootImage, Clock, Endpoint, Errno, Pid};
 
 use crate::privilege::{CallMask, PrivFlags};
 use crate::process_table::RProcTable;
-use crate::service_slot::SlotId;
+use crate::sched::SchedulerConfig;
+use crate::service_slot::{SlotId, SysFlags};
 
 use crate::table::{
     BOOT_IMAGE_DEV_TABLE, BOOT_IMAGE_PRIV_TABLE, BOOT_IMAGE_SYS_TABLE, BootImageDev, BootImagePriv,
@@ -55,6 +56,7 @@ pub use crate::privilege::{PrivCtlOp, Privilege};
 /// |--------|-------------|
 /// | [`KernelApi::get_machine`] | `sys_getmachine` — main.c:53 |
 /// | [`KernelApi::get_hz`] | `sys_getinfo(GET_HZ, ...)` — main.c:181 |
+/// | [`KernelApi::get_ticks`] | `getticks()` — main.c:333 (S2, alive_tm) |
 /// | [`KernelApi::privctl`] | `sys_privctl` — main.c:287/379 (boot) |
 /// | [`KernelApi::getpriv`] | `sys_getpriv` — main.c:294 |
 /// | [`KernelApi::sched_init_proc`] | `sched_init_proc` — main.c:376 |
@@ -65,19 +67,20 @@ pub use crate::privilege::{PrivCtlOp, Privilege};
 /// Errors are errno values (`minix-types` constants). Production wiring:
 /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
 pub trait KernelApi {
-    fn get_machine(&mut self) -> Result<Machine, i32>;
-    fn get_hz(&mut self) -> Result<u32, i32>;
+    fn get_machine(&mut self) -> Result<Machine, Errno>;
+    fn get_hz(&mut self) -> Result<u32, Errno>;
+    fn get_ticks(&mut self) -> Result<Clock, Errno>;
     fn privctl(
         &mut self,
         proc: Endpoint,
         op: PrivCtlOp,
         priv_: Option<&Privilege>,
-    ) -> Result<(), i32>;
-    fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32>;
-    fn sched_init_proc(&mut self, proc: Endpoint) -> Result<(), i32>;
-    fn getnuid(&mut self, proc: Endpoint) -> Result<u32, i32>;
-    fn getnpid(&mut self, proc: Endpoint) -> Result<i32, i32>;
-    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), i32>;
+    ) -> Result<(), Errno>;
+    fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno>;
+    fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
+    fn getnuid(&mut self, proc: Endpoint) -> Result<u32, Errno>;
+    fn getnpid(&mut self, proc: Endpoint) -> Result<i32, Errno>;
+    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno>;
 
     /// Forks a child service process.
     ///
@@ -85,17 +88,13 @@ pub trait KernelApi {
     /// `_taskcall(PM_PROC_NR, ...)` (lib/libsys/srv_fork.c). ARCH A-1: the
     /// no_std server has no libc `fork`; the external behavior (child created
     /// by PM) is preserved through the PM message face. Wired 19.
-    fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, i32> {
-        unimplemented!("srv_fork (PM_SRV_FORK) wiring pending (19-rs-external-interfaces.md)")
-    }
+    fn srv_fork(&mut self, uid: u32, gid: u32) -> Result<Pid, Errno>;
 
     /// Resolves a pid to an endpoint.
     ///
     /// C: `getprocnr(pid, &endpoint)` — manager.c:584; PM_GETEPINFO.
     /// Wired 19.
-    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, i32> {
-        unimplemented!("getprocnr wiring pending (19-rs-external-interfaces.md)")
-    }
+    fn getprocnr(&mut self, pid: Pid) -> Result<Endpoint, Errno>;
 
     /// RS memory control on a process (VM).
     ///
@@ -103,25 +102,21 @@ pub trait KernelApi {
     /// 663, 680, 693. Wired 19.
     fn vm_memctl(
         &mut self,
-        _proc: Endpoint,
-        _req: VmRsMemReq,
-        _a: usize,
-        _b: usize,
-    ) -> Result<(), i32> {
-        unimplemented!("vm_memctl wiring pending (19-rs-external-interfaces.md)")
-    }
+        proc: Endpoint,
+        req: VmRsMemReq,
+        a: usize,
+        b: usize,
+    ) -> Result<(), Errno>;
 
     /// Sets the VM call mask of a process.
     ///
     /// C: `vm_set_priv(ep, &vm_call_mask[0], TRUE)` — manager.c:698. Wired 19.
     fn vm_set_priv(
         &mut self,
-        _proc: Endpoint,
-        _vm_call_mask: CallMask,
-        _allow: bool,
-    ) -> Result<(), i32> {
-        unimplemented!("vm_set_priv wiring pending (19-rs-external-interfaces.md)")
-    }
+        proc: Endpoint,
+        vm_call_mask: CallMask,
+        allow: bool,
+    ) -> Result<(), Errno>;
 }
 
 /// VM RS-memory-control requests.
@@ -143,43 +138,70 @@ pub enum VmRsMemReq {
     GetPreallocMap = 4,
 }
 
-/// Fail-closed kernel API: panics on any call.
+/// Fail-closed kernel API: every method returns `ENOSYS`.
 ///
 /// Selected until the `minix-sys` wiring lands (19-rs-external-interfaces.md).
-/// A silent `Err` would mask missing syscall implementations; an explicit
-/// panic keeps the failure visible (ARCH A-12: panic retains fail-closed
-/// semantics).
+/// RS is a root system process — a panic is a system-wide outage (the kernel
+/// does not restart RS, `RSYS_F`); returning `Err(Errno::ENOSYS)` fails closed
+/// while keeping the server alive so the wiring gap is visible at the call
+/// site, not as a process crash (T2, 19-rs-external-interfaces.md).
 pub struct UnimplementedKernelApi;
 
 impl KernelApi for UnimplementedKernelApi {
-    fn get_machine(&mut self) -> Result<Machine, i32> {
-        unimplemented!("sys_getmachine wiring pending (19-rs-external-interfaces.md)")
+    fn get_machine(&mut self) -> Result<Machine, Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn get_hz(&mut self) -> Result<u32, i32> {
-        unimplemented!("sys_getinfo(GET_HZ) wiring pending")
+    fn get_hz(&mut self) -> Result<u32, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn get_ticks(&mut self) -> Result<Clock, Errno> {
+        Err(Errno::ENOSYS)
     }
     fn privctl(
         &mut self,
         _proc: Endpoint,
         _op: PrivCtlOp,
         _priv_: Option<&Privilege>,
-    ) -> Result<(), i32> {
-        unimplemented!("sys_privctl wiring pending")
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn getpriv(&mut self, _proc: Endpoint) -> Result<Privilege, i32> {
-        unimplemented!("sys_getpriv wiring pending")
+    fn getpriv(&mut self, _proc: Endpoint) -> Result<Privilege, Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn sched_init_proc(&mut self, _proc: Endpoint) -> Result<(), i32> {
-        unimplemented!("sched_init_proc wiring pending")
+    fn sched_init_proc(&mut self, _cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, i32> {
-        unimplemented!("getnuid wiring pending")
+    fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn getnpid(&mut self, _proc: Endpoint) -> Result<i32, i32> {
-        unimplemented!("getnpid wiring pending")
+    fn getnpid(&mut self, _proc: Endpoint) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
     }
-    fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), i32> {
-        unimplemented!("sys_setalarm wiring pending")
+    fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn vm_memctl(
+        &mut self,
+        _proc: Endpoint,
+        _req: VmRsMemReq,
+        _a: usize,
+        _b: usize,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn vm_set_priv(
+        &mut self,
+        _proc: Endpoint,
+        _vm_call_mask: CallMask,
+        _allow: bool,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
     }
 }
 
@@ -224,7 +246,13 @@ impl<'a> BootTables<'a> {
     ///
     /// C: `nr_image_srvs != nr_image_priv_srvs → panic` — main.c:225-227.
     /// Kernel tasks (negative endpoint slots) are excluded on both sides.
-    pub fn validate_tables(&self) -> Result<(), i32> {
+    /// R17: every image row must also satisfy `endpoint.slot() == proc_nr` —
+    /// the kernel derives boot endpoints as `_ENDPOINT(0, proc_nr)`, so a
+    /// hand-edited row with a mismatched pair would boot the wrong endpoint.
+    pub fn validate_tables(&self) -> Result<(), Errno> {
+        if self.image.iter().any(|ip| ip.endpoint.slot() != ip.proc_nr) {
+            return Err(Errno::ENOSYS); // boot protocol violation (R17)
+        }
         let image_srvs = self
             .image
             .iter()
@@ -236,23 +264,22 @@ impl<'a> BootTables<'a> {
             .filter(|e| !e.endpoint.is_kernel_task())
             .count();
         if image_srvs != priv_srvs {
-            return Err(ENOSYS); // boot protocol violation; C panics (main.c:226)
+            return Err(Errno::ENOSYS); // boot protocol violation; C panics (main.c:226)
         }
         Ok(())
     }
 }
 
-/// Minimal valid boot image for `placeholder()`.
-///
-/// Contains the boot-order services (RS/VM/PM/SCHED/VFS/DS) plus INIT; the
-/// exact `start_addr`/`len` are placeholders (kernel ELF blobs are reported by
-/// `sys_getimage` at runtime).
 /// Builds a placeholder `BootImage` entry with a padded name.
 const fn boot_img(proc_nr: i32, endpoint: Endpoint, name: &str) -> BootImage {
     let mut proc_name = [0u8; 16];
     let bytes = name.as_bytes();
+    // R17: clamp to the 16-byte field (C truncates with `strlcpy` when the
+    // kernel fills `proc_name`); an over-long name must not panic const
+    // evaluation with an out-of-range index.
+    let n = if bytes.len() > 16 { 16 } else { bytes.len() };
     let mut i = 0;
-    while i < bytes.len() {
+    while i < n {
         proc_name[i] = bytes[i];
         i += 1;
     }
@@ -363,6 +390,10 @@ pub struct RinitState {
 /// single entry; the four steps are private and strictly ordered.
 pub struct BootInit<'a> {
     tables: BootTables<'a>,
+    /// C: `machine` — main.c:53 (`sys_getmachine`). Startup-time snapshot of
+    /// the machine topology (N3): `check_request` resolves `RS_CPU_BSP` /
+    /// cpu > processors_count against it (request.c:1286-1296).
+    machine: Machine,
     /// C: `rinit` — main.c:185 (grant creation point).
     rinit: RinitState,
     /// C: `rproc[]`/`rprocpub[]` + `rproc_ptr[]` — the service table with
@@ -382,6 +413,7 @@ impl<'a> BootInit<'a> {
     pub fn new(tables: BootTables<'a>) -> Self {
         Self {
             tables,
+            machine: Machine::default(),
             rinit: RinitState::default(),
             table: RProcTable::new(),
             shutting_down: false,
@@ -390,12 +422,31 @@ impl<'a> BootInit<'a> {
         }
     }
 
+    /// Hands the runtime state over to the server (T1).
+    ///
+    /// C: the boot state IS the runtime state — `rproc[]`, `system_hz`,
+    /// `shutting_down` and `rinit` are `glo.h` globals that keep living after
+    /// boot; there is no separate post-boot copy. Consuming `self` makes the
+    /// transition explicit: after `init_fresh` the main loop owns the state,
+    /// and a boot-phase value can no longer be mutated post-handover.
+    pub fn into_state(self) -> crate::ServerState<'a> {
+        crate::ServerState {
+            tables: self.tables,
+            machine: self.machine,
+            rinit: self.rinit,
+            table: self.table,
+            shutting_down: self.shutting_down,
+            system_hz: self.system_hz,
+            nr_uncaught_init_srvs: self.nr_uncaught_init_srvs,
+        }
+    }
+
     /// Runs the 4-step boot. C: `sef_cb_init_fresh` — main.c:158-494.
     ///
     /// Step order is fixed and cannot be reordered from outside:
     /// `step1_set_attrs` → `step2_allow_run` → `step3_catch_init_ready` →
     /// `step4_finish`.
-    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
         self.step0_prepare(sys)?;
         self.step1_set_attrs(sys)?;
         self.step2_allow_run(sys)?;
@@ -407,7 +458,11 @@ impl<'a> BootInit<'a> {
     /// Step 0 — preparation: config, frequency, grant, resets, image copy.
     ///
     /// C: main.c:178-237.
-    fn step0_prepare(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    fn step0_prepare(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+        // C: sys_getmachine(&machine) — main.c:53. Fetched once at startup
+        // (before the main loop), not per request — `check_request`'s CPU
+        // resolution (request.c:1286-1296) reads this snapshot (N3).
+        self.machine = sys.get_machine()?;
         // C: env_parse("rs_verbose", ...) — main.c:179 (config injection; A-11).
         // C: sys_getinfo(GET_HZ, &system_hz, ...) — main.c:181-183.
         self.system_hz = sys.get_hz()?;
@@ -442,22 +497,22 @@ impl<'a> BootInit<'a> {
     /// C: main.c:244-346. RS/VM skip `SYS_PRIV_SET_SYS` (main.c:285-291) —
     /// they are already running. The priv-structure construction itself
     /// (send mask, call masks, sig mgr) belongs to 03/05.
-    fn step1_set_attrs(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    fn step1_set_attrs(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
         let tables = self.tables;
         for (slot_nr, priv_) in tables.priv_table.iter().enumerate() {
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:248-250
             }
             // C: boot_image_info_lookup(ep, image, &ip, NULL, &sys, &dev) — main.c:253-254.
-            let ip = lookup_image(tables.image, priv_.endpoint).map_err(|_| ENOSYS)?;
+            let ip = lookup_image(tables.image, priv_.endpoint).map_err(|_| Errno::ENOSYS)?;
             let sys_ = lookup_sys(tables.sys_table, priv_.endpoint);
             let dev = lookup_dev(tables.dev_table, priv_.endpoint);
 
             // C: boot Step 1 priv assembly — main.c:264-296 (03-rs-privilege.md §4.2).
-            let mut privilege = Privilege::boot_priv(
-                PrivFlags::from_bits_truncate(priv_.flags as u16),
-                priv_.endpoint.slot(),
-            );
+            // N10: `priv_.flags` is already the typed `PrivFlags` (table.rs);
+            // the old `from_bits_truncate(flags as u16)` silently dropped
+            // unknown high bits (C main.c:269 assigns s_flags verbatim).
+            let mut privilege = Privilege::boot_priv(priv_.flags, priv_.endpoint.slot());
             // C: sys_privctl(SYS_PRIV_SET_SYS) — RS/VM exception — main.c:285-291.
             if priv_.endpoint != Endpoint::RS && priv_.endpoint != Endpoint::VM {
                 sys.privctl(priv_.endpoint, PrivCtlOp::SetSys, Some(&privilege))?;
@@ -465,6 +520,8 @@ impl<'a> BootInit<'a> {
             // C: sys_getpriv — main.c:293-296. The kernel may have rewritten
             //   the structure (id/proc_nr/pending); take the synced version.
             privilege = sys.getpriv(priv_.endpoint)?;
+            // C: rp->r_alive_tm = getticks() — main.c:333 (S2; 07 heartbeat).
+            let ticks = sys.get_ticks()?;
 
             // C: slot population + activation — main.c:258-345. The boot slot
             //   index equals the priv-table index (main.c:255); mechanism
@@ -479,6 +536,7 @@ impl<'a> BootInit<'a> {
                 sys_,
                 dev,
                 privilege,
+                ticks,
             )?;
         }
         Ok(())
@@ -488,7 +546,7 @@ impl<'a> BootInit<'a> {
     ///
     /// C: main.c:348-399. RS/VM go through `init_service` (12) directly;
     /// other services get `sched_init_proc` + `SYS_PRIV_ALLOW` first.
-    fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
         let tables = self.tables;
         let mut nr_uncaught_init_srvs = 0usize;
 
@@ -508,13 +566,22 @@ impl<'a> BootInit<'a> {
                 continue;
             }
             // C: sched_init_proc — main.c:376; sys_privctl(SYS_PRIV_ALLOW) — main.c:379.
-            sys.sched_init_proc(priv_.endpoint)?;
+            sys.sched_init_proc(&SchedulerConfig::boot_defaults(priv_.endpoint))?;
             sys.privctl(priv_.endpoint, PrivCtlOp::Allow, None)?;
 
-            if priv_.flags & crate::table::SYS_PROC != 0 {
+            if priv_.flags.contains(PrivFlags::SYS_PROC) {
                 // C: init_service — main.c:387. Mechanism: 12.
-                // C: SF_SYNCH_BOOT → catch_boot_init_ready — main.c:390-392.
-                //   Mechanism: 12. Here we only count (Step 3 catches the rest).
+                if lookup_sys(tables.sys_table, priv_.endpoint)
+                    .flags
+                    .contains(SysFlags::SYNCH_BOOT)
+                {
+                    // C: SF_SYNCH_BOOT → catch_boot_init_ready — main.c:390-392:
+                    // a blocking receive for THIS service's init-ready before
+                    // boot proceeds. The receive primitive is 12; failing
+                    // closed beats silently skipping the sync (T6).
+                    return Err(Errno::ENOSYS);
+                }
+                // C: else branch — main.c:393-394: count, Step 3 catches it.
                 nr_uncaught_init_srvs += 1;
             }
         }
@@ -525,11 +592,15 @@ impl<'a> BootInit<'a> {
     /// Step 3 — catch all remaining init-ready messages.
     ///
     /// C: `while(nr_uncaught_init_srvs) { catch_boot_init_ready(ANY); ... }` —
-    /// main.c:401-407. The receive mechanism is 12-rs-init-run.md; this module
-    /// only tracks the counter (DEFERRED until 12 lands).
-    fn step3_catch_init_ready(&mut self, _sys: &mut dyn KernelApi) -> Result<(), i32> {
-        while self.nr_uncaught_init_srvs > 0 {
-            self.nr_uncaught_init_srvs -= 1;
+    /// main.c:401-407: a blocking receive per outstanding init-ready. The
+    /// receive mechanism is 12-rs-init-run.md.
+    fn step3_catch_init_ready(&mut self, _sys: &mut dyn KernelApi) -> Result<(), Errno> {
+        if self.nr_uncaught_init_srvs > 0 {
+            // A counter-only loop would "complete" boot without the messages
+            // actually arriving — fail-open, and C blocks forever here if a
+            // service never replies (fail-closed). Until 12 lands there is no
+            // receive primitive; fail closed explicitly (T6).
+            return Err(Errno::ENOSYS);
         }
         Ok(())
     }
@@ -537,7 +608,7 @@ impl<'a> BootInit<'a> {
     /// Step 4 — pid lookup + periodic alarm.
     ///
     /// C: main.c:409-433. `getnpid` signature: 19; alarm semantics: 07.
-    fn step4_finish(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    fn step4_finish(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
         let tables = self.tables;
         for priv_ in tables.priv_table {
             if priv_.endpoint.is_kernel_task() {
@@ -553,7 +624,7 @@ impl<'a> BootInit<'a> {
             let pid = sys.getnpid(priv_.endpoint)?;
             if pid < 0 {
                 // C: panic("unable to get pid") — main.c:427-429.
-                return Err(ENOSYS);
+                return Err(Errno::ENOSYS);
             }
             self.table.get_mut(id).pid = Some(pid);
         }
@@ -569,7 +640,7 @@ impl<'a> BootInit<'a> {
     /// The full mechanism belongs to 18-rs-self-lifecycle.md; this method
     /// only pins the call chain and its doc ownership.
     #[cfg(feature = "live-update")]
-    pub fn self_update(&mut self, sys: &mut dyn KernelApi) -> Result<(), i32> {
+    pub fn self_update(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
         // C: clone_slot(rp, &replica_rp) — main.c:441 (10/18).
         // C: srv_fork(0, 0) — main.c:446 (10, ARCH A-1).
         // C: update_service(&rp, &replica_rp, RS_SWAP, 0) — main.c:460 (16).
@@ -585,80 +656,12 @@ impl<'a> BootInit<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::privilege::{CallMask, PrivFlags};
     use crate::table::*;
+    use crate::testutil::{Call, MockKernelApi};
     use alloc::vec::Vec;
     use minix_types::BootImage;
 
-    /// Records the kernel calls made during boot, in order.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum Call {
-        GetMachine,
-        GetHz,
-        PrivCtl(Endpoint, PrivCtlOp),
-        GetPriv(Endpoint),
-        SchedInitProc(Endpoint),
-        GetNpid(Endpoint),
-        SetAlarm(u32),
-    }
-
-    #[derive(Default)]
-    struct MockKernelApi {
-        calls: Vec<Call>,
-        hz: u32,
-        pids: Vec<i32>,
-    }
-
-    impl MockKernelApi {
-        fn new(hz: u32) -> Self {
-            Self {
-                calls: Vec::new(),
-                hz,
-                pids: Vec::new(),
-            }
-        }
-    }
-
-    impl KernelApi for MockKernelApi {
-        fn get_machine(&mut self) -> Result<Machine, i32> {
-            self.calls.push(Call::GetMachine);
-            Ok(Machine::default())
-        }
-        fn get_hz(&mut self) -> Result<u32, i32> {
-            self.calls.push(Call::GetHz);
-            Ok(self.hz)
-        }
-        fn privctl(
-            &mut self,
-            proc: Endpoint,
-            op: PrivCtlOp,
-            _priv_: Option<&Privilege>,
-        ) -> Result<(), i32> {
-            self.calls.push(Call::PrivCtl(proc, op));
-            Ok(())
-        }
-        fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, i32> {
-            self.calls.push(Call::GetPriv(proc));
-            Ok(Privilege::vacant())
-        }
-        fn sched_init_proc(&mut self, proc: Endpoint) -> Result<(), i32> {
-            self.calls.push(Call::SchedInitProc(proc));
-            Ok(())
-        }
-        fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, i32> {
-            Ok(0) // root for boot tests
-        }
-        fn getnpid(&mut self, proc: Endpoint) -> Result<i32, i32> {
-            self.calls.push(Call::GetNpid(proc));
-            Ok(self.pids.pop().unwrap_or(100))
-        }
-        fn setalarm(&mut self, delay_ticks: u32) -> Result<(), i32> {
-            self.calls.push(Call::SetAlarm(delay_ticks));
-            Ok(())
-        }
-    }
-
-    fn boot_image(proc_nr: i32, endpoint: Endpoint) -> BootImage {
+    const fn boot_image(proc_nr: i32, endpoint: Endpoint) -> BootImage {
         BootImage {
             proc_nr,
             proc_name: *b"x\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
@@ -666,6 +669,26 @@ mod tests {
             start_addr: 0,
             len: 0,
         }
+    }
+
+    #[test]
+    fn test_unimplemented_kernel_api_fails_closed() {
+        // T2: the production placeholder must fail closed with ENOSYS, not
+        // panic — RS is a root system process and a panic is a system-wide
+        // outage (kernel does not restart RS, RSYS_F).
+        let mut sys = UnimplementedKernelApi;
+        assert_eq!(sys.get_hz(), Err(Errno::ENOSYS));
+        assert_eq!(sys.get_machine(), Err(Errno::ENOSYS));
+        assert_eq!(
+            sys.sched_init_proc(&SchedulerConfig::boot_defaults(Endpoint::PM)),
+            Err(Errno::ENOSYS)
+        );
+        assert_eq!(sys.getnuid(Endpoint::PM), Err(Errno::ENOSYS));
+        assert_eq!(sys.srv_fork(0, 0), Err(Errno::ENOSYS));
+        assert_eq!(
+            sys.vm_set_priv(Endpoint::VM, CallMask::empty(), false),
+            Err(Errno::ENOSYS)
+        );
     }
 
     #[test]
@@ -692,7 +715,14 @@ mod tests {
 
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        boot.init_fresh(&mut sys).expect("boot must succeed");
+        // T6: step 3 (catch init-ready) has no receive primitive until 12;
+        // the boot must fail closed (ENOSYS) instead of "completing" without
+        // the messages actually arriving (main.c:401-407).
+        assert_eq!(
+            boot.init_fresh(&mut sys),
+            Err(Errno::ENOSYS),
+            "step 3 fail-closed until 12 (T6)"
+        );
 
         // Step 1: SYS_PRIV_SET_SYS for every service except RS/VM (10 services).
         let set_sys = sys
@@ -734,14 +764,13 @@ mod tests {
             assert_eq!(boot.table.get(id).priv_, Privilege::vacant());
         }
 
-        // Step 4: getnpid for all 12 services + setalarm(system_hz).
-        let npid = sys
-            .calls
-            .iter()
-            .filter(|c| matches!(c, Call::GetNpid(_)))
-            .count();
-        assert_eq!(npid, 12);
-        assert!(sys.calls.iter().any(|c| matches!(c, Call::SetAlarm(100))));
+        // Step 4 (getnpid ×12 + setalarm(system_hz)) must NOT have run: the
+        // boot aborted at step 3, so no pid lookup or alarm happened.
+        assert!(!sys.calls.iter().any(|c| matches!(c, Call::SetAlarm(_))));
+        assert!(
+            !sys.calls.iter().any(|c| matches!(c, Call::GetNpid(_))),
+            "step 4 must not run when step 3 fails closed"
+        );
     }
 
     #[test]
@@ -763,7 +792,10 @@ mod tests {
         let tables = BootTables::new(image);
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        boot.init_fresh(&mut sys).expect("boot must succeed");
+        // Steps 1-2 only (step 3 is fail-closed until 12 — T6); the table
+        // population happens in step 1 (main.c:244-346).
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
 
         // Step 1: the 12 boot services occupy slots 0..11 (priv-table order,
         // main.c:255), marked IN_USE|ACTIVE, and the A-4 index hits.
@@ -817,7 +849,12 @@ mod tests {
         let tables = BootTables::new(image);
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        boot.init_fresh(&mut sys).expect("boot must succeed");
+        // Drive steps 0/1/2/4 directly; step 3 (receive) is fail-closed until
+        // 12 (T6) and would abort the boot.
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        boot.step4_finish(&mut sys).expect("step 4");
 
         // Step 4: every boot slot carries the pid returned by getnpid
         // (main.c:426; mock returns 100).
@@ -849,22 +886,22 @@ mod tests {
             BootImagePriv {
                 endpoint: Endpoint::RS,
                 label: "rs",
-                flags: RSYS_F,
+                flags: crate::privilege::RSYS_F,
             },
             BootImagePriv {
                 endpoint: Endpoint::VM,
                 label: "vm",
-                flags: VM_F,
+                flags: crate::privilege::VM_F,
             },
         ];
         let sys_table: &[BootImageSys] = &[
             BootImageSys {
                 endpoint: Endpoint::RS,
-                flags: SRVR_SF,
+                flags: crate::service_slot::SRVR_SF,
             },
             BootImageSys {
                 endpoint: Endpoint::VM,
-                flags: VM_SF,
+                flags: crate::service_slot::VM_SF,
             },
         ];
         let dev_table: &[BootImageDev] = &[];
@@ -876,7 +913,8 @@ mod tests {
         };
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        boot.init_fresh(&mut sys).expect("boot must succeed");
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
 
         let set_sys: Vec<Endpoint> = sys
             .calls
@@ -898,6 +936,24 @@ mod tests {
             tables.validate_tables().is_err(),
             "main.c:225-227 mismatch check"
         );
+    }
+
+    #[test]
+    fn test_validate_tables_rejects_proc_nr_endpoint_mismatch() {
+        // R17: C derives boot endpoints as `_ENDPOINT(0, proc_nr)` — a row
+        // whose proc_nr disagrees with its endpoint slot boots the wrong
+        // endpoint, so the placeholder must fail validation (fail-closed).
+        let image: &[BootImage] = &[boot_image(2, Endpoint::PM)]; // proc_nr 2, slot 0
+        let tables = BootTables::new(image);
+        assert!(tables.validate_tables().is_err(), "R17 mismatch check");
+    }
+
+    #[test]
+    fn test_boot_img_truncates_long_name() {
+        // R17: a name longer than the 16-byte field is clamped instead of
+        // panicking const evaluation with an out-of-range index.
+        let img = boot_img(2, Endpoint::RS, "this-name-is-way-too-long");
+        assert_eq!(&img.proc_name[..], b"this-name-is-way"); // 16 bytes
     }
 
     #[test]
@@ -927,7 +983,8 @@ mod tests {
     fn test_lookup_sys_default_fallback() {
         let sys = lookup_sys(BOOT_IMAGE_SYS_TABLE, Endpoint::INIT);
         assert_eq!(
-            sys.flags, SRV_SF,
+            sys.flags,
+            crate::service_slot::SRV_SF,
             "INIT is not in sys table → default (main.c:753-762)"
         );
     }
@@ -948,5 +1005,186 @@ mod tests {
             tables.validate_tables().is_ok(),
             "placeholder must pass count check"
         );
+    }
+
+    #[test]
+    fn test_step3_fails_closed_when_init_ready_pending() {
+        // T6: C blocks on receive per outstanding init-ready (main.c:401-407);
+        // without the 12 receive primitive, step 3 must fail closed instead
+        // of pretending the messages arrived.
+        let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+        ];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        // VM is counted (main.c:369-370) → step 3 has work to do.
+        assert_eq!(boot.nr_uncaught_init_srvs, 1);
+        assert_eq!(boot.step3_catch_init_ready(&mut sys), Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_step2_synch_boot_fails_closed() {
+        // T6: a SF_SYNCH_BOOT service is synchronously caught in C
+        // (main.c:390-392, blocking receive). Until 12 lands there is no
+        // receive primitive — fail closed instead of silently skipping the
+        // sync (which would let boot proceed without that init-ready).
+        let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(0, Endpoint::PM)];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: SysFlags::SYNCH_BOOT,
+            },
+        ];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        assert_eq!(
+            boot.step2_allow_run(&mut sys),
+            Err(Errno::ENOSYS),
+            "SF_SYNCH_BOOT sync catch is fail-closed until 12 (T6)"
+        );
+    }
+
+    #[test]
+    fn test_rs_server_handover_after_fresh_init() {
+        // T1: after a completed fresh boot (RS-only table → zero pending
+        // init-ready, so step 3 passes), the runtime state is owned by the
+        // server: the main loop can reach table/system_hz/shutting_down
+        // without a getter dump on BootInit.
+        static IMAGE: &[BootImage] = &[boot_image(2, Endpoint::RS)];
+        let priv_table: &[BootImagePriv] = &[BootImagePriv {
+            endpoint: Endpoint::RS,
+            label: "rs",
+            flags: crate::privilege::RSYS_F,
+        }];
+        let sys_table: &[BootImageSys] = &[BootImageSys {
+            endpoint: Endpoint::RS,
+            flags: crate::service_slot::SRVR_SF,
+        }];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let sys = MockKernelApi::new(100);
+        // N5: the SEF callback set is the trait implemented by RsServer —
+        // no registration value to pass at construction.
+        let mut server = crate::RsServer::with_kernel(tables, Box::new(sys));
+        server
+            .init(crate::SefInitType::Fresh)
+            .expect("RS-only boot completes (zero pending init-ready)");
+
+        let state = server.state().expect("handover after init(Fresh)");
+        assert_eq!(state.system_hz, 100);
+        assert!(!state.shutting_down);
+        // N3: the machine snapshot taken at startup (main.c:53) survives the
+        // boot→run handover — check_request resolves CPU affinities against
+        // it (request.c:1286-1296).
+        assert_eq!(state.machine, Machine::default());
+        assert_eq!(
+            state.table.endpoint_slot(Endpoint::RS),
+            Some(SlotId::new(0))
+        );
+        // The boot machine is consumed by the handover (no double ownership).
+        assert!(server.boot.is_none());
+    }
+
+    #[test]
+    fn test_boot_slot_populates_s2_fields() {
+        // S2: boot slots carry cmd/args/argc/vm_call_mask/scheduler/priority/
+        // quantum/alive_tm (main.c:308-333) — the fields the heartbeat (07)
+        // and exec (09/10) paths rely on.
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 4242;
+        static IMAGE: &[BootImage] = &[boot_image(2, Endpoint::RS)];
+        let priv_table: &[BootImagePriv] = &[BootImagePriv {
+            endpoint: Endpoint::RS,
+            label: "rs",
+            flags: crate::privilege::RSYS_F,
+        }];
+        let sys_table: &[BootImageSys] = &[BootImageSys {
+            endpoint: Endpoint::RS,
+            flags: crate::service_slot::SRVR_SF,
+        }];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+
+        let slot = boot.table.get(SlotId::new(0));
+        // C: strlcpy(r_cmd, proc_name) + build_cmd_dep — main.c:308-310.
+        assert_eq!(slot.cmd[..3], *b"x\0\0");
+        assert_eq!(slot.argc, 1);
+        assert_eq!(slot.script[0], 0); // r_script[0] = '\0' — main.c:309
+        // C: SRV_VC = ALL_C → full vm_call_mask — main.c:317-319, priv.h:78-80.
+        assert_eq!(slot.pub_.vm_call_mask, crate::privilege::CallMask::all());
+        // C: SRV_SCH=KERNEL / SRV_Q=USER_Q=7 / SRV_QT=USER_QUANTUM=200 — main.c:320-322.
+        assert_eq!(slot.scheduler, Endpoint::KERNEL);
+        assert_eq!(slot.priority, crate::sched::USER_Q);
+        assert_eq!(slot.quantum, crate::sched::USER_QUANTUM);
+        // C: r_alive_tm = getticks() — main.c:333.
+        assert_eq!(slot.alive_tm, 4242);
     }
 }

@@ -155,6 +155,14 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 
 `SourceIpcFilterEl` 用 `&str` 表达 label（纯决策模型），`IpcFilterEl` 用 `Endpoint` 表达 `m_source`。`m_source` 未解析时的默认值：C 为 0（PM 端点），Rust 用 `Endpoint::NONE`——字段仅在 `IPCF_MATCH_M_SOURCE` 置位时有效，安全默认不引入歧义（ARCH A-14，见 §4.2）。
 
+> **R11（2026-08-16）label UTF-8 契约**：C 的 `m_label[RS_MAX_LABEL_LEN]` 是原始字节（rs.h:90），
+> Rust `SourceIpcFilterEl.m_label: &'a str` 要求 UTF-8——**决策为保持 `&str` + 边界 fail-closed**：
+> 19 消息边界用 `from_utf8` 校验，非 UTF-8 label 拒绝该请求。理由：(1) DS label 语义是服务名字符串
+> （Minix3 实践中为 ASCII），无真实非 UTF-8 场景；(2) `parse_label` 的十进制解析用
+> `str::parse::<i32>()`（整串消费 + 溢出失败，等价 manager.c:260-263 的 strtol 双检查），改字节需
+> 手写 strtol，属 translate 反模式；(3) 拒绝方向安全（不静默错配）。代码标注：
+> `state_data.rs` `SourceIpcFilterEl`/`parse_label` 注释。
+
 > **[ARCH: A-14]** — 状态数据协议常量与安全默认，三处一致标注（doc/design/code）。行为对照点：`manager.c:190`（sizeof 门）、`manager.c:240-270`（MATCH 门控 + 解析）、`request.c:823-827`（整包 grant）。三个子项：
 > 1. **`RS_STATE_DATA_SIZE=56` 取 x86-64 目标布局**（本树 C 为 i386，`sizeof(struct rs_state_data)` = 28；目标端口为 64 位，wire 常量取 56）；
 > 2. **`m_source` 未设 `MATCH_M_SOURCE` 时**：C 写 0（PM 端点），Rust 用 `Endpoint::NONE`（安全默认，字段仅在门控时有效）；
@@ -225,7 +233,7 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 ## 7. 参见
 
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `do_update` 调用点（request.c:814）、rpupd 链、prepare 阶段
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `RupdateDescriptor`/`rprocupd` 数据形状
+- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `UpdateChain`/`rprocupd` 数据形状
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 契约
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自升级 `cpf_reload`/rollback 特例
 - `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/23-ipc-filter.md` —— IPC filter 内核机制

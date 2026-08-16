@@ -67,8 +67,8 @@ impl TimerIrqGate for X86_64TimerIrqGate {
             // Set SVR Enable bit (offset 0xF0, bit 8).
             // C: apic.c:lapic_enable() sets the SVR enable (apic.c:674-700).
             // Note: also performed by X86_64InterruptController::init_lapic;
-            // kept here per Follow-up 1 (05-clock-interrupt-init.md §4.7.1)
-            // until the SVR/LVT responsibility split is decided.
+            // kept here (idempotent) until the SVR/LVT responsibility split
+            // is decided (see 05-clock-interrupt-init.md §4.7.1).
             let svr = lapic_base.add(0xF0 / 4);
             let v = core::ptr::read_volatile(svr);
             core::ptr::write_volatile(svr, v | (1 << 8));
