@@ -1,86 +1,67 @@
-//! PM process table structure definition.
+//! PM 进程表：槽位分配/释放、endpoint 验证、PID 查找。
 //!
-//! This is the Rust implementation of Minix3's `mproc[NR_PROCS]`, containing PM's private process table management logic.
+//! C 对应: `minix3/minix/servers/pm/{glo.h, utility.c, forkexit.c}` + 内核
+//! generation 语义（`minix3/minix/kernel/system/do_fork.c:69-72`）。
+//! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/03-mproc-table.md`
 //!
-//! # Minix3 Multi-Process Table Architecture
-//! Minix3 uses a distributed process table design with 4 copies:
-//! - **PM/mproc**: Process management, signals, permissions (this module)
-//! - **VM/vmproc**: Virtual memory, page tables
-//! - **VFS/fproc**: File descriptors, directories
-//! - **Kernel/proc**: Scheduling, IPC, register saving
+//! # 表的三层身份
 //!
-//! # Design Decisions
-//! - Uses static array `[Process; NR_PROCS]` to guarantee stable addresses
-//! - Uses `Cell<usize>` for interior mutability (single-threaded safe)
-//! - Preserves `IN_USE` semantics (`Lifecycle::Unused`)
+//! - **槽位（slot）**：`[0, NR_PROCS)`，与内核/VM/VFS 三表共享的物理索引；
+//! - **endpoint**：`generation << 15 + slot`（跨服务 IPC 身份，`minix-types`
+//!   [`Endpoint`]），generation 由内核在槽位复用（fork）时递增
+//!   （`do_fork.c:69-72`），**PM 只验证不生成**；
+//! - **pid**：POSIX 可见身份，`[INIT_PID+1, NR_PIDS]`，PM 经
+//!   [`PidGenerator`] 分配。
 //!
-//! # Endpoint and Generation
+//! # 单线程模型
 //!
-//! Minix3's Endpoint format:
-//! ```text
-//! endpoint = (generation << 15) + proc_nr
-//! ```
+//! PM 是用户态服务器（单线程事件循环）。`Cell<usize>` 计数/轮转指针在
+//! 单线程下安全；跨线程共享需改 `AtomicUsize`。
 //!
-//! - **Low 15 bits**: process slot number
-//! - **High 17 bits**: generation
+//! # Minix3 对照点
 //!
-//! Generation's purpose:
-//! - Prevents "stale messages sent to new processes"
-//! - Each time a slot is released, generation +1
-//! - Embedded in endpoint, **no separate storage needed**
-//!
-//! # Why in PM crate, not minix-types?
-//!
-//! 1. **Separation of concerns**: Process table slot allocation is PM's private logic
-//! 2. **Invariant protection**: Slot allocation/release logic binds PM internal state
-//! 3. **Microkernel principle**: Other services don't need to know PM's process table implementation
+//! - `mproc[NR_PROCS]`（mproc.h:83）+ `procs_in_use`（glo.h:9）→ 本结构
+//! - `pm_isokendpt`（utility.c:108-121）→ [`ProcTable::pm_isokendpt`]
+//! - `find_proc`（utility.c:76-85）→ [`ProcTable::find_proc`]
+//! - `cleanup`（forkexit.c:795-806）→ [`ProcTable::release_slot`]
+//!   （**不 bump generation**，见 03-mproc-table.md §3.3）
+//! - `do_fork` 容量检查（forkexit.c:60-62）→ [`ProcTable::can_alloc_for_user`]
 
 use core::cell::Cell;
-use minix_types::{Endpoint, NR_PROCS, LAST_FEW};
-use crate::mproc::{Process, Lifecycle, PidGenerator};
+use minix_types::{Endpoint, Errno, NR_PROCS, LAST_FEW, Pid, UserSlot};
+use crate::mproc::{Process, PidGenerator};
 
-/// Endpoint generation shift.
+/// PM 进程表。
 ///
-/// Minix3 definition: `#define _ENDPOINT_GENERATION_SHIFT 15`
-pub const ENDPOINT_GENERATION_SHIFT: u32 = 15;
-
-/// PM process table.
-///
-/// Stores all PM process structures, provides slot allocation functionality.
-///
-/// # Memory Layout
-/// ```text
-/// ProcTable {
-///     procs: [Process; 256],      // ~22.5 KB
-///     procs_in_use: Cell<usize>,  // 8 bytes
-///     next_child: Cell<usize>,    // 8 bytes
-///     pid_generator: PidGenerator, // 4 bytes
-/// }
-/// ```
-///
-/// # Note
-///
-/// Generation is embedded in `Process.endpoint`, no separate storage needed.
-/// This follows Minix3's design principle: **single truth**.
+/// C: `mproc[NR_PROCS]`（mproc.h:83）+ `procs_in_use`（glo.h:9）+
+/// `do_fork` 的 `static next_child`（forkexit.c:51）+
+/// `get_free_pid` 的 `static next_pid`（utility.c:36）四个分散全局的聚合
+/// （ARCH A-3：全局变量 → `ProcTable`/`PmContext`）。
 #[derive(Debug)]
 pub struct ProcTable {
-    /// Process array.
-    pub procs: [Process; NR_PROCS],
-    /// Number of processes currently in use.
-    pub procs_in_use: Cell<usize>,
-    /// Next child slot (round-robin algorithm).
-    pub next_child: Cell<usize>,
-    /// PID generator.
+    /// 进程数组（256 槽，约 120 KB，`size_of::<Process>()` 实测 480 B/槽）。
     ///
-    /// Uses monotonic increment + conflict detection strategy.
-    /// Corresponds to Minix3's `static pid_t next_pid`.
+    /// 槽位索引 = endpoint 的 slot 部分 = 四表（内核/VM/VFS/PM）共享的坐标。
+    pub procs: [Process; NR_PROCS],
+    /// 活进程计数。
+    ///
+    /// C: `procs_in_use`（glo.h:9）。与 `procs[]` 中 `is_in_use()` 槽数恒等。
+    pub procs_in_use: Cell<usize>,
+    /// 下一子进程槽（轮转分配指针）。
+    ///
+    /// C: `do_fork` 内 `static unsigned int next_child`（forkexit.c:51）。
+    pub next_child: Cell<usize>,
+    /// PID 生成器。
+    ///
+    /// C: `get_free_pid` 内 `static pid_t next_pid`（utility.c:36）。
     pub pid_generator: PidGenerator,
 }
 
 impl ProcTable {
-    /// Creates a new process table.
+    /// 创建空进程表：全部槽位 `Unused`、计数 0、轮转指针 0、
+    /// PID 生成器就绪（`next_pid = INIT_PID + 1`）。
     ///
-    /// All slots are initialized to `Lifecycle::Unused`.
+    /// C: 第 1 步（main.c:146-152）mproc 表初始化 + 全局零初始化。
     pub fn new() -> Self {
         Self {
             procs: core::array::from_fn(|_| Process::default()),
@@ -89,58 +70,47 @@ impl ProcTable {
             pid_generator: PidGenerator::new(),
         }
     }
-    
-    /// Gets a process reference.
+
+    /// 获取槽位进程引用。
     pub fn get(&self, index: usize) -> Option<&Process> {
-        if index < NR_PROCS {
-            Some(&self.procs[index])
-        } else {
-            None
-        }
+        self.procs.get(index)
     }
-    
-    /// Gets a mutable process reference.
+
+    /// 获取槽位进程可变引用。
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Process> {
-        if index < NR_PROCS {
-            Some(&mut self.procs[index])
-        } else {
-            None
-        }
+        self.procs.get_mut(index)
     }
-    
-    /// Gets the number of processes currently in use.
+
+    /// 活进程计数。
+    ///
+    /// C: `procs_in_use`。
     pub fn count(&self) -> usize {
         self.procs_in_use.get()
     }
-    
-    /// Checks if the process table is full.
+
+    /// 表是否已满（无空槽）。
     pub fn is_full(&self) -> bool {
         self.procs_in_use.get() >= NR_PROCS
     }
-    
-    /// Iterates over all active processes.
+
+    /// 遍历全部活进程。
     ///
-    /// Returns an iterator containing only processes in use.
-    ///
-    /// # Usage
-    ///
-    /// Mainly used for PID conflict detection, iterating all active processes to check PID and process group ID conflicts.
-    ///
-    /// # Performance
-    ///
-    /// Uses Rust iterator's lazy evaluation and short-circuit evaluation:
-    /// - **Lazy evaluation**: Only accesses processes when actually needed
-    /// - **Short-circuit evaluation**: With `Iterator::any` etc., stops as soon as a match is found
+    /// 只产生活进程（`is_in_use()`），供 PID 冲突检测等表级扫描使用。
     pub fn iter_active(&self) -> impl Iterator<Item = &Process> {
         self.procs.iter().filter(|p| p.is_in_use())
     }
-    
-    /// Checks if a non-root user can allocate a slot.
+
+    /// 非 root 用户是否还能分配槽位。
     ///
-    /// Corresponds to Minix3's check:
+    /// C: `do_fork` 容量检查（forkexit.c:60-62）：
     /// ```c
-    /// if (procs_in_use >= NR_PROCS-LAST_FEW && rmp->mp_effuid != 0)
+    /// if ((procs_in_use == NR_PROCS) ||
+    ///     (procs_in_use >= NR_PROCS-LAST_FEW && rmp->mp_effuid != 0))
+    ///     return(EAGAIN);
     /// ```
+    ///
+    /// `is_root` 按 C 语义应为 effective uid == 0（`mp_effuid`，
+    /// 见 `PmContext::is_root`）。
     pub fn can_alloc_for_user(&self, is_root: bool) -> bool {
         let count = self.procs_in_use.get();
         if count >= NR_PROCS {
@@ -151,10 +121,10 @@ impl ProcTable {
         }
         true
     }
-    
-    /// Finds a free slot (round-robin algorithm).
+
+    /// 找空槽（轮转扫描）。
     ///
-    /// Corresponds to the round-robin search in Minix3's `do_fork`:
+    /// C: `do_fork` 的槽位扫描（forkexit.c:68-74）：
     /// ```c
     /// do {
     ///     next_child = (next_child+1) % NR_PROCS;
@@ -162,101 +132,96 @@ impl ProcTable {
     /// } while((mproc[next_child].mp_flags & IN_USE) && n <= NR_PROCS);
     /// ```
     ///
-    /// # Returns
-    /// - `Some(usize)`: Found free slot index
-    /// - `None`: Process table is full
+    /// 先递增 `next_child` 再检查（与 C 相同）；`next_child` 保持"最后检查的
+    /// 槽位"。满表返回 `None`（C 对应 `panic("do_fork can't find child slot")`
+    /// 的不可达路径——容量检查已保证存在空槽）。
     pub fn find_free_slot(&self) -> Option<usize> {
-        let start = self.next_child.get();
-        
-        for i in 0..NR_PROCS {
-            let idx = (start + i) % NR_PROCS;
-            if !self.procs[idx].is_in_use() {
-                self.next_child.set((idx + 1) % NR_PROCS);
-                return Some(idx);
+        for _ in 0..NR_PROCS {
+            let next = (self.next_child.get() + 1) % NR_PROCS;
+            self.next_child.set(next);
+            if !self.procs[next].is_in_use() {
+                return Some(next);
             }
         }
-        
         None
     }
-    
-    /// Allocates a slot.
+
+    /// 分配槽位：找空槽 + 活进程计数加一。
     ///
-    /// Finds a free slot and marks it as in use.
-    ///
-    /// # Returns
-    /// - `Some(usize)`: Allocated slot index
-    /// - `None`: Process table is full
+    /// 只负责"占位 + 计数"；槽位内容（endpoint/pid/状态）由调用方
+    /// （fork/init 路径）填充。满表返回 `None`。
     pub fn alloc_slot(&self) -> Option<usize> {
         let slot = self.find_free_slot()?;
         self.procs_in_use.set(self.procs_in_use.get() + 1);
         Some(slot)
     }
-    
-    /// Releases a slot.
+
+    /// 释放槽位：重置槽位 + 活进程计数减一。
     ///
-    /// Marks the slot as unused, increments generation.
+    /// C: `cleanup`（forkexit.c:795-806）——只清 `mp_pid`/`mp_flags`/child 时间
+    /// + `procs_in_use--`。
     ///
-    /// Note: This method doesn't check process state, only decrements the counter.
-    /// Caller is responsible for ensuring process state has been properly reset.
+    /// # 与 C 的差异（ARCH，03-mproc-table.md §3.3）
+    ///
+    /// C 保留陈旧 `mp_endpoint`，靠 `!IN_USE` 检查挡陈旧引用（EDEADEPT）；
+    /// Rust 重置整个槽位为 `Process::default()`（endpoint → `Endpoint::NONE`），
+    /// 陈旧引用在 endpoint 比较处即失败——errno 契约相同（EDEADEPT）。
+    ///
+    /// **generation 的递增属于内核**（`do_fork.c:69-72`，槽位复用时 +1，
+    /// 经 VM 传回 PM），PM 侧不得 bump——本方法不修改 endpoint 代数。
     pub fn release_slot(&mut self, index: usize) {
-        if index < NR_PROCS && self.procs_in_use.get() > 0 {
-            self.procs_in_use.set(self.procs_in_use.get() - 1);
-            
-            let old_endpoint = self.procs[index].endpoint();
-            let new_endpoint = Self::increment_endpoint_generation(old_endpoint);
-            self.procs[index].identity.endpoint = new_endpoint;
+        if index >= NR_PROCS || self.procs_in_use.get() == 0 {
+            return;
         }
+        self.procs[index] = Process::default();
+        self.procs_in_use.set(self.procs_in_use.get() - 1);
     }
-    
-    /// Calculates Endpoint.
+
+    /// 验证 endpoint 并返回对应槽位。
     ///
-    /// Minix3 formula: `endpoint = (generation << 15) + proc_nr`
+    /// C: `pm_isokendpt`（utility.c:108-121）：
+    /// ```c
+    /// *proc = _ENDPOINT_P(endpoint);
+    /// if (*proc < 0 || *proc >= NR_PROCS)
+    ///     return EINVAL;
+    /// if (endpoint != mproc[*proc].mp_endpoint)
+    ///     return EDEADEPT;
+    /// if (!(mproc[*proc].mp_flags & IN_USE))
+    ///     return EDEADEPT;
+    /// return OK;
+    /// ```
     ///
-    /// Note: This calculates the initial endpoint for a new process (generation = 0)
-    pub fn calculate_endpoint(index: usize) -> Endpoint {
-        if index < NR_PROCS {
-            Endpoint(index as i32)
-        } else {
-            Endpoint::NONE
+    /// 三层检查顺序与 C 一致：槽位范围（EINVAL）→ endpoint 代数
+    /// （EDEADEPT）→ 存活（EDEADEPT）。负槽位（内核 task）与
+    /// ANY/NONE/SELF 特殊值都落在范围检查 → EINVAL。
+    pub fn pm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, EndpointError> {
+        let slot = endpoint.slot();
+        if slot < 0 || slot as usize >= NR_PROCS {
+            return Err(EndpointError::InvalidSlot);
         }
-    }
-
-    /// Parses index from Endpoint.
-    ///
-    /// Uses Endpoint::slot() method.
-    pub fn endpoint_to_index(endpoint: Endpoint) -> usize {
-        endpoint.slot() as usize
-    }
-
-    /// Parses generation from Endpoint.
-    ///
-    /// Uses Endpoint::generation() method.
-    pub fn endpoint_to_generation(endpoint: Endpoint) -> u32 {
-        endpoint.generation() as u32
-    }
-
-    /// Increments Endpoint's generation.
-    ///
-    /// Used when releasing a slot, prevents stale messages from being sent to new processes.
-    fn increment_endpoint_generation(endpoint: Endpoint) -> Endpoint {
-        let generation = Self::endpoint_to_generation(endpoint);
-        let index = Self::endpoint_to_index(endpoint);
-        let new_gen = generation + 1;
-
-        Endpoint::from_generation_slot(new_gen as i32, index as i32)
-    }
-    
-    /// Validates if an Endpoint is valid.
-    ///
-    /// Checks if the endpoint's generation matches what's in the process table.
-    pub fn validate_endpoint(&self, endpoint: Endpoint) -> bool {
-        let index = Self::endpoint_to_index(endpoint);
-        
-        if index >= NR_PROCS {
-            return false;
+        let idx = slot as usize;
+        if self.procs[idx].endpoint() != endpoint {
+            return Err(EndpointError::DeadEndpoint);
         }
-        
-        self.procs[index].endpoint() == endpoint
+        if !self.procs[idx].is_in_use() {
+            return Err(EndpointError::DeadEndpoint);
+        }
+        Ok(UserSlot::new(idx))
+    }
+
+    /// 按 pid 查找进程槽位。
+    ///
+    /// C: `find_proc`（utility.c:76-85）——扫描 `(mp_flags & IN_USE) &&
+    /// mp_pid == lpid` 的第一个槽位；无匹配返回 `None`（调用方映射 ESRCH）。
+    ///
+    /// 返回槽位而非 `&Process`：调用方（trace/misc）需要可变访问时按需
+    /// `get_mut()`，表保持"索引权威"。
+    pub fn find_proc(&self, pid: Pid) -> Option<UserSlot> {
+        self.procs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.is_in_use() && p.pid() == pid)
+            .map(|(idx, _)| UserSlot::new(idx))
     }
 }
 
@@ -266,24 +231,66 @@ impl Default for ProcTable {
     }
 }
 
+/// Endpoint 验证错误。
+///
+/// C: `pm_isokendpt` 的两种失败 errno（utility.c:108-121）：
+/// - `InvalidSlot` → EINVAL（槽位越界：负槽位/≥ NR_PROCS/特殊 endpoint）；
+/// - `DeadEndpoint` → EDEADEPT（endpoint 代数不匹配或槽位未使用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointError {
+    /// 槽位越界（C: EINVAL，sys/errno.h:64）。
+    InvalidSlot,
+    /// endpoint 陈旧或槽位未使用（C: EDEADEPT，sys/errno.h:211）。
+    DeadEndpoint,
+}
+
+impl EndpointError {
+    /// 映射到 Minix3 errno。
+    pub const fn to_errno(self) -> Errno {
+        match self {
+            Self::InvalidSlot => Errno::EINVAL,
+            Self::DeadEndpoint => Errno::EDEADEPT,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::mproc::Lifecycle;
+
     #[test]
     fn test_proc_table_new() {
         let table = ProcTable::new();
         assert_eq!(table.count(), 0);
         assert!(!table.is_full());
+        assert!(!table.procs[0].is_in_use());
     }
-    
+
     #[test]
-    fn test_find_free_slot() {
-        let table = ProcTable::new();
+    fn test_find_free_slot_round_robin() {
+        let mut table = ProcTable::new();
+        // 首轮：从槽 1 开始检查（next_child 先递增，与 C forkexit.c:69 相同）。
         let slot = table.find_free_slot().unwrap();
-        assert!(slot < NR_PROCS);
+        assert_eq!(slot, 1);
+        assert_eq!(table.next_child.get(), 1);
+
+        // 轮转：已占用的槽位被跳过。
+        table.procs[2].state.lifecycle = Lifecycle::Running;
+        let slot = table.find_free_slot().unwrap();
+        assert_eq!(slot, 3);
+        assert_eq!(table.next_child.get(), 3);
     }
-    
+
+    #[test]
+    fn test_find_free_slot_full() {
+        let mut table = ProcTable::new();
+        for i in 0..NR_PROCS {
+            table.procs[i].state.lifecycle = Lifecycle::Running;
+        }
+        assert_eq!(table.find_free_slot(), None);
+    }
+
     #[test]
     fn test_alloc_slot() {
         let table = ProcTable::new();
@@ -291,71 +298,157 @@ mod tests {
         assert!(slot < NR_PROCS);
         assert_eq!(table.count(), 1);
     }
-    
+
+    #[test]
+    fn test_alloc_slot_full_returns_none() {
+        let mut table = ProcTable::new();
+        for i in 0..NR_PROCS {
+            table.procs[i].state.lifecycle = Lifecycle::Running;
+        }
+        table.procs_in_use.set(NR_PROCS);
+        assert_eq!(table.alloc_slot(), None);
+    }
+
     #[test]
     fn test_release_slot() {
         let mut table = ProcTable::new();
-        
         let slot = table.alloc_slot().unwrap();
         assert_eq!(table.count(), 1);
-        
-        table.procs[slot].identity.endpoint = ProcTable::calculate_endpoint(slot);
-        let gen_before = ProcTable::endpoint_to_generation(table.procs[slot].endpoint());
-        
+        table.procs[slot].state.lifecycle = Lifecycle::Running;
+        table.procs[slot].identity.endpoint = Endpoint::from_generation_slot(2, slot as i32);
+
         table.release_slot(slot);
         assert_eq!(table.count(), 0);
-        
-        let gen_after = ProcTable::endpoint_to_generation(table.procs[slot].endpoint());
-        assert_eq!(gen_after, gen_before + 1);
+        assert!(!table.procs[slot].is_in_use());
+        // C cleanup 不 bump generation（forkexit.c:795-806）；Rust 重置为
+        // default（endpoint → NONE）。新 endpoint 由内核在槽位复用时生成。
+        assert_eq!(table.procs[slot].endpoint(), Endpoint::NONE);
     }
-    
+
+    #[test]
+    fn test_release_slot_keeps_count() {
+        let mut table = ProcTable::new();
+        table.release_slot(0); // 未分配就释放：计数不变
+        assert_eq!(table.count(), 0);
+    }
+
     #[test]
     fn test_can_alloc_for_user() {
-        let table = ProcTable::new();
-        
+        let mut table = ProcTable::new();
         assert!(table.can_alloc_for_user(false));
         assert!(table.can_alloc_for_user(true));
+
+        // 到达保留区：非 root 被拒，root 可分配。
+        table.procs_in_use.set(NR_PROCS - LAST_FEW);
+        assert!(!table.can_alloc_for_user(false));
+        assert!(table.can_alloc_for_user(true));
+
+        // 全满：root 也被拒。
+        table.procs_in_use.set(NR_PROCS);
+        assert!(!table.can_alloc_for_user(true));
     }
-    
+
     #[test]
-    fn test_endpoint_calculation() {
-        let endpoint = ProcTable::calculate_endpoint(5);
-        let index = ProcTable::endpoint_to_index(endpoint);
-        let gen_val = ProcTable::endpoint_to_generation(endpoint);
-        
-        assert_eq!(index, 5);
-        assert_eq!(gen_val, 0);
-    }
-    
-    #[test]
-    fn test_endpoint_generation_increment() {
-        let endpoint1 = ProcTable::calculate_endpoint(5);
-        assert_eq!(ProcTable::endpoint_to_generation(endpoint1), 0);
-        
-        let endpoint2 = ProcTable::increment_endpoint_generation(endpoint1);
-        assert_eq!(ProcTable::endpoint_to_generation(endpoint2), 1);
-        assert_eq!(ProcTable::endpoint_to_index(endpoint2), 5);
-        
-        let endpoint3 = ProcTable::increment_endpoint_generation(endpoint2);
-        assert_eq!(ProcTable::endpoint_to_generation(endpoint3), 2);
-        assert_eq!(ProcTable::endpoint_to_index(endpoint3), 5);
-    }
-    
-    #[test]
-    fn test_endpoint_after_release() {
+    fn test_pm_isokendpt_valid() {
         let mut table = ProcTable::new();
-        
+        table.procs[5].state.lifecycle = Lifecycle::Running;
+        table.procs[5].identity.endpoint = Endpoint::from_generation_slot(3, 5);
+        let ep = table.procs[5].endpoint();
+        assert_eq!(table.pm_isokendpt(ep), Ok(UserSlot::new(5)));
+    }
+
+    #[test]
+    fn test_pm_isokendpt_slot_out_of_range() {
+        let table = ProcTable::new();
+        // 负槽位（内核 task）→ EINVAL。
+        assert_eq!(
+            table.pm_isokendpt(Endpoint::CLOCK),
+            Err(EndpointError::InvalidSlot)
+        );
+        // 槽位 ≥ NR_PROCS → EINVAL（与 C `*proc >= NR_PROCS` 相同）。
+        assert_eq!(
+            table.pm_isokendpt(Endpoint::from_generation_slot(0, NR_PROCS as i32)),
+            Err(EndpointError::InvalidSlot)
+        );
+        // 特殊 endpoint（ANY/NONE/SELF）槽位远大于 NR_PROCS → EINVAL。
+        assert_eq!(
+            table.pm_isokendpt(Endpoint::ANY),
+            Err(EndpointError::InvalidSlot)
+        );
+        assert_eq!(
+            table.pm_isokendpt(Endpoint::NONE),
+            Err(EndpointError::InvalidSlot)
+        );
+    }
+
+    #[test]
+    fn test_pm_isokendpt_generation_mismatch() {
+        let mut table = ProcTable::new();
+        table.procs[7].state.lifecycle = Lifecycle::Running;
+        table.procs[7].identity.endpoint = Endpoint::from_generation_slot(2, 7);
+        // 代数不匹配 → EDEADEPT（陈旧引用）。
+        let stale = Endpoint::from_generation_slot(1, 7);
+        assert_eq!(
+            table.pm_isokendpt(stale),
+            Err(EndpointError::DeadEndpoint)
+        );
+    }
+
+    #[test]
+    fn test_pm_isokendpt_not_in_use() {
+        let mut table = ProcTable::new();
+        // 未使用槽位持有匹配 endpoint（C cleanup 后陈旧 endpoint 场景的
+        // Rust 同构：endpoint 已被重置为 NONE，此处模拟 C 陈旧值）。
+        table.procs[7].identity.endpoint = Endpoint::from_generation_slot(2, 7);
+        let ep = table.procs[7].endpoint();
+        assert_eq!(
+            table.pm_isokendpt(ep),
+            Err(EndpointError::DeadEndpoint)
+        );
+    }
+
+    #[test]
+    fn test_pm_isokendpt_released_slot() {
+        let mut table = ProcTable::new();
         let slot = table.alloc_slot().unwrap();
-        table.procs[slot].identity.endpoint = ProcTable::calculate_endpoint(slot);
-        
-        let endpoint_before = table.procs[slot].endpoint();
-        
+        table.procs[slot].state.lifecycle = Lifecycle::Running;
+        table.procs[slot].identity.endpoint = Endpoint::from_generation_slot(1, slot as i32);
+        let old_ep = table.procs[slot].endpoint();
         table.release_slot(slot);
-        
-        let endpoint_after = table.procs[slot].endpoint();
-        assert_ne!(endpoint_before, endpoint_after);
-        
-        assert!(!table.validate_endpoint(endpoint_before));
-        assert!(table.validate_endpoint(endpoint_after));
+
+        // 释放后：陈旧 endpoint → EDEADEPT（C: !IN_USE 检查；Rust: NONE 不匹配）。
+        assert_eq!(
+            table.pm_isokendpt(old_ep),
+            Err(EndpointError::DeadEndpoint)
+        );
+    }
+
+    #[test]
+    fn test_find_proc() {
+        let mut table = ProcTable::new();
+        table.procs[3].state.lifecycle = Lifecycle::Running;
+        table.procs[3].identity.id.pid = 42;
+        table.procs[10].state.lifecycle = Lifecycle::Running;
+        table.procs[10].identity.id.pid = 43;
+
+        assert_eq!(table.find_proc(42), Some(UserSlot::new(3)));
+        assert_eq!(table.find_proc(43), Some(UserSlot::new(10)));
+        assert_eq!(table.find_proc(44), None);
+    }
+
+    #[test]
+    fn test_find_proc_skips_released_slot() {
+        let mut table = ProcTable::new();
+        // 未使用槽位的陈旧 pid 不参与匹配（C: `mp_flags & IN_USE` 检查，
+        // utility.c:82）。
+        table.procs[5].identity.id.pid = 42;
+        assert_eq!(table.find_proc(42), None);
+    }
+
+    #[test]
+    fn test_endpoint_error_to_errno() {
+        // C: sys/errno.h:64/211。
+        assert_eq!(EndpointError::InvalidSlot.to_errno(), Errno::EINVAL);
+        assert_eq!(EndpointError::DeadEndpoint.to_errno(), Errno::EDEADEPT);
     }
 }

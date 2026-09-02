@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 6 — 主循环与分发（运行时锚点文档）
 > **源码**: `minix3/minix/servers/vm/main.c`（`vm_calls` :47-51 / `CALLNUMBER` :53-59 / 主循环 :112-192 / `CALLMAP` 注册 :522-580）+ `minix3/minix/include/minix/com.h`（`VM_RQ_BASE` :627 / `VM_*` 请求码 :630-773 / `NR_VM_CALLS` :769 / `VM_BASIC_CALLS` :778-780 / `SUSPEND` :1151）+ `minix3/minix/include/minix/vfsif.h`（`TRNS_GET_ID` :79 / `TRNS_ADD_ID` :80 / `TRNS_DEL_ID` :81）+ `minix3/minix/include/minix/ipcconst.h`（`IPC_FLG_MSG_FROM_KERNEL` :28 / `IPC_STATUS_FLAGS_TEST` :34）
-> **Rust 模块**: `os/servers/vm/src/ipc/dispatcher.rs`（1986 行：`MessageDispatcher` :99 / `VfsReplyResult` :60 / `DispatchResult` :72 / `dispatch_by_number` :1011）+ `os/servers/vm/src/ipc/transport.rs`（323 行：`IpcTransport` :90 / `KernelIpcTransport` :113 / `TestIpcTransport` :178）+ `os/servers/vm/src/vm_server.rs`（`run` :423 / `dispatch_on_msg` :553 / `rs_handshake` :647 / `handle_vfs_transid` :688 / `reply_to_errno` :1053 / `encode_reply_data` :1100）
+> **Rust 模块**: `os/servers/vm/src/ipc/dispatcher.rs`（2155 行：`MessageDispatcher` :99 / `VfsReplyResult` :60 / `DispatchResult` :72 / `dispatch_by_number` :1032）+ `os/servers/vm/src/ipc/transport.rs`（404 行：`IpcStatus` :46 / `IpcTransport` :117 / `KernelIpcTransport` :147 / `TestIpcTransport` :215）+ `os/servers/vm/src/vm_server.rs`（`run` :588 / `run_once` :623 / `dispatch_on_msg` :786 / `rs_handshake` :890 / `handle_vfs_transid` :931 / `reply_to_errno` :1233 / `encode_reply_data` :1280）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（启动链锚点）+ `02~14` 全部就绪（进程表/ACL/物理内存/页表/区域）
 > **说明**: VM 的**运行时心跳**——主循环如何收消息、按五优先级分发、用 `SUSPEND` 协议管理延迟回复、路由 VFS 事务、过滤内核通知、接线 `acl_check`。01 管"进入主循环之前"，本文档管"进入主循环之后"。**不覆盖**：各 handler 实现（16~26）、ACL 数据结构（04）、`do_procctl` 细节（22）、VFS 请求队列（23）、SEF 生命周期细节（01）。
 
@@ -92,6 +92,8 @@ if (is_ipc_notify(rcv_sts)) {
 ```
 
 同样地，`VM_PAGEFAULT` 必须来自内核——`IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)`（ipcconst.h:28/:34）验证消息**由内核代表进程发出**（信任标志），否则打印 "faked VM_PAGEFAULT message!" 告警。这是对伪造消息的第一道防线。
+
+**Rust 对应（V10-P1-1）**：状态字解析收敛为 `IpcStatus` 方法——`is_notify()`（transport.rs:58，`(flags & 0x3F) == NOTIFY`）与 `is_from_kernel()`（transport.rs:69，`((flags >> 16) & 1) != 0`，`IPC_FLG_MSG_FROM_KERNEL` 位）。主循环在 endpoint 校验**之前**跳过通知（vm_server.rs:639），P3 分支用 `rcv_sts.is_from_kernel()` 做 `debug_assert`（vm_server.rs:813）。`flags` 的真实来源待 kernel IPC core（`KernelIpcTransport::receive` 填充）；默认 `IpcStatus::default()` 下两者恒 false。
 
 ### 1.6 对照：Redox 与 Linux
 
@@ -299,7 +301,7 @@ static int sef_cb_init_fresh(int type, sef_init_info_t *info)
 
 ## 3. Rust 设计决策
 
-### 3.1 D1：编译期 CALLMAP——dispatch_by_number（dispatcher.rs:1011-1188）
+### 3.1 D1：编译期 CALLMAP——dispatch_by_number（dispatcher.rs:1032-1232）
 
 **C 方案**：`vm_calls[]` 运行时函数指针表 + `CALLNUMBER` 索引 + `vmc_func(&msg)`；表项可为 NULL，越界/空表在运行时才暴露。
 
@@ -335,32 +337,32 @@ VmReply（服务返回值，含 Suspend）
 ```
 
 ```rust
-enum DispatchAction { Reply(VmReply), Suspend, NoReply }   /* vm_server.rs:488-491 */
+enum DispatchAction { Reply(VmReply), Suspend, NoReply }   /* vm_server.rs:721-724 */
 
-struct VmReplyForIpc { /* :522 */ }                          /* 只含非 Suspend 载荷 */
+struct VmReplyForIpc { /* :755 */ }                          /* 只含非 Suspend 载荷 */
 impl VmReplyForIpc {
-    fn new(reply: VmReply) -> Option<Self> {                 /* :530 */
+    fn new(reply: VmReply) -> Option<Self> {                 /* :763 */
         match reply { VmReply::Suspend => None, other => Some(..) }
     }
 }
 ```
 
-`reply_to_errno`（:1049）对 `VmReply::Suspend` 有 `unreachable!` 臂 + 修复提示——如果未来重构把 Suspend 误路由进回复路径，panic 信息直接指出"dispatch_on_msg 应转成 DispatchAction::Suspend"，而不是晦涩的断言。
+`reply_to_errno`（:1233）对 `VmReply::Suspend` 有 `unreachable!` 臂 + 修复提示——如果未来重构把 Suspend 误路由进回复路径，panic 信息直接指出"dispatch_on_msg 应转成 DispatchAction::Suspend"，而不是晦涩的断言。
 
-### 3.3 D3：IpcTransport 策略 trait（transport.rs:90-96）
+### 3.3 D3：IpcTransport 策略 trait（transport.rs:117-131）
 
 **C 方案**：`sef_receive_status(ANY)` / `ipc_send()` 自由函数，链接 `libsys.a` 时绑定内核 IPC。
 
-**Rust 方案**：trait + 两个 impl：
+**Rust 方案**：trait + 两个 impl，由 `VmServer` 以 `Rc<RefCell<Box<dyn IpcTransport>>>` 持有（V10-P0-2，替代旧版进程全局 `IPC_TRANSPORT_PTR: AtomicPtr` + `Box::into_raw` 泄漏路径）：
 
 | Impl | 用途 | 现状 |
 |------|------|------|
-| `KernelIpcTransport`（:113） | 生产 | `receive`/`send` 主体 `unimplemented!("wiring pending kernel IPC core")`——内核 IPC 原语未就绪，`initialized` 门控给出清晰错误而非旧版 `Err(())` |
-| `TestIpcTransport`（:178） | `#[cfg(test)]` | 队列式 mock：`queue_receive` 预置消息、`sent` 记录每次 `send`——单测可驱动主循环 |
+| `KernelIpcTransport`（:147） | 生产 | `receive`/`send` 主体 `unimplemented!("wiring pending kernel IPC core")`——内核 IPC 原语未就绪；`initialized` 门控（`mark_initialized` 置位，:167）给出清晰错误而非旧版 `Err(())` |
+| `TestIpcTransport`（:215） | `#[cfg(test)]` | 队列式 mock：`queue_receive` 预置消息 + `IpcStatus`、`sent` 记录每次 `send`、`should_fail` 强制失败；`TestTransportHandle`（:269）在 transport 移入 `VmServer` 后继续持有共享状态 |
 
-选择器 `ipc_transport_for_build()`（:243）按 `cfg(test)` 返回对应实现；`vm_server.rs` 用进程全局 `IPC_TRANSPORT_PTR`（AtomicPtr 惰性初始化，:831-866）持有 trait 对象。
+接线（V10-P0-2）：`VmServer.transport` 字段（vm_server.rs:134-136）由构造器注入——生产 `new_with_boot_params` → `kernel_transport()`（vm_server.rs:173）创建共享 `KernelIpcTransport`；测试 `new_for_test`（vm_server.rs:157）注入 `TestIpcTransport`，主循环经 `self.transport.borrow_mut().receive()/send()` 走 trait 对象（`run_once` vm_server.rs:623）。`mark_initialized`（trait 默认 no-op，transport.rs:131）在 `init()` 调用（vm_server.rs:413）——对应 C `__minix_init`（main.c:480）的"IPC 就绪"门控（01 篇 §3.3）。
 
-### 3.4 D4：五优先级 dispatch_on_msg（vm_server.rs:553-641）
+### 3.4 D4：五优先级 dispatch_on_msg（vm_server.rs:786-886）
 
 `run()` 循环体把 C 的 if-else 链（main.c:137-176）提炼成 `dispatch_on_msg`：
 
@@ -368,11 +370,11 @@ impl VmReplyForIpc {
 |---------|----------|---------|
 | P1 VFS transid | `source == VFS_PROC_NR && is_vfs_fs_transid(m_type)` → `handle_vfs_transid` | 校验 clean_type==VM_PROCCTL + transid≠0（C 无显式校验，直接 do_procctl） |
 | P2 RS_INIT | `m_type == RS_INIT && source == RS_PROC_NR` → `rs_handshake()` + `DispatchAction::Suspend` | `rs_handshake` 复刻 `sef_cb_init_fresh`（rproctab + map_service），SEF 框架 DEFERRED（A-8） |
-| P3 VM_PAGEFAULT | `debug_assert!(is_from_kernel)` + `dispatch_pagefault` + `NoReply` | 生产用 debug_assert（C 是运行时告警） |
+| P3 VM_PAGEFAULT | `debug_assert!(rcv_sts.is_from_kernel())` + `dispatch_pagefault` + `NoReply` | 生产用 debug_assert（C 是运行时告警）；失败结果计数 + `audit_log!`（V9-P1-1，vm_server.rs:819-829），不再静默丢弃 |
 | P4 正常调用 | `callnr()` → `acl_check` → `dispatch_by_number` | ACL 拒绝 → 回复 ENOSYS（保持 C result 初值语义） |
 | P5 兜底 | `DispatchAction::Reply(NotImplemented)` | = ENOSYS |
 
-### 3.5 D5：VFS 回调延迟执行（dispatcher.rs:66-96）
+### 3.5 D5：VFS 回调延迟执行（dispatcher.rs:60-96）
 
 **C 方案**：`do_vfs_reply`（vfs.c:109）内联调用 `req_callback`。
 
@@ -380,7 +382,7 @@ impl VmReplyForIpc {
 
 ```rust
 if let Some((callback, reply, state)) = result.vfs_callback {
-    let _ = callback(self, &reply, &state);     /* vm_server.rs:631-633 */
+    let _ = callback(self, &reply, &state);     /* vm_server.rs:873-875 */
 }
 ```
 
@@ -388,12 +390,13 @@ if let Some((callback, reply, state)) = result.vfs_callback {
 
 ### 3.6 D6：acl_check 接线 + ENOSYS 语义保持
 
-调用点（vm_server.rs:589-621）：
+调用点（vm_server.rs:844-863）：
 
 ```rust
 if let Some(proc) = table.get_active(caller_slot) {
     if proc.acl_check(c as u32).is_err() {
-        /* 审计通道：cfg(test) 或 feature vm_acl_audit 时 eprintln! */
+        /* audit_log!：test → eprintln；vm_acl_audit → no_std sink；release → 编译消除（lib.rs:40-54） */
+        audit_log!("[VM ACL] denied: call=0x{:x} source={:?} …", c, source);
         return DispatchAction::Reply(VmReply::Error(VmError::NotImplemented));
     }
 }
@@ -407,61 +410,100 @@ if let Some(proc) = table.get_active(caller_slot) {
 
 | # | C 行为 | Rust 行为 | 性质 |
 |---|--------|----------|------|
-| 1 | `RS_INIT` = 0x714（com.h:478） | 修复前 `const RS_INIT = 0x606`（vm_server.rs:973）——优先级 2 永不匹配 | **本轮 P0 修复**（0x606→0x714，cargo check 通过，0x606 残留 0） |
+| 1 | `RS_INIT` = 0x714（com.h:478） | 修复前 `const RS_INIT = 0x606`（vm_server.rs:973）——优先级 2 永不匹配 | **P0 修复**（0x606→0x714，现 const 在 vm_server.rs:1157，0x606 残留 0） |
 | 2 | SEF 框架（sef_local_startup/sef_startup） | `rs_handshake()` 直接复刻 sef_cb_init_fresh 两步；SEF 生命周期 DEFERRED | A-8 缺口契约 |
-| 3 | `is_ipc_notify(rcv_sts)` 读状态字 | 桩函数恒 false（vm_server.rs:884）——状态字未接 kernel IPC | 待 kernel IPC core |
-| 4 | `IPC_FLG_MSG_FROM_KERNEL` 运行时校验 + 告警 | `debug_assert!(is_from_kernel)`（恒 true 桩） | 生产路径未达（KernelIpcTransport unimplemented） |
+| 3 | `is_ipc_notify(rcv_sts)` 读状态字 | `IpcStatus::is_notify()`（transport.rs:58）按 `IPC_STATUS_CALL == NOTIFY` 解析；主循环在 endpoint 校验前跳过通知（vm_server.rs:639） | **V10-P1-1 修复**（2026-08-16）：`flags` 真实来源仍待 kernel IPC，但解析语义已与 C 位定义一致 |
+| 4 | `IPC_FLG_MSG_FROM_KERNEL` 运行时校验 + 告警 | `rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16；`IpcStatus::default()` 下恒 false（不再是恒 true 桩） | 生产路径未达（KernelIpcTransport unimplemented） |
 | 5 | `do_procctl(&msg, transid)` 直接调 | `handle_vfs_transid` 显式校验 clean_type/transid 后调 `dispatch_procctl` | 防御增强 |
 | 6 | VFS 回复内联回调 | 回调延迟到主循环借用边界执行 | borrow checker 驱动，语义等价 |
-| 7 | `vm_calls[c].vmc_name` 告警字符串 | 审计通道 eprintln!（feature-gated） | 等 syslog IPC |
+| 7 | `vm_calls[c].vmc_name` 告警字符串 | `audit_log!` 宏（lib.rs:40-54）：test → `std::eprintln!`；`vm_acl_audit` feature → `audit::emit`（no_std sink，格式化后丢弃，audit.rs）；release 无 feature → 编译消除 | 等 syslog IPC（V10-P0-1 接线点已明确） |
 | 8 | `msg.m_type = result` 单一编码 | `reply_to_errno` + `encode_reply_data` 分离（errno 与载荷） | 类型化编码，载荷字段显式 |
+| 9 | receive 失败 / 未知 endpoint → `panic`（main.c:122-123/:131-132） | 丢弃消息 + `dropped_messages` 饱和计数 + 审计（不 panic，主循环继续） | **A-14 架构演进**（V9-P0-1，2026-08-16 修复） |
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 run() 主循环（vm_server.rs:423-481）
+### 4.1 run() / run_once() 主循环（vm_server.rs:588-721）
+
+`run()` 不再内联单次迭代——每轮工作拆到 `run_once() -> RunStep`（vm_server.rs:623-715，V10-P0-2），测试可用 mock transport 逐轮驱动主循环：
 
 ```rust
 pub fn run(&mut self) -> ! {
     assert!(self.initialized, "VmServer::run() called before init()");
+    let mut consecutive_recv_failures: u32 = 0;
     loop {
         // C: if(missing_spares > 0) alloc_cycle();
         if self.missing_spares > 0 { self.alloc_cycle(); }
-
-        // C: sef_receive_status(ANY, &msg, &rcv_sts)
-        let (msg, rcv_sts) = match ipc_receive() { Ok(v) => v, Err(_) => panic!(..) };
-
-        // C: if(is_ipc_notify(rcv_sts)) { continue; }
-        if is_ipc_notify(&rcv_sts) { continue; }
-
-        // C: who_e = msg.m_source; vm_isokendpt(who_e, &caller_slot);
-        let caller_slot = match VmProcTable::get_global().vm_isokendpt(msg.m_source) {
-            Ok(slot) => slot, Err(_) => panic!("invalid caller {:?}", msg.m_source),
-        };
-
-        let action = self.dispatch_on_msg(&msg, &rcv_sts, caller_slot);
-
-        match action {
-            DispatchAction::Reply(reply) => {
-                let reply_for_ipc = VmReplyForIpc::new(reply)
-                    .expect("DispatchAction::Reply carries VmReply::Suspend; …");
-                let code = reply_to_errno(reply_for_ipc.payload());
-                let mut reply_msg = msg.clone();
-                reply_msg.m_type = code;
-                encode_reply_data(reply_for_ipc.into_payload(), &mut reply_msg);
-                ipc_send(who_e, &reply_msg).unwrap_or_else(|_| panic!("ipc_send() failed"));
+        match self.run_once() {
+            RunStep::Handled => consecutive_recv_failures = 0,
+            RunStep::ReceiveFailed => {
+                // C: sef_receive_status blocks; receive Err = transport 损坏，
+                // 忙等会掩盖故障（V10-P0-2）——连续失败 64 次（MAX_CONSECUTIVE_RECV_FAILURES，:717）即 panic。
+                consecutive_recv_failures = consecutive_recv_failures.saturating_add(1);
+                if consecutive_recv_failures >= MAX_CONSECUTIVE_RECV_FAILURES {
+                    panic!("IPC transport permanently broken: …");
+                }
             }
-            DispatchAction::Suspend => {}
-            DispatchAction::NoReply => {}
         }
     }
+}
+
+fn run_once(&mut self) -> RunStep {
+    // C: sef_receive_status(ANY, &msg, &rcv_sts)
+    let (msg, rcv_sts) = match self.transport.borrow_mut().receive() {
+        Ok(v) => v,
+        // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
+        // user-space server must survive bad IPC — drop + audit.
+        Err(_) => {
+            self.dropped_messages = self.dropped_messages.saturating_add(1);
+            audit_log!("[VM IPC] ipc_receive() failed — message dropped");
+            return RunStep::ReceiveFailed;
+        }
+    };
+
+    // C: if(is_ipc_notify(rcv_sts)) { continue; }
+    if rcv_sts.is_notify() { return RunStep::Handled; }
+
+    // C: who_e = msg.m_source; vm_isokendpt(who_e, &caller_slot);
+    let who_e = msg.m_source;
+    let caller_slot = match VmProcTable::get_global().vm_isokendpt(who_e) {
+        Ok(slot) => slot,
+        // [ARCH: A-14] V9-P0-1: C panics (main.c:131-132); the
+        // caller cannot be serviced either way, but VM must not
+        // die with it — drop + audit.
+        Err(_) => {
+            self.dropped_messages = self.dropped_messages.saturating_add(1);
+            audit_log!("[VM IPC] invalid caller {:?} — message dropped", who_e);
+            return RunStep::Handled;
+        }
+    };
+
+    let action = self.dispatch_on_msg(&msg, &rcv_sts, caller_slot);
+
+    match action {
+        DispatchAction::Reply(reply) => {
+            let reply_for_ipc = VmReplyForIpc::new(reply)
+                .expect("DispatchAction::Reply carries VmReply::Suspend; …");
+            let code = reply_to_errno(reply_for_ipc.payload());
+            let mut reply_msg = msg;
+            reply_msg.m_type = code;
+            encode_reply_data(reply_for_ipc.into_payload(), &mut reply_msg);
+            self.transport.borrow_mut().send(who_e, &reply_msg)
+                .unwrap_or_else(|_| panic!("ipc_send() failed"));
+        }
+        DispatchAction::Suspend => {}
+        DispatchAction::NoReply => {}
+    }
+    RunStep::Handled
 }
 ```
 
 与 C 主循环逐句对应：alloc_cycle 钩子（main.c:118-120）、收消息（:122-123）、通知过滤（:125-129）、caller 验证（:130-132）、五优先级（:137-176）、SUSPEND 抑制回复（:178-191）。**回复编码两段式**：`reply_to_errno` 决定 `m_type`（errno），`encode_reply_data` 填载荷字段（C 的 handler 直接写 `msg` 字段）。
 
-### 4.2 dispatch_on_msg 五优先级（vm_server.rs:553-641）
+**与 C 的边界差异（[ARCH: A-14] V9-P0-1）**：C 在收消息失败（:122-123）与未知 endpoint（:131-132）两处直接 `panic`——VM 是系统唯一内存管理服务器，panic 意味着全系统内存管理停摆，且页表/refcount/region 状态不可恢复。Rust 改为**丢弃消息 + `dropped_messages` 饱和计数 + `audit_log!` 审计**（test → eprintln、`vm_acl_audit` → no_std sink、release 无 feature → 编译消除，见 §3.7 #7），主循环继续。外部可观察行为不变——该 caller 本就无法得到服务；`ipc_send` 失败仍 panic（回复丢失 = 调用者永久挂起，A-14 只覆盖输入边界）。另一个 C 没有的边界：transport 本身损坏（连续 64 次 receive 失败）时 `run()` panic 而非空转烧 CPU（`test_run_busy_loop_protection`，vm_server.rs:1849）。
+
+### 4.2 dispatch_on_msg 五优先级（vm_server.rs:786-886）
 
 ```rust
 fn dispatch_on_msg(&mut self, msg: &Message, rcv_sts: &IpcStatus,
@@ -480,8 +522,13 @@ fn dispatch_on_msg(&mut self, msg: &Message, rcv_sts: &IpcStatus,
     }
     // P3: VM_PAGEFAULT（main.c:153-164）
     if m_type == VM_PAGEFAULT {
-        debug_assert!(is_from_kernel(rcv_sts), "faked VM_PAGEFAULT from {:?}", source);
-        let _ = self.dispatch_pagefault(msg);
+        debug_assert!(rcv_sts.is_from_kernel(), "faked VM_PAGEFAULT from {:?}", source);
+        let reply = self.dispatch_pagefault(msg);
+        // V9-P1-1: 失败不再静默丢弃——计数 + audit_log!（vm_server.rs:819-829）
+        if let VmReply::Error(e) = reply {
+            self.pagefault_errors = self.pagefault_errors.saturating_add(1);
+            audit_log!("[VM PF] pagefault failed: err={:?} …", e, source);
+        }
         return DispatchAction::NoReply;
     }
     // P4: 正常调用（main.c:165-176）
@@ -500,16 +547,16 @@ fn dispatch_on_msg(&mut self, msg: &Message, rcv_sts: &IpcStatus,
 }
 ```
 
-transid 辅助函数（vm_server.rs:901-930）逐字复刻 C 宏：
+transid 辅助函数（vm_server.rs:1081-1110）逐字复刻 C 宏：
 
 | Rust | C | 语义 |
 |------|---|------|
-| `is_vfs_fs_transid` :887 | `IS_VFS_FS_TRANSID` | `(m_type & !0xFF) == 0xB00` |
-| `transid_extract` :899 | `TRNS_GET_ID` | `m_type & 0xFFFF` |
-| `transid_strip` :909 | `TRNS_DEL_ID` | `((m_type >> 16) as i16) as u32`（符号扩展保留） |
-| `callnr` :984 | `CALLNUMBER` | `checked_sub(VM_RQ_BASE)` + `< NR_VM_CALLS` |
+| `is_vfs_fs_transid` :1081 | `IS_VFS_FS_TRANSID` | `(m_type & !0xFF) == 0xB00` |
+| `transid_extract` :1091 | `TRNS_GET_ID` | `m_type & 0xFFFF` |
+| `transid_strip` :1102 | `TRNS_DEL_ID` | `((m_type >> 16) as i16) as u32`（符号扩展保留） |
+| `callnr` :1168 | `CALLNUMBER` | `checked_sub(VM_RQ_BASE)` + `< NR_VM_CALLS` |
 
-### 4.3 handle_vfs_transid（vm_server.rs:688-741）
+### 4.3 handle_vfs_transid（vm_server.rs:931-984）
 
 ```rust
 fn handle_vfs_transid(&mut self, clean_type: u32, transid: i32, msg: &Message) -> VmReply {
@@ -521,9 +568,9 @@ fn handle_vfs_transid(&mut self, clean_type: u32, transid: i32, msg: &Message) -
 }
 ```
 
-C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispatch_procctl**"：clean_type 必须 VM_PROCCTL（C 隐式约定：只有 procctl 走 transid 路径）、transid 非零（对应 C main.c:135 断言）。`dispatch_procctl` 本体（dispatcher.rs:213-290）按 VMPPARAM_CLEAR/HANDLEMEM 分发（22 详述）。
+C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispatch_procctl**"：clean_type 必须 VM_PROCCTL（C 隐式约定：只有 procctl 走 transid 路径）、transid 非零（对应 C main.c:135 断言）。`dispatch_procctl` 本体（dispatcher.rs:219-280）按 VMPPARAM_CLEAR/HANDLEMEM 分发（22 详述）。
 
-### 4.4 dispatch_by_number 全分支（dispatcher.rs:1011-1188）
+### 4.4 dispatch_by_number 全分支（dispatcher.rs:1032-1232）
 
 `dispatch_by_number` 用 `server.parts_mut()` 一次性取出四个可变组件，逐分支 decode 后委托：
 
@@ -551,16 +598,20 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 ### 4.5 特殊路径：exec_newmem 与 pagefault 不进 dispatch_by_number
 
-- **`VM_EXEC_NEWMEM`**：`dispatch_by_number` **无**该分支——请求落到 `_` 兜底返回 NotImplemented（fail-closed）。`dispatch_exec_newmem`（dispatcher.rs:845）是**孤儿 stub**：架构注释（dispatcher.rs:805-846）说明真实 handler 未来应放 `VmServer` 层（exec-newmem 需要 `&mut self` 全组件访问、跨进程态），接线方案（dispatch_by_number 分支 vs 主循环截获）待定。
-- **`VM_PAGEFAULT`**：`callnr()` 对 `0xCFF` 返回 None（越界），根本进不了 dispatch_by_number——P3 分支先截获。`dispatch_pagefault`（vm_server.rs:742-797）在 `VmServer` 层持有 `&mut self`，委托 `cow_exec_pf::handle_pagefault`（16 详述）。
+- **`VM_EXEC_NEWMEM`**：`dispatch_by_number` **无**该分支——请求落到 `_` 兜底返回 NotImplemented（fail-closed）。`dispatch_exec_newmem`（dispatcher.rs:821）是**孤儿 stub**（V10-P2-1 DEAD/DEFERRED 标注）：架构注释说明真实 handler 未来应放 `VmServer` 层（exec-newmem 需要 `&mut self` 全组件访问、跨进程态），接线方案（dispatch_by_number 分支 vs 主循环截获）待定。
+- **`VM_PAGEFAULT`**：`callnr()` 对 `0xCFF` 返回 None（越界，`const VM_PAGEFAULT: u32 = 0xCFF` 在 vm_server.rs:1158），根本进不了 dispatch_by_number——P3 分支先截获。`dispatch_pagefault`（vm_server.rs:986-1057）在 `VmServer` 层持有 `&mut self`，委托 `cow_exec_pf::handle_pagefault`（16 详述）。
 
-### 4.6 reply 编码（vm_server.rs:1049-1140）
+### 4.6 reply 编码（vm_server.rs:1233-1420）
 
 `reply_to_errno` 全变体显式列出的原因：**新增 VmReply 变体必须在此处补编码分支，否则编译错误**。`VmError::to_errno()`（minix-types vm.rs:610-628）做 errno 映射（EINVAL/ESRCH/ENOMEM/EFAULT/EPERM/EACCES/EIO/ENOSYS/ENOENT）。`encode_reply_data` 对每个带载荷变体写 M1 字段（fork 子进程 endpoint、brk 新地址、mmap 地址、Info* 统计等）。
 
-### 4.7 IpcTransport 接线（vm_server.rs:825-895）
+### 4.7 IpcTransport 接线（vm_server.rs:134-186 / 588-721，V10-P0-2）
 
-进程全局 `IPC_TRANSPORT_PTR: AtomicPtr<KernelIpcTransport>` 惰性初始化一次，转换为 trait 对象；`ipc_receive`/`ipc_send` 是薄包装。测试侧 `TestIpcTransport` 记录 `sent` 列表，单测可断言主循环"回给谁、回了什么"。
+transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（vm_server.rs:134-136），**构造器注入**（V9-P1-2 的落地）：
+
+- **生产**：`new_with_boot_params`（vm_server.rs:149）→ `kernel_transport()`（vm_server.rs:168）创建共享 `KernelIpcTransport`；`init()` 调用 `mark_initialized`（vm_server.rs:413，对应 C `__minix_init` main.c:480）。
+- **测试**：`new_for_test`（vm_server.rs:157）注入 `TestIpcTransport`；测试保留 `TestTransportHandle`（transport.rs:269）驱动 `queue_receive` / 检查 `sent`——主循环走真实的 `run_once` → `dispatch_on_msg` → `send` 全路径（V10-P0-2，§5.1）。
+- 旧的进程全局 `IPC_TRANSPORT_PTR: AtomicPtr` + `Box::into_raw` 泄漏路径与自由函数 `ipc_receive`/`ipc_send` 包装已删除；`transport()`/`ipc_transport_for_build()` 选择器不再存在。
 
 ---
 
@@ -568,7 +619,7 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 ### 5.1 单元测试清单（grep 实证，2026-08-16）
 
-**dispatcher.rs**（26 个）：
+**dispatcher.rs**（29 个，含 V10-P1-2 pin 测试）：
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
@@ -583,28 +634,35 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 | test_dispatch_forgetcache_rejects_zero_pages / unaligned_offset / valid_input | :1756/:1775/:1794 | forgetcache 校验 |
 | test_dispatch_setcache_rejects_zero_pages / zero_dev_and_ino / unaligned_dev_offset / invalid_caller | :1815/:1835/:1855/:1875 | setcache 校验 |
 | test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :1898/:1919/:1940/:1962 | mapcache 校验 + ENOENT |
+| test_dispatch_rs_update_pins_not_implemented | :1561 | **V10-P1-2**：`dispatch_rs_update` 恒 `Error(NotImplemented)`（live-update 骨架 pin，落地时翻转） |
 
-**transport.rs**（6 个）：
-
-| 测试 | 位置 | 契约 |
-|------|------|------|
-| kernel_transport_uninitialized_returns_unimplemented | :260 | 未初始化 → Unimplemented |
-| kernel_transport_send_to_none_is_invalid | :269 | NONE endpoint → InvalidEndpoint |
-| test_transport_empty_returns_unimplemented | :278 | 空队列 → Unimplemented |
-| test_transport_queue_then_receive | :285 | 队列预置 + 取空 |
-| test_transport_send_is_recorded | :299 | sent 记录 |
-| test_transport_should_fail_flag | :313 | should_fail 强制失败 |
-
-**vm_server.rs**（主循环/transid 相关 7 个 + 生命周期）：
+**transport.rs**（7 个，含 V10-P1-1 状态位测试）：
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_is_vfs_fs_transid_valid / invalid | :1454/:1464 | 0xB00 区间判定 |
-| test_transid_extract | :1473 | TRNS_GET_ID 等价 |
-| test_transid_strip | :1482 | TRNS_DEL_ID 等价（含符号扩展） |
-| test_handle_vfs_transid_wrong_clean_type / zero_transid / invalid_endpoint | :1496/:1509/:1522 | P1 路径前置校验 |
-| test_vm_server_run_without_init | :1342 | run() 前必须 init |
-| test_missing_spares_pressure_counter | :1350 | alloc_cycle 压力钩子 |
+| ipc_status_call_bits_match_minix3 | :325 | **V10-P1-1**：`is_notify`/`is_from_kernel` 与 C `IPC_STATUS_*` 位定义逐位对齐（NOTIFY=4、bit 16） |
+| kernel_transport_uninitialized_returns_unimplemented | :341 | 未初始化 → Unimplemented |
+| kernel_transport_send_to_none_is_invalid | :350 | NONE endpoint → InvalidEndpoint |
+| test_transport_empty_returns_unimplemented | :359 | 空队列 → Unimplemented |
+| test_transport_queue_then_receive | :366 | 队列预置（含 IpcStatus）+ 取空 |
+| test_transport_send_is_recorded | :380 | sent 记录 |
+| test_transport_should_fail_flag | :394 | should_fail 强制失败 |
+
+**vm_server.rs**（主循环/transid 相关 15 个 + 生命周期，V10-P0-2 新增端到端驱动）：
+
+| 测试 | 位置 | 契约 |
+|------|------|------|
+| test_vm_server_run_without_init | :1661 | run() 前必须 init |
+| test_run_once_dispatch_reply_round | :1672 | **V10-P0-2**：TestTransportHandle 预置 VM_INFO 请求 → `run_once` 全路径 → 断言 reply 经 `send` 记录 |
+| test_run_once_notify_skipped_before_dispatch | :1735 | **V10-P1-1**：NOTIFY 状态消息在 dispatch 前跳过（不产生 reply） |
+| test_run_once_receive_failure_counts | :1770 | receive 失败 → `dropped_messages` 计数 + `RunStep::ReceiveFailed` |
+| test_run_busy_loop_protection | :1849 | **V10-P0-2**：连续 64 次 receive 失败 → `run()` panic（不忙等） |
+| test_missing_spares_pressure_counter | :1879 | alloc_cycle 压力钩子 |
+| test_pagefault_errors_counted | :2059 | P3 失败 → `pagefault_errors == 1`（V9-P1-1） |
+| test_is_vfs_fs_transid_valid / invalid | :2108/:2118 | 0xB00 区间判定 |
+| test_transid_extract | :2127 | TRNS_GET_ID 等价 |
+| test_transid_strip | :2136 | TRNS_DEL_ID 等价（含符号扩展） |
+| test_handle_vfs_transid_wrong_clean_type / zero_transid / invalid_endpoint | :2150/:2163/:2176 | P1 路径前置校验 |
 
 ### 5.2 覆盖维度
 
@@ -618,23 +676,24 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| dispatch_on_msg 五优先级直接单测 | ⚠️ 缺失 | run()/dispatch_on_msg 无端到端测试——TestIpcTransport 已就绪（transport.rs:178）但未接线驱动主循环（04-P2-10 backlog：分发拒绝回复端到端） |
-| RS_INIT 分支测试 | ⚠️ 缺失 | rs_handshake 依赖 ipc_call_rs_init 桩（vm_server.rs:932/:965 返回 RprocTab::empty()），无消息级测试 |
-| VM_PAGEFAULT 分支测试 | ⚠️ 缺失 | is_from_kernel 桩恒 true（vm_server.rs:889），真实状态字未接 kernel IPC |
-| is_ipc_notify 桩 | ⚠️ 缺失 | 恒 false（vm_server.rs:884），等 kernel IPC 状态字；TestIpcTransport 可带 IpcStatus 但主循环未消费 |
+| dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（vm_server.rs:1672）经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1770）覆盖丢弃路径；`test_pagefault_errors_counted`（:2059）覆盖 P3 失败路径 |
+| RS_INIT 分支测试 | ⚠️ 缺失 | rs_handshake 依赖 ipc_call_rs_init 桩（vm_server.rs:1112 返回 RprocTab::empty()），无消息级测试 |
+| VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2059）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
+| is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（vm_server.rs:1735）——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
 | acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（acl.rs:200+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |
 | DMA 三请求 | ⚠️ 显式排除 | dispatch_by_number `_` 兜底 NotImplemented；C 有 do_adddma 等（DMA 表 DEFERRED） |
 | VFS transid 编码端到端 | ⚠️ 缺失 | TRNS_ADD_ID 编码（VFS 侧）不在 VM 测试范围；仅单向 GET/STRIP 解码 |
 
-### 5.4 测试统计（截至 2026-08-16）
+### 5.4 测试统计（截至 2026-08-17）
 
 ```
 $ cd os && cargo test -p minix-vm --lib
-→ 360 passed / 1 failed（test_map_lazy pre-existing，13 范围，§5.3 已标注）
-$ cargo test -p minix-vm --lib ipc::dispatcher → 26 passed
-$ cargo test -p minix-vm --lib ipc::transport → 6 passed
-$ cargo test -p minix-vm --lib vm_server → 21 passed（含 transid/生命周期）
-$ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error）
+→ 441 passed / 0 failed（2026-08-17：V10-P0-2 端到端驱动 + V10-P1-1 状态位/通知跳过 后）
+$ cargo test -p minix-vm --lib ipc::dispatcher → 29 passed
+$ cargo test -p minix-vm --lib ipc::transport → 7 passed
+$ cargo test -p minix-vm --lib vm_server → 34 passed（含 transid/生命周期 + 主循环端到端）
+$ cargo clippy -p minix-vm --lib → 0 warnings（V10-P2-1 收敛后）
+$ cargo check -p minix-vm → Finished（无 error）
 ```
 
 ---

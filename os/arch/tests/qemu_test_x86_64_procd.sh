@@ -5,8 +5,9 @@
 # 1. init_proc_and_boot() executes without panic
 # 2. ProcessTable is initialized with SLOT_FREE for all slots
 # 3. VM process gets ELF loaded (pc != 0)
-# 4. init_post_and_memory() sets ptproc correctly
-# 5. Free PDE slots are allocated for cross-space access
+# 4. init_post_and_memory() asserts VM page-table root valid + Direct Map
+#    base configured, and installs VM as kernel-level ptproc
+# 5. (No free PDE slots — freepdes is superseded by Direct Map)
 #
 # Exit codes:
 #   0 = PASS (all checkpoints reached)

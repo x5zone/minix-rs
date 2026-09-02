@@ -90,6 +90,7 @@ impl VmProc {
     ///
     /// This creates a vacant slot and sets the vm_slot field.
     /// The vm_pt and vm_regions remain uninitialized.
+    #[allow(dead_code)] // V10-P2-1: no callers (table uses vacant() + explicit slot set)
     pub(crate) const fn vacant_with_slot(vm_slot: UserSlot) -> Self {
         let mut proc = Self::vacant();
         proc.vm_slot = vm_slot;
@@ -98,18 +99,21 @@ impl VmProc {
 
     /// Checks if the process is in use.
     #[inline]
+    #[allow(dead_code)] // V10-P2-1: typestate views replace raw flag reads
     pub(crate) fn is_in_use(&self) -> bool {
         self.vm_flags.contains(VmFlags::IN_USE)
     }
 
     /// Checks if the process is exiting.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn is_exiting(&self) -> bool {
         self.vm_flags.contains(VmFlags::EXITING)
     }
 
     /// Checks if this is a VM instance.
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only today
     pub(crate) fn is_vm_instance(&self) -> bool {
         self.vm_flags.contains(VmFlags::VM_INSTANCE)
     }
@@ -128,6 +132,7 @@ impl VmProc {
 
     /// Debug invariant check (runtime assertion).
     #[cfg(debug_assertions)]
+    #[allow(dead_code)] // V10-P2-1: no caller yet (candidate for table slot transitions)
     pub(crate) fn check(&self) {
         if self.vm_flags.contains(VmFlags::IN_USE) {
             debug_assert!(

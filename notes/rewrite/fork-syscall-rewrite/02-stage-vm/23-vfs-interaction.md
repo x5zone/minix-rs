@@ -296,7 +296,14 @@ ev_pagefault（决策）                    handle_pagefault（执行）
 
 **根因**（§2.2）：`VM_VFS_REPLY` 是 `mess_10` 布局（com.h:707-714 + ipc.h:85-91），旧 Rust 用 `MessageM1::decode(m1)` 解码，所有字段偏移 8 字节错位——22-P0-1/21-P1-1/19-P1-1/16-P0-1 同族（每个都用错 overlay 解过 m10 消息）。
 
-**修复**：`MessVmVfsReply`（repr(C)，message.rs:1874-1896）：`ull1:u64@0` / `endpoint:i32@8` / `result:i32@12` / `reqid:i32@16` / `dev:i32@20` / `ino:u32@24` / `fd:u32@28` / `size_pages:u32@32` / `_padding:[u8;20]`；`MessageUnion.m_vm_vfs_reply`（message.rs:150）；`VmVfsReplyIn::decode_message`（vm.rs:586）从 overlay 读取；删除错误的 `DecodeFromM1` impl。dispatcher 的 VM_VFS_REPLY 分支改走 `decode_message`（ipc/dispatcher.rs:1187-1193），`dispatch_vfs_reply` 把 `request.ino` 传入 `VfsReply.ino`（原来是硬编码 0——`mmap_file_cont` 的 fdref dedup 需要 ino，mmap.rs:583）。
+**修复**：`MessVmVfsReply`（repr(C)，message.rs:1869-1891）：`ull1:u64@0` / `endpoint:i32@8` / `result:i32@12` / `reqid:i32@16` / `dev:i32@20` / `ino:u32@24` / `fd:u32@28` / `size_pages:u32@32` / `_padding:[u8;20]`；`MessageUnion.m_vm_vfs_reply`（message.rs:153）；`VmVfsReplyIn::decode_message`（vm.rs:586）从 overlay 读取；删除错误的 `DecodeFromM1` impl。dispatcher 的 VM_VFS_REPLY 分支改走 `decode_message`（ipc/dispatcher.rs:1187-1193），`dispatch_vfs_reply` 把 `request.ino` 传入 `VfsReply.ino`（原来是硬编码 0——`mmap_file_cont` 的 fdref dedup 需要 ino，mmap.rs:583）。
+
+> **关联架构决策（V10-P2-9，2026-09-02，本轮回退）**：**初版**曾把 `VmReply::InfoRegion.regions` 改为 `Box<[VmRegionInfo; 64]>`（heap 分配），导致整个 enum 失去 `Copy`（`Copy` 与 `Box` 不兼容）；**终版（回退）** 恢复 inline 数组 `[VmRegionInfo; 64]`（栈上 1.5 KiB，远小于 cache line × 数十倍，单线程 dispatcher 完全 hold 得住），`VmReply` 重新 `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`。决策依据：
+> 1. **`Copy` 是调用方的强信号**——所有 14 处现状用法是 by-move，保留 `Copy` 让"是否真的要复制"留给类型系统（`&VmReply` 借 vs `VmReply` move 一目了然）；改 `Clone` 会让一处 silent clone 撑大 enum；
+> 2. **inline 比 Box 快**——`VmRegionInfo` 自身 `Copy`，64 × 24B = 1536B 是 SIMD 友好的连续 mem-copy；`Box` 的 alloc+memcpy+refcount 路径反而更慢且引入 `extern crate alloc` 依赖；
+> 3. **`#[allow(clippy::large_enum_variant)]` 已标在所有 `Copy`-by-value 使用点**（`DispatchAction` 在 vm_server.rs:719-729）——silence ~1.5 KiB "large variant" lint，不掩盖真实成本。
+>
+> 详见 [26-vm-queries.md §3.7 transport 缺口](../02-stage-vm/26-vm-queries.md)。`VmReplyForIpc::new(reply: VmReply)` 不受影响（依然 take-by-value；`Copy` 反而让边界检查更廉价）。
 
 **为什么 ino 必须进 reply**：`mmap_file_cont` → `mmap_file` → `dedup_or_new(fd, dev, ino, ...)` 的复用判断靠 (dev, ino)（§2.3）。ino 错位为 0 会导致 dedup 全部失效（每次 mmap 都新建 fdref + FDCLOSE 风暴）。
 
@@ -378,7 +385,7 @@ handle_mmap（mmap.rs:268）
 **文件页缺页路径**（对照 C do_pagefaults → mappedfile_pagefault → handle_memory_continue）：
 
 ```
-dispatch_pagefault（vm_server.rs:743）
+dispatch_pagefault（vm_server.rs:986）
   └─ handle_pagefault（cow_exec_pf.rs:23）
        ├─ MappedFile::ev_pagefault（memtype.rs:954）
        │    ├─ 缓存命中 → map_page + （写/末页 → NeedCow）
@@ -406,7 +413,7 @@ dispatch_pagefault（vm_server.rs:743）
 | 23-P0-1b | P0 | fdref 语义：删除 `FdRefEntry.may_close`；`deref_entry` refcount==0 无条件返回 `PendingFdClose`（对齐 fdref.c:150-153） |
 | 23-P0-1c | P0 | fdref dedup 语义完整对齐：`dedup_or_new(fd, dev, ino, may_close)` 四态（§3.2），删除旧 `create` 的 may_close 参数 |
 | 23-P1-1 | P1 | `MappedFile::ev_pagefault` 缓存命中路径（find_byino/bydev + increase_refcount + map_page + 写/末页 NeedCow）；`VMC_NO_INODE` 常量（page_cache.rs:25） |
-| 23-P1-2 | P1 | 缺页 FDIO 接线：`handle_pagefault` 增 `cache`/`vfs_queue` 参数；`enqueue_fdio` + `mappedfile_pf_cont`（cow_exec_pf.rs:67/:114）；`dispatch_pagefault` 透传（vm_server.rs:763-766） |
+| 23-P1-2 | P1 | 缺页 FDIO 接线：`handle_pagefault` 增 `cache`/`vfs_queue` 参数；`enqueue_fdio` + `mappedfile_pf_cont`（cow_exec_pf.rs:67/:114）；`dispatch_pagefault` 透传（vm_server.rs:1007-1010） |
 | 23-P2-1 | P2 | 测试：新增 11 个（fdref dedup 5 + memtype mapped 4 + cow_exec_pf 2）；测试总数 395 → 406（§5.4） |
 
 ### 4.4 与 15/16/20/24 的关系
@@ -495,9 +502,9 @@ dispatch_pagefault（vm_server.rs:743）
 
 本文档的机制在主循环的**两个位置**被消费：
 
-1. **P4 分发（普通 VM 调用）**：`handle_mmap` 文件分支入队 FDLOOKUP 后返回 `MmapResult::Suspended` → `DispatchAction::Suspend`（主循环不回复，vm_server.rs:636-637）。
+1. **P4 分发（普通 VM 调用）**：`handle_mmap` 文件分支入队 FDLOOKUP 后返回 `MmapResult::Suspended` → `DispatchAction::Suspend`（主循环不回复，vm_server.rs:786-788）。
 2. **VM_VFS_REPLY 分支（ipc/dispatcher.rs:1187-1193）**：VFS 回复到达 → `dispatch_vfs_reply` → `handle_reply` → 回调（`mmap_file_cont` / `mappedfile_pf_cont`）在主循环执行（vm_server.rs:632-634 `result.vfs_callback`）。
-3. **缺页分支（P3）**：`dispatch_pagefault`（vm_server.rs:743）→ `handle_pagefault` → 文件页未命中 → FDIO 入队 → `DispatchAction::NoReply`（进程保持挂起）。
+3. **缺页分支（P3）**：`dispatch_pagefault`（vm_server.rs:986）→ `handle_pagefault` → 文件页未命中 → FDIO 入队 → `DispatchAction::NoReply`（进程保持挂起）。
 
 即：**请求从 P4/P3 入口入队，回复从 VM_VFS_REPLY 分支消费**——这正是 C 主循环里 `do_vfs_reply` 的位置（main.c:150 附近）。
 

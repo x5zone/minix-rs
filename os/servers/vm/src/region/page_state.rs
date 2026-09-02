@@ -60,6 +60,8 @@ impl PageState {
         self.refcount
     }
 
+    // V10-P2-1: no callers yet (`is_cached` reads the field directly).
+    #[allow(dead_code)]
     pub fn flags(&self) -> PageFlags {
         self.flags
     }
@@ -69,69 +71,163 @@ impl PageState {
     }
 }
 
+/// Per-page mapping slot state machine.
+///
+/// Replaces Minix3's `struct phys_region **physblocks` pointer array
+/// (NULL = unmapped) with an explicit three-state representation:
+///
+/// - `Empty`: no mapping and no reservation — the default state of every slot
+///   in a freshly created region.
+/// - `Reserved`: lazy placeholder — the slot is reserved for a mapping that
+///   will be materialized on demand (anonymous demand paging / CoW
+///   preallocation). Carries `offset` + `memtype` so the placeholder is
+///   self-describing, but has no backing frame yet (`pfn()` is `None`).
+/// - `Mapped`: materialized mapping backed by a physical frame (`pfn`).
+///
+/// The three states are explicit at the type level. The previous design
+/// encoded both `Empty` and `Reserved` as `pfn == PFN_NONE`, which made a
+/// lazy placeholder indistinguishable from an unmapped slot and caused
+/// `get_slot()` to hide reserved slots (todo P0-1, 13-region-mapping §3.6).
 #[derive(Clone, Copy)]
-pub(crate) struct PageSlot {
-    pub(crate) pfn: u32,
-    pub(crate) offset: VirBytes,
-    pub(crate) memtype: Option<&'static dyn MemType>,
+pub(crate) enum PageSlot {
+    Empty,
+    Reserved {
+        offset: VirBytes,
+        memtype: Option<&'static dyn MemType>,
+    },
+    Mapped {
+        pfn: u32,
+        offset: VirBytes,
+        memtype: Option<&'static dyn MemType>,
+    },
 }
-
-pub(crate) const PFN_NONE: u32 = u32::MAX;
 
 impl PartialEq for PageSlot {
     fn eq(&self, other: &Self) -> bool {
-        self.pfn == other.pfn && self.offset == other.offset
+        match (self, other) {
+            (Self::Empty, Self::Empty) => true,
+            (Self::Reserved { offset: a, .. }, Self::Reserved { offset: b, .. }) => a == b,
+            (
+                Self::Mapped {
+                    pfn: a_pfn,
+                    offset: a_off,
+                    ..
+                },
+                Self::Mapped {
+                    pfn: b_pfn,
+                    offset: b_off,
+                    ..
+                },
+            ) => a_pfn == b_pfn && a_off == b_off,
+            _ => false,
+        }
     }
 }
 
 impl Eq for PageSlot {}
 
 impl PageSlot {
-    /// Sentinel value representing an unmapped (empty) page slot.
-    /// Uses `PFN_NONE` as the pfn sentinel, with zero offset and no memtype.
-    /// This avoids the `Option<PageSlot>` overhead (4+ bytes per slot for the
-    /// discriminant) while preserving the same semantics: `is_mapped()` returns
-    /// false for `EMPTY`, true for any real mapping.
-    pub const EMPTY: Self = Self {
-        pfn: PFN_NONE,
-        offset: VirBytes(0),
-        memtype: None,
-    };
-
-    pub fn new(pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType>) -> Self {
-        Self { pfn, offset, memtype }
+    /// Construct a materialized slot backed by physical frame `pfn`.
+    pub fn mapped(pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType>) -> Self {
+        Self::Mapped {
+            pfn,
+            offset,
+            memtype,
+        }
     }
 
-    pub fn pfn(&self) -> u32 {
-        self.pfn
+    /// Construct a lazy placeholder slot (no backing frame yet).
+    ///
+    /// Consumed by `VirRegion::map_lazy()`: reserves the slot for a mapping
+    /// that will be materialized on demand, carrying the region's default
+    /// memtype so materialization knows which policy applies.
+    /// `#[allow(dead_code)]` (ARCH A-13): the lazy family has no production
+    /// caller yet — it is exercised by tests and reserved for the demand
+    /// paging / CoW preallocation path (todo P0-1).
+    #[allow(dead_code)]
+    pub fn reserved(offset: VirBytes, memtype: Option<&'static dyn MemType>) -> Self {
+        Self::Reserved { offset, memtype }
     }
 
+    /// The backing frame of a materialized slot, if any.
+    ///
+    /// `None` for `Empty` and `Reserved` — the state machine guarantees a
+    /// frame exists only for `Mapped`.
+    pub fn pfn(&self) -> Option<u32> {
+        match self {
+            Self::Mapped { pfn, .. } => Some(*pfn),
+            Self::Empty | Self::Reserved { .. } => None,
+        }
+    }
+
+    /// Page offset within the region (0 for `Empty`).
     pub fn offset(&self) -> VirBytes {
-        self.offset
+        match self {
+            Self::Empty => VirBytes(0),
+            Self::Reserved { offset, .. } | Self::Mapped { offset, .. } => *offset,
+        }
     }
 
+    /// The mapping's memtype, if any (`Empty` has none).
     pub fn memtype(&self) -> Option<&'static dyn MemType> {
-        self.memtype
+        match self {
+            Self::Empty => None,
+            Self::Reserved { memtype, .. } | Self::Mapped { memtype, .. } => *memtype,
+        }
     }
 
     pub fn is_mapped(&self) -> bool {
-        self.pfn != PFN_NONE
+        matches!(self, Self::Mapped { .. })
+    }
+
+    #[allow(dead_code)] // ARCH A-13: lazy family, see `reserved()`.
+    pub fn is_reserved(&self) -> bool {
+        matches!(self, Self::Reserved { .. })
+    }
+
+    #[allow(dead_code)] // ARCH A-13: lazy family, used by `get_slot_any()`.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    /// Replace the memtype of a present slot (Mapped or Reserved); no-op on
+    /// `Empty`.
+    pub fn set_memtype(&mut self, memtype: Option<&'static dyn MemType>) {
+        match self {
+            Self::Mapped { memtype: mt, .. } | Self::Reserved { memtype: mt, .. } => *mt = memtype,
+            Self::Empty => {}
+        }
     }
 }
 
 impl core::fmt::Debug for PageSlot {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PageSlot")
-            .field("pfn", &self.pfn)
-            .field("offset", &self.offset)
-            .field("memtype", &self.memtype.map(|m| m.name()))
-            .finish()
+        match self {
+            Self::Empty => f.write_str("PageSlot::Empty"),
+            Self::Reserved { offset, memtype } => f
+                .debug_struct("PageSlot::Reserved")
+                .field("offset", offset)
+                .field("memtype", &memtype.map(|m| m.name()))
+                .finish(),
+            Self::Mapped {
+                pfn,
+                offset,
+                memtype,
+            } => f
+                .debug_struct("PageSlot::Mapped")
+                .field("pfn", pfn)
+                .field("offset", offset)
+                .field("memtype", &memtype.map(|m| m.name()))
+                .finish(),
+        }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct PageFrames {
     states: Vec<PageState>,
+    // V10-P2-1: read only by the test-only `total_pages()` accessor.
+    #[cfg_attr(not(test), allow(dead_code))]
     total_pages: u32,
 }
 
@@ -151,6 +247,9 @@ impl PageFrames {
         self.states.get_mut(pfn as usize)
     }
 
+    // V10-P2-1: test-only accessor (production reads the allocator's
+    // `total_count()`); kept for layout-invariant assertions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn total_pages(&self) -> u32 {
         self.total_pages
     }
@@ -164,23 +263,21 @@ impl PageFrames {
     }
 
     pub fn addcache(&mut self, pfn: u32) {
-        if let Some(state) = self.states.get_mut(pfn as usize) {
-            if !state.flags.contains(PageFlags::IN_CACHE) {
+        if let Some(state) = self.states.get_mut(pfn as usize)
+            && !state.flags.contains(PageFlags::IN_CACHE) {
                 state.flags.insert(PageFlags::IN_CACHE);
                 state.refcount = state.refcount.saturating_add(1);
             }
-        }
     }
 
     pub fn rmcache(&mut self, pfn: u32) {
-        if let Some(state) = self.states.get_mut(pfn as usize) {
-            if state.flags.contains(PageFlags::IN_CACHE) {
+        if let Some(state) = self.states.get_mut(pfn as usize)
+            && state.flags.contains(PageFlags::IN_CACHE) {
                 state.flags.remove(PageFlags::IN_CACHE);
                 if state.refcount > 0 {
                     state.refcount -= 1;
                 }
             }
-        }
     }
 
     // verify_refcounts is implemented in sanity.rs module.
@@ -222,12 +319,22 @@ mod tests {
 
     #[test]
     fn test_page_slot() {
-        let slot = PageSlot::new(5, VirBytes(0x5000), None);
-        assert_eq!(slot.pfn, 5);
+        let slot = PageSlot::mapped(5, VirBytes(0x5000), None);
+        assert_eq!(slot.pfn(), Some(5));
         assert!(slot.is_mapped());
+        assert!(!slot.is_reserved());
 
-        let empty = PageSlot::new(PFN_NONE, VirBytes(0), None);
+        let reserved = PageSlot::reserved(VirBytes(0x1000), None);
+        assert!(reserved.is_reserved());
+        assert!(!reserved.is_mapped());
+        assert_eq!(reserved.pfn(), None);
+        assert_eq!(reserved.offset(), VirBytes(0x1000));
+
+        let empty = PageSlot::Empty;
+        assert!(empty.is_empty());
         assert!(!empty.is_mapped());
+        assert_eq!(empty.pfn(), None);
+        assert_eq!(empty.offset(), VirBytes(0));
     }
 
     #[test]

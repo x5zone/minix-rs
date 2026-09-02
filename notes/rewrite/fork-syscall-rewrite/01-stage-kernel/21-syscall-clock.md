@@ -705,7 +705,7 @@ pub fn dispatch_vtimer(
 // os/kernel/src/syscall_clock.rs:282-290
 
 /// Returns true iff `caller.priv_id` is `Some` AND the matching KPriv
-/// entry is a SYS_PROC (i.e. has `PrivFlagsBits::SYS_PROC` set).
+/// entry is a SYS_PROC (i.e. has `ProcessCapability::SYS_PROC` set).
 ///
 /// Used by `dispatch_setalarm` / `dispatch_vtimer` to gate syscalls
 /// that only system processes may invoke (Minix3: `do_setalarm.c:33`,

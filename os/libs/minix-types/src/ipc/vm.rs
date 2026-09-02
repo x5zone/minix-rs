@@ -111,6 +111,14 @@ pub const VM_GETREF: u32 = VM_RQ_BASE + 36;
 /// Get VM info.
 pub const VM_INFO: u32 = VM_RQ_BASE + 40;
 
+/// VM_INFO `what` selector values — C: `VMIW_STATS`/`VMIW_USAGE`/
+/// `VMIW_REGION` (minix/include/minix/com.h:732-734). These are wire
+/// values: libsys `vm_info_stats`/`vm_info_usage`/`vm_info_region`
+/// (vm_info.c:15/:29/:46) send exactly these, so the decoder must match.
+pub const VMIW_STATS: i32 = 1;
+pub const VMIW_USAGE: i32 = 2;
+pub const VMIW_REGION: i32 = 3;
+
 /// Remap read-only.
 pub const VM_REMAP_RO: u32 = VM_RQ_BASE + 44;
 
@@ -605,12 +613,42 @@ impl VmVfsReplyIn {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmRegionInfo {
-    pub vaddr: VirBytes,
+    /// Base address of the *used* portion of the region.
+    ///
+    /// C: `vri_addr` — `vr->vaddr + ph1->offset` (region.c:1492): the first
+    /// mapped page of the region, not necessarily the region start.
+    pub addr: VirBytes,
+    /// Length of the used portion (first mapped page .. last mapped page).
+    ///
+    /// C: `vri_length` — `ph2->offset + VM_PAGE_SIZE - ph1->offset`
+    /// (region.c:1494).
     pub length: VirBytes,
-    pub flags: u32,
+    /// Protection flags (PROT_READ=0x01 / PROT_WRITE=0x02, sys/mman.h:63-64).
+    ///
+    /// C: `vri_prot` — `PROT_READ | (VR_WRITABLE ? PROT_WRITE : 0)`
+    /// (region.c:1476-1478). PROT_EXEC is never set — Minix3 does not track
+    /// per-region execute permission.
+    pub prot: u32,
 }
 
 /// VM reply — wraps each link's Out type or an error.
+///
+/// `Copy` is fine: every variant's payload is a small POD (`u32`/
+/// counts, `<= 64`-element arrays of `VmRegionInfo`). The natural size
+/// of `VmReply::InfoRegion` is dominated by the embedded
+/// `[VmRegionInfo; 64]` — ~1.5 KiB — which is annotated with
+/// `#[allow(clippy::large_enum_variant)]` at every `Copy`-by-value
+/// use site (the variant is small enough to live on the kernel
+/// stack, and copying it is faster than re-encoding through `Box`).
+///
+/// The 64-region array is a *bounded* buffer — it never grows; the
+/// actual count returned is `fields.count <= 64`. Boxing would only
+/// add an `alloc` dependency for no measurable benefit, so we keep
+/// it inline. The transport encoding of the array is `DEFERRED` —
+/// M1's 3-pointer + 3-int slot set carries only `count`/`next` in
+/// the kernel reply path. See
+/// `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md`
+/// §3.7 ("transport 缺口") for the explicit gap contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmReply {
     Fork(VmForkOut),
@@ -642,6 +680,18 @@ pub enum VmReply {
         total_pages: u32,
         free_pages: u32,
         largest_contiguous: u32,
+        /// C: `vsi_cached` — `cached_pages` reported by `get_stats_info`
+        /// (cache.c:328-331).
+        cached_pages: u64,
+        /// minix-rs extension (V10-P2-4): main-loop dropped-message count
+        /// (receive failures + invalid callers, [ARCH: A-14]). Not part of
+        /// C's `struct vm_stats_info` wire layout — observable in-process
+        /// only until a syslog/extension slot lands.
+        dropped_messages: u64,
+        /// minix-rs extension (V10-P2-4): failed pagefault handlings
+        /// (V9-P1-1 counter). Same wire-layout caveat as
+        /// `dropped_messages`.
+        pagefault_errors: u64,
     },
     InfoUsage {
         total: VirBytes,
@@ -649,11 +699,27 @@ pub enum VmReply {
         shared: VirBytes,
         virtual_total: VirBytes,
         mvirtual: VirBytes,
+        /// C: `vui_maxrss` (KB) — `vm_total_max / 1024` (region.c:1444).
+        max_rss_kb: u64,
+        /// C: `vui_minflt` (region.c:1445).
+        minor_faults: u64,
+        /// C: `vui_majflt` (region.c:1446).
+        major_faults: u64,
     },
     InfoRegion {
-        regions: [VmRegionInfo; 8],
+        /// Up to `MAX_VRI_COUNT` (64, vm.h:66) regions per call.
+        ///
+        /// Inline 64-entry array (no heap allocation). The array is
+        /// `Copy`-cheap because [`VmRegionInfo`] is `Copy` and the
+        /// bounds are bounded — actual reported count is
+        /// `fields.count <= 64`. Sites that `Copy`-pass an
+        /// `InfoRegion` `#[allow(clippy::large_enum_variant)]` is
+        /// applied to silence the ~1.5 KiB "large variant" lint.
+        regions: [VmRegionInfo; 64],
         count: usize,
-        next: usize,
+        /// Vaddr cursor: end address of the last visited region
+        /// (C: `*nextp`, region.c:1464). Caller passes it back verbatim.
+        next: VirBytes,
     },
     Getrusage {
         max_rss_kb: u64,

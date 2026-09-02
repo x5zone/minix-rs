@@ -249,7 +249,7 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/libs/minix-rt/src/lib.rs`（line 169）
+> `os/libs/minix-rt/src/lib.rs`（line 169）
 >
 > 文档注释（line 148-167）说明未来路线图：格式化 panic 消息 → 调用 `minix_sys::write(STDERR, buf)` → `minix_sys::exit(1)`。当前因 `minix_sys::write` 未落地，halt-loop 是最安全的最小行为。
 
@@ -262,7 +262,7 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/boot-shim/src/main.rs`（line 56）
+> `os/boot-shim/src/main.rs`（line 56）
 
 boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，直接 halt。
 
@@ -277,7 +277,7 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 | `os/kernel/src/vm.rs:909` | `kernel_call_resume` 状态非法 | 内部不变式违反 |
 | `os/kernel/src/irq_manager.rs:150,154,161,318,342` | IRQ handler/vector 校验失败 | 内部不变式违反 |
 
-> `file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs`（line 1681）—— `dispatch_abort` 的 `panic!("MINIX will now be shut down ... (SYS_ABORT from endpoint {:?}...)")`
+> `os/kernel/src/syscall.rs`（line 1681）—— `dispatch_abort` 的 `panic!("MINIX will now be shut down ... (SYS_ABORT from endpoint {:?}...)")`
 
 **与 C `panic` 的差异**：
 - C `panic` 打印 `kernel panic:` 前缀 + stacktrace + `minix_shutdown`——Rust `panic!` 由 `#[panic_handler]` 处理，当前只 halt-loop（无消息打印）
@@ -302,7 +302,7 @@ pub trait EarlyConsole {
 }
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/plat/src/early_console.rs`（line 14）
+> `os/plat/src/early_console.rs`（line 14）
 
 **三架构实现**：
 - x86_64：COM1 串口（0x3F8）
@@ -318,7 +318,7 @@ use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
 Console::write_str("\nMINIX-RS 0.1.0 (rust rewrite) — scheduling live\n");
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs`（line 1831）
+> `os/kernel/src/lib.rs`（line 1831）
 
 **`log` crate 接入**（mock 平台）：
 
@@ -329,7 +329,7 @@ fn init(&mut self) {
 }
 ```
 
-> `file:///home/xzhao/github/minix-rs/os/plat/src/mock.rs`（line 30）
+> `os/plat/src/mock.rs`（line 30）
 
 > **注**：内核 crate（`os/kernel/src/`）当前未直接使用 `log::` 宏——内核输出走 `EarlyConsole::write_str`。`log` crate 主要用于 mock 平台和测试。未来若引入用户态日志服务，可通过 `log` 后端桥接（替代 C 的 `kmess_buf` + `SIGKMESS` 机制）。
 

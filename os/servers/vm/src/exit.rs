@@ -118,11 +118,11 @@ fn free_process_phys(
 
         // C: map_subfree → pb_unreferenced per mapped page (region.c:527-563).
         for slot in &region.physblocks {
-            if slot.is_mapped() {
-                if let Some(mt) = slot.memtype {
-                    mt.ev_unreference(frames, slot.pfn);
+            if let Some(pfn) = slot.pfn() {
+                if let Some(mt) = slot.memtype() {
+                    mt.ev_unreference(frames, pfn);
                 }
-                let should_free = if let Some(state) = frames.get_mut(slot.pfn) {
+                let should_free = if let Some(state) = frames.get_mut(pfn) {
                     if state.refcount > 0 {
                         state.refcount -= 1;
                     }
@@ -131,7 +131,7 @@ fn free_process_phys(
                     false
                 };
                 if should_free {
-                    page_alloc.free_pfn(slot.pfn);
+                    page_alloc.free_pfn(pfn);
                 }
             }
         }
@@ -291,6 +291,9 @@ pub(crate) enum VmProcctlHandlememResult {
 pub(crate) enum VmProcctlError {
     InvalidEndpoint,
     ProcessNotFound,
+    // V10-P2-1 (DEFERRED): no constructor yet — kept for the errno-mapping
+    // surface (V10-P2-3) and the CLEAR/HANDLEMEM permission checks.
+    #[allow(dead_code)]
     PermissionDenied,
     InvalidAddress,
     PageNotMapped,

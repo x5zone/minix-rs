@@ -346,7 +346,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**A IMPLEMENTED**（原 DEFERRED，P9-2 落地）
 - **理由**：IPC_STATUS 在 RECEIVE 完成时设置状态码到 `p_reg.IPC_STATUS_REG`，原标注 DEFERRED 因 Rust RECEIVE 路径未完整实现。P9-2 落地后 RECEIVE 路径已接通，IPC_STATUS 有消费方，故实现。诚实标注优于假装实现。
 - **实现路径**：
-  - `CpuContextArch::or_ipc_status_reg(ctx, value)` trait 方法 + 三架构 impl（[arm64/boot.rs:161](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/boot.rs)、[riscv64/boot.rs:146](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/boot.rs)、x86_64 同）
+  - `CpuContextArch::or_ipc_status_reg(ctx, value)` trait 方法 + 三架构 impl（os/arch/src/arm64/boot.rs:161、os/arch/src/riscv64/boot.rs:146、x86_64 同）
   - `proc.rs:1654-1679` 实现 `ipc_status_add_call` / `ipc_status_add_flags` 两个 helper（C 的 `IPC_STATUS_ADD` 内联进两者，无独立 `ipc_status_add`）
   - `ipc.rs` 4 路径 wire：SEND (line 841/858) / NOTIFY (line 950) / SENDA (line 959) / SENDA target (line 1002/1007)
 - **C 对齐**：`ipc.h:25-48 IPC_STATUS_*` 语义已实现（对应 C 的宏展开）。
@@ -489,7 +489,7 @@ if call_denied {
 
 **未覆盖**（依赖缺口）：`allow_ipc_filtered_msg` 的过滤链遍历、blacklist/whitelist 翻转逻辑、`IPCF_EL_MATCH` 匹配——待 L2 过滤实现后补充。
 
-**IPC_STATUS_* 测试**（P9-2 落地）：IPC_STATUS helper（`ipc_status_add_call` / `ipc_status_add_flags`，[proc.rs:1654-1679](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)，C 的 `IPC_STATUS_ADD` 内联进两者）无独立单元测试，由 `ipc.rs` 4 路径 wire 点的集成测试间接覆盖（SEND/NOTIFY/SENDA 路径在 [ipc.rs:841/950/959/1002](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs) 调用 helper 设置状态码）。
+**IPC_STATUS_* 测试**（P9-2 落地）：IPC_STATUS helper（`ipc_status_add_call` / `ipc_status_add_flags`，os/kernel/src/proc.rs:1654-1679，C 的 `IPC_STATUS_ADD` 内联进两者）无独立单元测试，由 `ipc.rs` 4 路径 wire 点的集成测试间接覆盖（SEND/NOTIFY/SENDA 路径在 os/kernel/src/ipc.rs:841/950/959/1002 调用 helper 设置状态码）。
 
 ---
 

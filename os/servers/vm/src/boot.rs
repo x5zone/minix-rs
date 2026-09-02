@@ -79,6 +79,12 @@ pub struct BootParams<'a> {
     pub modules: &'a [BootModule],
     /// Kernel's own memory footprint (charged via `mem_add_total_pages`).
     pub kernel_allocated: KernelAllocated,
+    /// Bytes the kernel allocated to load the VM image itself.
+    ///
+    /// C: `kernel_boot_info.vm_allocated_bytes` (minix/include/minix/param.h:44),
+    /// consumed by `get_usage_info_vm` (region.c:1369) for the VM-self
+    /// usage query.
+    pub vm_allocated_bytes: u64,
     /// Whether this is a fresh boot.
     ///
     /// C: `is_first_time()` (main.c:79-88) — returns true when RS still
@@ -109,6 +115,7 @@ impl<'a> BootParams<'a> {
             boot_procs: &[],
             modules: &[],
             kernel_allocated: KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
             is_first_time: true,
         }
     }
@@ -129,6 +136,7 @@ impl<'a> BootParams<'a> {
             boot_procs: &[VM_BOOT_IMAGE],
             modules: &[],
             kernel_allocated: KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
             is_first_time: true,
         }
     }
@@ -273,6 +281,7 @@ mod tests {
             boot_procs: &[],
             modules: &modules,
             kernel_allocated: KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
             is_first_time: true,
         };
         assert_eq!(params.extra_pages(), 3);
@@ -290,6 +299,7 @@ mod tests {
                 static_bytes: PAGE as u64 + 1, // → 2 pages
                 dynamic_bytes: 2 * PAGE as u64,
             },
+            vm_allocated_bytes: 0,
             is_first_time: true,
         };
         assert_eq!(params.extra_pages(), 4);

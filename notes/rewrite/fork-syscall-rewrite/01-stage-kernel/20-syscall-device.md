@@ -23,7 +23,7 @@
 
 - **WHY**: 中断上下文不可阻塞、不可执行用户态代码；但驱动逻辑必须在用户态运行。需要一个"翻译层"把硬件中断转为可被驱动 `RECEIVE` 的消息。
 - **WHAT**: IRQ 钩子（hook）是 `(endpoint, notify_id, policy)` 三元组。驱动通过 `SYS_IRQCTL` 注册钩子；硬件中断触发时，内核 `generic_handler` 设置 `s_int_pending` 位 + 发 `mini_notify(HARDWARE, endpoint)`，驱动下次 `RECEIVE` 即拿到中断事件。
-- **HOW**: C 用 `do_irqctl()` ([do_irqctl.c:23-138](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_irqctl.c)) 的 4 子请求管理钩子生命周期；`generic_handler()` ([do_irqctl.c:143-172](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_irqctl.c)) 在中断上下文执行"随机数→位图→通知"三步。
+- **HOW**: C 用 `do_irqctl()` (minix3/minix/kernel/system/do_irqctl.c:23-138) 的 4 子请求管理钩子生命周期；`generic_handler()` (minix3/minix/kernel/system/do_irqctl.c:143-172) 在中断上下文执行"随机数→位图→通知"三步。
 
 **4 个子请求的语义**:
 
@@ -34,7 +34,7 @@
 | ENABLE | 启用中断线（验主→enable_irq） | `IRQ_ENABLE` |
 | DISABLE | 禁用中断线（验主→disable_irq） | `IRQ_DISABLE` |
 
-**generic_handler 的副作用链** ([do_irqctl.c:143-172](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_irqctl.c)):
+**generic_handler 的副作用链** (minix3/minix/kernel/system/do_irqctl.c:143-172):
 
 1. `get_randomness(&krandom, hook->irq)` — 采集中断作为随机熵源（/dev/random）
 2. `priv(proc)->s_int_pending |= (1 << hook->notify_id)` — 位图记账（驱动位待取）
@@ -44,8 +44,8 @@
 **关键约束**:
 
 1. `notify_id ≤ 31`（`s_int_pending` 是 `u32` 位图）
-2. 只有钩子 owner 能 RMPOLICY/ENABLE/DISABLE（[do_irqctl.c:46,126](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_irqctl.c)）
-3. 进程退出必须摘钩（不变式；违例 panic — [do_irqctl.c:160-161](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_irqctl.c)）
+2. 只有钩子 owner 能 RMPOLICY/ENABLE/DISABLE（minix3/minix/kernel/system/do_irqctl.c:46,126）
+3. 进程退出必须摘钩（不变式；违例 panic — minix3/minix/kernel/system/do_irqctl.c:160-161）
 
 ### §1.2 端口 I/O：DEVIO/VDEVIO/SDEVIO 的语义分层
 
@@ -65,14 +65,14 @@
 - `CHECK_IO_PORT`：扫描 `s_io_tab[]`，要求 `port >= base && port+size-1 <= limit`
 - 对齐检查：`port & (size-1)` 必须为 0（word/long 自然对齐）
 
-**VDEVIO 的批量语义** ([do_vdevio.c:25-164](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/system/do_vdevio.c)):
+**VDEVIO 的批量语义** (minix3/minix/kernel/system/do_vdevio.c:25-164):
 
 1. `data_copy` 从用户拷入 (port,value) 向量到内核 `vdevio_buf`
 2. 批量 `CHECK_IO_PORT`（逐元素扫 `s_io_tab`）
 3. 批量 in/out（byte 无对齐；word/long 内联对齐检查，违例 panic）
 4. input 模式 `data_copy` 拷回结果
 
-**SDEVIO 的跨进程语义** ([do_sdevio.c:24-161](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/do_sdevio.c)):
+**SDEVIO 的跨进程语义** (minix3/minix/kernel/arch/i386/do_sdevio.c:24-161):
 
 1. SELF/endpoint 验证 + 拒绝 kernel 目标
 2. `_DIO_SAFE` 区分 safe（`verify_grant` 映射 grant→物理地址）与 unsafe（要求 target==caller）
@@ -87,14 +87,14 @@
 **IOPENABLE**:
 
 - 语义：给用户态进程 IOPL=3 权限，允许其执行 `in/out` 指令访问**所有**端口（绕过 CHECK_IO_PORT）
-- C 实现：`do_iopenable()` ([do_iopenable.c:19-33](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/do_iopenable.c)) → `enable_iop()` 设 `p_reg.psw |= 0x3000`
+- C 实现：`do_iopenable()` (minix3/minix/kernel/arch/i386/do_iopenable.c:19-33) → `enable_iop()` 设 `p_reg.psw |= 0x3000`
 - x86 范围：IOPL 是 x86 RFLAGS 第 12-13 位；ARM/RISC-V 无对应概念
 - 内核层抽象：只知"enable user I/O"概念，arch 层决定编码（x86: IOPL=3；其他: no-op）
 
 **READBIOS**:
 
 - 语义：从 BIOS 内存区拷贝数据到用户 buffer（用户态不可直接读物理 BIOS 区）
-- C 实现：`do_readbios()` ([do_readbios.c:15-37](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/do_readbios.c)) → `virtual_copy_vmcheck`（src=NONE 物理地址）
+- C 实现：`do_readbios()` (minix3/minix/kernel/arch/i386/do_readbios.c:15-37) → `virtual_copy_vmcheck`（src=NONE 物理地址）
 - BIOS 内存范围两段：
   - `0x0..=0x4FF`（IVT+BIOS data，低段）
   - `0x90000..=0xFFFFF`（upper memory area 含 EBDA，高段）
@@ -116,7 +116,7 @@
 | 用户态 I/O 提权 | RFLAGS.IOPL=3 | no-op | no-op | `CpuContextArch::enable_user_io` |
 | BIOS 数据 | 物理内存 0x0-0xFFFFF | 无 | 无 | (x86-only，BadCall on others) |
 
-> **注**: aarch64/riscv64 的 PortIo trait 实现尚未落地（MMIO 映射需 per-board 驱动）。当前 `dispatch_devio`/`dispatch_vdevio` 在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`，不会调用 PortIo 方法。x86_64 的 PortIo 实现见 [x86_64/port_io.rs](file:///home/xzhao/github/minix-rs/os/plat/src/x86_64/port_io.rs)。
+> **注**: aarch64/riscv64 的 PortIo trait 实现尚未落地（MMIO 映射需 per-board 驱动）。当前 `dispatch_devio`/`dispatch_vdevio` 在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`，不会调用 PortIo 方法。x86_64 的 PortIo 实现见 os/plat/src/x86_64/port_io.rs。
 
 **设计原则**: 内核代码（`syscall_device.rs`）只依赖 trait 方法，不出现 `#[cfg(target_arch)]` 行为选择。各架构在 arch 层提供 trait 实现。x86-only 调用在非 x86 上由 dispatch 层 `CurrentArchSyscall` trait 默认方法返回 `KcallResult::BadCall`（参见 [13-syscall-dispatch.md](../13-syscall-dispatch.md) D6 全局决策）。
 
@@ -274,7 +274,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 trait + BadCall：内核 dispatch 层通过 `ArchSyscall` trait（`CurrentArchSyscall` 类型别名单一 cfg 选择），x86 转发到 `syscall_device::dispatch_*`，非 x86 返回 `BadCall`；内核主体架构无关。
 - 所以用 trait + BadCall：架构耦合集中在 arch 层，内核主体纯净。这是 D6 全局决策在设备 I/O 的应用。
 
-**实现**: `X86_64Syscall` impl `ArchSyscall` trait 覆盖 5 个方法（[syscall.rs:296-344](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L296-L344)）转发到 `syscall_device::dispatch_*`；非 x86 由 `DefaultSyscall` trait 默认方法返回 `BadCall`。
+**实现**: `X86_64Syscall` impl `ArchSyscall` trait 覆盖 5 个方法（syscall.rs:296-344）转发到 `syscall_device::dispatch_*`；非 x86 由 `DefaultSyscall` trait 默认方法返回 `BadCall`。
 
 ### D7. I/O 类型/方向：裸位掩码 vs IoSize/IoDirection enum
 

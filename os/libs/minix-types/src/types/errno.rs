@@ -7,6 +7,11 @@
 //! These values follow Minix3's errno numbering, which differs from Linux
 //! in some cases (e.g., `ENOSYS = 78` in Minix3 vs `38` in Linux).
 
+/// Minix3 成功码。
+///
+/// 对应 minix3/sys/sys/errno.h:190 `#define OK 0`。PM 用 `OK` 作为回复码。
+pub const OK: i32 = 0;
+
 pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
 pub const ESRCH: i32 = 3;

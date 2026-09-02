@@ -1,0 +1,18 @@
+[package]
+name = "minix-driver-usb_hub"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-driver-usb_hub"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_driver_usb_hub"
+path = "src/lib.rs"

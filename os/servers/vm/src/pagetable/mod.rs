@@ -17,8 +17,6 @@
 
 pub(crate) mod vm_self_map;
 
-use minix_types::VirBytes;
-
 // C `pt_t` (dual-view struct) is structurally eliminated ([ARCH: A-2]):
 // the page table is a trait object whose root is a single physical page;
 // intermediate levels are allocated on demand by the arch implementation.
@@ -29,19 +27,23 @@ pub(crate) use minix_arch::paging::PageTableError;
 pub(crate) use minix_arch::paging::Paging;
 pub(crate) use vm_self_map::{vm_self_mappages, vm_self_unmappages, vm_self_unmap};
 
-pub(crate) fn page_align(addr: VirBytes) -> VirBytes {
-    let ps = <PageTable as Paging>::PAGE_SIZE as u64;
-    VirBytes((addr.0 + ps - 1) & !(ps - 1))
-}
-
-pub(crate) fn page_align_down(addr: VirBytes) -> VirBytes {
-    let ps = <PageTable as Paging>::PAGE_SIZE as u64;
-    VirBytes(addr.0 & !(ps - 1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::VirBytes;
+
+    // V10-P2-1: `page_align`/`page_align_down` have no production callers
+    // (only these tests), so they live in the test module instead of the
+    // public surface.
+    fn page_align(addr: VirBytes) -> VirBytes {
+        let ps = <PageTable as Paging>::PAGE_SIZE as u64;
+        VirBytes((addr.0 + ps - 1) & !(ps - 1))
+    }
+
+    fn page_align_down(addr: VirBytes) -> VirBytes {
+        let ps = <PageTable as Paging>::PAGE_SIZE as u64;
+        VirBytes(addr.0 & !(ps - 1))
+    }
 
     #[test]
     fn test_page_align() {

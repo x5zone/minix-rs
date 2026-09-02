@@ -23,7 +23,7 @@ Minix3 的 MIB 服务器：以对象树（OID）形式维护系统配置/统计�
 ## 依赖关系
 
 - 前置：01-stage-kernel（syscall/IPC）、02-stage-vm（页表）
-- 后置：14-stage-integration（/mib 挂载点与用户态工具集成）
+- 后置：19-stage-integration（/mib 挂载点与用户态工具集成）
 
 ## 编号说明
 

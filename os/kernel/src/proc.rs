@@ -2,6 +2,11 @@
 //!
 //! This is the Rust implementation of Minix3's `proc` structure with basic and scheduling fields.
 //!
+//! **Zero-heap contract**: see `lib.rs` for the kernel-wide contract. This
+//! module allocates nothing at runtime — all fields are statically sized
+//! (`Option<ProcNr>`, `AtomicI32`, fixed arrays). Sender wait queues use
+//! intrusive FIFO (caller_q_head/tail + send_q_link).
+//!
 //! # Minix3 Multi-Process Table Architecture
 //!
 //! Minix3 uses a distributed process table design with 4 copies:
@@ -18,7 +23,6 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicU8, Ordering};
 use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch, CurrentFpuState};
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
-use crate::ipc::SenderQueue;
 
 /// Process number type (corresponds to C's `proc_nr_t`).
 ///
@@ -61,7 +65,8 @@ impl core::fmt::Display for ProcNr {
 }
 
 /// Sentinel value for "no process" in atomic queue pointers.
-/// Used by `p_nextready` (AtomicI32). `caller_q` uses `SenderQueue` (VecDeque).
+/// Used by `p_nextready` (AtomicI32). `caller_q_head`/`caller_q_tail`/
+/// `send_q_link` use `Option<ProcNr>` (no sentinel needed).
 pub const NONE_PROC_NR: i32 = -1;
 
 /// Clock ticks type.
@@ -88,8 +93,8 @@ pub mod proc_nr {
     pub const KERNEL: ProcNr = ProcNr(-1);
 
     // Boot image user process numbers.
-    // C: minix/com.h: PM_PROC_NR=0, RS_PROC_NR=1, VM_PROC_NR=8
-    pub const RS_PROC_NR: ProcNr = ProcNr(1);
+    // C: minix/com.h: PM_PROC_NR=0, VFS_PROC_NR=1, RS_PROC_NR=2, VM_PROC_NR=8
+    pub const RS_PROC_NR: ProcNr = ProcNr(2);
     pub const VM_PROC_NR: ProcNr = ProcNr(8);
 }
 
@@ -117,19 +122,24 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
     ("kernel", ProcNr(-1)),  // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
 ];
 
-/// User-space boot module process numbers (matching C's image[] in table.c).
-/// C: table.c — entries after kernel tasks, in boot image order.
-/// C: kinfo.module_list[i] corresponds to image[NR_TASKS + i].
-/// The proc_nr values are contiguous: DS=0, RS=1, PM=2, ..., INIT=11.
-/// C: minix/com.h — DS_PROC_NR=0, RS_PROC_NR=1, PM_PROC_NR=2, etc.
+/// User-space boot module process numbers, in C's boot image order.
+///
+/// `kernel_info.boot_modules()[i]` is the i-th multiboot module, which
+/// corresponds to `image[NR_TASKS + i]` in C's table.c. The boot image
+/// order (DS, RS, PM, SCHED, VFS, MEM, TTY, MIB, VM, PFS, MFS, INIT) is
+/// **not** the same as the C proc numbers — each module keeps its fixed
+/// `com.h` number (PM=0, VFS=1, RS=2, MEM=3, SCHED=4, TTY=5, DS=6, MIB=7,
+/// VM=8, PFS=9, MFS=10, INIT=11). This array maps module index → C proc
+/// number, so booted servers end up with the C endpoints (gen=0: endpoint
+/// == proc number) that user-space servers use for addressing.
 pub const BOOT_MODULE_PROC_NRS: &[ProcNr; NR_BOOT_MODULES] = &[
-    ProcNr(0),   // DS_PROC_NR
-    ProcNr(1),   // RS_PROC_NR
-    ProcNr(2),   // PM_PROC_NR
-    ProcNr(3),   // SCHED_PROC_NR
-    ProcNr(4),   // VFS_PROC_NR
-    ProcNr(5),   // MEM_PROC_NR
-    ProcNr(6),   // TTY_PROC_NR
+    ProcNr(6),   // DS_PROC_NR   (com.h: DS=6)
+    ProcNr(2),   // RS_PROC_NR   (com.h: RS=2)
+    ProcNr(0),   // PM_PROC_NR   (com.h: PM=0)
+    ProcNr(4),   // SCHED_PROC_NR (com.h: SCHED=4)
+    ProcNr(1),   // VFS_PROC_NR  (com.h: VFS=1)
+    ProcNr(3),   // MEM_PROC_NR  (com.h: MEM=3)
+    ProcNr(5),   // TTY_PROC_NR  (com.h: TTY=5)
     ProcNr(7),   // MIB_PROC_NR
     ProcNr(8),   // VM_PROC_NR
     ProcNr(9),   // PFS_PROC_NR
@@ -908,13 +918,34 @@ pub struct KProcess {
     /// C: `struct proc *p_nextready` — proc.h
     pub p_nextready: AtomicI32,
 
-    /// Sender wait queue for IPC.
+    /// Sender wait queue for IPC — intrusive FIFO threaded through the
+    /// process-table slots (C-isomorphic, no heap).
+    ///
     /// Blocked senders waiting to deliver a message to this process.
-    /// C: `struct proc *p_caller_q` + `p_q_link` intrusive linked list — proc.h.
-    /// Rust: `SenderQueue` (VecDeque<ProcNr>) — design §2.5 / ARCH-2.
-    /// Owned by the process; no `p_q_link` field needed (queue storage is
-    /// internal to SenderQueue).
-    pub caller_q: SenderQueue,
+    /// C: `struct proc *p_caller_q` (queue head, proc.h:73) +
+    /// `struct proc *p_q_link` (chain link, proc.h:74). Rust re-expresses
+    /// the two pointers as `Option<ProcNr>` slot indices: index links
+    /// carry no reference semantics, so no heap allocation is involved
+    /// and enqueue is infallible (C: two pointer writes, proc.c:960-964).
+    ///
+    /// The head/tail pair lives on the TARGET (this process); the link
+    /// lives on the SENDER. `caller_q_tail` is an O(1)-append extension —
+    /// C walks O(n) to the tail (proc.c:960-964); FIFO order identical.
+    ///
+    /// `sys_update` slot-swap semantics (do_update.c:241-258):
+    /// `caller_q_head`/`caller_q_tail` are slot-identity fields (preserved
+    /// through `adjust_proc_slot`, C: `rp->p_caller_q = from_rp->p_caller_q`);
+    /// `send_q_link` is content (swapped with the rest of the slot).
+    ///
+    /// Operations: `ipc::caller_q_push` / `caller_q_find` /
+    /// `caller_q_remove` / `caller_q_remove_by_nr`.
+    pub caller_q_head: Option<ProcNr>,
+    /// Tail of the sender wait queue (see `caller_q_head`).
+    pub caller_q_tail: Option<ProcNr>,
+    /// Chain link to the next queued sender, when this process is
+    /// blocked in `RTS_SENDING` on some target's queue.
+    /// C: `struct proc *p_q_link` — proc.h:74. `None` outside a queue.
+    pub send_q_link: Option<ProcNr>,
 
     // IPC endpoint fields
     /// Source endpoint for receiving message.
@@ -968,7 +999,10 @@ pub struct KProcess {
 
     /// FPU / extended-register state buffer.
     ///
-    /// C: `p_seg.fpu_state[FPU_XFP_SIZE]` — kernel/proc.h.
+    /// C: `p_seg.fpu_state` — a `char *` pointer (i386 archtypes.h:35) into
+    /// the arch-level pool `fpu_state[NR_PROCS][FPU_XFP_SIZE]`
+    /// (arch_system.c:144, NULL for kernel tasks). Rust embeds the buffer
+    /// per-process instead of pointer + pool.
     ///
     /// Stores the per-process FPU state for save/restore during context
     /// switches (SMP migration SAVE_CTX) and signal handling (sigreturn).
@@ -1011,6 +1045,49 @@ pub struct KProcess {
     //    The four old fields (`initial_pc`, `initial_sp`,
     //    `initial_ps_strings_reg`, `initial_status`) are gone; their
     //    semantics live inside the arch-private `CpuContext` value.
+}
+
+impl KProcess {
+    /// Whether this slot is occupied (SLOT_FREE cleared).
+    ///
+    /// Extracted from `Drop` so the decision logic is unit-testable in a
+    /// `panic = "abort"` build (where `#[should_panic]` cannot catch the
+    /// abort — see `panic-in-drop.md` §5 / §6).
+    pub(crate) fn slot_is_occupied(&self) -> bool {
+        !self.p_rts_flags.get().contains(RtsFlagsBits::SLOT_FREE)
+    }
+}
+
+impl Drop for KProcess {
+    /// Slot-ownership invariant (design: `panic-in-drop.md`, GPT two-round
+    /// discussion in `AI-chats/comments.md`).
+    ///
+    /// A `KProcess` is a **process-table slot**, not a plain Rust value:
+    /// its Rust lifetime is *not* the OS process lifecycle. Destroying a
+    /// *occupied* slot via Rust's implicit destruction semantics would
+    /// silently drop cross-slot state (IPC caller queue, timer chain,
+    /// scheduler linkage, privilege binding) while other slots still
+    /// reference it — kernel invariant violation.
+    ///
+    /// Policy:
+    /// - **`SLOT_FREE`** (empty slot): no chains, no back-references, no
+    ///   resources attached. Dropping is the normal lifetime end of a
+    ///   transient empty value (tests construct these via `KProcess::new`).
+    /// - **occupied** (SLOT_FREE cleared): the process is live; dropping is a
+    ///   kernel bug. Explicit destruction must go through kernel lifecycle
+    ///   APIs (`clear_proc`/slot clear → back to SLOT_FREE first), never
+    ///   through Rust `Drop`.
+    ///
+    /// Note: `impl Drop` also makes `KProcess` non-`Copy`, so the type
+    /// system refuses "copy a live process like a plain value".
+    fn drop(&mut self) {
+        if self.slot_is_occupied() {
+            panic!(
+                "BUG: occupied KProcess slot #{} dropped without explicit destruction",
+                self.p_nr.0
+            );
+        }
+    }
 }
 
 /// Maximum process name length (including trailing \0).
@@ -1235,7 +1312,9 @@ impl KProcess {
             p_dequeued: AtomicU64::new(0),
             p_defer: DeferArgs::default(),
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            caller_q: SenderQueue::new(),
+            caller_q_head: None,
+            caller_q_tail: None,
+            send_q_link: None,
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
             p_pending: SigSet::empty(),
@@ -1279,7 +1358,9 @@ impl KProcess {
             p_fault_addr: None,
             p_defer: DeferArgs::new(),
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            caller_q: SenderQueue::new(),
+            caller_q_head: None,
+            caller_q_tail: None,
+            send_q_link: None,
             p_getfrom_e: Endpoint::NONE,
             p_sendto_e: Endpoint::NONE,
             p_pending: SigSet::empty(),
@@ -1488,7 +1569,8 @@ impl KProcess {
     /// | `p_misc_flags` | Copy then clear `VIRT_TIMER\|PROF_TIMER\|SC_TRACE\|SPROF_SEEN\|STEP` | Copy then apply same mask |
     /// | `p_time` | `virt_left=0, prof_left=0` | All zeroed (new) |
     /// | `p_pending` | `sigemptyset()` | Empty |
-    /// | `p_nextready/caller_q` | Pointer copied but child gets own queues | `None` (child not queued yet) |
+    /// | `p_nextready`/`send_q_link` | Pointer copied but child gets own links | `None` (child not queued yet) |
+    /// | `caller_q_head/tail` | Copy (queue is slot identity, empty for a fresh slot) | `None` |
     ///
     /// # Parameters
     /// - `parent`: Reference to parent process
@@ -1543,8 +1625,12 @@ impl KProcess {
             p_dequeued: AtomicU64::new(0),
             p_defer: DeferArgs::default(),
             // IPC queue pointers: child is not queued, no callers, no links
+            // (C: do_fork clears p_nextready/p_q_link; child's fresh slot
+            // has an empty p_caller_q).
             p_nextready: AtomicI32::new(NONE_PROC_NR),
-            caller_q: SenderQueue::new(),
+            caller_q_head: None,
+            caller_q_tail: None,
+            send_q_link: None,
             p_getfrom_e: parent.p_getfrom_e,
             p_sendto_e: parent.p_sendto_e,
             // p_pending cleared: corresponds to sigemptyset(&rpc->p_pending)
@@ -1563,15 +1649,25 @@ impl KProcess {
         };
 
         // Inherit extended-register / FPU state from parent if parent
-        // has touched the FPU. Each arch overrides `inherit_fpu_state`:
-        //   x86-64    → copies `fpu_policy` (LazyUserInit / KernelTask)
-        //   aarch64   → copies `fpu_enable_el0` (CPACR_EL1.FPEN policy)
-        //   riscv64   → copies `sstatus` (preserves FS field)
-        // The kernel layer is unaware of which field is copied — it
-        // only observes `EXT_REG_INITIALIZED` propagation.
+        // has touched the FPU. Two things are copied:
         //
-        // C: do_fork.c memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state,
-        //                     FPU_XFP_SIZE) under proc_used_fpu(rpp)
+        // 1. The arch-specific init policy via `inherit_fpu_state`:
+        //      x86-64    → copies `fpu_policy` (LazyUserInit / KernelTask)
+        //      aarch64   → copies `fpu_enable_el0` (CPACR_EL1.FPEN policy)
+        //      riscv64   → copies `sstatus` (preserves FS field)
+        // 2. The register save area itself (`fpu_state`), so a forked
+        //    child that executes FP instructions immediately sees the
+        //    parent's FP register values instead of a zeroed state.
+        //
+        // C: do_fork.c:66-68 (i386 only) — under `proc_used_fpu(rpp)`,
+        //    `memcpy(rpc->p_seg.fpu_state, rpp->p_seg.fpu_state,
+        //    FPU_XFP_SIZE)`. On x86-64 the `#if defined(__i386__)` guard
+        //    compiles out and `*rpc = *rpp` leaves the child aliasing the
+        //    parent's static slot buffer; the Rust rewrite realizes the
+        //    i386 copy semantics with per-process inline buffers, so the
+        //    child gets a private copy. C's `save_fpu(rpp)` flush before
+        //    the copy (do_fork.c:57) is a no-op in this codebase until the
+        //    per-CPU FPU ownership path (`smp.rs` `fpu_owner`) is wired.
         //
         // See 06-proc-init-boot-proc.md §3.14.
         if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
@@ -1579,6 +1675,7 @@ impl KProcess {
                 &mut child.cpu_context,
                 &parent.cpu_context,
             );
+            child.fpu_state = parent.fpu_state;
             child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
         }
 
@@ -1683,6 +1780,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_boot_module_proc_nrs_match_c_comh() {
+        // Boot image order (C: table.c:52-64) — DS, RS, PM, SCHED, VFS,
+        // MEM, TTY, MIB, VM, PFS, MFS, INIT — is not the same as the C
+        // proc numbers (C: com.h:59-72). Each module keeps its fixed
+        // com.h number; at generation 0 the endpoint equals the proc
+        // number, so servers address each other with these values.
+        let expected = [
+            (6, Endpoint::DS),
+            (2, Endpoint::RS),
+            (0, Endpoint::PM),
+            (4, Endpoint::SCHED),
+            (1, Endpoint::VFS),
+            (3, Endpoint::MEM),
+            (5, Endpoint::TTY),
+            (7, Endpoint::MIB),
+            (8, Endpoint::VM),
+            (9, Endpoint::PFS),
+            (10, Endpoint::MFS),
+            (11, Endpoint::INIT),
+        ];
+        assert_eq!(expected.len(), NR_BOOT_MODULES);
+        for (i, (proc_nr, endpoint)) in expected.iter().enumerate() {
+            assert_eq!(
+                BOOT_MODULE_PROC_NRS[i], ProcNr(*proc_nr),
+                "boot module {i}: proc number must match C com.h"
+            );
+            assert_eq!(
+                BOOT_MODULE_PROC_NRS[i].0, endpoint.0,
+                "boot module {i}: endpoint at generation 0 must equal proc number"
+            );
+        }
+        // RS is the root system process and VM is the memory server —
+        // both constants must agree with the boot array.
+        assert_eq!(proc_nr::RS_PROC_NR, ProcNr(2));
+        assert_eq!(proc_nr::VM_PROC_NR, ProcNr(8));
+    }
+
+    #[test]
     fn test_cpu_mask_default_all_allows_any_cpu() {
         let mask = CpuMask::all();
         assert!(mask.allows(CpuId::BSP));
@@ -1750,9 +1885,36 @@ mod tests {
         assert!(!proc.is_runnable());
     }
 
+    // ── Slot-ownership invariant (panic-in-drop.md §2) ──
+
+    /// Dropping an *empty* slot (SLOT_FREE set) is the normal lifetime end
+    /// of a transient empty value — it must not trip the defensive alarm.
+    #[test]
+    fn test_drop_empty_slot_is_normal() {
+        let proc = KProcess::new(ProcNr(1), Endpoint(1));
+        drop(proc); // empty slot — no alarm
+    }
+
+    /// The Drop decision logic must agree with the SLOT_FREE bit.
+    ///
+    /// The occupied-path (`Drop` → panic) cannot be asserted in this build:
+    /// `panic = "abort"` (Cargo.toml `[profile.dev]`) makes `#[should_panic]`
+    /// ineffective, so this test pins the *decision predicate* (`slot_is_occupied`)
+    /// that the `Drop` body is built on.
+    #[test]
+    fn test_slot_is_occupied_agrees_with_slot_free_bit() {
+        let mut proc = KProcess::new(ProcNr(1), Endpoint(1));
+        assert!(!proc.slot_is_occupied(), "fresh KProcess::new is an empty slot");
+        proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        assert!(proc.slot_is_occupied(), "SLOT_FREE cleared → occupied");
+        proc.p_rts_flags.set(RtsFlagsBits::SLOT_FREE);
+        assert!(!proc.slot_is_occupied(), "SLOT_FREE restored → empty");
+        drop(proc);
+    }
+
     #[test]
     fn test_kprocess_runnable() {
-        let proc = KProcess::new(ProcNr(1), Endpoint(1));
+        let proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint(1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         assert!(proc.is_runnable());
@@ -1906,14 +2068,14 @@ mod tests {
 
     #[test]
     fn test_fork_from_basic() {
-        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(3, 5));
+        let parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(3, 5)));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.set_priority(priority::USER_Q);
 
         let child_endpoint = Endpoint::fork_new_endpoint(
             Endpoint::from_generation_slot(0, 10), 10
         );
-        let child = KProcess::fork_from(&parent, ProcNr(10), child_endpoint);
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), child_endpoint));
 
         assert_eq!(child.p_nr, ProcNr(10));
         assert_eq!(child.p_endpoint, child_endpoint);
@@ -1929,7 +2091,7 @@ mod tests {
         parent.p_accounting.record_ipc_sync();
         parent.p_accounting.record_ipc_sync();
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         assert_eq!(child.p_accounting.ipc_sync.load(Ordering::Relaxed), 0);
     }
@@ -1938,12 +2100,14 @@ mod tests {
     fn test_fork_from_independent_queues() {
         let mut parent = KProcess::new(ProcNr(5), Endpoint(5));
         parent.p_nextready.store(3, Ordering::Relaxed);
-        parent.caller_q.push_back(ProcNr(7));
+        parent.send_q_link = Some(ProcNr(7));
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         assert_eq!(child.p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
-        assert!(child.caller_q.is_empty());
+        assert!(child.send_q_link.is_none());
+        assert!(child.caller_q_head.is_none());
+        assert!(child.caller_q_tail.is_none());
     }
 
     #[test]
@@ -1952,7 +2116,7 @@ mod tests {
         parent.p_getfrom_e = Endpoint::PM;
         parent.p_sendto_e = Endpoint::VFS;
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         assert_eq!(child.p_getfrom_e, Endpoint::PM);
         assert_eq!(child.p_sendto_e, Endpoint::VFS);
@@ -1964,7 +2128,7 @@ mod tests {
         parent.p_cycles.add_cycles(1000);
         parent.p_cycles.add_kcall_cycles(200);
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         assert_eq!(child.p_cycles.total.load(Ordering::Relaxed), 0);
         assert_eq!(child.p_cycles.kcall.load(Ordering::Relaxed), 0);
@@ -1973,11 +2137,11 @@ mod tests {
     #[test]
     fn test_fork_from_rts_flags_corrections() {
         // Parent has SIGNALED and SIG_PENDING set — child must NOT inherit these
-        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
+        let parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5)));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.p_rts_flags.set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP);
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         // Child must have NO_QUANTUM set (C: RTS_SET(rpc, RTS_NO_QUANTUM))
         assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
@@ -1995,7 +2159,7 @@ mod tests {
         // Also set a flag that SHOULD be inherited
         parent.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         // Cleared flags
         assert!(!child.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER));
@@ -2007,11 +2171,42 @@ mod tests {
         assert!(child.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND));
     }
 
+    #[test]
+    fn test_fork_from_inherits_fpu_state_when_initialized() {
+        // C: do_fork.c:66-68 — under `proc_used_fpu(parent)` the child's
+        // FPU save area is a copy of the parent's (i386 memcpy semantics;
+        // the per-process inline buffer makes the copy private instead of
+        // aliasing the parent's slot buffer as C x86-64 does).
+        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
+        parent.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
+
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+
+        // The save area counts as initialized in the child: the flag
+        // propagates and the state buffer is a byte-for-byte copy
+        // (`CurrentFpuState: Copy`). Under the mock arch the state is a
+        // ZST, so the buffer contents are unobservable here; the copy
+        // semantics are guaranteed by the `Copy` bound in `FpuArch::State`.
+        assert!(child.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+        let _ = child.fpu_state;
+    }
+
+    #[test]
+    fn test_fork_from_zeroes_fpu_state_when_parent_unused() {
+        // Parent never touched the FPU → child keeps a zeroed save area
+        // (C: the child's own static buffer stays zeroed until first use).
+        let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
+
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+
+        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+    }
+
     // ── §5.1: KProcess VM suspend/resume tests ──
 
     #[test]
     fn test_suspend_for_vm_sets_rts_and_context() {
-        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2039,7 +2234,7 @@ mod tests {
 
     #[test]
     fn test_suspend_for_vm_with_copy() {
-        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2073,7 +2268,7 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend() {
-        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2100,7 +2295,7 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend_does_not_clear_kcall_resume() {
-        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2126,7 +2321,7 @@ mod tests {
 
     #[test]
     fn test_vm_suspend_context_mut() {
-        let mut proc = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2149,7 +2344,7 @@ mod tests {
 
     #[test]
     fn test_fork_child_has_no_vm_suspend() {
-        let mut parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
+        let mut parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5)));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2164,7 +2359,7 @@ mod tests {
             None,
         );
 
-        let child = KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
 
         // Child should NOT inherit VM suspend state
         assert!(!child.is_vm_suspended());

@@ -169,10 +169,10 @@ priv[NR_SYS_PROCS=64]:
 
 | # | 决策 | 选项 | 结论 | 理由 |
 |---|------|------|------|------|
-| D1 | KPriv 结构 | 扁平 vs 6 子结构 | **6 子结构** | 如果用扁平 struct，31 字段职责混杂，难以按职责 const fn 初始化；6 子结构（PrivCapability/Signals/Ipc/Io/Mem/Runtime）按职责分组，每子结构独立 `const fn new()`，PrivTable 可用 `[KPriv; 64]` const 初始化 |
-| D2 | s_flags | 裸 short vs bitflags | **`PrivFlagsBits` bitflags** | 如果用裸 i16，`s_flags = 0x030` 无法区分意图，函数签名无法区分"任意 i16"与"权限标志"；bitflags 使位组合成为 first-class 值，`contains(SYS_PROC)` 类型安全 |
+| D1 | KPriv 结构 | 扁平 vs 8 子结构 | **8 子结构** | 如果用扁平 struct，31 字段职责混杂，难以按职责 const fn 初始化；8 子结构（PrivIdentity/PrivInit/PrivFlags/PrivSignals/PrivIpc/PrivIo/PrivMem/PrivRuntime）按职责分组，每子结构独立 `const fn new()`，PrivTable 可用 `[KPriv; 64]` const 初始化 |
+| D2 | s_flags | 裸 short vs bitflags | **`ProcessCapability` bitflags（C wire 位布局）** | 如果用裸 i16，`s_flags = 0x030` 无法区分意图，函数签名无法区分"任意 i16"与"权限标志"；bitflags 使位组合成为 first-class 值，`contains(SYS_PROC)` 类型安全。低 11 位 = C wire 位布局，wire 边界 `from_wire`/`to_wire` 编解码 |
 | D3 | 权限授予 | 分散设置 vs CapabilityTemplate | **模板 enum** | 如果用 C 的分散设置（get_priv + 逐字段），调用者需记住每类进程的掩码，易漏（如忘设 IPC 掩码→进程无法通信）；5 个模板（Idle/KernelTask/Vm/RootService/Deferred）封装正确组合，correct-by-construction |
-| D4 | ProcessCapability vs PrivFlagsBits | 统一 vs 双系统 | **当前保留双系统** | PrivFlagsBits(u16) 忠实映射 C s_flags 的 11 个位（位布局对齐 const.h:143-154，语义可追溯）；ProcessCapability(u32) 是 Rust 侧语义扩展（含 C 没有的 KILL/SIGS_SYS/OWN_ID）；grant_capability 中映射是单一转换点。长期评估合并 |
+| D4 | 能力位类型 | 统一 vs 双系统 | **单一 `ProcessCapability`** | 低 11 位采 C wire 位布局（const.h:143-154）+ priv.h:36-50 组合位，Rust 扩展位（KILL/SIGS_SYS/OWN_ID）位于 16 位 wire 范围外，`from_wire`/`to_wire` 在 `PrivUpdateRequest`/`PrivInfoStruct`/GET_WHOAMI 边界编解码；`grant_capability` 直接落位模板 flag set。若保留双系统，每次授予都要跨 bitflags 翻译，且用户态导出的 s_flags 位布局会与 C 端错位 |
 | D5 | 掩码类型 | 裸整数 vs Newtype | **Newtype** | 如果用裸 u64，类型系统无法区分 IPC 目标位图与 kernel call 位图——函数签名 `fn set_mask(mask: u64)` 可传入任意 u64；`IpcMask(u64)`/`KCallMask(u64)`/`TrapMask(u32)` Newtype 使三种掩码不可互换 |
 | D6 | PrivTable 存储 | 堆分配 vs 固定数组 | **固定数组** | 如果用 `Box<[KPriv]>`，boot 阶段无堆分配器（no_std + allocator 未初始化）；`[KPriv; NR_SYS_PROCS]` + `const fn new()` 编译期已知大小，匹配 C 的 BSS 布局 |
 | D7 | s_proc_nr | sentinel NONE vs Option | **`Option<ProcNr>`** | 如果用 i32 + NONE(-1) sentinel，-1 是合法 i32 值，类型系统无法阻止误用；`Option<ProcNr>` 强制处理"未分配"情况 |
@@ -180,67 +180,81 @@ priv[NR_SYS_PROCS=64]:
 | D9 | s_ipcf/s_stack_guard | 裸指针 vs Option<usize> | **Option<usize>（当前限制）** | usize 不是类型安全的指针；`Option<*mut T>` 不 Send/Sync。当前对齐 C 裸指针语义，redesign 阶段引入 `NonNull<T>`。标 P2 |
 | D10 | PrivId/SysId | type alias vs newtype | **type alias（当前限制）** | 改 newtype 需更新所有 callsite，影响面大。当前 `static_priv_id`/`is_static_priv_id` 语义已清晰。标 P2 |
 
-> **anti-translate 总结**: 8 处 Rust 惯用法替代 C 模式（bitflags/6子结构/Option/CapabilityTemplate/Newtype/固定数组/Option tuple），2 处已知限制（D9/D10）标 P2 后续改进。
+> **anti-translate 总结**: 8 处 Rust 惯用法替代 C 模式（bitflags/**8 子结构**/Option/CapabilityTemplate/Newtype/固定数组/Option tuple），2 处已知限制（D9/D10）标 P2 后续改进。
 
 ---
 
 ## Ch4: 实现要点
 
-### 4.1 PrivFlagsBits bitflags
+### 4.1 ProcessCapability（能力位，含 C wire 位布局）
 
-> Rust 实现: `os/kernel/src/kpriv.rs:72-85`
+> Rust 实现: `os/kernel/src/capability.rs:67-160`（内核唯一能力位类型；kpriv.rs `PrivFlags` 字段采用，wire 编解码见下）
 
 ```rust
-// C: minix/include/minix/const.h:143-154
+// C: minix/include/minix/const.h:143-154（低 11 位 = C wire 位布局，1:1）
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct PrivFlagsBits: u16 {
-        const PREEMPTIBLE     = 0x002;  // const.h:143
-        const BILLABLE        = 0x004;  // const.h:144
-        const DYN_PRIV_ID     = 0x008;  // const.h:145
-        const SYS_PROC        = 0x010;  // const.h:147
-        const CHECK_IO_PORT   = 0x020;  // const.h:148
-        const CHECK_IRQ       = 0x040;  // const.h:149
-        const CHECK_MEM       = 0x080;  // const.h:150
-        const ROOT_SYS_PROC   = 0x100;  // const.h:151
-        const VM_SYS_PROC     = 0x200;  // const.h:152
-        const LU_SYS_PROC     = 0x400;  // const.h:153
-        const RST_SYS_PROC    = 0x800;  // const.h:154
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct ProcessCapability: u32 {
+        // C 原子位（位置 = wire 位布局）
+        const PREEMPTIBLE     = 0x0000_0002;  // const.h:143
+        const BILLABLE        = 0x0000_0004;  // const.h:144
+        const DYN_PRIV_ID     = 0x0000_0008;  // const.h:145
+        const SYS_PROC        = 0x0000_0010;  // const.h:147
+        const CHECK_IO_PORT   = 0x0000_0020;  // const.h:148
+        const CHECK_IRQ       = 0x0000_0040;  // const.h:149
+        const CHECK_MEM       = 0x0000_0080;  // const.h:150
+        const ROOT_SYS_PROC   = 0x0000_0100;  // const.h:151
+        const VM_SYS_PROC     = 0x0000_0200;  // const.h:152
+        const LU_SYS_PROC     = 0x0000_0400;  // const.h:153
+        const RST_SYS_PROC    = 0x0000_0800;  // const.h:154
+        // Rust 扩展位（C 无对应位；位于 16 位 wire 范围外，不跨 wire）
+        const KILL            = 0x0001_0000;
+        const SIGS_SYS        = 0x0002_0000;
+        const OWN_ID          = 0x0004_0000;
+        // C 预定义组合（priv.h:36-49）——原子位的 OR，非独立位
+        const IDL_F           = Self::SYS_PROC.bits() | Self::BILLABLE.bits();
+        const TSK_F           = Self::SYS_PROC.bits();
+        const SRV_F           = Self::SYS_PROC.bits() | Self::PREEMPTIBLE.bits();
+        const DSRV_F          = Self::SRV_F.bits() | Self::DYN_PRIV_ID.bits();
+        const RSYS_F          = Self::SRV_F.bits() | Self::ROOT_SYS_PROC.bits();
+        const VM_F            = Self::SYS_PROC.bits() | Self::VM_SYS_PROC.bits();
+        const USR_F           = Self::BILLABLE.bits() | Self::PREEMPTIBLE.bits();
     }
 }
-```
 
-**预定义组合**（`kpriv.rs:90-106`）对齐 `priv.h:36-49`：
-
-```rust
-pub mod priv_flag_set {
-    use super::PrivFlagsBits as F;
-    pub const IDL_F: F = F::from_bits_truncate(F::SYS_PROC.bits() | F::BILLABLE.bits());
-    pub const TSK_F: F = F::from_bits_truncate(F::SYS_PROC.bits());
-    pub const SRV_F: F = F::from_bits_truncate(F::SYS_PROC.bits() | F::PREEMPTIBLE.bits());
-    pub const DSRV_F: F = F::from_bits_truncate(SRV_F.bits() | F::DYN_PRIV_ID.bits());
-    pub const RSYS_F: F = F::from_bits_truncate(SRV_F.bits() | F::ROOT_SYS_PROC.bits());
-    pub const VM_F: F = F::from_bits_truncate(F::SYS_PROC.bits() | F::VM_SYS_PROC.bits());
-    pub const USR_F: F = F::from_bits_truncate(F::BILLABLE.bits() | F::PREEMPTIBLE.bits());
+// wire 编解码（PrivUpdateRequest.s_flags: u16 ↔ ProcessCapability）
+impl ProcessCapability {
+    pub const fn from_wire(wire: u16) -> Self { Self::from_bits_truncate(wire as u32) }
+    pub const fn to_wire(self) -> u16 { (self.bits() & 0xFFFF) as u16 }
 }
 ```
 
-### 4.2 KPriv 6 子结构
+> **wire 边界约定**：`PrivUpdateRequest.s_flags` 保持裸 `u16`——位值采 C 布局是**刻意选择**而非 IPC 强制（真实硬契约是内核↔RS 内部一致；采 C 位值的理由——用户态导出路径 GET_WHOAMI/GET_PRIV + ground truth——见 [06 §3.10 协议边界](./06-proc-init-boot-proc.md)）；`ProcessCapability` 只在 kpriv.rs `update_from_request` / misc.rs `PrivInfoStruct::from_kpriv` / GET_WHOAMI 三处与 wire 互转。Rust 扩展位（KILL/SIGS_SYS/OWN_ID）高于 bit 15，`to_wire` 截断、`from_wire` 不可能读入。
 
-> Rust 实现: `os/kernel/src/kpriv.rs:140-330`
+### 4.2 KPriv 8 子结构
 
-KPriv 按 6 个职责组拆分为子结构，每个子结构独立 `const fn new()` 构造：
+> Rust 实现: `os/kernel/src/kpriv.rs:140-400`
+
+KPriv 按 8 个职责组拆分为子结构（与 Ch3 D1 决策一致），每个子结构独立 `const fn new()` 构造：
 
 ```rust
-// 身份/能力元数据
-pub(crate) struct PrivCapability {
+// 1. 身份绑定（"我绑定哪个 ProcNr + 我的 slot id"）
+pub(crate) struct PrivIdentity {
     pub(crate) s_proc_nr: Option<ProcNr>,   // D7: Option vs sentinel NONE
     pub(crate) s_id: SysId,
-    pub(crate) s_flags: PrivFlagsBits,       // D2: bitflags vs short
+}
+
+// 2. init 阶段标志（运行期逐步清零）
+pub(crate) struct PrivInit {
     pub(crate) s_init_flags: i32,
 }
 
-// 信号簿记（异步表、管理器、挂起信号）
+// 3. 能力位掩码（5 种角色 + C wire 位布局，见 §4.1）
+pub(crate) struct PrivFlags {
+    pub(crate) s_flags: ProcessCapability,   // D2: bitflags vs short
+}
+
+// 4. 信号簿记（异步表、管理器、挂起信号）
 pub(crate) struct PrivSignals {
     pub(crate) s_asyntab: u64,
     pub(crate) s_asynsize: usize,
@@ -253,14 +267,14 @@ pub(crate) struct PrivSignals {
     pub(crate) s_sig_pending: SigSet,
 }
 
-// IPC 允许列表（trap、ipc-to、kernel-call 掩码）
+// 5. IPC 允许列表（trap、ipc-to、kernel-call 掩码）——D5 Newtype
 pub(crate) struct PrivIpc {
-    pub(crate) s_trap_mask: u16,
-    pub(crate) s_ipc_to: u64,
-    pub(crate) s_k_call_mask: [u32; SYS_CALL_MASK_SIZE],
+    pub(crate) s_trap_mask: TrapMask,        // D5: wire 宽度（u16）保留在 PrivUpdateRequest
+    pub(crate) s_ipc_to: IpcMask,            // D5: wire 宽度（u64）保留在 PrivUpdateRequest
+    pub(crate) s_k_call_mask: KCallMask,     // D5: wire 宽度（[u32; 2]）保留在 PrivUpdateRequest
 }
 
-// I/O 端口 + IRQ 允许列表
+// 6. I/O 端口 + IRQ 允许列表
 pub(crate) struct PrivIo {
     pub(crate) s_nr_io_range: i32,
     pub(crate) s_io_tab: [IoRange; NR_IO_RANGE],
@@ -268,7 +282,7 @@ pub(crate) struct PrivIo {
     pub(crate) s_irq_tab: [i32; NR_IRQ],
 }
 
-// 内存范围允许列表 + 跨空间 IPC + 栈保护
+// 7. 内存范围允许列表 + 跨空间 IPC + 栈保护
 pub(crate) struct PrivMem {
     pub(crate) s_nr_mem_range: i32,
     pub(crate) s_mem_tab: [MemRange; NR_MEM_RANGE],
@@ -277,7 +291,7 @@ pub(crate) struct PrivMem {
     pub(crate) s_diag_sig: bool,
 }
 
-// 运行时状态（闹钟 + grant 表 + state 表）
+// 8. 运行时状态（闹钟 + grant 表 + state 表）
 pub(crate) struct PrivRuntime {
     pub(crate) s_alarm_timer: Option<(crate::clock::TimerEntry, crate::clock::TimerId)>,  // D8
     pub(crate) s_grant_table: usize,
@@ -288,7 +302,9 @@ pub(crate) struct PrivRuntime {
 }
 
 pub(crate) struct KPriv {
-    pub(crate) capability: PrivCapability,
+    pub(crate) identity: PrivIdentity,
+    pub(crate) flags: PrivFlags,
+    pub(crate) init: PrivInit,
     pub(crate) signals: PrivSignals,
     pub(crate) ipc: PrivIpc,
     pub(crate) io: PrivIo,
@@ -296,6 +312,10 @@ pub(crate) struct KPriv {
     pub(crate) runtime: PrivRuntime,
 }
 ```
+
+> **协议结构字段序**：跨空间载荷 `PrivUpdateRequest`（`SYS_PRIV_SET_SYS`/`UPDATE_SYS` 的 `data_copy` 载荷，[kpriv.rs](file:///os/kernel/src/kpriv.rs)）字段序镜像上述子结构序（去内核私有的 `PrivRuntime`：identity → flags → init → signal managers → IPC 掩码 → I/O → IRQ → memory）；RS 侧填写结构 `Privilege` 同序对照。契约边界（位值跟 C、布局跟自己）见 [06 §3.10](./06-proc-init-boot-proc.md)。
+
+> **三子结构分离的原因（D1 修订说明）**：初版曾把 `PrivIdentity + PrivInit + PrivFlags` 合并为 `PrivCapability`，按"读写时机 / 锁粒度"切为身份 / init / 能力三域。后改为3 个独立子结构——原因是每子结构类型独立、`const fn new()` 接口对齐，且三者的「关联进程」「init 阶段」「能力位」在域语义上确实独立（读 `s_proc_nr` 与读 `s_flags` 的调用栈完全不同）。`PrivCapability` 是历史命名，已统一为 `PrivIdentity` / `PrivInit` / `PrivFlags`。
 
 **IoRange**（`kpriv.rs:32-35`，base/limit 为 u32 对齐 C `struct io_range`）:
 
@@ -306,16 +326,24 @@ pub struct IoRange {
 }
 ```
 
-**关键方法**（`kpriv.rs:369-392`）:
+**关键方法**（谓词收口在 `PrivFlags`，位图检查收口在 newtype）:
 
 ```rust
-impl KPriv {
-    pub fn is_sys_proc(&self) -> bool {
-        self.capability.s_flags.contains(PrivFlagsBits::SYS_PROC)
+impl PrivFlags {
+    pub(crate) fn is_sys_proc(&self) -> bool {
+        self.s_flags.contains(ProcessCapability::SYS_PROC)
     }
+    #[allow(dead_code)]
+    pub(crate) fn is_preemptible(&self) -> bool {
+        self.s_flags.contains(ProcessCapability::PREEMPTIBLE)
+    }
+    // ... (更多谓词方法)
+}
+
+impl KPriv {
     pub fn may_send_to(&self, target_id: SysId) -> bool {
         if target_id as usize >= 64 { return false; }
-        (self.ipc.s_ipc_to & (1u64 << target_id)) != 0
+        self.ipc.s_ipc_to.may_send_to(target_id as u8)
     }
 }
 ```
@@ -337,7 +365,7 @@ impl PrivTable {
         let mut privs = [const { KPriv::new_zeroed(0) }; NR_SYS_PROCS];
         let mut i = 0;
         while i < NR_SYS_PROCS {
-            privs[i].capability.s_id = i as SysId;
+            privs[i].identity.s_id = i as SysId;
             i += 1;
         }
         Self { privs }
@@ -352,8 +380,8 @@ impl PrivTable {
             (NR_TASKS as PrivId + proc_nr.0 as PrivId) as PrivId
         };
         let priv_ = self.get_mut(priv_id)?;
-        if priv_.capability.s_proc_nr.is_some() { return None; }  // EBUSY
-        priv_.capability.s_proc_nr = Some(proc_nr);
+        if priv_.identity.s_proc_nr.is_some() { return None; }  // EBUSY
+        priv_.identity.s_proc_nr = Some(proc_nr);
         Some(priv_id)
     }
 
@@ -365,31 +393,29 @@ impl PrivTable {
     ) -> Result<PrivId, CapabilityError> {
         let priv_id = self.assign_static(proc_nr)
             .ok_or(CapabilityError::SlotOccupied)?;
-        let template_caps = template.capabilities();
 
-        // 映射 ProcessCapability → PrivFlagsBits（两个编码空间，单一转换点）
-        let mut flags = PrivFlagsBits::empty();
-        if template_caps.contains(ProcessCapability::SYS_PROC) { flags |= PrivFlagsBits::SYS_PROC; }
-        if template_caps.contains(ProcessCapability::BILLABLE) { flags |= PrivFlagsBits::BILLABLE; }
-        // ... (kpriv.rs:850-868 完整映射：VM_F/RSYS_F/IDL_F/TSK_F 分支)
+        // capabilities() 返回的就是 C flag set（priv.h:36-49 组合），
+        // 直接落位 KPriv，无跨 bitflags 转换。
+        let flags = template.capabilities();
 
-        let trap_mask_bits = template.trap_mask().bits();
-        let ipc_to_bits = template.ipc_mask().bits();
-        let kcall_mask_bits = template.kcall_mask().bits();
+        // 角色默认 trap_mask + CLOCK/SYSTEM 的 CSK_T 例外（main.c:218-219）。
+        let mut trap_mask = template.trap_mask();
+        if matches!(template, CapabilityTemplate::KernelTask)
+            && (proc_nr == crate::proc::proc_nr::CLOCK
+                || proc_nr == crate::proc::proc_nr::SYSTEM)
+        {
+            trap_mask = TrapMask::RECEIVE;
+        }
 
         // sig_mgr 默认指向自身 endpoint（匹配 C init）。
         let sig_mgr = Endpoint::from_generation_slot(0, proc_nr.0);
 
         if let Some(priv_) = self.get_mut(priv_id) {
-            priv_.capability.s_flags = flags;
-            priv_.capability.s_init_flags = 0;
-            priv_.ipc.s_trap_mask = trap_mask_bits as u16;
-            priv_.ipc.s_ipc_to = ipc_to_bits;
-            // KCallMask.bits() 是 u64；打包为 [u32; 2]（低字在前，R-16）
-            priv_.ipc.s_k_call_mask = [
-                (kcall_mask_bits & 0xFFFF_FFFF) as u32,
-                (kcall_mask_bits >> 32) as u32,
-            ];
+            priv_.flags.s_flags = flags;
+            priv_.init.s_init_flags = 0;
+            priv_.ipc.s_trap_mask = trap_mask;
+            priv_.ipc.s_ipc_to = template.ipc_mask();
+            priv_.ipc.s_k_call_mask = template.kcall_mask();
             priv_.signals.s_sig_mgr = sig_mgr;
         }
         Ok(priv_id)
@@ -424,7 +450,7 @@ impl IpcMask {
 }
 ```
 
-**D4 双系统**: `ProcessCapability` (u32, Rust 语义扩展) vs `PrivFlagsBits` (u16, C 对齐)。`grant_capability` 中的映射（`kpriv.rs:850-868`）是单一转换点。ProcessCapability 含 C 没有的 `KILL`/`SIGS_SYS`/`OWN_ID` 位，是 Rust 侧扩展。
+**D4 统一**: `ProcessCapability`（[capability.rs:67](file:///os/kernel/src/capability.rs#L67)，u32）是唯一能力位类型——低 11 位采 C wire 位布局（const.h:143-154），`*_F` 为 priv.h:36-50 组合位，`from_wire`/`to_wire` 在 wire 边界编解码；Rust 扩展位（KILL/SIGS_SYS/OWN_ID）位于 16 位 wire 范围外、永不跨 wire。`grant_capability` 直接落位模板 flag set，无转换点。
 
 ### 4.5 辅助函数
 
@@ -455,7 +481,7 @@ pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 以下 C 函数在 Ch2 中分析但 Rust 尚未实现，属于已知覆盖缺口（syscall 层 `dispatch_privctl` 在 [13-syscall-dispatch.md](13-syscall-dispatch.md) 覆盖；`do_update` 路径在 [25-misc-unported.md](25-misc-unported.md) 覆盖）。
 
-> **2026-08-13 Phase 6 更新**：`get_priv` 动态分支已由 `KPriv::get_priv`（[os/kernel/src/kpriv.rs:764-795](file:///home/xzhao/github/minix-rs/os/kernel/src/kpriv.rs)）实现，覆盖 `NULL_PRIV_ID` 扫描动态区 + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码。下表仅 `set_sendto_bit` 仍属缺口。
+> **2026-08-13 Phase 6 更新**：`get_priv` 动态分支已由 `KPriv::get_priv`（os/kernel/src/kpriv.rs:764-795）实现，覆盖 `NULL_PRIV_ID` 扫描动态区 + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码。下表仅 `set_sendto_bit` 仍属缺口。
 
 | C 函数 | C 位置 | 用途 | Rust 状态 |
 |--------|--------|------|----------|
@@ -467,7 +493,7 @@ pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 ### 4.7 SYS_PRIVCTL 子命令实现状态（FIX-25, Phase 5; Phase 6 完成 6 DEFERRED 项 2026-08-13）
 
-`dispatch_privctl`（[os/kernel/src/syscall.rs:1166-1583](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）实现了 `do_privctl`（C: `system/do_privctl.c:26-275`）的 11 个子命令中的全部 11 个。原本 Phase 5 标记为 DEFERRED 的 6 个子命令（SET_SYS/ADD_IO/ADD_MEM/ADD_IRQ/UPDATE_SYS/CLEAR_IPC_REFS）于 2026-08-13 全部落地，使用 `data_copy_vmcheck` 跨地址空间拷贝 + `KPriv::update_from_request` / `KPriv::get_priv` / `clear_ipc_refs` 完成。
+`dispatch_privctl`（os/kernel/src/syscall.rs:1166-1583）实现了 `do_privctl`（C: `system/do_privctl.c:26-275`）的 11 个子命令中的全部 11 个。原本 Phase 5 标记为 DEFERRED 的 6 个子命令（SET_SYS/ADD_IO/ADD_MEM/ADD_IRQ/UPDATE_SYS/CLEAR_IPC_REFS）于 2026-08-13 全部落地，使用 `data_copy_vmcheck` 跨地址空间拷贝 + `KPriv::update_from_request` / `KPriv::get_priv` / `clear_ipc_refs` 完成。
 
 | 子命令 | C 位置 | Rust 实现 | 状态 |
 |--------|--------|----------|------|
@@ -547,7 +573,7 @@ pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 ### syscall.rs `dispatch_privctl` 测试（Phase 6, 2026-08-13）
 
-> Rust 实现: [os/kernel/src/syscall.rs:2748-2995](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs) — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
+> Rust 实现: os/kernel/src/syscall.rs:2748-2995 — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
 
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|

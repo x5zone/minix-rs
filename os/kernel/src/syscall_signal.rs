@@ -740,7 +740,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         // Invalid endpoint → EINVAL
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -751,7 +751,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         // Set endpoint to a kernel process (negative proc_nr)
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Kernel processes have negative proc_nr, but endpoint_to_nr
         // won't find them in the table, so we get EINVAL.
         let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
@@ -763,7 +763,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigreturn as i32;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_sigreturn(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }

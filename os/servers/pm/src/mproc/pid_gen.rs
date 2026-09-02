@@ -23,7 +23,7 @@
 //! # Minix3 Source Mapping
 //!
 //! ```c
-//! // minix3/minix/servers/pm/utility.c (lines 32-52)
+//! // minix3/minix/servers/pm/utility.c:34-52
 //! pid_t get_free_pid()
 //! {
 //!   static pid_t next_pid = INIT_PID + 1;
@@ -43,6 +43,13 @@
 //!   return(next_pid);
 //! }
 //! ```
+//!
+//! # ARCH 行为差异（03-mproc-table.md §3.4）
+//!
+//! C 扫描**全部**槽位（`for rmp = &mproc[0]; rmp < &mproc[NR_PROCS]`），
+//! 释放槽的陈旧 `mp_procgrp` 会造成额外跳过；Rust 只扫活进程
+//! （[`ProcTable::iter_active`]）——对活进程的 PID 唯一性契约两边一致，
+//! 环绕边界上"具体选中哪个 PID"可能有差异，不构成外部语义变化。
 //!
 //! # Single Source of Truth Principle
 //!
@@ -261,5 +268,20 @@ mod tests {
             assert!(pid > INIT_PID && pid <= NR_PIDS,
                 "PID {} out of range [{}, {}]", pid, INIT_PID + 1, NR_PIDS);
         }
+    }
+
+    #[test]
+    fn test_released_slot_stale_procgrp_not_conflict() {
+        // ARCH 差异（03-mproc-table.md §3.4）：C 扫描全部槽位，释放槽的
+        // 陈旧 mp_procgrp 会造成额外跳过；Rust 只扫活进程（iter_active）——
+        // 对活进程的唯一性契约不变。
+        let generator = PidGenerator::new();
+        let mut table = create_test_table();
+        generator.next_pid.set(7);
+
+        // 未使用槽位持有陈旧 procgrp=7：不参与冲突检测。
+        table.procs[0].identity.procgrp = 7;
+        let pid = generator.get_free_pid(&table);
+        assert_eq!(pid, 7);
     }
 }

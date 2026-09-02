@@ -295,7 +295,7 @@ int mem_cow(struct vir_region *region, struct phys_region *ph,
 
 ### 3.1 D1: 集中数组替代分散对象（ARCH 主决策）
 
-`PageFrames`（page_state.rs:133-256）是全局 PFN → PageState 数组：
+`PageFrames`（page_state.rs:225-258）是全局 PFN → PageState 数组：
 
 ```rust
 pub(crate) struct PageFrames {
@@ -314,21 +314,21 @@ pub(crate) struct PageState {
 ### 3.2 D2: PageSlot 替代 phys_region
 
 ```rust
-pub(crate) struct PageSlot {
-    pub(crate) pfn: u32,                       /* phys_block.phys 的 PFN 化 */
-    pub(crate) offset: VirBytes,               /* phys_region.offset */
-    pub(crate) memtype: Option<&'static dyn MemType>,  /* phys_region.memtype */
+pub(crate) enum PageSlot {
+    Empty,                                      /* 未映射也未保留 */
+    Reserved { offset: VirBytes, memtype: Option<&'static dyn MemType> },  /* lazy 占位（无后备帧） */
+    Mapped   { pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType> },  /* phys_region 挂载 */
 }
-pub(crate) const PFN_NONE: u32 = u32::MAX;     /* 哨兵：未映射 */
 ```
 
-- `PageSlot::EMPTY`（pfn=PFN_NONE）替代 `Option<PageSlot>`——省判别位开销，`is_mapped()` 语义等价。
+- **三态枚举替代 PFN_NONE 哨兵**（2026-08-16，todo P0-1）：旧设计 `pfn=PFN_NONE` 同时编码"未映射"与"lazy 占位"，二者在类型层不可区分，导致 `get_slot` 过滤掉 lazy 槽。现在 `Empty`/`Reserved`/`Mapped` 显式分态：`pfn()` 仅 `Mapped` 返回 `Some`，`is_reserved()`/`is_empty()` 提供状态查询。枚举尺寸与旧结构相同（32B），仍省 `Option<PageSlot>` 判别开销。
+- `mapped(pfn, offset, memtype)`/`reserved(offset, memtype)` 构造器替代 `PageSlot::new`；`set_memtype` 仅对 present 槽（Mapped/Reserved）生效。
 - `parent` 字段消失：PageSlot 挂在 vir_region 的 slots 数组里，归属由容器表达（13）。
 - `next_ph_list` 消失：PFN 模型下共享信息在 PageFrames 的 refcount 中，无需 per-mapping 链表。
 
 ### 3.3 D3: refcount u8→u32 + saturating_add
 
-C `u8_t refcount`（region.h:31）上限 255——32 位 Minix3 上共享链（fork 链）很少接近，但 **64 位系统 + 深 fork 链可以超过**。Rust 用 `u32` + `saturating_add`（page_state.rs:170）防溢出。这同时消除了 C 的 `refcount == 0` 判断与 u8 回绕的隐患。
+C `u8_t refcount`（region.h:31）上限 255——32 位 Minix3 上共享链（fork 链）很少接近，但 **64 位系统 + 深 fork 链可以超过**。Rust 用 `u32` + `saturating_add`（page_state.rs:263）防溢出。这同时消除了 C 的 `refcount == 0` 判断与 u8 回绕的隐患。
 
 ### 3.4 D4: 标志显式化（PageFlags）
 
@@ -340,7 +340,7 @@ pub(crate) struct PageFlags: u8 {
 }
 ```
 
-- `addcache(pfn)`/`rmcache(pfn)`（page_state.rs:166-184）：IN_CACHE 置位/清除 + refcount 同步增减——页缓存持有引用的显式表达（24 消费）。
+- `addcache(pfn)`/`rmcache(pfn)`（page_state.rs:258-276）：IN_CACHE 置位/清除 + refcount 同步增减——页缓存持有引用的显式表达（24 消费）。
 - COW 显式标记替代 C 的 PTE 只读推断：`prepare_cow()`（fork 路径）置位，页错误处理（16）直接查标志决定分裂。
 
 ### 3.5 D5: PfnAllocator trait
@@ -371,7 +371,7 @@ pub(crate) trait PfnAllocator {
 
 ## 4. 实现详解
 
-### 4.1 `PageFrames`（page_state.rs:133-256）
+### 4.1 `PageFrames`（page_state.rs:225-258）
 
 ```rust
 pub(crate) struct PageFrames {
@@ -397,24 +397,24 @@ impl PageFrames {
 - `PAGE_SIZE = 4096`（page_state.rs:15），与 VM 页大小一致。
 - `total_pages as u32` 的界：4KB 页 × 4TB = 2^32 页——u32 恰好覆盖。
 
-### 4.2 `PageSlot`（page_state.rs:73-130）
+### 4.2 `PageSlot`（page_state.rs:90-205）
 
 Copy 语义（fork 复制区域时整个槽位可拷贝，fork.rs 依赖）：
 
 ```rust
 #[derive(Clone, Copy)]
-pub(crate) struct PageSlot {
-    pub(crate) pfn: u32,
-    pub(crate) offset: VirBytes,
-    pub(crate) memtype: Option<&'static dyn MemType>,
+pub(crate) enum PageSlot {
+    Empty,
+    Reserved { offset: VirBytes, memtype: Option<&'static dyn MemType> },
+    Mapped   { pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType> },
 }
 ```
 
-- `EMPTY` 哨兵（pfn=PFN_NONE）：未映射槽位，`is_mapped()` 返回 false。
-- `PartialEq` 仅比较 pfn+offset（memtype 指针比较不稳定）——测试/审计用。
-- `Debug` 打印 memtype 名称（`m.name()`）而非指针值——可读性。
+- **三态**：`Empty`（未映射）→ `Reserved`（lazy 占位，`map_lazy` 写入，携带 offset+memtype）→ `Mapped`（挂载帧）。`pfn()` 返回 `Option<u32>`——类型层保证只有 `Mapped` 有帧（todo P0-1 修复）。
+- `PartialEq` 同态比较（memtype 指针比较不稳定，忽略）——测试/审计用。
+- `Debug` 按变体打印，memtype 输出名称（`m.name()`）而非指针值——可读性。
 
-### 4.3 `PageFlags` 与缓存消费（page_state.rs:29-47 / :166-184）
+### 4.3 `PageFlags` 与缓存消费（page_state.rs:27-40 / :258-276）
 
 `IN_CACHE`/`PENDING_IO`/`COW` 三标志。`addcache`/`rmcache` 由 page_cache.rs 消费（24 覆盖完整缓存语义）：
 
@@ -460,12 +460,12 @@ pub fn verify_refcounts(
 
 | 测试 | 位置 | 验证目标 |
 |------|------|---------|
-| `test_page_frames_init` | page_state.rs:197 | 初始化 refcount=0、flags 空 |
-| `test_pfn_to_phys` | page_state.rs:208 | PFN → PA 换算 |
-| `test_phys_to_pfn` | page_state.rs:216 | PA → PFN 换算 |
-| `test_page_slot` | page_state.rs:224 | 映射/EMPTY 哨兵 |
-| `test_incache` | page_state.rs:234 | addcache/rmcache refcount 维护 |
-| `test_refcount_operations` | page_state.rs:246 | refcount 增减 |
+| `test_page_frames_init` | page_state.rs:289 | 初始化 refcount=0、flags 空 |
+| `test_pfn_to_phys` | page_state.rs:300 | PFN → PA 换算 |
+| `test_phys_to_pfn` | page_state.rs:308 | PA → PFN 换算 |
+| `test_page_slot` | page_state.rs:316 | 三态：Mapped/Reserved/Empty |
+| `test_incache` | page_state.rs:336 | addcache/rmcache refcount 维护 |
+| `test_refcount_operations` | page_state.rs:348 | refcount 增减 |
 | `test_verify_refcounts_empty/mismatch/cache_only/cache_mismatch` | sanity.rs:128/:136/:150/:159 | 审计一致性 |
 
 ### 5.2 覆盖维度
@@ -481,7 +481,7 @@ pub fn verify_refcounts(
 
 ### 5.4 测试统计（截至 2026-08-15）
 
-- `cargo test -p minix-vm --lib`：**360 passed / 1 failed**（1 failed 为 pre-existing `region::vir_region::tests::test_map_lazy`，13 范围）。
+- `cargo test -p minix-vm --lib`：**434 passed / 0 failed**（2026-08-16 实测；`test_map_lazy` 已由 13 范围修复，todo P0-1）。
 - 本文档直接相关：page_state.rs 6 个 + sanity.rs 4 个 = **10 个**。
 - 完整测试清单：`rg "^\s*fn test_" os/servers/vm/src/`。
 

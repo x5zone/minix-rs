@@ -58,16 +58,16 @@
 
 | # | C 宏 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|------|---------|------|-----------|------|
-| K-016 | `PREEMPTIBLE` | priv.h:42 | 0x002, 进程可被抢占 | `PrivFlagsBits::PREEMPTIBLE` (kpriv.rs:50) | ✅ |
-| K-017 | `DYN_PRIV_ID` | priv.h:43 | 0x008, 动态 priv id | `PrivFlagsBits::DYN_PRIV_ID` (kpriv.rs:51) | ✅ Doc 21 §1.2 已修复, 与 C `priv.h:43` 一致 |
-| K-018 | `SYS_PROC` | priv.h:44 | 0x010, 系统进程 | `PrivFlagsBits::SYS_PROC` (kpriv.rs:52) | ✅ |
-| K-019 | `CHECK_IO_PORT` | priv.h:45 | 0x020, I/O 端口检查 | `PrivFlagsBits::CHECK_IO_PORT` (kpriv.rs:53) | ✅ |
-| K-020 | `CHECK_IRQ` | priv.h:46 | 0x040, IRQ 检查 | `PrivFlagsBits::CHECK_IRQ` (kpriv.rs:54) | ✅ |
-| K-021 | `CHECK_MEM` | priv.h:47 | 0x080, 内存访问检查 | `PrivFlagsBits::CHECK_MEM` (kpriv.rs:55) | ✅ |
-| K-022 | `ROOT_SYS_PROC` | priv.h:48 | 0x100, 根系统进程 | `PrivFlagsBits::ROOT_SYS_PROC` (kpriv.rs:56) | ✅ |
-| K-023 | `VM_SYS_PROC` | priv.h:49 | 0x200, VM 系统进程 | `PrivFlagsBits::VM_SYS_PROC` (kpriv.rs:57) | ✅ |
-| K-024 | `LU_SYS_PROC` | priv.h:50 | 0x400, Live Update 进程 | `PrivFlagsBits::LU_SYS_PROC` (kpriv.rs:58) | ✅ |
-| K-025 | `RST_SYS_PROC` | priv.h:51 | 0x800, RS 系统进程 | `PrivFlagsBits::RST_SYS_PROC` (kpriv.rs:59) | ✅ |
+| K-016 | `PREEMPTIBLE` | const.h:143 | 0x002, 进程可被抢占 | `ProcessCapability::PREEMPTIBLE` (capability.rs:70) | ✅ |
+| K-017 | `DYN_PRIV_ID` | const.h:145 | 0x008, 动态 priv id | `ProcessCapability::DYN_PRIV_ID` (capability.rs:74) | ✅ Doc 21 §1.2 已修复, 与 C `const.h:145` 一致 |
+| K-018 | `SYS_PROC` | const.h:147 | 0x010, 系统进程 | `ProcessCapability::SYS_PROC` (capability.rs:77) | ✅ |
+| K-019 | `CHECK_IO_PORT` | const.h:148 | 0x020, I/O 端口检查 | `ProcessCapability::CHECK_IO_PORT` (capability.rs:79) | ✅ |
+| K-020 | `CHECK_IRQ` | const.h:149 | 0x040, IRQ 检查 | `ProcessCapability::CHECK_IRQ` (capability.rs:81) | ✅ |
+| K-021 | `CHECK_MEM` | const.h:150 | 0x080, 内存访问检查 | `ProcessCapability::CHECK_MEM` (capability.rs:83) | ✅ |
+| K-022 | `ROOT_SYS_PROC` | const.h:151 | 0x100, 根系统进程 | `ProcessCapability::ROOT_SYS_PROC` (capability.rs:85) | ✅ |
+| K-023 | `VM_SYS_PROC` | const.h:152 | 0x200, VM 系统进程 | `ProcessCapability::VM_SYS_PROC` (capability.rs:87) | ✅ |
+| K-024 | `LU_SYS_PROC` | const.h:153 | 0x400, Live Update 进程 | `ProcessCapability::LU_SYS_PROC` (capability.rs:89) | ✅ |
+| K-025 | `RST_SYS_PROC` | const.h:154 | 0x800, RS 系统进程 | `ProcessCapability::RST_SYS_PROC` (capability.rs:91) | ✅ |
 | K-026 | ~~`CHECK_IPC`~~ | — | — | **不存在** | ✅ 已确认: C 源码无此宏, Doc 21/22 已删除虚构引用, IPC 过滤通过 s_ipc_to 无条件执行 |
 | K-027 | `PMAGIC` | proc.h | 进程表 magic 0xC0FFEE1 | `PMAGIC = 0x00C0_FFEE1` | ✅ |
 

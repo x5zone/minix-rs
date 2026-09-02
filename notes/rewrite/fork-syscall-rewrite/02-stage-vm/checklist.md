@@ -209,7 +209,7 @@
 |---|--------|---------|------|-----------|------|
 | G-001 | `vmproc[]` | glo.h:20 | 进程表 (1024 槽位) | `VM_PROC_TABLE: [AssumeSyncCell<VmProc>; VM_PROC_COUNT]` | 已实现 (vmproc/table.rs) |
 | G-002 | `enable_filemap` | glo.h:22 | 文件映射开关 | `GLOBAL.enable_filemap` | 已实现 (global.rs) |
-| G-003 | `kernel_boot_info` | glo.h:25 | 启动信息 | `BOOT_INFO` | 已实现 (global.rs) |
+| G-003 | `kernel_boot_info` | glo.h:25 | 启动信息 | `VmServer.boot_procs`（`BootParams`，全局 `BOOT_INFO` 已删，V9-P3-1） | 已实现 (vm_server.rs) |
 | G-004 | `nocheck/incheck/sc_lastline` | glo.h:28-30 | 健全检查控制 | 跳过 (cfg 控制) | 跳过 |
 | G-005 | `sc_lastfile` | glo.h:31 | 健全检查位置 | 跳过 | 跳过 |
 | G-006 | `mem_type_anon` | glo.h:37 | 匿名内存类型 | `MEM_TYPE_ANON` | 已实现 (memtype.rs:692) |
@@ -559,8 +559,8 @@
 | F-220 | `map_region_lookup_type` | region.c:1303 | 按类型查 | `RegionMap::find_by_type` | 已实现 |
 | F-221 | `map_get_phys` | region.c:1323 | 取物理地址 | `query::handle_get_phys` (query.rs) | 已实现 |
 | F-222 | `map_get_ref` | region.c:1343 | 取引用数 | `query::handle_get_refcount` (query.rs) | 已实现 |
-| F-223 | `get_usage_info_kernel` | region.c:1357 | 内核使用信息 | `VmUsageInfo::kernel` | 已实现 (query.rs) |
-| F-224 | `get_usage_info_vm` | region.c:1366 | VM 使用信息 (static) | `VmUsageInfo::collect` | 已实现 (query.rs) |
+| F-223 | `get_usage_info_kernel` | region.c:1357 | 内核使用信息 | `UsageSources.kernel_bytes`（vm_server.rs:813-826，query.rs Usage 特判） | 已实现 (query.rs) |
+| F-224 | `get_usage_info_vm` | region.c:1366 | VM 使用信息 (static) | `UsageSources.vm_self_bytes`（vm_server.rs:813-826，ARCH: self_page_count） | 已实现 (query.rs) |
 | F-225 | `is_stack_region` | region.c:1384 | 是否栈区 (static) | `RegionMap::is_stack_region` | 已实现 |
 | F-226 | `get_usage_info` | region.c:1395 | 使用信息 | `query::handle_info` Usage分支 (query.rs) | **已修复 (2026-06-15)**: UsageInfo 与 C 的 `vm_usage_info` 对齐 (total/common/shared/virtual/mvirtual), 遍历 region+physblock 按 C 逻辑计算 (refcount>1→common, VR_SHARED→shared, unmapped stack→mvirtual扣减) |
 | F-227 | `get_region_info` | region.c:1452 | 区信息 | `query::handle_info` | 已实现 (query.rs) |
@@ -599,7 +599,7 @@
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| F-246 | `get_mem_chunks` | utility.c:44 | 取内存块 | `BOOT_INFO.mem_chunks` | 已实现 (global.rs) |
+| F-246 | `get_mem_chunks` | utility.c:44 | 取内存块 | `BootParams.mem_chunks`（`BOOT_INFO` 已删，V9-P3-1） | 已实现 (boot.rs) |
 | F-247 | `vm_isokendpt` | utility.c:84 | 端点合法 | `Endpoint::is_valid` + `VmServer::vm_isokendpt` | ✅ **已实现 + From<EndpointError> impls 已完成**: `vmproc::table` 公开 re-export `EndpointError` enum; 7 个调用模块 (munmap/query/rs/mmap/brk/map_phys/exit) 全部实现 `impl From<EndpointError> for XxxError { fn from(_: EndpointError) -> Self { XxxError::ProcessNotFound } }`; 调用点统一为 `table.vm_isokendpt(endpoint)?` 风格 (Rust `?` 操作符)。保留分层决策: `QueryError::to_errno_for_rusage()` 仍是上下文相关 (getrusage vs 其他查询), `From<QueryError> for VmError` 处理常规路径。`query_rusage_error_to_vm_error` 仍由 dispatcher 调用 (该映射是 ESRCH vs EINVAL, 无法用 From 表达)。 |
 | F-248 | `do_info` | utility.c:100 | 信息 | `query::handle_info` (query.rs) | **已修复 (2026-06-15)**: UsageInfo 与 C 的 `vm_usage_info` 对齐 (total/common/shared/virtual_total/mvirtual), 移除了不存在的 text/data/stack 字段. `shared` 按 C 逻辑计算 (refcount>1 + VR_SHARED flag), 不再按 `def_memtype.name()` 匹配. `handle_info` 新增 `frames: &PageFrames` 参数以查询 per-page refcount. |
 | F-249 | `swap_proc_slot` | utility.c:188 | 交换进程槽 | `ActiveProc::swap_proc_slot` (vmproc_handle.rs:613) | 已实现 — **SAFETY 注释已补全 (2026-06-14)**: 4 大不变性 (distinct pointers / bitwise swap safety / no concurrent access / no hardware in-flight) + 显式 C 源引用 + 逐字段类型分析 + `debug_assert_ne!` 防御性 guard + 测试 `test_swap_proc_slot_preserves_identities` |
@@ -705,7 +705,7 @@
 
 ### 8.1 P0 — 必须修复 (6 项, 原 19 项已修复 13 项)
 
-1. ~~**IpcTransport trait 实现** — `vm_server::ipc_send/ipc_receive` 当前是 stub (VFS 不是阻塞项，IPC 是功能待实现)~~ ✅ **已修复 (2026-06-13)**: `os/servers/vm/src/ipc/transport.rs` 新建, 定义 `IpcTransport` trait + `KernelIpcTransport` (生产) + `TestIpcTransport` (测试) 双 impl. 6 个测试覆盖. 遗留: `KernelIpcTransport` 体内 `unimplemented!()` 等 P0-02 kernel IPC 落地.
+1. ~~**IpcTransport trait 实现** — `vm_server::ipc_send/ipc_receive` 当前是 stub (VFS 不是阻塞项，IPC 是功能待实现)~~ ✅ **已修复 (2026-06-13)**: `os/servers/vm/src/ipc/transport.rs` 新建, 定义 `IpcTransport` trait + `KernelIpcTransport` (生产) + `TestIpcTransport` (测试) 双 impl. 6 个测试覆盖. 遗留: `KernelIpcTransport` 体内 `unimplemented!()` 等 P0-02 kernel IPC 落地. **DEFERRED 依赖链（todo P1-3，2026-08-16 明确）**: kernel IPC core → `minix_arch` `sys_ipc_*` 接缝 → `KernelIpcTransport::receive/send` 实现（transport.rs:151/:165）→ 主循环端到端验证（vm_server.rs 收发失败分支 panic 解除）；落地时 `Message` 编解码收敛到 minix-types codec trait（`EncodeToM1`/`DecodeFromM1`），消除 vm_server.rs 手工布局。
 2. ~~**slab 模块决策** — `os/servers/vm/src/slab/` 空目录, 移植或删除~~ → **已修复**: 目录已不存在
 3. ~~**dispatch_vfs_mmap** — VFS 文件 mmap 路径未实现~~ → **已修复**: handle_vfs_mmap 已实现 (mmap.rs:273)
 4. ~~**dispatch_procctl** — VFS transid 流程未实现~~ → **已修复 (2026-06-16)**: dispatch_procctl 完整实现 (VMPPARAM_CLEAR + VMPPARAM_HANDLEMEM); handle_vfs_transid 接入 dispatch_procctl; transid 辅助函数; 7 个测试

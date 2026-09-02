@@ -2,7 +2,7 @@
 //!
 //! Defines the messages exchanged between PM and other services (Kernel, VM, VFS).
 
-use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, ESRCH, Endpoint};
+use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, EPERM, ESRCH, Endpoint};
 
 /// PM request message types.
 ///
@@ -43,6 +43,8 @@ pub enum PmError {
     InvalidEndpoint,
     /// Slot is already in use.
     SlotInUse,
+    /// Permission denied (EPERM, e.g., non-RS srv_fork).
+    PermissionDenied,
     /// Internal error.
     InternalError,
     /// Operation not implemented.
@@ -57,6 +59,7 @@ impl PmError {
             Self::OutOfMemory => ENOMEM,
             Self::InvalidEndpoint => ESRCH,
             Self::SlotInUse => EINVAL,
+            Self::PermissionDenied => EPERM,
             Self::InternalError => EIO,
             Self::NotImplemented => ENOSYS,
         }

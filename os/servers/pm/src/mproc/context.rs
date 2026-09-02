@@ -21,7 +21,7 @@
 //! 3. **Microkernel principle**: Other services don't need to know PM's context implementation
 
 use minix_types::UserSlot;
-use crate::mproc::{ProcTable, Process, Privilege, Credentials};
+use crate::mproc::{ProcTable, Process, Privilege};
 
 /// PM context.
 ///
@@ -79,9 +79,13 @@ impl<'a> PmContext<'a> {
     }
     
     /// Checks if current process is root.
+    ///
+    /// C: LAST_FEW 容量检查用 `rmp->mp_effuid != 0`（forkexit.c:61）——
+    /// root 判定以 **effective uid** 为准，非 real uid。系统进程
+    /// （`Privilege::Kernel`）视为 root（特权进程不受保留槽限制）。
     pub fn is_root(&self) -> bool {
         match &self.current_proc().resources.privilege {
-            Privilege::User(creds) => creds.user.real == 0,
+            Privilege::User(creds) => creds.is_superuser(),
             Privilege::Kernel => true,
         }
     }
@@ -100,7 +104,7 @@ impl<'a> PmContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mproc::Lifecycle;
+    use crate::mproc::{Credentials, Lifecycle};
     
     #[test]
     fn test_pm_context_new() {
@@ -115,5 +119,38 @@ mod tests {
         table.procs[0].state.lifecycle = Lifecycle::Running;
         let ctx = PmContext::new(&mut table, 0);
         assert!(ctx.current_proc().is_in_use());
+    }
+
+    #[test]
+    fn test_is_root_effective_uid() {
+        // D6（03-mproc-table.md §3.6）：root 判定以 effective uid 为准
+        // （C: `rmp->mp_effuid != 0`，forkexit.c:61），非 real uid。
+        let mut table = ProcTable::new();
+        table.procs[0].state.lifecycle = Lifecycle::Running;
+
+        // 普通用户：real = eff = 1000 → 非 root。
+        table.procs[0].resources.privilege =
+            Privilege::User(Credentials::new(1000, 100));
+        let ctx = PmContext::new(&mut table, 0);
+        assert!(!ctx.is_root());
+
+        // setuid 提权：real = 1000、effective = 0 → root（D6 修正的核心场景）。
+        let mut creds = Credentials::new(1000, 100);
+        creds.user.effective = 0;
+        table.procs[0].resources.privilege = Privilege::User(creds);
+        let ctx = PmContext::new(&mut table, 0);
+        assert!(ctx.is_root());
+
+        // real = 0 但 effective = 1000（降权场景）→ 非 root。
+        let mut creds = Credentials::new(0, 0);
+        creds.user.effective = 1000;
+        table.procs[0].resources.privilege = Privilege::User(creds);
+        let ctx = PmContext::new(&mut table, 0);
+        assert!(!ctx.is_root());
+
+        // 系统进程（PRIV_PROC）→ root。
+        table.procs[0].resources.privilege = Privilege::Kernel;
+        let ctx = PmContext::new(&mut table, 0);
+        assert!(ctx.is_root());
     }
 }

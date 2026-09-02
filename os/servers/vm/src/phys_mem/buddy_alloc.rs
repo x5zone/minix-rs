@@ -220,8 +220,8 @@ impl BuddyAllocator {
             return Some(page);
         }
 
-        if order < self.max_order {
-            if let Some(block) = self.alloc_block(order + 1, max_page) {
+        if order < self.max_order
+            && let Some(block) = self.alloc_block(order + 1, max_page) {
                 let buddy = block + (1usize << order);
                 let buddy_size = 1usize << order;
                 if buddy + buddy_size <= max_page {
@@ -237,7 +237,6 @@ impl BuddyAllocator {
                 self.page_orders[block] = (order as u8) | FLAG_ALLOCATED;
                 return Some(block);
             }
-        }
 
         None
     }
@@ -320,7 +319,7 @@ impl PhysAllocator for BuddyAllocator {
         };
 
         let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1 * 1024 * 1024) / CLICK_SIZE
+            (1024 * 1024) / CLICK_SIZE
         } else if flags.contains(PageAllocFlags::LOWER16MB) {
             (16 * 1024 * 1024) / CLICK_SIZE
         } else {
@@ -545,7 +544,7 @@ mod tests {
         let a = alloc.alloc_mem(3, PageAllocFlags::empty()).unwrap();
         let start = a.page_index();
 
-        assert!(start % 4 == 0, "order-2 block should be 4-page aligned, got {start}");
+        assert!(start.is_multiple_of(4), "order-2 block should be 4-page aligned, got {start}");
         assert!(start + 3 <= tp);
 
         alloc.free_mem(a, 3);

@@ -740,9 +740,9 @@ pub trait TrapEntryArch: Sized {
 
 | 架构 | 实现位置 | 机制 | C 源码对照 |
 |------|---------|------|-----------|
-| x86-64 | [x86_64/trap_entry.rs:263-282](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/trap_entry.rs#L263-L282) | `set_gate(IPC_VECTOR=33, entry_point, dpl=3, ist=0, is_trap=true)` | protect.c:147 `{ ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE }` |
-| aarch64 | [arm64/trap_entry.rs:74-92](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/trap_entry.rs#L74-L92) | no-op（SVC 共享向量，运行时 `cmp r3, #IPCVEC_INTR; beq ipc_entry`） | earm/mpx.S:181-184 |
-| riscv64 | [riscv64/trap_entry.rs:77-93](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/trap_entry.rs#L77-L93) | no-op（ecall 共享向量，运行时 `a7 < 17` 软件分流） | Minix3 无 RISC-V port，设计对齐 ARM64 模式 |
+| x86-64 | x86_64/trap_entry.rs:263-282 | `set_gate(IPC_VECTOR=33, entry_point, dpl=3, ist=0, is_trap=true)` | protect.c:147 `{ ipc_entry_softint_orig, IPC_VECTOR_ORIG, USER_PRIVILEGE }` |
+| aarch64 | arm64/trap_entry.rs:74-92 | no-op（SVC 共享向量，运行时 `cmp r3, #IPCVEC_INTR; beq ipc_entry`） | earm/mpx.S:181-184 |
+| riscv64 | riscv64/trap_entry.rs:77-93 | no-op（ecall 共享向量，运行时 `a7 < 17` 软件分流） | Minix3 无 RISC-V port，设计对齐 ARM64 模式 |
 
 ### 4.3 init_protection() 的实现
 

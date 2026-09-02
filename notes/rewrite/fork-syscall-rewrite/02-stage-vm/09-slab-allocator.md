@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 4 — 自举的堆与元数据（堆分配面）
 > **源码**: `minix3/minix/servers/vm/slaballoc.c`（528 行：`SLABSIZES` :29 / `ITEMSPERPAGE` :31 / `ELBITS` :33 / `BITPAT` :34 / `BITEL` :35 / `GETBIT` :69 / `SETBIT` :70 / `CLEARBIT` :71 / `OBJALIGN` :73 / `MINSIZE` :75 / `MAXSIZE` :76 / `USEELEMENTS` :77 / `struct sdh` :96 / `DATABYTES` :111 / `MAGIC1` :113 / `MAGIC2` :114 / `JUNK` :115 / `NOJUNK` :116 / `struct slabdata` :118 / `slabs[]` :125 / `GETSLAB` :130 / `ADDHEAD` :140 / `UNLINKNODE` :151 / `newslabdata` :159 / `checklist` :194 / `slab_sanitycheck` :229 / `slabsane_f` :240 / `slaballoc` :259 / `objstats` :344 / `slabfree` :406 / `slablock` :464 / `slabunlock` :483 / `slabstats` :504）+ `minix3/minix/servers/vm/proto.h:133-134`（`SLABALLOC`/`SLABFREE` 宏）+ `minix3/minix/servers/vm/vm.h:13`（MEMPROTECT）+ `minix3/minix/servers/vm/vm.h:52`（VMP_SLAB）+ `minix3/minix/servers/vm/pagetable.c:403`（`vm_pagelock`）
-> **Rust 模块**: `os/servers/vm/src/heap_arena.rs`（`HeapArena` + `HeapArenaError`）+ `os/servers/vm/src/global.rs`（`VmAllocator` bump + `#[global_allocator]` + `PAGE_ALLOC_PTR`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`vm_self_mappages`/`vm_self_unmap`）+ `os/servers/vm/src/direct_map.rs`（`VM_HEAP_BASE`/`VM_HEAP_SIZE`/`VM_HEAP_LIMIT`）+ `os/servers/vm/src/vm_server.rs`（接线）
+> **Rust 模块**: `os/servers/vm/src/heap_arena.rs`（`HeapArena` + `HeapArenaError`）+ `os/servers/vm/src/global.rs`（`VmAllocator` free-list + `#[global_allocator]` + `PAGE_ALLOC_PTR`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`vm_self_mappages`/`vm_self_unmap`）+ `os/servers/vm/src/direct_map.rs`（`VM_HEAP_BASE`/`VM_HEAP_SIZE`/`VM_HEAP_LIMIT`）+ `os/servers/vm/src/vm_server.rs`（接线）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（`VmPageAllocator` 给堆供物理页）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（`vm_self_mappages`/`vm_self_unmap` 操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 时序 + `__minix_init` 分界线）
 > **说明**: 内核堆分配语义模块：**Minix3 的 slab 尺寸分类分配器（slaballoc.c 全量）、`SLABALLOC`/`SLABFREE` 类型化宏、MEMPROTECT 调试写保护、slabstats 统计**。**不覆盖**：物理页分配器（06）、页表结构/操作（07/08）、元数据搬迁（10）、内存占用统计（26）。
 
@@ -17,7 +17,7 @@ VM server 自己也是一个用户态进程，它需要**堆**：libc 的 `mallo
 本文档回答三个问题：
 
 1. **堆何时可用**——`init_vm()` 里 `__minix_init()` 之前的"堆不可用"与之后的"堆可用"分界线（启动时序锚点，§1.1）。
-2. **堆从哪来、怎么组织**——Minix3 用 slab 尺寸分类分配器（§1.3-§1.5），Rust 侧用 `HeapArena` + `VmAllocator`（bump）替代（§1.8）。
+2. **堆从哪来、怎么组织**——Minix3 用 slab 尺寸分类分配器（§1.3-§1.5），Rust 侧用 `HeapArena` + `VmAllocator`（free-list，ARCH A-3 v2）替代（§1.8）。
 3. **调试期如何保护堆**——MEMPROTECT 写保护硬化语义（§1.6）。
 
 它在启动时序中的位置：
@@ -33,7 +33,7 @@ init_vm()（main.c:428）
   ├─ exec_bootproc() / CALLMAP / sef_local_startup()         ← 01/15
 ```
 
-Rust 侧对应的分界线是 `VmServer::new()` 中的 `register_page_alloc()`（`vm_server.rs:92`）：此后 `#[global_allocator]` 的 bump 分配器才有物理页来源。**C 的分界线与 Rust 的分界线不是同一时刻**——前者是 libc 构造完成，后者是全局分配器获得供页能力（§1.1 详述）。
+Rust 侧对应的分界线是 `VmServer::new()` 中的 `register_page_alloc()`（`vm_server.rs:92`）：此后 `#[global_allocator]` 的 `VmAllocator` 才有物理页来源（`refill_arena()` 供页）。**C 的分界线与 Rust 的分界线不是同一时刻**——前者是 libc 构造完成，后者是全局分配器获得供页能力（§1.1 详述）。
 
 ### 1.1 堆可用分界线：init_vm() 里堆何时可用
 
@@ -58,7 +58,7 @@ Rust 侧的对应物有两层：
 
 堆的物理页来源：`newslabdata()`（slaballoc.c:166）调用 `vm_allocpage(&p, VMP_SLAB)`——**VM 自己的物理页分配器（06）给堆供页**，`VMP_SLAB`（vm.h:52，reason=3）是页分配器的用途标记（与 `VMP_PAGETABLE` 等并列，供统计/审计）。这意味着堆页与 VM 管理的其他物理页同池：堆页可被碎片化分配，没有"堆专用内存区"。
 
-堆的 VA 组织：slab 分配器要求对象地址在**连续 VA 内**（`data + i*bytes` 的指针算术），因此 slab 页必须连续映射。32 位 Minix3 的 VM 地址空间是线性映射的（页表直接覆盖整个空间），VA 连续性天然成立；64 位 Rust 重写引入 Direct Map 后，**Direct Map 提供稳定 VA（VA = PA + BASE）但不提供 VA 连续性**——物理洞变成 VA 洞，bump 分配器无法在洞上行走。这是 09 的核心架构问题：
+堆的 VA 组织：slab 分配器要求对象地址在**连续 VA 内**（`data + i*bytes` 的指针算术），因此 slab 页必须连续映射。32 位 Minix3 的 VM 地址空间是线性映射的（页表直接覆盖整个空间），VA 连续性天然成立；64 位 Rust 重写引入 Direct Map 后，**Direct Map 提供稳定 VA（VA = PA + BASE）但不提供 VA 连续性**——物理洞变成 VA 洞，任何需要 VA 连续的分配器（bump/free-list）都无法在洞上行走。这是 09 的核心架构问题：
 
 > **物理页可碎片化，VA 必须连续。** Direct Map 解决"任意物理页有稳定 VA"，`HeapArena` 解决"堆的 VA 连续"——两者分工（§3.2 D2）。
 
@@ -127,14 +127,16 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 
 ### 1.8 ARCH A-3：为什么 Rust 侧不实现 slab
 
-> **[ARCH: A-3]** `slaballoc.c`（528 行）→ `HeapArena`（连续 VA 区间）+ 全局 `VmAllocator`（bump）——slab 尺寸分类/位图/空闲链**有意省略**。
+> **[ARCH: A-3]** `slaballoc.c`（528 行）→ `HeapArena`（连续 VA 区间）+ 全局 `VmAllocator`——slab 尺寸分类/位图**有意省略**；空闲链复用由 free-list 承担（A-3 v2）。
+>
+> **A-3 v2（2026-08-16，todo P1-1）**：v1 用纯 bump（`dealloc` no-op，堆只增不减）；v2 改为**地址有序 free-list + 首适配 + 分裂/合并**（`linked_list_allocator` 思路），释放的堆对象（region Vec、page-cache 条目、临时消息）被复用——回收语义与 C slab 的空闲链一致，长期进程堆不再单调增长。见 §3.1 D1 v2。
 
 不实现 Minix3 式专用 slab 分配器的理由（因果链，不是"Minix3 过时"）：
 
 1. **对象生命周期表达方式不同**：C 无所有权/析构，分配器必须用位图 + 空闲链簿记"谁被占用、释放后如何复用"；Rust 的类型系统（RAII + 借用检查）让对象生命周期由编译器保证——分配器的簿记职责消失。
-2. **分配模式不同**：C 侧 slab 服务于**高频分配/释放**（每次 mmap/munmap/fork 都建/毁 region、phys_block、fdref）；Rust 侧 VM 的分配集中在启动期 + 少量长期对象，服务路径的临时对象经 `Box`/`Vec` 由 bump 分配 + 析构处理（dealloc no-op，§3.1）。
+2. **分配模式不同**：C 侧 slab 服务于**高频分配/释放**（每次 mmap/munmap/fork 都建/毁 region、phys_block、fdref）；Rust 侧 VM 的分配集中在启动期 + 少量长期对象，服务路径的临时对象经 `Box`/`Vec` 分配 + 析构释放（A-3 v2：free-list 复用，§3.1）。
 3. **32 位地址空间稀缺性消失**：C 侧位图管理（每对象 1 bit）是对 4GB 地址空间的精打细算；64 位 + 64MB 堆区间（`VM_HEAP_SIZE`，os/arch/src/arch/direct_map.rs:69）无需这种粒度。
-4. **代价诚实声明**：无对象复用（释放对象的空间不立即归还）、无 per-object 统计、长期进程堆只增不减（arena 页永驻）——对 VM 这种"启动后稳定"的长期服务是可接受的；若未来出现高频建毁模式，硬化轮可再评估（§6 过渡）。
+4. **代价诚实声明（v2 修订）**：v1 的代价（无对象复用、堆只增不减）在 2026-08-16 架构审查（todo P1-1）中被判定为长期运行短板，v2 以 free-list 复用消除；剩余代价：arena 页不收缩（与 v1 相同，见 §5.3 缺口）、无 per-object 统计。
 
 代价与收益的对照在 §3.1 D1 展开，与 Redox/Linux 的对照在 §1.9。
 
@@ -142,16 +144,16 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 
 | 维度 | Minix3 slab（slaballoc.c） | minix-rs `VmAllocator` + `HeapArena` | Redox `linked_list_allocator` | Linux slab/slub |
 |------|---------------------------|-------------------------------------|------------------------------|-----------------|
-| 分配对象 | 固定尺寸类对象（8..207B） | 任意 `Layout`（bump 页内切割） | 任意大小（页内切割 + 空闲块链） | 内核对象缓存（kmalloc/专用 cache） |
-| 元数据 | 页尾 `sdh`（位图/链表/魔数） | 无（bump cursor） | 空闲块链头 | per-CPU slab + 着色 |
-| 复用 | 位图清位后复用 + 空页还回 | 无（dealloc no-op） | 空闲块合并复用 | 对象复用 + slab 收缩 |
-| 防碎片 | 尺寸分类隔离 | 连续 VA 区间 + bump（无页内碎片） | 首次适配（可能有碎片） | 尺寸分类 + per-CPU |
+| 分配对象 | 固定尺寸类对象（8..207B） | 任意 `Layout`（free-list 块 + bump 补充） | 任意大小（页内切割 + 空闲块链） | 内核对象缓存（kmalloc/专用 cache） |
+| 元数据 | 页尾 `sdh`（位图/链表/魔数） | 空闲块头 `FreeBlock{size, next}`（块内存储） | 空闲块链头 | per-CPU slab + 着色 |
+| 复用 | 位图清位后复用 + 空页还回 | free-list 复用 + 相邻块合并（按需分裂） | 空闲块合并复用 | 对象复用 + slab 收缩 |
+| 防碎片 | 尺寸分类隔离 | 连续 VA 区间 + 地址有序 free-list + 合并 | 首次适配（可能有碎片） | 尺寸分类 + per-CPU |
 | 同步 | 无（单线程 VM） | 无（单线程事件循环） | 无（单进程） | per-CPU + 锁 |
 | 定位 | VM 服务自用 | `#[global_allocator]` 全局 | `GlobalAlloc` 全局 | 内核全局 |
 
 对照要点：
 
-- **Redox 同构**：Redox 的 `src/allocator/linked_list.rs` 用 `linked_list_allocator::Heap` + `GlobalAlloc`——先在**连续 VA 区间**上建立分配器（`HEAP_START`/`HEAP_SIZE`），物理帧由内核的 `FrameAllocator`（BumpAllocator/BuddyAllocator）独立管理。minix-rs 的 `VmAllocator`（VA 区间内切割）对应 Redox 的 GlobalAlloc 层，`VmPageAllocator`（06）对应 `FrameAllocator` 层——**"连续 VA 区间 + 独立物理帧分配器"是主流 OS 的两层结构**，minix-rs 的 HeapArena 正是这个结构的 VA 区间管理器。
+- **Redox 同构**：Redox 的 `src/allocator/linked_list.rs` 用 `linked_list_allocator::Heap` + `GlobalAlloc`——先在**连续 VA 区间**上建立分配器（`HEAP_START`/`HEAP_SIZE`），物理帧由内核的 `FrameAllocator`（BumpAllocator/BuddyAllocator）独立管理。minix-rs 的 `VmAllocator`（A-3 v2 后与 `linked_list_allocator` 同为 free-list 形态）对应 Redox 的 GlobalAlloc 层，`VmPageAllocator`（06）对应 `FrameAllocator` 层——**"连续 VA 区间 + 独立物理帧分配器"是主流 OS 的两层结构**，minix-rs 的 HeapArena 正是这个结构的 VA 区间管理器。
 - **Linux slab/slub**：通用内核对象缓存，per-CPU、着色、SMP 优化——它的存在理由（SMP 并发 + 内核全局高频 kmalloc）在单线程用户态服务器 VM 中不成立；Minix3 slab 是 32 位单线程朴素版（无 per-CPU/着色）。minix-rs 不实现 slab 不是"简化 Linux"，而是"工作负载与执行模型不匹配"。
 - **Memkind/arena 惯例**：现代分配器普遍采用"保留连续 VA + 按需映射物理页"策略（`mmap` 保留 + `mprotect`/`mremap` 调整）——`HeapArena::grow`（逐页映射）与 arena 分配器的 lazy-commit 同构。
 
@@ -160,7 +162,7 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 - 堆是自举的：物理页来自 VM 自己的分配器（`vm_allocpage(VMP_SLAB)`），VA 连续性由专门区间保证。
 - Minix3 slab = 尺寸分类 + 单页位图 + 空闲链，本质是 C 侧的对象生命周期簿记；`SLABALLOC`/`SLABFREE` 宏是 C 侧的类型化约定。
 - MEMPROTECT 是调试期写保护硬化（默认关），生产语义等价于"页可写"。
-- **[ARCH: A-3]** Rust 侧用 `HeapArena` + `VmAllocator`（bump）替代 slab——类型系统承担簿记，bump 承担分配，与 Redox 的"连续 VA + GlobalAlloc"同构。
+- **[ARCH: A-3]** Rust 侧用 `HeapArena` + `VmAllocator` 替代 slab——类型系统承担簿记，free-list 承担回收（A-3 v2），与 Redox 的"连续 VA + `linked_list_allocator` 式 GlobalAlloc"同构。
 
 ---
 
@@ -419,22 +421,29 @@ proto.h:133-134（§1.5 已述）。消费方实证（2026-08-15 `rg SLABALLOC|S
 
 > 本章为设计决策正文版（D1-D6 与 plan.md §7.3 ARCH A-3 对应），代码侧标注 `[ARCH: A-3]`。设计契约快照按项目规范存于独立目录，正文不引用。
 
-### 3.1 D1: slab → VmAllocator bump + HeapArena（ARCH A-3 主决策）
+### 3.1 D1: slab → VmAllocator free-list + HeapArena（ARCH A-3 主决策，v2 修订）
 
 - **C**：slaballoc.c 的 200 尺寸类 + 页内位图 + 空闲链（§2.1-§2.7）。
-- **Rust**：`VmAllocator`（global.rs）——连续 VA 区间（arena）内游标 bump：
+- **Rust（v1）**：`VmAllocator`（global.rs）——连续 VA 区间（arena）内游标 bump，`dealloc` no-op。2026-08-16 架构审查（todo P1-1）判定"长期运行堆只涨不跌"为最突出短板后，v2 落地 free-list。
+- **Rust（v2）**：`VmAllocator`（global.rs:604）——地址有序 free-list（首适配 + 分裂）+ bump 补充 + arena 尾块回收：
 
 ```text
 Box::new → GlobalAlloc::alloc → VmAllocator::alloc
-    → bump within current arena（cursor + align_offset）
-    → arena exhausted? → refill_arena()
-        → HEAP_ARENA.grow(ARENA_PAGES=16, page_alloc)   // 64KB 新区块
-        → new arena_base = HeapArena VA
+    → free-list first-fit（地址有序；分裂 + 相邻合并）
+        → 命中 → 分裂余块，返回对齐 payload（= 块起点）
+    → else bump within current arena（cursor + align_up）
+        → arena exhausted? → free_tail()（尾块入 free-list）+ refill_arena()
+            → HEAP_ARENA.grow(ARENA_PAGES=16, page_alloc)   // 64KB 新区块
+            → new arena_base = HeapArena VA
+        → retry（oversize guard 保证新 arena 必可容纳）
+
+GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{size, next}
+    → 插入地址有序 free-list（相邻块合并）
 ```
 
-- **行为契约**：分配按 `layout.align()` 对齐（`align_offset`）；arena 耗尽自动 refill（`alloc` 递归一次）；refill 失败（物理页不足 / `PAGE_ALLOC_PTR` 未注册）→ 返回 `null_mut`（`Box` 会 abort）；`dealloc` no-op——对象释放不归还空间。
-- **差异**：尺寸分类/位图/空闲链/复用 → 结构性省略；`SLABALLOC/SLABFREE` 类型化宏 → `Box::new/drop`（编译器保证类型与释放）；C 的按对象计数 → 无统计。
-- **理由**：§1.8 因果链——类型系统承担簿记、分配模式为启动期集中 + 长期稳定、64 位地址空间充裕。**代价**：无对象复用（bump 单调递增）、堆只增不减——对"启动后稳定"的长期服务可接受；Redox 的 `linked_list_allocator` 提供空闲块复用是另一种取舍（§1.9），minix-rs 选 bump 是因为 VM 无高频建毁模式。
+- **行为契约（v2）**：分配按 `layout.align()` 对齐（≤16 对齐零填充；>16 对齐时 padding ≥ 32B 转独立 free 块）；先查 free-list（复用优先），未命中才 bump；arena 耗尽 → 尾块回收 + refill（每块 16 页 = 64KB）；refill 失败（物理页不足 / `PAGE_ALLOC_PTR` 未注册）→ 返回 `null_mut`（`Box` 会 abort）；`dealloc` 携带与 `alloc` 相同的 `Layout`（GlobalAlloc 契约），按 `size = round_up(layout.size(), 16)` 重建块并入链（合并相邻）。
+- **差异（v2 修订）**：尺寸分类/位图 → 结构性省略（free-list 承担复用，对应 C slab 的空闲链语义）；`SLABALLOC/SLABFREE` 类型化宏 → `Box::new/drop`（编译器保证类型与释放）；C 的按对象计数 → 无统计。
+- **理由**：§1.8 因果链 + P1-1 实测——类型系统承担簿记；free-list 复用消除 v1"长期进程堆只涨不跌"；与 Redox `linked_list_allocator`（同为"连续 VA + free-list GlobalAlloc"）对齐；arena 页不收缩的残余代价见 §5.3。
 
 ### 3.2 D2: 物理页碎片化 → HeapArena 连续 VA（三 VA 模型）
 
@@ -469,8 +478,8 @@ Box::new → GlobalAlloc::alloc → VmAllocator::alloc
 
 - **C**：`slabs[]`/`pages` 是静态全局，`newslabdata` 直接调 `vm_allocpage`（全局函数，无注册）。
 - **Rust**：`GlobalAlloc::alloc(&self)` 无 `&mut` 参数 → `VmAllocator` 无法直接持有 `VmPageAllocator`；`PAGE_ALLOC_PTR: AtomicPtr<VmPageAllocator>`（global.rs）作为间接层：
-  - `register_page_alloc(alloc)`（global.rs:415）：`compare_exchange(null → ptr)`——首次注册正常；同指针幂等重注册；不同指针 → 双初始化 bug 检测。**BSS → 堆搬迁场景为防御性设计**：当前 `main.rs` 中 `VmServer` 在栈上创建，无搬迁发生；代码注释保留该路径以防未来 VmServer 被 `Box` 化。
-  - `unregister_page_alloc()`（global.rs:451）：VmServer::drop 置 null（vm_server.rs:800）。
+  - `register_page_alloc(alloc)`（global.rs:445）：`compare_exchange(null → ptr)`——首次注册正常；同指针幂等重注册；不同指针 → 双初始化 bug 检测。**BSS → 堆搬迁场景为防御性设计**：当前 `main.rs` 中 `VmServer` 在栈上创建，无搬迁发生；代码注释保留该路径以防未来 VmServer 被 `Box` 化。
+  - `unregister_page_alloc()`（global.rs:481）：VmServer::drop 置 null。
   - `refill_arena`：读指针，null → 返回 false（`alloc` 返回 null）。
 - **行为契约**：注册必须先于首次分配（`VmServer::new`，vm_server.rs:92）；`page_alloc_mut()` 对 null 指针 panic（fail-fast）；指针生命期 = VmServer 生命期 ≥ GLOBAL 生命期（SAFETY 注释链，global.rs）。
 - **执行模型**：VM 是用户态服务器单线程事件循环（CLAUDE.md Execution Model）——`AtomicPtr` + `AssumeSyncCell` 足够，无需 Mutex；与 kernel SMP 的 BKL 约束正交。
@@ -479,9 +488,9 @@ Box::new → GlobalAlloc::alloc → VmAllocator::alloc
 
 | # | C 行为 | Rust 行为 | 类型 |
 |---|--------|----------|------|
-| 1 | `slaballoc`/`slabfree`（尺寸分类 + 位图复用） | `GlobalAlloc::alloc/dealloc`（bump，dealloc no-op） | 结构性替代（D1，ARCH A-3） |
+| 1 | `slaballoc`/`slabfree`（尺寸分类 + 位图复用） | `GlobalAlloc::alloc/dealloc`（free-list 复用 + bump 补充，A-3 v2） | 结构性替代（D1，ARCH A-3） |
 | 2 | `SLABALLOC`/`SLABFREE` 宏（类型化 + 置 NULL） | `Box::new`/`drop`（编译器保证类型/释放） | 语义对应（D1） |
-| 3 | `slabs[]`/`struct sdh`/`usebits` 空闲链 + 位图 | `HeapArena`（base/limit/top）+ cursor | 结构性替代（D1/D2） |
+| 3 | `slabs[]`/`struct sdh`/`usebits` 空闲链 + 位图 | `HeapArena`（base/limit/top）+ free-list（`FreeBlock` 链，地址有序）+ cursor | 结构性替代（D1/D2，A-3 v2） |
 | 4 | `newslabdata`/`vm_freepages`（按页取/还） | `HeapArena::grow/shrink`（按 arena 批量 + 回滚） | VA 区间管理（D2/D3） |
 | 5 | `vm_allocpage(VMP_SLAB)` 供页 | `VmPageAllocator::alloc_phys` | 语义等价（06） |
 | 6 | MEMPROTECT + `slablock`/`slabunlock`/`vm_pagelock` | 未实现（硬化项移交） | 移交（D4） |
@@ -522,43 +531,50 @@ Box::new → GlobalAlloc::alloc → VmAllocator::alloc
 4. **`AssumeSyncCell` 而非 Mutex**：单线程 VM 事件循环（CLAUDE.md Execution Model），`limit` 读写无需锁。
 5. **测试性**：`HeapArena::new()` const fn + 纯字段查询——常量边界测试（heap_arena.rs tests）零依赖可跑。
 
-### 4.2 `VmAllocator`：bump 分配器 + GlobalAlloc（global.rs）
+### 4.2 `VmAllocator`：free-list 分配器 + GlobalAlloc（global.rs）
 
-**结构**（global.rs:395-398）：
+**结构**（global.rs:604-611，A-3 v2）：
 
 | 字段 | 语义 |
 |------|------|
 | `arena_base: AssumeSyncCell<*mut u8>` | 当前 arena 起始（HeapArena 返回的 VA） |
-| `cursor: AssumeSyncCell<usize>` | arena 内偏移游标 |
+| `cursor: AssumeSyncCell<usize>` | arena 内偏移游标（bump 补充路径用） |
+| `free_head: AssumeSyncCell<*mut FreeBlock>` | 地址有序 free-list 头（块内存储 `FreeBlock{size, next}`） |
 
-**分配路径**（`unsafe impl GlobalAlloc`，global.rs:531-579）：
+**分配路径**（`unsafe impl GlobalAlloc`，global.rs:818-893）：
 
 ```text
 alloc(layout)
-  ├─ size > ARENA_BYTES（64KB）？ → 返回 null（fail-fast，不消耗堆）
+  ├─ payload = round_up(layout.size(), 16)（下限 16B）
+  ├─ payload + align - 1 > ARENA_BYTES（64KB）？ → 返回 null（fail-fast，不消耗堆）
+  ├─ try_alloc_from_free_list()：首适配（payload 起点 = 块起点 align_up）
+  │    └─ 命中 → padding/余块（≥ 32B）转 free 块入链；返回 payload 指针
   ├─ ensure_arena()：arena_base 为 null → refill_arena()
-  ├─ ptr = base + cursor；offset = ptr.align_offset(align)
-  ├─ cursor + offset + size ≤ ARENA_BYTES（64KB）？ → cursor += total，返回
-  └─ 否则 → refill_arena()（新 arena）→ 递归 alloc(layout)
+  └─ loop：
+       ├─ try_alloc_from_free_list() → 命中返回
+       ├─ alloc_bump()：ptr = align_up(base + cursor, align)；cursor += payload
+       ├─ 放不下 → free_tail()（[cursor, ARENA_BYTES) 尾块入链，不浪费）
+       └─ refill_arena() 失败 → 返回 null
 ```
 
-- `ARENA_PAGES = 16`（global.rs:489）→ `ARENA_BYTES = 64KB`/块（:490）。
-- `refill_arena()`（global.rs:492）：读 `PAGE_ALLOC_PTR`（null → false）→ `HEAP_ARENA.grow(16, alloc)` → 新 `arena_base` + `cursor = 0`。
-- `dealloc` no-op（global.rs:574-578）：bump 不回收——注释明示"VM 生命周期内 arena 页永驻"。
-- **`#[cfg_attr(not(test), global_allocator)] static GLOBAL`**（global.rs:581-585）：测试构建不注册（避免 std 测试环境冲突）。
+- `ARENA_PAGES = 16`（global.rs:611）→ `ARENA_BYTES = 64KB`/块（:612）。
+- `free_list_insert()`（global.rs:630）：按地址升序插入 + **相邻块合并**（prev/next 双向）——碎片不累积。
+- `refill_arena()`（global.rs:779）：读 `PAGE_ALLOC_PTR`（null → false）→ `HEAP_ARENA.grow(16, alloc)` → 新 `arena_base` + `cursor = 0`。
+- `dealloc`（global.rs:858-871）：由**相同** `Layout` 重建 `FreeBlock{size = round_up(layout.size(), 16)}` 写回 `ptr`（payload 即块起点，`linked_list_allocator` 同款手法），插入 free-list——对象空间被复用。
+- **`#[cfg_attr(not(test), global_allocator)] static GLOBAL`**（global.rs:892-893）：测试构建不注册（避免 std 测试环境冲突）。
 
 **边界行为**：
 
-- 对齐：`align_offset` 满足任意 `layout.align()`（bump 的经典对齐方案）。
-- 跨块：当前 arena 放不下（`size ≤ ARENA_BYTES` 但对齐后越界）→ refill 换新块重试一次（递归深度 1）；refill 失败 → `null_mut`。
-- **超大分配 fail-fast**：`size > ARENA_BYTES`（64KB）→ 直接返回 `null_mut`——否则 `cursor + total > ARENA_BYTES` 会反复 refill 直到耗尽整个 HeapArena（64MB）再失败；guard 在 global.rs:538-546（2026-08-15 review 修复，P1）。
-- `layout.size() == 0`：GlobalAlloc 约定调用方保证非零（`Box` 保证），bump 仍返回合法指针（不特殊处理）。
+- 对齐：≤16 对齐零填充（块恒 16 对齐）；>16 对齐（32/512/4096）在块内 `align_up`，padding ≥ 32B 转独立 free 块，不浪费。
+- 跨块：bump 放不下 → `free_tail()` 回收尾块 + refill 换新 arena 重试；refill 失败 → `null_mut`。
+- **超大分配 fail-fast**：`payload + align - 1 > ARENA_BYTES`（64KB）→ 直接返回 `null_mut`——否则 bump 会反复 refill 直到耗尽整个 HeapArena（64MB）再失败；guard 在 global.rs:826（继承 2026-08-15 review 的 P1 修复；v2 计入对齐余量后，新 arena 必可容纳，重试循环不空转）。
+- `layout.size() == 0`：GlobalAlloc 约定调用方保证非零（`Box` 保证）；`payload` 下限 16B 兜底，仍返回合法指针。
 
 ### 4.3 `PAGE_ALLOC_PTR` 接线（global.rs + vm_server.rs）
 
 - 注册：`VmServer::new()` 内 `register_page_alloc(&mut page_alloc)`（vm_server.rs:92）。
 - 注销：`VmServer::drop()` 内 `unregister_page_alloc()`（vm_server.rs:800）。
-- `compare_exchange` 语义（global.rs:429-447，`register_page_alloc` :415-447）：null → ptr 正常；同 ptr 幂等（防御 BSS → 堆搬迁，当前 main() 栈上创建 VmServer 无搬迁）；异 ptr → 双初始化 bug 检测（注释明示）。
+- `compare_exchange` 语义（global.rs:445-479，`register_page_alloc` :445-479）：null → ptr 正常；同 ptr 幂等（防御 BSS → 堆搬迁，当前 main() 栈上创建 VmServer 无搬迁）；异 ptr → 双初始化 bug 检测（注释明示）。
 - **生命期论证**（global.rs 注释链）：`GLOBAL` 是 `static`（程序整个生命期），`VmPageAllocator` 由 `VmServer` 持有（VmServer 生命期 = VM 进程生命期）→ 供页者不短于消费者。
 
 ### 4.4 启动时序（init 链）
@@ -569,7 +585,7 @@ Rust 侧堆自举的完整顺序（对应 C 侧 `init_vm()`）：
 VmServer::new()                                    ← 生产路径（main.rs，main()）
   ├─ params.validate()（boot.rs:144，纯断言无分配）
   ├─ create_default_allocator + VmPageAllocator::new（vm_server.rs:90-91，无堆分配）
-  ├─ register_page_alloc(&mut page_alloc)          ← ★ 供页注册（vm_server.rs:92，global.rs:415）
+  ├─ register_page_alloc(&mut page_alloc)          ← ★ 供页注册（vm_server.rs:92，global.rs:445）
   ├─ pt_alloc::register(vm_pt_alloc)               ← 页表页供给钩子（vm_server.rs:103）
   ├─ init_vm_self_pt()                             ← ★ 映射能力就绪（vm_server.rs:111，07/08 页表面）
   └─ ... 其余字段初始化 ...
@@ -583,8 +599,8 @@ VmServer::init()
 
 ### 4.5 消费链与边界
 
-- **消费方**：`vm_server.rs:195` `heap_arena_grow(pages, &mut self.page_alloc)`（VM_HEAP 服务 / 压力计数路径）；一切 Rust 侧 `Box`/`Vec`/`String` → `GLOBAL` bump。
-- **边界**：`HeapArena` 不直接暴露给服务层（`pub(crate)`），经 `heap_arena_grow`（global.rs:481）转发；`VmAllocator` 仅以 `GLOBAL` 静态存在，无第二实例。
+- **消费方**：`vm_server.rs:195` `heap_arena_grow(pages, &mut self.page_alloc)`（VM_HEAP 服务 / 压力计数路径）；一切 Rust 侧 `Box`/`Vec`/`String` → `GLOBAL`（free-list 复用优先，bump 补充）。
+- **边界**：`HeapArena` 不直接暴露给服务层（`pub(crate)`），经 `heap_arena_grow`（global.rs:511）转发；`VmAllocator` 仅以 `GLOBAL` 静态存在，无第二实例。
 - **与 08 的接缝**：`grow/shrink` 消费 08 的 `vm_self_mappages`/`vm_self_unmap`/`vm_self_unmappages`（vm_self_map.rs:113/129/151）——08 是"怎么改 VM 自身页表"，09 是"VM 的堆怎么经这些 API 自举"。
 
 ---
@@ -599,17 +615,17 @@ VmServer::init()
 |------|------|---------|
 | `test_heap_arena_constants`（1 个） | heap_arena.rs tests | base/top/limit/mapped_bytes/available_va 常量边界 |
 | **HeapArena 行为 6 个（新增，本文档补）**：`test_grow_advances_limit_and_maps`/`test_grow_zero_pages_is_error`/`test_grow_exhausted_reports_remaining`/`test_grow_rolls_back_on_map_failure`/`test_shrink_unmaps_and_frees_pages`/`test_shrink_underflow_is_error` | heap_arena.rs tests | grow 推进 limit + 映射可查询（RW 标志）、ZeroPages/Exhausted/Underflow 错误、**失败回滚**（预映射第二页 → MapFailed → 第一页 unmap + limit 不动）、shrink 逐页 unmap + free |
-| global 状态 4 个（`test_boot_image_empty`/`test_boot_image_name`/`test_vm_instance_count`/`test_kernel_layout_*`） | global.rs tests | BOOT_INFO/VM_INSTANCE_COUNT/KERNEL_LAYOUT 读写 |
-| **VmAllocator bump 6 个（新增，本文档补）**：`test_bump_alignment_and_no_overlap`/`test_bump_oversize_returns_null`/`test_bump_refill_failure_returns_null`/`test_bump_refill_via_heap_arena`/`test_register_page_alloc_idempotent`/`test_register_page_alloc_overwrite_panics` | global.rs tests | 对齐/不重叠、超大分配 fail-fast、refill 失败 null、**全链 refill**（MockPaging + 真实 HeapArena）、注册幂等/覆盖 panic |
+| global 状态 3 个（`test_vm_instance_count`/`test_kernel_layout_set_and_get`/`test_kernel_layout_overwrite`） | global.rs tests | VM_INSTANCE_COUNT/KERNEL_LAYOUT 读写（boot image 测试随 `BOOT_INFO` 删除，V9-P3-1） |
+| **VmAllocator 10 个（6 bump + 4 free-list）**：`test_bump_alignment_and_no_overlap`/`test_bump_oversize_returns_null`/`test_bump_refill_failure_returns_null`/`test_bump_refill_via_heap_arena`/`test_register_page_alloc_idempotent`/`test_register_page_alloc_overwrite_panics` + `test_free_list_reuses_freed_block`/`test_free_list_alignment_variants`/`test_free_list_split_and_coalesce`/`test_free_list_reuse_cycles_without_refill` | global.rs tests | 对齐/不重叠、超大分配 fail-fast、refill 失败 null、全链 refill、注册幂等/覆盖 panic + **A-3 v2**：释放同址复用、对齐变体（1..4096）、分裂 + 相邻合并（`free_block_count` 可观测）、50 轮 alloc/free 循环不 refill |
 | vm_self_map 2 个（`test_vm_self_pt_not_initialized_by_default`/`test_init_vm_self_pt_then_reset`） | vm_self_map.rs | 静态存储初始 None + 单次 init/reset 语义（grow 前置契约） |
 
 ### 5.2 覆盖维度
 
 - **HeapArena 常量契约**：base = VM_HEAP_BASE、top = base + VM_HEAP_SIZE、初始 limit = base、mapped_bytes = 0、available_va = VM_HEAP_SIZE——区间不变量（D2）。
 - **HeapArena 行为契约**：grow 成功推进 limit + 映射可查询（RW 标志）+ 可续 grow（旧 limit 起点）、`ZeroPages`/`Exhausted{requested,available}`/`Underflow`、**失败 all-or-nothing 回滚**（预映射冲突 → MapFailed → 已映射页 unmap + limit 不动）、shrink 从高端逐页 unmap + free——D2/D3 行为契约全覆盖（MockPaging + 真实 HeapArena 静态）。
-- **VmAllocator bump**：对齐（8/32 字节）、连续分配不重叠、**超大分配（> 64KB）fail-fast null**（guard）、refill 失败（PAGE_ALLOC_PTR null）null、**全链 refill**（MockPaging + 真实 HeapArena + 真实 VmPageAllocator）——D1 行为契约 + 2026-08-15 修复项。
+- **VmAllocator（A-3 v2）**：对齐（8/32 字节）、连续分配不重叠、**超大分配（> 64KB）fail-fast null**（guard）、refill 失败（PAGE_ALLOC_PTR null）null、**全链 refill**（MockPaging + 真实 HeapArena + 真实 VmPageAllocator）——D1 行为契约 + 2026-08-15 修复项 + **free-list 复用/对齐变体/分裂合并/循环不 refill**（2026-08-16，todo P1-1）。
 - **注册语义**：同指针幂等（防御路径）、异指针 panic（双初始化检测）——D6。
-- **全局状态**：boot image 查找/写入、VM 实例计数增减、kernel layout 的 set/get + panic 前置——D6 的接线前置。
+- **全局状态**：VM 实例计数增减、kernel layout 的 set/get + panic 前置——D6 的接线前置（boot image 全局态已删，V9-P3-1）。
 - **`vm_self_mappages` 前置 panic + 单次 init**：`init_vm_self_pt` 未调用时 fail-fast、重复调用 panic、reset 语义——D3 的自举安全契约。
 
 ### 5.3 覆盖缺口与诚实标注
@@ -617,16 +633,16 @@ VmServer::init()
 | 缺口 | 说明 | 状态 |
 |------|------|------|
 | HeapArena grow/shrink 行为测试 | `grow` 成功推进 limit/返回 VA、`Exhausted`、`ZeroPages`、`shrink` `Underflow`、失败回滚 | ✅ 已补（2026-08-15 review，§5.1 新增 6 个，MockPaging 路径） |
-| VmAllocator bump 语义测试 | 对齐/连续分配不重叠/arena 耗尽 refill/refill 失败 null/超大 fail-fast | ✅ 已补（2026-08-15 review，§5.1 新增 6 个，含全链 refill） |
+| VmAllocator 语义测试（bump + free-list） | 对齐/不重叠/refill/超大 fail-fast + 释放复用/对齐变体/分裂合并/循环不 refill | ✅ 已补（2026-08-15 补 6 个 + 2026-08-16 A-3 v2 补 4 个，§5.1） |
 | register_page_alloc 幂等/覆盖检测 | compare_exchange 语义（同指针幂等/异指针检测） | ✅ 已补（2026-08-15 review，§5.1 新增 2 个） |
-| `HeapArena::shrink` 生产调用方 | 当前无调用方（`rg "\.shrink\("` 仅定义处命中） | 10 承接（§4.1 已注） |
+| `HeapArena::shrink` 生产调用方 + arena 页收缩 | 当前无调用方；A-3 v2 后 free-list 复用消除"堆只增不减"，但 arena 页仍不收缩（与 v1 相同）——shrink 接入 free-list 回收是后续项 | 10 承接（§4.1 已注） |
 | MEMPROTECT 硬化 | 未实现（D4），无测试 | 硬化轮承接 |
 | 生产路径（真实 HeapArena + X86_64Paging + QEMU） | 自举堆 + 全局分配器 + `init_vm_self_pt` 时序 | 归 01/10 QEMU 集成 |
 
-### 5.4 测试统计（截至 2026-08-15）
+### 5.4 测试统计（截至 2026-08-16）
 
-- `cargo test -p minix-vm --lib`：**360 passed / 1 failed**（`region::vir_region::tests::test_map_lazy`，13 范围 pre-existing，plan §3.5 基线一致）。
-- 本文档范围 Rust 测试：heap_arena 7（1 常量 + 6 行为）+ global 10（4 状态 + 6 bump/注册）+ vm_self_map 2 = **19 个**（2026-08-15 review 新增 13 个：HeapArena 6 + VmAllocator/bump 6 + vm_self_map 1）。
+- `cargo test -p minix-vm --lib`：**437 passed / 0 failed**（A-3 v2 + V9-P3-1 后实测；基线 434/0，P0-1 修复后）。
+- 本文档范围 Rust 测试：heap_arena 7（1 常量 + 6 行为）+ global 13（3 状态 + 10 分配器/注册）+ vm_self_map 2 = **22 个**（2026-08-15 新增 13 个：HeapArena 6 + VmAllocator/bump 6 + vm_self_map 1；2026-08-16 A-3 v2 新增 4 个 free-list、V9-P3-1 删 2 个 boot-image 测试）。
 - 统计规则：不引用具体测试文件行号（避免行号漂移传播，Pattern #66 RCPD 主动应用）。
 
 ---
@@ -643,12 +659,12 @@ VmServer::init()
 
 **下一篇入口**：10-vm-relocation 承接元数据搬迁——C 侧 slab 元数据（`struct sdh`/`slabs[]`）随进程地址空间搬迁的语义，在 HeapArena 下简化为 VA 区间重定位（`[ARCH: A-3]` 的操作面后果）。
 
-**向后衔接的服务文档**：26-vm-queries（`get_usage_info` 内存占用统计——D5 延后的 slabstats 语义归此处）、13-region-mapping（region 对象经 `Box` 分配，无分配器感知）、18-vm-fork / 20-vm-mmap / 21-vm-munmap（建毁 region/phys_block 的分配模式——验证 bump 足够）。
+**向后衔接的服务文档**：26-vm-queries（`get_usage_info` 内存占用统计——D5 延后的 slabstats 语义归此处）、13-region-mapping（region 对象经 `Box` 分配，无分配器感知）、18-vm-fork / 20-vm-mmap / 21-vm-munmap（建毁 region/phys_block 的分配模式——A-3 v2 后验证 free-list 复用足够）。
 
 **硬化项清单**（2026-08-15 review 后更新）：
 
 1. MEMPROTECT 等价物：`HeapArena` debug-only PTE 写保护（经 08 `update_flags` 的 `vm_self_update_flags`）——D4 移交，实施轮承接。
-2. ~~HeapArena grow/shrink 行为测试 + VmAllocator bump 测试~~ → **已闭环**（2026-08-15 review，§5.1 新增 13 个，含超大分配 fail-fast guard）。
+2. ~~HeapArena grow/shrink 行为测试 + VmAllocator bump 测试~~ → **已闭环**（2026-08-15 review，§5.1 新增 13 个，含超大分配 fail-fast guard）；**A-3 v2 free-list 测试** → 已闭环（2026-08-16，§5.1 新增 4 个）。
 3. `shrink` 的 `Err(_) => {}` 吞错：当前无生产调用方（10 承接），实施时改为 fail-fast 或保留显式容忍注释（§4.1 讨论）。
 
 ---

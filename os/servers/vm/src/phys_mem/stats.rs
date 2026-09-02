@@ -58,38 +58,49 @@ impl MemStats {
         self.allocation_failures += 1;
     }
 
+    // V10-P2-1: getters + report are test-only today; production only
+    // drives `record_*` (the allocators' hot path).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_allocations(&self) -> usize {
         self.total_allocations
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_deallocations(&self) -> usize {
         self.total_deallocations
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_allocations(&self) -> usize {
         self.active_allocations
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn allocation_failures(&self) -> usize {
         self.allocation_failures
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_allocated_bytes(&self) -> usize {
         self.total_allocated_bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_freed_bytes(&self) -> usize {
         self.total_freed_bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn current_allocated_bytes(&self) -> usize {
         self.current_allocated_bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn peak_allocated_bytes(&self) -> usize {
         self.peak_allocated_bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn generate_report(&self) -> String {
         format!(
             "Memory Statistics:\n\

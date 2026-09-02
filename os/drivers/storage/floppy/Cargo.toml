@@ -1,0 +1,18 @@
+[package]
+name = "minix-driver-floppy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-driver-floppy"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_driver_floppy"
+path = "src/lib.rs"

@@ -68,12 +68,17 @@ impl VmPageAllocator {
         result
     }
 
+    // V10-P2-1: `alloc_page`/`alloc_pages`/`self_alloc_count`/`stats` are
+    // test-only today (production goes through `alloc_phys` + the
+    // `PfnAllocator` impl).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn alloc_page(&mut self, flags: PageAllocFlags) -> Option<(VirBytes, AlignedPhysBytes)> {
         let phys = self.alloc_phys(1, flags).ok()?;
         let virt = vm_phys_to_virt(phys);
         Some((virt, phys))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn alloc_pages(
         &mut self, clicks: usize, flags: PageAllocFlags,
     ) -> Option<(VirBytes, AlignedPhysBytes)> {
@@ -95,6 +100,7 @@ impl VmPageAllocator {
         self.phys_alloc.total_count()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn self_alloc_count(&self) -> usize {
         self.stats.active_allocations()
     }
@@ -103,6 +109,7 @@ impl VmPageAllocator {
         self.stats.active_pages()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stats(&self) -> &VmAllocStats {
         &self.stats
     }

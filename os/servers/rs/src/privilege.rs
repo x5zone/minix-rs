@@ -333,6 +333,12 @@ pub const fn srv_or_usr<T: Copy>(is_sys_proc: bool, srv: T, usr: T) -> T {
 /// it whole to `sys_privctl` (via `data_copy`, do_privctl.c:123-126).
 /// Construction: 03-rs-privilege.md §4.2 (`boot_priv`); updates:
 /// `set_sig_mgrs` (sched.rs) and `do_edit` (08).
+///
+/// Field order mirrors the kernel's `PrivUpdateRequest`
+/// (`os/kernel/src/kpriv.rs`): the KPriv substructure sequence minus the
+/// kernel-internal state — id → flags → init → signal managers → IPC masks →
+/// I/O → IRQ → memory, each resource group listing its count before the
+/// table. The two protocol ends can thus be compared field-by-field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Privilege {
     /// Static priv id. C: `s_id` — kernel/priv.h:23.
@@ -341,30 +347,31 @@ pub struct Privilege {
     pub flags: PrivFlags,
     /// Initialization flags given to the process. C: `s_init_flags` — kernel/priv.h:25.
     pub init_flags: u32,
+    /// Signal manager for system signals. C: `s_sig_mgr` — kernel/priv.h:40.
+    pub sig_mgr: Endpoint,
+    /// Backup signal manager. C: `s_bak_sig_mgr` — kernel/priv.h:41.
+    pub bak_sig_mgr: Endpoint,
     /// Allowed system call traps. C: `s_trap_mask` — kernel/priv.h:34.
     pub trap_mask: TrapMask,
     /// Allowed destination processes. C: `s_ipc_to` — kernel/priv.h:35 (05).
     pub ipc_to: SysMap,
     /// Allowed kernel calls. C: `s_k_call_mask` — kernel/priv.h:38.
     pub k_call_mask: CallMask,
-    /// Signal manager for system signals. C: `s_sig_mgr` — kernel/priv.h:40.
-    pub sig_mgr: Endpoint,
-    /// Backup signal manager. C: `s_bak_sig_mgr` — kernel/priv.h:41.
-    pub bak_sig_mgr: Endpoint,
 
     // Resource white-lists (driver-facing; RS passes them through).
-    /// Allowed I/O ports. C: `s_io_tab` — kernel/priv.h:54.
-    pub io_ranges: [IoRange; NR_IO_RANGE],
+    // Group order and count-before-table match the kernel `PrivUpdateRequest`.
     /// Number of I/O ranges. C: `s_nr_io_range` — kernel/priv.h:53 (`int`).
     pub nr_io_range: i32,
-    /// Allowed memory ranges. C: `s_mem_tab` — kernel/priv.h:57.
-    pub mem_ranges: [MemRange; NR_MEM_RANGE],
-    /// Number of memory ranges. C: `s_nr_mem_range` — kernel/priv.h:56 (`int`).
-    pub nr_mem_range: i32,
-    /// Allowed IRQ lines. C: `s_irq_tab` — kernel/priv.h:60.
-    pub irqs: [u32; NR_IRQ],
+    /// Allowed I/O ports. C: `s_io_tab` — kernel/priv.h:54.
+    pub io_ranges: [IoRange; NR_IO_RANGE],
     /// Number of IRQ lines. C: `s_nr_irq` — kernel/priv.h:59 (`int`).
     pub nr_irq: i32,
+    /// Allowed IRQ lines. C: `s_irq_tab` — kernel/priv.h:60.
+    pub irqs: [u32; NR_IRQ],
+    /// Number of memory ranges. C: `s_nr_mem_range` — kernel/priv.h:56 (`int`).
+    pub nr_mem_range: i32,
+    /// Allowed memory ranges. C: `s_mem_tab` — kernel/priv.h:57.
+    pub mem_ranges: [MemRange; NR_MEM_RANGE],
 }
 
 impl Privilege {
@@ -374,17 +381,17 @@ impl Privilege {
             id: PrivId::NONE,
             flags: PrivFlags::empty(),
             init_flags: 0,
+            sig_mgr: Endpoint::NONE,
+            bak_sig_mgr: Endpoint::NONE,
             trap_mask: TrapMask::empty(),
             ipc_to: SysMap::empty(),
             k_call_mask: CallMask::empty(),
-            sig_mgr: Endpoint::NONE,
-            bak_sig_mgr: Endpoint::NONE,
-            io_ranges: [IoRange::default(); NR_IO_RANGE],
             nr_io_range: 0,
-            mem_ranges: [MemRange::default(); NR_MEM_RANGE],
-            nr_mem_range: 0,
-            irqs: [0; NR_IRQ],
+            io_ranges: [IoRange::default(); NR_IO_RANGE],
             nr_irq: 0,
+            irqs: [0; NR_IRQ],
+            nr_mem_range: 0,
+            mem_ranges: [MemRange::default(); NR_MEM_RANGE],
         }
     }
 
@@ -401,14 +408,6 @@ impl Privilege {
             id: PrivId::static_priv_id(endpoint_slot), // main.c:265-266
             flags,                                     // main.c:269
             init_flags: 0,                             // SRV_I/USR_I = 0 (main.c:270)
-            trap_mask: TrapMask::srv_or_usr(is_sys_proc), // main.c:271
-            // main.c:272-273: `ipc_to = SRV_OR_USR(rp, SRV_M, USR_M)` —
-            //   both are ALL_M, so `fill_send_mask(mask, TRUE)` sets all bits.
-            ipc_to: SysMap::all(),
-            // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
-            //   ? all_c : no_c` — boot services use the SRV_KC=ALL_C branch.
-            k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
-                .expect("boot call list is a constant in range"),
             // main.c:274: `s_sig_mgr = SRV_OR_USR(rp, SRV_SM, USR_SM)` —
             //   RS (2) for system services, PM (0) for user processes.
             sig_mgr: if is_sys_proc {
@@ -417,12 +416,20 @@ impl Privilege {
                 Endpoint::PM
             },
             bak_sig_mgr: Endpoint::NONE, // main.c:275
-            io_ranges: [IoRange::default(); NR_IO_RANGE],
+            trap_mask: TrapMask::srv_or_usr(is_sys_proc), // main.c:271
+            // main.c:272-273: `ipc_to = SRV_OR_USR(rp, SRV_M, USR_M)` —
+            //   both are ALL_M, so `fill_send_mask(mask, TRUE)` sets all bits.
+            ipc_to: SysMap::all(),
+            // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
+            //   ? all_c : no_c` — boot services use the SRV_KC=ALL_C branch.
+            k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
+                .expect("boot call list is a constant in range"),
             nr_io_range: 0,
-            mem_ranges: [MemRange::default(); NR_MEM_RANGE],
-            nr_mem_range: 0,
-            irqs: [0; NR_IRQ],
+            io_ranges: [IoRange::default(); NR_IO_RANGE],
             nr_irq: 0,
+            irqs: [0; NR_IRQ],
+            nr_mem_range: 0,
+            mem_ranges: [MemRange::default(); NR_MEM_RANGE],
         }
     }
 

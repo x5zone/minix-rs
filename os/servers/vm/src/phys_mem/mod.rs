@@ -40,7 +40,12 @@
 pub(crate) mod types;
 pub(crate) mod alloc_trait;
 pub(crate) mod bitmap_alloc;
+// V10-P2-1 (DEFERRED): both alternate backends are always compiled so the
+// parity tests run on the default CI; in a non-test build without their
+// feature they are production-dead until `relocate()` selects them.
+#[cfg_attr(all(not(test), not(feature = "segment_tree_alloc")), allow(dead_code))]
 pub(crate) mod segment_tree_alloc;
+#[cfg_attr(all(not(test), not(feature = "buddy_alloc")), allow(dead_code))]
 pub(crate) mod buddy_alloc;
 pub(crate) mod stats;
 #[cfg(test)]
@@ -99,16 +104,24 @@ pub(crate) use segment_tree_alloc::SegmentTreeAllocator;
 pub(crate) use stats::MemStats;
 pub(crate) use types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
+// V10-P2-1: the `DefaultAllocator` alias documents the bootstrap-backend
+// precedence (buddy > segment-tree > bitmap, see 05-physical-memory.md
+// §3.3) but has no constructor yet — `vm_server.rs` selects the backend
+// explicitly via `PhysAllocType`.
 #[cfg(feature = "buddy_alloc")]
+#[allow(dead_code)]
 pub(crate) type DefaultAllocator = BuddyAllocator;
 
 #[cfg(all(feature = "segment_tree_alloc", not(feature = "buddy_alloc")))]
+#[allow(dead_code)]
 pub(crate) type DefaultAllocator = SegmentTreeAllocator;
 
 #[cfg(all(feature = "bitmap_alloc", not(any(feature = "segment_tree_alloc", feature = "buddy_alloc"))))]
+#[allow(dead_code)]
 pub(crate) type DefaultAllocator = BitmapAllocator;
 
 #[cfg(not(any(feature = "bitmap_alloc", feature = "segment_tree_alloc", feature = "buddy_alloc")))]
+#[allow(dead_code)]
 pub(crate) type DefaultAllocator = BitmapAllocator;
 
 pub(crate) enum PhysAlloc {
@@ -172,6 +185,9 @@ impl PhysAllocator for PhysAlloc {
 }
 
 impl PhysAlloc {
+    // V10-P2-1: `is_bitmap`/`as_bitmap_mut` have no callers yet
+    // (production uses `as_bitmap` in `relocate()`).
+    #[allow(dead_code)]
     pub(crate) fn is_bitmap(&self) -> bool {
         matches!(self, PhysAlloc::Bitmap(_))
     }
@@ -195,13 +211,16 @@ impl PhysAlloc {
     pub(crate) fn as_bitmap(&self) -> Option<&BitmapAllocator> {
         match self {
             PhysAlloc::Bitmap(b) => Some(b),
+            #[cfg(any(feature = "buddy_alloc", feature = "segment_tree_alloc"))]
             _ => None,
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn as_bitmap_mut(&mut self) -> Option<&mut BitmapAllocator> {
         match self {
             PhysAlloc::Bitmap(b) => Some(b),
+            #[cfg(any(feature = "buddy_alloc", feature = "segment_tree_alloc"))]
             _ => None,
         }
     }
@@ -219,6 +238,7 @@ impl PhysAlloc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")), allow(dead_code))]
 pub(crate) enum PhysAllocType {
     Bitmap,
     Buddy,
@@ -234,7 +254,7 @@ impl PhysAllocType {
     pub fn metadata_size_exact(&self, total_pages: usize) -> usize {
         match self {
             PhysAllocType::Bitmap => {
-                let bitmap_chunks = (total_pages + 63) / 64;
+                let bitmap_chunks = total_pages.div_ceil(64);
                 bitmap_chunks * core::mem::size_of::<u64>()
                     + 10000 * core::mem::size_of::<usize>()
             }
@@ -264,6 +284,7 @@ impl PhysAllocType {
 pub(crate) const CLICK_SIZE: usize = 4096;
 pub(crate) const CLICK_SHIFT: usize = 12;
 pub(super) const METADATA_ALIGN_PADDING: usize = 2 * CLICK_SIZE;
+#[cfg_attr(not(feature = "buddy_alloc"), allow(dead_code))]
 pub(crate) const BUDDY_THRESHOLD_PAGES: usize = 1 << 20;
 
 #[inline]
@@ -271,17 +292,22 @@ pub(crate) const fn bytes_to_clicks(bytes: usize) -> usize {
     (bytes + CLICK_SIZE - 1) >> CLICK_SHIFT
 }
 
+// V10-P2-1: byte↔click helpers with no callers yet (the allocators work
+// in clicks; keep as the documented conversion surface).
 #[inline]
+#[allow(dead_code)]
 pub(crate) const fn clicks_to_bytes(clicks: usize) -> usize {
     clicks << CLICK_SHIFT
 }
 
 #[inline]
+#[allow(dead_code)]
 pub(crate) const fn click_floor(addr: usize) -> usize {
     (addr >> CLICK_SHIFT) << CLICK_SHIFT
 }
 
 #[inline]
+#[allow(dead_code)]
 pub(crate) const fn click_ceil(addr: usize) -> usize {
     ((addr + CLICK_SIZE - 1) >> CLICK_SHIFT) << CLICK_SHIFT
 }
@@ -295,18 +321,21 @@ pub struct BootMemRegion {
 impl BootMemRegion {
     pub(crate) fn validate(&self) {
         assert!(
-            self.base % CLICK_SIZE == 0,
+            self.base.is_multiple_of(CLICK_SIZE),
             "BootMemRegion base must be page-aligned, got {:#x}",
             self.base
         );
         assert!(
-            self.size % CLICK_SIZE == 0,
+            self.size.is_multiple_of(CLICK_SIZE),
             "BootMemRegion size must be page-aligned, got {:#x}",
             self.size
         );
     }
 }
 
+// V10-P2-1: test-only helper (boot-region bounds used by allocator parity
+// tests); kept out of the production surface.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn compute_memory_bounds(regions: &[BootMemRegion]) -> (usize, usize, usize) {
     let mut mem_low = usize::MAX;
     let mut mem_high = 0;
@@ -353,7 +382,7 @@ mod metadata_size_tests {
     fn test_bitmap_metadata_size() {
         let total_pages = 1024;
         let size = PhysAllocType::Bitmap.metadata_size_exact(total_pages);
-        let bitmap_chunks = (total_pages + 63) / 64;
+        let bitmap_chunks = total_pages.div_ceil(64);
         let expected = bitmap_chunks * 8 + 10000 * core::mem::size_of::<usize>();
         assert_eq!(size, expected);
     }

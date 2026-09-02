@@ -17,11 +17,12 @@
 
 | 分类 | 处理 | 明细 |
 |------|------|------|
-| ✅ 已修复（代码落地 + 测试通过） | **3 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留） |
+| ✅ 已修复（代码落地 + 测试通过） | **4 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留）、D-51 PrivUpdateRequest 字段序重排（2026-09-03，KPriv 子结构镜像 + RS 侧同序，见 §7.1） |
 | ✅ 已实现（原记录过时，非缺口，2026-08-14 二次核实） | **18 项完整 + D-38 ②③ 部分** | §7.1 表 ✅ 行：D-1~D-5/D-7（dispatch_exec/clear/runctl/statectl 全部落地，含 process name 跨空间拷贝、release_address_space、clear_endpoint、SMP IPI）、D-10/D-12（cause_signal SELF 路径 mini_notify_core + 去重）、D-19（allow_ipc_filtered_memreq→dequeue_filtered）、D-21（kernel_call_resume + 2 测试）、D-22（data_copy_vmcheck VMSUSPEND 路径）、D-23（三架构 PTE walk）、D-26~D-29（GETINFO 10 分支）、D-31（sprof 数据拷贝）、D-32（clean_seen_flag）；D-38 ②③ BKL 接入（lib.rs:1956/:2167）；另有 I-4（doc 01/02 测试表去重，01 残留 TODO 标记已清理） |
-| 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1778 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
-| 📌 保持 DEFERRED（已核实依赖仍成立） | **31 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新 |
-| ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D1/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节） |
+| 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1807 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
+| 📌 保持 DEFERRED（已核实依赖仍成立） | **33 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**、**D-53（2026-09-03 新增）：cpu_identify/GET_CPUINFO 全字段链路（procfs/用户态接线时补齐）** |
+| ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节；~~A3 已于 2026-09-02 实施完成，见 §2 A3~~） |
+| ✅ 已修复（doc 准确性问题，2026-08-18 GPT 评论评审） | **5 项** | §20.6 FIX-06-GPT-1/1b（§3.9 + §3.1 "唯一组合"措辞降级）+ FIX-06-GPT-2/2b（§3.8 + §3.1 "BSS"表述修正）+ FIX-06-GPT-2c（§3.15 决策表"BSS 段零运行时开销"修正）|
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
 
@@ -37,6 +38,93 @@
 | boot 契约 | `minix-boot::KernelInfo`（含 `validate()`）为 kernel/boot-shim 唯一契约 | ✅ |
 | 占位符 | `todo!`/`unimplemented!` = **0**；`unsafe impl Sync/Send` 全库仅 4 处真实实现（pt_alloc:46 / lib.rs:1155 / protection.rs:175-176，均有论证） | ✅ 基线（F1 已解决） |
 | 平台发现 | `PlatformContext` write-once（AssumeSyncCell）+ `&'static dyn PlatformDesc` | ✅ 论证完整 |
+
+## 0.5 学习 / 概念理解 backlog（与代码改动分离）
+
+本段记录**需要透彻理解但暂不立即动手**的概念 / 知识类任务。与 §1-§5 的"代码改动类建议"区分——这些是给自己未来阅读 §16/§11 时回头查找的索引，不进入 §0.1 的"未解决"或"DEFERRED"统计（它们不是 bug）。
+
+### L1. `happens-before` 与内存序（C 时代背景 → Rust 内存模型） [学习]
+
+**当前认知盲点**（2026-08-31）：仅停留在 C 时代 `volatile` 知识水平，对 Rust `Acquire`/`Release`/`Relaxed` 的形式化含义理解不够深。§3.3 并发协议（[06-proc-init-boot-proc.md:1067-1087](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md#L1067-L1087)）的修复论证正确但深度不够——论证"为什么 `p_rts_flags` 用 `Acquire`、`p_nextready` 用 `Relaxed`"时只给了现象，未给"如果去 BKL 会怎样"的完整推理。
+
+**待深入**：
+1. **`happens-before` 是什么**——Rust 借用 C++ 内存模型的形式化定义（与 C `volatile + 程序员约定` 的差异）
+2. **单字段次序 vs 跨字段次序**两层保证——`Atomic<T>` 在所有 Ordering 下都防撕裂读 + 防本字段读写乱序（这是 C `volatile` 做不到的），但**只有** `Acquire`/`Release` 才建立跨字段 happens-before
+3. **`Acquire` 防止的是 `load` 之后被重排到 `load` 之前**——而非 `load` 本身被重排（这是常见误解）
+4. **`Acquire`/`Release` 配对原则**——读侧 `Acquire` 必须配写侧 `Release` 才形成 happens-before 链
+
+**学习入口（按深度递进）**：
+
+| 阶段 | 文档 | 期望收获 |
+|---|---|---|
+| 第一遍（基础） | [06-proc-init-boot-proc.md §3.3](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md#L1050) 末段"关键反推" | 当前已写——能答"为什么这里用 Relaxed/Acquire" |
+| 第二遍（形式化） | [16-smp.md](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/16-smp.md) §BKL 实现 + `BklSection` witness | BKL 内部 `xchg` + `Acquire`/`Release` 屏障的具体实现，对照 §3.3 验证 |
+| 第三遍（推演） | [11-scheduling-primitives.md](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/11-scheduling-primitives.md) 写作时（**D-52** deferred） | 推演"如果去 BKL、改用 RCU/per-CPU lock，`p_nextready` 的 Relaxed 是否要升 `Acquire`——反推 §3.3 关键反推段的判断标准" |
+
+**为什么是 backlog 而非立即任务**：
+- 当前 §3.3 论证对修复 CSK_T 修复 + 调度联动修复的目标已足够
+- §16-smp 是当前未充分写的文档，D-52 决策也 deferred——强行深挖会阻塞主线
+- 真正需要 happens-before 形式化的地方是 §11 写作 + 未来去 BKL 的重构，本轮只是"埋锚"
+
+**触发条件**（任一出现即开始第二/三遍）：
+- 启动 [11-scheduling-primitives.md](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/11-scheduling-primitives.md) 写作
+- 启动 [16-smp.md](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/16-smp.md) review
+- 实际去 BKL 的重构启动
+
+## 0.6 硬件抽象化加固 backlog（CLAUDE.md §"硬件抽象为 trait"）
+
+本段记录**违反 CLAUDE.md 原则 "使用 `#[cfg(target_arch)]` 选行为 ❌ 应 trait 静态分派"**的位置。与 §0.5（学习类）和 §1-§5（代码改动类）区分——这些是**架构级重构**，范围跨多个 crate，需要专门的 review 任务。
+
+CLAUDE.md 原则：
+- ✅ **可以用 `#[cfg(target_arch)]` 的位置**：仅在**定义 current* 类型**（如 `qemu_virt.rs`、`minix-platform/src/arch/mod.rs` 的 module 路径选择）
+- ❌ **不可以用 `#[cfg(target_arch)]` 的位置**：在代码逻辑中"用 cfg 选行为"——这应当 trait 化
+- ⚠️ **字面量汇编硬约束**：`naked_asm!` 内的寄存器名 / `asm!("hlt"/"wfi")` 内的指令字面量——这些**必须**用 cfg 选（因为 Rust 的宏展开要求编译期已知符号），不是"行为选择"是"语法约束"
+
+### B-X. 全项目 `#[cfg(target_arch)]` 行为选择审计与 trait 化重构 [Backlog]
+
+**当前规模**（全 `os/` grep）：**50+ 处** `#[cfg(target_arch)]` 使用。
+
+**两步分类**：
+
+#### 步骤一：剔除合法使用（保留）
+
+| 位置 | 用途 | 分类 |
+|---|---|---|
+| `libs/minix-platform/src/arch/mod.rs:18-23` | module 路径选择 | ✅ 合法（定义 current） |
+| `plat/src/lib.rs:30-71` | `CurrentXxx` 类型选择 | ✅ 合法（定义 current） |
+| `libs/minix-platform/src/kind.rs:61` 等 | `Kind` trait 实现选择 | ✅ 合法（trait 实现点） |
+| `kernel/src/lib.rs:534/544/552` | `naked_asm!` 内寄存器名（`rbp/rsp/rcx/rdx` / `x0-x29` / `a0-a7`/`s0`） | ⚠️ 字面量汇编硬约束 |
+| `kernel/src/lib.rs:636/641` | `asm!("hlt")` / `asm!("wfi")` 指令字面量 | ⚠️ 字面量汇编硬约束 |
+| `kernel/src/smp.rs:512` | 注释 | ✅ 合法 |
+| `kernel/src/syscall.rs:368/370/372` | `CurrentSyscallArch` 选 trait 实现 + aarch64 fallback 到 `DefaultSyscall` | ✅ 合法（定义 current）**+ 注意**：`L370 target_arch = "arm"` 是有意区分 32-bit ARM（`ArmSyscall`）vs aarch64（fallback 到 `DefaultSyscall`——aarch64 syscall 实现尚未落地）。未来加 aarch64 syscall 时**必须**在 L370 之前插入 `#[cfg(target_arch = "aarch64")] pub type CurrentArchSyscall = Aarch64Syscall;`，否则 fallback 仍生效（什么也不做） |
+| `libs/minix-platform/src/device_tree.rs:51-77` 等 | `device_tree` crate 内 arch trait 实现选择 | ✅ 合法（trait 实现点） |
+
+#### 步骤二：列出违规使用（需要重构）
+
+| 位置 | 现状 | 应当改 |
+|---|---|---|
+| `kernel/src/lib.rs:582-600` | 9 个 `#[cfg(target_arch)]` 给 `ARCH_NAME`/`SP_LABEL`/`PC_LABEL`/`FP_LABEL` 字符串常量赋值 | 抽 `ArchNames` trait 到 `minix_plat`，调用 `CurrentArchNames::arch_name()` 等 |
+| `kernel/src/lib.rs:1537/1549/1563` | 3 个 `new_test_interrupt_controller` fn，每个架构一个，用 cfg 选 | 抽 `MockInterruptController` trait 或注册到 `minix_plat::CurrentInterruptController` 同位置（与 `qemu_virt.rs` 对齐） |
+| `kernel/src/lib.rs:576` | riscv64 独有"reached!"提示（用 cfg 守门） | 抽到 `ArchNames::boot_reached_msg()` 等 |
+
+#### 待发现位置（建议下一步全 grep）
+
+- `libs/minix-platform/src/global.rs` 有 10+ 处 `#[cfg(target_arch = "x86_64")]`（仅 x86，其他架构）—— 是否合法需进一步核实
+- `kernel/src/cross_space.rs` / `kernel/src/vm.rs` 等注释中有提到 `no #[cfg(target_arch)]` 的声明——这些是**已经完成 trait 化**的好引用
+
+**为什么是 backlog 而非立即任务**：
+1. 范围跨多个 crate（kernel + arch + libs + boot-shim），需要专门的"硬件抽象化加固"review 任务
+2. `naked_asm!` / `asm!` 内的 cfg 是真硬约束，**不能动**——分类后才知道哪些能改
+3. 重构期间需要逐个设计 trait 边界（`ArchNames` / `MockInterruptController` 等），不能批量 sed
+
+**触发条件**（任一出现即开始）：
+- 启动 [16-smp.md](file:///os/notes/rewrite/fork-syscall-rewrite/01-stage-kernel/16-smp.md) review（BklSection 已在 §3.3 出现，但完整 trait 实现细节在 16）
+- 用户在 review 中再次发现 `#[cfg(target_arch)]` 行为选择
+- 添加新 arch 平台时遇到大量 cfg 重复（说明 trait 化迫切）
+
+**当前已埋的 TODO 锚点**（便于重启任务时找到）：
+- [kernel/src/lib.rs:582](file:///os/kernel/src/lib.rs#L582) `ARCH_NAME` 字符串常量上方（"Architecture-specific labels for register output"）
+- [kernel/src/lib.rs:1539](file:///os/kernel/src/lib.rs#L1539) `new_test_interrupt_controller` 注释下方
 
 ## 1. 建议总览
 
@@ -99,6 +187,19 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 注意：`bkl_is_locked()`（smp.rs:1005）可作为 debug 断言锚点，建议在 `kernel_call_finish` 路径加
 `debug_assert!(bkl_is_locked())`。
 
+### A3. KProcess / KPriv `Drop + panic` slot ownership 防御 [Done: 2026-09-02]
+
+**已实施**。`KProcess`（proc.rs）与 `KPriv`（kpriv.rs）均加防御性 `Drop`——占用槽（`SLOT_FREE` 清除 /
+`s_proc_nr = Some`）被隐式销毁时 `panic!` fail-fast，同时 `impl Drop` 自动禁止 `Copy`。
+
+**测试落地**：三层豁免夹具（`os/kernel/src/test_helpers.rs`：`TestProcTable` / `TestPrivTable` /
+`TestProcArray` / `TestKProc`）承载所有测试局部表/局部进程；`panic = "abort"`（dev/release 双 profile）
+下 panic 路径不靠 `#[should_panic]`（abort 无法捕获），由"未豁免占用槽 drop 即 abort"在 CI 承担，
+判定谓词 `slot_is_occupied` 有专门单测钉死。验证：全 workspace `cargo test` 绿（kernel 615 单测 + 2 集成）。
+
+**完整设计来源**：见 [`panic-in-drop.md`](./panic-in-drop.md)（三分类法 + 不做之事 + 实施门槛与决策）。
+原「现状/建议/触发条件/Backlog」内容已被实施记录取代。
+
 ### C1. dispatch 大函数按语义拆分（范围收窄后） [P2]
 
 **精确测量**（按顶层 fn 边界，排除测试模块污染——首次粗筛 14 个"500-850 行"中
@@ -108,10 +209,10 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 
 | 函数 | 位置 | 行数 | 拆分方向 |
 |------|------|------|---------|
-| `dispatch_getinfo` | misc.rs:660 | ~550 | 按 info 类别拆（do_getinfo 同款大 switch） |
+| `dispatch_getinfo` | misc.rs:721 | ~550 | 按 info 类别拆（do_getinfo 同款大 switch） |
 | `dispatch_privctl` | syscall.rs:1164 | ~418 | 按 privctl 子命令拆 |
 | `dispatch_vmctl` | syscall.rs:1751 | ~348 | 按 vmctl 子命令拆 |
-| `dispatch_trace` | misc.rs:1210 | ~332 | 按 trace 操作拆 |
+| `dispatch_trace` | misc.rs:1239 | ~332 | 按 trace 操作拆 |
 | `dispatch_statectl` | syscall_process.rs:732 | ~258 | 按 state 子命令拆 |
 
 **原则**：按 C 函数边界/子步骤拆 helper，**不改行为**；拆后跑 Gate B 行为契约验证。
@@ -219,15 +320,16 @@ SAFETY: 写入仅发生在 boot 单线程期（kernel lib.rs:184 注册）或 us
 文档化"boot 域 + user-space VM 域"双注册契约。
 
 **演进方向（Redox rmm 对照，§6）**：Redox 用 `FrameAllocator` trait + `TheFrameAllocator` 别名注入，
-比 fn 指针更可测试（mock 可注入）。长期可将 `pt_alloc::register(fn)` 演进为
-`pt_alloc::register(impl FrameAllocator)`（trait object 或泛型）——fn 指针保持当前简单形态，
-trait 化列为 VM 阶段（页表分配器接入）一并评估。
+比 fn 指针更可测试（mock 可注入）。~~长期可将 `pt_alloc::register(fn)` 演进为
+`pt_alloc::register(impl FrameAllocator)`~~——**已否决（见 `frame.rs` 模块 doc-comment "What this module does not own"）**：
+在"kernel 不做长期 PMM"前提下，通用 `FrameAllocator` trait 无长期 owner（VM PMM 在 VM 进程内、`VmBootAllocator` 是一次性），属于 premature abstraction，**明确不引入**。
+`pt_alloc` 保持 fn 指针形态；runtime VM 页表页 provider 待 VM 阶段。
 
 **解决记录（2026-08-14）**：
 - `register()` 增加 `debug_assert!(!PT_REGISTERED.load(Ordering::Relaxed))`——同域双注册即 boot bug
 - store 改 `Ordering::Release`、`alloc_pt_page()` load 改 `Ordering::Acquire`——fn 指针写入对观察者可见（pt_alloc.rs:74-86/:101-105）
 - "boot 域 + user-space VM 域"双注册契约已文档化
-- trait 化演进方向不变（VM 阶段评估）；172 arch tests 通过
+- trait 化演进方向**已否决**（见 `frame.rs` 模块 doc-comment "What this module does not own"）；172 arch tests 通过
 
 ## 5. 跨层建议
 
@@ -263,7 +365,7 @@ arch trait 签名改用共享 `ProcNr`；消除 `nr.0` 与双定义。符合 CLA
 | **usercopy 独立模块**（`UserSlice::ro/wo` 统一用户内存校验） | `UserCopy` trait（ipc.rs:266）+ pte_walk + cross_space | ✅ 同构；`UserSlice` 的"统一校验入口"思想可对照我们 `syscall_copy.rs` 的 copy_struct_from_user 收口 |
 | **无内核级 Arch trait**（`#[cfg(target_arch)]` 整体模块切换） | **16 个细粒度 trait + mock** | ✅ **trait 化优于 cfg 换模块**（可测、可文档化）——保留；聚合收尾见 §E1 |
 | **rmm crate 的 `Arch` trait 关联常量**（PAGE_SHIFT/PAGE_LEVELS/**ENTRY_FLAG_\*（PTE 位）**/PHYS_OFFSET） | Paging trait 有 `PAGE_SIZE` 常量；PTE 位各 arch 私有 const（x86_64/pte.rs:19 `PTE_PRESENT` 等） | ⚠️ **PTE 位无权威位置**——各 arch 各自定义 → 新增建议 **R1**（见下） |
-| **内存管理下沉独立 crate rmm** + `FrameAllocator` trait + `PageMapper`（软件遍历） | pt_alloc fn 指针注册 + Paging trait + pte_walk | ⚠️ **fn 指针 vs trait 注入**——trait 化演进见 §F2；VM 阶段可参考 rmm 分层（页表核心独立 + allocator 注入） |
+| **内存管理下沉独立 crate rmm** + `FrameAllocator` trait + `PageMapper`（软件遍历） | pt_alloc fn 指针注册 + Paging trait + pte_walk | ⚠️ **fn 指针 vs trait 注入**——`FrameAllocator` trait 方案**已否决**（见 `frame.rs` 模块 doc-comment "What this module does not own"：无 owner 的抽象不建）；`pt_alloc` 保持 fn 指针；VM 阶段可参考 rmm 的页表核心独立分层 |
 | **共享 ABI crate redox_syscall 承载 `Error{errno:i32}`** + `mux/demux`（`Ok(v)=>v, Err(e)=>-e.errno`）+ `Result<T, E=Error>` | kernel errno.rs 114 常量；**minix-types 已部分 import errno**（ipc/kernel.rs `EAGAIN/EIO/ENOSYS/ESRCH` + `to_n()`） | ⚠️ **双源风险实证**——kernel errno.rs 与 minix-types 各自有 errno → 强化 §D1：**Errno newtype 放 minix-types**（Redox 同款共享 ABI 定位），mux/demux 的 `-errno` 编码可参考 |
 | **锁序类型 L0-L5 + `CleanLockToken`**（syscall 全链传 token，乱序编译失败） | `BklSection` witness（已实现）+ 33 处裸 unsafe 访问器未收敛 | ⚠️ **我们已有 CleanLockToken 的雏形**——witness 全覆盖（§A1）正是向 Redox 完全版收敛 |
 | **全局自旋锁 `CONTEXT_SWITCH_LOCK: AtomicBool`**（每 arch 一份）+ 无 static mut | BKL `AtomicBool` + `SyncUnsafeCell` + sealed `BklProtected` | ✅ 同构且我们的 sealed trait 更严格 |
@@ -323,13 +425,13 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-23 | 跨空间 | aarch64/riscv64 PTE walk | 24 §4.6 [P2] | **✅ 已解决（2026-08-14 核实）**：三架构 `PteWalkArch` 完整实现——x86_64/paging.rs、arm64/paging.rs:310（4 级）、riscv64/paging.rs:334（Sv39 3 级） |
 | D-24 | 跨空间 | `VmSuspendContext` Map 变体未使用（当前仅 KernelCall + DeliverMsg） | 24 §4.6 [P2] | 随 IPC/message deliver 推进 |
 | D-25 | 跨空间 | 部分拷贝进度报告（`CrossSpaceResult::Suspended(fault, usize)` 扩展方向） | 24 §4.6 [P2] | 未来可扩展 |
-| D-26 | GETINFO | `GET_PROC`/`GET_PROCTAB`（do_getinfo.c） | 25 附录 | **✅ 已解决（2026-08-14）**：已实现为 `GetInfoRequest::Proc`/`ProcTab`（misc.rs:732/:754），非 C 布局而是 KProcess Rust 语义（rewrite 目标） |
-| D-27 | GETINFO | `GET_PRIV`/`GET_PRIVTAB` | 25 附录 | **✅ 已解决（2026-08-14）**：`Priv`/`PrivTab`（misc.rs:841/:791） |
-| D-28 | GETINFO | `GET_REGS` | 25 附录 | **✅ 已解决（2026-08-14）**：`Regs`（misc.rs:863） |
-| D-29 | GETINFO | 其余：`GET_IMAGE`/`MONPARAMS`/`IRQHOOKS`/`IRQACTIDS`/`IDLETSC` | 25 附录 + §2.1 | **✅ 已解决（2026-08-14）**：`Image`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`（misc.rs:1083/:1121/:1051/:958/:988） |
-| D-30 | UPDATE | `swap_memreq`（do_update.c:313-337） | 25 附录 | 🟢 **设计 no-op（2026-08-14 核实）**：swap 时两个进程均不可运行 → swap 无操作（misc.rs:1778 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.6） |
-| D-31 | SPROF | 数据拷贝（sprof_info + 采样缓冲区 → 用户态） | 25 §4.5 | **✅ 已解决（2026-08-14 核实）**：info + buffer 双重 `data_copy_vmcheck`（misc.rs:2067-2070，do_sprofile.c:117-120 语义） |
-| D-32 | SPROF | `clean_seen_flag`（do_sprofile.c:25-31） | 25 附录 | **✅ 已解决（2026-08-14）**：`clean_seen_flag` helper（misc.rs:1951）+ PROF_START（:2017）/ PROF_STOP（:2149）调用（do_sprofile.c:91/:122 语义）+ 测试 test_sprof_start_clears_seen_flags |
+| D-26 | GETINFO | `GET_PROC`/`GET_PROCTAB`（do_getinfo.c） | 25 附录 | **✅ 已解决（2026-08-14）**：已实现为 `GetInfoRequest::Proc`/`ProcTab`（misc.rs:784/:754），非 C 布局而是 KProcess Rust 语义（rewrite 目标） |
+| D-27 | GETINFO | `GET_PRIV`/`GET_PRIVTAB` | 25 附录 | **✅ 已解决（2026-08-14）**：`Priv`/`PrivTab`（misc.rs:893/:791） |
+| D-28 | GETINFO | `GET_REGS` | 25 附录 | **✅ 已解决（2026-08-14）**：`Regs`（misc.rs:915） |
+| D-29 | GETINFO | 其余：`GET_IMAGE`/`MONPARAMS`/`IRQHOOKS`/`IRQACTIDS`/`IDLETSC` | 25 附录 + §2.1 | **✅ 已解决（2026-08-14）**：`Image`/`MonParams`/`IrqHooks`/`IrqActids`/`IdleTsc`（misc.rs:1135/:1150/:1103/:1010/:1040） |
+| D-30 | UPDATE | `swap_memreq`（do_update.c:313-337） | 25 附录 | 🟢 **设计 no-op（2026-08-14 核实）**：swap 时两个进程均不可运行 → swap 无操作（misc.rs:1807 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.6） |
+| D-31 | SPROF | 数据拷贝（sprof_info + 采样缓冲区 → 用户态） | 25 §4.5 | **✅ 已解决（2026-08-14 核实）**：info + buffer 双重 `data_copy_vmcheck`（misc.rs:2096-2099，do_sprofile.c:117-120 语义） |
+| D-32 | SPROF | `clean_seen_flag`（do_sprofile.c:25-31） | 25 附录 | **✅ 已解决（2026-08-14）**：`clean_seen_flag` helper（misc.rs:1980）+ PROF_START（:1993）/ PROF_STOP（:2080）调用（do_sprofile.c:91/:122 语义）+ 测试 test_sprof_start_clears_seen_flags |
 | D-33 | 随机数 | x86 RDRAND 熵采集（当前 kernel 侧 no-op stub 匹配 C i386/earm） | 25 §4.7 D3 | 应在 os/arch/src/x86_64/ 实现（当前 deferred）；实际熵采集由用户态 random 驱动 |
 | D-34 | VM | `kinfo.mmap_size` + `mem_high_phys` 更新（08 委派，C add_memmap 更新，Rust KernelInfo immutable） | 09 §6.1 + 08 §4 | VM direct map 实际大小 + 最高物理地址在 boot 阶段确定后，dispatch_vmctl 补充分支或独立 SYS_GETINFO 路径 |
 | D-35 | VM | `VmInhibitSet` SMP IPI（dispatch_vmctl，RTS_SET(VMINHIBIT)） | 09 §4 | **部分实现（2026-08-14 核实）**：本地路径已实现（syscall.rs:1883-1903 RTS_SET(VMINHIBIT)）；SMP IPI 远程路径待实现 |
@@ -337,7 +439,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-37 | SMP | `boot_lock`（smp.c:28） | 16 §4.14 | 随 smp_init（D-36）一并实现 |
 | D-38 | SMP | **BKL 接入 4 处**：exception_dispatcher::handle 需 bkl_lock() / kmain switch_to_user 前获取 / switch_to_user 调度循环前 bkl_unlock / kernel_call_resume | 16 §4.13 | ②③ **✅ 已解决（2026-08-14）**：lib.rs:1956 bkl_lock（switch_to_user 前）+ lib.rs:2167 bkl_unlock（调度循环前）；①④ 仍 DEFERRED（SMP 异常路径） |
 | D-39 | SMP | x86_64 `init_ap` panic 占位（protection.rs:368-370） | 16 §5.3 [P1] | AP 启动路径；占位触发后无测试（→ 见 T-2） |
-| D-40 | SMP | ptproc per-CPU 语义（PostInitArch::set_ptproc 三架构占位） | 16 §5.3 [P1] | SMP 落地后 per-CPU ptproc 跟踪 |
+| D-40 | SMP | ptproc per-CPU 语义（arch 层 `PostInitArch` 已删除；kernel 级 `CURRENT_PTPROC_NR` 全局当前承担，SMP 落地时迁移 `CpuLocal::ptproc`） | 16 §5.3 [P1] | SMP 落地后 per-CPU ptproc 跟踪（见 16 §D8） |
 | D-41 | 平台 | `PLATFORM` AssumeSyncCell SMP 替换（AP_STARTUP 并发访问时替换为 Mutex/Atomic） | 04 §3.3 TODO [P1] | SMP 就绪后失效；由 16-smp 在 AP bring-up 前完成 |
 | D-42 | return-path | `TrapReturnArch` trait 定义 + asm impl（iretq/eret/sret + GP 寄存器恢复，trap_return.rs 未创建） | 10 §4.1 + 14 §4.8 + 03 §4.3 | 待 doc 10 switch_to_user 完整调度循环落地；拟议签名 `trait TrapReturnArch: ExceptionArch { type RegisterFile; unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! }` |
 | D-43 | 调度 | `SC_TRACE`/`SC_ACTIVE` misc flags 处理 | 10 §4.2 | future phase（依赖 signal module） |
@@ -347,7 +449,10 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-47 | 调试 | `util_stacktrace()` 不展开栈 | 27 §6.3 | 待 arch stack walker |
 | D-48 | panic | panic handler 增强：消息输出 / CPU 号 / `minix_shutdown(0)` / 栈展开 | 27 §6.3 | 待 shutdown 协议 + arch stack walker + `minix_sys::write(STDERR)` |
 | D-49 | 特权 | `set_sendto_bit`（system.c:307-330 运行时设置 s_ipc_to 位） | 22 §4.6 | boot 阶段由 grant_capability 的 ipc_mask 替代；运行时设置路径未实现 |
-| D-50 | 架构清理 | `set_ptproc`/`PostInitArch`/`MemoryInitArch`/`FreePdeSlots` 待废弃（createpde 已被 Direct Map 取代） | 07 §1.4 TODO-07-1 | 修复 lib.rs:905-972 旧逻辑后自然废弃（MemoryInitArch 对接 DirectMapArch） |
+| D-50 | 架构清理 | `set_ptproc`/`PostInitArch`/`MemoryInitArch`/`FreePdeSlots` 待废弃（createpde 已被 Direct Map 取代） | 07 §1.4 TODO-07-1 | ✅ **已修复（2026-08-17，Action Item #1）**：`init_post_and_memory` 重构为确认就绪 + 相关类型链/statics/测试全部删除 |
+| D-51 | IPC 协议 | `PrivUpdateRequest` 字段顺序全局重构（按读写时机 / 锁粒度 / 协议语义切，让 14 字段贴近 KPriv 8 子结构分组语义） | 06 §3.10 | **✅ 已解决（2026-09-03）**：字段序冻结为 KPriv 8 子结构镜像（去 `PrivRuntime`）：`s_id / s_flags / s_init_flags / s_sig_mgr / s_bak_sig_mgr / s_trap_mask / s_ipc_to / s_k_call_mask / s_nr_io_range / s_io_tab / s_nr_irq / s_irq_tab / s_nr_mem_range / s_mem_tab`——s_id 归位 Identity 首；I/O 组在 IRQ 组前（对齐 `PrivIo` 与 C priv.h 惯例）；资源组计数在表前；signal manager 在 Signals 位、init 贴近 s_flags。三处同步落地：(a) `kpriv.rs` `PrivUpdateRequest` + `new()`（`TODO(backlog)` 锚点移除，改为冻结序说明）；(b) RS `privilege.rs` `Privilege`/`vacant()`/`boot_priv()` 同序镜像；(c) `data_copy` 大小由内核侧 `size_of::<PrivUpdateRequest>()` 统一计算（repr(C) 布局随新序自动一致，RS 无独立 size 源）。文档同步：06 §3.10、22 §4.2（协议结构字段序注 + KPriv 片段 flags/init 顺序对齐代码）、03-rs §3.2/§4.2。`cargo test -p minix-kernel -p minix-rs` 全过。 |
+| D-52 | 调度 | `sched_proc` 裸 `set/clear(NO_QUANTUM)` 是否对齐 C 的 `RTS_SET/RTS_UNSET` dequeue/enqueue 语义（二选一？） | 06 §3.3 / 11（待写） | **deferred 到 11-scheduling-primitives review（2026-08-31 标记，用户决策）**：当前 `sched_proc`（sched.rs:321-411）拿 `&mut KProcess` 只能裸改 RTS 位（[sched.rs:366/408](file:///os/kernel/src/sched.rs#L366)），绕过了 `rts_set/rts_unset` 的 enqueue/dequeue 封装（proc_table.rs:282-316）——依赖 syscall 出口统一 pick_proc 重调度。C 的 `RTS_SET/RTS_UNSET(RTS_NO_QUANTUM)`（system.c:674/697）宏会立即 dequeue/enqueue。**决策待定**：完全对齐 C（改 `sched_proc` 签名为持有 `&mut ProcessTable` 并调用封装）vs 在更高层对齐（保留出口重调度模型，文档标注差异）。改 priority 后 runqueue 位置不立即重排是当前模型与 C 的实际行为差。已同步在 `06-proc-init-boot-proc.md §3.3` 写侧代码证据中标注该差异与 deferred 决策。 |
+| D-53 | boot / 用户态链路 | `cpu_identify()`（main.c:45 → i386 arch_system.c:212，CPUID 填 `cpu_info[CONFIG_MAX_CPUS]`：vendor/family/model/stepping/freq/flags，archtypes.h:39-46）未移植；Rust `GET_CPUINFO` 分支（misc.rs:1001-1015）返回缩减 `CpuInfoEntry`（仅 cpu_id 实值），布局与 C `struct cpu_info` 不一致，注释引用 `type.h:146-159` 为错误出处（该处实为 boot_image；真实类型为各 arch archtypes.h 的 `struct cpu_info`） | 08 §4 / 06 §4.8 | **deferred（2026-09-03 记录）**：C 侧 `cpu_info` 消费者全在用户态（procfs cpuinfo.c:146 `/proc/cpuinfo` + libsys tsc_util.c:40 TSC 校准读 freq），内核自身不读；QEMU 完整暴露 CPUID（guest `/proc/cpuinfo` 可见），探测无环境障碍，非物理硬件依赖。补齐时点 = procfs/用户态 TSC 校准接线（19 阶段后）：移植 `cpu_identify`（i386 CPUID 路径 + aarch64 MIDR/earm 路径）+ `CpuInfoEntry` 对齐 `struct cpu_info` 布局 + 修 misc.rs 注释出处（→ archtypes.h:39-46）。 |
 
 ### 7.2 WONTFIX 设计排除清单（有 rationale，非缺口）
 
@@ -360,7 +465,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | W-5 | 25 | SPROF `PROF_NMI` 路径 | NMI 子系统超范围（25 附录，同 26） |
 | W-6 | 09 | `ClearMapCache` → Ok(0) no-op | 64-bit Direct Map 无 cache table，匹配 C 无 cache table 架构的 no-op（09 §4.5） |
 | W-7 | 27 | kmess 缓冲体系（kmess_buf / km_buf 双缓冲 / END_OF_KMESS / send_diag_sig / SIGKMESS / DIAGCTL_CODE_REGISTER） | EarlyConsole 直接输出 + log 后端替代（27 §6.2，ARCH 演进） |
-| W-8 | 25 | `swap_memreq`（do_update.c:313-337，D-30） | 🟢 设计 no-op（2026-08-14 核实）：当前 vmrequest 链无入队路径（D-20 DEFERRED）→ 链恒空 → swap 无操作（misc.rs:1778 注释 + doc 25，与 W-6 同类）；**D-20 落地时需重审** |
+| W-8 | 25 | `swap_memreq`（do_update.c:313-337，D-30） | 🟢 设计 no-op（2026-08-14 核实）：当前 vmrequest 链无入队路径（D-20 DEFERRED）→ 链恒空 → swap 无操作（misc.rs:1807 注释 + doc 25，与 W-6 同类）；**D-20 落地时需重审** |
 
 ### 7.3 待补充测试清单
 
@@ -491,7 +596,7 @@ trait 的 `Send + Sync` 是引用层面的类型证明，不蕴含实例字段�
 | 06 `EntrySpec::DEFERRED` 非 VM 进程 | ✅ 设计语义 | boot 协议（RS 运行时加载），非缺口 |
 | 08 三处 C 步骤差异（cpu_identify / krandom_init / CPU_IS_READY） | ✅ ARCH 演进 | 08 §4 差异说明表，非实现遗漏 |
 | 27 kmess 缓冲 | ✅ 演进替代 | §W-7（log crate + EarlyConsole） |
-| 25 swap_memreq（D-30） | 🟢 设计 no-op | misc.rs:1778 注释 + doc 25（2026-08-14）：vmrequest 链无入队路径 → 链恒空 → swap 无操作；与 W-6 同类，D-20 落地时重审 |
+| 25 swap_memreq（D-30） | 🟢 设计 no-op | misc.rs:1807 注释 + doc 25（2026-08-14）：vmrequest 链无入队路径 → 链恒空 → swap 无操作；与 W-6 同类，D-20 落地时重审 |
 
 
 
@@ -1089,31 +1194,39 @@ rg "^static mut " os/ --type rust -n
 
 **已补测试分布**：
 
+> **2026-08-17 变更（Action Item #1）**：下表测试对应的机制（`PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`FREE_UPPER_IDX`）已被 Direct Map 取代并删除，下表中的 5.1/5.2/5.3 测试随类型删除一并移除（`test_set_ptproc_*`/`test_allocate_free_pdes_*`/`test_free_pde_slots_*`/`test_advance_free_upper_idx`/`test_createpde_does_not_reallocate_slots`/`test_init_post_and_memory_phase_d_dependencies`）。07 文档 §5.2 以"类型不存在"的编译期断言替代（见 [07-cross-space-init.md §5.2](07-cross-space-init.md)）。
+
 | §5 子节 | 测试函数 | 位置 | 状态 |
 |---------|---------|------|------|
-| 5.1 | `test_set_ptproc_accepts_valid_vm_page_table_info` | `arch/src/{x86_64,arm64,riscv64}/post_init.rs` | ✅ |
-| 5.2 | `test_memory_init_arch_allocates_two_consecutive_pdes` | `arch/src/arch/post_init.rs` | ✅ |
-| 5.2 | `test_memory_init_arch_advances_free_upper_idx_by_two` | `kernel/src/lib.rs` (`test_advance_free_upper_idx`) | ✅ 已有 |
-| 5.2 | `test_allocate_free_pdes_panics_on_overflow` | `arch/src/{x86_64,arm64,riscv64}/post_init.rs` (per-arch) | ✅ |
-| 5.2 | `test_free_pde_slots_new_is_empty` | `arch/src/arch/post_init.rs` | ✅ |
-| 5.2 | `test_free_pde_slots_push_*` | `arch/src/arch/post_init.rs` | ✅ |
-| 5.3 | `test_init_post_and_memory_phase_d_dependencies` | `kernel/src/lib.rs` | ✅ |
-| 5.3 | `test_free_pde_slots_global_persists_after_init` | `kernel/src/lib.rs` (`test_free_upper_idx_starts_at_zero`) | ✅ 已有 |
-| 5.3 | `test_createpde_does_not_reallocate_slots` | `kernel/src/lib.rs` | ✅ |
+| 5.1 | `test_set_ptproc_accepts_valid_vm_page_table_info` | `arch/src/{x86_64,arm64,riscv64}/post_init.rs` | ✅ → 2026-08-17 删除（类型废弃） |
+| 5.2 | `test_memory_init_arch_allocates_two_consecutive_pdes` | `arch/src/arch/post_init.rs` | ✅ → 2026-08-17 删除（类型废弃） |
+| 5.2 | `test_memory_init_arch_advances_free_upper_idx_by_two` | `kernel/src/lib.rs` (`test_advance_free_upper_idx`) | ✅ 已有 → 2026-08-17 删除 |
+| 5.2 | `test_allocate_free_pdes_panics_on_overflow` | `arch/src/{x86_64,arm64,riscv64}/post_init.rs` (per-arch) | ✅ → 2026-08-17 删除（类型废弃） |
+| 5.2 | `test_free_pde_slots_new_is_empty` | `arch/src/arch/post_init.rs` | ✅ → 2026-08-17 删除（类型废弃） |
+| 5.2 | `test_free_pde_slots_push_*` | `arch/src/arch/post_init.rs` | ✅ → 2026-08-17 删除（类型废弃） |
+| 5.3 | `test_init_post_and_memory_phase_d_dependencies` | `kernel/src/lib.rs` | ✅ → 2026-08-17 删除（机制废弃） |
+| 5.3 | `test_free_pde_slots_global_persists_after_init` | `kernel/src/lib.rs` (`test_free_upper_idx_starts_at_zero`) | ✅ 已有 → 2026-08-17 删除 |
+| 5.3 | `test_createpde_does_not_reallocate_slots` | `kernel/src/lib.rs` | ✅ → 2026-08-17 删除（机制废弃） |
 | 5.1/5.3 | ptproc 未初始化 / virt_root=None / mem_clear_mapcache | — | DEFERRED（见 §12.2） |
 
-**编译验证**：
+**编译验证**（2026-06-21，删除前）：
 - `cargo test -p minix-arch --features mock --lib -- post_init::tests` / `x86_64::post_init::tests` → OK
 - `cargo test -p minix-kernel --features mock --lib` → OK (test_createpde + test_phase_d_dependencies)
+
+**编译验证**（2026-08-17，删除后）：
+- `cargo test -p minix-arch -p minix-kernel` → OK（610 + 2 通过，0 失败）
+- `rg "PostInitArch|MemoryInitArch|FreePdeSlots|VmPageTableInfo" os/ -t rust` → 0 matches
 
 ###### 12.2 [P1] ptproc per-CPU 变量未实现（架构 TODO）
 
 **问题**：`PostInitArch::set_ptproc()` 当前在三个架构实现中都只是占位（`let _ = vm_page_table`），未实际存储 ptproc 指针。这意味着 `createpde()` 等后续依赖 ptproc 的功能无法工作。
 
-**位置**：
-- `os/arch/src/x86_64/post_init.rs:46-58`
-- `os/arch/src/arm64/post_init.rs:38-48`
-- `os/arch/src/riscv64/post_init.rs:42-52`
+> **2026-08-17 更新（Action Item #1）**：arch 层 `PostInitArch` 及三架构占位实现已删除——`createpde` 已被 Direct Map 取代，arch 级 ptproc 不再需要。kernel 级 ptproc 跟踪由 `CURRENT_PTPROC_NR` 全局（`set_current_ptproc_nr(VM_PROC_NR)`，[07 §1.4](07-cross-space-init.md)）承担；SMP 落地时迁移到 `CpuLocal::ptproc`（见 [16-smp.md §D8](16-smp.md)）。
+
+**位置**（已删除，2026-08-17）：
+- ~~`os/arch/src/x86_64/post_init.rs:46-58`~~
+- ~~`os/arch/src/arm64/post_init.rs:38-48`~~
+- ~~`os/arch/src/riscv64/post_init.rs:42-52`~~
 
 **修复方向**：
 1. 在 arch 层添加 `pub fn ptproc() -> Option<*const KProcess>` 和 `pub fn set_ptproc_value(...)` 自由函数（封装 per-CPU 访问的 `AtomicPtr` 或 `[UnsafeCell<Option<usize>>; MAX_CPUS]`）。
@@ -1173,7 +1286,7 @@ Minix3 C 版的页表生命周期：
 |------|--------|-----------|
 | pre_init | `pg_identity()` + `pg_mapkernel()` + `pg_load()` 建立初始页表 | 同 C |
 | 阶段 B（`prot_init()`） | `pg_clear()` + `pg_identity()` + `pg_mapkernel()` + `pg_load()` **重建**页表 | **不重建**，直接复用 pre_init 页表 |
-| 阶段 C（`arch_boot_proc(VM)`） | `pg_map(PG_ALLOCATEME, ...)` 添加 VM 映射 | 同 C |
+| 阶段 C（`arch_boot_proc(VM)`） | `pg_map(PG_ALLOCATEME, ...)` 分配器选帧添加 VM 映射 | **架构演进（2026-09-01，见 [`frame.rs`](file:///os/arch/src/arch/frame.rs)）**：`VmBootAllocator` 分配物理帧 + `Paging::map(vm_va → pa)`；与 C 语义目标一致（PA≠VA），实现位置不同 |
 
 C 版重建的动机（`protect.c:357-358` 注释）："Set up a new post-relocate bootstrap pagetable so that we can map in VM, and we no longer rely on pre-relocated data."
 
@@ -1568,6 +1681,351 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 **根因**：与 Pattern #77（doc 08 先例）相同——代码增量后注释未同步。建议批量修复脚本：`rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust` + sed 逐处验证。
 
 ---
+
+## 19. GPT 评论批判性分析（2026-08-16，doc 05 review 顺带）
+
+> **来源**：`~/AI-chats/comments.md:1-1214`（GPT 对 doc 05 时钟中断初始化设计的整体评论）。
+> **方法学**：逐条对照 C 源码（ground truth）+ 当前 Rust 实现 + doc 05 既有决策，标注"接受 / 部分接受 / 反对"，避免直接照搬 GPT 结论。
+> **状态**：批判性 review 完成，结论写入 todo；不立即改动代码（需 OQ 确认哪些进入 P0/P1/P2 改造）。
+
+### 19.1 评分与采纳结论
+
+GPT 整体给 8/10。逐项判定：
+
+| # | GPT 论点 | 准确性 | 评审结论 | 处理 |
+|---|---------|--------|---------|------|
+| 1 | **ClockArch / TimerIrqGate 边界冲突** | ✅ 完全正确（已 grep 验证 `arm64/clock.rs:69` 写 `msr cntp_ctl_el0, 1`（Enable=1,IMASK=0）+ `riscv64/clock.rs:84` 写 `csrs sie, 0x20`） | 与 C 时序偏差：C `bsp_finish_booting`（`main.c:324`）才使能 timer IRQ；Rust 在 `init_clock_and_interrupts` 就直接 Enable → 违反 C 时序 → boot 期间 timer IRQ 已 live 但尚无 handler（与 doc §3.7 V3 P0-1 已承认的差异一致） | **P0-1 接受**：把 `ClockArch::init_timer` 改为 "configure + IRQ-gated" 两阶段（GPT 建议的方案）；`TimerIrqGate::enable_timer_irq` 成为唯一 timer IRQ live 入口 |
+| 2 | **InterruptController global/per-CPU 不对称** | ✅ 完全正确（已 grep 验证 `arm64/interrupt.rs:1569 ack(_irq)` / `x86_64/interrupt.rs` 同款 / `riscv64/interrupt.rs:1776 ack(_irq)` 全忽略 `_irq`） | doc §3.3 末尾已延展 + §7.4.1 I-13 P2；GPT 进一步建议 `InterruptRouter` + per-CPU `InterruptAck` 两个 trait，与现有 P2 一致 | **P1 接受**：backlog 写入 §7.4.1 I-13；当前不动代码（依赖 16-smp 的 per-CPU 基础设施） |
+| 3 | **`ack(irq)` API 应改为 `ack() -> IrqVector`** | ✅ 完全正确（硬语义错误） | GIC/PLIC 硬件语义确实是"读控制器当前最高优先级 pending IRQ"，不是"ack expected IRQ"；x86 LAPIC EOI 写动作对应 eoi 不对应 ack | **P1 接受**：trait 修改工作（影响三架构 + irq_manager），doc §3.3 + §4.6/§4.8 同步修正；与 §7.4.1 I-13 合并 |
+| 4 | **ClockArch 职责膨胀** | ⚠️ 部分对 | 8 个方法（`new/init_timer/read_ticks/read_tsc/stop_local_timer/init_profile_clock/stop_profile_clock/ack_profile_clock`）确实多；但 `init_profile_clock`/`stop_profile_clock`/`ack_profile_clock` 在 C `profile.c:123` 也存在（不是 Rust 引入）；`read_tsc` 默认委托 `read_ticks`（arch/clock.rs:1255） | **P2 接受**：可演进为 `PeriodicTimer` + `ClockCounter` + `ProfileTimer` 三个 trait；当前保持不动（与方法数膨胀但语义清晰不冲突） |
+| 5 | **GIC `mask_all()` 只处理 SPI** | ✅ 完全正确（已 grep 验证 `arm64/interrupt.rs:1582` 循环 `32..self.nr_irqs`） | trait 命名 `mask_all()` 暗示"所有 INTID disabled"实则"仅 SPI disabled" | **P2 接受**：trait 方法改名为 `mask_all_global()` + 加 `mask_all_local()`（GPT 建议）；doc §3.3 同步注释明确语义 |
+| 6 | **`ClockState` BSP/AP 模型** | ✅ 完全正确 | doc §4.1.5 L1011 `set_timer` AP 上 panic；GPT 建议 `GlobalClock + PerCpuClock` 拆分 | **P2 接受**：留待 SMP 阶段拆分（doc §3.1 D8 已说"先运行时分支"）；当前实现可工作 |
+| 7 | **TimerQueue 双索引 + ClockState/硬件分层** | ✅ GPT 评价正确 | doc §4.1.2 D2 + §3.1 D1 决策；GPT 认可是正确的 | **记录**：无修改需要 |
+| 8 | **`ArchInit` 垃圾箱风险** | ✅ 完全正确（doc §3.5 已自承） | doc §3.5 末段已写硬边界规则；GPT 强调强化与现有决策一致 | **P2 接受**：保持现有边界规则文字；如未来加 PMP/ACPI/PMU 仍走 ArchInit，需先论证无跨架构抽象空间 |
+| 9 | **`DEFAULT_HZ` 双份定义** | ✅ 完全正确 | doc §3.2 已标注；os/arch + os/kernel 两处定义 | **P2 接受**：同 D1（`Errno newtype` 共享 minix-types）——把 `TickRate` / `ClockConfig` 放到 platform/common config 层；当前依赖方向不允许反向依赖，需 OQ 决定 crate 拆分 |
+| 10 | **x86-64 文档描述 vs 实现脱节** | ✅ 完全正确 | doc §3.3 表写 `x86-64: 8254 PIT / LAPIC Timer`，但 `ClockArch::init_timer` 只配 PIT，LAPIC 由 `InterruptController::init` 负责 | **P2 接受**：doc §3.3 表加 boot/runtime 阶段明确说明（GPT 建议的画法） |
+| 11 | **EarlyConsole 别动** | ✅ GPT 评价正确 | doc §3.4 简洁 + 与 doc §3.5 ArchInit 边界一致；无需加 ConsoleManager | **记录**：无修改需要 |
+| 12 | **不应过度强调 `Send + Sync`** | ⚠️ **GPT 错了一半** | doc §3.1（ClockArch）+ §3.3（InterruptController）已给出**完整解释**：per-CPU 物理隔离 + 引用可传递的语义编码，不是并发安全声明；GPT 没看到这两段长注释就说"为有问题的 instance model 辩护"——实际 doc 已说明 `ClockArch` 是 transient 当前不需要持久化 | **反驳 GPT**：当前 `Send + Sync` bound **没有运行时开销**，对未来 per-CPU 持久化也无坏处；doc §3.1 大段解释恰恰是设计透明性而非"解释为什么它没问题"——读者能据此判断何时可收紧 bound |
+| 13 | **建议的总体架构图** | ⚠️ 方向对但时机错 | GPT 提出的 `PlatformDesc → Clock Hardware / Interrupt Router / Arch Boot Glue → TimerIrqGate → CPU Trap Entry → IrqManager → ClockState::tick()` 链路与 doc §4.13 `init_clock_and_interrupts()` 流程图基本一致；GPT 多出 `InterruptRouter` 拆分（与 §7.4.1 I-13 重合） | **记录**：架构方向确认，无新决策 |
+
+### 19.2 关键 P0 接受项详细记录（待 OQ 确认是否本轮改造）
+
+#### 19.2.1 P0-1：ClockArch / TimerIrqGate 边界冲突修复
+
+**问题陈述（与 doc §3.7 V3 P0-1 一致）**：
+
+当前 `ClockArch::init_timer` 在三架构直接 Enable timer IRQ：
+
+```rust
+// os/arch/src/arm64/clock.rs:69
+core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);  // Enable=1, IMASK=0
+
+// os/arch/src/riscv64/clock.rs:84
+core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x20u64);  // STIE=1
+
+// os/arch/src/x86_64/clock.rs（已 grep 验证 init_timer 只配 PIT）
+// init_timer 不写 LAPIC LVT Timer mask；但 LAPIC LVT mask 由 init_lapic 设=1
+```
+
+而 `TimerIrqGate::enable_timer_irq` 又写**完全相同**的硬件位：
+
+```rust
+// os/arch/src/arm64/timer_irq_gate.rs:31-44
+core::arch::asm!("msr CNTP_CTL_EL0, {ctrl}", ctrl = in(reg) 1u64);
+
+// os/arch/src/riscv64/timer_irq_gate.rs:23-32
+core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x20u64);
+```
+
+→ aarch64/riscv64 在 `init_clock_and_interrupts` 阶段 `ClockArch::init_timer` 一调用，timer IRQ 立刻 live，但 handler 尚未注册。
+
+**C 时序（ground truth）**：C 版 `init_clock()`（clock.c:48）只初始化软件状态（`kclockinfo`/`kloadinfo`/频率），**不碰硬件**。硬件定时器使能发生在更晚的 `bsp_finish_booting()`（main.c:324）调用 `boot_cpu_init_timer()`（clock.c:293）→ `init_local_timer()` + `register_local_timer_handler()`。
+
+**GPT 建议**：把 `ClockArch::init_timer` 改为 "configure timer + leave IRQ gated"，由 `TimerIrqGate::enable_timer_irq` 成为唯一 timer IRQ live 入口。
+
+**具体实现方向**：
+
+| 架构 | 当前 `ClockArch::init_timer` | 期望行为（GPT 建议） |
+|------|------------------------------|----------------------|
+| x86-64 | 配 PIT | 配 PIT + LAPIC LVT mask=1（保持 masked） |
+| aarch64 | `CNTP_CTL_EL0 = 1`（Enable=1,IMASK=0）| `CNTP_CTL_EL0 = 2`（Enable=0,IMASK=1）— 配置 compare 值但不 live |
+| riscv64 | `csrs sie, 0x20`（STIE=1）| 写 mtimecmp 但**不**写 `sie.STIE`；`TimerIrqGate::enable_timer_irq` 才设 STIE |
+
+**影响范围**：
+- `os/arch/src/{x86_64,arm64,riscv64}/clock.rs` `init_timer` 实现
+- `os/arch/src/{x86_64,arm64,riscv64}/timer_irq_gate.rs`（当前实现可能要从"实现 enable"改为"实现 enable 的硬件位 mask"——语义不变只是迁移）
+- `os/kernel/src/lib.rs` `bsp_finish_booting` Step 6（V3 P0-1 已记录此步需调用 `enable_timer_irq`）
+- doc 05 §3.7 + §4.2/§4.4/§4.5/§4.7 + §3.8 行为变更声明表
+- 测试：x86 LAPIC timer 启用后的 QEMU 集成测试覆盖（当前 §5.2 列为未覆盖）
+
+**风险**：
+- boot 期间 timer IRQ 不 live → 所有依赖 boot 期间 tick 的代码（罕见）会延后到 `bsp_finish_booting` 之后；与 C 时序对齐（ground truth priority）
+- 与 doc §3.7 V3 P0-1 的差异声明表做反向修正：当前是"x86 LAPIC LVT mask 0→1"，改为"aarch64/riscv64 从 live 改为 gated"
+
+**建议**：本轮修复（与 V3 P0-1 合并）；保持 doc §3.7 的 P0-1 标记。
+
+### 19.3 P1 接受项详细记录
+
+#### 19.3.1 P1-1：`InterruptController::ack` API 改为 `ack() -> IrqVector`
+
+**问题陈述（GPT 与 §7.4.1 I-13 重合）**：当前 `ack(irq: IrqVector)` 把参数 `_irq` 完全忽略（x86_64/arm64/riscv64 三架构 grep 已验证），但签名要求调用方传一个 IRQ 号——这是把 x86 LAPIC EOI 思维（写动作不需要 IRQ 参数）强行投影到 GIC/PLIC。
+
+**GIC 真实语义**（`arm/interrupt.c`，Minix3 未移植）：读 `ICC_IAR1_EL1` 返回 INTID。
+**PLIC 真实语义**（RISC-V PLIC spec §4）：读 claim 寄存器返回 INTID。
+**LAPIC 真实语义**（x86）：EOI 寄存器**只写不读**——但 LAPIC 也有"读 IRR（Interrupt Request Register）/ISR（In-Service Register）"获得 INTID 的能力；Minix3 x86 用 IOAPIC RTE（Redirection Table Entry）+ `irq_handlers[]` 表查 IRQ 号，不靠读 LAPIC 寄存器。
+
+→ 三架构硬件语义都是"读 → 得到 INTID"，而非"传 INTID 进去 ack"。
+
+**GPT 建议 API**：
+
+```rust
+trait InterruptCpuInterface {
+    fn ack(&mut self) -> IrqVector;  // 返回 ack 到的 IRQ 号
+    fn eoi(&mut self, irq: IrqVector);  // eoi 仍需 IRQ 号（GIC 写 ICC_EOIR1_EL1 + INTID）
+}
+```
+
+**影响范围**：与 §7.4.1 I-13 的 `InterruptRouter + InterruptAck` trait 拆分合并处理；当前 `InterruptController::ack(irq)` 应作为过渡，doc §3.3 + §3.8 表 + §4.6/§4.8 同步修正。
+
+**风险**：拆 trait 依赖 per-CPU 基础设施（`CpuLocal<Ack>`），与 16-smp 同批次；本轮先做文档修正（§3.3 + §3.8 + §4.6 + §4.8 中所有 `ack(irq)` 调用语义说明）。
+
+### 19.4 反驳/部分反对项
+
+#### 19.4.1 对 GPT "不应过度强调 Send + Sync" 论点的反驳
+
+GPT 原文："**Send + Sync** 解释得很努力，但模型本身不够干净"——GPT 没看 doc §3.1（ClockArch 完整解释）+ §3.3（InterruptController 完整解释）就下结论。
+
+**反驳证据**：
+
+1. doc §3.1 L360-370 用 80+ 行解释 `ClockArch: Send + Sync` 的真实动机——per-CPU 物理隔离 + 引用可传递的语义编码，不是"并发数据结构"的声明；
+2. doc §3.3 末尾延展（DEFERRED 段）已说明 `Send + Sync` 是引用层面的类型证明不蕴含实例字段可多 CPU 同时变更；
+3. 当前 `ClockArch` 确实是 transient（每次调用从 desc 现构造），但 `Send + Sync` bound 没有运行时开销，且对未来 per-CPU 持久化无坏处；
+4. 项目整体（kernel/arch 已 0 clippy warnings）的 Sync 设计有完整论证（sealed trait `BklProtected` + BKL witness）——`Send + Sync` 不是"解释为什么没问题"，而是"设计透明性"的体现。
+
+**评审结论**：`Send + Sync` bound 当前**正确且必要**；GPT 的"抽象泄漏约束"推测与代码事实不符。**不修**。
+
+#### 19.4.2 对 GPT "ClockArch 拆分三个 trait" 的部分接受
+
+GPT 原文建议拆 `PeriodicTimer` + `ClockCounter` + `ProfileTimer` 三个 trait。
+
+**部分接受**：`PeriodicTimer`（`init/stop`）+ `ClockCounter`（`read`）的语义区分**真实**——`read_ticks/read_tsc` 当前默认委托确实是把不同语义揉在一起（C 版亦如此，`read_tsc` 是 x86 标准做法；Rust 用默认方法委托保持 API 一致）。
+
+**部分反对**：`init_profile_clock/stop_profile_clock/ack_profile_clock` 在 C `profile.c:123` 也存在——这不是 Rust 引入的"膨胀"，而是 C 既有 API 的忠实重写。拆 `ProfileTimer` trait 会失去 C-Rust 1:1 对应（CLAUDE.md 强调 Rewrite 保持外部行为）。
+
+**评审结论**：当前 8 方法 trait 可保留；doc §3.1 增补一句"ClockArch 当前承担三个职责（periodic + counter + profile），C 端同款"——明确这是 C 既有语义的保留，而非 Rust 引入的过度设计。**P3 记录**，不修。
+
+### 19.5 P2/P3 项汇总（备查）
+
+| 项 | 描述 | 触发时机 |
+|----|------|---------|
+| P2-1 | `InterruptController::mask_all()` 改名为 `mask_all_global()` + 加 `mask_all_local()`（GPT §14） | 与 §7.4.1 I-13 合并重构时 |
+| P2-2 | doc §3.3 表加 boot/runtime 阶段明确说明（GPT §13） | 本轮 doc 修正可做 |
+| P2-3 | `DEFAULT_HZ` 跨 crate 共享（放到 platform config 层，GPT §16） | OQ 决定 crate 拆分（与 D1 同源） |
+| P2-4 | `ArchInit` 硬边界规则文字强化（GPT §12） | doc §3.5 末段已有，复核即可 |
+| P3-1 | ClockArch 拆 `PeriodicTimer` + `ClockCounter` + `ProfileTimer` 三 trait | 不推荐（C-Rust 1:1 对应丢失） |
+| P3-2 | `Send + Sync` bound 收紧（仅在需要持久化场景保留） | 不推荐（当前 bound 无运行时开销） |
+
+### 19.6 评审整体结论
+
+- **GPT 评价 8/10 合理**；
+- **核心 P0（ClockArch / TimerIrqGate 边界）**与 doc §3.7 V3 P0-1 已记录项重合，**本轮修复时合并处理**；
+- **P1 ack API 修正**与 §7.4.1 I-13 合并，**SMP 阶段统一处理**；
+- **P2/P3 项**已识别但工作量小、本轮不强制；
+- **Send+Sync 等论述 doc 已透明**，**无需修改**；
+- 整体 doc 05 设计方向**保留**，小修具体实现即可。
+
+## 20. GPT 对 doc 06 评论的批判性分析（2026-08-18，task: `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md`）
+
+> **来源**：`~/AI-chats/comments.md:1-1137`（GPT 对 doc 06 进程表初始化与 boot 进程加载的整体评论）
+> **方法学**：逐条对照 C 源码（ground truth）+ 当前 Rust 实现 + doc 06 既有决策，标注"接受 / 部分接受 / 反对 / 已记录"。
+> **状态**：批判性 review 完成；可优化项追加写入本节（不立即改动代码——遵循 doc 06 §3.0 设计原则 "先做完整个 kernel，统一 review"）。
+
+### 20.1 GPT 论点逐项判定
+
+GPT 整体评价 8/10。逐项判定：
+
+| # | GPT 论点 | 准确性 | 评审结论 | 处理 |
+|---|---------|--------|---------|------|
+| 1 | **固定数组 ProcessTable / ProcNr/index / CapabilityTemplate / RtsFlags + rts_set/rts_unset** 评价"很好/正确/非常好" | ✅ 完全正确（已 grep 验证：proc_table.rs:75 const fn new + proc.rs:112 KERNEL_TASKS + capability.rs:131 enum CapabilityTemplate + RtsFlags bitflags） | 与 doc 06 §3.1/§3.3 决策完全一致 | **记录**：无需修改 |
+| 2 | **ProcKind 方向正确但职责开始变宽** | ⚠️ 部分正确 | 当前 `ProcKind` 5 变体（KernelTask/Vm/RootService/UserService/UserProcess）确实决定 PSW/段选择子/FPU/特权等多维度。但拆分 `ExecutionDomain` × `ProcessRole` × `PrivilegePolicy` 三轴短期内是 over-engineering——当前 Minix3 角色确实简单 | **P2 设计债记录**：未来如果 KernelTask 下出现 interrupt-driven / kernel coroutine / schedulable kernel thread 三种情形，再拆分；当前不修 |
+| 3 | **EntrySpec 是"第一阶段 Rust refinement"** | ✅ 完全正确 | doc 06 §3.4 已自承 "类型层局限（仍依赖 `ProcKind` 区分）：KERNEL_TASK 与 DEFERRED 都是全 None 的 EntrySpec"——已明确为 known debt | **P2 设计债记录**：未来演进为 `enum ProcessStart { KernelEventDriven, UserDeferred, UserReady(UserEntry) }`；当前不修 |
+| 4 | **CpuContextArch trait 正在变胖（6 方法）** | ✅ 完全正确 | 已 grep 验证 boot.rs:165/173/184/197/226/251 实有 6 方法：build_cpu_context/apply_to_trap_frame/enable_user_io/inherit_fpu_state/write_user_register/or_ipc_status_reg（doc 06 §5.4 也记录 21 处引用、6 类方法） | **P2 设计债记录**：未来 `enable_user_io` 可能拆出到 `ArchPrivilege` / `UserIoArch` trait；当前不修 |
+| 5 | **enable_user_io() 是不属于 CpuContextArch 的"语义偏移"** | ✅ 部分正确 | x86-64 `enable_user_io` 设 IOPL=3，aarch64/riscv64 no-op——确实是"privilege / device access policy"而非 CPU context。但 doc 06 §3.5 已明确论证"trait 用于真多态"——`enable_user_io` 是真多态（x86 需实现，aarch64/riscv64 不需要），三架构语义不同 | **P2 设计债记录**：与 #4 合并 |
+| 6 | **FPU 下沉 arch（FpuArch trait + CurrentFpuState + FPU 策略）方向正确** | ✅ 完全正确 | doc 06 §3.6 已论证 rust 不翻译 fnsave/fxrstor 而是 FXSAVE/CPACR_EL1.FPEN/sstatus.FS 三架构统一抽象；实测 x86_64/boot.rs:1657 `fpu_policy` 枚举 + aarch64/riscv64 同款 trait 方法 | **记录**：无需修改 |
+| 7 | **KPriv 8 子结构是健康的重构** | ✅ 完全正确 | doc 06 §4.6 + kpriv.rs 实际有 8 子结构（PrivIdentity/PrivInit/PrivFlags/PrivSignals/PrivIpc/PrivIo/PrivMem/PrivRuntime，§4.6 表精确）；PrivFlagsBits 物理位布局保留的决策正确（拆位会破坏 IPC） | **记录**：无需修改 |
+| 8 | **BKL + atomic 是 SMP 安全"唯一组合" — 说得太满** | ✅ 完全正确（重要修正） | doc 06 §3.9 原文："BKL + AtomicI32 是 SMP 安全的唯一组合"——这个表述确实过强。实际存在 per-CPU lock / RCU / sequence lock / MCS lock / lock-free queue 等多种方案。但 doc 06 §3.9 的"在当前 Minix3 BKL + idle-steal 模型下，我们选择的组合"是准确的 | **P1 文档修正**：doc 06 §3.9 把 "唯一组合" 降级为 "在当前 Minix3 BKL + idle-steal 模型下，我们选择的组合"——这是 doc 准确性修正，无代码改动 |
+| 9 | **BSS 表述需要小心（const fn ≠ BSS）** | ✅ 完全正确（重要修正） | doc 06 §3.8 原文："编译期完成初始化（BSS 段零运行时开销）" + "结果固化在 .bss 段"。实际 const fn 是 static compile-time initialization，最终落到 `.bss / .data / .rodata` 由链接器决定——若 `KProcess::new_zeroed()` 含非零初值（如 Atomic/Option/Endpoint），不一定纯 zero-init | **P1 文档修正**：doc 06 §3.8 "BSS" 措辞改为 "static compile-time initialization, avoiding runtime construction"——避免 BSS 表述不准 |
+| 10 | **load_vm_elf() free fn（非 trait 方法）很好** | ✅ 完全正确 | doc 06 §3.7 + arch/boot.rs:271 实测——三架构实现相同是假多态，free function 正确 | **记录**：无需修改 |
+| 11 | **boot 主流程保留 orchestrator 形态（未拆 builder）** | ✅ 完全正确 | doc 06 §3.0 + lib.rs:767 init_proc_and_boot 实测是单 function 编排，无 ProcessBuilder/PrivilegeBuilder/BootImageBuilder/ContextBuilder 拆分 | **记录**：无需修改 |
+| 12 | **bsp_finish_booting() 结构清晰** | ✅ 完全正确 | lib.rs:1806 + doc 06 §4.8 步骤分解准确；Step 8.5 `mem::forget(bkl_lock())` 是 BKL 跨 switch_to_user 的关键设计（lib.rs:1843） | **记录**：无需修改 |
+| 13 | **"Process = execution flow"概念仍有过拟合（Process vs ExecutionContext 应拆分）** | ⚠️ 部分正确 | GPT 指出 IDLE 几乎无状态（"反证执行流与状态是正交维度"），CLOCK/SYSTEM 的入口是事件驱动而非独立执行流——这是真实的概念债务。但 doc 06 §1.1.4 已诚实标注 "Kernel task 的'运行'是事件驱动的，不是独立执行流" + "没有独立地址空间（共享 kernel image），且 kernel task 从未被 `arch_proc_init()` 设置执行入口"，已建立了 Process 与 ExecutionContext 的分离意识 | **P2 设计债记录**：与 #2/#3 合并——待整个 kernel 完成后统一 review |
+| 14 | **GPT 的 17 条最终设计债（5 类：Proc vs ExecutionContext / ProcKind 拆分 / EntrySpec state enum / CpuContextArch 膨胀 / BKL 论证强度）** | ✅ 部分正确 | 5 类设计债中：① Process vs ExecutionContext = 与 #13 同项；② ProcKind 拆分 = 与 #2 同项；③ EntrySpec state enum = 与 #3 同项；④ CpuContextArch 膨胀 = 与 #4/#5 同项；⑤ BKL 论证强度 = 与 #8 同项（已修正） | **P2 设计债记录**：5 项统一纳入最终 review checklist |
+| 15 | **GPT 的"反转收益"指标（每个 abstraction 检查反方向收益）** | ⚠️ 方法论正确，但 doc 06 已部分体现 | doc 06 §3.0 "强制设计原则"（P1-P7）+ §3.5 CpuContextArch 论证 + §3.6 FPU 演进 + §3.7 load_vm_elf 都给出了明确的"反方向收益"分析（不是更抽象，是更具体）。但 doc 没有系统化用"反方向收益"做清单 | **P2 文档改进（可选）**：可在 doc 06 §3.15 决策汇总表加一列 "反方向收益（GPT §15 方法论）" |
+| 16 | **GPT 提到 "capability.rs 的 `CapabilityTemplate` 与 `ProcKind` 不合并"** | ✅ 完全正确 | doc 06 §3.4 已论证 + capability.rs:131-145 enum 实测——两者关注点不同（ProcKind 给 arch 层看，CapabilityTemplate 给 kernel 层看），合并会丢失 IDLE = KernelTask + Idle 的组合自由度 | **记录**：无需修改 |
+| 17 | **CapabilityTemplate 名字"有点危险"（template 太窄）** | ✅ 部分正确 | 当前 CapabilityTemplate 表达 "boot-time privilege policy"——未来若引入运行时 capability 机制，"template" 概念会变窄。但目前是 5 变体枚举，命名匹配 | **P3 命名**：未来 capability 复杂化时再考虑改名 |
+
+### 20.2 关键 P1 文档修正项详细记录
+
+#### 20.2.1 [P1] BKL + AtomicI32 "唯一组合" 措辞降级
+
+**问题陈述**：doc 06 §3.9 原文：
+
+> **假设性推理**：如果用 `Rc<RefCell<KProcess>>` 跨 CPU 共享，`RefCell` 的运行时借用检查不是原子操作，两个 CPU 可能同时获得 `&mut`，导致 UB。**BKL**（全局串行化调度决策）+ **`AtomicI32`**（BKL 外的 idle steal 读路径）组合是 SMP 安全的**唯一组合**——`AtomicI32` 不是 BKL 的"替代"，而是 BKL 之外的**少锁读路径**（CPU 闲置从其他队列偷进程时，BKL 不被持有，需要原子读 `p_nextready`）。
+
+**GPT 准确判定**：
+
+> 后半句"唯一组合"就说得太满了。
+> 因为从系统设计角度：BKL + atomics 只是"你当前这个 Minix-style scheduler 选择的安全方案"，不是一般意义上的"唯一 SMP 安全组合"。可以存在：per-CPU locks / RCU / sequence lock / MCS lock / lock-free queue / …
+
+**修复建议（doc 06 §3.9 末尾段）**：
+
+```diff
+- **BKL**（全局串行化调度决策）+ **`AtomicI32`**（BKL 外的 idle steal 读路径）组合是 SMP 安全的唯一组合
++ **BKL**（全局串行化调度决策）+ **`AtomicI32`**（BKL 外的 idle steal 读路径）组合是 **在当前 Minix3 BKL + idle-steal 模型下我们选择的方案**——
++ 存在其他 SMP 安全组合（per-CPU locks / RCU / sequence lock / MCS lock / lock-free queue 等），
++ 但本项目沿用 Minix3 的简化模型，故未引入
+```
+
+**关联**：todo §7.1 D-38（BKL 接入 4 处）的 §4.13 BKL 论证强度 + 16-smp.md §4.13 同款问题。
+
+**优先级**：P1（文档准确性，非代码缺陷）
+
+#### 20.2.2 [P1] "BSS 段" 表述改为 "static compile-time initialization"
+
+**问题陈述**：doc 06 §3.8 原文：
+
+> **`const fn` 实际实现**（[proc_table.rs:75](file:///os/kernel/src/proc_table.rs)）：`[const { KProcess::new_zeroed() }; PROC_TABLE_SIZE]` 在编译期构建完整数组，调用点 `static PROC_TABLE` 触发 const 上下文求值，结果**固化在 `.bss` 段**，运行期零开销。
+
+**GPT 准确判定**：
+
+> 严格来说：`const fn` 意味着 **静态初始化可以在编译期完成**；但是否最终进 `.bss / .data / .rodata` 是由对象的实际初始值和链接器决定的。尤其 `KProcess::new_zeroed()` 如果其中存在非零初始值（Atomic/Option/Endpoint/ProcNr...），不一定全部是纯 zero-init。因此更准确的设计表述应该是：**static compile-time initialization, avoiding runtime construction** 而不是 **BSS = compile-time initialization**
+
+**修复建议（doc 06 §3.8 末段）**：
+
+```diff
+- `[const { KProcess::new_zeroed() }; PROC_TABLE_SIZE]` 在编译期构建完整数组，调用点 `static PROC_TABLE` 触发 const 上下文求值，结果固化在 `.bss` 段，运行期零开销。
++ `[const { KProcess::new_zeroed() }; PROC_TABLE_SIZE]` 在编译期构建完整数组，调用点 `static PROC_TABLE` 触发 const 上下文求值，运行期零开销。
++ 注：`KProcess::new_zeroed()` 中含 `Atomic*` / `Option<ProcNr>` / `Endpoint` 等非零初始字段，
++ 实际链接段由编译器/链接器决定（可能是 `.data` 而非 `.bss`）——准确表述是 "static compile-time initialization" 而非 "BSS = compile-time initialization"。
+```
+
+**关联**：CLAUDE.md "Hidden Folder Convention" — `tmp_design_and_todo/` 视为中间产物，正式 doc 引用应使用绝对路径到 doc、代码、C 源。当前 doc 06 §3.8 的 BSS 表述是设计准确性而非路径问题。
+
+**优先级**：P1（文档准确性）
+
+### 20.3 P2 设计债汇总（5 项，纳入最终 review checklist）
+
+合并 GPT 论点 #2/#3/#4/#5/#13/#14 的设计债，作为最终 kernel architecture review 的固定检查项（doc 06 §3.0 "待整个 kernel 完成后统一 review"）：
+
+| ID | 设计债 | 触发条件 | 当前状态 |
+|----|--------|---------|---------|
+| **D-52** | ProcKind 拆分（ProcessRole × ExecutionDomain × PrivilegePolicy） | KernelTask 下出现 interrupt-driven / kernel coroutine / schedulable kernel thread 三种情形时 | ⏸ 设计债 |
+| **D-53** | EntrySpec 从 Option fields 演进为 state enum（`Kernel / Deferred / Ready(UserEntry)`） | 出现第三种 "Option 表达不了" 的 entry 状态时 | ⏸ 设计债 |
+| **D-54** | enable_user_io 从 CpuContextArch 拆出（成立 `ArchPrivilege` / `UserIoArch` trait） | CpuContextArch trait 方法数 > 8 或 trait 边界频繁调整时 | ⏸ 设计债 |
+| **D-55** | Process vs ExecutionContext 概念拆分（拆 `ProcessIdentity/State` 与 `ExecutionContext`） | 引入更多类型 kernel entity（coroutine / 微线程 / 异构执行流）时 | ⏸ 设计债 |
+| **D-56** | CapabilityTemplate 重命名（template → policy / 引入运行时 capability 时） | 引入运行时 capability 机制时 | ⏸ 设计债 |
+
+**集成位置**：写入 doc 06 §3.0 "强制设计原则" 之后的 "设计债跟踪" 段 + STATE.md（如果后续启动 Claude Code review 流程）。
+
+**验证**：
+
+```bash
+# 1. doc 06 §3.9 "唯一组合" 措辞降级
+rg "唯一组合" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 1 match（需降级措辞）
+
+# 2. doc 06 §3.8 "BSS" 表述
+rg "固化在 .bss 段" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 1 match（需改为 "static compile-time initialization"）
+
+# 3. CpuContextArch trait 方法数
+rg "fn " os/arch/src/arch/boot.rs -n | rg "build_cpu_context|apply_to_trap_frame|enable_user_io|inherit_fpu_state|write_user_register|or_ipc_status_reg"
+# → 6 matches（当前 6 方法，触发 D-54 拆出的临界点）
+```
+
+### 20.4 反驳/部分反对项
+
+#### 20.4.1 对 GPT "CpuContextArch trait 正在变胖" 的部分反对
+
+**GPT 论点**：21 处引用、6 类方法——trait 已从 "CPU context abstraction" 演变为 "ArchEverything"。
+
+**反驳/补充**：
+
+1. **6 方法数量仍在合理区间**（Linux `arch_thread_struct` 同款 6+ 字段、Redox `Arch::Context` 5 方法）
+2. **每个方法都是真多态**：x86_64 vs aarch64 vs riscv64 实现真的不同（不是假多态）——`enable_user_io` 在 x86-64 写 PSW.IOPL，aarch64/riscv64 no-op；`inherit_fpu_state` 在 x86-64 复制 `fpu_policy`，aarch64 复制 `fpu_enable_el0`，riscv64 复制 sstatus
+3. **doc 06 §3.5 已给出"为什么 trait 而非 cfg-alias"的论证**：3 个架构的 `CpuContext` 字段布局完全不同 + 提供 mock 测试能力
+
+**结论**：6 方法是当前复杂度下的合理设计；GPT 警告的"抽象膨胀"风险成立，但触发点应该是 8+ 方法或 trait 边界频繁调整时。当前不修，纳入 D-54 设计债跟踪。
+
+#### 20.4.2 对 GPT "CapabilityTemplate 名字有点危险" 的反驳
+
+**GPT 论点**：名字 "template" 太窄——其实表达的是 "boot-time privilege policy"。
+
+**反驳**：
+
+1. **当前 5 变体枚举完美匹配 boot 期 5 类角色**（Idle/KernelTask/Vm/RootService/Deferred）
+2. **"template" 在 Rust 生态是 idiomatic 命名**（Diesel、Askama、handlebars 都用 "Template" 表达"角色/模板"含义）
+3. **未来若引入运行时 capability，**可重命名为 `CapabilityPolicy` 或 `BootCapability`，当前命名不阻塞
+
+**结论**：当前命名合理；GPT 担忧的"未来过窄"风险成立，但当前不修（D-56 设计债跟踪）。
+
+### 20.5 评审整体结论
+
+- **GPT 评价 8/10 合理**；
+- **核心 P1 文档修正 2 项**（§3.9 "唯一组合" + §3.8 "BSS"）——**✅ 已修复（2026-08-18）**：见 §20.6 修复记录；
+- **P2 设计债 5 项**已识别但工作量小、本轮不强制（纳入 D-52~D-56 设计债跟踪，最终 kernel 完成后统一 review）；
+- **P3 命名 1 项**（CapabilityTemplate 重命名）暂不修；
+- **核心架构决策（ProcessTable/ProcKind/CpuContextArch/EntrySpec/FPU/KPriv/BKL/boot 主流程）保留**，GPT 评价与 doc 06 既有决策一致；
+- **整体 doc 06 设计方向保留**，小修具体表述即可。
+
+**关联文档**：
+- doc 06 §3.0 设计原则（"先做完整个 kernel，统一 review"）→ 本节 5 项设计债纳入最终 review checklist
+- doc 06 §3.8 §3.9 文字表述 → **✅ 已修复**（§20.6）
+- doc 06 §3.15 设计决策汇总表 → 可选加 "反方向收益" 列（GPT §15 方法论）
+
+### 20.6 P1 修复记录（2026-08-18）
+
+| ID | 修复内容 | doc 文件:行 | diff 摘要 | 验证 |
+|----|---------|------------|---------|------|
+| **FIX-06-GPT-1** | §3.9 "BKL + AtomicI32 唯一组合" 措辞降级 | `06-proc-init-boot-proc.md:1411` | 把"唯一组合"改为"在当前 Minix3 BKL + idle-steal 模型下我们选择的方案" + 新增"架构范围说明"段落（列出其他 SMP 安全组合） | `rg "唯一组合" notes/rewrite/.../06-proc-init-boot-proc.md` = 0 match |
+| **FIX-06-GPT-1b** | §3.1 "零堆 + SMP 安全唯一组合" 措辞降级（第二轮扫描发现 L1144 第二处出现） | `06-proc-init-boot-proc.md:1144` | 把"零堆 + SMP 安全的唯一组合"改为"零堆 + SMP 安全在当前 Minix3 BKL + idle-steal 模型下我们选择的方案" | 同上 |
+| **FIX-06-GPT-2** | §3.8 "BSS 段" 表述修正 | `06-proc-init-boot-proc.md:1374` | 把"结果固化在 .bss 段"改为"static compile-time initialization, avoiding runtime construction" + 新增"术语说明"段（解释 const fn 与 BSS 的区别） | `rg "固化在 .bss 段" notes/rewrite/.../06-proc-init-boot-proc.md` = 0 match |
+| **FIX-06-GPT-2b** | §3.1 "`.kernel.bss`" 表述修正（L1146 第二处出现） | `06-proc-init-boot-proc.md:1146` | 把"放在 `.kernel.bss` 段"改为"放在编译期静态段（实际链接段由 link.ld 与 `ProcessTable` 字段初值决定，可能落在 `.bss` 或 `.data`）" | `rg "\.kernel\.bss" notes/rewrite/.../06-proc-init-boot-proc.md` = 0 match |
+| **FIX-06-GPT-2c** | §3.15 决策汇总表 "BSS 段零运行时开销" 表述修正（第三轮扫描发现 L1557 第三处出现） | `06-proc-init-boot-proc.md:1557` | 把"BSS 段零运行时开销"改为"static compile-time initialization，运行期零构造开销" | `rg "BSS 段零运行时" notes/rewrite/.../06-proc-init-boot-proc.md` = 0 match |
+
+**关联修改**：
+- doc 06 §3.9 新增段落引用其他 SMP 安全组合（per-CPU locks / RCU / sequence lock / MCS lock / lock-free queue），明确这些方案未引入的原因（本项目沿用 Minix3 简化模型）
+- doc 06 §3.8 新增段落说明 `KProcess::new_zeroed()` 含非零字段（Atomic/Option/Endpoint）→ 实际链接段可能是 `.data` 而非 `.bss`
+- doc 06 §3.1 第二处 BSS/BKL 表述也修正（不仅 §3.8/§3.9，§3.1 也有同类表述）
+- doc 06 §3.0 设计原则 P1 列表内 "BSS 段零运行时开销" 修正
+- doc 06 §3.15 设计决策汇总表 "BSS 段零运行时开销" 修正
+
+**三轮扫描覆盖**：第一轮扫描覆盖 §3.8/§3.9 主要位置；第二轮发现 §3.1 也有两处同类表述；第三轮发现 §3.0 原则表 + §3.15 决策表两处遗漏。修复采用"全文档穷尽扫描"模式确保不留死角。
+
+**验证命令**：
+```bash
+# 验证 "唯一组合" 已清除（全文档）
+rg "唯一组合" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 0 match（FIX-06-GPT-1 + FIX-06-GPT-1b 生效）
+
+# 验证 "固化在 .bss 段" 已清除
+rg "固化在 .bss 段" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 0 match（FIX-06-GPT-2 生效）
+
+# 验证 ".kernel.bss" 已清除
+rg "\.kernel\.bss" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 0 match（FIX-06-GPT-2b 生效）
+
+# 验证 "BSS 段零运行时" 已清除
+rg "BSS 段零运行时" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 0 match（FIX-06-GPT-2c 生效）
+
+# 验证新增段落存在
+rg "static compile-time initialization" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 3 match（§3.0 + §3.8 + §3.15 三处提及）
+rg "架构范围说明" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md
+# → 1 match（FIX-06-GPT-1 新增段落）
+```
 
 ## doc 15 review 发现：DEFAULT_HZ 设计差异（2026-08-14，OQ-15-1）
 

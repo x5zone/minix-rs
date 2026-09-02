@@ -22,7 +22,9 @@ kmain 的启动流程分为六个阶段：
 | E | 系统初始化 | 系统调用注册、子系统启动 | 08 |
 | F | 启动完成 | 调度开始、bsp_finish_booting | 08 |
 
-阶段 D 要回答一个核心矛盾：**内核运行在自己的地址空间里，却要读写用户进程的内存**。IPC 消息拷贝（`lin_lin_copy`）、`vm_memset` 等内核服务都需要穿越进程隔离——目标内存不在当前页表的用户空间映射里。这就是跨地址空间访问问题。
+阶段 D 要回答一个核心矛盾：**Minix3 内核没有自己独立的页表——它运行在"被借用"的进程页表里（boot 期借 VM 的 bootstrap 页表，运行期借当前进程的页表），却要访问"别的"进程的内存**。当前 CR3 装的页表只映射了"当前进程"的用户态 VA，**目标进程**的用户态 VA 在当前页表里没有映射——CPU 无法解释这个 VA。IPC 消息拷贝（`lin_lin_copy`）、`vm_memset` 等内核服务都需要穿越进程隔离。这就是跨地址空间访问问题。
+
+> **重要澄清**：Minix3 不是"内核态 vs 用户态"二元地址空间模型。每个进程的页表都映射了内核段（高地址区），所以 CPU 在任何进程的上下文里都能直接跑内核代码。真正的"跨空间"问题是**"借来的页表"vs"目标进程的页表"**——内核当前跑在 A 进程页表里（= 只看得见 A 的用户态），要访问 B 进程的用户态内存时，需要让 CPU 暂时能解释 B 的 VA。
 
 这个问题的解法随虚拟地址空间位宽演进：
 
@@ -31,7 +33,7 @@ kmain 的启动流程分为六个阶段：
 
 **本章立场**：minix-rs 选择 direct_map，废弃 32 位的临时窗口机制。阶段 D 从"分配临时窗口"简化为"确认 direct_map 就绪"。
 
-**目标读者**：已理解 Minix3 微内核基本结构、了解 x86 分页机制、读过 [06-proc-init-boot-proc-new.md](06-proc-init-boot-proc-new.md)（阶段 C）的开发者。
+**目标读者**：已理解 Minix3 微内核基本结构、了解 x86 分页机制、读过 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（阶段 C）的开发者。
 
 **本章不讲什么**：
 
@@ -94,8 +96,6 @@ va = pa + BASE
 
 #### 1.3.1 双视图的硬件根源（ISA U/S 位语义）
 
-> **新增**（2026-07-16，TODO-07-6）：把"为什么必须两个视图"独立成子节，便于读者抓住 ISA 必然性。
-
 x86-64 的页表项（PTE）有一个二元 U/S 位（User/Supervisor bit），定义如下：
 - **U/S=1**：PTE 被 ring 3（用户态）访问时，TLB/MMU 允许
 - **U/S=0**：PTE 仅被 ring 0（内核态）访问时，TLB/MMU 允许；用户态访问触发 #PF（page fault）
@@ -137,15 +137,9 @@ direct_map 下这两行的语义变化：
 
 注意：Kernel direct map 不在阶段 D 范围——它由 VM 启动后通过 `map_kernel` 建立（见 §3.4）。阶段 D 确认的是 VM direct map 就绪。
 
-> **实现状态**（2026-07-16，TODO-07-1N）：当前 `os/kernel/src/lib.rs` 的 `init_post_and_memory` 函数**仍翻译 C 旧逻辑**——
-> - [lib.rs:1045](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `CurrentPostInitArch::set_ptproc`（应废弃——记录 arch 内部状态 `virt_root` 供 createpde 用，但 createpde 已被 Direct Map 取代）
-> - [lib.rs:1057](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 调用 `set_current_ptproc_nr(VM_PROC_NR)`（**P9-4 新增，不废弃**——这是 kernel 级 ptproc 跟踪，使 `dispatch_vmctl(SetAddrSpace)` 能决定是否 reload CR3；详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）
-> - 行 1087 调用 `CurrentMemoryInitArch::allocate_free_pdes`（应废弃）
-> - 行 1098 写入 `FREE_PDE_SLOTS` 全局可变状态（应废弃）
+> **阶段 D 的 Rust 对应**：`init_post_and_memory`（os/kernel/src/lib.rs:1031）由三部分组成——①断言 VM 页表 root 有效（`p_seg.phys_root != 0` + `p_seg.virt_root.is_some()`，阶段 C 建立）；②记录 VM 为 kernel 级 ptproc（`set_current_ptproc_nr`，使 `dispatch_vmctl(SetAddrSpace)` 的 Step 3 能决定是否 reload CR3，详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）；③断言 VM direct map base 已配置。arch 级 `set_ptproc`（记录 `virt_root` 供 createpde 借页目录）与 freepdes 分配在代码库中不存在——其类型链（`PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo` + `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` statics）被 Direct Map 取代，迁移说明见 §4.3。
 >
-> **两层 ptproc 跟踪的区分**（P9-4 澄清）：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用——但 createpde 已被 Direct Map 取代，故应废弃）；kernel 层 `set_current_ptproc_nr`（[lib.rs:2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
->
-> 这与本节"阶段 D 简化为确认就绪"的设计承诺直接矛盾。**修复方向**：将 `init_post_and_memory` 重构为"VM direct map base != 0 + vm_proc.page_table_root.is_valid()"两条断言，删除 set_ptproc/allocate_free_pdes/FREE_PDE_SLOTS 三处调用（但**保留** `set_current_ptproc_nr`）。DirectMapArch（vm.rs:21）已接入，但 `init_post_and_memory` 自身需要清理。此修复是 **Action Item #1**（非本 session 范围，留作代码任务）。
+> **两层 ptproc 跟踪的区分**（P9-4 澄清）：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用）——createpde 被 Direct Map 取代后该层不再需要；kernel 层 `set_current_ptproc_nr`（os/kernel/src/lib.rs:1963）记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`，arch_do_vmctl.c:25），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
 
 ### 1.5 本章小结
 
@@ -184,7 +178,7 @@ void arch_post_init(void)
 
 **ptproc 是什么**：per-CPU 变量（`minix3/minix/kernel/cpulocals.h:55`），记录"当前 CR3 装的是谁"。ptproc 在 C 中有两个用途：
 1. **freepdes 临时窗口**：createpde 借 ptproc 的页目录放临时映射——因为 MMU 只按 CR3 装的页目录解释 VA，临时映射必须写入这个页目录才有效。direct_map 下此用途废弃（kernel 有 Kernel direct map，不借页目录）。
-2. **SetAddrSpace 的 CR3-reload 决策**：`setcr3()` 用 `if (p == get_cpulocal_var(ptproc))` 判断目标进程是否是当前页表进程，若是则立即 `write_cr3`（arch_do_vmctl.c:31）。direct_map 下此用途**保留**——VM 仍通过 `VMCTL_SETADDRSPACE` 切换到自己的页表，内核需知道是否该立即 reload CR3。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32` + `set_current_ptproc_nr(VM_PROC_NR)` 跟踪（P9-4，详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）。
+2. **SetAddrSpace 的 CR3-reload 决策**：`setcr3()` 用 `if (p == get_cpulocal_var(ptproc))` 判断目标进程是否是当前页表进程，若是则立即 `write_cr3`（arch_do_vmctl.c:25）。direct_map 下此用途**保留**——VM 仍通过 `VMCTL_SETADDRSPACE` 切换到自己的页表，内核需知道是否该立即 reload CR3。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32` + `set_current_ptproc_nr(VM_PROC_NR)` 跟踪（P9-4，详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）。
 
 ### 2.2 pg_info()：记录 bootstrap 页表地址
 
@@ -390,18 +384,18 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 | ptproc per-CPU 变量（createpde 用途） | `cpulocals.h:55` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
 | freepdes[] 数组 | `memory.c:32` | 全局可变状态 + 临时窗口全部问题 | direct map 永久映射 |
 | memory_init() | `memory.c:707` | 运行时分配槽位的逻辑冗余 | 无需分配 |
-| PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 对接 DirectMapArch |
-| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch（**触发条件**：TODO-07-1 修复 lib.rs:1017-1098 之后自然废弃，详见 §1.4 实现状态块）|
-| FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无（同上触发条件）|
-| VmPageTableInfo | `pg_info` 输出 | 记录 bootstrap 页表地址，direct map 不依赖 | kernel 用 `kernel_phys_to_virt` 直接访问 |
-| FREE_PDE_SLOTS static | `freepdes[]` | 全局可变状态 | 无 |
-| FREE_UPPER_IDX static | `kinfo.freepde_start` | 全局原子，临时窗口索引 | 无 |
+| PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 对接 DirectMapArch（类型链已移除，见 §4.3）|
+| MemoryInitArch trait | 无 C 对应 | 同上 | 对接 DirectMapArch（类型链已移除，见 §4.3）|
+| FreePdeSlots 结构体 | `freepdes[]` | 表达临时窗口槽位，direct map 不需要 | 无（类型链已移除，见 §4.3）|
+| VmPageTableInfo | `pg_info` 输出 | 记录 bootstrap 页表地址，direct map 不依赖 | kernel 用 `kernel_phys_to_virt` 直接访问（已移除）|
+| FREE_PDE_SLOTS static | `freepdes[]` | 全局可变状态 | 无（已移除）|
+| FREE_UPPER_IDX static | `kinfo.freepde_start` | 全局原子，临时窗口索引 | 无（已移除；对应的 `KernelInfo.free_upper_idx` 字段保留，见 §4.3）|
 
-> 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。
+> 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。上表全部废弃项的 Rust 类型链在代码库中不存在（迁移说明见 §4.3）。
 >
-> **ptproc 跟踪不全部废弃**（P9-4 澄清）：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:31）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（[lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `set_current_ptproc_nr(VM_PROC_NR)` 跟踪此用途，与 arch 层 `PostInitArch::set_ptproc`（记录 createpde 用的 `virt_root`，应废弃）分离。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md) 与 §1.4 实现状态块。
+> **ptproc 跟踪不全部废弃**（P9-4 澄清）：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:25）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:1921）+ `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:1963）跟踪此用途；arch 层 `PostInitArch::set_ptproc`（记录 createpde 用的 `virt_root`）已随类型链删除。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md) 与 §1.4。
 
-> **内核全局状态存储模式**（废弃项之上的模式层问题）：上表废弃的 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 采用"分散全局"存储——每个全局一个 `SyncUnsafeCell`/`AtomicUsize`，与 C 源码的全局变量一一对应。不聚合为 `KernelState` 结构体的理由（机制废弃后模式仍适用）：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化；聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局（`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）以参数形式传递，无需单一访问点。此模式是 kernel 全局的通用选择，废弃清单只删条目、不推翻模式本身；若后续出现需跨子系统原子联动的全局，再评估聚合。
+> **内核全局状态存储模式**（废弃项之上的模式层问题）：上表废弃的 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 曾采用"分散全局"存储——每个全局一个 `SyncUnsafeCell`/`AtomicUsize`，与 C 源码的全局变量一一对应（机制废弃后两全局已删除，但模式本身仍适用于现存全局）。不聚合为 `KernelState` 结构体的理由（机制废弃后模式仍适用）：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化；聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局（`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）以参数形式传递，无需单一访问点。此模式是 kernel 全局的通用选择，废弃清单只删条目、不推翻模式本身；若后续出现需跨子系统原子联动的全局，再评估聚合。
 
 ---
 
@@ -467,41 +461,55 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 
 1GB huge page 的 CPU 支持检查（`supports_1gb_page()`）：x86-64 查 `CPUID.80000001H:EDX.GBPAGES`，不支持时回退 2MB。详见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2。
 
+> **⚠️ DirectMapArch 职责边界（避免误用 direct map 分配内存）**——`DirectMapArch` 只做一件事：**PA ↔ kernel VA 的线性转换**。它**不负责、也永远不会负责分配物理帧**（无 `alloc_phys_page` / `free_phys_page`，见 [`frame.rs` 模块 doc-comment](file:///os/arch/src/arch/frame.rs)）。
+>
+> 物理帧的**来源**由分配机制决定（[`frame.rs` VM Bootstrap Memory Handoff](file:///os/arch/src/arch/frame.rs)）：
+> - VM ELF image / 用户栈帧（bootstrap）：`VmBootAllocator`（消费 `VmBootRegion::select_multi(memmap, exclusions)` 验证区）
+> - 页表页（bootstrap）：`BootAlloc` / `pt_alloc`
+> - VM runtime：VM 自己的 bitmap/buddy PMM
+>
+> `DirectMapArch`（经 `PhysAccess` 的 blanket impl）只回答"这个 PA，kernel 用什么 VA 访问"。生产中 `CurrentDirectMap` 作为 `PhysAccess` 传给 `load_vm_elf`（09-vm-boot-protocol.md §4.9.3）。**若未来代码出现"从 DirectMapArch 分配内存"的需求，那是设计错误**——分配要回到 `VmBootAllocator` / VM PMM，而不是扩 `DirectMapArch`。
+
 ### 4.2 阶段 D 入口：确认 direct_map 就绪
 
-> **目标实现**（Action Item #1）：当前 `init_post_and_memory` 仍为 C 翻译版（§1.4 实现状态块），以下为重构后的目标形态。
-
-阶段 D 入口 `init_post_and_memory` 重写为确认步骤：
+阶段 D 入口 `init_post_and_memory` 是确认步骤（os/kernel/src/lib.rs:1031-1077）：
 
 ```rust
-/// 阶段 D：确认 VM direct_map 已就绪。
-///
-/// VM direct map 由 kernel 在阶段 C 建立 VM 进程时建好
-/// （详见 VM 07-pagetable-struct.md §3.2 的 4 页初始页表结构）。
-/// 本函数只做确认，不分配任何东西。
-///
-/// 废弃的 C 逻辑：
-/// - arch_post_init 的 ptproc=VM + pg_info（direct_map 不借页目录）
-/// - memory_init 的 freepdes 分配（direct_map 是永久映射）
-fn init_post_and_memory(vm_proc: &Proc) {
-    // 1. 确认 VM 进程页表 root 有效
-    assert!(vm_proc.page_table_root.is_valid(),
-            "VM page table root must be valid after stage C");
+pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
+    use minix_arch::{CurrentDirectMap, DirectMapArch};
 
-    // 2. 确认 direct map base 已由 boot-shim 填充
-    assert!(CurrentDirectMap::VM_DIRECT_MAP_BASE != 0,
-            "VM direct map base must be configured");
+    // Step 1: Assert VM's page-table root is valid.
+    // The root was installed in Phase C (`init_proc_and_boot`): for the
+    // non-mock path, `p_seg.phys_root` records the bootstrap root and
+    // `p_seg.virt_root` its identity-mapped VA (lib.rs:960-963).
+    let vm_proc = proc_table.get(crate::proc::proc_nr::VM_PROC_NR)
+        .expect("VM process must be initialized before init_post_and_memory");
+    assert!(
+        vm_proc.p_seg.phys_root.0 != 0,
+        "VM page-table root (phys) must be valid after stage C"
+    );
+    assert!(
+        vm_proc.p_seg.virt_root.is_some(),
+        "VM page-table root (virt) must be kernel-mapped after stage C"
+    );
 
-    // 3. 确认 VM direct map 在 VM 页表中已建立
-    //    （阶段 C 建立，此处只验证）
-    assert!(verify_vm_direct_map_present(vm_proc),
-            "VM direct map must be present in VM page table");
+    // Step 2: Record VM as the kernel-level ptproc.
+    // C: get_cpulocal_var(ptproc) = vm — protect.c:372
+    // Enables `dispatch_vmctl(SetAddrSpace)` Step 3 to decide whether to
+    // reload the hardware root register (setcr3 semantics).
+    set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
 
-    // 不分配 freepdes、不设 ptproc、不记录 VmPageTableInfo
+    // Step 3: Assert the VM Direct Map base is configured.
+    assert!(
+        CurrentDirectMap::VM_DIRECT_MAP_BASE != 0,
+        "VM direct map base must be configured"
+    );
 }
 ```
 
-**流程**：获取 VM 进程 → 确认页表 root 有效 → 确认 direct map base 已配置 → 确认 VM direct map 已存在 → 返回。
+**流程**：获取 VM 进程 → 断言页表 root 有效（phys + virt）→ 记录 VM 为 kernel 级 ptproc → 断言 direct map base 已配置 → 返回。**不分配 freepdes、不设 arch 级 ptproc、不记录 VmPageTableInfo**。
+
+**为什么没有 `verify_vm_direct_map_present` 式的页表 walk**：阶段 C 建立 VM direct map 时已保证其存在（fail-fast 已在阶段 C 触发），阶段 D 的断言是"就绪确认 + 契约记录"——用两个廉价断言把失败点固定在启动期。运行时真正的 direct map 访问（`kernel_phys_to_virt`）失败时，由 24-cross-space-runtime.md 的调用方处理。
 
 **时序边界**：阶段 D 确认的是 VM direct map（阶段 C 建立）。Kernel direct map 由 VM 启动后的 `map_kernel` 建立，此处不验证——VM 还没运行。
 
@@ -518,15 +526,17 @@ fn init_post_and_memory(vm_proc: &Proc) {
 | `FREE_PDE_SLOTS` static | `os/kernel/src/lib.rs` | 无 |
 | `FREE_UPPER_IDX` static | `os/kernel/src/lib.rs` | 无 |
 
-> **不废弃**：kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（[lib.rs:2036/2075](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，P9-4 新增）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途）分离。详见 §3.2 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
+> **不废弃**：kernel 级 `CURRENT_PTPROC_NR`（os/kernel/src/lib.rs:1921）+ `set_current_ptproc_nr`（os/kernel/src/lib.rs:1963）。这是 `setcr3()` 中 `if (p == ptproc)` CR3-reload 决策的 Rust 对应，与 arch 级 `set_ptproc`（createpde 用途，已移除）分离。详见 §3.2 废弃清单脚注与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 
 **迁移影响**：后续 24-cross-space-runtime.md 的 `createpde` 等价函数改用 `CurrentDirectMap::kernel_phys_to_virt(pa)`，不再读 freepdes 槽位。
 
-**代码清理范围**：
+**迁移后的代码布局**（读者验证方式）：
 
-- `os/arch/src/arch/post_init.rs`：删除 `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo`
-- `os/arch/src/{x86_64,arm64,riscv64}/post_init.rs`：删除对应 impl
-- `os/kernel/src/lib.rs`：删除 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX`
+- `PostInitArch`/`MemoryInitArch`/`FreePdeSlots`/`VmPageTableInfo` 原在 `os/arch/src/{arch,x86_64,arm64,riscv64}/post_init.rs`——这些类型在代码库中不存在，`rg "PostInitArch|MemoryInitArch|FreePdeSlots|VmPageTableInfo" os/ -t rust` 返回 0 matches
+- `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` statics + accessors 原在 `os/kernel/src/lib.rs`——已不存在，相关测试（`test_free_upper_idx_*`/`test_advance_free_upper_idx`/`test_createpde_does_not_reallocate_slots`/`test_init_post_and_memory_phase_d_dependencies`）一并移除
+- `CurrentPostInitArch`/`CurrentMemoryInitArch` type alias 已从 `os/arch/src/lib.rs` 移除
+
+> **`KernelInfo.free_upper_idx` 字段保留**（IPC 协议契约）：`os/libs/minix-boot` 的 `KernelInfo.free_upper_idx`（C: `kinfo.freepde_start`）字段保留——它是 SYS_GETINFO GET_KINFO 回复的 `m4l4`（os/kernel/src/misc.rs:766-769，C: `kinfo.freepde_start`）IPC 协议字段。kernel 内部不消费该值（`FREE_UPPER_IDX` static 已移除），但 GET_KINFO 回复仍需 boot-shim 填充的原始值以保持 IPC 兼容。
 
 ---
 
@@ -536,17 +546,19 @@ fn init_post_and_memory(vm_proc: &Proc) {
 
 ### 5.1 direct_map 就绪验证
 
-- **测试**：阶段 D 确认步骤能正确识别 direct map 已就绪（VM 进程页表 root 有效 + direct map base 已配置 + VM direct map 已存在）
-- **测试**：direct map 未就绪时确认步骤 panic（fail-fast，启动阶段暴露问题而非运行时）
+- **测试**：阶段 D 确认步骤能正确识别 direct map 已就绪（VM 进程页表 root 有效 + direct map base 已配置）
+- **测试**：direct map 未就绪时确认步骤 panic（fail-fast，启动阶段暴露问题而非运行时）——`init_post_and_memory` 的 `.expect("VM process must be initialized")` + 两条 `assert!` 构成 fail-fast 点
 - **测试**：`CurrentDirectMap::kernel_phys_to_virt(pa)` 返回正确 VA（对接 `DirectMapArch` 的 mock 实现）
+
+> **QEMU 覆盖**：`os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init` 在真机启动流程中调用 `init_post_and_memory`（os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:259），验证阶段 D 在真实 boot 路径中不 panic。`os/arch/tests/qemu_test_x86_64_procd.sh` 用 GDB breakpoint 验证到达 `init_post_and_memory` 并完成。
 
 ### 5.2 废弃路径不存在的断言
 
-> **状态标注**（2026-08-14）：以下为 **Action Item #1 落地后**的目标测试——当前 `FreePdeSlots`/`PostInitArch`/`MemoryInitArch`/`VmPageTableInfo` 仍存在于 `os/arch/src/arch/post_init.rs:35-206`（§1.4 实现状态块：`init_post_and_memory` 仍翻译 C 旧逻辑）。Action Item #1 重构后这些类型删除，编译期保证本节断言成立。
+> `FreePdeSlots`/`PostInitArch`/`MemoryInitArch`/`VmPageTableInfo` 及 `FREE_PDE_SLOTS`/`FREE_UPPER_IDX` 在代码库中不存在，以下断言由编译期保证。
 
-- **测试**：freepdes 相关代码已删除（编译期保证：`FreePdeSlots`/`PostInitArch`/`MemoryInitArch` 不存在）
-- **测试**：ptproc 相关代码已删除
-- **测试**：`VmPageTableInfo` 不存在
+- **测试**：freepdes 相关代码已移除（编译期保证：`FreePdeSlots`/`PostInitArch`/`MemoryInitArch` 不存在）
+- **测试**：ptproc arch 层代码已移除（`set_ptproc`/`VmPageTableInfo` 不存在）
+- **验证命令**：`rg "PostInitArch|MemoryInitArch|FreePdeSlots|VmPageTableInfo" os/ -t rust` → 0 matches
 
 废弃的验证是"不存在"而非"存在"——编译期类型系统保证。
 
@@ -585,11 +597,11 @@ direct_map 的测试在 VM 层已覆盖（[VM 07-pagetable-struct.md](../02-stag
 阶段 C: kernel 建立 VM 初始页表（含 VM direct map, 4页结构）
         详见 VM 07-pagetable-struct.md §3.2
   ↓
-阶段 D: 确认 VM direct_map 就绪（init_post_and_memory 简化版）
-        - 确认 VM 进程页表 root 有效
-        - 确认 direct map base 已配置
-        - 确认 VM direct map 已存在
-        - 不分配 freepdes、不设 ptproc
+阶段 D: 确认 VM direct_map 就绪（init_post_and_memory）
+        - 断言 VM 进程页表 root 有效（phys + virt）
+        - 记录 VM 为 kernel 级 ptproc（set_current_ptproc_nr）
+        - 断言 direct map base 已配置
+        - 不分配 freepdes、不设 arch 级 ptproc
   ↓
 阶段 E-F: system_init + bsp_finish_booting（见 08）
   ↓
@@ -602,10 +614,11 @@ VM 启动后: map_kernel 建立 Kernel direct map（U/S=0, G=1）
 | 方面 | Minix3 C (32位) | minix-rs (64位 direct_map) |
 |------|----------------|---------------------------|
 | 跨空间访问机制 | freepdes 临时窗口 | direct_map 永久映射 |
-| ptproc | per-CPU 变量，记录当前页目录 | 废弃 |
+| ptproc（createpde 用途） | per-CPU 变量，记录当前页目录 | 废弃（direct_map 取代） |
+| ptproc（setcr3 用途） | `if (p == ptproc)` 决定 reload CR3 | kernel 级 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（保留） |
 | memory_init | 分配 2 个 freepdes | 废弃 |
 | pg_info | 记录 bootstrap 页表地址 | 废弃（direct_map 不依赖） |
-| 阶段 D 内容 | 设 ptproc + 分配 freepdes | 确认 VM direct_map 就绪 |
+| 阶段 D 内容 | 设 ptproc + 分配 freepdes | 确认 VM direct_map 就绪（断言 + ptproc 记录） |
 | 内核映射建立 | pg_mapkernel (4MB 大页, pre_init) | map_kernel (1GB huge page + Kernel direct map, VM 启动后) |
 | 建立者 | kernel (pre_init) | kernel (VM direct map, 阶段 C) + VM (Kernel direct map, 启动后) |
 | 全局可变状态 | freepdes[]/nfreepdes/kinfo.freepde_start | 无 |
@@ -614,7 +627,7 @@ VM 启动后: map_kernel 建立 Kernel direct map（U/S=0, G=1）
 
 ## 6. 参见
 
-- [06-proc-init-boot-proc-new.md](06-proc-init-boot-proc-new.md) — 阶段 C：进程表初始化与 VM ELF 加载（含 bootstrap 页表）
+- [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 阶段 C：进程表初始化与 VM ELF 加载（含 bootstrap 页表）
 - [08-system-init-boot-finish.md](08-system-init-boot-finish.md) — 阶段 E-F：系统调用注册与启动完成
 - [24-cross-space-runtime.md](24-cross-space-runtime.md) — 运行时跨空间访问（`createpde` 等价函数 = `kernel_phys_to_virt`）
 - [02-stage-vm/07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2 — direct_map 完整设计（双视图、4页结构、DirectMapArch trait）

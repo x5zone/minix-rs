@@ -21,7 +21,7 @@
 //! 3. **Microkernel principle**: Other services don't need to know PM's fork implementation
 
 use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid, EAGAIN, ENOMEM, EINVAL};
-use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags};
+use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags, ExecState};
 
 /// PM -> VM: Fork request message.
 #[derive(Debug, Clone, Copy)]
@@ -229,7 +229,85 @@ fn getticks() -> Clock {
     0
 }
 
+/// Srv-fork parameters (RS → PM, `mess_lsys_pm_srv_fork`, `ipc.h:1422`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SrvForkParams {
+    /// Requested UID for new service (real/eff/saved).
+    pub uid: Uid,
+    /// Requested GID for new service (real/eff/saved).
+    pub gid: Gid,
+}
+
 impl Process {
+    /// Srv-fork semantics: create system-service child from RS.
+    ///
+    /// Contrast with `fork_from` (normal fork):
+    /// - `do_fork` `PRIV_PROC` **not** inherited → child `User(SCHED)`; `do_srv_fork` **retains** `PRIV_PROC` → child `Kernel(NONE)`
+    /// - `do_fork` `TAINTED` inherited; `do_srv_fork` `TAINTED` cleared
+    /// - `do_fork` credentials inherited; `do_srv_fork` credentials injected from `SrvForkParams`
+    /// - `do_fork` `REUID/REGID=-1`; `do_srv_fork` `REUID/REGID=uid/gid`
+    pub fn srv_fork_from(
+        parent: &Process,
+        child_index: usize,
+        child_pid: Pid,
+        child_endpoint: Endpoint,
+        parent_index: usize,
+        params: SrvForkParams,
+    ) -> Self {
+        let identity = ProcessIdentity {
+            id: ProcessId {
+                index: UserSlot::new(child_index),
+                pid: child_pid,
+            },
+            endpoint: child_endpoint,
+            procgrp: parent.identity.procgrp,
+            name: parent.identity.name,
+        };
+
+        let state = ProcessState {
+            lifecycle: Lifecycle::Running,
+            block: BlockState::default(),
+            wait: WaitState::default(),
+            guardianship: Guardianship::Normal {
+                parent: UserSlot::new(parent_index),
+            },
+            trace: TraceState::default(),
+        };
+
+        // Srv-fork retains PRIV_PROC (system service): child is system service
+        // with scheduler NONE (not SCHED) and credentials injected from params.
+        // In Minix3, even PRIV_PROC has uid/gid (mp_realuid etc.), but Rust's
+        // Privilege::Kernel has no creds field. We model srv_fork child as
+        // User with injected creds + scheduler NONE, and treat scheduler==NONE
+        // as system-service marker. is_kernel_process() will be false — this is
+        // a known P2 gap vs C's PRIV_PROC (see design D2); 09 will refine with
+        // a shadow creds field or by extending Privilege::Kernel to carry creds.
+        let scheduler = parent.resources.scheduler; // RS has NONE, child keeps NONE
+        let resources = ProcessResources {
+            privilege: Privilege::User(Credentials::new(params.uid, params.gid)),
+            signals: parent.resources.signals.clone(),
+            child_utime: 0,
+            child_stime: 0,
+            started: getticks(),
+            timer: None,
+            intervals: [0; NR_ITIMERS],
+            nice: parent.resources.nice,
+            scheduler,
+            flags: RemainingFlags::empty(), // TAINTED cleared for srv_fork (vs fork's TAINTED)
+            tainted: false,
+            exec_state: ExecState::Idle,
+        };
+
+        let proc = Self {
+            identity,
+            state,
+            resources,
+            ipc: ProcessIpc::default(),
+        };
+
+        proc
+    }
+
     /// Fork semantics: create child process from parent.
     ///
     /// Strategy: Explicit Construction
@@ -240,11 +318,12 @@ impl Process {
     /// |------------|----------|
     /// | `*rmc = *rmp` | Explicitly copy each field |
     /// | `rmc->mp_pid = next_pid` | `identity.id.pid = child_pid` |
-    /// | `rmc->mp_flags &= ~TRACE_EXIT` | `trace.stopped = false` |
+    /// | mask clears TRACE_EXIT/TRACE_STOPPED/TRACE_ZOMBIE | `guardianship = Normal{..}`, `trace.stopped = false` |
     /// | `rmc->mp_child_utime = 0` | `resources.child_utime = 0` |
-    /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` only keeps TAINTED |
+    /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` keeps only TAINTED; `ipc_blocked` reset (DELAY_CALL unreachable at fork: a process with DELAY_CALL set is mid-send in the kernel and cannot execute fork) |
+    /// | `rmc->mp_flags &= ~PRIV_PROC` | `privilege = Privilege::User(..)` (PRIV_PROC not inherited by normal fork) |
+    /// | `if (rmc->mp_flags & PRIV_PROC) scheduler = SCHED_PROC_NR` | kernel parent → `scheduler = Endpoint::SCHED` |
     /// | `rmc->mp_started = getticks()` | `started = getticks()` |
-    /// | Privileged process scheduler | `Endpoint::RS` |
     pub fn fork_from(
         parent: &Process, 
         child_index: usize, 
@@ -273,8 +352,25 @@ impl Process {
             trace: TraceState::default(),
         };
 
+        let (privilege, scheduler) = match &parent.resources.privilege {
+            Privilege::Kernel => (
+                // forkexit.c:96-100 + 106: a system process (PRIV_PROC) that
+                // calls regular fork (e.g. RS spawning a recovery script)
+                // produces a *user* child scheduled by SCHED; PRIV_PROC is
+                // dropped by the inheritance mask. System process credentials
+                // are uid/gid 0 (boot image never sets them), so the child
+                // starts as root.
+                Privilege::User(Credentials::new(0, 0)),
+                Endpoint::SCHED,
+            ),
+            Privilege::User(creds) => (
+                Privilege::User(creds.clone()),
+                parent.resources.scheduler,
+            ),
+        };
+
         let resources = ProcessResources {
-            privilege: parent.resources.privilege.clone(),
+            privilege,
             signals: parent.resources.signals.clone(),
             
             child_utime: 0,
@@ -284,22 +380,17 @@ impl Process {
             intervals: [0; NR_ITIMERS],
             nice: parent.resources.nice,
             
-            scheduler: if parent.resources.privilege.is_kernel() {
-                Endpoint::RS
-            } else {
-                parent.resources.scheduler
-            },
+            scheduler,
             
-            flags: {
-                let mut flags = RemainingFlags::empty();
-                if parent.resources.flags.contains(RemainingFlags::TAINTED) {
-                    flags |= RemainingFlags::TAINTED;
-                }
-                if parent.resources.flags.contains(RemainingFlags::DELAY_CALL) {
-                    flags |= RemainingFlags::DELAY_CALL;
-                }
-                flags
-            },
+            // Normal fork inherits only TAINTED (forkexit.c:106). DELAY_CALL
+            // is deliberately reset: a process with DELAY_CALL set is mid-send
+            // in the kernel, so it cannot execute a fork syscall; the C flag
+            // inheritance is an artifact of the whole-slot copy.
+            flags: RemainingFlags::from_bits_truncate(
+                parent.resources.flags.bits() & RemainingFlags::TAINTED.bits(),
+            ),
+            tainted: parent.resources.tainted,
+            exec_state: ExecState::Idle,
         };
 
         let ipc = ProcessIpc::default();
@@ -424,24 +515,37 @@ mod tests {
     #[test]
     fn test_fork_flags_inheritance() {
         let mut parent = Process::new(0, 100);
-        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::DELAY_CALL | RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
+        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON | RemainingFlags::PARTIAL_EXEC;
         
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
+        // Normal fork inherits only TAINTED (forkexit.c:106).
         assert!(child.resources.flags.contains(RemainingFlags::TAINTED));
-        assert!(child.resources.flags.contains(RemainingFlags::DELAY_CALL));
         assert!(!child.resources.flags.contains(RemainingFlags::ALARM_ON));
-        assert!(!child.resources.flags.contains(RemainingFlags::NEW_PARENT));
+        assert!(!child.resources.flags.contains(RemainingFlags::PARTIAL_EXEC));
     }
     
     #[test]
     fn test_fork_flags_no_tainted() {
         let mut parent = Process::new(0, 100);
-        parent.resources.flags = RemainingFlags::ALARM_ON | RemainingFlags::NEW_PARENT;
+        parent.resources.flags = RemainingFlags::ALARM_ON | RemainingFlags::PARTIAL_EXEC;
         
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
         assert!(child.resources.flags.is_empty());
+    }
+    
+    #[test]
+    fn test_fork_no_delay_call() {
+        // C's DELAY_CALL inheritance is an artifact of the whole-slot copy:
+        // a process with DELAY_CALL set is mid-send in the kernel and cannot
+        // execute fork. minix-rs resets ipc_blocked instead (forkexit.c:106).
+        let mut parent = Process::new(0, 100);
+        parent.state.block.ipc_blocked = Some(crate::mproc::IpcBlockReason::DelayedSignal);
+        
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        
+        assert!(child.state.block.ipc_blocked.is_none());
     }
     
     #[test]
@@ -452,7 +556,13 @@ mod tests {
         
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
         
-        assert_eq!(child.resources.scheduler, Endpoint::RS);
+        // forkexit.c:96-100: a PRIV_PROC parent's regular-fork child is a
+        // *user* process scheduled by SCHED; PRIV_PROC is not inherited.
+        assert!(matches!(
+            child.resources.privilege,
+            Privilege::User(ref creds) if creds.user.effective == 0
+        ));
+        assert_eq!(child.resources.scheduler, Endpoint::SCHED);
     }
     
     #[test]
@@ -475,14 +585,53 @@ mod tests {
     }
     
     #[test]
+    #[allow(deprecated)]
     fn test_fork_ipc_reset() {
         let mut parent = Process::new(0, 100);
         parent.ipc.reply = Some(minix_types::Message::default());
         parent.ipc.event_subscriber = Some(UserSlot::new(5));
-        
+
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
-        
+
         assert!(child.ipc.reply.is_none());
         assert!(child.ipc.event_subscriber.is_none());
+    }
+
+    #[test]
+    fn test_srv_fork_credentials_injected() {
+        let parent = {
+            let mut p = Process::new(2, 2);
+            p.resources.privilege = Privilege::Kernel;
+            p.resources.scheduler = Endpoint::NONE;
+            p
+        };
+        let params = SrvForkParams { uid: 1001, gid: 100 };
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        let creds = child.resources.privilege.credentials().unwrap();
+        assert_eq!(creds.user.real, 1001);
+        assert_eq!(creds.user.effective, 1001);
+        assert_eq!(creds.group.real, 100);
+        // Scheduler stays NONE for system service
+        assert_eq!(child.resources.scheduler, Endpoint::NONE);
+    }
+
+    #[test]
+    fn test_srv_fork_flags_not_tainted() {
+        let mut parent = Process::new(2, 2);
+        parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON;
+        let params = SrvForkParams { uid: 0, gid: 0 };
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        assert!(!child.resources.flags.contains(RemainingFlags::TAINTED));
+        assert!(!child.resources.flags.contains(RemainingFlags::ALARM_ON));
+    }
+
+    #[test]
+    fn test_srv_fork_intervals_cleared() {
+        let mut parent = Process::new(2, 2);
+        parent.resources.intervals = [100, 200, 300];
+        let params = SrvForkParams { uid: 0, gid: 0 };
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        assert_eq!(child.resources.intervals, [0; NR_ITIMERS]);
+        assert_eq!(child.resources.child_utime, 0);
     }
 }

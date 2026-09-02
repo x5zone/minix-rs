@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 2 — 访问控制与物理内存（物理内存锚点）
 > **源码**: `minix3/minix/servers/vm/alloc.c`（548 行）；`minix3/minix/servers/vm/utility.c:44-79`（`get_mem_chunks`）；`minix3/minix/servers/vm/main.c:428-520`（`init_vm` 调用点）；`minix3/minix/include/minix/type.h:157-160`（`struct memory`）；`minix3/minix/include/minix/param.h:13-19`（`MAXMEMMAP`/`kinfo.memmap`）；`minix3/minix/servers/vm/vm.h:22-27,62`（`PAF_*`/`NO_MEM`）；`minix3/minix/include/minix/const.h:84-101`（click 宏）
-> **Rust 模块**: `os/servers/vm/src/phys_mem/`（`mod.rs`/`types.rs`/`alloc_trait.rs`/`bitmap_alloc.rs`/`buddy_alloc.rs`/`segment_tree_alloc.rs`/`stats.rs`/`allocator_tests.rs`）+ `os/servers/vm/src/boot.rs` + `os/servers/vm/src/global.rs` + `os/servers/vm/src/vm_server.rs:107-156,344-405` + `os/servers/vm/src/query.rs:237-246`
+> **Rust 模块**: `os/servers/vm/src/phys_mem/`（`mod.rs`/`types.rs`/`alloc_trait.rs`/`bitmap_alloc.rs`/`buddy_alloc.rs`/`segment_tree_alloc.rs`/`stats.rs`/`allocator_tests.rs`）+ `os/servers/vm/src/boot.rs` + `os/servers/vm/src/global.rs` + `os/servers/vm/src/vm_server.rs:230-350,505-600` + `os/servers/vm/src/query.rs:296-305`
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`（启动主线）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（Direct Map `A-1` 概念，`PAF_CLEAR` 清零机制的前置）
 > **说明**: 物理内存分配的语义模块：**内存清单获取 / 分配器初始化 / 任意大小连续块分配与释放 / 记账与诊断 / 保留队列机制**。**不覆盖**：`vm_allocpage` 页分配与保留页池消费（`06-page-allocator`）、元数据搬迁 `relocate`（`10-vm-relocation`）、块缓存回收 `cache_freepages`（`24-page-cache`）。
 
@@ -112,7 +112,7 @@ Minix3 只有一个位图分配器（`alloc.c`）。minix-rs 把它演进为**�
 - **`total_pages`**（`glo.h:45`）：系统物理内存总页数。`mem_init` 从 chunks 累加（alloc.c:331），`mem_add_total_pages` 事后校准（§2.7）。**初始化后基本不变**，只在启动早期追加。
 - **`memstats`**（alloc.c:348-367）：分配器当前**空闲**量——空闲块数（nodes）、空闲页数（pages）、最大连续块（largest）。"总内存 4GB"和"当前还剩 512MB"是两个不同的问题。
 
-Rust 侧把前者放进 `BootParams.total_pages` + 全局 `TOTAL_PAGES`，后者建模为 `PhysMemStats` 结构体（§3.6），并接线到 `VM_INFO` 查询（query.rs:238）。
+Rust 侧把前者放进 `BootParams.total_pages` + 全局 `TOTAL_PAGES`，后者建模为 `PhysMemStats` 结构体（§3.6），并接线到 `VM_INFO` 查询（query.rs:297）。
 
 ### 1.8 与 06 的分工边界：块分配 vs 页分配
 
@@ -441,30 +441,32 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 ### 3.1 D1: `PhysAllocator` trait + `PhysAlloc` 枚举——策略模式静态分发（`[ARCH: A-5]`）
 
 - **C**: 单一位图实现，`alloc_mem/free_mem` 直接操作全局 `free_pages_bitmap`（alloc.c:35）。
-- **Rust**: `trait PhysAllocator`（`alloc_trait.rs:34-41`：`alloc_mem/free_mem/total_count/reserve_pages/available_regions`）+ `enum PhysAlloc`（`mod.rs:114`，三变体 `Bitmap/Buddy/SegmentTree`）。Cargo feature 启动期决定编译进哪个后端，`PhysAlloc` 是唯一静态分发点——**无 `dyn` 开销**。
+- **Rust**: `trait PhysAllocator`（`alloc_trait.rs:34-44`：`alloc_mem/free_mem/total_count/reserve_pages/available_regions`）+ `enum PhysAlloc`（`mod.rs:127`，三变体 `Bitmap/Buddy/SegmentTree`，变体按 feature 门控）。Cargo feature 启动期决定编译进哪个后端，`PhysAlloc` 是唯一静态分发点——**无 `dyn` 开销**。
 - **为什么**：分配器是 VM 最热路径之一，vtable 间接不可接受；trait 使消费方（`alloc_page.rs` 的 `VmPageAllocator`）与后端解耦，跨后端 parity 由 `allocator_tests.rs` 验证（§5.1）。
 - **行为契约**：三后端对同一请求序列产生可观察等价结果（对齐语义差异见 §3.8）；`PhysAlloc` 把 trait 方法 `match` 到具体后端。
 
 ### 3.2 D2: 元数据放置——预映射内存 + `BumpBuf`
 
 - **C**: 位图是静态 BSS 数组，大小按 32 位地址空间上限固定（128KB），"先于分配器存在"。
-- **Rust**: 64 位物理内存无硬上限 → 元数据大小随 `total_pages` 增长（`PhysAllocType::metadata_size`，`mod.rs:229-262`）。自举期 GlobalAlloc 依赖分配器（循环依赖），故从 Direct Map 预映射区切一段**连续物理内存**做元数据（`vm_server.rs:create_default_allocator`，L107-145：找 `base < VM_DIRECT_MAP_SIZE && size >= meta_pages*CLICK` 的 free region，元数据 PA 从分配器视野中扣除——等价于 C 的"分配器占用不进入空闲池"）。`BumpBuf`（`mod.rs:49`）把裸字节按对齐切出 `&'static mut [T]` slice。
+- **Rust**: 64 位物理内存无硬上限 → 元数据大小随 `total_pages` 增长（`PhysAllocType::metadata_size`，`mod.rs:249`）。自举期 GlobalAlloc 依赖分配器（循环依赖），故从 Direct Map 预映射区切一段**连续物理内存**做元数据（`vm_server.rs:create_default_allocator`，L230-285：找 `base < VM_DIRECT_MAP_SIZE && size >= meta_pages*CLICK` 的 free region，元数据 PA 从分配器视野中扣除——等价于 C 的"分配器占用不进入空闲池"）。`VM_DIRECT_MAP_SIZE` 的来源是 `DirectMapArch::VM_DIRECT_MAP_SIZE`（`os/arch/src/arch/direct_map.rs`，按架构窗口给出：x86_64/aarch64 1 GiB、riscv64 16 GiB，V10-P2-2 收敛），VM 侧不再硬编码。`BumpBuf`（`mod.rs:49`）把裸字节按对齐切出 `&'static mut [T]` slice。
 - **生命周期**：元数据 slice 的 `'static` 生命周期由"VM 进程存活期"保证（SAFETY 注释见 `mod.rs:81-85`）；`metadata_pa_range()`（`bitmap_alloc.rs:110-112`）暴露元数据 PA 范围，供 `relocate` 搬迁后 `free_mem` 回收（归 10-vm-relocation）。
-- **行为契约**：`adjusted_regions`（`vm_server.rs:141-143`）扣除元数据页后作为初始空闲区间；`validate()`（`boot.rs:144`）断言页对齐。
+- **行为契约**：`adjusted_regions`（`vm_server.rs:266-268`）扣除元数据页后作为初始空闲区间；`validate()`（`boot.rs:152`）断言页对齐。
 
 ### 3.3 D3: 三后端权衡——bitmap / buddy / segment-tree
 
 | 后端 | 分配 | 元数据/页 | 选择条件 |
 |------|------|----------|---------|
 | bitmap（默认） | O(n) 扫描 + 单页缓存 O(1) | 1 bit/页 + 10000×usize 缓存（64 位下 8B/槽） | 默认 feature |
-| buddy | O(log n) 拆分/合并 | 5B/页（4B next + 1B order）+ (max_order+1)×4B 头部 | `buddy_alloc` feature 且 `total_pages > BUDDY_THRESHOLD_PAGES`（`mod.rs:267`，1M 页 ≈ 4GB） |
-| segment-tree | O(log n) 任意连续度 | 2×2^k×32B（最贵） | `segment_tree_alloc` feature（实验性，未接入默认选择路径） |
+| buddy | O(log n) 拆分/合并 | 5B/页（4B next + 1B order）+ (max_order+1)×4B 头部 | `buddy_alloc` feature 且 `total_pages > BUDDY_THRESHOLD_PAGES`（`mod.rs:288`，1M 页 ≈ 4GB） |
+| segment-tree | O(log n) 任意连续度 | 2×2^k×32B（最贵） | `segment_tree_alloc` feature 直接选中（V10-P0-1 修复前永远选不上，见 §3.3 注） |
 
 **与 Redox / 主流 OS 的对比**（用户要求）：
 
 - **Redox RMM**：boot 期 `BumpAllocator` → 主分配器 `BuddyAllocator`（11 orders），`FrameAllocator` trait 抽象、`RecycleAllocator` 做回收复用——是"先导分配器 → 主分配器"的固定演进路径。
 - **Linux**：buddy（页粒度，`__alloc_pages`）+ slab（小对象）双层，boot 期 bootmem/memblock 先导。
 - **minix-rs 的选择**：三后端 trait 可选、按内存规模选择，而不是固定演进。理由：VM 是用户态服务器，内存规模跨度大（256MB-2TB+），位图的内存效率（1 bit/页）在中小内存下最优，buddy 的 O(log n) 延迟在大内存下才值得；segment-tree 保留 O(log n) 任意连续度能力作为实验后端。这与"单进程内分配器策略可配置"的定位一致——分配策略在**用户态服务器层**决定（微内核分工），而不是像 Linux 一样固化在内核。
+
+> **选择路径（V10-P0-1 修复，2026-08-17）**：`choose_allocator_type`（`vm_server.rs:286-299`）在 `buddy_alloc` feature 下保留自适应阈值（`total_pages > BUDDY_THRESHOLD_PAGES` 才切 buddy，否则回落 bitmap），在 `segment_tree_alloc` feature 下直接选中 `SegmentTree`；`relocate()`（`vm_server.rs:300-369`）按 feature 分别构造 `PhysAlloc` 分支，未启用 feature 的分支回落 Bitmap（bootstrap 分配器）。三个 feature 组合此前**根本无法构建**（缺 import / `_total_pages` 引错 / no_std 下 `eprintln!`），已修复并纳入构建矩阵验证。
 
 ### 3.4 D4: 类型化错误与标志——消除魔法值
 
@@ -480,18 +482,18 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 - **C**: `kernel_boot_info`（glo.h）是隐藏全局；`init_vm()` 的断言与调用点散落在 main.c:442-495。
 - **Rust**: `BootParams`（`boot.rs:61`）把 kernel→VM 交接建模为**构造输入**；`validate()`（`boot.rs:144`）镜像 main.c:451-452 断言（`mmap_size > 0` → `free_regions` 非空），并额外断言 `total_pages == Σ region pages`（C 无此断言，Rust 把 mem_init 的累加不变量前移到构造期）；`extra_pages()`（`boot.rs:201`）精确复刻 `mem_add_total_pages` 调用点（main.c:485-495：模块循环排除最后一个 + kernel static 向上取整 + dynamic 原样）。
 - **为什么**：boot 协议是一次性 one-shot 交接，把依赖显式化在构造函数使启动链可审计、可单测（`boot.rs` 6 个测试，§5.1）。
-- **行为契约**：`validate()` 失败即 panic（fail-fast，与 C `assert` 同构）；`extra_pages()` 对 modules 最后一项（VM 自身）用 `saturating_sub(1)` 排除；总页数 = `global::init(total_pages)` + `account_boot_memory()` 追加 `extra_pages()`（`vm_server.rs:344-349`）。
+- **行为契约**：`validate()` 失败即 panic（fail-fast，与 C `assert` 同构）；`extra_pages()` 对 modules 最后一项（VM 自身）用 `saturating_sub(1)` 排除；总页数 = `global::init(total_pages)` + `account_boot_memory()` 追加 `extra_pages()`（`vm_server.rs:505-516`）。
 
 ### 3.6 D6: 统计结构体——取代 C 三指针 out-param
 
 - **C**: `memstats(int *nodes, int *pages, int *largest)`（alloc.c:348）三指针输出；`printmemstats` 直接 printf。
-- **Rust**: `PhysMemStats { free_nodes, free_pages, largest_free }`（`alloc_trait.rs:28-32`）；`PhysAlloc::memstats()` 统一分发到三后端（bitmap 全量扫描 / buddy `largest_free()` + `free_pages` / segment-tree 同 buddy）；接线 `query.rs:237-246`：`InfoQuery::Stats` → `InfoResult::Stats`。
+- **Rust**: `PhysMemStats { free_nodes, free_pages, largest_free }`（`alloc_trait.rs:28-32`）；`PhysAlloc::memstats()` 统一分发到三后端（bitmap 全量扫描 / buddy `largest_free()` + `free_pages` / segment-tree 同 buddy）；接线 `query.rs:296-305`：`InfoQuery::Stats` → `InfoResult::Stats`。
 - **诚实标注**：buddy/segment-tree 的 `free_nodes` 暂为 0（buddy 无现成块计数，`nodes` 仅诊断用途，`VM_INFO` 路径只用 `free_pages`/`largest_free`）；`printmemstats` 无 Rust 直接对应（诊断打印，数据面已被 INFO 查询覆盖）。
 
 ### 3.7 D7: `PAF_CLEAR` 机制演进——`sys_memset` IPC → Direct Map 直接清零
 
 - **C**: `alloc_pages` 内 `sys_memset(NONE, 0, ...)`（alloc.c:453-456）——VM 不持有物理页映射，清零必须委托内核 IPC，失败 `panic`。
-- **Rust**: `vm_phys_to_virt()`（`direct_map.rs:21`）直映射后 `write_volatile` 循环清零（`bitmap_alloc.rs:412-430`，三后端同构）——**依赖 Direct Map（A-1，07 文档显式章节）**。
+- **Rust**: `vm_phys_to_virt()`（`direct_map.rs:24`）直映射后 `write_volatile` 循环清零（`bitmap_alloc.rs:412-430`，三后端同构）——**依赖 Direct Map（A-1，07 文档显式章节）**。
 - **行为契约**：清零语义等价（分配返回前物理页全零）；去掉一次内核 IPC 往返与 `panic` 失败面。VM 是单线程服务器，`write_volatile` 无并发写竞争（SAFETY 注释见 `bitmap_alloc.rs:414-418`）。
 
 ### 3.8 语义差异清单（C ↔ Rust 诚实标注）
@@ -502,8 +504,8 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 | S-2 | `lastscan` 静态提示位（顺序局部性） | 未移植，每次从 `maxpage` 起扫 | 性能差异（语义等价），诚实标注 |
 | S-3 | `cache_freepages`（cache.c:288）LRU 回收块缓存后重试 | `BitmapAllocator::cache_freepages` 返回 0（`bitmap_alloc.rs:340-348`，DEFERRED） | 语义缺口（OOM 时无续命路径），归 24-page-cache |
 | S-4 | `usedpages_*` + `mem_sanitycheck`（SANITYCHECKS 编译宏） | `cfg(test)` + `debug_assert` 双分配检测（如 `free_pages_internal` 的 `debug_assert!(!page_is_free)`，`bitmap_alloc.rs:266`） | cfg 替代（A-7） |
-| S-5 | `alloc_cycle` 主循环补满保留队列 | `vm_server.rs:371-405` 只维护 `missing_spares` 计数（`mark_alloc_failure`），清零无补充体 | DEFERRED，归 06 |
-| S-6 | `printmemstats` 诊断打印 | 无直接对应 | 数据面经 `query.rs:237-246` 覆盖 |
+| S-5 | `alloc_cycle` 主循环补满保留队列 | `vm_server.rs:570-581` 只维护 `missing_spares` 计数（`mark_alloc_failure`，L533），清零无补充体 | DEFERRED，归 06 |
+| S-6 | `printmemstats` 诊断打印 | 无直接对应 | 数据面经 `query.rs:296-305` 覆盖 |
 | S-7 | `mem_low/mem_high` 边界跟踪 | `compute_memory_bounds`（`mod.rs:310-328`）等价计算，仅测试/诊断使用 | 语义等价 |
 
 ---
@@ -515,7 +517,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 - `PhysAlloc` 枚举（`mod.rs:114`）+ `PhysAllocator for PhysAlloc` 静态分发（`mod.rs:122-161`）；
 - `BumpBuf`（`mod.rs:49-94`）：`alloc_slice::<T>()` 按对齐切 `&'static mut [T]`，溢出 `assert`（元数据缓冲耗尽即 bug）；
 - `PhysAllocType::metadata_size_exact`（`mod.rs:229-262`）：三后端元数据公式，`metadata_size` 向上取整到页（`mod.rs:219-227`）；
-- 常量与助手：`CLICK_SIZE/CLICK_SHIFT`（`mod.rs:264-265`）、`BUDDY_THRESHOLD_PAGES`（`mod.rs:267`）、`bytes_to_clicks/clicks_to_bytes/click_floor/click_ceil`（`mod.rs:270-288`）；
+- 常量与助手：`CLICK_SIZE/CLICK_SHIFT`（`mod.rs:284-285`）、`BUDDY_THRESHOLD_PAGES`（`mod.rs:288`）、`bytes_to_clicks/clicks_to_bytes/click_floor/click_ceil`（`mod.rs:291-313`）；
 - `BootMemRegion`（`mod.rs:290-308`）：`validate()` 断言 base/size 页对齐（等价 C 的 click 取整后不变量）；
 - `compute_memory_bounds`（`mod.rs:310-328`）：计算 `(total_pages, mem_low, mem_high)`，等价 C `mem_init` 的边界跟踪（S-7）；
 - `is_low_mem_flag` / `oom_error`（`mod.rs:336-344`）：错误分类（D4）。
@@ -523,7 +525,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 ### 4.2 `types.rs` / `alloc_trait.rs`：核心类型与契约
 
 - `AlignedPhysBytes`（`types.rs:24-78`）、`PageAllocFlags`（`types.rs:80-90`）、`AllocError`（`types.rs:98-102`）——见 D4；
-- `PhysMemStats`（`alloc_trait.rs:28-32`）、`PhysAllocator` trait（`alloc_trait.rs:34-41`）——见 D1/D6。trait 的 `available_regions`（callback 遍历空闲区间）供 `relocate` 搬迁时状态转移（`vm_server.rs:182-183`）与 VFS fd 表设置使用。
+- `PhysMemStats`（`alloc_trait.rs:28-32`）、`PhysAllocator` trait（`alloc_trait.rs:34-44`）——见 D1/D6。trait 的 `available_regions`（callback 遍历空闲区间）供 `relocate` 搬迁时状态转移（`vm_server.rs:324-330`）与 VFS fd 表设置使用。
 
 ### 4.3 `bitmap_alloc.rs`：默认后端（与 C 最接近）
 
@@ -538,18 +540,18 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 ### 4.4 `buddy_alloc.rs` / `segment_tree_alloc.rs`：可选后端
 
 - **buddy**（`buddy_alloc.rs`）：SoA 三数组 `free_list_heads/page_next/page_orders`；`init`（L52）把 free regions 按 2 的幂拆分插入（`add_free_region`，L123，`pos.trailing_zeros()` 保证对齐）；`alloc_mem`（L309）`order = max(size_order, align_order)` 天然满足对齐，尾部 `block_size - clicks` 释放（无浪费，S-1）；`free_mem`（L372）`try_merge` 合并 buddy（L170）；`memstats`（L431）`largest_free` + `free_pages`，`free_nodes=0`（诚实标注）。
-- **segment-tree**（`segment_tree_alloc.rs`，`segment_tree_alloc` feature 门控）：每节点 `(max_free,left_free,right_free,len)`；`alloc_mem`（L242）`find_first_fit`（L190）O(log n) 找最大适配连续块；**局限**：LOWER16MB/LOWER1MB 是先分配后检查（`mem + alloc_clicks > max_page` 则 `LowMemoryExhausted`，L274-276），不是 C 的"限制搜索范围"——实验性后端，未接入默认选择路径（§3.3）。
+- **segment-tree**（`segment_tree_alloc.rs`，`segment_tree_alloc` feature 门控）：每节点 `(max_free,left_free,right_free,len)`；`alloc_mem`（L242）`find_first_fit`（L190）O(log n) 找最大适配连续块；**局限**：LOWER16MB/LOWER1MB 是先分配后检查（`mem + alloc_clicks > max_page` 则 `LowMemoryExhausted`，L274-276），不是 C 的"限制搜索范围"——实验性后端；V10-P0-1 起 `segment_tree_alloc` feature 会真正选中它（§3.3 注），默认构建仍走 bitmap。
 
 ### 4.5 `boot.rs` / `global.rs` / `vm_server.rs`：boot 契约与调用点
 
 - `boot.rs`：`BootModule`（L34）、`KernelAllocated`（L46）、`BootParams`（L61）、`validate`（L144）、`extra_pages`（L201）——见 D5；
 - `global.rs`：`TOTAL_PAGES`（L17，`AssumeSyncCell` 单线程模型）、`init`（L43）、`add_total_pages`（L68，`mem_add_total_pages` 等价）；
-- `vm_server.rs`：`create_default_allocator`（L107-146，D2 元数据切分）、`choose_allocator_type`（L148-153，D3 选后端）、`relocate`（L155-228，归 10，元数据从 Direct Map 迁到 HeapArena）、`account_boot_memory`（L341-346，`extra_pages` 接线）、`mark_alloc_failure`/`missing_spares`（L368-373，C `missing_spares++`）、主循环 `missing_spares > 0` 清零（L381-402，S-5 DEFERRED 体）。
+- `vm_server.rs`：`create_default_allocator`（L230-285，D2 元数据切分）、`choose_allocator_type`（L286-299，D3 选后端，V10-P0-1 修复）、`relocate`（L300-369，归 10，元数据从 Direct Map 迁到 HeapArena）、`account_boot_memory`（L505-516，`extra_pages` 接线）、`mark_alloc_failure`/`missing_spares`（L533-538，C `missing_spares++`）、主循环 `missing_spares > 0` 清零（L570-581，S-5 DEFERRED 体）。
 
 ### 4.6 `alloc_page.rs` / `query.rs`：消费方与查询接线
 
 - `alloc_page.rs`：`VmPageAllocator`（L17）包装 `PhysAlloc` + `VmAllocStats` 记账；`alloc_phys/alloc_page/alloc_pages/free_page/free_pages`（L30-59）——**06 文档的消费方边界**；
-- `query.rs:237-246`：`InfoQuery::Stats` → `PhysAlloc::memstats()` → `InfoResult::Stats`（page_size/total_pages/free_pages/largest_contiguous），对应 C `do_info` 的物理内存统计面（26-vm-queries 的接线面）。
+- `query.rs:296-305`：`InfoQuery::Stats` → `PhysAlloc::memstats()` → `InfoResult::Stats`（page_size/total_pages/free_pages/largest_contiguous），对应 C `do_info` 的物理内存统计面（26-vm-queries 的接线面）。
 
 ---
 
@@ -584,7 +586,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 | `lastscan` 分配位置提示 | 未移植（性能差异，非语义，§3.8 S-2） |
 | `usedpages_*`/`mem_sanitycheck` 双分配检测 | `cfg`/`debug_assert` 替代（A-7，§3.8 S-4） |
 | `alloc_cycle` 保留队列补充体 | DEFERRED，归 06-page-allocator（§3.8 S-5） |
-| `printmemstats` 诊断打印 | 无直接对应（数据面经 `query.rs:237-246` 覆盖） |
+| `printmemstats` 诊断打印 | 无直接对应（数据面经 `query.rs:296-305` 覆盖） |
 | buddy/segment-tree `free_nodes` | 恒 0（诊断字段，`VM_INFO` 路径不使用） |
 | segment-tree LOWER16MB/1MB 先分配后检查 | 实验性后端局限（§4.4） |
 | `PAF_CLEAR` 端到端（真实 Direct Map 清零） | 依赖 Direct Map（07-pagetable-struct） |

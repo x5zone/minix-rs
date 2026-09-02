@@ -8,6 +8,7 @@ pub mod paging;
 pub mod paging_ext;
 pub mod pt_alloc;
 pub mod direct_map;
+pub mod frame;
 pub mod pte_walk_arch;
 pub mod protection;
 pub mod trap_entry;
@@ -20,7 +21,6 @@ pub mod smp;
 pub mod arch_init;
 pub mod timer_irq_gate;
 pub mod boot;
-pub mod post_init;
 pub mod stacktrace;
 pub mod tlb_arch;
 // proc_arch was removed in 06-proc-init-boot-proc.md; its responsibilities

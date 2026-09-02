@@ -8,12 +8,18 @@ use crate::vmproc::{ActiveProc, VmProcTable};
 use crate::region::{PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
 use crate::page_cache::PageCache;
 
-pub(crate) trait MemType: Send + Sync {
+// V10-P2-1 (DEFERRED): several C-memtype callbacks (`ev_new`, `ev_resize`,
+// `ev_split`, `ev_low_shrink`, `ev_sanitycheck`, `writable`, `pt_flags`)
+// are part of the trait contract but have no invoking flow yet — the
+// resize/split/low-shrink paths are not wired. They are intentionally
+// kept (with their C counterparts documented) until those flows land.
+pub(crate) trait MemType {
     fn name(&self) -> &'static str;
 
     // C NULL → skip init. Default Ok(()): framework handles page allocation.
     // Receives PageFrames and PfnAllocator so memtypes that pre-allocate
     // physical pages (e.g. ContiguousAnonymous) can do so during creation.
+    #[allow(dead_code)]
     fn ev_new(
         &self,
         _region: &mut crate::region::VirRegion,
@@ -34,10 +40,14 @@ pub(crate) trait MemType: Send + Sync {
     // C implementations free physical pages here. PfnAllocator handles this in PFN model, default no-op.
     fn ev_unreference(&self, _frames: &mut PageFrames, _pfn: u32) {}
 
-    // All C types implement this (no NULL). Default Handled; complex types must override.
-    // `table` provides cross-process region lookup (needed by SharedMemory).
-    // `alloc` provides page allocation for memtypes that need to fault in
-    // pages from other regions (e.g. SharedMemory's recursive source pagefault).
+    // All C types implement this (no NULL callback in memtype.h).
+    // **Required, no default** (V10-P1-3): a default `Ok(Handled)` made a
+    // forgotten implementation silently "handle" page faults as no-ops —
+    // no mapping, no error. `table` provides cross-process region lookup
+    // (needed by SharedMemory); `alloc` provides page allocation for
+    // memtypes that need to fault in pages from other regions (e.g.
+    // SharedMemory's recursive source pagefault).
+    #[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into a PagefaultCtx struct when the cross-region fault path lands
     fn ev_pagefault(
         &self,
         _proc_endpoint: Endpoint,
@@ -47,12 +57,11 @@ pub(crate) trait MemType: Send + Sync {
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
-        cache: &mut PageCache,
-    ) -> Result<PagefaultResult, MemTypeError> {
-        Ok(PagefaultResult::Handled)
-    }
+        _cache: &mut PageCache,
+    ) -> Result<PagefaultResult, MemTypeError>;
 
     // C NULL → generic resize logic. Default Ok(()): framework handles page allocation.
+    #[allow(dead_code)]
     fn ev_resize(
         &self,
         _proc: &mut ActiveProc<'_>,
@@ -65,6 +74,7 @@ pub(crate) trait MemType: Send + Sync {
     // C NULL → EINVAL (region.c:1164). Default Err(NotSupported).
     // C signature: void (*ev_split)(struct vmproc *vmp, ...).
     // Matches ev_resize: &mut ActiveProc corresponds to struct vmproc*.
+    #[allow(dead_code)]
     fn ev_split(
         &self,
         _proc: &mut ActiveProc<'_>,
@@ -76,6 +86,7 @@ pub(crate) trait MemType: Send + Sync {
     }
 
     // C NULL → EINVAL (region.c:1096). Default Err(NotSupported).
+    #[allow(dead_code)]
     fn ev_low_shrink(
         &self,
         _region: &mut crate::region::VirRegion,
@@ -104,6 +115,7 @@ pub(crate) trait MemType: Send + Sync {
     }
 
     // C NULL → skip. No runtime checks needed in PFN model.
+    #[allow(dead_code)]
     fn ev_sanitycheck(
         &self,
         _frames: &PageFrames,
@@ -113,6 +125,7 @@ pub(crate) trait MemType: Send + Sync {
     }
 
     // All C types implement this (no NULL). Default false; AnonymousMemory overrides for CoW check.
+    #[allow(dead_code)]
     fn writable(&self, _frames: &PageFrames, _slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         false
     }
@@ -126,6 +139,19 @@ pub(crate) trait MemType: Send + Sync {
         Ok(())
     }
 
+    // C NULL callback → map_get_phys returns EINVAL (region.c:1331).
+    // Rust expresses "callback presence" as a capability predicate;
+    // `region_id()` itself defaults to 0 (= C NULL semantics) and is only
+    // meaningful when this predicate is true.
+    fn supports_region_id(&self) -> bool {
+        false
+    }
+
+    // C NULL callback → map_get_ref returns EINVAL (region.c:1349).
+    fn supports_ref_count(&self) -> bool {
+        false
+    }
+
     // C NULL → return 0. Default 0.
     fn region_id(&self, _region: &crate::region::VirRegion) -> u32 {
         0
@@ -137,6 +163,7 @@ pub(crate) trait MemType: Send + Sync {
     }
 
     // C NULL → return 0 (default caching). Default empty(). DirectPhysical etc. override with NO_CACHE.
+    #[allow(dead_code)]
     fn pt_flags(&self, _region: &crate::region::VirRegion) -> PageFlags {
         PageFlags::empty()
     }
@@ -147,7 +174,12 @@ pub(crate) enum MemTypeError {
     NoMemory,
     InvalidParam,
     NotSupported,
+    // V10-P2-1 (DEAD/DEFERRED): VFS IO failures propagate via
+    // `CowError`/`VfsQueueError` today; these variants are kept for the
+    // future file-memtype fault-in path.
+    #[allow(dead_code)]
     IoError,
+    #[allow(dead_code)]
     CopyFailed,
     /// Source process endpoint is invalid or dead (C: EINVAL from getsrc).
     InvalidProcess,
@@ -185,6 +217,12 @@ pub(crate) enum PagefaultResult {
 /// Copy-on-Write when refcount > 1 (fork).
 pub(crate) struct AnonymousMemory;
 
+// SAFETY: shared through `&'static dyn MemType` statics (MEM_TYPE_*); the
+// structs hold no interior mutability and are only read via MemType
+// methods within the single-threaded VM server (V10-P1-3, cf. global.rs
+// AssumeSyncCell rationale).
+unsafe impl Sync for AnonymousMemory {}
+
 impl AnonymousMemory {
     pub(crate) const fn new() -> Self {
         Self
@@ -211,13 +249,13 @@ impl MemType for AnonymousMemory {
     ///
     /// Corresponds to Minix3's `anon_writable()` (mem_anon.c).
     fn writable(&self, frames: &PageFrames, slot: PageSlot, region: &crate::region::VirRegion) -> bool {
-        if !slot.is_mapped() {
+        let Some(pfn) = slot.pfn() else {
             return false;
-        }
+        };
         if region.remaps > 0 {
             return true;
         }
-        frames.get(slot.pfn)
+        frames.get(pfn)
             .map(|s| s.refcount == 1)
             .unwrap_or(false)
     }
@@ -249,20 +287,13 @@ impl MemType for AnonymousMemory {
         _alloc: &mut dyn PfnAllocator,
         _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
-        let slot = region.get_slot(offset);
-
-        match slot {
-            None => {
-                return Ok(PagefaultResult::NeedNewPage);
-            }
-            Some(s) if !s.is_mapped() => {
-                return Ok(PagefaultResult::NeedNewPage);
-            }
-            _ => {}
-        }
-
-        let slot = slot.unwrap();
-        let refcount = frames.get(slot.pfn)
+        let Some(slot) = region.get_slot(offset) else {
+            return Ok(PagefaultResult::NeedNewPage);
+        };
+        let Some(pfn) = slot.pfn() else {
+            return Ok(PagefaultResult::NeedNewPage);
+        };
+        let refcount = frames.get(pfn)
             .map(|s| s.refcount)
             .unwrap_or(0);
 
@@ -281,6 +312,16 @@ impl MemType for AnonymousMemory {
     ///
     /// `region.id` is always non-negative (valid region IDs), so the
     /// `i32 → u32` cast is safe. Corresponds to Minix3's `anon_region_id`.
+    // C: mem_anon.c:42 — `.regionid = anon_regionid` (callback present).
+    fn supports_region_id(&self) -> bool {
+        true
+    }
+
+    // C: mem_anon.c:44 — `.refcount = anon_refcount` (callback present).
+    fn supports_ref_count(&self) -> bool {
+        true
+    }
+
     fn region_id(&self, region: &crate::region::VirRegion) -> u32 {
         region.id as u32
     }
@@ -326,6 +367,9 @@ impl MemType for AnonymousMemory {
 /// Used for device memory and physical address access. Pages are mapped
 /// on fault from the `VrParam::Direct { phys }` base address.
 pub(crate) struct DirectPhysical;
+
+// SAFETY: see AnonymousMemory — no interior mutability, single-threaded VM.
+unsafe impl Sync for DirectPhysical {}
 
 impl DirectPhysical {
     pub(crate) const fn new() -> Self {
@@ -423,6 +467,9 @@ impl MemType for DirectPhysical {
 
 pub(crate) struct SharedMemory;
 
+// SAFETY: see AnonymousMemory — no interior mutability, single-threaded VM.
+unsafe impl Sync for SharedMemory {}
+
 impl SharedMemory {
     pub(crate) const fn new() -> Self {
         Self
@@ -443,6 +490,33 @@ impl MemType for SharedMemory {
     /// Always writable when mapped — shared pages have no CoW semantics.
     fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
+    }
+
+    // C: mem_shared.c:35 — `.regionid = shared_regionid` (callback present).
+    fn supports_region_id(&self) -> bool {
+        true
+    }
+
+    // C: mem_shared.c:36 — `.refcount = shared_refcount` (callback present).
+    fn supports_ref_count(&self) -> bool {
+        true
+    }
+
+    /// C: `shared_regionid` (mem_shared.c:99-106) returns the *source*
+    /// region's id. `shared_setsource` copies `src_vr->id` into
+    /// `param.shared.id` (mem_shared.c:184) and `getsrc` validates the
+    /// invariant on every use (mem_shared.c:88-93), so reading the
+    /// parameter directly is C-equivalent.
+    fn region_id(&self, region: &crate::region::VirRegion) -> u32 {
+        match region.param {
+            crate::region::VrParam::Shared { id, .. } => id as u32,
+            _ => 0,
+        }
+    }
+
+    // C: `shared_refcount` (mem_shared.c:207-209) — 1 + vr->remaps.
+    fn ref_count(&self, region: &crate::region::VirRegion) -> i32 {
+        1 + region.remaps
     }
 
     /// Cross-process shared page fault — currently not supported.
@@ -477,11 +551,10 @@ impl MemType for SharedMemory {
     ) -> Result<PagefaultResult, MemTypeError> {
         // Step 1: If the page is already mapped, no action needed.
         // C: mem_shared.c:139 — "if(ph->ph->phys != MAP_NONE) return OK"
-        if let Some(slot) = region.get_slot(offset) {
-            if slot.is_mapped() {
+        if let Some(slot) = region.get_slot(offset)
+            && slot.is_mapped() {
                 return Ok(PagefaultResult::Handled);
             }
-        }
 
         // Step 2: Extract source process endpoint from VrParam::Shared.
         // C: getsrc() — mem_shared.c:52-80
@@ -528,9 +601,9 @@ impl MemType for SharedMemory {
         // Step 6: If source page is not mapped, allocate one for it first.
         // C: map_pf(src_vmp, src_region, ph->offset, write, ...)
         let src_slot_state = src_region.get_slot(src_offset);
-        let src_pfn = match src_slot_state {
-            Some(s) if s.is_mapped() => s.pfn,
-            _ => {
+        let src_pfn = match src_slot_state.and_then(PageSlot::pfn) {
+            Some(pfn) => pfn,
+            None => {
                 // Source page not mapped — allocate and map it.
                 // C: map_pf() → anon_pagefault → alloc + map
                 let pfn = alloc.alloc_pfn()
@@ -538,8 +611,8 @@ impl MemType for SharedMemory {
                 // Drop the immutable source region reference before obtaining
                 // a mutable one. Safe because: single-threaded VM, and the
                 // source process is a different slot from the faulting process.
-                drop(src_region);
-                drop(src_proc);
+                let _ = src_region;
+                let _ = src_proc;
                 let mut src_proc_mut = table.get_active(src_user_slot)
                     .ok_or(MemTypeError::InvalidProcess)?;
                 let src_region_mut = src_proc_mut.regions_mut().find_mut(src_vaddr)
@@ -599,6 +672,9 @@ impl MemType for SharedMemory {
 
 pub(crate) struct ContiguousAnonymous;
 
+// SAFETY: see AnonymousMemory — no interior mutability, single-threaded VM.
+unsafe impl Sync for ContiguousAnonymous {}
+
 impl ContiguousAnonymous {
     pub(crate) const fn new() -> Self {
         Self
@@ -627,13 +703,13 @@ impl MemType for ContiguousAnonymous {
         // remaps is always 0, making this equivalent to slot.is_mapped(). However, if
         // fork support is added for ContiguousAnonymous in the future, the full check
         // must remain to correctly determine CoW eligibility.
-        if !slot.is_mapped() {
+        let Some(pfn) = slot.pfn() else {
             return false;
-        }
+        };
         if region.remaps > 0 {
             return true;
         }
-        frames.get(slot.pfn)
+        frames.get(pfn)
             .map(|s| s.refcount == 1)
             .unwrap_or(false)
     }
@@ -681,7 +757,8 @@ impl MemType for ContiguousAnonymous {
 
         // C: anon_contig_new (mem_anon_contig.c:52-96)
         // Step 1: Create phys_block + phys_region for each page (MAP_NONE).
-        //         In PFN model: map each page slot with PFN_NONE first.
+        //         In PFN model: all slots start as `PageSlot::Empty`
+        //         (created by `VirRegion::new`, no explicit pass needed).
         // Step 2: alloc_mem(pages, allocflags) — allocate contiguous physical memory.
         //         In PFN model: allocate contiguous PFNs one by one.
         // Step 3: Assign contiguous physical addresses to each phys_region.
@@ -794,6 +871,9 @@ impl MemType for ContiguousAnonymous {
 
 pub(crate) struct CacheMemory;
 
+// SAFETY: see AnonymousMemory — no interior mutability, single-threaded VM.
+unsafe impl Sync for CacheMemory {}
+
 impl CacheMemory {
     pub(crate) const fn new() -> Self {
         Self
@@ -842,11 +922,10 @@ impl MemType for CacheMemory {
     ) -> Result<PagefaultResult, MemTypeError> {
         // Step 1: Already mapped → no action needed.
         // C: "if(ph->ph->phys != MAP_NONE) return OK" (implicit in assert)
-        if let Some(slot) = region.get_slot(offset) {
-            if slot.is_mapped() {
+        if let Some(slot) = region.get_slot(offset)
+            && slot.is_mapped() {
                 return Ok(PagefaultResult::Handled);
             }
-        }
 
         // Step 2-3: Extract cached PFN. pfn==0 means no cached page,
         // which is a programming error (C: assert(region->param.pb_cache)).
@@ -918,6 +997,9 @@ impl MemType for CacheMemory {
 /// writes to shared pages trigger CoW (`NeedCow`).
 pub(crate) struct MappedFile;
 
+// SAFETY: see AnonymousMemory — no interior mutability, single-threaded VM.
+unsafe impl Sync for MappedFile {}
+
 impl MappedFile {
     pub(crate) const fn new() -> Self {
         Self
@@ -962,11 +1044,10 @@ impl MemType for MappedFile {
         _alloc: &mut dyn PfnAllocator,
         cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
-        if let crate::region::VrParam::File { inited, .. } = &region.param {
-            if !inited {
+        if let crate::region::VrParam::File { inited, .. } = &region.param
+            && !inited {
                 return Ok(PagefaultResult::NeedNewPage);
             }
-        }
 
         let slot = region.get_slot(offset);
 
@@ -1027,8 +1108,7 @@ impl MemType for MappedFile {
                         // into a private anon page (clearend zeroing is not yet
                         // modeled; doc 24 §3.5 差异清单).
                         let last_partial = {
-                            let page_end = (offset.0 + clearend as u64 + PAGE_SIZE - 1)
-                                / PAGE_SIZE * PAGE_SIZE;
+                            let page_end = (offset.0 + clearend as u64).div_ceil(PAGE_SIZE) * PAGE_SIZE;
                             page_end >= region.length.0
                         };
                         if write || last_partial {
@@ -1333,7 +1413,7 @@ mod tests {
         // 2 = cache's own reference + the mapping's (C: pb_link on top of
         // addcache's refcount++).
         let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
-        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(slot.pfn(), Some(cached_pfn));
         assert_eq!(frames.get(cached_pfn).unwrap().refcount(), 2);
         assert!(frames.get(cached_pfn).unwrap().is_cached());
     }
@@ -1369,7 +1449,7 @@ mod tests {
         );
         assert_eq!(result, Ok(PagefaultResult::Handled));
         let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
-        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(slot.pfn(), Some(cached_pfn));
         assert_eq!(frames.get(cached_pfn).unwrap().refcount(), 2);
     }
 
@@ -1565,7 +1645,7 @@ mod tests {
         // Verify the slot is now mapped to the cached PFN.
         let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
         assert!(slot.is_mapped());
-        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(slot.pfn(), Some(cached_pfn));
 
         // Verify the cache pointer was cleared (pfn set to 0).
         if let crate::region::VrParam::PbCache { pfn } = &region.param {

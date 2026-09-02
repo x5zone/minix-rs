@@ -1,0 +1,14 @@
+[package]
+name = "minix-arithmetic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-arithmetic"
+path = "src/main.rs"
+
+[dependencies]
+minix-sys = { workspace = true }
+minix-rt = { workspace = true, features = ["std"] }

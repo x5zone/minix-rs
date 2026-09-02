@@ -18,6 +18,7 @@ use alloc::collections::VecDeque;
 use minix_types::{Endpoint, VirBytes, VmMmapIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // `Fd` prefix mirrors C VMVFSREQ_FDLOOKUP/FDIO/FDCLOSE
 pub(crate) enum VfsRequestType {
     FdLookup,
     FdIo,
@@ -38,9 +39,6 @@ pub(crate) enum VfsRequestState {
         write: bool,
         caller_endpoint: Endpoint,
     },
-    FdClose {
-        fd: i32,
-    },
 }
 
 pub(crate) type VfsCallbackFn = fn(
@@ -51,11 +49,21 @@ pub(crate) type VfsCallbackFn = fn(
 
 #[derive(Debug)]
 pub(crate) struct VfsRequest {
+    // V10-P2-1: `request_type`/`caller_endpoint`/`fd`/`offset`/`length`
+    // are write-only today — the queue matches on `req_id` and hands
+    // `state`+`callback` to the handler, which re-reads the original data
+    // from `VfsRequestState`. Kept for the VFS message-build path when
+    // `KernelIpcTransport` lands.
+    #[allow(dead_code)]
     pub(crate) request_type: VfsRequestType,
     pub(crate) req_id: u32,
+    #[allow(dead_code)]
     pub(crate) caller_endpoint: Endpoint,
+    #[allow(dead_code)]
     pub(crate) fd: i32,
+    #[allow(dead_code)]
     pub(crate) offset: u64,
+    #[allow(dead_code)]
     pub(crate) length: u32,
     pub(crate) callback: Option<VfsCallbackFn>,
     pub(crate) state: Option<VfsRequestState>,
@@ -65,10 +73,15 @@ pub(crate) struct VfsRequest {
 pub(crate) struct VfsReply {
     pub(crate) req_id: u32,
     pub(crate) result: i32,
+    // V10-P2-1: `data_phys`/`size_pages` mirror the C VMV_REPLY payload
+    // but are write-only today — the FDIO consumer (mappedfile pagefault
+    // retry) is not wired to read them.
+    #[allow(dead_code)]
     pub(crate) data_phys: Option<minix_types::PhysBytes>,
     pub(crate) fd: i32,
     pub(crate) dev: u64,
     pub(crate) ino: u64,
+    #[allow(dead_code)]
     pub(crate) size_pages: u64,
 }
 
@@ -77,7 +90,6 @@ pub(crate) enum VfsQueueError {
     QueueFull,
     InvalidFd,
     IoError,
-    NoCallback,
     NoActiveRequest,
     UnexpectedReply,
     NoCallbackState,
@@ -151,14 +163,17 @@ impl VfsRequestQueue {
         self.active.is_none() && self.queued.is_empty()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(crate) fn has_active(&self) -> bool {
         self.active.is_some()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(crate) fn active_req_id(&self) -> Option<u32> {
         self.active.as_ref().map(|req| req.req_id)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(crate) fn queued_count(&self) -> usize {
         self.queued.len()
     }

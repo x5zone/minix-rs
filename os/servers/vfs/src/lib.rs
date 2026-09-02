@@ -21,10 +21,18 @@
 //! - `call_table`: System call dispatch table.
 //! - `ipc`: IPC message handling.
 
+pub mod filp;
 pub mod main_loop;
 pub mod fproc;
+pub mod tll;
+pub mod vnode;
+pub mod vmnt;
 pub mod worker;
 pub mod call_table;
+pub mod fs_comm;
+pub mod request;
+pub mod path;
+pub mod filedes;
 pub mod ipc;
 
 pub use fproc::*;

@@ -59,6 +59,9 @@ pub union MessageUnion {
     pub m_m4: MessageM4,
     /// Format 5: Mixed types (char + int + long).
     pub m_m5: MessageM5,
+    /// Format 7: Five int args + two pointer args (VFS_PM_INIT and others
+    /// in the `com.h` VFS-PM / VM-Signal / VM-Trace families).
+    pub m_m7: MessageM7,
     /// Kernel: SYS_VIRCOPY / SYS_PHYSCOPY.
     pub m_lsys_krn_sys_copy: MessLsysKrnSysCopy,
     /// Kernel: SYS_UMAP / SYS_UMAP_REMOTE.
@@ -155,6 +158,20 @@ pub union MessageUnion {
     /// Cache-block map reply payload (VM → VFS) for VM_MAPCACHEPAGE.
     /// C: `message.m_m2` — `mess_vmmcp_reply` layout (ipc.h:2396-2400).
     pub m_vmmcp_reply: MessVmmcpReply,
+    /// PM: procevent mask (subscriber → PM). C: `mess_lsys_pm_proceventmask` — ipc.h:1414-1420
+    pub m_lsys_pm_proceventmask: MessLsysPmProceventmask,
+    /// PM: process event (PM → subscriber). C: `mess_pm_lsys_proc_event` — ipc.h:1800-1813
+    pub m_pm_lsys_proc_event: MessPmLsysProcEvent,
+    /// PM: srv_fork params (RS → PM). C: `mess_lsys_pm_srv_fork` — ipc.h:1422-1428
+    pub m_lsys_pm_srv_fork: MessLsysPmSrvFork,
+    /// PM: exit status (user → PM). C: `mess_lc_pm_exit` — ipc.h:445-451
+    pub m_lc_pm_exit: MessLcPmExit,
+    /// PM: wait4 params (user → PM). C: `mess_lc_pm_wait4` — ipc.h:460-470
+    pub m_lc_pm_wait4: MessLcPmWait4,
+    /// PM: kill params (user → PM). C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) / 535 (sig) overlay
+    pub m_lc_pm_kill: MessLcPmKill,
+    /// PM: srv_kill params (RS → PM). C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885
+    pub m_rs_pm_srv_kill: MessRsPmSrvKill,
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
     /// C: `mess_notify m_notify` — ipc.h:2598
     pub m_notify: crate::ipc::notify::MessNotify,
@@ -471,6 +488,42 @@ pub struct MessageM5 {
     pub m5l1: i64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 24],
+}
+
+/// Format 7: Five `i32` args + two `u64` pointer args + padding.
+///
+/// C: `mess_7` (com.h / ipc.h). The 64-bit Rust receiver widens the
+/// `void*` slots to `u64` while the on-wire bytes for 32-bit pointers
+/// remain zero-extended. Used by `VFS_PM_INIT` (`m7_i1..m7_i3`) and
+/// the VM signal/trace families.
+///
+/// Wire layout follows the 32-bit C sender (`mess_7`, ipc.h):
+/// 5 × `i32` at offsets 0/4/8/12/16, 2 × `u64` pointer slots at
+/// offsets 20/28 (64-bit `usize`, zero-extended from the on-wire 32-bit
+/// `char *` of `m_m7.m7_p1/m7_p2`), padding @36..56. The 64-bit Rust
+/// receiver widens the 32-bit pointer slots; the high 32 bits are
+/// always zero on the i386 boot path (all boot addresses are in low
+/// 4 GiB and the kernel still treats the top half as "kernel VM tags"
+/// for its direct map — see `kernel_info`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MessageM7 {
+    /// C: `m7_i1` (payload offset 0).
+    pub m7i1: i32,
+    /// C: `m7_i2` (payload offset 4).
+    pub m7i2: i32,
+    /// C: `m7_i3` (payload offset 8).
+    pub m7i3: i32,
+    /// C: `m7_i4` (payload offset 12).
+    pub m7i4: i32,
+    /// C: `m7_i5` (payload offset 16).
+    pub m7i5: i32,
+    /// C: `m7_p1` (payload offset 20, `char *` on i386).
+    pub m7p1: u64,
+    /// C: `m7_p2` (payload offset 28, `char *` on i386).
+    pub m7p2: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 20],
 }
 
 // ── Kernel-specific message types ──
@@ -1572,7 +1625,7 @@ impl Default for MessLcVmBrk {
 /// 64-bit Rust receiver zero-extends the 32-bit fields. `retaddr` is the reply
 /// field the kernel echoes back to libc after a successful map.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessMmap {
     /// File offset. C: `mess_mmap.offset` (payload offset 0)
     pub offset: u64,
@@ -1594,22 +1647,6 @@ pub struct MessMmap {
     pub _padding: [u8; 20],
 }
 
-impl Default for MessMmap {
-    fn default() -> Self {
-        Self {
-            offset: 0,
-            addr: 0,
-            len: 0,
-            prot: 0,
-            flags: 0,
-            fd: 0,
-            forwhom: 0,
-            retaddr: 0,
-            _padding: [0; 20],
-        }
-    }
-}
-
 /// VFS-initiated file mapping payload (VFS → VM).
 ///
 /// C: `message.m_vm_vfs_mmap` — `mess_vm_vfs_mmap { off_t offset; dev_t dev;
@@ -1620,7 +1657,7 @@ impl Default for MessMmap {
 /// the three 64-bit fields (`off_t`/`dev_t`/`ino_t`) sit at offsets 0/8/16,
 /// the 32-bit fields follow at 24-43, `clearend` at 44.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessVmVfsMmap {
     /// File offset. C: `mess_vm_vfs_mmap.offset` (payload offset 0)
     pub offset: u64,
@@ -1644,22 +1681,7 @@ pub struct MessVmVfsMmap {
     pub _padding: [u8; 8],
 }
 
-impl Default for MessVmVfsMmap {
-    fn default() -> Self {
-        Self {
-            offset: 0,
-            dev: 0,
-            ino: 0,
-            who: 0,
-            vaddr: 0,
-            len: 0,
-            flags: 0,
-            fd: 0,
-            clearend: 0,
-            _padding: [0; 8],
-        }
-    }
-}
+
 
 /// Physical memory mapping payload (driver → VM).
 ///
@@ -1709,7 +1731,7 @@ impl Default for MessLsysVmMapPhys {
 /// NOT derived from `m_source` (the IPC server remaps into its client:
 /// minix3/minix/servers/ipc/shm.c:159).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessLsysVmVmremap {
     /// Destination process endpoint (receives the shared region).
     /// C: `mess_lsys_vm_vmremap.destination` (payload offset 0)
@@ -1729,19 +1751,7 @@ pub struct MessLsysVmVmremap {
     pub _padding: [u8; 32],
 }
 
-impl Default for MessLsysVmVmremap {
-    fn default() -> Self {
-        Self {
-            destination: 0,
-            source: 0,
-            dest_addr: 0,
-            src_addr: 0,
-            size: 0,
-            ret_addr: 0,
-            _padding: [0; 32],
-        }
-    }
-}
+
 
 /// Unmap-physical-mapping payload (driver → VM).
 ///
@@ -1819,7 +1829,7 @@ impl Default for MessLcVmShmUnmap {
 /// 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode re-mapped the five fields
 /// to different offsets, breaking C-layout compatibility).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessLcVmProcctl {
     /// C: `mess_9.m9ull1` (payload offset 0) — unused by VM_PROCCTL.
     pub ull1: u64,
@@ -1843,21 +1853,7 @@ pub struct MessLcVmProcctl {
     pub _padding: [u8; 12],
 }
 
-impl Default for MessLcVmProcctl {
-    fn default() -> Self {
-        Self {
-            ull1: 0,
-            ull2: 0,
-            param: 0,
-            who: 0,
-            m1: 0,
-            len: 0,
-            flags: 0,
-            shorts: [0; 4],
-            _padding: [0; 12],
-        }
-    }
-}
+
 
 /// VFS call completion payload (VFS → VM) for `VM_VFS_REPLY`.
 ///
@@ -1877,7 +1873,7 @@ impl Default for MessLcVmProcctl {
 /// payload at mess_1 offsets, shifting every field and mapping `reqid` to
 /// the real `VMV_ENDPOINT`).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessVmVfsReply {
     /// C: `mess_10.m10ull1` (payload offset 0) — unused by VM_VFS_REPLY.
     pub ull1: u64,
@@ -1901,21 +1897,7 @@ pub struct MessVmVfsReply {
     pub _padding: [u8; 20],
 }
 
-impl Default for MessVmVfsReply {
-    fn default() -> Self {
-        Self {
-            ull1: 0,
-            endpoint: 0,
-            result: 0,
-            reqid: 0,
-            dev: 0,
-            ino: 0,
-            fd: 0,
-            size_pages: 0,
-            _padding: [0; 20],
-        }
-    }
-}
+
 
 /// Cache-block request payload (VFS → VM) for `VM_MAPCACHEPAGE` /
 /// `VM_SETCACHEPAGE` / `VM_FORGETCACHEPAGE` / `VM_CLEARCACHE`.
@@ -1944,7 +1926,7 @@ impl Default for MessVmVfsReply {
 /// as 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
 /// read `dev` from `m1p1` @16 and hardcoded `ino`/`ino_offset`/`block` to 0).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct MessVmmcp {
     /// Device number. C: `mess_vmmcp.dev` (payload offset 0)
     pub dev: u64,
@@ -1969,21 +1951,7 @@ pub struct MessVmmcp {
     pub _padding: [u8; 14],
 }
 
-impl Default for MessVmmcp {
-    fn default() -> Self {
-        Self {
-            dev: 0,
-            dev_offset: 0,
-            ino_offset: 0,
-            ino: 0,
-            block: 0,
-            flags_ptr: 0,
-            pages: 0,
-            flags: 0,
-            _padding: [0; 14],
-        }
-    }
-}
+
 
 /// Cache-block map reply payload (VM → VFS) for `VM_MAPCACHEPAGE`.
 ///
@@ -2015,5 +1983,194 @@ impl Default for MessVmmcpReply {
             flags: 0,
             _padding: [0; 51],
         }
+    }
+}
+
+/// PM: procevent mask (subscriber → PM) — `mess_lsys_pm_proceventmask`.
+///
+/// C: `mess_lsys_pm_proceventmask` — ipc.h:1414-1420:
+/// ```c
+/// typedef struct {
+///     unsigned int mask;   // event mask (PROC_EVENT_EXIT|SIGNAL)
+///     uint8_t padding[52];
+/// } mess_lsys_pm_proceventmask;
+/// ```
+///
+/// Wire layout: `mask` @0 (u32), padding @4..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessLsysPmProceventmask {
+    /// Event mask (bitwise OR of `PROC_EVENT_EXIT` / `PROC_EVENT_SIGNAL`).
+    /// C: `unsigned int mask` (payload offset 0)
+    pub mask: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessLsysPmProceventmask {
+    fn default() -> Self {
+        Self { mask: 0, _padding: [0; 52] }
+    }
+}
+
+/// PM: process event (PM → subscriber) — `mess_pm_lsys_proc_event`.
+///
+/// C: `mess_pm_lsys_proc_event` — ipc.h:1800-1813:
+/// ```c
+/// typedef struct {
+///     endpoint_t endpt;      // target process endpoint
+///     unsigned int event;    // PROC_EVENT_EXIT or SIGNAL
+///     uint8_t padding[48];
+/// } mess_pm_lsys_proc_event;
+/// ```
+///
+/// Wire layout: `endpt` @0 (i32), `event` @4 (u32), padding @8..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessPmLsysProcEvent {
+    /// Target process endpoint. C: `endpoint_t endpt` (payload offset 0)
+    pub endpt: i32,
+    /// Event type. C: `unsigned int event` (payload offset 4)
+    pub event: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessPmLsysProcEvent {
+    fn default() -> Self {
+        Self { endpt: 0, event: 0, _padding: [0; 48] }
+    }
+}
+
+/// PM: srv_fork params (RS → PM) — `mess_lsys_pm_srv_fork`.
+///
+/// C: `mess_lsys_pm_srv_fork` — ipc.h:1422-1428:
+/// ```c
+/// typedef struct {
+///     uid_t uid;                 // real/eff/saved uid
+///     gid_t gid;                 // real/eff/saved gid
+///     uint8_t padding[48];
+/// } mess_lsys_pm_srv_fork;
+/// ```
+///
+/// Wire layout: `uid` @0 (u32), `gid` @4 (u32), padding @8..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessLsysPmSrvFork {
+    /// User ID for new service. C: `uid_t uid` (payload offset 0)
+    pub uid: u32,
+    /// Group ID for new service. C: `gid_t gid` (payload offset 4)
+    pub gid: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLsysPmSrvFork {
+    fn default() -> Self {
+        Self { uid: 0, gid: 0, _padding: [0; 48] }
+    }
+}
+
+/// PM: exit status (user → PM) — `mess_lc_pm_exit`.
+///
+/// C: `mess_lc_pm_exit` — ipc.h:445-451:
+/// ```c
+/// typedef struct {
+///     int status;                // exit status
+///     uint8_t padding[52];
+/// } mess_lc_pm_exit;
+/// ```
+///
+/// Wire layout: `status` @0 (i32), padding @4..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessLcPmExit {
+    /// Exit status. C: `int status` (payload offset 0)
+    pub status: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessLcPmExit {
+    fn default() -> Self {
+        Self { status: 0, _padding: [0; 52] }
+    }
+}
+
+/// PM: wait4 params (user → PM) — `mess_lc_pm_wait4`.
+///
+/// C: `mess_lc_pm_wait4` — ipc.h:460-470:
+/// ```c
+/// typedef struct {
+///     pid_t pid;                 // wait target
+///     int options;               // WNOHANG etc.
+///     vir_bytes addr;            // rusage addr
+///     uint8_t padding[40];
+/// } mess_lc_pm_wait4;
+/// ```
+///
+/// Wire layout: `pid` @0 (i32), `options` @4 (i32), `addr` @8 (u64), padding @16..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessLcPmWait4 {
+    /// Wait target pid. C: `pid_t pid` (payload offset 0)
+    pub pid: i32,
+    /// Wait options (WNOHANG). C: `int options` (payload offset 4)
+    pub options: i32,
+    /// Rusage struct addr. C: `vir_bytes addr` (payload offset 8, u64 on 64-bit)
+    pub addr: u64,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLcPmWait4 {
+    fn default() -> Self {
+        Self { pid: 0, options: 0, addr: 0, _padding: [0; 40] }
+    }
+}
+
+/// PM: kill params (user → PM) — `mess_lc_pm_kill`.
+///
+/// C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) overlay, used by `do_kill` via `m_lc_pm_sig` union overlay.
+/// ```c
+/// typedef struct { pid_t pid; int nr; uint8_t padding[48]; } mess_lc_pm_kill;
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessLcPmKill {
+    /// Target pid. C: `pid_t pid` (payload offset 0)
+    pub pid: i32,
+    /// Signal number. C: `int nr` (payload offset 4)
+    pub signo: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLcPmKill {
+    fn default() -> Self {
+        Self { pid: 0, signo: 0, _padding: [0; 48] }
+    }
+}
+
+/// PM: srv_kill params (RS → PM) — `mess_rs_pm_srv_kill`.
+///
+/// C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885:
+/// ```c
+/// typedef struct { pid_t pid; int nr; uint8_t padding[48]; } mess_rs_pm_srv_kill;
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessRsPmSrvKill {
+    /// Target pid. C: `pid_t pid` (payload offset 0)
+    pub pid: i32,
+    /// Signal number. C: `int nr` (payload offset 4)
+    pub signo: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessRsPmSrvKill {
+    fn default() -> Self {
+        Self { pid: 0, signo: 0, _padding: [0; 48] }
     }
 }

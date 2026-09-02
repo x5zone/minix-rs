@@ -3,12 +3,17 @@
 //! Manages process virtual address space layout using a BTreeMap.
 //! Corresponds to Minix3's `vir_region` struct in `region.h`.
 //!
-//! PFN index model: uses `Vec<PageSlot>` with `PageSlot::EMPTY` sentinel
-//! (pfn=PFN_NONE) instead of `Vec<Option<PageSlot>>`. This eliminates the
+//! PFN index model: uses `Vec<PageSlot>` with `PageSlot::Empty` as the
+//! unmapped state instead of `Vec<Option<PageSlot>>`. This eliminates the
 //! Option discriminant overhead (4+ bytes per slot) while preserving the
 //! same semantics: `slot.is_mapped()` replaces `slot.is_some()`.
+//!
+//! `PageSlot` is an explicit three-state machine (Empty / Reserved / Mapped):
+//! `Reserved` slots are lazy placeholders written by `map_lazy()` — visible
+//! to the reserved-inclusive `get_slot_any()`, hidden from the mapped-only
+//! `get_slot()`.
 
-use super::page_state::{PageFrames, PageSlot, PageFlags, PFN_NONE, PAGE_SIZE, PfnAllocator, PfnAllocError};
+use super::page_state::{PageFrames, PageSlot, PageFlags, PAGE_SIZE};
 use minix_types::{PhysBytes, VirBytes, UserSlot};
 use alloc::vec::Vec;
 use crate::memtype::MemType;
@@ -30,7 +35,11 @@ bitflags::bitflags! {
 }
 
 impl VrFlags {
-    pub(crate) fn to_alloc_flags(&self) -> PageAllocFlags {
+    // V10-P2-1: no caller yet — the anon/contig-anon allocation paths
+    // currently build `PageAllocFlags` directly. Keep as the VrFlags→
+    // PageAllocFlags mapping (C: `VR_*` → `PAA_*` in alloc.c).
+    #[allow(dead_code)]
+    pub(crate) fn to_alloc_flags(self) -> PageAllocFlags {
         let mut af = PageAllocFlags::empty();
         if self.contains(Self::PHYS64K) { af |= PageAllocFlags::ALIGN64K; }
         if self.contains(Self::LOWER16MB) { af |= PageAllocFlags::LOWER16MB; }
@@ -44,6 +53,13 @@ impl VrFlags {
 pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
+    // V10-P2-1: constructed only by tests today (`dispatch_mapcache`
+    // pre-maps its pages, so the cached-PFN param stays at `Direct{0}`;
+    // C's `do_mapcache` sets `param.pb_cache` transiently per page and
+    // consumes it in `map_pf`). `CacheMemory::ev_pagefault`/`ev_delete`
+    // consume this variant — keep it wired for the setcache pagefault
+    // path; revisit when that path has a production constructor.
+    #[cfg_attr(not(test), allow(dead_code))]
     PbCache { pfn: u32 },
     File { inited: bool, fdref_id: Option<u32>, offset: u64, clearend: u16 },
 }
@@ -57,9 +73,10 @@ impl Default for VrParam {
 pub(crate) struct VirRegion {
     pub vaddr: VirBytes,
     pub length: VirBytes,
-    /// Per-page mapping slots. Uses `PageSlot::EMPTY` (pfn=PFN_NONE) as
-    /// sentinel for unmapped pages instead of `Option<PageSlot>`, saving
-    /// 4+ bytes of Option discriminant per slot.
+    /// Per-page mapping slots. Uses `PageSlot::Empty` as the unmapped state
+    /// instead of `Option<PageSlot>`, saving the Option discriminant per slot.
+    /// `PageSlot` is a three-state machine: Empty / Reserved (lazy
+    /// placeholder, written by `map_lazy()`) / Mapped (backed by a frame).
     pub physblocks: Vec<PageSlot>,
     pub flags: VrFlags,
     pub parent_slot: Option<UserSlot>,
@@ -87,8 +104,8 @@ impl core::fmt::Debug for VirRegion {
 
 impl VirRegion {
     pub(crate) fn new(vaddr: VirBytes, length: VirBytes, flags: VrFlags) -> Self {
-        let pages = ((length.get() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let physblocks = alloc::vec![PageSlot::EMPTY; pages];
+        let pages = length.get().div_ceil(PAGE_SIZE) as usize;
+        let physblocks = alloc::vec![PageSlot::Empty; pages];
         Self {
             vaddr,
             length,
@@ -125,14 +142,14 @@ impl VirRegion {
     /// (region.c:1037-1045); minix-rs folds the resize semantics into this
     /// single operation ([ARCH: A-12], 19-vm-brk.md §3.2).
     pub(crate) fn extend(&mut self, extra: VirBytes) -> Result<(), VmError> {
-        if extra.0 == 0 || extra.0 % PAGE_SIZE != 0 {
+        if extra.0 == 0 || !extra.0.is_multiple_of(PAGE_SIZE) {
             return Err(VmError::InvalidParam);
         }
         let old_pages = self.physblocks.len();
         let added_pages = (extra.0 / PAGE_SIZE) as usize;
         self.physblocks.reserve(added_pages);
         for _ in 0..added_pages {
-            self.physblocks.push(PageSlot::EMPTY);
+            self.physblocks.push(PageSlot::Empty);
         }
         self.length = VirBytes(self.length.0 + extra.0);
         debug_assert_eq!(self.physblocks.len(), old_pages + added_pages);
@@ -151,10 +168,14 @@ impl VirRegion {
         self.flags.contains(VrFlags::WRITABLE)
     }
 
+    // V10-P2-1: no callers yet (flag checks are done via `flags()`
+    // directly in the fork/CoW paths). Kept as the documented accessors.
+    #[allow(dead_code)]
     pub(crate) fn is_anon(&self) -> bool {
         self.flags.contains(VrFlags::ANON)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_direct(&self) -> bool {
         self.flags.contains(VrFlags::DIRECT)
     }
@@ -175,7 +196,7 @@ impl VirRegion {
         memtype: &'static dyn MemType,
     ) {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        let slot = PageSlot::new(pfn, offset, Some(memtype));
+        let slot = PageSlot::mapped(pfn, offset, Some(memtype));
         self.physblocks[page_idx] = slot;
         if let Some(state) = frames.get_mut(pfn) {
             state.refcount = state.refcount.saturating_add(1);
@@ -199,31 +220,49 @@ impl VirRegion {
         offset: VirBytes,
     ) -> Option<(u32, &'static dyn MemType)> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        let slot = core::mem::replace(&mut self.physblocks[page_idx], PageSlot::EMPTY);
-        if slot.is_mapped() {
-            if let Some(state) = frames.get_mut(slot.pfn) {
+        let slot = core::mem::replace(&mut self.physblocks[page_idx], PageSlot::Empty);
+        if let PageSlot::Mapped { pfn, memtype, .. } = slot
+            && let Some(state) = frames.get_mut(pfn) {
                 if state.refcount > 0 {
                     state.refcount -= 1;
                 }
                 if state.refcount == 0
                     && !state.flags.contains(PageFlags::IN_CACHE)
-                {
-                    if let Some(mt) = slot.memtype {
-                        return Some((slot.pfn, mt));
+                    && let Some(mt) = memtype {
+                        return Some((pfn, mt));
                     }
-                }
             }
-        }
         None
     }
 
+    /// Reserve a lazy placeholder slot at `offset`.
+    ///
+    /// Writes a `PageSlot::Reserved` (no backing frame yet) so the mapping
+    /// can be materialized on demand (anonymous demand paging / CoW
+    /// preallocation). The reserved slot carries the region's default memtype
+    /// and is visible to the reserved-inclusive `get_slot_any()` query;
+    /// mapped-only queries (`get_slot`) keep filtering it out.
+    ///
+    /// [ARCH: A-13] minix-rs extension: Minix3 has no lazy-slot concept —
+    /// `map_region` always allocates frames up front. The reserved state
+    /// defers frame allocation to page-fault time without losing the slot's
+    /// offset/memtype identity (todo P0-1, 13-region-mapping §3.6).
+    /// `#[allow(dead_code)]`: no production caller yet — exercised by tests,
+    /// reserved for demand paging / CoW preallocation.
+    #[allow(dead_code)]
     pub(crate) fn map_lazy(&mut self, offset: VirBytes) {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         if page_idx < self.physblocks.len() {
-            self.physblocks[page_idx] = PageSlot::new(PFN_NONE, offset, self.def_memtype);
+            self.physblocks[page_idx] = PageSlot::reserved(offset, self.def_memtype);
         }
     }
 
+    /// Look up the materialized slot at `offset`.
+    ///
+    /// Mapped-only query: returns the slot only when it is backed by a frame
+    /// (`Mapped`). Lazy placeholders (`Reserved`) are hidden — page-fault and
+    /// CoW consumers treat them as unmapped. See `get_slot_any` for the
+    /// reserved-inclusive variant.
     pub(crate) fn get_slot(&self, offset: VirBytes) -> Option<&PageSlot> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         self.physblocks.get(page_idx).filter(|s| s.is_mapped())
@@ -234,29 +273,44 @@ impl VirRegion {
         self.physblocks.get_mut(page_idx).filter(|s| s.is_mapped())
     }
 
+    /// Reserved-inclusive lookup: any non-Empty slot at `offset` (mapped or
+    /// lazy placeholder). Consumers of lazy mappings use this to distinguish
+    /// "reserved but not yet materialized" from "never touched".
+    #[allow(dead_code)] // ARCH A-13: lazy family, see `map_lazy()`.
+    pub(crate) fn get_slot_any(&self, offset: VirBytes) -> Option<&PageSlot> {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        self.physblocks.get(page_idx).filter(|s| !s.is_empty())
+    }
+
+    #[allow(dead_code)] // ARCH A-13: lazy family, see `map_lazy()`.
+    pub(crate) fn get_slot_mut_any(&mut self, offset: VirBytes) -> Option<&mut PageSlot> {
+        let page_idx = (offset.0 / PAGE_SIZE) as usize;
+        self.physblocks.get_mut(page_idx).filter(|s| !s.is_empty())
+    }
+
     pub(crate) fn needs_cow(&self, frames: &PageFrames, offset: VirBytes) -> bool {
-        match self.get_slot(offset) {
-            Some(slot) if slot.is_mapped() => {
-                frames.get(slot.pfn)
-                    .map(|s| s.refcount > 1)
-                    .unwrap_or(false)
-            }
-            _ => false,
+        match self.get_slot(offset).and_then(PageSlot::pfn) {
+            Some(pfn) => frames.get(pfn)
+                .map(|s| s.refcount > 1)
+                .unwrap_or(false),
+            None => false,
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_page_writable(&self, frames: &PageFrames, offset: VirBytes) -> bool {
-        match self.get_slot(offset) {
-            Some(slot) if slot.is_mapped() => {
-                if let Some(mt) = slot.memtype {
-                    mt.writable(frames, *slot, self)
-                } else {
-                    frames.get(slot.pfn)
-                        .map(|s| s.refcount == 1)
-                        .unwrap_or(false)
-                }
-            }
-            _ => false,
+        let Some(slot) = self.get_slot(offset) else {
+            return false;
+        };
+        let Some(pfn) = slot.pfn() else {
+            return false;
+        };
+        if let Some(mt) = slot.memtype() {
+            mt.writable(frames, *slot, self)
+        } else {
+            frames.get(pfn)
+                .map(|s| s.refcount == 1)
+                .unwrap_or(false)
         }
     }
 
@@ -266,18 +320,16 @@ impl VirRegion {
         // write_page_table_mappings() can map them read-only.
         // Equivalent to Minix3's pt_writemap() with ~PT_W flag in map_copy_region().
         for slot in self.physblocks.iter() {
-            if slot.is_mapped() {
-                if let Some(state) = frames.get_mut(slot.pfn) {
-                    if state.refcount > 1 {
+            if let Some(pfn) = slot.pfn()
+                && let Some(state) = frames.get_mut(pfn)
+                    && state.refcount > 1 {
                         state.flags.insert(PageFlags::COW);
                     }
-                }
-            }
         }
     }
 
     pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
-        if split_len.0 == 0 || split_len.0 % PAGE_SIZE != 0 || split_len.0 >= self.length.0 {
+        if split_len.0 == 0 || !split_len.0.is_multiple_of(PAGE_SIZE) || split_len.0 >= self.length.0 {
             return Err(VmError::InvalidParam);
         }
 
@@ -351,7 +403,7 @@ impl VirRegion {
 
     pub(crate) fn free_range(&mut self, frames: &mut PageFrames, offset: VirBytes, len: VirBytes) -> Vec<(u32, &'static dyn MemType)> {
         let start_page = (offset.0 / PAGE_SIZE) as usize;
-        let end_page = ((offset.0 + len.0 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let end_page = (offset.0 + len.0).div_ceil(PAGE_SIZE) as usize;
         let mut pending_unrefs = Vec::new();
 
         for page in start_page..end_page.min(self.physblocks.len()) {
@@ -368,13 +420,14 @@ impl VirRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmError {
     InvalidParam,
-    NoMemory,
-    NotFound,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only used by tests; kept out of the module-level import so the
+    // no_std production build stays free of unused-import warnings.
+    use super::super::page_state::{PfnAllocator, PfnAllocError};
 
     struct TestAlloc { next: u32 }
     impl PfnAllocator for TestAlloc {
@@ -505,14 +558,33 @@ mod tests {
 
     #[test]
     fn test_map_lazy() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
 
+        // 1. Reserve a lazy placeholder: visible to the reserved-inclusive
+        //    query, hidden from the mapped-only query.
         region.map_lazy(VirBytes(0x1000));
-
-        let slot = region.get_slot(VirBytes(0x1000)).unwrap();
+        assert!(region.get_slot(VirBytes(0x1000)).is_none());
+        let slot = region.get_slot_any(VirBytes(0x1000)).unwrap();
+        assert!(slot.is_reserved());
         assert!(!slot.is_mapped());
-        assert_eq!(slot.pfn, PFN_NONE);
+        assert_eq!(slot.pfn(), None);
+        assert_eq!(slot.memtype().map(|m| m.name()), Some("anonymous memory"));
+
+        // 2. Materialize: reserved → backed page (full lazy chain).
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x1000), pfn, &crate::memtype::MEM_TYPE_ANON);
+        assert_eq!(frames.get(pfn).unwrap().refcount, 1);
+        let slot = region.get_slot(VirBytes(0x1000)).unwrap();
+        assert!(slot.is_mapped());
+        assert_eq!(slot.pfn(), Some(pfn));
+
+        // 3. Unmap: back to Empty; both queries miss.
+        region.unmap_page(&mut frames, VirBytes(0x1000));
+        assert!(region.get_slot(VirBytes(0x1000)).is_none());
+        assert!(region.get_slot_any(VirBytes(0x1000)).is_none());
     }
 
     #[test]

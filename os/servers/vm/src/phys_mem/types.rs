@@ -27,12 +27,12 @@ pub(crate) struct AlignedPhysBytes(u64);
 
 impl AlignedPhysBytes {
     pub fn new(addr: u64) -> Self {
-        assert!(addr % CLICK_SIZE as u64 == 0, "AlignedPhysBytes must be page-aligned, got {addr:#x}");
+        assert!(addr.is_multiple_of(CLICK_SIZE as u64), "AlignedPhysBytes must be page-aligned, got {addr:#x}");
         AlignedPhysBytes(addr)
     }
 
     pub fn new_unchecked(addr: u64) -> Self {
-        debug_assert!(addr % CLICK_SIZE as u64 == 0, "AlignedPhysBytes must be page-aligned, got {addr:#x}");
+        debug_assert!(addr.is_multiple_of(CLICK_SIZE as u64), "AlignedPhysBytes must be page-aligned, got {addr:#x}");
         AlignedPhysBytes(addr)
     }
 
@@ -40,6 +40,8 @@ impl AlignedPhysBytes {
         self.0
     }
 
+    // V10-P2-1: test-only convenience (parity tests index via usize).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn as_usize(&self) -> usize {
         self.0 as usize
     }
@@ -52,6 +54,8 @@ impl AlignedPhysBytes {
         (self.0 as usize) / CLICK_SIZE
     }
 
+    // V10-P2-1: no callers yet; kept as the documented checked-offset API.
+    #[allow(dead_code)]
     pub fn add(&self, offset: usize) -> Self {
         let new_addr = self.0 + offset as u64;
         assert!(new_addr >= self.0, "AlignedPhysBytes::add overflow: {:#x} + {:#x}", self.0, offset);
@@ -69,7 +73,7 @@ impl TryFrom<MtPhysBytes> for AlignedPhysBytes {
     type Error = u64;
     fn try_from(phys: MtPhysBytes) -> Result<Self, Self::Error> {
         let addr = phys.get();
-        if addr % CLICK_SIZE as u64 == 0 {
+        if addr.is_multiple_of(CLICK_SIZE as u64) {
             Ok(AlignedPhysBytes(addr))
         } else {
             Err(addr)

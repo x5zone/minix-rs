@@ -10,8 +10,8 @@
 //!   (equivalent to Minix3's `pt_free(&vmc->vm_pt)`)
 
 use minix_types::{VirBytes, Endpoint, UserSlot, NR_PROCS};
-use crate::region::{VirRegion, VrFlags, PageFrames, PfnAllocator, PfnAllocError, PAGE_SIZE};
-use crate::memtype::{MemType, MemTypeError, MEM_TYPE_ANON};
+use crate::region::{VirRegion, PageFrames, PfnAllocator, PAGE_SIZE};
+use crate::memtype::MemTypeError;
 use crate::cow_exec_pf::cow_resolve_core;
 use crate::vmproc::VmProcTable;
 use alloc::vec::Vec;
@@ -41,7 +41,7 @@ pub(crate) fn handle_memory_once(
     // Page-align start and length, matching Minix3's handle_memory_start.
     let page_offset = mem.0 % PAGE_SIZE;
     let start = VirBytes(mem.0 - page_offset);
-    let aligned_len = VirBytes(((len.0 + page_offset + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE);
+    let aligned_len = VirBytes((len.0 + page_offset).div_ceil(PAGE_SIZE) * PAGE_SIZE);
 
     let mut addr = start;
     let end = VirBytes(start.0 + aligned_len.0);
@@ -112,24 +112,22 @@ pub(crate) fn fork_region(
     let mut refcounted_pfns: Vec<u32> = Vec::new();
 
     for (i, slot) in src.physblocks.iter().enumerate() {
-        if slot.is_mapped() {
-            if let Some(state) = frames.get_mut(slot.pfn) {
+        if let Some(pfn) = slot.pfn() {
+            if let Some(state) = frames.get_mut(pfn) {
                 state.refcount = state.refcount.saturating_add(1);
-                refcounted_pfns.push(slot.pfn);
+                refcounted_pfns.push(pfn);
             }
-            if let Some(mt) = slot.memtype {
-                if let Err(e) = mt.ev_reference(frames, *slot) {
+            if let Some(mt) = slot.memtype()
+                && let Err(e) = mt.ev_reference(frames, *slot) {
                     // Rollback: decrement refcount for all pages that were incremented.
                     for pfn in &refcounted_pfns {
-                        if let Some(state) = frames.get_mut(*pfn) {
-                            if state.refcount > 0 {
+                        if let Some(state) = frames.get_mut(*pfn)
+                            && state.refcount > 0 {
                                 state.refcount -= 1;
                             }
-                        }
                     }
                     return Err(VmForkError::from(e));
                 }
-            }
             dst.physblocks[i] = *slot;
         }
     }
@@ -162,15 +160,14 @@ pub(crate) fn fork_regions(
 fn free_forked_regions(regions: &mut [VirRegion], frames: &mut PageFrames) {
     for region in regions.iter() {
         for slot in region.physblocks.iter() {
-            if slot.is_mapped() {
-                if let Some(mt) = slot.memtype {
-                    mt.ev_unreference(frames, slot.pfn);
+            if let Some(pfn) = slot.pfn() {
+                if let Some(mt) = slot.memtype() {
+                    mt.ev_unreference(frames, pfn);
                 }
-                if let Some(state) = frames.get_mut(slot.pfn) {
-                    if state.refcount > 0 {
+                if let Some(state) = frames.get_mut(pfn)
+                    && state.refcount > 0 {
                         state.refcount -= 1;
                     }
-                }
             }
         }
     }
@@ -186,7 +183,7 @@ fn free_forked_regions(regions: &mut [VirRegion], frames: &mut PageFrames) {
 pub(crate) fn do_fork(
     table: &VmProcTable,
     frames: &mut PageFrames,
-    pfn_alloc: &mut dyn PfnAllocator,
+    _pfn_alloc: &mut dyn PfnAllocator,
     parent_endpoint: Endpoint,
     child_slot: UserSlot,
 ) -> Result<Endpoint, VmForkError> {
@@ -305,7 +302,7 @@ pub(crate) fn do_fork(
     //   - VM is single-threaded, so no concurrent access to `child`.
     // SAFETY: See reasoning above — child is Active, page table initialized,
     // no CR3 points to it, CoW refcounts valid, single-threaded.
-    if let Err(_) = unsafe { child.write_page_table_mappings(frames) } {
+    if unsafe { child.write_page_table_mappings(frames) }.is_err() {
         // SAFETY: `free_page_table()` after failed `write_page_table_mappings`.
         // Page table has only CoW/empty entries — no active CR3 points to it.
         // CoW refcounts remain valid (parent holds source-of-truth refcount).
@@ -318,7 +315,7 @@ pub(crate) fn do_fork(
     // If bind_page_table fails, we can still rollback (free page table, clear slot).
     // After sys_fork, the kernel has committed the child process and rollback
     // is no longer possible — so any failure after sys_fork is irrecoverable.
-    if let Err(_) = child.bind_page_table() {
+    if child.bind_page_table().is_err() {
         // SAFETY: `free_page_table()` after failed `bind_page_table`.
         //
         // Preconditions verified:
@@ -429,6 +426,9 @@ fn sys_fork(_parent_endpoint: Endpoint, child_slot: UserSlot) -> Endpoint {
 ///
 /// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
 /// `VmForkError`.
+// V10-P2-1 (DEFERRED): CoW is exercised via tests only — the fork
+// production path that faults pages post-`sys_fork` is not wired.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cow_copy_page(
     region: &mut VirRegion,
     frames: &mut PageFrames,
@@ -471,6 +471,8 @@ impl From<MemTypeError> for VmForkError {
 mod tests {
     use super::*;
     use minix_types::PhysBytes;
+    use crate::region::{VrFlags, PfnAllocError};
+    use crate::memtype::MEM_TYPE_ANON;
 
     struct TestAlloc { next: u32 }
     impl PfnAllocator for TestAlloc {
@@ -526,8 +528,8 @@ mod tests {
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
 
         let new_slot = region.get_slot(VirBytes(0x0000)).unwrap();
-        assert_ne!(new_slot.pfn, pfn);
-        assert_eq!(frames.get(new_slot.pfn).unwrap().refcount, 1);
+        assert_ne!(new_slot.pfn(), Some(pfn));
+        assert_eq!(frames.get(new_slot.pfn().unwrap()).unwrap().refcount, 1);
     }
 
     #[test]
@@ -543,7 +545,7 @@ mod tests {
         cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
 
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
-        assert_eq!(slot.pfn, pfn);
+        assert_eq!(slot.pfn(), Some(pfn));
     }
 
     #[test]
@@ -551,6 +553,8 @@ mod tests {
         use crate::memtype::{MemType, PagefaultResult, MemTypeError};
 
         struct FailOnRefMemType;
+        // SAFETY: test-only static (`FAIL_MT`), single-threaded tests.
+        unsafe impl Sync for FailOnRefMemType {}
         impl MemType for FailOnRefMemType {
             fn name(&self) -> &'static str { "fail-on-ref" }
             fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
@@ -598,6 +602,8 @@ mod tests {
         use crate::memtype::{MemType, PagefaultResult, MemTypeError};
 
         struct FailOnSecondRefMemType;
+        // SAFETY: test-only static (`FAIL2_MT`), single-threaded tests.
+        unsafe impl Sync for FailOnSecondRefMemType {}
         impl MemType for FailOnSecondRefMemType {
             fn name(&self) -> &'static str { "fail-on-2nd-ref" }
             fn ev_pagefault(&self, _proc_endpoint: Endpoint, _region: &mut VirRegion,
@@ -708,8 +714,8 @@ mod tests {
         // CoW should have been resolved: new private page allocated.
         let region = regions.find(VirBytes(0x1000)).unwrap();
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
-        assert_ne!(slot.pfn, pfn, "CoW should allocate a new page");
-        assert_eq!(frames.get(slot.pfn).unwrap().refcount, 1);
+        assert_ne!(slot.pfn(), Some(pfn), "CoW should allocate a new page");
+        assert_eq!(frames.get(slot.pfn().unwrap()).unwrap().refcount, 1);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
     }
 

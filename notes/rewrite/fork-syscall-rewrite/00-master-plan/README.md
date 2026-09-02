@@ -29,8 +29,13 @@
 | 11 | `11-stage-devman/` | DEVMAN | 设备管理（不在 boot_image，RS 运行时加载；2026-08-14 补建） |
 | 12 | `12-stage-input/` | INPUT | 输入服务器（不在 boot_image，RS 运行时加载；2026-08-14 补建） |
 | 13 | `13-stage-ipc/` | IPC | 用户态 IPC 服务（不在 boot_image，RS 运行时加载；2026-08-14 补建） |
-| 14 | `14-stage-integration/` | — | 跨服务集成、状态机、端到端测试（原 10，2026-08-14 后移） |
-| 15 | `15-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移） |
+| 14 | `14-stage-runtime/` | RUNTIME | 用户态运行时/标准库（minix-rt + minix-sys 实装；2026-08-16 新建占位） |
+| 15 | `15-stage-fs/` | FS | 文件系统服务器 mfs/pfs/procfs/ptyfs/ext2/isofs/vbfs/hgfs + 框架库 libfsdriver/libminixfs/libvtreefs/libsffs（2026-08-16 plan.md 定稿 + 26 篇最小骨架，占位 README 移入 draft/） |
+| 16 | `16-stage-drivers/` | DRIVERS | 57 个驱动占位，tty/memory/log 为 boot 关键路径（2026-08-16 新建占位） |
+| 17 | `17-stage-net/` | NET | lwip + uds 双 server + libsockdriver/libsockevent/liblwip 框架 + libc socket 封装（2026-08-16 plan.md 定稿 + 26 篇最小骨架，占位 README 移入 draft/） |
+| 18 | `18-stage-commands/` | COMMANDS | games 补齐 + bin/sbin + /etc + 登录链路（2026-08-16 新建占位） |
+| 19 | `19-stage-integration/` | — | 跨服务集成、状态机、端到端测试（原 10，2026-08-14 后移；2026-08-16 顺延） |
+| 20 | `20-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移；2026-08-16 顺延） |
 
 > **boot 两层语义**：登记顺序（`kernel/table.c:44-64` boot_image 数组）= 模块槽位顺序（ds→rs→pm→sched→vfs→memory→tty→mib→vm→pfs→mfs→init）；执行顺序（`kernel/main.c:196` 仅 kernel 任务 + RS + VM 立即可调度；`:265-267` 非 VM 挂 RTS_VMINHIBIT）= kernel 任务 → VM → RS → 其余。目录编号采用执行语义 + 阅读理解顺序。
 
@@ -62,8 +67,8 @@ RS (root sysproc)
 | `03-stage-kernel/` | `01-stage-kernel/` |
 | `04-stage-vfs/` | `05-stage-vfs/` |
 | `05-stage-sched/` | `06-stage-sched/` |
-| `06-stage-integration/` | `14-stage-integration/`（2026-08-14 后移） |
-| `07-redesign/` | `15-redesign/`（2026-08-14 后移） |
+| `06-stage-integration/` | `19-stage-integration/`（2026-08-14 后移，2026-08-16 顺延） |
+| `07-redesign/` | `20-redesign/`（2026-08-14 后移，2026-08-16 顺延） |
 | —（新建） | `03-stage-rs/` |
 | —（新建） | `07-stage-ds/` |
 | —（新建） | `08-stage-is/` |

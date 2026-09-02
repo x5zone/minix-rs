@@ -24,11 +24,11 @@
 
 1. **Minix3 自己也只覆盖部分架构**：`find minix3/minix/kernel/arch -name arch_watchdog*` 仅命中 `i386/` 和 `earm/`——aarch64 和 riscv64 在 Minix3 也没有 NMI watchdog 实现。minix-rs 三架构目标（x86_64 + aarch64 + riscv64），强行抽象 NMI watchdog 会扭曲设计（x86 NMI / ARM FIQ / RISC-V NMI 语义差异大，无统一 trait 自然抽象）。
 
-2. **Minix3 默认关闭**：[main.c:455-458](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/main.c) 双重门控——`#ifdef USE_WATCHDOG`（编译时条件）+ `env_get("watchdog")`（运行时 boot 参数）。说明 Minix3 自己也把 NMI watchdog 当"高级调试选项"，不是核心 kernel 功能。
+2. **Minix3 默认关闭**：minix3/minix/kernel/main.c:455-458 双重门控——`#ifdef USE_WATCHDOG`（编译时条件）+ `env_get("watchdog")`（运行时 boot 参数）。说明 Minix3 自己也把 NMI watchdog 当"高级调试选项"，不是核心 kernel 功能。
 
-3. **依赖硬件 PMU/MSR（驱动层问题）**：[arch_watchdog.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/arch_watchdog.c) 使用 vendor-specific MSR（`INTEL_MSR_PERFMON_CRT0/SEL0` for Intel，AMD 有自己的版本）+ LAPIC LVT PCR（性能计数器溢出 → NMI）。性能计数器是驱动层职责（vendor-specific MSR），不是 kernel 核心路径。
+3. **依赖硬件 PMU/MSR（驱动层问题）**：minix3/minix/kernel/arch/i386/arch_watchdog.c 使用 vendor-specific MSR（`INTEL_MSR_PERFMON_CRT0/SEL0` for Intel，AMD 有自己的版本）+ LAPIC LVT PCR（性能计数器溢出 → NMI）。性能计数器是驱动层职责（vendor-specific MSR），不是 kernel 核心路径。
 
-4. **sprofile 已用 timer IRQ 替代 NMI**：Minix3 的 NMI 还兼任统计采样载体（[profile.c:128](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c) `nmi_sprofile_handler`）。minix-rs 的 [30-kernel-profile.md](30-kernel-profile.md) 用 `profile_clock_handler` + `ack_profile_clock`（基于普通 IRQ 时钟）替代 NMI 采样，三架构统一，无需 NMI 子系统。
+4. **sprofile 已用 timer IRQ 替代 NMI**：Minix3 的 NMI 还兼任统计采样载体（minix3/minix/kernel/profile.c:128 `nmi_sprofile_handler`）。minix-rs 的 [30-kernel-profile.md](30-kernel-profile.md) 用 `profile_clock_handler` + `ack_profile_clock`（基于普通 IRQ 时钟）替代 NMI 采样，三架构统一，无需 NMI 子系统。
 
 5. **NMI 是可选调试特性，非内核正确性必需**：缺失不影响调度、IPC、VM 等核心子系统的正常运行。与 [25-misc-unported.md](25-misc-unported.md) 附录 DEFERRED 清单中 `SPROF PROF_NMI` 的排除说明一致。
 
@@ -222,8 +222,8 @@ arch 钩子声明（watchdog.h:31-36）：
 |------|------|------|
 | 是否内核正确性必需 | ❌ 否——NMI watchdog 是调试设施，缺失不影响内核正常运行 | Minix3 `USE_WATCHDOG` 编译时关闭 |
 | Minix3 架构覆盖 | ❌ 部分——仅 i386 + earm 实现 | `find minix3/minix/kernel/arch -name arch_watchdog*` 命中 i386/earm |
-| Minix3 默认启用 | ❌ 否——编译时 + 运行时双重门控 | [main.c:455-458](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/main.c) `#ifdef USE_WATCHDOG` + `env_get("watchdog")` |
-| 是否依赖硬件 PMU | ✅ 是——vendor-specific MSR + LAPIC LVT PCR | [arch_watchdog.c:22-44](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/arch_watchdog.c) Intel/AMD MSR |
+| Minix3 默认启用 | ❌ 否——编译时 + 运行时双重门控 | minix3/minix/kernel/main.c:455-458 `#ifdef USE_WATCHDOG` + `env_get("watchdog")` |
+| 是否依赖硬件 PMU | ✅ 是——vendor-specific MSR + LAPIC LVT PCR | minix3/minix/kernel/arch/i386/arch_watchdog.c:22-44 Intel/AMD MSR |
 | 是否阻塞 sprofile | ❌ 否——minix-rs 已用 timer IRQ 替代 | [30-kernel-profile.md](30-kernel-profile.md) `profile_clock_handler` + `ack_profile_clock` |
 | 是否有 Rust 实现 | ❌ 无——WONTFIX | — |
 | 是否架构相关 | ✅ 是——x86 NMI / ARM FIQ / RISC-V NMI 语义差异大 | 三架构无统一 trait 自然抽象 |

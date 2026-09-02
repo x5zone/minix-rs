@@ -1,4 +1,3 @@
-#![no_std]
 #![doc = include_str!("../README.md")]
 
 //! Minix3 core protocol types.

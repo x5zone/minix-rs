@@ -24,8 +24,12 @@
 //! `BUDDY_THRESHOLD_PAGES`).
 //!
 use super::alloc_trait::{PhysAllocator, PhysMemStats};
+#[cfg(feature = "segment_tree_alloc")]
+use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::BootMemRegion;
+#[cfg(feature = "segment_tree_alloc")]
+use super::{BumpBuf, CLICK_SIZE, METADATA_ALIGN_PADDING};
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]

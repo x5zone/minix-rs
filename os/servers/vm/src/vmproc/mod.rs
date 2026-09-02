@@ -61,13 +61,16 @@
 //! during the slot transition.
 
 mod flags;
+// clippy::module_inception: `VmProc` lives in `vmproc::vmproc` (mirrors the
+// C struct name); the nested name is intentional.
+#[allow(clippy::module_inception)]
 mod vmproc;
 mod vmproc_handle;
 mod table;
 
 pub(crate) use flags::VmFlags;
 pub(crate) use vmproc_handle::{EmptySlot, ActiveProc, ExitingProc};
-pub(crate) use table::{VmProcTable, EndpointError, RegionSnapshot};
+pub(crate) use table::{VmProcTable, EndpointError};
 
 #[cfg(test)]
 pub(super) mod test_utils {

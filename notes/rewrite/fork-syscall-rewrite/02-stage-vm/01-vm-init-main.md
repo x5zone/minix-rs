@@ -206,7 +206,7 @@ pt_init();                 /* 475 — 定义于 pagetable.c */
 __minix_init();
 ```
 
-`__minix_init()` 是 libc 提供的函数：VM 在确定内核映射后，才能取得之前不可用的内核 IPC 向量（`SYS_*` 调用号映射）。Rust 侧对应 `minix-sys` 的系统调用库（当前 stub，见 §3.3 的 DEFERRED 表）。
+`__minix_init()` 是 libc 提供的函数：VM 在确定内核映射后，才能取得之前不可用的内核 IPC 向量（`SYS_*` 调用号映射）。Rust 侧分两层（V10-P0-2）：**就绪机制**已落地——`init()` 末尾调用 `self.transport.borrow_mut().mark_initialized()`（vm_server.rs:413），把 `IpcTransport` 的 `initialized` 门控打开（对应 C 的"IPC 向量可用"时刻）；**真实系统调用**仍待 `minix-sys` 的内核 IPC 原语（`KernelIpcTransport::receive/send` 主体 `unimplemented!`，见 §3.3 的 DEFERRED 表）。
 
 #### 2.2.5 mem_add_total_pages() 调用点（main.c:485-495）
 
@@ -581,13 +581,13 @@ if params.is_first_time {
 | `map_region_init()`（main.c:468） | `RegionMap::new()`（惰性，每进程初始化时） | `init_regions()` 时 |
 | `init_proc(VM_PROC_NR)`（main.c:474） | `VmServer::init_vm_slot()` → `EmptySlot::activate` + `set_boot` | `init()` Phase 2a |
 | `pt_init()`（main.c:475） | `init_vm_self_pt()` | `new_with_boot_params`（非 test） |
-| `__minix_init()`（main.c:480） | **DEFERRED**（`minix-sys` 系统调用库为 stub） | — |
+| `__minix_init()`（main.c:480） | **就绪机制已落地（V10-P0-2）**：`transport.mark_initialized()`（vm_server.rs:413）；系统调用本体 DEFERRED（`minix-sys` 为 stub） | `init()` 末尾 |
 | `mem_add_total_pages`（main.c:485-495） | `VmServer::account_boot_memory()` → `global::add_total_pages` | `init()` Phase 2b |
 | boot 进程循环（main.c:498-520） | `VmServer::init_boot_procs()`（`exec_bootproc`/`free_mem` DEFERRED） | `init()` Phase 2c |
 | CALLMAP（main.c:522-573） | `MessageDispatcher::dispatch_by_number` 编译时 match | 编译期 |
 | VM 实例标记（main.c:577-579） | `VmServer::mark_vm_instance()` → `ActiveProc::mark_vm_instance` | `init()` Phase 2d |
 
-**DEFERRED 判定**：`__minix_init`（内核 IPC 向量）与 `exec_bootproc`（ELF 装载 + `sys_exec`/`sys_vmctl`）依赖 `minix-sys` 的内核 IPC 原语，后者尚未实现（`os/libs/minix-sys/src/lib.rs` 标注 stub）。这两步的**槽位建立**不依赖内核 IPC（`init_proc` 等价物已完成），因此先落地槽位、延迟"装载与启动"，避免把进程表留给空壳。
+**DEFERRED 判定**：`__minix_init` 的**系统调用本体**（内核 IPC 向量）与 `exec_bootproc`（ELF 装载 + `sys_exec`/`sys_vmctl`）依赖 `minix-sys` 的内核 IPC 原语，后者尚未实现（`os/libs/minix-sys/src/lib.rs` 标注 stub）。就绪**机制**（`transport.mark_initialized`）已随 V10-P0-2 落地（见上表），只差真实 syscall 接线。这两步的**槽位建立**不依赖内核 IPC（`init_proc` 等价物已完成），因此先落地槽位、延迟"装载与启动"，避免把进程表留给空壳。
 
 ### 3.4 SEF 简化：rs_handshake + do_sef_init_request（对应 §2.4）
 
@@ -599,7 +599,7 @@ SEF 在 C 中解决 3 个问题，Rust 各有更简单的替代：
 | `do_sef_init_request` + `sef_cb_init_response`（sef_init.c:193-217） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`，返回 `DispatchAction::Suspend`（不回复） |
 | `sef_cb_init_response_rs_asyn_once`（sef_init.c:471-481） | 避免启动死锁 | **DEFERRED**：RS_INIT 回复本身依赖 asynsend 原语（内核 IPC），落地时引入 |
 | `sef_cb_init_lu_restart` / `sef_cb_lu_state_changed` / `sef_cb_init_vm_multi_lu`（main.c:196-217,592-730） | Live Update 状态机 | **DEFERRED**：`rs.rs` 的 `handle_rs_prepare`/`handle_rs_update` 已预留入口；swap_proc_slot 等 LU 语义归 `25-rs-services.md` |
-| `sef_cb_signal_handler`（main.c:731-754） | 信号经 IPC 通知送达 | 主循环 `is_ipc_notify` 分支识别通知；`SIGKMEM → do_memory` 归 `06-page-allocator.md`，当前 DEFERRED（通知分支直接 continue） |
+| `sef_cb_signal_handler`（main.c:731-754） | 信号经 IPC 通知送达 | 主循环 `rcv_sts.is_notify()` 分支识别通知（V10-P1-1，transport.rs:58）；`SIGKMEM → do_memory` 归 `06-page-allocator.md`，当前 DEFERRED（通知分支直接 return Handled） |
 
 **结论**：`rs_handshake()`（约 30 行）替代 SEF 的 setcb 注册 + startup 状态机（约 60 行），协议语义不变，框架复杂度消除。
 
@@ -641,14 +641,14 @@ for m in &self.modules[..charged_modules] { ... }
 
 ### 3.7 VM 自身内存：无 libc mmap（对应 §2.6，ARCH 注记）
 
-C 的 utility.c 为 VM 自身 libc 实现 `mmap`/`munmap`/`_brk`（§2.6）。Rust 的 `no_std` VM 不使用 libc 堆接口，自身内存来源是 `VmAllocator`（`global.rs`，实现 `GlobalAlloc`）：通过 `HEAP_ARENA` 从直接映射区申请页并 bump 分配。
+C 的 utility.c 为 VM 自身 libc 实现 `mmap`/`munmap`/`_brk`（§2.6）。Rust 的 `no_std` VM 不使用 libc 堆接口，自身内存来源是 `VmAllocator`（`global.rs`，实现 `GlobalAlloc`）：通过 `HEAP_ARENA` 从直接映射区申请页，free-list 分配 + bump 补充（[ARCH: A-3 v2]，09-slab-allocator.md §3.1）。
 
 **这是 ARCH 差异，标注三处一致**：
-- 本文档（§3.7）：C 用 `_brk` 逐页映射自身堆；Rust 用 `GlobalAlloc` bump 分配器。
+- 本文档（§3.7）：C 用 `_brk` 逐页映射自身堆；Rust 用 `GlobalAlloc` free-list 分配器（A-3 v2）。
 - design：`global.rs` 的 `VmAllocator` 设计文档。
-- 代码：`global.rs` 的 `VmAllocator` 注释（"bump allocator ... intentional for a long-lived system service"）。
+- 代码：`global.rs` 的 `VmAllocator` 注释（A-3 v2：free-list + 合并，[ARCH: A-3 v2] 标注）。
 
-语义等价点：C 的 `_brk` 页映射 + `pt_writemap` 与 Rust 的 `heap_arena_grow` 都解决"VM 自身需要可写内存"；C 的 `munmap` 显式归还与 Rust 的 no-op `dealloc`（进程生命周期内不回收）是行为差异，但 VM 是常驻服务、分配量稳定，二者在可观测行为上等价。
+语义等价点：C 的 `_brk` 页映射 + `pt_writemap` 与 Rust 的 `heap_arena_grow` 都解决"VM 自身需要可写内存"；C 的 `munmap` 显式归还与 Rust 的 free-list `dealloc`（A-3 v2：块级回收复用，arena 页不收缩）表达差异，可观测行为上等价。
 
 ### 3.8 CALLMAP → 编译时 match（对应 §2.2.7）
 
@@ -702,8 +702,8 @@ fn main() {
 新增 `add_total_pages(pages)`（§3.6）。既有设施保持不变：
 
 - `TOTAL_PAGES` + `init()`——`mem_init` 的 total_pages 语义（§2.2.2）；
-- `BOOT_INFO` + `find_boot_image`/`set_boot_image`——`kernel_boot_info.boot_procs[]`（§2.2.6）；
 - `VM_INSTANCE_COUNT` + `inc_vm_instance`/`dec_vm_instance`/`vm_instance_count`——`num_vm_instances`（main.c:578）；
+- （V9-P3-1，todo 2026-08-16）`BOOT_INFO` + `find_boot_image`/`set_boot_image` 已删除——`kernel_boot_info.boot_procs[]`（§2.2.6）的唯一真相源是 `VmServer.boot_procs`（`BootParams`，见 §4.4.1），全局副本是无生产调用者的死代码；
 - `KERNEL_LAYOUT` + `set_kernel_layout`——页表模块的 kernel layout（`08-pagetable-ops.md`）。
 
 ### 4.4 `os/servers/vm/src/vm_server.rs`（对应 §3.3-§3.5）
@@ -757,7 +757,7 @@ pub fn init(&mut self) {
 
 #### 4.4.3 主循环与 RS_INIT（对应 §3.4；细节归 15）
 
-`run()` 的 `is_ipc_notify` 分支、`missing_spares` 检查、`ipc_receive`/`ipc_send` 封装保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()` 并返回 `DispatchAction::Suspend`（不回复，等价 C main.c:149-152 的 SUSPEND 语义）。
+`run()`/`run_once()`（vm_server.rs:588/:623）经 `self.transport.borrow_mut().receive()/send()` 走 `IpcTransport` trait 对象（V10-P0-2）；通知跳过用 `rcv_sts.is_notify()`（V10-P1-1）；`missing_spares` 检查保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()` 并返回 `DispatchAction::Suspend`（不回复，等价 C main.c:149-152 的 SUSPEND 语义）。
 
 #### 4.4.4 Drop 与测试基础设施修复
 
@@ -800,9 +800,9 @@ pub fn init(&mut self) {
 3 个失败均为测试自身问题，非启动链代码缺陷，串行/并行一致复现：
 
 - `alloc_page::tests::test_alloc_page`、`test_alloc_pages_multi`——断言 `vaddr - paddr == VM_DIRECT_MAP_BASE`，但套件使用堆泄露缓冲作为 mock base（`alloc_page.rs` 的 `ALLOC_MOCK_BASE`），断言与自身基础设施矛盾（`06-page-allocator.md` 范围）。
-- `region::vir_region::tests::test_map_lazy`——依赖默认 mock base 的测试在堆 base 下 `unwrap()` 失败（`13-region-mapping.md` 范围）。
+- `region::vir_region::tests::test_map_lazy`——`map_lazy` 写 `pfn=PFN_NONE` 槽被 `get_slot` 的 `is_mapped()` 过滤，`unwrap()` 失败（`13-region-mapping.md` 范围；**2026-08-16 已修复**，todo P0-1 → PageSlot 三态状态机，见 13-region-mapping.md §5.3）。
 
-修复方向（backlog）：上述测试应改为断言"等于当前 mock base"，而非硬编码默认值。
+修复方向（backlog，2026-08-16 更新）：`test_map_lazy` 已随 P0-1 修复转绿（13 范围）；`alloc_page` 两测试归 06 范围处理。
 
 ---
 

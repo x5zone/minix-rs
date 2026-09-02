@@ -183,9 +183,10 @@ VM_FORK 到达（主循环 dispatch）
 | 26 | 13/15 | `do_info`/`do_get_phys`/`do_get_refcount`/`do_getrusage`/`get_usage_info(_kernel)`/`get_region_info`/`map_get_phys`/`map_get_ref` | 区域生命周期（13） |
 | 99 | 无 | endpoint/generation、`VM_*`/`VMP_*` 常量、全局变量表 | 一切机制 |
 
-### 3.5 测试基线（截至 2026-08-16）
+### 3.5 测试基线（截至 2026-08-17）
 
-- `cargo test -p minix-vm --lib`：**414 passed / 1 failed**（基线更新：2026-08-16 25-rs-services 轮实测复核 414/1，较 360/1 增量来自 15/19/20/21/22/24/25 各轮新增测试；定向 `rs` 18 / `ipc::dispatcher` 26 / `ipc::transport` 6 / `vm_server` 21；剩余 `region::vir_region::tests::test_map_lazy` 归 13 范围 pre-existing）
+- `cargo test -p minix-vm --lib`：**441 passed / 0 failed**（基线更新：2026-08-16 26-vm-queries 轮实测复核 433/1；P0-1 修复（todo.md §8，PageSlot 三态状态机）后 `test_map_lazy` 转绿 → 434/0；P1-1 free-list + V9-* 修复（todo.md §10）后 → 437/0；V10 全量（todo.md §13，transport 注入端到端 + IpcStatus 状态位 + InfoStats 可观测性等）后 → 441/0；历史基线：360/1 → 414/1 → 433/1，增量来自 15/19/20/21/22/24/25/26 各轮新增测试）
+- `cargo clippy -p minix-vm --lib`：**0 warnings**（V10-P2-1 死代码收敛后，todo.md §13 Fix #16）
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -210,7 +211,7 @@ VM_FORK 到达（主循环 dispatch）
 |---|---------|------------|--------------|-----------|------|
 | A-1 | **Direct Map** | 无（`pmap.h` 的 `PMAP_DIRECT_MAP` 受 `#ifdef __HAVE_DIRECT_MAP` 保护且从未定义；VM 用 `vm_phys_to_virt` 走静态映射表） | `VM_DIRECT_MAP_BASE`/`KERNEL_DIRECT_MAP_BASE`，`DirectMapArch` trait（`os/arch/src/direct_map.rs`），VM 侧 `direct_map.rs` 双向转换 | 07 | 已实现，需文档显式章节 |
 | A-2 | 页表层级 | 2 级（PD→PT，`pt_pt[1024]` 固定数组，u32 PTE） | 4 级（PML4→PDPT→PD→PT，动态分配，u64 PTE） | 07/08 | 已实现 |
-| A-3 | 内核堆分配 | `slaballoc.c`（528 行） | `HeapArena` + 全局 `VmAllocator`（`heap_arena.rs`/`global.rs`） | 09 | 已实现（slab 有意省略，需理由） |
+| A-3 | 内核堆分配 | `slaballoc.c`（528 行） | `HeapArena` + 全局 `VmAllocator`（`heap_arena.rs`/`global.rs`；A-3 v2：bump → free-list 复用，2026-08-16） | 09 | 已实现（slab 有意省略，需理由；v2 补回收语义） |
 | A-4 | 区域查找 | Walt Karas 公共域 AVL（`cavl_*.h` 宏模板） | `BTreeMap<VirBytes, VirRegion>`（`region_map.rs`） | 14 | 已实现（O(log n) 语义等价） |
 | A-5 | 物理分配器 | 单一位图（`alloc.c`） | bitmap + buddy + segment-tree 三实现（`phys_mem/*`），`PhysAllocator` trait | 05 | 已实现 |
 | A-6 | 地址空间宽度 | 32 位（`VM_DATATOP`/`VM_STACKTOP`/mmap 范围受限） | 64 位（`MMAP_BASE`/`MMAP_TOP` 重定义） | 00/07/20 | 已实现 |

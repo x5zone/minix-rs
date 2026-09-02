@@ -839,11 +839,11 @@ fn switch_to_user() -> ! {
 
 | C 步骤 | C 位置 | 未实现原因 |
 |--------|--------|----------|
-| `cpu_identify()` | main.c:45 | CPU 识别在 boot-shim 阶段已完成（01-boot-shim-bootstrap），Rust 无需在 bsp_finish_booting 重复 |
-| `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:387` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
+| `cpu_identify()` | main.c:45 | C 用 CPUID 填 `cpu_info[CONFIG_MAX_CPUS]`（vendor/family/model/stepping/freq/flags，archtypes.h:39-46）；内核自身不读它——消费者全在用户态（procfs `/proc/cpuinfo` 经 `sys_getcpuinfo`，cpuinfo.c:146；libsys TSC 校准读 freq，tsc_util.c:40）。Rust `GET_CPUINFO` 分支（misc.rs:1001-1015）已存在但返回缩减记录（仅 cpu_id 实值）。QEMU 完整暴露 CPUID（guest `/proc/cpuinfo` 可见），探测本身无环境障碍；补齐时点 = procfs/用户态 TSC 校准接线（19 阶段后），见 todo D-53 |
+| `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:398` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
 | `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:95 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
 
-这 3 步的差异属于**架构演进**（ARCH），不是实现遗漏——每步都有 Rust 类型系统的替代方案。
+三步中两项已有 Rust 等价表达（krandom.rs 建模 + `krandom::init()`、`CpuState`/`SmpState` 枚举/字段）；`cpu_identify` 未移植——C 侧消费者在用户态，随 procfs/用户态接线补齐（todo D-53）。属范围决定而非实现遗漏。
 
 > 设计决策 D7：`bsp_finish_booting() -> !` 类型系统表达永不返回。D6：vm_running 当前用全局 `AtomicBool`，SMP 就绪后移入 `SmpState`。D8：`kernel_may_alloc` 用 `AtomicBool`。
 

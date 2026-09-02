@@ -84,19 +84,25 @@ pub(crate) enum RsMemctlResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // V10-P1-2: live-update scaffolding, see variant comments
 pub(crate) enum RsUpdateResult {
+    // V10-P1-2: live-update scaffolding — `handle_rs_update` currently
+    // always returns `Err(UpdateNotImplemented)` (kernel `sys_update`
+    // pending), so these two variants are unreachable in production. When
+    // live update lands, flip the pinned test
+    // `dispatcher::tests::test_dispatch_rs_update_pins_not_implemented`.
     Ok,
     Suspend,
 }
 
-/// Flags for VM_RS_UPDATE request.
-///
-/// Corresponds to Minix3's `SF_VM_*` flags in `minix/rs.h:198-199`.
-///
-/// ```c
-/// #define SF_VM_ROLLBACK  0x080    /* set when vm update is a rollback */
-/// #define SF_VM_NOMMAP    0x100    /* set when vm update ignores mmapped regions */
-/// ```
+// Flags for VM_RS_UPDATE request.
+//
+// Corresponds to Minix3's `SF_VM_*` flags in `minix/rs.h:198-199`.
+//
+// ```c
+// #define SF_VM_ROLLBACK  0x080    /* set when vm update is a rollback */
+// #define SF_VM_NOMMAP    0x100    /* set when vm update ignores mmapped regions */
+// ```
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct RsUpdateFlags: u32 {
@@ -295,7 +301,7 @@ pub(crate) fn handle_rs_update(
     if src == Endpoint::NONE {
         return Err(RsError::InvalidRequest);
     }
-    let src_slot = table.vm_isokendpt(src)?;
+    let _src_slot = table.vm_isokendpt(src)?;
     let dst_slot = table.vm_isokendpt(dst)?;
 
     // Step 2: Check flags — if neither ROLLBACK nor NOMMAP is set,

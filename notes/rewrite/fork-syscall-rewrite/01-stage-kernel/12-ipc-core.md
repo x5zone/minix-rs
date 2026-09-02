@@ -98,7 +98,7 @@ SEND(A → B) 时：
 
 | 文档 | 提供的概念 | 12 的依赖点 |
 |------|-----------|------------|
-| 06-proc-init-boot-proc | `struct proc` / `p_rts_flags` / `p_misc_flags` 字段 | 进程结构体字段语义（不重复定义） |
+| 06-proc-init-boot-proc | IPC 状态组字段分组导航 / `p_rts_flags` 16 位全集 | IPC 字段分组与 RTS 不变量（不重复定义） |
 | 10-switch-to-user | `switch_to_user` 主循环 / misc 标志处理 | `delivermsg()` 调用点（10 调用本节 §4.6） |
 | 11-scheduling-primitives | RTS 状态机 / `rts_set`/`rts_unset` 联动 | SENDING/RECEIVING 对调度的影响 |
 | 22-privilege | `struct priv` / `s_ipc_to` / `s_trap_mask` | 权限检查机制（22 提供位图语义） |
@@ -487,23 +487,29 @@ pub enum IpcOutcome {
 
 **理由**：阻塞是 IPC 的正常语义，不是错误。`IpcOutcome` 显式区分三种状态，调用方 match 处理。借鉴 02-stage-vm/draft/24-vm-ipc-dispatch 的 `VmReply::Suspend` 模式（区分"完成"与"挂起"）。
 
-### 3.2 发送者队列：SenderQueue 封装 + VecDeque 替代指针链表
+### 3.2 发送者队列：caller_q 索引式侵入 FIFO
 
-**C 模式**：`struct proc *p_caller_q` + `p_q_link` 内嵌链表，pointer-pointer 遍历。
+> **改判说明**：v1 原设计 `SenderQueue(VecDeque<ProcNr>)` 为运行期堆结构，违反内核零堆纪律（C kernel 无 malloc，`p_caller_q` 链是进程表内嵌的侵入链）。改判为 C 同构的**索引式侵入 FIFO**。C 侧本就不是堆结构——本次改判是存储形态对 C 收敛（Refactor，非行为演进）：FIFO 语义/阻塞唤醒语义不变。旧"Rust 直译陷阱"段所指的 unsafe 问题在索引方案下不存在：链接是 `Option<ProcNr>` 槽索引（值语义，无别名借用），自由函数取 `&mut [KProcess]` 整表独占借用，无 unsafe。
 
-**Rust 直译陷阱**：用 `AtomicI32` 索引模拟 C 链表，仍需 unsafe 访问进程表，所有权混乱——进程结构体持有 `p_caller_q`/`p_q_link` 两个 `AtomicI32` 字段模拟指针，队列操作实质是指针模拟。
+**C 模式**：`struct proc *p_caller_q`（链头，目标进程槽，proc.h:73）+ `p_q_link`（链后继，发送方进程槽，proc.h:74）内嵌侵入链，pointer-pointer 遍历。
 
-**设计决策**：用 `SenderQueue(VecDeque<ProcNr>)` 替代 C 的内嵌链表 + `AtomicI32` 索引。队列所有权内聚于 `SenderQueue`，`KProcess` 不再持有 `p_q_link` 字段。
+**设计决策**：同构保留侵入链布局，指针换槽索引——自由函数操作：
 
 ```rust
-pub struct SenderQueue(VecDeque<ProcNr>);
+// 链分布（C 同构）：
+//   目标槽:  caller_q_head / caller_q_tail  — C: p_caller_q（队头）
+//   发送方槽: send_q_link                    — C: p_q_link（后继）
+pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: usize);
+pub(crate) fn caller_q_find(procs: &[KProcess], dst_idx: usize, src_endpoint: Endpoint) -> Option<usize>;
+pub(crate) fn caller_q_remove(procs: &mut [KProcess], dst_idx: usize, sender_idx: usize) -> bool;
+pub(crate) fn caller_q_remove_by_nr(procs: &mut [KProcess], dst_idx: usize, target_nr: ProcNr) -> bool;
 ```
 
 **理由**：
-1. Rust 所有权模型禁止安全地跨 `&mut [KProcess]` 构造内嵌链表（aliasing UB）——`VecDeque` 将队列存储与进程结构体解耦，消除 unsafe。
-2. `VecDeque` 提供 O(1) `push_back`/`pop_front`，性能与 C 链表等价。
-3. `NR_PROCS` 较小（通常 256），线性扫描可接受。
-4. 消除 `p_q_link` 字段简化 `KProcess` 布局——队列存储是 `SenderQueue` 的内部细节，非进程结构体的职责。
+1. **零堆（否决 VecDeque 的根因）**：`VecDeque` 运行期堆分配，kernel 生产构建（无 `global_allocator`）中分配在链接期失败；C 的队列存储就在进程表内（侵入链），索引方案同构
+2. 链接是 `Option<ProcNr>` 槽索引——值语义，无借用别名，无 unsafe；入队 = 两次索引写（C: proc.c:960-964 两次指针写），不可失败
+3. `caller_q_tail` 是 O(1) 尾插扩展（C 遍历 O(n) 到尾）；FIFO 顺序与 C 逐行为一致
+4. 槽位身份字段在 `sys_update` 槽交换时保留（C: do_update.c:241-258 `rp->p_caller_q = from_rp->p_caller_q`；`send_q_link` 随内容交换）——与 C 的 slot-identity/content 二分完全对齐
 
 ### 3.3 IpcEngine 形态：持有 &mut 借用的真实封装
 
@@ -633,23 +639,29 @@ pub trait UserCopy {
 
 **理由**：硬件抽象原则——用户空间拷贝涉及页表权限检查，必须 trait 化。当前 IPC 代码保留 `copy_msg_from_user` 调用点但标记 TODO，完整 trait 实现见后续 follow-up。
 
-### 3.10 SENDA 批量：AsyncMessageTable + try_deliver_all
+### 3.10 SENDA 批量：用户表直读
 
-**C 模式**：`asynmsg_t` 表 + `try_deliver_senda` 扫描（proc.c:1200-1326, 1331-1346）。
+> **改判说明**：v1 原选 A（Vec-owned `AsyncMessageTable`，每 SENDA 一次堆分配）违反内核零堆纪律。改判为 C 同构的**用户表直读**（v1 选项 B 的 trait 化形态）：内核不拷贝表、不长期持有用户指针——每次扫描逐条 `A_RETR` 读用户表/`A_INSRT` 写回结果（proc.c:1231-1326 `mini_senda` 逐条扫描；重试路径 `try_one`/`deliver_async` 每次重读，proc.c:1425-1427——用户态可在重试间修改条目，C 语义如此）。"用户指针不长期持有"原则的落地方式：内核仅在发送方 priv 缓存**表指针三元组**（`s_asyntab`/`s_asynsize`/`s_asynendpoint`，C: priv.h:28，proc.c:1320-1323），重投递时用它重新走 `UserCopy` trait 校验读取，与 C 持久持有 `s_asyntab` 指针的行为一致（指针本身是用户地址值，非内核引用语义）。
 
-**设计决策**：`AsyncMessageTable` 持有 `Vec<AsyncMessageEntry>`（Vec-owned，非裸指针 + size 对），每条目跟踪 `AsyncEntryState`（Pending/Done/NotReady）。`try_deliver_all` 遍历 Pending 条目，经 `engine.send`（`FROM_KERNEL` 标志——异步消息是内核缓存副本，非用户指针）逐个投递；`Blocked` 结果记为 `NotReady` 待下次 RECEIVE 重试（INV-8）。`IpcEngine::senda` 调用 `table.try_deliver_all(self, caller_nr)` 后**始终返回 `Delivered`**——SENDA 从不阻塞调用方（与 C 一致：失败条目留 pending，调用方继续运行）。
+**C 模式**：`asynmsg_t` 表（在调用方用户地址空间）+ `mini_senda` 逐条 `A_RETR`/`A_INSRT`（proc.c:1231-1326）+ priv 缓存表指针（proc.c:1320-1323）+ `try_one`/`deliver_async` 重试重读（proc.c:1390-1497）。
+
+**设计决策**：`IpcEngine::senda(caller_nr, table: VirBytes, size: usize)` 逐条扫描用户表：
+- 每条目经 `UserCopy::read_senda_entry` 读取（含用户指针校验），投递成功/失败经 `UserCopy::write_senda_result` 写回（C: `A_RETR`/`A_INSRT`）
+- 目标不可达（`iskerneln` task 区）→ `ECALLDENIED`（proc.c:1266）；`may_send_to` 检查 caller 的 `s_ipc_to` 位图
+- 未完成条目：目标 priv 的 `s_asyn_pending` 位图置位（C: proc.c:1328-1331 `setasynpending`）+ 发送方 priv 缓存表三元组——下次目标 `receive` 时 `deliver_async` **重读用户表**重试（INV-8）
+- SENDA 从不阻塞调用方（与 C 一致：失败条目留 pending 位图，调用方继续运行）
 
 **设计选项（多方案列举 + 选优）**：
 
 | 方案 | 描述 | 优 | 劣 |
 |------|------|----|----|
-| **A. Vec-owned `AsyncMessageTable`** | `Vec<AsyncMessageEntry>` + 状态字段 + `try_deliver_all` | 类型安全；状态显式；可在 `no_std` 用 `alloc::Vec` | 堆分配（每 SENDA 一次） |
-| **B. 裸指针 + size（C 1:1）** | `*const asynmsg_t` + `usize`，遍历时读用户空间 | 无堆分配 | 反复 `copy_from_user`；无状态跟踪；违反"用户指针不长期持有"原则 |
-| **C. 固定大小数组** | `[AsyncMessageEntry; N]` | 无堆分配 | N 难定（C 上限 16*PROC_TABLE_SIZE）；浪费空间 |
+| A. Vec-owned `AsyncMessageTable` | `Vec<AsyncMessageEntry>` 内核副本 | 类型安全（v1 原选） | **堆分配（每 SENDA 一次，违反零堆）**；缓存副本偏离 C 语义（用户态改表后内核看不到） |
+| **B. 用户表直读（trait 化）** | `UserCopy` 逐条 `A_RETR`/`A_INSRT`，priv 只缓存表指针三元组 | **零堆（C 同构）**；用户态可变语义保真；重试自然重读 | 每次扫描多次 `UserCopy` 调用（SENDA 低频，可接受） |
+| C. 固定大小数组 | `[AsyncMessageEntry; N]` 内核副本 | 无堆 | N 难定（C 上限 16*PROC_TABLE_SIZE）；仍是副本语义，偏离 C |
 
-**选定 A**：Vec-owned。理由：SENDA 调用频率低（仅 ASYNCM 进程），堆分配开销可接受；状态跟踪是正确性必需（INV-8 重试要求区分 Pending/Done/NotReady）；`alloc::Vec` 在 `no_std` 可用（`extern crate alloc`）。C: proc.c:1200-1326 `try_deliver_senda` 内部也缓存了用户表副本。
+**选定 B**。理由：C ground truth 就是用户表直读（`mini_senda` 全程无内核表副本，proc.c:1231-1326）；零堆；INV-8 的"用户表是权威状态"语义精确成立（用户态改条目、下次重试生效）。
 
-**实现位置**：`os/kernel/src/ipc.rs:405-502`（`AsyncMessageEntry`/`AsyncEntryState`/`AsyncMessageTable`/`try_deliver_all`）+ `os/kernel/src/ipc.rs:1213-1218`（`IpcEngine::senda`）。
+**实现位置**：`os/kernel/src/ipc.rs`（`IpcEngine::senda` + `try_one`/`deliver_async` 重试路径 + `UserCopy::read_senda_entry`/`write_senda_result`）+ `os/kernel/src/kpriv.rs`（`s_asyntab`/`s_asynsize`/`s_asynendpoint`/`s_asyn_pending` 字段）。
 
 ### 3.11 SENDREC 两阶段：保留 MF_REPLY_PEND 标志
 
@@ -727,7 +739,7 @@ pub enum DeadlockDirection {
 
 ### 4.2 IpcEngine 核心 trait/方法签名
 
-**位置**: [ipc.rs:643-660](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:643-660
 
 ```rust
 pub struct IpcEngine<'a> {
@@ -763,8 +775,9 @@ impl<'a> IpcEngine<'a> {
     fn is_willing_to_receive(dst: &KProcess, src: Endpoint) -> bool;
 
     /// 批量异步发送。C: mini_senda — proc.c:1331-1346
-    /// 调用 `table.try_deliver_all(self, caller_nr)` 后始终返回 Delivered（SENDA 不阻塞）。
-    pub fn senda(&mut self, caller_nr: ProcNr, table: &mut AsyncMessageTable) -> IpcOutcome;
+    /// 逐条扫描用户表（A_RETR/A_INSRT 直读直写，零拷贝缓存），始终返回
+    /// Delivered（SENDA 不阻塞）；未投递条目留在用户表等待重试。
+    pub fn senda(&mut self, caller_nr: ProcNr, table: VirBytes, size: usize) -> IpcOutcome;
 
     /// IPC 权限检查。C: do_sync_ipc 权限层 — proc.c:479-597
     pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError>;
@@ -822,10 +835,13 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
     }
 
     // Phase 3: 同步发送者队列。C: proc.c:1054-1099
-    let q_idx = self.procs[caller_idx].caller_q.find_matching(self.procs, src_endpoint);
-    if let Some(q_idx) = q_idx {
+    // 遍历 caller_q 侵入链（caller_q_head → send_q_link → ...）找
+    // p_endpoint 匹配 src 的发送者；Endpoint::ANY 匹配链头。
+    if let Some(sender_idx) = caller_q_find(self.procs, caller_idx, src_endpoint) {
+        // 先摘链（前驱链接 + 链头/链尾修正），再投递。
+        caller_q_remove(self.procs, caller_idx, sender_idx);
         // 投递 sender.p_sendmsg + MF_DELIVERMSG
-        // 唤醒 sender: RTS_UNSET(SENDING) + remove_at 出队
+        // 唤醒 sender: RTS_UNSET(SENDING) + 清 SENDING_FROM_KERNEL
         return IpcOutcome::Delivered;
     }
 
@@ -837,7 +853,7 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
 
 ### 4.5 detect_deadlock 与 blocked_on 实现
 
-**位置**: [ipc.rs:685-783](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:685-783
 
 ```rust
 /// 动态选字段。C: P_BLOCKEDON 宏 — proc.h:187-194
@@ -890,9 +906,9 @@ pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endp
 
 ### 4.6 delivermsg 自由函数实现（FIX-20, Phase 1B）
 
-**位置**: [ipc.rs:363](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:363
 
-**调用方**: `ProcessTable::process_misc_flags`（[proc_table.rs:851-879](file:///home/xzhao/github/minix-rs/os/kernel/src/proc_table.rs)），当 `MF_DELIVERMSG` 置位时调用。
+**调用方**: `ProcessTable::process_misc_flags`（os/kernel/src/proc_table.rs:851-879），当 `MF_DELIVERMSG` 置位时调用。
 
 ```rust
 /// C: delivermsg(&p) — proc.c:263-294
@@ -953,7 +969,7 @@ impl IpcEngine {
 
 ### 4.7 check_ipc_permission 四层检查
 
-**位置**: [ipc.rs:1270-1318](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:1270-1318
 
 ```rust
 pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError> {
@@ -1003,9 +1019,9 @@ pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, ca
 
 ### 4.8 do_ipc 分派
 
-**位置**: [ipc.rs:1339-1388](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:1339-1388
 
-> **入口前置**：`dispatch_ipc_entry`（[syscall.rs:523-550](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs#L523-L550)，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `do_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
+> **入口前置**：`dispatch_ipc_entry`（syscall.rs:523-550，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `do_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
 
 > **SENDA 表传递**：C 通过 trap-frame 寄存器 `r3`（表指针）和 `r2`（表大小）传递 SENDA 表（proc.c:673, 683），不走消息字段。Rust API 对齐：`senda_table: Option<(VirBytes, usize)>` 是独立参数，仅在 `call == SendA` 时使用。
 
@@ -1044,47 +1060,66 @@ pub fn do_ipc(
             if count > max_count {
                 return IpcOutcome::Error(IpcError::BadCall);
             }
-            match self.user_copy.copy_senda_table_from_user(table_ptr, count) {
-                Ok(entries) => {
-                    let mut table = AsyncMessageTable::from_raw_entries(entries);
-                    self.senda(caller_nr, &mut table)
-                }
-                Err(_) => IpcOutcome::Error(IpcError::Fault),
-            }
+            // 不预拷贝整表：`senda` 逐条读用户表（C: A_RETR），
+            // 内核零堆分配，且重试语义与 C 同构（重试时重读表）。
+            self.senda(caller_nr, table_ptr, count)
         }
     }
 }
 ```
 
-### 4.9 SenderQueue 队列操作
+### 4.9 caller_q 队列操作（索引式侵入链自由函数）
 
-**位置**: [ipc.rs:522](file:///home/xzhao/github/minix-rs/os/kernel/src/ipc.rs)
+**位置**: os/kernel/src/ipc.rs:502-607
 
-```rust
-pub struct SenderQueue(VecDeque<ProcNr>);
+caller_q 是**索引式侵入 FIFO**：链表节点内嵌在进程槽位中，指针退化为 `Option<ProcNr>` 槽位索引。链的存储分布与 C 同构（`proc.h:73-74`）：
 
-impl SenderQueue {
-    /// 入队尾。C: while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller;
-    pub fn push_back(&mut self, nr: ProcNr) { self.0.push_back(nr); }
-
-    /// 出队头（FIFO）。
-    pub fn pop_front(&mut self) -> Option<ProcNr> { self.0.pop_front() }
-
-    /// 查找匹配源端点的发送者索引（不移除）。
-    /// C: while (*xpp) { if (CANRECEIVE(...)) break; }
-    pub fn find_matching(&self, procs: &[KProcess], src: Endpoint) -> Option<usize>;
-
-    /// 按索引移除（与 find_matching 配对使用）。
-    pub fn remove_at(&mut self, idx: usize) -> Option<ProcNr>;
-
-    /// 按 ProcNr 值移除（SYS_UPDATE rollback 用）。
-    pub fn remove_by_nr(&mut self, nr: ProcNr) -> bool;
-}
+```
+目标槽（dst_idx）                     发送方槽
+┌──────────────────┐                ┌──────────────────┐
+│ caller_q_head ───┼──→ ProcNr(A) ─│ send_q_link ─────┼──→ ProcNr(B) ...
+│ caller_q_tail ───┼──→ ProcNr(尾)  │                  │
+└──────────────────┘                └──────────────────┘
 ```
 
-**find + remove 分离的原因**：`IpcEngine::receive` 需先扫描队列查找匹配发送者（需 `&self.procs` 不可变借用查端点），再移除条目（需 `&mut self.procs[caller].caller_q` 可变借用）。合并为单个 `remove_matching` 会导致同一 `self` 同时可变和不可变借用——aliasing 冲突。分离为 `find_matching`（不可变借用结束）→ `remove_at`（可变借用开始）让借用检查器接受。
+- **链头/链尾** `caller_q_head`/`caller_q_tail` 在**目标槽**（C: 目标的 `p_caller_q` + `mini_send` 尾插时缓存的链尾）
+- **后继链接** `send_q_link` 在**发送方槽**（C: 发送方的 `p_q_link`）
 
-**实现说明**：用 `VecDeque<ProcNr>` 存储队列，队列所有权内聚于 `SenderQueue`（每个 `KProcess` 的 `caller_q` 字段）。`KProcess` 不持有 `p_q_link` 字段——C 的内嵌链表在 Rust 中由 `VecDeque` 内部存储替代。
+```rust
+/// 尾插。C: while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller;
+/// — proc.c:1077-1105 的入队路径
+pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: usize);
+
+/// 沿链查找 p_endpoint 匹配 src 的发送者槽位索引（不移除）。
+/// C: while (*xpp) { if (CANRECEIVE(...)) break; } — proc.c:1077-1105
+/// Endpoint::ANY 匹配链头（C: 队首即最长等待者）。
+pub(crate) fn caller_q_find(
+    procs: &[KProcess],
+    dst_idx: usize,
+    src_endpoint: Endpoint,
+) -> Option<usize>;
+
+/// 摘链：前驱 send_q_link 改接 + 链头/链尾修正。
+/// C: *xpp = (*xpp)->p_q_link — proc.c:1084（查找+摘链一次遍历）；
+/// 同形态遍历见 clear_ipc（system.c:520-531）。
+pub(crate) fn caller_q_remove(procs: &mut [KProcess], dst_idx: usize, sender_idx: usize) -> bool;
+
+/// 按 ProcNr 摘链（内部解析槽位索引）。
+/// C: clear_ipc / abort_proc_ipc_send 循环 — system.c:520-531
+pub(crate) fn caller_q_remove_by_nr(procs: &mut [KProcess], dst_idx: usize, target_nr: ProcNr) -> bool;
+
+/// 队列判空（链头为 None）。
+pub(crate) fn caller_q_is_empty(procs: &[KProcess], dst_idx: usize) -> bool;
+```
+
+**为什么是自由函数而非 `KProcess` 方法/独立容器**：
+
+1. **零堆纪律**：`VecDeque<ProcNr>`（v1 设计）是运行期堆结构——C 内核无 malloc，链表节点内嵌于 `proc[]` 静态数组。侵入链对 C 同构，链操作只是槽位字段读写，无任何分配。
+2. **链跨槽分布**：链头在目标槽、后继在发送方槽，任何单槽方法都无法在不拿整表的情况下完成链操作。自由函数以 `&mut [KProcess]`（或 `&[KProcess]`）为第一参数，借用形状与数据分布一致。
+3. **O(1) 尾插**：C 的 `mini_send` 入队需从头遍历到尾（`while (*xpp) xpp = &(*xpp)->p_q_link`）；Rust 缓存 `caller_q_tail` 后尾插 O(1)。这是实现优化，FIFO 语义不变（语义等价，非 ARCH 演进）。
+4. **slot-identity 与 content 二分**（`sys_update` 槽交换语义，见 [06 §3.4](06-proc-init-boot-proc.md)）：链身份 = 槽位 ProcNr；槽交换后新进程继承旧槽的队列位置——`caller_q_remove_by_nr` 按槽位摘链正确处理该语义，与 `do_update.c:241-258` 一致。
+
+**find + remove 分离**：`caller_q_find`（不可变借用）与 `caller_q_remove`（可变借用）分离，借用按序结束/开始，借用检查器接受。旧 v1 `SenderQueue` 因队列容器内聚于单槽子对象、需 find/remove 两阶段借用规避——侵入链后链接散布在发送方槽，借用退化为普通顺序槽访问，不再有该约束。
 
 ---
 
@@ -1150,7 +1185,7 @@ fn test_deadlock_mixed_chain_cycle() {
 
 ## 6. 参见
 
-- [06-proc-init-boot-proc](06-proc-init-boot-proc.md) — `struct proc` 字段语义 / `p_rts_flags` / `p_misc_flags`
+- [06-proc-init-boot-proc](06-proc-init-boot-proc.md) — IPC 状态组字段分组导航 / `p_rts_flags` 16 位全集 / RTS 不变量
 - [10-switch-to-user](10-switch-to-user.md) — `switch_to_user` 调用 `delivermsg` / misc 标志处理
 - [11-scheduling-primitives](11-scheduling-primitives.md) — `RTS_SENDING`/`RECEIVING` 状态机 / `rts_set` 联动
 - [22-privilege](22-privilege.md) — `struct priv` / `s_ipc_to` / `s_trap_mask` 权限位图

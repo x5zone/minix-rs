@@ -190,7 +190,7 @@ struct priv {
 };
 ```
 
-> **关键观察**：`s_alarm_timer` 是 `priv` 的嵌入字段，不是指针。C 用 `&sp->s_alarm_timer` 作为 `minix_timer_t *tp` 传入 `set_kernel_timer`/`reset_kernel_timer`。这个**结构体地址稳定性**是 C 的 stable identity。Rust 不能用指针（数据结构不是链表节点），需重新设计 identity 机制（见 §3 D3）。
+> **关键观察**：`s_alarm_timer` 是 `priv` 的嵌入字段，不是指针——节点本身**就是侵入链节点**（`tmr_next` 指向下一个 `priv` 的嵌入节点）。C 用 `&sp->s_alarm_timer` 作为 `minix_timer_t *tp` 传入 `set_kernel_timer`/`reset_kernel_timer`，这个**结构体地址稳定性**（= priv 槽地址 + 固定偏移）是 C 的 stable identity。Rust 同构方案：节点内嵌 `KPriv::runtime.s_alarm_timer`（侵入链节点），身份 = `PrivId` 槽索引（见 §3 D3）。
 
 ### 2.3 关键函数分析
 
@@ -349,7 +349,9 @@ SYS_VTIMER 系统调用
 
 ## Ch3: Rust 设计决策
 
-> **设计原则**：避免 C 代码的 translate，用 Rust 类型系统重新表达 C 的指针语义（TimerId newtype）、函数指针（TimerAction enum）、BSP/AP 分支（per-CPU 实例）。每个决策都列多方案对比，优中选优。完整方案对比见 §3。
+> **设计原则**：避免 C 代码的 translate，用 Rust 类型系统重新表达 C 的指针语义（索引式侵入链 + `PrivId` 槽位身份）、函数指针（TimerAction enum）、BSP/AP 分支（per-CPU 实例）。每个决策都列多方案对比，优中选优。完整方案对比见 §3。
+>
+> **零堆纪律**：C kernel 无 malloc，`clock_timers` 链为静态侵入结构（节点内嵌 `struct priv`，链头是 `static` 指针）。Rust 侧所有运行期结构必须零堆：定时器链 = 索引式侵入有序链（D2 方案 G），tick 路径 = callback 分发（无 `Vec` 收集，R-06），到期的回调结果不经过堆容器。`alloc` 仅在 `#[cfg(test)]` 构建链接（`os/kernel/src/lib.rs` 零堆契约注释），生产构建无 `global_allocator`，任何分配尝试在链接期失败。
 
 ### 3.1 决策 D1：全局时钟状态封装
 
@@ -362,31 +364,40 @@ SYS_VTIMER 系统调用
 
 ### 3.2 决策 D2：定时器队列数据结构
 
+> **改判说明**：v1 原选 C（BTreeSet/BTreeMap 双索引）为运行期堆结构，违反内核零堆纪律——C kernel 无 malloc，`clock_timers` 是静态侵入链（链头 `static` 指针，clock.c:37；节点内嵌 `struct priv.s_alarm_timer`，priv.h:48）。改判为方案 G（C 同构索引式侵入有序链）。C 侧本就是零堆结构，本次改判是**存储形态对 C 收敛（Refactor，非行为演进）**：外部行为（SYS_SETALARM 语义/到期通知/排序）不变。
+
 | 方案 | 描述 | 优 | 劣 |
 |------|------|----|----|
-| A. `BTreeMap<u64, TimerEntry>` | exp_time 作 key | O(log N) 插入 | **同 exp_time 多 timer 覆盖**（C 链表支持） |
-| B. `BTreeMap<u64, Vec<TimerEntry>>` | exp_time → Vec | 支持同 exp_time | 删除需扫 Vec；Vec 堆分配碎片 |
-| **C. `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>`** | 二级索引 | stable identity + 排序 + 唯一 + 纯 alloc | 双索引维护；by_id O(log N) 非 O(1) |
-| D. `BTreeMap<TimerId, TimerEntry>` | TimerId 作 key | stable identity | 查到期需 O(N) 扫全表 |
-| E. `BTreeSet<(u64, TimerId)>` + `HashMap<TimerId, TimerEntry>` | 二级索引 + hash | by_id O(1) | **HashMap 不在 `alloc::collections`**；需引入 hashbrown 外部 crate |
-| F. `SlotMap<TimerId, TimerEntry>` | SlotMap | O(1) + stable id | no_std 生态弱；引入外部 crate |
+| A. `BTreeMap<u64, TimerEntry>` | exp_time 作 key | O(log N) 插入 | **同 exp_time 多 timer 覆盖**；**运行期堆分配（违反零堆）** |
+| B. `BTreeMap<u64, Vec<TimerEntry>>` | exp_time → Vec | 支持同 exp_time | 删除需扫 Vec；**运行期堆分配** |
+| C. `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>` | 二级索引 | 排序 + 唯一 | **运行期堆分配**；双索引簿记；v1 原选，已废弃 |
+| D. `BTreeMap<TimerId, TimerEntry>` | TimerId 作 key | stable identity | **运行期堆分配**；查到期需 O(N) 扫全表 |
+| E. `BTreeSet` + `HashMap` | 二级索引 + hash | by_id O(1) | **运行期堆分配**；HashMap 不在 `alloc::collections`，需 hashbrown crate |
+| F. `SlotMap<TimerId, TimerEntry>` | SlotMap | O(1) + stable id | **外部 crate**；no_std 生态弱 |
+| **G. 索引式侵入有序链** | 节点内嵌 `KPriv::runtime.s_alarm_timer`（`AlarmTimerNode`），链头 `ClockState::timers_head: Option<PrivId>`，后继字段 `next: Option<PrivId>` | **零堆（C 同构）**；插入/摘链 O(1)；容量静态有界（NR_SYS_PROCS）；无索引簿记 | 链操作需 `(&mut PrivTable, &mut ClockState)` 双借用，实现为自由函数而非 ClockState 方法 |
 
-**选定 C**。理由：
-1. BTreeSet 按 `(exp_time, id)` 排序，`pop_expired` O(k log N) 弹出 k 个到期 timer
-2. BTreeMap 按 `TimerId` O(log N) 查找，`reset_timer(id)` 高效（timer 队列小，通常 < 64 条目，O(log N) 可接受）
-3. 同 exp_time 多 timer 自然支持（id 不同）
-4. 纯 `alloc::collections`，无外部依赖（**HashMap 不在 `alloc::collections`**，需 hashbrown crate，违反最小依赖）
+**选定 G**。理由：
+1. **零堆纪律（否决 A-F 的共同根因）**：BTreeSet/BTreeMap/HashMap/SlotMap 全部在运行期堆分配节点，kernel 生产构建（无 `global_allocator`）中分配尝试在链接期失败（undefined `__rust_alloc`）。C 的 `clock_timers` 是 `static minix_timer_t *` 链头（clock.c:37）+ `priv[]` 静态数组内嵌节点（priv.h:48），全程静态存储——侵入链是 C 同构形态
+2. **每 priv 至多一个闹钟**：C 的 `do_setalarm` 固定操作 `&priv(caller)->s_alarm_timer` 单节点（do_setalarm.c:36），容量 ≤ NR_SYS_PROCS(64)，侵入链静态有界、无扩容需求
+3. **三原语同构映射**：C `tmrs_settimer`/`tmrs_clrtimer`/`tmrs_exptimers`（tmrs_set.c/tmrs_clr.c/tmrs_exp.c）直接映射为三个自由函数（§4.3），插入扫描/摘链/到期前缀循环与 C 逐行对应
+4. **排序语义可精确复刻**：环绕有序（`tmr_is_first`）+ 相等 exp_time 后插入者排前（tmrs_set.c:38-43）在链扫描中自然表达
 
 ### 3.3 决策 D3：定时器 identity
 
+> **改判说明**：v1 原选 B（`TimerId(u64)` 计数器 newtype）。侵入链方案（D2-G）下节点内嵌 `KPriv::runtime.s_alarm_timer`，"哪个 timer"天然由"哪个 priv 槽"回答——`TimerId` 计数器与 `(TimerEntry, TimerId)` 元组簿记失去存在必要，已删除。
+
 | 方案 | 描述 | 优 | 劣 |
 |------|------|----|----|
-| A. exp_time 作 key | C `minix_timer_t *tp` 的 translate 误用 | 简单 | **同 exp_time 无法区分**；reset_timer(exp_time) 误取消其他 timer |
-| **B. `TimerId(u64)` newtype** | stable identity | 类型安全；支持 reset(id) | 需生成 id（per-ClockState 计数器） |
+| A. exp_time 作 key | C `minix_timer_t *tp` 的 translate 误用 | 简单 | **同 exp_time 无法区分**；reset(exp_time) 误取消其他 timer |
+| B. `TimerId(u64)` newtype | per-ClockState 单调计数器 | 类型安全 | 需额外 id 簿记（`Option<(TimerEntry, TimerId)>` 元组）；侵入链下冗余；v1 原选，已废弃 |
+| **C. `PrivId` 槽位身份** | 节点内嵌 priv 槽，身份 = 槽索引 | **C 同构**（`&sp->s_alarm_timer` 地址 ⟺ priv 槽索引）；零簿记；"每 priv 至多一个闹钟"的天然表达 | 容量 ≤ NR_SYS_PROCS（与 C 同界） |
 
-**选定 B**。理由：C 用 timer 指针作 stable identity（结构体地址不变），Rust 用 newtype 替代指针语义。`TimerId` 是 per-ClockState 单调递增计数器，无需全局同步（BKL 保护）。
+**选定 C**。理由：
+1. C 的 stable identity 是**结构体地址** `&sp->s_alarm_timer`（priv.h:48 内嵌字段，地址 = `priv[]` 静态数组槽地址 + 固定偏移）——地址与槽一一对应，Rust 用 `PrivId` 槽索引同构表达，无 unsafe 指针
+2. 每 priv 至多一个闹钟（C 语义：do_setalarm 固定操作 caller 的单节点），槽索引即身份，"同槽两个 timer"的状态空间不存在
+3. 调用方零簿记：`set_alarm_timer`/`reset_alarm_timer` 的 `priv_id` 直接取自 `caller.priv_id`（C: do_setalarm.c:36 `priv(caller)`），无需存储/回传 id
 
-**持久性论证**（id 作为 stable identity 是否安全）：`TimerId` 是 per-ClockState 计数器，若 `ClockState` 重建则 id 会重置——但 `ClockState` 是 BKL 保护的全局状态，boot 后**不重建**，id 在系统生命周期内单调不减，因此可以充当 stable identity。Live update 等重建场景由 16-smp.md / 24-cross-space-runtime.md 处理，不在本章范围。`TimerId` 存入 `KPriv.s_alarm_timer`（字段类型变更为 `Option<(TimerEntry, TimerId)>`）无序列化风险：KPriv 不跨重启序列化（boot 时重建），Debug 输出由自动派生覆盖（tuple 实现 Debug）。
+**持久性论证**：身份 = 槽位，随 `PrivTable` 生命周期。`PrivTable` boot 时构建（编译期定容数组，与 C `priv[NR_SYS_PROCS]` 同构），运行期不重建；`s_alarm_timer` 节点内嵌 `PrivRuntime`（kpriv.rs），无序列化、无跨重启状态。Live update 等重建场景由 16-smp.md / 24-cross-space-runtime.md 处理，不在本章范围。
 
 ### 3.4 决策 D4：adjtime 机制
 
@@ -518,10 +529,12 @@ pub struct ClockState {
     boottime: u64,
     /// Time adjustment delta. C: `adjtime_delta` (clock.c:42, BSP only)
     adjtime_delta: i32,
-    /// Synchronous alarm timer queue (BSP only).
-    /// C: `clock_timers` (clock.c:37)
-    /// D2: TimerQueue (BTreeSet + BTreeMap) replaces linked list.
-    timers: TimerQueue,
+    /// Head of the alarm timer chain (BSP only): index of the first
+    /// `KPriv::runtime.s_alarm_timer` node, or `None` when empty.
+    /// C: `static minix_timer_t *clock_timers` — clock.c:37.
+    /// D2-G: intrusive index chain (nodes embedded in PrivTable)
+    /// replaces C's pointer chain — zero heap allocation.
+    timers_head: Option<PrivId>,
     /// Load average info. C: `kloadinfo` (all CPUs)
     load_info: LoadInfo,
 }
@@ -529,99 +542,119 @@ pub struct ClockState {
 
 **与 C 的关键差异**：
 - 新增 `cpu_id` + `is_bsp` 字段（替代 `cpu_is_bsp(cpuid)` 全局查询）
-- `timers` 类型从 C 链表改为 `TimerQueue`（D2）
+- `timers_head` 类型从 C 指针链头改为 `Option<PrivId>` 槽索引链头（D2-G）——链头指向 `PrivTable` 槽，节点本体在 `KPriv::runtime.s_alarm_timer`
 - 所有字段 BKL 保护下可变，无 interior mutability
 
 **全局原子镜像**：`uptime`/`realtime`/`boottime` 通过 `CLOCK_UPTIME`/`CLOCK_REALTIME`/`CLOCK_BOOTTIME` 三个 `AtomicU64` 镜像到全局，使 `get_monotonic()`/`get_realtime()`/`get_boottime()` 无需 `&ClockState` 即可读取（用于 scheduler 等不便传递 `&ClockState` 的路径）。
 
-### 4.2 TimerId — 定时器 stable identity（D3）
+### 4.2 AlarmTimerNode — 侵入式定时器节点（D2-G, D3-C）
 
-> 设计决策 D3：用 newtype 替代 C 的 `minix_timer_t *tp` 指针语义。
+> 设计决策 D2-G（侵入链节点）+ D3-C（`PrivId` 槽位身份）。替代 v1 的 `TimerId(u64)` newtype（已删除）。节点**内嵌** `KPriv::runtime.s_alarm_timer`（kpriv.rs），与 C `priv[i].s_alarm_timer`（priv.h:48）同构。
 
 ```rust
 // os/kernel/src/clock.rs
 
-/// Stable identity for a timer, replacing C's `minix_timer_t *tp` pointer.
+/// Intrusive alarm timer node, embedded in `KPriv::runtime.s_alarm_timer`.
 ///
-/// C uses the timer struct pointer as stable identity for set/reset operations
-/// (`set_kernel_timer(tp, ...)` / `reset_kernel_timer(tp)`). Rust cannot use
-/// pointers (timers are not intrusive linked-list nodes), so we use a newtype
-/// wrapping a per-`ClockState` monotonic counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TimerId(u64);
+/// C-isomorphic rewrite of `minix_timer_t` (include/minix/timers.h:32-38)
+/// embedded at `priv[i].s_alarm_timer` (kernel/priv.h:48). The field layout
+/// differs in exactly one way: `tmr_next` is an `Option<PrivId>` index into
+/// `PrivTable` instead of a `struct minix_timer *` pointer, so the kernel
+/// never heap-allocates timer storage (capacity = `NR_SYS_PROCS`, same bound
+/// as C's `EXTERN struct priv priv[NR_SYS_PROCS]`).
+///
+/// A node is "set" (on the clock chain) iff `action.is_some()`, matching C's
+/// `tmr_is_set(tp)` = `tp->tmr_func != NULL` (timers.h:52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlarmTimerNode {
+    /// Expiration time in monotonic ticks (absolute). C: `tmr_exp_time`.
+    pub exp_time: u64,
+    /// Action to call when expired; `None` = timer not set. C: `tmr_func`
+    /// (NULL means inactive) + `tmr_arg` folded into the enum payload.
+    pub action: Option<TimerAction>,
+    /// Successor in the global sorted chain, as a privilege-slot index.
+    /// C: `tmr_next` (pointer). Stale after dequeue — C leaves it dangling
+    /// too (tmrs_clr.c:29-34 unlinks without clearing `tp->tmr_next`); the
+    /// authoritative link is the chain reachable from `ClockState::timers_head`.
+    pub next: Option<PrivId>,
+}
 
-impl TimerId {
-    pub const fn new(id: u64) -> Self { Self(id) }
-    pub fn raw(self) -> u64 { self.0 }
+impl AlarmTimerNode {
+    /// C: `tmr_inittimer(tp)` = `tmr_func = NULL; tmr_next = NULL` (timers.h:64)
+    pub const fn new() -> Self { Self { exp_time: 0, action: None, next: None } }
+    /// C: `tmr_is_set(tp)` = `tp->tmr_func != NULL` — timers.h:52.
+    pub fn is_set(&self) -> bool { self.action.is_some() }
 }
 ```
 
 **设计要点**：
-- `TimerId` 是 per-ClockState 单调递增计数器，BKL 保护下无需原子操作
-- `set_timer()` 返回 `TimerId`，调用方必须存储以便后续 `reset_timer(id)`
-- 与 C `minix_timer_t *tp` 的对应：C 用结构体地址（不变），Rust 用 u64 计数器（不变）
+- 节点不是独立分配——内嵌 `KPriv::runtime.s_alarm_timer`（C 同构 `priv[i].s_alarm_timer`），存储零堆，容量 = `NR_SYS_PROCS`
+- `next: Option<PrivId>` 槽索引替代 C 的 `struct minix_timer *` 指针——身份与链后继合一，无 unsafe
+- 摘链后 `next` 保留旧值（C 同构悬垂语义：tmrs_clr.c 不清 `tmr_next`；权威链 = 从 `ClockState::timers_head` 可达的节点集）
+- `action: Option<TimerAction>` 折叠了 C 的 `tmr_func`（NULL = 未设置）+ `tmr_arg`（enum payload）两个字段
+- `is_set()` 对应 C 宏 `tmr_is_set`；`new()` 对应 `tmr_inittimer`（system.c:180 初始化 `s_alarm_timer` 用）
 
-### 4.3 TimerQueue — 双索引定时器队列（D2）
+### 4.3 闹钟链三原语 — set/reset/expire 自由函数（D2-G）
 
-> 设计决策 D2：`BTreeSet<(exp_time, TimerId)>` + `BTreeMap<TimerId, TimerEntry>` 双索引。
+> 设计决策 D2-G：C 的 `tmrs_*` 三原语（tmrs_set.c / tmrs_clr.c / tmrs_exp.c）映射为三个自由函数，联合操作 `(&mut PrivTable, &mut ClockState)`——链头在 `ClockState.timers_head`（C: clock.c:37 `clock_timers`），节点在 `PrivTable` 各槽。两个独立可变借用指向两个不同对象，borrow checker 允许；BKL 保护两者共存。
 
 ```rust
-// os/kernel/src/clock.rs
+// os/kernel/src/clock.rs — clock.rs:622/652/764
 
-#[derive(Debug, Default)]
-struct TimerQueue {
-    /// Sorted by (exp_time, id) — supports O(k log N) expiry scan.
-    by_expiry: BTreeSet<(u64, TimerId)>,
-    /// Lookup by TimerId — supports O(log N) reset_timer(id).
-    /// BTreeMap (not HashMap) because `HashMap` is not in `alloc::collections`.
-    by_id: BTreeMap<TimerId, TimerEntry>,
-    /// Next TimerId counter (per-ClockState, monotonic).
-    next_id: u64,
-}
+/// Deactivate a timer node and remove it from the chain.
+/// Idempotent: a node that is not set (or not on the chain) is left untouched.
+/// C: `reset_kernel_timer(tp)` — clock.c:245-255 → `tmrs_clrtimer`
+pub fn reset_alarm_timer(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+);
 
-impl TimerQueue {
-    fn insert(&mut self, entry: TimerEntry) -> TimerId {
-        let id = TimerId(self.next_id);
-        self.next_id += 1;
-        self.by_expiry.insert((entry.exp_time, id));
-        self.by_id.insert(id, entry);
-        id
-    }
+/// Activate (or re-arm) a timer node at absolute time `exp_time`.
+/// Panics if called on an AP instance (alarm timers are BSP-only).
+/// C: `set_kernel_timer(tp, exp_time, watchdog, arg)` — clock.c:229-240
+/// → `tmrs_settimer` (tmrs_set.c:14-47)
+pub fn set_alarm_timer(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+    exp_time: u64,
+    action: TimerAction,
+);
 
-    fn remove(&mut self, id: TimerId) -> Option<TimerEntry> {
-        let entry = self.by_id.remove(&id)?;
-        self.by_expiry.remove(&(entry.exp_time, id));
-        Some(entry)
-    }
-
-    fn pop_expired(&mut self, now: u64) -> Option<TimerEntry> {
-        let first = self.by_expiry.iter().next().copied()?;
-        if first.0 > now { return None; }
-        self.by_expiry.remove(&first);
-        self.by_id.remove(&first.1)
-    }
-}
+/// Check the chain for expired timers, dequeue + deactivate each,
+/// then invoke `on_expired` for each.
+/// C: `tmrs_exptimers(&clock_timers, uptime, NULL)` — tmrs_exp.c:9-29
+pub fn expire_alarm_timers<F>(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    now: u64,
+    on_expired: F,
+) where F: FnMut(TimerAction);
 ```
 
-**与 C 链表的关键差异**：
-- 同 exp_time 多 timer 自然支持（id 不同，`(exp_time, id)` 唯一）——修复了旧实现 `BTreeMap<u64, _>` 同 exp_time 覆盖的 P1 缺陷
-- `pop_expired` 按到期顺序弹出（BTreeSet 自动按 `(exp_time, id)` 排序）
-- 纯 `alloc::collections`，无外部依赖
+**与 C 的语义对齐**（逐行为对照，C ground truth 为 `minix3/minix/lib/libtimers/`）：
 
-### 4.4 TimerEntry + TimerAction — 定时器条目与动作（D6）
+| 原语 | C 行为 | Rust 行为 | C 证据 |
+|------|--------|----------|--------|
+| `set_alarm_timer` | 先清旧节点 → 写 `tmr_exp_time`/`tmr_func`/`tmr_arg` → 扫描链在第一个 `exp_time <= cur` 节点**前**插入 | `reset_alarm_timer` 先行（幂等）→ 写 `exp_time`/`action` → 环绕比较扫描（`tmr_is_first(exp_time, cur_exp)` 即 `exp_time <= cur_exp` 时 break）改 2 个 `next` 挂链 | tmrs_set.c:29-33, 38-43 |
+| 相等 exp_time | 后插入者排前面（先触发）——插入扫描在第一个"不早于我"的节点前停下 | 同（相等时 `tmr_is_first` 为 true → break → 插入在其前） | tmrs_set.c:38-43 |
+| `reset_alarm_timer` | `tmr_is_set` guard → 摘链 → `tmr_func = NULL`；**不动 `tmr_next`**（留悬垂）、`tmr_exp_time` 保留 | `!node.is_set() → return` → `chain_unlink` → `action = None`；`next`/`exp_time` 保留旧值 | clock.c:246, tmrs_clr.c:27-34 |
+| `expire_alarm_timers` | head 过期前缀循环：先摘链（`*tmrs = tp->tmr_next`）+ 去激活（`tmr_func = NULL`），**再**调 `func(tp)` | 同序（`clock.timers_head = next` → `action.take()` → `on_expired(action)`）——节点可在回调内重挂而不断链遍历 | tmrs_exp.c:15-20 |
+| 摘链实现 | `for (atp = tmrs; *atp != NULL; atp = &(*atp)->tmr_next)` 找前驱 | 私有 `chain_unlink`：head 命中直改链头，否则走链找前驱改 `next` | tmrs_clr.c:29-34 |
 
-> 设计决策 D6：enum 替代函数指针；删除 `KernelCallback` 变体。
+**与 v1 TimerQueue 的关键差异**：
+- 挂链/摘链 O(1)（改最多 2 个 `next` 字段），无 BTreeSet/BTreeMap 堆节点、无 `next_id` 计数器
+- 同 exp_time 多 timer：链上自然共存（不同 priv 槽的节点），相等时后插入者在前（C 语义；v1 用 `(exp_time, id)` 排序近似，id 序与插入序的先后语义与本方案不同——本方案与 C 逐行为一致）
+- 到期弹出：链有序保证 head 前缀即全部到期节点，无 `pop_expired` 双索引删除
+- 环绕安全：到期判定用 `tmr_has_expired`（`tmr_is_first(exp_time, now)` 环绕比较，timers.h:58），非 `first.0 > now` 直接比较
+
+### 4.4 TimerAction — 到期动作（D6）
+
+> 设计决策 D6：enum 替代函数指针；删除 `KernelCallback` 变体。v1 的 `TimerEntry` struct 已删除——其字段（`exp_time`/`action`）并入 `AlarmTimerNode`，无独立条目结构（零堆：无独立分配的条目对象）。
 
 ```rust
 // os/kernel/src/clock.rs
-
-#[derive(Debug, Clone)]
-pub struct TimerEntry {
-    /// Expiration time in monotonic ticks. C: `tmr_exp_time`
-    pub exp_time: u64,
-    /// Action to take when timer expires. Replaces C's `tmr_func_t` callback.
-    pub action: TimerAction,
-}
 
 /// Action to take when a timer expires.
 ///
@@ -638,14 +671,14 @@ pub enum TimerAction {
 }
 ```
 
-### 4.5 ClockState::tick() — 时钟中断处理（D8, D9, D10）
+### 4.5 ClockState::tick_with() — 时钟中断处理（D8, D9, D10）
 
-> 设计决策 D8（per-CPU 实例 + is_bsp 运行时分支）+ D9（quantum 不在此）+ D10（显式 billp 参数）。
+> 设计决策 D8（per-CPU 实例 + is_bsp 运行时分支）+ D9（quantum 不在此）+ D10（显式 billp 参数）。`tick_with` 是唯一 tick 路径；`tick_bsp`/`tick_ap` 是带 `debug_assert` 的便捷包装（clock.rs:1014/1034）。
 
 ```rust
 // os/kernel/src/clock.rs
 
-/// Handle a timer interrupt tick.
+/// Handle a timer interrupt tick (zero-allocation, callback-based).
 ///
 /// C: `timer_int_handler()` — clock.c:70-173
 ///
@@ -656,47 +689,24 @@ pub enum TimerAction {
 ///
 /// # Arguments
 ///
+/// * `priv_table` — the privilege table holding the alarm timer nodes
+///   (needed for the BSP expiry pass; unused on APs)
 /// * `current_proc` — the currently running process (for time accounting)
 /// * `billp` — the billable process if `current_proc` is not billable;
 ///   `None` if `current_proc` is itself billable (D10).
 /// * `ready_count` — number of processes in ready queues (for load average)
+/// * `on_expired` — callback invoked once per expired alarm timer
+///   (BSP only; on APs, never called)
 ///
 /// # Returns
 ///
-/// `TimerTickResult` containing expired alarms and vtimer status.
-/// **Does NOT contain `quantum_exhausted`** — quantum decrement is handled
-/// by `clock::decrement_quantum()` (D9), which the caller invokes separately.
-///
-/// # Performance (R-06)
-///
-/// This method collects expired alarms into a `Vec<TimerAction>`. For
-/// hot paths (e.g. timer interrupt handler in production), prefer
-/// `tick_with` which uses a callback and avoids heap allocation.
-pub fn tick(
-    &mut self,
-    current_proc: &mut KProcess,
-    billp: Option<&mut KProcess>,
-    ready_count: usize,
-) -> TimerTickResult {
-    // R-06 (2026-08-12): Delegate to `tick_with` with a Vec collector.
-    // Pre-allocate with capacity 4 to avoid reallocation on first pushes.
-    let mut expired_alarms = Vec::with_capacity(4);
-    let vtimer_expired = self.tick_with(
-        current_proc, billp, ready_count,
-        |action| expired_alarms.push(action),
-    );
-    TimerTickResult { expired_alarms, vtimer_expired }
-}
-
-/// Zero-allocation variant of `tick` for hot paths (R-06, 2026-08-12).
-///
-/// Instead of collecting expired alarms into a `Vec` (which heap-allocates
-/// on push), this variant invokes `on_expired` for each expired alarm
-/// timer inline. Production interrupt handlers should prefer this variant;
-/// tests and convenience code may use `tick` which returns a
-/// `TimerTickResult` with `Vec<TimerAction>`.
+/// `Option<VtimerExpired>` — `Some` if a virtual/profile timer expired
+/// for the current or billable process. **Does NOT report
+/// `quantum_exhausted`** — quantum decrement is handled by
+/// `clock::decrement_quantum()` (D9), invoked separately by the caller.
 pub fn tick_with<F>(
     &mut self,
+    priv_table: &mut PrivTable,
     current_proc: &mut KProcess,
     billp: Option<&mut KProcess>,
     ready_count: usize,
@@ -747,13 +757,11 @@ where F: FnMut(TimerAction) {
         }
     }
 
-    // 5. BSP-only: invoke callback for each expired alarm timer
-    //    C: clock.c:153-161
-    //    R-06: zero-allocation — callback instead of Vec::push.
+    // 5. BSP-only: expire alarm timers from the intrusive chain.
+    //    C: clock.c:153-161 — `if (cpu_is_bsp) tmrs_exptimers(...)`
+    //    Zero-allocation: callback instead of collecting into a Vec.
     if self.is_bsp {
-        while let Some(entry) = self.timers.pop_expired(self.uptime) {
-            on_expired(entry.action);
-        }
+        expire_alarm_timers(priv_table, self, self.uptime, on_expired);
     }
 
     // 6. Load update (all CPUs)
@@ -764,28 +772,19 @@ where F: FnMut(TimerAction) {
 }
 ```
 
-> **R-06（2026-08-12）热路径零分配**：原 `tick()` 在每次调用都用 `Vec::new()` 分配（`collect_expired_timers` 内部），timer 中断属于高频热路径。重构为 `tick_with(callback)` 零分配生产 API + `tick()` 兼容包装（`Vec::with_capacity(4)` 预分配）。生产代码（中断入口）应使用 `tick_with`；测试和便捷代码继续用 `tick`。`collect_expired_timers` 辅助方法已移除（逻辑内联到 `tick_with`）。
+> **热路径零分配**：timer 中断属于高频热路径，`tick_with(callback)` 通过 `on_expired` 回调逐个分发到期闹钟（步骤 5），不在生产路径上构造 `Vec<TimerAction>` 中间集合——避免每次 tick 一次堆分配。`Vec<TimerAction>` 收集仅出现在 `#[cfg(test)]` 内的局部变量（白盒验证回调次数/顺序，测试构建允许堆）。
 
 **与 C 的语义对齐**：
-- 步骤 1-6 与 `timer_int_handler()` 的步骤一一对应
+- 步骤 1-6 与 `timer_int_handler()` 的步骤一一对应（步骤 5 = C clock.c:153-161 的 BSP 闹钟扫描）
 - billp 通过 `Option<&mut KProcess>` 显式传递，`None` 表示当前进程可计费（`BILLABLE`）
 - quantum 递减**不在此方法**——D9 修正旧实现的错误归处
 
-### 4.6 TimerTickResult — tick 返回值
+### 4.6 VtimerExpired — tick 返回值
+
+`TimerTickResult` struct 已删除（零堆：`expired_alarms: Vec<TimerAction>` 为堆容器）。`tick_with` 直接返回 `Option<VtimerExpired>`：
 
 ```rust
 // os/kernel/src/clock.rs
-
-#[derive(Debug, Default)]
-pub struct TimerTickResult {
-    /// Actions from expired alarm timers (BSP only).
-    /// C: `tmrs_exptimers()` output — clock.c:159-161
-    pub expired_alarms: Vec<TimerAction>,
-    /// Virtual/profile timer expiry for current or billable process, if any.
-    /// C: `vtimer_check()` output — do_vtimer.c:81-103
-    pub vtimer_expired: Option<VtimerExpired>,
-    // REMOVED: quantum_exhausted — quantum is now in clock::decrement_quantum() (D9)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VtimerExpired {
@@ -796,76 +795,92 @@ pub enum VtimerExpired {
 }
 ```
 
-### 4.7 set_timer / reset_timer — 定时器管理接口（D3）
+### 4.7 set_alarm_timer / reset_alarm_timer — 定时器管理接口（D3-C）
 
-> 设计决策 D3：`set_timer` 返回 `TimerId`，`reset_timer` 接受 `TimerId`。
+> 设计决策 D3-C：定时器管理接口是**自由函数**（非 `ClockState` 方法）——链操作需同时可变借用 `PrivTable`（节点宿主）与 `ClockState`（链头），身份 = `PrivId` 槽位。完整签名与 C 行为对照见 §4.3。
 
 ```rust
-// os/kernel/src/clock.rs
+// os/kernel/src/clock.rs — clock.rs:622/652
 
-impl ClockState {
-    /// Set a kernel timer. Returns the assigned `TimerId` for later reset.
-    /// C: `set_kernel_timer()` — clock.c:229-240
-    ///
-    /// # Panics
-    ///
-    /// Panics if called on an AP instance (alarm timers are BSP-only).
-    pub fn set_timer(&mut self, entry: TimerEntry) -> TimerId {
-        assert!(self.is_bsp, "set_timer called on AP ClockState (timers are BSP-only)");
-        self.timers.insert(entry)
-    }
+// C: `set_kernel_timer(tp, exp_time, watchdog, arg)` — clock.c:229-240
+//   tp = &priv(caller)->s_alarm_timer（结构体地址身份）
+pub fn set_alarm_timer(
+    priv_table: &mut PrivTable,   // 节点宿主（C: priv[]）
+    clock: &mut ClockState,       // 链头宿主（C: clock_timers）
+    priv_id: PrivId,              // 身份 = 槽位（C: tp 指针 ⟺ 槽地址）
+    exp_time: u64,
+    action: TimerAction,
+);  // 无返回值——无需回传 id，节点就内嵌在 priv 槽
 
-    /// Reset (remove) a kernel timer by `TimerId`.
-    /// C: `reset_kernel_timer()` — clock.c:245-255
-    pub fn reset_timer(&mut self, id: TimerId) -> Option<TimerEntry> {
-        if !self.is_bsp { return None; }
-        self.timers.remove(id)
-    }
-}
+// C: `reset_kernel_timer(tp)` — clock.c:245-255
+pub fn reset_alarm_timer(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+);  // 幂等，无返回值
 ```
 
-**与 C 的接口差异**：
-- C：`set_kernel_timer(tp, exp_time, watchdog, arg)` —— `tp` 是 `minix_timer_t *`（结构体地址），调用方持有结构体内存
-- Rust：`set_timer(entry: TimerEntry) -> TimerId` —— 调用方传入 entry（所有权转移），返回 `TimerId` 用于后续 reset
+**与 C 的接口对应**：
+- C：`set_kernel_timer(tp, exp_time, watchdog, arg)` —— `tp` 是 `minix_timer_t *`（`&sp->s_alarm_timer`，结构体地址），调用方持有结构体内存
+- Rust：`set_alarm_timer(priv_table, clock, priv_id, exp_time, action)` —— `priv_id` 槽索引同构表达 `tp` 地址，节点内嵌 priv 槽（零堆），无所有权转移
 - C：`reset_kernel_timer(tp)` —— 用 `tp` 指针定位
-- Rust：`reset_timer(id: TimerId)` —— 用 `id` 定位
+- Rust：`reset_alarm_timer(priv_table, clock, priv_id)` —— 用槽位定位（幂等：未设置节点不动）
+- v1 的 `set_timer(entry) -> TimerId` / `reset_timer(id) -> Option<TimerEntry>`（方法 + id 簿记）已随 TimerQueue 删除
 
-### 4.8 syscall_clock.rs 调用方适配（D3 配套）
+### 4.8 syscall_clock.rs 调用方适配（D3-C 配套）
 
-> `dispatch_setalarm` 改用新 `set_timer`/`reset_timer` 接口；`KPriv.s_alarm_timer` 字段类型变更以存储 `TimerId`。
+> `dispatch_setalarm` 用 `set_alarm_timer`/`reset_alarm_timer` 自由函数；`KPriv.s_alarm_timer` 字段是内嵌节点（非 `Option<(TimerEntry, TimerId)>` 元组）。
 
-**KPriv 字段变更**（`os/kernel/src/kpriv.rs`）：
+**KPriv 字段**（`os/kernel/src/kpriv.rs`，kpriv.rs:403）：
 
 ```rust
 pub(crate) struct PrivRuntime {
-    /// Synchronous alarm timer + its `TimerId` for queue management.
+    /// Synchronous alarm timer node (intrusive, C-isomorphic).
     ///
-    /// `None` when no alarm is set. When `Some`, holds `(entry, id)` where
-    /// `id` is the `TimerId` returned by `ClockState::set_timer()`, used to
-    /// call `ClockState::reset_timer(id)` when the alarm is cancelled or
-    /// replaced (15-design.md §4.4).
-    pub(crate) s_alarm_timer: Option<(crate::clock::TimerEntry, crate::clock::TimerId)>,
+    /// C: `minix_timer_t s_alarm_timer` — kernel/priv.h:48. The node is
+    /// linked into the clock's sorted chain by `crate::clock::set_alarm_timer`
+    /// / unlinked by `reset_alarm_timer` (C: `clock_timers`, clock.c:37).
+    /// Initialized by `AlarmTimerNode::new()` (C: `tmr_inittimer`,
+    /// system.c:180).
+    pub(crate) s_alarm_timer: crate::clock::AlarmTimerNode,
     // ... other fields
 }
 ```
 
-**dispatch_setalarm 调用方**（`os/kernel/src/syscall_clock.rs`）：
+**dispatch_setalarm 调用方**（`os/kernel/src/syscall_clock.rs`，syscall_clock.rs:199-251）：
 
 ```rust
-// Reset path (exp_time == 0 && !abs_time):
-if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-    clock_state.reset_timer(old_id);  // 用 TimerId reset，非 exp_time
-}
+// C: do_setalarm.c:39-46 — time_left 三分支（wrap-safe）
+let time_left = match priv_table.get(caller_priv_id) {
+    Some(kpriv) => {
+        let tp = &kpriv.runtime.s_alarm_timer;
+        if !tp.is_set() {
+            TMR_NEVER                       // !tmr_is_set(tp)
+        } else if clock::tmr_is_first(uptime, tp.exp_time) {
+            tp.exp_time.wrapping_sub(uptime) // exp >= uptime 路径
+        } else {
+            0                                // 已过期
+        }
+    }
+    None => TMR_NEVER,
+};
 
-// Set path:
-if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-    clock_state.reset_timer(old_id);  // 先取消旧 timer
+// C: do_setalarm.c:56-62 — set or reset
+if !use_abs_time && exp_time == 0 {
+    // Reset: C: do_setalarm.c:57 — reset_kernel_timer(tp)
+    clock::reset_alarm_timer(priv_table, clock_state, caller_priv_id);
+} else {
+    let actual_exp_time = if use_abs_time { exp_time } else { uptime.wrapping_add(exp_time) };
+    // Set: C: do_setalarm.c:59-61 — set_kernel_timer(tp, ...)
+    // set_alarm_timer 内部先摘旧节点（tmrs_set.c:29-30），无需手工先 reset
+    clock::set_alarm_timer(
+        priv_table, clock_state, caller_priv_id, actual_exp_time,
+        TimerAction::NotifyAlarm { endpoint: caller.p_endpoint },
+    );
 }
-let id = clock_state.set_timer(timer.clone());
-kpriv.runtime.s_alarm_timer = Some((timer, id));  // 存储 (entry, id)
 ```
 
-> **关键修正**：旧 Rust 实现调用 `reset_timer(old_timer.exp_time)`（用 exp_time 作 key），会误取消同 exp_time 的其他 timer。新实现用 `TimerId` 精确定位。
+> **关键修正（沿用并简化）**：更早的 Rust 实现调用 `reset_timer(old_timer.exp_time)`（用 exp_time 作 key），会误取消同 exp_time 的其他 timer；v1 修复引入 `TimerId` 簿记。现行实现（D3-C）以 `priv_id` 槽位定位——每 priv 至多一个闹钟，重挂时 `set_alarm_timer` 内部先摘旧节点（C: tmrs_set.c:29-30），无需任何 id 存储/回传，比 v1 的 `(TimerEntry, TimerId)` 元组簿记更简单且与 C 同构。
 
 ### 4.9 ClockArch trait — 硬件定时器抽象（D9 配套）
 
@@ -1052,9 +1067,11 @@ impl ClockState {
 
 ## Ch5: 测试要点
 
-> 测试位置：`os/kernel/src/clock.rs` `#[cfg(test)] mod tests`（44 个测试）+ `os/kernel/src/syscall_clock.rs`（10 个测试，`clock::` 过滤器匹配 `syscall_clock::`）。当前 54 个测试全部通过（`cargo test -p minix-kernel --lib clock::`）。
+> 测试位置：`os/kernel/src/clock.rs` `#[cfg(test)] mod tests`（43 个测试）+ `os/kernel/src/syscall_clock.rs`（10 个测试，`clock::` 过滤器匹配 `syscall_clock::`）。当前 53 个测试全部通过（`cargo test -p minix-kernel --lib clock::`）。
 
-> **R-06（2026-08-12）新增测试**：`test_tick_with_invokes_callback_on_expiry`（callback 在 timer 过期时被调用）+ `test_tick_with_no_allocation_on_empty_expiry`（无过期时 callback 不调用，零分配热路径）+ `test_tick_with_matches_tick_behavior`（`tick` 与 `tick_with` 行为一致）。
+> **R-06（tick 路径零分配）测试覆盖**：`test_tick_with_invokes_callback_on_expiry`（callback 在 timer 过期时被调用）+ `test_tick_with_no_callback_on_empty_expiry`（无过期时 callback 不调用，零分配热路径）+ `test_tick_with_matches_tick_bsp_behavior`（`tick_bsp` 与 `tick_with` 行为一致）。
+
+> **改判后测试覆盖**：闹钟基线用例 `test_alarm_set_and_expire` / `test_alarm_reset_is_idempotent` / `test_alarm_same_exp_time_coexist` / `test_multiple_timers_pop_order` / `test_ap_state_set_alarm_timer_panics`；链语义用例 `test_chain_set_reset_keeps_other_nodes` / `test_chain_expire_order_and_stop_at_head` / `test_chain_rearm_overwrites_old_timer`。`TimerId` 已删除，故无 `test_timer_id_uniqueness`；AP reset 幂等由 `test_chain_set_reset_keeps_other_nodes` 覆盖。
 
 ### 5.1 L1 对偶测试（C-Rust 行为一致）
 
@@ -1069,23 +1086,24 @@ impl ClockState {
 | `test_billp_prof_timer_expiry_reports_prof` | clock.c:147-148 vtimer_check(billp) | billp 到期报告 Prof |
 | `test_vtimer_virtual_expiry` | do_vtimer.c:91-95 | VIRT_TIMER + virt_left=0 → Virtual |
 | `test_vtimer_prof_expiry` | do_vtimer.c:98-102 | PROF_TIMER + prof_left=0 → Prof |
-| `test_timer_set_and_expire` | clock.c:159-161 tmrs_exptimers | set_timer(t=3), tick 3 → expired |
-| `test_timer_reset_by_id` | clock.c:245-255 reset_kernel_timer | set_timer → reset_timer(id) → 不触发 |
+| `test_alarm_set_and_expire` | clock.c:159-161 tmrs_exptimers | set_alarm_timer(t=3), tick 3 → expired |
+| `test_alarm_reset_is_idempotent` | clock.c:245-255 reset_kernel_timer（tmr_is_set guard） | set → reset → 不触发；再 reset 无副作用（幂等） |
 | `test_user_time_accounting` | clock.c:116 p->p_user_time++ | tick 后 user_time+1 |
 
 ### 5.2 L2 契约测试（trait/类型契约）
 
 | 测试名 | 契约 |
 |--------|------|
-| `test_timer_id_uniqueness` | 同一 ClockState 内 set_timer 多次返回不同 TimerId |
-| `test_timer_queue_same_exp_time` | 同 exp_time 两个 timer 都能到期触发（修复 P1：旧 BTreeMap 同 exp_time 覆盖） |
-| `test_ap_state_set_timer_panics` | AP 实例 set_timer panic（D8: AP 不拥有 timer 队列） |
-| `test_ap_state_reset_timer_returns_none` | AP 实例 reset_timer 返回 None |
+| `test_alarm_same_exp_time_coexist` | 同 exp_time 两个闹钟（不同 priv 槽）链上共存；相等时**后插入者先触发**（tmrs_set.c:38-43） |
+| `test_multiple_timers_pop_order` | 3 个闹钟不同 exp_time → 按到期顺序触发 |
+| `test_ap_state_set_alarm_timer_panics` | AP 实例 set_alarm_timer panic（D8: AP 不拥有闹钟链） |
 | `test_load_update_slot_rotation` | uptime 推进 → slot 切换 → history 清零 |
-| `test_timer_queue_pop_expired_order` | 3 个 timer 不同 exp_time → 按顺序弹出 |
 | `test_tick_with_invokes_callback_on_expiry` (R-06) | `tick_with` callback 在 timer 过期时被调用一次 |
-| `test_tick_with_no_allocation_on_empty_expiry` (R-06) | 无过期时 callback 不调用（零分配热路径） |
-| `test_tick_with_matches_tick_behavior` (R-06) | `tick` 与 `tick_with` 行为一致（结果相同） |
+| `test_tick_with_no_callback_on_empty_expiry` (R-06) | 无过期时 callback 不调用（零分配热路径） |
+| `test_tick_with_matches_tick_bsp_behavior` (R-06) | `tick_bsp` 与 `tick_with` 行为一致（结果相同） |
+| `test_chain_set_reset_keeps_other_nodes` | reset 槽 A 不影响链上槽 B/C 的链接关系（chain_unlink 前驱扫描正确） |
+| `test_chain_expire_order_and_stop_at_head` | 到期前缀循环：head 未过期即停（链有序 + 前缀语义） |
+| `test_chain_rearm_overwrites_old_timer` | 同槽重挂：旧节点先摘（tmrs_set.c:29-30），链上无重复节点 |
 
 ### 5.3 边界用例
 
@@ -1093,7 +1111,7 @@ impl ClockState {
 |--------|------|
 | `test_clock_state_hz_bounds` | hz=1 / hz=50001 → fallback DEFAULT_HZ |
 | `test_adjtime_zero_delta` | delta=0 → realtime 每tick+1 |
-| `test_timer_never_expires` | exp_time=u64::MAX → 不触发 |
+| `test_timer_never_expires` | exp_time=TMR_NEVER（=TMRDIFF_MAX+1，timers.h:48）→ 100 tick 内不触发（环绕安全语义） |
 | `test_vtimer_no_expiry_when_flag_not_set` | virt_left=0 但 MF_VIRT_TIMER 未设 → None |
 | `test_billp_no_accounting_when_none` | billp=None → sys_time 不变 |
 | `test_ap_set_boottime_no_op` | AP 实例 set_boottime 无效 |
@@ -1140,4 +1158,4 @@ impl ClockState {
 | 10-switch-to-user | 10 §2.1 阶段 4 quantum 检查，15 D9 quantum 递减归架构层 | ✅ 已协调（10 仅检查不递减） |
 | 11-scheduling-primitives | 11 quantum 设置，15 quantum 递减 | ✅ 已双向 |
 | 16-smp | 16 AP 定时器初始化，15 BSP/AP 职责分离 | ✅ 已双向 |
-| 21-syscall-clock | 21 时钟系统调用，15 内核实现 | ✅ 已同步（21 已更新为 `reset_timer(id)` TimerId 接口） |
+| 21-syscall-clock | 21 时钟系统调用，15 内核实现 | ✅ 已同步（15 §4.8：`dispatch_setalarm` 用 `set_alarm_timer`/`reset_alarm_timer` 自由函数 + time_left 三分支） |

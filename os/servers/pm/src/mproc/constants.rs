@@ -14,7 +14,7 @@
 //! #define NR_PIDS    30000    // Maximum PID
 //! #define INIT_PID   1        // init process PID
 //! #define NO_PID     0        // Invalid PID
-//! #define NO_TRACER  0        // No tracer (process table index 0 is INIT, won't be traced)
+//! #define NO_TRACER  0        // No tracer (slot 0 is PM, never a tracer)
 //! ```
 
 use minix_types::Pid;
@@ -44,8 +44,9 @@ pub const NO_PID: Pid = 0;
 ///
 /// Minix3 definition: `#define NO_TRACER 0`
 ///
-/// Note: In Minix3, NO_TRACER = 0 because process table index 0 is the INIT process,
-/// which will never be traced (it's the system's first process).
+/// Note: In Minix3, NO_TRACER = 0 because process table slot 0 is PM, a
+/// system process that never calls PTRACE, so the sentinel never collides
+/// with a real tracer (INIT is slot 11, `INIT_PROC_NR`, not slot 0).
 ///
 /// This differs from minix-types' NO_TRACER = UserSlot(usize::MAX),
 /// but the semantics are the same: "no tracer".

@@ -446,14 +446,14 @@ impl MemType for ContiguousAnonymous {
 ### 4.6 挂载点：PageSlot.memtype
 
 ```rust
-pub(crate) struct PageSlot {
-    pub(crate) pfn: u32,
-    pub(crate) offset: VirBytes,
-    pub(crate) memtype: Option<&'static dyn MemType>,   /* 11 定义，12 的类型对象挂载 */
+pub(crate) enum PageSlot {                                /* 11 定义（2026-08-16 三态化，todo P0-1） */
+    Empty,
+    Reserved { offset: VirBytes, memtype: Option<&'static dyn MemType> },
+    Mapped   { pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType> },
 }
 ```
 
-`Option` 表达 C 的 phys_region.memtype 指针（可能 NULL——uninitialized 槽位）。框架调用模式：`slot.memtype.unwrap_or(ANON_DEFAULT).ev_pagefault(...)`。
+`Option` 表达 C 的 phys_region.memtype 指针（可能 NULL——Empty/未初始化槽位）。框架调用模式：`slot.memtype().unwrap_or(ANON_DEFAULT).ev_pagefault(...)`；`set_memtype()` 仅对 present 槽（Mapped/Reserved）生效。
 
 ### 4.7 消费链与边界
 

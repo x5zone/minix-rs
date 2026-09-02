@@ -96,7 +96,7 @@ pub(crate) struct MunmapRequest {
 /// macro (`(len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)`). `do_munmap`
 /// applies it to `VMUM_LEN` (mmap.c:568); zero is handled by the caller.
 fn roundup_page(len: VirBytes) -> VirBytes {
-    VirBytes(((len.0 + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE)
+    VirBytes(len.0.div_ceil(PAGE_SIZE) * PAGE_SIZE)
 }
 
 pub(crate) fn handle_munmap(
@@ -105,7 +105,7 @@ pub(crate) fn handle_munmap(
     frames: &mut PageFrames,
     request: &MunmapRequest,
 ) -> Result<MunmapOutcome, MunmapError> {
-    if request.addr.0 % PAGE_SIZE != 0 {
+    if !request.addr.0.is_multiple_of(PAGE_SIZE) {
         return Err(MunmapError::BadAddress);
     }
 
@@ -128,7 +128,7 @@ pub(crate) fn handle_munmap(
         } else if active.regions().find(request.addr).is_some() {
             // C: map_unmap_region(vmp, vr, 0, m->VMUM_LEN) — unaligned
             // length is rejected by map_unmap_region (EINVAL, region.c:1076).
-            if request.length.0 % PAGE_SIZE != 0 {
+            if !request.length.0.is_multiple_of(PAGE_SIZE) {
                 return Err(MunmapError::InvalidLength);
             }
             unmap_range(&mut active, page_alloc, frames, request.addr, request.length)?;
@@ -158,10 +158,10 @@ pub(crate) fn handle_munmap(
 }
 
 pub(crate) fn munmap_vm_lin(addr: VirBytes, length: VirBytes) -> Result<(), MunmapError> {
-    if addr.0 % PAGE_SIZE != 0 {
+    if !addr.0.is_multiple_of(PAGE_SIZE) {
         return Err(MunmapError::BadAddress);
     }
-    if length.0 % PAGE_SIZE != 0 {
+    if !length.0.is_multiple_of(PAGE_SIZE) {
         // C: munmap_vm_lin returns EFAULT for unaligned length (mmap.c:496).
         return Err(MunmapError::BadAddress);
     }
@@ -224,7 +224,7 @@ pub(crate) fn unmap_range(
                 // shared, cache) return EINVAL. Preserving the restriction
                 // also keeps `VrParam::Direct` physical bases correct (a
                 // split of a direct region would map the wrong device pages).
-                if !region.def_memtype.map_or(false, |mt| mt.supports_split()) {
+                if !region.def_memtype.is_some_and(|mt| mt.supports_split()) {
                     return Err(MunmapError::MemTypeNotSupported);
                 }
                 let head_len = VirBytes(unmap_start.0 - reg_start.0);
@@ -252,7 +252,7 @@ pub(crate) fn unmap_range(
                 // C: low-end shrink requires the memtype's `ev_lowshrink`
                 // callback (region.c:1096-1106); memtypes without it
                 // (directphys, shared, anon_contig) return EINVAL.
-                if !region.def_memtype.map_or(false, |mt| mt.supports_low_shrink()) {
+                if !region.def_memtype.is_some_and(|mt| mt.supports_low_shrink()) {
                     return Err(MunmapError::MemTypeNotSupported);
                 }
                 let cut_len = VirBytes(unmap_end.0 - reg_start.0);

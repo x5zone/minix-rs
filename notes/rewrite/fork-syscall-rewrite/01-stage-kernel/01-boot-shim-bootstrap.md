@@ -521,8 +521,8 @@ kmain(cbi)
 >
 > | 回收阶段 | C 源码 | Rust 对应 | 详细文档 |
 > |---------|--------|----------|---------|
-> | 1. 临时切除（pre_init） | `pg_utils.c:32 cut_memmap()`（由 `pre_init.c` 调用）切掉 boot module 占用的物理内存 | `kmain` Phase A.2 调 `cut_memmap` 临时切除（[lib.rs:326-333](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）；boot-shim `build_memmap()` 返回完整 DRAM（含 module 区域），kernel 侧负责切除（FIX-23） | 本文档 §2.4（本节上下文） |
-> | 2. ELF 复制后回收（protect） | `arch/i386/protect.c:450-451` 解析 ELF 后 `mod_start = mod_end = 0` | `load_vm_elf` 复制段后回收（见 [06-proc-init-boot-proc.md §2.5 `arch_boot_proc()`：VM ELF 加载](06-proc-init-boot-proc.md#L756-L830)） | [06-proc-init-boot-proc.md §2.5](06-proc-init-boot-proc.md) |
+> | 1. 临时切除（pre_init） | `pg_utils.c:32 cut_memmap()`（由 `pre_init.c` 调用）切掉 boot module 占用的物理内存 | `kmain` Phase A.2 调 `cut_memmap` 临时切除（os/kernel/src/lib.rs:326-333）；boot-shim `build_memmap()` 返回完整 DRAM（含 module 区域），kernel 侧负责切除（FIX-23） | 本文档 §2.4（本节上下文） |
+> | 2. ELF 复制后回收（protect） | `arch/i386/protect.c:450-451` 解析 ELF 后 `mod_start = mod_end = 0` | `load_vm_elf` 复制段后回收（见 [06-proc-init-boot-proc.md §2.3 boot image 存储（`arch_boot_proc()` VM ELF 加载与回收）](06-proc-init-boot-proc.md#L767-L795)） | [06-proc-init-boot-proc.md §2.3](06-proc-init-boot-proc.md) |
 > | 3. bootstrap 段回收（finish） | `main.c:301` `add_memmap(bootstrap_start, bootstrap_len)` | `os/kernel/src/lib.rs:327-337` `add_memmap(kinfo.bootstrap_start, kinfo.bootstrap_len)`（Rust port 始终 `bootstrap_len=0`，见 §3.5.1） | [08-system-init-boot-finish.md §2.3 add_memmap()](08-system-init-boot-finish.md#L170) |
 >
 > **设计原则**：回收逻辑本质是**跨阶段**的，强行集中到一个文档会破坏叙事流。本节只承担"boot module 内存**不是永久占用**"这一认知锚点；具体机制由各文档按"何时回收 / 谁回收 / 怎么标记"三问分别回答。

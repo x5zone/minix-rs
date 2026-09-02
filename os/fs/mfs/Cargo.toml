@@ -1,0 +1,18 @@
+[package]
+name = "minix-fs-mfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-fs-mfs"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_fs_mfs"
+path = "src/lib.rs"

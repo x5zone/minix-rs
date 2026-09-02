@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn test_process_table_new() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         assert!(table.get(ProcNr(0)).is_some());
         assert!(table.get(ProcNr(-1)).is_some());
         assert!(table.get(ProcNr(255)).is_some());
@@ -1075,7 +1075,7 @@ mod tests {
     fn test_process_table_const_init_per_slot_nr() {
         // 06-proc-init-boot-proc.md §3.1: ProcessTable is `const fn`-initialized
         // with each slot's `p_nr = i - NR_TASKS` and `p_endpoint` set.
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         for i in 0..PROC_TABLE_SIZE {
             let p = table.get_by_index(i).expect("slot must exist");
             let expected_nr = ProcNr(i as i32) - ProcNr(NR_TASKS as i32);
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn test_process_table_const_init_idle_name() {
         // IDLE slot's name must be "IDLE" (set via const fn from_array).
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         let idle = table.get(proc_nr::IDLE).unwrap();
         let name_bytes = idle.p_name.as_bytes();
         assert_eq!(&name_bytes[..4], b"IDLE", "IDLE proc name must be 'IDLE'");
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_process_table_idle() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         let idle = table.get(proc_nr::IDLE).unwrap();
         assert!(idle.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
     }
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn test_rts_set_unset() {
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(1);
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(table.get(nr).unwrap().is_runnable());
@@ -1144,7 +1144,7 @@ mod tests {
         use crate::proc::KProcess;
         use minix_types::Endpoint;
 
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
 
         // Step 1: Make parent (slot 0) runnable
         let parent_nr = ProcNr(0);
@@ -1194,7 +1194,7 @@ mod tests {
         use crate::proc::KProcess;
         use minix_types::Endpoint;
 
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
 
         // Set up parent as runnable
         let parent_nr = ProcNr(0);
@@ -1208,11 +1208,13 @@ mod tests {
             table.get(parent_nr).unwrap().p_endpoint,
             child_nr.0,
         );
-        let child = KProcess::fork_from(
+        // Scratch child: never installed into a table slot in this test, so
+        // the slot-ownership alarm must not fire when it goes out of scope.
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
             table.get(parent_nr).unwrap(),
             child_nr,
             child_endpoint,
-        );
+        ));
 
         // Child should have NO_QUANTUM (not yet scheduled)
         assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
@@ -1232,7 +1234,7 @@ mod tests {
     /// 3. Scheduler dequeue on rts_set, enqueue on rts_unset
     #[test]
     fn test_rts_set_unset_multiple_flags() {
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(0);
 
         // Make process runnable
@@ -1259,7 +1261,7 @@ mod tests {
     /// Test: rts_set on already-set flag is idempotent.
     #[test]
     fn test_rts_set_idempotent() {
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(0);
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
@@ -1296,7 +1298,7 @@ mod tests {
     /// §5.2: Round-trip test: nr → get → p_nr == nr.
     #[test]
     fn test_proc_nr_roundtrip() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         for nr in [ProcNr(-5), ProcNr(-4), ProcNr(-3), ProcNr(-2), ProcNr(-1), ProcNr(0), ProcNr(1), ProcNr(100), ProcNr(255)] {
             assert_eq!(table.get(nr).unwrap().p_nr, nr);
         }
@@ -1305,7 +1307,7 @@ mod tests {
     /// §5.3: Slot empty test — new table has all non-IDLE slots as SLOT_FREE.
     #[test]
     fn test_is_empty_new_table() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         // All slots except IDLE should be SLOT_FREE
         for i in -5i32..=255 {
             let nr = ProcNr(i);
@@ -1321,7 +1323,7 @@ mod tests {
     /// §5.3: is_empty returns false after clearing SLOT_FREE.
     #[test]
     fn test_is_empty_after_alloc() {
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(2);
         assert!(table.is_empty(nr));
         table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1331,7 +1333,7 @@ mod tests {
     /// §5.4: is_kernel_task on KProcess.
     #[test]
     fn test_is_kernel_task() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         // Kernel tasks
         for nr in [ProcNr(-5), ProcNr(-4), ProcNr(-3), ProcNr(-2), ProcNr(-1)] {
             assert!(table.get(nr).unwrap().is_kernel_task(),
@@ -1347,7 +1349,7 @@ mod tests {
     /// §5.5: Iterator count tests.
     #[test]
     fn test_iter_counts() {
-        let table = ProcessTable::new();
+        let table = crate::test_helpers::test_proc_table();
         assert_eq!(table.iter().count(), PROC_TABLE_SIZE);
         // User processes only (skip NR_TASKS kernel tasks)
         assert_eq!(table.iter().skip(NR_TASKS).count(), NR_PROCS);
@@ -1358,7 +1360,7 @@ mod tests {
     #[test]
     fn test_set_bill_to_idle() {
         use crate::proc::proc_nr;
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         // Pre-condition: IDLE slot's enter_queue is 0 (fresh table).
         let idle_idx = super::nr_to_idx(proc_nr::IDLE).unwrap();
         assert_eq!(table.procs[idle_idx].p_accounting.enter_queue
@@ -1388,7 +1390,7 @@ mod tests {
     /// C: do_vmctl.c:72 — `return ENOENT` when vmrequest list is empty.
     #[test]
     fn test_vm_memreq_get_empty_queue() {
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let result = table.vm_memreq_get();
         assert!(matches!(result, Err(crate::vm::VmCtlError::NoRequest)));
     }
@@ -1400,7 +1402,7 @@ mod tests {
         use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
         use minix_types::VirBytes;
 
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(0);
         // Use the process's own endpoint as target (it exists in the table)
         let target_ep = table.get(nr).unwrap().p_endpoint;
@@ -1446,7 +1448,7 @@ mod tests {
         use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckResult, VmCheckParams};
         use minix_types::{Endpoint, VirBytes};
 
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(0);
         // Set up a process in Fetched state (as if MemReqGet was called)
         {
@@ -1484,7 +1486,7 @@ mod tests {
         use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
         use minix_types::{Endpoint, VirBytes};
 
-        let mut table = ProcessTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
         let nr = ProcNr(0);
         // Process in Pending state (not Fetched)
         {
@@ -1515,8 +1517,8 @@ mod tests {
     /// interesting flags are set.
     #[test]
     fn test_process_misc_flags_empty_returns_true() {
-        let mut table = ProcessTable::new();
-        let mut priv_table = crate::kpriv::PrivTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
         table.procs[nr.0 as usize].p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
@@ -1527,8 +1529,8 @@ mod tests {
     /// is cleared and the process stays runnable.
     #[test]
     fn test_process_misc_flags_clears_kcall_resume() {
-        let mut table = ProcessTable::new();
-        let mut priv_table = crate::kpriv::PrivTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
@@ -1564,8 +1566,8 @@ mod tests {
     /// `MF_DELIVERMSG` is cleared.
     #[test]
     fn test_process_misc_flags_clears_delivermsg() {
-        let mut table = ProcessTable::new();
-        let mut priv_table = crate::kpriv::PrivTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
@@ -1584,8 +1586,8 @@ mod tests {
     /// MF_SC_DEFER is cleared and IPC is dispatched.
     #[test]
     fn test_process_misc_flags_clears_sc_defer() {
-        let mut table = ProcessTable::new();
-        let mut priv_table = crate::kpriv::PrivTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();
@@ -1603,8 +1605,8 @@ mod tests {
     /// unrunnable after flag processing.
     #[test]
     fn test_process_misc_flags_unrunnable_returns_false() {
-        let mut table = ProcessTable::new();
-        let mut priv_table = crate::kpriv::PrivTable::new();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
         {
             let proc = table.get_mut(nr).unwrap();

@@ -250,18 +250,18 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 C 的 `map_copy_region`（region.c:820-849）建立共享但忽略 `ev_reference` 失败。Rust `fork_region`：
 
 1. **元数据继承**（:96-101）：`parent_slot`/`def_memtype`/`remaps`/`id`/`param` + `ev_copy`（:103-105，C region.c:826-830）。
-2. **逐 slot refcount++**（:114-133）：`frames.get_mut(slot.pfn).refcount += 1` 并记录到 `refcounted_pfns`；`ev_reference`（:121）失败 → **逐 pfn 递减回滚**（:122-131）→ `VmForkError`。
+2. **逐 slot refcount++**（:114-133）：`if let Some(pfn) = slot.pfn() { frames.get_mut(pfn).refcount += 1 }`（三态 `PageSlot`，仅 `Mapped` 有 pfn）并记录到 `refcounted_pfns`；`ev_reference`（:121）失败 → **逐 pfn 递减回滚**（:122-131）→ `VmForkError`。
 3. **子区域只读**（:137）：`dst.set_writable(false)`——对应 C fork 后 PTE 只读的起点（后续由 write_page_table_mappings 具体写 PTE）。
 
 ### 3.2 D2：写保护——prepare_cow + write_page_table_mappings
 
 ```rust
-pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {   // vir_region.rs:256-270
+pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {   // vir_region.rs:304-317
     for slot in self.physblocks.iter() {
-        if slot.is_mapped() {
-            if let Some(state) = frames.get_mut(slot.pfn) {
+        if let Some(pfn) = slot.pfn() {
+            if let Some(state) = frames.get_mut(pfn) {
                 if state.refcount > 1 {
-                    state.flags.insert(PageFlags::COW);           // page_state.rs:35
+                    state.flags.insert(PageFlags::COW);           // page_state.rs:27-40
                 }
             }
         }

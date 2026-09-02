@@ -25,7 +25,6 @@ use crate::vmproc::{VmProcTable, ActiveProc, EndpointError};
 use crate::region::{VirRegion, VrFlags, PageFrames};
 use crate::alloc_page::VmPageAllocator;
 use crate::memtype::MEM_TYPE_ANON;
-use crate::pagetable::Paging;
 use crate::region::page_state::PAGE_SIZE;
 
 /// Errors from VM_BRK (heap resize) operations.
@@ -95,7 +94,7 @@ fn grow_heap(
         return Ok(BrkResponse { new_brk_addr: current_top });
     }
 
-    let aligned_len = VirBytes(((grow_len + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE);
+    let aligned_len = VirBytes(grow_len.div_ceil(PAGE_SIZE) * PAGE_SIZE);
     let new_end = VirBytes(current_top.0 + aligned_len.0);
 
     if active.regions().find_overlap(current_top, new_end).is_some() {

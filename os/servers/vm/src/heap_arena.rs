@@ -44,6 +44,9 @@ use crate::phys_mem::{PageAllocFlags, AlignedPhysBytes, CLICK_SIZE};
 const PAGE_SIZE: u64 = CLICK_SIZE as u64;
 
 pub(crate) struct HeapArena {
+    // V10-P2-1: `base` is read only by the test-only accessors and the
+    // DEFERRED `shrink` path; production uses `limit`/`top`.
+    #[cfg_attr(not(test), allow(dead_code))]
     base: u64,
     limit: AssumeSyncCell<u64>,
     top: u64,
@@ -58,6 +61,8 @@ impl HeapArena {
         }
     }
 
+    // V10-P2-1: layout accessors are test-only today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn base(&self) -> u64 {
         self.base
     }
@@ -67,14 +72,17 @@ impl HeapArena {
         unsafe { *self.limit.get() }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn top(&self) -> u64 {
         self.top
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn available_va(&self) -> u64 {
         self.top - self.limit()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn mapped_bytes(&self) -> u64 {
         self.limit() - self.base
     }
@@ -138,6 +146,11 @@ impl HeapArena {
     /// Unmaps the pages from VM's page table and frees the physical pages
     /// back to the page allocator. Pages are unmapped from highest VA
     /// downward to maintain contiguity.
+    ///
+    /// V10-P2-1 (DEFERRED): no production caller yet — the heap-shrink
+    /// path (process exit / heap release) is not wired. Revisit with the
+    /// 24-page-cache reclaim work.
+    #[allow(dead_code)]
     pub fn shrink(
         &self,
         pages: usize,
@@ -161,11 +174,8 @@ impl HeapArena {
 
         for i in 0..pages {
             let va = VB(new_limit + i as u64 * PAGE_SIZE);
-            match vm_self_unmap(va) {
-                Ok(phys) => {
-                    page_alloc.free_page(AlignedPhysBytes::new(phys.0));
-                }
-                Err(_) => {}
+            if let Ok(phys) = vm_self_unmap(va) {
+                page_alloc.free_page(AlignedPhysBytes::new(phys.0));
             }
         }
 
@@ -176,6 +186,10 @@ impl HeapArena {
 }
 
 #[derive(Debug)]
+// V10-P2-1: error payloads are diagnostic-only (callers propagate or
+// `.expect()` without inspecting them), so dead fields/variants are
+// allowed until a caller inspects them.
+#[allow(dead_code)]
 pub(crate) enum HeapArenaError {
     ZeroPages,
     Exhausted { requested: u64, available: u64 },

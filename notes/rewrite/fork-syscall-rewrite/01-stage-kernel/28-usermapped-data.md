@@ -28,7 +28,7 @@ Minix3 32-bit 采用**共享内存映射**策略；minix-rs 64-bit 采用**系�
 
 ### 1.2 `.usermapped` section 的架构角色
 
-**链接器层面**（[kernel.lds:24-28](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/kernel.lds)）：
+**链接器层面**（minix3/minix/kernel/arch/i386/kernel.lds:24-28）：
 
 ```ld
 . = ALIGN(4096); usermapped_start = .;
@@ -44,9 +44,9 @@ Minix3 32-bit 采用**共享内存映射**策略；minix-rs 64-bit 采用**系�
 
 段位于内核镜像起始（unpaged 段之后，`.text` 之前），4KB 对齐确保页表粒度。
 
-**映射层面**（[arch/i386/memory.c:746-806](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/memory.c)）：`arch_phys_map()` 函数返回段的物理地址和长度，VM 调用此函数后用 `VMMF_USER` 标志映射到每个进程的用户地址空间。
+**映射层面**（minix3/minix/kernel/arch/i386/memory.c:746-806）：`arch_phys_map()` 函数返回段的物理地址和长度，VM 调用此函数后用 `VMMF_USER` 标志映射到每个进程的用户地址空间。
 
-**访问层面**：用户态通过 `get_minix_kerninfo()`（[lib/libc/sys/kernel_utils.c:26](file:///home/xzhao/github/minix-rs/minix3/minix/lib/libc/sys/kernel_utils.c)）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
+**访问层面**：用户态通过 `get_minix_kerninfo()`（minix3/minix/lib/libc/sys/kernel_utils.c:26）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
 
 ### 1.3 IPC 入口向量表的三套机制
 
@@ -86,17 +86,17 @@ Minix3 32-bit 提供 3 种 IPC 入口机制，对应不同 x86 指令：
 
 | 文件 | 行数 | 核心内容 |
 |------|------|---------|
-| [usermapped_data.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/usermapped_data.c) | 15 | 8 个数据结构声明（`__section(".usermapped")`） |
-| [arch/i386/usermapped_data_arch.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_data_arch.c) | 33 | 3 个 IPC 向量表定义 |
-| [arch/i386/usermapped_glo_ipc.S](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S) | 108 | 3×7=21 个 IPC trampoline 函数 |
-| [arch/i386/kernel.lds](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/kernel.lds) | 37 | 链接脚本段定义（L24-28） |
-| [arch/i386/memory.c:744-806](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/memory.c) | 63 | `arch_phys_map()` usermapped 段返回 |
-| [include/minix/type.h:98-244](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/type.h) | 147 | §2.2 的 7 个结构体定义（`kinfo` 在 param.h；区内另夹 io_range/minix_mem_range/boot_image/memory/k_randomness 5 个辅助结构体） |
-| [include/minix/param.h:14-47](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/param.h) | 34 | `struct kinfo` 定义 |
+| minix3/minix/kernel/usermapped_data.c | 15 | 8 个数据结构声明（`__section(".usermapped")`） |
+| minix3/minix/kernel/arch/i386/usermapped_data_arch.c | 33 | 3 个 IPC 向量表定义 |
+| arch/i386/usermapped_glo_ipc.S | 108 | 3×7=21 个 IPC trampoline 函数 |
+| minix3/minix/kernel/arch/i386/kernel.lds | 37 | 链接脚本段定义（L24-28） |
+| minix3/minix/kernel/arch/i386/memory.c:744-806 | 63 | `arch_phys_map()` usermapped 段返回 |
+| minix3/minix/include/minix/type.h:98-244 | 147 | §2.2 的 7 个结构体定义（`kinfo` 在 param.h；区内另夹 io_range/minix_mem_range/boot_image/memory/k_randomness 5 个辅助结构体） |
+| minix3/minix/include/minix/param.h:14-47 | 34 | `struct kinfo` 定义 |
 
 ### 2.2 8 个用户可见数据结构
 
-[usermapped_data.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/usermapped_data.c) 声明 8 个全局变量，全部用 `__section(".usermapped")` 属性放入用户映射段：
+minix3/minix/kernel/usermapped_data.c 声明 8 个全局变量，全部用 `__section(".usermapped")` 属性放入用户映射段：
 
 ```c
 struct minix_kerninfo minix_kerninfo __section(".usermapped");
@@ -122,7 +122,7 @@ struct kclockinfo kclockinfo __section(".usermapped");
 | `arm_frclock` | type.h:197 | hz + tcrr | ❌ NOT userland ABI | ARM 自由运行时钟（32-bit ARM 专用） |
 | `kclockinfo` | type.h:104 | boottime + uptime + realtime + hz（含 64-bit 保留字段） | ❌ NOT userland ABI（volatile） | 时钟信息 |
 
-**`minix_kerninfo` 顶层结构详解**（[type.h:214-244](file:///home/xzhao/github/minix-rs/minix3/minix/include/minix/type.h)）：
+**`minix_kerninfo` 顶层结构详解**（minix3/minix/include/minix/type.h:214-244）：
 
 ```c
 struct minix_kerninfo {
@@ -149,7 +149,7 @@ struct minix_kerninfo {
 
 ### 2.3 IPC trampoline 三套机制
 
-[usermapped_glo_ipc.S](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S) 用宏 `IPCFUNC(name,SETARGS,VEC,POSTTRAP)` 生成 3×7=21 个 trampoline 函数。以 `send` 为例：
+usermapped_glo_ipc.S 用宏 `IPCFUNC(name,SETARGS,VEC,POSTTRAP)` 生成 3×7=21 个 trampoline 函数。以 `send` 为例：
 
 **softint 版本**（最简单）：
 ```asm
@@ -181,7 +181,7 @@ usermapped_send_softint:
 
 ### 2.4 `arch_phys_map()` 映射逻辑
 
-[arch/i386/memory.c:746-806](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/memory.c) 的 `arch_phys_map()` 函数返回 usermapped 段的物理地址和标志：
+minix3/minix/kernel/arch/i386/memory.c:746-806 的 `arch_phys_map()` 函数返回 usermapped 段的物理地址和标志：
 
 ```c
 if(index == usermapped_glo_index) {
@@ -224,7 +224,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **C 行为**: `kinfo` 结构既用于 boot→kernel 传递（pre_init.c 填充），又通过 usermapped 暴露给用户态。
 
-**Rust 64-bit 决策**: `KernelInfo`（[os/libs/minix-boot/src/kernel_info.rs:13](file:///home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs)）仅用于 boot-shim → kernel 传递，不暴露给用户态。
+**Rust 64-bit 决策**: `KernelInfo`（os/libs/minix-boot/src/kernel_info.rs:13）仅用于 boot-shim → kernel 传递，不暴露给用户态。
 
 **理由**: boot 阶段尚无系统调用机制，必须用共享内存；boot→kernel 是受控环境（同一二进制或已知兼容的二进制），安全性可保证。
 
@@ -234,7 +234,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **C 行为**: `struct kclockinfo kclockinfo __section(".usermapped")` 全局变量，用户态直接读取 `kclockinfo.uptime`。
 
-**Rust 64-bit 决策**: `ClockState` 结构体字段（[os/kernel/src/clock.rs:708](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs)），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
+**Rust 64-bit 决策**: `ClockState` 结构体字段（os/kernel/src/clock.rs:708），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
 
 **理由**:
 1. 封装性——内部字段可添加验证逻辑
@@ -257,7 +257,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **ARCH: Architectural Evolution** — 从"多入口 + 用户态 trampoline"到"单入口 + 内核直接处理"
 
-**C 行为**: 3 套向量表（softint/sysenter/syscall）+ 21 个 trampoline 函数（[usermapped_glo_ipc.S](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S)）。
+**C 行为**: 3 套向量表（softint/sysenter/syscall）+ 21 个 trampoline 函数（usermapped_glo_ipc.S）。
 
 **Rust 64-bit 决策**: 统一 `syscall` 指令入内核。
 
@@ -284,7 +284,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 #### KernelInfo（boot→kernel 信息传递）
 
-[os/libs/minix-boot/src/kernel_info.rs:13](file:///home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs) 定义 `KernelInfo` 结构体，对应 C `kinfo` 的 boot→kernel 用途：
+os/libs/minix-boot/src/kernel_info.rs:13 定义 `KernelInfo` 结构体，对应 C `kinfo` 的 boot→kernel 用途：
 
 ```rust
 pub struct KernelInfo {
@@ -307,7 +307,7 @@ pub struct KernelInfo {
 
 #### ClockState（kclockinfo 内部化）
 
-[os/kernel/src/clock.rs:708](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs) 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
+os/kernel/src/clock.rs:708 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
 
 ```rust
 struct ClockState {
@@ -326,7 +326,7 @@ struct ClockState {
 
 #### LoadInfoStruct（GET_LOADINFO 子请求）
 
-[os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs) 定义 `LoadInfoStruct`，用于 `sys_getinfo` GET_LOADINFO 子请求返回给用户态。
+os/kernel/src/misc.rs 定义 `LoadInfoStruct`，用于 `sys_getinfo` GET_LOADINFO 子请求返回给用户态。
 
 ### 4.2 不实现（WONTFIX）
 

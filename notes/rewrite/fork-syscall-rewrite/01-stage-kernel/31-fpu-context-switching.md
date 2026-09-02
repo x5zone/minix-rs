@@ -451,7 +451,7 @@ int is_fpu(void)
 
 | 决策 | 设计 | 备选与理由 |
 |------|------|-----------|
-| **D1 状态抽象** | `FpuArch` trait + `State` 关联类型（fpu_arch.rs） | 硬件抽象约束（CLAUDE.md）：OS 层不接触 CR0/CR4/PTE 位；三架构 State 布局不同（x86-64 FXSAVE 512B / ARM64 FPSIMD 528B / RISC-V F/D 264B），关联类型让恢复/保存按 State 泛型化 |
+| **D1 状态抽象** | `FpuArch` trait + `State` 关联类型（fpu_arch.rs） | 硬件抽象约束（项目约定）：OS 层不接触 CR0/CR4/PTE 位；三架构 State 布局不同（x86-64 FXSAVE 512B / ARM64 FPSIMD 528B / RISC-V F/D 264B），关联类型让恢复/保存按 State 泛型化 |
 | **D2 实例化** | stateless ZST `CurrentFpuArch::default()`（泛型静态分发） | trait 对象动态分发对热路径（#NM 恢复）无必要；ZST + 泛型零开销，与现有 `ExceptionArch` 模式一致 |
 | **D3 owner 表示** | `Option<ProcNr>`（每 CPU，smp.rs:164）替代 C 的 `struct proc *fpu_owner` | Option 显式编码"无 owner"状态，杜绝 NULL 解引用语义；ProcNr 是 proc 表的稳定索引（进程死亡后表项复用由 proc 层保证，release 路径同步清理） |
 | **D4 #NM 分发** | dispatcher 特判 `vector 7 && is_user → ExceptionOutcome::FpuTrap`（新增，本轮实现） | C 在汇编层拦截用户 #NM（不进 exception_handler）；Rust 无汇编层分发 → 在 dispatcher 特判，对齐既有 vector 2/14 模式。kernel #NM 走 handle_nested（panic），匹配 C 的 exception_entry_nested |

@@ -3,20 +3,29 @@
 //! Implements the six IPC primitives (SEND, RECEIVE, SENDREC, NOTIFY, SENDNB, SENDA)
 //! and supporting mechanisms (deadlock detection, sender queues, delayed delivery).
 //!
+//! **Zero-heap contract**: see `lib.rs` for the kernel-wide contract. This
+//! module allocates nothing at runtime — sender queues use an intrusive
+//! FIFO through the process-table slots (caller_q_head/tail in target slot,
+//! send_q_link in sender slot).
+//!
 //! # Module Organization
 //!
-//! - Types: `IpcCall`, `IpcOutcome`, `IpcError`, `SendFlags`, `SenderQueue`,
-//!   `IpcEngine`, `DeadlockCycle`, `AsyncMessageTable`, `UserCopy`, `DeliverResult`
+//! - Types: `IpcCall`, `IpcOutcome`, `IpcError`, `SendFlags`,
+//!   `IpcEngine`, `DeadlockCycle`, `UserCopy`, `DeliverResult`
+//! - Sender wait queue: free functions `caller_q_push` / `caller_q_find` /
+//!   `caller_q_remove` / `caller_q_remove_by_nr` (intrusive FIFO through
+//!   the process-table slots — no heap)
+//! - SENDA flags: `AMF_*` constants
 //!
 //! Design decisions are documented in `12-ipc-core.md` §3.
 //! C source: `minix3/minix/kernel/proc.c:263-294, 479-597, 599-698, 703-768,
 //! 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`.
 
 use minix_types::{Endpoint, Message, MessNotify, VirBytes};
-use alloc::collections::VecDeque;
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits, NONE_PROC_NR, proc_nr};
 use crate::proc_table::PROC_TABLE_SIZE;
-use crate::kpriv::PrivTable;
+use crate::kpriv::{KPriv, PrivTable};
+use crate::errno::{OK, EINVAL, EDEADSRCDST, ECALLDENIED};
 
 /// Notification message type. C: `#define NOTIFY_MESSAGE 0x1000` — com.h:90.
 ///
@@ -179,6 +188,9 @@ pub enum IpcError {
     CallDenied,
     /// System call trap not permitted. C: `ETRAPDENIED` — `do_sync_ipc`
     TrapDenied,
+    /// Caller lacks SYS_PROC privilege. C: `EPERM` — `mini_senda`
+    /// (proc.c:1336-1339)
+    Permission,
 }
 
 // IPC send flags. C: `minix3/minix/kernel/ipc.h:11-12`.
@@ -274,18 +286,34 @@ pub trait UserCopy {
     /// Same error semantics as `copy_msg_from_user`.
     fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message) -> Result<(), CopyError>;
 
-    /// Copy a SENDA table from user space.
-    /// C: `mini_senda` reads `asynmsg_t[]` — proc.c:1331.
-    /// Each entry is `(target_endpoint, message)`; the Rust side
-    /// reconstructs `AsyncMessageEntry` from the raw bytes.
+    /// Read one SENDA table entry from user space.
     ///
-    /// Returns the parsed entries on success. On page fault, returns
-    /// `Err(CopyError::PageFault)` (caller maps to `IpcError::Fault`).
-    fn copy_senda_table_from_user(
+    /// C: `A_RETR(i)` — proc.c:1244 (per-entry copy-in of `asynmsg_t`).
+    /// The kernel never caches the whole table; entries are read one at
+    /// a time and results written back one at a time, so no kernel-side
+    /// copy of the table exists (C stores only the user-space table
+    /// address + size in `priv->s_asyntab`/`s_asynsize`, priv.h:28).
+    ///
+    /// Returns `(dst_endpoint, message, flags)` — C: `asynmsg_t.dst`,
+    /// `.msg`, `.flags`. Flag values are `AMF_*` (ipc.h:2754-2761).
+    fn read_senda_entry(
         &self,
-        src: VirBytes,
-        count: usize,
-    ) -> Result<alloc::vec::Vec<AsyncMessageEntry>, CopyError>;
+        table: VirBytes,
+        index: usize,
+    ) -> Result<(Endpoint, Message, i32), CopyError>;
+
+    /// Write one SENDA table result back to user space.
+    ///
+    /// C: `A_INSRT(i)` — proc.c:1307 (per-entry copy-out of the result +
+    /// `AMF_DONE` flag). The kernel ignores copy errors here, same as C
+    /// ("Copy results to caller; ignore errors").
+    fn write_senda_result(
+        &self,
+        table: VirBytes,
+        index: usize,
+        result: i32,
+        flags: i32,
+    ) -> Result<(), CopyError>;
 }
 
 /// User-copy error. Distinguishes page fault (retryable via VM) from
@@ -316,14 +344,24 @@ impl UserCopy for KernelUserCopy {
         // Stub: symmetric with `copy_msg_from_user`.
         Ok(())
     }
-    fn copy_senda_table_from_user(
+    fn read_senda_entry(
         &self,
-        _src: VirBytes,
-        _count: usize,
-    ) -> Result<alloc::vec::Vec<AsyncMessageEntry>, CopyError> {
-        // Stub: kernel-origin path never triggers SENDA table read.
-        // Tests construct AsyncMessageTable directly via `from_entries`.
-        Ok(alloc::vec::Vec::new())
+        _table: VirBytes,
+        _index: usize,
+    ) -> Result<(Endpoint, Message, i32), CopyError> {
+        // Stub: kernel-origin path never triggers SENDA table reads.
+        // Real SENDA flows inject an arch-specific `UserCopy`.
+        Err(CopyError::PageFault)
+    }
+    fn write_senda_result(
+        &self,
+        _table: VirBytes,
+        _index: usize,
+        _result: i32,
+        _flags: i32,
+    ) -> Result<(), CopyError> {
+        // Stub: symmetric with `read_senda_entry`.
+        Ok(())
     }
 }
 
@@ -395,226 +433,182 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
     }
 }
 
-// ── Async message table for SENDA (FIX-6 / AT-9) ──
+// ── Async message passing (SENDA) ──
+//
+// Design (re-judged from the earlier `AsyncMessageTable` Vec cache):
+// C never copies the SENDA table into the kernel. `try_deliver_senda`
+// reads entries from user space one at a time (`A_RETR`, proc.c:1244)
+// and writes results back one at a time (`A_INSRT`, proc.c:1307). If
+// entries remain undelivered, C stores only the table address and size
+// in the caller's privilege structure (`s_asyntab`/`s_asynsize`,
+// priv.h:28) — retry re-reads the table from user space
+// (try_async → try_deliver_senda, proc.c:1348-1410).
+//
+// The kernel-side Vec cache was a double deviation: it heap-allocated
+// (violating the kernel's zero-heap storage model — 06 §2.0 layer 2)
+// and changed retry semantics (kernel copy vs C's user-space re-read).
+// Delivery state lives where C keeps it: the `AMF_DONE` flag in the
+// user table entry, plus the `s_asyn_pending` bitmap on the target
+// (set by the delivery pass, cleared by retry delivery).
 
-/// Async message table entry. C: `asynmsg_t` — proc.c:1331.
+// ── Sender wait queue (design §2.5 / AT-2 / ARCH-2) ──
+//
+// C: `struct proc *p_caller_q` (queue head, owned by the TARGET —
+// proc.h:73) + `struct proc *p_q_link` (chain link, living on the
+// SENDER — proc.h:74) — an intrusive FIFO threaded through the
+// process-table slots.
+//
+// Design (re-judged from the earlier `VecDeque<ProcNr>`): same
+// intrusive FIFO, links re-expressed as `Option<ProcNr>` slot indices.
+// Index links carry no reference semantics, so Rust's aliasing rules
+// are not violated and no heap is involved — enqueue touches only
+// `Option<ProcNr>` fields already inside the slots. This restores C's
+// properties exactly:
+//   1. **Zero allocation** — the kernel has no heap at any point in its
+//      lifetime (06-proc-init-boot-proc.md §2.0 layer 2: no malloc/kmalloc
+//      in the entire C kernel; minix-rs follows the same storage model).
+//   2. **Infallible enqueue** — C's enqueue (two pointer writes,
+//      proc.c:960-964) never fails; `VecDeque::push_back` would abort
+//      the kernel on allocation failure.
+//   3. **Bounded capacity for free** — a process blocks on at most one
+//      send (`RTS_SENDING` blocks the whole process, proc.c:948), so
+//      each slot appears in at most one queue: total queued entries ≤
+//      NR_TASKS + NR_PROCS, statically guaranteed. No overflow path.
+//
+// Storage (in KProcess, C-isomorphic):
+//   - target slot: `caller_q_head` / `caller_q_tail` (C: `p_caller_q`;
+//     the tail is an O(1)-append extension — C walks O(n) to the tail,
+//     proc.c:960-964; FIFO order identical)
+//   - sender slot: `send_q_link` (C: `p_q_link`)
+//
+// The operations below take `&mut [KProcess]` and resolve links via
+// `nr_to_idx` (bounds-checked, same as C's `proc_addr` offset formula).
+// C walks find+unlink in one pass (proc.c:1084); Rust's split
+// find/remove walks twice — O(n) either way, n ≤ table size.
+
+/// SENDA table entry flags. C: `ipc.h:2754-2761` (octal values).
+pub const AMF_EMPTY: i32 = 0o0;
+pub const AMF_VALID: i32 = 0o1;
+pub const AMF_DONE: i32 = 0o2;
+pub const AMF_NOTIFY: i32 = 0o4;
+pub const AMF_NOREPLY: i32 = 0o10;
+pub const AMF_NOTIFY_ERR: i32 = 0o20;
+/// All flag bits the kernel accepts. C: proc.c:1251.
+const AMF_ALL: i32 = AMF_VALID | AMF_DONE | AMF_NOTIFY | AMF_NOREPLY | AMF_NOTIFY_ERR;
+
+/// Enqueue `caller_idx`'s process at the tail of `dst_idx`'s sender queue.
 ///
-/// Each entry tracks delivery state so failed deliveries can be retried
-/// on the next RECEIVE (INV-8).
-#[derive(Debug, Clone)]
-pub struct AsyncMessageEntry {
-    /// Target endpoint. C: `asynmsg_t.a_dest`.
-    pub target: Endpoint,
-    /// Message payload. C: `asynmsg_t.a_msg`.
-    pub message: Message,
-    /// Delivery state (pub(crate) — external code only sees target+message).
-    pub(crate) state: AsyncEntryState,
-}
-
-/// Async entry delivery state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AsyncEntryState {
-    /// Pending delivery. C: initial state.
-    Pending,
-    /// Delivered successfully. C: `result == OK`.
-    Done,
-    /// Target not ready; will retry on next RECEIVE. C: pending bit set.
-    NotReady,
-}
-
-/// Async message table for SENDA. C: `asynmsg_t *table` — proc.c:1331.
+/// C: `while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller_ptr;`
+/// — proc.c:960-964 (walk to tail, link). Rust keeps an explicit tail
+/// for O(1) append; FIFO order is identical.
 ///
-/// Design decision §3.10 / AT-9: `Vec`-owned entries instead of a raw
-/// pointer + size pair. Each entry tracks delivery state so failed
-/// deliveries can be retried on the next RECEIVE (INV-8).
-#[derive(Debug, Default)]
-pub struct AsyncMessageTable {
-    entries: alloc::vec::Vec<AsyncMessageEntry>,
-}
-
-impl AsyncMessageTable {
-    /// Construct from explicit entries (test/IPC dispatcher path).
-    /// C: `mini_senda` reads the user table once and caches it.
-    pub fn from_entries(
-        entries: impl IntoIterator<Item = (Endpoint, Message)>,
-    ) -> Self {
-        let entries = entries
-            .into_iter()
-            .map(|(target, message)| AsyncMessageEntry {
-                target,
-                message,
-                state: AsyncEntryState::Pending,
-            })
-            .collect();
-        Self { entries }
-    }
-
-    /// Construct from pre-built entries (UserCopy path).
-    pub fn from_raw_entries(entries: alloc::vec::Vec<AsyncMessageEntry>) -> Self {
-        Self { entries }
-    }
-
-    /// Number of entries in the table.
-    pub fn len(&self) -> usize { self.entries.len() }
-
-    /// Returns `true` if no entries.
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
-
-    /// Try to deliver all pending entries. C: `try_deliver_senda` —
-    /// proc.c:1200-1326. Returns the number of entries successfully
-    /// delivered in this pass.
-    ///
-    /// Each entry is dispatched via `engine.send` with `FROM_KERNEL`
-    /// (async messages are kernel-cached copies, not user pointers).
-    /// `Blocked` outcomes are recorded as `NotReady` for retry; the
-    /// caller is **not** blocked (SENDA never blocks the caller).
-    pub fn try_deliver_all(
-        &mut self,
-        engine: &mut IpcEngine<'_>,
-        caller_nr: ProcNr,
-    ) -> usize {
-        let mut delivered = 0;
-        for entry in &mut self.entries {
-            if entry.state != AsyncEntryState::Pending {
-                continue;
+/// Invariant (INV-1): a process with `RTS_SENDING` set is in exactly one
+/// queue; `send_q_link` is `None` outside a queue.
+pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: usize) {
+    let caller_nr = procs[caller_idx].p_nr;
+    procs[caller_idx].send_q_link = None;
+    match procs[dst_idx].caller_q_tail {
+        Some(tail_nr) => {
+            if let Some(tail_idx) = nr_to_idx(tail_nr) {
+                procs[tail_idx].send_q_link = Some(caller_nr);
             }
-            let outcome = engine.send(
-                caller_nr,
-                entry.target,
-                &entry.message,
-                SendFlags::FROM_KERNEL | SendFlags::SENDA,
-            );
-            match outcome {
-                IpcOutcome::Delivered => {
-                    entry.state = AsyncEntryState::Done;
-                    delivered += 1;
-                }
-                IpcOutcome::Blocked => {
-                    entry.state = AsyncEntryState::NotReady;
-                }
-                IpcOutcome::Error(_) => {
-                    entry.state = AsyncEntryState::NotReady;
-                }
-            }
+            procs[dst_idx].caller_q_tail = Some(caller_nr);
         }
-        delivered
+        None => {
+            procs[dst_idx].caller_q_head = Some(caller_nr);
+            procs[dst_idx].caller_q_tail = Some(caller_nr);
+        }
     }
 }
 
-// ── Sender queue (design §2.5 / AT-2 / ARCH-2) ──
-
-/// Sender wait queue. Replaces C's `p_caller_q` intrusive linked list.
-/// C: `struct proc *p_caller_q` + `p_q_link` — proc.h:73, proc.c:960-964.
+/// Find the first queued sender on `dst_idx`'s queue matching
+/// `src_endpoint` (head-first scan). Returns the sender's slot index.
 ///
-/// Design decision §2.5 / ARCH-2: `VecDeque<ProcNr>` instead of intrusive
-/// linked list. Reasons:
-///   1. Rust ownership model forbids safe intrusive lists across
-///      `&mut [KProcess]` (aliasing UB).
-///   2. `VecDeque` provides O(1) `push_back`/`pop_front`.
-///   3. `NR_PROCS` is small (typically 256), linear scan acceptable.
-///   4. No `unsafe` (replaces previous `AtomicI32` + `nr_to_idx` indexing
-///      which was effectively unsafe pointer simulation).
+/// C: `while (*xpp) { if (CANRECEIVE(...)) break; }` — proc.c:1077-1105.
+/// `Endpoint::ANY` matches the head (C: first queue entry).
+pub(crate) fn caller_q_find(
+    procs: &[KProcess],
+    dst_idx: usize,
+    src_endpoint: Endpoint,
+) -> Option<usize> {
+    let mut cur = procs[dst_idx].caller_q_head;
+    while let Some(nr) = cur {
+        let idx = nr_to_idx(nr)?;
+        if src_endpoint == Endpoint::ANY || procs[idx].p_endpoint == src_endpoint {
+            return Some(idx);
+        }
+        cur = procs[idx].send_q_link;
+    }
+    None
+}
+
+/// Remove the sender at slot index `sender_idx` from `dst_idx`'s queue,
+/// unlinking it (predecessor link + head/tail fixup).
 ///
-/// The queue is owned by each `KProcess` as field `caller_q`. C's
-/// `p_q_link` field is eliminated — queue storage is internal to
-/// `SenderQueue`, not the process struct.
-#[derive(Debug, Default)]
-pub struct SenderQueue(VecDeque<ProcNr>);
-
-impl SenderQueue {
-    /// Create an empty queue. `const` so it can be used in `KProcess::new_zeroed`
-    /// (which is `const fn` for `static mut` process table init).
-    pub const fn new() -> Self { Self(VecDeque::new()) }
-
-    /// Append sender to the tail of the queue.
-    ///
-    /// C: `while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller_ptr;`
-    /// — proc.c:960-964.
-    pub fn push_back(&mut self, nr: ProcNr) { self.0.push_back(nr); }
-
-    /// Pop the head of the queue (FIFO). Used when target enters
-    /// RECEIVE with `Endpoint::ANY`.
-    pub fn pop_front(&mut self) -> Option<ProcNr> { self.0.pop_front() }
-
-    /// Find the index of the first sender matching `src_endpoint`.
-    /// Does NOT remove — caller must call `remove_at` to dequeue.
-    /// Returns `Some(0)` for `Endpoint::ANY` when the queue is non-empty.
-    ///
-    /// C: `while (*xpp) { if (CANRECEIVE(...)) break; }` — proc.c:1077-1105.
-    ///
-    /// # Why split find + remove
-    ///
-    /// `IpcEngine::receive` needs to (1) scan the queue against the process
-    /// table and (2) remove the matched entry. Because the queue lives
-    /// inside `self.procs[caller_idx].caller_q`, a single `remove_matching`
-    /// method would require simultaneously borrowing `self.procs` mutably
-    /// (for the queue) and immutably (for endpoint lookup) — a classic
-    /// aliasing conflict. Splitting lets the immutable lookup borrow end
-    /// before the mutable removal borrow starts.
-    pub fn find_matching(
-        &self,
-        procs: &[KProcess],
-        src_endpoint: Endpoint,
-    ) -> Option<usize> {
-        if src_endpoint == Endpoint::ANY {
-            return if self.0.is_empty() { None } else { Some(0) };
+/// C: `*xpp = (*xpp)->p_q_link` — proc.c:1084 (find + unlink in one walk);
+/// same walk shape in `clear_ipc` (system.c:520-531).
+pub(crate) fn caller_q_remove(procs: &mut [KProcess], dst_idx: usize, sender_idx: usize) -> bool {
+    let sender_nr = procs[sender_idx].p_nr;
+    let sender_next = procs[sender_idx].send_q_link;
+    let mut cur = procs[dst_idx].caller_q_head;
+    let mut prev: Option<ProcNr> = None;
+    while let Some(nr) = cur {
+        let Some(idx) = nr_to_idx(nr) else { return false };
+        if idx == sender_idx {
+            match prev {
+                Some(prev_nr) => {
+                    if let Some(prev_idx) = nr_to_idx(prev_nr) {
+                        procs[prev_idx].send_q_link = sender_next;
+                    }
+                }
+                None => procs[dst_idx].caller_q_head = sender_next,
+            }
+            if procs[dst_idx].caller_q_tail == Some(sender_nr) {
+                procs[dst_idx].caller_q_tail = prev;
+            }
+            procs[sender_idx].send_q_link = None;
+            return true;
         }
-        self.0.iter().position(|nr| {
-            nr_to_idx(*nr)
-                .and_then(|idx| procs.get(idx))
-                .is_some_and(|p| p.p_endpoint == src_endpoint)
-        })
+        prev = Some(nr);
+        cur = procs[idx].send_q_link;
     }
+    false
+}
 
-    /// Remove the sender at the given index (paired with `find_matching`).
-    /// Returns the removed `ProcNr`, or `None` if `idx` is out of bounds.
-    pub fn remove_at(&mut self, idx: usize) -> Option<ProcNr> {
-        if idx < self.0.len() {
-            self.0.remove(idx)
-        } else {
-            None
-        }
+/// Remove `target_nr` from `dst_idx`'s queue by ProcNr value.
+///
+/// C: `clear_ipc` walk — system.c:520-531 (dead process unlinked from
+/// its send target's queue); `abort_proc_ipc_send` — do_update.c:226-234.
+pub(crate) fn caller_q_remove_by_nr(
+    procs: &mut [KProcess],
+    dst_idx: usize,
+    target_nr: ProcNr,
+) -> bool {
+    match nr_to_idx(target_nr) {
+        Some(i) => caller_q_remove(procs, dst_idx, i),
+        None => false,
     }
+}
 
-    /// Remove the first entry matching `nr` by `ProcNr` value.
-    ///
-    /// Used by `abort_proc_ipc_send` (SYS_UPDATE rollback) to unlink a
-    /// process from its send target's caller_q.
-    ///
-    /// C: `while (*xpp) { if(*xpp == rp) { *xpp = rp->p_q_link; ... } }`
-    /// — do_update.c:226-234.
-    pub fn remove_by_nr(&mut self, nr: ProcNr) -> bool {
-        if let Some(idx) = self.0.iter().position(|n| *n == nr) {
-            self.0.remove(idx);
-            true
-        } else {
-            false
-        }
+// ── Test/convenience helpers (queue length + membership) ──
+
+/// Number of senders queued on `dst_idx`'s queue (walks the chain).
+#[cfg(test)]
+pub(crate) fn caller_q_len(procs: &[KProcess], dst_idx: usize) -> usize {
+    let mut n = 0;
+    let mut cur = procs[dst_idx].caller_q_head;
+    while let Some(nr) = cur {
+        let Some(idx) = nr_to_idx(nr) else { break };
+        n += 1;
+        cur = procs[idx].send_q_link;
     }
+    n
+}
 
-    /// Convenience wrapper: find + remove in one call.
-    /// Use only when `self` (the queue) and `procs` (the table) are
-    /// independently owned. Inside `IpcEngine::receive` use the split
-    /// `find_matching` + `remove_at` API to avoid aliasing.
-    pub fn remove_matching(
-        &mut self,
-        procs: &[KProcess],
-        src_endpoint: Endpoint,
-    ) -> Option<ProcNr> {
-        let idx = self.find_matching(procs, src_endpoint)?;
-        self.remove_at(idx)
-    }
-
-    /// Check if queue is empty.
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
-
-    /// Number of senders waiting.
-    pub fn len(&self) -> usize { self.0.len() }
-
-    /// Iterator over waiting senders (head → tail).
-    pub fn iter(&self) -> impl Iterator<Item = ProcNr> + '_ {
-        self.0.iter().copied()
-    }
+/// `true` iff `dst_idx`'s queue is empty.
+#[cfg(test)]
+pub(crate) fn caller_q_is_empty(procs: &[KProcess], dst_idx: usize) -> bool {
+    procs[dst_idx].caller_q_head.is_none()
 }
 
 // ── IPC Engine (design §2.6 / AT-3 / ARCH-3) ──
@@ -886,9 +880,7 @@ impl<'a> IpcEngine<'a> {
         }
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::SENDING);
         self.procs[caller_idx].p_sendto_e = dst_endpoint;
-        let dst_nr = self.procs[dst_idx].p_nr;
-        self.procs[dst_idx].caller_q.push_back(caller_nr);
-        let _ = dst_nr;
+        caller_q_push(self.procs, dst_idx, caller_idx);
         IpcOutcome::Blocked
     }
 
@@ -953,31 +945,24 @@ impl<'a> IpcEngine<'a> {
 
         // Phase 2: pending async messages.
         // C: `has_pending` (ASEND) + `try_async` — proc.c:1031-1070.
+        // `try_async` failure (EAGAIN — table empty/endpoint mismatch)
+        // falls through to the caller_q check, same as C.
         if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint) {
-            self.deliver_async(caller_idx, async_src);
-            // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
-            crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
-            return IpcOutcome::Delivered;
+            if self.deliver_async(caller_idx, async_src) {
+                // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
+                crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
+                return IpcOutcome::Delivered;
+            }
         }
 
         // Phase 3: sync sender queue. C: proc.c:1071-1095.
-        // Two-step find + remove to avoid aliasing: the queue lives inside
-        // `self.procs[caller_idx].caller_q`, so we cannot mutably borrow the
-        // queue while immutably borrowing `self.procs` for endpoint lookup.
-        // `find_matching` takes only `&self` borrows; once it returns the
-        // immutable borrow ends and `remove_at` can take `&mut self`.
-        let q_idx = self.procs[caller_idx]
-            .caller_q
-            .find_matching(self.procs, src_endpoint);
-        if let Some(q_idx) = q_idx {
-            let sender_nr = self.procs[caller_idx]
-                .caller_q
-                .remove_at(q_idx)
-                .expect("find_matching returned a valid index");
-            let sender_idx = match self.idx_of(sender_nr) {
-                Some(i) => i,
-                None => return IpcOutcome::Error(IpcError::DeadSrcDst),
-            };
+        // Intrusive chain walk: `caller_q_find` scans head-first via
+        // `send_q_link`; `caller_q_remove` unlinks (fixing predecessor +
+        // head/tail). The old VecDeque split find/remove existed to work
+        // around queue-owns-subobject aliasing — with links living in the
+        // sender slots, the borrows are ordinary sequential slot accesses.
+        if let Some(sender_idx) = caller_q_find(self.procs, caller_idx, src_endpoint) {
+            caller_q_remove(self.procs, caller_idx, sender_idx);
             // Copy sender's cached message into caller's deliver buffer.
             let sender_msg = self.procs[sender_idx].p_sendmsg;
             let sender_ep = self.procs[sender_idx].p_endpoint;
@@ -1073,9 +1058,9 @@ impl<'a> IpcEngine<'a> {
     /// pending async message, or `None` if no match.
     ///
     /// The bit position is the sender's `priv_id`, same as notify.
-    /// The actual message is stored in the sender's `asynmsg` table;
-    /// for simplicity this implementation reads it from the sender's
-    /// `p_sendmsg` (set by `senda` when the async message was cached).
+    /// The actual message lives in the sender's user-space SENDA table —
+    /// no kernel copy exists; `deliver_async` re-reads it from user
+    /// space (C: `try_one`, proc.c:1390-1497).
     fn take_pending_async(
         &mut self,
         caller_nr: ProcNr,
@@ -1110,18 +1095,139 @@ impl<'a> IpcEngine<'a> {
         None
     }
 
-    /// Deliver a pending async message from `sender_nr` to `caller_idx`.
+    /// Deliver a pending async message from `sender_ep` to `caller_idx`.
     ///
-    /// C: `try_async(caller, src_dst)` — proc.c:1050-1070. Copies the
-    /// cached async message from the sender's `p_sendmsg` (set by
-    /// `senda`) into the caller's `p_delivermsg`.
-    fn deliver_async(&mut self, caller_idx: usize, sender_ep: Endpoint) {
-        if let Some(sender_idx) = self.idx_by_endpoint(sender_ep) {
-            let msg = self.procs[sender_idx].p_sendmsg;
-            self.procs[caller_idx].p_delivermsg = msg;
-            self.procs[caller_idx].p_delivermsg.m_source = sender_ep;
-            self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+    /// C: `try_one(ANY, src_ptr, dst_ptr)` — proc.c:1390-1497. Re-reads
+    /// the sender's SENDA table from user space (the sender may have
+    /// altered entries since `mini_senda` — proc.c:1425-1427), delivers
+    /// the first entry aimed at the receiver, and marks that entry
+    /// `AMF_DONE` in the user table. When every remaining entry is
+    /// done/empty, the sender's table pointer is cleared
+    /// (`s_asyntab`/`s_asynsize`, proc.c:1496-1497).
+    ///
+    /// Returns `true` if a message was delivered. The caller's pending
+    /// bit was already cleared by `take_pending_async` (C clears it at
+    /// try_one entry, proc.c:1409 — same ordering).
+    fn deliver_async(&mut self, caller_idx: usize, sender_ep: Endpoint) -> bool {
+        let Some(sender_idx) = self.idx_by_endpoint(sender_ep) else {
+            return false;
+        };
+        let Some(sender_priv_id) = self.procs[sender_idx].priv_id else {
+            return false;
+        };
+
+        // C: table + size from the sender's privilege structure
+        // (proc.c:1405-1406). size == 0 or endpoint mismatch → EAGAIN
+        // (proc.c:1411-1412) — nothing to deliver.
+        let (table, size, asynendpoint) = {
+            let Some(priv_) = self.priv_table.get(sender_priv_id) else {
+                return false;
+            };
+            (priv_.signals.s_asyntab, priv_.signals.s_asynsize, priv_.signals.s_asynendpoint)
+        };
+        if size == 0 || asynendpoint != sender_ep {
+            return false;
         }
+        let table = VirBytes(table);
+        let sender_ep_final = sender_ep;
+        let caller_endpoint = self.procs[caller_idx].p_endpoint;
+
+        // C: scan the table (proc.c:1422-1491). Delivery stops at the
+        // first entry that matches (break — one message per receive).
+        let mut done = true;
+        let mut do_notify = false;
+        let mut delivered = false;
+
+        for i in 0..size {
+            // C: A_RETR(i) — per-entry copy-in; failure skips the entry.
+            let (dst_ep, msg, flags) = match self.user_copy.read_senda_entry(table, i) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // C: flags == 0 → skip (proc.c:1434).
+            if flags == AMF_EMPTY {
+                continue;
+            }
+            // C: flags validation (proc.c:1436-1441). EINVAL entries
+            // fall through to result write-back.
+            let invalid = (flags & !AMF_ALL) != 0 || (flags & AMF_VALID) == 0;
+            if (flags & AMF_DONE) != 0 {
+                // C: already done (proc.c:1441).
+                continue;
+            }
+            // C: done = FALSE — a not-yet-done entry exists (proc.c:1449).
+            done = false;
+
+            if invalid {
+                // C: goto store_result with r = EINVAL (proc.c:1451-1452).
+                let _ = self
+                    .user_copy
+                    .write_senda_result(table, i, EINVAL, flags | AMF_DONE);
+                // C: do_notify on NOTIFY / error+NOTIFY_ERR (proc.c:1486-1487).
+                if (flags & AMF_NOTIFY) != 0 {
+                    do_notify = true;
+                }
+                break;
+            }
+
+            // C: message must be directed at the receiver (proc.c:1455).
+            if dst_ep != caller_endpoint {
+                continue;
+            }
+            // C: CANRECEIVE — the receiver must want this source
+            // (proc.c:1457-1461; receive_e is ANY from try_async).
+            if !Self::is_willing_to_receive(&self.procs[caller_idx], sender_ep_final) {
+                continue;
+            }
+            // C: AMF_NOREPLY must not satisfy the receive part of a
+            // SENDREC (proc.c:1463-1468).
+            let noreply_block = (flags & AMF_NOREPLY) != 0
+                && self.procs[caller_idx]
+                    .p_misc_flags
+                    .is_set(MiscFlagsBits::REPLY_PEND);
+            if noreply_block {
+                continue;
+            }
+
+            // C: deliver (proc.c:1470-1474).
+            self.procs[caller_idx].p_delivermsg = msg;
+            self.procs[caller_idx].p_delivermsg.m_source = sender_ep_final;
+            self.procs[caller_idx]
+                .p_misc_flags
+                .set(MiscFlagsBits::DELIVERMSG);
+            delivered = true;
+
+            // C: store_result (proc.c:1479-1488) — result OK + AMF_DONE.
+            let _ = self.user_copy.write_senda_result(table, i, OK, flags | AMF_DONE);
+            if (flags & AMF_NOTIFY) != 0 {
+                do_notify = true;
+            }
+            // C: break — one entry per receive (proc.c:1490).
+            break;
+        }
+
+        if do_notify {
+            // C: mini_notify(proc_addr(ASYNCM), src_ptr->p_endpoint)
+            // — proc.c:1493-1494. ASYNCM = -5 (com.h:47).
+            let _ = mini_notify_core(
+                self.procs,
+                self.priv_table,
+                ProcNr(-5),
+                sender_ep_final,
+            );
+        }
+
+        if done {
+            // C: all entries done/empty — clear the table pointer
+            // (proc.c:1496-1497).
+            if let Some(priv_) = self.priv_table.get_mut(sender_priv_id) {
+                priv_.signals.s_asyntab = u64::MAX; // C: (vir_bytes) -1
+                priv_.signals.s_asynsize = 0;
+            }
+        }
+
+        delivered
     }
 
     /// Build a notification message in `dst.p_delivermsg`.
@@ -1198,22 +1304,205 @@ impl<'a> IpcEngine<'a> {
 
     // ── SENDA ──
 
-    /// Batch async send. C: `mini_senda()` — proc.c:1331-1346.
+    /// Batch async send. C: `mini_senda()` — proc.c:1331-1342, delegating
+    /// to `try_deliver_senda` — proc.c:1200-1326.
     ///
-    /// Delegates to `AsyncMessageTable::try_deliver_all`. Never blocks
-    /// the caller; entries that cannot be delivered immediately are
-    /// marked `NotReady` and retried on the next RECEIVE.
+    /// The kernel never caches the table: entries are read from user
+    /// space one at a time (`UserCopy::read_senda_entry`, C: `A_RETR` —
+    /// proc.c:1244) and per-entry results written back one at a time
+    /// (`UserCopy::write_senda_result`, C: `A_INSRT` — proc.c:1307).
+    /// Undelivered entries are retried by re-reading the user table
+    /// when the target next receives (`deliver_async`, C: `try_one` —
+    /// proc.c:1390-1497).
     ///
-    /// # P0 FIX (FIX-6 / P0-12-3)
-    ///
-    /// Previous implementation returned `BadCall` stub. This version
-    /// accepts a fully-constructed `AsyncMessageTable` and dispatches
-    /// each entry via `send(FROM_KERNEL)`. Table extraction from user
-    /// space is handled by `do_ipc` SENDA branch (via `UserCopy`).
-    pub fn senda(&mut self, caller_nr: ProcNr, table: &mut AsyncMessageTable) -> IpcOutcome {
-        let _delivered = table.try_deliver_all(self, caller_nr);
-        // SENDA never blocks the caller — return Delivered regardless of
-        // per-entry outcomes (failed entries remain pending for retry).
+    /// The caller never blocks. Per-entry errors go into the table's
+    /// `result` field (with `AMF_DONE`), not the return value; the
+    /// function returns `Delivered` (C: always `OK`) unless a
+    /// pre-check fails: non-`SYS_PROC` caller (C: `EPERM`, proc.c:1336)
+    /// or the duplicated size sanity check (C: `EDOM`, proc.c:1233;
+    /// primary check is the SENDA syscall path — proc.c:681).
+    pub fn senda(&mut self, caller_nr: ProcNr, table: VirBytes, size: usize) -> IpcOutcome {
+        // C: mini_senda — SYS_PROC check (proc.c:1331-1342).
+        let caller_idx = match self.idx_of(caller_nr) {
+            Some(i) => i,
+            None => return IpcOutcome::Error(IpcError::DeadSrcDst),
+        };
+        let caller_priv_id = match self.procs[caller_idx].priv_id {
+            Some(id) => id,
+            // C: "caller has no privilege structure" → EPERM (proc.c:1337).
+            None => return IpcOutcome::Error(IpcError::Permission),
+        };
+        let caller_is_sys = self
+            .priv_table
+            .get(caller_priv_id)
+            .map(KPriv::is_sys_proc)
+            .unwrap_or(false);
+        if !caller_is_sys {
+            return IpcOutcome::Error(IpcError::Permission);
+        }
+        let caller_endpoint = self.procs[caller_idx].p_endpoint;
+
+        // C: clear table first (proc.c:1217-1219); restored only if
+        // entries remain undelivered (proc.c:1320-1323).
+        {
+            let Some(priv_) = self.priv_table.get_mut(caller_priv_id) else {
+                return IpcOutcome::Error(IpcError::Permission);
+            };
+            priv_.signals.s_asyntab = u64::MAX; // C: (vir_bytes) -1
+            priv_.signals.s_asynsize = 0;
+            priv_.signals.s_asynendpoint = caller_endpoint;
+        }
+
+        // C: size == 0 — nothing to do (proc.c:1221).
+        if size == 0 {
+            return IpcOutcome::Delivered;
+        }
+
+        // C: duplicated size sanity check (proc.c:1233). Same EDOM →
+        // BadCall mapping as the syscall path.
+        if size > 16 * PROC_TABLE_SIZE {
+            return IpcOutcome::Error(IpcError::BadCall);
+        }
+
+        let mut done = true;
+        let mut do_notify = false;
+
+        for i in 0..size {
+            // C: A_RETR(i) — per-entry copy-in. On copy failure C
+            // complains and skips the entry (asyn_error has no result
+            // write-back); the entry stays un-DONE for retry.
+            let (mut dst_ep, msg, flags) = match self.user_copy.read_senda_entry(table, i) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // C: flags == 0 → skip empty entries (proc.c:1248).
+            if flags == AMF_EMPTY {
+                continue;
+            }
+            // C: flags must contain only valid bits (proc.c:1251) and
+            // must contain a message (proc.c:1255-1258). C's asyn_error
+            // path prints and moves on without write-back.
+            if (flags & !AMF_ALL) != 0 || (flags & AMF_VALID) == 0 {
+                continue;
+            }
+            // C: AMF_DONE → already processed (proc.c:1259).
+            if (flags & AMF_DONE) != 0 {
+                continue;
+            }
+
+            // C: A_RETR SELF replacement (proc.c:1183-1185).
+            if dst_ep == Endpoint::SELF {
+                dst_ep = caller_endpoint;
+            }
+
+            // C: destination checks (proc.c:1261-1274).
+            //   isokendpt fail            → EDEADSRCDST
+            //   iskerneln(dst_p)          → ECALLDENIED (no asyn to kernel)
+            //   !may_asynsend_to          → ECALLDENIED (IPC mask; self
+            //                               always allowed — priv.h:87)
+            //   RTS_NO_ENDPOINT on target → EDEADSRCDST
+            let mut r: i32 = OK;
+            let mut dst_idx_opt: Option<usize> = None;
+            if let Some(di) = self.idx_by_endpoint(dst_ep) {
+                if self.procs[di].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
+                    r = EDEADSRCDST;
+                } else if self.procs[di].p_nr.0 <= 0 {
+                    // iskerneln: slot number in the task region (C:
+                    // `dst_p <= 0` — proc.h iskerneln).
+                    r = ECALLDENIED;
+                } else {
+                    let may = self.procs[di]
+                        .priv_id
+                        .map(|pid| {
+                            self.priv_table
+                                .get(caller_priv_id)
+                                .map(|cp| cp.may_send_to(pid))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
+                        || self.procs[di].p_nr == caller_nr;
+                    if !may {
+                        r = ECALLDENIED;
+                    } else {
+                        dst_idx_opt = Some(di);
+                    }
+                }
+            } else {
+                r = EDEADSRCDST;
+            }
+
+            // C: check if dst is blocked waiting for this message
+            // (proc.c:1276-1291). AMF_NOREPLY must not satisfy the
+            // receive part of a SENDREC (MF_REPLY_PEND).
+            let delivered = match dst_idx_opt {
+                Some(di) if r == OK => {
+                    let willing = Self::is_willing_to_receive(&self.procs[di], caller_endpoint);
+                    let noreply_block = (flags & AMF_NOREPLY) != 0
+                        && self.procs[di]
+                            .p_misc_flags
+                            .is_set(MiscFlagsBits::REPLY_PEND);
+                    if willing && !noreply_block {
+                        // Direct delivery: C: proc.c:1284-1288.
+                        self.procs[di].p_delivermsg = msg;
+                        self.procs[di].p_delivermsg.m_source = caller_endpoint;
+                        self.procs[di]
+                            .p_misc_flags
+                            .set(MiscFlagsBits::DELIVERMSG);
+                        crate::proc::ipc_status_add_call(&mut self.procs[di], IpcCall::SendA);
+                        self.procs[di].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
+                        true
+                    } else {
+                        // C: set_sys_bit(priv(dst)->s_asyn_pending,
+                        // priv(caller)->s_id) — proc.c:1293-1297. The
+                        // bit index is the sender's sys_id (priv_id).
+                        if let Some(dst_pid) = self.procs[di].priv_id {
+                            if let Some(dst_priv) = self.priv_table.get_mut(dst_pid) {
+                                dst_priv.signals.s_asyn_pending |= 1u64 << caller_priv_id;
+                            }
+                        }
+                        done = false;
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if !delivered && r == OK && dst_idx_opt.is_some() {
+                // Pending (not delivered, no error) — C: `continue`
+                // without result write-back (proc.c:1292-1298).
+                continue;
+            }
+            if delivered {
+                // fall through to result write-back with r == OK
+            }
+
+            // C: store results (proc.c:1300-1307).
+            //   tabent.result = r; tabent.flags = flags | AMF_DONE;
+            //   A_INSRT ignores copy errors.
+            let _ = self
+                .user_copy
+                .write_senda_result(table, i, r, flags | AMF_DONE);
+            if (flags & AMF_NOTIFY) != 0 {
+                do_notify = true;
+            } else if r != OK && (flags & AMF_NOTIFY_ERR) != 0 {
+                do_notify = true;
+            }
+        }
+
+        if do_notify {
+            // C: mini_notify(proc_addr(ASYNCM), caller_ptr->p_endpoint)
+            // — proc.c:1317-1318. ASYNCM = -5 (com.h:47).
+            let _ = mini_notify_core(self.procs, self.priv_table, ProcNr(-5), caller_endpoint);
+        }
+
+        if !done {
+            // C: proc.c:1320-1323 — remember table for retry.
+            if let Some(priv_) = self.priv_table.get_mut(caller_priv_id) {
+                priv_.signals.s_asyntab = table.0;
+                priv_.signals.s_asynsize = size;
+            }
+        }
+
         IpcOutcome::Delivered
     }
 
@@ -1296,13 +1585,13 @@ impl<'a> IpcEngine<'a> {
 
         // Layer 3: trap mask. C: `priv(caller)->s_trap_mask & (1 << call_nr)`
         // — proc.c:552. C's `short s_trap_mask` sign-extends to int for the
-        // AND, so `SRV_T = ~0` (short -1) becomes all-1s at int width and
-        // allows SENDA (call_nr=16). To match this with our `u16` storage
-        // we sign-extend to `i32` before the AND. `call as u32` covers
+        // AND, so `SRV_T = ~0` (stored 0xFFFF) allows SENDA (call_nr=16).
+        // The sign extension happens once at the wire boundary
+        // (`TrapMask::from_wire` in kpriv.rs), so the stored mask is already
+        // in the effective form C checks against. `call as u32` covers
         // SENDA=16 (out of `u16` bit range).
-        let mask_extended = (caller_priv.ipc.s_trap_mask as i16) as u32;
-        let call_bit = 1u32 << (call as u32);
-        if (mask_extended & call_bit) == 0 {
+        let call_bit = crate::capability::TrapMask::from_bits(1u32 << (call as u32));
+        if !caller_priv.ipc.s_trap_mask.contains(call_bit) {
             return Err(IpcError::TrapDenied);
         }
 
@@ -1384,13 +1673,10 @@ impl<'a> IpcEngine<'a> {
                     // C: returns EDOM — mapped to BadCall (out-of-domain).
                     return IpcOutcome::Error(IpcError::BadCall);
                 }
-                match self.user_copy.copy_senda_table_from_user(table_ptr, count) {
-                    Ok(entries) => {
-                        let mut table = AsyncMessageTable::from_raw_entries(entries);
-                        self.senda(caller_nr, &mut table)
-                    }
-                    Err(_) => IpcOutcome::Error(IpcError::Fault),
-                }
+                // No table pre-copy: `senda` reads entries from user space
+                // one at a time (C: `A_RETR`), keeping the kernel heap-free
+                // and retry semantics C-isomorphic (re-read on retry).
+                self.senda(caller_nr, table_ptr, count)
             }
         }
     }
@@ -1666,64 +1952,63 @@ mod tests {
         assert_eq!(SendFlags::NONE, SendFlags::empty());
     }
 
-    // ── SenderQueue tests (AT-2 / ARCH-2) ──
+    // ── Sender wait queue tests (AT-2 / ARCH-2 — intrusive FIFO) ──
 
     #[test]
-    fn test_sender_queue_push_pop_fifo() {
-        let mut q = SenderQueue::new();
-        assert!(q.is_empty());
-        q.push_back(ProcNr(1));
-        q.push_back(ProcNr(2));
-        q.push_back(ProcNr(3));
-        assert_eq!(q.len(), 3);
-        assert_eq!(q.pop_front(), Some(ProcNr(1)));
-        assert_eq!(q.pop_front(), Some(ProcNr(2)));
-        assert_eq!(q.pop_front(), Some(ProcNr(3)));
-        assert_eq!(q.pop_front(), None);
+    fn test_caller_q_push_find_remove_fifo() {
+        // Three slots; queue on slot 2 (target). FIFO order via
+        // caller_q_push; find walks head-first; remove unlinks middle.
+        let mut procs = crate::test_helpers::scratch_procs([
+            make_test_proc(0, Endpoint(11)),
+            make_test_proc(1, Endpoint(22)),
+            make_test_proc(2, Endpoint(33)),
+        ]);
+        assert!(caller_q_is_empty(&procs, 2));
+        caller_q_push(&mut procs, 2, 0);
+        caller_q_push(&mut procs, 2, 1);
+        assert_eq!(caller_q_len(&procs, 2), 2);
+        // Chain: head=nr(0) → nr(1); tail=nr(1).
+        assert_eq!(procs[2].caller_q_head, Some(test_nr(0)));
+        assert_eq!(procs[2].caller_q_tail, Some(test_nr(1)));
+        assert_eq!(procs[0].send_q_link, Some(test_nr(1)));
+        assert_eq!(procs[1].send_q_link, None);
+        // ANY matches the head.
+        assert_eq!(caller_q_find(&procs, 2, Endpoint::ANY), Some(0));
+        // Specific endpoint match walks the chain.
+        assert_eq!(caller_q_find(&procs, 2, Endpoint(22)), Some(1));
+        // Remove the middle sender: head link must be fixed.
+        assert!(caller_q_remove(&mut procs, 2, 1));
+        assert_eq!(caller_q_len(&procs, 2), 1);
+        assert_eq!(procs[2].caller_q_head, Some(test_nr(0)));
+        assert_eq!(procs[2].caller_q_tail, Some(test_nr(0)));
+        assert!(procs[1].send_q_link.is_none());
+        // Remove the last sender: queue becomes empty.
+        assert!(caller_q_remove(&mut procs, 2, 0));
+        assert!(caller_q_is_empty(&procs, 2));
+        // Removing a non-member returns false.
+        assert!(!caller_q_remove_by_nr(&mut procs, 2, test_nr(1)));
     }
 
     #[test]
-    fn test_sender_queue_remove_matching_any() {
-        let mut q = SenderQueue::new();
-        q.push_back(ProcNr(1));
-        q.push_back(ProcNr(2));
-        // ANY → pop_front.
-        let procs: [KProcess; 0] = [];
-        assert_eq!(q.remove_matching(&procs, Endpoint::ANY), Some(ProcNr(1)));
-        assert_eq!(q.len(), 1);
-    }
-
-    #[test]
-    fn test_sender_queue_remove_matching_specific() {
-        let mut q = SenderQueue::new();
-        q.push_back(ProcNr(1));
-        q.push_back(ProcNr(2));
-        q.push_back(ProcNr(3));
-        // Build procs slice where nr=2 → endpoint=Endpoint(99).
-        let mut p1 = make_test_proc(0, Endpoint(11));
-        p1.p_rts_flags = RtsFlags::new();
-        let mut p2 = make_test_proc(1, Endpoint(99));
-        p2.p_rts_flags = RtsFlags::new();
-        let mut p3 = make_test_proc(2, Endpoint(33));
-        p3.p_rts_flags = RtsFlags::new();
-        let procs = [p1, p2, p3];
-        // nr_to_idx(1) = 1+NR_TASKS, but our procs array is only 3 long.
-        // This test uses a small slice — remove_matching resolves nr→idx
-        // via nr_to_idx which returns None for out-of-range. Adjust test
-        // to use endpoint match by scanning procs directly.
-        // Instead: test with Endpoint::ANY (already covered above) and
-        // empty queue.
-        let _ = procs;
-        // For specific endpoint match, we need a real process table.
-        // Covered by integration tests below.
+    fn test_caller_q_remove_by_nr_unlinks() {
+        // remove_by_nr resolves the ProcNr → slot index itself (same
+        // walk as C's clear_ipc / abort_proc_ipc_send loops).
+        let mut procs = crate::test_helpers::scratch_procs([
+            make_test_proc(0, Endpoint(11)),
+            make_test_proc(1, Endpoint(22)),
+        ]);
+        caller_q_push(&mut procs, 1, 0);
+        assert!(caller_q_remove_by_nr(&mut procs, 1, test_nr(0)));
+        assert!(caller_q_is_empty(&procs, 1));
+        assert!(procs[0].send_q_link.is_none());
     }
 
     // ── Deadlock detection (P0) ──
 
     #[test]
     fn test_deadlock_no_cycle_empty_table() {
-        let mut pt = crate::proc_table::ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let procs = pt.procs_slice_mut();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, ProcNr(0), Endpoint(1));
@@ -1737,7 +2022,7 @@ mod tests {
         b_ep: Endpoint,
         b_state: RtsFlagsBits,
         b_chain_target: Endpoint,
-    ) -> [KProcess; 2] {
+    ) -> crate::test_helpers::TestProcArray<2> {
         let mut a = make_test_proc(0, a_ep);
         let mut b = make_test_proc(1, b_ep);
         a.p_rts_flags = RtsFlags::new();
@@ -1747,7 +2032,7 @@ mod tests {
             RtsFlagsBits::RECEIVING => b.p_getfrom_e = b_chain_target,
             _ => panic!("test setup: b_state must be SENDING or RECEIVING"),
         }
-        [a, b]
+        crate::test_helpers::scratch_procs([a, b])
     }
 
     #[test]
@@ -1756,7 +2041,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::SENDING, Endpoint(1),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, test_nr(0), Endpoint(2));
         assert!(result.is_some(), "SEND↔SEND 2-cycle must be a deadlock");
@@ -1772,7 +2057,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::RECEIVING, Endpoint(1),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, test_nr(0), Endpoint(2));
         assert!(
@@ -1786,7 +2071,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::SENDING, Endpoint(1),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Receive, test_nr(0), Endpoint(2));
         assert!(
@@ -1800,7 +2085,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::RECEIVING, Endpoint(1),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Receive, test_nr(0), Endpoint(2));
         assert!(
@@ -1819,8 +2104,8 @@ mod tests {
         a.p_rts_flags = RtsFlags::new();
         b.p_rts_flags = RtsFlags::new();
         b.p_getfrom_e = Endpoint::NONE;
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Receive, test_nr(0), Endpoint(2));
         assert!(result.is_none());
@@ -1831,7 +2116,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::RECEIVING, Endpoint(99),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, test_nr(0), Endpoint(2));
         assert!(result.is_none());
@@ -1848,8 +2133,8 @@ mod tests {
         b.p_sendto_e = Endpoint(3);
         c.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
         c.p_sendto_e = Endpoint(1);
-        let mut procs = [a, b, c];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b, c]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, test_nr(0), Endpoint(2));
         assert!(result.is_some(), "3-proc SEND cycle must be detected");
@@ -1872,8 +2157,8 @@ mod tests {
         b.p_getfrom_e = Endpoint(3);
         c.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
         c.p_sendto_e = Endpoint(1);
-        let mut procs = [a, b, c];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b, c]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let result = engine.detect_deadlock(IpcCall::Send, test_nr(0), Endpoint(2));
         assert!(
@@ -1895,8 +2180,8 @@ mod tests {
         a.p_rts_flags = RtsFlags::new();
         b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
         b.p_getfrom_e = Endpoint(1);
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let msg = Message::default();
         let outcome = engine.send(test_nr(0), Endpoint(2), &msg, SendFlags::FROM_KERNEL);
@@ -1914,16 +2199,17 @@ mod tests {
         let mut b = make_test_proc(1, Endpoint(2));
         a.p_rts_flags = RtsFlags::new();
         b.p_rts_flags = RtsFlags::new();
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let msg = Message::default();
         let outcome = engine.send(test_nr(0), Endpoint(2), &msg, SendFlags::FROM_KERNEL);
         assert!(outcome.is_blocked(), "send to non-receiving target must block caller");
         // caller should have RTS_SENDING set.
         assert!(procs[0].p_rts_flags.is_set(RtsFlagsBits::SENDING));
-        // caller should be enqueued on dst's caller_q.
-        assert_eq!(procs[1].caller_q.len(), 1);
+        // caller should be enqueued on dst's caller_q (intrusive chain).
+        assert_eq!(caller_q_len(&procs, 1), 1);
+        assert_eq!(procs[1].caller_q_head, Some(test_nr(0)));
     }
 
     #[test]
@@ -1932,8 +2218,8 @@ mod tests {
         let mut b = make_test_proc(1, Endpoint(2));
         a.p_rts_flags = RtsFlags::new();
         b.p_rts_flags = RtsFlags::new();
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let msg = Message::default();
         let outcome = engine.send(test_nr(0), Endpoint(2), &msg, SendFlags::NON_BLOCKING);
@@ -1948,7 +2234,7 @@ mod tests {
         let mut procs = build_two_proc_scenario(
             Endpoint(1), Endpoint(2), RtsFlagsBits::SENDING, Endpoint(1),
         );
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let msg = Message::default();
         let outcome = engine.send(test_nr(0), Endpoint(2), &msg, SendFlags::FROM_KERNEL);
@@ -1960,8 +2246,8 @@ mod tests {
     #[test]
     fn test_receive_picks_notify_first() {
         // Phase 1: pending notify is delivered before async/caller_q.
-        let mut pt = crate::proc_table::ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         // Assign priv slots so notify bitmap can be set.
         priv_table.assign_static(ProcNr(-4)).unwrap();
         priv_table.assign_static(ProcNr(-3)).unwrap();
@@ -1991,8 +2277,8 @@ mod tests {
     #[test]
     fn test_receive_skips_notify_when_reply_pend() {
         // MF_REPLY_PEND set → notify check skipped, falls through to caller_q.
-        let mut pt = crate::proc_table::ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         priv_table.assign_static(ProcNr(-4)).unwrap();
         priv_table.assign_static(ProcNr(-3)).unwrap();
         {
@@ -2029,24 +2315,25 @@ mod tests {
         a.p_sendto_e = Endpoint(2);
         a.p_sendmsg = Message::default();
         b.p_rts_flags = RtsFlags::new();
-        b.caller_q.push_back(test_nr(0));
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        // Enqueue a on b's queue (intrusive link in a's slot).
+        caller_q_push(&mut procs, 1, 0);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let outcome = engine.receive(test_nr(1), Endpoint::ANY);
         assert!(outcome.is_delivered(), "receive must pick caller_q sender");
         // Sender should be woken (RTS_SENDING cleared).
         assert!(!procs[0].p_rts_flags.is_set(RtsFlagsBits::SENDING));
         // caller_q should be empty after removal.
-        assert!(procs[1].caller_q.is_empty());
+        assert!(caller_q_is_empty(&procs, 1));
     }
 
     #[test]
     fn test_receive_blocks_when_no_match() {
         let mut a = make_test_proc(0, Endpoint(1));
         a.p_rts_flags = RtsFlags::new();
-        let mut procs = [a];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         let outcome = engine.receive(test_nr(0), Endpoint::ANY);
         assert!(outcome.is_blocked(), "receive with no match must block");
@@ -2056,37 +2343,54 @@ mod tests {
     #[test]
     fn test_receive_picks_async_second() {
         // Phase 2: pending async message delivered after notify check.
-        let mut pt = crate::proc_table::ProcessTable::new();
-        let mut priv_table = PrivTable::new();
-        priv_table.assign_static(ProcNr(-4)).unwrap();
-        priv_table.assign_static(ProcNr(-3)).unwrap();
+        //
+        // Realistic state (C: proc.c:1039-1050 → try_one, 1390-1497): the
+        // sender holds a live SENDA table (s_asyntab/s_asynsize on its
+        // priv) and the receiver carries the sender's bit in
+        // s_asyn_pending. receive → deliver_async re-reads the table from
+        // "user space" (SuccessCopy: one VALID entry aimed at Endpoint(2))
+        // and delivers.
+        //
+        // Targets must be user-region slots (p_nr > 0): SENDA to task
+        // slots is ECALLDENIED in C (iskerneln, proc.c:1266).
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(ProcNr(1)).unwrap();
+        let b_priv = priv_table.assign_static(ProcNr(2)).unwrap();
+        let a_endpoint = pt.get(ProcNr(1)).unwrap().p_endpoint; // Endpoint(1)
         {
             let procs = pt.procs_slice_mut();
-            let a = procs.get_mut(0).unwrap();
+            let a = procs.get_mut(nr_to_idx(ProcNr(1)).unwrap()).unwrap();
             a.p_rts_flags = RtsFlags::new();
-            a.priv_id = Some(0);
-            let b = procs.get_mut(1).unwrap();
+            a.priv_id = Some(a_priv);
+            let b = procs.get_mut(nr_to_idx(ProcNr(2)).unwrap()).unwrap();
             b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
             b.p_getfrom_e = Endpoint::ANY;
-            b.priv_id = Some(1);
+            b.priv_id = Some(b_priv);
         }
-        let procs = pt.procs_slice_mut();
-        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
-        // Set async pending bit 0 on B.
+        // Sender's pending SENDA table (C: proc.c:1405-1406 re-reads these).
         {
-            let b_priv = engine.priv_table.get_mut(1).unwrap();
-            b_priv.signals.s_asyn_pending |= 1u64 << 0;
+            let p = priv_table.get_mut(a_priv).unwrap();
+            p.signals.s_asyntab = 0x1000;
+            p.signals.s_asynsize = 1;
+            p.signals.s_asynendpoint = a_endpoint;
         }
-        let b_nr = engine.procs[1].p_nr;
-        let outcome = engine.receive(b_nr, Endpoint::ANY);
+        // Receiver's async-pending bitmap carries the sender's priv bit.
+        priv_table.get_mut(b_priv).unwrap().signals.s_asyn_pending |= 1u64 << a_priv;
+
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &SuccessCopy);
+        let outcome = engine.receive(ProcNr(2), Endpoint::ANY);
         assert!(outcome.is_delivered(), "receive must pick pending async");
+        let b_idx = nr_to_idx(ProcNr(2)).unwrap();
+        assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
     // ── Notify tests (P0-12-1) ──
 
     #[test]
     fn test_notify_delivers_when_target_receiving() {
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
         {
             let a = pt.get_mut(ProcNr(-4)).unwrap();
             a.p_rts_flags = RtsFlags::new();
@@ -2098,7 +2402,7 @@ mod tests {
         }
         let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
         let procs = pt.procs_slice_mut();
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
         let result = engine.notify(ProcNr(-4),b_endpoint);
         assert!(result.is_delivered(), "notify should deliver");
@@ -2109,7 +2413,7 @@ mod tests {
 
     #[test]
     fn test_notify_records_bitmap_when_not_receiving() {
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
         {
             let a = pt.get_mut(ProcNr(-4)).unwrap();
             a.p_rts_flags = RtsFlags::new();
@@ -2122,7 +2426,7 @@ mod tests {
         }
         let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
         let procs = pt.procs_slice_mut();
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         priv_table.assign_static(ProcNr(-4)).unwrap();
         priv_table.assign_static(ProcNr(-3)).unwrap();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
@@ -2138,9 +2442,9 @@ mod tests {
     #[test]
     fn test_notify_never_blocks() {
         // Notify to a non-existent endpoint returns Error, not Blocked.
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
         let procs = pt.procs_slice_mut();
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
         let result = engine.notify(ProcNr(-4),Endpoint(99999));
         assert!(!result.is_blocked(), "notify must never block");
@@ -2148,12 +2452,16 @@ mod tests {
 
     // ── Deliver message tests (P0-12-1) ──
 
-    /// A UserCopy impl that always succeeds.
+    /// A UserCopy impl that always succeeds. SENDA reads return a
+    /// single VALID entry aimed at `Endpoint(2)`.
     struct SuccessCopy;
     impl UserCopy for SuccessCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
-        fn copy_senda_table_from_user(&self, _src: VirBytes, _count: usize) -> Result<alloc::vec::Vec<AsyncMessageEntry>, CopyError> { Ok(alloc::vec::Vec::new()) }
+        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+            Ok((Endpoint(2), Message::default(), AMF_VALID))
+        }
+        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
     /// A UserCopy impl that always page-faults.
@@ -2161,15 +2469,16 @@ mod tests {
     impl UserCopy for PageFaultCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Err(CopyError::PageFault) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Err(CopyError::PageFault) }
-        fn copy_senda_table_from_user(&self, _src: VirBytes, _count: usize) -> Result<alloc::vec::Vec<AsyncMessageEntry>, CopyError> { Err(CopyError::PageFault) }
+        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> { Err(CopyError::PageFault) }
+        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Err(CopyError::PageFault) }
     }
 
     #[test]
     fn test_deliver_message_success() {
         let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
-        let mut procs = [a];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &SuccessCopy);
         let result = engine.deliver_message(test_nr(0));
         assert_eq!(result, DeliverResult::Delivered);
@@ -2181,8 +2490,8 @@ mod tests {
     fn test_deliver_message_first_page_fault() {
         let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
-        let mut procs = [a];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &PageFaultCopy);
         let result = engine.deliver_message(test_nr(0));
         assert_eq!(result, DeliverResult::PageFault);
@@ -2197,8 +2506,8 @@ mod tests {
         let a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         a.p_misc_flags.set(MiscFlagsBits::MSGFAILED); // already failed once
-        let mut procs = [a];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &PageFaultCopy);
         let result = engine.deliver_message(test_nr(0));
         assert_eq!(result, DeliverResult::Segfault, "second consecutive fault → Segfault");
@@ -2224,7 +2533,7 @@ mod tests {
             .collect();
         procs[0] = make_test_proc(0, Endpoint(2));  // kernel task target
         procs[NR_TASKS].p_endpoint = Endpoint(1);   // user's own endpoint
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let task_priv = priv_table.assign_static(task_nr).unwrap();
         let user_priv = priv_table.assign_static(user_nr).unwrap();
         procs[0].priv_id = Some(task_priv);
@@ -2232,8 +2541,12 @@ mod tests {
         // Configure caller's priv: allow IPC to task (and self), all traps.
         {
             let caller_priv = priv_table.get_mut(user_priv).unwrap();
-            caller_priv.ipc.s_ipc_to |= (1u64 << task_priv as u32) | (1u64 << user_priv as u32);
-            caller_priv.ipc.s_trap_mask = 0xFFFF;  // allow all calls including SEND
+            caller_priv.ipc.s_ipc_to = caller_priv.ipc.s_ipc_to.union(
+                crate::capability::IpcMask::from_bits(
+                    (1u64 << task_priv as u32) | (1u64 << user_priv as u32),
+                ),
+            );
+            caller_priv.ipc.s_trap_mask = crate::capability::TrapMask::ALL; // allow all calls including SEND
         }
         let engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
         // SEND to a kernel task target is denied at layer 4.
@@ -2251,42 +2564,126 @@ mod tests {
         assert_eq!(r4, Ok(()), "SEND to regular target must pass layer 4");
     }
 
-    // ── AsyncMessageTable tests ──
+    // ── SENDA tests (no kernel-side table cache — A_RETR/A_INSRT per entry) ──
 
     #[test]
-    fn test_async_table_empty() {
-        let table = AsyncMessageTable::default();
-        assert!(table.is_empty());
-        assert_eq!(table.len(), 0);
-    }
-
-    #[test]
-    fn test_async_table_from_entries() {
-        let table = AsyncMessageTable::from_entries([
-            (Endpoint(2), Message::default()),
-            (Endpoint(3), Message::default()),
-        ]);
-        assert_eq!(table.len(), 2);
-        assert!(!table.is_empty());
-    }
-
-    #[test]
-    fn test_senda_all_delivered() {
-        // SENDA with target in RECEIVE → all entries delivered.
+    fn test_senda_requires_sys_proc() {
+        // C: mini_senda — proc.c:1336-1339. Caller without SYS_PROC
+        // privilege gets EPERM.
         let mut a = make_test_proc(0, Endpoint(1));
-        let mut b = make_test_proc(1, Endpoint(2));
         a.p_rts_flags = RtsFlags::new();
-        b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
-        b.p_getfrom_e = Endpoint::ANY;
-        let mut procs = [a, b];
-        let mut priv_table = PrivTable::new();
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(test_nr(0)).unwrap();
+        procs[0].priv_id = Some(a_priv);
+        // Leave SYS_PROC unset → EPERM (IpcError::Permission).
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
-        let mut table = AsyncMessageTable::from_entries([
-            (Endpoint(2), Message::default()),
-        ]);
-        let outcome = engine.senda(test_nr(0), &mut table);
+        let outcome = engine.senda(test_nr(0), VirBytes::new(0x1000), 1);
+        assert_eq!(outcome.err(), Some(IpcError::Permission));
+    }
+
+    #[test]
+    fn test_senda_delivers_to_receiving_target() {
+        // SENDA with target in RECEIVE → entry delivered via
+        // read_senda_entry/write_senda_result (no kernel table copy).
+        //
+        // Realistic state (C: mini_senda, proc.c:1231-1323): user-region
+        // slots (p_nr > 0 — task slots get ECALLDENIED, iskerneln
+        // proc.c:1266), caller privileged (SYS_PROC, proc.c:1336), and
+        // the caller's s_ipc_to carrying the target's bit (may_send_to,
+        // priv.h:87 — a fresh priv has an empty mask).
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(ProcNr(1)).unwrap();
+        let b_priv = priv_table.assign_static(ProcNr(2)).unwrap();
+        {
+            let procs = pt.procs_slice_mut();
+            let a = procs.get_mut(nr_to_idx(ProcNr(1)).unwrap()).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+            a.priv_id = Some(a_priv);
+            let b = procs.get_mut(nr_to_idx(ProcNr(2)).unwrap()).unwrap();
+            b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
+            b.p_getfrom_e = Endpoint::ANY;
+            b.priv_id = Some(b_priv);
+        }
+        // Caller: SYS_PROC + IPC send permission for the target's sys_id.
+        {
+            let p = priv_table.get_mut(a_priv).unwrap();
+            p.flags.s_flags.insert(crate::capability::ProcessCapability::SYS_PROC);
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.union(
+                crate::capability::IpcMask::from_bits(1u64 << b_priv),
+            );
+        }
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &SuccessCopy);
+        // SuccessCopy reads one AMF_VALID entry aimed at Endpoint(2).
+        let outcome = engine.senda(ProcNr(1), VirBytes::new(0x1000), 1);
         assert!(outcome.is_delivered(), "SENDA never blocks caller");
-        assert_eq!(table.len(), 1);
+        // Fully delivered → caller's table pointer stays cleared.
+        {
+            let p = engine.priv_table.get(a_priv).unwrap();
+            assert_eq!(p.signals.s_asynsize, 0);
+        }
+        // Target got the message and was woken.
+        let b_idx = nr_to_idx(ProcNr(2)).unwrap();
+        assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(!engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_eq!(engine.procs[b_idx].p_delivermsg.m_source, Endpoint(1));
+    }
+
+    #[test]
+    fn test_senda_pending_sets_bitmap_and_retries_via_receive() {
+        // Target not receiving → s_asyn_pending bit set on target,
+        // table pointer kept in caller's priv; the next receive from
+        // the target re-reads the table and delivers (C: try_one).
+        //
+        // Realistic state: user-region slots (task slots get
+        // ECALLDENIED — iskerneln, proc.c:1266), both privs assigned,
+        // caller SYS_PROC with the target's bit in s_ipc_to.
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(ProcNr(1)).unwrap();
+        let b_priv = priv_table.assign_static(ProcNr(2)).unwrap();
+        {
+            let procs = pt.procs_slice_mut();
+            let a = procs.get_mut(nr_to_idx(ProcNr(1)).unwrap()).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+            a.priv_id = Some(a_priv);
+            let b = procs.get_mut(nr_to_idx(ProcNr(2)).unwrap()).unwrap();
+            b.p_rts_flags = RtsFlags::new();
+            b.priv_id = Some(b_priv);
+        }
+        // Caller: SYS_PROC + IPC send permission for the target's sys_id.
+        {
+            let p = priv_table.get_mut(a_priv).unwrap();
+            p.flags.s_flags.insert(crate::capability::ProcessCapability::SYS_PROC);
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.union(
+                crate::capability::IpcMask::from_bits(1u64 << b_priv),
+            );
+        }
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &SuccessCopy);
+        let outcome = engine.senda(ProcNr(1), VirBytes::new(0x1000), 1);
+        assert!(outcome.is_delivered());
+        // Target's async-pending bitmap has the sender's bit.
+        {
+            let p = engine.priv_table.get(b_priv).unwrap();
+            assert_ne!(p.signals.s_asyn_pending & (1u64 << a_priv), 0,
+                "s_asyn_pending must carry the sender's priv bit");
+        }
+        // Caller's table pointer retained for retry (C: proc.c:1320-1323).
+        {
+            let p = engine.priv_table.get(a_priv).unwrap();
+            assert_eq!(p.signals.s_asyntab, 0x1000);
+            assert_eq!(p.signals.s_asynsize, 1);
+        }
+        // Target now receives → pending async delivered via re-read.
+        let b_idx = nr_to_idx(ProcNr(2)).unwrap();
+        engine.procs[b_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        engine.procs[b_idx].p_getfrom_e = Endpoint::ANY;
+        let r = engine.receive(ProcNr(2), Endpoint::ANY);
+        assert!(r.is_delivered(), "receive must deliver pending async");
+        assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
     // ── Deliver result + KernelUserCopy stub ──
@@ -2303,6 +2700,9 @@ mod tests {
         let copier = KernelUserCopy;
         let _msg = copier.copy_msg_from_user(VirBytes::new(0)).unwrap();
         copier.copy_msg_to_user(VirBytes::new(0), &Message::default()).unwrap();
-        let _table = copier.copy_senda_table_from_user(VirBytes::new(0), 0).unwrap();
+        // SENDA stub: reads fault (no real user table in tests), writes
+        // succeed (C ignores A_INSRT errors).
+        assert!(copier.read_senda_entry(VirBytes::new(0), 0).is_err());
+        copier.write_senda_result(VirBytes::new(0), 0, 0, 0).unwrap();
     }
 }

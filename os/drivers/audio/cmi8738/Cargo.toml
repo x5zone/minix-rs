@@ -1,0 +1,18 @@
+[package]
+name = "minix-driver-cmi8738"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-driver-cmi8738"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_driver_cmi8738"
+path = "src/lib.rs"

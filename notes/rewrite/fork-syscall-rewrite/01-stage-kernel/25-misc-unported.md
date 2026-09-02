@@ -289,7 +289,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 - 对齐 C 语义——C 对未知调用号返回 `EBADREQUEST`，Rust `BadCall` 映射到同一 errno
 - 编译期穷尽性——`kernel_call_dispatch` 的 `match` 必须覆盖全部 `Syscall` 变体，新调用号接入时编译器强制实现，不存在"漏注册"状态
 
-> ⚠️ 早期版本曾有 `dispatch_unused()` 返回 `ENOSYS`（对齐虚构的 `do_unused`），现为 **dead code**（misc.rs:2414，0 个调用点）——未识别调用实际走 `BadCall`。`dispatch_unused` 保留为历史遗存，待清理。
+> ⚠️ 早期版本曾有 `dispatch_unused()` 返回 `ENOSYS`（对齐虚构的 `do_unused`），现为 **dead code**（misc.rs:2443，0 个调用点）——未识别调用实际走 `BadCall`。`dispatch_unused` 保留为历史遗存，待清理。
 
 ### 3.3 D3: "前置验证 + 后置 DEFERRED" 渐进模式（历史演进）
 
@@ -303,12 +303,12 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 
 | 调用 | 原 DEFERRED 项 | 现状态 | 实现位置 |
 |------|---------------|--------|---------|
-| `SYS_TRACE` | 内存读写（`COPYFROMPROC/COPYTOPROC`） | ✅ 已实现（`data_copy_vmcheck` + VMSUSPEND 恢复） | misc.rs:1210-1542 |
-| `SYS_TRACE` | `T_GETUSER`/`T_SETUSER` 字段访问 | ✅ 已实现（快照 + `write_user_register`） | misc.rs:1418-1542 |
-| `SYS_UPDATE` | 槽位交换体（swap/adjust/指针更新） | ✅ 已实现（`swap_slots`/`adjust_*_slot`/ptproc+memreq no-op） | misc.rs:1543-1807 |
-| `SYS_SPROF` | 采样时钟初始化 | ✅ 已实现（`init_profile_clock`/`stop_profile_clock`，PROF_RTC） | misc.rs:2012/2065 |
-| `SYS_SPROF` | STOP 数据搬运 | ✅ 已实现（`data_copy_vmcheck` 拷 sprof_info + 采样缓冲区） | misc.rs:2078-2140 |
-| `GET_MONPARAMS` | 数据搬运 | ⚠️ `EINVAL`（`param_buf` 为空，P9-1） | misc.rs:1121 |
+| `SYS_TRACE` | 内存读写（`COPYFROMPROC/COPYTOPROC`） | ✅ 已实现（`data_copy_vmcheck` + VMSUSPEND 恢复） | misc.rs:1239-1571 |
+| `SYS_TRACE` | `T_GETUSER`/`T_SETUSER` 字段访问 | ✅ 已实现（快照 + `write_user_register`） | misc.rs:1447-1571 |
+| `SYS_UPDATE` | 槽位交换体（swap/adjust/指针更新） | ✅ 已实现（`swap_slots`/`adjust_*_slot`/ptproc+memreq no-op） | misc.rs:1572-1836 |
+| `SYS_SPROF` | 采样时钟初始化 | ✅ 已实现（`init_profile_clock`/`stop_profile_clock`，PROF_RTC） | misc.rs:2041/2065 |
+| `SYS_SPROF` | STOP 数据搬运 | ✅ 已实现（`data_copy_vmcheck` 拷 sprof_info + 采样缓冲区） | misc.rs:2107-2169 |
+| `GET_MONPARAMS` | 数据搬运 | ⚠️ `EINVAL`（`param_buf` 为空，P9-1） | misc.rs:1150 |
 
 > 该模式的价值在于过程而非最终形态——每个 DEFERRED 项落地时只需替换对应分支体，前置验证代码无需改动。
 
@@ -332,7 +332,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 - `T_GETUSER`/`T_SETUSER` 的对齐检查是 C 显式前置检查（`do_trace.c:106`/`137`），独立于字段访问，可单独实现并测试。
 - 内存读写 `T_GETINS` 等的 `COPYFROMPROC`/`COPYTOPROC` 是字节级 `virtual_copy`，无对齐要求。Rust 通过 `data_copy_vmcheck` 实现相同语义（Direct Map + PTE walk），并额外支持 VMSUSPEND（C 的 `virtual_copy` 在页未映射时返回 EFAULT；`data_copy_vmcheck` 请求 VM 处理页缺失后重试）。
 
-> design.md §D5 ↔ misc.rs:1210-1542（`dispatch_trace` 全函数）
+> design.md §D5 ↔ misc.rs:1239-1571（`dispatch_trace` 全函数）
 
 ### 3.6 D6: GET_WHOAMI 直接写 reply message
 
@@ -342,7 +342,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 
 **理由**：对齐 C 特殊路径。WHOAMI 数据量小（endpt + 2 flags + 44 字节 name），直接放 reply union 比起一次 data_copy 更高效。
 
-> design.md §D6 ↔ misc.rs:674-698
+> design.md §D6 ↔ misc.rs:726-751
 
 ### 3.7 D7: GET_KINFO 用 M4 格式返回关键字段（临时方案）
 
@@ -354,7 +354,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 
 **理由**：PM 启动需要 `kinfo` 关键字段（`nr_procs`/`nr_tasks` 用于进程表大小，`user_sp` 用于栈顶，`freepde_start`/`vir_kern_start` 用于地址空间布局），无需等完整 data_copy 路径。
 
-> design.md §D7 ↔ misc.rs:700-730
+> design.md §D7 ↔ misc.rs:752-783
 
 ### 3.8 D8: SPROFILING 用 AtomicBool（SMP 安全）
 
@@ -367,7 +367,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 - 不依赖隐式 BKL 假设——即使未来 BKL 拆分，状态机仍然正确
 - 状态转换原子化——`PROF_START` 的"检查 + 设置"和 `PROF_STOP` 的"检查 + 清除"都是原子的
 
-> design.md §D8 ↔ misc.rs:2179（`SPROFILING` static）+ misc.rs:1957-2413（`dispatch_profile`）
+> design.md §D8 ↔ misc.rs:2208（`SPROFILING` static）+ misc.rs:1986-2442（`dispatch_profile`）
 
 ### 3.9 D9: 消息字段类型化访问（禁 m1 overlay）
 
@@ -420,16 +420,16 @@ pub enum GetInfoRequest {
 **宏存在但 enum 省略**（D4）：`GET_KENV=5`/`GET_KADDRESSES=9`/`GET_SCHEDINFO=10`/`GET_LOCKTIMING=13`/`GET_BIOSBUFFER=14` — 这些值在 `TryFrom<i32>` 中返回 `Err(())` → `EINVAL`，与 C `default` 分支一致。
 
 **实现状态**（截至 2026-08-14，19 个分支中 18 个完整实现，1 个部分实现）：
-- `WhoAmI`：✅ 完整实现（D6，直接写 reply，misc.rs:674-698）
-- `KInfo`：✅ 实现中——M4 返回 5 关键字段（D7 临时方案，misc.rs:700-730）；待 `struct kinfo` C 兼容布局设计后改 `data_copy_vmcheck`
-- `Hz`/`LoadInfo`/`Machine`/`CpuInfo`/`CpuTicks`：✅ 完整实现（经 `copy_struct_to_caller<T>` + `data_copy_vmcheck`，misc.rs:826-957）。`Hz` 拷 `system_hz`；`LoadInfo` 构造 `LoadInfoStruct`（180 项 `u16` + `u16` + `u64`，`#[repr(C)]`）取自 `clock_state.load_history()`；`Machine` 构造 `MachineStruct`（`#[repr(C)]`，processors_count + bsp_id + padding + apic_enabled + acpi_rsdp + board_id）取自 SMP 状态；`CpuInfo` 构造 `CpuInfoEntry` 数组（`#[repr(C)]`，cpu_id + cpu_cycles + cpu_load）；`CpuTicks` 拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线）
-- `Proc`/`Priv`/`Regs`：✅ 完整实现（endpoint 验证 + `SELF` 替换；`Proc`/`Priv` 经 `ProcInfoStruct`/`PrivInfoStruct` 快照 + `copy_struct_to_caller`，`Regs` 取 cpu_context 物理地址经 `data_copy_vmcheck` 直拷，misc.rs:732/841/863）
-- `ProcTab`/`PrivTab`：✅ 完整实现（逐项快照 + 分块 `data_copy_vmcheck`，避免单次 27KB 栈缓冲溢出，misc.rs:754/791）
-- `IrqHooks`/`IrqActids`：✅ 完整实现（`IrqManager` 快照为 C 兼容结构，misc.rs:1051/958）
-- `IdleTsc`：✅ 完整实现（IDLE 进程 `p_cycles.total`，misc.rs:988-1002）
-- `Image`：✅ 完整实现（进程表 + boot modules 构造 `BootImageStruct[]`，misc.rs:1083-1119）
-- `Randomness`/`RandomnessBin`：✅ 完整实现（misc.rs:1004-1050，经 `crate::krandom::try_krandom()` + `wipe_all`/`wipe_bin` 拷贝后清零，详见 §4.7）
-- `MonParams`：⚠️ 部分实现（`KernelInfo.param_buf` 字段已存在但 boot-shim 填充为空切片 → `EINVAL`，misc.rs:1121-1148，P9-1：待 UEFI load options 接入后拷贝字节）
+- `WhoAmI`：✅ 完整实现（D6，直接写 reply，misc.rs:726-751）
+- `KInfo`：✅ 实现中——M4 返回 5 关键字段（D7 临时方案，misc.rs:752-783）；待 `struct kinfo` C 兼容布局设计后改 `data_copy_vmcheck`
+- `Hz`/`LoadInfo`/`Machine`/`CpuInfo`/`CpuTicks`：✅ 完整实现（经 `copy_struct_to_caller<T>` + `data_copy_vmcheck`，misc.rs:878-976）。`Hz` 拷 `system_hz`；`LoadInfo` 构造 `LoadInfoStruct`（180 项 `u16` + `u16` + `u64`，`#[repr(C)]`）取自 `clock_state.load_history()`；`Machine` 构造 `MachineStruct`（`#[repr(C)]`，processors_count + bsp_id + padding + apic_enabled + acpi_rsdp + board_id）取自 SMP 状态；`CpuInfo` 构造 `CpuInfoEntry` 数组（`#[repr(C)]`，cpu_id + cpu_cycles + cpu_load）；`CpuTicks` 拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线）
+- `Proc`/`Priv`/`Regs`：✅ 完整实现（endpoint 验证 + `SELF` 替换；`Proc`/`Priv` 经 `ProcInfoStruct`/`PrivInfoStruct` 快照 + `copy_struct_to_caller`，`Regs` 取 cpu_context 物理地址经 `data_copy_vmcheck` 直拷，misc.rs:784/841/863）
+- `ProcTab`/`PrivTab`：✅ 完整实现（逐项快照 + 分块 `data_copy_vmcheck`，避免单次 27KB 栈缓冲溢出，misc.rs:806/791）
+- `IrqHooks`/`IrqActids`：✅ 完整实现（`IrqManager` 快照为 C 兼容结构，misc.rs:1103/958）
+- `IdleTsc`：✅ 完整实现（IDLE 进程 `p_cycles.total`，misc.rs:1040-1055）
+- `Image`：✅ 完整实现（`build_boot_image` 按 boot image 顺序构造 `BootImageStruct[NR_BOOT_PROCS]`——内核 task 在前、模块按 image 顺序落在 `image[NR_TASKS+i]` 并取 C com.h proc 号，misc.rs:666/1135-1149）
+- `Randomness`/`RandomnessBin`：✅ 完整实现（misc.rs:1056-1102，经 `crate::krandom::try_krandom()` + `wipe_all`/`wipe_bin` 拷贝后清零，详见 §4.7）
+- `MonParams`：⚠️ 部分实现（`KernelInfo.param_buf` 字段已存在但 boot-shim 填充为空切片 → `EINVAL`，misc.rs:1150-1169，P9-1：待 UEFI load options 接入后拷贝字节）
 
 ### 4.2 dispatch_getinfo 分派
 
@@ -443,26 +443,26 @@ pub fn dispatch_getinfo(
 ) -> KcallResult
 ```
 
-> design.md §D6/D7/D9 ↔ misc.rs:660-1210（`dispatch_getinfo` 全函数）+ misc.rs:268（`msg_getinfo`）
+> design.md §D6/D7/D9 ↔ misc.rs:721-1170（`dispatch_getinfo` 全函数）+ misc.rs:268（`msg_getinfo`）
 
 **分派逻辑**：
-- `WhoAmI`：直接写 `m_krn_lsys_sys_getwhoami` reply（D6，misc.rs:674）
-- `KInfo`：用 `MessageM4` 返回 5 字段（D7 临时方案，misc.rs:700）
-- `Hz`：从 `clock_state.system_hz()` 取 `i32`，经 `copy_struct_to_caller` 拷贝（misc.rs:925）
-- `LoadInfo`：从 `clock_state.load_history()` 构造 `LoadInfoStruct`（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:826）
-- `Machine`：从 SMP 状态构造 `MachineStruct`（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:930）
-- `CpuInfo`：构造 `CpuInfoEntry` 数组（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:943）
-- `CpuTicks`：拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线，misc.rs:910），经 `copy_struct_to_caller` 拷贝
-- `Proc`/`Priv`：验证 endpoint（`SELF` 替换 + `isokendpt`）→ `ProcInfoStruct`/`PrivInfoStruct` 快照 → `copy_struct_to_caller`（misc.rs:732/841）
-- `Regs`：验证 endpoint → 取 cpu_context 物理地址经 `data_copy_vmcheck` 直拷原始字节（对齐 C `sizeof(p->p_reg)`，misc.rs:863）
-- `ProcTab`/`PrivTab`：分块拷贝——每项构造 `ProcInfoStruct`/`PrivInfoStruct` 快照后单独 `data_copy_vmcheck`，避免大栈缓冲（misc.rs:754/791）
-- `IrqHooks`：`IrqManager` hook 表快照（`next`/`handler` 导出为 0，用户态工具只读非指针字段，misc.rs:1051）
-- `IrqActids`：`IRQ_MANAGER.actids` 快照（`try_irq_manager()` 未初始化时 `EINVAL`，misc.rs:958）
-- `IdleTsc`：读 IDLE 槽位 `p_cycles.total`（SMP 求和待多 CPU 接线，misc.rs:988）
-- `Image`：进程表（nr/endpoint/name）+ boot modules（start_addr/len）构造 `BootImageStruct[]`（misc.rs:1083）
-- `Randomness`：✅ 完整实现（`misc.rs:1004-1020`）—— 快照整个 `KRandomness`（2184 字节）后 `wipe_all()` 清零所有 bin，再 `copy_struct_to_caller` 拷贝快照到用户空间。`try_krandom()` 返回 `None` 时返回 `EINVAL`（boot 未完成）
-- `RandomnessBin`：✅ 完整实现（`misc.rs:1022-1049`）—— 验证 `0 ≤ bin < RANDOM_SOURCES(16)` → `EINVAL`；`r_size < RANDOM_ELEMENTS` 时返回 `ENOENT`（bin 未满）；快照单 bin 后 `wipe_bin(bin_idx)` 清零，再 `copy_struct_to_caller` 拷贝
-- `MonParams`：`KernelInfo.param_buf` 为空 → `EINVAL`（P9-1，misc.rs:1121）
+- `WhoAmI`：直接写 `m_krn_lsys_sys_getwhoami` reply（D6，misc.rs:726）
+- `KInfo`：用 `MessageM4` 返回 5 字段（D7 临时方案，misc.rs:752）
+- `Hz`：从 `clock_state.system_hz()` 取 `i32`，经 `copy_struct_to_caller` 拷贝（misc.rs:977）
+- `LoadInfo`：从 `clock_state.load_history()` 构造 `LoadInfoStruct`（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:878）
+- `Machine`：从 SMP 状态构造 `MachineStruct`（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:982）
+- `CpuInfo`：构造 `CpuInfoEntry` 数组（`#[repr(C)]`），经 `copy_struct_to_caller` 拷贝（misc.rs:995）
+- `CpuTicks`：拷 `[u64; MINIX_CPUSTATES=5]`（当前零值，待 `get_cpu_ticks` 接线，misc.rs:962），经 `copy_struct_to_caller` 拷贝
+- `Proc`/`Priv`：验证 endpoint（`SELF` 替换 + `isokendpt`）→ `ProcInfoStruct`/`PrivInfoStruct` 快照 → `copy_struct_to_caller`（misc.rs:784/841）
+- `Regs`：验证 endpoint → 取 cpu_context 物理地址经 `data_copy_vmcheck` 直拷原始字节（对齐 C `sizeof(p->p_reg)`，misc.rs:915）
+- `ProcTab`/`PrivTab`：分块拷贝——每项构造 `ProcInfoStruct`/`PrivInfoStruct` 快照后单独 `data_copy_vmcheck`，避免大栈缓冲（misc.rs:806/791）
+- `IrqHooks`：`IrqManager` hook 表快照（`next`/`handler` 导出为 0，用户态工具只读非指针字段，misc.rs:1103）
+- `IrqActids`：`IRQ_MANAGER.actids` 快照（`try_irq_manager()` 未初始化时 `EINVAL`，misc.rs:1010）
+- `IdleTsc`：读 IDLE 槽位 `p_cycles.total`（SMP 求和待多 CPU 接线，misc.rs:1040）
+- `Image`：`build_boot_image` 按 C table.c 的 boot image 顺序构造 `BootImageStruct[NR_BOOT_PROCS]`（17 项，对齐 C 的 `sizeof(struct boot_image) * NR_BOOT_PROCS`）：内核 task 在 `image[0..NR_TASKS]`（start_addr/len=0），模块 i 在 `image[NR_TASKS+i]` 取 `BOOT_MODULE_PROC_NRS[i]` 的 C proc 号，endpoint/name 来自进程表槽位、start_addr/len 来自 multiboot 模块（misc.rs:666）
+- `Randomness`：✅ 完整实现（`misc.rs:1056-1073`）—— 快照整个 `KRandomness`（2184 字节）后 `wipe_all()` 清零所有 bin，再 `copy_struct_to_caller` 拷贝快照到用户空间。`try_krandom()` 返回 `None` 时返回 `EINVAL`（boot 未完成）
+- `RandomnessBin`：✅ 完整实现（`misc.rs:1074-1102`）—— 验证 `0 ≤ bin < RANDOM_SOURCES(16)` → `EINVAL`；`r_size < RANDOM_ELEMENTS` 时返回 `ENOENT`（bin 未满）；快照单 bin 后 `wipe_bin(bin_idx)` 清零，再 `copy_struct_to_caller` 拷贝
+- `MonParams`：`KernelInfo.param_buf` 为空 → `EINVAL`（P9-1，misc.rs:1150）
 
 **`copy_struct_to_caller<T>` 通用 helper**（misc.rs:624）：封装 `GET_*` 子请求共有的"E2BIG 检查 + `data_copy_vmcheck` 从内核栈拷到用户空间"模式。`dispatch_getinfo` 现接收 `clock_state: &ClockState` 参数（与 `dispatch_setalarm` 对齐），供 `Hz`/`LoadInfo` 读取时钟状态。
 
@@ -479,7 +479,7 @@ pub fn dispatch_trace(
 ) -> KcallResult
 ```
 
-> design.md §D3/D5/D9 ↔ misc.rs:1210-1542
+> design.md §D3/D5/D9 ↔ misc.rs:1239-1571
 
 **前置验证**（对齐 C do_trace.c:83-87）：
 1. `TraceRequest::try_from(request)` → `EINVAL`
@@ -514,7 +514,7 @@ pub fn dispatch_update(
 ) -> KcallResult
 ```
 
-> design.md §D3 ↔ misc.rs:1543-1807 (`dispatch_update`) + misc.rs:1808-1831 (`proc_is_updatable`)
+> design.md §D3 ↔ misc.rs:1572-1836 (`dispatch_update`) + misc.rs:1837-1860 (`proc_is_updatable`)
 
 **7 步验证**（对齐 C do_update.c:55-79）：
 1. `isokendpt(src_e)` → `EINVAL`
@@ -557,20 +557,20 @@ pub fn dispatch_profile(
 ) -> KcallResult
 ```
 
-> design.md §D3/D8 ↔ misc.rs:1957-2413（`proc_table: &mut ProcessTable`——`clean_seen_flag` 需遍历清除 `MF_SPROF_SEEN`）
+> design.md §D3/D8 ↔ misc.rs:1986-2442（`proc_table: &mut ProcessTable`——`clean_seen_flag` 需遍历清除 `MF_SPROF_SEEN`）
 
 **PROF_START**：
 1. `SPROFILING.compare_exchange(false, true)` 失败 → `EBUSY`（对齐 C do_sprofile.c:50-53）
 2. `isokendpt(endpt)` 失败 → rollback + `EINVAL`（对齐 C do_sprofile.c:56-57）
 3. `ProfIntrType::try_from(intr_type)` 失败 → rollback + `EINVAL`（对齐 C do_sprofile.c:84-86）
-4. ✅ `PROF_RTC` → `crate::clock::init_profile_clock(freq)`（misc.rs:2012，经 `ClockArch` 接线）；`PROF_NMI` → rollback + `ENOSYS`（NMI 子系统超范围，设计排除；代码附完整 NMI subsystem WONTFIX 注释）
+4. ✅ `PROF_RTC` → `crate::clock::init_profile_clock(freq)`（misc.rs:2041，经 `ClockArch` 接线）；`PROF_NMI` → rollback + `ENOSYS`（NMI 子系统超范围，设计排除；代码附完整 NMI subsystem WONTFIX 注释）
 5. `clean_seen_flag()`：清除全部进程的 `MF_SPROF_SEEN`（对齐 C do_sprofile.c:91）——这是 `&mut ProcessTable` 的消费点
 6. Rollback `SPROFILING`（验证失败 / `init_profile_clock` 失败 / PROF_NMI 时回滚）
 
 **PROF_STOP**：
 1. `SPROFILING.compare_exchange(true, false)` 失败 → `EBUSY`（对齐 C do_sprofile.c:101-104）
-2. ✅ `crate::clock::stop_profile_clock()`（misc.rs:2065，经 `ClockArch` 接线）
-3. ✅ 数据搬运已实现（对齐 C do_sprofile.c:117-120）：`SPROF_INFO`（`addr_of!` 规避 `static_mut_refs`，P1-5）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（misc.rs:2078-2140）；`mem_used == 0` 时缓冲区拷贝为 no-op
+2. ✅ `crate::clock::stop_profile_clock()`（misc.rs:2094，经 `ClockArch` 接线）
+3. ✅ 数据搬运已实现（对齐 C do_sprofile.c:117-120）：`SPROF_INFO`（`addr_of!` 规避 `static_mut_refs`，P1-5）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（misc.rs:2107-2169）；`mem_used == 0` 时缓冲区拷贝为 no-op
 4. `clean_seen_flag()`
 
 **Rollback 机制**：验证失败时 `SPROFILING.store(false)` 回滚，避免后续 `PROF_START` 被毒化。这是 Rust 相对 C 的改进——C 在验证失败后直接 return，`sprofiling` 仍是 0（因为还没到 `sprofiling = 1`），但 Rust 用 `compare_exchange` 提前设置了 true，需要显式回滚。
@@ -579,7 +579,7 @@ pub fn dispatch_profile(
 
 未识别调用**不在 misc.rs 处理**——`kernel_call_dispatch_inner` 的 `match` 是穷尽的（syscall.rs:428-527），所有合法 `Syscall` 变体都有分派函数。`Syscall::try_from(i32)` 对未知值返回 `Err(())` → `KcallResult::BadCall`（syscall.rs:444），对应 C 的 `EBADREQUEST`（system.c:110-113/126-129）。
 
-> ⚠️ **历史遗存**：`dispatch_unused()`（misc.rs:2414-2420，返回 `ENOSYS`）曾作为"未实现调用"兜底，现为 **dead code**（`rg "dispatch_unused" os/kernel/src/` 仅命中定义 + 测试，0 个分派表调用点）。其设计前提（虚构的 C `do_unused`）已在 §2.6 澄清——C 的兜底是 `EBADREQUEST` 而非 `ENOSYS`。保留待清理（或由 `#![deny(dead_code)]` 之外的 lint 移除）。
+> ⚠️ **历史遗存**：`dispatch_unused()`（misc.rs:2443-2449，返回 `ENOSYS`）曾作为"未实现调用"兜底，现为 **dead code**（`rg "dispatch_unused" os/kernel/src/` 仅命中定义 + 测试，0 个分派表调用点）。其设计前提（虚构的 C `do_unused`）已在 §2.6 澄清——C 的兜底是 `EBADREQUEST` 而非 `ENOSYS`。保留待清理（或由 `#![deny(dead_code)]` 之外的 lint 移除）。
 
 ### 4.7 krandom 子系统接入（GET_RANDOMNESS / GET_RANDOMNESS_BIN）
 
@@ -594,8 +594,8 @@ pub fn dispatch_profile(
 | `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
 | `krandom_init()` | main.c:48-49（`krandom.random_sources`/`random_elements` 直接赋值，**无此函数**） | `krandom::init()`（`lib.rs:387` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
 | `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | **no-op stub**，匹配 C i386/earm 实现 |
-| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1004-1020） | 快照 + `wipe_all` + 拷贝 |
-| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1022-1049） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
+| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1056-1073） | 快照 + `wipe_all` + 拷贝 |
+| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1074-1102） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
 
 **设计决策**（krandom.rs 文件头 D1-D4）：
 
@@ -607,7 +607,7 @@ pub fn dispatch_profile(
 **dispatch_getinfo 接入点**：
 
 ```rust
-// misc.rs:1004-1020 — GET_RANDOMNESS
+// misc.rs:1056-1073 — GET_RANDOMNESS
 GetInfoRequest::Randomness => {
     // C: do_getinfo.c:148-160 — copy entire krandom struct, then wipe all bins.
     // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
@@ -618,7 +618,7 @@ GetInfoRequest::Randomness => {
     return copy_struct_to_caller(caller, &krandom_snapshot, val_ptr, val_len);
 }
 
-// misc.rs:1022-1049 — GET_RANDOMNESS_BIN
+// misc.rs:1074-1102 — GET_RANDOMNESS_BIN
 GetInfoRequest::RandomnessBin => {
     let bin = val_len2_e;
     if bin < 0 || bin >= crate::krandom::RANDOM_SOURCES as i32 {
@@ -664,7 +664,7 @@ GetInfoRequest::RandomnessBin => {
 pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 ```
 
-> design.md ↔ misc.rs:2300-2361（`profile_sample`）+ misc.rs:2362-2376（`is_sys_proc_runnable` helper）
+> design.md ↔ misc.rs:2329-2390（`profile_sample`）+ misc.rs:2391-2405（`is_sys_proc_runnable` helper）
 
 **实现要点**：
 
@@ -673,11 +673,11 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
    > **C typo 复刻**：C 第二个 `2*sizeof(struct sprof_sample)` 实为 `sprof_proc` 的笔误；Rust 复刻 C 的精确检查（语义对齐优先于"正确性修正"），并附注释说明
 3. **样本分类**（对齐 C profile.c:92-109）：IDLE → `idle_samples++`；KERNEL/（`SYS_PROC` 且可运行）→ `MF_SPROF_SEEN` 门控的 `sprof_save_proc` + `sprof_save_sample` + `system_samples++`；其余 → `user_samples++`；最终 `total_samples++`
 
-**SPROF_INFO 访问**：`SPROF_INFO` 是 `static mut`（misc.rs:1918），经 `addr_of_mut!` 访问（P1-5：规避 `static_mut_refs` lint）。BKL 保护：IRQ 路径（`profile_sample`）与 syscall 路径（`dispatch_profile`）不会并发。
+**SPROF_INFO 访问**：`SPROF_INFO` 是 `static mut`（misc.rs:1947），经 `addr_of_mut!` 访问（P1-5：规避 `static_mut_refs` lint）。BKL 保护：IRQ 路径（`profile_sample`）与 syscall 路径（`dispatch_profile`）不会并发。
 
 **与 `dispatch_profile` 的接线**：`SPROFILING`（AtomicBool@2179）是两面的共享状态——syscall 侧 `compare_exchange` 启停，中断侧 `load` 门控。`profile_sample` 的调用点（时钟中断 handler）待 `ClockArch` 采样接线落地（profile_clock_handler 等价物），当前由测试直接调用验证语义。
 
-**测试覆盖**（8 个，misc.rs:3472-3628）：
+**测试覆盖**（8 个，misc.rs:3501-3657）：
 
 | 测试 | 覆盖点 |
 |------|--------|
@@ -710,7 +710,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | dispatch_unused | 1 | dead code 守卫 | ENOSYS（历史遗存，见 §4.6） |
 | **总计** | **58** | — | — |
 
-> 实际测试位置：`os/kernel/src/misc.rs:2421-3645`（`#[cfg(test)] mod tests`）。验证命令：`cargo test -p minix-kernel --lib misc`。
+> 实际测试位置：`os/kernel/src/misc.rs:2450-3674`（`#[cfg(test)] mod tests`）。验证命令：`cargo test -p minix-kernel --lib misc`。
 > **测试范围说明**：上表 58 个测试属 `misc::tests` 模块；`cargo test --lib misc` 还会按名称匹配 7 个跨模块测试（`proc::tests` 1 个 + `proc_table::tests` 4 个 + 其他 2 个，均含 `misc` 字样），实测 **65 passed; 0 failed; 1 ignored**（2026-08-14 验证）。
 > **krandom 单独统计**：krandom.rs `mod tests` 另有 6 个布局/wipe 测试（见 §4.7 测试覆盖表），不在上述 58 个之内。
 
@@ -766,13 +766,13 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | 缺口 | C 位置 | 阻塞原因 | 解除条件 |
 |------|--------|---------|---------|
 | ~~GET_HZ/LOADINFO/MACHINE/CPUINFO/CPUTICKS~~ | do_getinfo.c 各 case | ✅ 已实现: `copy_struct_to_caller<T>` + `data_copy_vmcheck`（`LoadInfoStruct`/`MachineStruct`/`CpuInfoEntry` 均为 `#[repr(C)]`） | — |
-| ~~GETINFO GET_PROC/GET_PROCTAB~~ | do_getinfo.c:GET_PROC/PROCTAB | ✅ 已实现: `ProcInfoStruct` 快照（misc.rs:732/754，ProcTab 分块拷贝避免 27KB 栈缓冲） | — |
-| ~~GETINFO GET_PRIV/GET_PRIVTAB~~ | do_getinfo.c:GET_PRIV/PRIVTAB | ✅ 已实现: `PrivInfoStruct` 快照（misc.rs:841/791） | — |
-| ~~GETINFO GET_REGS~~ | do_getinfo.c:GET_REGS | ✅ 已实现: cpu_context 物理地址直拷（misc.rs:863） | — |
-| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1004-1020`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
-| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1022-1049`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
-| ~~GETINFO IMAGE/IRQHOOKS/IRQACTIDS/IDLETSC~~ | do_getinfo.c 各 case | ✅ 已实现: boot modules + IrqManager 快照 + IDLE 槽位（misc.rs:1083/1051/958/988） | — |
-| GETINFO MONPARAMS | do_getinfo.c:143-146 | ⚠️ `KernelInfo.param_buf` 字段存在但 boot-shim 填充为空切片 → `EINVAL`（P9-1，misc.rs:1121） | boot-shim 接入 UEFI load options |
+| ~~GETINFO GET_PROC/GET_PROCTAB~~ | do_getinfo.c:GET_PROC/PROCTAB | ✅ 已实现: `ProcInfoStruct` 快照（misc.rs:784/754，ProcTab 分块拷贝避免 27KB 栈缓冲） | — |
+| ~~GETINFO GET_PRIV/GET_PRIVTAB~~ | do_getinfo.c:GET_PRIV/PRIVTAB | ✅ 已实现: `PrivInfoStruct` 快照（misc.rs:893/791） | — |
+| ~~GETINFO GET_REGS~~ | do_getinfo.c:GET_REGS | ✅ 已实现: cpu_context 物理地址直拷（misc.rs:915） | — |
+| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1056-1073`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
+| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1074-1102`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
+| ~~GETINFO IMAGE/IRQHOOKS/IRQACTIDS/IDLETSC~~ | do_getinfo.c 各 case | ✅ 已实现: boot modules + IrqManager 快照 + IDLE 槽位（misc.rs:1135/1103/1010/1040） | — |
+| GETINFO MONPARAMS | do_getinfo.c:143-146 | ⚠️ `KernelInfo.param_buf` 字段存在但 boot-shim 填充为空切片 → `EINVAL`（P9-1，misc.rs:1150） | boot-shim 接入 UEFI load options |
 | ~~TRACE 跨地址空间拷贝~~ | do_trace.c COPYFROMPROC/COPYTOPROC | ✅ 已实现: `data_copy_vmcheck` | — |
 | ~~TRACE T_SETUSER 段寄存器保护~~ | do_trace.c:141-166 | ✅ 已实现: `CpuContextArch::write_user_register` trait 方法 + 三架构实现（x86_64 段寄存器保护 + PSW 用户位掩码；arm64/riscv64 偏移映射） | — |
 | ~~TRACE T_GETUSER priv-struct 分支~~ | do_trace.c:117-123 | ✅ 已实现: `dispatch_trace` 签名新增 `priv_table: &PrivTable`；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取；对齐 C 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑；2 个测试覆盖（正常读取 + 越界 EFAULT） | — |
@@ -782,9 +782,9 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | UPDATE swap_memreq | do_update.c:313-337 | ✅ 设计 no-op：vmrequest 全局链未实现 + 两进程非 runnable（`proc_is_updatable` 保证）→ VMREQUEST 通常未设置 | VmRequestQueue（未来） |
 | ~~SPROF 时钟初始化（PROF_RTC）~~ | do_sprofile.c:75-82 | ✅ 已实现: `ClockArch::init_profile_clock(freq)` / `stop_profile_clock()` | — |
 | SPROF PROF_NMI | do_sprofile.c | NMI 子系统超范围（设计排除），返回 `ENOSYS` | N/A（设计排除） |
-| ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（misc.rs:2078-2140，`addr_of!` 规避 `static_mut_refs`） | — |
-| ~~SPROF clean_seen_flag~~ | do_sprofile.c:25-31 | ✅ 已实现: 遍历清除 `MF_SPROF_SEEN`（misc.rs:1951 调用，`&mut ProcessTable` 消费点） | — |
-| ~~SPROF profile_sample~~ | profile.c:75-110 | ✅ 已实现: `profile_sample`（misc.rs:2300）+ 8 个测试（见 §4.8） | — |
+| ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（misc.rs:2107-2169，`addr_of!` 规避 `static_mut_refs`） | — |
+| ~~SPROF clean_seen_flag~~ | do_sprofile.c:25-31 | ✅ 已实现: 遍历清除 `MF_SPROF_SEEN`（misc.rs:1980 调用，`&mut ProcessTable` 消费点） | — |
+| ~~SPROF profile_sample~~ | profile.c:75-110 | ✅ 已实现: `profile_sample`（misc.rs:2329）+ 8 个测试（见 §4.8） | — |
 
 > **已解除的 DEFERRED**（本轮修复）：
 > - `GetInfoRequest` enum 已扩展到全部 19 个变体，与 C `do_getinfo` 一一对应（此前缺失 9 个变体）
@@ -812,3 +812,8 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 > - **T_GETUSER proc-struct 分支已实现**: 通过 `ProcInfoStruct::from_kprocess` 构造快照后 `read_word_at_offset` 读取 `u64`（对齐 C do_trace.c:108-111）
 > - **T_GETUSER priv-struct 分支已实现**: `dispatch_trace` 签名新增 `priv_table: &PrivTable` 参数；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取（对齐 C do_trace.c:117-123 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑）；2 个测试覆盖（正常读取 s_proc_nr + 越界 EFAULT）
 > - **测试隔离修复**: `BootAlloc` / `IpcFilterPool` 全局状态封装为结构体，支持 per-test 实例（避免 `cargo test` 多线程并行时 `BOOT_PT_NEXT` / `ipc_filter_pool()` 全局状态互染）
+
+> **2026-08-17 追加（GET_IMAGE 布局修复）**：
+> - `GET_IMAGE` 的 `BootImageStruct[]` 修正为 C `table.c` 的 **boot image 顺序 + `NR_BOOT_PROCS`（17）项**：内核 task 在 `image[0..NR_TASKS]`（`start_addr`/`len`=0），模块 i 在 `image[NR_TASKS+i]` 并取 C `com.h` proc 号（`BOOT_MODULE_PROC_NRS[i]`，见 06 §1.4.1）
+> - 此前 `start_addr`/`len` 按模块下标直写 `image[i]`，错位到内核 task 槽；数组尺寸误用 `NR_PROCS + NR_TASKS`（261 项，C 语义调用方会触发 E2BIG）。现拷贝长度对齐 C 的 `sizeof(struct boot_image) * NR_BOOT_PROCS`
+> - 逻辑抽为 `build_boot_image`（misc.rs:666），新增 `test_build_boot_image_matches_c_layout`（kernel 612 passed，原 611）

@@ -54,11 +54,11 @@ Minix3 的调试功能通过预处理宏控制，生产构建中完全不编译�
 
 | 文件 | 行数 | 核心内容 |
 |------|------|---------|
-| [debug.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) | ~563 | 17 函数 + 4 宏，分 4 类功能 |
+| minix3/minix/kernel/debug.c | ~563 | 17 函数 + 4 宏，分 4 类功能 |
 
 ### 2.2 调度队列 sanity check
 
-[debug.c:16-134](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) 实现调度队列一致性验证：
+minix3/minix/kernel/debug.c:16-134 实现调度队列一致性验证：
 
 **`runqueues_ok_cpu(cpu)`**（L16-107）验证单个 CPU 的调度队列：
 1. 初始化所有进程的 `p_found = 0`
@@ -74,7 +74,7 @@ Minix3 的调试功能通过预处理宏控制，生产构建中完全不编译�
 
 ### 2.3 进程信息打印
 
-[debug.c:136-312](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) 实现进程详情打印：
+minix3/minix/kernel/debug.c:136-312 实现进程详情打印：
 
 **辅助函数**：
 - `rtsflagstr(flags)`（L136-161）: 将 RTS 标志位转为字符串（RTS_SLOT_FREE / RTS_PROC_STOP / RTS_SENDING 等 15 个标志）
@@ -95,7 +95,7 @@ nr: name endpoint prio time user/sys cycles high:low cpu pdbr rts misc sched sig
 
 ### 2.4 IPC 消息跟踪
 
-[debug.c:314-426](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_DUMPIPC` 条件编译块：
+minix3/minix/kernel/debug.c:314-426 `DEBUG_DUMPIPC` 条件编译块：
 
 **`mtypename(mtype, possible_callname)`**（L315-354）: 解析消息类型名称，从 `extracted-mtype.h` 和 `extracted-errno.h` 匹配。
 
@@ -113,7 +113,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 ### 2.5 IPC 统计
 
-[debug.c:428-516](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_IPCSTATS` 条件编译块：
+minix3/minix/kernel/debug.c:428-516 `DEBUG_IPCSTATS` 条件编译块：
 
 **全局状态**：
 - `messages[IPCPROCS][IPCPROCS]`（L431）: 消息计数矩阵，`IPCPROCS = NR_PROCS+1`
@@ -128,7 +128,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 ### 2.6 IPC hooks
 
-[debug.c:518-563](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c) `DEBUG_IPC_HOOK` 条件编译块：
+minix3/minix/kernel/debug.c:518-563 `DEBUG_IPC_HOOK` 条件编译块：
 
 5 个 hook 函数在 IPC 路径中被调用：
 
@@ -160,8 +160,8 @@ operation src dst mtype(mtype_hex) [params...]
 **Rust 64-bit 决策**: 实现（`os/kernel/src/debug.rs`）。
 
 **实现内容**:
-- `runqueues_ok_cpu(smp_state, proc_table, cpu) -> bool`（[debug.rs:47](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `runqueues_ok_cpu(cpu)`（[debug.c:16-107](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `runqueues_ok(smp_state, proc_table) -> bool`（[debug.rs:190](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `runqueues_ok()`（[debug.c:121-131](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `runqueues_ok_cpu(smp_state, proc_table, cpu) -> bool`（os/kernel/src/debug.rs:47）对应 C `runqueues_ok_cpu(cpu)`（minix3/minix/kernel/debug.c:16-107）
+- `runqueues_ok(smp_state, proc_table) -> bool`（os/kernel/src/debug.rs:190）对应 C `runqueues_ok()`（minix3/minix/kernel/debug.c:121-131）
 
 **实现差异**:
 1. **`p_found` 改为本地 bitset**: C 在 `proc.p_found` 字段上操作（修改进程表）；Rust 使用本地 `[bool; PROC_TABLE_SIZE]` 数组避免修改进程表（保持只读检查的纯度）
@@ -181,9 +181,9 @@ operation src dst mtype(mtype_hex) [params...]
 **Rust 64-bit 决策**: 部分实现——`print_proc` 已实现；`print_proc_depends` / `print_proc_recursive` 不实现。
 
 **实现内容**:
-- `write_rts_flags(flags)`（[debug.rs:208](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `rtsflagstr(flags)`（[debug.c:136-161](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `write_misc_flags(flags)`（[debug.rs:238](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `miscflagstr(flags)`（[debug.c:163-174](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
-- `print_proc(proc)`（[debug.rs:258](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）对应 C `print_proc(pp)`（[debug.c:249-275](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/debug.c)）
+- `write_rts_flags(flags)`（os/kernel/src/debug.rs:208）对应 C `rtsflagstr(flags)`（minix3/minix/kernel/debug.c:136-161）
+- `write_misc_flags(flags)`（os/kernel/src/debug.rs:238）对应 C `miscflagstr(flags)`（minix3/minix/kernel/debug.c:163-174）
+- `print_proc(proc)`（os/kernel/src/debug.rs:258）对应 C `print_proc(pp)`（minix3/minix/kernel/debug.c:249-275）
 
 **实现差异**:
 1. **直接 console 输出替代字符串返回**: C 用 `static char buf[]` 返回字符串（非线程安全）；Rust 直接走 `EarlyConsole::write_str`，无字符串分配
@@ -223,7 +223,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 ## Ch4: Rust 实现
 
-### 4.1 已实现（[os/kernel/src/debug.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）
+### 4.1 已实现（os/kernel/src/debug.rs）
 
 | C 符号 | C 位置 | Rust 实现 | 状态 |
 |--------|--------|----------|------|
@@ -236,7 +236,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 #### 4.1.1 `runqueues_ok_cpu` 实现要点
 
-[debug.rs:47-189](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现单 CPU 调度队列验证：
+os/kernel/src/debug.rs:47-189 实现单 CPU 调度队列验证：
 
 ```rust
 pub fn runqueues_ok_cpu(
@@ -271,7 +271,7 @@ pub fn runqueues_ok_cpu(
 
 #### 4.1.2 `print_proc` 实现要点
 
-[debug.rs:258-269](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs) 实现：
+os/kernel/src/debug.rs:258-269 实现：
 
 ```rust
 pub fn print_proc(proc: &KProcess) {
@@ -328,7 +328,7 @@ pub fn print_proc(proc: &KProcess) {
 
 ## Ch5: 测试
 
-### 5.1 已有测试（[os/kernel/src/debug.rs:296-317](file:///home/xzhao/github/minix-rs/os/kernel/src/debug.rs)）
+### 5.1 已有测试（os/kernel/src/debug.rs:296-317）
 
 | 测试 | 位置 | 覆盖内容 | 状态 |
 |------|------|---------|------|

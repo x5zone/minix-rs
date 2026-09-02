@@ -80,7 +80,7 @@ CPU 只有一个 INT 引脚（或一个 IRQ 线），但设备有几十个。中
 | 时钟源 | 8254 PIT / LAPIC Timer | ARM Generic Timer（`CNTFRQ_EL0` 读频率） | RISC-V `mtime` + `mtimecmp`（CLINT MMIO，S-mode 直接写） |
 | 时钟中断 | IRQ 0 → IDT vector 0x50（`include/arch/i386/include/interrupt.h:17` `IRQ0_VECTOR=0x50`） | GIC PPI 27（Generic Timer 物理 PPI，私有外设中断，每个 CPU 一份） | S-mode 定时器中断 → `stvec`（RISC-V Privileged Spec，`sip.STIP=1` 触发，无固定向量号，由 `stvec` 指定 handler 入口） |
 | 中断控制器 | LAPIC + IOAPIC（x86 APIC 规范） | GICv3：GICD（Distributor）+ GICR（Redistributor）+ CPU Interface（`ICC_*_EL1` 系统寄存器） | PLIC（外部设备中断）+ CLINT（Core-Local Interruptor，含 `mtimecmp`/software interrupt，`sifive/clint` 规范） |
-| intr_init | 初始化 8259A 或 APIC | 初始化 GICv3（GICD/GICR 建表 + `ICC_SRE_EL1.SRE=1`；OMAP INTC 为 32 位 ARM 的 C 行为 [ARCH: K-1]，见 §2.3） | 初始化 PLIC（`enable` 位 + 优先级阈值 [ARCH: K-2]；CLINT 由 `ClockArch` 管理，见 §3.8 注） |
+| intr_init | 初始化 8259A 或 APIC | 初始化 GICv3（GICD/GICR 建表 + `ICC_SRE_EL1.SRE=1`；OMAP INTC 为 32 位 ARM 的 C 行为 架构演进，见 §2.3） | 初始化 PLIC（`enable` 位 + 优先级阈值 架构演进；CLINT 由 `ClockArch` 管理，见 §3.8 注） |
 | arch_init | TSS（任务状态段）/APIC/ACPI/BIOS mem cut | TSS（软件抽象，保存 sp0）/PMU（性能监控单元）/bsp_init | PMP（Physical Memory Protection，`pmpaddr0-15`+`pmpcfg0-3` 配置内核地址空间访问权限） |
 
 > **注**：x86-64 的 `TSS` 是硬件任务状态段，详见 [03-kmain-cstart.md](03-kmain-cstart.md) §1.4c；ARM 端口虽然也有同名 `tss_init()`/`struct tss_s`，但它**不是硬件 TSS**，只是一个软件抽象，里面只存一个 `sp0`（中断时用的内核栈指针），外加在栈顶记录 CPU id。
@@ -206,7 +206,7 @@ int intr_init(const int auto_eoi)
 
 ARM 的 `intr_init()` 比 x86 简单——只需要映射中断控制器的 MMIO 基地址。实际的 GIC 初始化在后续步骤完成。
 
-**注意**：这是 Minix3 ARM（32 位）的实现。minix-rs 的 aarch64 目标用 GICv3 取代 OMAP INTC（`[ARCH: K-1]`，见 §3.8 标注），初始化序列不同（需要初始化 Distributor、Redistributor 和 CPU Interface），但语义相同——都是配置中断路由并屏蔽所有 IRQ。
+**注意**：这是 Minix3 ARM（32 位）的实现。minix-rs 的 aarch64 目标用 GICv3 取代 OMAP INTC（`架构演进`，见 §3.8），初始化序列不同（需要初始化 Distributor、Redistributor 和 CPU Interface），但语义相同——都是配置中断路由并屏蔽所有 IRQ。
 
 ### 2.4 arch_init()：x86-64 架构特定初始化
 
@@ -386,7 +386,7 @@ pub trait ClockArch: Sized + Send + Sync {
 /// C: DEFAULT_HZ — i386: 60 Hz，earm: 1000 Hz（32 位值）
 ///   路径：minix3/minix/include/arch/i386/include/archconst.h
 ///         minix3/minix/include/arch/earm/include/archconst.h
-/// minix-rs: 统一为 100 Hz（[ARCH: K-3]，见 §3.8 标注）。
+/// minix-rs: 统一为 100 Hz（架构演进，见 §3.8）。
 /// 选择 100 Hz 的理由：10 ms tick 在响应延迟与上下文切换开销之间取得平衡，
 /// 且是 Linux 服务器常见配置之一（CONFIG_HZ=100），便于与现有工具/预期对齐。
 ///
@@ -466,7 +466,7 @@ pub type CurrentInterruptController = crate::riscv64::interrupt::Riscv64Interrup
 > - `init` / `mask_all` / `mask` / `unmask` —— **全局动作**（一次性 BSP 初始化；或修改 IOAPIC redirection / GICD_ICENABLER / PLIC ENABLE 位等"路由表"——一改全部 CPU 看见）
 > - `ack` / `eoi` —— **per-CPU 动作**（写当前核私有寄存器：LAPIC EOI / ICC_EOIR1_EL1 / PLIC per-context complete——印证：`x86_64::ack(_irq)` 与 `arm64::eoi(_irq)` 中 `_irq` 参数完全被忽略）
 >
-> 现有 trait 把这两类语义不同的动作放进同一接口、同一 trait bound（`Send + Sync`），是**简化抽象**而非**对称抽象**——读者若按"对称接口"理解会错过硬件真相。trait 实际工作由外面 `BKL`（`os/kernel/src/irq_manager.rs`）保证并发安全，`Send + Sync` 是引用层面的类型证明不蕴含实例字段可多 CPU 同时变更。方向 A 是文档层强化（本节延展）；方向 B 是拆为 `InterruptRouter` + per-CPU `InterruptAck` 两个 trait。前者本阶段可做，后者依赖 16-smp 的 SMP 完整实现。**详细背景与未来重构方案见** [todo.md §7.4.1](todo.md#741-i-13-interruptcontroller-traitc-rust-不对称--send--sync-真实动机)（I-13 项，P2 文档改进 + P2 重构候选，非本阶段落地范围）。
+> 现有 trait 把这两类语义不同的动作放进同一接口、同一 trait bound（`Send + Sync`），是**简化抽象**而非**对称抽象**——读者若按"对称接口"理解会错过硬件真相。trait 实际工作由外面 `BKL`（`os/kernel/src/irq_manager.rs`）保证并发安全，`Send + Sync` 是引用层面的类型证明不蕴含实例字段可多 CPU 同时变更。当前阶段可做的改进是文档层强化（本节已延展）；未来重构候选是把 trait 拆为 `InterruptRouter` + per-CPU `InterruptAck` 两个 trait——依赖 16-smp 的 SMP 完整实现。**详细背景与未来重构方案见** [todo.md §7.4.1](todo.md#741-i-13-interruptcontroller-traitc-rust-不对称--send--sync-真实动机)（I-13 项，P2 文档改进 + P2 重构候选，非本阶段落地范围）。
 
 ### 3.4 决策：把早期控制台抽象为 `EarlyConsole` trait
 
@@ -618,8 +618,8 @@ pub trait ArchInit: Sized + Send + Sync {
 | 方面 | x86-64 | aarch64 | riscv64 |
 |------|--------|---------|---------|
 | 时钟硬件 | 8254 PIT (I/O port 0x40-0x43) / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | RISC-V mtime (CLINT MMIO) |
-| 时钟频率 | 100 Hz (可配置, [ARCH: K-3]) | 100 Hz | 100 Hz |
-| **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF, [ARCH: K-1]) | **PLIC** (external) + **CLINT** (timer + software, [ARCH: K-2]) |
+| 时钟频率 | 100 Hz (可配置, 架构演进) | 100 Hz | 100 Hz |
+| **中断控制器** | LAPIC + IOAPIC | GICv3 (GICD + GICR + CPU IF, 架构演进) | **PLIC** (external) + **CLINT** (timer + software, 架构演进) |
 | IRQ 数量 | 64 (APIC mode) | 64 (software limit) / 1020 (GICv3 SPI hardware capability) | 64 (software limit) / 1024 (PLIC max) |
 | `EarlyConsole::init()` | COM1 UART 配置（115200 8N1 + FIFO） | 默认空实现 | 默认空实现 |
 | `EarlyConsole::write_byte()` | COM1 I/O port `0x3F8` | PL011 MMIO `0x0900_0000` | SBI `console_putchar` ecall |
@@ -627,13 +627,13 @@ pub trait ArchInit: Sized + Send + Sync {
 
 > **注**: RISC-V "中断控制器" 应明确分为 **PLIC** (external interrupts, 由 `InterruptController` trait 管理) 和 **CLINT** (timer + software interrupts, 由 `ClockArch` 管理)。前表中"RISC-V 中断控制器"列单写"PLIC + CLINT"易混淆——`ClockArch` 用 CLINT 的 mtime/mtimecmp，`InterruptController` 只用 PLIC。
 
-> **架构演进标注（[ARCH: ...]）**：本节涉及的架构演进按三处一致标注（本文档 + design 快照 + 代码注释），每项给出 Minix3 现状与 minix-rs 演进，读者无需跳出本文档：
+> **架构演进标注**：本节涉及的架构演进按"本文档 + 代码注释"标注，每项给出 Minix3 现状与 minix-rs 演进，读者无需跳出本文档：
 >
-> | 标注 | 演进 | Minix3 现状 | minix-rs |
+> | 演进 | 内容 | Minix3 现状 | minix-rs |
 > |------|------|-------------|----------|
-> | `[ARCH: K-1]` | aarch64 中断路径 OMAP INTC → GICv3 | 32 位 ARM 用 OMAP INTC（`omap_intr.c:24-40`）+ BSP timer（`omap_timer.c`），见 §2.3 | ARMv8-A GICv3（GICD/GICR + CPU interface）+ Generic Timer（CNTP），见 §4.6/§4.7 |
-> | `[ARCH: K-2]` | riscv64 全新架构 | Minix3 无 RISC-V 移植 | 对标 RISC-V Privileged Spec 1.12：CLINT mtime/mtimecmp + PLIC + `sie.STIE` + PMP，见 §4.5/§4.8/§4.12 |
-> | `[ARCH: K-3]` | 时钟频率统一 100 Hz | i386 `DEFAULT_HZ=60`、earm `DEFAULT_HZ=1000`（`archconst.h:4`），boot 参数可调 | 三架构统一编译期常量 100 Hz（`os/arch/src/arch/clock.rs:43`），见 §3.2 |
+> | aarch64 中断路径 | OMAP INTC → GICv3 | 32 位 ARM 用 OMAP INTC（`omap_intr.c:24-40`）+ BSP timer（`omap_timer.c`），见 §2.3 | ARMv8-A GICv3（GICD/GICR + CPU interface）+ Generic Timer（CNTP），见 §4.6/§4.7 |
+> | riscv64 全新架构 | Minix3 无 RISC-V 移植（minix-rs 引入） | — | 对标 RISC-V Privileged Spec 1.12：CLINT mtime/mtimecmp + PLIC + `sie.STIE` + PMP，见 §4.5/§4.8/§4.12 |
+> | 时钟频率统一 100 Hz | i386 `DEFAULT_HZ=60`、earm `DEFAULT_HZ=1000`（`archconst.h:4`），boot 参数可调 | 三架构统一编译期常量 100 Hz（`os/arch/src/arch/clock.rs:43`），见 §3.2 |
 
 ---
 
@@ -1406,12 +1406,12 @@ impl ClockArch for AArch64ClockArch {
 
 ### 4.5 riscv64 ClockArch 实现
 
-Minix3 没有 RISC-V 移植，本实现是全新架构（`[ARCH: K-2]`，见 §3.8 标注）：直接用 CLINT mtime/mtimecmp（MMIO，M-mode 固件如 OpenSBI 已映射）。
+Minix3 没有 RISC-V 移植，本实现是全新架构（`架构演进`，见 §3.8）：直接用 CLINT mtime/mtimecmp（MMIO，M-mode 固件如 OpenSBI 已映射）。
 
 ```rust
 /// RISC-V 64 位时钟，使用 CLINT mtime。
 ///
-/// C: 无 Minix3 对应实现（Minix3 没有 RISC-V 端口 [ARCH: K-2]，见 §3.8 标注）。
+/// C: 无 Minix3 对应实现（Minix3 没有 RISC-V 端口 架构演进，见 §3.8）。
 pub struct Riscv64ClockArch {
     /// CLINT mtime 寄存器 MMIO 地址（来自 `ClintDesc`）。
     mtime_addr: usize,
@@ -1477,7 +1477,7 @@ impl ClockArch for Riscv64ClockArch {
 
 ### 4.6 aarch64 InterruptController 实现（GICv3）
 
-Minix3 ARM（32 位）用 OMAP INTC（`omap_intr.c`），本实现针对 ARMv8-A GICv3（`[ARCH: K-1]`，见 §3.8 标注）：GICD（Distributor）+ GICR（Redistributor）+ CPU interface。
+Minix3 ARM（32 位）用 OMAP INTC（`omap_intr.c`），本实现针对 ARMv8-A GICv3（`架构演进`，见 §3.8）：GICD（Distributor）+ GICR（Redistributor）+ CPU interface。
 
 ```rust
 /// GICD_CTLR：Distributor 控制寄存器。
@@ -1666,8 +1666,8 @@ pub trait TimerIrqGate: Sized {
 | 架构 | impl 类型 | enable_timer_irq | disable_timer_irq | C 源码 |
 |------|----------|------------------|-------------------|--------|
 | x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `apic.c:44` / `apic.c:475-477`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable 职责归属见 §4.7.1） |
-| aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_intr.c:22-44`（32 位 ARM；aarch64 为架构演进 [ARCH: K-1]，见 §2.5） |
-| riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植 [ARCH: K-2]；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
+| aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_intr.c:22-44`（32 位 ARM；aarch64 为架构演进 架构演进，见 §2.5） |
+| riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植 架构演进；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
 
 **设计要点**：
 
@@ -1691,7 +1691,7 @@ aarch64 timer IRQ 投递链是 CNTP（per-CPU timer 模块）→ PPI → GIC red
 
 ### 4.8 riscv64 InterruptController 实现（PLIC）
 
-Minix3 没有 RISC-V 移植，PLIC 实现对标 RISC-V PLIC 规范（`[ARCH: K-2]`，见 §3.8 标注）：外部设备中断经 PLIC 路由，时钟/软件中断由 CLINT 负责（`ClockArch` 管理）。
+Minix3 没有 RISC-V 移植，PLIC 实现对标 RISC-V PLIC 规范（`架构演进`，见 §3.8）：外部设备中断经 PLIC 路由，时钟/软件中断由 CLINT 负责（`ClockArch` 管理）。
 
 ```rust
 /// PLIC 寄存器偏移。

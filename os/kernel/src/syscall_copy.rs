@@ -1524,12 +1524,11 @@ mod tests {
     #[test]
     fn test_dispatch_copy_rejects_invalid_src_endpoint() {
         // C: do_copy.c:67 — if(!isokendpt(vir_addr[i].proc_nr_e, &p)) return EINVAL
-        use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
         use minix_types::Endpoint;
         use minix_types::Message;
 
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
@@ -1547,12 +1546,11 @@ mod tests {
     #[test]
     fn test_dispatch_copy_rejects_invalid_dst_endpoint() {
         // C: do_copy.c:67 — same check for destination
-        use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
         use minix_types::Endpoint;
         use minix_types::Message;
 
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
@@ -1570,12 +1568,11 @@ mod tests {
     fn test_dispatch_copy_accepts_none_endpoint() {
         // C: do_copy.c:66 — if(vir_addr[i].proc_nr_e != NONE) { isokendpt... }
         // NONE endpoint skips validation (physical address copy).
-        use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
         use minix_types::Endpoint;
         use minix_types::Message;
 
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
@@ -1593,13 +1590,12 @@ mod tests {
     #[test]
     fn test_dispatch_copy_self_replacement_and_valid_endpoint() {
         // C: do_copy.c:64-65 — SELF → caller endpoint, then isokendpt
-        use crate::proc_table::ProcessTable;
         use crate::proc::KProcess;
         use minix_types::Endpoint;
         use minix_types::Message;
         use crate::proc::RtsFlagsBits;
 
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Activate a slot so endpoint_to_nr can find it
         let target_nr = 0;
         let target_ep = Endpoint::from_generation_slot(1, target_nr);
@@ -1625,7 +1621,7 @@ mod tests {
     #[test]
     fn test_dispatch_copy_overflow_returns_e2big() {
         // C: do_copy.c:77 — src_addr + nr_bytes overflow → E2BIG.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Vircopy as i32;
@@ -1646,7 +1642,7 @@ mod tests {
         // the PTE walk fails → Suspended. In try mode, this becomes EFAULT
         // instead of VmSuspend.
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_ep = Endpoint::from_generation_slot(1, 0);
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = target_ep;
@@ -1689,9 +1685,9 @@ mod tests {
     }
 
     /// Helper: build a proc_table with a user process activated at a given slot.
-    fn make_umap_proc_table() -> (ProcessTable, Endpoint, Endpoint) {
+    fn make_umap_proc_table() -> (crate::test_helpers::TestProcTable, Endpoint, Endpoint) {
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = Endpoint(100);
         let target_ep = Endpoint(101);
         // Activate caller at slot 0 (RS_USER slot 0 is USER).
@@ -1714,7 +1710,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // src_endpt = SELF, segment = LOCAL_VM_SEG | VIR_ADDR.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         // vm_lookup via lookup_in_table returns None in test env (MockPteWalk) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
@@ -1726,7 +1722,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // src_endpt = 9999 is invalid.
         let mut msg = build_umap_msg(9999, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1743,7 +1739,7 @@ mod tests {
             SELF,
             0x100_i32,
         );
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         // vm_lookup via lookup_in_table returns None in test env (MockPteWalk) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
@@ -1755,7 +1751,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grantee = NONE is not valid for UMAP_REMOTE.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, NONE, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1766,7 +1762,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grantee = ANY is not valid for UMAP_REMOTE.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, ANY, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1778,7 +1774,7 @@ mod tests {
         // grantee = 9999 is not in proc_table; seg_index must be MEM_GRANT for
         // a non-SELF grantee to be valid. Here seg_index = VIR_ADDR → EINVAL.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, 9999, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1795,7 +1791,7 @@ mod tests {
             target_ep.0,
             0x100_i32,
         );
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         // verify_grant fails (no grant table in test) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
@@ -1807,7 +1803,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // segment type 0x9999 is unknown → EINVAL.
         let mut msg = build_umap_msg(SELF, 0x9999, 0x1000, SELF, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1818,7 +1814,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // segment = LOCAL_VM_SEG | 0x99 (bogus index) → EFAULT.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | 0x99, 0x1000, SELF, 0x100_i32);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap_remote(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -1836,7 +1832,7 @@ mod tests {
             SELF,
             0x100_i32,
         );
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_umap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1864,9 +1860,8 @@ mod tests {
     #[test]
     fn test_dispatch_safememset_rejects_none_dst() {
         // C: do_safememset.c:36-37 — dst_endpt == NONE → EFAULT
-        use crate::kpriv::PrivTable;
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safememset_msg(NONE, 0, 0, 0, 0);
         let result = dispatch_safememset(&mut caller, &msg, &proc_table, &priv_table);
@@ -1876,10 +1871,9 @@ mod tests {
     #[test]
     fn test_dispatch_safememset_rejects_invalid_dst_endpoint() {
         // C: do_safememset.c:39-40 — endpoint_lookup fails → EINVAL
-        use crate::kpriv::PrivTable;
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         // Activate caller at slot 0 (caller is valid).
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(100);
@@ -1895,10 +1889,9 @@ mod tests {
     #[test]
     fn test_dispatch_safememset_rejects_dst_without_grant_table() {
         // C: do_safememset.c:42-45 — priv(dst_p) && s_grant_table == NULL → EINVAL
-        use crate::kpriv::PrivTable;
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         // Activate caller at slot 0.
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(100);
@@ -1925,10 +1918,9 @@ mod tests {
         // verify_grant is now wired: it reads the grant entry from the
         // granter's user space via data_copy_vmcheck. In the test env,
         // MockPteWalk returns None → the copy suspends → VmSuspend.
-        use crate::kpriv::PrivTable;
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(100);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1978,8 +1970,8 @@ mod tests {
     #[test]
     fn test_dispatch_safecopy_from_rejects_none_granter() {
         // C: do_safecopy.c:290-293 — granter == NONE || grantee == NONE → EFAULT
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(NONE, 0, 0, 0, 0);
         let result = dispatch_safecopy_from(&mut caller, &msg, &proc_table, &priv_table);
@@ -1989,8 +1981,8 @@ mod tests {
     #[test]
     fn test_dispatch_safecopy_from_rejects_invalid_granter() {
         // C: do_safecopy.c:63-67 — verify_grant → endpoint_lookup fails → EINVAL
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(9999, 0, 0, 0, 0);
         let result = dispatch_safecopy_from(&mut caller, &msg, &proc_table, &priv_table);
@@ -2001,8 +1993,8 @@ mod tests {
     fn test_dispatch_safecopy_from_rejects_negative_grant_id() {
         // C: cp_grant_id_t is i32; negative IDs are invalid.
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2019,8 +2011,8 @@ mod tests {
         // Granter exists but has no grant table (s_grant_table == 0).
         // verify_grant returns EPERM (do_safecopy.c:96-101 — HASGRANTTABLE check).
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2039,8 +2031,8 @@ mod tests {
     #[test]
     fn test_dispatch_safecopy_to_rejects_none_granter() {
         // C: do_safecopy.c:290-293 — granter == NONE → EFAULT
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(NONE, 0, 0, 0, 0);
         let result = dispatch_safecopy_to(&mut caller, &msg, &proc_table, &priv_table);
@@ -2050,8 +2042,8 @@ mod tests {
     #[test]
     fn test_dispatch_safecopy_to_rejects_invalid_granter() {
         // C: do_safecopy.c:63-67 — endpoint_lookup fails → EINVAL
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(9999, 0, 0, 0, 0);
         let result = dispatch_safecopy_to(&mut caller, &msg, &proc_table, &priv_table);
@@ -2061,8 +2053,8 @@ mod tests {
     #[test]
     fn test_dispatch_safecopy_to_rejects_negative_grant_id() {
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2078,8 +2070,8 @@ mod tests {
         // Granter exists but has no grant table (s_grant_table == 0).
         // verify_grant returns EPERM (do_safecopy.c:96-101 — HASGRANTTABLE check).
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2106,7 +2098,7 @@ mod tests {
     #[test]
     fn test_dispatch_memset_rejects_invalid_process() {
         // C: vm_memset:540-541 — process != NONE && !endpoint_lookup → ESRCH
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // process = 9999 is not in proc_table.
         let msg = build_memset_msg(0x1000, 0x100, 0xAB, 9999);
@@ -2122,7 +2114,7 @@ mod tests {
         // faulted in; VM will handle the fault and kernel_call_resume
         // will retry.
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2137,7 +2129,7 @@ mod tests {
     fn test_dispatch_memset_physical_zero_bytes_is_noop() {
         // C: vm_memset:553 — count == 0 is a no-op.
         // Physical address with count=0 returns OK without touching memory.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(0x1000, 0, 0xAB, NONE);
         let result = dispatch_memset(&mut caller, &msg, &proc_table);
@@ -2147,7 +2139,7 @@ mod tests {
     #[test]
     fn test_dispatch_memset_overflow_returns_e2big() {
         // base + count overflow → E2BIG (matches C do_copy.c:77).
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(u64::MAX, 1, 0xAB, NONE);
         let result = dispatch_memset(&mut caller, &msg, &proc_table);
@@ -2159,7 +2151,7 @@ mod tests {
         // C: vm_memset:543 — pattern & 0xFF (fold higher bits away).
         // High-bit patterns are not rejected as invalid; the truncation
         // is internal. Use count=0 to avoid actual memory writes.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // pattern = 0xAB_CD_EF_12 — only 0x12 is the actual byte.
         let msg = build_memset_msg(0x1000, 0, 0xABCDEF12, NONE);
@@ -2182,8 +2174,8 @@ mod tests {
     fn test_dispatch_vsafecopy_rejects_none_caller() {
         // C: do_safecopy.c:408 — `assert(src.proc_nr_e != NONE)` → EFAULT
         // (we replace the panic with a graceful EFAULT return).
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(NONE));
         let msg = build_vsafecopy_msg(0x1000, 1);
         let result = dispatch_vsafecopy(&mut caller, &msg, &proc_table, &priv_table);
@@ -2194,8 +2186,8 @@ mod tests {
     fn test_dispatch_vsafecopy_rejects_zero_vec_size() {
         // C: do_safecopy.c:414-415 — els = 0 → no-op loop.
         // We reject it explicitly (more defensive than the C no-op).
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, 0);
         let result = dispatch_vsafecopy(&mut caller, &msg, &proc_table, &priv_table);
@@ -2206,8 +2198,8 @@ mod tests {
     fn test_dispatch_vsafecopy_rejects_negative_vec_size() {
         // C: do_safecopy.c:414 — els < 0 → no-op loop (signed i32).
         // We reject it for clarity.
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, -1);
         let result = dispatch_vsafecopy(&mut caller, &msg, &proc_table, &priv_table);
@@ -2218,8 +2210,8 @@ mod tests {
     fn test_dispatch_vsafecopy_rejects_overflow_vec_size() {
         // C: do_safecopy.c:415 — `els * sizeof(vscp_vec)` overflow check.
         // MAX_VSCPVEC + 1 must be rejected.
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, MAX_VSCPVEC + 1);
         let result = dispatch_vsafecopy(&mut caller, &msg, &proc_table, &priv_table);
@@ -2232,8 +2224,8 @@ mod tests {
         // proceeds to data_copy_vmcheck to copy the vec from user space.
         // Without real page tables (test mock), the PTE walk fails →
         // EFAULT or VmSuspend (depending on mock PteWalk behavior).
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, 4);
         let result = dispatch_vsafecopy(&mut caller, &msg, &proc_table, &priv_table);
@@ -2282,10 +2274,10 @@ mod tests {
     #[test]
     fn test_dispatch_vumap_rejects_none_caller() {
         // C: do_vumap.c:37 — caller must have a valid endpoint.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(NONE));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -2293,10 +2285,10 @@ mod tests {
     #[test]
     fn test_dispatch_vumap_rejects_zero_vcount() {
         // C: do_vumap.c:48 — vcount <= 0 → EINVAL
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 0, 0x2000, 4, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -2304,10 +2296,10 @@ mod tests {
     #[test]
     fn test_dispatch_vumap_rejects_zero_pmax() {
         // C: do_vumap.c:48 — pmax <= 0 → EINVAL
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 0, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -2316,10 +2308,10 @@ mod tests {
     fn test_dispatch_vumap_rejects_unknown_access() {
         // C: do_vumap.c:59 — default case in switch → EINVAL.
         // access = 0xFF is neither VUA_READ, VUA_WRITE, nor their OR.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, 0xFF, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -2328,7 +2320,7 @@ mod tests {
     fn test_dispatch_vumap_rejects_invalid_source_endpoint() {
         // C: do_vumap.c:79 — when source != SELF, the granter must exist.
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -2336,7 +2328,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // source = 9999 is not in proc_table.
         let mut msg = build_vumap_msg(9999, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -2346,10 +2338,10 @@ mod tests {
         // C: do_vumap.c:84-86 — source == SELF bypasses grant verification.
         // data_copy_vmcheck of vvec from caller fails (MockPteWalk returns
         // None) → Suspended → VmSuspend in the test environment.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
@@ -2361,14 +2353,14 @@ mod tests {
         // (MockPteWalk returns None) → Suspended → VmSuspend in the test
         // environment, before grant verification is reached.
         use crate::proc::RtsFlagsBits;
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(p) = proc_table.get_mut(ProcNr(0)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(200, 0x1000, 4, 0x2000, 4, VUA_READ | VUA_WRITE, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
@@ -2379,10 +2371,10 @@ mod tests {
         // We don't return EINVAL; we accept and clamp (matching C). The
         // clamping/validation passes, but the actual vvec copy suspends in
         // the test environment (MockPteWalk returns None) → VmSuspend.
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 1000, 0x2000, 4, VUA_READ, 0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }

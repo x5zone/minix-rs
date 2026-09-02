@@ -9,9 +9,15 @@ use minix_types::VirBytes;
 use minix_arch::{CurrentDirectMap, DirectMapArch};
 use crate::phys_mem::AlignedPhysBytes;
 
+// V10-P2-2: production only uses VM_DIRECT_MAP_SIZE + vm_phys_to_virt; the
+// base re-exports serve tests and the DEAD virt/phys helpers above.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const VM_DIRECT_MAP_BASE: u64 = CurrentDirectMap::VM_DIRECT_MAP_BASE;
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-pub(crate) const VM_DIRECT_MAP_SIZE: u64 = 1 << 30;
+// V10-P2-2: size now comes from `DirectMapArch` (per-arch window) instead
+// of a VM-server-local hardcode that silently drifted on RISC-V (16 GiB).
+pub(crate) const VM_DIRECT_MAP_SIZE: u64 = CurrentDirectMap::VM_DIRECT_MAP_SIZE;
 
 pub(crate) const VM_HEAP_BASE: u64 = CurrentDirectMap::VM_HEAP_BASE;
 pub(crate) const VM_HEAP_SIZE: u64 = CurrentDirectMap::VM_HEAP_SIZE;
@@ -22,20 +28,31 @@ pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
     CurrentDirectMap::vm_phys_to_virt(phys.into())
 }
 
+// V10-P2-2: DEAD in production (only `vm_phys_to_virt` is used); kept for
+// tests and the future kernel-IPC wiring. Revisit: either wire into a
+// heap_arena self-map assertion or delete.
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) fn kernel_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
     CurrentDirectMap::kernel_phys_to_virt(phys.into())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) fn virt_to_phys(virt: VirBytes) -> AlignedPhysBytes {
     let phys = CurrentDirectMap::virt_to_phys(virt);
     AlignedPhysBytes::new_unchecked(phys.get())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool {
-    virt.0 >= KERNEL_DIRECT_MAP_BASE || (virt.0 >= VM_DIRECT_MAP_BASE && virt.0 < VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE)
+    // VM window is bounded by VM_DIRECT_MAP_SIZE (V10-P2-2). The kernel
+    // window has no explicit size constant yet (kernel layout constants
+    // live in BootParams/KERNEL_LAYOUT); the high-half check is kept and
+    // documented as such — the function is DEAD in production today.
+    virt.0 >= KERNEL_DIRECT_MAP_BASE
+        || (virt.0 >= VM_DIRECT_MAP_BASE && virt.0 < VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE)
 }
 
 #[cfg(test)]
@@ -119,7 +136,16 @@ pub(crate) mod tests {
     #[test]
     fn test_is_direct_map_virt() {
         assert!(is_direct_map_virt(VirBytes(VM_DIRECT_MAP_BASE)));
+        assert!(is_direct_map_virt(VirBytes(VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE - 1)));
+        assert!(!is_direct_map_virt(VirBytes(VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE)));
         assert!(is_direct_map_virt(VirBytes(KERNEL_DIRECT_MAP_BASE)));
         assert!(!is_direct_map_virt(VirBytes(0x7000_0000)));
+    }
+
+    #[test]
+    fn test_layout_invariant_heap_follows_direct_map() {
+        // V10-P2-2: VM_HEAP_BASE must immediately follow the VM direct map
+        // window (per-arch const-assert also enforces this at compile time).
+        assert_eq!(VM_HEAP_BASE, VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE);
     }
 }

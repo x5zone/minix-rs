@@ -4,15 +4,18 @@
 
 /// Trace state.
 ///
-/// Corresponds to Minix3's `TRACE_STOPPED` flag.
+/// Corresponds to Minix3's `TRACE_STOPPED` flag and `TRACE_EXIT`.
 ///
 /// # Note
 /// `TRACE_STOPPED` is the state of a process stopped due to tracing,
-/// can combine with `Running` or `Exiting`.
+/// can combine with `Running` or `Exiting`. `TRACE_EXIT` indicates tracer
+/// forced exit (signal.c:695-698, 09-pm-exit.md).
 #[derive(Debug, Clone, Default)]
 pub struct TraceState {
     /// Whether stopped due to tracing (TRACE_STOPPED).
     pub stopped: bool,
+    /// Whether tracer forced exit (TRACE_EXIT, `exit_proc` pending).
+    pub exit_pending: bool,
 }
 
 impl TraceState {

@@ -387,7 +387,7 @@ os/servers/vm/src/vm_server.rs
       └─ Some(entry)（过时）→ rmcache
    c. memtype 必须是 MEM_TYPE_ANON / MEM_TYPE_CONTIG_ANON（静态指针比较）→ 否则 InvalidAddress
    d. 帧 refcount != 1 → InvalidAddress
-   e. slot.memtype = MEM_TYPE_CACHE
+   e. slot.set_memtype(Some(MEM_TYPE_CACHE))（三态 PageSlot 的 set_memtype，仅 present 槽生效）
    f. addcache(dev, off, ino, ino_off, flags & VMSF_ONCE, pfn) → Err → InvalidParam
 ```
 

@@ -3,6 +3,10 @@
 //! Implements 100Hz periodic timer interrupt handling, synchronous alarm timers,
 //! virtual/profile timers, time accounting, and load average tracking.
 //!
+//! **Zero-heap contract**: see `lib.rs` for the kernel-wide contract. This
+//! module allocates nothing at runtime — alarm timers use an intrusive
+//! sorted list embedded in `KPriv::runtime.s_alarm_timer` (D2).
+//!
 //! # Minix3 C Source Mapping
 //!
 //! - `clock.c:47-64` — `init_clock()`: initialize clock variables
@@ -18,8 +22,15 @@
 //! # Design Decisions (15-clock-timer.md §3)
 //!
 //! - **D1**: `ClockState` struct encapsulates `kclockinfo` + `kloadinfo` + `clock_timers`
-//! - **D2**: `TimerQueue` = `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>`
-//! - **D3**: `TimerId(u64)` newtype replaces C's `minix_timer_t *tp` pointer identity
+//! - **D2**: alarm timer chain = C-isomorphic intrusive sorted singly-linked list.
+//!   Head `Option<PrivId>` lives in `ClockState` (C: `clock_timers`, clock.c:37);
+//!   nodes are embedded in `KPriv::runtime.s_alarm_timer` (C: `priv[i].s_alarm_timer`,
+//!   priv.h:48) and linked by `Option<PrivId>` indices instead of pointers.
+//!   Zero heap allocation: capacity is bounded by `NR_SYS_PROCS` (one timer per
+//!   privilege slot, same as C).
+//! - **D3**: node identity = `PrivId` (the embedding privilege slot). C uses the
+//!   `minix_timer_t *tp` pointer (the embedded node's address) as identity;
+//!   the index of the embedding slot is the pointer's positional counterpart.
 //! - **D6**: `TimerAction` enum replaces C's `tmr_func_t` (KernelCallback variant deleted)
 //! - **D7**: `hz` is compile-time constant with runtime override
 //! - **D8**: per-CPU `ClockState` instance with `is_bsp` flag (replaces PerCpuTick const)
@@ -27,12 +38,11 @@
 //! - **D10**: explicit `billp: Option<&mut KProcess>` parameter for billable accounting
 //! - **D11**: standalone `vtimer_check()` deleted (tick-internal logic handles expiry)
 
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use minix_types::Endpoint;
 
+use crate::kpriv::{PrivId, PrivTable};
 use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 
 // ── Global clock state mirrors (read by scheduler without &ClockState) ──
@@ -475,9 +485,41 @@ fn decrement_quantum_in(
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Timer "never expires" sentinel.
-/// C: `TMR_NEVER` = `((clock_t)TMRDIFF_MAX + 1)` — include/minix/timers.h:48 (INT_MAX+1)
-/// Rust 用 `u64::MAX`——语义等价的"永不触发"哨兵。
-pub const TMR_NEVER: u64 = u64::MAX;
+/// C: `TMR_NEVER` = `((clock_t)TMRDIFF_MAX + 1)` — include/minix/timers.h:48
+/// (= INT_MAX+1 = 0x80000000).
+///
+/// Must be exactly `TMRDIFF_MAX + 1`, NOT `u64::MAX`: with the wrap-safe
+/// comparison `tmr_is_first`, `u64::MAX` is only `now + 1` ticks ahead of
+/// any `now` (i.e. always "expired"), while `TMRDIFF_MAX + 1` is always
+/// more than half the tick space away — unreachable until uptime wraps
+/// past it (~68 years at 100 Hz), which is the C semantics of "never".
+pub const TMR_NEVER: u64 = (i32::MAX as u64) + 1;
+
+/// Maximum valid timer difference (half the tick value space).
+/// C: `TMRDIFF_MAX` = `INT_MAX` — include/minix/timers.h:45.
+///
+/// `clock_t` is unsigned and may wrap, so time comparisons must use
+/// wrap-safe relative differences: `a` is "not later than" `b` iff
+/// `b.wrapping_sub(a) <= TMRDIFF_MAX` (C: `tmr_is_first(a, b)`, timers.h:57).
+const TMRDIFF_MAX: u64 = i32::MAX as u64;
+
+/// Wrap-safe "not later than" comparison of two absolute tick times.
+/// C: `tmr_is_first(a, b)` = `(b) - (a) <= TMRDIFF_MAX` — include/minix/timers.h:57.
+///
+/// Public because kernel-call layering mirrors C's header macro: callers
+/// outside this module need the same comparison (C: do_setalarm.c:42 uses
+/// `tmr_is_first(uptime, tp->tmr_exp_time)` for the time_left reply).
+#[inline]
+pub fn tmr_is_first(a: u64, b: u64) -> bool {
+    b.wrapping_sub(a) <= TMRDIFF_MAX
+}
+
+/// Wrap-safe "expired" check for a timer node at time `now`.
+/// C: `tmr_has_expired(tp, now)` = `tmr_is_first((tp)->tmr_exp_time, now)` — timers.h:58.
+#[inline]
+fn tmr_has_expired(exp_time: u64, now: u64) -> bool {
+    tmr_is_first(exp_time, now)
+}
 
 /// Load average sampling interval in seconds.
 /// C: `_LOAD_UNIT_SECS` — include/minix/type.h:88 (6)
@@ -486,30 +528,6 @@ const LOAD_UNIT_SECS: u64 = 6;
 /// Number of load average history slots.
 /// C: `_LOAD_HISTORY` — include/minix/type.h:95 (150 = 60s*15min/6s)
 const LOAD_HISTORY: usize = 150;
-
-// ── Timer identity (D3) ──
-
-/// Stable identity for a timer, replacing C's `minix_timer_t *tp` pointer.
-///
-/// C uses the timer struct pointer as stable identity for set/reset operations
-/// (`set_kernel_timer(tp, ...)` / `reset_kernel_timer(tp)`). Rust cannot use
-/// pointers (timers are not intrusive linked-list nodes), so we use a newtype
-/// wrapping a per-`ClockState` monotonic counter.
-///
-/// `TimerId` is allocated by `ClockState::set_timer()` and returned to the
-/// caller, who must store it to later call `ClockState::reset_timer(id)`.
-///
-/// See 15-clock-timer.md §2.2 (D3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TimerId(u64);
-
-impl TimerId {
-    /// Construct a `TimerId` from a raw counter value.
-    pub const fn new(id: u64) -> Self { Self(id) }
-
-    /// Return the raw counter value.
-    pub fn raw(self) -> u64 { self.0 }
-}
 
 // ── Timer action (D6) ──
 
@@ -527,100 +545,254 @@ pub enum TimerAction {
     // KernelCallback variant DELETED (YAGNI): was dead code with no callers.
     // If a kernel-internal timer callback is needed in the future (e.g.
     // for a kernel watchdog or profile timer), add a new variant here and
-    // wire up the dispatch in TimerQueue::expire().
+    // wire up the dispatch in expire_alarm_timers().
 }
 
-// ── Timer entry ──
+// ── Alarm timer node (D2, D3) ──
 
-/// A timer entry in the clock timer queue.
+/// Intrusive alarm timer node, embedded in `KPriv::runtime.s_alarm_timer`.
 ///
-/// Replaces C's `minix_timer_t` linked list node.
-/// Design decision D5: stored in `TimerQueue` (BTreeSet + BTreeMap) instead of
-/// a pointer-based linked list.
+/// C-isomorphic rewrite of `minix_timer_t` (include/minix/timers.h:32-38)
+/// embedded at `priv[i].s_alarm_timer` (kernel/priv.h:48). The field layout
+/// differs in exactly one way: `tmr_next` is an `Option<PrivId>` index into
+/// `PrivTable` instead of a `struct minix_timer *` pointer, so the kernel
+/// never heap-allocates timer storage (capacity = `NR_SYS_PROCS`, same bound
+/// as C's `EXTERN struct priv priv[NR_SYS_PROCS]`).
 ///
-/// C: timers.h — `struct minix_timer`
-#[derive(Debug, Clone)]
-pub struct TimerEntry {
-    /// Expiration time in monotonic ticks. C: `tmr_exp_time`
+/// A node is "set" (on the clock chain) iff `action.is_some()`, matching C's
+/// `tmr_is_set(tp)` = `tp->tmr_func != NULL` (timers.h:52).
+///
+/// Field name `s_` prefix lives on the embedding `KPriv::runtime` (C
+/// traceability); node-internal names mirror the C struct member names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlarmTimerNode {
+    /// Expiration time in monotonic ticks (absolute). C: `tmr_exp_time`.
     pub exp_time: u64,
-    /// Action to take when timer expires. Replaces C's `tmr_func_t` callback.
-    pub action: TimerAction,
+    /// Action to call when expired; `None` = timer not set. C: `tmr_func`
+    /// (NULL means inactive) + `tmr_arg` folded into the enum payload.
+    pub action: Option<TimerAction>,
+    /// Successor in the global sorted chain, as a privilege-slot index.
+    /// C: `tmr_next` (pointer). Stale after dequeue — C leaves it dangling
+    /// too (tmrs_clr.c:29-34 unlinks without clearing `tp->tmr_next`); the
+    /// authoritative link is the chain reachable from `ClockState::timers_head`.
+    pub next: Option<PrivId>,
 }
 
-// ── Timer queue (D2) ──
-
-/// Alarm timer queue with stable identity + sorted expiry.
-///
-/// Replaces C's `minix_timer_t *clock_timers` linked list (clock.c:37).
-///
-/// Design decision D2: dual-index data structure.
-/// - `by_expiry: BTreeSet<(exp_time, TimerId)>` — sorted by expiration time,
-///   supports O(k log N) expiry scan for `pop_expired()`.
-/// - `by_id: BTreeMap<TimerId, TimerEntry>` — O(log N) lookup by id for
-///   `remove(id)` (reset_timer). BTreeMap (not HashMap) because `HashMap`
-///   is not in `alloc::collections` (would require the `hashbrown` crate).
-///
-/// This dual-index design fixes the P1 issue where `BTreeMap<u64, _>`
-/// silently overwrote timers with the same `exp_time` (C's linked list
-/// supports multiple timers at the same expiration time).
-///
-/// See 15-clock-timer.md §2.3 (D2).
-#[derive(Debug, Default)]
-struct TimerQueue {
-    /// Sorted by (exp_time, id) — supports O(k log N) expiry scan.
-    by_expiry: BTreeSet<(u64, TimerId)>,
-    /// Lookup by TimerId — supports O(log N) reset_timer(id).
-    /// BTreeMap (not HashMap) because `HashMap` is not in `alloc::collections`.
-    by_id: BTreeMap<TimerId, TimerEntry>,
-    /// Next TimerId counter (per-ClockState, monotonic).
-    next_id: u64,
+impl Default for AlarmTimerNode {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-impl TimerQueue {
-    /// Insert a new timer entry. Returns the assigned `TimerId`.
+impl AlarmTimerNode {
+    /// Const-constructible zeroed node (for `const fn` table init).
     ///
-    /// C: `tmrs_settimer()` — timers.h (inserts into linked list)
-    fn insert(&mut self, entry: TimerEntry) -> TimerId {
-        let id = TimerId(self.next_id);
-        self.next_id += 1;
-        self.by_expiry.insert((entry.exp_time, id));
-        self.by_id.insert(id, entry);
-        id
+    /// C: `tmr_inittimer(tp)` = `tmr_func = NULL; tmr_next = NULL`
+    /// (timers.h:64) — `exp_time` is left uninitialized in C; Rust zeroes it
+    /// because `Option` discriminants require a total value.
+    pub const fn new() -> Self {
+        Self { exp_time: 0, action: None, next: None }
     }
 
-    /// Remove a timer by `TimerId`. Returns the removed entry, if any.
-    ///
-    /// C: `tmrs_clrtimer()` — timers.h (removes from linked list by pointer)
-    fn remove(&mut self, id: TimerId) -> Option<TimerEntry> {
-        let entry = self.by_id.remove(&id)?;
-        self.by_expiry.remove(&(entry.exp_time, id));
-        Some(entry)
+    /// Whether this node is on the clock chain.
+    /// C: `tmr_is_set(tp)` = `tp->tmr_func != NULL` — timers.h:52.
+    pub fn is_set(&self) -> bool {
+        self.action.is_some()
+    }
+}
+
+// ── Alarm timer chain operations (D2) ──
+//
+// C-isomorphic rewrite of the three `tmrs_*` primitives from
+// minix/lib/libtimers/{tmrs_set,tmrs_clr,tmrs_exp}.c, operating on
+// `ClockState::timers_head` (C: `clock_timers`, clock.c:37) plus the
+// nodes embedded in `PrivTable`. All operations take `(&mut PrivTable,
+// &mut ClockState)` as separate mutable borrows — the two objects are
+// always owned side by side (BKL protects both), and Rust's borrow
+// checker permits two distinct `&mut` arguments.
+//
+// Zero heap allocation: the chain capacity is bounded by NR_SYS_PROCS
+// (one node per privilege slot), identical to C.
+
+/// Deactivate a timer node and remove it from the chain.
+///
+/// C: `reset_kernel_timer(tp)` — clock.c:245-255
+/// `if (tmr_is_set(tp)) tmrs_clrtimer(&clock_timers, tp, NULL, NULL)`
+///
+/// Idempotent: a node that is not set (or not on the chain) is left
+/// untouched. This is the operation invoked by `SYS_SETALARM` with
+/// relative `exp_time == 0` (do_setalarm.c:57) and by `SYS_CLEAR`
+/// (do_clear.c:52).
+pub fn reset_alarm_timer(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+) {
+    let node = match priv_table.get(priv_id) {
+        Some(kp) => kp.runtime.s_alarm_timer,
+        None => return,
+    };
+    if !node.is_set() {
+        return; // C: `if (tmr_is_set(tp))` guard.
+    }
+    chain_unlink(priv_table, clock, priv_id);
+    // C: tmrs_clr.c:27 — `tp->tmr_func = NULL` clears the timer object.
+    // (tmr_exp_time is left as-is, same as C.)
+    if let Some(kp) = priv_table.get_mut(priv_id) {
+        kp.runtime.s_alarm_timer.action = None;
+    }
+}
+
+/// Activate (or re-arm) a timer node at absolute time `exp_time`.
+///
+/// C: `set_kernel_timer(tp, exp_time, watchdog, arg)` — clock.c:229-240,
+/// delegating to `tmrs_settimer()` (tmrs_set.c:14-47): if the node is
+/// already set it is first removed from the chain; then the node fields
+/// are written and the node is inserted in expiry order (earliest first;
+/// among equal expiry times the most recently inserted node goes in
+/// front — the scan breaks at the first `cur` with
+/// `tmr_is_first(exp_time, cur_exp)`, i.e. `exp_time <= cur_exp`, and
+/// inserts before it).
+pub fn set_alarm_timer(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+    exp_time: u64,
+    action: TimerAction,
+) {
+    assert!(
+        clock.is_bsp,
+        "set_alarm_timer called on AP ClockState (timers are BSP-only)"
+    );
+    // C: tmrs_set.c:29-30 — clear the old timer object first.
+    reset_alarm_timer(priv_table, clock, priv_id);
+
+    // C: tmrs_set.c:31-33 — set the timer's variables.
+    {
+        let Some(kp) = priv_table.get_mut(priv_id) else { return };
+        kp.runtime.s_alarm_timer.exp_time = exp_time;
+        kp.runtime.s_alarm_timer.action = Some(action);
     }
 
-    /// Pop the next expired timer (exp_time <= now), if any.
-    ///
-    /// C: `tmr_has_expired()` + `tmrs_exptimers()` — timers.h / clock.c:159-161
-    ///
-    /// Returns `None` if the earliest timer has not yet expired.
-    fn pop_expired(&mut self, now: u64) -> Option<TimerEntry> {
-        let first = self.by_expiry.iter().next().copied()?;
-        if first.0 > now {
-            return None;
+    // C: tmrs_set.c:38-43 — insert before the first node whose expiry is
+    // not earlier than ours (wrap-safe comparison).
+    let mut prev: Option<PrivId> = None;
+    let mut cur = clock.timers_head;
+    loop {
+        let insert_here = match cur {
+            None => true,
+            Some(cid) => {
+                let cur_exp = priv_table
+                    .get(cid)
+                    .map(|kp| kp.runtime.s_alarm_timer.exp_time)
+                    .unwrap_or(u64::MAX);
+                tmr_is_first(exp_time, cur_exp)
+            }
+        };
+        if insert_here {
+            break;
         }
-        self.by_expiry.remove(&first);
-        self.by_id.remove(&first.1)
+        prev = cur;
+        cur = match cur {
+            Some(cid) => priv_table
+                .get(cid)
+                .and_then(|kp| kp.runtime.s_alarm_timer.next),
+            None => None,
+        };
     }
-
-    /// Check if a timer with the given id exists.
-    #[cfg(test)]
-    fn contains(&self, id: TimerId) -> bool {
-        self.by_id.contains_key(&id)
+    // Link: prev -> priv_id -> cur.
+    match prev {
+        Some(pid) => {
+            if let Some(kp) = priv_table.get_mut(pid) {
+                kp.runtime.s_alarm_timer.next = Some(priv_id);
+            }
+        }
+        None => {
+            clock.timers_head = Some(priv_id);
+        }
     }
+    if let Some(kp) = priv_table.get_mut(priv_id) {
+        kp.runtime.s_alarm_timer.next = cur;
+    }
+}
 
-    /// Number of timers in the queue.
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.by_id.len()
+/// Remove `priv_id` from the chain without touching its set-state.
+///
+/// C: the unlink loop of `tmrs_clrtimer` — tmrs_clr.c:29-34
+/// (`for (atp = tmrs; *atp != NULL; atp = &(*atp)->tmr_next) ...`).
+/// The caller is responsible for clearing `action` (C: `tmr_func`).
+fn chain_unlink(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    priv_id: PrivId,
+) {
+    if clock.timers_head == Some(priv_id) {
+        let next = priv_table
+            .get(priv_id)
+            .and_then(|kp| kp.runtime.s_alarm_timer.next);
+        clock.timers_head = next;
+    } else {
+        // Walk the chain to find the predecessor of priv_id.
+        let mut cur = clock.timers_head;
+        while let Some(cid) = cur {
+            let next = priv_table
+                .get(cid)
+                .and_then(|kp| kp.runtime.s_alarm_timer.next);
+            if next == Some(priv_id) {
+                let target_next = priv_table
+                    .get(priv_id)
+                    .and_then(|kp| kp.runtime.s_alarm_timer.next);
+                if let Some(kp) = priv_table.get_mut(cid) {
+                    kp.runtime.s_alarm_timer.next = target_next;
+                }
+                return;
+            }
+            cur = next;
+        }
+    }
+}
+
+/// Check the chain for expired timers, deactivate them, and invoke
+/// `on_expired` for each.
+///
+/// C: `tmrs_exptimers(&clock_timers, uptime, NULL)` — tmrs_exp.c:9-29,
+/// called from the BSP tick path (clock.c:159-161). Expiry uses the
+/// wrap-safe `tmr_has_expired` check (timers.h:58), matching C's
+/// overflow-aware comparison.
+///
+/// The callback is invoked after the node is dequeued and deactivated —
+/// the same ordering as C (`tmrs_exp.c:15-20` unlinks and NULLs
+/// `tmr_func` before calling `func`). This makes the node re-armable
+/// from within the callback (e.g. a periodic alarm) without corrupting
+/// the chain walk.
+pub fn expire_alarm_timers<F>(
+    priv_table: &mut PrivTable,
+    clock: &mut ClockState,
+    now: u64,
+    mut on_expired: F,
+) where
+    F: FnMut(TimerAction),
+{
+    while let Some(head_id) = clock.timers_head {
+        let head_exp = priv_table
+            .get(head_id)
+            .map(|kp| kp.runtime.s_alarm_timer.exp_time)
+            .unwrap_or(u64::MAX);
+        if !tmr_has_expired(head_exp, now) {
+            break;
+        }
+        // Dequeue head (C: `*tmrs = tp->tmr_next`).
+        let next = priv_table
+            .get(head_id)
+            .and_then(|kp| kp.runtime.s_alarm_timer.next);
+        clock.timers_head = next;
+        // Deactivate before invoking (C: tmrs_exp.c:17-18).
+        let action = priv_table
+            .get_mut(head_id)
+            .and_then(|kp| kp.runtime.s_alarm_timer.action.take());
+        if let Some(action) = action {
+            on_expired(action);
+        }
     }
 }
 
@@ -671,26 +843,6 @@ impl Default for LoadInfo {
     }
 }
 
-// ── Timer tick result ──
-
-/// Result returned by `ClockState::tick()` after processing one timer interrupt.
-///
-/// Contains the list of expired alarm actions that the caller must process
-/// (e.g., send notifications via `mini_notify`), plus the virtual/profile
-/// timer expiry status for the current (or billable) process.
-///
-/// **Does NOT contain `quantum_exhausted`** — quantum decrement is handled
-/// by `ClockArch::arch_tick()` (D9), not by `ClockState::tick()`.
-#[derive(Debug, Default)]
-pub struct TimerTickResult {
-    /// Actions from expired alarm timers (BSP only).
-    /// C: `tmrs_exptimers()` output — clock.c:159-161
-    pub expired_alarms: Vec<TimerAction>,
-    /// Virtual/profile timer expiry for current or billable process, if any.
-    /// C: `vtimer_check()` output — do_vtimer.c:81-103
-    pub vtimer_expired: Option<VtimerExpired>,
-}
-
 // ── ClockState (D1, D8) ──
 
 /// Global clock state, equivalent to C's `kclockinfo` + `kloadinfo` + `clock_timers`.
@@ -724,10 +876,12 @@ pub struct ClockState {
     /// Time adjustment delta (positive=speed up, negative=slow down).
     /// C: `adjtime_delta` (clock.c:42, BSP only)
     adjtime_delta: i32,
-    /// Synchronous alarm timer queue (BSP only).
-    /// C: `clock_timers` (clock.c:37)
-    /// Design decision D2: TimerQueue (BTreeSet + BTreeMap) replaces linked list.
-    timers: TimerQueue,
+    /// Head of the alarm timer chain (BSP only): index of the first
+    /// `KPriv::runtime.s_alarm_timer` node, or `None` when empty.
+    /// C: `static minix_timer_t *clock_timers` — clock.c:37.
+    /// Design decision D2: intrusive index chain (nodes embedded in PrivTable)
+    /// replaces C's pointer chain — zero heap allocation.
+    timers_head: Option<PrivId>,
     /// Load average info. C: `kloadinfo` (all CPUs)
     load_info: LoadInfo,
 }
@@ -755,7 +909,7 @@ impl ClockState {
             realtime: 0,
             boottime: 0,
             adjtime_delta: 0,
-            timers: TimerQueue::default(),
+            timers_head: None,
             load_info: LoadInfo::new(),
         }
     }
@@ -848,84 +1002,102 @@ impl ClockState {
         &self.load_info.proc_load_history
     }
 
-    // ── Timer management (D2, D3) ──
-
-    /// Set a kernel timer. Returns the assigned `TimerId` for later reset.
-    ///
-    /// C: `set_kernel_timer()` — clock.c:229-240
-    ///
-    /// # Panics
-    ///
-    /// Panics if called on an AP instance (alarm timers are BSP-only).
-    /// This is a programming error: APs do not own the global timer queue.
-    pub fn set_timer(&mut self, entry: TimerEntry) -> TimerId {
-        assert!(self.is_bsp, "set_timer called on AP ClockState (timers are BSP-only)");
-        self.timers.insert(entry)
-    }
-
-    /// Reset (remove) a kernel timer by `TimerId`.
-    ///
-    /// C: `reset_kernel_timer()` — clock.c:245-255
-    ///
-    /// Returns the removed entry, or `None` if the timer was not found
-    /// (or this is an AP instance, which has no timers).
-    pub fn reset_timer(&mut self, id: TimerId) -> Option<TimerEntry> {
-        if !self.is_bsp { return None; }
-        self.timers.remove(id)
-    }
-
     // ── Tick handling (D8, D9, D10) ──
     //
-    // R-06 (2026-08-12): The old `collect_expired_timers` helper was removed.
-    // Its logic is now inlined in `tick_with` as a `while let Some(...) =
-    // pop_expired(...) { on_expired(action); }` loop, eliminating the
-    // intermediate `Vec<TimerAction>` allocation. The `tick` method wraps
-    // `tick_with` with a `Vec::with_capacity(4)` collector for API
-    // compatibility (tests + convenience code).
+    // Timer set/reset/expiry moved to the free functions `set_alarm_timer` /
+    // `reset_alarm_timer` / `expire_alarm_timers` above: they operate on
+    // `(&mut PrivTable, &mut ClockState)` jointly (the intrusive chain head
+    // lives in `ClockState`, the nodes in `PrivTable`).
 
     /// Handle a timer interrupt tick on the BSP.
     ///
-    /// Convenience wrapper that delegates to [`Self::tick`] with the BSP
-    /// instance's `is_bsp = true`. The caller must pass the billable process
-    /// if the current process is not billable (D10).
+    /// Convenience wrapper that delegates to [`Self::tick_with`] with the
+    /// BSP instance's `is_bsp = true`. The caller must pass the billable
+    /// process if the current process is not billable (D10).
     ///
     /// See 15-clock-timer.md §4.1.
-    pub fn tick_bsp(
+    pub fn tick_bsp<F>(
         &mut self,
+        priv_table: &mut PrivTable,
         current_proc: &mut KProcess,
         billp: Option<&mut KProcess>,
         ready_count: usize,
-    ) -> TimerTickResult {
+        on_expired: F,
+    ) -> Option<VtimerExpired>
+    where
+        F: FnMut(TimerAction),
+    {
         debug_assert!(self.is_bsp, "tick_bsp called on non-BSP ClockState");
-        self.tick(current_proc, billp, ready_count)
+        self.tick_with(priv_table, current_proc, billp, ready_count, on_expired)
     }
 
     /// Handle a timer interrupt tick on an AP.
     ///
-    /// Convenience wrapper that delegates to [`Self::tick`] with the AP
+    /// Convenience wrapper that delegates to [`Self::tick_with`] with the AP
     /// instance's `is_bsp = false`. The caller must pass the billable process
     /// if the current process is not billable (D10).
-    pub fn tick_ap(
+    pub fn tick_ap<F>(
         &mut self,
+        priv_table: &mut PrivTable,
         current_proc: &mut KProcess,
         billp: Option<&mut KProcess>,
         ready_count: usize,
-    ) -> TimerTickResult {
+        on_expired: F,
+    ) -> Option<VtimerExpired>
+    where
+        F: FnMut(TimerAction),
+    {
         debug_assert!(!self.is_bsp, "tick_ap called on BSP ClockState");
-        self.tick(current_proc, billp, ready_count)
+        self.tick_with(priv_table, current_proc, billp, ready_count, on_expired)
     }
 
-    /// Zero-allocation variant of [`Self::tick`] for hot paths.
+    /// Handle a timer interrupt tick (zero-allocation, callback-based).
     ///
-    /// R-06 (2026-08-12): Instead of collecting expired alarms into a `Vec`
-    /// (which heap-allocates on push), this variant invokes `on_expired`
-    /// for each expired alarm timer inline. Production interrupt handlers
-    /// should prefer this variant; tests and convenience code may use
-    /// [`Self::tick`] which returns a `TimerTickResult` with `Vec<TimerAction>`.
+    /// This is the main clock interrupt handler, called at `hz` frequency.
+    /// The per-CPU role is determined by `self.is_bsp` (D8: per-CPU instance
+    /// with runtime flag, replacing `PerCpuTick` const generic).
+    ///
+    /// C: `timer_int_handler()` — clock.c:70-173
+    ///
+    /// This is the sole tick path: expired alarm timers are dispatched
+    /// inline via `on_expired` (BSP only), so no intermediate collection
+    /// is allocated. The old `tick()`/`TimerTickResult` Vec-returning API
+    /// was removed for the kernel zero-heap discipline (2026-08-31):
+    /// a `Vec<TimerAction>` return would make the production interrupt
+    /// path allocate. Tests collect callbacks into local `Vec`s instead
+    /// (test builds may allocate).
+    ///
+    /// **Does NOT handle `quantum_exhausted`** — quantum decrement is handled
+    /// by `clock::decrement_quantum()` (D9), which the caller invokes
+    /// separately. This matches C's `context_stop()`
+    /// (arch_clock.c:326-330 within line 208-349) which is called from the
+    /// context switch path (proc.c:208/440/1956), separately from
+    /// `timer_int_handler()`. `arch_timer_int_handler()` in i386 is an empty
+    /// function (arch_clock.c:72-74).
+    ///
+    /// # BKL (Big Kernel Lock)
+    ///
+    /// **Precondition**: the caller must hold the BKL when calling this
+    /// method. In C, the BKL is acquired in `context_stop()` (called from
+    /// the assembly trap entry before the timer handler). In Rust, the
+    /// interrupt entry point is responsible for acquiring the BKL before
+    /// calling `tick_bsp`/`tick_ap`.
+    ///
+    /// This method does **not** acquire the BKL internally because:
+    /// 1. It may be called from a syscall path where BKL is already held
+    ///    (acquiring again would deadlock — BKL is non-recursive).
+    /// 2. The C pattern is "caller holds BKL", not "callee acquires BKL".
     ///
     /// # Arguments
     ///
-    /// Same as [`Self::tick`], plus:
+    /// * `priv_table` — the privilege table holding the alarm timer nodes
+    ///   (needed for the BSP expiry pass; unused on APs)
+    /// * `current_proc` — the currently running process (for time accounting)
+    /// * `billp` — the billable process if `current_proc` is not billable;
+    ///   `None` if `current_proc` is itself billable (D10).
+    ///   When `Some`, the billable process's `sys_time` and `prof_left` are
+    ///   decremented (C: clock.c:118-120, 134-138).
+    /// * `ready_count` — number of processes in ready queues (for load average)
     /// * `on_expired` — callback invoked once per expired alarm timer
     ///   (BSP only; on APs, never called)
     ///
@@ -935,10 +1107,11 @@ impl ClockState {
     /// for the current or billable process, `None` otherwise.
     pub fn tick_with<F>(
         &mut self,
+        priv_table: &mut PrivTable,
         current_proc: &mut KProcess,
         billp: Option<&mut KProcess>,
         ready_count: usize,
-        mut on_expired: F,
+        on_expired: F,
     ) -> Option<VtimerExpired>
     where
         F: FnMut(TimerAction),
@@ -995,13 +1168,11 @@ impl ClockState {
             }
         }
 
-        // 5. BSP-only: invoke callback for each expired alarm timer.
+        // 5. BSP-only: expire alarm timers from the intrusive chain.
         //    C: clock.c:153-161 — `if (cpu_is_bsp) tmrs_exptimers(...)`
-        //    R-06: zero-allocation — callback instead of Vec::push.
+        //    Zero-allocation: callback instead of collecting into a Vec.
         if self.is_bsp {
-            while let Some(entry) = self.timers.pop_expired(self.uptime) {
-                on_expired(entry.action);
-            }
+            expire_alarm_timers(priv_table, self, self.uptime, on_expired);
         }
 
         // 6. Load update (all CPUs).
@@ -1009,93 +1180,6 @@ impl ClockState {
         self.load_update(ready_count);
 
         vtimer_expired
-    }
-
-    /// Handle a timer interrupt tick.
-    ///
-    /// This is the main clock interrupt handler, called at `hz` frequency.
-    /// The per-CPU role is determined by `self.is_bsp` (D8: per-CPU instance
-    /// with runtime flag, replacing `PerCpuTick` const generic).
-    ///
-    /// C: `timer_int_handler()` — clock.c:70-173
-    ///
-    /// # BKL (Big Kernel Lock)
-    ///
-    /// **Precondition**: the caller must hold the BKL when calling this
-    /// method. In C, the BKL is acquired in `context_stop()` (called from
-    /// the assembly trap entry before the timer handler). In Rust, the
-    /// interrupt entry point is responsible for acquiring the BKL before
-    /// calling `tick_bsp`/`tick_ap`.
-    ///
-    /// This method does **not** acquire the BKL internally because:
-    /// 1. It may be called from a syscall path where BKL is already held
-    ///    (acquiring again would deadlock — BKL is non-recursive).
-    /// 2. The C pattern is "caller holds BKL", not "callee acquires BKL".
-    ///
-    /// # Arguments
-    ///
-    /// * `current_proc` — the currently running process (for time accounting)
-    /// * `billp` — the billable process if `current_proc` is not billable;
-    ///   `None` if `current_proc` is itself billable (D10).
-    ///   When `Some`, the billable process's `sys_time` and `prof_left` are
-    ///   decremented (C: clock.c:118-120, 134-138).
-    /// * `ready_count` — number of processes in ready queues (for load average)
-    ///
-    /// # Returns
-    ///
-    /// `TimerTickResult` containing expired alarms and vtimer status.
-    ///
-    /// **Does NOT contain `quantum_exhausted`** — quantum decrement is handled
-    /// by `clock::decrement_quantum()` (D9), which the caller invokes separately
-    /// after this method returns. This matches C's `context_stop()`
-    /// (arch_clock.c:326-330 within line 208-349) which is called from the
-    /// context switch path (proc.c:208/440/1956), separately from
-    /// `timer_int_handler()`. `arch_timer_int_handler()` in i386 is an empty
-    /// function (arch_clock.c:72-74).
-    ///
-    /// # Billable Process Accounting (D10)
-    ///
-    /// C: clock.c:118-120 — if the current process is not billable, the
-    /// billable process's `p_sys_time` is incremented. C: clock.c:134-138 —
-    /// the billable process's `p_prof_left` is also decremented (one
-    /// process's user time is another's system time, and the profile timer
-    /// decreases for both). This Rust implementation requires the caller to
-    /// pass `billp: Option<&mut KProcess>` explicitly, matching C's
-    /// `get_cpulocal_var(bill_ptr)`.
-    ///
-    /// # Performance (R-06)
-    ///
-    /// This method collects expired alarms into a `Vec<TimerAction>`. For
-    /// hot paths (e.g. timer interrupt handler in production), prefer
-    /// [`Self::tick_with`] which uses a callback and avoids heap allocation.
-    pub fn tick(
-        &mut self,
-        current_proc: &mut KProcess,
-        billp: Option<&mut KProcess>,
-        ready_count: usize,
-    ) -> TimerTickResult {
-        // R-06 (2026-08-12): Delegate to `tick_with` with a Vec collector.
-        // Pre-allocate with capacity 4 to avoid reallocation on first pushes.
-        // `Vec::with_capacity(4)` allocates once; subsequent pushes up to 4
-        // are amortized O(1). For typical per-tick expiry (0-2 timers), this
-        // covers the common case without reallocation.
-        let mut expired_alarms = Vec::with_capacity(4);
-        let vtimer_expired = self.tick_with(
-            current_proc,
-            billp,
-            ready_count,
-            |action| expired_alarms.push(action),
-        );
-
-        // NOTE: quantum decrement is NOT here (D9).
-        // C: context_stop() — arch_clock.c:326-330 (within line 208-349) decrements
-        // p_cpu_time_left based on TSC delta. In Rust, this is handled by
-        // clock::decrement_quantum(), which the caller invokes separately.
-
-        TimerTickResult {
-            expired_alarms,
-            vtimer_expired,
-        }
     }
 
     /// Update load average tracking.
@@ -1129,9 +1213,13 @@ impl Default for ClockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kpriv::PrivTable;
     use crate::proc::KProcess;
     use crate::proc::ProcNr;
     use minix_types::Endpoint;
+    // Test builds may allocate (zero-heap discipline applies to production
+    // code only); the collected Vec lives inside `#[cfg(test)]`.
+    use alloc::vec::Vec;
 
     fn make_test_proc() -> KProcess {
         KProcess::new(ProcNr(0), Endpoint(0))
@@ -1143,6 +1231,49 @@ mod tests {
 
     fn make_ap_clock() -> ClockState {
         ClockState::new_for_cpu(CpuId::new_unchecked(1), false)
+    }
+
+    fn make_priv_table() -> crate::test_helpers::TestPrivTable {
+        crate::test_helpers::test_priv_table()
+    }
+
+    /// Number of nodes reachable from the alarm chain head.
+    /// (Test-only chain-length assertion helper.)
+    fn timers_len(privs: &PrivTable, clock: &ClockState) -> usize {
+        let mut n = 0;
+        let mut cur = clock.timers_head;
+        while let Some(id) = cur {
+            cur = privs
+                .get(id)
+                .and_then(|kp| kp.runtime.s_alarm_timer.next);
+            n += 1;
+        }
+        n
+    }
+
+    /// Tick a BSP clock whose alarm chain is empty — for tests that exercise
+    /// uptime/vtimer/load paths only. A fresh `PrivTable` per call is
+    /// equivalent here because the chain is always empty (nothing is ever
+    /// armed). Test builds may allocate; production uses `tick_bsp` directly.
+    fn tick_bsp_vtimer(
+        clock: &mut ClockState,
+        proc: &mut KProcess,
+        billp: Option<&mut KProcess>,
+        ready: usize,
+    ) -> Option<VtimerExpired> {
+        let mut privs = make_priv_table();
+        clock.tick_bsp(&mut privs, proc, billp, ready, |_| {})
+    }
+
+    /// AP variant of [`tick_bsp_vtimer`].
+    fn tick_ap_vtimer(
+        clock: &mut ClockState,
+        proc: &mut KProcess,
+        billp: Option<&mut KProcess>,
+        ready: usize,
+    ) -> Option<VtimerExpired> {
+        let mut privs = make_priv_table();
+        clock.tick_ap(&mut privs, proc, billp, ready, |_| {})
     }
 
     // ── ClockState initialization ──
@@ -1187,10 +1318,10 @@ mod tests {
         let mut clock = make_bsp_clock();
         let mut proc = make_test_proc();
 
-        let result = clock.tick_bsp(&mut proc, None, 0);
+        let vtimer = tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 1);
         assert_eq!(clock.realtime(), 1);
-        assert!(result.expired_alarms.is_empty());
+        assert_eq!(vtimer, None);
     }
 
     #[test]
@@ -1198,7 +1329,7 @@ mod tests {
         let mut clock = make_ap_clock();
         let mut proc = make_test_proc();
 
-        clock.tick_ap(&mut proc, None, 0);
+        tick_ap_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 0);
         assert_eq!(clock.realtime(), 0);
     }
@@ -1214,18 +1345,18 @@ mod tests {
         clock.set_adjtime_delta(3);
 
         // Tick 1: uptime=1, odd → realtime += 2, delta → 2
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 1);
         assert_eq!(clock.realtime(), 2);
         assert_eq!(clock.adjtime_delta(), 2);
 
         // Tick 2: uptime=2, even → realtime += 1
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 2);
         assert_eq!(clock.realtime(), 3);
 
         // Tick 3: uptime=3, odd → realtime += 2, delta → 1
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 3);
         assert_eq!(clock.realtime(), 5);
         assert_eq!(clock.adjtime_delta(), 1);
@@ -1240,13 +1371,13 @@ mod tests {
         clock.set_adjtime_delta(-2);
 
         // Tick 1: uptime=1, odd → realtime += 0, delta → -1
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 1);
         assert_eq!(clock.realtime(), 0);
         assert_eq!(clock.adjtime_delta(), -1);
 
         // Tick 2: uptime=2, even → realtime += 1
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.uptime(), 2);
         assert_eq!(clock.realtime(), 1);
     }
@@ -1257,9 +1388,9 @@ mod tests {
         let mut clock = make_bsp_clock();
         let mut proc = make_test_proc();
 
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.realtime(), 1);
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         assert_eq!(clock.realtime(), 2);
     }
 
@@ -1273,7 +1404,7 @@ mod tests {
         let mut billp = make_test_proc();
 
         let billp_initial = billp.p_time.sys_time.load(Ordering::Acquire);
-        clock.tick_bsp(&mut current, Some(&mut billp), 0);
+        tick_bsp_vtimer(&mut clock, &mut current, Some(&mut billp), 0);
         let billp_after = billp.p_time.sys_time.load(Ordering::Acquire);
         assert_eq!(billp_after, billp_initial + 1);
     }
@@ -1285,7 +1416,7 @@ mod tests {
         let mut current = make_test_proc();
 
         let initial = current.p_time.sys_time.load(Ordering::Acquire);
-        clock.tick_bsp(&mut current, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut current, None, 0);
         let after = current.p_time.sys_time.load(Ordering::Acquire);
         assert_eq!(after, initial, "sys_time must not change when billp=None");
     }
@@ -1300,7 +1431,7 @@ mod tests {
         billp.p_misc_flags.set(MiscFlagsBits::PROF_TIMER);
         billp.p_time.prof_left.store(5, Ordering::Release);
 
-        clock.tick_bsp(&mut current, Some(&mut billp), 0);
+        tick_bsp_vtimer(&mut clock, &mut current, Some(&mut billp), 0);
         assert_eq!(billp.p_time.prof_left.load(Ordering::Acquire), 4);
     }
 
@@ -1314,8 +1445,8 @@ mod tests {
         billp.p_misc_flags.set(MiscFlagsBits::PROF_TIMER);
         billp.p_time.prof_left.store(1, Ordering::Release);
 
-        let result = clock.tick_bsp(&mut current, Some(&mut billp), 0);
-        assert_eq!(result.vtimer_expired, Some(VtimerExpired::Prof));
+        let vtimer = tick_bsp_vtimer(&mut clock, &mut current, Some(&mut billp), 0);
+        assert_eq!(vtimer, Some(VtimerExpired::Prof));
     }
 
     // ── Tick: vtimer ──
@@ -1329,8 +1460,8 @@ mod tests {
         proc.p_misc_flags.set(MiscFlagsBits::VIRT_TIMER);
         proc.p_time.virt_left.store(1, Ordering::Release);
 
-        let result = clock.tick_bsp(&mut proc, None, 0);
-        assert_eq!(result.vtimer_expired, Some(VtimerExpired::Virtual));
+        let vtimer = tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
+        assert_eq!(vtimer, Some(VtimerExpired::Virtual));
     }
 
     #[test]
@@ -1342,8 +1473,8 @@ mod tests {
         proc.p_misc_flags.set(MiscFlagsBits::PROF_TIMER);
         proc.p_time.prof_left.store(1, Ordering::Release);
 
-        let result = clock.tick_bsp(&mut proc, None, 0);
-        assert_eq!(result.vtimer_expired, Some(VtimerExpired::Prof));
+        let vtimer = tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
+        assert_eq!(vtimer, Some(VtimerExpired::Prof));
     }
 
     #[test]
@@ -1355,38 +1486,43 @@ mod tests {
         proc.p_time.virt_left.store(0, Ordering::Release);
         // Note: MF_VIRT_TIMER is NOT set.
 
-        let result = clock.tick_bsp(&mut proc, None, 0);
-        assert_eq!(result.vtimer_expired, None);
+        let vtimer = tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
+        assert_eq!(vtimer, None);
     }
 
-    // ── Timer queue (D2, D3) ──
+    // ── Alarm timer chain (D2, D3) ──
 
     #[test]
-    fn test_timer_set_and_expire() {
+    fn test_alarm_set_and_expire() {
+        // C: set_kernel_timer + tmrs_exptimers — arm one node, expire at tick.
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
+        let pid: PrivId = 5;
 
-        let entry = TimerEntry {
-            exp_time: 3,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(100) },
-        };
-        let id = clock.set_timer(entry);
-        assert!(clock.timers.contains(id));
+        set_alarm_timer(
+            &mut privs, &mut clock, pid, 3,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(100) },
+        );
+        assert!(privs.get(pid).unwrap().runtime.s_alarm_timer.is_set());
+        assert_eq!(timers_len(&privs, &clock), 1);
 
         // Tick 1-2: no expiry
-        clock.tick_bsp(&mut proc, None, 0);
-        clock.tick_bsp(&mut proc, None, 0);
-        assert!(clock.timers.contains(id));
+        clock.tick_bsp(&mut privs, &mut proc, None, 0, |_| {});
+        clock.tick_bsp(&mut privs, &mut proc, None, 0, |_| {});
+        assert!(privs.get(pid).unwrap().runtime.s_alarm_timer.is_set());
 
         // Tick 3: timer expires
-        let result = clock.tick_bsp(&mut proc, None, 0);
-        assert_eq!(result.expired_alarms.len(), 1);
+        let mut collected: Vec<TimerAction> = Vec::new();
+        clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
+        assert_eq!(collected.len(), 1);
         assert_eq!(
-            result.expired_alarms[0],
+            collected[0],
             TimerAction::NotifyAlarm { endpoint: Endpoint(100) }
         );
-        // Timer removed after expiry.
-        assert!(!clock.timers.contains(id));
+        // Node deactivated and chain empty after expiry (C: tmrs_exp.c:17-18).
+        assert!(!privs.get(pid).unwrap().runtime.s_alarm_timer.is_set());
+        assert_eq!(timers_len(&privs, &clock), 0);
     }
 
     // ── tick_with: zero-allocation callback API (R-06) ──
@@ -1394,19 +1530,19 @@ mod tests {
     #[test]
     fn test_tick_with_invokes_callback_on_expiry() {
         // R-06: `tick_with` should invoke the callback once per expired timer,
-        // without allocating a Vec. Verify behavior parity with `tick`.
+        // without allocating a collection.
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
 
-        let entry = TimerEntry {
-            exp_time: 1,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(42) },
-        };
-        clock.set_timer(entry);
+        set_alarm_timer(
+            &mut privs, &mut clock, 2, 1,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(42) },
+        );
 
         // Tick 1: timer should expire.
         let mut collected: Vec<TimerAction> = Vec::new();
-        let vtimer_expired = clock.tick_with(&mut proc, None, 0, |action| {
+        let vtimer_expired = clock.tick_with(&mut privs, &mut proc, None, 0, |action| {
             collected.push(action);
         });
 
@@ -1418,14 +1554,15 @@ mod tests {
     }
 
     #[test]
-    fn test_tick_with_no_allocation_on_empty_expiry() {
+    fn test_tick_with_no_callback_on_empty_expiry() {
         // R-06: When no timers expire, `tick_with` should not invoke the
         // callback at all. This is the zero-allocation hot path.
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
 
         let mut call_count = 0u32;
-        let vtimer_expired = clock.tick_with(&mut proc, None, 0, |_| {
+        let vtimer_expired = clock.tick_with(&mut privs, &mut proc, None, 0, |_| {
             call_count += 1;
         });
 
@@ -1434,40 +1571,45 @@ mod tests {
     }
 
     #[test]
-    fn test_tick_with_matches_tick_behavior() {
-        // R-06: `tick` (Vec-collecting) and `tick_with` (callback) should
+    fn test_tick_with_matches_tick_bsp_behavior() {
+        // `tick_bsp` (convenience wrapper) and `tick_with` (core) should
         // produce identical results for the same input.
         let mut clock_a = make_bsp_clock();
-        let mut clock_b = make_bsp_clock();
+        let mut privs_a = make_priv_table();
         let mut proc_a = make_test_proc();
+        let mut clock_b = make_bsp_clock();
+        let mut privs_b = make_priv_table();
         let mut proc_b = make_test_proc();
 
-        // Set up identical timers in both clocks.
-        for exp in [3u64, 3, 5] {
-            clock_a.set_timer(TimerEntry {
-                exp_time: exp,
-                action: TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
-            });
-            clock_b.set_timer(TimerEntry {
-                exp_time: exp,
-                action: TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
-            });
+        // Set up identical timers in both clocks (same priv slots, same
+        // expiry times → same chain shape).
+        for (pid, exp) in [(0u16, 3u64), (1, 3), (2, 5)] {
+            set_alarm_timer(
+                &mut privs_a, &mut clock_a, pid, exp,
+                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+            );
+            set_alarm_timer(
+                &mut privs_b, &mut clock_b, pid, exp,
+                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+            );
         }
 
         // Tick both clocks 5 times.
         let mut collected_with: Vec<TimerAction> = Vec::new();
         for _ in 0..5 {
-            clock_a.tick_with(&mut proc_a, None, 0, |a| collected_with.push(a));
+            clock_a.tick_with(&mut privs_a, &mut proc_a, None, 0, |a| collected_with.push(a));
         }
         let mut collected_tick: Vec<TimerAction> = Vec::new();
         for _ in 0..5 {
-            let r = clock_b.tick(&mut proc_b, None, 0);
-            collected_tick.extend(r.expired_alarms);
+            clock_b.tick_with(&mut privs_b, &mut proc_b, None, 0, |a| {
+                collected_tick.push(a);
+            });
         }
 
-        // Both should have collected the same actions (compare as multisets
-        // since BTreeSet iteration order is by (exp_time, id) and ids are
-        // assigned in the same order, so they should match exactly).
+        // Both should have collected the same actions. The chain is sorted by
+        // exp_time (among equal exp_times the last-armed node is in front,
+        // C: tmrs_set.c:38-43), and both clocks armed slots in the same
+        // order, so the sequences must match exactly.
         assert_eq!(collected_with.len(), collected_tick.len());
         for (a, b) in collected_with.iter().zip(collected_tick.iter()) {
             assert_eq!(a, b);
@@ -1475,164 +1617,141 @@ mod tests {
     }
 
     #[test]
-    fn test_timer_reset_by_id() {
-        // C: clock.c:245-255 — reset_kernel_timer(tp) removes the timer.
+    fn test_alarm_reset_is_idempotent() {
+        // C: clock.c:245-255 — reset_kernel_timer(tp) is guarded by
+        // `if (!tmr_is_set(tp)) return` (tmrs_clr.c:19), so resetting an
+        // unset node is a no-op and resetting twice is safe.
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
 
-        let entry = TimerEntry {
-            exp_time: 5,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(50) },
-        };
-        let id = clock.set_timer(entry);
-        assert!(clock.timers.contains(id));
+        set_alarm_timer(
+            &mut privs, &mut clock, 4, 5,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(50) },
+        );
+        assert!(privs.get(4).unwrap().runtime.s_alarm_timer.is_set());
+        assert_eq!(timers_len(&privs, &clock), 1);
 
-        let removed = clock.reset_timer(id);
-        assert!(removed.is_some());
-        assert!(!clock.timers.contains(id));
+        // First reset unlinks and deactivates the node.
+        reset_alarm_timer(&mut privs, &mut clock, 4);
+        assert!(!privs.get(4).unwrap().runtime.s_alarm_timer.is_set());
+        assert_eq!(timers_len(&privs, &clock), 0);
 
-        // Resetting again returns None.
-        let again = clock.reset_timer(id);
-        assert!(again.is_none());
+        // Resetting an unset node is a no-op (C: tmrs_clr.c:19 guard).
+        reset_alarm_timer(&mut privs, &mut clock, 4);
+        assert!(!privs.get(4).unwrap().runtime.s_alarm_timer.is_set());
+        assert_eq!(timers_len(&privs, &clock), 0);
     }
 
     #[test]
-    fn test_timer_id_uniqueness() {
-        // D3: TimerId is a per-ClockState monotonic counter.
+    fn test_alarm_same_exp_time_coexist() {
+        // Two different priv slots with the same exp_time must coexist in
+        // the chain. Among equal expiry times C's insertion scan breaks at
+        // the FIRST node with `exp_time <= cur_exp` and inserts before it
+        // (tmrs_set.c:38-43) — so the most recently armed node fires first.
         let mut clock = make_bsp_clock();
-
-        let id1 = clock.set_timer(TimerEntry {
-            exp_time: 1,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
-        });
-        let id2 = clock.set_timer(TimerEntry {
-            exp_time: 2,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
-        });
-        let id3 = clock.set_timer(TimerEntry {
-            exp_time: 3,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
-        });
-
-        assert_ne!(id1, id2);
-        assert_ne!(id2, id3);
-        assert_ne!(id1, id3);
-    }
-
-    #[test]
-    fn test_timer_queue_same_exp_time() {
-        // D2 fix: two timers with the same exp_time both fire (previously
-        // BTreeMap<u64, _> silently overwrote the first).
-        let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
 
-        let id1 = clock.set_timer(TimerEntry {
-            exp_time: 5,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
-        });
-        let id2 = clock.set_timer(TimerEntry {
-            exp_time: 5,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
-        });
-        assert_ne!(id1, id2, "TimerId must be unique even for same exp_time");
-        assert_eq!(clock.timers.len(), 2, "Both timers must coexist");
+        set_alarm_timer(
+            &mut privs, &mut clock, 0, 5,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+        );
+        set_alarm_timer(
+            &mut privs, &mut clock, 1, 5,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
+        );
+        assert_eq!(timers_len(&privs, &clock), 2, "Both timers must coexist");
 
-        // Tick to expiry.
+        // Tick to expiry: both fire in the same tick (last-armed first).
+        let mut collected: Vec<TimerAction> = Vec::new();
         for _ in 0..5 {
-            clock.tick_bsp(&mut proc, None, 0);
+            clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
-
-        // Both timers should have fired (order by TimerId).
-        // (We can't directly assert here since expired_alarms is per-tick;
-        // verify by checking the queue is now empty.)
-        assert_eq!(clock.timers.len(), 0, "Both timers must have expired");
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(2) });
+        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(1) });
+        assert_eq!(timers_len(&privs, &clock), 0, "Both timers must have expired");
     }
 
     #[test]
     fn test_multiple_timers_pop_order() {
-        // Timers with different exp_times must pop in expiry order.
+        // Timers with different exp_times must fire in expiry order
+        // (chain is kept sorted by `set_alarm_timer`'s insertion scan).
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
 
-        clock.set_timer(TimerEntry {
-            exp_time: 5,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(5) },
-        });
-        clock.set_timer(TimerEntry {
-            exp_time: 3,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
-        });
-        clock.set_timer(TimerEntry {
-            exp_time: 7,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(7) },
-        });
+        set_alarm_timer(
+            &mut privs, &mut clock, 0, 5,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(5) },
+        );
+        set_alarm_timer(
+            &mut privs, &mut clock, 1, 3,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
+        );
+        set_alarm_timer(
+            &mut privs, &mut clock, 2, 7,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(7) },
+        );
 
         // Tick 1-3: timer@3 fires.
-        let mut result_3 = TimerTickResult::default();
+        let mut collected: Vec<TimerAction> = Vec::new();
         for _ in 0..3 {
-            result_3 = clock.tick_bsp(&mut proc, None, 0);
+            clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
-        assert_eq!(result_3.expired_alarms.len(), 1);
-        assert_eq!(
-            result_3.expired_alarms[0],
-            TimerAction::NotifyAlarm { endpoint: Endpoint(3) }
-        );
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(3) });
 
         // Tick 4-5: timer@5 fires.
-        let mut result_5 = TimerTickResult::default();
+        collected.clear();
         for _ in 0..2 {
-            result_5 = clock.tick_bsp(&mut proc, None, 0);
+            clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
-        assert_eq!(result_5.expired_alarms.len(), 1);
-        assert_eq!(
-            result_5.expired_alarms[0],
-            TimerAction::NotifyAlarm { endpoint: Endpoint(5) }
-        );
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(5) });
 
         // Tick 6-7: timer@7 fires.
-        let mut result_7 = TimerTickResult::default();
+        collected.clear();
         for _ in 0..2 {
-            result_7 = clock.tick_bsp(&mut proc, None, 0);
+            clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
-        assert_eq!(result_7.expired_alarms.len(), 1);
-        assert_eq!(
-            result_7.expired_alarms[0],
-            TimerAction::NotifyAlarm { endpoint: Endpoint(7) }
-        );
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(7) });
     }
 
     #[test]
     fn test_timer_never_expires() {
-        // exp_time=u64::MAX (TMR_NEVER) — never expires.
+        // TMR_NEVER = TMRDIFF_MAX+1 = 0x80000000 (C: timers.h:48). Under the
+        // wrap-safe comparison it is more than half the tick space away from
+        // any realistic uptime — matching C, where uptime would have to run
+        // ~68 years at 100 Hz before the sentinel itself expires.
         let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
         let mut proc = make_test_proc();
 
-        clock.set_timer(TimerEntry {
-            exp_time: TMR_NEVER,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(99) },
-        });
+        set_alarm_timer(
+            &mut privs, &mut clock, 3, TMR_NEVER,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(99) },
+        );
 
         for _ in 0..100 {
-            let result = clock.tick_bsp(&mut proc, None, 0);
-            assert!(result.expired_alarms.is_empty());
+            let mut fired = 0u32;
+            clock.tick_bsp(&mut privs, &mut proc, None, 0, |_| fired += 1);
+            assert_eq!(fired, 0);
         }
     }
 
     #[test]
-    #[should_panic(expected = "set_timer called on AP ClockState")]
-    fn test_ap_state_set_timer_panics() {
-        // D8: AP instances do not own the timer queue.
+    #[should_panic(expected = "set_alarm_timer called on AP ClockState")]
+    fn test_ap_state_set_alarm_timer_panics() {
+        // D8: AP instances do not own the alarm chain (C: only the BSP
+        // clock interrupt drives `tmrs_exptimers`, clock.c:159-161).
         let mut clock = make_ap_clock();
-        clock.set_timer(TimerEntry {
-            exp_time: 1,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
-        });
-    }
-
-    #[test]
-    fn test_ap_state_reset_timer_returns_none() {
-        let mut clock = make_ap_clock();
-        let result = clock.reset_timer(TimerId::new(0));
-        assert!(result.is_none());
+        let mut privs = make_priv_table();
+        set_alarm_timer(
+            &mut privs, &mut clock, 0, 1,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+        );
     }
 
     // ── Load average ──
@@ -1645,7 +1764,7 @@ mod tests {
         let mut proc = make_test_proc();
 
         for _ in 0..100 {
-            clock.tick_bsp(&mut proc, None, 5);
+            tick_bsp_vtimer(&mut clock, &mut proc, None, 5);
         }
 
         let history = clock.load_history();
@@ -1668,7 +1787,7 @@ mod tests {
 
         // Fill slot 0 with ticks 1..600 (599 ticks @ 3 ready = 1797).
         for _ in 0..600 {
-            clock.tick_bsp(&mut proc, None, 3);
+            tick_bsp_vtimer(&mut clock, &mut proc, None, 3);
         }
         assert_eq!(
             clock.load_history()[0],
@@ -1684,7 +1803,7 @@ mod tests {
 
         // Run 599 more ticks (ticks 601..=1199) all in slot 1 with 7 ready each.
         for _ in 0..599 {
-            clock.tick_bsp(&mut proc, None, 7);
+            tick_bsp_vtimer(&mut clock, &mut proc, None, 7);
         }
         assert_eq!(
             clock.load_history()[1],
@@ -1737,7 +1856,7 @@ mod tests {
         let mut proc = make_test_proc();
 
         let initial = proc.p_time.user_time.load(Ordering::Acquire);
-        clock.tick_bsp(&mut proc, None, 0);
+        tick_bsp_vtimer(&mut clock, &mut proc, None, 0);
         let after = proc.p_time.user_time.load(Ordering::Acquire);
         assert_eq!(after, initial + 1);
     }
@@ -1950,56 +2069,121 @@ mod tests {
         );
     }
 
-    // ── TimerQueue unit tests ──
+    // ── Alarm chain primitive tests (C: libtimers) ──
 
     #[test]
-    fn test_timer_queue_insert_remove() {
-        let mut q = TimerQueue::default();
-        let id1 = q.insert(TimerEntry {
-            exp_time: 10,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
-        });
-        let id2 = q.insert(TimerEntry {
-            exp_time: 20,
-            action: TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
-        });
-        assert_eq!(q.len(), 2);
+    fn test_chain_set_reset_keeps_other_nodes() {
+        // Resetting a middle node must not disturb the rest of the chain
+        // (C: tmrs_clr.c:29-34 unlink loop relinks prev→next).
+        let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
 
-        let removed = q.remove(id1);
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap().exp_time, 10);
-        assert_eq!(q.len(), 1);
+        // Arm three nodes; insertion scan keeps them ordered 10, 20, 30.
+        for (pid, exp) in [(0u16, 10u64), (1, 20), (2, 30)] {
+            set_alarm_timer(
+                &mut privs, &mut clock, pid, exp,
+                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+            );
+        }
+        assert_eq!(timers_len(&privs, &clock), 3);
+        assert_eq!(clock.timers_head, Some(0));
 
-        // id2 still present.
-        assert!(q.contains(id2));
+        // Unlink the middle node (priv slot 1, exp 20).
+        reset_alarm_timer(&mut privs, &mut clock, 1);
+        assert_eq!(timers_len(&privs, &clock), 2);
+        // prev(0) now links directly to next(2).
+        assert_eq!(privs.get(0).unwrap().runtime.s_alarm_timer.next, Some(2));
+        assert_eq!(clock.timers_head, Some(0));
+
+        // Remaining nodes expire in order 10 then 30.
+        let mut collected: Vec<TimerAction> = Vec::new();
+        expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(10) });
+        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(30) });
     }
 
     #[test]
-    fn test_timer_queue_pop_expired_order() {
-        let mut q = TimerQueue::default();
-        q.insert(TimerEntry { exp_time: 30, action: TimerAction::NotifyAlarm { endpoint: Endpoint(30) } });
-        q.insert(TimerEntry { exp_time: 10, action: TimerAction::NotifyAlarm { endpoint: Endpoint(10) } });
-        q.insert(TimerEntry { exp_time: 20, action: TimerAction::NotifyAlarm { endpoint: Endpoint(20) } });
+    fn test_chain_expire_order_and_stop_at_head() {
+        // expire_alarm_timers fires only the expired prefix of the chain
+        // (C: tmrs_exp.c: while head expired) and stops at the first
+        // non-expired node.
+        let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
+
+        // Insert out of order to exercise the sorted-insert scan.
+        for (pid, exp) in [(0u16, 30u64), (1, 10), (2, 20)] {
+            set_alarm_timer(
+                &mut privs, &mut clock, pid, exp,
+                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+            );
+        }
+        // Chain is sorted: head=1(exp 10) → 2(exp 20) → 0(exp 30).
+        assert_eq!(clock.timers_head, Some(1));
 
         // now=5: nothing expired.
-        assert!(q.pop_expired(5).is_none());
+        let mut fired = 0u32;
+        expire_alarm_timers(&mut privs, &mut clock, 5, |_| fired += 1);
+        assert_eq!(fired, 0);
+        assert_eq!(timers_len(&privs, &clock), 3);
 
-        // now=10: first timer expires.
-        let e1 = q.pop_expired(10).unwrap();
-        assert_eq!(e1.exp_time, 10);
+        // now=15: only head (exp 10) fires; exp 20/30 stay linked.
+        let mut collected: Vec<TimerAction> = Vec::new();
+        expire_alarm_timers(&mut privs, &mut clock, 15, |a| collected.push(a));
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(10) });
+        assert_eq!(timers_len(&privs, &clock), 2);
+        assert_eq!(clock.timers_head, Some(2));
 
-        // now=15: nothing more.
-        assert!(q.pop_expired(15).is_none());
+        // now=25: exp 20 fires.
+        collected.clear();
+        expire_alarm_timers(&mut privs, &mut clock, 25, |a| collected.push(a));
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(20) });
 
-        // now=25: timer@20 expires.
-        let e2 = q.pop_expired(25).unwrap();
-        assert_eq!(e2.exp_time, 20);
+        // now=30: exp 30 fires.
+        collected.clear();
+        expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(30) });
+        assert_eq!(timers_len(&privs, &clock), 0);
+        assert_eq!(clock.timers_head, None);
 
-        // now=30: timer@30 expires.
-        let e3 = q.pop_expired(30).unwrap();
-        assert_eq!(e3.exp_time, 30);
+        // Chain empty: further expiry calls are no-ops.
+        let mut fired = 0u32;
+        expire_alarm_timers(&mut privs, &mut clock, 100, |_| fired += 1);
+        assert_eq!(fired, 0);
+    }
 
-        // Queue empty.
-        assert!(q.pop_expired(100).is_none());
+    #[test]
+    fn test_chain_rearm_overwrites_old_timer() {
+        // Re-arming a slot that already has a timer must first unlink the
+        // old node (C: tmrs_set.c:23-27) — chain never contains duplicates.
+        let mut clock = make_bsp_clock();
+        let mut privs = make_priv_table();
+
+        set_alarm_timer(
+            &mut privs, &mut clock, 0, 10,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+        );
+        set_alarm_timer(
+            &mut privs, &mut clock, 1, 20,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
+        );
+
+        // Re-arm slot 0 with a later expiry: old node (exp 10) is replaced.
+        set_alarm_timer(
+            &mut privs, &mut clock, 0, 30,
+            TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
+        );
+        assert_eq!(timers_len(&privs, &clock), 2);
+        assert_eq!(clock.timers_head, Some(1), "exp 20 (slot 1) is now the head");
+
+        // exp 10 must never fire; only 20 then 30.
+        let mut collected: Vec<TimerAction> = Vec::new();
+        expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(2) });
+        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(3) });
     }
 }

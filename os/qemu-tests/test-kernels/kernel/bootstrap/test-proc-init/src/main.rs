@@ -6,7 +6,8 @@
 //!   3. VM process has correct RTS flags (PROC_STOP set, SLOT_FREE clear, no VMINHIBIT)
 //!   4. Non-VM user processes have VMINHIBIT + BOOTINHIBIT set
 //!   5. VM p_seg is accessible
-//!   6. init_post_and_memory completes without panic (ptproc + freepdes)
+//!   6. init_post_and_memory completes without panic (Direct Map readiness
+//!      check + kernel-level ptproc tracking)
 //!
 //! Boot flow: UEFI → arch_boot_impl (paging) → init_protection →
 //!            init_proc_and_boot → init_post_and_memory → verify
@@ -252,8 +253,10 @@ fn main() -> Status {
     let _seg = vm_proc.p_seg;
     early_console::write_str("  VM p_seg accessible (OK)\n");
 
-    // 6. Phase D: init_post_and_memory (ptproc + freepdes)
-    minix_kernel::init_post_and_memory(&result.kernel_info, &proc_table);
+    // 6. Phase D: init_post_and_memory — Direct Map readiness check
+    // (asserts VM p_seg root valid + VM direct map base configured, and
+    // installs VM as kernel-level ptproc). No freepdes allocation (Direct Map).
+    minix_kernel::init_post_and_memory(&proc_table);
     early_console::write_str("  init_post_and_memory completed\n");
 
     early_console::write_str("### TEST_RESULT: PASS test-proc-init ###\n");

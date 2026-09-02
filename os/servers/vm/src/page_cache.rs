@@ -35,7 +35,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::region::{PageFrames, PfnAllocator, PageFlags};
+use crate::region::{PageFrames, PfnAllocator};
 
 /// Sentinel inode value for device files without an associated inode.
 /// C: `#define VMC_NO_INODE 0` (minix3/minix/include/minix/vm.h:90).
@@ -229,6 +229,7 @@ impl PageCache {
     /// Fails with `AlreadyCached` when the physical frame is already in the
     /// cache (`PBF_INCACHE`, cache.c:222-226) — one block has exactly one
     /// cache entry.
+    #[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into an AddCacheCtx struct
     pub(crate) fn addcache(
         &mut self,
         dev: u64,
@@ -326,8 +327,8 @@ impl PageCache {
 
         // C: if(ino != VMC_NO_INODE) { if(hb->ino != ino || hb->ino_offset
         // != ino_off) update_inohash(hb, ino, ino_off); } (cache.c:183-188).
-        if let Some(ino) = ino {
-            if entry.ino != Some(ino) || entry.ino_offset != ino_off {
+        if let Some(ino) = ino
+            && (entry.ino != Some(ino) || entry.ino_offset != ino_off) {
                 if let Some(old_ino) = entry.ino {
                     self.by_ino.remove(&(dev, old_ino, entry.ino_offset));
                 }
@@ -335,7 +336,6 @@ impl PageCache {
                 entry.ino_offset = ino_off;
                 self.by_ino.insert((dev, ino, ino_off), (dev, dev_off));
             }
-        }
 
         let lru_node = entry.lru_node;
         if touch {
@@ -423,10 +423,13 @@ impl PageCache {
     }
 
     /// Number of cache entries (diagnostics/tests).
+    // V10-P2-1: test-only (the dispatcher queries by dev/offset directly).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.by_dev.len()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.by_dev.is_empty()
     }

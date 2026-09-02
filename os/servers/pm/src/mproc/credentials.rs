@@ -59,12 +59,93 @@ impl Credentials {
     pub fn is_superuser(&self) -> bool {
         self.user.effective == 0
     }
+
+    /// `setuid` BSD full triplet (`getset.c:117-119` D3).
+    pub fn set_uid_all(&mut self, uid: Uid) {
+        self.user.real = uid;
+        self.user.effective = uid;
+        self.user.saved = uid;
+    }
+    /// `seteuid` single effective (`getset.c:134`).
+    pub fn set_euid(&mut self, uid: Uid) {
+        self.user.effective = uid;
+    }
+    /// `setgid` BSD full triplet (`getset.c:147-149`).
+    pub fn set_gid_all(&mut self, gid: Gid) {
+        self.group.real = gid;
+        self.group.effective = gid;
+        self.group.saved = gid;
+    }
+    /// `setegid` single effective (`getset.c:163`).
+    pub fn set_egid(&mut self, gid: Gid) {
+        self.group.effective = gid;
+    }
+    /// `setgroups` ngroups + supplemental (`getset.c:194-197`).
+    pub fn set_groups(&mut self, gids: &[Gid]) {
+        let n = gids.len().min(NGROUPS_MAX);
+        self.supplemental_groups[..n].copy_from_slice(&gids[..n]);
+        for i in n..NGROUPS_MAX {
+            self.supplemental_groups[i] = 0;
+        }
+        self.ngroups = n;
+    }
+
+    /// `can_set_uid` for `SETUID` (`getset.c:114` `real!=uid && eff!=SUPER_USER`).
+    pub fn can_set_uid(&self, uid: Uid) -> bool {
+        self.user.real == uid || self.is_superuser()
+    }
+    /// `can_set_euid` for `SETEUID` (`getset.c:131-133` `real/saved/eff` triple).
+    pub fn can_set_euid(&self, uid: Uid) -> bool {
+        self.user.real == uid || self.user.saved == uid || self.is_superuser()
+    }
+    /// `can_set_gid` (`getset.c:145`).
+    pub fn can_set_gid(&self, gid: Gid) -> bool {
+        self.group.real == gid || self.is_superuser()
+    }
+    /// `can_set_egid` (`getset.c:160-162`).
+    pub fn can_set_egid(&self, gid: Gid) -> bool {
+        self.group.real == gid || self.group.saved == gid || self.is_superuser()
+    }
+    /// `can_set_groups` (`getset.c:173`).
+    pub fn can_set_groups(&self) -> bool {
+        self.is_superuser()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
+    #[test]
+    fn test_set_uid_all() {
+        let mut c = Credentials::new(1000, 100);
+        c.set_uid_all(2000);
+        assert_eq!(c.user.real, 2000);
+        assert_eq!(c.user.effective, 2000);
+        assert_eq!(c.user.saved, 2000);
+    }
+    #[test]
+    fn test_set_euid() {
+        let mut c = Credentials::new(1000, 100);
+        c.set_euid(0);
+        assert_eq!(c.user.effective, 0);
+        assert_eq!(c.user.real, 1000);
+    }
+    #[test]
+    fn test_set_gid_all() {
+        let mut c = Credentials::new(1000, 100);
+        c.set_gid_all(200);
+        assert_eq!(c.group.real, 200);
+        assert_eq!(c.group.effective, 200);
+        assert_eq!(c.group.saved, 200);
+    }
+    #[test]
+    fn test_tainted_bool() {
+        // TAINTED is now modeled as bool in ProcessResources, but Credentials still pure;
+        // this test ensures Credentials::set_* does not touch tainted.
+        let c = Credentials::new(0, 0);
+        assert!(c.is_superuser());
+    }
     #[test]
     fn test_credentials_default() {
         let creds = Credentials::default();

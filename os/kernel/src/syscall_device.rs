@@ -17,7 +17,8 @@ use minix_plat::{IrqPolicy, IrqVector, IrqNotifyId, NR_IRQ_VECTORS};
 use minix_types::{Endpoint, Message, MessageM1};
 
 use crate::irq_manager::IrqManager;
-use crate::kpriv::{KPriv, PrivFlagsBits, PrivTable};
+use crate::capability::ProcessCapability;
+use crate::kpriv::{KPriv, PrivTable};
 use crate::proc::KProcess;
 use crate::syscall::{KcallResult, Syscall};
 use minix_plat::InterruptController;
@@ -164,7 +165,7 @@ fn msg_m1(msg: &Message) -> MessageM1 {
 ///
 /// C: do_irqctl.c:62-76 — `if (privp->s_flags & CHECK_IRQ)` loop.
 fn check_irq_permission(caller_priv: &KPriv, irq_vec: i32) -> bool {
-    if !caller_priv.capability.s_flags.contains(PrivFlagsBits::CHECK_IRQ) {
+    if !caller_priv.flags.s_flags.contains(ProcessCapability::CHECK_IRQ) {
         return true; // No CHECK_IRQ flag → unrestricted
     }
     // C: do_irqctl.c:67-72 — scan s_irq_tab for matching vector
@@ -401,7 +402,7 @@ pub fn dispatch_devio<PI: PortIo>(
     // C: do_devio.c:31-58 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
             // C: do_devio.c:42-53 — scan s_io_tab for matching range
             let mut allowed = false;
             for i in 0..priv_.io.s_nr_io_range as usize {
@@ -565,7 +566,7 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // C: do_vdevio.c:72-100 — batch permission check
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
             for i in 0..vec_size as usize {
                 let port = match size {
                     IoSize::Byte => {
@@ -853,7 +854,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
     // C: do_sdevio.c:102-122 — CHECK_IO_PORT permission
     let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.capability.s_flags.contains(PrivFlagsBits::CHECK_IO_PORT) {
+        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
             let mut allowed = false;
             for i in 0..priv_.io.s_nr_io_range as usize {
                 if i < priv_.io.s_io_tab.len() {
@@ -1249,7 +1250,7 @@ mod tests {
     #[test]
     fn test_check_irq_permission_with_flag_allowed() {
         let mut priv_ = KPriv::new(0);
-        priv_.capability.s_flags = PrivFlagsBits::CHECK_IRQ;
+        priv_.flags.s_flags = ProcessCapability::CHECK_IRQ;
         priv_.io.s_nr_irq = 2;
         priv_.io.s_irq_tab[0] = 5;
         priv_.io.s_irq_tab[1] = 10;
@@ -1260,7 +1261,7 @@ mod tests {
     #[test]
     fn test_check_irq_permission_with_flag_denied() {
         let mut priv_ = KPriv::new(0);
-        priv_.capability.s_flags = PrivFlagsBits::CHECK_IRQ;
+        priv_.flags.s_flags = ProcessCapability::CHECK_IRQ;
         priv_.io.s_nr_irq = 1;
         priv_.io.s_irq_tab[0] = 5;
         assert!(!check_irq_permission(&priv_, 3));
@@ -1316,7 +1317,7 @@ mod tests {
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0xAB);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
         // Result written to m_krn_lsys_sys_devio.value (offset 0, C reply)
@@ -1336,7 +1337,7 @@ mod tests {
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(*pio.last_write.borrow(), Some((0x60, 0x1234)));
@@ -1355,7 +1356,7 @@ mod tests {
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         // C: do_devio.c:60-65 — unaligned → EPERM
         assert_eq!(result, KcallResult::Ok(EPERM));
@@ -1371,11 +1372,11 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
             priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
@@ -1396,11 +1397,11 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
             priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
@@ -1423,7 +1424,7 @@ mod tests {
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_devio(&mut caller, &mut msg, &pio, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1433,10 +1434,10 @@ mod tests {
     #[test]
     fn test_iopenable_self_endpoint_resolves_to_caller() {
         // C: do_iopenable.c:24-25 — SELF → okendpt(caller->p_endpoint, &proc_nr)
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Set up a user process at slot 0 (nr=0, endpoint=Endpoint(0))
         let caller_ep = Endpoint::from_generation_slot(1, 0);
-        let mut caller = KProcess::new(ProcNr(0), caller_ep);
+        let mut caller = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(0), caller_ep));
         caller.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // Also mark the process in the table as not-free so endpoint_to_nr finds it
         {
@@ -1461,7 +1462,7 @@ mod tests {
     #[test]
     fn test_iopenable_explicit_endpoint_sets_iopl() {
         // C: do_iopenable.c:26-28 — isokendpt + enable_iop
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_ep = Endpoint::from_generation_slot(1, 5);
         {
             let proc = proc_table.get_mut(ProcNr(5)).unwrap();
@@ -1483,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_iopenable_invalid_endpoint_returns_einval() {
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
 
         let mut msg = Message::default();
@@ -1498,7 +1499,7 @@ mod tests {
     fn test_iopenable_kernel_process_returns_eperm() {
         // C: do_iopenable.c:29 — kernel processes denied
         // Kernel tasks have p_nr < 0
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Slot for kernel task at nr=-1 (index 0 in the task portion)
         // ProcessTable stores tasks at indices 0..NR_TASKS
         let kernel_ep = Endpoint::from_generation_slot(1, -1_i32);
@@ -1524,7 +1525,7 @@ mod tests {
         // bit-level assertion is in `x86_64::boot::tests::
         // enable_user_io_sets_iopl`. The kernel-layer test just verifies
         // the syscall succeeds.
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_ep = Endpoint::from_generation_slot(1, 3);
         {
             let proc = proc_table.get_mut(ProcNr(3)).unwrap();
@@ -1559,7 +1560,7 @@ mod tests {
     #[test]
     fn test_sdevio_invalid_endpoint_returns_einval() {
         // C: do_sdevio.c:56 — isokendpt fails → EINVAL
-        let proc_table = crate::proc_table::ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
 
         let mut msg = Message::default();
@@ -1571,7 +1572,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1579,7 +1580,7 @@ mod tests {
     #[test]
     fn test_sdevio_kernel_target_returns_eperm() {
         // C: do_sdevio.c:60 — iskerneln(proc_nr) → EPERM
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Kernel task at slot -1
         let kernel_ep = Endpoint::from_generation_slot(1, -1_i32);
         {
@@ -1598,7 +1599,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1606,7 +1607,7 @@ mod tests {
     #[test]
     fn test_sdevio_unsafe_target_not_caller_returns_eperm() {
         // C: do_sdevio.c:84-90 — unsafe sdevio with target != caller → EPERM
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let _caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
         let target_ep = setup_sdevio_proc(&mut proc_table, 5, 1);
 
@@ -1622,7 +1623,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1630,7 +1631,7 @@ mod tests {
     #[test]
     fn test_sdevio_long_type_returns_einval() {
         // C: do_sdevio.c:140-152 — _DIO_LONG not supported in batch I/O
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
@@ -1645,7 +1646,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1653,7 +1654,7 @@ mod tests {
     #[test]
     fn test_sdevio_unaligned_port_returns_eperm() {
         // C: do_sdevio.c:124-129 — port & (size-1) != 0 → EPERM
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
@@ -1669,7 +1670,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1677,15 +1678,15 @@ mod tests {
     #[test]
     fn test_sdevio_check_io_port_denied() {
         // C: do_sdevio.c:102-122 — CHECK_IO_PORT with port out of range → EPERM
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
-        let mut priv_table = PrivTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
         caller.priv_id = Some(priv_id);
         if let Some(priv_) = priv_table.get_mut(priv_id) {
-            priv_.capability.s_flags = PrivFlagsBits::CHECK_IO_PORT;
+            priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
             priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
         }
@@ -1714,7 +1715,7 @@ mod tests {
         // Uses _DIO_SAFE (0x100) to select the safe path. verify_grant
         // resolves the grant via the granter's privilege table; with
         // priv_id=None, it returns EPERM (grant.rs:386).
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
@@ -1730,7 +1731,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1738,7 +1739,7 @@ mod tests {
     #[test]
     fn test_sdevio_invalid_direction_returns_einval() {
         // C: do_sdevio.c:148-152 — direction other than INPUT/OUTPUT → EINVAL
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
 
         let mut caller = KProcess::new(ProcNr(0), caller_ep);
@@ -1754,7 +1755,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1880,7 +1881,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_irqctl_msg(99, 0, 0, 0);
         let mut irq_mgr = IrqManager::new(MockIrqController);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1896,7 +1897,7 @@ mod tests {
             0,
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1912,7 +1913,7 @@ mod tests {
             0,
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1931,7 +1932,7 @@ mod tests {
             0,
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1954,7 +1955,7 @@ mod tests {
             0,   // notify_id (valid: 0..=31)
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
-        let priv_table = PrivTable::new();
+        let priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_irqctl(&mut caller, &mut msg, &mut irq_mgr, &priv_table);
         assert_eq!(result, KcallResult::Ok(OK));
         // The first installed hook gets 1-based id = 1.

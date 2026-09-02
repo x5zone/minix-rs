@@ -1364,7 +1364,7 @@ mod tests {
     fn test_sched_handler_full_empty() {
         // sched_handler_full with no pending IPI should be a no-op.
         let mut smp = SmpState::new_single_cpu();
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
         // No IPI flags set — should return without modifying anything.
         smp.sched_handler_full(&mut pt, CpuId::BSP);
         assert!(!smp.ipi_data(CpuId::BSP).has_pending());
@@ -1374,7 +1374,7 @@ mod tests {
     fn test_sched_handler_full_stop_proc() {
         // sched_handler_full with STOP_PROC should set RTS_PROC_STOP.
         let mut smp = SmpState::new_single_cpu();
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
 
         // Set IPI flags for STOP_PROC targeting process slot 0.
         smp.ipi_data(CpuId::BSP).set_flags(SchedIpiFlags::STOP_PROC);
@@ -1393,7 +1393,7 @@ mod tests {
     fn test_sched_handler_full_vminhibit() {
         // sched_handler_full with VM_INHIBIT should set RTS_VMINHIBIT.
         let mut smp = SmpState::new_single_cpu();
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
 
         smp.ipi_data(CpuId::BSP).set_flags(SchedIpiFlags::VM_INHIBIT);
         smp.ipi_data(CpuId::BSP).set_target(ProcNr(0));
@@ -1410,7 +1410,7 @@ mod tests {
         // ipi_sched_handler with IDLE as current process should NOT
         // set RTS_PREEMPTED.
         let mut smp = SmpState::new_single_cpu();
-        let mut pt = crate::proc_table::ProcessTable::new();
+        let mut pt = crate::test_helpers::test_proc_table();
 
         // Set current CPU's proc_ptr to IDLE.
         smp.cpu_local_mut(CpuId::BSP).unwrap().proc_ptr = Some(proc_nr::IDLE);

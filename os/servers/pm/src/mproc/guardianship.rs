@@ -99,6 +99,42 @@ impl Guardianship {
             Self::Traced { trace_exit, .. } => *trace_exit,
         }
     }
+
+    /// Gets trace options.
+    pub fn trace_options(&self) -> TraceOptions {
+        match self {
+            Self::Normal { .. } => TraceOptions::empty(),
+            Self::Traced { trace_options, .. } => *trace_options,
+        }
+    }
+
+    /// Sets trace options (`T_SETOPT`, `trace.c:162`).
+    pub fn set_trace_options(&mut self, bits: u32) {
+        if let Self::Traced { trace_options, .. } = self {
+            *trace_options = TraceOptions::from_bits_truncate(bits);
+        }
+    }
+
+    /// Tries to set tracer (`T_OK`, `trace.c:58`).
+    pub fn try_set_tracer(&mut self, parent: UserSlot) -> Result<(), ()> {
+        if self.tracer().is_some() {
+            return Err(());
+        }
+        let p = self.parent();
+        *self = Self::Traced {
+            parent: p,
+            tracer: parent,
+            trace_exit: false,
+            trace_options: TraceOptions::empty(),
+        };
+        Ok(())
+    }
+
+    /// Clears tracer (`T_DETACH`, `trace.c:194`).
+    pub fn clear_tracer(&mut self) {
+        let parent = self.parent();
+        *self = Self::Normal { parent };
+    }
 }
 
 #[cfg(test)]

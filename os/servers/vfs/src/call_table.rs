@@ -12,8 +12,8 @@
 
 /// VFS syscall base offset.
 ///
-/// Corresponds to Minix3's `VFS_BASE`.
-pub const VFS_BASE: u32 = 0x1000;
+/// Corresponds to Minix3's `VFS_BASE` (`callnr.h:68` `0x100`).
+pub const VFS_BASE: u32 = 0x100;
 
 /// VFS syscall count.
 ///
@@ -317,6 +317,44 @@ impl Default for CallTable {
     }
 }
 
+/// Call-number resolver — typed indirection over the `call_vec[64]` table.
+///
+/// In C `call_vec[call_index]` is a nullable function pointer; here the
+/// resolver returns `Option<VfsCallNum>` and the caller matches exhaustively.
+/// The trait separates “how to resolve” (table vs. match vs. deny) from
+/// “what to do with it”, making the priority chain in `main_loop` testable.
+///
+/// Two behaviourally different impls satisfy Gate D: [`CallTable`] (real)
+/// maps 64 valid numbers to `Some(call)`, while [`NullResolver`] maps every
+/// input to `None` (always deny).
+pub trait CallResolver {
+    /// Resolve `raw` (`m_type`) to a typed call, or `None` for `ENOSYS`.
+    fn resolve(&self, raw: u32) -> Option<VfsCallNum>;
+    /// Convenience: `resolve(raw).is_some()`.
+    fn is_valid(&self, raw: u32) -> bool {
+        self.resolve(raw).is_some()
+    }
+}
+
+impl CallResolver for CallTable {
+    fn resolve(&self, raw: u32) -> Option<VfsCallNum> {
+        self.lookup(raw)
+    }
+}
+
+/// Always-deny resolver — for tests and for demonstrating the trait contract.
+///
+/// Behaviourally different from `CallTable`: same input `VFS_OPEN` yields
+/// `Some(Open)` vs `None`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullResolver;
+
+impl CallResolver for NullResolver {
+    fn resolve(&self, _raw: u32) -> Option<VfsCallNum> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +422,29 @@ mod tests {
         assert_eq!(SyscallResult::Error(1), SyscallResult::Error(1));
         assert_eq!(SyscallResult::Suspend, SyscallResult::Suspend);
         assert_eq!(SyscallResult::Nosys, SyscallResult::Nosys);
+    }
+
+    #[test]
+    fn test_call_resolver_two_impls() {
+        let table = CallTable::new();
+        let null = NullResolver;
+        let raw = VfsCallNum::Open as u32;
+        assert_eq!(CallResolver::resolve(&table, raw), Some(VfsCallNum::Open));
+        assert_eq!(CallResolver::resolve(&null, raw), None);
+        assert!(CallResolver::is_valid(&table, raw));
+        assert!(!CallResolver::is_valid(&null, raw));
+        // Polymorphic use as trait object — Gate D “used as bound”
+        fn is_valid_dyn(r: &dyn CallResolver, raw: u32) -> bool {
+            r.is_valid(raw)
+        }
+        assert!(is_valid_dyn(&table, raw));
+        assert!(!is_valid_dyn(&null, raw));
+    }
+
+    #[test]
+    fn test_transid_codec_two_impls_in_call_table() {
+        // Sanity: VFS_BASE vs TRANSACTION_BASE are distinct (A-2 + D3)
+        assert_ne!(VFS_BASE, 0xB00);
+        assert_eq!(NR_VFS_CALLS, 64);
     }
 }

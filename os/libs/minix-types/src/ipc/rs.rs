@@ -13,7 +13,7 @@ use crate::{Endpoint, Gid, Pid, Uid, VirBytes};
 pub const RS_RQ_BASE: i32 = 0x700;
 
 /// Start system service. C: `RS_UP` — com.h:465.
-pub const RS_UP: i32 = RS_RQ_BASE + 0;
+pub const RS_UP: i32 = RS_RQ_BASE;
 /// Stop system service. C: `RS_DOWN` — com.h:466.
 pub const RS_DOWN: i32 = RS_RQ_BASE + 1;
 /// Refresh system service. C: `RS_REFRESH` — com.h:467.

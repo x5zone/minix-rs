@@ -204,7 +204,17 @@ impl KernelInfo {
     // `pub` for backward compatibility with boot-shim construction and
     // test assertions, but new code should prefer these methods.
 
-    /// Free physical memory regions (kernel + modules already excluded).
+    /// Free physical memory regions reported by the boot-shim.
+    ///
+    /// NOTE: **not** filtered. The boot-shim snapshots the UEFI memory map
+    /// *before* loading the kernel, so every conventional RAM region is
+    /// reported as free — the kernel image and boot-module regions are
+    /// included. Consumers that allocate from this map (e.g. the VM
+    /// bootstrap allocator, `VmBootRegion::select_multi` in
+    /// `os/arch/src/arch/frame.rs`) must exclude the occupied ranges
+    /// (kernel image + modules) explicitly, mirroring C's `cut_memmap`
+    /// (pre_init.c:190-214). The kernel's `FREE_MEMMAP` (Phase A.2) applies
+    /// that cut for boot-module regions only.
     /// C: `kinfo.memmap[]` — pg_utils.c add_memmap/cut_memmap
     #[inline]
     pub fn memmap(&self) -> &'static [MemoryRegion] { self.memmap }

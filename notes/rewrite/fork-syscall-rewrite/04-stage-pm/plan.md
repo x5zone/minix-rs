@@ -175,7 +175,7 @@ PM_FORK 到达（主循环 dispatch，04）
 
 ### 3.5 测试基线（截至 2026-08-16）
 
-- `cargo test -p minix-pm --lib`：**77 passed / 0 failed**（实测基线，2026-08-16；定向模块：`mproc::table` 4、`mproc::trace` 2、`mproc::wait` 4、`mproc::pid_gen` 等）
+- `cargo test -p minix-pm --lib`：**91 passed / 0 failed**（实测基线，2026-08-17；01 完成时 87，02 新增 4 个：位值对齐/NEW_PARENT 载荷/ignored-caught/fork 无 DELAY_CALL；定向模块：`mproc::table` 8、`mproc::trace` 2、`mproc::wait` 4、`mproc::pid_gen` 7 等）
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -192,12 +192,12 @@ PM_FORK 到达（主循环 dispatch，04）
 
 | # | ARCH 项 | Minix3 现状 | minix-rs 演进 | 涉及新文档 | 状态 |
 |---|---------|------------|--------------|-----------|------|
-| A-1 | **mproc 结构分层** | `struct mproc` 单结构 + `mp_flags` 正交位一锅炖（`mproc.h:20-77`） | `Process` 分层模型：Identity / State（Lifecycle+BlockState+WaitState+Guardianship+TraceState）/ Resources（Credentials+SignalState）/ Context（`mproc/mproc.rs` 等） | 02 | 已实现 |
+| A-1 | **mproc 结构分层** | `struct mproc` 单结构 + `mp_flags` 正交位一锅炖（`mproc.h:24-83`） | `Process` 分层模型：Identity / State（Lifecycle+BlockState+WaitState+Guardianship+TraceState）/ Resources（Credentials+SignalState）/ Context（`mproc/mproc.rs` 等） | 02 | 已实现 |
 | A-2 | **flags 正交位 → 状态机枚举** | `IN_USE/WAITING/ZOMBIE/...` 19 个正交位（`mproc.h:86-104`，另有 `MP_MAGIC` 魔数），任意组合 | `Lifecycle` 互斥枚举（Unused/Running/Exiting/Zombie/TraceZombie/ToldParent）+ `BlockState`/`WaitState` 组合子（`mproc/lifecycle.rs`、`block.rs`、`wait.rs`） | 02/09/10 | 已实现（位→枚举映射须逐位对照） |
-| A-3 | **全局状态 → PmContext** | `mp`/`who_p`/`who_e`/`call_nr`/`mproc` 文件级全局（`glo.h:16-23`） | `PmContext<'a>` 显式传参 + `ProcTable`（`mproc/context.rs`、`table.rs`），借用检查器作编译期锁 | 03/04 | 已实现 |
+| A-3 | **全局状态 → PmContext** | `mp`/`who_p`/`who_e`/`call_nr`/`mproc` 文件级全局（`glo.h:16-23`） | `PmContext<'a>` 显式传参 + `ProcTable`（`mproc/context.rs`、`table.rs`），借用检查器作编译期锁 | 03/04 | 已实现（04 完成显式参数调用点：run_once/reply 用 `UserSlot`，init.rs:279/337） |
 | A-4 | **message union → 类型化 IPC** | `m_in.m_lc_pm_*`/`m_pm_lc_*` 手写 union 字段（`com.h`） | `PmRequest`/`PmResponse`/`PmError` + codec trait（`minix-types/src/ipc/pm.rs`），errno 映射 | 04/07 | 部分实现（目前仅 Fork 变体） |
-| A-5 | **call_vec 函数指针表 → match 分发** | `call_vec[NR_PM_CALLS]` 表 + `call_index`（`table.c`） | `MessageDispatcher::dispatch` match 路由（`ipc/dispatcher.rs`） | 04 | 部分实现（仅 Fork） |
-| A-6 | **SUSPEND 显式化** | `return SUSPEND` 表示"本次不回复，稍后 reply()"（`main.c:106`） | 异步回复模型：dispatch 返回 `ReplyLater`/`NoReply` 变体，回复队列 | 04/05 | 未实现（语义契约待建模） |
+| A-5 | **call_vec 函数指针表 → match 分发** | `call_vec[NR_PM_CALLS]` 表 + `call_index`（`table.c`） | `dispatch_pm_call` match 分发（`ipc/calls.rs`，47 变体 `#[repr(i32)]`） | 04 | 已实现（`dispatch_pm_call` 47 项，calls.rs:201） |
+| A-6 | **SUSPEND 显式化** | `return SUSPEND` 表示"本次不回复，稍后 reply()"（`main.c:106`） | 异步回复模型：dispatch 返回 `ReplyLater`/`NoReply` 变体 | 04/05 | 已实现（`ReplyIntent` 三变体，dispatcher.rs:45；handler 具体路径归 05/09+） |
 | A-7 | **定时器抽象** | `minix_timer_t` + `set_timer`/`expire_timers`，CLOCK notify 驱动（`alarm.c`、`main.c:65-67`） | 类型化 `Timeout`/`Clock` + 定时器队列（minix-types），到期回调 | 14 | 未实现 |
 | A-8 | **用户态调度协议** | `sched_start/inherit/stop/nice` 经 `_taskcall` 到 SCHED 服务（`schedule.c`、`minix/sched.h`） | sched 客户端模块 + 类型化 `SchedulingRequest` | 16 | 未实现 |
 | A-9 | **进程事件订阅** | `subs[NR_SUBS]` + 串行化 EVENT_CALL 往返（`event.c`） | 事件订阅表（若实现）或显式缺口契约 | 06 | **缺口**：未实现，标注 fail-closed |
@@ -298,26 +298,26 @@ PM_FORK 到达（主循环 dispatch，04）
 | 编号 | 文档 | 状态 | 首次改写日期 | 最后 review 日期 |
 |------|------|------|-------------|-----------------|
 | 00 | `00-pm-overview.md` | 骨架 | — | — |
-| 01 | `01-pm-init-main.md` | 骨架 | — | — |
-| 02 | `02-mproc-struct.md` | 骨架 | — | — |
-| 03 | `03-mproc-table.md` | 骨架 | — | — |
-| 04 | `04-ipc-dispatch.md` | 骨架 | — | — |
-| 05 | `05-vfs-interaction.md` | 骨架 | — | — |
-| 06 | `06-event-subscription.md` | 骨架 | — | — |
-| 07 | `07-pm-fork.md` | 骨架 | — | — |
-| 08 | `08-pm-srv-fork.md` | 骨架 | — | — |
-| 09 | `09-pm-exit.md` | 骨架 | — | — |
-| 10 | `10-pm-wait.md` | 骨架 | — | — |
-| 11 | `11-signal-core.md` | 骨架 | — | — |
-| 12 | `12-signal-handlers.md` | 骨架 | — | — |
-| 13 | `13-signal-flow.md` | 骨架 | — | — |
-| 14 | `14-itimer.md` | 骨架 | — | — |
-| 15 | `15-credentials.md` | 骨架 | — | — |
-| 16 | `16-scheduling.md` | 骨架 | — | — |
-| 17 | `17-exec.md` | 骨架 | — | — |
-| 18 | `18-trace.md` | 骨架 | — | — |
-| 19 | `19-time.md` | 骨架 | — | — |
-| 20 | `20-misc-queries.md` | 骨架 | — | — |
+| 01 | `01-pm-init-main.md` | 完整 | 2026-08-17 | 2026-08-17 |
+| 02 | `02-mproc-struct.md` | 完整 | 2026-08-17 | 2026-08-17 |
+| 03 | `03-mproc-table.md` | 完整 | 2026-08-17 | 2026-08-17 |
+| 04 | `04-ipc-dispatch.md` | 完整 | 2026-08-17 | 2026-08-17 |
+| 05 | `05-vfs-interaction.md` | 完整 | 2026-09-02 | 2026-09-02 |
+| 06 | `06-event-subscription.md` | 完整 | 2026-09-02 | 2026-09-02 |
+| 07 | `07-pm-fork.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 08 | `08-pm-srv-fork.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 09 | `09-pm-exit.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 10 | `10-pm-wait.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 11 | `11-signal-core.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 12 | `12-signal-handlers.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 13 | `13-signal-flow.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 14 | `14-itimer.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 15 | `15-credentials.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 16 | `16-scheduling.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 17 | `17-exec.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 18 | `18-trace.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 19 | `19-time.md` | 完整 | 2026-09-03 | 2026-09-03 |
+| 20 | `20-misc-queries.md` | 完整 | 2026-09-03 | 2026-09-03 |
 | 99 | `99-global-concepts.md` | 骨架 | — | — |
 
 ### 6.2 改写优先级

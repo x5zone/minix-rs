@@ -671,8 +671,8 @@ mod tests {
     #[test]
     fn test_verify_grant_invalid_endpoint() {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let proc_cr3 = |_| None;
 
         let result = verify_grant(
@@ -693,8 +693,8 @@ mod tests {
     #[test]
     fn test_verify_grant_invalid_grant_id() {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        let proc_table = ProcessTable::new();
-        let priv_table = PrivTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let proc_cr3 = |_| None;
 
         let result = verify_grant(

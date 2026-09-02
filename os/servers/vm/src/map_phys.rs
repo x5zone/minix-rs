@@ -77,7 +77,7 @@ pub(crate) fn handle_map_phys(
     let len_aligned = VirBytes(length.0 + offset);
     let startaddr = PhysBytes(phys_addr.0 - offset);
 
-    let aligned_len = VirBytes(((len_aligned.0 + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE);
+    let aligned_len = VirBytes(len_aligned.0.div_ceil(PAGE_SIZE) * PAGE_SIZE);
 
     // Find a free virtual address range in the mmap region.
     // [ARCH: A-6] minix-rs uses the fixed 64-bit MMAP_BASE/MMAP_TOP

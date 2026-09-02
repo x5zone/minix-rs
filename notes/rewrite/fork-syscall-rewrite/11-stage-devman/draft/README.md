@@ -23,7 +23,7 @@ Minix3 的设备管理服务器：维护设备树/设备状态，处理设备驱
 ## 依赖关系
 
 - 前置：01-stage-kernel、02-stage-vm、03-stage-rs（加载方）
-- 后置：14-stage-integration（设备驱动端到端接入）
+- 后置：19-stage-integration（设备驱动端到端接入）
 
 ## 编号说明
 

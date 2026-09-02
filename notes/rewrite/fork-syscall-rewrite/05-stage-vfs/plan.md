@@ -91,7 +91,7 @@ VFS_PM_FORK 到达（主循环 dispatch，09）
 | 阶段 | 编号 | 文档 | 语义模块 | C 源码 | Rust 模块 | draft 来源 | 变更 |
 |------|------|------|---------|--------|-----------|-----------|------|
 | 0 总览 | 00 | `00-vfs-overview.md` | VFS 是什么、启动主线图、文档导航、设计原则 | `servers/vfs/` 全部 | 全部 | `draft/00` + `draft/99` | **重写**：导航改为启动主线叙事 |
-| 1 启动入口与进程模型 | 01 | `01-vfs-init-main.md` | main()/SEF 三回调/VFS_PM_INIT 握手/init_* 调用点/do_init_root/mount_pfs/worker_allow | `main.c:54-68,374-499,501-527` | `main.rs`、`main_loop.rs:run/init_fresh` | `draft/10` 启动部分 | **拆分**：启动链独立成篇 |
+| 1 启动入口与进程模型 | 01 | `01-vfs-init-main.md` | main()/SEF 三回调/VFS_PM_INIT 握手/init_* 调用点/do_init_root/mount_pfs/worker_allow | `main.c:54-141,374-499,501-523` | `main.rs`、`main_loop.rs:run/init_fresh` | `draft/10` 启动部分 | **拆分**：启动链独立成篇 |
 | 1 | 02 | `02-fproc-struct.md` | struct fproc 全字段、fp_flags、fp_blocked_on + fp_u 五类阻塞状态 union、凭证字段 | `fproc.h` | `fproc.rs:FProc/FpFlags/BlockedOn` | `draft/01`+`draft/02`+`draft/03`+`draft/fproc-design` | **合并**：结构/标志/凭证三篇合一 |
 | 1 | 03 | `03-fproc-table.md` | fproc[NR_PROCS] 表、okendpt/isokendpt_f 验证、PID_FREE 槽语义、fproc_light（MIB） | `utility.c:94-127`、`fproc.h:117-124`、`glo.h` | `fproc.rs:FProcTable` | `draft/09` 部分 | **新建**：表操作与结构分离 |
 | 2 核心数据结构 | 04 | `04-filp-table.md` | struct filp、init_filps、get_filp/get_filp2/find_filp*、filp 引用计数与锁、FSF_* 标志 | `file.h`、`filedes.c:73-249,313-430` | （未实现）filp 模块 | `draft/04`+`draft/filp-refcount` | 沿用 + 补表操作 |
@@ -237,7 +237,7 @@ VFS_PM_FORK 到达（主循环 dispatch，09）
 |---|---------|------------|--------------|-----------|------|
 | A-1 | **执行模型：mthread 多线程 → 单线程事件循环 + 请求槽状态机** | VFS 是 Minix3 唯一多线程服务器：main 线程 + 9 个 worker 线程（`NR_WTHREADS=9`，`worker.c`，`worker_main` 真实线程 + `w_event_mutex`/`w_event` 条件变量） | worker 抽象保留为**请求槽状态机**（`worker.rs:WorkerState::Idle/Busy/WaitingForFs`），无真实线程；阻塞 I/O 由异步状态机/回复队列建模 | 08/09 | 部分实现（状态枚举已存在，无线程） |
 | A-2 | **call_vec 函数指针表 → 类型化枚举分发** | `int (* const call_vec[NR_VFS_CALLS])(void)`（`table.c`），64 个调用 | `VfsCallNum` enum（64 变体）+ `CallTable::dispatch` match 路由（`call_table.rs`） | 09/99 | 已实现（枚举面） |
-| A-3 | **fp_blocked_on union → 类型化阻塞枚举** | `fp_u` 五类 union（u_pipe/u_popen/u_flock/u_cdev/u_sdev，`fproc.h:31-57`） | `BlockedOn` enum（`fproc.rs:BlockedOn::Pipe/Flock/Other`），阻塞详情用类型化结构 | 02/09 | 部分实现（枚举存在，细节结构未建模） |
+| A-3 | **fp_blocked_on union → 类型化阻塞枚举** | `fp_u` 五类 union（u_pipe/u_popen/u_flock/u_cdev/u_sdev，`fproc.h:31-57`） | `BlockedOn` 标签枚举 + 五类载荷结构（`fproc.rs`: Pipe/PipeOpen/Flock/Select/Cdev/Sdev，含 PipeIo/FlockCmd/SdevCall/SdevAux） | 02/09 | **已实现**（2026-08-17，02-fproc-struct） |
 | A-4 | **全局变量 → VfsState 聚合** | `glo.h` 全局（fp/susp_count/reviving/sending/verbose/m_in/self/workers/err_code/bsf_lock...） | `VfsState` 聚合全部子系统状态（`main_loop.rs:VfsState`：fproc_table/worker_pool/call_table/reviving/current_message） | 09/99 | 部分实现 |
 | A-5 | **SUSPEND/revive 机制显式化** | `return SUSPEND` 表示稍后回复；pipe/select/驱动三条恢复路径（`pipe.c:revive`、`select.c:select_return`、`sdev.c:sdev_finish`） | 异步回复意图枚举（`ReplyIntent::Reply/ReplyLater/NoReply`），回复队列 | 09/17/23 | **缺口**：未实现，标注语义契约 |
 | A-6 | **mthread 锁/条件变量 → Rust 内部可变性** | `fp_lock` mutex、`filp_lock` mutex、`w_event_mutex`/`w_event` cond（`threads.h` 宏映射） | 单线程事件循环下 `Rc`/`RefCell`（`!Send`/`!Sync` 安全），锁降级为借用规则 + 显式状态 | 02/04/08 | 设计层 |
@@ -384,13 +384,13 @@ VFS_PM_FORK 到达（主循环 dispatch，09）
 | 编号 | 文档 | 状态 | 首次改写日期 | 最后 review 日期 |
 |------|------|------|-------------|-----------------|
 | 00 | `00-vfs-overview.md` | 骨架 | — | — |
-| 01 | `01-vfs-init-main.md` | 骨架 | — | — |
-| 02 | `02-fproc-struct.md` | 骨架 | — | — |
-| 03 | `03-fproc-table.md` | 骨架 | — | — |
-| 04 | `04-filp-table.md` | 骨架 | — | — |
-| 05 | `05-vnode-table.md` | 骨架 | — | — |
-| 06 | `06-vmnt-table.md` | 骨架 | — | — |
-| 07 | `07-tll-lock.md` | 骨架 | — | — |
+| 01 | `01-vfs-init-main.md` | **已改写**（2026-08-17） | 2026-08-17 | — |
+| 02 | `02-fproc-struct.md` | **已改写**（2026-08-17） | 2026-08-17 | — |
+| 03 | `03-fproc-table.md` | **已改写**（2026-09-03） | 2026-09-03 | 2026-09-03 |
+| 04 | `04-filp-table.md` | **已改写**（2026-09-03） | 2026-09-03 | 2026-09-03 |
+| 05 | `05-vnode-table.md` | **已改写**（2026-09-03） | 2026-09-03 | 2026-09-03 |
+| 06 | `06-vmnt-table.md` | **已改写**（2026-09-03） | 2026-09-03 | 2026-09-03 |
+| 07 | `07-tll-lock.md` | **已改写**（2026-09-03） | 2026-09-03 | 2026-09-03 |
 | 08 | `08-worker-thread.md` | 骨架 | — | — |
 | 09 | `09-main-loop.md` | 骨架 | — | — |
 | 10 | `10-pm-protocol.md` | 骨架 | — | — |

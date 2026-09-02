@@ -22,7 +22,7 @@ use minix_types::{
     MessageM1, MessageM2,
 };
 
-use crate::clock::{self, ClockState, TimerAction, TimerEntry, TMR_NEVER};
+use crate::clock::{self, ClockState, TimerAction, TMR_NEVER};
 use crate::kpriv::{KPriv, PrivTable};
 use crate::proc::{KProcess, MiscFlagsBits};
 use crate::proc_table::ProcessTable;
@@ -197,55 +197,57 @@ pub fn dispatch_setalarm(
     };
 
     // C: do_setalarm.c:39-46 — return time left on previous alarm
+    // Three branches, exactly as in C:
+    //   !tmr_is_set(tp)            → TMR_NEVER
+    //   tmr_is_first(uptime, exp)  → exp - uptime (wrap-safe; exp >= uptime here)
+    //   otherwise (already expired) → 0
+    // (`saturating_sub` was a semantic deviation: an already-expired alarm
+    // must report 0, and wrap-around must follow the C comparison.)
     let uptime = clock_state.uptime();
-    let time_left = {
-        let kpriv = priv_table.get(caller_priv_id);
-        if let Some(kpriv) = kpriv {
-            match &kpriv.runtime.s_alarm_timer {
-                None => TMR_NEVER,
-                Some((timer, _id)) => {
-                    timer.exp_time.saturating_sub(uptime)
-                }
+    let time_left = match priv_table.get(caller_priv_id) {
+        Some(kpriv) => {
+            let tp = &kpriv.runtime.s_alarm_timer;
+            if !tp.is_set() {
+                TMR_NEVER
+            } else if clock::tmr_is_first(uptime, tp.exp_time) {
+                // C: `tp->tmr_exp_time - uptime` (clock_t unsigned arithmetic;
+                // the branch condition guarantees no wrap on this path).
+                tp.exp_time.wrapping_sub(uptime)
+            } else {
+                0
             }
-        } else {
-            TMR_NEVER
         }
+        None => TMR_NEVER,
     };
 
     // C: do_setalarm.c:56-62 — set or reset timer
     if !use_abs_time && exp_time == 0 {
-        // Reset alarm: C: do_setalarm.c:57 — reset_kernel_timer(tp)
-        let kpriv = priv_table.get_mut(caller_priv_id);
-        if let Some(kpriv) = kpriv
-            && let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-                clock_state.reset_timer(old_id);
-            }
+        // Reset alarm: C: do_setalarm.c:57 — reset_kernel_timer(tp).
+        // Chain-aware: unlinks the node from the clock chain (if linked)
+        // and deactivates it. `set_alarm_timer` re-arms first, so no
+        // duplicate (entry, id) bookkeeping is needed — node identity is
+        // the privilege slot (C: `&priv(caller)->s_alarm_timer`).
+        clock::reset_alarm_timer(priv_table, clock_state, caller_priv_id);
     } else {
-        // Set alarm: C: do_setalarm.c:61 — set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint)
+        // Set alarm: C: do_setalarm.c:59-61 —
+        //   if (!use_abs_time) exp_time += uptime;
+        //   set_kernel_timer(tp, exp_time, cause_alarm, caller->p_endpoint);
         let actual_exp_time = if use_abs_time {
             exp_time
         } else {
-            uptime + exp_time
+            // C: clock_t unsigned addition (defined wrap-around).
+            uptime.wrapping_add(exp_time)
         };
 
-        let timer = TimerEntry {
-            exp_time: actual_exp_time,
-            action: TimerAction::NotifyAlarm {
+        clock::set_alarm_timer(
+            priv_table,
+            clock_state,
+            caller_priv_id,
+            actual_exp_time,
+            TimerAction::NotifyAlarm {
                 endpoint: caller.p_endpoint,
             },
-        };
-
-        // Remove existing timer if any, then set the new one.
-        // D3: set_timer returns a TimerId that must be stored for later
-        // reset_timer(id) (15-clock-timer.md §4.4).
-        let kpriv = priv_table.get_mut(caller_priv_id);
-        if let Some(kpriv) = kpriv {
-            if let Some((_old_entry, old_id)) = kpriv.runtime.s_alarm_timer.take() {
-                clock_state.reset_timer(old_id);
-            }
-            let id = clock_state.set_timer(timer.clone());
-            kpriv.runtime.s_alarm_timer = Some((timer, id));
-        }
+        );
     }
 
     // C: do_setalarm.c:49 — return current uptime + time_left
@@ -264,7 +266,7 @@ pub fn dispatch_setalarm(
 }
 
 /// Returns true iff `caller.priv_id` is `Some` AND the matching KPriv
-/// entry is a SYS_PROC (i.e. has `PrivFlagsBits::SYS_PROC` set).
+/// entry is a SYS_PROC (i.e. has `ProcessCapability::SYS_PROC` set).
 ///
 /// Used by `dispatch_setalarm` / `dispatch_vtimer` to gate syscalls
 /// that only system processes may invoke (Minix3: `do_setalarm.c:33`,
@@ -552,7 +554,7 @@ mod tests {
 
     // ── KSC-1 / KSC-2 SYS_PROC permission tests ─────────────────────
 
-    use crate::kpriv::{priv_flag_set, PrivFlagsBits};
+    use crate::capability::ProcessCapability;
     use crate::proc::KProcess;
     use minix_types::Endpoint;
 
@@ -579,7 +581,7 @@ mod tests {
         let mut p = proc_with_priv_id(None);
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
-        match dispatch_setalarm(&mut p, &mut msg, &mut PrivTable::new(), &mut ClockState::new()) {
+        match dispatch_setalarm(&mut p, &mut msg, &mut crate::test_helpers::test_priv_table(), &mut ClockState::new()) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),
         }
@@ -590,7 +592,7 @@ mod tests {
         let mut p = proc_with_priv_id(None);
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
-        match dispatch_vtimer(&mut p, &mut msg, &PrivTable::new(), &ProcessTable::new()) {
+        match dispatch_vtimer(&mut p, &mut msg, &crate::test_helpers::test_priv_table(), &crate::test_helpers::test_proc_table()) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),
         }
@@ -598,9 +600,10 @@ mod tests {
 
     #[test]
     fn test_ksc_priv_flags_sys_proc_bit_definition() {
-        assert!(priv_flag_set::IDL_F.contains(PrivFlagsBits::SYS_PROC));
-        assert!(priv_flag_set::SRV_F.contains(PrivFlagsBits::SYS_PROC));
-        assert!(!priv_flag_set::USR_F.contains(PrivFlagsBits::SYS_PROC));
+        // C combos (priv.h:36-49): IDL_F/SRV_F carry SYS_PROC, USR_F does not.
+        assert!(ProcessCapability::IDL_F.contains(ProcessCapability::SYS_PROC));
+        assert!(ProcessCapability::SRV_F.contains(ProcessCapability::SYS_PROC));
+        assert!(!ProcessCapability::USR_F.contains(ProcessCapability::SYS_PROC));
     }
 
     #[test]
@@ -612,7 +615,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_times.endpt = SELF;
         msg.m_type = 25; // SYS_TIMES
 
-        let proc_table = ProcessTable::new();
+        let proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_times(&mut p, &mut msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(OK));
 
@@ -634,7 +637,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
         let result = dispatch_setalarm(
-            &mut p, &mut msg, &mut PrivTable::new(), &mut ClockState::new(),
+            &mut p, &mut msg, &mut crate::test_helpers::test_priv_table(), &mut ClockState::new(),
         );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }

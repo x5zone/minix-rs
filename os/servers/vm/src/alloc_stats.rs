@@ -42,14 +42,19 @@ impl VmAllocStats {
         self.allocation_failures += 1;
     }
 
+    // V10-P2-1: leak-detection surface is exercised by tests only; the
+    // periodic `check_leak` entry point is DEFERRED (alloc_stats wiring).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_allocations(&self) -> usize {
         self.total_allocations - self.total_deallocations
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_pages(&self) -> usize {
         self.total_alloc_clicks - self.total_dealloc_clicks
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn check_leak(&self) -> Option<usize> {
         let active = self.active_pages();
         if active > 0 {

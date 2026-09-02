@@ -101,6 +101,7 @@ impl VmProcTable {
     /// # Safety
     /// Caller must ensure no mutable references to the same slot are active.
     /// Even in single-threaded contexts, aliasing a mutable reference is UB.
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (via is_slot_in_use)
     unsafe fn get_slot(&self, slot: UserSlot) -> Option<&VmProc> {
         let index = Self::check_slot(slot)?;
         // SAFETY: Caller guarantees no mutable references to this slot are active
@@ -157,6 +158,7 @@ impl VmProcTable {
     /// Sets the vm_slot field to the found index (Minix3's `vm_slot = i`).
     ///
     /// This method is not atomic and assumes single-threaded execution.
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(crate) fn alloc_empty_slot(&self) -> Option<EmptySlot<'_>> {
         for i in 0..VM_PROC_COUNT {
             // SAFETY: We only access slot i, and the returned EmptySlot
@@ -206,6 +208,7 @@ impl VmProcTable {
 
     /// Checks if the slot is in use.
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(crate) fn is_slot_in_use(&self, slot: UserSlot) -> bool {
         // SAFETY: get_slot returns &VmProc (shared reference). No mutation occurs.
         // Single-threaded VM ensures no concurrent modification.
@@ -219,6 +222,7 @@ impl VmProcTable {
     /// Unlike `alloc_empty_slot()`, this returns only the slot index
     /// without an `EmptySlot` handle, so the slot might be taken
     /// by another operation before you use it.
+    #[allow(dead_code)] // V10-P2-1: no callers (used by the dead is_full)
     pub(crate) fn find_free_slot(&self) -> Option<UserSlot> {
         for i in 0..VM_PROC_COUNT {
             // SAFETY: Read-only access to check IN_USE flag. No mutation.
@@ -232,6 +236,7 @@ impl VmProcTable {
     }
 
     /// Returns the number of used slots.
+    #[allow(dead_code)] // V10-P2-1: no callers (used by the dead free_count/is_empty)
     pub(crate) fn used_count(&self) -> usize {
         (0..VM_PROC_COUNT)
             .filter(|&i| {
@@ -244,16 +249,19 @@ impl VmProcTable {
     }
 
     /// Returns the number of free slots.
+    #[allow(dead_code)]
     pub(crate) fn free_count(&self) -> usize {
         VM_PROC_COUNT - self.used_count()
     }
 
     /// Checks if the table is empty.
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.used_count() == 0
     }
 
     /// Checks if the table is full.
+    #[allow(dead_code)]
     pub(crate) fn is_full(&self) -> bool {
         self.find_free_slot().is_none()
     }
@@ -306,6 +314,7 @@ impl VmProcTable {
     /// It does NOT expose raw `&VmProc`, preserving the typestate contract.
     ///
     /// Corresponds to Minix3's `ALLREGIONS` macro in `region.c:178-192`.
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: used by verify_refcounts (test-driven)
     pub(crate) fn for_each_active_region<F>(&self, mut f: F)
     where
         F: FnMut(UserSlot, Endpoint, &VirRegion),
@@ -355,6 +364,7 @@ impl VmProcTable {
     /// `pub(super)` — this iterator bypasses typestate and should only be
     /// used within the vmproc module tree. Prefer typestate views for all
     /// stateful operations.
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
     pub(super) fn iter(&self) -> VmProcIter<'_> {
         VmProcIter {
             table: self,
@@ -441,6 +451,7 @@ impl VmProcTable {
 /// This iterator returns `&VmProc` directly, bypassing the typestate
 /// system. It is restricted to `pub(super)` to prevent external code
 /// from accessing process data without typestate enforcement.
+#[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (via table.iter())
 pub(super) struct VmProcIter<'a> {
     table: &'a VmProcTable,
     index: usize,

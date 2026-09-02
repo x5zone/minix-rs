@@ -152,7 +152,7 @@ Rust: ActiveProc.regions (RegionMap = BTreeMap<VirBytes, VirRegion>)
 ```
 
 - **RegionMap**（region_map.rs:39）：BTreeMap 按 vaddr 有序，`find`（:58）= C map_lookup，`find_slot`（:157）= C region_find_slot_range。
-- **VirRegion.physblocks**（vir_region.rs:57-71）：`Vec<PageSlot>`，`PageSlot::EMPTY`（pfn=PFN_NONE 哨兵）替代 NULL 指针，省 Option 判别开销。
+- **VirRegion.physblocks**（vir_region.rs:62-73）：`Vec<PageSlot>` 三态枚举（`Empty`/`Reserved`/`Mapped`）替代 NULL 指针，省 Option 判别开销。
 - **PageFrames**：phys_block 的集中替代（11），refcount 由 map_page/unmap_page 读写。
 - **框架操作分散**：map_free → `free_region_pages`（mod.rs:23）、map_pin_memory → `map_pin_memory`（mod.rs:128）、map_copy_region → `fork_region`（fork.rs:92）、map_handle_memory → `handle_memory_once`（fork.rs:33）。
 
@@ -379,7 +379,7 @@ int map_free_proc(struct vmproc *vmp)                                      /* :5
 
 ### 2.10 工具与调试
 
-- **vrallocflags**（:645）：VR_* 标志 → 物理页分配标志（PAF_*）：`VR_PHYS64K → PAF_ALIGN64K`、`VR_LOWER16MB → PAF_LOWER16MB`、`VR_LOWER1MB → PAF_LOWER1MB`、无 `VR_UNINITIALIZED → PAF_CLEAR`（分配后清零）。Rust 对应 `VrFlags::to_alloc_flags`（vir_region.rs:33，PageAllocFlags）。
+- **vrallocflags**（:645）：VR_* 标志 → 物理页分配标志（PAF_*）：`VR_PHYS64K → PAF_ALIGN64K`、`VR_LOWER16MB → PAF_LOWER16MB`、`VR_LOWER1MB → PAF_LOWER1MB`、无 `VR_UNINITIALIZED → PAF_CLEAR`（分配后清零）。Rust 对应 `VrFlags::to_alloc_flags`（vir_region.rs:38，PageAllocFlags）。
 - **physregions**（:1546）：统计区域中已挂载的槽位数（sanity 断言用）。
 - **map_region_lookup_type**（:1303）：按标志线性扫描找区域（RS 预分配，§1.8）。
 - **map_printmap**（:98）/ **printregionstats**（:1510）：调试打印——遍历树打印区域/槽位/引用；printregionstats 统计 used/weighted（跳过 VR_DIRECT）。Rust 无直接对应（cfg 诊断替代）。
@@ -405,12 +405,12 @@ int map_free_proc(struct vmproc *vmp)                                      /* :5
 
 ### 3.2 D2: Vec\<PageSlot\> 替代指针数组
 
-C 的 `struct phys_region **physblocks`（NULL=未映射）→ `Vec<PageSlot>`：
+C 的 `struct phys_region **physblocks`（NULL=未映射）→ `Vec<PageSlot>` 三态枚举（page_state.rs:90-101）：
 
-- `PageSlot::EMPTY`（page_state.rs:95-99，pfn=PFN_NONE 哨兵）替代 NULL，**省 Option 判别开销**（vir_region.rs:1-9 注释）。
-- `get_slot`（vir_region.rs:220）过滤 EMPTY = C physblock_get 返回 NULL；`get_slot_mut`（:225）提供可变访问。
-- `map_page`（:163）：写槽 + `PageFrames[pfn].refcount++`（saturating_add）——合并了 C 的 physblock_set + pb_reference 记账。
-- `unmap_page`（:189）：清槽 + refcount--；**归零且非 IN_CACHE 时返回 `(pfn, memtype)`** 供调用方 ev_unreference + free——C 的 pb_unreferenced 职责（rm=1 的 ev_unreference）被拆成"框架摘槽 + 返回待办"，由 free_region_pages 统一执行。
+- `Empty`：未映射也未保留（新区域默认态）；`Reserved`：lazy 占位（`map_lazy` 写入，无后备帧）；`Mapped`：已挂载物理帧（pfn）。三态在**类型层**显式区分——旧设计的 `pfn=PFN_NONE` 哨兵把 `Empty` 与 `Reserved` 混为一谈，导致 `get_slot` 过滤掉 lazy 占位（todo P0-1，2026-08-16 修复）。
+- `get_slot`（vir_region.rs:254）只返回 `Mapped` = C physblock_get 返回 NULL；`get_slot_mut`（:259）提供可变访问；**新增** `get_slot_any`（:268）/`get_slot_mut_any`（:274）——含 `Reserved` 的查询，lazy 消费者用（ARCH A-13，见 §3.6）。
+- `map_page`（:176）：写 `Mapped` 槽 + `PageFrames[pfn].refcount++`（saturating_add）——合并了 C 的 physblock_set + pb_reference 记账。
+- `unmap_page`（:202）：清回 `Empty` + refcount--；**归零且非 IN_CACHE 时返回 `(pfn, memtype)`** 供调用方 ev_unreference + free——C 的 pb_unreferenced 职责（rm=1 的 ev_unreference）被拆成"框架摘槽 + 返回待办"，由 free_region_pages 统一执行。
 
 ### 3.3 D3: 引用计数集中到 PageFrames
 
@@ -431,14 +431,14 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 | map_copy_region | `fork_region`（fork.rs:92） | 18 fork |
 | map_proc_copy(_range) | `fork_regions`（fork.rs:142） | 18 fork |
 | map_unmap_region / split_region | munmap.rs split + free_region_pages（munmap.rs:155-192） | 21 munmap |
-| map_region_extend_upto_v | `VirRegion::extend`（vir_region.rs:127） | 19 brk（brk.rs:106/:109） |
-| map_writept / map_ph_writept | `prepare_cow`（vir_region.rs:256）+ 页表同步路径 | 16/17 |
+| map_region_extend_upto_v | `VirRegion::extend`（vir_region.rs:133） | 19 brk（brk.rs:106/:109） |
+| map_writept / map_ph_writept | `prepare_cow`（vir_region.rs:304）+ 页表同步路径 | 16/17 |
 | map_lookup | `RegionMap::find`（region_map.rs:58） | 各处 |
 | map_region_lookup_type | 无实现（rs.rs:242 注释） | 25 承接 |
 
 ### 3.5 D5: 错误显式化
 
-- **VmError**（vir_region.rs:353）：`InvalidParam` 等变体替代 C 的 printf + errno 返回——extend/split 的参数校验返回类型化错误。
+- **VmError**（vir_region.rs:410）：`InvalidParam` 等变体替代 C 的 printf + errno 返回——extend/split 的参数校验返回类型化错误。
 - **PinMemoryError::PageNotMapped**（mod.rs:155）：替代 C 的 `panic("map_pin_memory: ...")`（region.c:790）——RS 调用方可恢复处理而非崩溃。
 - **find_slot 返回 Option**：替代 C 的 `SLOT_FAIL ((vir_bytes)-1)` 哨兵（region.c:298）。
 
@@ -447,13 +447,13 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 | 维度 | Minix3 | minix-rs | 判定 |
 |------|--------|----------|------|
 | 区域容器 | AVL（regionavl.c） | BTreeMap（ARCH A-4） | ✅ 语义等价 |
-| 槽位 | phys_region* 指针数组 | Vec\<PageSlot\>（PFN 哨兵） | ✅ 语义等价 |
+| 槽位 | phys_region* 指针数组 | Vec\<PageSlot\>（Empty/Reserved/Mapped 三态） | ✅ 语义等价 |
 | 物理页状态 | phys_block + firstregion 链表 | PageFrames[PFN] refcount | ✅ 语义等价（11） |
 | 记账 | vm_total/vm_total_max（physblock_set 内联） | ActiveProc sub_total（消费面） | ✅ 等价，位置不同 |
 | 框架错误 | printf + errno / SLOT_FAIL | VmError / Option | ✅ 显式化 |
 | 调试打印 | map_printmap/printregionstats | 无直接对应（cfg 诊断替代） | ⚠️ 功能缺失，P2 |
 | map_region_lookup_type | rs.c:177/:334 消费 | 无实现（rs.rs:242） | ⚠️ DEFERRED（25） |
-| map_lazy | 无对应（C 无 lazy 槽概念） | vir_region.rs:213 孤儿 API + test_map_lazy 失败 | ⚠️ 见 §5.3 |
+| map_lazy | 无对应（C 无 lazy 槽概念） | vir_region.rs:241 `Reserved` 占位（[ARCH: A-13]，无生产调用方） | ✅ 测试覆盖全链路（§5.3） |
 | ev_copy 时机 | 先复制结构再 ev_copy | fork_region 同序 | ✅ |
 | limbo 语义 | map_copy_region 先复制后挂链 | fork_regions 批量复制后统一 insert | ✅ 等价 |
 
@@ -474,14 +474,14 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 
 ### 4.2 VirRegion（vir_region.rs）
 
-- **new**（:89）：`vec![PageSlot::EMPTY; pages]` 预分配槽位数组（= C region_new 的 calloc）。
-- **extend**（:120）：追加 EMPTY 槽 + length 增长（= C map_region_extend_upto_v 的 realloc 分支；brk.rs:106/:109 消费）。
-- **map_page**（:163）/ **unmap_page**（:189）：槽位挂载/摘除 + refcount 维护（§3.2）。
-- **map_lazy**（:213）：写 PFN_NONE 槽（**孤儿 API，无生产调用方**，见 §5.3）。
-- **needs_cow**（:230）：refcount>1 判定（17 消费）。
-- **prepare_cow**（:256）：把 refcount>1 的页标 COW 标志（fork 后写保护，= C map_copy_region 后 pt_writemap(~PT_W)）。
-- **split**（:272）：`split_len` 切成左右两半（= C split_region）：File 类型 param 特殊处理（left offset 不变 / right offset+split_len，fdref ref 两次）；其余类型克隆 param。
-- **free_range**（:336）：区间摘槽 + 收集 pending（= C map_subfree 的 Rust 版）。
+- **new**（:95）：`vec![PageSlot::Empty; pages]` 预分配槽位数组（= C region_new 的 calloc）。
+- **extend**（:133）：追加 `Empty` 槽 + length 增长（= C map_region_extend_upto_v 的 realloc 分支；brk.rs:106/:109 消费）。
+- **map_page**（:176）/ **unmap_page**（:202）：槽位挂载/摘除 + refcount 维护（§3.2）。
+- **map_lazy**（:241）：写 `Reserved` 占位槽（[ARCH: A-13]，无生产调用方；`#[allow(dead_code)]` 标注，测试覆盖 `map_lazy → get_slot_any → 实化 → get_slot` 全链路，见 §5.3）。
+- **needs_cow**（:279）：refcount>1 判定（17 消费）。
+- **prepare_cow**（:304）：把 refcount>1 的页标 COW 标志（fork 后写保护，= C map_copy_region 后 pt_writemap(~PT_W)）。
+- **split**（:320）：`split_len` 切成左右两半（= C split_region）：File 类型 param 特殊处理（left offset 不变 / right offset+split_len，fdref ref 两次）；其余类型克隆 param。
+- **free_range**（:393）：区间摘槽 + 收集 pending（= C map_subfree 的 Rust 版）。
 
 ### 4.3 顶层函数（mod.rs）
 
@@ -524,15 +524,15 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_vir_region_creation | :378 | 建区域 + 槽位数组 |
-| test_vir_region_contains | :386 | contains_addr 边界 |
-| test_vir_region_flags | :396 | VrFlags 位操作 |
-| test_map_unmap_page | :411 | 挂载/摘除 + refcount 1→0 |
-| test_needs_cow | :428 | refcount>1 → COW 判定 |
-| test_vir_region_split / split_invalid | :443/:455 | 分割 + 参数校验 |
-| test_free_range | :466 | 区间摘槽 + pending 收集 |
-| test_map_lazy | :491 | lazy 槽语义（**FAIL**，见 §5.3） |
-| test_extend / extend_invalid | :503/:516 | 扩展 + 校验 |
+| test_vir_region_creation | :435 | 建区域 + 槽位数组 |
+| test_vir_region_contains | :443 | contains_addr 边界 |
+| test_vir_region_flags | :453 | VrFlags 位操作 |
+| test_map_unmap_page | :468 | 挂载/摘除 + refcount 1→0 |
+| test_needs_cow | :485 | refcount>1 → COW 判定 |
+| test_vir_region_split / split_invalid | :500/:512 | 分割 + 参数校验 |
+| test_free_range | :523 | 区间摘槽 + pending 收集 |
+| test_map_lazy | :548 | lazy 占位 → 实化 → 摘除全链路（✅ 2026-08-16 修复） |
+| test_extend / extend_invalid | :579/:592 | 扩展 + 校验 |
 
 **mod.rs**（2 个）：test_map_pin_memory_empty :176、test_map_pin_memory_non_cow_region :188。
 
@@ -547,8 +547,8 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| **test_map_lazy FAIL**（vir_region.rs:497） | ⚠️ 13 范围遗留 | `map_lazy`（:213）写 PFN_NONE 槽，但 `get_slot`（:220）用 `is_mapped()` 过滤 → `unwrap()` panic。**语义待定**：lazy 槽应不可见（get_slot 保持过滤，测试改直接访问 physblocks）还是可见（get_slot 放开过滤，调用方自查）？当前无生产调用方（孤儿 API），修复归 13 后续轮次。pre-existing（360 passed / 1 failed）。 |
-| find_slot 生产消费 | ⚠️ backlog | `RegionMap::find_slot` 被 mmap.rs:219/:221/:225 与 dispatcher.rs:504/:1397 调用，但无端到端测试（21/20 承接） |
+| ~~test_map_lazy FAIL~~ | ✅ 已修复（2026-08-16，todo P0-1） | **根因**：`map_lazy` 写 `pfn=PFN_NONE` 槽，但 `get_slot` 用 `is_mapped()` 过滤 → lazy 占位永远读不回。**方案**：`PageSlot` 改为三态枚举（`Empty`/`Reserved`/`Mapped`，page_state.rs:90），`get_slot` 保持 mapped-only 过滤，新增 `get_slot_any`/`get_slot_mut_any`（含 `Reserved`，vir_region.rs:268/:274）；`map_lazy` 写 `Reserved`（携带 def_memtype），测试覆盖 `map_lazy → get_slot_any → map_page 实化 → get_slot` 全链路（vir_region.rs:548）。生产语义不变：lazy 族为 [ARCH: A-13] 扩展，仍无生产调用方，`#[allow(dead_code)]` 标注。 |
+| find_slot 生产消费 | ⚠️ backlog | `RegionMap::find_slot` 被 mmap.rs:219/:221/:225 与 dispatcher.rs:522/:1464 调用，但无端到端测试（21/20 承接） |
 | map_page_region 等价组合 | ⚠️ backlog | find_slot + VirRegion::new + memtype ev_new + insert 的组合路径无集成测试 |
 | map_region_lookup_type | ⚠️ DEFERRED | 无 Rust 实现（rs.rs:242 注释），25-rs-services 承接 |
 | map_printmap / printregionstats | ⚠️ 接受 | 调试打印无 Rust 对应，cfg 诊断替代 |
@@ -558,9 +558,9 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 
 ```
 $ cd os && cargo test -p minix-vm --lib
-→ 360 passed / 1 failed（test_map_lazy pre-existing，13 范围，§5.3）
+→ 437 passed / 0 failed（2026-08-16 实测；test_map_lazy 已修复，见 §5.3；含 free-list A-3 v2 + V9-* 修复）
 $ cargo test -p minix-vm --lib region_map   → 16 passed
-$ cargo test -p minix-vm --lib vir_region   → 10 passed / 1 failed（test_map_lazy）
+$ cargo test -p minix-vm --lib vir_region   → 11 passed
 $ cargo test -p minix-vm --lib map_pin_memory → 2 passed
 ```
 

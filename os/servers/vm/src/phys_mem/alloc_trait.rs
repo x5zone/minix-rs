@@ -35,8 +35,11 @@ pub(crate) trait PhysAllocator {
     fn alloc_mem(&mut self, clicks: usize, flags: PageAllocFlags) -> Result<AlignedPhysBytes, AllocError>;
     fn free_mem(&mut self, base: AlignedPhysBytes, clicks: usize);
     fn total_count(&self) -> usize;
+    // V10-P2-1: boot-time reservation API (C: PAA_RESERVE) — implemented
+    // by all backends, only exercised by tests until the boot-shim wiring
+    // (P1-4) calls it.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn reserve_pages(&mut self, base_page: usize, count: usize);
 
     fn available_regions(&self, callback: &mut dyn FnMut(usize, usize));
 }
-

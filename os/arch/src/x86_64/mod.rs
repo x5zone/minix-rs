@@ -12,7 +12,6 @@ pub mod signal;
 pub mod smp;
 pub mod arch_init;
 pub mod boot;
-pub mod post_init;
 pub mod tlb;
 
 pub use protection::{X86_64Protection, X86PrivilegeLevel};
@@ -25,4 +24,3 @@ pub use signal::{X86_64SignalContext, X86_64SigContext, X86_64SigFrame};
 pub use smp::X86_64SmpArch;
 pub use arch_init::X86_64ArchInit;
 pub use boot::{X86_64CpuContext, X86_64CpuContextArch};
-pub use post_init::{X86_64PostInitArch, X86_64MemoryInitArch};

@@ -1,0 +1,153 @@
+{
+  "_comment": "C→Rust 语义映射表（pm 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "C 函数名/结构体/宏 → 一个或多个 Rust 限定名/方法名。03-mproc-table 表/身份管理语义范围为主，其余 doc 语义按需扩展。",
+  "get_free_pid": [
+    "PidGenerator::get_free_pid"
+  ],
+  "find_proc": [
+    "ProcTable::find_proc"
+  ],
+  "pm_isokendpt": [
+    "ProcTable::pm_isokendpt"
+  ],
+  "cleanup": [
+    "ProcTable::release_slot"
+  ],
+  "do_fork": [
+    "PmContext::do_fork_prepare",
+    "Process::fork_from"
+  ],
+  "do_srv_fork": [
+    "PmContext::do_fork_prepare"
+  ],
+  "main": [
+    "PmServer::run",
+    "PmServer::init"
+  ],
+  "sef_cb_init_fresh": [
+    "PmServer::init",
+    "PmServer::fill_boot_procs"
+  ],
+  "sef_local_startup": [
+    "PmServer::new"
+  ],
+  "reply": [
+    "ipc::dispatcher"
+  ],
+  "tell_vfs": [
+    "init::vfs_init_sync",
+    "vfs_init_messages"
+  ],
+  "set_rusage_times": [
+    "mproc::wait"
+  ],
+  "nice_to_priority": [
+    "nice_from_queue"
+  ],
+  "get_nice_value": [
+    "nice_from_queue"
+  ],
+  "mproc": [
+    "Process",
+    "ProcTable"
+  ],
+  "struct mproc": [
+    "Process"
+  ],
+  "mp": [
+    "PmContext"
+  ],
+  "procs_in_use": [
+    "ProcTable::procs_in_use"
+  ],
+  "next_child": [
+    "ProcTable::next_child"
+  ],
+  "mp_pid": [
+    "ProcessId::pid"
+  ],
+  "mp_endpoint": [
+    "ProcessIdentity::endpoint"
+  ],
+  "mp_procgrp": [
+    "ProcessIdentity::procgrp"
+  ],
+  "mp_name": [
+    "ProcessIdentity::name"
+  ],
+  "mp_parent": [
+    "Guardianship"
+  ],
+  "mp_tracer": [
+    "Guardianship"
+  ],
+  "mp_flags": [
+    "Lifecycle",
+    "BlockState",
+    "RemainingFlags"
+  ],
+  "MP_MAGIC": [
+    "Process"
+  ],
+  "NR_PIDS": [
+    "NR_PIDS"
+  ],
+  "INIT_PID": [
+    "INIT_PID"
+  ],
+  "NO_PID": [
+    "NO_PID"
+  ],
+  "NO_TRACER": [
+    "NO_TRACER_INDEX"
+  ],
+  "NR_ITIMERS": [
+    "NR_ITIMERS"
+  ],
+  "LAST_FEW": [
+    "LAST_FEW"
+  ],
+  "NR_PROCS": [
+    "NR_PROCS"
+  ],
+  "_ENDPOINT": [
+    "Endpoint::from_generation_slot"
+  ],
+  "_ENDPOINT_P": [
+    "Endpoint::slot"
+  ],
+  "_ENDPOINT_G": [
+    "Endpoint::generation"
+  ],
+  "_ENDPOINT_MAX_GENERATION": [
+    "Endpoint::ENDPOINT_MAX_GENERATION"
+  ],
+  "VFS_PM_INIT": [
+    "VFS_PM_INIT",
+    "VfsPmInit"
+  ],
+  "PROC_EVENT_SUBSCRIBE": [
+    "mproc::event"
+  ],
+  "PROC_EVENT_REPLY": [
+    "mproc::event"
+  ],
+  "NR_PM_CALLS": [
+    "MessageDispatcher"
+  ],
+  "call_vec": [
+    "MessageDispatcher::dispatch"
+  ],
+  "PM_BASE": [
+    "minix_types::PM_BASE"
+  ],
+  "init_timer": [
+    "MinixTimer"
+  ],
+  "mp_sigact": [
+    "SignalState::actions"
+  ],
+  "mp_eventsub": [
+    "ProcessIpc::event_subscriber"
+  ]
+}

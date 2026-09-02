@@ -47,7 +47,7 @@ pub(crate) struct BitmapAllocator {
 
 impl BitmapAllocator {
     pub fn init(metadata: &mut [u8], total_pages: usize, free_regions: &[BootMemRegion], meta_phys_base: u64, meta_pages: usize) -> Self {
-        let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
+        let bitmap_chunks = total_pages.div_ceil(BITS_PER_CHUNK);
         let mut buf = BumpBuf::new(metadata);
 
         let bitmap = buf.alloc_slice::<u64>(bitmap_chunks);
@@ -82,16 +82,20 @@ impl BitmapAllocator {
     }
 
     pub fn metadata_size(total_pages: usize) -> usize {
-        let bitmap_chunks = (total_pages + BITS_PER_CHUNK - 1) / BITS_PER_CHUNK;
+        let bitmap_chunks = total_pages.div_ceil(BITS_PER_CHUNK);
         let bitmap_bytes = bitmap_chunks * core::mem::size_of::<u64>();
         let cache_bytes = PAGE_CACHE_MAX * core::mem::size_of::<usize>();
         bitmap_bytes + cache_bytes + METADATA_ALIGN_PADDING
     }
 
+    // V10-P2-1: metrics surface without callers yet (reserved for the
+    // VM_INFO stats expansion, V10-P2-4).
+    #[allow(dead_code)]
     pub fn total_memory(&self) -> usize {
         self.total_pages * CLICK_SIZE
     }
 
+    #[allow(dead_code)]
     pub fn free_memory(&self) -> usize {
         self.free_pages * CLICK_SIZE
     }
@@ -111,6 +115,9 @@ impl BitmapAllocator {
         (self.meta_phys_base, self.meta_pages)
     }
 
+    // V10-P2-1: metrics surface without callers yet (reserved for the
+    // VM_INFO stats expansion / cache-pressure heuristic, alloc.c:242-279).
+    #[allow(dead_code)]
     pub fn is_under_pressure(&self) -> bool {
         self.free_pages * 10 < self.total_pages
     }
@@ -205,7 +212,7 @@ impl BitmapAllocator {
     /// for the current workload.
     fn find_bit(&self, low: usize, start_scan: usize, pages: usize) -> Option<usize> {
         let mut run_length = 0;
-        let mut free_start = 0usize;
+        let mut free_start;
         let mut i = start_scan;
 
         loop {
@@ -363,7 +370,7 @@ impl PhysAllocator for BitmapAllocator {
         }
 
         let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1 * 1024 * 1024) / CLICK_SIZE
+            (1024 * 1024) / CLICK_SIZE
         } else if flags.contains(PageAllocFlags::LOWER16MB) {
             (16 * 1024 * 1024) / CLICK_SIZE
         } else {

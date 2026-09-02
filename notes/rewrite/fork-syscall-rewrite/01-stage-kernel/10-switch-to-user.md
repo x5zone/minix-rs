@@ -218,7 +218,7 @@ fn switch_to_user() -> ! {
     // does not return. In Rust, we release explicitly before the loop.
     smp::bkl_unlock();
 
-    // First-dispatch hook (06-proc-init-boot-proc.md §3.5): apply each boot
+    // First-dispatch hook (06-proc-init-boot-proc.md §3.12): apply each boot
     // process's `cpu_context` to its trap frame once, before the
     // scheduling loop picks the first runnable process. The arch layer
     // owns the trap-frame layout; the kernel only hands it the opaque
@@ -373,8 +373,8 @@ pub fn process_misc_flags(
 - **`arch_do_syscall` 非 trait 方法**（FIX-21）：C 的 `arch_do_syscall` 是 arch-specific（i386 用 `p_defer`，ARM 用 `p_reg`），Rust 统一为 `p_defer` struct，消除 arch 差异。放入 `TrapEntryArch` trait 会产生 3 个相同实现，违反"≥2 行为不同实现"规则。实现为 `ProcessTable` 方法
 
 > **接入状态**（FIX-21, Phase 1C, 2026-08-12）：
-> - `KCALL_RESUME` 分支已接入 `crate::vm::kernel_call_resume`（[vm.rs:896](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)），清标志 + 读 VM 结果。完整重新分发由 `switch_to_user` 调用 `syscall::kernel_call_resume`（[syscall.rs:2622](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）
-> - `SC_DEFER` 分支已接入 `self.arch_do_syscall()`（[proc_table.rs:956](file:///home/xzhao/github/minix-rs/os/kernel/src/proc_table.rs)），清标志 + 重新分发 IPC
+> - `KCALL_RESUME` 分支已接入 `crate::vm::kernel_call_resume`（os/kernel/src/vm.rs:896），清标志 + 读 VM 结果。完整重新分发由 `switch_to_user` 调用 `syscall::kernel_call_resume`（os/kernel/src/syscall.rs:2622）
+> - `SC_DEFER` 分支已接入 `self.arch_do_syscall()`（os/kernel/src/proc_table.rs:956），清标志 + 重新分发 IPC
 > - `SC_TRACE` / `SC_ACTIVE` 仍为 TODO（future phase — 依赖 signal module）
 > - `vm_suspend(VMS_PAGEFAULT)` 和 `cause_sig(SIGSEGV)` 路由由 caller（`switch_to_user`）实现，依赖 future phase
 

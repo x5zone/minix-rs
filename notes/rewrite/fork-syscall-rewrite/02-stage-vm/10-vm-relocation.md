@@ -173,7 +173,7 @@ Rust 侧状态：`swap_proc_slot` **已实现**（§4.3，typestate 版本）；
 
 ### 1.9 对照 Redox / Linux
 
-**Redox**：Redox 内核早期用 `linked_list_allocator` 的 bump/空链表分配器 + 固定帧分配器（`BumpAllocator`/`BuddyAllocator`）管物理帧，恒等映射 + 直接映射提供稳定 VA——自举后**不需要**像 Minix3 那样重建页表结构（无 liveupdate 的"PA 变化"问题）。这与 minix-rs 同构：Direct Map 消除页表重建需求，bump 分配器（09 `VmAllocator`）对应 Redox 的 `linked_list_allocator::Heap`，物理帧分配器（05/06）对应 Redox `FrameAllocator`。Redox 的上下文切换/进程替换不涉及 VM 侧"页表搬迁"。
+**Redox**：Redox 内核早期用 `linked_list_allocator` 的 bump/空链表分配器 + 固定帧分配器（`BumpAllocator`/`BuddyAllocator`）管物理帧，恒等映射 + 直接映射提供稳定 VA——自举后**不需要**像 Minix3 那样重建页表结构（无 liveupdate 的"PA 变化"问题）。这与 minix-rs 同构：Direct Map 消除页表重建需求，free-list 分配器（09 `VmAllocator`，A-3 v2 与 `linked_list_allocator` 同形态）对应 Redox 的 `linked_list_allocator::Heap`，物理帧分配器（05/06）对应 Redox `FrameAllocator`。Redox 的上下文切换/进程替换不涉及 VM 侧"页表搬迁"。
 
 **Linux**：`memblock`（早期物理内存跟踪，自举期用）→ `paging_init`/`memblock_free_all`（把 memblock 的空闲区域移交 buddy 分配器）是经典的"先静态后动态"迁移——与 Minix3 的"先 BSS 后动态"、minix-rs 的"先 BumpBuf 后 HeapArena"同构。Linux `kexec`/kpatch 与 Minix3 LU 无直接对应：kexec 是整内核重启加载，kpatch 是函数级热补丁；Minix3 LU 是**进程级热替换**（整服务重启 + 状态转移），minix-rs 用 typestate `swap_proc_slot` + 区域 parent 重定向实现其核心原语。
 
@@ -615,7 +615,7 @@ C 对照：`pt_init()` 搬迁段（pagetable.c:1311-1345）位于 `init_vm()` �
 ### 4.7 消费链与边界
 
 - **上游**：05（BitmapAllocator::init 自举构造）、06（页分配器 + mark_alloc_failure）、08（vm_self_mappages 供 heap_arena_grow）、09（HeapArena::grow）。
-- **下游**：relocate 后所有分配（`#[global_allocator]` bump、进程表、region、page cache）都在稳态分配器上。
+- **下游**：relocate 后所有分配（`#[global_allocator]` free-list、进程表、region、page cache）都在稳态分配器上。
 - **边界**：不覆盖 RS 服务流程（25）；不覆盖页缓存回收（24）；`map_proc_dyn_data` 等 LU 转移族归 25 实施。
 
 ---

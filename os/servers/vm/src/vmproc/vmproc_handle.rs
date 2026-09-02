@@ -17,7 +17,7 @@ use minix_arch::paging::map_kernel;
 use super::{VmFlags, vmproc::VmProc};
 use crate::pagetable::PageTable;
 use crate::region::RegionMap;
-use crate::region::VmError;
+use minix_types::VmError;
 
 /// Empty (free) slot typestate view.
 ///
@@ -180,6 +180,7 @@ impl<'a> ActiveProc<'a> {
     ///
     /// # Safety
     /// Caller must ensure this process's page table is no longer in use by hardware.
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1 (DEFERRED): swap/exit paths use it in tests only
     pub(crate) unsafe fn force_clear(self) -> EmptySlot<'a> {
         // SAFETY: Caller guarantees this process's page table is no longer in use
         // by hardware. Single-threaded VM ensures no concurrent access.
@@ -198,11 +199,13 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
     pub(crate) fn flags(&self) -> VmFlags {
         self.inner.vm_flags
     }
 
     #[inline]
+    #[allow(dead_code)] // V10-P2-1: no callers (VmProc::is_vm_instance is test-only too)
     pub(crate) fn is_vm_instance(&self) -> bool {
         self.inner.is_vm_instance()
     }
@@ -233,6 +236,7 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
     pub(crate) fn acl(&self) -> crate::acl::AclState {
         self.inner.vm_acl
     }
@@ -253,6 +257,7 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (query/table tests)
     pub(crate) fn set_total_max(&mut self, value: VirBytes) {
         self.inner.vm_total_max = value;
     }
@@ -292,16 +297,21 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
+    #[allow(dead_code)] // V10-P2-1: no callers yet (brk keeps totals via add/sub)
     pub(crate) fn set_total(&mut self, value: VirBytes) {
         self.inner.vm_total = value;
     }
 
     #[inline]
+    // V10-P2-1 (DEFERRED): pagefault accounting counters have no producer
+    // yet — the fault path does not bump them.
+    #[allow(dead_code)]
     pub(crate) fn inc_minor_fault(&mut self) {
         self.inner.vm_minor_page_fault += 1;
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn inc_major_fault(&mut self) {
         self.inner.vm_major_page_fault += 1;
     }
@@ -482,6 +492,7 @@ impl<'a> ActiveProc<'a> {
         unsafe { self.inner.vm_regions.assume_init_mut() }
     }
 
+    #[allow(dead_code)] // V10-P2-1: no callers (region counts go via regions().len())
     pub(crate) fn region_count(&self) -> usize {
         self.regions().len()
     }
@@ -524,12 +535,12 @@ impl<'a> ActiveProc<'a> {
 
         for region in self.regions_mut().iter_mut() {
             for (i, slot) in region.physblocks.iter().enumerate() {
-                if slot.is_mapped() {
+                if let Some(pfn) = slot.pfn() {
                     let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
-                    let paddr = frames.pfn_to_phys(slot.pfn);
+                    let paddr = frames.pfn_to_phys(pfn);
 
                     let writable = region.is_writable()
-                        && frames.get(slot.pfn)
+                        && frames.get(pfn)
                             .map(|s| s.refcount == 1)
                             .unwrap_or(false);
                     let flags = if writable {
@@ -559,6 +570,7 @@ impl<'a> ActiveProc<'a> {
     ///
     /// Returns `Err(VmError::InvalidParam)` if the region overlaps an existing region.
     /// Corresponds to Minix3's region insertion in `vm_fork()` / `do_mmap()`.
+    #[allow(dead_code)] // V10-P2-1: dispatcher inserts via regions_mut() instead
     pub(crate) fn add_region(&mut self, start: VirBytes, len: VirBytes) -> Result<(), VmError> {
         use crate::region::{VirRegion, VrFlags};
         let end = VirBytes(start.0 + len.0);
@@ -582,6 +594,7 @@ impl<'a> ActiveProc<'a> {
     /// Corresponds to Minix3's region removal in `do_munmap()` / `vm_exit()`,
     /// where `pt_writemap(vaddr, MAP_NONE, ...)` is called before removing
     /// the region from the AVL tree.
+    #[allow(dead_code)] // V10-P2-1: munmap/exit remove via regions_mut() instead
     pub(crate) fn remove_region(&mut self, start: VirBytes) -> Result<(), VmError> {
         // Find the region first to get its length for page table unmap.
         let region_len = self.regions()
@@ -626,6 +639,7 @@ impl<'a> ActiveProc<'a> {
     /// old_service.swap_proc_slot(&mut new_service);
     /// // old_service now has new_service's memory, but keeps original endpoint
     /// ```
+    #[allow(dead_code)] // V10-P2-1 (DEFERRED): live-update path not wired
     pub(crate) fn swap_proc_slot(&mut self, other: &mut ActiveProc<'_>) {
         // The Rust borrow checker guarantees `&mut self` and `&mut other`
         // cannot alias a single `VmProc`. The typestate system further
@@ -720,21 +734,25 @@ impl<'a> ExitingProc<'a> {
     }
 
     #[inline]
+    #[allow(dead_code)] // V10-P2-1: exit path reads via reap() internals; accessors unused
     pub(crate) fn slot(&self) -> UserSlot {
         self.inner.vm_slot
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn endpoint(&self) -> Endpoint {
         self.inner.vm_endpoint
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn flags(&self) -> VmFlags {
         self.inner.vm_flags
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn regions(&self) -> &RegionMap {
         debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed after clear()");
         // SAFETY: vm_regions_initialized is true (checked by debug_assert above).

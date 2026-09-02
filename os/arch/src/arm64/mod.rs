@@ -11,7 +11,6 @@ pub mod signal;
 pub mod smp;
 pub mod arch_init;
 pub mod boot;
-pub mod post_init;
 pub mod tlb;
 
 pub use paging::AArch64Paging;
@@ -25,4 +24,3 @@ pub use signal::{AArch64SignalContext, AArch64SigContext, AArch64SigFrame};
 pub use smp::AArch64SmpArch;
 pub use arch_init::AArch64ArchInit;
 pub use boot::{AArch64CpuContext, AArch64CpuContextArch};
-pub use post_init::{AArch64PostInitArch, AArch64MemoryInitArch};

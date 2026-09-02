@@ -23,10 +23,10 @@ boot 链路的终点：所有内核任务与系统服务就绪后，kernel 跳�
 ## 依赖关系
 
 - 前置：全部 01-08 stage（kernel 基础设施 + 全部系统服务）
-- 后置：14-stage-integration（init 启动后的端到端集成验证）
+- 后置：19-stage-integration（init 启动后的端到端集成验证）
 
 ## 与真实 boot 顺序的关系（两层语义）
 
 - **登记顺序**（`table.c:64`）：init 是 boot_image 中**最后一项** —— 一致
 - **执行顺序**（`main.c:265-267`）：init 同样挂 `RTS_VMINHIBIT`，等 VM 建页表后可运行；作为 boot 链路终点，在所有系统服务就绪后切换到用户态执行 —— 一致
-- 编号 09 与实际位置吻合；其后为补建的 server 目录（10-stage-mib / 11-stage-devman / 12-stage-input / 13-stage-ipc），14-stage-integration / 15-redesign 为收尾 stage。
+- 编号 09 与实际位置吻合；其后为补建的 server 目录（10-stage-mib / 11-stage-devman / 12-stage-input / 13-stage-ipc），19-stage-integration / 20-redesign 为收尾 stage。

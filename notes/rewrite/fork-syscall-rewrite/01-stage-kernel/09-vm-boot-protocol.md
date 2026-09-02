@@ -106,7 +106,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 - `VMCTL_SETADDRSPACE` 同时清除 `RTS_VMINHIBIT`——VM 设置完页表后进程立即可调度
 - 如果设置的是当前运行进程（ptproc）的 CR3，立即刷新硬件 CR3
 - 如果设置的是 VM 进程的 CR3，调用 `arch_enable_paging()` 启用分页
-- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（[os/arch/src/arch/tlb_arch.rs:135](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（[os/kernel/src/lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）+ `current_ptproc_nr()` 访问器（[os/kernel/src/lib.rs:2054](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
+- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（os/arch/src/arch/tlb_arch.rs:135）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:1921）+ `current_ptproc_nr()` 访问器（os/kernel/src/lib.rs:1938），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
 
 ### 2.3 VMCTL_MEMREQ_GET/REPLY — VM 请求获取与回复
 
@@ -322,9 +322,9 @@ VmCtlParam::SetAddrSpace => {
 
 ### 4.7 GetPdbr / FlushTlb / InvlPg / ClearMapCache 实现（FIX-24, Phase 5）
 
-C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（[os/kernel/src/syscall.rs:1751-2098](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）。
+C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（os/kernel/src/syscall.rs:1751-2098）。
 
-**TlbArch trait 抽象**（[os/arch/src/arch/tlb_arch.rs](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)）：
+**TlbArch trait 抽象**（os/arch/src/arch/tlb_arch.rs）：
 
 ```rust
 pub trait TlbArch {
@@ -337,7 +337,7 @@ pub trait TlbArch {
     unsafe fn flush_addr(vaddr: VirBytes);
 
     /// Install a new page-table root on the current CPU (P9-4).
-    /// C: write_cr3(p->p_seg.p_cr3) inside setcr3() — arch_do_vmctl.c:31
+    /// C: write_cr3(p->p_seg.p_cr3) inside setcr3() — arch_do_vmctl.c:26
     /// 与 flush_all（重载当前 root）不同：本方法装入一个新 root，切换地址空间。
     unsafe fn set_active_root(phys_root: PhysBytes);
 }
@@ -369,33 +369,33 @@ pub trait TlbArch {
 
 ### 4.8 ptproc 跟踪与 set_active_root（P9-4）
 
-C 的 `setcr3()` 用指针同一性 `if (p == get_cpulocal_var(ptproc))` 判断目标进程是否是当前页表进程（arch_do_vmctl.c:31）。Rust 移植需解决两个问题：如何跟踪 ptproc、如何写硬件 root 寄存器。P9-4 同时落地两者。
+C 的 `setcr3()` 用指针同一性 `if (p == get_cpulocal_var(ptproc))` 判断目标进程是否是当前页表进程（arch_do_vmctl.c:25）。Rust 移植需解决两个问题：如何跟踪 ptproc、如何写硬件 root 寄存器。P9-4 同时落地两者。
 
 #### 4.8.1 CURRENT_PTPROC_NR 内核全局
 
-**位置**: [os/kernel/src/lib.rs:2036](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: os/kernel/src/lib.rs:1921
 
 ```rust
-// os/kernel/src/lib.rs:2036
+// os/kernel/src/lib.rs:1921
 static CURRENT_PTPROC_NR: AtomicI32 = AtomicI32::new(i32::MIN);
 
 /// Sentinel value indicating CURRENT_PTPROC_NR has not been initialized.
 /// Distinct from any valid proc-nr (user procs ≥ 0, kernel tasks in -NR_TASKS..=-1).
-const PTPROC_UNSET: i32 = i32::MIN;  // lib.rs:2041
+const PTPROC_UNSET: i32 = i32::MIN;  // lib.rs:1926
 
 /// Read the proc-nr of the current ptproc. Returns None if not yet set.
-pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {  // lib.rs:2054
+pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {  // lib.rs:1939
     let v = CURRENT_PTPROC_NR.load(Ordering::Acquire);
     if v == PTPROC_UNSET { None } else { Some(crate::proc::ProcNr(v)) }
 }
 
 /// Set the current ptproc proc-nr. Called once during init_post_and_memory.
-pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:2075
+pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:1963
     CURRENT_PTPROC_NR.store(nr.0, Ordering::Release);
 }
 ```
 
-**初始化**：`init_post_and_memory` 在调用 arch 层 `CurrentPostInitArch::set_ptproc` 之后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（[os/kernel/src/lib.rs:1057](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。
+**初始化**：`init_post_and_memory` 断言 VM 页表 root 有效后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:1063）。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。（arch 层 `PostInitArch::set_ptproc` 已被 Direct Map 取代——见 [07-cross-space-init.md §4.3](07-cross-space-init.md)。）
 
 **为何用 proc-nr 比较而非指针同一性**：C 比较 `struct proc *` 指针，Rust 用 `ProcNr`（i32 进程表索引）。两者等价——proc-nrs 唯一标识 `ProcessTable` 中的进程槽位，一一对应无别名（同一 proc-nr 永远映射到同一 `KProcess`）。proc-nr 比较还避免了裸指针的不安全性，与 [16-smp.md §D8](16-smp.md) 的 per-CPU 索引设计一致（`proc_ptr`/`fpu_owner` 均用 `Option<ProcNr>`）。
 
@@ -403,11 +403,11 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:2075
 
 #### 4.8.2 TlbArch::set_active_root 三架构汇编
 
-`set_active_root` 的完整定义见 [os/arch/src/arch/tlb_arch.rs:135](file:///home/xzhao/github/minix-rs/os/arch/src/arch/tlb_arch.rs)。三架构实现在 §4.7 表中列出，关键差异：
+`set_active_root` 的完整定义见 os/arch/src/arch/tlb_arch.rs:135。三架构实现在 §4.7 表中列出，关键差异：
 
-- **x86-64**（[os/arch/src/x86_64/tlb.rs:51](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/tlb.rs)）：`mov cr3, {phys_root}`。写 CR3 隐式 flush 所有非全局 TLB 条目（Intel SDM Vol 3 §4.10.4.1），无需额外 invalidate 指令。
-- **aarch64**（[os/arch/src/arm64/tlb.rs:61](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/tlb.rs)）：`msr TTBR0_EL1, {root}` + `tlbi alle1is` + `isb`。ARM64 写 TTBR0 **不**隐式刷 TLB（ARM ARM D5.4.5），必须显式 `tlbi alle1is` 清除旧 root 的过期翻译，`isb` 同步上下文。
-- **riscv64**（[os/arch/src/riscv64/tlb.rs:70](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/tlb.rs)）：`csrw satp, (SV39_MODE << 60) | (phys_root >> 12)` + `sfence.vma zero, zero`。RISC-V 写 satp **不**隐式刷 TLB（Priv ISA §4.2.1），需 `sfence.vma`。satp 编码为 `[MODE(1)=8] [ASID(16)=0] [PPN(44)]`，故 `phys_root >> 12` 丢弃页内偏移。
+- **x86-64**（os/arch/src/x86_64/tlb.rs:51）：`mov cr3, {phys_root}`。写 CR3 隐式 flush 所有非全局 TLB 条目（Intel SDM Vol 3 §4.10.4.1），无需额外 invalidate 指令。
+- **aarch64**（os/arch/src/arm64/tlb.rs:61）：`msr TTBR0_EL1, {root}` + `tlbi alle1is` + `isb`。ARM64 写 TTBR0 **不**隐式刷 TLB（ARM ARM D5.4.5），必须显式 `tlbi alle1is` 清除旧 root 的过期翻译，`isb` 同步上下文。
+- **riscv64**（os/arch/src/riscv64/tlb.rs:70）：`csrw satp, (SV39_MODE << 60) | (phys_root >> 12)` + `sfence.vma zero, zero`。RISC-V 写 satp **不**隐式刷 TLB（Priv ISA §4.2.1），需 `sfence.vma`。satp 编码为 `[MODE(1)=8] [ASID(16)=0] [PPN(44)]`，故 `phys_root >> 12` 丢弃页内偏移。
 
 #### 4.8.3 并发模型
 
@@ -423,7 +423,7 @@ C 的 `arch_boot_proc()` 在 boot 期间把 VM ELF 段映射进 bootstrap 页表
 
 #### 4.9.1 CURRENT_ROOT_PHYS 内核全局
 
-**位置**: [os/kernel/src/lib.rs:2103](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: os/kernel/src/lib.rs:2103
 
 ```rust
 // os/kernel/src/lib.rs:2103
@@ -445,7 +445,7 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {  // lib.rs:2140
 }
 ```
 
-**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（[os/kernel/src/lib.rs:270](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)）。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
+**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（os/kernel/src/lib.rs:270）。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
 
 **Sentinel 设计**：`ROOT_PHYS_UNSET = u64::MAX` 不是 4KB 对齐（低 12 位非零），永远不可能与真实页表根物理地址冲突。
 
@@ -457,18 +457,18 @@ SMP 迁移时两者都需要变为 per-CPU `CpuLocal` 字段（详见 [16-smp.md
 
 #### 4.9.2 Paging::from_active_root trait 方法
 
-**位置**: [os/arch/src/arch/paging.rs:202](file:///home/xzhao/github/minix-rs/os/arch/src/arch/paging.rs)
+**位置**: os/arch/src/arch/paging.rs:202
 
 ```rust
 /// Wrap an already-active page table root without modifying it.
 fn from_active_root(root_phys: PhysBytes) -> Self;
 ```
 
-与 `new_from_page`（zero-fill 根页）不同，`from_active_root` 假设根页表已初始化并装入 MMU，仅创建 `Paging` handle 用于 `map`/`remap`/`query`。三架构实现都是简单的 `Self { root_paddr: root_phys.0 }`（[x86_64/paging.rs:370](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/paging.rs) / [arm64/paging.rs:413](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/paging.rs) / [riscv64/paging.rs:424](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/paging.rs)）。
+与 `new_from_page`（zero-fill 根页）不同，`from_active_root` 假设根页表已初始化并装入 MMU，仅创建 `Paging` handle 用于 `map`/`remap`/`query`。三架构实现都是简单的 `Self { root_paddr: root_phys.0 }`（os/arch/src/x86_64/paging.rs:370 / os/arch/src/arm64/paging.rs:413 / os/arch/src/riscv64/paging.rs:424）。
 
 #### 4.9.3 init_proc_and_boot 非 mock 路径
 
-**位置**: [os/kernel/src/lib.rs:913-967](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)
+**位置**: os/kernel/src/lib.rs:1000-1097（非 mock 分支；mock 分支 L936-998）
 
 ```rust
 // FIX-24 (Phase 9): Real VM ELF loading at boot.
@@ -476,11 +476,38 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 {
     use minix_arch::paging::Paging as _;
     use minix_arch::CurrentPaging;
+    use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+
+    // VM image frames come from the VM Bootstrap Memory Handoff
+    // (`os/arch/src/arch/frame.rs` module doc-comment). The boot-shim
+    // memmap is *unfiltered* — kernel image + boot modules are
+    // reported as free — so the occupied ranges must be excluded
+    // (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
+    let mut exclusions = [minix_boot::MemoryRegion { base: PhysBytes(0), len: 0 };
+        crate::proc::NR_BOOT_MODULES + 1];
+    let mut n_excl = 0usize;
+    push_exclusion(&mut exclusions, &mut n_excl,
+        kernel_info.kern_phys_base(), kernel_info.kern_size() as usize);
+    for m in kernel_info.boot_modules() {
+        push_exclusion(&mut exclusions, &mut n_excl, m.start, m.len);
+    }
+    let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+        .expect("init_proc_and_boot: VM bootstrap region selection failed")
+        .expect("init_proc_and_boot: no free memory for VM bootstrap region \
+                 (after excluding kernel + boot modules)");
+    let mut vm_alloc = VmBootAllocator::new(regions);
 
     let root_phys = current_root_phys()
         .expect("init_proc_and_boot: bootstrap root not set");
     let mut paging = CurrentPaging::from_active_root(root_phys);
-    let vm_result = load_vm_elf(module, kernel_info, &mut paging)
+    // `CurrentDirectMap` is a type alias — select the concrete ZST.
+    #[cfg(target_arch = "x86_64")]
+    let access = minix_arch::X86_64DirectMap; // PhysAccess impl (kernel_phys_to_virt)
+    #[cfg(target_arch = "aarch64")]
+    let access = minix_arch::AArch64DirectMap;
+    #[cfg(target_arch = "riscv64")]
+    let access = minix_arch::Riscv64DirectMap;
+    let vm_result = load_vm_elf(module, kernel_info, &mut paging, &mut vm_alloc, &access)
         .expect("load_vm_elf: VM ELF is required at boot");
 
     // Reclaim VM module physical memory (undoes Phase A.2 cut_memmap).
@@ -490,10 +517,11 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
         let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
     }
 
-    // Record VM's page-table root in p_seg so init_post_and_memory can
-    // install VM as ptproc (set_ptproc + set_current_ptproc_nr).
+    // Record VM's page-table root in p_seg so init_post_and_memory
+    // (Phase D) can assert it valid and install VM as kernel-level ptproc
+    // (set_current_ptproc_nr).
     proc.p_seg.phys_root = root_phys;
-    proc.p_seg.virt_root = Some(VirBytes(root_phys.0)); // VA=PA in bootstrap
+    proc.p_seg.virt_root = Some(VirBytes(root_phys.0)); // bootstrap root (identity-mapped)
 
     EntrySpec::loaded(vm_result.pc, vm_result.sp, vm_result.ps_strings)
 }
@@ -501,9 +529,10 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 
 **关键设计**：
 1. **复用 bootstrap 页表**：不在 boot 期为 VM 单独构造页表，而是把 ELF 段映射进 `arch_boot_impl` 创建并已激活的 bootstrap 页表。VM 接管这个根作为自己的初始根。VMCTL SetAddrSpace 后续会替换为 VM 自建的页表（经 `TlbArch::set_active_root` 写硬件）。
-2. **identity mapping**：`load_vm_elf` 用 VA=PA 1:1 映射段（[arch/boot.rs:290-326](file:///home/xzhao/github/minix-rs/os/arch/src/arch/boot.rs)），与 bootstrap 页表的低地址 identity mapping 一致。
-3. **p_seg 同步**：VM 的 `p_seg.phys_root`/`virt_root` 记录为 bootstrap 根，使 `init_post_and_memory` 能从 `proc_table.get(VM_PROC_NR).p_seg` 读出根地址并交给 `CurrentPostInitArch::set_ptproc`。
-4. **module 内存回收**：ELF 段复制进页表后立即 `add_memmap` 回收 module 物理内存，与 mock 路径和 C 行为一致（`protect.c:450-451`）。
+2. **物理帧来自 `VmBootAllocator`（[`frame.rs`](file:///os/arch/src/arch/frame.rs)）**：`load_vm_elf` 不再假设 `paddr = vaddr`。每页由 `VmBootAllocator`（消费 `VmBootRegion::select_multi(memmap, exclusions)` 选出的已验证物理区——按 `start` 降序的多段列表）分配 PA，然后 `Paging::map(vm_va → pa)`。**boot-shim 的 memmap 是未过滤的**（kernel 镜像 + boot modules 都算 free），`exclusions`（kernel 镜像 + 所有 boot module 区间）确保 `VmBootRegion ∩ reserved = ∅` ——对应 C 的 `cut_memmap`（pre_init.c:190-214 kernel-as-module + modules）；`VmBootAllocator` 自身不做重叠检测。ELF 段帧与用户栈帧都来自该 allocator；bootstrap 根页表自身的 **identity mapping**（`p_seg.virt_root` 为 bootstrap 根的 identity VA）保持不变——那是页表机制的性质，与被加载的 VM VA 无关。
+3. **数据拷贝经 `PhysAccess`**：具体架构的直接映射类型（`X86_64DirectMap`/`AArch64DirectMap`/`Riscv64DirectMap`，经 blanket impl 实现 `PhysAccess`）提供 PA → kernel VA（`kernel_phys_to_virt`），loader 不直接依赖 `DirectMapArch`。每页先 zero 再 copy（`.bss`/partial page），帧构造完整后才 `map` 进 VM 地址空间。
+4. **p_seg 同步**：VM 的 `p_seg.phys_root`/`virt_root` 记录为 bootstrap 根，使 `init_post_and_memory` 能从 `proc_table.get(VM_PROC_NR).p_seg` 读出根地址并断言其有效（arch 层 `PostInitArch::set_ptproc` 已被 Direct Map 取代，kernel 只保留 `set_current_ptproc_nr` 记录 proc-nr）。
+5. **module 内存回收**：ELF 段复制进页表后立即 `add_memmap` 回收 module 物理内存，与 mock 路径和 C 行为一致（`protect.c:450-451`）。
 
 #### 4.9.4 测试
 

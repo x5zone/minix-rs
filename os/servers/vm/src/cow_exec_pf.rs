@@ -3,8 +3,8 @@
 //! Uses PageFrames + PageSlot for CoW resolution and page fault dispatch.
 
 use minix_types::{Endpoint, VirBytes};
-use crate::region::{VirRegion, PageFrames, PfnAllocator, PAGE_SIZE};
-use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON, MEM_TYPE_MAPPED_FILE};
+use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
+use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
 use crate::vmproc::VmProcTable;
 use crate::page_cache::PageCache;
 use crate::vfs_queue::{VfsQueueError, VfsReply, VfsRequest, VfsRequestQueue, VfsRequestState, VfsRequestType};
@@ -20,6 +20,7 @@ use crate::phys_mem::AlignedPhysBytes;
 /// Dispatches to the region's `MemType::ev_pagefault`, then acts on the
 /// returned `PagefaultResult`: allocate a new page, resolve CoW, or report
 /// an access violation.
+#[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into a PagefaultCtx struct
 pub(crate) fn handle_pagefault(
     proc_endpoint: Endpoint,
     region: &mut VirRegion,
@@ -203,14 +204,9 @@ pub(crate) fn cow_resolve_core(
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
 ) -> Result<u32, CowCoreError> {
-    let slot = region.get_slot(offset)
-        .ok_or(CowCoreError::PageNotMapped)?;
-
-    if !slot.is_mapped() {
+    let Some(old_pfn) = region.get_slot(offset).and_then(PageSlot::pfn) else {
         return Err(CowCoreError::PageNotMapped);
-    }
-
-    let old_pfn = slot.pfn;
+    };
     let refcount = frames.get(old_pfn)
         .map(|s| s.refcount)
         .unwrap_or(0);
@@ -279,9 +275,9 @@ fn verify_cow_consistency(
             offset
         );
         assert_eq!(
-            slot.pfn, new_pfn,
-            "slot at offset {:?} should point to new_pfn {}, got {}",
-            offset, new_pfn, slot.pfn
+            slot.pfn(), Some(new_pfn),
+            "slot at offset {:?} should point to new_pfn {}, got {:?}",
+            offset, new_pfn, slot.pfn()
         );
     }
 }
@@ -328,6 +324,9 @@ fn copy_page_content(_frames: &PageFrames, _src_pfn: u32, _dst_pfn: u32) {
 ///
 /// Iterates over every page slot; if `needs_cow` is true, performs
 /// `cow_resolve` on that page. Returns the number of pages resolved.
+// V10-P2-1 (DEFERRED): fork/exec production paths are not wired; kept for
+// the CoW test suite and the future exec-newmem flow.
+#[allow(dead_code)]
 pub(crate) fn cow_resolve_region(
     region: &mut VirRegion,
     frames: &mut PageFrames,
@@ -375,6 +374,9 @@ mod tests {
     use super::*;
     use minix_types::PhysBytes;
     use crate::region::VrFlags;
+    // Only used by tests; kept out of the module-level import so the
+    // no_std production build stays free of unused-import warnings.
+    use crate::memtype::MEM_TYPE_MAPPED_FILE;
 
     use crate::region::PfnAllocError;
 
@@ -403,7 +405,7 @@ mod tests {
 
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert!(slot.is_mapped());
-        assert_eq!(slot.pfn, pfn);
+        assert_eq!(slot.pfn(), Some(pfn));
     }
 
     #[test]
@@ -476,7 +478,7 @@ mod tests {
         assert_eq!(result, pfn);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
-        assert_eq!(slot.pfn, pfn);
+        assert_eq!(slot.pfn(), Some(pfn));
     }
 
     fn make_file_region(fdref_id: u32, file_offset: u64) -> VirRegion {
@@ -585,7 +587,7 @@ mod tests {
         ).unwrap();
         assert_eq!(action, PagefaultAction::Handled);
         let slot = region.get_slot(VirBytes(0)).unwrap();
-        assert_eq!(slot.pfn, cached_pfn);
+        assert_eq!(slot.pfn(), Some(cached_pfn));
         assert!(queue.is_empty(), "no second FDIO may be enqueued");
     }
 }

@@ -23,7 +23,7 @@
 ## 依赖关系
 
 - 前置：01-stage-kernel（syscall 基础设施）、02-stage-vm、03-stage-rs（加载方）
-- 后置：14-stage-integration（跨服务集成时 IS 作为信息查询端接入）
+- 后置：19-stage-integration（跨服务集成时 IS 作为信息查询端接入）
 
 ## 与真实 boot 顺序的关系
 

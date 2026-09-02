@@ -490,7 +490,7 @@ impl MessageDispatcher {
         const PAGE_SIZE: u64 = 4096;
 
         // Step 1: alignment (C: mem_cache.c:99-101 → EFAULT).
-        if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
+        if !request.dev_offset.is_multiple_of(PAGE_SIZE) || !request.ino_offset.is_multiple_of(PAGE_SIZE) {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
@@ -619,7 +619,7 @@ impl MessageDispatcher {
         if request.pages == 0 {
             return VmReply::Error(VmError::InvalidParam);
         }
-        if request.dev_offset % PAGE_SIZE != 0 || request.ino_offset % PAGE_SIZE != 0 {
+        if !request.dev_offset.is_multiple_of(PAGE_SIZE) || !request.ino_offset.is_multiple_of(PAGE_SIZE) {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
@@ -649,7 +649,10 @@ impl MessageDispatcher {
                 Some(s) => s,
                 None => return VmReply::Error(VmError::InvalidAddress),
             };
-            let pfn = slot.pfn;
+            let pfn = match slot.pfn() {
+                Some(pfn) => pfn,
+                None => return VmReply::Error(VmError::InvalidAddress),
+            };
 
             let cache_offset = request.dev_offset + page_offset;
             let cache_ino_offset = request.ino_offset + page_offset;
@@ -670,7 +673,7 @@ impl MessageDispatcher {
             // `phys_region->memtype != &mem_type_anon && !=
             // &mem_type_anon_contig`). Compared by static identity, not by
             // name string.
-            let is_anon = slot.memtype.is_some_and(|mt| {
+            let is_anon = slot.memtype().is_some_and(|mt| {
                 core::ptr::eq(mt, &crate::memtype::MEM_TYPE_ANON as &dyn crate::memtype::MemType)
                     || core::ptr::eq(mt, &crate::memtype::MEM_TYPE_CONTIG_ANON as &dyn crate::memtype::MemType)
             });
@@ -686,8 +689,8 @@ impl MessageDispatcher {
             }
 
             // Step 6: switch memtype + register (C: mem_cache.c:268-273).
-            slot.memtype = Some(&crate::memtype::MEM_TYPE_CACHE);
-            if let Err(_) = cache.addcache(
+            slot.set_memtype(Some(&crate::memtype::MEM_TYPE_CACHE));
+            if cache.addcache(
                 request.dev,
                 cache_offset,
                 ino,
@@ -695,7 +698,7 @@ impl MessageDispatcher {
                 request.flags & VMSF_ONCE != 0,
                 pfn,
                 frames,
-            ) {
+            ).is_err() {
                 return VmReply::Error(VmError::InvalidParam);
             }
         }
@@ -722,7 +725,7 @@ impl MessageDispatcher {
         if request.pages == 0 {
             return VmReply::Error(VmError::InvalidParam);
         }
-        if request.dev_offset % PAGE_SIZE != 0 {
+        if !request.dev_offset.is_multiple_of(PAGE_SIZE) {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
@@ -814,6 +817,7 @@ impl MessageDispatcher {
     // TODO (exec-newmem follow-up, deferred): wire the request into one
     // of the two routes above; until then the `_` arm returns
     // `NotImplemented` (fail-closed).
+    #[allow(dead_code)] // V10-P2-1 (DEFERRED): see ARCHITECTURE NOTE above
     pub(crate) fn dispatch_exec_newmem(
         _table: &VmProcTable,
         _page_alloc: &mut VmPageAllocator,
@@ -930,29 +934,38 @@ impl MessageDispatcher {
     // -- get_refcount --
     pub(crate) fn dispatch_get_refcount(
         table: &VmProcTable,
-        frames: &PageFrames,
         target: minix_types::Endpoint,
         addr: VirBytes,
     ) -> VmReply {
-        match query::handle_get_refcount(table, frames, target, addr) {
+        match query::handle_get_refcount(table, target, addr) {
             Ok(cnt) => VmReply::GetRefcount { count: cnt },
             Err(e) => VmReply::Error(e.into()),
         }
     }
 
     // -- info --
+    #[allow(clippy::too_many_arguments)] // V10-P2-1 (DEFERRED): fold into a DispatchCtx struct with P2-1
     pub(crate) fn dispatch_info(
         table: &VmProcTable,
         page_alloc: &VmPageAllocator,
         frames: &PageFrames,
+        sources: query::UsageSources,
+        cached_pages: u64,
+        dropped_messages: u64,
+        pagefault_errors: u64,
         q: query::InfoQuery,
     ) -> VmReply {
-        match query::handle_info(table, page_alloc, frames, q) {
+        match query::handle_info(table, page_alloc, frames, sources, cached_pages, q) {
             Ok(query::InfoResult::Stats(s)) => VmReply::InfoStats {
                 page_size: s.page_size,
                 total_pages: s.total_pages,
                 free_pages: s.free_pages,
                 largest_contiguous: s.largest_contiguous,
+                cached_pages: s.cached_pages,
+                // V10-P2-4: main-loop observability counters (minix-rs
+                // extension; not on C's vm_stats_info wire layout).
+                dropped_messages,
+                pagefault_errors,
             },
             Ok(query::InfoResult::Usage(u)) => VmReply::InfoUsage {
                 total: u.total,
@@ -960,12 +973,18 @@ impl MessageDispatcher {
                 shared: u.shared,
                 virtual_total: u.virtual_total,
                 mvirtual: u.mvirtual,
+                max_rss_kb: u.max_rss_kb,
+                minor_faults: u.minor_faults,
+                major_faults: u.major_faults,
             },
             Ok(query::InfoResult::Region { regions, count, next }) => VmReply::InfoRegion {
+                // C: vri_addr/vri_length/vri_prot (region.c:1469-1478);
+                // vri_flags is always 0 in C (static zero-init, never
+                // written) and is not modeled.
                 regions: regions.map(|r| minix_types::VmRegionInfo {
-                    vaddr: r.vaddr,
+                    addr: r.addr,
                     length: r.length,
-                    flags: r.flags as u32,
+                    prot: r.prot as u32,
                 }),
                 count,
                 next,
@@ -1016,6 +1035,11 @@ impl MessageDispatcher {
         server: &mut crate::VmServer,
     ) -> DispatchResult {
         let table = VmProcTable::get_global();
+        // Query usage sources are owned Copy values computed before the
+        // mutable parts borrow (usage_sources takes &self).
+        let usage_sources = server.usage_sources();
+        let dropped_messages = server.dropped_messages();
+        let pagefault_errors = server.pagefault_errors();
         let (page_alloc, frames, cache, vfs_queue) = server.parts_mut();
 
         let vm_rq_base = VM_RQ_BASE as usize;
@@ -1090,7 +1114,7 @@ impl MessageDispatcher {
             // VM_RS_CTL_ADDR=m2_p1, VM_RS_CTL_LEN=m2_i3
             _c if _c == VM_RS_MEMCTL as usize - vm_rq_base => {
                 let target = Endpoint(m1.m1i1);
-                let req_code = m1.m1i2;
+                let _req_code = m1.m1i2;
                 let request = match decode_rs_memctl_request(
                     m1.m1i2,
                     m2.m2l1 as u64,
@@ -1113,22 +1137,43 @@ impl MessageDispatcher {
                 // C: utility.c — get_ref uses m1_i1=target, m1_p1=vaddr
                 let target = Endpoint(m1.m1i1);
                 let addr = VirBytes(m1.m1p1);
-                Self::dispatch_get_refcount(table, frames, target, addr).into()
+                Self::dispatch_get_refcount(table, target, addr).into()
             }
             _c if _c == VM_INFO as usize - vm_rq_base => {
                 // C: utility.c:100 — m_lsys_vm_info.what, .ep, .count, .next
                 // M2: m2i1=what, m2i2=ep, m2i3=count, m2l2=next
                 let what = m2.m2i1;
-                let ep = Endpoint(m2.m2i2);
+                let mut ep = Endpoint(m2.m2i2);
                 let count = m2.m2i3 as usize;
-                let next = m2.m2l2 as usize;
+                let next = VirBytes(m2.m2l2 as u64);
+                // C: VMIW_STATS=1 / VMIW_USAGE=2 / VMIW_REGION=3
+                // (com.h:732-734) — libsys sends exactly these values
+                // (vm_info.c:15/:29/:46). The decoder must match the wire.
                 let q = match what {
-                    0 => query::InfoQuery::Stats,
-                    1 => query::InfoQuery::Usage { target: ep },
-                    2 => query::InfoQuery::Region { target: ep, count, next },
-                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidAddress)),
+                    minix_types::VMIW_STATS => query::InfoQuery::Stats,
+                    minix_types::VMIW_USAGE => query::InfoQuery::Usage { target: ep },
+                    minix_types::VMIW_REGION => {
+                        // C: do_info — VMIW_REGION with ep == SELF uses the
+                        // caller (utility.c:141-143).
+                        if ep == Endpoint::SELF {
+                            ep = msg.m_source;
+                        }
+                        query::InfoQuery::Region { target: ep, count, next }
+                    }
+                    // C: do_info default arm returns EINVAL (utility.c:163).
+                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidParam)),
                 };
-                Self::dispatch_info(table, page_alloc, frames, q).into()
+                Self::dispatch_info(
+                    table,
+                    page_alloc,
+                    frames,
+                    usage_sources,
+                    cache.total_cached(),
+                    dropped_messages,
+                    pagefault_errors,
+                    q,
+                )
+                .into()
             }
             _c if _c == VM_GETRUSAGE as usize - vm_rq_base => {
                 // C: utility.c:426 — m_lsys_vm_rusage: target, children flag
@@ -1308,10 +1353,14 @@ impl From<rs::RsError> for VmError {
 impl From<query::QueryError> for VmError {
     fn from(e: query::QueryError) -> Self {
         match e {
+            // C: do_info/do_get_phys/do_get_refcount return EINVAL for
+            // every failure (utility.c:110, mmap.c:444-452, region.c:
+            // 1327-1334/1346-1353). The getrusage ESRCH path is handled by
+            // `query_rusage_error_to_vm_error` below.
             query::QueryError::ProcessNotFound => VmError::InvalidProcess,
-            query::QueryError::NotMapped => VmError::InvalidAddress,
-            query::QueryError::NotSupported => VmError::InvalidAddress,
-            query::QueryError::InvalidQuery => VmError::InvalidAddress,
+            query::QueryError::NotMapped => VmError::InvalidParam,
+            query::QueryError::NotSupported => VmError::InvalidParam,
+            query::QueryError::InvalidQuery => VmError::InvalidParam,
         }
     }
 }
@@ -1501,6 +1550,46 @@ mod tests {
     fn test_vm_error_slot_in_use_maps_to_einval() {
         let result = VmError::SlotInUse.to_errno();
         assert_eq!(result, minix_types::EINVAL);
+    }
+
+    /// V10-P1-2: pins the live-update scaffold. `dispatch_rs_update` must
+    /// currently return `Error(NotImplemented)` — the `Ok`/`Suspend` arms
+    /// (dispatcher.rs) and `DispatchAction::Suspend` (vm_server.rs) are
+    /// unreachable until kernel `sys_update` lands. Flip this test when
+    /// live update is implemented.
+    #[test]
+    fn test_dispatch_rs_update_pins_not_implemented() {
+        use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
+
+        let table = VmProcTable::get_global();
+        unsafe {
+            table.reset_slot(UserSlot::new(50));
+            table.reset_slot(UserSlot::new(51));
+        }
+        for slot in [50i32, 51] {
+            let empty = table.get_empty(UserSlot::new(slot as usize)).unwrap();
+            empty.activate(Endpoint::from_generation_slot(1, slot)).init_regions();
+        }
+
+        let mut page_alloc = default_vm();
+        let mut frames =
+            crate::region::PageFrames::new(minix_types::PhysBytes(256 * REGION_PAGE_SIZE as u64));
+        let src = Endpoint::from_generation_slot(1, 50);
+        let dst = Endpoint::from_generation_slot(1, 51);
+
+        let reply = MessageDispatcher::dispatch_rs_update(
+            &table,
+            &mut page_alloc,
+            &mut frames,
+            src,
+            dst,
+            0,
+        );
+        assert!(
+            matches!(reply, VmReply::Error(VmError::NotImplemented)),
+            "V10-P1-2: live update must stay NotImplemented until sys_update lands: {:?}",
+            reply
+        );
     }
 
     // ── DEFERRED dispatcher happy-path tests ─────

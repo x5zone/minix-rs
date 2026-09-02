@@ -486,7 +486,7 @@ struct RprocTab { entries: [RprocEntry; 32] }
 RS（m_source）→ 主循环 dispatch_on_msg（vm_server.rs:565）
   ├─ CALLMAP 解码（dispatcher.rs:1062-1103）：按请求码拆字段 → RsMemctlRequest / 直接参数
   ├─ dispatch_rs_set_priv/prepare/update/memctl（dispatcher.rs:829-892）
-  └─ handle_rs_*（rs.rs:122/168/285/339）→ VmReply → 回复编码（vm_server.rs:1100+）
+  └─ handle_rs_*（rs.rs:122/168/285/339）→ VmReply → 回复编码（vm_server.rs:1233+）
 
 握手（启动期）：RS_INIT（主循环优先级 2，vm_server.rs:582-586）
   └─ rs_handshake（vm_server.rs:659）→ ipc_call_rs_init（:946，stub）→ RprocTab → 逐条 acl_set

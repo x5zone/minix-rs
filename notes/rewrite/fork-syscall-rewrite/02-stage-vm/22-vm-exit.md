@@ -441,7 +441,7 @@ VM_EXIT / VM_WILLEXIT / VM_PROCCTL 到达
   ├─ VM_WILLEXIT  → dispatch_willexit（dispatcher.rs:804）
   │                 → exit::handle_vm_willexit（exit.rs:66）→ VmReply::Willexit（errno 0）
   └─ VM_PROCCTL   → dispatch_procctl（dispatcher.rs:219）
-                    ├─ VFS transid 路径：handle_vfs_transid（vm_server.rs:688）→ decode_message → dispatch_procctl
+                    ├─ VFS transid 路径：handle_vfs_transid（vm_server.rs:931）→ decode_message → dispatch_procctl
                     └─ 普通路径：decode_message（dispatcher.rs:1181 分支）→ dispatch_procctl
 ```
 

@@ -11,7 +11,6 @@ pub mod signal;
 pub mod smp;
 pub mod arch_init;
 pub mod boot;
-pub mod post_init;
 pub mod tlb;
 
 pub use paging::Riscv64Paging;
@@ -25,4 +24,3 @@ pub use signal::{Riscv64SignalContext, Riscv64SigContext, Riscv64SigFrame};
 pub use smp::Riscv64SmpArch;
 pub use arch_init::Riscv64ArchInit;
 pub use boot::{Riscv64CpuContext, Riscv64CpuContextArch};
-pub use post_init::{Riscv64PostInitArch, Riscv64MemoryInitArch};

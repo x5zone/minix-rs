@@ -20,6 +20,7 @@
 //! # Module Structure
 //!
 //! - `mproc`: PM process table module (private)
+//! - `init`: PM startup chain (SEF init_fresh equivalent)
 //! - `fork`: fork system call entry
 //! - `exec`: exec system call
 //! - `exit`: exit system call
@@ -29,21 +30,23 @@
 
 extern crate alloc;
 
-pub mod mproc;
-pub mod fork;
+pub mod event;
 pub mod exec;
 pub mod exit;
-pub mod signal;
-pub mod wait;
+pub mod fork;
+pub mod init;
 pub mod ipc;
+pub mod credentials;
+pub mod mproc;
+pub mod sched;
+pub mod misc;
+pub mod signal;
+pub mod signal_flow;
+pub mod signal_handlers;
+pub mod time;
+pub mod timer;
+pub mod trace;
+pub mod wait;
 
-pub use mproc::*;
 pub use ipc::*;
-
-pub fn init() {
-}
-
-pub fn run() -> ! {
-    loop {
-    }
-}
+pub use mproc::*;

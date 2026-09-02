@@ -23,12 +23,13 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use minix_types::{Endpoint, UserSlot};
-use crate::region::page_state::{PageFrames, PageFlags, PFN_NONE};
+use crate::region::page_state::{PageFrames, PageFlags};
 use crate::region::VirRegion;
 use crate::vmproc::VmProcTable;
 
 /// A single refcount mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // V10-P2-1 (DEFERRED): see verify_refcounts below
 pub struct RefcountMismatch {
     pub pfn: u32,
     pub expected: u32,
@@ -51,6 +52,10 @@ pub struct RefcountMismatch {
 /// ALLREGIONS(;,if(pr->ph->flags & PBF_INCACHE) pr->ph->seencount++;);
 /// ALLREGIONS(;,MYASSERT(pr->ph->refcount == pr->ph->seencount););
 /// ```
+// V10-P2-1 (DEFERRED): C compiles this under SANITYCHECKS; Rust has no
+// production entry point yet — wire it behind a `sanity_checks` feature +
+// periodic main-loop call when the allocator/region work stabilizes.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_refcounts(
     frames: &PageFrames,
     table: &VmProcTable,
@@ -61,8 +66,8 @@ pub fn verify_refcounts(
 
     table.for_each_active_region(|_slot: UserSlot, _endpoint: Endpoint, region: &VirRegion| {
         for slot in region.physblocks.iter() {
-            if slot.is_mapped() && slot.pfn != PFN_NONE {
-                *seen.entry(slot.pfn).or_insert(0) += 1;
+            if let Some(pfn) = slot.pfn() {
+                *seen.entry(pfn).or_insert(0) += 1;
             }
         }
     });
@@ -72,19 +77,18 @@ pub fn verify_refcounts(
     // In Rust, IN_CACHE on PageState means the page is in the page cache,
     // which holds an extra reference (matching C's PBF_INCACHE logic).
     for (&pfn, count) in seen.iter_mut() {
-        if let Some(state) = frames.get(pfn) {
-            if state.flags.contains(PageFlags::IN_CACHE) {
+        if let Some(state) = frames.get(pfn)
+            && state.flags.contains(PageFlags::IN_CACHE) {
                 *count += 1;
             }
-        }
     }
 
     // Also check PFNs that have refcount > 0 or IN_CACHE but no VirRegion references.
     // These include cache-only pages (IN_CACHE + refcount=1) and orphaned pages
     // (refcount > 0 but no references found).
     for pfn in 0..frames.total_pages() {
-        if let Some(state) = frames.get(pfn) {
-            if !seen.contains_key(&pfn) {
+        if let Some(state) = frames.get(pfn)
+            && !seen.contains_key(&pfn) {
                 let has_refcount = state.refcount > 0;
                 let has_cache = state.flags.contains(PageFlags::IN_CACHE);
                 if has_refcount || has_cache {
@@ -93,7 +97,6 @@ pub fn verify_refcounts(
                     seen.insert(pfn, expected);
                 }
             }
-        }
     }
 
     // Phase 3: Compare with PageFrames.refcount.

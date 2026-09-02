@@ -49,6 +49,50 @@ impl VirBytes {
     }
 }
 
+/// A page-sized physical memory frame — a 4 KiB-aligned physical
+/// address denoting one page of physical memory.
+///
+/// *Different from an address*: a frame is a unit of physical memory
+/// that an allocator hands out (bootstrap: `VmBootAllocator`; runtime:
+/// VM PMM). The owner is determined by context, not by the type — do
+/// not encode "owned by PMM" here.
+///
+/// C: nothing — Minix3 has no such type. This is minix-rs's type-level
+/// semantic for "one page of physical memory".
+///
+/// NOTE (`PhysFrame::SIZE`, 4 KiB): `minix-types` is an
+/// architecture-independent crate. All currently supported architectures
+/// (x86-64 / AArch64 / RISC-V64) use 4 KiB base pages, so the constant
+/// is safe for now. If a different base page size is ever supported,
+/// introduce a `PageSize` trait — not before (over-engineering).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysFrame {
+    start: PhysBytes,
+}
+
+impl PhysFrame {
+    /// Frame size in bytes — the base-page size of all supported
+    /// minix-rs architectures (4 KiB). See type-level NOTE.
+    pub const SIZE: u64 = 0x1000;
+
+    /// Creates a frame from a physical address, assuming 4 KiB alignment.
+    /// Callers must guarantee the alignment invariant.
+    pub const fn new(start: PhysBytes) -> Self {
+        Self { start }
+    }
+
+    /// Starting physical address of this frame.
+    pub const fn start(self) -> PhysBytes {
+        self.start
+    }
+
+    /// Whether `addr` lies within this frame's `[start, start+SIZE)`.
+    pub const fn contains(self, addr: PhysBytes) -> bool {
+        addr.0 >= self.start.0 && addr.0 < self.start.0 + Self::SIZE
+    }
+}
+
 impl core::ops::Add for VirBytes {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {

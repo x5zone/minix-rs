@@ -99,7 +99,7 @@ impl ProtFlags {
     /// propagates MAP_SHARED to `VR_SHARED` in `do_mmap` (VR_SHARED is only
     /// set by `do_remap`, mmap.c:413) — user MAP_SHARED regions are copied
     /// COW-style at fork like MAP_PRIVATE ones (doc 20 §2.2/§3.6).
-    pub(crate) fn to_vr_flags(&self, flags: MmapFlags) -> VrFlags {
+    pub(crate) fn to_vr_flags(self, flags: MmapFlags) -> VrFlags {
         let mut vr = VrFlags::empty();
         if self.contains(Self::WRITE) {
             vr |= VrFlags::WRITABLE;
@@ -237,7 +237,7 @@ fn mmap_region(
         if addr.0 == 0 {
             return Err(MmapError::BadAddress);
         }
-        if addr.0 % PAGE_SIZE != 0 {
+        if !addr.0.is_multiple_of(PAGE_SIZE) {
             return Err(MmapError::BadAddress);
         }
         // C mmap.c:60-68 — unmap whatever occupies [addr, addr+len).
@@ -250,7 +250,7 @@ fn mmap_region(
     // mmap range (C mmap.c:70-80). Unaligned hints are treated as "no
     // hint" — the C side would honor them exactly, but region slots are
     // page-aligned by construction in minix-rs (doc 20 §3.6).
-    if addr.0 != 0 && addr.0 % PAGE_SIZE == 0 {
+    if addr.0 != 0 && addr.0.is_multiple_of(PAGE_SIZE) {
         let end = VirBytes(addr.0 + len.0);
         if active.regions().find_overlap(addr, end).is_none() {
             return Ok(addr);

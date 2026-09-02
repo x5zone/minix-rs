@@ -2,6 +2,7 @@
 //!
 //! Provides Minix3 IPC message structure definitions and protocol types.
 
+mod event;
 mod ipc_error;
 mod kernel;
 mod message;
@@ -12,6 +13,7 @@ mod syscall;
 mod vfs;
 mod vm;
 
+pub use event::*;
 pub use ipc_error::*;
 pub use kernel::*;
 pub use message::*;

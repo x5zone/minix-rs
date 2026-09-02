@@ -462,10 +462,8 @@ mod fragmentation {
         if let Ok(addr) = alloc.alloc_mem(5, PageAllocFlags::CONTIG) {
             alloc.free_mem(addr, 5);
         }
-        for opt in ptrs {
-            if let Some((addr, size)) = opt {
-                alloc.free_mem(addr, size);
-            }
+        for (addr, size) in ptrs.into_iter().flatten() {
+            alloc.free_mem(addr, size);
         }
     }
 

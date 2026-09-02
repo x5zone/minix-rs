@@ -36,6 +36,14 @@ pub trait DirectMapArch {
     /// Located immediately after the VM Direct Map window.
     const VM_HEAP_BASE: u64;
 
+    /// Size in bytes of the VM-accessible Direct Map window.
+    ///
+    /// Invariant (asserted per architecture below): `VM_HEAP_BASE ==
+    /// VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE`. Previously hardcoded in
+    /// the VM server (`direct_map.rs`), which silently drifted on
+    /// architectures with a larger window (V10-P2-2).
+    const VM_DIRECT_MAP_SIZE: u64;
+
     /// Size of the VM HeapArena region in bytes.
     const VM_HEAP_SIZE: u64;
 
@@ -66,8 +74,16 @@ impl DirectMapArch for X86_64DirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
     const VM_HEAP_BASE: u64 = 0x0000_0000_C000_0000;
+    const VM_DIRECT_MAP_SIZE: u64 = 0x0000_0000_4000_0000; // 1 GiB
     const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 }
+
+const _: () = assert!(
+    <X86_64DirectMap as DirectMapArch>::VM_HEAP_BASE
+        == <X86_64DirectMap as DirectMapArch>::VM_DIRECT_MAP_BASE
+            + <X86_64DirectMap as DirectMapArch>::VM_DIRECT_MAP_SIZE,
+    "x86-64: VM_HEAP_BASE must immediately follow the VM direct map window"
+);
 
 /// AArch64 Direct Map address space layout.
 ///
@@ -83,8 +99,16 @@ impl DirectMapArch for AArch64DirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_1000_0000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
     const VM_HEAP_BASE: u64 = 0x0000_1000_4000_0000;
+    const VM_DIRECT_MAP_SIZE: u64 = 0x0000_0000_4000_0000; // 1 GiB
     const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 }
+
+const _: () = assert!(
+    <AArch64DirectMap as DirectMapArch>::VM_HEAP_BASE
+        == <AArch64DirectMap as DirectMapArch>::VM_DIRECT_MAP_BASE
+            + <AArch64DirectMap as DirectMapArch>::VM_DIRECT_MAP_SIZE,
+    "aarch64: VM_HEAP_BASE must immediately follow the VM direct map window"
+);
 
 /// RISC-V 64 (Sv39) Direct Map address space layout.
 ///
@@ -102,8 +126,16 @@ impl DirectMapArch for Riscv64DirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_0010_0000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_FC00_0000_0000;
     const VM_HEAP_BASE: u64 = 0x0000_0014_0000_0000;
+    const VM_DIRECT_MAP_SIZE: u64 = 0x0000_0004_0000_0000; // 16 GiB
     const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 }
+
+const _: () = assert!(
+    <Riscv64DirectMap as DirectMapArch>::VM_HEAP_BASE
+        == <Riscv64DirectMap as DirectMapArch>::VM_DIRECT_MAP_BASE
+            + <Riscv64DirectMap as DirectMapArch>::VM_DIRECT_MAP_SIZE,
+    "riscv64: VM_HEAP_BASE must immediately follow the VM direct map window"
+);
 
 /// Mock Direct Map — configurable base addresses for testing.
 ///
@@ -117,6 +149,7 @@ impl DirectMapArch for MockDirectMap {
     const VM_DIRECT_MAP_BASE: u64 = 0x0000_0000_8000_0000;
     const KERNEL_DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
     const VM_HEAP_BASE: u64 = 0x0000_0000_C000_0000;
+    const VM_DIRECT_MAP_SIZE: u64 = 0x0000_0000_4000_0000; // 1 GiB
     const VM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
     fn vm_phys_to_virt(phys: PhysBytes) -> VirBytes {

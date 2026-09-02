@@ -383,31 +383,28 @@ AVL 的"键唯一 + 有序"由算法内建保证；BTreeMap 同样内建（同�
 | 迭代器 | region_iter 路径栈（深度上限 30） | BTreeMap 原生迭代器 | ✅ 强化（无深度上限） |
 | 节点 | 侵入式（region.h:63-65） | 非侵入 | ✅ 强化 |
 | 空槽查找 | region_find_slot*（hint + 高端对齐） | find_slot（+ 页对齐/checked） | ✅ 等价 + 强化 |
-| SearchType 家族消费 | utility.c/rs.c 搜索调用 | find_less/find_greater/less_equal/greater_equal 无生产消费方（仅测试） | ⚠️ API 就绪待接线（10/25 DEFERRED） |
-| find_by_end | 无直接对应（C 用 getnextvr 相邻检查） | find_by_end/find_mut_by_end（brk.rs:108 消费） | ✅ Rust 新增便利 API |
+| SearchType 家族消费 | utility.c/rs.c 搜索调用 | `SearchType::{Equal, Less}` + `find_less`（V10-P2-1 收敛：Greater/LessEqual/GreaterEqual 无生产消费，已删） | ✅ 收敛（10/25 DEFERRED 路径落地时按需加回） |
+| find_by_end | 无直接对应（C 用 getnextvr 相邻检查） | `find_mut_by_end`（region_map.rs:81，brk.rs:108 消费）；`find_by_end` V10-P2-1 已删（无生产消费） | ✅ Rust 新增便利 API |
 | 对照测试 | — | BTreeMap↔AVL 等价对照测试不存在 | ⚠️ 诚实标注（§5.3） |
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 SearchType + search（region_map.rs:19 / :77）
+### 4.1 SearchType + search（region_map.rs:18 / :70）
 
-`search(key, st)` 是五向搜索的总入口，match 分派：
+`search(key, st)` 是搜索入口，match 分派：
 
 - `Equal` → `regions.get(&key)`（= region_search AVL_EQUAL）
 - `Less` → `range(..key).next_back()`（= AVL_LESS）
-- `Greater` → `range((Excluded(key), Unbounded)).next()`（= AVL_GREATER）
-- `LessEqual` → 先 `get`，无则 `range(..key).next_back()`（= AVL_LESS_EQUAL）
-- `GreaterEqual` → 先 `get`，无则 `range((Excluded(key), Unbounded)).next()`（= AVL_GREATER_EQUAL）
 
-`find_less`/`find_greater`/`find_less_equal`/`find_greater_equal`（:99-:130）是 search 的薄封装——**当前仅测试消费**（utility.c/rs.c 的对应生产路径 DEFERRED，见 §3.6）。
+`find_less`（:77）是 `search(key, Less)` 的薄封装——**当前仅测试消费**（utility.c/rs.c 的对应生产路径 DEFERRED，见 §3.6）。**V10-P2-1 收敛**：`Greater/LessEqual/GreaterEqual` 变体与 `find_greater`/`find_less_equal`/`find_greater_equal` 包装无生产调用，已删除（对应测试一并移除）；将来 utility.c/rs.c 路径（10/25）落地时按需加回。
 
-### 4.2 find 家族（:58-:133）
+### 4.2 find 家族（:51-:90）
 
-- **find**（:58）= C map_lookup 的索引步：`range(..=addr).next_back()` + `contains_addr` 过滤——地址包含查找（13 §2.4 已述）。
-- **find_mut**（:66）：先定位 key 再 `get_mut`——避免 range 迭代器与可变借用冲突。
-- **find_by_end**（:103）/ **find_mut_by_end**（:111）：`range(..end).next_back()` + `end_addr() == end` 过滤——按区域末尾定位（brk 收缩/扩展找堆顶区域，brk.rs:108 用 find_mut_by_end）。
+- **find**（:51）= C map_lookup 的索引步：`range(..=addr).next_back()` + `contains_addr` 过滤——地址包含查找（13 §2.4 已述）。
+- **find_mut**（:59）：先定位 key 再 `get_mut`——避免 range 迭代器与可变借用冲突。
+- **find_mut_by_end**（:81）：`range(..end).next_back()` + `end_addr() == end` 过滤——按区域末尾定位（brk 收缩/扩展找堆顶区域，brk.rs:108 用 find_mut_by_end）。`find_by_end` 无生产调用，V10-P2-1 已删。
 
 ### 4.3 find_slot（:157-217）
 
@@ -437,15 +434,15 @@ pub(crate) fn find_slot(&self, minv, maxv, length) -> Option<VirBytes> {
 ### 4.4 insert / remove / 迭代（:219-254）
 
 - **insert**（:219）：`find_overlap(region.vaddr, end)` 预检 → 重叠 `Err(region)`；无重叠 → `BTreeMap::insert`（同键替换 `Ok(Some(old))`）。
-- **remove**（:229）：`regions.remove(&addr)` → `Option<VirRegion>`（所有权给调用方）。
-- **get_mut**（:233）/ **traverse**（:237）/ **iter**（:246）/ **iter_mut**（:250）/ **clear**（:254）：集合基础操作。
+- **remove**（:187）：`regions.remove(&addr)` → `Option<VirRegion>`（所有权给调用方）。
+- **get_mut**（:191）/ **traverse**（:196）/ **iter**（:205）/ **iter_mut**（:209）/ **clear**（:213）：集合基础操作。
 
 ### 4.5 消费面接线
 
 | Rust 消费方 | RegionMap 方法 | C 对应 |
 |------------|---------------|--------|
 | mmap.rs:219/:221/:225 | find_slot | region_find_slot（map_page_region 内） |
-| dispatcher.rs:504/:1397 | find_slot | region_find_slot |
+| dispatcher.rs:522/:1464 | find_slot | region_find_slot |
 | brk.rs:108 | find_mut_by_end | getnextvr 相邻检查（region.c:112-128） |
 | munmap.rs:155-192 | insert（split 后 re-insert） | region_insert |
 | vmproc_handle.rs:457/:469 | regions/regions_mut 访问器 | vm_regions_avl（vmproc.h:21） |
@@ -456,28 +453,26 @@ pub(crate) fn find_slot(&self, minv, maxv, length) -> Option<VirBytes> {
 
 ### 5.1 单元测试清单（grep 实证，2026-08-16）
 
-**region_map.rs**（16 个，全部与查找语义直接相关）：
+**region_map.rs**（12 个，全部与查找语义直接相关；V10-P2-1 随 Greater/LessEqual/GreaterEqual 删除移除了对应 4 个搜索类型测试）：
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_insert_and_find | :274 | 插入乱序 + find 命中/未命中 |
-| test_remove | :291 | 摘除后 find None |
-| test_find_overlap | :308 | 重叠检测 |
-| test_traverse | :322 | 升序遍历（vaddr 有序） |
-| test_iter | :339 | 迭代器升序 |
-| test_search_type_less / greater | :355/:371 | 严格小于/大于 |
-| test_search_type_less_equal / greater_equal | :387/:403 | 含等于 |
-| test_find_slot_basic | :419 | 空槽命中 |
-| test_find_slot_in_gap | :432 | 间隙内找槽 |
-| test_find_slot_no_space | :446 | 无空槽 None |
-| test_find_all_overlaps | :457 | 全量重叠迭代 |
-| test_search_type_enum | :476 | 枚举互斥 + Default=Equal |
-| test_find_slot_alignment_c09 | :493 | 非对齐边界页对齐 |
-| test_find_slot_subpage_gap_c09 | :521 | 亚页间隙 None |
+| test_insert_and_find | :233 | 插入乱序 + find 命中/未命中 |
+| test_remove | :250 | 摘除后 find None |
+| test_find_overlap | :267 | 重叠检测 |
+| test_traverse | :281 | 升序遍历（vaddr 有序） |
+| test_iter | :298 | 迭代器升序 |
+| test_search_type_less | :314 | 严格小于（Equal 是 `SearchType` 的 `#[default]`，由 `test_insert_and_find` 等间接覆盖） |
+| test_find_slot_basic | :330 | 空槽命中 |
+| test_find_slot_in_gap | :343 | 间隙内找槽 |
+| test_find_slot_no_space | :357 | 无空槽 None |
+| test_find_all_overlaps | :368 | 全量重叠迭代 |
+| test_find_slot_alignment_c09 | :390 | 非对齐边界页对齐 |
+| test_find_slot_subpage_gap_c09 | :418 | 亚页间隙 None |
 
 ### 5.2 覆盖维度
 
-- **五向搜索**：Equal/Less/Greater/LessEqual/GreaterEqual 全覆盖（:355-:413）。
+- **两向搜索**：Equal/Less（V10-P2-1 收敛；`test_search_type_less` :314；Equal 为 `SearchType` 的 `#[default]`）。
 - **地址包含查找**：find/insert/remove/overlap。
 - **空槽查找**：基础/间隙/无空间/页对齐/亚页间隙 5 态。
 - **有序遍历**：traverse/iter 升序断言。
@@ -487,18 +482,19 @@ pub(crate) fn find_slot(&self, minv, maxv, length) -> Option<VirBytes> {
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| SearchType 家族生产消费 | ⚠️ API 就绪待接线 | `find_less`/`find_greater`/`find_less_equal`/`find_greater_equal` 仅测试消费；C 侧消费点 utility.c:233/:252/:264（transfer_mmap_regions，10 DEFERRED）与 rs.c:116/:119/:290（25 承接）尚无 Rust 对应路径 |
+| SearchType 家族生产消费 | ⚠️ 仅 find_less 待接线 | `find_less` 仅测试消费（V10-P2-1 已删 Greater/LessEqual/GreaterEqual 变体与三个包装）；C 侧消费点 utility.c:233/:252/:264（transfer_mmap_regions，10 DEFERRED）与 rs.c:116/:119/:290（25 承接）尚无 Rust 对应路径，落地时按需扩展 |
 | BTreeMap↔AVL 等价对照测试 | ⚠️ 缺失 | 语义等价靠本文档 §1.6 表 + 单侧测试断言；无"同一数据同时喂 AVL 与 BTreeMap 比对结果"的测试（C AVL 无法在 Rust 测试中实例化） |
 | find_slot 端到端 | ⚠️ backlog | mmap.rs/dispatcher.rs 调用点无直接集成测试（20/15 承接） |
 | region_find_slot_range 的内缩一页（FREEVRANGE）语义 | ✅ 已吸收 | Rust 页对齐等效处理，c09 测试覆盖 |
 
-### 5.4 测试统计（截至 2026-08-16）
+### 5.4 测试统计（截至 2026-08-17）
 
 ```
 $ cd os && cargo test -p minix-vm --lib
-→ 360 passed / 1 failed（test_map_lazy pre-existing，13 范围，§5.3 已标注）
-$ cargo test -p minix-vm --lib region_map → 16 passed
-$ cargo test -p minix-vm --lib vir_region → 10 passed / 1 failed（test_map_lazy）
+→ 441 passed / 0 failed（2026-08-17 实测；含 V10-P2-1 死代码收敛 + V10 主循环/状态位测试）
+$ cargo test -p minix-vm --lib region_map → 12 passed
+$ cargo test -p minix-vm --lib vir_region → 11 passed
+$ cargo clippy -p minix-vm --lib → 0 warnings
 ```
 
 ---
@@ -507,7 +503,7 @@ $ cargo test -p minix-vm --lib vir_region → 10 passed / 1 failed（test_map_la
 
 14 完成阶段 5 地址空间数据结构的索引面（11 状态 → 12 策略 → 13 生命周期 → **14 索引**）。接下来：
 
-- **15-ipc-dispatch**：主循环分发，dispatcher.rs:504/:1397 的 find_slot 调用点接线。
+- **15-ipc-dispatch**：主循环分发，dispatcher.rs:522/:1464 的 find_slot 调用点接线。
 - **16/17**：页错误 + CoW 消费 find/map_lookup（地址→区域解析）。
 - **18-vm-fork**：fork_regions 消费 search_least/search_greatest 等价（iter().next()/next_back()）。
 - **20/21**：mmap 消费 find_slot；munmap 消费 find_overlap/insert。

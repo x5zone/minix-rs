@@ -13,4 +13,11 @@ bitflags = "2.4"
 
 [features]
 default = []
+# `std` is a no-op marker. The crate is unconditionally `no_std`
+# (`#![no_std]` in `lib.rs`); the `std` feature itself is **not**
+# wired to anything — it exists only so downstream crates that
+# declare `features = ["std"]` on their `minix-types` dependency do
+# not trip cargo's "unknown feature" warning. `std = []` is the
+# idiomatic way to **silence** such warnings without enabling a real
+# feature. See `vm.rs` for the `[VmReply]` allow rationale.
 std = []

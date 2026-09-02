@@ -101,6 +101,54 @@ pub fn last_fault_addr(proc: &KProcess) -> Option<u64> {
     proc.p_fault_addr
 }
 
+/// Stack-allocated formatting buffer (zero-heap `core::fmt::Write`).
+///
+/// The kernel has no allocator: the C kernel builds panic text with its
+/// `vsnprintf`-style machinery into fixed buffers (no `malloc` exists in
+/// the minix3 kernel). The Rust equivalent for panic-path formatting is
+/// a fixed inline array written through `core::fmt` — never the heap.
+/// Overflow returns `fmt::Error` (write fails, earlier content stays),
+/// matching C's silent truncation semantics without unwrapping.
+pub struct FmtBuf<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> FmtBuf<N> {
+    /// Fresh empty buffer (`const fn` so it lives directly on the stack
+    /// of the trap handler with no initializer code).
+    pub const fn new() -> Self {
+        Self {
+            buf: [0u8; N],
+            len: 0,
+        }
+    }
+
+    /// The formatted text written so far (empty on UTF-8 or overflow
+    /// failure — `core::fmt` only feeds us valid UTF-8, so this cannot
+    /// fail in practice).
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> core::fmt::Write for FmtBuf<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let end = self.len + s.len();
+        if end > N {
+            return Err(core::fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Message buffer capacity: the kernel-mode page-fault message is at
+/// most ~120 bytes (fixed text + endpoint + 16-hex-digit address); 160
+/// leaves headroom for future context fields.
+pub type PageFaultMsgBuf = FmtBuf<160>;
+
 /// Determine whether a kernel-mode page fault should panic the kernel.
 ///
 /// C: `if (is_nested) { ... inkernel_disaster(...); }` — exception.c:91.
@@ -109,20 +157,28 @@ pub fn last_fault_addr(proc: &KProcess) -> Option<u64> {
 /// exception, BKL already acquired) is a kernel bug or unrecoverable
 /// hardware fault. The C code prints diagnostics and panics.
 ///
-/// We return a human-readable panic message suitable for
-/// `panic!("{}", msg)`. The actual panic call is left to the trap
-/// handler so it can include additional context (saved IP, registers).
-pub fn kernel_mode_pagefault_panic_msg(
+/// We format the panic message into the caller's stack buffer
+/// (`PageFaultMsgBuf`, zero heap — the kernel has no allocator) and
+/// return it for `panic!("{}", msg)`. The actual panic call is left to
+/// the trap handler so it can include additional context (saved IP,
+/// registers).
+pub fn kernel_mode_pagefault_panic_msg<'a>(
+    buf: &'a mut PageFaultMsgBuf,
     proc_endpoint: Endpoint,
     fault_addr: u64,
-) -> alloc::string::String {
-    use alloc::format;
-    format!(
-        "kernel-mode page fault: endpoint={}, fault_addr=0x{:x} \
+) -> &'a str {
+    use core::fmt::Write as _;
+    // C: exception.c:91 — fixed format string, no allocation. `write!`
+    // into the stack buffer uses core's formatting machinery, which
+    // never allocates.
+    let _ = write!(
+        buf,
+        "kernel-mode page fault: endpoint={}, fault_addr={:#x} \
          (nested exception while BKL held; \
          this is a kernel bug or unrecoverable hardware fault)",
         proc_endpoint.0, fault_addr
-    )
+    );
+    buf.as_str()
 }
 
 /// Build the message to send to VM for a page fault.
@@ -165,8 +221,6 @@ pub fn build_vm_pagefault_msg(
     msg
 }
 
-extern crate alloc;
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -175,12 +229,11 @@ mod tests {
     use crate::proc::proc_nr::KERNEL;
     use crate::proc::RtsFlagsBits;
     use crate::proc::ProcNr;
-    use crate::proc_table::ProcessTable;
 
     #[test]
     fn test_set_pagefault_pending_sets_flag_and_addr() {
         // C: RTS_SET(pr, RTS_PAGEFAULT) at exception.c:115.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -192,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_clear_pagefault_pending_clears_flag_and_addr() {
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -210,7 +263,7 @@ mod tests {
     #[test]
     fn test_is_pagefault_pending_default_false() {
         // A freshly-spawned process must not have RTS_PAGEFAULT set.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -237,16 +290,19 @@ mod tests {
     #[test]
     fn test_kernel_mode_pagefault_panic_msg_includes_endpoint_and_addr() {
         // The panic message should include the faulting endpoint and
-        // address so post-mortem analysis can identify the cause.
-        let msg = kernel_mode_pagefault_panic_msg(Endpoint(7), 0xffff_8000_0000_0000);
+        // address so post-mortem analysis can identify the cause. The
+        // message is formatted into a stack buffer — zero-heap contract
+        // (the kernel has no allocator).
+        let mut buf = PageFaultMsgBuf::new();
+        let msg = kernel_mode_pagefault_panic_msg(&mut buf, Endpoint(7), 0xffff_8000_0000_0000);
         assert!(msg.contains("7"));
-        assert!(msg.contains("ffff800000000000") || msg.contains("0xffff"));
+        assert!(msg.contains("0xffff800000000000"));
     }
 
     #[test]
     fn test_pagefault_pending_roundtrip_with_clear() {
         // End-to-end: set → query → clear → query (false).
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -261,7 +317,7 @@ mod tests {
     fn test_pagefault_pending_idempotent_set() {
         // Calling set twice should be idempotent (RTS_PAGEFAULT is a
         // single bit; setting it again is a no-op).
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let proc = proc_table.get_mut(ProcNr(0)).unwrap();
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -279,15 +335,17 @@ mod tests {
         // kernel_mode_pagefault_panic_msg. This test documents the
         // expected caller-side contract: callers must dispatch on
         // is_kernelp first.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let kernel_proc = proc_table.get_mut(KERNEL).unwrap();
         kernel_proc.p_endpoint = Endpoint(0); // KERNEL's endpoint
         kernel_proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         // We do NOT call set_pagefault_pending here; instead we verify
         // that kernel_mode_pagefault_panic_msg produces a useful panic
-        // message that the trap handler can use.
+        // message that the trap handler can use (stack buffer, no heap).
+        let mut buf = PageFaultMsgBuf::new();
         let panic_msg = kernel_mode_pagefault_panic_msg(
+            &mut buf,
             kernel_proc.p_endpoint,
             0xdead_beef,
         );

@@ -41,6 +41,7 @@ pub use arch::paging;
 pub use arch::paging_ext;
 pub use arch::pt_alloc;
 pub use arch::direct_map;
+pub use arch::frame;
 pub use arch::pte_walk_arch;
 pub use arch::protection;
 pub use arch::trap_entry;
@@ -53,7 +54,6 @@ pub use arch::smp;
 pub use arch::arch_init;
 pub use arch::timer_irq_gate;
 pub use arch::boot;
-pub use arch::post_init;
 pub use arch::stacktrace;
 pub use arch::tlb_arch;
 
@@ -90,7 +90,6 @@ pub use boot::{
     VmLoadResult, VmLoadError, load_vm_elf,
 };
 pub use stacktrace::StacktraceArch;
-pub use post_init::{PostInitArch, MemoryInitArch, VmPageTableInfo, FreePdeSlots, MAX_FREE_PDE_SLOTS};
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;
@@ -287,26 +286,6 @@ pub type CurrentTrapFrame = crate::x86_64::exception::X86_64ExceptionFrame;
 pub type CurrentTrapFrame = crate::arm64::exception::AArch64ExceptionFrame;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentTrapFrame = crate::riscv64::exception::Riscv64ExceptionFrame;
-
-// ── CurrentPostInitArch type aliases ──
-#[cfg(feature = "mock")]
-pub type CurrentPostInitArch = crate::post_init::MockPostInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub type CurrentPostInitArch = crate::x86_64::post_init::X86_64PostInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-pub type CurrentPostInitArch = crate::arm64::post_init::AArch64PostInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-pub type CurrentPostInitArch = crate::riscv64::post_init::Riscv64PostInitArch;
-
-// ── CurrentMemoryInitArch type aliases ──
-#[cfg(feature = "mock")]
-pub type CurrentMemoryInitArch = crate::post_init::MockMemoryInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub type CurrentMemoryInitArch = crate::x86_64::post_init::X86_64MemoryInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-pub type CurrentMemoryInitArch = crate::arm64::post_init::AArch64MemoryInitArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-pub type CurrentMemoryInitArch = crate::riscv64::post_init::Riscv64MemoryInitArch;
 
 // ── CurrentSmpArch type aliases ──
 //

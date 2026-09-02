@@ -1,0 +1,18 @@
+[package]
+name = "minix-driver-tps65217"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-driver-tps65217"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_driver_tps65217"
+path = "src/lib.rs"

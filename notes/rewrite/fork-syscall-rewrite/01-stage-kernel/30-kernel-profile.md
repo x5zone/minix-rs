@@ -27,7 +27,7 @@
 | 分类统计 | `profile_sample` | 区分 idle / system / user 样本 |
 | NMI profiling | `nmi_sprofile_handler` | 用不可屏蔽中断采样，即使内核关中断也能触发 |
 
-**采样分类逻辑**（[profile.c:75-110](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**采样分类逻辑**（minix3/minix/kernel/profile.c:75-110）：
 - `IDLE` 进程 → `sprof_info.idle_samples++`（CPU 空闲）
 - `KERNEL` 或 `SYS_PROC` runnable → `sprof_info.system_samples++`（内核/系统进程）
 - 其他 → `sprof_info.user_samples++`（用户进程）
@@ -35,7 +35,7 @@
 
 ### 1.2 SPROFILE 条件编译
 
-整个 [profile.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c) 用 `#if SPROFILE` 包裹。`SPROFILE` 宏未启用时，文件编译为空——这是 Minix3 的特性开关机制，让 profiling 代码完全从生产构建中移除。
+整个 minix3/minix/kernel/profile.c 用 `#if SPROFILE` 包裹。`SPROFILE` 宏未启用时，文件编译为空——这是 Minix3 的特性开关机制，让 profiling 代码完全从生产构建中移除。
 
 ### 1.3 与 25-misc-unported.md 的关系
 
@@ -63,7 +63,7 @@
 
 | 文件 | 行数 | 核心内容 |
 |------|------|---------|
-| [profile.c](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c) | 157 | 7 函数 + 1 全局数组，全部 `#if SPROFILE` |
+| minix3/minix/kernel/profile.c | 157 | 7 函数 + 1 全局数组，全部 `#if SPROFILE` |
 
 ### 2.2 全局状态
 
@@ -79,18 +79,18 @@ static irq_hook_t profile_clock_hook;             // IRQ hook
 
 ### 2.3 时钟初始化与停止
 
-**`init_profile_clock(freq)`**（[profile.c:27-37](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`init_profile_clock(freq)`**（minix3/minix/kernel/profile.c:27-37）：
 1. 调用 `arch_init_profile_clock(freq)` 初始化架构专用时钟
 2. 若返回 IRQ 号 ≥ 0，注册 `profile_clock_handler` 为 IRQ handler
 3. `enable_irq` 启用中断
 
-**`stop_profile_clock()`**（[profile.c:42-49](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`stop_profile_clock()`**（minix3/minix/kernel/profile.c:42-49）：
 1. 调用 `arch_stop_profile_clock()` 停止架构专用时钟
 2. `disable_irq` + `rm_irq_handler` 注销 handler
 
 ### 2.4 样本收集
 
-**`sprof_save_sample(p, pc)`**（[profile.c:51-61](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`sprof_save_sample(p, pc)`**（minix3/minix/kernel/profile.c:51-61）：
 ```c
 struct sprof_sample *s = (struct sprof_sample *)(sprof_sample_buffer + sprof_info.mem_used);
 s->proc = p->p_endpoint;
@@ -99,7 +99,7 @@ sprof_info.mem_used += sizeof(struct sprof_sample);
 ```
 将 endpoint + PC 写入 buffer，前进 `mem_used` 指针。
 
-**`sprof_save_proc(p)`**（[profile.c:63-73](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`sprof_save_proc(p)`**（minix3/minix/kernel/profile.c:63-73）：
 ```c
 struct sprof_proc *s = (struct sprof_proc *)(sprof_sample_buffer + sprof_info.mem_used);
 s->proc = p->p_endpoint;
@@ -110,7 +110,7 @@ sprof_info.mem_used += sizeof(struct sprof_proc);
 
 ### 2.5 主采样逻辑
 
-**`profile_sample(p, pc)`**（[profile.c:75-110](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`profile_sample(p, pc)`**（minix3/minix/kernel/profile.c:75-110）：
 
 ```c
 // 未启用或 buffer 满 → 返回
@@ -146,7 +146,7 @@ sprof_info.total_samples++;
 
 ### 2.6 中断 handler
 
-**`profile_clock_handler(hook)`**（[profile.c:115-126](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`profile_clock_handler(hook)`**（minix3/minix/kernel/profile.c:115-126）：
 ```c
 struct proc *p = get_cpulocal_var(proc_ptr);   // 当前进程
 profile_sample(p, (void *)p->p_reg.pc);         // 采样
@@ -156,7 +156,7 @@ return 1;                                        // 重新启用中断
 
 ### 2.7 NMI profiling handler
 
-**`nmi_sprofile_handler(frame)`**（[profile.c:128-155](file:///home/xzhao/github/minix-rs/minix3/minix/kernel/profile.c)）：
+**`nmi_sprofile_handler(frame)`**（minix3/minix/kernel/profile.c:128-155）：
 
 NMI 版本与时钟版本的区别：
 - NMI 即使在内核关中断时也能触发
@@ -177,13 +177,13 @@ NMI 版本与时钟版本的区别：
 **Rust 64-bit 决策**: `ClockArch` trait 保留 `init_profile_clock` / `stop_profile_clock` 方法。
 
 **已实现**:
-- [os/kernel/src/clock.rs:293](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError>`
-- [os/kernel/src/clock.rs:315](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs): `pub fn stop_profile_clock()`
-- [os/arch/src/x86_64/clock.rs:114](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs): `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>`
-- [os/arch/src/x86_64/clock.rs:165](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs): `fn stop_profile_clock(&mut self)`
-- [os/arch/src/arm64/clock.rs:89](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/clock.rs): aarch64 impl
+- os/kernel/src/clock.rs:293: `pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError>`
+- os/kernel/src/clock.rs:315: `pub fn stop_profile_clock()`
+- os/arch/src/x86_64/clock.rs:114: `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>`
+- os/arch/src/x86_64/clock.rs:165: `fn stop_profile_clock(&mut self)`
+- os/arch/src/arm64/clock.rs:89: aarch64 impl
 
-**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 [misc.rs:1957](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs)）。
+**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 os/kernel/src/misc.rs:1957）。
 
 ### 3.2 D2: 样本收集实现
 
@@ -192,7 +192,7 @@ NMI 版本与时钟版本的区别：
 **Rust 64-bit 决策**: 实现样本收集，使用 `static mut` buffer + BKL 保护。
 
 **已实现**:
-- [os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs): `SprofSample` / `SprofProc` 结构体 + `sprof_save_sample` / `sprof_save_proc` / `profile_sample` / `profile_clock_handler` / `is_sys_proc_runnable`
+- os/kernel/src/misc.rs: `SprofSample` / `SprofProc` 结构体 + `sprof_save_sample` / `sprof_save_proc` / `profile_sample` / `profile_clock_handler` / `is_sys_proc_runnable`
 - `profile_sample(proc, pc, priv_table)` 接收 `&KProcess` + PC + `&PrivTable`，分类为 idle/system/user
 - `profile_clock_handler(proc, pc, priv_table)` 调用 `profile_sample` 后 `ack_profile_clock()`
 - 使用 `addr_of_mut!` 避免 Rust 2024 `static_mut_refs` 问题
@@ -227,7 +227,7 @@ NMI 版本与时钟版本的区别：
 
 ### 4.1 profile 时钟接口
 
-[os/kernel/src/clock.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/clock.rs)：
+os/kernel/src/clock.rs：
 
 ```rust
 /// C: `init_profile_clock()` — arch/i386/arch_clock.c
@@ -249,15 +249,15 @@ pub fn ack_profile_clock() {
 }
 ```
 
-x86_64 impl（[os/arch/src/x86_64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/x86_64/clock.rs)）配置 RTC 定时器 + 读 Register C ack。
+x86_64 impl（os/arch/src/x86_64/clock.rs）配置 RTC 定时器 + 读 Register C ack。
 
-aarch64 impl（[os/arch/src/arm64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/arm64/clock.rs)）返回 `Err(ProfileClockError::Unsupported)`（PMU 未集成）。
+aarch64 impl（os/arch/src/arm64/clock.rs）返回 `Err(ProfileClockError::Unsupported)`（PMU 未集成）。
 
-riscv64 impl（[os/arch/src/riscv64/clock.rs](file:///home/xzhao/github/minix-rs/os/arch/src/riscv64/clock.rs)）返回 `Err(ProfileClockError::Unsupported)`（无独立 profiling 定时器）。
+riscv64 impl（os/arch/src/riscv64/clock.rs）返回 `Err(ProfileClockError::Unsupported)`（无独立 profiling 定时器）。
 
 ### 4.2 样本收集
 
-[os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs)：
+os/kernel/src/misc.rs：
 
 ```rust
 /// C: `struct sprof_sample` — include/minix/profile.h:27-30
@@ -301,7 +301,7 @@ C 源码 profile.c:84-86 空间检查中，`2*sizeof(struct sprof_sample)` 出�
 
 ### 4.3 do_sprofile 调用
 
-[os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs) 的 `dispatch_profile` 调用 `init_profile_clock` / `stop_profile_clock`，PROF_STOP 时通过 `data_copy_vmcheck` 将 `SPROF_INFO` + `SPROF_SAMPLE_BUFFER` 拷贝到用户空间。
+os/kernel/src/misc.rs 的 `dispatch_profile` 调用 `init_profile_clock` / `stop_profile_clock`，PROF_STOP 时通过 `data_copy_vmcheck` 将 `SPROF_INFO` + `SPROF_SAMPLE_BUFFER` 拷贝到用户空间。
 
 ### 4.4 WONTFIX
 
@@ -319,7 +319,7 @@ C 源码 profile.c:84-86 空间检查中，`2*sizeof(struct sprof_sample)` 出�
 
 ### 5.2 样本收集测试
 
-[os/kernel/src/misc.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/misc.rs) tests 模块中 8 个测试覆盖 `profile_sample` 全部分类路径：
+os/kernel/src/misc.rs tests 模块中 8 个测试覆盖 `profile_sample` 全部分类路径：
 
 | 测试名 | 覆盖路径 | C 对齐 |
 |--------|---------|--------|

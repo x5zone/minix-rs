@@ -152,7 +152,15 @@ fn init_proc_and_boot_test() {
     use minix_kernel::proc_table::ProcessTable;
 
     // Step 1: Create process table and verify initial state.
-    let table = ProcessTable::new();
+    //
+    // `ProcessTable::new()` ships with the IDLE slot already occupied
+    // (a permanent kernel task — `proc_table.rs:new`), so a *real* local
+    // table can never be dropped without tripping the slot-ownership
+    // alarm (panic-in-drop.md). This integration crate cannot use the
+    // crate-private `test_helpers` fixtures, so we express the exemption
+    // explicitly with `ManuallyDrop`: the table is a read-only fixture
+    // here, not an OS lifecycle owner.
+    let table = core::mem::ManuallyDrop::new(ProcessTable::new());
     println!("── Step 1: ProcessTable created ──");
 
     // Verify SLOT_FREE for all user-space slots

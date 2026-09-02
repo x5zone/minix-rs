@@ -44,6 +44,24 @@ pub enum WaitTarget {
     Group(Pid),
 }
 
+impl WaitTarget {
+    /// Creates `WaitTarget` from `waitpid` pid argument.
+    ///
+    /// C: `forkexit.c:493` `if (pidarg == 0) pidarg = -mp->mp_procgrp`
+    /// then `507-508` `pidarg>0 → Specific` / `pidarg<-1 → Group`.
+    pub fn from_pidarg(pidarg: Pid, caller_procgrp: Pid) -> Self {
+        if pidarg == 0 {
+            Self::Group(-caller_procgrp)
+        } else if pidarg > 0 {
+            Self::SpecificChild(pidarg)
+        } else if pidarg == -1 {
+            Self::AnyChild
+        } else {
+            Self::Group(pidarg)
+        }
+    }
+}
+
 impl Default for WaitTarget {
     fn default() -> Self {
         Self::AnyChild

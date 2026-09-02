@@ -23,7 +23,7 @@ Minix3 的键盘/输入事件服务器：统一汇聚键盘等输入设备事件
 ## 依赖关系
 
 - 前置：01-stage-kernel、02-stage-vm、03-stage-rs（加载方）
-- 后置：14-stage-integration（输入链端到端验证）
+- 后置：19-stage-integration（输入链端到端验证）
 
 ## 编号说明
 

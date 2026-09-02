@@ -1,0 +1,18 @@
+[package]
+name = "minix-fs-isofs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minix-fs-isofs"
+path = "src/main.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_fs_isofs"
+path = "src/lib.rs"

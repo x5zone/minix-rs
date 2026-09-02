@@ -149,22 +149,49 @@ impl Privilege {
 bitflags::bitflags! {
     /// Remaining flags.
     ///
-    /// These flags have not yet been categorized into specific state machines.
+    /// The last three `mp_flags` bits not yet categorized into a state
+    /// machine. Their future homes (see 02-mproc-struct.md):
+    /// - `ALARM_ON` → timer module (14-itimer.md: alarm/setitimer arming)
+    /// - `PARTIAL_EXEC` → exec flow (17-exec.md)
+    /// - `TAINTED` → credentials/exec (15-credentials.md / 17-exec.md)
+    ///
+    /// Bit values match Minix3's `mproc.h:86-104` exactly.
+    /// `VFS_CALL`/`EVENT_CALL`/`DELAY_CALL`/`NEW_PARENT` are modeled by
+    /// `BlockState::ipc_blocked` and must NOT appear here (single-truth).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct RemainingFlags: u32 {
-        /// Timer started.
+        /// Timer started (ALARM_ON, mproc.h:91).
         const ALARM_ON = 0x00010;
-        /// Deferred call.
-        const DELAY_CALL = 0x00040;
-        /// VFS call in progress.
-        const VFS_CALL = 0x00200;
-        /// Parent changed.
-        const NEW_PARENT = 0x00800;
-        /// Partial exec.
+        /// Partial exec: new map but no content (PARTIAL_EXEC, mproc.h:100).
         const PARTIAL_EXEC = 0x04000;
-        /// Tainted flag.
+        /// Process is 'tainted' (TAINTED, mproc.h:103).
         const TAINTED = 0x40000;
     }
+}
+
+/// `FrameRegion` for `exec` (`mproc.h:71-72` `mp_frame_addr/len`, D6, A-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRegion {
+    pub base: VirBytes,
+    pub len: usize,
+}
+
+impl FrameRegion {
+    pub fn new(base: VirBytes, len: usize) -> Self { Self { base, len } }
+    pub fn from_high_len(high: VirBytes, len: usize) -> Self {
+        Self { base: VirBytes(high.0.wrapping_sub(len as u64)), len }
+    }
+}
+
+/// `ExecState` (`PARTIAL_EXEC 0x4000`, D3, A-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecState {
+    Idle,
+    Partial { frame: FrameRegion },
+}
+
+impl Default for ExecState {
+    fn default() -> Self { Self::Idle }
 }
 
 /// Process resources.
@@ -192,6 +219,11 @@ pub struct ProcessResources {
     pub scheduler: Endpoint,
     /// Uncategorized flags.
     pub flags: RemainingFlags,
+    /// Tainted for `issetugid` (`TAINTED` 0x40000, `getset.c:81`, D5).
+    /// Separate from `flags` for single-truth `tainted: bool` (A-12).
+    pub tainted: bool,
+    /// Exec state (`PARTIAL_EXEC` whs, D3).
+    pub exec_state: ExecState,
 }
 
 impl Default for ProcessResources {
@@ -207,6 +239,8 @@ impl Default for ProcessResources {
             nice: 0,
             scheduler: Endpoint::default(),
             flags: RemainingFlags::empty(),
+            tainted: false,
+            exec_state: ExecState::default(),
         }
     }
 }
@@ -218,7 +252,15 @@ impl Default for ProcessResources {
 pub struct ProcessIpc {
     /// IPC reply message (lazy loaded).
     pub reply: Option<Message>,
-    /// Event subscriber.
+    /// Event subscriber cursor (legacy, deprecated).
+    ///
+    /// C: `mp_eventsub` (`char`, `0..nsubs-1` or `NO_EVENTSUB`).
+    /// Rust: 该字段语义实为订阅者下标（`0..NR_SUBS`），却被误建模为
+    /// `UserSlot`（进程槽位）；正确位置为 `BlockState::EventCall { cursor: EventCursor }`
+    /// （`os/servers/pm/src/mproc/block.rs:EventCursor`，`[ARCH: A-2]`）。
+    /// 新逻辑（`os/servers/pm/src/event.rs`）不再读写本字段，仅保留以兼容
+    /// `fork.rs` 旧测试；06 后续将与 02 文档联动改为 `Option<EventCursor>` 或移除。
+    #[deprecated(note = "use BlockState::EventCall { cursor: EventCursor } instead; see 06-event-subscription.md D3")]
     pub event_subscriber: Option<UserSlot>,
     /// Stack frame address.
     pub frame_addr: VirBytes,
@@ -230,6 +272,7 @@ impl Default for ProcessIpc {
     fn default() -> Self {
         Self {
             reply: None,
+            #[allow(deprecated)]
             event_subscriber: None,
             frame_addr: VirBytes(0),
             frame_len: 0,
@@ -256,13 +299,36 @@ impl Default for ProcessIpc {
 /// └── ipc: ProcessIpc             // IPC context
 /// ```
 ///
-/// # Minix3 Mapping
-/// | Minix3 field | Rust field |
-/// |--------------|------------|
-/// | mp_pid, mp_endpoint | identity.id, identity.endpoint |
-/// | mp_flags (state) | state.lifecycle, state.block |
-/// | mp_realuid, mp_effuid | resources.privilege |
-/// | mp_reply | ipc.reply |
+/// # Minix3 Mapping (complete, see 02-mproc-struct.md §4)
+/// | Minix3 field (mproc.h) | Rust field |
+/// |------------------------|------------|
+/// | mp_pid | identity.id.pid |
+/// | mp_endpoint | identity.endpoint |
+/// | mp_procgrp | identity.procgrp |
+/// | mp_name | identity.name |
+/// | mp_parent / mp_tracer | state.guardianship (Normal/Traced) |
+/// | mp_trace_flags | state.guardianship Traced.trace_options |
+/// | mp_wpid / mp_waddr | state.wait.target / rusage_addr |
+/// | mp_exitstatus / mp_sigstatus | state.lifecycle variant payloads |
+/// | mp_flags: IN_USE/EXITING/ZOMBIE/TOLD_PARENT/TRACE_ZOMBIE | state.lifecycle |
+/// | mp_flags: WAITING | state.wait.waiting |
+/// | mp_flags: PROC_STOPPED/VFS_CALL/EVENT_CALL/DELAY_CALL/NEW_PARENT/UNPAUSED | state.block |
+/// | mp_flags: TRACE_STOPPED | state.trace.stopped |
+/// | mp_flags: SIGSUSPENDED | resources.signals.suspended |
+/// | mp_flags: PRIV_PROC | resources.privilege (Privilege::Kernel) |
+/// | mp_flags: ALARM_ON/PARTIAL_EXEC/TAINTED | resources.flags (RemainingFlags) |
+/// | mp_realuid/effuid/svuid + gid triplet | resources.privilege User(Credentials) |
+/// | mp_ngroups / mp_sgroups | resources.privilege User(Credentials).ngroups/supplemental_groups |
+/// | mp_ignore/mp_catch/mp_sigmask/mp_sigmask2 | resources.signals.ignored/caught/mask/mask_saved |
+/// | mp_sigpending/mp_ksigpending/mp_sigtrace | resources.signals.pending/kernel_pending/trace_mask |
+/// | mp_sigact[] / mp_sigreturn | resources.signals.actions / sigreturn_addr |
+/// | mp_timer / mp_interval / mp_started | resources.timer / intervals / started |
+/// | mp_nice / mp_scheduler | resources.nice / scheduler |
+/// | mp_child_utime / mp_child_stime | resources.child_utime / child_stime |
+/// | mp_eventsub | ipc.event_subscriber (None == NO_EVENTSUB) |
+/// | mp_reply | ipc.reply (None == no pending reply) |
+/// | mp_frame_addr / mp_frame_len | ipc.frame_addr / frame_len |
+/// | mp_magic | (type-system invariant, no field) |
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct Process {
@@ -433,6 +499,17 @@ mod tests {
         
         proc.resources.privilege = Privilege::Kernel;
         assert!(proc.is_kernel_process());
+    }
+    
+    #[test]
+    fn test_remaining_flags_bits_match_c() {
+        // Bit values must match mproc.h:86-104 exactly (ALARM_ON 0x00010,
+        // PARTIAL_EXEC 0x04000, TAINTED 0x40000). VFS_CALL/EVENT_CALL/
+        // DELAY_CALL/NEW_PARENT are modeled by BlockState and must not
+        // reappear here (single-truth).
+        assert_eq!(RemainingFlags::ALARM_ON.bits(), 0x00010);
+        assert_eq!(RemainingFlags::PARTIAL_EXEC.bits(), 0x04000);
+        assert_eq!(RemainingFlags::TAINTED.bits(), 0x40000);
     }
     
     #[test]

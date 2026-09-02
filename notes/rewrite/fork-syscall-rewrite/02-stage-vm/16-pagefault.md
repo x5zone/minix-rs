@@ -383,7 +383,7 @@ pub fn decode_message(msg: &Message) -> Self {
 }
 ```
 
-**本轮 P0 修复记录**：旧实现 `impl DecodeFromM1 for VmPagefaultIn`（原 vm.rs:713-722）从 `m_m1` 解码（`endpoint: Endpoint(m1.m1i1)`、`vaddr: VirBytes(m1.m1p1)`、`write: m1.m1i2 != 0`），与 kernel 写入的 `m_vm_pagefault` union 成员**错位**——按 union 重叠布局实际会解出 `endpoint = 低 32 位出错地址`、`vaddr = 0`、`write = 高 32 位地址非零`，一旦端到端接线必然 `vm_isokendpt` 失败。修复：移除 M1 解码，新增 `decode_message`（minix-types vm.rs:379-398），`dispatch_pagefault` 改用（vm_server.rs:746），并补 2 个解码测试（vm.rs:1034/:1052）。`write` 语义同步修正为 `flags & 2`（C `PFERR_WRITE`），旧 `!= 0` 会把只读保护错误误判为写。
+**本轮 P0 修复记录**：旧实现 `impl DecodeFromM1 for VmPagefaultIn`（原 vm.rs:713-722）从 `m_m1` 解码（`endpoint: Endpoint(m1.m1i1)`、`vaddr: VirBytes(m1.m1p1)`、`write: m1.m1i2 != 0`），与 kernel 写入的 `m_vm_pagefault` union 成员**错位**——按 union 重叠布局实际会解出 `endpoint = 低 32 位出错地址`、`vaddr = 0`、`write = 高 32 位地址非零`，一旦端到端接线必然 `vm_isokendpt` 失败。修复：移除 M1 解码，新增 `decode_message`（minix-types vm.rs:379-398），`dispatch_pagefault` 改用（vm_server.rs:986），并补 2 个解码测试（vm.rs:1034/:1052）。`write` 语义同步修正为 `flags & 2`（C `PFERR_WRITE`），旧 `!= 0` 会把只读保护错误误判为写。
 
 ### 3.5 D5：handle_memory_once 同步子集（fork.rs:33-85）
 
@@ -399,9 +399,9 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
-| 1 | `handle_pagefault` 验证链 + memtype 分发 | `dispatch_pagefault` + `cow_exec_pf::handle_pagefault` 等价实现（vm_server.rs:742-771） | ✅ 已实现 |
+| 1 | `handle_pagefault` 验证链 + memtype 分发 | `dispatch_pagefault` + `cow_exec_pf::handle_pagefault` 等价实现（vm_server.rs:986-1057） | ✅ 已实现 |
 | 2 | wire format：`m_source` + `m1_i1`/`m1_i2` | `decode_message`：`m_source` + `m_vm_pagefault`（64 位 ARCH） | ✅ 已实现（本轮修复） |
-| 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | VM 侧无 `sys_vmctl`；`dispatch_pagefault` 只返回 `VmReply`，主循环丢弃（vm_server.rs:583 `let _`） | ⚠️ DEFERRED（进程保持挂起，恢复契约未接线） |
+| 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | VM 侧无 `sys_vmctl`；`dispatch_pagefault` 返回 `VmReply`，主循环对 `VmReply::Error` 计数 + 审计（V9-P1-1，todo），不再静默丢弃；进程恢复契约仍未接线 | ⚠️ DEFERRED（错误可观测；恢复契约未接线） |
 | 4 | `pf_errstr` 诊断日志 | no_std 无 printf；错误以 `CowError`/`VmReply::Error(AccessViolation)` 传递 | ⚠️ 简化 |
 | 5 | major/minor 缺页计数（:135-138） | 字段存在（vmproc.rs:55-56）+ `inc_minor_fault`/`inc_major_fault` 方法（vmproc_handle.rs:300-307），生产路径未调用（仅测试） | ⚠️ 缺口 |
 | 6 | `do_memory`/`handle_memory_start/step/final/continue` 异步状态机 | 未实现；`fork.rs::handle_memory_once` 仅同步子集 | ⚠️ DEFERRED |
@@ -414,7 +414,7 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 
 ## 4. 实现详解
 
-### 4.1 dispatch_pagefault：主循环 P3 的 handler（vm_server.rs:742-771）
+### 4.1 dispatch_pagefault：主循环 P3 的 handler（vm_server.rs:986-1057）
 
 ```
 decode_message(msg)                        :746  m_source + m_vm_pagefault
@@ -472,7 +472,7 @@ pending(old_pfn, memtype) → ev_unreference + free_pfn  :119-122
 
 C 的核心状态机（`hm_state` + `handle_memory_continue` + `pf_cont`）在 Rust 中**尚未落地**：
 
-- `PagefaultResult::NeedVfsIo`（memtype.rs:156）与 `PagefaultAction::Suspended`（cow_exec_pf.rs:240）**存在但无消费者**——`dispatch_pagefault` 目前把 `Ok(PagefaultAction::Suspended)` 也映射为 `VmReply::Ok`（vm_server.rs:767），即"挂起"被当作成功吞掉，进程不会恢复（§3.6 #3/#10）。
+- `PagefaultResult::NeedVfsIo`（memtype.rs:156）与 `PagefaultAction::Suspended`（cow_exec_pf.rs:240）**存在但无消费者**——`dispatch_pagefault` 目前把 `Ok(PagefaultAction::Suspended)` 也映射为 `VmReply::Ok`（vm_server.rs:1011），即"挂起"被当作成功吞掉，进程不会恢复（§3.6 #3/#10）。
 - `fork.rs::handle_memory_once`（:33-85）是唯一落地的主动路径，且只在 fork 时使用（18 详述）。
 - 诚实标注：**这意味着一页文件映射未缓存时，当前 Rust 行为与 C 不等价**——C 发起 VFS 异步读，Rust 返回 Ok 但页未映射。此缺口必须在 23（VFS 请求队列）+ 24（页缓存）接线后闭环。
 
@@ -482,17 +482,24 @@ C 的核心状态机（`hm_state` + `handle_memory_continue` + `pf_cont`）在 R
 // Priority 3: VM_PAGEFAULT (main.c:153-164)
 if m_type == VM_PAGEFAULT {
     debug_assert!(
-        is_from_kernel(rcv_sts),
+        rcv_sts.is_from_kernel(),
         "faked VM_PAGEFAULT from {:?}", source
     );
-    let _ = self.dispatch_pagefault(msg);
+    let reply = self.dispatch_pagefault(msg);
+    // V9-P1-1：失败不再静默丢弃——计数（pagefault_errors）+ 审计。
+    if let VmReply::Error(e) = reply {
+        self.pagefault_errors = self.pagefault_errors.saturating_add(1);
+        audit_log!("[VM PF] pagefault failed: err={:?} endpoint={:?} …", e, source);
+        let _ = e;
+    }
     return DispatchAction::NoReply;
 }
 ```
 
-- `VM_PAGEFAULT = 0xCFF`（vm_server.rs:978）——与 C 一致（com.h:773），`callnr()` 对 0xCFF 越界返回 None，进不了 `dispatch_by_number`，只能走 P3（15 详述）。
-- `is_from_kernel` 是桩恒 true（vm_server.rs:889-892）——C 用 `IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)`（main.c:154-157），真实状态字待 kernel IPC（15 §5.3 已标注）。
+- `VM_PAGEFAULT = 0xCFF`（vm_server.rs:1158）——与 C 一致（com.h:773），`callnr()` 对 0xCFF 越界返回 None，进不了 `dispatch_by_number`，只能走 P3（15 详述）。
+- `rcv_sts.is_from_kernel()`（transport.rs:69）按 `IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)` 语义解析 bit 16（`((flags >> 16) & 1) != 0`，ipcconst.h:22-24）；`IpcStatus::default()` 下恒 false——真实状态字待 kernel IPC core（`KernelIpcTransport::receive` 填充，15 §3.7 #4 已标注；V10-P1-1 前是恒 true 桩）。
 - `DispatchAction::NoReply` 保持 C `continue` 语义（main.c:164）——不回复，进程恢复靠 `VMCTL_CLEAR_PAGEFAULT`（Rust DEFERRED，§3.6 #3）。
+- **V9-P1-1 错误可观测性**（2026-08-16，todo）：`VmReply::Error`（region 不存在 / 分配失败 / CoW 失败）被 `pagefault_errors` 计数（`vm_server.rs` 字段 + `pagefault_errors()` 访问器 vm_server.rs:547），并经 `audit_log!` 通道（test → eprintln、`vm_acl_audit` → no_std sink、release → 编译消除，lib.rs:40-54）——release 下故障不再不可观测。
 
 ---
 
@@ -531,8 +538,8 @@ if m_type == VM_PAGEFAULT {
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| dispatch_pagefault 端到端单测 | ⚠️ 缺失 | 主循环 P3 → decode → 区域查找 → handle_pagefault 无消息级测试（is_from_kernel 桩恒 true） |
-| SIGSEGV / VMCTL_CLEAR_PAGEFAULT 恢复进程 | ⚠️ 未实现 | VM 无 sys_vmctl；`let _ = dispatch_pagefault(msg)` 丢弃回复，进程恢复契约 DEFERRED（§3.6 #3） |
+| dispatch_pagefault 端到端单测 | ⚠️ 部分 | 主循环 P3 → decode → handle_pagefault 无成功路径消息级测试（`rcv_sts.is_from_kernel()` 默认 false，真实状态字待 kernel IPC）；**失败路径已有 `test_pagefault_errors_counted`**（2026-08-16，V9-P1-1：无效 endpoint → `pagefault_errors == 1`，vm_server.rs:2059） |
+| SIGSEGV / VMCTL_CLEAR_PAGEFAULT 恢复进程 | ⚠️ 未实现 | VM 无 sys_vmctl；错误已计数 + 审计（V9-P1-1），进程恢复契约仍 DEFERRED（§3.6 #3） |
 | major/minor 计数生产接线 | ⚠️ 缺失 | `inc_minor_fault`/`inc_major_fault`（vmproc_handle.rs:300-307）仅测试调用，`dispatch_pagefault` 未统计 |
 | `NeedVfsIo → Suspended` 的 VFS 回调 | ⚠️ 未接线 | 对应 C `pf_cont`/`handle_memory_continue`；`PagefaultAction::Suspended` 被当作 Ok 吞掉（§4.4），23/24 范围 |
 | do_memory / handle_memory_start/step/final/continue | ⚠️ 未实现 | SIGKMEM 主动路径 DEFERRED；仅 `fork.rs::handle_memory_once` 同步子集 |
@@ -543,10 +550,11 @@ if m_type == VM_PAGEFAULT {
 
 ```
 $ cd os && cargo test -p minix-vm --lib
-→ 360 passed / 1 failed（test_map_lazy pre-existing，13 范围，§5.3 已标注）
-$ cargo test -p minix-vm --lib cow_exec_pf → 5 passed
-$ cargo test -p minix-types --lib ipc::vm → 17 passed（含本轮新增 decode 2 个）
-$ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error）
+→ 441 passed / 0 failed（2026-08-17 实测；含 V9-P1-1 的 test_pagefault_errors_counted + V10 主循环端到端/状态位测试）
+$ cargo test -p minix-vm --lib cow_exec_pf → 7 passed
+$ cargo test -p minix-types --lib ipc::vm → 27 passed
+$ cargo clippy -p minix-vm --lib → 0 warnings
+$ cargo check -p minix-vm → Finished（无 error）
 ```
 
 ---
@@ -567,7 +575,7 @@ $ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error�
 ## 7. 参见
 
 - `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md` — `map_pf`/`map_handle_memory`/`map_lookup`（两条路径的汇合点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md` — 主循环 P3 分发、SUSPEND 协议、`is_from_kernel` 桩
+- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md` — 主循环 P3 分发、SUSPEND 协议、`IpcStatus::is_from_kernel`/`is_notify` 位语义
 - `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md` — `ev_pagefault`/`writable` 回调语义与 6 类 memtype
 - `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md` — CoW 分裂机制（`mem_cow`/引用计数）
 - `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md` — `handle_memory_once` 的 fork 调用方

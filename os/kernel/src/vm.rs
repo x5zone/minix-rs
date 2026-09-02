@@ -1158,7 +1158,7 @@ mod tests {
         assert_eq!(VmCheckResult::Fault, VmCheckResult::Fault);
     }
 
-    fn make_test_procs() -> [KProcess; 4] {
+    fn make_test_procs() -> crate::test_helpers::TestProcArray<4> {
         let params = VmCheckParams {
             start: VirBytes::new(0x1000),
             length: VirBytes::new(0x100),
@@ -1178,13 +1178,13 @@ mod tests {
         procs[1].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 2), params, None);
         procs[2].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 3), params, None);
         procs[3].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 0), params, None);
-        procs
+        crate::test_helpers::scratch_procs(procs)
     }
 
     fn make_vm_suspended_proc(
         nr: ProcNr,
         suspend_type: VmSuspendType,
-    ) -> KProcess {
+    ) -> crate::test_helpers::TestKProc {
         let mut proc = KProcess::new(nr, Endpoint::from_generation_slot(1, nr.0));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         let params = VmCheckParams {
@@ -1198,7 +1198,7 @@ mod tests {
             params,
             None,
         );
-        proc
+        crate::test_helpers::scratch_kproc(proc)
     }
 
     // ── §5.1: VmSuspendState state transition tests ──

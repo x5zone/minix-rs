@@ -50,13 +50,14 @@ pub const NR_SYS_PROCS: usize = 64;
 
 /// Slots reserved for root.
 ///
-/// Corresponds to Minix3's `LAST_FEW`.
+/// Corresponds to Minix3's `LAST_FEW` — `servers/pm/forkexit.c:32`
+/// (`#define LAST_FEW 2`), a PM-local constant, not a global config header.
 ///
 /// # Notes
 ///
 /// The last few process slots are reserved for the root user,
 /// preventing regular users from exhausting all process slots.
-pub const LAST_FEW: usize = 5;
+pub const LAST_FEW: usize = 2;
 
 /// Actual number of tasks (tasks initialized at boot).
 ///

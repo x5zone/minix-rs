@@ -282,7 +282,7 @@ PM: sys_clear(exit_endpt)
 - 升级为 `#[repr(transparent)] pub struct ProcNr(pub i32)` newtype：与 Endpoint 对齐，编译期防止混淆；`repr(transparent)` 保证消息布局兼容。
 - 取舍：`ProcNr` 使用点遍布 `proc.rs`/`proc_table.rs`/`sched.rs`/`smp.rs`/`syscall_process.rs` 等多个模块，升级需同步修改所有使用点 + 补 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` 转换。为提供编译期类型防护，已完成 newtype 升级。
 
-**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)`（[proc.rs:30](file:///home/xzhao/github/minix-rs/os/kernel/src/proc.rs)）+ `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
+**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)`（os/kernel/src/proc.rs:30）+ `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
 
 ---
 
@@ -338,7 +338,7 @@ pub fn dispatch_fork(
     // C: do_fork.c:105-107 — 检查父是否为 SYS_PROC 以决定降级
     let parent_is_sys_proc = caller.priv_id
         .and_then(|id| priv_table.get(id))
-        .map(|p| p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC))
+        .map(|p| p.flags.s_flags.contains(ProcessCapability::SYS_PROC))
         .unwrap_or(false);
     // C: do_fork.c:105-107 — 所有 fork 出的子进程都从 USER_PRIV_ID 起步
     child.priv_id = Some(USER_PRIV_ID);

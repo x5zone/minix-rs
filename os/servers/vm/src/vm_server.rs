@@ -16,11 +16,17 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, EncodeToM1};
+use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, EncodeToM1};
+#[cfg(test)]
+use minix_types::{VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
-use crate::boot::{BootParams, VM_PROC_NR};
+#[cfg(feature = "buddy_alloc")]
+use crate::phys_mem::{BuddyAllocator, BUDDY_THRESHOLD_PAGES};
+#[cfg(feature = "segment_tree_alloc")]
+use crate::phys_mem::SegmentTreeAllocator;
+use crate::boot::{BootParams, KernelAllocated, VM_PROC_NR};
 use crate::page_cache::PageCache;
 use crate::vfs_queue::VfsRequestQueue;
 use crate::ipc::dispatcher::MessageDispatcher;
@@ -68,6 +74,33 @@ pub struct VmServer {
     /// `alloc_cycle()` are the only mutating access points, both
     /// `&mut self`-only.
     missing_spares: u32,
+    /// Count of kernel pagefault messages whose handling failed.
+    ///
+    /// V9-P1-1 (todo): the main loop previously dropped the
+    /// `dispatch_pagefault` result (`let _ =`), so CoW / allocation /
+    /// region-lookup failures were unobservable in release builds. Each
+    /// `VmReply::Error` from a pagefault is now counted here and surfaced
+    /// through the feature-gated audit channel (same `vm_acl_audit` feature
+    /// as ACL denials). Saturating so a pathological fault storm cannot
+    /// wrap the counter.
+    ///
+    /// C has no direct equivalent: Minix3's pagefault path (pagefaults.c)
+    /// does not audit failures either; this is a minix-rs observability
+    /// extension ([ARCH: A-15]).
+    pagefault_errors: u64,
+    /// Count of IPC messages dropped at the main-loop boundary.
+    ///
+    /// V9-P0-1 (todo): the C main loop panics on receive failure
+    /// (main.c:122-123) and on invalid callers (main.c:131-132). A
+    /// user-space server must treat IPC as untrusted input: VM is the
+    /// system's only memory manager, and a panic would halt all memory
+    /// management with unrecoverable page/refcount/region state. We drop
+    /// the offending message and count it instead — the caller (if any)
+    /// times out, which is the same observable outcome as C for that
+    /// caller, minus the whole-server outage ([ARCH: A-14]).
+    ///
+    /// Saturating so a hostile fault storm cannot wrap the counter.
+    dropped_messages: u64,
     /// Boot process images, copied at construction.
     ///
     /// C: `kernel_boot_info.boot_procs[]` (main.c:497-520). Copied from
@@ -78,6 +111,29 @@ pub struct VmServer {
     ///
     /// C: `mem_add_total_pages()` call points (main.c:485-495).
     boot_extra_pages: usize,
+    /// Kernel's own memory footprint, kept for the kernel usage query.
+    ///
+    /// C: `kernel_boot_info.kernel_allocated_bytes(_dynamic)` — consumed by
+    /// `get_usage_info_kernel` (region.c:1357-1364).
+    kernel_allocated: KernelAllocated,
+    /// Bytes the kernel allocated to load VM, kept for the VM-self usage query.
+    ///
+    /// C: `kernel_boot_info.vm_allocated_bytes` — consumed by
+    /// `get_usage_info_vm` (region.c:1366-1373).
+    vm_allocated_bytes: u64,
+    /// IPC transport for the main loop.
+    ///
+    /// `Rc<RefCell<...>>` (V10-P0-2, V9-P1-2): the previous process-global
+    /// `AtomicPtr` + `Box::into_raw` slot always constructed a
+    /// `KernelIpcTransport` (even in tests), never marked it initialized,
+    /// and leaked the allocation — the main loop was untestable and would
+    /// busy-loop on `Err(Unimplemented)` in production. The shared handle
+    /// lets tests keep a clone to drive and inspect a mock transport while
+    /// the server owns the sole production instance; VM is single-threaded
+    /// (lib.rs), so `Rc`/`RefCell` is sound.
+    transport: alloc::rc::Rc<
+        core::cell::RefCell<alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>>,
+    >,
 }
 
 impl VmServer {
@@ -91,6 +147,38 @@ impl VmServer {
     /// `sys_getkinfo()` and consumed by `init_vm()`. `BootParams::validate()`
     /// mirrors the two `init_vm()` asserts (main.c:451-452).
     pub fn new_with_boot_params(params: BootParams<'_>) -> Self {
+        Self::new_inner(params, Self::kernel_transport())
+    }
+
+    /// Test constructor: inject a mock transport so the main loop can be
+    /// driven end-to-end on the host (V10-P0-2). The boot contract is the
+    /// simplified `BootParams::simple` form used by `new()`.
+    #[cfg(test)]
+    fn new_for_test(
+        total_pages: usize,
+        free_regions: &[BootMemRegion],
+        transport: alloc::rc::Rc<
+            core::cell::RefCell<alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>>,
+        >,
+    ) -> Self {
+        Self::new_inner(BootParams::simple(total_pages, free_regions), transport)
+    }
+
+    /// Production transport handle: a single shared `KernelIpcTransport`.
+    fn kernel_transport() -> alloc::rc::Rc<
+        core::cell::RefCell<alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>>,
+    > {
+        alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+            crate::ipc::transport::KernelIpcTransport::new(),
+        )))
+    }
+
+    fn new_inner(
+        params: BootParams<'_>,
+        transport: alloc::rc::Rc<
+            core::cell::RefCell<alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>>,
+        >,
+    ) -> Self {
         params.validate();
 
         let phys_alloc = Self::create_default_allocator(params.total_pages, params.free_regions);
@@ -129,8 +217,13 @@ impl VmServer {
             vfs_queue: VfsRequestQueue::new(),
             initialized: false,
             missing_spares: 0,
+            pagefault_errors: 0,
+            dropped_messages: 0,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
+            kernel_allocated: params.kernel_allocated,
+            vm_allocated_bytes: params.vm_allocated_bytes,
+            transport,
         }
     }
 
@@ -175,12 +268,31 @@ impl VmServer {
         PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
     }
 
-    fn choose_allocator_type(_total_pages: usize) -> PhysAllocType {
+    /// Select the boot-time allocator backend ([ARCH: A-5]).
+    ///
+    /// Enabling a backend Cargo feature selects that backend, mirroring
+    /// `DefaultAllocator` precedence in `phys_mem/mod.rs` (buddy >
+    /// segment-tree > bitmap):
+    ///
+    /// - `buddy_alloc` keeps the documented adaptive threshold — below
+    ///   `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) the compact bitmap is
+    ///   used even when the feature is enabled (05-physical-memory.md §3.3).
+    /// - `segment_tree_alloc` selects the segment-tree backend outright
+    ///   (was previously compiled but never selected — V10-P0-1).
+    #[cfg_attr(
+        not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")),
+        allow(unused_variables)
+    )]
+    fn choose_allocator_type(total_pages: usize) -> PhysAllocType {
         #[cfg(feature = "buddy_alloc")]
         {
             if total_pages > BUDDY_THRESHOLD_PAGES {
                 return PhysAllocType::Buddy;
             }
+        }
+        #[cfg(feature = "segment_tree_alloc")]
+        {
+            return PhysAllocType::SegmentTree;
         }
         PhysAllocType::Bitmap
     }
@@ -217,21 +329,33 @@ impl VmServer {
             });
         }
 
+        // Each backend is cfg-gated on its feature; a requested backend
+        // whose feature is disabled falls back to Bitmap (the bootstrap
+        // allocator), so `PhysAllocType` stays feature-independent while
+        // `PhysAlloc` construction matches the compiled-in backend.
         let new_alloc = match alloc_type {
             PhysAllocType::Bitmap => {
                 PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
             }
-            // Buddy and SegmentTree are not yet implemented without buddy_alloc feature.
-            // Fall back to Bitmap allocator for now.
-            PhysAllocType::Buddy | PhysAllocType::SegmentTree => {
+            PhysAllocType::Buddy => {
                 #[cfg(feature = "buddy_alloc")]
-                if alloc_type == PhysAllocType::Buddy {
+                {
                     PhysAlloc::Buddy(BuddyAllocator::init(new_metadata, total_pages, &free_regions))
-                } else {
-                    PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
                 }
                 #[cfg(not(feature = "buddy_alloc"))]
-                PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+                {
+                    PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+                }
+            }
+            PhysAllocType::SegmentTree => {
+                #[cfg(feature = "segment_tree_alloc")]
+                {
+                    PhysAlloc::SegmentTree(SegmentTreeAllocator::init(new_metadata, total_pages, &free_regions))
+                }
+                #[cfg(not(feature = "segment_tree_alloc"))]
+                {
+                    PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+                }
             }
         };
 
@@ -280,6 +404,13 @@ impl VmServer {
         // Phase 3: PageFrames after total_pages is known.
         let total_phys = PhysBytes(self.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.page_frames = Some(PageFrames::new(total_phys));
+
+        // C: __minix_init() (main.c:480) — SEF startup makes the IPC
+        // channel ready before the main loop. V10-P0-2: without this, a
+        // `KernelIpcTransport` stays uninitialized and `run()` would
+        // busy-loop on `Err(Unimplemented)` instead of blocking on
+        // `sef_receive_status`.
+        self.transport.borrow_mut().mark_initialized();
 
         self.initialized = true;
     }
@@ -408,6 +539,21 @@ impl VmServer {
         self.missing_spares
     }
 
+    /// Returns the count of failed kernel pagefault handlings (V9-P1-1).
+    ///
+    /// Every `VmReply::Error` produced while dispatching a `VM_PAGEFAULT`
+    /// message increments this counter. Tests assert on it; the audit
+    /// channel (`vm_acl_audit` feature) prints each failure.
+    pub fn pagefault_errors(&self) -> u64 {
+        self.pagefault_errors
+    }
+
+    /// Returns the count of IPC messages dropped at the main-loop boundary
+    /// (V9-P0-1, [ARCH: A-14]): receive failures + invalid callers.
+    pub fn dropped_messages(&self) -> u64 {
+        self.dropped_messages
+    }
+
     /// C: `alloc_cycle()` (alloc.c:227-237) — main-loop replenishment hook,
     /// invoked whenever the pressure counter is non-zero (main.c:118-119).
     ///
@@ -432,71 +578,154 @@ impl VmServer {
         self.missing_spares = 0;
     }
 
+    /// Main event loop. Never returns (C: main.c:113-193).
+    ///
+    /// Per-iteration work lives in [`Self::run_once`] so tests can drive a
+    /// single dispatch→reply round without spawning the infinite loop
+    /// (V10-P0-2). The loop owns the two things `run_once` cannot:
+    /// the allocation-pressure replenishment hook and the receive-failure
+    /// bound that prevents a busy-spin when the transport is broken.
     pub fn run(&mut self) -> ! {
         assert!(self.initialized, "VmServer::run() called before init()");
 
+        let mut consecutive_recv_failures: u32 = 0;
         loop {
             // C: if(missing_spares > 0) alloc_cycle();
             if self.missing_spares > 0 {
                 self.alloc_cycle();
             }
 
-            // C: sef_receive_status(ANY, &msg, &rcv_sts)
-            let (msg, rcv_sts) = match ipc_receive() {
-                Ok(v) => v,
-                Err(_) => panic!("ipc_receive() failed"),
-            };
-
-            // C: if(is_ipc_notify(rcv_sts)) { continue; }
-            if is_ipc_notify(&rcv_sts) {
-                continue;
-            }
-
-            // C: who_e = msg.m_source; vm_isokendpt(who_e, &caller_slot);
-            let who_e = msg.m_source;
-            let caller_slot = match VmProcTable::get_global().vm_isokendpt(who_e) {
-                Ok(slot) => slot,
-                Err(_) => panic!("invalid caller {:?}", who_e),
-            };
-
-            let action = self.dispatch_on_msg(&msg, &rcv_sts, caller_slot);
-
-            // C: if(result != SUSPEND) { ipc_send(who_e, &msg); }
-            //
-            // DEFERRED: use `VmReplyForIpc` wrapper that
-            // *statically* excludes `VmReply::Suspend`, replacing the prior
-            // `unreachable!("Suspend filtered before reply_to_errno")` panic.
-            // The `DispatchAction` enum already encodes the three C outcomes
-            // (SUSPEND / no-reply / reply-with-payload); at this call site
-            // we map `DispatchAction::Reply(reply)` (where `reply` is *any*
-            // `VmReply`) into `VmReplyForIpc::new(reply)`. The wrapper
-            // constructor returns `None` for `VmReply::Suspend`, which would
-            // be a logic bug (we forgot to convert Suspend at dispatch
-            // boundary) — we explicitly check that case and panic with a
-            // useful error message rather than the previous cryptic
-            // `unreachable!()` panic from deep inside `reply_to_errno`.
-            match action {
-                DispatchAction::Reply(reply) => {
-                    let reply_for_ipc = VmReplyForIpc::new(reply)
-                        .expect("DispatchAction::Reply carries VmReply::Suspend; \
-                                 dispatch_on_msg should translate to DispatchAction::Suspend");
-                    // Clone once (VmReply is `Clone`) instead of cloning twice
-                    // as the original code did; the wrapper owns the reply.
-                    let code = reply_to_errno(reply_for_ipc.payload());
-                    let mut reply_msg = msg.clone();
-                    reply_msg.m_type = code;
-                    encode_reply_data(reply_for_ipc.into_payload(), &mut reply_msg);
-                    ipc_send(who_e, &reply_msg)
-                        .unwrap_or_else(|_| panic!("ipc_send() failed"));
+            match self.run_once() {
+                RunStep::Handled => consecutive_recv_failures = 0,
+                RunStep::ReceiveFailed => {
+                    // C: sef_receive_status blocks until a message arrives,
+                    // so a receive `Err` means the transport itself is
+                    // broken, not "no message". Busy-spinning at 100% CPU
+                    // would hide the failure (V10-P0-2) — fail fast instead.
+                    consecutive_recv_failures = consecutive_recv_failures.saturating_add(1);
+                    if consecutive_recv_failures >= MAX_CONSECUTIVE_RECV_FAILURES {
+                        panic!(
+                            "IPC transport permanently broken: {} consecutive receive failures",
+                            consecutive_recv_failures
+                        );
+                    }
                 }
-                DispatchAction::Suspend => {}
-                DispatchAction::NoReply => {}
             }
         }
     }
+
+    /// Process exactly one IPC message (or one receive failure).
+    ///
+    /// Mirrors one iteration of C main.c:113-193. Extracted from `run()`
+    /// so tests can drive the main loop one round at a time with a mock
+    /// transport (V10-P0-2); `run()` supplies the infinite loop, the
+    /// pressure hook, and the receive-failure bound.
+    fn run_once(&mut self) -> RunStep {
+        // C: sef_receive_status(ANY, &msg, &rcv_sts)
+        let (msg, rcv_sts) = match self.transport.borrow_mut().receive() {
+            Ok(v) => v,
+            // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
+            // user-space server must survive bad IPC — drop + audit.
+            Err(_) => {
+                self.dropped_messages = self.dropped_messages.saturating_add(1);
+                audit_log!("[VM IPC] ipc_receive() failed — message dropped");
+                return RunStep::ReceiveFailed;
+            }
+        };
+
+        // C: if(is_ipc_notify(rcv_sts)) { continue; } (main.c:126-129).
+        // Notifications are async signals, not requests; they are skipped
+        // before endpoint validation (V10-P1-1).
+        if rcv_sts.is_notify() {
+            return RunStep::Handled;
+        }
+
+        // C: who_e = msg.m_source; vm_isokendpt(who_e, &caller_slot);
+        let who_e = msg.m_source;
+        let caller_slot = match VmProcTable::get_global().vm_isokendpt(who_e) {
+            Ok(slot) => slot,
+            // [ARCH: A-14] V9-P0-1: C panics (main.c:131-132); the
+            // caller cannot be serviced either way, but VM must not
+            // die with it — drop + audit.
+            Err(_) => {
+                self.dropped_messages = self.dropped_messages.saturating_add(1);
+                audit_log!("[VM IPC] invalid caller {:?} — message dropped", who_e);
+                return RunStep::Handled;
+            }
+        };
+
+        let action = self.dispatch_on_msg(&msg, &rcv_sts, caller_slot);
+
+        // C: if(result != SUSPEND) { ipc_send(who_e, &msg); }
+        //
+        // DEFERRED: use `VmReplyForIpc` wrapper that
+        // *statically* excludes `VmReply::Suspend`, replacing the prior
+        // `unreachable!("Suspend filtered before reply_to_errno")` panic.
+        // The `DispatchAction` enum already encodes the three C outcomes
+        // (SUSPEND / no-reply / reply-with-payload); at this call site
+        // we map `DispatchAction::Reply(reply)` (where `reply` is *any*
+        // `VmReply`) into `VmReplyForIpc::new(reply)`. The wrapper
+        // constructor returns `None` for `VmReply::Suspend`, which would
+        // be a logic bug (we forgot to convert Suspend at dispatch
+        // boundary) — we explicitly check that case and panic with a
+        // useful error message rather than the previous cryptic
+        // `unreachable!()` panic from deep inside `reply_to_errno`.
+        match action {
+            DispatchAction::Reply(reply) => {
+                let reply_for_ipc = VmReplyForIpc::new(reply)
+                    .expect("DispatchAction::Reply carries VmReply::Suspend; \
+                             dispatch_on_msg should translate to DispatchAction::Suspend");
+                // Clone once (VmReply is `Clone`) instead of cloning twice
+                // as the original code did; the wrapper owns the reply.
+                let code = reply_to_errno(reply_for_ipc.payload());
+                let mut reply_msg = msg;
+                reply_msg.m_type = code;
+                encode_reply_data(reply_for_ipc.into_payload(), &mut reply_msg);
+                self.transport
+                    .borrow_mut()
+                    .send(who_e, &reply_msg)
+                    .unwrap_or_else(|_| panic!("ipc_send() failed"));
+            }
+            // V10-P1-2: live-update scaffolding. C: main.c:191 — SUSPEND
+            // means "no reply now, resume later" (RS_INIT handshake and
+            // rs_update). The only current producer is the RS_INIT
+            // handshake (Priority 2 above); the rs_update Suspend path is
+            // unreachable until kernel `sys_update` lands — the empty arm
+            // is intentional and pinned by
+            // `dispatcher::tests::test_dispatch_rs_update_pins_not_implemented`.
+            DispatchAction::Suspend => {}
+            DispatchAction::NoReply => {}
+        }
+        RunStep::Handled
+    }
 }
 
+/// Outcome of one [`VmServer::run_once`] iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStep {
+    /// A message was received and handled (dispatched, skipped as a
+    /// notification, or dropped as invalid input).
+    Handled,
+    /// The transport reported a receive error; the message was dropped
+    /// and counted. `run()` uses this to bound consecutive failures.
+    ReceiveFailed,
+}
+
+/// Consecutive receive failures before `run()` treats the transport as
+/// permanently broken and panics (V10-P0-2). C's `sef_receive_status`
+/// blocks, so errors cannot be transient "no message" conditions.
+const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 64;
+
 /// Three reply actions — maps to C main.c:178-191.
+///
+/// `#[allow(clippy::large_enum_variant)]`: the largest variant is
+/// `Reply(VmReply)`, and `VmReply::InfoRegion` carries an inline
+/// `[VmRegionInfo; 64]` (~1.5 KiB, see `minix-types/src/ipc/vm.rs`
+/// for the rationale). The enum is held by value inside the
+/// single-threaded dispatcher hot path, and `VmReply` is `Copy` —
+/// boxing the variant would only add an `alloc` dependency for no
+/// measurable benefit.
+#[allow(clippy::large_enum_variant)]
 enum DispatchAction {
     Reply(VmReply),
     Suspend,
@@ -550,7 +779,7 @@ impl VmReplyForIpc {
     /// is never `VmReply::Suspend`. Use this when the caller still needs
     /// to inspect the reply after encoding (e.g. for logging).
     fn payload(&self) -> VmReply {
-        self.inner.clone()
+        self.inner
     }
 
     /// Consumes the wrapper and returns the owned `VmReply`. By construction
@@ -589,10 +818,22 @@ impl VmServer {
         // Priority 3: VM_PAGEFAULT (main.c:153-164)
         if m_type == VM_PAGEFAULT {
             debug_assert!(
-                is_from_kernel(rcv_sts),
+                rcv_sts.is_from_kernel(),
                 "faked VM_PAGEFAULT from {:?}", source
             );
-            let _ = self.dispatch_pagefault(msg);
+            let reply = self.dispatch_pagefault(msg);
+            // V9-P1-1: never silently drop a pagefault failure — the faulting
+            // process stays suspended and would otherwise re-fault forever
+            // with no observable signal. Count + audit instead (the counter is
+            // also surfaced by the `pagefault_errors()` accessor in tests).
+            if let VmReply::Error(e) = reply {
+                self.pagefault_errors = self.pagefault_errors.saturating_add(1);
+                audit_log!(
+                    "[VM PF] pagefault failed: err={:?} endpoint={:?} vaddr={:?}",
+                    e, source, minix_types::VmPagefaultIn::decode_message(msg).vaddr
+                );
+                let _ = e;
+            }
             return DispatchAction::NoReply;
         }
 
@@ -600,25 +841,24 @@ impl VmServer {
         if let Some(c) = callnr(m_type) {
             // C: acl_check(&vmproc[caller_slot], c)
             let table = VmProcTable::get_global();
-            if let Some(proc) = table.get_active(caller_slot) {
-                if proc.acl_check(c as u32).is_err() {
+            if let Some(proc) = table.get_active(caller_slot)
+                && proc.acl_check(c as u32).is_err() {
                     // FIX (VMA-1): Previously `let _ = (c, source);` silently
                     // dropped the ACL denial event, making production
                     // misbehaviour unobservable. Now we record the denial
                     // through a feature-gated audit channel:
                     //
                     //   * `cargo test`           → eprintln! to test stderr
-                    //   * `--features vm_acl_audit` → eprintln! in dev builds
-                    //   * release (no feature)   → eprintln! compiled out,
-                    //     `let _ = (c, source);` keeps references used
+                    //   * `--features vm_acl_audit` → no_std sink
+                    //     (`audit::emit`; formats + drops, output pending
+                    //     VM ↔ syslog IPC, see 15-ipc-dispatch.md §3.7)
+                    //   * release (no feature)   → compiled out entirely
                     //
-                    // The audit feature is intentionally off by default
-                    // because VM is `no_std`-only (no `std::println!` outside
-                    // test cfg) — enabling it adds a `std` dependency and
-                    // IPC-grade logging will replace this once VM ↔ syslog
-                    // IPC lands.
-                    #[cfg(any(test, feature = "vm_acl_audit"))]
-                    eprintln!(
+                    // The audit feature is intentionally off by default:
+                    // VM is `no_std`-only outside test cfg, so the audit
+                    // channel is a no_std-compatible sink until IPC-grade
+                    // logging lands (V10-P0-1).
+                    audit_log!(
                         "[VM ACL] denied: call=0x{:x} source={:?} caller_slot={:?}",
                         c, source, caller_slot
                     );
@@ -634,7 +874,6 @@ impl VmServer {
                         VmReply::Error(VmError::NotImplemented)
                     );
                 }
-            }
             // C: result = vm_calls[c].vmc_func(&msg);
             let result = MessageDispatcher::dispatch_by_number(c, msg, self);
             // Execute deferred VFS callback if present (C: do_vfs_reply
@@ -786,6 +1025,30 @@ impl VmServer {
 
     /// Returns mutable references to page_alloc, page_frames, page_cache, and vfs_queue simultaneously.
     /// This avoids double mutable borrow when dispatching VM calls that need multiple components.
+    /// Boot-time byte totals for the kernel / VM-self usage queries.
+    ///
+    /// C: `do_info` VMIW_USAGE with `ep < 0` → `get_usage_info_kernel()`
+    /// (region.c:1357-1364): `kernel_allocated_bytes + _dynamic`;
+    /// `ep == VM_PROC_NR` → `get_usage_info_vm()` (region.c:1366-1373):
+    /// `vm_allocated_bytes + get_vm_self_pages() * VM_PAGE_SIZE`.
+    ///
+    /// `get_vm_self_pages()` (pagetable.c:1500) is carried by
+    /// `VmPageAllocator::self_page_count()` in minix-rs: the Direct Map
+    /// ([ARCH: A-1], 06-page-allocator.md §3.3) structurally eliminates
+    /// VM's separate self-mapping page accounting, so the allocator's
+    /// live allocation count is the direct analog.
+    pub(crate) fn usage_sources(&self) -> crate::query::UsageSources {
+        crate::query::UsageSources {
+            kernel_bytes: self.kernel_allocated.static_bytes
+                .saturating_add(self.kernel_allocated.dynamic_bytes),
+            vm_self_bytes: self.vm_allocated_bytes
+                .saturating_add(
+                    (self.page_alloc.self_page_count() as u64)
+                        * crate::region::page_state::PAGE_SIZE,
+                ),
+        }
+    }
+
     pub(crate) fn parts_mut(
         &mut self,
     ) -> (&mut VmPageAllocator, &mut PageFrames, &mut PageCache, &mut VfsRequestQueue) {
@@ -796,6 +1059,7 @@ impl VmServer {
         (page_alloc, page_frames, page_cache, vfs_queue)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
     pub(crate) fn is_initialized(&self) -> bool {
         self.initialized
     }
@@ -813,96 +1077,6 @@ impl Drop for VmServer {
         // drop path only matters for tests — but the contract must hold.
         crate::global::unregister_page_alloc();
     }
-}
-
-// ==========================================================================
-// IPC transport wiring — see ipc/transport.rs for the strategy trait.
-//
-// The free functions `ipc_receive` / `ipc_send` below are thin wrappers
-// around a process-global `IpcTransport` instance. The instance is
-// selected by build mode:
-//
-//   - #[cfg(test)]    → `TestIpcTransport` (mock, records sends)
-//   - #[cfg(not(test))]→ `KernelIpcTransport` (real kernel, blocked on kernel IPC core)
-//
-// ARCHITECTURE NOTE (VM IPC blocking bug, fixed 2026-06-13): the previous
-// implementation hard-coded `Err(())` in both free functions, which
-// made the main loop panic with an opaque error on first iteration.
-// The trait abstraction now makes the failure mode self-documenting
-// and lets unit tests drive the main loop end-to-end.
-//
-// Once kernel IPC core lands, the `KernelIpcTransport` impl
-// in `ipc/transport.rs` will be filled in with the real syscall
-// invocations. The trait surface is stable.
-// ==========================================================================
-
-use crate::ipc::transport::IpcTransport;
-
-/// Process-global IPC transport slot. Initialized lazily on first use.
-///
-/// We avoid the `static mut` pattern (denied by Rust 2024 edition) by
-/// using `AtomicPtr` to a heap-allocated `KernelIpcTransport`. The first
-/// call to `transport()` allocates the transport; subsequent calls
-/// return a `&mut` derived from the atomic pointer.
-///
-/// # Safety
-/// VM is single-threaded by design (see `lib.rs` top-level docs). The
-/// `AtomicPtr` is used here purely for the const-constructor
-/// convenience — we do **not** rely on its atomicity for soundness.
-/// The transport pointer is initialized once at first use and never
-/// aliased: there is no second writer, and the reader only constructs
-/// a `&mut` after observing the non-null pointer.
-static IPC_TRANSPORT_PTR: core::sync::atomic::AtomicPtr<
-    crate::ipc::transport::KernelIpcTransport,
-> = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-fn transport() -> &'static mut dyn IpcTransport {
-    use core::sync::atomic::Ordering;
-    let mut ptr = IPC_TRANSPORT_PTR.load(Ordering::Relaxed);
-    if ptr.is_null() {
-        let boxed = alloc::boxed::Box::new(crate::ipc::transport::KernelIpcTransport::new());
-        // SAFETY: VM is single-threaded. The AtomicPtr is used only to
-        // make the slot const-constructible; we are the sole writer.
-        let raw = alloc::boxed::Box::into_raw(boxed);
-        IPC_TRANSPORT_PTR.store(raw, Ordering::Relaxed);
-        ptr = raw;
-    }
-    // SAFETY: `ptr` is non-null and was allocated by `Box::new` above.
-    // We need a fat pointer for the trait object; reconstruct it via
-    // the vtable of `KernelIpcTransport`'s `IpcTransport` impl. This
-    // unsizing coercion is the standard way to build a trait-object
-    // pointer from a concrete reference.
-    let concrete: &'static mut crate::ipc::transport::KernelIpcTransport =
-        unsafe { &mut *ptr };
-    // The `as` cast is a coercion that takes the vtable of the
-    // concrete type's IpcTransport impl. This is the same mechanism
-    // `Box<dyn Trait>::new` uses internally.
-    concrete as &mut (dyn IpcTransport + 'static)
-}
-
-/// Receive an IPC message from any source.
-///
-/// Wraps the [`IpcTransport::receive`] call so the main loop code in
-/// `run()` does not need to know about the underlying transport.
-fn ipc_receive() -> Result<(Message, IpcStatus), ()> {
-    transport().receive().map_err(|_| ())
-}
-
-/// Send an IPC reply message to a destination endpoint.
-///
-/// Wraps the [`IpcTransport::send`] call.
-fn ipc_send(dest: Endpoint, msg: &Message) -> Result<(), ()> {
-    transport().send(dest, msg).map_err(|_| ())
-}
-
-fn is_ipc_notify(_sts: &IpcStatus) -> bool {
-    // C: is_ipc_notify(rcv_sts)
-    false
-}
-
-fn is_from_kernel(_sts: &IpcStatus) -> bool {
-    // C: IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)
-    true
 }
 
 /// Check if a message type carries a VFS filesystem transaction ID.
@@ -1130,24 +1304,35 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
         VmReply::VfsMmap(out) => out.encode(m1),
         VmReply::GetPhys { phys_addr } => { m1.m1p1 = phys_addr.0; }
         VmReply::GetRefcount { count } => { m1.m1i1 = count as i32; }
-        VmReply::InfoStats { page_size, total_pages, free_pages, largest_contiguous } => {
+        VmReply::InfoStats { page_size, total_pages, free_pages, largest_contiguous, cached_pages, .. } => {
+            // C: struct vm_stats_info (vm.h:39-44) — pagesize/total/free/
+            // largest/cached. M1 slots: p1=pagesize, i1=total, i2=free,
+            // i3=largest, p2=cached (u64 page count; no integer slots left).
+            // `dropped_messages`/`pagefault_errors` (V10-P2-4) are a
+            // minix-rs extension with no C wire slot — dropped here, like
+            // InfoUsage's minflt/majflt (see below).
             m1.m1p1 = page_size;
             m1.m1i1 = total_pages as i32;
             m1.m1i2 = free_pages as i32;
             m1.m1i3 = largest_contiguous as i32;
+            m1.m1p2 = cached_pages;
         }
-        VmReply::InfoUsage { total, common, shared, virtual_total, mvirtual } => {
+        VmReply::InfoUsage { total, common, shared, virtual_total, mvirtual, max_rss_kb, minor_faults, major_faults } => {
             // Minix3 C uses sys_datacopy to copy a `struct vm_usage_info`
             // (5 VirBytes fields + 3 u64 fields) into the caller's address
             // space (utility.c — do_info → get_usage_info).
             // Rust M1 layout has 3 pointer slots (m1p1..m1p3) and 3 integer
             // slots (m1i1..m1i3). Encode the 5 VirBytes fields: 3 in pointer
-            // slots, 2 as page counts (saturated i32) in integer slots.
+            // slots, 2 as page counts (saturated i32) in integer slots, and
+            // vui_maxrss (KB) in the last integer slot.
             //
             // Field mapping (aligned with C's struct vm_usage_info):
             //   m1p1 = vui_total, m1p2 = vui_common, m1p3 = vui_shared
             //   m1i1 = vui_virtual (page count), m1i2 = vui_mvirtual (page count)
-            //   m1i3 = 0 (reserved)
+            //   m1i3 = vui_maxrss (KB, saturated)
+            // vui_minflt / vui_majflt have no remaining M1 slot — DEFERRED
+            // to the sys_datacopy path (VMI-3 follow-up; MIB gets them via
+            // the full reply once transport lands).
             m1.m1p1 = total.0;
             m1.m1p2 = common.0;
             m1.m1p3 = shared.0;
@@ -1161,7 +1346,11 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             };
             m1.m1i1 = pages(virtual_total.0);
             m1.m1i2 = pages(mvirtual.0);
-            m1.m1i3 = 0; // reserved
+            // SAFETY: `as i32` saturates — maxrss in KB is bounded by
+            // total physical memory / 1024, far below i32::MAX.
+            m1.m1i3 = max_rss_kb.min(i32::MAX as u64) as i32;
+            let _ = minor_faults;
+            let _ = major_faults;
         }
         VmReply::RsMemctlAddrLen { addr, len } => {
             // C message layout (com.h:738-741): VM_RS_CTL_ADDR == m2_p1,
@@ -1195,7 +1384,10 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             let len_u32 = u32::try_from(regions.len()).unwrap_or(u32::MAX);
             m1.m1p1 = u64::from(len_u32); // sentinel: source-side length
             m1.m1i1 = count as i32;
-            m1.m1i2 = next as i32;
+            // SAFETY: `as i32` truncates the vaddr cursor. Region addresses
+            // live in the low 4 GiB user range (VM_MMAPTOP = 0x80000000),
+            // so the cursor fits — documented per §模式19.
+            m1.m1i2 = next.0 as i32;
             // m1.m1i3 deliberately left as 0 — reserved for caller-side
             // buffer capacity once sys_datacopy is wired.
         }
@@ -1236,6 +1428,36 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
 }
 
 impl VmServer {
+    // V10-P2-1: the `handle_*` wrappers were superseded by
+    // `dispatch_on_msg` → `MessageDispatcher::dispatch_*` (which routes
+    // directly); they had zero callers and are removed.
+
+    pub fn has_pending_vfs_requests(&self) -> bool {
+        !self.vfs_queue.is_empty()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessors
+    pub(crate) fn page_cache(&self) -> &PageCache {
+        &self.page_cache
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vfs_queue(&self) -> &VfsRequestQueue {
+        &self.vfs_queue
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn vfs_queue_mut(&mut self) -> &mut VfsRequestQueue {
+        &mut self.vfs_queue
+    }
+}
+
+// V10-P2-1: `handle_fork`/`handle_brk`/`handle_exit` are thin test
+// wrappers over `MessageDispatcher` (the main loop routes via
+// `dispatch_on_msg` → `dispatch_by_number` directly). They are kept under
+// `cfg(test)` for the server-level dispatch tests.
+#[cfg(test)]
+impl VmServer {
     pub(crate) fn handle_fork(&mut self, req: VmForkIn) -> VmReply {
         let table = VmProcTable::get_global();
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
@@ -1252,56 +1474,6 @@ impl VmServer {
         let table = VmProcTable::get_global();
         let frames = self.page_frames.as_mut().expect("page_frames not initialized");
         MessageDispatcher::dispatch_exit(table, &mut self.page_alloc, frames, req)
-    }
-
-    pub(crate) fn handle_mmap(&mut self, req: VmMmapIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_mmap(table, &mut self.page_alloc, frames, &mut self.vfs_queue, req)
-    }
-
-    pub(crate) fn handle_map_phys(&mut self, req: VmMapPhysIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_map_phys(table, &mut self.page_alloc, frames, req)
-    }
-
-    pub(crate) fn handle_mapcache(&mut self, caller: Endpoint, req: VmCacheIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_mapcache(table, &mut self.page_alloc, frames, &mut self.page_cache, caller, req)
-    }
-
-    pub(crate) fn handle_setcache(&mut self, caller: Endpoint, req: VmCacheIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_setcache(table, &mut self.page_alloc, frames, &mut self.page_cache, caller, req)
-    }
-
-    pub(crate) fn handle_forgetcache(&mut self, req: VmCacheIn) -> VmReply {
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_forgetcache(&mut self.page_cache, frames, &mut self.page_alloc, req)
-    }
-
-    pub(crate) fn handle_clearcache(&mut self, req: VmCacheIn) -> VmReply {
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_clearcache(&mut self.page_cache, frames, &mut self.page_alloc, req)
-    }
-
-    pub fn has_pending_vfs_requests(&self) -> bool {
-        !self.vfs_queue.is_empty()
-    }
-
-    pub(crate) fn page_cache(&self) -> &PageCache {
-        &self.page_cache
-    }
-
-    pub(crate) fn vfs_queue(&self) -> &VfsRequestQueue {
-        &self.vfs_queue
-    }
-
-    pub(crate) fn vfs_queue_mut(&mut self) -> &mut VfsRequestQueue {
-        &mut self.vfs_queue
     }
 }
 
@@ -1384,6 +1556,96 @@ mod tests {
     }
 
     #[test]
+    fn test_dispatch_vm_info_what_matches_c_wire() {
+        // 26-P0 regression: C wire values are VMIW_STATS=1 / VMIW_USAGE=2 /
+        // VMIW_REGION=3 (com.h:732-734) — libsys vm_info_stats/usage/region
+        // send exactly these (vm_info.c:15/:29/:46). The decoder must match:
+        // a libsys caller sending what=1 must get Stats, not Usage.
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(60);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+            empty.activate(ep).init_regions();
+
+            let mut msg = Message::default();
+            msg.m_source = ep;
+            msg.m_type = minix_types::VM_INFO as i32;
+            let call = minix_types::VM_INFO as usize - VM_RQ_BASE as usize;
+
+            // what=1 (VMIW_STATS) → Stats reply.
+            // SAFETY: union overlay write — MessageM2 layout matches the
+            // VM_INFO decode (m2i1=what, m2i2=ep, m2i3=count, m2l2=next).
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: minix_types::VMIW_STATS,
+                    ..Default::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(call, &msg, &mut server);
+            assert!(
+                matches!(result.reply, VmReply::InfoStats { .. }),
+                "what=1 (VMIW_STATS) must decode to Stats: {:?}",
+                result.reply
+            );
+
+            // what=2 (VMIW_USAGE) with invalid target → InvalidProcess.
+            // SAFETY: union overlay write (MessageM2 layout as above).
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: minix_types::VMIW_USAGE,
+                    m2i2: 9999,
+                    ..Default::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(call, &msg, &mut server);
+            assert!(
+                matches!(result.reply, VmReply::Error(VmError::InvalidProcess)),
+                "what=2 (VMIW_USAGE) with invalid ep must be InvalidProcess: {:?}",
+                result.reply
+            );
+
+            // what=3 (VMIW_REGION) with ep=SELF → replaced by m_source
+            // (C: utility.c:141-143). m_source is a valid slot, so a
+            // successful empty Region reply proves the replacement.
+            // SAFETY: union overlay write (MessageM2 layout as above).
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: minix_types::VMIW_REGION,
+                    m2i2: Endpoint::SELF.get(),
+                    m2i3: 64,
+                    ..Default::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(call, &msg, &mut server);
+            assert!(
+                matches!(result.reply, VmReply::InfoRegion { .. }),
+                "what=3 (VMIW_REGION) with ep=SELF must resolve to m_source: {:?}",
+                result.reply
+            );
+
+            // Unknown what → InvalidParam (C: utility.c:163).
+            // SAFETY: union overlay write (MessageM2 layout as above).
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: 0,
+                    ..Default::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(call, &msg, &mut server);
+            assert!(
+                matches!(result.reply, VmReply::Error(VmError::InvalidParam)),
+                "unknown what must be InvalidParam: {:?}",
+                result.reply
+            );
+        });
+    }
+
+    #[test]
     fn test_vm_server_new() {
         with_test_mock_base(|| {
             let server = make_test_vm_server();
@@ -1408,6 +1670,216 @@ mod tests {
         with_test_mock_base(|| {
             let mut server = make_test_vm_server();
             server.run();
+        });
+    }
+
+    /// V10-P0-2: end-to-end main-loop round. A `TestIpcTransport` drives
+    /// `run_once()` through receive → caller validation → dispatch → reply,
+    /// and the reply is observable via the test-side handle.
+    #[test]
+    fn test_run_once_dispatch_reply_round() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            // Boot image: VM itself (slot 8). The caller is registered at a
+            // dedicated slot (70) below — the shared proc-table statics race
+            // under parallel tests (P2-4), so we avoid boot slots 8/9 here.
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Register a valid caller at slot 70 (endpoint encodes slot 70).
+            let table = VmProcTable::get_global();
+            let caller_slot = UserSlot::new(70);
+            unsafe { table.reset_slot(caller_slot); }
+            let empty = table.get_empty(caller_slot).unwrap();
+            let caller_ep = Endpoint::from_generation_slot(1, 70);
+            let mut caller = empty.activate(caller_ep);
+            caller.init_regions();
+            // Allow all calls: a fresh slot starts Uninitialized (DEFAULT
+            // mask only), and VM_INFO is a privileged query in C's ACL
+            // (acl.c). System(all) mirrors "trusted caller" in this test.
+            caller.set_acl(crate::acl::AclState::System(crate::acl::AclMask::all()));
+
+            // Queue a VM_INFO (what=1 → InfoStats) request from PFS.
+            let mut msg = Message::default();
+            msg.m_source = caller_ep;
+            msg.m_type = minix_types::VM_INFO as i32;
+            // SAFETY: union overlay write — VM_INFO decodes m2i1 as `what`.
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: minix_types::VMIW_STATS,
+                    ..Default::default()
+                };
+            }
+            handle.queue_receive(msg, IpcStatus::default());
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+
+            let sent = handle.sent();
+            assert_eq!(sent.len(), 1, "one reply must be sent");
+            assert_eq!(sent[0].0, caller_ep, "reply goes to the caller");
+            // InfoStats encodes as OK → errno 0 (C: do_info VMIW_STATS → OK).
+            assert_eq!(sent[0].1.m_type, 0, "InfoStats reply errno must be OK(0)");
+
+            reset_boot_slots();
+            unsafe { table.reset_slot(caller_slot); }
+        });
+    }
+
+    /// V10-P1-1: a notification (IPC_STATUS_CALL == NOTIFY == 4) is skipped
+    /// before endpoint validation — it must not be dropped nor answered.
+    #[test]
+    fn test_run_once_notify_skipped_before_dispatch() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Source NONE: if the notify were treated as a request it would
+            // be dropped as an invalid caller — the skip must happen first.
+            let mut msg = Message::default();
+            msg.m_source = Endpoint::NONE;
+            msg.m_type = 0;
+            handle.queue_receive(msg, IpcStatus { flags: 4 /* NOTIFY */ });
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+            assert_eq!(server.dropped_messages(), 0, "notify must not be counted as dropped");
+            assert!(handle.sent().is_empty(), "notify must not produce a reply");
+
+            reset_boot_slots();
+        });
+    }
+
+    /// V10-P0-2: a receive failure is dropped + counted, and reported as
+    /// `RunStep::ReceiveFailed` so `run()` can bound consecutive failures.
+    #[test]
+    fn test_run_once_receive_failure_counts() {
+        with_test_mock_base(|| {
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+            handle.set_should_fail(true);
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::ReceiveFailed);
+            assert_eq!(server.dropped_messages(), 1);
+        });
+    }
+
+    /// V10-P2-4: the main-loop counters are observable via `InfoStats` —
+    /// after N dropped receives, a VM_INFO (VMIW_STATS) query reports them.
+    #[test]
+    fn test_dropped_messages_observable_via_info_stats() {
+        with_test_mock_base(|| {
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Register a valid caller at slot 70 (endpoint encodes slot 70).
+            let table = VmProcTable::get_global();
+            let caller_slot = UserSlot::new(70);
+            unsafe { table.reset_slot(caller_slot); }
+            let empty = table.get_empty(caller_slot).unwrap();
+            let caller_ep = Endpoint::from_generation_slot(1, 70);
+            let mut caller = empty.activate(caller_ep);
+            caller.init_regions();
+            caller.set_acl(crate::acl::AclState::System(crate::acl::AclMask::all()));
+
+            // Three consecutive receive failures → three dropped messages.
+            handle.set_should_fail(true);
+            for _ in 0..3 {
+                assert_eq!(server.run_once(), RunStep::ReceiveFailed);
+            }
+            assert_eq!(server.dropped_messages(), 3);
+
+            // The counters must be visible through VMIW_STATS.
+            let mut msg = Message::default();
+            msg.m_source = caller_ep;
+            msg.m_type = minix_types::VM_INFO as i32;
+            // SAFETY: union overlay write — VM_INFO decodes m2i1 as `what`.
+            unsafe {
+                msg.m_u.m_m2 = minix_types::ipc::MessageM2 {
+                    m2i1: minix_types::VMIW_STATS,
+                    ..Default::default()
+                };
+            }
+            let result = MessageDispatcher::dispatch_by_number(
+                minix_types::VM_INFO as usize - VM_RQ_BASE as usize,
+                &msg,
+                &mut server,
+            );
+            match result.reply {
+                VmReply::InfoStats { dropped_messages, pagefault_errors, .. } => {
+                    assert_eq!(dropped_messages, 3, "dropped counter must surface via InfoStats");
+                    assert_eq!(pagefault_errors, 0);
+                }
+                other => panic!("VMIW_STATS must decode to InfoStats: {:?}", other),
+            }
+
+            unsafe { table.reset_slot(caller_slot); }
+        });
+    }
+
+    /// V10-P0-2: a permanently broken transport must not busy-spin — after
+    /// `MAX_CONSECUTIVE_RECV_FAILURES` consecutive failures `run()` panics
+    /// instead of burning 100% CPU (C's `sef_receive_status` blocks).
+    #[test]
+    fn test_run_busy_loop_protection() {
+        with_test_mock_base(|| {
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+            handle.set_should_fail(true);
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                server.run();
+            }));
+            assert!(result.is_err(), "broken transport must panic, not busy-loop");
+            assert_eq!(
+                server.dropped_messages(),
+                MAX_CONSECUTIVE_RECV_FAILURES as u64,
+                "each consecutive failure must be counted before the panic"
+            );
         });
     }
 
@@ -1592,6 +2064,34 @@ mod tests {
     }
 
     #[test]
+    fn test_pagefault_errors_counted() {
+        // V9-P1-1: a pagefault whose handling fails (here: endpoint not in
+        // the process table) must be counted, not silently dropped.
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+            assert_eq!(server.pagefault_errors(), 0);
+
+            let mut msg = Message::default();
+            msg.m_source = Endpoint::MEM; // kernel-ish source, invalid proc slot
+            msg.m_type = minix_types::VM_PAGEFAULT as i32;
+            let mut pf = minix_types::ipc::MessVmPagefault::default();
+            pf.vpf_addr = 0x1000;
+            pf.vpf_flags = 0; // not a write fault (C: PFERR_WRITE bit 1)
+            unsafe {
+                msg.m_u.m_vm_pagefault = pf;
+            }
+
+            // Pagefaults originate in the kernel on behalf of the faulting
+            // process: IPC_FLG_MSG_FROM_KERNEL (ipcconst.h:22-24, bit 16).
+            let from_kernel = IpcStatus { flags: 1 << 16 };
+            let action = server.dispatch_on_msg(&msg, &from_kernel, UserSlot::new(0));
+            assert!(matches!(action, DispatchAction::NoReply));
+            assert_eq!(server.pagefault_errors(), 1, "failed pagefault must be counted");
+        });
+    }
+
+    #[test]
     fn test_vm_server_vfs_queue_access() {
         with_test_mock_base(|| {
             let server = make_test_vm_server();
@@ -1739,6 +2239,7 @@ mod tests {
             boot_procs,
             modules,
             kernel_allocated: KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
             is_first_time: true,
         }
     }

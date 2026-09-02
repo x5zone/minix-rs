@@ -23,9 +23,9 @@
 //!   builds will still panic at runtime, but now with a clear "wiring
 //!   pending" message instead of a misleading `Err(())`.
 //! - [`TestIpcTransport`] — mock impl that buffers/returns test data.
-//!   Selected via `cfg(test)` or by explicit `VmServer::run_with()`
-//!   parameterization. Lets unit tests drive the main loop without a
-//!   live kernel.
+//!   `#[cfg(test)]`-only; injected through `VmServer::new_for_test`
+//!   (V10-P0-2). Lets unit tests drive the main loop without a live
+//!   kernel.
 //!
 //! # See also
 //!
@@ -48,6 +48,29 @@ pub struct IpcStatus {
     pub flags: u32,
 }
 
+impl IpcStatus {
+    /// C: `is_ipc_notify(ipc_status)` — `IPC_STATUS_CALL(status) == NOTIFY`
+    /// (minix/com.h:92, minix/ipcconst.h:16: `NOTIFY == 4`).
+    ///
+    /// Notifications are async signals (kernel interrupts / RS pings), not
+    /// request messages; the main loop must skip them before endpoint
+    /// validation (V10-P1-1, main.c:126-129).
+    pub fn is_notify(&self) -> bool {
+        (self.flags & 0x3F) == 4 // NOTIFY
+    }
+
+    /// C: `IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)`
+    /// (minix/ipcconst.h:22-24) — the message originated in the kernel on
+    /// behalf of a process (pagefaults, signals), never reply to it.
+    ///
+    /// DEAD until kernel IPC core: `KernelIpcTransport::receive` fills
+    /// `flags` for real; until then every status is `default()` and this
+    /// returns `false`.
+    pub fn is_from_kernel(&self) -> bool {
+        ((self.flags >> 16) & 1) != 0
+    }
+}
+
 /// Errors that can occur during IPC transport operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcError {
@@ -57,8 +80,12 @@ pub enum IpcError {
     /// Destination endpoint is invalid (`NONE` or out of range).
     InvalidEndpoint,
     /// Send queue is full.
+    // V10-P2-1 (DEFERRED): no producer until kernel IPC core returns
+    // EAGAIN-style errors.
+    #[allow(dead_code)]
     WouldBlock,
     /// The kernel returned a generic error (carries the raw code).
+    #[allow(dead_code)]
     Kernel(i32),
 }
 
@@ -95,6 +122,13 @@ pub trait IpcTransport {
     /// Send an IPC message to a destination endpoint. Mirrors C
     /// `ipc_send(dest, &msg)`.
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError>;
+
+    /// Mark the transport as ready before the main loop starts.
+    ///
+    /// C: SEF startup (`__minix_init`, main.c:480) initializes the IPC
+    /// vectors; production impls seed kernel-side state here. Default
+    /// no-op so test transports need no special handling (V10-P0-2).
+    fn mark_initialized(&mut self) {}
 }
 
 // ── Production impl: kernel IPC ──
@@ -121,13 +155,6 @@ impl KernelIpcTransport {
     pub const fn new() -> Self {
         Self { initialized: false }
     }
-
-    /// Mark the transport as initialized. Called from `VmServer::init()`
-    /// after the kernel IPC channel is ready (today: a no-op; once
-    /// kernel IPC core lands, this will also seed any kernel-side state).
-    pub fn mark_initialized(&mut self) {
-        self.initialized = true;
-    }
 }
 
 impl Default for KernelIpcTransport {
@@ -137,6 +164,12 @@ impl Default for KernelIpcTransport {
 }
 
 impl IpcTransport for KernelIpcTransport {
+    fn mark_initialized(&mut self) {
+        // Today this only flips the readiness flag; once kernel IPC core
+        // lands it will also seed any kernel-side state (SEF startup).
+        self.initialized = true;
+    }
+
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
         // C: sef_receive_status(ANY, &msg, &rcv_sts) — libsys.so
         // Rust: blocked on kernel IPC core. The `initialized`
@@ -167,86 +200,118 @@ impl IpcTransport for KernelIpcTransport {
     }
 }
 
-// ── Test impl: in-memory mock ──
+// ── Test impl: in-memory mock (cfg(test) only; V10-P0-2) ──
 
 /// Test-only IPC transport. Holds a single pre-loaded message that
 /// `receive` returns, and records every `send` so tests can inspect
 /// what the main loop would have replied.
 ///
-/// This impl is selected automatically in `#[cfg(test)]` builds via
-/// the `ipc_transport_for_test()` constructor.
+/// The mutable state lives behind an `Rc` so a test can keep a
+/// [`TestTransportHandle`] after the transport itself is boxed into
+/// `VmServer` (`VmServer::new_for_test`, V10-P0-2) — the server runs
+/// `receive`/`send` through the trait object while the test queues
+/// messages and inspects replies through the handle.
+#[cfg(test)]
 pub struct TestIpcTransport {
-    /// The next message `receive` will return.
-    next_receive: Option<(Message, IpcStatus)>,
-    /// All `send` calls recorded for inspection.
-    sent: alloc::vec::Vec<(Endpoint, Message)>,
-    /// If `true`, `receive` returns `Err(Unimplemented)` like the old
-    /// stub. Default `false` so tests can opt into the panic.
-    should_fail: bool,
+    shared: alloc::rc::Rc<TestTransportShared>,
 }
 
+#[cfg(test)]
 impl TestIpcTransport {
     pub fn new() -> Self {
         Self {
-            next_receive: None,
-            sent: alloc::vec::Vec::new(),
-            should_fail: false,
+            shared: alloc::rc::Rc::new(TestTransportShared {
+                next_receive: core::cell::RefCell::new(None),
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                should_fail: core::cell::Cell::new(false),
+            }),
         }
+    }
+
+    /// A handle to this transport's state, kept by the test after the
+    /// transport is moved into `VmServer` (V10-P0-2).
+    pub fn handle(&self) -> TestTransportHandle {
+        TestTransportHandle { shared: alloc::rc::Rc::clone(&self.shared) }
     }
 
     /// Queue a message to be returned by the next `receive` call.
     pub fn queue_receive(&mut self, msg: Message, sts: IpcStatus) {
-        self.next_receive = Some((msg, sts));
+        *self.shared.next_receive.borrow_mut() = Some((msg, sts));
     }
 
-    /// Return the list of recorded sends (oldest first).
-    pub fn sent(&self) -> &[(Endpoint, Message)] {
-        &self.sent
+    /// Return a snapshot of the recorded sends (oldest first).
+    pub fn sent(&self) -> alloc::vec::Vec<(Endpoint, Message)> {
+        self.shared.sent.borrow().clone()
     }
 
     /// Make `receive` return `Err(Unimplemented)` (matches old stub).
     pub fn set_should_fail(&mut self, v: bool) {
-        self.should_fail = v;
+        self.shared.should_fail.set(v);
     }
 }
 
+/// Shared mutable state of [`TestIpcTransport`], owned by both the
+/// transport and any [`TestTransportHandle`] clones.
+#[cfg(test)]
+struct TestTransportShared {
+    next_receive: core::cell::RefCell<Option<(Message, IpcStatus)>>,
+    sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
+    should_fail: core::cell::Cell<bool>,
+}
+
+/// Test-side handle to a [`TestIpcTransport`]'s state (V10-P0-2).
+///
+/// The test keeps a clone of this handle while the transport itself runs
+/// inside `VmServer`; queueing a message before `run_once` and inspecting
+/// the recorded replies afterwards exercises the real main-loop path.
+#[derive(Clone)]
+#[cfg(test)]
+pub struct TestTransportHandle {
+    shared: alloc::rc::Rc<TestTransportShared>,
+}
+
+#[cfg(test)]
+impl TestTransportHandle {
+    /// Queue a message to be returned by the next `receive` call.
+    pub fn queue_receive(&self, msg: Message, sts: IpcStatus) {
+        *self.shared.next_receive.borrow_mut() = Some((msg, sts));
+    }
+
+    /// Return a snapshot of the recorded sends (oldest first).
+    pub fn sent(&self) -> alloc::vec::Vec<(Endpoint, Message)> {
+        self.shared.sent.borrow().clone()
+    }
+
+    /// Make `receive` return `Err(Unimplemented)`.
+    pub fn set_should_fail(&self, v: bool) {
+        self.shared.should_fail.set(v);
+    }
+}
+
+#[cfg(test)]
 impl Default for TestIpcTransport {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl IpcTransport for TestIpcTransport {
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
-        if self.should_fail {
+        if self.shared.should_fail.get() {
             return Err(IpcError::Unimplemented);
         }
-        self.next_receive
+        self.shared
+            .next_receive
+            .borrow_mut()
             .take()
             .ok_or(IpcError::Unimplemented)
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
-        self.sent.push((dest, msg.clone()));
+        self.shared.sent.borrow_mut().push((dest, *msg));
         Ok(())
     }
-}
-
-// ── Selector ──
-
-/// Select the appropriate IPC transport for the current build.
-///
-/// In `#[cfg(test)]` builds, returns a [`TestIpcTransport`] so unit
-/// tests can drive the main loop. In production builds, returns a
-/// [`KernelIpcTransport`] (which will panic until kernel IPC core lands).
-#[cfg(test)]
-pub fn ipc_transport_for_build() -> TestIpcTransport {
-    TestIpcTransport::new()
-}
-
-#[cfg(not(test))]
-pub fn ipc_transport_for_build() -> KernelIpcTransport {
-    KernelIpcTransport::new()
 }
 
 // ── Tests ──
@@ -255,6 +320,22 @@ pub fn ipc_transport_for_build() -> KernelIpcTransport {
 mod tests {
     use super::*;
     use minix_types::Message;
+
+    #[test]
+    fn ipc_status_call_bits_match_minix3() {
+        // C: IPC_STATUS_CALL(status) = (status >> 0) & 0x3F (ipcconst.h:16-18).
+        assert!(IpcStatus { flags: 4 /* NOTIFY */ }.is_notify());
+        assert!(!IpcStatus { flags: 3 /* SENDREC */ }.is_notify());
+        assert!(!IpcStatus { flags: 0 }.is_notify());
+        // C: IPC_STATUS_FLAGS_TEST(status, IPC_FLG_MSG_FROM_KERNEL)
+        //    = ((status >> 16) & 1) != 0 (ipcconst.h:22-24).
+        assert!(IpcStatus { flags: 1 << 16 }.is_from_kernel());
+        assert!(!IpcStatus { flags: 0 }.is_from_kernel());
+        // Notify + from-kernel can coexist (kernel notification).
+        let both = IpcStatus { flags: 4 | (1 << 16) };
+        assert!(both.is_notify());
+        assert!(both.is_from_kernel());
+    }
 
     #[test]
     fn kernel_transport_uninitialized_returns_unimplemented() {

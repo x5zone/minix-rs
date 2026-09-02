@@ -22,7 +22,11 @@ pub(crate) struct FdRefEntry {
 
 pub(crate) struct PendingFdClose {
     pub fd: i32,
+    // V10-P2-1: `dev`/`ino` are carried for diagnostics; the close request
+    // itself only needs `fd` (mmap.rs:458).
+    #[allow(dead_code)]
     pub dev: u64,
+    #[allow(dead_code)]
     pub ino: u64,
 }
 
@@ -70,11 +74,19 @@ impl FdRefTable {
         &FDREF_TABLE
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn inner(&self) -> &mut FdRefTableInner {
         // SAFETY: single-threaded event loop model; no concurrent access.
+        // The `#[allow(clippy::mut_from_ref)]` mirrors vmproc/table.rs:
+        // `&self` only locates the interior `UnsafeCell`; exclusive access
+        // is guaranteed by the single-threaded event loop (no other thread
+        // can hold a reference to the same table).
         unsafe { &mut *self.inner.get() }
     }
 
+    // V10-P2-1: `create` is test-only — production goes through
+    // `dedup_or_new` (the dedup + refcount path).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create(&self, fd: i32, dev: u64, ino: u64) -> u32 {
         let inner = self.inner();
         let id = inner.next_id;
@@ -165,11 +177,10 @@ impl FdRefTable {
             // the index points to a *different* id (collision during
             // `create` overwrote it), we don't remove — that other
             // id is still alive and the index is still correct.
-            if let Some(indexed_id) = inner.dev_ino_index.get(&(entry.dev, entry.ino)) {
-                if *indexed_id == id {
+            if let Some(indexed_id) = inner.dev_ino_index.get(&(entry.dev, entry.ino))
+                && *indexed_id == id {
                     inner.dev_ino_index.remove(&(entry.dev, entry.ino));
                 }
-            }
             // C's fdref_deref (fdref.c:116-155) ALWAYS sends VMVFSREQ_FDCLOSE
             // when the last reference disappears — the tracked fds are all
             // VM-owned dup'd fds (from FDLOOKUP's dupvm or exec's vmfd), so
@@ -191,6 +202,9 @@ impl FdRefTable {
     /// Returns the most-recently-`create`d id for that (dev, ino)
     /// pair, or None if no such entry exists. O(1) was O(n) before
     /// (perf fix).
+    // V10-P2-1: `find_by_dev_ino`/`len`/`is_empty` are test-only today
+    // (the dedup check is inlined in `deref_entry` via the side index).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn find_by_dev_ino(&self, dev: u64, ino: u64) -> Option<u32> {
         self.inner().dev_ino_index.get(&(dev, ino)).copied()
     }
@@ -205,10 +219,12 @@ impl FdRefTable {
         self.inner().entries.get(&id).cloned()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.inner().entries.len()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.inner().entries.is_empty()
     }

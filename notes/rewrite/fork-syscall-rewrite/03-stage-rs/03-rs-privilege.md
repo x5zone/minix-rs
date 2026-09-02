@@ -378,19 +378,21 @@ pub struct Privilege {
     pub id: PrivId,              // C s_id（kernel/priv.h:23）—— static priv id
     pub flags: PrivFlags,        // C s_flags（:24）
     pub init_flags: u32,         // C s_init_flags（:25）
+    pub sig_mgr: Endpoint,       // C s_sig_mgr（:40）
+    pub bak_sig_mgr: Endpoint,   // C s_bak_sig_mgr（:41）
     pub trap_mask: TrapMask,     // C s_trap_mask（:34）
     pub ipc_to: SysMap,          // C s_ipc_to（:35）—— 组合语义归 05
     pub k_call_mask: CallMask,   // C s_k_call_mask（:38）
-    pub sig_mgr: Endpoint,       // C s_sig_mgr（:40）
-    pub bak_sig_mgr: Endpoint,   // C s_bak_sig_mgr（:41）
-    pub io_ranges: [IoRange; NR_IO_RANGE],   // C s_io_tab（:54）—— 透传
     pub nr_io_range: i32,        // C s_nr_io_range（:53，int）
-    pub mem_ranges: [MemRange; NR_MEM_RANGE], // C s_mem_tab（:57）
-    pub nr_mem_range: i32,       // C s_nr_mem_range（:56，int）
-    pub irqs: [u32; NR_IRQ],     // C s_irq_tab（:60）
+    pub io_ranges: [IoRange; NR_IO_RANGE],   // C s_io_tab（:54）—— 透传
     pub nr_irq: i32,             // C s_nr_irq（:59，int）
+    pub irqs: [u32; NR_IRQ],     // C s_irq_tab（:60）
+    pub nr_mem_range: i32,       // C s_nr_mem_range（:56，int）
+    pub mem_ranges: [MemRange; NR_MEM_RANGE], // C s_mem_tab（:57）
 }
 ```
+
+**字段序镜像内核 `PrivUpdateRequest`**（[kpriv.rs](file:///os/kernel/src/kpriv.rs)，KPriv 8 子结构序去掉内核私有字段）：id → flags → init → 信号管理器 → IPC 掩码 → I/O → IRQ → 内存，资源组计数在表前——与 C `struct priv`（`s_nr_io_range` 在 `s_io_tab` 前，priv.h:53-54）同惯例。填写端与内核定义端逐字段可对照，`data_copy` 布局漂移目检可见（契约边界 → 01-stage-kernel/06 §3.10）。
 
 **计数域为 `i32`（R2，2026-08-16）**：C 是 `int`（priv.h:53/56/59），且 `sys_privctl` 拒绝负值
 （do_privctl.c:308-309/319-320/330-331）——`u16` 会丢失"校验前可负"状态。`Privilege::validate()`
@@ -531,18 +533,18 @@ pub fn boot_priv(flags: PrivFlags, endpoint_slot: i32) -> Privilege {
         id: PrivId::static_priv_id(endpoint_slot),         // main.c:265-266
         flags,                                             // main.c:269
         init_flags: 0,                                     // SRV_I/USR_I = 0（main.c:270）
+        sig_mgr: if is_sys_proc { Endpoint::RS } else { Endpoint::PM }, // main.c:274
+        bak_sig_mgr: Endpoint::NONE,                       // main.c:275
         trap_mask: TrapMask::srv_or_usr(is_sys_proc),      // main.c:271
         ipc_to: SysMap::all(),                             // fill_send_mask(ALL_M)，main.c:272-273
         k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true),
                                                            // main.c:278-280
-        sig_mgr: if is_sys_proc { Endpoint::RS } else { Endpoint::PM }, // main.c:274
-        bak_sig_mgr: Endpoint::NONE,                       // main.c:275
-        io_ranges: [IoRange::default(); NR_IO_RANGE],
         nr_io_range: 0,
-        mem_ranges: [MemRange::default(); NR_MEM_RANGE],
-        nr_mem_range: 0,
-        irqs: [0; NR_IRQ],
+        io_ranges: [IoRange::default(); NR_IO_RANGE],
         nr_irq: 0,
+        irqs: [0; NR_IRQ],
+        nr_mem_range: 0,
+        mem_ranges: [MemRange::default(); NR_MEM_RANGE],
     }
 }
 ```

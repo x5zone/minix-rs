@@ -30,10 +30,36 @@
 
 extern crate alloc;
 
+/// Feature-gated audit logging.
+///
+/// - `#[cfg(test)]` → `std::eprintln!` (test stderr)
+/// - `--features vm_acl_audit` (non-test) → `crate::audit::emit`, a
+///   no_std-compatible sink (formats + drops; output pending syslog IPC)
+/// - otherwise → compiled out entirely (release without the feature)
+#[cfg(test)]
+macro_rules! audit_log {
+    ($($arg:tt)*) => {
+        std::eprintln!($($arg)*)
+    };
+}
+
+#[cfg(all(not(test), feature = "vm_acl_audit"))]
+macro_rules! audit_log {
+    ($($arg:tt)*) => {
+        crate::audit::emit(core::format_args!($($arg)*))
+    };
+}
+
+#[cfg(not(any(test, feature = "vm_acl_audit")))]
+macro_rules! audit_log {
+    ($($arg:tt)*) => {};
+}
+
 pub(crate) mod global;
 pub(crate) mod boot;
 pub(crate) mod vmproc;
 pub(crate) mod acl;
+pub(crate) mod audit;
 pub(crate) mod fork;
 pub(crate) mod alloc_stats;
 pub(crate) mod phys_mem;

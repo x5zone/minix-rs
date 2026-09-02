@@ -71,17 +71,12 @@ impl AclMask {
     );
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum AclState {
+    #[default]
     Uninitialized,
     Default,
     System(AclMask),
-}
-
-impl Default for AclState {
-    fn default() -> Self {
-        Self::Uninitialized
-    }
 }
 
 impl AclState {
@@ -177,10 +172,16 @@ impl AclState {
     /// Corresponds to Minix3's `acl_clear()`.
     /// Unlike Minix3, there is no shared slot table to free,
     /// so simply returning `Uninitialized` is sufficient.
+    // V10-P2-1 (DEFERRED): test-only today — exit clears the ACL via
+    // `VmProc::clear()` instead of this path.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn acl_clear(&self) -> Self {
         AclState::Uninitialized
     }
 
+    // V10-P2-1 (DEFERRED): test-only; `mask` can converge with the
+    // V9-P2-3 Provider-enum work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn mask(&self) -> Option<AclMask> {
         match self {
             AclState::Uninitialized => None,

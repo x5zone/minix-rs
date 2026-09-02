@@ -25,7 +25,8 @@ use minix_types::{Endpoint, Message, MessageM1, MessLsysKrnSchedctl, MessLsysKrn
 
 use crate::proc::{CpuId, KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, complete_fork_setup};
 use crate::proc_table::ProcessTable;
-use crate::kpriv::{PrivTable, PrivFlagsBits, USER_PRIV_ID};
+use crate::capability::ProcessCapability;
+use crate::kpriv::{PrivTable, USER_PRIV_ID};
 use crate::syscall::{KcallResult, Syscall};
 use crate::syscall_signal::SIGABRT;
 
@@ -157,8 +158,11 @@ pub fn dispatch_fork(
         return KcallResult::Ok(EINVAL);
     }
 
-    // C: do_fork.c:57 — save FPU context before copy
-    // save_fpu(rpp) — handled by arch layer
+    // C: do_fork.c:57 — save_fpu(rpp) flushes the parent's live FPU
+    // registers into its buffer before the struct copy. In this codebase
+    // the per-CPU FPU ownership path (`smp.rs` `fpu_owner`) is not wired
+    // yet, so the flush is a no-op; `fork_from` copies the parent's
+    // `fpu_state` buffer when `EXT_REG_INITIALIZED` is set.
 
     // C: do_fork.c:59,69-72 — increment endpoint generation
     // gen = _ENDPOINT_G(rpc->p_endpoint); gen++; rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);
@@ -178,7 +182,7 @@ pub fn dispatch_fork(
     // Check parent's privilege flags to determine if child needs downgrade.
     let parent_is_sys_proc = caller.priv_id
         .and_then(|id| priv_table.get(id))
-        .map(|p| p.capability.s_flags.contains(PrivFlagsBits::SYS_PROC))
+        .map(|p| p.flags.s_flags.contains(ProcessCapability::SYS_PROC))
         .unwrap_or(false);
 
     // C: do_fork.c:105-107 — rpc->p_priv = priv_addr(USER_PRIV_ID)
@@ -396,7 +400,7 @@ fn cause_signal_abort(caller: &mut KProcess) {
 ///
 /// The following C operations ARE now implemented:
 /// - IRQ hook cleanup (`rm_irq_handler`) — via global `irq_manager()`
-/// - `reset_kernel_timer(&priv(rc)->s_alarm_timer)` — via `clock_state.reset_timer()`
+/// - `reset_kernel_timer(&priv(rc)->s_alarm_timer)` — via `clock::reset_alarm_timer()`
 ///
 /// The core operations that ARE implemented here (endpoint validation,
 /// RTS_SLOT_FREE, FPU flag clear, SYS_PROC privilege release) are
@@ -461,14 +465,12 @@ pub fn dispatch_clear(
     crate::syscall::clear_endpoint(proc_table, priv_table, target_nr);
 
     // C: do_clear.c:52 — reset_kernel_timer(&priv(rc)->s_alarm_timer)
-    // Cancel any pending alarm timer for this process.
-    if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
-        && let Some(kp) = priv_table.get_mut(pid)
-            && let Some((_entry, timer_id)) = kp.runtime.s_alarm_timer.take() {
-                // Remove the timer from the clock's active timer chain.
-                // C: reset_kernel_timer() dequeues + reinitializes.
-                clock_state.reset_timer(timer_id);
-            }
+    // Cancel any pending alarm timer for this process. Chain-aware: the
+    // node is embedded in the priv slot and unlinked from the clock's
+    // sorted chain (C: `reset_kernel_timer` → `tmrs_clrtimer`).
+    if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id) {
+        crate::clock::reset_alarm_timer(priv_table, clock_state, pid);
+    }
 
     // C: do_clear.c:57 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
     // Mark the TARGET slot as free so it can be reused.
@@ -487,7 +489,7 @@ pub fn dispatch_clear(
         && let Some(priv_id) = target.priv_id
             && let Some(kpriv) = priv_table.get_mut(priv_id)
                 && kpriv.is_sys_proc() {
-                    kpriv.capability.s_proc_nr = None;
+                    kpriv.identity.s_proc_nr = None;
                 }
 
     KcallResult::Ok(OK)
@@ -1023,8 +1025,8 @@ mod tests {
     /// Helper: prepare a caller process with a working priv_id, returning
     /// (caller, priv_table). The priv_id must map to a real KPriv slot so
     /// dispatch_statectl can update `s_ipcf`.
-    fn build_caller_with_priv() -> (KProcess, PrivTable) {
-        let priv_table = PrivTable::new();
+    fn build_caller_with_priv() -> (KProcess, crate::test_helpers::TestPrivTable) {
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = Some(0);
         (caller, priv_table)
@@ -1033,7 +1035,7 @@ mod tests {
     #[test]
     fn test_dispatch_statectl_add_ipc_bl_filter_allocates_slot() {
         let (mut caller, mut priv_table) = build_caller_with_priv();
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
         assert_eq!(
@@ -1054,7 +1056,7 @@ mod tests {
     #[test]
     fn test_dispatch_statectl_add_ipc_wl_filter_allocates_slot() {
         let (mut caller, mut priv_table) = build_caller_with_priv();
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(4, 0xdead_beef, 0);
         assert_eq!(
@@ -1077,7 +1079,7 @@ mod tests {
         // slot, not stacks. Verify by calling twice and observing only one
         // allocation in the local pool.
         let (mut caller, mut priv_table) = build_caller_with_priv();
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
         assert_eq!(
@@ -1100,7 +1102,7 @@ mod tests {
     #[test]
     fn test_dispatch_statectl_invalid_request_returns_einval() {
         let (mut caller, mut priv_table) = build_caller_with_priv();
-        let mut proc_table = crate::proc_table::ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(99, 0, 0);
         assert_eq!(
@@ -1133,7 +1135,7 @@ mod tests {
     #[test]
     fn test_dispatch_runctl_stop() {
         // C: do_runctl.c — RTS_SET(rp, RTS_PROC_STOP) on the target
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Use a valid user-space process slot (nr=0, endpoint=0)
         let target_nr: ProcNr = ProcNr(0);
         if let Some(target) = proc_table.get_mut(target_nr) {
@@ -1155,7 +1157,7 @@ mod tests {
     #[test]
     fn test_dispatch_runctl_resume() {
         // C: do_runctl.c — RTS_UNSET(rp, RTS_PROC_STOP) on the target
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr: ProcNr = ProcNr(0);
         if let Some(target) = proc_table.get_mut(target_nr) {
             target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1175,7 +1177,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_runctl_invalid_action() {
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr: ProcNr = ProcNr(0);
         if let Some(target) = proc_table.get_mut(target_nr) {
             target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1194,14 +1196,14 @@ mod tests {
     #[test]
     fn test_dispatch_runctl_kernel_process_returns_eperm() {
         // C: do_runctl.c:31 — iskerneln(proc_nr) → EPERM
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Kernel processes have negative ProcNr. The IDLE process
         // (nr = -(NR_TASKS-4) on most configs) is a kernel task.
         // Find a kernel process by scanning for negative p_nr.
         let kernel_nr = proc_table.iter()
             .find(|p| p.p_nr < ProcNr(0))
             .map(|p| p.p_nr)
-            .expect("ProcessTable::new() should have kernel tasks");
+            .expect("crate::test_helpers::test_proc_table() should have kernel tasks");
         let kernel_endpoint = proc_table.get(kernel_nr).unwrap().p_endpoint;
 
         // IDLE is in SLOT_FREE by default, so endpoint_to_nr won't find it.
@@ -1220,7 +1222,7 @@ mod tests {
     #[test]
     fn test_dispatch_exec_operates_on_target() {
         // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr), then operate on rp
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         // Set up a user-space target process (nr >= 0)
         let target_nr: ProcNr = ProcNr(0);
         proc_table.get_mut(target_nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -1260,7 +1262,7 @@ mod tests {
     #[test]
     fn test_dispatch_exec_invalid_endpoint() {
         // C: do_exec.c:27,30 — isokendpt fails → EINVAL
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
@@ -1277,8 +1279,8 @@ mod tests {
         let mut msg = Message::default();
         // Set an endpoint that won't be found in the process table
         msg.m_u.m_m1.m1i1 = 99999; // invalid endpoint
-        let mut proc_table = ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1287,8 +1289,8 @@ mod tests {
     fn test_dispatch_clear_sets_target_slot_free() {
         // C: do_clear.c:57 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
         // The target process (not the caller) should be marked SLOT_FREE.
-        let mut proc_table = ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
 
         // Activate a user-process slot so endpoint_to_nr can find it.
         // Slot with p_nr = 0 (first user process after NR_TASKS).
@@ -1318,8 +1320,8 @@ mod tests {
     #[test]
     fn test_dispatch_clear_clears_ext_reg_on_target() {
         // C: do_clear.c:60-61 — release_fpu(rc), clear MF_FPU_INITIALIZED
-        let mut proc_table = ProcessTable::new();
-        let mut priv_table = PrivTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
 
         let target_nr = ProcNr(0);
         let target_ep = Endpoint::from_generation_slot(1, target_nr.0);
@@ -1382,7 +1384,7 @@ mod tests {
     #[test]
     fn test_dispatch_schedctl_invalid_flags() {
         // C: do_schedctl.c:16-17 — flags & ~SCHEDCTL_FLAG_KERNEL → EINVAL
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let msg = build_schedctl_msg(0xFF, 0, 0, 0, 0);
 
@@ -1393,7 +1395,7 @@ mod tests {
     #[test]
     fn test_dispatch_schedctl_invalid_endpoint_returns_einval() {
         // C: do_schedctl.c:23-24 — isokendpt fails → EINVAL
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // Endpoint 99999 won't resolve in an empty process table.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, 99999, 0, 0, 0);
@@ -1406,7 +1408,7 @@ mod tests {
     fn test_dispatch_schedctl_kernel_flag_calls_sched_proc_and_clears_scheduler() {
         // C: do_schedctl.c:23-35 — kernel becomes scheduler:
         //   sched_proc(p, priority, quantum, cpu, FALSE) + p_scheduler = NULL
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
@@ -1435,7 +1437,7 @@ mod tests {
     fn test_dispatch_schedctl_kernel_flag_propagates_sched_proc_error() {
         // C: do_schedctl.c:37 — if sched_proc returns error, propagate it.
         // Invalid priority (out of range) → EINVAL from sched_proc.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
@@ -1455,7 +1457,7 @@ mod tests {
         // After fix: `priority = 256` → rejected at syscall layer because
         // 256 > NR_SCHED_QUEUES (16) → EINVAL.
         // C: system.c:645 — priority > NR_SCHED_QUEUES → EINVAL.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
@@ -1470,7 +1472,7 @@ mod tests {
     #[test]
     fn test_dispatch_schedctl_kernel_flag_invalid_quantum_returns_einval() {
         // C: do_schedctl.c:37 → sched_proc validates quantum < 1 && != -1 → EINVAL.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
@@ -1487,7 +1489,7 @@ mod tests {
         // C: do_schedctl.c:41-42 — caller becomes the scheduler.
         // The TARGET's p_scheduler should be set to caller.p_nr, NOT the
         // caller's own p_scheduler.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
@@ -1512,7 +1514,7 @@ mod tests {
     fn test_dispatch_schedctl_preserves_minus_one_sentinels() {
         // C: do_schedctl.c:37 → sched_proc(p, -1, -1, -1, FALSE) keeps
         // current priority/quantum/cpu unchanged.
-        let mut proc_table = ProcessTable::new();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 

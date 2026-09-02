@@ -16,11 +16,19 @@
 // gain, large churn across 70+ tests. Allowed per clippy::field_reassign_with_default.
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
+// Zero-heap contract: the C kernel has no `malloc` (the minix3 kernel
+// allocates nothing at runtime — all tables are static arrays), and this
+// crate preserves that. `alloc` is linked only so `#[cfg(test)]` code can
+// use `alloc::` collections; the production build registers NO
+// `global_allocator`, so any allocation attempt on a non-test path fails
+// at link time (undefined `__rust_alloc`). Runtime data structures
+// therefore use fixed-size arrays, index-based intrusive lists, and
+// `FmtBuf` stack formatting (see clock.rs, ipc.rs, page_fault.rs).
 extern crate alloc;
 
 use minix_arch::paging_ext::HugePages;
 use minix_types::{VirBytes, PhysBytes};
-use minix_boot::KernelInfo;
+use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::PageFlags;
 use minix_arch::pt_alloc;
 
@@ -56,6 +64,9 @@ pub mod page_fault;
 pub mod pte_walk;
 pub mod grant;
 pub mod krandom;
+
+#[cfg(test)]
+mod test_helpers;
 
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 #[path = "arch/x86_64/mod.rs"]
@@ -386,10 +397,12 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // `init_clock_and_interrupts`, but BKL is held until `switch_to_user`).
     crate::krandom::init();
 
-    // Phase D: arch_post_init + memory_init
+    // Phase D: arch_post_init + memory_init → Direct Map readiness check.
+    // C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
+    // C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
     // SAFETY: boot is single-threaded before BKL exists.
     let proc_table = unsafe { crate::proc_table_boot_unchecked() };
-    init_post_and_memory(kernel_info, proc_table);  // covered in 07
+    init_post_and_memory(proc_table);  // covered in 07
 
     // Phase E: system_init — register syscall handlers
     // C: system_init() — system.c:168-278
@@ -568,7 +581,14 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 
     let kern_high = kernel_info.kern_virt_base().0;
 
-    // Architecture-specific labels for register output
+    // Architecture-specific labels for register output.
+    // TODO(refactor): these `#[cfg(target_arch)]` blocks select behavior
+    // (output strings) and should be replaced with an `ArchNames` trait
+    // in `minix_plat`. The naked_asm blocks above (L534/544/552) and the
+    // `asm!("hlt"/"wfi")` blocks below (L636/641) are **literal asm
+    // constraints** — those must stay because `naked_asm!` requires
+    // compile-time symbol names. Tracked in todo.md as B-X (hardware
+    // abstraction hardening backlog).
     #[cfg(target_arch = "x86_64")]
     const ARCH_NAME: &str = "x86_64";
     #[cfg(target_arch = "aarch64")]
@@ -763,6 +783,31 @@ fn init_clock_and_interrupts() {
 /// C: proc_init() — proc.c:119
 /// C: boot image loop — main.c:157-282
 /// C: arch_boot_proc() — protect.c:388 (x86) / protect.c:115 (ARM)
+///
+/// Collects one occupied physical range into a fixed-size exclusion
+/// array (boot is zero-heap — no `Vec`). The boot-shim memmap reports
+/// all conventional RAM as free *including* kernel-image and boot-module
+/// regions; `VmBootRegion::select_multi` needs them excluded so
+/// `VmBootRegion ∩ ReservedRegions = ∅` holds (see `frame.rs` module
+/// doc-comment, "Invariants enforced by construction").
+/// Callers pre-allocate `[MemoryRegion; NR_BOOT_MODULES + 1]`.
+fn push_exclusion(
+    exclusions: &mut [MemoryRegion],
+    n: &mut usize,
+    base: PhysBytes,
+    len: usize,
+) {
+    if len == 0 {
+        return;
+    }
+    assert!(
+        *n < exclusions.len(),
+        "push_exclusion: exclusion list overflow (NR_BOOT_MODULES too small)"
+    );
+    exclusions[*n] = MemoryRegion { base, len };
+    *n += 1;
+}
+
 #[cfg(not(feature = "mock"))]
 pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     use minix_arch::{
@@ -771,7 +816,6 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     };
     use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
     use crate::proc_table::NR_TASKS;
-    use crate::kpriv::{priv_flag_set, K_CALL_MASK_NONE, K_CALL_MASK_ALL, IPC_TO_NONE, IPC_TO_ALL};
     use crate::proc::NR_BOOT_MODULES;
 
     // Step 1+2: Acquire global process + privilege tables (SyncUnsafeCell, BSS).
@@ -895,9 +939,51 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             #[cfg(feature = "mock")]
             {
                 use minix_arch::paging::mock::MockPaging;
+                use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+                use minix_arch::DirectMapArch as _;
+                use minix_arch::MockDirectMap;
+
+                // VM image frames come from the VM Bootstrap Memory Handoff
+                // (frame.rs module doc-comment). PA is decoupled from the
+                // ELF VA. The boot-shim memmap reports all conventional RAM
+                // as free — including the kernel image and boot-module
+                // regions — so the occupied ranges must be excluded here
+                // (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
+                // Collect occupied ranges: kernel image + every boot module
+                // (fixed array — boot is zero-heap, no Vec).
+                let mut exclusions = [MemoryRegion {
+                    base: PhysBytes(0),
+                    len: 0,
+                }; crate::proc::NR_BOOT_MODULES + 1];
+                let mut n_excl = 0usize;
+                push_exclusion(
+                    &mut exclusions,
+                    &mut n_excl,
+                    kernel_info.kern_phys_base(),
+                    kernel_info.kern_size() as usize,
+                );
+                for m in kernel_info.boot_modules() {
+                    push_exclusion(&mut exclusions, &mut n_excl, m.start, m.len);
+                }
+                let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "init_proc_and_boot: no free memory for VM bootstrap region \
+                             (after excluding kernel + boot modules)"
+                        )
+                    });
+                let mut vm_alloc = VmBootAllocator::new(regions);
                 let mut paging = MockPaging::new_from_page(PhysBytes(0));
-                let vm_result = load_vm_elf(module, kernel_info, &mut paging)
-                    .expect("load_vm_elf: VM ELF is required at boot");
+                let access = MockDirectMap;
+                let vm_result = load_vm_elf(
+                    module,
+                    kernel_info,
+                    &mut paging,
+                    &mut vm_alloc,
+                    &access,
+                )
+                .expect("load_vm_elf: VM ELF is required at boot");
                 // FIX-23 (Phase 4): Reclaim VM module physical memory after
                 // ELF segments have been copied into the VM process's page
                 // tables. C: protect.c:450-451 — mod->mod_start = mod_end = 0.
@@ -923,22 +1009,68 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 //
                 // The bootstrap page table (created by `arch_boot_impl`)
                 // is still active — we wrap it via `from_active_root` and
-                // map the VM ELF segments into it. The segments use 1:1
-                // identity mapping (VA = PA), matching what `load_vm_elf`
-                // expects (see `arch/boot.rs`).
+                // map the VM ELF segments into it. Direction D
+                // (see `frame.rs` VM Bootstrap Memory Handoff):
+                // segment frames come from a verified
+                // `VmBootRegions`; `load_vm_elf` maps VM VA → the
+                // allocated PA (VA ≠ PA — no identity assumption).
                 //
                 // After the ELF is loaded, the VM module's physical memory
                 // is reclaimed via `add_memmap` (undoes the `cut_memmap`
                 // from Phase A.2), matching C: protect.c:450-451.
                 use minix_arch::paging::Paging as _;
                 use minix_arch::CurrentPaging;
+                use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+
+                // Same exclusion set as the mock path: boot-shim memmap is
+                // unfiltered, so occupied ranges (kernel + modules) must be
+                // excluded (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
+                let mut exclusions = [MemoryRegion {
+                    base: PhysBytes(0),
+                    len: 0,
+                }; crate::proc::NR_BOOT_MODULES + 1];
+                let mut n_excl = 0usize;
+                push_exclusion(
+                    &mut exclusions,
+                    &mut n_excl,
+                    kernel_info.kern_phys_base(),
+                    kernel_info.kern_size() as usize,
+                );
+                for m in kernel_info.boot_modules() {
+                    push_exclusion(&mut exclusions, &mut n_excl, m.start, m.len);
+                }
+                let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "init_proc_and_boot: no free memory for VM bootstrap region \
+                             (after excluding kernel + boot modules)"
+                        )
+                    });
+                let mut vm_alloc = VmBootAllocator::new(regions);
 
                 let root_phys = current_root_phys()
                     .expect("init_proc_and_boot: bootstrap root not set \
                              — arch_boot_impl must run first");
                 let mut paging = CurrentPaging::from_active_root(root_phys);
-                let vm_result = load_vm_elf(module, kernel_info, &mut paging)
-                    .expect("load_vm_elf: VM ELF is required at boot");
+                // `CurrentDirectMap` is a type alias, not a value
+                // constructor — select the concrete ZST like `CurrentPaging`
+                // does. All three are unit structs implementing `PhysAccess`
+                // via the blanket impl (frame.rs).
+                #[cfg(target_arch = "x86_64")]
+                let access = minix_arch::X86_64DirectMap;
+                #[cfg(target_arch = "aarch64")]
+                let access = minix_arch::AArch64DirectMap;
+                #[cfg(target_arch = "riscv64")]
+                let access = minix_arch::Riscv64DirectMap;
+                let vm_result = load_vm_elf(
+                    module,
+                    kernel_info,
+                    &mut paging,
+                    &mut vm_alloc,
+                    &access,
+                )
+                .expect("load_vm_elf: VM ELF is required at boot");
 
                 // Reclaim VM module physical memory after ELF segments
                 // have been copied into the bootstrap page table.
@@ -951,10 +1083,11 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 }
 
                 // Record VM's page-table root addresses in p_seg so
-                // `init_post_and_memory` can install them via
-                // `set_ptproc` + `set_current_ptproc_nr`. The bootstrap
-                // root IS VM's initial root — VMCTL SetAddrSpace will
-                // replace it later when VM installs its own page table.
+                // `init_post_and_memory` (Phase D) can assert them valid and
+                // install VM as the kernel-level ptproc
+                // (`set_current_ptproc_nr`). The bootstrap root IS VM's
+                // initial root — VMCTL SetAddrSpace will replace it later
+                // when VM installs its own page table.
                 proc.p_seg.phys_root = root_phys;
                 // The virtual address of the root is the identity-mapped
                 // address (VA = PA during bootstrap).
@@ -1001,12 +1134,23 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // tables; callers acquire them via `crate::proc_table()` / `crate::priv_table()`.
 }
 
-/// Initialize post-boot architecture state and memory mapping slots.
+/// Initialize post-boot architecture state.
 ///
-/// This is the Rust equivalent of C's `arch_post_init()` + `memory_init()`.
-/// It:
-/// 1. Sets ptproc to VM and records VM's page table addresses
-/// 2. Allocates free page directory entries for createpde() temporary mappings
+/// This is the Rust equivalent of C's `arch_post_init()` + `memory_init()`,
+/// reduced under Direct Map to a **readiness confirmation**:
+///
+/// 1. Assert VM's page-table root is valid (established in Phase C).
+/// 2. Record VM as the kernel-level ptproc (`set_current_ptproc_nr`) so
+///    `dispatch_vmctl(SetAddrSpace)` Step 3 can decide whether to reload
+///    the hardware root register (C: `setcr3()`, arch_do_vmctl.c:19-33; the
+///    `p == ptproc` check is at :25).
+/// 3. Assert the VM Direct Map base is configured.
+///
+/// The C behavior this replaces — `arch_post_init`'s `ptproc = VM` + `pg_info`
+/// and `memory_init`'s freepdes allocation — is intentionally absent:
+/// Direct Map is a permanent mapping, so no temporary-window allocation or
+/// borrowed page-directory registration is needed (ARCH: Direct Map, see
+/// 07-cross-space-init.md §3.5).
 ///
 /// Must be called after `init_proc_and_boot()` (Phase C), because VM's
 /// process slot and page table must already be initialized.
@@ -1014,94 +1158,56 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
 /// C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
 /// C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
 #[cfg(not(feature = "mock"))]
-pub fn init_post_and_memory(kernel_info: &KernelInfo, proc_table: &crate::proc_table::ProcessTable) {
-    use minix_arch::{
-        PostInitArch, MemoryInitArch,
-        CurrentPostInitArch, CurrentMemoryInitArch,
-        VmPageTableInfo, FreePdeSlots,
-    };
+pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
+    use minix_arch::{CurrentDirectMap, DirectMapArch};
 
-    // Step 1: Set ptproc to VM and record VM's page table addresses.
-    // C: arch_post_init() — protect.c:370-377 (x86) / protect.c:97-104 (ARM)
+    // Step 1: Assert VM's page-table root is valid.
     //
-    // In C, this does:
-    //   vm = proc_addr(VM_PROC_NR);
-    //   get_cpulocal_var(ptproc) = vm;
-    //   pg_info(&vm->p_seg.p_cr3, &vm->p_seg.p_cr3_v);   // x86
-    //   pg_info(&vm->p_seg.p_ttbr, &vm->p_seg.p_ttbr_v); // ARM
-    //
-    // In Rust, VmPageTableInfo encapsulates the page table root addresses.
-    // We populate it from the VM process's p_seg field, which was set
-    // during init_proc_and_boot when load_vm_elf mapped the VM image.
-    let vm_page_table = {
-        use crate::proc::proc_nr::VM_PROC_NR;
-        let vm_proc = proc_table.get(VM_PROC_NR)
-            .expect("VM process must be initialized before init_post_and_memory");
-        VmPageTableInfo {
-            phys_root: vm_proc.p_seg.phys_root,
-            virt_root: vm_proc.p_seg.virt_root,
-        }
-    };
-    CurrentPostInitArch::set_ptproc(&vm_page_table);
+    // The root was installed in Phase C (`init_proc_and_boot`): for the
+    // non-mock path, `p_seg.phys_root` records the bootstrap root and
+    // `p_seg.virt_root` its identity-mapped VA (lib.rs:960-963). Both must
+    // be present before VM can be trusted as the page-table process.
+    let vm_proc = proc_table.get(crate::proc::proc_nr::VM_PROC_NR)
+        .expect("VM process must be initialized before init_post_and_memory");
+    assert!(
+        vm_proc.p_seg.phys_root.0 != 0,
+        "VM page-table root (phys) must be valid after stage C"
+    );
+    assert!(
+        vm_proc.p_seg.virt_root.is_some(),
+        "VM page-table root (virt) must be kernel-mapped after stage C"
+    );
 
-    // Record VM's proc-nr as the current ptproc in the kernel global.
+    // Step 2: Record VM as the kernel-level ptproc.
+    //
     // C: get_cpulocal_var(ptproc) = vm — protect.c:372 (x86) / protect.c:99 (ARM)
     //
-    // This is the kernel-level counterpart of `set_ptproc`: the arch-level
-    // trait records any arch-internal state (e.g., virt_root for createpde),
-    // while this global enables `dispatch_vmctl(SetAddrSpace)` to decide
-    // whether to call `TlbArch::set_active_root` (write_cr3) when the
-    // target process is the current ptproc.
+    // This is the kernel-level counterpart of C's per-CPU `ptproc`: it lets
+    // `dispatch_vmctl(SetAddrSpace)` Step 3 decide whether to reload the
+    // hardware root register when the target process is the current ptproc.
+    // It is NOT part of the createpde temporary-window mechanism (that arch
+    // layer is gone — `PostInitArch`/`MemoryInitArch` were superseded by
+    // Direct Map), so it survives Direct Map (07-cross-space-init.md §1.4, P9-4).
     //
     // SAFETY: BKL is held during boot, only this CPU accesses the global.
     set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
 
-    // Step 2: Allocate free page directory entries (mirrors C's memory_init()
-    // freepdes[] accounting). createpde() itself is superseded by Direct Map
-    // in 64-bit (see FREE_PDE_SLOTS doc); the slots are retained for boot
-    // accounting parity with C.
-    // C: memory_init() — memory.c:707-717 (x86) / memory.c:612-622 (ARM)
+    // Step 3: Assert the VM Direct Map base is configured.
     //
-    // In C, this does:
-    //   freepdes[nfreepdes++] = kinfo.freepde_start++;
-    //   freepdes[nfreepdes++] = kinfo.freepde_start++;
-    //
-    // In Rust, KernelInfo is shared and immutable (passed by `&`).
-    // We track `free_upper_idx` in a global `AtomicUsize` (FREE_UPPER_IDX)
-    // so that subsequent `allocate_free_pdes()` / `createpde()` calls
-    // observe the advanced value. Atomic operations are sufficient:
-    // during boot (Phase D, single-threaded, before BKL needed) the
-    // ordering is trivial; after boot, callers must hold the BKL
-    // before invoking `createpde()`, which serializes the access.
-    //
-    // The local `free_idx` is read from the global, advanced by
-    // `allocate_free_pdes`, then written back. The advance is exactly
-    // `MAX_FREE_PDE_SLOTS` (= 2) on all architectures (x86-64/aarch64/
-    // riscv64) — the arch impl decides how many slots it consumes.
-    FREE_UPPER_IDX.store(kernel_info.free_upper_idx().expect(
-        "free_upper_idx must be set by boot-shim before kernel init"
-    ), Ordering::Release);
-    let mut free_idx = kernel_info.free_upper_idx().expect(
-        "free_upper_idx must be set by boot-shim before kernel init"
+    // The VM Direct Map window is established in Phase C when the kernel
+    // builds VM's initial page table (07-cross-space-init.md §3.2). Its
+    // base is a per-architecture compile-time constant; this check is a
+    // documented-contract assertion that fails fast at boot if a future
+    // architecture ever configures a zero base.
+    assert!(
+        CurrentDirectMap::VM_DIRECT_MAP_BASE != 0,
+        "VM direct map base must be configured"
     );
-    let free_pde_slots: FreePdeSlots = CurrentMemoryInitArch::allocate_free_pdes(&mut free_idx);
-    // Persist the advanced value. `Ordering::Release` pairs with the
-    // `Acquire` load in `free_upper_idx()`. Under BKL on SMP, the
-    // explicit ordering is redundant; on single-CPU builds the
-    // ordering compiles to a no-op.
-    FREE_UPPER_IDX.store(free_idx, Ordering::Release);
-    // Store the slots in kernel global state (retained for boot accounting;
-    // createpde() is superseded by Direct Map — see FREE_PDE_SLOTS doc).
-    // SAFETY: This runs during boot (single-threaded, before BKL needed).
-    //         No concurrent access possible at this point.
-    unsafe {
-        *FREE_PDE_SLOTS.get() = free_pde_slots;
-    }
 }
 
 // ── Phase E-F: system_init + bsp_finish_booting (08-system-init-boot-finish.md) ──
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 /// Global flag: kernel may allocate physical memory directly.
 /// C: kernel_may_alloc in glo.h
@@ -1239,7 +1345,6 @@ mod bkl_protected {
         crate::kpriv::PrivTable,
         crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>,
         crate::smp::SmpState,
-        minix_arch::FreePdeSlots,
         crate::ipc_filter::IpcFilterPool,
         crate::krandom::KRandomness,
     }
@@ -1269,7 +1374,7 @@ mod bkl_protected_tests {
     use super::*;
     use ::alloc::string::String;
 
-    /// Verify all 9 approved types implement `BklProtected`.
+    /// Verify all approved types implement `BklProtected`.
     ///
     /// If any of these fails to compile, a `SyncUnsafeCell<NewType>` static
     /// was added without extending the `bkl_protected_impls!` macro in
@@ -1287,7 +1392,6 @@ mod bkl_protected_tests {
         assert_impl::<crate::kpriv::PrivTable>();
         assert_impl::<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>();
         assert_impl::<crate::smp::SmpState>();
-        assert_impl::<minix_arch::FreePdeSlots>();
         assert_impl::<crate::ipc_filter::IpcFilterPool>();
         assert_impl::<crate::krandom::KRandomness>();
 
@@ -1330,9 +1434,6 @@ mod bkl_protected_tests {
 static FREE_MEMMAP: SyncUnsafeCell<[memmap::MemMapEntry; memmap::MAXMEMMAP]> =
     SyncUnsafeCell::new([memmap::MEM_MAP_ENTRY_ZERO; memmap::MAXMEMMAP]);
 
-/// Free page directory entry slots for createpde() temporary mappings.
-/// C: freepdes[NR_FREEPDES] — glo.h / memory.c:707-717
-///
 /// Global KernelInfo — stored once during kmain, read-only thereafter.
 ///
 /// C: `kinfo` global in glo.h — populated by memcpy from boot params in main.c.
@@ -1554,6 +1655,14 @@ pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
 /// Construct a `CurrentInterruptController` for unit tests without
 /// touching hardware. Only the matching target arch's descriptor is
 /// compiled; the others are `cfg`-elided.
+///
+/// TODO(refactor): three `#[cfg(target_arch)]` arms selecting per-arch
+/// mock constructors is exactly the pattern CLAUDE.md says to avoid
+/// ("use trait `Current*` for behavior selection"). The clean form is
+/// one `MockInterruptController` impl per arch wired through the existing
+/// `minix_plat::CurrentInterruptController` registration (same place as
+/// `qemu_virt.rs`). Tracked in todo.md as B-X (hardware abstraction
+/// hardening backlog).
 #[cfg(test)]
 #[cfg(target_arch = "x86_64")]
 fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
@@ -1673,85 +1782,6 @@ pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
     // SAFETY: After boot, KERNEL_INFO is read-only.
     // Caller is responsible for BKL synchronization.
     unsafe { (*KERNEL_INFO.get()).as_ref() }
-}
-
-/// Populated by `init_post_and_memory()` during boot. Allocated to mirror
-/// C's `memory_init()` `freepdes[]` boot accounting, which reserved PDE
-/// slots for `createpde()` temporary mappings.
-///
-/// # createpde superseded by Direct Map
-///
-/// In the 64-bit Rust rewrite, `createpde()` is **not implemented** — it
-/// is superseded by Direct Map + `PteWalkArch`. C's `createpde()` inserted
-/// a foreign process's PDE into the active page table to access its memory;
-/// in 64-bit, `DirectMapArch::phys_to_virt` + `CurrentPteWalk::walk` read
-/// any process's page table pages directly (see `cross_space.rs::data_copy_vmcheck`
-/// and `vm::lookup_in_table`). The `FreePdeSlots` are retained only for
-/// boot-time accounting parity with C (the slots are allocated but never
-/// consumed at runtime). See [18-syscall-copy.md §1.5](../../notes/rewrite/fork-syscall-rewrite/03-stage-kernel/18-syscall-copy.md).
-///
-/// SAFETY: Only written once during boot (single-threaded, before BKL needed).
-/// After boot, read-only under BKL protection.
-#[allow(dead_code)] // SMP PDE slot mgmt (checklist D-17); retained for boot-accounting parity
-static FREE_PDE_SLOTS: SyncUnsafeCell<minix_arch::FreePdeSlots> = SyncUnsafeCell::new(minix_arch::FreePdeSlots::new());
-
-/// Get a reference to the global free PDE slots.
-///
-/// Caller must ensure BKL is held if called after boot initialization.
-/// C: freepdes[] global array access.
-#[allow(dead_code)] // accessor for FREE_PDE_SLOTS; not yet wired to all call sites
-pub(crate) fn free_pde_slots() -> &'static minix_arch::FreePdeSlots {
-    // SAFETY: After boot, FREE_PDE_SLOTS is read-only.
-    // Caller is responsible for BKL synchronization.
-    unsafe { &*FREE_PDE_SLOTS.get() }
-}
-
-/// Global `free_upper_idx` — first free page table root-level index
-/// after identity + kernel maps.
-///
-/// C: `kinfo.freepde_start` — pre_init.c:233, advanced by
-/// `pg_mapkernel()` and `createpde()`.
-///
-/// # Why a global (not on `KernelInfo`)?
-///
-/// `KernelInfo` is shared by `&` (immutable reference) from boot
-/// to all kernel subsystems. Adding a `Cell<usize>` would require
-/// all readers to use `.get()` instead of `.free_upper_idx`, a
-/// breaking change at every call site. Instead, the kernel uses a
-/// global `AtomicUsize` initialized during `init_post_and_memory()`
-/// (Phase D).
-///
-/// # createpde superseded
-///
-/// In C, `createpde()` advanced `freepde_start` to claim PDE slots for
-/// temporary foreign mappings. In the 64-bit Rust rewrite, `createpde()`
-/// is **not implemented** (superseded by Direct Map + `PteWalkArch` — see
-/// `FREE_PDE_SLOTS` doc above and 18-syscall-copy.md §1.5). This counter
-/// is therefore advanced only during boot (`init_post_and_memory`), never
-/// at runtime; it is retained for boot-accounting parity with C.
-///
-/// SAFETY: Initialized once during boot (single-threaded). After
-/// boot, callers must hold the BKL when reading or advancing.
-static FREE_UPPER_IDX: AtomicUsize = AtomicUsize::new(0);
-
-/// Read the current `free_upper_idx`.
-///
-/// Caller must hold the BKL if called after boot.
-#[allow(dead_code)] // accessor for FREE_UPPER_IDX; not yet wired to all call sites
-pub(crate) fn free_upper_idx() -> usize {
-    FREE_UPPER_IDX.load(Ordering::Acquire)
-}
-
-/// Advance `free_upper_idx` by `n` and return the previous value.
-///
-/// Used during boot (`init_post_and_memory`) to claim page directory
-/// slots. Not used at runtime — `createpde()` is superseded by Direct
-/// Map (see `FREE_PDE_SLOTS` doc).
-///
-/// Caller must hold the BKL.
-#[allow(dead_code)] // accessor for FREE_UPPER_IDX; not yet wired to all call sites
-pub(crate) fn advance_free_upper_idx(n: usize) -> usize {
-    FREE_UPPER_IDX.fetch_add(n, Ordering::AcqRel)
 }
 
 /// IPC filter pool for per-process message filtering.
@@ -2055,10 +2085,13 @@ pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {
 
 /// Set the current ptproc proc-nr.
 ///
-/// Called once during `init_post_and_memory` (after
-/// `CurrentPostInitArch::set_ptproc`) to record that VM is now the
+/// Called once during `init_post_and_memory` to record that VM is now the
 /// page-table process. C: `get_cpulocal_var(ptproc) = vm` in
 /// `arch_post_init()` — protect.c:372 (x86) / protect.c:99 (ARM).
+///
+/// (The arch-level `PostInitArch::set_ptproc`, which C also performs here,
+/// is deleted in Action Item #1 — it recorded `virt_root` for the createpde
+/// temporary window, superseded by Direct Map.)
 ///
 /// # Concurrency
 ///
@@ -2600,125 +2633,6 @@ mod tests {
         // kern_size must be a multiple of the chosen huge page size
         assert_eq!(kern_size % fallback, 0,
             "kern_size must be a multiple of 2MB");
-    }
-
-    // ── free_upper_idx global storage tests ──
-
-    #[test]
-    fn test_free_upper_idx_starts_at_zero() {
-        // The global starts at 0 (no boot happened in this test).
-        // Reset for test isolation: store 0 first.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-        assert_eq!(free_upper_idx(), 0);
-    }
-
-    #[test]
-    fn test_advance_free_upper_idx() {
-        // Reset.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-        // Advance by 2 (matches MAX_FREE_PDE_SLOTS).
-        let prev = advance_free_upper_idx(2);
-        assert_eq!(prev, 0);
-        assert_eq!(free_upper_idx(), 2);
-        // Advance again.
-        let prev = advance_free_upper_idx(1);
-        assert_eq!(prev, 2);
-        assert_eq!(free_upper_idx(), 3);
-        // Reset for next test.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-    }
-
-    /// Verifies the Phase D integration contract: `allocate_free_pdes` is
-    /// idempotent — calling it again does NOT re-allocate the same indices.
-    ///
-    /// L1 parity with C: C's `memory_init()` asserts `nfreepdes == 0` (it
-    /// panics if called twice). Rust's `allocate_free_pdes` does not enforce
-    /// the "called once" invariant by itself, but the global `FREE_UPPER_IDX`
-    /// must advance monotonically — calling allocate again must observe the
-    /// already-advanced index, not reset to a previous one.
-    ///
-    /// This test simulates two consecutive calls and verifies that the
-    /// second call uses indices starting from where the first left off,
-    /// which is what `init_post_and_memory` (Phase D) and any subsequent
-    /// `createpde` call would rely on.
-    #[test]
-    fn test_createpde_does_not_reallocate_slots() {
-        use minix_arch::post_init::MockMemoryInitArch;
-        use minix_arch::{FreePdeSlots, MemoryInitArch};
-
-        // Reset.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-
-        // First call: simulates Phase D's `init_post_and_memory` allocating
-        // indices 0 and 1.
-        let mut idx1: usize = free_upper_idx();
-        let slots1: FreePdeSlots = MockMemoryInitArch::allocate_free_pdes(&mut idx1);
-        FREE_UPPER_IDX.store(idx1, Ordering::Release);
-        assert_eq!(slots1.get(0), Some(0));
-        assert_eq!(slots1.get(1), Some(1));
-        assert_eq!(free_upper_idx(), 2);
-
-        // Second call: simulates a later `createpde` call that re-reads the
-        // global counter. It must observe 2, not reset.
-        let mut idx2: usize = free_upper_idx();
-        let slots2: FreePdeSlots = MockMemoryInitArch::allocate_free_pdes(&mut idx2);
-        // Second call must use indices 2 and 3, NOT 0 and 1.
-        assert_eq!(
-            slots2.get(0),
-            Some(2),
-            "Second allocate must observe the already-advanced counter, not reset"
-        );
-        assert_eq!(slots2.get(1), Some(3));
-        assert_eq!(idx2, 4);
-
-        // Reset for next test.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-    }
-
-    /// Verifies the Phase C → Phase D dependency contract documented in
-    /// `07-cross-space-init.md §1.2-1.3`: `init_post_and_memory` requires the
-    /// VM process slot to already be initialized (Phase C's `proc_init`).
-    ///
-    /// Since we cannot easily call `init_post_and_memory` directly in a unit
-    /// test (it requires a real `KernelInfo` from boot-shim), this test
-    /// documents the dependency by verifying the trait + global ordering:
-    /// `free_upper_idx()` reads the kernel global, and `set_ptproc` reads
-    /// the VM process's p_seg. If Phase C did not initialize the VM proc,
-    /// reading p_seg would return zeros and set_ptproc would store bogus
-    /// values — which this test guards against by verifying that
-    /// `allocate_free_pdes` reads `free_upper_idx` correctly from the
-    /// global (independent of VM state).
-    ///
-    /// The actual VM-init-before-post-init ordering is enforced at runtime
-    /// by `init_post_and_memory`'s `.expect("VM process must be initialized")`
-    /// (lib.rs:934). If Phase C is skipped, this expect fires.
-    #[test]
-    fn test_init_post_and_memory_phase_d_dependencies() {
-        use minix_arch::post_init::MockMemoryInitArch;
-        use minix_arch::MemoryInitArch;
-
-        // Reset.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
-
-        // Simulate Phase D running with a fresh kernel: free_upper_idx
-        // starts at 0 (boot-shim-provided value), and allocate_free_pdes
-        // advances it by exactly MAX_FREE_PDE_SLOTS.
-        let mut idx: usize = free_upper_idx();
-        assert_eq!(idx, 0, "fresh kernel must have free_upper_idx == 0");
-        let slots = MockMemoryInitArch::allocate_free_pdes(&mut idx);
-        assert_eq!(slots.len(), 2, "MAX_FREE_PDE_SLOTS == 2");
-        assert_eq!(idx, 2);
-
-        // The dependency on Phase C is: if Phase C's init_proc_and_boot
-        // was skipped, calling init_post_and_memory's vm_proc.p_seg access
-        // would panic on `.expect("VM process must be initialized...")`.
-        // We document this by asserting the contract that the global
-        // FREE_UPPER_IDX state is correctly maintained regardless of
-        // whether set_ptproc was called — proving Phase D's allocate
-        // step is independent of Phase C's set_ptproc step.
-
-        // Reset for next test.
-        FREE_UPPER_IDX.store(0, Ordering::Release);
     }
 
     /// riscv64 linker script: KERN_VIRT_BASE = 0xFFFFFFC000000000, KERN_PHYS_BASE = 0x80200000
