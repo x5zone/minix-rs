@@ -258,7 +258,7 @@ doc 14 已于 2026-07-31 完成重写（651→591 行），关联代码已修复
 ### §1.6 验证
 
 ```bash
-cd /home/xzhao/github/minix-rs/os
+cd os
 cargo test -p minix-kernel --lib irq_manager
 cargo test -p minix-kernel --lib ipc::tests
 cargo test -p minix-arch exception
@@ -360,7 +360,7 @@ cargo clippy -p minix-kernel -- -D warnings
 
 ### Task 1 验证
 ```bash
-cd /home/xzhao/github/minix-rs/os
+cd os
 cargo build -p minix-types                    # MessNotify 编译
 cargo build -p minix-kernel                   # IrqManager 全局 + KernelNotifier 编译
 cargo test -p minix-kernel --lib irq_manager  # IRQ 测试

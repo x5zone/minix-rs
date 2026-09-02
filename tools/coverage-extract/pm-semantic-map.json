@@ -42,10 +42,67 @@
     "mproc::wait"
   ],
   "nice_to_priority": [
-    "nice_from_queue"
+    "sched::NiceMapping::to_queue",
+    "sched::nice_to_priority"
   ],
   "get_nice_value": [
-    "nice_from_queue"
+    "sched::NiceMapping::to_nice",
+    "sched::get_nice_value"
+  ],
+  "sched_init": [
+    "sched::sched_init"
+  ],
+  "sched_start_user": [
+    "sched::sched_start_user",
+    "sched::SchedCtl::inherit"
+  ],
+  "sched_nice": [
+    "sched::sched_nice",
+    "sched::SchedCtl::set_nice"
+  ],
+  "do_getsetpriority": [
+    "sched::do_getsetpriority",
+    "sched::SchedWhich",
+    "sched::Who"
+  ],
+  "mp_nice": [
+    "ProcessResources::nice"
+  ],
+  "mp_scheduler": [
+    "ProcessResources::scheduler"
+  ],
+  "PRIO_MIN": [
+    "sched::PRIO_MIN"
+  ],
+  "PRIO_MAX": [
+    "sched::PRIO_MAX"
+  ],
+  "do_exec": [
+    "exec::do_exec",
+    "exec::VfsExec::forward_exec"
+  ],
+  "do_newexec": [
+    "exec::do_newexec",
+    "exec::ExecInfo"
+  ],
+  "do_execrestart": [
+    "exec::do_execrestart"
+  ],
+  "exec_restart": [
+    "exec::exec_restart",
+    "exec::KernelExec::exec"
+  ],
+  "mp_frame_addr": [
+    "FrameRegion::base",
+    "ProcessIpc::frame_addr"
+  ],
+  "mp_frame_len": [
+    "FrameRegion::len",
+    "ProcessIpc::frame_len"
+  ],
+  "PARTIAL_EXEC": [
+    "ExecState::Partial",
+    "RemainingFlags::PARTIAL_EXEC"
   ],
   "mproc": [
     "Process",
@@ -149,5 +206,268 @@
   ],
   "mp_eventsub": [
     "ProcessIpc::event_subscriber"
+  ],
+  "do_sigaction": [
+    "handle_sigaction",
+    "SignalState::install",
+    "SigHandler"
+  ],
+  "do_sigpending": [
+    "handle_sigpending",
+    "SignalState::pending_snapshot"
+  ],
+  "do_sigprocmask": [
+    "handle_sigprocmask",
+    "SigMaskOp",
+    "MaskOpEffect",
+    "SignalState::apply_mask_op"
+  ],
+  "do_sigsuspend": [
+    "handle_sigsuspend",
+    "SignalState::prepare_suspend"
+  ],
+  "do_sigreturn": [
+    "handle_sigreturn",
+    "SignalState::restore_for_sigreturn",
+    "KernelSig::sigreturn"
+  ],
+  "sig_send": [
+    "sig_send",
+    "SignalState::prepare_sigmsg",
+    "SigMsg",
+    "KernelSig::sigsend",
+    "PostAction"
+  ],
+  "mp_ignore": [
+    "SignalState::ignored"
+  ],
+  "mp_catch": [
+    "SignalState::caught"
+  ],
+  "mp_sigmask": [
+    "SignalState::mask"
+  ],
+  "mp_sigmask2": [
+    "SignalState::mask_saved"
+  ],
+  "mp_sigpending": [
+    "SignalState::pending"
+  ],
+  "mp_ksigpending": [
+    "SignalState::kernel_pending"
+  ],
+  "SIGKILL": [
+    "SIGKILL",
+    "UNKILLABLE_MASK"
+  ],
+  "SIGSTOP": [
+    "SIGSTOP",
+    "UNKILLABLE_MASK"
+  ],
+  "SA_NODEFER": [
+    "SA_NODEFER"
+  ],
+  "SA_RESETHAND": [
+    "SA_RESETHAND"
+  ],
+  "SIG_BLOCK": [
+    "SigMaskOp::Block"
+  ],
+  "SIG_UNBLOCK": [
+    "SigMaskOp::Unblock"
+  ],
+  "SIG_SETMASK": [
+    "SigMaskOp::SetMask"
+  ],
+  "SIG_INQUIRE": [
+    "SigMaskOp::Inquire"
+  ],
+  "stop_proc": [
+    "signal_flow::stop_proc",
+    "MayDelay",
+    "StopOutcome",
+    "KernelStop::delay_stop"
+  ],
+  "try_resume_proc": [
+    "signal_flow::try_resume_proc",
+    "BlockState::can_resume",
+    "KernelResume::resume"
+  ],
+  "check_pending": [
+    "signal_flow::check_pending",
+    "SignalState::next_unblocked",
+    "CheckPendingOutcome",
+    "MaskOpEffect::needs_check"
+  ],
+  "restart_sigs": [
+    "signal_flow::restart_sigs",
+    "RestartAction",
+    "ExitHandler::exit_proc"
+  ],
+  "unpause": [
+    "signal_flow::unpause",
+    "UnpauseOutcome",
+    "VfsCtl::tell_unpause"
+  ],
+  "SIGSNDELAY": [
+    "signal_flow::handle_sigsn_delay",
+    "BlockState::DelayedSignal"
+  ],
+  "PROC_STOPPED": [
+    "BlockState::stopped"
+  ],
+  "DELAY_CALL": [
+    "BlockState::DelayedSignal"
+  ],
+  "UNPAUSED": [
+    "BlockState::unpaused"
+  ],
+  "SIGSUSPENDED": [
+    "SignalState::suspended"
+  ],
+  "VFS_PM_UNPAUSE": [
+    "VfsCtl::tell_unpause"
+  ],
+  "do_itimer": [
+    "timer::do_itimer",
+    "ItimerWhich",
+    "ItimerOp"
+  ],
+  "ticks_from_timeval": [
+    "timer::TicksConv::ticks_from_timeval"
+  ],
+  "timeval_from_ticks": [
+    "timer::TicksConv::timeval_from_ticks"
+  ],
+  "is_sane_timeval": [
+    "timer::Timeval::is_sane"
+  ],
+  "getset_vtimer": [
+    "timer::getset_vtimer",
+    "VTimerCtl::vtimer"
+  ],
+  "check_vtimer": [
+    "timer::check_vtimer"
+  ],
+  "get_realtimer": [
+    "timer::get_realtimer",
+    "TicksConv::timeval_from_ticks"
+  ],
+  "set_realtimer": [
+    "timer::set_realtimer",
+    "TicksConv::ticks_from_timeval"
+  ],
+  "set_alarm": [
+    "timer::set_alarm",
+    "TimerCtl::set"
+  ],
+  "cause_sigalrm": [
+    "timer::cause_sigalrm",
+    "SigSender::send_sigalrm"
+  ],
+  "mp_timer": [
+    "ProcessResources::timer"
+  ],
+  "mp_interval": [
+    "ProcessResources::intervals"
+  ],
+  "ALARM_ON": [
+    "RemainingFlags::ALARM_ON",
+    "ProcessResources::timer"
+  ],
+  "system_hz": [
+    "TicksConv::hz"
+  ],
+  "expire_timers": [
+    "timer::handle_clock_notify"
+  ],
+  "do_get": [
+    "credentials::do_get",
+    "GetOp",
+    "GetResult"
+  ],
+  "do_set": [
+    "credentials::do_set",
+    "SetOp",
+    "SetError",
+    "VfsForwarder::forward_set"
+  ],
+  "mp_realuid": [
+    "Credentials::user"
+  ],
+  "mp_effuid": [
+    "Credentials::user"
+  ],
+  "mp_svuid": [
+    "Credentials::user"
+  ],
+  "mp_realgid": [
+    "Credentials::group"
+  ],
+  "mp_effgid": [
+    "Credentials::group"
+  ],
+  "mp_svgid": [
+    "Credentials::group"
+  ],
+  "mp_ngroups": [
+    "Credentials::ngroups"
+  ],
+  "mp_sgroups": [
+    "Credentials::supplemental_groups"
+  ],
+  "TAINTED": [
+    "ProcessResources::tainted",
+    "RemainingFlags::TAINTED"
+  ],
+  "NGROUPS_MAX": [
+    "NGROUPS_MAX"
+  ],
+  "GID_MAX": [
+    "GID_MAX"
+  ],
+  "SUPER_USER": [
+    "Credentials::is_superuser"
+  ],
+  "VFS_PM_SETUID": [
+    "VfsForwarder::forward_set"
+  ],
+  "VFS_PM_SETGID": [
+    "VfsForwarder::forward_set"
+  ],
+  "VFS_PM_SETGROUPS": [
+    "VfsForwarder::forward_set"
+  ],
+  "VFS_PM_SETSID": [
+    "VfsForwarder::forward_set"
+  ],
+  "do_trace": [
+    "trace::do_trace",
+    "Guardianship::Traced"
+  ],
+  "trace_stop": [
+    "trace::trace_stop",
+    "TraceState::stopped"
+  ],
+  "mp_tracer": [
+    "Guardianship::tracer"
+  ],
+  "mp_trace_flags": [
+    "Guardianship::trace_options"
+  ],
+  "TRACE_STOPPED": [
+    "TraceState::stopped"
+  ],
+  "TRACE_EXIT": [
+    "TraceState::exit_pending"
+  ],
+  "W_STOPCODE": [
+    "trace::w_stopcode"
+  ],
+  "T_OK": [
+    "trace::T_OK"
+  ],
+  "T_ATTACH": [
+    "trace::T_ATTACH"
   ]
 }

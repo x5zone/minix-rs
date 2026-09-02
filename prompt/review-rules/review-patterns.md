@@ -108,7 +108,7 @@
 ### 模式8：路径使用用户环境绝对路径
 ```markdown
 ❌ 错误：使用 `file:///home/user/...` 等用户环境绝对路径
-        [pagetable.c:333-389](file:///home/xzhao/github/minix-rs/minix3/minix/servers/vm/pagetable.c#L333-L389)
+        [pagetable.c:333-389](file:///home/user/minix-rs/minix3/minix/servers/vm/pagetable.c#L333-L389)
 
 ✅ 正确：使用项目根相对路径
         [pagetable.c:333-389](minix3/minix/servers/vm/pagetable.c#L333-L389)
