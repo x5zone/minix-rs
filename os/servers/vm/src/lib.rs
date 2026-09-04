@@ -86,7 +86,7 @@ pub(crate) mod sanity;
 pub use vm_server::VmServer;
 
 pub use phys_mem::BootMemRegion;
-pub use boot::{BootModule, BootParams, KernelAllocated};
+pub use boot::{BootModule, BootParams, KernelAllocated, read_boot_params};
 
 
 mod vm_server;

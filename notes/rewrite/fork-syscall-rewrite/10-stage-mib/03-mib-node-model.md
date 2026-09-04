@@ -1,22 +1,196 @@
-# 03-mib-node-model: 树节点模型
+# 03 — 系统信息库节点模型：节点内存布局、四种父子与挂载组合、一页暂存区
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: 阶段 3 树模型（所有树操作的前置）
-> **源码**: `minix3/minix/servers/mib/mib.h:110-280`
-> **Rust 模块**: `tree/node.rs`、`tree/flag.rs`
-> **draft 素材**: 无（新建）
+> **分类**: 数据模型 / 树节点语义
+> **源码**: `minix3/minix/servers/mib/mib.h:110-280`（节点结构全段 + 初始化宏，宏体移交 04）、`minix3/minix/servers/mib/tree.c:12,21-27,474,829,1501,1524-1531,1776`（静态 id 判定、scratch、计数器、版本落点）
+> **说明**: 树上每个结点的形状：`mib_node` 巨型联合体的五态、`mib_dynode` 的变长尾巴、四类节点矩阵、计数器与草稿纸。本文只讲"结点是什么"，不讲"结点怎么找"（05）、"怎么长出来"（08）、"怎么初始化"（04）。
 
-## 核心点
+---
 
-- `struct mib_node` 全字段：flags/size/ver/parent/三态 union（child/remote/立即值）/name/desc
-- 4 类节点矩阵（PARENT×REMOTE）：真实子树 / 函数驱动 / 临时挂载点 / 覆盖挂载点
-- `struct mib_dynode`：按 id 有序链表 + 内嵌 name（+data/desc）
-- 标志系统：CTLTYPE 类型位（低 4 位）+ CTLFLAG 标志位 + SYSCTL_VERS 高位；内部标志复用 NetBSD 位（ROOT/ALIAS/MMAP）不暴露用户态
-- 计数：`mib_nodes`/`mib_objects`/`mib_remotes`；scratch 缓冲（`SCRATCH_SIZE = max(PAGE_SIZE, sizeof(sysctldesc)+MAXDESCLEN=1024)`）
-- 位域拆分：`MIB_EID_BITS=5`（32 个远程服务）/`MIB_RC_BITS=12`（4096 子节点）
-- A-2：Rust enum 节点建模（`NodeKind::{Static, Data, Func, Remote}`）
+## 1 概念
 
-## 边界
+### 1.1 目标读者与前置知识
 
-- **前置依赖**: 02
-- **不覆盖（移交）**: 查找（05）、静态树定义（04）、远程字段用途（12）
+面向要读树代码（05/08/10/12）的读者。前置知识：02（类型/标志 wire 值）、C 联合体（"同一块内存的多种看法"）的基本想法。Overlay（覆盖）不需要预习——现用现讲。
+
+### 1.2 本章不讲什么
+
+- 静态表长什么样、`MIB_*` 宏怎么用——那是 04 的事（本篇只引用宏设了什么位）。
+- `mib_find` 的查找顺序——那是 05 的事（本篇只给"静态 id"判定，所有权在 05）。
+- 动态节点的创建/销毁流程——那是 08 的事（本篇只给 `dynode` 形状与计数器）。
+- 拷贝/鉴权/挂载行为——那是 06/07/12 的事。
+
+### 1.3 为什么一个结点需要五种角色
+
+本服务树上的结点承担五种角色：**作为父节点挂载孩子**（拥有子树）、**作为叶子节点存放数据**（数值或字符串等）、**作为函数接管点由处理函数接管整棵子树**、**作为远端挂载点由远端服务接管**、**作为动态链表的串联节点**。C 语言用一个 `struct mib_node`（`mib.h:188-220`）加两个联合体装下全部五种——省内存（静态结点上百个，注释说"按多静态少动态优化尺寸"，`:76-84`），代价是"同一字段名在不同结点上意思不同"（例如挂载点上 `node_csize` 读出来其实是远端服务的端点编号）。读树代码的第一课：**先看节点类型和两个标志位，再决定每个字段怎么解读**。本篇就是这第一课的课本：
+
+```
+读一个结点的推荐顺序（mib.h:86-162 注释的 Rust 版）：
+
+  标志位低 4 位 → 节点类型（目录节点 / 整数 / 字符串 / 64位整数 / 结构体 / 布尔值）
+  类型是叶子 → 看是否为立即值：在节点体内直接存放还是在指针指向的外部内存
+                    + 看是否有校验回调或是否有读写处理函数
+  类型是目录节点 → 看是否为父节点与是否为远端挂载点组合成的四种情况（见 §1.4）
+```
+
+### 1.4 四种组合：是否为父节点与是否为远端挂载点
+
+（`mib.h:111-125`，本篇的核心表，后文 05/10/12 处处引用）：
+
+| 是否为父节点 | 是否为远端挂载 | 节点种类 | 孩子与函数指针如何解读 |
+|--------|--------|--------|---------------------|
+| 否 | 否 | 函数接管的子树：由一个处理函数接管其下全部访问 | 处理函数指针有效；孩子数与孩子指针等字段全部无效，节点大小常为 0（`:136-138`） |
+| 是 | 否 | 本地真实父节点：拥有本地子树，含静态数组与动态链表 | 节点大小表示静态槽位数；静态孩子指针数组按编号索引，标志为零的槽位表示空位；动态孩子链表另存 |
+| 否 | 是 | 临时挂载点：为远端树临时创建的节点 | 完全由远端服务接管；卸载时**节点本身一并销毁**（如 `net.inet`） |
+| 是 | 是 | 遮蔽式挂载点：压住本地真实子树的远端接管 | 卸载后原本地节点重新可见（如 `kern.ipc` 被进程间通信服务盖住，在 13 中为模拟节点） |
+
+挂载点（后两格）的内存复用是最细的一笔：`REMOTE` 置位期间，`csize/clen` 的位置改存 `eid/rcsize/rclen/rid`（`:150-156`），读错了就把"远端口号"当成"孩子数"。Rust 侧用 `RemotePack` 与 `ChildWindow` 两个**不相交的类型**装这两格（§3 D3）——类型不同，读错即编译失败。
+
+### 1.5 三个计数器与一页暂存区
+
+树级记账三个数（`tree.c:25-27`）：`mib_nodes`（存活节点数）、`mib_objects`（已分配的内存对象数：动态节点、描述字符串、临时缓冲）、`mib_remotes`（已挂载的远端子树数）。初始化后基线为 1/0/0（`:1524-1525`：根节点自身算一个，尚未分配任何对象）——15 的 `minix.mib.*` 统计接口直接读取它们。增减点分散在各处（创建 `:474`/`:1501`、删除 `:829`、挂载 `:1776`），本篇把增减收敛为 `TreeCounts` 的七个常量函数（§4），08 与 12 调用，15 只读。
+
+暂存区（`tree.c:21-23`）：`scratch[SCRATCH_SIZE]`，大小为 `max(PAGE_SIZE, sizeof(sysctldesc)+1024)`，按 32 位整数对齐。`sizeof(sysctldesc)` 为 16，`PAGE_SIZE` 为 4096（三架构统一）——**暂存区恰好为一页**。四处用途：字符串长度试探（`:402`）、描述信息暂存（`:945`）、写入数据暂存（`:1242`）、挂载时名字与描述获取（`:1702`）。单线程事件循环里一块全局暂存区是安全的（同一时刻只处理一封消息，目录服务的同款道理）；09 的写入路径有个配套规则（大数据且非特权则不分配，架构演进三），那里细讲。
+
+### 1.6 版本号：树的乐观锁
+
+每个结点一个 `node_ver`（`mib.h:191`）。根初始化为 1（`tree.c:1531`）；新孩子建链时继承父亲版本（`:1505`）；查询/描述时把版本号拷给用户（`tree.c:111,948`），用户下次带回，变了就说明"树动过"（`:203,545,889,1030` 四处比对）。这就是乐观并发的老办法用在单线程树上：**版本号不是给锁用的，是给"我看到的还是那棵树吗"用的**。`version_matches(0, _)` 恒真——0 表示"不检查"，调用者明确放弃比对（`:889` 模式）。
+
+### 1.7 小结
+
+五态结点（爹/叶子/门面/挂载点/路标）→ 先看类型再读字段；四格矩阵（函数树/真爹/临时挂载/遮蔽挂载）；三个计数器（基线 1/0/0）；一页草稿纸（4096，int32 对齐）；版本号是乐观锁。记住"先分类再读字段"，05/08/10 的代码就不会读错一半。
+
+---
+
+## 2 C 源码分析
+
+### 2.1 `struct mib_node` 全字段（`mib.h:188-220`）
+
+| 字段 | 类型 | 含义 | 本篇外 |
+|------|------|------|--------|
+| `node_flags` | `uint32` | 类型（低 4 位）+ 标志 | §2.2 |
+| `node_size` | `size_t` | 数据字节数（叶子）**或**静态槽数（真爹，**个数不是字节数**，`:127-129`） | 09（叶子语义） |
+| `node_ver` | `uint32` | 版本号 | §1.6 |
+| `node_parent` | 指针 | 父亲（根除外） | 04（建链） |
+| `node_val_u` 联合体 | — | 三态：`nvu_child{csize,clen}` / `nvu_remote{eid,rcsize,rclen,rid}` / `nvu_bool/int/quad` 立即值 | §2.3 |
+| `node_ptr_u` 联合体 | — | 两态：`npu_data`（外存数据）/ `npu_scptr`（静态孩子数组） | 04/09 |
+| `node_aux_u` 联合体 | — | 四态：`nau_dcptr`（动态链表）/ `nau_func`（handler）/ `nau_verify`（校验）/ `nau_next`（远端链表） | 08（链表）/09/12 |
+| `node_name` | `const char*` | 结点名 | 05（查找） |
+| `node_desc` | `const char*` | 描述（可 NULL） | 11（描述） |
+
+联合体刻意"指针与非指针分组"（`:158-162`：`ixfer` 只装非指针，`pxfer` 只装指针）——为 live update 的内存搬运方便（A-7 同源注释）。`eid/rcsize/rclen` 挤在一个 `uint32` 里（`MIB_EID_BITS 5` + `MIB_RC_BITS 12 ×2`，`:181-186`，超 32 位直接 `#error`）：32 个远端 × 远端根 4096 孩子封顶。
+
+### 2.2 `struct mib_dynode`（`mib.h:244-249`）
+
+`dynode_next`（链表）/ `dynode_id`（本结点 id）/ `dynode_node`（内嵌的完整 `mib_node`）/ `dynode_name[1]`（变长尾巴：名字 + 非立即数据的实际数据区 **或** 临时挂载点的描述，都塞在这一块 `malloc` 里，`:238-243`）。**一次分配装下结点+名字+数据**——08 的内存所有权（OWNDATA/OWNDESC）就从这块内存的归属讲起。
+
+### 2.3 三个联合体的读法（`mib.h:86-162` 注释全覆盖）
+
+- 数据结点（`BOOL/INT/QUAD`）：`IMMEDIATE` 置位 → 值在 `node_bool/int/quad` 体内；否则 `node_data` 是指针（`STRING/STRUCT` 恒为指针，`:99-100`）。`node_size` 对字符串是**最大长度**，对其他是精确字段宽（`:97-99`）——09 的字符串语义从这里来。
+- `VERIFY` 置位 → `node_verify` 是校验回调；否则 `node_func` 非 NULL 表示函数读写（`:100-105`）——09 的两条读写路。
+- NODE 结点四格见 §1.4；函数格 `node_size` 常（非必）为 0（`:136-138` 的"typically (but not necessarily)"——**读代码别把 0 当函数格的判定条件，判定只看两标志位**）。
+
+### 2.4 静态 id 判定（`tree.c:12`，所有权在 05，本篇只钉语义）
+
+`IS_STATIC_ID(parent, id)` = `(unsigned)id < parent->node_size`：静态数组 O(1)，之外走动态链表 O(n)（`:34-88`）。无符号是关键：负 id 转成巨大数，天然落到链表路（元标识符 QUERY/CREATE 那些负数走的正是这条"落出数组"的路，10 细讲）。
+
+### 2.5 初始化宏一览（体在 04，本篇只钉"设了什么位"）
+
+`MIB_NODE(f,t,n,d)`（`:252-258`：NODE+PARENT+f，size=表长）/ `MIB_ENODE`（`:259-263`：空架子，size 后填）/ `MIB_BOOL/INT/QUAD`（`:264-284`：IMMEDIATE + 体内值）/ `MIB_*PTR/STRING/STRUCT`（`:292-296`：外存指针）/ `MIB_FUNC`（`:297-303`）/ `MIB_INTV`（`:304-312`：IMMEDIATE+VERIFY）/ `MIB_INIT_ENODE`（`:315-319`：后填 size+表）/ `_RO/_RW/_P`（`:322-324`：READONLY/READWRITE/PERMANENT 缩写）。
+
+---
+
+## 3 Rust 设计决策
+
+| # | 决策 | C 做法 | Rust 做法 | 为什么 |
+|---|------|--------|-----------|--------|
+| D1 | 类型变枚举，解码全 | 裸 nibble，无"未知类型"路径（静态宏保证） | `NodeType` 六变体 + `from_raw → Option`（`flag.rs:34`），未知 nibble 回 `None` | 动态创建（08）的 size 来自用户，校验在别处；解码器保持全函数——"不可能"的事由类型说，而不是由"没写"说 |
+| D2 | 四格矩阵变枚举，非结点无格 | 注释表格 + 两位手工与 | `NodeRole` 四变体 + `classify → Option`（`flag.rs:79,94`），叶子问矩阵回 `None` | "这个整数是哪种挂载"是编程错误不是第五个答案；`None` 让误用在分类时暴露，不在挂载时爆炸 |
+| D3 | 窗口与远端包不相交 | 同一联合体位置两种读法（读错即把端口号当孩子数） | `ChildWindow{csize,clen}`（`node.rs:21`）与 `RemotePack{eid,rcsize,rclen}`（`node.rs:60`）两个类型 + `to_word/from_word`（`:78` 起） | C 的坑（`:150-156` 复用）用类型填上：拿窗口当包装错即编译失败；pack 越界拒绝（截断 `eid` 会路由到错的服务） |
+| D4 | 计数器变不可变累加 | 三个全局 `unsigned` 散落在 7 处增减 | `TreeCounts{nodes,objects,remotes}` + `baseline/node_added/...` 七个 `const fn`（`node.rs:110,119`） | 增减点散（建/删/挂载）是事实，但"基线 1/0/0"和"成对增减"值得一个类型 + 一个测试；单线程下 `Copy` 累加即真相（多线程才需要 Atomic，01 同款单线程假设） |
+| D5 | 草稿纸变预算常量 | 全局 `char scratch[]` + 四处裸用 | `SCRATCH_SIZE/ALIGN/MAX_DESC_LEN`（`node.rs:187-191`）+ 推导注释（max(4096,16+1024)=4096） | 缓冲本体是 09/11/12 的效果（栈/静态二选一，A-3）；本篇只钉预算——"一页"这个结论比缓冲本身更值得钉 |
+| D6 | 版本变谓词 | `ver` 裸 `uint32` + 四处手写比对 | `ROOT_VER/linked_ver/version_matches`（`node.rs:194-204`，`staged==0` 免检显式） | `:889` 的"0 不检查"是惯例不是注释——写进函数名级别的语义，后人不敢删 |
+
+Redox/业界对照（类比）：把"结点类型"做成枚举而非位掩码直译，是 Redox 式的 tutul（scheme 节点用 Rust 枚举区分文件/目录/挂载的同款思路在概念层成立）——但本篇不引具体 Redox 符号（02 同款诚实：类比止于形状，无 API 断言）。真正可验证的对照在 repo 内：DS 的 `DsCall` 枚举（07-stage-ds/01 D1）与本篇 D1/D2 同构——"非法状态不可表达"在本 repo 已是既定风格。
+
+替代方案及否决：union 直译（`union NodeVal { csize: u32, eid: u32, ... }` + `unsafe` 读写）——否决，Rust 的 `union` 读写全 `unsafe`，而§1.4 的教训恰恰是"读错格"；`ChildWindow`/`RemotePack` 不相交建模把 C 用注释表达的东西（`:150-156`）变成编译器检查。arena（静态表/动态链表本体）同样否决现在建模——04/05/08 各拥有一块，03 只判不管（verdict-first 延续 01/02）。
+
+---
+
+## 4 实现详解
+
+### 4.1 模块结构
+
+```
+os/servers/mib/src/tree/
+├── mod.rs    — 本篇：重导出（词汇 + 形状）
+├── flag.rs   — 本篇：NodeType / NodeRole / PARENT-VERIFY-REMOTE 别名 /
+│                access_bits + 11 个谓词（is_writable/…/is_unsigned）
+└── node.rs   — 本篇：ChildWindow / is_static_id / RemotePack(+EID/RC_BITS) /
+                 TreeCounts / SCRATCH_* / MAX_DESC_LEN / ROOT_VER+linked/matches /
+                 can_have_children
+```
+
+### 4.2 核心符号表
+
+| 符号 | 来源 | Rust 位置 | 行为 |
+|------|------|-----------|------|
+| 三个别名 | `mib.h:72-74` | `flag.rs:24-28` | 值同 ROOT/ALIAS/MMAP（测试钉三等式） |
+| 类型/角色 | `mib.h:86-125` | `flag.rs:34,79` + `from_raw/classify` | 未知 nibble/叶子问格 → `None` |
+| 11 谓词 | `mib.h` 各段 + `sysctl.h` | `flag.rs:116-178` | 读写/私有/永久/立即/拥有/校验/编号/hex/隐藏/无符号 + access |
+| 孩子窗口 | `mib.h:195-196` | `node.rs:21,28` | `clen>csize` 拒绝；`free_slots` |
+| 静态判定 | `tree.c:12` | `node.rs:50` | 无符号比较，负数落空 |
+| 远端包 | `mib.h:181-186` | `node.rs:60-76` + pack/unpack | 越界拒绝；字往返 |
+| 计数器 | `tree.c:25-27,474,829,1501,1524-25,1776` | `node.rs:110,119` | 基线 1/0/0 + 七累加 || 草稿预算 | `tree.c:21-23` | `node.rs:187-191` | 4096/4/1024 + 推导 |
+| 版本 | `tree.c:1505,1531` + 比对四处 | `node.rs:194-209` | 根 1/建链继承/0 免检/孩子门 |
+
+### 4.3 不变量
+
+| 不变量 | 守卫 | 证据 |
+|--------|------|------|
+| 窗口不倒置 | `ChildWindow::new` 拒绝 | `clen` 语义（有效≤槽位） |
+| 远端包不截断 | `RemotePack::pack` 拒绝 | 32×4096 封顶 |
+| 计数成对 | `TreeCounts` 累加 + 往返测试 | 增减 16 处（nodes 4/object 9/remotes 2 + 基线 2 行，`tree.c:474-1841`） |
+| 草稿一页 | `SCRATCH_SIZE==4096` 断言 | max 推导 |
+| 别名同值 | 三等式测试 | `mib.h:72-74` |
+
+### 4.4 与 C 的差异说明（模式 72 CSSCM）
+
+§2 五节（全字段/动态体/读法/id 判定/宏一览）vs §4 两模块：宏体（04）与查找/创建流程（05/08）按边界移交，无遗漏（§2.5 显式"只钉设位"）。category：边界移交（§1.2 前置声明）+ 设计决策（D1/D2 全函数解码器，C 无对应路径——防御性，非行为差）。
+
+---
+
+## 5 测试要点
+
+> 基线：`cargo test -p minix-mib --lib`，本篇 9 个测试（3 flag + 6 node）。
+
+| 测试名 | 覆盖 C 位置 | 行为 | 文件 |
+|--------|-------------|------|------|
+| `test_type_nibble` | `sysctl.h:92-97` + nibble | 六类型 + 未知 0/7 拒 + 标志位不干扰 | `flag.rs` |
+| `test_role_matrix` | `mib.h:111-125` | 四格 + 叶子问格 `None` | `flag.rs` |
+| `test_access_predicates` | `mib.h` 各段 | 零即只读/三别名等式等 11 谓词 | `flag.rs` |
+| `test_child_window_bounds` | `mib.h:195-196` | 空位计算 + 倒置拒绝 | `node.rs` |
+| `test_static_id_unsigned` | `tree.c:12` | 边界 6/7 + 负数落空 | `node.rs` |
+| `test_remote_pack_roundtrip` | `mib.h:181-186` | 32×4096 + 往返 + 三越界拒 + 位排布 | `node.rs` |
+| `test_counts_lifecycle` | `tree.c:25-27,1524-25` | 基线 1/0/0 + 加减往返 | `node.rs` |
+| `test_scratch_budget` | `tree.c:21-23` | 4096/4/1024 + 覆盖式 | `node.rs` |
+| `test_versions` | `tree.c:1505,1531` + 比对 | 根 1/继承/0 免检 | `node.rs` |
+
+测试策略：矩阵全格（四格 + 非法格）+ 边界值（6/7、31/32、4095/4096）+ 往返式（pack/count）。
+
+### 5.1 测试统计（截至 2026-09-05）
+
+- `cargo test -p minix-mib --lib`：**94 passed**（全 crate；其中本篇 9 个，见上表）
+- 本节上表列出与本篇直接相关的 9 个（子集；02 起各篇测试同住一个 crate，总数随阶段推进增长）
+
+---
+
+## 6 过渡
+
+结点会认了：类型六种、角色四格、计数三个、草稿一页、版本乐观锁。下一站是 04——静态 wiring：七顶层结点怎么摆、`mib_init` 四行调了谁、全树初始化走什么（本篇的 `ChildWindow` 在那里第一次装上真数）。
+
+## 7 参见
+
+- C 源：`minix3/minix/servers/mib/mib.h:72-74,86-280`、`minix3/minix/servers/mib/tree.c:12,21-27,474,829,1501,1524-1531,1776`、`minix3/sys/sys/sysctl.h:92-125`
+- 阶段文档：`02-mib-message-contract.md`（上一站，wire 值）、`04-mib-static-tree-init.md`（下一站，宏体与 wiring）、`05-mib-tree-lookup.md`（`IS_STATIC_ID` 所有权）、`08-mib-dynamic-nodes.md`（dynode 所有权）、`../07-stage-ds/01-ds-init-main.md`（`DsCall` 枚举先例）
+- Rust 实现：`os/servers/mib/src/tree/flag.rs`、`os/servers/mib/src/tree/node.rs`
+- 对端：无（纯树内语义；A-2 建模决策见 plan §4）

@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 3 — 页与页表（结构锚点）
 > **源码**: `minix3/minix/servers/vm/pt.h:11-25`（`pt_t`）；`minix3/minix/servers/vm/arch/i386/pagetable.h`（`ARCH_VM_*` 宏族）；`minix3/minix/servers/vm/arch/earm/pagetable.h`（earm 变体）；`minix3/minix/include/arch/i386/include/vm.h:7-64`（PTE 位布局）；`minix3/minix/servers/vm/pagetable.c:1088-1349`（`pt_init` 结构面）+ `:112`（`static_sparepagedirs`）+ `:1358-1435`（`pt_bind` 结构语义）+ `:1442-1489`（`pt_mapkernel` 结构语义）
-> **Rust 模块**: `os/servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 + `page_align`）+ `os/servers/vm/src/direct_map.rs`（VM 侧 Direct Map 双向转换）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（VM 自身页表接口）+ `os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait + 三架构实现）+ `os/arch/src/arch/paging.rs`（`Paging` trait + `PageFlags` + `paging_init`）+ `os/arch/src/x86_64/paging.rs`（4 级 walk）
+> **Rust 模块**: `os/servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 + `page_align`）+ `os/servers/vm/src/direct_map.rs`（VM 侧 Direct Map 双向转换）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（VM 自身页表接口：`VmSelfPageTable::adopt` + `init_vm_self_pt`）+ `os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait + 三架构实现）+ `os/arch/src/arch/paging.rs`（`Paging` trait + `PageFlags`）+ `os/arch/src/arch/dm_coverage.rs`（`DmCoverageArch` + `establish_dm_range` 覆盖建立驱动）+ `os/kernel/src/dm_coverage.rs`（`establish_boot_dm`：kernel boot 期双窗口覆盖建立）+ `os/arch/src/x86_64/paging.rs`（4 级 walk）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配 + Direct Map 概念首次引入）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）
 > **说明**: 页表**结构**语义模块：**`pt_t` 结构、`ARCH_VM_*` 宏族、Direct Map 双视图（[ARCH: A-1]）、VM 自映射页表（[ARCH: A-9]）、页表层级（[ARCH: A-2]）、地址空间宽度（[ARCH: A-6]）、多架构 trait（[ARCH: A-10]）、`pt_init` 结构面**。**不覆盖**：pt 操作（`pt_new`/`pt_bind`/`pt_copy`/`pt_mapkernel`/`pt_writemap` 逐函数语义 → 08）、页分配（06）、物理分配器（05）。
 
@@ -285,7 +285,7 @@ pt_init_done = 1;					/* ⑥ 稳态开始 */
 /* ⑦ 动态重建：alloc_cycle 换血 + pt_copy 重建（06 §1.4 已述，L1314-1349） */
 ```
 
-结构意义：**VM 的页表不是从零画的，而是从内核的初始页表"继承"而来**——内核为 VM 进程建立的映射（代码/数据/BSS + 内核区）被逐项拷贝进 VM 自己的 `pt_t`。这正是 minix-rs `paging_init`（Ch3 §3.4）对应"结构继承"的地方。
+结构意义：**VM 的页表不是从零画的，而是直接接管内核已经建立并正在运行的页表**——kernel 在 bootstrap root 上为 VM 建好初始映射（identity + 内核高半 + 双 DM 窗口覆盖，§3.4）后把根 PA 经 boot handoff 页交给 VM；VM 启动时以 adopt 语义包装同一根（`VmSelfPageTable::adopt`，§4.3），无任何拷贝步骤。C 的"逐项拷贝继承"在 64 位 Direct Map 下没有存在理由：C 拷贝是因为内核与 VM 各持一棵树、VM 需要自己的副本；minix-rs 里根只有一棵，"继承"退化为"地址空间身份移交"（§3.4 配套设计 4）。
 
 ### 2.6 static_sparepagedirs 与自举资源（pagetable.c:112）
 
@@ -311,7 +311,7 @@ pdes = (void *)(pagedir_pde*ARCH_BIG_PAGE_SIZE + pdeslot*VM_PAGE_SIZE);
 return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 ```
 
-结构语义：**"页目录的页目录"**——`pagedir_mappings` 的 PDE 让内核在自己的地址空间里能看到任意进程的页目录页（`page_directories` 页表），`sys_vmctl_set_addrspace` 通知内核把目标进程的 CR3 换成 `pt_dir_phys`。minix-rs 对应 `bind_to_process`（paging.rs:464）。
+结构语义：**"页目录的页目录"**——`pagedir_mappings` 的 PDE 让内核在自己的地址空间里能看到任意进程的页目录页（`page_directories` 页表），`sys_vmctl_set_addrspace` 通知内核把目标进程的 CR3 换成 `pt_dir_phys`。minix-rs：登记册簿记（步骤 1-4）被 Direct Map 结构性消除（§3.8 D8），内核侧根登记由 `VmCtlParam::SetAddrSpace` 通道承接（`os/kernel/src/syscall.rs:2003`）；VM 自身的根不经此通道——bootstrap root 在 boot 期已登记为 VM 的根（A1 adoption，§3.4）。
 
 **`pt_mapkernel`**（pagetable.c:1442-1489）：每个页表必须映射内核区——三段：
 
@@ -383,12 +383,12 @@ VM 侧 `direct_map.rs` 包装为 `vm_phys_to_virt`/`kernel_phys_to_virt`/`virt_t
 
 三架构常量：
 
-| 架构 | `VM_DIRECT_MAP_BASE` | `KERNEL_DIRECT_MAP_BASE` | 依据 |
-|------|---------------------|--------------------------|------|
-| x86-64 | `0x0000_0000_8000_0000`（2GB） | `0xFFFF_8000_0000_0000` | 用户区 2GB 起，内核高半 |
-| arm64 | `0x0000_1000_0000_0000` | `0xFFFF_8000_0000_0000` | TTBR0 用户区 |
-| riscv64 | `0x0000_0010_0000_0000` | `0xFFFF_FC00_0000_0000` | Sv39 用户低半 / 内核高半 |
-| Mock | 可配置（`set_mock_vm_base`） | `0xFFFF_8000_0000_0000` | 无 QEMU 单元测试 |
+| 架构 | `VM_DIRECT_MAP_BASE` | `VM_DIRECT_MAP_SIZE` | `KERNEL_DIRECT_MAP_BASE` | 依据 |
+|------|---------------------|---------------------|--------------------------|------|
+| x86-64 | `0x0000_0000_8000_0000`（2GB） | 1 GiB | `0xFFFF_8080_0000_0000` | 用户区 2GB 起；Kernel DM 占 PML4[257]——镜像在 PML4[256]，DM 窗口不与镜像共享顶层槽位 |
+| arm64 | `0x0000_1000_0000_0000` | 2 GiB | `0xFFFF_8080_0000_0000` | TTBR0 用户区；镜像在 L0[256]，DM 窗口占 L0[257]；窗口 ≥2GiB 满足 DM-window admissibility precondition（QEMU virt RAM base = 1GiB） |
+| riscv64 | `0x0000_0010_0000_0000` | 16 GiB | `0xFFFF_FFC0_4000_0000` | Sv39 用户低半；镜像在 VPN[2]=256，DM 窗口占 VPN[2]=257（非 canonical 的 `0xFFFF_FC00_0000_0000` 会解码到镜像自己的槽位） |
+| Mock | 可配置（`set_mock_vm_base`） | — | `0xFFFF_8080_0000_0000` | 无 QEMU 单元测试 |
 
 **为什么是 trait 而不是常量**：`VM_DIRECT_MAP_BASE` 若做成 VM crate 的裸常量，`virt_to_phys` 的双窗口判断就得用 `#[cfg(target_arch)]` 硬编码（A-10 禁止）；trait 让"布局"成为架构的**能力**，`CurrentDirectMap` 编译期选中实现，VM 侧零条件编译。**大页参数（1GB/2MB）不在此 trait**——那是 MMU 能力（`HugePages`），不是地址空间布局（direct_map.rs 头注释明言）。
 
@@ -416,14 +416,15 @@ static VM_SELF_PT_STORAGE: AssumeSyncCell<Option<PageTable>> = AssumeSyncCell::n
 
 **C 的问题**：操作与结构耦合——`pt_*` 函数族直接操作 `pt_t` 的字段，`#if defined(__i386__)` 散落各处（pagetable.c 的 `#if` 至少 8 处）。
 
-**Rust 决策**：`Paging` trait（os/arch/src/arch/paging.rs:152-425）定义页表操作的统一契约：
+**Rust 决策**：`Paging` trait（os/arch/src/arch/paging.rs:152-427）定义页表操作的统一契约：
 
 ```rust
 pub trait Paging {
     const PAGE_SIZE: usize;                       // 4096
     fn new() -> Result<Self, PageTableError>;
     fn new_from_page(root_page: PhysBytes) -> Self;  // 自举：预分配根页
-    fn from_active_root(root_phys: PhysBytes) -> Self; // 包装已活动页表
+    fn from_active_root(root_phys: PhysBytes) -> Self; // 包装已活动页表（kernel 上下文，kernel DM 通道）
+    fn adopt_active_root(root_phys: PhysBytes) -> Self; // A1：VM 上下文包装已活动根（VM DM 通道）
     unsafe fn enable(&self) -> PhysBytes;         // 加载根 + 开分页
     unsafe fn destroy(&mut self);
     fn map(&mut self, vaddr, paddr, flags) -> Result<(), PageTableError>;
@@ -443,8 +444,8 @@ pub trait Paging {
 
 1. **`PageFlags`（u16 位标志）与硬件编码分离**：OS 语义（`PRESENT`/`WRITABLE`/`USER_ACCESSIBLE`/`EXECUTABLE`/`GLOBAL`/`NO_CACHE`…）与架构位布局解耦；x86-64 的 NX 反相、arm64 的 nG 反相等翻译封在 `flags_to_pte`/`pte_to_flags`（x86_64/paging.rs:80-113）。VM 层**永不接触 PTE 位域**（review-code-skill §2 硬件抽象强制）。
 2. **`PageTableError` 6 变体**：`InvalidAddress`/`AlreadyMapped`/`NotMapped`/`AllocationFailed`/`PermissionDenied`/`NotSupported`——映射到页表操作的失败面；错误码对齐在 IPC 边界（15）完成，不在此 trait 内自创 errno。
-3. **独立函数而非 trait 方法**：`clone_range`（paging.rs:426，对应 C `pt_copy`/`pt_map_in_range`）、`bind_to_process`（:464，对应 `pt_bind`）、`map_kernel`（:500，对应 `pt_mapkernel`）、`paging_init`（:569，对应 `pt_init` 结构继承）——这些是**跨页表组合操作**，不是单个架构的硬件机制，做成泛型函数复用 trait 方法（review-code-skill §2.5 机制 vs 策略分离）。
-4. **`paging_init` 的结构继承**（paging.rs:569-650）：kernel 已为 VM 建好 1GB DM（`VM_DIRECT_MAP_BASE` 起）+ 内核映射；`paging_init` 在其上 `map_huge` 扩展 >1GB 物理内存 + `bind_to_process`——对应 C `pt_init` 的"从内核继承 + 扩展"结构。**注意差异**：C 拷贝内核页表内容（`sys_vircopy`/`sys_abscopy`），minix-rs 的 kernel 直接把 DM/内核映射建进 VM 页表，VM 只扩展 >1GB 部分（`MOCK_KERNEL_*` 常量 FIXME：真实 boot_info 接线归 01/10）。
+3. **独立函数而非 trait 方法**：`clone_range`（paging.rs:453，对应 C `pt_copy`/`pt_map_in_range`）、`map_kernel`（:494，对应 `pt_mapkernel`）——这些是**跨页表组合操作**，不是单个架构的硬件机制，做成泛型函数复用 trait 方法（review-code-skill §2.5 机制 vs 策略分离）。C `pt_init` 没有单函数对应物：其语义分解为 DM 覆盖建立（kernel boot，见 4）、地址空间接管（`init_vm_self_pt` 的 adopt）、用户区映射写入（08 的 `write_page_table_mappings`）与根登记（VMCTL SetAddrSpace 通道，08 §3.3），各归其位。
+4. **A1 adoption 取代"结构继承"**：VM 的初始页表就是 kernel bootstrap root——kernel boot 期在该根上建立 identity + 内核高半映射（`arch_boot_impl`，os/kernel/src/lib.rs:269）与双 DM 窗口覆盖（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:66，§4.4），随后把根 PA 写入 boot handoff 页（lib.rs:1152-1190）；VM 的 `init_vm_self_pt`（vm_self_map.rs:175）以 `VmSelfPageTable::adopt` 包装同一根（`adopt_active_root`，paging.rs:229），不新建、不拷贝。**注意差异**：C 拷贝内核页表内容（`sys_vircopy`/`sys_abscopy`）是因为 i386 下内核与 VM 各持一棵树；minix-rs 里根只有一棵，"继承"退化为"身份移交"——adopt 的根 PA round-trip 有测试锁定（vm_self_map.rs `test_adopt_round_trips_root_paddr`）。
 
 ### 3.5 语义差异清单（C ↔ Rust 诚实标注）
 
@@ -454,7 +455,7 @@ pub trait Paging {
 | 2 | 固定 1024/4096 项数组，页表页预先分配 | 中间级按需 `walk_alloc` | [ARCH: A-2] 层级演进 |
 | 3 | `pt_virtop` 死字段（仅写入无读取） | 无对应 | 结构消除 |
 | 4 | `ARCH_VM_*` 宏族两套 + `#if` 切换 | trait 静态分派，VM 侧零条件编译 | [ARCH: A-10] |
-| 5 | `pt_init` 拷贝内核页表内容 | `paging_init` 建立在 kernel 已建 DM 上，仅扩展 >1GB | [ARCH: A-1] 结构继承方式演进 |
+| 5 | `pt_init` 拷贝内核页表内容 | VM adopt bootstrap root（kernel boot 期已在同一根上建好初始映射与 DM 覆盖），无拷贝继承 | [ARCH: A-1] 结构继承 → 地址空间接管 |
 | 6 | 自举用 BSS 静态备用资源 | 无（`vm_self_map` + Direct Map + `vm_pt_alloc`） | [ARCH: A-9/A-1]（06 D3/D5） |
 | 7 | `PTF_*`/`I386_VM_*` 位标志直接暴露 | `PageFlags` OS 语义 + arch 内翻译 | 类型安全演进 |
 | 8 | `PFERR_*` 页错误解码宏 | 16-pagefault 消费（cow_exec_pf.rs） | 移交（16） |
@@ -486,44 +487,52 @@ pub(crate) fn page_align_down(addr: VirBytes) -> VirBytes { ... } // L34-37
 
 ```rust
 // direct_map.rs
-pub(crate) const VM_DIRECT_MAP_BASE: u64 = CurrentDirectMap::VM_DIRECT_MAP_BASE;   // L12
-pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE; // L13
-pub(crate) const VM_DIRECT_MAP_SIZE: u64 = 1 << 30;                                // L14
-pub(crate) const VM_HEAP_BASE: u64 = CurrentDirectMap::VM_HEAP_BASE;               // L16
-pub(crate) const VM_HEAP_SIZE: u64 = CurrentDirectMap::VM_HEAP_SIZE;               // L17
-pub(crate) const VM_HEAP_LIMIT: u64 = VM_HEAP_BASE + VM_HEAP_SIZE;                 // L18
+pub(crate) const VM_DIRECT_MAP_BASE: u64 = CurrentDirectMap::VM_DIRECT_MAP_BASE;   // L15
+pub(crate) const KERNEL_DIRECT_MAP_BASE: u64 = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE; // L17
+pub(crate) const VM_DIRECT_MAP_SIZE: u64 = CurrentDirectMap::VM_DIRECT_MAP_SIZE;   // L20
+pub(crate) const VM_HEAP_BASE: u64 = CurrentDirectMap::VM_HEAP_BASE;               // L22
+pub(crate) const VM_HEAP_SIZE: u64 = CurrentDirectMap::VM_HEAP_SIZE;               // L23
+pub(crate) const VM_HEAP_LIMIT: u64 = VM_HEAP_BASE + VM_HEAP_SIZE;                 // L24
 
-pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes { ... }          // L21-23
-pub(crate) fn kernel_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes { ... }      // L26-28
-pub(crate) fn virt_to_phys(virt: VirBytes) -> AlignedPhysBytes { ... }             // L31-34
-pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool { ... }                   // L37-39
+pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes { ... }          // L27-29
+pub(crate) fn kernel_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes { ... }      // L36-38
+pub(crate) fn virt_to_phys(virt: VirBytes) -> AlignedPhysBytes { ... }             // L42-45
+pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool { ... }                   // L49-56
 ```
 
 - **输入用 `AlignedPhysBytes`**（物理页对齐新类型）：构造时强制页对齐（`AlignedPhysBytes::new` 断言、`new_unchecked` debug 断言），未对齐在构造点即暴露——C 里 `vm_phys_to_virt` 接受任意 `phys_bytes`，越界/未对齐在更晚的访问点才暴露。
 - `is_direct_map_virt` 的双窗口判定（高半 kernel / 低半 VM）是 `virt_to_phys` 的方向选择器，也是后续 09/13 判断"这个 VA 是不是 DM 页"的哨兵。
-- `VM_DIRECT_MAP_SIZE`（1GB）是 kernel 初始建好的 DM 窗口大小；>1GB 由 `paging_init` 扩展（§3.4）。
+- `VM_DIRECT_MAP_SIZE` 是编译期容量声明（三架构 1GiB/2GiB/16GiB，`os/arch/src/arch/direct_map.rs:77/108/135`）——它声明"窗口能表达的 PA 上界"，不是"kernel 已建好的映射大小"。窗口覆盖由 kernel boot 一次建立（`establish_boot_dm`，§3.4 配套设计 4）：落在窗口内的资源按需获得映射，超出窗口的物理内存不具 DM 可表达性、被资格过滤排除在 VM PMM 之外——**运行期没有任何">窗口扩展"路径**。窗口常量因此是**设计输入**而非实现细节：值选错不违反任何不变量，却能让架构功能性不可用（AArch64 若用 1GiB 窗口面对 RAM base = 1GiB 的 QEMU virt，全部 RAM 落在资格链外层上界之外——完整推导见 01-stage-kernel/07-cross-space-init.md §4.1）。
 
 ### 4.3 `vm_self_map.rs`：VM 自身页表接口
 
 ```rust
-static VM_SELF_PT_STORAGE: AssumeSyncCell<Option<PageTable>> = AssumeSyncCell::new(None); // L55
+pub(crate) struct VmSelfPageTable { inner: PageTable }            // L83（no Clone/Copy）
 
-fn get_pt_mut() -> &'static mut PageTable {                       // L63-71
+impl VmSelfPageTable {
+    pub(crate) fn adopt(root_paddr: PhysBytes) -> Self { ... }    // L95（唯一构造入口）
+}
+
+static VM_SELF_PT_STORAGE: AssumeSyncCell<Option<VmSelfPageTable>> = AssumeSyncCell::new(None); // L144
+
+fn get_pt_mut() -> &'static mut VmSelfPageTable {                 // L152-160
     // SAFETY: 单线程事件循环，无并发 &mut（lib.rs 头注释）
     let opt = unsafe { &mut *VM_SELF_PT_STORAGE.get() };
     opt.as_mut().expect("vm_self_pt: not initialized — call init_vm_self_pt() first")
 }
 
-pub(crate) fn init_vm_self_pt() { ... }                           // L82-90（重复调用 panic）
-pub(crate) fn vm_self_mappages(va: VirBytes, phys: PhysBytes, flags: PageFlags) -> Result<(), PageTableError> { ... } // L100-106
-pub(crate) fn vm_self_unmap(va: VirBytes) -> Result<PhysBytes, PageTableError> { ... }  // L116-118
-pub(crate) fn vm_self_query(va: VirBytes) -> Option<(PhysBytes, PageFlags)> { ... }    // L127-129
-pub(crate) fn vm_self_unmappages(va_start: VirBytes, pages: usize) -> Result<(), PageTableError> { ... } // L138-143
+pub(crate) fn init_vm_self_pt(root_paddr: PhysBytes) { ... }      // L175-182（重复调用 panic）
+pub(crate) fn vm_self_mappages(va: VirBytes, phys: PhysBytes, flags: PageFlags) -> Result<(), PageTableError> { ... } // L203-209
+pub(crate) fn vm_self_unmap(va: VirBytes) -> Result<PhysBytes, PageTableError> { ... }  // L219-221
+pub(crate) fn vm_self_query(va: VirBytes) -> Option<(PhysBytes, PageFlags)> { ... }    // L231-233
+pub(crate) fn vm_self_unmappages(va_start: VirBytes, pages: usize) -> Result<(), PageTableError> { ... } // L242-247
 ```
 
-- **初始化时机**：`vm_server.rs:new_with_boot_params` 在 `#[cfg(not(test))]` 下调用（L110-111）——测试构建用 `MockPaging`，不需要真实页表；生产构建在 `pt_alloc` 注册（06 D5）之后、`VmServer::init()` 之前。
+- **A1 adoption：构造入口封闭**：`VmSelfPageTable` 的唯一构造函数是 `adopt(root_paddr)`（经 `Paging::adopt_active_root` 包装既有根），**没有新建根的构造器，也没有 `Clone`/`Copy`**——"VM 的地址空间只有一棵树、只有一个可变权威"由类型系统保证（第二次 `init_vm_self_pt` panic 是最后一道运行时保险，非主机制）。根 PA 来自 boot handoff 页的 `root_paddr` 字段，adopt 后 round-trip 一致有测试锁定（`test_adopt_round_trips_root_paddr`）。
+- **PTE 访问通道在构造时钉死（D2-⑥）**：adopt 包装的 handle 在 VM 进程内使用——VM 是用户态进程，够不到 supervisor 专属的 kernel DM 窗口，所以 handle 的全部 `map`/`unmap`/`query` 走 **VM Direct Map** 通道；kernel 上下文的 `from_active_root`（boot 期加载 VM ELF 等场景）走 kernel DM 通道。walk 逻辑单一，仅通道不同。
+- **初始化时机**：`vm_server.rs` 的 `new_with_boot_params` 在 `#[cfg(not(test))]` 下调用（L208-209）——测试构建用 `MockPaging`，不需要真实页表；生产构建在 `pt_alloc` 注册（06 D5）之后、任何触发 `HeapArena::grow` 的堆分配之前。
 - **`vm_self_unmap` 返回被解映射的 PA**：调用者可据此释放物理页（HeapArena::shrink 用）——比 C 的 `pt_writemap(MAP_NONE, WMF_FREE)` 一体化解映射+释放更显式（06 D1 已述拆分）。
-- **`vm_self_query` 是 `vm_addrok` 语义的 Rust 对应**（06 D6 移交）：返回映射的 (PA, flags)，供校验/查询。
+- **`vm_self_query` 是 `vm_addrok` 语义的 Rust 对应**（06 D6 移交）：返回映射的 (PA, flags)，供校验/查询（当前仅测试消费，`#[cfg_attr(not(test), allow(dead_code))]` 诚实标注）。
 
 ### 4.4 arch 侧：`DirectMapArch` / `Paging` / `X86_64Paging` 4 级 walk
 
@@ -546,13 +555,13 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 - **`phys_to_ptr_dm`**（L120-123）：`KERNEL_DIRECT_MAP_BASE + phys` 得到内核 VA 指针——PTE 读写统一经它（`write_pte_dm`/`read_pte_dm`），**页表页的"VM 视角"由 DM 派生，不再有 `pt_pt[]` 缓存**。
 - **arm64/riscv64 同构**：各自的 `walk_alloc` + `phys_to_ptr_dm` 变体（arm64/paging.rs:160、riscv64/paging.rs:195）——trait 契约相同，索引/位域不同，全部封在 arch crate。
 
-**`paging_init` 的结构继承**（os/arch/src/arch/paging.rs:569-650）：`map_kernel`（内核文本 + kernel DM 哨兵页）→ 若 `total_phys_bytes > 1GB` 则 `map_huge` 扩展 VM DM → `bind_to_process` 通知内核。对应 C `pt_init` 的"继承内核映射 + 登记 + 绑定"（§2.5 ⑥），差异在 §3.5 #5 已注。
+**DM 覆盖建立（kernel boot 期，bootstrap root 上）**：VM DM 窗口不是"VM 启动后补映射"，而是 kernel 在 paging enable 之后、调度 VM 之前一次性建好（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:66，由 `arch_boot_impl` Step 4 调用，os/kernel/src/lib.rs:348）。映射候选是**两源并集**：①memmap conventional 区段（VM PMM 的 RAM 来源）；②bootstrap 树显式登记（VM 自身根页 + boot bump 区间——二者是 LOADER_DATA 分配，永不出现在 conventional memmap 里，不显式登记则 self root 永远进不了覆盖）。粒度选择按资源包含性裁剪：1GiB/2MiB 大页仅当**整个叶页落在同一候选区段内**才成立，reserved hole（VGA/ROM 等）不可能被任何粒度的大页吞没。同一组候选装进两个窗口——kernel DM 先建（supervisor，全 PA 域）、VM DM 后建（user，PA 域裁剪到 `VM_DIRECT_MAP_SIZE`）；x86-64 下 VM DM 窗口与 identity mapping 重叠于 PDPTE[2]，建立时以空下级表替换该槽位、仅重写 VA [2GiB, 3GiB) 的翻译，与 VA<1GiB 的自举写通道（identity `VA=PA`）正交。超窗口 conventional RAM 经资格过滤排除在 VM PMM 之外——覆盖、资格、分配三层由同一条推导链锁定。
 
 ### 4.5 消费方接线
 
 | 消费方 | 位置 | 使用 |
 |--------|------|------|
-| `vm_server.rs:new_with_boot_params` | L102-111 | `pt_alloc` 注册 + `init_vm_self_pt`（06 D5 接线） |
+| `vm_server.rs:new_with_boot_params` | L196-209 | `pt_alloc` 注册（06 D5 接线）+ `init_vm_self_pt(params.root_paddr)`（A1 adoption） |
 | `heap_arena.rs` | L83-118 | `vm_self_mappages` 映射堆页、`vm_self_unmap` 回滚（09 详述） |
 | `munmap.rs` | L111 | `vm_self_unmappages` 批量解映射（21 详述） |
 | `alloc_page.rs` | L30-36 | `vm_phys_to_virt` 给自用页派生 VA（06 D2） |
@@ -568,14 +577,17 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 
 | 测试函数 | 位置 | 验证目标 |
 |----------|------|---------|
-| `test_page_align` | pagetable/mod.rs:44 | 向上/向下页对齐（0x1234→0x2000/0x1000） |
-| `test_page_size_from_trait` | pagetable/mod.rs:51 | `PAGE_SIZE` 经 trait 常量取 4096 |
-| `test_vm_phys_to_virt` | direct_map.rs:85 | `vm_phys_to_virt(0x1000) = VM_DIRECT_MAP_BASE+0x1000` |
-| `test_vm_phys_to_virt_with_real_constant` | direct_map.rs:94 | 真实常量 + roundtrip |
-| `test_kernel_phys_to_virt` | direct_map.rs:104 | `kernel_phys_to_virt` 高半窗口 |
-| `test_virt_to_phys_roundtrip` | direct_map.rs:111 | 双窗口 roundtrip |
-| `test_is_direct_map_virt` | direct_map.rs:120 | DM 判定（含非 DM 地址拒绝） |
-| `test_vm_self_pt_not_initialized_by_default` | vm_self_map.rs:150 | 静态存储初始 `None` |
+| `test_page_align` | pagetable/mod.rs:49 | 向上/向下页对齐（0x1234→0x2000/0x1000） |
+| `test_page_size_from_trait` | pagetable/mod.rs:56 | `PAGE_SIZE` 经 trait 常量取 4096 |
+| `test_vm_phys_to_virt` | direct_map.rs:102 | `vm_phys_to_virt(0x1000) = VM_DIRECT_MAP_BASE+0x1000` |
+| `test_vm_phys_to_virt_with_real_constant` | direct_map.rs:111 | 真实常量 + roundtrip |
+| `test_kernel_phys_to_virt` | direct_map.rs:121 | `kernel_phys_to_virt` 高半窗口 |
+| `test_virt_to_phys_roundtrip` | direct_map.rs:128 | 双窗口 roundtrip |
+| `test_is_direct_map_virt` | direct_map.rs:137 | DM 判定（含非 DM 地址拒绝） |
+| `test_layout_invariant_heap_follows_direct_map` | direct_map.rs:146 | 布局不变量：堆窗口紧随 DM 窗口之后 |
+| `test_vm_self_pt_not_initialized_by_default` | vm_self_map.rs:258 | 静态存储初始 `None` |
+| `test_init_vm_self_pt_then_reset` | vm_self_map.rs:267 | init 一次性（二次调用 panic）+ reset 状态机 |
+| `test_adopt_round_trips_root_paddr` | vm_self_map.rs:279 | A1 adoption：handle 包装 handoff 根而非新建根 |
 | x86_64/paging.rs 11 个（`test_flag_roundtrip_*`×3、`test_nx_*`×2、`test_address_preserved_*`、`test_huge_page_flag_roundtrip`、`test_pml4_index_high_canonical`、`test_pdpt_index_1gb_boundary`、`test_pd_index_2mb_boundary`、`test_walk_read_not_present_on_zero_root`） | os/arch/src/x86_64/paging.rs:633-721 | PTE 标志翻译（NX 反相）、4 级索引、huge page 标志、零根 walk |
 
 ### 5.2 覆盖维度
@@ -583,23 +595,22 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 - **Direct Map 双向转换**：`vm_phys_to_virt`/`virt_to_phys` roundtrip + 双窗口判定——A-1 的核心不变量（`virt_to_phys(vm_phys_to_virt(p)) == p`）。
 - **结构访问**：`page_align`/`PAGE_SIZE` trait 常量——VM 层页大小统一入口。
 - **4 级页表结构**：x86_64/paging.rs 的索引函数（PML4/PDPT/PD 边界值：canonical 高半、1GB/2MB 边界）+ 零根 walk（PRESENT=0 检测）——A-2 的层级正确性。
-- **VM 自映射状态**：`vm_self_map` 静态存储初始 `None`——A-9 模块的初始化状态机。
+- **VM 自映射状态与 adoption 契约**：`vm_self_map` 静态存储初始 `None`（A-9 状态机）+ init 一次性（二次调用 panic）+ adopt 根 PA round-trip（A1：handle 必须包装 handoff 根——若 `adopt` 退化为 `new()` 新建根，round-trip 断言即失败）。
 - **mock 隔离**：`with_mock_base_lock`/`with_custom_mock_base` 串行化依赖全局 mock base 的测试，防并行竞态（direct_map.rs:56-80）。
 
 ### 5.3 覆盖缺口与诚实标注
 
 | 缺口 | 说明 | 状态 |
 |------|------|------|
-| `init_vm_self_pt` 生产路径 | `#[cfg(not(test))]` 跳过；`X86_64Paging::new()` + 真实 DM 需 QEMU 集成 | 06 已注，backlog（QEMU） |
+| `init_vm_self_pt` 生产路径 | `#[cfg(not(test))]` 跳过；adopt 语义已由 mock 单测锁定（round-trip + 一次性），真实硬件执行绑定需 QEMU sentinel 测试 | QEMU sentinel 承接（test-proc-init 真实硬件验证） |
 | `vm_self_map` map/unmap roundtrip | 无独立测试；映射路径经 HeapArena 测试覆盖（09 详述） | 09 承接 |
-| `paging_init` 真实 boot_info | `MOCK_KERNEL_*` 常量 FIXME（paging.rs:601-604），真实内核布局接线归 01/10 | 01/10 承接 |
 | `vm_self_query` 无生产消费方 | `vm_addrok` 语义对应（06 D6 移交），当前仅定义供校验/查询；页表级 sanity 检查（sanity.rs:26-28 注释的 `map_sanitycheck_pt` 延后项）是预期消费方 | 接受（预留接口，诚实标注） |
 | `PagingWithId`（PCID/ASID） | 预留 trait，无生产消费方 | 接受（draft/06-pagetable-struct.md §3.3（素材）预留声明） |
 | `PFERR_*` 页错误解码 | 无 Rust 对应（16-pagefault 消费方接管） | 16 承接 |
 
-### 5.4 测试统计（截至 2026-08-15）
+### 5.4 测试统计（截至 2026-09-04）
 
-- 本文档范围 Rust 测试：`pagetable/mod.rs` 2 + `direct_map.rs` 5 + `vm_self_map.rs` 1 + `os/arch x86_64/paging.rs` 11 = **19 个**（含 2 个 mock helper 函数）。
+- 本文档范围 Rust 测试：`pagetable/mod.rs` 2 + `direct_map.rs` 6 + `vm_self_map.rs` 3 + `os/arch x86_64/paging.rs` 11 = **22 个**（含 2 个 mock helper 函数）。
 - 全 crate 基线：`cargo test -p minix-vm --lib` = **347 passed / 1 failed**（`region::vir_region::tests::test_map_lazy`，13 范围 pre-existing）。`os/arch` crate 测试在 `cargo test -p minix-arch` 下运行。
 - 统计规则：不引用具体文件行号（避免行号漂移传播，Pattern #66 RCPD 主动应用）。
 

@@ -448,7 +448,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 ### 3.2 D2: 元数据放置——预映射内存 + `BumpBuf`
 
 - **C**: 位图是静态 BSS 数组，大小按 32 位地址空间上限固定（128KB），"先于分配器存在"。
-- **Rust**: 64 位物理内存无硬上限 → 元数据大小随 `total_pages` 增长（`PhysAllocType::metadata_size`，`mod.rs:249`）。自举期 GlobalAlloc 依赖分配器（循环依赖），故从 Direct Map 预映射区切一段**连续物理内存**做元数据（`vm_server.rs:create_default_allocator`，L230-285：找 `base < VM_DIRECT_MAP_SIZE && size >= meta_pages*CLICK` 的 free region，元数据 PA 从分配器视野中扣除——等价于 C 的"分配器占用不进入空闲池"）。`VM_DIRECT_MAP_SIZE` 的来源是 `DirectMapArch::VM_DIRECT_MAP_SIZE`（`os/arch/src/arch/direct_map.rs`，按架构窗口给出：x86_64/aarch64 1 GiB、riscv64 16 GiB，V10-P2-2 收敛），VM 侧不再硬编码。`BumpBuf`（`mod.rs:49`）把裸字节按对齐切出 `&'static mut [T]` slice。
+- **Rust**: 64 位物理内存无硬上限 → 元数据大小随 `total_pages` 增长（`PhysAllocType::metadata_size`，`mod.rs:249`）。自举期 GlobalAlloc 依赖分配器（循环依赖），故从 Direct Map 预映射区切一段**连续物理内存**做元数据（`vm_server.rs:create_default_allocator`，L230-285：找 `base < VM_DIRECT_MAP_SIZE && size >= meta_pages*CLICK` 的 free region，元数据 PA 从分配器视野中扣除——等价于 C 的"分配器占用不进入空闲池"）。`VM_DIRECT_MAP_SIZE` 的来源是 `DirectMapArch::VM_DIRECT_MAP_SIZE`（`os/arch/src/arch/direct_map.rs`，按架构窗口给出：x86_64 1 GiB、aarch64 2 GiB、riscv64 16 GiB——窗口容量必须覆盖目标平台的 RAM base，QEMU virt 的 arm64 RAM base 为 1 GiB，1 GiB 窗口会使全部 RAM 落在 DM 可表达范围之外，故 aarch64 取 2 GiB；窗口容量与资格过滤的推导见 07-pagetable-struct.md §3.4），VM 侧不再硬编码。`BumpBuf`（`mod.rs:49`）把裸字节按对齐切出 `&'static mut [T]` slice。
 - **生命周期**：元数据 slice 的 `'static` 生命周期由"VM 进程存活期"保证（SAFETY 注释见 `mod.rs:81-85`）；`metadata_pa_range()`（`bitmap_alloc.rs:110-112`）暴露元数据 PA 范围，供 `relocate` 搬迁后 `free_mem` 回收（归 10-vm-relocation）。
 - **行为契约**：`adjusted_regions`（`vm_server.rs:266-268`）扣除元数据页后作为初始空闲区间；`validate()`（`boot.rs:152`）断言页对齐。
 
@@ -480,9 +480,13 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 ### 3.5 D5: boot 契约显式化——`BootParams` / `validate` / `extra_pages`
 
 - **C**: `kernel_boot_info`（glo.h）是隐藏全局；`init_vm()` 的断言与调用点散落在 main.c:442-495。
-- **Rust**: `BootParams`（`boot.rs:61`）把 kernel→VM 交接建模为**构造输入**；`validate()`（`boot.rs:144`）镜像 main.c:451-452 断言（`mmap_size > 0` → `free_regions` 非空），并额外断言 `total_pages == Σ region pages`（C 无此断言，Rust 把 mem_init 的累加不变量前移到构造期）；`extra_pages()`（`boot.rs:201`）精确复刻 `mem_add_total_pages` 调用点（main.c:485-495：模块循环排除最后一个 + kernel static 向上取整 + dynamic 原样）。
-- **为什么**：boot 协议是一次性 one-shot 交接，把依赖显式化在构造函数使启动链可审计、可单测（`boot.rs` 6 个测试，§5.1）。
-- **行为契约**：`validate()` 失败即 panic（fail-fast，与 C `assert` 同构）；`extra_pages()` 对 modules 最后一项（VM 自身）用 `saturating_sub(1)` 排除；总页数 = `global::init(total_pages)` + `account_boot_memory()` 追加 `extra_pages()`（`vm_server.rs:505-516`）。
+- **Rust**: `BootParams`（`boot.rs:61`）把 kernel→VM 交接建模为**构造输入**，生产构造经 boot handoff 页读取（`read_boot_params`，`boot.rs:242`）：`root_paddr` 是 A1 地址空间身份交接（VM 初始页表 = bootstrap root，不新建不拷贝）；`free_regions`/`deducted` 是 kernel 侧 **A2 post-bootstrap classification** 的产物——`VM PMM eligible = conventional ∩ DM-representable − LiveBootstrap`（kernel 在分类时点按 LiveBootstrap 记录从全量 memmap 扣除，对账契约见下文 `reconcile`）。C 的 `mem_chunks[]` 对应的是"分类后的幸存区间"而非全量内存图。`validate()`（`boot.rs:132`）镜像 main.c:451-452 断言（`mmap_size > 0` → 分类后 `free_regions` 非空），另断言 root PA 非零且页对齐（A1 契约）与 `total_pages == Σ region pages`（C 无此断言，Rust 把 mem_init 的累加不变量前移到构造期）；`extra_pages()`（`boot.rs:197`）精确复刻 `mem_add_total_pages` 调用点（main.c:485-495：模块循环排除最后一个 + kernel static 向上取整 + dynamic 原样）。
+- **为什么**：boot 协议是一次性 one-shot 交接，把依赖显式化在构造函数使启动链可审计、可单测（`boot.rs` 12 个测试：validate 5 + extra_pages 2 + reconcile 5，§5.1）。kernel 写侧与 VM 读侧各自带对账：kernel 随 free 清单移交扣除记录 `deducted`，VM 的 `reconcile`（`boot.rs:322`）用**独立可枚举的事实**复核记录——adopted root 页、保留模块 blob、kernel 动态分配都必须落在记录内，free 与 deducted 不得相交。交接面从"信任一个隐藏全局"变为"验证一份记录"。
+- **行为契约**：`validate()`/`reconcile()` 失败即 panic（fail-fast，与 C `assert` 同构）；`extra_pages()` 对 modules 最后一项（VM 自身）用 `saturating_sub(1)` 排除；总页数 = `global::init(total_pages)`（`vm_server.rs:425`）+ `account_boot_memory()`（`vm_server.rs:509`）追加 `extra_pages()`。
+
+**A2 清单的定格语义：linearizable，而非 atomic**。设计把"一页退出 bootstrap 记账、进入 VM free set"定义为一个对分配路径**不可观察的单一状态转移**，即"合法回收（reclaim）相对 VM PMM 分配操作 linearizable"。当前系统里三类 LiveBootstrap 成员（self 页表层级、ELF backing、用户栈帧）都没有回收路径，这个契约是防御性的：它约束的是**未来可能出现**的回收机制。为什么术语用 linearizable 而不是 atomic——linearizable 是**可观察性契约**，不预设实现机制：VM 是单线程事件循环，顺序代码里"先退出记账、后进入 free"两步连续提交即构成单一转移，不需要 CAS/锁/原子 CPU 指令；说 atomic 会让读者误以为必须用原子指令实现。契约锚定的是"中间态不得暴露给分配路径"这个性质本身，未来回收改为批量/多阶段时依然适用。
+
+**capacity validation 验证的是"最低运行需求"，不是"最低自举需求"**。`validate()` 断言分类后的资源非空、足以支撑 VM 正常运行（分配器元数据 + 最低堆页数等）。为什么判据是运行需求而非自举需求——这是防时序错位：bootstrap（页表层级、ELF、栈）在 eligible 清单建成**之前**就已完成，且已从清单中扣除；eligible 承载的是"排除后"的运行资源，自举不再向它索要任何东西。若把 validation 语义错置为"够不够自举"，等于在时序上追问一个已经过去的问题（自举成败在分类前已成定局），而真正的检查对象是 VM 进入服务循环后的 PMM 容量下限。
 
 ### 3.6 D6: 统计结构体——取代 C 三指针 out-param
 
@@ -567,10 +571,10 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 | `phys_mem/mod.rs` | 4 | `metadata_size` 公式（bitmap/buddy/页对齐/0 页边界） |
 | `phys_mem/stats.rs` | 3 | `MemStats` 记账（基本/峰值/失败） |
 | `alloc_stats.rs` | 4 | `VmAllocStats` 记账（基本/泄漏检测/失败跟踪/压力） |
-| `boot.rs` | 6 | `BootParams::validate`（通过/空区间 panic/总数不匹配 panic）、`extra_pages`（模块排除最后一项/kernel 取整）、placeholder 含 VM 槽 |
+| `boot.rs` | 12 | `BootParams::validate`（通过/空区间 panic/总数不匹配 panic/root 未对齐 panic/root 为零 panic）、`extra_pages`（模块排除最后一项/kernel 取整）、`reconcile` 对账（一致记录接受/空记录拒绝/root 不在记录拒绝/free∩deducted 相交拒绝/模块不在记录拒绝） |
 | `global.rs` | 5 | `TOTAL_PAGES` 读写、`add_total_pages`、kernel layout、VM instance 计数 |
 
-合计 102 个测试函数（`segment_tree_alloc` feature 关闭时部分 parity 用例不编译）。
+合计 108 个测试函数（`segment_tree_alloc` feature 关闭时部分 parity 用例不编译）。
 
 ### 5.2 覆盖维度
 
@@ -591,10 +595,9 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 | segment-tree LOWER16MB/1MB 先分配后检查 | 实验性后端局限（§4.4） |
 | `PAF_CLEAR` 端到端（真实 Direct Map 清零） | 依赖 Direct Map（07-pagetable-struct） |
 
-### 5.4 测试统计（截至 2026-08-15）
+### 5.4 测试统计（截至 2026-09-04）
 
-- `cargo test -p minix-vm --lib`：**346 passed / 3 failed**
-- 3 个 pre-existing 失败（plan.md §3.5 基线，不属本文档范围）：`alloc_page::tests::test_alloc_page`、`alloc_page::tests::test_alloc_pages_multi`（06 范围）、`region::vir_region::tests::test_map_lazy`（13 范围）
+- `cargo test -p minix-vm --lib`：**448 passed / 0 failed**——此前基线（346 passed / 3 failed）中的 3 个 pre-existing 失败已随 06/13 的推进清零
 - 本文档相关模块（§5.1 八文件）在默认 feature 构建下全部通过
 
 ---

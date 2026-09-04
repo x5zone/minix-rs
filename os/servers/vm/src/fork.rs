@@ -236,7 +236,7 @@ pub(crate) fn do_fork(
             //   3. `fork_regions` failed *before* writing any region metadata
             //      into the page table — no live PTEs reference the allocators.
             //   4. No CR3 points to this page table (not yet bound via
-            //      `bind_page_table`), so freeing it cannot cause TLB shootdown
+            //      write_page_table_mappings), so freeing it cannot cause TLB shootdown
             //      issues or dangling hardware references.
             //
             // Alias safety: `child` is a local mutable handle obtained from
@@ -311,27 +311,12 @@ pub(crate) fn do_fork(
         return Err(VmForkError::PageTableMapFailed);
     }
 
-    // Bind page table BEFORE sys_fork so that failure is recoverable.
-    // If bind_page_table fails, we can still rollback (free page table, clear slot).
-    // After sys_fork, the kernel has committed the child process and rollback
-    // is no longer possible — so any failure after sys_fork is irrecoverable.
-    if child.bind_page_table().is_err() {
-        // SAFETY: `free_page_table()` after failed `bind_page_table`.
-        //
-        // Preconditions verified:
-        //   1. `bind_page_table` failed BEFORE the kernel has accepted the
-        //      new process — the page table is not in any CR3 register.
-        //   2. `free_page_table` can therefore drop all mappings and the
-        //      underlying page-allocator state without races against the
-        //      kernel MMU (no TLB shootdown needed).
-        //   3. This is the LAST recoverable point — after `sys_fork` the
-        //      kernel commits the child and rollback is no longer possible.
-        //   4. VM is single-threaded, so no concurrent access to `child`.
-        // SAFETY: See reasoning above — no CR3, no TLB shootdown needed,
-        // last recoverable point, single-threaded.
-        unsafe { child.free_page_table(); }
-        return Err(VmForkError::PageTableMapFailed);
-    }
+    // `write_page_table_mappings` failing above is the last recoverable
+    // point — after `sys_fork` the kernel has committed the child process
+    // and rollback is no longer possible. There is no separate bind step:
+    // the kernel-side address-space registration happens in `sys_fork`
+    // itself (A1 adoption semantics; Minix3's `pt_bind()` step-5
+    // notification is subsumed by the VMCTL SetAddrSpace path).
 
     let child_endpoint = sys_fork(parent.endpoint(), child.slot());
     child.set_endpoint(child_endpoint);
@@ -454,8 +439,8 @@ pub(crate) enum VmForkError {
     /// Page table initialization failed (pt_new / init_page_table).
     /// Corresponds to Minix3's ENOMEM from pt_new() in do_fork().
     PageTableInitFailed,
-    /// Page table mapping or binding failed (pt_map / pt_bind).
-    /// Corresponds to Minix3's ENOMEM from pt_writemap() / pt_bind().
+    /// Page table mapping failed (pt_writemap).
+    /// Corresponds to Minix3's ENOMEM from pt_writemap().
     PageTableMapFailed,
     PageNotMapped,
     MemType(MemTypeError),

@@ -62,6 +62,27 @@ pub trait SmpArch {
     /// riscv64: `wfi` instruction
     fn halt_cpu();
 
+    /// Enable interrupts, then halt until the next interrupt arrives.
+    ///
+    /// This is the **idle-loop** halt — distinct from [`SmpArch::halt_cpu`]
+    /// (the IPI-halt variant, called from interrupt context where the
+    /// interrupt flag is already managed by the entry path).
+    ///
+    /// C: `halt_cpu()` — klib.S:407-414 (`sti; hlt`). The STI is essential:
+    /// the scheduler enters `idle()` with interrupts disabled (kernel
+    /// context), and `hlt` sleeps until an interrupt — without enabling
+    /// first, the CPU would sleep forever. The pairing also guarantees
+    /// exactly one interrupt is taken after the halt: the IRET of that
+    /// interrupt restores the pre-halt RFLAGS (IF=1 only up to the next
+    /// `cli`), so the handler runs with IF cleared (klib.S comment:
+    /// "interrupt handlers make sure that the interrupts are disabled when
+    /// we get here").
+    ///
+    /// x86_64: `sti; hlt`
+    /// aarch64: `msr daifclr, #2` (unmask IRQ) + `wfi`
+    /// riscv64: `csrs sstatus, SIE` + `wfi`
+    fn idle_halt();
+
     /// Acknowledge an IPI.
     ///
     /// C: `ipi_ack()` — smp.c:58,198
@@ -122,6 +143,7 @@ pub struct MockSmpArch;
 impl SmpArch for MockSmpArch {
     fn send_sched_ipi(_cpu: u32) { /* no-op for test */ }
     fn halt_cpu() { /* no-op for test */ }
+    fn idle_halt() { /* no-op for test */ }
     fn ack_ipi() { /* no-op for test */ }
     fn boot_ap(_cpu: u32, _entry: usize) { /* no-op for test */ }
     fn current_cpu() -> u32 { 0 }
@@ -138,6 +160,7 @@ mod tests {
         impl SmpArch for DummyArch {
             fn send_sched_ipi(_cpu: u32) {}
             fn halt_cpu() {}
+            fn idle_halt() {}
             fn ack_ipi() {}
             fn boot_ap(_cpu: u32, _entry: usize) {}
             fn current_cpu() -> u32 { 0 }

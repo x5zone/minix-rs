@@ -13,6 +13,14 @@ use minix_plat::x86_64::early_console;
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
+// UEFI test kernels allocate only while boot services are alive (build_memmap
+// etc.); boot-shim's pool allocator covers exactly that window. See
+// uefi_helpers::UefiPoolAllocator for why the registration lives here and not
+// in boot-shim itself.
+#[global_allocator]
+static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
+    boot_shim::uefi_helpers::UefiPoolAllocator;
+
 #[entry]
 fn main() -> Status {
     early_console::write_str("### test_memmap: verifying UEFI memory map...\n");

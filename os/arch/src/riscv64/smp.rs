@@ -118,6 +118,27 @@ impl SmpArch for Riscv64SmpArch {
         }
     }
 
+    fn idle_halt() {
+        // C: halt_cpu() — klib.S:407-414 (idle-loop variant: `sti; hlt`).
+        //
+        // riscv64 equivalent: set `sstatus.SIE` (bit 5 — supervisor
+        // interrupts globally enabled in S-mode) then `wfi`. Same
+        // requirement as x86_64/aarch64: the wait must not sleep with
+        // interrupts masked, or the hart never wakes.
+        //
+        // SAFETY: `csrs sstatus` and `wfi` are privileged but confined:
+        // the first only enables interrupts, the second only sleeps the
+        // hart. Safe in S-mode kernel context.
+        unsafe {
+            core::arch::asm!(
+                "csrs sstatus, {sie}",
+                "wfi",
+                sie = in(reg) 1u64 << 5, // sstatus.SIE
+                options(nomem, nostack)
+            );
+        }
+    }
+
     #[inline]
     fn ack_ipi() {
         // C: ipi_ack() — smp.c:58,198

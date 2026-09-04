@@ -123,8 +123,11 @@ impl FpuArch for AArch64FpuArch {
                 "stp q26, q27, [{ptr}], #32",
                 "stp q28, q29, [{ptr}], #32",
                 "stp q30, q31, [{ptr}], #32",
-                "mrs {fpsr}, fpsr_el1",
-                "mrs {fpcr}, fpcr_el1",
+                // FPSR/FPCR aliases: `fpsr_el1`/`fpcr_el1` require
+                // Armv8.8-A; the unsuffixed aliases name the same register
+                // at the current exception level (EL1 in kernel context).
+                "mrs {fpsr}, fpsr",
+                "mrs {fpcr}, fpcr",
                 ptr = in(reg) ptr,
                 fpsr = out(reg) dst.fpsr,
                 fpcr = out(reg) dst.fpcr,
@@ -160,8 +163,8 @@ impl FpuArch for AArch64FpuArch {
                 "ldp q26, q27, [{ptr}], #32",
                 "ldp q28, q29, [{ptr}], #32",
                 "ldp q30, q31, [{ptr}], #32",
-                "msr fpsr_el1, {fpsr}",
-                "msr fpcr_el1, {fpcr}",
+                "msr fpsr, {fpsr}",
+                "msr fpcr, {fpcr}",
                 ptr = in(reg) ptr,
                 fpsr = in(reg) fpsr,
                 fpcr = in(reg) fpcr,

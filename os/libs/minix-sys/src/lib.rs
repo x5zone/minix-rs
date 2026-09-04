@@ -9,9 +9,22 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use minix_types::{Endpoint, Message, IpcError};
 
 pub use minix_types::{Gid, Pid, Uid};
+
+/// devman client library: driver-side registration + bind handling
+/// (11-stage-devman/10-libdevman-client.md).
+pub mod devman_client;
+/// Remote MIB client: pure bookkeeping for mounted subtrees
+/// (10-stage-mib/22-mib-rmib-client.md). Message sending and grant
+/// handling stay out until the IPC transport lands.
+pub mod rmib;
+/// USB device modeling over the devman client
+/// (11-stage-devman/11-usb-device-model.md).
+pub mod usb_model;
 
 /// File descriptor.
 pub type Fd = i32;

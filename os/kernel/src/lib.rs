@@ -25,12 +25,23 @@
 // therefore use fixed-size arrays, index-based intrusive lists, and
 // `FmtBuf` stack formatting (see clock.rs, ipc.rs, page_fault.rs).
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use minix_arch::paging_ext::HugePages;
-use minix_types::{VirBytes, PhysBytes};
+use minix_types::{PhysBytes, VirBytes};
+// Handoff types are exercised only by the non-mock VM-loading path
+// (same reason as the `PhysAccess` import below).
+#[cfg(not(feature = "mock"))]
+use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::PageFlags;
-use minix_arch::pt_alloc;
+// `PhysAccess` is exercised only by the non-mock VM-loading path
+// (`access.frame_virt`, cfg'd out under `feature = "mock"`); a plain
+// import would be an unused-import error in mock builds.
+#[cfg(not(feature = "mock"))]
+use minix_arch::arch::frame::PhysAccess;
+use minix_arch::{DirectMapArch, pt_alloc};
 
 /// End of identity-mapped region during boot (4 GB).
 /// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
@@ -45,6 +56,9 @@ pub mod errno;
 pub mod sched;
 pub mod boot_alloc;
 pub mod boot;
+pub mod dm_coverage;
+pub mod vm_handoff;
+
 pub mod irq_manager;
 pub mod syscall;
 pub mod memmap;
@@ -64,6 +78,31 @@ pub mod page_fault;
 pub mod pte_walk;
 pub mod grant;
 pub mod krandom;
+
+/// Test-only serialization for tests that touch process-global boot state.
+///
+/// Unit tests of this crate run in one process: `BOOT_ALLOC` (boot bump
+/// region), the `MockDmCoverage` leaf registry, and the `pt_alloc`
+/// registration are all process-global. Tests that run the boot flow
+/// (`arch_boot_impl` → Step 4 DM establishment) or mutate the bump region
+/// must hold this lock; the DM leaf registry is cleared on acquisition so
+/// repeated boot simulations never trip `AlreadyMapped` on overlapping
+/// bootstrap candidates (the self-root candidate VA set is identical across
+/// boot tests by construction).
+#[cfg(all(test, feature = "mock"))]
+pub(crate) mod test_sync {
+    extern crate std;
+    use std::sync::{Mutex, MutexGuard};
+
+    static BOOT_GLOBALS_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the boot-globals lock and clear the MockDmCoverage registry.
+    pub(crate) fn lock_boot_globals() -> MutexGuard<'static, ()> {
+        let guard = BOOT_GLOBALS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        minix_arch::arch::dm_coverage::mock::mock_dm_clear();
+        guard
+    }
+}
 
 #[cfg(test)]
 mod test_helpers;
@@ -186,12 +225,30 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     // Register boot-stage page table page allocator if not already registered.
     // The caller (e.g., a test kernel) may have registered its own allocator
     // with a safer region (e.g., a bump region past the kernel image).
-    if !pt_alloc::is_registered() {
-        let memmap = kernel_info.memmap();
-        let base = memmap.first().map(|r| r.base.0).unwrap_or(0);
-        let end = base + memmap.first().map(|r| r.len as u64).unwrap_or(0);
-        let boot_alloc_end = core::cmp::min(base + 0x100_000, end);
+    //
+    // The fallback region must satisfy the DM-admissible bound
+    // `min(IDENTITY_MAP_END, VM_DIRECT_MAP_SIZE)` — the bootstrap tree (self
+    // root + bump pages) has to stay DM-covered (07-paging_init_design §6.1
+    // 资格过滤 ②), and `establish_boot_dm` fails fast otherwise. Enforcing
+    // the bound here turns a late validate panic into an early, clearer one.
+    if boot_alloc::boot_alloc_region().is_none() {
+        const FALLBACK_BUMP_LEN: u64 = 0x100_000;
+        let dm_admissible_end =
+            core::cmp::min(IDENTITY_MAP_END, minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE);
+        let region = kernel_info.memmap().iter().find_map(|r| {
+            let start = r.base.0;
+            let end = core::cmp::min(start.checked_add(r.len as u64)?, dm_admissible_end);
+            (end >= start + FALLBACK_BUMP_LEN).then_some((start, start + FALLBACK_BUMP_LEN))
+        });
+        let (base, boot_alloc_end) = region.unwrap_or_else(|| {
+            panic!(
+                "arch_boot: no DM-admissible region for the boot allocator — \
+                 boot-shim must allocate the bump region below {dm_admissible_end:#x}"
+            )
+        });
         boot_alloc::init_boot_pt_alloc(base, boot_alloc_end);
+    }
+    if !pt_alloc::is_registered() {
         pt_alloc::register(boot_alloc::boot_pt_alloc);
     }
 
@@ -279,6 +336,16 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // (e.g., the satp-encoded value on riscv64, not the raw physical
     // address). The parameter is always the raw physical address.
     set_current_root_phys(root_page);
+
+    // Step 4: Establish Direct Map coverage on the bootstrap root.
+    // 07-paging_init_design §6.1 (D8-②): kernel DM first (supervisor RW,
+    // full PA span), then VM DM (user RW, PA span clipped to the window).
+    // Candidates are the two-source union: resource-classified memmap
+    // ranges + explicit bootstrap PhysAccess ranges (self root + boot
+    // bump region). All PTE writes go through the identity write channel.
+    // Must run after `enable()` (writes VA=PA through the live root) and
+    // before any VM physical access through the windows.
+    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
 
     // Return kernel_info so the caller can decide what to do next.
     kernel_info
@@ -1082,12 +1149,55 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
                 }
 
+                // A1 address-space identity hand-off: publish VM's bootstrap
+                // root to VM itself. The kernel writes a `VmBootHandoff`
+                // page and maps it user read-only at `VM_BOOT_HANDOFF_VA`;
+                // VM reads it at startup and adopts the root as its own
+                // page table (`VmSelfPageTable::adopt`, see
+                // 07-paging_init_design §4). The handoff frame is allocated
+                // from the VM bootstrap allocator, so it lands in the
+                // LiveBootstrap record that the A2 free-region
+                // classification deducts.
+                let handoff_frame = vm_alloc
+                    .alloc_page()
+                    .expect("init_proc_and_boot: no frame for VM boot handoff page");
+                let hv = access.frame_virt(handoff_frame);
+                // Map the handoff page user read-only: VM consumes it once
+                // at startup and must not be able to rewrite it. The VA is
+                // above the identity window and below every architecture's
+                // user-VA limit (see minix_types::VM_BOOT_HANDOFF_VA).
+                paging
+                    .map(
+                        VirBytes(VM_BOOT_HANDOFF_VA),
+                        handoff_frame.start(),
+                        PageFlags::read_only(),
+                    )
+                    .expect("init_proc_and_boot: failed to map VM boot handoff page");
+                // Classification point (A2, 07-paging_init_design §6.0):
+                // every bootstrap allocation — ELF segments, the PT
+                // hierarchy, stacks, the handoff frame itself, and any
+                // page-table page the `map` above just installed — is now
+                // handed out, so the cut below sees the complete
+                // LiveBootstrap(t_classify) record. `i` is VM's index in
+                // the boot-module list; its blob was reclaimed above and
+                // therefore stays out of the deduction record.
+                let handoff =
+                    crate::vm_handoff::build_vm_handoff(kernel_info, root_phys, &vm_alloc, i);
+                // SAFETY: `hv` covers one whole frame (PhysAccess contract)
+                // and `VmBootHandoff` fits well within a page.
+                unsafe {
+                    core::ptr::write(hv.0 as *mut VmBootHandoff, handoff);
+                }
+
                 // Record VM's page-table root addresses in p_seg so
                 // `init_post_and_memory` (Phase D) can assert them valid and
                 // install VM as the kernel-level ptproc
                 // (`set_current_ptproc_nr`). The bootstrap root IS VM's
-                // initial root — VMCTL SetAddrSpace will replace it later
-                // when VM installs its own page table.
+                // initial and permanent root: VM adopts it at startup
+                // (A1 hand-off via the VmBootHandoff page above), so there
+                // is no later "VM installs its own page table" step —
+                // VMCTL SetAddrSpace only re-points *other* processes'
+                // page tables built by VM.
                 proc.p_seg.phys_root = root_phys;
                 // The virtual address of the root is the identity-mapped
                 // address (VA = PA during bootstrap).
@@ -1345,6 +1455,7 @@ mod bkl_protected {
         crate::kpriv::PrivTable,
         crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>,
         crate::smp::SmpState,
+        crate::smp::CpuInfoTable,
         crate::ipc_filter::IpcFilterPool,
         crate::krandom::KRandomness,
     }
@@ -1392,6 +1503,7 @@ mod bkl_protected_tests {
         assert_impl::<crate::kpriv::PrivTable>();
         assert_impl::<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>();
         assert_impl::<crate::smp::SmpState>();
+        assert_impl::<crate::smp::CpuInfoTable>();
         assert_impl::<crate::ipc_filter::IpcFilterPool>();
         assert_impl::<crate::krandom::KRandomness>();
 
@@ -1839,15 +1951,28 @@ fn bsp_finish_booting(
 ) -> ! {
     use crate::proc::{ProcNr, RtsFlagsBits, proc_nr};
 
+    // Step 0: cpu_identify() — probe BSP CPU identity into the global table.
+    // C: cpu_identify() — main.c:45, the first statement of bsp_finish_booting;
+    // i386 impl arch_system.c:212-243 (CPUID leaves 0/1 → cpu_info[cpu]).
+    // Rust: the register read is the arch crate's CurrentCpuIdentity probe
+    // (x86 CPUID / aarch64 MIDR_EL1 / riscv64 marchid·mimpid); the result is
+    // recorded into the kernel-side CPU_INFO table (smp.rs) — the Rust
+    // counterpart of C's cpu_info[CONFIG_MAX_CPUS] (glo.h).
+    // AP path: C identifies APs in ap_finish_booting (arch_smp.c:232); the
+    // same helper will be called there once SMP bring-up lands (16-smp.md),
+    // so single-CPU boot fills only the BSP slot.
+    crate::smp::cpu_identify();
+
     // Step 1: vm_running = 0
-    // C: vm_running = 0 — glo.h:37
-    // Rust: vm_running lives in CpuLocal (added in Doc 15 §2.2 + smp.rs:135-200).
-    // For the BSP (cpu 0), we mark "VM not yet running" via a single global
-    // atomic — multi-CPU expansion will move it into SmpState.cpu_locals[0].
+    // C: vm_running = 0 — main.c:47 (declared glo.h:74)
+    // Rust: global `VM_RUNNING: AtomicBool` (definition below, L2121).
+    // C keeps vm_running as a plain global (glo.h:74) — the Rust mirror is
+    // a global AtomicBool with identical semantics. A future per-CPU split
+    // would diverge from C and needs an [ARCH] marker if ever proposed.
     VM_RUNNING.store(false, Ordering::Release);
 
     // Step 2: bill_ptr = proc_ptr = idle_proc
-    // C: get_cpulocal_var(bill_ptr) = get_cpulocal_var_ptr(idle_proc) — main.c:50
+    // C: get_cpulocal_var(bill_ptr) = get_cpulocal_var_ptr(idle_proc) — main.c:54-55
     // Rust: CpuLocal::set_running(IDLE) — see smp.rs:200.
     // We plumb this through the (single-CPU) SmpState when one exists. For now
     // we record the intent by setting the bill pointer inside proc_table via
@@ -1963,7 +2088,7 @@ fn bsp_finish_booting(
     }
 
     // Step 8: kernel_may_alloc = 0
-    // C: kernel_may_alloc = 0 — glo.h:39 (last line of bsp_finish_booting)
+    // C: kernel_may_alloc = 0 — main.c:105 (last statement of bsp_finish_booting)
     // Rust: AtomicBool store.
     KERNEL_MAY_ALLOC.store(false, Ordering::Release);
 
@@ -1992,9 +2117,11 @@ fn bsp_finish_booting(
 
 /// Global atomic mirror of C's `vm_running` flag.
 ///
-/// In C, `vm_running` is a plain `int` in `glo.h:37`. The 64-bit Rust port
-/// keeps it as a single atomic for now; multi-CPU will move it into
-/// `SmpState.cpu_locals[cpu].vm_running` (Doc 15 §2.2 — added in smp.rs).
+/// In C, `vm_running` is a plain `int` in `glo.h:74` — a global, never
+/// per-CPU. The Rust mirror is a global `AtomicBool` with identical
+/// semantics; readers span multiple consumers (do_umap_remote, acpi,
+/// oxpcie in C). A future per-CPU split would diverge from C and needs
+/// an [ARCH] marker if ever proposed.
 ///
 /// Writers: `bsp_finish_booting` (step 1) sets it false;
 ///          `dispatch_vmctl(VMCTL_SETADDRSPACE)` sets it true when target is VM.
@@ -2010,7 +2137,7 @@ fn bsp_finish_booting(
 /// `09-vm-boot-protocol.md §3 decision4`.
 static VM_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Read the `vm_running` flag. C: `vm_running` — glo.h:37.
+/// Read the `vm_running` flag. C: `EXTERN int vm_running` — glo.h:74.
 pub fn vm_running() -> bool {
     VM_RUNNING.load(Ordering::Acquire)
 }
@@ -2089,9 +2216,10 @@ pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {
 /// page-table process. C: `get_cpulocal_var(ptproc) = vm` in
 /// `arch_post_init()` — protect.c:372 (x86) / protect.c:99 (ARM).
 ///
-/// (The arch-level `PostInitArch::set_ptproc`, which C also performs here,
-/// is deleted in Action Item #1 — it recorded `virt_root` for the createpde
-/// temporary window, superseded by Direct Map.)
+/// (C also installs the arch-level ptproc state here, but that layer has no
+/// Rust counterpart — it recorded `virt_root` for the createpde temporary
+/// window, superseded by Direct Map. Only the setcr3-reload tracking needs
+/// a Rust equivalent, which this function provides.)
 ///
 /// # Concurrency
 ///
@@ -2113,12 +2241,20 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 //
 // We record it in this global right after `enable()` succeeds.
 //
+// The mirror's role has since grown: it is now the **software image of the
+// active page-table root** (Rust's `read_cr3`). C reads the live CR3
+// register in `__switch_address_space` (klib.S:618) to skip redundant
+// reloads; Rust compares against this mirror instead, and every root-
+// changing site must go through `set_active_root_tracked` to keep it
+// exact (currently `dispatch_vmctl(VMCTL_SETADDRSPACE)` and the
+// scheduler's `switch_address_space`).
+//
 // # Concurrency
 //
-// Same model as `CURRENT_PTPROC_NR`: single writer during boot, readers hold
-// the BKL. After boot the value is effectively immutable (the bootstrap
-// table stays active until the first VMCTL SetAddrSpace swaps it out, at
-// which point the global is no longer consulted).
+// Same model as `CURRENT_PTPROC_NR`: single writer during boot, readers
+// hold the BKL. Without the BKL a stale read is safe — the only
+// consequence is one extra root reload (a TLB flush), which the next
+// context switch corrects.
 //
 // # SMP
 //
@@ -2167,100 +2303,534 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
     CURRENT_ROOT_PHYS.store(phys.0, Ordering::Release);
 }
 
-/// Entry point for the scheduler loop.
+/// Install a page-table root on the current CPU and keep the software
+/// mirror ([`CURRENT_ROOT_PHYS`]) in sync.
 ///
-/// C: switch_to_user() in proc.c
-/// Design decision D7 (08 §3): returns `!` — never returns to caller.
+/// Rust equivalent of C's `write_cr3()`: the hardware write goes through
+/// `TlbArch::set_active_root` (CR3 / TTBR0_EL1 / satp per architecture),
+/// and `CURRENT_ROOT_PHYS` mirrors the register that C's
+/// `__switch_address_space` reads back directly (`mov %cr3, %ecx` —
+/// klib.S:618) to skip redundant reloads. Keeping the mirror exact is what
+/// makes the scheduler's address-space switch a no-op when the picked
+/// process already owns the active root.
 ///
-/// Full implementation covered in 10-switch-to-user.md.
+/// Every site that changes the active root must go through this helper —
+/// currently `VMCTL_SETADDRSPACE` (dispatch_vmctl) and the scheduler's
+/// `switch_address_space`.
 ///
-/// # BKL (Big Kernel Lock)
+/// # Concurrency
 ///
-/// In C, the BKL is released in `restore_user_context()` (the last thing
-/// before returning to user mode). In Rust, we release the BKL at the
-/// top of `switch_to_user()` before the scheduling loop. This is safe
-/// because:
-///
-/// 1. The scheduling loop itself does not modify shared kernel state
-///    (it only reads per-CPU state and picks a process).
-/// 2. If a process needs kernel service (syscall, exception), the
-///    entry point re-acquires the BKL before touching shared state.
-/// 3. This matches C's pattern: BKL is released before the context
-///    switch and re-acquired on the next kernel entry.
-#[allow(dead_code)] // called from arch trap entry (asm); not visible to compiler
-fn switch_to_user() -> ! {
-    // Release BKL before entering the scheduling loop.
-    // C: BKL is released implicitly by restore_user_context() which
-    // does not return. In Rust, we release explicitly before the loop.
-    smp::bkl_unlock();
-
-    // First-dispatch hook (06-proc-init-boot-proc.md §3.5): apply each boot
-    // process's `cpu_context` to its trap frame once, before the
-    // scheduling loop picks the first runnable process. The arch layer
-    // owns the trap-frame layout; the kernel only hands it the opaque
-    // `CpuContext` built during `init_proc_and_boot`.
-    //
-    // C: this work is folded into `arch_boot_proc()` + the first
-    // `restore_user_context()` in Minix3. Splitting it here keeps the
-    // arch trait's `apply_to_trap_frame` as the single sink for
-    // initial-register writes (§3.2 "arch returns pure value").
-    //
-    // SAFETY: boot is single-threaded (BKL just released, but no other
-    // CPU is up yet on single-CPU configs). On SMP this must move
-    // inside the per-CPU dispatch path.
+/// Callers hold the BKL (single-writer guarantee for the mirror).
+pub(crate) fn set_active_root_tracked(root: PhysBytes) {
+    use minix_arch::TlbArch;
+    // SAFETY: `root` is a boot-established or VM-validated page-table
+    // root (see `TlbArch::set_active_root` safety contract); the caller
+    // holds the BKL, so no other CPU is concurrently switching roots.
     unsafe {
-        apply_boot_cpu_contexts();
+        minix_arch::CurrentTlbArch::set_active_root(root);
     }
+    set_current_root_phys(root);
+}
 
-    // Placeholder — full scheduler loop implemented in 10-switch-to-user.md
-    loop {
-        core::hint::spin_loop();
+/// Pick the next runnable process and update the bill pointer.
+///
+/// C: `pick_proc()` — proc.c:1785-1813, including the `bill_ptr` side
+/// effect: when the picked process's privilege is BILLABLE, it becomes the
+/// recipient of system-time accounting (`get_cpulocal_var(bill_ptr) = rp`
+/// — proc.c:1809). The C function reads the *local CPU's* run queues; in
+/// the single-CPU Rust build the queues live in `ProcessTable::sched`
+/// (see `smp.rs` CpuLocal::scheduler for the SMP migration plan).
+///
+/// Returns `None` when every queue is empty — the caller falls into
+/// `idle()` (C: `while (!(p = pick_proc())) idle();` — proc.c:338).
+fn pick_and_bill(
+    table: &mut crate::proc_table::ProcessTable,
+    smp: &mut crate::smp::SmpState,
+    priv_table: &crate::kpriv::PrivTable,
+) -> Option<crate::proc::ProcNr> {
+    let picked = table.scheduler().pick_proc(table.procs_slice())?;
+
+    // C: proc.c:1808-1809 — `if (priv(rp)->s_flags & BILLABLE)
+    // get_cpulocal_var(bill_ptr) = rp;`
+    if is_billable(table, priv_table, picked) {
+        let bsp = smp.bsp_cpu_id();
+        if let Some(local) = smp.cpu_local_mut(bsp) {
+            local.bill_ptr = Some(picked);
+        }
+    }
+    Some(picked)
+}
+
+/// Whether a process's privilege is BILLABLE (receives CPU-time billing).
+///
+/// C: `priv(p)->s_flags & BILLABLE` — proc.c:186 (idle) / proc.c:1808
+/// (pick_proc). Kernel tasks like IDLE are billable (IDL_F = SYS_PROC |
+/// BILLABLE); a missing priv slot or priv id means "not billable".
+fn is_billable(
+    table: &crate::proc_table::ProcessTable,
+    priv_table: &crate::kpriv::PrivTable,
+    nr: crate::proc::ProcNr,
+) -> bool {
+    table
+        .get(nr)
+        .and_then(|p| p.priv_id)
+        .and_then(|pid| priv_table.get(pid))
+        .is_some_and(|k| k.is_billable())
+}
+
+/// Re-queue a PREEMPTED process according to its remaining quantum.
+///
+/// C: proc.c:322-330 (inside `not_runnable_pick_new`). The flag is cleared
+/// with the raw flag primitive — deliberately NOT `rts_unset`, whose
+/// auto-enqueue is tail-only; C re-decides head-vs-tail from
+/// `p_cpu_time_left` (a process preempted mid-quantum re-enters at the
+/// HEAD of its priority queue to finish its slice).
+///
+/// A process that is not runnable after the clear (blocked again by the
+/// preempting work) is left alone — C: proc.c:324 guards the enqueue the
+/// same way.
+fn requeue_if_preempted(
+    table: &mut crate::proc_table::ProcessTable,
+    nr: crate::proc::ProcNr,
+) {
+    use crate::proc::RtsFlagsBits;
+    use core::sync::atomic::Ordering;
+
+    let preempted = table
+        .get(nr)
+        .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::PREEMPTED));
+    if !preempted {
+        return;
+    }
+    if let Some(p) = table.get_mut(nr) {
+        p.p_rts_flags.clear(RtsFlagsBits::PREEMPTED);
+    }
+    if table.get(nr).is_some_and(|p| p.is_runnable()) {
+        let has_quantum = table
+            .get(nr)
+            .is_some_and(|p| p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0);
+        if has_quantum {
+            table.sched_enqueue_head(nr, crate::proc::CpuId::BSP);
+        } else {
+            table.sched_enqueue(nr, None, crate::proc::CpuId::BSP);
+        }
     }
 }
 
-/// Apply each boot process's `cpu_context` to its trap frame (P2-2).
+/// The CPU has nothing to run: become IDLE until the next interrupt.
 ///
-/// Called once from `switch_to_user()` before the scheduling loop. Iterates
-/// the global `PROC_TABLE`, and for every slot that is not `SLOT_FREE` and
-/// has a non-default `cpu_context`, calls
-/// `CurrentCpuContextArch::apply_to_trap_frame(&ctx, &mut frame)`.
+/// C: `idle()` — proc.c:175-229. Sequence and single-CPU parity:
 ///
-/// The trap frame is a stack-local zeroed value per process; the real
-/// `restore_user_context()` (10-switch-to-user.md) will read from the
-/// per-CPU exception stack instead. This stub exists to exercise the
-/// `apply_to_trap_frame` call site and keep the trait contract honest.
+/// 1. `proc_ptr = idle_proc` (C:185) and `bill_ptr = idle_proc` when IDLE
+///    is billable (C:186-187) — idle time is billed to IDLE.
+/// 2. `switch_address_space_idle()` is `CONFIG_SMP`-only in C (proc.c:
+///    160-170) — omitted on the single-CPU build, exactly like a C build
+///    without SMP.
+/// 3. `cpu_is_idle = 1` (C:192); the AP branch (stop the local timer,
+///    C:194-196) is SMP-only and omitted. The BSP branch calls
+///    `restart_local_timer()` (C:198-204) — see that helper: on the
+///    periodic PIT clock source it is a no-op in C too.
+/// 4. `context_stop(KERNEL)` (C:207) starts idle-time accounting: the
+///    kernel-execution delta since the last switch is charged to the
+///    KERNEL pseudo-process (its TSC baseline is advanced).
+/// 5. `halt_cpu()` (C:209, klib.S:407-414) enables interrupts and halts.
+///    The CPU sleeps until an interrupt wakes it, at which point this
+///    function returns and the caller retries `pick_proc()`.
 ///
-/// # Safety
+/// The `sprofiling` polling variant (C:211-229) is deferred with the
+/// statistical-profiling subsystem (`sprofiling == false` in a default
+/// build, so C takes the plain `halt_cpu()` branch — parity holds for the
+/// default configuration).
 ///
-/// Caller must hold BKL (or be in single-threaded boot).
-#[allow(dead_code)] // boot path, called conditionally; not visible to compiler
-unsafe fn apply_boot_cpu_contexts() {
-    use minix_arch::{CpuContextArch, CurrentCpuContextArch};
-    use crate::proc::RtsFlagsBits;
+/// # BKL
+///
+/// C's `context_stop(KERNEL)` releases the BKL before the halt (the
+/// `must_bkl_unlock` branch — arch_clock.c:226-233); the interrupt that
+/// ends the idle window re-acquires it at handler entry. Rust mirrors the
+/// release before `idle_halt()` and re-acquires on wake, so every shared-
+/// state region in the scheduler loop keeps its "runs under BKL" contract
+/// (see `process_misc_flags`).
+fn idle(
+    table: &mut crate::proc_table::ProcessTable,
+    smp: &mut crate::smp::SmpState,
+    priv_table: &crate::kpriv::PrivTable,
+) {
+    use crate::proc::proc_nr;
+    use minix_arch::SmpArch;
 
+    let bsp = smp.bsp_cpu_id();
+    let idle_nr = smp
+        .cpu_local(bsp)
+        .map(|l| l.idle_proc)
+        .unwrap_or(proc_nr::IDLE);
+
+    // 1. proc_ptr = idle_proc (C:185).
+    if let Some(local) = smp.cpu_local_mut(bsp) {
+        local.proc_ptr = Some(idle_nr);
+    }
+    // bill_ptr = idle_proc if BILLABLE (C:186-187).
+    if is_billable(table, priv_table, idle_nr)
+        && let Some(local) = smp.cpu_local_mut(bsp)
+    {
+        local.bill_ptr = Some(idle_nr);
+    }
+
+    // 2./3. SMP-only steps omitted (see doc comment); cpu_is_idle = 1.
+    if let Some(local) = smp.cpu_local_mut(bsp) {
+        local.cpu_is_idle = true;
+    }
+    restart_local_timer();
+
+    // 4. context_stop(KERNEL) — charge the kernel-execution delta and
+    // advance the TSC baseline (C:207; the quantum decrement itself is
+    // skipped for the endpoint < 0 pseudo-process, arch_clock.c:314).
+    // # Known gap (C-parity accounting): C also accumulates
+    // `kernel_ticks[cpu]` and `p->p_cycles` here (arch_clock.c:231-232).
+    // TODO(P2, code): wire per-CPU kernel-tick statistics into
+    // `clock::decrement_quantum_in` with the clock accounting path
+    // (15-clock-timer.md) — see 10-switch-to-user.md §4.5.
+    let tsc = crate::clock::read_tsc();
+    let kernel = table
+        .get_mut(proc_nr::KERNEL)
+        .expect("idle: KERNEL pseudo-process slot must exist");
+    let _exhausted = crate::clock::decrement_quantum_in(smp, kernel, tsc);
+
+    // 5. BKL release (C: context_stop's must_bkl_unlock — arch_clock.c:
+    // 226-233) then halt with interrupts enabled until the next interrupt.
+    crate::smp::bkl_unlock();
+    minix_arch::CurrentSmpArch::idle_halt();
+
+    // Re-acquire the BKL: the halt window released it and the wake
+    // interrupt's handler has returned. Every state access below the
+    // return point (pick_proc, queues, priv table) must hold the BKL.
+    core::mem::forget(crate::smp::bkl_lock());
+
+    // No end-of-idle accounting here — C measures idle time from the NEXT
+    // context_stop after the interrupt (proc.c:221-222 comment).
+}
+
+/// Re-arm the local timer.
+///
+/// C: `restart_local_timer()` — arch_clock.c:168-175: restarts the LAPIC
+/// timer and is a **no-op when no LAPIC is present** (`if (lapic_addr)`).
+/// The single-CPU Rust build runs the clock on the periodic PIT (x86-64)
+/// or an auto-reloading comparator (aarch64 Generic Timer / riscv64
+/// CLINT) — hardware sources that repeat without software re-arming — so
+/// the exact single-CPU parity of this function is a no-op, matching C's
+/// `lapic_addr == 0` behavior.
+///
+/// When the one-shot LAPIC timer becomes the clock source (LAPIC LVT
+/// adoption deferred in bsp_finish_booting step 6), this function is the
+/// re-arm hook: reload the comparator with the tick interval before
+/// returning to user mode / idle.
+fn restart_local_timer() {
+    // No-op on the current auto-reloading clock sources — see doc comment.
+}
+
+/// Switch the active address space to `nr`'s page-table root.
+///
+/// C: `switch_address_space(p)` → `__switch_address_space(p, &ptproc)` —
+/// klib.S:605-626 (i386) / arch_system.c:196-226 (earm). Three outcomes,
+/// preserved exactly:
+///
+/// 1. `p_cr3 == 0` (kernel task): no-op — the process has no own root, so
+///    the current kernel mapping stays active (klib.S:610-612). Kernel
+///    tasks run in the kernel's address space.
+/// 2. `p_cr3 == current CR3`: no-op — reloading the same root would only
+///    cost a pointless TLB flush (klib.S:614-620), and — importantly —
+///    `ptproc` is NOT updated on this path (the `je 0f` skips both the
+///    register write and the pointer store).
+/// 3. otherwise: load the root into the MMU (`TlbArch::set_active_root`)
+///    and record `p` as the current `ptproc` (klib.S:621-624).
+///
+/// C reads the live CR3 register for comparison 2; Rust compares against
+/// the [`CURRENT_ROOT_PHYS`] mirror, which every root-changing site
+/// (`set_active_root_tracked`) keeps in sync.
+///
+/// `ptproc` tracking uses the global mirror ([`set_current_ptproc_nr`]),
+/// the same source `dispatch_vmctl(VMCTL_SETADDRSPACE)` compares against
+/// (C's per-CPU `ptproc` variable collapses to one CPU in the single-CPU
+/// build; see the CURRENT_PTPROC_NR doc comment for the SMP plan).
+///
+/// # BKL
+///
+/// Caller holds the BKL (scheduler loop) — same protection C relies on.
+fn switch_address_space(
+    table: &crate::proc_table::ProcessTable,
+    nr: crate::proc::ProcNr,
+) {
+    let idx = match crate::proc_table::nr_to_idx(nr) {
+        Some(i) => i,
+        None => return,
+    };
+    let root = match table.get_by_index(idx) {
+        Some(p) => p.p_seg.phys_root,
+        None => return,
+    };
+
+    if root.0 == 0 {
+        return; // kernel task — keep the kernel address space (klib.S:611-612)
+    }
+    if crate::current_root_phys() == Some(root) {
+        return; // already active — skip the TLB flush (klib.S:618-620)
+    }
+    set_active_root_tracked(root);
+    crate::set_current_ptproc_nr(nr); // klib.S:622-624
+}
+
+/// Final dispatch: last scheduler bookkeeping, then transfer to user mode.
+///
+/// C: proc.c:437-474 (from `arch_finish_switch_to_user()` to
+/// `restore_user_context()`). Steps in C order, with the Rust mapping:
+///
+/// 1. `arch_finish_switch_to_user()` (arch_system.c:495-513) has two
+///    effects: (a) store the process pointer at the kernel-stack top for
+///    the assembly restore path — no Rust counterpart, the Rust restore
+///    receives state as values, not via stack layout; (b) OR `IF_MASK`
+///    into the saved PSW so the restored context runs with interrupts
+///    enabled — moved into the arch restore impls (the `TrapReturnArch`
+///    contract, guarantee 2), where it belongs to the mode-switch
+///    instruction boundary.
+/// 2. `context_stop(KERNEL)` (C:440): charge the kernel-execution delta to
+///    the KERNEL pseudo-process and advance the TSC baseline — the Rust
+///    `decrement_quantum_in` (quantum-exempt for endpoint < 0). On SMP this
+///    is also where C releases the BKL (`must_bkl_unlock`,
+///    arch_clock.c:226-233); Rust releases it explicitly right after.
+/// 3. FPU ownership (C:443-446): a non-owner gets the FP-exception trap
+///    (`enable_fpu_exception` sets CR0.TS — Rust `FpuArch::disable`), the
+///    owner runs FP instructions directly (`disable_fpu_exception` = clts
+///    — Rust `FpuArch::enable`).
+/// 4. Clear `MF_CONTEXT_SET` (C:451): the context was just materialized
+///    for dispatch; a kernel entry before the next dispatch must save
+///    state afresh.
+/// 5. SMP `MF_FLUSH_TLB` refresh (C:458-464) is `CONFIG_SMP`-only —
+///    omitted, single-CPU parity (the switch in `switch_address_space`
+///    already flushed the local TLB).
+/// 6. `restart_local_timer()` (C:466) — no-op on auto-reloading clock
+///    sources (see the helper's doc comment).
+/// 7. Rebuild the trap frame from the process's `cpu_context` and restore.
+///    The `cpu_context` plays C's `p_reg` role (simultaneously initial and
+///    saved state): EVERY dispatch rebuilds the frame from it, so a
+///    process that never ran before and one resuming after a trap take
+///    the same path. `restore_to_user` never returns — the loop is
+///    re-entered from the next trap, with the BKL re-acquired at entry.
+///
+/// # Safety (restore call)
+///
+/// `frame`/`ctx` describe the picked process's saved user state; the
+/// address space was switched in `switch_address_space` before the misc/
+/// quantum stages; the BKL was released in step 2 — the exact precondition
+/// list of `TrapReturnArch::restore_to_user`.
+fn finish_and_restore(
+    table: &mut crate::proc_table::ProcessTable,
+    smp: &mut crate::smp::SmpState,
+    picked: crate::proc::ProcNr,
+) -> ! {
+    use core::sync::atomic::Ordering;
+    use minix_arch::{
+        CpuContextArch, CurrentCpuContextArch, CurrentFpuArch,
+        CurrentTrapReturnArch, FpuArch, TrapReturnArch,
+    };
+
+    // C:438 — debug_assert(p->p_cpu_time_left). After the quantum stage
+    // every path that reaches here has time left: kernel-scheduled
+    // processes had their quantum reset (`sched_proc_no_time`), and an
+    // exhausted preemptible process was dequeued (not runnable → the loop
+    // re-picked before dispatch).
+    debug_assert!(
+        table
+            .get(picked)
+            .is_some_and(|p| p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0),
+        "finish_and_restore: picked process has no quantum left"
+    );
+
+    // 2. context_stop(KERNEL) — C:440. `smp` and `kernel` are distinct
+    // objects (SmpState owns per-CPU scheduler data, not the process
+    // table), so the two &mut borrows — `smp` via reborrow and `kernel`
+    // out of `table` — never alias (same disjointness argument as
+    // clock::decrement_quantum_in's doc comment).
+    let tsc = crate::clock::read_tsc();
+    let kernel = table
+        .get_mut(crate::proc::proc_nr::KERNEL)
+        .expect("finish_and_restore: KERNEL pseudo-process slot must exist");
+    let _exhausted = crate::clock::decrement_quantum_in(smp, kernel, tsc);
+    // C releases the BKL inside context_stop (must_bkl_unlock,
+    // arch_clock.c:226-233); the restore below is the last kernel act.
+    crate::smp::bkl_unlock();
+
+    // 3. FPU ownership — C:443-446.
+    let fpu_owner = smp
+        .cpu_local(smp.bsp_cpu_id())
+        .and_then(|l| l.fpu_owner);
+    let fpu = CurrentFpuArch::default();
+    if fpu_owner != Some(picked) {
+        fpu.disable(); // non-owner: next FP instruction traps (#NM) — C: enable_fpu_exception
+    } else {
+        fpu.enable(); // owner keeps the FPU — C: disable_fpu_exception (clts)
+    }
+
+    // 4. Clear MF_CONTEXT_SET — C:451.
+    if let Some(p) = table.get_mut(picked) {
+        p.p_misc_flags.clear(crate::proc::MiscFlagsBits::CONTEXT_SET);
+    }
+
+    // 5. (SMP TLB refresh — CONFIG_SMP-only in C, omitted.)
+    // 6. restart_local_timer — no-op on auto-reloading sources.
+    restart_local_timer();
+
+    // 7. Rebuild the frame from the arch-private context, then restore.
+    let idx = crate::proc_table::nr_to_idx(picked)
+        .expect("finish_and_restore: picked ProcNr out of table range");
+    let ctx = table
+        .get_by_index(idx)
+        .expect("finish_and_restore: picked ProcNr resolved but slot missing")
+        .cpu_context;
+    let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
+    <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(&ctx, &mut frame);
+
+    // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
+    // - the picked process's address space is active (switch_address_space
+    //   ran before the misc/quantum stages);
+    // - frame/ctx are this process's saved user state (cpu_context is
+    //   maintained by the boot/fork/signal paths and the future trap-entry
+    //   save path);
+    // - the BKL was released in step 2 (the release point C uses);
+    // - we run on this CPU's kernel stack with paging enabled.
+    unsafe { CurrentTrapReturnArch::restore_to_user(&frame, &ctx) }
+}
+
+/// Entry point for the scheduling loop — never returns to the caller.
+///
+/// C: `switch_to_user()` — proc.c:299-474 (`NOT_REACHABLE` at 473). All
+/// three kernel re-entry paths (hardware interrupt, CPU exception,
+/// syscall) funnel into this loop; it is the single place where the kernel
+/// hands the CPU back to user code. Design decision D10-1: `-> !` — Rust
+/// expresses "never returns" in the type system instead of C's
+/// `NOT_REACHABLE` comment.
+///
+/// # BKL (Big Kernel Lock)
+///
+/// The loop runs **with the BKL held** and releases it at exactly the two
+/// points C does:
+///
+/// - inside `context_stop(KERNEL)` on the dispatch tail
+///   (`finish_and_restore` step 2 — arch_clock.c:226-233), i.e. just
+///   before user code runs; the next trap entry re-acquires it
+///   (`kernel_call_dispatch` / `dispatch_ipc_entry`);
+/// - around the idle halt (`idle` step 5), where C's interrupt handlers
+///   re-lock at entry.
+///
+/// This supersedes the earlier stub's "release at the top" arrangement:
+/// the misc-flags stage mutates shared kernel state (see
+/// `process_misc_flags` — `arch_do_syscall` re-dispatches IPC under the
+/// documented "runs under BKL" contract), so the release must happen
+/// after those stages, matching C. [ARCH: BKL release point realigned
+/// with C's context_stop(KERNEL); single-CPU build, SMP re-validation
+/// pending.]
+///
+/// # Loop structure vs C's gotos
+///
+/// C threads one function body through two labels
+/// (`not_runnable_pick_new`, `check_misc_flags`). Rust re-expresses the
+/// same control flow as an outer loop whose body runs the five stages in
+/// order; the two C `goto not_runnable_pick_new` exits become `continue`.
+/// Stage mapping:
+///
+/// | Stage | C lines | Rust |
+/// |-------|---------|------|
+/// | probe current process | proc.c:309-315 | runnability check on `proc_ptr` |
+/// | not_runnable_pick_new | proc.c:321-349 | requeue + pick-or-idle + `switch_address_space` |
+/// | check_misc_flags | proc.c:351-415 | `process_misc_flags` (bool return replaces goto) |
+/// | quantum check | proc.c:421-428 | `check_quantum` (folded re-check) |
+/// | finish + restore | proc.c:437-474 | `finish_and_restore` |
+///
+/// # Safety (global accessors)
+///
+/// The loop takes `&mut` to three distinct statics (`PROC_TABLE`,
+/// `SMP_STATE`, `PRIV_TABLE`) once per invocation. The references never
+/// alias (separate `SyncUnsafeCell` statics), and every access region
+/// holds the BKL — the single-writer guarantee the unchecked accessors
+/// require. This is the same access pattern the boot path
+/// (`bsp_finish_booting`) uses; per-CPU dispatch under SMP will replace
+/// the boot-unchecked accessors with `BklSection`-witnessed ones.
+#[allow(dead_code)] // reachable only from the divergent boot path / asm entry
+fn switch_to_user() -> ! {
+    use crate::proc::proc_nr;
+
+    // SAFETY: distinct statics, no aliasing; BKL is held on entry (boot:
+    // bsp_finish_booting step 8.5; trap re-entry: dispatch paths) and the
+    // references live for the whole loop with every region BKL-covered.
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    for i in 0..crate::proc_table::PROC_TABLE_SIZE {
-        let proc = match table.get_by_index(i) {
-            Some(p) => p,
-            None => continue,
-        };
-        // Skip free slots and slots that never got a boot context.
-        if proc.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE) {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    let bsp = smp.bsp_cpu_id();
+
+    // Seed proc_ptr = IDLE (C: main.c:54 — bsp_finish_booting step 2's
+    // per-CPU half; the accounting half lives in `set_bill_to_idle`).
+    // IDLE is never queued (RTS_PROC_STOP), so the first pass falls
+    // through to the pick path — the same first-dispatch behavior as C.
+    if let Some(local) = smp.cpu_local_mut(bsp) {
+        local.proc_ptr = Some(proc_nr::IDLE);
+    }
+
+    loop {
+        // ── Stage 1+2: probe current process / pick a new one ──
+        // C: proc.c:309-349. `current` is the per-CPU proc_ptr snapshot;
+        // None (or a non-runnable process) routes into the pick path.
+        let mut current: Option<crate::proc::ProcNr> = smp
+            .cpu_local(bsp)
+            .and_then(|l| l.proc_ptr);
+
+        // C: proc.c:314 — `if (proc_is_runnable(p)) goto check_misc_flags;`
+        // The current process is re-dispatched only when it is still
+        // runnable; anything else (None seed, blocked, stopped) enters the
+        // pick path below.
+        let need_pick = current
+            .is_none_or(|nr| {
+                !table.get(nr).is_some_and(|p| p.is_runnable())
+            });
+        if need_pick {
+            // not_runnable_pick_new — C: proc.c:321-330.
+            if let Some(cur) = current {
+                requeue_if_preempted(table, cur);
+            }
+            // C: proc.c:338-340 — `while (!(p = pick_proc())) idle();`
+            let picked = loop {
+                if let Some(p) = pick_and_bill(table, smp, priv_table) {
+                    break p;
+                }
+                idle(table, smp, priv_table);
+            };
+            // C: proc.c:343 — `get_cpulocal_var(proc_ptr) = p;`
+            current = Some(picked);
+            if let Some(local) = smp.cpu_local_mut(bsp) {
+                local.proc_ptr = Some(picked);
+            }
+            // C: proc.c:349 — switch_address_space(p).
+            switch_address_space(table, picked);
+        }
+        let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
+
+        // ── Stage 3: misc flags (check_misc_flags) ──
+        // C: proc.c:351-415. Runs under the BKL (the contract documented
+        // on process_misc_flags / arch_do_syscall). A `false` return is
+        // C's `goto not_runnable_pick_new` (proc.c:413-414): the process
+        // became non-runnable while being serviced.
+        if !table.process_misc_flags(picked, &crate::ipc::KernelUserCopy, priv_table) {
             continue;
         }
-        // Apply the opaque arch context to a zeroed trap frame.
-        // The real dispatch path will use the on-stack exception frame;
-        // here we use `Default::default()` to satisfy the trait signature.
-        let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
-        <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(
-            &proc.cpu_context,
-            &mut frame,
-        );
-        // In the real scheduler (09), `frame` is the actual exception
-        // stack frame and `restore_user_context(&frame)` is the tail call.
-        // The stub discards `frame` — the trait call itself is the
-        // contract being exercised.
-        let _ = frame;
+
+        // ── Stage 4: quantum check ──
+        // C: proc.c:421-428. `check_quantum` folds both C checks:
+        // `proc_no_time` when the quantum is exhausted (with its
+        // scheduler-notify policy split) and the post-quantum runnability
+        // re-check (C:427-428) — one `false` exit back to the pick path.
+        if !table.check_quantum(picked) {
+            continue;
+        }
+
+        // ── Stage 5: finish + restore (never returns) ──
+        finish_and_restore(table, smp, picked);
     }
 }
 
@@ -2418,37 +2988,6 @@ mod tests {
         accept_higher_half::<MockHigherHalf>();
     }
 
-    /// Verify that after arch_boot_impl completes, the boot flow
-    /// (arch_boot_impl → enable paging) is consistent.
-    #[test]
-    fn test_arch_boot_impl_enables_paging() {
-        let memmap: &'static [minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 },
-        ];
-        let info = KernelInfo {
-            memmap,
-            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
-            kern_phys_base: PhysBytes(0x200_000),
-            kern_size: 0x200000,
-            free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
-            boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
-            platform_sources: &[],
-            param_buf: &[],
-        };
-        let root_page = PhysBytes(0x1000);
-
-        // arch_boot_impl calls P::new_from_page, map_huge for identity + kernel,
-        // and enable(). Should not panic.
-        let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
-        assert_eq!(info_ref.kern_virt_base.0, info.kern_virt_base.0,
-            "returned KernelInfo should match input");
-    }
-
     /// Verify MockPaging queries work correctly after mapping.
     #[test]
     fn test_mock_paging_query_after_map() {
@@ -2512,63 +3051,6 @@ mod tests {
             "riscv64 kern_virt_base must equal kern_phys_base (identity mapping)");
         assert_eq!(kern_phys_base % (1 << 30), 0,
             "riscv64 kern_phys_base must be 1GB-aligned for Sv39 huge pages");
-    }
-
-    /// Verify arch_boot_impl with aarch64-style KernelInfo (phys in QEMU RAM range).
-    #[test]
-    fn test_arch_boot_impl_aarch64_params() {
-        let memmap: &'static [minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
-        ];
-        let info = KernelInfo {
-            memmap,
-            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
-            kern_phys_base: PhysBytes(0x4020_0000),
-            kern_size: 0x200_000,
-            free_upper_idx: None,
-            user_sp: VirBytes(0x0000_7fff_ffff_f000),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
-            boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
-            platform_sources: &[],
-            param_buf: &[],
-        };
-        let root_page = PhysBytes(0x1000);
-        let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
-        assert_eq!(info_ref.kern_phys_base.0, 0x4020_0000);
-    }
-
-    /// Verify arch_boot_impl with riscv64-style KernelInfo (identity mapping).
-    /// Note: In real riscv64, kern_virt_base == kern_phys_base, so identity map
-    /// and kernel map overlap at the same virtual address. MockPaging rejects
-    /// double-mapping, so we use a non-overlapping kern_virt_base here to test
-    /// the arch_boot_impl flow, and verify the identity property separately.
-    #[test]
-    fn test_arch_boot_impl_riscv64_params() {
-        let memmap: &'static [minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x8000_0000), len: 0x800_0000 },
-        ];
-        // Use a high-half address that doesn't overlap with identity map range
-        let info = KernelInfo {
-            memmap,
-            kern_virt_base: VirBytes(0xFFFF_8000_0800_0000), // high-half alias
-            kern_phys_base: PhysBytes(0x8000_0000),
-            kern_size: 0x200_000,
-            free_upper_idx: None,
-            user_sp: VirBytes(0x0000_003f_ffff_f000),
-            kern_stack_top: VirBytes(0xFFFF_8000_0800_0000 + 0x200_000),
-            syscall_entry: VirBytes(0xFFFF_8000_0800_0000),
-            boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
-            platform_sources: &[],
-            param_buf: &[],
-        };
-        let root_page = PhysBytes(0x1000);
-        let info_ref = arch_boot_impl::<MockPaging>(&info, root_page);
-        assert_eq!(info_ref.kern_phys_base.0, 0x8000_0000);
     }
 
     // ── Linker script constraint validation tests ──
@@ -2954,5 +3436,308 @@ mod tests {
         let paging = MockPaging::from_active_root(unusual_root);
         assert_eq!(paging.root_paddr(), unusual_root,
             "from_active_root must preserve the caller-supplied root");
+    }
+
+    // ── 10-switch-to-user: scheduler loop tests ─────────────────────────
+    //
+    // The loop itself is divergent (`-> !`); these tests drive its stages
+    // individually (pick/requeue/address-space/idle/finish) with injected
+    // state, plus two end-to-end tests that run the real loop until the
+    // mock restore diverges (should_panic — the divergence IS the
+    // assertion that all five stages completed).
+    //
+    // Global-state hygiene: BKL/root-mirror/ptproc mirrors are reset at
+    // each test's start (tests run with RUST_TEST_THREADS=1 — see
+    // .cargo/config.toml R-17 — so no parallel interference).
+
+    use crate::kpriv::PrivTable;
+    use crate::proc::{CpuId, ProcNr, RtsFlagsBits, proc_nr};
+    use crate::proc_table::ProcessTable;
+    use crate::smp::SmpState;
+
+    /// Reset the BKL to "held" — simulates the boot/trap-entry contract
+    /// (`bsp_finish_booting` step 8.5 acquires it before `switch_to_user`).
+    /// The scheduler loop and `idle`/`finish_and_restore` release it at
+    /// C's release points, so leaving it cleanly unlocked after a test is
+    /// the correct end state.
+    fn bkl_acquire_for_test() {
+        crate::smp::bkl_lock_reset_for_test();
+        core::mem::forget(crate::smp::bkl_lock());
+    }
+
+    /// Make a user process runnable in `table` at `nr` with the given
+    /// priority and remaining quantum, and link a BILLABLE privilege slot.
+    fn make_runnable_billable(
+        table: &mut ProcessTable,
+        priv_table: &mut PrivTable,
+        nr: ProcNr,
+        prio: u8,
+        quantum_cycles: u64,
+    ) {
+        let p = table.get_mut(nr).expect("process slot must exist");
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        p.p_endpoint = minix_types::Endpoint(nr.0); // endpoint >= 0 → quantum-eligible
+        p.p_sched.priority.store(prio, Ordering::Release);
+        p.p_sched.quantum.cpu_time_left.store(quantum_cycles, Ordering::Release);
+
+        let priv_id = priv_table.assign_static(nr).expect("priv slot for user process");
+        let kpriv = priv_table.get_mut(priv_id).expect("priv entry");
+        kpriv.flags.s_flags = crate::capability::ProcessCapability::USR_F; // BILLABLE | PREEMPTIBLE
+        table.get_mut(nr).unwrap().priv_id = Some(priv_id);
+    }
+
+    // ── requeue_if_preempted (C: proc.c:322-330) ──
+
+    #[test]
+    fn test_requeue_preempted_with_quantum_reenters_queue_head() {
+        // C: proc.c:324-327 — PREEMPTED + runnable + cpu_time_left > 0
+        // → enqueue_head: a process preempted mid-quantum finishes its
+        // slice before equal-priority peers run.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        // A peer already in the queue; the requeued process must land AHEAD of it.
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
+        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        // Preempt process 0 (rts_set with PREEMPTED also dequeues — it was not queued yet).
+        table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
+
+        super::requeue_if_preempted(&mut table, ProcNr(0));
+
+        let q = crate::proc::priority::USER_Q as usize;
+        assert_eq!(table.scheduler().queue_head(q), Some(ProcNr(0)),
+            "preempted process with quantum left must re-enter at the HEAD");
+        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::PREEMPTED),
+            "PREEMPTED must be cleared by the requeue");
+    }
+
+    #[test]
+    fn test_requeue_preempted_without_quantum_reenters_queue_tail() {
+        // C: proc.c:327-328 — PREEMPTED + runnable + no time left →
+        // enqueue (tail): it must yield to peers that still have a slice.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 0);
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
+        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
+
+        super::requeue_if_preempted(&mut table, ProcNr(0));
+
+        let q = crate::proc::priority::USER_Q as usize;
+        assert_eq!(table.scheduler().queue_head(q), Some(ProcNr(1)),
+            "peer keeps the head");
+        let second = table.get(ProcNr(1)).unwrap().p_nextready.load(Ordering::Relaxed);
+        assert_eq!(second, ProcNr(0).0,
+            "exhausted preempted process goes to the TAIL (peer's nextready)");
+    }
+
+    #[test]
+    fn test_requeue_preempted_unrunnable_not_enqueued() {
+        // C: proc.c:324 — the enqueue is guarded by proc_is_runnable; a
+        // process blocked again by the preempting work stays off the queue.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
+        table.rts_set(ProcNr(0), RtsFlagsBits::RECEIVING); // blocked again → not runnable
+
+        super::requeue_if_preempted(&mut table, ProcNr(0));
+
+        let q = crate::proc::priority::USER_Q as usize;
+        assert_eq!(table.scheduler().queue_head(q), None,
+            "non-runnable preempted process must not be enqueued");
+        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::PREEMPTED),
+            "PREEMPTED is still cleared");
+    }
+
+    #[test]
+    fn test_requeue_not_preempted_is_noop() {
+        // C: proc.c:322 — the whole block is guarded by proc_is_preempted.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        // Runnable but NOT preempted, and not in any queue.
+
+        super::requeue_if_preempted(&mut table, ProcNr(0));
+
+        let q = crate::proc::priority::USER_Q as usize;
+        assert_eq!(table.scheduler().queue_head(q), None,
+            "non-preempted process must not be enqueued by the requeue path");
+    }
+
+    // ── pick_and_bill (C: pick_proc — proc.c:1785-1813) ──
+
+    #[test]
+    fn test_pick_and_bill_sets_bill_ptr_for_billable_process() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+
+        let picked = super::pick_and_bill(&mut table, &mut smp, &priv_table);
+
+        assert_eq!(picked, Some(ProcNr(0)));
+        let bsp = smp.bsp_cpu_id();
+        assert_eq!(smp.cpu_local(bsp).unwrap().bill_ptr, Some(ProcNr(0)),
+            "BILLABLE picked process becomes the bill pointer (C: proc.c:1809)");
+    }
+
+    #[test]
+    fn test_pick_and_bill_empty_queues_returns_none() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+
+        assert_eq!(super::pick_and_bill(&mut table, &mut smp, &priv_table), None,
+            "empty queues → None (caller falls into idle)");
+    }
+
+    // ── switch_address_space (C: __switch_address_space — klib.S:605-626) ──
+
+    /// Reset the root + ptproc mirrors to the boot-unset state.
+    fn reset_root_mirrors_for_test() {
+        reset_root_phys_for_test();
+        crate::set_current_ptproc_nr(ProcNr(i32::MIN)); // PTPROC_UNSET sentinel
+    }
+
+    #[test]
+    fn test_switch_address_space_kernel_task_is_noop() {
+        // C: klib.S:610-612 — p_cr3 == 0 → return; the kernel mapping
+        // stays active and neither the root nor ptproc changes.
+        reset_root_mirrors_for_test();
+        let table = crate::test_helpers::test_proc_table();
+
+        super::switch_address_space(&table, proc_nr::KERNEL);
+
+        assert_eq!(crate::current_root_phys(), None,
+            "kernel task (no own root) must not touch the root mirror");
+        assert_eq!(crate::current_ptproc_nr(), None,
+            "kernel task must not become ptproc");
+    }
+
+    #[test]
+    fn test_switch_address_space_installs_root_and_tracks_ptproc() {
+        // C: klib.S:621-624 — write the root, then record ptproc.
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let root = minix_types::PhysBytes(0x5000); // page-aligned, non-zero
+        table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = root;
+        table.get_mut(ProcNr(0)).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+
+        super::switch_address_space(&table, ProcNr(0));
+
+        assert_eq!(crate::current_root_phys(), Some(root),
+            "the mirror must reflect the installed root (Rust's read_cr3)");
+        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(0)),
+            "the switched-to process becomes ptproc");
+    }
+
+    #[test]
+    fn test_switch_address_space_same_root_skips_ptproc_update() {
+        // C: klib.S:614-620 — when the new root equals the live CR3, the
+        // `je 0f` skips BOTH the register write AND the ptproc store.
+        // Reproduce: install root A for process 0, then switch to a
+        // process 1 sharing the same root — ptproc must still name
+        // process 0? No: C never wrote ptproc for the second switch, so
+        // it keeps pointing at the LAST process that caused a real load.
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let root = minix_types::PhysBytes(0x5000);
+        for nr in [ProcNr(0), ProcNr(1)] {
+            let p = table.get_mut(nr).unwrap();
+            p.p_seg.phys_root = root;
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        }
+        super::switch_address_space(&table, ProcNr(0));
+        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(0)));
+
+        super::switch_address_space(&table, ProcNr(1));
+
+        assert_eq!(crate::current_root_phys(), Some(root),
+            "root unchanged (same-root switch is a no-op)");
+        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(0)),
+            "same-root switch must NOT update ptproc (C skips the store — klib.S:620)");
+    }
+
+    // ── idle (C: idle — proc.c:175-229) ──
+
+    #[test]
+    fn test_idle_marks_cpu_idle_and_bills_idle_proc() {
+        // C: proc.c:185-187,192 — proc_ptr = idle_proc, bill_ptr = idle
+        // when billable, cpu_is_idle = 1. The kernel-task billable check
+        // needs a privilege slot; without one, bill_ptr keeps its old
+        // value (C: the BILLABLE test fails and bill_ptr is untouched).
+        crate::smp::bkl_lock_reset_for_test();
+        bkl_acquire_for_test();
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+        let bsp = smp.bsp_cpu_id();
+
+        super::idle(&mut table, &mut smp, &priv_table);
+
+        let local = smp.cpu_local(bsp).unwrap();
+        assert_eq!(local.proc_ptr, Some(proc_nr::IDLE),
+            "idle must install the idle process as current (C:185)");
+        assert!(local.cpu_is_idle,
+            "idle must set cpu_is_idle (C:192)");
+        // The wake path re-acquired the BKL; release it for the next test.
+        crate::smp::bkl_unlock();
+    }
+
+    // ── finish_and_restore + the full loop (divergence-based) ──
+
+    #[test]
+    #[should_panic(expected = "MockTrapReturn::restore_to_user")]
+    fn test_finish_and_restore_reaches_mock_restore() {
+        // Stage 5 in isolation: with a quantum-bearing picked process and
+        // the BKL held (the loop's contract), the final act must be the
+        // arch restore — the mock panics, which asserts every preceding
+        // step (quantum debug_assert, context_stop, FPU select, flag
+        // clear) completed.
+        bkl_acquire_for_test();
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
+
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "MockTrapReturn::restore_to_user")]
+    fn test_switch_to_user_full_loop_dispatches_first_runnable_process() {
+        // End-to-end: seed proc_ptr = IDLE → stage 1 sees a non-runnable
+        // current → requeue (no-op) → pick finds process 0 → address-
+        // space install → misc flags (none) → quantum (plenty) → restore
+        // diverges. The panic is the success signal; reaching any other
+        // outcome (spin, wrong process) would hang or mis-panic instead.
+        bkl_acquire_for_test();
+        reset_root_mirrors_for_test();
+
+        // Global state the real loop reads: seed the process table with
+        // one runnable BILLABLE process.
+        // SAFETY: single-threaded test (RUST_TEST_THREADS=1); the global
+        // statics are initialized lazily exactly as the boot path does.
+        unsafe {
+            *SMP_STATE.get() = Some(SmpState::new_single_cpu());
+        }
+        {
+            let table = unsafe { crate::proc_table_boot_unchecked() };
+            let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+            make_runnable_billable(table, priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+            table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x6000);
+            // make_runnable_billable only clears SLOT_FREE; the run queue
+            // must be populated explicitly (C's boot path reaches the same
+            // state via RTS_UNSET(PROC_STOP) auto-enqueue — proc.h:216-224).
+            table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        }
+
+        super::switch_to_user();
     }
 }

@@ -2,7 +2,10 @@
 //!
 //! Defines the messages exchanged between VFS and other services (PM, Kernel).
 
-use crate::{EAGAIN, EINVAL, EIO, EMFILE, ENOSYS, ESRCH, Endpoint, Message, MessageM7, MessageUnion, NR_PROCS, Pid};
+use crate::{
+    EAGAIN, EINVAL, EIO, EMFILE, ENOSYS, ESRCH, Endpoint, Message, MessageM7, MessageUnion,
+    NR_PROCS, Pid,
+};
 
 /// VFS request message types.
 ///
@@ -435,8 +438,7 @@ impl VfsCall {
             | Self::Exit { endpoint }
             | Self::DumpCore { endpoint, .. }
             | Self::Unpause { endpoint } => Some(*endpoint),
-            Self::Fork { child, .. }
-            | Self::SrvFork { child, .. } => Some(*child),
+            Self::Fork { child, .. } | Self::SrvFork { child, .. } => Some(*child),
             Self::Reboot => None,
         }
     }
@@ -728,15 +730,30 @@ mod vfs_call_reply_tests {
             m_type,
             ..Message::default()
         };
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_SETUID_REPLY)).unwrap(), VfsReply::SetUid);
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_SETGID_REPLY)).unwrap(), VfsReply::SetGid);
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_SETUID_REPLY)).unwrap(),
+            VfsReply::SetUid
+        );
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_SETGID_REPLY)).unwrap(),
+            VfsReply::SetGid
+        );
         assert_eq!(
             VfsReply::decode(&mk(VFS_PM_SETGROUPS_REPLY)).unwrap(),
             VfsReply::SetGroups
         );
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_SETSID_REPLY)).unwrap(), VfsReply::SetSid);
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_EXIT_REPLY)).unwrap(), VfsReply::Exit);
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_FORK_REPLY)).unwrap(), VfsReply::Fork);
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_SETSID_REPLY)).unwrap(),
+            VfsReply::SetSid
+        );
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_EXIT_REPLY)).unwrap(),
+            VfsReply::Exit
+        );
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_FORK_REPLY)).unwrap(),
+            VfsReply::Fork
+        );
         assert_eq!(
             VfsReply::decode(&mk(VFS_PM_SRV_FORK_REPLY)).unwrap(),
             VfsReply::SrvFork
@@ -745,7 +762,10 @@ mod vfs_call_reply_tests {
             VfsReply::decode(&mk(VFS_PM_UNPAUSE_REPLY)).unwrap(),
             VfsReply::Unpause
         );
-        assert_eq!(VfsReply::decode(&mk(VFS_PM_REBOOT_REPLY)).unwrap(), VfsReply::Reboot);
+        assert_eq!(
+            VfsReply::decode(&mk(VFS_PM_REBOOT_REPLY)).unwrap(),
+            VfsReply::Reboot
+        );
     }
 
     #[test]
@@ -778,7 +798,10 @@ mod vfs_call_reply_tests {
         };
         let m7 = unsafe { &mut msg.m_u.m_m7 };
         m7.m7i2 = -1;
-        assert_eq!(VfsReply::decode(&msg).unwrap(), VfsReply::Core { status: -1 });
+        assert_eq!(
+            VfsReply::decode(&msg).unwrap(),
+            VfsReply::Core { status: -1 }
+        );
     }
 
     #[test]
@@ -848,4 +871,3 @@ mod vfs_call_reply_tests {
         assert_eq!(VFS_PM_SETGROUPS_REPLY, 0x98b);
     }
 }
-

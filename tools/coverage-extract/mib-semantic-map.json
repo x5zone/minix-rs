@@ -1,0 +1,39 @@
+{"_comment": "C→Rust 语义映射表（mib 模块）。用于 coverage-extract.py 的 --semantic-map。按文档逐篇扩展；17 先行。",
+  "_note": "MIB 是 verdict 风格重写：C 函数的纯决策半移入 judge_*/classify_*/check_* 自由函数，transport effect（拉表/时钟/拷贝）归 transport。映射只列决策对应。",
+  "get_lwp_stat": [
+    "classify_awake",
+    "judge_sleep",
+    "pick_rts",
+    "decode_blocked_on"
+  ],
+  "fill_lwp_common": [
+    "judge_times"
+  ],
+  "fill_lwp_kern": [
+    "judge_kern_lwp"
+  ],
+  "fill_lwp_user": [
+    "user_flag"
+  ],
+  "mib_kern_lwp": [
+    "check_lwp_args",
+    "judge_pid_slot",
+    "extra_headroom"
+  ],
+  "kinfo_lwp": [
+    "KernLwpVerdict",
+    "SleepVerdict"
+  ],
+  "update_tables": [
+    "update_tables"
+  ],
+  "get_mslot": [
+    "get_mslot"
+  ],
+  "ticks_to_timeval": [
+    "ticks_to_timeval"
+  ],
+  "fill_wmesg": [
+    "fill_wmesg"
+  ]
+}

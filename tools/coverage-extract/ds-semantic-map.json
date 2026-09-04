@@ -1,0 +1,83 @@
+{
+  "_comment": "C→Rust 语义映射表（ds 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "04-ds-slot-management 槽位原语语义范围为主，其余 doc（01~03、05~12、99）语义随写作按需扩展。",
+  "alloc_data_slot": [
+    "alloc_entry_slot",
+    "EntrySlot"
+  ],
+  "alloc_sub_slot": [
+    "alloc_sub_slot",
+    "SubSlot"
+  ],
+  "free_sub_slot": [
+    "free_sub_slot"
+  ],
+  "lookup_entry": [
+    "lookup_entry",
+    "key_eq"
+  ],
+  "lookup_label_entry": [
+    "lookup_label_entry"
+  ],
+  "lookup_sub": [
+    "lookup_sub",
+    "key_eq"
+  ],
+  "ds_store": [
+    "DsStore",
+    "DataEntry",
+    "NR_DS_KEYS"
+  ],
+  "ds_subs": [
+    "DsSubs",
+    "Subscription",
+    "NR_DS_SUBS"
+  ],
+  "data_store": [
+    "DataEntry"
+  ],
+  "subscription": [
+    "Subscription"
+  ],
+  "main": [
+    "main"
+  ],
+  "sef_local_startup": [
+    "DsInitKind"
+  ],
+  "get_work": [
+    "triage"
+  ],
+  "reply": [
+    "should_reply"
+  ],
+  "ds_getprocname": [
+    "resolve_name",
+    "DS_SELF_NAME"
+  ],
+  "ds_getprocep": [
+    "resolve_endpoint"
+  ],
+  "check_auth": [
+    "check_auth"
+  ],
+  "map_service": [
+    "map_service",
+    "BootService"
+  ],
+  "sef_cb_init_fresh": [
+    "apply_boot_map",
+    "reset_tables"
+  ],
+  "rprocpub": [
+    "BootService"
+  ],
+  "do_publish": [
+    "plan_publish",
+    "PublishTarget",
+    "PublishReject"
+  ],
+  "get_key_name": [
+    "check_key_len"
+  ]
+}

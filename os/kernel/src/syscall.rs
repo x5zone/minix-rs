@@ -2028,17 +2028,16 @@ fn dispatch_vmctl(
                     // uniquely identify process slots in the ProcessTable
                     // (one-to-one mapping, no aliasing).
                     //
-                    // SAFETY: We are in syscall context with BKL held.
-                    // `ptroot_phys` is the new CR3/TTBR0/satp value provided
-                    // by VM (a trusted system process). VM has already
-                    // constructed the page table and mapped the kernel
-                    // direct map into it, so the new root is valid.
+                    // `set_active_root_tracked` = C's write_cr3 + the Rust
+                    // CR3-mirror update: the scheduler's
+                    // `switch_address_space` compares against the mirror
+                    // (C reads the live CR3), so the mirror must reflect
+                    // every root change or the first dispatch after this
+                    // would needlessly reload the same root.
                     if crate::current_ptproc_nr() == Some(p.p_nr) {
-                        unsafe {
-                            minix_arch::CurrentTlbArch::set_active_root(
-                                minix_types::PhysBytes(ptroot_phys),
-                            );
-                        }
+                        crate::set_active_root_tracked(
+                            minix_types::PhysBytes(ptroot_phys),
+                        );
                     }
 
                     // Step 4: arch_enable_paging — no-op on 64-bit

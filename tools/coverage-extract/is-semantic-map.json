@@ -1,0 +1,28 @@
+{
+  "_comment": "C→Rust 语义映射表（is 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "01-is-init-main 启动入口语义范围为主，其余 doc（02~10）语义随写作按需扩展。",
+
+  "main": ["IsServer::run", "IsServer::new", "main"],
+  "sef_local_startup": ["SefCallbacks", "IsServer::startup"],
+  "sef_startup": ["SefTransport::startup", "IsServer::startup"],
+  "sef_cb_init_fresh": ["SefCallbacks::init_fresh"],
+  "sef_cb_init_restart": ["SefCallbacks::init_restart"],
+  "sef_cb_init_lu": ["SefCallbacks::init_lu"],
+  "sef_cb_signal_handler": ["SefCallbacks::signal_handler"],
+  "get_work": ["IsServer::step", "SefTransport::receive"],
+  "reply": ["SefTransport::send", "IsServer::step"],
+  "sef_receive": ["SefTransport::receive"],
+  "ipc_send": ["SefTransport::send"],
+  "env_setargs": ["IsServer::new"],
+  "map_unmap_fkeys": ["IsServer::request_fkey_map"],
+  "do_fkey_pressed": ["IsServer::handle_fkey_pressed", "DispatchAction::HandleFkey"],
+  "is_notify": ["is_notify_call"],
+  "NOTIFY_MESSAGE": ["NOTIFY_MESSAGE"],
+  "TTY_PROC_NR": ["TTY_PROC_SLOT"],
+  "EDONTREPLY": ["EDONTREPLY", "is_reply_suppressed"],
+  "m_in": ["IsServerState::inbox"],
+  "m_out": ["IsServerState::reply_buf"],
+  "who_e": ["IsServerState::caller"],
+  "callnr": ["IsServerState::call_nr"],
+  "SIGTERM": ["SIGTERM"]
+}

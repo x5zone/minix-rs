@@ -10,6 +10,7 @@ name = "minix-sched"
 path = "src/main.rs"
 
 [dependencies]
+bitflags = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 

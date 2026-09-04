@@ -191,6 +191,28 @@ impl SmpArch for X86_64SmpArch {
         }
     }
 
+    fn idle_halt() {
+        // C: halt_cpu() — klib.S:407-414 (idle-loop variant): `sti; hlt`.
+        //
+        // The scheduler reaches idle() in kernel context with IF=0; `hlt`
+        // sleeps until an interrupt, so IF must be re-enabled first —
+        // otherwise the CPU sleeps forever. The interrupt that wakes the
+        // CPU pushes RFLAGS (IF=1) and runs its handler with IF=0; the
+        // IRET restores IF=1 at the instruction after `hlt`, matching C's
+        // "exactly one interrupt after halting" comment in klib.S.
+        //
+        // SAFETY: `sti` and `hlt` are privileged but side-effect-confined:
+        // `sti` only sets the interrupt flag, `hlt` only sleeps the CPU.
+        // Safe in kernel mode (CPL=0) on the current CPU's kernel stack.
+        unsafe {
+            core::arch::asm!(
+                "sti",
+                "hlt",
+                options(nomem, nostack)
+            );
+        }
+    }
+
     fn ack_ipi() {
         // C: ipi_ack() — smp.c:58,198
         //

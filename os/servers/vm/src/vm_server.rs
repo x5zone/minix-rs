@@ -201,8 +201,12 @@ impl VmServer {
         // (in-memory mapping table, no page table to initialize), while the
         // production path must establish VM's own page table before any heap
         // allocation (HeapArena::grow → vm_self_mappages).
+        // A1 adoption: the root comes from the boot handoff
+        // (`BootParams::root_paddr`, read from the handoff page in `main`)
+        // — VM adopts the bootstrap root the kernel built, it does not
+        // create a fresh one.
         #[cfg(not(test))]
-        init_vm_self_pt();
+        init_vm_self_pt(params.root_paddr);
 
         // Copy the boot process list (C: kernel_boot_info.boot_procs[]).
         let mut boot_procs = [BootImage::empty(); NR_BOOT_PROCS];
@@ -2234,6 +2238,9 @@ mod tests {
         modules: &'a [BootModule],
     ) -> BootParams<'a> {
         BootParams {
+            // Fake-but-valid root: these tests never exercise adoption
+            // (init_vm_self_pt is skipped in test builds).
+            root_paddr: PhysBytes(0x900_000),
             total_pages: TEST_TOTAL_PAGES,
             free_regions,
             boot_procs,

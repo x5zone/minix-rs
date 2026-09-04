@@ -383,28 +383,28 @@ MIB 的全部工作本质是把 `sysctl(2)` 名字解析到对象树节点并读
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
 | 00 | pending | — | 新建导航 |
-| 01 | pending | — | 新建 |
-| 02 | pending | — | 新建协议面（A-1） |
-| 03 | pending | — | 新建（A-2/A-3） |
-| 04 | pending | — | 新建 |
-| 05 | pending | — | 新建 |
-| 06 | pending | — | 新建（A-12） |
-| 07 | pending | — | 新建 |
-| 08 | pending | — | 新建 |
-| 09 | pending | — | 新建（A-3/A-11） |
-| 10 | pending | — | 新建 + 次主线路径图 |
-| 11 | pending | — | 新建（A-4） |
-| 12 | pending | — | 新建 + 远程次主线 |
-| 13 | pending | — | 新建（A-9） |
-| 14 | pending | — | 新建 |
-| 15 | pending | — | 新建 |
-| 16 | pending | — | 新建（A-6） |
-| 17 | pending | — | 新建（A-4） |
-| 18 | pending | — | 新建（A-4） |
-| 19 | pending | — | 新建 |
-| 20 | pending | — | 新建（A-5） |
-| 21 | pending | — | 新建外部契约 |
-| 22 | pending | — | 新建（A-8） |
+| 01 | reviewed（2026-09-04） | 2026-09-04 | 新建（dispatch.rs verdict 层 9 tests + com.rs MIB 号段，scan CONVERGED） |
+| 02 | reviewed（2026-09-04） | 2026-09-04 | 新建协议面（A-1 兑现，13 tests，scan CONVERGED） |
+| 03 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-2 兑现，9 tests，scan CONVERGED） |
+| 04 | reviewed（2026-09-04） | 2026-09-04 | 新建（6 tests，scan CONVERGED；arena 缺口→13） |
+| 05 | reviewed（2026-09-04） | 2026-09-04 | 新建（3 tests，scan CONVERGED，零自修） |
+| 06 | reviewed（2026-09-04） | 2026-09-04 | 新建（7 tests，scan CONVERGED；执行→transport） |
+| 07 | reviewed（2026-09-04） | 2026-09-04 | 新建（4 tests，scan CONVERGED） |
+| 08 | reviewed（2026-09-04） | 2026-09-04 | 新建（10 tests，scan CONVERGED；arena→后续） |
+| 09 | reviewed（2026-09-04） | 2026-09-04 | 新建（7 tests，scan CONVERGED） |
+| 10 | reviewed（2026-09-04） | 2026-09-04 | 新建 + 次主线路径图（5 tests，scan CONVERGED） |
+| 11 | reviewed（2026-09-04） | 2026-09-04 | 新建（7 tests，scan CONVERGED） |
+| 12 | reviewed（2026-09-04） | 2026-09-04 | 新建 + 远程次主线（7 tests，scan CONVERGED） |
+| 13 | reviewed（2026-09-05） | 2026-09-05 | 教学重写（185行+Redox对照；OQ-13-1闭环为声明；快照v2） |
+| 14 | reviewed（2026-09-05） | 2026-09-05 | 教学重写（167行+算例；MACH ARCH行；快照v2） |
+| 15 | reviewed（2026-09-05） | 2026-09-05 | 教学重写（164行；arena收官声明；快照v2） |
+| 16 | reviewed（2026-09-05） | 2026-09-05 | 白话重写（代码不动；快照v2） |
+| 17 | reviewed（2026-09-05） | 2026-09-05 | 白话重写（代码不动；快照v2） |
+| 18 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust proc2.rs（7测试+值表；快照v1嵌入生成） |
+| 19 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust proc_args.rs（3测试；快照v1嵌入生成） |
+| 20 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust minix_proc.rs（3测试+排布值表；快照v1嵌入生成） |
+| 21 | reviewed（2026-09-05） | 2026-09-05 | 新建外部契约文档（不实现；快照v1嵌入生成） |
+| 22 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust rmib.rs（minix-sys，3测试；快照v1嵌入生成） |
 | 99 | pending | — | 新建全局概念 |
 
 ---

@@ -18,6 +18,7 @@ use uefi::system;
 use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 use uefi::Guid;
 use minix_types::{PhysBytes, VirBytes};
+use minix_arch::boot_dm_admissible_end;
 use minix_boot::{
     BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource, RSDP,
 };
@@ -31,6 +32,46 @@ use crate::loader::{
 /// Defined in the UEFI Specification as `EFI_DEVICE_TREE_GUID`.
 /// Not provided by the `uefi` crate, so we define it here.
 const DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f018a8d3");
+
+/// Global allocator for UEFI test kernels that define none of their own.
+///
+/// While boot services are alive every allocation delegates to the UEFI
+/// pool allocator (`LOADER_DATA`); after `exit_boot_services()` it returns
+/// null — test kernels allocate nothing past that point (their post-exit
+/// bookkeeping is bump-allocator based, not heap based).
+///
+/// The `#[global_allocator]` registration deliberately stays in each test
+/// kernel (2 lines) instead of living here: a global allocator compiled
+/// into boot-shim would reach every boot-shim consumer through feature
+/// unification and conflict with kernels that define their own allocator
+/// (e.g. `test-proc-init`'s hybrid UEFI+bump allocator).
+pub struct UefiPoolAllocator;
+
+unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let size = layout.size();
+        let align = layout.align();
+        // UEFI guarantees 8-byte alignment minimum; for larger alignments,
+        // over-allocate and align within the block.
+        let alloc_size = if align > 8 { size + align } else { size };
+        match boot::allocate_pool(MemoryType::LOADER_DATA, alloc_size) {
+            Ok(ptr) => {
+                let addr = ptr.as_ptr() as usize;
+                if align > 8 {
+                    ((addr + align - 1) & !(align - 1)) as *mut u8
+                } else {
+                    addr as *mut u8
+                }
+            }
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
+        // Pool pages are reclaimed wholesale by the firmware at
+        // ExitBootServices; boot-stage code never frees individually.
+    }
+}
 
 /// Scan the UEFI Configuration Table for platform descriptor sources
 /// (ACPI RSDP on x86-64, DTB on ARM64).
@@ -191,19 +232,72 @@ pub fn build_memmap() -> &'static [MemoryRegion] {
     Box::leak(regions.into_boxed_slice())
 }
 
+/// Size of one page-table page (UEFI allocates in 4 KiB pages).
+const PAGE_SIZE: u64 = 4096;
+
+/// Refuse to boot if a conventional memmap range overlaps the bootstrap
+/// allocation `[base, base + len)`.
+///
+/// The root page and the bump region are LOADER_DATA allocations made
+/// before the memmap snapshot (see `prepare_boot`); if firmware ever
+/// reports those pages as conventional, the A2 classification would hand
+/// live page-table pages to the VM PMM (07-paging_init_design §6.0-A2).
+fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64) {
+    for r in memmap {
+        let rbase = r.base.0;
+        let rend = rbase + r.len as u64;
+        assert!(
+            base + len <= rbase || rend <= base,
+            "conventional memmap [{rbase:#x}, {rend:#x}) overlaps bootstrap allocation [{base:#x}, {:#x})",
+            base + len
+        );
+    }
+}
+
+/// UEFI `AllocateMaxAddress` limit for a bootstrap allocation of `size`
+/// bytes: UEFI guarantees the allocated base is at or below the limit, so
+/// passing `bound - size` keeps the whole region under the bound.
+///
+/// The bound is `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per
+/// target architecture (07-paging_init_design §6.1 资格过滤 ①): below it the
+/// bootstrap tree is simultaneously identity-write-reachable and
+/// representable in the VM DM window. The kernel re-validates at DM
+/// establishment (`os/kernel/src/dm_coverage.rs`).
+fn bootstrap_alloc_limit(size: u64) -> u64 {
+    boot_dm_admissible_end()
+        .checked_sub(size)
+        .expect("bootstrap allocation request exceeds the DM-admissible bound")
+}
+
 /// Allocate a single physical page for the root page table.
+///
+/// MaxAddress keeps the page below the DM-admissible bound so the identity
+/// write channel and the VM DM window both cover it (§6.1 资格过滤 ①).
 pub fn alloc_root_page() -> PhysBytes {
-    let ptr = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
-        .expect("Failed to allocate root page for page table");
+    let ptr = boot::allocate_pages(
+        AllocateType::MaxAddress(bootstrap_alloc_limit(PAGE_SIZE)),
+        MemoryType::LOADER_DATA,
+        1,
+    )
+    .expect("Failed to allocate root page below DM-admissible bound");
     PhysBytes(ptr.as_ptr() as u64)
 }
 
 /// Allocate a bump region for boot-stage page table page allocation.
+///
+/// The region backs the VM self page-table tree's lower-level pages, which
+/// the identity write channel constructs and the VM DM window must cover —
+/// it must sit below the DM-admissible bound (§6.1 资格过滤 ①②).
 pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
-    let ptr = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages)
-        .expect("Failed to allocate bump region for boot_pt_alloc");
+    let size = (num_pages as u64) * PAGE_SIZE;
+    let ptr = boot::allocate_pages(
+        AllocateType::MaxAddress(bootstrap_alloc_limit(size)),
+        MemoryType::LOADER_DATA,
+        num_pages,
+    )
+    .expect("Failed to allocate bump region below DM-admissible bound");
     let base = ptr.as_ptr() as u64;
-    let end = base + (num_pages as u64) * 4096;
+    let end = base + size;
     (base, end)
 }
 

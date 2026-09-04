@@ -210,7 +210,7 @@ mod tests {
     /// Tests execute single-threaded (RUST_TEST_THREADS=1, .cargo/config.toml).
     fn with_vm_self_pt<F: FnOnce()>(f: F) {
         reset_vm_self_pt_for_test();
-        init_vm_self_pt();
+        init_vm_self_pt(minix_types::PhysBytes(0x900_000));
         f();
         reset_vm_self_pt_for_test();
     }

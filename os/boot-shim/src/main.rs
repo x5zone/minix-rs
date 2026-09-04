@@ -36,7 +36,13 @@ fn main() -> Status {
     // 1. UEFI boot preparation via BootShim trait
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
     //    → load boot modules → build KernelInfo → ExitBootServices
-    let result = UefiBootShim::prepare_boot(8);
+    // 64 pages (256 KiB): the identity mapping, the kernel high mapping and
+    // DM coverage establishment (kernel + VM windows) all draw
+    // lower-level page-table pages from this bump pool via boot_pt_alloc.
+    // A fragmentary firmware memmap forces 4 KiB-granularity DM leaves —
+    // one PT page per 2 MiB region per window — which 16 pages cannot
+    // cover (the same bound as the kernel's fallback bump, FALLBACK_BUMP_LEN).
+    let result = UefiBootShim::prepare_boot(64);
 
     // --- Below this point, UEFI boot services are gone ---
 

@@ -111,10 +111,25 @@ impl Lookup {
 /// `lookup_res` — `request.h:25` 9-field response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookupRes {
-    Ok { ino: u64, mode: u32, size: u64, dev: u64 },
-    EnterMount { ino: u64, offset: i32, symloop: u8 },
-    LeaveMount { offset: i32, symloop: u8 },
-    Symlink { offset: i32, symloop: u8 },
+    Ok {
+        ino: u64,
+        mode: u32,
+        size: u64,
+        dev: u64,
+    },
+    EnterMount {
+        ino: u64,
+        offset: i32,
+        symloop: u8,
+    },
+    LeaveMount {
+        offset: i32,
+        symloop: u8,
+    },
+    Symlink {
+        offset: i32,
+        symloop: u8,
+    },
 }
 
 /// `node_details` — `request.h:12` 7-field (MFS `REQ_CREATE` response).
@@ -256,7 +271,11 @@ impl PathResolver for StrictResolver {
         Ok(99)
     }
     fn eat_path(&self, lookup: &mut Lookup, fproc: &TestFproc) -> Result<usize, PathError> {
-        let dir = if lookup.path.starts_with('/') { fproc.rd } else { fproc.wd };
+        let dir = if lookup.path.starts_with('/') {
+            fproc.rd
+        } else {
+            fproc.wd
+        };
         self.advance(dir, lookup)
     }
 }
@@ -269,7 +288,11 @@ impl PathResolver for PermissiveResolver {
         Ok(42)
     }
     fn eat_path(&self, lookup: &mut Lookup, fproc: &TestFproc) -> Result<usize, PathError> {
-        let dir = if lookup.path.starts_with('/') { fproc.rd } else { fproc.wd };
+        let dir = if lookup.path.starts_with('/') {
+            fproc.rd
+        } else {
+            fproc.wd
+        };
         self.advance(dir, lookup)
     }
 }
@@ -295,7 +318,11 @@ mod tests {
         lk.symloop = 17;
         assert_eq!(lk.check_symloop().unwrap_err(), PathError::Loop);
         // LookupRes symloop field is u8, max 255, but threshold 16
-        let res = LookupRes::EnterMount { ino: 1, offset: 3, symloop: 5 };
+        let res = LookupRes::EnterMount {
+            ino: 1,
+            offset: 3,
+            symloop: 5,
+        };
         if let LookupRes::EnterMount { symloop, .. } = res {
             assert_eq!(symloop, 5);
         }
@@ -313,7 +340,8 @@ mod tests {
         PosixPath.normalize(&mut p3);
         assert_eq!(p3, "/a/b/.");
         // Trait objects
-        let handlers: Vec<Box<dyn SlashHandler>> = vec![Box::new(HistoricalPath), Box::new(PosixPath)];
+        let handlers: Vec<Box<dyn SlashHandler>> =
+            vec![Box::new(HistoricalPath), Box::new(PosixPath)];
         let mut a = "/x/".to_string();
         handlers[0].normalize(&mut a);
         assert_eq!(a, "/x");
@@ -344,7 +372,8 @@ mod tests {
         let r_rel = strict.eat_path(&mut lk_rel, &fproc).unwrap();
         assert_eq!(r_rel, 99);
         // Both use same advance stub, but dir differs internally (rd vs wd) — test that trait objects differ
-        let resolvers: Vec<Box<dyn PathResolver>> = vec![Box::new(StrictResolver), Box::new(PermissiveResolver)];
+        let resolvers: Vec<Box<dyn PathResolver>> =
+            vec![Box::new(StrictResolver), Box::new(PermissiveResolver)];
         let mut lk = Lookup::new("/x".to_string(), LookupFlags::NOFLAGS).unwrap();
         assert_eq!(resolvers[0].eat_path(&mut lk.clone(), &fproc).unwrap(), 99);
         assert_eq!(resolvers[1].eat_path(&mut lk, &fproc).unwrap(), 42);
@@ -375,13 +404,19 @@ mod tests {
         assert_eq!(p, "/a/b/c");
         // Simulate canonical climbs PATH_MAX bound
         let long = "a".repeat(PATH_MAX + 1);
-        assert_eq!(Lookup::new(long, LookupFlags::NOFLAGS).unwrap_err(), PathError::TooLong);
+        assert_eq!(
+            Lookup::new(long, LookupFlags::NOFLAGS).unwrap_err(),
+            PathError::TooLong
+        );
     }
 
     #[test]
     fn test_path_max() {
         let long = "a".repeat(PATH_MAX + 1);
-        assert_eq!(Lookup::new(long, LookupFlags::NOFLAGS).unwrap_err(), PathError::TooLong);
+        assert_eq!(
+            Lookup::new(long, LookupFlags::NOFLAGS).unwrap_err(),
+            PathError::TooLong
+        );
         let ok = "a".repeat(PATH_MAX);
         assert!(Lookup::new(ok, LookupFlags::NOFLAGS).is_ok());
     }
@@ -395,11 +430,15 @@ mod tests {
         let safecopy = SafecopyFetcher;
         assert_eq!(safecopy.fetch(0x2000, 5).unwrap().len(), 4);
         // Trait objects
-        let fetchers: Vec<Box<dyn PathFetcher>> = vec![Box::new(DirectFetcher), Box::new(SafecopyFetcher)];
+        let fetchers: Vec<Box<dyn PathFetcher>> =
+            vec![Box::new(DirectFetcher), Box::new(SafecopyFetcher)];
         assert_eq!(fetchers[0].fetch(0x1000, 3).unwrap().len(), 2);
         assert_eq!(fetchers[1].fetch(0x1000, 3).unwrap().len(), 2);
         // Behavioural difference: Direct vs Safecopy differ on large len? Both ok but we test len check
-        assert_ne!(fetchers[0].fetch(0x1000, 2).unwrap(), fetchers[1].fetch(0x1000, 3).unwrap());
+        assert_ne!(
+            fetchers[0].fetch(0x1000, 2).unwrap(),
+            fetchers[1].fetch(0x1000, 3).unwrap()
+        );
     }
 
     #[test]
@@ -407,7 +446,11 @@ mod tests {
         let lk = Lookup::new("".to_string(), LookupFlags::NOFLAGS).unwrap();
         assert_eq!(lk.path, "");
         // lookup:405 if(l_path[0]=='\0') ENOENT
-        let err = if lk.path.is_empty() { PathError::Empty } else { PathError::NoEnt };
+        let err = if lk.path.is_empty() {
+            PathError::Empty
+        } else {
+            PathError::NoEnt
+        };
         assert_eq!(err, PathError::Empty);
     }
 
@@ -442,7 +485,11 @@ mod tests {
         lk.vmnt = Some(2);
         lk.vnode = Some(10);
         // Simulate EnterMount res
-        let res = LookupRes::EnterMount { ino: 5, offset: 4, symloop: 1 };
+        let res = LookupRes::EnterMount {
+            ino: 5,
+            offset: 4,
+            symloop: 1,
+        };
         if let LookupRes::EnterMount { ino, offset, .. } = res {
             assert_eq!(ino, 5);
             assert_eq!(offset, 4);
@@ -456,9 +503,13 @@ mod tests {
         let direct = DirectFetcher;
         let safecopy = SafecopyFetcher;
         // Same len, both succeed but we test that they are distinct types
-        assert_eq!(direct.fetch(0x1000, 10).unwrap().len(), safecopy.fetch(0x1000, 10).unwrap().len());
+        assert_eq!(
+            direct.fetch(0x1000, 10).unwrap().len(),
+            safecopy.fetch(0x1000, 10).unwrap().len()
+        );
         // Behavioural difference via trait object
-        let fetchers: Vec<Box<dyn PathFetcher>> = vec![Box::new(DirectFetcher), Box::new(SafecopyFetcher)];
+        let fetchers: Vec<Box<dyn PathFetcher>> =
+            vec![Box::new(DirectFetcher), Box::new(SafecopyFetcher)];
         assert_eq!(fetchers.len(), 2);
         // Direct vs Safecopy differ on error handling for len 0? Both Err, but we test that trait objects work
         assert!(fetchers[0].fetch(0, 0).is_err());

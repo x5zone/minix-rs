@@ -373,7 +373,7 @@ C 退出路径的错误码高度统一，Rust 修复前有两处偏差：
 |--------|---------|------------|------------|
 | do_exit/do_willexit endpoint 无效 | EINVAL（exit.c:69/:108） | `VmExitError::ProcessNotFound → EINVAL` | ✓ 原本正确 |
 | 未 willexit 直接 exit | EINVAL（exit.c:74） | `NotExiting → EINVAL` | ✓ 原本正确 |
-| procctl endpoint 无效 | EINVAL（exit.c:122-125） | `InvalidEndpoint → ESRCH` ❌ | `InvalidProcess → EINVAL`（exit.rs:306-309） |
+| procctl endpoint 无效 | EINVAL（exit.c:122-125） | `InvalidEndpoint → ESRCH` ❌ | `InvalidProcess → EINVAL`（exit.rs:314-316） |
 | procctl 越权 | EPERM（exit.c:131-132/:141-142） | `PermissionDenied → EPERM` | ✓ 原本正确 |
 | procctl 未知参数 | EINVAL（exit.c:150-151） | `InvalidAddress → EFAULT` ❌ | `InvalidParam → EINVAL`（dispatcher.rs:278） |
 | procctl who<=0 | EINVAL（exit.c:122-125） | `InvalidEndpoint → ESRCH` ❌ | `InvalidProcess → EINVAL`（dispatcher.rs:231） |
@@ -382,7 +382,7 @@ C 退出路径的错误码高度统一，Rust 修复前有两处偏差：
 
 ### 3.4 D4：VMPPARAM_CLEAR（rusage 补全）
 
-**决策**：`handle_procctl_clear`（exit.rs:163-197）按 C 序列 `free_proc → pt_new → pt_bind` 实现：
+**决策**：`handle_procctl_clear`（exit.rs:164-200）按 C 序列 `free_proc → pt_free → pt_new` 实现；C 终步 `pt_bind` 无对应调用——内核侧根重登记由 VMCTL SetAddrSpace 通道承接（08 §3.3 D7 裁决）：
 
 ```
 ① free_process_phys(regions_mut)    ← C map_free_proc
@@ -390,7 +390,7 @@ C 退出路径的错误码高度统一，Rust 修复前有两处偏差：
 ③ set_region_top(0) + reset_rusage() ← C free_proc 的 vm_region_top/reset_vm_rusage（本轮补全）
 ④ free_page_table()（unsafe）        ← C pt_free
 ⑤ init_page_table()                 ← C pt_new（含内核区映射）
-⑥ bind_page_table()                 ← C pt_bind（sys_vmctl_set_addrspace 等价）
+（C 终步 pt_bind 无对应调用——root 通知语义由 SetAddrSpace 通道承接）
 ```
 
 **本轮补全**：C `free_proc` 会重置 `vm_region_top` + 4 个 rusage 字段（exit.c:41-42）；修复前 Rust 的 CLEAR 路径漏掉这些统计清零。新增 `VmProc::reset_rusage`（vmproc.rs:122，对应 checklist F-042）+ `ActiveProc::reset_rusage`（vmproc_handle.rs:469），CLEAR 路径与退出路径共享同一语义。
@@ -400,7 +400,7 @@ C 退出路径的错误码高度统一，Rust 修复前有两处偏差：
 
 ### 3.5 D5：VMPPARAM_HANDLEMEM 同步路径（SUSPEND 偏差）
 
-**决策**：`handle_procctl_handlemem`（exit.rs:215-278）用 `fork::handle_memory_once` 同步解析（页对齐 + 逐页 map_lookup + wrflag 检查 + CoW 分裂），成功后返回 `VmReply::Ok`；文件后备页 → `NotImplemented`（ENOSYS）。
+**决策**：`handle_procctl_handlemem`（exit.rs:219-281）用 `fork::handle_memory_once` 同步解析（页对齐 + 逐页 map_lookup + wrflag 检查 + CoW 分裂），成功后返回 `VmReply::Ok`；文件后备页 → `NotImplemented`（ENOSYS）。
 
 **偏差（诚实标注）**：C 无条件 SUSPEND（exit.c:148），VFS 阻塞到 VM_VFS_REPLY 续作；Rust 同步完成、立即回复。可观察差异是回复**时序**（C 延后至续作点；Rust 即时），成功/失败 errno 等价。这个近似的前提是**已映射的匿名页**（exec 参数/路径解析的主要场景）同步可解析——`handle_memory_once` 只对已映射共享页做 CoW 分裂，**未映射页（含匿名）当前被静默跳过**（C 会经 `map_pf` 分配或向 VFS 取页），见 §3.7 #9；文件后备区域需要 VFS 提供页，C 会 SUSPEND + 异步，Rust 显式 NotImplemented 而非假装成功（本轮实现：范围起点所在区域为文件后备即拒绝）。**backlog B1**：23 范围接入 VM_VFS_REPLY + transid 状态机后改回 SUSPEND。
 
@@ -478,7 +478,8 @@ handle_procctl_clear(table, alloc, frames, ep):
     proc.regions_mut().clear()
     proc.set_region_top(0); proc.reset_rusage()
     unsafe { proc.free_page_table() }
-    proc.init_page_table()?; proc.bind_page_table()?   // PageTableError → EIO
+    proc.init_page_table()?             // PageTableError → EIO
+    // C 终步 pt_bind 无对应调用（SetAddrSpace 通道承接，§3.4）
 
 handle_procctl_handlemem(table, alloc, frames, ep, mem, len, wrflag):
     slot = table.vm_isokendpt(ep)?

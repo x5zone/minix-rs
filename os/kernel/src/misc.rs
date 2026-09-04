@@ -21,7 +21,7 @@ use minix_types::{
 use core::sync::atomic::{AtomicBool, Ordering};
 use minix_plat::NR_IRQ_VECTORS;
 
-use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits, PROC_NAME_LEN,
+use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits, CpuId, PROC_NAME_LEN,
     BOOT_MODULE_PROC_NRS, NR_BOOT_PROCS};
 #[cfg(test)]
 use crate::proc::{ProcNr, NR_BOOT_MODULES};
@@ -32,6 +32,7 @@ use crate::cross_space::data_copy_vmcheck;
 use crate::vm::{AddressRef, CrossSpaceResult};
 use crate::clock::ClockState;
 use minix_arch::{CurrentDirectMap, DirectMapArch};
+use minix_arch::cpu_identity::{CpuIdentity, X86Vendor};
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
@@ -305,17 +306,66 @@ struct MachineStruct {
     board_id: u32,
 }
 
-/// C: `struct cpuinfo` — type.h:146-159
-/// Per-CPU info entry.
+/// Wire record for GET_CPUINFO — C: `struct cpu_info` (i386
+/// archtypes.h:39-46: vendor/family/model/stepping/freq/flags). Same C-ABI
+/// convention as the other GetInfo structs in this file (e.g. MachineStruct
+/// mirrors the C i386 layout): one canonical kernel-call ABI shape, with the
+/// running arch's identity mapped into it by [`From<CpuIdentity>`].
+///
+/// `Default` is the all-zero record — byte-identical to C's zero-filled
+/// `cpu_info[]` slot: an unprobed CPU copies out as zeros, exactly like C.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct CpuInfoEntry {
-    /// C: `cpu_id` — CPU identifier
-    cpu_id: u32,
-    /// C: `cpu_cycles` — 64-bit cycle counter
-    cpu_cycles: u64,
-    /// C: `cpu_load` — load percentage
-    cpu_load: u32,
+    /// C: `vendor` — CPU_VENDOR_INTEL=0 / CPU_VENDOR_AMD=2 /
+    /// CPU_VENDOR_UNKNOWN=0xff (i386 archconst.h:134-136).
+    vendor: u8,
+    /// C: `family` — CPUID leaf-1 EAX[11:8], extended by [27:20] when base == 0xF.
+    family: u8,
+    /// C: `model` — EAX[7:4], extended by [19:16] << 4 when family ∈
+    /// {0xF, 0x6} (SDM rule; MINIX3 BUG fix, see
+    /// x86_64/cpu_identity.rs::decode_signature).
+    model: u8,
+    /// C: `stepping` — EAX[3:0].
+    stepping: u8,
+    /// C: `freq` (MHz). C backfills it during TSC calibration
+    /// (arch_clock.c); minix-rs does not calibrate the TSC yet
+    /// (x86_64/clock.rs NOTE), so it stays 0 until that lands.
+    freq: u32,
+    /// C: `flags[2]` — CPUID leaf-1 ECX/EDX feature bits.
+    flags: [u32; 2],
+}
+
+/// C vendor encodings — i386 archconst.h:134-136.
+const CPU_VENDOR_INTEL: u8 = 0;
+const CPU_VENDOR_AMD: u8 = 2;
+const CPU_VENDOR_UNKNOWN: u8 = 0xff;
+
+impl From<CpuIdentity> for CpuInfoEntry {
+    fn from(id: CpuIdentity) -> Self {
+        match id {
+            CpuIdentity::X86(x) => CpuInfoEntry {
+                vendor: match x.vendor {
+                    X86Vendor::Intel => CPU_VENDOR_INTEL,
+                    X86Vendor::Amd => CPU_VENDOR_AMD,
+                    X86Vendor::Unknown => CPU_VENDOR_UNKNOWN,
+                },
+                family: x.family,
+                model: x.model,
+                stepping: x.stepping,
+                freq: 0,
+                flags: [x.feature_ecx, x.feature_edx],
+            },
+            // The wire record carries the C x86 identity shape; ARM MIDR
+            // fields (implementer/variant/arch/part/revision) and RISC-V
+            // CSR values have no counterpart in it, so non-x86 CPUs report
+            // CPU_VENDOR_UNKNOWN with zeroed fields. The typed per-arch
+            // identity stays available kernel-side via `smp::cpu_identity`.
+            CpuIdentity::Arm(_) | CpuIdentity::Riscv(_) => {
+                CpuInfoEntry { vendor: CPU_VENDOR_UNKNOWN, ..Default::default() }
+            }
+        }
+    }
 }
 
 /// C-compatible process info structure exposed by GET_PROC / GET_PROCTAB.
@@ -999,17 +1049,24 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
             copy_struct_to_caller(caller, &machine, val_ptr, val_len)
         }
         GetInfoRequest::CpuInfo => {
-            // C: do_getinfo.c:76-80 — copy per-CPU info array
-            // Build the full CONFIG_MAX_CPUS array (C copies sizeof(cpu_info)).
-            let mut cpuinfo: [CpuInfoEntry; crate::smp::MAX_CPUS] =
-                [CpuInfoEntry::default(); crate::smp::MAX_CPUS];
-            // SAFETY: BKL held; see GET_MACHINE above.
-            let ncpus = unsafe { crate::try_smp_state() }
-                .as_ref()
-                .map(|s| s.ncpus())
-                .unwrap_or(1);
-            for (i, entry) in cpuinfo.iter_mut().take(ncpus as usize).enumerate() {
-                entry.cpu_id = i as u32;
+            // C: do_getinfo.c:76-80 — copy the whole cpu_info[] array
+            // (length = sizeof(cpu_info) = CONFIG_MAX_CPUS × struct cpu_info,
+            // including unprobed slots, which C leaves zero-filled).
+            //
+            // The DATA IS PRODUCED by the kernel, mirroring C: smp::cpu_identify()
+            // fills the global CPU_INFO table at boot (BSP: bsp_finish_booting
+            // Step 0 — C main.c:45; APs: ap_finish_booting — C arch_smp.c:232,
+            // pending SMP bring-up in 16-smp.md). Unprobed slots convert to the
+            // all-zero record (C zero-fill behavior); see CpuInfoEntry for the
+            // wire layout and the non-x86 mapping note.
+            let mut cpuinfo = [CpuInfoEntry::default(); crate::smp::MAX_CPUS];
+            for (slot, entry) in cpuinfo.iter_mut().enumerate() {
+                // SAFETY: CpuId::new_unchecked contract (id < MAX_CPUS) holds —
+                // `slot` ranges over 0..MAX_CPUS.
+                let cpu = CpuId::new_unchecked(slot as u32);
+                if let Some(id) = crate::smp::cpu_identity(cpu) {
+                    *entry = CpuInfoEntry::from(id);
+                }
             }
             copy_struct_to_caller(caller, &cpuinfo, val_ptr, val_len)
         }
@@ -2487,6 +2544,78 @@ mod tests {
         assert_eq!(GetInfoRequest::try_from(9), Err(()));   // GET_KADDRESSES (not handled)
         assert_eq!(GetInfoRequest::try_from(10), Err(()));  // GET_SCHEDINFO (not handled)
         assert_eq!(GetInfoRequest::try_from(99), Err(()));
+    }
+
+    // ── GET_CPUINFO wire record (D-53) ──
+
+    /// C ABI layout: `struct cpu_info` (i386 archtypes.h:39-46) is
+    /// 4 × u8 + u32 + u32[2] with natural (unpacked) alignment — 16 bytes,
+    /// `freq` at offset 4, `flags` at offset 8. A wrong layout would
+    /// silently corrupt every user-space reader of GET_CPUINFO.
+    #[test]
+    fn test_cpu_info_entry_layout_matches_c() {
+        assert_eq!(core::mem::size_of::<CpuInfoEntry>(), 16);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, vendor), 0);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, family), 1);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, model), 2);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, stepping), 3);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, freq), 4);
+        assert_eq!(core::mem::offset_of!(CpuInfoEntry, flags), 8);
+    }
+
+    /// X86 identity maps onto the C record: vendor codes
+    /// (archconst.h:134-136: INTEL=0 / AMD=2 / UNKNOWN=0xff), identity
+    /// fields copied, ECX/EDX feature bits split across flags[2], freq
+    /// stays 0 (no TSC calibration backfill yet).
+    #[test]
+    fn test_cpu_info_entry_from_x86_identity() {
+        use minix_arch::cpu_identity::X86Identity;
+
+        let mk = |vendor| CpuInfoEntry::from(CpuIdentity::X86(X86Identity {
+            vendor,
+            family: 6,
+            model: 142,
+            stepping: 10,
+            feature_ecx: 0x7654_3210,
+            feature_edx: 0xFEBA_EBAD,
+        }));
+
+        let intel = mk(X86Vendor::Intel);
+        assert_eq!(intel.vendor, CPU_VENDOR_INTEL);
+        assert_eq!((intel.family, intel.model, intel.stepping), (6, 142, 10));
+        assert_eq!(intel.flags, [0x7654_3210, 0xFEBA_EBAD]);
+        assert_eq!(intel.freq, 0);
+
+        assert_eq!(mk(X86Vendor::Amd).vendor, CPU_VENDOR_AMD);
+        assert_eq!(mk(X86Vendor::Unknown).vendor, CPU_VENDOR_UNKNOWN);
+    }
+
+    /// ARM/RISC-V identities have no counterpart in the C x86 wire shape —
+    /// they report CPU_VENDOR_UNKNOWN with zeroed fields (documented ABI;
+    /// the typed identity stays reachable via smp::cpu_identity).
+    #[test]
+    fn test_cpu_info_entry_from_non_x86_is_unknown_zeroed() {
+        use minix_arch::cpu_identity::{ArmIdentity, RiscvIdentity};
+
+        let arm = CpuInfoEntry::from(CpuIdentity::Arm(ArmIdentity {
+            implementer: 0x41, variant: 0, arch: 0xF, part: 0xD08, revision: 3,
+        }));
+        assert_eq!(arm.vendor, CPU_VENDOR_UNKNOWN);
+        assert_eq!(arm.family, 0);
+        assert_eq!(arm.model, 0);
+        assert_eq!(arm.stepping, 0);
+        assert_eq!(arm.freq, 0);
+        assert_eq!(arm.flags, [0, 0]);
+
+        let riscv = CpuInfoEntry::from(CpuIdentity::Riscv(RiscvIdentity {
+            mvendorid: 0, marchid: 0x210, mimpid: 0x100,
+        }));
+        assert_eq!(riscv.vendor, CPU_VENDOR_UNKNOWN);
+        assert_eq!(riscv.family, 0);
+        assert_eq!(riscv.model, 0);
+        assert_eq!(riscv.stepping, 0);
+        assert_eq!(riscv.freq, 0);
+        assert_eq!(riscv.flags, [0, 0]);
     }
 
     #[test]

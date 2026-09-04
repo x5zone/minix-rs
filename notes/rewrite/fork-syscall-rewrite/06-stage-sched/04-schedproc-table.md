@@ -1,20 +1,191 @@
-# 04-schedproc-table: 进程表与 endpoint 验证
+# 04 — schedproc 表管理与槽位校验
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: 数据结构（进程表 + 验证 + 安全模型）
-> **源码**: `minix3/minix/servers/sched/schedproc.h`、`utility.c:29-72`
-> **Rust 模块**: `table.rs`、`valid.rs`
-> **draft 素材**: `draft/01-sched-struct.md`（素材，验证部分拆分）
+本文介绍 SCHED 怎样管理进程记录表：先把端点号换算成槽位号，再过三道检查（任务拒绝、越界拒绝、名字或占用对不上拒绝），申请空槽和查已用槽各走一个函数，最后只有 PM 和 RS 发来的消息才允许进入。可以把这一篇理解成表的"门禁"：校验是表的影子，没有门禁，表里的人都可以被冒名。
 
-## 核心点
+前置阅读：`03-schedproc-struct.md`（字段长什么样）、`02-sched-message-surface.md`（消息里提到的人是谁）。
 
-- `schedproc[NR_PROCS]` 静态表、`_ENDPOINT_P(endpoint)` slot 提取
-- `sched_isokendpt()`（utility.c:29）：EBADEPT/EINVAL/EDEADEPT 三错误码语义
-- `sched_isemtyendpt()`（utility.c:46）：空闲 slot 验证
-- `accept_message()`（utility.c:61）：PM/RS 白名单安全模型
-- 错误码表（`EBADEPT`/`EINVAL`/`EDEADEPT`/`EPERM`/`ENOSYS`/`EBADCPU`）
+> 本篇不讲什么：
+> - 字段细节——见 `03-schedproc-struct.md`（本篇直接用字段）
+> - 各个处理函数里的使用——见 `06-start-scheduling.md`、`07-stop-scheduling.md`、`08-noquantum-nice.md`（本篇只讲门禁）
+> - 错误码全表——见 `99-global-concepts.md`（本篇只讲用到的三个）
 
-## 边界
+---
 
-- **前置依赖**: 03
-- **不覆盖（移交）**: 字段细节（03）、各 handler 中的使用（06~08）
+## 1 概念
+
+### 1.0 引言
+
+表管理要回答三个问题：槽位怎么算（端点号换算成槽位号）、怎么验（四道判断、三道拒绝）、谁能进（白名单）。本文假设读者知道字段长什么样（见 03 篇），只讲"表的门禁"。
+
+### 1.1 为什么查表前要先校验
+
+三个风险对应三道门：端点号可以随手编，所以要对名字（名实须对）；槽位可能空着，所以要查占用（占位须查）；发消息的可能是陌生人，所以要列白名单（来路须验）。校验是表的影子：表里记的是谁，门口验的就是谁；没有门禁的表，谁都可以冒名。
+
+### 1.2 槽位换算
+
+`_ENDPOINT_P` 宏把端点号换算成槽位号：剥掉生成号，槽位号就出来了——纯算术，不访问表。换算结果分两种特殊情况：槽位号为负的是内核任务（内核任务永不进调度表）；槽位号超过表长的是越界（没有这个槽）。顺序不能乱：先换算出槽位，再谈验表，还没算出槽位就验表是没有意义的。
+
+### 1.3 查已用槽的四道判断
+
+`sched_isokendpt` 按固定顺序做四个判断：槽位号为负拒绝（任务不调度）、槽位号越界拒绝、端点号和槽位里记的名字对不上拒绝、槽位没启用拒绝。后两个拒绝共用一个错误码（`EDEADEPT`），但原因是两回事（名字死了和槽位空了）。顺序不能换：换了就会误诊——比如越界的槽位报成"空槽"，诊断就是错的。
+
+### 1.4 查空槽是镜像逻辑
+
+`sched_isemtyendpt` 是查已用槽的镜像：同样的换算、同样的前两道拒绝（任务、越界），最后一道判断反转（有人占着就拒绝）。空槽不验名字——空槽没有名字可对，查名字等于先假设有人，和"空"自相矛盾。查已用和查空槽是两个函数、两个名字（ok 和 empty），不能合并：合一个就把名字丢了（C 写成两个函数，不可并）。
+
+### 1.5 白名单
+
+`accept_message`：PM 和 RS 发来的消息放行，其余一律拒绝。名单就是信任（R-15）：调度服务只和两个人打交道（管出生的 PM、管服务的 RS），"消息必有主人"（02 篇的约定）在这里落实。名单是恒定的——万古两个名字，所以用枚举就行，不需要查表（给恒定名单配表驱动属于多余）。
+
+### 1.6 与其他 OS 的对照
+
+- **Linux**：pid 表和 `idr` 的槽位检查对应这里的三道门。`pid_task` 返回空对应空槽拒绝，命名空间越界对应越界拒绝；内核线程（`PF_KTHREAD` 不进用户调度）对应负槽拒绝。`EDEADEPT` 的"名字对不上和空槽共用一码"在 Linux 里是两个码（`ESRCH` 查无此人 vs `EINVAL` 参数形状错）——一码两因是 Minix 简化风格的体现。
+- **Redox**：没有全局进程表（句柄本身就是能力，没有槽位可算）。槽位换算这种"先算后验"是 Minix 表驱动风格的产物：在 Redox 里由"没有表可验"代替——有表所以要验，无表所以免验。
+- **seL4**：能力绑定对应这里的名字核对。seL4 里能力本身就是名实合一（拿着能力就等于对上了名），没有名实分离的烦恼——名字核对在 seL4 里由能力持有机制内建：拿着就是对上，不用复验。
+
+### 1.7 小结
+
+换算（先算后验）定位置，门禁（顺序固定）辨真假，空占（镜像两门）各管一头，白名单（PM/RS 两家）闭环。记住一条分工：门禁只做判断，不读表内容。
+
+---
+
+## 2 C 源码分析
+
+### 2.1 查已用槽（`utility.c:29-41`）
+
+`sched_isokendpt`：换算槽位（`31`），负槽拒绝（`32-33`，任务不调度），越界拒绝（`34-35`），名字对不上拒绝（`36-37`），槽位没启用拒绝（`38-39`），全过则放行（`40`，返回 `OK` 本身不带信息——过了就是无话可说）。
+
+### 2.2 查空槽（`utility.c:46-56`）
+
+`sched_isemtyendpt`：换算槽位（`48`），负槽拒绝（`49-50`），越界拒绝（`51-52`），有人占着拒绝（`53-54`，最后一道判断反转），全过则放行（`55`）。
+
+### 2.3 白名单（`utility.c:61-74`）
+
+`accept_message`：PM 放行（`66`），RS 放行（`67`），其余拒绝（`72-73`，返回 0）。
+
+### 2.4 错误码（`errno.h:64,211-212`）
+
+`EDEADEPT`（`211`：端点无活性——名字对不上和空槽两种含义），`EBADEPT`（`212`：端点坏——任务的编号），`EINVAL`（`64`：参数形状错——越界的数字）。用户态错误码是正数（`_SIGN` 约定：216/22/215 分别对应三个码的值）。
+
+---
+
+## 3 Rust 设计决策
+
+Rust 改写不照抄三个函数和 switch 写法，而是参考 Linux 的槽位检查和已有的端点实现做了取舍。下面逐条说明 D1–D5。
+
+### D1 槽位换算复用已有实现
+
+- **C**：`*proc = _ENDPOINT_P(endpoint)`（`utility.c:31,48`；宏定义在 `endpoint.h:68-69`）。
+- **Rust**：`Endpoint::slot()`（minix-types 里已有，换算式子已经验证过；门禁函数只收槽位号，换算归调用方）。
+- **为什么**：换算式子已经有了；门禁只管验不管算（换算是已有的事，验是本篇的事）。备选方案（门禁内部重算）被否决：算和验合一会让门禁难复用（手里已经有槽位号的调用方还得倒算回端点号，多此一举）。
+
+### D2 查已用槽做成枚举
+
+- **C**：四道判断、三种拒绝（`utility.c:31-40`）。
+- **Rust**：`SlotVerdict::{Occupied, Task, OutOfRange, Dead}` 加 `check_occupied()`（`os/servers/sched/src/table.rs:16,53`）；门禁收两个布尔值，读表归调用方。
+- **为什么**：判断顺序就是优先级（C 的顺序不能换）；名字对不上和空槽同码不同因，枚举把原因分开；读表归调用方（门禁是判断，读是执行）。备选方案（门禁收整张表引用）被否决：判断和执行分离。
+
+### D3 查空槽镜像对称
+
+- **C**：`sched_isemtyendpt`（`utility.c:46-56`，最后一道判断反转）。
+- **Rust**：`check_vacant()`（`os/servers/sched/src/table.rs:71`；不查名字——空槽没有名字可对）。
+- **为什么**：查空和查占对偶；空槽不验名字。备选方案（查空查占合一个函数加布尔参数）被否决：两个门两个名字，合一个就把名字丢了。
+
+### D4 白名单三个取值
+
+- **C**：`accept_message`（`utility.c:61-74`，PM/RS 返回 1）。
+- **Rust**：`Sender::{Pm, Rs, Other}` 加 `sender_from()` 加 `accept()`（`os/servers/sched/src/valid.rs:14,28,42`；`Endpoint::PM/RS` 已有）。
+- **为什么**：名单就是信任；C 的 1/0 直译成布尔。备选方案（白名单查表驱动）被否决：两个名字恒定不变，查表属于多余。
+
+### D5 错误码一处映射
+
+- **C**：三个错误码值（`errno.h:64,211-212`）。
+- **Rust**：`EBADEPT=216` 补进 types（`EDEADEPT=215` 就在隔壁），`SlotVerdict::errno()`（`os/servers/sched/src/table.rs:38`）一处映射。
+- **为什么**：常量补齐是跨服务契约；映射收在一处（三个调用方各写一遍早晚写岔）。备选方案（各调用方自己写映射）被否决：重复就是漂移的开始。
+
+### ARCH 决策总表
+
+| ARCH | 落点 | 三处一致标注 |
+|------|------|-------------|
+| （本篇无 ARCH 行为变更） | — | 纯表达层演进（枚举和直译），不需要 ARCH 标注 |
+
+---
+
+## 4 实现详解
+
+### 4.1 模块结构
+
+```
+os/servers/sched/src/
+├── table.rs              — 本篇：查已用查空槽两道门（判断）
+├── valid.rs              — 本篇：发送方白名单（名字）
+├── schedproc.rs          — 记录对端（03 篇，字段长什么样）
+└── lib.rs                — 模块导出
+os/libs/minix-types/src/types/
+└── errno.rs              — EBADEPT 权威位置（跨服务复用）
+```
+
+> 设计决策：§3 D2（查已用槽枚举）/ D3（查空槽镜像）/ D4（白名单三值）。
+
+### 4.2 核心符号表
+
+| 符号 | 来源 | Rust 位置 | 行为 |
+|------|------|-----------|------|
+| 查已用槽 | `utility.c:29-41` | `os/servers/sched/src/table.rs:16,29,38,53` | 穷举加一处错误码 |
+| 查空槽 | `utility.c:46-56` | `os/servers/sched/src/table.rs:71` | 最后一道判断反转 |
+| 白名单 | `utility.c:61-74` | `os/servers/sched/src/valid.rs:14,28,42` | 名字即身份 |
+| 错误码值 | `errno.h:64,211-212` | `os/libs/minix-types/src/types/errno.rs` 的 EBADEPT 加 `os/servers/sched/src/table.rs:38` | 跨服务权威 |
+
+### 4.3 不变量
+
+| 不变量 | 位置 | 守卫 | 证据 |
+|--------|------|------|------|
+| 先换算后验 | 门禁第一道判断负槽 | 换算归调用方 | `utility.c:31,48` |
+| 判断有序（任务→越界→名字→占用） | C 顺序直译 | 顺序不能换 | `utility.c:31-40` |
+| 查空查占对偶（最后一道反转） | 两道镜像门 | 镜像即约定 | `utility.c:38 vs 53` |
+| 名单闭合（PM/RS 之外全拒） | `Sender` 穷举 | 其余即 Other | `utility.c:64-73` |
+
+---
+
+## 5 测试要点
+
+> 基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。
+
+| 测试名 | 覆盖 C 行号 | 行为 | 文件 |
+|--------|-------------|------|------|
+| `test_occupied_door` | `utility.c:29-41` | 四道判断加顺序优先加码值 | `os/servers/sched/src/table.rs:89` |
+| `test_vacant_mirror` | `utility.c:46-56` | 三道判断加镜像加互斥 | `os/servers/sched/src/table.rs:121` |
+| `test_names` | `com.h:59-61` | PM/RS 名字加其余全 Other | `os/servers/sched/src/valid.rs:51` |
+| `test_closed_list` | `utility.c:61-74` | 两个名字放行、其他拒绝 | `os/servers/sched/src/valid.rs:63` |
+
+测试策略：查已用槽用四道判断全枚举锁定（含顺序优先：任务压越界压名字）；查空槽用三道判断加互斥锁定（已用和空对同一个槽位永远意见相反）；名单用 PM/RS 取值加其他拒绝锁定；错误码用三个值全映射锁定（216/22/215）。
+
+### 5.1 测试统计
+
+基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。本篇直接相关的测试是上表 4 个（含 types 侧 errno 锁定）。完整测试清单：`rg "fn test_" os/servers/sched/src/table.rs os/servers/sched/src/valid.rs`。
+
+---
+
+## 6 过渡
+
+本篇在 03（记录结构）之后、05（优先级模型）之前，讲的是"表的校验规则"：03 给出字段长什么样，本篇定查表先过哪几道检查。没有本篇，第 06 篇的接管就不知道门从哪里验，第 05 篇的模型就不知道取值从哪里验。
+
+```
+03-schedproc-struct: 七字段记录（字段长什么样）
+   │
+   └─► 本篇：槽位换算 → 三道门禁 → 白名单
+           │                              │
+           ├─► 05-priority-timeslice-model：优先级语义（门的下一站）
+           └─► 06-start-scheduling：接管处理（验完的去向）
+```
+
+阅读顺序提示：想看门后面的取值含义，下一站 `05-priority-timeslice-model.md`（优先级语义）；验完的去向见 `06-start-scheduling.md`（接管处理）。
+
+---
+
+## 7 参见
+
+- C 源：`minix3/minix/servers/sched/utility.c:29-74`（三道门禁全部代码）、`minix3/minix/include/minix/endpoint.h:68-69`（槽位换算宏）、`minix3/sys/sys/errno.h:64,211-212`（三个错误码值）、`minix3/minix/include/minix/com.h:59-61`（PM/RS 编号）
+- 阶段文档：`03-schedproc-struct.md`（上一站）、`05-priority-timeslice-model.md`（下一站）、`06-start-scheduling.md`（验完的去向）、`02-sched-message-surface.md`（消息里提到的人）
+- Rust 实现：`os/servers/sched/src/table.rs:1`（本篇判断层）、`os/servers/sched/src/valid.rs:1`（本篇名字层）、`os/libs/minix-types/src/types/errno.rs`（EBADEPT 权威位置）、`os/libs/minix-types/src/types/endpoint.rs`（槽位换算权威位置）
+- 对端：`../01-stage-kernel/11-scheduling-primitives.md`（内核调度原语）

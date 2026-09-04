@@ -742,71 +742,7 @@ impl Default for ProcessTable {
 
 // ── 10-switch-to-user methods ──
 
-/// switch_to_user 控制流状态。
-///
-/// C 使用 goto 在多个检查点之间跳转（proc.c:299-477）。
-/// Rust 使用枚举状态 + loop 模拟相同控制流。
-///
-/// Design decision: 状态机替代 goto（10-switch-to-user.md §3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SwitchFlow {
-    /// 检查当前进程是否可运行
-    CheckCurrent,
-    /// 当前进程不可运行，选择新进程
-    PickNew,
-    /// 处理 misc 标志
-    CheckMiscFlags,
-    /// 检查时间片
-    CheckQuantum,
-    /// 恢复用户态上下文
-    RestoreContext,
-}
-
 impl ProcessTable {
-    /// 选择下一个可运行进程。
-    ///
-    /// C: switch_to_user() 中的 pick_proc() 调用 — proc.c:335
-    /// 处理 PREEMPTED 进程的重新入队逻辑 — proc.c:320-329
-    ///
-    /// 返回 `(selected_proc_nr, flow_state)`：
-    /// - 如果当前进程仍可运行，返回当前进程 + CheckMiscFlags
-    /// - 否则选择新进程 + CheckMiscFlags
-    pub fn select_next_process(
-        &mut self,
-        current_nr: Option<ProcNr>,
-        cpu_id: CpuId,
-    ) -> (Option<ProcNr>, SwitchFlow) {
-        // 阶段 1：当前进程是否可运行？
-        if let Some(nr) = current_nr
-            && let Some(p) = self.get(nr)
-                && p.is_runnable() {
-                    return (Some(nr), SwitchFlow::CheckMiscFlags);
-                }
-
-        // 阶段 2：处理 PREEMPTED 进程
-        if let Some(nr) = current_nr {
-            let was_preempted = self.get(nr).is_some_and(|p| {
-                p.p_rts_flags.is_set(RtsFlagsBits::PREEMPTED)
-            });
-            if was_preempted {
-                self.rts_unset(nr, RtsFlagsBits::PREEMPTED);
-                if let Some(p) = self.get(nr)
-                    && p.is_runnable() {
-                        let has_time_left = p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0;
-                        if has_time_left {
-                            self.sched_enqueue_head(nr, cpu_id);
-                        } else {
-                            self.sched_enqueue(nr, None, cpu_id);
-                        }
-                    }
-            }
-        }
-
-        // 阶段 3：选择最高优先级进程 (per-CPU scheduler)
-        let selected = self.sched_for_cpu(cpu_id).pick_proc(self.procs_slice());
-        (selected, SwitchFlow::CheckMiscFlags)
-    }
-
     /// 处理进程的 misc 标志。
     ///
     /// C: check_misc_flags 循环 — proc.c:351-405

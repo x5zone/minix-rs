@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 7 — IPC 服务（fork 次主线核心）
 > **源码**: `minix3/minix/servers/vm/fork.c`（116 行：`do_fork` :32-115）+ `minix3/minix/servers/vm/region.c`（`map_proc_copy` :933-939 / `map_proc_copy_range` :944-999）+ `minix3/minix/servers/vm/acl.c`（`acl_fork` :110-116）+ `minix3/minix/servers/vm/utility.c`（`vm_isokendpt` :84-101）+ `minix3/minix/kernel/system/do_fork.c`（内核侧 `sys_fork` 处理）+ `minix3/minix/include/minix/com.h`（`VMF_ENDPOINT`/`VMF_SLOTNO`/`VMF_CHILD_ENDPOINT` :633-635 / `PFF_VMINHIBIT` :360）
-> **Rust 模块**: `os/servers/vm/src/fork.rs`（`do_fork` :186-409 / `fork_regions` :142-161 / `free_forked_regions` :162-177 / `handle_memory_once` :33-85 / `sys_fork` stub :424-426）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_from_fork` :318-330 / `copy_acl_from` :331-341 / `init_page_table` :342-398 / `bind_page_table` :399-410 / `free_page_table` :411-422 / `init_regions` :423-430）+ `os/servers/vm/src/vmproc/table.rs`（`VM_PROC_COUNT` :41 / `VM_EXEC_TMP_SLOT` :44 / `get_empty` :141-150）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_fork` :108-121 / 主循环 VM_FORK 分支 :1036-1037）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn` :167-172 / `VmForkOut` :175-177 / `decode` :678-687 / `encode` :689-695）
+> **Rust 模块**: `os/servers/vm/src/fork.rs`（`do_fork` :183-390 / `fork_regions` :140-158 / `free_forked_regions` :160-175 / `handle_memory_once` :33-85 / `sys_fork` stub :406-408）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_from_fork` :327-333 / `copy_acl_from` :340-343 / `init_page_table` :351-403 / `free_page_table` :411-419 / `init_regions` :423-427）+ `os/servers/vm/src/vmproc/table.rs`（`VM_PROC_COUNT` :41 / `VM_EXEC_TMP_SLOT` :44 / `get_empty` :141-150）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_fork` :108-121 / 主循环 VM_FORK 分支 :1036-1037）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn` :167-172 / `VmForkOut` :175-177 / `decode` :678-687 / `encode` :689-695）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md`（CoW 机制：`fork_region` 共享建立 / `setup_cow_for_all_regions`+`write_page_table_mappings` 写保护）+ `04-acl.md`（ACL 继承）+ `03-vmproc-table.md`（slot 表）+ `15-ipc-dispatch.md`（主循环分发）
 > **说明**: 本文档管 **fork 的编排**——VM 如何把"复制地址空间"组织成一次可回滚的服务调用：验证 → 初始化子进程 → 新建页表 → 区域复制（CoW）→ 页表写入 → 内核注册 → 返回 endpoint。**不覆盖**：CoW 机制本身（17）、`fork_region` 内部 refcount 语义（17 §3.1）、exit 逆向清理（22）、VFS fdref 细节（23）。
 
@@ -236,31 +236,30 @@ if (handle_memory_once(vmp, vir, sizeof(message), 1) != OK)
 
 ## 3. Rust 设计决策
 
-> 行号以 2026-08-16 实证为准。Rust 侧现状：**七阶段编排全部落地**（do_fork :186-409），含 03-P1-1 修复、bind 提前、ACL 继承；`handle_memory_once` ×2 与真实 `sys_fork` 为 DEFERRED（诚实标注，§3.6）。
+> 行号以 2026-08-16 实证为准。Rust 侧现状：**七阶段编排全部落地**（do_fork :183-390），含 03-P1-1 修复、ACL 继承；C `pt_bind` 终步无对应调用（内核侧登记并入 `sys_fork`，§3.1 差异 1）；`handle_memory_once` ×2 与真实 `sys_fork` 为 DEFERRED（诚实标注，§3.6）。
 
-### 3.1 D1：do_fork 编排（fork.rs:186-409）
+### 3.1 D1：do_fork 编排（fork.rs:183-390）
 
 对应 C 七阶段，差异用 typestate 视图表达状态转换：
 
 | C 阶段 | Rust | 行号 |
 |--------|------|------|
-| 验证父进程 | `vm_isokendpt` → `get_active` | :191-199 |
-| 验证子槽位 | `assert_ne!(parent, child)` + **slot 上界检查** + `get_empty` | :201-213 |
-| 初始化子进程 | `activate_relaxed(NONE)` → `init_from_fork` → `copy_acl_from` | :215-222 |
-| 创建页表 | `init_page_table` + `init_regions` | :224-227 |
-| 复制地址空间 | `fork_regions` + `regions_mut().insert` | :229-259 |
-| CoW + PTE | `setup_cow_for_all_regions` + `write_page_table_mappings` | :283/:308 |
-| 绑定页表 | `bind_page_table`（**提前到 sys_fork 前**） | :321 |
-| 内核注册 | `sys_fork`（stub）+ `set_endpoint` | :339-340 |
-| 消息页 | `handle_memory_once` ×2 | **DEFERRED**（:342-406 注释） |
+| 验证父进程 | `vm_isokendpt` → `get_active` | :191-197 |
+| 验证子槽位 | `assert_ne!(parent, child)` + **slot 上界检查** + `get_empty` | :198-210 |
+| 初始化子进程 | `activate_relaxed(NONE)` → `init_from_fork` → `copy_acl_from` | :212-220 |
+| 创建页表 | `init_page_table` + `init_regions` | :222-223 |
+| 复制地址空间 | `fork_regions` + `regions_mut().insert` | :226-257 |
+| CoW + PTE | `setup_cow_for_all_regions` + `write_page_table_mappings` | :280/:305 |
+| 内核注册 | `sys_fork`（stub）+ `set_endpoint` | :321-322 |
+| 消息页 | `handle_memory_once` ×2 | **DEFERRED**（:325-385 注释） |
 
 **与 C 的编排差异（诚实标注）**：
 
-1. `bind_page_table` 在 `sys_fork` **之前**（C fork.c:94 在其后）——绑定失败从 panic 降级为可回滚错误（§3.4）。
+1. C 的 `pt_bind` 终步（fork.c:94，sys_fork 之后）无对应调用——内核侧地址空间登记并入 `sys_fork`（08 §3.3 D7 裁决），fork 的最后一个可恢复点是 `write_page_table_mappings`（§3.4）。
 2. `handle_memory_once` ×2 未实现（§3.6 #5 DEFERRED，安全论证见 §4.4）。
 3. `sys_fork` 是 stub（返回确定性 endpoint，§3.5）。
 
-### 3.2 D2：逐字段拷贝替代 *vmc = *vmp（vmproc_handle.rs:318-330）
+### 3.2 D2：逐字段拷贝替代 *vmc = *vmp（vmproc_handle.rs:327-333）
 
 C 用整结构体浅拷贝 + 4 字段恢复（fork.c:58-64）。Rust 的 `init_from_fork` 显式继承 4 个标量（endpoint / total / total_max / region_top）+ 置 IN_USE：
 
@@ -274,10 +273,10 @@ pub(crate) fn init_from_fork(&mut self, endpoint: Endpoint, total: VirBytes, tot
 }
 ```
 
-- 区域树与页表**不拷贝**——由 `init_regions`（:423-430，空 RegionMap）与 `init_page_table`（:342-398，新建 + kernel 映射）新建，避免"拷贝后恢复"的脆弱模式（C 的 origpt 保存/恢复在 Rust 中不存在）。
+- 区域树与页表**不拷贝**——由 `init_regions`（:423-427，空 RegionMap）与 `init_page_table`（:351-403，新建 + kernel 映射）新建，避免"拷贝后恢复"的脆弱模式（C 的 origpt 保存/恢复在 Rust 中不存在）。
 - `vm_flags = IN_USE` 等价于 C 的 `vm_flags &= VMF_INUSE`（:83）——子进程只保留 IN_USE，其余标志（如 VM_INSTANCE）不继承。
 
-### 3.3 D3：ACL 继承（copy_acl_from :331-341 → AclState::acl_fork acl.rs:167-174）
+### 3.3 D3：ACL 继承（copy_acl_from :340-343 → AclState::acl_fork acl.rs:167-174）
 
 | C ACL | C 结果 | Rust AclState | Rust 结果 |
 |-------|--------|--------------|-----------|
@@ -287,15 +286,15 @@ pub(crate) fn init_from_fork(&mut self, endpoint: Endpoint, total: VirBytes, tot
 
 语义等价：只有用户 ACL 被继承，系统 ACL 不继承（由 RS 重新设置）。
 
-### 3.4 D4：回滚两层 + bind 提前（fork.rs）
+### 3.4 D4：回滚两层（fork.rs）
 
-**区域层**（fork_regions :142-161）：任一 `fork_region` 失败 → `free_forked_regions`（:162-177）递减全部已复制区域的 refcount + `ev_unreference`——对应 C `map_free_proc`（region.c:956）。
+**区域层**（fork_regions :140-158）：任一 `fork_region` 失败 → `free_forked_regions`（:160-175）递减全部已复制区域的 refcount + `ev_unreference`——对应 C `map_free_proc`（region.c:956）。
 
-**进程层**（do_fork）：`fork_regions` 失败（:231-253）、`write_page_table_mappings` 失败（:313-314）、`bind_page_table` 失败（:335-336）都调用 `free_page_table`（vmproc_handle.rs:411-422，对应 C `pt_free`）后返回错误。
+**进程层**（do_fork）：`fork_regions` 失败（:228-249）、`write_page_table_mappings` 失败（:306-311）都调用 `free_page_table`（vmproc_handle.rs:411-419，对应 C `pt_free`）后返回错误。
 
-**bind 提前的收益**：C 中 `pt_bind` 在 `sys_fork` 之后（fork.c:94），失败即 panic；Rust 把绑定移到 `sys_fork` 之前（fork.rs:321），失败可回滚（free_page_table + 返回 PageTableMapFailed）——**把不可恢复路径缩短到只剩 sys_fork 本身**。SAFETY 注释论证了各回滚点前置条件（无 CR3 引用、页表未发布、单线程）。
+**bind 语义的归属**：C 中 `pt_bind` 在 `sys_fork` 之后（fork.c:94），失败即 panic；Rust 无独立 bind 步骤——`write_page_table_mappings` 失败是最后一个可恢复点（fork.rs:314-319 注释），此后 `sys_fork` 完成内核侧登记，不可恢复路径只剩 sys_fork 本身。C `pt_bind` 的内核通知语义由 SetAddrSpace 通道承接（08 §3.3 D7 裁决）。SAFETY 注释论证了各回滚点前置条件（无 CR3 引用、页表未发布、单线程）。
 
-### 3.5 D5：sys_fork stub 与 03-P1-1 修复（fork.rs:424-426 / :203-209）
+### 3.5 D5：sys_fork stub 与 03-P1-1 修复（fork.rs:406-408 / :204-207）
 
 ```rust
 /// DEFERRED (2026-06-15): Once IpcTransport is implemented, this will call:
@@ -324,13 +323,13 @@ if child_slot.get() >= NR_PROCS {
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
-| 1 | `*vmc = *vmp` 整结构体拷贝 + 4 字段恢复（fork.c:58-64） | `init_from_fork` 逐字段拷贝（vmproc_handle.rs:318-330） | ✅ 等价 |
-| 2 | 子槽位界检查（fork.c:47-52） | 曾缺失 → **本轮修复**（fork.rs:203-209 + 回归测试） | ✅ 修复（03-P1-1） |
-| 3 | `pt_bind` 在 sys_fork 后（fork.c:94），失败 panic | `bind_page_table` 提前到 sys_fork 前（fork.rs:321），失败可回滚 | ✅ 设计改进 |
-| 4 | `map_free_proc`（region.c:956） | `free_forked_regions`（fork.rs:162-177） | ✅ 等价 |
-| 5 | `handle_memory_once` ×2（fork.c:97-108） | **DEFERRED**（fork.rs:342-406 注释，依赖跨 slot 可变访问 + 真实 msgaddr） | ⚠️ 待接线 |
-| 6 | `sys_fork` 真实内核调用（返回 endpoint + msgaddr） | stub（fork.rs:424-426，确定性 endpoint） | ⚠️ 待内核 IPC |
-| 7 | `region_init` 双重调用（fork.c:60 + region.c:935） | `init_regions` 一次（vmproc_handle.rs:423-430） | ✅ 简化 |
+| 1 | `*vmc = *vmp` 整结构体拷贝 + 4 字段恢复（fork.c:58-64） | `init_from_fork` 逐字段拷贝（vmproc_handle.rs:327-333） | ✅ 等价 |
+| 2 | 子槽位界检查（fork.c:47-52） | 曾缺失 → **本轮修复**（fork.rs:204-207 + 回归测试） | ✅ 修复（03-P1-1） |
+| 3 | `pt_bind` 在 sys_fork 后（fork.c:94），失败 panic | 无独立 bind 调用——内核侧登记并入 `sys_fork`（fork.rs:321，SetAddrSpace 通道语义）；最后可恢复点为 `write_page_table_mappings` | ✅ 简化 |
+| 4 | `map_free_proc`（region.c:956） | `free_forked_regions`（fork.rs:160-175） | ✅ 等价 |
+| 5 | `handle_memory_once` ×2（fork.c:97-108） | **DEFERRED**（fork.rs:325-385 注释，依赖跨 slot 可变访问 + 真实 msgaddr） | ⚠️ 待接线 |
+| 6 | `sys_fork` 真实内核调用（返回 endpoint + msgaddr） | stub（fork.rs:406-408，确定性 endpoint） | ⚠️ 待内核 IPC |
+| 7 | `region_init` 双重调用（fork.c:60 + region.c:935） | `init_regions` 一次（vmproc_handle.rs:423-427） | ✅ 简化 |
 | 8 | ACL 继承（acl.c:110-116） | `copy_acl_from` → `AclState::acl_fork`（acl.rs:167-174） | ✅ 等价 |
 | 9 | VMF_CHILD_ENDPOINT 写回 m1_i3（fork.c:111） | `VmReply::Fork` → `EncodeToM1`（vm.rs:689-695） | ✅ 等价 |
 
@@ -353,41 +352,39 @@ if child_slot.get() >= NR_PROCS {
 - `VmForkOut`（vm.rs:175-177）：`child_endpoint`（→ m1_i3，encode :689-695）。
 - 错误映射（dispatcher.rs:1206-1213）：`InvalidEndpoint`/`InvalidSlot` → `VmError::InvalidProcess`（EINVAL，对齐 C fork.c:44/:51）；`SlotInUse` → `SlotInUse`（EINVAL）；`CowAllocFailed`/`PageTableInitFailed`/`PageTableMapFailed` → `OutOfMemory`（ENOMEM，对齐 C fork.c:71/:79）。
 
-### 4.2 do_fork 分阶段伪码（fork.rs:186-409）
+### 4.2 do_fork 分阶段伪码（fork.rs:183-390）
 
 ```
 do_fork(table, frames, pfn_alloc, parent_endpoint, child_slot)
-  parent_slot = table.vm_isokendpt(parent_endpoint)      :193-195  → InvalidEndpoint
-  parent      = table.get_active(parent_slot)            :197-199  → InvalidSlot
-  assert_ne!(parent_slot, child_slot)                    :201      （防同 slot 双 &mut）
-  if child_slot.get() >= NR_PROCS → InvalidSlot          :203-209  （03-P1-1）
-  empty = table.get_empty(child_slot)                    :211-213  → SlotInUse
-  child = empty.activate_relaxed(Endpoint::NONE)         :215      （EmptySlot → ActiveProc）
-  child.init_from_fork(NONE, total, total_max, region_top) :217-222
-  child.copy_acl_from(&parent)                           :223
-  child.init_page_table()                                :225      → PageTableInitFailed
-  child.init_regions()                                   :226
-  dst_regions = fork_regions(&parent_regions, frames)    :229-254
-      └─ Err → child.free_page_table() + return          :231-253
-  for region in dst_regions: child.regions_mut().insert(region)  :256-259
-  child.setup_cow_for_all_regions(frames)                :283
-  child.write_page_table_mappings(frames)                :308
-      └─ Err → child.free_page_table() + PageTableMapFailed  :313-314
-  child.bind_page_table()                                :321      （提前）
-      └─ Err → child.free_page_table() + PageTableMapFailed  :335-336
-  child_endpoint = sys_fork(parent.endpoint(), child.slot())  :339   （stub）
-  child.set_endpoint(child_endpoint)                     :340
-  // handle_memory_once ×2 — DEFERRED                    :342-406
-  Ok(child_endpoint)                                     :408
+  parent_slot = table.vm_isokendpt(parent_endpoint)      :191-193  → InvalidEndpoint
+  parent      = table.get_active(parent_slot)            :195-197  → InvalidSlot
+  assert_ne!(parent_slot, child_slot)                    :198      （防同 slot 双 &mut）
+  if child_slot.get() >= NR_PROCS → InvalidSlot          :204-207  （03-P1-1）
+  empty = table.get_empty(child_slot)                    :209-210  → SlotInUse
+  child = empty.activate_relaxed(Endpoint::NONE)         :212      （EmptySlot → ActiveProc）
+  child.init_from_fork(NONE, total, total_max, region_top) :214-218
+  child.copy_acl_from(&parent)                           :220
+  child.init_page_table()                                :222      → PageTableInitFailed
+  child.init_regions()                                   :223
+  dst_regions = fork_regions(&parent_regions, frames)    :226
+      └─ Err → child.free_page_table() + return          :228-249
+  for region in dst_regions: child.regions_mut().insert(region)  :253-257
+  child.setup_cow_for_all_regions(frames)                :280
+  child.write_page_table_mappings(frames)                :305
+      └─ Err → child.free_page_table() + PageTableMapFailed  :306-311
+  child_endpoint = sys_fork(parent.endpoint(), child.slot())  :321   （stub；内核侧登记在此闭合）
+  child.set_endpoint(child_endpoint)                     :322
+  // handle_memory_once ×2 — DEFERRED                    :325-385
+  Ok(child_endpoint)                                     :390
 ```
 
 ### 4.3 回滚与 SAFETY 论证模式
 
-每个回滚点都带完整 SAFETY 注释（fork.rs:231-253/:313-314/:335-336），共同前置条件：
+每个回滚点都带完整 SAFETY 注释（fork.rs:228-249/:306-311），共同前置条件：
 
 1. `child` 是 Active typestate（`activate_relaxed` 后），`free_page_table` 是合法状态转换；
 2. 页表已初始化（`init_page_table` 成功），可安全释放；
-3. **无 CR3 引用**（`bind_page_table` 之前或绑定失败时）——free 不需要 TLB shootdown；
+3. **无 CR3 引用**（`sys_fork` 之前——页表未向内核发布，无 CPU 可能切换到该根）——free 不需要 TLB shootdown；
 4. 失败发生在区域元数据写入页表之前（fork_regions 失败）或映射未提交完（write_page_table_mappings 失败）——无悬空 PTE；
 5. VM 单线程事件循环——无并发访问。
 
@@ -449,7 +446,6 @@ C 在 sys_fork 后调用 `handle_memory_once` ×2（fork.c:97-108）把消息页
 | do_fork 端到端（真实父进程多区域 → 子区域一致 + 父子页表只读） | ⚠️ 缺失 | 需真实页表/多区域测试基建（08/17 页表接线） |
 | sys_fork 真实内核调用 | ⚠️ 未接线 | stub 确定性 endpoint（26 范围） |
 | handle_memory_once ×2 消息页预解析 | ⚠️ DEFERRED | 依赖跨 slot 可变访问 + 真实 msgaddr（§4.4） |
-| bind_page_table 失败路径 | ⚠️ 无单测 | 依赖真实页表绑定实现 |
 | acl_fork 在 fork 上下文的端到端 | ⚠️ 部分 | `AclState::acl_fork` 有单测（acl.rs），fork 集成无 |
 | write_page_table_mappings → PTE 只读联合 | ⚠️ 17-P2-2 承接 | COW flag 读侧接线（08/18 核对） |
 

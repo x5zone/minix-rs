@@ -719,14 +719,14 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // Step 1: 恒等映射 — VA=PA 前 4GB (C: pg_identity — pg_utils.c:162)
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
     let mut addr: u64 = 0;
-    while addr < 0x1_0000_0000 {
+    while addr < IDENTITY_MAP_END {
+        // 忽略错误 — 部分区间可能没有物理内存背书，CPU 不会访问它们
         let _ = paging.map_huge(VirBytes(addr), PhysBytes(addr),
                         kern_huge as usize, id_flags);
         addr += kern_huge;
     }
 
     // Step 2: 内核高半核映射 (C: pg_mapkernel — pg_utils.c:186)
-    let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
     // supervisor-only mapping 注释:
     //   `kernel_read_write()` **不含** `USER_ACCESSIBLE`，所以三架构 PTE 都设了
     //   supervisor-only 标记：x86-64 U/S=0；aarch64 AP1=0 (EL1 only)；riscv64 U=0。
@@ -734,13 +734,14 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     //   因为 S-mode 永远读 supervisor-only mapping，不需要 SUM。
     //   **总结**: 我们用 supervisor-only mapping，不设 USER_ACCESSIBLE，sstatus.SUM
     //   是否为 0 都不影响当前阶段。SUM 只在"内核要读 U=1 页面"时才有意义。
-    let kern_virt = kernel_info.kern_virt_base.0;
-    let kern_phys = kernel_info.kern_phys_base.0;
+    let kern_virt = kernel_info.kern_virt_base().0;
+    let kern_phys = kernel_info.kern_phys_base().0;
     // 当 kern_virt == kern_phys 时，Step 2 与 Step 1 完全重叠，
     // 跳过以避免覆盖 L2 条目（详见附录 A）
     if kern_virt != kern_phys {
+        let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let mut offset = 0u64;
-        while offset < kernel_info.kern_size {
+        while offset < kernel_info.kern_size() {
             paging.map_huge(
                 VirBytes(kern_virt + offset),
                 PhysBytes(kern_phys + offset),
@@ -750,13 +751,27 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     }
 
     // Step 3: 开分页 (C: pg_load + vm_enable_paging)
-    unsafe { paging.enable() };
+    let _root_phys = unsafe { paging.enable() };
+
+    // 记录 bootstrap root 物理地址到 kernel 全局——后续阶段（如 init_proc_and_boot
+    // 加载 VM ELF）经它包装同一棵活动页表。用 root_page 参数而非 enable() 返回值：
+    // 部分架构（riscv64 satp 编码值）返回的不是裸物理地址。
+    set_current_root_phys(root_page);
+
+    // Step 4: 在 bootstrap root 上建立 Direct Map 双窗口覆盖（07-cross-space-init.md §4.4）：
+    // Kernel DM 先行（supervisor RW，PA 全域），VM DM 随后（user RW，PA 裁剪到窗口）。
+    // 候选是两源并集：memmap conventional 区段 + bootstrap 树显式登记（self root +
+    // boot bump 区）。所有 PTE 写走 identity 写通道；必须在 enable() 之后（VA=PA 写）
+    // 且在任何经窗口的 VM 物理访问之前。
+    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
 
     kernel_info
 }
 ```
 
-> **Step 0→3 的顺序不可调换**：先注册分配器（Step 0），否则 `map_huge` 分配中间页表页会 panic；先建映射（Step 1+2），否则切换页表后内核找不到自己；最后切换页表（Step 3），切换后脚手架生效。
+> **Step 0→4 的顺序不可调换**：先注册分配器（Step 0），否则 `map_huge` 分配中间页表页会 panic；先建映射（Step 1+2），否则切换页表后内核找不到自己；最后切换页表（Step 3），切换后脚手架生效；DM 双窗口（Step 4）在开分页后经 identity 写通道建立——晚于 Step 3（写 VA=PA 需要活动 root），早于一切经窗口的物理访问（VM ELF 加载）。
+>
+> Step 4 的建立算法（两源候选、x86-64 identity 重叠处理、启动验证）在 [07-cross-space-init.md §4.4](07-cross-space-init.md) 详述——本节只给建立点在启动序列中的位置。
 
 > **`kern_virt != kern_phys` 守卫（防御性编程）**：当 `kern_virt_base == kern_phys_base` 时，Step 2 的映射目标与 Step 1 完全重叠，**跳过 Step 2 是正确的**——identity mapping 已覆盖相同范围且权限相同，跳过不丢映射。当 `kern_virt_base` 与 `kern_phys_base` 不同时（生产场景），Step 2 仍照常执行。
 >
@@ -764,7 +779,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 > **与 C 源码的差异**：C 的 `pg_mapkernel()` 只设 `PRESENT | BIGPAGE | WRITE`，无 GLOBAL 位。Rust 代码中 `PageFlags::kernel_read_write()` 含 GLOBAL，boot 阶段无实际作用（无进程切换，CR3 不变）。GLOBAL 位的真正价值在 VM 的 Direct Map 中——每次进程切换重写 CR3 时避免内核映射 TLB miss。
 
-**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:80-132`，三架构版本 + mock 测试入口)：
+**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:130-166`，三架构版本 + mock 测试入口)：
 
 ```rust
 // x86-64
@@ -790,6 +805,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     - 恒等映射已建立（0~4GB，VA=PA）
     - 内核高地址映射已建立（KERN_VIRT_BASE → 物理内存）
     - CR3/satp/TTBR1 已加载，分页已启用
+    - DM 双窗口覆盖已建立（`establish_boot_dm`，Kernel DM + VM DM，详见 [07-cross-space-init.md §4.4](07-cross-space-init.md)）
     - **但 RSP 仍在低地址**（boot-shim 的栈）
 
 - **Step 2（`HigherHalf::jump_to_kmain`）**：
@@ -797,7 +813,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     - 如果直接 `call kmain`，返回地址会被压入低地址栈
     - 后续中断/异常需要栈操作时，若恒等映射已移除就会 crash
 
-这两步的语义边界在 §4.6 前文 "Step 0→3 的顺序不可调换" 注释块已详述：`arch_boot_impl` 是"启用分页 + 建映射"，`HigherHalf::jump_to_kmain` 是"切栈到高地址 + 转移控制权"。前者是分页机制，后者是栈控制权交接——必须分两步执行，不能合并。
+这两步的语义边界在 §4.6 前文 "Step 0→4 的顺序不可调换" 注释块已详述：`arch_boot_impl` 是"启用分页 + 建映射 + 建 DM 覆盖"，`HigherHalf::jump_to_kmain` 是"切栈到高地址 + 转移控制权"。前者是分页机制，后者是栈控制权交接——必须分两步执行，不能合并。
 
 **为什么有 4 份 `#[cfg]` 重复**：`arch_boot` 函数的统一形式本可以是：
 
@@ -817,7 +833,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 > - aarch64: `minix_arch::arm64::paging::AArch64Paging` (TTBR1, 4 级 L0→L3)
 > - riscv64: `minix_arch::riscv64::paging::Riscv64Paging` (Sv39, 3 级)
 >
-> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:80-132](os/kernel/src/lib.rs)。
+> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:130-166](os/kernel/src/lib.rs)。
 
 **为什么必须 `jump_to_kmain` 而不是直接 `kmain(info)`？**
 
@@ -844,6 +860,7 @@ boot-shim (低地址执行)
         │     ├── 恒等映射 0~4GB
         │     ├── 内核高地址映射
         │     ├── 加载 CR3（启用分页）
+        │     ├── establish_boot_dm（DM 双窗口覆盖，Step 4）
         │     └── 返回 &KernelInfo
         │
         └── X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top)
@@ -875,6 +892,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
         │     ├── 恒等映射 0~4GB
         │     ├── 内核高地址映射
         │     ├── 加载 CR3（启用分页）
+        │     ├── establish_boot_dm（DM 双窗口覆盖，Step 4）
         │     └── 返回 &KernelInfo
         │
         └── X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top)  ← 切栈 + 跳转
@@ -906,7 +924,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
 arch_boot_impl → HigherHalf::jump_to_kmain → kmain (naked) → kmain_verify
 ```
 
-`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain` 与 `kmain_verify` 位于内核 `os/kernel/src/lib.rs:519-643`（`#[cfg(feature = "qemu_test")]`）——测试内核 `main.rs` 仅调用 `arch_boot`，跳转后的验证由内核侧完成。`kmain_verify` 断言：
+`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain` 与 `kmain_verify` 位于内核 `os/kernel/src/lib.rs:599-643`（`#[cfg(feature = "qemu_test")]`）——测试内核 `main.rs` 仅调用 `arch_boot`，跳转后的验证由内核侧完成。`kmain_verify` 断言：
 
 1. **SP >= kern_virt_base**：栈指针在高地址空间
 2. **SP 16 字节对齐**：满足 ABI 要求

@@ -259,17 +259,17 @@ IS 的全部工作本质是"功能键 → 转储输出"。次主线以一次 F-k
 
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
-| 00 | pending | — | 新建导航 |
-| 01 | pending | — | draft/tmp_main.c.md 素材 |
-| 02 | pending | — | 新建协议面 |
-| 03 | pending | — | draft/tmp_dmp.c.md 素材 |
-| 04 | pending | — | 新建数据面 |
-| 05 | pending | — | draft/tmp_dmp_kernel.c.md 素材 |
-| 06 | pending | — | draft/tmp_dmp_pm.c.md 素材 |
-| 07 | pending | — | draft/tmp_dmp_fs.c.md 素材 |
-| 08 | pending | — | draft/tmp_dmp_rs.c.md 素材 |
-| 09 | pending | — | draft/tmp_dmp_ds.c.md 素材 |
-| 10 | pending | — | draft/tmp_dmp_vm.c.md 素材 |
+| 00 | skipped | — | 用户决策跳过（2026-09-04），从 01 开始 |
+| 01 | reviewed | 2026-09-04 | draft/tmp_main.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/01-is-init-main/`） |
+| 02 | reviewed | 2026-09-04 | 新建协议面；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/02-is-fkey-contract/`；A-1 兑现） |
+| 03 | reviewed | 2026-09-04 | draft/tmp_dmp.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/03-is-dump-dispatch/`；次主线收口） |
+| 04 | reviewed | 2026-09-04 | 新建数据面；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/04-is-data-acquisition/`；A-3 设计） |
+| 05 | reviewed | 2026-09-04 | draft/tmp_dmp_kernel.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/05-is-dump-kernel/`；A-4 快照） |
+| 06 | reviewed | 2026-09-04 | draft/tmp_dmp_pm.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/06-is-dump-pm/`） |
+| 07 | reviewed | 2026-09-04 | draft/tmp_dmp_fs.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/07-is-dump-vfs/`） |
+| 08 | reviewed | 2026-09-04 | draft/tmp_dmp_rs.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/08-is-dump-rs/`） |
+| 09 | reviewed | 2026-09-04 | draft/tmp_dmp_ds.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/09-is-dump-ds/`） |
+| 10 | reviewed | 2026-09-04 | draft/tmp_dmp_vm.c.md 素材；CONVERGED（scan 见 `.review/claude/fork-syscall-rewrite/10-is-dump-vm/`；阶段收官） |
 | 99 | pending | — | 新建全局概念 |
 
 ---

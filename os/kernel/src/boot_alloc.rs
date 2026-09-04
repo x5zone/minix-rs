@@ -29,6 +29,7 @@ use minix_arch::paging::PageTableError;
 /// production kernel uses a single `static` instance via
 /// [`boot_pt_alloc`] / [`init_boot_pt_alloc`].
 pub struct BootAlloc {
+    base: AtomicU64,
     next: AtomicU64,
     end: AtomicU64,
 }
@@ -37,6 +38,7 @@ impl BootAlloc {
     /// Create an empty allocator (zero-length range → all allocations fail).
     pub const fn new() -> Self {
         Self {
+            base: AtomicU64::new(0),
             next: AtomicU64::new(0),
             end: AtomicU64::new(0),
         }
@@ -46,8 +48,34 @@ impl BootAlloc {
     ///
     /// Must be called before the first [`Self::alloc`].
     pub fn init(&self, base: u64, end: u64) {
+        self.base.store(base, Ordering::Relaxed);
         self.next.store(base, Ordering::Relaxed);
         self.end.store(end, Ordering::Relaxed);
+    }
+
+    /// The configured bump region `[base, end)`, or `None` if uninitialized.
+    ///
+    /// Boot-path access for DM coverage candidate registration: the bump
+    /// region is an explicit bootstrap PhysAccess range (it never appears
+    /// in a conventional memmap), so the DM establishment path needs its
+    /// bounds (`07-paging_init_design` §6.1 two-source union).
+    pub fn region(&self) -> Option<(u64, u64)> {
+        let end = self.end.load(Ordering::Relaxed);
+        if end == 0 {
+            return None;
+        }
+        Some((self.base.load(Ordering::Relaxed), end))
+    }
+
+    /// Bytes handed out so far (`next − base`).
+    ///
+    /// Reported as `kernel_allocated_bytes_dynamic` in the VM boot handoff
+    /// (C: `cbi->n_dynamic`, pg_utils.c:154 — every boot page-table page
+    /// the kernel allocated while mapping itself).
+    pub fn used_bytes(&self) -> u64 {
+        self.next
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.base.load(Ordering::Relaxed))
     }
 
     /// Allocate a zero-filled 4 KiB page with identity mapping (VA = PA).
@@ -97,6 +125,22 @@ pub fn boot_pt_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
 /// and identity-mapped (typically a region from `KernelInfo.memmap`).
 pub fn init_boot_pt_alloc(base: u64, end: u64) {
     BOOT_ALLOC.init(base, end);
+}
+
+/// The configured boot bump region `[base, end)` (source-2 DM candidate).
+///
+/// `None` before [`init_boot_pt_alloc`] — the DM establishment path runs
+/// strictly after allocator registration (Step 0 of `arch_boot_impl`).
+pub fn boot_alloc_region() -> Option<(u64, u64)> {
+    BOOT_ALLOC.region()
+}
+
+/// Bytes handed out by the global boot allocator so far.
+///
+/// Zero before [`init_boot_pt_alloc`]. Consumed by the VM boot handoff
+/// (`kernel_allocated_bytes_dynamic`).
+pub fn boot_alloc_used_bytes() -> u64 {
+    BOOT_ALLOC.used_bytes()
 }
 
 #[cfg(test)]

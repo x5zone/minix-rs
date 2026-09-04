@@ -23,6 +23,14 @@ use uefi::prelude::*;
 /// Sentinel value written to low memory, read back via high-half alias.
 const SENTINEL: u64 = 0xdeadbeef_cafe0001;
 
+// UEFI test kernels allocate only while boot services are alive (build_memmap
+// etc.); boot-shim's pool allocator covers exactly that window. See
+// uefi_helpers::UefiPoolAllocator for why the registration lives here and not
+// in boot-shim itself.
+#[global_allocator]
+static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
+    boot_shim::uefi_helpers::UefiPoolAllocator;
+
 #[entry]
 fn main() -> Status {
     early_console::write_str("### test_kernel_map: verify high-half mapping\n");
@@ -30,7 +38,7 @@ fn main() -> Status {
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
     let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
-    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(8);
+    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
     let kern_virt_base: u64 = 0xFFFF_8000_0000_0000;
     let kern_phys_base: u64 = 0x200_000; // 2MB-aligned for 2MB huge pages

@@ -598,10 +598,7 @@ mod tests {
         // Callback also blocks
         global.vmnts[0].cur_reqs = 0;
         global.vmnts[0].callback = true;
-        assert_eq!(
-            global.vmnts[0].can_send().unwrap_err(),
-            CommError::Callback
-        );
+        assert_eq!(global.vmnts[0].can_send().unwrap_err(), CommError::Callback);
         // Else would queuemsg
         let r = global.queuemsg(0, 7);
         assert!(r.is_ok());
@@ -728,17 +725,31 @@ mod tests {
         assert!(r2.is_ok());
         assert_eq!(mock.sent_fs.len(), 1);
         // Trait objects
-        let mut transports: Vec<Box<dyn FsTransport>> =
-            vec![Box::new(BlockingTransport), Box::new(MockTransport::default())];
+        let mut transports: Vec<Box<dyn FsTransport>> = vec![
+            Box::new(BlockingTransport),
+            Box::new(MockTransport::default()),
+        ];
         let _ = transports[0].send_vm(0, &msg);
         let _ = transports[1].send_vm(0, &msg);
     }
 
     #[test]
     fn test_vm_procctl_handlemem() {
-        let r = vm_procctl_handlemem(Some(1), Endpoint::from_generation_slot(0, 5), 0x1000, 0x1000, 0);
+        let r = vm_procctl_handlemem(
+            Some(1),
+            Endpoint::from_generation_slot(0, 5),
+            0x1000,
+            0x1000,
+            0,
+        );
         assert!(r.is_ok());
-        let r2 = vm_procctl_handlemem(None, Endpoint::from_generation_slot(0, 5), 0x1000, 0x1000, 0);
+        let r2 = vm_procctl_handlemem(
+            None,
+            Endpoint::from_generation_slot(0, 5),
+            0x1000,
+            0x1000,
+            0,
+        );
         assert_eq!(r2.unwrap_err(), CommError::NoWorker);
     }
 }

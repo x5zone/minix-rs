@@ -13,7 +13,7 @@ use core::cell::Cell;
 
 use minix_types::{Endpoint, Mode, UserSlot};
 
-use crate::filp::{FilpId, FilpTable, FILP_CLOSED};
+use crate::filp::{FILP_CLOSED, FilpId, FilpTable};
 use crate::fproc::{FProc, OPEN_MAX};
 
 /// `Fd` — typed file descriptor `0..255` (u8 bound makes `256` unrepresentable).
@@ -96,7 +96,9 @@ pub struct NextFit {
 
 impl NextFit {
     pub fn new(start: usize) -> Self {
-        Self { next: Cell::new(start) }
+        Self {
+            next: Cell::new(start),
+        }
     }
 }
 
@@ -154,9 +156,7 @@ pub fn get_fd(
         .ok_or(FdError::TooManyOpen)?;
     let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
 
-    let filp_id = filp_table
-        .alloc_filp(mode)
-        .map_err(|_| FdError::FilpFull)?;
+    let filp_id = filp_table.alloc_filp(mode).map_err(|_| FdError::FilpFull)?;
 
     // Reserve: do not bump count here; caller will `inc_count` on commit.
     // For test we leave count 0 but mode set (as `get_fd:139` does).
@@ -167,11 +167,7 @@ pub fn get_fd(
 ///
 /// Simplified: `may_suspend` is accepted but not used (socket `SUSPEND` is
 /// DEFERRED to 22-sdev).  Lock release (`nr_locks`) is also DEFERRED to 30.
-pub fn close_fd(
-    fproc: &mut FProc,
-    fd: Fd,
-    filp_table: &mut FilpTable,
-) -> Result<(), FdError> {
+pub fn close_fd(fproc: &mut FProc, fd: Fd, filp_table: &mut FilpTable) -> Result<(), FdError> {
     let idx = fd.get();
     let filp_idx = fproc.filps[idx].ok_or(FdError::BadFd)?;
     let filp = filp_table.get(FilpId(filp_idx)).ok_or(FdError::BadFd)?;
@@ -253,18 +249,14 @@ pub fn copy_fd(
     match kind {
         CopyKind::From => {
             // `S_ISSOCK` self-copy deadlock would be `EDEADLK` — stub always ok for test
-            let idx = policy
-                .allocate(&dst.filps, 0)
-                .ok_or(FdError::TooManyOpen)?;
+            let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
             let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
             dst.filps[idx] = Some(filp_idx);
             // Bump filp count would be `filp_table.inc_count` — caller does
             Ok(fd)
         }
         CopyKind::To => {
-            let idx = policy
-                .allocate(&dst.filps, 0)
-                .ok_or(FdError::TooManyOpen)?;
+            let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
             let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
             dst.filps[idx] = Some(filp_idx);
             Ok(fd)
@@ -306,7 +298,10 @@ mod tests {
         let mut fp = new_fproc();
         // Initially OPEN_MAX free
         assert!(check_fds(&fp, OPEN_MAX).is_ok());
-        assert_eq!(check_fds(&fp, OPEN_MAX + 1).unwrap_err(), FdError::TooManyOpen);
+        assert_eq!(
+            check_fds(&fp, OPEN_MAX + 1).unwrap_err(),
+            FdError::TooManyOpen
+        );
         // Occupy OPEN_MAX-2 → 2 free left
         for i in 0..OPEN_MAX - 2 {
             fp.filps[i] = Some(i);
@@ -492,7 +487,8 @@ mod tests {
         assert_eq!(fifo.allocate(&fp.filps, 5), Some(8));
         assert_eq!(next.allocate(&fp.filps, 5), Some(8));
         // Polymorphic via trait object
-        let policies: Vec<Box<dyn FdAllocPolicy>> = vec![Box::new(LowestFree), Box::new(NextFit::new(10))];
+        let policies: Vec<Box<dyn FdAllocPolicy>> =
+            vec![Box::new(LowestFree), Box::new(NextFit::new(10))];
         assert_eq!(policies[0].allocate(&fp.filps, 5), Some(8));
         assert_eq!(policies[1].allocate(&fp.filps, 5), Some(10)); // NextFit starts at 10
     }

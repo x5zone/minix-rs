@@ -254,7 +254,9 @@ mod tests {
     use super::*;
     use minix_types::UserSlot;
 
-    fn slot(n: usize) -> UserSlot { UserSlot::new(n) }
+    fn slot(n: usize) -> UserSlot {
+        UserSlot::new(n)
+    }
 
     #[test]
     fn test_tll_init() {
@@ -281,7 +283,10 @@ mod tests {
     fn test_tll_lock_write_busy() {
         let mut t = Tll::new();
         assert!(t.try_lock(slot(1), TllAccess::Read).is_ok());
-        assert_eq!(t.try_lock(slot(2), TllAccess::Write).unwrap_err(), TllError::Busy);
+        assert_eq!(
+            t.try_lock(slot(2), TllAccess::Write).unwrap_err(),
+            TllError::Busy
+        );
         assert!(!t.write_q.is_empty());
     }
 
@@ -323,7 +328,11 @@ mod tests {
     // Second impl for Gate D
     struct AltTll(Tll);
     impl AltTll {
-        fn new_alt() -> Self { Self(Tll::new()) }
-        fn lock_alt(&mut self, s: UserSlot) -> Result<(), TllError> { self.0.try_lock(s, TllAccess::Read) }
+        fn new_alt() -> Self {
+            Self(Tll::new())
+        }
+        fn lock_alt(&mut self, s: UserSlot) -> Result<(), TllError> {
+            self.0.try_lock(s, TllAccess::Read)
+        }
     }
 }

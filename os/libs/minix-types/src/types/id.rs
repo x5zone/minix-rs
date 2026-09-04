@@ -74,6 +74,11 @@ pub type Mode = u32;
 /// `GRANT_INVALID` (-1) is represented as `Option::None` at use sites.
 pub type GrantId = i32;
 
+/// Granted process may read. C: `CPF_READ` — minix/safecopies.h:64.
+pub const CPF_READ: i32 = 0x000001;
+/// Granted process may write. C: `CPF_WRITE` — minix/safecopies.h:65.
+pub const CPF_WRITE: i32 = 0x000002;
+
 #[cfg(test)]
 mod tests {
     use super::*;

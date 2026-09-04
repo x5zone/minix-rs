@@ -1,0 +1,47 @@
+{
+  "_comment": "C→Rust 语义映射表（devman 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "01-devm-init-main 启动链语义范围为主（main.c 全函数 + vtreefs 调用点形状）；其余 doc 语义按需扩展。C 侧 run_vtreefs/sef_local_startup/fs_mount/fs_other 定义在 lib/libvtreefs（02 全量覆盖），此处仅映射 01 使用的形状。",
+  "main": [
+    "main"
+  ],
+  "init_hook": [
+    "devman_init_hook",
+    "FsHooks::fire_init",
+    "FirstGuard::enter"
+  ],
+  "message_hook": [
+    "devman_message_hook",
+    "FsHooks::fire_message"
+  ],
+  "read_hook": [
+    "devman_read_hook",
+    "FsHooks::fire_read"
+  ],
+  "run_vtreefs": [
+    "ServerConfig::devman_default"
+  ],
+  "sef_local_startup": [
+    "SefLifecycle"
+  ],
+  "fs_mount": [
+    "FsHooks::fire_init"
+  ],
+  "fs_other": [
+    "FsHooks::fire_message"
+  ],
+  "devman_init_devices": [
+    "InitCtx::request_init"
+  ],
+  "fs_hooks": [
+    "FsHooks"
+  ],
+  "inode_stat": [
+    "RootStat"
+  ],
+  "BUF_SIZE": [
+    "BUF_SIZE"
+  ],
+  "NO_DEV": [
+    "NO_DEV"
+  ]
+}

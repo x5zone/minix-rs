@@ -174,9 +174,10 @@ impl PrivFlags {
 
     /// C: `priv(rp)->s_flags & BILLABLE`.
     ///
-    /// Currently unused — CPU time accounting not yet wired. Same rationale
-    /// as [`Self::is_preemptible`].
-    #[allow(dead_code)]
+    /// Called by the scheduler's pick path (`switch_to_user` /
+    /// `not_runnable_pick_new`) to decide whether a picked process becomes
+    /// the CPU's `bill_ptr` — the recipient of system-time accounting
+    /// (C: proc.c:1808-1809 in `pick_proc`, proc.c:186-187 in `idle`).
     pub(crate) fn is_billable(&self) -> bool {
         self.s_flags.contains(ProcessCapability::BILLABLE)
     }

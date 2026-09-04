@@ -15,7 +15,7 @@
 //! one-way and one-shot, so making the dependency visible at the
 //! constructor keeps the startup chain auditable and testable.
 
-use minix_types::{BootImage, Endpoint, NR_BOOT_PROCS};
+use minix_types::{BootImage, Endpoint, HandoffMemRegion, NR_BOOT_PROCS, PhysBytes};
 use crate::phys_mem::{BootMemRegion, CLICK_SIZE};
 
 /// VM's own boot-image process number.
@@ -59,6 +59,16 @@ impl KernelAllocated {
 /// state that is only populated once during `init_vm()`.
 #[derive(Debug, Clone, Copy)]
 pub struct BootParams<'a> {
+    /// Physical address of VM's bootstrap page-table root (A1 adoption).
+    ///
+    /// The kernel builds and enables this root before scheduling VM and
+    /// hands its physical address over via the boot handoff page
+    /// (`minix_types::VmBootHandoff`, mapped user read-only at
+    /// `VM_BOOT_HANDOFF_VA`). Consumed by `init_vm_self_pt`: VM adopts
+    /// this root as its own page table instead of creating a fresh one,
+    /// so kernel-built mappings (VM DM window, handoff page, ELF) remain
+    /// visible in VM's address space.
+    pub root_paddr: PhysBytes,
     /// Total physical memory pages.
     ///
     /// C: `total_pages`, accumulated by `mem_init()` from the memory
@@ -92,17 +102,6 @@ pub struct BootParams<'a> {
     pub is_first_time: bool,
 }
 
-/// Placeholder boot image for the VM process itself.
-///
-/// Used by [`BootParams::placeholder()`] so the production binary has a
-/// valid VM slot until the real boot protocol (sys_getkinfo) lands.
-const VM_BOOT_IMAGE: BootImage = {
-    let mut img = BootImage::empty();
-    img.proc_nr = VM_PROC_NR;
-    img.endpoint = Endpoint::VM;
-    img
-};
-
 impl<'a> BootParams<'a> {
     /// Single-region boot params with no modules and no boot processes.
     ///
@@ -110,30 +109,11 @@ impl<'a> BootParams<'a> {
     /// paths. Production code must use real boot parameters.
     pub fn simple(total_pages: usize, free_regions: &'a [BootMemRegion]) -> Self {
         Self {
+            // Fake-but-valid root: these tests never exercise adoption.
+            root_paddr: PhysBytes(0x900_000),
             total_pages,
             free_regions,
             boot_procs: &[],
-            modules: &[],
-            kernel_allocated: KernelAllocated::ZERO,
-            vm_allocated_bytes: 0,
-            is_first_time: true,
-        }
-    }
-
-    /// Placeholder boot params for the current binary entry point.
-    ///
-    /// Values match the previous hardcoded mock in `main.rs`
-    /// (65536 pages starting at physical 0x100000). Once the kernel IPC
-    /// vector (`minix-sys::sys_getkinfo`) lands, the boot-shim fills
-    /// these from the real boot protocol instead.
-    pub fn placeholder() -> BootParams<'static> {
-        BootParams {
-            total_pages: 65536,
-            free_regions: &[BootMemRegion {
-                base: 0x100000,
-                size: 65536 * CLICK_SIZE,
-            }],
-            boot_procs: &[VM_BOOT_IMAGE],
             modules: &[],
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
@@ -150,6 +130,14 @@ impl<'a> BootParams<'a> {
     /// protocol (09-vm-boot-protocol) guarantees a non-empty module list
     /// before VM starts.
     pub fn validate(&self) {
+        // A1 handoff contract: the root must be a real, page-aligned
+        // physical page (mirrors `VmBootHandoff::validate`).
+        assert!(
+            self.root_paddr.0 != 0 && self.root_paddr.0 & 0xFFF == 0,
+            "BootParams: root_paddr 0x{:x} must be a non-zero page-aligned physical address",
+            self.root_paddr.0
+        );
+
         // C: assert(kernel_boot_info.mmap_size > 0) — main.c:451
         assert!(
             !self.free_regions.is_empty(),
@@ -232,6 +220,154 @@ fn round_up_page(bytes: u64) -> u64 {
     bytes.div_ceil(CLICK_SIZE as u64) * CLICK_SIZE as u64
 }
 
+/// Read the full boot parameter set from the kernel→VM boot handoff page.
+///
+/// The kernel writes a `minix_types::VmBootHandoff` page and maps it user
+/// read-only at `minix_types::VM_BOOT_HANDOFF_VA` before scheduling VM:
+/// `root_paddr` is the A1 address-space identity hand-off (VM's initial
+/// page table IS the bootstrap root), `free_regions`/`deducted` are the
+/// A2 post-bootstrap classification output (kernel cut `LiveBootstrap`
+/// out of the full memmap; see `07-paging_init_design` §6.0-A2), and the
+/// boot tables + kernel footprint fill in the C `kernel_boot_info` role.
+///
+/// This runs once before any heap-consuming server setup; the converted
+/// region/module slices are leaked (one-shot boot data, C keeps the
+/// equivalent tables in BSS for the process lifetime).
+///
+/// # Panics
+///
+/// Panics if the page fails header validation or if the A2 reconciliation
+/// ([`reconcile`]) fails — boot contract violations, not recoverable
+/// errors.
+pub fn read_boot_params() -> BootParams<'static> {
+    // SAFETY: the kernel guarantees the handoff page is mapped at
+    // VM_BOOT_HANDOFF_VA in VM's initial address space before VM is
+    // scheduled; the mapping is user read-only and its contents are fixed
+    // for VM's lifetime (one-way, one-shot boot contract). VM runs
+    // single-threaded and reads it before any other boot-contract use.
+    let handoff =
+        unsafe { &*(minix_types::VM_BOOT_HANDOFF_VA as *const minix_types::VmBootHandoff) };
+    handoff.validate();
+
+    // A2 free list: kernel-cut survivors, already clipped to VM's DM
+    // window (VM PMM eligible = conventional ∩ DM-representable −
+    // LiveBootstrap).
+    let free_regions: &'static [BootMemRegion] = {
+        let v: alloc::vec::Vec<BootMemRegion> =
+            handoff.free_regions[..handoff.free_region_count as usize]
+                .iter()
+                .map(|r| BootMemRegion {
+                    base: r.base as usize,
+                    size: r.size as usize,
+                })
+                .collect();
+        alloc::boxed::Box::leak(v.into_boxed_slice())
+    };
+    let modules: &'static [BootModule] = {
+        let v: alloc::vec::Vec<BootModule> =
+            handoff.modules[..handoff.module_count as usize]
+                .iter()
+                .map(|m| BootModule {
+                    start_addr: m.start_addr,
+                    len: m.len,
+                })
+                .collect();
+        alloc::boxed::Box::leak(v.into_boxed_slice())
+    };
+
+    let params = BootParams {
+        root_paddr: PhysBytes::new(handoff.root_paddr),
+        // C: total_pages accumulated by mem_init() from the memory chunks
+        // (alloc.c:319-331) — the handoff free list IS the chunk list.
+        total_pages: free_regions.iter().map(|r| r.size / CLICK_SIZE).sum(),
+        free_regions,
+        boot_procs: &handoff.boot_procs[..],
+        modules,
+        kernel_allocated: KernelAllocated {
+            static_bytes: handoff.kernel_allocated_static,
+            dynamic_bytes: handoff.kernel_allocated_dynamic,
+        },
+        vm_allocated_bytes: handoff.vm_allocated_bytes,
+        is_first_time: handoff.is_first_time != 0,
+    };
+    params.validate();
+    reconcile(&params, &handoff.deducted[..handoff.deducted_count as usize]);
+    params
+}
+
+/// Page size of every handoff range (C: I386_PAGE_SIZE).
+const PAGE: u64 = 0x1000;
+
+/// A2 consumer-boundary reconciliation (07-paging_init_design §6.0-A2,
+/// Proof 2 — "deducted set == record" audit).
+///
+/// The kernel builds the free list by cutting `LiveBootstrap(t_classify)`
+/// from the full memmap (post-bootstrap classification, by construction)
+/// and hands the deduction record over in the same page. VM cannot see
+/// the pre-cut memmap, so the record is verified against everything VM
+/// can enumerate independently:
+///
+/// 1. the record is non-empty (kernel image + root page are always
+///    deducted);
+/// 2. the adopted root page is inside the record — A1 identity, VM knows
+///    `root_paddr` from the handoff itself;
+/// 3. every reserved boot-module blob (boot-image entries other than
+///    VM's reclaimed one) is inside the record;
+/// 4. `free ∩ deducted = ∅` — the Proof 2 invariant at the consumption
+///    point.
+///
+/// Runs before VM PMM construction, so the allocator's first allocation
+/// cannot precede the reconciliation (`adopt → reconcile → PMM
+/// enabled`).
+fn reconcile(params: &BootParams, deducted: &[HandoffMemRegion]) {
+    assert!(
+        !deducted.is_empty(),
+        "reconcile: empty LiveBootstrap record — kernel did not hand over the deduction list"
+    );
+    let covered = |addr: u64, len: u64| {
+        deducted
+            .iter()
+            .any(|r| addr >= r.base && addr + len <= r.base + r.size)
+    };
+
+    // (2) root page — A1 identity hand-off must be part of the record.
+    assert!(
+        covered(params.root_paddr.0, PAGE),
+        "reconcile: root page 0x{:x} not covered by the deduction record",
+        params.root_paddr.0
+    );
+
+    // (3) reserved module blobs. Kernel tasks carry no blob (len == 0);
+    // VM's own blob was reclaimed after the ELF copy
+    // (C: protect.c:450-451) and therefore stays out of the record.
+    for ip in params.boot_procs {
+        if ip.len == 0 || ip.proc_nr == VM_PROC_NR {
+            continue;
+        }
+        assert!(
+            covered(ip.start_addr, ip.len),
+            "reconcile: boot module [{:#x},{:#x}) (proc {}) not covered by the deduction record",
+            ip.start_addr,
+            ip.start_addr + ip.len,
+            ip.proc_nr
+        );
+    }
+
+    // (4) LiveBootstrap ∩ VM-free = ∅ (Proof 2 at the consumption point).
+    for fr in params.free_regions {
+        let fb = fr.base as u64;
+        let fe = fb + fr.size as u64;
+        for dr in deducted {
+            assert!(
+                fe <= dr.base || dr.base + dr.size <= fb,
+                "reconcile: free [{fb:#x},{fe:#x}) overlaps deducted [{:#x},{:#x})",
+                dr.base,
+                dr.base + dr.size
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +403,27 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn test_boot_params_validate_misaligned_root() {
+        // A1 handoff contract: root must be page-aligned.
+        let regions = [region(0, 4)];
+        let mut params = BootParams::simple(4, &regions);
+        params.root_paddr = PhysBytes(0x900_123);
+        params.validate();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_boot_params_validate_zero_root() {
+        // A1 handoff contract: root must be non-zero (no adopted root is
+        // ever at physical 0).
+        let regions = [region(0, 4)];
+        let mut params = BootParams::simple(4, &regions);
+        params.root_paddr = PhysBytes(0);
+        params.validate();
+    }
+
+    #[test]
     fn test_boot_params_extra_pages_modules() {
         // C: main.c:485-489 — each module (except the last entry) is
         // charged rounded up to a page.
@@ -276,6 +433,7 @@ mod tests {
             BootModule { start_addr: 0x4000, len: 999 },                // excluded (last)
         ];
         let params = BootParams {
+            root_paddr: PhysBytes(0x900_000),
             total_pages: 0,
             free_regions: &[],
             boot_procs: &[],
@@ -291,6 +449,7 @@ mod tests {
     fn test_boot_params_extra_pages_kernel() {
         // C: main.c:492-495 — static rounded up, dynamic added as-is.
         let params = BootParams {
+            root_paddr: PhysBytes(0x900_000),
             total_pages: 0,
             free_regions: &[],
             boot_procs: &[],
@@ -305,15 +464,86 @@ mod tests {
         assert_eq!(params.extra_pages(), 4);
     }
 
+    /// A valid record for reconcile tests: covers the simple() root page.
+    fn root_record(root: PhysBytes) -> Vec<HandoffMemRegion> {
+        vec![HandoffMemRegion {
+            base: root.0,
+            size: 0x1000,
+        }]
+    }
+
     #[test]
-    fn test_boot_params_placeholder_has_vm_slot() {
-        let params = BootParams::placeholder();
-        params.validate();
-        let vm = params
-            .boot_procs
-            .iter()
-            .find(|ip| ip.proc_nr == VM_PROC_NR)
-            .expect("placeholder must include VM boot image");
-        assert_eq!(vm.endpoint, Endpoint::VM);
+    fn test_reconcile_accepts_consistent_record() {
+        let regions = [region(0x100000, 4)];
+        let params = BootParams::simple(4, &regions);
+        reconcile(&params, &root_record(params.root_paddr));
+    }
+
+    #[test]
+    #[should_panic(expected = "empty LiveBootstrap record")]
+    fn test_reconcile_rejects_empty_record() {
+        let regions = [region(0x100000, 4)];
+        let params = BootParams::simple(4, &regions);
+        reconcile(&params, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "root page")]
+    fn test_reconcile_rejects_root_not_in_record() {
+        let regions = [region(0x100000, 4)];
+        let params = BootParams::simple(4, &regions);
+        // Record covers some other page, not the root.
+        let record = vec![HandoffMemRegion {
+            base: 0x500000,
+            size: 0x1000,
+        }];
+        reconcile(&params, &record);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps deducted")]
+    fn test_reconcile_rejects_free_deducted_overlap() {
+        let regions = [region(0x100000, 4)];
+        let params = BootParams::simple(4, &regions);
+        // Record covers the root AND claims part of the free region.
+        let record = vec![
+            HandoffMemRegion {
+                base: params.root_paddr.0,
+                size: 0x1000,
+            },
+            HandoffMemRegion {
+                base: 0x100000,
+                size: 0x2000,
+            },
+        ];
+        reconcile(&params, &record);
+    }
+
+    #[test]
+    #[should_panic(expected = "not covered by the deduction record")]
+    fn test_reconcile_rejects_module_not_in_record() {
+        // A boot image with a blob (RS) whose physical range the record
+        // does not cover.
+        let regions = [region(0x100000, 4)];
+        let params = BootParams::simple(4, &regions);
+        let mut record = root_record(params.root_paddr);
+        record.push(HandoffMemRegion {
+            base: 0x300000,
+            size: 0x1000,
+        });
+        // params.boot_procs is empty in simple(); exercise the module
+        // check through a boot-image slice on a locally built params.
+        let boot_procs = [BootImage {
+            proc_nr: 2, // RS_PROC_NR — not VM
+            proc_name: [0; 16],
+            endpoint: Endpoint(2),
+            start_addr: 0x700000,
+            len: 0x1000,
+        }];
+        let params = BootParams {
+            boot_procs: &boot_procs,
+            ..params
+        };
+        reconcile(&params, &record);
     }
 }

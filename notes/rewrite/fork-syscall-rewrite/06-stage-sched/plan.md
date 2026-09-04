@@ -270,19 +270,21 @@ PM do_fork → VFS 回复后 → sched_start_user() (pm/schedule.c:55)
 
 ### 6.1 文档改写状态跟踪
 
+> 2026-09-04：01~14 全篇技术博客风格重写（去文言文，语义/覆盖/D 决策/ARCH 全保留），回归 full-review CONVERGED（P0=0），报告见 `.review/codex/sched/full-rewrite-review/scan.md`；`cargo test -p minix-sched --lib` 59 passed，clippy 0 警告。
+
 | 编号 | 文档 | 状态 | 最后改写 | scan 路径 |
 |------|------|------|---------|-----------|
 | 00 | `00-sched-overview.md` | pending | — | `.review/codex/sched/00-overview/` |
-| 01 | `01-sched-init-main.md` | pending | — | `.review/codex/sched/01-init-main/` |
-| 02 | `02-sched-message-surface.md` | pending | — | `.review/codex/sched/02-message-surface/` |
-| 03 | `03-schedproc-struct.md` | pending | — | `.review/codex/sched/03-schedproc-struct/` |
-| 04 | `04-schedproc-table.md` | pending | — | `.review/codex/sched/04-schedproc-table/` |
-| 05 | `05-priority-timeslice-model.md` | pending | — | `.review/codex/sched/05-priority-model/` |
-| 06 | `06-start-scheduling.md` | pending | — | `.review/codex/sched/06-start-scheduling/` |
-| 07 | `07-stop-scheduling.md` | pending | — | `.review/codex/sched/07-stop-scheduling/` |
-| 08 | `08-noquantum-nice.md` | pending | — | `.review/codex/sched/08-noquantum-nice/` |
-| 09 | `09-schedule-process.md` | pending | — | `.review/codex/sched/09-schedule-process/` |
-| 10 | `10-pick-cpu-smp.md` | pending | — | `.review/codex/sched/10-pick-cpu-smp/` |
+| 01 | `01-sched-init-main.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/fork-syscall-rewrite/scans/01-sched-init-main/` |
+| 02 | `02-sched-message-surface.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/fork-syscall-rewrite/scans/02-sched-message-surface/` |
+| 03 | `03-schedproc-struct.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/fork-syscall-rewrite/scans/03-schedproc-struct/` |
+| 04 | `04-schedproc-table.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/fork-syscall-rewrite/scans/04-schedproc-table/` |
+| 05 | `05-priority-timeslice-model.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/05-priority-model/` |
+| 06 | `06-start-scheduling.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/06-start-scheduling/` |
+| 07 | `07-stop-scheduling.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/07-stop-scheduling/` |
+| 08 | `08-noquantum-nice.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/08-noquantum-nice/` |
+| 09 | `09-schedule-process.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/09-schedule-process/` |
+| 10 | `10-pick-cpu-smp.md` | **已改写**（2026-09-03） | 2026-09-03 | `.review/codex/sched/10-pick-cpu-smp/` |
 | 11 | `11-balance-queues.md` | pending | — | `.review/codex/sched/11-balance-queues/` |
 | 12 | `12-kernel-interface.md` | pending | — | `.review/codex/sched/12-kernel-interface/` |
 | 13 | `13-pm-interaction.md` | pending | — | `.review/codex/sched/13-pm-interaction/` |

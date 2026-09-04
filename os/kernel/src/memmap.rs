@@ -12,7 +12,10 @@
 //!   In 64-bit minix-rs, Direct Map can access all physical memory.
 
 /// Maximum number of memory map entries.
-/// C: MAXMEMMAP in minix/com.h
+/// C: MAXMEMMAP = 40 — minix/include/minix/param.h:13. Rust raises it to
+/// 128 deliberately: UEFI firmware memory maps routinely exceed 40 entries,
+/// and truncating the firmware map would silently drop RAM. Slot-scan
+/// semantics unchanged; capacity divergence from C is input-shaped.
 pub const MAXMEMMAP: usize = 128;
 
 /// Memory map entry representing a contiguous physical memory region.

@@ -45,12 +45,14 @@ pub use arch::frame;
 pub use arch::pte_walk_arch;
 pub use arch::protection;
 pub use arch::trap_entry;
+pub use arch::trap_return;
 pub use arch::exception;
 pub use arch::exception_dispatcher;
 pub use arch::clock;
 pub use arch::fpu_arch;
 pub use arch::signal_context;
 pub use arch::smp;
+pub use arch::cpu_identity;
 pub use arch::arch_init;
 pub use arch::timer_irq_gate;
 pub use arch::boot;
@@ -59,6 +61,7 @@ pub use arch::tlb_arch;
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
+pub use arch::dm_coverage::{DmCoverageArch, DmRange, establish_dm_range};
 pub use pte_walk_arch::PteWalkArch;
 #[cfg(feature = "mock")]
 pub use pte_walk_arch::MockPteWalk;
@@ -68,6 +71,9 @@ pub use protection::MockProtection;
 pub use trap_entry::TrapEntryArch;
 #[cfg(feature = "mock")]
 pub use trap_entry::MockTrapEntry;
+pub use trap_return::TrapReturnArch;
+#[cfg(feature = "mock")]
+pub use trap_return::MockTrapReturn;
 pub use exception::{ExceptionArch, FaultContext, RecoveryPoint};
 pub use exception_dispatcher::{
     ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal, KernTrapStyle,
@@ -132,6 +138,30 @@ pub type CurrentDirectMap = AArch64DirectMap;
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub type CurrentDirectMap = Riscv64DirectMap;
 
+// ── CurrentDmCoverage type alias ──
+//
+// Selects the architecture-specific `DmCoverageArch` implementor (DM
+// coverage establishment on the bootstrap root). Like `CurrentPteWalk`, the
+// implementor is a ZST: the operation is static boot-time table surgery, not
+// a per-handle page-table service.
+#[cfg(feature = "mock")]
+pub use arch::dm_coverage::mock::MockDmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub use x86_64::paging::X86_64DmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub use arm64::paging::AArch64DmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+pub use riscv64::paging::Riscv64DmCoverage;
+
+#[cfg(feature = "mock")]
+pub type CurrentDmCoverage = MockDmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub type CurrentDmCoverage = X86_64DmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub type CurrentDmCoverage = AArch64DmCoverage;
+#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+pub type CurrentDmCoverage = Riscv64DmCoverage;
+
 // ── CurrentPteWalk type aliases ──
 //
 // Selects the architecture-specific `PteWalkArch` implementor at compile
@@ -162,6 +192,35 @@ pub type CurrentProtection = crate::arm64::protection::AArch64Protection;
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub type CurrentProtection = crate::riscv64::protection::Riscv64Protection;
 
+// ── Bootstrap allocation bounds ──
+//
+// End of the boot identity-mapped window: `arch_boot_impl` maps PA
+// `[0, END)` identity on the bootstrap root (C: pg_identity() maps
+// 1024 × 4MiB = 4 GiB — pg_utils.c:162). Bootstrap allocations that must
+// stay identity-write-reachable (the page-table root, the boot bump
+// region) have to sit below this end.
+pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000;
+
+/// Highest PA *end* any bootstrap-tree allocation (page-table root, boot
+/// bump region) may use: `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)`.
+///
+/// Below this bound the bootstrap root is simultaneously
+/// - identity-write-reachable — the DM establishment write channel
+///   (`VA = PA`) works, and
+/// - representable in the VM DM window — VM self page-table walks can
+///   read/write root and PT pages through the window
+///
+/// (07-paging_init_design §6.1 资格过滤 ②). The boot-shims enforce this at
+/// allocation time; the kernel re-validates at DM establishment time.
+pub const fn boot_dm_admissible_end() -> u64 {
+    // `core::cmp::min` is not const-stable; compare explicitly.
+    if BOOT_IDENTITY_MAP_END < CurrentDirectMap::VM_DIRECT_MAP_SIZE {
+        BOOT_IDENTITY_MAP_END
+    } else {
+        CurrentDirectMap::VM_DIRECT_MAP_SIZE
+    }
+}
+
 // ── CurrentTrapEntry type aliases ──
 //
 // Mock branch prevents tests on x86_64 host from touching real IDT
@@ -184,6 +243,21 @@ pub type CurrentClockArch = crate::x86_64::clock::X86_64ClockArch;
 pub type CurrentClockArch = crate::arm64::clock::AArch64ClockArch;
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub type CurrentClockArch = crate::riscv64::clock::Riscv64ClockArch;
+
+// ── CurrentCpuIdentity type aliases ──
+//
+// Selects the per-arch CPU identity probe at compile time (same mock-first
+// pattern as CurrentPaging/CurrentClockArch: tests run on the x86_64 host
+// and must not execute `cpuid`/`mrs`/`ecall`).
+#[cfg(feature = "mock")]
+pub type CurrentCpuIdentity = arch::cpu_identity::mock::MockCpuIdentity;
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub type CurrentCpuIdentity = crate::x86_64::cpu_identity::X86_64CpuIdentity;
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub type CurrentCpuIdentity = crate::arm64::cpu_identity::AArch64CpuIdentity;
+#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+pub type CurrentCpuIdentity = crate::riscv64::cpu_identity::Riscv64CpuIdentity;
+
 
 // ── CurrentFpuArch type aliases ──
 //
@@ -318,6 +392,21 @@ pub type CurrentTlbArch = crate::x86_64::tlb::X86_64TlbArch;
 pub type CurrentTlbArch = crate::arm64::tlb::AArch64TlbArch;
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub type CurrentTlbArch = crate::riscv64::tlb::Riscv64TlbArch;
+
+// ── CurrentTrapReturnArch type alias ──
+//
+// Selects the architecture-specific `TrapReturnArch` implementor (the
+// return-path twin of `CurrentTrapEntry`). Mock build uses `MockTrapReturn`
+// (panics on dispatch — see `arch/trap_return.rs`); tests exercise the
+// scheduling stages, never the real mode switch.
+#[cfg(feature = "mock")]
+pub type CurrentTrapReturnArch = crate::arch::trap_return::MockTrapReturn;
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub type CurrentTrapReturnArch = crate::x86_64::trap_return::X86_64TrapReturn;
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub type CurrentTrapReturnArch = crate::arm64::trap_return::AArch64TrapReturn;
+#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+pub type CurrentTrapReturnArch = crate::riscv64::trap_return::Riscv64TrapReturn;
 
 // ── CurrentStacktraceArch type aliases ──
 //

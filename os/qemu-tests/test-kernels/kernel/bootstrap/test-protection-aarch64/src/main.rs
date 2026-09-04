@@ -40,6 +40,17 @@ core::arch::global_asm!(
     ".global exc_trap_flag",
     "exc_trap_flag:",
     "  .quad 0",
+    // Handler scratch: the sync handler must not clobber callee-saved
+    // registers (x19-x28) — trap delivery is asynchronous, and LLVM is free
+    // to keep values in callee-saved registers across an inline-asm block
+    // (it only assumes caller-saved registers die). x17 (caller-saved
+    // class) is the single scratch register allowed here.
+    ".balign 16",
+    "exc_scratch:",
+    "  .quad 0",
+    "  .quad 0",
+    "  .quad 0",
+    "  .quad 0",
 
     // Exception vector table with recoverable sync exception handler.
     // Entry 4 (offset 0x200): Current EL with SPx, synchronous
@@ -49,10 +60,26 @@ core::arch::global_asm!(
     ".global exc_vector_table",
     "exc_vector_table:",
 
-    // Entry 0: Current EL SP0, sync — infinite loop
+    // Entries 0-3: Current EL SP0 — recoverable, same handler as Entry 4.
+    // The SP_EL1 probe runs with SPSel=0 (SP0 active), so a sync trap in
+    // that window lands HERE (vbar+0x000), not in Entry 4 — a `b .` here
+    // would hang the test inside the probe.
     ".balign 128",
-    "  b .",
-    // Entry 1: Current EL SP0, IRQ
+    "  adr x17, exc_scratch",
+    "  stp x20, x21, [x17]",
+    "  stp x22, x23, [x17, #16]",
+    "  mrs x20, ESR_EL1",
+    "  mrs x21, ELR_EL1",
+    "  add x21, x21, #4",
+    "  msr ELR_EL1, x21",
+    "  mov x22, #1",
+    "  adr x23, exc_trap_flag",
+    "  str x22, [x23]",
+    "  ldp x22, x23, [x17, #16]",
+    "  ldp x20, x21, [x17]",
+    "  eret",
+    // Entry 1: Current EL SP0, IRQ — IRQ needs EOI; spin is the honest
+    // choice (a re-entering IRQ without ack would loop anyway).
     ".balign 128",
     "  b .",
     // Entry 2: Current EL SP0, FIQ
@@ -64,6 +91,9 @@ core::arch::global_asm!(
 
     // Entry 4: Current EL SPx, synchronous — RECOVERABLE handler
     ".balign 128",
+    "  adr x17, exc_scratch",   // x17: scratch base (caller-saved class)
+    "  stp x20, x21, [x17]",    // save callee-saved regs we use
+    "  stp x22, x23, [x17, #16]",
     "  mrs x20, ESR_EL1",       // read exception syndrome
     "  mrs x21, ELR_EL1",       // read faulting instruction address
     "  add x21, x21, #4",       // skip the faulting instruction
@@ -71,6 +101,8 @@ core::arch::global_asm!(
     "  mov x22, #1",
     "  adr x23, exc_trap_flag",
     "  str x22, [x23]",         // set trap flag = 1
+    "  ldp x22, x23, [x17, #16]", // restore callee-saved regs
+    "  ldp x20, x21, [x17]",
     "  eret",                    // return to EL1
 
     // Entry 5: Current EL SPx, IRQ
@@ -90,30 +122,31 @@ core::arch::global_asm!(
     ".endr",
 );
 
-// Helper function to safely test SP_EL1 read/write.
-// x0 = test value to write to SP_EL1, returns readback in x0.
+// Helper function to safely probe SP_EL1 accessibility.
+// x0 = value read from SP_EL1.
 // This must be in asm because we need to switch SPSel without the
 // compiler inserting stack accesses in between.
-// IMPORTANT: This function does NOT use the stack at all.
+// IMPORTANT: This function does NOT use the stack at all, and it is
+// READ-ONLY on SP_EL1: a trap inside the SPSel=0 window is recovered by
+// skipping the faulting instruction (+4), and a skipped write would leave
+// SP_EL1 clobbered — after `msr SPSel, #1` the active stack register would
+// be garbage. A skipped *read* has no side effect, so the probe is
+// state-safe under any single trap.
 core::arch::global_asm!(
     ".section .text",
     ".balign 16",
     ".global test_sp_el1_access",
     "test_sp_el1_access:",
-    // Save return address (x30) in a callee-saved register
+    // Save return address (x30) in a caller-saved register
     "mov x9, x30",
     // Save current SP (which is SP_EL1 since SPSel=1) to SP_EL0
     "mov x10, sp",
     "msr SP_EL0, x10",
-    // Switch to SP_EL0 as active SP
+    // Switch to SP_EL0 as active SP (and as the trap stack for this window)
     "msr SPSel, #0",
     "isb",
-    // Now SP = SP_EL0 (has the old SP_EL1 value), SP_EL1 is free to modify
-    // Write x0 to SP_EL1, then read back
-    "msr SP_EL1, x0",
+    // Read SP_EL1 (read-only probe — see the safety note above)
     "mrs x0, SP_EL1",
-    // Restore SP_EL1 to original value (still in x10)
-    "msr SP_EL1, x10",
     // Switch back to SP_EL1
     "msr SPSel, #1",
     "isb",
@@ -121,6 +154,14 @@ core::arch::global_asm!(
     "mov x30, x9",
     "ret",
 );
+
+// UEFI test kernels allocate only while boot services are alive (build_memmap
+// etc.); boot-shim's pool allocator covers exactly that window. See
+// uefi_helpers::UefiPoolAllocator for why the registration lives here and not
+// in boot-shim itself.
+#[global_allocator]
+static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
+    boot_shim::uefi_helpers::UefiPoolAllocator;
 
 #[entry]
 fn main() -> Status {
@@ -136,12 +177,24 @@ fn main() -> Status {
     early_console::write_hex(el);
     early_console::write_str("\n");
 
-    // Set VBAR_EL1 to our exception vector table first, so we can catch traps
+    // Set VBAR_EL1 to our exception vector table first, so we can catch traps.
+    // The firmware's vector table is saved and restored after the probe:
+    // UEFI boot services run at EL1 with their own trap expectations, and
+    // our minimal table (IRQ entries spin) would break them.
     unsafe extern "C" {
         static exc_vector_table: u8;
         static mut exc_trap_flag: u64;
     }
+    let saved_vbar: u64;
+    let saved_daif: u64;
     unsafe {
+        asm!("mrs {}, VBAR_EL1", out(reg) saved_vbar, options(nomem, nostack, preserves_flags));
+        asm!("mrs {}, DAIF", out(reg) saved_daif, options(nomem, nostack, preserves_flags));
+        // Mask DAIF for the probe window: UEFI boot services run with IRQs
+        // enabled, and a timer IRQ landing while OUR table is installed
+        // would enter the spinning IRQ entry and hang the test
+        // non-deterministically. Sync traps stay recoverable (entries 0/4).
+        asm!("msr DAIFSet, #0xF", options(nomem, nostack, preserves_flags));
         asm!("msr VBAR_EL1, {}", in(reg) &exc_vector_table as *const u8 as u64, options(nomem, nostack, preserves_flags));
         asm!("isb");
     }
@@ -221,40 +274,50 @@ fn main() -> Status {
     }
     early_console::write_str("  SPSel switch OK\n");
 
-    // Step 2: Test SP_EL1 access step by step
-    // First, just try msr SP_EL1 while SPSel=1 (current SP = SP_EL1)
-    // This should NOT trap (TSP=0), but it WILL change the current SP!
-    early_console::write_str("  test msr SP_EL1 while SPSel=1 (no switch)...\n");
+    // Step 2: SP_EL1 access via the pre-built safe helper (`test_sp_el1_access`).
+    // The helper switches to SP_EL0 (SPSel=0) *before* touching SP_EL1, so no
+    // trap or IRQ window ever runs on a clobbered stack register — with our
+    // minimal vector table installed (entry 5 = IRQ spins forever), an IRQ
+    // landing in such a window would hang the kernel non-deterministically.
+    // The helper does not use the stack at all (asm, callee-saved regs only).
+    early_console::write_str("  test SP_EL1 access (SPSel=0 helper)...\n");
+    let sp_readback: u64;
     unsafe {
         exc_trap_flag = 0;
-        // Save current SP so we can restore it
-        let cur_sp: u64;
-        asm!(
-            "mov {sp}, sp",
-            sp = out(reg) cur_sp,
-            options(nomem, nostack, preserves_flags),
-        );
-        // Write a different value to SP_EL1 — this changes the current SP!
-        // We need to restore it immediately.
-        asm!(
-            "msr SP_EL1, {newval}",
-            "mov sp, {oldsp}",
-            newval = in(reg) 0xFFFF_8000_0000_0000u64,
-            oldsp = in(reg) cur_sp,
-            options(nostack, preserves_flags),
+        core::arch::asm!(
+            "bl test_sp_el1_access",
+            lateout("x0") sp_readback,
+            out("x9") _,
+            out("x10") _,
+            out("x30") _,
         );
     }
     let sp_trapped = unsafe { exc_trap_flag };
-    early_console::write_str("  trap_flag = ");
+    early_console::write_str("  readback = 0x");
+    early_console::write_hex(sp_readback);
+    early_console::write_str(" trap_flag = ");
     early_console::write_hex(sp_trapped);
     early_console::write_str("\n");
 
     early_console::write_str("  EL probe done\n");
 
+    // Restore the firmware vector table and the interrupt mask state before
+    // any UEFI boot-services call: the probe is over and our minimal table
+    // (recoverable sync, spinning IRQ) must not observe firmware traps
+    // anymore.
+    unsafe {
+        // Order matters: VBAR first, DAIF second. Unmasking IRQs while our
+        // minimal table is still installed would let a timer IRQ enter the
+        // spinning IRQ entry (vbar+0x280) and hang the test.
+        asm!("msr VBAR_EL1, {}", in(reg) saved_vbar, options(nomem, nostack, preserves_flags));
+        asm!("msr DAIF, {}", in(reg) saved_daif, options(nomem, nostack, preserves_flags));
+        asm!("isb");
+    }
+
     // 1. UEFI boot preparation
     let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
-    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(8);
+    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
     let kernel_info = KernelInfo {
         memmap,

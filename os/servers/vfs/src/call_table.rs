@@ -361,14 +361,8 @@ mod tests {
 
     #[test]
     fn test_vfs_call_num_from_raw() {
-        assert_eq!(
-            VfsCallNum::from_raw(VFS_BASE + 3),
-            Some(VfsCallNum::Open)
-        );
-        assert_eq!(
-            VfsCallNum::from_raw(VFS_BASE + 5),
-            Some(VfsCallNum::Close)
-        );
+        assert_eq!(VfsCallNum::from_raw(VFS_BASE + 3), Some(VfsCallNum::Open));
+        assert_eq!(VfsCallNum::from_raw(VFS_BASE + 5), Some(VfsCallNum::Close));
         assert_eq!(VfsCallNum::from_raw(0), None);
         assert_eq!(VfsCallNum::from_raw(VFS_BASE + 200), None);
     }

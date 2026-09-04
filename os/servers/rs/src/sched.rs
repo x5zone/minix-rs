@@ -140,6 +140,46 @@ pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'
     SchedAction::Start(cfg)
 }
 
+/// Where a `sched_stop` result lands.
+///
+/// The same nonzero means different things by site: during cleanup there
+/// is no slot state left to protect (teardown is best-effort), while
+/// during edit the slot is still untouched (abort keeps it so).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopSite {
+    /// `cleanup_service`: teardown. C: manager.c:461-463.
+    CleanupService,
+    /// `do_edit`: pre-mutation. C: request.c:342-345.
+    EditSlot,
+}
+
+/// What the caller does with a `sched_stop` result.
+///
+/// Warnings (`printf`) stay shell-side (T5): the pure layer only names
+/// the road — continue or abort with the code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// Carry on: success everywhere, failure at cleanup.
+    Continue,
+    /// Abort the edit, carrying the code. C: `return r` — request.c:345.
+    Abort(i32),
+}
+
+/// Route a `sched_stop` result by site.
+///
+/// Zero (OK) continues on both roads — success needs no decision.
+/// Nonzero continues at cleanup (warn and go on: nothing to go back to)
+/// but aborts an edit (the slot is untouched, so stopping keeps it so).
+pub const fn on_stop_result(site: StopSite, result: i32) -> StopOutcome {
+    if result == 0 {
+        return StopOutcome::Continue;
+    }
+    match site {
+        StopSite::CleanupService => StopOutcome::Continue,
+        StopSite::EditSlot => StopOutcome::Abort(result),
+    }
+}
+
 /// Commit effect of [`set_sig_mgrs`]: `SYS_PRIV_UPDATE_SYS`.
 ///
 /// The shell executes it as
@@ -267,5 +307,34 @@ mod tests {
         // sanity: Privilege + PrivFlags wiring compiles together.
         let p = Privilege::boot_priv(PrivFlags::SYS_PROC, 0);
         assert!(p.is_sys_proc());
+    }
+
+    #[test]
+    fn test_stop_ok_continues() {
+        // Zero (OK) continues on both roads — success needs no decision
+        // (manager.c:461 `s == OK` falls through; request.c:342 likewise).
+        assert_eq!(
+            on_stop_result(StopSite::CleanupService, 0),
+            StopOutcome::Continue
+        );
+        assert_eq!(on_stop_result(StopSite::EditSlot, 0), StopOutcome::Continue);
+    }
+
+    #[test]
+    fn test_cleanup_warns_on() {
+        // Cleanup failure warns and goes on: teardown has no slot state
+        // left to protect (manager.c:461-463).
+        assert_eq!(
+            on_stop_result(StopSite::CleanupService, 1),
+            StopOutcome::Continue
+        );
+    }
+
+    #[test]
+    fn test_edit_aborts_on() {
+        // Edit failure aborts with the code: the slot is untouched, so
+        // stopping keeps it so (request.c:342-345). The code rides
+        // through untouched — any nonzero, here 5.
+        assert_eq!(on_stop_result(StopSite::EditSlot, 5), StopOutcome::Abort(5));
     }
 }

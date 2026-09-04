@@ -120,38 +120,197 @@ pub struct VfsUCred {
 /// Typed `REQ_*` request — 33 live variants (no `GetNode`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsReq {
-    PutNode { fs_e: Endpoint, ino: u64, count: i32 },
-    SLink { fs_e: Endpoint, dir_ino: u64, lastc: String, target: String, uid: u32, gid: u32 },
-    FTrunc { fs_e: Endpoint, ino: u64, start: i64, end: i64 },
-    Chown { fs_e: Endpoint, ino: u64, uid: u32, gid: u32 },
-    Chmod { fs_e: Endpoint, ino: u64, mode: u32 },
-    InhibRead { fs_e: Endpoint, ino: u64 },
-    Stat { fs_e: Endpoint, ino: u64, grant: Option<u64> },
-    Utime { fs_e: Endpoint, ino: u64, actime: i64, modtime: i64 },
-    StatVfs { fs_e: Endpoint, grant: Option<u64> },
-    BRead { fs_e: Endpoint, dev: u64, pos: i64, nbytes: usize, user: Endpoint },
-    BWrite { fs_e: Endpoint, dev: u64, pos: i64, nbytes: usize, user: Endpoint },
-    Unlink { fs_e: Endpoint, dir_ino: u64, lastc: String },
-    Rmdir { fs_e: Endpoint, dir_ino: u64, lastc: String },
-    Unmount { fs_e: Endpoint },
-    Sync { fs_e: Endpoint },
-    NewDriver { fs_e: Endpoint, dev: u64, label: String },
-    Flush { fs_e: Endpoint, dev: u64 },
-    Read { fs_e: Endpoint, ino: u64, pos: i64, nbytes: usize, user: Endpoint },
-    Write { fs_e: Endpoint, ino: u64, pos: i64, nbytes: usize, user: Endpoint },
-    Mknod { fs_e: Endpoint, dir_ino: u64, lastc: String, mode: u32, dev: u64, uid: u32, gid: u32 },
-    Mkdir { fs_e: Endpoint, dir_ino: u64, lastc: String, mode: u32, uid: u32, gid: u32 },
-    Create { fs_e: Endpoint, dir_ino: u64, lastc: String, mode: u32, uid: u32, gid: u32 },
-    Link { fs_e: Endpoint, dir_ino: u64, lastc: String, linked: u64 },
-    Rename { fs_e: Endpoint, old_dir: u64, old_name: String, new_dir: u64, new_name: String },
-    Lookup { fs_e: Endpoint, dir_ino: u64, root_ino: u64, path: String, cred: Option<VfsUCred>, flags: u32 },
-    Mountpoint { fs_e: Endpoint, ino: u64 },
-    ReadSuper { fs_e: Endpoint, label: String, dev: u64, readonly: bool, isroot: bool },
-    NewNode { fs_e: Endpoint, mode: u32, dev: u64, uid: u32, gid: u32 },
-    RdLink { fs_e: Endpoint, ino: u64, size: usize, direct: bool },
-    GetDents { fs_e: Endpoint, ino: u64, pos: i64, size: usize, direct: bool },
-    Peek { fs_e: Endpoint, ino: u64, pos: i64, nbytes: usize },
-    BPeek { fs_e: Endpoint, dev: u64, pos: i64, nbytes: usize },
+    PutNode {
+        fs_e: Endpoint,
+        ino: u64,
+        count: i32,
+    },
+    SLink {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+        target: String,
+        uid: u32,
+        gid: u32,
+    },
+    FTrunc {
+        fs_e: Endpoint,
+        ino: u64,
+        start: i64,
+        end: i64,
+    },
+    Chown {
+        fs_e: Endpoint,
+        ino: u64,
+        uid: u32,
+        gid: u32,
+    },
+    Chmod {
+        fs_e: Endpoint,
+        ino: u64,
+        mode: u32,
+    },
+    InhibRead {
+        fs_e: Endpoint,
+        ino: u64,
+    },
+    Stat {
+        fs_e: Endpoint,
+        ino: u64,
+        grant: Option<u64>,
+    },
+    Utime {
+        fs_e: Endpoint,
+        ino: u64,
+        actime: i64,
+        modtime: i64,
+    },
+    StatVfs {
+        fs_e: Endpoint,
+        grant: Option<u64>,
+    },
+    BRead {
+        fs_e: Endpoint,
+        dev: u64,
+        pos: i64,
+        nbytes: usize,
+        user: Endpoint,
+    },
+    BWrite {
+        fs_e: Endpoint,
+        dev: u64,
+        pos: i64,
+        nbytes: usize,
+        user: Endpoint,
+    },
+    Unlink {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+    },
+    Rmdir {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+    },
+    Unmount {
+        fs_e: Endpoint,
+    },
+    Sync {
+        fs_e: Endpoint,
+    },
+    NewDriver {
+        fs_e: Endpoint,
+        dev: u64,
+        label: String,
+    },
+    Flush {
+        fs_e: Endpoint,
+        dev: u64,
+    },
+    Read {
+        fs_e: Endpoint,
+        ino: u64,
+        pos: i64,
+        nbytes: usize,
+        user: Endpoint,
+    },
+    Write {
+        fs_e: Endpoint,
+        ino: u64,
+        pos: i64,
+        nbytes: usize,
+        user: Endpoint,
+    },
+    Mknod {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+        mode: u32,
+        dev: u64,
+        uid: u32,
+        gid: u32,
+    },
+    Mkdir {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    },
+    Create {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    },
+    Link {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        lastc: String,
+        linked: u64,
+    },
+    Rename {
+        fs_e: Endpoint,
+        old_dir: u64,
+        old_name: String,
+        new_dir: u64,
+        new_name: String,
+    },
+    Lookup {
+        fs_e: Endpoint,
+        dir_ino: u64,
+        root_ino: u64,
+        path: String,
+        cred: Option<VfsUCred>,
+        flags: u32,
+    },
+    Mountpoint {
+        fs_e: Endpoint,
+        ino: u64,
+    },
+    ReadSuper {
+        fs_e: Endpoint,
+        label: String,
+        dev: u64,
+        readonly: bool,
+        isroot: bool,
+    },
+    NewNode {
+        fs_e: Endpoint,
+        mode: u32,
+        dev: u64,
+        uid: u32,
+        gid: u32,
+    },
+    RdLink {
+        fs_e: Endpoint,
+        ino: u64,
+        size: usize,
+        direct: bool,
+    },
+    GetDents {
+        fs_e: Endpoint,
+        ino: u64,
+        pos: i64,
+        size: usize,
+        direct: bool,
+    },
+    Peek {
+        fs_e: Endpoint,
+        ino: u64,
+        pos: i64,
+        nbytes: usize,
+    },
+    BPeek {
+        fs_e: Endpoint,
+        dev: u64,
+        pos: i64,
+        nbytes: usize,
+    },
 }
 
 impl FsReq {
@@ -205,11 +364,43 @@ impl FsReq {
     pub fn grants(&self) -> usize {
         match self {
             Self::Lookup { cred, .. } => {
-                if cred.is_some() { 2 } else { 1 }
+                if cred.is_some() {
+                    2
+                } else {
+                    1
+                }
             }
             Self::Rename { .. } => 2,
             Self::SLink { .. } => 2,
-            Self::BPeek { .. } | Self::Peek { .. } | Self::Flush { .. } | Self::Sync { .. } | Self::Unmount { .. } | Self::PutNode { .. } | Self::InhibRead { .. } | Self::FTrunc { .. } | Self::Chmod { .. } | Self::Chown { .. } | Self::Stat { .. } | Self::Utime { .. } | Self::StatVfs { .. } | Self::BRead { .. } | Self::BWrite { .. } | Self::Unlink { .. } | Self::Rmdir { .. } | Self::NewDriver { .. } | Self::Read { .. } | Self::Write { .. } | Self::Mknod { .. } | Self::Mkdir { .. } | Self::Create { .. } | Self::Link { .. } | Self::Mountpoint { .. } | Self::ReadSuper { .. } | Self::NewNode { .. } | Self::RdLink { .. } | Self::GetDents { .. } => 1,
+            Self::BPeek { .. }
+            | Self::Peek { .. }
+            | Self::Flush { .. }
+            | Self::Sync { .. }
+            | Self::Unmount { .. }
+            | Self::PutNode { .. }
+            | Self::InhibRead { .. }
+            | Self::FTrunc { .. }
+            | Self::Chmod { .. }
+            | Self::Chown { .. }
+            | Self::Stat { .. }
+            | Self::Utime { .. }
+            | Self::StatVfs { .. }
+            | Self::BRead { .. }
+            | Self::BWrite { .. }
+            | Self::Unlink { .. }
+            | Self::Rmdir { .. }
+            | Self::NewDriver { .. }
+            | Self::Read { .. }
+            | Self::Write { .. }
+            | Self::Mknod { .. }
+            | Self::Mkdir { .. }
+            | Self::Create { .. }
+            | Self::Link { .. }
+            | Self::Mountpoint { .. }
+            | Self::ReadSuper { .. }
+            | Self::NewNode { .. }
+            | Self::RdLink { .. }
+            | Self::GetDents { .. } => 1,
         }
     }
 
@@ -288,7 +479,9 @@ impl FsClient for BlockingFsClient {
         match req {
             FsReq::BRead { .. } | FsReq::BWrite { .. } => Ok(FsResp::Size(512)),
             FsReq::Lookup { .. } => Ok(FsResp::Lookup(LookupRes::default())),
-            FsReq::Create { .. } | FsReq::NewNode { .. } => Ok(FsResp::Node(NodeDetails::default())),
+            FsReq::Create { .. } | FsReq::NewNode { .. } => {
+                Ok(FsResp::Node(NodeDetails::default()))
+            }
             _ => Ok(FsResp::Ok),
         }
     }
@@ -305,7 +498,10 @@ impl FsClient for MockFsClient {
     fn send(&mut self, req: FsReq, scope: GrantScope) -> Result<FsResp, FsError> {
         self.sent.push((req.clone(), scope));
         if self.inject_restart && scope == GrantScope::Try {
-            if matches!(req, FsReq::BRead { .. } | FsReq::Read { .. } | FsReq::GetDents { .. }) {
+            if matches!(
+                req,
+                FsReq::BRead { .. } | FsReq::Read { .. } | FsReq::GetDents { .. }
+            ) {
                 return Err(FsError::GrantFaulted);
             }
         }
@@ -327,13 +523,17 @@ pub trait GrantStrategy {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DirectGrant;
 impl GrantStrategy for DirectGrant {
-    fn direct(&self) -> bool { true }
+    fn direct(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MagicGrant;
 impl GrantStrategy for MagicGrant {
-    fn direct(&self) -> bool { false }
+    fn direct(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -413,7 +613,10 @@ mod tests {
 
     #[test]
     fn test_breadwrite_retry() {
-        let mut mock = MockFsClient { inject_restart: true, ..Default::default() };
+        let mut mock = MockFsClient {
+            inject_restart: true,
+            ..Default::default()
+        };
         let req = FsReq::BRead {
             fs_e: Endpoint::MFS,
             dev: 1,
@@ -436,7 +639,12 @@ mod tests {
             dir_ino: 1,
             root_ino: 1,
             path: "/a".to_string(),
-            cred: Some(VfsUCred { uid: 1000, gid: 1000, ngroups: 2, sgroups: [1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }),
+            cred: Some(VfsUCred {
+                uid: 1000,
+                gid: 1000,
+                ngroups: 2,
+                sgroups: [1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            }),
             flags: 0,
         };
         let without = FsReq::Lookup {
@@ -460,8 +668,15 @@ mod tests {
             size: 1024,
             direct: false,
         };
-        assert_eq!(req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1).unwrap_err(), FsError::InvalidOff);
-        assert!(req.check_64bit(FsFlags::IS64BIT, i32::MAX as i64 + 1).is_ok());
+        assert_eq!(
+            req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1)
+                .unwrap_err(),
+            FsError::InvalidOff
+        );
+        assert!(
+            req.check_64bit(FsFlags::IS64BIT, i32::MAX as i64 + 1)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -473,7 +688,11 @@ mod tests {
             nbytes: 100,
             user: Endpoint::INIT,
         };
-        assert_eq!(req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1).unwrap_err(), FsError::InvalidOff);
+        assert_eq!(
+            req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1)
+                .unwrap_err(),
+            FsError::InvalidOff
+        );
     }
 
     #[test]
@@ -502,7 +721,10 @@ mod tests {
 
     #[test]
     fn test_flush_no_resp() {
-        let req = FsReq::Flush { fs_e: Endpoint::MFS, dev: 1 };
+        let req = FsReq::Flush {
+            fs_e: Endpoint::MFS,
+            dev: 1,
+        };
         assert_eq!(req.m_type(), REQ_FLUSH);
         let mut c = BlockingFsClient::default();
         let r = c.send(req, GrantScope::Try);
@@ -517,7 +739,11 @@ mod tests {
             start: i32::MAX as i64 + 1,
             end: 100,
         };
-        assert_eq!(req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1).unwrap_err(), FsError::InvalidOff);
+        assert_eq!(
+            req.check_64bit(FsFlags::empty(), i32::MAX as i64 + 1)
+                .unwrap_err(),
+            FsError::InvalidOff
+        );
     }
 
     #[test]
@@ -552,7 +778,11 @@ mod tests {
 
     #[test]
     fn test_putnode_count() {
-        let req = FsReq::PutNode { fs_e: Endpoint::MFS, ino: 42, count: 2 };
+        let req = FsReq::PutNode {
+            fs_e: Endpoint::MFS,
+            ino: 42,
+            count: 2,
+        };
         assert_eq!(req.m_type(), REQ_PUTNODE);
         let mut c = BlockingFsClient::default();
         assert!(c.send(req, GrantScope::Try).is_ok());
@@ -560,7 +790,12 @@ mod tests {
 
     #[test]
     fn test_peek_no_grant() {
-        let req = FsReq::Peek { fs_e: Endpoint::MFS, ino: 1, pos: 0, nbytes: 100 };
+        let req = FsReq::Peek {
+            fs_e: Endpoint::MFS,
+            ino: 1,
+            pos: 0,
+            nbytes: 100,
+        };
         assert_eq!(req.m_type(), REQ_PEEK);
         assert_eq!(req.grants(), 1);
     }
@@ -569,7 +804,13 @@ mod tests {
     fn test_fs_req_two_impls() {
         let mut blocking = BlockingFsClient::default();
         let mut mock = MockFsClient::default();
-        let req = FsReq::BRead { fs_e: Endpoint::MFS, dev: 1, pos: 0, nbytes: 512, user: Endpoint::INIT };
+        let req = FsReq::BRead {
+            fs_e: Endpoint::MFS,
+            dev: 1,
+            pos: 0,
+            nbytes: 512,
+            user: Endpoint::INIT,
+        };
         let r1 = blocking.send(req.clone(), GrantScope::Try);
         let r2 = mock.send(req.clone(), GrantScope::Try);
         assert!(r1.is_ok());
@@ -577,7 +818,10 @@ mod tests {
         assert_eq!(blocking.sent.len(), 1);
         assert_eq!(mock.sent.len(), 1);
         // Polymorphic via trait object
-        let mut clients: Vec<Box<dyn FsClient>> = vec![Box::new(BlockingFsClient::default()), Box::new(MockFsClient::default())];
+        let mut clients: Vec<Box<dyn FsClient>> = vec![
+            Box::new(BlockingFsClient::default()),
+            Box::new(MockFsClient::default()),
+        ];
         assert!(clients[0].send(req.clone(), GrantScope::Try).is_ok());
         assert!(clients[1].send(req, GrantScope::Try).is_ok());
     }
@@ -591,7 +835,8 @@ mod tests {
         let d = DirectGrant;
         let m = MagicGrant;
         assert_ne!(d.direct(), m.direct());
-        let strategies: Vec<Box<dyn GrantStrategy>> = vec![Box::new(DirectGrant), Box::new(MagicGrant)];
+        let strategies: Vec<Box<dyn GrantStrategy>> =
+            vec![Box::new(DirectGrant), Box::new(MagicGrant)];
         assert!(strategies[0].direct());
         assert!(!strategies[1].direct());
     }

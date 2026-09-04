@@ -400,11 +400,7 @@ impl WorkerPool {
     pub fn drain_pending<S: SlotSelector>(&mut self, selector: &S) -> usize {
         let mut bound = 0;
         while self.may_do_pending() {
-            let Some(job_idx) = self
-                .pending_q
-                .iter()
-                .position(|_| true)
-            else {
+            let Some(job_idx) = self.pending_q.iter().position(|_| true) else {
                 break;
             };
             let Some(slot_idx) = selector.select_idle(self) else {
@@ -527,18 +523,16 @@ impl WorkerPool {
     ) -> ActivateOutcome {
         let needed: usize = if use_spare { 1 } else { 2 };
         if needed <= self.available() && (self.allow || use_spare) {
-            let idx = self.assign(fslot, func, msg, selector).expect("available assured");
+            let idx = self
+                .assign(fslot, func, msg, selector)
+                .expect("available assured");
             // Clear a stale PENDING if we had queued earlier (defensive).
             if fproc.flags.contains(FpFlags::PENDING) {
                 fproc.flags.remove(FpFlags::PENDING);
                 assert!(self.pending > 0);
                 self.pending -= 1;
                 // Also drop from pending_q if it was queued.
-                if let Some(pos) = self
-                    .pending_q
-                    .iter()
-                    .position(|(s, _, _)| *s == fslot)
-                {
+                if let Some(pos) = self.pending_q.iter().position(|(s, _, _)| *s == fslot) {
                     self.pending_q.remove(pos);
                 }
             }
@@ -638,12 +632,11 @@ impl WorkerPool {
     pub fn yield_now(&mut self) {}
 
     /// `worker_suspend:474` — save `err` and return an owning token.
-    pub fn suspend(
-        &mut self,
-        slot_idx: usize,
-        err: i32,
-    ) -> Result<SuspendToken, WorkerError> {
-        let slot = self.slots.get_mut(slot_idx).ok_or(WorkerError::NoSuchSlot)?;
+    pub fn suspend(&mut self, slot_idx: usize, err: i32) -> Result<SuspendToken, WorkerError> {
+        let slot = self
+            .slots
+            .get_mut(slot_idx)
+            .ok_or(WorkerError::NoSuchSlot)?;
         if slot.state != WorkerState::Busy {
             return Err(WorkerError::NotSuspended);
         }
@@ -674,7 +667,10 @@ impl WorkerPool {
 
     /// `worker_signal:526` — wake a `Suspended` / `WaitingForFs` slot.
     pub fn signal(&mut self, slot_idx: usize) -> Result<(), WorkerError> {
-        let slot = self.slots.get_mut(slot_idx).ok_or(WorkerError::NoSuchSlot)?;
+        let slot = self
+            .slots
+            .get_mut(slot_idx)
+            .ok_or(WorkerError::NoSuchSlot)?;
         match slot.state {
             WorkerState::Suspended => {
                 slot.state = WorkerState::Busy;
@@ -735,8 +731,7 @@ impl WorkerPool {
         }
         let mut stopped = 0;
         for idx in 0..self.slots.len() {
-            let should = self.slots[idx].task == Some(ep)
-                && self.slots[idx].fp_slot.is_some();
+            let should = self.slots[idx].task == Some(ep) && self.slots[idx].fp_slot.is_some();
             if should {
                 self.stop(idx);
                 stopped += 1;
@@ -759,11 +754,7 @@ impl WorkerPool {
     ///
     /// Moves the binding from `from` to `to`, asserts `to` is idle, and
     /// preserves the `WorkerState`.  Only `pm_reboot` uses this.
-    pub fn steal_context(
-        &mut self,
-        from: UserSlot,
-        to: UserSlot,
-    ) -> Result<(), WorkerError> {
+    pub fn steal_context(&mut self, from: UserSlot, to: UserSlot) -> Result<(), WorkerError> {
         if from == to {
             return Ok(());
         }
@@ -1252,10 +1243,7 @@ mod tests {
 
     #[test]
     fn test_worker_error_to_errno() {
-        assert_eq!(
-            WorkerError::AlreadyHasNormal.to_errno(),
-            minix_types::EBUSY
-        );
+        assert_eq!(WorkerError::AlreadyHasNormal.to_errno(), minix_types::EBUSY);
         assert_eq!(
             WorkerError::BothPendingAndActive.to_errno(),
             minix_types::EINVAL

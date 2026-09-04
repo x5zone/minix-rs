@@ -23,8 +23,8 @@
 //! `ARCH A-4` (VfsState aggregation) keeps `fproc_table` + `reviving` in one
 //! place; `ARCH A-3` keeps `BlockedOn` typed.
 
-use minix_types::{Endpoint, Gid, Pid, Uid, UserSlot, VfsCall, VfsReply};
 use crate::fproc::{BlockedOn, FProc, FProcTable, FpFlags, PID_FREE};
+use minix_types::{Endpoint, Gid, Pid, Uid, UserSlot, VfsCall, VfsReply};
 
 /// PM → VFS dispatch error — maps to Minix errno for the `PM→REPLY` path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,9 +163,7 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 // Postponed in C (`worker_start(..., NULL)`); here we just
                 // validate the endpoint is known and return `Exec` for the
                 // caller to route via `PM_WORK`.
-                let slot = endpoint
-                    .to_user_slot()
-                    .ok_or(PmError::BadEndpoint)?;
+                let slot = endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
                 let fp = self.table.get(slot).ok_or(PmError::BadEndpoint)?;
                 if fp.pid == PID_FREE {
                     return Err(PmError::BadEndpoint);
@@ -178,9 +176,7 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 })
             }
             VfsCall::DumpCore {
-                endpoint,
-                term_sig,
-                ..
+                endpoint, term_sig, ..
             } => {
                 if term_sig == 0 {
                     return Err(PmError::BadEndpoint);
@@ -312,10 +308,20 @@ impl PmHandler for MockPmHandler {
     fn handle_exit(&mut self, _endpoint: Endpoint) -> Result<(), PmError> {
         Err(PmError::BadEndpoint)
     }
-    fn handle_setuid(&mut self, _endpoint: Endpoint, _euid: Uid, _ruid: Uid) -> Result<(), PmError> {
+    fn handle_setuid(
+        &mut self,
+        _endpoint: Endpoint,
+        _euid: Uid,
+        _ruid: Uid,
+    ) -> Result<(), PmError> {
         Err(PmError::BadEndpoint)
     }
-    fn handle_setgid(&mut self, _endpoint: Endpoint, _egid: Gid, _rgid: Gid) -> Result<(), PmError> {
+    fn handle_setgid(
+        &mut self,
+        _endpoint: Endpoint,
+        _egid: Gid,
+        _rgid: Gid,
+    ) -> Result<(), PmError> {
         Err(PmError::BadEndpoint)
     }
     fn handle_setgroups(
@@ -341,7 +347,10 @@ impl PmHandler for MockPmHandler {
 pub struct MessageDispatcher;
 
 impl MessageDispatcher {
-    pub fn dispatch(table: &mut FProcTable, request: minix_types::VfsRequest) -> minix_types::VfsResponse {
+    pub fn dispatch(
+        table: &mut FProcTable,
+        request: minix_types::VfsRequest,
+    ) -> minix_types::VfsResponse {
         match request {
             minix_types::VfsRequest::Fork {
                 parent_endpoint,
@@ -393,9 +402,7 @@ fn handle_fork_inner(
     child_pid: Pid,
 ) -> Result<CopyOutcome, PmError> {
     // 1. Parent must be valid (okendpt) and live.
-    let parent_slot = parent_endpoint
-        .to_user_slot()
-        .ok_or(PmError::BadEndpoint)?;
+    let parent_slot = parent_endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
     let parent = table.get(parent_slot).ok_or(PmError::BadEndpoint)?;
     if parent.pid == PID_FREE {
         return Err(PmError::BadEndpoint);
@@ -403,9 +410,7 @@ fn handle_fork_inner(
 
     // 2. Child slot derived from endpoint low bits (no okendpt, C does
     // `_ENDPOINT_P(cproc)` directly).  Validate range and PID_FREE.
-    let child_slot = child_endpoint
-        .to_user_slot()
-        .ok_or(PmError::BogusChild)?;
+    let child_slot = child_endpoint.to_user_slot().ok_or(PmError::BogusChild)?;
     if child_slot.get() >= minix_types::NR_PROCS {
         return Err(PmError::SlotOutOfRange);
     }
@@ -437,7 +442,21 @@ fn copy_fproc(
     child_slot: UserSlot,
     child_endpoint: Endpoint,
 ) -> CopyOutcome {
-    let (pid, root_dir, work_dir, filps, cloexec_set, real_uid, eff_uid, real_gid, eff_gid, ngroups, supplemental_groups, umask, name) = {
+    let (
+        pid,
+        root_dir,
+        work_dir,
+        filps,
+        cloexec_set,
+        real_uid,
+        eff_uid,
+        real_gid,
+        eff_gid,
+        ngroups,
+        supplemental_groups,
+        umask,
+        name,
+    ) = {
         let parent = table.get(parent_slot).unwrap();
         (
             parent.pid,
@@ -483,7 +502,10 @@ fn copy_fproc(
     child.supplemental_groups = supplemental_groups;
     child.umask = umask;
     let mut child_name = name;
-    let current_len = child_name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    let current_len = child_name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(name.len());
     if current_len + 2 < name.len() {
         child_name[current_len] = b'_';
         child_name[current_len + 1] = b'c';
@@ -568,7 +590,10 @@ mod tests {
             Endpoint::from_generation_slot(1, 0),
             Endpoint::from_generation_slot(1, 1),
         );
-        assert!(matches!(result, Err(minix_types::VfsError::InvalidEndpoint)));
+        assert!(matches!(
+            result,
+            Err(minix_types::VfsError::InvalidEndpoint)
+        ));
     }
 
     #[test]
@@ -708,9 +733,7 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut handler = VfsPmHandler { table: &mut table };
         let ep = Endpoint::from_generation_slot(1, 0);
-        handler
-            .handle_setgroups(ep, 2, &[10, 20])
-            .unwrap();
+        handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
         let fp = handler.table.get(UserSlot::new(0)).unwrap();
         assert_eq!(fp.ngroups, 2);
         assert_eq!(fp.supplemental_groups[0], 10);
@@ -754,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_pm_request_decode() {
-        use minix_types::{is_vfs_pm_rq, VFS_PM_FORK};
+        use minix_types::{VFS_PM_FORK, is_vfs_pm_rq};
         assert!(is_vfs_pm_rq(VFS_PM_FORK));
         let call = VfsCall::Fork {
             child: Endpoint::from_generation_slot(1, 1),

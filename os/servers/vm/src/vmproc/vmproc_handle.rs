@@ -11,7 +11,6 @@
 
 use minix_types::{BootImage, Endpoint, UserSlot, VirBytes};
 use minix_arch::paging::Paging;
-use minix_arch::paging::bind_to_process;
 #[cfg(not(test))]
 use minix_arch::paging::map_kernel;
 use super::{VmFlags, vmproc::VmProc};
@@ -400,15 +399,6 @@ impl<'a> ActiveProc<'a> {
             self.inner.vm_pt_initialized = true;
             Ok(())
         }
-    }
-
-    /// Binds the page table to the kernel for this process.
-    ///
-    /// Corresponds to Minix3's `pt_bind()`.
-    /// Must be called after `init_page_table()` and before the process runs.
-    pub(crate) fn bind_page_table(&self) -> Result<(), minix_arch::paging::PageTableError> {
-        let pt = self.page_table();
-        bind_to_process(pt.root_paddr(), self.endpoint())
     }
 
     /// Frees the page table resources and resets initialization flag.

@@ -18,6 +18,14 @@ use minix_boot::{BootPrepareResult, KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
+// UEFI test kernels allocate only while boot services are alive (build_memmap
+// etc.); boot-shim's pool allocator covers exactly that window. See
+// uefi_helpers::UefiPoolAllocator for why the registration lives here and not
+// in boot-shim itself.
+#[global_allocator]
+static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
+    boot_shim::uefi_helpers::UefiPoolAllocator;
+
 #[entry]
 fn main() -> Status {
     early_console::write_str("### test_paging_enable (aarch64): boot → enable MMU → verify alive\n");
@@ -25,7 +33,7 @@ fn main() -> Status {
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
     let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
-    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(8);
+    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
     let kernel_info = KernelInfo {
         memmap,

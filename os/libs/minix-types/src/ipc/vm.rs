@@ -987,7 +987,6 @@ impl VmRemapIn {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // DecodeFromM1 for the reply encoders below; requests use dedicated
 // `decode_message` overlays matching the C wire formats.
@@ -1191,18 +1190,25 @@ mod tests {
         // payload offset 0 — the same bytes as m1_i1 — so the OLD M1 decode
         // (endpoint = m1i1) read the low 32 bits of addr → garbage endpoint
         // → EINVAL for every brk() (19-P1-1, same family as 16-P0-1).
-        use crate::ipc::{Message, MessLcVmBrk};
+        use crate::ipc::{MessLcVmBrk, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
         msg.m_type = 0xC02; // VM_BRK
         unsafe {
-            msg.m_u.m_lc_vm_brk = MessLcVmBrk { addr: 0x4000_0000, ..MessLcVmBrk::default() };
+            msg.m_u.m_lc_vm_brk = MessLcVmBrk {
+                addr: 0x4000_0000,
+                ..MessLcVmBrk::default()
+            };
         }
         // m1_i1 (payload bytes 0-3) == low 32 bits of addr == 0x4000_0000,
         // deliberately non-zero: if the decode read m1i1 as endpoint it
         // would be Endpoint(0x4000_0000), not PM.
         let req = VmBrkIn::decode_message(&msg);
-        assert_eq!(req.endpoint, Endpoint::PM, "endpoint must come from m_source, not m1i1");
+        assert_eq!(
+            req.endpoint,
+            Endpoint::PM,
+            "endpoint must come from m_source, not m1i1"
+        );
         assert_eq!(req.new_addr.0, 0x4000_0000);
     }
 
@@ -1212,7 +1218,7 @@ mod tests {
         // (u32 @ 8), len (u32 @ 12), prot (i32 @ 16), flags (i32 @ 20),
         // fd (i32 @ 24), forwhom (i32 @ 28). The old M1 decode zeroed
         // prot/flags/fd/offset — the regression asserts all fields survive.
-        use crate::ipc::{Message, MessMmap};
+        use crate::ipc::{MessMmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
         msg.m_type = 0xC03; // VM_MMAP
@@ -1243,7 +1249,7 @@ mod tests {
     fn test_vm_vfs_mmap_in_decode_message() {
         // C wire format (mess_vm_vfs_mmap, ipc.h:2369): offset/dev/ino as
         // u64 at 0/8/16, who/vaddr/len/flags/fd as u32, clearend as u16.
-        use crate::ipc::{Message, MessVmVfsMmap};
+        use crate::ipc::{MessVmVfsMmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::VFS;
         msg.m_type = 0xC2E; // VM_VFS_MMAP = VM_RQ_BASE+46
@@ -1277,7 +1283,7 @@ mod tests {
     fn test_vm_map_phys_in_decode_message() {
         // C wire format (mess_lsys_vm_map_phys, ipc.h:1504): ep (i32 @ 0),
         // phaddr (u32 @ 4), len (u32 @ 8).
-        use crate::ipc::{Message, MessLsysVmMapPhys};
+        use crate::ipc::{MessLsysVmMapPhys, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::MEM;
         msg.m_type = 0xC04; // VM_MAP_PHYS
@@ -1302,7 +1308,7 @@ mod tests {
         // and the caller is m_source (mmap.c:518-525). The old M1 decode
         // read the endpoint from m_mmap.offset's low bits and addr/len
         // from prot/flags — all wrong.
-        use crate::ipc::{Message, MessMmap};
+        use crate::ipc::{MessMmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::from_generation_slot(1, 33);
         msg.m_type = VM_MUNMAP as i32;
@@ -1315,7 +1321,10 @@ mod tests {
             };
         }
         let req = VmMunmapIn::decode_message(&msg);
-        assert_eq!(req.endpoint, msg.m_source, "endpoint must come from m_source");
+        assert_eq!(
+            req.endpoint, msg.m_source,
+            "endpoint must come from m_source"
+        );
         assert_eq!(req.addr.0, 0x1000);
         assert_eq!(req.length.0, 0x2000);
     }
@@ -1325,7 +1334,7 @@ mod tests {
         // 21-P1-1 regression: mess_lsys_vm_unmap_phys (ipc.h:1521) has
         // ep (i32 @ 0), vaddr (u32 @ 4). The old M1 decode read vaddr
         // from m1p1 @ 16 — past the 4-byte field.
-        use crate::ipc::{Message, MessLsysVmUnmapPhys};
+        use crate::ipc::{MessLsysVmUnmapPhys, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::MEM;
         msg.m_type = VM_UNMAP_PHYS as i32;
@@ -1346,7 +1355,7 @@ mod tests {
         // 21-P1-1 regression: mess_lc_vm_shm_unmap (ipc.h:934) has
         // forwhom (i32 @ 0), addr (u32 @ 4). The old M1 decode read addr
         // from m1p1 @ 16.
-        use crate::ipc::{Message, MessLcVmShmUnmap};
+        use crate::ipc::{MessLcVmShmUnmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
         msg.m_type = VM_SHM_UNMAP as i32;
@@ -1368,7 +1377,7 @@ mod tests {
         // (i32 @ 0), source (i32 @ 4), dest_addr (u32 @ 8), src_addr
         // (u32 @ 12), size (u32 @ 16). destination is an explicit message
         // field, NOT the caller.
-        use crate::ipc::{Message, MessLsysVmVmremap};
+        use crate::ipc::{MessLsysVmVmremap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint(100); // IPC server
         msg.m_type = 0xC0D; // VM_REMAP
@@ -1384,7 +1393,10 @@ mod tests {
         }
         let req = VmRemapIn::decode_message(&msg);
         assert_eq!(req.caller, Endpoint(100));
-        assert_eq!(req.destination.0, 88, "destination must come from the message field, not m_source");
+        assert_eq!(
+            req.destination.0, 88,
+            "destination must come from the message field, not m_source"
+        );
         assert_eq!(req.who.0, 99);
         assert_eq!(req.vaddr.0, 0x1000);
         assert_eq!(req.length.0, 0x4000);

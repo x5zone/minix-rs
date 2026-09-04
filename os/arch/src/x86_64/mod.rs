@@ -4,6 +4,7 @@ pub mod pte;
 pub mod paging;
 pub mod protection;
 pub mod trap_entry;
+pub mod trap_return;
 pub mod exception;
 pub mod clock;
 pub mod timer_irq_gate;
@@ -12,6 +13,7 @@ pub mod signal;
 pub mod smp;
 pub mod arch_init;
 pub mod boot;
+pub mod cpu_identity;
 pub mod tlb;
 
 pub use protection::{X86_64Protection, X86PrivilegeLevel};

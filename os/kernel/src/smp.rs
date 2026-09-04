@@ -750,6 +750,104 @@ impl Default for SmpState {
     }
 }
 
+// ── CPU identity table (D-53: 08-system-init-boot-finish.md §4.6) ──
+//
+// C's split: `cpu_identify()` (arch code, arch_system.c:212 i386 / :85 earm)
+// fills the kernel global `cpu_info[CONFIG_MAX_CPUS]` (glo.h). The register
+// read lives in the arch crate (`CurrentCpuIdentity` probe); the table lives
+// here because `CONFIG_MAX_CPUS` is kernel configuration and `GET_CPUINFO`
+// (misc.rs) is the kernel-ABI consumer.
+
+use minix_arch::cpu_identity::{CpuIdentity, CpuIdentityArch};
+use minix_arch::CurrentCpuIdentity;
+
+/// Per-CPU ISA identity storage — the Rust counterpart of C's
+/// `cpu_info[CONFIG_MAX_CPUS]` kernel global (glo.h).
+///
+/// `None` = slot not yet probed (C: zero-filled slot). Filled once per CPU
+/// during boot ([`cpu_identify`]); read afterwards by `GET_CPUINFO`
+/// (misc.rs) — C: do_getinfo.c:76-80 copies the whole `sizeof(cpu_info)`
+/// array.
+#[derive(Debug)]
+pub(crate) struct CpuInfoTable {
+    slots: [Option<CpuIdentity>; MAX_CPUS],
+}
+
+impl CpuInfoTable {
+    /// All-unprobed table — C: zero-filled `cpu_info[]`.
+    pub(crate) const fn new() -> Self {
+        Self { slots: [None; MAX_CPUS] }
+    }
+
+    /// Record the identity of one CPU. C: `cpu_info[cpu] = ...`.
+    ///
+    /// Out-of-range CPU ids are ignored (bounded by `MAX_CPUS`; C would
+    /// write out of bounds for an invalid `cpuid`).
+    pub(crate) fn record(&mut self, cpu: CpuId, identity: CpuIdentity) {
+        let idx = cpu.raw() as usize;
+        if idx < MAX_CPUS {
+            self.slots[idx] = Some(identity);
+        }
+    }
+
+    /// Read back one CPU's identity. C: `GET_CPUINFO` data source.
+    /// `None` = not probed.
+    pub(crate) fn get(&self, cpu: CpuId) -> Option<CpuIdentity> {
+        let idx = cpu.raw() as usize;
+        if idx < MAX_CPUS {
+            self.slots[idx]
+        } else {
+            None
+        }
+    }
+}
+
+/// Global CPU identity table — C: `cpu_info[CONFIG_MAX_CPUS]` (glo.h).
+///
+/// # SAFETY
+///
+/// Mutated only while no other CPU can observe the write: the BSP records
+/// its identity in single-threaded boot (C: `cpu_identify()` is the first
+/// statement of `bsp_finish_booting`, main.c:45 — before any AP or user
+/// process runs); the C AP path records under boot_lock + BKL
+/// (arch_smp.c:227-232) and will do the same when SMP bring-up lands
+/// (16-smp.md). Post-boot readers (GET_CPUINFO) hold the BKL.
+static CPU_INFO: crate::SyncUnsafeCell<CpuInfoTable> =
+    crate::SyncUnsafeCell::new(CpuInfoTable::new());
+
+/// Probe and record the identity of the currently executing CPU.
+///
+/// Rust rewrite of C `cpu_identify()` (i386 arch_system.c:212-243 — CPUID
+/// leaves 0/1; earm arch_system.c:85-100 — MIDR). The register read itself
+/// is the arch crate's `CurrentCpuIdentity` probe; this wrapper records the
+/// result into [`CPU_INFO`] at the calling CPU's index.
+///
+/// Called once per CPU during boot: BSP at `bsp_finish_booting` Step 0
+/// (C: main.c:45); APs at their startup handshake (C: arch_smp.c:232) —
+/// pending SMP bring-up (16-smp.md), only the BSP slot is filled.
+pub fn cpu_identify() {
+    let identity = CurrentCpuIdentity::identify_current_cpu();
+    let cpu = crate::clock::current_cpuid();
+    // SAFETY: single-threaded boot (BKL-held AP path once SMP lands) —
+    // see the `CPU_INFO` safety contract.
+    let table = unsafe { &mut *CPU_INFO.get() };
+    table.record(cpu, identity);
+}
+
+/// Read one CPU's probed identity — the `GET_CPUINFO` data source.
+///
+/// Returns `None` for CPUs that have not been identified (C: zero-filled
+/// `cpu_info[]` slot, which copies out as all-zero bytes).
+///
+/// # Safety contract
+///
+/// Callers must hold the BKL after boot (GET_CPUINFO runs under
+/// `kernel_call_dispatch`); during boot the table is write-only.
+pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
+    // SAFETY: read-only snapshot under BKL (or boot) — see `CPU_INFO`.
+    unsafe { (*CPU_INFO.get()).get(cpu) }
+}
+
 // ── Big Kernel Lock (BKL) — D1 implementation ──
 
 /// The single Big Kernel Lock protecting cross-CPU shared kernel state.
@@ -1006,6 +1104,18 @@ pub fn bkl_is_locked() -> bool {
     BKL_LOCKED.load(Ordering::Acquire)
 }
 
+/// Test-only: force the BKL to the unlocked state.
+///
+/// Tests that simulate the boot/trap-entry contract (BKL held on entry to
+/// `switch_to_user` / `idle`) start by resetting the global flag — a
+/// previous panicked test may have left it locked. Same intent as
+/// `bkl_test_setup`'s cleanup line in this module's test section, exposed
+/// crate-wide so lib.rs scheduler-loop tests can share it.
+#[cfg(test)]
+pub(crate) fn bkl_lock_reset_for_test() {
+    BKL_LOCKED.store(false, Ordering::Release);
+}
+
 // ── Tests ──
 
 #[cfg(test)]
@@ -1146,6 +1256,48 @@ mod tests {
         let smp = SmpState::new_single_cpu();
         let result = smp.handle_sched_ipi(CpuId::BSP);
         assert!(result.is_none());
+    }
+
+    // ── CPU identity table tests (D-53) ──
+
+    /// record + get round-trip on a local table; out-of-range CPU ids are
+    /// ignored (bounded by MAX_CPUS, mirroring C's fixed CONFIG_MAX_CPUS
+    /// slots). Uses a local instance — the global CPU_INFO is boot-phase
+    /// state, not test-mutable.
+    #[test]
+    fn test_cpu_info_table_record_and_get() {
+        use minix_arch::cpu_identity::{X86Identity, X86Vendor};
+
+        let mut table = CpuInfoTable::new();
+        assert_eq!(table.get(CpuId::BSP), None);
+
+        table.record(
+            CpuId::BSP,
+            CpuIdentity::X86(X86Identity {
+                vendor: X86Vendor::Intel,
+                family: 6,
+                model: 142,
+                stepping: 10,
+                feature_ecx: 0,
+                feature_edx: 0,
+            }),
+        );
+        assert!(matches!(table.get(CpuId::BSP), Some(CpuIdentity::X86(_))));
+        assert_eq!(table.get(CpuId::new_unchecked(1)), None);
+
+        // Out-of-range: ignored, not a panic (C would have written OOB),
+        // and existing slots are untouched.
+        table.record(
+            CpuId::new_unchecked(MAX_CPUS as u32),
+            CpuIdentity::Arm(minix_arch::cpu_identity::ArmIdentity {
+                implementer: 0x41,
+                variant: 0,
+                arch: 0xF,
+                part: 0xD08,
+                revision: 3,
+            }),
+        );
+        assert!(matches!(table.get(CpuId::BSP), Some(CpuIdentity::X86(_))));
     }
 
     // ── BKL tests (D1 framework) ──

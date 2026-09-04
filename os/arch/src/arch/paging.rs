@@ -201,6 +201,33 @@ pub trait Paging {
     /// (i.e., don't call `destroy()` on it unless you own the table).
     fn from_active_root(root_phys: PhysBytes) -> Self;
 
+    /// Wrap an already-active page table root for VM-context access.
+    ///
+    /// Identical to [`Paging::from_active_root`] except for the PTE access
+    /// channel: the returned handle reads and writes page-table entries
+    /// through the **VM Direct Map** (`DirectMapArch::vm_phys_to_virt`),
+    /// because the handle is exercised while VM — a user-space process —
+    /// runs, and the kernel Direct Map window is supervisor-only. The
+    /// channel is pinned at construction; all `map`/`unmap`/`query`
+    /// operations on this handle use the same channel.
+    ///
+    /// # Use case
+    ///
+    /// VM's address-space identity adoption: VM's initial page table IS the
+    /// bootstrap root the kernel built and enabled, so VM wraps that root
+    /// (identified by the physical address handed over at boot) instead of
+    /// creating a fresh one. Unlike `from_active_root` (kernel boot
+    /// context), the VM-context handle must be able to reach the page-table
+    /// pages from user space, which only the VM Direct Map provides.
+    ///
+    /// # Safety contract (caller responsibility)
+    ///
+    /// Same as `from_active_root`: `root_phys` must point to a valid,
+    /// currently-active page table root. Additionally, every page-table
+    /// page reachable from the root must be covered by the VM Direct Map
+    /// window — the handle's only way to reach them.
+    fn adopt_active_root(root_phys: PhysBytes) -> Self;
+
     /// Load root table physical address into MMU and enable paging.
     /// After this call, all memory accesses go through page tables.
     /// Returns the root table physical address.
@@ -450,39 +477,6 @@ pub fn clone_range<P: Paging>(
     Ok(())
 }
 
-/// Bind a page table to a process in the kernel.
-///
-/// Corresponds to Minix3's `pt_bind()` step 5 — notifies the kernel
-/// of the process's page table root address via `sys_vmctl_set_addrspace`.
-///
-/// This is a VM policy operation, not a hardware mechanism. All architectures
-/// perform the same kernel IPC call, so this is a plain function, not a trait method.
-///
-/// Minix3's `pt_bind()` also wrote the page directory physical address into
-/// `pagedir_mappings` (steps 1-4). Under Direct Map, the kernel can access any
-/// page directory via `kernel_phys_to_virt(cr3_phys)`, so those steps are eliminated.
-pub fn bind_to_process(
-    root_paddr: PhysBytes,
-    endpoint: minix_types::Endpoint,
-) -> Result<(), PageTableError> {
-    // C: pt_bind() step 5 — sys_vmctl_set_addrspace(endpoint, root_paddr)
-    //
-    // Design decision (arch→kernel boundary): The arch crate cannot call
-    // kernel IPC (`sys_vmctl_set_addrspace`) because the dependency graph
-    // is kernel → arch (not arch → kernel). The actual kernel notification
-    // is performed by the CALLER:
-    //   - VM server: `vmproc_handle.rs:bind_to_process()` call site
-    //   - Kernel boot: `paging_init()` caller in `kernel/src/lib.rs`
-    //
-    // This function validates inputs and returns Ok; the caller is
-    // responsible for invoking the kernel IPC to register the page table
-    // root with the process. This matches Minix3's layering where `pt_bind`
-    // is called from VM-side code that has access to kernel syscalls.
-    let _ = root_paddr;
-    let _ = endpoint;
-    Ok(())
-}
-
 /// Map kernel address space into a page table.
 ///
 /// Corresponds to Minix3's `pt_mapkernel()`. Establishes three mappings:
@@ -527,124 +521,6 @@ pub fn map_kernel<P: Paging>(
         let paddr = PhysBytes(i as u64 * page_size);
         pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
     }
-
-    Ok(())
-}
-
-/// Initialize the page table subsystem for the VM process.
-///
-/// Corresponds to Minix3's `pt_init()` but drastically simplified:
-/// - **Eliminated**: spare page pool (Direct Map provides VA access),
-///   `kern_mappings` / `pagedir_mappings` initialization (Direct Map replaces),
-///   dynamic rebuild (no static-to-dynamic transition needed)
-/// - **Retained but changed**: CPU feature detection → `HugePages::supports_1gb_page()`;
-///   VM page table setup → `map_kernel()` + direct map extension + `bind_to_process()`
-///
-/// # Phase 1: Huge page capability confirmation
-///
-/// Determines whether to use 1GB or 2MB huge pages for Direct Map extension.
-/// On x86-64, this requires CPUID check; fallback to 2MB is handled by
-/// `HugePages` trait implementation.
-///
-/// # Phase 2: VM page table setup (based on kernel-provided initial page table)
-///
-/// The kernel creates a minimal initial page table for VM (4 pages, 1GB direct map)
-/// before VM starts running. This function extends that page table:
-/// 1. `map_kernel()` — kernel code/data + kernel direct map
-/// 2. VM direct map extension — if physical memory > 1GB
-/// 3. `bind_to_process()` — register page table with the kernel
-///
-/// # Phase 3: (Future) SMP page table synchronization
-///
-/// # Type parameters
-///
-/// - `P`: Paging implementation (must also support HugePages)
-/// - `D`: DirectMapArch for address layout constants
-///
-/// # Arguments
-///
-/// - `pt`: The VM process's page table (created from kernel-provided initial page table)
-/// - `total_phys_bytes`: Total physical memory size in bytes (for direct map extension)
-/// - `endpoint`: VM process endpoint (for `bind_to_process()`)
-pub fn paging_init<P, D>(
-    pt: &mut P,
-    total_phys_bytes: u64,
-    endpoint: minix_types::Endpoint,
-) -> Result<(), PageTableError>
-where
-    P: crate::paging_ext::HugePages,
-    D: crate::direct_map::DirectMapArch,
-{
-    // Phase 1: Huge page capability confirmation
-    let use_1gb = P::supports_1gb_page();
-    let huge_page_size = if use_1gb {
-        P::HUGE_PAGE_SIZE
-    } else {
-        P::FALLBACK_HUGE_PAGE_SIZE
-    };
-
-    // Phase 2: VM page table setup
-
-    // Step 2a: Map kernel address space (kernel code/data + kernel direct map)
-    // Address layout constants from DirectMapArch trait (architecture-specific)
-    // Kernel segment physical addresses from boot_info (not yet passed to this function)
-    // For now, use mock layout constants. In real implementation, boot_info provides:
-    // - kernel text start physical address
-    // - kernel text size in pages
-    // - kernel data size in pages
-    //
-    // FIXME: Pass kernel layout from boot_info when available (tracked in
-    //        todo.md §1 — boot module ELF loading lifecycle). The mock
-    //        constants below produce a valid-but-sentinel kernel mapping
-    //        sufficient for VM bootstrap; real boot_info plumbing is a
-    //        larger change that touches KernelInfo + boot-shim handoff.
-    const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
-    const MOCK_KERNEL_TEXT_PBASE: u64 = 0x100_0000;
-    const MOCK_KERNEL_TEXT_PAGES: usize = 8;
-    const MOCK_KERNEL_DATA_PAGES: usize = 8;
-    let dm_vbase = D::KERNEL_DIRECT_MAP_BASE;
-    let dm_pages = 4; // Only map a few sentinel pages in mock
-
-    map_kernel(
-        pt,
-        MOCK_KERNEL_TEXT_VBASE,
-        MOCK_KERNEL_TEXT_PBASE,
-        MOCK_KERNEL_TEXT_PAGES,
-        MOCK_KERNEL_DATA_PAGES,
-        dm_vbase,
-        dm_pages,
-    )?;
-
-    // Step 2b: Extend VM direct map if physical memory exceeds 1GB
-    // The kernel-provided initial page table has 1GB direct map starting at
-    // VM_DIRECT_MAP_BASE. If total physical memory exceeds 1GB, extend with
-    // additional huge page mappings so VM can access all physical memory.
-    //
-    // C: pt_init() extends the direct map — the `pt_initsize > 0` path
-    //    in memory.c that calls pg_map() for each additional huge page.
-    //
-    // Flags: read_write() = PRESENT | WRITABLE | USER_ACCESSIBLE.
-    // VM is a user-space process, so the direct map must be user-accessible.
-    let initial_dm_size: u64 = 1 << 30; // 1GB
-    if total_phys_bytes > initial_dm_size {
-        let extra_bytes = total_phys_bytes - initial_dm_size;
-        let extra_huge_pages = extra_bytes.div_ceil(huge_page_size);
-        // minix-rs is 64-bit only, so u64→usize is non-truncating.
-        let huge_page_size_usize = huge_page_size as usize;
-        for i in 0..extra_huge_pages {
-            let paddr = PhysBytes(initial_dm_size + i * huge_page_size);
-            let vaddr = D::vm_phys_to_virt(paddr);
-            pt.map_huge(
-                vaddr,
-                paddr,
-                huge_page_size_usize,
-                PageFlags::read_write(),
-            )?;
-        }
-    }
-
-    // Step 2c: Bind page table to VM process
-    bind_to_process(pt.root_paddr(), endpoint)?;
 
     Ok(())
 }
@@ -715,6 +591,13 @@ pub mod mock {
                 mappings: BTreeMap::new(),
                 root_phys: root_phys.0,
             }
+        }
+
+        /// VM-context variant — same in-memory behavior as
+        /// `from_active_root` (the mock has no DM windows to choose
+        /// between); the `root_phys` parity guarantee is what matters.
+        fn adopt_active_root(root_phys: PhysBytes) -> Self {
+            Self::from_active_root(root_phys)
         }
 
         unsafe fn enable(&self) -> PhysBytes {
@@ -1210,33 +1093,6 @@ pub mod mock {
             let (p, f) = result.unwrap();
             assert_eq!(p, paddr);
             assert_eq!(f, flags);
-        }
-
-        #[test]
-        fn test_paging_init_basic() {
-            use crate::direct_map::MockDirectMap;
-
-            let mut pt = MockPaging::new().unwrap();
-            let endpoint = minix_types::Endpoint(1);
-
-            // paging_init with small physical memory (< 1GB, no extension needed)
-            let result = super::super::super::paging::paging_init::<
-                MockPaging, MockDirectMap,
-            >(&mut pt, 512 * 1024 * 1024, endpoint); // 512MB
-
-            assert!(result.is_ok());
-
-            // Verify kernel code/data mappings were established by map_kernel() segment 1
-            const MOCK_KERNEL_TEXT_VBASE: u64 = 0xFFFF_FFFF_8000_0000;
-            let first_kernel_page = VirBytes(MOCK_KERNEL_TEXT_VBASE);
-            assert!(pt.query(first_kernel_page).is_some());
-
-            // Verify kernel direct map sentinel was established by map_kernel() segment 2
-            const MOCK_DM_VBASE: u64 = crate::direct_map::MockDirectMap::KERNEL_DIRECT_MAP_BASE;
-            // DirectMapArch trait must be in scope for associated const access
-            use crate::direct_map::DirectMapArch as _;
-            let first_dm_page = VirBytes(MOCK_DM_VBASE);
-            assert!(pt.query(first_dm_page).is_some());
         }
 
         // ── L2 trait contract tests (Paging) ──────────────────────────

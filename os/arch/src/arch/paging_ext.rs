@@ -115,6 +115,13 @@ pub trait HugePages: Paging {
     ///
     /// x86-64 requires a CPUID check (`CPUID.80000001H:EDX.GBPAGES`);
     /// ARM64 and RISC-V always support it.
+    ///
+    /// `[latent capability]` — currently no production caller. Retained as
+    /// a single arch capability primitive for future consumers (boot-time
+    /// capability validation, user-space huge-page allocation); it is not
+    /// part of the current boot-path contract. Runtime 1-GiB probing for
+    /// DM coverage establishment lives on `DmCoverageArch::
+    /// supports_1gb_page`, not here.
     fn supports_1gb_page() -> bool {
         true
     }

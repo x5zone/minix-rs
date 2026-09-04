@@ -151,11 +151,12 @@ fn free_process_phys(
 ///
 /// Corresponds to Minix3's `do_procctl()` case `VMPPARAM_CLEAR` (exit.c:130-137).
 /// Called by RS or VFS to release a process's memory and page table, then
-/// create a fresh page table and bind it. The process slot remains IN_USE.
+/// create a fresh page table. The process slot remains IN_USE.
 ///
 /// C sequence: `free_proc(vmp)` → `pt_new(&vmp->vm_pt)` → `pt_bind(&vmp->vm_pt, vmp)`.
 /// Rust equivalent: free physical pages → clear regions → free old page table →
-/// init new page table → bind.
+/// init new page table. C's `pt_bind` step has no counterpart call here —
+/// see the Step 4 note below.
 ///
 /// # Caller permission
 /// Only RS_PROC_NR and VFS_PROC_NR may call this (C: exit.c:131-132).
@@ -189,9 +190,12 @@ pub(crate) fn handle_procctl_clear(
     unsafe { proc.free_page_table(); }
     proc.init_page_table().map_err(|_| VmProcctlError::PageTableError)?;
 
-    // Step 4: Bind new page table to this process.
-    // C: pt_bind(&vmp->vm_pt, vmp)
-    proc.bind_page_table().map_err(|_| VmProcctlError::PageTableError)?;
+    // C's sequence ends with `pt_bind(&vmp->vm_pt, vmp)` (exit.c:137), whose
+    // substance is the `sys_vmctl_set_addrspace` root notification
+    // (pagetable.c:1421) plus i386 pagedir_mappings bookkeeping that Direct
+    // Map eliminates. The Rust arch-layer bind helper was a validated no-op
+    // and has been removed (07-paging_init_design D8-④); kernel-side root
+    // (re-)registration is carried by the VMCTL SetAddrSpace channel.
 
     Ok(())
 }

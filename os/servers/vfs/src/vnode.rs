@@ -45,7 +45,9 @@ pub struct VnodeLock {
 
 impl Default for VnodeLock {
     fn default() -> Self {
-        Self { state: VnodeLockState::Unlocked }
+        Self {
+            state: VnodeLockState::Unlocked,
+        }
     }
 }
 
@@ -353,11 +355,15 @@ mod tests {
 
     struct NopFs;
     impl FsCtl for NopFs {
-        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> { Ok(()) }
+        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> {
+            Ok(())
+        }
     }
     struct AltFs;
     impl FsCtl for AltFs {
-        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> { Ok(()) }
+        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -381,7 +387,12 @@ mod tests {
         let id2 = table.alloc().unwrap();
         assert_eq!(id2.get(), 1);
         // Locked vnode should be skipped
-        table.get_mut(id2).unwrap().lock.try_lock(VnodeAccess::Write).unwrap();
+        table
+            .get_mut(id2)
+            .unwrap()
+            .lock
+            .try_lock(VnodeAccess::Write)
+            .unwrap();
         let id3 = table.alloc().unwrap();
         assert_eq!(id3.get(), 2);
     }
@@ -396,9 +407,22 @@ mod tests {
             v.fs = Endpoint::from_generation_slot(0, 5);
             v.ino = 42;
         }
-        assert_eq!(table.find_by_ino(Endpoint::from_generation_slot(0, 5), 42).unwrap(), id);
-        assert!(table.find_by_ino(Endpoint::from_generation_slot(0, 5), 99).is_none());
-        assert!(table.find_by_ino(Endpoint::from_generation_slot(0, 6), 42).is_none());
+        assert_eq!(
+            table
+                .find_by_ino(Endpoint::from_generation_slot(0, 5), 42)
+                .unwrap(),
+            id
+        );
+        assert!(
+            table
+                .find_by_ino(Endpoint::from_generation_slot(0, 5), 99)
+                .is_none()
+        );
+        assert!(
+            table
+                .find_by_ino(Endpoint::from_generation_slot(0, 6), 42)
+                .is_none()
+        );
     }
 
     #[test]
@@ -467,6 +491,8 @@ mod tests {
     // Second impl for Gate D
     struct AltVnodeTable(VnodeTable);
     impl AltVnodeTable {
-        fn alloc(&mut self) -> Result<VnodeId, VnodeError> { self.0.alloc() }
+        fn alloc(&mut self) -> Result<VnodeId, VnodeError> {
+            self.0.alloc()
+        }
     }
 }

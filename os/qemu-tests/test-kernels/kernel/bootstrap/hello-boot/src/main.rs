@@ -27,6 +27,14 @@ use minix_boot::{BootPrepareResult, KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
+// UEFI test kernels allocate only while boot services are alive (build_memmap
+// etc.); boot-shim's pool allocator covers exactly that window. See
+// uefi_helpers::UefiPoolAllocator for why the registration lives here and not
+// in boot-shim itself.
+#[global_allocator]
+static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
+    boot_shim::uefi_helpers::UefiPoolAllocator;
+
 #[entry]
 fn main() -> Status {
     early_console::write_str("### Booting Minix-RS hello-boot (Paging trait)...\n");
@@ -34,7 +42,7 @@ fn main() -> Status {
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
     let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
-    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(8);
+    let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
     let kernel_info = KernelInfo {
         memmap,
@@ -83,7 +91,29 @@ fn main() -> Status {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
+    if let Some(loc) = info.location() {
+        early_console::write_str("  at ");
+        early_console::write_str(loc.file());
+        early_console::write_str(":");
+        let mut buf = [0u8; 12];
+        early_console::write_str(write_u32(loc.line(), &mut buf));
+        early_console::write_str(":");
+        early_console::write_str(write_u32(loc.column(), &mut buf));
+        early_console::write_str("\n");
+    }
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+}
+
+/// Format a u32 as decimal into the caller's buffer (no_std, no itoa).
+fn write_u32(mut v: u32, buf: &mut [u8; 12]) -> &str {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 { break; }
+    }
+    core::str::from_utf8(&buf[i..]).unwrap_or("?")
 }

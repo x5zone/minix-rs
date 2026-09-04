@@ -382,7 +382,7 @@
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| F-053 | `do_fork` | fork.c:32 | 处理 fork | `fork::do_fork` (fork.rs:191) + `vm_server::handle_fork` (vm_server.rs:534) | 已实现+ (2026-06-14: 新增 pfn_alloc 参数 + handle_memory_once 函数; do_fork 中 handle_memory_once 调用待 VmProcTable split borrow) + ✅ **SAFETY 注释已补全**: fork.rs:225-326 共 9 处 SAFETY 注释, 每处显式列出: 1) Active typestate 前置条件; 2) single-threaded VM 合约; 3) parent→dst_regions→frames refcount 数据流; 4) 回滚点 (bind_page_table 是 last recoverable point). 四个 unsafe 块 (free_page_table rollback / setup_cow_for_all_regions / write_page_table_mappings / free_page_table after bind) 均有独立编号的 SAFETY 段落 + **handle_memory_once DEFERRED 详细文档化**: 1) Dependency-1 VmProcTable 不支持双 slot 同时可变借用; 2) Dependency-2 `sys_fork` 是 stub, 未返回 kernel-assigned msgaddr; 3) 安全依据: C `fork.c:97-108` 自承 "optimisation", 若未做只是产生一次性 page fault 而非 deadlock (子进程可异步处理自己的 page fault) |
+| F-053 | `do_fork` | fork.c:32 | 处理 fork | `fork::do_fork` (fork.rs:191) + `vm_server::handle_fork` (vm_server.rs:534) | 已实现+ (2026-06-14: 新增 pfn_alloc 参数 + handle_memory_once 函数; do_fork 中 handle_memory_once 调用待 VmProcTable split borrow) + ✅ **SAFETY 注释已补全**: fork.rs:225-326 共 9 处 SAFETY 注释, 每处显式列出: 1) Active typestate 前置条件; 2) single-threaded VM 合约; 3) parent→dst_regions→frames refcount 数据流; 4) 回滚点 (2026-09-04 起为 write_page_table_mappings——bind 为 no-op 已随 D8-④ 删除). unsafe 块 (free_page_table rollback / setup_cow_for_all_regions / write_page_table_mappings) 均有独立编号的 SAFETY 段落 + **handle_memory_once DEFERRED 详细文档化**: 1) Dependency-1 VmProcTable 不支持双 slot 同时可变借用; 2) Dependency-2 `sys_fork` 是 stub, 未返回 kernel-assigned msgaddr; 3) 安全依据: C `fork.c:97-108` 自承 "optimisation", 若未做只是产生一次性 page fault 而非 deadlock (子进程可异步处理自己的 page fault) |
 
 ### 4.8 main.c (17 函数)
 
@@ -500,12 +500,12 @@
 | F-171 | `pt_writemap` | pagetable.c:784 | 写入映射 | `PageTable::writemap` | 已实现 (arch crate) |
 | F-172 | `pt_checkrange` | pagetable.c:943 | 范围检查 | `PageTable::check_range` | 已实现 (arch crate) |
 | F-173 | `pt_new` | pagetable.c:990 | 新建页表 | `PageTable::new` | 已实现 (arch crate) |
-| F-174 | `freepde` | pagetable.c:1028 | 分配 PDE (static) | `PageTable::free_pde` | 已实现 (arch crate) |
-| F-175 | `pt_allocate_kernel_mapped_pagetables` | pagetable.c:1035 | 分配内核页表 | `PageTable::allocate_kernel_pt` | 已实现 (arch crate) |
-| F-176 | `pt_copy` | pagetable.c:1069 | 复制页表 (static) | `PageTable::copy` | 已实现 (arch crate) |
-| F-177 | `pt_init` | pagetable.c:1088 | 页表初始化 | `PageTable::init` | 已实现 (arch crate) |
-| F-178 | `pt_bind` | pagetable.c:1358 | 绑定页表 | `VmProc::bind_page_table` (vmproc_handle.rs:285) | 已实现 |
-| F-179 | `pt_free` | pagetable.c:1427 | 释放页表 | `VmProc::unbind_page_table` | 已实现 (vmproc_handle.rs) |
+| F-174 | `freepde` | pagetable.c:1028 | 分配 PDE (static) | i386 freepdes 临时窗口/登记册机制，64 位 DM 下被替代（08 §2.11） | 结构性消除 |
+| F-175 | `pt_allocate_kernel_mapped_pagetables` | pagetable.c:1035 | 分配内核页表 | `pagedir_mappings` 登记册被 DM 访问替代（08 §2.11） | 结构性消除 |
+| F-176 | `pt_copy` | pagetable.c:1069 | 复制页表 (static) | `clone_range`（paging.rs:453，08 §3.5 D5） | 已实现 |
+| F-177 | `pt_init` | pagetable.c:1088 | 页表初始化 | 语义三通道分解：`establish_boot_dm`（kernel dm_coverage.rs:66）+ `VmSelfPageTable::adopt`（vm_self_map.rs:95）+ `VmCtlParam::SetAddrSpace`（syscall.rs:2003）（08 §3.3） | 结构性分解 |
+| F-178 | `pt_bind` | pagetable.c:1358 | 绑定页表 | 无独立 bind API——根登记走 `VmCtlParam::SetAddrSpace`（syscall.rs:2003），VM 自身根经 `VmSelfPageTable::adopt`（vm_self_map.rs:95） | 结构性消除（08 §3.3 D7 裁决） |
+| F-179 | `pt_free` | pagetable.c:1427 | 释放页表 | `ActiveProc::free_page_table` (vmproc_handle.rs:411) | 已实现 |
 | F-180 | `pt_mapkernel` | pagetable.c:1442 | 映射内核 | `PageTable::map_kernel` | 已实现 (arch crate) |
 | F-181 | `get_vm_self_pages` | pagetable.c:1500 | 取 VM 页数 | `VmAllocStats::self_page_count`（06 D4） | 已实现（06-page-allocator.md §3.4） |
 
@@ -765,7 +765,7 @@
 | F-07 | P1 | 测试竞态条件 | mock_vm_base save/restore 模式, brk 测试唯一 slot 分配 |
 | F-08 | P1 | Rust 2024 unsafe_op_in_unsafe_fn | 嵌套 unsafe 块 + SAFETY 注释 |
 | F-09 | P0 | ~~C-09 find_slot 对齐回退~~ | ✅ **已修复 (2026-06-14)**: `try_gap` 闭包做页对齐, 不足返回 None; 2 个回归测试 |
-| F-10 | P0 | C-14 bind_page_table 错误处理 | 移到 sys_fork 前, 失败可回滚 |
+| F-10 | P0 | C-14 bind_page_table 错误处理 | 移到 sys_fork 前, 失败可回滚（后被 D8-④ 取代：bind 为已验证 no-op，整体删除） |
 | F-11 | P0 | S-19 dispatcher pagefault 重复 | 删除 dispatcher stub, 保留 vm_server 实现 |
 | F-12 | P1 | pub(crate) 可见性 (第二轮) | BitmapAllocator/BuddyAllocator/SegmentTreeAllocator/AlignedPhysBytes/PageAllocFlags/AllocError/PhysMemStats/PhysAllocator/PAGE_SIZE/PFN_NONE 降级 |
 | F-13 | P1 | SAFETY 注释补全 (第二轮) | global.rs refill_arena 补全 |

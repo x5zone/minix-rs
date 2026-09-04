@@ -17,10 +17,10 @@
 
 | 分类 | 处理 | 明细 |
 |------|------|------|
-| ✅ 已修复（代码落地 + 测试通过） | **4 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留）、D-51 PrivUpdateRequest 字段序重排（2026-09-03，KPriv 子结构镜像 + RS 侧同序，见 §7.1） |
+| ✅ 已修复（代码落地 + 测试通过） | **5 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留）、D-51 PrivUpdateRequest 字段序重排（2026-09-03，KPriv 子结构镜像 + RS 侧同序，见 §7.1）、D-53 cpu_identify + GET_CPUINFO 全记录（2026-09-04，arch 探测 + CPU_INFO 表 + C ABI 对齐，见 §7.1） |
 | ✅ 已实现（原记录过时，非缺口，2026-08-14 二次核实） | **18 项完整 + D-38 ②③ 部分** | §7.1 表 ✅ 行：D-1~D-5/D-7（dispatch_exec/clear/runctl/statectl 全部落地，含 process name 跨空间拷贝、release_address_space、clear_endpoint、SMP IPI）、D-10/D-12（cause_signal SELF 路径 mini_notify_core + 去重）、D-19（allow_ipc_filtered_memreq→dequeue_filtered）、D-21（kernel_call_resume + 2 测试）、D-22（data_copy_vmcheck VMSUSPEND 路径）、D-23（三架构 PTE walk）、D-26~D-29（GETINFO 10 分支）、D-31（sprof 数据拷贝）、D-32（clean_seen_flag）；D-38 ②③ BKL 接入（lib.rs:1956/:2167）；另有 I-4（doc 01/02 测试表去重，01 残留 TODO 标记已清理） |
 | 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1807 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
-| 📌 保持 DEFERRED（已核实依赖仍成立） | **33 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**、**D-53（2026-09-03 新增）：cpu_identify/GET_CPUINFO 全字段链路（procfs/用户态接线时补齐）** |
+| 📌 保持 DEFERRED（已核实依赖仍成立） | **32 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**（~~D-53 已于 2026-09-04 实施完成，移入"已修复"行~~） |
 | ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节；~~A3 已于 2026-09-02 实施完成，见 §2 A3~~） |
 | ✅ 已修复（doc 准确性问题，2026-08-18 GPT 评论评审） | **5 项** | §20.6 FIX-06-GPT-1/1b（§3.9 + §3.1 "唯一组合"措辞降级）+ FIX-06-GPT-2/2b（§3.8 + §3.1 "BSS"表述修正）+ FIX-06-GPT-2c（§3.15 决策表"BSS 段零运行时开销"修正）|
 
@@ -452,7 +452,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-50 | 架构清理 | `set_ptproc`/`PostInitArch`/`MemoryInitArch`/`FreePdeSlots` 待废弃（createpde 已被 Direct Map 取代） | 07 §1.4 TODO-07-1 | ✅ **已修复（2026-08-17，Action Item #1）**：`init_post_and_memory` 重构为确认就绪 + 相关类型链/statics/测试全部删除 |
 | D-51 | IPC 协议 | `PrivUpdateRequest` 字段顺序全局重构（按读写时机 / 锁粒度 / 协议语义切，让 14 字段贴近 KPriv 8 子结构分组语义） | 06 §3.10 | **✅ 已解决（2026-09-03）**：字段序冻结为 KPriv 8 子结构镜像（去 `PrivRuntime`）：`s_id / s_flags / s_init_flags / s_sig_mgr / s_bak_sig_mgr / s_trap_mask / s_ipc_to / s_k_call_mask / s_nr_io_range / s_io_tab / s_nr_irq / s_irq_tab / s_nr_mem_range / s_mem_tab`——s_id 归位 Identity 首；I/O 组在 IRQ 组前（对齐 `PrivIo` 与 C priv.h 惯例）；资源组计数在表前；signal manager 在 Signals 位、init 贴近 s_flags。三处同步落地：(a) `kpriv.rs` `PrivUpdateRequest` + `new()`（`TODO(backlog)` 锚点移除，改为冻结序说明）；(b) RS `privilege.rs` `Privilege`/`vacant()`/`boot_priv()` 同序镜像；(c) `data_copy` 大小由内核侧 `size_of::<PrivUpdateRequest>()` 统一计算（repr(C) 布局随新序自动一致，RS 无独立 size 源）。文档同步：06 §3.10、22 §4.2（协议结构字段序注 + KPriv 片段 flags/init 顺序对齐代码）、03-rs §3.2/§4.2。`cargo test -p minix-kernel -p minix-rs` 全过。 |
 | D-52 | 调度 | `sched_proc` 裸 `set/clear(NO_QUANTUM)` 是否对齐 C 的 `RTS_SET/RTS_UNSET` dequeue/enqueue 语义（二选一？） | 06 §3.3 / 11（待写） | **deferred 到 11-scheduling-primitives review（2026-08-31 标记，用户决策）**：当前 `sched_proc`（sched.rs:321-411）拿 `&mut KProcess` 只能裸改 RTS 位（[sched.rs:366/408](file:///os/kernel/src/sched.rs#L366)），绕过了 `rts_set/rts_unset` 的 enqueue/dequeue 封装（proc_table.rs:282-316）——依赖 syscall 出口统一 pick_proc 重调度。C 的 `RTS_SET/RTS_UNSET(RTS_NO_QUANTUM)`（system.c:674/697）宏会立即 dequeue/enqueue。**决策待定**：完全对齐 C（改 `sched_proc` 签名为持有 `&mut ProcessTable` 并调用封装）vs 在更高层对齐（保留出口重调度模型，文档标注差异）。改 priority 后 runqueue 位置不立即重排是当前模型与 C 的实际行为差。已同步在 `06-proc-init-boot-proc.md §3.3` 写侧代码证据中标注该差异与 deferred 决策。 |
-| D-53 | boot / 用户态链路 | `cpu_identify()`（main.c:45 → i386 arch_system.c:212，CPUID 填 `cpu_info[CONFIG_MAX_CPUS]`：vendor/family/model/stepping/freq/flags，archtypes.h:39-46）未移植；Rust `GET_CPUINFO` 分支（misc.rs:1001-1015）返回缩减 `CpuInfoEntry`（仅 cpu_id 实值），布局与 C `struct cpu_info` 不一致，注释引用 `type.h:146-159` 为错误出处（该处实为 boot_image；真实类型为各 arch archtypes.h 的 `struct cpu_info`） | 08 §4 / 06 §4.8 | **deferred（2026-09-03 记录）**：C 侧 `cpu_info` 消费者全在用户态（procfs cpuinfo.c:146 `/proc/cpuinfo` + libsys tsc_util.c:40 TSC 校准读 freq），内核自身不读；QEMU 完整暴露 CPUID（guest `/proc/cpuinfo` 可见），探测无环境障碍，非物理硬件依赖。补齐时点 = procfs/用户态 TSC 校准接线（19 阶段后）：移植 `cpu_identify`（i386 CPUID 路径 + aarch64 MIDR/earm 路径）+ `CpuInfoEntry` 对齐 `struct cpu_info` 布局 + 修 misc.rs 注释出处（→ archtypes.h:39-46）。 |
+| D-53 | boot / 用户态链路 | `cpu_identify()`（main.c:45 → i386 arch_system.c:212，CPUID 填 `cpu_info[CONFIG_MAX_CPUS]`：vendor/family/model/stepping/freq/flags，archtypes.h:39-46）未移植；Rust `GET_CPUINFO` 分支（misc.rs:1001-1015）返回缩减 `CpuInfoEntry`（仅 cpu_id 实值），布局与 C `struct cpu_info` 不一致，注释引用 `type.h:146-159` 为错误出处（该处实为 boot_image；真实类型为各 arch archtypes.h 的 `struct cpu_info`） | 08 §4 / 06 §4.8 | **✅ 已解决（2026-09-04）**：boot 期 per-CPU 身份探测 + `CpuInfoEntry` 布局对齐 + misc.rs 注释出处修正全部落地。三层实现：(a) **arch 探测** `os/arch/src/arch/cpu_identity.rs`——`CpuIdentity` enum（X86/Arm/Riscv 每 ISA 一个变体，C 各 arch 异形 struct 的类型化）+ `CpuIdentityArch` trait + `CurrentCpuIdentity` alias（x86 CPUID leaves 0/1；aarch64 `MIDR_EL1`；riscv64 SBI `mvendorid/marchid/mimpid`）。x86 含 **MINIX3 BUG 修复**：C arch_system.c:239 把 ext-model 合并条件误写在 base model 上，对 2007 后 family-6 CPU（Penryn 起）截断 model（Nehalem 0x106E0→0xE 而非 0x1E）；Rust 按 SDM 以 family∈{0xF,0x6} 为条件（`// MINIX3 BUG:` 标注 + `decode_signature` 4 单测）；C 的 `max_leaf==0` 古董守卫（486 时代）按"只支持现代硬件"原则不移植；(b) **kernel 表**——`CPU_INFO: SyncUnsafeCell<CpuInfoTable>`（smp.rs，`[Option<CpuIdentity>; MAX_CPUS]`，纳入 `BklProtected` 审批列表），`smp::cpu_identify()` 挂 `bsp_finish_booting` Step 0（与 C 同位同序 main.c:45；AP 路径随 16-smp.md SMP bring-up 落地）；(c) **GET_CPUINFO 全记录**——misc.rs `CpuInfoEntry` 重排为 C i386 `struct cpu_info` repr(C) 16 字节（vendor=INTEL 0/AMD 2/UNKNOWN 0xff，archconst.h:134-136；freq=0——TSC 校准回填无 Rust 读者，有意保留缺口；非 x86 身份 wire 上为 UNKNOWN+全零，类型化身份留 `smp::cpu_identity`），整体拷出对齐 do_getinfo.c:76-80，注释出处修正为 archtypes.h:39-46。设计说明见 08 §4.6 差异表；新增 8 测试（smp.rs 1 + misc.rs 3 + arch decode_signature 4），`cargo test -p minix-kernel` 629 + `cargo test -p minix-arch` 201 通过，x86_64/aarch64/riscv64 三目标 `cargo check --no-default-features` 通过。 |
 
 ### 7.2 WONTFIX 设计排除清单（有 rationale，非缺口）
 
@@ -501,8 +501,67 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | I-11 | BIOS 启动 / 实模式 / Multiboot/GRUB legacy 路径未覆盖 | 04 §2 + 01 §3.1 | 范围声明（当前仅 UEFI x86-64/aarch64 + OpenSBI+U-Boot riscv64），非缺口 |
 | I-12 | BKL guard RAII 重构建议 | 13 §6.2 | **已被 D6 明确拒绝**（BKL 语义需显式 release/reacquire 围绕阻塞操作）；§B1 的显式 transfer API 是不同方案，待 OQ |
 | I-13 | `InterruptController` trait C-Rust 不对称分析 + `Send + Sync` 真实动机（doc 05 §3.3 缺文） | 05 §3.3 | 见下方 §7.4.1 详细背景与建议 |
+| I-14 | 启动主线文档 06/09/10/16 范围声明 vs 代码时序系统性错位（architecture-wide 调整的预登记） | 06/08/09/10/16 | 见下方 §7.4.2 详细背景与建议 |
 
-### 7.4.1 [I-13] InterruptController trait：C-Rust 不对称 + `Send + Sync` 真实动机
+### 7.4.1 [I-14] 启动主线文档 06/08/09/10/16 范围声明 vs 代码时序系统性错位（2026-09-04）
+
+> **状态：📌 P1 [doc] [architecture] 结构性错位 — 留作大调整专项预登记（用户裁决：追加记入，本 session 不动手）**
+
+**背景**：本次回归 review（2026-09-04，fix #9 见 [08-system-init-boot-finish.md:33](08-system-init-boot-finish.md) 作者自注 "TODO，看起来 06,07,08 的时序并不正确"）触发的子。代码实读 `os/kernel/src/lib.rs` 实际 kmain 阶段顺序：
+
+```
+T0 init_protection              (lib.rs:744)
+T1 init_clock_and_interrupts    (lib.rs:780)
+T2 SMP_STATE = SmpState::new_single_cpu()   (lib.rs:559, 早于一切 init)
+T3 init_proc_and_boot           (lib.rs:879)
+T4 init_post_and_memory         (lib.rs:1271)
+T5 bsp_finish_booting           (lib.rs:1948, 含 smp_state 参数)
+T6 switch_to_user               (lib.rs:2757, 完整五阶段调度循环；
+                                 早期草案的 apply_boot_cpu_contexts 钩子已删除——
+                                 trap frame 改为每次分派前从 cpu_context 重建，
+                                 见 10-switch-to-user.md §3.2)
+```
+
+**2026-09-04 更新（10 号文档完整实现落地后的前提核销）**：上表三项前提已失效——
+
+| 原条目 | 失效原因 | 当前证据 |
+|--------|---------|---------|
+| [10 范围声明](10-switch-to-user.md) "自承 stub"（原 L177/L251） | 10 已完整重写：五阶段调度循环 + idle + 地址空间切换 + TrapReturnArch 终局分派全部落地，文档不再含"占位 stub"表述 | `rg "占位 stub" 10-switch-to-user.md` → 0 hits；`rg "fn switch_to_user" os/kernel/src/lib.rs` → lib.rs:2757 |
+| [06 §3.5/§3.12](06-proc-init-boot-proc.md) 引用 `apply_boot_cpu_contexts` | 该钩子已从代码删除；doc 06 §3.12 伪代码与叙述同步修订（trap frame 分派时重建，lib.rs:2689） | `rg "apply_boot_cpu_contexts" os/ notes/` → 0 hits |
+| [08 §1.1/§1.2](08-system-init-boot-finish.md) T6 "占位 stub" 五处 | doc 08 同步更新：T6 状态改为"已实现"，§3.4 的类型/行为一致性说明同步修订 | `rg "占位 stub" 08-system-init-boot-finish.md` → 0 hits |
+
+行号快照（lib.rs，2026-09-04）：`switch_to_user` = L2757；阶段函数 `set_active_root_tracked` = L2324、`pick_and_bill` = L2346、`requeue_if_preempted` = L2392、`idle` = L2453、`restart_local_timer` = L2526、`switch_address_space` = L2558、`finish_and_restore` = L2624。
+
+**问题清单**（不属本 session 改动引入——`06-todo.md:9` 作者执行记录已自带注解）。
+> **阅读提示（2026-09-04）**：下表是写于 10 号文档完整实现**之前**的审计记录，行号与结论均已过时（其中 06/08/10 三行已由上表核销，11-15 行随本次实现落地，16 行未动）。保留原文仅作审计追溯，请勿据其定位当前代码。
+
+| 文档 | 偏差类型 | 具体错位 | 证据 |
+|------|---------|---------|------|
+| [06 §3.5/§3.12](06-proc-init-boot-proc.md) | 范围溢出 | 11 处引用 `apply_boot_cpu_contexts`/`apply_to_trap_frame`/"首次调度"——这些实现在 10 范围（lib.rs:2348 `apply_boot_cpu_contexts`），非阶段 C 范畴 | `rg "apply_boot_cpu_contexts\|apply_to_trap_frame\|首次调度" 06-proc-init-boot-proc.md \| wc -l = 11` |
+| [08 §1.2](08-system-init-boot-finish.md) | 文档虚构 | T8 `system_init` / T9 `add_memmap` grep 0 命中实现；T10 `bsp_finish_booting` 真存在 | `rg "fn system_init\|fn add_memmap" os/kernel/src/lib.rs` → 0 hits |
+| [09 范围声明](09-vm-boot-protocol.md) | 前置链错位 | 自称"前置 08"，但实际在 T6 之后才发生（VM 启动需 switch_to_user 先调度） | 09 L5 vs 实际调度循环在 lib.rs:2302 |
+| [10 范围声明](10-switch-to-user.md) | 自承 stub | L177/L251 自承"占位 stub"，调度循环依赖 11/13/14 未落地 | rg L177 "占位 stub"、L251 "占位 stub" |
+| [11/12/13/14/15](11-scheduling-primitives.md) 等 | 计划状态 | 调度/IPC/异常/时钟/系统调用分发表全部为计划文档，代码 0 实现 | — |
+| [16 范围声明](16-smp.md) | 反向依赖 | 自称"前置 11/14/15"，但 smp 实现早于 init（lib.rs:559 T2），早于多数被列前置的文档 | 16 L7 vs lib.rs:559 |
+
+**已影响**：本 session Phase 6 的回归 review 已撞见一次（[07-cross-space-init.md §3.4](07-cross-space-init.md) 之前存在隐含范围溢出，已在本 session 修复）；未来 11/13/14 落地时若继续按现前置链会引入系统性偏差。
+
+**修复路径（用户裁决推迟，本 session 不动手）**：
+
+1. **最小动作（A 层，本 session 内可完成）**：修范围声明 + 前置依赖指向，对齐 T0-T6 实读顺序；不动章节内容/序号/细节
+2. **中度动作（B 层）**：上一项 + 把 06 §3.5/§3.12 中属于阶段 F 的内容显式 "see 10 §X" + 08 把 T8/T9 改写为 "规划中 — 当前仅 T10 实现"
+3. **大重排（C 层，按 03 重构级别）**：按真实时序重编号 06~16 + 改写各章节内部叙述。涉及 11+ 篇文档，预计单 session 完不成且易引入新错位
+
+**关联**：
+- 用户裁决：2026-09-04 选择 "先讨论"（在 `.trae/documents/07-paging-init-d8-implementation-plan.md` 三路径问询中），本条目作为 "讨论结论：留作大调整专项" 的占位记录
+- 真实 bug 现场：08-system-init-boot-finish.md:33 作者已自注 "TODO，看起来 06,07,08 的时序并不正确，可能需要稍作调整"
+- 间接证据：fix-guard 严格修 06/07/08 时序，会引出 §3.12/§3.5 范围溢出连锁修，建议按 B 层走
+
+**保留**：
+- 本 session 完成的 D8 实施（dm_coverage + VmBootHandoff + 测试完备性）不依赖此结构调整——本次回归 review 已对 07-cross-space-init.md 单独完成行号/隐藏文件夹/§4.1 签名补全，**与 I-14 解耦**
+- 本文件（todo.md）的 §0.1 计数需待 I-14 修复会话完成后回写（届时本条目从"📌"升"✅"或新拆条目）
+
+### 7.4.2 [I-13] InterruptController trait：C-Rust 不对称 + `Send + Sync` 真实动机
 
 > 来源：doc 05 §3.3 review 顺带发现（2026-08-15，user-question driven）——C 源行为细节揭示 Rust trait 把两类**语义不同**的动作塞进了同一抽象。
 

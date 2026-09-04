@@ -5,10 +5,13 @@
 //! switched to our own page table.
 //!
 //! Runtime methods (`map`, `unmap`, `query`, `remap`, `update_flags`,
-//! `new`, `destroy`) use the kernel Direct Map
-//! (`DirectMapArch::kernel_phys_to_virt`) to read and write page table
-//! entries through physical addresses after the kernel's own page table
-//! is live.
+//! `new`, `destroy`) read and write page table entries through physical
+//! addresses after the kernel's own page table is live. The Direct Map
+//! window used for that access is pinned per-handle as a [`PteChannel`]:
+//! kernel-context handles (`new_from_page`, `from_active_root`) use the
+//! kernel Direct Map (`DirectMapArch::kernel_phys_to_virt`), VM-context
+//! handles (`new`, `adopt_active_root`) use the VM Direct Map
+//! (`DirectMapArch::vm_phys_to_virt`).
 //!
 //! # ARM64 page table architecture (4KB granule, 4-level)
 //!
@@ -143,43 +146,59 @@ fn pte_to_flags(pte: u64) -> PageFlags {
 
 pub struct AArch64Paging {
     root_paddr: u64,
+    /// PTE access channel pinned at construction (see [`PteChannel`]).
+    channel: PteChannel,
 }
 
 // ── Page table walk helpers (runtime, via Direct Map) ──
 
-/// Convert a physical address to a kernel-virtual pointer via the Direct Map.
+/// PTE access channel, pinned at handle construction.
 ///
-/// Runtime page table walk uses this to read/write PTEs through physical
-/// addresses after the kernel page table is live. The boot-stage
-/// `phys_to_ptr` (identity mapping) must NOT be used at runtime.
-///
-/// SAFETY: caller must ensure the Direct Map window is established
-/// (paging is enabled with `KERNEL_DIRECT_MAP_BASE` mapped to PA=0).
+/// ARM64 exposes two Direct Map windows with different privilege levels:
+/// the kernel Direct Map (supervisor-only, high half) and the VM Direct
+/// Map (user-accessible). A page-table handle exercised in kernel context
+/// reaches PTE pages through the kernel window; a handle exercised by VM —
+/// a user-space process — can only reach them through the VM window. The
+/// channel is chosen by the constructor: `new_from_page`/`from_active_root`
+/// pin `KernelDm`, `new()` (whose production callers are all VM-side) and
+/// `adopt_active_root` pin `VmDm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PteChannel {
+    /// Kernel context: PTE pages accessed via the kernel Direct Map.
+    KernelDm,
+    /// VM context: PTE pages accessed via the VM Direct Map.
+    VmDm,
+}
+
 #[inline]
-fn phys_to_ptr_dm(phys: u64) -> *mut u64 {
-    let vaddr = AArch64DirectMap::kernel_phys_to_virt(PhysBytes(phys));
-    vaddr.0 as *mut u64
+fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
+    match channel {
+        PteChannel::KernelDm => {
+            AArch64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
+        }
+        PteChannel::VmDm => AArch64DirectMap::vm_phys_to_virt(PhysBytes(phys)).0 as *mut u64,
+    }
 }
 
 /// Read a PTE at the given physical address via the Direct Map.
 ///
-/// SAFETY: Direct Map must be active; `paddr` must be a valid 8-byte
-/// aligned PTE address.
+/// SAFETY: the channel's Direct Map window must be active; `paddr` must be
+/// a valid 8-byte aligned PTE address.
 #[inline]
-unsafe fn read_pte_dm(paddr: u64) -> u64 {
-    core::ptr::read_volatile(phys_to_ptr_dm(paddr))
+unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
+    core::ptr::read_volatile(channel_to_ptr(paddr, channel))
 }
 
 /// Write a PTE at the given physical address via the Direct Map, with
 /// a TLB invalidation for the affected virtual address.
 ///
-/// SAFETY: Direct Map must be active; `paddr` must be a valid 8-byte
-/// aligned PTE address. `vaddr_for_flush` is the virtual address the
-/// PTE covers (used for TLB invalidation; pass 0 for intermediate
-/// tables where no leaf TLB entry exists yet).
+/// SAFETY: the channel's Direct Map window must be active; `paddr` must be
+/// a valid 8-byte aligned PTE address. `vaddr_for_flush` is the virtual
+/// address the PTE covers (used for TLB invalidation; pass 0 for
+/// intermediate tables where no leaf TLB entry exists yet).
 #[inline]
-unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64) {
-    core::ptr::write_volatile(phys_to_ptr_dm(paddr), value);
+unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
+    core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
     // Flush any stale TLB entry for this virtual address. For intermediate
     // table descriptors (L0/L1/L2 table entries), no leaf TLB entry exists
     // yet, so the flush is a conservative no-op. For leaf PTE entries, this
@@ -219,14 +238,15 @@ enum WalkResult {
 ///
 /// # Safety precondition (not enforced at compile time)
 ///
-/// The kernel Direct Map must be active — i.e. paging is enabled with
-/// `KERNEL_DIRECT_MAP_BASE` mapped to PA=0. This is true after
-/// `Paging::enable()` returns.
-fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
+/// The Direct Map window selected by `channel` must be active — i.e.
+/// paging is enabled with that window mapped (kernel: `PA=0` at
+/// `KERNEL_DIRECT_MAP_BASE`; VM: the VM Direct Map window). Callers must
+/// not invoke this before paging is enabled.
+fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
     let i0 = l0_index(vaddr);
-    // SAFETY: Direct Map active per function precondition; the L0
+    // SAFETY: channel's Direct Map active per function precondition; the L0
     // entry address is root_paddr + i0*8, within the root page.
-    let l0e = unsafe { read_pte_dm(root_paddr + (i0 as u64) * 8) };
+    let l0e = unsafe { read_pte_dm(root_paddr + (i0 as u64) * 8, channel) };
     if l0e & Arm64PteFlags::VALID.bits() == 0 {
         return WalkResult::NotPresent;
     }
@@ -235,7 +255,7 @@ fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
 
     let i1 = l1_index(vaddr);
     // SAFETY: see above; L1 entry address is within the L1 page.
-    let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8) };
+    let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8, channel) };
     if l1e & Arm64PteFlags::VALID.bits() == 0 {
         return WalkResult::NotPresent;
     }
@@ -250,7 +270,7 @@ fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
 
     let i2 = l2_index(vaddr);
     // SAFETY: see above; L2 entry address is within the L2 page.
-    let l2e = unsafe { read_pte_dm(l2 + (i2 as u64) * 8) };
+    let l2e = unsafe { read_pte_dm(l2 + (i2 as u64) * 8, channel) };
     if l2e & Arm64PteFlags::VALID.bits() == 0 {
         return WalkResult::NotPresent;
     }
@@ -266,7 +286,7 @@ fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
     let l3_idx = ((vaddr >> 12) & 0x1FF) as u64;
     let leaf_paddr = l3 + l3_idx * 8;
     // SAFETY: see above; L3 entry address is within the L3 page.
-    let pte = unsafe { read_pte_dm(leaf_paddr) };
+    let pte = unsafe { read_pte_dm(leaf_paddr, channel) };
     WalkResult::Leaf(leaf_paddr, pte)
 }
 
@@ -282,7 +302,10 @@ fn walk_read(root_paddr: u64, vaddr: u64) -> WalkResult {
 ///
 /// The kernel Direct Map must be active. See `walk_read`.
 pub(crate) fn walk_translate(root_paddr: u64, vaddr: u64) -> Option<(PhysBytes, PageFlags)> {
-    match walk_read(root_paddr, vaddr) {
+    // Cross-space translation runs in kernel context (the kernel reads a
+    // foreign process's page table during IPC copies), so the kernel DM
+    // channel is hardcoded — independent of any handle's pinned channel.
+    match walk_read(root_paddr, vaddr, PteChannel::KernelDm) {
         WalkResult::Leaf(_leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
             // For 4KB leaf pages, the offset within the page comes from
             // the low 12 bits of vaddr.
@@ -321,17 +344,18 @@ impl PteWalkArch for AArch64PteWalk {
 ///
 /// # Safety precondition (not enforced at compile time)
 ///
-/// The kernel Direct Map must be active. See `walk_read`.
-fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
+/// The Direct Map window selected by `channel` must be active. See
+/// `walk_read`.
+fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, PageTableError> {
     let i0 = l0_index(vaddr);
-    // SAFETY: Direct Map active per function precondition.
-    let l0e = unsafe { read_pte_dm(root_paddr + (i0 as u64) * 8) };
+    // SAFETY: channel's Direct Map active per function precondition.
+    let l0e = unsafe { read_pte_dm(root_paddr + (i0 as u64) * 8, channel) };
     let l1 = if l0e & Arm64PteFlags::VALID.bits() == 0 {
         // Allocate a new L1 table page.
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
         let entry = phys.0 | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits();
-        // SAFETY: Direct Map active; L0 entry slot is 8-byte aligned.
-        unsafe { write_pte_dm(root_paddr + (i0 as u64) * 8, entry, 0) };
+        // SAFETY: channel's Direct Map active; L0 entry slot is 8-byte aligned.
+        unsafe { write_pte_dm(root_paddr + (i0 as u64) * 8, entry, 0, channel) };
         phys.0
     } else {
         l0e & ADDR_MASK
@@ -339,7 +363,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
 
     let i1 = l1_index(vaddr);
     // SAFETY: see above.
-    let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8) };
+    let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8, channel) };
     if l1e & Arm64PteFlags::VALID.bits() != 0 && l1e & Arm64PteFlags::TABLE.bits() == 0 {
         // A 1GB block descriptor already occupies this slot — cannot
         // install a 4KB page without demoting the block.
@@ -348,7 +372,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
     let l2 = if l1e & Arm64PteFlags::VALID.bits() == 0 {
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
         let entry = phys.0 | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits();
-        unsafe { write_pte_dm(l1 + (i1 as u64) * 8, entry, 0) };
+        unsafe { write_pte_dm(l1 + (i1 as u64) * 8, entry, 0, channel) };
         phys.0
     } else {
         l1e & ADDR_MASK
@@ -356,7 +380,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
 
     let i2 = l2_index(vaddr);
     // SAFETY: see above.
-    let l2e = unsafe { read_pte_dm(l2 + (i2 as u64) * 8) };
+    let l2e = unsafe { read_pte_dm(l2 + (i2 as u64) * 8, channel) };
     if l2e & Arm64PteFlags::VALID.bits() != 0 && l2e & Arm64PteFlags::TABLE.bits() == 0 {
         // A 2MB block descriptor already occupies this slot.
         return Err(PageTableError::AlreadyMapped);
@@ -364,7 +388,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64) -> Result<u64, PageTableError> {
     let l3 = if l2e & Arm64PteFlags::VALID.bits() == 0 {
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
         let entry = phys.0 | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits();
-        unsafe { write_pte_dm(l2 + (i2 as u64) * 8, entry, 0) };
+        unsafe { write_pte_dm(l2 + (i2 as u64) * 8, entry, 0, channel) };
         phys.0
     } else {
         l2e & ADDR_MASK
@@ -386,7 +410,7 @@ impl Paging for AArch64Paging {
     fn new_from_page(root_page: PhysBytes) -> Self {
         let ptr = unsafe { phys_to_ptr(root_page.0) };
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Self { root_paddr: root_page.0 }
+        Self { root_paddr: root_page.0, channel: PteChannel::KernelDm }
     }
 
     /// Wrap an already-active L0 translation table root without zeroing it.
@@ -411,7 +435,22 @@ impl Paging for AArch64Paging {
     ///   via the kernel Direct Map, which `walk_read`/`walk_alloc` rely on).
     /// - The returned handle must not outlive the page table it wraps.
     fn from_active_root(root_phys: PhysBytes) -> Self {
-        Self { root_paddr: root_phys.0 }
+        Self { root_paddr: root_phys.0, channel: PteChannel::KernelDm }
+    }
+
+    /// Wrap an already-active L0 translation table root for VM-context access.
+    ///
+    /// Same wrapping semantics as `from_active_root`, but the handle's PTE
+    /// access channel is the VM Direct Map: the handle is exercised while
+    /// VM (a user-space process) runs, where the supervisor-only kernel
+    /// window is unreachable. See [`PteChannel`].
+    ///
+    /// # Safety contract (caller responsibility)
+    ///
+    /// Same as `from_active_root`, plus: every page-table page reachable
+    /// from the root must be covered by the VM Direct Map window.
+    fn adopt_active_root(root_phys: PhysBytes) -> Self {
+        Self { root_paddr: root_phys.0, channel: PteChannel::VmDm }
     }
 
     unsafe fn enable(&self) -> PhysBytes {
@@ -476,12 +515,20 @@ impl Paging for AArch64Paging {
         // Allocate the root L0 (PGD) page via the registered page-table
         // allocator. The allocator (boot bump or VM-side) is responsible
         // for zero-filling; we additionally zero here for defense-in-depth.
+        //
+        // Channel: VM-context (VmDm). In production this constructor is only
+        // called from the VM server (VM-managed process page tables), and a
+        // user-space process can only reach PTE pages through the VM Direct
+        // Map. Kernel-context construction goes through `from_active_root`.
         let (root_phys, _root_virt) = crate::pt_alloc::alloc_pt_page()?;
-        let ptr = phys_to_ptr_dm(root_phys.0);
+        // SAFETY: the VM Direct Map window must be established (paging
+        // enabled with the VM DM window mapped); the fresh root page is
+        // RAM covered by that window.
+        let ptr = channel_to_ptr(root_phys.0, PteChannel::VmDm);
         // SAFETY: alloc_pt_page returns a fresh, 4KB-aligned page that is
         // not aliased by any other live reference. Direct Map must be active.
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Ok(Self { root_paddr: root_phys.0 })
+        Ok(Self { root_paddr: root_phys.0, channel: PteChannel::VmDm })
     }
 
     unsafe fn destroy(&mut self) {
@@ -490,9 +537,9 @@ impl Paging for AArch64Paging {
         // root L0 to prevent use-after-free if the physical page is reused,
         // and accept the intermediate-table leak.
         //
-        // SAFETY: Direct Map must be active; root_paddr is the physical
-        // address of our L0 (PGD) page.
-        let ptr = phys_to_ptr_dm(self.root_paddr);
+        // SAFETY: the handle's Direct Map channel must be active;
+        // root_paddr is the physical address of our L0 (PGD) page.
+        let ptr = channel_to_ptr(self.root_paddr, self.channel);
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
     }
 
@@ -507,16 +554,16 @@ impl Paging for AArch64Paging {
             return Err(PageTableError::InvalidAddress);
         }
         // Walk to the leaf L3 PTE address, allocating intermediate tables.
-        let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0)?;
-        // SAFETY: Direct Map active; leaf_paddr is 8-byte aligned PTE slot.
-        let pte = unsafe { read_pte_dm(leaf_paddr) };
+        let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0, self.channel)?;
+        // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned PTE slot.
+        let pte = unsafe { read_pte_dm(leaf_paddr, self.channel) };
         if pte & Arm64PteFlags::VALID.bits() != 0 {
             return Err(PageTableError::AlreadyMapped);
         }
         let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
         // SAFETY: see above. Flush TLB for the target vaddr in case a
         // stale entry lingers from a prior unmap.
-        unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0) };
+        unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
         Ok(())
     }
 
@@ -530,7 +577,7 @@ impl Paging for AArch64Paging {
             return Err(PageTableError::InvalidAddress);
         }
         // Walk read-only first to locate the leaf (do not allocate).
-        match walk_read(self.root_paddr, vaddr.0) {
+        match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, old_pte) => {
                 let old = if old_pte & Arm64PteFlags::VALID.bits() != 0 {
                     Some((PhysBytes(old_pte & ADDR_MASK), pte_to_flags(old_pte)))
@@ -538,8 +585,8 @@ impl Paging for AArch64Paging {
                     None
                 };
                 let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
-                // SAFETY: Direct Map active; leaf_paddr is 8-byte aligned.
-                unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0) };
+                // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
+                unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
                 Ok(old)
             }
             // Not mapped and no leaf table — overwrite requires allocation,
@@ -549,12 +596,12 @@ impl Paging for AArch64Paging {
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
-        match walk_read(self.root_paddr, vaddr.0) {
+        match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
                 let old_paddr = PhysBytes(pte & ADDR_MASK);
-                // SAFETY: Direct Map active; leaf_paddr is 8-byte aligned.
+                // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 // Clear the PTE (set to 0 = invalid) and flush TLB.
-                unsafe { write_pte_dm(leaf_paddr, 0, vaddr.0) };
+                unsafe { write_pte_dm(leaf_paddr, 0, vaddr.0, self.channel) };
                 Ok(old_paddr)
             }
             _ => Err(PageTableError::NotMapped),
@@ -566,12 +613,12 @@ impl Paging for AArch64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
-        match walk_read(self.root_paddr, vaddr.0) {
+        match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
                 // Preserve the physical address, replace only the flag bits.
                 let new_pte = (pte & ADDR_MASK) | flags_to_pte(flags);
-                // SAFETY: Direct Map active; leaf_paddr is 8-byte aligned.
-                unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0) };
+                // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
+                unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
                 Ok(())
             }
             _ => Err(PageTableError::NotMapped),
@@ -579,7 +626,7 @@ impl Paging for AArch64Paging {
     }
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-        match walk_read(self.root_paddr, vaddr.0) {
+        match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(_leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
                 // For 4KB leaf pages, the offset within the page comes from
                 // the low 12 bits of vaddr.
@@ -678,6 +725,123 @@ impl HugePages for AArch64Paging {
 
         let i2 = l2_index(vaddr.0);
         unsafe { write_entry(l2, i2, (paddr.0 & ADDR_MASK) | pte_flags) };
+        Ok(())
+    }
+}
+
+// ── DM coverage establishment (boot identity write channel) ────────────────
+
+/// ZST implementor of [`DmCoverageArch`] for AArch64.
+///
+/// The VM DM window (0x0000_1000_0000_0000, L0 slot 32) and the kernel DM
+/// window (0xFFFF_8000_0000_0000, L0 slot 256) both lie outside the identity
+/// range [0, 4 GiB) (L0 slot 0), so coverage establishment is pure
+/// incremental mapping — no demotion path exists: any present slot inside a
+/// DM window on the bootstrap root is a boot-layout bug and fails fast.
+/// All table access goes through the identity mapping (`VA = PA`), which
+/// stays untouched by these writes (§6.1 "DM 建立的自举写通道闭环").
+pub struct AArch64DmCoverage;
+
+impl crate::arch::dm_coverage::DmCoverageArch for AArch64DmCoverage {
+    unsafe fn dm_install_leaf(
+        root_paddr: PhysBytes,
+        vaddr: VirBytes,
+        paddr: PhysBytes,
+        size: usize,
+        flags: PageFlags,
+    ) -> Result<(), PageTableError> {
+        if size != 1 << 30 && size != 1 << 21 && size != 4096 {
+            return Err(PageTableError::InvalidAddress);
+        }
+        if !vaddr.0.is_multiple_of(size as u64) || !paddr.0.is_multiple_of(size as u64) {
+            return Err(PageTableError::InvalidAddress);
+        }
+        let pte_flags = flags_to_pte(flags);
+        // bitflags' `|` is not const; combine raw bit patterns instead.
+        const TABLE_ENTRY: u64 =
+            Arm64PteFlags::VALID.bits() | Arm64PteFlags::AF.bits() | Arm64PteFlags::TABLE.bits();
+
+        // L0 → L1 (branch allocation only — fresh slots).
+        let i0 = l0_index(vaddr.0);
+        let l0 = unsafe { phys_to_ptr(root_paddr.0) };
+        let e0 = unsafe { read_entry(l0, i0) };
+        let l1 = if e0 & Arm64PteFlags::VALID.bits() == 0 {
+            let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
+            // SAFETY: identity channel active (§6.1 boot write channel); L0
+            // slot is within the root page.
+            unsafe { write_entry(l0, i0, phys.0 | TABLE_ENTRY) };
+            phys.0
+        } else {
+            e0 & ADDR_MASK
+        };
+
+        // L1 level: 1 GiB block or branch to L2.
+        let i1 = l1_index(vaddr.0);
+        let l1_ptr = unsafe { phys_to_ptr(l1) };
+        let e1 = unsafe { read_entry(l1_ptr, i1) };
+        let present1 = e1 & Arm64PteFlags::VALID.bits() != 0;
+        let block1 = present1 && e1 & Arm64PteFlags::TABLE.bits() == 0;
+
+        if size == 1 << 30 {
+            if present1 {
+                // Block or table — both impossible from a single candidate
+                // pass into a fresh window; fail fast.
+                return Err(PageTableError::AlreadyMapped);
+            }
+            // SAFETY: identity channel active; fresh slot. pte_flags carries
+            // no TABLE bit → 1 GiB block descriptor.
+            unsafe { write_entry(l1_ptr, i1, (paddr.0 & ADDR_MASK) | pte_flags) };
+            return Ok(());
+        }
+        if block1 {
+            // A 1 GiB block blocks the finer install.
+            return Err(PageTableError::AlreadyMapped);
+        }
+        let l2 = if present1 {
+            e1 & ADDR_MASK
+        } else {
+            let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
+            // SAFETY: identity channel active; fresh slot.
+            unsafe { write_entry(l1_ptr, i1, phys.0 | TABLE_ENTRY) };
+            phys.0
+        };
+
+        // L2 level: 2 MiB block or branch to L3.
+        let i2 = l2_index(vaddr.0);
+        let l2_ptr = unsafe { phys_to_ptr(l2) };
+        let e2 = unsafe { read_entry(l2_ptr, i2) };
+        let present2 = e2 & Arm64PteFlags::VALID.bits() != 0;
+        let block2 = present2 && e2 & Arm64PteFlags::TABLE.bits() == 0;
+
+        if size == 1 << 21 {
+            if present2 {
+                return Err(PageTableError::AlreadyMapped);
+            }
+            // SAFETY: identity channel active; fresh slot.
+            unsafe { write_entry(l2_ptr, i2, (paddr.0 & ADDR_MASK) | pte_flags) };
+            return Ok(());
+        }
+        if block2 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        let l3 = if present2 {
+            e2 & ADDR_MASK
+        } else {
+            let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
+            // SAFETY: identity channel active; fresh slot.
+            unsafe { write_entry(l2_ptr, i2, phys.0 | TABLE_ENTRY) };
+            phys.0
+        };
+
+        // L3 level: 4 KiB leaf.
+        let i3 = ((vaddr.0 >> 12) & 0x1FF) as usize;
+        let l3_ptr = unsafe { phys_to_ptr(l3) };
+        let e3 = unsafe { read_entry(l3_ptr, i3) };
+        if e3 & Arm64PteFlags::VALID.bits() != 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        // SAFETY: identity channel active; fresh leaf slot.
+        unsafe { write_entry(l3_ptr, i3, (paddr.0 & ADDR_MASK) | pte_flags) };
         Ok(())
     }
 }

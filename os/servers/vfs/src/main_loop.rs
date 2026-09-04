@@ -32,10 +32,10 @@
 //!   minix-rs models this as a single-threaded event loop with request-slot
 //!   state machines (ARCH A-1, see 01-vfs-init-main.md §3.4).
 
-use minix_types::{Endpoint, Gid, Message, Uid, UserSlot, VfsPmInit, VfsPmInitError};
+use crate::call_table::CallTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
 use crate::worker::WorkerPool;
-use crate::call_table::CallTable;
+use minix_types::{Endpoint, Gid, Message, Uid, UserSlot, VfsPmInit, VfsPmInitError};
 
 /// C: `const.h:16-17` — uid_t/gid_t for system processes and INIT.
 const SYS_UID: Uid = 0;
@@ -510,14 +510,12 @@ impl VfsState {
         child_ep: Endpoint,
         child_pid: minix_types::Pid,
     ) -> Result<(), &'static str> {
-        let _parent_slot = parent_ep
-            .to_user_slot()
-            .ok_or("Invalid parent endpoint")?;
-        let child_slot = child_ep
-            .to_user_slot()
-            .ok_or("Invalid child endpoint")?;
+        let _parent_slot = parent_ep.to_user_slot().ok_or("Invalid parent endpoint")?;
+        let child_slot = child_ep.to_user_slot().ok_or("Invalid child endpoint")?;
 
-        let child_fp = self.fproc_table.get_mut(child_slot)
+        let child_fp = self
+            .fproc_table
+            .get_mut(child_slot)
             .ok_or("Child slot out of range")?;
 
         if child_fp.pid != PID_FREE {
@@ -763,9 +761,7 @@ impl VfsState {
         codec: &C,
     ) -> Result<usize, &'static str> {
         let transid_raw = (msg.m_type as u32) & 0xFFFF;
-        let slot = codec
-            .decode(transid_raw)
-            .ok_or("spurious transid")?;
+        let slot = codec.decode(transid_raw).ok_or("spurious transid")?;
         if slot >= crate::worker::NR_WTHREADS {
             return Err("worker slot out of range");
         }
@@ -1347,14 +1343,20 @@ mod tests {
     #[test]
     fn test_reply_intent_reply_or_later() {
         let state = VfsState::new();
-        assert_eq!(state.reply(Endpoint::from_generation_slot(0, 1), 0), ReplyIntent::Reply(0));
+        assert_eq!(
+            state.reply(Endpoint::from_generation_slot(0, 1), 0),
+            ReplyIntent::Reply(0)
+        );
         assert_eq!(state.reply(Endpoint::NONE, 0), ReplyIntent::NoReply);
-        assert_eq!(state.reply_code(Endpoint::from_generation_slot(0, 1), 5), ReplyIntent::Reply(5));
+        assert_eq!(
+            state.reply_code(Endpoint::from_generation_slot(0, 1), 5),
+            ReplyIntent::Reply(5)
+        );
     }
 
     #[test]
     fn test_call_resolver_trait_two_impls() {
-        use crate::call_table::{CallResolver, CallTable, NullResolver, VfsCallNum, VFS_BASE};
+        use crate::call_table::{CallResolver, CallTable, NullResolver, VFS_BASE, VfsCallNum};
         let table = CallTable::new();
         let null = NullResolver;
         // Same raw, different behavior
@@ -1364,7 +1366,8 @@ mod tests {
         assert!(CallResolver::is_valid(&table, raw));
         assert!(!CallResolver::is_valid(&null, raw));
         // Invalid raw both None, but trait objects show polymorphism
-        let resolvers: Vec<Box<dyn CallResolver>> = vec![Box::new(CallTable::new()), Box::new(NullResolver)];
+        let resolvers: Vec<Box<dyn CallResolver>> =
+            vec![Box::new(CallTable::new()), Box::new(NullResolver)];
         assert_eq!(resolvers[0].resolve(raw), Some(VfsCallNum::Open));
         assert_eq!(resolvers[1].resolve(raw), None);
         let _ = VFS_BASE; // use constant

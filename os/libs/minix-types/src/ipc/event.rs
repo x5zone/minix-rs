@@ -6,8 +6,8 @@
 //!
 //! 对应 04-stage-pm/06-event-subscription.md 的协议层。
 
-use crate::{Endpoint, Message, MessageUnion};
 use crate::ipc::message::{MessLsysPmProceventmask, MessPmLsysProcEvent};
+use crate::{Endpoint, Message, MessageUnion};
 
 /// `PM_PROCEVENTMASK` — `callnr.h:53` (`PM_BASE + 40`).
 pub const PM_PROCEVENTMASK: i32 = 40;

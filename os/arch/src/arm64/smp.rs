@@ -159,6 +159,27 @@ impl SmpArch for AArch64SmpArch {
         }
     }
 
+    fn idle_halt() {
+        // C: halt_cpu() — klib.S:407-414 (idle-loop variant: `sti; hlt`).
+        //
+        // aarch64 equivalent: unmask IRQs (`daifclr, #2` clears the I mask
+        // — DAIF I-bit, ARM ARM §D1.12) then `wfi`. As on x86_64, the mask
+        // must be cleared before waiting or the CPU never wakes. `wfi`
+        // returns when any pending interrupt is taken (the IRQ entry then
+        // runs with interrupts masked by hardware PSTATE masking).
+        //
+        // SAFETY: `msr daifclr` and `wfi` are privileged but confined:
+        // the first only unmasks IRQs, the second only sleeps the CPU.
+        // Safe in EL1 kernel mode.
+        unsafe {
+            core::arch::asm!(
+                "msr daifclr, #2",
+                "wfi",
+                options(nomem, nostack)
+            );
+        }
+    }
+
     #[inline]
     fn ack_ipi() {
         // C: ipi_ack() — smp.c:58,198

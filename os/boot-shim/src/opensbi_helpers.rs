@@ -364,6 +364,16 @@ pub fn dtb_ptr() -> Option<u64> {
 static mut BUMP_PTR: u64 = MODULE_REGION_BASE;
 const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 
+// Compile-time proof (riscv64 target) that every bump allocation — root
+// page, page-table pages, modules — ends at or below the DM-admissible
+// bound `min(BOOT_IDENTITY_MAP_END, VM DM window PA end)` per target
+// architecture (07-paging_init_design §6.1 资格过滤 ①). OpenSBI has no
+// AllocateMaxAddress; the fixed pool location must satisfy the bound by
+// construction. The kernel re-validates at DM establishment
+// (`os/kernel/src/dm_coverage.rs`).
+#[cfg(target_arch = "riscv64")]
+const _: () = assert!(BUMP_END <= minix_arch::boot_dm_admissible_end());
+
 fn bump_alloc(num_pages: usize) -> Option<u64> {
     // Reject zero-page requests: a successful call with num_pages == 0
     // would return the current BUMP_PTR (a duplicate address) without

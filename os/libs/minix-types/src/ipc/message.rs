@@ -3,6 +3,7 @@
 //! Minix3 uses fixed-size messages for inter-process communication.
 
 use crate::types::Endpoint;
+use crate::types::GrantId;
 
 /// Message payload size (bytes).
 ///
@@ -99,6 +100,18 @@ pub union MessageUnion {
     /// Kernel: SCHEDULING_NO_QUANTUM (kernel → user-space scheduler).
     /// C: `mess_krn_lsys_schedule` — ipc.h:261-272.
     pub m_krn_lsys_schedule: MessKrnLsysSchedule,
+    /// Scheduler: SCHEDULING_START (PM/RS → scheduler).
+    /// C: `mess_lsys_sched_scheduling_start` — ipc.h:1428-1437.
+    pub m_lsys_sched_scheduling_start: MessLsysSchedSchedulingStart,
+    /// Scheduler: SCHEDULING_STOP (PM → scheduler).
+    /// C: `mess_lsys_sched_scheduling_stop` — ipc.h:1439-1444.
+    pub m_lsys_sched_scheduling_stop: MessLsysSchedSchedulingStop,
+    /// Scheduler: SCHEDULING_SET_NICE (PM → scheduler).
+    /// C: `mess_pm_sched_scheduling_set_nice` — ipc.h:1819-1827.
+    pub m_pm_sched_scheduling_set_nice: MessPmSchedSchedulingSetNice,
+    /// Scheduler: SCHEDULING_START reply (scheduler → PM).
+    /// C: `mess_sched_lsys_scheduling_start` — ipc.h:1904-1912.
+    pub m_sched_lsys_scheduling_start: MessSchedLsysSchedulingStart,
     /// Kernel: SYS_GETMCONTEXT / SYS_SETMCONTEXT.
     pub m_lsys_krn_sys_mcontext: MessLsysKrnSysMcontext,
     /// Kernel: SYS_EXEC.
@@ -109,6 +122,12 @@ pub union MessageUnion {
     pub m_krn_lsys_sys_times: MessKrnLsysSysTimes,
     /// Kernel: SYS_SETALARM request/reply.
     pub m_lsys_krn_sys_setalarm: MessLsysKrnSysSetalarm,
+    /// TTY: TTY_FKEY_CONTROL request (IS → TTY).
+    /// C: `mess_lsys_tty_fkey_ctl` — ipc.h:1447-1454.
+    pub m_lsys_tty_fkey_ctl: MessLsysTtyFkeyCtl,
+    /// TTY: TTY_FKEY_CONTROL reply (TTY → IS, written back in place).
+    /// C: `mess_tty_lsys_fkey_ctl` — ipc.h:1925-1931.
+    pub m_tty_lsys_fkey_ctl: MessTtyLsysFkeyCtl,
     /// Kernel: SYS_STIME request.
     pub m_lsys_krn_sys_stime: MessLsysKrnSysStime,
     /// Kernel: SYS_SETTIME request.
@@ -175,6 +194,18 @@ pub union MessageUnion {
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
     /// C: `mess_notify m_notify` — ipc.h:2598
     pub m_notify: crate::ipc::notify::MessNotify,
+    /// MIB: sysctl(2) request (user/libc → MIB). C: `message.m_lc_mib_sysctl` — ipc.h:424
+    pub m_lc_mib_sysctl: MessLcMibSysctl,
+    /// MIB: sysctl(2) reply (MIB → user/libc). C: `message.m_mib_lc_sysctl` — ipc.h:1548
+    pub m_mib_lc_sysctl: MessMibLcSysctl,
+    /// MIB: subtree mount/unmount (service → MIB, one-way). C: `message.m_lsys_mib_register` — ipc.h:1373
+    pub m_lsys_mib_register: MessLsysMibRegister,
+    /// MIB: remote reply (service → MIB). C: `message.m_lsys_mib_reply` — ipc.h:1384
+    pub m_lsys_mib_reply: MessLsysMibReply,
+    /// MIB: relayed sysctl call (MIB → remote service). C: `message.m_mib_lsys_call` — ipc.h:1554
+    pub m_mib_lsys_call: MessMibLsysCall,
+    /// MIB: subtree description fetch (MIB → remote service). C: `message.m_mib_lsys_info` — ipc.h:1571
+    pub m_mib_lsys_info: MessMibLsysInfo,
     /// Raw bytes.
     pub raw: [u8; MESSAGE_PAYLOAD_SIZE],
 }
@@ -1021,6 +1052,347 @@ pub struct MessKrnLsysSchedule {
     pub _padding: [u8; 24],
 }
 
+/// SCHEDULING_START message payload (PM/RS → user-space scheduler).
+///
+/// C: `mess_lsys_sched_scheduling_start` — ipc.h:1428-1437. Carries the
+/// process to schedule, its parent (inheritance source), the maximum
+/// priority, and the time quantum.
+///
+/// # Layout (matches C `mess_lsys_sched_scheduling_start`)
+/// ```text
+/// | Field    | Type | Offset | C field   |
+/// |----------|------|--------|-------------|
+/// | endpoint | i32  | 0      | endpoint    |
+/// | parent   | i32  | 4      | parent      |
+/// | maxprio  | i32  | 8      | maxprio     |
+/// | quantum  | i32  | 12     | quantum     |
+/// | _padding | 40B  | 16     | (C: uint8_t[40]) |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessLsysSchedSchedulingStart {
+    /// Process to schedule. C: `endpoint_t endpoint`.
+    pub endpoint: i32,
+    /// Inheritance source (parent endpoint). C: `endpoint_t parent`.
+    pub parent: i32,
+    /// Maximum priority. C: `int maxprio`.
+    pub maxprio: i32,
+    /// Time quantum in ms. C: `int quantum`.
+    pub quantum: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLsysSchedSchedulingStart {
+    fn default() -> Self {
+        Self {
+            endpoint: 0,
+            parent: 0,
+            maxprio: 0,
+            quantum: 0,
+            _padding: [0u8; 40],
+        }
+    }
+}
+
+/// SCHEDULING_STOP message payload (PM → user-space scheduler).
+///
+/// C: `mess_lsys_sched_scheduling_stop` — ipc.h:1439-1444. Names the
+/// process to stop scheduling (exit path).
+///
+/// # Layout (matches C `mess_lsys_sched_scheduling_stop`)
+/// ```text
+/// | Field    | Type | Offset |
+/// |----------|------|--------|
+/// | endpoint | i32  | 0      |
+/// | _padding | 52B  | 4      |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessLsysSchedSchedulingStop {
+    /// Process to stop scheduling. C: `endpoint_t endpoint`.
+    pub endpoint: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessLsysSchedSchedulingStop {
+    fn default() -> Self {
+        Self {
+            endpoint: 0,
+            _padding: [0u8; 52],
+        }
+    }
+}
+
+/// SCHEDULING_SET_NICE message payload (PM → user-space scheduler).
+///
+/// C: `mess_pm_sched_scheduling_set_nice` — ipc.h:1819-1827. Names the
+/// process and the new maximum priority.
+///
+/// # Layout (matches C `mess_pm_sched_scheduling_set_nice`)
+/// ```text
+/// | Field    | Type | Offset |
+/// |----------|------|--------|
+/// | endpoint | i32  | 0      |
+/// | maxprio  | u32  | 4      |
+/// | _padding | 48B  | 8      |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessPmSchedSchedulingSetNice {
+    /// Target process endpoint. C: `endpoint_t endpoint`.
+    pub endpoint: i32,
+    /// New maximum priority. C: `uint32_t maxprio`.
+    pub maxprio: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessPmSchedSchedulingSetNice {
+    fn default() -> Self {
+        Self {
+            endpoint: 0,
+            maxprio: 0,
+            _padding: [0u8; 48],
+        }
+    }
+}
+
+/// SCHEDULING_START reply payload (scheduler → PM).
+///
+/// C: `mess_sched_lsys_scheduling_start` — ipc.h:1904-1912. Reports which
+/// scheduler took over the process (`SCHED_PROC_NR` on success).
+///
+/// # Layout (matches C `mess_sched_lsys_scheduling_start`)
+/// ```text
+/// | Field     | Type | Offset |
+/// |-----------|------|--------|
+/// | scheduler | i32  | 0      |
+/// | _padding  | 52B  | 4      |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessSchedLsysSchedulingStart {
+    /// Scheduler endpoint that took over. C: `endpoint_t scheduler`.
+    pub scheduler: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessSchedLsysSchedulingStart {
+    fn default() -> Self {
+        Self {
+            scheduler: 0,
+            _padding: [0u8; 52],
+        }
+    }
+}
+
+/// DS value: one 32-bit lane, three meanings (`ipc.h:94-99`).
+///
+/// C: `union ds_val { grant; u32; ep }` — three arms share one 32-bit lane;
+/// which arm reads depends on the letter (LABEL letters read the endpoint
+/// arm, U32 letters the number arm, MEM/key lanes the grant arm). Reading
+/// the wrong arm of a C union is UB with no guardrail, so the Rust form
+/// is a newtype: constructing names the arm, reading returns its meaning.
+///
+/// # Layout (matches C `union ds_val`)
+/// ```text
+/// | Field | Type | Offset |
+/// |-------|------|--------|
+/// | raw   | i32  | 0      |
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct DsVal(i32);
+
+impl DsVal {
+    /// A safecopy grant lane. C: `grant` arm — `key_grant`, MEM values.
+    pub const fn grant(id: GrantId) -> Self {
+        Self(id)
+    }
+
+    /// A plain number lane. C: `u32` arm — U32 values.
+    pub const fn number(value: u32) -> Self {
+        Self(value as i32)
+    }
+
+    /// An endpoint lane. C: `ep` arm — LABEL values.
+    pub const fn endpoint(ep: Endpoint) -> Self {
+        Self(ep.0)
+    }
+
+    /// Read the grant lane.
+    pub const fn as_grant(self) -> GrantId {
+        self.0
+    }
+
+    /// Read the number lane.
+    pub const fn as_number(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// Read the endpoint lane.
+    pub const fn as_endpoint(self) -> Endpoint {
+        Endpoint(self.0)
+    }
+}
+
+/// DS request payload (client → DS).
+///
+/// C: `mess_ds_req` — ipc.h:107-115. Six lanes in order: the key grant,
+/// the key length, the flags, the input value, the value length, and the
+/// owner. Every DS letter fills this same shape; unused lanes stay zeroed
+/// (`memset`, libsys/ds.c).
+///
+/// # Layout (matches C `mess_ds_req`)
+/// ```text
+/// | Field     | Type | Offset |
+/// |-----------|------|--------|
+/// | key_grant | i32  | 0      |
+/// | key_len   | i32  | 4      |
+/// | flags     | i32  | 8      |
+/// | val_in    | i32  | 12     |
+/// | val_len   | i32  | 16     |
+/// | owner     | i32  | 20     |
+/// | _padding  | 32B  | 24     |
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct MessDsReq {
+    /// Key safecopy grant. C: `cp_grant_id_t key_grant`.
+    pub key_grant: GrantId,
+    /// Key length. C: `int key_len`.
+    pub key_len: i32,
+    /// Request flags. C: `int flags` (`DSF_*`, ds.h:12-26).
+    pub flags: i32,
+    /// Input value (arm by letter). C: `union ds_val val_in`.
+    pub val_in: DsVal,
+    /// Value length. C: `int val_len`.
+    pub val_len: i32,
+    /// Requesting owner. C: `endpoint_t owner` (wire shape; readers name it).
+    pub owner: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 32],
+}
+
+/// DS reply payload (DS → client).
+///
+/// C: `mess_ds_reply` — ipc.h:100-105. Two lanes: the output value and
+/// its length. Replies carry no key and no flags of their own (`do_check`
+/// writes back into the *request* lanes instead — 10's domain).
+///
+/// # Layout (matches C `mess_ds_reply`)
+/// ```text
+/// | Field     | Type | Offset |
+/// |-----------|------|--------|
+/// | val_out   | i32  | 0      |
+/// | val_len   | i32  | 4      |
+/// | _padding  | 48B  | 8      |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessDsReply {
+    /// Output value (arm by letter). C: `union ds_val val_out`.
+    pub val_out: DsVal,
+    /// Value length. C: `int val_len`.
+    pub val_len: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessDsReply {
+    // Manual: `[u8; 48]` has no `Default` (arrays past 32 don't derive),
+    // so `#[derive(Default)]` cannot apply — same as the neighbouring
+    // 48/52-byte payloads in this file.
+    fn default() -> Self {
+        Self {
+            val_out: DsVal::default(),
+            val_len: 0,
+            _padding: [0u8; 48],
+        }
+    }
+}
+
+/// FKEY control request payload (IS → TTY).
+///
+/// C: `mess_lsys_tty_fkey_ctl` — `minix3/minix/include/minix/ipc.h:1447-1454`
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field   | Type | Offset |
+/// |---------|------|--------|
+/// | request | i32  | 0      |
+/// | fkeys   | i32  | 4      |
+/// | sfkeys  | i32  | 8      |
+/// | padding | 44B  | 12     |
+/// | Total   | 56B  |        |
+/// ```
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessLsysTtyFkeyCtl {
+    /// Sub-command (`FKEY_MAP`/`FKEY_UNMAP`/`FKEY_EVENTS`). C: `int request`.
+    pub request: i32,
+    /// F1-F12 bitmap, bits 1-12 (bit 0 unused). C: `int fkeys`.
+    pub fkeys: i32,
+    /// Shift F1-F12 bitmap, bits 1-12. C: `int sfkeys`.
+    pub sfkeys: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 44],
+}
+
+impl Default for MessLsysTtyFkeyCtl {
+    // Manual `Default` — same neighbouring-payload convention as above.
+    fn default() -> Self {
+        Self {
+            request: 0,
+            fkeys: 0,
+            sfkeys: 0,
+            _padding: [0u8; 44],
+        }
+    }
+}
+
+/// FKEY control reply payload (TTY → IS, written back in place).
+///
+/// C: `mess_tty_lsys_fkey_ctl` — `minix3/minix/include/minix/ipc.h:1925-1931`
+///
+/// # 64-bit Layout
+/// ```text
+/// | Field   | Type | Offset |
+/// |---------|------|--------|
+/// | fkeys   | i32  | 0      |
+/// | sfkeys  | i32  | 4      |
+/// | padding | 48B  | 8      |
+/// | Total   | 56B  |        |
+/// ```
+///
+/// Only successfully consumed bits are cleared (`bit_unset`); leftover bits
+/// are returned as-is for retry/diagnosis
+/// (`minix3/minix/drivers/tty/tty/arch/i386/keyboard.c:439-526`).
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MessTtyLsysFkeyCtl {
+    /// Remaining (unconsumed) F1-F12 bits. C: `int fkeys`.
+    pub fkeys: i32,
+    /// Remaining Shift F1-F12 bits. C: `int sfkeys`.
+    pub sfkeys: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessTtyLsysFkeyCtl {
+    // Manual `Default` — same neighbouring-payload convention as above.
+    fn default() -> Self {
+        Self {
+            fkeys: 0,
+            sfkeys: 0,
+            _padding: [0u8; 48],
+        }
+    }
+}
+
 /// SYS_GETMCONTEXT / SYS_SETMCONTEXT message payload.
 ///
 /// C: `mess_lsys_krn_sys_getmcontext` / `mess_lsys_krn_sys_setmcontext` — ipc.h:1188-1198, 1264-1274
@@ -1681,8 +2053,6 @@ pub struct MessVmVfsMmap {
     pub _padding: [u8; 8],
 }
 
-
-
 /// Physical memory mapping payload (driver → VM).
 ///
 /// C: `message.m_lsys_vm_map_phys` — `mess_lsys_vm_map_phys { endpoint_t ep;
@@ -1750,8 +2120,6 @@ pub struct MessLsysVmVmremap {
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 32],
 }
-
-
 
 /// Unmap-physical-mapping payload (driver → VM).
 ///
@@ -1853,8 +2221,6 @@ pub struct MessLcVmProcctl {
     pub _padding: [u8; 12],
 }
 
-
-
 /// VFS call completion payload (VFS → VM) for `VM_VFS_REPLY`.
 ///
 /// C: `message.m_m10` — `mess_10 { uint64_t m10ull1; int m10i1..m10i4;
@@ -1896,8 +2262,6 @@ pub struct MessVmVfsReply {
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 20],
 }
-
-
 
 /// Cache-block request payload (VFS → VM) for `VM_MAPCACHEPAGE` /
 /// `VM_SETCACHEPAGE` / `VM_FORGETCACHEPAGE` / `VM_CLEARCACHE`.
@@ -1950,8 +2314,6 @@ pub struct MessVmmcp {
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 14],
 }
-
-
 
 /// Cache-block map reply payload (VM → VFS) for `VM_MAPCACHEPAGE`.
 ///
@@ -2009,7 +2371,10 @@ pub struct MessLsysPmProceventmask {
 
 impl Default for MessLsysPmProceventmask {
     fn default() -> Self {
-        Self { mask: 0, _padding: [0; 52] }
+        Self {
+            mask: 0,
+            _padding: [0; 52],
+        }
     }
 }
 
@@ -2038,7 +2403,11 @@ pub struct MessPmLsysProcEvent {
 
 impl Default for MessPmLsysProcEvent {
     fn default() -> Self {
-        Self { endpt: 0, event: 0, _padding: [0; 48] }
+        Self {
+            endpt: 0,
+            event: 0,
+            _padding: [0; 48],
+        }
     }
 }
 
@@ -2067,7 +2436,11 @@ pub struct MessLsysPmSrvFork {
 
 impl Default for MessLsysPmSrvFork {
     fn default() -> Self {
-        Self { uid: 0, gid: 0, _padding: [0; 48] }
+        Self {
+            uid: 0,
+            gid: 0,
+            _padding: [0; 48],
+        }
     }
 }
 
@@ -2093,7 +2466,10 @@ pub struct MessLcPmExit {
 
 impl Default for MessLcPmExit {
     fn default() -> Self {
-        Self { status: 0, _padding: [0; 52] }
+        Self {
+            status: 0,
+            _padding: [0; 52],
+        }
     }
 }
 
@@ -2125,7 +2501,12 @@ pub struct MessLcPmWait4 {
 
 impl Default for MessLcPmWait4 {
     fn default() -> Self {
-        Self { pid: 0, options: 0, addr: 0, _padding: [0; 40] }
+        Self {
+            pid: 0,
+            options: 0,
+            addr: 0,
+            _padding: [0; 40],
+        }
     }
 }
 
@@ -2148,7 +2529,11 @@ pub struct MessLcPmKill {
 
 impl Default for MessLcPmKill {
     fn default() -> Self {
-        Self { pid: 0, signo: 0, _padding: [0; 48] }
+        Self {
+            pid: 0,
+            signo: 0,
+            _padding: [0; 48],
+        }
     }
 }
 
@@ -2171,6 +2556,350 @@ pub struct MessRsPmSrvKill {
 
 impl Default for MessRsPmSrvKill {
     fn default() -> Self {
-        Self { pid: 0, signo: 0, _padding: [0; 48] }
+        Self {
+            pid: 0,
+            signo: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
+// ── MIB wire payloads (02-mib-message-contract.md) ──
+//
+// All six are wire-identical 32-bit layouts: every lane is 4 bytes, so
+// each struct is exactly the 56-byte union payload. `vir_bytes`/`size_t`
+// travel as `u32` — the senders (libc `__sysctl`, libsys `rmib.c`) are
+// 32-bit C, and the 56-byte budget cannot hold 64-bit addresses next to
+// `name[8]` anyway. A future 64-bit userland is an A-4 exchange-ABI
+// decision, not a silent widening: widening here would desynchronise
+// every sender at once.
+
+/// MIB sysctl(2) request payload (user/libc → MIB).
+///
+/// C: `mess_lc_mib_sysctl` — ipc.h:424-433.
+///
+/// # Layout (matches C, all lanes 4 bytes)
+/// ```text
+/// | Field   | Type    | Offset |
+/// |---------|---------|--------|
+/// | oldp    | u32     | 0      |
+/// | oldlen  | u32     | 4      |
+/// | newp    | u32     | 8      |
+/// | newlen  | u32     | 12     |
+/// | namelen | u32     | 16     |
+/// | namep   | u32     | 20     |
+/// | name    | [i32;8] | 24     |
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessLcMibSysctl {
+    /// Old-data address (0 = no sink). C: `vir_bytes oldp`.
+    pub oldp: u32,
+    /// Old-data length. C: `size_t oldlen`.
+    pub oldlen: u32,
+    /// New-data address. C: `vir_bytes newp`.
+    pub newp: u32,
+    /// New-data length. C: `size_t newlen`.
+    pub newlen: u32,
+    /// Name length in components. C: `unsigned int namelen`.
+    pub namelen: u32,
+    /// Name address for long names. C: `vir_bytes namep`.
+    pub namep: u32,
+    /// Inline name (`namelen <= CTL_SHORTNAME`). C: `int name[CTL_SHORTNAME]`.
+    pub name: [i32; 8],
+}
+
+/// MIB sysctl(2) reply payload (MIB → user/libc).
+///
+/// C: `mess_mib_lc_sysctl` — ipc.h:1548-1552. One lane: the full result
+/// length (or the staged `call_reslen` on error) — see 01 §2.4.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessMibLcSysctl {
+    /// Result length. C: `size_t oldlen` (payload offset 0).
+    pub oldlen: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessMibLcSysctl {
+    // Manual: `[u8; 52]` has no `Default` — same as the neighbouring
+    // 48/52-byte payloads in this file.
+    fn default() -> Self {
+        Self {
+            oldlen: 0,
+            _padding: [0; 52],
+        }
+    }
+}
+
+/// MIB subtree mount/unmount payload (service → MIB, one-way).
+///
+/// C: `mess_lsys_mib_register` — ipc.h:1373-1382. Shared by `MIB_REGISTER`
+/// and `MIB_DEREGISTER`: deregister reads only `root_id` (remote.c:303).
+///
+/// # Layout (matches C, all lanes 4 bytes)
+/// ```text
+/// | Field  | Type    | Offset |
+/// |--------|---------|--------|
+/// | root_id| u32     | 0      |
+/// | flags  | u32     | 4      |
+/// | csize  | u32     | 8      |
+/// | clen   | u32     | 12     |
+/// | miblen | u32     | 16     |
+/// | mib    | [i32;8] | 20     |
+/// | pad    | 4B      | 52     |
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessLsysMibRegister {
+    /// Remote root id. C: `uint32_t root_id`.
+    pub root_id: u32,
+    /// Mount flags. C: `uint32_t flags`.
+    pub flags: u32,
+    /// Remote root child slots. C: `unsigned int csize`.
+    pub csize: u32,
+    /// Remote root children. C: `unsigned int clen`.
+    pub clen: u32,
+    /// Mount-path length (≤ 8, else silently dropped). C: `unsigned int miblen`.
+    pub miblen: u32,
+    /// Mount path. C: `int mib[CTL_SHORTNAME]`.
+    pub mib: [i32; 8],
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 4],
+}
+
+/// MIB remote reply payload (service → MIB).
+///
+/// C: `mess_lsys_mib_reply` — ipc.h:1384-1389. Replies are keyed by
+/// `req_id` (the call this answers); a zero `req_id` means "no reply
+/// expected" (remote.c:361,364).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysMibReply {
+    /// Request id being answered. C: `uint32_t req_id`.
+    pub req_id: u32,
+    /// Handler status (may be `ERESTART`). C: `ssize_t status`.
+    pub status: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessLsysMibReply {
+    // Manual: `[u8; 48]` has no `Default` — same as `MessDsReply`.
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            status: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
+/// MIB relayed sysctl call (MIB → remote service).
+///
+/// C: `mess_mib_lsys_call` — ipc.h:1554-1569. MIB re-grants the user
+/// regions to the service instead of copying: three grants, three
+/// lengths, no data bytes on this message.
+///
+/// # Layout (matches C, all lanes 4 bytes)
+/// ```text
+/// | Field      | Type | Offset |
+/// |------------|------|--------|
+/// | req_id     | u32  | 0      |
+/// | root_id    | u32  | 4      |
+/// | name_grant | i32  | 8      |
+/// | name_len   | u32  | 12     |
+/// | oldp_grant | i32  | 16     |
+/// | oldp_len   | u32  | 20     |
+/// | newp_grant | i32  | 24     |
+/// | newp_len   | u32  | 28     |
+/// | user_endpt | i32  | 32     |
+/// | flags      | u32  | 36     |
+/// | root_ver   | u32  | 40     |
+/// | tree_ver   | u32  | 44     |
+/// | pad        | 8B   | 48     |
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessMibLsysCall {
+    /// Request id (echoed in the reply). C: `uint32_t req_id`.
+    pub req_id: u32,
+    /// Remote root id. C: `uint32_t root_id`.
+    pub root_id: u32,
+    /// Grant for the remaining name. C: `cp_grant_id_t name_grant`.
+    pub name_grant: GrantId,
+    /// Remaining name length. C: `unsigned int name_len`.
+    pub name_len: u32,
+    /// Grant for the old-data region (or invalid). C: `cp_grant_id_t oldp_grant`.
+    pub oldp_grant: GrantId,
+    /// Old-data length. C: `size_t oldp_len`.
+    pub oldp_len: u32,
+    /// Grant for the new-data region (or invalid). C: `cp_grant_id_t newp_grant`.
+    pub newp_grant: GrantId,
+    /// New-data length. C: `size_t newp_len`.
+    pub newp_len: u32,
+    /// Original user endpoint. C: `endpoint_t user_endpt`.
+    pub user_endpt: i32,
+    /// Call flags. C: `uint32_t flags`.
+    pub flags: u32,
+    /// Remote root version seen at mount. C: `uint32_t root_ver`.
+    pub root_ver: u32,
+    /// Tree version seen at mount. C: `uint32_t tree_ver`.
+    pub tree_ver: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 8],
+}
+
+/// MIB subtree description fetch (MIB → remote service).
+///
+/// C: `mess_mib_lsys_info` — ipc.h:1571-1580. Asks the service for the
+/// name and description of its subtree root (mount time).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessMibLsysInfo {
+    /// Request id. C: `uint32_t req_id`.
+    pub req_id: u32,
+    /// Remote root id. C: `uint32_t root_id`.
+    pub root_id: u32,
+    /// Grant for the name buffer. C: `cp_grant_id_t name_grant`.
+    pub name_grant: GrantId,
+    /// Name buffer size. C: `size_t name_size`.
+    pub name_size: u32,
+    /// Grant for the description buffer. C: `cp_grant_id_t desc_grant`.
+    pub desc_grant: GrantId,
+    /// Description buffer size. C: `size_t desc_size`.
+    pub desc_size: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 32],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn test_sched_message_layouts() {
+        // C: ipc.h `_ASSERT_MSG_SIZE` — every payload is 56 bytes.
+        assert_eq!(size_of::<MessLsysSchedSchedulingStart>(), 56);
+        assert_eq!(size_of::<MessLsysSchedSchedulingStop>(), 56);
+        assert_eq!(size_of::<MessPmSchedSchedulingSetNice>(), 56);
+        assert_eq!(size_of::<MessSchedLsysSchedulingStart>(), 56);
+        // Field offsets pin the C layouts (ipc.h:1428-1444,1819-1827,1904-1912).
+        let start = MessLsysSchedSchedulingStart {
+            endpoint: 7,
+            parent: 3,
+            maxprio: 12,
+            quantum: 200,
+            _padding: [0u8; 40],
+        };
+        assert_eq!(
+            (start.endpoint, start.parent, start.maxprio, start.quantum),
+            (7, 3, 12, 200)
+        );
+        let stop = MessLsysSchedSchedulingStop {
+            endpoint: 7,
+            _padding: [0u8; 52],
+        };
+        assert_eq!(stop.endpoint, 7);
+        let nice = MessPmSchedSchedulingSetNice {
+            endpoint: 7,
+            maxprio: 12,
+            _padding: [0u8; 48],
+        };
+        assert_eq!((nice.endpoint, nice.maxprio), (7, 12));
+        let reply = MessSchedLsysSchedulingStart {
+            scheduler: 9,
+            _padding: [0u8; 52],
+        };
+        assert_eq!(reply.scheduler, 9);
+    }
+
+    #[test]
+    fn test_ds_val_shapes() {
+        // C: ipc.h:94-99 — three arms share one 32-bit lane.
+        assert_eq!(size_of::<DsVal>(), 4);
+        assert_eq!(DsVal::grant(11).as_grant(), 11);
+        assert_eq!(DsVal::number(0xDEAD_BEEF).as_number(), 0xDEAD_BEEF);
+        assert_eq!(DsVal::endpoint(Endpoint(6)).as_endpoint(), Endpoint(6));
+    }
+
+    #[test]
+    fn test_ds_req_layout() {
+        // C: ipc.h:107-115 `_ASSERT_MSG_SIZE` — six lanes, 56 bytes.
+        assert_eq!(size_of::<MessDsReq>(), 56);
+        // Field order pins the C layout (key_grant/key_len/flags/val_in/
+        // val_len/owner).
+        let req = MessDsReq {
+            key_grant: 11,
+            key_len: 9,
+            flags: 0x010,
+            val_in: DsVal::number(42),
+            val_len: 4,
+            owner: 6,
+            _padding: [0u8; 32],
+        };
+        assert_eq!(
+            (req.key_grant, req.key_len, req.flags, req.owner),
+            (11, 9, 0x010, 6)
+        );
+        assert_eq!(req.val_in.as_number(), 42);
+        assert_eq!(req.val_len, 4);
+    }
+
+    #[test]
+    fn test_ds_reply_layout() {
+        // C: ipc.h:100-105 `_ASSERT_MSG_SIZE` — two lanes, 56 bytes.
+        assert_eq!(size_of::<MessDsReply>(), 56);
+        let reply = MessDsReply {
+            val_out: DsVal::endpoint(Endpoint(6)),
+            val_len: 4,
+            _padding: [0u8; 48],
+        };
+        assert_eq!(reply.val_out.as_endpoint(), Endpoint(6));
+        assert_eq!(reply.val_len, 4);
+    }
+
+    #[test]
+    fn test_mib_wire_layouts() {
+        // C: ipc.h `_ASSERT_MSG_SIZE` — every MIB payload is 56 bytes.
+        assert_eq!(size_of::<MessLcMibSysctl>(), 56);
+        assert_eq!(size_of::<MessMibLcSysctl>(), 56);
+        assert_eq!(size_of::<MessLsysMibRegister>(), 56);
+        assert_eq!(size_of::<MessLsysMibReply>(), 56);
+        assert_eq!(size_of::<MessMibLsysCall>(), 56);
+        assert_eq!(size_of::<MessMibLsysInfo>(), 56);
+        // Field order pins the C layouts (ipc.h:424-433,1548-1580,1373-1389).
+        let req = MessLcMibSysctl {
+            oldp: 0x1000,
+            oldlen: 64,
+            newp: 0,
+            newlen: 0,
+            namelen: 3,
+            namep: 0,
+            name: [1, 7, 12, 0, 0, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!((req.oldp, req.oldlen, req.namelen), (0x1000, 64, 3));
+        assert_eq!(req.name[2], 12);
+        let reg = MessLsysMibRegister {
+            root_id: 9,
+            flags: 0,
+            csize: 4,
+            clen: 2,
+            miblen: 2,
+            mib: [4, 20, 0, 0, 0, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!((reg.root_id, reg.miblen), (9, 2));
+        assert_eq!(reg.mib[1], 20);
+        let call = MessMibLsysCall {
+            req_id: 41,
+            root_id: 9,
+            user_endpt: 5,
+            ..Default::default()
+        };
+        assert_eq!((call.req_id, call.root_id, call.user_endpt), (41, 9, 5));
     }
 }

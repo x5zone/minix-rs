@@ -22,6 +22,7 @@ mod endpoint;
 mod errno;
 mod id;
 mod pid;
+mod sysctl;
 
 pub use address::*;
 pub use bitmap::*;
@@ -33,3 +34,4 @@ pub use endpoint::*;
 pub use errno::*;
 pub use id::*;
 pub use pid::*;
+pub use sysctl::*;

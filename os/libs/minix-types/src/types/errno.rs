@@ -103,6 +103,10 @@ pub const EDONTREPLY: i32 = 203;
 pub const EGENERIC: i32 = 204;
 /// Specified endpoint is not alive. C: `EDEADEPT` — sys/errno.h:211.
 pub const EDEADEPT: i32 = 215;
+/// Specified endpoint is bad (a task, not a process). C: `EBADEPT` — sys/errno.h:212.
+pub const EBADEPT: i32 = 216;
+/// Requested CPU does not work. C: `EBADCPU` — sys/errno.h:213.
+pub const EBADCPU: i32 = 217;
 pub const EFTYPE: i32 = 79;
 pub const EAUTH: i32 = 80;
 pub const ENEEDAUTH: i32 = 81;
@@ -140,6 +144,18 @@ impl Errno {
     pub const EBUSY: Errno = Errno(EBUSY);
     /// C: `EINVAL` — sys/errno.h:22.
     pub const EINVAL: Errno = Errno(EINVAL);
+    /// C: `ENOENT` — sys/errno.h:2.
+    pub const ENOENT: Errno = Errno(ENOENT);
+    /// C: `EIO` — sys/errno.h:5.
+    pub const EIO: Errno = Errno(EIO);
+    /// C: `EEXIST` — sys/errno.h:17.
+    pub const EEXIST: Errno = Errno(EEXIST);
+    /// C: `ENAMETOOLONG` — sys/errno.h:63.
+    pub const ENAMETOOLONG: Errno = Errno(ENAMETOOLONG);
+    /// C: `ENOTDIR` — sys/errno.h:20.
+    pub const ENOTDIR: Errno = Errno(ENOTDIR);
+    /// C: `ENODEV` — sys/errno.h:19.
+    pub const ENODEV: Errno = Errno(ENODEV);
     /// C: `ENOMEM` — sys/errno.h:12.
     pub const ENOMEM: Errno = Errno(ENOMEM);
     /// C: `ENOSYS` — sys/errno.h:78.
@@ -152,6 +168,10 @@ impl Errno {
     pub const EGENERIC: Errno = Errno(EGENERIC);
     /// C: `EDEADEPT` — sys/errno.h:211.
     pub const EDEADEPT: Errno = Errno(EDEADEPT);
+    /// C: `EBADEPT` — sys/errno.h:212.
+    pub const EBADEPT: Errno = Errno(EBADEPT);
+    /// C: `EBADCPU` — sys/errno.h:213.
+    pub const EBADCPU: Errno = Errno(EBADCPU);
 
     /// Wraps a raw errno value (wire form).
     pub const fn from_i32(value: i32) -> Self {
@@ -174,6 +194,9 @@ mod tests {
         assert_eq!(Errno::EPERM.to_i32(), EPERM);
         assert_eq!(Errno::EINVAL.to_i32(), EINVAL);
         assert_eq!(Errno::ENOSYS.to_i32(), ENOSYS);
+        assert_eq!(Errno::EDEADEPT.to_i32(), EDEADEPT);
+        assert_eq!(Errno::EBADEPT.to_i32(), EBADEPT);
+        assert_eq!(EBADEPT, 216);
         assert_eq!(Errno::EDONTREPLY.to_i32(), EDONTREPLY);
         assert_eq!(Errno::EDEADEPT.to_i32(), EDEADEPT);
     }

@@ -16,12 +16,17 @@ fn main() {
     // memory before main() runs, we skip the binary entirely in test mode.
     #[cfg(not(test))]
     {
-        use minix_vm::{BootParams, VmServer};
+        use minix_vm::{VmServer, read_boot_params};
 
         // C: main.c:79-88 is_first_time() — fresh boot gates init_vm().
-        // Placeholder until sys_getkinfo (minix-sys) lands; values match
-        // the previous hardcoded mock (see BootParams::placeholder()).
-        let params = BootParams::placeholder();
+        // The kernel writes a `VmBootHandoff` page (A1 root identity + A2
+        // post-bootstrap classification + boot tables + kernel footprint)
+        // and maps it user read-only before scheduling VM. VM consumes it
+        // once here: the free list feeds the PMM, `root_paddr` feeds
+        // adoption (init_vm_self_pt), and the A2 deduction record is
+        // reconciled at this consumer boundary before the allocator is
+        // built (07-paging_init_design §6.0).
+        let params = read_boot_params();
 
         let mut server = VmServer::new_with_boot_params(params);
 

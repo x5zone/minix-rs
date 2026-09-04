@@ -339,7 +339,10 @@ mod tests {
         // need_lock false → OK (close path)
         assert_eq!(table.get_filp(id, false).unwrap(), id);
         // Bad fd
-        assert_eq!(table.get_filp(FilpId(9999), true).unwrap_err(), FilpError::BadFd);
+        assert_eq!(
+            table.get_filp(FilpId(9999), true).unwrap_err(),
+            FilpError::BadFd
+        );
     }
 
     #[test]
@@ -378,7 +381,10 @@ mod tests {
         assert!(table.try_lock(id, holder).is_ok());
         assert_eq!(table.get(id).unwrap().locked_by, Some(holder));
         // Second lock → Busy
-        assert_eq!(table.try_lock(id, UserSlot::new(2)).unwrap_err(), FilpError::Busy);
+        assert_eq!(
+            table.try_lock(id, UserSlot::new(2)).unwrap_err(),
+            FilpError::Busy
+        );
         table.unlock(id);
         assert!(table.get(id).unwrap().locked_by.is_none());
     }
@@ -391,7 +397,10 @@ mod tests {
         assert_eq!(FsfFlags::WR_BLOCK.bits(), 0x10);
         assert_eq!(FsfFlags::ERR_BLOCK.bits(), 0x20);
         assert_eq!(FsfFlags::BLOCKED.bits(), 0x38);
-        assert_eq!((FsfFlags::RD_BLOCK | FsfFlags::WR_BLOCK | FsfFlags::ERR_BLOCK).bits(), FsfFlags::BLOCKED.bits());
+        assert_eq!(
+            (FsfFlags::RD_BLOCK | FsfFlags::WR_BLOCK | FsfFlags::ERR_BLOCK).bits(),
+            FsfFlags::BLOCKED.bits()
+        );
         let mut flags = FsfFlags::BLOCKED;
         assert!(flags.contains(FsfFlags::RD_BLOCK));
         flags = FsfFlags::empty();

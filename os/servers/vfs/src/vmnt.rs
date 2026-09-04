@@ -59,7 +59,9 @@ pub struct VmntLock {
 
 impl Default for VmntLock {
     fn default() -> Self {
-        Self { state: LockState::Unlocked }
+        Self {
+            state: LockState::Unlocked,
+        }
     }
 }
 
@@ -200,7 +202,12 @@ impl VmntTable {
         self.get(id).map(|v| v.lock.is_locked()).unwrap_or(false)
     }
 
-    pub fn lock(&mut self, id: VmntId, access: VmntAccess, requester: Endpoint) -> Result<(), VmntError> {
+    pub fn lock(
+        &mut self,
+        id: VmntId,
+        access: VmntAccess,
+        requester: Endpoint,
+    ) -> Result<(), VmntError> {
         let v = self.get(id).ok_or(VmntError::BadVmnt)?;
         if v.fs == requester {
             return Err(VmntError::Deadlock);
@@ -353,8 +360,17 @@ mod tests {
             v.dev = 5;
             v.fs = Endpoint::from_generation_slot(0, 7);
         }
-        assert_eq!(table.find_by_fs(Endpoint::from_generation_slot(0, 7)).unwrap(), id);
-        assert!(table.find_by_fs(Endpoint::from_generation_slot(0, 8)).is_none());
+        assert_eq!(
+            table
+                .find_by_fs(Endpoint::from_generation_slot(0, 7))
+                .unwrap(),
+            id
+        );
+        assert!(
+            table
+                .find_by_fs(Endpoint::from_generation_slot(0, 8))
+                .is_none()
+        );
     }
 
     #[test]
@@ -364,7 +380,10 @@ mod tests {
         table.get_mut(id).unwrap().dev = 1;
         table.get_mut(id).unwrap().fs = Endpoint::from_generation_slot(0, 5);
         let req = Endpoint::from_generation_slot(0, 5);
-        assert_eq!(table.lock(id, VmntAccess::Read, req).unwrap_err(), VmntError::Deadlock);
+        assert_eq!(
+            table.lock(id, VmntAccess::Read, req).unwrap_err(),
+            VmntError::Deadlock
+        );
         let other = Endpoint::from_generation_slot(0, 6);
         assert!(table.lock(id, VmntAccess::Read, other).is_ok());
     }
@@ -400,9 +419,19 @@ mod tests {
         let mut fs = NopFs;
         let mut filp = NopFilp;
         let mut vnode = NopVnode;
-        assert!(table.unmap_by_endpoint(Endpoint::from_generation_slot(0, 9), &mut fs, &mut filp, &mut vnode));
+        assert!(table.unmap_by_endpoint(
+            Endpoint::from_generation_slot(0, 9),
+            &mut fs,
+            &mut filp,
+            &mut vnode
+        ));
         assert_eq!(table.get(id).unwrap().dev, NO_DEV);
-        assert!(!table.unmap_by_endpoint(Endpoint::from_generation_slot(0, 99), &mut fs, &mut filp, &mut vnode));
+        assert!(!table.unmap_by_endpoint(
+            Endpoint::from_generation_slot(0, 99),
+            &mut fs,
+            &mut filp,
+            &mut vnode
+        ));
     }
 
     #[test]
@@ -417,6 +446,8 @@ mod tests {
     // Second impl for Gate D
     struct AltVmntTable(VmntTable);
     impl AltVmntTable {
-        fn alloc(&mut self) -> Result<VmntId, VmntError> { self.0.alloc() }
+        fn alloc(&mut self) -> Result<VmntId, VmntError> {
+            self.0.alloc()
+        }
     }
 }

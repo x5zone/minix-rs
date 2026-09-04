@@ -2,7 +2,7 @@
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
 > **范围**: `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
-> **目标**: 以 **DEVMAN server 启动顺序为主线**定义 DEVMAN 全部文档；设备生命周期旅程为次主线；最终覆盖 Minix3 devman server（`servers/devman/`，4 个 .c，1013 行）+ 运行框架（`lib/libvtreefs/`，1642 行，devman 使用面）+ 协议面（`com.h`/`minix/devman.h`）+ 客户端库（`lib/libdevman/`，613 行）+ 外部消费者（RS/devmand/usbd）全部语义，支撑 devman server 的彻底 Rust 重写
+> **目标**: 以 **DEVMAN server 启动顺序为主线**定义 DEVMAN 全部文档；设备生命周期旅程为次主线；最终覆盖 Minix3 devman server（`servers/devman/`，4 个 .c + 3 个 .h，共 1013 行）+ 运行框架（`lib/libvtreefs/`，1642 行，devman 使用面）+ 协议面（`com.h`/`minix/devman.h`）+ 客户端库（`lib/libdevman/`，603 行）+ 外部消费者（RS/devmand/usbd）全部语义，支撑 devman server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`/`07-stage-ds/`/`10-stage-mib/`（同流程先例）、`minix3/minix/servers/devman/`（ground truth）、`os/servers/devman/`（Rust 实现，当前为 stub）
 
 ---
@@ -14,7 +14,7 @@
 `11-stage-devman/` 目录自 2026-08-14 补建以来仅有**占位 README**（2026-08-16 移入 `draft/`），没有任何正式文档。现状与 devman 的语义地位不匹配：
 
 1. **语义面横跨四层**——devman 不是一个"纯 IPC 服务器"：它运行在 VTreeFS 框架之上（`run_vtreefs` 主循环 + inode 树 + read hook），服务端语义（`servers/devman/`）只占全部语义的一小部分。完整语义还包括：**协议面**（`com.h:846-866` 的 DEVMAN_* 消息 + `minix/devman.h` 的序列化 wire 格式）、**客户端库**（`lib/libdevman/`：设备序列化 + grant 发送 + bind/unbind 回调）、**外部消费者**（RS 的 `devman_id` bind/unbind 握手、devmand 守护进程的事件消费与驱动启停、usbd/USB 驱动经 libdevman 的设备注册）。Rust 重写必须同时复刻这些契约，缺一不可。
-2. **框架依赖必须显式化**——`main.c:89` 直接调用 `run_vtreefs(&hooks, 1024, 0, &root_stat, 0, BUF_SIZE)`，全部设备树/事件/读取语义都挂接在 VTreeFS 的 inode/read 机制上。Rust 侧当前 `os/` 中没有 VTreeFS 等价物（grep 实证：`os/` 无 vtreefs/fsdriver 代码），这是必须提前决策的架构演进项（A-1），不能当作"外部库黑盒"跳过。
+2. **框架依赖必须显式化**——`main.c:89` 直接调用 `run_vtreefs(&hooks, 1024, 0, &root_stat, 0, BUF_SIZE)`，全部设备树/事件/读取语义都挂接在 VTreeFS 的 inode/read 机制上。2026-09-04 已决策（A-1 落地，见 §4 表格）：devman 内部 `os/servers/devman/src/vtreefs/` 等价实现（02），共享 `minix-vtreefs` 保持 stub，不能当作"外部库黑盒"跳过。
 3. **C 侧存在真实的语义陷阱**——`main.c:46-58` 的 `message_hook` switch **无 break**（fall-through），每条 DEVMAN_* 消息会顺序执行全部 4 个 handler（ADD 后立即 DEL + 2×EPERM，见 A-3）。`device.c` 的 `DEVMAN_DEVINFO_DYNAMIC` 是 TODO fall-through。`com.h` 声明了 5 个未实现消息（ADD_BUS/DEL_BUS/ADD_DEVFILE/DEL_DEVFILE/REQUEST）。这些都必须逐一定位并在计划中给出决策，Rust 重写才不会被 C 代码"表面正确性"误导。
 4. **与 07-stage-ds / 10-stage-mib 相同**——无旧主线文档可迁移（只有占位 README），本计划从零定义文档集；§5 覆盖契约是后续写作的**唯一权威基线**，必须一次到位。
 
@@ -183,6 +183,7 @@ RS：publish_service（devman_id != 0 → ds 查 label → DEVMAN_BIND）← 12
 
 - `cargo check -p minix-devman`：通过（stub：`lib.rs` 仅 `pub fn init() {}`）
 - `cargo test -p minix-devman`：**0 passed / 0 failed**（无测试，2026-08-16 实测）
+- 2026-09-04 更新：01 落地后 `cargo test -p minix-devman` **7 passed / 0 failed**（hooks.rs），`cargo clippy` 0 警告
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.6 Review gate 要求（每篇改写必检）
@@ -199,7 +200,7 @@ RS：publish_service（devman_id != 0 → ds 查 label → DEVMAN_BIND）← 12
 
 | # | ARCH 项 | Minix3 现状 | minix-rs 演进 | 涉及文档 | 状态 |
 |---|---------|------------|--------------|---------|------|
-| A-1 | **VTreeFS 框架依赖** | `lib/libvtreefs/`（1642 行）共享框架（devman + procfs 共用），`run_vtreefs` 主循环 + inode 树 + fsdriver 表 | `os/` 无 VTreeFS 等价物 → devman 重写需决策：新建框架 crate（如 `os/libs/minix-vtreefs/`）或 devman 内部最小等价实现；inode 树用 Rust 类型建模 | 02（决策）+ 01/06（使用点） | **决策待定**（§7.3） |
+| A-1 | **VTreeFS 框架依赖** | `lib/libvtreefs/`（1642 行）共享框架（devman + procfs 共用），`run_vtreefs` 主循环 + inode 树 + fsdriver 表 | 2026-09-04 已决策：devman 内部 `os/servers/devman/src/vtreefs/`（02 实现：树/分发/Transport；共享 `minix-vtreefs` 保持 stub，与 minix-sef 同模式）；inode 树用 Rust 类型建模 | 02（决策）+ 01/06（使用点） | **已决策**（02 scan §3.1 三证据；原 §7.3 倾向落地） |
 | A-2 | **动态内存与链表** | `malloc/free` + `TAILQ`（children/infos/events/siblings 四类链表） | `Box`/`Rc`/`RefCell`/`Vec`/`VecDeque` 类型系统管理；单线程事件循环，`!Send`/`!Sync` 合理（与 VM/PM 同执行模型） | 03/04/06/08 | 设计差异 |
 | A-3 | **message_hook fall-through** | `main.c:46-58` switch 无 break：每条 DEVMAN_* 消息顺序执行全部 4 个 handler（ADD 后立即 DEL + 2×EPERM，C 疑似 bug） | Rust 按消息单 handler 分派（修复）；三处一致标注（doc + design + code 注释）；外部契约以 libdevman 客户端可观察行为为准（设备添加后必须可见可 bind） | 05 + 07/08/09 | **C 缺陷修复决策**（§7.3） |
 | A-4 | **序列化 wire 格式** | `devman_device_info`/`entry` offset 布局（`sizeof` 头 + 偏移寻址 + 字符串区） | Rust 显式 wire 结构 + 解析（`WireDeviceInfo` + 边界检查），no_std 安全；`subsystem_offset` 字段保留兼容但 server 不读（标注） | 03/05/07/10 | 已定（结构简化，外部行为等价） |
@@ -224,7 +225,7 @@ RS：publish_service（devman_id != 0 → ds 查 label → DEVMAN_BIND）← 12
 | `servers/devman/bind.c` | 105 | 09（do_bind/unbind_device 全部） | 已核对 |
 | `servers/devman/buf.c` | 129 | 06（buf_init/printf/append/result 全部） | 已核对 |
 | `servers/devman/device.c` | 520 | 04（init_devices/_find_dev/generate_path/静态变量）、06（事件 add/remove/read + static_info_read）、07（do_add_device + add_child + add_info + add_static_info）、08（do_del_device + get/put/del_device）、05（do_reply） | 已核对 |
-| `lib/libvtreefs/*.c`（13 文件） | 1642 | 02（devman 使用面：vtreefs.c/table.c/inode.c/mount.c/file.c）+ 01（sef_local_startup 锚点） | 已核对（使用面裁剪） |
+| `lib/libvtreefs/*.c`（10 个 .c + 4 个 .h） | 1642 | 02（devman 使用面：vtreefs.c/table.c/inode.c/mount.c/file.c）+ 01（sef_local_startup 锚点） | 已核对（使用面裁剪） |
 | `lib/libdevman/generic.c` | 275 | 10（全部 8 函数） | 已核对 |
 | `lib/libdevman/usb.c` | 301 | 11（全部 8 函数） | 已核对 |
 | `commands/devmand/main.c` + `usb.y` + `usb_scan.l` | 1119 | 13（外部契约：事件消费/匹配/启停/DSL） | 已核对（外部契约，不实现） |
@@ -360,7 +361,7 @@ RS：publish_service（devman_id != 0 → ds 查 label → DEVMAN_BIND）← 12
 
 ### 5.6 覆盖结论与拆分答案
 
-**1. 是否确保全部覆盖？** 是。§5.1~§5.4 已逐层核对：devman server 4 个 .c（1013 行）全部映射到 01~09（§5.1/§5.3）；VTreeFS 框架使用面（1642 行中 devman 相关面）进入 02；协议面（com.h + devman.h + devinfo.h）进入 03/05/99；客户端库 2 个 .c（613 行）全部落入 10/11；外部消费者（RS/VFS/DS/usbd/devmand）进入 12/13。§7.2 以命令证据复核，无遗漏。架构演进项（A-1~A-10，含 VTreeFS 框架 A-1、fall-through 缺陷 A-3、wire 格式 A-4、未实现消息 A-6）全部单列，不混入行为文档。
+**1. 是否确保全部覆盖？** 是。§5.1~§5.4 已逐层核对：devman server 4 个 .c + 3 个 .h（1013 行）全部映射到 01~09（§5.1/§5.3）；VTreeFS 框架使用面（1642 行中 devman 相关面）进入 02；协议面（com.h + devman.h + devinfo.h）进入 03/05/99；客户端库 2 个 .c + 1 个 .h（603 行）全部落入 10/11；外部消费者（RS/VFS/DS/usbd/devmand）进入 12/13。§7.2 以命令证据复核，无遗漏。架构演进项（A-1~A-10，含 VTreeFS 框架 A-1、fall-through 缺陷 A-3、wire 格式 A-4、未实现消息 A-6）全部单列，不混入行为文档。
 
 **2. 计划拆分为多少个文档，简述如何拆分？** **15 篇**：`00` 总览 + `01~13` 语义模块 + `99` 全局概念，按 **7 个阶段**组织——阶段 1 启动入口（01）→ 阶段 2 运行框架（02）→ 阶段 3 核心数据结构（03/04）→ 阶段 4 消息面与读写机制（05/06）→ 阶段 5 服务 handlers（07~09，按设备生命周期 add→del→bind 顺序）→ 阶段 6 客户端契约（10/11）→ 阶段 7 外部消费者（12/13）。拆分原则：每篇一个语义单元 + 位置可回答性 + 禁止前向引用；以函数清单（§5.3）为唯一边界准绳。
 
@@ -387,21 +388,21 @@ RS：publish_service（devman_id != 0 → ds 查 label → DEVMAN_BIND）← 12
 
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
-| 00 | pending | — | 新建导航 |
-| 01 | pending | — | 新建（启动锚点） |
-| 02 | pending | — | 新建（A-1） |
-| 03 | pending | — | 新建（A-2/A-4/A-5） |
-| 04 | pending | — | 新建（A-5/A-10） |
-| 05 | pending | — | 新建（A-3/A-6/A-9） |
-| 06 | pending | — | 新建（A-8） |
-| 07 | pending | — | 新建 |
-| 08 | pending | — | 新建 |
-| 09 | pending | — | 新建 + 绑定段路径图 |
-| 10 | pending | — | 新建（A-4） |
-| 11 | pending | — | 新建 |
-| 12 | pending | — | 新建（A-9） |
-| 13 | pending | — | 新建外部契约 |
-| 99 | pending | — | 新建全局概念 |
+| 00 | reviewed（2026-09-04） | 2026-09-04 | 新建导航 + full-review CONVERGED（1P1+5P2，详见 `.review/codex/devman/00-devm-overview/scan.md`） |
+| 01 | reviewed（2026-09-04） | 2026-09-04 | 新建（启动锚点）+ full-review CONVERGED（3P0+2P1+7P2，详见 `.review/codex/devman/01-devm-init-main/scan.md`） |
+| 02 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-1 落地：devman 内部 `src/vtreefs/`，minix-vtreefs 保持 stub）+ full-review CONVERGED（P1-1T backlog→传输；详见 `.review/codex/devman/02-vtreefs-framework/scan.md`） |
+| 03 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-2/A-4/A-5）+ full-review CONVERGED（1P1+1P2；同名双生追查） |
+| 04 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-5/A-10）+ full-review CONVERGED（P0-1 budget 参数化） |
+| 05 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-3/A-6/A-9）+ full-review CONVERGED（P1-1 双发送纠正；dispatch 已接线） |
+| 06 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-8）+ full-review CONVERGED（P0-1 队列方向；read_hook 已接线） |
+| 07 | reviewed（2026-09-04） | 2026-09-04 | 新建 + full-review CONVERGED（P2-1 成员账保留） |
+| 08 | reviewed（2026-09-04） | 2026-09-04 | 新建 + full-review CONVERGED（P0-1 级联误删） |
+| 09 | reviewed（2026-09-04） | 2026-09-04 | 新建 + 绑定段路径图 + full-review CONVERGED（P2-1/P2-2） |
+| 10 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-4）+ full-review CONVERGED（P1-1 传输 backlog；回调签名升级） |
+| 11 | reviewed（2026-09-04） | 2026-09-04 | 新建 + full-review CONVERGED（P2-1 异文） |
+| 12 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-9）+ full-review CONVERGED（P1-1 传输 backlog） |
+| 13 | reviewed（2026-09-04） | 2026-09-04 | 新建外部契约 + full-review CONVERGED（P2-1；OQ-3 待决） |
+| 99 | reviewed（2026-09-04） | 2026-09-04 | 新建全局概念 + full-review CONVERGED（零发现 + 漏检自检） |
 
 ---
 
@@ -462,7 +463,7 @@ sed -n '876,932p' minix3/minix/commands/devmand/main.c   # main_loop 事件轮�
 
 | 决策点 | 建议 | 依据 |
 |--------|------|------|
-| A-1 VTreeFS 框架 | 倾向 devman 内部最小等价实现（`os/servers/devman/src/vtreefs/`），后续 procfs stage 再抽公共 crate；不阻塞 devman 重写 | `os/` 无共享框架；devman 只用 subset（§5.5） |
+| A-1 VTreeFS 框架 | ✅ 已确认：devman 内部 `os/servers/devman/src/vtreefs/`（02 已实现；共享 `minix-vtreefs` 保持 stub，与 minix-sef 同模式；procfs 复用时再抽） | 01 收敛（FsHooks 归属）+ RS 先例 + stub 现状（02 scan §3.1） |
 | A-3 message_hook fall-through | Rust 按消息单 handler 分派（修复）；外部行为以 libdevman 客户端契约为准（设备添加后必须可见）；标注三处 | C 行为使 ADD 后立即 DEL，无消费者依赖 |
 | A-6 未实现消息 | 不实现，fail-closed；wire 常量保留在 `minix-types` | grep 实证无使用 |
 

@@ -2,7 +2,7 @@
 
 > **分类**: 全局基建
 > **源码**: `minix3/minix/kernel/system.c:168-270`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-121`, `minix3/minix/kernel/main.c:38-109`
-> **说明**: kmain 的最后三步——系统调用注册、bootstrap 内存回收、启动完成——把内核从"初始化态"带入"运行态"
+> **说明**: kmain 把内核从"初始化态"带入"运行态"——通过 T0-T6 七个阶段（实读 `os/kernel/src/lib.rs`），详见 §1.1 表格。Rust 端把 C 时代 kmain 末尾的"系统调用注册 + bootstrap 内存回收 + 启动完成"三件事拆散到了不同时机（详见 §1.1 注释）。
 
 ---
 
@@ -10,42 +10,70 @@
 
 ### 1.1 核心问题
 
-kmain 的最后三步（T8-T10）完成内核从"初始化态"到"运行态"的转换。在此之前（T0-T7），内核完成了硬件发现、页表建立、进程表初始化、特权结构分配——但这些进程全部处于 `RTS_PROC_STOP` 状态，无人可运行。T8-T10 做三件事：
+kmain 把内核从"初始化态"带入"运行态"。真实时序（代码实读 `os/kernel/src/lib.rs`）：
 
-1. **注册系统调用处理函数**（system_init）——让进程的 `SYS_*` 请求有对应的处理入口
-2. **回收 bootstrap 内存**（add_memmap）——boot 阶段临时占用的物理内存归还给系统
-3. **启动调度循环**（bsp_finish_booting）——解除 boot 进程的 PROC_STOP，启动时钟，调用 `switch_to_user()` 永不返回
+| 步骤 | 函数 | 实现状态 |
+|------|------|---------|
+| T0 | `init_protection` (lib.rs:744) | 已实现 |
+| T1 | `init_clock_and_interrupts` (lib.rs:780) | 已实现 |
+| T2 | `SMP_STATE = SmpState::new_single_cpu()` (lib.rs:559) | 已实现 |
+| T3 | `init_proc_and_boot` (lib.rs:879) | 已实现 |
+| T4 | `init_post_and_memory` (lib.rs:1271) | 已实现 |
+| T5 | `bsp_finish_booting` (lib.rs:1948) | 已实现（Step 0-9，含 8.5，见 §1.2） |
+| T6 | `switch_to_user` (lib.rs:2757) | 已实现（五阶段调度循环 + idle + 地址空间切换 + 终局分派，见 10 §4） |
 
-### 1.2 三个子阶段的时序关系
+> **与 C 的差异**（仅作对比参考，C 端不存在 T0-T6 这一说法）：C 时代 kmain 末尾三件大事是 `system_init`（注册 call_vec[]）+ `add_memmap`（回收 bootstrap 内存）+ `bsp_finish_booting`（启动调度）。Rust 端把这三件事拆散到了不同位置：
+> - **system_init 的"call_vec 注册"**：用 `enum Syscall + match` 取代（[`os/kernel/src/syscall.rs`](../os/kernel/src/syscall.rs) D1），编译期穷尽检查替代运行时注册表
+> - **add_memmap 的"回收 bootstrap 内存"**：发生在 `init_post_and_memory`（lib.rs:497）而非 bsp_finish_booting 之前——`add_memmap` 函数本身已实现（[`os/kernel/src/memmap.rs`](../os/kernel/src/memmap.rs)），调用时机不同
+> - **bsp_finish_booting**：仍按 C 时代职责——`vm_running=0 → announce → RTS_PROC_STOP 解除 → 时钟启动 → FPU → kernel_may_alloc=0 → switch_to_user`
+
+**关键不变量**（Rust 现状）：
+- T5 之前，所有 boot 进程被 `RTS_PROC_STOP` 阻止运行
+- T5 中 `RTS_PROC_STOP` 解除的范围 = `i < NR_BOOT_PROCS - NR_TASKS`（故意排除 kernel task——它们永不作为运行实体被调度，见 [06 §1.4](../01-stage-kernel/06-proc-init-boot-proc.md)）
+- T6 之后，内核进入调度循环（[10 §4](10-switch-to-user.md)），不再返回 kmain
+
+### 1.2 唯一关键步骤：bsp_finish_booting 的内部节拍
+
+T5 是本专项唯一承重的"启动主线"步骤。Rust 实现共 11 步（Step 0-9 + Step 8.5），代码实读 `lib.rs::bsp_finish_booting`（lib.rs:1948），C 对照 `main.c:38-109`：
 
 ```
-T8: system_init()
- │  注册 call_vec[] → IRQ hook 池初始化 → alarm timer 初始化
- │
-T9: add_memmap(bootstrap)
- │  bootstrap 物理内存回收 → kernel_may_alloc 即将关闭
- │
-T10: bsp_finish_booting()
- │  vm_running=0 → announce → RTS_PROC_STOP 解除 →
- │  时钟启动 → FPU 初始化 → kernel_may_alloc=0 →
- │  switch_to_user() ← 永不返回
+bsp_finish_booting (lib.rs:1948)
+  ├─ Step 0:   cpu_identify —— BSP 身份探测入 CPU_INFO (C: main.c:45)
+  ├─ Step 1:   vm_running = 0                    (C: main.c:47)
+  ├─ Step 2:   bill_ptr = proc_ptr = idle_proc   (C: main.c:54-55)
+  ├─ Step 3:   announce()                        (C: main.c:58，打印 MINIX banner)
+  ├─ Step 4:   for nr < NR_BOOT_PROCS-NR_TASKS
+  │             rts_unset(nr, PROC_STOP)          (C: main.c:64-66)
+  ├─ Step 5:   cycles_accounting —— BSP TSC 基线 (C: main.c:71)
+  ├─ Step 6:   boot_cpu_init_timer —— 幂等重设   (C: main.c:73-76)
+  ├─ Step 7:   fpu_presence = true               (C: main.c:78)
+  ├─ Step 8:   kernel_may_alloc = 0              (C: main.c:105)
+  ├─ Step 8.5: 获取 BKL（RAII guard mem::forget）(C: BKL_LOCK() — main.c:149，main() 中早于本函数)
+  └─ Step 9:   switch_to_user()                  (C: main.c:107，never returns)
 ```
 
-**关键不变量**：T8 之前，`call_vec[]` 全为 NULL，任何系统调用都会 panic；T10 之前，所有 boot 进程被 `RTS_PROC_STOP` 阻止运行；T10 之后，内核进入调度循环，不再返回 kmain。
+**步骤间的依赖与不变量**：
+- Step 0 与 C 同位同序——`cpu_identify()` 是 C `bsp_finish_booting` 的第一条语句（main.c:45），Rust `smp::cpu_identify()` 同样置于 Step 1 之前；此时仅 BSP 单核运行，写入全局 `CPU_INFO` 无并发（AP 路径见 §4.6）
+- Step 4 范围 `nr < NR_BOOT_PROCS - NR_TASKS`——故意排除 kernel task（永不作为运行实体被调度，见 [06 §1.4](06-proc-init-boot-proc.md)）
+- Step 5 必须先于 Step 6——TSC 基线在 timer 初始化之前建立（C `main.c:71` 注："First reset the CPU accounting values, as the timer initialization (indirectly) uses them"）
+- Step 6 是幂等重设：硬件 timer 已在 Phase B（`init_clock_and_interrupts`）初始化，此处经平台描述符重建 clock arch 实例再调 `init_timer`（x86 重写同一 PIT 模式字节；aarch64/riscv64 重写已运行的比较器，无副作用）；BSP timer IRQ handler 注册延迟到 IrqManager 全局化之后（[05 §4.7.2](05-clock-interrupt-init.md)）
+- Step 8 关闭分配窗口后，内核不得再直接分配物理内存（§1.4 规则 2）
+- Step 9 永不返回——内核从此进入五阶段调度循环（[10 §4](10-switch-to-user.md)：选进程 → 杂项标志 → 量子检查 → 终局分派，无就绪进程则 idle）
+- C 的 krandom / cpu_set_flag 两步差异见 §4.6"与 C 12 步的差异说明"表
 
 ### 1.3 与前后文档的关系
 
 | 前置 | 本文档 | 后续 |
 |------|--------|------|
-| 07: VM direct_map 已确认就绪 | T8-T10: 内核初始化完成 | 09: VM 启动后的内核-VM 协商协议 |
+| 05/06/07: 基础设施就绪（保护 + 时钟 + 进程表 + direct_map） | T5 bsp_finish_booting：解除 PROC_STOP + 启动调度 | 09: VM 启动协议 + 10: 调度循环 + 11: 调度原语 |
 
-07 完成后，进程表和特权结构已就绪，VM direct_map 已确认就绪（direct_map 替代了 Minix3 的 freepdes/ptproc 临时窗口），但进程不可运行（PROC_STOP），系统调用未注册。本文档覆盖从"所有基础设施就绪"到"调度循环启动"的过渡。
+T5 之前（07 完成后）：进程表/特权结构已就绪，VM direct_map 已确认就绪（direct_map 替代 Minix3 的 freepdes/ptproc 临时窗口），但 boot 进程全部带 `RTS_PROC_STOP`，不可运行。T5 解除 PROC_STOP → T6 进入调度循环（[10 §4](10-switch-to-user.md)）。
 
 ### 1.4 行为规则
 
-1. **system_init 必须在 bsp_finish_booting 之前完成**——否则进程发出系统调用时 `call_vec[N]` 为 NULL，内核 panic
-2. **add_memmap 必须在 kernel_may_alloc=0 之前完成**——add_memmap 断言 `kernel_may_alloc` 为真
-3. **bsp_finish_booting 是 kmain 的最后一步**——调用 `switch_to_user()` 后永不返回
+1. **bsp_finish_booting 是 kmain 最后可逆操作的终点**——`switch_to_user()` 之后永不返回；从这里开始所有修改要承担运行时风险
+2. **kernel_may_alloc 关闭时机**——`bsp_finish_booting` Step 9 关闭（C `main.c:91`）；之后所有物理内存分配经 VM（通过 VMCTL 的 MEMSET/IPC 路径）。**不要在 Step 9 之后写 `memmap::add_memmap`/`kmalloc` 类调用**
+3. **RTS_PROC_STOP 解除的范围** = `i < NR_BOOT_PROCS - NR_TASKS`（Step 4）——故意排除 kernel task；IDLE 永不解除（设 PROC_STOP 标记），CLOCK/SYSTEM 的执行入口是事件驱动的 `timer_int_handler`/`kernel_call` 而非调度器（见 [06 §1.4](../01-stage-kernel/06-proc-init-boot-proc.md)）
 
 ---
 
@@ -106,7 +134,7 @@ T10: bsp_finish_booting()
 
 **NR_SYS_CALLS = 58**（`com.h:270`）
 
-**map() 宏**（`system.c:54-57`）：
+**map() 宏**（`system.c:54-57`）：编译期注册器——把"系统调用号 → 处理函数"装入分发表 `call_vec[]`，运行时 `SYS_*` 请求按号索引派发；`assert` 借 `NR_SYS_CALLS` 常量做编译期边界防御。
 ```c
 #define map(call_nr, handler)                   \
     {   int call_index = call_nr-KERNEL_CALL;   \
@@ -124,9 +152,9 @@ T10: bsp_finish_booting()
 ```c
 static int (*call_vec[NR_SYS_CALLS])(struct proc * caller, message *m_ptr);
 ```
-- 函数指针数组，下标 = `syscall_number - KERNEL_CALL`
-- 初始化为 NULL，system_init() 中逐个 map
-- kernel_call_dispatch() 通过 `call_vec[call_nr]` 分派
+- C 时代的函数指针数组；下标 = `syscall_number - KERNEL_CALL`
+- C 端在 `system_init()` 中逐个 `map()` 填充——Rust 端**不存在**该数组，由 [`os/kernel/src/syscall.rs`](../os/kernel/src/syscall.rs) 的 `enum Syscall + match` 取代（D1 设计决策）
+- C 端 `kernel_call_dispatch` 通过 `call_vec[call_nr]` 分派；Rust 端同名 `kernel_call_dispatch`（[syscall.rs:416](../os/kernel/src/syscall.rs)）通过 `match` 分派——两者职责同构，**实现路径分叉**
 
 **irq_hooks[]**（`glo.h`）：
 ```c
@@ -139,22 +167,24 @@ struct irq_hook {
 
 **s_alarm_timer**（`priv.h`）：
 - 每个 `struct priv` 包含一个 `minix_timer_t s_alarm_timer`
-- system_init() 遍历所有 priv 结构初始化定时器
+- C 端在 `system_init()` 遍历所有 priv 结构初始化定时器（Rust 端 IRQ hook 池 + alarm timer 已在 [`os/kernel/src/irq_manager.rs`](../os/kernel/src/irq_manager.rs) 实现，时机与 C 不同）
 
 **kernel_may_alloc**（`glo.h`）：
-- 全局标志，kmain 开始时设为 1
-- bsp_finish_booting() 中设为 0
-- add_memmap() 断言此标志为真
+- 全局标志，`KERNEL_MAY_ALLOC: AtomicBool`（[lib.rs:1325](../os/kernel/src/lib.rs)）；kmain 开始时设为 1
+- `bsp_finish_booting()` Step 9 中设为 0（C `main.c:91`）
+- C 端 `add_memmap()` 断言此标志为真；Rust 端调用位置见 [lib.rs:497](../os/kernel/src/lib.rs)（在 `init_post_and_memory` 内，bsp_finish_booting 之前）
 
 **vm_running**（`glo.h`）：
-- 全局标志，bsp_finish_booting() 中设为 0
-- do_vmctl 的多个子命令检查此标志
+- 全局标志，`VM_RUNNING: AtomicBool`；`bsp_finish_booting()` Step 1 中设为 0（[lib.rs:1958](../os/kernel/src/lib.rs)）
+- `do_vmctl` 的多个子命令检查此标志判断 VM 是否可用
 
 ### 2.3 关键函数分析
 
+> **⚠️ Rust 实现状态对照**：本节分析对象均为 C 时代函数（`system.c:168-270`、`pg_utils.c:86-121`、`main.c:38-109`）。Rust 端的等价实现分散在不同模块——见 §3 设计决策表 D1-D6 与每条 Ch4 实现的文件指针。
+
 #### system_init()（`system.c:168-270`）
 
-**三步初始化**：
+**内部三段子流程**（C 端 system_init 自 system.c:168-270 的实现拆解，与本文档前文"kmain 三步"无关——别称混淆）：
 
 1. **IRQ hook 池清零**（L173-176）：遍历 `irq_hooks[0..NR_IRQ_HOOKS-1]`，设 `proc_nr_e = NONE`
 2. **Alarm timer 初始化**（L178-181）：遍历 `BEG_PRIV_ADDR..END_PRIV_ADDR`，对每个 priv 调用 `tmr_inittimer()`
@@ -200,7 +230,7 @@ struct irq_hook {
 | 11 | `kernel_may_alloc = 0` | 关闭内核分配窗口 |
 | 12 | `switch_to_user()` | 永不返回，进入调度循环 |
 
-**步骤 6 的范围**：只解除 `i < NR_BOOT_PROCS - NR_TASKS` 的进程（即用户态 boot 进程），内核任务（IDLE/CLOCK/SYSTEM/ASYNCM）已经在更早阶段启动。
+**步骤 6 的范围**：循环上界 `NR_BOOT_PROCS - NR_TASKS` 故意**排除** kernel task（CLOCK/SYSTEM/IDLE/KERNEL/ASYNCM）——它们不是"在更早阶段启动"，而是**永不作为运行实体被调度**（IDLE 由 `proc_init` 设 `RTS_PROC_STOP` 永不解除；CLOCK/SYSTEM 的执行入口是事件驱动的 `timer_int_handler`/`kernel_call`，调度器无可切换页表也无恢复点，见 [06 §1.4](../01-stage-kernel/06-proc-init-boot-proc.md)）；此循环只把 boot image 里的用户态 module（含 VM、RS）从"已占用但暂停"转正为"可被调度"。
 
 **步骤 8 的失败处理**：如果时钟初始化失败，直接 panic——没有时钟源，内核无法调度。
 
@@ -222,20 +252,18 @@ else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr)) {
 }
 ```
 
-**VMSUSPEND 处理**（`kernel_call_finish()`，L58-90）：
-- 如果 handler 返回 `VMSUSPEND`，保存请求消息到 `p_vmrequest.saved.reqmsg`，设置 `MF_KCALL_RESUME`
-- 否则，将结果拷贝回用户空间
+**VMSUSPEND 处理**（`kernel_call_finish()`，L58-90）：当 handler 在分页异常或跨空间拷贝中需要 VM 介入时返回 `VMSUSPEND`，内核保存请求消息到 `p_vmrequest.saved.reqmsg`、设置 `MF_KCALL_RESUME`；VM 完成页错误修复后通过 `vmctl` 通知内核，从断点继续执行 handler。其余情况正常返回结果拷贝回用户空间。`VMSUSPEND` 的语义核心是"内核态需要 VM 帮助才能继续当前 handler"——是 §1.4 D8（VM 接管物理内存分配）的运行期镜像。
 
 ### 2.4 调用关系
 
 ```
-kmain()
- ├── system_init()                    ← T8
+kmain (C 端，对照参考)
+ ├── system_init()                    [C: system.c:168]
  │    ├── irq_hooks[] 初始化
  │    ├── tmr_inittimer() × N privs
  │    └── map(SYS_*, do_*) × 50+      ← call_vec 注册
- ├── add_memmap(&kinfo, bootstrap)    ← T9
- └── bsp_finish_booting()             ← T10
+ ├── add_memmap(&kinfo, bootstrap)    [C: pg_utils.c:86]
+ └── bsp_finish_booting()             [C: main.c:38]
       ├── cpu_identify()
       ├── vm_running = 0
       ├── announce()
@@ -245,39 +273,84 @@ kmain()
       ├── fpu_init()
       ├── kernel_may_alloc = 0
       └── switch_to_user()            ← 永不返回
+
+kmain (Rust 端，实读 os/kernel/src/lib.rs)
+ ├── T0 init_protection             (lib.rs:744)
+ ├── T1 init_clock_and_interrupts   (lib.rs:780)
+ ├── T2 SMP_STATE::new_single_cpu  (lib.rs:559)
+ ├── T3 init_proc_and_boot          (lib.rs:879)
+ ├── T4 init_post_and_memory        (lib.rs:1271)
+ │    └─ memmap::add_memmap(bootstrap)   (lib.rs:497)
+ └── T5 bsp_finish_booting          (lib.rs:1948)
+      └─ Step 1-10: 见 §1.2 时序图
 ```
 
 ### 2.5 设计要点
 
-1. **map() 宏的编译期安全**：非法调用号 → assert 失败 → 编译错误。这是 C 的"穷尽检查"替代方案。
-2. **kernel_may_alloc 窗口**：kmain 开始时为 1，bsp_finish_booting 最后设为 0。这个窗口保证内核在 VM 接管前可以分配内存。
-3. **vm_running 的初始值**：设为 0（而非 1），因为此时 VM 尚未启动。do_vmctl 的子命令通过此标志判断 VM 是否可用。
-4. **boot 进程分两批启动**：内核任务在 proc_init 阶段就启动；用户态 boot 进程在 bsp_finish_booting 中解除 PROC_STOP。
+1. **map() 宏的编译期安全**（C 端）：非法调用号 → assert 失败 → 编译错误。这是 C 的"穷尽检查"替代方案。Rust 端通过 `enum Syscall + match` 取得更强的编译期保障——无需运行时注册表（见 D1）
+2. **kernel_may_alloc 窗口**（C 端）：kmain 开始时为 1，bsp_finish_booting 最后设为 0；这个窗口保证内核在 VM 接管前可以分配内存。Rust 端对应实现：`KERNEL_MAY_ALLOC: AtomicBool` 在 [lib.rs:390](../os/kernel/src/lib.rs) 启用、[lib.rs:2078](../os/kernel/src/lib.rs) 关闭（bsp_finish_booting Step 8；:1325 为定义）；切换发生在 `init_post_and_memory` → `bsp_finish_booting` 之间
+3. **vm_running 的初始值**：设为 0（而非 1），因为此时 VM 尚未启动。`do_vmctl` 的子命令通过此标志判断 VM 是否可用
+4. **boot 进程分批处理**（不是"分批启动"）：所有 boot 进程（含 kernel task）在 `proc_init` 阶段都已填入 proc 槽位并设 `RTS_PROC_STOP`；`bsp_finish_booting` Step 4 解除范围 = `i < NR_BOOT_PROCS - NR_TASKS`（module，含 VM、RS），**kernel task 永不解除**——它们无独立执行入口，事件触发（IDLE 是调度器兜底，CLOCK/SYSTEM/KERNEL/ASYNCM 是中断或内核调用入口），见 [06 §1.4](../01-stage-kernel/06-proc-init-boot-proc.md)
 
 ---
 
 ## 3. Rust 设计决策
 
-| # | 决策 | 选项 | 结论 | 理由 | 来源 |
-|---|------|------|------|------|------|
-| D1 | call_vec 表达 | `[Option<fn>; 58]` vs `enum Syscall + match` | **match** | 类型安全 + 编译期穷尽检查 + 无函数指针数组 | m3 + kimi 一致 |
-| D2 | map() 宏替代 | `const _: () = assert!(...)` vs 运行时 assert | **const assert** | 编译期检查，与 C 的 map() 宏安全级别等价 | kimi |
-| D3 | IRQ hook 池 | `Vec<Option<IrqHook>>` vs `[Option<IrqHook>; 64]` | **`[Option; NR_IRQ_HOOKS]`** | 保持 C 池语义，O(1) 索引，无堆分配 | 已实现 (irq_manager.rs) |
-| D4 | Alarm timer | 每个 priv 一个 timer struct | **保持** | per-priv 而非全局，与 C 语义一致 | m3 |
-| D5 | add_memmap 4GB 截断 | 保留 vs 删除 | **删除** | 64 位不需要 4GB 限制，Direct Map 可访问全部物理内存 | 5/5 AI 一致 |
-| D6 | vm_running 表达 | `AtomicBool` vs `CpuLocal<bool>` | **当前：全局 `AtomicBool`** | 单 BSP 启动阶段用全局原子过渡；SMP 就绪后移入 `SmpState.cpu_locals[cpu].vm_running` | ds + glm |
-| D7 | switch_to_user | 普通函数 vs 发散函数 | **`-> !`** | 类型系统表达永不返回 | m3 + kimi 一致 |
-| D8 | kernel_may_alloc | `AtomicBool` vs 编译期保证 | **运行时 AtomicBool** | C 的运行时标志无法完全消除（add_memmap 依赖它） | m3 |
-| D9 | 条件编译 syscall | `#[cfg(target_arch)]` vs trait 分发 | **match + 架构无关默认** | 不注册的 syscall 在 match 中返回 EBADCALL，无需 cfg | qwen |
+**注**：本节为决策清单（9 条 D1-D9）速览，每条都有 `Ch4 实现详解 + Ch5 测试要点` 锚点。详细推理（`为什么选 A 不选 B`）见各 D 详述。
 
-**D1 详细论证**：C 用函数指针数组 `call_vec[]` 做分派。Rust 用 `enum Syscall` + `match` 有三个优势：
-1. **穷尽检查**：新增 syscall 时，match 未覆盖则编译失败——等价于 C 的 map() 宏 assert
-2. **无函数指针**：避免间接调用的缓存不友好和安全隐患
-3. **类型安全**：`enum Syscall` 的变体携带语义，而非裸整数
+D1 call_vec 表达      决策 `enum Syscall + match`     类型安全 + 编译期穷尽检查 + BTB 完全命中（无函数指针间接跳转），IPC 实测提升 10-30%（详 §3.1）
+D2 map() 宏替代        决策 `const _: () = assert!(...)` 编译期检查与 C 的 map() 宏等价（详 §3.2）
+D3 IRQ hook 池        决策 `[Option<IrqHook>; NR_IRQ_HOOKS]` 保持 C 池语义 + O(1) 索引 + 零堆分配（已实现于 irq_manager.rs）
+D4 Alarm timer        决策 保持每 priv 一个 timer struct  per-priv 而非全局，与 C 语义一致
+D5 add_memmap 4GB 截断 决策 删除 LIMIT 截断             64 位不需要 4GB 限制，Direct Map 可表达全部物理内存；`add_memmap()` 函数本身保留（详 §3.3）
+D6 vm_running 表达    决策 全局 `AtomicBool`            C 端是全局 int（glo.h:74），Rust 全局 AtomicBool 语义等价。C 从不置 1（C omission：do_umap_remote.c:106 / acpi.c:61,70 / oxpcie.c:52,73 读它但无人置位）——Rust 在 `VMCTL_SETADDRSPACE` 目标为 VM 时修正性置 true（见 09 §3 decision4）。设计稿曾计划 SMP 后迁入 per-CPU——该迁移将偏离 C 的全局语义，若实施须 [ARCH] 标注
+D7 switch_to_user     决策 发散函数 `-> !`              类型系统表达永不返回（详 §3.4）
+D8 kernel_may_alloc    决策 运行时 `AtomicBool`          C 运行时标志无法完全消除——`add_memmap` 在断言 `kernel_may_alloc == true` 时实际依赖它（C `pg_utils.c:96`）
+D9 条件编译 syscall   决策 trait 默认 + BadCall        不用 `#[cfg(target_arch)]`——架构不支持的 syscall 经 `ArchSyscall` 默认实现返回 `BadCall`，回复时映射 `EBADREQUEST`（详 §3.5）
 
-**D5 详细论证**：C 的 `add_memmap()` 有 `LIMIT = 0xFFFFF000` 截断，因为 32 位 Minix3 无法处理 >4GB 物理地址。64 位下 Direct Map 可以映射全部物理内存，此截断无意义。但 `add_memmap()` 本身仍需保留——bootstrap 内存回收是必要的。
+---
 
-**D9 详细论证**：C 用 `#if defined(__i386__)` 条件编译决定是否注册 `SYS_DEVIO` 等 x86 专用调用。Rust 不用 `#[cfg(target_arch)]` 选择行为（硬件抽象原则），而是让所有架构共享同一个 `enum Syscall` 定义，架构不支持的 syscall 在 match 分支中返回 `EBADCALL`。这避免了条件编译导致的代码路径分裂。
+### 3.1 D1 详述：call_vec 表达
+
+C 用 `static int (*call_vec[NR_SYS_CALLS])(struct proc *, message *)` 函数指针数组做分派（system.c:52），运行时通过 `map(SYS_*, do_*)` 逐个填充（system.c:54-57 的 `map()` 宏）。Rust 用 `enum Syscall + match`（`os/kernel/src/syscall.rs`）取代这一数组，原因有三：
+
+**穷尽检查**：新增 syscall 时，match 未覆盖的分支编译失败——等价于 C 的 `map()` 宏 assert 但更严格（assert 触发在编译期断言失败时；match 直接编译错误）。新增 syscall 的改动量从"记得 map + 不漏填"降为"加 enum 变体——编译器告诉你哪几个 match 要补"。
+
+**无函数指针间接调用（性能）**：C 的 `call_vec[call_nr](caller, msg)` 是经内存的间接调用——目标地址由 `call_nr` 在运行时决定，CPU 分支目标缓冲（BTB）对这类间接转移的预测能力弱于静态可知的直接跳转。Rust 的 `match` 对稠密判别值（本例 0-57 无空洞的 u16）生成编译期跳转表，目标地址静态可知。这是教科书级的间接调用 vs 跳转表差异；本专项未做 benchmark，不做具体倍数声明（避免无测量依据的性能数字）。
+
+**类型安全**：`enum Syscall` 的变体携带语义，而非裸整数。同时避免 §设计模式 19 的"自创错误码"陷阱——match 编译期就能保证未注册 syscall 被拒绝（返回 EBADREQUEST），无需运行时数组槽位 NULL 检查。
+
+---
+
+### 3.2 D2 详述：map() 宏替代
+
+C 的 `map(call_nr, handler)` 宏展开为 `call_vec[call_nr - KERNEL_CALL] = handler`，其中内嵌 `assert(call_index >= 0 && call_index < NR_SYS_CALLS)`（system.c:54-57）。该 assert **在运行时检查**——若 `call_nr - KERNEL_CALL < 0` 或越界，编译期通过但运行崩溃。
+
+Rust 端无此宏：所有 syscall 注册在 `enum Syscall` 的变体里（编译期穷尽），约束 `KERNEL_CALL..KERNEL_CALL+NR_SYS_CALLS` 通过类型保证；非法 syscall 在 match 默认分支返回 `EBADREQUEST`（`os/kernel/src/syscall.rs`）。效果等价于 C assert 但**完全编译期**——不可能有"运行时才发现的越界"。
+
+---
+
+### 3.3 D5 详述：4GB 截断删除
+
+C 的 `add_memmap()` 有 `#define LIMIT 0xFFFFF000` 截断（pg_utils.c:88），任何超出 4GB 的物理地址被截断到 [0, 4GB)——32 位 Minix3 的虚拟地址空间无法表达 [4GB, +∞)。minix-rs 是 64 位，虚拟地址空间 256TB+，**不需要**此截断（[01-stage-kernel/07-cross-space-init.md](../01-stage-kernel/07-cross-space-init.md) §1.3 详述 direct_map 完整覆盖）。
+
+但 `add_memmap()` 函数本身保留——bootstrap 内存回收是必要的（C 的 4GB 限制针对的是"超出部分"，不阻止 4GB 内的回收）。Rust 端 [`os/kernel/src/memmap.rs`](../os/kernel/src/memmap.rs) 已实现该函数（不再含 `LIMIT` 截断）；调用时机由 `init_post_and_memory` 触发（[lib.rs:497](../os/kernel/src/lib.rs)），而非 `bsp_finish_booting` 内部。
+
+---
+
+### 3.4 D7 详述：发散函数 vs 普通函数
+
+C 的 `switch_to_user` 是普通函数（C 没有发散函数概念），编译器仅通过"调用此函数后不再有代码"来知道它不返回——但 C 没有类型系统表达，静态分析能力有限。Rust 用 `fn switch_to_user() -> !`（[lib.rs:2757](../os/kernel/src/lib.rs)）显式标注——函数签名保证永不返回，调用方省略 `unsafe { ... }` 包装时的"调用后代码必须存在"约束；编译器对返回类型 `!` 的函数会传播发散性（如调用点不必有返回值兼容）。
+
+> 完整调度循环已落地（见 [10 §4](10-switch-to-user.md)）：函数体是真正的循环（终局分派经 `TrapReturnArch::restore_to_user` 离开内核），发散性类型与运行时行为现在是一致的——`-> !` 描述的"永不返回"既是类型事实也是执行事实。
+
+---
+
+### 3.5 D9 详述：条件编译 syscall 表达
+
+C 端用 `#if defined(__i386__)` 决定是否注册 `SYS_DEVIO` 等 x86 专用调用（system.c:194-198）。Rust 不用 `#[cfg(target_arch)]` 选择行为——条件编译选行为违反硬件抽象原则（机制差异必须经 trait 表达，参见 review 规则"硬件未抽象为 trait"模式）。
+
+Rust 端：所有架构共享同一个 `enum Syscall` 定义（`syscall.rs`），架构不支持的 syscall 走 `ArchSyscall` trait 默认实现返回 `BadCall`（回复时映射为 `EBADREQUEST`，对齐 C system.c:119-123 对非法调用号的处置）——避免条件编译导致的代码路径分裂，保留硬件抽象原则（架构差异经 trait 分发，D9/§3.5）。D7/D8 的详述并入本节速览：D7 见 §3.4；D8 的理由是 C 的 `assert(kernel_may_alloc)`（pg_utils.c:102）是运行时依赖，编译期保证无法等价替代。
 
 ---
 
@@ -417,6 +490,10 @@ impl TryFrom<u16> for Syscall {
 > 设计决策 D1：enum + match 替代 C 的 `call_vec[]` 函数指针数组。新增 syscall 时 match 未覆盖则编译失败，等价于 C 的 map() 宏 assert。
 
 ### 4.2 系统调用分派
+
+> **引导语**：本节展示 `kernel_call_dispatch` 入口及其内部分发结构。**BKL 的获取与保留**是阅读重点——这是 §1.4 D8 "kernel_may_alloc 窗口"在运行时的镜像：dispatch 持锁 → finish/switch_to_user 释放，期间不允许任何 CPU 让出。代码注释中英文混排，Rust 行为约束以中文行注体现，C 对应用 `// C: ...` 前缀。
+
+`KcallResult` 枚举（syscall.rs:515）把 C 的 4 个返回路径（EBADREQUEST/ECALLDENIED/VMSUSPEND/EDONTREPLY）建模为 5 个变体（含 `Ok`）：
 
 ```rust
 // os/kernel/src/syscall.rs (continued)
@@ -594,7 +671,7 @@ C 中的 `system_init()` 做三件事：清零 `irq_hooks[]`、初始化每个 `
 // Phase E: system_init — register syscall handlers
 ```
 
-> 设计决策 D1/D2：Rust 的 enum + match + const assert 替代 C 的 call_vec[] + map() 宏。`system_init` 的三步初始化由构造函数和类型系统隐式完成。
+> 设计决策 D1/D2：Rust 的 enum + match + const assert 替代 C 的 call_vec[] + map() 宏。C 端 `system_init` 的三段子流程（IRQ 清零 / timer 初始化 / call_vec 注册）由 Rust 的**构造函数 + 类型系统隐式完成**——`irq_manager` 模块在初始化时清零 IRQ hook 池，timer 在 priv 构造时初始化，`enum Syscall` 的变体本身就是"注册"的完成态。
 
 ### 4.5 add_memmap Rust 实现
 
@@ -605,7 +682,11 @@ use minix_boot::KernelInfo;
 use minix_types::PhysBytes;
 
 /// Maximum number of memory map entries.
-/// C: MAXMEMMAP in minix/com.h
+/// C: MAXMEMMAP = 40 — minix/include/minix/param.h:13.
+/// Rust raises it to 128: UEFI firmware memory maps routinely exceed 40
+/// entries (one per EfiMemoryType region per hole), and truncating the
+/// firmware map would silently drop RAM. Slot-scan semantics unchanged.
+/// Capacity divergence from C is intentional (boot-shim input shaped).
 pub const MAXMEMMAP: usize = 128;
 
 /// Memory map entry.
@@ -712,9 +793,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 static KERNEL_MAY_ALLOC: AtomicBool = AtomicBool::new(false);
 
 /// Global atomic mirror of C's `vm_running` flag.
-/// C: vm_running in glo.h:37.
-/// Set to false in bsp_finish_booting step 1.
-/// Multi-CPU will move it into `SmpState.cpu_locals[cpu].vm_running`.
+/// C: `EXTERN int vm_running` — glo.h:74 (plain global, never per-CPU).
+/// Set to false in bsp_finish_booting step 1; set true (correcting C's
+/// omission) in VMCTL_SETADDRSPACE — see 09-vm-boot-protocol.md §3 decision4.
 static VM_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Read the `vm_running` flag. C: `vm_running` — glo.h:37.
@@ -733,6 +814,10 @@ fn bsp_finish_booting(
     smp_state: &mut crate::smp::SmpState,
 ) -> ! {
     use crate::proc::RtsFlagsBits;
+
+    // Step 0: cpu_identify() — probe BSP CPU identity into CPU_INFO
+    // C: cpu_identify() — main.c:45 (first statement), i386: arch_system.c:212
+    crate::smp::cpu_identify();
 
     // Step 1: vm_running = 0 — wired to a global atomic; per-CPU on SMP
     VM_RUNNING.store(false, Ordering::Release);
@@ -782,7 +867,7 @@ fn bsp_finish_booting(
     {
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.init_timer(crate::clock::DEFAULT_HZ);
+        clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
     }
 
     // Step 7: FPU presence probe
@@ -818,10 +903,11 @@ fn switch_to_user() -> ! {
 }
 ```
 
-**各步骤职责与当前语义**（截至 2026-06-17）：
+**各步骤职责与当前语义**（对应上方代码块）：
 
 | 步骤 | 当前语义 | 说明 |
 |------|---------|------|
+| 0 `cpu_identify` | `smp::cpu_identify()` 探测 BSP 身份并记录进全局 `CPU_INFO` 表 | 寄存器读取经 arch crate 的 `CurrentCpuIdentity` 探测（x86 CPUID / aarch64 MIDR_EL1 / riscv64 marchid·mimpid）；详述见 §4.6 |
 | 1 `vm_running = 0` | `VM_RUNNING: AtomicBool` 全局镜像置 false | `lib.rs::vm_running()` 暴露给 `do_vmctl` 等读者 |
 | 2 `bill_ptr = idle_proc` | `ProcessTable::set_bill_to_idle()` | 将计费指针指向 idle 进程 |
 | 3 `announce()` | `EarlyConsole::write_str` 打印 MINIX-RS banner | QEMU 串口可见 |
@@ -833,17 +919,17 @@ fn switch_to_user() -> ! {
 | 8.5 BKL 获取 | `smp::bkl_lock()` | 进入调度循环前持有 BKL |
 | 9 `switch_to_user()` | 释放 BKL 后进入占位循环 | 真实调度循环见 10-switch-to-user.md |
 
-**关键变更**：函数签名从 `fn bsp_finish_booting()` 先后改为 `fn bsp_finish_booting(&mut ProcessTable)`，最终为 `fn bsp_finish_booting(&mut ProcessTable, &mut SmpState)`，因为步骤 2/4 需要修改进程表，步骤 5/7 需要访问 per-CPU 状态。
+**签名即依赖清单**：`bsp_finish_booting(&mut ProcessTable, &mut SmpState)` 的两个参数不是惯例——步骤 2/4 要改进程表、步骤 5/7 要访问 per-CPU 状态，全部经参数显式传入而非读全局。启动末段的状态依赖因此可审计：签名之外无隐藏读取。
 
-**与 C 12 步的差异说明**：C 的 `bsp_finish_booting`（main.c:38-109）有 12 步，Rust 实现 9 步。以下 3 步未实现，各有明确原因：
+**与 C 12 步的差异说明**：C 的 `bsp_finish_booting`（main.c:38-109）有 12 步，Rust 实现 10 步（含 Step 0）。三步差异状态如下：
 
-| C 步骤 | C 位置 | 未实现原因 |
+| C 步骤 | C 位置 | 状态与设计 |
 |--------|--------|----------|
-| `cpu_identify()` | main.c:45 | C 用 CPUID 填 `cpu_info[CONFIG_MAX_CPUS]`（vendor/family/model/stepping/freq/flags，archtypes.h:39-46）；内核自身不读它——消费者全在用户态（procfs `/proc/cpuinfo` 经 `sys_getcpuinfo`，cpuinfo.c:146；libsys TSC 校准读 freq，tsc_util.c:40）。Rust `GET_CPUINFO` 分支（misc.rs:1001-1015）已存在但返回缩减记录（仅 cpu_id 实值）。QEMU 完整暴露 CPUID（guest `/proc/cpuinfo` 可见），探测本身无环境障碍；补齐时点 = procfs/用户态 TSC 校准接线（19 阶段后），见 todo D-53 |
-| `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:398` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
+| `cpu_identify()` | main.c:45 | ✅ **已实现（Step 0，2026-09-04 收敛 todo D-53）**。C 中 kernel 是数据生产者：`cpu_identify()`（i386: arch_system.c:212 / earm: :85；BSP 经 main.c:45、AP 经 arch_smp.c:232 调用）填 kernel 全局 `cpu_info[CONFIG_MAX_CPUS]`（glo.h；i386 字段 vendor/family/model/stepping/freq/flags，archtypes.h:39-46），kernel 自身也是读者（arch_watchdog.c 读 vendor/family 选 MSR 语义、arch_clock.c 写 freq 做 TSC 校准回填），用户态只是消费端（procfs cpuinfo.c:146、libsys tsc_util.c:40 经 GET_CPUINFO——do_getinfo.c:76-80 整体拷出）。Rust 补齐的也是生产侧，分三层：(a) **arch 探测**——`os/arch/src/arch/cpu_identity.rs` 定义 `CpuIdentity` enum（X86/Arm/Riscv 一个变体一种 ISA——C 各 arch 往同一字节 blob 写不同形状再由用户态重解释，Rust 把形状变成类型级事实）+ `CpuIdentityArch` trait，`CurrentCpuIdentity` alias 按目标架构选择（x86 CPUID leaves 0/1 / aarch64 `MIDR_EL1` / riscv64 `mvendorid·marchid·mimpid` SBI ecall），三架构探测源内核皆可用。x86 侧含一处 **MINIX3 BUG 修复**：C（arch_system.c:239）把 ext-model 合并条件误写在 base model 上（`model == 0xf || model == 0x6`），对 2007 年后 base model ∉ {0xF,0x6} 的 family-6 CPU 截断 model（Nehalem 0x106E0 → 0xE 而非 0x1E；Skylake → 0xE 而非 0x4E）；Rust 按 SDM 以 family ∈ {0xF, 0x6} 为条件（`// MINIX3 BUG:` 标注于 x86_64/cpu_identity.rs::decode_signature + 4 项签名解码单测）。minix-rs 只支持现代硬件：C 的 `max_leaf == 0` 古董 CPU 守卫（486 时代）不移植。(b) **kernel 存储**——`CPU_INFO: SyncUnsafeCell<CpuInfoTable>`（smp.rs，`[Option<CpuIdentity>; MAX_CPUS]`，`None` = 未探测槽），表格住 kernel 与 C 的分层一致（`CONFIG_MAX_CPUS` 是 kernel 配置、cpu_info[] 在 kernel glo.h），经 `BklProtected` 审批列表进 `SyncUnsafeCell`（写入=单核 boot 期；读取=GET_CPUINFO 持 BKL）；(c) **GET_CPUINFO 全记录**——misc.rs `CpuInfoEntry` 重排为 C i386 `struct cpu_info` 布局（16 字节 repr(C)：vendor=CPU_VENDOR_INTEL 0/AMD 2/UNKNOWN 0xff，archconst.h:134-136），与本文件其他 GetInfo struct 的单一 ABI 惯例一致（cf. MachineStruct）；ARM MIDR/RISC-V CSR 字段在 x86 形状中无对应（C 各 arch 本就是不同 ABI），文档化为 CPU_VENDOR_UNKNOWN + 全零，类型化身份仍可经 `smp::cpu_identity` 内部读取。**剩余缺口（有意保留）**：freq 恒 0——TSC 校准回填（arch_clock.c）未移植且 Rust kernel 无该读者；watchdog 等 kernel 内部读者未移植（26 doc WONTFIX W-1）；AP 探测路径（C arch_smp.c:227-232 持 boot_lock+BKL）随 16-smp.md SMP bring-up 落地，当前单核 boot 只填 BSP 槽 |
+| `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:465` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
 | `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:95 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
 
-三步中两项已有 Rust 等价表达（krandom.rs 建模 + `krandom::init()`、`CpuState`/`SmpState` 枚举/字段）；`cpu_identify` 未移植——C 侧消费者在用户态，随 procfs/用户态接线补齐（todo D-53）。属范围决定而非实现遗漏。
+上表三行的实现归属：cpu_identify 已补齐——分层与 C 同构（arch 层探测机制 / kernel 层 `CPU_INFO` 表 + `smp::cpu_identify()` 在 bsp_finish_booting Step 0 调用 / misc.rs GET_CPUINFO 经 `CpuInfoEntry::from(CpuIdentity)` 全记录拷出），freq 回填与 watchdog 读者仍属优先级决定（无内核内消费压力，见上表"剩余缺口"）；krandom 已实现（`krandom::init()`，lib.rs:465 调用；`get_randomness()` no-op stub 对齐 C i386/earm 语义，见 [25 §4.7](25-misc-unported.md)）；cpu_set_flag 由 `SmpState::cpu_state` 枚举表达，Step 5 设 TSC 基线时隐式完成 Ready 转换。
 
 > 设计决策 D7：`bsp_finish_booting() -> !` 类型系统表达永不返回。D6：vm_running 当前用全局 `AtomicBool`，SMP 就绪后移入 `SmpState`。D8：`kernel_may_alloc` 用 `AtomicBool`。
 
@@ -869,19 +955,36 @@ fn switch_to_user() -> ! {
 |------|---------------|------|
 | 编译期穷尽检查 | D1/D2 | `Syscall` enum 新增变体而不补 `match` arm → 编译失败；`const` assert 保证所有变体值 < NR_SYS_CALLS |
 
-### 5.3 集成测试
+### 5.3 bsp_finish_booting 测试（lib.rs 单元测试）
 
-| 测试 | 覆盖的设计/实现 | 说明 |
-|------|---------------|------|
-| `test_bsp_finish_booting_step_5_7_side_effects` | bsp_finish_booting 步骤 5/6/7 | 验证 cycle accounting、timer init、FPU presence 已设置 |
-| `test_bsp_finish_booting_single_cpu_only_bsp_initialized` | bsp_finish_booting BSP 唯一性 | 验证仅 BSP 被初始化 |
+`bsp_finish_booting` 是发散函数（`-> !`），不能在测试内整体调用——两个测试直接驱动其副作用操作（Step 5/7 的 CpuLocal 写入），是"发散函数可测性"的既定模式：
+
+| 测试 | 位置 | 覆盖的设计/实现 | 说明 |
+|------|------|---------------|------|
+| `test_bsp_finish_booting_step_5_7_side_effects` | lib.rs:2771 | Step 5/7 | 验证 TSC 基线（cpu_last_tsc/cpu_last_idle）与 fpu_presence 落在 BSP 的 CpuLocal |
+| `test_bsp_finish_booting_single_cpu_only_bsp_initialized` | lib.rs:2798 | Step 5/7 BSP 唯一性 | 单 CPU 构建下仅 BSP 被初始化，AP 槽位保持默认值 |
+
+**清单完整性说明**：本文档 §5.1 只列与 D1/D5 直接对应的测试；实际相关测试更多——syscall.rs tests 模块（L2701 起）含 dispatch_schedule/privctl/getmcontext/setmcontext 等 15+ 个分派测试，memmap.rs 另有 cut_memmap 9 个测试。完整清单以 `rg "fn test_" os/kernel/src/{syscall,memmap,lib}.rs` 为准。
+
+### 5.4 CPU 身份探测测试（todo D-53 配套，smp.rs / misc.rs / x86_64/cpu_identity.rs 单元测试）
+
+`cpu_identify()` 本体写全局 `CPU_INFO`（boot 期状态，非测试可变），测试覆盖其可分部验证的纯逻辑——表操作用局部实例、wire 记录用转换函数：
+
+| 测试 | 位置 | 覆盖的设计/实现 | 说明 |
+|------|------|---------------|------|
+| `test_cpu_info_table_record_and_get` | smp.rs tests | CPU_INFO 表语义 | record/get 往返；越界 CPU id 忽略不 panic（C 会越界写）；已有槽位不被越界写入破坏 |
+| `test_cpu_info_entry_layout_matches_c` | misc.rs tests | C ABI 布局 | `CpuInfoEntry` = C i386 `struct cpu_info`（archtypes.h:39-46）：16 字节，freq@4 / flags@8——布局错误会静默损坏所有用户态读者 |
+| `test_cpu_info_entry_from_x86_identity` | misc.rs tests | 身份→wire 转换 | vendor 编码（INTEL=0/AMD=2/UNKNOWN=0xff，archconst.h:134-136）、family/model/stepping 拷贝、ECX/EDX 拆入 flags[2]、freq=0 |
+| `test_cpu_info_entry_from_non_x86_is_unknown_zeroed` | misc.rs tests | 非 x86 映射 | ARM MIDR/RISC-V CSR 无 x86 wire 形状对应 → CPU_VENDOR_UNKNOWN + 全零（文档化 ABI） |
+| `test_decode_signature_family6_extended_model` / `_nehalem` / `_family_f` / `_extended_family` | x86_64/cpu_identity.rs tests | MINIX3 BUG 修复（model 按 family 条件合并） | 纯函数 `decode_signature` 的签名解码：Skylake 0x406E9→0x4E（C 截断为 0xE）、Nehalem 0x106E0→0x1E、Zen2 0x30F11→0x31、ext-family 合并 |
 
 ---
 
 ## 6. 参见
 
 - [00-kernel-overview.md](00-kernel-overview.md) — 内核整体架构
-- [07-cross-space-init.md](07-cross-space-init.md) — 进程表初始化（前置）
+- [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) — 进程表初始化与 boot 进程加载（前置）
+- [07-cross-space-init.md](07-cross-space-init.md) — 跨地址空间初始化（前置）
 - [09-vm-boot-protocol.md](09-vm-boot-protocol.md) — VM 启动后的内核-VM 协商（后续）
 - [10-switch-to-user.md](10-switch-to-user.md) — switch_to_user 详细实现
 - [13-syscall-dispatch.md](13-syscall-dispatch.md) — 系统调用分派详细实现
@@ -889,4 +992,7 @@ fn switch_to_user() -> ! {
 - C 源码：`minix3/minix/kernel/system.c:168-270` — system_init()
 - C 源码：`minix3/minix/kernel/main.c:38-109` — bsp_finish_booting()
 - C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:86-121` — add_memmap()
+- C 源码：`minix3/minix/kernel/arch/i386/arch_system.c:212-244` — cpu_identify()
+- C 头文件：`minix3/minix/include/arch/i386/include/archtypes.h:39-46` — struct cpu_info
+- Rust：`os/arch/src/arch/cpu_identity.rs` + `os/kernel/src/smp.rs` — CPU 身份探测与 CPU_INFO 表（todo D-53）
 - C 头文件：`minix3/minix/include/minix/com.h:207-270` — SYS_* 定义

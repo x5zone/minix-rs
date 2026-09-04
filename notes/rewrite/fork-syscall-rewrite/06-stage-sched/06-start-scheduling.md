@@ -1,23 +1,249 @@
-# 06-start-scheduling: do_start_scheduling（调度接管）
+# 06 — do_start_scheduling 调度接管
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: 主循环 → `SCHEDULING_INHERIT`/`START` → `do_start_scheduling`（fork 次主线核心）
-> **源码**: `minix3/minix/servers/sched/schedule.c:140-252`
-> **Rust 模块**: `scheduling/start.rs`
-> **draft 素材**: `draft/02-sched-inherit.md` + `draft/03-sched-start.md`（素材，合并）
+本文介绍 SCHED 怎么把一个新进程登记进来：两种消息（START 和 INHERIT）走同一个入口，依次过四道检查（消息类型断言、发送者白名单、槽位为空、上限不越界），然后按三种情况填初始值（init 临时值、START 显式给值、INHERIT 从父进程继承），再调用内核完成交接、置位占用标记、选 CPU 下发（目标 CPU 已死就换一个重试），最后回复调用者。登记是进程调度的起点：没登记，调度器就不认识这个进程。
 
-## 核心点
+前置阅读：`02-sched-message-surface.md`（两种消息的名字和分发）、`04-schedproc-table.md`（表检查规则）、`05-priority-timeslice-model.md`（参数公共定义）。
 
-- 双消息 assert（INHERIT/START 统一入口）+ `accept_message`
-- `sched_isemtyendpt`(child) + slot 填充（endpoint/parent/max_priority）+ `max_priority >= NR_SCHED_QUEUES → EINVAL`
-- `endpoint == parent` init 特例（USER_Q/DEFAULT_USER_TIME_SLICE/BSP）
-- START 分支（priority=max_priority、time_slice=msg.quantum，RS 系统进程路径） vs INHERIT 分支（priority/time_slice 父继承）
-- `sys_schedctl(0, ep, 0, 0, 0)` 调度接管 → `flags=IN_USE`
-- `pick_cpu` + `schedule_process(SCHEDULE_CHANGE_ALL)` + **EBADCPU 重试**（`cpu_proc[cpu]=CPU_DEAD`）
-- 回复 `scheduler=SCHED_PROC_NR`
-- **fork 次主线路径图**（PM → sched_inherit → INHERIT 分支，plan.md §1.3）
+> 本章不讲什么：
+> - 消息格式和分发的细节 —— 见 `02-sched-message-surface.md`（本篇只用两个消息的名字）
+> - 客户端怎么组装消息（PM/RS 那边） —— 见 `13-pm-interaction.md`/`14-rs-interaction.md`（本篇只讲服务端收到之后怎么办）
+> - 下发的细节（`schedule_process` 参数聚合与内核 `sched_proc`） —— 见 `09-schedule-process.md`
+> - 选 CPU 的细节（`pick_cpu` 负载策略与 `cpu_proc[]`） —— 见 `10-pick-cpu-smp.md`
 
-## 边界
+---
 
-- **前置依赖**: 02/04/05
-- **不覆盖（移交）**: `schedule_process` 内部（09）、`pick_cpu` 内部（10）、PM 调用面（13）
+## 1 概念
+
+### 1.0 引言
+
+登记流程要回答三个问题：什么消息能进这个入口（两种消息走一扇门）、新槽位的初始值怎么定（三种情况）、登记完数据流向哪里（调内核交接、置标记、下发）。答完这三个问题，检查顺序、三种填值方式、交接置标记下发的去向就全清楚了。本章默认你已经知道消息的名字（见 02）、表检查规则（见 04）、参数定义（见 05），只讲"登记流程本身"。
+
+### 1.1 为什么两种消息走同一个入口
+
+整个系统只有一个调度器（全系统 sole scheduler，`schedule.c:168-170` 的注释）：新进程不管来自 RS 创建（系统进程）还是 PM fork（fork 出来的儿子），最后都要找同一个人登记——两种消息是"来路不同"，同一个入口是"登记这件事相同"。消息里带四个字段（endpoint/parent/maxprio/quantum，格式归 02 和 13，结构体在 `ipc.h:1430-1434`）——06 只读字段的值，不解释格式。如果拆成两个入口，两套检查各写一遍，以后改了一处忘了另一处；合成一个入口，分支只在填值那一步（START 显式给、INHERIT 从父进程抄）。入口合并、填值分开，这是本篇的第一个要点。
+
+### 1.2 检查的顺序
+
+检查有四道，顺序本身就是诊断信息：类型断言（`146-147`：只有两种消息能进——名字不对连门都没有）→ 发送者白名单（`150-152`：只有 PM 和 RS 能进，其他一律 `EPERM`）→ 槽位为空（`154-157`：被占了就拒绝，错误码看是哪种占用——`04` 的检查在这里调用）→ 上限不越界（`160-166`：先填上限、再检查 `>= 16`——填完再验，验不过的话槽位已经脏了，但脏槽位因为没置标记，04 的空检查照样认它是空的）。顺序不能换（换了就误诊：上限越界却报槽位被占，错的就不是真正的原因——04 的 §1.3 讲过同样的道理）。
+
+### 1.3 三种填值方式
+
+新槽位的初始值分三种情况：init 临时值（`171-188`：端点等于父进程的就是 init，先临时给 `USER_Q` 和 200 时间片——临时值不是最终值，START 分支会覆盖它，见下）→ START 显式给值（`191-197`：当前位置等于上限、时间片等于消息里带的值——系统进程不从父进程继承，自己带着值来）→ INHERIT 从父进程抄（`199-211`：先确认父进程在册、再抄父进程的当前位置和时间片——儿子从父亲"现在的位置"起步，不是父亲的"上限"）。这里有个容易疑惑的点：init 的临时值一定会被 START 分支覆盖（PM 给 init 发的消息本来就是 `USER_Q`/200，和临时值数字一样，只是走的路不同）——临时值真正起作用的只有 CPU（BSP，`184`），数字部分都会被覆盖。临时值填了又被覆盖，这是 C 代码写得笨的地方，但读者看到临时值一定会问它最后去哪了，所以必须讲清楚（答案：被覆盖了）。
+
+### 1.4 内核交接是什么意思
+
+交接就是告诉内核"这个进程归我管了"（`sys_schedctl(0, ep, 0, 0, 0)`，`218`：全零参数——意思就是"这个进程，我是它的调度器"）。交接失败则整个登记失败（`218-222`：内核拒绝的话标记不置、槽位虽然填了但内核还没认可——填是 SCHED 自己的记录，认可是内核的事；记了但不认，这个进程还是没人调度）。交接成功才置标记（`IN_USE`，`223`：从这一刻起这个槽位算占用，04 的检查认它）——标记是交接的结果，不是填槽位的结果（置标记在交接之后，不在填槽位之后，顺序别记反）。
+
+### 1.5 死 CPU 重试循环
+
+选出来的 CPU 可能已经死了（SMP 机器上目标 CPU 可能挂了）：下发遇到 `EBADCPU` 就把那个 CPU 标死（`cpu_proc[cpu] = CPU_DEAD`，`229`）、重新选、再下发（`226-231`：循环以 `EBADCPU` 为继续条件、其他返回码都退出）。这个循环一定能结束（每轮都标死一个 CPU，候选集合只减不增——`pick_cpu` 里面的 `++` 加的是新选中 CPU 的负载计数，不会清除已标死的——所以必定退出）。出循环还要再判断一次（`233-237`：退出时的返回码不是 `OK` 则整个登记失败——失败时槽位已经置了标记但调度没下发，脏槽位的收尾归调用层面处理，13 的内容）。重试循环是本篇最容易出错的一环，也是 SMP 下启动失败处理的核心（R-11）。
+
+### 1.6 回复 scheduler 字段
+
+最后填 `scheduler = SCHED_PROC_NR`（`246`：告诉 PM"这个儿子归我调度"→ PM 记到 `mp_scheduler`）。这个字段可以转交（`238-245` 的注释：默认填自己，如果想把调度权分给别的调度器，就填那个调度器的号——现在永远填自己，形状上留了余地）。转交的形状是微内核多调度器的伏笔（一套系统多个调度器、各管各的儿子；现在是单一调度器，伏笔还没启用）。
+
+### 1.7 fork 次主线路径图
+
+fork 出来的儿子最终要走到本篇的 INHERIT 分支，完整路径分下面几步：
+
+```text
+步骤 1  PM 里 fork 出儿子（VFS 建好地址空间后回 VFS_PM_FORK_REPLY，pm/main.c:369-373）
+步骤 2  nice 折算成队列（sched_start_user 里面调 nice_to_priority，pm/schedule.c:55-61）← 05 的公式
+步骤 3  决定从谁继承（PRIV_PROC 的儿子 → INIT_PROC_NR 特例，pm/schedule.c:66-73）← 13 的细节
+步骤 4  调 sched_inherit(SCHED, 儿子, 继承对象, maxprio)（libsys，sched_start.c:11-41）
+步骤 5  SCHEDULING_INHERIT 消息 → 主循环分发（02，main.c:58-61）→ 本篇 INHERIT 分支：
+  5a  04 表检查：白名单（PM）→ 空检查（儿子槽位必须空）→ 边界检查（max < 16）
+  5b  03 槽位形状：填 endpoint/parent/max
+  5c  本篇 INHERIT：确认父进程在册 → 抄父进程当前位置和时间片
+  5d  09 下发：sys_schedctl 交接 → 置标记 → schedule_process 全量下发
+  5e  10 选 CPU：选负载最低的可用 CPU（死了就重试）
+  5f  回 scheduler=SCHED_PROC_NR → PM 记到 mp_scheduler
+```
+
+RS 创建系统进程走 START 分支（RS 的 `sched_init_proc` 组装消息 → 主循环 `59` → 本篇 START）：来路不同，入口同一个（§1.1）。
+
+### 1.8 其他系统的同类设计
+
+- **Linux** 用 `sched_fork`/`wake_up_new_task` 对应这里的两种消息：`sched_fork` 从父进程继承调度参数（`__sched_fork` 抄 `prio/policy`——对应 INHERIT 的抄），`sched_setscheduler` 显式定级（对应 START 的显式给值）——"继承还是显式给"这个区分两个系统都有。`EBADCPU` 重试循环对应 Linux 的 `select_task_rq` 重选（CPU 不可用就换一个——弃死换新是 SMP 通用的做法）。`cpu_proc[cpu] = CPU_DEAD` 的标死对应 Linux 清 `cpu_active_mask` 的对应位（死 CPU 标记的两种写法）。
+- **Redox** 创建进程的同时就进入调度（创建和登记是同一步，没有独立的"登记"动作），也没有类型断言、白名单、空检查这四道关——这些关是 Minix"表驱动加用户态调度器"这个架构的形状（Redox 内核自己调度，不需要验发送者、验槽位）。
+- **seL4** 的线程诞生于 TCB 配置（优先级、亲和性、MCS 预算一次配齐——三种填值方式合成一步），没有"先给临时值再覆盖"这种写法（init 临时值是 Minix 特有的笨写法，seL4 没有临时值）。`scheduler` 回复字段对应 seL4 的调度上下文归属（SchedContext 绑定——"这个儿子归谁调度"在 seL4 里由能力绑定直接保证）。
+
+### 1.9 小结
+
+检查（类型断言、白名单、空槽位、边界检查四道且有序）管能不能进，填值（临时、显式给、从父进程抄三种）定初始值，交接加置标记让内核认可，死 CPU 重试保下发，scheduler 回复告诉调用者归属。贯穿始终的一条要求：检查顺序不能换，换了就误诊。
+
+---
+
+## 2 C 源码分析
+
+### 2.1 类型断言与白名单（`schedule.c:140-157`）
+
+开头（`140-143`：两个槽位指针、两个编号——`rmp`/`rv`/`proc_nr_n`/`parent_nr_n`）→ 断言（`146-147`：两种消息能进）→ 白名单（`150-152`：PM/RS 之外一律 `EPERM`）→ 空检查（`154-157`：`sched_isemtyendpt(child)`，被占了就拒绝，错误码看占用类型）。
+
+### 2.2 填槽位与边界检查（`schedule.c:158-166`）
+
+取槽位（`158`）→ 填三个值（`161-163`：endpoint/parent/max_priority）→ 验边界（`164-166`：`>= 16` 就 `EINVAL`——先填后验的顺序，见 §1.2）。
+
+### 2.3 init 临时值（`schedule.c:171-188`）
+
+自父判断（`171`：`endpoint == parent`）→ 临时数字（`174-175`：`USER_Q`/200）→ 临时 CPU（`184`：BSP，只在 SMP 构建里有；`185` 的死字段 FIXME，S-3）→ 注释（`167-170,177-183`：单一调度器的注释和 CPU 注释——临时值的完整含义）。
+
+### 2.4 START 显式给值（`schedule.c:191-197`）
+
+系统进程的注释（`192-194`）→ 显式给两个值（`195-196`：当前位置等于上限、时间片等于消息里的值）→ 临时值被覆盖的事实（`174-175` 的值到这里一定被覆盖——§1.3 讲过的点）。
+
+### 2.5 INHERIT 从父进程抄（`schedule.c:199-211`）
+
+父进程检查（`203-206`：`sched_isokendpt(parent)`，父进程不在就拒绝）→ 抄两个值（`207-208`：抄父进程当前位置和时间片）→ 不可达断言（`212-213`：`default: assert(0)`——分发已经过滤了野消息，02 的约定在这里回响）。
+
+### 2.6 交接与置标记（`schedule.c:216-223`）
+
+交接（`218-222`：`sys_schedctl(0, ep, 0, 0, 0)`，失败则整个登记失败）→ 置标记（`223`：`IN_USE`——标记是交接的结果，不在填槽位之后，见 §1.4）。
+
+### 2.7 选 CPU 与重试（`schedule.c:226-237`）
+
+初选（`226`：`pick_cpu`，细节归 10）→ 重试循环（`227-231`：`EBADCPU` 就标死再选，`229-230`）→ 出循环再判（`233-237`：不是 `OK` 就失败）。
+
+### 2.8 回复调用者（`schedule.c:238-248`）
+
+转交的注释（`238-245`）→ 填归属（`246`：`scheduler = SCHED_PROC_NR`）→ 返回成功（`248`：`OK`）。
+
+---
+
+## 3 Rust 设计决策
+
+Rust 改写不是把一个函数八步照抄过来，而是参考 Linux 的继承/显式区分和表检查已有的裁决之后再取舍。决策编号 D1–D6，每条都给出 C 依据和 Rust 落点。
+
+### D1 两种消息收进类型
+
+- **C**：`assert(m_type == START || m_type == INHERIT)`（`schedule.c:146-147`）+ `default: assert(0)`（`212-213`）。
+- **Rust**：`Kind::{Start, Inherit}` + `from_msg(SchedMsg) -> Option`（`os/servers/sched/src/scheduling/start.rs:28,38`，其他消息一律 `None`）。
+- **为什么**：断言是门，类型是墙（门可能被误闯，墙进不去——`None` 就是拒绝）；分发（02）已经分过一次类，这道是第二道（以后调用者忘了分发的约定，这个函数照样是全函数）。备选方案（`debug_assert!` 直译）被否决了：断言在 release 构建下就没了，类型检查在什么构建下都在。
+
+### D2 检查顺序照抄
+
+- **C**：白名单 → 空检查 → 验边界（`150-166`，顺序不能换）。
+- **Rust**：`admit(sender_ok, child, maxprio)`（`start.rs:106`：`EPERM` → 表检查码 → `EINVAL` 的顺序直译，一道检查一个测试）。
+- **为什么**：顺序就是诊断信息（先验发送者、再验槽位、再验数字——防误诊，见 §1.2）；三道检查收在一个函数里（调用者散着写顺序就会漂移，04 的 D5 有同样的例子）。备选方案（三个调用者各写一遍检查顺序）被否决了：重复就是漂移的开始。
+
+### D3 边界检查双向拒绝
+
+- **C**：`max_priority >= 16 → EINVAL`（`164`：没写下界——负数绕过无符号比较进同一个拒绝）。
+- **Rust**：`maxprio < 0 || >= 16 → EINVAL`（`start.rs:113-122`，负数直接拒绝；`as u8` 旁边有守卫注释）。
+- **为什么**：对外表现一致，内部绕数技巧不进模型（wrap trick 是 C 写法的笨地方，不是语义本身）；守卫注释堵住 `as` 转换的疑问。备选方案（用 `u32` 绕回来求"逐行长得像"）被否决了：逐行像就是翻译腔（模式 65）。
+
+### D4 三种填值
+
+- **C**：临时值（`174-175`）→ 覆盖（`195-196`）/ 从父进程抄（`207-208`）。
+- **Rust**：`Request`（`start.rs:55`：消息的形状，四个字段，格式归 02/13）→ `plan_start`（`start.rs:140`：直接赋显式值，临时值覆盖的净等价性写了证明）+ `plan_inherit`（`start.rs:162`：父进程 verdict 先行 + `ParentState` 带两个继承值）→ `Seed`（`start.rs:74`：填值结果的形状）。
+- **为什么**：临时值只是写法（净效果等价就省略步骤、保留证明——证明写在注释里，不在代码里）；从父进程抄收 `ParentState`（arm 不直接看父进程的表行，判断和执行分离，04 的 D2 同例）；自父 INHERIT 不需要特例（父 verdict 自己会读出 Dead——`223` 置标记在 switch 之后，这个顺序就是证明，不需要额外代码）。备选方案（`plan(kind, ...)` 一个函数两个分支）被否决了：两种消息两个名字，合成一个就把名字抹掉了（04 的 D3 同例）。
+
+### D5 交接置标记留给调用者
+
+- **C**：`sys_schedctl` 交接（`218`）+ `flags = IN_USE`（`223`）+ `scheduler` 回复（`246`）。
+- **Rust**：三者都归调用者（`Seed` 只带填好的值——`start.rs:74`；交接归 12、下发归 09、回复经分发的 `settle`）。
+- **为什么**：判断和执行分离（arm 只做判断，交接下发是执行——执行要发 IPC，纯函数做不了）；`Seed` 里不带标记和回复（标记是交接的结果，回复是循环的结果——结果不进原因）。备选方案（`Seed` 里加 `flags/scheduler` 字段）被否决了：结果进了原因，调用者就能先置标记后交接（顺序就可能错——错序正是 C 代码 `223` 在 `218` 之后所禁止的）。
+
+### D6 重试循环收进类型
+
+- **C**：`while (rv == EBADCPU)` 标死再选（`227-231`）。
+- **Rust**：`Fanout::{Done(i32), CpuDead}` + `classify_fanout`（`start.rs:184,197`：只有 `EBADCPU` 继续循环，其他都退出）。
+- **为什么**：循环的继续/退出是个判断（判断收进类型，执行归调用者——标死那张表归 10，重选归 10）；`EBADCPU` 常量补齐（types，`errno.h:213` → 217，04 的 EBADEPT 同例）。备选方案（调用者散写 `if rv == -217`）被否决了：魔数散写就是漂移（模式 16）。
+
+### ARCH 决策总表
+
+| ARCH | 落点 | 三处一致标注 |
+|------|------|-------------|
+| （本篇无 ARCH 行为变更） | — | 纯表达层调整（断言改类型、检查顺序直译、覆盖写净等价证明），无需 ARCH 标注 |
+
+---
+
+## 4 实现详解
+
+### 4.1 模块结构
+
+```
+os/servers/sched/src/
+├── scheduling/             — 本篇：登记臂目录（06 先写，07/08 继续加）
+│   ├── mod.rs              — 臂的名字（各臂的约定）
+│   └── start.rs            — 本篇：两种消息的检查、三种填值、重试判断
+├── dispatch.rs             — 消息（02，SchedMsg 的源头）
+├── table.rs                — 表检查（04，SlotVerdict 的源头）
+├── valid.rs                — 发送者（04，白名单的源头，调用者拿着）
+├── schedproc.rs            — 结构体（03，Priority 的源头）
+├── priority.rs             — 参数（05，USER_Q/DEFAULT 的源头）
+└── lib.rs                  — 模块导出
+os/libs/minix-types/src/types/
+└── errno.rs                — EBADCPU 权威定义（跨服务复用，04 的 EBADEPT 同例）
+```
+
+> 设计决策：§3 D1（两种消息收进类型）/ D2（检查顺序照抄）/ D4（三种填值）/ D6（重试循环收进类型）。
+
+### 4.2 核心符号表
+
+| 符号 | 来源 | Rust 位置 | 行为 |
+|------|------|-----------|------|
+| 两种消息的名字 | `schedule.c:146` | `start.rs:28,38` | 其他消息直接拒绝 |
+| 消息的形状 | `ipc.h:1430-1434` | `start.rs:55` | 四个字段只读不解释 |
+| 检查顺序 | `schedule.c:150-166` | `start.rs:106` | 先发送者后槽位后数字 |
+| 填值结果 | `schedule.c:161-163,193-208` | `start.rs:55,74,93,140,162` | 三种情况两个构造 |
+| 重试判断 | `schedule.c:227-231` | `start.rs:184,197` | 只有死 CPU 继续循环 |
+| 死 CPU 错误码 | `errno.h:213` | `errno.rs` EBADCPU + `start.rs:197` | 跨服务权威定义 |
+
+### 4.3 不变量
+
+| 不变量 | 位置 | 守卫 | 证据 |
+|--------|------|------|------|
+| 名字对才进（两种消息之外没有入口） | `Kind::from_msg` | 穷举即封闭 | `schedule.c:146,212` |
+| 顺序即诊断（发送者→槽位→数字） | `admit` | 顺序直译 + 顺序测试 | `schedule.c:150-166` |
+| 填值净等价（临时值一定被覆盖） | `plan_start` | 注释证明 + init 自测 | `schedule.c:174-175,195-196` |
+| 继承必在册（死父拒绝登记） | `plan_inherit` | 父 verdict 先行 | `schedule.c:203-206` |
+| 循环必结束（死 CPU 只增不减） | 调用者循环 + `classify_fanout` | 只有死 CPU 继续 | `schedule.c:227-231` |
+
+---
+
+## 5 测试要点
+
+| 测试名 | 覆盖 C 行号 | 行为 | 文件 |
+|--------|-------------|------|------|
+| `test_kind_gate` | `schedule.c:146,212` | 两种消息接收 + 三种消息拒绝 | `start.rs:232` |
+| `test_doors_in_order` | `schedule.c:150-166` | 发送者压槽位压数字 + 边界值（15 收、16/99/-1 拒） | `start.rs:242` |
+| `test_start_birth` | `schedule.c:174-175,191-197` | 显式值 + init 净等价（自父形状保留） | `start.rs:262` |
+| `test_inherit_birth` | `schedule.c:199-211,223` | 抄父进程值 + 死父拒绝 + 自父拒绝（无特例） | `start.rs:282` |
+| `test_fanout_retry` | `schedule.c:227` + `errno.h:213` | 只有死 CPU 循环 + 其他码退出 + 217 锁定 | `start.rs:323` |
+
+测试策略：检查用顺序覆盖（发送者坏但槽位好照样 `EPERM`、槽位坏但数字好照样表检查码）锁定；填值用净等价（init 的终值就是 START 的值）和抄值（抄父进程当前位置不是上限）锁定；循环用一继续（`EBADCPU`）两退出（`OK`/其他错）锁定；错误码用 217 全量断言锁定。
+
+### 5.1 测试统计
+
+基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。
+
+- 本节列出与本模块直接相关的 5 个（子集）
+- 完整测试清单：`rg "fn test_" os/servers/sched/src/scheduling/start.rs`
+
+---
+
+## 6 过渡
+
+本篇在 05（公共参数）之后、07（停止调度）之前，是"登记"的归属：05 定参数的含义，本篇定登记的流程；没有本篇，07 的释放不知道槽位从哪立起来的，09 的下发不知道时间片从哪来的，10 的选 CPU 不知道从哪开始选。
+
+```
+05-priority-timeslice-model: 队列常量表 → 上限/当前位置 → 时间片约定 → nice 换算 → 系统进程判断（公共参数定义）
+   │
+   └─► 本篇：两种消息 → 四道检查 → 三种填值 → 交接置标记 → 死 CPU 重试 → 回复归属（登记流程）
+           │                              │
+           ├─► 07-stop-scheduling：释放流程（登记的逆操作）
+           ├─► 09-schedule-process：下发流程（时间片的去向）
+           └─► 10-pick-cpu-smp：选 CPU 流程（CPU 的去向）
+```
+
+阅读顺序提示：关心"登记完怎么释放"，下一站 `07-stop-scheduling.md`（释放流程）；下发的细节见 `09-schedule-process.md`，选 CPU 的细节见 `10-pick-cpu-smp.md`。
+
+---
+
+## 7 参见
+
+- C 源：`minix3/minix/servers/sched/schedule.c:140-252`（登记全流程）、`minix3/minix/include/minix/ipc.h:1430-1437,1908-1912`（登记消息与回复）、`minix3/minix/include/minix/com.h:801-807,63`（五种消息的号与调度器的号）、`minix3/minix/servers/sched/main.c:57-61`（两种消息合流）、`minix3/sys/sys/errno.h:213`（死 CPU 错误码）、`minix3/minix/lib/libsys/sched_start.c:11-66`（组装消息对端）、`minix3/minix/servers/pm/schedule.c:55-85`（继承对象对端）、`minix3/minix/servers/pm/main.c:369-373`（fork 回复路径）
+- 阶段文档：`02-sched-message-surface.md`（消息的名字）、`04-schedproc-table.md`（表检查规则）、`05-priority-timeslice-model.md`（参数定义）、`07-stop-scheduling.md`（下一站）、`09-schedule-process.md`（下发）、`10-pick-cpu-smp.md`（选 CPU）
+- Rust 实现：`os/servers/sched/src/scheduling/start.rs:1`（本篇臂层）、`os/servers/sched/src/scheduling/mod.rs:1`（臂的名字）、`os/libs/minix-types/src/types/errno.rs`（EBADCPU 权威定义）
+- 对端：`../04-stage-pm/16-scheduling.md`（PM 继承对象对端）、`13-pm-interaction.md`（组装消息面，另篇）

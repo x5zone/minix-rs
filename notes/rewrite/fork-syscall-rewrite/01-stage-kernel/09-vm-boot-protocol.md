@@ -20,7 +20,7 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 ```
 1. switch_to_user() → pick_proc() → 选 VM（唯一无 VMINHIBIT 的进程）
 2. VM 用户态代码执行 init_page_table() → map_kernel()
-   → 建立 kernel direct map（KERNEL_DIRECT_MAP_BASE, U/S=0, G=1）
+   → 建立 kernel direct map（KERNEL_DIRECT_MAP_BASE, U/S=0, G=1） *TODO 这里应该是讲C，而不是Rust。可以提一下RUST（Rust的或者放到 ch3 or ch4），但C必须要讲到。
 3. VM → SYS_VMCTL(VMCTL_SETADDRSPACE): 切换 CR3 到 VM 的真实页表
 4. VM → SYS_VMCTL(VMCTL_KERN_PHYSMAP): 内核声明需映射的物理区
 5. VM → SYS_VMCTL(VMCTL_KERN_MAP_REPLY): VM 返回虚拟地址
@@ -71,7 +71,7 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 
 **未在 switch 中处理的子命令**：传递给 `arch_do_vmctl()` 处理（do_vmctl.c:172）。
 
-### 2.2 arch_do_vmctl() — x86 架构特定 VMCTL
+### 2.2 arch_do_vmctl() — x86 架构特定 VMCTL *TODO 看起来三架构都需要这个呀？
 
 **源码**: `minix3/minix/kernel/arch/i386/arch_do_vmctl.c:38-67`
 

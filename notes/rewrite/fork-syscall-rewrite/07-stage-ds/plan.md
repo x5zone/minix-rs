@@ -264,7 +264,7 @@ DS 的全部工作本质是**发布/订阅数据流**。次主线以"一条数�
 | 01 | pending | — | draft/tmp_main.c.md 素材 |
 | 02 | pending | — | 新建协议面 |
 | 03 | pending | — | draft/tmp_store.c.md 素材 |
-| 04 | pending | — | draft/tmp_store.c.md 素材 |
+| 04 | reviewed（2026-09-04，CONVERGED，0/0/0） | 2026-09-04 | draft/tmp_store.c.md 素材 + slots.rs 新实现 |
 | 05 | pending | — | draft/tmp_store.c.md 素材 |
 | 06 | pending | — | 素材 + boot 时序补充 |
 | 07 | pending | — | 素材 + 通知接线 |

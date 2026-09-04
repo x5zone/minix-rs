@@ -292,7 +292,7 @@ mod tests {
         // Full chain: GLOBAL-style allocator with null arena_base →
         // ensure_arena → refill_arena → HEAP_ARENA.grow(16) → bump.
         crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
-        crate::pagetable::vm_self_map::init_vm_self_pt();
+        crate::pagetable::vm_self_map::init_vm_self_pt(minix_types::PhysBytes(0x900_000));
         let mut page_alloc = make_page_alloc(256);
         register_page_alloc(&mut page_alloc);
 

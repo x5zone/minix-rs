@@ -431,7 +431,12 @@ pub(crate) fn decrement_quantum_with_tsc(
 /// `SMP_STATE` (which would race with parallel tests). Both `smp` and
 /// `current_proc` are `&mut` but refer to disjoint state — `SmpState`
 /// owns per-CPU scheduler data, not the process table.
-fn decrement_quantum_in(
+///
+/// `pub(crate)` so the scheduler's `context_stop` equivalent
+/// (`switch_to_user`) can pass its already-borrowed `&mut SmpState`
+/// directly — calling the global-based [`decrement_quantum`] while holding
+/// `&mut SmpState` would create two live `&mut` aliases.
+pub(crate) fn decrement_quantum_in(
     smp: &mut crate::smp::SmpState,
     current_proc: &mut KProcess,
     current_tsc: u64,
