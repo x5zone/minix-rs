@@ -174,6 +174,26 @@ pub const INPUT_DEV_MOUSE: u16 = 0x02;
 /// value locally; this copy leads.
 pub const INVALID_INPUT_ID: i32 = -1;
 
+/// Data-store key prefix for input-driver announcements.
+///
+/// C: `driver_prefix = "drv.inp."` (`inputdriver.c:23`, client side) matched
+/// against the subscription `drv\.inp\..*` and filtered with
+/// `strncmp(key, "drv.inp.", len)` (`input.c:562-579`, server side). Both
+/// sides spell the same dots; this constant is the shared spelling.
+/// (The sibling `"drv.chr."` belongs to the character framework, document
+/// 02, and lives outside this protocol.)
+pub const DRIVER_KEY_PREFIX: &str = "drv.inp.";
+
+/// Whether a data-store key names an input driver, and if so, which.
+///
+/// Mirrors the server filter (`input.c:578-582`): the key must start with
+/// [`DRIVER_KEY_PREFIX`]; the remainder is the driver's own label. Returns
+/// the label part, unvalidated (the server verifies it against the sender
+/// before trusting it — document 11).
+pub fn driver_label(key: &str) -> Option<&str> {
+    key.strip_prefix(DRIVER_KEY_PREFIX)
+}
+
 // ── Light control encoding (ioctl in, mask out) ──
 
 /// Keyboard light bits as the caller passes them (`kio_leds_t.kl_bits`).
@@ -493,5 +513,17 @@ mod tests {
     fn test_tty_up_carries_no_payload() {
         let msg = tty_up_msg();
         assert_eq!(msg.m_type, TTY_INPUT_UP);
+    }
+
+    #[test]
+    fn test_driver_key_prefix_matches_both_sides() {
+        // C: client publishes "drv.inp.<label>" (inputdriver.c:23,32);
+        // server filters strncmp(key, "drv.inp.", len) (input.c:562-579).
+        assert_eq!(DRIVER_KEY_PREFIX, "drv.inp.");
+        assert_eq!(driver_label("drv.inp.kbd0"), Some("kbd0"));
+        assert_eq!(driver_label("drv.inp."), Some(""));
+        assert_eq!(driver_label("drv.chr.kbd0"), None);
+        assert_eq!(driver_label("drv.inpx.kbd0"), None);
+        assert_eq!(driver_label("other"), None);
     }
 }

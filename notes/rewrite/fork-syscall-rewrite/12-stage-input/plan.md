@@ -390,10 +390,10 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 | 06 | reviewed | 2026-09-05 | 新建（含关闭修正 MINIX3 BUG；scan: scans/06-input-open-close/，CONVERGED） |
 | 07 | reviewed | 2026-09-05 | 新建（A-5/A-11；scan: scans/07-input-read-suspend/，CONVERGED） |
 | 08 | reviewed | 2026-09-05 | 新建（A-8；scan: scans/08-input-ioctl-cancel-select/，CONVERGED） |
-| 09 | pending | — | 新建（A-4/A-9，事件旅程核心） |
-| 10 | pending | — | 新建（A-6） |
-| 11 | pending | — | 新建（A-2） |
-| 12 | pending | — | 新建（A-9） |
+| 09 | reviewed | 2026-09-05 | 新建（A-4/A-9，事件旅程核心；scan: scans/09-input-event-processing/，CONVERGED） |
+| 10 | reviewed | 2026-09-05 | 新建（A-6；scan: scans/10-input-setleds/，CONVERGED） |
+| 11 | reviewed | 2026-09-05 | 新建（A-2；scan: scans/11-input-driver-connect/，CONVERGED） |
+| 12 | reviewed | 2026-09-05 | 新建（A-9；scan: scans/12-libinputdriver/，CONVERGED） |
 | 13 | pending | — | 新建外部契约 |
 | 14 | pending | — | 新建外部契约 |
 | 99 | pending | — | 新建全局概念 |

@@ -76,6 +76,15 @@ impl Minor {
     pub const fn is_multiplexer(self) -> bool {
         self.0 == KEYBOARD_MULTIPLEXER_MINOR || self.0 == MOUSE_MULTIPLEXER_MINOR
     }
+
+    /// Whether this is the keyboard-multiplexer minor (0).
+    ///
+    /// Needed by the light broadcast (`input.c:224` matches only
+    /// `KBDMUX_MINOR`): the mouse multiplexer (64) broadcasts nothing,
+    /// since the light loop ranges over keyboard slots only.
+    pub const fn is_keyboard_multiplexer(self) -> bool {
+        self.0 == KEYBOARD_MULTIPLEXER_MINOR
+    }
 }
 
 /// A device-table index: the slot inside the server's ten-element array.
@@ -330,6 +339,13 @@ mod tests {
         // C: `input.h:18-26` — ten slots total.
         assert_eq!(DEVICE_COUNT, 10);
         assert_eq!(LAST_MOUSE_INDEX, 9);
+        // Multiplexer predicates (used by the document 10 broadcast).
+        assert!(Minor(0).is_multiplexer());
+        assert!(Minor(64).is_multiplexer());
+        assert!(!Minor(1).is_multiplexer());
+        assert!(Minor(0).is_keyboard_multiplexer());
+        assert!(!Minor(64).is_keyboard_multiplexer());
+        assert!(!Minor(1).is_keyboard_multiplexer());
     }
 
     #[test]

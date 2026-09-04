@@ -27,12 +27,18 @@
 //! - [`eventbuf`] — ring-buffer copy geometry (document 07).
 //! - [`handlers`] — open/close/read/control/cancel/select decisions
 //!   (documents 06-08).
+//! - [`produce`] — event intake, enqueue, and wake-up decisions
+//!   (document 09).
+//! - [`setleds`] — light broadcast planning and mask memory (document 10).
+//! - [`connect`] — driver slot allocation, connect reports, disconnect
+//!   effects (document 11).
 //!
-//! Later documents (09-14) add event production, light sending, driver
-//! lifecycle, the client library, and the external consumers.
+//! Later documents (12-14) add the client library and the external
+//! consumers (the client library lives in `minix-sys`, document 12).
 
 extern crate alloc;
 
+pub mod connect;
 pub mod error;
 pub mod event;
 pub mod eventbuf;
@@ -40,8 +46,14 @@ pub mod framework;
 pub mod handlers;
 pub mod init;
 pub mod key_codes;
+pub mod produce;
+pub mod setleds;
 pub mod structs;
 
+pub use connect::{
+    ConnectReport, DisconnectEffects, NO_SLOT, alloc_id, connect_driver, disconnect_device,
+    key_is_new_driver, wants_from_typemask,
+};
 pub use error::InputError;
 pub use event::{
     ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, LedCode, PressState,
@@ -59,6 +71,12 @@ pub use handlers::{
 };
 pub use init::{HandlerSlot, InitStep, StartupRegistration};
 pub use key_codes::KeyCode;
+pub use produce::{
+    DropReason, EventIntake, ForwardedEvent, WakeDirective, apply_wake_answered,
+    apply_wake_notified, decide_wake, enqueue, forward_to_terminal, multiplexer_for, route_event,
+    stored_event,
+};
+pub use setleds::{LightTarget, apply_light_save, plan_light_targets, remembered_lights};
 pub use structs::{DeviceIndex, InputDevice, InputTable, Minor};
 
 /// Crate-level init entry (called by `main.rs`; real init runs on startup).

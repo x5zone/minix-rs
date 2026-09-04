@@ -1,6 +1,6 @@
 {
  "_comment": "C->Rust semantic map (input module). Used by coverage-extract.py --semantic-map.",
- "_note": "Covers documents 01-08 (init, chardriver framework, device structs, event format, message contract, open/close, read/suspend, ioctl/cancel/select). Extended as documents 09-14 land.",
+ "_note": "Covers documents 01-11 (init through driver connect). Document 12 (client library) maps libinputdriver symbols below.",
  "main": [
   "main"
  ],
@@ -93,7 +93,10 @@
   "InputEvent"
  ],
  "input_event": [
-  "InputEvent"
+  "route_event",
+  "EventIntake",
+  "ForwardedEvent",
+  "multiplexer_for"
  ],
  "EVENTBUF_SIZE": [
   "EVENT_BUFFER_SIZE"
@@ -239,7 +242,10 @@
   "SelectOutcome"
  ],
  "input_set_leds": [
-  "IoctlVerdict"
+  "plan_light_targets",
+  "apply_light_save",
+  "LightTarget",
+  "remembered_lights"
  ],
  "TTY_INPUT_UP": [
   "TTY_INPUT_UP",
@@ -307,13 +313,16 @@
   "SELECT_NOTIFY"
  ],
  "INPUT_DEV_KBD": [
-  "INPUT_DEV_KBD"
+  "INPUT_DEV_KBD",
+  "announce_type"
  ],
  "INPUT_DEV_MOUSE": [
-  "INPUT_DEV_MOUSE"
+  "INPUT_DEV_MOUSE",
+  "announce_type"
  ],
  "INVALID_INPUT_ID": [
-  "INVALID_INPUT_ID"
+  "INVALID_INPUT_ID",
+  "NO_SLOT"
  ],
  "mess_input_linputdriver_input_conf": [
   "MessInputLinputdriverInputConf"
@@ -326,5 +335,78 @@
  ],
  "mess_linputdriver_input_event": [
   "MessLinputdriverInputEvent"
+ ],
+ "input_process": [
+  "enqueue",
+  "decide_wake",
+  "WakeDirective",
+  "stored_event"
+ ],
+ "input_alloc_id": [
+  "alloc_id"
+ ],
+ "input_connect": [
+  "connect_driver",
+  "ConnectReport",
+  "wants_from_typemask"
+ ],
+ "input_disconnect": [
+  "disconnect_device",
+  "DisconnectEffects"
+ ],
+ "input_check": [
+  "key_is_new_driver"
+ ],
+ "input_other": [
+  "route_event"
+ ],
+ "inputdriver_announce": [
+  "announce_key",
+  "announce_type"
+ ],
+ "inputdriver_send_event": [
+  "decide_report",
+  "ReportVerdict",
+  "note_server_lost"
+ ],
+ "do_conf": [
+  "verify_conf_sender",
+  "ConfOutcome",
+  "apply_conf"
+ ],
+ "do_setleds": [
+  "accept_setleds",
+  "SetledsOutcome"
+ ],
+ "inputdriver_process": [
+  "classify_incoming",
+  "DriverIncoming"
+ ],
+ "inputdriver_task": [
+  "DriverHooks"
+ ],
+ "inputdriver_terminate": [
+  "DriverHooks"
+ ],
+ "inputdriver": [
+  "DriverHooks",
+  "DriverRegistration"
+ ],
+ "idr_leds": [
+  "LightCallback"
+ ],
+ "idr_intr": [
+  "InterruptCallback"
+ ],
+ "idr_alarm": [
+  "AlarmCallback"
+ ],
+ "idr_other": [
+  "OtherCallback"
+ ],
+ "drv_inp": [
+  "DRIVER_KEY_PREFIX",
+  "driver_label",
+  "announce_key"
  ]
 }

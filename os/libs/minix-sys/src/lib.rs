@@ -11,13 +11,18 @@
 
 extern crate alloc;
 
-use minix_types::{Endpoint, Message, IpcError};
+use minix_types::{Endpoint, IpcError, Message};
 
 pub use minix_types::{Gid, Pid, Uid};
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
 pub mod devman_client;
+/// Input-driver client library: driver-side announce, event filing, and
+/// server-message handling (12-stage-input/12-libinputdriver.md).
+/// Transport (label lookup, publish, blocking send) stays out until the
+/// IPC transport lands — same boundary as `devman_client`.
+pub mod inputdriver;
 /// Remote MIB client: pure bookkeeping for mounted subtrees
 /// (10-stage-mib/22-mib-rmib-client.md). Message sending and grant
 /// handling stay out until the IPC transport lands.

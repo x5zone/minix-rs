@@ -239,7 +239,7 @@ pub struct Minor(pub i32);        // 门牌号：用户进程看到的号码
 pub struct DeviceIndex(pub usize); // 房间号：数组下标
 ```
 
-门牌用 32 位整数（C 的 `devminor_t` 是整型，门牌可能被直接比较大小，区间判断依赖整数语义）；房间用无符号地址宽度（它就是数组下标）。`Minor::is_multiplexer` 回答"是不是两个多路器之一"，`DeviceIndex::new` 校验外部传进来的下标（事件消息里带的就是下标，第 09 篇），非法返回 `InvalidDeviceIndex` 错误而不是崩溃（决策 3.4）。
+门牌用 32 位整数（C 的 `devminor_t` 是整型，门牌可能被直接比较大小，区间判断依赖整数语义）；房间用无符号地址宽度（它就是数组下标）。`Minor::is_multiplexer` 回答"是不是两个多路器之一"，`Minor::is_keyboard_multiplexer` 回答"是不是键盘多路器"（第 10 篇广播用：只有键盘多路器地址才广播，鼠标多路器不广播），`DeviceIndex::new` 校验外部传进来的下标（事件消息里带的就是下标，第 09 篇），非法返回 `InvalidDeviceIndex` 错误而不是崩溃（决策 3.4）。
 
 ### 4.3 换算：`map_minor_to_index` 与 `minor_of_index`（对应决策 3.2、3.4）
 
