@@ -382,10 +382,10 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
 | 00 | pending | — | 新建导航 |
-| 01 | pending | — | 新建（启动锚点） |
-| 02 | pending | — | 新建（A-1） |
-| 03 | pending | — | 新建（A-3/A-4/A-7） |
-| 04 | pending | — | 新建（事件格式契约） |
+| 01 | reviewed | 2026-09-04 | 新建（启动锚点；scan: .review/codex/fork-syscall-rewrite/scans/01-input-init-main/，CONVERGED） |
+| 02 | reviewed | 2026-09-04 | 新建（A-1 框架契约；scan: scans/02-chardriver-framework/，CONVERGED） |
+| 03 | reviewed | 2026-09-04 | 新建（A-3/A-7；scan: scans/03-input-device-structs/，CONVERGED） |
+| 04 | reviewed | 2026-09-04 | 新建（事件格式契约；scan: scans/04-input-event-format/，CONVERGED） |
 | 05 | pending | — | 新建（协议面） |
 | 06 | pending | — | 新建 |
 | 07 | pending | — | 新建（A-5/A-11） |
