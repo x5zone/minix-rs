@@ -1,21 +1,379 @@
 # 05-input-message-contract: 消息协议面
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: INPUT/TTY 消息常量、消息结构、全单向协议（阶段 2 协议面）
-> **源码**: `minix3/minix/include/minix/com.h:877-893`、`ipc.h:232-259,990-1000,2434-2436,2517`、`dmap.h:78`、`MAKEDEV.sh:330-343`、`system.conf:400-403`
-> **Rust 模块**: `minix-types`（`ipc/input.rs`）
-> **draft 素材**: 无
+> **状态**: 已改写（2026-09-05，首版完整文档）
+> **定位**: 消息编号、四个载荷结构、全单向纪律、设备节点表（阶段 2，协议面；第 01 篇握手与第 09-11 篇消息的字典）
+> **源码**: `minix3/minix/include/minix/com.h:872-893`（编号）+ `minix3/minix/include/minix/ipc.h:232-259`（服务发出的三个载荷）+ `ipc.h:993-1001`（驱动上报载荷）+ `ipc.h:2434-2436,2517`（联合体接入）+ `minix3/minix/include/minix/dmap.h:78`（主设备号）+ `minix3/minix/commands/MAKEDEV/MAKEDEV.sh:330-343`（设备节点表）+ `minix3/minix/include/sys/kbdio.h`（灯位）+ `minix3/sys/sys/ttycom.h:174`（灯控制号）+ `minix3/minix/servers/input/input.c:608-644`（消息面入口）
+> **Rust 模块**: `os/libs/minix-types/src/ipc/input.rs`（编号、节点表、灯编码、构造解码）+ `os/libs/minix-types/src/ipc/message.rs`（四个载荷结构与联合体成员）
+> **目标读者**: 想理解"输入服务和驱动、终端之间用哪几个消息号、每种消息里装什么、为什么从不需要回消息"的读者。前置知识：第 01 篇（见过终端握手）、第 03 篇（知道次设备号与槽位号）、第 04 篇（知道事件长什么样）。
+> **本章不讲什么**: 字符设备请求（打开读控制那些，属于第 02 篇的前台协议）；各处理函数收到消息后做什么（第 06 至第 11 篇）；终端收到转交事件后如何消费（第 13 篇）；驱动一侧如何组装上报（第 12、第 14 篇）。
 
-## 核心点
+---
 
-- 消息常量：TTY_INPUT_UP/TTY_INPUT_EVENT（TTY_RQ_BASE+2/+3）、INPUT_CONF/INPUT_SETLEDS（INPUT_RQ_BASE 0x1500）、INPUT_EVENT（INPUT_RS_BASE 0x1580）（com.h:879-893）
-- 四个消息结构：`mess_input_linputdriver_input_conf`（kbd/mouse/rsvd1/rsvd2 id）、`mess_input_linputdriver_setleds`（led_mask）、`mess_input_tty_event`、`mess_linputdriver_input_event`（id/page/code/value/flags）（ipc.h）
-- **全单向协议**（com.h:886 明言无回复，A-9）；server 侧 asynsend、驱动侧阻塞 ipc_send
-- `INPUT_MAJOR=64`（dmap.h:78）+ `/dev` 节点表：kbdmux(64,0)/kbd0-3(64,1-4)/mousemux(64,64)/mouse0-3(64,65-68)（MAKEDEV.sh:330-343）
-- `system.conf:400-403`：service input 权限（ipc SYSTEM pm vfs rs ds tty vm; priority 1）
-- `input_tab` 注册面（锚 01）+ `input_other` 消息面入口（A-10：DS notify/INPUT_EVENT/INPUT_SETLEDS 来源过滤）
+## 1. 概念：五个单向消息撑起的全部对话
 
-## 边界
+### 1.1 先数一数：整个协议只有五种消息
 
-- **前置依赖**: 01 + 03（设备语义）+ 04（事件字段）
-- **不覆盖（移交）**: handler 业务（06~10）、驱动生命周期（11）、TTY 消费（13）
+输入服务的对外对话简单到可以用一只手数完。服务和驱动之间三种：服务告诉驱动"你分到哪两个槽位"（配置），服务告诉驱动"把灯调成这样"（置灯），驱动告诉服务"来了一个事件"（上报）。服务和终端之间两种：服务告诉终端"我起来了"（宣告），服务把没人要的事件转交给终端（转交）。五种，没有第六种。读者记住这个数字，本章其余内容都是给这五种消息配编号、配信封、配规矩。
+
+```
+驱动进程                                    输入服务                                  终端驱动
+   |  -- 上报事件 (INPUT_EVENT) ------------> |                                           |
+   |  <-------- 配置槽位 (INPUT_CONF) ------- |                                           |
+   |  <-------- 置灯掩码 (INPUT_SETLEDS) ---- |                                           |
+   |                                          | ---- 宣告起来 (TTY_INPUT_UP) -----------> |
+   |                                          | ---- 转交事件 (TTY_INPUT_EVENT) --------> |
+```
+
+注意箭头的方向：配置和置灯是服务发给驱动，上报是驱动发给服务，宣告和转交是服务发给终端。没有一对消息是"你来我往"的问答——每个箭头都是单程票。这就是下一节的主题。
+
+### 1.2 全单向纪律：没有回消息的协议
+
+头文件里有一句注释，值得全文引用（`com.h:886`）："输入协议没有真正的回消息，所有消息都是单向的。"（原文如此，翻译如此。）这句话是整个协议设计的地基，理解它需要先理解"回消息"在别的协议里是干什么的：通常请求方发问、服务方回答，问和答靠编号配对。但输入协议的五种消息全是"通知"：配置是告知（驱动照做就是了，不需要回答"知道了"），置灯是命令，上报是投递，宣告是广播，转交是转发。每一方收到消息都知道该干什么，不需要再问一句"然后呢"。
+
+这个纪律带来一个硬性后果：任何等待输入协议回消息的代码都会永远卡住。第 02 篇的门卫和回信纪律管的是字符设备请求（打开读控制那些，有问有答）；本章的五种消息走另一条路（第 01 篇注册表里的"其他信箱"，`input_other`），前台对它们一律不回信。两套规矩并存，靠消息号区分——问答号段和单向号段是不同的数字区间，收到哪个号段就按哪套规矩办，绝不混淆。
+
+### 1.3 编号是地址：基址加偏移
+
+五个消息号不是随意挑选的，它们住在两个地址段里。终端相关的两个住在终端请求段（基址 `0x1300`，偏移 +2、+3）；服务与驱动之间的三个住在输入段，其中请求方向（服务发给驱动）的基址是 `0x1500`（偏移 +0、+1），上报方向（驱动发给服务）的基址是 `0x1580`（偏移 +0）。看到 `0x1501` 就知道"输入请求段第 1 号"，不需要查表——和第 02 篇字符设备号"基址加偏移"的思想是同一套（那边的基址是 `0x400`）。Minix3 的协议设计偏爱这种"地址式编号"：号段即分类，偏移即序号。
+
+### 1.4 载荷是合同：每种消息的信封里装什么
+
+编号只解决"这是什么消息"，载荷解决"消息里有什么"。四个载荷结构（宣告消息没有载荷，有存在即是全部内容，第 01 篇 2.4 节）：
+
+- **配置载荷**：四个槽位号——键盘槽、鼠标槽、两个保留槽。保留槽今天恒填"未分配"，是留给未来设备的空位（和第 03 篇次设备号留白是同一个思想：用今天的空位买明天的兼容）。
+- **置灯载荷**：一个 32 位掩码。掩码的第几位亮，取决于灯的事件码是几（第 04 篇的灯码 1、2、3 对应掩码位 1、2、3）——"码即位号"的设计，翻译时不需要查表（第 08 篇）。
+- **上报载荷与转交载荷**：五个整数字段，槽位号加事件四要素（页、码、值、标志）。两个结构逐字段相同，只是方向相反：驱动用它上报，服务原样抄一份转交给终端。相同形状的刻意重复是为了让转交变成"复制粘贴"，而不是"翻译"（第 09 篇）。
+
+四个载荷都是 56 字节（消息联合体的统一尺寸，不足的补零）——定长的好处是接收方永远知道读多少，不需要先读长度再读内容。
+
+### 1.5 节点表是门面：/dev 下的名字如何对应到号码
+
+用户进程不直接说"我要次设备号 1"，它打开 `/dev/kbd0` 这样的路径。设备节点表（系统安装脚本 `MAKEDEV.sh:330-343`）规定了十个名字到（主设备号 64，次设备号）的映射：键盘多路器叫 `kbdmux`（64,0），一至四号键盘叫 `kbd0` 到 `kbd3`（64,1 到 64,4），鼠标多路器叫 `mousemux`（64,64），一至四号鼠标叫 `mouse0` 到 `mouse3`（64,65 到 64,68）。次设备号和第 03 篇的门牌号逐项相同——两处拼写同一套号码，Rust 一侧用测试把它们锁在一起，改了一处不改另一处就会响。
+
+主设备号 64（`dmap.h:78`）是"输入服务"这个设备家族在全系统的门牌：虚拟文件系统看到主设备号 64，就知道该把请求送给输入服务。服务声明（`system.conf:400-403`，通话名单与优先级）第 01 篇 1.1 节已经登记，本篇不再重复，只在此指过去（跨文档不重复，是本阶段统一的引用规则）。
+
+### 1.6 消息面入口：五种消息进服务的同一扇门
+
+字符设备请求走前台分发（第 02 篇），本章的五种消息走"其他信箱"（`input_other`，`input.c:608-644`）。这扇门先看是不是通知：数据存储服务的通知表示"驱动来了或者走了"，转交驱动生命周期处理（第 11 篇），其他人的通知记一笔日志。再看消息号：上报无条件处理（第 09 篇）；置灯只接受终端发来的——终端之外的发送者会被"掉落"进默认分支，和完全未知的新消息一起记一笔"意外消息"日志。这种"来源不对就当没看见"的处理，是置灯命令的安全底线：只有终端有权调灯（第 10 篇解释为什么）。
+
+### 1.7 本章小结：字典备好，对话在别处
+
+读完本章，读者应该能不假思索地回答：五种消息各叫什么、号码多少、往哪个方向走；为什么全都不需要回消息；四个载荷各装什么、为什么都是 56 字节；十个设备节点名字和号码；五种消息进服务的哪扇门、置灯为什么只认终端。接下来第 06 篇开始讲处理函数：打开和关闭。
+
+---
+
+## 2. C 源码分析
+
+> 本章逐段对照原始 C 代码。所有行号以工作区当前 `minix3/` 为准，可用 `sed -n` 独立验证。
+
+### 2.1 编号：两段基址，五个偏移（com.h:872-893）
+
+```c
+#define TTY_RQ_BASE 0x1300
+
+#define TTY_FKEY_CONTROL        (TTY_RQ_BASE + 1) /* control an F-key at TTY */
+#define TTY_INPUT_UP            (TTY_RQ_BASE + 2) /* input server is up */
+#define TTY_INPUT_EVENT         (TTY_RQ_BASE + 3) /* relayed input event */
+
+/* The input protocol has no real replies. All messages are one-way. */
+#define INPUT_RQ_BASE 0x1500    /* from TTY to server, or server to driver */
+#define INPUT_RS_BASE 0x1580    /* from input driver to input server */
+
+#define INPUT_CONF              (INPUT_RQ_BASE + 0)     /* configure driver */
+#define INPUT_SETLEDS           (INPUT_RQ_BASE + 1)     /* set keyboard LEDs */
+
+#define INPUT_EVENT             (INPUT_RS_BASE + 0)     /* send input event */
+```
+
+逐行核对：终端基址 `0x1300`（第 872 行），其 +1 是功能键控制（与本阶段无关，登记在此以免读者疑惑"为什么 +1 空着"）；宣告 +2、转交 +3（第 879-880 行）。输入请求基址 `0x1500`、上报基址 `0x1580`（第 887-888 行），配置 +0、置灯 +1、上报 +0（第 890-893 行）。注意基址注释的方向说明："请求基址：终端到服务，或服务到驱动；上报基址：驱动到服务"——方向写在基址注释里，不在每个消息注释里，这是头文件压缩信息的常用手法。
+
+全单向注释在第 886 行，夹在两组基址之间，管的是下面三行（输入段），不管上面的终端段——但终端段的两个消息同样没有回消息（宣告是广播，转交是转发，第 13 篇）。注释的位置是历史原因（输入段是后加的，注释跟着新段走），效力覆盖五个消息。Rust 一侧用 `needs_no_reply` 函数把五个号码显式列出来，不依赖注释的位置推断（第 3 章）。
+
+### 2.2 服务发出的三个载荷（ipc.h:232-259）
+
+```c
+typedef struct {
+        int kbd_id;
+        int mouse_id;
+        int rsvd1_id;
+        int rsvd2_id;
+
+        uint8_t padding[40];
+} mess_input_linputdriver_input_conf;
+
+typedef struct {
+        uint32_t led_mask;
+
+        uint8_t padding[52];
+} mess_input_linputdriver_setleds;
+
+typedef struct {
+        int id;
+        int page;
+        int code;
+        int value;
+        int flags;
+
+        uint8_t padding[36];
+} mess_input_tty_event;
+```
+
+配置载荷四个整型加 40 字节填充（4×4+40=56）。注意字段名用 `kbd_id`/`mouse_id` 而不是"槽位"——C 的词汇停留在"设备编号"的层面，Rust 文档把它们解释为表格槽位（第 11 篇分配的就是槽位号，见 1.4 节）。保留槽的注释在 C 里是没有的（C 只给了名字 `rsvd1/2`），"恒填未分配、驱动必须忽略"的合同是读服务发送代码（`input.c:516-522`，第 11 篇）反推出来的——本篇如实标注"反推"，不伪装成头文件写明的（证据链诚实是论文级文档的要求）。
+
+置灯载荷一个 32 位掩码加 52 字节填充（4+52=56）。掩码位与灯码的关系（位号等于码值）不在头文件里，在服务的组装代码里（`input.c:263-268`，第 08 篇），本篇登记形状，含义的权威解释在第 08 篇（所有权规则：一个概念只属于一篇）。
+
+转交载荷五个整型加 36 字节填充（5×4+36=56）。字段是槽位号加事件四要素——和第 04 篇的事件结构（页、码、值、标志）逐项对应，只是这里全用整型（消息载荷用整型是 Minix3 消息的统一风格，事件结构用定宽类型是存储格式的风格，两种风格各有主场）。
+
+### 2.3 驱动上报载荷（ipc.h:993-1001）
+
+```c
+typedef struct {
+        int id;
+        int page;
+        int code;
+        int value;
+        int flags;
+
+        uint8_t padding[36];
+} mess_linputdriver_input_event;
+```
+
+和转交载荷逐字段相同（连填充都一样），方向相反、消息号不同。`id` 在这里是"驱动被分配到的表格槽位"（连接时分配，第 11 篇），不是次设备号——这是 plan A-3 的核心陷阱，服务用它直接下标数组，越界就丢弃（第 09 篇）。两个相同形状的结构体分开命名而不是共用一个，是 C 的刻意选择：共用会暗示"可以互换"，而它们的消息号不同、方向不同，分开命名让误用在编译期就暴露（传错结构体名字类型不对）。Rust 版本同样分开定义（第 3 章）。
+
+### 2.4 联合体接入（ipc.h:2434-2436,2517）
+
+四个载荷在消息联合体里各占一个成员（`m_input_linputdriver_input_conf`、`m_input_linputdriver_setleds`、`m_input_tty_event`、`m_linputdriver_input_event`）。联合体成员的命名规则是"发送方_接收方_内容"——`m_input_linputdriver_input_conf` 读作"输入服务发给输入驱动的配置"，`m_linputdriver_input_event` 读作"输入驱动发给输入服务的事件"。命名即文档：读到成员名就知道方向，不需要查注释。Rust 一侧的联合体成员同名保留（第 3 章）。
+
+### 2.5 主设备号与节点表（dmap.h:78，MAKEDEV.sh:330-343）
+
+```c
+#define INPUT_MAJOR            64      /* 64 = /dev/input (input) */
+```
+
+```sh
+input)
+        # Input server
+        makedev kbdmux c 64 0 ${uname} ${gname} ${permissions}
+        makedev mousemux c 64 64 ${uname} ${gname} ${permissions}
+
+        for n in 0 1 2 3
+        do
+                minor_keyboard=`expr ${n} + 1`
+                minor_mouse=`expr ${n} + 65`
+
+                makedev kbd${n} c 64 ${minor_keyboard} ${uname} ${gname} ${permissions}
+                makedev mouse${n} c 64 ${minor_mouse} ${uname} ${gname} ${permissions}
+        done
+        ;;
+```
+
+主设备号 64 在设备映射表里占一行（第 78 行），注释写明它属于 `/dev/input` 家族。节点表用循环生成八个编号设备（键盘次设备号是循环变量加一，鼠标是加六十五），外加两个多路器。循环变量的算术（`n+1`、`n+65`）和第 03 篇的门牌常量（起始 1、起始 65）是同一套号码的两种写法——脚本用算术，头文件用常量，Rust 用数组加测试三方互锁（第 3 章）。
+
+### 2.6 灯位与灯控制号（kbdio.h:15-24，ttycom.h:174）
+
+```c
+typedef struct kio_leds
+{
+        unsigned kl_bits;
+} kio_leds_t;
+
+#define KBD_LEDS_NUM    0x1
+#define KBD_LEDS_CAPS   0x2
+#define KBD_LEDS_SCROLL 0x4
+```
+
+```c
+#define KIOCSLEDS       _IOW('k', 2, struct kio_leds)
+```
+
+调用者传灯状态用一个结构体，里面只有一个无符号整数，三位分别表示数字锁、大写锁、滚动锁（`0x1`/`0x2`/`0x4`）。控制号用 `_IOW` 宏构造：方向（写入设备）加参数长度加组（`k`）加序号（2）。`_IOW` 的位布局在 `ioccom.h:40-87`（高三位方向、接着长度、接着组、最低序号），代入可得 `0x80046B02`——Rust 一侧用常量表达式重复这套构造，而不是硬抄结果（第 3 章），测试再把结果锁死，双保险。
+
+注意灯位（调用者词汇，`0x1`/`0x2`/`0x4`）和灯掩码（服务词汇，位号等于灯码 1/2/3，即 `0x2`/`0x4`/`0x8`）是两套编码，翻译发生在服务收到控制请求时（`input.c:262-268`，第 08 篇）。两套编码并存的原因：调用者沿用键盘驱动的传统位定义，服务内部用"码即位号"的统一规则——翻译层只做三位映射，不多不少。
+
+### 2.7 消息面入口（input_other，input.c:608-644）
+
+```c
+static void
+input_other(message *m, int ipc_status)
+{
+        if (is_ipc_notify(ipc_status)) {
+                switch (m->m_source) {
+                case DS_PROC_NR:
+                        input_check();
+                        break;
+                default:
+                        printf("INPUT: unexpected notify from %d\n",
+                            m->m_source);
+                }
+                return;
+        }
+
+        /* An input event from a registered driver. */
+        switch (m->m_type) {
+        case INPUT_EVENT:
+                input_event(m);
+
+                break;
+
+        case INPUT_SETLEDS:
+                if (m->m_source == TTY_PROC_NR) {
+                        input_set_leds(KBDMUX_MINOR, m->m_input_linputdriver_setleds.led_mask);
+
+                        break;
+                }
+                /* FALLTHROUGH */
+        default:
+                printf("INPUT: unexpected message %d from %d\n",
+                    m->m_type, m->m_source);
+        }
+}
+```
+
+先看是不是通知：是通知只认数据存储服务（转交驱动生命周期，第 11 篇），别人的通知记日志。是消息看类型号：上报无条件处理（第 09 篇）；置灯先验发送者——终端发来的才执行（注意执行时用的次设备号是键盘多路器 0，即"所有键盘"，第 10 篇），非终端发来的掉进默认分支，和未知消息一起记"意外消息"日志。`FALLTHROUGH` 注释是刻意的穿透（和第 02 篇回信函数的穿透是同一作者的手笔）：非终端的置灯不是"错误"，是"不认识"，和未知消息同等对待——记一笔，不崩溃，不回答（单向协议本来就没有回答）。
+
+### 2.8 覆盖核对：本篇语义范围内的符号一个不少
+
+| 符号 | 源码位置 | 本文档位置 | Rust 对应 |
+|------|---------|-----------|----------|
+| TTY_RQ_BASE/INPUT 基址与偏移 | com.h:872-893 | 2.1 节 | `ipc/input.rs` 常量组 |
+| 全单向注释 | com.h:886 | 1.2/2.1 节 | `needs_no_reply` |
+| 三个服务发出载荷 | ipc.h:232-259 | 2.2 节 | `message.rs` 三结构 + 联合体成员 |
+| 上报载荷 | ipc.h:993-1001 | 2.3 节 | `message.rs` 结构 + 联合体成员 |
+| 联合体接入 | ipc.h:2434-2436,2517 | 2.4 节 | 同上 |
+| INPUT_MAJOR | dmap.h:78 | 2.5 节 | `INPUT_MAJOR` + 节点表 |
+| 节点表 | MAKEDEV.sh:330-343 | 2.5 节 | `INPUT_NODES`（测试互锁） |
+| 灯位与灯结构 | kbdio.h:15-24 | 2.6 节 | `KioLeds` + `KBD_LEDS_*` |
+| 灯控制号 | ttycom.h:174 | 2.6 节 | `KIOCSLEDS`（构造表达式） |
+| input_other | input.c:608-644 | 2.7 节 | 分发去向（09/10/11 篇实现） |
+| 服务声明权限 | system.conf:400-403 | 1.5 节指 01 篇 | 见 01 篇 1.1 节（不重复） |
+| input_tab 注册面 | input.c:31-42 | 1.6 节指 01 篇 | 见 01 篇 2.3 节（不重复） |
+
+---
+
+## 3. Rust 设计决策
+
+> 本章解释"为什么这样设计"。每个决策先说备选方案，再说选择的理由。
+
+### 3.1 编号住进共享类型库，而不是输入服务自己的箱子
+
+五个消息号、主设备号、灯位、灯控制号，全部住在 `minix-types`（`ipc/input.rs`），而不是输入服务的箱子里。理由：这些号码是"多方合同"——驱动宣告时用类型位（第 12、第 14 篇），终端握手时用宣告号（第 13 篇），服务分发时用全部号码（第 09-11 篇）。合同住在任何一方的箱子里，另一方引用时都要跨箱子伸手；住在各方都依赖的共享库里，谁用谁引用，没有主从。只有消息号是这样——处理逻辑（打开读控制）是服务私事，住服务自己的箱子（第 06-08 篇）。"合同共享、私事自留"的分界标准是：超过一个进程需要知道的东西进共享库，只有一个进程用的东西留本地。
+
+备选方案是号码跟着服务走（输入服务定义，驱动和终端引用）。拒绝的理由：驱动和终端在时间上先于服务重写（第 12-14 篇是外部契约篇），号码跟着服务走意味着契约篇要引用尚未重写的服务箱子——依赖方向反了。号码先行落地，服务与驱动后续各自引用，依赖方向才顺。
+
+### 3.2 基址加偏移的算术原样保留，包括加零
+
+C 用 `(INPUT_RQ_BASE + 0)` 这种写法，Rust 原样保留 `INPUT_RQ_BASE + 0`（附 `allow` 注明不是手滑）。理由：加零不是算术，是位置声明——"我是请求段第 0 号"，和置灯的 +1 排成序列才有意义。去掉加零，序列感就断了（`INPUT_CONF = INPUT_RQ_BASE` 看不出它是第几个）。代码检查工具会抱怨"加零无意义"，用允许标记加注释的方式回应：工具看的是算术，人看的是序列，注释替人说话。终端基址本身（`TTY_RQ_BASE`）不住这里，引用 `tty.rs` 的定义——基址的权威在终端协议模块，本篇只做偏移算术（所有权规则）。
+
+### 3.3 保留槽的合同用构造与解码分担，而不是注释
+
+配置载荷的两个保留槽"恒填未分配、驱动忽略"，C 靠程序员自觉（发送代码填对了，接收代码不读）。Rust 把合同拆成两半：构造侧（`conf_msg`）把保留槽写死，调用者想填错都填不了——参数表里根本没有保留槽的位置；解码侧（`decode_conf`）校验保留槽，收到非法的直接拒收。构造保证"我方永远正确"，解码保证"对方错了能发现"，合同从"约定"变成"机制"。这是 Redox 协议代码的常用手法（构造器收窄参数、解码器校验不变量），比注释可靠，比断言温和（不断进程，只拒收）。
+
+备选方案是保留槽也做成参数（调用者传）。拒绝的理由：今天合法的参数值只有一个（未分配），做成参数等于邀请调用者填错——"做正确的事容易，做错事难"是接口设计的第一原则。
+
+### 3.4 相同形状分开定义，方向写进名字
+
+上报载荷和转交载荷逐字段相同，Rust 依然定义两个结构体（`message.rs`），联合体成员也分开。理由和 C 一样（2.3 节）：共用会暗示可互换，而消息号不同、方向不同。更进一步：解码函数（`decode_input_event`/`decode_tty_event`）先验消息号再读载荷，拿着上报消息调转交解码会得到空——类型（消息号）和形状（结构体）双保险，错方向的消息在两处都被拦下。
+
+### 3.5 节点表写成数组加测试，而不是注释
+
+十个设备节点写成常量数组（`INPUT_NODES`），测试把名字、主设备号、次设备号逐项锁死，并和第 03 篇的门牌常量逐项对照（`nodes_match_minor_scheme` 的思想，测试名为 `test_nodes_match_makedev`）。理由：节点表今天是安装脚本里的 shell 循环，明天有人加第五个键盘时要改三处（脚本、头文件、Rust 表），测试是唯一能喊出"三处不一致"的东西。数组加测试把"三处"变成"改一处、跑测试、测试告诉你另两处"。
+
+### 3.6 灯控制号用表达式构造，而不是硬抄结果
+
+`KIOCSLEDS` 的值（`0x80046B02`）可以用两种方式得到：硬抄算好的数，或者重复 `_IOW` 的位构造。Rust 用后者（方向位或长度移位或组移位或序号），测试再把结果锁死。理由：硬抄的结果是对的，但读者看不出"为什么是这个数"；表达式把编码规则写出来，读者对照 `ioccom.h` 的位布局图能自己算一遍。表达式是"可推导的知识"，硬抄是"背下来的知识"——教学文档选前者。测试锁死结果，保证表达式写错时第一时间暴露（构造与锁死双保险，和 3.3 节是同一个思想）。
+
+---
+
+## 4. 实现详解
+
+> 完整代码在 `os/libs/minix-types/src/ipc/input.rs`（编号、节点表、灯编码、构造解码）与 `os/libs/minix-types/src/ipc/message.rs`（四个载荷结构与联合体成员）。本章按"编号、载荷、节点、灯、 helpers"的顺序展开，每个小节标注对应的第 3 章决策。
+
+### 4.1 编号：常量组与单向集合（对应决策 3.1、3.2）
+
+```rust
+pub const TTY_INPUT_UP: i32 = TTY_RQ_BASE + 2;     // com.h:879
+pub const TTY_INPUT_EVENT: i32 = TTY_RQ_BASE + 3;  // com.h:880
+pub const INPUT_RQ_BASE: i32 = 0x1500;             // com.h:887
+pub const INPUT_RS_BASE: i32 = 0x1580;             // com.h:888
+pub const INPUT_CONF: i32 = INPUT_RQ_BASE + 0;     // com.h:890（加零是位置声明）
+pub const INPUT_SETLEDS: i32 = INPUT_RQ_BASE + 1;  // com.h:891
+pub const INPUT_EVENT: i32 = INPUT_RS_BASE + 0;    // com.h:893（加零同上）
+pub const INPUT_MAJOR: i32 = 64;                   // dmap.h:78
+
+pub const fn needs_no_reply(message_type: i32) -> bool { ... }  // com.h:886 的可执行版本
+```
+
+`needs_no_reply` 把注释"没有真正的回消息"变成函数：分发器问它，就知道这五个号没有回答路径。`const fn` 意味着单向集合编译期固定——协议纪律不是运行时配置，是刻在契约里的。
+
+### 4.2 载荷：四个结构体与联合体成员（对应决策 3.4）
+
+`MessInputLinputdriverInputConf`（四个槽位号加 40 字节填充）、`MessInputLinputdriverSetleds`（掩码加 52 字节填充）、`MessInputTtyEvent` 与 `MessLinputdriverInputEvent`（各五字段加 36 字节填充），字段顺序与 C 一致，`repr(C)` 保证布局一致，56 字节测试锁死（`message.rs` 的 `test_input_wire_layouts`）。联合体四个成员与 C 成员同名（2.4 节的命名即文档，在 Rust 一侧延续）。
+
+### 4.3 节点表：数组与互锁测试（对应决策 3.5）
+
+`DeviceNode`（名字、主设备号、次设备号）加十元素数组 `INPUT_NODES`，按服务槽位顺序排列（多路器、键盘、多路器、鼠标）。测试逐项核对名字与号码（`test_nodes_match_makedev`），次设备号序列 `[0,1,2,3,4,64,65,66,67,68]` 与第 03 篇门牌表逐项相同——两处拼写同一套号码，测试是互锁的销子。
+
+### 4.4 灯编码：位、结构、控制号（对应决策 3.6）
+
+`KBD_LEDS_NUM/CAPS/SCROLL`（`0x1`/`0x2`/`0x4`）、`KioLeds`（单字段结构，尺寸测试锁 4 字节）、`KIOCSLEDS`（表达式构造，结果测试锁 `0x80046B02`）。调用者词汇（位）到服务词汇（掩码）的翻译不在这里，在第 08 篇的 `led_mask_from_kio_bits`——编码归本篇，翻译归使用方（所有权规则）。
+
+### 4.5 构造解码：五组 helpers（对应决策 3.3）
+
+`conf_msg`/`decode_conf`（保留槽写死加校验）、`setleds_msg`/`decode_setleds`、`input_event_msg`/`decode_input_event`、`tty_event_msg`/`decode_tty_event`、`tty_up_msg`（无载荷，零填充）。构造侧收窄（保留槽无参数位置），解码侧先验号再读载荷（错方向得空）。解码读联合体字段用 `unsafe` 块包裹——读联合体在 Rust 里永远是 unsafe（编译器不知道当前活跃的是哪个成员），调用者用消息号验过之后才读，`unsafe` 的理由写在函数注释里（每个解码函数第一句就是号检查，检查与读取的距离不超过三行）。
+
+### 4.6 与 C 的差异说明
+
+| C 行为 | Rust 对应 | 差异分类 |
+|--------|----------|---------|
+| 编号宏与基址算术 | 同值常量（含加零） | 无差异 |
+| 载荷结构与填充 | 同序同尺寸结构 | 无差异 |
+| 保留槽"靠自觉" | 构造写死加解码校验 | 表达强化：行为一致（合法输入下），非法输入 Rust 拒收而 C 不读（C 从不读保留槽，效果等价） |
+| 联合体成员命名 | 同名成员 | 无差异 |
+| 其余（节点表、灯编码） | 同值 | 无差异 |
+
+---
+
+## 5. 测试要点
+
+> 测试代码在 `os/libs/minix-types/src/ipc/input.rs`（10 个）与 `message.rs`（`test_input_wire_layouts`）的测试模块。运行方法：`cargo test -p minix-types`（全 crate 通过）。
+
+| 测试函数 | 验证什么 | 对应的 C 行为 |
+|---------|---------|--------------|
+| `test_message_numbers_match_c` | 七个编号加主设备号 | com.h:872-893，dmap.h:78 |
+| `test_one_way_set_matches_c` | 五个号单向，相邻他协议号与空号除外 | com.h:886 |
+| `test_nodes_match_makedev` | 十节点名字号码逐项 | MAKEDEV.sh:330-343 |
+| `test_device_kinds_match_c` | 类型位可组合，非法编号为负 | input.h:6-15 |
+| `test_led_bits_match_c` | 灯结构 4 字节，三位值 | kbdio.h:15-24 |
+| `test_led_control_number_match_c` | 控制号等于 `0x80046B02` | ttycom.h:174 + ioccom.h 编码 |
+| `test_conf_roundtrip_with_reserved_lanes` | 配置往返，保留槽损坏拒收，他类型不误解 | input.c:516-522（发送形状，11 篇） |
+| `test_setleds_roundtrip` | 置灯往返，他类型不误解 | input.c:212-215 |
+| `test_event_reports_roundtrip` | 上报与转交往返互不串 | ipc.h 载荷形状 |
+| `test_tty_up_carries_no_payload` | 宣告只有类型号 | input.c:672-677 |
+| `test_input_wire_layouts`（message.rs） | 四载荷 56 字节，字段顺序 | ipc.h `_ASSERT_MSG_SIZE` |
+
+### 5.1 测试统计（截至 2026-09-05）
+
+- `cargo test -p minix-types`：**152 个通过，0 个失败**。
+- 其中与本篇直接相关的 11 个（上表：`input.rs` 10 个 + `message.rs` 1 个）；其余 141 个为既有测试（回归无破坏）。
+- 完整测试清单：`rg "#\[test\]" os/libs/minix-types/src/ipc/input.rs os/libs/minix-types/src/ipc/message.rs`
+
+---
+
+## 6. 过渡：字典备好，开始查字典办事
+
+本篇结束时，五个消息的号码、信封、规矩、节点表全部备好，Rust 一侧的构造解码 helpers 就绪。从下一篇（第 06 篇）开始，处理函数登场：打开设备时查哪张表、关设备时清什么、读不到数据时怎么办、控制请求里藏着什么、取消与查询的语义。本篇的编号和载荷会在第 09、第 10、第 11 篇被真正收发——字典的任务就是被人查，查字典办事的人在后面。
+
+---
+
+## 7. 参见
+
+- 第 01 篇 `01-input-init-main.md`：终端握手发送方（本篇宣告号的使用方）；服务声明权限（本篇不重复）。
+- 第 02 篇 `02-chardriver-framework.md`：问答号段与单向号段的分界；"其他信箱"不回信的纪律。
+- 第 03 篇 `03-input-device-structs.md`：门牌号（节点表次设备号的另一拼写）。
+- 第 04 篇 `04-input-event-format.md`：事件四要素（载荷后四个字段的含义）；灯码（掩码位号的来源）。
+- 第 08 篇 `08-input-ioctl-cancel-select.md`：灯控制号与灯位翻译的使用方。
+- 第 09 篇 `09-input-event-processing.md`：上报载荷的消费方。
+- 第 10 篇 `10-input-setleds.md`：置灯载荷的消费方。
+- 第 11 篇 `11-input-driver-connect.md`：配置载荷的收发方。
+- 第 13 篇 `13-tty-consumer.md`：宣告与转交的接收方。
+- `os/libs/minix-types/src/ipc/input.rs`、`os/libs/minix-types/src/ipc/message.rs`：本篇全部 Rust 实现。

@@ -20,11 +20,16 @@
 /// announces both; document 14), and the server matches announcements
 /// against them (document 11). Defined here because the header that names
 /// them is this module's ground truth; *used* in documents 11/12/14.
+///
+/// Authority (§2.4g): `minix_types::INPUT_DEV_KBD` is the shared canonical
+/// copy (document 05 owns the protocol numbers); this copy serves
+/// crate-local use. Change that copy first, then sync this one.
 pub const DEVICE_TYPE_KEYBOARD: u16 = 0x01;
 
 /// Driver device-type bit: mouse (`INPUT_DEV_MOUSE = 0x02`, `input.h:10`).
 ///
-/// See [`DEVICE_TYPE_KEYBOARD`] for the contract.
+/// See [`DEVICE_TYPE_KEYBOARD`] for the contract (canonical shared copy:
+/// `minix_types::INPUT_DEV_MOUSE`).
 pub const DEVICE_TYPE_MOUSE: u16 = 0x02;
 
 /// "No device assigned yet" (`INVALID_INPUT_ID = -1`, `input.h:13`).
@@ -32,6 +37,9 @@ pub const DEVICE_TYPE_MOUSE: u16 = 0x02;
 /// Negative so it can never collide with a real table index (all
 /// non-negative). The server hands this to drivers whose connect attempt
 /// found no slot, and drivers store it as "I have no device" (document 11).
+///
+/// Authority (§2.4g): canonical shared copy `minix_types::INVALID_INPUT_ID`;
+/// this copy serves crate-local use (see above).
 pub const INVALID_INPUT_ID: i32 = -1;
 
 /// One input event as read from an input device.

@@ -206,6 +206,14 @@ pub union MessageUnion {
     pub m_mib_lsys_call: MessMibLsysCall,
     /// MIB: subtree description fetch (MIB → remote service). C: `message.m_mib_lsys_info` — ipc.h:1571
     pub m_mib_lsys_info: MessMibLsysInfo,
+    /// Input: driver configuration (server → driver, one-way). C: `message.m_input_linputdriver_input_conf` — ipc.h:2434
+    pub m_input_linputdriver_input_conf: MessInputLinputdriverInputConf,
+    /// Input: set keyboard lights (server → driver, one-way). C: `message.m_input_linputdriver_setleds` — ipc.h:2435
+    pub m_input_linputdriver_setleds: MessInputLinputdriverSetleds,
+    /// Input: relayed event (server → TTY, one-way). C: `message.m_input_tty_event` — ipc.h:2436
+    pub m_input_tty_event: MessInputTtyEvent,
+    /// Input: driver event report (driver → server, one-way). C: `message.m_linputdriver_input_event` — ipc.h:2517
+    pub m_linputdriver_input_event: MessLinputdriverInputEvent,
     /// Raw bytes.
     pub raw: [u8; MESSAGE_PAYLOAD_SIZE],
 }
@@ -2774,6 +2782,194 @@ pub struct MessMibLsysInfo {
     pub _padding: [u8; 32],
 }
 
+/// Input driver configuration payload (server → driver, one-way).
+///
+/// C: `mess_input_linputdriver_input_conf` — ipc.h:232-241:
+/// ```c
+/// typedef struct {
+///     int kbd_id;
+///     int mouse_id;
+///     int rsvd1_id;
+///     int rsvd2_id;
+///
+///     uint8_t padding[40];
+/// } mess_input_linputdriver_input_conf;
+/// ```
+///
+/// The server tells a freshly connected driver which table slots it owns:
+/// the keyboard slot and the mouse slot (each may be `INVALID_INPUT_ID`
+/// when the driver announced only one kind). The two reserved slots are
+/// always `INVALID_INPUT_ID` today (room for a future joystick and one more
+/// device); drivers must ignore them, the server must send the invalid id.
+///
+/// Wire layout: `kbd_id` @0 (i32), `mouse_id` @4 (i32), `rsvd1_id` @8 (i32),
+/// `rsvd2_id` @12 (i32), padding @16..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessInputLinputdriverInputConf {
+    /// Keyboard table slot owned by the driver, or -1. C: `int kbd_id`.
+    pub kbd_id: i32,
+    /// Mouse table slot owned by the driver, or -1. C: `int mouse_id`.
+    pub mouse_id: i32,
+    /// Reserved (always -1). C: `int rsvd1_id`.
+    pub rsvd1_id: i32,
+    /// Reserved (always -1). C: `int rsvd2_id`.
+    pub rsvd2_id: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessInputLinputdriverInputConf {
+    fn default() -> Self {
+        Self {
+            kbd_id: 0,
+            mouse_id: 0,
+            rsvd1_id: 0,
+            rsvd2_id: 0,
+            _padding: [0; 40],
+        }
+    }
+}
+
+/// Input set-lights payload (server → driver, one-way).
+///
+/// C: `mess_input_linputdriver_setleds` — ipc.h:243-248:
+/// ```c
+/// typedef struct {
+///     uint32_t led_mask;
+///
+///     uint8_t padding[52];
+/// } mess_input_linputdriver_setleds;
+/// ```
+///
+/// Bit `n` of the mask addresses the light whose event code is `n`
+/// (`INPUT_LED_NUMLOCK = 1` → bit 1, and so on — the mask is built with
+/// `1 << code`, see input.c:263-268). A set bit means "light on".
+///
+/// Wire layout: `led_mask` @0 (u32), padding @4..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessInputLinputdriverSetleds {
+    /// Light mask. C: `uint32_t led_mask` (payload offset 0).
+    pub led_mask: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessInputLinputdriverSetleds {
+    // Manual: `[u8; 52]` has no `Default` — same as the neighbouring
+    // 48/52-byte payloads in this file.
+    fn default() -> Self {
+        Self {
+            led_mask: 0,
+            _padding: [0; 52],
+        }
+    }
+}
+
+/// Input relayed-event payload (server → TTY, one-way).
+///
+/// C: `mess_input_tty_event` — ipc.h:250-259:
+/// ```c
+/// typedef struct {
+///     int id;
+///     int page;
+///     int code;
+///     int value;
+///     int flags;
+///
+///     uint8_t padding[36];
+/// } mess_input_tty_event;
+/// ```
+///
+/// Same five lanes as the driver-to-server report below, but travelling the
+/// other way: the server forwards events nobody else wanted to the terminal
+/// driver (input.c:409-420, documents 09/13). `id` names the source table
+/// slot; the remaining lanes are the event itself.
+///
+/// Wire layout: `id` @0, `page` @4, `code` @8, `value` @12, `flags` @16
+/// (all i32), padding @20..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessInputTtyEvent {
+    /// Source table slot. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// Event family. C: `int page` (payload offset 4).
+    pub page: i32,
+    /// Family-specific code. C: `int code` (payload offset 8).
+    pub code: i32,
+    /// Press/release or motion value. C: `int value` (payload offset 12).
+    pub value: i32,
+    /// Absolute/relative flag. C: `int flags` (payload offset 16).
+    pub flags: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 36],
+}
+
+impl Default for MessInputTtyEvent {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            page: 0,
+            code: 0,
+            value: 0,
+            flags: 0,
+            _padding: [0; 36],
+        }
+    }
+}
+
+/// Input driver event report payload (driver → server, one-way).
+///
+/// C: `mess_linputdriver_input_event` — ipc.h:993-1001:
+/// ```c
+/// typedef struct {
+///     int id;
+///     int page;
+///     int code;
+///     int value;
+///     int flags;
+///
+///     uint8_t padding[36];
+/// } mess_linputdriver_input_event;
+/// ```
+///
+/// Lane-for-lane identical to the TTY relay above; only the direction and
+/// the message number differ (`INPUT_EVENT` vs `TTY_INPUT_EVENT`). `id` is
+/// the driver's table slot (assigned at connect time, document 11) — *not*
+/// a minor number: the server validates it as an array index (A-3).
+///
+/// Wire layout: same as [`MessInputTtyEvent`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLinputdriverInputEvent {
+    /// Driver table slot. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// Event family. C: `int page` (payload offset 4).
+    pub page: i32,
+    /// Family-specific code. C: `int code` (payload offset 8).
+    pub code: i32,
+    /// Press/release or motion value. C: `int value` (payload offset 12).
+    pub value: i32,
+    /// Absolute/relative flag. C: `int flags` (payload offset 16).
+    pub flags: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 36],
+}
+
+impl Default for MessLinputdriverInputEvent {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            page: 0,
+            code: 0,
+            value: 0,
+            flags: 0,
+            _padding: [0; 36],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2901,5 +3097,68 @@ mod tests {
             ..Default::default()
         };
         assert_eq!((call.req_id, call.root_id, call.user_endpt), (41, 9, 5));
+    }
+
+    #[test]
+    fn test_input_wire_layouts() {
+        // C: ipc.h `_ASSERT_MSG_SIZE` — every input payload is 56 bytes.
+        assert_eq!(size_of::<MessInputLinputdriverInputConf>(), 56);
+        assert_eq!(size_of::<MessInputLinputdriverSetleds>(), 56);
+        assert_eq!(size_of::<MessInputTtyEvent>(), 56);
+        assert_eq!(size_of::<MessLinputdriverInputEvent>(), 56);
+        // Field order pins the C layouts (ipc.h:232-259,993-1001).
+        let conf = MessInputLinputdriverInputConf {
+            kbd_id: 1,
+            mouse_id: -1,
+            rsvd1_id: -1,
+            rsvd2_id: -1,
+            ..Default::default()
+        };
+        assert_eq!(
+            (conf.kbd_id, conf.mouse_id, conf.rsvd1_id, conf.rsvd2_id),
+            (1, -1, -1, -1)
+        );
+        let leds = MessInputLinputdriverSetleds {
+            led_mask: 0x6,
+            ..Default::default()
+        };
+        assert_eq!(leds.led_mask, 0x6);
+        let report = MessLinputdriverInputEvent {
+            id: 2,
+            page: 0x0007,
+            code: 0x0004,
+            value: 1,
+            flags: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            (
+                report.id,
+                report.page,
+                report.code,
+                report.value,
+                report.flags
+            ),
+            (2, 0x0007, 0x0004, 1, 0)
+        );
+        // The TTY relay carries the same five lanes (ipc.h:250-259).
+        let relay = MessInputTtyEvent {
+            id: 2,
+            page: 0x0007,
+            code: 0x0004,
+            value: 1,
+            flags: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            (relay.id, relay.page, relay.code, relay.value, relay.flags),
+            (
+                report.id,
+                report.page,
+                report.code,
+                report.value,
+                report.flags
+            )
+        );
     }
 }

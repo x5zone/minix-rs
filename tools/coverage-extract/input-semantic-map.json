@@ -1,1 +1,330 @@
-{"_comment": "C->Rust semantic map (input module). Used by coverage-extract.py --semantic-map.", "_note": "Covers documents 01-04 (init, chardriver framework, device structs, event format). Extended as documents 05-14 land.", "main": ["main"], "input_startup": ["StartupRegistration", "startup_registration"], "input_init": ["InitStep", "init_plan", "InputTable"], "input_tab": ["HandlerSlot", "handler_slots"], "input_map": ["map_minor_to_index", "Minor", "DeviceIndex"], "input_revmap": ["minor_of_index"], "input_dev_active": ["is_active"], "input_dev_buf_empty": ["is_buffer_empty"], "input_dev_buf_full": ["is_buffer_full"], "devs": ["InputTable", "InputDevice"], "input_dev": ["InputDevice"], "chardriver_task": ["classify_request", "gate_character_request", "decide_reply"], "chardriver_process": ["classify_request", "Incoming", "GateVerdict"], "chardriver_reply": ["decide_reply", "ReplyDecision", "TaskAnswer", "SelectAnswer"], "chardriver_announce": ["announce_effects", "AnnounceEffect"], "chardriver_reply_task": ["TaskAnswer"], "chardriver_reply_select": ["SelectNotification"], "chardriver_get_minor": ["CharacterRequest"], "do_open": ["GateVerdict"], "do_block_open": ["BlockOpen"], "is_open_dev": ["contains"], "set_open_dev": ["record"], "clear_open_devs": ["cleared", "OpenDeviceSet"], "open_devs": ["OpenDeviceSet"], "input_event_struct": ["InputEvent"], "input_event": ["InputEvent"], "EVENTBUF_SIZE": ["EVENT_BUFFER_SIZE"], "INPUT_DEV_MAX": ["DEVICE_COUNT"], "KBDMUX_MINOR": ["KEYBOARD_MULTIPLEXER_MINOR"], "KBD0_MINOR": ["KEYBOARD_FIRST_MINOR"], "KBD_MINORS": ["KEYBOARD_MINOR_COUNT"], "MOUSEMUX_MINOR": ["MOUSE_MULTIPLEXER_MINOR"], "MOUSE0_MINOR": ["MOUSE_FIRST_MINOR"], "MOUSE_MINORS": ["MOUSE_MINOR_COUNT"], "KBDMUX_DEV": ["KEYBOARD_MULTIPLEXER_INDEX"], "FIRST_KBD_DEV": ["FIRST_KEYBOARD_INDEX"], "LAST_KBD_DEV": ["LAST_KEYBOARD_INDEX"], "MOUSEMUX_DEV": ["MOUSE_MULTIPLEXER_INDEX"], "FIRST_MOUSE_DEV": ["FIRST_MOUSE_INDEX"], "LAST_MOUSE_DEV": ["LAST_MOUSE_INDEX"], "INPUT_PAGE_GD": ["GeneralDesktop"], "INPUT_PAGE_KEY": ["Keyboard"], "INPUT_PAGE_LED": ["Led"], "INPUT_PAGE_BUTTON": ["Button"], "INPUT_PAGE_CONS": ["Consumer"], "INPUT_PRESS": ["Pressed"], "INPUT_RELEASE": ["Released"], "INPUT_FLAG_ABS": ["Absolute"], "INPUT_FLAG_REL": ["Relative"], "INPUT_KEY_A": ["KeyCode"], "CDEV_OPEN": ["Open"], "CDEV_CLOSE": ["Close"], "CDEV_READ": ["Read"], "CDEV_WRITE": ["Write"], "CDEV_IOCTL": ["Control"], "CDEV_CANCEL": ["Cancel"], "CDEV_SELECT": ["Select"], "CDEV_REPLY": ["General"], "CDEV_SEL1_REPLY": ["SelectImmediate"], "CDEV_SEL2_REPLY": ["SelectNotify"], "EDONTREPLY": ["Parked", "CancelMismatch"], "ERESTART": ["Restarted"]}
+{
+ "_comment": "C->Rust semantic map (input module). Used by coverage-extract.py --semantic-map.",
+ "_note": "Covers documents 01-08 (init, chardriver framework, device structs, event format, message contract, open/close, read/suspend, ioctl/cancel/select). Extended as documents 09-14 land.",
+ "main": [
+  "main"
+ ],
+ "input_startup": [
+  "StartupRegistration",
+  "startup_registration"
+ ],
+ "input_init": [
+  "InitStep",
+  "init_plan",
+  "InputTable"
+ ],
+ "input_tab": [
+  "HandlerSlot",
+  "handler_slots"
+ ],
+ "input_map": [
+  "map_minor_to_index",
+  "Minor",
+  "DeviceIndex"
+ ],
+ "input_revmap": [
+  "minor_of_index"
+ ],
+ "input_dev_active": [
+  "is_active"
+ ],
+ "input_dev_buf_empty": [
+  "is_buffer_empty"
+ ],
+ "input_dev_buf_full": [
+  "is_buffer_full"
+ ],
+ "devs": [
+  "InputTable",
+  "InputDevice"
+ ],
+ "input_dev": [
+  "InputDevice"
+ ],
+ "chardriver_task": [
+  "classify_request",
+  "gate_character_request",
+  "decide_reply"
+ ],
+ "chardriver_process": [
+  "classify_request",
+  "Incoming",
+  "GateVerdict"
+ ],
+ "chardriver_reply": [
+  "decide_reply",
+  "ReplyDecision",
+  "TaskAnswer",
+  "SelectAnswer"
+ ],
+ "chardriver_announce": [
+  "announce_effects",
+  "AnnounceEffect"
+ ],
+ "chardriver_reply_task": [
+  "TaskAnswer"
+ ],
+ "chardriver_reply_select": [
+  "SelectNotification"
+ ],
+ "chardriver_get_minor": [
+  "CharacterRequest"
+ ],
+ "do_open": [
+  "GateVerdict"
+ ],
+ "do_block_open": [
+  "BlockOpen"
+ ],
+ "is_open_dev": [
+  "contains"
+ ],
+ "set_open_dev": [
+  "record"
+ ],
+ "clear_open_devs": [
+  "cleared",
+  "OpenDeviceSet"
+ ],
+ "open_devs": [
+  "OpenDeviceSet"
+ ],
+ "input_event_struct": [
+  "InputEvent"
+ ],
+ "input_event": [
+  "InputEvent"
+ ],
+ "EVENTBUF_SIZE": [
+  "EVENT_BUFFER_SIZE"
+ ],
+ "INPUT_DEV_MAX": [
+  "DEVICE_COUNT"
+ ],
+ "KBDMUX_MINOR": [
+  "KEYBOARD_MULTIPLEXER_MINOR"
+ ],
+ "KBD0_MINOR": [
+  "KEYBOARD_FIRST_MINOR"
+ ],
+ "KBD_MINORS": [
+  "KEYBOARD_MINOR_COUNT"
+ ],
+ "MOUSEMUX_MINOR": [
+  "MOUSE_MULTIPLEXER_MINOR"
+ ],
+ "MOUSE0_MINOR": [
+  "MOUSE_FIRST_MINOR"
+ ],
+ "MOUSE_MINORS": [
+  "MOUSE_MINOR_COUNT"
+ ],
+ "KBDMUX_DEV": [
+  "KEYBOARD_MULTIPLEXER_INDEX"
+ ],
+ "FIRST_KBD_DEV": [
+  "FIRST_KEYBOARD_INDEX"
+ ],
+ "LAST_KBD_DEV": [
+  "LAST_KEYBOARD_INDEX"
+ ],
+ "MOUSEMUX_DEV": [
+  "MOUSE_MULTIPLEXER_INDEX"
+ ],
+ "FIRST_MOUSE_DEV": [
+  "FIRST_MOUSE_INDEX"
+ ],
+ "LAST_MOUSE_DEV": [
+  "LAST_MOUSE_INDEX"
+ ],
+ "INPUT_PAGE_GD": [
+  "GeneralDesktop"
+ ],
+ "INPUT_PAGE_KEY": [
+  "Keyboard"
+ ],
+ "INPUT_PAGE_LED": [
+  "Led"
+ ],
+ "INPUT_PAGE_BUTTON": [
+  "Button"
+ ],
+ "INPUT_PAGE_CONS": [
+  "Consumer"
+ ],
+ "INPUT_PRESS": [
+  "Pressed"
+ ],
+ "INPUT_RELEASE": [
+  "Released"
+ ],
+ "INPUT_FLAG_ABS": [
+  "Absolute"
+ ],
+ "INPUT_FLAG_REL": [
+  "Relative"
+ ],
+ "INPUT_KEY_A": [
+  "KeyCode"
+ ],
+ "CDEV_OPEN": [
+  "Open"
+ ],
+ "CDEV_CLOSE": [
+  "Close"
+ ],
+ "CDEV_READ": [
+  "Read"
+ ],
+ "CDEV_WRITE": [
+  "Write"
+ ],
+ "CDEV_IOCTL": [
+  "Control"
+ ],
+ "CDEV_CANCEL": [
+  "Cancel"
+ ],
+ "CDEV_SELECT": [
+  "Select"
+ ],
+ "CDEV_REPLY": [
+  "General"
+ ],
+ "CDEV_SEL1_REPLY": [
+  "SelectImmediate"
+ ],
+ "CDEV_SEL2_REPLY": [
+  "SelectNotify"
+ ],
+ "EDONTREPLY": [
+  "Parked",
+  "CancelMismatch"
+ ],
+ "ERESTART": [
+  "Restarted"
+ ],
+ "input_open": [
+  "decide_open",
+  "apply_open"
+ ],
+ "input_close": [
+  "decide_close",
+  "apply_close"
+ ],
+ "input_read": [
+  "decide_read",
+  "park_read",
+  "ReadVerdict"
+ ],
+ "input_copy_events": [
+  "plan_copy",
+  "apply_copy",
+  "serve_copy",
+  "CopyPlan"
+ ],
+ "input_ioctl": [
+  "decide_ioctl",
+  "IoctlVerdict",
+  "led_mask_from_kio_bits"
+ ],
+ "input_cancel": [
+  "decide_cancel",
+  "apply_cancel",
+  "CancelVerdict"
+ ],
+ "input_select": [
+  "decide_select",
+  "apply_select_record",
+  "SelectOutcome"
+ ],
+ "input_set_leds": [
+  "IoctlVerdict"
+ ],
+ "TTY_INPUT_UP": [
+  "TTY_INPUT_UP",
+  "tty_up_msg"
+ ],
+ "TTY_INPUT_EVENT": [
+  "TTY_INPUT_EVENT",
+  "tty_event_msg",
+  "MessInputTtyEvent"
+ ],
+ "INPUT_CONF": [
+  "INPUT_CONF",
+  "conf_msg",
+  "MessInputLinputdriverInputConf"
+ ],
+ "INPUT_SETLEDS": [
+  "INPUT_SETLEDS",
+  "setleds_msg",
+  "MessInputLinputdriverSetleds"
+ ],
+ "INPUT_EVENT": [
+  "INPUT_EVENT",
+  "input_event_msg",
+  "MessLinputdriverInputEvent"
+ ],
+ "INPUT_RQ_BASE": [
+  "INPUT_RQ_BASE"
+ ],
+ "INPUT_RS_BASE": [
+  "INPUT_RS_BASE"
+ ],
+ "INPUT_MAJOR": [
+  "INPUT_MAJOR",
+  "INPUT_NODES",
+  "DeviceNode"
+ ],
+ "KIOCSLEDS": [
+  "KIOCSLEDS"
+ ],
+ "KBD_LEDS_NUM": [
+  "KBD_LEDS_NUM"
+ ],
+ "KBD_LEDS_CAPS": [
+  "KBD_LEDS_CAPS"
+ ],
+ "KBD_LEDS_SCROLL": [
+  "KBD_LEDS_SCROLL"
+ ],
+ "kio_leds_t": [
+  "KioLeds"
+ ],
+ "CDEV_NONBLOCK": [
+  "TRANSFER_NON_BLOCKING"
+ ],
+ "CDEV_OP_RD": [
+  "SELECT_READ"
+ ],
+ "CDEV_OP_WR": [
+  "SELECT_WRITE"
+ ],
+ "CDEV_OP_ERR": [
+  "SELECT_ERROR"
+ ],
+ "CDEV_NOTIFY": [
+  "SELECT_NOTIFY"
+ ],
+ "INPUT_DEV_KBD": [
+  "INPUT_DEV_KBD"
+ ],
+ "INPUT_DEV_MOUSE": [
+  "INPUT_DEV_MOUSE"
+ ],
+ "INVALID_INPUT_ID": [
+  "INVALID_INPUT_ID"
+ ],
+ "mess_input_linputdriver_input_conf": [
+  "MessInputLinputdriverInputConf"
+ ],
+ "mess_input_linputdriver_setleds": [
+  "MessInputLinputdriverSetleds"
+ ],
+ "mess_input_tty_event": [
+  "MessInputTtyEvent"
+ ],
+ "mess_linputdriver_input_event": [
+  "MessLinputdriverInputEvent"
+ ]
+}

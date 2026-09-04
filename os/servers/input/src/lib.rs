@@ -15,7 +15,7 @@
 //! to completion. The device table is plain mutable state — no `Arc`, no
 //! `Mutex`, no atomics. Do not share these types across threads.
 //!
-//! # Module map (documents 01-04)
+//! # Module map (documents 01-08)
 //!
 //! - [`init`] — startup order and the callback inventory (document 01).
 //! - [`framework`] — the shared character-driver front door: message
@@ -24,15 +24,20 @@
 //! - [`event`] — the event wire format and code tables (document 04).
 //! - [`error`] — failures with their Minix3 errno numbers.
 //! - [`key_codes`] — the 215 keyboard-page codes, mechanically derived.
+//! - [`eventbuf`] — ring-buffer copy geometry (document 07).
+//! - [`handlers`] — open/close/read/control/cancel/select decisions
+//!   (documents 06-08).
 //!
-//! Later documents (05-14) add handlers, buffering behavior, driver
+//! Later documents (09-14) add event production, light sending, driver
 //! lifecycle, the client library, and the external consumers.
 
 extern crate alloc;
 
 pub mod error;
 pub mod event;
+pub mod eventbuf;
 pub mod framework;
+pub mod handlers;
 pub mod init;
 pub mod key_codes;
 pub mod structs;
@@ -42,9 +47,15 @@ pub use event::{
     ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, LedCode, PressState,
     ValueMode,
 };
+pub use eventbuf::{CopyPlan, apply_copy, drain_ordered, plan_copy};
 pub use framework::{
     CharacterRequest, CharacterResponse, GateVerdict, Incoming, NotifySource, OpenDeviceSet,
     ReplyDecision,
+};
+pub use handlers::{
+    CancelVerdict, EVENT_BYTES, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel,
+    apply_close, apply_open, apply_select_record, decide_cancel, decide_close, decide_ioctl,
+    decide_open, decide_read, decide_select, led_mask_from_kio_bits, park_read, serve_copy,
 };
 pub use init::{HandlerSlot, InitStep, StartupRegistration};
 pub use key_codes::KeyCode;

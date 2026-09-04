@@ -1,20 +1,273 @@
-# 07-input-read-suspend: 读取与挂起状态机
+# 07-input-read-suspend: 读取与挂起
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: CDEV_READ handler + 环形缓冲拷贝（阶段 3 字符设备操作面）
-> **源码**: `minix3/minix/servers/input/input.c:130-201`（input_copy_events/input_read）
-> **Rust 模块**: `handlers.rs`（read）、`eventbuf.rs`
-> **draft 素材**: `../../../../tmp/input/tmp_input.c.md`（素材）
+> **状态**: 已改写（2026-09-05，首版完整文档）
+> **定位**: 读的三岔路（给、等、不给）与环形缓冲拷贝几何（阶段 3，字符设备操作面；打开之后的主活动）
+> **源码**: `minix3/minix/servers/input/input.c:130-199`（`input_copy_events`/`input_read`）
+> **Rust 模块**: `os/servers/input/src/handlers.rs`（读判断与挂起执行）+ `os/servers/input/src/eventbuf.rs`（拷贝几何）
+> **目标读者**: 想理解"读键盘时服务如何决定给几个、什么时候给、没数据时怎么等而不卡住服务"的读者。前置知识：第 02 篇（赊账许可）、第 03 篇（队列结构）、第 06 篇（判断执行分离）。
+> **本章不讲什么**: 唤醒挂起读的事件到来路径（第 09 篇）；取消挂起（第 08 篇）；跨进程内存拷贝的传输实现（未来分发层，只定几何契约）；控制、查询（第 08 篇）。
 
-## 核心点
+---
 
-- `input_read`（:162-201）：map 失败 → ENXIO；`!active || suspended` → EIO（每设备单挂起读）；`event_count = size / sizeof(input_event)`，为 0 → EIO
-- 空缓冲：`CDEV_NONBLOCK` → EAGAIN；否则挂起（`suspended=TRUE` + caller/grant/req_id + 返回 EDONTREPLY 伪回复）
-- `input_copy_events`（:130-160）：回绕分段 `sys_safecopyto`（wrap_left 判定，1~2 段拷贝）；`count < event_count` 时 panic（A-11：Rust 改 debug_assert + 错误）
-- 挂起状态机三出口：resume（09 事件到达 → `chardriver_reply_task`）、cancel（08）、disconnect（11 → EIO）
-- ARCH A-4（环形缓冲）/A-5（显式 `SuspendedRead` 状态）/A-11（错误码）
+## 1. 概念：读的三岔路
 
-## 边界
+### 1.1 调用者说"我要 N 个"，服务有三种回答
 
-- **前置依赖**: 03 + 02（reply 语义）+ 05
-- **不覆盖（移交）**: 唤醒的生产方（09）、ioctl/cancel/select（08）、驱动连接断开（11）
+读请求带一个数字：调用者的缓冲区能装几个事件（缓冲区字节数除以单个事件 20 字节）。服务看一眼队列，回答三选一：
+
+```
+调用者：“我的缓冲能装 N 个事件。”
+
+服务看队列：
+  |-- 队列里有货 → “给你 M 个”（M 是 N 和存货的较小者）……回答一：给
+  |-- 队列空了，你说不等 → “下次再来”（EAGAIN，“再试一次”）……回答二：不给
+  |-- 队列空了，你愿意等 → “你先睡，有货叫你” …………………回答三：等
+```
+
+三种回答对应三种线缆行为：给是立即回消息带数据，等是现在不回消息（赊账，第 02 篇）、有货了再答，不给是立即回错误。调用者选哪种，用请求标志里的"不等"位表达——把选择权交给调用者，是非阻塞输入输出的通用规矩（文件、套接字都一样）。
+
+### 1.2 “等”不卡住服务：记下来，干别的去
+
+"等"的实现是全章最值得停留的地方。直觉的做法是服务原地等用户按键——但服务是单进程事件循环（第 01 篇），原地等意味着后面的消息（别的读、控制、驱动上报）全部卡住。正确的做法是把等待"记下来"：谁在等（调用者身份）、货送到他哪块内存（内存授权——跨进程内存访问的许可证，调用者预先办好的）、回信上写哪个编号（调用者同时办多件事时的认领号），然后告诉前台"这封信先别回"（赊账许可，第 02 篇），回头处理下一封信。事件到来时（第 09 篇），服务翻出这张纸条，把货送过去，再补寄迟到的回信。等待从"占用服务"变成"占用一张纸条"，服务永远不停。
+
+一张纸条只记一个等待者：每设备最多一个挂起读。第二个读在有挂起时直接被拒（"输入输出错误"）——不是排队，是拒绝。为什么不定成队列？因为读是消耗性的，排队会让先到的读者拿走事件、后到的永远等残羹；拒绝让调用者立刻知道"你来晚了"，而不是在队列里慢慢饿死。拒绝是诚实的快，排队是虚伪的慢。
+
+### 1.3 给多少：调用者胃口与存货的较小者
+
+"给"的数量是两者的较小者：调用者要 10 个、只有 3 个，就给 3 个（不欠着，剩下的下次再要）；调用者要 2 个、有 10 个，就给 2 个（不多给，调用者的缓冲装不下）。"给多少算多少，差的下次再说"是流式读取的通用语义（读文件、读套接字都一样），读者如果用过 `read` 系统调用，会觉得亲切——这里就是字符设备版的 `read`。
+
+### 1.4 拷贝几何：环断了，分两段搬
+
+队列是环形的（第 03 篇）：32 个槽位，队尾指针指着最旧的事件，新事件往队尾加，读走就挪队尾。拷贝时可能遇到"要搬的数据跨过数组末尾"：比如队尾在 30 号槽，要搬 5 个——30、31 号在数组尾，0、1、2 号在数组头。一次连续拷贝搬不走，分两次：先搬尾段（30、31），再搬头段（0、1、2）。分段数永远不超过两段（环至多断一次），这是环形缓冲的几何定理，本章的拷贝规划函数就是这条定理的可执行版本。
+
+### 1.5 三种"不给"：三种不同的"你错了"
+
+读的拒绝有三种，每种对应调用者不同的错：设备没营业或已有挂起（"输入输出错误"——服务侧的状态不对）；缓冲连一个事件都装不下（同样"输入输出错误"——调用者的请求本身无意义，要 0 个事件的读永远成功不了，不如当场拒绝）；空队列加不等标志（"再试一次"——谁都没错，只是时机不对）。前两种是"你错了"，第三种是"再来"。错误号精确到场景，是 Minix3 错误语义的风格（第 03 篇错误词汇的设计初衷）。
+
+### 1.6 本章小结：三岔路加几何
+
+读完本章，读者应该能不假思索地回答：读的三岔路是什么、"等"为什么不卡服务、一设备为什么只记一个等待者、给多少怎么算、拷贝为什么分两段、三拒绝各对应什么错。下一章（第 08 篇）讲挂起的另一个出口（取消）与控制、查询。
+
+---
+
+## 2. C 源码分析
+
+> 本章逐段对照原始 C 代码。所有行号以工作区当前 `minix3/` 为准。
+
+### 2.1 读：五段式分支（input_read，input.c:162-199）
+
+```c
+static ssize_t
+input_read(devminor_t minor, u64_t UNUSED(position), endpoint_t endpt,
+        cp_grant_id_t grant, size_t size, int flags, cdev_id_t id)
+{
+        unsigned int event_count;
+        struct input_dev *input_dev;
+
+        if ((input_dev = input_map(minor)) == NULL)
+                return ENXIO;
+
+        /* We cannot accept more than one pending read request at once. */
+        if (!input_dev_active(input_dev) || input_dev->suspended)
+                return EIO;
+
+        /* The caller's buffer must have room for at least one whole event. */
+        event_count = size / sizeof(*input_dev->eventbuf);
+        if (event_count == 0)
+                return EIO;
+
+        /* No data available? Suspend the caller, unless we shouldn't block. */
+        if (input_dev_buf_empty(input_dev)) {
+                if (flags & CDEV_NONBLOCK)
+                        return EAGAIN;
+
+                input_dev->suspended = TRUE;
+                input_dev->caller = endpt;
+                input_dev->grant = grant;
+                input_dev->req_id = id;
+
+                /* We should now wake up any selector, but that's lame.. */
+                return EDONTREPLY;
+        }
+
+        if (event_count > input_dev->count)
+                event_count = input_dev->count;
+
+        return input_copy_events(endpt, grant, event_count, input_dev);
+}
+```
+
+五段与 1.1/1.5 节逐段对应：换算查不到（调用者门牌错，不在本函数讨论）；不营业或已有挂起→输入输出错误（注释写明"一次只接受一个挂起读"，和 1.2 节的一纸条政策同源）；胃口换算（字节数除以事件尺寸，不足一个→输入输出错误，注意这里用的是"每个事件槽"的尺寸，即事件结构体的 20 字节）；空队列分支（不等标志→再试一次，否则记纸条四项、赊账）；钳制（超过存货就按存货）后调拷贝。
+
+两个细节值得放大。第一，位置参数不用（`UNUSED(position)`）：键盘没有"第几个字节"的概念，读永远从最旧的事件开始——流设备的读位置就是队尾，不需要调用者指定（和读文件的偏移量对比：文件有位置，流没有）。第二，纸条段的自嘲注释（"现在该叫醒选择者，但那太挫了.."）：作者知道挂起时该顺手叫醒查询等待者，但没做。没做的原因不明（可能是"选择者反正会被事件到来叫醒，早叫一会晚叫一会无所谓"），注释的诚实之处在于承认"这里有个小缺憾"。Rust 版本原样保留这个缺憾（挂起不碰选择者，第 3 章）——复刻缺憾需要勇气，但缺憾不在线缆上（调用者观察不到"叫醒早晚"的差别，选择者最终都会被叫醒），复刻它是安全的。
+
+### 2.2 拷贝：两段搬运加两种推进（input_copy_events，input.c:130-157）
+
+```c
+static ssize_t
+input_copy_events(endpoint_t endpt, cp_grant_id_t grant,
+        unsigned int event_count, struct input_dev *input_dev)
+{
+        int r, nbytes, wrap_left;
+        size_t event_size = sizeof(*input_dev->eventbuf);
+
+        if (input_dev->count < event_count)
+                panic("input_copy_events: not enough input is ready");
+
+        wrap_left = input_dev->tail + event_count - EVENTBUF_SIZE;
+        nbytes = (wrap_left <= 0 ? event_count :
+            EVENTBUF_SIZE - input_dev->tail) * event_size;
+
+        if ((r = sys_safecopyto(endpt, grant, 0,
+            (vir_bytes)(input_dev->eventbuf + input_dev->tail), nbytes)) != OK)
+                return r;
+
+        /* Copy possible remaining part if we wrap over. */
+        if (wrap_left > 0 && (r = sys_safecopyto(endpt, grant, nbytes,
+            (vir_bytes) input_dev->eventbuf, wrap_left * event_size)) != OK)
+                return r;
+
+        input_dev->tail = (input_dev->tail + event_count) % EVENTBUF_SIZE;
+        input_dev->count -= event_count;
+
+        return event_size * event_count; /* bytes copied */
+}
+```
+
+入口先断言"存货够"（不够就崩溃——调用者（读函数）钳制过，正常走不到这里，断言防的是未来的第二个调用者，第 3 章有不同处理）。`wrap_left` 是"第二段有几个"：队尾加个数减容量，正数表示跨过数组末尾。第一段字节数是"要搬的"与"到数组末尾为止" 的较小者（乘事件尺寸变字节）。两次安全拷贝（第一次从队尾搬第一段到调用者偏移零处，第二次从数组头搬第二段到调用者偏移第一段末尾处），任一次失败就返回错误——注意失败时队尾和计数都没动（推进在两次拷贝都成功之后），失败的拷贝可以重试，事件还在。成功后推进队尾（取模回绕）、扣减计数，返回总字节数。
+
+拷贝失败不推进，是全函数最重要的一行语义：推进是"货已送达"的确认，货没送到就不能确认。Rust 版本把"规划"（算两段）与"推进"（改队尾计数）拆成两个函数，拷贝（传输层）在两者之间（第 3 章）——失败时根本调不到推进，确认不可能早发。
+
+### 2.3 覆盖核对
+
+| 符号 | 源码位置 | 本文档位置 | Rust 对应 |
+|------|---------|-----------|----------|
+| `input_read` | input.c:162-199 | 2.1 节 | `handlers.rs` 判断挂起执行三节 |
+| `input_copy_events` | input.c:130-157 | 2.2 节 | `eventbuf.rs` 规划推进两节 |
+| 事件尺寸（20 字节） | input.h:25-32 | 2.1 节胃口换算 | `EVENT_BYTES`（测试锁死） |
+| 不等标志 | com.h:946（第 02 篇已登记） | 2.1 节空队列分支 | `decide_read` 参数 |
+
+---
+
+## 3. Rust 设计决策
+
+> 本章解释"为什么这样设计"。每个决策先说备选方案，再说选择的理由。
+
+### 3.1 读拆成判断、挂起、拷贝三段，而不是一个函数
+
+C 的读函数 incluye 判断、挂起、拷贝调用三件事。Rust 拆成 `decide_read`（纯判断）、`park_read`（记纸条）、`serve_copy`（规划加推进）。理由在第 06 篇 3.1 节已经论证（测试意图分离），读这里多一条硬理由：判断与推进之间隔着一次跨进程拷贝，拷贝可能失败——一体函数需要在失败时"撤销已改的状态"（如果先推进后拷贝）或"把推进拖到最后"（如果先拷贝后推进，前者需要回滚，后者判断与推进被拷贝隔开，天然就是三段）。C 选了后者（推进在两次拷贝之后），Rust 把 C 的"先后"变成"三个函数"，顺序由调用者（分发层）保证：判断→拷贝→推进。拷贝失败调不到推进，回滚问题消失。
+
+备选方案是一体函数加"失败回滚"。拒绝的理由：回滚需要记住改前的值（队尾计数的快照），快照本身是新状态，新状态需要新测试——为省两个函数引入一套快照机制，得不偿失。
+
+### 3.2 挂起不叫选择者：复刻缺憾，并写明为什么敢
+
+`park_read` 只写四项（挂起标志、调用者、授权、编号），不碰选择者——复刻 C 的"lame"缺憾（2.1 节）。敢复刻的理由：缺憾不在线缆上。调用者能观察到的只有"挂起是否成功"和"何时被叫醒"；选择者早叫一会（挂起时）还是晚叫一会（事件到来时，第 09 篇），选择者看到的"有货了"是一样的。复刻注释里写明这条推理（handlers.rs 的 `park_read` 注释），后人想"补上"时能看到"前人想过，结论是不用补"——注释的职责不仅是解释"是什么"，更是拦截"想当然的改进"。
+
+备选方案是"顺手补上"（挂起时叫醒选择者）。拒绝的理由：补上之后，选择者在"有货"和"有人排队"两种情况下被叫醒，叫醒原因变模糊；且与 C 行为产生可观察差异（选择者早醒），需要论证早醒无害——论证成本高于收益。
+
+### 3.3 存货不足返回错误，且所有构建统一返回（无断言）
+
+C 的拷贝入口断言存货够（不够崩溃）。Rust 的 `plan_copy` 存货不够返回"输入输出错误"，且调试构建与发布构建行为一致——刻意不用断言。理由：断言在调试构建崩溃、发布构建返回，同一个调用在两种构建下行为不同；而调试构建的崩溃恰恰是本阶段要删掉的东西（架构演进 A-11：崩溃改显式错误）。"调试构建多一道检查"的前提是检查不改变行为，崩溃式检查改变行为，所以不用。合同（"别多要"）由测试锁死（`test_plan_copy_shortage_is_an_error_not_a_crash`），读路径的钳制保证正常流程永远触发不了这条分支——保证来自调用者，检查来自测试，不来自崩溃。
+
+备选方案是"断言加返回"（plan 备忘录的原始措辞）。偏离备忘录措辞的理由如上：双行为不如单行为。备忘录的方向（不崩溃）完全保留，只是实现手段从"断言加返回"收敛为"统一返回"。评审时记为设计细化，非方向偏离（见 scan Gate B）。
+
+### 3.4 拷贝几何独立成模块，而不是读的附庸
+
+`eventbuf.rs` 独立于 `handlers.rs`：规划、推进、按序列出三个纯函数，只认识"队尾、计数、数组"，不认识"设备、调用者、挂起"。理由：几何是数学，处理是业务——数学不依赖业务（同样的环形几何，第 09 篇的生产者侧也会用到：溢出时挤掉最旧，同样是队尾计数算术）。独立成模块后，第 09 篇复用时不需要从读处理函数里"借"逻辑。模块边界按"知识依赖"划分：认识设备结构的归处理模块，只认识数组下标的归几何模块。
+
+### 3.5 授权与编号原样透传，不解读
+
+`park_read` 收下授权号与请求编号，原样存下，唤醒时原样用，不问它们是什么意思。理由：授权是调用者与内核之间的合同（哪块内存、什么权限），服务只是搬运工——搬运工不需要拆开包裹看。解读授权（验权限、查范围）是内核在拷贝时做的事（传输层），服务层解读属于越权（且解读了也用不上：服务对授权能做的只有"传给拷贝调用"）。"透传不解读"的原则同样适用于请求编号（调用者的认领号，服务只负责回信时原样写回去）。
+
+---
+
+## 4. 实现详解
+
+> 完整代码在 `os/servers/input/src/handlers.rs`（读三节）与 `os/servers/input/src/eventbuf.rs`（几何三节）。本章按"判断、挂起、几何、推进"的顺序展开，每个小节标注对应的第 3 章决策。
+
+### 4.1 判断：`ReadVerdict` 与 `decide_read`（对应决策 3.1）
+
+```rust
+pub enum ReadVerdict {
+    Serve { event_count: u32 },  // 给：个数已钳制
+    Park,                        // 等：记纸条，框架不回信
+    Refuse(InputError),          // 不给：框架立即回错误
+}
+```
+
+判断按 C 顺序：营业且无挂起→胃口换算（不足一个拒）→空则等或拒→钳制后给。胃口换算用 `usize` 除法再转 32 位——转之前先钳制到存货（存货不超 32），截断不可能发生（注释写明，大数调用者在钳制处被收敛，见代码注释）。返回的个数恒大于零（空队列早走了等或拒分支，钳制只会把大数变小、不会把零变大）——"给零个"的状态不可达，调用者不需要处理。
+
+### 4.2 挂起：`park_read`（对应决策 3.2、3.5）
+
+四项原样记下，不碰选择者（注释写明复刻缺憾的理由）。授权与编号透传（决策 3.5）。
+
+### 4.3 几何：`CopyPlan` 与 `plan_copy`（对应决策 3.3、3.4）
+
+```rust
+pub struct CopyPlan {
+    pub first_len: u32,   // 第一段：队尾到数组末尾
+    pub second_len: u32,  // 第二段：数组头（不跨为零）
+    pub new_tail: u32,    // 拷贝后的队尾
+    pub new_count: u32,   // 拷贝后的存货
+}
+```
+
+`wrap_left` 用 64 位中间值计算（队尾加个数减 32 在 C 里是 `int`，可能为负——Rust 用有符号中间值保留"负数表示不跨"的语义，而不是用无符号绕回）。`event_total` 方法给调用者"一共搬几个"。`drain_ordered` 按序列出（测试与未来复用）。
+
+### 4.4 推进：`apply_copy` 与 `serve_copy`（对应决策 3.1）
+
+`apply_copy` 只改队尾计数（C 的最后两行）。`serve_copy` 把"规划→（传输拷贝）→推进" glue 在一起：规划失败直接返回错误，规划成功等传输（未来分发层在此处插入两次授权拷贝），拷贝成功才推进。当前 `serve_copy` 在传输落地前直接推进——注释写明插入点，传输落地时把拷贝调用填进去（诚实占位，第 01 篇 4.4 节的风格）。
+
+### 4.5 与 C 的差异说明
+
+| C 行为 | Rust 对应 | 差异分类 |
+|--------|----------|---------|
+| 读五段分支与错误号 | 同序同号 | 无差异 |
+| 挂起四项加赊账 | 同四项（赊账归框架 02 篇） | 无差异 |
+| 挂起不叫选择者 | 同样不叫（注释写明） | 无差异（复刻缺憾） |
+| 拷贝两段几何与推进 | 同算术同推进 | 无差异 |
+| 存货不足崩溃 | 统一返回输入输出错误 | 架构演进 A-11（见 3.3 节；无断言双行为） |
+| 拷贝失败不推进 | 规划推进分离，失败调不到推进 | 设计决策：结构保证代替顺序保证 |
+
+---
+
+## 5. 测试要点
+
+> 测试代码在 `os/servers/input/src/handlers.rs`（读四节）与 `os/servers/input/src/eventbuf.rs`（几何五节）的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 48 个）。
+
+| 测试函数 | 验证什么 | 对应的 C 行为 |
+|---------|---------|--------------|
+| `test_plan_copy_without_wrap_matches_c` | 不跨时一段、队尾计数推进 | input.c:140-154（手算例：队尾 5 取 3） |
+| `test_plan_copy_with_wrap_matches_c` | 跨时两段 2+3、队尾回绕 | 同上（手算例：队尾 30 取 5） |
+| `test_plan_copy_shortage_is_an_error_not_a_crash` | 多要返回错误，要零是空规划 | input.c:137-138（崩溃改返回） |
+| `test_apply_copy_advances_tail_and_count` | 推进只改队尾计数 | input.c:153-154 |
+| `test_drain_ordered_reads_oldest_first_across_wrap` | 跨回绕按序读出 | 环顺序语义 |
+| `test_read_serves_clamped_to_buffered` | 给钳制到存货 | input.c:195-196 |
+| `test_read_refusals_match_c` | 三拒（不营业/有挂起/胃口不足，含零） | input.c:172-179 |
+| `test_read_parks_or_refuses_when_empty` | 空则等、不等则拒、纸条四项 | input.c:182-193 |
+| `test_serve_copy_moves_and_advances` | 给并推进，多要失败 | 读调拷贝路径 |
+| `test_event_bytes_match_c`（与 06 共用） | 事件 20 字节 | input.h:25-32 |
+
+### 5.1 测试统计（截至 2026-09-05）
+
+- `cargo test -p minix-input`：**48 个通过，0 个失败**。
+- 其中与本篇直接相关的 10 个（上表，`test_event_bytes_match_c` 与第 06 篇共用）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个加共用 1 个）、第 08 篇（5 个）与错误码模块（2 个）。
+- 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs os/servers/input/src/eventbuf.rs`
+
+---
+
+## 6. 过渡：等的两条出路，下一章讲一条
+
+本篇结束时，挂起的读者睡在纸条上，两种未来等着他：事件到来叫醒他（第 09 篇），或者有人取消这次等待（第 08 篇）。取消是挂起的"人工出口"：等待的进程被信号打断、退出、或主动反悔时，文件系统发来取消请求，服务核对身份（调用者加编号三重匹配），对上了就叫醒并告诉读者"被打断了"，对不上就沉默（原来的读可能已经结束了，没人可叫）。下一篇（第 08 篇）讲取消，以及控制与查询。
+
+---
+
+## 7. 参见
+
+- 第 02 篇 `02-chardriver-framework.md`：赊账许可（等的法律基础）；不等标志位定义。
+- 第 03 篇 `03-input-device-structs.md`：队列结构；纸条字段归属。
+- 第 04 篇 `04-input-event-format.md`：事件 20 字节（胃口换算的分母）。
+- 第 06 篇 `06-input-open-close.md`：判断执行分离（本篇沿用的手法）；关闭修正（等的状态清理对照）。
+- 第 08 篇 `08-input-ioctl-cancel-select.md`：取消（等的另一出口）。
+- 第 09 篇 `09-input-event-processing.md`：事件到来唤醒（等的自然出口）。
+- `os/servers/input/src/handlers.rs`、`os/servers/input/src/eventbuf.rs`：本篇全部 Rust 实现。

@@ -386,10 +386,10 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 | 02 | reviewed | 2026-09-04 | 新建（A-1 框架契约；scan: scans/02-chardriver-framework/，CONVERGED） |
 | 03 | reviewed | 2026-09-04 | 新建（A-3/A-7；scan: scans/03-input-device-structs/，CONVERGED） |
 | 04 | reviewed | 2026-09-04 | 新建（事件格式契约；scan: scans/04-input-event-format/，CONVERGED） |
-| 05 | pending | — | 新建（协议面） |
-| 06 | pending | — | 新建 |
-| 07 | pending | — | 新建（A-5/A-11） |
-| 08 | pending | — | 新建（A-8） |
+| 05 | reviewed | 2026-09-05 | 新建（协议面；scan: scans/05-input-message-contract/，CONVERGED） |
+| 06 | reviewed | 2026-09-05 | 新建（含关闭修正 MINIX3 BUG；scan: scans/06-input-open-close/，CONVERGED） |
+| 07 | reviewed | 2026-09-05 | 新建（A-5/A-11；scan: scans/07-input-read-suspend/，CONVERGED） |
+| 08 | reviewed | 2026-09-05 | 新建（A-8；scan: scans/08-input-ioctl-cancel-select/，CONVERGED） |
 | 09 | pending | — | 新建（A-4/A-9，事件旅程核心） |
 | 10 | pending | — | 新建（A-6） |
 | 11 | pending | — | 新建（A-2） |
