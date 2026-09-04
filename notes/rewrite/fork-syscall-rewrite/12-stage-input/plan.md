@@ -394,8 +394,8 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 | 10 | reviewed | 2026-09-05 | 新建（A-6；scan: scans/10-input-setleds/，CONVERGED） |
 | 11 | reviewed | 2026-09-05 | 新建（A-2；scan: scans/11-input-driver-connect/，CONVERGED） |
 | 12 | reviewed | 2026-09-05 | 新建（A-9；scan: scans/12-libinputdriver/，CONVERGED） |
-| 13 | pending | — | 新建外部契约 |
-| 14 | pending | — | 新建外部契约 |
+| 13 | reviewed | 2026-09-05 | 新建外部契约（scan: scans/13-tty-consumer/，CONVERGED） |
+| 14 | reviewed | 2026-09-05 | 新建外部契约（scan: scans/14-pckbd-driver/，CONVERGED） |
 | 99 | pending | — | 新建全局概念 |
 
 ---
