@@ -36,7 +36,7 @@
 **关键概念**:
 
 - **exec 是替换非新建**: exec 不分配新 proc 槽，只改 IP/SP/名字，复用同一 endpoint——这与 fork（新建槽+新 endpoint 代际）本质不同。所以 exec 后的进程仍是"同一进程"，只是换了执行流。
-- **exit 不直接杀**: exit 调 `cause_sig(caller, SIGABRT)`（do_exit.c:21），把死亡决策权交给信号管理器（PM）。内核不越俎代庖地直接释放资源——资源释放在 PM 决议后由 SYS_CLEAR 完成。这种"自杀 → 委托 → 回收"三段式让 PM 能执行清理钩子（如通知父进程、记账）。
+- **exit 不直接杀**: exit 调 `cause_sig(caller, SIGABRT)`（do_exit.c:21），把死亡决策权交给信号管理器。内核不越俎代庖地直接释放资源——资源释放在管理器决议后由 SYS_CLEAR 完成。这种"自杀 → 委托 → 回收"三段式让管理器能执行清理钩子（如通知父进程、记账）。典型管理方是 PM；**自管理进程**（s_sig_mgr = 自身，如 VM）退出属致命自信号：有 backup 管理器则提升接管，无 backup 内核 panic（[19-syscall-signal.md](19-syscall-signal.md) §1.4）。
 - **clear 的幂等性**: `if(isemptyp(rc)) return OK`（do_clear.c:38）——若槽位已空闲则直接返回成功。这保证 PM 在网络分区或重试场景下重复调用 clear 不会二次释放 IRQ/endpoint/timer。
 
 ### 1.2 同步 fork：为什么父进程必须 RTS_RECEIVING
@@ -131,7 +131,12 @@
 | `cause_sig(caller->p_nr, sig_nr)` | do_exit.c:21 | 委托信号管理器 |
 | `return(EDONTREPLY)` | do_exit.c:23 | 不回复 |
 
-`cause_sig` 的完整 C 路径（system.c:389）：查找 `priv(rp)->s_sig_mgr` → `sigaddset(&priv->s_sig_pending, sig)` → `RTS_SET(rp, RTS_SIGNALED|RTS_SIG_PENDING)` → `mini_notify(sig_mgr, caller->p_endpoint)`。内核侧状态变更可独立完成，信号管理器通知需要 IPC 子系统。
+`cause_sig` 的完整 C 路径（system.c:389-449）在 do_exit 场景下有两种走向，取决于调用者的信号管理器是谁：
+
+1. **PM 管理的服务**（多数系统服务，s_sig_mgr = PM）：目标 ≠ 管理器 → 外部路径——`sigaddset(&rp->p_pending, SIGABRT)` + `RTS_SET(rp, RTS_SIGNALED|RTS_SIG_PENDING)`（挂起目标）+ `send_sig(sig_mgr, SIGKSIG)`（system.c:445-446）唤醒 **PM 自己**。
+2. **自管理进程**（s_sig_mgr = SELF/自身，典型如 VM，main.c:208）：目标 = 管理器 → SELF 致命路径（system.c:416-432）——SIGABRT 属 `SIGS_IS_LETHAL`：有 backup 管理器则提升并**递归重投**（转外部路径），无 backup 则 **panic**（自管理服务无人收割 = 系统不可恢复）。
+
+两条路径的通知都是 `mini_notify(proc_addr(SYSTEM), …)`（system.c:381）——**源恒为 SYSTEM 内核任务**，不是调用者。Rust 侧完整语义见 [19-syscall-signal.md](19-syscall-signal.md) §4.3（`cause_signal` 三路径）。
 
 ### 2.4 do_clear — 释放资源，RTS_SLOT_FREE
 
@@ -462,27 +467,35 @@ pub fn dispatch_exec(
 }
 ```
 
-### 4.3 dispatch_exit — 完整实现（in-place 部分）
+### 4.3 dispatch_exit — 完整实现（转调 cause_signal 全语义）
+
+> 2026-09-05（todo D-6）：由"in-place 位操作 + 无管理器通知"升级为完整 `cause_sig`。
+> 原 `cause_signal_abort` 已删除（唯一消费方被替换）。
 
 ```rust
-// C: do_exit.c:14-23
-pub fn dispatch_exit(caller: &mut KProcess, _msg: &Message) -> KcallResult {
-    // C: do_exit.c:21 — cause_sig(caller, SIGABRT)（in-place 部分）
-    cause_signal_abort(caller);
-    // C: do_exit.c:23 — return EDONTREPLY
+// os/kernel/src/syscall_process.rs:351-364（行号以 rg 为准）
+pub fn dispatch_exit(
+    caller: &mut KProcess,
+    _msg: &Message,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut PrivTable,
+) -> KcallResult {
+    // C: do_exit.c:21 — cause_sig(caller->p_nr, SIGABRT); EDONTREPLY
+    // SIGABRT ∈ SIGS_IS_LETHAL：自管理进程的 exit 会进入 cause_signal
+    // 的致命 SELF 子路径（backup 提升或 panic，见 19-syscall-signal.md §4.3）。
+    cause_signal(caller.p_nr, SIGABRT, proc_table, priv_table);
+    // C: do_exit.c:23 — return EDONTREPLY（不写回消息）
     KcallResult::NoReply
-}
-
-// C: cause_sig — system.c:389-426 的 in-place 部分
-fn cause_signal_abort(caller: &mut KProcess) {
-    // C: system.c:433 — sigaddset(&priv->s_sig_pending, sig_nr)
-    caller.p_pending.add(SIGABRT as u8);
-    // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
-    caller.p_rts_flags.set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
 }
 ```
 
-**DEFERRED**: 信号管理器通知 `mini_notify(sig_mgr, caller->p_endpoint)`（do_exit.c:21 完整路径的 step 3，需 `SignalContext` trait + IPC）。
+**完整语义**（对齐 C `cause_sig`，system.c:389-449）：
+1. 查调用者 priv 的 `s_sig_mgr`（`SELF` 解析为自身 endpoint）；
+2. **外部管理**（PM 典型）：SIGABRT 写入调用者槽位 `p_pending`，`RTS_SIGNALED|RTS_SIG_PENDING`
+   挂起之，通知 PM（SYSTEM 源 `mini_notify_core`）——PM 轮询 GETKSIG 收割；
+3. **自管理 + 致命**：提升 `s_bak_sig_mgr`（若有）并递归走外部路径；无 backup → panic。
+
+内核依旧不直接释放资源——"自杀 → 委托 → 回收"三段式保持：资源释放在 PM 决议后由 SYS_CLEAR 完成（§4.4）。
 
 ### 4.4 dispatch_clear — 完整实现
 
@@ -825,7 +838,7 @@ pub(crate) fn dispatch_statectl(
 | ~~clear clear_endpoint~~ | do_clear.c:49 | ✅ 已实现 | `syscall::clear_endpoint`（syscall_process.rs:457-461） |
 | ~~clear reset_kernel_timer~~ | do_clear.c:52 | ✅ 已实现 | `clock_state.reset_timer(timer_id)` + `s_alarm_timer.take()`（syscall_process.rs:463-471） |
 | ~~runctl SMP IPI~~ | do_runctl.c:55-62 | ✅ 已实现 | `smp_state.schedule_stop_proc::<CurrentSmpArch>`（syscall_process.rs:544-579，见 [16-smp.md](16-smp.md) §1.3） |
-| exit mini_notify | do_exit.c:21 | `SignalContext` | SignalContext trait + IPC（唯一剩余 DEFERRED 项） |
+| ~~exit cause_sig 全语义~~ | do_exit.c:21 | ✅ 已实现（2026-09-05，todo D-6） | `dispatch_exit` 转调 `cause_signal`（syscall_process.rs:351-364）——管理器通知经 `mini_notify_core`；自管理致命路径（backup 提升/panic）见 [19-syscall-signal.md](19-syscall-signal.md) §4.3 |
 | ~~statectl ClearIpcRefs~~ | do_statectl.c:21-26 | ✅ 已实现 | `syscall::clear_ipc_refs`（syscall_process.rs:755-758） |
 | ~~statectl filter 元素填充~~ | do_statectl.c:32-41 | ✅ 已实现 | `data_copy_vmcheck` + filter pool（syscall_process.rs:767-972） |
 
@@ -844,8 +857,8 @@ pub(crate) fn dispatch_statectl(
 | `test_dispatch_statectl_add_ipc_wl_filter_allocates_slot` | 白名单过滤分配槽位 | statectl |
 | `test_dispatch_statectl_repeated_add_replaces_slot` | 重复 add 替换旧槽（非堆叠） | statectl |
 | `test_dispatch_statectl_invalid_request_returns_einval` | 非法 request → EINVAL | statectl |
-| `test_dispatch_exit_returns_no_reply` | exit 返回 NoReply | exit |
-| `test_dispatch_exit_sets_sigabrt` | exit 设 SIGABRT + SIGNALED + SIG_PENDING | exit |
+| `test_dispatch_exit_returns_no_reply` | exit 返回 NoReply（不写回消息，EDONTREPLY） | exit |
+| `test_dispatch_exit_sets_sigabrt_and_notifies_manager` | exit 经完整 cause_sig：目标 p_pending 置 SIGABRT + RTS_SIGNALED，管理器收到通知（DELIVERMSG） | exit |
 | `test_dispatch_runctl_stop` | RC_STOP 设 RTS_PROC_STOP | runctl |
 | `test_dispatch_runctl_resume` | RC_RESUME 清 RTS_PROC_STOP | runctl |
 | `test_dispatch_runctl_invalid_action` | 非法 action → EINVAL | runctl |

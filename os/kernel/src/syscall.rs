@@ -479,7 +479,7 @@ fn kernel_call_dispatch_inner(
         Syscall::Fork => dispatch_fork(caller, msg, proc_table, priv_table),
         Syscall::Exec => dispatch_exec(caller, msg, proc_table),
         Syscall::Clear => dispatch_clear(caller, msg, proc_table, priv_table, clock_state),
-        Syscall::Exit => dispatch_exit(caller, msg),
+        Syscall::Exit => dispatch_exit(caller, msg, proc_table, priv_table),
         Syscall::Schedule => dispatch_schedule(caller, msg, proc_table, priv_table),
         Syscall::Privctl => dispatch_privctl(caller, msg, proc_table, priv_table, clock_state),
         Syscall::Trace => dispatch_trace(caller, msg, proc_table, priv_table),
@@ -704,7 +704,7 @@ fn dispatch_fork(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::p
 }
 fn dispatch_exec(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_exec(caller, msg, proc_table) }
 fn dispatch_clear(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut crate::kpriv::PrivTable, clock_state: &mut ClockState) -> KcallResult { crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table, clock_state) }
-fn dispatch_exit(caller: &mut KProcess, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_exit(caller, msg) }
+fn dispatch_exit(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut crate::kpriv::PrivTable) -> KcallResult { crate::syscall_process::dispatch_exit(caller, msg, proc_table, priv_table) }
 
 /// Dispatch SYS_SCHEDULE.
 ///

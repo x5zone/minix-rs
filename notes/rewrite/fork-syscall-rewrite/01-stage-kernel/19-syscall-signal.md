@@ -2,11 +2,11 @@
 
 > **分类**: 系统调用服务
 > **C 源码**: `minix3/minix/kernel/system/do_kill.c`, `do_getksig.c`, `do_endksig.c`, `do_sigsend.c`, `do_sigreturn.c`; `minix3/minix/kernel/system.c` (`cause_sig` / `sig_delay_done`)
-> **Rust 实现**: `os/kernel/src/syscall_signal.rs` (796 行), `os/kernel/src/proc.rs` (`SigSet` / `p_pending`), `os/kernel/src/proc_table.rs` (`sig_mgr`), `os/kernel/src/kpriv.rs` (`PrivSignals`)
+> **Rust 实现**: `os/kernel/src/syscall_signal.rs` (1035 行), `os/kernel/src/proc.rs` (`SigSet` / `p_pending`), `os/kernel/src/proc_table.rs` (`sig_mgr`), `os/kernel/src/kpriv.rs` (`PrivSignals`)
 > **覆盖**: SYS_KILL / SYS_GETKSIG / SYS_ENDKSIG / SYS_SIGSEND / SYS_SIGRETURN 五个系统调用，以及内核内部函数 `cause_sig`
 > **前置**: [11-scheduling-primitives.md](11-scheduling-primitives.md) (RTS_SIGNALED / RTS_SIG_PENDING), [14-exception-interrupt.md](14-exception-interrupt.md) (CPU 异常 → cause_sig), [16-smp.md](16-smp.md) (BKL), [22-privilege.md](22-privilege.md) (s_sig_mgr)
 
-> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:283）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。仅 `SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径在 Rust 侧 DEFERRED（见 §4.7）。
+> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:280-282）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。`SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径已于 2026-09-05 在 Rust 侧实现（§4.3/§4.7）；`sig_delay_done`（SIGSNDELAY）与 DIAGCTL SIGKMESS 通知仍 DEFERRED。
 
 ---
 
@@ -111,6 +111,10 @@
 
 **backup 切换的副作用**: `RTS_UNSET(sig_mgr_rp, RTS_NO_PRIV)` (system.c:424)——backup SM 可能因 NO_PRIV 阻塞，切换时需清除让其可接收信号。
 
+> **实现状态（2026-09-05）**: 本小节语义已全部落地——`cause_signal` 三路径（外部 / SELF 非致命 / SELF 致命 backup 提升或 panic）见 §4.3；`dispatch_exit`（SYS_EXIT）经完整 `cause_sig` 自杀（todo D-6/D-11，[17-syscall-process.md](17-syscall-process.md) §4.3）。
+>
+> **为什么"自管理进程死亡"是内核级事件**：普通进程的信号由 PM 之类的外部管理器处理——进程死了，管理器负责收割（通知父进程、回收资源）。自管理进程（典型如 VM，C main.c:208 `s_sig_mgr = SELF`）**自己就是自己的管理器**：它若死于致命信号，就没有任何存活者会替它"处理后事"，它名下的孤儿信号将永远无人认领。C 给出的答案是：RS 在部署时预设一个 backup 管理器（live update 的接替者）；有 backup 就提升并让它接管；没有 backup，内核直接 panic，而不是让系统带着无人收割的进程半死不活地运行。这一"系统级看护进程不允许静默消失"的设计与主流 OS 一致——Linux 对 init(PID 1) 死亡同样以 `panic("Attempted to kill init!")` 兜底，因为它是所有孤儿进程的最后收割者；Redox 内核无此概念（信号直接由内核分发给目标），其"系统服务崩溃即重启"由 userspace scheme 管理，等效职责不在内核——这正是 Minix3 把故障收敛（failover）决策放在内核的原因：**看护者不能由被看护者自己担任**。
+
 ### 1.5 本章小结
 
 内核作为信号中介的核心抽象是"双路径 + 推拉"：内核信号路径用三步闭环（cause_sig → GETKSIG → ENDKSIG）解耦产生方与管理器；POSIX 路径用栈帧改写（SIGSEND → SIGRETURN）让用户态处理器得以运行。两者共享 `p_pending` / `RTS_SIGNALED` / `RTS_SIG_PENDING` 状态，由 BKL 保证原子性。架构相关细节（sigcontext 字段、寄存器修改）由 `SignalContext` trait 统一抽象（§3 D2/D6、§4.6）。后续章节按"概念 → C 源码 → 设计决策 → 实现 → 测试"展开。
@@ -130,7 +134,7 @@
 | `SIGKSIGSM` | signal.h:273 | 自管理进程的自通知信号（值 = 73）；Rust SELF 路径已实现（§4.3） |
 | `SIGSNDELAY` | signal.h:264 | 停止延迟结束信号（值 = 70）；`sig_delay_done` 对应 Rust DEFERRED（§4.7） |
 | `SC_MAGIC` | i386 signal.h:115 | sigcontext 完整性魔数（值 = 0xc0ffee1，`(架构相关)`）；Rust `check_magic` 已实现（§4.6） |
-| `SIGS_IS_LETHAL(sig)` | signal.h:283 | 致命信号判断宏（SIGILL/SIGBUS/SIGFPE/SIGSEGV/SIGEMT/SIGABRT）；Rust 侧 DEFERRED（§4.7） |
+| `SIGS_IS_LETHAL(sig)` | signal.h:280-282 | 致命信号判断宏（SIGILL=4/SIGABRT=6/SIGEMT=7/SIGFPE=8/SIGBUS=10/SIGSEGV=11）；Rust `is_lethal` 已实现（syscall_signal.rs:101-103，§4.3） |
 | `m_sigcalls.endpt` | minix/ipc.h:2622 | 目标进程 endpoint（5 个信号 syscall 共用） |
 | `m_sigcalls.sig` | minix/ipc.h:2622 | 信号编号（KILL 用） |
 | `m_sigcalls.map` | minix/ipc.h:2622 | 待处理信号位图（GETKSIG 返回） |
@@ -351,9 +355,9 @@
 
 - 如果用全局函数 `fn cause_signal(target_nr, sig_nr, proc_table, priv_table)`：参数列表长（4 个），且需访问 `ProcessTable` + `PrivTable` 两个表；调用方需先查表再传参。
 - 如果完全用 KProcess 方法 `fn cause_signal(&mut self, sig_nr, priv_table)`：封装 `p_pending` + `p_rts_flags` 操作；但 `cause_sig` 还需修改 SM 的 `s_sig_pending`，需访问 `PrivTable`，且 SELF 路径需查 `s_sig_mgr`，不能完全封装在 KProcess 内。
-- 所以当前用 **free function** `cause_signal(target_nr, sig_nr, proc_table, priv_table)` (`syscall_signal.rs:164`)：显式传入两个表，借用清晰；design §3.2 给出未来重构为 KProcess 方法的目标签名（需拆分借用）。
+- 所以当前用 **free function** `cause_signal(target_nr, sig_nr, proc_table, priv_table)` (`syscall_signal.rs:194`)：显式传入两个表，借用清晰；design §3.2 给出未来重构为 KProcess 方法的目标签名（需拆分借用）。
 
-> 设计决策：`design.md §3.2`（目标方法签名）。当前实现 `os/kernel/src/syscall_signal.rs:164`。
+> 设计决策：`design.md §3.2`（目标方法签名）。当前实现 `os/kernel/src/syscall_signal.rs:194`。
 
 ### D5. GETKSIG 进程扫描：线性扫描 vs 信号队列
 
@@ -361,7 +365,7 @@
 - 如果用线性扫描（C 方式）：O(N) 扫描所有进程；但进程数 < 128（`CONFIG_MAX_PROCS`），扫描成本可忽略；与 C 一致。
 - 所以用**线性扫描**：与 C 一致，简单可维护，性能足够。
 
-> 设计决策：`design.md`。实现 `os/kernel/src/syscall_signal.rs:164-267`（`cause_signal` 全函数，含 SELF 路径）。
+> 设计决策：`design.md` + design 快照 v2（致命 SELF 路径，见 19-design.v2）。实现 `os/kernel/src/syscall_signal.rs:194-322`（`cause_signal` 全函数，三路径 + 致命子路径）。
 
 ### D6. SIGSEND/SIGRETURN 架构相关代码：`#[cfg(target_arch)]` vs trait 静态分发
 
@@ -425,26 +429,37 @@ pub const fn sig_mask(sig_nr: u32) -> SigSet {
 ### 4.2 信号常量
 
 ```rust
-// os/kernel/src/syscall_signal.rs:39-57
+// os/kernel/src/syscall_signal.rs:47-103
 pub const NSIG: usize = 64;        // C: _NSIG — signal.h
+pub const SIGILL: u32 = 4;         // C: SIGILL — signal.h:55
+pub const SIGTRAP: u32 = 5;        // C: SIGTRAP
+pub const SIGABRT: u32 = 6;        // C: SIGABRT
+pub const SIGEMT: u32 = 7;         // C: SIGEMT — signal.h:59
+pub const SIGFPE: u32 = 8;         // C: SIGFPE — signal.h:60
+pub const SIGBUS: u32 = 10;        // C: SIGBUS — signal.h:62
+pub const SIGSEGV: u32 = 11;       // C: SIGSEGV — signal.h:63
 pub const SIGVTALRM: u32 = 26;     // C: SIGVTALRM
 pub const SIGPROF: u32 = 27;       // C: SIGPROF
-pub const SIGABRT: u32 = 6;        // C: SIGABRT
-pub const SIGTRAP: u32 = 5;        // C: SIGTRAP
 /// 内核→SM 通知信号。C: SIGKSIG = 74 — signal.h:274
 /// 超出 _NSIG(1-64) 范围，是内核内部通知而非 POSIX 信号。
 pub const SIGKSIG: u32 = 74;
+
+/// 致命信号判定。C: SIGS_IS_LETHAL — signal.h:280-282
+pub(crate) const fn is_lethal(sig_nr: u32) -> bool {
+    matches!(sig_nr, SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT)
+}
 ```
 
-> Rust 未定义常量：`SIGKSIGSM`（=73，signal.h:273）、`SC_MAGIC`（=0xc0ffee1，i386 signal.h:115）、`SIGSNDELAY`（=70，signal.h:264）——C 定义均已定位，Rust 侧无内核读者：SELF 路径通知直接经 `mini_notify_core` 实现（通知数值仅写入无读者的 `s_sig_pending`，见 §4.3 注），`check_magic` 在 arch 层实现（§4.6），`sig_delay_done` 整体 DEFERRED（§4.7）。
+> Rust 未定义常量：`SIGKSIGSM`（=73，signal.h:273）、`SC_MAGIC`（=0xc0ffee1，i386 signal.h:115）、`SIGSNDELAY`（=70，signal.h:264）——C 定义均已定位：SELF 路径通知直接经 `mini_notify_core` 实现（>64 的信号无法编码进 Rust `SigSet(u64)`，唤醒即 C 语义的全部内核动作，见 §4.3 语义澄清），`check_magic` 在 arch 层实现（§4.6），`sig_delay_done` 整体 DEFERRED（§4.7）。致命信号常量 `SIGILL`/`SIGEMT`/`SIGFPE`/`SIGBUS`/`SIGSEGV` 已定义（syscall_signal.rs:47-66），供 `is_lethal` 使用。
 
 ### 4.3 cause_signal 实现
 
-> 设计决策：§3 D4。当前为 free function，design §3.2 给出 KProcess 方法的目标重构。
+> 设计决策：§3 D4 + design 快照 v2（D-3b 致命 SELF 路径 / D-3c `is_lethal`，见 19-design.v2）。
+> 当前为 free function，design §3.2 给出 KProcess 方法的目标重构。
 
 ```rust
-// os/kernel/src/syscall_signal.rs:164-251
-fn cause_signal(
+// os/kernel/src/syscall_signal.rs:194-327（行号随版本漂移，以 rg 为准）
+pub(crate) fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
     proc_table: &mut ProcessTable,
@@ -460,20 +475,49 @@ fn cause_signal(
     if let (Some(ep), Some(mgr)) = (target_endpoint, sig_mgr)
         && ep == mgr
     {
-        // C: system.c:417 — SIGS_IS_LETHAL → 备份管理器切换 / panic。
-        // DEFERRED: 需 s_bak_sig_mgr 切换 + RTS_NO_PRIV + panic 集成（见 todo.md）。
-        // 当前阶段无用户态进程，自管理进程（VM/RS）收到致命信号的路径不可达。
+        // C: system.c:417 — 致命信号（SIGS_IS_LETHAL）→ 备份管理器提升 / panic
+        if is_lethal(sig_nr) {
+            // C: system.c:418-420 — sig_mgr = priv(rp)->s_bak_sig_mgr;
+            //     if (sig_mgr != NONE && isokendpt(sig_mgr, &sig_mgr_proc_nr))
+            let pid = proc_table.get(target_nr).and_then(|p| p.priv_id);
+            let backup = pid
+                .and_then(|pid| priv_table.get(pid))
+                .map(|priv_| priv_.signals.s_bak_sig_mgr);
 
-        // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)
+            if let Some(bak_ep) = backup
+                && bak_ep != Endpoint::NONE
+                && let Some(bak_nr) = proc_table.endpoint_to_nr(bak_ep)
+            {
+                // C: system.c:421-422 — 提升：s_sig_mgr ← backup；s_bak_sig_mgr ← NONE
+                if let Some(pid) = pid
+                    && let Some(priv_) = priv_table.get_mut(pid)
+                {
+                    priv_.signals.s_sig_mgr = bak_ep;
+                    priv_.signals.s_bak_sig_mgr = Endpoint::NONE;
+                }
+                // C: system.c:424 — RTS_UNSET(backup, RTS_NO_PRIV)：解除挂起
+                proc_table.rts_unset(bak_nr, RtsFlagsBits::NO_PRIV);
+                // C: system.c:425-426 — cause_sig(proc_nr, sig_nr) 递归重投（外部路径）
+                cause_signal(target_nr, sig_nr, proc_table, priv_table);
+                return;
+            }
+            // C: system.c:429-431 — 无 backup → panic（系统不可恢复）
+            panic!(
+                "cause_sig: sig manager {} gets lethal signal {} for itself",
+                ep.0, sig_nr
+            );
+        }
+
+        // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)（非致命自管理）
         if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
             && let Some(priv_) = priv_table.get_mut(pid)
         {
             priv_.signals.s_sig_pending.add(sig_nr as u8);
         }
 
-        // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
-        // 唤醒目标自身。C 的通知数值（SIGKSIGSM=73）仅写入 s_sig_pending（无内核读者），
-        // 故 Rust 直接 mini_notify_core（源 = SYSTEM，目标 = 自身），无需 SIGKSIGSM 常量。
+        // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(自身)
+        // SIGKSIGSM=73 的内核动作仅是"唤醒自管理进程去处理自身待决状态"；
+        // Rust SigSet(u64) 无法编码 >64 的信号，唤醒本身由 mini_notify 完成。
         let _ = crate::ipc::mini_notify_core(
             proc_table.procs_slice_mut(),
             priv_table,
@@ -484,38 +528,25 @@ fn cause_signal(
     }
 
     // ── 外部路径：目标由外部信号管理器管理 ──
-    // C: system.c:439 — s = sigismember(&rp->p_pending, sig_nr)
-    // Rust 以 RTS_SIGNALED 判定 was_signaled + 无条件 p_pending.add：
-    // sigaddset 幂等，与 C 的 sigismember 门控语义等价。
+    // C: system.c:439-442 — sigaddset(&rp->p_pending, sig_nr)（sigismember 门控
+    // 以 RTS_SIGNALED 判定 was_signaled；sigaddset 幂等，语义等价）
     let was_signaled = proc_table.get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
-
-    // C: system.c:442 — sigaddset(&rp->p_pending, sig_nr)
     if let Some(target) = proc_table.get_mut(target_nr) {
         target.p_pending.add(sig_nr as u8);
     }
 
-    // C: system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED))
+    // C: system.c:443-446 — if (!RTS_ISSET(rp, RTS_SIGNALED)) → RTS_SIGNALED|RTS_SIG_PENDING
+    //     + send_sig(sig_mgr, SIGKSIG)（system.c:381 mini_notify SYSTEM → sig_mgr）
     if !was_signaled {
-        // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
         proc_table.rts_set(target_nr, RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
-
-        // C: system.c:445-446 — send_sig(sig_mgr, SIGKSIG) → 唤醒信号管理器
-        // send_sig (system.c:364-382): sigaddset(&priv(sig_mgr)->s_sig_pending, SIGKSIG)
-        // + mini_notify(proc_addr(SYSTEM), rp->p_endpoint) —— 通知目标是**信号管理器自身**，
-        // 源是 SYSTEM。
         if let Some(sig_mgr_ep) = sig_mgr {
-            // C: system.c:380 — sigaddset(&priv->s_sig_pending, sig_nr)
-            // SIGKSIG=74 超出 Rust SigSet(u64) 位宽 → add 为 no-op；s_sig_pending 是
-            // 写记录（内核无读者），行为保持。
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
                 && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
                     && let Some(pid) = sig_mgr_proc.priv_id
                         && let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
                             sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
                         }
-
-            // C: system.c:381 — mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
             let _ = crate::ipc::mini_notify_core(
                 proc_table.procs_slice_mut(),
                 priv_table,
@@ -527,10 +558,25 @@ fn cause_signal(
 }
 ```
 
-**已实现**: 双路径均经 `mini_notify_core` 唤醒（**源 = SYSTEM，目标 = 需被唤醒者**，对齐 C: system.c:381 `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)`）。SELF 路径写目标自身 `s_sig_pending` 并唤醒目标自身（C 的 SIGKSIGSM=73 数值仅写入无内核读者的 `s_sig_pending`，故 Rust 无需该常量）；外部路径写目标 `p_pending` + `RTS_SIGNALED|RTS_SIG_PENDING`，并在 SM 的 `s_sig_pending` 置 SIGKSIG 后唤醒 **SM 自身**（SIGKSIG=74 超出 Rust SigSet(u64) 位宽 → add 为 no-op；`s_sig_pending` 是写记录——C 内核从不读它——行为保持，诚实标注）。
+**已实现（三路径 + 致命子路径）**：
+1. **外部路径**（目标由他人管理）：写目标 `p_pending`，`RTS_SIGNALED|RTS_SIG_PENDING` 挂起目标，
+   唤醒 **SM 自身**（SIGKSIG 置位 + SYSTEM 源 `mini_notify_core`）。这是 PM 管理的用户进程
+   收到信号的常态路径。
+2. **SELF 非致命路径**：目标即自身 SM → 信号写入目标 priv 的 `s_sig_pending`，唤醒目标自身
+   （进程不被 RTS 挂起，由它自行决定何时处理）。
+3. **SELF 致命路径**（system.c:417-432，design 快照 v2 D-3b）：目标即自身 SM 且信号致命
+   （`is_lethal`：SIGILL/ABRT/EMT/FPE/BUS/SEGV）→ 查 `s_bak_sig_mgr`：
+   - 有 backup 且 endpoint 有效 → 提升 backup 为 primary（清 `s_bak_sig_mgr`）+ 
+     `RTS_UNSET(backup, RTS_NO_PRIV)` + **递归 cause_signal 走外部路径**（让新 manager 收割）；
+   - 无 backup → `panic!`（自管理服务无人收割 = 系统不可恢复；Rust 省略 C 的 `proc_stacktrace`，
+     见 §4.7 差异表）。
 
-**未对齐 C 的功能**（仍 DEFERRED，见 §4.7）：
-- 致命信号 SELF 路径（system.c:417-432）：`SIGS_IS_LETHAL` + backup 切换（`s_bak_sig_mgr`、`RTS_UNSET(RTS_NO_PRIV)`）+ panic——当前无用户态进程，自管理进程（VM/RS）收到致命信号的路径不可达
+`is_lethal`（syscall_signal.rs:101-103）精确匹配 C `SIGS_IS_LETHAL`（signal.h:280-282）的六个信号。
+
+> **语义澄清（2026-09-05）**：SELF 路径上 SIGKSIGSM/SIGKSIG（73/74）超出 Rust `SigSet(u64)`
+> 位宽，add 为 no-op；二者的内核动作就是"唤醒"，由 `mini_notify_core` 完成，行为保持。
+> `s_sig_pending`（≤64 位部分）的消费方在 ipc 通知投递路径——SYSTEM 源通知送达时被编码进
+> `m_notify.sigset` 并清空（ipc.rs:1776-1782）。
 
 > **DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)` 仍 DEFERRED**：DIAGCTL_CODE_REGISTER 路径（syscall.rs:2271-2315，do_diagctl.c:49-56）只设 `s_diag_sig=true`，未发 SIGKMESS 通知。原因：DIAGCTL dispatch 已持 caller/priv_table 借用，与查 PM_PROC_NR 所需的全局 proc_table 访问冲突；PM 会在下次 `getksig` 轮询时观察到内核消息（主用途已实现，PM 通知是次要副作用）。
 
@@ -588,7 +634,7 @@ pub fn dispatch_getksig(
 完整流程已接入 `data_copy_vmcheck`（cross_space.rs）和 `CurrentSignalContext`（arch trait），包括 VMSUSPEND 处理和时序约束。
 
 ```rust
-// os/kernel/src/syscall_signal.rs:440-613（dispatch_sigsend 节选）
+// os/kernel/src/syscall_signal.rs:516-689（dispatch_sigsend 节选）
 pub fn dispatch_sigsend(
     caller: &mut KProcess,
     msg: &Message,
@@ -641,7 +687,7 @@ pub fn dispatch_sigsend(
 }
 ```
 
-`dispatch_sigreturn`（`syscall_signal.rs:614-708`）同样已接入完整流程：
+`dispatch_sigreturn`（`syscall_signal.rs:690-776`）同样已接入完整流程：
 
 1. **拷贝 sigcontext**：用 `data_copy_vmcheck` 从目标用户栈拷贝 `SigContext`（C 用 `data_copy` 无 vmcheck；Rust 统一用 `data_copy_vmcheck`，因为用户栈页可能未映射）
 2. **恢复寄存器**：`CurrentSignalContext::restore_sigcontext` + `arch_setcontext(trap_style)`
@@ -703,21 +749,23 @@ pub trait SignalContext: Sized + Send + Sync {
 
 ### 4.7 DEFERRED 表（诚实标注）
 
+> 行号为 2026-09-05 快照（cause_sig 致命路径落地后），漂移以 `rg` 为准。
+
 | 功能 | C 位置 | Rust 位置 | 状态 / DEFERRED 理由 |
 |------|--------|----------|---------------------|
-| SIGKSIG 通知（mini_notify） | system.c:445-446（send_sig 内 system.c:381） | syscall_signal.rs:228-249 | ✅ 已实现: SM 的 `s_sig_pending.add(SIGKSIG)`（no-op，写记录）+ `mini_notify_core` 唤醒 **SM 自身**（源 = SYSTEM） |
-| cause_sig SELF 路径 | system.c:416,433-434 | syscall_signal.rs:177-202 | ✅ 已实现: 目标自身 `s_sig_pending.add(sig_nr)` + `mini_notify_core` 唤醒目标自身（无需 SIGKSIGSM 常量，通知数值无读者） |
-| cause_sig 去重检查 | system.c:439-441 | syscall_signal.rs:206-210 | ✅ 已实现: 以 `RTS_SIGNALED` 判定 was_signaled（等价于 C 的 sigismember 门控——sigaddset 幂等）；未置 SIGNALED 时不再重复通知 |
-| dispatch_sigsend 完整流程 | do_sigsend.c:19-162 | syscall_signal.rs:440-613 | ✅ 已实现: data_copy_vmcheck + SignalContext |
-| dispatch_sigreturn 完整流程 | do_sigreturn.c:19-95 | syscall_signal.rs:614-708 | ✅ 已实现: data_copy_vmcheck + SignalContext |
+| SIGKSIG 通知（mini_notify） | system.c:445-446（send_sig 内 system.c:381） | syscall_signal.rs:300-325 | ✅ 已实现: SM 的 `s_sig_pending.add(SIGKSIG)`（>64 → no-op）+ `mini_notify_core` 唤醒 **SM 自身**（源 = SYSTEM） |
+| cause_sig SELF 路径 | system.c:416,433-434 | syscall_signal.rs:258-278 | ✅ 已实现: 目标自身 `s_sig_pending.add(sig_nr)` + `mini_notify_core` 唤醒目标自身（SIGKSIGSM=73 >64 位宽无法编码，唤醒即 C 的全部内核动作） |
+| cause_sig 去重检查 | system.c:439-441 | syscall_signal.rs:285-286 | ✅ 已实现: 以 `RTS_SIGNALED` 判定 was_signaled（等价于 C 的 sigismember 门控——sigaddset 幂等）；未置 SIGNALED 时不再重复通知 |
+| **cause_sig 致命 SELF 路径（backup 切换 / panic）** | system.c:417-432 | syscall_signal.rs:210-256（`is_lethal` 101-103） | ✅ **已实现（2026-09-05，todo D-11）**: `is_lethal` 判定 → 查 `s_bak_sig_mgr`；有效则提升（`s_sig_mgr`←backup、`s_bak_sig_mgr`←NONE、`RTS_UNSET(NO_PRIV)`）并**递归走外部路径**；无 backup → `panic!("cause_sig: sig manager …")`。差异：C 在 panic 前调 `proc_stacktrace(rp)`（system.c:429）打印进程用户栈，Rust 省略——完整栈展开需 `cross_space_copy` + `StacktraceArch::walk_frames`（DIAGCTL_CODE_STACKTRACE 路径已实现，syscall.rs:2295），在致命 panic 的 BKL 临界区引入跨空间读风险大于收益；panic 消息保留 endpoint + 信号号。测试：`test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` |
+| dispatch_sigsend 完整流程 | do_sigsend.c:19-162 | syscall_signal.rs:516-689 | ✅ 已实现: data_copy_vmcheck + SignalContext |
+| dispatch_sigreturn 完整流程 | do_sigreturn.c:19-95 | syscall_signal.rs:690-776 | ✅ 已实现: data_copy_vmcheck + SignalContext |
 | sigframe 构建（架构相关） | do_sigsend.c:50-118 | arch/{x86_64,arm64,riscv64}/signal.rs | ✅ 已实现: SignalContext::build_sigframe |
 | SignalContext x86_64 impl | do_sigsend.c:53-89 | arch/x86_64/signal.rs | ✅ 已实现 |
 | SignalContext aarch64 impl | do_sigsend.c:91-110 | arch/arm64/signal.rs | ✅ 已实现 |
 | SignalContext riscv64 impl | — | arch/riscv64/signal.rs | ✅ 已实现（C 源码未实现，按 RISC-V ELF psABI 独立设计） |
-| cause_sig 致命信号 panic | system.c:417-432 | syscall_signal.rs:180-182 | DEFERRED: 需 SIGS_IS_LETHAL + s_bak_sig_mgr 切换 + RTS_NO_PRIV + panic 集成；当前无用户态进程，路径不可达（已记 todo.md） |
 | sig_delay_done | system.c:454-464 | — | DEFERRED: 需 PM 通知接口 + SIGSNDELAY |
 | DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | do_diagctl.c:49-56 | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
-| FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:590（sigsend 清 MF_FPU_INITIALIZED）/ 690（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
+| FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:670（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
 | trap_style 校验 | do_sigsend.c:79-82 | arch/signal_context.rs `get_trap_style` | ✅ 已实现: `SignalContext::get_trap_style` + `arch_setcontext` |
 
 ### 4.8 redox 对比
@@ -742,17 +790,23 @@ pub trait SignalContext: Sized + Send + Sync {
 
 ## 5. 测试
 
-### 5.1 现有测试（7 个，已实现）
+### 5.1 现有测试（13 个，可 grep）
 
-| 测试函数 | 行号 | 验证行为 | 对应 C 符号 |
+| 测试函数 | 行号（2026-09-05） | 验证行为 | 对应 C 符号 |
 |---------|------|---------|------------|
-| `test_sig_mask` | syscall_signal.rs:716 | sig_mask 信号编号到位掩码转换 | `sig_mask` |
-| `test_nsig` | syscall_signal.rs:725 | NSIG=64 与 C `_NSIG` 对齐 | `_NSIG` |
-| `test_signal_constants` | syscall_signal.rs:730 | SIGVTALRM/SIGPROF/SIGABRT/SIGTRAP 数值与 C 对齐 | `SIGVTALRM` 等 |
-| `test_sigsend_invalid_endpoint` | syscall_signal.rs:738 | 无效 endpoint 返回 EINVAL | `do_sigsend.c:31` |
-| `test_sigsend_kernel_process` | syscall_signal.rs:749 | 内核任务返回 EPERM（或 EINVAL，见注） | `do_sigsend.c:32` |
-| `test_sigreturn_invalid_endpoint` | syscall_signal.rs:762 | 无效 endpoint 返回 EINVAL | `do_sigreturn.c:28` |
-| `test_sigmsg_struct` | syscall_signal.rs:772 | SigMsg `#[repr(C)]` 字段顺序与 C `struct sigmsg` 对齐 | `struct sigmsg` |
+| `test_sig_mask` | syscall_signal.rs:792 | sig_mask 信号编号到位掩码转换 | `sig_mask` |
+| `test_nsig` | syscall_signal.rs:801 | NSIG=64 与 C `_NSIG` 对齐 | `_NSIG` |
+| `test_signal_constants` | syscall_signal.rs:806 | SIGVTALRM/SIGPROF/SIGABRT/SIGTRAP 数值与 C 对齐 | `SIGVTALRM` 等 |
+| `test_sigsend_invalid_endpoint` | syscall_signal.rs:814 | 无效 endpoint 返回 EINVAL | `do_sigsend.c:31` |
+| `test_sigsend_kernel_process` | syscall_signal.rs:825 | 内核任务返回 EPERM（或 EINVAL，见注） | `do_sigsend.c:32` |
+| `test_sigreturn_invalid_endpoint` | syscall_signal.rs:838 | 无效 endpoint 返回 EINVAL | `do_sigreturn.c:28` |
+| `test_sigmsg_struct` | syscall_signal.rs:848 | SigMsg `#[repr(C)]` 字段顺序与 C `struct sigmsg` 对齐 | `struct sigmsg` |
+| `test_is_lethal` | syscall_signal.rs:864 | 六致命信号 true / 非致命与内核信号 false | `SIGS_IS_LETHAL` |
+| `test_cause_signal_external_path_notifies_manager` | syscall_signal.rs:924 | 外部路径：p_pending + RTS_SIGNALED + 通知管理器 | `cause_sig` 外部路径 |
+| `test_cause_signal_dedup_does_not_notify_twice` | syscall_signal.rs:948 | SIGNALED 期间二次投递不重复通知 | `cause_sig` 去重（system.c:443） |
+| `test_cause_signal_self_path_non_lethal` | syscall_signal.rs:978 | 自管理非致命：写自身 s_sig_pending，不设 RTS_SIGNALED | `cause_sig` SELF 路径 |
+| `test_cause_signal_self_lethal_promotes_backup` | syscall_signal.rs:998 | 致命 SELF：backup 提升 + NO_PRIV 解除 + 递归外部投递 | `cause_sig` 致命路径 |
+| `test_cause_signal_self_lethal_no_backup_panics` | syscall_signal.rs:1030 | 致命 SELF + 无 backup → panic | `cause_sig` 致命路径 |
 
 > 注：`test_sigsend_kernel_process` 当前因 `endpoint_to_nr` 找不到内核进程返回 EINVAL（非 EPERM），因测试用空 ProcessTable 无内核任务槽；语义上 iskerneln 应返回 EPERM，待 ProcessTable 测试基建完善后细化。
 
@@ -760,29 +814,30 @@ pub trait SignalContext: Sized + Send + Sync {
 
 ```bash
 rg "fn test_" os/kernel/src/syscall_signal.rs --type rust -n
-# → 716: fn test_sig_mask
-# → 725: fn test_nsig
-# → 730: fn test_signal_constants
-# → 738: fn test_sigsend_invalid_endpoint
-# → 749: fn test_sigsend_kernel_process
-# → 762: fn test_sigreturn_invalid_endpoint
-# → 772: fn test_sigmsg_struct
+# → 792: fn test_sig_mask
+# → 801: fn test_nsig
+# → 806: fn test_signal_constants
+# → 814: fn test_sigsend_invalid_endpoint
+# → 825: fn test_sigsend_kernel_process
+# → 838: fn test_sigreturn_invalid_endpoint
+# → 848: fn test_sigmsg_struct
+# → 864: fn test_is_lethal
+# → 924: fn test_cause_signal_external_path_notifies_manager
+# → 948: fn test_cause_signal_dedup_does_not_notify_twice
+# → 978: fn test_cause_signal_self_path_non_lethal
+# → 998: fn test_cause_signal_self_lethal_promotes_backup
+# → 1030: fn test_cause_signal_self_lethal_no_backup_panics
 ```
 
 ### 5.2 待补充测试
 
 | 测试函数 | 验证行为 | 依赖 |
 |---------|---------|------|
-| `test_cause_signal_sets_pending` | cause_signal 设置 p_pending + RTS_SIGNALED | cause_signal 外部路径（已实现，测试待补） |
-| `test_cause_signal_dedup` | 信号已在 p_pending 不重复通知 | was_signaled 预检查（已实现，测试待补） |
-| `test_cause_signal_self_path` | SELF 路径写 s_sig_pending + 唤醒自身 | SELF 路径（已实现 §4.3，测试待补） |
-| `test_cause_signal_lethal_panic` | 自管理进程致命信号 panic | SIGS_IS_LETHAL backup 子路径（DEFERRED，§4.7） |
 | `test_getksig_finds_signaled` | GETKSIG 扫描找到 RTS_SIGNALED 进程 | dispatch_getksig（已实现，待测试基建） |
 | `test_endksig_clears_pending` | ENDKSIG 无新信号时清除 SIG_PENDING | dispatch_endksig（已实现） |
 | `test_endksig_keeps_pending` | ENDKSIG 有新信号时保留 SIG_PENDING | dispatch_endksig（已实现） |
 | `test_sigsend_vmsuspend_on_page_fault` | SIGSEND sigmsg 拷贝触发 VmSuspend + RTS_VMREQUEST | MockPteWalk 返回 None（已具备） |
 | `test_sigreturn_vmsuspend_on_page_fault` | SIGRETURN sigcontext 拷贝触发 VmSuspend | MockPteWalk 返回 None（已具备） |
-| `test_is_lethal` | is_lethal 正确判断致命信号 | is_lethal（C: signal.h:283）未实现 |
 
 ---
 

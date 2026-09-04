@@ -44,11 +44,26 @@ pub const SIGVTALRM: u32 = 26;
 /// Signal number for SIGPROF. C: `SIGPROF` — signal.h
 pub const SIGPROF: u32 = 27;
 
-/// Signal number for SIGABRT. C: `SIGABRT` — signal.h
-pub const SIGABRT: u32 = 6;
+/// Signal number for SIGILL. C: `SIGILL` — signal.h:55
+pub const SIGILL: u32 = 4;
 
 /// Signal number for SIGTRAP. C: `SIGTRAP` — signal.h
 pub const SIGTRAP: u32 = 5;
+
+/// Signal number for SIGABRT. C: `SIGABRT` — signal.h
+pub const SIGABRT: u32 = 6;
+
+/// Signal number for SIGEMT. C: `SIGEMT` — signal.h:59
+pub const SIGEMT: u32 = 7;
+
+/// Signal number for SIGFPE. C: `SIGFPE` — signal.h:60
+pub const SIGFPE: u32 = 8;
+
+/// Signal number for SIGBUS. C: `SIGBUS` — signal.h:62
+pub const SIGBUS: u32 = 10;
+
+/// Signal number for SIGSEGV. C: `SIGSEGV` — signal.h:63
+pub const SIGSEGV: u32 = 11;
 
 /// Kernel signal notification. C: `SIGKSIG = 74` — signal.h
 /// Used by cause_sig() to notify the signal manager that a kernel signal
@@ -75,6 +90,16 @@ pub const fn sig_mask(sig_nr: u32) -> SigSet {
     } else {
         SigSet::from_raw(1u64 << (sig_nr - 1))
     }
+}
+
+/// Check whether a signal is "lethal" for a self-managing system process.
+///
+/// C: `SIGS_IS_LETHAL(sig)` — signal.h:280-282. A self-managing process
+/// (its own signal manager) that receives one of these cannot handle the
+/// signal itself: the kernel must either fail over to the designated
+/// backup manager or panic (see [`cause_signal`]).
+pub(crate) const fn is_lethal(sig_nr: u32) -> bool {
+    matches!(sig_nr, SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT)
 }
 
 // ── Helper ──
@@ -151,17 +176,22 @@ pub fn dispatch_kill(
 ///
 /// # Signal manager notification
 ///
-/// C: `cause_sig()` (system.c:389-449) — 双路径：
+/// C: `cause_sig()` (system.c:389-449) — 双路径 + 致命子路径：
 /// - SELF 路径（`rp->p_endpoint == sig_mgr`，目标进程是自身信号管理器）：
-///   `sigaddset(&priv(rp)->s_sig_pending, sig_nr)` + `send_sig(SIGKSIGSM)` 唤醒目标自身。
+///   致命信号（`SIGS_IS_LETHAL`，见 [`is_lethal`]）先尝试提升 `s_bak_sig_mgr`
+///   为 primary 后递归走外部路径；无 backup 则 panic（system.c:417-432）。
+///   非致命信号：`sigaddset(&priv(rp)->s_sig_pending, sig_nr)` +
+///   `send_sig(SIGKSIGSM)` 唤醒目标自身（system.c:433-436）。
 /// - 外部路径（其余）：`sigaddset(&rp->p_pending, sig_nr)` + `RTS_SIGNALED|RTS_SIG_PENDING`
 ///   + `send_sig(sig_mgr, SIGKSIG)` 唤醒目标进程的信号管理器。
 ///
 /// 两条路径的唤醒均经 `mini_notify_core`（源 = SYSTEM，目标 = 需被唤醒者，
-/// C: `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)` — system.c:381）实现；
-/// `s_sig_pending` 标记为写记录（内核无读者）。
-/// SIGS_IS_LETHAL 致命信号自管理路径（备份管理器切换 / panic）DEFERRED（见 todo.md）。
-fn cause_signal(
+/// C: `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)` — system.c:381）实现。
+/// `s_sig_pending` 在本模块只写不读：其消费方在 ipc 通知投递路径
+///（SYSTEM 源通知送达时编码进 `m_notify.sigset` 并清空，ipc.rs:1776-1782）；
+/// 超过 64 的内核信号（SIGKSIG=74 等）因 `SigSet(u64)` 位宽限制 add 为 no-op，
+/// 唤醒动作本身即 C 语义中该信号的完整内核行为。
+pub(crate) fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
     proc_table: &mut ProcessTable,
@@ -178,8 +208,52 @@ fn cause_signal(
         && ep == mgr
     {
         // C: system.c:417 — if (SIGS_IS_LETHAL(sig_nr)) → 备份管理器切换 / panic。
-        // DEFERRED: 需 s_bak_sig_mgr 切换 + RTS_NO_PRIV + panic 集成（见 01-stage-kernel/todo.md）。
-        // 当前阶段无用户态进程，自管理进程（VM/RS）收到致命信号的路径不可达。
+        // 自管理进程收到致命信号（SIGILL/ABRT/EMT/FPE/BUS/SEGV）意味着它无法再
+        // 自我管理——它是"没有人能替我处理信号"的角色。要么把预设的 backup
+        // 管理器提升为 primary 后重投（走外部路径，让 backup 收割），要么 panic。
+        if is_lethal(sig_nr) {
+            // C: system.c:418-419 — sig_mgr = priv(rp)->s_bak_sig_mgr
+            let pid = proc_table.get(target_nr).and_then(|p| p.priv_id);
+            let backup = pid
+                .and_then(|pid| priv_table.get(pid))
+                .map(|priv_| priv_.signals.s_bak_sig_mgr);
+
+            // C: system.c:420 — if (sig_mgr != NONE && isokendpt(sig_mgr, &sig_mgr_proc_nr))
+            // endpoint_to_nr 仅在 slot 非 SLOT_FREE 时命中（proc_table.rs:435-437），
+            // 等价 C 的 isokendpt + isemptyn。
+            if let Some(bak_ep) = backup
+                && bak_ep != Endpoint::NONE
+                && let Some(bak_nr) = proc_table.endpoint_to_nr(bak_ep)
+            {
+                // C: system.c:421-422 — priv(rp)->s_sig_mgr = sig_mgr;
+                //                        priv(rp)->s_bak_sig_mgr = NONE;
+                if let Some(pid) = pid
+                    && let Some(priv_) = priv_table.get_mut(pid)
+                {
+                    priv_.signals.s_sig_mgr = bak_ep;
+                    priv_.signals.s_bak_sig_mgr = Endpoint::NONE;
+                }
+
+                // C: system.c:424 — RTS_UNSET(sig_mgr_rp, RTS_NO_PRIV)
+                // backup 进程可能因 RTS_NO_PRIV 被挂起（提升前不参与调度），
+                // 接管前必须解除，它才能作为管理器被唤醒。
+                proc_table.rts_unset(bak_nr, RtsFlagsBits::NO_PRIV);
+
+                // C: system.c:425-426 — cause_sig(proc_nr, sig_nr); return
+                // 递归重投：target 的 s_sig_mgr 现为 backup（≠ target），走外部路径
+                //（p_pending + RTS_SIGNALED + 通知 backup）。递归深度恒为 1。
+                cause_signal(target_nr, sig_nr, proc_table, priv_table);
+                return;
+            }
+
+            // C: system.c:429-431 — proc_stacktrace(rp); panic(...)
+            // 无 backup：系统服务无人收割即系统不可恢复。Rust 省略 proc_stacktrace
+            //（需 cross_space 栈展开，见 19-design.v2 §D-3b 与 doc 19 §4.7 差异表）。
+            panic!(
+                "cause_sig: sig manager {} gets lethal signal {} for itself",
+                ep.0, sig_nr
+            );
+        }
 
         // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)
         // 自管理进程的信号记入其自身 s_sig_pending（内核侧写记录，无内核读者；
@@ -191,8 +265,10 @@ fn cause_signal(
         }
 
         // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
-        // 唤醒目标自身。C 的通知数值（SIGKSIGSM=73）仅写入 s_sig_pending（无内核读者），
-        // 故 Rust 直接 mini_notify_core（源 = SYSTEM，目标 = 自身），无需 SIGKSIGSM 常量。
+        // SIGKSIGSM=73 的内核动作仅是"唤醒自管理进程去处理自身待决状态"。
+        // Rust SigSet(u64) 无法编码 >64 的信号（add 为 no-op），而唤醒本身
+        // 由 mini_notify 完成，故直接 mini_notify_core（源 = SYSTEM，目标 = 自身），
+        // 无需 SIGKSIGSM 常量。
         let _ = crate::ipc::mini_notify_core(
             proc_table.procs_slice_mut(),
             priv_table,
@@ -782,5 +858,178 @@ mod tests {
         assert_eq!(smsg.sighandler, 0x400000);
         assert_eq!(smsg.sigreturn, 0x401000);
         assert_eq!(smsg.stkptr, 0x7FFFF000);
+    }
+
+    #[test]
+    fn test_is_lethal() {
+        // C: SIGS_IS_LETHAL — signal.h:280-282（SIGILL/ABRT/EMT/FPE/BUS/SEGV）
+        assert!(is_lethal(SIGILL)); // 4
+        assert!(is_lethal(SIGABRT)); // 6
+        assert!(is_lethal(SIGEMT)); // 7
+        assert!(is_lethal(SIGFPE)); // 8
+        assert!(is_lethal(SIGBUS)); // 10
+        assert!(is_lethal(SIGSEGV)); // 11
+        // 非致命（含 SIGKILL=9 / SIGTERM=15 / SIGSYS=12）与内核信号（SIGKSIG=74）
+        assert!(!is_lethal(SIGTRAP)); // 5
+        assert!(!is_lethal(9)); // SIGKILL
+        assert!(!is_lethal(12)); // SIGSYS
+        assert!(!is_lethal(15)); // SIGTERM
+        assert!(!is_lethal(SIGKSIG)); // 74
+    }
+
+    // ── cause_signal 行为测试（外部路径 / 去重 / SELF / 致命 SELF）──
+    //
+    // 通知可观测性说明：cause_signal 的 mini_notify_core 副作用在目标
+    // "正在 RECEIVE 且 p_getfrom_e == ANY" 时是直接投递（置 DELIVERMSG +
+    // 清 RECEIVING）。测试把 manager 置于监听态来观测"通知发生过"，用
+    // DELIVERMSG 的置位与否判定 cause_signal 的 RTS_SIGNALED 门控。
+
+    /// 占用 target/manager 两个进程槽并绑定 priv 0/1。
+    /// target 默认自管理（s_sig_mgr = 自身 endpoint）。
+    fn occupy_two_slots(
+        target_nr: ProcNr,
+        manager_nr: ProcNr,
+    ) -> (Endpoint, Endpoint, crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
+        let mut procs = crate::test_helpers::test_proc_table();
+        let mut privs = crate::test_helpers::test_priv_table();
+
+        {
+            let p = procs.get_mut(target_nr).expect("target slot");
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(0);
+        }
+        let target_ep = procs.get(target_nr).unwrap().p_endpoint;
+        privs.get_mut(0).unwrap().identity.s_proc_nr = Some(target_nr);
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = target_ep;
+
+        {
+            let p = procs.get_mut(manager_nr).expect("manager slot");
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(1);
+        }
+        let manager_ep = procs.get(manager_nr).unwrap().p_endpoint;
+        privs.get_mut(1).unwrap().identity.s_proc_nr = Some(manager_nr);
+
+        (target_ep, manager_ep, procs, privs)
+    }
+
+    /// 让进程进入监听态：RECEIVING + p_getfrom_e == ANY（可被 mini_notify 直接投递）。
+    fn listen(procs: &mut ProcessTable, nr: ProcNr) {
+        let p = procs.get_mut(nr).unwrap();
+        p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        p.p_getfrom_e = Endpoint::ANY;
+    }
+
+    #[test]
+    fn test_cause_signal_external_path_notifies_manager() {
+        let (target_ep, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        // 目标由外部 manager 管理（C system.c:412：s_sig_mgr = manager endpoint）
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        // manager 监听 → 通知以直接投递（DELIVERMSG）形式可观测
+        listen(&mut procs, ProcNr(1));
+
+        cause_signal(ProcNr(0), SIGTRAP, &mut procs, &mut privs);
+
+        // C system.c:442,444 — sigaddset(&rp->p_pending) + RTS_SIGNALED|RTS_SIG_PENDING
+        let target = procs.get(ProcNr(0)).unwrap();
+        assert!(target.p_pending.contains(SIGTRAP as u8));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+
+        // C system.c:445-446 + system.c:381 — send_sig(manager, SIGKSIG) → mini_notify
+        let manager = procs.get(ProcNr(1)).unwrap();
+        assert!(manager.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert_eq!(manager.p_endpoint, manager_ep);
+        assert_eq!(target.p_endpoint, target_ep);
+    }
+
+    #[test]
+    fn test_cause_signal_dedup_does_not_notify_twice() {
+        let (_, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+
+        // 第一次投递：RTS_SIGNALED 未置 → 通知 manager
+        listen(&mut procs, ProcNr(1));
+        cause_signal(ProcNr(0), SIGTRAP, &mut procs, &mut privs);
+        assert!(procs.get(ProcNr(1)).unwrap()
+            .p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+
+        // 清掉可观测状态并重新置 manager 为监听
+        procs.get_mut(ProcNr(1)).unwrap()
+            .p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+        listen(&mut procs, ProcNr(1));
+
+        // C system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED)) 才通知；
+        // 第二次 cause_signal（不同信号）只加 p_pending 位，不重复通知。
+        cause_signal(ProcNr(0), SIGPROF, &mut procs, &mut privs);
+
+        let target = procs.get(ProcNr(0)).unwrap();
+        assert!(target.p_pending.contains(SIGTRAP as u8));
+        assert!(target.p_pending.contains(SIGPROF as u8));
+        let manager = procs.get(ProcNr(1)).unwrap();
+        assert!(!manager.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(manager.p_rts_flags.is_set(RtsFlagsBits::RECEIVING),
+            "未重复通知时 manager 应保持监听态");
+    }
+
+    #[test]
+    fn test_cause_signal_self_path_non_lethal() {
+        // fixture 默认 target 自管理（s_sig_mgr = 自身 endpoint）
+        let (_, _, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
+
+        // C system.c:416 — rp->p_endpoint == sig_mgr → 自管理路径
+        // SIGTERM = 15（signal.h:67）
+        cause_signal(ProcNr(0), 15, &mut procs, &mut privs);
+
+        // C system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig)
+        let priv0 = privs.get(0).unwrap();
+        assert!(priv0.signals.s_sig_pending.contains(15_u8),
+            "自管理非致命信号应记入进程自身 priv 的 s_sig_pending");
+        // C 自管理路径不设 RTS_SIGNALED（进程不被挂起，由自身处理）
+        let target = procs.get(ProcNr(0)).unwrap();
+        assert!(!target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(!target.p_pending.contains(15_u8),
+            "自管理路径不写 p_pending（那是外部管理器轮询的位图）");
+    }
+
+    #[test]
+    fn test_cause_signal_self_lethal_promotes_backup() {
+        let (_, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        // 自管理 + 预设 backup（C system.c:418-419 — s_bak_sig_mgr）
+        privs.get_mut(0).unwrap().signals.s_bak_sig_mgr = manager_ep;
+        // backup 以 RTS_NO_PRIV 挂起（C system.c:424 提升时解除）
+        procs.get_mut(ProcNr(1)).unwrap()
+            .p_rts_flags.set(RtsFlagsBits::NO_PRIV);
+        listen(&mut procs, ProcNr(1));
+
+        cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
+
+        // C system.c:421-422 — 提升：s_sig_mgr ← backup，s_bak_sig_mgr ← NONE
+        let priv0 = privs.get(0).unwrap();
+        assert_eq!(priv0.signals.s_sig_mgr, manager_ep);
+        assert_eq!(priv0.signals.s_bak_sig_mgr, Endpoint::NONE);
+
+        // C system.c:424 — RTS_UNSET(backup, RTS_NO_PRIV)
+        let backup = procs.get(ProcNr(1)).unwrap();
+        assert!(!backup.p_rts_flags.is_set(RtsFlagsBits::NO_PRIV));
+
+        // 递归重投走外部路径：p_pending + RTS_SIGNALED + 通知新管理器
+        let target = procs.get(ProcNr(0)).unwrap();
+        assert!(target.p_pending.contains(SIGABRT as u8));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        assert!(backup.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+            "提升后 backup 应收到 SIGKSIG 通知");
+    }
+
+    #[test]
+    #[should_panic(expected = "cause_sig: sig manager")]
+    fn test_cause_signal_self_lethal_no_backup_panics() {
+        // 自管理 + 致命信号 + 无 backup → C system.c:429-431 panic
+        let (_, _, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
+        cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
     }
 }

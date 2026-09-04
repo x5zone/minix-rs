@@ -28,7 +28,7 @@ use crate::proc_table::ProcessTable;
 use crate::capability::ProcessCapability;
 use crate::kpriv::{PrivTable, USER_PRIV_ID};
 use crate::syscall::{KcallResult, Syscall};
-use crate::syscall_signal::SIGABRT;
+use crate::syscall_signal::{cause_signal, SIGABRT};
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
@@ -338,43 +338,29 @@ pub fn dispatch_exec(
 ///
 /// C: `do_exit()` — do_exit.c
 ///
-/// A system process has requested to exit. Generate a self-termination signal.
+/// A system process has requested to exit. Raise SIGABRT on itself through
+/// the full `cause_sig` semantics (do_exit.c:21): the signal manager
+/// (typically PM) is notified so it can execute its cleanup hooks and
+/// finally reclaim the slot via SYS_CLEAR. A self-managed process that
+/// exits — a system service nobody else can reap — triggers the lethal
+/// self path: promote the backup manager if one was designated, else panic.
 /// Returns EDONTREPLY (no reply to the caller).
-pub fn dispatch_exit(caller: &mut KProcess, _msg: &Message) -> KcallResult {
-    // C: do_exit.c:20-22 — send SIGABRT to the caller via cause_sig()
-    // cause_sig(caller->p_nr, SIGABRT) — system.c:389
-    // The full C semantics require:
-    //   1. Look up s_sig_mgr from priv(rp) (signal manager endpoint)
-    //   2. Set RTS_SIGNALED + add SIGABRT to s_sig_pending
-    //   3. mini_notify(sig_mgr, caller->p_endpoint)
-    // Steps 2 are in-place state mutations and can be done without ProcessTable
-    // access. Step 3 (signal manager notify) is deferred to SignalContext
-    // trait since it requires PrivTable + mini_notify (kernel IPC core).
-    cause_signal_abort(caller);
+///
+/// The "自杀 → 委托 → 回收" three-phase contract is preserved: the kernel
+/// does not free resources here; it only makes the death observable.
+pub fn dispatch_exit(
+    caller: &mut KProcess,
+    _msg: &Message,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut PrivTable,
+) -> KcallResult {
+    // C: do_exit.c:21 — cause_sig(caller->p_nr, SIGABRT); EDONTREPLY
+    // SIGABRT ∈ SIGS_IS_LETHAL（signal.h:280-282），因此自管理进程的 exit
+    // 会进入 cause_signal 的致命 SELF 子路径（backup 提升或 panic）。
+    cause_signal(caller.p_nr, SIGABRT, proc_table, priv_table);
 
     // C: do_exit.c:23 — return EDONTREPLY
     KcallResult::NoReply
-}
-
-/// Minimal in-place implementation of `cause_sig(caller, SIGABRT)`.
-///
-/// Sets the kernel-side signal state on the caller so a subsequent
-/// `do_getksig()` poll by the signal manager will observe it. Does NOT
-/// perform the signal-manager notification (deferred to SignalContext trait).
-///
-/// C: `cause_sig()` — system.c:389-426
-fn cause_signal_abort(caller: &mut KProcess) {
-    // C: system.c:433 — sigaddset(&priv->s_sig_pending, sig_nr)
-    // In Rust, signal manager pending is `s_sig_pending` (KPriv), but the
-    // kernel-side p_pending (KProcess) is the visible "any signal queued"
-    // bitmap. We set both to mirror C's "send to signal manager" semantics
-    // from the caller's perspective.
-    caller.p_pending.add(SIGABRT as u8);
-
-    // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
-    caller
-        .p_rts_flags
-        .set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
 }
 
 /// Dispatch SYS_CLEAR.
@@ -1111,25 +1097,91 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_dispatch_exit_returns_no_reply() {
-        let mut proc = KProcess::new(ProcNr(0), Endpoint(0));
-        let msg = Message::default();
-        assert_eq!(dispatch_exit(&mut proc, &msg), KcallResult::NoReply);
+    /// Occupies the exiting process slot and binds its priv slot.
+    /// The exiting process is managed by `sig_mgr` (typically PM).
+    fn occupy_exiting_proc(
+        procs: &mut ProcessTable,
+        privs: &mut PrivTable,
+        nr: ProcNr,
+        pid: u16,
+        sig_mgr: Endpoint,
+    ) -> Endpoint {
+        let p = procs.get_mut(nr).expect("exit slot");
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        p.priv_id = Some(pid);
+        let ep = p.p_endpoint;
+        let priv_ = privs.get_mut(pid).expect("priv slot");
+        priv_.identity.s_proc_nr = Some(nr);
+        priv_.signals.s_sig_mgr = sig_mgr;
+        ep
     }
 
     #[test]
-    fn test_dispatch_exit_sets_sigabrt() {
-        // C: do_exit.c:20-22 — cause_sig(caller, SIGABRT)
-        // Verifies that dispatch_exit sets p_pending[6] (SIGABRT) and
-        // RTS_SIGNALED | RTS_SIG_PENDING on the caller, so a subsequent
-        // do_getksig() poll by the signal manager will observe it.
-        let mut proc = KProcess::new(ProcNr(0), Endpoint(0));
+    fn test_dispatch_exit_returns_no_reply() {
+        // C: do_exit.c:23 — return EDONTREPLY（不写回消息）
+        let mut procs = crate::test_helpers::test_proc_table();
+        let mut privs = crate::test_helpers::test_priv_table();
+        let mgr_ep = occupy_exiting_proc(
+            &mut procs,
+            &mut privs,
+            ProcNr(0),
+            0,
+            Endpoint::from_generation_slot(0, 1),
+        );
+        // manager slot（nr 1）须占用，否则外部路径的通知目标无效
+        let _ = occupy_exiting_proc(
+            &mut procs,
+            &mut privs,
+            ProcNr(1),
+            1,
+            mgr_ep,
+        );
+
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
         let msg = Message::default();
-        assert_eq!(dispatch_exit(&mut proc, &msg), KcallResult::NoReply);
-        assert!(proc.p_pending.contains(SIGABRT as u8));
-        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
-        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        assert_eq!(
+            dispatch_exit(&mut caller, &msg, &mut procs, &mut privs),
+            KcallResult::NoReply
+        );
+    }
+
+    #[test]
+    fn test_dispatch_exit_sets_sigabrt_and_notifies_manager() {
+        // C: do_exit.c:21 — cause_sig(caller, SIGABRT)
+        // 外部管理路径：SIGABRT 记入 target 的 p_pending，置
+        // RTS_SIGNALED|RTS_SIG_PENDING，并通知信号管理器（PM 典型场景）。
+        let mut procs = crate::test_helpers::test_proc_table();
+        let mut privs = crate::test_helpers::test_priv_table();
+        let mgr_ep = occupy_exiting_proc(
+            &mut procs,
+            &mut privs,
+            ProcNr(0),
+            0,
+            Endpoint::from_generation_slot(0, 1),
+        );
+        // manager（PM 角色）监听 → 通知以 DELIVERMSG 直接投递
+        let _ = occupy_exiting_proc(&mut procs, &mut privs, ProcNr(1), 1, mgr_ep);
+        {
+            let m = procs.get_mut(ProcNr(1)).unwrap();
+            m.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            m.p_getfrom_e = Endpoint::ANY;
+        }
+
+        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
+        let msg = Message::default();
+        assert_eq!(
+            dispatch_exit(&mut caller, &msg, &mut procs, &mut privs),
+            KcallResult::NoReply
+        );
+
+        // 目标（退出的进程）槽位状态
+        let target = procs.get(ProcNr(0)).unwrap();
+        assert!(target.p_pending.contains(SIGABRT as u8));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        // 管理器收到 SIGKSIG 通知（system.c:445-446 + 381）
+        let manager = procs.get(ProcNr(1)).unwrap();
+        assert!(manager.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
     #[test]

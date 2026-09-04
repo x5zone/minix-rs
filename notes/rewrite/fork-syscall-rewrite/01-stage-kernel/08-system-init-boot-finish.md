@@ -586,7 +586,7 @@ fn kernel_call_dispatch_inner(
         Syscall::Fork => crate::syscall_process::dispatch_fork(caller, msg, proc_table, priv_table),
         Syscall::Exec => crate::syscall_process::dispatch_exec(caller, msg, proc_table),
         Syscall::Clear => crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table, clock_state),
-        Syscall::Exit => crate::syscall_process::dispatch_exit(caller, msg),
+        Syscall::Exit => crate::syscall_process::dispatch_exit(caller, msg, proc_table, priv_table),
         Syscall::Schedule => dispatch_schedule(caller, msg, proc_table, priv_table),
         Syscall::Privctl => dispatch_privctl(caller, msg, proc_table, priv_table),
         Syscall::Trace => dispatch_trace(caller, msg, proc_table, priv_table),

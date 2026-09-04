@@ -18,9 +18,10 @@
 | 分类 | 处理 | 明细 |
 |------|------|------|
 | ✅ 已修复（代码落地 + 测试通过） | **5 项** | §F1 pt_alloc 论证模型改写（SMP+BKL write-once）、§F2 register 防重复 + Release/Acquire、§D3 命名错误类型（6/7 处，vm.rs 按 R-18 保留）、D-51 PrivUpdateRequest 字段序重排（2026-09-03，KPriv 子结构镜像 + RS 侧同序，见 §7.1）、D-53 cpu_identify + GET_CPUINFO 全记录（2026-09-04，arch 探测 + CPU_INFO 表 + C ABI 对齐，见 §7.1） |
+| ✅ 已修复（代码落地 + 测试通过，2026-09-05） | **2 项** | **D-6** dispatch_exit 全 cause_sig 接线（syscall_process.rs:351-364，SIGABRT 自杀经管理器通知/自管理致命路径；原 cause_signal_abort 删除）+ **D-11** cause_sig 致命 SELF 路径（syscall_signal.rs:210-256，is_lethal 101-103 + s_bak_sig_mgr 提升 + RTS_UNSET(NO_PRIV) + 递归重投 + 无 backup panic；19-design.v2；doc 17 §4.3 / doc 19 §4.3/§4.7；新增 6 测试（syscall_signal.rs：is_lethal 1 + cause_signal 5），见 §7.1 行） |
 | ✅ 已实现（原记录过时，非缺口，2026-08-14 二次核实） | **18 项完整 + D-38 ②③ 部分** | §7.1 表 ✅ 行：D-1~D-5/D-7（dispatch_exec/clear/runctl/statectl 全部落地，含 process name 跨空间拷贝、release_address_space、clear_endpoint、SMP IPI）、D-10/D-12（cause_signal SELF 路径 mini_notify_core + 去重）、D-19（allow_ipc_filtered_memreq→dequeue_filtered）、D-21（kernel_call_resume + 2 测试）、D-22（data_copy_vmcheck VMSUSPEND 路径）、D-23（三架构 PTE walk）、D-26~D-29（GETINFO 10 分支）、D-31（sprof 数据拷贝）、D-32（clean_seen_flag）；D-38 ②③ BKL 接入（lib.rs:1956/:2167）；另有 I-4（doc 01/02 测试表去重，01 残留 TODO 标记已清理） |
 | 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1807 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
-| 📌 保持 DEFERRED（已核实依赖仍成立） | **32 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）；其中 D-6 部分实现（cause_signal_abort 已接、mini_notify 待接线）、D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**（~~D-53 已于 2026-09-04 实施完成，移入"已修复"行~~） |
+| 📌 保持 DEFERRED（已核实依赖仍成立） | **31 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）+ §18.5 cause_sig 收尾 backlog；其中 D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**、**D-57（2026-09-05 新增）：proc_stacktrace 接入 cause_sig 致命 panic 路径**（见 §18.5 BL-1）|（~~D-53 已于 2026-09-04 实施完成，移入"已修复"行~~；~~D-6/D-11 已于 2026-09-05 实施完成，移入上方 2026-09-05 行~~） |
 | ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节；~~A3 已于 2026-09-02 实施完成，见 §2 A3~~） |
 | ✅ 已修复（doc 准确性问题，2026-08-18 GPT 评论评审） | **5 项** | §20.6 FIX-06-GPT-1/1b（§3.9 + §3.1 "唯一组合"措辞降级）+ FIX-06-GPT-2/2b（§3.8 + §3.1 "BSS"表述修正）+ FIX-06-GPT-2c（§3.15 决策表"BSS 段零运行时开销"修正）|
 
@@ -405,15 +406,16 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-3 | 进程 | `dispatch_clear` release_address_space（do_clear.c:35） | 17 §4.4/4.8 | **✅ 已解决（2026-08-14 核实）**：release_address_space（syscall.rs:1075，对应 C memory.c:986-989 单行 `p_cr3_v = NULL`） |
 | D-4 | 进程 | `dispatch_clear` clear_endpoint（do_clear.c:49） | 17 §4.4/4.8 | **✅ 已解决（2026-08-14 核实）**：clear_endpoint 完整序列（syscall.rs:1096 + syscall_process.rs:457-458，2026-08-13 Phase 8） |
 | D-5 | 进程 | `dispatch_runctl` SMP IPI 路径（do_runctl.c:55-58） | 17 §4.6/4.8 | **✅ 已解决（2026-08-14 核实）**：RC_STOP 远程路径 `smp_state.schedule_stop_proc::<CurrentSmpArch>`（syscall_process.rs:570-575，do_runctl.c:55-58 语义） |
-| D-6 | 进程 | `dispatch_exit` mini_notify(sig_mgr)（do_exit.c:21） | 17 §4.3/4.8 | **部分实现**：`cause_signal_abort` 已接线（syscall_process.rs:339+），`mini_notify(sig_mgr)` 待 `SignalContext` trait + IPC 接线 |
+| D-6 | 进程 | `dispatch_exit` mini_notify(sig_mgr)（do_exit.c:21） | 17 §4.3/4.8 | **✅ 已解决（2026-09-05）**：`dispatch_exit` 转调完整 `cause_signal(caller.p_nr, SIGABRT)`（syscall_process.rs:351-364，签名接 proc_table/priv_table，dispatch 表 syscall.rs:482/707 同步）；原 `cause_signal_abort` 删除；管理器通知（SYSTEM 源 mini_notify_core）落地；测试 `test_dispatch_exit_sets_sigabrt_and_notifies_manager`（管理器收到 DELIVERMSG）+ `test_dispatch_exit_returns_no_reply` |
 | D-7 | 进程 | `dispatch_statectl` ClearIpcRefs（do_statectl.c:21-25） | 17 §4.7/4.8 | **✅ 已解决（2026-08-14 核实）**：ClearIpcRefs 分支 + clear_endpoint（syscall_process.rs:58/:732，do_statectl.c:21-25 语义） |
 | D-8 | syscall | `kernel_call()` wrapper 未实现（trap 入口 wrapper：copy_msg_from_user + p_delivermsg_vir + dispatch + finish） | 13 §6.3 [P1] | 待 trap 入口文档化（14），含 TOCTOU 防护的 copy_msg_from_user |
 | D-9 | syscall | `kbill_kcall` 内核计费标记（性能分析用） | 13 §6.4 [P2] | — |
-| D-10 | 信号 | cause_sig **SELF 路径**（system.c:416-437 自管理进程自通知） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：写自身 `s_sig_pending` + `mini_notify_core` 唤醒（syscall_signal.rs:195-196；SIGKSIGSM=73 仅写入无内核读者的 s_sig_pending，无需常量） |
-| D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | `SIGS_IS_LETHAL` + backup 切换（见尾部 D19-1 段） |
-| D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：`was_signaled`（RTS_SIGNALED 判定）+ 无条件 `p_pending.add` 去重（syscall_signal.rs:209-220） |
+| D-10 | 信号 | cause_sig **SELF 路径**（system.c:416-437 自管理进程自通知） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：写自身 `s_sig_pending` + `mini_notify_core` 唤醒（syscall_signal.rs:258-278，行号 2026-09-05 漂移修正；SIGKSIGSM=73 超出 SigSet(u64) 位宽，唤醒即 C 语义全部内核动作，无需常量） |
+| D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | **✅ 已解决（2026-09-05）**：`is_lethal`（syscall_signal.rs:101-103，SIGS_IS_LETHAL 六信号）+ SELF 致命子路径（syscall_signal.rs:210-256）——s_bak_sig_mgr 提升（s_sig_mgr←backup、s_bak_sig_mgr←NONE、RTS_UNSET(NO_PRIV)）+ 递归 cause_signal 走外部路径 + 无 backup panic（消息同 C）；差异：省略 C 的 proc_stacktrace（syscall.rs:2295 DIAGCTL 栈路径可复用，见 doc 19 §4.7）；测试 `test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` / `test_is_lethal`（另见 .design/19-design.v2.md） |
+| D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：`was_signaled`（RTS_SIGNALED 判定）+ 无条件 `p_pending.add` 去重（syscall_signal.rs:285-286，行号 2026-09-05 漂移修正） |
 | D-13 | 信号 | `sig_delay_done`（system.c:454-464） | 19 §4.7 | PM 通知接口 + `SIGSNDELAY` 常量 |
 | D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | 保持 DEFERRED。已核实（2026-08-14）：借用冲突注释现存于 syscall.rs:2286（原引 :1010-1037 行号漂移，已更正）；PM getksig 轮询主用途已实现 |
+| **D-57** | 信号 | `proc_stacktrace` 接入 `cause_sig` 致命 SELF panic 路径（system.c:429 差异对齐） | 19 §4.7 / [32-stack-tracing.md](32-stack-tracing.md) | **新增（2026-09-05）**：C 在致命 self-path 无 backup 时先调 `proc_stacktrace(rp)` 打印进程用户栈再 `panic`（system.c:429）；Rust 当前省略（syscall_signal.rs:249-255 panic 直接走），doc 19 §4.7 差异表已登记。**实施路径**：复用 DIAGCTL_CODE_STACKTRACE（syscall.rs:2295）已实现的 `cross_space_copy` + `StacktraceArch::walk_frames` 闭包；在 `cause_signal` 致命无 backup 分支 panic 前调用 `proc_stacktrace(rp)`（新公共助手函数，参数 `&KProcess` + `&ProcessTable`，经 EarlyConsole 输出 target 名称/endpoint/PC 链）。**风险**：BKL 临界区做跨空间栈读取（`data_copy_vmcheck` 失败时静默忽略，与 C 同款）；不破坏 §4.7 已登记的 panic 消息格式。**依赖**：doc 32 §3 已有 `StacktraceArch` 设计；`walk_frames` 默认实现可直接复用。 |
 | D-15 | 时钟 | `mini_notify(CLOCK, endpoint)` 到期通知分发（TimerAction::NotifyAlarm 已定义未接线） | 21 附录 B | 保持 DEFERRED。已核实（2026-08-14）：NotifyAlarm 仅 enum 定义（clock.rs:522）+ 测试构造（:1363/:1378），tick 无生产调用方 |
 | D-16 | IPC 过滤 | `allow_ipc_filtered_msg`（system.c:803-874，L2 receive 路径偏好过滤） | 23 §4.5/Ch6 [P1] | 12-ipc-core RECEIVE 路径（当前 skeleton）后才消费方；当前 s_ipcf 字段存在但无消费方 |
 | D-17 | IPC 过滤 | `may_asynsend_to` self-send 不对称（priv.h:87） | 23 §4.5/Ch6 [P1] | 异步 IPC 路径完整接入（当前用 may_send_to 替代） |
@@ -1741,6 +1743,25 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 
 ---
 
+## §18.5 Cause_sig 全语义实施的遗留 backlog（2026-09-05 cause_sig-D-6/D-11 收尾）
+
+> 本节为 cause_sig 全语义实现完成（见 §0.1 "2026-09-05"行）后明确登记的**不阻塞收敛** backlog，
+> 与 §7.1 表格共同构成完整追踪。三项均为非缺口但仍未落地的实现项，遵循 §0.1 的 "📌 保持 DEFERRED" 范畴。
+
+| 序号 | 关联条目 | 项 | 关联文档 / 代码 | 实施要点 / 备注 |
+|------|---------|-----|----------------|-----------------|
+| BL-1 | **D-57** | `proc_stacktrace` 接入 `cause_sig` 致命 SELF panic 路径 | doc 19 §4.7 / syscall_signal.rs:249-255 / syscall.rs:2295 / doc 32 | C system.c:429 在 panic 前调 `proc_stacktrace(rp)` 打印进程用户栈；Rust 当前省略，差异已在 doc 19 §4.7 标注。**复用路径**：DIAGCTL_CODE_STACKTRACE 已实现 `cross_space_copy` + `StacktraceArch::walk_frames` 闭包；新助手函数 `proc_stacktrace(&KProcess, &ProcessTable)` 即可 |
+| BL-2 | D-13 | `sig_delay_done`（system.c:454-464） | doc 19 §4.7 / T-1 行 | PM 通知接口 + `SIGSNDELAY` 常量；依赖 PM getksig 主路径已就绪（D-21/D-22 同批已落） |
+| BL-3 | D-14 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | doc 19 §4.7 / syscall.rs:2271-2315 / W-7 kmess 体系 ARCH 演进 | 借用冲突注释现存于 syscall.rs:2286（dispatch 已持 caller/priv_table 借用，与查 PM_PROC_NR 全局 proc_table 访问冲突）；PM 下次 getksig 轮询可观察 → 主用途已实现，PM 通知是次要副作用 |
+
+**统一触发条件**（任一出现即启动对应 backlog）：
+- 启动 doc 11-scheduling-primitives review（BL-2 因 T-1 链路依赖）
+- 启动 doc 16-smp review（BL-3 因 PM 调用主路径 SM 重构）
+- 用户态服务进程首次出现"自管理 + 致命信号"路径实证（BL-1）
+- 启动 doc 32 卓越性 2nd-pass（BL-1 因依赖 `StacktraceArch` 完整闭环）
+
+---
+
 ## 19. GPT 评论批判性分析（2026-08-16，doc 05 review 顺带）
 
 > **来源**：`~/AI-chats/comments.md:1-1214`（GPT 对 doc 05 时钟中断初始化设计的整体评论）。
@@ -2126,3 +2147,5 @@ rg "架构范围说明" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-pr
 **依赖**：`s_bak_sig_mgr` 字段接入 + `RTS_NO_PRIV` 清除 + panic 集成（设计级：需决定 Rust 内核 panic 策略）。
 
 **建议**：待用户态进程落地、信号路径可测后再实现；当前不可达路径无需占用设计决策。
+
+**状态（2026-09-05）**：✅ 已实现——`is_lethal`（syscall_signal.rs:101-103）+ SELF 致命子路径（syscall_signal.rs:210-256：backup 提升 + `RTS_UNSET(NO_PRIV)` + 递归 + 无 backup panic）落地（见 §7.1 D-11 行 + `.design/19-design.v2.md`）。本段为历史归档，保留原始 deferral 记录。
