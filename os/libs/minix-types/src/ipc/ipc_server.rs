@@ -189,6 +189,10 @@ pub const SHM_RND: i32 = 0o20000;
 /// Destroy on last detach. C: `SHM_DEST 0x0400` — sys/shm.h:222.
 pub const SHM_DEST: u32 = 0x0400;
 
+/// Slot-in-use marker, private to the server (synced with the NetBSD
+/// kernel value). C: `SHM_ALLOC 0x0800` — servers/ipc/shm.c:4.
+pub const SHM_ALLOC: u32 = 0x0800;
+
 /// Read by slot index (with identifier reply). C: `SHM_STAT 13` — sys/shm.h:205.
 pub const SHM_STAT: i32 = 13;
 
@@ -671,6 +675,7 @@ mod tests {
         assert_eq!(SEM_SEQ_MASK, 0x7fff);
         assert_eq!((SHM_RDONLY, SHM_RND), (0o10000, 0o20000));
         assert_eq!(SHM_DEST, 0x0400);
+        assert_eq!(SHM_ALLOC, 0x0800);
         assert_eq!((SHM_STAT, SHM_INFO), (13, 14));
         assert_eq!((SHMMNI, SHMSEG), (1024, 32));
     }

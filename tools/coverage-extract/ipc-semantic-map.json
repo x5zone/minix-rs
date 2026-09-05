@@ -32,17 +32,20 @@
   "MOUNT_PATH"
  ],
  "sef_cb_signal_handler": [
-  "StubHandler"
+  "Signal",
+  "shutdown_check",
+  "ShutdownVerdict"
  ],
  "update_sub": [
-  "StubHandler"
+  "Subscription",
+  "set_sem_want"
  ],
  "update_sem_sub": [
-  "StubHandler"
+  "set_sem_want"
  ],
  "got_proc_event": [
-  "handle_proc_event",
-  "ProcEventIn"
+  "ProcEvent",
+  "ack_type"
  ],
  "event_mask": [
   "dropped_messages"
@@ -174,20 +177,22 @@
   "IpcTransport"
  ],
  "do_shmget": [
-  "handle_call",
-  "StubHandler"
+  "create",
+  "ShmTable",
+  "CreateParams"
  ],
  "do_shmat": [
-  "handle_call",
-  "StubHandler"
+  "align_addr",
+  "attach_mask"
  ],
  "do_shmdt": [
-  "handle_call",
-  "StubHandler"
+  "find_by_phys",
+  "sweep"
  ],
  "do_shmctl": [
-  "handle_call",
-  "StubHandler"
+  "ShmctlCommand",
+  "authorize",
+  "aggregate"
  ],
  "do_semget": [
   "create"
@@ -206,7 +211,8 @@
   "retry"
  ],
  "update_refcount_and_destroy": [
-  "on_cycle_end"
+  "sweep",
+  "SweepPlan"
  ],
  "SEM_EVENTS": [
   "StubHandler"
@@ -215,7 +221,7 @@
   "is_empty"
  ],
  "is_shm_nil": [
-  "StubHandler"
+  "is_empty"
  ],
  "check_perm": [
   "check_perm",
@@ -280,5 +286,20 @@
  "iproc": [
   "Waiter",
   "WaiterTable"
- ]
+ ],
+ "fill_shminfo": [
+  "fill_summary",
+  "ShmSummary"
+ ],
+ "get_shm_mib_info": [
+  "assemble_mib_info",
+  "ShmIdView"
+ ],
+ "shm_find_key": [
+  "find_key"
+ ],
+ "shm_find_id": [
+  "find_id"
+ ],
+ "list_shm_ds": []
 }

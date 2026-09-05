@@ -353,10 +353,10 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | 04 | reviewed | 2026-09-05 | 新建权限模型（204 行 + perms 10 测试；review 内修 1 P2；58 passed） |
 | 05 | reviewed | 2026-09-05 | 新建（244 行 + table/ctl 11 测试；review 内修 2 P0 + 1 P2；58 passed） |
 | 06 | reviewed | 2026-09-05 | 新建（230 行 + op/waiter 13 测试；review 内修 2 P0-code-bug + 1 P0-fact；58 passed） |
-| 07 | pending | — | 新建（A-3/A-9） |
-| 08 | pending | — | 新建（A-3 决策落地） |
-| 09 | pending | — | 新建 |
-| 10 | pending | — | 新建 |
+| 07 | reviewed | 2026-09-05 | 新建（段创建；review 内修 1 P2 参数包；83 passed） |
+| 08 | reviewed | 2026-09-05 | 新建（挂接与引用计数；review 内修 1 P0 映射长度；83 passed） |
+| 09 | reviewed | 2026-09-05 | 新建（进程事件；review 内修 1 P2；83 passed） |
+| 10 | reviewed | 2026-09-05 | 新建（生命周期；review 内 0 issue；83 passed） |
 | 99 | pending | — | 新建全局概念 |
 
 ---
