@@ -71,6 +71,31 @@ pub const SIGSEGV: u32 = 11;
 /// internal kernel-to-sm notification, not a POSIX signal.
 pub const SIGKSIG: u32 = 74;
 
+/// End of delay for signal delivery. C: `SIGSNDELAY = 70` — signal.h:264.
+///
+/// Sent to a process whose stop was requested with `RC_DELAY` while it was
+/// still sending a message (or in a deferred syscall): once the process
+/// reaches a quiescent point (no longer sending), the kernel notifies the
+/// signal manager that the delayed stop can now proceed. Consumed by PM
+/// (`pm/signal.c:344-369`, `DELAY_CALL` handling) to resume the stop.
+///
+/// This is a "system signal" (outside the 1-64 POSIX range, like
+/// [`SIGKSIG`]). `cause_signal` delivers it through the external path:
+/// `RTS_SIGNALED | RTS_SIG_PENDING` + `mini_notify` to the manager, which
+/// drives the manager to `SYS_GETKSIG`.
+///
+/// # Known limitation (`SigSet(u64)`)
+///
+/// C's `sigset_t` is 128 bits (`__uint32_t __bits[4]`, sigtypes.h:60-62),
+/// so bit 70 lands in `p_pending` and rides the GETKSIG map to the
+/// manager. The Rust `SigSet(u64)` (`_NSIG = 64`) cannot encode it:
+/// `p_pending.add(70)` is a no-op, so the signal *number* is not visible
+/// to the manager — only the wakeup is (same shared limitation as
+/// [`SIGKSIG`]/`SIGKSIGSM`). Widening `SigSet` to 128 bits is a
+/// cross-cutting wire change (GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG
+/// message fields + PM mirror), tracked separately.
+pub const SIGSNDELAY: u32 = 70;
+
 // ── Endpoint constants ──
 
 // SELF is used via Endpoint::SELF in cause_signal/endksig/getksig

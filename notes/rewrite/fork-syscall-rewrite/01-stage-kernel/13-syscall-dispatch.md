@@ -77,7 +77,8 @@
   → dispatch_ipc_entry(caller, msg, priv_table, proc_table)
     → IpcCall::from_raw(msg.m_type)
     → acquire BKL（mem::forget guard，由 kernel_call_finish 释放）
-    → dispatch_ipc(caller, msg, ..., ipc_call)  ← 12-ipc-core
+    → dispatch_ipc(proc_table, caller_idx, msg, priv_table, ipc_call)  ← 12-ipc-core
+    → （若 sender 带 MF_SIG_DELAY 且消息被取走 → sig_delay_done，见 19-syscall-signal.md §4.8）
     → return KcallResult（Delivered/Blocked/Error 映射见 §4.8）
 ```
 
@@ -760,8 +761,9 @@ pub fn dispatch_ipc_entry(
     let caller_idx = crate::proc_table::nr_to_idx(caller_nr)
         .expect("dispatch_ipc_entry: caller_nr out of range") as usize;
     let bkl_guard = crate::smp::bkl_lock();
-    let procs = proc_table.procs_slice_mut();
-    let result = dispatch_ipc(procs, caller_idx, msg, priv_table, ipc_call);
+    // 传入 `proc_table`（而非切片）：dispatch_ipc 需在 do_ipc 返回后运行
+    // 调度器感知的 sig_delay_done（D-13，见 19-syscall-signal.md §4.8）。
+    let result = dispatch_ipc(proc_table, caller_idx, msg, priv_table, ipc_call);
     core::mem::forget(bkl_guard);
     result
 }
@@ -771,7 +773,8 @@ pub fn dispatch_ipc_entry(
 - `dispatch_ipc` 签名从 `(caller: &mut KProcess, msg, priv_table, proc_table, ipc_call)` 改为 `(procs: &mut [KProcess], caller_idx: usize, msg, priv_table, ipc_call)`
 - **原因**：原签名需要同时传 `caller: &mut KProcess`（一个元素）和 `proc_table: &mut ProcessTable`（整个数组），当 `caller` 来自 `proc_table.procs[idx]` 时产生别名冲突。新签名让 caller 通过索引访问，消除别名
 - **受益者**：`ProcessTable::arch_do_syscall`（SC_DEFER handler）现在可以直接传 `self.procs` + `idx`，无需 `unsafe` 绕过借用检查器
-- **`dispatch_ipc_entry` 适配**：入口提取 `caller_nr` + `caller_idx`，然后 `proc_table.procs_slice_mut()` 获取切片（NLL 确保 `caller` 借用在 `caller_nr` 读取后释放）
+
+**D-13 扩展（2026-09-05）**：`dispatch_ipc` 签名再改为 `(proc_table: &mut ProcessTable, caller_idx, msg, priv_table, ipc_call)`——从裸切片回到 `ProcessTable` 引用。原因：receive 投递时若 sender 置了 `MF_SIG_DELAY`（PM 延迟停止），`dispatch_ipc` 必须在 `do_ipc` 返回后为它运行 `sig_delay_done`，而该通知会设 `RTS_SIGNALED`——`rts_set` 携带调度器 **dequeue** 副作用（就绪队列住在 `ProcessTable` 内部），切片级无法完成。`arch_do_syscall` 随之改为传 `self`。详见 [19-syscall-signal.md](19-syscall-signal.md) §4.8。
 
 **与 `kernel_call_dispatch` 的对称设计**：
 - 入口 acquire BKL，`mem::forget(bkl_guard)` 阻止 RAII Drop 释放

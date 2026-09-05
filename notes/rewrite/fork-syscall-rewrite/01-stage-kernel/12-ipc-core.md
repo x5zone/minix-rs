@@ -842,6 +842,9 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
         caller_q_remove(self.procs, caller_idx, sender_idx);
         // 投递 sender.p_sendmsg + MF_DELIVERMSG
         // 唤醒 sender: RTS_UNSET(SENDING) + 清 SENDING_FROM_KERNEL
+        // C: proc.c:1082-1083 — sender 若置 MF_SIG_DELAY（PM 延迟停止），
+        // 在此记录到 sig_delay_sender；由 ProcessTable 级 dispatch_ipc
+        // 在 do_ipc 返回后统一 sig_delay_done（原因见 19-syscall-signal.md §4.8）。
         return IpcOutcome::Delivered;
     }
 
@@ -1137,6 +1140,8 @@ pub(crate) fn caller_q_is_empty(procs: &[KProcess], dst_idx: usize) -> bool;
 | `test_receive_skips_notify_when_reply_pend` | receive + MF_REPLY_PEND | proc.c:1000-1005 | P0 |
 | `test_receive_picks_async_second` | receive Phase 2（async 次之） | proc.c:1040-1053 | P0 |
 | `test_receive_picks_caller_q_last` | receive Phase 3（caller_q 最后） | proc.c:1054-1099 | P0 |
+| `test_receive_sig_delay_sender_records_pending_delay` | receive Phase 3 + `MF_SIG_DELAY` sender（记录 one-shot） | proc.c:1082-1083 | P0 |
+| `test_receive_plain_sender_has_no_pending_delay` | receive Phase 3 无 `MF_SIG_DELAY` 不记录 | proc.c:1082-1083 | P0 |
 | `test_receive_blocks_when_no_match` | receive Phase 4（阻塞） | proc.c:1100-1112 | P0 |
 | `test_notify_delivers_when_target_receiving` | notify 路径 A | proc.c:1122-1150 | P0 |
 | `test_notify_records_bitmap_when_not_receiving` | notify 路径 B（位图） | proc.c:1151-1167 | P0 |

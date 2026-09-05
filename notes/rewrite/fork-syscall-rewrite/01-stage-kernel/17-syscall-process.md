@@ -616,6 +616,10 @@ pub fn dispatch_runctl(
     match action {
         RC_STOP => {
             // C: do_runctl.c:44-50 — RC_DELAY 模式：目标正在 SENDING 则设 MF_SIG_DELAY 返回 EBUSY
+            // 延迟的"结束"（sig_delay_done → SIGSNDELAY）由两处触发：
+            // 1) 调度循环 misc-flags：deferred syscall 走完且未阻塞 SEND（proc.c:379-381）
+            // 2) receive 投递：sender 消息被接收方取走（proc.c:1082-1083）
+            // 二者统一走 `ProcessTable::sig_delay_done`（见 19-syscall-signal.md §4.8）。
             if (flags & RC_DELAY) != 0 {
                 let target = proc_table.get(target_nr);
                 if let Some(rp) = target

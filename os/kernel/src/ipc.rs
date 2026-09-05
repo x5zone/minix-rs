@@ -641,6 +641,17 @@ pub struct IpcEngine<'a> {
     priv_table: &'a mut PrivTable,
     /// User-space copy abstraction (arch-specific impl injected).
     user_copy: &'a dyn UserCopy,
+    /// Sender whose message was just delivered while `MF_SIG_DELAY` was set.
+    ///
+    /// C: proc.c:1082-1083 — `if (sender->p_misc_flags & MF_SIG_DELAY)
+    /// sig_delay_done(sender)`. The delay-end notification
+    /// (`sig_delay_done` → `cause_sig(SIGSNDELAY)`) must run at the
+    /// `ProcessTable` level because `cause_signal` sets `RTS_SIGNALED`
+    /// through the scheduler-aware `rts_set` (dequeue). The engine only has
+    /// a slice, so it records the sender here and the `ProcessTable`-level
+    /// dispatcher (`dispatch_ipc`) completes the protocol after `do_ipc`
+    /// returns. At most one sender is delivered per IPC operation.
+    sig_delay_sender: Option<ProcNr>,
 }
 
 impl<'a> IpcEngine<'a> {
@@ -650,7 +661,17 @@ impl<'a> IpcEngine<'a> {
         priv_table: &'a mut PrivTable,
         user_copy: &'a dyn UserCopy,
     ) -> Self {
-        Self { procs, priv_table, user_copy }
+        Self { procs, priv_table, user_copy, sig_delay_sender: None }
+    }
+
+    /// Take the sender whose message was delivered while `MF_SIG_DELAY`
+    /// was set (and whose delay-end notification is now due), clearing the
+    /// record. See [`Self::sig_delay_sender`].
+    ///
+    /// Called by the `ProcessTable`-level dispatcher after `do_ipc`
+    /// returns; `Some(sender_nr)` means "call `sig_delay_done(sender_nr)`".
+    pub fn take_sig_delay_sender(&mut self) -> Option<ProcNr> {
+        self.sig_delay_sender.take()
     }
 
     // ── Helpers ──
@@ -994,6 +1015,17 @@ impl<'a> IpcEngine<'a> {
             // Clear MF_REPLY_PEND if this was a SENDREC reply delivery.
             if reply_pend {
                 self.procs[caller_idx].p_misc_flags.clear(MiscFlagsBits::REPLY_PEND);
+            }
+            // C: proc.c:1082-1083 — if (sender->p_misc_flags & MF_SIG_DELAY)
+            //   sig_delay_done(sender).
+            // The sender is now no longer sending (RTS_SENDING cleared
+            // above): if PM had requested a delayed stop on it, this is the
+            // quiescent point that ends the delay. We record the sender and
+            // let the ProcessTable-level dispatcher run `sig_delay_done`
+            // (scheduler-aware `cause_signal`), see
+            // `IpcEngine::sig_delay_sender` / `take_sig_delay_sender`.
+            if self.procs[sender_idx].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY) {
+                self.sig_delay_sender = Some(self.procs[sender_idx].p_nr);
             }
             return IpcOutcome::Delivered;
         }
@@ -2326,6 +2358,65 @@ mod tests {
         assert!(!procs[0].p_rts_flags.is_set(RtsFlagsBits::SENDING));
         // caller_q should be empty after removal.
         assert!(caller_q_is_empty(&procs, 1));
+    }
+
+    /// C: proc.c:1082-1083 — when the receiver takes a message from a
+    /// sender with `MF_SIG_DELAY` set, the engine records the sender so the
+    /// `ProcessTable`-level dispatcher can run `sig_delay_done` (which
+    /// needs the scheduler-aware `rts_set`). The flag itself is left for
+    /// `sig_delay_done` to clear.
+    #[test]
+    fn test_receive_sig_delay_sender_records_pending_delay() {
+        let mut a = make_test_proc(0, Endpoint(1));
+        let mut b = make_test_proc(1, Endpoint(2));
+        a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
+        a.p_sendto_e = Endpoint(2);
+        a.p_sendmsg = Message::default();
+        // PM requested a delayed stop (RC_DELAY) while `a` was sending.
+        a.p_misc_flags.set(MiscFlagsBits::SIG_DELAY);
+        b.p_rts_flags = RtsFlags::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        caller_q_push(&mut procs, 1, 0);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
+
+        let outcome = engine.receive(test_nr(1), Endpoint::ANY);
+        assert!(outcome.is_delivered(), "receive must pick caller_q sender");
+
+        // Sender's delay-end is now due: recorded for the ProcessTable-level
+        // dispatcher (dispatch_ipc), exactly once.
+        assert_eq!(
+            engine.take_sig_delay_sender(),
+            Some(test_nr(0)),
+            "MF_SIG_DELAY sender must be reported"
+        );
+        assert_eq!(engine.take_sig_delay_sender(), None, "record is one-shot");
+        // The flag stays set — sig_delay_done (ProcessTable level) clears it.
+        assert!(procs[0].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+    }
+
+    /// C: proc.c:1082-1083 — a sender *without* `MF_SIG_DELAY` must not be
+    /// reported (no delayed stop to end).
+    #[test]
+    fn test_receive_plain_sender_has_no_pending_delay() {
+        let mut a = make_test_proc(0, Endpoint(1));
+        let mut b = make_test_proc(1, Endpoint(2));
+        a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
+        a.p_sendto_e = Endpoint(2);
+        a.p_sendmsg = Message::default();
+        b.p_rts_flags = RtsFlags::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        caller_q_push(&mut procs, 1, 0);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
+
+        let outcome = engine.receive(test_nr(1), Endpoint::ANY);
+        assert!(outcome.is_delivered(), "receive must pick caller_q sender");
+        assert_eq!(
+            engine.take_sig_delay_sender(),
+            None,
+            "plain sender has no stop-delay to end"
+        );
     }
 
     #[test]

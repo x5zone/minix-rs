@@ -582,8 +582,10 @@ pub fn dispatch_ipc_entry(
     // R-05: BklGuard is RAII; mem::forget prevents Drop from releasing
     // because BKL must stay held until kernel_call_finish() releases it.
     let bkl_guard = crate::smp::bkl_lock();
-    let procs = proc_table.procs_slice_mut();
-    let result = dispatch_ipc(procs, caller_idx, msg, priv_table, ipc_call);
+    // `caller` is derived from `proc_table` by the trap entry (raw-pointer
+    // global access); passing `proc_table` (not a slice) lets dispatch_ipc
+    // run the scheduler-aware sig_delay_done protocol.
+    let result = dispatch_ipc(proc_table, caller_idx, msg, priv_table, ipc_call);
     // BKL is NOT released here — mem::forget prevents Drop from releasing.
     // BKL is released in:
     //   1. kernel_call_finish() — for normal completion (before switch_to_user)
@@ -617,8 +619,17 @@ pub fn dispatch_ipc_entry(
 /// - `Blocked` → `NoReply`: caller is now blocked (RTS_SENDING/RECEIVING),
 ///   no reply should be sent — scheduler will pick next process
 /// - `Error(e)` → `Ok(errno)`: IPC failed, caller stays runnable with errno
+///
+/// # Delay-end signal protocol (C: proc.c:1082-1083)
+///
+/// When a receiver takes a message from a sender whose `MF_SIG_DELAY` is
+/// set (PM's delayed stop), the sender has reached a quiescent point and
+/// PM must be told via `sig_delay_done` → `cause_sig(SIGSNDELAY)`. That
+/// notification sets `RTS_SIGNALED` through the scheduler-aware `rts_set`
+/// (dequeue), which requires `ProcessTable` — hence this function takes
+/// `proc_table` (not a bare slice) and runs the protocol after `do_ipc`.
 pub(crate) fn dispatch_ipc(
-    procs: &mut [KProcess],
+    proc_table: &mut crate::proc_table::ProcessTable,
     caller_idx: usize,
     msg: &Message,
     priv_table: &mut PrivTable,
@@ -628,23 +639,30 @@ pub(crate) fn dispatch_ipc(
     use crate::errno::*;
     use minix_types::VirBytes;
 
-    // Read caller fields by index (avoiding split-borrow issue —
-    // FIX-21, Phase 1C: refactored from (caller: &mut KProcess, proc_table)
-    // to (procs: &mut [KProcess], caller_idx) so callers like
-    // ProcessTable::arch_do_syscall can pass self.procs without aliasing).
-    let caller = &procs[caller_idx];
-    let caller_nr = caller.p_nr;
+    // Read caller fields by index (avoiding split-borrow issue — the caller
+    // lives inside `proc_table`, so we derive it by index and copy the
+    // fields out before constructing the `IpcEngine` over the process
+    // slice). FIX-21, Phase 1C: refactored from
+    // (caller: &mut KProcess, proc_table) to (procs, caller_idx); this
+    // variant takes `ProcessTable` directly so the delay-end signal
+    // protocol below can run scheduler-aware.
+    let (caller_nr, defer) = {
+        let procs = proc_table.procs_slice_mut();
+        let caller = &procs[caller_idx];
+        (caller.p_nr, caller.p_defer)
+    };
 
     // Extract dst_endpoint (or SENDA table params) from p_defer.
     // C: r2 = src_dst (for sync IPC) or count (for SENDA)
+    // (r1 = call_nr is already carried by `msg.m_type`.)
     let dst_endpoint;
     let senda_table;
     match ipc_call {
         crate::ipc::IpcCall::SendA => {
             // C: proc.c:673 — `size_t msg_size = (size_t) r2;`
             // C: proc.c:683 — `mini_senda(caller_ptr, (asynmsg_t *) r3, msg_size);`
-            let count = caller.p_defer.r2;
-            let table_ptr = caller.p_defer.r3;
+            let count = defer.r2;
+            let table_ptr = defer.r3;
             dst_endpoint = minix_types::Endpoint::ANY;
             senda_table = Some((VirBytes(table_ptr as u64), count));
         }
@@ -654,28 +672,39 @@ pub(crate) fn dispatch_ipc(
             // low 32 bits. Endpoints are i32 in Minix3, so valid endpoints
             // survive intact. Invalid values are caught by IpcEngine's
             // endpoint validity check (Layer 1: idx_by_endpoint returns None).
-            dst_endpoint = minix_types::Endpoint(caller.p_defer.r2 as i32);
+            dst_endpoint = minix_types::Endpoint(defer.r2 as i32);
             senda_table = None;
         }
     }
 
     // Construct IpcEngine and dispatch.
     // C: do_ipc → do_sync_ipc → mini_send/receive/notify/sendrec
-    let mut engine = IpcEngine::new(procs, priv_table, &KernelUserCopy);
-    let outcome = engine.do_ipc(
-        caller_nr,
-        ipc_call,
-        dst_endpoint,
-        msg,
-        SendFlags::NONE,
-        senda_table,
-    );
+    //
+    // The engine borrows the process slice out of `proc_table`; the scope
+    // block ends that borrow so the `sig_delay_done` protocol below can
+    // touch `proc_table` again (the scheduler-aware `cause_signal`).
+    let (outcome, pending_sig_delay) = {
+        let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy);
+        let outcome = engine.do_ipc(
+            caller_nr,
+            ipc_call,
+            dst_endpoint,
+            msg,
+            SendFlags::NONE,
+            senda_table,
+        );
+        // A sender whose message was delivered while `MF_SIG_DELAY` was set
+        // needs its PM stop-delay ended: take the record out of the engine
+        // (it holds the proc_table/priv_table borrows).
+        let pending = engine.take_sig_delay_sender();
+        (outcome, pending)
+    };
 
     // Map IpcOutcome → KcallResult.
     // C: do_ipc returns errno (OK=0 for success/delivered, ELOCKED etc. for
     // errors). Blocked is implicit in C (RTS flags set), but Rust makes it
     // explicit via IpcOutcome::Blocked.
-    match outcome {
+    let result = match outcome {
         IpcOutcome::Delivered => KcallResult::Ok(OK),
         IpcOutcome::Blocked => KcallResult::NoReply,
         IpcOutcome::Error(e) => {
@@ -691,7 +720,16 @@ pub(crate) fn dispatch_ipc(
             };
             KcallResult::Ok(errno)
         }
+    };
+
+    // C: proc.c:1082-1083 — sig_delay_done(sender) for a delay-stopped
+    // sender whose message was just delivered. Runs after do_ipc but still
+    // under BKL (dispatch_ipc_entry), so no observable interleaving vs C.
+    if let Some(sender_nr) = pending_sig_delay {
+        proc_table.sig_delay_done(sender_nr, priv_table);
     }
+
+    result
 }
 
 // ── Dispatch functions ──
@@ -3236,6 +3274,89 @@ mod tests {
         // BKL should be held now (acquired by dispatch_ipc_entry,
         // not released due to mem::forget). Release it to restore state.
         crate::smp::bkl_unlock();
+    }
+
+    /// End-to-end (D-13): `dispatch_ipc` → `IpcEngine::receive` delivers
+    /// a message from a `MF_SIG_DELAY` sender → `dispatch_ipc` runs
+    /// `sig_delay_done` for it. C: proc.c:1082-1083 → system.c:454-464.
+    ///
+    /// This pins the glue between the slice-based IPC engine (which cannot
+    /// run the scheduler-aware `cause_signal`) and the `ProcessTable`-level
+    /// dispatcher that completes the PM stop-delay protocol.
+    #[test]
+    fn test_dispatch_ipc_receive_ends_sender_sig_delay() {
+        use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+        use crate::capability::{IpcMask, TrapMask};
+        use crate::proc_table::nr_to_idx;
+        use crate::ipc::caller_q_push;
+
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let receiver_nr = ProcNr(1);
+        let sender_nr = ProcNr(0);
+        let manager_nr = ProcNr(2);
+
+        // Receiver: occupied + priv allowing RECEIVE (trap mask + ipc_to).
+        {
+            let p = proc_table.get_mut(receiver_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(1);
+        }
+        priv_table.get_mut(1).unwrap().identity.s_proc_nr = Some(receiver_nr);
+        priv_table.get_mut(1).unwrap().ipc.s_trap_mask = TrapMask::ALL;
+        priv_table.get_mut(1).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << 0);
+
+        let receiver_ep = proc_table.get(receiver_nr).unwrap().p_endpoint;
+        let sender_ep = proc_table.get(sender_nr).unwrap().p_endpoint;
+        // Sender: occupied + SENDING (queued on receiver) + SIG_DELAY.
+        {
+            let p = proc_table.get_mut(sender_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.p_rts_flags.set(RtsFlagsBits::SENDING);
+            p.p_sendto_e = receiver_ep;
+            p.p_sendmsg = Message::default();
+            p.p_misc_flags.set(MiscFlagsBits::SIG_DELAY);
+            p.priv_id = Some(0);
+        }
+        let manager_ep = proc_table.get(manager_nr).unwrap().p_endpoint;
+        priv_table.get_mut(0).unwrap().identity.s_proc_nr = Some(sender_nr);
+        priv_table.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        // Manager: occupied + listening (notification observable).
+        {
+            let p = proc_table.get_mut(manager_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(2);
+            p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            p.p_getfrom_e = minix_types::Endpoint::ANY;
+        }
+        priv_table.get_mut(2).unwrap().identity.s_proc_nr = Some(manager_nr);
+
+        // Enqueue the sender on the receiver's caller queue.
+        {
+            let procs = proc_table.procs_slice_mut();
+            caller_q_push(procs, nr_to_idx(receiver_nr).unwrap(), nr_to_idx(sender_nr).unwrap());
+        }
+
+        // Receiver performs RECEIVE from the sender.
+        let mut msg = Message::default();
+        msg.m_type = crate::ipc::IpcCall::Receive as i32;
+        proc_table.get_mut(receiver_nr).unwrap().p_defer.r2 = sender_ep.0 as usize;
+
+        let result = dispatch_ipc(
+            &mut proc_table,
+            nr_to_idx(receiver_nr).unwrap(),
+            &msg,
+            &mut priv_table,
+            crate::ipc::IpcCall::Receive,
+        );
+        assert_eq!(result, KcallResult::Ok(crate::errno::OK));
+
+        // Sender's delay ended: MF_SIG_DELAY cleared, RTS_SIGNALED set,
+        // and the manager was woken (DELIVERMSG = direct notification).
+        let sender = proc_table.get(sender_nr).unwrap();
+        assert!(!sender.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+        assert!(sender.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(proc_table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
     // ── dispatch_diagctl STACKTRACE tests (P8-4) ──────────────────────

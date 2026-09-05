@@ -346,6 +346,54 @@ impl ProcessTable {
         })
     }
 
+    /// End a PM "stop delay" for a process that has finished sending.
+    ///
+    /// C: `sig_delay_done(rp)` — system.c:454-464.
+    ///
+    /// When PM requests a delayed stop (`SYS_RUNCTL` with `RC_STOP |
+    /// RC_DELAY`, do_runctl.c:44-50) on a process that is blocked sending a
+    /// message or stuck in a deferred syscall, the kernel cannot stop it
+    /// mid-IPC (the message handshake must complete). It instead records
+    /// the intent in `MF_SIG_DELAY` and returns `EBUSY`. Once the process
+    /// reaches a quiescent point — its message was delivered to the
+    /// receiver, or its deferred syscall completed without blocking on
+    /// SEND — this method is called to:
+    ///
+    /// 1. Clear `MF_SIG_DELAY` (system.c:461).
+    /// 2. Notify PM via `cause_sig(proc_nr(rp), SIGSNDELAY)` (system.c:463)
+    ///    so it can re-attempt the stop, which now succeeds immediately.
+    ///
+    /// # Known limitation
+    ///
+    /// `SIGSNDELAY` = 70 is outside the `SigSet(u64)` bit range, so the
+    /// signal *number* does not ride the GETKSIG map (same limitation as
+    /// `SIGKSIG`, see `syscall_signal::SIGSNDELAY`); the delivered kernel
+    /// behavior is the wakeup: `RTS_SIGNALED` + manager notification.
+    ///
+    /// # Why this is a `ProcessTable` method (not a free function)
+    ///
+    /// `cause_signal` sets `RTS_SIGNALED | RTS_SIG_PENDING` through
+    /// [`Self::rts_set`], which carries the scheduler **dequeue** side
+    /// effect: a process that was runnable and in a ready queue becomes
+    /// non-runnable and must be removed, or `pick_proc` would select a
+    /// non-runnable head (debug-asserted in `sched.rs`). The ready queues
+    /// live in the `Scheduler` inside `ProcessTable`, so the delay-end
+    /// notification must run here, not in the slice-based `IpcEngine`.
+    ///
+    /// # BKL
+    ///
+    /// Caller must hold the BKL (both call sites do: `process_misc_flags`
+    /// runs under `switch_to_user`'s BKL; `dispatch_ipc` runs under
+    /// `dispatch_ipc_entry`'s BKL).
+    pub fn sig_delay_done(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
+        // C: system.c:461 — rp->p_misc_flags &= ~MF_SIG_DELAY
+        if let Some(p) = self.get_mut(nr) {
+            p.p_misc_flags.clear(MiscFlagsBits::SIG_DELAY);
+        }
+        // C: system.c:463 — cause_sig(proc_nr(rp), SIGSNDELAY)
+        crate::syscall_signal::cause_signal(nr, crate::syscall_signal::SIGSNDELAY, self, priv_table);
+    }
+
     /// Set the BSP's bill pointer to the IDLE kernel task.
     ///
     /// C: `bsp_finish_booting` step 2 — `get_cpulocal_var(bill_ptr) =
@@ -833,6 +881,21 @@ impl ProcessTable {
                 // FIX-21 (Phase 1C): wired to self.arch_do_syscall().
                 // arch_do_syscall clears MF_SC_DEFER + re-dispatches IPC.
                 let _ = self.arch_do_syscall(nr, priv_table);
+                // C: proc.c:379-381 — if (MF_SIG_DELAY) && !RTS_SENDING →
+                // sig_delay_done(p). A delay-stopped process whose deferred
+                // syscall completed without blocking on SEND has reached a
+                // quiescent point: end the PM stop-delay now (SIGSNDELAY).
+                // If it *blocked* in SEND, the receive-side delivery path
+                // (ipc.rs receive Phase 3) ends the delay instead.
+                let (sig_delay_pending, is_sending) = self.get(nr).map_or((false, false), |p| {
+                    (
+                        p.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY),
+                        p.p_rts_flags.is_set(RtsFlagsBits::SENDING),
+                    )
+                });
+                if sig_delay_pending && !is_sending {
+                    self.sig_delay_done(nr, priv_table);
+                }
             } else if flags.contains(MiscFlagsBits::SC_TRACE) {
                 if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
                     break;
@@ -925,9 +988,11 @@ impl ProcessTable {
             ..Default::default()
         };
 
-        // Dispatch IPC using the refactored dispatch_ipc (FIX-21):
-        // passes self.procs + caller_idx, avoiding split-borrow aliasing.
-        crate::syscall::dispatch_ipc(self.procs.as_mut_slice(), caller_idx, &msg, priv_table, ipc_call)
+        // Dispatch IPC. FIX-21 (Phase 1C) avoided split-borrow aliasing by
+        // passing self.procs + caller_idx; since D-13 (2026-09-05) dispatch_ipc
+        // takes `&mut ProcessTable` (to run the scheduler-aware sig_delay_done),
+        // we pass `self` directly — no aliasing because caller access is by index.
+        crate::syscall::dispatch_ipc(self, caller_idx, &msg, priv_table, ipc_call)
     }
 
     /// 检查进程时间片并处理。
@@ -1567,5 +1632,151 @@ mod tests {
             }
         }
         assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+    }
+
+    // ── sig_delay_done tests (D-13: PM stop-delay end, system.c:454-464) ──
+
+    /// C: system.c:461-463 — `sig_delay_done` clears `MF_SIG_DELAY` and
+    /// causes `SIGSNDELAY` to the process (external path: `RTS_SIGNALED` +
+    /// notify the signal manager).
+    ///
+    /// Note: `SIGSNDELAY` = 70 is a *system* signal outside `_NSIG = 64`;
+    /// the `SigSet(u64)` bitmap cannot encode it (`add(70)` is a no-op, same
+    /// known limitation as `SIGKSIG`/`SIGKSIGSM`, see
+    /// `syscall_signal.rs` `cause_signal`). What IS delivered — and what
+    /// this test pins — is the wakeup protocol: `RTS_SIGNALED` +
+    /// `RTS_SIG_PENDING` + `mini_notify` to the manager, which is the part
+    /// of the C behavior that drives the manager to `SYS_GETKSIG`. Encoding
+    /// bit 70 requires widening `SigSet` to the C `sigset_t` 128 bits
+    /// (cross-cutting wire change, tracked separately).
+    #[test]
+    fn test_sig_delay_done_clears_flag_and_causes_signdelay() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        {
+            let p = table.get_mut(nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(0);
+            p.p_misc_flags.set(MiscFlagsBits::SIG_DELAY);
+        }
+        let manager_ep = table.get(manager_nr).unwrap().p_endpoint;
+        priv_table.get_mut(0).unwrap().identity.s_proc_nr = Some(nr);
+        // Target's signal manager is the external manager (not self) → the
+        // SIGSNDELAY is delivered through the external cause_signal path.
+        priv_table.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        {
+            let p = table.get_mut(manager_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(1);
+            // Listening: RECEIVING + ANY makes the mini_notify observable
+            // as a direct delivery (DELIVERMSG).
+            p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            p.p_getfrom_e = Endpoint::ANY;
+        }
+        priv_table.get_mut(1).unwrap().identity.s_proc_nr = Some(manager_nr);
+
+        table.sig_delay_done(nr, &mut priv_table);
+
+        // C: system.c:461 — rp->p_misc_flags &= ~MF_SIG_DELAY
+        assert!(!table.get(nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+        // C: system.c:463 — cause_sig(rp, SIGSNDELAY) external path
+        // (system.c:439-446): RTS_SIGNALED|RTS_SIG_PENDING.
+        assert!(table.get(nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(table.get(nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        // Manager notified via mini_notify (system.c:381) → direct delivery.
+        assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// C: proc.c:379-381 — a delay-stopped process whose deferred syscall
+    /// completes without blocking on SEND reaches a quiescent point and the
+    /// stop delay ends (SIGSNDELAY). `process_misc_flags` returns false
+    /// because SIGSNDELAY (via `cause_signal`) makes the process
+    /// non-runnable — the scheduler must pick another process (C: proc.c:413).
+    #[test]
+    fn test_process_misc_flags_sc_defer_ends_sig_delay() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        {
+            let p = table.get_mut(nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(0);
+            p.p_misc_flags.set(MiscFlagsBits::SC_DEFER | MiscFlagsBits::SIG_DELAY);
+            // Deferred SEND (call_nr=1) to an invalid endpoint: dispatch
+            // fails without blocking → the process is NOT sending.
+            p.p_defer.r1 = crate::ipc::IpcCall::Send as usize;
+            p.p_defer.r2 = 9999; // invalid dst endpoint → EDEADSRCDST
+        }
+        let manager_ep = table.get(manager_nr).unwrap().p_endpoint;
+        priv_table.get_mut(0).unwrap().identity.s_proc_nr = Some(nr);
+        priv_table.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        {
+            let p = table.get_mut(manager_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(1);
+            p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            p.p_getfrom_e = Endpoint::ANY;
+        }
+        priv_table.get_mut(1).unwrap().identity.s_proc_nr = Some(manager_nr);
+
+        // The deferred syscall errors (not blocked), so the delay ends.
+        assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        // arch_do_syscall cleared SC_DEFER; sig_delay_done cleared SIG_DELAY.
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+        // SIGSNDELAY delivery (wakeup): SIGNALED → non-runnable → false.
+        // (bit 70 not encodable in SigSet(u64), see sig_delay_done test.)
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        // Manager notified.
+        assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// C: proc.c:379-381 — a delay-stopped process whose deferred syscall
+    /// BLOCKS in SEND does NOT end the delay here: `MF_SIG_DELAY` stays set
+    /// and the receive-side delivery path (ipc.rs receive Phase 3) ends it
+    /// when the message is finally taken by the receiver.
+    #[test]
+    fn test_process_misc_flags_sc_defer_blocked_in_send_keeps_sig_delay() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let dst_nr = ProcNr(2);
+        let dst_ep = table.get(dst_nr).unwrap().p_endpoint;
+        {
+            let p = table.get_mut(nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(0);
+            p.p_misc_flags.set(MiscFlagsBits::SC_DEFER | MiscFlagsBits::SIG_DELAY);
+            p.p_defer.r1 = crate::ipc::IpcCall::Send as usize;
+            p.p_defer.r2 = dst_ep.0 as usize;
+        }
+        // Caller's priv allows SEND to the (valid) destination so the IPC
+        // blocks rather than failing a permission check.
+        priv_table.get_mut(0).unwrap().identity.s_proc_nr = Some(nr);
+        priv_table.get_mut(0).unwrap().ipc.s_trap_mask = crate::capability::TrapMask::ALL;
+        priv_table.get_mut(0).unwrap().ipc.s_ipc_to =
+            crate::capability::IpcMask::from_bits(1u64 << 2);
+        // Destination: valid, occupied, NOT receiving → SEND blocks.
+        {
+            let p = table.get_mut(dst_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(2);
+        }
+        priv_table.get_mut(2).unwrap().identity.s_proc_nr = Some(dst_nr);
+
+        assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        // SC_DEFER cleared by arch_do_syscall, but the process blocked in
+        // SEND → the delay is NOT ended here.
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SENDING));
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
     }
 }

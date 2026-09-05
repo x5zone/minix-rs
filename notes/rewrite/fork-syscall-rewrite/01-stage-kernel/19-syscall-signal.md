@@ -115,7 +115,21 @@
 >
 > **为什么"自管理进程死亡"是内核级事件**：普通进程的信号由 PM 之类的外部管理器处理——进程死了，管理器负责收割（通知父进程、回收资源）。自管理进程（典型如 VM，C main.c:208 `s_sig_mgr = SELF`）**自己就是自己的管理器**：它若死于致命信号，就没有任何存活者会替它"处理后事"，它名下的孤儿信号将永远无人认领。C 给出的答案是：RS 在部署时预设一个 backup 管理器（live update 的接替者）；有 backup 就提升并让它接管；没有 backup，内核直接 panic，而不是让系统带着无人收割的进程半死不活地运行。这一"系统级看护进程不允许静默消失"的设计与主流 OS 一致——Linux 对 init(PID 1) 死亡同样以 `panic("Attempted to kill init!")` 兜底，因为它是所有孤儿进程的最后收割者；Redox 内核无此概念（信号直接由内核分发给目标），其"系统服务崩溃即重启"由 userspace scheme 管理，等效职责不在内核——这正是 Minix3 把故障收敛（failover）决策放在内核的原因：**看护者不能由被看护者自己担任**。
 
-### 1.5 本章小结
+### 1.5 停止延迟（stop-delay）：PM 如何"等一个正在发消息的进程停下来"
+
+**灵魂本质**: 停止一个进程必须是**协作式**的——当 PM 想停的进程正阻塞在 SEND（消息还没送达）或卡在 deferred syscall 时，内核不强行打断 IPC 握手，而是记下"它一安静就通知我"，等进程到达安静点再用 `SIGSNDELAY` 唤醒 PM 重试。
+
+**WHY → WHAT → HOW 弧线**:
+
+- **WHY**: PM 投递信号前通常要先把进程停下（`stop_proc` → SYS_RUNCTL RC_STOP），保证信号处理器设置期间进程不会乱跑。但"停下"有一个天然冲突：进程可能正阻塞在 `SEND`——它的消息还挂在接收方的等待队列里。此刻设 `RTS_PROC_STOP` 会让进程永远无法被唤醒去完成投递（它既不运行、消息也送不出），IPC 握手中断；deferred syscall（`MF_SC_DEFER`）同理。强行停止 = 打破消息层的不变量。
+- **WHAT**: `do_runctl` 遇到 `RC_STOP | RC_DELAY` 且目标正在 SENDING 或 SC_DEFER 时，不设 `RTS_PROC_STOP`，改为置 `MF_SIG_DELAY` 并返回 `EBUSY`（do_runctl.c:44-50）。PM 收到 EBUSY 记下 `DELAY_CALL`，等内核后续补发 `SIGSNDELAY`（signal.c:344-369）。"安静点"由内核判定并触发 `sig_delay_done`：deferred syscall 走完且没阻塞在 SEND（proc.c:379-381），或 sender 的消息被接收方取走（proc.c:1082-1083）——两条路都保证"进程不再发送"。
+- **HOW**: `sig_delay_done`（system.c:454-464）清 `MF_SIG_DELAY` + `cause_sig(SIGSNDELAY)`，PM 通过 `process_ksig` 收到后重试 `stop_proc`——此时进程已安静，停止立即成功。
+
+**为什么是信号而不是直接置位**: `SIGSNDELAY` 走的是标准内核信号三步闭环（cause_sig → GETKSIG → process_ksig）。复用同一机制意味着 PM 只需一个统一入口处理所有内核信号，且内核无需知道 PM 的内部状态机——这是微内核"内核只负责机制、策略交给服务器"原则的又一次体现。
+
+**与 Linux 的对照**: Linux 的 `SIGSTOP`/`SIGCONT` 是内核直接执行的进程状态迁移（`TASK_STOPPED`），不存在"等消息发完"问题——因为 Linux 是宏内核，`sendmsg` 等系统调用在内核内原子完成，调度器天然只在可安全停止的点切走进程。Minix3 的 IPC 是**跨进程握手**：发送方阻塞在"等待接收方取消息"，这个状态横跨两个进程，内核若强行停止发送方，接收方会永远等一个不会醒来的发送者。所以 Minix3 把"停止"设计成两段式（请求 → 安静点通知），本质上是**把跨进程的一致性检查推迟到不变量满足的时刻**——与 Linux 的 `TASK_INTERRUPTIBLE` + 信号检查点有相似精神（都只在自己能安全响应信号的地方响应），只是约束来自 IPC 握手而非单进程上下文。
+
+### 1.6 本章小结
 
 内核作为信号中介的核心抽象是"双路径 + 推拉"：内核信号路径用三步闭环（cause_sig → GETKSIG → ENDKSIG）解耦产生方与管理器；POSIX 路径用栈帧改写（SIGSEND → SIGRETURN）让用户态处理器得以运行。两者共享 `p_pending` / `RTS_SIGNALED` / `RTS_SIG_PENDING` 状态，由 BKL 保证原子性。架构相关细节（sigcontext 字段、寄存器修改）由 `SignalContext` trait 统一抽象（§3 D2/D6、§4.6）。后续章节按"概念 → C 源码 → 设计决策 → 实现 → 测试"展开。
 
@@ -132,7 +146,7 @@
 | `sig_mask(sig)` | signal.h | 信号编号到位掩码转换（1-based → 0-based） |
 | `SIGKSIG` | signal.h:274 | 内核→SM 通知信号（值 = 74，超出 `_NSIG` 范围） |
 | `SIGKSIGSM` | signal.h:273 | 自管理进程的自通知信号（值 = 73）；Rust SELF 路径已实现（§4.3） |
-| `SIGSNDELAY` | signal.h:264 | 停止延迟结束信号（值 = 70）；`sig_delay_done` 对应 Rust DEFERRED（§4.7） |
+| `SIGSNDELAY` | signal.h:264 | 停止延迟结束信号（值 = 70，超出 `_NSIG` 范围）；`sig_delay_done` 已实现（2026-09-05，todo D-13，§4.8）；已知限制：超出 `SigSet(u64)` 位宽，编号不随 GETKSIG map 送达 PM |
 | `SC_MAGIC` | i386 signal.h:115 | sigcontext 完整性魔数（值 = 0xc0ffee1，`(架构相关)`）；Rust `check_magic` 已实现（§4.6） |
 | `SIGS_IS_LETHAL(sig)` | signal.h:280-282 | 致命信号判断宏（SIGILL=4/SIGABRT=6/SIGEMT=7/SIGFPE=8/SIGBUS=10/SIGSEGV=11）；Rust `is_lethal` 已实现（syscall_signal.rs:101-103，§4.3） |
 | `m_sigcalls.endpt` | minix/ipc.h:2622 | 目标进程 endpoint（5 个信号 syscall 共用） |
@@ -278,7 +292,7 @@
 | 状态前置 | 进程不再发送直接消息 |
 | 状态后置 | 通知 PM 停止延迟结束 |
 | 竞争条件 | BKL 保证 |
-| Rust 状态 | DEFERRED（需 PM 通知接口） |
+| Rust 状态 | ✅ 已实现（2026-09-05，todo D-13）：`ProcessTable::sig_delay_done`（proc_table.rs）——清 `MF_SIG_DELAY` + `cause_signal(SIGSNDELAY)`；双路接线见 §4.8 |
 
 ### 2.4 调用关系图（双路径时序）
 
@@ -762,12 +776,32 @@ pub trait SignalContext: Sized + Send + Sync {
 | SignalContext x86_64 impl | do_sigsend.c:53-89 | arch/x86_64/signal.rs | ✅ 已实现 |
 | SignalContext aarch64 impl | do_sigsend.c:91-110 | arch/arm64/signal.rs | ✅ 已实现 |
 | SignalContext riscv64 impl | — | arch/riscv64/signal.rs | ✅ 已实现（C 源码未实现，按 RISC-V ELF psABI 独立设计） |
-| sig_delay_done | system.c:454-464 | — | DEFERRED: 需 PM 通知接口 + SIGSNDELAY |
+| sig_delay_done | system.c:454-464 | proc_table.rs `ProcessTable::sig_delay_done` | ✅ **已实现（2026-09-05，todo D-13）**：清 `MF_SIG_DELAY` + `cause_signal(SIGSNDELAY)`；双路接线见 §4.8 |
 | DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | do_diagctl.c:49-56 | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
 | FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:670（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
 | trap_style 校验 | do_sigsend.c:79-82 | arch/signal_context.rs `get_trap_style` | ✅ 已实现: `SignalContext::get_trap_style` + `arch_setcontext` |
 
-### 4.8 redox 对比
+### 4.8 sig_delay_done 实现：停止延迟的"何时结束"与"谁来通知"
+
+> C 语义的完整闭环：**PM 请求延迟停止 → 内核置 `MF_SIG_DELAY` 返回 EBUSY → 进程到达安静点 → 内核 `sig_delay_done` → PM 收到 SIGSNDELAY 重试停止**。前一半（置位 + EBUSY）在 [17-syscall-process.md](17-syscall-process.md) §4.6（`dispatch_runctl` RC_DELAY）；后一半是本节内容。
+
+`sig_delay_done(rp)` 的 C 实现只有两行——清 `MF_SIG_DELAY`，然后 `cause_sig(proc_nr(rp), SIGSNDELAY)`（system.c:461,463）。但"何时调用它"分散在两处，且两处的触发条件都隐含了**进程不再发送**这个不变量：
+
+| 触发点 | C 位置 | 条件 | 语义 |
+|--------|--------|------|------|
+| 调度循环 misc-flags | proc.c:379-381 | 进程 `MF_SC_DEFER` 重放完 syscall 后，`MF_SIG_DELAY` 仍置 **且** 不再 `RTS_SENDING` | deferred syscall 走完、没阻塞在 SEND → 已安静 |
+| receive 投递 | proc.c:1082-1083 | sender 的 `MF_SIG_DELAY` 置位，其消息刚被接收方取走 | 消息送达 = 不再发送 → 已安静 |
+
+**设计难点**：`cause_sig(SIGSNDELAY)` 会设 `RTS_SIGNALED`。在 Rust 里，`rts_set` 不是裸改位——它携带**调度器 dequeue 副作用**（进程从可运行变不可运行，必须移出就绪队列，否则 `pick_proc` 会选到不可运行的队头，sched.rs debug_assert 直接炸）。就绪队列住在 `ProcessTable` 内部的 `Scheduler` 里，所以延迟结束通知**必须在 ProcessTable 级运行**，而不能在只拿 `&mut [KProcess]` 的 `IpcEngine` 里。这决定了两个调用点的形状：
+
+- **调度循环路**（proc.c:379-381）本就跑在 `process_misc_flags`（`ProcessTable` 方法）里，直接调 `self.sig_delay_done(nr, priv_table)`；
+- **receive 投递路**（proc.c:1082-1083）跑在 `IpcEngine::receive` 里——引擎只持有进程切片。这里把 C 的"就地调用"改成**先记录、后上报**：`IpcEngine` 新增 `sig_delay_sender: Option<ProcNr>` 字段，receive Phase 3 投递时若 sender 置了 `MF_SIG_DELAY` 就记录之；`dispatch_ipc` 改持 `&mut ProcessTable`（不再裸切片），`do_ipc` 返回后取走记录并统一 `sig_delay_done`。
+
+这个"slice 引擎只负责投递、ProcessTable 负责有调度副作用的收尾"的拆分，和 `delivermsg`→`process_misc_flags` 的既有分工同构：**任何会把进程从 runnable 拖到 non-runnable 的路径都必须回到 ProcessTable 层**。文档 [12-ipc-core.md](12-ipc-core.md) §4.4 的 Phase 3 伪代码已同步标注该记录动作。
+
+**已知限制（SIGSNDELAY 超出 64 位位图）**：C 的 `sigset_t` 是 128 位（`__uint32_t __bits[4]`，sigtypes.h:60-62），SIGSNDELAY=70 能落在 `p_pending` 里随 GETKSIG map 送达 PM。Rust 的 `SigSet(u64)` 以 `_NSIG=64` 为界，`p_pending.add(70)` 是 no-op——所以信号**编号**不会出现在 GETKSIG map 里，交付的内核行为是唤醒协议：`RTS_SIGNALED | RTS_SIG_PENDING` + `mini_notify` 唤醒管理器。这与既有 `SIGKSIG=74`/`SIGKSIGSM=73` 是同一个已记录的限制（见 §4.3/§4.7）；完整编码需要把 `SigSet` 扩到 128 位，涉及 GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG 消息字段与 PM 镜像的跨切面改动，独立追踪。
+
+### 4.9 redox 对比
 
 | 维度 | redox | minix-rs | 选择理由 |
 |------|-------|---------|---------|
@@ -779,7 +813,7 @@ pub trait SignalContext: Sized + Send + Sync {
 | FPU 状态 | `context::fxsave` 内联 | `FpuArch` trait + `KProcess.fpu_state: CurrentFpuState`（SMP SAVE_CTX 使用；64-bit 信号路径不参与，对齐 C `#if defined(__i386__)` gating） | minix-rs 抽象为 trait 可跨架构 |
 | 信号管理器 | 单一 PM（无多 SM 概念） | per-process `s_sig_mgr` + `s_bak_sig_mgr` | minix-rs 对齐 C 的多 SM 支持 |
 
-### 4.9 no_std 与 BKL 约束
+### 4.10 no_std 与 BKL 约束
 
 - `#![no_std]`：`syscall_signal.rs` 不依赖 `std`，仅用 `core`；测试模块 `#[cfg(test)]` 可用 `std`。
 - BKL 保护：`p_pending` / `p_rts_flags` / `s_sig_pending` 是共享数据，由系统调用入口获取的 BKL 保护（参考 16-smp）。`cause_signal` 必须在 BKL 下调用，BKL 保证无其他 CPU 并发修改。
@@ -790,6 +824,8 @@ pub trait SignalContext: Sized + Send + Sync {
 ## 5. 测试
 
 ### 5.1 现有测试（13 个，可 grep）
+
+> 注：`sig_delay_done`（todo D-13）的行为测试分布在 `proc_table.rs` / `ipc.rs` / `syscall.rs` 三个测试模块（而非 syscall_signal.rs），见下方「sig_delay_done 专项测试（D-13，2026-09-05）」小节。
 
 | 测试函数 | 行号（2026-09-05） | 验证行为 | 对应 C 符号 |
 |---------|------|---------|------------|
@@ -828,6 +864,17 @@ rg "fn test_" os/kernel/src/syscall_signal.rs --type rust -n
 # → 1030: fn test_cause_signal_self_lethal_no_backup_panics
 ```
 
+#### sig_delay_done 专项测试（D-13，2026-09-05）
+
+| 测试函数 | 模块 | 验证行为 | 对应 C 符号 |
+|---------|------|---------|------------|
+| `test_sig_delay_done_clears_flag_and_causes_signdelay` | proc_table.rs | 清 `MF_SIG_DELAY` + cause_signal(SIGSNDELAY) 外部路径（SIGNALED + 管理器通知） | system.c:461,463 |
+| `test_process_misc_flags_sc_defer_ends_sig_delay` | proc_table.rs | deferred syscall 完成且未阻塞 SEND → 延迟结束 | proc.c:379-381 |
+| `test_process_misc_flags_sc_defer_blocked_in_send_keeps_sig_delay` | proc_table.rs | deferred syscall 阻塞在 SEND → 延迟**不**结束（留给 receive 路） | proc.c:379-381 |
+| `test_receive_sig_delay_sender_records_pending_delay` | ipc.rs | receive Phase 3 记录 `MF_SIG_DELAY` sender（one-shot） | proc.c:1082-1083 |
+| `test_receive_plain_sender_has_no_pending_delay` | ipc.rs | 无 `MF_SIG_DELAY` 的 sender 不记录 | proc.c:1082-1083 |
+| `test_dispatch_ipc_receive_ends_sender_sig_delay` | syscall.rs | **端到端**：dispatch_ipc → receive 投递 → 统一 sig_delay_done（清位 + SIGNALED + 管理器唤醒） | proc.c:1082-1083 → system.c:454-464 |
+
 ### 5.2 待补充测试
 
 | 测试函数 | 验证行为 | 依赖 |
@@ -843,8 +890,10 @@ rg "fn test_" os/kernel/src/syscall_signal.rs --type rust -n
 ## 6. 参见
 
 - [11-scheduling-primitives.md](11-scheduling-primitives.md) — `RTS_SIGNALED` / `RTS_SIG_PENDING` 定义与调度影响
+- [12-ipc-core.md](12-ipc-core.md) — receive Phase 3 投递路径（sig_delay_done 的记录点，§4.4/§5.1）
+- [13-syscall-dispatch.md](13-syscall-dispatch.md) — `dispatch_ipc` 签名演进（D-13 改持 `&mut ProcessTable`，§4.8）
 - [14-exception-interrupt.md](14-exception-interrupt.md) — `exception_handler` 调用 `cause_sig`（CPU 异常 → 信号投递）
 - [15-clock-timer.md](15-clock-timer.md) — `vtimer_check` 发送 SIGVTALRM / SIGPROF
 - [16-smp.md](16-smp.md) — BKL 保护共享数据（`p_pending` / `s_sig_pending`）；FpuArch trait（FPU save/restore 依赖）
-- [17-syscall-process.md](17-syscall-process.md) — `do_exit` 向自身发 SIGABRT；fork 时 `p_pending` 清空（不继承信号）
+- [17-syscall-process.md](17-syscall-process.md) — `do_exit` 向自身发 SIGABRT；fork 时 `p_pending` 清空（不继承信号）；`dispatch_runctl` RC_DELAY 置 `MF_SIG_DELAY`
 - [22-privilege.md](22-privilege.md) — `KPriv.s_sig_mgr` / `s_bak_sig_mgr` / `s_sig_pending` 字段定义与权限模型
