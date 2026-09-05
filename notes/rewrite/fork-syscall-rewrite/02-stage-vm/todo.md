@@ -1188,6 +1188,13 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **453 / 468 / 467 / 453 passed**（+1 可观测性测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 26-vm-queries.md（§3.4 扩展字段段、§4.8 encode 表、§5.1 测试行）
 
+### ✅ Fix #31: T17 — bitmap `cache_freepages` no-op 钩子删除（V11/T17 判定：语义已被双层覆盖）
+
+- **Files**: `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（删 55 行蓝图文档 + no-op `cache_freepages` + `alloc_mem` 内的恒零重试环 + `test_cache_freepages_returns_zero` no-op pin 测试；代之 10 行架构注记）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（5 处 DEFERRED 表述同步为已落地/判定状态）
+- **Ground Truth 判定**：C `cache_freepages` 的"回收单引用缓存页"语义已由 `PageCache::free_pages`（走 lru_oldest + refcount==1 + rmcache，page_cache.rs:375——正是 C cache.c:288-305 的对应物）实现，并由主循环压力钩子 `alloc_cycle` 批量调用；C 的"alloc_mem 内同步重试"在 minix-rs 对应"异步回收 + 下次分配重试"（偏差已登记）。allocator 内部 freed-page LIFO 在 `alloc_mem` 中本被优先消费——耗尽时 no-op 钩子恒返 0，重试环是死代码
+- **Verified**: `rg "cache_freepages" os/servers/vm/src` 仅剩 C 映射标签注释（page_cache.rs/vm_server.rs，语义正确）；四矩阵 452/467/466/452 passed（-1 no-op pin 测试）；四组合 clippy `^servers/` 0
+- **Docs**: 05-physical-memory.md 5 处；bitmap_alloc.rs 架构注记
+
 ### ✅ Fix #28: T9 step 1 — KernelIpcTransport 从 `unimplemented!()` 改为委托 minix-sys trap 后端（P1-3 半边闭环）
 
 - **Files**: `os/servers/vm/src/ipc/transport.rs`（`KernelIpcTransport` 增 `inner: DirectTrapTransport` 字段；`receive` 按 `sef_receive_status(ANY,…)` 委托、`send` 按 `ipc_send` 委托——调用形态定稿；`IpcStatus{flags}` 与 minix-sys `IpcStatus(u32)` 原始字直通；`TrapStatus → IpcError::Kernel` 映射；模块头/类型头文档重写）、minix-sys 依赖从闲置转为实际使用

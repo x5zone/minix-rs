@@ -303,53 +303,19 @@ impl BitmapAllocator {
         self.bitmap.len() * BITS_PER_CHUNK
     }
 
-    /// Free pages from the bitmap's page cache when the allocator
-    /// is under memory pressure.
-    ///
-    /// # DEFERRED
-    ///
-    /// Returns 0 (no-op) for now. The original Minix3 C
-    /// `cache_freepages()` at `cache.c:288` walks the VM block-cache
-    /// LRU (`lru_oldest`), reclaims single-refcount pages via
-    /// `rmcache()` + `free_mem()`, and returns how many were freed —
-    /// `alloc_mem` (alloc.c:263) retries after a successful reclaim.
-    /// The Rust port defers this reclaim path: the VM block cache
-    /// (`page_cache.rs`, 24-page-cache doc) is not yet wired into the
-    /// allocator, so on exhaustion `alloc_mem` falls through to
-    /// `AllocError::OutOfMemory` without the C "borrow pages from the
-    /// block cache" escape hatch. The split between the allocator's
-    /// own page cache and the VM block cache is:
-    ///
-    /// - **BitmapAllocator's page cache** (this `page_cache` field):
-    ///   a small LIFO of recently-freed pages that can be re-handed
-    ///   out without a bitmap lookup. Eviction policy: when the
-    ///   cache fills up, drop the oldest entry (push_back /
-    ///   pop_front semantics — see FIFO vs LRU eviction policy
-    ///   doc).
-    /// - **VM block cache** (`PageCache` in `page_cache.rs`):
-    ///   separately tracked by the VM and is unrelated to the
-    ///   bitmap's internal cache. Wiring `cache_freepages()` to flush
-    ///   entries from the VM block cache (as C does) is the deferred
-    ///   implementation step.
-    ///
-    /// **Implementation path** (when needed):
-    /// 1. If `self.page_cache_size > 0`, return the top of the
-    ///    cache as a "re-usable" page (no bitmap update needed —
-    ///    the page is still marked free).
-    /// 2. If empty, scan `free_pages_internal`'s reverse index
-    ///    (not yet implemented — see PFN → key reverse index for
-    ///    the page cache).
-    /// 3. Return the number of pages actually freed.
-    ///
-    /// For now, the bitmap falls through to the "no free pages"
-    /// branch in `alloc_mem` (line 347), which propagates
-    /// `AllocError::OutOfMemory` to the caller.
-    fn cache_freepages(&mut self, _needed: usize) -> usize {
-        // DEFERRED: see doc above for the 3-step implementation path.
-        // Currently returns 0 (no-op); the fallback in `alloc_mem` is
-        // `AllocError::OutOfMemory`, which propagates correctly.
-        0
-    }
+    // V11/T17 判定：C 的 `cache_freepages()`（cache.c:288-305）在本架构中
+    // 不需要 allocator 侧对应物——
+    //   1. 其"回收单引用缓存页"语义已由 VM 层实现：
+    //      `PageCache::free_pages()`（page_cache.rs，走 lru_oldest +
+    //      refcount==1 判定 + rmcache），由主循环压力钩子 `alloc_cycle`
+    //      批量调用（vm_server.rs，FREE_CACHE_BATCH=1024）。
+    //   2. C 的"alloc_mem 失败后同步重试"对应 minix-rs 的"回收后清压力
+    //      计数，下一次分配失败重新武装"——异步化的偏差已在 alloc_cycle
+    //      文档与 24-page-cache 登记为已知差异。
+    //   3. allocator 内部的 freed-page LIFO（free 路径压入）在
+    //      `alloc_mem` 里本就被优先消费——回收语义已天然覆盖。
+    // 保留此 no-op 钩子只会暗示"allocator 应该认识 VM block cache"，
+    // 而两层缓存的刻意分离（[ARCH: A-1] Direct Map 设计）恰恰不允许。
 }
 
 impl PhysAllocator for BitmapAllocator {
@@ -379,17 +345,12 @@ impl PhysAllocator for BitmapAllocator {
 
         let use_cache = !super::is_low_mem_flag(flags);
 
-        let mut page;
-        loop {
-            page = self.alloc_pages(alloc_clicks, max_page, use_cache);
-            if page.is_some() {
-                break;
-            }
-            let freed = self.cache_freepages(alloc_clicks);
-            if freed == 0 {
-                break;
-            }
-        }
+        // C: alloc_mem retries after cache_freepages() (alloc.c:263). In
+        // minix-rs that reclaim is asynchronous — the main loop's
+        // `alloc_cycle` calls `PageCache::free_pages()` and re-arms the
+        // pressure counter — so a failed attempt here simply falls through
+        // to `AllocError::OutOfMemory` (V11/T17 判定，见上方注记).
+        let page = self.alloc_pages(alloc_clicks, max_page, use_cache);
 
         let page = match page {
             Some(p) => p,
@@ -721,16 +682,7 @@ mod tests {
         assert_eq!(err, AllocError::OutOfMemory);
     }
 
-    #[test]
-    fn test_cache_freepages_returns_zero() {
-        let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];
-        let tp = total_pages_from_regions(&regions);
-        let metadata = make_test_metadata(tp);
-        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
-        assert_eq!(alloc.cache_freepages(1), 0);
-        assert_eq!(alloc.cache_freepages(100), 0);
-    }
-
+    
     #[test]
     fn test_reserve_pages() {
         let regions = vec![BootMemRegion { base: 0, size: 100 * CLICK_SIZE }];

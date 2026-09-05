@@ -4,7 +4,7 @@
 > **源码**: `minix3/minix/servers/vm/alloc.c`（548 行）；`minix3/minix/servers/vm/utility.c:44-79`（`get_mem_chunks`）；`minix3/minix/servers/vm/main.c:428-520`（`init_vm` 调用点）；`minix3/minix/include/minix/type.h:157-160`（`struct memory`）；`minix3/minix/include/minix/param.h:13-19`（`MAXMEMMAP`/`kinfo.memmap`）；`minix3/minix/servers/vm/vm.h:22-27,62`（`PAF_*`/`NO_MEM`）；`minix3/minix/include/minix/const.h:84-101`（click 宏）
 > **Rust 模块**: `os/servers/vm/src/phys_mem/`（`mod.rs`/`types.rs`/`alloc_trait.rs`/`bitmap_alloc.rs`/`buddy_alloc.rs`/`segment_tree_alloc.rs`/`stats.rs`/`allocator_tests.rs`）+ `os/servers/vm/src/boot.rs` + `os/servers/vm/src/global.rs` + `os/servers/vm/src/vm_server.rs:230-350,505-600` + `os/servers/vm/src/query.rs:296-305`
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`（启动主线）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（Direct Map `A-1` 概念，`PAF_CLEAR` 清零机制的前置）
-> **说明**: 物理内存分配的语义模块：**内存清单获取 / 分配器初始化 / 任意大小连续块分配与释放 / 记账与诊断 / 保留队列机制**。**不覆盖**：`vm_allocpage` 页分配与保留页池消费（`06-page-allocator`）、元数据搬迁 `relocate`（`10-vm-relocation`）、块缓存回收 `cache_freepages`（`24-page-cache`）。
+> **说明**: 物理内存分配的语义模块：**内存清单获取 / 分配器初始化 / 任意大小连续块分配与释放 / 记账与诊断 / 保留队列机制**。**不覆盖**：`vm_allocpage` 页分配与保留页池消费（`06-page-allocator`）、元数据搬迁 `relocate`（`10-vm-relocation`）、块缓存回收 `cache_freepages`（`24-page-cache`；Rust 侧回收已由 `PageCache::free_pages` + 主循环 `alloc_cycle` 落地，allocator 侧同步重试钩子按 V11/T17 判定删除）。
 
 ---
 
@@ -267,7 +267,7 @@ phys_clicks alloc_mem(phys_clicks clicks, u32_t memflags)
 语义要点：
 
 1. **对齐 = 预加大 + 裁剪**：先多要 `align_clicks` 页（64KB 对齐 = 16 clicks，16KB 对齐 = 4 clicks），分配成功后若起点未对齐，释放前缀、前移起点。**注意 C 只释放前缀**：当起点已经对齐（`o == 0`）时什么都不释放，`align_clicks` 页的尾部保留在分配器账上（外部不可见但减少空闲量）。Rust 侧回收了这部分（§3.8 语义差异表）。
-2. **失败重试依赖 `cache_freepages`**（cache.c:288-320）：分配失败时遍历 VM 块缓存 LRU、`rmcache` + `free_mem` 回收物理页后重试。这是"内存耗尽时块缓存可续命"机制（Rust 侧 DEFERRED，归 24-page-cache）。
+2. **失败重试依赖 `cache_freepages`**（cache.c:288-320）：分配失败时遍历 VM 块缓存 LRU、`rmcache` + `free_mem` 回收物理页后重试。这是"内存耗尽时块缓存可续命"机制。**Rust 侧已落地（异步化）**：回收由主循环压力钩子 `alloc_cycle` 调 `PageCache::free_pages`（批量 1024 页）完成，分配失败仅武装压力计数、下一次分配重试——同步重试 → 异步回收的偏差已登记（alloc_cycle 文档）。allocator 侧的同步重试钩子按 V11/T17 判定删除（bitmap_alloc.rs 架构注记）。
 3. **返回值是页号**：`NO_MEM` 定义在 `vm.h:62`（`((phys_clicks) MAP_NONE)`）。
 
 ### 2.5 alloc_pages / findbit：位图扫描核心（alloc.c:404-460 / 369-399）
@@ -506,7 +506,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 |---|--------|----------|------|
 | S-1 | 对齐 `o==0` 时尾部 `align_clicks` 页保留在账上（浪费） | bitmap/segment-tree 释放尾部；buddy 按 2 的幂块天然无浪费 | 良性改进（free_pages 记账更准，§2.4） |
 | S-2 | `lastscan` 静态提示位（顺序局部性） | 未移植，每次从 `maxpage` 起扫 | 性能差异（语义等价），诚实标注 |
-| S-3 | `cache_freepages`（cache.c:288）LRU 回收块缓存后重试 | `BitmapAllocator::cache_freepages` 返回 0（`bitmap_alloc.rs:340-348`，DEFERRED） | 语义缺口（OOM 时无续命路径），归 24-page-cache |
+| S-3 | `cache_freepages`（cache.c:288）LRU 回收块缓存后重试 | 回收半边已由 `PageCache::free_pages` + `alloc_cycle` 落地（vm_server.rs:580）；allocator 侧同步重试钩子按 V11/T17 判定删除（异步化偏差登记） | ✅ 已解决（异步化偏差为已知差异，alloc_cycle 文档） |
 | S-4 | `usedpages_*` + `mem_sanitycheck`（SANITYCHECKS 编译宏） | `cfg(test)` + `debug_assert` 双分配检测（如 `free_pages_internal` 的 `debug_assert!(!page_is_free)`，`bitmap_alloc.rs:266`） | cfg 替代（A-7） |
 | S-5 | `alloc_cycle` 主循环补满保留队列 | `vm_server.rs:570-581` 只维护 `missing_spares` 计数（`mark_alloc_failure`，L533），清零无补充体 | DEFERRED，归 06 |
 | S-6 | `printmemstats` 诊断打印 | 无直接对应 | 数据面经 `query.rs:296-305` 覆盖 |
@@ -537,7 +537,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 - `alloc_pages`（`bitmap_alloc.rs:145-204`）：单页走 page cache（LIFO + 失效条目跳过，等价 C alloc.c:418-429）、`max_page` 边界（LOWER16MB→4096 / LOWER1MB→256，等价 C alloc.c:406-416）、`find_bit` 单次全范围扫描（从 `max_page-1` 扫到 0，`bitmap_alloc.rs:168-171`）——C 的双扫描（lastscan 起点 + maxpage 兜底）在 Rust 因无 lastscan 提示位而合并为一次完整扫描，语义等价；
 - `find_bit`（`bitmap_alloc.rs:206-257`）：反向扫描 + chunk-skip（等价 C findbit alloc.c:369-399；Rust 以 u64 chunk 实现，且跳过逻辑为 C 的严格改进）；
 - `free_pages_internal`（`bitmap_alloc.rs:259-274`）：置位 + 缓存压栈（上限 10000）+ `debug_assert` 双释放检测（S-4）；
-- `alloc_mem`（`bitmap_alloc.rs:349-430`）：对齐预加大 + 失败重试 `cache_freepages`（当前返回 0，S-3）+ 对齐裁剪（S-1）+ `PAF_CLEAR` Direct Map 清零（D7）；
+- `alloc_mem`（`bitmap_alloc.rs`）：对齐预加大 + 对齐裁剪（S-1）+ `PAF_CLEAR` Direct Map 清零（D7）；C 的失败重试 `cache_freepages` 环节在 Rust 侧由主循环 `alloc_cycle` 异步承接（V11/T17 判定，重试环已删除）；
 - `free_mem`（`bitmap_alloc.rs:432-439`）：`clicks == 0` 早退（等价 C alloc.c:296）；
 - `reserve_pages`（`bitmap_alloc.rs:445-462`）：把一段物理页标记为已用（等价"分配器知道哪些页被谁占用"，供 boot 期预留）；`available_regions`（`bitmap_alloc.rs:464-476`）；`memstats`（`bitmap_alloc.rs:482-489`，等价 C `memstats` 的逐段扫描）。
 
@@ -586,7 +586,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 
 | 缺口 | 状态 |
 |------|------|
-| `cache_freepages` 块缓存回收重试（C cache.c:288 LRU） | DEFERRED，归 24-page-cache（§3.8 S-3） |
+| `cache_freepages` 块缓存回收（C cache.c:288 LRU） | ✅ 回收半边落地（`PageCache::free_pages` + `alloc_cycle`）；allocator 同步重试钩子 V11/T17 判定删除（异步化偏差登记） |
 | `lastscan` 分配位置提示 | 未移植（性能差异，非语义，§3.8 S-2） |
 | `usedpages_*`/`mem_sanitycheck` 双分配检测 | `cfg`/`debug_assert` 替代（A-7，§3.8 S-4） |
 | `alloc_cycle` 保留队列补充体 | DEFERRED，归 06-page-allocator（§3.8 S-5） |
