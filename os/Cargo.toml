@@ -155,6 +155,7 @@ members = [
     "libs/minix-blockdriver",
     "libs/minix-netdriver",
     "libs/minix-vtreefs",
+    "libs/minix-sffs",
     "libs/minix-bdev",
     "libs/minix-usb",
     "libs/minix-virtio",
