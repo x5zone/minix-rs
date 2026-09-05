@@ -1,8 +1,25 @@
-//! Minix-RS driver (bus/pci) — 占位 crate。
+//! PCI bus driver: enumeration database plus configuration access.
 //!
-//! C 对应: `minix3/minix/drivers/bus/pci/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence: `minix3/minix/drivers/bus/pci/` — `main.c` (740
+//! lines, query protocol plus control codes), `pci.c` (2559 lines,
+//! enumeration, bridges, interrupt routing), `pci_table.c` (37 lines,
+//! bridge identifier table). Enumeration mechanics (bridge windows,
+//! register-level probing) stay in the service crate behind
+//! [`config::ConfigSpace`]; this crate owns the numbers and the policy
+//! (protocol decoding, visibility, duplicate refusal). See document
+//! `11-pci-driver.md` in
+//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//!
+//! Single-threaded event loop: one message at a time, no shared mutable
+//! state across threads.
+
 #![no_std]
 
-/// 服务初始化入口（占位）。
+extern crate alloc;
+
+pub mod config;
+pub mod database;
+pub mod protocol;
+
+/// Service initialization entry (wires the database; transport stays out).
 pub fn init() {}

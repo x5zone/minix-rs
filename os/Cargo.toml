@@ -159,6 +159,7 @@ members = [
     "libs/minix-bdev",
     "libs/minix-usb",
     "libs/minix-virtio",
+    "libs/minix-devman-client",
 
     # 游戏命令（占位，镜像 minix3/games）
     "commands/games/adventure",
