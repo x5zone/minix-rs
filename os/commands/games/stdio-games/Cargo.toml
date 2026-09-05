@@ -1,0 +1,10 @@
+[package]
+name = "minix-stdio-games"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_stdio_games"
+path = "src/lib.rs"

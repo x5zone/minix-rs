@@ -1,0 +1,10 @@
+[package]
+name = "minix-text-games"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_text_games"
+path = "src/lib.rs"

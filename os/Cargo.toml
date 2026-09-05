@@ -86,6 +86,7 @@ members = [
     "commands/usr-bin/doctools",
     "commands/usr-bin/compress",
     "commands/usr-sbin/svcsched",
+    "commands/usr-sbin/pkgtools",
     "commands/usr-sbin/netconfig",
     "commands/usr-sbin/netservices",
     
@@ -187,6 +188,9 @@ members = [
     "commands/games/adventure",
     "commands/games/arithmetic",
     "commands/games/banner",
+    "commands/games/stdio-games",
+    "commands/games/term-games",
+    "commands/games/text-games",
     "commands/games/bcd",
     "commands/games/caesar",
     "commands/games/colorbars",

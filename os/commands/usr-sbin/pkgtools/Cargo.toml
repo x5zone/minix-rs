@@ -1,0 +1,10 @@
+[package]
+name = "minix-pkgtools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_pkgtools"
+path = "src/lib.rs"
