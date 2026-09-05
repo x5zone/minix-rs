@@ -2,18 +2,33 @@
 //!
 //! System call wrappers for user-space programs.
 //!
-//! # STUB NOTICE
+//! The communication primitives ([`ipc`]) and the system call protocol
+//! ([`syscall`]) are fully implemented over an explicit transport trait.
+//! Service-group wrappers below (processes, files, memory mapping) belong to
+//! later stage documents and still report explicit failures until their own
+//! documents land.
 //!
-//! This crate is a **stub** — most functions are `todo!()` and will panic
-//! if called. It defines the intended API but is not yet functional.
+//! # Transport model
+//!
+//! The zero-argument functions in this file delegate to the direct-trap
+//! transport: the only transport a real binary has. In a hosted test
+//! environment no kernel answers, so they return explicit errors instead of
+//! faulting. Test code that needs scripted replies uses [`ipc::CannedTransport`]
+//! with [`syscall::perform_syscall`] directly.
 
 #![no_std]
 
 extern crate alloc;
 
+use ipc::IpcTransport;
 use minix_types::{Endpoint, IpcError, Message};
 
 pub use minix_types::{Gid, Pid, Uid};
+
+/// Inter-process communication primitives (document 04).
+pub mod ipc;
+/// System call protocol above send-and-receive (document 05).
+pub mod syscall;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
@@ -35,26 +50,42 @@ pub mod usb_model;
 pub type Fd = i32;
 
 // ── IPC system calls ──
+//
+// Each function delegates to the direct-trap transport (see `ipc`). The
+// transport reports an explicit failure status where no kernel answers;
+// the mapping to the public error type lives in one place
+// (`ipc::trap_status_to_ipc_error`).
 
-/// Sends a message.
+/// Sends a message (blocking).
 pub fn send(dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
-    todo!("send implementation")
+    ipc::DirectTrapTransport
+        .send(dest, msg)
+        .map_err(ipc::trap_status_to_ipc_error)
 }
 
-/// Receives a message.
+/// Receives a message (blocking).
 pub fn receive(src: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
-    todo!("receive implementation")
+    ipc::DirectTrapTransport
+        .receive(src, msg)
+        .map(|_| ())
+        .map_err(ipc::trap_status_to_ipc_error)
 }
 
 /// Sends and receives (synchronous call).
 pub fn sendrec(dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
-    send(dest, msg)?;
-    receive(dest, msg)
+    // The C library implements send-and-receive as one trap (not as
+    // send-then-receive); keep the single-trap shape here as well.
+    ipc::DirectTrapTransport
+        .sendrec(dest, msg)
+        .map_err(ipc::trap_status_to_ipc_error)
 }
 
 /// Sends a notification.
 pub fn notify(dest: Endpoint, type_: minix_types::NotifyType) -> Result<(), IpcError> {
-    todo!("notify implementation")
+    let _ = type_;
+    ipc::DirectTrapTransport
+        .notify(dest)
+        .map_err(ipc::trap_status_to_ipc_error)
 }
 
 // ── Process system calls ──

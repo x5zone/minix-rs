@@ -98,6 +98,12 @@ pub const ENOSYS: i32 = 78;
 /// minix-types 采用用户态正数约定，见 03-stage-rs/99-rs-global-concepts.md §errno 符号约定).
 /// RS 用它作 `r_init_err` 的默认值（manager.c:1828，clone_slot）。
 pub const ERESTART: i32 = 200;
+/// Source or destination is not ready. C: `ENOTREADY` — sys/errno.h:197.
+/// The kernel answers a system call with this status when the other end is
+/// not ready yet; `_kernel_call` (minix/lib/libsys/kernel_call.c) retries the
+/// call with a growing delay instead of failing. Like the other 200-range
+/// codes, minix-types uses the positive user-space convention.
+pub const ENOTREADY: i32 = 201;
 pub const EDONTREPLY: i32 = 203;
 /// Generic error. C: `EGENERIC` — sys/errno.h:200.
 pub const EGENERIC: i32 = 204;
@@ -162,6 +168,8 @@ impl Errno {
     pub const ENOSYS: Errno = Errno(ENOSYS);
     /// C: `ERESTART` — sys/errno.h:196 (positive user-space convention).
     pub const ERESTART: Errno = Errno(ERESTART);
+    /// C: `ENOTREADY` — sys/errno.h:197 (positive user-space convention).
+    pub const ENOTREADY: Errno = Errno(ENOTREADY);
     /// C: `EDONTREPLY` — sys/errno.h:199 (reply-suppression sentinel).
     pub const EDONTREPLY: Errno = Errno(EDONTREPLY);
     /// C: `EGENERIC` — sys/errno.h:200.
@@ -205,5 +213,7 @@ mod tests {
     fn test_errno_roundtrip() {
         assert_eq!(Errno::from_i32(22).to_i32(), 22);
         assert_eq!(Errno::from_i32(78), Errno::ENOSYS);
+        assert_eq!(Errno::from_i32(201), Errno::ENOTREADY);
+        assert_eq!(ENOTREADY, 201);
     }
 }

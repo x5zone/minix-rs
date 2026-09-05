@@ -1,8 +1,8 @@
 //! Minix-RS Runtime Library.
 //!
 //! User-space runtime support for every Minix-RS user program (servers, file
-//! systems, drivers, and commands share this layer). The crate covers the
-//! first three documents of the runtime stage:
+//! systems, drivers, and commands share this layer). The crate covers four
+//! documents of the runtime stage:
 //!
 //! - `01-kernel-handoff`: the kernel information page and the initial stack
 //!   ([`handoff`]).
@@ -10,25 +10,24 @@
 //!   to the `main` call ([`start`]).
 //! - `03-runtime-init`: publishing the kernel information page and the
 //!   communication vector table ([`init`]).
+//! - `06-allocator`: break management and slab allocation ([`alloc`]).
 //!
-//! The remaining runtime concerns (memory allocator, panic output, system
-//! call wrappers) live in later stage documents and keep their existing
-//! placeholder implementations at the bottom of this file until their own
-//! documents land.
+//! The remaining runtime concerns (panic output, system call wrappers) live
+//! in later stage documents and keep their existing placeholder
+//! implementations until their own documents land.
 //!
 //! # Crate status
 //!
-//! The three new modules have complete logic with unit tests. The functions
-//! below remain placeholders with well-defined behavior (no silent failures):
+//! The four modules have complete logic with unit tests. The functions below
+//! remain placeholders with well-defined behavior (no silent failures):
 //!
-//! - `init()` — no-op. Will delegate to [`init::initialize_runtime`] once the
-//!   communication trap is wired.
 //! - `_start()` — calls `init`, then `main`, then `minix_sys::exit`.
-//! - `alloc()` / `free()` — return null / no-op. Will back onto a slab
-//!   allocator fed by `minix_sys::mmap` once virtual memory communication is
-//!   wired.
 //! - `panic` handler — loops forever. Will print to standard error via
 //!   `minix_sys::write` once that system call lands.
+//!
+//! `init()` now initializes the global allocator (idempotent). It will
+//! delegate to [`init::initialize_runtime`] once the communication trap is
+//! wired.
 //!
 //! # Standard library versus freestanding builds
 //!
@@ -61,6 +60,8 @@ pub mod handoff;
 pub mod start;
 /// Runtime initialization: kernel page query and vector install (document 03).
 pub mod init;
+/// Memory allocator: break management plus slab allocation (document 06).
+pub mod alloc;
 
 #[cfg(not(feature = "std"))]
 use core::panic::PanicInfo;
@@ -71,10 +72,10 @@ use core::panic::PanicInfo;
 ///
 /// # Current behavior
 ///
-/// No-op. Future extensions (in order of dependency):
-/// 1. Initialize the global allocator (when slab allocator lands).
-/// 2. Set up thread-local storage (when symmetric multiprocessing user-space lands).
-/// 3. Install default signal handlers (when `minix_sys::sigaction` lands).
+/// Initializes the global allocator (idempotent: later calls do nothing).
+/// Future extensions (in order of dependency):
+/// 1. Set up thread-local storage (when symmetric multiprocessing user-space lands).
+/// 2. Install default signal handlers (when `minix_sys::sigaction` lands).
 ///
 /// # When to call
 ///
@@ -82,7 +83,7 @@ use core::panic::PanicInfo;
 /// - In `std` mode: caller must invoke explicitly (typically the first
 ///   line of `main`).
 pub fn init() {
-    // Intentionally empty. See doc comment above for the roadmap.
+    ensure_global_allocator();
 }
 
 /// Program entry point (`no_std` mode only).
@@ -124,48 +125,142 @@ pub extern "C" fn _start() -> ! {
 
 /// Allocates `size` bytes of uninitialized memory.
 ///
-/// Returns a pointer to the allocated memory, or null if the allocation
-/// fails (including the current stub state where no allocator is wired).
-///
-/// # Current behavior
-///
-/// Returns null unconditionally. Callers that dereference the result
-/// will fault — this is intentional (fail-fast) rather than returning
-/// a dangling pointer.
-///
-/// # Future implementation
-///
-/// Will back onto a slab allocator that obtains pages from VM via
-/// `minix_sys::mmap`. Small allocations (< page size) will be served
-/// from per-CPU slab caches; large allocations will be direct `mmap`s.
+/// Served by the global slab allocator (see [`alloc`]): small objects come
+/// from size-class slabs, large objects from whole page runs, all currently
+/// supplied by an embedded static pool. Returns null when the pool is
+/// exhausted or when `size` is zero — fail-fast rather than faulting later.
 ///
 /// # Alignment
 ///
-/// The returned pointer is guaranteed to be aligned to `core::mem::align_of::<usize>()`.
-/// (Future contract; the stub does not allocate.)
+/// The returned pointer is guaranteed to be eight-byte aligned.
+///
+/// # Threading contract
+///
+/// Assumes a single-threaded user process (same assumption as the rest of
+/// the startup path). Thread support will revisit this contract.
 pub fn alloc(size: usize) -> *mut u8 {
-    let _ = size;
-    // Stub: no allocator wired. Return null so callers fail fast
-    // rather than silently corrupting memory.
-    core::ptr::null_mut()
+    with_global_allocator(|allocator| allocator.alloc(size))
 }
 
 /// Frees memory previously allocated by [`alloc`].
 ///
-/// # Current behavior
-///
-/// No-op. Memory allocated by the future allocator will be returned to
-/// the slab cache here.
+/// Returns the block to the global slab allocator. Passing null is allowed
+/// and does nothing (matches C `free(NULL)`).
 ///
 /// # Safety contract
 ///
-/// - `ptr` must be either null or a pointer previously returned by `alloc`.
-/// - Passing null is explicitly allowed (matches C `free(NULL)`).
-/// - The behavior when passing a dangling or already-freed pointer is
-///   undefined (will be a panic in the future implementation).
+/// - `ptr` must be either null or a pointer previously returned by `alloc`
+///   on this same process image.
+/// - A pointer that was already freed, or that never came from `alloc`,
+///   stops the process with a panic instead of corrupting the heap.
 pub fn free(ptr: *mut u8) {
-    let _ = ptr;
-    // Stub: no-op. Future implementation will return memory to the slab.
+    with_global_allocator(|allocator| allocator.free(ptr))
+}
+
+/// The C heap starts at the linker-provided `_end` symbol and grows through
+/// the virtual memory server. Until that server channel lands, this embedded
+/// pool plays the role of the initial heap: sixteen pages owned by the
+/// binary itself, with virtual memory mapping chained behind it later.
+/// Page-aligned so the same memory can later be described to the virtual
+/// memory server without copying.
+#[repr(align(4096))]
+struct PoolStorage(core::cell::UnsafeCell<[u8; alloc::GLOBAL_POOL_BYTES]>);
+
+// SAFETY: only touched through the global allocator functions, which assume
+// a single-threaded user process (see the threading contract on `alloc`).
+unsafe impl Sync for PoolStorage {}
+
+static POOL_STORAGE: PoolStorage = PoolStorage(core::cell::UnsafeCell::new(
+    [0u8; alloc::GLOBAL_POOL_BYTES],
+));
+
+/// Holder for the lazily created global allocator.
+struct GlobalAllocator {
+    inner: core::cell::UnsafeCell<Option<alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>>>,
+    ready: core::sync::atomic::AtomicBool,
+}
+
+impl GlobalAllocator {
+    const fn new() -> Self {
+        GlobalAllocator {
+            inner: core::cell::UnsafeCell::new(None),
+            ready: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+// SAFETY: same single-threaded contract as PoolStorage; the `ready` flag is
+// an atomic so initialization itself is ordered.
+unsafe impl Sync for GlobalAllocator {}
+
+static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
+
+/// Creates the global allocator on first use (idempotent).
+fn ensure_global_allocator() {
+    if !GLOBAL_ALLOCATOR
+        .ready
+        .swap(true, core::sync::atomic::Ordering::SeqCst)
+    {
+        // SAFETY: this branch runs exactly once (the swap above hands out a
+        // single "first" ticket), and no other code touches the pool before
+        // the flag is set, so exclusive access holds.
+        unsafe {
+            let pool = &mut *POOL_STORAGE.0.get();
+            let supplier = alloc::FixedPoolSupplier::new(pool);
+            *GLOBAL_ALLOCATOR.inner.get() = Some(alloc::SlabAllocator::new(supplier));
+        }
+    }
+}
+
+/// Runs `action` against the global allocator, creating it first if needed.
+fn with_global_allocator<R>(action: impl FnOnce(&mut alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>) -> R) -> R {
+    ensure_global_allocator();
+    // SAFETY: creation above precedes this read (same SeqCst ordering), and
+    // single-threaded use rules out concurrent access.
+    unsafe {
+        let allocator = (*GLOBAL_ALLOCATOR.inner.get())
+            .as_mut()
+            .expect("global allocator is ready after ensure");
+        action(allocator)
+    }
+}
+
+#[cfg(test)]
+mod global_tests {
+    use super::*;
+
+    // Serializes the global-allocator tests: they share one static pool, so
+    // they must not interleave. Owned-allocator tests in `alloc.rs` never
+    // touch the globals and run freely in parallel.
+    static GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_global_alloc_free_round_trip() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
+        let pointer = alloc(64);
+        assert!(!pointer.is_null());
+        assert_eq!(pointer as usize % 8, 0);
+        // SAFETY: 64 bytes were just handed out to this test.
+        unsafe {
+            core::ptr::write_bytes(pointer, 0x5A, 64);
+            assert_eq!(core::ptr::read(pointer), 0x5A);
+        }
+        free(pointer);
+    }
+
+    #[test]
+    fn test_global_zero_request_returns_null() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
+        assert!(alloc(0).is_null());
+    }
+
+    #[test]
+    fn test_global_init_is_idempotent() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
+        init();
+        init();
+        assert!(!alloc(8).is_null());
+    }
 }
 
 /// Panic handler (`no_std` mode only).
