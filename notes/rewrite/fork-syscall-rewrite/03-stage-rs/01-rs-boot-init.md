@@ -661,17 +661,20 @@ pub trait SefCallbacks {
     fn init_response(&mut self, m: &Message) -> Result<i32, Errno>;  // → 12
     fn lu_response(&mut self, m: &Message) -> Result<i32, Errno>;    // → 12
     fn signal_handler(&mut self, signo: i32);                        // → 06
-    fn signal_manager(&mut self, signo: i32, exec: i32) -> i32;      // → 06
+    fn signal_manager(&mut self, target: Endpoint, signo: i32) -> Result<i32, Errno>;  // → 06
 }
 ```
 
 - `SefInitType::{Fresh, Lu, Restart}` 对应 `SEF_INIT_FRESH=0/LU=1/RESTART=2`（sef.h:93-95）。
+- `signal_manager` 的签名逐字对照 C 回调类型 `int(*)(endpoint_t target, int signo)`
+  （sef.h:270）：`target` 是信号管理器目标端点、`signo` 是信号号；`target` 用 `Endpoint`
+  newtype 而非裸 `i32`，两个参数在调用点不可互换（R26，todo §18）。
 - **实现者是 `RsServer` 本身**：`impl SefCallbacks for RsServer`。`RsServer::init(init_type)` 对应
   `sef_startup()` 的分派（main.c:151）——按 `init_type` 路由到 `init_fresh`/`init_lu`/
   `init_restart`；`init_fresh` 即四步 boot（§3.4）。**消息接收/拦截机制归 12**
   （`do_init_ready`/`sef_cb_init_response`）；主循环的 RS_INIT 分支（12）直接调 trait 方法，
-  回调体经 `&mut self` 拿到 `RsServer` 状态。12/18/06 未落地的 6 个方法在 `RsServer` 上
-  fail-closed（`Err(ENOSYS)`/`ENOSYS.to_i32()`），`signal_handler` 保留 `unimplemented!`
+  回调体经 `&mut self` 拿到 `RsServer` 状态。12/18/06 未落地的 5 个方法在 `RsServer` 上
+  fail-closed（`Err(ENOSYS)`），`signal_handler` 保留 `unimplemented!`
   （无 Result 通道，T7 门禁带 06 契约）。
 - **与 VM 01 §3.4 的简化对齐**：VM 用 `rs_handshake()` 替代 SEF 框架（`02-stage-vm/01-vm-init-main.md` §3.4）；RS 是 SEF 的**提供方**（其余服务的 init 协议由 RS 实现），必须保留完整的回调集语义；trait 化去掉 C 的全局函数指针且不引入"注册值 + 回调体无法触达状态"的中间形态。
 

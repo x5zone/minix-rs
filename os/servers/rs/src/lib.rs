@@ -28,7 +28,7 @@
 
 extern crate alloc;
 
-use minix_types::Errno;
+use minix_types::{Endpoint, Errno};
 
 pub mod access;
 pub mod boot;
@@ -288,8 +288,9 @@ impl SefCallbacks for RsServer {
     }
 
     /// C: `sef_cb_signal_manager` — main.c:149. DEFERRED until 06 lands;
-    /// fail closed, no panic (06-rs-main-loop.md).
-    fn signal_manager(&mut self, _signo: i32, _exec: i32) -> i32 {
-        Errno::ENOSYS.to_i32()
+    /// fail closed, no panic (06-rs-main-loop.md). Signature mirrors
+    /// sef.h:270 `(endpoint_t target, int signo)` (R26).
+    fn signal_manager(&mut self, _target: Endpoint, _signo: i32) -> Result<i32, Errno> {
+        Err(Errno::ENOSYS)
     }
 }

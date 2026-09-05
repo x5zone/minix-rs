@@ -27,7 +27,7 @@
 //! | [`SefCallbacks::signal_handler`] | main.c:148 | 06-rs-main-loop.md |
 //! | [`SefCallbacks::signal_manager`] | main.c:149 | 06-rs-main-loop.md |
 
-use minix_types::Errno;
+use minix_types::{Endpoint, Errno};
 
 /// SEF init type carried in the SEF_INIT message.
 ///
@@ -87,7 +87,13 @@ pub trait SefCallbacks {
     fn signal_handler(&mut self, signo: i32);
 
     /// C: `sef_cb_signal_manager` — main.c:149. Mechanism: 06-rs-main-loop.md.
-    fn signal_manager(&mut self, signo: i32, exec: i32) -> i32;
+    ///
+    /// Signature mirrors the C callback type verbatim —
+    /// `int(*)(endpoint_t target, int signo)` (sef.h:270): `target` is the
+    /// signal-manager endpoint the request is forwarded to, `signo` the
+    /// signal number. Typed as [`Endpoint`] (not a bare `i32`) so the two
+    /// arguments cannot be transposed at a call site (R26, todo §18).
+    fn signal_manager(&mut self, target: Endpoint, signo: i32) -> Result<i32, Errno>;
 }
 
 #[cfg(test)]
@@ -105,8 +111,8 @@ mod tests {
     #[test]
     fn test_deferred_callbacks_fail_closed() {
         // N5: the 12/18/06 callback bodies are not wired yet — every one of
-        // them must fail closed (Err(ENOSYS) / ENOSYS value) instead of
-        // panicking or silently succeeding (T2 pattern).
+        // them must fail closed with `Err(ENOSYS)` instead of panicking or
+        // silently succeeding (T2 pattern).
         let mut s = server();
         let info = SefInitInfo::default();
         assert_eq!(
@@ -117,6 +123,6 @@ mod tests {
         let m = Message::default();
         assert_eq!(s.init_response(&m), Err(Errno::ENOSYS));
         assert_eq!(s.lu_response(&m), Err(Errno::ENOSYS));
-        assert_eq!(s.signal_manager(1, 0), Errno::ENOSYS.to_i32());
+        assert_eq!(s.signal_manager(Endpoint::RS, 1), Err(Errno::ENOSYS));
     }
 }
