@@ -350,9 +350,9 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | 01 | reviewed | 2026-09-05 | 新建主循环骨架（248 行 + dispatch/server 16 测试；review 内修 1 P0 收尾可达 + 1 P0 文档 + 1 P2；24 passed） |
 | 02 | reviewed | 2026-09-05 | 新建协议面（299 行 + types 11 测试 + 7 线布局；review 内修 1 P0 填充 + 1 P1 推测 + 1 P2；164 passed） |
 | 03 | reviewed | 2026-09-05 | 新建（213 行 + mib_tree 8 测试；review 内修 1 P1 编号重叠 + 1 P2；24 passed） |
-| 04 | pending | — | 新建权限模型 |
-| 05 | pending | — | 新建 |
-| 06 | pending | — | 新建（A-2） |
+| 04 | reviewed | 2026-09-05 | 新建权限模型（204 行 + perms 10 测试；review 内修 1 P2；58 passed） |
+| 05 | reviewed | 2026-09-05 | 新建（244 行 + table/ctl 11 测试；review 内修 2 P0 + 1 P2；58 passed） |
+| 06 | reviewed | 2026-09-05 | 新建（230 行 + op/waiter 13 测试；review 内修 2 P0-code-bug + 1 P0-fact；58 passed） |
 | 07 | pending | — | 新建（A-3/A-9） |
 | 08 | pending | — | 新建（A-3 决策落地） |
 | 09 | pending | — | 新建 |

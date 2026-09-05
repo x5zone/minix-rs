@@ -17,6 +17,8 @@ extern crate alloc;
 
 pub mod dispatch;
 pub mod mib_tree;
+pub mod perms;
+pub mod sem;
 pub mod server;
 
 pub use dispatch::{Incoming, classify, proc_event_reply_type, should_reply, unknown_call_result};
@@ -24,4 +26,5 @@ pub use mib_tree::{
     InfoRoute, KERN_IPC_TABLE, KERN_SYSVIPC, KERN_SYSVIPC_SEM, KERN_SYSVIPC_SEM_INFO,
     KERN_SYSVIPC_SHM, KERN_SYSVIPC_SHM_INFO, KernIpcChild, MOUNT_PATH, route_info_query,
 };
+pub use perms::{AccessVerdict, Identity, IpcPerm, IpcPermSysctl, check_perm, is_owner_or_root};
 pub use server::{CallHandler, IpcServer, IpcStatus, IpcTransport, StubHandler, TransportError};

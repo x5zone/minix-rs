@@ -81,6 +81,127 @@ pub const SUSPEND: i32 = -998;
 pub const SEMOPM: usize = 100;
 
 // ============================================================================
+// System V permission bits, commands, and set limits
+// ============================================================================
+// Defined in Minix3: sys/sys/ipc.h:85-101 (permission bits and control
+// commands), sys/sys/sem.h:81-87/93/154/163-184/215-216 (semaphore commands,
+// maximum value, allocation bit, table limits, info subtypes).
+// Documents 04/05/06 share these; they live here (not per document) so the
+// three permission/table/operation modules read the same values.
+
+/// Read permission bit. C: `IPC_R 000400` — sys/ipc.h:85.
+pub const IPC_R: u32 = 0o400;
+
+/// Write/alter permission bit. C: `IPC_W 000200` — sys/ipc.h:86.
+pub const IPC_W: u32 = 0o200;
+
+/// Control-information permission bit. C: `IPC_M 010000` — sys/ipc.h:87.
+pub const IPC_M: u32 = 0o10000;
+
+/// Create entry if key does not exist. C: `IPC_CREAT 001000` — sys/ipc.h:90.
+pub const IPC_CREAT: i32 = 0o1000;
+
+/// Fail if key exists (with `IPC_CREAT`). C: `IPC_EXCL 002000` — sys/ipc.h:91.
+pub const IPC_EXCL: i32 = 0o2000;
+
+/// Error instead of waiting. C: `IPC_NOWAIT 004000` — sys/ipc.h:92.
+pub const IPC_NOWAIT: i32 = 0o4000;
+
+/// Private key: always creates a new object. C: `IPC_PRIVATE (key_t)0` — sys/ipc.h:94.
+pub const IPC_PRIVATE: i32 = 0;
+
+/// Remove identifier. C: `IPC_RMID 0` — sys/ipc.h:96.
+pub const IPC_RMID: i32 = 0;
+
+/// Set options. C: `IPC_SET 1` — sys/ipc.h:97.
+pub const IPC_SET: i32 = 1;
+
+/// Get options. C: `IPC_STAT 2` — sys/ipc.h:98.
+pub const IPC_STAT: i32 = 2;
+
+/// Read module information (Minix3 extension for `ipcs`). C: `IPC_INFO 500` — sys/ipc.h:101.
+pub const IPC_INFO: i32 = 500;
+
+/// Permission bits kept from the creation flag. C: `ACCESSPERMS 0777` — sys/stat.h:189.
+pub const ACCESSPERMS: u32 = 0o777;
+
+/// Return semaphore wait-for-increase count. C: `GETNCNT 3` — sys/sem.h:81.
+pub const GETNCNT: i32 = 3;
+
+/// Return last-operation process id. C: `GETPID 4` — sys/sem.h:82.
+pub const GETPID: i32 = 4;
+
+/// Return semaphore value. C: `GETVAL 5` — sys/sem.h:83.
+pub const GETVAL: i32 = 5;
+
+/// Return all semaphore values. C: `GETALL 6` — sys/sem.h:84.
+pub const GETALL: i32 = 6;
+
+/// Return semaphore wait-for-zero count. C: `GETZCNT 7` — sys/sem.h:85.
+pub const GETZCNT: i32 = 7;
+
+/// Set semaphore value. C: `SETVAL 8` — sys/sem.h:86.
+pub const SETVAL: i32 = 8;
+
+/// Set all semaphore values. C: `SETALL 9` — sys/sem.h:87.
+pub const SETALL: i32 = 9;
+
+/// Read by slot index (with identifier reply). C: `SEM_STAT 18` — sys/sem.h:215.
+pub const SEM_STAT: i32 = 18;
+
+/// Read module information. C: `SEM_INFO 19` — sys/sem.h:216.
+pub const SEM_INFO: i32 = 19;
+
+/// Semaphore maximum value. C: `SEMVMX 32767` — sys/sem.h:93.
+pub const SEMVMX: u32 = 32767;
+
+/// Undo-on-exit flag (explicitly unsupported: plan A-7). C: `SEM_UNDO 010000` — sys/sem.h:76.
+pub const SEM_UNDO: i32 = 0o10000;
+
+/// Mode bit: slot holds a live set. C: `SEM_ALLOC 01000` — sys/sem.h:154.
+pub const SEM_ALLOC: u32 = 0o1000;
+
+/// Maximum semaphore identifiers. C: `SEMMNI 10` — sys/sem.h:164.
+pub const SEMMNI: usize = 10;
+
+/// Maximum semaphores per identifier. C: `SEMMSL SEMMNS` — sys/sem.h:181.
+pub const SEMMSL: usize = 60;
+
+/// Maximum semaphores system-wide. C: `SEMMNS 60` — sys/sem.h:166.
+pub const SEMMNS: usize = 60;
+
+/// Sequence-number mask (fifteen bits). C: `& 0x7fff` — sem.c:135.
+pub const SEM_SEQ_MASK: u32 = 0x7fff;
+
+// ============================================================================
+// Shared-memory flags, commands, and limits
+// ============================================================================
+// Defined in Minix3: sys/sys/shm.h:76-77 (attach flags), :205-206 (info
+// subtypes), :218-223 (table limits and flags). Document 02 §2.6 lists
+// them; documents 07/08 consume them.
+
+/// Attach read-only. C: `SHM_RDONLY 010000` — sys/shm.h:76.
+pub const SHM_RDONLY: i32 = 0o10000;
+
+/// Round attach address. C: `SHM_RND 020000` — sys/shm.h:77.
+pub const SHM_RND: i32 = 0o20000;
+
+/// Destroy on last detach. C: `SHM_DEST 0x0400` — sys/shm.h:222.
+pub const SHM_DEST: u32 = 0x0400;
+
+/// Read by slot index (with identifier reply). C: `SHM_STAT 13` — sys/shm.h:205.
+pub const SHM_STAT: i32 = 13;
+
+/// Read module information. C: `SHM_INFO 14` — sys/shm.h:206.
+pub const SHM_INFO: i32 = 14;
+
+/// Maximum shared memory identifiers. C: `SHMMNI 1024` — sys/shm.h:218.
+pub const SHMMNI: usize = 1024;
+
+/// Maximum attached segments per process. C: `SHMSEG 32` — sys/shm.h:219.
+pub const SHMSEG: usize = 32;
+
+// ============================================================================
 // Call-number enum
 // ============================================================================
 
@@ -527,6 +648,31 @@ mod tests {
         assert_eq!(NR_IPC_CALLS, 7);
         // C: com.h:1151 — SUSPEND is negative, not an errno.
         assert_eq!(SUSPEND, -998);
+    }
+
+    #[test]
+    fn sysv_constants_match_c() {
+        // C: sys/sys/ipc.h:85-101 (permission bits and commands),
+        // sys/sys/sem.h:76-87/93/154/163-184/215-216 (undo flag, commands,
+        // maximum value, allocation bit, table limits, info subtypes),
+        // sys/stat.h:189 (ACCESSPERMS), sem.c:135 (sequence mask).
+        assert_eq!((IPC_R, IPC_W, IPC_M), (0o400, 0o200, 0o10000));
+        assert_eq!((IPC_CREAT, IPC_EXCL, IPC_NOWAIT), (0o1000, 0o2000, 0o4000));
+        assert_eq!(IPC_PRIVATE, 0);
+        assert_eq!((IPC_RMID, IPC_SET, IPC_STAT, IPC_INFO), (0, 1, 2, 500));
+        assert_eq!((GETNCNT, GETPID, GETVAL, GETALL, GETZCNT), (3, 4, 5, 6, 7));
+        assert_eq!((SETVAL, SETALL), (8, 9));
+        assert_eq!((SEM_STAT, SEM_INFO), (18, 19));
+        assert_eq!(SEMVMX, 32767);
+        assert_eq!(SEM_UNDO, 0o10000);
+        assert_eq!(SEM_ALLOC, 0o1000);
+        assert_eq!((SEMMNI, SEMMSL, SEMMNS, SEMOPM), (10, 60, 60, 100));
+        assert_eq!(ACCESSPERMS, 0o777);
+        assert_eq!(SEM_SEQ_MASK, 0x7fff);
+        assert_eq!((SHM_RDONLY, SHM_RND), (0o10000, 0o20000));
+        assert_eq!(SHM_DEST, 0x0400);
+        assert_eq!((SHM_STAT, SHM_INFO), (13, 14));
+        assert_eq!((SHMMNI, SHMSEG), (1024, 32));
     }
 
     #[test]

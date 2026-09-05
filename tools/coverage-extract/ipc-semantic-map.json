@@ -190,16 +190,20 @@
   "StubHandler"
  ],
  "do_semget": [
-  "handle_call",
-  "StubHandler"
+  "create"
  ],
  "do_semctl": [
-  "handle_call",
-  "StubHandler"
+  "SemctlCommand",
+  "authorize",
+  "query_scalar",
+  "write_value",
+  "write_all",
+  "read_all"
  ],
  "do_semop": [
-  "handle_call",
-  "StubHandler"
+  "validate_ops",
+  "try_ops",
+  "retry"
  ],
  "update_refcount_and_destroy": [
   "on_cycle_end"
@@ -208,9 +212,73 @@
   "StubHandler"
  ],
  "is_sem_nil": [
-  "StubHandler"
+  "is_empty"
  ],
  "is_shm_nil": [
   "StubHandler"
+ ],
+ "check_perm": [
+  "check_perm",
+  "AccessVerdict"
+ ],
+ "prepare_mib_perm": [
+  "IpcPermSysctl",
+  "from_perm"
+ ],
+ "sem_find_key": [
+  "find_key"
+ ],
+ "sem_find_id": [
+  "find_id"
+ ],
+ "remove_set": [
+  "remove",
+  "drain_set"
+ ],
+ "fill_seminfo": [
+  "fill_info",
+  "SemInfo"
+ ],
+ "get_sem_mib_info": [
+  "assemble_mib_info",
+  "SemIdView"
+ ],
+ "try_semop": [
+  "try_ops",
+  "TryOutcome"
+ ],
+ "check_set": [
+  "retry"
+ ],
+ "inc_susp_count": [
+  "bump_count",
+  "park"
+ ],
+ "dec_susp_count": [
+  "bump_count",
+  "complete_slot"
+ ],
+ "complete_semop": [
+  "complete_slot",
+  "Wakeup"
+ ],
+ "send_reply": [
+  "Wakeup"
+ ],
+ "sem_process_event": [
+  "cancel"
+ ],
+ "semaphore": [
+  "Semaphore"
+ ],
+ "sem_struct": [
+  "SemSet"
+ ],
+ "sembuf": [
+  "SemOp"
+ ],
+ "iproc": [
+  "Waiter",
+  "WaiterTable"
  ]
 }
