@@ -151,6 +151,14 @@ impl RProcTable {
     /// endpoint.rs:26-50) also yield `None`: C is saved from this indexing
     /// panic by the `rs_isokendpt` gate at the main loop (main.c:63-66), and
     /// the O(1) fast index must be total the same way (R12, fail-closed).
+    ///
+    /// R30 (index invariant): like C's raw `rproc_ptr`, this lookup is
+    /// deliberately *unfiltered* — mid-restructure rows legitimately flow
+    /// through it (swap_slot reads both endpoints before re-indexing, and
+    /// clone rows may still be vacant). Per-consumer validity filtering is
+    /// the consumer's job, mirroring C: `caller_can_control` re-verifies
+    /// `RS_IN_USE` (manager.c:52-60, access.rs), message-facing gates verify
+    /// slot state before acting (06, R12).
     pub fn endpoint_slot(&self, endpoint: Endpoint) -> Option<SlotId> {
         let slot = endpoint.slot();
         if !(0..NR_PROCS as i32).contains(&slot) {
@@ -764,6 +772,25 @@ mod tests {
         let table = RProcTable::new();
         // Negative slots are kernel tasks — never services (A-4: no index).
         assert_eq!(table.endpoint_slot(Endpoint::CLOCK), None);
+    }
+
+    #[test]
+    fn test_endpoint_slot_is_raw_index_mid_restructure() {
+        // R30: the index mirrors C's raw `rproc_ptr` — it stays readable
+        // while rows are mid-restructure (a freed-but-not-yet-cleared entry,
+        // or a vacant clone row flowing through swap_slot). Per-consumer
+        // validity filtering (e.g. `caller_can_control`'s `RS_IN_USE`
+        // re-check, manager.c:52-60) lives with the consumer.
+        let mut table = table_with_one_slot();
+        let id = table.endpoint_slot(Endpoint::VFS).expect("healthy index");
+        table.free_slot(id);
+        // free_slot cleared the index — a *cleared* entry yields None even
+        // at the raw layer.
+        assert_eq!(table.endpoint_slot(Endpoint::VFS), None);
+        // But a stale (not-yet-cleared) entry still surfaces the slot id:
+        // filtering is the consumer's contract, not the index's.
+        table.set_endpoint_index(Endpoint::VFS, Some(id));
+        assert_eq!(table.endpoint_slot(Endpoint::VFS), Some(id));
     }
 
     #[test]

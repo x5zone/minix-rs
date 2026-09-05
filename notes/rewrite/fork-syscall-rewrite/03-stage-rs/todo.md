@@ -1985,7 +1985,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
 | R28 | clone_service 两分支漏标 DEFERRED | P2 | ☐ | 可立即 todo-fix |
 | R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ☐ | 19 接线期决策 |
-| R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ☐ | 可立即 todo-fix |
+| R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ☐ | 逐项标注（见条目） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | D1 同轮 |
@@ -2091,6 +2091,25 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   文件零 diff；`tools/check-rs-unwired.sh` PASS。文档同步：06 §3 枚举/classify 签名 +
   设计差异"心跳分类结果自包含"条 + §5 表 7→8 项；07 §3.1 函数清单 + 设计差异"心跳写活标
   是独立决策"条 + §5 表加行；01 §4.4 枚举/classify 签名 + §5 表加行。
+
+### ✅ Fix #43 — R30（P2 契约弱化）：`caller_can_control` 补 in-use 复核，索引语义显式化
+- **File**：`os/servers/rs/src/access.rs`（`caller_can_control` 复核 + 测试）、
+  `process_table.rs`（`endpoint_slot` 文档化不变式 + 测试）、文档 02 §3.5/04 §2.2/§5
+- **Before**：`caller_can_control` 走 `endpoint_slot()` 索引后直接使用（manager.c:52-53 的
+  `RS_IN_USE` 逐行复核丢失），"endpoint 索引项 ⟺ in-use 槽"不变式无任何显式声明。
+- **After**：方案修正过程值得记录——最初把 in-use 校验加在 `endpoint_slot` 本身（方案 a），
+  被 3 个失败测试证伪：`swap_slot` 对重组中/vacant 行合法使用原始索引，全局过滤破坏
+  swap 流。最终形态忠实映射 C 的**两种构造**：`endpoint_slot` 保持裸 `rproc_ptr` 语义
+  （不过滤，文档声明不变式 + `test_endpoint_slot_is_raw_index_mid_restructure` 锁定
+  "清除的条目 None、陈旧条目仍可见"），`caller_can_control` 在索引命中后显式复核
+  `RFlags::IN_USE`（access.rs，fail-closed，等价 C 扫描跳过非 in-use 行）+
+  `test_caller_can_control_skips_non_in_use_caller_row`。
+- **Verified**：`cargo test -p minix-rs` = **216 passed**；clippy/fmt 触碰文件零输出；
+  `tools/check-rs-unwired.sh` PASS。文档同步：02 §3.5 加"原始索引语义（R30）"条、
+  04 §2.2 语义要点加第 2 条 + §5 表 5→6 项。
+- **设计注**：这一轮的失败-修正过程正是 translate 防线的实例——把 C 扫描循环的局部语义
+  提升到共享索引层，是"看起来更安全"的 translate 式全局化；C 的安全来自**每消费者各自
+  过滤**，Rust 的正确形态是映射同一结构，而不是发明一个 C 不存在的"智能索引"。
 
 ### ✅ Fix #42 — R24（P1 模式破例）：`do_upd_ready` 补 SlotMutations 载荷，`RS_PREPARE_DONE` 落地
 - **File**：`os/servers/rs/src/ready.rs`（新增 `UpdReadyDecision` + `do_upd_ready` 返回载荷

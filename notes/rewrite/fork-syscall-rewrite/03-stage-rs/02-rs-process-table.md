@@ -593,6 +593,7 @@ pub struct RProcTable {
 - **O(1) 保持**：`by_endpoint[endpoint.slot()]`（`Endpoint::slot()` = `_ENDPOINT_P`，endpoint.rs:88-90）。
 - **无悬垂**：槽释放时同步清除索引（`free_slot`，§4.2）；内核任务（负槽号）不建索引——`endpoint_slot()` 对负槽号返回 `None`（内核任务永不为服务，`rproc_ptr` 负下标在 C 中本就是未定义行为，Rust 显式排除）。
 - **索引全量（R12）**：`endpoint_slot()`/`set_endpoint_index()` 对 `slot() ∉ [0, NR_PROCS)` 一律 `None`/忽略——`Endpoint::NONE/ANY/SELF` 的槽号在 `NR_PROCS` 之上（endpoint.rs:26-50），裸下标会越界 panic。C 靠主循环 `rs_isokendpt` 前置（main.c:63-66）保住安全；Rust 在索引层补齐（fail-closed），06 接线时 `classify` 前仍须跑 `isokendpt` 拒绝非法源（dispatch.rs 已标注）。
+- **原始索引语义（R30，2026-09-06）**：`endpoint_slot()` 刻意**不过滤** `RS_IN_USE`——它镜像的是 C 的裸 `rproc_ptr`（glo.h:35），而重组进行中的行会合法流经它（`swap_slot` 在重写索引前要读两端的旧条目，clone 行在链接时可能还是 vacant）。C 里 IN_USE 过滤是 `caller_can_control` 扫描的**局部**语义（manager.c:52-53），Rust 同样把这一复核放在消费方（access.rs `caller_can_control`，fail-closed）；消息面消费方的槽位状态校验归主循环门（06，R12）。两种 C 构造（裸数组 vs 扫描循环）对应两个 Rust 契约，不是重复 API。测试：`test_endpoint_slot_is_raw_index_mid_restructure`。
 - **三处一致标注**：本表 + `.design/02-design.v1.md` D5 + `process_table.rs` 注释均标注 `ARCH A-4`。
 
 ### 3.6 lookup/alloc/free 方法化（D6）

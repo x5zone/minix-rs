@@ -39,21 +39,29 @@ pub fn caller_is_root(euid: Result<u32, Errno>) -> bool {
 /// Checks whether the caller's isolation policy lists the target service.
 ///
 /// C: `caller_can_control` — manager.c:39-76. Finds the caller's own slot
-/// (first `RS_IN_USE` row whose endpoint matches — manager.c:52-60; Rust uses
-/// the `by_endpoint` index, ARCH A-4) and scans its `r_control[]` list
-/// (`r_nr_control` entries) for the target's `proc_name` (manager.c:63-68).
+/// (first `RS_IN_USE` row whose endpoint matches — manager.c:52-60; Rust
+/// resolves through the `by_endpoint` index, ARCH A-4) and scans its
+/// `r_control[]` list (`r_nr_control` entries) for the target's `proc_name`
+/// (manager.c:63-68).
 pub fn caller_can_control(caller: Endpoint, target: &ServiceSlot, table: &RProcTable) -> bool {
     let Some(caller_slot) = table.endpoint_slot(caller) else {
         return false; // manager.c:61 — caller not in the service table
     };
-    let caller = &table.get(caller_slot);
+    let caller_slot = &table.get(caller_slot);
+    // R30: C's scan skips rows without `RS_IN_USE` (manager.c:52-53). The
+    // index is a raw `rproc_ptr` mirror (process_table.rs) and can surface a
+    // mid-restructure row, so the in-use contract is enforced here — a
+    // stale entry fails closed instead of granting control.
+    if !caller_slot.flags.contains(RFlags::IN_USE) {
+        return false;
+    }
     let proc_name = &target.pub_.proc_name;
     // Fail closed on a corrupt count: `nr_control > RS_NR_CONTROL` would panic
     // on direct indexing; C validates the count at edit time (manager.c:1543-
     // 1556, EINVAL), but this is a pub fn reachable from message handling.
-    caller
+    caller_slot
         .control
-        .get(..caller.nr_control.max(0) as usize)
+        .get(..caller_slot.nr_control.max(0) as usize)
         .is_some_and(|list| list.iter().any(|c| c == proc_name))
 }
 
@@ -194,6 +202,23 @@ mod tests {
         let target = t.get(tid).clone();
         t.get_mut(cid).control[0] = Label::from_bytes(b"tty");
         t.get_mut(cid).nr_control = crate::service_slot::RS_NR_CONTROL as i32 + 1;
+        assert!(!caller_can_control(Endpoint::VFS, &target, &t));
+    }
+
+    #[test]
+    fn test_caller_can_control_skips_non_in_use_caller_row() {
+        // R30: C's scan skips rows without `RS_IN_USE` (manager.c:52-53).
+        // The endpoint index is a raw `rproc_ptr` mirror — if a stale entry
+        // still resolves the caller's endpoint to a freed row, the in-use
+        // contract fails closed here instead of granting control.
+        let (mut t, cid, tid) = table();
+        let target = t.get(tid).clone();
+        t.get_mut(cid).control[0] = Label::from_bytes(b"tty");
+        t.get_mut(cid).nr_control = 1;
+        assert!(caller_can_control(Endpoint::VFS, &target, &t));
+        // Free the caller's row but leave a stale index entry behind.
+        t.free_slot(cid);
+        t.set_endpoint_index(Endpoint::VFS, Some(cid));
         assert!(!caller_can_control(Endpoint::VFS, &target, &t));
     }
 

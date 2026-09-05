@@ -152,8 +152,9 @@ struct rproc *target_rp;
 语义要点：
 
 1. **调用者必须是 RS 表内服务**（`RS_IN_USE` 且 endpoint 匹配，manager.c:52-60）。表外端点（如普通用户进程）直接拒绝——C 用"扫描到表尾"表示找不到（manager.c:61），Rust 用 `endpoint_slot()` 的 `None` 等价（ARCH A-4）。
-2. **匹配对象是目标的 `proc_name`**（`r_pub->proc_name`），不是 label。`proc_name` 是进程可执行名（如 `"vm"`、`"pm"`），`label` 是发布名（如 `"service"`、`"vm"`）——两者在 boot 后通常相同，但隔离策略按可执行名匹配（与 `RS_LOOKUP` 的 label 匹配区分，14 展开）。
-3. 列表长度 `r_nr_control` 与内容 `r_control[]` 的填充发生在请求参数校验阶段（`check_request`/`init_slot`，08），本文档只读不写。
+2. **`RS_IN_USE` 复核保留在访问层（R30，2026-09-06）**：C 的扫描每行都验 `RS_IN_USE`（manager.c:52-53），而 Rust 的 `endpoint_slot()` 是裸 `rproc_ptr` 镜像（重组中的行合法流经它，见 02 §3.5）。因此本函数在索引命中后**显式复核 in-use**（access.rs，fail-closed）——陈旧索引条目解析到已释放行时拒绝授权，等价于 C 的"扫描跳过非 in-use 行"。测试：`test_caller_can_control_skips_non_in_use_caller_row`。
+3. **匹配对象是目标的 `proc_name`**（`r_pub->proc_name`），不是 label。`proc_name` 是进程可执行名（如 `"vm"`、`"pm"`），`label` 是发布名（如 `"service"`、`"vm"`）——两者在 boot 后通常相同，但隔离策略按可执行名匹配（与 `RS_LOOKUP` 的 label 匹配区分，14 展开）。
+4. 列表长度 `r_nr_control` 与内容 `r_control[]` 的填充发生在请求参数校验阶段（`check_request`/`init_slot`，08），本文档只读不写。
 
 ### 2.3 `check_call_permission`（manager.c:81-130）
 
@@ -353,13 +354,14 @@ access.rs
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs --lib access` 中 access 相关测试（access.rs `#[cfg(test)]`，5 项，5/5 已落地；全局测试数是并行模块增长快照，非承诺）：
+`cargo test -p minix-rs --lib access` 中 access 相关测试（access.rs `#[cfg(test)]`，6 项，6/6 已落地；全局测试数是并行模块增长快照，非承诺）：
 
 | 测试 | 覆盖 |
 |------|------|
 | `test_caller_is_root` | `Ok(0)` → true；`Ok(1000)` → false；`Err(...)`（getnuid 失败）→ false（fail-closed） |
 | `test_caller_can_control_policy` | 无策略 → denied；控制列表含目标 proc_name → allowed；未知调用者（不在表内）→ denied |
 | `test_caller_can_control_corrupt_count_fails_closed`（D3） | `nr_control` 超 `RS_NR_CONTROL` → denied（不 panic，fail-closed） |
+| `test_caller_can_control_skips_non_in_use_caller_row`（R30） | 调用者行已释放但索引条目陈旧 → denied（manager.c:52-53 的 in-use 复核） |
 | `test_check_call_permission_root` | root + 无目标（RS_UP）→ OK；非 root + 无目标 → EPERM；getnuid 失败 → EPERM（fail-closed） |
 | `test_check_call_permission_target_rules` | 五条目标槽规则逐条：用户进程仅 RS_EDIT / updating EBUSY / LATEREPLY EBUSY / TERMINATED 限 DOWN·RESTART / CORE_SRV 禁 DOWN（非 DOWN 调用放行） |
 
