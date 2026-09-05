@@ -2617,6 +2617,11 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
             ctx.saved_msg = Some(*msg);
         }
         caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        // D-20 (C vm_suspend proc.c:253-257): enqueue into the global VM
+        // request chain + wake up VM via mini_notify(SYSTEM→VM).
+        let proc_table = unsafe { crate::proc_table() };
+        let priv_table = unsafe { crate::priv_table() };
+        proc_table.vm_enqueue_and_notify_vm(caller.p_nr, priv_table);
         // Release BKL — process is suspended waiting for VM.
         // Other CPUs can enter the kernel while we wait.
         // kernel_call_resume() will re-acquire BKL when VM replies.

@@ -274,6 +274,37 @@ impl ProcessTable {
         self.vm_request_queue.enqueue(ProcNr(idx as i32), &mut self.procs)
     }
 
+    /// D-20: enqueue the suspended process into the global VM request
+    /// chain and, if the chain was empty (first requestor), send the
+    /// SIGKMEM wake-up notification to the VM process from SYSTEM.
+    ///
+    /// C: `vm_suspend()` — proc.c:253-257:
+    /// ```c
+    /// if (!(caller->p_vmrequest.nextrequestor = vmrequest))
+    ///     if (OK != send_sig(VM_PROC_NR, SIGKMEM)) panic(...);
+    /// vmrequest = caller;
+    /// ```
+    ///
+    /// The `send_sig(VM, SIGKMEM)` is split: the wake-up half is
+    /// `mini_notify_core(SYSTEM→VM)` (works); the sigset half (SIGKMEM=71
+    /// > 64) is a no-op like SIGKSIG=74/SIGSNDELAY=70 — VM discovers the
+    /// details via MEMREQ_GET, not the signal number.
+    pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
+        let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);
+        let was_empty = {
+            let idx = nr_to_idx(nr).expect("vm_enqueue: invalid ProcNr");
+            self.vm_request_queue.enqueue(crate::proc::ProcNr(idx as i32), &mut self.procs)
+        };
+        if was_empty {
+            let _ = crate::ipc::mini_notify_core(
+                self.procs_slice_mut(),
+                priv_table,
+                crate::proc::proc_nr::SYSTEM,
+                vm_ep,
+            );
+        }
+    }
+
     /// Set RTS flags on a process. If the process transitions from runnable
     /// to non-runnable, automatically dequeues it from the scheduler.
     ///
@@ -870,19 +901,35 @@ impl ProcessTable {
                         // process remaining flags.
                     }
                     crate::ipc::DeliverResult::PageFault => {
-                        // First page fault — MF_MSGFAILED already set by
-                        // delivermsg, MF_DELIVERMSG kept for the retry.
-                        // D-44 (still deferred): C routes to
-                        // vm_suspend(VMS_PAGEFAULT) here (proc.c:281-282),
-                        // which blocks the process until VM resolves the
-                        // fault. Half-wiring it (suspend without the D-20
-                        // SIGKMEM notification chain) would park the
-                        // process on RTS_VMREQUEST forever, so the
-                        // process stays schedulable for now: the retry
-                        // faults again and lands in the Segfault arm.
-                        // Boundary pinned by
-                        // test_process_misc_flags_delivermsg_first_fault_no_signal.
-                        break;
+                        // D-44: first page fault → route to
+                        // vm_suspend(VMS_PAGEFAULT) (C proc.c:281-282).
+                        // Blocks the process until VM resolves the fault;
+                        // the D-20 enqueue+notify chain (wired below) wakes
+                        // VM so it can process the request.
+                        let msg_size = core::mem::size_of::<minix_types::Message>();
+                        let target_ep = self.get(nr).map(|p| p.p_delivermsg_vir);
+                        let _ = target_ep;
+                        let clock_ep = Endpoint::from_generation_slot(
+                            0, crate::proc::proc_nr::CLOCK.0,
+                        );
+                        let _ = clock_ep;
+                        let r = self.get_mut(nr).unwrap();
+                        r.suspend_for_vm(
+                            crate::vm::VmSuspendType::DeliverMsg,
+                            r.p_getfrom_e,
+                            crate::vm::VmCheckParams {
+                                start: r.p_delivermsg_vir,
+                                length: minix_types::VirBytes(msg_size as u64),
+                                write_flag: true,
+                            },
+                            None,
+                        );
+                        // D-20: enqueue into global VM request chain +
+                        // wake VM (mini_notify SYSTEM→VM).
+                        self.vm_enqueue_and_notify_vm(
+                            nr,
+                            priv_table,
+                        );
                     }
                     crate::ipc::DeliverResult::Segfault => {
                         // D-45: second consecutive fault or out-of-bounds —
@@ -1990,14 +2037,22 @@ mod tests {
         setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
         table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
 
-        assert!(table.process_misc_flags(nr, &PageFaultCopy, &mut priv_table));
+        // D-44 wired: first fault now routes to vm_suspend(DeliverMsg) →
+        // RTS_VMREQUEST set → process blocked (returns false) → scheduler
+        // re-picks. No signal raised (that's the Segfault arm, not this).
+        assert!(!table.process_misc_flags(nr, &PageFaultCopy, &mut priv_table));
 
         let proc = table.get(nr).unwrap();
-        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
+        assert!(proc.p_vm_suspend.is_some());
+        assert_eq!(
+            proc.p_vm_suspend.as_ref().unwrap().suspend_type,
+            crate::vm::VmSuspendType::DeliverMsg
+        );
         assert!(proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
+        // No signal on first fault — that's D-45/D-47 territory.
         assert!(proc.p_pending.is_empty());
         assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
-        assert!(!table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
     }
 
     /// D-43: SC_TRACE + SC_ACTIVE (leaving a syscall under trace) must
