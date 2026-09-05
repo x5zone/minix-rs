@@ -12,7 +12,7 @@
 use crate::process_table::RProcTable;
 use crate::service_slot::{RFlags, ServiceSlot, SlotMutations};
 use alloc::vec::Vec;
-use minix_types::Pid;
+use minix_types::{Clock, Pid};
 
 /// C: `RS_INIT_T = system_hz * 10` — const.h:48.
 pub fn init_timeout(hz: u32) -> i64 {
@@ -99,6 +99,22 @@ pub fn effective_period(rp: &ServiceSlot, hz: u32) -> i64 {
         }
     } else {
         rp.period
+    }
+}
+
+/// Heartbeat refresh: a service's notify carries the kernel timestamp and
+/// the main loop writes it into the slot's alive marker.
+///
+/// C: main.c:85-91 — `rproc_ptr[who_p]->r_alive_tm = m.m_notify.timestamp`
+/// (`m_notify.timestamp` is `u64_t`, ipc.h:1715 — "valid for every notify
+/// msg"). R13 payload style: the decision returns the mutation, the 06
+/// caller applies it after the endpoint lookup. The NULL-slot branch
+/// (main.c:89-90, "unexpected notify" warning) stays with the caller — it
+/// owns the table access.
+pub fn heartbeat_mutations(timestamp: Clock) -> SlotMutations {
+    SlotMutations {
+        alive_tm: Some(timestamp),
+        ..SlotMutations::default()
     }
 }
 
@@ -305,6 +321,17 @@ mod tests {
         assert_eq!(upd_init_maxtime(60, None), 600); // unmodelled → RS_INIT_T
         assert_eq!(upd_init_maxtime(60, Some(300)), 300); // explicit override
         assert_eq!(upd_init_maxtime(60, Some(120)), 600); // == default → RS_INIT_T
+    }
+
+    #[test]
+    fn test_heartbeat_mutations_refresh_alive_tm() {
+        // C: main.c:85-91 — the notify timestamp lands in `r_alive_tm`
+        // verbatim; nothing else on the slot may move.
+        let mut s = slot();
+        let before = (s.flags, s.check_tm, s.stop_tm);
+        heartbeat_mutations(777).apply(&mut s);
+        assert_eq!(s.alive_tm, 777);
+        assert_eq!((s.flags, s.check_tm, s.stop_tm), before);
     }
 
     #[test]

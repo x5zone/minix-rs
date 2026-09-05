@@ -276,13 +276,13 @@ impl IpcStatus { pub fn is_notify(&self) -> bool }   // 低 6 位 == NOTIFY(4)
 
 pub enum DispatchKind {
     ClockNotify,                                     // main.c:82
-    HeartbeatNotify(Endpoint),                       // main.c:85-91
+    HeartbeatNotify { source: Endpoint, timestamp: Clock },  // main.c:85-91
     InitReady,                                       // RS_INIT → 12
     LuPrepareReady,                                  // RS_LU_PREPARE → 12/16
     Request(i32),                                    // RS_* → 13/14/16
 }
 
-pub fn classify(ipc_status, who_p, call_nr) -> DispatchKind
+pub fn classify(ipc_status, who_p, call_nr, timestamp) -> DispatchKind
 pub struct DispatchResult(pub i32);                  // handler 返回值
 impl DispatchResult { pub const fn is_reply_suppressed(&self) -> bool }
 pub fn dispatch_request(call_nr) -> DispatchResult   // 目前全 ENOSYS（fail-closed）
@@ -291,6 +291,7 @@ pub fn dispatch_request(call_nr) -> DispatchResult   // 目前全 ENOSYS（fail-
 设计差异：
 
 - **`DispatchKind` 编码 C 的分类树**：notify 先分（CLOCK vs 心跳），非 notify 按 `call_nr` 分（ready vs 请求）——C 的 if/switch 嵌套变成显式枚举，`match` 穷尽。
+- **心跳分类结果自包含（R25，2026-09-06）**：C 在 main.c:87 把 `m.m_notify.timestamp`（ipc.h:1715，`u64_t`，每个 notify 都有效）直接写入 `r_alive_tm`；Rust 的 `HeartbeatNotify` 携带 `timestamp: Clock`（与 `r_alive_tm` 同型的 crate tick 类型），`classify` 增设 `timestamp` 参数承接，分类结果无需回看消息即可被消费。`Message` 的载荷在 union 中，读取需要 `unsafe`——本 crate 不用 unsafe，故真实提取位于 19 号的安全 receive 包装器内；`heartbeat_mutations(timestamp)`（07 §3）是写侧的纯决策。
 - **`DispatchResult` 携带 EDONTREPLY 语义**：`is_reply_suppressed()`（dispatch.rs）对应 main.c:125 的判定；handler 尚未接线前全部 `ENOSYS`，与 C 的 `default` 分支（main.c:118-121）一致（fail-closed）。
 - **`Endpoint` 槽位校验前置**：`classify` 的调用方（未来的 `main.rs`）先做 `RProcTable::isokendpt`（02 §3.5）再分类——与 C 的 main.c:64 顺序一致。
 
@@ -342,12 +343,13 @@ dispatch.rs
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs --lib dispatch` 中 dispatch 相关测试（dispatch.rs `#[cfg(test)]`，7 项，7/7 已落地；全局测试数是并行模块增长快照，非承诺）：
+`cargo test -p minix-rs --lib dispatch` 中 dispatch 相关测试（dispatch.rs `#[cfg(test)]`，8 项，8/8 已落地；全局测试数是并行模块增长快照，非承诺）：
 
 | 测试 | 覆盖 |
 |------|------|
 | `test_classify_clock_notify` | CLOCK notify → `ClockNotify` |
-| `test_classify_heartbeat_notify` | 其他 notify → `HeartbeatNotify(endpoint)` |
+| `test_classify_heartbeat_notify` | 其他 notify → `HeartbeatNotify { source, timestamp }` |
+| `test_classify_heartbeat_carries_timestamp` | 心跳 timestamp 穿过分类原样携带（R25，main.c:87） |
 | `test_classify_ready` | `RS_INIT`/`RS_LU_PREPARE` → ready 类 |
 | `test_classify_request` | `RS_UP` → `Request(RS_UP)` |
 | `test_classify_request_unknown` | 未知调用 → `Request(9999)` → `ENOSYS` |

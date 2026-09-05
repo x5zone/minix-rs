@@ -17,7 +17,7 @@
 //! ```
 
 use minix_types::{
-    Endpoint, Errno, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_GETSYSINFO, RS_INIT, RS_LOOKUP,
+    Clock, Endpoint, Errno, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_GETSYSINFO, RS_INIT, RS_LOOKUP,
     RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
 };
 
@@ -50,8 +50,15 @@ impl IpcStatus {
 pub enum DispatchKind {
     /// CLOCK notification → `do_period` (07). C: main.c:80-83.
     ClockNotify,
-    /// Heartbeat notification from a service (07). C: main.c:85-91.
-    HeartbeatNotify(Endpoint),
+    /// Heartbeat notification from a service (07). C: main.c:85-91 — the
+    /// kernel timestamp carried by every notify (ipc.h:1715, `u64_t`) is
+    /// what the main loop writes into `r_alive_tm`, so the classification
+    /// result carries it (R25, todo §18): a `HeartbeatNotify` is
+    /// self-contained and the handler needs no second look at the message.
+    /// `timestamp` uses the crate-wide tick type `Clock` (= `i64`, matching
+    /// `r_alive_tm`/`SlotMutations::alive_tm`); the u64 wire value converts
+    /// once at the receive boundary (19).
+    HeartbeatNotify { source: Endpoint, timestamp: Clock },
     /// `RS_INIT` → `do_init_ready` (12). C: main.c:116.
     InitReady,
     /// `RS_LU_PREPARE` → `do_upd_ready` (12/16). C: main.c:117.
@@ -64,15 +71,25 @@ pub enum DispatchKind {
 ///
 /// C: `main()` classification — main.c:70-127. `who_p` is the sender's slot
 /// (validated by `rs_isokendpt`, 02, before classification); `call_nr` is
-/// `m.m_type`. R12: the 06 main-loop wiring must run the `isokendpt` gate
-/// (main.c:63-66) before classifying — the O(1) endpoint fast index is total
-/// (out-of-range endpoints yield `None`) but only the gate rejects them.
-pub fn classify(ipc_status: &IpcStatus, who_p: Endpoint, call_nr: i32) -> DispatchKind {
+/// `m.m_type`; `timestamp` is `m.m_notify.timestamp` (ipc.h:1715 — valid for
+/// every notify; the non-notify classes ignore it). R12: the 06 main-loop
+/// wiring must run the `isokendpt` gate (main.c:63-66) before classifying —
+/// the O(1) endpoint fast index is total (out-of-range endpoints yield
+/// `None`) but only the gate rejects them.
+pub fn classify(
+    ipc_status: &IpcStatus,
+    who_p: Endpoint,
+    call_nr: i32,
+    timestamp: Clock,
+) -> DispatchKind {
     if ipc_status.is_notify() {
         if who_p == Endpoint::CLOCK {
             return DispatchKind::ClockNotify;
         }
-        return DispatchKind::HeartbeatNotify(who_p);
+        return DispatchKind::HeartbeatNotify {
+            source: who_p,
+            timestamp,
+        };
     }
     match call_nr {
         RS_INIT => DispatchKind::InitReady,
@@ -124,15 +141,36 @@ mod tests {
     #[test]
     fn test_classify_clock_notify() {
         let st = IpcStatus { flags: 4 }; // NOTIFY (ipcconst.h:10)
-        assert_eq!(classify(&st, Endpoint::CLOCK, 0), DispatchKind::ClockNotify);
+        assert_eq!(
+            classify(&st, Endpoint::CLOCK, 0, 0),
+            DispatchKind::ClockNotify
+        );
     }
 
     #[test]
     fn test_classify_heartbeat_notify() {
         let st = IpcStatus { flags: 4 };
         assert_eq!(
-            classify(&st, Endpoint::VFS, 0),
-            DispatchKind::HeartbeatNotify(Endpoint::VFS)
+            classify(&st, Endpoint::VFS, 0, 0),
+            DispatchKind::HeartbeatNotify {
+                source: Endpoint::VFS,
+                timestamp: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_heartbeat_carries_timestamp() {
+        // R25: the notify's kernel timestamp (ipc.h:1715) must survive
+        // classification — main.c:87 writes it into `r_alive_tm` verbatim,
+        // so the classifier loses nothing on the way (main.c:85-91).
+        let st = IpcStatus { flags: 4 };
+        assert_eq!(
+            classify(&st, Endpoint::VFS, 0, 777),
+            DispatchKind::HeartbeatNotify {
+                source: Endpoint::VFS,
+                timestamp: 777
+            }
         );
     }
 
@@ -140,11 +178,11 @@ mod tests {
     fn test_classify_ready() {
         let st = IpcStatus { flags: 0 };
         assert_eq!(
-            classify(&st, Endpoint::RS, RS_INIT),
+            classify(&st, Endpoint::RS, RS_INIT, 0),
             DispatchKind::InitReady
         );
         assert_eq!(
-            classify(&st, Endpoint::RS, RS_LU_PREPARE),
+            classify(&st, Endpoint::RS, RS_LU_PREPARE, 0),
             DispatchKind::LuPrepareReady
         );
     }
@@ -153,7 +191,7 @@ mod tests {
     fn test_classify_request() {
         let st = IpcStatus { flags: 0 };
         assert_eq!(
-            classify(&st, Endpoint::PM, RS_UP),
+            classify(&st, Endpoint::PM, RS_UP, 0),
             DispatchKind::Request(RS_UP)
         );
     }
@@ -161,7 +199,7 @@ mod tests {
     #[test]
     fn test_classify_request_unknown() {
         let st = IpcStatus { flags: 0 };
-        let kind = classify(&st, Endpoint::PM, 9999);
+        let kind = classify(&st, Endpoint::PM, 9999, 0);
         match kind {
             DispatchKind::Request(n) => {
                 assert_eq!(dispatch_request(n), DispatchResult(Errno::ENOSYS.to_i32()))

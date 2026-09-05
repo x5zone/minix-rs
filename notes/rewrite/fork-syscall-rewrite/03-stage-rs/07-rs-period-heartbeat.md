@@ -229,6 +229,7 @@ pub fn upd_init_maxtime(hz, prepare_maxtime: Option<i64>) -> i64  // const.h:116
 pub struct PeriodDecision { action: PeriodAction, mutations: SlotMutations }  // R13
 pub fn period_decision(now, rp, hz,
     another_initializing: bool, is_updating: bool) -> PeriodDecision  // request.c:975-1038
+pub fn heartbeat_mutations(timestamp: Clock) -> SlotMutations          // main.c:85-91 心跳写活标（R25）
 pub fn has_update_timed_out(now, prepare_tm, prepare_maxtime) -> bool  // update.c:386
 pub fn sigchld_cleanup(table, pid) -> Option<SigchldOutcome>         // request.c:1051-1090
 ```
@@ -238,6 +239,7 @@ pub fn sigchld_cleanup(table, pid) -> Option<SigchldOutcome>         // request.
 - **决策与副作用分离**：C 的 `do_period` 在判定同时执行 `restart_service`/`crash_service`/`ipc_notify`；Rust 的 `period_decision` 只返回 `PeriodDecision { action, mutations }`，动作副作用由调用方（未来主循环集成，06/15/19）执行，**槽位变异**（`r_backoff -= 1`、`r_stop_tm = 0`、`r_check_tm = now`、`r_alive_tm/check_tm` 的 free pass、`NOPINGREPLY` + `r_init_err = EINTR`）以 `SlotMutations` 载荷显式携带（R13）——调用方 `mutations.apply(rp)` 一次提交，漏变异从"注释约定"变成编译期缺口（对照 Redox 变异权 token 风格）。
 - **`another_initializing`/`is_updating` 参数注入**：C 靠全局表查询（`lookup_slot_by_flags(RS_INITIALIZING)`，request.c:1013）与 `SRV_IS_UPDATING`（const.h:114）——Rust 把这两个判定结果作为布尔参数传入，`period_decision` 不触表（保持纯函数）。
 - **常量族函数化**：`RS_INIT_T`/`RS_DELTA_T`/`RS_DEFAULT_PREPARE_MAXTIME` 依赖运行时 `system_hz`（GET_HZ，01/19）→ `init_timeout(hz)`/`delta_t(hz)`/`default_prepare_maxtime(hz)`；`UPD_INIT_MAXTIME` → `upd_init_maxtime(hz, prepare_maxtime: Option<i64>)`（覆盖值 ≠ 默认才生效，否则 `RS_INIT_T`——`prepare_maxtime` 未建模（16 DEFERRED），当前传 `None`）；`MAX_BACKOFF` 是编译期常量 30。
+- **心跳写活标是独立决策（R25，2026-09-06）**：`r_alive_tm` 的常规写入路径不在 `do_period` 里，而在主循环的 notify 分支——C 是 main.c:87 `rproc_ptr[who_p]->r_alive_tm = m.m_notify.timestamp`（timestamp 由内核填，ipc.h:1715，每个 notify 都有效）。Rust 建模为 `heartbeat_mutations(timestamp) -> SlotMutations`（只带 `alive_tm` 一个字段的载荷），与 `period_decision` 同一种"决策返回载荷、调用方 apply"模式；NULL 槽告警分支（main.c:89-90"unexpected notify"）留在调用方——表查询归它。分类结果 `HeartbeatNotify { source, timestamp }`（06 §3）自带 timestamp，handler 无需回看消息。
 
 > **N2 修复（2026-08-16，todo §11）**：`period_decision` 的"period 到期 → ping"分支
 > （request.c:1035-1037）必须比较**原始 `rp->r_period`**，而不是 `effective_period` 的结果。
@@ -304,6 +306,7 @@ monitor.rs
 | `test_zero_pid_is_no_process` | `Some(0)` 不触发 stop/ping 超时 crash（R19） |
 | `test_nopingreply_blocks_crash` | NOPINGREPLY 阻断重复 crash |
 | `test_update_timeout` | prepare 超时判定 + maxtime=0 不超时 |
+| `test_heartbeat_mutations_refresh_alive_tm`（R25） | 心跳载荷只写 `alive_tm`（main.c:85-91），槽位其余字段不动 |
 | `test_sigchld_cleanup` | 实例链释放 + update_cleared + 槽位清空 |
 
 ---

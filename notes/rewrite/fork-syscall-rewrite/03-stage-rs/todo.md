@@ -1980,7 +1980,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ☐ | 可立即 todo-fix |
-| R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ☐ | 可立即 todo-fix（06 先行） |
+| R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
 | R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
 | R28 | clone_service 两分支漏标 DEFERRED | P2 | ☐ | 可立即 todo-fix |
@@ -2068,3 +2068,26 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   --lib` 触碰文件零告警；`cargo fmt --check` 触碰文件零 diff；`tools/check-rs-unwired.sh`
   PASS（标记集不变：boot.rs:652、lib.rs:244/:287）。文档同步：01-rs-boot-init.md §3.3 trait
   清单 + fail-closed 表述（6 个未落地 = 5 个 `Err(ENOSYS)` + signal_handler `unimplemented!`）。
+
+### ✅ Fix #41 — R25（P1 类型缺陷）：`HeartbeatNotify` 携带 timestamp，心跳语义类型化
+- **File**：`os/servers/rs/src/dispatch.rs`（variant + classify + 测试）、`monitor.rs`
+  （新增 `heartbeat_mutations` + 测试）、`lib.rs`（run() 调用点）、文档 06 §3/§5、07 §3.1/§5、
+  01 §4.4/§5
+- **Before**：`HeartbeatNotify(Endpoint)` 只携带端点——main.c:87
+  `rproc_ptr[who_p]->r_alive_tm = m.m_notify.timestamp` 的心跳语义在类型层不可表达（"没写
+  测试"实为"签名缺陷使测试不可写"）；`classify` 签名也没有 timestamp 入参。
+- **After**：`HeartbeatNotify { source: Endpoint, timestamp: Clock }` 结构体变体；
+  `classify` 增设第 4 参 `timestamp: Clock`（ipc.h:1715 的 notify 载荷，非 notify 类忽略）；
+  monitor 新增 `heartbeat_mutations(timestamp) -> SlotMutations`（只带 `alive_tm` 的载荷，
+  R13 模式）承接写侧。方案对比：a) 命名结构体变体 + Clock 消费端同型（选定）vs b) 二元组
+  `HeartbeatNotify(Endpoint, Clock)`（位置参数可读性差）vs c) 变体携带整个 `Message`（分类器
+  耦合 wire 布局，破坏既有"提取字段"风格）。关键设计约束：`Message` 载荷在 `MessageUnion`
+  联合体中，读取需 `unsafe`——本 crate 零 unsafe，真实提取归 19 号安全 receive 包装器；
+  run() 调用点传占位 0 并注释（循环在 `get_work` 的 fail-closed 处不可达，T4 语义不受影响）。
+- **Verified**：`cargo test -p minix-rs` = **213 passed**（新增
+  `test_classify_heartbeat_carries_timestamp`：timestamp 777 穿过分类原样携带；
+  `test_heartbeat_mutations_refresh_alive_tm`：apply 后 `alive_tm==777` 且 flags/check_tm/
+  stop_tm 不动）；`cargo clippy -p minix-rs --lib` 触碰文件零告警；`cargo fmt --check` 触碰
+  文件零 diff；`tools/check-rs-unwired.sh` PASS。文档同步：06 §3 枚举/classify 签名 +
+  设计差异"心跳分类结果自包含"条 + §5 表 7→8 项；07 §3.1 函数清单 + 设计差异"心跳写活标
+  是独立决策"条 + §5 表加行；01 §4.4 枚举/classify 签名 + §5 表加行。

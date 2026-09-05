@@ -792,12 +792,12 @@ fn self_update(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> { ... }
 ```rust
 pub enum DispatchKind {
     ClockNotify,          // C: case CLOCK → do_period（07）
-    HeartbeatNotify(Endpoint), // C: default 心跳（07）
+    HeartbeatNotify { source: Endpoint, timestamp: Clock }, // C: default 心跳（07）
     InitReady,            // C: RS_INIT → do_init_ready（12）
     LuPrepareReady,       // C: RS_LU_PREPARE → do_upd_ready（12/16）
     Request(i32),         // C: RS_* → do_*（13/14/16）
 }
-pub fn classify(ipc_status: &IpcStatus, who_p: Endpoint, call_nr: i32) -> DispatchKind;
+pub fn classify(ipc_status: &IpcStatus, who_p: Endpoint, call_nr: i32, timestamp: Clock) -> DispatchKind;
 ```
 
 - `is_ipc_notify`（com.h:92，`IPC_STATUS_CALL(status) == NOTIFY`）在 Rust 中由 `IpcStatus` 的位解析表达（对照 VM `os/servers/vm/src/ipc/transport.rs` 的 `IpcStatus`）。
@@ -956,7 +956,8 @@ impl RsServer {
 |------|------|
 | `test_deferred_callbacks_fail_closed` | 12/18/06 未接线的回调（`init_restart`/`init_lu`/`init_response`/`lu_response`/`signal_manager`）全部 fail-closed（`Err(ENOSYS)`，T2） |
 | `test_classify_clock_notify` | `is_notify` + `CLOCK` → `ClockNotify`（对应 main.c:80-83） |
-| `test_classify_heartbeat_notify` | 非 CLOCK 通知 → `HeartbeatNotify`（对应 main.c:85-91） |
+| `test_classify_heartbeat_notify` | 非 CLOCK 通知 → `HeartbeatNotify { source, timestamp }`（对应 main.c:85-91） |
+| `test_classify_heartbeat_carries_timestamp` | 心跳 timestamp 穿过分类原样携带（R25，main.c:87） |
 | `test_classify_ready` | `RS_INIT`/`RS_LU_PREPARE` → `InitReady`/`LuPrepareReady`（对应 main.c:116-117） |
 | `test_classify_request` / `test_classify_request_unknown` | 请求分类；未知调用号 → `dispatch_request` 返回 `ENOSYS`（对应 main.c:118-121） |
 | `test_dispatch_result_reply_suppression` | `DispatchResult(EDONTREPLY)` 抑制 reply 路径（对应 main.c:124-129） |

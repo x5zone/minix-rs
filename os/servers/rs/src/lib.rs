@@ -221,7 +221,12 @@ impl RsServer {
             // C: rs_idle_period() — main.c:59 (06).
             // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833 (06).
             let (msg, rcv_sts) = self.get_work();
-            let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type);
+            // R25: classify takes the notify timestamp (ipc.h:1715). The
+            // value lives in the `MessageUnion` — reading it requires
+            // `unsafe`, which this crate never uses — so extraction belongs
+            // to the safe receive wrapper (06/19); `0` here is unreachable
+            // until that lands (get_work fails closed above).
+            let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type, 0);
             // C: message dispatch — main.c:70-127 (mechanisms in 06/07/12-16).
             // 06 wiring: `do_period` reads `state.system_hz`/`state.table`;
             // the RS_DOWN sweep reads/writes `state.shutting_down`.
