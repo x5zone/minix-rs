@@ -1561,3 +1561,510 @@ rg -n "INITIALIZING" os/servers/rs/src/*.rs | grep -v test   # 生产无 INITIAL
   `privilege::IoRange` 避免 C 双表同构（D6）。Redox 视角：资源声明（`rs_start`）与资源授权
   （priv `s_io_tab`）共用同一类型，声明→授权无转换面，非法组合（计数超表长/负值）在类型上
   可表达但由 19 校验拒绝（fail-closed）。
+
+---
+
+## 18. 全量查漏补缺 + 架构级审查（2026-09-06 — scan-only：覆盖度穷举 + C 逐函数对照 + 分层架构建议）
+
+> **来源**：cmd-04（stage 架构级审视）+ cmd-20 第 1 步（对照 Minix3 C 实现找遗漏）+ code-excellence
+> 分层审视法。**本轮只审查+记录，产品代码零改动**；全部条目状态 ☐，按"可立即 todo-fix /
+> 08·13·16 号文档落地期 / 19 接线期"三档标注归属（见 18.6 总览表）。
+> **范围**：`os/servers/rs/` 全部 22 模块（10,305 行，211 测试）↔ Ground Truth
+> `minix3/minix/servers/rs/`（8 个 .c 共 6,307 行 + const.h/type.h/glo.h/proto.h/inc.h 五个头文件）。
+> 方法：覆盖度工具穷举（coverage-extract + semantic-map 全量扩展）+ 四路逐模块深读（生命周期 /
+> 监控与 Live Update / 表与权限 / 服务面），每路对照 C 源逐函数判定"已实现 / 部分 / stub / 缺失"。
+> **基线证据**：`cargo test -p minix-rs` = **211 passed**（§17 末记录 208——§17 之后代码有小步演进，
+> 本轮以 211 为新基线）；`tools/check-rs-unwired.sh` = PASS（3 个生产未接线标记全部带文档契约）；
+> `rg -c "#\[test\]"` = 211（Gate E 数量对账：声称 = 实测，偏差 0%）。生产运行路径仍全部
+> fail-closed（`UnimplementedKernelApi` 全 ENOSYS、`get_work` 为 `todo!()`），维持
+> "无 P0 运行时缺陷"前提——本轮发现的全部缺口集中在"接线前必须补齐的设计缺失"（P1）与
+> 改进项（P2），无 P0。
+> **与既有条目的关系**：D1/D2/D6/E2/E3/R8/R9/R10 等既有遗留项只引用不重报；本轮 R 系列从
+> **R20** 起编（承接 §14 R1-R11、§16 R12-R19）。
+
+### 18.0 gate-evidence-A：覆盖度提取证据
+
+本轮将 `tools/coverage-extract/rs-semantic-map.json` 从 56 条（仅覆盖 01 号文档语义，自注
+"其余 doc（02~19）语义随写作按需扩展"）全量扩展到 02~19 号文档的全部语义面（映射依据 = 四路
+深读的行号锚点；**完全缺失的 C 函数刻意不映射**，让其如实显示为缺口），重跑覆盖度提取：
+
+```
+$ python3 tools/coverage-extract/coverage-extract.py rs \
+    notes/rewrite/fork-syscall-rewrite/03-stage-rs \
+    --rust-dir os/servers/rs/src --c-dir minix3/minix/servers/rs \
+    --semantic-map tools/coverage-extract/rs-semantic-map.json \
+    --output .review/claude/rs/scan/SYMBOLS.md
+  Found 171 C symbols (112 funcs, 7 structs, 52 macros, 0 enums)
+  Found 834 Rust symbols (447 top-level fn, 148 qualified methods)
+Coverage Summary for rs:
+  Total C symbols: 171
+  Doc covered: 163 (95.3%)
+  Rust covered (name-match): 115 (67.3%)
+```
+
+- Rust 覆盖 115/171 中：语义映射命中 111、限定名匹配 5、名称匹配 1（SYMBOLS.md 统计）。
+- **缺口 56 个** = 有文档无 Rust 49 + 完全缺口 7（其中 5 个是 C 头文件 include 守卫
+  （`RS_CONST_H`/`RS_GLO_H`/`RS_TYPE_H` 等）与 `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT` 两个纯
+  编译期调试开关——ARCH 不需要；真实的完全缺口是 error.c 的 `rs_strerror`（error.c:33）与
+  `errentry` 结构（error.c:9），归入 R31）。
+- **工具盲区声明**：coverage-extract.py 的函数签名正则只匹配单行签名，exec.c 的
+  `do_exec`（exec.c:7/:62）、`read_seg`（exec.c:10/:143）、`srv_execve`（exec.c:21）三个多行
+  签名函数未被提取。人工已确认这三者在 Rust 全缺（19 号 DEFERRED，见 R31 归属），不影响
+  缺口结论，但符号总数（112 funcs）略低于实际。
+
+### 18.1 查漏结果：有文档无 Rust 的函数清单（按文档域分组）
+
+下表为 SYMBOLS.md"⚠️ 有文档无 Rust"中的全部 39 个函数（剔除头文件机制宏后）。**关键结论**：
+缺口不是散点，而是**五个整域缺失**——这正是既有 DEFERRED 标记挂到 06/08/13/16/19 的原因；
+本轮的贡献是把每个域的缺失规模从"一个函数名"精确到"函数 + 分支 + 载体字段"。
+
+| 文档域 | 缺失函数（C 锚点） | Rust 现状 | 精确规模 |
+|--------|------------------|-----------|---------|
+| 08 配置管线 | `edit_slot`（manager.c:1460）、`init_slot`（manager.c:1708）、`copy_rs_start`（manager.c:135）、`copy_label`（manager.c:151）、`inherit_service_defaults`（manager.c:1303） | 全缺；`init_slot`/`edit_slot` 仅注释提及（slot.rs:9、ipc_mask.rs:10-11） | edit_slot 约 25 个校验/拷贝分支零载体（18.2 R20 逐段列出）；RsStart 缺约 10 个输入字段 |
+| 13 控制请求 | `do_restart`（request.c:160）、`do_clone`（request.c:208）、`do_unclone`（request.c:253）、`do_edit`（request.c:298）、`run_service`（manager.c:923）、`start_service`（manager.c:950）、`restart_service`（manager.c:1246）、`kill_service_debug`（manager.c:360）、`crash_service_debug`（manager.c:380）、`detach_service_debug`（manager.c:497） | 纯切片部分就绪（`up_init_flags`/`check_duplicates`/`stop_service`/`mark_late_reply`/`shutdown_apply`，request.rs），编排层全缺 | create_service 15 步管线只有 2 步有 Rust（18.2 R22） |
+| 16 Live Update | `rupdate_clear_upds`（update.c:7）、`rupdate_set_new_upd_flags`（update.c:88）、`rupdate_upd_clear`（update.c:135）、`rupdate_upd_move`（update.c:164）、`start_update_prepare`（update.c:401）、`start_update_prepare_next`（update.c:467）、`start_update`（update.c:532）、`start_srv_update`（update.c:621）、`end_update_curr`（update.c:744）、`end_update_before_prepare`（update.c:763）、`end_update_prepare_done`（update.c:780）、`end_update_initializing`（update.c:795） | 入口决策（`validate_update_request`/`lu_flags_from_rss`/`UpdateChain::add`）与出口分类（`end_update_role`/`abort_action`）已建；中段编排与链操作全缺 | 相位驱动（flags 写入）无入口；`UpdateChain` 只有 add；per-slot `r_upd` 载体未建（18.2 R23） |
+| 06 主循环/信号 | `reply`（utility.c:309）、`rs_asynsend`（utility.c:223）、`rs_idle_period`（utility.c:443）、`fi_service`（utility.c:69）、`sef_local_startup`（main.c:136，结构等价但 SEF_INIT 消息驱动语义缺） | `get_work` 为 `todo!()`（lib.rs:244）；sef 回调 4/7 为 stub（lib.rs:261-293） | 心跳 timestamp 在类型层不可表达（R25）；signal_manager 签名偏差（R26） |
+| 诊断面 | `srv_to_string_gen`（utility.c:142）、`srv_upd_to_string`（utility.c:189）、`print_services_status`（utility.c:485）、`print_update_status`（utility.c:516）、`init_strerror`（error.c:48）、`lu_strerror`（error.c:56）、`exec_restart`（exec.c:121） | 全缺（R31） | IS 服务器 dump 与错误名输出依赖此域 |
+
+ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`END_RPROC_ADDR`（const.h:54-55，
+数组地址哨兵——Rust 迭代器取代）、`DEBUG`/`PRIV_DEBUG`（const.h:10/:14，编译期调试开关）、
+`EXTERN`（glo.h:8，全局变量声明机制）、`_SYSTEM`/`_TABLE`（inc.h:7/table.c:7，编译单元选择），
+及前述 include 守卫。
+
+### 18.2 新发现（R20–R34）
+
+- **R20（P1-design-missing，08 号域）— `edit_slot`/`init_slot` 整体缺失，且 `RsStart` 载体字段不全**
+  - C 证据：`edit_slot`（manager.c:1460-1707）约 25 个分支：IPC 表校验/拷入（:1476-1483）、IRQ
+    哨兵与界检查（:1486-1501）、IO 哨兵/界检查/`ior_limit` 拷入（:1504-1524）、k_call_mask 与
+    vm_call_mask 的 memcpy+basic 叠加（:1527-1540）、control labels（:1543-1564）、sig_mgr
+    （:1567）、调度四字段条件写（:1570-1575）、cmd/progname/label/script（:1578-1626）、
+    RSS_COPY 复用/加载（:1629-1661）、REPLICA/NO_BIN_EXP/DETACH/NORESTART 标志（:1662-1682）、
+    period/restarts/asr_count（:1685-1700）；`init_slot`（manager.c:1708-1795）：DSRV 默认三元组
+    （:1723-1724）、bak_sig_mgr/uid（:1727-1730）、域校验（:1733-1736）、dev_nr/devman_id
+    （:1738-1742）、PCI 校验（:1745-1774）、字段复位块（:1777-1791）。
+  - Rust 现状：两函数零载体。**载体也不全**——`RsStart`（slot.rs:89-145，21 字段）缺
+    `rss_major`、`rss_script`/`rss_scriptlen`、`rss_heap_prealloc_bytes`/`rss_map_prealloc_bytes`
+    （live_update.rs:131/:179 只能用裸 i64 参数绕过）、`rss_pci_*`（`PublicSlot` 亦无 `pci_acl`
+    字段，publish.rs:30 恒 false stub 与此同源）、`rss_system`/`rss_vm` 两个掩码源、
+    `rss_label`/`rss_trg_label`、`rss_nr_domain`/`rss_domain`、入口侧 `devman_id`——缺的恰好全部
+    是 edit_slot/init_slot 的输入。`build_cmd_dep`（slot.rs:240）是唯一已实现的 edit_slot 分支。
+  - 改进思考：08 号文档落地时按"先补 RsStart 字段（对照 rs.h:104-151 逐项）、再按 C 分支序实现
+    校验/拷贝、最后逐分支补测试"推进；IRQ/IO 计数域沿用 Fix #39 的 i32 决策（C `int` 校验前
+    语义）；注意 C 的 `> NR_IRQ` 检查不拦负数（manager.c:1492），Rust 应 fail-closed 拒负
+    （与 Fix #39 注释一致）。
+
+- **R21（P1，API 形状缺口）— `CallMask::from_calls` 无法表达 C `fill_call_mask` 的 is_init=false 组合语义**
+  - C 证据：utility.c:126-135——`is_init=FALSE` 时**不清零**，在既有掩码上逐位叠加；消费点
+    edit_slot :1527-1540（先 `memcpy(rpriv->s_k_call_mask, rs_start->rss_system, ...)` 再
+    `fill_call_mask(RSS_SYS_BASIC_CALLS, ..., FALSE)` 叠加 basic 位）。
+  - Rust 现状：privilege.rs:241-248（已核对）——`is_init` 两个分支都是 `CallMask(0)` 起步，
+    注释自认 "C does not zero when `is_init` is false; the caller is expected to pass a
+    pre-zeroed mask（05 composes masks）"，但**签名没有传入既有掩码的入口**，组合行为在当前
+    API 上不可表达。这是 N7 修复时引入的新形状缺口：08 接线时若照现签名直填，basic 位叠加会
+    静默变成清零重填。
+  - 改进思考：方案 a——`from_calls` 加参数 `base: CallMask`（is_init=true 时传 empty，语义
+    统一为"从 base 出发叠加"）；方案 b——新增 `from_calls_or(base, calls, ...)` 保留原签名。
+    推荐 a（一个构造入口，消除"is_init 分支语义分裂"）。补"非零 base 叠加 basic 位"测试。
+
+- **R22（P1-design-missing，13 号域）— 服务生命周期编排层缺失：create_service 15 步只有 2 步有 Rust**
+  - C 证据：`create_service`（manager.c:531-708）线性管线：前置检查（:542-568）→ `srv_fork`
+    （:576）→ `getprocnr`（:584）→ 表更新（:589-597）→ priv 设置/回读（:600-606）→
+    `sched_init_proc`（:609）→ `read_exec`（:625）→ `srv_execve`（:634）→ `free_exec`（:643）
+    → setuid hack（:656）→ RS pin（:659-669）→ VM 注册（:672-695）→ `vm_set_priv`（:698），
+    **每个失败点都有 `cleanup_service` + VM pin 解除的对称清理**。`start_service`（:950-983，
+    init_flags → create → activate → publish → run）、`run_service`（:923-948，ALLOW +
+    `init_service`）、`restart_service`（:1246-1298，脚本保存/clone/update/run 编排 + DETACH
+    位）、`kill_service`（:360-378）、`crash_service`（:380-403，RS 自杀 `exit(1)` + SIGKILL）、
+    `detach_service`（:497-528，label 前缀重发布 + 标志清理）均无编排对应物。
+  - Rust 现状：`check_create_preconditions`（service_create.rs:29）+ `mark_child_created`
+    （service_create.rs:54）对应第 1、4 步；**`check_create_preconditions` 注释声明 "the
+    caller owns the slot cleanup"（service_create.rs:23-24），但 caller 尚不存在，该契约
+    无人履行、也无类型强制**。`cleanup_service` 只建了第二相分类 `cleanup_decision`
+    （recovery.rs:250，对应 manager.c:451-452），第一阶段（manager.c:416-448：解链四指针、
+    RS_DEAD 置位、DISALLOW/CLEAR_IPC_REFS、去 ACTIVE、late_reply）连决策都没有。
+  - 改进思考：见 18.3 A1（编排层引入形态三方案对比，推荐忠实编排函数）。
+
+- **R23（P1-design-missing，16 号域）— Live Update 中段编排缺失 + rupdate 全局碎片化**
+  - C 证据：链操作四缺——`rupdate_clear_upds`（update.c:7-18）、`rupdate_set_new_upd_flags`
+    （update.c:88-116，MULTI 置位 + last 继承 + VM/RS endpoint 自动置位）、`rupdate_upd_clear`
+    （update.c:135-159）、`rupdate_upd_move`（update.c:164-180，end_srv_init 的 update-scheduled
+    分支依赖它，manager.c:344-346）。相位驱动两处全局写——update.c:510
+    `rupdate.flags |= RS_UPDATING`、update.c:548 `|= RS_INITIALIZING`。编排五缺——
+    `start_update_prepare`/`start_update_prepare_next`/`start_update`/`start_srv_update` 与
+    `end_update` 四个相位执行体（update.c:744-811）。
+  - Rust 现状：`UpdateChain` 只有 `add`（live_update.rs:385，偏序插入逐行对应 update.c:23-83）；
+    `last_lu_flags`（live_update.rs:339）是给 `rupdate_set_new_upd_flags` 备的原料但零消费。
+    **rupdate 全局（type.h:43-52）没有单一 Rust holder**：`RupdateFlags` 是无处挂载的裸
+    bitflags（process_table.rs:32）、`num_init_ready_pending` 退化为 `do_init_ready` 入参
+    （ready.rs:164）、per-slot `r_upd` 描述符（type.h:62）整体缺席 `ServiceSlot`——
+    `SRV_IS_UPD_SCHEDULED`/`SRV_IS_PREPARING_ONLY`（const.h:119-120）只能靠注入 bool 表达。
+    `UpdateEntry` 缺 `prepare_tm`/`prepare_maxtime`/`prepare_state_data*`/三个 grant id
+    （type.h:35-39）。**结论：16 号 DEFERRED 的确切边界是"载体结构本身未建"，不只是接线缺。**
+  - 改进思考：见 18.3 A2（UpdateState 单点持有方案）。
+
+- **R24（P1）— `do_upd_ready` 是 R13 决策-载荷模式唯一的破例：`RS_PREPARE_DONE` 置位无处落地**
+  - C 证据：request.c:911——gate 通过后立即 `rp->r_flags |= RS_PREPARE_DONE`（无论 result
+    成败）。
+  - Rust 现状：`do_upd_ready`（ready.rs:243）只返回裸 `UpdReadyOutcome` 枚举、无 `SlotMutations`
+    载荷；该置位在整个 crate 无处安放。同文件的 `do_init_ready`（ready.rs:160）与
+    monitor/recovery 的决策都严格执行载荷模式（Fix #38），唯此处破例。
+  - 改进思考：`UpdReadyOutcome` 携带 `SlotMutations`（gate 通过即 `set: RS_PREPARE_DONE`），
+    补"与 result 无关、gate 通过即置位"的测试。改动小，可立即 todo-fix。
+
+- **R25（P1，类型缺陷）— `HeartbeatNotify` 不携带 timestamp，main.c:87 的心跳语义在类型层不可表达**
+  - C 证据：main.c:87 `rp->r_alive_tm = m.m_notify.timestamp`——心跳通知的 timestamp 直接
+    写入槽位存活时间戳。
+  - Rust 现状：`HeartbeatNotify(Endpoint)`（dispatch.rs:54，已核对）只携带端点；分类类型上
+    没有这个数据，06 接线时要么丢语义要么改签名。这不是"没写测试"，是**签名缺陷使测试
+    不可写**。
+  - 改进思考：改为 `HeartbeatNotify { endpoint: Endpoint, timestamp: <C m_notify.timestamp
+    对应类型> }`，`period_decision`/存活时间戳写入路径（Fix #38 已有 `alive_tm` 载荷字段）
+    消费之。字段类型对照 ipc.h 的 `m_notify.timestamp` 与 type.h 的 `r_alive_tm` 落定。
+
+- **R26（P1，签名偏差）— `signal_manager` 参数序与命名偏离 C 回调类型**
+  - C 证据：sef.h:270 回调类型为 `(endpoint_t target, int signo)`——target 是信号管理器
+    目标端点。
+  - Rust 现状：`fn signal_manager(&mut self, signo: i32, exec: i32) -> i32`（sef.rs:90，
+    已核对）——参数序颠倒且 target 被改名为 exec。06/18 接线时照此签名实现会把两个 i32
+    按错位语义使用（编译器无法拦截）。
+  - 改进思考：改签名为 `(target: Endpoint, signo: i32)`（与 C 同序同名），顺带把
+    main.c:647-704 的六分支语义（spurious 清信号 / terminated→EDEADEPT / stacktrace 透传 /
+    termination 分支"先 terminate 再 rs_idle_period"次序 / VM 不投递 / SIGS 异步转发）作为
+    06 号文档的实现清单。
+
+- **R27（P1）— monitor 与 LU 的两个交界行为缺失：rollback 心跳重发扫 + end_update RS 自毁短路**
+  - C 证据：(a) update.c:349-352——`rollback_service` 的 RS 分支把全表 `RS_ACTIVE` 槽的
+    `r_check_tm` 清零，强制下一周期对全部活跃服务重发 ping（rollback 后心跳状态失效的正确
+    处置）；(b) update.c:883-887——`end_update` 中 `result != OK && RUPDATE_IS_RS_INIT_DONE()`
+    → `exit(1)`，RS 自更新失败时旧实例让位的最后安全网。
+  - Rust 现状：(a) 在 monitor.rs/recovery.rs/self_lifecycle.rs 三处均无（07/16 两文档交界处，
+    接线时最易两边都漏）；(b) live_update.rs 只建了 role 分类与 reply-flag 调整，无此分支。
+    另：`terminate_decision` 的两次 `abort_update_proc` 调用在 C 中是**内嵌**于决策树的
+    （manager.c:1099-1102 位于初始化块之后、norestart 计算之前；:1127-1130 位于 EXITING 分支
+    内、late_reply 之前），而 recovery.rs:68-71 注释表述为"executed around the decision"
+    ——按注释编排会偏离 C 时序（与遗留 R10"调用顺序只存在于注释"同构，可并入该立项）。
+  - 改进思考：18.3 A5 路线图中把 (a) 划入 16 号先行项、(b) 划入 16 号 end_update 执行体；
+    recovery.rs 注释修正为内嵌时序（一行注释改动，可立即 todo-fix）。
+
+- **R28（P2）— `clone_service` 的两个分支在 Rust 无 DEFERRED 标记（纯漏标，不只是未实现）**
+  - C 证据：manager.c:730-734（VM 单 replica 预清理）、manager.c:765-779（RS 备份信号管理器
+    `update_sig_mgrs` 配对）。
+  - Rust 现状：`clone_slot` + `link_replica`（service_create.rs:118/:148）对应主链路，
+    service_create.rs:110-113 只声明了 sys_getpriv 同步一处 defer——上述两分支连 DEFERRED
+    注释都没有。其余缺口均有标记，这两处属于"漏"，13 号接线时容易被当作已完整对照。
+  - 改进思考：补两条 DEFERRED 注释（挂 13 号），或直接在 13 号文档落地时实现。可立即 todo-fix。
+
+- **R29（P2，OQ-2）— `TrapMask` 宽度分歧：C `SRV_T`=0xFFFF（16 位 short 全 1），Rust=0x3E**
+  - C 证据：kernel/priv.h:34 `short s_trap_mask`（16 位）；`SRV_T = (~0)` 落在 short 上是
+    0xFFFF，含 bit 6 = `MINIX_KERNINFO` trap（ipcconst.h:13）——C 语义下系统服务允许该 trap。
+  - Rust 现状：`TrapMask` 只建模 SEND..SENDNB 4 位（privilege.rs:135-147），`SRV_T =
+    from_bits_truncate(!0)` = 0x3E（privilege.rs:151）；测试 privilege.rs:548 用
+    `from_bits_truncate(0xFFFF)` **固化了 0x3E**，无"收窄是有意"的声明。`DSRV_T`(~0)/`DSRV_I`(0)
+    常量缺失（init_slot :1723-1724 消费，归 R20）。序列化（19 `sys_getpriv`）未落地前是潜伏
+    分歧：一旦落地，C 侧读到的 trap mask 与 Rust 侧语义不同。
+  - 改进思考：方案 a——保持 4 位建模，补显式设计差异声明 + 对 bit 6 单独决策（OQ-2 上交）；
+    方案 b——改 u16 背书忠实 C 全 16 位（含保留位透传）。推荐先 OQ 定方向，再决定是否随
+    19 号序列化对齐。不立即修。
+
+- **R30（P2）— `caller_can_control` 丢失 C 的 IN_USE 复核，索引不变式无显式声明**
+  - C 证据：manager.c:52-60——`caller_can_control` 扫描 rproc 表时重新验证 `RS_IN_USE`。
+  - Rust 现状：access.rs:45 走 `endpoint_slot()` 索引（process_table.rs:154-160 只做范围
+    检查）。当前索引写点（activate_boot_slot process_table.rs:416-418、set_endpoint_index
+    :168、mark_child_created（service_create.rs:71）、swap_slot 步骤 5（service_create.rs:
+    229-239）、free_slot :344-347）都同步维护，问题不可达；但"endpoint 索引项 ⟺ in-use 槽"
+    这一不变式没有任何显式声明或断言，未来新增写点漏清旧索引时，C 找不到已释放行而 Rust
+    可能命中。
+  - 改进思考：`endpoint_slot` 或 `caller_can_control` 补 `debug_assert!(slot.in_use)`，或在
+    process_table.rs 模块头显式声明该不变式。可立即 todo-fix。
+
+- **R31（P2）— 错误字符串表（error.c 全文件）与诊断字符串化 4 函数缺失**
+  - C 证据：`errentry` 结构（error.c:9）+ `rs_strerror`/`init_strerror`/`lu_strerror`
+    （error.c:33/:48/:56，其中 rs_strerror 为完全缺口——无文档无 Rust）；`srv_to_string_gen`
+    （utility.c:142）、`srv_upd_to_string`（utility.c:189）、`print_services_status`
+    （utility.c:485）、`print_update_status`（utility.c:516）。
+  - 改进思考：错误名面由 T3 已立项的 `Errno` Display 承接（不单独移植 error.c 的查表）；四个
+    诊断函数属 IS 阶段（08-stage-is 的 dump 依赖）与 14 号（getsysinfo）接线面；`exec_restart`
+    属 19 号 exec 系列。全部记录归属，不立即修。
+
+- **R32（P2，一致性杂项 7 小项）**
+  1. `Machine.processors_count`/`bsp_id` 字段零读取（boot.rs:42/:44）——`check_request` 改为
+     裸参数传入后成死存储（仅 boot.rs:1139 的 PartialEq 断言消费）。
+  2. `RinitState.rproctab_gid`（boot.rs:384，恒 None）与 ready.rs:71 的独立 `rproctab_gid`
+     两份字段未打通——19 号 grant 接线时会面对"改哪份"的歧义。
+  3. `default_prepare_maxtime` 同名双函数：monitor.rs:28（hz→i64）与 live_update.rs:119
+     （(maxtime, default)→u32），lib.rs:65 只导出后者；语义相关（同出 const.h:58）但类型不通，
+     19 接线时是现成的混用点。建议改名其一。
+  4. `init_service` 发送后 `r_map_prealloc_addr/len` 清零（utility.c:59-60）无任何 Rust 函数
+     执行（字段在 service_slot.rs 存在；grep 全 crate 无复位点）——12 号接线清单项。
+  5. `update_sig_mgrs` 的两处 C 调用语义不同：do_update 的 (new_rp, SELF, new_rp 自身作
+     backup) 配对（request.c:760-766）与 clone_service 的重启副本配对（manager.c:771-773）；
+     Rust `sig_mgr_updates`（self_lifecycle.rs:169）只覆盖后者。
+  6. `lookup_by_flags`（process_table.rs:295，C 唯一调用点 request.c:1013）与
+     `period_decision` 的喂参关系（`another_initializing` 参数，monitor.rs:115）只存在于
+     C 行号注释（monitor.rs:107-109），未链到 Rust API 名——接线者需知参数来源。
+  7. `check_request` 的负优先级合法（request.c:1275-1279 只拒 `>= NR_SCHED_QUEUES`，负值
+     放行）无测试锁定；`sched_decision` 用 debug_assert（sched.rs:120-132）而 C 是运行期
+     assert（utility.c:371-372）——release 下"系统进程 + scheduler=NONE"静默放行的选择无声明。
+
+- **R33（P2，D1 补充角度）— `ServiceSlot` 派生 `PartialEq`/`Eq`，`exec: Arc<[u8]>` 使相等比较退化为逐字节 ELF 比较**
+  - 现状：service_slot.rs:357 `#[derive(Debug, Clone, PartialEq, Eq)]`（已核对）；任何对槽位的
+    `==`/`!=` 都会深比较整个 exec 镜像。
+  - 改进思考：手动 impl `PartialEq` 只比较身份字段（pub_ + flags + pid + endpoint），或去掉
+    derive 改为测试内字段断言。与 D1（god struct 收敛）同轮处理即可，不单独立项修复。
+
+- **R34（P2）— 测试盲区清单（四路深读汇总，按优先级）**
+  以下 C 语义分支当前无测试锁定（锚点 = C 分支 + Rust 位置）：
+  1. monitor 决策树分支优先级：`backoff > 0` 与 stop 超时同帧时 backoff 赢（request.c:975
+     先于 :985）——现有测试只单分支注入。
+  2. `has_update_timed_out` 等号边界：C/Rust 均严格 `>`，`now == prepare_tm + maxtime` 不超时
+     ——monitor.rs:452-456 只测远超与未到。
+  3. `do_init_ready` result≠0 且 updating 时**不得**置 `INIT_DONE`、不得减 pending（载荷负
+     断言缺失）。
+  4. terminate 三分支组合互斥：INITIALIZING + updating + `SF_NO_BIN_EXP` 时 rollback 压过
+     refresh（manager.c:1071 早于 :1078）。
+  5. `CLEANUP_SCRIPT` 负例：`has_script=true` 且 `NORESTART=false` 时不得置位（manager.c:1113-1116
+     在 norestart 块内）。
+  6. `compute_backoff` 移位极值：restarts=62 → `1<<62` 被 `MAX_BACKOFF` 收敛到 30。
+  7. `RSS_FORCE_INIT_ST → SEF_INIT_ST` 映射（request.c:619-621）。
+  8. `vm_default_prealloc` 负输入（C 有符号 `<= 0` 判定，request.c:591——负值等同未给）。
+  9. `validate_update_request` 的合法 prepare-only 放行侧（request.c:679）。
+  10. `update_phase` 对 flags 与计数不一致非法态的解码行为（C 可表达该非法态）。
+  11. RupdateFlags 位值（process_table.rs:32-38）无逐 bit 头文件对照测试（RFlags/SysFlags/
+      PrivFlags 均有）。
+  12. 访问控制规则交互："用户进程目标 + updating=true + RS_EDIT → EBUSY（非 EPERM）"
+      （manager.c:103-110 的次序语义）。
+  13. `lookup_by_label` 的 "ACTIVE 但 in_use=false 仍应找到" 契约（manager.c:1944 不查 IN_USE）
+      ——防止将来"顺手"补 IN_USE 过滤静默偏离 C。
+  14. do_getsysinfo 两个尺寸门 `len > size` 早退 / `len != size` EINVAL（request.c:1120-1121/
+      :1135-1136）——`GetsysinfoTable` 枚举无尺寸概念，19 组装时最易丢。
+  15. do_sysctl 的 ESRCH→OK 归一（request.c:1194-1198）。
+  16. do_down 的 RS_TERMINATED 双形态（request.c:137-146：终止服务走 unpublish+cleanup+立即
+      OK，活服务走 stop+late reply）。
+  17. do_shutdown 的 NULL 消息形态（request.c:438-441 内部调用免权限）。
+  18. boot 失败传播族：step0 `get_machine`/`get_hz` Err 提前中止、step1 `lookup_image` 未命中
+      →ENOSYS、step4 负 pid →Err、setalarm 失败——mock（testutil.rs:42 pids 栈）可注入但未用。
+  19. `run()` 在 state None 时 panic（lib.rs:217-219）与二次 `init(Fresh)` panic（lib.rs:252）。
+  20. classify 前置 isokendpt 门（R12 契约）无非法 endpoint 测试。
+  21. 信号路由映射：SIGCHLD→do_sigchld、SIGTERM→do_shutdown（main.c:634-641）——两层纯逻辑
+      各有单测，但 SEF 信号→handler 的分发层零测试。
+  22. `signal_manager` 六分支（main.c:655-703）零分支测试——sef.rs:120 只断言 ENOSYS。
+  23. `catch_boot_init_ready` 的阻塞接收与三类 panic（main.c:795-807，12 号落地时补）。
+  24. `init_privs` 的 IPC_ALL 只应有 NR_SYS_PROCS 个有效位（manager.c:2325-2329 C 逐位循环；
+      Rust `SysMap::all()` 恒 u64::MAX）——NR_SYS_PROCS 变化时语义分叉无契约锁定。
+  改进思考：第 1-9、11-13 条可在对应模块内直接补（纯决策测试，成本低）；第 14-17 条依赖
+  13/14 号接线（先补类型载体再补测试）；第 18-23 条属 E3（集成测试）的具体化——**补 E3 时
+  应先补模型（R22/R23/R25/R26）再补测试，否则测试无载体**。
+
+### 18.3 架构级建议（每条 ≥2 方案对比）
+
+- **A1（对应 R22）编排层引入形态** [若采纳需在 08/13/16 文档设计差异节同步标注]
+  - 方案 a（推荐）：**忠实编排函数**。在各域模块补 `create_service`/`start_service`/
+    `run_service`/`restart_service`/`start_update` 等编排函数：步骤序列对照 C 行号注释组织，
+    复用现有纯决策切片，KernelApi 副作用集中在编排层执行，失败即清理对照 C 的对称清理点。
+    优点：与 C 对照性最强（19 接线与 review 都能逐行对）、现有 211 测试全部保值、接线期
+    风险最低。缺点：编排函数是较长的过程式形态，函数级单测要靠 mock KernelApi。
+  - 方案 b：**服务生命周期状态机**（per-service enum 状态 + 事件迁移表）。优点：非法迁移
+    编译期不可表达。缺点：C 的编排充满跨服务副作用（VM pin、sigmgr 备份、abort 钩子内嵌
+    时序），16 号的多服务批量编排（start_update 链式扫表 + VM 最后两遍）在 per-service
+    状态机中表达别扭；建模成本在 19 接线期不可承受。
+  - 方案 c：**Effect 解释器**——`SlotMutations` 泛化为 `Effect` 枚举（Send/PrivCtl/Kill/...），
+    编排函数返回 effect 序列，唯一解释器执行。优点：与 T5/R13 的 functional-core 一脉相承，
+    编排完全可测（断言 effect 序列）。缺点：内核调用 20+ 种，Effect 枚举与 KernelApi 方法
+    一一映射的维护成本高；C 的"失败即清理"要在 effect 列表上建模补偿 effect，复杂度失控。
+  - **推荐 a，局部借鉴 c**（决策返回已有 SlotMutations，编排层负责顺序与 IPC 副作用）；
+    b 作为后续演进方向不在接线期实施。
+
+- **A2（对应 R23）rupdate 全局收敛**
+  - 方案 a（推荐）：**`UpdateState` 挂进 `ServerState`**——`UpdateState { flags: RupdateFlags,
+    chain: UpdateChain, num_init_ready_pending }`，相位写入口收敛为
+    `begin_updating()/begin_initializing()` 两个方法（对照 update.c:510/:548 仅有的两个全局
+    写点）。`ServerState` 已是 T1 修复后的运行态 handover 容器（lib.rs:137），顺理成章。
+  - 方案 b：把 flags/pending 直接并入 `UpdateChain` 扩名为 UpdateState。差异仅在归属层级
+    命名；a 的"chain 是 state 的一部分"语义更清晰。
+  - 共同前置：per-slot `r_upd`（type.h:62）补进 `ServiceSlot`（`Option<UpdateEntry 索引>`），
+    否则 `SRV_IS_UPD_SCHEDULED`/`SRV_IS_PREPARING_ONLY`（const.h:119-120）在 16 号接线时仍要
+    靠注入 bool；`UpdateEntry` 补 `prepare_tm`/`prepare_maxtime`/grant 三字段（type.h:35-39）。
+
+- **A3（对应 R26 + 18 号文档）SEF 回调机制演进**
+  - 现状缺口：`SefCallbacks` 静态 trait（sef.rs:68）无法表达 C 的运行期回调重绑——
+    `sef_cb_init_lu` 完成后 `sef_setcb_init_restart(SEF_CB_INIT_RESTART_STATEFUL)`
+    （main.c:558）把 restart 回调换成 stateful 版本；`sef_cb_init_response` 的"模拟 RS-to-RS
+    init 消息调 `do_init_ready`"（main.c:602）与 `sef_cb_lu_response` 的 EDONTREPLY→EGENERIC
+    反向归一（main.c:622-624，normalize_* 已实现未接）都缺消费点。
+  - 方案 a（推荐）：保留 trait，`RsServer` 内加 `restart_cb: RestartCb` 枚举
+    （Default/Stateful）承载重绑，trait 方法内 match。改动最小，语义与 C 的单点重绑同构。
+  - 方案 b：回调表整体 enum 化（`SefCbSet::Fresh/LuStateful` 切换）。更同构但多一层间接，
+    18 号落地时若发现重绑点多于一个再升级。
+  - 共同前置：R26 签名修正；restart/lu 路径的 `sys_setalarm(RS_DELTA_T)` 重挂（main.c:540）
+    纳入 18 号实现清单。
+
+- **A4（对应 R32.5/R34）dispatch→handler 模式统一**
+  - 现状三种决策/变异约定并存：recovery 决策载荷模式（R13）、request.rs 直接变异
+    （stop_service request.rs:113 / shutdown_apply request.rs:132）、service_create 直接变异
+    （mark_child_created/swap_slot）。
+  - 建议：**控制请求域（request.rs）迁移到决策载荷模式**（与 monitor/ready/recovery 一致，
+    调用方只记一套约定）；**表编排域（service_create）保留直接变异**——表结构不变式由
+    RProcTable 原语保证，强行载荷化只增加无意义样板。`dispatch_request` 死表
+    （dispatch.rs:106，14 个请求全 ENOSYS，含纯切片已就绪的 RS_UP/RS_DOWN/RS_SHUTDOWN/
+    RS_LOOKUP）在 06 接线时改逐请求路由，此前处置见 OQ-4。
+
+- **A5 接线路线图（依赖序 + 先行修复映射）**
+  1. **06（主循环）**：先行修 R25（HeartbeatNotify timestamp）、R26（signal_manager 签名）、
+     R24（do_upd_ready 载荷）——都是 06 分派路径上的类型/载荷修正，改动小。
+  2. **12（init ready 接线）**：normalize_*/should_reply_ready/mark_initializing 已就绪；
+     补 sef_cb_init_response 的"模拟 init 消息"决策与 R32.4 的 map_prealloc 清零。
+  3. **13（控制请求）**：R22 编排层（start_service/run_service/restart_service/kill/crash/
+     detach + cleanup 第一阶段）+ A4 模式统一 + R28 两分支。
+  4. **08（配置管线）**：R20（RsStart 补字段 → edit_slot/init_slot 分支序实现）+
+     R21（from_calls base 参数）。
+  5. **16（Live Update）**：A2（UpdateState）+ R23 中段编排 + R27(a) rollback 心跳耦合 +
+     end_update 执行体（含 R27(b) 自毁短路）。
+  6. **19（外部接口）**：exec 系列、reply/rs_asynsend IPC 原语、T3 Errno 统一收口、
+     R29 TrapMask 序列化决策、R31 诊断面、R32.1-2.3 死存储清理。
+  （依赖依据：各 DEFERRED 注释锚点 + C 调用图；01-stage-kernel todo 的 RS 联调 DEFERRED 项
+  与 6 同步收敛。）
+
+### 18.4 死代码候选清单（本轮只列不删；每条含判定依据与消除影响）
+
+**第一档：立即可删（2 项）**
+1. `RS_FI_CRASH` 双定义——query.rs:115 与 `libs/minix-types/src/ipc/rs.rs:61` 各一份（值相同，
+   各带一份重复测试 query.rs:175-178 与 minix-types:260）；dispatch.rs:24-26 已声明 minix-types
+   是 RS 消息常量唯一权威。消除影响：零（query.rs 版零生产调用）。
+2. `RProcTable::set_endpoint_mapping`（process_table.rs:225-233）——被 `set_endpoint_index`
+   （process_table.rs:168，带 R12 fail-closed 断言）完全取代，全仓唯一出现处即定义。消除
+   影响：零。
+
+**第二档：同一语义双实现点（1 项，OQ-3 上交）**
+3. `share_exec`（exec.rs:47）与 service_create.rs:129 的内联 `exec.clone()` 做同一件事（后者
+   注释自辩 "explicit for faithfulness"）——未来改 exec 表示时是分叉风险。留一删一。
+
+**第三档：接线期复活（不删，建议统一标注）**
+- 零调用根因是 dispatch 全 ENOSYS（A4）：`dispatch_request`（dispatch.rs:106）、request.rs
+  五件套（`up_init_flags` :34、`check_duplicates` :55、`mark_late_reply` :83、`stop_service`
+  :113、`shutdown_apply` :132）、query.rs 全部函数、service_create 大部分纯切片。
+- 连 lib.rs 导出都没有的孤儿（cargo bin 目标会报 dead_code，建议补 `#[allow(dead_code)]` +
+  归属标注）：`should_reply_ready`（ready.rs:275）、`normalize_init_response`（ready.rs:283）、
+  `normalize_lu_response`（ready.rs:298）。
+- 为未建编排预留的原料（R23 落地时消费）：`UpdateEntry::is_preparing_only`（live_update.rs:284，
+  C 消费点 update.c:515/:552/:827/:891/:904 五处编排尚不存在）、`UpdateChain::last_lu_flags`
+  （live_update.rs:339，唯一消费者 `rupdate_set_new_upd_flags` 缺失）。
+- 18/19 号预支：self_lifecycle.rs 全部 13 个导出（唯一引用是 lib.rs:90-94 转导出）、sched.rs
+  三件套（`sched_decision` :119、`on_stop_result` :173、`set_sig_mgrs` :207）、KernelApi 5 个
+  预支方法（`getnuid`/`srv_fork`/`getprocnr`/`vm_memctl`/`vm_set_priv`，boot.rs:81/:91/:97/
+  :103/:114——R9 拆 trait 时归位）、`VmRsMemReq` 三个 LU 变体（boot.rs:134-138）、
+  `ipc_mask::update_ipc_mask`（ipc_mask.rs:212）、`exec::has_shared_exec`/`validate_image`
+  （exec.rs:57/:27，RSS_REUSE 与 19 号路径）、`lookup_by_flags`（process_table.rs:295，
+  A5-06 步喂参 `period_decision`）。
+- **机制建议**：对照 `tools/check-rs-unwired.sh` 对 panic 标记的 doc-contract 门禁，给上述
+  "预期零调用"项在模块头或 lib.rs 导出清单统一加 `// awaiting-wiring: NN-rs-xxx.md` 标注
+  ——把"有意等待"显式化，防止后续轮次误判为死代码误删，也防止接线者漏认领。
+
+### 18.5 DEFERRED 判定表（3 个 panic 标记 + 21 处 DEFERRED 注释）
+
+| 类别 | 数量 | 判定 |
+|------|------|------|
+| panic 标记（`todo!`/`unimplemented!`） | 3（lib.rs:244/:287、boot.rs:652） | 全部带文档契约（check-rs-unwired.sh PASS），合理接线期 |
+| DEFERRED 注释 | 21（lib.rs 8、boot.rs 5、service_create.rs 3、monitor.rs 2、publish/exec/main.rs 各 1） | 逐条核对均有文档编号锚点，合理接线期 |
+| **无标记的漏**（本轮新发现） | 4 | clone_service 两分支（R28）、cleanup_service 第一阶段（R22）、fill_call_mask 组合语义（R21——有注释但注释声称的调用方路径不存在） |
+
+**结论**：DEFERRED 机制本身健康（无虚标）；真正的风险是 08/13/16 号 DEFERRED 的实际规模
+远大于标记密度暗示——以 R20/R22/R23 的精确清单为准（edit_slot 约 25 分支、create_service
+15 步、update.c 中段 12 函数、RsStart 约 10 字段、UpdateEntry 4 字段组）。
+
+### 18.6 本轮总览表
+
+| ID | 主题 | 严重度 | 状态 | 归属 |
+|----|------|--------|------|------|
+| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ☐ | 08 落地期 |
+| R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ☐ | 08 落地期（可先改 API） |
+| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
+| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
+| R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ☐ | 可立即 todo-fix |
+| R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ☐ | 可立即 todo-fix（06 先行） |
+| R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
+| R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
+| R28 | clone_service 两分支漏标 DEFERRED | P2 | ☐ | 可立即 todo-fix |
+| R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ☐ | 19 接线期决策 |
+| R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ☐ | 可立即 todo-fix |
+| R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
+| R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ☐ | 逐项标注（见条目） |
+| R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | D1 同轮 |
+| R34 | 测试盲区清单 24 条 | P2 | ☐ | 1-13 可立即补；14-17 随 13/14；18-23=E3 具体化 |
+| A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
+| A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ☐ | 16 落地期 |
+| A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ☐ | 18 落地期 |
+| A4 | 控制请求域统一决策载荷模式 | 建议 | ☐ | 13 落地期 |
+| A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ☐ | 全局 |
+
+**OQ 清单（上交用户）**
+- OQ-1：self_lifecycle.rs 13 个导出保持"纯切片等 18 号接线"形态，还是先内联进 recovery/
+  live_update？（推荐保持 + awaiting-wiring 标注）
+- OQ-2：TrapMask 收窄到 4 位是否有意？`MINIX_KERNINFO`（bit 6）trap 允许面要不要对齐 C？
+  （R29 方向决策）
+- OQ-3：`share_exec` 与内联 clone 留一删一，留哪个？（18.4 第二档）
+- OQ-4：`dispatch_request` ENOSYS 死表在 06 接线前删除还是保留占位？（推荐保留 + awaiting
+  标注，06 时原地转真）
+
+### 18.7 Redox / OS 理论 / Rust 社区对照（本轮增量）
+
+- 服务监管模型：现有 todo.md §7（2026-08-15 调研）、§12 N12、§14.2 已核实并对照过 Redox 的
+  init 声明式服务管理与 `redox_syscall` 边界，本轮结论一致：RS 的 terminate→backoff→
+  reincarnate 决策树（recovery.rs）与 Redox 的 daemon 崩溃重启语义方向一致；Redox 无
+  live update 机制（§12 N12 已核实）。
+- 本轮新增角度：RS 的 LU 四阶段（prepare→update→init→end/rollback）+ 状态数据迁移
+  （state_data.rs 的 eval 表与 IPC filter 迁移）在"进程级热更新"维度上比业界常见方案
+  （Erlang/OTP 的 supervisor 重启策略 + code change 回调、systemd 的 ExecReload）更完整
+  ——这是本 crate 最具教学价值的部分，16/17 号文档落地时应把这一对照写进设计差异节。
+  [业界对照为通识性论断；本轮外网不可达，新增 Redox 锚点一律标 待验证，不影响上述条目
+  成立——各条目的 C 源锚点已独立充分。]
+- Rust 社区实践：A1 的三方案对比本质是 functional-core/imperative-shell（T5 已定方向）在
+  "编排层"的延伸——决策可测性与编排忠实性的平衡；A2 是"单一状态容器"惯例（对照
+  02-stage-vm/todo.md 的 VmContext 收敛教训 P1-2，同款问题第三处出现：rs 的 ServerState
+  应一次到位）。
+
+### 18.8 验证命令块与 Gate 结果
+
+```
+$ cargo test -p minix-rs                     # 211 passed; 0 failed（基线，本轮零代码改动）
+$ bash tools/check-rs-unwired.sh             # Result: PASS（3 个生产标记全带 doc contract）
+$ rg -c "#\[test\]" os/servers/rs/src        # 合计 211（Gate E 数量对账：声称=实测，偏差 0%）
+$ python3 tools/coverage-extract/coverage-extract.py rs \
+    notes/rewrite/fork-syscall-rewrite/03-stage-rs --rust-dir os/servers/rs/src \
+    --c-dir minix3/minix/servers/rs --semantic-map tools/coverage-extract/rs-semantic-map.json \
+    --output .review/claude/rs/scan/SYMBOLS.md
+  # 171 C 符号 / 文档 95.3% / Rust 67.3% / 缺口 56（含 11 个 ARCH-不需要的机制宏）
+```
+
+- Gate E（测试名对账）：本轮 18.2/18.4 中的测试引用全部使用 file:line 锚点而非测试名（避免
+  行号漂移与幽灵引用）；数量对账 211 = 211。
+- 锚点纪律：R20-R34 的每个"C 证据/Rust 现状"均带 file:line；其中 privilege.rs:241-248、
+  dispatch.rs:54、sef.rs:90、service_slot.rs:357、process_table.rs:225 五处关键锚点已逐一
+  打开源文件复核，其余锚点来自四路深读的带锚报告（抽查一致）。
+- **遗留（本轮不修）**：R20-R34 全部 ☐；既有 D1/D2/D6/E2/E3/T3 残留/R8/R9/R10 维持原归属；
+  semantic-map 的 `_note` 已更新为全量扩展说明（工具链配置改动，非产品代码）。
+
+### 18.9 实现记录（Fix #40 起——§18 条目按 todo-fix 迭代队列逐项落地，2026-09-06 起）
+
+> 迭代协议：每轮一项（讲明白 → ≥2 方案对照 Linux/Redox/OS 理论/Rust 社区 → 测试先行实施 →
+> 文档同步 → cargo test/clippy/fmt + T7 门禁 → 回归 review → 本节标注 → commit）。
+> 范围边界：实现到 `KernelApi` trait 边界（mock 全真、生产 ENOSYS fail-closed）；真实内核
+> 传输留给 19 号主线。
+
+### ✅ Fix #40 — R26（P1 签名偏差）：`signal_manager` 对齐 sef.h:270 回调类型
+- **File**：`os/servers/rs/src/sef.rs`（trait 声明 + 测试）、`os/servers/rs/src/lib.rs`
+  （`impl SefCallbacks for RsServer`）、`01-rs-boot-init.md` §3.3（trait 清单）
+- **Before**：`fn signal_manager(&mut self, signo: i32, exec: i32) -> i32`——参数序与 C 回调
+  类型 `int(*)(endpoint_t target, int signo)`（sef.h:270）颠倒，且 `target` 被改名为 `exec`；
+  两个裸 `i32` 在调用点可互换（编译器无法拦截错位）；返回裸 `i32` 是 trait 七方法中唯一的
+  非 `Result` 例外，fail-closed 靠约定值（`ENOSYS.to_i32()`）而非类型。
+- **After**：`fn signal_manager(&mut self, target: Endpoint, signo: i32) -> Result<i32, Errno>`。
+  方案对比：a) Endpoint newtype + Result（选定）vs b) 保留 i32 只换序（两个 i32 仍可互换，
+  地雷只剩命名约定）vs c) 结构体打包参数（双参回调无收益，与 C 对照变差）。选 a 的理由：
+  与 sef.h:270 同序同名；`Endpoint` 与 crate 内全部端点流（`dispatch::classify`、
+  `process_table::endpoint_slot`）类型一致，错位在编译期不可表达；`Result` 与其余 6 个回调
+  统一，fail-closed 从约定升级为类型强制。外部行为不变（回调未接线），无需 [ARCH] 标注。
+- **Verified**：`cargo test -p minix-rs` = 211 passed（含 `test_deferred_callbacks_fail_closed`
+  更新为 `s.signal_manager(Endpoint::RS, 1) == Err(Errno::ENOSYS)`）；`cargo clippy -p minix-rs
+  --lib` 触碰文件零告警；`cargo fmt --check` 触碰文件零 diff；`tools/check-rs-unwired.sh`
+  PASS（标记集不变：boot.rs:652、lib.rs:244/:287）。文档同步：01-rs-boot-init.md §3.3 trait
+  清单 + fail-closed 表述（6 个未落地 = 5 个 `Err(ENOSYS)` + signal_handler `unimplemented!`）。
