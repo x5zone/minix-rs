@@ -883,9 +883,19 @@ impl ProcessTable {
                     None => break,
                 };
                 // vm::kernel_call_resume clears MF_KCALL_RESUME + returns
-                // VmCheckResult. If the VM result indicates an error,
-                // the process may need SIGSEGV (future phase).
-                let _ = result; // TODO: route VmCheckResult in switch_to_user
+                // VmCheckResult. If the VM result indicates an error (VM
+                // confirmed the address is genuinely invalid), the process
+                // gets SIGSEGV — C: arch/i386/memory.c vm_suspend reply
+                // path sets vmresult; the kernel_call_resume in C sends
+                // SIGSEGV when VM cannot resolve the fault.
+                if result == crate::vm::VmCheckResult::Fault {
+                    crate::syscall_signal::cause_signal(
+                        nr,
+                        crate::syscall_signal::SIGSEGV,
+                        self,
+                        priv_table,
+                    );
+                }
             } else if flags.contains(MiscFlagsBits::DELIVERMSG) {
                 // C: delivermsg(p) — proc.c:263-294. Clears MF_DELIVERMSG
                 // on success or fatal failure; sets MF_MSGFAILED on first

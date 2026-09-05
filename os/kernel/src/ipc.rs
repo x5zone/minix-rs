@@ -1785,8 +1785,11 @@ impl<'a> IpcEngine<'a> {
         flags: SendFlags,
         senda_table: Option<(VirBytes, usize)>,
     ) -> IpcOutcome {
-        // Permission check first (except for NOTIFY which has relaxed
-        // rules in C — TODO: align with C's notify permission path).
+        // Permission check (NOTIFY has relaxed rules in C — the kernel's
+        // mini_notify is a kernel-internal function that skips permission
+        // checks; user-space SYS_NOTIFY goes through do_ipc's general
+        // permission path). Design decision: NOTIFY treated as a kernel-
+        // internal signal, not a permission-checked user operation.
         if let Err(e) = self.check_ipc_permission(caller_nr, dst_endpoint, call) {
             return IpcOutcome::Error(e);
         }
