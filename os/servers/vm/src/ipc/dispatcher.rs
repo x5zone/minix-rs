@@ -31,6 +31,8 @@ use minix_types::{
     VM_RS_UPDATE, VM_RS_MEMCTL, VM_GETPHYS, VM_GETREF, VM_INFO, VM_GETRUSAGE,
     VM_REMAP, VM_REMAP_RO, VM_PROCCTL, VM_SHM_UNMAP, VM_VFS_REPLY,
 };
+#[cfg(test)]
+use minix_types::{VM_ADDDMA, VM_DELDMA, VM_EXEC_NEWMEM, VM_GETDMA};
 use crate::vmproc::VmProcTable;
 use crate::vm_server::VmContext;
 use crate::alloc_page::VmPageAllocator;
@@ -842,13 +844,11 @@ impl MessageDispatcher {
     }
 
     // -- info --
-    pub(crate) fn dispatch_info(
-        ctx: &mut VmContext,
-        sources: query::UsageSources,
-        dropped_messages: u64,
-        pagefault_errors: u64,
-        q: query::InfoQuery,
-    ) -> VmReply {
+    pub(crate) fn dispatch_info(ctx: &mut VmContext, q: query::InfoQuery) -> VmReply {
+        // Copy values read before the field-level mutable destructuring.
+        let sources = ctx.usage_sources();
+        let dropped_messages = ctx.dropped_messages;
+        let pagefault_errors = ctx.pagefault_errors;
         let VmContext { proc_table, page_alloc, page_frames, page_cache: cache, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let cached_pages = cache.total_cached();
@@ -911,207 +911,264 @@ impl MessageDispatcher {
 // ==========================================================================
 
 impl MessageDispatcher {
-    /// Compile-time CALLMAP replacement for C's `vm_calls[c].vmc_func(&msg)` (main.c:163-165).
-    ///
-    /// Each branch decodes `Message` → per-call `In` type, then delegates to
-    /// the existing `dispatch_xxx()` method. Resolved at compile time — no
-    /// runtime function pointer table needed.
-    ///
-    /// Full coverage of ~20 CALLMAP entries from main.c:508-538.
-    /// All VM request types are now wired up with decode + dispatch.
-    /// DEFERRED entries (procctl/remap/remap_ro) have fail-closed
-    /// input validation and return NotImplemented. DMA-related calls
-    /// (VM_ADDDMA/VM_DELDMA/VM_GETDMA) are explicitly excluded and
-    /// caught by the `_` arm.
+    /// Compile-time CALLMAP lookup (C: main.c:137-176 — `CALLNUMBER(c)`
+    /// bounds check, then `vm_calls[c].vmc_func` dispatch; unregistered
+    /// calls keep `result = ENOSYS` at main.c:139/165). The table lives in
+    /// [`CALLMAP`]; each entry is a per-call decode wrapper.
     pub(crate) fn dispatch_by_number(
         call_nr: usize,
         msg: &Message,
         server: &mut crate::VmServer,
     ) -> DispatchResult {
-        // Query usage sources are owned Copy values computed before the
-        // mutable parts borrow (usage_sources takes &self).
-        let usage_sources = server.usage_sources();
-        let dropped_messages = server.dropped_messages();
-        let pagefault_errors = server.pagefault_errors();
-        // V9-P1-3 step 2: handlers destructure the context themselves; the
-        // trunk only passes it down.
         let ctx = &mut server.ctx;
-
-        let vm_rq_base = VM_RQ_BASE as usize;
-
-        // Most VM IPC messages use mess_1 format.
-        // SAFETY: m_type has already been validated by the caller to be a
-        // VM request number. M1 and M2 are accessed based on which call it is.
-        let m1 = unsafe { &msg.m_u.m_m1 };
-        let m2 = unsafe { &msg.m_u.m_m2 };
-
-        match call_nr {
-            _c if _c == VM_MMAP as usize - vm_rq_base =>
-                Self::dispatch_mmap(ctx, VmMmapIn::decode_message(msg)).into(),
-            _c if _c == VM_MUNMAP as usize - vm_rq_base =>
-                // 21-P1-1 wire-format fix: decode from the m_mmap overlay +
-                // m_source (20-P1-1 family). The old MessageM1 decode read
-                // endpoint from m_mmap.offset and addr/len from prot/flags.
-                Self::dispatch_munmap(ctx, VmMunmapIn::decode_message(msg)).into(),
-            _c if _c == VM_UNMAP_PHYS as usize - vm_rq_base =>
-                // 21-P1-1: wired here (previously fell through to the `_`
-                // catch-all → NotImplemented, contradicting the handler's
-                // existence). C: CALLMAP(VM_UNMAP_PHYS, do_munmap), main.c:540.
-                Self::dispatch_unmap_phys(ctx, VmUnmapPhysIn::decode_message(msg)).into(),
-            _c if _c == VM_MAP_PHYS as usize - vm_rq_base =>
-                Self::dispatch_map_phys(ctx, VmMapPhysIn::decode_message(msg)).into(),
-            _c if _c == VM_EXIT as usize - vm_rq_base =>
-                Self::dispatch_exit(ctx, VmExitIn::decode(m1)).into(),
-            _c if _c == VM_FORK as usize - vm_rq_base =>
-                Self::dispatch_fork(ctx, VmForkIn::decode(m1)).into(),
-            _c if _c == VM_BRK as usize - vm_rq_base =>
-                Self::dispatch_brk(ctx, VmBrkIn::decode_message(msg)).into(),
-            _c if _c == VM_WILLEXIT as usize - vm_rq_base =>
-                Self::dispatch_willexit(ctx, VmWillexitIn::decode(m1)).into(),
-            _c if _c == VM_VFS_MMAP as usize - vm_rq_base =>
-                Self::dispatch_vfs_mmap(ctx, VmVfsMmapIn::decode_message(msg)).into(),
-            _c if _c == VM_MAPCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_mapcache(ctx, msg.m_source, VmCacheIn::decode_message(msg)).into(),
-            _c if _c == VM_SETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_setcache(ctx, msg.m_source, VmCacheIn::decode_message(msg)).into(),
-            _c if _c == VM_FORGETCACHEPAGE as usize - vm_rq_base =>
-                Self::dispatch_forgetcache(ctx, VmCacheIn::decode_message(msg)).into(),
-            _c if _c == VM_CLEARCACHE as usize - vm_rq_base =>
-                Self::dispatch_clearcache(ctx, VmCacheIn::decode_message(msg)).into(),
-            // RS calls — use m_lsys_vm_update (M2 format: src, dst, flags)
-            // C: com.h VM_RS_NR=m2_i1, VM_RS_BUF=m2_l1, VM_RS_SYS=m2_i2
-            _c if _c == VM_RS_SET_PRIV as usize - vm_rq_base => {
-                // C: rs.c:40 — nr=m->VM_RS_NR, buf=m->VM_RS_BUF, sys=m->VM_RS_SYS
-                // M2: m2i1=target endpoint, m2l1=call_mask pointer, m2i2=is_sys_proc
-                let target = Endpoint(m2.m2i1);
-                let is_sys_proc = m2.m2i2 != 0;
-                // call_mask is passed via sys_datacopy in C; we can't do that
-                // from M2 alone. RS must pass the mask inline or via shared memory.
-                // For now, pass None (will use default ACL for user, empty for sys).
-                let mask = None;
-                Self::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc).into()
-            }
-            // C: rs.c:71 — src=m->m_lsys_vm_update.src, dst=m->m_lsys_vm_update.dst
-            // m_lsys_vm_update maps to M2: m2i1=src, m2i2=dst, m2i3=flags
-            _c if _c == VM_RS_PREPARE as usize - vm_rq_base => {
-                let src = Endpoint(m2.m2i1);
-                let dst = Endpoint(m2.m2i2);
-                let flags = m2.m2i3 as u32;
-                Self::dispatch_rs_prepare(ctx, src, dst, flags).into()
-            }
-            _c if _c == VM_RS_UPDATE as usize - vm_rq_base => {
-                let src = Endpoint(m2.m2i1);
-                let dst = Endpoint(m2.m2i2);
-                let flags = m2.m2i3 as u32;
-                Self::dispatch_rs_update(ctx, src, dst, flags).into()
-            }
-            // C: rs.c:349 — ep=m->VM_RS_CTL_ENDPT(m1_i1), req=m->VM_RS_CTL_REQ(m1_i2)
-            // VM_RS_CTL_ADDR=m2_p1, VM_RS_CTL_LEN=m2_i3
-            _c if _c == VM_RS_MEMCTL as usize - vm_rq_base => {
-                let target = Endpoint(m1.m1i1);
-                let _req_code = m1.m1i2;
-                let request = match decode_rs_memctl_request(
-                    m1.m1i2,
-                    m2.m2l1 as u64,
-                    m2.m2i3,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => return DispatchResult::from_reply(VmReply::Error(e)),
-                };
-                Self::dispatch_rs_memctl(ctx, target, request).into()
-            }
-            // C: utility.c:100 — m_lsys_vm_info (M2 format: what, ep, count, ptr, next)
-            // M2: m2i1=what, m2i2=ep, m2i3=count, m2l1=ptr, m2l2=next
-            _c if _c == VM_GETPHYS as usize - vm_rq_base => {
-                // C: utility.c — get_phys uses m1_i1=target, m1_p1=vaddr
-                let target = Endpoint(m1.m1i1);
-                let addr = VirBytes(m1.m1p1);
-                Self::dispatch_get_phys(ctx, target, addr).into()
-            }
-            _c if _c == VM_GETREF as usize - vm_rq_base => {
-                // C: utility.c — get_ref uses m1_i1=target, m1_p1=vaddr
-                let target = Endpoint(m1.m1i1);
-                let addr = VirBytes(m1.m1p1);
-                Self::dispatch_get_refcount(ctx, target, addr).into()
-            }
-            _c if _c == VM_INFO as usize - vm_rq_base => {
-                // C: utility.c:100 — m_lsys_vm_info.what, .ep, .count, .next
-                // M2: m2i1=what, m2i2=ep, m2i3=count, m2l2=next
-                let what = m2.m2i1;
-                let mut ep = Endpoint(m2.m2i2);
-                let count = m2.m2i3 as usize;
-                let next = VirBytes(m2.m2l2 as u64);
-                // C: VMIW_STATS=1 / VMIW_USAGE=2 / VMIW_REGION=3
-                // (com.h:732-734) — libsys sends exactly these values
-                // (vm_info.c:15/:29/:46). The decoder must match the wire.
-                let q = match what {
-                    minix_types::VMIW_STATS => query::InfoQuery::Stats,
-                    minix_types::VMIW_USAGE => query::InfoQuery::Usage { target: ep },
-                    minix_types::VMIW_REGION => {
-                        // C: do_info — VMIW_REGION with ep == SELF uses the
-                        // caller (utility.c:141-143).
-                        if ep == Endpoint::SELF {
-                            ep = msg.m_source;
-                        }
-                        query::InfoQuery::Region { target: ep, count, next }
-                    }
-                    // C: do_info default arm returns EINVAL (utility.c:163).
-                    _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidParam)),
-                };
-                Self::dispatch_info(ctx, usage_sources, dropped_messages, pagefault_errors, q).into()
-            }
-            _c if _c == VM_GETRUSAGE as usize - vm_rq_base => {
-                // C: utility.c:426 — m_lsys_vm_rusage: target, children flag
-                // M2: m2i1=target, m2i2=children
-                let target = Endpoint(m2.m2i1);
-                let children = m2.m2i2 != 0;
-                Self::dispatch_getrusage(ctx, msg.m_source, target, children).into()
-            }
-            // VM_SHM_UNMAP (P0 follow-up 2026-06-14): wired up here after
-            // the function was previously orphaned in the catch-all. The
-            // C side calls this from PM when a shared region is unmapped.
-            // Field mapping: m_lc_vm_shm_unmap (forwhom, addr). The m1
-            // struct is reused (forwhom=m1i1, addr=m1p1).
-            _c if _c == VM_SHM_UNMAP as usize - vm_rq_base =>
-                // 21-P1-1 wire-format fix: decode from the dedicated
-                // m_lc_vm_shm_unmap overlay (forwhom@0, addr@4). The old
-                // M1 decode read addr from m1p1 @ 16 (past the 4-byte addr).
-                Self::dispatch_shm_unmap(ctx, VmShmUnmapIn::decode_message(msg)).into(),
-            // VM_REMAP: destination/source are explicit message fields
-            // (C: mess_lsys_vm_vmremap, ipc.h:1537); caller = m_source
-            // is used for ACL only.
-            _c if _c == VM_REMAP as usize - vm_rq_base => {
-                let request = VmRemapIn::decode_message(msg);
-                Self::dispatch_remap(ctx, request).into()
-            }
-            // VM_REMAP_RO: same layout as VM_REMAP
-            // but the readonly flag is forced on.
-            _c if _c == VM_REMAP_RO as usize - vm_rq_base => {
-                let request = VmRemapIn::decode_message(msg);
-                Self::dispatch_remap_ro(ctx, request).into()
-            }
-            // VM_PROCCTL: param/who/m1/len/flags follow the C m9 layout
-            // (param@16/who@20/m1@24/len@28/flags@32); `decode_message`
-            // reads the dedicated `m_lc_vm_procctl` overlay.
-            _c if _c == VM_PROCCTL as usize - vm_rq_base => {
-                let request = VmProcctlIn::decode_message(msg);
-                let caller = msg.m_source;
-                Self::dispatch_procctl(ctx, caller, request).into()
-            }
-            // VM_VFS_REPLY: decodes the m10 payload (MessVmVfsReply) via
-            // decode_message — C do_vfs_reply (vfs.c:109) only accesses
-            // vfs_queue, not page_alloc/frames.
-            _c if _c == VM_VFS_REPLY as usize - vm_rq_base => {
-                let request = VmVfsReplyIn::decode_message(msg);
-                Self::dispatch_vfs_reply(ctx, request).into()
-            }
-            // C has the call numbers VM_ADDDMA, VM_DELDMA, VM_GETDMA but
-            // does not register handlers for them in CALLMAP — C answers
-            // ENOSYS (main.c:139/165). minix-rs matches via this `_` arm
-            // (parity-verified, see the exec_newmem/DMA note above).
-            _ => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
+        match CALLMAP.get(call_nr).copied().flatten() {
+            Some(handler) => handler(ctx, msg),
+            None => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
         }
     }
+}
+
+// ==========================================================================
+// Compile-time CALLMAP — V9-P2-1 (per-call codec) + V9-P2-2 (table dispatch)
+//
+// C builds `vm_calls[VM_RQ_BASE..]` in main.c:508-538 and registers one
+// handler per call at main.c:543-575; the dispatcher loop calls
+// `vm_calls[c].vmc_func(&msg)`. minix-rs mirrors that architecture: the
+// table is built at compile time, indexed by `callnr(m_type)`
+// (the relative index 0..=48), and unregistered slots stay `None`
+// (→ ENOSYS), exactly like C's NULL `vmc_func`.
+//
+// Each entry is a thin *decode wrapper* — the single place that knows which
+// wire format its call number speaks (M1 / M2 / dedicated overlay) and how
+// wire fields map to semantic arguments (V9-P2-1). Policy lives in the
+// `dispatch_*` handlers, which the wrapper delegates to.
+// ==========================================================================
+
+/// One registered entry of the dispatch table (C: `vmc_func`).
+type CallHandler = fn(&mut VmContext, &Message) -> DispatchResult;
+
+const NR_VM_CALLS_IDX: usize = minix_types::NR_VM_CALLS as usize;
+
+/// C: `CALLNUMBER(c)` relative index (main.c:57-59).
+const fn call_index(call: u32) -> usize {
+    call as usize - VM_RQ_BASE as usize
+}
+
+/// SAFETY (union reads): the caller has validated `m_type` as a VM request
+/// number (`callnr()` bounds check, vm_server.rs), so the message is one of
+/// the VM call formats below; each wrapper reads the union member its call
+/// documents (ipc.h / com.h wire layouts).
+static CALLMAP: [Option<CallHandler>; NR_VM_CALLS_IDX] = build_callmap();
+
+const fn build_callmap() -> [Option<CallHandler>; NR_VM_CALLS_IDX] {
+    let mut t: [Option<CallHandler>; NR_VM_CALLS_IDX] = [None; NR_VM_CALLS_IDX];
+    // Registration order mirrors C main.c:543-575.
+    t[call_index(VM_EXIT)] = Some(call_exit);
+    t[call_index(VM_FORK)] = Some(call_fork);
+    t[call_index(VM_BRK)] = Some(call_brk);
+    t[call_index(VM_WILLEXIT)] = Some(call_willexit);
+    t[call_index(VM_MMAP)] = Some(call_mmap);
+    t[call_index(VM_MAP_PHYS)] = Some(call_map_phys);
+    t[call_index(VM_UNMAP_PHYS)] = Some(call_unmap_phys);
+    t[call_index(VM_MUNMAP)] = Some(call_munmap);
+    t[call_index(VM_MAPCACHEPAGE)] = Some(call_mapcache);
+    t[call_index(VM_SETCACHEPAGE)] = Some(call_setcache);
+    t[call_index(VM_FORGETCACHEPAGE)] = Some(call_forgetcache);
+    t[call_index(VM_CLEARCACHE)] = Some(call_clearcache);
+    t[call_index(VM_VFS_REPLY)] = Some(call_vfs_reply);
+    t[call_index(VM_REMAP)] = Some(call_remap);
+    t[call_index(VM_SHM_UNMAP)] = Some(call_shm_unmap);
+    t[call_index(VM_GETPHYS)] = Some(call_get_phys);
+    t[call_index(VM_GETREF)] = Some(call_get_refcount);
+    t[call_index(VM_RS_SET_PRIV)] = Some(call_rs_set_priv);
+    t[call_index(VM_INFO)] = Some(call_info);
+    t[call_index(VM_RS_UPDATE)] = Some(call_rs_update);
+    t[call_index(VM_RS_MEMCTL)] = Some(call_rs_memctl);
+    t[call_index(VM_REMAP_RO)] = Some(call_remap_ro);
+    t[call_index(VM_PROCCTL)] = Some(call_procctl);
+    t[call_index(VM_VFS_MMAP)] = Some(call_vfs_mmap);
+    t[call_index(VM_GETRUSAGE)] = Some(call_getrusage);
+    t[call_index(VM_RS_PREPARE)] = Some(call_rs_prepare);
+    // Deliberately NOT registered (parity with C, which leaves these NULL
+    // too — see the exec_newmem/DMA note in this file):
+    //   VM_EXEC_NEWMEM (+3), VM_ADDDMA (+12), VM_DELDMA (+13), VM_GETDMA (+14).
+    t
+}
+
+fn call_exit(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    MessageDispatcher::dispatch_exit(ctx, VmExitIn::decode(m1)).into()
+}
+
+fn call_fork(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    MessageDispatcher::dispatch_fork(ctx, VmForkIn::decode(m1)).into()
+}
+
+fn call_brk(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_brk(ctx, VmBrkIn::decode_message(msg)).into()
+}
+
+fn call_willexit(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    MessageDispatcher::dispatch_willexit(ctx, VmWillexitIn::decode(m1)).into()
+}
+
+fn call_mmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_mmap(ctx, VmMmapIn::decode_message(msg)).into()
+}
+
+fn call_map_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_map_phys(ctx, VmMapPhysIn::decode_message(msg)).into()
+}
+
+fn call_unmap_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // 21-P1-1: wired at VM_UNMAP_PHYS (previously the `_` catch-all).
+    // C: CALLMAP(VM_UNMAP_PHYS, do_munmap), main.c:540.
+    MessageDispatcher::dispatch_unmap_phys(ctx, VmUnmapPhysIn::decode_message(msg)).into()
+}
+
+fn call_munmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // 21-P1-1 wire-format fix: decode from the m_mmap overlay + m_source.
+    MessageDispatcher::dispatch_munmap(ctx, VmMunmapIn::decode_message(msg)).into()
+}
+
+fn call_mapcache(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_mapcache(ctx, msg.m_source, VmCacheIn::decode_message(msg)).into()
+}
+
+fn call_setcache(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_setcache(ctx, msg.m_source, VmCacheIn::decode_message(msg)).into()
+}
+
+fn call_forgetcache(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_forgetcache(ctx, VmCacheIn::decode_message(msg)).into()
+}
+
+fn call_clearcache(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_clearcache(ctx, VmCacheIn::decode_message(msg)).into()
+}
+
+fn call_vfs_reply(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_vfs_reply(ctx, VmVfsReplyIn::decode_message(msg)).into()
+}
+
+fn call_remap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_remap(ctx, VmRemapIn::decode_message(msg)).into()
+}
+
+fn call_shm_unmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // 21-P1-1 wire-format fix: dedicated m_lc_vm_shm_unmap overlay
+    // (forwhom@0, addr@4). The old M1 decode read addr from m1p1 @ 16.
+    MessageDispatcher::dispatch_shm_unmap(ctx, VmShmUnmapIn::decode_message(msg)).into()
+}
+
+fn call_get_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: utility.c — get_phys uses m1_i1=target, m1_p1=vaddr.
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    let target = Endpoint(m1.m1i1);
+    let addr = VirBytes(m1.m1p1);
+    MessageDispatcher::dispatch_get_phys(ctx, target, addr).into()
+}
+
+fn call_get_refcount(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: utility.c — get_ref uses m1_i1=target, m1_p1=vaddr.
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    let target = Endpoint(m1.m1i1);
+    let addr = VirBytes(m1.m1p1);
+    MessageDispatcher::dispatch_get_refcount(ctx, target, addr).into()
+}
+
+fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: rs.c:40 — nr=m->VM_RS_NR, buf=m->VM_RS_BUF, sys=m->VM_RS_SYS
+    // M2: m2i1=target endpoint, m2l1=call_mask pointer, m2i2=is_sys_proc.
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let target = Endpoint(m2.m2i1);
+    let is_sys_proc = m2.m2i2 != 0;
+    // call_mask is passed via sys_datacopy in C; we can't do that
+    // from M2 alone. RS must pass the mask inline or via shared memory.
+    // For now, pass None (will use default ACL for user, empty for sys).
+    let mask = None;
+    MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc).into()
+}
+
+fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: utility.c:100 — m_lsys_vm_info (M2: m2i1=what, m2i2=ep, m2i3=count, m2l2=next)
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let what = m2.m2i1;
+    let mut ep = Endpoint(m2.m2i2);
+    let count = m2.m2i3 as usize;
+    let next = VirBytes(m2.m2l2 as u64);
+    // C: VMIW_STATS=1 / VMIW_USAGE=2 / VMIW_REGION=3 (com.h:732-734) —
+    // libsys sends exactly these values (vm_info.c:15/:29/:46).
+    let q = match what {
+        minix_types::VMIW_STATS => query::InfoQuery::Stats,
+        minix_types::VMIW_USAGE => query::InfoQuery::Usage { target: ep },
+        minix_types::VMIW_REGION => {
+            // C: do_info — VMIW_REGION with ep == SELF uses the caller
+            // (utility.c:141-143).
+            if ep == Endpoint::SELF {
+                ep = msg.m_source;
+            }
+            query::InfoQuery::Region { target: ep, count, next }
+        }
+        // C: do_info default arm returns EINVAL (utility.c:163).
+        _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidParam)),
+    };
+    MessageDispatcher::dispatch_info(ctx, q).into()
+}
+
+fn call_rs_update(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: rs.c:150 — m_lsys_vm_update maps to M2: m2i1=src, m2i2=dst, m2i3=flags.
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let src = Endpoint(m2.m2i1);
+    let dst = Endpoint(m2.m2i2);
+    let flags = m2.m2i3 as u32;
+    MessageDispatcher::dispatch_rs_update(ctx, src, dst, flags).into()
+}
+
+fn call_rs_memctl(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: rs.c:349 — ep=m->VM_RS_CTL_ENDPT(m1_i1), req=m->VM_RS_CTL_REQ(m1_i2),
+    // VM_RS_CTL_ADDR=m2_p1, VM_RS_CTL_LEN=m2_i3.
+    let m1 = unsafe { &msg.m_u.m_m1 };
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let target = Endpoint(m1.m1i1);
+    let request = match decode_rs_memctl_request(m1.m1i2, m2.m2l1 as u64, m2.m2i3) {
+        Ok(r) => r,
+        Err(e) => return DispatchResult::from_reply(VmReply::Error(e)),
+    };
+    MessageDispatcher::dispatch_rs_memctl(ctx, target, request).into()
+}
+
+fn call_remap_ro(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_remap_ro(ctx, VmRemapIn::decode_message(msg)).into()
+}
+
+fn call_procctl(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // param/who/m1/len/flags follow the C m9 layout; `decode_message`
+    // reads the dedicated m_lc_vm_procctl overlay. Caller = m_source.
+    MessageDispatcher::dispatch_procctl(ctx, msg.m_source, VmProcctlIn::decode_message(msg)).into()
+}
+
+fn call_vfs_mmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    MessageDispatcher::dispatch_vfs_mmap(ctx, VmVfsMmapIn::decode_message(msg)).into()
+}
+
+fn call_getrusage(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: utility.c:426 — m_lsys_vm_rusage: m2i1=target, m2i2=children.
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let target = Endpoint(m2.m2i1);
+    let children = m2.m2i2 != 0;
+    MessageDispatcher::dispatch_getrusage(ctx, msg.m_source, target, children).into()
+}
+
+fn call_rs_prepare(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+    // C: rs.c:71 — m2i1=src, m2i2=dst, m2i3=flags.
+    let m2 = unsafe { &msg.m_u.m_m2 };
+    let src = Endpoint(m2.m2i1);
+    let dst = Endpoint(m2.m2i2);
+    let flags = m2.m2i3 as u32;
+    MessageDispatcher::dispatch_rs_prepare(ctx, src, dst, flags).into()
 }
 
 // ==========================================================================
@@ -1440,6 +1497,30 @@ mod tests {
     /// (dispatcher.rs) and `DispatchAction::Suspend` (vm_server.rs) are
     /// unreachable until kernel `sys_update` lands. Flip this test when
     /// live update is implemented.
+    /// V11/T7 structural test: the CALLMAP is the executable form of C's
+    /// CALLMAP (main.c:543-575). Exactly the 26 calls C registers are
+    /// registered here; the four parity-unregistered numbers (exec_newmem,
+    /// ADDDMA/DELDMA/GETDMA — see the note above `build_callmap`) stay
+    /// `None`, and every other relative index is `None` too.
+    #[test]
+    fn test_callmap_registration_matches_c() {
+        let registered: Vec<usize> = CALLMAP
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(registered.len(), 26, "exactly the 26 C CALLMAP entries");
+        for rel in [call_index(VM_EXEC_NEWMEM), call_index(VM_ADDDMA), call_index(VM_DELDMA), call_index(VM_GETDMA)] {
+            assert!(CALLMAP[rel].is_none(), "parity calls must stay unregistered: +{rel}");
+        }
+        // The highest registered call is VM_RS_PREPARE (+48), the highest
+        // relative index in the table (C: com.h:769 NR_VM_CALLS 49).
+        assert_eq!(CALLMAP.len(), 49);
+        assert!(CALLMAP[48].is_some());
+        assert!(CALLMAP.iter().skip(49).next().is_none());
+    }
+
     #[test]
     fn test_dispatch_rs_update_pins_not_implemented() {
         use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
@@ -1467,6 +1548,10 @@ mod tests {
                 page_frames: Some(frames),
                 page_cache: _default_cache(),
                 vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
             },
             src,
             dst,
@@ -1530,6 +1615,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 Endpoint(0), req,
             ) {
@@ -1556,6 +1645,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 Endpoint(0), req,
             ) {
@@ -1586,6 +1679,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 Endpoint(42), req,
             ) {
@@ -1614,6 +1711,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 Endpoint(0), req,
             ) {
@@ -1641,6 +1742,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 Endpoint(0), req,
             ) {
@@ -1670,6 +1775,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 }, req) {
             VmReply::Error(_) => {} // expected: any error
             other => panic!("dispatch_remap(vaddr=0) must return Error, got {:?}", other),
@@ -1695,6 +1804,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 }, req) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
             other => panic!("dispatch_remap(length=0) must return InvalidParam, got {:?}", other),
@@ -1721,6 +1834,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 }, req) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
             other => panic!("dispatch_remap(bad endpoint) must return InvalidParam, got {:?}", other),
@@ -1746,6 +1863,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 }, req) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
             other => panic!("dispatch_remap_ro(bad endpoint) must return InvalidParam, got {:?}", other),
@@ -1771,6 +1892,10 @@ mod tests {
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
                     vfs_queue,
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             );
@@ -1801,6 +1926,10 @@ mod tests {
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
                     vfs_queue,
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             );
@@ -1830,6 +1959,10 @@ mod tests {
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
                     vfs_queue,
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             );
@@ -1862,6 +1995,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: cache,
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             ) {
@@ -1891,6 +2028,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: cache,
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             ) {
@@ -1920,6 +2061,10 @@ mod tests {
                     page_frames: Some(frames),
                     page_cache: cache,
                     vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                    vm_allocated_bytes: 0,
+                    pagefault_errors: 0,
+                    dropped_messages: 0,
                 },
                 req,
             ) {
@@ -1946,7 +2091,7 @@ mod tests {
         };
         let mut page_alloc = default_vm();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:204-205).
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -1971,7 +2116,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -1992,7 +2137,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2014,7 +2159,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2038,7 +2183,7 @@ mod tests {
             block: 0,
         };
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2061,7 +2206,7 @@ mod tests {
         };
         let mut cache = _default_cache();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:107).
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -2084,7 +2229,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2109,7 +2254,7 @@ mod tests {
         // but we need a valid endpoint to get past vm_isokendpt.
         // Endpoint(0) is VM itself, which should be in the table.
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new() }, Endpoint(0), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(0), req) {
             VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
             other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
         }

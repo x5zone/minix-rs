@@ -382,7 +382,7 @@ struct VmContext {
 
 **验证**：`rg "parts_mut|page_frames.as_mut" os/servers/vm/src` 归零；`cargo test` 全绿。
 
-### V9-P2-1 wire-format 三套并存 → per-call codec 注册表
+### ✅ V9-P2-1 wire-format 三套并存 → per-call codec 注册表——已落地 2026-09-06（CALLMAP per-call 解码 wrapper，见 §15 Fix #26；minix-types 侧统一 decode 函数为可选后续）
 
 **问题**：同一 `Message` 的解码知识散落三处：
 
@@ -408,7 +408,7 @@ decode 与业务 dispatch 解耦，测试可逐条验证"每个调用号的格�
 
 **验证**：`rg "m2i[123]" os/servers/vm/src` 归零（codec 表除外）；`cargo test` 全绿。
 
-### V9-P2-2 `dispatch_by_number` 表驱动化
+### ✅ V9-P2-2 `dispatch_by_number` 表驱动化——已落地 2026-09-06（CALLMAP 编译期函数指针表，见 §15 Fix #26）
 
 **问题**：dispatcher.rs:1035-1051 起 30+ 分支的 `_c if _c == VM_X as usize - vm_rq_base`，
 每分支重复 `VM_RQ_BASE` 偏移运算，加新调用号易错。
@@ -1163,6 +1163,14 @@ Coverage Summary for vm:
 - **After**: 单一 `&mut VmContext` + 语义参数；主干线不再解构；`fdref` 收敛随 T10（VFS_FDCLOSE 触碰 fdref 时）处理
 - **Verified**: 四 feature 组合 clippy `^servers/` **0 警告**；四矩阵 **449 / 465 / 464 / 449 passed**；`cargo check --all-features` 通过
 - **Docs**: 15-ipc-dispatch.md（§4.1 干线描述与 arm 示例）、18-vm-fork.md（arm 示例）
+
+### ✅ Fix #26: T7（V9-P2-1 + V9-P2-2）— CALLMAP 编译期表驱动分发 + per-call 解码 wrapper
+
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（新 `CALLMAP: [Option<CallHandler>; 49]` 编译期静态表 + `build_callmap()` const fn 注册序对齐 C main.c:543-575；26 个 `call_*` 解码 wrapper——每调用号唯一 wire 格式档案，union 读取集中于此；`dispatch_by_number` 主体从 26 臂 match 收敛为查表 + `None → ENOSYS`；`dispatch_info` 内化 counters/usage_sources（5 参→2 参）；新增结构对账测试 `test_callmap_registration_matches_c`）、`os/servers/vm/src/vm_server.rs`（`kernel_allocated`/`vm_allocated_bytes`/两计数器从 VmServer 迁入 VmContext，访问器委托、测试零改动；`usage_sources` 方法移至 VmContext）
+- **Ground Truth 对照**：C 的 main.c 本就是表驱动（`vm_calls[c].vmc_func`，未注册 → ENOSYS）——本条把 Rust 侧"26 臂 match + 重复 `as usize - vm_rq_base` 算术"还原为 C 的 CALLMAP 架构的 Rust 形态，属反 translate 的架构对齐而非新发明
+- **锚点核验**：`rg "as usize - vm_rq_base"` → 0（V9-P2-2 锚点）；`rg "as usize - VM_RQ_BASE"` → 1（仅 call_index 定义处）；`test_callmap_registration_matches_c` 钉死"恰好 26 条注册 + parity 四条 None + 表长 49"
+- **Verified**: 四矩阵 **466 / 465 / 450 / 449 passed**（+1 结构对账测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 15-ipc-dispatch.md（§4.1 查表描述 + wrapper 示例 + §5.1 新测试行）；minix-types 侧全量 per-call decode 函数下移为可选后续（现 wrapper 已使解码知识局部化）
 
 ### ✅ Fix #25: T19 — exec_newmem / DMA 三条 parity 处置（删孤儿 stub，不实现）
 

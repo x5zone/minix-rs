@@ -312,7 +312,12 @@ match call_nr {
     _c if _c == VM_MMAP as usize - vm_rq_base =>
         Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(m1)).into(),
     _c if _c == VM_FORK as usize - vm_rq_base =>
-        Self::dispatch_fork(ctx, VmForkIn::decode(m1)).into(),
+        // 注册（build_callmap，编译期）：t[call_index(VM_FORK)] = Some(call_fork);
+        // 解码 wrapper（每调用号一处，wrapper 即该调用号的 wire 格式档案）：
+        // fn call_fork(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
+        //     let m1 = unsafe { &msg.m_u.m_m1 };
+        //     MessageDispatcher::dispatch_fork(ctx, VmForkIn::decode(m1)).into()
+        // }
     // … 全部分支 …
     _ => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
 }
@@ -572,7 +577,7 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 ### 4.4 dispatch_by_number 全分支（dispatcher.rs:1032-1232）
 
-`dispatch_by_number` 顶部取 `ctx = &mut server.ctx`（V9-P1-3 step 2），逐分支 decode 后把 `&mut VmContext` 交给 handler——各 handler 自行解构所需字段（字段级 disjoint `&mut`，取代旧 `parts_mut()` 4 元组）：
+`dispatch_by_number` 主体已收敛为**查表**（V9-P2-2）：`CALLMAP[callnr]` 是编译期构建的函数指针表（`Option<fn(&mut VmContext, &Message) -> DispatchResult>`，索引 = `callnr(m_type)` 相对偏移），未注册槽位为 `None` → ENOSYS——与 C 的 `vm_calls[c].vmc_func` NULL 语义逐位对应。每个注册项是一个 **per-call 解码 wrapper**（V9-P2-1）：它是唯一知道"该调用号说哪种 wire 格式（M1/M2/专用 overlay）、哪个字段映射到哪个语义参数"的地方，decode 后委托给类型化 handler；handler 自行从 `&mut VmContext` 解构所需组件（V9-P1-2）：
 
 | 请求码 | decode | 委托 | 状态 |
 |--------|--------|------|------|
@@ -635,6 +640,7 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 | test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :2026/:2048/:2071/:2094 | mapcache 校验 + ENOENT |
 | test_decode_rs_memctl_unknown_req_einval / all_valid_codes | :2121/:2131 | RS_MEMCTL 解码 |
 | test_dispatch_rs_update_pins_not_implemented | :1561 | **V10-P1-2**：`dispatch_rs_update` 恒 `Error(NotImplemented)`（live-update 骨架 pin，落地时翻转） |
+| test_callmap_registration_matches_c | dispatcher.rs（V11/T7） | **V11**：CALLMAP 恰好注册 26 条（= C CALLMAP 数量）；exec_newmem/DMA 四条 parity 未注册槽位为 `None`；表长 49、+48（RS_PREPARE）为最高注册项 |
 
 **transport.rs**（7 个，含 V10-P1-1 状态位测试）：
 

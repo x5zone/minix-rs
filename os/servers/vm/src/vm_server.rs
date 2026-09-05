@@ -69,16 +69,50 @@ pub(crate) struct VmContext {
     pub(crate) page_frames: Option<PageFrames>,
     pub(crate) page_cache: PageCache,
     pub(crate) vfs_queue: VfsRequestQueue,
+    /// C: `kernel_boot_info.kernel_allocated_bytes(_dynamic)` (glo.h) —
+    /// consumed by the kernel usage query (region.c:1357-1364).
+    pub(crate) kernel_allocated: KernelAllocated,
+    /// C: `kernel_boot_info.vm_allocated_bytes` — consumed by the VM-self
+    /// usage query (region.c:1366-1373).
+    pub(crate) vm_allocated_bytes: u64,
+    /// Failed pagefault handlings ([ARCH: A-15], saturating).
+    pub(crate) pagefault_errors: u64,
+    /// Main-loop dropped-message count ([ARCH: A-14], saturating).
+    pub(crate) dropped_messages: u64,
 }
 
 impl VmContext {
-    fn new(page_alloc: VmPageAllocator) -> Self {
+    fn new(
+        page_alloc: VmPageAllocator,
+        kernel_allocated: KernelAllocated,
+        vm_allocated_bytes: u64,
+    ) -> Self {
         Self {
             proc_table: VmProcTable::get_global(),
             page_alloc,
             page_frames: None,
             page_cache: PageCache::new(),
             vfs_queue: VfsRequestQueue::new(),
+            // Field semantics are documented on the struct definition;
+            // counters start saturated-proof at zero.
+            kernel_allocated,
+            vm_allocated_bytes,
+            pagefault_errors: 0,
+            dropped_messages: 0,
+        }
+    }
+
+    pub(crate) fn usage_sources(&self) -> crate::query::UsageSources {
+        crate::query::UsageSources {
+            kernel_bytes: self
+                .kernel_allocated
+                .static_bytes
+                .saturating_add(self.kernel_allocated.dynamic_bytes),
+            vm_self_bytes: self.vm_allocated_bytes
+                .saturating_add(
+                    (self.page_alloc.self_page_count() as u64)
+                        * crate::region::page_state::PAGE_SIZE,
+                ),
         }
     }
 }
@@ -121,20 +155,6 @@ pub struct VmServer {
     /// C has no direct equivalent: Minix3's pagefault path (pagefaults.c)
     /// does not audit failures either; this is a minix-rs observability
     /// extension ([ARCH: A-15]).
-    pagefault_errors: u64,
-    /// Count of IPC messages dropped at the main-loop boundary.
-    ///
-    /// V9-P0-1 (todo): the C main loop panics on receive failure
-    /// (main.c:122-123) and on invalid callers (main.c:131-132). A
-    /// user-space server must treat IPC as untrusted input: VM is the
-    /// system's only memory manager, and a panic would halt all memory
-    /// management with unrecoverable page/refcount/region state. We drop
-    /// the offending message and count it instead — the caller (if any)
-    /// times out, which is the same observable outcome as C for that
-    /// caller, minus the whole-server outage ([ARCH: A-14]).
-    ///
-    /// Saturating so a hostile fault storm cannot wrap the counter.
-    dropped_messages: u64,
     /// Boot process images, copied at construction.
     ///
     /// C: `kernel_boot_info.boot_procs[]` (main.c:497-520). Copied from
@@ -145,16 +165,6 @@ pub struct VmServer {
     ///
     /// C: `mem_add_total_pages()` call points (main.c:485-495).
     boot_extra_pages: usize,
-    /// Kernel's own memory footprint, kept for the kernel usage query.
-    ///
-    /// C: `kernel_boot_info.kernel_allocated_bytes(_dynamic)` — consumed by
-    /// `get_usage_info_kernel` (region.c:1357-1364).
-    kernel_allocated: KernelAllocated,
-    /// Bytes the kernel allocated to load VM, kept for the VM-self usage query.
-    ///
-    /// C: `kernel_boot_info.vm_allocated_bytes` — consumed by
-    /// `get_usage_info_vm` (region.c:1366-1373).
-    vm_allocated_bytes: u64,
     /// IPC transport for the main loop.
     ///
     /// `Rc<RefCell<...>>` (V10-P0-2, V9-P1-2): the previous process-global
@@ -249,15 +259,11 @@ impl VmServer {
         }
 
         Self {
-            ctx: VmContext::new(page_alloc),
+            ctx: VmContext::new(page_alloc, params.kernel_allocated, params.vm_allocated_bytes),
             initialized: false,
             missing_spares: 0,
-            pagefault_errors: 0,
-            dropped_messages: 0,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
-            kernel_allocated: params.kernel_allocated,
-            vm_allocated_bytes: params.vm_allocated_bytes,
             transport,
         }
     }
@@ -592,13 +598,13 @@ impl VmServer {
     /// message increments this counter. Tests assert on it; the audit
     /// channel (`vm_acl_audit` feature) prints each failure.
     pub fn pagefault_errors(&self) -> u64 {
-        self.pagefault_errors
+        self.ctx.pagefault_errors
     }
 
     /// Returns the count of IPC messages dropped at the main-loop boundary
     /// (V9-P0-1, [ARCH: A-14]): receive failures + invalid callers.
     pub fn dropped_messages(&self) -> u64 {
-        self.dropped_messages
+        self.ctx.dropped_messages
     }
 
     /// C: `alloc_cycle()` (alloc.c:227-237) — main-loop replenishment hook,
@@ -676,7 +682,7 @@ impl VmServer {
             // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
             // user-space server must survive bad IPC — drop + audit.
             Err(_) => {
-                self.dropped_messages = self.dropped_messages.saturating_add(1);
+                self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
                 audit_log!("[VM IPC] ipc_receive() failed — message dropped");
                 return RunStep::ReceiveFailed;
             }
@@ -697,7 +703,7 @@ impl VmServer {
             // caller cannot be serviced either way, but VM must not
             // die with it — drop + audit.
             Err(_) => {
-                self.dropped_messages = self.dropped_messages.saturating_add(1);
+                self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
                 audit_log!("[VM IPC] invalid caller {:?} — message dropped", who_e);
                 return RunStep::Handled;
             }
@@ -876,7 +882,7 @@ impl VmServer {
             // with no observable signal. Count + audit instead (the counter is
             // also surfaced by the `pagefault_errors()` accessor in tests).
             if let VmReply::Error(e) = reply {
-                self.pagefault_errors = self.pagefault_errors.saturating_add(1);
+                self.ctx.pagefault_errors = self.ctx.pagefault_errors.saturating_add(1);
                 audit_log!(
                     "[VM PF] pagefault failed: err={:?} endpoint={:?} vaddr={:?}",
                     e, source, minix_types::VmPagefaultIn::decode_message(msg).vaddr
@@ -1075,30 +1081,6 @@ impl VmServer {
 
     /// Returns mutable references to page_alloc, page_frames, page_cache, and vfs_queue simultaneously.
     /// This avoids double mutable borrow when dispatching VM calls that need multiple components.
-    /// Boot-time byte totals for the kernel / VM-self usage queries.
-    ///
-    /// C: `do_info` VMIW_USAGE with `ep < 0` → `get_usage_info_kernel()`
-    /// (region.c:1357-1364): `kernel_allocated_bytes + _dynamic`;
-    /// `ep == VM_PROC_NR` → `get_usage_info_vm()` (region.c:1366-1373):
-    /// `vm_allocated_bytes + get_vm_self_pages() * VM_PAGE_SIZE`.
-    ///
-    /// `get_vm_self_pages()` (pagetable.c:1500) is carried by
-    /// `VmPageAllocator::self_page_count()` in minix-rs: the Direct Map
-    /// ([ARCH: A-1], 06-page-allocator.md §3.3) structurally eliminates
-    /// VM's separate self-mapping page accounting, so the allocator's
-    /// live allocation count is the direct analog.
-    pub(crate) fn usage_sources(&self) -> crate::query::UsageSources {
-        crate::query::UsageSources {
-            kernel_bytes: self.kernel_allocated.static_bytes
-                .saturating_add(self.kernel_allocated.dynamic_bytes),
-            vm_self_bytes: self.vm_allocated_bytes
-                .saturating_add(
-                    (self.ctx.page_alloc.self_page_count() as u64)
-                        * crate::region::page_state::PAGE_SIZE,
-                ),
-        }
-    }
-
     #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
     pub(crate) fn is_initialized(&self) -> bool {
         self.initialized
