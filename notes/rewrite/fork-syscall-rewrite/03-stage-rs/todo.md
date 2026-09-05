@@ -1979,7 +1979,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ☐ | 08 落地期（可先改 API） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
-| R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ☐ | 可立即 todo-fix |
+| R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
 | R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
@@ -2091,3 +2091,22 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   文件零 diff；`tools/check-rs-unwired.sh` PASS。文档同步：06 §3 枚举/classify 签名 +
   设计差异"心跳分类结果自包含"条 + §5 表 7→8 项；07 §3.1 函数清单 + 设计差异"心跳写活标
   是独立决策"条 + §5 表加行；01 §4.4 枚举/classify 签名 + §5 表加行。
+
+### ✅ Fix #42 — R24（P1 模式破例）：`do_upd_ready` 补 SlotMutations 载荷，`RS_PREPARE_DONE` 落地
+- **File**：`os/servers/rs/src/ready.rs`（新增 `UpdReadyDecision` + `do_upd_ready` 返回载荷
+  + 测试）、`lib.rs`（re-export）、文档 12 §2.4/§3.1/§5
+- **Before**：`do_upd_ready` 返回裸 `UpdReadyOutcome`、无载荷——request.c:911 的
+  `rp->r_flags |= RS_PREPARE_DONE`（gate 之后、result 检查之前，与 result 无关）在整个 crate
+  无处安放；R13 决策-载荷模式（period/do_init_ready/terminate 三处严格执行，Fix #38）的
+  唯一破例。
+- **After**：新增 `UpdReadyDecision { outcome, mutations }`（与 `ReadyDecision` 同形）；
+  门通过的三个分支（PrepareFailed/NextPrepare/StartUpdate）统一携带
+  `mutations.set = RFlags::PREPARE_DONE`，门失败分支载荷为默认空。方案对比：a) 决策包装
+  结构体（选定，R13 既有形态）vs b) 每个 outcome 变体挂 mutations 字段（Unexpected 携带空
+  载荷嘈杂）vs c) 返回元组（位置语义，与既有模式不一致）。
+- **Verified**：`cargo test -p minix-rs` = **214 passed**（`test_do_upd_ready` 改断言
+  `.outcome`；新增 `test_do_upd_ready_sets_prepare_done_after_gate`：门通过两分支
+  `mutations.set` 含 `PREPARE_DONE`（含 result≠9 的失败分支），门失败分支载荷等于
+  `SlotMutations::default()`）；clippy/fmt 触碰文件零输出；`tools/check-rs-unwired.sh` PASS。
+  文档同步：12 §2.4 加 Rust 映射段（置位位置语义）、§3.1 表行更新、§5 清单 15→16 项 +
+  全局 208→214。

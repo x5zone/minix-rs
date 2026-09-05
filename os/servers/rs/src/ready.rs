@@ -239,18 +239,51 @@ pub enum UpdReadyOutcome {
     StartUpdate,
 }
 
+/// The `do_upd_ready` decision plus the slot mutations it implies.
+///
+/// R13/R24: C sets `RS_PREPARE_DONE` inline right after the gate
+/// (request.c:911) — before looking at `result` — so every post-gate
+/// outcome carries `mutations.set = RS_PREPARE_DONE` while the gate-fail
+/// outcome carries none. Same payload shape as [`ReadyDecision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdReadyDecision {
+    /// Branch to execute.
+    pub outcome: UpdReadyOutcome,
+    /// Slot mutations implied by the branch (R13/R24).
+    pub mutations: SlotMutations,
+}
+
 /// C: `do_upd_ready` — request.c:890-938 (pure decisions).
-pub fn do_upd_ready(result: i32, gate_ok: bool, has_next: bool) -> UpdReadyOutcome {
+pub fn do_upd_ready(result: i32, gate_ok: bool, has_next: bool) -> UpdReadyDecision {
     if !gate_ok {
-        return UpdReadyOutcome::Unexpected; // request.c:903-910
+        return UpdReadyDecision {
+            outcome: UpdReadyOutcome::Unexpected, // request.c:903-910
+            mutations: SlotMutations::default(),
+        };
     }
+    // C: request.c:911 — `rp->r_flags |= RS_PREPARE_DONE` fires before the
+    // result check: the service did prepare, success or not (R24 — the last
+    // missing payload of the R13 decision-mutation pattern).
+    let mutations = SlotMutations {
+        set: RFlags::PREPARE_DONE,
+        ..Default::default()
+    };
     if result != 0 {
-        return UpdReadyOutcome::PrepareFailed { result }; // request.c:917-922
+        return UpdReadyDecision {
+            outcome: UpdReadyOutcome::PrepareFailed { result }, // request.c:917-922
+            mutations,
+        };
     }
     if has_next {
-        return UpdReadyOutcome::NextPrepare; // request.c:930-932
+        return UpdReadyDecision {
+            outcome: UpdReadyOutcome::NextPrepare, // request.c:930-932
+            mutations,
+        };
     }
-    UpdReadyOutcome::StartUpdate // request.c:934-935
+    UpdReadyDecision {
+        outcome: UpdReadyOutcome::StartUpdate, // request.c:934-935
+        mutations,
+    }
 }
 
 /// The `end_srv_init` slot bookkeeping.
@@ -459,13 +492,36 @@ mod tests {
     #[test]
     fn test_do_upd_ready() {
         // C: request.c:903-937 — gate / prepare-fail / next / start.
-        assert_eq!(do_upd_ready(0, false, false), UpdReadyOutcome::Unexpected);
         assert_eq!(
-            do_upd_ready(9, true, false),
+            do_upd_ready(0, false, false).outcome,
+            UpdReadyOutcome::Unexpected
+        );
+        assert_eq!(
+            do_upd_ready(9, true, false).outcome,
             UpdReadyOutcome::PrepareFailed { result: 9 }
         );
-        assert_eq!(do_upd_ready(0, true, true), UpdReadyOutcome::NextPrepare);
-        assert_eq!(do_upd_ready(0, true, false), UpdReadyOutcome::StartUpdate);
+        assert_eq!(
+            do_upd_ready(0, true, true).outcome,
+            UpdReadyOutcome::NextPrepare
+        );
+        assert_eq!(
+            do_upd_ready(0, true, false).outcome,
+            UpdReadyOutcome::StartUpdate
+        );
+    }
+
+    #[test]
+    fn test_do_upd_ready_sets_prepare_done_after_gate() {
+        // C: request.c:911 — `r_flags |= RS_PREPARE_DONE` fires right after
+        // the gate, before the result check: the service did prepare,
+        // success or not (R24 — the last missing R13 decision payload).
+        let ok = do_upd_ready(0, true, false);
+        assert!(ok.mutations.set.contains(RFlags::PREPARE_DONE));
+        let failed = do_upd_ready(9, true, true);
+        assert!(failed.mutations.set.contains(RFlags::PREPARE_DONE));
+        let gated = do_upd_ready(0, false, false);
+        assert!(!gated.mutations.set.contains(RFlags::PREPARE_DONE));
+        assert_eq!(gated.mutations, SlotMutations::default());
     }
 
     #[test]

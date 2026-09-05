@@ -138,6 +138,8 @@ do_init_ready（request.c:462-529）
 
 本文档只固化分支决策；rpupd 链与 start_update 机制全在 16。
 
+**Rust 映射（R24，2026-09-06）**：`do_upd_ready` 返回 `UpdReadyDecision { outcome, mutations }`——与 `do_init_ready` 的 `ReadyDecision` 同一种 R13 决策载荷形态。要点是第 2 步的位置：`RS_PREPARE_DONE` 的置位发生在**门之后、result 检查之前**（request.c:911），因此门通过的全部三个分支（PrepareFailed/NextPrepare/StartUpdate）都携带 `mutations.set = RS_PREPARE_DONE`（"服务确实做了 prepare，无论成败"），门失败分支载荷为空。
+
 ### 2.5 catch_boot_init_ready：boot 的同步捕获（main.c:784-821）
 
 boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795）**阻塞等待指定服务**的 ready：
@@ -177,7 +179,7 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 | `fold_init_flags(slot, init_flags)` | manager.c:953 | `s_init_flags |= init_flags`（OR 语义，R14） |
 | `init_message(...)` | utility.c:49-60 | RS_INIT 载荷装配（`InitMessage`） |
 | `do_init_ready(flags, result, is_updating, pending, ticks)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyDecision { outcome, mutations }`（R13） |
-| `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyOutcome` |
+| `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyDecision { outcome, mutations }`（R24：gate 后立即携带 `RS_PREPARE_DONE`，与 result 无关） |
 | `end_srv_init(rp, has_prev)` | manager.c:336-354 | 槽位收尾（restarts/prev/next） |
 | `should_reply_ready(src)` | main.c:812-815 | VM 异步例外 |
 | `normalize_init_response`/`normalize_lu_response` | main.c:591-626 | EDONTREPLY 归一化 |
@@ -233,7 +235,7 @@ pub enum ReadyOutcome {
 
 ## 5. 测试要点
 
-`ready.rs` 内 15 项测试（`cargo test -p minix-rs --lib ready` 过滤含 `dispatch::test_classify_ready`，共 16 通过）：
+`ready.rs` 内 16 项测试（`cargo test -p minix-rs --lib ready` 过滤含 `dispatch::test_classify_ready`，共 17 通过）：
 
 1. `init_flags`：SF_USE_SCRIPT 置位/不置位（2 断言组）。
 2. `init_message`：type（SEF_INIT_RESTART=2）/flags/gid/old_endpoint/restarts/buff/prepare_state 全字段。
@@ -245,13 +247,16 @@ pub enum ReadyOutcome {
    `debug_assert!(pending > 0)`——C 调用方保持 `num_init_ready_pending > 0`（main.c:586 assert），
    underflow 是程序错误而非静默饱和；`test_do_init_ready_pending_underflow_panics` 锁死该语义）。
 8. `do_init_ready` fresh：→ `FreshInitDone`。
-9. `do_upd_ready` 四分支：门失败 / prepare 失败 / 还有下一个 / start_update。
-10. `end_srv_init`：has_prev → restarts+1 + prev/next 清空（`test_end_srv_init_bookkeeping`）；无 prev → 只清 next、restarts 保留（`test_end_srv_init_no_prev`，manager.c:354）。
-11. `should_reply_ready`：VM → false；VFS/PM → true。
-12. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
-13. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
+9. `do_upd_ready` 四分支：门失败 / prepare 失败 / 还有下一个 / start_update（`outcome` 字段）。
+10. `do_upd_ready` 载荷（R24）：门通过的三分支 `mutations.set` 均含 `RS_PREPARE_DONE`
+   （request.c:911 先于 result 检查）；门失败分支载荷为空
+   （`test_do_upd_ready_sets_prepare_done_after_gate`）。
+11. `end_srv_init`：has_prev → restarts+1 + prev/next 清空（`test_end_srv_init_bookkeeping`）；无 prev → 只清 next、restarts 保留（`test_end_srv_init_no_prev`，manager.c:354）。
+12. `should_reply_ready`：VM → false；VFS/PM → true。
+13. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
+14. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
 
-测试总数声明：本文档范围为 **15 项**（`ready` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
+测试总数声明：本文档范围为 **16 项**（`ready` 模块内）。全局 `cargo test -p minix-rs --lib` = 214 通过（2026-09-06，随并行模块增长，以各 doc 范围为准）。
 
 ---
 

@@ -76,8 +76,8 @@ pub use query::{
     GetsysinfoTable, SysctlAction, classify_sysctl, getsysinfo_table, lookup_name_len,
 };
 pub use ready::{
-    InitMessage, ReadyDecision, ReadyOutcome, do_init_ready, do_upd_ready, end_srv_init,
-    fold_init_flags, init_message, mark_initializing,
+    InitMessage, ReadyDecision, ReadyOutcome, UpdReadyDecision, UpdReadyOutcome, do_init_ready,
+    do_upd_ready, end_srv_init, fold_init_flags, init_message, mark_initializing,
 };
 pub use recovery::{
     CleanupDecision, TerminateAction, TerminateDecision, cleanup_decision, compute_backoff,
