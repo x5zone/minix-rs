@@ -1975,7 +1975,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 
 | ID | 主题 | 严重度 | 状态 | 归属 |
 |----|------|--------|------|------|
-| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | 🔶 | 载体已全（Fix #46）；edit_slot/init_slot 本体=轮 8/9 |
+| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | 🔶 | 载体+edit_slot 已全（Fix #46/#48）；init_slot/inherit=轮 9 |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
@@ -2213,3 +2213,39 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   SRV_T/DSRV_T bits==0xFFFF、含 MINIX_KERNINFO/SENDNB、USR_T=0x8、CSK_T=RECEIVE；新增
   `test_dsrv_defaults`）；clippy/fmt 零输出；T7 PASS。文档同步：03 §5.1 表述与代码一致
   （无需改动，代码侧对齐）。
+
+### ✅ Fix #48 — R20b（P1-design-missing 主体）：`edit_slot` 全分支实现
+- **File**：`os/servers/rs/src/slot.rs`（`edit_slot` + 10 个测试）、`process_table.rs`
+  （`iter_all()`）、`privilege.rs`（irqs u32→i32）、`lib.rs`（导出）、
+  `libs/minix-types`（SYS_* 8 个调用号 + SYS_BASIC_CALLS/VM_BASIC_CALLS 清单）、文档 08
+  §3.1/§3.4/§4/§5
+- **Before**：`edit_slot`（manager.c:1460-1707）零载体——约 25 个分支中仅 `build_cmd_dep`
+  有实现；`init_slot`/`edit_slot` 的输入字段（R20a 已补）无处消费。
+- **After**：按 C 分支序全量实现，关键形态决策：
+  - **C 的 `sys_datacopy` 步骤纯化**——C 的 `rss_cmd`/`rss_ipc`/`rss_script` 是指向请求方
+    地址空间的指针、收消息时拷入；Rust 的 `RsStart` 本就是拷贝后内存结构，字段落槽是切片
+    拷贝（方案 a：纯函数 + 单一注入缝 vs 方案 b：plan/apply 两段拆分——SF_USE_COPY 置位
+    依赖 read_exec 结果、纯决策无法预计算且撕裂错误语义 vs 方案 c：全量 KernelApi 注入——
+    过度）。唯一外部效果 `read_exec`（文件 I/O，19 号）以
+    `&mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>` 注入；失败传播发生在
+    `SF_USE_COPY` 置位**之前**（与 C 的 `if (s != OK) return s` 同序）。
+  - **RSS_REUSE 供体扫描保留 C 的残留数据行为**：manager.c:1636-1651 全表扫描、不过滤
+    `RS_IN_USE`（释放行残留 `proc_name`/`sys_flags`）——新增 `RProcTable::iter_all()`
+    （与 `iter_in_use` 分立，附 C 锚点）；供体命中走纯 `share_exec`（Arc 克隆）。
+  - **basic 位叠加 = R21 base 参数的首次实战**：
+    `from_calls(既有掩码, SYS_BASIC_CALLS, NR_SYS_CALLS, KERNEL_CALL)`；
+    `SYS_BASIC_CALLS`（com.h:275-278，11 个调用号）/`VM_BASIC_CALLS`（com.h:778-780，7 个）
+    落位 minix-types 单一权威（补 SYS_SETALARM/TIMES/SAFECOPYFROM/SAFECOPYTO/VSAFECOPY/
+    SETGRANT/EXIT/STATECTL/SAFEMEMSET 8 个常量）。
+  - **IRQ/IO 哨兵**：`RSS_IRQ_ALL`/`RSS_IO_ALL` → 计数清零且不置 CHECK_IRQ/CHECK_IO_PORT
+    （manager.c:1489-1491/1506-1508）；显式表置位并双表（slot+priv）拷入；`Privilege.irqs`
+    u32→i32（C `s_irq_tab` 是 int）。
+  - **守卫组**：scheduler=NONE 不动四字段；RS 自身不改 period；restarts=0、asr_count<0
+    不覆盖；label 仅在为空时写（回退 proc_name 或取自定义）；NORESTART+核心服务 EPERM；
+    DETACH 置/清 DET_RESTART 双向。
+- **Verified**：`cargo test -p minix-rs` = **234 passed**（新增 10 个 edit_slot 测试：
+  IPC 门/IRQ 哨兵+越界/IO/掩码叠加/命令与 label 回退/脚本三规则/COPY-REUSE 注入与失败
+  传播/NORESTART EPERM/三个守卫/调度守卫+sig_mgr）。测试自查抓出 4 处测试代码自身错误
+  （切片长度、哨兵值误用为越界值、label 只置一次语义误判）——Gate E/测试自查记录。
+  clippy/fmt 零输出；T7 PASS。文档同步：08 §3.1 模型块、§3.4 重写（DEFERRED→已实现 +
+  注入缝形态）、§4 模块结构、§5 表 14→26 项。

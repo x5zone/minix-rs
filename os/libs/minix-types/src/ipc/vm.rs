@@ -131,6 +131,20 @@ pub const VM_VFS_MMAP: u32 = VM_RQ_BASE + 46;
 /// Get resource usage.
 pub const VM_GETRUSAGE: u32 = VM_RQ_BASE + 47;
 
+/// The basic VM-call set every system service gets on request.
+/// C: `VM_BASIC_CALLS` — com.h:778-780 (NULL_C terminator added by the
+/// consumer, mirroring `int basic_vmc[] = {VM_BASIC_CALLS, NULL_C}`,
+/// manager.c:1471). `i32` to compose with `CallMask::from_calls`.
+pub const VM_BASIC_CALLS: [i32; 7] = [
+    VM_BRK as i32,
+    VM_MMAP as i32,
+    VM_MUNMAP as i32,
+    VM_MAP_PHYS as i32,
+    VM_UNMAP_PHYS as i32,
+    VM_INFO as i32,
+    VM_GETRUSAGE as i32,
+];
+
 // --- RS calls ---
 
 /// RS set privileges.

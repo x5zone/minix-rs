@@ -225,6 +225,20 @@ impl RProcTable {
             .map(|(i, rp)| (SlotId::new(i), rp))
     }
 
+    /// Iterates over **all** rows, in use or not.
+    ///
+    /// C: scans without an `RS_IN_USE` filter — e.g. the `RSS_REUSE` donor
+    /// search in `edit_slot` (manager.c:1636-1651) compares `proc_name` and
+    /// `SF_USE_COPY` over every row; freed rows keep those fields, so a
+    /// freed donor matches in C exactly as it does here (R20b — deliberate
+    /// residual-data faithfulness, see free_slot's cleared-field list).
+    pub fn iter_all(&self) -> impl Iterator<Item = (SlotId, &ServiceSlot)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(i, rp)| (SlotId::new(i), rp))
+    }
+
     /// Sets the endpoint → slot mapping (ARCH A-4).
     ///
     /// C: `rproc_ptr[_ENDPOINT_P(endpoint)] = rp` — manager.c:599

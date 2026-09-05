@@ -103,7 +103,9 @@ pub use service_slot::{
     NR_DOMAIN, NR_IO_RANGE, NR_IRQ, NR_MEM_RANGE, PublicSlot, RFlags, RS_MAX_LABEL_LEN,
     RS_NR_CONTROL, SRV_SF, SRVR_SF, ServiceSlot, SlotId, SlotMutations, SysFlags, VM_SF,
 };
-pub use slot::{RsStart, RssFlags, build_cmd_dep, check_request};
+pub use slot::{
+    RsPciClass, RsPciId, RsStateData, RsStart, RssFlags, build_cmd_dep, check_request, edit_slot,
+};
 pub use state_data::{
     ANY_SYS, ANY_TSK, ANY_USR, IPCF_MAX_ELEMENTS, IpcFilterEl, IpcfFlags, SourceIpcFilterEl,
     VM_RS_UPDATE, ipcf_els_buff_size, num_ipc_filter_blocks, parse_filter_el, parse_label,

@@ -11,13 +11,14 @@
 //! module owns the pure validation and parsing that does not touch the
 //! kernel.
 
-use crate::privilege::{CallMask, IoRange};
+use crate::privilege::{CallMask, IoRange, PrivFlags};
 use crate::sched::NR_SCHED_QUEUES;
 use crate::service_slot::{
-    Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_SCRIPT_LEN, NR_DOMAIN, RS_NR_CONTROL,
+    Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_SCRIPT_LEN, NR_DOMAIN, NR_IO_RANGE, NR_IRQ,
+    RS_MAX_LABEL_LEN, RS_NR_CONTROL, ServiceSlot, SlotId, SysFlags,
 };
 use alloc::vec::Vec;
-use minix_types::{Endpoint, Errno};
+use minix_types::{Endpoint, Errno, SYS_BASIC_CALLS, VM_BASIC_CALLS};
 
 /// C: `RSS_NR_IRQ` — rs.h:25.
 pub const RSS_NR_IRQ: usize = 16;
@@ -388,10 +389,253 @@ pub fn build_cmd_dep(cmd: &[u8]) -> Vec<&[u8]> {
     args
 }
 
+/// Edits a slot to override existing settings — the `RS_UP`/`RS_EDIT` field
+/// pipeline.
+///
+/// C: `edit_slot` — manager.c:1460-1707, branch for branch. The
+/// `sys_datacopy` steps (IPC list, cmd, progname, script, control labels)
+/// are pure here: [`RsStart`] already carries the copied bytes, while C's
+/// pointers referenced the requester's address space and the copies ran at
+/// message receive. The single external effect is `read_exec` (binary file
+/// I/O, 19-rs-external-interfaces.md), injected as `read_exec`; the
+/// `RSS_REUSE` donor path stays pure (`share_exec` is an `Arc` clone).
+/// `init_privs` (manager.c:1700) recomputes the send mask from the new
+/// `ipc_list` — the 05 write-back completes the pipeline.
+///
+/// Note: C rewrites the caller's `rs_start` in place for the IRQ/IO
+/// sentinels (`rss_nr_irq = 0`, manager.c:1489/1506); Rust keeps `&RsStart`
+/// and uses an effective local — same downstream values, no caller surprise
+/// (ARCH: deliberate deviation from C's in-place argument mutation).
+pub fn edit_slot(
+    slot: &mut ServiceSlot,
+    rs_start: &RsStart,
+    table: &crate::process_table::RProcTable,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    // Update IPC target list (manager.c:1476-1483): non-empty, and the byte
+    // count plus the NUL terminator must fit the slot buffer.
+    if rs_start.ipclen == 0 || rs_start.ipclen + 1 > MAX_IPC_LIST {
+        return Err(Errno::EINVAL);
+    }
+    slot.ipc_list[..rs_start.ipclen].copy_from_slice(&rs_start.ipc_list[..rs_start.ipclen]);
+    slot.ipc_list[rs_start.ipclen] = 0;
+
+    // Update IRQs (manager.c:1486-1501): `RSS_IRQ_ALL` → count zeroed and no
+    // `CHECK_IRQ` (the kernel manages the set); an explicit list sets the
+    // check flag. C's `> NR_IRQ` does not reject negatives — callers produce
+    // counts via `check_request`; keep the comparison shape verbatim.
+    let check_irq = rs_start.nr_irq != RSS_IRQ_ALL;
+    let nr_irq = if check_irq { rs_start.nr_irq } else { 0 };
+    if nr_irq > NR_IRQ as i32 {
+        return Err(Errno::EINVAL);
+    }
+    if check_irq {
+        slot.priv_.flags.insert(PrivFlags::CHECK_IRQ);
+    }
+    slot.nr_irq = nr_irq;
+    slot.priv_.nr_irq = nr_irq;
+    for i in 0..nr_irq as usize {
+        slot.irq_tab[i] = rs_start.irq[i];
+        slot.priv_.irqs[i] = rs_start.irq[i];
+    }
+
+    // Update I/O ranges (manager.c:1504-1524): sentinel / flag / bound as
+    // for IRQs; the stored entry keeps `base`+`len` (`ior_limit =
+    // base+len-1` is derived, C io_range's limit form is information-
+    // equivalent — IoRange single authority, N9/D6).
+    let check_io = rs_start.nr_io != RSS_IO_ALL;
+    let nr_io = if check_io { rs_start.nr_io } else { 0 };
+    if nr_io > NR_IO_RANGE as i32 {
+        return Err(Errno::EINVAL);
+    }
+    if check_io {
+        slot.priv_.flags.insert(PrivFlags::CHECK_IO_PORT);
+    }
+    slot.nr_io_range = nr_io;
+    slot.priv_.nr_io_range = nr_io;
+    for i in 0..nr_io as usize {
+        slot.io_tab[i] = rs_start.io[i];
+        slot.priv_.io_ranges[i] = rs_start.io[i];
+    }
+
+    // Update kernel call mask; inherit basic kernel calls when asked to
+    // (manager.c:1527-1532). memcpy → plain assignment; the basic-calls
+    // overlay is C's `fill_call_mask(..., FALSE)` — R21's base parameter.
+    slot.priv_.k_call_mask = rs_start.system;
+    if rs_start.flags.contains(RssFlags::SYS_BASIC_CALLS) {
+        slot.priv_.k_call_mask = CallMask::from_calls(
+            slot.priv_.k_call_mask,
+            &SYS_BASIC_CALLS,
+            crate::privilege::NR_SYS_CALLS,
+            crate::privilege::KERNEL_CALL,
+        )?;
+    }
+
+    // Update VM call mask; inherit basic VM calls (manager.c:1535-1540).
+    // The VM mask lives on the public half (`rprocpub`).
+    slot.pub_.vm_call_mask = rs_start.vm;
+    if rs_start.flags.contains(RssFlags::VM_BASIC_CALLS) {
+        slot.pub_.vm_call_mask = CallMask::from_calls(
+            slot.pub_.vm_call_mask,
+            &VM_BASIC_CALLS,
+            crate::privilege::NR_VM_CALLS,
+            crate::privilege::VM_RQ_BASE,
+        )?;
+    }
+
+    // Update control labels (manager.c:1543-1564): only when the request
+    // carries any (> 0), otherwise the existing list survives.
+    if rs_start.nr_control > 0 {
+        if rs_start.nr_control > RS_NR_CONTROL as i32 {
+            return Err(Errno::EINVAL);
+        }
+        let n = rs_start.nr_control as usize;
+        slot.control[..n].copy_from_slice(&rs_start.control[..n]);
+        slot.nr_control = rs_start.nr_control;
+    }
+
+    // Update signal manager (manager.c:1567).
+    slot.priv_.sig_mgr = rs_start.sigmgr;
+
+    // Update scheduling properties only when a scheduler is set
+    // (manager.c:1570-1575).
+    if slot.scheduler != Endpoint::NONE {
+        slot.scheduler = rs_start.scheduler;
+        slot.priority = rs_start.priority;
+        slot.quantum = rs_start.quantum;
+        slot.cpu = rs_start.cpu;
+    }
+
+    // Update command and arguments (manager.c:1578-1593): E2BIG bound,
+    // absolute path enforced, argv rebuilt from the new command.
+    if rs_start.cmdlen > MAX_COMMAND_LEN - 1 {
+        return Err(Errno::E2BIG);
+    }
+    slot.cmd[..rs_start.cmdlen].copy_from_slice(&rs_start.cmd[..rs_start.cmdlen]);
+    slot.cmd[rs_start.cmdlen] = 0;
+    if slot.cmd[0] != b'/' {
+        return Err(Errno::EINVAL);
+    }
+    crate::service_create::rebuild_args(slot);
+
+    // Copy in the program name (manager.c:1596-1615 is the label block; the
+    // progname copy is manager.c:1589-1593's sibling at :1593-1595 in C —
+    // E2BIG bound, then the byte copy; `Label` carries the bytes already).
+    let progname_len = rs_start
+        .progname
+        .as_bytes()
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(RS_MAX_LABEL_LEN);
+    if progname_len > RS_MAX_LABEL_LEN - 1 {
+        return Err(Errno::E2BIG);
+    }
+    slot.pub_.proc_name = rs_start.progname;
+
+    // Update label if not already set (manager.c:1598-1615): custom label
+    // from the request, else fall back to the program name.
+    if slot.pub_.label.as_bytes()[0] == 0 {
+        if rs_start.label.as_bytes()[0] != 0 {
+            slot.pub_.label = rs_start.label;
+        } else {
+            slot.pub_.label = slot.pub_.proc_name;
+        }
+    }
+
+    // Update recovery script (manager.c:1618-1626): bound, presence, and
+    // core services never carry one; the flag marks it for `run_script`.
+    if rs_start.scriptlen > MAX_SCRIPT_LEN - 1 {
+        return Err(Errno::E2BIG);
+    }
+    if rs_start.scriptlen > 0 && !slot.pub_.sys_flags.contains(SysFlags::CORE_SRV) {
+        slot.script[..rs_start.scriptlen].copy_from_slice(&rs_start.script[..rs_start.scriptlen]);
+        slot.script[rs_start.scriptlen] = 0;
+        slot.pub_.sys_flags.insert(SysFlags::USE_SCRIPT);
+    }
+
+    // Update system flags and in-memory copy (manager.c:1629-1661). With
+    // `RSS_REUSE`, scan for a same-named service that already holds the
+    // binary and share its `Arc`; otherwise load it via the injected
+    // `read_exec`. C scans every row (no `RS_IN_USE` filter) — freed rows
+    // keep `proc_name`/`sys_flags`, so the residual-data behaviour is
+    // identical on both sides.
+    if rs_start.flags.contains(RssFlags::COPY) && !slot.pub_.sys_flags.contains(SysFlags::USE_COPY)
+    {
+        let mut donor: Option<SlotId> = None;
+        if rs_start.flags.contains(RssFlags::REUSE) {
+            donor = table.iter_all().find_map(|(id, rp)| {
+                (rp.pub_.proc_name == slot.pub_.proc_name
+                    && rp.pub_.sys_flags.contains(SysFlags::USE_COPY))
+                .then_some(id)
+            });
+        }
+        match donor {
+            Some(d) => {
+                crate::exec::share_exec(slot, table.get(d));
+            }
+            None => read_exec(slot)?,
+        }
+        slot.pub_.sys_flags.insert(SysFlags::USE_COPY);
+    }
+    if rs_start.flags.contains(RssFlags::REPLICA) {
+        slot.pub_.sys_flags.insert(SysFlags::USE_REPL);
+    }
+    if rs_start.flags.contains(RssFlags::NO_BIN_EXP) {
+        slot.pub_.sys_flags.insert(SysFlags::NO_BIN_EXP);
+    }
+    if rs_start.flags.contains(RssFlags::DETACH) {
+        slot.pub_.sys_flags.insert(SysFlags::DET_RESTART);
+    } else {
+        slot.pub_.sys_flags.remove(SysFlags::DET_RESTART);
+    }
+    if rs_start.flags.contains(RssFlags::NORESTART) {
+        if slot.pub_.sys_flags.contains(SysFlags::CORE_SRV) {
+            return Err(Errno::EPERM);
+        }
+        slot.pub_.sys_flags.insert(SysFlags::NORESTART);
+    } else {
+        slot.pub_.sys_flags.remove(SysFlags::NORESTART);
+    }
+
+    // Update period — RS itself keeps its boot-time period
+    // (manager.c:1685-1687).
+    if slot.pub_.endpoint != Endpoint::RS {
+        slot.period = rs_start.period;
+    }
+
+    // Update restarts (manager.c:1690-1692): nonzero overrides only.
+    if rs_start.restarts != 0 {
+        slot.restarts = rs_start.restarts as i32;
+    }
+
+    // Update number of ASR live updates (manager.c:1695-1697): non-negative
+    // overrides only (C `int` — the negative state means "not requested").
+    if rs_start.asr_count >= 0 {
+        slot.asr_count = rs_start.asr_count as i32;
+    }
+
+    // (Re)initialize privilege settings (manager.c:1700): the send mask is
+    // recomputed from the new `ipc_list` and written back to the privilege
+    // structure — `update_ipc_mask` is `init_privs` + write-back (05).
+    crate::ipc_mask::update_ipc_mask(slot, table, |endpoint| {
+        table
+            .endpoint_slot(endpoint)
+            .map(|id| table.get(id).priv_.id)
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::boot::Machine;
+    use crate::exec::has_shared_exec;
+    use crate::privilege::{NULL_C, Privilege};
+    use crate::process_table::RProcTable;
+    use crate::service_slot::{RFlags, RS_MAX_LABEL_LEN};
+    use alloc::sync::Arc;
+    use minix_types::SYS_EXIT;
 
     /// The C global `machine` snapshot for tests (request.c:1286-1296).
     fn machine() -> Machine {
@@ -399,6 +643,20 @@ mod tests {
             processors_count: 4,
             bsp_id: 2,
         }
+    }
+
+    /// A started-service slot: in use, endpoint TTY, proc name "tty",
+    /// no script, no label yet.
+    fn service_slot() -> ServiceSlot {
+        let mut s = ServiceSlot::vacant();
+        s.flags.insert(RFlags::IN_USE);
+        s.pub_.endpoint = Endpoint::TTY;
+        s.pub_.proc_name = Label::from_bytes(b"tty");
+        s
+    }
+
+    fn no_exec(_slot: &mut ServiceSlot) -> Result<(), Errno> {
+        Ok(())
     }
 
     #[test]
@@ -622,5 +880,310 @@ mod tests {
         assert_eq!(RS_CPU_BSP, -2);
         assert_eq!(RssFlags::COPY.bits(), 0x01);
         assert_eq!(RssFlags::NO_BIN_EXP.bits(), 0x100000);
+    }
+
+    // ── edit_slot (R20b, manager.c:1460-1707) ───────────────────────────
+
+    /// An `RsStart` that passes every gate (relative to `service_slot()`).
+    fn edit_request() -> RsStart {
+        let mut r = RsStart::default();
+        r.ipclen = 9;
+        r.ipc_list[..9].copy_from_slice(b"one\0two\0t");
+        r.cmdlen = 9;
+        r.cmd[..9].copy_from_slice(b"/sbin/tty");
+        r.progname = Label::from_bytes(b"tty");
+        r
+    }
+
+    #[test]
+    fn test_edit_slot_ipc_list_gate() {
+        // C: manager.c:1476-1479 — empty list or count+1 beyond the slot
+        // buffer → EINVAL before anything else moves.
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.ipclen = 0;
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::EINVAL)
+        );
+        r.ipclen = MAX_IPC_LIST; // +1 terminator would overflow
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::EINVAL)
+        );
+        // Valid: the bytes land NUL-terminated in the slot list.
+        r.ipclen = 4;
+        r.ipc_list = [0; MAX_IPC_LIST];
+        r.ipc_list[..4].copy_from_slice(b"ds\0a");
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(&s.ipc_list[..5], b"ds\0a\0");
+        assert_eq!(s.ipc_list[4], 0);
+    }
+
+    #[test]
+    fn test_edit_slot_irq_sentinel_bound_and_flag() {
+        // C: manager.c:1486-1501 — RSS_IRQ_ALL → count 0, no CHECK_IRQ;
+        // explicit list → CHECK_IRQ + both tables filled; over-bound EINVAL.
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.nr_irq = RSS_IRQ_ALL;
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.nr_irq, 0);
+        assert!(!s.priv_.flags.contains(PrivFlags::CHECK_IRQ));
+
+        r.nr_irq = 2;
+        r.irq[0] = 4;
+        r.irq[1] = 9;
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.nr_irq, 2);
+        assert!(s.priv_.flags.contains(PrivFlags::CHECK_IRQ));
+        assert_eq!(s.irq_tab[0], 4);
+        assert_eq!(s.priv_.irqs[1], 9);
+
+        // Over-bound: RSS_NR_IRQ == NR_IRQ == 16, so the sentinel is 17 —
+        // the first value C rejects is 18 (`> NR_IRQ` with the sentinel
+        // already diverted, manager.c:1492).
+        r.nr_irq = NR_IRQ as i32 + 2;
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_edit_slot_io_sentinel_and_entries() {
+        // C: manager.c:1504-1524 — RSS_IO_ALL → 0 / no CHECK_IO_PORT;
+        // explicit ranges copied with base+len preserved (limit derived).
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.nr_io = RSS_IO_ALL;
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.nr_io_range, 0);
+        assert!(!s.priv_.flags.contains(PrivFlags::CHECK_IO_PORT));
+
+        r.nr_io = 1;
+        r.io[0] = IoRange {
+            base: 0x3f8,
+            len: 8,
+        };
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(s.priv_.flags.contains(PrivFlags::CHECK_IO_PORT));
+        assert_eq!(
+            s.io_tab[0],
+            IoRange {
+                base: 0x3f8,
+                len: 8
+            }
+        );
+        assert_eq!(
+            s.priv_.io_ranges[0],
+            IoRange {
+                base: 0x3f8,
+                len: 8
+            }
+        );
+    }
+
+    #[test]
+    fn test_edit_slot_call_masks_overlay_basic_calls() {
+        // C: manager.c:1527-1540 — memcpy the request masks, then OR the
+        // basic-call lists on RSS_*_BASIC_CALLS (R21 composition live).
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.system = CallMask::from_calls(
+            CallMask::empty(),
+            &[crate::privilege::KERNEL_CALL + 20, NULL_C],
+            crate::privilege::NR_SYS_CALLS,
+            crate::privilege::KERNEL_CALL,
+        )
+        .unwrap();
+        r.flags.insert(RssFlags::SYS_BASIC_CALLS);
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(s.priv_.k_call_mask.test_bit(20)); // from the request mask
+        assert!(
+            s.priv_
+                .k_call_mask
+                .test_bit((SYS_EXIT - crate::privilege::KERNEL_CALL) as usize)
+        ); // basic overlay
+        assert!(s.pub_.vm_call_mask.0 == 0); // no VM flag → exactly rss_vm
+    }
+
+    #[test]
+    fn test_edit_slot_cmd_and_label_fallback() {
+        // C: manager.c:1578-1615 — E2BIG bound, absolute path, label falls
+        // back to proc_name when empty, custom label wins when given.
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.cmdlen = MAX_COMMAND_LEN; // > MAX-1
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::E2BIG)
+        );
+
+        r = edit_request();
+        r.cmd[0] = b's'; // relative path
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::EINVAL)
+        );
+
+        // Label fallback: empty request label → proc_name.
+        r = edit_request();
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.pub_.label, Label::from_bytes(b"tty"));
+
+        // C only writes the label while it is still empty (manager.c:1598,
+        // `!strcmp(rpub->label, "")`) — after the fallback the label sticks
+        // and a later custom label is ignored.
+        r.label = Label::from_bytes(b"mydriver");
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.pub_.label, Label::from_bytes(b"tty"));
+
+        // A custom label on the FIRST edit of an unlabelled slot wins.
+        let mut s2 = service_slot();
+        r = edit_request();
+        r.label = Label::from_bytes(b"mydriver");
+        assert!(edit_slot(&mut s2, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s2.pub_.label, Label::from_bytes(b"mydriver"));
+    }
+
+    #[test]
+    fn test_edit_slot_script_rules() {
+        // C: manager.c:1618-1626 — E2BIG bound; core services never carry a
+        // script; non-core get the bytes + SF_USE_SCRIPT.
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.scriptlen = 7;
+        r.script[..7].copy_from_slice(b"/rescue");
+        s.pub_.sys_flags.insert(SysFlags::CORE_SRV);
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(!s.pub_.sys_flags.contains(SysFlags::USE_SCRIPT));
+
+        s.pub_.sys_flags.remove(SysFlags::CORE_SRV);
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(s.pub_.sys_flags.contains(SysFlags::USE_SCRIPT));
+        assert_eq!(&s.script[..8], b"/rescue\0");
+
+        r.scriptlen = MAX_SCRIPT_LEN; // > MAX-1
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::E2BIG)
+        );
+    }
+
+    #[test]
+    fn test_edit_slot_copy_reuse_and_exec_injection() {
+        // C: manager.c:1629-1661 — RSS_COPY with RSS_REUSE shares an existing
+        // same-name copy; without a donor the injected read_exec runs. The
+        // exec failure must propagate BEFORE SF_USE_COPY is set.
+        let mut table = RProcTable::new();
+        let donor = table.alloc_slot().unwrap();
+        {
+            let rp = table.get_mut(donor);
+            rp.flags.insert(RFlags::IN_USE);
+            rp.pub_.proc_name = Label::from_bytes(b"tty");
+            rp.pub_.sys_flags.insert(SysFlags::USE_COPY);
+            rp.exec = Some(Arc::from(&b"donor-bytes"[..]));
+        }
+
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.flags.insert(RssFlags::COPY | RssFlags::REUSE);
+        assert!(edit_slot(&mut s, &r, &table, &mut no_exec).is_ok());
+        assert!(s.pub_.sys_flags.contains(SysFlags::USE_COPY));
+        // share_exec cloned the donor's Arc — pointer identity, not a reload.
+        assert!(Arc::ptr_eq(
+            s.exec.as_ref().unwrap(),
+            table.get(donor).exec.as_ref().unwrap()
+        ));
+        assert!(has_shared_exec(&s, &table));
+
+        // No donor anywhere: the injected read_exec executes exactly once.
+        let mut s2 = service_slot();
+        let mut calls = 0;
+        {
+            let mut hook = |slot: &mut ServiceSlot| {
+                calls += 1;
+                slot.exec = Some(Arc::from(&b"loaded"[..]));
+                Ok(())
+            };
+            assert!(edit_slot(&mut s2, &r, &RProcTable::new(), &mut hook).is_ok());
+        }
+        assert_eq!(calls, 1);
+        assert!(s2.pub_.sys_flags.contains(SysFlags::USE_COPY));
+
+        // read_exec failure propagates and USE_COPY stays clear.
+        let mut s3 = service_slot();
+        let mut fail = |_slot: &mut ServiceSlot| Err(Errno::EIO);
+        assert_eq!(
+            edit_slot(&mut s3, &r, &RProcTable::new(), &mut fail),
+            Err(Errno::EIO)
+        );
+        assert!(!s3.pub_.sys_flags.contains(SysFlags::USE_COPY));
+    }
+
+    #[test]
+    fn test_edit_slot_norestart_core_eperm() {
+        // C: manager.c:1668-1682 — NORESTART on a core service is EPERM; on
+        // others the flag follows the request bit (set or cleared).
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.flags.insert(RssFlags::NORESTART);
+        s.pub_.sys_flags.insert(SysFlags::CORE_SRV);
+        assert_eq!(
+            edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec),
+            Err(Errno::EPERM)
+        );
+
+        s.pub_.sys_flags.remove(SysFlags::CORE_SRV);
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(s.pub_.sys_flags.contains(SysFlags::NORESTART));
+
+        r.flags.remove(RssFlags::NORESTART);
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert!(!s.pub_.sys_flags.contains(SysFlags::NORESTART));
+    }
+
+    #[test]
+    fn test_edit_slot_period_restarts_asr_guards() {
+        // C: manager.c:1685-1700 — RS keeps its period; zero restarts and
+        // negative asr_count leave the slot fields alone.
+        let mut s = service_slot();
+        s.pub_.endpoint = Endpoint::RS; // RS itself
+        let mut r = edit_request();
+        r.period = 99;
+        r.restarts = 0;
+        r.asr_count = -1;
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.period, 0); // untouched (RS endpoint)
+        assert_eq!(s.restarts, 0); // untouched (zero request)
+        assert_eq!(s.asr_count, 0); // untouched (negative request)
+
+        // A regular service takes the period; positive overrides apply.
+        let mut s2 = service_slot();
+        r.restarts = 5;
+        r.asr_count = 2;
+        assert!(edit_slot(&mut s2, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s2.period, 99);
+        assert_eq!(s2.restarts, 5);
+        assert_eq!(s2.asr_count, 2);
+    }
+
+    #[test]
+    fn test_edit_slot_sched_guard_and_ipc_mask() {
+        // C: manager.c:1570-1575 + 1700 — scheduling fields only move while a
+        // scheduler is set; the send mask is recomputed from the new list
+        // (IPC_ALL → full map).
+        let mut s = service_slot();
+        s.scheduler = Endpoint::NONE;
+        s.priority = 3;
+        let mut r = edit_request();
+        r.scheduler = Endpoint::SCHED;
+        r.priority = 7;
+        r.ipclen = 8;
+        r.ipc_list[..8].copy_from_slice(b"IPC_ALL\0");
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.priority, 3); // NONE guard: unchanged
+        assert!(s.priv_.sig_mgr == r.sigmgr); // signal manager always moves
     }
 }

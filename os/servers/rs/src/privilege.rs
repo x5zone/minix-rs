@@ -385,8 +385,9 @@ pub struct Privilege {
     pub io_ranges: [IoRange; NR_IO_RANGE],
     /// Number of IRQ lines. C: `s_nr_irq` — kernel/priv.h:59 (`int`).
     pub nr_irq: i32,
-    /// Allowed IRQ lines. C: `s_irq_tab` — kernel/priv.h:60.
-    pub irqs: [u32; NR_IRQ],
+    /// Allowed IRQ lines. C: `s_irq_tab` — kernel/priv.h:60 (`int` values;
+    /// R20b: `i32` matches the C `int` and `RsStart.irq`/`r_irq_tab`).
+    pub irqs: [i32; NR_IRQ],
     /// Number of memory ranges. C: `s_nr_mem_range` — kernel/priv.h:56 (`int`).
     pub nr_mem_range: i32,
     /// Allowed memory ranges. C: `s_mem_tab` — kernel/priv.h:57.

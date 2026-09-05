@@ -345,9 +345,23 @@ pub fn check_request(rs_start: &RsStart, machine: &Machine)
 
 `Vec<&[u8]>` 返回 argv（借用 `cmd`，长度任意、不截断），`None` 终止符由 Vec 的末尾语义替代（`argv[argc] = NULL`，manager.c:322 不需要显式建模）。`ARGV_ELEMENTS-1` 上限（manager.c:311-313）与遇 NUL 停止（manager.c:305-306）均在测试中断言。
 
-### 3.4 `edit_slot`/`init_slot` 的 sys_datacopy 依赖（D4，DEFERRED→19）
+### 3.4 `edit_slot` 已实现（R20b）；`init_slot` 的 sys_datacopy 面（DEFERRED→19）
 
-`copy_rs_start`/`copy_label`/`edit_slot`/`init_slot` 依赖 `sys_datacopy`（19 的 minix-sys 接线）。Rust 侧契约：`edit_slot` 的字段覆盖表（§2.4）作为**规格**，`RsStart` 提供类型化输入，`slot.rs` 的 `check_request`/`build_cmd_dep` 先行落地，`edit_slot` 本体在 19 接线后实现（DEFERRED 标注，同 `KernelApi` 模式）。
+`copy_rs_start`/`copy_label` 仍归 19（消息接收时的内核拷入）。**`edit_slot` 已实现（2026-09-06，
+todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 按 manager.c:1460-1707
+逐分支落地。关键形态：
+
+- **C 的 `sys_datacopy` 步骤在 Rust 中是纯内存操作**——C 的 `rss_cmd`/`rss_ipc`/`rss_script`
+  是指向请求方地址空间的指针、收消息时拷入；Rust 的 `RsStart` 本就是拷贝后的内存结构，
+  字段落槽是切片拷贝。
+- **唯一的注入缝是 `read_exec`**（二进制文件 I/O，19 号）：`RSS_COPY` 无复用供体时以
+  `&mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>` 注入执行；`RSS_REUSE` 的供体
+  搜索（manager.c:1636-1651，按 `proc_name`+`SF_USE_COPY` 全表扫描、**不过滤 IN_USE**）走
+  `RProcTable::iter_all()` + 纯函数 `share_exec`（Arc 克隆）。
+- **basic 位叠加由 R21 承接**：`fill_call_mask(..., FALSE)` →
+  `CallMask::from_calls(既有掩码, SYS_BASIC_CALLS/VM_BASIC_CALLS, ...)`；
+  `SYS_BASIC_CALLS`/`VM_BASIC_CALLS` 清单落位 minix-types（单一权威）。
+- `init_slot`/`inherit_service_defaults` 仍待 R20c（轮 9）。
 
 ---
 
@@ -379,17 +393,29 @@ slot.rs
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs --lib`（208 passed，slot.rs 相关 14 项）：
+`cargo test -p minix-rs --lib`（234 passed，slot.rs 相关 26 项）：
 
 | 测试 | 覆盖 |
 |------|------|
 | `test_check_request_ok` | 合法参数（SCHED 调度器/优先级/量子/默认 CPU/SELF sigmgr） |
 | `test_check_request_scheduler` | KERNEL/合法特殊进程 OK；> LAST_SPECIAL_PROC_NR EINVAL |
 | `test_check_request_priority_quantum` | priority ≥ NR_SCHED_QUEUES / quantum ≤ 0 → EINVAL |
+| `test_check_request_negative_priority_accepted`（R32） | 负优先级合法（request.c:1275-1279 只拒上界） |
 | `test_check_request_cpu` | BSP→bsp_id / 正常→自身 / 越界→BSP / 负非特例→EINVAL |
 | `test_check_request_sigmgr` | SELF/PM OK；越界 EINVAL |
 | `test_rs_start_default_matches_c_caller` | Default 对齐 C 调用方：调度默认 + 资源计数/表全零（parse.c:1160） |
 | `test_rs_start_resource_counts_are_i32_like_c_int` | 计数域 i32：哨兵 17 与负值可表示（C `int` 校验前语义） |
+| `test_rs_start_r20a_field_defaults`（R20a） | rs.h 新字段默认值 = 调用方 memset（parse.c:1160） |
+| `test_edit_slot_ipc_list_gate`（R20b） | IPC 表空/超长 EINVAL；合法拷入 + NUL 终止 |
+| `test_edit_slot_irq_sentinel_bound_and_flag`（R20b） | `RSS_IRQ_ALL` → 0+无 CHECK_IRQ；显式表 → CHECK_IRQ+双表；越界 EINVAL |
+| `test_edit_slot_io_sentinel_and_entries`（R20b） | IO 同构（CHECK_IO_PORT/base+len 保留） |
+| `test_edit_slot_call_masks_overlay_basic_calls`（R20b） | 掩码 memcpy + basic 位叠加（R21 base）；无 VM 标志 → 恰为 rss_vm |
+| `test_edit_slot_cmd_and_label_fallback`（R20b） | E2BIG/绝对路径；label 空时回退 proc_name、已置则粘住、首次自定义优先 |
+| `test_edit_slot_script_rules`（R20b） | 核心服务不带脚本；非核心 → 字节+SF_USE_SCRIPT；E2BIG |
+| `test_edit_slot_copy_reuse_and_exec_injection`（R20b） | REUSE 供体共享 Arc（ptr_eq）；无供体 → read_exec 注入恰一次；失败传播且不置 USE_COPY |
+| `test_edit_slot_norestart_core_eperm`（R20b） | 核心服务 NORESTART → EPERM；置位/清位随请求 |
+| `test_edit_slot_period_restarts_asr_guards`（R20b） | RS 不改 period；restarts=0 / asr_count<0 不覆盖 |
+| `test_edit_slot_sched_guard_and_ipc_mask`（R20b） | scheduler=NONE 守卫四字段；sig_mgr 恒更新 |
 | `test_build_cmd_dep` | 多参数分词 |
 | `test_build_cmd_dep_trailing_spaces` | 尾部空格丢弃（manager.c:308） |
 | `test_build_cmd_dep_empty_cmd_keeps_argv0` | 空命令/纯空格/NUL 开头 → `[""]`，argc≥1（N11） |
