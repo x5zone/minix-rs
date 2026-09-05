@@ -287,27 +287,50 @@ pub struct RsStart {
     pub uid: u32, pub sigmgr: Endpoint, pub scheduler: Endpoint,
     pub priority: i32, pub quantum: i32, pub cpu: i32,
     pub period: i64, pub restarts: i64, pub asr_count: i64,
+    pub major: i32,                                  // rss_major（rs.h:114）
     pub cmd: [u8; MAX_COMMAND_LEN], pub cmdlen: usize,   // 指针字段 → 数组+长度
+    pub script: [u8; MAX_SCRIPT_LEN], pub scriptlen: usize,  // rss_script（rs.h:116-117）
+    pub heap_prealloc_bytes: i64, pub map_prealloc_bytes: i64, // rs.h:120-121（C long）
     pub ipc_list: [u8; MAX_IPC_LIST], pub ipclen: usize,
     pub progname: Label, pub nr_control: i32, pub control: [Label; RS_NR_CONTROL],
+    pub system: CallMask,        // rss_system（rs.h:130，bitchunk_t[2] → 64 位）
+    pub vm: CallMask,            // rss_vm（rs.h:135）
+    pub label: Label, pub trg_label: Label,   // rss_label/rss_trg_label（rs.h:131-132）
     pub nr_irq: i32, pub irq: [i32; RSS_NR_IRQ],
     pub nr_io: i32, pub io: [IoRange; RSS_NR_IO],
+    pub nr_pci_id: i32, pub pci_id: [RsPciId; RS_NR_PCI_DEVICE],       // rs.h:126-127
+    pub nr_pci_class: i32, pub pci_class: [RsPciClass; RS_NR_PCI_CLASS], // rs.h:128-129
+    pub state_data: RsStateData, // rss_state_data（rs.h:138，17 号域输入）
+    pub devman_id: i32,          // rs.h:139
+    pub nr_domain: i32, pub domain: [i32; NR_DOMAIN],  // rs.h:142-143
 }
-pub struct RssFlags(bitflags);   // 20 个标志（rs.h:33-52）
+pub struct RssFlags(bitflags);   // 21 个标志（rs.h:33-52）
+pub struct RsPciId { vid, did, sub_vid, sub_did: u16 }   // rs.h:73-78
+pub struct RsPciClass { pciclass, mask: u32 }            // rs.h:82-85
+pub struct RsStateData { size, ipcf_els_addr, ipcf_els_size, ipcf_els_gid,
+                         eval_addr, eval_len, eval_gid } // rs.h:93-101（指针 → 地址+grant）
 ```
 
 设计差异：
 
 - **指针字段 → 数组 + 长度**：C 的 `char *rss_cmd`/`char *rss_ipc`/`struct rss_label` 是指向请求方地址空间的指针，Rust 用固定数组 + 长度表示"拷入后的内容"（`sys_datacopy` 的产物）。
-- **`RssFlags` 用 bitflags**：20 个标志类型安全；`RSS_*` 值断言测试防漂移。
-- **计数域用 `i32`（对齐 C `int`，R20a）**：`rss_nr_irq`/`rss_nr_io`/`rss_nr_control` 在 C 中都是
-  `int`（rs.h:122/124/136）。`i32` 保留 `edit_slot` 校验（manager.c:1486-1521）前的三态——
+- **`RssFlags` 用 bitflags**：21 个标志类型安全；`RSS_*` 值断言测试防漂移。
+- **计数域用 `i32`（对齐 C `int`，R20a）**：`rss_nr_irq`/`rss_nr_io`/`rss_nr_control`/`rss_nr_pci_id`/`rss_nr_pci_class`/`rss_nr_domain` 在 C 中都是
+  `int`（rs.h:122/124/126/128/136/142）。`i32` 保留 `edit_slot`/`init_slot` 校验（manager.c:1486-1521/1733-1774）前的三态——
   `RSS_IRQ_ALL`/`RSS_IO_ALL` 哨兵（17）、0、负值（非法）；`usize` 会把非法负值包成巨大正数，
   与 `> NR_IRQ`/`> NR_IO_RANGE` 检查错位（R2/Fix #27 同理由，`ServiceSlot.nr_control` 已是 i32）。
 - **`rss_io` 表用 `privilege::IoRange`（N9 单一权威）**：C 的 `rss_io`（rs.h:125，匿名
   `{unsigned base; unsigned len;}`）与内核 `struct io_range`（priv.h:13-16）同构，`edit_slot`
   逐项拷入 `s_io_tab`（manager.c:1516-1518）。Rust 收敛为同一类型，消除 C 双表同构（D6 收敛方向）。
-- 未建模字段（PCI 表/state data/domains/script）标注 defer（A-10/17），使用时扩展。
+- **`rss_system`/`rss_vm` 用 `CallMask`（R20a，2026-09-06）**：C 是 `bitchunk_t[SYS_CALL_MASK_SIZE]`
+  位图（rs.h:130/135），edit_slot 先 memcpy 再叠加 basic 位（manager.c:1527-1540）——Rust 直接
+  用 64 位 `CallMask`（与 `s_k_call_mask` 同型，N9 单一权威方向），叠加语义由 R21 的
+  `from_calls(base, ...)` 承接。
+- **`RsStateData` 指针 → 地址 + grant**：C 的 `ipcf_els`/`eval_addr` 是 void*，缓冲字节经
+  grant 传输——Rust 建模为 `地址 + 长度 + Option<grant id>`（`ipcf_els_gid`/`eval_gid`），
+  语义由 17-rs-state-data.md 消费。
+- **PCI 载荷字段如实建模（R20a）**：`rss_pci_id`/`rss_pci_class` 是 init_slot 校验分支
+  （manager.c:1745-1774，R20c）的输入；`rs_pci` 特权模型本身仍按 A-10 延后（publish.rs）。
 
 ### 3.2 `check_request` 纯函数（D2）
 
@@ -335,12 +358,14 @@ pub fn check_request(rs_start: &RsStart, machine: &Machine)
 ```
 slot.rs
 ├─ RSS_NR_IRQ/RSS_NR_IO/RSS_IRQ_ALL/RSS_IO_ALL（rs.h:25-28）
+├─ RS_NR_PCI_DEVICE/RS_NR_PCI_CLASS/NO_SUB_VID/NO_SUB_DID（rs.h:56-57,79-80，R20a）
 ├─ RS_CPU_DEFAULT/RS_CPU_BSP/LAST_SPECIAL_PROC_NR（NR_SCHED_QUEUES 从 sched.rs 导入，N9）
-├─ RssFlags（20 标志，rs.h:33-52）
-├─ RsStart（rs.h:104-151 子集 + Default；计数域 i32 + io 表 [IoRange; RSS_NR_IO]）
-├─ check_request（request.c:1265-1308 纯化）
+├─ RssFlags（21 标志，rs.h:33-52）
+├─ RsPciId/RsPciClass/RsStateData（rs.h:73-101，R20a）
+├─ RsStart（rs.h:104-151 全字段 + Default；计数域 i32 + CallMask 掩码 + io 表 [IoRange; RSS_NR_IO]）
+├─ check_request（request.c:1265-1308 纯化，吃 &Machine）
 ├─ build_cmd_dep（manager.c:289-323 纯化）
-└─ #[cfg(test)] 24 个测试（§5）
+└─ #[cfg(test)] 测试（§5）
 ```
 
 关键不变量：

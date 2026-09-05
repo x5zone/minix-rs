@@ -11,9 +11,11 @@
 //! module owns the pure validation and parsing that does not touch the
 //! kernel.
 
-use crate::privilege::IoRange;
+use crate::privilege::{CallMask, IoRange};
 use crate::sched::NR_SCHED_QUEUES;
-use crate::service_slot::{Label, MAX_COMMAND_LEN, MAX_IPC_LIST, RS_NR_CONTROL};
+use crate::service_slot::{
+    Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_SCRIPT_LEN, NR_DOMAIN, RS_NR_CONTROL,
+};
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno};
 
@@ -25,6 +27,14 @@ pub const RSS_NR_IO: usize = 16;
 pub const RSS_IRQ_ALL: i32 = RSS_NR_IRQ as i32 + 1;
 /// C: `RSS_IO_ALL` — rs.h:28.
 pub const RSS_IO_ALL: i32 = RSS_NR_IO as i32 + 1;
+/// C: `RS_NR_PCI_DEVICE` — rs.h:56.
+pub const RS_NR_PCI_DEVICE: usize = 32;
+/// C: `RS_NR_PCI_CLASS` — rs.h:57.
+pub const RS_NR_PCI_CLASS: usize = 4;
+/// C: `NO_SUB_VID` — rs.h:79.
+pub const NO_SUB_VID: u16 = 0xffff;
+/// C: `NO_SUB_DID` — rs.h:80.
+pub const NO_SUB_DID: u16 = 0xffff;
 /// C: `RS_CPU_DEFAULT` — rs.h:63.
 pub const RS_CPU_DEFAULT: i32 = -1;
 /// C: `RS_CPU_BSP` — rs.h:64.
@@ -142,6 +152,91 @@ pub struct RsStart {
     /// (`edit_slot` → `s_io_tab`, manager.c:1516-1518); using it here avoids
     /// the C "two same-shape tables" duplication (D6).
     pub io: [IoRange; RSS_NR_IO],
+    /// C: `rss_major` — rs.h:114 (`int`; major device number, 0 = dynamic).
+    pub major: i32,
+    /// C: `rss_script`/`rss_scriptlen` — rs.h:116-117 (`MAX_SCRIPT_LEN`,
+    /// const.h:19). Restart script consumed by `run_script` (manager.c:1209,
+    /// 15/19).
+    pub script: [u8; MAX_SCRIPT_LEN],
+    /// Length of `script`. C: `rss_scriptlen`.
+    pub scriptlen: usize,
+    /// C: `rss_heap_prealloc_bytes` — rs.h:120 (`long`; negative = not
+    /// requested, request.c:768-770 zeroes it before VM registration).
+    pub heap_prealloc_bytes: i64,
+    /// C: `rss_map_prealloc_bytes` — rs.h:121.
+    pub map_prealloc_bytes: i64,
+    /// C: `rss_system` — rs.h:130 (`bitchunk_t[SYS_CALL_MASK_SIZE]` → one
+    /// 64-bit [`CallMask`]). edit_slot memcpy's it into `s_k_call_mask`
+    /// (manager.c:1527-1532).
+    pub system: CallMask,
+    /// C: `rss_vm` — rs.h:135. edit_slot memcpy's it into `vm_call_mask`
+    /// (manager.c:1535-1540).
+    pub vm: CallMask,
+    /// C: `rss_label` — rs.h:131. Service label; edit_slot copies it when
+    /// non-empty, else falls back to `progname` (manager.c:1596-1615).
+    pub label: Label,
+    /// C: `rss_trg_label` — rs.h:132. Live-update target label (16).
+    pub trg_label: Label,
+    /// PCI device-id ACL inputs. C: `rss_nr_pci_id`/`rss_pci_id` —
+    /// rs.h:126-127. A-10: the `rs_pci` privilege model is deferred
+    /// (publish.rs), but the request payload is modelled here so
+    /// init_slot's validation branch (manager.c:1745-1774, R20c) has its
+    /// input.
+    pub nr_pci_id: i32,
+    pub pci_id: [RsPciId; RS_NR_PCI_DEVICE],
+    /// PCI class ACL inputs. C: `rss_nr_pci_class`/`rss_pci_class` —
+    /// rs.h:128-129.
+    pub nr_pci_class: i32,
+    pub pci_class: [RsPciClass; RS_NR_PCI_CLASS],
+    /// C: `rss_state_data` — rs.h:138. Live-update state-data spec consumed
+    /// by `init_state_data` (manager.c:174, 17-rs-state-data.md).
+    pub state_data: RsStateData,
+    /// C: `devman_id` — rs.h:139. devman device id consumed by init_slot
+    /// (manager.c:1738-1742); `PublicSlot.devman_id` receives it.
+    pub devman_id: i32,
+    /// Number of socket-driver domains. C: `rss_nr_domain` — rs.h:142.
+    /// `i32`: init_slot rejects negatives (manager.c:1733-1736).
+    pub nr_domain: i32,
+    /// C: `rss_domain` — rs.h:143.
+    pub domain: [i32; NR_DOMAIN],
+}
+
+/// A PCI device-id ACL entry. C: `struct rs_pci_id` — rs.h:73-78.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RsPciId {
+    pub vid: u16,
+    pub did: u16,
+    pub sub_vid: u16,
+    pub sub_did: u16,
+}
+
+/// A PCI class ACL entry. C: `struct rs_pci_class` — rs.h:82-85.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RsPciClass {
+    pub pciclass: u32,
+    pub mask: u32,
+}
+
+/// The live-update state-data request spec. C: `struct rs_state_data` —
+/// rs.h:93-101. The C pointers (`ipcf_els`/`eval_addr`) become address+
+/// grant pairs: the buffer bytes travel by grant (`ipcf_els_gid`/
+/// `eval_gid`), the addresses stay for the 17 datacopy wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RsStateData {
+    /// C: `size` — total state-data size (E2BIG-checked, manager.c:190).
+    pub size: usize,
+    /// C: `ipcf_els` (void*) — IPC filter element buffer address.
+    pub ipcf_els_addr: u64,
+    /// C: `ipcf_els_size`.
+    pub ipcf_els_size: usize,
+    /// C: `ipcf_els_gid` (`grant_id_t`; `None` = no grant yet).
+    pub ipcf_els_gid: Option<u32>,
+    /// C: `eval_addr` (void*).
+    pub eval_addr: u64,
+    /// C: `eval_len`.
+    pub eval_len: usize,
+    /// C: `eval_gid`.
+    pub eval_gid: Option<u32>,
 }
 
 impl Default for RsStart {
@@ -177,6 +272,23 @@ impl Default for RsStart {
             irq: [0; RSS_NR_IRQ],
             nr_io: 0,
             io: [IoRange::default(); RSS_NR_IO],
+            major: 0,
+            script: [0; MAX_SCRIPT_LEN],
+            scriptlen: 0,
+            heap_prealloc_bytes: 0,
+            map_prealloc_bytes: 0,
+            system: CallMask::empty(),
+            vm: CallMask::empty(),
+            label: Label::empty(),
+            trg_label: Label::empty(),
+            nr_pci_id: 0,
+            pci_id: [RsPciId::default(); RS_NR_PCI_DEVICE],
+            nr_pci_class: 0,
+            pci_class: [RsPciClass::default(); RS_NR_PCI_CLASS],
+            state_data: RsStateData::default(),
+            devman_id: 0,
+            nr_domain: 0,
+            domain: [0; NR_DOMAIN],
         }
     }
 }
@@ -387,6 +499,30 @@ mod tests {
         assert!(s.io.iter().all(|r| *r == IoRange::default()));
         // Valid under check_request (the C path validates before use).
         assert!(check_request(&s, &machine()).is_ok());
+    }
+
+    #[test]
+    fn test_rs_start_r20a_field_defaults() {
+        // R20a: the rs.h fields added for the edit_slot/init_slot pipeline
+        // default to the C caller's `memset(rs_config, 0, sizeof)`
+        // (parse.c:1160) — masks empty, labels empty, counts zero.
+        let s = RsStart::default();
+        assert_eq!(s.major, 0);
+        assert_eq!(s.scriptlen, 0);
+        assert!(s.script.iter().all(|&b| b == 0));
+        assert_eq!(s.heap_prealloc_bytes, 0);
+        assert_eq!(s.map_prealloc_bytes, 0);
+        assert_eq!(s.system, CallMask::empty());
+        assert_eq!(s.vm, CallMask::empty());
+        assert_eq!(s.label, Label::empty());
+        assert_eq!(s.trg_label, Label::empty());
+        assert_eq!(s.nr_pci_id, 0);
+        assert!(s.pci_id.iter().all(|p| *p == RsPciId::default()));
+        assert_eq!(s.nr_pci_class, 0);
+        assert_eq!(s.state_data, RsStateData::default());
+        assert_eq!(s.devman_id, 0);
+        assert_eq!(s.nr_domain, 0);
+        assert!(s.domain.iter().all(|&d| d == 0));
     }
 
     #[test]

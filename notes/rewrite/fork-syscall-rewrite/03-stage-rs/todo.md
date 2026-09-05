@@ -1975,7 +1975,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 
 | ID | 主题 | 严重度 | 状态 | 归属 |
 |----|------|--------|------|------|
-| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ☐ | 08 落地期 |
+| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | 🔶 | 载体已全（Fix #46）；edit_slot/init_slot 本体=轮 8/9 |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
@@ -1984,7 +1984,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
 | R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
 | R28 | clone_service 两分支漏标 DEFERRED | P2 | ☐ | 可立即 todo-fix |
-| R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ☐ | 19 接线期决策 |
+| R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ✅ | 已修（Fix #47，2026-09-06，OQ-2=全宽） |
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
@@ -2180,3 +2180,36 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `tools/check-rs-unwired.sh` PASS。文档同步：08 §2/§4（check_request 签名两处）、03 §5.5
   （assert 语义 + panic 测试）、16（改名 4 处）、12 §3.1/§5（take_map_prealloc）、07 §3.1
   （喂参来源互链）。
+
+### ✅ Fix #46 — R20a（P1-design-missing 前半）：`RsStart` 补全 rs.h:104-151 全部字段
+- **File**：`os/servers/rs/src/slot.rs`（RsStart + RsPciId/RsPciClass/RsStateData + 常量 +
+  Default + 测试）、文档 08 §3.1/§4
+- **Before**：`RsStart` 21 字段，缺 `rss_major`/`rss_script`+len/`rss_heap_prealloc_bytes`/
+  `rss_map_prealloc_bytes`/`rss_system`/`rss_vm`/`rss_label`/`rss_trg_label`/
+  `rss_pci_*`/`rss_state_data`/`devman_id`/`rss_nr_domain`+`rss_domain`——缺的恰好全部是
+  `edit_slot`/`init_slot` 的输入（live_update 只能用裸 i64 参数绕过 prealloc 字段）。
+- **After**：全字段补齐 + 三个配套类型（`RsPciId` rs.h:73-78、`RsPciClass` rs.h:82-85、
+  `RsStateData` rs.h:93-101——C 指针字段建模为"地址 + 长度 + Option<grant>"，缓冲字节经
+  grant 传输）+ 常量 `RS_NR_PCI_DEVICE=32`/`RS_NR_PCI_CLASS=4`/`NO_SUB_VID`/`NO_SUB_DID`。
+  `rss_system`/`rss_vm` 直接用 64 位 `CallMask`（与 `s_k_call_mask` 同型，N9 方向；叠加语义
+  由 R21 的 base 参数承接）。Default 全部对齐 C 调用方 memset（parse.c:1160）。
+- **Verified**：`cargo test -p minix-rs` = **224 passed**（新增
+  `test_rs_start_r20a_field_defaults`：新字段默认值 = memset 语义）；clippy/fmt 零输出；
+  T7 PASS。文档同步：08 §3.1 模型块全字段化 + 4 条新设计差异 + §4 模块结构更新。
+
+### ✅ Fix #47 — R29（P2 潜伏分歧）：`TrapMask` 全宽 u16 忠实 C（OQ-2 裁决）
+- **File**：`os/servers/rs/src/privilege.rs`（TrapMask + DSRV_I + 测试）、`lib.rs`（导出）
+- **Before**：TrapMask 只建模 SEND..SENDNB 4 位，`SRV_T = from_bits_truncate(!0)` = 0x3E，
+  测试固化了截断值——C 是 16 位 `short`，`SRV_T=DSRV_T=~0` = 0xFFFF（含 MINIX_KERNINFO
+  bit 6 与保留位 7-15），19 号 `sys_getpriv` 序列化时两侧语义不同；`DSRV_T`/`DSRV_I`
+  常量缺失（init_slot manager.c:1723-1724 消费）。注意：03 文档 §3/§5.1 原本就声称
+  "SRV_T=0xFFFF"——代码截断是对已收敛文档的偏离，本修复消除该 doc-code mismatch。
+- **After**：**OQ-2 用户裁决 = u16 全宽忠实 C**。`MINIX_KERNINFO = 1<<6`（ipcconst.h:12）
+  显式建模；`SRV_T`/`DSRV_T = from_bits_retain(0xFFFF)`（保留位 7-15 如实存在）；
+  新增 `DSRV_I: u32 = 0`（priv.h:55，init-flags 族——非 trap 族，manager.c:1723 消费）。
+  方案对比：a) u16 全宽（选定，用户裁决）vs b) 窄建模 + 声明差异（19 号序列化需映射层，
+  分歧风险留给接线期）。
+- **Verified**：`cargo test -p minix-rs` = **224 passed**（`test_trap_mask` 重写：
+  SRV_T/DSRV_T bits==0xFFFF、含 MINIX_KERNINFO/SENDNB、USR_T=0x8、CSK_T=RECEIVE；新增
+  `test_dsrv_defaults`）；clippy/fmt 零输出；T7 PASS。文档同步：03 §5.1 表述与代码一致
+  （无需改动，代码侧对齐）。

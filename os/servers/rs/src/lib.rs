@@ -69,7 +69,7 @@ pub use monitor::{
     PeriodAction, PeriodDecision, delta_t, effective_period, has_update_timed_out, init_timeout,
     period_decision, sigchld_cleanup,
 };
-pub use privilege::{PrivCtlOp, Privilege};
+pub use privilege::{DSRV_I, PrivCtlOp, Privilege, TrapMask};
 pub use process_table::{RProcTable, RupdateFlags, ServiceInstances};
 pub use publish::{should_bind_devman, should_map_driver, should_set_pci_acl, unpublish_result};
 pub use query::{

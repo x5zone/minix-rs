@@ -129,8 +129,12 @@ bitflags::bitflags! {
     /// Allowed system call traps (`s_trap_mask`).
     ///
     /// C: `short s_trap_mask` (kernel/priv.h:34); bit positions are the IPC
-    /// call numbers (`include/minix/ipcconst.h:7-13`). `SENDA` (16) does not
-    /// fit the C `short` and is never set via this field.
+    /// call numbers (`include/minix/ipcconst.h:7-13`). Full u16 backing
+    /// (R29 — OQ-2 decision 2026-09-06): C's `SRV_T/DSRV_T = ~0` on a short
+    /// is 0xFFFF, so `MINIX_KERNINFO` (bit 6) and the reserved bits 7-15
+    /// are faithfully present and 19's `sys_getpriv` serialization needs no
+    /// mapping layer. `SENDA` (16) does not fit the C `short` either — it is
+    /// outside this field on both sides.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TrapMask: u16 {
         /// Blocking send. C: `SEND` — ipcconst.h:7.
@@ -143,13 +147,21 @@ bitflags::bitflags! {
         const NOTIFY = 1 << 4;
         /// Nonblocking send. C: `SENDNB` — ipcconst.h:11.
         const SENDNB = 1 << 5;
+        /// Request kernel info structure. C: `MINIX_KERNINFO` —
+        /// ipcconst.h:12 (bit 6; R29 — modelled, not truncated away).
+        const MINIX_KERNINFO = 1 << 6;
     }
 }
 
 impl TrapMask {
-    /// System services: all traps allowed. C: `SRV_T = ~0` — priv.h:61.
-    pub const SRV_T: TrapMask = TrapMask::from_bits_truncate(!0);
-    /// Clock and system tasks. C: `CSK_T = (1 << RECEIVE)` — priv.h:60.
+    /// System services: all traps allowed. C: `SRV_T = ~0` — priv.h:61;
+    /// on the C `short` that is 0xFFFF (R29: full-width, not the old 4-bit
+    /// `0x3E` truncation).
+    pub const SRV_T: TrapMask = TrapMask::from_bits_retain(0xFFFF);
+    /// Dynamic system services. C: `DSRV_T = ~0` — priv.h:62. Consumed by
+    /// `init_slot` (manager.c:1724, R20c).
+    pub const DSRV_T: TrapMask = TrapMask::from_bits_retain(0xFFFF);
+    /// Clock and system tasks. C: `CSK_T = (1 << RECEIVE)` — priv.h:59.
     pub const CSK_T: TrapMask = TrapMask::RECEIVE;
     /// User processes. C: `USR_T = (1 << SENDREC)` — priv.h:63.
     pub const USR_T: TrapMask = TrapMask::SENDREC;
@@ -163,6 +175,10 @@ impl TrapMask {
         }
     }
 }
+
+/// Dynamic system services' init flags. C: `DSRV_I = 0` — priv.h:55.
+/// Consumed by `init_slot` (`s_init_flags = DSRV_I`, manager.c:1723, R20c).
+pub const DSRV_I: u32 = 0;
 
 // ── Bitmaps (C: bitchunk_t[2] — 64-bit covers both call spaces) ─────────────
 
@@ -551,14 +567,26 @@ mod tests {
 
     #[test]
     fn test_trap_mask() {
-        // C: SRV_T=~0 (priv.h:61), USR_T=(1<<SENDREC)=0x8 (priv.h:63),
-        //    CSK_T=(1<<RECEIVE)=0x4 (priv.h:60).
-        assert_eq!(TrapMask::SRV_T, TrapMask::from_bits_truncate(0xFFFF));
-        assert!(TrapMask::USR_T.contains(TrapMask::SENDREC));
+        // C: SRV_T=DSRV_T=~0 → 0xFFFF on the C short (priv.h:61-62),
+        //    USR_T=(1<<SENDREC)=0x8 (priv.h:63),
+        //    CSK_T=(1<<RECEIVE)=0x4 (priv.h:59).
+        // R29 (OQ-2): full u16 backing — the old 4-bit model truncated
+        // SRV_T to 0x3E and silently dropped MINIX_KERNINFO (bit 6).
+        assert_eq!(TrapMask::SRV_T.bits(), 0xFFFF);
+        assert_eq!(TrapMask::DSRV_T.bits(), 0xFFFF);
+        assert!(TrapMask::SRV_T.contains(TrapMask::MINIX_KERNINFO));
+        assert!(TrapMask::SRV_T.contains(TrapMask::SENDNB));
         assert_eq!(TrapMask::USR_T.bits(), 0x8);
         assert_eq!(TrapMask::CSK_T, TrapMask::RECEIVE);
         assert_eq!(TrapMask::srv_or_usr(true), TrapMask::SRV_T);
         assert_eq!(TrapMask::srv_or_usr(false), TrapMask::USR_T);
+    }
+
+    #[test]
+    fn test_dsrv_defaults() {
+        // C: DSRV_I=0 (priv.h:55, init flags) — consumed by init_slot
+        // (manager.c:1723, R20c).
+        assert_eq!(DSRV_I, 0);
     }
 
     #[test]
