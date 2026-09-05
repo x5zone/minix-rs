@@ -18,8 +18,10 @@
 extern crate alloc;
 
 pub mod addr;
+pub mod bpfdev;
 pub mod ethif;
 pub mod ifaddr;
+pub mod ifconf;
 pub mod ifdev;
 pub mod ipsock;
 pub mod lnksock;
@@ -28,6 +30,8 @@ pub mod mempool;
 pub mod ndev;
 pub mod pktsock;
 pub mod rawsock;
+pub mod route;
+pub mod rtsock;
 pub mod startup;
 pub mod tcpsock;
 pub mod udpsock;
