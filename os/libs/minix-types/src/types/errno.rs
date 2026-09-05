@@ -104,9 +104,31 @@ pub const ERESTART: i32 = 200;
 /// call with a growing delay instead of failing. Like the other 200-range
 /// codes, minix-types uses the positive user-space convention.
 pub const ENOTREADY: i32 = 201;
+/// Source or destination is not alive. C: `EDEADSRCDST` — sys/errno.h:198.
+pub const EDEADSRCDST: i32 = 202;
 pub const EDONTREPLY: i32 = 203;
 /// Generic error. C: `EGENERIC` — sys/errno.h:200.
 pub const EGENERIC: i32 = 204;
+/// Invalid packet size for some protocol. C: `EPACKSIZE` — sys/errno.h:201.
+pub const EPACKSIZE: i32 = 205;
+/// Urgent data present. C: `EURG` — sys/errno.h:202.
+pub const EURG: i32 = 206;
+/// No urgent data present. C: `ENOURG` — sys/errno.h:203.
+pub const ENOURG: i32 = 207;
+/// Can't send message due to deadlock. C: `ELOCKED` — sys/errno.h:204.
+pub const ELOCKED: i32 = 208;
+/// Illegal system call number. C: `EBADCALL` — sys/errno.h:205.
+pub const EBADCALL: i32 = 209;
+/// No permission for system call. C: `ECALLDENIED` — sys/errno.h:206.
+pub const ECALLDENIED: i32 = 210;
+/// IPC trap not allowed. C: `ETRAPDENIED` — sys/errno.h:207.
+pub const ETRAPDENIED: i32 = 211;
+/// Destination cannot handle request. C: `EBADREQUEST` — sys/errno.h:208.
+pub const EBADREQUEST: i32 = 212;
+/// Bad mode in ioctl. C: `EBADMODE` — sys/errno.h:209.
+pub const EBADMODE: i32 = 213;
+/// No such connection. C: `ENOCONN` — sys/errno.h:210.
+pub const ENOCONN: i32 = 214;
 /// Specified endpoint is not alive. C: `EDEADEPT` — sys/errno.h:211.
 pub const EDEADEPT: i32 = 215;
 /// Specified endpoint is bad (a task, not a process). C: `EBADEPT` — sys/errno.h:212.
@@ -121,6 +143,28 @@ pub const ENOMSG: i32 = 83;
 pub const EOVERFLOW: i32 = 84;
 pub const EILSEQ: i32 = 85;
 pub const ENOTSUP: i32 = 86;
+/// Operation canceled. C: `ECANCELED` — sys/errno.h:156.
+pub const ECANCELED: i32 = 87;
+/// Bad or corrupt message. C: `EBADMSG` — sys/errno.h:159.
+pub const EBADMSG: i32 = 88;
+/// No message available. C: `ENODATA` — sys/errno.h:162.
+pub const ENODATA: i32 = 89;
+/// No STREAM resources. C: `ENOSR` — sys/errno.h:163.
+pub const ENOSR: i32 = 90;
+/// Not a STREAM. C: `ENOSTR` — sys/errno.h:164.
+pub const ENOSTR: i32 = 91;
+/// STREAM ioctl timeout. C: `ETIME` — sys/errno.h:165.
+pub const ETIME: i32 = 92;
+/// Attribute not found. C: `ENOATTR` — sys/errno.h:168.
+pub const ENOATTR: i32 = 93;
+/// Multihop attempted. C: `EMULTIHOP` — sys/errno.h:171.
+pub const EMULTIHOP: i32 = 94;
+/// Link has been severed. C: `ENOLINK` — sys/errno.h:172.
+pub const ENOLINK: i32 = 95;
+/// Protocol error. C: `EPROTO` — sys/errno.h:173.
+pub const EPROTO: i32 = 96;
+/// Must equal largest errno. C: `ELAST` — sys/errno.h:175 (same value as `EPROTO`).
+pub const ELAST: i32 = 96;
 
 /// Type-safe errno value (ARCH A-12, 03-stage-rs/99-rs-global-concepts.md).
 ///

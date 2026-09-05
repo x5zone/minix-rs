@@ -33,6 +33,12 @@ pub mod syscall;
 pub mod pm;
 /// File system call group (document 09).
 pub mod vfs;
+/// Virtual memory call group (document 10).
+pub mod vm;
+/// Miscellaneous calls: sleeping, server control, clock reads (document 11).
+pub mod misc;
+/// Reincarnation server queries: lookup and endpoint questions (document 12).
+pub mod rs;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
@@ -180,6 +186,10 @@ pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
 }
 
 /// Memory mapping.
+///
+/// Maps memory for the caller itself (the third-party flag stays clear).
+/// A failed call reports `None` instead of the mapped-failed sentinel, so
+/// callers cannot mistake failure for address minus one.
 pub fn mmap(
     addr: *mut u8,
     len: usize,
@@ -188,7 +198,21 @@ pub fn mmap(
     fd: Fd,
     offset: i64,
 ) -> Result<*mut u8, Errno> {
-    todo!("mmap syscall")
+    let request = vm::MapRequest {
+        beneficiary: Endpoint(0),
+        address: minix_types::VirBytes(addr as u64),
+        length: minix_types::VirBytes(len as u64),
+        protection: prot as u32,
+        flags: flags as u32,
+        file: fd,
+        offset,
+    };
+    // The caller endpoint is unknown inside this shim; self-mapping is the
+    // overwhelmingly common case and matches the C `mmap` wrapper, which
+    // always passes SELF. Third-party mappings use `vm::mmap_via` directly
+    // with an explicit beneficiary.
+    let placed = vm::mmap_via(&ipc::DirectTrapTransport, Endpoint(0), request)?;
+    Ok(placed.map(|address| address.0 as *mut u8).unwrap_or(core::ptr::null_mut()))
 }
 
 /// Error number — single shared ABI type.

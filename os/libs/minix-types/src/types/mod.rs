@@ -22,6 +22,7 @@ mod endpoint;
 mod errno;
 mod id;
 mod pid;
+mod signal;
 mod sysctl;
 
 pub use address::*;
@@ -34,4 +35,5 @@ pub use endpoint::*;
 pub use errno::*;
 pub use id::*;
 pub use pid::*;
+pub use signal::*;
 pub use sysctl::*;

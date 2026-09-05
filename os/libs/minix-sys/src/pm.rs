@@ -69,8 +69,10 @@ pub const PM_CALL_SERVICE_KILL: i32 = 42;
 
 /// Highest signal number (exclusive upper bound for validation).
 ///
-/// C: `_NSIG 64` (`minix3/sys/sys/signal.h:45`).
-pub const MAX_SIGNAL_NUMBER: i32 = 64;
+/// Single home: the shared types crate (verified against
+/// `minix3/sys/sys/signal.h:45`). Re-exported here so callers of this
+/// module need not import a second crate for the bound.
+pub use minix_types::MAX_SIGNAL_NUMBER;
 
 /// Too-big argument or environment vector.
 ///
@@ -232,7 +234,7 @@ pub fn kill_via(transport: &impl IpcTransport, target: Pid, signal: i32) -> Resu
 /// range check happens before any transport use, so an invalid number never
 /// causes a round trip.
 pub fn raise_via(transport: &impl IpcTransport, signal: i32) -> Result<(), Errno> {
-    if !(0..MAX_SIGNAL_NUMBER).contains(&signal) {
+    if !minix_types::is_valid_signal_number(signal) {
         return Err(Errno::EINVAL);
     }
     let me = getpid_via(transport)?;
