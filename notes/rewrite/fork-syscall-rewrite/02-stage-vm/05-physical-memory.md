@@ -466,7 +466,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 - **Linux**：buddy（页粒度，`__alloc_pages`）+ slab（小对象）双层，boot 期 bootmem/memblock 先导。
 - **minix-rs 的选择**：三后端 trait 可选、按内存规模选择，而不是固定演进。理由：VM 是用户态服务器，内存规模跨度大（256MB-2TB+），位图的内存效率（1 bit/页）在中小内存下最优，buddy 的 O(log n) 延迟在大内存下才值得；segment-tree 保留 O(log n) 任意连续度能力作为实验后端。这与"单进程内分配器策略可配置"的定位一致——分配策略在**用户态服务器层**决定（微内核分工），而不是像 Linux 一样固化在内核。
 
-> **选择路径（V10-P0-1 修复，2026-08-17）**：`choose_allocator_type`（`vm_server.rs:286-299`）在 `buddy_alloc` feature 下保留自适应阈值（`total_pages > BUDDY_THRESHOLD_PAGES` 才切 buddy，否则回落 bitmap），在 `segment_tree_alloc` feature 下直接选中 `SegmentTree`；`relocate()`（`vm_server.rs:300-369`）按 feature 分别构造 `PhysAlloc` 分支，未启用 feature 的分支回落 Bitmap（bootstrap 分配器）。三个 feature 组合此前**根本无法构建**（缺 import / `_total_pages` 引错 / no_std 下 `eprintln!`），已修复并纳入构建矩阵验证。
+> **选择路径（V10-P0-1 修复，2026-08-17；V11-P1-3 澄清组合语义，2026-09-06）**：`choose_allocator_type`（`vm_server.rs:294-309`）在 `buddy_alloc` feature 下保留自适应阈值（`total_pages > BUDDY_THRESHOLD_PAGES` 才切 buddy，否则回落 bitmap），在 `segment_tree_alloc` feature 下直接选中 `SegmentTree`——**两个 feature 同时开启时 segment-tree 优先**（该函数是后端选择的唯一权威；`phys_mem/mod.rs` 里声称 "buddy > segment-tree" 的 `DefaultAllocator` 死别名已删除，组合语义由三个 feature 组合测试逐一定格）；`relocate()`（`vm_server.rs:311-376` 附近）按 feature 分别构造 `PhysAlloc` 分支，未启用 feature 的分支回落 Bitmap（bootstrap 分配器）。三个 feature 组合此前**根本无法构建**（缺 import / `_total_pages` 引错 / no_std 下 `eprintln!`），已修复并纳入构建矩阵验证。
 
 ### 3.4 D4: 类型化错误与标志——消除魔法值
 

@@ -104,25 +104,12 @@ pub(crate) use segment_tree_alloc::SegmentTreeAllocator;
 pub(crate) use stats::MemStats;
 pub(crate) use types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 
-// V10-P2-1: the `DefaultAllocator` alias documents the bootstrap-backend
-// precedence (buddy > segment-tree > bitmap, see 05-physical-memory.md
-// §3.3) but has no constructor yet — `vm_server.rs` selects the backend
-// explicitly via `PhysAllocType`.
-#[cfg(feature = "buddy_alloc")]
-#[allow(dead_code)]
-pub(crate) type DefaultAllocator = BuddyAllocator;
-
-#[cfg(all(feature = "segment_tree_alloc", not(feature = "buddy_alloc")))]
-#[allow(dead_code)]
-pub(crate) type DefaultAllocator = SegmentTreeAllocator;
-
-#[cfg(all(feature = "bitmap_alloc", not(any(feature = "segment_tree_alloc", feature = "buddy_alloc"))))]
-#[allow(dead_code)]
-pub(crate) type DefaultAllocator = BitmapAllocator;
-
-#[cfg(not(any(feature = "bitmap_alloc", feature = "segment_tree_alloc", feature = "buddy_alloc")))]
-#[allow(dead_code)]
-pub(crate) type DefaultAllocator = BitmapAllocator;
+// V11-P1-3: the former `DefaultAllocator` type alias was removed. It was a
+// constructor-less documentation alias whose claimed precedence (buddy >
+// segment-tree > bitmap) contradicted the actual runtime selection in
+// `vm_server::VmServer::choose_allocator_type` (segment-tree wins outright
+// when its feature is enabled). Single source of truth for backend
+// selection: `choose_allocator_type` + 05-physical-memory.md §3.3.
 
 pub(crate) enum PhysAlloc {
     Bitmap(BitmapAllocator),

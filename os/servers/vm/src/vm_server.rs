@@ -274,31 +274,38 @@ impl VmServer {
 
     /// Select the boot-time allocator backend ([ARCH: A-5]).
     ///
-    /// Enabling a backend Cargo feature selects that backend, mirroring
-    /// `DefaultAllocator` precedence in `phys_mem/mod.rs` (buddy >
-    /// segment-tree > bitmap):
+    /// This function is the **single precedence authority** (the contradictory
+    /// `DefaultAllocator` alias in `phys_mem/mod.rs` was removed in V11-P1-3):
     ///
-    /// - `buddy_alloc` keeps the documented adaptive threshold — below
-    ///   `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) the compact bitmap is
-    ///   used even when the feature is enabled (05-physical-memory.md §3.3).
-    /// - `segment_tree_alloc` selects the segment-tree backend outright
-    ///   (was previously compiled but never selected — V10-P0-1).
-    #[cfg_attr(
-        not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")),
-        allow(unused_variables)
-    )]
+    /// - `segment_tree_alloc` selects the segment-tree backend outright,
+    ///   including when the `buddy_alloc` feature is also enabled (V10-P0-1
+    ///   wired the previously-never-selected backend; V11-P1-3 pinned the
+    ///   combined-feature semantics with tests).
+    /// - `buddy_alloc` (without segment-tree) keeps the documented adaptive
+    ///   threshold — at or below `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) the
+    ///   compact bitmap is used even when the feature is enabled
+    ///   (05-physical-memory.md §3.3).
+    /// - with no backend feature, the bitmap backend is used.
+    ///
+    /// The `cfg` blocks are structured so every feature combination compiles
+    /// to a body without unreachable code: the segment-tree check comes first
+    /// and the buddy check is compiled only when segment-tree is absent.
+    #[cfg_attr(not(feature = "buddy_alloc"), allow(unused_variables))]
     fn choose_allocator_type(total_pages: usize) -> PhysAllocType {
-        #[cfg(feature = "buddy_alloc")]
-        {
-            if total_pages > BUDDY_THRESHOLD_PAGES {
-                return PhysAllocType::Buddy;
-            }
-        }
         #[cfg(feature = "segment_tree_alloc")]
         {
             return PhysAllocType::SegmentTree;
         }
-        PhysAllocType::Bitmap
+        #[cfg(not(feature = "segment_tree_alloc"))]
+        {
+            #[cfg(feature = "buddy_alloc")]
+            {
+                if total_pages > BUDDY_THRESHOLD_PAGES {
+                    return PhysAllocType::Buddy;
+                }
+            }
+            PhysAllocType::Bitmap
+        }
     }
 
     fn relocate(&mut self) {
@@ -1489,6 +1496,41 @@ mod tests {
     use super::*;
     use crate::direct_map::tests::with_custom_mock_base;
     use crate::boot::{BootModule, KernelAllocated};
+
+    // V11-P1-3: pin the backend-selection semantics for every feature
+    // combination — this function is the single precedence authority since
+    // the contradictory `DefaultAllocator` alias was removed.
+    #[cfg(not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")))]
+    #[test]
+    fn test_choose_allocator_no_backend_feature_selects_bitmap() {
+        assert_eq!(VmServer::choose_allocator_type(TEST_TOTAL_PAGES), PhysAllocType::Bitmap);
+    }
+
+    #[cfg(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc")))]
+    #[test]
+    fn test_choose_allocator_buddy_adaptive_threshold() {
+        // Strictly above the threshold → buddy; at the threshold → bitmap.
+        assert_eq!(
+            VmServer::choose_allocator_type(crate::phys_mem::BUDDY_THRESHOLD_PAGES + 1),
+            PhysAllocType::Buddy
+        );
+        assert_eq!(
+            VmServer::choose_allocator_type(crate::phys_mem::BUDDY_THRESHOLD_PAGES),
+            PhysAllocType::Bitmap
+        );
+    }
+
+    #[cfg(feature = "segment_tree_alloc")]
+    #[test]
+    fn test_choose_allocator_segment_tree_wins_over_buddy() {
+        // Segment-tree selects outright — even when the buddy feature is also
+        // enabled (this combination is what the removed alias got backwards).
+        assert_eq!(
+            VmServer::choose_allocator_type(crate::phys_mem::BUDDY_THRESHOLD_PAGES + 1),
+            PhysAllocType::SegmentTree
+        );
+        assert_eq!(VmServer::choose_allocator_type(TEST_TOTAL_PAGES), PhysAllocType::SegmentTree);
+    }
 
     const TEST_TOTAL_PAGES: usize = 256;
 

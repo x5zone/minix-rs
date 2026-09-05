@@ -901,7 +901,7 @@ Coverage Summary for vm:
 
 **验证**：`rg "parts_mut" os/servers/vm/src` 归零；`rg "AssumeSyncCell" os/servers/vm/src` 收敛到 boot 期常量与分配器基础设施；测试不再需要 `reset_vm_self_pt_for_test`/`MOCK_BASE_MUTEX` 串行化（`rg "MOCK_BASE_MUTEX" os/servers/vm/src` 归零）。
 
-#### V11-P1-3 物理分配器后端选择语义"双真相源"矛盾
+#### ✅ V11-P1-3 物理分配器后端选择语义"双真相源"矛盾——已修复 2026-09-06（见 §15 Fix #22）
 
 **问题**：后端优先级在两处声明且**方向相反**：
 - `phys_mem/mod.rs:107-110`：`DefaultAllocator` 类型别名的注释宣称优先级为 "buddy > segment-tree > bitmap"；
@@ -1140,3 +1140,11 @@ Coverage Summary for vm:
 - **After**: clippy 默认 **0 warnings**；all-features 仅剩 `vm_server.rs:301` unreachable（属 V11-P1-3 双真相源条目，下一迭代清除）；NR_VM_CALLS 单一来源派生
 - **Verified**: `cargo test -p minix-vm --lib` 三矩阵 **448 / 463 / 448 passed**；`cargo check -p minix-vm --all-features` 通过；clippy 两档实测如上
 - **Docs**: 死代码删除项中 `metadata_size` 的公式差异已在代码注释说明单一权威归属；文档无引用被删项，无需同步
+
+### ✅ Fix #22: V11-P1-3 — 删 `DefaultAllocator` 双真相源 + 组合 feature 语义测试 + cfg 重构
+
+- **Files**: `os/servers/vm/src/phys_mem/mod.rs`（删 `DefaultAllocator` 别名四个 cfg 分支 :107-125，替换为指向单一权威的注释）、`os/servers/vm/src/vm_server.rs`（`choose_allocator_type` 文档重写 + **cfg 重构**：segment-tree 判定前置、buddy 块加 `not(feature = "segment_tree_alloc")` 守卫——任何 feature 组合下函数体都无不可达代码，all-features 的 unreachable 警告随之消失；新增 3 个按 feature 组合门控的选择语义测试）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（§3.3 选择路径段补组合语义 + 别名删除说明 + 行号刷新）
+- **Before**: mod.rs 别名注释宣称 "buddy > segment-tree > bitmap"，与 `choose_allocator_type` 的实际选择（segment-tree 直接胜出）方向相反；all-features 下 `vm_server.rs:301` unreachable expression 警告
+- **After**: 后端选择单一真相源 = `choose_allocator_type`（文档显式声明组合语义）+ 05 §3.3；三组合测试定格语义（无 feature→Bitmap / 仅 buddy→阈值判定 / segment-tree→直接胜出含双 feature 场景）
+- **Verified**: `rg "DefaultAllocator" os/servers/vm/src` → 0；`cargo test -p minix-vm --lib` 四矩阵 **449 / 464 / 449 / 465 passed**（每矩阵 +1 个新门控测试）；clippy minix-vm 默认与 all-features 均 **0 warnings**；`cargo check -p minix-vm --all-features` 通过
+- **Docs**: 05-physical-memory.md §3.3（选择路径段）；todo.md §0 验证块保持 V11 审查时点快照，当前数字以本 Fix 为准
