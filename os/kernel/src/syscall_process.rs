@@ -754,225 +754,160 @@ pub(crate) fn dispatch_statectl(
         }
         // C: do_statectl.c:32-36 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
         StatectlRequest::AddIpcBlFilter => {
-            // Capture caller endpoint and CR3 before the mutable priv_table
-            // borrow so the data_copy_vmcheck closure can reference them
-            // without aliasing `caller`.
-            let caller_endpt = caller.p_endpoint;
-            let caller_cr3 = caller.p_seg.phys_root;
-            let length = sc.length as usize;
-
-            // First, free any existing filter for this caller to avoid leaks
-            // (matches C `add_ipc_filter` semantics — replaces, not stacks),
-            // then allocate a fresh blacklist slot from the pool.
-            // C: IPCF_POOL_ALLOCATE_SLOT(IPCF_BLACKLIST, &priv_->s_ipcf)
-            if let Some(pid) = caller.priv_id
-                && let Some(priv_) = priv_table.get_mut(pid) {
-                    if let Some(old_idx) = priv_.mem.s_ipcf.take() {
-                        pool.free(old_idx);
-                    }
-                    match pool
-                        .allocate(crate::ipc_filter::IpcFilterType::Blacklist)
-                    {
-                        Some(idx) => priv_.mem.s_ipcf = Some(idx),
-                        None => return KcallResult::Ok(ENOMEM),
-                    }
-                }
-            // Element population via data_copy_vmcheck is implemented below.
-
-            // Reject overly-long filter lists before copying. Free the slot
-            // we just allocated to avoid a leak.
-            if length > crate::ipc_filter::IPCF_MAX_ELEMENTS {
-                if let Some(pid) = caller.priv_id
-                    && let Some(priv_) = priv_table.get_mut(pid)
-                        && let Some(idx) = priv_.mem.s_ipcf.take() {
-                            pool.free(idx);
-                        }
-                return KcallResult::Ok(EINVAL);
-            }
-
-            // Copy filter elements from user space.
-            // C: do_statectl.c:34-36 — add_ipc_filter copies `length` elements
-            // from user-supplied `address` array.
-            if length > 0 {
-                use crate::cross_space::data_copy_vmcheck;
-                use crate::vm::{AddressRef, CrossSpaceResult};
-                use minix_arch::{CurrentDirectMap, DirectMapArch};
-                use minix_types::VirBytes;
-
-                // Build a kernel-stack buffer to receive the elements.
-                // Each IpcFilterElement is 12 bytes (#[repr(C)]):
-                // flags(u32) + m_source(i32) + m_type(i32).
-                let mut buf: [crate::ipc_filter::IpcFilterElement;
-                    crate::ipc_filter::IPCF_MAX_ELEMENTS] =
-                    [crate::ipc_filter::IpcFilterElement {
-                        flags: 0,
-                        m_source: 0,
-                        m_type: 0,
-                    }; crate::ipc_filter::IPCF_MAX_ELEMENTS];
-
-                let copy_bytes =
-                    length * core::mem::size_of::<crate::ipc_filter::IpcFilterElement>();
-                let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                    buf.as_mut_ptr() as u64,
-                ));
-
-                let proc_cr3 = |endpt: Endpoint| {
-                    if endpt == caller_endpt { Some(caller_cr3) } else { None }
-                };
-
-                let src = AddressRef::Process {
-                    endpoint: caller_endpt,
-                    offset: VirBytes(sc.address),
-                };
-                let dst = AddressRef::Physical(buf_phys);
-
-                match data_copy_vmcheck(caller, src, dst, copy_bytes, proc_cr3) {
-                    CrossSpaceResult::Completed(Ok(())) => {
-                        // Populate the filter slot with the copied elements.
-                        if let Some(pid) = caller.priv_id
-                            && let Some(priv_) = priv_table.get_mut(pid)
-                                && let Some(idx) = priv_.mem.s_ipcf
-                                    && let Some(slot) =
-                                        pool.get_mut(idx)
-                                    {
-                                        slot.num_elements = length;
-                                        slot.elements[..length]
-                                            .copy_from_slice(&buf[..length]);
-                                    }
-                    }
-                    CrossSpaceResult::Completed(Err(_)) => {
-                        // Free the slot on copy failure.
-                        if let Some(pid) = caller.priv_id
-                            && let Some(priv_) = priv_table.get_mut(pid)
-                                && let Some(idx) = priv_.mem.s_ipcf.take() {
-                                    pool.free(idx);
-                                }
-                        return KcallResult::Ok(EFAULT);
-                    }
-                    CrossSpaceResult::Suspended(_) => {
-                        return KcallResult::VmSuspend;
-                    }
-                }
-            }
+            // C: do_statectl.c:34-36 — add_ipc_filter(caller, IPCF_BLACKLIST,
+            // address, length)。D-16/D-18 实现见 add_ipc_filter_arm。
+            return add_ipc_filter_arm(caller, sc, proc_table, priv_table, pool,
+                crate::ipc_filter::IpcFilterType::Blacklist);
         }
         // C: do_statectl.c:37-41 — add_ipc_filter(caller, IPCF_WHITELIST, address, length)
         StatectlRequest::AddIpcWlFilter => {
-            // Capture caller endpoint and CR3 before the mutable priv_table
-            // borrow so the data_copy_vmcheck closure can reference them
-            // without aliasing `caller`.
-            let caller_endpt = caller.p_endpoint;
-            let caller_cr3 = caller.p_seg.phys_root;
-            let length = sc.length as usize;
-
-            // First, free any existing filter for this caller to avoid leaks
-            // (matches C `add_ipc_filter` semantics — replaces, not stacks),
-            // then allocate a fresh whitelist slot from the pool.
-            // C: IPCF_POOL_ALLOCATE_SLOT(IPCF_WHITELIST, &priv_->s_ipcf)
-            if let Some(pid) = caller.priv_id
-                && let Some(priv_) = priv_table.get_mut(pid) {
-                    if let Some(old_idx) = priv_.mem.s_ipcf.take() {
-                        pool.free(old_idx);
-                    }
-                    match pool
-                        .allocate(crate::ipc_filter::IpcFilterType::Whitelist)
-                    {
-                        Some(idx) => priv_.mem.s_ipcf = Some(idx),
-                        None => return KcallResult::Ok(ENOMEM),
-                    }
-                }
-            // Element population via data_copy_vmcheck is implemented below.
-
-            // Reject overly-long filter lists before copying. Free the slot
-            // we just allocated to avoid a leak.
-            if length > crate::ipc_filter::IPCF_MAX_ELEMENTS {
-                if let Some(pid) = caller.priv_id
-                    && let Some(priv_) = priv_table.get_mut(pid)
-                        && let Some(idx) = priv_.mem.s_ipcf.take() {
-                            pool.free(idx);
-                        }
-                return KcallResult::Ok(EINVAL);
-            }
-
-            // Copy filter elements from user space.
-            // C: do_statectl.c:34-36 — add_ipc_filter copies `length` elements
-            // from user-supplied `address` array.
-            if length > 0 {
-                use crate::cross_space::data_copy_vmcheck;
-                use crate::vm::{AddressRef, CrossSpaceResult};
-                use minix_arch::{CurrentDirectMap, DirectMapArch};
-                use minix_types::VirBytes;
-
-                // Build a kernel-stack buffer to receive the elements.
-                // Each IpcFilterElement is 12 bytes (#[repr(C)]):
-                // flags(u32) + m_source(i32) + m_type(i32).
-                let mut buf: [crate::ipc_filter::IpcFilterElement;
-                    crate::ipc_filter::IPCF_MAX_ELEMENTS] =
-                    [crate::ipc_filter::IpcFilterElement {
-                        flags: 0,
-                        m_source: 0,
-                        m_type: 0,
-                    }; crate::ipc_filter::IPCF_MAX_ELEMENTS];
-
-                let copy_bytes =
-                    length * core::mem::size_of::<crate::ipc_filter::IpcFilterElement>();
-                let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                    buf.as_mut_ptr() as u64,
-                ));
-
-                let proc_cr3 = |endpt: Endpoint| {
-                    if endpt == caller_endpt { Some(caller_cr3) } else { None }
-                };
-
-                let src = AddressRef::Process {
-                    endpoint: caller_endpt,
-                    offset: VirBytes(sc.address),
-                };
-                let dst = AddressRef::Physical(buf_phys);
-
-                match data_copy_vmcheck(caller, src, dst, copy_bytes, proc_cr3) {
-                    CrossSpaceResult::Completed(Ok(())) => {
-                        // Populate the filter slot with the copied elements.
-                        if let Some(pid) = caller.priv_id
-                            && let Some(priv_) = priv_table.get_mut(pid)
-                                && let Some(idx) = priv_.mem.s_ipcf
-                                    && let Some(slot) =
-                                        pool.get_mut(idx)
-                                    {
-                                        slot.num_elements = length;
-                                        slot.elements[..length]
-                                            .copy_from_slice(&buf[..length]);
-                                    }
-                    }
-                    CrossSpaceResult::Completed(Err(_)) => {
-                        // Free the slot on copy failure.
-                        if let Some(pid) = caller.priv_id
-                            && let Some(priv_) = priv_table.get_mut(pid)
-                                && let Some(idx) = priv_.mem.s_ipcf.take() {
-                                    pool.free(idx);
-                                }
-                        return KcallResult::Ok(EFAULT);
-                    }
-                    CrossSpaceResult::Suspended(_) => {
-                        return KcallResult::VmSuspend;
-                    }
-                }
-            }
+            return add_ipc_filter_arm(caller, sc, proc_table, priv_table, pool,
+                crate::ipc_filter::IpcFilterType::Whitelist);
         }
-        // C: do_statectl.c:42-44 — clear_ipc_filters(caller)
         StatectlRequest::ClearIpcFilters => {
+            // C clear_ipc_filters (system.c:751-770) — free the WHOLE
+            // filter chain (D-16: filters chain via `next`; clearing only
+            // the head would orphan the rest).
             if let Some(pid) = caller.priv_id
-                && let Some(priv_) = priv_table.get_mut(pid) {
-                    // Free the IPC filter slot from the pool, then clear
-                    // the pointer. C: IPCF_POOL_FREE_SLOT(priv(caller)->s_ipcf)
-                    // followed by priv(caller)->s_ipcf = NULL.
-                    if let Some(ipcf_idx) = priv_.mem.s_ipcf.take() {
-                        pool.free(ipcf_idx);
-                    }
-                }
+                && let Some(priv_) = priv_table.get_mut(pid)
+                && let Some(head) = priv_.mem.s_ipcf.take()
+            {
+                crate::ipc_filter::free_chain(pool, Some(head));
+            }
         }
     }
 
     KcallResult::Ok(OK)
+}
+
+
+/// D-16/D-18: SYS_STATECTL ADD_IPC_{BL,WL}_FILTER — C `add_ipc_filter`
+/// (system.c:705-747): 校验（length 按元素字节对齐、1..=MAX 个 → E2BIG）→
+/// 分配新槽 → data_copy 元素进槽 → EL_CHECK 逐元素校验 + MATCH 标志聚合
+/// （fill_flags）→ **链尾追加**（C system.c:742-745；修复旧实现"替换非
+/// 追加"的偏离）。失败路径只释放新槽位，链上既有 filter 不受影响。
+fn add_ipc_filter_arm(
+    caller: &mut KProcess,
+    sc: MessLsysKrnSysStatectl,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &mut PrivTable,
+    pool: &mut crate::ipc_filter::IpcFilterPool,
+    filter_type: crate::ipc_filter::IpcFilterType,
+) -> KcallResult {
+    use crate::cross_space::data_copy_vmcheck;
+    use crate::vm::{AddressRef, CrossSpaceResult};
+    use minix_arch::{CurrentDirectMap, DirectMapArch};
+    use minix_types::VirBytes;
+
+    // C system.c:708-717 — validate length (byte-aligned to the element
+    // size) and element count (1..=IPCF_MAX_ELEMENTS → E2BIG).
+    let length = sc.length as usize;
+    let el_size = core::mem::size_of::<crate::ipc_filter::IpcFilterElement>();
+    if length % el_size != 0 {
+        return KcallResult::Ok(EINVAL);
+    }
+    let num_elements = length / el_size;
+    // C system.c:713-716 — num_elements <= 0 或超上限 → E2BIG。
+    if num_elements == 0 || num_elements > crate::ipc_filter::IPCF_MAX_ELEMENTS {
+        return KcallResult::Ok(E2BIG);
+    }
+
+    // C system.c:719-722 — allocate a fresh slot; the chain append
+    // happens after validation, so early failures free only the new slot.
+    let new_idx = match pool.allocate(filter_type) {
+        Some(idx) => idx,
+        None => return KcallResult::Ok(ENOMEM),
+    };
+
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
+
+    // C system.c:729-731 — data_copy elements directly into the slot.
+    let dst_phys = match pool.get_mut(new_idx) {
+        Some(slot) => CurrentDirectMap::virt_to_phys(VirBytes(
+            slot.elements.as_mut_ptr() as u64,
+        )),
+        None => unreachable!("slot was just allocated"),
+    };
+    let src = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(sc.address),
+    };
+    let dst = AddressRef::Physical(dst_phys);
+
+    match data_copy_vmcheck(caller, src, dst, length, |endpt| {
+        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+    }) {
+        CrossSpaceResult::Completed(Ok(())) => {}
+        CrossSpaceResult::Completed(Err(_)) => {
+            pool.free(new_idx);
+            return KcallResult::Ok(EFAULT);
+        }
+        CrossSpaceResult::Suspended(_) => {
+            // The resume path (arch_do_syscall) re-executes the whole
+            // add; freeing here avoids leaking the slot across suspend.
+            pool.free(new_idx);
+            return KcallResult::VmSuspend;
+        }
+    }
+
+    // D-18 (C check_ipc_filter, system.c:776-798) — EL_CHECK each element
+    // (isokendpt 经 proc_table 解析) + MATCH 标志聚合（fill_flags）+
+    // 链尾追加（C system.c:742-745）。校验失败：finalize 不释放，由本
+    // 函数释放新槽位后返回 EINVAL。
+    let caller_priv_id = match caller.priv_id {
+        Some(id) => id,
+        None => return KcallResult::Ok(EPERM),
+    };
+    match finalize_ipc_filter(proc_table, caller_priv_id, pool, new_idx, num_elements, priv_table) {
+        Ok(()) => KcallResult::Ok(OK),
+        Err(EINVAL) => {
+            pool.free(new_idx);
+            KcallResult::Ok(EINVAL)
+        }
+        Err(e) => KcallResult::Ok(e),
+    }
+}
+
+/// D-18: C `check_ipc_filter(ipcf, TRUE)`（system.c:776-798）+ 链尾追加
+/// （system.c:742-745）。校验每个元素（EL_CHECK，isokendpt 经
+/// `proc_table` 解析）、聚合 MATCH 标志进 `slot.flags`，然后把 `new_idx`
+/// 追加到 `caller_priv_id` 的 filter 链尾。校验失败返回 `Err(EINVAL)`
+/// 且**不释放**槽位（由调用方决定）——链上既有 filter 不受影响。
+pub(crate) fn finalize_ipc_filter(
+    proc_table: &crate::proc_table::ProcessTable,
+    caller_priv_id: u16,
+    pool: &mut crate::ipc_filter::IpcFilterPool,
+    new_idx: usize,
+    num_elements: usize,
+    caller_priv_table: &mut PrivTable,
+) -> Result<(), i32> {
+    let _ = caller_priv_id; // 链头读取走 caller_priv_table
+    if let Some(slot) = pool.get_mut(new_idx) {
+        slot.num_elements = num_elements;
+        let mut aggregated = 0i32;
+        for el in &slot.elements[..num_elements] {
+            let src_ep = minix_types::Endpoint(el.m_source);
+            let source_ok = proc_table.endpoint_to_nr(src_ep).is_some();
+            if !crate::ipc_filter::el_check(el, source_ok) {
+                return Err(EINVAL);
+            }
+            aggregated |= (el.flags
+                & (crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE
+                    | crate::ipc_filter::IpcFilterElFlags::MATCH_M_TYPE))
+                as i32;
+        }
+        slot.flags = aggregated;
+    }
+    // C system.c:742-745 — append at the end of the IPC filter chain.
+    let old_head = caller_priv_table
+        .get(caller_priv_id)
+        .and_then(|p| p.mem.s_ipcf);
+    let new_head = crate::ipc_filter::append_to_chain(pool, old_head, new_idx);
+    if let Some(priv_) = caller_priv_table.get_mut(caller_priv_id) {
+        priv_.mem.s_ipcf = new_head;
+    }
+    Ok(())
 }
 
 // ── Tests ──
@@ -1019,70 +954,107 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_statectl_add_ipc_bl_filter_allocates_slot() {
+    fn test_dispatch_statectl_add_ipc_filter_rejects_unaligned_length() {
+        // C system.c:710-712 — length 不按元素大小对齐 → EINVAL。
+        let (mut caller, mut priv_table) = build_caller_with_priv();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut pool = crate::ipc_filter::IpcFilterPool::new();
+        let msg = build_statectl_msg(3, 0xdead_beef, 5);
+        assert_eq!(
+            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
+            KcallResult::Ok(EINVAL)
+        );
+        assert_eq!(pool.allocated_count(), 0);
+    }
+
+    #[test]
+    fn test_dispatch_statectl_add_ipc_filter_rejects_zero_length() {
+        // C system.c:713-716 — num_elements <= 0 → E2BIG（长度 0 = 0 个元素）。
         let (mut caller, mut priv_table) = build_caller_with_priv();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
         assert_eq!(
             dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
-            KcallResult::Ok(OK)
+            KcallResult::Ok(E2BIG)
         );
-        // Caller must now hold a non-None s_ipcf pointing into the pool.
-        let priv_ = priv_table.get(0).unwrap();
-        let slot_idx = priv_.mem.s_ipcf.expect("AddIpcBlFilter should allocate a slot");
-        let pool_slot = pool.get(slot_idx)
-            .expect("slot index must resolve");
-        assert_eq!(
-            pool_slot.filter_type,
-            crate::ipc_filter::IpcFilterType::Blacklist
-        );
+        assert_eq!(pool.allocated_count(), 0);
     }
 
     #[test]
-    fn test_dispatch_statectl_add_ipc_wl_filter_allocates_slot() {
+    fn test_dispatch_statectl_add_ipc_filter_suspends_and_frees_on_copy_fault() {
+        // data_copy_vmcheck 在 hosted mock 下不可解（PteWalk None →
+        // Suspended）→ VmSuspend 且新槽位已释放（不跨挂起泄漏）。
         let (mut caller, mut priv_table) = build_caller_with_priv();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
-        let msg = build_statectl_msg(4, 0xdead_beef, 0);
+        let msg = build_statectl_msg(3, 0xdead_beef, 12); // 1 element
         assert_eq!(
             dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
-            KcallResult::Ok(OK)
+            KcallResult::VmSuspend
         );
-        let priv_ = priv_table.get(0).unwrap();
-        let slot_idx = priv_.mem.s_ipcf.expect("AddIpcWlFilter should allocate a slot");
-        let pool_slot = pool.get(slot_idx)
-            .expect("slot index must resolve");
-        assert_eq!(
-            pool_slot.filter_type,
-            crate::ipc_filter::IpcFilterType::Whitelist
-        );
+        assert_eq!(pool.allocated_count(), 0, "suspend must free the new slot");
     }
 
+    /// D-18: finalize 校验元素（EL_CHECK）+ 聚合 MATCH 标志 + 链尾追加。
+    /// 非法来源（isokendpt 失败）→ Err(EINVAL) 且槽位保留（由调用方释放）。
     #[test]
-    fn test_dispatch_statectl_repeated_add_replaces_slot() {
-        // C: add_ipc_filter semantics — replacing the filter frees the old
-        // slot, not stacks. Verify by calling twice and observing only one
-        // allocation in the local pool.
-        let (mut caller, mut priv_table) = build_caller_with_priv();
+    fn test_finalize_ipc_filter_appends_and_aggregates() {
         let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
-        let msg = build_statectl_msg(3, 0xdead_beef, 0);
+        // 目标端点：slot ProcNr(1) 占用（清除 SLOT_FREE）→ isokendpt 通过。
+        proc_table
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
+        let a_ep = proc_table.get(ProcNr(1)).unwrap().p_endpoint;
+
+        let idx = pool.allocate(crate::ipc_filter::IpcFilterType::Whitelist).unwrap();
+        if let Some(slot) = pool.get_mut(idx) {
+            slot.elements[0] = crate::ipc_filter::IpcFilterElement {
+                flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
+                m_source: a_ep.0,
+                m_type: 0,
+            };
+        }
+        assert!(finalize_ipc_filter(&proc_table, 0, &mut pool, idx, 1, &mut priv_table).is_ok());
+        // 链头已设置；MATCH 标志聚合进 slot.flags。
+        assert_eq!(priv_table.get(0).unwrap().mem.s_ipcf, Some(idx));
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
-            KcallResult::Ok(OK)
+            pool.get(idx).unwrap().flags,
+            crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE as i32
         );
-        let first_idx = priv_table.get(0).unwrap().mem.s_ipcf.unwrap();
-        // Second add must not increase the allocated count (old slot freed).
+
+        // 第二个 filter 追加到链尾（D-16 链式语义：链长 2）。
+        let idx2 = pool.allocate(crate::ipc_filter::IpcFilterType::Blacklist).unwrap();
+        assert!(finalize_ipc_filter(&proc_table, 0, &mut pool, idx2, 0, &mut priv_table).is_ok());
+        assert_eq!(pool.get(idx).unwrap().next, Some(idx2));
+        assert_eq!(priv_table.get(0).unwrap().mem.s_ipcf, Some(idx), "链头不变");
+    }
+
+    /// D-18 负例：MATCH_M_SOURCE 指向不可解析端点（isokendpt 失败）→
+    /// Err(EINVAL)，槽位由调用方释放。
+    #[test]
+    fn test_finalize_ipc_filter_invalid_source_rejected() {
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut pool = crate::ipc_filter::IpcFilterPool::new();
+        let idx = pool.allocate(crate::ipc_filter::IpcFilterType::Blacklist).unwrap();
+        if let Some(slot) = pool.get_mut(idx) {
+            slot.elements[0] = crate::ipc_filter::IpcFilterElement {
+                flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
+                m_source: 0x7FFF, // 无占用槽解析到它
+                m_type: 0,
+            };
+        }
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
-            KcallResult::Ok(OK)
+            finalize_ipc_filter(&proc_table, 0, &mut pool, idx, 1, &mut priv_table),
+            Err(EINVAL)
         );
-        let second_idx = priv_table.get(0).unwrap().mem.s_ipcf.unwrap();
+        // finalize 不释放——调用方（add_ipc_filter_arm）负责。
         assert_eq!(pool.allocated_count(), 1);
-        // Indices need not be identical (allocator may reuse the freed slot,
-        // but the *count* must remain 1).
-        let _ = (first_idx, second_idx);
     }
 
     #[test]

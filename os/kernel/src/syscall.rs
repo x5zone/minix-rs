@@ -690,7 +690,10 @@ pub(crate) fn dispatch_ipc(
     // block ends that borrow so the `sig_delay_done` protocol below can
     // touch `proc_table` again (the scheduler-aware `cause_signal`).
     let (outcome, pending_sig_delay) = {
-        let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy);
+        // D-16: wire the global IPC filter pool (BKL held — kernel_call
+        // dispatch contract; SAFETY per the raw accessor's doc).
+        let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy)
+            .with_filter_pool(crate::ipc_filter_pool());
         let outcome = engine.do_ipc(
             caller_nr,
             ipc_call,

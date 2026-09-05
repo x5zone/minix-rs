@@ -641,6 +641,11 @@ pub struct IpcEngine<'a> {
     priv_table: &'a mut PrivTable,
     /// User-space copy abstraction (arch-specific impl injected).
     user_copy: &'a dyn UserCopy,
+    /// IPC filter pool (D-16, optional — `None` = no filtering available
+    /// and every message is allowed, the pre-D-16 behavior; production
+    /// dispatch wires the global `IPC_FILTER_POOL` via
+    /// [`Self::with_filter_pool`]).
+    filter_pool: Option<&'a crate::ipc_filter::IpcFilterPool>,
     /// Sender whose message was just delivered while `MF_SIG_DELAY` was set.
     ///
     /// C: proc.c:1082-1083 — `if (sender->p_misc_flags & MF_SIG_DELAY)
@@ -661,7 +666,80 @@ impl<'a> IpcEngine<'a> {
         priv_table: &'a mut PrivTable,
         user_copy: &'a dyn UserCopy,
     ) -> Self {
-        Self { procs, priv_table, user_copy, sig_delay_sender: None }
+        Self { procs, priv_table, user_copy, filter_pool: None, sig_delay_sender: None }
+    }
+
+    /// Wire the IPC filter pool (D-16). Production dispatch passes the
+    /// global `IPC_FILTER_POOL`; without it no filtering is applied.
+    pub(crate) fn with_filter_pool(mut self, pool: &'a crate::ipc_filter::IpcFilterPool) -> Self {
+        self.filter_pool = Some(pool);
+        self
+    }
+
+    /// D-16 (C ipc.h:17-22 CANRECEIVE 的过滤半边): the receiver's filter
+    /// chain decides whether a message from `src_e` with `m_type` is
+    /// acceptable. C forces `m_source = src_e` (system.c:847) and walks
+    /// the chain — see `ipc_filter::chain_allowed`. No pool wired, no
+    /// chain head (`s_ipcf == None`), or filters not configured → allow.
+    fn can_receive(&self, receiver_idx: usize, src_e: Endpoint, m_type: i32) -> bool {
+        let Some(head) = self.procs[receiver_idx]
+            .priv_id
+            .and_then(|pid| self.priv_table.get(pid))
+            .and_then(|p| p.mem.s_ipcf)
+        else {
+            return true;
+        };
+        let Some(pool) = self.filter_pool else {
+            return true;
+        };
+        let procs = &*self.procs;
+        let priv_table = &*self.priv_table;
+        let mut class_of = move |ep: Endpoint| -> Option<crate::ipc_filter::EndpointClass> {
+            let idx = procs
+                .iter()
+                .position(|p| p.p_endpoint == ep && !p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE))?;
+            let p = &procs[idx];
+            // C: iskerneln（proc.h）——任务区槽号 <= 0。
+            if p.p_nr.0 <= 0 {
+                return Some(crate::ipc_filter::EndpointClass::Task);
+            }
+            let Some(pid) = p.priv_id else {
+                return Some(crate::ipc_filter::EndpointClass::Usr);
+            };
+            match priv_table.get(pid) {
+                Some(priv_) if priv_
+                    .flags
+                    .s_flags
+                    .contains(crate::capability::ProcessCapability::SYS_PROC) =>
+                {
+                    Some(crate::ipc_filter::EndpointClass::Sys)
+                }
+                _ => Some(crate::ipc_filter::EndpointClass::Usr),
+            }
+        };
+        crate::ipc_filter::chain_allowed(pool, Some(head), src_e, m_type, &mut class_of)
+    }
+
+    /// D-16: filter-aware `caller_q_find` — C proc.c:1053-1058. Walks
+    /// the caller queue; a sender whose cached message (`p_sendmsg`,
+    /// C: `m_src_p = &sender->p_sendmsg`) fails the receiver's filter
+    /// chain stays queued (retried on a later receive) and the scan
+    /// continues with the next queued sender.
+    fn caller_q_find_allowed(&self, caller_idx: usize, src_endpoint: Endpoint) -> Option<usize> {
+        let mut cur = self.procs[caller_idx].caller_q_head;
+        while let Some(nr) = cur {
+            let idx = crate::proc_table::nr_to_idx(nr)?;
+            let sender_ep = self.procs[idx].p_endpoint;
+            let endpoint_match =
+                src_endpoint == Endpoint::ANY || sender_ep == src_endpoint;
+            if endpoint_match
+                && self.can_receive(caller_idx, sender_ep, self.procs[idx].p_sendmsg.m_type)
+            {
+                return Some(idx);
+            }
+            cur = self.procs[idx].send_q_link;
+        }
+        None
     }
 
     /// Take the sender whose message was delivered while `MF_SIG_DELAY`
@@ -835,19 +913,26 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Phase 2: WILLRECEIVE check (path A — direct delivery).
+        // D-16: C 的 WILLRECEIVE 含 CANRECEIVE（ipc.h:19-22）——被过滤的
+        // 消息不投递，发送方落入 Path B（阻塞/排队，proc.c:895→925+），
+        // 即被过滤的发送者在队列中等待，与"未命中 receive"同形。
         if Self::is_willing_to_receive(&self.procs[dst_idx], caller_endpoint) {
             // C: `copy_msg_from_user` (user path) or direct copy (FROM_KERNEL).
-            if !flags.contains(SendFlags::FROM_KERNEL) {
+            let m = if !flags.contains(SendFlags::FROM_KERNEL) {
                 // User-origin send: route through UserCopy trait.
                 // C: proc.c:901-906.
                 let user_src = self.procs[caller_idx].p_delivermsg_vir;
                 match self.user_copy.copy_msg_from_user(user_src) {
-                    Ok(m) => self.procs[dst_idx].p_delivermsg = m,
+                    Ok(m) => m,
                     Err(_) => return IpcOutcome::Error(IpcError::Fault),
                 }
             } else {
-                self.procs[dst_idx].p_delivermsg = *msg;
-            }
+                *msg
+            };
+            if !self.can_receive(dst_idx, caller_endpoint, m.m_type) {
+                // Filtered → fall through to Path B (block/queue).
+            } else {
+            self.procs[dst_idx].p_delivermsg = m;
             self.procs[dst_idx].p_delivermsg.m_source = caller_endpoint;
             self.procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
             if flags.contains(SendFlags::FROM_KERNEL) {
@@ -874,6 +959,7 @@ impl<'a> IpcEngine<'a> {
             // C: `RTS_UNSET(dst, RTS_RECEIVING)` — wake up target.
             self.procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
             return IpcOutcome::Delivered;
+            }
         }
 
         // Path B: caller must block.
@@ -953,7 +1039,7 @@ impl<'a> IpcEngine<'a> {
         // Phase 1: pending notifications (skipped when MF_REPLY_PEND).
         // C: `has_pending` (NOTIFY) — proc.c:1000-1030.
         if !reply_pend
-            && let Some(notify_src) = self.take_pending_notify(caller_nr, src_endpoint) {
+            && let Some(notify_src) = self.pick_allowed_notify(caller_nr, src_endpoint) {
                 self.build_notify_message(
                     caller_idx,
                     NotifySource::from_caller_nr(notify_src),
@@ -982,7 +1068,11 @@ impl<'a> IpcEngine<'a> {
         // head/tail). The old VecDeque split find/remove existed to work
         // around queue-owns-subobject aliasing — with links living in the
         // sender slots, the borrows are ordinary sequential slot accesses.
-        if let Some(sender_idx) = caller_q_find(self.procs, caller_idx, src_endpoint) {
+        // D-16: filtered find — C proc.c:1053-1058 checks CANRECEIVE
+        // inside the queue walk (m_src_p = &sender->p_sendmsg, the
+        // kernel-cached blocked-send message); a filtered sender stays
+        // queued and the scan continues with the next one.
+        if let Some(sender_idx) = self.caller_q_find_allowed(caller_idx, src_endpoint) {
             caller_q_remove(self.procs, caller_idx, sender_idx);
             // Copy sender's cached message into caller's deliver buffer.
             let sender_msg = self.procs[sender_idx].p_sendmsg;
@@ -1046,7 +1136,7 @@ impl<'a> IpcEngine<'a> {
     /// The bit position in `s_notify_pending` is the sender's `priv_id`
     /// (NOT its `proc_nr`). We translate back to endpoint via the
     /// process table.
-    fn take_pending_notify(
+    fn pick_allowed_notify(
         &mut self,
         caller_nr: ProcNr,
         src_endpoint: Endpoint,
@@ -1069,6 +1159,16 @@ impl<'a> IpcEngine<'a> {
                 if let Some(sender_idx) = self.procs.iter().position(|p| p.priv_id == Some(bit as u16)) {
                     let sender_ep = self.procs[sender_idx].p_endpoint;
                     if src_endpoint == Endpoint::ANY || src_endpoint == sender_ep {
+                        // D-16: CANRECEIVE filter half — C ipc.h:19-22.
+                        // Notify messages are kernel-built with
+                        // m_type = NOTIFY_MESSAGE (com.h:90).
+                        if !self.can_receive(caller_idx, sender_ep, NOTIFY_MESSAGE) {
+                            // Filtered → skip this candidate (bit stays
+                            // pending), try the next one — C proc.c:1000-1030
+                            // iterates bits the same way.
+                            bit += 1;
+                            continue;
+                        }
                         // Clear the bit (C: caller_priv->s_notify_pending &= ~(1<<bit)).
                         if let Some(caller_priv) = self.priv_table.get_mut(caller_priv_id) {
                             caller_priv.signals.s_notify_pending &= !(1u64 << bit);
@@ -1179,6 +1279,12 @@ impl<'a> IpcEngine<'a> {
 
             // C: flags == 0 → skip (proc.c:1434).
             if flags == AMF_EMPTY {
+                continue;
+            }
+            // D-16: CANRECEIVE filter half — C try_one proc.c:1457
+            // (`if (!CANRECEIVE(...)) continue;`): a filtered entry stays
+            // not-done (retried later) and carries no result write-back.
+            if !self.can_receive(caller_idx, sender_ep_final, msg.m_type) {
                 continue;
             }
             // C: flags validation (proc.c:1436-1441). EINVAL entries
@@ -1469,7 +1575,12 @@ impl<'a> IpcEngine<'a> {
             // receive part of a SENDREC (MF_REPLY_PEND).
             let delivered = match dst_idx_opt {
                 Some(di) if r == OK => {
-                    let willing = Self::is_willing_to_receive(&self.procs[di], caller_endpoint);
+                    // D-16: WILLRECEIVE includes CANRECEIVE (C ipc.h:14-16)
+                    // — the entry's message is in hand, so the filter check
+                    // is free. Filtered → treated as not-willing → pending
+                    // path (no AMF_DONE, retried later).
+                    let willing = Self::is_willing_to_receive(&self.procs[di], caller_endpoint)
+                        && self.can_receive(di, caller_endpoint, msg.m_type);
                     let noreply_block = (flags & AMF_NOREPLY) != 0
                         && self.procs[di]
                             .p_misc_flags
@@ -2553,6 +2664,203 @@ mod tests {
             Ok((Endpoint(2), Message::default(), AMF_VALID))
         }
         fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
+    }
+
+    // ── D-16: receive 侧过滤集成测试 ─────────────────────────────────
+
+    /// D-16: whitelist filter（只允许 A）挂在接收方 R 上——A 的消息照常
+    /// 直投（Path A 放行），B 的消息被过滤 → B 阻塞入队且**留在队列中**
+    /// （C proc.c:1053-1058 的 CANRECEIVE 失败 = 扫描继续，非错误）。
+    #[test]
+    fn test_d16_whitelist_allows_listed_blocks_unlisted() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut pool = crate::ipc_filter::IpcFilterPool::new();
+        let (r_priv, a_priv, b_priv) = (
+            priv_table.assign_static(ProcNr(4)).unwrap(),
+            priv_table.assign_static(ProcNr(5)).unwrap(),
+            priv_table.assign_static(ProcNr(6)).unwrap(),
+        );
+        let (r_ep, a_ep, b_ep) = (Endpoint(0x30), Endpoint(0x31), Endpoint(0x32));
+        {
+            let procs = pt.procs_slice_mut();
+            for (nr, ep) in [(ProcNr(4), r_ep), (ProcNr(5), a_ep), (ProcNr(6), b_ep)] {
+                let p = procs.get_mut(nr_to_idx(nr).unwrap()).unwrap();
+                p.p_rts_flags = RtsFlags::new();
+                p.p_endpoint = ep;
+            }
+            procs[nr_to_idx(ProcNr(4)).unwrap()].priv_id = Some(r_priv);
+            procs[nr_to_idx(ProcNr(5)).unwrap()].priv_id = Some(a_priv);
+            procs[nr_to_idx(ProcNr(6)).unwrap()].priv_id = Some(b_priv);
+            let r = &mut procs[nr_to_idx(ProcNr(4)).unwrap()];
+            r.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            r.p_getfrom_e = Endpoint::ANY;
+        }
+        let wl = pool.allocate(crate::ipc_filter::IpcFilterType::Whitelist).unwrap();
+        {
+            let slot = pool.get_mut(wl).unwrap();
+            slot.num_elements = 1;
+            slot.elements[0] = crate::ipc_filter::IpcFilterElement {
+                flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
+                m_source: a_ep.0,
+                m_type: 0,
+            };
+        }
+        priv_table.get_mut(r_priv).unwrap().mem.s_ipcf = Some(wl);
+
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy)
+            .with_filter_pool(&pool);
+
+        let outcome = engine.send(ProcNr(5), r_ep, &Message::default(), SendFlags::empty());
+        assert!(outcome.is_delivered(), "whitelisted sender must deliver");
+        assert_eq!(engine.procs[nr_to_idx(ProcNr(4)).unwrap()].p_delivermsg.m_source, a_ep);
+        {
+            let r = &mut engine.procs[nr_to_idx(ProcNr(4)).unwrap()];
+            r.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+            r.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        }
+
+        let outcome = engine.send(ProcNr(6), r_ep, &Message::default(), SendFlags::empty());
+        assert!(outcome.is_blocked(), "filtered sender blocks like an unmatched send");
+        let outcome = engine.receive(ProcNr(4), Endpoint::ANY);
+        assert!(outcome.is_blocked());
+        assert!(!engine.procs[nr_to_idx(ProcNr(4)).unwrap()]
+            .p_misc_flags
+            .is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(engine.procs[nr_to_idx(ProcNr(6)).unwrap()]
+            .p_rts_flags
+            .is_set(RtsFlagsBits::SENDING));
+    }
+
+    /// D-16: 被过滤的 notify 保持 pending（位不清除）——C proc.c:1013 的
+    /// CANRECEIVE 逐位检查：不过滤的候选照常投递，过滤的候选留待 filter
+    /// 变化后的下一轮 receive。
+    #[test]
+    fn test_d16_notify_filtered_stays_pending() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut pool = crate::ipc_filter::IpcFilterPool::new();
+        let (r_priv, n_priv) = (
+            priv_table.assign_static(ProcNr(4)).unwrap(),
+            priv_table.assign_static(ProcNr(5)).unwrap(),
+        );
+        let (r_ep, n_ep) = (Endpoint(0x30), Endpoint(0x31));
+        {
+            let procs = pt.procs_slice_mut();
+            let r = procs.get_mut(nr_to_idx(ProcNr(4)).unwrap()).unwrap();
+            r.p_rts_flags = RtsFlags::new();
+            r.p_endpoint = r_ep;
+            r.priv_id = Some(r_priv);
+            r.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            r.p_getfrom_e = Endpoint::ANY;
+            let n = procs.get_mut(nr_to_idx(ProcNr(5)).unwrap()).unwrap();
+            n.p_rts_flags = RtsFlags::new();
+            n.p_endpoint = n_ep;
+            n.priv_id = Some(n_priv);
+        }
+        let wl = pool.allocate(crate::ipc_filter::IpcFilterType::Whitelist).unwrap();
+        {
+            let slot = pool.get_mut(wl).unwrap();
+            slot.num_elements = 1;
+            slot.elements[0] = crate::ipc_filter::IpcFilterElement {
+                flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
+                m_source: 0x99,
+                m_type: 0,
+            };
+        }
+        priv_table.get_mut(r_priv).unwrap().signals.s_notify_pending = 1u64 << n_priv;
+        priv_table.get_mut(r_priv).unwrap().mem.s_ipcf = Some(wl);
+
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy)
+            .with_filter_pool(&pool);
+
+        let outcome = engine.receive(ProcNr(4), Endpoint::ANY);
+        assert!(outcome.is_blocked(), "filtered notify → no delivery → block");
+        assert_eq!(
+            engine.priv_table.get(r_priv).unwrap().signals.s_notify_pending,
+            1u64 << n_priv
+        );
+        assert!(!engine.procs[nr_to_idx(ProcNr(4)).unwrap()]
+            .p_misc_flags
+            .is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// D-16: 被过滤的 SENDA 表项走 pending 路径——无结果写回（非
+    /// AMF_DONE，留待重试），目标置 s_asyn_pending 位（C proc.c:1280 的
+    /// WILLRECEIVE 含 CANRECEIVE；proc.c:1293-1297 的 pending 分支）。
+    #[test]
+    fn test_d16_senda_filtered_entry_stays_pending() {
+        use core::cell::Cell;
+        struct RecordingCopy {
+            delivered: Cell<bool>,
+        }
+        impl UserCopy for RecordingCopy {
+            fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
+            fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
+            fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+                Ok((Endpoint(0x30), Message::default(), AMF_VALID))
+            }
+            fn write_senda_result(&self, _t: VirBytes, _i: usize, _r: i32, _f: i32) -> Result<(), CopyError> {
+                self.delivered.set(true);
+                Ok(())
+            }
+        }
+
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut pool = crate::ipc_filter::IpcFilterPool::new();
+        let (r_priv, b_priv) = (
+            priv_table.assign_static(ProcNr(4)).unwrap(),
+            priv_table.assign_static(ProcNr(6)).unwrap(),
+        );
+        let (r_ep, b_ep) = (Endpoint(0x30), Endpoint(0x32));
+        {
+            let procs = pt.procs_slice_mut();
+            let r = procs.get_mut(nr_to_idx(ProcNr(4)).unwrap()).unwrap();
+            r.p_rts_flags = RtsFlags::new();
+            r.p_endpoint = r_ep;
+            r.priv_id = Some(r_priv);
+            r.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            r.p_getfrom_e = Endpoint::ANY;
+            let b = procs.get_mut(nr_to_idx(ProcNr(6)).unwrap()).unwrap();
+            b.p_rts_flags = RtsFlags::new();
+            b.p_endpoint = b_ep;
+            b.priv_id = Some(b_priv);
+        }
+        // L1 掩码层放行（B 的 s_ipc_to 有 R 位——may_asynsend_to 通过；
+        // senda 还要求 SYS_PROC），拒绝发生在 L2 filter 层：白名单只允许
+        // 来源 0x31（≠ B 的 0x32）。
+        priv_table.get_mut(b_priv).unwrap().flags.s_flags.insert(
+            crate::capability::ProcessCapability::SYS_PROC,
+        );
+        priv_table.get_mut(b_priv).unwrap().ipc.s_ipc_to =
+            crate::capability::IpcMask::from_bits(1u64 << r_priv);
+        let wl = pool.allocate(crate::ipc_filter::IpcFilterType::Whitelist).unwrap();
+        {
+            let slot = pool.get_mut(wl).unwrap();
+            slot.num_elements = 1;
+            slot.elements[0] = crate::ipc_filter::IpcFilterElement {
+                flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
+                m_source: 0x31,
+                m_type: 0,
+            };
+        }
+        priv_table.get_mut(r_priv).unwrap().mem.s_ipcf = Some(wl);
+
+        let copy = RecordingCopy { delivered: Cell::new(false) };
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &copy)
+            .with_filter_pool(&pool);
+
+        let outcome = engine.senda(ProcNr(6), VirBytes::new(0x1000), 1);
+        assert!(outcome.is_delivered());
+        assert_eq!(
+            engine.priv_table.get(r_priv).unwrap().signals.s_asyn_pending,
+            1u64 << b_priv
+        );
+        assert!(!copy.delivered.get(), "filtered entry must not be marked AMF_DONE");
     }
 
     /// D-17 fixture: the single table entry is addressed to SELF

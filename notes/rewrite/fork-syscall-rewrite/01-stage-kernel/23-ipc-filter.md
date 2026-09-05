@@ -258,7 +258,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 | `may_send_to` | `get_sys_bit(s_ipc_to, nr_to_id(nr))` 查位图 | `caller_priv.may_send_to(target_sys_id)` 委派 `s_ipc_to` u64 位测试 | 一致 | — | priv.h:86 | kpriv.rs:387 | D3 u64 统一 |
 | `may_asynsend_to` | `may_send_to(rp,nr) \|\| rp->p_nr == nr` 允许 self-send | ✅ 已实现（ipc.rs:1456 `\|\| p_nr == caller_nr`；D-17，2026-09-06 补不对称测试 ×2） | 对齐 | P1 | priv.h:87 | — | 异步 IPC 允许 self-send |
 | `GET_BIT(s_k_call_mask, call_nr)` | 位图查 call_nr 是否允许 | `kcall_filter_check(caller_priv, call_nr)` u64 位测试 | 一致 | — | system.c:111 | ipc_filter.rs:72-80 | D3 u64 统一 |
-| `allow_ipc_filtered_msg` | 遍历 s_ipcf 过滤链，按 m_source/m_type 匹配，blacklist 默认 allow | 未实现 | 覆盖缺口 | P1 | system.c:803-874 | — | 细粒度过滤 |
+| `allow_ipc_filtered_msg` | 遍历 s_ipcf 过滤链，按 m_source/m_type 匹配，blacklist 默认 allow | ✅ 已实现（D-16，2026-09-06：`ipc_filter::chain_allowed` 链式遍历 + receive/send/senda 插桩） | 对齐 | P1 | system.c:803-874 | — | 细粒度过滤 |
 | `IPCF_POOL_ALLOCATE_SLOT` | 扫描池找 `type==IPCF_NONE` 槽位 | `IpcFilterPool::allocate` 找 `None` 槽位 | 一致（语义等价） | — | ipc_filter.h:59-70 | ipc_filter.rs:222-230 | D5 Option 替代哨兵 |
 
 ---
@@ -454,14 +454,14 @@ if call_denied {
 
 `KcallResult::CallDenied`（syscall.rs:209）对应 C `ECALLDENIED`（errno.h:206）。`priv_id.and_then(...).is_none_or(...)` 链处理三种情况：无 priv_id（deny）、priv_id 但无 priv 表项（deny）、有 priv 表项（查 mask）。已实现，见 `os/kernel/src/syscall.rs`。
 
-### 4.5 未实现的 C 函数（诚实标注缺口）
+### 4.5 未实现的 C 函数（诚实标注缺口；D-16/D-18 已于 2026-09-06 落地，见下）
 
 | C 函数 | C 位置 | Rust 状态 | 依赖 |
 |--------|--------|----------|------|
-| `allow_ipc_filtered_msg` | system.c:803-874 | 未实现 | 12-ipc-core RECEIVE 路径实现后才有消费方 |
+| `allow_ipc_filtered_msg` | system.c:803-874 | ✅ 已实现（D-16，2026-09-06：`ipc_filter::chain_allowed` + receive Phase 1/2/3 与 send/senda 插桩） | — |
 | `allow_ipc_filtered_memreq` | system.c:879+ | ✅ 已实现（2026-08-14 核实） | 语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，do_vmctl.c:37-79 遍历时按过滤器跳过请求）——C 在 MEMREQ_GET 遍历时过滤，Rust 在 `dequeue_filtered` 消费 |
 | `may_asynsend_to` 不对称 | priv.h:87 | ✅ 已实现（2026-09-06，D-17：ipc.rs:1456 self 例外 + 不对称测试 ×2） | — |
-| `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | 未实现 | `allow_ipc_filtered_msg` 的子逻辑 |
+| `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | ✅ 已实现（D-18，2026-09-06：`el_match`/`el_check` + ANY_USR/SYS/TSK 类别匹配） | — |
 | `IPC_STATUS_*` | ipc.h:25-48 | ✅ 已实现 (P9-2) | `CpuContextArch::or_ipc_status_reg` + `proc.rs:1654-1679` + `ipc.rs` 4 路径 wire |
 
 ---
@@ -497,15 +497,15 @@ if call_denied {
 
 | 缺口 | C 位置 | Rust 状态 | 优先级 | 依赖 |
 |------|--------|----------|--------|------|
-| `allow_ipc_filtered_msg` | system.c:803-874 | 未实现 | P1 | 12-ipc-core RECEIVE 路径（当前 skeleton） |
+| `allow_ipc_filtered_msg` | system.c:803-874 | ✅ 已实现（D-16，2026-09-06） | — | RECEIVE 路径 |
 | `may_asynsend_to` 不对称 | priv.h:87 | ✅ 已实现（D-17，2026-09-06） | — | 异步 IPC 路径完整接入 |
 | `IPC_STATUS_*` 机制 | ipc.h:25-48 | ✅ 已实现 (P9-2) | — | — |
-| `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | 未实现 | P2 | `allow_ipc_filtered_msg` 子逻辑 |
+| `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | ✅ 已实现（D-18，2026-09-06） | — | `allow_ipc_filtered_msg` 子逻辑 |
 | `allow_ipc_filtered_memreq` | system.c:879+ | 未实现 | P2 | VM 页错误请求过滤 |
 
 **缺口影响评估**：
 - L1 过滤（send/notify/asyncsend/kcall）**已完整实现**，IPC 安全的基础强制检查可用。
-- L2 过滤链（receive 路径偏好过滤）**未实现**——当前 `s_ipcf` 字段存在但无消费方。影响：接收方无法按 m_source/m_type 细粒度过滤，所有未被 L1 拦截的消息都会被接收。这是功能缺失而非安全漏洞（L1 已保证基本权限），但限制了一些靠 L2 实现的用例（如 VM 只接收特定类型的内存请求）。
+- ~~L2 过滤链（receive 路径偏好过滤）**未实现**~~ → **✅ 已实现（D-16/D-18，2026-09-06）**：`ipc_filter::chain_allowed`（黑白名单链式遍历，顺序即优先级）+ `el_match`/`el_check`（ANY_USR/SYS/TSK 类别匹配）+ receive Phase 1（notify 逐位过滤，位保留）、Phase 2（deliver_async 表项跳过）、Phase 3（caller_q 过滤感知查找）、send Path A 与 senda 直投插桩；设置端 ADD_IPC_{BL,WL} 补 EL_CHECK 校验、MATCH 标志聚合与**链尾追加**语义（修复旧"替换非追加"偏离），CLEAR_IPC_FILTERS 释放整链。被过滤的消息 = 跳过/延迟（pending 位保留、表项不标 AMF_DONE），不是错误——与 C proc.c:1457 try_one 语义一致。
 
 ---
 

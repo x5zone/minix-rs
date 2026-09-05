@@ -757,13 +757,17 @@ impl ProcessTable {
         // `m_source` is set to the depleted process's endpoint inside
         // `IpcEngine::send` (it overwrites `m_source` with `caller_endpoint`).
         let _ = scheduler_nr; // resolved to scheduler_ep above; nr is the caller
+        // D-16: wire the global IPC filter pool (BKL held by
+        // process_misc_flags contract — SAFETY per raw accessor doc).
         let mut engine = IpcEngine::new(
             self.procs_slice_mut(),
             // SAFETY: BKL held by the caller (clock tick path). The global
             // PRIV_TABLE is statically initialized and BKL-protected.
             unsafe { crate::priv_table() },
             &KernelUserCopy,
-        );
+        )
+        // D-16: wire the global IPC filter pool (BKL held — same proof).
+        .with_filter_pool(crate::ipc_filter_pool());
         let outcome = engine.send(nr, scheduler_ep, &msg, SendFlags::FROM_KERNEL);
 
         // C: `if (err) panic("WARNING: Scheduling: mini_send returned %d\n", err)`.
