@@ -290,6 +290,14 @@ impl TrapMask {
         (self.0 & other.0) == other.0
     }
 
+    /// True if this mask admits any IPC trap beyond RECEIVE — C:
+    /// `s_trap_mask & ~(1 << RECEIVE)` (system.c:326-328). A RECEIVE-only
+    /// endpoint (CLOCK/SYSTEM with `CSK_T`) can never reply or initiate a
+    /// send, so `set_sendto_bit` skips granting the reciprocal bit to it.
+    pub const fn allows_more_than_receive(self) -> bool {
+        (self.0 & !Self::RECEIVE.0) != 0
+    }
+
     /// Decode from the wire `u16` (C `short s_trap_mask`, priv.h:34).
     ///
     /// C sign-extends the `short` to `int` at every read (proc.c:552), so
@@ -325,6 +333,34 @@ impl IpcMask {
         self.0
     }
 
+    /// Grant bit `idx` — C: `set_sys_bit(map, id)` (`kernel/const.h:24`).
+    ///
+    /// Indices at or above 64 are ignored: `s_ipc_to` covers exactly the
+    /// `NR_SYS_PROCS` (≤ 64) privilege ids, and an out-of-range grant is a
+    /// caller bug the kernel must not mask into silent state corruption.
+    pub const fn set_bit(mut self, idx: usize) -> Self {
+        if idx < 64 {
+            self.0 |= 1u64 << idx;
+        }
+        self
+    }
+
+    /// Revoke bit `idx` — C: `unset_sys_bit(map, id)` (`kernel/const.h:26`).
+    pub const fn unset_bit(mut self, idx: usize) -> Self {
+        if idx < 64 {
+            self.0 &= !(1u64 << idx);
+        }
+        self
+    }
+
+    /// Test bit `idx` — C: `get_sys_bit(map, id)` (`kernel/const.h:20`).
+    pub const fn has_bit(self, idx: usize) -> bool {
+        if idx >= 64 {
+            return false;
+        }
+        (self.0 & (1u64 << idx)) != 0
+    }
+
     /// Bitwise union — C accumulates `s_ipc_to` with `set_sys_bit`, e.g.
     /// do_update.c:107-112 copies src's target mask into dst's with
     /// `dst |= src` semantics.
@@ -333,10 +369,7 @@ impl IpcMask {
     }
 
     pub const fn may_send_to(self, sys_id: u8) -> bool {
-        if sys_id >= 64 {
-            return false;
-        }
-        (self.0 & (1u64 << sys_id)) != 0
+        self.has_bit(sys_id as usize)
     }
 }
 

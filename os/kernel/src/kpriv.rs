@@ -125,7 +125,7 @@ impl PrivIdentity {
 /// Init-stage flags (was C's `s_init_flags`).
 ///
 /// These flags are set during boot (`init_priv`) and gradually cleared
-/// as init completes (e.g., `DSRV_I` cleared after `update_from_request`).
+/// as init completes (e.g., `DSRV_I` cleared after `update_priv`).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PrivInit {
     pub(crate) s_init_flags: i32,
@@ -579,12 +579,19 @@ impl KPriv {
         Ok(())
     }
 
-    /// Update privilege fields from a user-supplied request struct.
-    /// C: `update_priv()` — do_privctl.c:280-368.
+    /// Update privilege fields from a user-supplied request struct — the
+    /// field-copy half of C `update_priv()` (do_privctl.c:284-342).
     ///
     /// Copies flags, signal managers, IRQ/I-O/memory tables (gated by
-    /// CHECK_IRQ / CHECK_IO_PORT / CHECK_MEM), trap mask, IPC target
-    /// mask, and kernel-call mask from `req` into `self`.
+    /// CHECK_IRQ / CHECK_IO_PORT / CHECK_MEM), trap mask, and kernel-call
+    /// mask from `req` into `self`.
+    ///
+    /// The IPC target mask (`req.s_ipc_to`) is deliberately NOT copied
+    /// here: C routes it through `fill_sendto_mask` (do_privctl.c:353),
+    /// which is a whole-table operation — it grants/revokes the reciprocal
+    /// bits on *other* privilege slots and applies the association and
+    /// self guards. A single-slot method cannot honor that, so
+    /// [`PrivTable::update_priv`] composes this method with the mask fill.
     ///
     /// This is the **wire boundary**: `req` carries the Minix3 raw widths
     /// (`s_flags: u16`, `s_trap_mask: u16`, `s_ipc_to: u64`,
@@ -593,8 +600,12 @@ impl KPriv {
     /// sign-extended exactly like C's `short` → `int` promotion at
     /// proc.c:552.
     ///
-    /// Returns `Err(())` (→ EINVAL in C) if any count is out of range.
-    pub fn update_from_request(&mut self, req: &PrivUpdateRequest) -> Result<(), ()> {
+    /// Returns `Err(PrivUpdateError)` (→ EINVAL in C) if any count is out
+    /// of range.
+    pub(crate) fn apply_fields_from_request(
+        &mut self,
+        req: &PrivUpdateRequest,
+    ) -> Result<(), PrivUpdateError> {
         // C: do_privctl.c:287-290 — copy flags + signal managers.
         let flags = ProcessCapability::from_wire(req.s_flags);
         self.flags.s_flags = flags;
@@ -605,7 +616,7 @@ impl KPriv {
         // C: do_privctl.c:293-305 — copy IRQs (gated by CHECK_IRQ).
         if flags.contains(ProcessCapability::CHECK_IRQ) {
             if req.s_nr_irq < 0 || req.s_nr_irq as usize > NR_IRQ {
-                return Err(());
+                return Err(PrivUpdateError::BadIrqCount);
             }
             self.io.s_nr_irq = req.s_nr_irq;
             for i in 0..req.s_nr_irq as usize {
@@ -616,7 +627,7 @@ impl KPriv {
         // C: do_privctl.c:308-322 — copy I/O ranges (gated by CHECK_IO_PORT).
         if flags.contains(ProcessCapability::CHECK_IO_PORT) {
             if req.s_nr_io_range < 0 || req.s_nr_io_range as usize > NR_IO_RANGE {
-                return Err(());
+                return Err(PrivUpdateError::BadIoRange);
             }
             self.io.s_nr_io_range = req.s_nr_io_range;
             for i in 0..req.s_nr_io_range as usize {
@@ -627,7 +638,7 @@ impl KPriv {
         // C: do_privctl.c:325-339 — copy memory ranges (gated by CHECK_MEM).
         if flags.contains(ProcessCapability::CHECK_MEM) {
             if req.s_nr_mem_range < 0 || req.s_nr_mem_range as usize > NR_MEM_RANGE {
-                return Err(());
+                return Err(PrivUpdateError::BadMemRange);
             }
             self.mem.s_nr_mem_range = req.s_nr_mem_range;
             for i in 0..req.s_nr_mem_range as usize {
@@ -640,8 +651,11 @@ impl KPriv {
         self.ipc.s_trap_mask = TrapMask::from_wire(req.s_trap_mask);
 
         // C: do_privctl.c:353 — fill_sendto_mask(rp, &priv->s_ipc_to).
-        // In Rust, s_ipc_to is a direct u64 bitmap (no separate fill step).
-        self.ipc.s_ipc_to = IpcMask::from_bits(req.s_ipc_to);
+        // The IPC target mask is NOT a single-slot field copy: the fill
+        // touches other privilege slots (reciprocal bits) and applies the
+        // association/self guards, so it lives in
+        // `PrivTable::update_priv`, which composes this method with
+        // `PrivTable::fill_sendto_mask`.
 
         // C: do_privctl.c:364-365 — copy kernel call mask.
         self.ipc.s_k_call_mask = KCallMask::from_wire(req.s_k_call_mask);
@@ -688,6 +702,28 @@ impl KPriv {
     }
 }
 
+/// Failure modes of [`PrivTable::update_priv`] (C `update_priv`,
+/// do_privctl.c:284-368).
+///
+/// Every variant maps to `EINVAL` at the kernel-call boundary (C returns
+/// EINVAL from `update_priv`); the enum exists to name each failure at
+/// the source instead of shipping an anonymous `Result<(), ()>` — the
+/// same direction the codebase already took with `ProfileClockError` and
+/// `WriteUserRegError` (todo D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivUpdateError {
+    /// CHECK_IRQ set but `s_nr_irq` out of range — C: do_privctl.c:293-305.
+    BadIrqCount,
+    /// CHECK_IO_PORT set but `s_nr_io_range` out of range — C: do_privctl.c:308-322.
+    BadIoRange,
+    /// CHECK_MEM set but `s_nr_mem_range` out of range — C: do_privctl.c:325-339.
+    BadMemRange,
+    /// `rp` does not name a valid privilege slot. Defensive: the dispatch
+    /// layer pre-validates the id, so C — which dereferences `priv(rp)`
+    /// unchecked — can only reach this state through a kernel bug.
+    NoSuchSlot,
+}
+
 /// User-space-visible privilege update request.
 ///
 /// This is the Rust equivalent of C's `struct priv` as passed to
@@ -727,7 +763,7 @@ pub struct PrivUpdateRequest {
     /// C: `s_flags` — privilege flags (PREEMPTIBLE, BILLABLE, SYS_PROC, etc.).
     /// Raw wire width (`u16`, bit layout `const.h:143-154`); the kernel
     /// decodes it to [`crate::capability::ProcessCapability`] in
-    /// [`KPriv::update_from_request`].
+    /// [`KPriv::apply_fields_from_request`].
     pub s_flags: u16,
     // ── PrivInit ────────────────────────────────────────────────────
     /// C: `s_init_flags` — initialization flags.
@@ -861,6 +897,151 @@ impl PrivTable {
             let (left, right) = self.privs.split_at_mut(ia);
             core::mem::swap(&mut left[ib], &mut right[0]);
         }
+    }
+
+    /// Simultaneous `&mut` access to two distinct in-range slots.
+    ///
+    /// Same `split_at_mut` pattern as [`Self::swap_slots`] — the borrow
+    /// checker cannot prove two indices of one array non-aliasing without
+    /// the split. Out-of-range ids or `a == b` degrade to `(None, None)`:
+    /// callers validate their inputs, so this only fires on a kernel bug,
+    /// and a no-op is the safe degradation (never a masked corruption).
+    fn get2_mut(&mut self, a: PrivId, b: PrivId) -> (Option<&mut KPriv>, Option<&mut KPriv>) {
+        let ia = a as usize;
+        let ib = b as usize;
+        debug_assert!(
+            ia < NR_SYS_PROCS && ib < NR_SYS_PROCS && ia != ib,
+            "get2_mut requires two distinct in-range slots"
+        );
+        if ia >= NR_SYS_PROCS || ib >= NR_SYS_PROCS || ia == ib {
+            return (None, None);
+        }
+        if ia < ib {
+            let (left, right) = self.privs.split_at_mut(ib);
+            (Some(&mut left[ia]), Some(&mut right[0]))
+        } else {
+            let (left, right) = self.privs.split_at_mut(ia);
+            (Some(&mut right[0]), Some(&mut left[ib]))
+        }
+    }
+
+    /// Grant `rp` permission to send IPC to the privilege slot `id`,
+    /// maintaining the mask symmetry the C model relies on.
+    /// C: `set_sendto_bit()` — system.c:307-329.
+    ///
+    /// Two guards make a requested grant degrade into an explicit revoke
+    /// of `rp`'s own bit (system.c:316-319):
+    /// * `id` has no associated process (`id_to_nr(id) == NONE`) — setting
+    ///   the bit would pre-authorize sending to whatever process later
+    ///   occupies that slot, so an unassociated id is never grantable;
+    /// * `id` is `rp` itself — the self bit stays clear.
+    ///
+    /// After granting (system.c:321), the target receives the reciprocal
+    /// bit so the pair can talk in both directions — unless the target's
+    /// trap mask admits no call beyond RECEIVE (a RECEIVE-only endpoint
+    /// such as CLOCK with `CSK_T` can never reply, so C skips it —
+    /// system.c:327-328).
+    pub fn set_sendto_bit(&mut self, rp: PrivId, id: PrivId) {
+        let rp_idx = rp as usize;
+        let id_idx = id as usize;
+        if rp_idx >= NR_SYS_PROCS {
+            return;
+        }
+        // C: system.c:316-319 — unassociated target or self → unset own bit.
+        let unassociated = self
+            .get(id)
+            .map(|p| p.identity.s_proc_nr.is_none())
+            .unwrap_or(true);
+        if unassociated || rp == id {
+            if let Some(p) = self.privs.get_mut(rp_idx) {
+                p.ipc.s_ipc_to = p.ipc.s_ipc_to.unset_bit(id_idx);
+            }
+            return;
+        }
+        // C: system.c:321-328 — grant own bit, then the reciprocal bit
+        // unless the target is RECEIVE-only. Read the target's trap mask
+        // before taking the two mutable borrows.
+        let target_can_reply = self
+            .get(id)
+            .map(|p| p.ipc.s_trap_mask.allows_more_than_receive())
+            .unwrap_or(false);
+        let (rp_slot, id_slot) = self.get2_mut(rp, id);
+        if let Some(p) = rp_slot {
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(id_idx);
+        }
+        if target_can_reply {
+            if let Some(p) = id_slot {
+                p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(rp_idx);
+            }
+        }
+    }
+
+    /// Revoke `rp`'s permission to send to privilege slot `id` and the
+    /// reciprocal permission, keeping the pair symmetric.
+    /// C: `unset_sendto_bit()` — system.c:335-344.
+    pub fn unset_sendto_bit(&mut self, rp: PrivId, id: PrivId) {
+        let rp_idx = rp as usize;
+        let id_idx = id as usize;
+        if rp_idx >= NR_SYS_PROCS {
+            return;
+        }
+        if rp == id {
+            // C executes both unsets against the same slot; one clear
+            // captures the net effect.
+            if let Some(p) = self.privs.get_mut(rp_idx) {
+                p.ipc.s_ipc_to = p.ipc.s_ipc_to.unset_bit(id_idx);
+            }
+            return;
+        }
+        let (rp_slot, id_slot) = self.get2_mut(rp, id);
+        if let Some(p) = rp_slot {
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.unset_bit(id_idx);
+        }
+        if let Some(p) = id_slot {
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.unset_bit(rp_idx);
+        }
+    }
+
+    /// Recompute `rp`'s whole IPC target mask from `map`, bit by bit.
+    /// C: `fill_sendto_mask()` — system.c:349-358.
+    ///
+    /// Every requested bit is routed through [`Self::set_sendto_bit`] or
+    /// [`Self::unset_sendto_bit`], so the association and self guards
+    /// apply and — the security-relevant part — a bit *cleared* in `map`
+    /// also revokes the target's reciprocal bit. Assigning `map` straight
+    /// onto `s_ipc_to` would leave stale one-directional grants behind and
+    /// break the symmetric-mask invariant C maintains across fills.
+    pub fn fill_sendto_mask(&mut self, rp: PrivId, map: IpcMask) {
+        for idx in 0..NR_SYS_PROCS {
+            if map.has_bit(idx) {
+                self.set_sendto_bit(rp, idx as PrivId);
+            } else {
+                self.unset_sendto_bit(rp, idx as PrivId);
+            }
+        }
+    }
+
+    /// Update a privilege structure from a user-supplied request — the
+    /// table-level form of C `update_priv()` (do_privctl.c:280-368).
+    ///
+    /// Field copies land on the target slot
+    /// ([`KPriv::apply_fields_from_request`]), then the requested target
+    /// mask goes through the whole-table fill (C: do_privctl.c:353) — the
+    /// two halves are composed here so a caller cannot apply the fields
+    /// and forget the symmetric mask maintenance. A field-copy error
+    /// (`Err`, → EINVAL) aborts before any mask change, matching C's
+    /// early return.
+    pub fn update_priv(
+        &mut self,
+        rp: PrivId,
+        req: &PrivUpdateRequest,
+    ) -> Result<(), PrivUpdateError> {
+        {
+            let p = self.get_mut(rp).ok_or(PrivUpdateError::NoSuchSlot)?;
+            p.apply_fields_from_request(req)?;
+        }
+        self.fill_sendto_mask(rp, IpcMask::from_bits(req.s_ipc_to));
+        Ok(())
     }
 
     pub fn init(&mut self) {
@@ -1418,15 +1599,19 @@ mod tests {
         }
     }
 
-    /// Wire boundary of `update_from_request` (C: do_privctl.c:280-368):
-    /// the request carries Minix3 raw widths; the kernel decodes via
+    /// Wire boundary of `update_priv` (C: do_privctl.c:280-368): the
+    /// request carries Minix3 raw widths; the kernel decodes via
     /// `from_wire`. Covers the C bit positions (const.h:143-154), the
     /// `short` → `int` sign extension of `s_trap_mask` (proc.c:552), and
-    /// dropping of undefined wire bits.
+    /// the target mask going through `fill_sendto_mask` instead of a raw
+    /// copy.
     #[test]
-    fn test_update_from_request_wire_decode() {
+    fn test_update_priv_wire_decode() {
         let mut table = crate::test_helpers::test_priv_table();
         let id = table.assign_static(ProcNr(1)).unwrap();
+        // A second bound slot so the requested target bit survives the
+        // association guard inside fill_sendto_mask.
+        let other = table.assign_static(ProcNr(2)).unwrap();
 
         let mut req = PrivUpdateRequest::new();
         // C wire bits: SYS_PROC = 0x010, CHECK_IRQ = 0x040 (const.h:147,149).
@@ -1435,12 +1620,12 @@ mod tests {
         req.s_irq_tab[0] = 5;
         // SRV_T = ~0 as a C short (0xFFFF) — sign-extends to the full mask.
         req.s_trap_mask = 0xFFFF;
-        req.s_ipc_to = 1 << 3;
+        req.s_ipc_to = 1u64 << other;
         req.s_k_call_mask = [0xFF, 0];
 
+        assert!(table.update_priv(id, &req).is_ok());
         {
-            let p = table.get_mut(id).unwrap();
-            assert!(p.update_from_request(&req).is_ok());
+            let p = table.get(id).unwrap();
             assert!(p.flags.s_flags.contains(ProcessCapability::SYS_PROC));
             assert!(p.flags.s_flags.contains(ProcessCapability::CHECK_IRQ));
             assert_eq!(p.io.s_nr_irq, 1, "CHECK_IRQ gate must copy the IRQ table");
@@ -1448,7 +1633,10 @@ mod tests {
                 "0xFFFF must sign-extend to the all-ones mask (C int promotion)");
             assert!(p.ipc.s_trap_mask.contains(TrapMask::from_bits(1 << 16)),
                 "SENDA (call 16) must pass after sign extension");
-            assert_eq!(p.ipc.s_ipc_to, IpcMask::from_bits(1 << 3));
+            // The requested bit survives the fill (target bound, not self);
+            // a raw copy would be indistinguishable here, but a request for
+            // an unassociated slot would not (see set_sendto_bit tests).
+            assert_eq!(p.ipc.s_ipc_to, IpcMask::from_bits(1u64 << other));
             assert_eq!(p.ipc.s_k_call_mask, KCallMask::from_wire([0xFF, 0]));
         }
 
@@ -1457,8 +1645,155 @@ mod tests {
         // (C keeps them in s_flags but nothing reads them).
         let mut req2 = PrivUpdateRequest::new();
         req2.s_flags = 0x7000;
-        let p = table.get_mut(id).unwrap();
-        assert!(p.update_from_request(&req2).is_ok());
+        assert!(table.update_priv(id, &req2).is_ok());
+        let p = table.get(id).unwrap();
         assert_eq!(p.flags.s_flags, ProcessCapability::empty());
+    }
+
+    /// A send-capable target gets the grant AND the reciprocal bit so the
+    /// pair can talk in both directions. C: system.c:321-328.
+    #[test]
+    fn test_set_sendto_bit_grants_pair_with_reply_capable_target() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let b = table.assign_static(ProcNr(2)).unwrap();
+        // Make the target reply-capable (C: s_trap_mask & ~(1 << RECEIVE)).
+        table.get_mut(b).unwrap().ipc.s_trap_mask = TrapMask::ALL;
+
+        table.set_sendto_bit(a, b);
+
+        assert!(table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8),
+            "grantor must hold the target's bit");
+        assert!(table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "reply-capable target must get the reciprocal bit");
+    }
+
+    /// A RECEIVE-only target (CLOCK/SYSTEM with `CSK_T = 1 << RECEIVE`)
+    /// holds the granted bit but gets no reciprocal bit: it cannot reply
+    /// or initiate a send. C: system.c:327-328.
+    #[test]
+    fn test_set_sendto_bit_receive_only_target_gets_no_reciprocal() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let clock_like = table.assign_static(ProcNr(2)).unwrap();
+        table.get_mut(clock_like).unwrap().ipc.s_trap_mask = TrapMask::RECEIVE;
+
+        table.set_sendto_bit(a, clock_like);
+
+        assert!(table.get(a).unwrap().ipc.s_ipc_to.may_send_to(clock_like as u8),
+            "grant itself must still land");
+        assert!(!table.get(clock_like).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "RECEIVE-only target must NOT get the reciprocal bit");
+    }
+
+    /// Both C guards degrade a requested grant into an unset of the
+    /// grantor's own bit (system.c:316-319): a self grant never lands, and
+    /// an unassociated slot is never grantable — not even when the grantor
+    /// already holds a stale bit for it.
+    #[test]
+    fn test_set_sendto_bit_self_and_unassociated_requests_unset_own_bit() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        // Slot for ProcNr(2) is left UNASSOCIATED (s_proc_nr = None) while
+        // staying in range — the guard under test is association, not range.
+        let unbound = (NR_TASKS + 2) as PrivId;
+
+        // Pre-seed stale bits so the test proves the guard *revokes*, not
+        // merely "does not grant".
+        table.get_mut(a).unwrap().ipc.s_ipc_to =
+            IpcMask::from_bits((1u64 << a) | (1u64 << unbound));
+
+        table.set_sendto_bit(a, a);
+        table.set_sendto_bit(a, unbound);
+
+        let mask = table.get(a).unwrap().ipc.s_ipc_to;
+        assert!(!mask.may_send_to(a as u8), "self bit must stay clear");
+        assert!(!mask.may_send_to(unbound as u8),
+            "unassociated slot must be revoked, not granted");
+    }
+
+    /// Revocation is symmetric: clearing A → B also clears B → A.
+    /// C: unset_sendto_bit — system.c:335-344.
+    #[test]
+    fn test_unset_sendto_bit_clears_both_directions() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let b = table.assign_static(ProcNr(2)).unwrap();
+        table.get_mut(a).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << b);
+        table.get_mut(b).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << a);
+
+        table.unset_sendto_bit(a, b);
+
+        assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8));
+        assert!(!table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "reciprocal bit must go too");
+    }
+
+    /// The security core of `fill_sendto_mask`: a bit cleared in `map`
+    /// revokes the target's reciprocal bit as well. A plain assignment of
+    /// `map` onto `s_ipc_to` would leave B → A behind — a one-directional
+    /// grant C's model never produces. C: system.c:349-358.
+    #[test]
+    fn test_fill_sendto_mask_revocation_clears_reciprocal_bit() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let b = table.assign_static(ProcNr(2)).unwrap();
+        // Simulate an earlier grant: A → B and the reciprocal B → A.
+        table.get_mut(a).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << b);
+        table.get_mut(b).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << a);
+
+        // Refill A's mask WITHOUT B's bit (RS revokes the pair).
+        table.fill_sendto_mask(a, IpcMask::NONE);
+
+        assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8));
+        assert!(!table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "stale reciprocal grant must be repaired by the fill");
+    }
+
+    /// C micro-behavior worth pinning: when `map` HAS a bit for an
+    /// unassociated slot, `set_sendto_bit` returns after unsetting the
+    /// grantor's own bit — the target's reciprocal bit is left untouched
+    /// (system.c:316-319 early return, versus unset_sendto_bit which
+    /// clears both sides).
+    #[test]
+    fn test_fill_sendto_mask_guard_case_keeps_target_bit() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let unbound = (NR_TASKS + 2) as PrivId;
+        // Pre-seed the target's bit toward A (it could only have come from
+        // an earlier configuration of that slot).
+        table.get_mut(unbound).unwrap().ipc.s_ipc_to = IpcMask::from_bits(1u64 << a);
+
+        // Map requests a grant for the unassociated slot.
+        table.fill_sendto_mask(a, IpcMask::from_bits(1u64 << unbound));
+
+        assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(unbound as u8),
+            "grantor's own bit must be unset by the guard");
+        assert_eq!(
+            table.get(unbound).unwrap().ipc.s_ipc_to,
+            IpcMask::from_bits(1u64 << a),
+            "guard early-return leaves the target's bit untouched"
+        );
+    }
+
+    /// A count-validation failure aborts `update_priv` before the mask
+    /// fill runs — C returns EINVAL from update_priv before reaching
+    /// fill_sendto_mask (do_privctl.c:296-298 vs :353).
+    #[test]
+    fn test_update_priv_bad_count_fails_without_mask_fill() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let a = table.assign_static(ProcNr(1)).unwrap();
+        let b = table.assign_static(ProcNr(2)).unwrap();
+        table.get_mut(b).unwrap().ipc.s_trap_mask = TrapMask::ALL;
+
+        let mut req = PrivUpdateRequest::new();
+        req.s_flags = ProcessCapability::CHECK_IRQ.bits() as u16;
+        req.s_nr_irq = i32::MAX; // out of range → EINVAL
+        req.s_ipc_to = 1u64 << b;
+
+        assert_eq!(table.update_priv(a, &req), Err(PrivUpdateError::BadIrqCount),
+            "bad IRQ count → named error");
+        assert!(table.get(a).unwrap().ipc.s_ipc_to == IpcMask::NONE,
+            "mask fill must not run after a failed field copy");
     }
 }

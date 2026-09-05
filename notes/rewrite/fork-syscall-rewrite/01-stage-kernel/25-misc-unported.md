@@ -185,7 +185,7 @@ if (isemptyp(rp)) return(EINVAL);                            // 槽位非空
 3. **不可运行断言**：`assert(!proc_is_runnable(src) && !proc_is_runnable(dst))`
 4. **updatable 检查**：`proc_is_updatable(src) && proc_is_updatable(dst)` → `EBUSY`
 5. **权限继承**：`inherit_priv_irq/io/mem(src, dst)` — 将 src 的 IRQ/I/O/内存范围转移到 dst
-6. **目标掩码继承**：遍历 `s_ipc_to` 位图，将 src 的 sendto 权限复制到 dst
+6. **目标掩码继承**：遍历 `s_ipc_to` 位图，对每个置位走 `set_sendto_bit(dst, i)`（C do_update.c:107-112 逐位授予：守卫 + 回执对称；每轮迭代重读 src 掩码，对齐 C 的活读取。2026-09-05 D-49 前 Rust 为 union 合并，无守卫/回执）
 7. **槽位交换**：
    - 保存原始状态（`orig_src_proc`/`orig_src_priv`/`orig_dst_proc`/`orig_dst_priv`）
    - `adjust_asyn_table` 双向调整异步消息表
@@ -538,7 +538,7 @@ pub fn proc_is_updatable(p: &KProcess) -> bool {
 
 **已实现**：槽位交换体（步骤 8-12）全部完成：
 - `inherit_priv_irq/io/mem`：`KPriv::add_irq/add_io/add_mem` 方法（dedup + CHECK_* flag）
-- `s_ipc_to` 目标掩码：OR 合并到 dst 的 `ipc.s_ipc_to`
+- `s_ipc_to` 目标掩码：逐位 `set_sendto_bit`（守卫 + 回执对称，2026-09-05 D-49；原为 OR 合并）
 - `abort_proc_ipc_send`：清除 `RTS_SENDING` + `SenderQueue::remove_by_nr` 从 target 的 caller_q 移除
 - 槽位交换：`ProcessTable::swap_slots` + `PrivTable::swap_slots`（`core::mem::swap` + `split_at_mut`）
 - `adjust_proc_slot`：恢复 endpoint/nr/priv_id/caller_q/scheduler/cpu/cpu_mask（`caller_q` 通过 `mem::replace` 提取/恢复）

@@ -477,42 +477,65 @@ pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 > **覆盖状态（2026-08-13 Phase 6 更新）**: `NULL_PRIV_ID` 在 C 中是动态分配的触发值（`get_priv` 见 `NULL_PRIV_ID` → 扫描动态区）。Rust 的动态分配路径已由 `KPriv::get_priv`（kpriv.rs:764-795）实现，覆盖 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码（详见 §4.6）。
 
-### 4.6 未实现的 C 函数
+### 4.6 C 函数覆盖状态
 
-以下 C 函数在 Ch2 中分析但 Rust 尚未实现，属于已知覆盖缺口（syscall 层 `dispatch_privctl` 在 [13-syscall-dispatch.md](13-syscall-dispatch.md) 覆盖；`do_update` 路径在 [25-misc-unported.md](25-misc-unported.md) 覆盖）。
+以下 C 函数在 Ch2 中分析，覆盖状态如下（syscall 层 `dispatch_privctl` 在 [13-syscall-dispatch.md](13-syscall-dispatch.md) 覆盖；`do_update` 路径在 [25-misc-unported.md](25-misc-unported.md) 覆盖）。
 
-> **2026-08-13 Phase 6 更新**：`get_priv` 动态分支已由 `KPriv::get_priv`（os/kernel/src/kpriv.rs:764-795）实现，覆盖 `NULL_PRIV_ID` 扫描动态区 + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码。下表仅 `set_sendto_bit` 仍属缺口。
+> **2026-08-13 Phase 6 更新**：`get_priv` 动态分支已由 `KPriv::get_priv`（kpriv.rs）实现，覆盖 `NULL_PRIV_ID` 扫描动态区 + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码。
+>
+> **2026-09-05 D-49 更新**：`set_sendto_bit` 全链路落地，本表全部条目已实现。实现要点与设计动机见 §4.6.1。
 
 | C 函数 | C 位置 | 用途 | Rust 状态 |
 |--------|--------|------|----------|
-| `get_priv` 动态分支 | system.c:284-288 | `NULL_PRIV_ID` → 扫描动态区 | ✅ 已实现（`KPriv::get_priv` kpriv.rs:764-795，2026-08-13 Phase 6 落地） |
-| `set_sendto_bit` | system.c:307-330 | 运行时设置 `s_ipc_to` 位 | 未实现（boot 阶段由 `grant_capability` 的 `ipc_mask` 替代） |
+| `get_priv` 动态分支 | system.c:284-288 | `NULL_PRIV_ID` → 扫描动态区 | ✅ 已实现（`KPriv::get_priv` kpriv.rs，2026-08-13 Phase 6 落地） |
+| `set_sendto_bit` | system.c:307-330 | 运行时设置 `s_ipc_to` 位 | ✅ 已实现（2026-09-05 D-49：`PrivTable::set_sendto_bit` / `unset_sendto_bit` / `fill_sendto_mask` 三原语 + `PrivTable::update_priv` 组合入口（kpriv.rs）；接线 SET_SYS 默认掩码、UPDATE_SYS、`dispatch_update` 掩码继承三处；boot 模板路径差异见 §4.6.1） |
 | `priv_add_irq` | system.c:918-940 | 添加 IRQ 到 `s_irq_tab` | ✅ 已实现（`KPriv::add_irq` 方法，被 `dispatch_update` 的 `inherit_priv_irq` 调用 + `SYS_PRIV_ADD_IRQ` syscall 路径通过 `copy_struct_from_user` 调用，2026-08-13 Phase 6 落地） |
 | `priv_add_io` | system.c:945-968 | 添加 I/O 范围到 `s_io_tab` | ✅ 已实现（`KPriv::add_io` 方法，被 `dispatch_update` 的 `inherit_priv_io` 调用 + `SYS_PRIV_ADD_IO` syscall 路径通过 `copy_struct_from_user` 调用，2026-08-13 Phase 6 落地） |
 | `priv_add_mem` | system.c:973-996 | 添加内存范围到 `s_mem_tab` | ✅ 已实现（`KPriv::add_mem` 方法，被 `dispatch_update` 的 `inherit_priv_mem` 调用 + `SYS_PRIV_ADD_MEM` syscall 路径通过 `copy_struct_from_user` 调用，2026-08-13 Phase 6 落地） |
 
+#### 4.6.1 sendto 掩码：为什么"置位"是全表操作
+
+把 C 的 `set_sendto_bit` 读成"把某一位置 1"是一个很容易掉进去的陷阱——它的名字确实在说这件事，但它实际维护的是整个特权表上的一条**不变量**：`s_ipc_to` 掩码是**成对对称**的。A 能发消息给 B，B 就必须能回复 A；反过来，撤销 A→B 时 B→A 也必须一起消失。C 用三个函数从三个方向维护这条不变量：
+
+- **`set_sendto_bit(rp, id)`**（system.c:307-329）授予 rp→id。两个守卫决定这次授予是否"退化成撤销"（system.c:316-319）：目标 slot 没有绑定进程（`id_to_nr(id) == NONE`），或者目标就是自己——两种情况下 rp 自己的这一位被显式清掉。守卫通过后，除了授予 rp→id（system.c:321），还要看目标的 trap 掩码（system.c:327-328）：一个只能 RECEIVE 的端点（CLOCK/SYSTEM 的 `CSK_T`）永远无法回复，给它回执位毫无意义，所以 C 跳过 `id→rp` 的对称授予。
+- **`unset_sendto_bit(rp, id)`**（system.c:335-344）撤销 rp→id 的同时无条件撤销 id→rp。
+- **`fill_sendto_mask(rp, map)`**（system.c:349-358）把整张掩码逐位重新计算——每一"置位"走 `set_sendto_bit`，每一"清位"走 `unset_sendto_bit`。
+
+逐位重算听起来多余（直接赋值 `s_ipc_to = map` 不就完了？），但它恰恰是安全性的关键：**清位方向会顺手修复别家掩码里的陈旧回执位**。想象 RS 先授权 A↔B，后来通过 `SYS_PRIV_UPDATE_SYS` 收回 A 掩码中的 B 位——如果只赋值 A 的掩码，B→A 那一位就成了 C 的模型里永远不会出现的**单向授权**：B 仍然可以主动发消息给 A。对称不变量被打破，能力模型"授权必经 RS"的承诺出现缺口。
+
+Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` 把 `req.s_ipc_to` 直接赋给 `s_ipc_to`（裸拷贝，无守卫、无回执、无修复），SET_SYS 默认路径写 `IpcMask::ALL`（包含自位与未绑定 slot），`dispatch_update` 用 union 合并 src 掩码。三处都在"位图赋值"这个更简单的模型上运行——简单，但每一处都偏离了 C 的不变量。
+
+**为什么落在 `PrivTable` 上**。C 的 `update_priv`（do_privctl.c:280-368）操作的是"进程 + 特权表"这个系统状态：字段拷贝发生在单个 priv slot 上，掩码 fill 却要触碰全表（回执位写在别的 slot 里）。这决定了 Rust 的落点几乎没有选择——`PrivTable` 级方法。把 fill 塞进 `KPriv::update_from_request` 是不可能的（单 slot 方法拿不到表）；退而求其次的方案是让字段拷贝方法返回掩码、调用者记得补一次 fill——这种"靠调用者纪律"的契约在内核代码里是定时炸弹。最终形态是组合入口：`PrivTable::update_priv(rp, req)` 先做字段拷贝（`KPriv::apply_fields_from_request`，计数越界返回命名的 `PrivUpdateError`、不碰掩码——对齐 C 的提前返回），再对请求掩码跑 `fill_sendto_mask`。调用者想"只拷字段不修掩码"在结构上就做不到。
+
+**守卫的宽度问题在 Rust 里不存在**。C 的 `id_to_nr(id) == NONE` 靠 `s_proc_nr` 哨兵值判断，Rust 直接用 `Option<ProcNr>::is_none()`；`IpcMask` 补了 `set_bit` / `unset_bit` / `has_bit`（对应 `set_sys_bit` / `unset_sys_bit` / `get_sys_bit`，kernel/const.h:24/26/20），越界索引安全降级——内核里不该存在的"授予"既不会被静默接受，也不会 panic。
+
+**对照其他系统**。seL4 的能力模型里，撤销是层级传播的（CNode revoke 沿派生树回收），代价是能力存储的复杂性；Minix3 的掩码模型是**扁平能力表**，没有派生树可走，`fill_sendto_mask` 的全量重算就是它对"撤销完整性"的务实回答。Redox 没有按目标的发送位图——它的能力边界是 scheme 命名空间（进程只能访问被授予的 scheme），粒度更粗，也不需要对称性维护，因为"能否通信"由路径解析时的 scheme 归属决定。Linux 根本没有 IPC 发送掩码——DAC 挂在管道/socket 等对象上，发送权由对象打开权限间接决定。三者共同反衬出 Minix3 模型的处境：微内核里**内核是唯一 IPC 仲裁者**，逐目标的位图检查在 send 路径上廉价且完备，掩码模型才成为可能。
+
+**boot 路径的差异（已知残留）**。C 的 boot 序列（main.c:244）对每个 schedulable boot 进程也走 `fill_sendto_mask`——但配对补全是增量的：进程 j 初始化时，之后才绑定的 slot 拿不到 j 的位，等后者初始化时通过回执位反向补全。Rust boot 走的是文档化的模板设计（§3 D3 `CapabilityTemplate`）：VM/RS 直接持有 `IpcMask::ALL`。对"绑定期内完成互相连接"的 boot 进程对，两种路径的终态一致（全部已绑定 slot 互通）；对运行期才绑定的动态服务 S，C 中老进程→S 的位由 S 自己 SET_SYS fill 的回执补全（S 绑定那一刻生效），Rust 中 `ALL` 已预先覆盖——注意"预授权"在 S 绑定前**不可观察**：slot 未绑定时 S 连 endpoint 都没有，IPC 层根本解析不出目标，所以这一差异是机制差异而非行为差异。真正可观察的残留只有一点：模板 `ALL` 含自位——boot 服务 SEND 自己的 endpoint 时，C 在掩码层拒绝（`ECALLDENIED`，proc.c:536-541 经 `may_send_to`），Rust 放行后进入阻塞路径。它只影响 boot 模板持有者（VM/RS），runtime 路径（SET_SYS/UPDATE_SYS/do_update）已完全对齐 C。是否把模板路径也改为"模板掩码 + 守卫 fill"属于 boot 能力语义决策，单独记录、不在 D-49 范围内处理。
+
 ### 4.7 SYS_PRIVCTL 子命令实现状态（FIX-25, Phase 5; Phase 6 完成 6 DEFERRED 项 2026-08-13）
 
-`dispatch_privctl`（os/kernel/src/syscall.rs:1166-1583）实现了 `do_privctl`（C: `system/do_privctl.c:26-275`）的 11 个子命令中的全部 11 个。原本 Phase 5 标记为 DEFERRED 的 6 个子命令（SET_SYS/ADD_IO/ADD_MEM/ADD_IRQ/UPDATE_SYS/CLEAR_IPC_REFS）于 2026-08-13 全部落地，使用 `data_copy_vmcheck` 跨地址空间拷贝 + `KPriv::update_from_request` / `KPriv::get_priv` / `clear_ipc_refs` 完成。
+`dispatch_privctl`（os/kernel/src/syscall.rs）实现了 `do_privctl`（C: `system/do_privctl.c:26-275`）的 11 个子命令中的全部 11 个。原本 Phase 5 标记为 DEFERRED 的 6 个子命令（SET_SYS/ADD_IO/ADD_MEM/ADD_IRQ/UPDATE_SYS/CLEAR_IPC_REFS）于 2026-08-13 全部落地，使用 `data_copy_vmcheck` 跨地址空间拷贝 + `PrivTable::update_priv`（D-49 前：`KPriv::update_from_request`）/ `KPriv::get_priv` / `clear_ipc_refs` 完成。
 
 | 子命令 | C 位置 | Rust 实现 | 状态 |
 |--------|--------|----------|------|
 | `SYS_PRIV_ALLOW` (1) | do_privctl.c:56-64 | 检查 `RTS_NO_PRIV` + `s_proc_nr` → 清 `RTS_NO_PRIV` | ✅ 已实现 |
 | `SYS_PRIV_DISALLOW` (2) | do_privctl.c:75-79 | 设置 `RTS_NO_PRIV` | ✅ 已实现 |
-| `SYS_PRIV_SET_SYS` (3) | do_privctl.c:86-174 | `KPriv::get_priv` 动态分配 slot + `reset_pending_ipc` + `reset_resources` + 可选 `update_from_request` | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_SET_SYS` (3) | do_privctl.c:86-174 | `KPriv::get_priv` 动态分配 slot + 双向链接（`p.priv_id` 回链，2026-09-05 修复）+ `reset_pending_ipc` + `reset_resources` + 默认掩码 `fill_sendto_mask(ALL)` + 可选 `update_priv` | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
 | `SYS_PRIV_SET_USER` (4) | do_privctl.c:176-185 | 链接 target 到 `USER_PRIV_ID` + 更新 `s_proc_nr` | ✅ 已实现 |
 | `SYS_PRIV_ADD_IO` (5) | do_privctl.c:187-204 | `copy_struct_from_user` 读取 `io_range` + `KPriv::add_io` | ✅ 已实现（Phase 6, 2026-08-13） |
 | `SYS_PRIV_ADD_MEM` (6) | do_privctl.c:206-216 | `copy_struct_from_user` 读取 `mem_range` + `KPriv::add_mem` | ✅ 已实现（Phase 6, 2026-08-13） |
 | `SYS_PRIV_ADD_IRQ` (7) | do_privctl.c:218-230 | `copy_struct_from_user` 读取 `irq` + `KPriv::add_irq` | ✅ 已实现（Phase 6, 2026-08-13） |
 | `SYS_PRIV_QUERY_MEM` (8) | do_privctl.c:232-251 | 检查 `phys_start/len` 落在 `s_mem_tab` 范围 | ✅ 已实现 |
-| `SYS_PRIV_UPDATE_SYS` (9) | do_privctl.c:253-268 | `copy_struct_from_user` 读取 `PrivUpdateRequest` + `KPriv::update_from_request` | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_UPDATE_SYS` (9) | do_privctl.c:253-268 | `copy_struct_from_user` 读取 `PrivUpdateRequest` + `PrivTable::update_priv`（字段拷贝 + `fill_sendto_mask` 全表掩码维护） | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
 | `SYS_PRIV_YIELD` (10) | do_privctl.c:66-73 | target 清 `RTS_NO_PRIV` + caller 设 `RTS_NO_PRIV` | ✅ 已实现 |
 | `SYS_PRIV_CLEAR_IPC_REFS` (11) | do_privctl.c:81-84 | 调用 `clear_ipc_refs`（syscall.rs:893）清 `s_notify_pending` / `s_asyn_pending` + 唤醒 `P_BLOCKEDON == target_ep` 的进程 | ✅ 已实现（Phase 6, 2026-08-13） |
 
 **Phase 6 设计要点（2026-08-13）**：
 
 1. **跨地址空间拷贝**：新增 `copy_struct_from_user` 助手（syscall.rs:828-857），封装 `data_copy_vmcheck` 路径，将用户空间 `io_range` / `mem_range` / `irq` / `PrivUpdateRequest` 拷贝到内核栈缓冲。`VmSuspend` 结果由 `dispatch_privctl` 转译为 `KcallResult::Suspend`，与 C 的 `SUSPEND` 语义对齐。
-2. **`KPriv::update_from_request`**（kpriv.rs:472-523）：对应 C `update_priv()` (do_privctl.c:280-368)，按 `CHECK_IRQ` / `CHECK_IO_PORT` / `CHECK_MEM` 标志位 gate 复制 IRQ/IO/MEM 表，超范围返回 `Err(())` → `EINVAL`。
+2. **`KPriv::update_from_request`**（kpriv.rs）：对应 C `update_priv()` (do_privctl.c:280-368)，按 `CHECK_IRQ` / `CHECK_IO_PORT` / `CHECK_MEM` 标志位 gate 复制 IRQ/IO/MEM 表，超范围返回 `Err(())` → `EINVAL`。
+   > **2026-09-05 D-49 更新**：该单 slot 方法已拆分——字段拷贝部分更名为 `KPriv::apply_fields_from_request`（私有，错误类型升级为命名的 `PrivUpdateError`），掩码部分上移为全表操作：`PrivTable::update_priv` 组合"字段拷贝 + `fill_sendto_mask`"，对称性/守卫语义见 §4.6.1。SET_SYS 默认路径同期发现 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298），已补双向链接。
 3. **`KPriv::get_priv`**（kpriv.rs:764-795）：对应 C `get_priv()` (system.c:274-302)，实现 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY` / `ENOSPC` / `EINVAL` 错误码。
 4. **`clear_ipc_refs`**（syscall.rs:893-942）：对应 C `clear_ipc_refs()` (system.c:577-607)，跨所有 `NR_SYS_PROCS` slot 清除 target 的 `s_notify_pending` / `s_asyn_pending` 位 + 唤醒 `blocked_on == target_ep` 的进程（清 `RTS_SENDING | RTS_RECEIVING`）。**Design gap**：C 设置 `rp->p_reg.retreg = caller_ret` 让被唤醒进程看到 `EDEADSRCDST`；Rust 未建模 register save area，`_error_code` 参数仅保留 API 完整性（与正常 IPC 唤醒路径相同 gap）。Rust `senda` 不持久化 async table，故无需 `cancel_async` 循环，bit 清除等价。
 

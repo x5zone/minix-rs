@@ -1218,7 +1218,8 @@ pub(crate) fn clear_endpoint(
 /// - `SYS_PRIV_ADD_MEM` (6): data_copy mem_range from user + add_mem
 /// - `SYS_PRIV_ADD_IRQ` (7): data_copy irq from user + add_irq
 /// - `SYS_PRIV_QUERY_MEM` (8): check if target may map physical range
-/// - `SYS_PRIV_UPDATE_SYS` (9): data_copy priv struct + update_from_request
+/// - `SYS_PRIV_UPDATE_SYS` (9): data_copy priv struct + update_priv
+///   (field copies + fill_sendto_mask target-mask maintenance)
 /// - `SYS_PRIV_YIELD` (10): clear RTS_NO_PRIV on target + set on caller
 /// - `SYS_PRIV_CLEAR_IPC_REFS` (11): clear pending IPC for target
 ///
@@ -1464,6 +1465,16 @@ fn dispatch_privctl(
             let allocated = priv_table.get_priv(target_nr, alloc_id);
             match allocated {
                 Ok(actual_id) => {
+                    // C: system.c:298 — get_priv links both directions
+                    // (`rc->p_priv = sp`). `PrivTable::get_priv` can only
+                    // reach the priv slot (s_proc_nr), so the process-side
+                    // link happens here. Without it the target stays
+                    // priv-less from its own side: a later UPDATE_SYS or
+                    // GET_PRIV on this process would fail as if SET_SYS
+                    // never ran.
+                    if let Some(p) = proc_table.get_mut(target_nr) {
+                        p.priv_id = Some(actual_id);
+                    }
                     // C: do_privctl.c:116-119 — restore s_id + s_proc_nr
                     // (get_priv already sets s_proc_nr; s_id is the slot index)
                     let target_ep = proc_table.get(target_nr)
@@ -1485,18 +1496,26 @@ fn dispatch_privctl(
                         priv_.flags.s_flags = crate::capability::ProcessCapability::DSRV_F;
                         priv_.init.s_init_flags = 0; // DSRV_I = 0
                         priv_.ipc.s_trap_mask = crate::capability::TrapMask::ALL; // DSRV_T = ~0
-                        priv_.ipc.s_ipc_to = crate::capability::IpcMask::ALL; // DSRV_M = ALL_M
                         priv_.ipc.s_k_call_mask = crate::capability::KCallMask::ALL; // DSRV_KC = ALL_C
                         priv_.signals.s_sig_mgr = minix_types::Endpoint::RS; // DSRV_SM = ROOT_SYS_PROC_NR
                         priv_.signals.s_bak_sig_mgr = minix_types::Endpoint::NONE;
                         priv_.reset_resources(target_ep);
-
-                        // C: do_privctl.c:167-172 — override with user-provided settings
-                        if arg_ptr != 0
-                            && priv_.update_from_request(&priv_id).is_err() {
-                                return KcallResult::Ok(EINVAL);
-                            }
                     }
+
+                    // C: do_privctl.c:138-143 — default target mask: map =
+                    // DSRV_M (= ALL_M) expanded to every priv id, then
+                    // fill_sendto_mask — the association/self guards apply
+                    // and every send-capable target receives the reciprocal
+                    // bit (system.c:349-358). A raw `s_ipc_to = ALL` here
+                    // would also pre-authorize slots RS has not bound yet
+                    // and set the self bit, which C never does.
+                    priv_table.fill_sendto_mask(actual_id, crate::capability::IpcMask::ALL);
+
+                    // C: do_privctl.c:167-172 — override with user-provided settings
+                    if arg_ptr != 0
+                        && priv_table.update_priv(actual_id, &priv_id).is_err() {
+                            return KcallResult::Ok(EINVAL);
+                        }
                     KcallResult::Ok(0)
                 }
                 Err(ENOSPC) => KcallResult::Ok(ENOSPC),
@@ -1624,14 +1643,14 @@ fn dispatch_privctl(
             );
             match copy_result {
                 crate::vm::CrossSpaceResult::Completed(Ok(())) => {
-                    match priv_table.get_mut(target_priv_id) {
-                        Some(priv_) => {
-                            match priv_.update_from_request(&req) {
-                                Ok(()) => KcallResult::Ok(0),
-                                Err(()) => KcallResult::Ok(EINVAL),
-                            }
-                        }
-                        None => KcallResult::Ok(EINVAL),
+                    // C: do_privctl.c:265-267 — update_priv(rp, &priv).
+                    // Table-level: field copies onto the target slot plus
+                    // the whole-table target-mask fill (fill_sendto_mask,
+                    // system.c:349-358) that grants/revokes the reciprocal
+                    // bits and applies the association/self guards.
+                    match priv_table.update_priv(target_priv_id, &req) {
+                        Ok(()) => KcallResult::Ok(0),
+                        Err(_) => KcallResult::Ok(EINVAL),
                     }
                 }
                 crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
@@ -2920,6 +2939,69 @@ mod tests {
         msg.m_u.m_m1.m1i2 = 101;
         let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::Ok(EPERM));
+    }
+
+    #[test]
+    fn test_dispatch_privctl_set_sys_fills_guarded_default_mask() {
+        // C: do_privctl.c:138-143 — SET_SYS defaults: map = DSRV_M (ALL_M)
+        // expanded to every priv id, then fill_sendto_mask
+        // (system.c:349-358). The fill applies the association/self
+        // guards, so only *bound* slots get bits (never the target's own
+        // slot, never an unbound one), and every send-capable target gets
+        // the reciprocal bit.
+        use crate::capability::{ProcessCapability, TrapMask};
+        use crate::kpriv::USER_PRIV_ID;
+        use crate::proc::RtsFlagsBits;
+
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        caller.priv_id = Some(USER_PRIV_ID);
+        if let Some(p) = priv_table.get_mut(USER_PRIV_ID) {
+            p.flags.s_flags |= ProcessCapability::SYS_PROC;
+            p.identity.s_proc_nr = Some(ProcNr(0));
+        }
+        // A send-capable system process the new service should reach, and
+        // whose mask should gain the reciprocal bit.
+        let driver = priv_table.assign_static(ProcNr(2)).unwrap();
+        proc_table.get_mut(ProcNr(2)).unwrap().p_endpoint = minix_types::Endpoint(102);
+        priv_table.get_mut(driver).unwrap().ipc.s_trap_mask = TrapMask::ALL;
+
+        let target_nr = ProcNr(1);
+        if let Some(p) = proc_table.get_mut(target_nr) {
+            p.p_endpoint = minix_types::Endpoint(101);
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.p_rts_flags.set(RtsFlagsBits::NO_PRIV); // SET_SYS precondition
+        }
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Privctl as i32;
+        msg.m_u.m_m1.m1i1 = 3; // SYS_PRIV_SET_SYS
+        msg.m_u.m_m1.m1i2 = 101;
+        // arg_ptr = 0 → defaults only, no cross-space copy needed.
+        let result = dispatch_privctl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        assert_eq!(result, KcallResult::Ok(0));
+
+        // The target got a dynamically allocated priv slot.
+        let target_priv = proc_table.get(target_nr).unwrap()
+            .priv_id.expect("SET_SYS must allocate a priv slot");
+        assert_ne!(target_priv, USER_PRIV_ID);
+        let mask = priv_table.get(target_priv).unwrap().ipc.s_ipc_to;
+        // Bound and not self → granted (system.c:313-317 inverse).
+        assert!(mask.may_send_to(USER_PRIV_ID as u8), "bound caller slot must be granted");
+        assert!(mask.may_send_to(driver as u8), "bound driver slot must be granted");
+        // Self and unassociated slots → not granted (C guards).
+        assert!(!mask.may_send_to(target_priv as u8), "self bit must stay clear");
+        let unbound = (crate::proc_table::NR_TASKS + 3) as u8; // ProcNr(3) never bound
+        assert!(!mask.may_send_to(unbound),
+            "unbound slot must not be pre-authorized by the ALL_M default");
+        // Reciprocal: the driver's trap mask is ALL → it can reply.
+        assert!(priv_table.get(driver).unwrap().ipc.s_ipc_to.may_send_to(target_priv as u8),
+            "send-capable target must receive the reciprocal bit");
+        // Reciprocal: the caller slot has no traps → no reply right.
+        assert!(!priv_table.get(USER_PRIV_ID).unwrap().ipc.s_ipc_to.may_send_to(target_priv as u8),
+            "RECEIVE-only caller slot must not receive the reciprocal bit");
+        // Non-mask SET_SYS defaults are unchanged by the fill rework.
+        assert_eq!(priv_table.get(target_priv).unwrap().ipc.s_trap_mask, TrapMask::ALL);
     }
 
     #[test]

@@ -1716,7 +1716,7 @@ pub fn dispatch_update(
     let dst_priv_id = proc_table.get(dst_nr).and_then(|p| p.priv_id);
     if let (Some(src_pid), Some(dst_pid)) = (src_priv_id, dst_priv_id) {
         // Copy arrays out of src_priv (immutable borrow ends after scope)
-        let (irqs, irq_count, io_tab, io_count, mem_tab, mem_count, ipc_to) = {
+        let (irqs, irq_count, io_tab, io_count, mem_tab, mem_count) = {
             let src_priv = match priv_table.get(src_pid) {
                 Some(p) => p,
                 None => return KcallResult::Ok(EINVAL),
@@ -1728,7 +1728,6 @@ pub fn dispatch_update(
                 src_priv.io.s_nr_io_range as usize,
                 src_priv.mem.s_mem_tab,
                 src_priv.mem.s_nr_mem_range as usize,
-                src_priv.ipc.s_ipc_to,
             )
         };
         // Now add each to dst's priv (mutable borrow is safe — src borrow ended)
@@ -1742,8 +1741,27 @@ pub fn dispatch_update(
             for memr in mem_tab.iter().take(mem_count) {
                 let _ = dst_priv.add_mem(memr);
             }
-            // C: do_update.c:107-112 — copy s_ipc_to target mask from src to dst.
-            dst_priv.ipc.s_ipc_to = dst_priv.ipc.s_ipc_to.union(ipc_to);
+        }
+
+        // C: do_update.c:107-112 — inherit the source's IPC target mask,
+        // bit by bit through `set_sendto_bit` (system.c:307-330): a set
+        // bit grants dst → id and, when id can reply, the reciprocal
+        // id → dst; unassociated slots are never granted (the guard
+        // degrades to an unset). A mask union would pre-authorize slots
+        // nothing is bound to and leave the reply direction ungated.
+        //
+        // The source mask is re-read on every iteration: C evaluates
+        // `get_sys_bit(priv_src->s_ipc_to, i)` live inside the loop, and a
+        // reciprocal write earlier in the loop can set a bit in src's own
+        // mask — C would pick it up, so the rewrite must too.
+        for idx in 0..crate::kpriv::NR_SYS_PROCS {
+            let bit_set = priv_table
+                .get(src_pid)
+                .map(|p| p.ipc.s_ipc_to.has_bit(idx))
+                .unwrap_or(false);
+            if bit_set {
+                priv_table.set_sendto_bit(dst_pid, idx as crate::kpriv::PrivId);
+            }
         }
     }
 
