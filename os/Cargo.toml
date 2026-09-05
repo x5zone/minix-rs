@@ -199,6 +199,7 @@ minix-sys = { path = "libs/minix-sys" }
 minix-rt = { path = "libs/minix-rt" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
+minix-fs = { path = "libs/minix-fs" }
 minix-arch = { path = "arch", default-features = false }
 minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }

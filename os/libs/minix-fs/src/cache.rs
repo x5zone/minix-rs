@@ -204,6 +204,17 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         self.slots.len()
     }
 
+    /// Block size in bytes, from the backing source.
+    pub fn source_block_size(&self) -> usize {
+        self.source.block_size()
+    }
+
+    /// Shared access to the backing source (for inspection and for
+    /// transfer layers built on top of the cache).
+    pub fn source(&self) -> &S {
+        &self.source
+    }
+
     /// Buffers currently pinned by callers.
     pub fn pinned(&self) -> usize {
         self.pinned

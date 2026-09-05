@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
+minix-fs = { workspace = true }
 
 [lib]
 name = "minix_fs_mfs"

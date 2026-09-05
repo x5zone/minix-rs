@@ -1,7 +1,10 @@
-//! FS server (mfs) 入口（占位）。
+//! Minix file server entry point.
+//!
+//! Builds nothing yet: the process startup handshake belongs to the
+//! service-runtime stage. The ready pieces (boot config, dispatch table,
+//! cache wrappers) are exercised through the library interface until the
+//! runtime wiring lands here.
 
 fn main() {
-    // TODO: 实装为真实服务进程（事件循环 + RS 启动协议）。
-    minix_fs_mfs::init();
     loop {}
 }

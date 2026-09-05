@@ -20,11 +20,9 @@
 //! - [`dentry`] — directory entry listing encoder (document 03).
 //! - [`lookup`] — path resolution walk (document 03).
 //! - [`cache`] — hashed least-recently-used block cache (document 04).
+//! - [`bio`] — raw block transfer, prefetch, driver binding, ramdisk
+//!   (document 05).
 //! - [`memfs`] — in-memory file server proving the trait (documents 01-03).
-//!
-//! Raw device block input and output (`bio.c`) belongs to document 05 and is
-//! not part of this crate yet; [`cache`] already exposes the [`cache::BlockSource`]
-//! trait the future block layer will implement.
 //!
 //! All servers built on this framework are single-threaded event loops: one
 //! message at a time, no shared mutable state across threads. Types in this
@@ -35,6 +33,7 @@
 
 extern crate alloc;
 
+pub mod bio;
 pub mod cache;
 pub mod call;
 pub mod data;

@@ -1,8 +1,18 @@
-//! Minix-RS FS server (mfs) — 占位 crate。
+//! Minix file server: startup, dispatch table, and cache wrappers.
 //!
-//! C 对应: `minix3/minix/fs/mfs/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence: `minix3/minix/fs/mfs/main.c`, `table.c`, `cache.c`.
+//! This crate owns the server skeleton; the superblock, inode, path, and
+//! data-path stages (documents 08-17) fill in the handlers row by row (see
+//! [`table`] for the per-row owners).
+//!
+//! Like every file server here, MFS is a single-threaded event loop: one
+//! message at a time, no shared mutable state across threads.
+
 #![no_std]
 
-/// 服务初始化入口（占位）。
-pub fn init() {}
+extern crate alloc;
+
+pub mod mfs_cache;
+pub mod startup;
+pub mod superblock;
+pub mod table;
