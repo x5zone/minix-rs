@@ -2321,18 +2321,19 @@ fn dispatch_diagctl(
                         return KcallResult::Ok(EPERM);
                     }
                     p.mem.s_diag_sig = true;
-                    // C: if kmess.km_size > 0 && !kinfo.do_serial_debug:
-                    //   send_sig(PM_PROC_NR, SIGKMESS)
-                    // This notifies PM that kernel messages are pending.
-                    // The notification uses cause_signal → mini_notify_core
-                    // (same path as SYS_KILL). Not wired here because
-                    // DIAGCTL's send_sig targets PM_PROC_NR specifically,
-                    // which requires looking up PM's ProcNr from the global
-                    // proc_table — the DIAGCTL dispatch already holds
-                    // caller/priv_table borrows that conflict with the
-                    // global accessor. The message output (primary purpose)
-                    // is implemented; the PM notification is a secondary
-                    // effect that PM will observe on its next getksig poll.
+                    // D-14 (2026-09-06 设计 no-op，W-7 连带结论)：
+                    // C do_diagctl.c:54-56 — `if (kmess.km_size > 0 &&
+                    // !kinfo.do_serial_debug) send_sig(caller->p_endpoint,
+                    // SIGKMESS)`（目标是注册者自身，非 todo 原文所写 PM）。
+                    // 两个条件输入在 W-7 演进下均不存在：kmess 缓冲已被
+                    // EarlyConsole 直出替代（km_size 恒无意义），唯一消费
+                    // 者 log 驱动（log.c:115 读 kmess）角色同被替代；
+                    // SIGKMESS=72（sys/sys/signal.h:272）>64 亦超 SigSet
+                    // 位宽。故本通知按 C 自身条件恒不触发——订阅状态
+                    // （s_diag_sig 置位/复位/SET_SYS 清除，kpriv.rs
+                    // reset_pending_ipc）完整保留。已知缺口：sys_update
+                    // 状态转移不携带 s_diag_sig（C do_update.c:293 有），
+                    // 记录于 todo D-14 行。
                     KcallResult::Ok(0)
                 }
                 None => KcallResult::Ok(EPERM),
@@ -3485,6 +3486,57 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_diagctl.endpt = minix_types::Endpoint::NONE.0;
         let result = dispatch_diagctl(&mut caller, &msg, &mut priv_table, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    /// D-14: DIAGCTL REGISTER/UNREGISTER lifecycle — a SYS_PROC caller
+    /// sets `s_diag_sig` (C do_diagctl.c:51), a non-SYS_PROC caller gets
+    /// EPERM (:50), and UNREGISTER clears it (:61). The SIGKMESS
+    /// notification itself is a W-7 no-op (see the comment in the
+    /// REGISTER arm): its condition inputs (kmess buffer) were removed
+    /// by the EarlyConsole ARCH evolution.
+    #[test]
+    fn test_dispatch_diagctl_register_unregister_lifecycle() {
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let a_priv = priv_table.assign_static(ProcNr(0)).unwrap();
+        priv_table.get_mut(a_priv).unwrap().flags.s_flags.insert(
+            crate::capability::ProcessCapability::SYS_PROC,
+        );
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        caller.priv_id = Some(a_priv);
+
+        // REGISTER: SYS_PROC → s_diag_sig set, OK.
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Diagctl as i32;
+        msg.m_u.m_lsys_krn_sys_diagctl.code = 3; // DIAGCTL_CODE_REGISTER
+        let result = dispatch_diagctl(&mut caller, &msg, &mut priv_table, &proc_table);
+        assert_eq!(result, KcallResult::Ok(0));
+        assert!(priv_table.get(a_priv).unwrap().mem.s_diag_sig);
+
+        // UNREGISTER: clears the subscription.
+        msg.m_u.m_lsys_krn_sys_diagctl.code = 4; // DIAGCTL_CODE_UNREGISTER
+        let result = dispatch_diagctl(&mut caller, &msg, &mut priv_table, &proc_table);
+        assert_eq!(result, KcallResult::Ok(0));
+        assert!(!priv_table.get(a_priv).unwrap().mem.s_diag_sig);
+    }
+
+    /// D-14: a caller without SYS_PROC privilege gets EPERM at REGISTER
+    /// (C do_diagctl.c:50) and the flag stays clear.
+    #[test]
+    fn test_dispatch_diagctl_register_denied_without_sys_proc() {
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let proc_table = crate::test_helpers::test_proc_table();
+        let a_priv = priv_table.assign_static(ProcNr(0)).unwrap();
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        caller.priv_id = Some(a_priv);
+        // No SYS_PROC capability inserted.
+
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Diagctl as i32;
+        msg.m_u.m_lsys_krn_sys_diagctl.code = 3;
+        let result = dispatch_diagctl(&mut caller, &msg, &mut priv_table, &proc_table);
+        assert_eq!(result, KcallResult::Ok(EPERM));
+        assert!(!priv_table.get(a_priv).unwrap().mem.s_diag_sig);
     }
 
     #[test]

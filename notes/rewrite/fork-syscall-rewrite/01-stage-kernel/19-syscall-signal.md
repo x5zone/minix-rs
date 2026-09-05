@@ -6,7 +6,7 @@
 > **覆盖**: SYS_KILL / SYS_GETKSIG / SYS_ENDKSIG / SYS_SIGSEND / SYS_SIGRETURN 五个系统调用，以及内核内部函数 `cause_sig`
 > **前置**: [11-scheduling-primitives.md](11-scheduling-primitives.md) (RTS_SIGNALED / RTS_SIG_PENDING), [14-exception-interrupt.md](14-exception-interrupt.md) (CPU 异常 → cause_sig), [16-smp.md](16-smp.md) (BKL), [22-privilege.md](22-privilege.md) (s_sig_mgr)
 
-> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:280-282）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。`SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径与 `sig_delay_done`（SIGSNDELAY）已于 2026-09-05 在 Rust 侧实现（§4.3/§4.7/§4.8）；DIAGCTL SIGKMESS 通知仍 DEFERRED。
+> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:280-282）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。`SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径与 `sig_delay_done`（SIGSNDELAY）已于 2026-09-05 在 Rust 侧实现（§4.3/§4.7/§4.8）；DIAGCTL SIGKMESS 通知为 **设计 no-op**（2026-09-06：W-7 移除 kmess 后通知条件/触发点/消费者均不存在，订阅状态生命周期已完备，见 §4.7 表）。
 
 ---
 
@@ -591,7 +591,7 @@ pub(crate) fn cause_signal(
 > `s_sig_pending`（≤64 位部分）的消费方在 ipc 通知投递路径——SYSTEM 源通知送达时被编码进
 > `m_notify.sigset` 并清空（ipc.rs:1776-1782）。
 
-> **DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)` 仍 DEFERRED**：DIAGCTL_CODE_REGISTER 路径（syscall.rs:2271-2315，do_diagctl.c:49-56）只设 `s_diag_sig=true`，未发 SIGKMESS 通知。原因：DIAGCTL dispatch 已持 caller/priv_table 借用，与查 PM_PROC_NR 所需的全局 proc_table 访问冲突；PM 会在下次 `getksig` 轮询时观察到内核消息（主用途已实现，PM 通知是次要副作用）。
+> **DIAGCTL `send_sig(caller→自身, SIGKMESS)` 设计 no-op（D-14，2026-09-06）**：DIAGCTL_CODE_REGISTER 路径（do_diagctl.c:49-56）设 `s_diag_sig=true` 后，C 仅在 `kmess.km_size > 0` 时向**注册者自身**（非 todo 原文所写 PM）发 SIGKMESS（=72，sys/sys/signal.h:272）。W-7 演进移除 kmess 缓冲后：条件输入不存在（恒不触发）、广播触发点（END_OF_KMESS，system.c:481）不存在、唯一消费者 log 驱动（log.c:115）读取角色被 EarlyConsole 替代、72>64 超 SigSet 位宽。订阅状态生命周期已完备（REGISTER/UNREGISTER + SET_SYS 清除 `reset_pending_ipc`）。已知缺口：sys_update 状态转移不携带 s_diag_sig（do_update.c:293 有）——随 sys_update 实现处理。测试：`test_dispatch_diagctl_register_unregister_lifecycle` / `test_dispatch_diagctl_register_denied_without_sys_proc`。
 
 ### 4.4 dispatch_getksig / dispatch_endksig 实现
 
