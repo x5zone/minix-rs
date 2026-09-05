@@ -1,8 +1,24 @@
-//! Minix-RS driver (system/log) — 占位 crate。
+//! System log driver: the kernel-message blackboard reader.
 //!
-//! C 对应: `minix3/minix/drivers/system/log/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence: `minix3/minix/drivers/system/log/` — `log.c` (360
+//! lines, ring plus hooks), `diag.c` (54 lines, kernel-message capture),
+//! `liveupdate.c` (99 lines, live-update hooks). This crate owns the
+//! numbers and the policy (ring arithmetic, read/select/cancel rules,
+//! message delta); the service binary owns the transport (diagnostics
+//! registration, signal handling, grant copies, live-update registration).
+//! See document `08-log-driver.md` in
+//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//!
+//! Single-threaded event loop: one message at a time, no shared mutable
+//! state across threads.
+
 #![no_std]
 
-/// 服务初始化入口（占位）。
+extern crate alloc;
+
+pub mod device;
+pub mod diag;
+pub mod ring;
+
+/// Service initialization entry (wires the device; transport stays out).
 pub fn init() {}

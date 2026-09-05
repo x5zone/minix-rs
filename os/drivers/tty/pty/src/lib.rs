@@ -1,8 +1,24 @@
-//! Minix-RS driver (tty/pty) — 占位 crate。
+//! Pseudo-terminal driver: master/slave pairs without hardware.
 //!
-//! C 对应: `minix3/minix/drivers/tty/pty/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence: `minix3/minix/drivers/tty/pty/pty.c` (860 lines,
+//! master side plus pair management) with `tty.c` (1320 lines, slave side
+//! line discipline — shared with the terminal driver, see the terminal
+//! crate) and `ptyfs.c` (112 lines, filesystem sidecar). The slave side
+//! reuses the terminal line policy; this crate owns the pair layer. See
+//! document `07-pty-driver.md` in
+//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//!
+//! Single-threaded event loop: one message at a time, no shared mutable
+//! state across threads.
+
 #![no_std]
 
-/// 服务初始化入口（占位）。
+extern crate alloc;
+
+pub mod buffer;
+pub mod pair;
+pub mod ptyfs;
+pub mod select;
+
+/// Service initialization entry (wires the pair table; transport stays out).
 pub fn init() {}
