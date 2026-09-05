@@ -87,7 +87,7 @@ Each doc in `notes/rewrite/` follows:
 
 The review system enforces structured review via 9 domain skills (in `prompt/skill/`, adapted to `.trae/skills/` and `.codex/skills/`). Claude Code Runtime uses the `review-scan` orchestrator (`.claude/skills/review-scan/`) + `review-implementation-skill` (`.claude/skills/review-implementation-skill/`), with always-on rules in `.claude/rules/`. Full process details: `prompt/skill/review-process-skill.md`. The 9th skill `review-implementation-skill` (added 2026-06-22 from the 06-design.md/06-design-final.md implementation) verifies design ↔ code consistency, tracks §X self-review issues, and enforces backward-compatible refactor + test coverage boundary.
 
-## 任务命令（review-cmds，2026-09-05 新增）
+### 任务命令（review-cmds，2026-09-05 新增）
 
 6 个独立 cmd 是任务的一级入口（单一目标 + 明确边界 + 章节级默认范围——注意力是 review 质量的第一约束）。规范源 `prompt/review-rules/review-cmds.md`；薄壳 skill 注册于 `.agents/skills/`（软链，ZCode 原生扫描）与 opencode.json（muse/opencode 可直呼）：
 

@@ -1263,7 +1263,7 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 
 ## §X.7 架构抽象与锚点纪律模式（模式 79-83，NEW 2026-09-05）
 
-> 完整定义/反例：[review-rules/review-patterns.md §九](../../../prompt/review-rules/review-patterns.md)。反例源：05-clock-interrupt-init.md §4.7.1。
+> 完整定义/反例：[review-patterns.md §九](../../../prompt/review-rules/review-patterns.md)。反例源：05-clock-interrupt-init.md §4.7.1。
 
 ### 模式 79: trait 边界按调用时序划分（Trait Boundary By Call Timing）（P1）
 
