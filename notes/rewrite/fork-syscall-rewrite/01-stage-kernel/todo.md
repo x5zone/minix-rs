@@ -2181,3 +2181,30 @@ rg "架构范围说明" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-pr
 **AI 倾向**：B——"自位恒清"是 C 模型的全域不变量，模板路径成为唯一例外不够干净；但触及 boot 能力授予的文档化设计（doc 06 §3.2 / doc 22 §3 D3），故上交而非擅动。
 
 **关联**：doc 22 §4.6.1（详细论证）、§7.1 D-49 行、§0.1 第四批行。
+
+## Edge Items：SMP/硬件阻塞残余（2026-09-06 全面扫描后追加）
+
+> 以下项的阻塞依赖经全面扫描确认仍成立——全部需要 SMP bring-up（doc 16 专项）或
+> 裸机/QEMU 集成测试基建。hosted CI 无法诚实验证；追加写入以关闭"可完成 TODO"扫描。
+
+| ID | 项 | 阻塞 | 追加说明 |
+|---|---|---|---|
+| D-36 | smp_init（ACPI/MADT + boot_ap） | doc 16 专项工程 | 多核 QEMU 验证必需 |
+| D-37 | boot_lock | 随 D-36 | |
+| D-38① | exception_dispatcher::handle 需 BKL | SMP 异常路径 | ②③ 已由 D-9/finish 解决 |
+| D-38④ | kernel_call_resume 需 BKL | 同上 | |
+| D-39 | x86_64 init_ap panic 占位 | AP 启动路径（TSS/selector） | 故意 panic（AP 无 TSS 即 triple-fault） |
+| D-40 | ptproc per-CPU 迁移 CpuLocal | SMP | 单 CPU 由 CURRENT_PTPROC_NR 全局承担 |
+| D-41 | PLATFORM AssumeSyncCell SMP 替换 | AP_STARTUP 并发 | 单 CPU 由 BKL 保证 |
+| sched-1 | per-CPU scheduler 访问 | SMP | proc_table.rs:487/496 TODO (SMP) 注释 |
+| tick-1 | per-CPU kernel-tick 统计 | SMP | lib.rs:2630 TODO(P2) 注释 |
+| hw-1 | D-46 硬件半环 | asm IRQ stub + IDT load + 入口分流 | 裸机汇编无法在 hosted CI 验证 |
+| hw-2 | D-48 shutdown(0) | 零 Rust 基础 | halt-loop 即当前终态 |
+| trap-1 | trap 入口接线 kernel_call_dispatch | asm 层 | D-8 wrapper 已实现可测，asm 层缺 |
+
+**非 SMP 的代码级 TODO 残余**（非 Edge，不阻塞）：
+- ipc.rs:1789 NOTIFY 权限路径——已改写为设计决策注释（NOTIFY 为 kernel 内部信号）
+- lib.rs:491 TODO-01-1——boot-shim bootstrap 历史项，已有 doc
+
+**追加日期**：2026-09-06。所有可完成的 TODO 已在前面轮次实现并提交；
+本表为不可完成项的最终清单，待 SMP bring-up（doc 16）后逐项解锁。
