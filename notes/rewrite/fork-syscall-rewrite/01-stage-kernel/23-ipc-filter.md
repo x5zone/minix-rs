@@ -256,7 +256,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 | 函数 | C 行为 | Rust 行为 | 差异类型 | 严重度 | C 证据 | Rust 证据 | 备注 |
 |------|--------|----------|---------|--------|--------|----------|------|
 | `may_send_to` | `get_sys_bit(s_ipc_to, nr_to_id(nr))` 查位图 | `caller_priv.may_send_to(target_sys_id)` 委派 `s_ipc_to` u64 位测试 | 一致 | — | priv.h:86 | kpriv.rs:387 | D3 u64 统一 |
-| `may_asynsend_to` | `may_send_to(rp,nr) \|\| rp->p_nr == nr` 允许 self-send | 未实现（当前用 `may_send_to` 替代） | 覆盖缺口 | P1 | priv.h:87 | — | 异步 IPC 允许 self-send |
+| `may_asynsend_to` | `may_send_to(rp,nr) \|\| rp->p_nr == nr` 允许 self-send | ✅ 已实现（ipc.rs:1456 `\|\| p_nr == caller_nr`；D-17，2026-09-06 补不对称测试 ×2） | 对齐 | P1 | priv.h:87 | — | 异步 IPC 允许 self-send |
 | `GET_BIT(s_k_call_mask, call_nr)` | 位图查 call_nr 是否允许 | `kcall_filter_check(caller_priv, call_nr)` u64 位测试 | 一致 | — | system.c:111 | ipc_filter.rs:72-80 | D3 u64 统一 |
 | `allow_ipc_filtered_msg` | 遍历 s_ipcf 过滤链，按 m_source/m_type 匹配，blacklist 默认 allow | 未实现 | 覆盖缺口 | P1 | system.c:803-874 | — | 细粒度过滤 |
 | `IPCF_POOL_ALLOCATE_SLOT` | 扫描池找 `type==IPCF_NONE` 槽位 | `IpcFilterPool::allocate` 找 `None` 槽位 | 一致（语义等价） | — | ipc_filter.h:59-70 | ipc_filter.rs:222-230 | D5 Option 替代哨兵 |
@@ -460,7 +460,7 @@ if call_denied {
 |--------|--------|----------|------|
 | `allow_ipc_filtered_msg` | system.c:803-874 | 未实现 | 12-ipc-core RECEIVE 路径实现后才有消费方 |
 | `allow_ipc_filtered_memreq` | system.c:879+ | ✅ 已实现（2026-08-14 核实） | 语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，do_vmctl.c:37-79 遍历时按过滤器跳过请求）——C 在 MEMREQ_GET 遍历时过滤，Rust 在 `dequeue_filtered` 消费 |
-| `may_asynsend_to` 不对称 | priv.h:87 | 未实现（当前用 `may_send_to` 替代） | 异步 IPC 路径完整接入 |
+| `may_asynsend_to` 不对称 | priv.h:87 | ✅ 已实现（2026-09-06，D-17：ipc.rs:1456 self 例外 + 不对称测试 ×2） | — |
 | `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | 未实现 | `allow_ipc_filtered_msg` 的子逻辑 |
 | `IPC_STATUS_*` | ipc.h:25-48 | ✅ 已实现 (P9-2) | `CpuContextArch::or_ipc_status_reg` + `proc.rs:1654-1679` + `ipc.rs` 4 路径 wire |
 
@@ -498,7 +498,7 @@ if call_denied {
 | 缺口 | C 位置 | Rust 状态 | 优先级 | 依赖 |
 |------|--------|----------|--------|------|
 | `allow_ipc_filtered_msg` | system.c:803-874 | 未实现 | P1 | 12-ipc-core RECEIVE 路径（当前 skeleton） |
-| `may_asynsend_to` 不对称 | priv.h:87 | 未实现（用 `may_send_to` 替代） | P1 | 异步 IPC 路径完整接入 |
+| `may_asynsend_to` 不对称 | priv.h:87 | ✅ 已实现（D-17，2026-09-06） | — | 异步 IPC 路径完整接入 |
 | `IPC_STATUS_*` 机制 | ipc.h:25-48 | ✅ 已实现 (P9-2) | — | — |
 | `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | 未实现 | P2 | `allow_ipc_filtered_msg` 子逻辑 |
 | `allow_ipc_filtered_memreq` | system.c:879+ | 未实现 | P2 | VM 页错误请求过滤 |

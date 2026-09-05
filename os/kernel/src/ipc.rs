@@ -2555,6 +2555,36 @@ mod tests {
         fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
+    /// D-17 fixture: the single table entry is addressed to SELF
+    /// (resolves to the caller's own endpoint — proc.c:1183-1185).
+    struct SelfEntryCopy;
+    impl UserCopy for SelfEntryCopy {
+        fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
+        fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
+        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+            Ok((Endpoint::SELF, Message::default(), AMF_VALID))
+        }
+        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
+    }
+
+    /// D-17 fixture: entry aimed at a fixed endpoint; captures the
+    /// per-entry result written back by `write_senda_result`.
+    struct CapturingCopy {
+        target: Endpoint,
+        result: core::cell::Cell<Option<i32>>,
+    }
+    impl UserCopy for CapturingCopy {
+        fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
+        fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
+        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+            Ok((self.target, Message::default(), AMF_VALID))
+        }
+        fn write_senda_result(&self, _table: VirBytes, _index: usize, result: i32, _flags: i32) -> Result<(), CopyError> {
+            self.result.set(Some(result));
+            Ok(())
+        }
+    }
+
     /// A UserCopy impl that always page-faults.
     struct PageFaultCopy;
     impl UserCopy for PageFaultCopy {
@@ -2720,6 +2750,83 @@ mod tests {
         assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         assert!(!engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert_eq!(engine.procs[b_idx].p_delivermsg.m_source, Endpoint(1));
+    }
+
+    /// D-17 (priv.h:87): `may_asynsend_to = may_send_to || self` — a
+    /// SENDA entry addressed to SELF (resolving to the caller's own
+    /// endpoint) passes the IPC mask gate even though the caller's own
+    /// `s_ipc_to` bit is clear (the boot convention deliberately keeps
+    /// the self bit clear). The target — the caller itself — is not
+    /// RECEIVING while executing senda, so the entry takes the pending
+    /// path: `s_asyn_pending` bit set for the caller's sys_id and the
+    /// table pointer kept for the next receive (C: proc.c:1293-1298,
+    /// 1320-1323).
+    #[test]
+    fn test_senda_self_target_allowed_without_mask_bit() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(ProcNr(1)).unwrap();
+        {
+            let procs = pt.procs_slice_mut();
+            let a = procs.get_mut(nr_to_idx(ProcNr(1)).unwrap()).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+            a.priv_id = Some(a_priv);
+        }
+        // Caller: SYS_PROC but an EMPTY s_ipc_to — the self exception
+        // must not depend on any mask bit.
+        {
+            let p = priv_table.get_mut(a_priv).unwrap();
+            p.flags.s_flags.insert(crate::capability::ProcessCapability::SYS_PROC);
+        }
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &SelfEntryCopy);
+        let outcome = engine.senda(ProcNr(1), VirBytes::new(0x1000), 1);
+        // Permission gate passed (CallDenied would surface as a table
+        // result, not the aggregate outcome) → aggregate OK.
+        assert!(outcome.is_delivered());
+        {
+            let p = engine.priv_table.get(a_priv).unwrap();
+            // Pending path: s_asyn_pending bit for the caller's own
+            // sys_id + table pointer kept for retry.
+            assert_eq!(p.signals.s_asyn_pending, 1u64 << a_priv);
+            assert_eq!(p.signals.s_asynsize, 1);
+        }
+    }
+
+    /// D-17 asymmetry counterpart: the same EMPTY `s_ipc_to` DENIES an
+    /// entry aimed at a different process (the sync-path rule
+    /// `may_send_to` has no self exception — priv.h:86 vs :87). The
+    /// denial is per-entry: the aggregate outcome stays OK and the
+    /// result is written back to the table entry (C: proc.c:1300-1307).
+    #[test]
+    fn test_senda_other_without_mask_bit_denied() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let a_priv = priv_table.assign_static(ProcNr(1)).unwrap();
+        let b_priv = priv_table.assign_static(ProcNr(2)).unwrap();
+        {
+            let procs = pt.procs_slice_mut();
+            let a = procs.get_mut(nr_to_idx(ProcNr(1)).unwrap()).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+            a.priv_id = Some(a_priv);
+            let b = procs.get_mut(nr_to_idx(ProcNr(2)).unwrap()).unwrap();
+            b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
+            b.p_getfrom_e = Endpoint::ANY;
+            b.priv_id = Some(b_priv);
+        }
+        // Caller: SYS_PROC, EMPTY s_ipc_to — no bit for the target.
+        {
+            let p = priv_table.get_mut(a_priv).unwrap();
+            p.flags.s_flags.insert(crate::capability::ProcessCapability::SYS_PROC);
+        }
+        let copy = CapturingCopy { target: Endpoint(2), result: core::cell::Cell::new(None) };
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &copy);
+        let outcome = engine.senda(ProcNr(1), VirBytes::new(0x1000), 1);
+        // Aggregate outcome is OK (SENA never fails as a whole); the
+        // denial lives in the per-entry result.
+        assert!(outcome.is_delivered());
+        assert_eq!(copy.result.get(), Some(ECALLDENIED));
     }
 
     #[test]
