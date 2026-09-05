@@ -7,6 +7,10 @@ Review must check the correct concurrency model for the module being reviewed:
 
 **Kernel**: SMP + BKL (Big Kernel Lock spinlock). Multi-CPU kernel execution with `CONFIG_SMP`. BKL is spinlock (busy-wait) — NO sleep/schedule/IPC inside critical section. `Rc`/`RefCell` NOT safe for cross-CPU sharing (need `Arc`+`Mutex`/`Atomic`). `UnsafeCell` safety must argue BKL-protection or per-CPU isolation, NOT "single-threaded".
 
+## 任务入口（review-cmds，2026-09-05）
+
+> 任务一级入口 = `prompt/review-rules/review-cmds.md` 的 6 个独立 cmd（full-review / style-fix / code-excellence / test-audit / todo-fix / style-bible）：单一目标 + scope 参数（默认 chapter 级——小范围 review 信噪比更高）+ 通用强制门（锚点纪律·模式 83 / 测试名对账·Gate E / 文风门 / translate 防线·模式 16+65 / fix-guard / 文档-代码同步）。进入任何 review 任务前，先按用户意图选择 cmd（口语触发词映射见 review-cmds.md §九），再按该 cmd 的加载清单取规则模块。
+
 ## ⛔ PROHIBITED BEHAVIORS
 1. **NEVER answer from memory.** Every claim about C code requires a grep/read result as evidence.
 2. **NEVER skip a check.** If you cannot execute it, write "UNVERIFIED: <reason>".

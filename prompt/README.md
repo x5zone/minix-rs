@@ -76,6 +76,7 @@ prompt/
 
 Review 规则集是项目在多轮迭代中积累的规则文档，定义了针对 Minix-RS 项目的所有 Review 要求。其逻辑顺序为：
 
+0. **review-cmds.md** — 任务命令规范（调度层）。6 个独立 cmd（full-review/style-fix/code-excellence/test-audit/todo-fix/style-bible）是任务一级入口：单一目标 + scope 参数（section/chapter/doc/range/dir）+ 强制门 + "不做"边界；含旧 Profile A-P/R/AG 的对账表（2026-09-05）。
 1. **review.md** — 核心框架，定义 **Rewrite / Refactor (code Refactor + design Refactor) / Architectural Evolution** 三层术语（原则层）。含执行模型按模块分层（用户态服务器单线程 vs 内核 SMP+BKL）、核心语义验证（Ground Truth 具体化，引用 review-core-semantics.md）、**Design First 原则 + §2.0 架构演进作为独立知识点维度 + P0 六分类（含 P0-design-deviation/missing/wrong/test-missing）**。
 2. **review-profiles.md** — 任务组合配置，决定不同场景加载哪些规则模块（策略层）。含 Profile O（卓越性专项）、Profile P（覆盖率专项）。
 3. **review-process.md** — 强制执行步骤，要求每个步骤必须产生可见中间产物（流程层）。含状态写入与收敛判断、Review Verification Protocol、§〇 执行模式选择（构造/快速/深度三模式）、Step 1.5 覆盖率穷举。

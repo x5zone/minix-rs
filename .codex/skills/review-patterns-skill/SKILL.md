@@ -1261,7 +1261,7 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 - 验证：`rg "// MINIX3 BUG:" os/ --type rust`
 - 来源：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏
 
-## §X.7 架构抽象与锚点纪律模式（模式 79-83，NEW 2026-09-05，来源 prompt/todo.md 条目 1 + 工作流迭代）
+## §X.7 架构抽象与锚点纪律模式（模式 79-83，NEW 2026-09-05）
 
 > 完整定义/反例：[review-rules/review-patterns.md §九](../../../prompt/review-rules/review-patterns.md)。反例源：05-clock-interrupt-init.md §4.7.1。
 

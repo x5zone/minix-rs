@@ -790,7 +790,7 @@ rg "error|fail|EPERM|EINVAL|ENOMEM|panic|assert" {doc_file} -i
 **Step 2.9.4：验证 no_std 兼容性**
 检查 Ch3 设计是否依赖 `std::` 功能。
 
-**Step 2.9.5：trait/类型抽象质量交叉核对（NEW 2026-09-05，落地 prompt/todo.md 条目 2）**
+**Step 2.9.5：trait/类型抽象质量交叉核对（NEW 2026-09-05）**
 
 > **背景**：trait 抽象问题主要藏在 Ch3（Rust 设计决策）中，而此前 §2.9 只验证"可追溯/场景覆盖/no_std"，未评估"抽象本身好不好"——VmPagingExt 反例（已补录为 review-patterns.md 模式 25）在 doc-only review 中被系统性漏检，直到阅读讨论时才暴露。本步骤让 doc review 直接可执行 trait 质量判断，无需加载 code-checklist §2.5 全文。
 

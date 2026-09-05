@@ -513,3 +513,16 @@ rg "// MINIX3 BUG:" os/ --type rust -n
 **详细规则**：见 `prompt/skill/review-patterns-skill.md §模式 78`。
 
 **首次发现**：2026-08-14 规则集优化（从 project_memory 沉淀的多个 C bug 修复案例抽象）。
+
+
+### 模式 79-83: 架构抽象与锚点纪律（NEW 2026-09-05，review-patterns.md §九）
+
+| id | 名称 | 一句话判据 | 严重度 |
+|---|---|---|---|
+| 79 | trait 边界按调用时序划分 | trait 方法仅因"同一阶段被调用"聚集，无能力共性 | P1（跨模块强制依赖 P0） |
+| 80 | 为 mock 预建抽象 | trait 全部实现体行为等价（mock 占位/"未实现的一致"） | P2（阻塞理解 P1） |
+| 81 | 生产实现触碰测试状态 | 非 `#[cfg(test)]` 路径写/读 `MOCK_*` 全局 | P0 |
+| 82 | target-specific cfg 泄漏 | arch crate 之外用 `#[cfg(target_arch)]` 选行为 | P1 |
+| 83 | 无锚点知识点断言 | 机制性断言无 file:line/来源锚点且无 `[待验证]` 标注 | P0 |
+
+完整定义/反例/验证命令：`prompt/review-rules/review-patterns.md §九`（反例源：05-clock-interrupt-init.md §4.7.1）。
