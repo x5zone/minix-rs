@@ -864,12 +864,12 @@ fn dispatch_schedule(
     };
     let cpu_opt = if sched.cpu == -1 { None } else { Some(sched.cpu as u32) };
 
-    let target = match proc_table.get_mut(target_nr) {
-        Some(p) => p,
-        None => return KcallResult::Ok(EINVAL),
-    };
+    // D-52: sched_proc takes the table (scheduler-aware rts_set/rts_unset
+    // dequeue/re-enqueue the process around the parameter update — C
+    // system.c:671-698 RTS_SET/RTS_UNSET semantics).
     match crate::sched::sched_proc(
-        target,
+        proc_table,
+        target_nr,
         crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced },
     ) {
         Ok(()) => KcallResult::Ok(0),

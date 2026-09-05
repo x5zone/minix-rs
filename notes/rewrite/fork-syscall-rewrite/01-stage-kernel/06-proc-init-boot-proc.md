@@ -1067,12 +1067,11 @@ KPriv 内部的 8 子结构分组见 §3.10（索引节）与 [22-privilege.md �
 
 **并发协议**——BKL 提供互斥，Atomic 提供类型安全，Relaxed/Acquire 区分"读场景"三层协同：
 
-**（一）概念结论**。**主路径写者**在 BKL 保护区内修改 RTS：`rts_set`/`rts_unset`（[proc_table.rs:282/304](file:///os/kernel/src/proc_table.rs#L282-L304)）均要求 caller 已持 BKL；其他 CPU 的 `AtomicU32` 读则不持 BKL。具体到每个字段用 `Relaxed` 还是 `Acquire` 取决于"读者是否在持锁状态下"——下面分开讲。**注意**：`sched_proc`（[sched.rs:321-411](file:///os/kernel/src/sched.rs#L321-L411)）是**特例**——它持 `&mut KProcess` 不经 BKL 改 RTS 位（见下方（二）裸路径），对 BKL 体系无依赖，靠 syscall 出口统一重调度（pick_proc）。
+**（一）概念结论**。**主路径写者**在 BKL 保护区内修改 RTS：`rts_set`/`rts_unset`（[proc_table.rs:282/304](file:///os/kernel/src/proc_table.rs#L282-L304)）均要求 caller 已持 BKL；其他 CPU 的 `AtomicU32` 读则不持 BKL。具体到每个字段用 `Relaxed` 还是 `Acquire` 取决于"读者是否在持锁状态下"——下面分开讲。**注意**：~~`sched_proc` 是**特例**——它持 `&mut KProcess` 不经 BKL 改 RTS 位~~ → **D-52 已解决（2026-09-06，用户裁决"完全对齐 C"）**：`sched_proc` 现持 `&mut ProcessTable`，NO_QUANTUM 的 set/clear 改经 `rts_set`/`rts_unset`（调度器感知，dequeue/enqueue 副作用齐备，C system.c:671-698 对齐）；生产调用点（SYS_SCHEDULE / SYS_SCHEDCTL）本就持 BKL 并传表。原"裸路径"写法已删除（见下方（二）的 D-52 关闭注）。
 
 **（二）写路径分两条**——`AtomicU32` 装的是位值，谁改、用什么封装，是两个独立设计点：
 - **封装路径**：`table.rts_set(ProcNr(0), RtsFlagsBits::PROC_STOP)`（[sched.rs:503](file:///os/kernel/src/sched.rs#L503)）经 `rts_set` 封装（[proc_table.rs:282](file:///os/kernel/src/proc_table.rs#L282)），RTS 变化自动联动 dequeue/enqueue——这是调度器主体采用的写法。
-- **裸路径**：`p.p_rts_flags.set(RtsFlagsBits::NO_QUANTUM)`（[sched.rs:366](file:///os/kernel/src/sched.rs#L366)）、`p.p_rts_flags.clear(RtsFlagsBits::NO_QUANTUM)`（[sched.rs:408](file:///os/kernel/src/sched.rs#L408)）**不经** `rts_set`/`rts_unset`，是 `sched_proc`（`SYS_SCHEDPROC` 实现，[sched.rs:321-411](file:///os/kernel/src/sched.rs#L321-L411)）内部的**临时标记**写法——它拿 `&mut KProcess`（无法访问调度队列），只能裸改位；依赖 syscall 出口统一重调度（pick_proc）。
-  - 与 C 的差异：`sched_proc` 的裸 set/clear **尚未完全对齐 C 的 `RTS_SET/RTS_UNSET` 宏**（system.c:674/697，宏会触发 dequeue/enqueue）。当前行为是"出口重调度"模型（对外部行为正确，因 sched_proc 改参数后统一走 pick_proc），但改 priority 后 runqueue 位置不立即重排。是否改为持有 `&mut ProcessTable` 并完整对齐 C 语义，**deferred 到调度相关文档（11-scheduling-primitives）review 时再决策**（见 todo.md D-52）。
+- ~~**裸路径**：`sched_proc` 拿 `&mut KProcess` 只能裸改位~~ → **D-52 已解决（2026-09-06）**：`sched_proc` 签名改为持 `&mut ProcessTable` + `nr`，NO_QUANTUM 置位/清除改经 `rts_set`/`rts_unset`（带 dequeue/enqueue 副作用，完全对齐 C 的 RTS_SET/RTS_UNSET 宏语义，system.c:671-698）；runnable 守卫对齐 C（仅 runnable 进程被预置 NO_QUANTUM 摘队，更新后 RTS_UNSET 重入队排队尾）。改 priority 后 runqueue 位置**立即重排**。"出口重调度"模型的旧描述已废止。
 
 **（三）读路径按字段分**——读的核心问题是"是否在持锁状态下"，决定 `Acquire` vs `Relaxed`：
 

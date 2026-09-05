@@ -664,11 +664,12 @@ pub fn dispatch_schedctl(
         // Non-negative i32 fits in u32 without truncation.
         let cpu_opt = if cpu == -1 { None } else { Some(cpu as u32) };
 
-        let target = match proc_table.get_mut(target_nr) {
-            Some(p) => p,
-            None => return KcallResult::Ok(EINVAL),
-        };
-        match crate::sched::sched_proc(target, crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced: false }) {
+        // D-52: pass the table (scheduler-aware rts wrappers).
+        match crate::sched::sched_proc(
+            proc_table,
+            target_nr,
+            crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced: false },
+        ) {
             Ok(()) => {
                 // C: do_schedctl.c:39 — p->p_scheduler = NULL
                 // Kernel is now the scheduler; clear any user-space scheduler.
@@ -682,7 +683,9 @@ pub fn dispatch_schedctl(
                 // a bug where a failed `sched_proc` (e.g. EINVAL on bad
                 // priority) would prematurely clear an existing user-space
                 // scheduler, leaving the target orphaned with no scheduler.
-                target.p_sched.scheduler = None;
+                if let Some(target) = proc_table.get_mut(target_nr) {
+                    target.p_sched.scheduler = None;
+                }
             }
             Err(e) => {
                 // Propagate the errno from sched_proc (EINVAL / EBADCPU).
