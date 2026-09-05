@@ -362,6 +362,13 @@ impl RamDisk {
         self.blocks.len()
     }
 
+    /// Mutable bytes of one block for image preparation and tests.
+    /// Production servers read and write through the cache instead; direct
+    /// access exists so tests and image builders need no driver.
+    pub fn block_mut(&mut self, index: usize) -> Option<&mut [u8]> {
+        self.blocks.get_mut(index).map(Vec::as_mut_slice)
+    }
+
     /// Label currently bound to a device, if any.
     pub fn label_of(&self, device: DevId) -> Option<&str> {
         self.labels

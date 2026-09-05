@@ -322,7 +322,8 @@
     "TableEntry"
   ],
   "fs_mount": [
-    "MFS_TABLE"
+    "mount",
+    "MountedFs"
   ],
   "fs_sync": [
     "ShutdownDecision::SyncThenTerminate"
@@ -356,5 +357,84 @@
   "struct super_block": [
     "Superblock",
     "DiskSuperblock"
+  ],
+  "get_inode": [
+    "InodeTable::get"
+  ],
+  "find_inode": [
+    "InodeTable::find"
+  ],
+  "put_inode": [
+    "InodeTable::put",
+    "ReleaseOutcome"
+  ],
+  "alloc_inode": [
+    "InodeTable::allocate"
+  ],
+  "wipe_inode": [
+    "allocate"
+  ],
+  "free_inode": [
+    "InodeTable::free_number"
+  ],
+  "update_times": [
+    "InodeTable::stamp_times"
+  ],
+  "rw_inode": [
+    "read_from_disk",
+    "write_to_disk"
+  ],
+  "new_icopy": [
+    "DiskInode::from_bytes",
+    "DiskInode::to_bytes"
+  ],
+  "dup_inode": [
+    "InodeTable::duplicate"
+  ],
+  "d2_inode": [
+    "DiskInode"
+  ],
+  "fs_unmount": [
+    "unmount",
+    "UnmountReport"
+  ],
+  "fs_mountpt": [
+    "check_mountpoint"
+  ],
+  "fs_lookup": [
+    "lookup_name"
+  ],
+  "advance": [
+    "lookup_name"
+  ],
+  "search_dir": [
+    "search_blocks",
+    "SearchOp"
+  ],
+  "struct direct": [
+    "DirEntry"
+  ],
+  "fs_create": [
+    "create_file",
+    "NewFile"
+  ],
+  "fs_mknod": [
+    "create_device"
+  ],
+  "fs_mkdir": [
+    "create_dir"
+  ],
+  "fs_slink": [
+    "create_symlink"
+  ],
+  "new_node": [
+    "new_node",
+    "Created"
+  ],
+  "fs_seek": [
+    "mark_seek"
+  ],
+  "count_free_bits": [
+    "count_free_bits"
   ]
 }

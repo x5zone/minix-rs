@@ -229,6 +229,12 @@ pub struct Superblock {
     pub indirect_per_block: u32,
     /// First data zone (computed when the small field is zero).
     pub first_data_zone: u64,
+    /// Small zone total, preserved verbatim for write-back (`s_nzones`).
+    pub zone_total_small: u16,
+    /// Small first data zone as stored (`s_firstdatazone_old`).
+    pub first_data_zone_small: u16,
+    /// Format sub-version, preserved verbatim (`s_disk_version`).
+    pub disk_version: u8,
     /// Mounted device.
     pub device: u64,
     /// Mounted read-only.
@@ -318,11 +324,37 @@ pub fn parse_superblock(
         direct_zones: DIRECT_ZONE_COUNT as u32,
         indirect_per_block: (block_size / core::mem::size_of::<u32>()) as u32,
         first_data_zone,
+        zone_total_small: disk.zone_total_small,
+        first_data_zone_small: disk.first_data_zone_small,
+        disk_version: disk.disk_version,
         device,
         read_only,
         isearch: 0,
         zsearch: 0,
     })
+}
+
+impl Superblock {
+    /// Rebuild the thirteen stored fields for write-back (`rw_super` write
+    /// half, `super.c:222-225`). Computed and runtime fields stay in memory;
+    /// only the disk thirteen travel. The pad word is written zero.
+    pub const fn rebuild_disk(&self) -> DiskSuperblock {
+        DiskSuperblock {
+            inode_count: self.inode_count,
+            zone_total_small: self.zone_total_small,
+            inode_map_blocks: self.inode_map_blocks,
+            zone_map_blocks: self.zone_map_blocks,
+            first_data_zone_small: self.first_data_zone_small,
+            log_zone_size: 0,
+            flags: self.flags,
+            max_size: self.max_size as i32,
+            zones: self.zones as u32,
+            magic: MAGIC_V3,
+            pad: 0,
+            block_size: self.block_size as u16,
+            disk_version: self.disk_version,
+        }
+    }
 }
 
 /// Refuse a superblock write on a read-only file system.
@@ -355,9 +387,13 @@ pub struct Bitmap {
 }
 
 impl Bitmap {
-    /// Empty map of `bit_count` bits, all free.
+    /// Empty map of `bit_count` bits, all free except reserved bit zero
+    /// (always set on disk, never allocated).
     pub fn new(bit_count: u64) -> Self {
-        let words = alloc::vec![0u32; bit_count.div_ceil(32) as usize];
+        let mut words = alloc::vec![0u32; bit_count.div_ceil(32) as usize];
+        if bit_count > 0 {
+            words[0] |= 1;
+        }
         Self { words, bit_count }
     }
 
@@ -374,28 +410,31 @@ impl Bitmap {
     /// C: `alloc_bit` (`super.c:29-106`) minus storage: origin past the end
     /// restarts at zero, each word is byte-swapped around the read on
     /// foreign-endian images (identity here, spelled out at the call site),
-    /// the first free bit wins, allocation marks dirty. Returns `None` when
-    /// the map is full.
+    /// the first free bit wins, allocation marks dirty. Bit zero is
+    /// reserved and never returned. Returns `None` when the map is full.
     pub fn alloc(&mut self, origin: u64) -> Option<u64> {
-        if self.bit_count == 0 {
+        if self.bit_count <= 1 {
             return None;
         }
-        let mut bit = if origin >= self.bit_count { 0 } else { origin };
-        for _ in 0..self.bit_count {
+        let mut bit = if origin == 0 || origin >= self.bit_count {
+            1
+        } else {
+            origin
+        };
+        let start = bit;
+        loop {
             if !self.test(bit) {
                 self.words[bit as usize / 32] |= 1 << (bit % 32);
-                // Bit zero is failure, never allocation: skip it.
-                if bit == 0 {
-                    continue;
-                }
                 return Some(bit);
             }
             bit += 1;
             if bit >= self.bit_count {
-                bit = 0;
+                bit = 1;
+            }
+            if bit == start {
+                return None;
             }
         }
-        None
     }
 
     /// Clear a bit. Returns false for a double free (the C code aborts here:

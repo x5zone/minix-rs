@@ -12,7 +12,11 @@
 
 extern crate alloc;
 
+pub mod dir;
+pub mod inode;
 pub mod mfs_cache;
+pub mod mount;
+pub mod open;
 pub mod startup;
 pub mod superblock;
 pub mod table;

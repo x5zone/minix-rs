@@ -16,6 +16,8 @@ use minix_fs::protocol::RequestNumber;
 pub enum EntryStatus {
     /// Served through the block-transfer stage (document 05).
     LiveViaBlockTransfer,
+    /// Implemented in this crate (mount lifecycle, document 10).
+    LiveInCrate,
     /// Owned by a later document; the framework answers "not implemented"
     /// until that document lands.
     PendingDocument,
@@ -40,13 +42,13 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_mount",
         request: RequestNumber::ReadSuper,
         owner: "10-mfs-mount.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_unmount",
         request: RequestNumber::Unmount,
         owner: "10-mfs-mount.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_lookup",
@@ -178,7 +180,7 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_mountpt",
         request: RequestNumber::MountPoint,
         owner: "10-mfs-mount.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_statvfs",
@@ -224,11 +226,12 @@ pub const MFS_TABLE: [TableEntry; 31] = [
     },
 ];
 
-/// Rows already served through the block-transfer stage.
+/// Rows already served: block-transfer stage plus this crate.
 pub fn live_entries() -> impl Iterator<Item = &'static TableEntry> {
-    MFS_TABLE
-        .iter()
-        .filter(|entry| entry.status == EntryStatus::LiveViaBlockTransfer)
+    MFS_TABLE.iter().filter(|entry| {
+        entry.status == EntryStatus::LiveViaBlockTransfer
+            || entry.status == EntryStatus::LiveInCrate
+    })
 }
 
 /// Rows awaiting their owning document.
@@ -269,8 +272,8 @@ mod tests {
     #[test]
     fn test_table_has_thirty_one_rows_like_c() {
         assert_eq!(MFS_TABLE.len(), 31);
-        assert_eq!(live_entries().count(), 5);
-        assert_eq!(pending_entries().count(), 26);
+        assert_eq!(live_entries().count(), 8);
+        assert_eq!(pending_entries().count(), 23);
     }
 
     #[test]
