@@ -26,7 +26,7 @@
 | 📌 保持 DEFERRED（已核实依赖仍成立） | **28 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）+ §18.5 cause_sig 收尾 backlog；其中 D-35 本地路径已实现（SMP IPI pending）、D-38 ①④ 仍 DEFERRED（SMP 异常路径）、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**（~~D-57 已于 2026-09-05 实施完成，移入上方第二批"已修复"行~~；~~D-53 已于 2026-09-04 实施完成，移入"已修复"行~~；~~D-6/D-11 已于 2026-09-05 实施完成，移入上方 2026-09-05 行~~；~~D-13 已于 2026-09-05 实施完成，移入上方第三批"已修复"行~~；~~D-49 已于 2026-09-05 实施完成，移入上方第四批"已修复"行~~） |
 | ☐ 未解决（架构建议，待专项） | **10 项** | A1/A2/B1/C1/D/D2/E1/G1/M1/R1（均需设计决策或专项重构，见各自章节；~~A3 已于 2026-09-02 实施完成，见 §2 A3~~） |
 | ✅ 已修复（doc 准确性问题，2026-08-18 GPT 评论评审） | **5 项** | §20.6 FIX-06-GPT-1/1b（§3.9 + §3.1 "唯一组合"措辞降级）+ FIX-06-GPT-2/2b（§3.8 + §3.1 "BSS"表述修正）+ FIX-06-GPT-2c（§3.15 决策表"BSS 段零运行时开销"修正） |
-| ✅ 已修复（代码落地 + 测试通过，2026-09-05，第四批） | **1 项 + 1 P0 顺带** | **D-49** `set_sendto_bit` 运行时路径全链落地（`PrivTable::set_sendto_bit`/`unset_sendto_bit`/`fill_sendto_mask`/`update_priv` + `IpcMask::set_bit/unset_bit/has_bit` + `TrapMask::allows_more_than_receive`；接线 SET_SYS 默认掩码 / UPDATE_SYS / `dispatch_update` 掩码继承三处；`update_from_request` 拆分为私有 `apply_fields_from_request` + 命名错误 `PrivUpdateError`，D3 方向）；**顺带 P0**：SET_SYS 成功后 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298——新 dispatch 测试 `test_dispatch_privctl_set_sys_fills_guarded_default_mask` 首跑即暴露）。新增 8 测试（kpriv 7 + dispatch 1）；doc 22 §4.6/§4.6.1/§4.7 + doc 25 §4 同步；boot 模板路径残留差异（自位/预授权）记录于 doc 22 §4.6.1。`cargo test -p minix-kernel --lib` → 664 passed, 0 failed, 6 ignored。详 §7.1 D-49 行 |
+| ✅ 已修复（代码落地 + 测试通过，2026-09-05，第四批） | **1 项 + 1 P0 顺带** | **D-49** `set_sendto_bit` 运行时路径全链落地（`PrivTable::set_sendto_bit`/`unset_sendto_bit`/`fill_sendto_mask`/`update_priv` + `IpcMask::set_bit/unset_bit/has_bit` + `TrapMask::allows_more_than_receive`；接线 SET_SYS 默认掩码 / UPDATE_SYS / `dispatch_update` 掩码继承三处；`update_from_request` 拆分为私有 `apply_fields_from_request` + 命名错误 `PrivUpdateError`，D3 方向）；**顺带 P0**：SET_SYS 成功后 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298——新 dispatch 测试 `test_dispatch_privctl_set_sys_fills_guarded_default_mask` 首跑即暴露）。新增 8 测试（kpriv 7 + dispatch 1）；doc 22 §4.6/§4.6.1/§4.7 + doc 25 §4 同步；boot 模板路径残留差异（自位；预授权经回归论证不可观察）记录于 doc 22 §4.6.1 + 独立追踪为文末 **OQ-D49-1**。`cargo test -p minix-kernel --lib` → 664 passed, 0 failed, 6 ignored。详 §7.1 D-49 行 |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
 
@@ -453,7 +453,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-46 | 中断 | Timer IRQ 链注册 dummy handler（lib.rs:1901-1921） | 08 §4 | 待 trap entry 连接 `IrqManager::dispatch`（Step 1.5.7） |
 | D-47 | 调试 | `util_stacktrace()` 不展开栈 | 27 §6.3 | 待 arch stack walker |
 | D-48 | panic | panic handler 增强：消息输出 / CPU 号 / `minix_shutdown(0)` / 栈展开 | 27 §6.3 | 待 shutdown 协议 + arch stack walker + `minix_sys::write(STDERR)` |
-| D-49 | 特权 | `set_sendto_bit`（system.c:307-330 运行时设置 s_ipc_to 位） | 22 §4.6 | **✅ 已解决（2026-09-05，第四批）**：`PrivTable::set_sendto_bit` / `unset_sendto_bit` / `fill_sendto_mask` 三原语 + `PrivTable::update_priv` 组合入口（kpriv.rs）——守卫（未关联 slot / 自身 → 降级为清己位）+ 回执对称（RECEIVE-only 目标跳过，`TrapMask::allows_more_than_receive`）+ fill 撤销修复（清位同步清别家回执位）。`IpcMask` 补 `set_bit`/`unset_bit`/`has_bit`。三处接线：SET_SYS 默认掩码（`fill_sendto_mask(ALL)` 替代裸 `IpcMask::ALL`）、UPDATE_SYS（`update_priv` 替代 `update_from_request` 裸拷贝）、`dispatch_update` 掩码继承（逐位 `set_sendto_bit` + 每轮迭代重读 src 掩码，对齐 C do_update.c:107-112 活读取；原 union 合并）。`update_from_request` 拆分为私有 `apply_fields_from_request` + 命名错误 `PrivUpdateError`（BadIrqCount/BadIoRange/BadMemRange/NoSuchSlot，D3 方向）。**顺带 P0 修复**：SET_SYS 成功后 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298；Rust `PrivTable::get_priv` 只达 priv 侧），新 dispatch 测试首跑暴露。新增 8 测试（kpriv 7：守卫/对称/撤销修复/guard-case 往返位不动/update_priv Err 路径/wire decode 重构 + dispatch 1：SET_SYS 端到端默认掩码），`cargo test -p minix-kernel --lib` → 664 passed, 0 failed, 6 ignored。doc 22 §4.6 重命名 + §4.6.1 新增（设计讨论：不变量/落点选择/seL4·Redox·Linux 对照/boot 模板残留差异）+ §4.7 行同步；doc 25 §4 两处掩码继承描述同步。**Boot 残留差异**（有意不动，单独记录）：CapabilityTemplate 的 `IpcMask::ALL` 含自位 + 预授权未绑定 slot，与 C boot fill 守卫语义存在窄差异（仅 VM/RS 模板持有者可观察），是否改为"模板掩码 + 守卫 fill"待 boot 能力语义 OQ 决策。 |
+| D-49 | 特权 | `set_sendto_bit`（system.c:307-330 运行时设置 s_ipc_to 位） | 22 §4.6 | **✅ 已解决（2026-09-05，第四批）**：`PrivTable::set_sendto_bit` / `unset_sendto_bit` / `fill_sendto_mask` 三原语 + `PrivTable::update_priv` 组合入口（kpriv.rs）——守卫（未关联 slot / 自身 → 降级为清己位）+ 回执对称（RECEIVE-only 目标跳过，`TrapMask::allows_more_than_receive`）+ fill 撤销修复（清位同步清别家回执位）。`IpcMask` 补 `set_bit`/`unset_bit`/`has_bit`。三处接线：SET_SYS 默认掩码（`fill_sendto_mask(ALL)` 替代裸 `IpcMask::ALL`）、UPDATE_SYS（`update_priv` 替代 `update_from_request` 裸拷贝）、`dispatch_update` 掩码继承（逐位 `set_sendto_bit` + 每轮迭代重读 src 掩码，对齐 C do_update.c:107-112 活读取；原 union 合并）。`update_from_request` 拆分为私有 `apply_fields_from_request` + 命名错误 `PrivUpdateError`（BadIrqCount/BadIoRange/BadMemRange/NoSuchSlot，D3 方向）。**顺带 P0 修复**：SET_SYS 成功后 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298；Rust `PrivTable::get_priv` 只达 priv 侧），新 dispatch 测试首跑暴露。新增 8 测试（kpriv 7：守卫/对称/撤销修复/guard-case 往返位不动/update_priv Err 路径/wire decode 重构 + dispatch 1：SET_SYS 端到端默认掩码），`cargo test -p minix-kernel --lib` → 664 passed, 0 failed, 6 ignored。doc 22 §4.6 重命名 + §4.6.1 新增（设计讨论：不变量/落点选择/seL4·Redox·Linux 对照/boot 模板残留差异）+ §4.7 行同步；doc 25 §4 两处掩码继承描述同步。**Boot 残留差异**（有意不动，独立追踪为文末 **OQ-D49-1**）：CapabilityTemplate 的 `IpcMask::ALL` 含自位——boot 服务 SEND 自身 endpoint 时 C 在掩码层拒绝（`ECALLDENIED`，proc.c:536-541）而 Rust 放行；候选差异"预授权未绑定 slot"经回归论证不可观察（详见 OQ-D49-1 + doc 22 §4.6.1）。 |
 | D-50 | 架构清理 | `set_ptproc`/`PostInitArch`/`MemoryInitArch`/`FreePdeSlots` 待废弃（createpde 已被 Direct Map 取代） | 07 §1.4 TODO-07-1 | ✅ **已修复（2026-08-17，Action Item #1）**：`init_post_and_memory` 重构为确认就绪 + 相关类型链/statics/测试全部删除 |
 | D-51 | IPC 协议 | `PrivUpdateRequest` 字段顺序全局重构（按读写时机 / 锁粒度 / 协议语义切，让 14 字段贴近 KPriv 8 子结构分组语义） | 06 §3.10 | **✅ 已解决（2026-09-03）**：字段序冻结为 KPriv 8 子结构镜像（去 `PrivRuntime`）：`s_id / s_flags / s_init_flags / s_sig_mgr / s_bak_sig_mgr / s_trap_mask / s_ipc_to / s_k_call_mask / s_nr_io_range / s_io_tab / s_nr_irq / s_irq_tab / s_nr_mem_range / s_mem_tab`——s_id 归位 Identity 首；I/O 组在 IRQ 组前（对齐 `PrivIo` 与 C priv.h 惯例）；资源组计数在表前；signal manager 在 Signals 位、init 贴近 s_flags。三处同步落地：(a) `kpriv.rs` `PrivUpdateRequest` + `new()`（`TODO(backlog)` 锚点移除，改为冻结序说明）；(b) RS `privilege.rs` `Privilege`/`vacant()`/`boot_priv()` 同序镜像；(c) `data_copy` 大小由内核侧 `size_of::<PrivUpdateRequest>()` 统一计算（repr(C) 布局随新序自动一致，RS 无独立 size 源）。文档同步：06 §3.10、22 §4.2（协议结构字段序注 + KPriv 片段 flags/init 顺序对齐代码）、03-rs §3.2/§4.2。`cargo test -p minix-kernel -p minix-rs` 全过。 |
 | D-52 | 调度 | `sched_proc` 裸 `set/clear(NO_QUANTUM)` 是否对齐 C 的 `RTS_SET/RTS_UNSET` dequeue/enqueue 语义（二选一？） | 06 §3.3 / 11（待写） | **deferred 到 11-scheduling-primitives review（2026-08-31 标记，用户决策）**：当前 `sched_proc`（sched.rs:321-411）拿 `&mut KProcess` 只能裸改 RTS 位（[sched.rs:366/408](file:///os/kernel/src/sched.rs#L366)），绕过了 `rts_set/rts_unset` 的 enqueue/dequeue 封装（proc_table.rs:282-316）——依赖 syscall 出口统一 pick_proc 重调度。C 的 `RTS_SET/RTS_UNSET(RTS_NO_QUANTUM)`（system.c:674/697）宏会立即 dequeue/enqueue。**决策待定**：完全对齐 C（改 `sched_proc` 签名为持有 `&mut ProcessTable` 并调用封装）vs 在更高层对齐（保留出口重调度模型，文档标注差异）。改 priority 后 runqueue 位置不立即重排是当前模型与 C 的实际行为差。已同步在 `06-proc-init-boot-proc.md §3.3` 写侧代码证据中标注该差异与 deferred 决策。 |
@@ -2152,3 +2152,27 @@ rg "架构范围说明" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-pr
 **建议**：待用户态进程落地、信号路径可测后再实现；当前不可达路径无需占用设计决策。
 
 **状态（2026-09-05）**：✅ 已实现——`is_lethal`（syscall_signal.rs:101-103）+ SELF 致命子路径（syscall_signal.rs:210-256：backup 提升 + `RTS_UNSET(NO_PRIV)` + 递归 + 无 backup panic）落地（见 §7.1 D-11 行 + `.design/19-design.v2.md`）。本段为历史归档，保留原始 deferral 记录。
+
+---
+
+## D-49 实施发现：boot 能力模板 sendto 掩码残留差异（2026-09-05，OQ-D49-1）
+
+> **状态：🟡 Open Question（待用户决定）**。D-49（`set_sendto_bit` 运行时路径）落地时确认：
+> runtime 路径（SET_SYS / UPDATE_SYS / do_update）已完全对齐 C 的 `fill_sendto_mask`
+> 守卫/对称语义；boot 路径走文档化的 `CapabilityTemplate` 设计（doc 22 §3 D3），与 C
+> boot fill（main.c:244）存在一处**可观察**残留差异，登记如下待裁决。
+
+| 侧 | 行为 | 位置 |
+|----|------|------|
+| C（ground truth） | fill 的 self 守卫使 `s_ipc_to` 自位**恒为 0**——boot 服务 SEND 自身 endpoint 在掩码层被拒（`ECALLDENIED`） | system.c:316-319 + main.c:244；proc.c:536-541 经 `may_send_to` |
+| Rust | `CapabilityTemplate::Vm` / `RootService` 的 `ipc_mask() = IpcMask::ALL`（含自位）——boot 服务 SEND 自身 endpoint 通过掩码层，进入阻塞路径 | os/kernel/src/capability.rs 模板；doc 22 §4.6.1 |
+
+**影响范围**：仅 boot 模板持有者（VM/RS）SEND 自身 endpoint 这一病态场景。另一候选差异"预授权未绑定 slot"经回归论证**不可观察**：slot 未绑定时没有 endpoint，IPC 层解析不出目标；绑定时 C 由绑定方自己的 SET_SYS fill 回执补全，终态一致（论证见 doc 22 §4.6.1 "boot 路径的差异"段）。
+
+**选项**：
+- A. 保留现状（模板 `ALL` 含自位）——模板 correct-by-construction 最简；自 SEND 属病态场景，进入阻塞路径后由既有死锁语义暴露
+- B. 模板掩码 + 守卫 fill——`grant_capability` 落模板掩码后对全表跑一次 `fill_sendto_mask(priv_id, 模板掩码)`，自位/未绑定 slot 被守卫清除；与 C boot fill 终态完全一致，代价约 1 行 + boot 能力测试更新
+
+**AI 倾向**：B——"自位恒清"是 C 模型的全域不变量，模板路径成为唯一例外不够干净；但触及 boot 能力授予的文档化设计（doc 06 §3.2 / doc 22 §3 D3），故上交而非擅动。
+
+**关联**：doc 22 §4.6.1（详细论证）、§7.1 D-49 行、§0.1 第四批行。
