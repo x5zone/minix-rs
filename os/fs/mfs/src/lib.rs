@@ -15,6 +15,7 @@ extern crate alloc;
 pub mod dir;
 pub mod inode;
 pub mod link;
+pub mod maint;
 pub mod meta;
 pub mod mfs_cache;
 pub mod mount;
