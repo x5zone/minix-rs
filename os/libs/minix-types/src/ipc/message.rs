@@ -206,6 +206,20 @@ pub union MessageUnion {
     pub m_mib_lsys_call: MessMibLsysCall,
     /// MIB: subtree description fetch (MIB → remote service). C: `message.m_mib_lsys_info` — ipc.h:1571
     pub m_mib_lsys_info: MessMibLsysInfo,
+    /// IPC: semaphore create (user → IPC). C: `message.m_lc_ipc_semget` — ipc.h:2449
+    pub m_lc_ipc_semget: MessLcIpcSemget,
+    /// IPC: semaphore control (user → IPC). C: `message.m_lc_ipc_semctl` — ipc.h:2448
+    pub m_lc_ipc_semctl: MessLcIpcSemctl,
+    /// IPC: semaphore operations (user → IPC). C: `message.m_lc_ipc_semop` — ipc.h:2450
+    pub m_lc_ipc_semop: MessLcIpcSemop,
+    /// IPC: shared memory create (user → IPC). C: `message.m_lc_ipc_shmget` — ipc.h:2454
+    pub m_lc_ipc_shmget: MessLcIpcShmget,
+    /// IPC: shared memory attach (user → IPC). C: `message.m_lc_ipc_shmat` — ipc.h:2451
+    pub m_lc_ipc_shmat: MessLcIpcShmat,
+    /// IPC: shared memory detach (user → IPC). C: `message.m_lc_ipc_shmdt` — ipc.h:2453
+    pub m_lc_ipc_shmdt: MessLcIpcShmdt,
+    /// IPC: shared memory control (user → IPC). C: `message.m_lc_ipc_shmctl` — ipc.h:2452
+    pub m_lc_ipc_shmctl: MessLcIpcShmctl,
     /// Input: driver configuration (server → driver, one-way). C: `message.m_input_linputdriver_input_conf` — ipc.h:2434
     pub m_input_linputdriver_input_conf: MessInputLinputdriverInputConf,
     /// Input: set keyboard lights (server → driver, one-way). C: `message.m_input_linputdriver_setleds` — ipc.h:2435
@@ -2966,6 +2980,261 @@ impl Default for MessLinputdriverInputEvent {
             value: 0,
             flags: 0,
             _padding: [0; 36],
+        }
+    }
+}
+
+/// IPC semaphore-create payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_semget` — `mess_lc_ipc_semget { key_t key; int nr;
+/// int flag; int retid; uint8_t padding[40]; }`
+/// (minix3/minix/include/minix/ipc.h:374-380).
+///
+/// Wire layout (32-bit C sender): `key` @0 (i32), `nr` @4 (i32),
+/// `flag` @8 (i32), `retid` @12 (i32, reply slot), padding @16..56.
+/// `retid` is written by the server on reply; the request leaves it zeroed
+/// (libc memsets the message before filling the request fields).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcSemget {
+    /// Lookup or create key (`IPC_PRIVATE` = 0 always creates).
+    /// C: `key_t key` (payload offset 0).
+    pub key: i32,
+    /// Number of semaphores in the set. C: `int nr` (payload offset 4).
+    pub nr: i32,
+    /// Creation flags (`IPC_CREAT`/`IPC_EXCL`/permission bits).
+    /// C: `int flag` (payload offset 8).
+    pub flag: i32,
+    /// Reply: new or found set identifier. C: `int retid` (payload offset 12).
+    pub retid: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLcIpcSemget {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            nr: 0,
+            flag: 0,
+            retid: 0,
+            _padding: [0; 40],
+        }
+    }
+}
+
+/// IPC semaphore-control payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_semctl` — `mess_lc_ipc_semctl { int id; int num;
+/// int cmd; vir_bytes opt; int ret; uint8_t padding[36]; }`
+/// (minix3/minix/include/minix/ipc.h:362-371).
+///
+/// Wire layout (32-bit C sender): `id` @0, `num` @4, `cmd` @8,
+/// `opt` @12 (u32: integer argument or user address, depending on `cmd`),
+/// `ret` @16 (reply slot), padding @20..56. `opt` is 4 bytes on the wire
+/// (32-bit `vir_bytes`); the 64-bit receiver zero-extends it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcSemctl {
+    /// Set identifier. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// Semaphore index within the set. C: `int num` (payload offset 4).
+    pub num: i32,
+    /// Control command (`GETVAL`/`SETVAL`/`IPC_RMID`/…). C: `int cmd` (payload offset 8).
+    pub cmd: i32,
+    /// Command argument: integer value or user-space address.
+    /// C: `vir_bytes opt` (payload offset 12).
+    pub opt: u32,
+    /// Reply: command result. C: `int ret` (payload offset 16).
+    pub ret: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 36],
+}
+
+impl Default for MessLcIpcSemctl {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            num: 0,
+            cmd: 0,
+            opt: 0,
+            ret: 0,
+            _padding: [0; 36],
+        }
+    }
+}
+
+/// IPC semaphore-operations payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_semop` — `mess_lc_ipc_semop { int id; void *ops;
+/// unsigned int size; uint8_t padding[42]; }`
+/// (minix3/minix/include/minix/ipc.h:383-388).
+///
+/// Wire layout (32-bit C sender): `id` @0, `ops` @4 (u32 user address of
+/// the operation array — the array itself does not fit in 56 bytes, so the
+/// server copies it with the kernel data-copy primitive), `size` @8
+/// (element count, capped at `SEMOPM` = 100), padding @12..54, plus 2 bytes
+/// of trailing alignment (54 rounds up to 56 under `repr(C)` 4-byte
+/// alignment — the same reason C's `_ASSERT_MSG_SIZE` passes).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcSemop {
+    /// Set identifier. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// User-space address of the operation array. C: `void *ops` (payload offset 4).
+    pub ops: u32,
+    /// Operation count. C: `unsigned int size` (payload offset 8).
+    pub size: u32,
+    /// Padding (42 bytes; trailing alignment rounds the struct to 56).
+    pub _padding: [u8; 42],
+}
+
+impl Default for MessLcIpcSemop {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            ops: 0,
+            size: 0,
+            _padding: [0; 42],
+        }
+    }
+}
+
+/// IPC shared-memory-create payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_shmget` — `mess_lc_ipc_shmget { key_t key;
+/// size_t size; int flag; int retid; uint8_t padding[40]; }`
+/// (minix3/minix/include/minix/ipc.h:415-421).
+///
+/// Wire layout (32-bit C sender): `key` @0 (i32), `size` @4 (u32, bytes),
+/// `flag` @8 (i32), `retid` @12 (reply slot), padding @16..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcShmget {
+    /// Lookup or create key (`IPC_PRIVATE` = 0 always creates).
+    /// C: `key_t key` (payload offset 0).
+    pub key: i32,
+    /// Requested segment size in bytes. C: `size_t size` (payload offset 4).
+    pub size: u32,
+    /// Creation flags (`IPC_CREAT`/`IPC_EXCL`/permission bits).
+    /// C: `int flag` (payload offset 8).
+    pub flag: i32,
+    /// Reply: new or found segment identifier. C: `int retid` (payload offset 12).
+    pub retid: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLcIpcShmget {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            size: 0,
+            flag: 0,
+            retid: 0,
+            _padding: [0; 40],
+        }
+    }
+}
+
+/// IPC shared-memory-attach payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_shmat` — `mess_lc_ipc_shmat { int id; const void
+/// *addr; int flag; void *retaddr; uint8_t padding[40]; }`
+/// (minix3/minix/include/minix/ipc.h:391-397).
+///
+/// Wire layout (32-bit C sender): `id` @0, `addr` @4 (u32 requested address,
+/// 0 lets the server pick), `flag` @8 (i32: `SHM_RDONLY`/`SHM_RND`),
+/// `retaddr` @12 (u32 reply slot: actual attach address), padding @16..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcShmat {
+    /// Segment identifier. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// Requested attach address (0 = any). C: `const void *addr` (payload offset 4).
+    pub addr: u32,
+    /// Attach flags. C: `int flag` (payload offset 8).
+    pub flag: i32,
+    /// Reply: actual attach address. C: `void *retaddr` (payload offset 12).
+    pub retaddr: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLcIpcShmat {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            addr: 0,
+            flag: 0,
+            retaddr: 0,
+            _padding: [0; 40],
+        }
+    }
+}
+
+/// IPC shared-memory-detach payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_shmdt` — `mess_lc_ipc_shmdt { const void *addr;
+/// uint8_t padding[52]; }` (minix3/minix/include/minix/ipc.h:409-412).
+///
+/// The simplest of the seven: a single address. No segment identifier —
+/// the address itself locates the attach record (document 08).
+///
+/// Wire layout: `addr` @0 (u32), padding @4..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcShmdt {
+    /// Attach address to detach. C: `const void *addr` (payload offset 0).
+    pub addr: u32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessLcIpcShmdt {
+    // Manual: `[u8; 52]` has no `Default` — same as the neighbouring
+    // 48/52-byte payloads in this file.
+    fn default() -> Self {
+        Self {
+            addr: 0,
+            _padding: [0; 52],
+        }
+    }
+}
+
+/// IPC shared-memory-control payload (user → IPC).
+///
+/// C: `message.m_lc_ipc_shmctl` — `mess_lc_ipc_shmctl { int id; int cmd;
+/// void *buf; int ret; uint8_t padding[40]; }`
+/// (minix3/minix/include/minix/ipc.h:400-406).
+///
+/// Wire layout (32-bit C sender): `id` @0, `cmd` @4 (`IPC_RMID`/`IPC_SET`/
+/// `IPC_STAT`), `buf` @8 (u32 user address of the data area — same
+/// pointer-in-message pattern as `semop.ops`), `ret` @12 (reply slot),
+/// padding @16..56.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcIpcShmctl {
+    /// Segment identifier. C: `int id` (payload offset 0).
+    pub id: i32,
+    /// Control command. C: `int cmd` (payload offset 4).
+    pub cmd: i32,
+    /// User-space address of the command data area. C: `void *buf` (payload offset 8).
+    pub buf: u32,
+    /// Reply: command result. C: `int ret` (payload offset 12).
+    pub ret: i32,
+    /// Padding to 56 bytes.
+    pub _padding: [u8; 40],
+}
+
+impl Default for MessLcIpcShmctl {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            cmd: 0,
+            buf: 0,
+            ret: 0,
+            _padding: [0; 40],
         }
     }
 }

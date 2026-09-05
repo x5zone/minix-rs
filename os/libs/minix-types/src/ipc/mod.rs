@@ -5,6 +5,7 @@
 mod event;
 mod input;
 mod ipc_error;
+mod ipc_server;
 mod kernel;
 mod message;
 mod mib;
@@ -20,6 +21,7 @@ mod vm;
 pub use event::*;
 pub use input::*;
 pub use ipc_error::*;
+pub use ipc_server::*;
 pub use kernel::*;
 pub use message::*;
 pub use mib::*;

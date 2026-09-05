@@ -1,0 +1,216 @@
+{
+ "_comment": "C->Rust semantic map (ipc module). Used by coverage-extract.py --semantic-map.",
+ "_note": "Covers documents 01-03 (init-main, message-contract, mib-registration). Handler documents 05-08 land later; their C symbols map to stub/placeholder Rust names where noted.",
+ "main": [
+  "IpcServer",
+  "run",
+  "run_once",
+  "init"
+ ],
+ "sef_local_startup": [
+  "init"
+ ],
+ "call_vec": [
+  "IpcCall",
+  "classify",
+  "Incoming"
+ ],
+ "sef_cb_init_fresh": [
+  "init",
+  "MOUNT_PATH",
+  "MountRequest"
+ ],
+ "kern_ipc_info": [
+  "route_info_query",
+  "InfoRoute"
+ ],
+ "kern_ipc_table": [
+  "KERN_IPC_TABLE",
+  "KernIpcChild"
+ ],
+ "kern_ipc_node": [
+  "MOUNT_PATH"
+ ],
+ "sef_cb_signal_handler": [
+  "StubHandler"
+ ],
+ "update_sub": [
+  "StubHandler"
+ ],
+ "update_sem_sub": [
+  "StubHandler"
+ ],
+ "got_proc_event": [
+  "handle_proc_event",
+  "ProcEventIn"
+ ],
+ "event_mask": [
+  "dropped_messages"
+ ],
+ "verbose": [
+  "StubHandler"
+ ],
+ "IPC_BASE": [
+  "IPC_BASE"
+ ],
+ "IPC_SHMGET": [
+  "IPC_SHMGET",
+  "IpcCall"
+ ],
+ "IPC_SHMAT": [
+  "IPC_SHMAT",
+  "IpcCall"
+ ],
+ "IPC_SHMDT": [
+  "IPC_SHMDT",
+  "IpcCall"
+ ],
+ "IPC_SHMCTL": [
+  "IPC_SHMCTL",
+  "IpcCall"
+ ],
+ "IPC_SEMGET": [
+  "IPC_SEMGET",
+  "IpcCall"
+ ],
+ "IPC_SEMCTL": [
+  "IPC_SEMCTL",
+  "IpcCall"
+ ],
+ "IPC_SEMOP": [
+  "IPC_SEMOP",
+  "IpcCall"
+ ],
+ "mess_lc_ipc_semget": [
+  "MessLcIpcSemget",
+  "IpcSemgetIn",
+  "IpcSemgetOut"
+ ],
+ "mess_lc_ipc_semctl": [
+  "MessLcIpcSemctl",
+  "IpcSemctlIn",
+  "IpcSemctlOut"
+ ],
+ "mess_lc_ipc_semop": [
+  "MessLcIpcSemop",
+  "IpcSemopIn"
+ ],
+ "mess_lc_ipc_shmget": [
+  "MessLcIpcShmget",
+  "IpcShmgetIn",
+  "IpcShmgetOut"
+ ],
+ "mess_lc_ipc_shmat": [
+  "MessLcIpcShmat",
+  "IpcShmatIn",
+  "IpcShmatOut"
+ ],
+ "mess_lc_ipc_shmdt": [
+  "MessLcIpcShmdt",
+  "IpcShmdtIn"
+ ],
+ "mess_lc_ipc_shmctl": [
+  "MessLcIpcShmctl",
+  "IpcShmctlIn",
+  "IpcShmctlOut"
+ ],
+ "mess_pm_lsys_proc_event": [
+  "MessPmLsysProcEvent",
+  "ProcEventIn"
+ ],
+ "PROC_EVENT": [
+  "PROC_EVENT",
+  "ProcEventIn"
+ ],
+ "PROC_EVENT_REPLY": [
+  "PROC_EVENT_REPLY",
+  "proc_event_reply_type"
+ ],
+ "SUSPEND": [
+  "SUSPEND",
+  "should_reply"
+ ],
+ "KERN_SYSVIPC": [
+  "KERN_SYSVIPC"
+ ],
+ "KERN_SYSVIPC_INFO": [
+  "KERN_SYSVIPC_INFO"
+ ],
+ "KERN_SYSVIPC_MSG": [
+  "KERN_SYSVIPC_MSG"
+ ],
+ "KERN_SYSVIPC_SEM": [
+  "KERN_SYSVIPC_SEM"
+ ],
+ "KERN_SYSVIPC_SHM": [
+  "KERN_SYSVIPC_SHM"
+ ],
+ "KERN_SYSVIPC_SEM_INFO": [
+  "KERN_SYSVIPC_SEM_INFO"
+ ],
+ "KERN_SYSVIPC_SHM_INFO": [
+  "KERN_SYSVIPC_SHM_INFO"
+ ],
+ "rmib_register": [
+  "MountTable",
+  "claim"
+ ],
+ "rmib_deregister": [
+  "release"
+ ],
+ "rmib_process": [
+  "handle_mib"
+ ],
+ "is_ipc_notify": [
+  "is_notify",
+  "IpcStatus"
+ ],
+ "sef_receive_status": [
+  "receive",
+  "IpcTransport"
+ ],
+ "ipc_sendnb": [
+  "send",
+  "IpcTransport"
+ ],
+ "do_shmget": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_shmat": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_shmdt": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_shmctl": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_semget": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_semctl": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "do_semop": [
+  "handle_call",
+  "StubHandler"
+ ],
+ "update_refcount_and_destroy": [
+  "on_cycle_end"
+ ],
+ "SEM_EVENTS": [
+  "StubHandler"
+ ],
+ "is_sem_nil": [
+  "StubHandler"
+ ],
+ "is_shm_nil": [
+  "StubHandler"
+ ]
+}
