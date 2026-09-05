@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 6 — Live Update（RS 最复杂状态机）
 > **源码**: `minix3/minix/servers/rs/update.c`（1011 行：`rupdate_clear_upds`—7、`rupdate_add_upd`—23、`rupdate_set_new_upd_flags`—88、`rupdate_upd_init`—121、`rupdate_upd_clear`—135、`rupdate_upd_move`—164、`srv_update`—230、`update_service`—262、`rollback_service`—330、`update_period`—371、`start_update_prepare`—401、`start_update_prepare_next`—467、`start_update`—532、`start_srv_update`—621、`complete_srv_update`—657、`abort_update_proc`—707、`end_update_curr`—744、`end_update_before_prepare`—763、`end_update_prepare_done`—780、`end_update_initializing`—795、`end_update_rev_iter`—816、`end_update_debug`—865、`end_srv_update`—932）、`minix3/minix/servers/rs/request.c:534-889`（`do_update`）、`minix3/minix/servers/rs/const.h:58,75-76,83,114-120`、`minix3/minix/include/minix/sef.h:235-242`
-> **Rust 模块**: `os/servers/rs/src/live_update.rs`（`LuFlags`/`UpdatePhase`/`update_phase`/`SEF_LU_STATE_*`/`default_prepare_maxtime`/`lu_flags_from_rss`/`vm_default_prealloc`/`validate_update_request`/`UpdateEntry`/`UpdateChain`/`EndUpdateRole`/`end_update_role`/`AbortAction`/`abort_action`/`end_srv_reply_flag`）
+> **Rust 模块**: `os/servers/rs/src/live_update.rs`（`LuFlags`/`UpdatePhase`/`update_phase`/`SEF_LU_STATE_*`/`resolve_prepare_maxtime`/`lu_flags_from_rss`/`vm_default_prealloc`/`validate_update_request`/`UpdateEntry`/`UpdateChain`/`EndUpdateRole`/`end_update_role`/`AbortAction`/`abort_action`/`end_srv_reply_flag`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`UpdateChain` 数据形状）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`init_slot`/`inherit_service_defaults`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`run_service`/`end_srv_init`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）
 > **说明**: 本文档是 Live Update 全状态机：`RS_UPDATE`（13 之后的第 16 篇）触发，`prepare → update → init → end/rollback` 四阶段。它依赖 17（state data）、18（RS 自身特例）、19（SEF/VM 契约）——本文档只落地**状态机本体**与**纯切片**（`live_update.rs`）。
 
@@ -161,7 +161,7 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
 | `LuFlags` | sef.h:235-242 | 8 个 `SEF_LU_*` 位 |
 | `UpdatePhase` + `update_phase(flags, num_rpupds)` | const.h:105,111 | `Idle/Scheduled/Updating/Initializing`（ARCH A-6） |
 | `SEF_LU_STATE_NULL`/`SEF_LU_STATE_UNREACHABLE` | sef.h:213,219 | 状态值 0/5 |
-| `default_prepare_maxtime(maxtime, default)` | request.c:653-655 | 0 → 默认 |
+| `resolve_prepare_maxtime(maxtime, default)` | request.c:653-655 | 0 → 默认（R32 改名：与 monitor 的同名校量函数区分） |
 | `lu_flags_from_rss(rss, map_prealloc_bytes)` | request.c:574-623 | RSS_* → `(LuFlags, init_flags)` |
 | `vm_default_prealloc(...)` | request.c:591-599 | VM 默认 mmap 预分配 |
 | `validate_update_request(...)` | request.c:648-686 | 校验门 → `EBUSY`/`EINVAL`（含 NULL state） |
@@ -200,7 +200,7 @@ C 的 `rprocupd *prev_rpupd/next_rpupd` 双向裸指针链（type.h:40-41）→ 
 
 - 常量/位：`LuFlags`（8 位）、`SEF_LU_STATE_NULL=0`/`SEF_LU_STATE_UNREACHABLE=5`、`RS_REPLY=1`/`RS_CANCEL=2`；
 - 全局态：`UpdatePhase` + `update_phase`；
-- 入口判定：`lu_flags_from_rss`/`vm_default_prealloc`/`default_prepare_maxtime`/`validate_update_request`；
+- 入口判定：`lu_flags_from_rss`/`vm_default_prealloc`/`resolve_prepare_maxtime`/`validate_update_request`；
 - 链：`UpdateEntry`/`UpdateChain`（`add`/`iter`/`rev_iter`/`len`/`vm`/`rs` 访问器/`is_preparing_only`）；
 - 结束/中止：`EndUpdateRole`/`end_update_role`/`AbortAction`/`abort_action`/`end_srv_reply_flag`。
 
@@ -229,7 +229,7 @@ C 的 `rprocupd *prev_rpupd/next_rpupd` 双向裸指针链（type.h:40-41）→ 
 7. `add` 标志传播：`INCLUDES_VM` 条目插入后全链 `lu_flags`/`init_flags` 含该位；`vm()` 指针指向首个。
 8. `end_update_role`：四角色（`initializing` 真/假两族的 4 组合）。
 9. `abort_action`：四阶段分派。
-10. `default_prepare_maxtime`：0 → 默认值；非 0 → 原值。
+10. `resolve_prepare_maxtime`：0 → 默认值；非 0 → 原值（R32 改名）。
 10. `end_srv_reply_flag`：VM + multi + 成功 → `RS_CANCEL`；否则原值。
 
 测试总数声明：本文档范围为 `live_update` 模块测试数（以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。

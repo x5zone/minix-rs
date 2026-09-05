@@ -118,15 +118,13 @@ pub enum SchedAction<'a> {
 /// C: `sched_init_proc` — utility.c:364-382. Pure decision half (T5).
 pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'_> {
     if !is_sys_proc {
-        debug_assert_eq!(
-            cfg.scheduler,
-            Endpoint::NONE,
+        assert!(
+            cfg.scheduler == Endpoint::NONE,
             "user process must have no scheduler (utility.c:369)"
         );
     } else {
-        debug_assert_ne!(
-            cfg.scheduler,
-            Endpoint::NONE,
+        assert!(
+            cfg.scheduler != Endpoint::NONE,
             "system process must have a scheduler (utility.c:370)"
         );
     }
@@ -242,6 +240,25 @@ mod tests {
         // calling the scheduler (sched_start.c:45-47) — no kernel call.
         let cfg = SchedulerConfig::from_slot(Endpoint::NONE, Endpoint::INIT, 3, 200, 0);
         assert_eq!(sched_decision(&cfg, false), SchedAction::Skip);
+    }
+
+    #[test]
+    #[should_panic(expected = "system process must have a scheduler")]
+    fn test_sched_decision_sys_proc_none_panics() {
+        // R32: C's assert is a runtime assert (utility.c:370, active in
+        // release MINIX builds) — a system process without a scheduler is a
+        // program error, not a silently-skipped scheduling setup.
+        let cfg = SchedulerConfig::from_slot(Endpoint::NONE, Endpoint::PM, 3, 200, 0);
+        let _ = sched_decision(&cfg, true);
+    }
+
+    #[test]
+    #[should_panic(expected = "user process must have no scheduler")]
+    fn test_sched_decision_user_proc_with_scheduler_panics() {
+        // R32: mirror assert (utility.c:369) — a user process must not
+        // carry a scheduler.
+        let cfg = SchedulerConfig::from_slot(Endpoint::KERNEL, Endpoint::INIT, 3, 200, 0);
+        let _ = sched_decision(&cfg, false);
     }
 
     #[test]

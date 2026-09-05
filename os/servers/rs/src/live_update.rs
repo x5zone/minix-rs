@@ -115,8 +115,10 @@ pub fn update_phase(flags: RupdateFlags, num_rpupds: usize) -> UpdatePhase {
 ///
 /// C: `do_update` — request.c:653-655: `prepare_maxtime == 0` →
 /// `RS_DEFAULT_PREPARE_MAXTIME` (const.h:58, `2*RS_DELTA_T`; the hz-dependent
-/// default is passed in by the caller, 19).
-pub fn default_prepare_maxtime(maxtime: u32, default: u32) -> u32 {
+/// default is passed in by the caller, 19). Named `resolve_*` (R32) because
+/// monitor's same-named `default_prepare_maxtime(hz)` computes the constant
+/// itself — two different C constructs, one name was a wiring trap.
+pub fn resolve_prepare_maxtime(maxtime: u32, default: u32) -> u32 {
     if maxtime == 0 { default } else { maxtime }
 }
 
@@ -784,8 +786,8 @@ mod tests {
     #[test]
     fn test_default_maxtime_and_reply_flag() {
         // C: request.c:653-655 — zero maxtime → default.
-        assert_eq!(default_prepare_maxtime(0, 100), 100);
-        assert_eq!(default_prepare_maxtime(50, 100), 50);
+        assert_eq!(resolve_prepare_maxtime(0, 100), 100);
+        assert_eq!(resolve_prepare_maxtime(50, 100), 50);
         // C: update.c:944-949 — VM multi success → RS_CANCEL.
         assert_eq!(
             end_srv_reply_flag(true, Endpoint::VM, true, RS_REPLY),

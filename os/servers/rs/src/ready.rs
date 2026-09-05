@@ -56,6 +56,22 @@ pub fn fold_init_flags(slot: &mut ServiceSlot, init_flags: u32) {
     slot.priv_.init_flags |= init_flags;
 }
 
+/// Takes the slot's preallocated-mmap window, clearing it on the slot.
+///
+/// C: `init_service` — utility.c:53-60: the values are copied into the
+/// `RS_INIT` message (`buff_addr`/`buff_len`) and the slot fields are zeroed
+/// **before** the send (`rp->r_map_prealloc_addr = 0;
+/// rp->r_map_prealloc_len = 0`, utility.c:59-60) — the window is
+/// single-shot, the new instance owns it after handoff. Take semantics make
+/// the copy-then-clear pair un-skippable: the message builder consumes what
+/// this returns (R32.4 — the zeroing previously had no executor at all).
+pub fn take_map_prealloc(slot: &mut ServiceSlot) -> (u64, usize) {
+    let window = (slot.map_prealloc_addr, slot.map_prealloc_len);
+    slot.map_prealloc_addr = 0;
+    slot.map_prealloc_len = 0;
+    window
+}
+
 /// The `RS_INIT` message payload.
 ///
 /// C: `struct mess_rs_init` — `minix3/minix/include/minix/ipc.h:1858-1866`.
@@ -67,7 +83,9 @@ pub struct InitMessage {
     pub result: i32,
     /// C: `type` — ipc.h:1857 (`short`; `SEF_INIT_*`, sef.h:93-95).
     pub init_type: u16,
-    /// C: `rproctab_gid` — ipc.h:1858 (`cp_grant_id_t`).
+    /// C: `rproctab_gid` — ipc.h:1858 (`cp_grant_id_t`). Filled from the
+    /// `rinit` global's grant (main.c:185) at the 12 wiring —
+    /// `ServerState.rinit.rproctab_gid` is the single source (R32.2).
     pub rproctab_gid: Option<u32>,
     /// C: `old_endpoint` — ipc.h:1859.
     pub old_endpoint: Option<Endpoint>,
@@ -382,6 +400,21 @@ mod tests {
         assert!(s.flags.contains(RFlags::INITIALIZING)); // utility.c:19
         assert_eq!(s.alive_tm, 4242); // utility.c:20
         assert_eq!(s.check_tm, 4243); // utility.c:21 — reply within period
+    }
+
+    #[test]
+    fn test_take_map_prealloc_is_single_shot() {
+        // R32.4: C init_service — utility.c:58-60 copies the window into the
+        // message, then zeroes the slot fields before the send. Take
+        // semantics make copy-then-clear un-skippable: the second take is
+        // empty and the slot stays clean.
+        let mut s = ServiceSlot::vacant();
+        s.map_prealloc_addr = 0x1000;
+        s.map_prealloc_len = 4096;
+        assert_eq!(take_map_prealloc(&mut s), (0x1000, 4096));
+        assert_eq!(s.map_prealloc_addr, 0);
+        assert_eq!(s.map_prealloc_len, 0);
+        assert_eq!(take_map_prealloc(&mut s), (0, 0));
     }
 
     #[test]

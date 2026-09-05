@@ -1987,7 +1987,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ☐ | 19 接线期决策 |
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
-| R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ☐ | 逐项标注（见条目） |
+| R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | D1 同轮 |
 | R34 | 测试盲区清单 24 条 | P2 | ☐ | 1-13 可立即补；14-17 随 13/14；18-23=E3 具体化 |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
@@ -2150,3 +2150,33 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   （cargo fmt 顺带收敛了同 impl 块内本就存在的注释对齐遗留）；`tools/check-rs-unwired.sh`
   PASS。文档同步：03 §3.5 签名/语义清单 + R21 修复注、§4 boot_priv 代码块、§4 vm_call_mask
   调用签名、§5.3 测试要点（删除"is_init=false 语义 N/A"过时表述）。
+
+### ✅ Fix #45 — R32（P2 一致性杂项）：7 小项逐项落地
+- **File**：`slot.rs`/`sched.rs`/`ready.rs`/`self_lifecycle.rs`/`live_update.rs`/`monitor.rs`/
+  `boot.rs`/`lib.rs`；文档 08/03/16/12/07
+- **逐项实现**：
+  1. **Machine 死存储**：`check_request(rs_start, bsp_id, processors_count)` →
+     `check_request(rs_start, machine: &Machine)`——C 直接读全局 `machine`（request.c:1289/
+     :1296），传快照使字段活跃且两个整数不可换位（C 是同一构造 `struct machine`，非两个裸值）。
+  2. **rproctab_gid 两份**：确认为"全局 vs 消息载荷"两个角色（非重复），在 `RinitState` 与
+     `InitMessage.rproctab_gid` 文档互链锁定"12 接线是唯一桥"。
+  3. **同名双函数**：live_update 的 `default_prepare_maxtime(maxtime, default)` 改名
+     `resolve_prepare_maxtime`（0 → 默认的决策），monitor 的（常量计算）保留原名——两种
+     C 构造一个名字是接线陷阱。
+  4. **map_prealloc 清零无执行者**：新增 `take_map_prealloc(slot) -> (u64, usize)`
+     （ready.rs）——take 语义使 copy-then-clear 不可跳过（utility.c:58-60，发送前清零，
+     单次移交）。
+  5. **sig_mgrs 第二调用点**：新增 `self_update_sig_mgr_update(new_endpoint)`
+     （self_lifecycle.rs，request.c:755-766——自更新新实例 sig_mgr=SELF、备份=自身端点），
+     与 restart-replica 配对（manager.c:771-773）分立。
+  6. **lookup_by_flags 喂参链接**：`period_decision` 文档标注
+     `RProcTable::lookup_by_flags(RFlags::INITIALIZING)` 为 `another_initializing` 来源，
+     02/07 文档互链。
+  7. **负优先级 + release 行为**：`test_check_request_negative_priority_accepted` 锁定
+     负值合法（request.c:1275-1279 只拒 `>= NR_SCHED_QUEUES`）；`sched_decision` 的
+     `debug_assert!` 升级为全构建 `assert!`（C 是运行期 assert，utility.c:369-370，
+     release 静默放行是对 C 的偏离）+ 两个 `#[should_panic]` 测试。
+- **Verified**：`cargo test -p minix-rs` = **222 passed**（+5）；clippy/fmt 零输出；
+  `tools/check-rs-unwired.sh` PASS。文档同步：08 §2/§4（check_request 签名两处）、03 §5.5
+  （assert 语义 + panic 测试）、16（改名 4 处）、12 §3.1/§5（take_map_prealloc）、07 §3.1
+  （喂参来源互链）。

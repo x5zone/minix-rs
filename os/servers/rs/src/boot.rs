@@ -380,7 +380,10 @@ pub struct RinitState {
     /// C: `rinit.rproctab_gid = cpf_grant_direct(ANY, rprocpub, ...)` — main.c:185.
     ///
     /// `None` = grant not yet created (DEFERRED: `cpf_grant_direct` wiring is
-    /// part of the syscall surface, 19). Consumption: 12-rs-init-run.md.
+    /// part of the syscall surface, 19). Consumption: 12-rs-init-run.md —
+    /// the 12 wiring copies **this** field into `InitMessage::rproctab_gid`
+    /// (ready.rs; R32.2: one global, one payload — the wiring is the only
+    /// bridge, keep them from drifting into two independent sources).
     pub rproctab_gid: Option<u32>,
 }
 

@@ -475,7 +475,7 @@ pub enum SchedAction<'a> { Skip, Start(&'a SchedulerConfig) }
 pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'_>
 ```
 
-- 断言等价（debug_assert）：`!is_sys_proc → scheduler == NONE`；`is_sys_proc → scheduler != NONE`
+- 断言等价（R32：`debug_assert!` → 全构建 `assert!`）：`!is_sys_proc → scheduler == NONE`；`is_sys_proc → scheduler != NONE`——C 是运行期 assert（utility.c:369-370，MINIX 用户态构建不定义 NDEBUG），release 静默放行是对 C 行为的偏离；`test_sched_decision_sys_proc_none_panics`/`test_sched_decision_user_proc_with_scheduler_panics` 锁定
 - 外部调用（sched_start 的 KERNEL→sys_schedctl / 用户调度器→SCHEDULING_START）经 `KernelApi` trait（01 的 boot.rs 边界）；`KernelApi::sched_init_proc(cfg: &SchedulerConfig) -> Result<Endpoint, Errno>`（S4 修复后携带全部调度参数并回传 `*newscheduler_e`）
 - **NONE 短路契约（S3 已实现，T5 拆分为决策/执行）**：`scheduler == NONE` 时 C 的 `sched_start` 直接返回 `OK` 且不发任何系统调用（sched_start.c:45-47，用户进程 INIT 场景）；Rust 侧 `sched_decision` 返回 `SchedAction::Skip`（**不触内核**，测试 `test_sched_decision_user_proc_none_skips`），shell 执行 `Start` → `sys.sched_init_proc(cfg)` 取得 `*newscheduler_e`（`SchedAction::Start` 携带完整 `&SchedulerConfig`）
 - `SchedulerConfig::boot_defaults(endpoint)` 给出 boot Step 2 的 C 默认（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/`SRV_QT=USER_QUANTUM=200`/`cpu=0`/`parent=RS`，main.c:320-322 + priv.h:88,93,98 + config.h:69,74）
@@ -655,7 +655,8 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 
 ### 5.5 sched_init_proc
 
-- `test_sched_decision_user_proc_none_skips`：用户进程（!SYS_PROC）scheduler 必须 NONE（debug_assert 触发路径）
+- `test_sched_decision_user_proc_none_skips`：用户进程（!SYS_PROC）scheduler 必须 NONE（assert 触发路径）
+- `test_sched_decision_sys_proc_none_panics` / `test_sched_decision_user_proc_with_scheduler_panics`（R32）：违规组合全构建 panic（utility.c:369-370 运行期 assert 语义）
 - `test_sched_decision_sys_proc_starts`：系统进程 scheduler 非 NONE
 - **NONE 短路**（S3，`test_sched_decision_user_proc_none_skips`）：`scheduler == NONE → Ok(NONE)` 且 mock 零内核调用（sched_start.c:45-47）
 - `test_sched_decision_passes_full_config`：完整配置逐字段传递（scheduler/parent/priority/quantum/cpu）

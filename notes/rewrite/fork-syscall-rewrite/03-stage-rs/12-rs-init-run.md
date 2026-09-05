@@ -178,6 +178,7 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 | `mark_initializing(slot, ticks)` | utility.c:19-21 | 发 RS_INIT 前：置 `INITIALIZING` + `alive_tm = ticks` + `check_tm = ticks+1`（R14） |
 | `fold_init_flags(slot, init_flags)` | manager.c:953 | `s_init_flags |= init_flags`（OR 语义，R14） |
 | `init_message(...)` | utility.c:49-60 | RS_INIT 载荷装配（`InitMessage`） |
+| `take_map_prealloc(slot)` | utility.c:53-60 | 取走 map_prealloc 窗口并清零槽位字段（R32.4：单次移交，copy-then-clear 不可跳过） |
 | `do_init_ready(flags, result, is_updating, pending, ticks)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyDecision { outcome, mutations }`（R13） |
 | `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyDecision { outcome, mutations }`（R24：gate 后立即携带 `RS_PREPARE_DONE`，与 result 无关） |
 | `end_srv_init(rp, has_prev)` | manager.c:336-354 | 槽位收尾（restarts/prev/next） |
@@ -255,6 +256,7 @@ pub enum ReadyOutcome {
 12. `should_reply_ready`：VM → false；VFS/PM → true。
 13. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
 14. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
+15. `take_map_prealloc`（R32.4）：首次调用返回 `(addr, len)` 并把槽位两字段清零（utility.c:58-60，发送前清零——单次移交）；二次调用返回 `(0, 0)`（`test_take_map_prealloc_is_single_shot`）。
 
 测试总数声明：本文档范围为 **16 项**（`ready` 模块内）。全局 `cargo test -p minix-rs --lib` = 214 通过（2026-09-06，随并行模块增长，以各 doc 范围为准）。
 

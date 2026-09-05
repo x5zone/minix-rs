@@ -122,7 +122,8 @@ pub fn heartbeat_mutations(timestamp: Clock) -> SlotMutations {
 ///
 /// C: request.c:975-1038. `another_initializing` is the caller's
 /// `lookup_slot_by_flags(RS_INITIALIZING) != NULL` probe
-/// (request.c:1013), and `is_updating` is `SRV_IS_UPDATING(rp)`
+/// (request.c:1013) — fed by [`RProcTable::lookup_by_flags`] with
+/// [`RFlags::INITIALIZING`] — and `is_updating` is `SRV_IS_UPDATING(rp)`
 /// (const.h:114).
 pub fn period_decision(
     now: i64,

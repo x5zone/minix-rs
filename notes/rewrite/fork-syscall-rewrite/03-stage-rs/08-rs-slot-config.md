@@ -105,7 +105,7 @@ static int check_request(struct rs_start *rs_start)    /* request.c:1265 */
 - **信号管理器**：`SELF` 或 0~11。
 - `check_request` 是静态函数，被 `do_up` 调用（request.c:43）——RS_UP 专属校验；RS_EDIT 不复用（编辑不改调度器为无效值）。
 
-Rust 侧 `check_request(rs_start, bsp_id, processors_count)`（slot.rs）：`machine.bsp_id`/`processors_count` 作为参数注入（01/19 的 `sys_getmachine` 结果），返回解析后的 CPU 值。测试覆盖四态 CPU 与全部越界分支。**R13（2026-08-16）**：C 就地改写 `rs_start->rss_cpu`（request.c:1286-1296），Rust 返回解析值——12 接线**必须消费该返回值**写回槽位 `cpu`（丢弃则 `RS_CPU_BSP` 残留在槽里，调度参数错误）。
+Rust 侧 `check_request(rs_start, machine: &Machine)`（slot.rs，R32.1）：C 读全局 `machine`（request.c:1289/:1296），Rust 传 `Machine` 快照——字段保持活跃且参数不可换位（01/19 的 `sys_getmachine` 结果），返回解析后的 CPU 值。测试覆盖四态 CPU 与全部越界分支。**R13（2026-08-16）**：C 就地改写 `rs_start->rss_cpu`（request.c:1286-1296），Rust 返回解析值——12 接线**必须消费该返回值**写回槽位 `cpu`（丢弃则 `RS_CPU_BSP` 残留在槽里，调度参数错误）。
 
 > **D5 修复（2026-08-15）**：`RsStart::default` 对齐 C 调用方注入的默认值
 > （minix-service parse.c:1164-1169：`sigmgr=RS`/`scheduler=SCHED`/
@@ -312,7 +312,7 @@ pub struct RssFlags(bitflags);   // 20 个标志（rs.h:33-52）
 ### 3.2 `check_request` 纯函数（D2）
 
 ```rust
-pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32)
+pub fn check_request(rs_start: &RsStart, machine: &Machine)
     -> Result<i32, Errno>
 ```
 

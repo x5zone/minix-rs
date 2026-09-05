@@ -185,6 +185,22 @@ pub fn sig_mgr_updates(
     ))
 }
 
+/// The signal-manager update for a self-update's new instance.
+///
+/// C: `do_update` — request.c:755-766: when the updating service is RS
+/// itself (`ROOT_SYS_PROC`), the new instance is set up with
+/// `update_sig_mgrs(new_rp, SELF, new_rp->r_pub->endpoint)` — the new
+/// instance's own endpoint doubles as its backup so a crash during its
+/// initialization rolls back to the current instance (R32: this pairing is
+/// a different call site from the restart-replica pairing of
+/// [`sig_mgr_updates`], manager.c:771-773, and was previously unmodelled).
+pub fn self_update_sig_mgr_update(new_instance_endpoint: Endpoint) -> SigMgrUpdate {
+    SigMgrUpdate {
+        sig_mgr: Endpoint::SELF,
+        bak_sig_mgr: new_instance_endpoint,
+    }
+}
+
 /// Whether an RS rollback needs the VM slot exchange.
 ///
 /// C: update.c:342-345 — after `sys_whoami`, only a process that is not RS
@@ -304,6 +320,16 @@ mod tests {
                 bak_sig_mgr: Endpoint::NONE,
             }
         );
+    }
+
+    #[test]
+    fn test_self_update_sig_mgr_update() {
+        // C: request.c:755-766 — the self-update's new instance carries
+        // sig_mgr=SELF with its own endpoint as backup (different call site
+        // from sig_mgr_updates' restart-replica pairing).
+        let upd = self_update_sig_mgr_update(Endpoint::from_generation_slot(0, 7));
+        assert_eq!(upd.sig_mgr, Endpoint::SELF);
+        assert_eq!(upd.bak_sig_mgr, Endpoint::from_generation_slot(0, 7));
     }
 
     #[test]

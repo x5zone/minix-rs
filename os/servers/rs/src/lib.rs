@@ -62,7 +62,7 @@ pub use ipc_mask::{IpcListIterator, add_backward_ipc, add_forward_ipc, init_priv
 pub use live_update::{
     AbortAction, EndUpdateRole, LuFlags, RS_CANCEL, RS_REPLY, SEF_INIT_ST, SEF_LU_STATE_NULL,
     SEF_LU_STATE_UNREACHABLE, UpdateChain, UpdateEntry, UpdatePhase, abort_action,
-    default_prepare_maxtime, end_srv_reply_flag, end_update_role, lu_flags_from_rss, update_phase,
+    end_srv_reply_flag, end_update_role, lu_flags_from_rss, resolve_prepare_maxtime, update_phase,
     validate_update_request, vm_default_prealloc,
 };
 pub use monitor::{
@@ -78,6 +78,7 @@ pub use query::{
 pub use ready::{
     InitMessage, ReadyDecision, ReadyOutcome, UpdReadyDecision, UpdReadyOutcome, do_init_ready,
     do_upd_ready, end_srv_init, fold_init_flags, init_message, mark_initializing,
+    take_map_prealloc,
 };
 pub use recovery::{
     CleanupDecision, TerminateAction, TerminateDecision, cleanup_decision, compute_backoff,
@@ -89,8 +90,9 @@ pub use request::{
 pub use sef::{SefCallbacks, SefInitInfo, SefInitType};
 pub use self_lifecycle::{
     SelfUpgradeRole, SigMgrUpdate, SrvUpdateAction, SwapFlag, is_rs_restart_replica,
-    lu_init_invariants, rollback_needs_vm_update, rollback_swap_flag, self_upgrade_role,
-    should_end_update_on_restart, should_pre_swap, sig_mgr_updates, srv_update_action,
+    lu_init_invariants, rollback_needs_vm_update, rollback_swap_flag, self_update_sig_mgr_update,
+    self_upgrade_role, should_end_update_on_restart, should_pre_swap, sig_mgr_updates,
+    srv_update_action,
 };
 pub use service_create::{
     activate_service, check_create_preconditions, clone_slot, link_replica, mark_child_created,

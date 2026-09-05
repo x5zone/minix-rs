@@ -190,7 +190,7 @@ impl Default for RsStart {
 /// (request.c:1286-1296); the returned resolved `cpu` MUST be consumed by
 /// the 12 wiring (write it back to the slot's `cpu`) — dropping it leaves
 /// `RS_CPU_BSP` (-2) in the slot and the scheduler sees a bogus affinity.
-pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32) -> Result<i32, Errno> {
+pub fn check_request(rs_start: &RsStart, machine: &crate::boot::Machine) -> Result<i32, Errno> {
     // Scheduler must be KERNEL or a valid special process (request.c:1268-1274).
     if rs_start.scheduler != Endpoint::KERNEL
         && (rs_start.scheduler.get() < 0 || rs_start.scheduler.get() > LAST_SPECIAL_PROC_NR)
@@ -198,6 +198,8 @@ pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32) -> 
         return Err(Errno::EINVAL);
     }
     // Priority must be within the scheduling queues (request.c:1275-1279).
+    // Negative priorities are *accepted* here — C only rejects `>=
+    // NR_SCHED_QUEUES`; the scheduler validates the final value (32).
     if rs_start.priority >= NR_SCHED_QUEUES {
         return Err(Errno::EINVAL);
     }
@@ -205,13 +207,15 @@ pub fn check_request(rs_start: &RsStart, bsp_id: u32, processors_count: u32) -> 
     if rs_start.quantum <= 0 {
         return Err(Errno::EINVAL);
     }
-    // CPU resolution (request.c:1286-1296):
+    // CPU resolution (request.c:1286-1296): the C function reads the global
+    // `machine` directly — passing the snapshot (R32.1) keeps the fields live
+    // and the signature transpose-proof.
     //   BSP → bsp_id; DEFAULT → keep; negative → EINVAL; > count → BSP.
     let cpu = match rs_start.cpu {
-        RS_CPU_BSP => bsp_id as i32,
+        RS_CPU_BSP => machine.bsp_id as i32,
         RS_CPU_DEFAULT => rs_start.cpu,
         c if c < 0 => return Err(Errno::EINVAL),
-        c if c as u32 > processors_count => bsp_id as i32,
+        c if c as u32 > machine.processors_count => machine.bsp_id as i32,
         c => c,
     };
     // Signal manager must be SELF or a valid special process
@@ -275,6 +279,15 @@ pub fn build_cmd_dep(cmd: &[u8]) -> Vec<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boot::Machine;
+
+    /// The C global `machine` snapshot for tests (request.c:1286-1296).
+    fn machine() -> Machine {
+        Machine {
+            processors_count: 4,
+            bsp_id: 2,
+        }
+    }
 
     #[test]
     fn test_check_request_ok() {
@@ -286,26 +299,37 @@ mod tests {
             sigmgr: Endpoint::SELF,
             ..RsStart::default()
         };
-        assert_eq!(check_request(&s, 0, 4), Ok(RS_CPU_DEFAULT));
+        assert_eq!(check_request(&s, &machine()), Ok(RS_CPU_DEFAULT));
     }
 
     #[test]
     fn test_check_request_scheduler() {
         let mut s = RsStart::default();
         s.scheduler = Endpoint::VFS; // 1, within LAST_SPECIAL_PROC_NR
-        assert!(check_request(&s, 0, 4).is_ok());
+        assert!(check_request(&s, &machine()).is_ok());
         s.scheduler = Endpoint::from_generation_slot(0, 12); // > 11
-        assert_eq!(check_request(&s, 0, 4), Err(Errno::EINVAL));
+        assert_eq!(check_request(&s, &machine()), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_check_request_priority_quantum() {
         let mut s = RsStart::default();
         s.priority = NR_SCHED_QUEUES;
-        assert_eq!(check_request(&s, 0, 4), Err(Errno::EINVAL));
+        assert_eq!(check_request(&s, &machine()), Err(Errno::EINVAL));
         s.priority = 0;
         s.quantum = 0;
-        assert_eq!(check_request(&s, 0, 4), Err(Errno::EINVAL));
+        assert_eq!(check_request(&s, &machine()), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_check_request_negative_priority_accepted() {
+        // R32: C only rejects `rss_priority >= NR_SCHED_QUEUES`
+        // (request.c:1275-1279) — a negative value passes here and is the
+        // scheduler's business; do not "tighten" this into an unsigned type
+        // without a C-change anchor.
+        let mut s = RsStart::default();
+        s.priority = -1;
+        assert_eq!(check_request(&s, &machine()).is_ok(), true);
     }
 
     #[test]
@@ -314,31 +338,31 @@ mod tests {
             cpu: RS_CPU_BSP,
             ..RsStart::default()
         };
-        assert_eq!(check_request(&s, 2, 4), Ok(2));
+        assert_eq!(check_request(&s, &machine()), Ok(2)); // → bsp_id
         let s = RsStart {
             cpu: 3,
             ..RsStart::default()
         };
-        assert_eq!(check_request(&s, 2, 4), Ok(3));
+        assert_eq!(check_request(&s, &machine()), Ok(3));
         let s = RsStart {
             cpu: 5,
             ..RsStart::default()
         }; // > count(4) → BSP
-        assert_eq!(check_request(&s, 2, 4), Ok(2));
+        assert_eq!(check_request(&s, &machine()), Ok(2));
         let s = RsStart {
             cpu: -3,
             ..RsStart::default()
         };
-        assert_eq!(check_request(&s, 2, 4), Err(Errno::EINVAL));
+        assert_eq!(check_request(&s, &machine()), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_check_request_sigmgr() {
         let mut s = RsStart::default();
         s.sigmgr = Endpoint::PM;
-        assert!(check_request(&s, 0, 4).is_ok());
+        assert!(check_request(&s, &machine()).is_ok());
         s.sigmgr = Endpoint::from_generation_slot(0, 12);
-        assert_eq!(check_request(&s, 0, 4), Err(Errno::EINVAL));
+        assert_eq!(check_request(&s, &machine()), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -362,7 +386,7 @@ mod tests {
         assert_eq!(s.nr_io, 0);
         assert!(s.io.iter().all(|r| *r == IoRange::default()));
         // Valid under check_request (the C path validates before use).
-        assert!(check_request(&s, 0, 4).is_ok());
+        assert!(check_request(&s, &machine()).is_ok());
     }
 
     #[test]
