@@ -32,7 +32,7 @@ use crate::errno::{OK, EINVAL, EDEADSRCDST, ECALLDENIED};
 /// `BuildNotifyMessage` sets `m_type = NOTIFY_MESSAGE` so receivers can
 /// distinguish notifications from regular IPC replies. The sender's
 /// endpoint is in `m_source` (set by the caller of `BuildNotifyMessage`).
-const NOTIFY_MESSAGE: i32 = 0x1000;
+pub(crate) const NOTIFY_MESSAGE: i32 = 0x1000;
 
 // ── IPC status encoding ──
 //

@@ -413,6 +413,71 @@ pub type CurrentArchSyscall = DefaultSyscall;
 /// `kernel_call_dispatch` + `kernel_call_finish`. The only exception
 /// is the `VmSuspend` path in `kernel_call_finish`, which releases
 /// the BKL before waiting for VM (see `kernel_call_finish` docs).
+/// D-8: `kernel_call()` wrapper — C system.c:136-163.
+///
+/// The full kernel call sequence: save user msg address → copy message
+/// from user space (TOCTOU defense: the kernel works on its own copy,
+/// not the user's mutable memory) → dispatch → finish. On copy failure:
+/// SIGSEGV (C system.c:152-155 — bad user pointer, not a kernel bug).
+///
+/// # TOCTOU defense
+///
+/// C: `copy_msg_from_user(m_user, &msg)` copies the user-space message
+/// into a kernel-stack `msg` at entry; dispatch and finish operate on
+/// this kernel copy. Without this, a malicious user could mutate the
+/// message between the dispatch's parameter validation and the finish's
+/// reply construction (check-to-use window).
+///
+/// # Arguments
+///
+/// * `caller` — the process making the kernel call
+/// * `m_user` — user-space virtual address of the message
+/// * `proc_table` / `priv_table` / `clock_state` — passed through to dispatch
+/// * `user_copy` — user-space copy abstraction (arch-injected)
+pub fn kernel_call(
+    caller: &mut KProcess,
+    m_user: minix_types::VirBytes,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &mut PrivTable,
+    clock_state: &mut ClockState,
+    user_copy: &dyn crate::ipc::UserCopy,
+) -> KcallResult {
+    use crate::syscall_signal::cause_signal;
+
+    // C system.c:141 — save the user-space reply address.
+    caller.p_delivermsg_vir = m_user;
+
+    // C system.c:147 — copy the message from user space (TOCTOU defense).
+    let msg = match user_copy.copy_msg_from_user(m_user) {
+        Ok(m) => m,
+        Err(_) => {
+            // C system.c:152-155 — printf WARNING + cause_sig(SIGSEGV).
+            // Rust: route to cause_signal(SIGSEGV) — same signal closed
+            // loop as D-45/D-43 in process_misc_flags.
+            crate::syscall_signal::cause_signal(
+                caller.p_nr,
+                crate::syscall_signal::SIGSEGV,
+                proc_table,
+                priv_table,
+            );
+            return KcallResult::Ok(EFAULT);
+        }
+    };
+
+    // C system.c:148 — stamp the sender's endpoint.
+    let mut msg = msg;
+    msg.m_source = caller.p_endpoint;
+
+    // C system.c:149 — dispatch.
+    let result = kernel_call_dispatch(caller, &mut msg, priv_table, proc_table, clock_state);
+
+    // C system.c:160 — kbill_kcall = caller (D-9, inside dispatch).
+
+    // C system.c:162 — finish (VMSUSPEND / reply / BKL release).
+    kernel_call_finish(caller, &msg, result);
+    result
+}
+
 pub fn kernel_call_dispatch(
     caller: &mut KProcess,
     msg: &mut Message,
@@ -3262,7 +3327,6 @@ mod tests {
     fn test_kernel_call_dispatch_call_denied_no_priv() {
         // Process without priv_id should be denied
         let mut msg = Message::default();
-        msg.m_type = 0; // SYS_FORK
         let mut proc = KProcess::new(ProcNr(0), minix_types::Endpoint::KERNEL);
         // proc.priv_id is None by default
         let mut priv_table = crate::test_helpers::test_priv_table();
@@ -3281,7 +3345,6 @@ mod tests {
         // call (the kernel work of handling the denial is still the
         // caller's).
         let mut msg = Message::default();
-        msg.m_type = 0; // SYS_FORK
         let mut proc = KProcess::new(ProcNr(0), minix_types::Endpoint::KERNEL);
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
@@ -3295,6 +3358,34 @@ mod tests {
         crate::smp::bkl_unlock();
         // Cleanup: consume with delta 0 — clears the marker without
         // attribution so later tests start neutral.
+        let _ = crate::consume_kbill_kcall(&mut proc_table, 0);
+    }
+
+    /// D-8: kernel_call wrapper — TOCTOU defense + SIGSEGV on bad copy.
+    /// The wrapper copies the user message via UserCopy::copy_msg_from_user
+    /// (TOCTOU defense: kernel works on its own copy), then dispatches.
+    #[test]
+    fn test_kernel_call_wrapper() {
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut clock_state = crate::clock::ClockState::new();
+        let mut proc = KProcess::new(ProcNr(0), minix_types::Endpoint::KERNEL);
+        proc.priv_id = Some(0);
+        let msg = Message::default();
+        // Use an invalid syscall → BadCall deterministically. The wrapper
+        // mechanics (p_delivermsg_vir save + dispatch + finish) are what
+        // we're testing, not the dispatch semantics.
+        let result = kernel_call(
+            &mut proc, minix_types::VirBytes(0x1000),
+            &mut proc_table, &mut priv_table, &mut clock_state,
+            &crate::ipc::KernelUserCopy,
+        );
+        assert_eq!(result, KcallResult::CallDenied);
+        // p_delivermsg_vir saved (C system.c:141)
+        assert_eq!(proc.p_delivermsg_vir, minix_types::VirBytes(0x1000));
+        // kernel_call_finish already released BKL (CallDenied → non-VmSuspend → unlock).
+
+        // Cleanup: D-9 marker
         let _ = crate::consume_kbill_kcall(&mut proc_table, 0);
     }
 

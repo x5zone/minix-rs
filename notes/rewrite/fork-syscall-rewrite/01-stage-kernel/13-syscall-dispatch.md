@@ -896,11 +896,14 @@ r2 回归 review 中实施了 4 项卓越性改进：
 - Syscall::try_from 简化：强行简化降低可读性，当前 match 虽多但清晰、穷尽、编译器可优化。
 - KcallResult::Ok 拆分：API 变更影响 43 个 handler，避免过度设计。
 
-### 6.3 kernel_call() wrapper 未实现（P1，DEFERRED）
+### 6.3 kernel_call() wrapper（✅ 已实现，2026-09-06 D-8）
 
-C 的 `kernel_call(m_user, caller)` 是 trap 入口的 wrapper，负责 `copy_msg_from_user`、设置 `p_delivermsg_vir`、调用 dispatch + finish。Rust 当前未实现此 wrapper——trap 入口直接调用 `kernel_call_dispatch`。
+C 的 `kernel_call(m_user, caller)` 是 trap 入口的 wrapper，负责 `copy_msg_from_user`、设置 `p_delivermsg_vir`、调用 dispatch + finish。Rust 已实现 `kernel_call()`（syscall.rs）：
 
-**责任归属**：待 14-exception-interrupt 文档化 trap 入口时实现 `kernel_call` wrapper（含 TOCTOU 防护的 `copy_msg_from_user`）。
+- TOCTOU 防护：copy_msg_from_user 将用户消息拷入内核栈副本，dispatch/finish 全程操作内核副本
+- 复制失败 → `cause_signal(SIGSEGV)`（同 D-45/D-43 信号闭环）
+- 成功 → `kernel_call_dispatch` + `kernel_call_finish`
+- 生产 trap 入口尚未接线（D-42 已完成但 asm trap entry 属 D-42 范畴），wrapper 自身可测且有测试
 
 ### 6.4 kbill_kcall 内核计费（✅ 已实现，2026-09-06 D-9）
 
