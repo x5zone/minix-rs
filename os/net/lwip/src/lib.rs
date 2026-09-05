@@ -19,10 +19,14 @@ extern crate alloc;
 
 pub mod addr;
 pub mod ipsock;
+pub mod lnksock;
+pub mod mcast;
 pub mod mempool;
 pub mod pktsock;
+pub mod rawsock;
 pub mod startup;
 pub mod tcpsock;
+pub mod udpsock;
 pub mod util;
 
 /// Service initialization entry (wires the tables; traffic and storage stay out).
