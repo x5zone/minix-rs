@@ -1,43 +1,66 @@
 //! Minix-RS Runtime Library.
 //!
-//! User-space runtime support. Provides the program entry point (`_start`),
-//! runtime initialization, a placeholder allocator, and a panic handler for
-//! `no_std` builds.
+//! User-space runtime support for every Minix-RS user program (servers, file
+//! systems, drivers, and commands share this layer). The crate covers the
+//! first three documents of the runtime stage:
+//!
+//! - `01-kernel-handoff`: the kernel information page and the initial stack
+//!   ([`handoff`]).
+//! - `02-crt0-start`: the program entry sequence from the first instruction
+//!   to the `main` call ([`start`]).
+//! - `03-runtime-init`: publishing the kernel information page and the
+//!   communication vector table ([`init`]).
+//!
+//! The remaining runtime concerns (memory allocator, panic output, system
+//! call wrappers) live in later stage documents and keep their existing
+//! placeholder implementations at the bottom of this file until their own
+//! documents land.
 //!
 //! # Crate status
 //!
-//! This crate is a **minimal runtime stub**. The functions here have correct
-//! signatures and well-defined behavior (no silent failures), but the actual
-//! implementations are placeholders:
+//! The three new modules have complete logic with unit tests. The functions
+//! below remain placeholders with well-defined behavior (no silent failures):
 //!
-//! - `init()` — no-op. Will set up TLS, allocator, signal handlers.
+//! - `init()` — no-op. Will delegate to [`init::initialize_runtime`] once the
+//!   communication trap is wired.
 //! - `_start()` — calls `init`, then `main`, then `minix_sys::exit`.
 //! - `alloc()` / `free()` — return null / no-op. Will back onto a slab
-//!   allocator fed by `minix_sys::mmap` once VM IPC is wired.
-//! - `panic` handler — loops forever. Will print to stderr via
-//!   `minix_sys::write` once that syscall lands.
+//!   allocator fed by `minix_sys::mmap` once virtual memory communication is
+//!   wired.
+//! - `panic` handler — loops forever. Will print to standard error via
+//!   `minix_sys::write` once that system call lands.
 //!
-//! # Std vs no_std
+//! # Standard library versus freestanding builds
 //!
-//! With the default `std` feature, this crate compiles as a normal std
-//! library: `_start` is **not** defined (the std runtime provides its own),
-//! and the panic handler is **not** defined (std provides one). Only `init`,
-//! `alloc`, and `free` are exported.
+//! With the default `std` feature, this crate compiles as a normal standard
+//! library crate: `_start` is **not** defined (the standard runtime provides
+//! its own), and the panic handler is **not** defined (the standard library
+//! provides one). Only `init`, `alloc`, `free`, and the three new modules
+//! are exported.
 //!
 //! Without the `std` feature (`--no-default-features`), the crate is
-//! `#![no_std]` and provides `_start` + a panic handler suitable for
+//! `#![no_std]` and provides `_start` plus a panic handler suitable for
 //! linking into a freestanding Minix-RS user process.
 //!
-//! # Redox comparison
+//! # Relation to Redox
 //!
-//! Redox OS uses the `linker` crate to provide `_start`. The pattern is
-//! similar: parse argc/argv from the stack, call `main`, call `exit`.
-//! Minix-RS's `_start` is intentionally simpler — it does not parse
-//! argc/argv because Minix3's PM passes initial args via a different
-//! mechanism (the `bootinfo` struct, mirror of the kernel's). When that
-//! mechanism is wired, `_start` will read argv from `bootinfo`.
+//! Redox ships the same shape in its `linker` crate: parse the startup
+//! information the kernel left behind, run the startup function lists, call
+//! `main`, pass the result to `exit`. The Minix variant differs in its input:
+//! Linux and Redox place the argument count and pointers directly on the
+//! initial stack, while Minix passes a pointer to a process string
+//! descriptor plus two loader values in registers. The [`start`] module
+//! therefore takes the descriptor as its input rather than re-parsing a raw
+//! stack image.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+
+/// Kernel handoff: kernel information page and initial stack (document 01).
+pub mod handoff;
+/// Program entry: descriptor check through the `main` call (document 02).
+pub mod start;
+/// Runtime initialization: kernel page query and vector install (document 03).
+pub mod init;
 
 #[cfg(not(feature = "std"))]
 use core::panic::PanicInfo;
@@ -50,7 +73,7 @@ use core::panic::PanicInfo;
 ///
 /// No-op. Future extensions (in order of dependency):
 /// 1. Initialize the global allocator (when slab allocator lands).
-/// 2. Set up thread-local storage (when SMP user-space lands).
+/// 2. Set up thread-local storage (when symmetric multiprocessing user-space lands).
 /// 3. Install default signal handlers (when `minix_sys::sigaction` lands).
 ///
 /// # When to call

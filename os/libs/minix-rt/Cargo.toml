@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+minix-types = { workspace = true }
 
 [features]
 default = ["std"]
