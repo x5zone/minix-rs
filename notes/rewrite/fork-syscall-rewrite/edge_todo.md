@@ -21,7 +21,7 @@
 | T5 | 1 | VmContext 第一步：parts_mut 消灭 | V11-P1-2（1/2） | ✅ 2026-09-06（todo.md §15 Fix #23） |
 | T6 | 1 | VmContext 第二步：dispatcher 收 &mut VmContext + fdref/table 收敛 | V11-P1-2（2/2） | ✅ 2026-09-06（todo.md §15 Fix #24；fdref 收敛归 T10） |
 | T7 | 1 | per-call codec 注册表 + dispatch 表驱动化 | V9-P2-1 + V9-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #26） |
-| T8 | 1 | 错误枚举收敛（errno 映射样板归一） | V10-P2-3 + P2-2 | ⬜ |
+| T8 | 1 | 错误枚举收敛 → **判定闭合：现有 From 集中表即最优** | V10-P2-3 + P2-2 | ✅ 2026-09-06（todo.md §15 Fix #27，WONTFIX 级设计判定） |
 | T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | ⬜ |
 | T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | ⬜ |
 | T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ⬜ |

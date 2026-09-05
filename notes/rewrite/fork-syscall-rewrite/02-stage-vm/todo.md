@@ -150,7 +150,7 @@ heap 对象（region Vec、page_cache 条目、临时消息）全部泄漏到进
 2. 或按 reply 类型拆到各服务模块（fork/mmap/brk... 自带 encode），dispatcher 只做路由。
 3. enum 变体直接携带数据 + 单一 `to_message()` 实现，替代散装 match。
 
-### P2-2 错误处理模式重复
+### ✅ P2-2 错误处理模式重复——**判定闭合：现有形式即 errno 映射总表**（2026-09-06，见 §15 Fix #27）
 
 **现状**：每个服务模块自带错误 enum：`BrkError`(brk.rs:47)、`VmExitError`(exit.rs:32)、
 `MmapError`(mmap.rs:176)、`MunmapError`(munmap.rs:75)、`RsError`(rs.rs:63)、`QueryError`(query.rs:55)、
@@ -663,7 +663,9 @@ paging 是逐页 fault 时分配（page_fault_handler → Grant → Provider 分
 
 **验证**：`rg "VM_DIRECT_MAP_SIZE|is_direct_map_virt" os/servers/vm/src --glob '!direct_map.rs'` 与布局文档一致。
 
-### ⏸ V10-P2-3 错误枚举 12+ 套盘点（P2-2 的量化补充）——**DEFERRED 2026-08-17**（见 §13 判定）
+### ✅ V10-P2-3 错误枚举收敛（P2-2 的量化补充）——**判定闭合：现有架构即最优，不做收敛重构**（2026-09-06，见 §15 Fix #27）
+
+> 原验证锚点（"收敛到 1 个对外 + 少量内部"）经 T8 深审后**作废**——它假设收敛是收益，实读全部 From 实现后证实收敛是损失。替代判据与完整论证见 Fix #27；重开条件亦在该处。
 
 **问题**：P2-2 已列"错误处理模式重复"，本轮量化：`VmExitError`/`BrkError`/`MmapError`/`MunmapError`/`RsError`/`QueryError`/`MemTypeError`/`CacheError`/`VfsQueueError`/`EndpointError`/`CowError`/`HeapArenaError`/`VmForkError`/`VmProcctlError`/`PageTableError` 等 15 个 crate 内错误 enum，每套自带 `From<EndpointError>` + errno 映射 + 测试（如 query.rs:43-57 注释说明 `QueryError::ProcessNotFound` 在 getrusage 上下文映射 ESRCH、其余 EINVAL）。
 
@@ -1171,6 +1173,19 @@ Coverage Summary for vm:
 - **锚点核验**：`rg "as usize - vm_rq_base"` → 0（V9-P2-2 锚点）；`rg "as usize - VM_RQ_BASE"` → 1（仅 call_index 定义处）；`test_callmap_registration_matches_c` 钉死"恰好 26 条注册 + parity 四条 None + 表长 49"
 - **Verified**: 四矩阵 **466 / 465 / 450 / 449 passed**（+1 结构对账测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 15-ipc-dispatch.md（§4.1 查表描述 + wrapper 示例 + §5.1 新测试行）；minix-types 侧全量 per-call decode 函数下移为可选后续（现 wrapper 已使解码知识局部化）
+
+### ✅ Fix #27: T8（V10-P2-3 + P2-2）— 错误枚举收敛**判定闭合**：现有 From 集中表即 errno 映射总表，收敛重构判为损失
+
+- **性质**：本条为设计判定（无代码改动）。V10-P2-3 的启动条件（kernel IPC 落地）已满足（V11-P1-1 核实），故按计划深审全部错误映射后做出最终判定。
+- **实证**：
+  1. `impl From<…Error> for VmError` **全部集中于 dispatcher.rs 一个文件**（grep 证实唯一文件）——"errno 映射集中一处"这一 P2-2 的核心诉求**已经成立**；所谓"15 套重复"实为同一总表的 15 个分区，每分区 4-12 行、穷尽 match（新增变体即编译错误，dispatcher.rs 文件头注释明言此保证）。
+  2. 每个非平凡映射臂携带 **C 侧锚点**（如 munmap InvalidLength → region.c:1233、MmapError::FileMapDisabled → mmap.c:255-261 ENXIO、RsError::SysProcNoMask → rs.c:56-58 EINVAL）——宏收敛会把锚点从映射臂上剥走，违反锚点纪律（模式 83），属用行数换质量。
+  3. 上下文相关映射已被证实不可统一：QueryError::ProcessNotFound 在 getrusage 语境映射 ESRCH、其余语境 EINVAL（dispatcher.rs `query_rusage_error_to_vm_error`）——"单一 From 无法表达"是实测结论。
+  4. thiserror 2.x 虽支持 no_std（纠正 P2-2 建议三的旧论据），但它只生成 Display/From 样板；本仓 From 已集中且 Display 承载语义文本，引入 proc-macro 依赖无对应收益。
+- **判定**：P2-2 / V10-P2-3 关闭（WONTFIX 级设计判定，非 DEFERRED——不存在"待解依赖"，是"评估后认定现状更优"）。对照 Redox syscall 的裸 errno 直传方案同样不采纳：会丢失本仓已获得的 errno 语义区分文档（InvalidEndpoint→ESRCH vs InvalidProcess→EINVAL，25/22 篇均有登记）。
+- **重开条件**：新增服务模块使 From 实现第三次出现在 dispatcher.rs 之外的文件时，评估 error_map! 声明宏（macro_rules!，no_std 安全）；或 minix-types 引入 per-call decode 函数时一并统筹。
+- **Verified**: `grep -rl "impl From<.*Error> for VmError" os/servers/vm/src` → 仅 dispatcher.rs；`cargo test -p minix-vm --lib` → 466 passed（各模块 error_to_errno 契约测试全部保持）
+- **Docs**: 无代码改动；本条即判定记录
 
 ### ✅ Fix #25: T19 — exec_newmem / DMA 三条 parity 处置（删孤儿 stub，不实现）
 
