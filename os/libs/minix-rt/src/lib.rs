@@ -12,18 +12,20 @@
 //!   communication vector table ([`init`]).
 //! - `06-allocator`: break management and slab allocation ([`alloc`]).
 //!
-//! The remaining runtime concerns (panic output, system call wrappers) live
-//! in later stage documents and keep their existing placeholder
-//! implementations until their own documents land.
+//! The remaining runtime concern (system call wrappers) lives in a later
+//! stage document and keeps its existing placeholder implementation until
+//! its own document lands.
 //!
 //! # Crate status
 //!
-//! The four modules have complete logic with unit tests. The functions below
-//! remain placeholders with well-defined behavior (no silent failures):
+//! The five modules have complete logic with unit tests. The function below
+//! remains a placeholder with well-defined behavior (no silent failures):
 //!
 //! - `_start()` — calls `init`, then `main`, then `minix_sys::exit`.
-//! - `panic` handler — loops forever. Will print to standard error via
-//!   `minix_sys::write` once that system call lands.
+//!
+//! The `panic` handler formats the location and message into a stack buffer
+//! and emits it through the diagnostic sink (see [`diag`]); the default sink
+//! spins, preserving the previous observable behavior.
 //!
 //! `init()` now initializes the global allocator (idempotent). It will
 //! delegate to [`init::initialize_runtime`] once the communication trap is
@@ -62,6 +64,8 @@ pub mod start;
 pub mod init;
 /// Memory allocator: break management plus slab allocation (document 06).
 pub mod alloc;
+/// Diagnostic output: buffering, number formatting, panic ladder (document 07).
+pub mod diag;
 
 #[cfg(not(feature = "std"))]
 use core::panic::PanicInfo;
@@ -269,31 +273,62 @@ mod global_tests {
 ///
 /// # Current behavior
 ///
-/// Loops forever. This is the safest minimal behavior for a freestanding
-/// binary: it does not require any subsystem (no console, no allocator,
-/// no syscalls) and halts forward progress deterministically.
+/// Formats the panic location and message into a stack buffer, hands the
+/// buffer to the diagnostic sink, and then stops. The default sink spins
+/// forever: the safest minimal behavior for a freestanding binary, requiring
+/// no subsystem (no console, no allocator, no syscalls) and halting forward
+/// progress deterministically.
 ///
-/// # Future implementation
+/// # Staged evolution (architecture item A-8)
 ///
-/// Will:
-/// 1. Format the panic message into a stack-allocated buffer.
-/// 2. Call `minix_sys::write(STDERR, buf)` to print to stderr.
-/// 3. Call `minix_sys::exit(1)` to terminate the process.
-///
-/// Until `minix_sys::write` lands, the loop is the correct behavior —
-/// attempting to print without a working write syscall would itself
-/// panic, recursing into this handler.
+/// 1. Spin after formatting (current step; observable behavior unchanged).
+/// 2. Route the sink through the kernel diagnostic channel.
+/// 3. Terminate through the process manager after emitting.
 #[cfg(all(not(test), not(feature = "std")))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // Halt forever. See doc comment for the roadmap.
+fn panic(info: &PanicInfo) -> ! {
+    use core::fmt::Write as _;
+
+    /// Byte writer over a fixed buffer; truncates silently when full.
+    struct BufferWriter<'a> {
+        buffer: &'a mut [u8; 256],
+        length: usize,
+    }
+
+    impl core::fmt::Write for BufferWriter<'_> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            for byte in text.bytes() {
+                if self.length < self.buffer.len() {
+                    self.buffer[self.length] = byte;
+                    self.length += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // Stage 1: format location plus message into a stack buffer. Stack
+    // memory only: no allocator, no syscalls, safe to run from any state.
+    let mut buffer = [0u8; 256];
+    let mut writer = BufferWriter {
+        buffer: &mut buffer,
+        length: 0,
+    };
+    if let Some(location) = info.location() {
+        let mut digits = [0u8; 12];
+        let digit_length = diag::format_decimal(location.line() as i32, &mut digits);
+        // The digit slice always fits: a line number renders in at most 11
+        // bytes and the scratch buffer holds 12.
+        let line_text = core::str::from_utf8(&digits[..digit_length]).unwrap_or("?");
+        let _ = write!(writer, "{}:{}: ", location.file(), line_text);
+    }
+    let _ = write!(writer, "{}\n", info.message());
+    let length = writer.length;
+    // Emit through the sink, then stop. The default sink never returns;
+    // the loop below is unreachable insurance for the type checker.
+    let mut sink = diag::SpinSink;
+    diag::DiagnosticSink::emit(&mut sink, &buffer[..length]);
     loop {
-        // On most architectures, a tight `core::hint::spin_loop` is
-        // preferable to a tight `loop {}` because it signals "I am
-        // waiting" to the CPU, reducing power consumption. In a panic
-        // handler we are not waiting for anything, but `spin_loop`
-        // also emits `pause`/`yield`/`nop` which is friendlier to
-        // hypervisors (QEMU) than a raw busy loop.
         core::hint::spin_loop();
     }
 }

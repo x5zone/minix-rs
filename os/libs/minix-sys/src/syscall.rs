@@ -101,7 +101,28 @@ pub fn perform_syscall(
     }
 }
 
-/// Hardware boundary for the privileged kernel-call trap.
+/// Performs one server-side call round trip.
+///
+/// This is the exact protocol of `_taskcall`
+/// (`minix3/minix/lib/libsys/taskcall.c:9-23`): "the same as `_syscall`
+/// except it returns negative error codes directly and not in errno."
+/// Write the call number, send and wait, report a failed round trip as-is,
+/// and return the reply message type untouched — negative values are errors
+/// in the caller's hands, not here.
+pub fn perform_taskcall(
+    transport: &impl IpcTransport,
+    destination: Endpoint,
+    call_number: i32,
+    message: &mut Message,
+) -> i32 {
+    message.m_type = call_number;
+    if let Err(status) = transport.sendrec(destination, message) {
+        // Like the C version (`return(status)`), the raw round-trip status
+        // goes back to the caller untouched.
+        return status.0;
+    }
+    message.m_type
+}
 ///
 /// C: `do_kernel_call` (invoked from `_kernel_call` in
 /// `minix3/minix/lib/libsys/kernel_call.c:13`). Server-side code uses this
@@ -339,5 +360,21 @@ mod tests {
     #[test]
     fn test_trap_failure_assignment_matches_c_statement() {
         assert_eq!(trap_failure_to_message_type(TrapStatus(-11)), -11);
+    }
+
+    #[test]
+    fn test_taskcall_returns_raw_reply_untouched() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(test_message(-5)));
+        let mut message = test_message(0);
+        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), -5);
+    }
+
+    #[test]
+    fn test_taskcall_reports_round_trip_status() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(TrapStatus(-11)));
+        let mut message = test_message(0);
+        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), -11);
     }
 }

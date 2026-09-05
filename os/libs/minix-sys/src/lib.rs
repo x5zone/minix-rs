@@ -29,6 +29,10 @@ pub use minix_types::{Gid, Pid, Uid};
 pub mod ipc;
 /// System call protocol above send-and-receive (document 05).
 pub mod syscall;
+/// Process manager call group (document 08).
+pub mod pm;
+/// File system call group (document 09).
+pub mod vfs;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
@@ -89,52 +93,90 @@ pub fn notify(dest: Endpoint, type_: minix_types::NotifyType) -> Result<(), IpcE
 }
 
 // ── Process system calls ──
+//
+// Each function delegates to the matching `pm` wrapper over the
+// direct-trap transport (see `pm`). Execution preparation (`exec`) takes a
+// caller-prepared request: the stack image is built with the 01-stage size
+// computation plus the 06-stage allocator, which live in `minix-rt` (this
+// crate cannot depend on it without a dependency cycle).
 
 /// Creates a child process.
 pub fn fork() -> Result<Pid, Errno> {
-    todo!("fork syscall")
+    pm::fork_via(&ipc::DirectTrapTransport)
 }
 
-/// Executes a new program.
-pub fn exec(path: &str, argv: &[&str]) -> Result<(), Errno> {
-    todo!("exec syscall")
+/// Executes a prepared program image.
+///
+/// The request is prepared by the caller (see `pm::prepare_exec`); a
+/// successful execution never returns, so the result is always the failure
+/// that came back.
+pub fn exec(prepared: pm::PreparedExec) -> Errno {
+    pm::exec_via(&ipc::DirectTrapTransport, prepared)
 }
 
 /// Process exit.
 pub fn exit(status: i32) -> ! {
-    loop {}
+    pm::exit_via(&ipc::DirectTrapTransport, status)
 }
 
-/// Waits for child process.
+/// Waits for a child process, reporting how it ended in `status`.
 pub fn waitpid(pid: Pid, status: &mut i32, options: i32) -> Result<Pid, Errno> {
-    todo!("waitpid syscall")
+    let (child, child_status) =
+        pm::waitpid_via(&ipc::DirectTrapTransport, pid, options, 0)?;
+    *status = child_status;
+    Ok(child)
 }
 
 /// Sends a signal.
 pub fn kill(pid: Pid, sig: i32) -> Result<(), Errno> {
-    todo!("kill syscall")
+    pm::kill_via(&ipc::DirectTrapTransport, pid, sig)
 }
 
 // ── File system calls ──
+//
+// Each function delegates to the matching `vfs` wrapper over the
+// direct-trap transport (see `vfs`). Buffer addresses come from the caller:
+// user programs pass their own buffers, whose addresses the server reads
+// through granted memory.
 
 /// Opens a file.
+///
+/// Dispatches on the create flag (see `vfs::dispatch_open`): the create path
+/// is fully implemented; the open-existing path reports `ENOSYS` until the
+/// global concepts document settles the 64-bit path message layout.
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
-    todo!("open syscall")
+    vfs::open_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        flags,
+        mode,
+    )
 }
 
 /// Closes a file.
 pub fn close(fd: Fd) -> Result<(), Errno> {
-    todo!("close syscall")
+    vfs::close_via(&ipc::DirectTrapTransport, fd)
 }
 
-/// Reads from a file.
+/// Reads from a file into the caller's buffer.
 pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
-    todo!("read syscall")
+    vfs::read_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        buf.as_mut_ptr() as u64,
+        buf.len(),
+    )
 }
 
-/// Writes to a file.
+/// Writes the caller's buffer to a file.
 pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
-    todo!("write syscall")
+    vfs::write_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        buf.as_ptr() as u64,
+        buf.len(),
+    )
 }
 
 /// Memory mapping.
