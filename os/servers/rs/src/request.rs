@@ -105,23 +105,40 @@ impl StopSignal {
     }
 }
 
-/// Stops a service: records the exit intent and the friendly signal.
+/// The `stop_service` decision: signal choice plus slot mutations.
 ///
-/// C: `stop_service` — manager.c:988-1008. The `sys_kill` send is injected
-/// (19); this function applies the slot-side effects and returns the signal
-/// to send. `how` is `RS_EXITING` (do_down) or `RS_REFRESHING` (do_refresh).
-pub fn stop_service(table: &mut RProcTable, rp: SlotId, how: RFlags, ticks: Clock) -> StopSignal {
-    let slot = table.get_mut(rp);
-    // C: manager.c:1003 — RS itself is stopped with SIGHUP (its SEF signal
-    // handler treats it as the stop request; 06/18).
-    let signal = if slot.pub_.endpoint == Endpoint::RS {
+/// A4: the control-request domain follows the R13 decision-payload pattern —
+/// the decision is pure, the 13 wiring sends the returned signal
+/// (`kernel.srv_kill`/`sys_kill`) and applies the mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopDecision {
+    /// The friendly signal to send. C: manager.c:1003.
+    pub signal: StopSignal,
+    /// Slot mutations implied by the stop (`how` flag + `stop_tm`).
+    pub mutations: crate::service_slot::SlotMutations,
+}
+
+/// Computes the stop decision for a service.
+///
+/// C: `stop_service` — manager.c:988-1008. `how` is `RS_EXITING` (do_down)
+/// or `RS_REFRESHING` (do_refresh); the friendly signal is `SIGTERM`, with
+/// `SIGHUP` for RS itself (manager.c:1003 — its SEF signal handler treats it
+/// as the stop request, 06/18); `stop_tm = getticks()` records when the stop
+/// started (manager.c:1007).
+pub fn stop_decision(rp: &ServiceSlot, how: RFlags, ticks: Clock) -> StopDecision {
+    let signal = if rp.pub_.endpoint == Endpoint::RS {
         StopSignal::Hangup
     } else {
         StopSignal::Term
     };
-    slot.flags |= how; // manager.c:1005
-    slot.stop_tm = ticks; // manager.c:1007
-    signal
+    StopDecision {
+        signal,
+        mutations: crate::service_slot::SlotMutations {
+            set: how,
+            stop_tm: Some(ticks),
+            ..Default::default()
+        },
+    }
 }
 
 /// Applies the shutdown sweep and reports the new `shutting_down` state.
@@ -203,24 +220,25 @@ mod tests {
 
     #[test]
     fn test_stop_service_signal_choice() {
-        // C: manager.c:1003 — RS → SIGHUP; others → SIGTERM.
-        let mut t = RProcTable::new();
-        let rp = t.alloc_slot().unwrap();
+        // C: manager.c:1003 — RS → SIGHUP; others → SIGTERM. A4: the
+        // decision is pure — the caller applies the mutations and sends the
+        // signal.
+        let t = RProcTable::new();
         let mut s = ServiceSlot::vacant();
         s.pub_.endpoint = Endpoint::VFS;
-        *t.get_mut(rp) = s;
-        let sig = stop_service(&mut t, rp, RFlags::EXITING, 77);
-        assert_eq!(sig, StopSignal::Term);
-        assert!(t.get(rp).flags.contains(RFlags::EXITING));
-        assert_eq!(t.get(rp).stop_tm, 77);
+        let d = stop_decision(&s, RFlags::EXITING, 77);
+        assert_eq!(d.signal, StopSignal::Term);
+        d.mutations.apply(&mut s);
+        assert!(s.flags.contains(RFlags::EXITING));
+        assert_eq!(s.stop_tm, 77);
 
-        let rp2 = t.alloc_slot().unwrap();
         let mut s2 = ServiceSlot::vacant();
         s2.pub_.endpoint = Endpoint::RS;
-        *t.get_mut(rp2) = s2;
-        let sig2 = stop_service(&mut t, rp2, RFlags::REFRESHING, 1);
-        assert_eq!(sig2, StopSignal::Hangup);
-        assert!(t.get(rp2).flags.contains(RFlags::REFRESHING));
+        let d2 = stop_decision(&s2, RFlags::REFRESHING, 1);
+        assert_eq!(d2.signal, StopSignal::Hangup);
+        d2.mutations.apply(&mut s2);
+        assert!(s2.flags.contains(RFlags::REFRESHING));
+        assert_eq!(s2.stop_tm, 1);
     }
 
     #[test]

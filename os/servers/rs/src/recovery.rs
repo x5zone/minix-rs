@@ -16,7 +16,7 @@ use crate::boot::KernelApi;
 use crate::privilege::PrivCtlOp;
 use crate::process_table::RProcTable;
 use crate::service_slot::{Label, RFlags, ServiceSlot, SlotId, SlotMutations, SysFlags};
-use minix_types::Errno;
+use minix_types::{Endpoint, Errno};
 
 /// C: `MAX_DET_RESTART` — const.h:25 (maximum number of detached restarts).
 pub const MAX_DET_RESTART: i32 = 10;
@@ -624,4 +624,114 @@ pub fn cleanup_service(
         // (manager.c:488-494).
         table.free_slot(rp);
     }
+}
+
+// ── crash/kill/detach executors (R22b — manager.c:360-378/380-403/497-528) ──
+
+/// The outcome of `crash_service`.
+///
+/// C: `crash_service` — manager.c:380-403: RS itself `exit(1)`s directly
+/// (manager.c:395-397) — a self-termination the caller (06/18 wiring) turns
+/// into RS's own run-loop shutdown; every other service is SIGKILLed via PM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashOutcome {
+    /// The crashing slot is RS itself: the caller must terminate the run
+    /// loop (C: `exit(1)`).
+    SelfTerminate,
+    /// The service was SIGKILLed through PM.
+    Signalled,
+}
+
+/// Simulates a crash in a system service.
+///
+/// C: `crash_service` — manager.c:380-403.
+pub fn crash_service(
+    slot: &ServiceSlot,
+    kernel: &mut dyn KernelApi,
+) -> Result<CrashOutcome, Errno> {
+    if slot.pub_.endpoint == Endpoint::RS {
+        return Ok(CrashOutcome::SelfTerminate); // manager.c:395-397
+    }
+    kernel.sys_kill(slot.pub_.endpoint, SIGKILL)?; // manager.c:399
+    Ok(CrashOutcome::Signalled)
+}
+
+/// Crashes a system service and marks it as not-to-be-restarted.
+///
+/// C: `kill_service` — manager.c:360-378: sets `RS_EXITING` ("expect exit")
+/// then crashes the service; the `errstr` printf (manager.c:365-367) is the
+/// diagnostics face (R31, suppressed while `shutting_down`). C ignores the
+/// crash result and returns the input `err` for propagation.
+pub fn kill_service(slot: &mut ServiceSlot, kernel: &mut dyn KernelApi, err: Errno) -> Errno {
+    slot.flags.insert(RFlags::EXITING); // manager.c:372
+    let _ = crash_service(slot, kernel); // manager.c:373 — result ignored
+    err
+}
+
+/// Detaches the given system service.
+///
+/// C: `detach_service` — manager.c:497-528: the service survives with a
+/// unique `"{counter}.{label}"` identity (republished via DS), keeps running
+/// (`RS_IN_USE | RS_ACTIVE`), loses its core/detach policy bits and its
+/// monitoring-relevant configuration, and is re-allowed. `counter` is the C
+/// static `detach_counter` — owned by the caller (`ServerState`); the
+/// `ds_publish_label` effect is injected (11/19).
+pub fn detach_service(
+    slot: &mut ServiceSlot,
+    kernel: &mut dyn KernelApi,
+    counter: u64,
+    ds_publish_label: &mut dyn FnMut(&Label, Endpoint),
+) {
+    // manager.c:503-513 — "{++detach_counter}.{label}" (NUL-safe truncation
+    // to RS_MAX_LABEL_LEN).
+    let old = slot.pub_.label.as_bytes();
+    let old_len = old.iter().position(|&b| b == 0).unwrap_or(old.len());
+    let mut new_label = [0u8; crate::service_slot::RS_MAX_LABEL_LEN];
+    let mut off = 0;
+    // Decimal digits of counter+1 (C: `snprintf("%lu.%s", ++detach_counter,
+    // label)`), most-significant first, written directly into the label
+    // buffer so no intermediate borrow exists.
+    let mut digits = [0u8; 20];
+    let mut n = counter.wrapping_add(1);
+    let mut di = digits.len();
+    loop {
+        di -= 1;
+        digits[di] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    for &d in &digits[di..] {
+        if off >= new_label.len() {
+            break;
+        }
+        new_label[off] = d;
+        off += 1;
+    }
+    if off < new_label.len() {
+        new_label[off] = b'.';
+        off += 1;
+    }
+    for &b in &old[..old_len] {
+        if off >= new_label.len() {
+            break;
+        }
+        new_label[off] = b;
+        off += 1;
+    }
+    slot.pub_.label = Label::from_bytes(&new_label);
+    ds_publish_label(&slot.pub_.label, slot.pub_.endpoint);
+
+    // manager.c:519-524 — alive, demoted from core/detach policy, unmonitored.
+    slot.flags = RFlags::IN_USE | RFlags::ACTIVE; // manager.c:520
+    slot.pub_
+        .sys_flags
+        .remove(SysFlags::CORE_SRV | SysFlags::DET_RESTART); // manager.c:521
+    slot.period = 0; // manager.c:522
+    slot.pub_.dev_nr = 0; // manager.c:523
+    slot.pub_.nr_domain = 0; // manager.c:524
+
+    // Allow the service to run (manager.c:526-527) — result ignored in C.
+    let _ = kernel.privctl(slot.pub_.endpoint, PrivCtlOp::Allow, None);
 }

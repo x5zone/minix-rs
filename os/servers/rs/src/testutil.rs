@@ -27,6 +27,7 @@ pub enum Call {
     SetAlarm(u32),
     SrvExecve(Endpoint),
     SrvKill(Pid, i32),
+    SysKill(Endpoint, i32),
     SchedStop(Endpoint, Endpoint),
     SetUid(u32),
     Reply(Endpoint, i32),
@@ -200,6 +201,10 @@ impl KernelApi for MockKernelApi {
         } else {
             Err(Errno::ENOSYS)
         }
+    }
+    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
+        self.calls.push(Call::SysKill(proc, signo));
+        Ok(())
     }
     fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {
         self.calls.push(Call::SchedStop(scheduler, proc));

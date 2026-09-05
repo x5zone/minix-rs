@@ -81,6 +81,14 @@
    - `RSS_NOBLOCK` → 立即 `return OK`（调用者不等初始化）；
    - 否则 `r_flags |= RS_LATEREPLY; r_caller = m_source; r_caller_request = RS_UP` + `return EDONTREPLY`——**初始化完成后补发 reply**（12 的 `end_srv_init` → `late_reply`，06）。
 
+### 2.1b stop_service 的决策化（A4，2026-09-06，todo §18 Fix #52）
+
+`stop_service`（manager.c:988-1008）在 Rust 中拆为**纯决策 + 调用方副作用**：
+`stop_decision(slot, how, ticks) -> StopDecision { signal, mutations }`——信号选择
+（RS→SIGHUP，manager.c:1003；其余→SIGTERM）与槽位变异（`how` 标志 + `stop_tm`，R13 载荷）
+由决策返回，13 接线发送信号（`kernel.srv_kill`）并 `mutations.apply`。全表 `shutdown` 扫描
+（`shutdown_apply`）保留直接变异——表级编排域与逐槽控制决策域分工不同（A4 的分界）。
+
 ### 2.2 do_down：停止入口（request.c:111-155）
 
 1. `copy_label` → `lookup_slot_by_label`（不存在 → `ESRCH`）；

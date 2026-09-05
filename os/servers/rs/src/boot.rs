@@ -138,9 +138,15 @@ pub trait KernelApi {
 
     /// Asks PM to signal a service process.
     ///
-    /// C: `srv_kill(rp->r_pid, SIGKILL)` — manager.c:469 (cleanup_service).
-    /// Wired 19.
+    /// C: `srv_kill(rp->r_pid, SIGKILL)` — manager.c:469 (cleanup_service,
+    /// by pid through PM). Wired 19.
     fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno>;
+
+    /// Signals a process by endpoint (kernel sys_kill).
+    ///
+    /// C: `sys_kill(rpub->endpoint, SIGKILL)` — manager.c:399
+    /// (crash_service). Wired 19.
+    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno>;
 
     /// Tells the scheduler a process is finished.
     ///
@@ -256,6 +262,9 @@ impl KernelApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn srv_kill(&mut self, _pid: Pid, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn sys_kill(&mut self, _proc: Endpoint, _signo: i32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {

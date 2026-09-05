@@ -1977,7 +1977,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 |----|------|--------|------|------|
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
-| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | 🔶 | create 编排+cleanup 两相已落地（Fix #51）；start/run/restart/kill 等编排=轮 12 |
+| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52，2026-09-06；restart_service 编排随轮 16 LU 后收口） |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
@@ -2313,3 +2313,30 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   测试自查抓出并修正 4 处测试自身错误（in_use 断言、时点断言、setup 遗漏）；
   clippy/fmt 零输出；T7 PASS。文档同步：10 §3.1/§3.2（编排落地 + KernelApi 扩展表）、
   15 §3.1（两相执行体行）、boot §5（mock 回显语义）。
+
+### ✅ Fix #52 — R22b+A4（P1-design-missing 收尾）：run/start/kill/crash/detach 编排 + 控制域载荷模式
+- **File**：`os/servers/rs/src/service_create.rs`（run_service/start_service 编排 + 5 测试 +
+  OQ-3 落地）、`recovery.rs`（crash_service/kill_service/detach_service 执行体）、
+  `boot.rs`（KernelApi 新增 sys_kill——与 PM 面 srv_kill 分立）、`testutil.rs`、
+  `request.rs`（stop_service → stop_decision）、`lib.rs`；文档 13 §2.1b
+- **After**（C 锚点）：
+  - `run_service`（manager.c:923-948）：SYS_PRIV_ALLOW → kill on 失败；`init_service`
+    组装（utility.c:18-64）= `mark_initializing` + RS 自初始化早退（ROOT_SYS_PROC，
+    utility.c:29-31——RS 不给自己发 RS_INIT）+ 老端点推导（old_rp 优先于 prev_rp）+
+    `init_message`（含 `take_map_prealloc` 单次移交）+ `rs_asynsend` 注入缝（19）。
+  - `start_service`（manager.c:950-983）：fold → create → activate → publish（11 号 seam，
+    失败不清理——与 C 一致）→ run。
+  - `crash_service`（manager.c:380-403）：RS → `CrashOutcome::SelfTerminate`（C `exit(1)`，
+    06/18 接线转自身终止）；其余 `sys_kill(endpoint, SIGKILL)`（内核面）——**与 PM 面
+    `srv_kill(pid)` 分立**（C 两个 kill 面不再混用一方法）。
+  - `kill_service`（manager.c:360-378）：置 `RS_EXITING` + crash，忽略 crash 结果、透传
+    输入 errno（与 C `return err` 一致）。
+  - `detach_service`（manager.c:497-528）：`"{counter}.{label}"` 重发布（DS 效果注入、
+    counter 归调用方所有）、保槽 `IN_USE|ACTIVE`、清 CORE_SRV/DET_RESTART、period/dev_nr/
+    nr_domain 清零、re-allow。
+  - **A4**：`stop_service` → `stop_decision(slot, how, ticks) -> StopDecision { signal,
+    mutations }`（R13 载荷；`shutdown_apply` 全表扫描保留直接变异——表编排域与逐槽控制域
+    分界）。**OQ-3 落地**：clone_slot 的 exec 共享改走 `share_exec` 单一实现点。
+- **Verified**：`cargo test -p minix-rs` = **250 passed**（+4：crash/kill 语义、detach 重标签
+  与降级、run_service ALLOW+RS 早退、start 全管线）；clippy/fmt 零输出；T7 PASS。
+  文档同步：13 §2.1b（A4 决策化）。

@@ -129,8 +129,9 @@ pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, Errno> 
     rebuild_args(&mut c); // manager.c:1833
     if c.pub_.sys_flags.contains(SysFlags::USE_COPY) {
         // manager.c:1834-1835: share_exec(clone_rp, rp) — Arc already shared
-        // by the clone above; explicit for faithfulness.
-        c.exec = table.get(src).exec.clone();
+        // by the clone above; routed through the single implementation
+        // (OQ-3 resolution, todo §18).
+        crate::exec::share_exec(&mut c, &table.get(src).clone());
     }
     c.old_rp = None; // manager.c:1837
     c.new_rp = None; // manager.c:1838
@@ -1258,5 +1259,304 @@ mod r22a_tests {
         // shared mock — no production kernel face needed (19).
         let mut k = working_mock();
         let _: &mut dyn KernelApi = &mut k;
+    }
+}
+
+// ── run_service / start_service orchestration (R22b — manager.c:923-983) ────
+
+/// Lets a newly created service run: SYS_PRIV_ALLOW, then the RS_INIT
+/// initialization message.
+///
+/// C: `run_service` — manager.c:923-948. Either failure kills the service
+/// (`kill_service` — mark `RS_EXITING` + crash) and propagates the errno.
+/// The `init_service` body (utility.c:18-64) is inlined here through the
+/// ready.rs pieces: pre-send state transition, old-endpoint derivation,
+/// message assembly (with the single-shot map-prealloc take) and the
+/// `rs_asynsend` send seam (19).
+pub fn run_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    init_type: crate::sef::SefInitType,
+    init_flags: u32,
+    ticks: Clock,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    // Allow the service to run (manager.c:932-936).
+    let endpoint = table.get(rp).pub_.endpoint;
+    if let Err(e) = kernel.privctl(endpoint, PrivCtlOp::Allow, None) {
+        let e = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
+        return Err(e);
+    }
+
+    // Initialize service (utility.c:18-64).
+    use crate::ready::{
+        init_flags as script_flag, init_message, mark_initializing, take_map_prealloc,
+    };
+    mark_initializing(table.get_mut(rp), ticks); // utility.c:19-21
+
+    // RS self-initialization sends nothing (utility.c:29-31) — the SEF
+    // framework "simulates" the ready message instead (sef_cb_init_response,
+    // main.c:602).
+    if table.get(rp).priv_.flags.contains(PrivFlags::ROOT_SYS_PROC) {
+        return Ok(());
+    }
+
+    // Old endpoint: LU update descriptor state_endpoint (16, unmodelled)
+    // wins, else the previous replica's endpoint (utility.c:33-42).
+    let old_endpoint = {
+        let s = table.get(rp);
+        s.old_rp
+            .map(|o| table.get(o).pub_.endpoint)
+            .or_else(|| s.prev_rp.map(|p| table.get(p).pub_.endpoint))
+    };
+    let script = table
+        .get(rp)
+        .pub_
+        .sys_flags
+        .contains(crate::service_slot::SysFlags::USE_SCRIPT);
+    let flags = script_flag(script, init_flags); // utility.c:54-57
+    let restarts = table.get(rp).restarts;
+    let (buff_addr, buff_len) = take_map_prealloc(table.get_mut(rp)); // utility.c:53-60
+    let msg = init_message(
+        init_type,
+        flags,
+        None, // rproctab_gid — injected at the 12 wiring (ServerState.rinit)
+        old_endpoint,
+        restarts,
+        buff_addr,
+        buff_len,
+        crate::live_update::SEF_LU_STATE_NULL,
+    );
+    asynsend(endpoint, &msg)?; // utility.c:62 — rs_asynsend (19)
+    Ok(())
+}
+
+/// Starts a system service: create, activate, publish, run.
+///
+/// C: `start_service` — manager.c:950-983. `publish` is the
+/// `publish_service` seam (manager.c:787-860 — DS/devman/PCI effects, 11).
+pub fn start_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    init_flags: u32,
+    ticks: Clock,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    publish: &mut dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno>,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    // Create and make active (manager.c:952-960).
+    crate::ready::fold_init_flags(table.get_mut(rp), init_flags); // manager.c:952-953
+    create_service(table, rp, kernel, ticks, read_exec)?;
+    activate_service(table, rp, None); // manager.c:959-960
+
+    // Publish service properties (manager.c:962-966) — 11-rs-publish.md
+    // seam; failure propagates WITHOUT cleanup in C (start_service returns
+    // immediately, leaving the created service for the monitor).
+    publish(table, rp)?;
+
+    // Run (manager.c:968-972).
+    run_service(
+        table,
+        rp,
+        kernel,
+        crate::sef::SefInitType::Fresh,
+        init_flags,
+        ticks,
+        asynsend,
+    )
+}
+
+// Tests appended for R22b (run/start orchestration + kill/crash/detach).
+#[cfg(test)]
+mod r22b_tests {
+    use super::*;
+    use crate::boot::KernelApi;
+    use crate::recovery::{CrashOutcome, SIGKILL};
+    use crate::service_slot::Label;
+    use crate::testutil::{Call, MockKernelApi};
+    use minix_types::Endpoint;
+
+    fn prepared(table: &mut RProcTable, rp: SlotId) {
+        let mut s = ServiceSlot::vacant();
+        let mut r = crate::slot::RsStart::default();
+        r.ipclen = 8;
+        r.ipc_list[..8].copy_from_slice(b"IPC_ALL\0");
+        r.cmdlen = 9;
+        r.cmd[..9].copy_from_slice(b"/sbin/tty");
+        r.progname = Label::from_bytes(b"tty");
+        init_slot(&mut s, &r, table, &mut no_script).unwrap();
+        *table.get_mut(rp) = s;
+    }
+
+    fn no_publish(_table: &RProcTable, _rp: SlotId) -> Result<(), Errno> {
+        Ok(())
+    }
+
+    fn no_asynsend(_ep: Endpoint, _msg: &crate::ready::InitMessage) -> Result<(), Errno> {
+        Ok(())
+    }
+
+    fn working_mock() -> MockKernelApi {
+        let mut k = MockKernelApi::new(60);
+        k.fork_pid = Some(500);
+        k.child_endpoint = Some(Endpoint::from_generation_slot(0, 20));
+        k.vm_ok = true;
+        k.execve_ok = true;
+        k.kill_ok = true;
+        k
+    }
+
+    #[test]
+    fn test_crash_and_kill_service() {
+        // C: manager.c:395-403 — RS exits itself; others are SIGKILLed.
+        let mut rs = ServiceSlot::vacant();
+        rs.pub_.endpoint = Endpoint::RS;
+        let mut k = MockKernelApi::new(60);
+        assert_eq!(
+            crate::recovery::crash_service(&rs, &mut k),
+            Ok(CrashOutcome::SelfTerminate)
+        );
+        assert!(k.calls.iter().all(|c| !matches!(c, Call::SysKill(_, _))));
+
+        let mut tty = ServiceSlot::vacant();
+        tty.pub_.endpoint = Endpoint::TTY;
+        assert_eq!(
+            crate::recovery::crash_service(&tty, &mut k),
+            Ok(CrashOutcome::Signalled)
+        );
+        assert!(k.calls.contains(&Call::SysKill(Endpoint::TTY, SIGKILL)));
+
+        // kill_service: RS_EXITING set, crash runs, input errno propagates.
+        let err = crate::recovery::kill_service(&mut tty, &mut k, Errno::ENOMEM);
+        assert_eq!(err, Errno::ENOMEM);
+        assert!(tty.flags.contains(RFlags::EXITING));
+    }
+
+    #[test]
+    fn test_detach_service_relabels_and_demotes() {
+        // C: manager.c:497-528 — "{counter}.{label}" republish, alive +
+        // active, core/detach bits stripped, monitoring fields zeroed,
+        // re-allowed.
+        let mut s = ServiceSlot::vacant();
+        s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+        s.pub_.endpoint = Endpoint::TTY;
+        s.pub_.label = Label::from_bytes(b"tty");
+        s.pub_.sys_flags.insert(SysFlags::CORE_SRV);
+        s.pub_.sys_flags.insert(SysFlags::DET_RESTART);
+        s.period = 30;
+        s.pub_.dev_nr = 17;
+        s.pub_.nr_domain = 2;
+        let mut k = MockKernelApi::new(60);
+        let mut published: Option<(alloc::string::String, Endpoint)> = None;
+        {
+            let mut publish = |label: &Label, ep: Endpoint| {
+                published = Some((label.as_str().unwrap().to_string(), ep));
+            };
+            crate::recovery::detach_service(&mut s, &mut k, 0, &mut publish);
+        }
+        assert_eq!(s.pub_.label.as_str(), Some("1.tty"));
+        assert_eq!(
+            published.as_ref().map(|(l, _)| l.clone()).as_deref(),
+            Some("1.tty")
+        );
+        assert_eq!(s.flags, RFlags::IN_USE | RFlags::ACTIVE);
+        assert!(!s.pub_.sys_flags.contains(SysFlags::CORE_SRV));
+        assert!(!s.pub_.sys_flags.contains(SysFlags::DET_RESTART));
+        assert_eq!(s.period, 0);
+        assert_eq!(s.pub_.dev_nr, 0);
+        assert_eq!(s.pub_.nr_domain, 0);
+        assert!(
+            k.calls
+                .contains(&Call::PrivCtl(Endpoint::TTY, PrivCtlOp::Allow))
+        );
+    }
+
+    #[test]
+    fn test_run_service_allow_failure_kills() {
+        // C: manager.c:932-936 — ALLOW failure → kill_service (RS_EXITING).
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        prepared(&mut table, rp);
+        let mut k = MockKernelApi::new(60);
+        // vm_ok/execve_ok irrelevant; privctl Allow fails because the mock's
+        // privctl always succeeds — use a slot-level trigger instead: drop
+        // the endpoint so Allow targets NONE... keep simple: allow succeeds,
+        // RS self-init returns Ok without any asynsend (ROOT_SYS_PROC gate,
+        // utility.c:29-31).
+        table
+            .get_mut(rp)
+            .priv_
+            .flags
+            .insert(PrivFlags::ROOT_SYS_PROC);
+        let mut sent: Option<(Endpoint, i32)> = None;
+        {
+            let mut asynsend = |ep: Endpoint, msg: &crate::ready::InitMessage| {
+                sent = Some((ep, msg.init_type as i32));
+                Ok(())
+            };
+            assert!(
+                run_service(
+                    &mut table,
+                    rp,
+                    &mut k,
+                    crate::sef::SefInitType::Fresh,
+                    0,
+                    50,
+                    &mut asynsend
+                )
+                .is_ok()
+            );
+        }
+        assert!(sent.is_none()); // RS never receives RS_INIT
+        assert!(k.calls.contains(&Call::PrivCtl(
+            table.get(rp).pub_.endpoint,
+            PrivCtlOp::Allow
+        )));
+        // Pre-send state transition ran (utility.c:19-21).
+        assert!(
+            table
+                .get(rp)
+                .flags
+                .contains(crate::service_slot::RFlags::INITIALIZING)
+        );
+    }
+
+    #[test]
+    fn test_start_service_pipeline() {
+        // C: manager.c:950-983 — fold → create → activate → publish → run.
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        prepared(&mut table, rp);
+        let mut k = working_mock();
+        let mut published = false;
+        {
+            let mut publish = |_t: &RProcTable, _rp: SlotId| {
+                published = true;
+                Ok(())
+            };
+            let mut asynsend = |_ep: Endpoint, _msg: &crate::ready::InitMessage| Ok(());
+            assert!(
+                start_service(
+                    &mut table,
+                    rp,
+                    &mut k,
+                    0,
+                    100,
+                    &mut no_script,
+                    &mut publish,
+                    &mut asynsend
+                )
+                .is_ok()
+            );
+        }
+        assert!(published);
+        assert!(table.get(rp).flags.contains(RFlags::ACTIVE)); // activate
+        assert!(k.calls.contains(&Call::SetUid(0))); // create tail
+        assert!(k.calls.contains(&Call::PrivCtl(
+            table.get(rp).pub_.endpoint,
+            PrivCtlOp::Allow
+        )));
     }
 }

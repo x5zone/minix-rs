@@ -85,7 +85,8 @@ pub use recovery::{
     late_reply_result, script_reason, terminate_decision,
 };
 pub use request::{
-    StopSignal, check_duplicates, mark_late_reply, shutdown_apply, stop_service, up_init_flags,
+    StopDecision, StopSignal, check_duplicates, mark_late_reply, shutdown_apply, stop_decision,
+    up_init_flags,
 };
 pub use sef::{SefCallbacks, SefInitInfo, SefInitType};
 pub use self_lifecycle::{
