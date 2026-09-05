@@ -88,7 +88,7 @@ Missing this section → scan.md marked DRAFT.
 ## Phase 2: Coverage Enumeration (DO THIS FIRST, once for the whole directory)
 
 > Derive from the user's target:
-> - `$DOC_DIR` = the directory the user wants reviewed (e.g. `notes/rewrite/fork-syscall-rewrite/03-stage-kernel`)
+> - `$DOC_DIR` = the directory the user wants reviewed (e.g. `notes/rewrite/fork-syscall-rewrite/01-stage-kernel`)
 > - `$MINIX3_MODULE` = the Minix3 module name (e.g. `kernel`, `vm`, `pm`, `vfs`)
 > - `$C_DIR` = `minix3/minix/kernel` if `$MINIX3_MODULE == kernel`; otherwise `minix3/minix/servers/$MINIX3_MODULE`
 > - `$TARGET_DOC` = basename if the user names a single `.md` file; otherwise leave empty for module-level coverage

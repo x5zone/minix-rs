@@ -59,11 +59,26 @@ prompt/              — review rules, skill definitions (source of truth for .c
 | review-core-semantics-skill | (file: .codex/skills/review-core-semantics-skill/SKILL.md) | 核心语义定义 + 行为契约表模板（8 字段）。Step 2 Diff Extraction 识别 Top 5 语义差异时用 |
 | review-doc-skill | (file: .codex/skills/review-doc-skill/SKILL.md) | 文档 Review 检查清单（Ch1 骨架 / Claims-Evidence / 概念准确性 / 文档-代码一致性等）。检查 .md 文档质量时用 |
 | review-code-skill | (file: .codex/skills/review-code-skill/SKILL.md) | 代码 Review 检查清单（Rewrite 质量 / 硬件抽象 / 类型安全 / SMP 并发 / no_std 等 15 维度）。检查 .rs 代码质量时用 |
-| review-patterns-skill | (file: .codex/skills/review-patterns-skill/SKILL.md) | 常见错误模式库（P0 必检清单 + 79 个文档/代码/测试/叙事/流程模式，含验证命令）。review 中对照典型错误时用 |
+| review-patterns-skill | (file: .codex/skills/review-patterns-skill/SKILL.md) | 常见错误模式库（P0 必检清单 + 84 个文档/代码/测试/叙事/流程/架构抽象模式，含验证命令）。review 中对照典型错误时用 |
 | review-excellence-skill | (file: .codex/skills/review-excellence-skill/SKILL.md) | 卓越性检查（正确性 gate 通过后）：教科书级文档 + redox 级代码 |
 | review-coverage-skill | (file: .codex/skills/review-coverage-skill/SKILL.md) | 覆盖率穷举：tools/coverage-extract/ 生成 SYMBOLS.md + AI 语义判断。检查 C 源码/Rust 实现覆盖完整性时用 |
 | review-socratic-skill | (file: .codex/skills/review-socratic-skill/SKILL.md) | 苏格拉底追问：review 发现可疑点无法判定时，通过提问引导用户澄清/提供证据（13 场景话术模板） |
 | review-implementation-skill | (file: .codex/skills/review-implementation-skill/SKILL.md) | 设计→实施 验证：验证 Rust 代码正确实现 design doc + 追踪自我审查问题清单 |
+
+## 任务命令（review-cmds，2026-09-05 新增）
+
+6 个独立 cmd 是任务的一级入口（单一目标 + 明确边界 + 章节级默认范围）。规范源 `prompt/review-rules/review-cmds.md`；薄壳 skill 注册于 `.agents/skills/`（软链，ZCode 原生扫描）与 opencode.json（muse/opencode 可直呼，style-bible 为 muse 必加载）：
+
+| cmd | 用途 |
+|-----|------|
+| full-review | 文档+代码全面 review+修复+覆盖度 |
+| style-fix | 文档文风与教学性修复 |
+| code-excellence | 代码卓越度 + 死代码消除 |
+| test-audit | 测试 5 维专项（完备/自身正确/冗余/无效/虚构） |
+| todo-fix | 修一个 TODO（DEFERRED 不算修；一次一个） |
+| style-bible | 文风宪法（禁黑话/缩写/文言文；锚点纪律） |
+
+通用强制门（任何 cmd 不可裁剪）：锚点纪律门（模式 83）、测试名对账门（Gate E）、文风门、translate 防线、fix-guard、文档-代码同步。旧 Profile A-P/R/AG 保留为别名（对账表 review-cmds.md §八）；新任务一律用 cmd 入口。
 
 > **一致性约定**：`.codex/skills/` 从 `prompt/skill/`（源）和 `.claude/skills/review-scan/` 派生；除 Codex frontmatter、运行时路径和单 session 状态布局外，规则正文保持同源。源文件变更后按 `prompt/README.md` 的同步命令更新派生文件，再运行 `tools/check-review-rules.sh`。`review-agent-ide` / `review-agent-trigger` 是 Trae agent 定义（无 frontmatter），Codex 无 agent 概念，不复制。
 

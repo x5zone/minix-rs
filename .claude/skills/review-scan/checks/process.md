@@ -68,7 +68,7 @@ Missing this section → scan.md marked DRAFT.
    - **Trae IDE** → `.review/trae/{module}/STATE.md` (project root `.review/`)
    - **Claude Code Runtime** → `.review/claude/{module}/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - **`{module}` resolution**: use the **first directory under `notes/rewrite/`** in the target doc path. E.g. `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`. This is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
+   - **`{module}` resolution**: use the **first directory under `notes/rewrite/`** in the target doc path. E.g. `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`. This is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
    - **`{doc-stem}`** = target doc basename without extension (e.g. `03-kmain-cstart`). **`{agent}`** = model id (Trae: glm/kimi/...; Claude: m3/...).
    - **STATE preflight**: run `tools/review-state-validate.py --state {state_path}` to verify referenced files exist and Open issues map to scan.md entries.
    - **Auto-init**: `tools/review-init.sh claude {doc-path}` computes `{module}`/`{doc-stem}` and creates standard directories.
@@ -550,11 +550,11 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 
 ## Step 0.7: TODO 验证（若输入含 TODO 清单，新增，2026-07-16）
 
-### Step 0.7.1 外部 TODO 验证（`tmp_design_and_todo/` 下）
+### Step 0.7.1 外部 TODO 验证
 
-> 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单时执行。
+> 当 review 输入包含外部 TODO 清单时执行（历史形态为 `tmp_design_and_todo/` 下文件——该临时目录已删除；当前形态为各 stage 的 `todo.md` / `{NN}-todo.md` / `draft/` 产物）。
 
-> **目的**：当 review 输入包含外部 TODO 清单时（如 `0108-todo-final.md`），TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
+> **目的**：当 review 输入包含外部 TODO 清单时（历史案例如 `0108-todo-final.md`），TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
 
 **执行步骤**：
 1. 逐个验证 TODO 真实性（grep/glob/read 交叉验证）
@@ -576,7 +576,7 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 
 ### Step 0.7.2 文档内部 TODO 扫描（NEW 2026-07-30）
 
-> **背景**：原 Step 0.7 仅针对外部 TODO 清单（`tmp_design_and_todo/` 下），但文档正文常含 **> **TODO** 内部标记**——这些未走任何 review 流程，可能累积成 doc drift。
+> **背景**：原 Step 0.7 仅针对外部 TODO 清单（历史形态为 `tmp_design_and_todo/` 下文件，该临时目录已删除），但文档正文常含 **> **TODO** 内部标记**——这些未走任何 review 流程，可能累积成 doc drift。
 
 **执行**：
 1. 扫描 doc 内部 TODO：`rg "^\s*>\s*\*\*TODO" notes/rewrite/{module}/{stage}/{doc}.md` 或 `rg "TODO（" notes/rewrite/{module}/{stage}/{doc}.md`
@@ -683,7 +683,7 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
 
 ### TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
 
-> 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单，且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报。
+> 当 review 输入包含外部 TODO 清单（当前形态：各 stage 的 todo.md / {NN}-todo.md；历史案例如 tmp_design_and_todo/ 下文件，该临时目录已删除），且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报。
 >
 > **详见**：[prompt/review-rules/review-process.md §Step 0.7.4 TODO Staleness Check](../../../../prompt/review-rules/review-process.md) + [prompt/review-rules/review-patterns.md 模式 70](../../../../prompt/review-rules/review-patterns.md)。
 - **命名区分**：`-structure.md` = review 骨架（Step 0.5 产物，12 节）；`-design-structure.md` = design 前序（Step 0.3.1 产物，知识点全集，脚手架）。两者内容完全不同，禁止混淆。`{NN}-outline.v{N}.md` 是可复用快照（带版本号），不是脚手架。

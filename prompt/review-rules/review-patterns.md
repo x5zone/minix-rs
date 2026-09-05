@@ -3,6 +3,24 @@
 > 本文档汇总文档 Review 和跨文档联动检查中的典型错误模式。
 > 适用：文档 Review 时对照检查
 
+## 模式编号索引（2026-09-05 清淤时加入，随新增模式维护）
+
+**总量：84 个检查模式 = 81 个编号模式（1-60、63-83，61/62 合并入 60 保留空号）+ A/B/C 三个字母模式**。历史文档中"79 个模式"的宣称对应加入 79-83 之前的状态（76 编号 + A/B/C）。"模式 64 扩展"（禁用词清单）复用编号 64，不计独立编号。
+
+| 编号段 | 所在节 | 主题域 |
+|---|---|---|
+| §0 | P0 必检清单 | Gate D 5 项（每项 ✅/❌ + grep 证据） |
+| 1-15 | 一、文档错误模式 | 概念/引用/结构/覆盖 |
+| A/B/C | 二、跨文档联动错误模式 | 跨文档联动 |
+| 16-29 | 四、代码错误模式 | translate 味/硬件抽象/并发 |
+| 30-34 | 五、跨阶段通用错误模式 | 精度/外部知识 |
+| 35-40 | 六、测试错误模式 | 测试存在性/完备性 |
+| 41-47 | 七、卓越性错误模式 | 卓越性 |
+| 48-78 | 八、叙事与概念错误模式 | 叙事/概念/流程漂移（含 63-72 流程族、73-78 文档漂移族） |
+| 79-83 | 九、架构抽象与锚点纪律模式（2026-09-05 新增，来源 prompt/todo.md） | trait 边界/YAGNI/mock 隔离/cfg 泄漏/锚点纪律 |
+
+> 编号检索是主要路径；编号说明（61/62 空号、64 扩展不占号）见 §八 内的"编号说明"。
+
 ---
 
 ## §0 P0 必检清单（Gate D，每项必须显式回答 ✅/❌ + grep 证据）
@@ -1166,49 +1184,7 @@ struct VmProc {
 
 ---
 
-> **编号说明**：模式 61-62 在演进过程中合并至模式 60（诚实显式 TODO），编号保留不补，以便历史 review 报告中的"模式 61/62"引用可追溯。模式 66 因 2026-07-16 新增时插入位置靠前，未按数字顺序排列——模式按编号检索，不影响功能。
-
-### 模式 66: 参考代码路径漂移（Reference Code Path Drift, RCPD）（NEW 2026-07-16）
-
-```markdown
-❌ 错误：TODO/issue 描述引用 file:line，但被审时期存在、review 时已不存在
-        TODO-04-2 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279`
-        实际：`06-design-final.md` 删除了 `proc_arch` 模块
-        → 多次 AI bagging 共识"P0 真实 bug"基于已删除路径，T2 严重度从 P0 降为 P1
-
-✅ 正确：TODO 验证 Step 0.7.1 path existence validation
-        1. grep `ls <file>` 或 `rg "fn <name>" <file>` 验证路径存在
-        2. 不存在 → 标"路径失效" + 触发 doc 重写而非 code 修复
-        3. 多 AI 共识必须满足"全共识 × 全部 path 存在验证通过"才采纳为真实 bug
-```
-
-**判定**：
-- TODO 描述引用已删除/重构路径导致虚假 P0 共识 → **P1 误报来源**（T2 案例：P0 → P1 降级）
-- AI/人类 review 基于"过时路径"误判问题严重度 → 同上
-- review 阶段对引用路径未做 ls/rg 验证 → 模式 66 触发
-
-**规则草案**：
-- (a) **TODO 描述必须有"path existence check"步骤**（Step 0.7.1 强制）
-- (b) **review 阶段对每条 TODO 引用的 file:line 执行 `ls -la` 或 `rg -l` 验证**
-- (c) **验证不通过** → 标"路径失效" + 触发 doc 重写而非 code 修复
-- (d) **多 AI 共识**必须经过 grep/Read 验证才采纳为真实 bug
-- (e) **任何"严重度降级"必须有 L1 证据**（`ls`/`rg` 命中或失效证明）
-
-**建议落地**：
-- [review-process.md §Step 0.7.1](../review-rules/review-process.md) 新增 path existence validation 子步骤
-- 工具：`tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line（未来实施）
-- Session #8+ 每个 review 必跑 Step 0.7.1
-
-**来源案例**：
-- 04-platform-discovery §11 (Session #8)：`0108-todo-final.md` L601-622 (TODO-04-2) 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` 三处，实际 `os/arch/src/arch/mod.rs:20` 已明确 "proc_arch was removed in 06-design-final.md"——T2 P0 严重缺陷降级为 P1 事实纠正（2 AI 共识但共识基础已删除）
-- I2 案例（2026-07-16 VERIFY-CHECK 暴露）：doc L416 引用 `global.rs:38-51`，实际 `PLATFORM` 静态在 L44——行号漂移 +6 行，P2 偏差（不影响行为但违反 file:line 精确标准）
-
-**与现有模式的关系**：
-- 模式 60（诚实显式 TODO）：互补——模式 60 关注 TODO 注释的 4 要素；模式 66 关注 TODO 描述引用的代码路径真实性
-- 模式 5（代码与文档不一致）：范围更窄——仅 doc-code；模式 66 涵盖 TODO 描述中所有 file:line 引用
-
----
-
+> **编号说明**：模式 61-62 在演进过程中合并至模式 60（诚实显式 TODO），编号保留不补，以便历史 review 报告中的"模式 61/62"引用可追溯。模式 66 原插入位置靠前，2026-09-05 清淤时已移至 65 之后按数字序排列。"模式 64 扩展"（禁用词清单）复用编号 64，不计为新编号。
 ### 模式 63: Design-Missing 反模式
 
 > **背景**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。如果 review 流程只发现实现问题而漏掉 design 缺失，会反复局部修复却始终漏掉核心概念。
@@ -1255,7 +1231,7 @@ struct VmProc {
 ```bash
 # 禁用词清单（命中即 P1）
 grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|FIXME" \
-    prompt/../doc.md
+    {DOC_FILE}
 ```
 
 **典型症状**：
@@ -1287,7 +1263,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 **grep 自动检测（增强版）**：
 ```bash
 grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|FIXME|过去|当年|当初|之前|改成|替代|替换|替换为|升级|废弃|不再|放弃|修正|我|我们|本项目|今后|接下来|添加|删除|重构|第一步|第二步|首先|然后|接着|最后|XXX|NOTE" \
-    prompt/../doc.md
+    {DOC_FILE}
 ```
 
 > **注意**：TODO 在代码中允许保留（标记待做事项），但禁止在文档正文中使用 TODO/已实现/待实现（与模式 15 区分）。
@@ -1314,13 +1290,13 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 diff <(grep "^void\|^int\|^static.*(" *.c) <(grep "fn " *.rs)
 
 # 反模式信号 2：static mut 出现
-grep -nE "static mut" prompt/../code.rs
+grep -nE "static mut" {CODE_FILE}
 
 # 反模式信号 3：函数指针数组
-grep -nE "fn\([^)]*\)\s*\[.*\]" prompt/../code.rs
+grep -nE "fn\([^)]*\)\s*\[.*\]" {CODE_FILE}
 
 # 反模式信号 4：unsafe 块密度过高
-grep -c "unsafe" prompt/../code.rs
+grep -c "unsafe" {CODE_FILE}
 # 期望：每 100 行代码 ≤ 1 个 unsafe
 ```
 
@@ -1342,6 +1318,48 @@ grep -c "unsafe" prompt/../code.rs
 > **配套机制**：[review.md §核心术语 Rewrite](review.md) 定义目标、"禁止 Translate"是基本约束、模式 16/17 也是反 Translate 味道的检查项。
 
 ---
+
+### 模式 66: 参考代码路径漂移（Reference Code Path Drift, RCPD）（NEW 2026-07-16）
+
+```markdown
+❌ 错误：TODO/issue 描述引用 file:line，但被审时期存在、review 时已不存在
+        TODO-04-2 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279`
+        实际：`06-design-final.md` 删除了 `proc_arch` 模块
+        → 多次 AI bagging 共识"P0 真实 bug"基于已删除路径，T2 严重度从 P0 降为 P1
+
+✅ 正确：TODO 验证 Step 0.7.1 path existence validation
+        1. grep `ls <file>` 或 `rg "fn <name>" <file>` 验证路径存在
+        2. 不存在 → 标"路径失效" + 触发 doc 重写而非 code 修复
+        3. 多 AI 共识必须满足"全共识 × 全部 path 存在验证通过"才采纳为真实 bug
+```
+
+**判定**：
+- TODO 描述引用已删除/重构路径导致虚假 P0 共识 → **P1 误报来源**（T2 案例：P0 → P1 降级）
+- AI/人类 review 基于"过时路径"误判问题严重度 → 同上
+- review 阶段对引用路径未做 ls/rg 验证 → 模式 66 触发
+
+**规则草案**：
+- (a) **TODO 描述必须有"path existence check"步骤**（Step 0.7.1 强制）
+- (b) **review 阶段对每条 TODO 引用的 file:line 执行 `ls -la` 或 `rg -l` 验证**
+- (c) **验证不通过** → 标"路径失效" + 触发 doc 重写而非 code 修复
+- (d) **多 AI 共识**必须经过 grep/Read 验证才采纳为真实 bug
+- (e) **任何"严重度降级"必须有 L1 证据**（`ls`/`rg` 命中或失效证明）
+
+**建议落地**：
+- [review-process.md §Step 0.7.1](../review-rules/review-process.md) 新增 path existence validation 子步骤
+- 工具：`tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line（未来实施）
+- Session #8+ 每个 review 必跑 Step 0.7.1
+
+**来源案例**：
+- 04-platform-discovery §11 (Session #8)：`0108-todo-final.md` L601-622 (TODO-04-2) 引用 `os/arch/src/{x86_64,riscv64,arm64}/proc_arch.rs:350/252/279` 三处，实际 `os/arch/src/arch/mod.rs:20` 已明确 "proc_arch was removed in 06-design-final.md"——T2 P0 严重缺陷降级为 P1 事实纠正（2 AI 共识但共识基础已删除）
+- I2 案例（2026-07-16 VERIFY-CHECK 暴露）：doc L416 引用 `global.rs:38-51`，实际 `PLATFORM` 静态在 L44——行号漂移 +6 行，P2 偏差（不影响行为但违反 file:line 精确标准）
+
+**与现有模式的关系**：
+- 模式 60（诚实显式 TODO）：互补——模式 60 关注 TODO 注释的 4 要素；模式 66 关注 TODO 描述引用的代码路径真实性
+- 模式 5（代码与文档不一致）：范围更窄——仅 doc-code；模式 66 涵盖 TODO 描述中所有 file:line 引用
+
+---
+
 
 ### 模式 67: C 函数名 vs OS 概念误判（C Function Name vs OS Concept Confusion, CFNOC）（NEW 2026-07-16）
 
@@ -1374,7 +1392,7 @@ grep -c "unsafe" prompt/../code.rs
 - 工具：`tools/ai-claim-verify.sh` 一键扫描所有 "X task/subsystem" 类 AI claim（未来实施）
 
 **来源案例**：
-- 05-clock-interrupt-init Session #10：`tmp_design_and_todo/0108-todo-final.md` L680 (TODO-05-1) 由 ds (P1-4) + seed (TODO-006) 提议："05 文档提到 CLOCK task 时，读者可能不理解其与普通进程的区别"；`rg "CLOCK task\|clock task\|System Task\|Kernel Subsystem" 05-clock-interrupt-init.md` 0 命中 → 误报
+- 05-clock-interrupt-init Session #10：历史输入 `tmp_design_and_todo/0108-todo-final.md`（该临时目录已删除，案例仅作教学引用）L680 (TODO-05-1) 由 ds (P1-4) + seed (TODO-006) 提议："05 文档提到 CLOCK task 时，读者可能不理解其与普通进程的区别"；`rg "CLOCK task\|clock task\|System Task\|Kernel Subsystem" 05-clock-interrupt-init.md` 0 命中 → 误报
 
 **与现有模式的关系**：
 - 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
@@ -1412,7 +1430,7 @@ grep -c "unsafe" prompt/../code.rs
 - 工具：`tools/doc-chapter-classify.sh` 自动识别 doc 章节类型（Ch1/Ch2/Ch3/Ch4/Ch5）（未来实施）
 
 **来源案例**：
-- 05-clock-interrupt-init Session #10：`tmp_design_and_todo/0108-todo-final.md` L702 (TODO-05-2) 由 m3 (TODO #13) 提议："05 §2.4/§2.5 arch_init 仍有 30+ 行 ifndef CONFIG_SMP 散落分支"；`rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP\|#\[cfg\(smp\|CONFIG_SMP" os/` 仅 3 注释提及，Rust impl 无 `#[cfg(smp)]` 分支 → 误报
+- 05-clock-interrupt-init Session #10：历史输入 `tmp_design_and_todo/0108-todo-final.md`（该临时目录已删除，案例仅作教学引用）L702 (TODO-05-2) 由 m3 (TODO #13) 提议："05 §2.4/§2.5 arch_init 仍有 30+ 行 ifndef CONFIG_SMP 散落分支"；`rg "ifndef CONFIG_SMP\|ifdef CONFIG_SMP\|#\[cfg\(smp\|CONFIG_SMP" os/` 仅 3 注释提及，Rust impl 无 `#[cfg(smp)]` 分支 → 误报
 
 **与现有模式的关系**：
 - 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
@@ -1470,7 +1488,7 @@ grep -c "unsafe" prompt/../code.rs
 ### 模式 70: 跨轮状态陈旧（Cross-Turn Outdated Staleness, CTOS）（NEW 2026-07-16）
 
 ```markdown
-❌ 错误：AI 拿到 `tmp_design_and_todo/0108-todo-final.md` 后直接采纳所有 TODO 为真
+❌ 错误：AI 拿到外部 TODO 清单（历史输入 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）后直接采纳所有 TODO 为真
         结果：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表跨多轮 review 累积：
         - TODO-06-2 假设"1 个 trait 而非 3 个"，但实际 Rust 已有 3 个 trait（前提错误）
         - TODO-06-4 假设"TODO-01-3 阻塞"，但 TODO-01-3 早已修复接通（前提失效）
@@ -1484,7 +1502,7 @@ grep -c "unsafe" prompt/../code.rs
 ```
 
 **判定**：
-- `tmp_design_and_todo/` 中 TODO 数 > 5 + 含"基于..."/"依赖..."/"待..."等时间敏感词 → **必须跑** Step 0.7.4
+- 输入 TODO 清单中 TODO 数 > 5 + 含"基于..."/"依赖..."/"待..."等时间敏感词 → **必须跑** Step 0.7.4
 - TODO 描述引用"TODO-XX-N 未修复"但当前 rg 0 命中 → 前提失效，标"前提失效"
 - TODO 描述引用"待 X 完成"但当前 X 已存在 → 前提失效，标"前提失效"
 - 未跑 staleness check 即采纳全部 TODO 为真 → 模式 70 触发
@@ -1501,7 +1519,7 @@ grep -c "unsafe" prompt/../code.rs
 - 工具：`tools/todo-staleness-check.sh {todo-file}`（已落地 2026-07-17）
 
 **来源案例**：
-- **Session #12 (06-proc-init-boot-proc.md)**：`tmp_design_and_todo/0108-todo-final.md` 中 8 个 TODO-06 经 staleness check 后：
+- **Session #12 (06-proc-init-boot-proc.md)**：历史输入 `tmp_design_and_todo/0108-todo-final.md`（该临时目录已删除）中 8 个 TODO-06 经 staleness check 后：
   - 3 误报（前提错误/失效/已修复）
   - 5 真实，其中 1 项已正确实现无需修改
   - 实际修复 4 项，节省 ~30 分钟
@@ -1992,6 +2010,76 @@ fn ev_copy(&self, ...) -> Result<...> { ... }
 **首次发现**：2026-08-14 规则集优化过程中，从 project_memory 沉淀的多个 C bug 修复案例抽象。
 
 ---
+
+## 九、架构抽象与锚点纪律模式（2026-09-05 新增，来源 prompt/todo.md 条目 1 + 工作流迭代）
+
+> 本节 5 条来自 05-clock-interrupt-init.md §4.7.1 重构 `ArchBoot::register_timer_handler` 时归纳的元原则（前 4 条）+ 多轮 review 沉淀的锚点纪律（第 5 条）。反例细节保留在源文档，本节只给判据与验证命令。
+
+### 模式 79: trait 边界按调用时序划分（Trait Boundary By Call Timing）
+
+```markdown
+❌ 错误：把"boot 时的调用顺序"当成"架构能力边界"——ArchBoot 聚合了 init/register_timer_handler/
+        write_user_register 等仅因"都在 boot 期被调用"而堆在一起的方法
+✅ 正确：trait 成员由 architecture variance（子系统能力差异）决定——ClockArch / TimerIrqGate /
+        StacktraceArch 各自表达一类能力，boot 是否调用它们与 trait 划分无关
+```
+
+**判定信号**：trait 方法仅在同一个生命周期阶段（boot/init/shutdown）被调用，但彼此无能力共性 → 边界错位。
+**验证命令**：`rg "trait {Name}" {arch_dir} -A 20`，逐方法问"去掉调用时序，这些方法仍属于同一能力域吗"。
+**严重度**：P1（边界错位）；若导致跨模块强制依赖 → P0。
+**反例**：05-clock-interrupt-init.md §4.7.1 反例 1。
+
+### 模式 80: 为 mock 预建抽象（Mock-Only Abstraction / YAGNI）
+
+```markdown
+❌ 错误：为"未来可能的硬件差异"预建 trait，当前三架构实现全部是 mock 占位（"未实现的一致"）
+✅ 正确：真硬件 binding 出现前删除占位 trait；抽象在第二个真实差异出现时才成立
+```
+
+**判定信号**：`rg "impl .*{Trait}"` 的全部实现体行为等价（通常都是 `let _ = x;` 或同一占位逻辑）。
+**验证命令**：`rg "impl .*{TraitName}" {arch_dir} --type rust -n` + 逐实现体 diff 行为。
+**严重度**：P2（YAGNI 债）；若阻塞读者理解或制造虚假测试信心 → P1。
+**反例**：05-clock-interrupt-init.md §4.7.1 反例 2（`register_timer_handler` 三架构 mock 占位）。
+
+### 模式 81: 生产实现触碰测试状态（Production Writes Mock State）
+
+```markdown
+❌ 错误：真硬件实现路径 fallback 写 MOCK_* 全局（如旧 X86_64TimerIrqGate::enable_timer_irq
+        在 LAPIC 未映射时写 MOCK_IRQ_ENABLED）——生产行为被测试状态污染
+✅ 正确：测试 mock 的 static 只存在于 #[cfg(test)] 或 mock 实现自身；真实现只操作真硬件/真状态
+```
+
+**判定信号**：非 `#[cfg(test)]` 代码路径中出现 `MOCK_` 前缀全局的写入（读也不允许）。
+**验证命令**：`rg "MOCK_" {rust_dir} --type rust -n | rg -v "cfg\(test\)|mock"` → 人工逐条判定。
+**严重度**：P0（生产正确性被测试基础设施污染）。
+**反例**：05-clock-interrupt-init.md §4.7.1 反例 3。
+
+### 模式 82: target-specific cfg 泄漏到能力使用方（cfg Leakage Past Selection Alias）
+
+```markdown
+❌ 错误：能力使用方（kernel/驱动代码）写 #[cfg(target_arch = "x86_64")] 选行为
+✅ 正确：target-specific cfg 仅存在于 arch crate 的 Current* 选择 alias（如 minix-plat 的
+        CurrentClock / qemu_virt.rs）；使用方只见 trait，架构差异全部下沉
+```
+
+**判定信号**：arch crate 之外的 `#[cfg(target_arch)]` 行为分支（CLAUDE.md §0.6 B-X 分类法：定义 current 类型合法，选行为违规；字面量汇编内寄存器/指令名属语法硬约束，豁免）。
+**验证命令**：`rg '#\[cfg\(target_arch' {kernel_or_server_dir} --type rust -n` → 逐条按 B-X 分类法判定。
+**严重度**：P1（硬件抽象泄漏；CLAUDE.md §0.6 全量重构的种子）。
+**反例**：05-clock-interrupt-init.md §4.7.1 反例 4。
+
+### 模式 83: 无锚点知识点断言（Unanchored Knowledge Claim）（NEW 2026-09-05，工作流迭代沉淀）
+
+```markdown
+❌ 错误：文档/中间产物中断言"X 的开销是 Y""Minix3 是这样做的""Linux 用 Z 方案"，
+        但全文无 file:line 锚点、无来源引用——读者追问时 AI 自认"是我虚构的"
+✅ 正确：每个知识点断言带锚点（C 源码 file:line / ISA 手册章节 / Redox 仓库路径 / OS 教材）；
+        确实无法给出锚点时，显式标注 [待验证] 并列为 review 待办，而非静默写成事实
+```
+
+**判定信号**：抽样文档中的机制性断言（"因为 X 所以 Y"/"某系统采用 Z"），逐条找锚点；找不到且无 [待验证] 标注 → 命中。
+**验证命令**：`rg "Minix3 是|Linux 采用|Redox 的实现|开销|代价" {doc}.md -n` → 抽 5 条查锚点（Step 3.5b 因果链抽样的锚点维度扩展）。
+**严重度**：P0（虚构知识点，Pattern #48 因果链编造的来源维扩展）。
+**关联**：#48（因果链编造）的"来源不可考"子类；与 review-cmds.md 各 cmd 的"锚点纪律门"配套。
 
 ## 附录：Pattern→Step 交叉引用表
 

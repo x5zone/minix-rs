@@ -135,4 +135,4 @@ Use the template in [process-skill](review-process-skill.md). Must include:
 **Coverage**: run coverage-extract.py first; use `--semantic-map` for C→Rust rewrite; use `--doc-file` for per-doc stats; AI supplements 5 judgments.
 **Excellence**: after correctness gate; doc narrative/term def; code API/precise errors/DI; test L1/L2/L3.
 **structure.md**: generate before correctness check; 12 sections; Gate D-6; verifies "what reader reads" not "what doc says".
-**Patterns**: 79 个模式，重点检查 P0/因果链/Ch1 叙事/Design-First/流程漂移。
+**Patterns**: 84 个模式，重点检查 P0/因果链/Ch1 叙事/Design-First/流程漂移/架构抽象（79-83）。

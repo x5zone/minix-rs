@@ -1,5 +1,8 @@
 # Review 任务组合配置
 
+
+> **⚠️ 现役入口变更（2026-09-05）**：任务一级入口已迁移至 [review-cmds.md](review-cmds.md) 的 6 个 cmd（full-review / style-fix / code-excellence / test-audit / todo-fix / style-bible）。本文件的 Profile 定义保留为：(a) 历史 STATE.md/scan.md 引用的别名；(b) cmd 加载规则的模块矩阵细节来源。新任务请从 cmd 入口进入，对账表见 review-cmds.md §八。
+
 > 本文档定义不同 Review 场景下应加载的模块组合。
 > 目的：根据任务类型按需加载，避免上下文过载。
 

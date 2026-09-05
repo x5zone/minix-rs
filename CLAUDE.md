@@ -87,6 +87,21 @@ Each doc in `notes/rewrite/` follows:
 
 The review system enforces structured review via 9 domain skills (in `prompt/skill/`, adapted to `.trae/skills/` and `.codex/skills/`). Claude Code Runtime uses the `review-scan` orchestrator (`.claude/skills/review-scan/`) + `review-implementation-skill` (`.claude/skills/review-implementation-skill/`), with always-on rules in `.claude/rules/`. Full process details: `prompt/skill/review-process-skill.md`. The 9th skill `review-implementation-skill` (added 2026-06-22 from the 06-design.md/06-design-final.md implementation) verifies design ↔ code consistency, tracks §X self-review issues, and enforces backward-compatible refactor + test coverage boundary.
 
+## 任务命令（review-cmds，2026-09-05 新增）
+
+6 个独立 cmd 是任务的一级入口（单一目标 + 明确边界 + 章节级默认范围——注意力是 review 质量的第一约束）。规范源 `prompt/review-rules/review-cmds.md`；薄壳 skill 注册于 `.agents/skills/`（软链，ZCode 原生扫描）与 opencode.json（muse/opencode 可直呼）：
+
+| cmd | 用途 |
+|-----|------|
+| full-review | 文档+代码全面 review+修复+覆盖度（range/dir 走 review-scan 编排器） |
+| style-fix | 文档文风与教学性修复（去开发文档味、章节重组，for 读者） |
+| code-excellence | 代码卓越度 + 死代码消除（多方案对比、[ARCH] 三处一致） |
+| test-audit | 测试 5 维专项（完备/自身正确/冗余/无效/虚构对账） |
+| todo-fix | 修一个 TODO（DEFERRED 不算修；一次一个） |
+| style-bible | 文风宪法（禁黑话/缩写/文言文；锚点纪律） |
+
+通用强制门（任何 cmd 不可裁剪）：锚点纪律门（模式 83）、测试名对账门（Gate E）、文风门、translate 防线（模式 16/65）、fix-guard、文档-代码同步。旧 Profile A-P/R/AG 保留为别名（对账表 review-cmds.md §八）；新任务一律用 cmd 入口。
+
 ### ⛔ Explicit Skill Invocation
 You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it". The Skill Invocation Log in scan.md must reflect actual Skill tool calls, not planned/intended calls.
 

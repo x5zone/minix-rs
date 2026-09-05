@@ -85,7 +85,7 @@ python3 tools/coverage-extract/coverage-extract.py vm \
   --rust-dir os --c-dir minix3/minix/servers/vm
 
 python3 tools/coverage-extract/coverage-extract.py kernel \
-  notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+  notes/rewrite/fork-syscall-rewrite/01-stage-kernel \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file 03-kmain-cstart.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \

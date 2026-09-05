@@ -5,7 +5,11 @@
 
 ## 快速导航（Quick Nav）
 
-> **AI 长 session 注意力衰减时，优先用此表定位所需章节，避免线性扫描 2676 行。**
+> **AI 长 session 注意力衰减时，优先用此表定位所需章节，避免线性扫描全文（当前 ~2700 行）。**
+>
+> **⛔ 新增规则元规则（2026-09-05，反膨胀）**：本文件经 20+ 轮迭代已积累 49 个带编号 Step（其中 2/3 为补丁式追加）。
+> **今后任何新检查规则，一律以「§检查项注册表」中的一行加入（id / 名称 / 触发时机 / 命令 / 证据要求），禁止新开 Step 编号章节。**
+> 历史补丁步骤的正文保留原地不动（导航见注册表）；注册表行与正文的关系是"索引 ↔ 详情"。
 
 | 需要找... | 跳转到 | 行数 |
 |----------|--------|------|
@@ -23,6 +27,72 @@
 | 修复阶段工作流 | [§五 修复阶段工作流](#五修复阶段工作流fix-phase) | ~33 行 |
 | Blocker Gates 状态表 | [§Step 5.5 收敛判断](#step-55-状态写入与收敛判断) | 搜索 "Blocker Gates" |
 | Gate H design 门控 | [§Gate H](#gate-h-design-门控) | 搜索 "Gate H" |
+
+### Step 总览（主干流程）
+
+| 主干 Step | 名称 | Gate 关联 |
+|---|---|---|
+| Step 0 | 范围声明 + 时间预算 + 状态恢复 + design 预检 | H.6 预检 |
+| Step 0.5 | structure.md 生成与骨架评审（0.5.1/0.5.2） | D-6 |
+| Step 1 | Ground Truth Lookup（源码定位） | — |
+| Step 1.5 | Coverage Enumeration 覆盖率穷举 | A |
+| Step 1.6 | 设计对齐检查 | H |
+| Step 2 | Diff Extraction 差异提取（Top5 行为契约表） | B |
+| Step 2.5 | Link Validation 链路验证 | — |
+| Step 3 | Sanity Check 一致性检查 | — |
+| Step 3.5 | Precision Check 细节精确检查（3.5a 纵向链路 / 3.5b 因果链抽样） | C |
+| Step 4 | Cross-Document Check 跨文档联动 | — |
+| Step 4.5 | Test Verification 测试章节验证 | E |
+| Step 5 | Final Review Output 最终输出 | — |
+| Step 5.5 | 状态写入与收敛判断（Blocker Gates 状态表） | 全体 |
+| Step 5.6 | Review Verification Protocol 独立验证 | G |
+| Step 5.7 | Rule Discovery 规则发现 | — |
+| Step 6 | Action Item Generation 修改项生成 | — |
+| Step 7 | 自检清单确认 | — |
+| Step 7.1 | 收敛成本警告（4 条停止规则） | — |
+
+### 检查项注册表（历史补丁步骤的索引层；正文保留原地，新规则以行加入本表）
+
+| id | 名称 | 触发时机 | 命令 / 证据 | 引入 |
+|---|---|---|---|---|
+| -0.5 | 工具辅助检查（review 前置） | review 启动前 | review-init.sh / lint-review-rules.sh | 2026-08-15 |
+| 0.3.1-0.3.5 | 缺失即生成（design-structure→outline→outline-review→design→使用） | Step 0 预检发现快照缺失 | 生成产物写入 `.design/{NN}-*.v{N}.md` | 2026-07-17 |
+| 0.5.3 | doc ↔ outline 对齐检查（原 0.5.4，改号链见正文） | 文档 review，快照存在时 | 偏离矩阵 | 2026-07-16 |
+| 0.5.4 | 跨文档契约检查 | 文档 review | 契约矩阵 | 2026-07-16 |
+| 0.5.5 | 跨章节一致性检查 | 同文档多章节描述同一事 | 一致性矩阵 | 2026-07-16 |
+| 0.5.6 | 6 维反查矩阵（标准化反查方法） | 文档 review | 6/6 反查覆盖率 100% | 2026-07-16 |
+| 0.5.7 | 章节意图分析 | 反查中标"多余"的章节 | 强调/解释/对齐/判定 4 项 | 2026-07-16 |
+| 0.5.8 | issue 反查来源标注 | scan.md 每条 issue | 来源维度标注（无标注降级） | 2026-07-16 |
+| 0.7.1 | Path Existence Validation（RCPD） | 输入含 TODO/路径引用 | `ls`/`test -f` 逐条 | 2026-07-16 |
+| 0.7.2 | AI Claim Grep Verification（CFNOC） | AI claim 含概念对象 | `rg` claim 关键词 | 2026-07-16 |
+| 0.7.3 | Doc Chapter Context Awareness（DSC） | AI 报告涉 Ch2/Ch4 归属 | 章节上下文核对 | 2026-07-16 |
+| 0.7.4 | TODO Staleness Check（CTOS） | 外部 TODO 清单 >5 条且含时间敏感词 | todo-staleness-check.sh | 2026-07-16 |
+| 1.0a | 行号主动抽样比对 | doc review，引用 file:line | `sed -n 'N,Mp'` 5-10 处 | 2026-07-30 |
+| 1.0a-自动 | 自动化行号校验脚本（+反向偏移重算） | 批量 doc review | Proposal #7 工具（⏸ 待开发） | 2026-07-31 |
+| 1.0b | Rust 代码示例同步扫描 | doc 含 Rust 代码块 | 对照实际 idioms（模式 #73） | 2026-07-30 |
+| 1.0c | Doc Path Convention 一致性 | doc 路径引用 | `os/` 前缀核对（模式 #74） | 2026-07-30 |
+| 1.0d | "参见"范围引用扫描 | doc §参见 | 链接范围核对（模式 #75） | 2026-07-31 |
+| 1.0e | 代码注释 doc 归属交叉检查 | 代码注释引用 doc | 归属核对（模式 #76） | 2026-07-31 |
+| 1.0f | 代码注释行号漂移检查 | 代码注释含 file:line | `rg "see .*\.rs:[0-9]+"` 重放（模式 #77） | 2026-07-31 |
+| 1.0g | forward reference 验证 | doc 引用未来文档 | 透明声明核对 | 2026-07-31 |
+| 4.5a | 测试数量偏差检查 | doc 声称测试数 | `cargo test` 对账（>50% 偏差 → P1） | 2026-07-30 |
+
+> **新增规则写入方式**：在本表追加一行（id 用表内下一序号，不再新开 `#### Step` 章节），详情正文放对应主干 Step 之下或独立小节并用本表行索引。
+
+### Gate 权威注册表（唯一定位表）
+
+| Gate | 语义 | 权威定义位置 | 证据分级 / 通过标准 |
+|---|---|---|---|
+| **Gate 0** | scan.md 制品完整性（9 个 grep 锚段） | prompt/skill/review-agent-ide.md §Gate 0；锚段清单 prompt/skill/review-process-skill.md §Step 0 产物 | L1；缺任一锚段 → FAIL（模式 69） |
+| **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL |
+| **Gate B** | Top5 行为契约表（8 字段 × 5 函数） | review-core-semantics.md §Gate B + 本文件 Step 2 | L2；3 语义偏移 + 2 覆盖缺口 |
+| **Gate C** | 细节精确性（Precision Check） | review.md §15 + 本文件 Step 3.5 | L2；5 meta-rules 表 |
+| **Gate D** | P0 必检清单 5 项 | review-patterns.md §0 + 本文件 | L1（每项 grep 证据）；PARTIAL/⚠️ = ❌ |
+| **Gate D-6** | structure.md 生成 + 12 节评审 | 本文件 Step 0.5 | L2；失败进 Issue List |
+| **Gate D-Impl** | 设计→代码实施验证 | review-implementation-skill.md §Gate D-Impl | L2；Fix Phase / 设计一致性专项 |
+| **Gate E** | §5 测试章节 grep 验证 | 本文件 Step 4.5 | L1；doc 无 §5 时 N/A + 原因 |
+| **Gate G** | VERIFY-CHECK 独立验证 | 本文件 Step 5.6 | consistency ≥ 90% PASS；CONCERN/FAIL 不得 CONVERGED |
+| **Gate H** | design/outline 门控（H.1-H.6） | 本文件 §Gate H | L2；不允许 N/A；缺快照 → Step 0.3 嵌入生成 |
 
 ---
 
@@ -199,7 +269,8 @@ Step 0 design 预检（前移自 Step 1.6）
 ### §〇.临时文档规则（含 bak / tmp_design_and_todo / /tmp/）
 
 > 来源：2026-07-16 工作流 bug 修复
-> **扩展理由**：原规则只禁 `*.bak`，未覆盖 `tmp_design_and_todo/` 和 `/tmp/` 实施稿，导致 AI 违规用 `tmp_design_and_todo/kboot-design.md` 当 design 依据。
+> **扩展理由**：原规则只禁 `*.bak`，未覆盖 `tmp_design_and_todo/`（该目录已删除，下同）和 `/tmp/` 实施稿，导致 AI 违规用临时讨论稿当 design 依据。
+> **状态（2026-09-05 清淤）**：`tmp_design_and_todo/` 目录**已物理删除**。本节规则保留两个目的：a) **历史案例记录**（下文 Session 案例中的路径均指向已删除目录，仅作教学引用）；b) **通用守卫**——任何未来的临时目录/未定稿产物（`tmp_*`、`draft/` 中未定稿文件、`/tmp/` 实施稿）同等禁止作为 design 或权威依据。
 
 **临时文档处置策略**：
 
@@ -228,8 +299,8 @@ Step 0 design 预检（前移自 Step 1.6）
 
 **grep 自动检测**：
 ```bash
-# 检测 review 引用临时文档
-grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.md prompt/../design-final.md
+# 检测 review 引用临时文档（{DOC_DIR} 为被审文档所在目录）
+grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.md {DOC_DIR}/design-final.md
 # 期望：无输出（或仅作为背景引用，非权威源）
 ```
 
@@ -334,11 +405,11 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`（项目根 `.review/` 下）
   - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
-  - **`{module}` 的确定**：取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。例如 `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
+  - **`{module}` 的确定**：取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。例如 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}` 校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
   - 推荐用 `tools/review-init.sh {tool} {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录。
 - **⛔ design + outline 预检（所有模式强制，前移自 Step 1.6）**：
-  - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（如 tmp_design_and_todo/ 下的讨论稿）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
+  - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（历史案例：tmp_design_and_todo/ 下的讨论稿，该目录已删除）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
   - **方案 D 演进（v2：可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时，AI **重新执行**附录 C 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？每轮 review 重新评估是独立 review 原则的体现。
   - **检查命令**（v2：快照是版本化的）：
     ```bash
@@ -406,14 +477,14 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" prompt/../scan.md prompt/../design.m
   > 6. **决策记录豁免**（**仅限一次性用户明确豁免**）：如 Session #11 用户决策"04/05 不回填"，**该决策仅适用于当时已 CONVERGED 的 04/05**，**不可泛化**到后续 review 的 06/07/08/...。任何"已有 CONVERGED 状态"豁免必须满足：a) 用户当时显式说"该 doc 豁免"；b) 豁免仅对该 doc 有效；c) 豁免记录在 STATE.md `§豁免列表` 段。
 
 - **⛔ TODO 列表 staleness 预检（NEW 2026-07-16，模式 70 CTOS 配套）**：
-  > **背景**：Session #12 发现 — `tmp_design_and_todo/0108-todo-final.md` 中 8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表跨多轮 review 累积，部分基于已修复/已接通的旧状态（如 TODO-06-4 假设 TODO-01-3 阻塞，但 TODO-01-3 早已修复）。
-  > **判定**：当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单时，**必须先跑 staleness 检查**：
+  > **背景**：Session #12 发现 — 历史输入 `tmp_design_and_todo/0108-todo-final.md`（该目录已删除）中 8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表跨多轮 review 累积，部分基于已修复/已接通的旧状态（如 TODO-06-4 假设 TODO-01-3 阻塞，但 TODO-01-3 早已修复）。
+  > **判定**：当 review 输入包含外部 TODO 清单（历史形态为 `tmp_design_and_todo/` 下文件；当前形态为各 stage 的 `todo.md` / `{NN}-todo.md` / `draft/` 产物）时，**必须先跑 staleness 检查**：
   > 1. 对每个 TODO 描述中的"基于状态"前提（如"X 阻塞"/"Y 未实现"），用 `rg` 验证当前状态
   > 2. **前提失效** → 标"前提失效，TODO 已不适用" + 严重度自动降级（与模式 66 RCPD 同规则）
   > 3. **允许的 TODO 状态前缀**（NEW，强制格式）：
   >    - `[P0/P1/P2] [code/doc] [factual/design] 问题描述 (file:line) (基于状态) (修复方案)`
   >    - 缺任一字段 → TODO 不可信，需重新验证
-  > 4. **触发**：`tmp_design_and_todo/` 中 TODO 数 > 5 + 任一 TODO 描述含"基于..."/"依赖..."/"待..."等时间敏感词 → 必须跑 Step 0.7.4 staleness check
+  > 4. **触发**：输入 TODO 清单中 TODO 数 > 5 + 任一 TODO 描述含"基于..."/"依赖..."/"待..."等时间敏感词 → 必须跑 Step 0.7.4 staleness check
 
 ### Step 0.3: 缺失即生成（NEW 2026-07-17，替代原"中断去附录 C"）
 
@@ -860,7 +931,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 
 ### Step 0.7: TODO 验证（若输入含 TODO 清单，新增，2026-07-16）
 
-> **目的**：当 review 输入包含外部 TODO 清单（如 `tmp_design_and_todo/0108-todo-final.md` 多 AI bagging 产物）时，TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
+> **目的**：当 review 输入包含外部 TODO 清单（历史案例如 `tmp_design_and_todo/0108-todo-final.md` 多 AI bagging 产物——该目录已删除；当前形态为各 stage 的 `todo.md` / `{NN}-todo.md`）时，TODO 验证是 review 的前置步骤，不是独立任务。TODO 验证结果直接喂入 Step 2 差异提取，避免二次 grep。
 > **触发条件**：用户输入包含 TODO 清单路径，或 review 目标文档含 `TODO`/`todo!`/`unimplemented!` 标记。
 
 **执行步骤**：
@@ -1049,8 +1120,8 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 
 #### Step 0.7.4: TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
 
-> **目的**：防止 `tmp_design_and_todo/` 下 TODO 清单因跨多轮 review 累积而包含"前提失效"误报。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表引用了已修复/已接通的旧状态。
-> **触发条件**（2026-08-15 修复 A-P1-1 明确语义）：`tmp_design_and_todo/` 中 TODO 数 > 5 **且（AND）** 任一 TODO 描述含"基于..."/"依赖..."/"待..."/"阻塞"等时间敏感词 → **必须跑** Step 0.7.4。两个条件必须同时满足才触发；仅 TODO 数 > 5 但无时间敏感词不触发，仅含时间敏感词但 TODO 数 ≤ 5 不触发。
+> **目的**：防止外部 TODO 清单因跨多轮 review 累积而包含"前提失效"误报。Session #12 实测（历史输入 `tmp_design_and_todo/0108-todo-final.md`，该目录已删除）：8 个 TODO-06 中 3 个 (37.5%) 是误报，主要原因为 TODO 列表引用了已修复/已接通的旧状态。
+> **触发条件**（2026-08-15 修复 A-P1-1 明确语义）：输入 TODO 清单中 TODO 数 > 5 **且（AND）** 任一 TODO 描述含"基于..."/"依赖..."/"待..."/"阻塞"等时间敏感词 → **必须跑** Step 0.7.4。两个条件必须同时满足才触发；仅 TODO 数 > 5 但无时间敏感词不触发，仅含时间敏感词但 TODO 数 ≤ 5 不触发。
 
 **执行步骤**：
 1. **识别"基于状态"前提**：从 TODO 描述中 grep 形如下模式：
@@ -1061,8 +1132,9 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 2. **对每个前提，用 rg 验证当前状态**：
    ```bash
    # 例：TODO-06-4 假设 "TODO-01-3 阻塞"，验证 TODO-01-3 当前状态
-   rg "TODO-01-3" notes/rewrite/fork-syscall-rewrite/03-stage-kernel/01-kmain-cstart.md -n
-   # 如果 01 文档没有 TODO-01-3 标记 → TODO-06-4 的前提失效
+   #（历史案例：当时目录名为 03-stage-kernel、文档编号 01-kmain-cstart；现目录 01-stage-kernel、该文档编号 03）
+   rg "TODO-01-3" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md -n
+   # 如果对应文档没有 TODO-01-3 标记 → TODO-06-4 的前提失效
    ```
 3. **分类处理**：
    - ✅ **前提成立** + 描述准确 → 正常 TODO 验证流程
@@ -2402,7 +2474,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 **grep 自动检测**：
 ```bash
 # 文档/代码中不应出现 scan 编号
-grep -rnE "P0-[0-9]+(-[0-9]+)?" prompt/../doc.md prompt/../code.rs
+grep -rnE "P0-[0-9]+(-[0-9]+)?" {DOC_FILE} {CODE_FILE}
 # 期望：无输出
 ```
 

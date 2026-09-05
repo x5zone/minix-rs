@@ -171,7 +171,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   - 若同一工具下出现两份 STATE.md 且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
 - **⛔ design + outline 预检（所有 review 模式强制，前移自 Step 1.6，2026-07-16 扩）**：
-  - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（如 `tmp_design_and_todo/` 下的讨论稿、`/tmp/` 下的实施稿）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
+  - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（历史案例：`tmp_design_and_todo/` 下的讨论稿，该临时目录已删除；`/tmp/` 下的实施稿）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
   - **方案 D 演进（v2：可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时，AI **重新执行**附录 C 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？每轮 review 重新评估是独立 review 原则的体现。
   - **检查命令**（v2：快照是版本化的）：
     ```bash
@@ -232,7 +232,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   > ### 必读文件清单（顺序）
   > 1. `.review/trae/{module}/STATE.md`（本文件）
   > 2. `.review/trae/{module}/scans/workflow-improvement-suggestions.md`
-  > 3. `tmp_design_and_todo/0108-todo-final.md`（若有 TODO 清单）
+  > 3. 外部 TODO 清单（当前形态：各 stage 的 `todo.md` / `{NN}-todo.md`；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
   > 4. `notes/rewrite/{module}/{stage}/{target-doc}.md`
   > 5. 上一个 CONVERGED 文档的 scan
   >
@@ -251,7 +251,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   > tools/design-coverage-check.sh {module} --stage {stage}
   >
   > # 4. TODO staleness check（若 TODO 数 > 5）
-  > tools/todo-staleness-check.sh tmp_design_and_todo/0108-todo-final.md  # NEW
+  > tools/todo-staleness-check.sh {todo-file}  # NEW
   > ```
   >
   > ### 豁免列表（仅一次性用户明确豁免，模式 71 DOG）
@@ -262,13 +262,13 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   > **⛔ 不可泛化**：用户对 X 的豁免仅适用 X，**不可**推广到 Y/Z。AI 认为需要类似豁免时必须先询问用户。
 
 - **TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）**：
-  > 当 review 输入包含 `tmp_design_and_todo/` 下 TODO 清单，且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../review-rules/review-process.md)。
+  > 当 review 输入包含外部 TODO 清单（当前形态：各 stage 的 todo.md / {NN}-todo.md；历史案例如 tmp_design_and_todo/ 下文件，该目录已删除），且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../review-rules/review-process.md)。
   >
   > **工具支持**（未来实施）：`tools/todo-staleness-check.sh {todo-file}` 自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
 
 - **路径变量与统一布局**（项目根 `.review/` 下分 `trae/` 与 `claude/`）：
   - `{module}` = rewrite 模块名 = `notes/rewrite/{module}/` 的目录名（如 `fork-syscall-rewrite`）。取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。
-  - `{stage}` = 模块下的阶段子目录（如 `03-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
+  - `{stage}` = 模块下的阶段子目录（如 `01-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
   - `{doc-stem}` = 目标文档去扩展名（如 `03-kmain-cstart`）。
   - `{agent}` = AI 模型标识（Trae 内：glm/kimi/ds/qwen/seed/...；Claude 内：m3/glm-flash）。
   - **统一布局**（扁平 scans/，不启用 `{stage}/` 子目录，`{doc-stem}` 已含 stage 编号前缀，足够区分）：

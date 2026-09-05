@@ -8,10 +8,11 @@
 prompt/
 ├── README.md                — 本文件
 ├── review-rules/            — 原始 Review 规则集（唯一真相源）
+│   ├── review-cmds.md       —   任务命令规范（6 个独立 cmd：full-review/style-fix/code-excellence/test-audit/todo-fix/style-bible；Profile 对账 + scope 参数，2026-09-05）
 │   ├── review.md            —   Review 核心框架（原则、约束、优先级、输出模板、执行模型分层）
 │   ├── review-doc-checklist.md  —  文档检查清单（§1~§3，含 §2.0 Claims-Evidence）
 │   ├── review-code-checklist.md —  代码检查清单（§1~§15，含 Kernel SMP/BKL 并发）
-│   ├── review-patterns.md       —  常见错误模式（79 个枚举模式，含文档/代码/测试/卓越性/流程）
+│   ├── review-patterns.md       —  常见错误模式（84 个枚举模式，含文档/代码/测试/卓越性/流程/架构抽象与锚点纪律）
 │   ├── review-process.md        —  执行流程（§〇三模式 + Step 0~7 + 状态追踪 + 收敛判断）
 │   ├── review-profiles.md       —  任务组合配置（Profile A~P + R + AG，含分阶段 H~K + 卓越性 O + 覆盖率 P）
 │   ├── review-core-semantics.md —  核心语义对齐（行为契约表 + IPC/生命周期契约模板）
@@ -80,7 +81,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 3. **review-process.md** — 强制执行步骤，要求每个步骤必须产生可见中间产物（流程层）。含状态写入与收敛判断、Review Verification Protocol、§〇 执行模式选择（构造/快速/深度三模式）、Step 1.5 覆盖率穷举。
 4. **review-doc-checklist.md** — 文档维度的检查清单（文档维度层）。含 §2.0 Claims-Evidence Tracing（论文级文档质量方法论）。
 5. **review-code-checklist.md** — 代码维度的检查清单（代码维度层）。含 §4.2 内核 SMP/BKL 并发检查项。
-6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式，共 79 个（76 个编号 + A/B/C 字母；61/62 已合并至 60）。
+6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式，共 84 个（81 个编号 1-60、63-83 + A/B/C 字母；61/62 已合并至 60 保留空号；79-83 为 2026-09-05 新增的架构抽象与锚点纪律模式）。
 7. **review-core-semantics.md** — 核心语义对齐。定义核心语义不变性原则，提供函数/IPC/生命周期行为契约表模板。
 8. **review-doc-excellence.md** — 文档卓越性。§4.1 叙事结构、§4.2 读者体验、§4.3 教学深度、§4.4 可维护性。
 9. **review-code-excellence.md** — 代码卓越性。§16 API 设计、§17 表达力、§18 性能、§19 代码即文档、§20 可测试性、§21 测试质量。
@@ -208,9 +209,9 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 | Skill | prompt/skill/ 字符 | .trae/skills/ 字符 | .codex/skills/ 字符 | .trae diff | .codex diff\* |
 |-------|-------------------|-------------------|--------------------|-----------|--------------|
 | review-code-skill | 7,335 | 7,370 | 7,372 | +35 | +2 |
-| review-doc-skill | 24,461 | 24,685 | 24,687 | +224 | +2 |
-| review-patterns-skill | 37,942 | 38,029 | 38,031 | +87 | +2 |
-| review-process-skill | 65,581 | 65,829 | 65,558 | +248 | -271 |
+| review-doc-skill | 24,768 | 24,992 | 24,994 | +224 | +2 |
+| review-patterns-skill | 39,338 | 39,425 | 39,427 | +87 | +2 |
+| review-process-skill | 65,677 | 65,925 | 65,654 | +248 | -271 |
 | review-core-semantics-skill | 8,464 | 8,486 | 8,488 | +22 | +2 |
 | review-coverage-skill | 11,082 | 11,170 | 11,142 | +88 | -28 |
 | review-excellence-skill | 9,220 | 9,320 | 9,322 | +100 | +2 |
@@ -231,7 +232,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
 | review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,461 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |
-| review-patterns.md | review-patterns-skill.md | Skill（79 个错误模式；Gate D 严格通过标准） | 37,942 |
+| review-patterns.md | review-patterns-skill.md | Skill（84 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
 | review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） | 65,581 |
 | review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 8,464 |
 | review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.5 + 代码§16-21 卓越性） | 9,220 |
@@ -304,7 +305,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 - **`SKILL.md`** — Orchestrator。YAML frontmatter 定义 `name`、`description`、`allowed-tools`。Phase 1-9 控制执行顺序：**Scope → Coverage Enumeration → Gap Scan → Doc Checks → Code Checks → Patterns → Excellence → Cross-doc → Report**。含 evidence 分级、"先读后判"强制规则、**Explicit Skill Invocation**、**STATE.md 双路径**、**scan.md 双写规则**。
 - **`checks/doc.md`** — 文档检查。覆盖 §2.0 Claims-Evidence、概念准确性、C 代码引用（**禁止"未逐行验证"**）、数据结构、doc-code 一致性、架构演进、跨引用、图示、C 源码覆盖、设计质量、链接验证、文档风格、skip 检查。
 - **`checks/code.md`** — 代码检查。覆盖 rewrite 质量、硬件抽象、trait 设计、类型安全、执行模型（含 SMP/BKL §4.2）、内存模型、模块设计、命名、测试、注释、64-bit、复杂度、no_std、设计-代码一致性、C-Rust 对齐、精度检查。
-  - **`checks/patterns.md`** — 错误模式库。源规则共 79 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
+  - **`checks/patterns.md`** — 错误模式库。源规则共 84 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
 - **`checks/process.md`** — 执行流程。含 §〇 三模式选择（构造/快速/深度）、**STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**、**P0/P1/P2 同步规则**。
 - **`checks/excellence.md`** — 卓越性检查。文档 §4.1-4.5 + 代码 §16-21。
 
@@ -347,6 +348,15 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 ---
 
+## 任务命令（review-cmds，NEW 2026-09-05）
+
+6 个独立 cmd 是任务的一级入口（单一目标 + 明确边界 + 章节级默认范围），定义于 [review-rules/review-cmds.md](review-rules/review-cmds.md)：
+`full-review` / `style-fix` / `code-excellence` / `test-audit` / `todo-fix` / `style-bible`（文风宪法，muse/opencode 必加载）。
+
+- **薄壳注册**：`prompt/skill/cmds/{name}/SKILL.md`（源）→ `.agents/skills/{name}`（**软链**，ZCode 原生扫描 `.agents/skills/`）→ opencode.json 亦已注册（muse 可直呼）。
+- **为何薄壳**：规则细节全部在 review-cmds.md（单一真相源），SKILL.md 只承载触发描述 + 目标 + 强制门摘要，避免再造平行真相源。
+- **为何 .trae/.codex/.claude 不注册 cmd**：.trae 需手工导入且 Windows git checkout 会把软链退化为文本文件（真实文件 + 派生脚本仍是正解）；这三端继续用 Skill 清单 + AGENTS.md 路由方式使用 cmd（读 review-cmds.md 照做）。
+
 ## 状态管理与收敛
 
 每次 Review 在**项目根 `.review/`** 下创建工具特定的输出目录，统一布局，`trae/`、`claude/` 与 `codex/` 三者互不干扰。三套工具**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）；Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。Codex 使用单 session 标准制品布局，不使用 Trae 的 bagging 状态。
@@ -354,7 +364,7 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 ### 路径变量
 
 - `{module}` = rewrite 模块名 = `notes/rewrite/{module}/` 的目录名（如 `fork-syscall-rewrite`）。取目标文档所在路径中 `notes/rewrite/` 下的第一级目录名。
-- `{stage}` = 模块下的阶段子目录（如 `03-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
+- `{stage}` = 模块下的阶段子目录（如 `01-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
 - `{doc-stem}` = 目标文档去扩展名（如 `03-kmain-cstart`）。
 - `{agent}` = AI 模型标识（Trae 内：glm/kimi/ds/qwen/seed/...；Claude 内：m3/glm-flash）；Codex 单 session 不使用 agent 后缀。
 - **`{module}` 与覆盖率脚本 `--module` 是两个不同概念**：本路径的 `{module}` 是 rewrite 模块名；覆盖率脚本的 `--module kernel` 是 Minix3 模块名。不得混用。
@@ -432,13 +442,13 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 6. **STATE.md Resume Point 模板**：续 session 必含 `ls .design/` 预检命令（避免续 session 跳过）。
 
-**当前快照覆盖情况**（`tools/design-coverage-check.sh fork-syscall-rewrite --stage 03-stage-kernel` 输出）：
+**当前快照覆盖情况**（`tools/design-coverage-check.sh fork-syscall-rewrite --stage 01-stage-kernel` 输出（历史快照数字，以工具当前输出为准））：
 - Total docs: 29
 - Complete (design + outline): **3**（仅 01/02/03）
 - Missing outline (H.6 FAIL): 24
 - Missing design (H.1 FAIL): **24**
 
-**含义**：当前 fork-syscall-rewrite 模块 03-stage-kernel 阶段 **22/29 文档缺 design 快照**（01-07 已审过有快照，08-25/99/00 按需生成）。按新规则，缺失时 review 自动执行 **Step 0.3 嵌入生成**（2026-07-17 变更：原"必须先附录 C 追溯生成"改为"Step 0.3 嵌入 review 流程内生成"）。
+**含义**：fork-syscall-rewrite 模块 01-stage-kernel 阶段 **22/29 文档缺 design 快照**（01-07 已审过有快照，08-25/99/00 按需生成）。按新规则，缺失时 review 自动执行 **Step 0.3 嵌入生成**（2026-07-17 变更：原"必须先附录 C 追溯生成"改为"Step 0.3 嵌入 review 流程内生成"）。
 
 > **精简说明**：所有维度检查结果（概念/引用/结构/覆盖/设计/链路/代码/跨文档/Claims）全部并入 `scan.md` 对应章节，不再拆 10 个维度文件。
 

@@ -790,6 +790,26 @@ rg "error|fail|EPERM|EINVAL|ENOMEM|panic|assert" {doc_file} -i
 **Step 2.9.4：验证 no_std 兼容性**
 检查 Ch3 设计是否依赖 `std::` 功能。
 
+**Step 2.9.5：trait/类型抽象质量交叉核对（NEW 2026-09-05，落地 prompt/todo.md 条目 2）**
+
+> **背景**：trait 抽象问题主要藏在 Ch3（Rust 设计决策）中，而此前 §2.9 只验证"可追溯/场景覆盖/no_std"，未评估"抽象本身好不好"——VmPagingExt 反例（已补录为 review-patterns.md 模式 25）在 doc-only review 中被系统性漏检，直到阅读讨论时才暴露。本步骤让 doc review 直接可执行 trait 质量判断，无需加载 code-checklist §2.5 全文。
+
+对 Ch3 声明的每个 trait / 关联类型抽象，按 code-checklist §2.5 判据交叉核对：
+
+1. **多态必要性**：是否有 ≥2 个行为不同的实现（三架构真差异，而非"未实现的一致"）？
+   ```bash
+   rg "impl .*{TraitName}" {rust_dir} --type rust -n
+   rg "fn {trait_method}" {arch_dir} --type rust -n   # 各实现体是否真的不同
+   ```
+2. **划分维度**：trait 成员由 architecture variance（子系统能力差异）决定，不由调用时序决定（对应新模式 79）。
+3. **假想差异**：是否存在仅为 mock 而预建的抽象（真硬件 binding 出现前是否可删，对应新模式 80）。
+4. **机制 vs 策略**：trait 是否只封装机制、把策略留给调用方。
+
+**判定标准（追加到 §2.9 判定）**：
+- trait 仅 1 个实现或三架构实现体逐字相同 → P1（假多态，抽象无收益）
+- trait 成员按调用时序而非能力差异划分 → P1（边界错位，新模式 79）
+- 仅为 mock 预建、无真实第二实现路径的抽象 → P2（YAGNI，新模式 80；若已阻塞理解 → P1）
+
 **必须输出以下表格**（不可省略）：
 ```markdown
 ### 2.9 设计决策质量验证结果

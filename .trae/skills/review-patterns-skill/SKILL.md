@@ -1,6 +1,6 @@
 ---
 name: review-patterns-skill
-description: Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 79 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。
+description: Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 84 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。
 ---
 
 # Minix-RS Review 常见错误模式
@@ -777,7 +777,7 @@ rg "\[.*\]\((\.\./.*\.md)\)" "$DIR" --type md -n  # "参见"文档是否存在
 **判定信号**（grep 自动检测，30+ 禁用词）：
 ```bash
 grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|FIXME|过去|当年|当初|之前|改成|替代|替换|替换为|升级|废弃|不再|放弃|修正|我|我们|本项目|今后|接下来|添加|删除|重构|第一步|第二步|首先|然后|接着|最后|XXX|NOTE" \
-    prompt/../doc.md
+    {DOC_FILE}
 ```
 
 **修复路径**：
@@ -862,7 +862,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 **定义**：TODO 列表跨多轮 review 累积，部分 TODO 前提已失效但未被检测，导致 AI 采纳全部 TODO 为真。
 
 **判定信号**：
-- `tmp_design_and_todo/` 中 TODO 数 > 5 + 含"基于..."/"依赖..."/"待..."等时间敏感词
+- 输入 TODO 清单中 TODO 数 > 5 + 含"基于..."/"依赖..."/"待..."等时间敏感词
 - TODO 描述引用"TODO-XX-N 未修复"但当前 rg 0 命中
 - TODO 描述引用"待 X 完成"但当前 X 已存在
 
@@ -1260,6 +1260,38 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 - Rust 修复了 C 源码 bug 但未标注 `// MINIX3 BUG:` → P1
 - 验证：`rg "// MINIX3 BUG:" os/ --type rust`
 - 来源：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏
+
+## §X.7 架构抽象与锚点纪律模式（模式 79-83，NEW 2026-09-05，来源 prompt/todo.md 条目 1 + 工作流迭代）
+
+> 完整定义/反例：[review-rules/review-patterns.md §九](../../../prompt/review-rules/review-patterns.md)。反例源：05-clock-interrupt-init.md §4.7.1。
+
+### 模式 79: trait 边界按调用时序划分（Trait Boundary By Call Timing）（P1）
+
+- 判定：trait 方法仅因"同一生命周期阶段被调用"而聚集，无能力共性 → 边界错位 P1；跨模块强制依赖 → P0
+- 验证：`rg "trait {Name}" {arch_dir} -A 20` 逐方法问"去掉调用时序仍属同一能力域吗"
+- 正例：ClockArch / TimerIrqGate / StacktraceArch 按能力域划分；反例：ArchBoot 聚合 boot 时序入口
+
+### 模式 80: 为 mock 预建抽象（Mock-Only Abstraction / YAGNI）（P2，阻塞理解时 P1）
+
+- 判定：trait 全部实现体行为等价（mock 占位/"未实现的一致"）→ 假多态
+- 验证：`rg "impl .*{TraitName}" {arch_dir} --type rust -n` + 逐实现体行为 diff
+- 规则：真硬件 binding 出现前删除占位 trait；抽象在第二个真实差异出现时才成立
+
+### 模式 81: 生产实现触碰测试状态（Production Writes Mock State）（P0）
+
+- 判定：非 `#[cfg(test)]` 路径写入/读取 `MOCK_*` 全局（含 fallback 写 mock）→ P0
+- 验证：`rg "MOCK_" {rust_dir} --type rust -n | rg -v "cfg\(test\)|mock"` 逐条判定
+
+### 模式 82: target-specific cfg 泄漏到能力使用方（cfg Leakage）（P1）
+
+- 判定：arch crate 之外出现 `#[cfg(target_arch)]` 行为分支（定义 Current* alias 合法；字面量汇编内寄存器/指令名属语法硬约束豁免——CLAUDE.md §0.6 B-X 分类法）
+- 验证：`rg '#\[cfg\(target_arch' {kernel_or_server_dir} --type rust -n` 逐条判定
+
+### 模式 83: 无锚点知识点断言（Unanchored Knowledge Claim）（P0）
+
+- 判定：机制性断言（"Minix3 是…"/"Linux 采用…"/"开销是…"）无 file:line/来源锚点且无 `[待验证]` 标注 → 虚构知识点
+- 验证：`rg "Minix3 是|Linux 采用|Redox 的实现|开销|代价" {doc}.md -n` 抽 5 条查锚点
+- 关联：#48 因果链编造的来源维扩展；review-cmds.md 各 cmd 的"锚点纪律门"配套
 
 ---
 

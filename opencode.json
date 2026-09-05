@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": {
+    "paths": [
+      ".codex/skills/review-code-skill",
+      ".codex/skills/review-core-semantics-skill",
+      ".codex/skills/review-coverage-skill",
+      ".codex/skills/review-doc-skill",
+      ".codex/skills/review-excellence-skill",
+      ".codex/skills/review-implementation-skill",
+      ".codex/skills/review-patterns-skill",
+      ".codex/skills/review-process-skill",
+      ".codex/skills/review-scan",
+      ".codex/skills/review-socratic-skill",
+      "prompt/skill/cmds/full-review",
+      "prompt/skill/cmds/style-fix",
+      "prompt/skill/cmds/code-excellence",
+      "prompt/skill/cmds/test-audit",
+      "prompt/skill/cmds/todo-fix",
+      "prompt/skill/cmds/style-bible"
+    ]
+  }
+}
