@@ -206,8 +206,8 @@ struct irq_hook {
 2. **页对齐**（L99-100）：base 向上对齐，len 向下对齐到 PAGE_SIZE
 3. **断言 kernel_may_alloc**（L102）：确保在内核分配窗口内调用
 4. **查找空槽**（L104-118）：线性扫描 `memmap[]`，找到第一个 `mm_length == 0` 的槽
-5. **更新 mmap_size**（L110-111）：跟踪已使用的最高 memmap 索引
-6. **更新 mem_high_phys**（L112-115）：跟踪最高物理地址
+5. ~~**更新 mmap_size**（L110-111）~~：**D-34 设计 no-op（2026-09-06）**——Rust `FREE_MEMMAP` 以空槽扫描隐式表达已用计数，独立计数器是第二真相源
+6. ~~**更新 mem_high_phys**（L112-115）~~：**D-34 设计 no-op**——帧分配器（frame.rs）直接迭代 region，无高水位扫描；无 Rust 读者
 
 **32 位遗留**：`LIMIT = 0xFFFFF000`（4GB-4KB）是 Minix3 32 位地址空间限制。64 位下不需要此截断。
 

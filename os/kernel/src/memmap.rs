@@ -61,15 +61,24 @@ pub enum MemMapError {
 /// minix-rs, Direct Map can access all physical memory, so this truncation
 /// is unnecessary and has been removed.
 ///
-/// # Known Gaps (TODO)
+/// # Known Gaps (RESOLVED as design no-op, D-34 2026-09-06)
 ///
 /// The C version also updates two `kinfo` fields that this function does
-/// not handle, because `KernelInfo` is immutable (`&KernelInfo`) in Rust:
+/// not handle:
 /// - `cbi->mmap_size` (pg_utils.c:110-111) — tracks highest used memmap index
 /// - `cbi->mem_high_phys` (pg_utils.c:112-115) — tracks highest physical address
 ///
-/// These must be updated by the caller (kmain Phase F) once a mutable
-/// kernel state struct is available. See 08-system-init-boot-finish.md §4.5.
+/// **D-34 resolution (design no-op)**: both C consumers are absorbed by
+/// replacement designs in Rust —
+/// - `mmap_size` (count of used slots): `FREE_MEMMAP` scans empty slots
+///   implicitly (`memmap.rs` scan loop), so a separate counter would be a
+///   second source of truth;
+/// - `mem_high_phys`: the frame allocator (`frame.rs`) iterates regions
+///   directly instead of a high-water scan, and the VM consumer asserts
+///   `!free_regions.is_empty()` instead of `mmap_size > 0`
+///   (`os/servers/vm/src/boot.rs:141-144`).
+/// No Rust code reads either value — maintaining them would be write-only
+/// state. Verified 2026-09-06; see todo.md D-34 and 08-system-init-boot-finish.md §4.5.
 ///
 /// # Arguments
 ///
