@@ -1980,19 +1980,31 @@ fn dispatch_vmctl(
         // ── VmInhibitSet: set RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:119-131
         VmCtlParam::VmInhibitSet => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    // C: if SMP and p->p_cpu != cpuid, smp_schedule_vminhibit(p);
-                    // else RTS_SET(p, RTS_VMINHIBIT);
-                    // SMP cross-CPU scheduling not yet implemented (SMP/BKL).
+            // D-35 (C do_vmctl.c:118-130): if SMP and target on a different
+            // CPU, send IPI via schedule_vminhibit; else set locally.
+            // Single-CPU build: always local (target_cpu == current_cpu).
+            let target_cpu = proc_table
+                .get(target_nr)
+                .map(|p| crate::proc::CpuId::new_unchecked(
+                    p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire),
+                ))
+                .unwrap_or(crate::proc::CpuId::BSP);
+            // SAFETY: dispatch_vmctl runs under BKL (kernel_call contract).
+            let smp = unsafe { crate::smp_state() };
+            let current_cpu = smp.bsp_cpu_id();
+            if target_cpu != current_cpu {
+                // SMP: route through IPI (schedule_sync → send_sched_ipi).
+                smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(
+                    proc_table, target_nr, current_cpu,
+                );
+            } else {
+                // Local: direct RTS_SET.
+                if let Some(p) = proc_table.get_mut(target_nr) {
                     p.p_rts_flags.set(crate::proc::RtsFlagsBits::VMINHIBIT);
-                    // C: p->p_misc_flags |= MF_FLUSH_TLB (SMP only)
                     p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
-                    VmCtlResult::Ok(0)
                 }
-                None => return KcallResult::Ok(EINVAL),
             }
+            VmCtlResult::Ok(0)
         }
 
         // ── VmInhibitClear: clear RTS_VMINHIBIT on target ──
