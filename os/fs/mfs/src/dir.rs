@@ -369,7 +369,6 @@ pub fn lookup_name(
 mod tests {
     use super::*;
     extern crate alloc;
-    use alloc::vec;
 
     const BLOCK: usize = 64;
 
