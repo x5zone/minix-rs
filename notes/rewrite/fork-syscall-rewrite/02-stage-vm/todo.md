@@ -5,6 +5,7 @@
 > 方法：整体分层分析（全局状态 → 主循环/分发 → 各子系统 → 模块），结合 Redox 实现与 Rust/OS 社区最佳实践。
 > 定位：本文档是新增的架构改进建议清单，**不同于** `draft/TODO.md`（旧 fork 主线 TODO 存档）。
 > 状态（2026-08-17 更新）：**P0-1 / P1-1 / V9-P0-1 / V9-P1-1 / V9-P3-1 / V10-P0-1 / V10-P0-2 / V10-P1-1 / V10-P1-2 / V10-P1-3 / V10-P2-1 / V10-P2-2 / V10-P2-4 已修复**（见 §8 + §10 + §13 修复记录）；V10-P2-3 与 P1-2/P1-3/P1-4/P2-\*/V9-P2-\*/V9-P3-2 为架构演进建议（DEFERRED/可选，依赖 kernel IPC 落地或需专项规划），供后续阶段参考。
+> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、1 项 P3，缺口登记 G-V11-1..6。已修复：**V11-P2-6**（见 §15 Fix #19）。
 
 ---
 
@@ -28,6 +29,13 @@
 - `cargo test -p minix-vm --lib`：**441 passed / 0 failed**（V10 全量修复后；V10 前 437 passed）
 - `cargo test -p minix-vm --lib --no-default-features --features segment_tree_alloc`：**456 passed / 0 failed**（V10-P0-1 feature 矩阵修复后）
 - `cargo clippy -p minix-vm --lib`：183 → 105 → **0 warnings**（V10-P2-1 死代码收敛 + 剩余设计项 DEAD/DEFERRED 标注后）
+
+验证命令（2026-09-06 V11 轮复核，见 §14.0）：
+- `cargo test -p minix-vm --lib`：**448 passed / 0 failed**（默认 feature；较 08-17 增加 7 个测试，来自 boot.rs reconcile、vmproc reset_rusage、swap_proc_slot 等增量）
+- `cargo test -p minix-vm --lib --no-default-features --features segment_tree_alloc`：**463 passed / 0 failed**
+- `cargo test -p minix-vm --lib --no-default-features --features buddy_alloc`：**448 passed / 0 failed**
+- `cargo clippy -p minix-vm --lib`：**1 warning**（默认）/ **7 warnings**（`--all-features`）——V10 后增量代码引入回归，条目见 V11-P2-3
+- `cargo check -p minix-vm --all-features`：通过，无 error
 
 ---
 
@@ -765,3 +773,354 @@ paging 是逐页 fault 时分配（page_fault_handler → Grant → Provider 分
 4. 每模块自带的 `From<EndpointError>` + errno 映射 + 测试（如 query.rs:43-57 注释）当前可维护，随 P2-2 专项规划推进。
 
 **验证锚点（保留）**：`rg "pub(crate) enum .*Error" os/servers/vm/src --glob '*.rs'` 清单——收敛到 1 个对外（`minix_types::VmError`）+ 少量内部时关闭本条。
+
+---
+
+## 14. 第五轮架构级审查：查漏补缺 + 分层全景（2026-09-06）
+
+> 范围：`os/servers/vm/src/` 全部（46 个 .rs，约 25,600 行，含测试）+ 接口面核对（`os/libs/minix-types/src/ipc/vm.rs` wire 层、`os/arch` 的 paging/direct_map/pt_alloc、`os/kernel` 的 ipc.rs / vm_handoff.rs 对接面、`os/libs/minix-sys` 桩库）。
+> 方法：先查漏补缺后架构审视，五步——① Gate A 覆盖穷举（`tools/coverage-extract/coverage-extract.py` 重跑，371 个 C 符号，产物 `.review/claude/vm/v11/SYMBOLS.md`）；② IPC 调用号三方对账（minix-types 常量表 ↔ dispatcher 路由 ↔ C com.h/CALLMAP）；③ 18 项存量嫌疑点的 staleness 逐条核查（上轮 2026-08-17 之后有 a4c6c9141 / c2600a1b2 / 3a0cc39f0 三个提交、约 1,400 行增量）；④ 核心 trait × 测试矩阵 + Gate E 文档测试名对账（3 篇 94 个具名测试）；⑤ 分层架构审视（L0 crate 边界 / L1 服务器核心 / L2 子系统），对照 Redox 与 Rust no_std 社区惯例。
+> 去重声明：V9/V10 已修与未修条目不再重复列入。本轮聚焦三件事：(a) 08-17 之后增量代码的首轮审查；(b) 存量 DEFERRED 的依赖依据复核——两条依赖链（kernel IPC、arch paging）都有实质进展，多个旧判定的前提已变化；(c) 测试与文档缺口。
+> **本轮最重要的两个发现**：① **P1-3 的 DEFERRED 依据已失效**——内核侧 IPC 核心已落地（`os/kernel/src/ipc.rs` 2,906 行，send/receive/notify/sendrec/do_ipc 全部有真实实现），用户态桩库 `minix-sys` 也已成形（5,738 行，含 IPC trap 桩与 VM 客户端桩），VM 侧 transport 落地的材料已经齐备；② V10 收敛后的增量改动引入了 clippy 回归（默认 1 条 / all-features 7 条）与 4 处过时注释，但增量代码本体（boot.rs / vm_self_map.rs / vmproc）质量良好、零 stub 标记。
+> 本轮只审查 + 追加 todo，未修复代码（与 §12 先例一致）。修复顺序建议见 §14.7。
+
+### 14.0 基线复核（2026-09-06 实测）
+
+| 命令 | 结果 | 与 2026-08-17 对比 |
+|---|---|---|
+| `cargo test -p minix-vm --lib` | **448 passed / 0 failed** | 441 → 448（增量 7 个测试：boot reconcile 系列、`test_swap_proc_slot_preserves_identities` 等） |
+| `cargo test … --features segment_tree_alloc` | **463 passed / 0 failed** | 456 → 463 |
+| `cargo test … --features buddy_alloc` | **448 passed / 0 failed** | 新增基线项（与默认一致） |
+| `cargo clippy -p minix-vm --lib` | **1 warning**（默认）/ **7 warnings**（all-features） | 0 → 1 / 7，**回归**，见 V11-P2-3 |
+| `cargo check -p minix-vm --all-features` | 通过，无 error | 持平 |
+
+08-17 之后的**功能增量**（本轮逐项核实）：
+- `alloc_cycle` 接入有界页缓存回收：`vm_server.rs:580` 调用 `page_cache.free_pages(FREE_CACHE_BATCH=1024, …)`（常量 `vm_server.rs:47`）——原 DEFERRED 的"回收"半边已落地；"回收后重试原分配"仍未实现，且 `:566-572` 的文档注释还写着"replenishment body is DEFERRED"，已轻度过时（见 V11-P2-4 附带项）。
+- Getrusage 补编码 minflt/majflt：`vm_server.rs:1417-1418`（标注 FIX VMI-3）；`UsageInfo` 字段填充在 `query.rs:391-394`。`VmReply::InfoUsage` 路径的 minflt/majflt 仍无 M1 槽位（`vm_server.rs:1356-1357`），维持原 DEFERRED。
+- `VM_UNMAP_PHYS` 接线（`dispatcher.rs:1061`，对应 21-P1-1）。
+- arch 侧 `X86_64Paging::new`/`destroy` 落地（`os/arch/src/x86_64/paging.rs:464-485` / `:487-497`）——由此引发 VM 侧 4 处注释过时（V11-P2-4）。
+
+### 14.1 查漏补缺总表（Gate A）
+
+#### 14.1.1 coverage-extract 重跑与 C 符号判定
+
+```
+$ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+    --rust-dir os --c-dir minix3/minix/servers/vm \
+    --semantic-map tools/coverage-extract/vm-semantic-map.json \
+    --output .review/claude/vm/v11/SYMBOLS.md
+Loaded semantic map: 81 entries
+Found 371 C symbols (189 funcs, 14 structs, 167 macros, 1 enums)
+Coverage Summary for vm:
+  Total C symbols: 371
+  Doc covered: 339 (91.4%)
+  Rust covered (name-match): 43 (11.6%)
+  完全缺口 (无文档无Rust): 32
+```
+
+判定结论：
+1. **32 个"完全缺口"中 28 个是 `cavl_impl.h` 的 AVL 内部宏**（`AVL_SET_GREATER`/`L__BIT_ARR_0` 等）——`regionavl.c` 已被 `region/region_map.rs` 的 BTreeMap 有序结构替代（[ARCH] 登记，14-region-lookup.md），属合理缺席，不是缺口。其余 4 个同类（`L__` 宏族）同源。
+2. **146 个"有文档无 Rust（按名字匹配）"经抽查判定绝大多数为语义吸收**：`do_brk`→`brk.rs::handle_brk`、`real_brk`→brk.rs 内部收缩/扩展路径、`lru_add/lru_rm/lru_touch`→`PageCache` 的 LRU 序维护、`makehash`→`by_dev: BTreeMap` 主键（`page_cache.rs:204`）、`get_stats_info`→`query.rs:302` + `page_cache.rs:419`、`byino/bydev`→`page_cache.rs:204-208` 的 `by_dev`/`by_ino` 双索引、`do_procctl_notrans`→dispatcher P4 普通路由。**未发现新的函数级语义缺失**。
+3. Rust 名称匹配率 11.6% 是"名字匹配"的机械结果（C→Rust 普遍改名 + 行为吸收进结构体方法），语义映射表（81 条）与 26 篇 CONVERGED 文档兜底，不构成缺口信号。相比 2026-06-12 `checklist.md` 的 59% 总覆盖基线，文档侧覆盖已实质提升。
+
+#### 14.1.2 IPC 调用号矩阵（49 调用全量对账）
+
+三方对账（`os/libs/minix-types/src/ipc/vm.rs` ↔ `os/servers/vm/src/ipc/dispatcher.rs` ↔ C `com.h:627-773` + `main.c:137-176`）结论：
+
+| 维度 | 结果 |
+|---|---|
+| 基准值 | `VM_RQ_BASE=0xC00`、`NR_VM_CALLS=49` 两侧一致（vm.rs:45/:149 ↔ com.h:627/:769） |
+| 常量集合 | Rust 31 个 `VM_*` 调用号与 C 完全一一对应，无 Rust 独有扩展、无遗漏 |
+| 路由对齐 | `dispatch_by_number` 26 个 arm 与 C CALLMAP 26 条严格 1:1：号值、handler 语义、ACL 拒绝回 ENOSYS（对齐 C main.c:145）、非法调用号 ENOSYS 全部一致 |
+| 两侧都不注册 | `VM_EXEC_NEWMEM`(+3)、`VM_ADDDMA/DELDMA/GETDMA`(+12/13/14)：C 落 `result=ENOSYS`（main.c:139/165），Rust 落 `_` 臂 → ENOSYS（dispatcher.rs:1229）——可观察行为一致 |
+| 特殊路径 | VFS transid（P1）/ RS_INIT（P2）/ VM_PAGEFAULT（P3）三分支与 C main.c:137-176 的裁决顺序结构一致；`VM_PAGEFAULT` 不经 dispatch_by_number（vm_server.rs:822-842） |
+
+三条**已声明的语义级偏差**（均有登记，列表备查，不算新缺口）：
+1. `VM_RS_SET_PRIV` 的 call_mask 位图传输依赖 safecopy，dispatcher 解码恒传 `None`（dispatcher.rs:1093-1097；25-rs-services.md:399 已登记 A-8 契约与 fail-closed 论证：user proc 得默认 ACL、sys proc 回 EINVAL）。
+2. `VM_PROCCTL` HANDLEMEM 的 transid 异步续作被同步化（dispatcher.rs:266-272；22-vm-exit.md:405 偏差表登记，backlog B1）。
+3. `VM_PAGEFAULT` 用 64 位专用 `m_vm_pagefault` overlay 替代 C 的 `m1_i1`（16-pagefault.md:371-386 [ARCH] 登记，含 P0 解码错位修复记录）。
+
+顺带刷新 V9-P2 的两个表驱动化锚点计数：`as usize - vm_rq_base` ×26（dispatcher.rs:1054-1219，每 arm 一处）、`m2.m2i1/m2i2/m2i3` 手工字段访问 ×14（另有 `m1.m1i1` 直接访问 ×3：dispatcher.rs:1116/:1132/:1138）。
+
+#### 14.1.3 缺口登记（本轮新发现，编号 G-V11-\*）
+
+| 编号 | 缺口 | C 锚点 | Rust 现状 | 判定 |
+|---|---|---|---|---|
+| G-V11-1 | `sef_cb_signal_handler`（SIGTERM/SIGSTOP 等信号回调，RS live-update 的前置机制） | main.c:731 | 无对应物；`rs_handshake`（vm_server.rs:900）只替代了 `sef_startup` 半边 | DEFERRED：依赖内核信号交付，归 A-8 live-update 依赖链，随 RS_UPDATE 步骤 4-7 一并规划 |
+| G-V11-2 | `usedpages_reset` / `usedpages_add_f` 双重分配运行时检测 | alloc.c:495-530（`#if SANITYCHECKS` 块） | 无对应物 | 并入 V10-P2-1 已登记的 sanity_checks feature 建议（`sanity.rs:58-59` verify_refcounts 同源）；本条补 C 锚点 |
+| G-V11-3 | PM↔VM 集成测试整体停用 | —（测试基建） | `os/tests/pm_vm_fork.rs`（96 行）与 `pm_vm_fork_test.rs`（105 行）正文整体被注释，文件头自注 "DEPRECATED: permanently disabled"；属独立 crate `minix-tests`，`cargo test -p minix-vm` 不覆盖 | 见 V11-P2-5 |
+| G-V11-4 | segment_tree 后端在默认 CI 下 0 条测试执行 | —（测试基建） | `allocator_tests.rs` 的 segment-tree parity 测试全部 `#[cfg(feature = "segment_tree_alloc")]` 门控（:14 起）；默认 feature 只跑 bitmap+buddy parity（463−448=15 条不执行） | 见 V11-P2-5（CI feature 矩阵，V10-P0-1 建议的延续） |
+| G-V11-5 | vfs_queue 无超时/失败恢复机制 | vfs.c（143 行全文无 timeout/revive/alarm） | 与 C **语义一致，不是缺口**。更正本文 §6 旧表述"注意补请求超时/失败恢复路径的语义测试"——C 的 VFS 挂起请求本无超时语义，补超时属 [ARCH] 扩展，须先立项登记再实现，不应默认实现 | 更正记录（反"无脑加码"） |
+| G-V11-6 | 文档 §5 测试名漂移 3 处 + 1 处 dispatcher 层测试真缺失 | —（15-ipc-dispatch.md §5） | 94 个具名测试 90 个精确命中；3 个实际名与文档名不一致（见 V11-P2-6）；`test_dispatch_setcache_rejects_zero_dev_and_ino` 无近似命中（该 NO_DEV 守卫改由 `page_cache::tests::test_addcache_rejects_no_device` 覆盖，dispatcher.rs:1958-1960 注释声明） | 文档侧 P0-fact + 测试侧可选补充，见 V11-P2-6 |
+
+### 14.2 存量 DEFERRED 依据复核（本轮核心工作之一）
+
+上轮（2026-08-17）之后，两条关键依赖链有实质进展。逐条复核存量 DEFERRED 判定的前提：
+
+| 条目 | 原 DEFERRED 依据 | 2026-09-06 事实（锚点） | 判定 |
+|---|---|---|---|
+| P1-3 transport 生产路径 | "depends on kernel IPC core"（transport.rs:183/:197 `unimplemented!()`） | **内核侧已落地**：`os/kernel/src/ipc.rs`（2,906 行）实现 `send`(:814)、`receive`(:934)、`notify`(:1280)、`sendrec`(:1305)、`senda`(:1356)、`do_ipc`(:1668)、死锁检测(:739)；:914 注释自证"旧实现是 30 行 stub"已被替换。用户态入口：`kernel/src/syscall.rs:548-556` IPC_VECTOR 33 中断门 + IPC 调用号 1-16 分发。用户态桩库：`minix-sys/src/ipc.rs` 提供 `TrapVector`(:82)、`IpcStatus`(:136)、`DirectTrapTransport`(:527)，`minix-sys/src/vm.rs`（619 行）提供 VM 客户端桩（mmap_via/break_via 等） | **依据失效 → 建议解封**，见 V11-P1-1 |
+| P1-2 / V9-P1-3 VmContext 状态收敛 | "需专项规划"，且测试无法驱动主循环 | Fix #12（2026-08-17）后 transport 已构造器注入，`TestIpcTransport` 可驱动 `run_once`（现有 4 个 run_once 测试：vm_server.rs:1684/:1726/:1770/:1865）；`parts_mut()` 4 元组仍在（调用 `vm_server.rs:1018`，定义 `:1056`） | **阻塞已解除**，见 V11-P1-2 |
+| P1-4 KERNEL_LAYOUT mock | "boot-info 接缝未闭环" | `boot.rs:46-53` 已建模 `KernelAllocated { static_bytes, dynamic_bytes }`（对齐 main.c:492-495），但只有**字节总数**，无 kernel text/data 的基址与页数；`vm_server.rs:437-450` 的 mock 值（含 `:450` 的 `0xFFFF_FFFF_8000_0000`）仍在 | 依据部分成立：需 `VmBootHandoff` 补 span 字段，见 V11-P2-7 |
+| V10-P2-3 错误枚举收敛 | "需 kernel IPC 落地后统一对外出口" | kernel IPC 已落地（见 P1-3 行） | 可启动专项；维持 DEFERRED 但依据更新，宜随 V11-P1-1 的 transport 落地一并做 |
+| 过时注释（非 DEFERRED，staleness） | — | `brk.rs:236`、`vmproc/vmproc.rs:188`、`vmproc/vmproc_handle.rs:352-354`、`region/mod.rs:21-22` 四处仍声称 `X86_64Paging::new()`/方法"是 todo!() / 未实现"，实际 `os/arch/src/x86_64/paging.rs:464-497` 已实现 new/destroy（全文件 grep `todo!` 零命中） | 见 V11-P2-4 |
+| 其余存量 DEFERRED | 各自依赖未变 | 逐条 grep 核实仍成立：`dispatch_exec_newmem` stub 且未路由（dispatcher.rs:820-833）；`sys_fork` 假端点 stub（fork.rs:398-408，调用点 :321）；`cow_resolve_region`/`cow_copy_page` 仅测试驱动（cow_exec_pf.rs:327-330）；VFS_FDCLOSE 丢弃（exit.rs:140-147）；RS_UPDATE 步骤 4-7（rs.rs:328-330）与 PREPARE `map_proc_dyn_data`（rs.rs:250-251）；DMA 三条不入 match（dispatcher.rs:1223-1229）；`ipc_call_rs_init` 返回空表（vm_server.rs:1124-1157）；sanity/alloc_stats 无生产入口（sanity.rs:58-59、alloc_stats.rs:46/:57-58）；bitmap `cache_freepages` 三步路径（bitmap_alloc.rs:309-351）；region close 入队（region/mod.rs:56-82）；audit syslog 未接线（audit.rs:16-19）；arch `destroy()` 只清零不回收中间页表页（paging.rs:487-497） | 维持 DEFERRED，锚点已刷新 |
+
+### 14.3 V11 条目
+
+#### V11-P1-1 【解封】KernelIpcTransport 落地路径（原 P1-3，DEFERRED 依据失效）
+
+**问题**：`ipc/transport.rs` 的 `KernelIpcTransport::receive/send` 仍是 `unimplemented!()`（transport.rs:183/:197），主循环生产路径不可运行。但该条目的 DEFERRED 依据（"wiring pending kernel IPC core"）已不成立：内核 IPC 核心与用户态桩库都已落地。
+
+**证据**：
+- 内核侧：`os/kernel/src/ipc.rs`（2,906 行）——`send`(:814)、`receive`(:934)、`notify`(:1280)、`sendrec`(:1305)、`do_ipc`(:1668)、死锁检测 `detect_deadlock`(:739)；`os/kernel/src/syscall.rs:548-556` 记载 IPC 经 IDT 向量 33 进入（对齐 C `protect.c:147` 与 `mpx.S:183-184`），IPC 调用号 1-16 分发。
+- 用户态桩库：`os/libs/minix-sys/src/ipc.rs`（`TrapVector`:82、`IpcStatus`:136、`AsyncSendQueue`:280、`DirectTrapTransport`:527、测试用 `CannedTransport`:568）；`os/libs/minix-sys/src/vm.rs`（619 行，`mmap_via`:171、`break_via`:241、`fork_address_space_via`:266 等 VM 客户端桩）。
+- VM 侧现状：`os/servers/vm/Cargo.toml:14` 声明了 `minix-sys` 依赖，但 `os/servers/vm/src/` 全目录 grep `minix_sys::` 零命中——依赖闲置。
+
+**影响**：P1-3 是最大的单一阻塞咽喉——`rs_handshake` stub（vm_server.rs:900 起）、`ipc_call_rs_init` stub（:1124-1157）、VFS_FDCLOSE 发送（exit.rs:140-147）、region close 入队（region/mod.rs:56-82）、audit syslog 转发（audit.rs:16-19）全部依赖同一 transport 落地。依赖已就位而接线未动，缺口会在陈旧注释的掩护下继续沉睡。
+
+**建议**（三步，每步可独立交付并验证）：
+1. **首选**：`KernelIpcTransport` 基于 `minix_sys::ipc` 桩实现——`receive` 走 `TrapVector`/`IpcStatus` 路径（与 V10-P1-1 已落地的 `is_notify()`/`is_from_kernel()` 位解析对接），`send` 走 sendrec 语义；VM 的 `Cargo.toml` 依赖从闲置转为实际使用。
+2. 落地顺序上先接 `rs_handshake`（VM 启动的第一件事，C main.c:149-152），再接 VFS_FDCLOSE/close 入队（把 region/mod.rs:75 与 exit.rs:145 的两处 `let _close` 换成真实的 `VfsRequestQueue` 入队 + 发送）。
+3. 每步同步刷新 15-ipc-dispatch.md 与 23-vfs-interaction.md 的接线状态标注；V10-P2-3（错误枚举收敛）与 V11-P1-2（VmContext）宜在 transport 可运行之后做，因为统一对外出口与状态收敛都会改动 dispatch 签名，分两轮做返工少。
+
+**验证**：`rg "unimplemented!" os/servers/vm/src/ipc/transport.rs` 归零；`rg "minix_sys::" os/servers/vm/src` 非零；新增 TestIpcTransport 之外的"真实 trap 路径"集成测试（可先在 `minix-sys` 的 `CannedTransport` 语义上做半实物回放）。
+
+#### V11-P1-2 【解封】VmContext 状态收敛（原 P1-2 / V9-P1-3，阻塞已解除）
+
+**问题**：P1-2（全局可变状态散落 4 处 static + 实例字段）当年搁置的理由是"需专项规划 + 主循环不可测"。现在后半条已不成立：Fix #12 之后 transport 构造器注入，`TestIpcTransport` 可逐轮驱动 `run_once`。重构可以在每一步都有测试兜底的情况下进行。
+
+**证据**：`parts_mut()` 4 元组仍在（调用 `vm_server.rs:1018`，定义 `:1056`）；`global.rs` 的 `BOOT_INFO`/`TOTAL_PAGES`/`KERNEL_LAYOUT` static 与 `vmproc/table.rs`、`fdref.rs` 的全局表仍在；V9-P1-3 列出的 9 个 `handle_xxx` 同构包装仍存在（部分已移入 `#[cfg(test)] impl`，见 Fix #16，但生产侧模式未变）。
+
+**影响**：P2-3（parts_mut 脆弱性）、P2-4（测试全局污染）都挂着等这一步；每新增一个共享子系统，4 元组就扩大一维，重构成本随时间上升。
+
+**建议**：
+1. **首选**：按 V9-P1-3 给出的 `VmContext` 设计直接实施，分三小步落地（每步 `cargo test -p minix-vm --lib` 448 基线全绿再进下一步）：第一步把 `PageFrames`/`PageCache`/`VfsRequestQueue`/`PageAllocator` 收进 `VmServer` 直接字段（消灭 parts_mut）；第二步 `MessageDispatcher` 签名统一收 `&mut VmContext`（消灭 handle_xxx 透传）；第三步 `fdref`/`vmproc table` 收敛，static 只留 boot 期常量。
+2. **次选**：若想更小步，先只做第一步（parts_mut 消灭），它独立可交付、风险最低、且是 V9-P2-2 表驱动化（dispatcher 收 `&mut VmContext`）的前置。
+3. Redox 对照：Redox 用户态 scheme daemon 把全部状态组织为 context 结构体、主循环持 `&mut Context` 单一所有权；static 只用于 boot 期一次性常量。V9-P1-3 的设计与社区惯例一致，本轮补足"测试已可驱动"的新证据。
+
+**验证**：`rg "parts_mut" os/servers/vm/src` 归零；`rg "AssumeSyncCell" os/servers/vm/src` 收敛到 boot 期常量与分配器基础设施；测试不再需要 `reset_vm_self_pt_for_test`/`MOCK_BASE_MUTEX` 串行化（`rg "MOCK_BASE_MUTEX" os/servers/vm/src` 归零）。
+
+#### V11-P1-3 物理分配器后端选择语义"双真相源"矛盾
+
+**问题**：后端优先级在两处声明且**方向相反**：
+- `phys_mem/mod.rs:107-110`：`DefaultAllocator` 类型别名的注释宣称优先级为 "buddy > segment-tree > bitmap"；
+- `vm_server.rs:290-302`：`choose_allocator_type` 的实际选择是 **segment_tree feature 开启即直接胜出**（`:297-300` 的 cfg 块无条件 `return PhysAllocType::SegmentTree`），只有未开 segment_tree 时才按阈值考虑 buddy。
+两处都是"文档型声明"（别名无构造器、纯 `#[allow(dead_code)]`），但语义冲突。`cargo clippy --all-features` 的 `unreachable expression` 警告（vm_server.rs:301）正是矛盾的症状：两个 feature 同时开启时 `:301` 的 `PhysAllocType::Bitmap` 回落分支不可达。
+
+**证据**：`cargo clippy -p minix-vm --lib --all-features --message-format short` → `servers/vm/src/vm_server.rs:301:9: warning: unreachable expression`；05-physical-memory.md §3.3（:469）记录的是 `choose_allocator_type` 的行为（与代码一致），即**矛盾方是 mod.rs 的别名注释**。clippy all-features 下的 7 条 minix-vm 警告中有 4 条是同一根源的连带（见 V11-P2-3）。
+
+**影响**：组合 feature（`--all-features`）的选择语义靠阅读 cfg 块才能确定；将来若有人"照注释实现" `DefaultAllocator` 的构造器，会得到与 `choose_allocator_type` 相反的选择。这正是 V10-P0-1（feature 矩阵无法构建）的同族风险——组合态没人看。
+
+**建议**：
+1. **首选**：删除 `DefaultAllocator` 别名（mod.rs:107-125，四个 cfg 分支共 19 行，零使用者）——它是"无构造器的文档别名"，其声明职责已由 `choose_allocator_type` + 05 文档 §3.3 承担；删除后一并消除 all-features 下与 alias 相关的歧义。
+2. **次选**：保留别名但把注释改为与 `choose_allocator_type` 一致（segment-tree > buddy > bitmap），并在 `choose_allocator_type` 加一条组合 feature 的单元测试（`--all-features` 下断言选中 SegmentTree）。
+3. 无论哪种，`choose_allocator_type` 的文档注释（vm_server.rs:280-289）应补一句"组合 feature 下 segment_tree 优先"的显式声明。
+
+**验证**：`rg "DefaultAllocator" os/servers/vm/src` 归零（或注释已改 + 组合测试存在）；`cargo clippy -p minix-vm --lib --all-features 2>&1 | grep -c unreachable` → 0。
+
+#### V11-P2-1 X86_64Paging 零契约测试：真实页表路径完全未验证
+
+**问题**：`Paging` trait 的契约测试（os/arch `arch/paging.rs` 36 个测试）全部跑在 `MockPaging`（arch/paging.rs:544 定义、:574 impl）上；`X86_64Paging`（x86_64/paging.rs:168，impl :369）自身的 11 个测试全是 PTE 标志位 roundtrip 与索引数学——**没有任何测试构造真实页表执行 map/unmap/query**。VM 侧测试则整体跳过页表操作（region/mod.rs:21-22 注释声明；`pagetable/mod.rs:23` 的 `type PageTable = minix_arch::CurrentPaging` 让 VM 与真实实现耦合，但测试里传 `None`/零桩）。也就是说：从 `X86_64Paging::new`（paging.rs:464，经 pt_alloc 分配 PML4）到 `map`/`unmap`/`query`/`switch` 的真实链路，当前零测试覆盖，而 VM 的全部语义（CoW 权限翻转、brk 映射、munmap 摘除）最终都压在这条链上。
+
+**影响**：这是本轮测试盘点中最大的结构性缺口。trait 契约只对 mock 验证 = "接口形状正确"≠"硬件行为正确"；一旦 V11-P1-1 把 transport 接通、VM 真正跑起来，页表链路的 bug 将第一次获得被执行的机会，且以最难排查的形式（二级错误：页错误风暴、陈旧 TLB）出现。
+
+**建议**（对应 V9-P2-4 的具体落地形态，两档）：
+1. **首选（纯 Rust 层）**：在 `os/arch` 提供一个 `#[cfg(test)]` 的软件模拟 `SimPaging`（BTreeMap 模拟四级表，行为契约对齐 `Paging` trait 文档），把现有 36 个契约测试从只跑 `MockPaging` 扩为"MockPaging + SimPaging 双实现参数化"；VM 侧测试改注入 `SimPaging`，使 region/brk/munmap 的测试真正走到"写 PTE→查询→摘除"路径。Redox rmm 的 `EmulateArch`（`cfg(feature="std")` 下 BTreeMap 模拟）是同一思路的先例。
+2. **次选（硬件层冒烟）**：workspace 已有 `os/qemu-tests/` 基建（test-memmap / test-paging-enable / test-kernel-map 等 bootstrap 测试内核）。为 VM 加一条 QEMU 冒烟：boot shim 拉起 VM → VM 建自身页表（`init_vm_self_pt`）→ 对测试页执行 map/query/unmap → 结果写串口。x86_64 一条即可，先覆盖 `new/map/query/unmap` 四个最高风险方法。
+3. 两档不互斥：第 1 档管回归密度，第 2 档管"真实硬件对不对"。若资源只够一个，先做第 2 档——它验证的是 SimPaging 无法替代的前提假设（PTE 位布局、NX、TLB 行为）。
+
+**验证**：`rg "struct SimPaging|impl Paging for SimPaging" os/arch/src` 非零；`cargo test -p minix-arch` 测试数从 36 增加；或 `os/qemu-tests/` 出现 vm-paging 冒烟目标且 CI 可跑。
+
+#### V11-P2-2 MemType / PhysAllocator 方法级测试缺口矩阵
+
+**问题**：按"核心 trait 方法 ≥3 测试（正常/边界/错误）"的项目标准盘点，两个核心 trait 的缺口集中：
+- **MemType**（memtype.rs，6 实现 × 19 方法）：`ContiguousAnonymous` 六实现中唯一 0 直测（其 `ev_new`:747、`ev_resize`:723、`ev_pagefault`:831 等 12 个 override 全无测试）；trait 级完全无测试的方法（所有实现）：`ev_new`、`ev_resize`、`ev_sanitycheck`(:119)、`ev_delete`、`ev_low_shrink`、`ev_reference`（fork.rs:82 只用 failing mock 测过回滚，六个真实现无直测）。`DirectPhysical` 除 `name` 外全部 override 无测试（`ev_pagefault`:402、`ev_copy`:438、`pt_flags`:452）。
+- **PhysAllocator**（phys_mem/alloc_trait.rs，5 方法 × 3 后端）：`allocator_tests.rs`（42 测试）只覆盖 `alloc_mem`/`free_mem` 两方法；`reserve_pages` 仅 bitmap 有测试（bitmap_alloc.rs:735），buddy（:384）/segment_tree（:342）实现无测试；`available_regions` 仅 bitmap 有 3 个测试（:755/:792/:840）；`memstats`/`total_count` 无任何直接测试（grep 全 src 仅实现处与 vm_server.rs:328 生产调用）。
+
+**影响**：`ev_resize` 是 brk 收缩/扩展路径的核心回调（19-vm-brk.md 主线），`ev_delete` 是 exit 释放路径的核心回调（22-vm-exit.md 主线）——两个生产主线的核心回调当前靠间接覆盖；`available_regions` 是 `relocate()` 元数据搬迁的输入（vm_server.rs:327-329），换后端时该路径零兜底。
+
+**建议**：补测优先级按生产暴露面排序——① `ContiguousAnonymous` 的 `ev_resize`/`ev_pagefault`（brk 主线）；② `ev_delete` × 六实现（exit 主线，可表驱动一次覆盖）；③ `reserve_pages`/`available_regions` 的 buddy/segment_tree 补齐（与 V11-P2-5 的 CI feature 矩阵联动，segment_tree 的补测天然要求该矩阵存在）；④ 其余按机会补。不建议一次性铺满 6×19 矩阵——按主线风险投递。
+
+**验证**：`cargo test -p minix-vm --lib memtype` 与 `allocator_tests` 用例数增加；`rg "fn test_.*contiguous" os/servers/vm/src/memtype.rs` 非零。
+
+#### V11-P2-3 clippy 回归收敛 + 死代码增量（V10-P2-1 的增量复盘）
+
+**问题**：V10 收敛时 `cargo clippy -p minix-vm --lib` 为 0 warnings；2026-09-06 实测默认 feature **1 条**、`--all-features` **7 条**。全部来自 08-17 之后的增量代码：
+
+| 锚点 | 警告 | 归因 |
+|---|---|---|
+| vm_server.rs:301 | unreachable expression（all-features） | V11-P1-3 的症状，随该条处理 |
+| vmproc/vmproc_handle.rs:433 | method `page_table` never used（默认即可见，即那条"1"） | 新增的不可变 getter，孪生 `page_table_mut` 有 8 处调用、它自己 0 处 |
+| phys_mem/mod.rs:196-207 | `as_buddy`/`as_buddy_mut` never used（all-features） | 与 `is_bitmap`/`as_bitmap_mut`（:188-193 已标注）不同，这对没有加 `#[allow(dead_code)]` |
+| phys_mem/buddy_alloc.rs:38 | `MAX_ORDER` never used（all-features） | V10-P2-1 表中 buddy 9 项 DEFERRED 标注的漏网项 |
+| phys_mem/buddy_alloc.rs:94、segment_tree_alloc.rs:135 | `metadata_size` 等 4 项 never used（all-features） | 同上：`PhysAllocType::metadata_size`（mod.rs:249）承担了元数据计算，allocator impl 上的同名方法成死代码 |
+| phys_mem/segment_tree_alloc.rs:263 | `1 * 1024 * 1024` identity op（all-features） | 照搬 C 字面量风格，纯噪音 |
+
+**影响**：轻——无行为问题；但"all-features 态无人看"的模式与 V10-P0-1 同源，放任会再次积累到构建破坏才发现。
+
+**建议**：一次收敛清零：`page_table()` 按 vmproc_handle.rs 既有惯例补 `#[cfg_attr(not(test), allow(dead_code))]` 或直接删（有调用者再加）；`as_buddy*` 与 `metadata_size` 系按 V10-P2-1 的 DEAD/DEFERRED 标注惯例处理或删除；identity op 改 `1024 * 1024`；V11-P1-3 处理后 unreachable 归零。同时建议 CI 固定跑 `cargo clippy -p minix-vm --lib --all-features`（与 V11-P2-5 的测试矩阵合并为一条 CI 步骤）。
+
+**验证**：`cargo clippy -p minix-vm --lib` 与 `--all-features` 均回到 0 warnings。
+
+#### V11-P2-4 过时注释 4 处：X86_64Paging 已实现而注释仍称 todo!()
+
+**问题**：arch 侧 `X86_64Paging::new`（paging.rs:464-485，经 `pt_alloc::alloc_pt_page` 分配 PML4 并清零）与 `destroy`（:487-497）均已实现，全文件 grep `todo!` 零命中；但 VM 侧 4 处注释仍以"未实现"为前提写理由：
+
+| 锚点 | 注释内容 | 实际情况 |
+|---|---|---|
+| brk.rs:236 | "(X86_64Paging::new() is todo!(), so a zero-initialized stub is used)" | `new()` 已实现；该处测试桩的真实理由应改为"测试环境无 VM DM 窗口/未跑 pt_alloc" |
+| vmproc/vmproc.rs:188 | "In test builds, skip destroy() since X86_64Paging::destroy() is todo!()" | `destroy` 已实现（:487-497） |
+| vmproc/vmproc_handle.rs:352-354 | "X86_64Paging::new() is todo!() and new_from_page(0) would dereference null" | 同上；且非测试路径 `init_page_table`（:363-365）已在调用真实 `new()`，注释自相矛盾 |
+| region/mod.rs:21-22 | "In test builds, page table operations are skipped since X86_64Paging methods are not yet implemented" | 方法已实现；真实理由是测试不接真实页表（与 V11-P2-1 相关） |
+
+**影响**：误导维护者——比如会让人以为"真实 `new()` 还不能调"而继续加零桩，或低估 V11-P2-1 测试缺口的紧迫性。V11-P2-1 落地后这些注释应随测试策略一起改写。
+
+**建议**：四处注释按"真实理由"改写（锚点如上）；改写时在 `vmproc_handle.rs:352-354` 处顺带指向 V11-P2-1 的 SimPaging 方案，说明测试桩的退出条件。属 P0-fact 族（描述与事实不符），修复成本低，可与 V11-P2-3 一次清掉。
+
+**验证**：`rg "todo!\(\)" os/servers/vm/src` 归零；`rg "not yet implemented" os/servers/vm/src/region/ os/servers/vm/src/brk.rs os/servers/vm/src/vmproc/` 归零。
+
+#### V11-P2-5 测试基建三条：CI feature 矩阵、rs_handshake 链路、PM↔VM 集成测试复活
+
+**问题**（对应 G-V11-3/G-V11-4）：
+1. segment_tree 后端的 15 条 parity 测试默认不执行（allocator_tests.rs:14 起 feature 门控），CI 无 feature 矩阵步骤——V10-P0-1 的"组合态无人看"风险仍在测试维度延续；
+2. `rs_handshake`（vm_server.rs:900）与 `ipc_call_rs_init`（:1124-1157）零测试（tests 区 grep 命中 0），`run_once` 的 reply 编码失败分支（:663-680）与 invalid caller 丢弃分支（:652-660）也无专门测试；
+3. PM↔VM 集成测试 `os/tests/pm_vm_fork{,_test}.rs` 正文整体注释停用（自注 "DEPRECATED: permanently disabled"，原因：`vmproc::fork` 等 `pub(crate)` 类型已不可从外部访问）。
+
+**影响**：fork 主线（18-vm-fork.md）当前没有任何跨 crate 端到端验证；主循环分支覆盖有盲区；后端矩阵靠手工自觉。
+
+**建议**：
+1. CI 加一步 feature 矩阵：`cargo test -p minix-vm --lib --no-default-features --features {segment_tree_alloc,buddy_alloc}` + `cargo clippy --all-features`（与 V11-P2-3 合并）；这是一条命令的事，优先做。
+2. `rs_handshake` 补 2 个测试（正常握手返回 Suspend、RS_INIT 消息分类），`ipc_call_rs_init` 在 V11-P1-1 落地前补一个 pin 测试（断言当前返回空表——防"看起来已实现"）；reply 编码失败与 invalid caller 分支各补 1 个（经 TestIpcTransport 驱动）。
+3. 集成测试复活的正确形态不是恢复旧文件（它依赖的 pub(crate) 边界是刻意收紧的），而是等 V11-P1-1 落地后，在 `minix-sys` 桩层写"伪 PM 驱动 VM"的集成测试——消息层是稳定契约（minix-types wire 格式），比旧的 crate 内访问更符合边界。在此之前，在旧文件头加一行指向 V11-P1-1 的"复活条件"注释，避免下轮又被当成死代码清理掉。
+
+**验证**：CI 配置含 feature 矩阵；`cargo test -p minix-vm --lib vm_server` 新增 ≥4 个用例；pm_vm_fork 文件头有复活条件注释。
+
+#### ✅ V11-P2-6 文档-代码同步批次（Gate E 产物）——已修复 2026-09-06（见 §15 Fix #19）
+
+**问题**：15-ipc-dispatch.md §5 有 3 个测试名与代码不一致（文档侧 P0-fact）+ 1 个声称的 dispatcher 层测试实际不存在：
+
+| 文档声称 | 实际（锚点） | 处置 |
+|---|---|---|
+| `test_dispatch_procctl_unknown_param_returns_invalid_address` | 实际名 `test_dispatch_procctl_unknown_param_returns_einval`（dispatcher.rs:1711） | 改文档名 |
+| `test_dispatch_vfs_reply_rejects_no_active_request` | 实际名 `test_dispatch_vfs_reply_no_active_request_returns_error`（dispatcher.rs:1830） | 改文档名 |
+| `test_dispatch_vfs_reply_rejects_negative_reqid` | 实际名 `test_dispatch_vfs_reply_negative_reqid_returns_error`（dispatcher.rs:1851） | 改文档名 |
+| `test_dispatch_setcache_rejects_zero_dev_and_ino`（声称 :1835） | 无近似命中；NO_DEV 守卫由 `page_cache::tests::test_addcache_rejects_no_device` 覆盖（dispatcher.rs:1958-1960 注释声明） | 文档改为指向 page_cache 测试，或按 V11-P2-2 精神补 dispatcher 层用例 |
+
+**影响**：Gate E 对账失败 4/94；后续按文档名 grep 验证的人会误判"测试被删了"。
+
+**建议**：按 fix-guard 逐条改 15-ipc-dispatch.md §5（4 处），顺带把 §5.4 的 "441 passed" 总数声明更新为 448（并注明 feature 差值）。其余 22 篇文档本轮抽查对账良好（21-vm-munmap 26/26、26-vm-queries 20/20 具名全命中），无需批次刷新。
+
+**验证**：对 4 个新文档名逐一 `rg "fn {name}" os/servers/vm/src` 命中（或指向说明成立）。
+
+#### V11-P2-7 P1-4 依赖精确化：VmBootHandoff 需补 kernel text/data span 字段
+
+**问题**：P1-4（KERNEL_LAYOUT mock，vm_server.rs:437-450）的现有 DEFERRED 表述是"boot-info 接缝未闭环"，但本轮发现接缝的一半已经闭环：`boot.rs` 已完整建模 C `kernel_boot_info`（BootParams:61-103，含 `kernel_allocated` 字节总数、`vm_allocated_bytes`、`root_paddr`）。真正缺的只剩：**kernel text/data 的基址与页数**（mock 里的 `kernel_text_vbase=0xFFFF_FFFF_8000_0000`、`pbase=16MiB`、`pages=8` 这四个值）在 `minix_types::VmBootHandoff` 里没有对应字段。
+
+**影响**：DEFERRED 理由从模糊的"接缝未闭环"收窄为明确的"handoff 布局缺 4 个字段"——依赖方（kernel vm_handoff.rs）与消费方（vm_server.rs init_global_state）可以各自立项，不用互相等。
+
+**建议**：在 `VmBootHandoff`（kernel/src/vm_handoff.rs）增加 kernel text/data 的 `(paddr, pages)` 字段（对齐 C 侧 kernel 布局符号），kernel 侧填充、`read_boot_params` 解析、`init_global_state` 消费，三处一次改齐并加 `debug_assert`（mock 值与真实值不得共存）。在 P1-4 条目上补本条的精确依赖描述。
+
+**验证**：`rg "kernel_text_vbase" os/kernel/src os/servers/vm/src` 出现 handoff 字段定义与解析（而非仅 mock）。
+
+#### V11-P2-8 进程退出的中间页表页确定性泄漏（arch 侧 destroy 只清零不回收）
+
+**问题**：`X86_64Paging::destroy`（`os/arch/src/x86_64/paging.rs:487-497`）只把根 PML4 清零，注释自述 "accept the intermediate-table leak"——因为 `pt_alloc` 只注册了 alloc 没有注册 free。即**每次进程退出，该进程的中间层页表页（PDP/PD/PT，最多 1+1+512 量级）物理页不归还**。调用链已在位：`exit.rs:190` → `vmproc_handle.rs:411-418` `free_page_table()` → `destroy()`；"页表不在任何 CPU 上活跃"的安全前提已由 `exit.rs:188-189` 的 SAFETY 注释与 `free_page_table` 的 `# Safety` 文档显式声明（契约是诚实的，本条只针对泄漏）。
+
+**C 对照**：Minix3 的 `pt_free`（pagetable.c:1427-1437）会归还页表页——本条同时是一处 C↔Rust 语义偏差（C 回收、Rust 泄漏）， magnitude 有界（每退出 1-3 页）所以评 P2，但长期运行下与 P1-1（heap 泄漏，已修）同类。
+
+**外部对照（本轮联网核实）**：
+- Redox：进程退出路径 `AddrSpace::drop` → `inner_drop()` 逐 grant 归还数据页，`Drop for Table` 先切到 `empty_cr3()` 再 `deallocate_frame` 回收**根表帧**，中间层由 rmm `PageMapper` 的 unmap 路径归还——没有"只清零"的捷径（redox-os/kernel 镜像 `src/context/memory.rs`）。
+- Linux：`exit_mmap()` → `tlb_gather_mmu_fullmm` → 逐 VMA unmap → `free_pgtables()`，页表页经 `tlb_remove_table`/`__p*_free_tlb` 批量回收，且强制"unhook → TLB invalidate → free"顺序（torvalds/linux `include/asm-generic/tlb.h` 权威注释、`mm/mmap.c:1288-1312`）。
+- 两者的共同点：中间页表页是**一等公民资源**，退出路径显式回收；差异点：Linux 需要显式 TLB 顺序（SMP+PCID 环境），Redox 用 RAII Drop 让类型系统保证顺序。
+
+**建议**：
+1. **首选**：给 `pt_alloc` 注册 free（arch crate 侧小改动），`destroy` 改为完整四级遍历：逐级回收中间页并归还分配器，最后回收根帧；保持现有"先清零根"的 UAF 防护语义不变。
+2. **次选**：若 arch 侧改动暂不立项，至少把 destroy 的泄漏契约从"注释自述"升级为显式 DEFERRED 标记（编号 + 指向本条），并补一个"退出 N 个进程后中间页计数不增"的 pin 测试（实现后翻转）——防泄漏规模被无感知放大。
+3. 修复跨 stage 边界（arch crate 属 07-paging 域），实施时按 `[ARCH]` 流程在 doc + design + code 三处一致标注。
+
+**验证**：`rg "fn free" os/arch/src/pt_alloc.rs`（或对应文件）非零；新增"destroy 后中间页归还"测试；长跑测试退出 N 进程后 `available_regions` 可用页不下降异常量。
+
+#### V11-P3-1 卫生项批次（一次清掉）
+
+- `NR_VM_CALLS` 双重定义：`minix-types/src/ipc/vm.rs:149`（`pub const u32`）与 `vm_server.rs:1173`（私有 `usize`）并存——VM 侧改用 minix-types 常量做 `as usize` 转换，删除私有副本。
+- `minix-types/src/ipc/event.rs:150`：doc 注释后空行（clippy `empty line after doc comment`）——相邻 crate 顺手修。
+- `os/kernel/src/arch/x86_64/paging.rs:977`：unnecessary unsafe block（arch crate，V11-P2-1 触及该文件时顺手修）。
+- `minix-sys` 依赖闲置（servers/vm/Cargo.toml:14）不单独删：V11-P1-1 落地后自然消解；若 P1-1 长期不动再降级为"删依赖声明"。
+
+### 14.4 08-17 后增量代码首轮审查结论（基线确认，无需动的部分）
+
+按"确认良好项"惯例登记本轮核过的增量（供下轮免检）：
+
+- **boot.rs**（549 行，净 +322）：`BootParams`/`BootModule`/`KernelAllocated` 对 C `kernel_boot_info`（glo.h）+ module list（main.c:485-489）+ kernel footprint（main.c:492-495）的建模完整，`reconcile()` 内存对账逻辑清晰；grep TODO/DEFERRED/stub 零命中；12 个测试覆盖 validate 与 reconcile 主分支。
+- **pagetable/vm_self_map.rs**（290 行，净 +165）：`VmSelfPageTable` 的 adopt/map/unmap/query 面正确收敛，`init_vm_self_pt` 已被 `VmServer::init` 调用（生产接线）；仅 2 处 test-only 标注（:125/:230）符合 V10-P2-1 惯例。
+- **vmproc 增量**：`reset_rusage`（vmproc.rs:122，vmproc_handle.rs:469）对齐 C exit.c:25-31 的 `reset_vm_rusage`，由 `free_proc`/`clear_proc` 共享，语义正确；`test_swap_proc_slot_preserves_identities` 等 7 个新测试有效。
+- **alloc_cycle 回收半边**：`free_pages(FREE_CACHE_BATCH)` 有界回收实现正确（回收跳过已映射页有测试 `test_free_pages_skips_mapped_frames`，page_cache.rs:604）；"回收后重试"缺口维持原 DEFERRED（24-page-cache 阶段），仅注释需随 V11-P2-4 微调。
+- **Getrusage 修复（VMI-3）**：编码路径 vm_server.rs:1417-1418 与 `UsageInfo` 字段（query.rs:391-394）一致，负数保护（faults_to_i32）在位。
+- **kernel 侧 ipc.rs**（对接面）：2,906 行实现含死锁检测（:739）与 IPC 权限检查（:1591），`sendrec`/`notify` 语义与 C 对齐；本轮仅核对接面对接充分性，深审属 01-stage-kernel 范围。
+- **VmReply 大枚举不 Box 的决策**（minix-types vm.rs:645-652）：注释给出完整论证（Boxing 只添 alloc 依赖无可测收益 + 数组 transport 编码 DEFERRED 契约指向 26-vm-queries.md §3.7）——已知已登记，不重复立项。
+
+### 14.5 对照 Redox / Linux / Rust 社区的架构参考（本轮新增，全部 URL 实际核实）
+
+> 来源说明：Redox 官方 GitLab 被 Cloudflare 拦截，以下证据取自 GitHub 官方镜像 `redox-os/kernel` / `redox-os/syscall` / `redox-os/redoxfs`（仓库描述自证镜像关系）；docs.rs 上的同名 `rmm` crate 与 Redox 无关（Redox 的 rmm 以 `path = "rmm"` 内嵌于 kernel 仓库），不采信。
+
+**① 物理分配器后端策略——"三后端 feature 互斥"在 OS 内核中没有先例**
+- Redox rmm 的 Cargo features 只有 `std`，没有任何"编译期选分配器"机制；帧分配器只有 bump 与 buddy 两个实现（`rmm/src/allocator/frame/`），且两者是**生命周期接力**（bump 建立直接映射 → buddy 接管全部帧分配，`rmm/src/main.rs`），不是候选方案。Linux 是单一 buddy（`mm/page_alloc.c`）+ per-cpu 分层，从不提供"bitmap vs buddy"二选一。
+- 对 V11-P1-3 的补充：`DefaultAllocator` 别名只是矛盾的一半；更上层的问题是 [ARCH: A-5] 的"三后端 feature 互斥"策略本身在业界无对应物——Rust 生态的 feature 门控惯例是能力开关（std/no_std、架构），不是算法策略切换。**候选方向（属 Architectural Evolution，需用户批准，不在本轮执行）**：bitmap 定为唯一生产后端，buddy/segment-tree 降级为 parity 测试参照（`allocator_tests.rs` 已证明三者可共存编译，feature 互斥层可以整体删除）。保留现状也可辩护（教学价值 + 05 文档 §3.3 的权衡论证），但"双真相源"必须先修。
+
+**② 用户态服务器状态组织——context struct 是社区共识**
+- redoxfs 守护进程主循环：全部状态在局部 `FileScheme` 结构中传递（`req.handle_sync(&mut scheme, &mut state)`），唯一全局是退出标志 AtomicU32；Redox kernel 自己也在 clippy 中压制 `static_mut_refs`（往去裸 static 方向迁移）。
+- embassy 生态 `static_cell` crate 的梯队（static + 运行期 init 借出 `&'static mut` → `Box::leak` → `OnceLock`）与 `os/libs/minix-platform/src/global.rs:29-49` 对 `AssumeSyncCell` 的论证一致。
+- 对 V11-P1-2 的补充：现状方向正确（主状态已走 `VmServer` 结构体），收敛终点是"全局只留启动期写一次、运行期只读的项"。
+
+**③ 错误处理——本地中间路线成立，"thiserror 不可 no_std"是误解**
+- Redox `syscall` crate 用统一 `Error { errno }` + errno 常量直传（`src/error.rs`）；本地是"每模块小 enum → 统一 `VmError` → 单一 `to_errno()` 出口"，属于社区常见模式与 Redox 极端方案之间的中间路线，且保留了 errno 语义区分文档（`InvalidEndpoint→ESRCH` vs `InvalidProcess→EINVAL`），**不建议**改成裸 errno 直传。
+- 事实更正（影响 P2-2 建议 3 与 V10-P2-3 的论据）：thiserror 2.x **支持 no_std**（`core::error::Error`，`default-features = false`），"避免 proc-macro 依赖"不再是不用它的理由——V10-P2-3 启动专项时可将其纳入候选方案对比。
+
+**④ 架构相关代码的测试策略——rmm 的宿主模拟正是 V11-P2-1 第 1 档的先例**
+- rmm README 明言 "testing memory management with software emulation"：`rmm/src/arch/emulate.rs` 的 `EmulateArch` 用 std 的 Box/BTreeMap 造假机器、实现与 `X8664Arch` 相同的 `Arch` trait，`rmm/src/main.rs`（`required-features = ["std"]`）跑"真实分配 + 模拟翻译"的端到端宿主测试——**不是 mock 单测也不是 QEMU，是第三档：真实算法 + 模拟存储**。
+- QEMU 档的社区惯例：blog_os 用 `isa-debug-exit` 设备带出退出码（os.phil-opp.com/testing/）；rust-osdev/uefi-rs 的 `uefi-test-runner` 在 QEMU+OVMF 中跑集成测试。
+- 对 V11-P2-1 的补充：workspace 已有 `os/qemu-tests/`（test-paging-enable / test-kernel-map 等）对应 QEMU 档；缺的中间档（SimPaging/EmulateArch 式）有 Redox 一手先例，两档建议均非发明。
+
+**⑤ IPC 大 enum——本地"先测量不 Box"的决策与 clippy 官方口径一致**
+- `VmReply::InfoRegion` 内嵌 64 项数组（约 1.5 KiB）的 `#[allow(clippy::large_enum_variant)]` 有文档论证（minix-types vm.rs:645-660），与 clippy 官方"boxing 可能反而亏，先测量"的警告一致——维持原判，不立项。
+- 真正的对照启示在传输层：Redox `syscall/src/data.rs` 是 per-call `#[repr(C)]` 小结构 + `Deref<Target=[u8]>` 字节视图，"线上格式"与"进程内类型"分离；本地的 `VmReply` 目前两者兼职（transport 编码是已登记的 DEFERRED 契约，26-vm-queries.md §3.7）。将来 M1 之外的消息格式落地时，V9-P2-1 的 codec 注册表应按 per-call 小结构方向设计，而非扩大统一 enum。
+
+**⑥ 页表销毁回收——Redox/Linux 都把中间页表页当一等公民资源**
+- 证据与建议已落条目 V11-P2-8（Redox `Drop for Table` + `empty_cr3()` + `deallocate_frame`；Linux `exit_mmap` → `free_pgtables`/`tlb_remove_table` 的 "unhook → invalidate → free" 强制顺序）。
+
+**对存量条目的证据更新汇总**：V11-P1-2（+redoxfs/static_cell 佐证）、V11-P1-3（+[ARCH: A-5] 无业界先例，候选演进需用户批准）、V11-P2-1（+rmm EmulateArch 先例）、V11-P2-8（新增）、V10-P2-3/P2-2（thiserror no_std 事实更正）、V9-P2-1（codec 方向补充 per-call 小结构）。
+
+### 14.6 Rule Discovery（Step 5.7）
+
+本轮发现一个可注册的新检查模式：
+
+**模式候选：DEFERRED 依据时效（stale-DEFERRED premise）**——DEFERRED 条目的"依赖未解除"论证本身会过时。本轮实证：P1-3 的阻塞依赖（kernel IPC core）在别的工作流里悄悄落地了（kernel/src/ipc.rs 2,906 行），而 VM 侧的 DEFERRED 标记、注释、文档共约 10 处仍按"依赖不存在"行事；同族还有 4 处 X86_64Paging 过时注释。与既有模式 70（CTOS：TODO 陈旧）的区别：70 查"TODO 指向的现状是否已变"，本模式查"**DEFERRED 的依赖论证是否仍成立**"——它要求跨 crate 反查依赖目标，而不是本 crate grep。
+
+**建议落地**：在 review-process 的 Step 0.7（TODO 验证）中加一个子步骤：对目标模块的每个 DEFERRED 标记，提取其声称的依赖物（crate/模块/函数），grep 依赖物是否已存在；已存在 → 列入"解封复核"清单。本条待规则集评审后收录（prompt/review-rules/review-patterns.md）。
+
+### 14.7 建议的推进顺序（更新）
+
+1. **V11-P2-6（文档名 4 处）+ V11-P2-3/V11-P2-4（clippy 回归 + 过时注释）**：低成本、防误导，一次清掉；顺带把 CI feature 矩阵（V11-P2-5 第 1 项）加上。
+2. **V11-P1-3（DefaultAllocator 双真相源）**：同属低风险清理，与上一步共用一次 clippy --all-features 验证。
+3. **V11-P1-1（KernelIpcTransport 落地）**：本轮最重要的解封项；按三步走，第一步只接 transport 本体 + `rs_handshake`。
+4. **V11-P1-2（VmContext）**：transport 可测之后做，按三小步；随后 V10-P2-3（错误枚举）与 V9-P2-1/P2-2（codec/表驱动）在同一条 dispatch 签名上一次收敛。
+5. **V11-P2-1（页表测试策略）**：与 V11-P1-1 并行启动第 2 档（QEMU 冒烟），transport 落地后补第 1 档（SimPaging）；**V11-P2-8（中间页表页回收）** 与本条同属 arch 域，宜一并规划（首选方案共用 pt_alloc free 注册）。
+6. **V11-P2-2（MemType/PhysAllocator 补测）与 V11-P2-5（链路测试）**：随上述各项的触碰面机会性补齐，不单独立项。
+7. 原 V9/V10 未修项的优先级不变，唯两处更新：P1-2 并入 V11-P1-2 执行；V10-P2-3 的启动时机挂到 V11-P1-1 之后。
+
+---
+
+## 15. 第五轮修复记录（2026-09-06 起，V11 条目逐条闭环）
+
+> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
+> 每条遵循：fix-guard（读目标行 ±5 + grep 现状）→ 设计对比（≥2 方案，对照 C/Redox/Linux）→ 代码+文档+测试一并改 → 回归（`cargo test -p minix-vm --lib` 基线 448 不回退 + clippy --all-features + 受影响 Gate）→ 单条单 commit。
+> 通电口径：依赖共享 trap 层（minix-sys）的条目，VM 侧逻辑完备 + mock 测试即标 ✅，真实通电挂 edge E1/E2。
+
+### ✅ Fix #19: V11-P2-6 — 文档测试名对账 + 15-ipc-dispatch.md §5 行号/计数全量刷新
+
+- **File**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§5.1 两张表、§5.3 行号、§5.4 统计块）
+- **Before**: 4 个测试名与代码不符（`..._returns_invalid_address` 实为 `..._returns_einval`；`rejects_no_active_request`/`rejects_negative_reqid` 实为 `..._returns_error` 后缀；setcache 行的 `zero_dev_and_ino` 无对应测试）；§5.1 全部行号较代码漂移约 12-110 行；§5.4 声称 441 passed / clippy 0 warnings
+- **After**: 4 名修正为实际名；setcache 行补 NO_DEV 守卫归属说明（由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复）；dispatcher 13 行 / vm_server 11 行行号逐一按 `grep -n "fn test_"` 刷新；补录 `test_decode_rs_memctl_unknown_req_einval / all_valid_codes`（:2121/:2131）；§5.4 更新为 448 passed（2026-09-06）+ clippy 1/7 warning 回归事实（指向 V11-P2-3）
+- **Verified**: 刷新后表中 36 个测试名逐一 `grep -c "fn {name}("` 全部恰好 1 次命中；旧名 4 个在文档中 0 残留；`cargo test -p minix-vm --lib` → 448 passed / 0 failed
+- **Docs**: 本条即文档修复，无代码改动

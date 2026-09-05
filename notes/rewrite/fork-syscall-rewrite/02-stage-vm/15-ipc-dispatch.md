@@ -617,23 +617,24 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 
 ## 5. 测试要点
 
-### 5.1 单元测试清单（grep 实证，2026-08-16）
+### 5.1 单元测试清单（grep 实证，2026-09-06 V11-P2-6 刷新）
 
 **dispatcher.rs**（29 个，含 V10-P1-2 pin 测试）：
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_vm_error_invalid_process_maps_to_einval / invalid_endpoint_maps_to_esrch / slot_in_use_maps_to_einval | :1465/:1473/:1481 | VmError→errno 映射（EINVAL/ESRCH） |
-| test_dispatch_procctl_rejects_negative_param / zero_who | :1519/:1539 | 非法参数 fail-closed |
-| test_dispatch_procctl_clear_rejects_unauthorized_caller | :1558 | VMPPARAM_CLEAR 仅 RS/VFS |
-| test_dispatch_procctl_handlemem_rejects_non_vfs_caller | :1579 | VMPPARAM_HANDLEMEM 仅 VFS |
-| test_dispatch_procctl_unknown_param_returns_invalid_address | :1600 | 未知 param → EINVAL |
-| test_dispatch_remap_rejects_zero_vaddr / zero_length / invalid_endpoints | :1620/:1640/:1658 | remap 输入校验 |
-| test_dispatch_remap_ro_rejects_invalid_endpoints | :1677 | remap_ro 校验 |
-| test_dispatch_vfs_reply_rejects_zero_reqid / no_active_request / negative_reqid | :1695/:1715/:1736 | vfs_reply fail-closed |
-| test_dispatch_forgetcache_rejects_zero_pages / unaligned_offset / valid_input | :1756/:1775/:1794 | forgetcache 校验 |
-| test_dispatch_setcache_rejects_zero_pages / zero_dev_and_ino / unaligned_dev_offset / invalid_caller | :1815/:1835/:1855/:1875 | setcache 校验 |
-| test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :1898/:1919/:1940/:1962 | mapcache 校验 + ENOENT |
+| test_vm_error_invalid_process_maps_to_einval / invalid_endpoint_maps_to_esrch / slot_in_use_maps_to_einval | :1534/:1542/:1550 | VmError→errno 映射（EINVAL/ESRCH） |
+| test_dispatch_procctl_rejects_negative_param / zero_who | :1628/:1648 | 非法参数 fail-closed |
+| test_dispatch_procctl_clear_rejects_unauthorized_caller | :1669 | VMPPARAM_CLEAR 仅 RS/VFS |
+| test_dispatch_procctl_handlemem_rejects_non_vfs_caller | :1690 | VMPPARAM_HANDLEMEM 仅 VFS |
+| test_dispatch_procctl_unknown_param_returns_einval | :1711 | 未知 param → EINVAL |
+| test_dispatch_remap_rejects_zero_vaddr / zero_length / invalid_endpoints | :1731/:1752/:1771 | remap 输入校验 |
+| test_dispatch_remap_ro_rejects_invalid_endpoints | :1791 | remap_ro 校验 |
+| test_dispatch_vfs_reply_rejects_zero_reqid / no_active_request_returns_error / negative_reqid_returns_error | :1810/:1830/:1851 | vfs_reply fail-closed |
+| test_dispatch_forgetcache_rejects_zero_pages / unaligned_offset / valid_input_returns_ok | :1871/:1892/:1912 | forgetcache 校验 |
+| test_dispatch_setcache_rejects_zero_pages / fails_closed_without_valid_caller / rejects_unaligned_dev_offset / rejects_invalid_caller | :1934/:1956/:1981/:2002 | setcache 校验（zero dev/ino 守卫由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复） |
+| test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :2026/:2048/:2071/:2094 | mapcache 校验 + ENOENT |
+| test_decode_rs_memctl_unknown_req_einval / all_valid_codes | :2121/:2131 | RS_MEMCTL 解码 |
 | test_dispatch_rs_update_pins_not_implemented | :1561 | **V10-P1-2**：`dispatch_rs_update` 恒 `Error(NotImplemented)`（live-update 骨架 pin，落地时翻转） |
 
 **transport.rs**（7 个，含 V10-P1-1 状态位测试）：
@@ -652,17 +653,17 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_vm_server_run_without_init | :1661 | run() 前必须 init |
-| test_run_once_dispatch_reply_round | :1672 | **V10-P0-2**：TestTransportHandle 预置 VM_INFO 请求 → `run_once` 全路径 → 断言 reply 经 `send` 记录 |
-| test_run_once_notify_skipped_before_dispatch | :1735 | **V10-P1-1**：NOTIFY 状态消息在 dispatch 前跳过（不产生 reply） |
-| test_run_once_receive_failure_counts | :1770 | receive 失败 → `dropped_messages` 计数 + `RunStep::ReceiveFailed` |
-| test_run_busy_loop_protection | :1849 | **V10-P0-2**：连续 64 次 receive 失败 → `run()` panic（不忙等） |
-| test_missing_spares_pressure_counter | :1879 | alloc_cycle 压力钩子 |
-| test_pagefault_errors_counted | :2059 | P3 失败 → `pagefault_errors == 1`（V9-P1-1） |
-| test_is_vfs_fs_transid_valid / invalid | :2108/:2118 | 0xB00 区间判定 |
-| test_transid_extract | :2127 | TRNS_GET_ID 等价 |
-| test_transid_strip | :2136 | TRNS_DEL_ID 等价（含符号扩展） |
-| test_handle_vfs_transid_wrong_clean_type / zero_transid / invalid_endpoint | :2150/:2163/:2176 | P1 路径前置校验 |
+| test_vm_server_run_without_init | :1673 | run() 前必须 init |
+| test_run_once_dispatch_reply_round | :1684 | **V10-P0-2**：TestTransportHandle 预置 VM_INFO 请求 → `run_once` 全路径 → 断言 reply 经 `send` 记录 |
+| test_run_once_notify_skipped_before_dispatch | :1747 | **V10-P1-1**：NOTIFY 状态消息在 dispatch 前跳过（不产生 reply） |
+| test_run_once_receive_failure_counts | :1782 | receive 失败 → `dropped_messages` 计数 + `RunStep::ReceiveFailed` |
+| test_run_busy_loop_protection | :1865 | **V10-P0-2**：连续 64 次 receive 失败 → `run()` panic（不忙等） |
+| test_missing_spares_pressure_counter | :1891 | alloc_cycle 压力钩子 |
+| test_pagefault_errors_counted | :2071 | P3 失败 → `pagefault_errors == 1`（V9-P1-1） |
+| test_is_vfs_fs_transid_valid / invalid | :2120/:2130 | 0xB00 区间判定 |
+| test_transid_extract | :2139 | TRNS_GET_ID 等价 |
+| test_transid_strip | :2148 | TRNS_DEL_ID 等价（含符号扩展） |
+| test_handle_vfs_transid_wrong_clean_type / zero_transid / invalid_endpoint | :2162/:2175/:2188 | P1 路径前置校验 |
 
 ### 5.2 覆盖维度
 
@@ -676,23 +677,24 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（vm_server.rs:1672）经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1770）覆盖丢弃路径；`test_pagefault_errors_counted`（:2059）覆盖 P3 失败路径 |
-| RS_INIT 分支测试 | ⚠️ 缺失 | rs_handshake 依赖 ipc_call_rs_init 桩（vm_server.rs:1112 返回 RprocTab::empty()），无消息级测试 |
-| VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2059）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
+| dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（vm_server.rs:1684）经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1782）覆盖丢弃路径；`test_pagefault_errors_counted`（:2071）覆盖 P3 失败路径 |
+| RS_INIT 分支测试 | ⚠️ 缺失 | rs_handshake 依赖 ipc_call_rs_init 桩（vm_server.rs:1124 返回 RprocTab::empty()），无消息级测试 |
+| VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2071）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
 | is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（vm_server.rs:1735）——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
 | acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（acl.rs:200+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |
 | DMA 三请求 | ⚠️ 显式排除 | dispatch_by_number `_` 兜底 NotImplemented；C 有 do_adddma 等（DMA 表 DEFERRED） |
 | VFS transid 编码端到端 | ⚠️ 缺失 | TRNS_ADD_ID 编码（VFS 侧）不在 VM 测试范围；仅单向 GET/STRIP 解码 |
 
-### 5.4 测试统计（截至 2026-08-17）
+### 5.4 测试统计（截至 2026-09-06，V11-P2-6 刷新）
 
 ```
 $ cd os && cargo test -p minix-vm --lib
-→ 441 passed / 0 failed（2026-08-17：V10-P0-2 端到端驱动 + V10-P1-1 状态位/通知跳过 后）
+→ 448 passed / 0 failed（2026-08-17 后新增 7 测试：boot.rs reconcile 系列、vmproc reset_rusage / swap_proc_slot 等）
 $ cargo test -p minix-vm --lib ipc::dispatcher → 29 passed
 $ cargo test -p minix-vm --lib ipc::transport → 7 passed
 $ cargo test -p minix-vm --lib vm_server → 34 passed（含 transid/生命周期 + 主循环端到端）
-$ cargo clippy -p minix-vm --lib → 0 warnings（V10-P2-1 收敛后）
+$ cargo clippy -p minix-vm --lib → 1 warning（默认）/ 7（--all-features）
+  （2026-09-06 实测：08-17 后增量代码引入回归，收敛条目 = 02-stage-vm/todo.md §14 V11-P2-3）
 $ cargo check -p minix-vm → Finished（无 error）
 ```
 
