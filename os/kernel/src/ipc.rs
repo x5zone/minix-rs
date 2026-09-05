@@ -322,7 +322,7 @@ pub trait UserCopy {
 pub enum CopyError {
     /// Page not mapped or permission denied. Triggers VM suspend on
     /// first occurrence, SIGSEGV on second consecutive failure.
-    /// C: `vm_suspend(VMS_PAGEFAULT)` — proc.c:278.
+    /// C: `vm_suspend(VMS_PAGEFAULT)` — proc.c:281-282.
     PageFault,
     /// Address outside user space. Always fatal (SIGSEGV).
     OutOfBounds,
@@ -373,10 +373,10 @@ pub enum DeliverResult {
     /// Message copied to user space successfully. C: clear `MF_DELIVERMSG`.
     Delivered,
     /// First page fault — caller should `vm_suspend(VMS_PAGEFAULT)` and
-    /// set `MF_MSGFAILED`. C: proc.c:278.
+    /// set `MF_MSGFAILED`. C: proc.c:281-282.
     PageFault,
     /// Second consecutive page fault, or out-of-bounds — caller should
-    /// `cause_sig(SIGSEGV)`. C: proc.c:283.
+    /// `cause_sig(SIGSEGV)`. C: proc.c:278.
     Segfault,
 }
 
@@ -415,12 +415,12 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
         }
         Err(CopyError::PageFault) => {
             if proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED) {
-                // Second consecutive failure → SIGSEGV. C: proc.c:283.
+                // Second consecutive failure → SIGSEGV. C: proc.c:278.
                 proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
                 proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
                 DeliverResult::Segfault
             } else {
-                // First failure → vm_suspend. C: proc.c:278.
+                // First failure → vm_suspend. C: proc.c:281-282.
                 proc.p_misc_flags.set(MiscFlagsBits::MSGFAILED);
                 DeliverResult::PageFault
             }

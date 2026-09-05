@@ -793,7 +793,7 @@ impl Default for ProcessTable {
 impl ProcessTable {
     /// 处理进程的 misc 标志。
     ///
-    /// C: check_misc_flags 循环 — proc.c:351-405
+    /// C: check_misc_flags 循环 — proc.c:351-415
     ///
     /// 返回 true 表示进程仍可运行，false 表示不可运行（需重新选择）。
     ///
@@ -802,13 +802,17 @@ impl ProcessTable {
     /// In C, each branch calls a handler function (kernel_call_resume,
     /// delivermsg, arch_do_syscall) which clears the corresponding flag.
     /// In Rust:
-    /// - `DELIVERMSG` (FIX-20): wired to `crate::ipc::delivermsg`
+    /// - `DELIVERMSG` (FIX-20): wired to `crate::ipc::delivermsg`; its
+    ///   `Segfault` outcome routes to `cause_signal(SIGSEGV)` here
+    ///   (D-45) — the signal is raised in-loop, matching C proc.c:278
     /// - `KCALL_RESUME` (FIX-21): wired to `crate::vm::kernel_call_resume`
     ///   (simple version — clears flag + reads VM result; full re-dispatch
     ///   is done by `switch_to_user` which has access to priv_table +
     ///   clock_state + proc_table)
     /// - `SC_DEFER` (FIX-21): wired to `self.arch_do_syscall()`
-    /// - `SC_TRACE` / `SC_ACTIVE`: still TODO (future phase)
+    /// - `SC_TRACE` / `SC_ACTIVE` (D-43): SIGTRAP wired to
+    ///   `cause_signal` (proc.c:398); `PageFault` still routes to
+    ///   nothing (D-44, blocked on the D-20 VM notification chain)
     pub fn process_misc_flags(
         &mut self,
         nr: ProcNr,
@@ -863,17 +867,59 @@ impl ProcessTable {
                     }
                     crate::ipc::DeliverResult::PageFault => {
                         // First page fault — MF_MSGFAILED already set by
-                        // delivermsg. Caller (switch_to_user) must route to
-                        // vm_suspend(VMS_PAGEFAULT).
-                        // TODO: vm_suspend(VMS_PAGEFAULT) — future phase
+                        // delivermsg, MF_DELIVERMSG kept for the retry.
+                        // D-44 (still deferred): C routes to
+                        // vm_suspend(VMS_PAGEFAULT) here (proc.c:281-282),
+                        // which blocks the process until VM resolves the
+                        // fault. Half-wiring it (suspend without the D-20
+                        // SIGKMEM notification chain) would park the
+                        // process on RTS_VMREQUEST forever, so the
+                        // process stays schedulable for now: the retry
+                        // faults again and lands in the Segfault arm.
+                        // Boundary pinned by
+                        // test_process_misc_flags_delivermsg_first_fault_no_signal.
                         break;
                     }
                     crate::ipc::DeliverResult::Segfault => {
-                        // Second consecutive fault or out-of-bounds —
-                        // delivermsg cleared MF_DELIVERMSG. Caller must
-                        // route to cause_sig(SIGSEGV).
-                        // TODO: cause_sig(SIGSEGV) — future phase
-                        break;
+                        // D-45: second consecutive fault or out-of-bounds —
+                        // delivermsg cleared MF_DELIVERMSG; the receiver gets
+                        // SIGSEGV. C calls `cause_sig(rp->p_nr, SIGSEGV)`
+                        // inside delivermsg (proc.c:278); the Rust routing
+                        // lives here at the consumer because `ipc::delivermsg`
+                        // deliberately holds no table access (FIX-20 extraction
+                        // contract: `&mut KProcess` + `&dyn UserCopy` only).
+                        // cause_signal's external path sets RTS_SIGNALED |
+                        // RTS_SIG_PENDING, so the runnability re-check below
+                        // returns false — C's `goto not_runnable_pick_new`
+                        // (proc.c:413). No `break`: C falls through to that
+                        // re-check. SIGSEGV is lethal (SIGS_IS_LETHAL), so
+                        // every outcome converges on it: the external /
+                        // backup-promoted stop sets RTS_SIGNALED (re-check
+                        // fails), and a self-managing receiver without a
+                        // backup panics inside cause_signal before returning.
+                        #[cfg(not(test))]
+                        if let Some(p) = self.get(nr) {
+                            // C: printf("WARNING wrong user pointer 0x%08lx
+                            // from process %s / %d\n") — proc.c:273-277.
+                            // EarlyConsole is production-only: hosted tests
+                            // would hit UART port I/O without `iopl`
+                            // (same gate as `proc_stacktrace` callers).
+                            use minix_arch::EarlyConsole as _;
+                            use minix_plat::CurrentEarlyConsole as Console;
+                            Console::write_str("WARNING wrong user pointer 0x");
+                            Console::write_hex(p.p_delivermsg_vir.0);
+                            Console::write_str(" from process ");
+                            Console::write_str(p.p_name.as_str());
+                            Console::write_str(" / ");
+                            Console::write_hex(p.p_endpoint.0 as u64);
+                            Console::write_str("\n");
+                        }
+                        crate::syscall_signal::cause_signal(
+                            nr,
+                            crate::syscall_signal::SIGSEGV,
+                            self,
+                            priv_table,
+                        );
                     }
                 }
             } else if flags.contains(MiscFlagsBits::SC_DEFER) {
@@ -900,10 +946,21 @@ impl ProcessTable {
                 if !flags.contains(MiscFlagsBits::SC_ACTIVE) {
                     break;
                 }
-                // C: clears both MF_SC_TRACE and MF_SC_ACTIVE, then cause_sig
+                // D-43: C clears both MF_SC_TRACE and MF_SC_ACTIVE, then
+                // raises SIGTRAP to stop the process for its tracer
+                // (proc.c:392-398). No `break` after the signal: C falls
+                // through to the runnability re-check (proc.c:413). An
+                // externally managed process gets RTS_SIGNALED → the check
+                // returns false and the scheduler re-picks; a self-managing
+                // one is merely woken (SELF path) and, with both flags now
+                // clear, the while-condition ends the loop naturally.
                 if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE); }
-                // TODO: wire cause_sig() from signal module
-                break;
+                crate::syscall_signal::cause_signal(
+                    nr,
+                    crate::syscall_signal::SIGTRAP,
+                    self,
+                    priv_table,
+                );
             } else if flags.contains(MiscFlagsBits::SC_ACTIVE) {
                 if let Some(p) = self.get_mut(nr) { p.p_misc_flags.clear(MiscFlagsBits::SC_ACTIVE) }
                 break;
@@ -1777,6 +1834,230 @@ mod tests {
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
         assert!(proc.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
         assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SENDING));
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+    }
+
+    // ── D-43 / D-45: cause_sig routing inside process_misc_flags ──
+
+    /// UserCopy stub whose `copy_msg_to_user` always reports an
+    /// out-of-bounds user pointer. `ipc::delivermsg` maps that to the
+    /// fatal `DeliverResult::Segfault` on the *first* attempt (no
+    /// `MF_MSGFAILED` preset needed).
+    struct OutOfBoundsCopy;
+    impl crate::ipc::UserCopy for OutOfBoundsCopy {
+        fn copy_msg_from_user(
+            &self,
+            _src: minix_types::VirBytes,
+        ) -> Result<minix_types::Message, crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::OutOfBounds)
+        }
+        fn copy_msg_to_user(
+            &self,
+            _dst: minix_types::VirBytes,
+            _msg: &minix_types::Message,
+        ) -> Result<(), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::OutOfBounds)
+        }
+        fn read_senda_entry(
+            &self,
+            _table: minix_types::VirBytes,
+            _index: usize,
+        ) -> Result<(Endpoint, minix_types::Message, i32), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::OutOfBounds)
+        }
+        fn write_senda_result(
+            &self,
+            _table: minix_types::VirBytes,
+            _index: usize,
+            _result: i32,
+            _flags: i32,
+        ) -> Result<(), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::OutOfBounds)
+        }
+    }
+
+    /// UserCopy stub whose `copy_msg_to_user` always reports a page
+    /// fault — the retryable first-failure class (D-44's vm_suspend
+    /// routing, still deferred).
+    struct PageFaultCopy;
+    impl crate::ipc::UserCopy for PageFaultCopy {
+        fn copy_msg_from_user(
+            &self,
+            _src: minix_types::VirBytes,
+        ) -> Result<minix_types::Message, crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::PageFault)
+        }
+        fn copy_msg_to_user(
+            &self,
+            _dst: minix_types::VirBytes,
+            _msg: &minix_types::Message,
+        ) -> Result<(), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::PageFault)
+        }
+        fn read_senda_entry(
+            &self,
+            _table: minix_types::VirBytes,
+            _index: usize,
+        ) -> Result<(Endpoint, minix_types::Message, i32), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::PageFault)
+        }
+        fn write_senda_result(
+            &self,
+            _table: minix_types::VirBytes,
+            _index: usize,
+            _result: i32,
+            _flags: i32,
+        ) -> Result<(), crate::ipc::CopyError> {
+            Err(crate::ipc::CopyError::PageFault)
+        }
+    }
+
+    /// Shared fixture: `nr` is a user process with `priv_id = 0` whose
+    /// signal manager is the (occupied, listening) process at
+    /// `manager_nr` — the standard external-manager shape of the
+    /// sig_delay tests, so `cause_signal`'s external path delivers the
+    /// wake-up as a directly observable `DELIVERMSG` on the manager.
+    fn setup_signaled_process(
+        table: &mut ProcessTable,
+        priv_table: &mut crate::kpriv::PrivTable,
+        nr: ProcNr,
+        manager_nr: ProcNr,
+    ) {
+        {
+            let p = table.get_mut(nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(0);
+        }
+        let manager_ep = table.get(manager_nr).unwrap().p_endpoint;
+        priv_table.get_mut(0).unwrap().identity.s_proc_nr = Some(nr);
+        priv_table.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        {
+            let p = table.get_mut(manager_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.priv_id = Some(1);
+            p.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            p.p_getfrom_e = Endpoint::ANY;
+        }
+        priv_table.get_mut(1).unwrap().identity.s_proc_nr = Some(manager_nr);
+    }
+
+    /// D-45: a receiver whose message buffer is unusable (OutOfBounds →
+    /// fatal Segfault on first attempt) must be hit with SIGSEGV through
+    /// the standard kernel signal closed loop, and the scheduler must be
+    /// told to re-pick (return false). C: delivermsg → cause_sig(SIGSEGV)
+    /// (proc.c:278), then `!proc_is_runnable → not_runnable_pick_new`
+    /// (proc.c:413) — RTS_SIGNALED from cause_sig is what makes the
+    /// re-check fail.
+    #[test]
+    fn test_process_misc_flags_delivermsg_segfault_causes_sigsegv() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
+        table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+
+        assert!(!table.process_misc_flags(nr, &OutOfBoundsCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        // delivermsg cleared the delivery flag on the fatal failure...
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        // ...cause_signal recorded the signal in the pending bitmap...
+        assert!(proc.p_pending.contains(crate::syscall_signal::SIGSEGV as u8));
+        // ...and blocked the process for PM (external path).
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
+        // Manager wake-up observable as a direct notify delivery.
+        assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// D-45 boundary (D-44 stays deferred): the FIRST page fault must not
+    /// raise a signal — MF_MSGFAILED is armed, MF_DELIVERMSG survives for
+    /// the retry, and the process stays schedulable (`true`) because
+    /// vm_suspend(VMS_PAGEFAULT) is not wired yet. C blocks the process
+    /// here via vm_suspend (proc.c:281-282); the Rust gap is tracked as
+    /// todo D-44 and must not silently escalate to SIGSEGV.
+    #[test]
+    fn test_process_misc_flags_delivermsg_first_fault_no_signal() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
+        table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+
+        assert!(table.process_misc_flags(nr, &PageFaultCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::MSGFAILED));
+        assert!(proc.p_pending.is_empty());
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(!table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// D-43: SC_TRACE + SC_ACTIVE (leaving a syscall under trace) must
+    /// raise SIGTRAP, clear both flags, and report the process as
+    /// non-runnable. C: proc.c:392-398 — `cause_sig(proc_nr(p), SIGTRAP)`
+    /// blocks the traced process until its manager harvests it.
+    #[test]
+    fn test_process_misc_flags_sc_trace_causes_sigtrap() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
+        table.get_mut(nr).unwrap().p_misc_flags.set(
+            MiscFlagsBits::SC_TRACE | MiscFlagsBits::SC_ACTIVE,
+        );
+
+        assert!(!table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_TRACE));
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_ACTIVE));
+        assert!(proc.p_pending.contains(crate::syscall_signal::SIGTRAP as u8));
+        assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// D-43 negative branch: SC_TRACE without SC_ACTIVE means "not
+    /// leaving a syscall" — C breaks out of the loop without signalling
+    /// (proc.c:389-390). Flags survive for a later pass and the process
+    /// stays runnable.
+    #[test]
+    fn test_process_misc_flags_sc_trace_without_active_no_signal() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
+        table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::SC_TRACE);
+
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        assert!(proc.p_misc_flags.is_set(MiscFlagsBits::SC_TRACE));
+        assert!(proc.p_pending.is_empty());
+        assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+    }
+
+    /// SC_ACTIVE alone (no trace) is C's syscall-leave epilogue: clear
+    /// the flag, break, keep running — no signal, still runnable.
+    #[test]
+    fn test_process_misc_flags_sc_active_only_clears_and_runs() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let nr = ProcNr(0);
+        let manager_nr = ProcNr(1);
+        setup_signaled_process(&mut table, &mut priv_table, nr, manager_nr);
+        table.get_mut(nr).unwrap().p_misc_flags.set(MiscFlagsBits::SC_ACTIVE);
+
+        assert!(table.process_misc_flags(nr, &KernelUserCopy, &mut priv_table));
+
+        let proc = table.get(nr).unwrap();
+        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_ACTIVE));
+        assert!(proc.p_pending.is_empty());
         assert!(!proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
     }
 }

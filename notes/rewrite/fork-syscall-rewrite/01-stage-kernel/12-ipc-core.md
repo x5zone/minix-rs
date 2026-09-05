@@ -911,7 +911,7 @@ pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endp
 
 **位置**: os/kernel/src/ipc.rs:363
 
-**调用方**: `ProcessTable::process_misc_flags`（os/kernel/src/proc_table.rs:851-879），当 `MF_DELIVERMSG` 置位时调用。
+**调用方**: `ProcessTable::process_misc_flags`（os/kernel/src/proc_table.rs:816，DELIVERMSG 分支 :854-922），当 `MF_DELIVERMSG` 置位时调用。
 
 ```rust
 /// C: delivermsg(&p) — proc.c:263-294
@@ -937,7 +937,7 @@ pub fn delivermsg(
                 proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
                 DeliverResult::Segfault
             } else {
-                // 第 1 次失败 → vm_suspend。C: proc.c:282-283
+                // 第 1 次失败 → vm_suspend。C: proc.c:281-282
                 proc.p_misc_flags.set(MiscFlagsBits::MSGFAILED);
                 DeliverResult::PageFault
             }
@@ -953,8 +953,8 @@ pub fn delivermsg(
 
 **与 C 对齐**：
 - 成功 → 清 `MF_DELIVERMSG` + `MF_MSGFAILED`（C: `p->p_misc_flags &= ~(MF_DELIVERMSG | MF_MSGFAILED)`）
-- 第 1 次 `PageFault` → 置 `MF_MSGFAILED`，返回 `PageFault`（caller 路由 `vm_suspend(VMS_PAGEFAULT)`）
-- 第 2 次连续 `PageFault`（`MF_MSGFAILED` 已置）→ 清标志，返回 `Segfault`（caller 路由 `cause_sig(SIGSEGV)`）
+- 第 1 次 `PageFault` → 置 `MF_MSGFAILED`，返回 `PageFault`（C proc.c:281-282；caller 路由 `vm_suspend(VMS_PAGEFAULT)`——**仍未接线**，todo D-44，阻塞于 D-20 的 VM 通知链）
+- 第 2 次连续 `PageFault`（`MF_MSGFAILED` 已置）→ 清标志，返回 `Segfault`（C proc.c:278；caller 路由 `cause_sig(SIGSEGV)`——✅ 已接线，todo D-45，2026-09-05：`process_misc_flags` 在本分支就地调 `cause_signal`，外部路径置 `RTS_SIGNALED` 后由可运行性复查触发重调度，即 C proc.c:413 的 `goto not_runnable_pick_new`）
 - `OutOfBounds` → 直接 `Segfault`（非法地址，VM 无法映射）
 
 **`IpcEngine::deliver_message` 薄 wrapper**：保留以兼容已有 API，内部委托给自由函数：

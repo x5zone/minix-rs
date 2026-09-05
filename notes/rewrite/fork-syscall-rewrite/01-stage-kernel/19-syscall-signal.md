@@ -6,7 +6,7 @@
 > **覆盖**: SYS_KILL / SYS_GETKSIG / SYS_ENDKSIG / SYS_SIGSEND / SYS_SIGRETURN 五个系统调用，以及内核内部函数 `cause_sig`
 > **前置**: [11-scheduling-primitives.md](11-scheduling-primitives.md) (RTS_SIGNALED / RTS_SIG_PENDING), [14-exception-interrupt.md](14-exception-interrupt.md) (CPU 异常 → cause_sig), [16-smp.md](16-smp.md) (BKL), [22-privilege.md](22-privilege.md) (s_sig_mgr)
 
-> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:280-282）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。`SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径已于 2026-09-05 在 Rust 侧实现（§4.3/§4.7）；`sig_delay_done`（SIGSNDELAY）与 DIAGCTL SIGKMESS 通知仍 DEFERRED。
+> **范围说明**: 本快照的 minix3 源码不含 `do_sigctl.c` / `do_ksig.c` / `do_sighold.c`（SYS_SIGCTL / SYS_SIGHOLD 不在此版本），Rust 实现亦未覆盖。本文聚焦五个已实现的信号系统调用。信号常量均已定位：`SIGKSIG=74`（signal.h:274）、`SIGKSIGSM=73`（signal.h:273）、`SIGSNDELAY=70`（signal.h:264）、`SIGS_IS_LETHAL`（signal.h:280-282）、`SC_MAGIC=0xc0ffee1`（i386 signal.h:115，arch 相关）。`SIGS_IS_LETHAL` 的 backup 切换 / panic 子路径与 `sig_delay_done`（SIGSNDELAY）已于 2026-09-05 在 Rust 侧实现（§4.3/§4.7/§4.8）；DIAGCTL SIGKMESS 通知仍 DEFERRED。
 
 ---
 
@@ -777,6 +777,8 @@ pub trait SignalContext: Sized + Send + Sync {
 | SignalContext aarch64 impl | do_sigsend.c:91-110 | arch/arm64/signal.rs | ✅ 已实现 |
 | SignalContext riscv64 impl | — | arch/riscv64/signal.rs | ✅ 已实现（C 源码未实现，按 RISC-V ELF psABI 独立设计） |
 | sig_delay_done | system.c:454-464 | proc_table.rs `ProcessTable::sig_delay_done` | ✅ **已实现（2026-09-05，todo D-13）**：清 `MF_SIG_DELAY` + `cause_signal(SIGSNDELAY)`；双路接线见 §4.8 |
+| **SC_TRACE → SIGTRAP（调度循环追踪信号）** | proc.c:392-398 | proc_table.rs `process_misc_flags` `SC_TRACE` 分支 | ✅ **已实现（2026-09-05，todo D-43）**：清 `MF_SC_TRACE\|MF_SC_ACTIVE` 后 `cause_signal(SIGTRAP)` 就地路由；外部管理 → `RTS_SIGNALED` → `process_misc_flags` 返回 `false` 重调度（C proc.c:413），自管理（SELF 路径）仅唤醒、标志已清循环自然退出。设计决策见 [10-switch-to-user.md](10-switch-to-user.md) §3.3 |
+| **delivermsg Segfault → SIGSEGV（接收缓冲区致命失败）** | proc.c:271-278（delivermsg 内联） | proc_table.rs `process_misc_flags` `DeliverResult::Segfault` 分支 | ✅ **已实现（2026-09-05，todo D-45）**：`ipc::delivermsg` 保持无表访问（FIX-20 契约），`Segfault` 结果由消费侧 `process_misc_flags` 路由 `cause_signal(SIGSEGV)`；C 的 WARNING printf 以 `#[cfg(not(test))]` EarlyConsole 输出保留（同 proc_stacktrace gate）。首错 `PageFault` 分支（vm_suspend，todo D-44）仍 DEFERRED |
 | DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | do_diagctl.c:49-56 | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
 | FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:670（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
 | trap_style 校验 | do_sigsend.c:79-82 | arch/signal_context.rs `get_trap_style` | ✅ 已实现: `SignalContext::get_trap_style` + `arch_setcontext` |
