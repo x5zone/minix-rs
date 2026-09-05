@@ -361,7 +361,10 @@ todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 
 - **basic 位叠加由 R21 承接**：`fill_call_mask(..., FALSE)` →
   `CallMask::from_calls(既有掩码, SYS_BASIC_CALLS/VM_BASIC_CALLS, ...)`；
   `SYS_BASIC_CALLS`/`VM_BASIC_CALLS` 清单落位 minix-types（单一权威）。
-- `init_slot`/`inherit_service_defaults` 仍待 R20c（轮 9）。
+- `init_slot` 已实现（R20c，2026-09-06，service_create.rs）：DSRV 默认覆盖 → 域/PCI 门 →
+  per-lifetime 复位（含 C 字面量 -1 的 scheduler/sig_mgr 瞬态，manager.c:1786-1787）→ 委托
+  `edit_slot`。PCI ACL 载体 `RsPci` 补进 `PublicSlot`（rs.h:180，label/endpoint 由 11 填）。
+  `inherit_service_defaults`（manager.c:1303-1330，IMM_SF/IMM_F 合并）同轮落地。
 
 ---
 

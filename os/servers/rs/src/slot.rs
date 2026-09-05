@@ -15,7 +15,8 @@ use crate::privilege::{CallMask, IoRange, PrivFlags};
 use crate::sched::NR_SCHED_QUEUES;
 use crate::service_slot::{
     Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_SCRIPT_LEN, NR_DOMAIN, NR_IO_RANGE, NR_IRQ,
-    RS_MAX_LABEL_LEN, RS_NR_CONTROL, ServiceSlot, SlotId, SysFlags,
+    RS_MAX_LABEL_LEN, RS_NR_CONTROL, RS_NR_PCI_CLASS, RS_NR_PCI_DEVICE, RsPciClass, RsPciId,
+    ServiceSlot, SlotId, SysFlags,
 };
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno, SYS_BASIC_CALLS, VM_BASIC_CALLS};
@@ -28,14 +29,6 @@ pub const RSS_NR_IO: usize = 16;
 pub const RSS_IRQ_ALL: i32 = RSS_NR_IRQ as i32 + 1;
 /// C: `RSS_IO_ALL` — rs.h:28.
 pub const RSS_IO_ALL: i32 = RSS_NR_IO as i32 + 1;
-/// C: `RS_NR_PCI_DEVICE` — rs.h:56.
-pub const RS_NR_PCI_DEVICE: usize = 32;
-/// C: `RS_NR_PCI_CLASS` — rs.h:57.
-pub const RS_NR_PCI_CLASS: usize = 4;
-/// C: `NO_SUB_VID` — rs.h:79.
-pub const NO_SUB_VID: u16 = 0xffff;
-/// C: `NO_SUB_DID` — rs.h:80.
-pub const NO_SUB_DID: u16 = 0xffff;
 /// C: `RS_CPU_DEFAULT` — rs.h:63.
 pub const RS_CPU_DEFAULT: i32 = -1;
 /// C: `RS_CPU_BSP` — rs.h:64.
@@ -200,22 +193,6 @@ pub struct RsStart {
     pub nr_domain: i32,
     /// C: `rss_domain` — rs.h:143.
     pub domain: [i32; NR_DOMAIN],
-}
-
-/// A PCI device-id ACL entry. C: `struct rs_pci_id` — rs.h:73-78.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RsPciId {
-    pub vid: u16,
-    pub did: u16,
-    pub sub_vid: u16,
-    pub sub_did: u16,
-}
-
-/// A PCI class ACL entry. C: `struct rs_pci_class` — rs.h:82-85.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RsPciClass {
-    pub pciclass: u32,
-    pub mask: u32,
 }
 
 /// The live-update state-data request spec. C: `struct rs_state_data` —
@@ -631,9 +608,9 @@ mod tests {
     use super::*;
     use crate::boot::Machine;
     use crate::exec::has_shared_exec;
-    use crate::privilege::{NULL_C, Privilege};
+    use crate::privilege::NULL_C;
     use crate::process_table::RProcTable;
-    use crate::service_slot::{RFlags, RS_MAX_LABEL_LEN};
+    use crate::service_slot::RFlags;
     use alloc::sync::Arc;
     use minix_types::SYS_EXIT;
 

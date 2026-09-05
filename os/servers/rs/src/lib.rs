@@ -95,17 +95,16 @@ pub use self_lifecycle::{
     srv_update_action,
 };
 pub use service_create::{
-    activate_service, check_create_preconditions, clone_slot, link_replica, mark_child_created,
-    rebuild_args, swap_index, swap_slot,
+    activate_service, check_create_preconditions, clone_slot, inherit_service_defaults, init_slot,
+    link_replica, mark_child_created, rebuild_args, swap_index, swap_slot,
 };
 pub use service_slot::{
     ARGV_ELEMENTS, IMM_SF, Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_NR_ARGS, MAX_SCRIPT_LEN,
     NR_DOMAIN, NR_IO_RANGE, NR_IRQ, NR_MEM_RANGE, PublicSlot, RFlags, RS_MAX_LABEL_LEN,
-    RS_NR_CONTROL, SRV_SF, SRVR_SF, ServiceSlot, SlotId, SlotMutations, SysFlags, VM_SF,
+    RS_NR_CONTROL, RS_NR_PCI_CLASS, RS_NR_PCI_DEVICE, RsPciClass, RsPciId, SRV_SF, SRVR_SF,
+    ServiceSlot, SlotId, SlotMutations, SysFlags, VM_SF,
 };
-pub use slot::{
-    RsPciClass, RsPciId, RsStateData, RsStart, RssFlags, build_cmd_dep, check_request, edit_slot,
-};
+pub use slot::{RsStart, RsStateData, RssFlags, build_cmd_dep, check_request, edit_slot};
 pub use state_data::{
     ANY_SYS, ANY_TSK, ANY_USR, IPCF_MAX_ELEMENTS, IpcFilterEl, IpcfFlags, SourceIpcFilterEl,
     VM_RS_UPDATE, ipcf_els_buff_size, num_ipc_filter_blocks, parse_filter_el, parse_label,

@@ -14,7 +14,9 @@
 
 use crate::privilege::PrivFlags;
 use crate::process_table::RProcTable;
-use crate::service_slot::{RFlags, ServiceSlot, SlotId, SysFlags};
+use crate::service_slot::{
+    DSRV_SF, NR_DOMAIN, RFlags, RS_NR_PCI_CLASS, RS_NR_PCI_DEVICE, ServiceSlot, SlotId, SysFlags,
+};
 use minix_types::{Clock, ERESTART, Endpoint, Errno, Pid};
 
 /// Checks `create_service`'s dependency preconditions.
@@ -240,6 +242,114 @@ pub fn swap_slot(table: &mut RProcTable, src: SlotId, dst: SlotId) -> (SlotId, S
 
     // 6. Adjust the caller's pointers (manager.c:1928-1929).
     (dst, src)
+}
+
+/// Initializes a slot as requested by the client, then delegates the
+/// editable settings to [`crate::slot::edit_slot`].
+///
+/// C: `init_slot` — manager.c:1708-1795. Every dynamically created service
+/// starts from the `DSRV_*` defaults (sys/priv/init flags, trap mask,
+/// backup signal manager — priv.h:52-63, const.h:67), passes the domain and
+/// PCI-ACL gates, gets its per-lifetime counters reset, and only then runs
+/// `edit_slot` so request fields override the defaults. `source`/the IPC
+/// copies are pure here (see `edit_slot`'s shape note, R20b).
+pub fn init_slot(
+    slot: &mut ServiceSlot,
+    rs_start: &crate::slot::RsStart,
+    table: &RProcTable,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), minix_types::Errno>,
+) -> Result<(), minix_types::Errno> {
+    // DSRV defaults (manager.c:1721-1727). `sys_flags` is *overwritten* —
+    // a dynamic service starts with a clean public flag set.
+    slot.pub_.sys_flags = DSRV_SF;
+    slot.priv_.flags = crate::privilege::DSRV_F;
+    slot.priv_.init_flags = crate::privilege::DSRV_I;
+    slot.priv_.trap_mask = crate::privilege::TrapMask::DSRV_T;
+    slot.priv_.bak_sig_mgr = Endpoint::NONE;
+
+    // Initialize uid (manager.c:1730).
+    slot.uid = rs_start.uid;
+
+    // Device driver settings (manager.c:1732-1742): domain count gate, then
+    // major/dev_nr, domains, devman id.
+    if rs_start.nr_domain < 0 || rs_start.nr_domain > NR_DOMAIN as i32 {
+        return Err(Errno::EINVAL);
+    }
+    slot.pub_.dev_nr = rs_start.major as u32;
+    slot.pub_.nr_domain = rs_start.nr_domain as u8;
+    for i in 0..rs_start.nr_domain as usize {
+        slot.pub_.domain[i] = rs_start.domain[i];
+    }
+    slot.pub_.devman_id = Some(rs_start.devman_id);
+
+    // PCI settings (manager.c:1744-1774): count gates, then the ACL tables
+    // on the public half.
+    if rs_start.nr_pci_id > RS_NR_PCI_DEVICE as i32 {
+        return Err(Errno::EINVAL);
+    }
+    slot.pub_.pci_acl.nr_device = rs_start.nr_pci_id;
+    for i in 0..rs_start.nr_pci_id as usize {
+        slot.pub_.pci_acl.device[i] = rs_start.pci_id[i];
+    }
+    if rs_start.nr_pci_class > RS_NR_PCI_CLASS as i32 {
+        return Err(Errno::EINVAL);
+    }
+    slot.pub_.pci_acl.nr_class = rs_start.nr_pci_class;
+    for i in 0..rs_start.nr_pci_class as usize {
+        slot.pub_.pci_acl.class[i] = rs_start.pci_class[i];
+    }
+
+    // Initialize per-lifetime fields (manager.c:1776-1791). Note the C
+    // literal `-1` for scheduler/sig_mgr (manager.c:1786-1787) is *not* the
+    // `NONE` endpoint (endpoint.h:55) — it is a transient "unset" state the
+    // immediately-following `edit_slot` sees as schedulable; keep it verbatim.
+    slot.asr_count = 0; // no ASR updates yet
+    slot.restarts = 0; // no restarts yet
+    slot.old_rp = None; // no old version yet
+    slot.new_rp = None; // no new version yet
+    slot.prev_rp = None; // no prev replica yet
+    slot.next_rp = None; // no next replica yet
+    slot.exec = None; // no in-memory copy yet
+    slot.script[0] = 0; // no recovery script yet
+    slot.pub_.label = crate::service_slot::Label::empty(); // no label yet
+    slot.scheduler = Endpoint(-1); // no scheduler yet (manager.c:1786)
+    slot.priv_.sig_mgr = Endpoint(-1); // no signal manager yet (manager.c:1787)
+    slot.map_prealloc_addr = 0; // no preallocated memory
+    slot.map_prealloc_len = 0;
+    slot.init_err = ERESTART; // default init error (manager.c:1792)
+
+    // Initialize editable slot settings (manager.c:1793).
+    crate::slot::edit_slot(slot, rs_start, table, read_exec)
+}
+
+/// Copies the immutable service properties from a template slot.
+///
+/// C: `inherit_service_defaults` — manager.c:1303-1330 (called from
+/// `do_update` for RS_UP on an existing service, 13/16). Device, domain and
+/// PCI settings cannot change; only the `IMM_SF`/`IMM_F` bits are inherited
+/// from the flags; the trap mask is copied wholesale (R20c — the merge
+/// function the IMM_SF/IMM_F constants were waiting for).
+pub fn inherit_service_defaults(def_slot: &ServiceSlot, slot: &mut ServiceSlot) {
+    // Device, domain, and PCI settings. These properties cannot change
+    // (manager.c:1313-1319).
+    slot.pub_.dev_nr = def_slot.pub_.dev_nr;
+    slot.pub_.nr_domain = def_slot.pub_.nr_domain;
+    slot.pub_.domain = def_slot.pub_.domain;
+    slot.pub_.pci_acl = def_slot.pub_.pci_acl.clone();
+
+    // Immutable system and privilege flags (manager.c:1322-1325): clear the
+    // immutable bits, then OR in the template's.
+    slot.pub_.sys_flags.remove(crate::service_slot::IMM_SF);
+    slot.pub_
+        .sys_flags
+        .insert(def_slot.pub_.sys_flags & crate::service_slot::IMM_SF);
+    slot.priv_.flags.remove(crate::privilege::IMM_F);
+    slot.priv_
+        .flags
+        .insert(def_slot.priv_.flags & crate::privilege::IMM_F);
+
+    // Allowed traps. They cannot change (manager.c:1328).
+    slot.priv_.trap_mask = def_slot.priv_.trap_mask;
 }
 
 #[cfg(test)]
@@ -520,5 +630,118 @@ mod tests {
         assert_eq!(t.endpoint_slot(Endpoint::VFS), Some(a));
         // The NONE endpoint stays unindexed.
         assert_eq!(t.endpoint_slot(Endpoint::NONE), None);
+    }
+
+    #[test]
+    fn test_init_slot_dsrv_defaults_resets_and_delegates() {
+        // C: manager.c:1708-1795 — DSRV defaults, per-lifetime resets, then
+        // the editable pipeline (R20c).
+        let mut s = ServiceSlot::vacant();
+        // Pre-set values that the resets must clear.
+        s.restarts = 9;
+        s.init_err = 0;
+        s.pub_.label = Label::from_bytes(b"stale");
+        s.pub_.sys_flags.insert(SysFlags::CORE_SRV); // must be overwritten away
+
+        let mut r = crate::slot::RsStart::default();
+        r.uid = 42;
+        r.major = 17;
+        r.devman_id = 3;
+        r.nr_domain = 2;
+        r.domain[0] = 1;
+        r.domain[1] = 2;
+        r.ipclen = 4;
+        r.ipc_list[..4].copy_from_slice(b"IPC1");
+        r.cmdlen = 9;
+        r.cmd[..9].copy_from_slice(b"/sbin/tty");
+        r.progname = Label::from_bytes(b"tty");
+
+        let table = RProcTable::new();
+        assert!(init_slot(&mut s, &r, &table, &mut |_| Ok(())).is_ok());
+
+        // DSRV defaults (manager.c:1721-1727).
+        assert_eq!(s.pub_.sys_flags, SysFlags::empty()); // DSRV_SF overwrites CORE_SRV
+        assert_eq!(s.priv_.trap_mask, crate::privilege::TrapMask::DSRV_T);
+        assert_eq!(s.priv_.bak_sig_mgr, Endpoint::NONE);
+        assert_eq!(s.uid, 42);
+        // Device settings (manager.c:1738-1742).
+        assert_eq!(s.pub_.dev_nr, 17);
+        assert_eq!(s.pub_.nr_domain, 2);
+        assert_eq!(s.pub_.domain[0], 1);
+        assert_eq!(s.pub_.devman_id, Some(3));
+        // Resets (manager.c:1776-1792). scheduler/sig_mgr take the C literal
+        // -1 here but are then overwritten by the delegated edit_slot —
+        // asserted below against the request values instead.
+        assert_eq!(s.restarts, 0);
+        assert_eq!(s.asr_count, 0);
+        assert_eq!(s.init_err, ERESTART);
+        assert_eq!(s.exec, None);
+        // Delegated editable settings: cmd + label fallback landed.
+        assert_eq!(&s.cmd[..9], b"/sbin/tty");
+        assert_eq!(s.pub_.label, Label::from_bytes(b"tty"));
+        // The transient -1 was replaced by edit_slot's scheduling update and
+        // the signal-manager write (default request values).
+        assert_eq!(s.scheduler, r.scheduler);
+        assert_eq!(s.priv_.sig_mgr, r.sigmgr);
+    }
+
+    #[test]
+    fn test_init_slot_domain_pci_gates() {
+        // C: manager.c:1732-1774 — domain/PCI count gates → EINVAL.
+        let table = RProcTable::new();
+        let mut r = crate::slot::RsStart::default();
+        r.nr_domain = -1;
+        assert_eq!(
+            init_slot(&mut ServiceSlot::vacant(), &r, &table, &mut |_| Ok(())),
+            Err(Errno::EINVAL)
+        );
+        r.nr_domain = NR_DOMAIN as i32 + 1;
+        assert_eq!(
+            init_slot(&mut ServiceSlot::vacant(), &r, &table, &mut |_| Ok(())),
+            Err(Errno::EINVAL)
+        );
+        r.nr_domain = 0;
+        r.nr_pci_id = RS_NR_PCI_DEVICE as i32 + 1;
+        assert_eq!(
+            init_slot(&mut ServiceSlot::vacant(), &r, &table, &mut |_| Ok(())),
+            Err(Errno::EINVAL)
+        );
+        r.nr_pci_id = 0;
+        r.nr_pci_class = RS_NR_PCI_CLASS as i32 + 1;
+        assert_eq!(
+            init_slot(&mut ServiceSlot::vacant(), &r, &table, &mut |_| Ok(())),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_inherit_service_defaults_immutable_only() {
+        // C: manager.c:1303-1330 — device/domain/PCI copied wholesale, only
+        // the IMM_SF/IMM_F bits inherited from the flags, traps wholesale.
+        let template = ServiceSlot::vacant();
+        let mut def = template.clone();
+        def.pub_.dev_nr = 17;
+        def.pub_.nr_domain = 1;
+        def.pub_.domain[0] = 5;
+        def.pub_.pci_acl.nr_device = 2;
+        // CORE_SRV ∈ IMM_SF (rs.h:205-206) → inherited; USE_SCRIPT ∉ → not.
+        def.pub_.sys_flags.insert(SysFlags::CORE_SRV);
+        def.pub_.sys_flags.insert(SysFlags::USE_SCRIPT);
+        def.priv_.flags.insert(crate::privilege::IMM_F); // IMM_F → inherited
+        def.priv_.flags.insert(PrivFlags::CHECK_IRQ); // ∉ IMM_F → not
+        def.priv_.trap_mask = crate::privilege::TrapMask::SENDNB;
+
+        let mut s = ServiceSlot::vacant();
+        s.pub_.sys_flags.insert(SysFlags::USE_SCRIPT); // target's own flag survives
+        inherit_service_defaults(&def, &mut s);
+        assert_eq!(s.pub_.dev_nr, 17);
+        assert_eq!(s.pub_.nr_domain, 1);
+        assert_eq!(s.pub_.domain[0], 5);
+        assert_eq!(s.pub_.pci_acl.nr_device, 2);
+        assert!(s.pub_.sys_flags.contains(SysFlags::CORE_SRV)); // immutable inherited
+        assert!(s.pub_.sys_flags.contains(SysFlags::USE_SCRIPT)); // own flag kept
+        assert!(!s.priv_.flags.contains(PrivFlags::CHECK_IRQ)); // non-immutable not inherited
+        assert!(s.priv_.flags.contains(crate::privilege::IMM_F)); // immutable inherited
+        assert_eq!(s.priv_.trap_mask, crate::privilege::TrapMask::SENDNB);
     }
 }

@@ -1975,7 +1975,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 
 | ID | 主题 | 严重度 | 状态 | 归属 |
 |----|------|--------|------|------|
-| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | 🔶 | 载体+edit_slot 已全（Fix #46/#48）；init_slot/inherit=轮 9 |
+| R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
@@ -2249,3 +2249,25 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   （切片长度、哨兵值误用为越界值、label 只置一次语义误判）——Gate E/测试自查记录。
   clippy/fmt 零输出；T7 PASS。文档同步：08 §3.1 模型块、§3.4 重写（DEFERRED→已实现 +
   注入缝形态）、§4 模块结构、§5 表 14→26 项。
+
+### ✅ Fix #49 — R20c（P1-design-missing 收尾）：`init_slot` + `inherit_service_defaults` 实现
+- **File**：`os/servers/rs/src/service_create.rs`（init_slot + inherit_service_defaults + 3 测试）、
+  `service_slot.rs`（`RsPci` ACL 载体 + PublicSlot.pci_acl + PCI 常量迁入）、`slot.rs`
+  （RsPciId/RsPciClass 迁出，消除重复）、`lib.rs`；文档 08 §3.4
+- **Before**：`init_slot`（manager.c:1708-1795）整体缺失——DSRV 默认覆盖、域/PCI 校验门、
+  per-lifetime 复位（init_err=ERESTART、四链清空、scheduler/sig_mgr=-1 瞬态）无处落地；
+  `inherit_service_defaults`（manager.c:1303-1330，IMM_SF/IMM_F 合并）缺失；`PublicSlot`
+  无 `pci_acl` 载体（publish.rs 恒 false stub 的根因之一）。
+- **After**：`init_slot(slot, rs_start, table, read_exec)`——DSRV 五项默认 → uid → 域门 →
+  dev_nr/domains/devman_id → PCI 双门+ACL 拷入 → 复位块 → 委托 `edit_slot`。**两个忠实性
+  细节**：(1) C 的 scheduler/sig_mgr 复位值是字面量 `-1`（manager.c:1786-1787），**不是**
+  `NONE` 端点（endpoint.h:55 的 NONE = SLOT_TOP-2）——瞬态值紧接的 edit_slot 视为可调度，
+  保持原样并注释；(2) `sys_flags = DSRV_SF` 是整体覆写（清掉 CORE_SRV 等残留），非 OR。
+  `inherit_service_defaults(def, slot)`：设备/域/PCI 整体拷贝、flags 只合并 IMM_SF/IMM_F 位
+  （clear+or）、trap_mask 整体拷贝。**配套**：`RsPci`（rs.h:154-163）载体落位
+  service_slot.rs，`RsPciId`/`RsPciClass`/PCI 常量随之迁入（消除与 slot.rs 的临时重复）。
+- **Verified**：`cargo test -p minix-rs` = **237 passed**（新增
+  `test_init_slot_dsrv_defaults_resets_and_delegates`——DSRV 覆盖/复位/委托链全断言、
+  `test_init_slot_domain_pci_gates`——四道 EINVAL 门、
+  `test_inherit_service_defaults_immutable_only`——不可变位继承 + 自有位保留 +
+  非不可变位不继承）；clippy/fmt 零输出；T7 PASS。文档同步：08 §3.4 收尾。

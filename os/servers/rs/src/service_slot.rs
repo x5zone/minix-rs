@@ -28,6 +28,14 @@ pub const MAX_NR_ARGS: usize = 10;
 pub const MAX_IPC_LIST: usize = 256;
 /// Number of control entries. C: `RS_NR_CONTROL` — rs.h:55.
 pub const RS_NR_CONTROL: usize = 8;
+/// PCI device-id ACL entries. C: `RS_NR_PCI_DEVICE` — rs.h:56.
+pub const RS_NR_PCI_DEVICE: usize = 32;
+/// PCI class ACL entries. C: `RS_NR_PCI_CLASS` — rs.h:57.
+pub const RS_NR_PCI_CLASS: usize = 4;
+/// Subvendor id absent marker. C: `NO_SUB_VID` — rs.h:79.
+pub const NO_SUB_VID: u16 = 0xffff;
+/// Subdevice id absent marker. C: `NO_SUB_DID` — rs.h:80.
+pub const NO_SUB_DID: u16 = 0xffff;
 /// Allowed I/O port ranges. C: `NR_IO_RANGE` — config.h:52.
 pub const NR_IO_RANGE: usize = 64;
 /// Allowed memory ranges. C: `NR_MEM_RANGE` — config.h:55.
@@ -295,6 +303,51 @@ pub use crate::privilege::IoRange;
 
 /// The public half of a service slot (`rprocpub`), merged into `ServiceSlot`.
 ///
+/// A PCI device-id ACL entry. C: `struct rs_pci_id` — rs.h:73-78.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RsPciId {
+    pub vid: u16,
+    pub did: u16,
+    pub sub_vid: u16,
+    pub sub_did: u16,
+}
+
+/// A PCI class ACL entry. C: `struct rs_pci_class` — rs.h:82-85.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RsPciClass {
+    pub pciclass: u32,
+    pub mask: u32,
+}
+
+/// PCI ACL information for one service. C: `struct rs_pci` — rs.h:154-163;
+/// carried by `rprocpub.pci_acl` (rs.h:180). `label`/`endpoint` are filled
+/// at publish time (11); the device/class tables are `init_slot` inputs
+/// (manager.c:1745-1774, R20c). `NO_SUB_VID`/`NO_SUB_DID` (rs.h:79-80,
+/// slot.rs) mark absent subdevice ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RsPci {
+    pub label: Label,
+    pub endpoint: i32,
+    pub nr_device: i32,
+    pub device: [RsPciId; RS_NR_PCI_DEVICE],
+    pub nr_class: i32,
+    pub class: [RsPciClass; RS_NR_PCI_CLASS],
+}
+
+impl RsPci {
+    /// Empty ACL (no devices, no classes).
+    pub fn vacant() -> Self {
+        Self {
+            label: Label::empty(),
+            endpoint: 0,
+            nr_device: 0,
+            device: [RsPciId::default(); RS_NR_PCI_DEVICE],
+            nr_class: 0,
+            class: [RsPciClass::default(); RS_NR_PCI_CLASS],
+        }
+    }
+}
+
 /// C: `struct rprocpub` — `minix3/minix/include/minix/rs.h:165-183`.
 /// Fields a service exposes to other services (via the `rproctab_gid` grant).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +375,8 @@ pub struct PublicSlot {
     /// VM call mask. C: `bitchunk_t vm_call_mask[VM_CALL_MASK_SIZE]` — rs.h:179
     /// (filled at boot Step 1 — main.c:317; semantics 03/05).
     pub vm_call_mask: crate::privilege::CallMask,
+    /// PCI ACL. C: `pci_acl` — rs.h:180 (`struct rs_pci`).
+    pub pci_acl: RsPci,
     /// Device manager id. C: `devman_id` — rs.h:182 (populated by 11).
     pub devman_id: Option<i32>,
 }
@@ -341,6 +396,7 @@ impl PublicSlot {
             label: Label::empty(),
             proc_name: Label::empty(),
             vm_call_mask: crate::privilege::CallMask::empty(),
+            pci_acl: RsPci::vacant(),
             devman_id: None,
         }
     }
