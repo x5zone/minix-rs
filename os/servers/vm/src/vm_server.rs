@@ -567,10 +567,12 @@ impl VmServer {
     /// (alloc.c:242-279, cache.c:288).
     ///
     /// Rust design: the reserve queues are eliminated by the Direct Map
-    /// (`[ARCH: A-1]`, 06-page-allocator.md §3.3), so the replenishment body
-    /// is DEFERRED to 24-page-cache (cache reclaim + retry). Until then the
-    /// counter is cleared so the next failure re-arms the hook — the loop
-    /// always gets a fresh replenishment attempt per pressure episode.
+    /// (`[ARCH: A-1]`, 06-page-allocator.md §3.3). The cache-reclaim half is
+    /// implemented below as a bounded batch (`page_cache.free_pages`); what
+    /// remains DEFERRED to 24-page-cache is retrying the failed allocation
+    /// after the reclaim. Until then the counter is cleared so the next
+    /// failure re-arms the hook — the loop always gets a fresh replenishment
+    /// attempt per pressure episode.
     fn alloc_cycle(&mut self) {
         debug_assert!(self.missing_spares > 0);
         // C: alloc_mem → cache_freepages(1024) 重试（alloc.c:242-279，main.c:118-119）。

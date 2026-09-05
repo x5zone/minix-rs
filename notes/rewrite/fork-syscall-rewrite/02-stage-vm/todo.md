@@ -963,7 +963,7 @@ Coverage Summary for vm:
 
 **验证**：`cargo clippy -p minix-vm --lib` 与 `--all-features` 均回到 0 warnings。
 
-#### V11-P2-4 过时注释 4 处：X86_64Paging 已实现而注释仍称 todo!()
+#### ✅ V11-P2-4 过时注释 4 处：X86_64Paging 已实现而注释仍称 todo!()——已修复 2026-09-06（见 §15 Fix #20）
 
 **问题**：arch 侧 `X86_64Paging::new`（paging.rs:464-485，经 `pt_alloc::alloc_pt_page` 分配 PML4 并清零）与 `destroy`（:487-497）均已实现，全文件 grep `todo!` 零命中；但 VM 侧 4 处注释仍以"未实现"为前提写理由：
 
@@ -1124,3 +1124,11 @@ Coverage Summary for vm:
 - **After**: 4 名修正为实际名；setcache 行补 NO_DEV 守卫归属说明（由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复）；dispatcher 13 行 / vm_server 11 行行号逐一按 `grep -n "fn test_"` 刷新；补录 `test_decode_rs_memctl_unknown_req_einval / all_valid_codes`（:2121/:2131）；§5.4 更新为 448 passed（2026-09-06）+ clippy 1/7 warning 回归事实（指向 V11-P2-3）
 - **Verified**: 刷新后表中 36 个测试名逐一 `grep -c "fn {name}("` 全部恰好 1 次命中；旧名 4 个在文档中 0 残留；`cargo test -p minix-vm --lib` → 448 passed / 0 failed
 - **Docs**: 本条即文档修复，无代码改动
+
+### ✅ Fix #20: V11-P2-4 — 过时注释改写（X86_64Paging 已实现，注释按真实依赖理由重写）
+
+- **Files**: `os/servers/vm/src/brk.rs`（:235-238）、`os/servers/vm/src/vmproc/vmproc.rs`（:188-189）、`os/servers/vm/src/vmproc/vmproc_handle.rs`（:352-360）、`os/servers/vm/src/region/mod.rs`（:20-23）、`os/servers/vm/src/vm_server.rs`（`alloc_cycle` 文档注释 :569-575，§14.4 登记的附带微调）
+- **Before**: 4 处注释以 "X86_64Paging::new()/destroy() is todo!()" / "methods are not yet implemented" 为由解释测试桩（实际 `os/arch/src/x86_64/paging.rs:464-497` 的 new/destroy 均已实现）；`alloc_cycle` 文档注释仍称 "replenishment body is DEFERRED"（回收半边已落地）
+- **After**: 按真实依赖理由改写——测试桩的存在原因是"宿主单元测试无 VM direct-map 窗口、未注册 pt_alloc"；`vmproc.rs` 的 destroy 跳过原因是"测试桩无真实页表可清零"；`region/mod.rs` 说明测试调用方传 `None` 的机制与生产传 `pt` 的对照；三处测试桩注释统一指向退出条件（可注入 Paging，V11-P2-1）；`alloc_cycle` 注释改为"回收半边已实现（有界批回收），重试半边仍 DEFERRED 归 24-page-cache"
+- **Verified**: `rg "todo!\(\)" os/servers/vm/src` → 0；`rg "not yet implemented" region/ brk.rs vmproc/` → 0；`cargo test -p minix-vm --lib` → 448 passed；clippy 默认/all-features 警告数与改动前持平（1/7，无新增）
+- **Docs**: 注释即文档载体；NN-*.md 无引用这些注释文本（grep 核实），无需同步

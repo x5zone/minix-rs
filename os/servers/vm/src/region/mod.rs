@@ -18,8 +18,10 @@ use minix_types::VirBytes;
 /// Free all pages in a region, unmapping them from the page table and
 /// releasing physical frames.
 ///
-/// In test builds, page table operations are skipped since X86_64Paging
-/// methods are not yet implemented.
+/// In test builds, callers pass `page_table = None` (the zeroed test stub
+/// table has no real storage behind it), so only the physical-frame release
+/// runs; unmap is exercised once a test-injectable Paging implementation
+/// lands (02-stage-vm todo V11-P2-1).
 pub(crate) fn free_region_pages(
     mut region: VirRegion,
     page_table: Option<&mut crate::pagetable::PageTable>,

@@ -185,7 +185,8 @@ impl VmProc {
         if self.vm_pt_initialized {
             // SAFETY: vm_pt_initialized is true, so vm_pt was previously initialized
             // by init_page_table(). No concurrent access (single-threaded VM).
-            // In test builds, skip destroy() since X86_64Paging::destroy() is todo!().
+            // In test builds vm_pt is the zeroed stub (no real page table
+            // behind it), so destroy() has nothing valid to zero — skip it.
             #[cfg(not(test))]
             unsafe {
                 self.vm_pt.assume_init_mut().destroy();

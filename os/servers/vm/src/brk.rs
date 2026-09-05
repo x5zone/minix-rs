@@ -232,8 +232,10 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // In test builds, init_page_table() creates a stub page table
-        // (X86_64Paging::new() is todo!(), so a zero-initialized stub is used).
+        // In test builds, init_page_table() writes a zeroed stub page table:
+        // unit tests have no VM direct-map window nor a registered pt_alloc,
+        // so the real `<PageTable as Paging>::new()` cannot run here yet
+        // (test-injectable Paging: 02-stage-vm todo V11-P2-1).
         active.init_page_table().unwrap();
         active.init_regions();
         active.set_region_top(VirBytes(0x4000_0000));
