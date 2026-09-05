@@ -279,10 +279,10 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 
 > `os/kernel/src/syscall.rs`（line 1681）—— `dispatch_abort` 的 `panic!("MINIX will now be shut down ... (SYS_ABORT from endpoint {:?}...)")`
 
-**与 C `panic` 的差异**：
-- C `panic` 打印 `kernel panic:` 前缀 + stacktrace + `minix_shutdown`——Rust `panic!` 由 `#[panic_handler]` 处理，当前只 halt-loop（无消息打印）
+**与 C `panic` 的差异**（D-48 更新，2026-09-06）：
+- C `panic` 打印 `kernel panic:` 前缀 + stacktrace + `minix_shutdown`——Rust `#[panic_handler]`（minix-rt）支持诊断 hook 委托：kernel 经 `register_panic_diagnostic()` 注册 `kernel_panic_diagnostic` 渲染器（`kernel panic: ` + 消息 + `kernel on CPU %d: ` + `util_stacktrace()`，EarlyConsole）；hook 槽位于 `minix-types::diagnostic`（依赖方向 kernel → minix-types ← minix-rt）；未注册回退 stage-1 SpinSink。`minix_shutdown` 仍 DEFERRED（零基础）
 - C `ARE_PANICING` 重入保护由 halt-loop 实现天然保证（见 §3.1）
-- C `util_stacktrace()` 已实现（D-47，`util_stacktrace()` 内核自回溯）；`PanicInfo` location 与栈展开的**接线**在 panic handler 侧（D-48）
+- C `util_stacktrace()` 已实现（D-47，`util_stacktrace()` 内核自回溯），panic 路径接线已由 D-48 完成
 
 ### 4.2 Rust kputc / log 接入
 
@@ -380,10 +380,10 @@ fn init(&mut self) {
 
 | C 行为 | Rust 当前状态 | 未来计划 |
 |--------|-------------|---------|
-| `printf("kernel panic: " + fmt)` | ❌ 不打印消息 | `minix_sys::write(STDERR, buf)`（见 `minix-rt` 文档注释） |
+| `printf("kernel panic: " + fmt)` | ✅ D-48：hook 注册后由 `kernel_panic_diagnostic` 经 EarlyConsole 打印（未注册回退 stage-1 sink） | — |
 | `util_stacktrace()` | ✅ 已实现（D-47：`StacktraceArch::current_frame_pointer` + `walk_frames_from` + 内核 Direct Map 直读；x86_64 only，C 同为 i386 only） | panic handler 接线（D-48） |
-| `minix_shutdown(0)` | ❌ halt-loop | 待 shutdown 协议 |
-| `printf("kernel on CPU %d: ")` | ❌ 不打印 | 随 panic 消息一起实现 |
+| `minix_shutdown(0)` | ❌ halt-loop | 待 shutdown 协议（**DEFERRED**，零 Rust 基础） |
+| `printf("kernel on CPU %d: ")` | ✅ D-48（单 CPU = BSP 常量；per-CPU 随 D-40） | — |
 
 ### 6.4 与其他文档的关系
 

@@ -284,7 +284,7 @@ mod global_tests {
 /// 1. Spin after formatting (current step; observable behavior unchanged).
 /// 2. Route the sink through the kernel diagnostic channel.
 /// 3. Terminate through the process manager after emitting.
-#[cfg(all(not(test), not(feature = "std")))]
+#[cfg(all(not(test), not(feature = "std"), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     use core::fmt::Write as _;
@@ -324,11 +324,89 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = write!(writer, "{}\n", info.message());
     let length = writer.length;
-    // Emit through the sink, then stop. The default sink never returns;
-    // the loop below is unreachable insurance for the type checker.
-    let mut sink = diag::SpinSink;
-    diag::DiagnosticSink::emit(&mut sink, &buffer[..length]);
+    // Stage 2 (A-8 step): a registered diagnostic hook takes over ALL
+    // rendering. The kernel hook (D-48) prints the C-panic format —
+    // "kernel panic: " + message + "kernel on CPU %d: " + backtrace —
+    // through the kernel EarlyConsole, which this crate cannot reach
+    // (dependency direction: kernel → minix-rt).
+    let message = core::str::from_utf8(&buffer[..length]).unwrap_or("panicked (non-utf8 message)");
+    if !run_panic_diagnostic_hook(message) {
+        // No hook registered (pre-registration panics, or binaries
+        // without a kernel): stage-1 emit through the default sink.
+        let mut sink = diag::SpinSink;
+        diag::DiagnosticSink::emit(&mut sink, &buffer[..length]);
+    }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+// ── Panic diagnostic hook (D-48, A-8 step 2) ────────────────────────────
+
+#[cfg(test)]
+mod panic_diagnostic_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static HOOK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_hook(_message: &str) {
+        HOOK_INVOCATIONS.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Hook set → run invokes it with the message and reports true;
+    /// cleared → run reports false. Workspace forces
+    /// RUST_TEST_THREADS=1, so the shared static slot is serial.
+    #[test]
+    fn hook_set_run_clear_round_trip() {
+        set_panic_diagnostic_hook(None);
+        assert!(!run_panic_diagnostic_hook("stage-1 fallback"));
+        assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 0);
+
+        set_panic_diagnostic_hook(Some(counting_hook));
+        assert!(run_panic_diagnostic_hook("kernel message"));
+        assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 1);
+
+        set_panic_diagnostic_hook(None);
+        assert!(!run_panic_diagnostic_hook("fallback again"));
+        assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 1);
+    }
+}
+
+/// Kernel-side panic renderer, registered at boot (see
+/// `minix_kernel::register_panic_diagnostic`). Receives the formatted
+/// stage-1 message (location + payload) and takes over rendering.
+pub type PanicDiagnosticHook = fn(&str);
+
+static PANIC_DIAGNOSTIC_HOOK: minix_types::AssumeSyncCell<Option<PanicDiagnosticHook>> =
+    minix_types::AssumeSyncCell::new(None);
+
+/// Register (or clear) the panic diagnostic hook.
+///
+/// Called once from the kernel boot path, as early as the kernel's
+/// diagnostic context (EarlyConsole, CPU id, stack walker) is usable.
+/// Panics before registration fall back to the stage-1 sink path.
+pub fn set_panic_diagnostic_hook(hook: Option<PanicDiagnosticHook>) {
+    // SAFETY: panic handling is effectively single-threaded — the first
+    // panic halts forward progress; registration happens before any
+    // concurrency exists (single-CPU boot) or under the BKL.
+    unsafe { *PANIC_DIAGNOSTIC_HOOK.get() = hook };
+}
+
+/// Current hook, if any.
+pub fn panic_diagnostic_hook() -> Option<PanicDiagnosticHook> {
+    // SAFETY: as `set_panic_diagnostic_hook`.
+    unsafe { *PANIC_DIAGNOSTIC_HOOK.get() }
+}
+
+/// Invoke the registered hook with the formatted panic message.
+/// Returns `true` if a hook ran, `false` when none is registered.
+pub fn run_panic_diagnostic_hook(message: &str) -> bool {
+    match panic_diagnostic_hook() {
+        Some(hook) => {
+            hook(message);
+            true
+        }
+        None => false,
     }
 }

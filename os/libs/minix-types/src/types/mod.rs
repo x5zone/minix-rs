@@ -11,8 +11,10 @@
 //! - `boot`: Boot image types
 //! - `cell`: Single-threaded interior mutability primitives
 //! - `errno`: POSIX errno constants
+//! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
 
 mod address;
+mod diagnostic;
 mod bitmap;
 mod boot;
 mod cell;
@@ -37,3 +39,4 @@ pub use id::*;
 pub use pid::*;
 pub use signal::*;
 pub use sysctl::*;
+pub use diagnostic::*;

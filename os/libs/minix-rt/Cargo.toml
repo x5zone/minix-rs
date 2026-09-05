@@ -16,3 +16,8 @@ minix-types = { workspace = true }
 [features]
 default = ["std"]
 std = []
+# Opt-in `#[panic_handler]`. The handler must stay a single graph-wide
+# instance: a binary that provides its own (e.g. the qemu test-kernels,
+# boot-shim) must NOT enable this feature, or E0152 fires. Library
+# consumers (minix-kernel) depend on minix-rt without it.
+panic-handler = []

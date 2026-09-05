@@ -1650,6 +1650,47 @@ pub(crate) fn consume_kbill_kcall(table: &mut crate::proc_table::ProcessTable, d
     true
 }
 
+// ── Panic diagnostic (D-48, C utility.c:22-50) ─────────────────────────
+
+/// Kernel panic renderer: C's `panic()` body minus the shutdown
+/// (C utility.c:30-39; `minix_shutdown(0)` at :49 stays deferred — zero
+/// Rust foundation, see 27-kernel-utility.md §6.3). Invoked by the
+/// minix-rt `#[panic_handler]` through the registered diagnostic hook
+/// (dependency direction: the handler lives in minix-rt, which cannot
+/// reach the kernel's EarlyConsole / CPU id / stack walker).
+///
+/// Robustness contract (diagnostic must not become the second fault):
+/// every step uses only EarlyConsole writes, the BSP constant, and
+/// [`util_stacktrace`] (fail-soft walker). No `.expect()` on the panic
+/// path.
+fn kernel_panic_diagnostic(message: &str) {
+    use minix_arch::EarlyConsole as _;
+    use minix_plat::CurrentEarlyConsole as Console;
+
+    // C utility.c:30-36 — "kernel panic: " + formatted message.
+    Console::write_str("kernel panic: ");
+    Console::write_str(message);
+    // C utility.c:38 — "kernel on CPU %d: ". Single-CPU build: always
+    // the BSP (per-CPU id lands with todo D-40); SMP_STATE uninitialized
+    // (panic before init_proc_and_boot) falls back to 0.
+    let cpu = unsafe { smp_state_boot_unchecked() }
+        .bsp_cpu_id()
+        .raw() as u64;
+    Console::write_str("kernel on CPU ");
+    Console::write_hex(cpu);
+    Console::write_str(": ");
+    // C utility.c:39 — util_stacktrace().
+    crate::stacktrace::util_stacktrace();
+}
+
+/// Register [`kernel_panic_diagnostic`] as the minix-rt panic handler's
+/// diagnostic hook. Called once from `bsp_finish_booting` (the earliest
+/// point where EarlyConsole and SMP_STATE are usable); panics before
+/// registration fall back to minix-rt's stage-1 sink path.
+pub fn register_panic_diagnostic() {
+    minix_types::set_panic_diagnostic_hook(Some(kernel_panic_diagnostic));
+}
+
 /// Global SMP state — owns per-CPU `CpuLocal` (proc_ptr, bill_ptr,
 /// cpu_last_tsc, cpu_last_idle, ...) and CPU readiness flags.
 ///
@@ -2005,6 +2046,12 @@ fn bsp_finish_booting(
     smp_state: &mut crate::smp::SmpState,
 ) -> ! {
     use crate::proc::{ProcNr, RtsFlagsBits, proc_nr};
+
+    // Step -1: register the kernel panic diagnostic (D-48, C
+    // utility.c:22-50) — as early as the diagnostic context (EarlyConsole,
+    // SMP_STATE, util_stacktrace) is usable. Panics before this point fall
+    // back to minix-rt's stage-1 sink path (message only).
+    register_panic_diagnostic();
 
     // Step 0: cpu_identify() — probe BSP CPU identity into the global table.
     // C: cpu_identify() — main.c:45, the first statement of bsp_finish_booting;
@@ -2933,6 +2980,21 @@ mod tests {
             table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
             500
         );
+    }
+
+    /// D-48: registration wires the kernel renderer into the minix-rt
+    /// hook slot; the slot is cleared afterwards so a later test panic
+    /// never routes through the EarlyConsole renderer (hosted tests
+    /// would SIGSEGV on UART port I/O — same gate as D-45/D-47).
+    #[test]
+    fn test_register_panic_diagnostic_sets_hook() {
+        assert!(minix_types::panic_diagnostic_hook().is_none());
+        register_panic_diagnostic();
+        assert!(minix_types::panic_diagnostic_hook().is_some());
+        // Cleanup FIRST-order concern: no kernel renderer may survive a
+        // test.
+        minix_types::set_panic_diagnostic_hook(None);
+        assert!(minix_types::panic_diagnostic_hook().is_none());
     }
 
     #[test]
