@@ -832,10 +832,13 @@ fn init_clock_and_interrupts() {
     let mut arch_init = CurrentArchInit::new(&pd.arch_misc());
     arch_init.init();
 
-    // Suppress unused-variable warnings for `clock` (its `hz()` was consumed
-    // above) — the software ClockState will be wired into the clock
-    // subsystem in a later step.
-    let _ = clock;
+    // D-46 (software half, 2026-09-06): store the software clock into the
+    // global — the timer IRQ handler (`clock::clock_irq_handler`) reads it
+    // at dispatch time to advance uptime and expire alarm timers.
+    // SAFETY: boot is single-threaded before BKL exists.
+    unsafe {
+        *CLOCK_STATE.get() = Some(clock);
+    }
 }
 
 /// Initialize process table and boot processes.
@@ -1460,6 +1463,7 @@ mod bkl_protected {
         crate::ipc_filter::IpcFilterPool,
         crate::krandom::KRandomness,
         crate::proc::ProcNr,
+        crate::clock::ClockState,
     }
 
     // Generic composite impls — derive BklProtected from the inner type.
@@ -1610,6 +1614,30 @@ static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqManager<minix_p
 /// `CURRENT_PTPROC_NR` (todo D-40) — migrate to `CpuLocal` when per-CPU
 /// lands.
 static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+
+/// D-46 (software half, 2026-09-06): the global software clock state —
+/// uptime/realtime/alarm-timer ring live here. C: `kclockinfo` +
+/// `clock_timers` (clock.c globals). Initialized in
+/// `init_clock_and_interrupts` (Phase B); consumed by the timer IRQ
+/// handler (`clock::clock_irq_handler`) at dispatch time.
+static CLOCK_STATE: SyncUnsafeCell<Option<crate::clock::ClockState>> = SyncUnsafeCell::new(None);
+
+/// Raw accessor for the global clock state.
+///
+/// # Safety
+///
+/// Caller must hold the BKL (the timer IRQ handler runs with it held —
+/// same contract as the other global accessors).
+pub unsafe fn clock_state() -> &'static mut crate::clock::ClockState {
+    // SAFETY: raw-pointer read/write avoids the `static_mut_refs` lint.
+    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+}
+
+/// Try-accessor: `None` before `init_clock_and_interrupts`.
+pub fn try_clock_state() -> Option<&'static mut crate::clock::ClockState> {
+    // SAFETY: BKL discipline as above; absence is a valid pre-boot state.
+    unsafe { (*CLOCK_STATE.get()).as_mut() }
+}
 
 /// Set the kbill_kcall marker (D-9, C system.c:160) with BKL witness.
 pub fn set_kbill_kcall_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklSection<'_>) {
@@ -2150,11 +2178,22 @@ fn bsp_finish_booting(
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
     }
-    // Timer IRQ handler registration is deferred to the real
-    // interrupt-dispatch path (`IrqManager::register_hook`, Step 1.5.7).
-    // The deleted `ArchBoot::register_timer_handler` was a mock placeholder
-    // with no readers — trap entry never reads it, and real dispatch goes
-    // through `IrqManager`. See 05-clock-interrupt-init.md §4.7.2.
+    // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
+    // clock IRQ hook with the global IrqManager. The handler
+    // (`clock::clock_irq_handler`) advances the software clock and
+    // delivers expired alarm notifications from the CLOCK source.
+    // Hardware half (x86_64 asm IRQ stubs + IDT load + entry routing)
+    // remains deferred — see todo.md D-46.
+    let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
+    unsafe { crate::irq_manager() }
+        .register_hook(
+            minix_plat::IrqVector::new(0),
+            crate::clock::clock_irq_handler,
+            clock_ep,
+            minix_plat::IrqNotifyId(0),
+            minix_plat::IrqPolicy::REENABLE,
+        )
+        .expect("register clock IRQ hook: no free slots in IRQ_MANAGER");
     //
     // Behavior change (05-clock-interrupt-init.md §3.7): with the deleted
     // `boot_init_timer` no longer calls `enable_timer_irq`. Per-arch effect:

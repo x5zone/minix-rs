@@ -39,6 +39,8 @@
 //! - **D11**: standalone `vtimer_check()` deleted (tick-internal logic handles expiry)
 
 use core::sync::atomic::Ordering;
+use minix_plat::{IrqAction, IrqPolicy};
+use crate::irq_manager::IrqHookContext;
 
 use minix_types::Endpoint;
 
@@ -1230,7 +1232,252 @@ impl Default for ClockState {
     }
 }
 
-// ── Tests ──
+// ── Timer IRQ handler (D-46 software half + D-15 alarm notify) ──────────
+
+/// Timer IRQ handler: advance the software clock for the CURRENT process
+/// and deliver expired alarm notifications from the CLOCK source.
+///
+/// C: `timer_int_handler` (clock.c:70) → `clocktick` (BSP) +
+/// `tmrs_exptimers` expiry; alarm expiry notifies the subscriber from
+/// CLOCK via `TimerAction::NotifyAlarm` (do_setalarm.c:69-76
+/// `cause_alarm` → `mini_notify(proc_addr(CLOCK), ...)`).
+///
+/// # Globals
+///
+/// Reads/writes the `CLOCK_STATE`, `PROC_TABLE`, `PRIV_TABLE` and
+/// `SMP_STATE` globals directly (the `IrqHandler` fn-pointer type carries
+/// no context; the IRQ dispatch entry holds the BKL — same contract as
+/// the other global accessors).
+///
+/// # Notification batch bound
+///
+/// Expired alarms are collected in a stack array (bound 16) and notified
+/// after [`ClockState::tick_with`] returns (the tick borrows
+/// `priv_table`, so notifies must run after it). SETALARM is one-shot per
+/// process, so a same-tick expiry storm beyond the bound is pathological;
+/// overflow trips a `debug_assert` and drops the excess notification.
+///
+/// # Returns
+///
+/// `Completed` under `IrqPolicy::REENABLE` (the timer re-arms in
+/// hardware), matching C `generic_handler` (do_irqctl.c:171).
+pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
+
+
+    // SAFETY: the IRQ dispatch entry holds the BKL.
+    let table = unsafe { crate::proc_table() };
+    let priv_table = unsafe { crate::priv_table() };
+    let smp = unsafe { crate::smp_state() };
+    let clock = unsafe { crate::clock_state() };
+
+    let bsp = smp.bsp_cpu_id();
+    let (cur_nr, bill_nr) = smp
+        .cpu_local(bsp)
+        .map(|l| (l.proc_ptr, l.bill_ptr))
+        .unwrap_or((None, None));
+    let ready_count = table.iter().filter(|p| p.is_runnable()).count();
+
+    let cur_idx = cur_nr.and_then(crate::proc_table::nr_to_idx);
+    let bill_idx = bill_nr
+        .filter(|n| Some(*n) != cur_nr)
+        .and_then(crate::proc_table::nr_to_idx);
+
+    // D-15: expired alarm notifications are collected in a stack array
+    // during the tick (tick_with holds `&mut priv_table`, so the CLOCK
+    // notify must run after it returns), then delivered from the CLOCK
+    // source — C do_setalarm.c:69-76 (`cause_alarm` →
+    // `mini_notify(proc_addr(CLOCK), ...)`).
+    const ALARM_NOTIFY_BATCH: usize = 16;
+    let mut batch: [Option<Endpoint>; ALARM_NOTIFY_BATCH] = [None; ALARM_NOTIFY_BATCH];
+    let mut n_batch = 0usize;
+    fn collect_expired(
+        batch: &mut [Option<Endpoint>; 16],
+        n: &mut usize,
+        action: TimerAction,
+    ) {
+        let TimerAction::NotifyAlarm { endpoint } = action;
+        if *n < ALARM_NOTIFY_BATCH {
+            batch[*n] = Some(endpoint);
+            *n += 1;
+        } else {
+            debug_assert!(false, "alarm notify batch overflow");
+        }
+    }
+
+    // Split disjoint &mut borrows for current/bill from the slice
+    // (bill_nr == cur_nr means the current process is itself billable —
+    // billp stays None, D10).
+    let procs = table.procs_slice_mut();
+    let (cur_p, bill_p) = match (cur_idx, bill_idx) {
+        (Some(ci), Some(bi)) if ci != bi => {
+            let split_at = ci.max(bi);
+            let (l, r) = procs.split_at_mut(split_at);
+            if ci < bi {
+                (Some(&mut l[ci]), Some(&mut r[0]))
+            } else {
+                (Some(&mut r[0]), Some(&mut l[bi]))
+            }
+        }
+        (Some(ci), _) => {
+            let (l, _r) = procs.split_at_mut(ci + 1);
+            (Some(&mut l[ci]), None)
+        }
+        _ => (None, None),
+    };
+
+    // Tick: advance uptime/realtime, account the current process, expire
+    // alarm timers (BSP). No current process (pre-idle boot edge) →
+    // account against a scratch kernel-exempt process (endpoint < 0 is
+    // quantum-exempt, arch_clock.c:314) so uptime/alarm expiry still run.
+    // 无 current（pre-idle boot edge）→ 记账对象退化为 IDLE 槽拷贝
+    // （endpoint < 0 = quantum 豁免，arch_clock.c:314）。
+    let mut scratch = KProcess::new(
+        crate::proc::proc_nr::IDLE,
+        Endpoint::from_generation_slot(0, crate::proc::proc_nr::IDLE.0),
+    );
+    let current: &mut KProcess = cur_p.unwrap_or(&mut scratch);
+    let _vtimer = clock.tick_with(
+        priv_table,
+        current,
+        bill_p,
+        ready_count,
+        |a| collect_expired(&mut batch, &mut n_batch, a),
+    );
+
+    // Deliver alarm notifications from the CLOCK source (post-tick — the
+    // notify needs the process slice, which the tick no longer borrows).
+    for ep in batch.iter().flatten().take(n_batch) {
+        let _ = crate::ipc::mini_notify_core(
+            table.procs_slice_mut(),
+            priv_table,
+            crate::proc::proc_nr::CLOCK,
+            *ep,
+        );
+    }
+
+    // C: generic_handler returns hook->policy & IRQ_REENABLE
+    // (do_irqctl.c:171).
+    if ctx.policy.contains(IrqPolicy::REENABLE) {
+        IrqAction::Completed
+    } else {
+        IrqAction::NotCompleted
+    }
+}
+
+
+
+// ── Tests (D-46 software half + D-15) ──
+
+#[cfg(test)]
+mod clock_irq_handler_tests {
+    use super::*;
+    use crate::irq_manager::IrqHookContext;
+    use crate::proc::{MiscFlagsBits, ProcNr, RtsFlags, RtsFlagsBits};
+    use crate::proc_table::ProcessTable;
+    use minix_plat::{IrqAction, IrqId, IrqNotifyId, IrqVector};
+
+    /// 本地 notifier：直调 handler 的测试不经过 IrqManager::dispatch，
+    /// notifier 为空实现（通知走 D-15 的 CLOCK 闭包路径）。
+    struct RecordingNotifier;
+    impl crate::irq_manager::IrqNotify for RecordingNotifier {
+        fn notify_hardware(&mut self, _dst: Endpoint, _id: IrqNotifyId) {}
+    }
+
+    /// 全局装配：IRQ_MANAGER/CLOCK_STATE/SMP_STATE/PROC_TABLE/PRIV_TABLE。
+    fn setup_globals() -> (&'static mut ProcessTable, &'static mut PrivTable) {
+        // SAFETY: single-threaded test (workspace forces --test-threads=1);
+        // each test re-initializes the globals it reads.
+        unsafe {
+            crate::init_irq_manager_for_test();
+            *crate::SMP_STATE.get() = Some(crate::smp::SmpState::new_single_cpu());
+            *crate::CLOCK_STATE.get() = Some(ClockState::new());
+            // 共享 PROC_TABLE/PRIV_TABLE 不整体替换（整体替换会 Drop 既有
+            // 占用槽触发 A3 防御 panic）——只显式重置本测试用到的槽位。
+            let table = crate::proc_table();
+            let priv_table = crate::priv_table();
+            for slot in table.procs_slice_mut() {
+                slot.p_rts_flags.set(RtsFlagsBits::SLOT_FREE);
+                slot.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+            }
+            (table, priv_table)
+        }
+    }
+
+
+
+    /// D-46 软件半环 + D-15 端到端：SETALARM(1 tick) → clock_irq_handler
+    /// 一次 tick → 到期通知从 CLOCK 源直投（订阅者 RECEIVE+ANY →
+    /// DELIVERMSG），ctx 按 REENABLE 返回 Completed，uptime 推进。
+    #[test]
+    fn test_clock_irq_handler_delivers_alarm_notification() {
+        let (table, mut priv_table) = setup_globals();
+
+        let r_priv = priv_table.assign_static(ProcNr(4)).unwrap();
+        let r_ep = Endpoint(0x40);
+        {
+            let r = table.get_mut(ProcNr(4)).unwrap();
+            r.p_rts_flags = RtsFlags::new();
+            r.p_endpoint = r_ep;
+            r.priv_id = Some(r_priv);
+            r.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            r.p_getfrom_e = Endpoint::ANY;
+        }
+        {
+            let clock = unsafe { crate::clock_state() };
+            set_alarm_timer(
+                priv_table,
+                clock,
+                r_priv,
+                1,
+                TimerAction::NotifyAlarm { endpoint: r_ep },
+            );
+        }
+
+        let mut noop = RecordingNotifier;
+        let mut ctx = IrqHookContext {
+            irq: IrqVector::new(0),
+            id: IrqId(0),
+            proc_endpoint: Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0),
+            notify_id: IrqNotifyId(0),
+            policy: IrqPolicy::REENABLE,
+            notifier: &mut noop,
+        };
+        let action = clock_irq_handler(&mut ctx);
+        assert_eq!(action, IrqAction::Completed);
+
+        let r = table.get(ProcNr(4)).unwrap();
+        assert!(r.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        // 通知消息按 m_type 识别（NOTIFY_MESSAGE，com.h:90）——接收方不读
+        // m_source（build_notify_message 置零，C memset 语义一致）。
+        assert_eq!(r.p_delivermsg.m_type, crate::ipc::NOTIFY_MESSAGE);
+        assert!(unsafe { crate::clock_state() }.uptime() > 0);
+    }
+
+    /// D-46：register_hook 落地验证——hook 挂着 clock_irq_handler
+    /// （CLOCK 拥有者 + notify_id 0），find_hook_by_owner_notify 可定位。
+    ///
+    /// #[ignore]：register_hook 尾部 `controller.unmask(irq)` 会写 PIC/
+    /// LAPIC 端口——hosted 无 iopl 即 SIGSEGV（D-45/D-47 同类 gate）。
+    /// 真机/QEMU 上 `cargo test -- --ignored` 验证。
+    #[test]
+    #[ignore = "register_hook unmasks via the real controller (port I/O) — needs iopl/QEMU"]
+    fn test_clock_hook_registered_in_manager() {
+        let _ = setup_globals();
+        let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
+        unsafe { crate::irq_manager() }
+            .register_hook(
+                IrqVector::new(0),
+                clock_irq_handler,
+                clock_ep,
+                IrqNotifyId(0),
+                IrqPolicy::REENABLE,
+            )
+            .expect("free slot must exist on a fresh manager");
+        assert!(unsafe { crate::irq_manager() }
+            .find_hook_by_owner_notify(clock_ep, IrqNotifyId(0))
+            .is_some());
+    }
+}
 
 #[cfg(test)]
 mod tests {
