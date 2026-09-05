@@ -430,6 +430,12 @@ pub fn kernel_call_dispatch(
         let bkl_section = bkl_guard.section();
         kernel_call_dispatch_inner(caller, msg, priv_table, proc_table, clock_state, &bkl_section)
     };
+    // D-9 (C system.c:160) — the kernel call is in flight for `caller`:
+    // attribute kernel time to it at the next context_stop. C sets the
+    // marker after dispatch, before finish, unconditionally (a failed
+    // call's kernel work is still the caller's); kernel_call_resume does
+    // not re-set it.
+    crate::set_kbill_kcall_with(caller.p_nr, &bkl_guard.section());
     // BKL is NOT released here — mem::forget prevents Drop from releasing.
     // BKL is released in:
     //   1. kernel_call_finish() — for normal completion (before switch_to_user)
@@ -3245,6 +3251,30 @@ mod tests {
         assert_eq!(result, KcallResult::CallDenied);
         // Same as above: release BKL acquired by kernel_call_dispatch.
         crate::smp::bkl_unlock();
+    }
+
+    #[test]
+    fn test_kernel_call_dispatch_sets_kbill_marker() {
+        // D-9 (C system.c:160): the kbill_kcall marker is set after
+        // dispatch, before finish — unconditionally, even for a denied
+        // call (the kernel work of handling the denial is still the
+        // caller's).
+        let mut msg = Message::default();
+        msg.m_type = 0; // SYS_FORK
+        let mut proc = KProcess::new(ProcNr(0), minix_types::Endpoint::KERNEL);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut clock_state = crate::clock::ClockState::new();
+        let result = kernel_call_dispatch(&mut proc, &mut msg, &mut priv_table, &mut proc_table, &mut clock_state);
+        assert_eq!(result, KcallResult::CallDenied);
+        // Marker in flight for the caller despite the denial.
+        // SAFETY: single-threaded test; BKL still held (released below).
+        assert_eq!(unsafe { crate::kbill_kcall_raw() }, Some(ProcNr(0)));
+        // Release the BKL acquired by dispatch (finish would normally).
+        crate::smp::bkl_unlock();
+        // Cleanup: consume with delta 0 — clears the marker without
+        // attribution so later tests start neutral.
+        let _ = crate::consume_kbill_kcall(&mut proc_table, 0);
     }
 
     #[test]

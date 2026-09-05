@@ -441,6 +441,23 @@ pub(crate) fn decrement_quantum_in(
     current_proc: &mut KProcess,
     current_tsc: u64,
 ) -> bool {
+    let (exhausted, _) = decrement_quantum_in_with_delta(smp, current_proc, current_tsc);
+    exhausted
+}
+
+/// D-9: [`decrement_quantum_in`] plus the context_stop TSC delta
+/// (C arch_clock.c:276 — `tsc_delta = tsc - *__tsc_ctr_switch`). The
+/// kbill_kcall consumption (C :279-281) attributes this same whole
+/// delta to the in-flight kernel call's process. Delta is `0` when no
+/// baseline exists yet (first call after boot) or the reading did not
+/// advance — consumers skip a zero delta. The delta is returned even on
+/// the kernel/idle-task exempt path (endpoint < 0): C's kbill block is
+/// the common tail of context_stop, outside the quantum branches.
+pub(crate) fn decrement_quantum_in_with_delta(
+    smp: &mut crate::smp::SmpState,
+    current_proc: &mut KProcess,
+    current_tsc: u64,
+) -> (bool, u64) {
     let cpu = smp.bsp_cpu_id();
     let last_tsc = match smp.cpu_local_mut(cpu) {
         Some(local) => {
@@ -452,7 +469,7 @@ pub(crate) fn decrement_quantum_in(
             local.tsc_ctr_switch = current_tsc;
             last
         }
-        None => return false,
+        None => return (false, 0),
     };
 
     // First call after boot/context-switch with no baseline: establish
@@ -460,24 +477,24 @@ pub(crate) fn decrement_quantum_in(
     // is set on context switch (`note_context_switch`), so the first tick
     // after switch computes a real delta.
     if last_tsc == 0 {
-        return false;
+        return (false, 0);
     }
 
     let delta = current_tsc.saturating_sub(last_tsc);
     if delta == 0 {
-        return false;
+        return (false, 0);
     }
 
     // C: arch_clock.c:314 — skip kernel/idle tasks (endpoint < 0).
     // Kernel tasks (CLOCK/SYSTEM/KERNEL/IDLE/ASYNCM) are quantum-exempt.
     if current_proc.p_endpoint.get() < 0 {
-        return false;
+        return (false, delta);
     }
 
     // C: arch_clock.c:326-330 — `p_cpu_time_left -= tsc_delta` (saturating).
     // `Quantum::consume` performs the saturating decrement via CAS and
     // returns `true` when the quantum is exhausted (cpu_time_left <= delta).
-    current_proc.p_sched.quantum.consume(delta)
+    (current_proc.p_sched.quantum.consume(delta), delta)
 }
 
 // ── Constants ──

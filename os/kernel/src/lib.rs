@@ -1459,6 +1459,7 @@ mod bkl_protected {
         crate::smp::CpuInfoTable,
         crate::ipc_filter::IpcFilterPool,
         crate::krandom::KRandomness,
+        crate::proc::ProcNr,
     }
 
     // Generic composite impls — derive BklProtected from the inner type.
@@ -1595,6 +1596,59 @@ static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsafeCell::new
 /// can reach it without holding a reference in a CPU-local. This mirrors
 /// C's global `irq_hooks[]` + `irq_actids[]` + `intr_*` globals.
 static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>> = SyncUnsafeCell::new(None);
+
+/// D-9 (C glo.h:44 + system.c:160) — the process whose kernel call is
+/// currently in flight (`kbill_kcall`). Set unconditionally after
+/// `kernel_call_dispatch_inner` returns (C sets it after dispatch, before
+/// finish; a failed call's kernel work is still the caller's — and
+/// `kernel_call_resume` does not re-set it). Consumed at the
+/// context_stop equivalents (`finish_and_restore` step 2 / `idle` step 4):
+/// the whole TSC delta since the last switch point is attributed to the
+/// marker's process `p_cycles.kcall`, then the marker clears (C
+/// arch_clock.c:279-281 — the whole-delta attribution is C's own coarse
+/// estimate, faithfully kept). SMP: a single global mirrors
+/// `CURRENT_PTPROC_NR` (todo D-40) — migrate to `CpuLocal` when per-CPU
+/// lands.
+static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+
+/// Set the kbill_kcall marker (D-9, C system.c:160) with BKL witness.
+pub fn set_kbill_kcall_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklSection<'_>) {
+    // SAFETY: BklSection witness proves the BKL is held.
+    unsafe { *KBILL_KCALL.get() = Some(nr) };
+}
+
+/// Raw read of the kbill_kcall marker.
+///
+/// # Safety
+///
+/// Caller must hold the BKL (production hooks run between BKL-acquiring
+/// dispatch and `bkl_unlock`); tests are single-threaded.
+pub unsafe fn kbill_kcall_raw() -> Option<crate::proc::ProcNr> {
+    // SAFETY: static is never re-assigned to an invalid value (Option<ProcNr>).
+    unsafe { *KBILL_KCALL.get() }
+}
+
+/// Consume the kbill_kcall marker: attribute `delta` TSC cycles to the
+/// in-flight kernel call's process `p_cycles.kcall`, then clear the
+/// marker (D-9, C arch_clock.c:279-281). Returns `true` if a marker was
+/// present and consumed.
+///
+/// Called from the context_stop equivalents (`finish_and_restore` /
+/// `idle`) while the BKL is still held — C consumes after its early BKL
+/// release (arch_clock.c:226-233 vs :279), a window Rust's single-lock
+/// discipline closes; single-CPU semantics are identical.
+pub(crate) fn consume_kbill_kcall(table: &mut crate::proc_table::ProcessTable, delta: u64) -> bool {
+    // SAFETY: BKL held by caller (see doc).
+    let Some(nr) = (unsafe { kbill_kcall_raw() }) else {
+        return false;
+    };
+    if let Some(p) = table.get(nr) {
+        p.p_cycles.add_kcall_cycles(delta);
+    }
+    // SAFETY: as above.
+    unsafe { *KBILL_KCALL.get() = None };
+    true
+}
 
 /// Global SMP state — owns per-CPU `CpuLocal` (proc_ptr, bill_ptr,
 /// cpu_last_tsc, cpu_last_idle, ...) and CPU readiness flags.
@@ -2494,7 +2548,12 @@ fn idle(
     let kernel = table
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
-    let _exhausted = crate::clock::decrement_quantum_in(smp, kernel, tsc);
+    let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
+    // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
+    // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
+    if tsc_delta > 0 {
+        consume_kbill_kcall(table, tsc_delta);
+    }
 
     // 5. BKL release (C: context_stop's must_bkl_unlock — arch_clock.c:
     // 226-233) then halt with interrupts enabled until the next interrupt.
@@ -2654,7 +2713,13 @@ fn finish_and_restore(
     let kernel = table
         .get_mut(crate::proc::proc_nr::KERNEL)
         .expect("finish_and_restore: KERNEL pseudo-process slot must exist");
-    let _exhausted = crate::clock::decrement_quantum_in(smp, kernel, tsc);
+    let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
+    // D-9 (C arch_clock.c:279-281) — consume kbill_kcall with the same
+    // whole-delta context_stop uses; must run before the BKL release
+    // below (see consume_kbill_kcall doc).
+    if tsc_delta > 0 {
+        consume_kbill_kcall(table, tsc_delta);
+    }
     // C releases the BKL inside context_stop (must_bkl_unlock,
     // arch_clock.c:226-233); the restore below is the last kernel act.
     crate::smp::bkl_unlock();
@@ -2845,6 +2910,31 @@ mod tests {
 
     /// Full boot-flow integration test with MockPaging.
     /// Verifies: identity mapping + kernel mapping + enable → no panic.
+    /// D-9 (C arch_clock.c:279-281): consuming the kbill marker
+    /// attributes the whole context_stop delta to the in-flight call's
+    /// process `p_cycles.kcall` and clears the marker; with no marker
+    /// the consumption is a no-op.
+    #[test]
+    fn test_consume_kbill_kcall_attributes_delta() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let nr = crate::proc::ProcNr(0);
+        // SAFETY: single-threaded test.
+        unsafe { *KBILL_KCALL.get() = Some(nr) };
+        assert!(consume_kbill_kcall(&mut table, 500));
+        assert_eq!(
+            table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
+            500
+        );
+        // Marker cleared → second consume reports false, no attribution.
+        // SAFETY: single-threaded test.
+        assert!(unsafe { kbill_kcall_raw() }.is_none());
+        assert!(!consume_kbill_kcall(&mut table, 100));
+        assert_eq!(
+            table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
+            500
+        );
+    }
+
     #[test]
     fn test_boot_flow_identity_and_kernel_map() {
         let memmap: &'static [minix_boot::MemoryRegion] = &[

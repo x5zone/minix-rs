@@ -320,7 +320,7 @@ void kernel_call(message *m_user, struct proc * caller)
 
 **TOCTOU 防护**：`copy_msg_from_user` 先将用户空间消息复制到内核栈，dispatch 与 finish 全程操作内核栈副本。防止用户在 dispatch 检查参数后、finish 使用参数前修改用户空间消息。
 
-**kbill_kcall**：内核计费用全局指针，标记当前正在处理 kernel call 的进程。Rust 当前 DEFERRED（见 §6.2）。
+**kbill_kcall**：内核计费用全局指针，标记当前正在处理 kernel call 的进程。Rust 已实现（`KBILL_KCALL`，见 §6.4）。
 
 #### 2.4.4 kernel_call_resume（system.c:612-637）
 
@@ -902,9 +902,13 @@ C 的 `kernel_call(m_user, caller)` 是 trap 入口的 wrapper，负责 `copy_ms
 
 **责任归属**：待 14-exception-interrupt 文档化 trap 入口时实现 `kernel_call` wrapper（含 TOCTOU 防护的 `copy_msg_from_user`）。
 
-### 6.4 kbill_kcall 内核计费（P2，DEFERRED）
+### 6.4 kbill_kcall 内核计费（✅ 已实现，2026-09-06 D-9）
 
-C 在 `kernel_call` 中设置 `kbill_kcall = caller` 标记当前正在处理 kernel call 的进程（用于性能分析）。Rust 当前未实现。
+C 在 `kernel_call` 中设置 `kbill_kcall = caller` 标记当前正在处理 kernel call 的进程（用于性能分析）。Rust 已完整实现两侧钩子，语义与 C 逐点对齐：
+
+- **置位**（C system.c:160）：`kernel_call_dispatch` 在 dispatch 返回后无条件置 `KBILL_KCALL = Some(caller.p_nr)`（lib.rs 全局 + `set_kbill_kcall_with`，BklProtected 收编）——失败的调用处理内核工作仍归属调用者；`kernel_call_resume` 不重置（C 同）。
+- **消费**（C arch_clock.c:279-281）：context_stop 等价点（`finish_and_restore` 步骤 2 / `idle` 步骤 4）取同一 `tsc_delta`（`decrement_quantum_in_with_delta` 新增返回值；C 的 delta 是自上次 switch 点的**全部** TSC——粗粒度整体归属是 C 本身的近似，忠实保留），计入 `p_cycles.kcall` 后清标记。Rust 在 `bkl_unlock` **前**消费（C 在 :226-233 先解锁、:279 后消费——单锁纪律关闭了该窗口，单 CPU 语义相同）。
+- **测试**：`test_kernel_call_dispatch_sets_kbill_marker`（拒绝调用也置位）、`test_consume_kbill_kcall_attributes_delta`（delta 归属 + 清标记 + 无标记 no-op）。
 
 ### 6.5 errno newtype（P2，改进方向）
 
