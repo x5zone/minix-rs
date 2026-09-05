@@ -1174,6 +1174,13 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **466 / 465 / 450 / 449 passed**（+1 结构对账测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 15-ipc-dispatch.md（§4.1 查表描述 + wrapper 示例 + §5.1 新测试行）；minix-types 侧全量 per-call decode 函数下移为可选后续（现 wrapper 已使解码知识局部化）
 
+### ✅ Fix #29: T9 step 2 — KernelGateway seam 落地，fork.rs sys_fork 假端点 stub 删除（VM_FORK 由假成功改为诚实错误）
+
+- **Files**: `os/servers/vm/src/kernel_gateway.rs`（新模块：`KernelGateway` trait + `GatewayError` + 泛型 `TrapKernelGateway`（`perform_kernel_call` ENOTREADY 重试环，SYS_FORK wire：M1 m1i1=parent/m1i2=slot/m1i3=flags，应答 m_type=child endpoint，kernel syscall_process.rs:139-141/:210-215）+ `MockGateway`（cfg(test) 脚本化）+ 2 个 wire 测试）、`os/servers/vm/src/lib.rs`（模块声明）、`os/servers/vm/src/vm_server.rs`（VmContext 增 `gateway: Rc<RefCell<Box<dyn KernelGateway>>>`——沿用 transport 注入模式）、`os/servers/vm/src/fork.rs`（删 sys_fork 假端点 stub；do_fork 增 gateway 参数，失败 → 新 `VmForkError::KernelCall` fail-closed）、`os/servers/vm/src/ipc/dispatcher.rs`（dispatch_fork 传 gateway；From 映射 KernelCall → InternalError）
+- **行为更正（诚实性）**：原 stub 在 VM_FORK 上返回**捏造的子进程 endpoint**（假成功，真实硬件上会腐蚀状态）；迁移后 pre-E1/E2 返回 InternalError（trap 未执行、内核状态未动，错误精确）。C 在此处 panic（post-commit）；minix-rs 的 fail-closed 偏差已文档化（18-vm-fork.md 偏差表 + do_fork 文档），post-E2 语义在 E2 签核时复核
+- **Verified**: 四矩阵 **452 / 467 / 466 / 452 passed**（+2 gateway wire 测试）；四组合 clippy `^servers/` **0 警告**；`rg "unimplemented!|Endpoint::from_generation_slot(1" os/servers/vm/src/fork.rs` → 0
+- **Docs**: 18-vm-fork.md（模块清单 + 偏差表）；kernel_gateway.rs 模块文档（wire 约定与 E1/E2 依赖）
+
 ### ✅ Fix #28: T9 step 1 — KernelIpcTransport 从 `unimplemented!()` 改为委托 minix-sys trap 后端（P1-3 半边闭环）
 
 - **Files**: `os/servers/vm/src/ipc/transport.rs`（`KernelIpcTransport` 增 `inner: DirectTrapTransport` 字段；`receive` 按 `sef_receive_status(ANY,…)` 委托、`send` 按 `ipc_send` 委托——调用形态定稿；`IpcStatus{flags}` 与 minix-sys `IpcStatus(u32)` 原始字直通；`TrapStatus → IpcError::Kernel` 映射；模块头/类型头文档重写）、minix-sys 依赖从闲置转为实际使用

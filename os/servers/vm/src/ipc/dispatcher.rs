@@ -109,10 +109,11 @@ impl MessageDispatcher {
     /// Corresponds to Minix3 `do_fork()` in fork.c.
     /// C returns EINVAL on vm_isokendpt failure (fork.c:44).
     pub(crate) fn dispatch_fork(ctx: &mut VmContext, request: VmForkIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, gateway, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match fork::do_fork(table, frames, page_alloc, request.parent_endpoint, request.child_slot) {
+        let mut gateway = gateway.borrow_mut();
+        match fork::do_fork(gateway.as_mut(), table, frames, page_alloc, request.parent_endpoint, request.child_slot) {
             Ok(child_endpoint) => VmReply::Fork(VmForkOut { child_endpoint }),
             Err(e) => VmReply::Error(e.into()),
         }
@@ -1195,6 +1196,11 @@ impl From<fork::VmForkError> for VmError {
             fork::VmForkError::PageTableMapFailed => VmError::OutOfMemory,
             fork::VmForkError::PageNotMapped => VmError::PageNotMapped,
             fork::VmForkError::MemType(_) => VmError::MemType,
+            // V11/T9: gateway kernel-call failure → fail-closed error reply
+            // (C do_fork.c panics instead — see the do_fork doc in fork.rs).
+            // Pre-E1 the trap stub answers -EIO while the kernel state is
+            // untouched, so the InternalError reply is exact.
+            fork::VmForkError::KernelCall(_) => VmError::InternalError,
         }
     }
 }
@@ -1544,6 +1550,7 @@ mod tests {
         let reply = MessageDispatcher::dispatch_rs_update(
             &mut crate::vm_server::VmContext {
                 proc_table: table,
+                gateway: test_gateway(),
                 page_alloc,
                 page_frames: Some(frames),
                 page_cache: _default_cache(),
@@ -1596,6 +1603,14 @@ mod tests {
         crate::page_cache::PageCache::new()
     }
 
+    fn test_gateway() -> alloc::rc::Rc<
+        core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
+    > {
+        alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+            crate::kernel_gateway::MockGateway::new(),
+        )))
+    }
+
     #[test]
     fn test_dispatch_procctl_rejects_negative_param() {
         // Unknown param values → EINVAL (C: exit.c:149 default).
@@ -1611,6 +1626,7 @@ mod tests {
         match MessageDispatcher::dispatch_procctl(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1641,6 +1657,7 @@ mod tests {
         match MessageDispatcher::dispatch_procctl(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1675,6 +1692,7 @@ mod tests {
         match MessageDispatcher::dispatch_procctl(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1707,6 +1725,7 @@ mod tests {
         match MessageDispatcher::dispatch_procctl(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1738,6 +1757,7 @@ mod tests {
         match MessageDispatcher::dispatch_procctl(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1771,6 +1791,7 @@ mod tests {
         // or region lookup will fail (C: map_lookup returns NULL for addr 0)
         match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1800,6 +1821,7 @@ mod tests {
         };
         match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1830,6 +1852,7 @@ mod tests {
         };
         match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1859,6 +1882,7 @@ mod tests {
         };
         match MessageDispatcher::dispatch_remap_ro(&mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: _default_cache(),
@@ -1888,6 +1912,7 @@ mod tests {
         let result = MessageDispatcher::dispatch_vfs_reply(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc: default_vm(),
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
@@ -1922,6 +1947,7 @@ mod tests {
         let result = MessageDispatcher::dispatch_vfs_reply(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc: default_vm(),
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
@@ -1955,6 +1981,7 @@ mod tests {
         let result = MessageDispatcher::dispatch_vfs_reply(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc: default_vm(),
                     page_frames: Some(default_frames()),
                     page_cache: _default_cache(),
@@ -1991,6 +2018,7 @@ mod tests {
         match MessageDispatcher::dispatch_forgetcache(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: cache,
@@ -2024,6 +2052,7 @@ mod tests {
         match MessageDispatcher::dispatch_forgetcache(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: cache,
@@ -2057,6 +2086,7 @@ mod tests {
         match MessageDispatcher::dispatch_forgetcache(
                 &mut crate::vm_server::VmContext {
                     proc_table: default_table(),
+                    gateway: test_gateway(),
                     page_alloc,
                     page_frames: Some(frames),
                     page_cache: cache,
@@ -2091,7 +2121,7 @@ mod tests {
         };
         let mut page_alloc = default_vm();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:204-205).
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -2116,7 +2146,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2137,7 +2167,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2159,7 +2189,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2183,7 +2213,7 @@ mod tests {
             block: 0,
         };
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2206,7 +2236,7 @@ mod tests {
         };
         let mut cache = _default_cache();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:107).
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -2229,7 +2259,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2254,7 +2284,7 @@ mod tests {
         // but we need a valid endpoint to get past vm_isokendpt.
         // Endpoint(0) is VM itself, which should be in the table.
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(0), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0 }, Endpoint(0), req) {
             VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
             other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
         }

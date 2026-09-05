@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 7 — IPC 服务（fork 次主线核心）
 > **源码**: `minix3/minix/servers/vm/fork.c`（116 行：`do_fork` :32-115）+ `minix3/minix/servers/vm/region.c`（`map_proc_copy` :933-939 / `map_proc_copy_range` :944-999）+ `minix3/minix/servers/vm/acl.c`（`acl_fork` :110-116）+ `minix3/minix/servers/vm/utility.c`（`vm_isokendpt` :84-101）+ `minix3/minix/kernel/system/do_fork.c`（内核侧 `sys_fork` 处理）+ `minix3/minix/include/minix/com.h`（`VMF_ENDPOINT`/`VMF_SLOTNO`/`VMF_CHILD_ENDPOINT` :633-635 / `PFF_VMINHIBIT` :360）
-> **Rust 模块**: `os/servers/vm/src/fork.rs`（`do_fork` :183-390 / `fork_regions` :140-158 / `free_forked_regions` :160-175 / `handle_memory_once` :33-85 / `sys_fork` stub :406-408）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_from_fork` :327-333 / `copy_acl_from` :340-343 / `init_page_table` :351-403 / `free_page_table` :411-419 / `init_regions` :423-427）+ `os/servers/vm/src/vmproc/table.rs`（`VM_PROC_COUNT` :41 / `VM_EXEC_TMP_SLOT` :44 / `get_empty` :141-150）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_fork` :108-121 / 主循环 VM_FORK 分支 :1036-1037）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn` :167-172 / `VmForkOut` :175-177 / `decode` :678-687 / `encode` :689-695）
+> **Rust 模块**: `os/servers/vm/src/fork.rs`（`do_fork` :183-390 / `fork_regions` :140-158 / `free_forked_regions` :160-175 / `handle_memory_once` :33-85 / `sys_fork` → `kernel_gateway.rs`（V11/T9 step 2））+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_from_fork` :327-333 / `copy_acl_from` :340-343 / `init_page_table` :351-403 / `free_page_table` :411-419 / `init_regions` :423-427）+ `os/servers/vm/src/vmproc/table.rs`（`VM_PROC_COUNT` :41 / `VM_EXEC_TMP_SLOT` :44 / `get_empty` :141-150）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_fork` :108-121 / 主循环 VM_FORK 分支 :1036-1037）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn` :167-172 / `VmForkOut` :175-177 / `decode` :678-687 / `encode` :689-695）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md`（CoW 机制：`fork_region` 共享建立 / `setup_cow_for_all_regions`+`write_page_table_mappings` 写保护）+ `04-acl.md`（ACL 继承）+ `03-vmproc-table.md`（slot 表）+ `15-ipc-dispatch.md`（主循环分发）
 > **说明**: 本文档管 **fork 的编排**——VM 如何把"复制地址空间"组织成一次可回滚的服务调用：验证 → 初始化子进程 → 新建页表 → 区域复制（CoW）→ 页表写入 → 内核注册 → 返回 endpoint。**不覆盖**：CoW 机制本身（17）、`fork_region` 内部 refcount 语义（17 §3.1）、exit 逆向清理（22）、VFS fdref 细节（23）。
 
@@ -69,7 +69,7 @@ VM 拿到 `msgaddr` 后调用两次 `handle_memory_once`（fork.c:97-108）：�
 | 参数验证 | endpoint 无效 / slot 越界 | `EINVAL` 直接返回 | 无副作用 |
 | 页表创建 | `pt_new` 失败 | `ENOMEM` 直接返回 | 无新资源 |
 | 区域复制 | `map_copy_region` 失败 | `map_free_proc` + `pt_free` + `ENOMEM` | 已复制区域 + 页表 |
-| 内核通知 | `sys_fork` 失败 | **panic**（不可恢复） | 内核可能已创建子进程 |
+| 内核通知 | `sys_fork` 失败 | **panic**（不可恢复） | **V11/T9 偏差（fail-closed）**：minix-rs 回错误而非 panic——pre-E1 trap 未执行、内核状态未动，错误回复是精确行为；post-E2 真实提交后失败的语义在 edge E2 签核时复核（见 do_fork 文档） |
 | 消息页 | `handle_memory_once` 失败 | **panic**（不可恢复） | — |
 
 **核心不变量**：`sys_fork` 是回滚分界线——之前全部可回滚，之后任何失败都 panic。Rust 把 `pt_bind` 移到 `sys_fork` 之前（§3.4），使页表绑定从"不可回滚 panic"降级为"可回滚错误"——这是对 C 顺序的**设计改进**（外部行为不变：C 的 pt_bind 失败本来就 panic，Rust 提前后失败返回 ENOMEM，调用方收到错误而非系统崩溃）。

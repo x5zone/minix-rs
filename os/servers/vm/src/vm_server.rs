@@ -69,6 +69,14 @@ pub(crate) struct VmContext {
     pub(crate) page_frames: Option<PageFrames>,
     pub(crate) page_cache: PageCache,
     pub(crate) vfs_queue: VfsRequestQueue,
+    /// Kernel-call gateway (V11/T9 step 2): the single exit point for
+    /// kernel syscalls (sys_fork today; safecopy/update/exec/diag join
+    /// with their consumers). `Rc<RefCell<…>>` follows the transport
+    /// pattern (V10-P0-2): tests keep a mock behind the same shape the
+    /// production `TrapKernelGateway` uses.
+    pub(crate) gateway: alloc::rc::Rc<
+        core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
+    >,
     /// C: `kernel_boot_info.kernel_allocated_bytes(_dynamic)` (glo.h) —
     /// consumed by the kernel usage query (region.c:1357-1364).
     pub(crate) kernel_allocated: KernelAllocated,
@@ -89,6 +97,11 @@ impl VmContext {
     ) -> Self {
         Self {
             proc_table: VmProcTable::get_global(),
+            gateway: alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
+                    transport: minix_sys::syscall::DirectKernelCallTransport,
+                }),
+            )),
             page_alloc,
             page_frames: None,
             page_cache: PageCache::new(),

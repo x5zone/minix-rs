@@ -175,12 +175,17 @@ fn free_forked_regions(regions: &mut [VirRegion], frames: &mut PageFrames) {
 
 /// Top-level fork orchestration. Corresponds to Minix3's `do_fork()`.
 ///
-/// Error handling mirrors Minix3:
+/// Error handling mirrors Minix3, with one documented deviation:
 /// - Validation failure → return error, no side effects
 /// - `pt_new` failure → return `PageTableInitFailed`, no side effects
 /// - `fork_regions` failure → free page table + free copied regions, return `CowAllocFailed`
-/// - `sys_fork` failure → panic (irrecoverable: kernel has created the child process)
+/// - `sys_fork` failure → C panics (post-commit irrecoverable); minix-rs
+///   replies fail-closed instead (`KernelCall`). Pre-E1 the trap never
+///   executed, so the reply is exact (kernel state untouched); post-E2
+///   real post-commit kernel failures get a VM-side review at edge E2
+///   sign-off (edge_todo.md).
 pub(crate) fn do_fork(
+    gateway: &mut dyn crate::kernel_gateway::KernelGateway,
     table: &VmProcTable,
     frames: &mut PageFrames,
     _pfn_alloc: &mut dyn PfnAllocator,
@@ -318,7 +323,14 @@ pub(crate) fn do_fork(
     // itself (A1 adoption semantics; Minix3's `pt_bind()` step-5
     // notification is subsumed by the VMCTL SetAddrSpace path).
 
-    let child_endpoint = sys_fork(parent.endpoint(), child.slot());
+    // C: fork.c:57-63 — sys_fork commits the child in the kernel and
+    // returns its endpoint. minix-rs routes the call through the gateway
+    // (kernel_gateway.rs) and maps failure to a fail-closed error reply:
+    // pre-E1 the trap stub answers -EIO while the kernel state is
+    // untouched, so the error is exact rather than a fabricated endpoint.
+    let child_endpoint = gateway
+        .sys_fork(parent.endpoint(), child.slot())
+        .map_err(VmForkError::KernelCall)?;
     child.set_endpoint(child_endpoint);
 
     // C: fork.c:97-108 — pre-fault message buffer pages for child and parent.
@@ -390,23 +402,6 @@ pub(crate) fn do_fork(
     Ok(child_endpoint)
 }
 
-/// Notify kernel to create child process scheduling entity.
-/// Corresponds to Minix3's `sys_fork()`.
-///
-/// Returns the child's new endpoint assigned by the kernel.
-/// On failure, panics — like Minix3, this is irrecoverable because
-/// the kernel may have already created the child process.
-///
-/// DEFERRED (2026-06-15): Once IpcTransport is implemented, this will call:
-///   ipc_call_kernel(SYS_FORK, parent_endpoint, child_slot)
-/// Implementation path: (1) IpcTransport::sendrecv to KERNEL endpoint;
-/// (2) kernel do_fork creates child proc + copies address space;
-/// (3) returns child endpoint. Currently returns a deterministic endpoint
-/// for testing — real hardware requires kernel IPC (kernel IPC core dependency).
-fn sys_fork(_parent_endpoint: Endpoint, child_slot: UserSlot) -> Endpoint {
-    Endpoint::from_generation_slot(1, child_slot.get() as i32)
-}
-
 /// Resolve CoW for a single page within a region (fork helper).
 ///
 /// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
@@ -442,6 +437,11 @@ pub(crate) enum VmForkError {
     /// Page table mapping failed (pt_writemap).
     /// Corresponds to Minix3's ENOMEM from pt_writemap().
     PageTableMapFailed,
+    /// The kernel-side sys_fork failed through the gateway (V11/T9).
+    /// C: do_fork.c panics on this; minix-rs replies fail-closed
+    /// (NotImplemented pre-E1 — trap not wired; InternalError for a real
+    /// kernel errno). See `do_fork` doc above.
+    KernelCall(crate::kernel_gateway::GatewayError),
     PageNotMapped,
     MemType(MemTypeError),
 }

@@ -67,6 +67,7 @@ pub(crate) mod region;
 pub(crate) mod pagetable;
 pub(crate) mod memtype;
 pub(crate) mod ipc;
+pub(crate) mod kernel_gateway;
 pub(crate) mod direct_map;
 pub(crate) mod alloc_page;
 pub(crate) mod heap_arena;
