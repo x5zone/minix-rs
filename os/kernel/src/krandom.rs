@@ -21,9 +21,10 @@
 //!   same pattern as `PROC_TABLE` / `PRIV_TABLE` / `IRQ_MANAGER`.
 //!   Access is BKL-protected (single-writer from IRQ path, single-reader
 //!   from syscall path).
-//! - **D3**: `get_randomness` is a no-op stub, matching C's i386/earm
-//!   implementation. The actual entropy gathering is done in user space
-//!   by the `random` driver (drivers/system/random/).
+//! - **D3**: `get_randomness` samples the TSC into the source bin
+//!   ([ARCH: deviation] — C i386/earm leave it as an empty stub; the
+//!   kernel-side sample is a cheap extra entropy source and the user-space
+//!   `random` driver remains the primary gatherer).
 //! - **D4**: `RANDOM_SOURCES = 16`, `RANDOM_ELEMENTS = 64` — matching
 //!   `include/minix/type.h:182-183`.
 
@@ -225,32 +226,36 @@ pub unsafe fn krandom() -> &'static mut KRandomness {
 ///
 /// # Implementation
 ///
-/// The C implementation is a **no-op stub** on most architectures (i386,
-/// earm — `arch_system.c:179`). The actual entropy gathering is done in
-/// user space by the `random` driver, which reads the (zero) bins via
-/// `GET_RANDOMNESS` and combines them with its own entropy sources.
+/// C keeps this an **empty stub** on i386/earm (`arch_system.c:179`) and
+/// gathers real entropy in user space (`drivers/system/random`). Rust
+/// samples the TSC here instead: the read is a single register read on
+/// the IRQ path, needs no subsystem, and adds jitter entropy on top of
+/// the user-space gatherer (which still owns the entropy decision — the
+/// bins are write-only to the kernel and consumed via `GET_RANDOMNESS`).
 ///
-/// We match the C behavior: this function is a no-op. When a real
-/// implementation is needed, it would record `read_tsc()` into
-/// `krandom.bin[source].r_buf[r_next]` and advance `r_next`.
+/// [ARCH: deviation] — C i386/earm no-op; Rust records `read_tsc()` into
+/// `krandom.bin[source].r_buf[r_next]` and advances the ring. The C
+/// user-space `random` driver remains the primary entropy gatherer.
 ///
 /// # Safety
 ///
 /// Caller must hold the BKL (IRQ dispatch path acquires BKL).
-pub fn get_randomness(_source: i32) {
-    // No-op stub — matches C's i386/earm implementation.
-    // Real implementation would be:
-    //   if let Some(kr) = unsafe { try_krandom() } {
-    //       let src = (_source as usize) % RANDOM_SOURCES;
-    //       let bin = &mut kr.bin[src];
-    //       if (bin.r_size as usize) < RANDOM_ELEMENTS {
-    //           let tsc = read_tsc();
-    //           bin.r_buf[bin.r_next as usize] = (tsc & 0xFFFF) as u16;
-    //           bin.r_next = (bin.r_next + 1) % RANDOM_ELEMENTS as i32;
-    //           if bin.r_next == 0 { bin.r_size = RANDOM_ELEMENTS as i32; }
-    //           else if bin.r_size < bin.r_next { bin.r_size = bin.r_next; }
-    //       }
-    //   }
+pub fn get_randomness(source: i32) {
+    // SAFETY: BKL held by the IRQ dispatch caller.
+    if let Some(kr) = unsafe { try_krandom() } {
+        let src = (source as usize) % RANDOM_SOURCES;
+        let bin = &mut kr.bin[src];
+        if (bin.r_size as usize) < RANDOM_ELEMENTS {
+            let tsc = crate::clock::read_tsc();
+            bin.r_buf[bin.r_next as usize] = (tsc & 0xFFFF) as u16;
+            bin.r_next = (bin.r_next + 1) % RANDOM_ELEMENTS as i32;
+            if bin.r_next == 0 {
+                bin.r_size = RANDOM_ELEMENTS as i32;
+            } else if bin.r_size < bin.r_next {
+                bin.r_size = bin.r_next;
+            }
+        }
+    }
 }
 
 // ── Tests ──
@@ -258,6 +263,46 @@ pub fn get_randomness(_source: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-33: get_randomness fills the source bin ring in order
+    /// (r_next advances, r_size saturates at RANDOM_ELEMENTS). Hosted
+    /// read_tsc returns 0 — the ring/advance semantics are still fully
+    /// observable (the recorded VALUE is hardware-dependent).
+    #[test]
+    fn test_get_randomness_advances_ring_and_saturates_size() {
+        // Reset the shared global (tests run single-threaded but in
+        // arbitrary order and earlier tests may have filled bins).
+        // SAFETY: single-threaded test.
+        unsafe { *KRANDOM.get() = KRandomness::new() };
+        init();
+        for _ in 0..(RANDOM_ELEMENTS + 3) {
+            get_randomness(4);
+        }
+        // SAFETY: single-threaded test; init() ran above.
+        let kr = unsafe { krandom() };
+        let bin = &kr.bin[4 % RANDOM_SOURCES];
+        // Once saturated (r_size == RANDOM_ELEMENTS) the fill guard stops
+        // writing, so r_next freezes at the wrap point (0) — a full bin is
+        // "ready to read", not overwritten. Hosted read_tsc() returns 0,
+        // so the recorded VALUE is 0; the ring semantics are what we pin.
+        assert_eq!(bin.r_next, 0);
+        assert_eq!(bin.r_size as usize, RANDOM_ELEMENTS);
+        assert_eq!(bin.r_buf[0], 0);
+    }
+
+    /// D-33: the source index wraps over RANDOM_SOURCES (no panic on
+    /// arbitrary IRQ vectors).
+    #[test]
+    fn test_get_randomness_source_index_wraps() {
+        // SAFETY: single-threaded test.
+        unsafe { *KRANDOM.get() = KRandomness::new() };
+        init();
+        get_randomness(1_000_003 % RANDOM_SOURCES as i32 + RANDOM_SOURCES as i32 * 7);
+        // SAFETY: single-threaded test.
+        let kr = unsafe { krandom() };
+        let touched: usize = kr.bin.iter().filter(|b| b.r_next > 0).count();
+        assert_eq!(touched, 1, "exactly one source bin must be touched");
+    }
 
     #[test]
     fn test_krandomness_bin_layout() {

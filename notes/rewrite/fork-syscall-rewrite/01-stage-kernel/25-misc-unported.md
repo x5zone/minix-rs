@@ -593,7 +593,7 @@ pub fn dispatch_profile(
 | `struct k_randomness` | include/minix/type.h:187-194 | `KRandomness`（`#[repr(C)]`，2184 字节） | `random_elements`/`random_sources`/`bin[16]` |
 | `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
 | `krandom_init()` | main.c:48-49（`krandom.random_sources`/`random_elements` 直接赋值，**无此函数**） | `krandom::init()`（`lib.rs:387` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
-| `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | **no-op stub**，匹配 C i386/earm 实现 |
+| `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | ✅ 已实现 read_tsc 采样（D-33，2026-09-06；**[ARCH: deviation]** C i386/earm 为空体） |
 | `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1056-1073） | 快照 + `wipe_all` + 拷贝 |
 | `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1074-1102） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
 
@@ -601,7 +601,7 @@ pub fn dispatch_profile(
 
 - **D1**: `#[repr(C)]` 结构体严格对齐 C ABI（字段顺序/大小/对齐），因为用户态 `random` 驱动通过原始字节解释这些结构。
 - **D2**: `KRANDOM` 全局用 `SyncUnsafeCell` + `get()`，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式。BKL 保护单写（IRQ 路径）单读（syscall 路径）。`SyncUnsafeCell::get()` 返回裸指针，规避 Rust 2024 的 `static_mut_refs` lint（早期版本用 `static mut` + `addr_of_mut!`，已迁移）。
-- **D3**: `get_randomness` 是 no-op stub，匹配 C 的 i386/earm 实现。**实际熵采集由用户态 `random` 驱动完成**（drivers/system/random/），内核仅提供 bin 容器与 `GET_RANDOMNESS` 导出接口。Rust 不在内核侧实现 RDRAND/RTSC 采集，避免架构特定代码泄漏到 kernel crate（与项目"硬件抽象为 trait"原则一致；x86 RDRAND 应在 `os/arch/src/x86_64/` 实现，当前 deferred）。
+- **D3**（2026-09-06 D-33 更新）: `get_randomness` 不再是 no-op——按用户裁决实现 **read_tsc 采样**（[ARCH: deviation]，C i386/earm 为空体）：IRQ 到达时把 `read_tsc() & 0xFFFF` 记入对应 source bin 的环形缓冲（`r_next` 推进、`r_size` 饱和于 RANDOM_ELEMENTS）。TSC 读取走既有 `clock::read_tsc()` 包装（ClockArch trait，非 RDRAND 指令），架构特定代码仍在 arch 层、kernel crate 零内联汇编。**用户态 `random` 驱动仍是主熵采集者**——内核 bin 是叠加的抖动源（write-only，经 `GET_RANDOMNESS` 导出后清零）。
 - **D4**: `RANDOM_SOURCES = 16`、`RANDOM_ELEMENTS = 64`，匹配 `include/minix/type.h:182-183`。
 
 **dispatch_getinfo 接入点**：
