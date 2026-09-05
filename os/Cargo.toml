@@ -66,6 +66,11 @@ members = [
     "commands/sbin/fsck",
     "commands/sbin/mkfs",
     "commands/sbin/reboot",
+    "commands/sbin/devdb",
+
+    # 用户态命令 - usr.bin / usr.sbin（命令安装分层，见 18-stage-commands/99）
+    "commands/usr-bin/login",
+    "commands/usr-sbin/svcsched",
     
     # 用户态命令 - games
     "commands/games/tetris",

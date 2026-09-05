@@ -1,21 +1,215 @@
-# 03-登录链路与口令数据库
+# 03-终端登录链路与口令数据库
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: 登录链路与口令数据库
-> **源码**: `minix3/libexec/getty/（3 .c）、usr.bin/login/（4 .c）、usr.bin/{passwd,chpass,su,newgrp,id,pwhash}/、usr.sbin/{pwd_mkdb,vipw,user}/、sbin/nologin/、etc/{gettytab,ttys,master.passwd,passwd.conf,skel}`
-> **Rust 模块**: `新 crate（待建）`
-> **draft 素材**: 无（新建）
+> **状态**: 已完成，等待评审收敛
+> **定位**: 交付因果链的第一环末段——终端值守程序就位之后，用户如何从一块空白屏幕走到自己的 shell
+> **源码**: `minix3/libexec/getty/main.c`（711 行，`main` 流程含第 190 到 270 行的终端认领段）、`minix3/libexec/getty/init.c`（147 行）、`minix3/libexec/getty/subr.c`（742 行）、`minix3/usr.bin/login/login.c`（789 行，主函数第 136 行起，重试常量第 116 到 117 行，口令比对第 424 行，会话收尾第 604 到 724 行）、`minix3/etc/ttys`、`minix3/etc/gettytab`、`minix3/etc/master.passwd`、`minix3/etc/passwd.conf`、`minix3/etc/skel/`、`minix3/etc/profile`、`minix3/usr.bin/passwd/`、`minix3/usr.bin/chpass/`、`minix3/usr.bin/su/`、`minix3/usr.bin/newgrp/`、`minix3/usr.bin/pwhash/`、`minix3/usr.bin/id/`、`minix3/usr.sbin/pwd_mkdb/pwd_mkdb.c`、`minix3/usr.sbin/vipw/vipw.c`、`minix3/usr.sbin/user/`、`minix3/sbin/nologin/`
+> **Rust 模块**: `os/commands/usr-bin/login`（库包 `minix-login`：`passwd.rs`、`ttys.rs`、`gettytab.rs`、`userdb.rs`，27 个测试通过）
+> **前置依赖**: `01-init-rc-scripts.md`（终端会话由谁派生）、`02-service-scheduler.md`（服务视角的值守关系）、终端控制语义（`13-terminal-termios.md` 的终端属性部分）、认证与权限归属（`04-stage-pm` 的用户标识部分）
+> **不覆盖（移交）**: 口令哈希算法与认证后端实现（见 `04-stage-pm`）、shell 启动文件的解释执行（见 `05-shell-family.md`）、终端驱动（见 `16-stage-drivers` 的终端部分）
 
-## 核心点
+---
 
-- - getty：libexec/getty（init.c/main.c/subr.c）——ttys 每行派生、终端初始化、exec login
-- - login：usr.bin/login 流程——口令验证 → 会话建立 → exec shell；gettytab 终端参数面
-- - 口令数据库面：passwd/master.passwd 格式 + pwd_mkdb（Berkeley DB 面）+ vipw + user + chpass + pwhash
-- - 权限命令：su/newgrp/nologin/id 的 setuid 语义（[ARCH] A-12，依赖 04-stage-pm）
-- - 会话初始化：profile/skel 面
+## 1. 概念：三次交棒，一次验证
 
-## 边界
+### 1.0 本章说明
 
-- - **前置依赖**: 02、13（termios）、04-stage-pm（认证/权限）
-- - **不覆盖（移交）**: 口令存储实现（PM）、shell 启动文件细节（05）
+本章讲用户从看到登录提示到进入 shell 之间发生的事：三段程序依次交棒（终端值守、登录验证、shell），中间做一次口令验证。
 
+> **本章不讲什么**：
+>
+> - 终端属性（波特率、回显、行规程）的驱动实现（见 `13-terminal-termios.md`）
+> - 用户标识与权限检查的内核侧实现（见 `04-stage-pm`）
+> - shell 启动后读取哪些启动文件（见 `05-shell-family.md`）
+>
+> 本章只讲登录链路本身：谁在终端上等人、如何确认你是你、确认之后如何把你送进 shell。
+
+### 1.1 登录链路全景：三棒交接
+
+一块终端从空闲到可用，要经过三次程序交棒，每次交棒都是一次"旧程序退出、新程序接管同一终端"的替换：
+
+1. **第一棒：终端值守程序**（`getty`）。它由启动初始化进程派生，任务是"把这块终端收拾成能跟人对话的样子"：设置波特率等终端属性、打印欢迎横幅与登录提示、读入用户敲下的登录名，然后带着登录名去启动登录验证程序，自己退出。
+2. **第二棒：登录验证程序**（`login`）。它核对"你是谁、你能不能进"：查口令数据库有没有这个用户、验证口令对不对、检查系统是否禁止登录、布设会话环境（家目录、环境变量、资源限制），最后启动用户的 shell，自己退出。
+3. **第三棒：shell**。用户日常操作的起点。从这一刻起，终端属于用户，之前两棒程序都不在了。
+
+"交棒即退出"这个设计是理解登录链的关键：任何一棒崩溃，启动初始化进程都会发现自己的子进程（第一棒）或孙辈链条断裂，重新派生第一棒，终端回到登录提示。终端永远不会卡死在一个坏掉的登录程序里——这正是 `01` 篇"值守"思想在登录场景的体现。
+
+### 1.2 口令数据库：两张脸，一份真相
+
+系统中关于用户的数据有两副面孔：
+
+- **文本脸**（`master.passwd` 与派生的 `passwd`）：人可读、可编辑。`master.passwd` 一行十个冒号分隔字段——登录名、加密口令、用户标识数字、组标识数字、登录类别、口令修改时间、账号过期时间、全名字段、家目录、shell；`passwd` 是去掉中间三个时间类别字段的七字段版本，供不需要特权信息的程序读取。
+- **数据库脸**（`pwd_mkdb` 构建的哈希数据库）：机器可读、可快速查询。文本文件查用户是逐行扫描，用户上千时每次登录都扫文件太慢，于是 `pwd_mkdb` 把文本编译成按名索引与按标识索引的两套哈希表，登录查询走哈希表，毫秒级返回。
+
+两张脸的一致性由工具链保证：`vipw` 是"带锁的编辑器"——编辑时加文件锁、存盘时做语法检查、通过后自动触发数据库重建，避免"文本改了数据库没更新"的不一致窗口；`chpass` 改单个用户信息字段、`passwd` 改口令、`pwhash` 生成口令哈希串，都是只写文本脸、再触发数据库重建的同一模式的不同入口。
+
+### 1.3 权限命令：已登录用户如何切换身份
+
+登录成功之后还有四个与身份相关的命令，它们共用"已验证的老用户申请新身份"的语义：
+
+- `su`（切换用户）：用目标用户的口令换取目标身份，常用于普通用户临时行使管理员权限。
+- `newgrp`（切换主组）：用组口令换取新的主属组，影响新建文件的归属。
+- `id`（查询身份）：打印当前用户标识、组标识与附属组，只读，无副作用，是前两个命令的"对照组"。
+- `nologin`（拒绝登录）：不是给人用的，是给账号用的——把某个账号的 shell 设成它，任何以此账号登录的尝试都会显示系统维护信息并断开（`daemon` 这类系统账号的 shell 就是它，见 `master.passwd` 第三行实例）。
+
+这四个命令的共同约束是必须以特权身份运行（切换身份是敏感操作），具体鉴权归进程管理阶段，Rust 侧当前只建模"拒绝优于放行"的默认策略（见第 3.3 节）。
+
+### 1.4 会话环境：登录程序留给 shell 的"行李"
+
+验证通过之后、启动 shell 之前，登录程序要布设会话环境，内容来自三处：
+
+1. **系统模板**（`/etc/profile`）：全系统统一的登录初始化脚本，设基本搜索路径、基本环境变量。
+2. **用户模板**（`/etc/skel/` 下的 `dot.profile`、`dot.shrc`、`dot.login` 等）：新建用户时复制到其家目录的起点文件，用户此后可自行修改。
+3. **口令数据库行**：家目录（切换工作目录的目标）、shell（要启动的程序）、全名字段（写入登录记录）。
+
+"模板复制"而非"直接引用"的设计值得玩味：系统升级改模板不影响老用户（老用户家目录里的是副本），新用户永远拿到最新起点。代价是模板的改进不会自动惠及老用户——这是用"一致性"换"不打扰"的经典取舍。
+
+---
+
+## 2. C 源码分析
+
+### 2.1 第一棒：`getty` 认领终端（`main.c` 第 190 到 270 行）
+
+`getty` 主函数开头的终端认领段做了五件事，顺序不能乱：
+
+1. 无视中断信号（登录提示被中断没有意义），写系统日志标记启动，取主机名与系统信息备用（第 190 到 200 行附近）。
+2. 判断调用名是否以 `uu` 开头（古老的拨号复用逻辑，现代恒为假分支，但代码保留）。
+3. 给自己设 CPU 时间上限（防坏线路导致无限空转）。
+4. 确定终端名：参数不足或第三个参数是横杠时，沿用标准输入已绑定的终端（第 233 行）；否则拼出 `/dev` 下的设备路径，并把设备属主改成登录用户、权限收紧为仅属主可读写、撤销旧的虚拟终端绑定（第 240 到 268 行）。
+5. 查终端能力表、应用终端属性（`subr.c` 的职责），清屏，打印提示，读登录名，启动 `login`。
+
+`init.c`（147 行）是终端初始化的早期步骤，`subr.c`（742 行）是能力表查询与属性应用的函数库。两者都是"把能力表文字变成终端设备状态"的翻译层，细节归终端阶段文档。
+
+### 2.2 终端表：`ttys` 文件是启动初始化进程与登录链的合同
+
+`minix3/etc/ttys` 每行五个有效列：终端名、要运行的程序（带引号的完整命令行，空串表示不运行）、终端类型、启用或停用、可选的安全标志。实例：`console "/usr/libexec/getty default" minix on secure`——控制台终端、运行值守程序并传 `default` 能力名、终端类型 `minix`、启用、允许管理员在此登录；`tty00 "" unknown off secure`——停用；`ttyp0 "" network off`——网络伪终端占位，平时停用。
+
+引号的必要性：程序列本身含空格（程序路径加能力名参数），不用引号包裹，列切分就错位。Rust 解析器为此实现了一次性的引号感知列切分（见第 4.2 节）。
+
+### 2.3 能力表：`gettytab` 是终端方言词典
+
+`minix3/etc/gettytab` 用终端能力格式（与 `termcap` 同源）描述每种终端：首行 `default` 条目给所有终端定默认值（清屏、校验、欢迎语模板 `im`），`std.9600|9600-baud` 这类条目用竖杠并列多个别名、用 `sp#9600` 设定速率。`getty` 启动时按 `ttys` 行指定的能力名查表，把查到的属性逐项应用到终端设备。别名机制让"按速率找"与"按名字找"两种习惯同时成立。
+
+### 2.4 第二棒：`login` 验证与布设（`login.c`）
+
+主函数从第 136 行开始，参数注释（第 182 到 195 行附近）把四个标志的来历说清：`-p`（值守程序传来，表示环境已备好、不要清空）、`-f`（跳过二次验证，用于已验证过的转交）、`-h` 与 `-a`（远端主机名与地址，供网络登录写入登录记录）。信号处置（第 174 到 176 行）延续值守传统：定时器防挂死、忽略退出与中断（登录过程不容打断）。
+
+验证核心在第 348 行（按名查库）与第 424 行（口令比对：把用户输入用同一哈希加密，与库中密文比较）。重试策略由第 116 到 117 行的两个常量钉住：最多 10 次机会、每次失败后退避 3 秒——防暴力猜解的最简有效手段（猜得越快等得越久，一天能试的次数有硬上限）。
+
+收尾段（第 604 到 724 行）是会话布设的完整清单：shell 为空则用默认 shell（第 604 到 605 行）、能力系统可覆盖 shell（第 607 到 612 行）、设 `SHELL` 环境变量（第 617 行）、取 shell 基名备显示（第 691 行）、口令过期则强制先改口令（第 709 行附近调用改口令程序）、最后把自己替换成 shell（第 723 行）。任何一步失败都以失败退出码结束，绝不"带病"进入 shell。
+
+### 2.5 口令工具链：`passwd`、`chpass`、`pwhash`、`pwd_mkdb`、`vipw`、`user`
+
+- `passwd`：改口令三步——验证老口令、读两遍新口令比对一致、写库。两遍比对防手误，是交互设计的常识。
+- `chpass`：改全名字段、家目录、shell 等非口令字段，带格式校验。
+- `pwhash`：口令哈希生成器，把明文变成可存入库的哈希串，供脚本批量建账号。
+- `pwd_mkdb`：文本编译成哈希数据库（见 1.2 节），重建是原子的（先建临时库、再整体改名覆盖），避免登录程序读到半成品。
+- `vipw`：加锁编辑加存盘校验加自动重建（见 1.2 节）。
+- `user`（`usr.sbin/user/`）：批量账号管理（增删改查面向脚本），与交互式工具互补。
+
+### 2.6 `master.passwd` 实例导读
+
+文件前三行是极佳的教学样本：`root::0:0::0:0:Charlie &:/root:/bin/sh`——管理员账号，口令字段为空（配合系统配置可直接登录控制台，生产环境应设密），用户标识与组标识都是零；`toor:*:1…`——口令字段为星号表示禁止此账号直接登录（备用管理员，平时锁死）；`daemon:*:1:1:…:/sbin/nologin`——系统账号，shell 是拒绝登录程序，连"锁没锁"的问题都不存在。三种"能否登录"的表达（空、星号、拒绝程序）各有用途，不可混用。
+
+---
+
+## 3. Rust 设计决策
+
+### 3.1 为什么四种文件格式各建一个解析模块
+
+`passwd` 行、`ttys` 行、`gettytab` 条目、`group` 行（归 `04` 篇）看起来都是"文本行"，最省事的是写一个"通用冒号分隔解析器"。但四种格式的分 sculpt 差异是本质的：`passwd` 是固定字段数的冒号分隔；`ttys` 是空格分隔但第二列可带引号；`gettytab` 是"竖杠别名加冒号能力"的两段式；注释与空行的处理也各不相同。通用解析器最终会变成"四个分支的开关语句"，省下的代码量远少于欠下的理解债。
+
+Rust 实现于是给每种格式一个模块（`passwd.rs`、`ttys.rs`、`gettytab.rs`），每个模块只懂一种格式，错误类型统一为 `LoginError`。这与 Linux 的 `util-linux` 把每个文件格式的解析散在各工具里、Redox 把用户数据库解析收进专用库的做法异曲同工：格式知识内聚，调用方只关心"查到了还是没查到"。
+
+### 3.2 为什么解析器借用输入而不拷贝
+
+四个解析模块全部返回借用输入文本的结构体（结构体字段是字符串切片，不是新分配的字符串），整个库无堆分配、可在无标准库环境编译。理由有二：其一，登录链解析的输入（配置文件内容）本来就躺在调用方读进来的整块文本里，再拷贝一份纯属浪费；其二，零拷贝迫使解析器不持有数据，生命周期由调用方掌控，"解析结果比输入活得长"这类悬垂错误在编译期即被拒绝。这是从 Rust 社区最佳实践（无分配解析器风格）直接借来的习惯，不是 C 源码的翻译（C 侧用静态缓冲与拷贝，两者内存模型完全不同）。
+
+### 3.3 为什么用户数据库是一个接口加两个实现
+
+C 侧用 `getpwnam` 家族屏蔽"文本还是哈希库"的差异，Rust 侧用 `UserDatabase` 接口做同样的事，只是方向反过来：C 的接口背后是多套现成实现（文件、数据库、网络），Rust 当前只有两个实现——`EmptyDatabase`（谁也查不到）与 `SliceDatabase`（在一组文本行里顺序找）。`EmptyDatabase` 不是占位糊弄，而是诚实的阶段状态：在进程管理阶段接管认证之前，任何"我认识这个用户"的断言都是虚假的；显式"谁也不认识"配合登录重试循环，系统行为是"永远提示、永远进不去"，安全且可预测。
+
+测试 `test_trait_objects_are_interchangeable` 把两个实现放进同一接口数组，证明调用方（未来的登录主程序）无需为换实现而改代码——这正是接口存在的全部意义。
+
+### 3.4 为什么登录尝试的判定独立成函数
+
+`identify` 函数（空名判参数无效、查无此人判不存在）看起来薄，但它钉住了一条安全规则：空登录名在解析层之外再被拒绝一次。C 侧 `login` 主函数里同样的检查散在输入读取之后（第 290 行附近的重试计数初始化暗示了流程位置）。收拢成函数的好处是规则可测试、可复用（`su` 与 `newgrp` 同样需要"先确认账号存在"），坏处是没有——三行函数没有抽象成本。
+
+---
+
+## 4. 实现详解
+
+### 4.1 模块结构
+
+`os/commands/usr-bin/login`（库包名 `minix-login`）共 5 个源文件：
+
+| Rust 文件 | 对应 C 源码位置 | 职责 |
+|-----------|----------------|------|
+| `lib.rs` | — | 错误类型（`LoginError`，22 对应参数无效、2 对应查无、13 对应拒绝）与模块组织 |
+| `passwd.rs` | `etc/master.passwd` 格式、`passwd` 面 | 七字段与十字字段两行形状的解析（`parse_passwd_line`） |
+| `ttys.rs` | `etc/ttys` 格式 | 引号感知列切分与五列解析（`parse_ttys_line`） |
+| `gettytab.rs` | `etc/gettytab` 格式 | 别名段与能力段解析、能力存在性查询（`has`） |
+| `userdb.rs` | `login.c:348` 查库语义 | `UserDatabase` 接口、`EmptyDatabase` 与 `SliceDatabase`、`identify` 判定 |
+
+### 4.2 关键类型与不变量
+
+- **口令条目 `PasswdEntry`**：登录名、口令占位、用户标识数字、组标识数字、全名、家目录、shell。不变量：登录名非空且字符合法；标识数字必须全数字且不溢出 32 位；七字段与十字字段输入经归一后字段位置一致（中间三字段在七字段形状下视为空）。
+- **终端行 `TtysEntry`**：终端名、值守命令、终端类型、启用状态、安全标志。不变量：至少四列；状态只认启用与停用两个词；安全标志只认 `secure` 一个词（其余尾列忽略，保证未来扩展不破坏解析）。
+- **能力条目 `GettytabEntry`**：别名表（最多 8 个）加能力表（最多 32 个），超限即判错（防恶意超长行耗尽栈上数组）。`has` 查询按"相等、井号前缀、等号前缀"三规则匹配，避免 `celery` 误命中 `ce`（测试钉住）。
+- **登录判定 `identify`**：空名先错、查无后错，错误码与 C 侧退出语义对齐（参数无效 22、查无 2）。
+
+### 4.3 解析函数一览
+
+| 函数 | 输入 | 输出 | 对应 C 行为 |
+|------|------|------|------------|
+| `parse_passwd_line(行)` | 文本行 | 条目 | `master.passwd` 与 `passwd` 的行语义 |
+| `parse_ttys_line(行)` | 文本行 | 条目、无（注释空行）、错 | `ttys` 五列语义 |
+| `parse_gettytab_line(逻辑行)` | 已拼接续行的文本 | 条目、无（注释空行）、错 | `gettytab` 别名加能力语义（调用方先拼接反斜杠续行） |
+| `identify(数据库, 登录名)` | 接口对象与名字 | 条目或拒绝原因 | `login.c:348` 查库加空名拒绝 |
+
+---
+
+## 5. 测试要点
+
+`cargo test -p minix-login`：**27 个测试，全部通过**（截至 2026-09-06）。
+
+重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/login` 复现）：
+
+- **口令行解析**（`passwd.rs`，8 个）：`test_classic_seven_field_line`（七字段形状）、`test_master_passwd_ten_field_line`（十字字段形状，中间三字段归一）、`test_blocked_account_still_parses`（星号口令可解析、封禁是策略层的事）、`test_wrong_field_count_rejected`（字段数不对）、`test_empty_name_rejected`（空名）、`test_non_numeric_id_rejected` 与 `test_overflowing_id_rejected`（标识非数字与溢出）、`test_errno_mapping`（22、2、13 三错误码）。
+- **终端表解析**（`ttys.rs`，7 个）：`test_console_line_from_etc_ttys`（用真实控制台行：引号命令、启用、安全三属性齐验）、`test_off_line_without_secure`（停用行）、`test_network_line_parses`（网络占位行无安全标志）、`test_comment_and_blank_skipped`（注释空行跳过）、`test_too_few_columns_rejected`（列不足）、`test_bad_status_rejected`（状态词非法）、`test_unterminated_quote_rejected`（引号未闭合）。
+- **能力表解析**（`gettytab.rs`，6 个）：`test_joined_default_entry`（默认条目四能力齐验）、`test_speed_entry_names_and_number`（竖杠别名加数字能力）、`test_missing_colon_rejected` 与 `test_missing_capabilities_rejected`（缺分隔与缺能力）、`test_prefix_without_separator_does_not_match`（前缀误命中拦截）。
+- **用户数据库**（`userdb.rs`，6 个）：`test_empty_database_knows_nobody`（空库谁也查不到）、`test_slice_database_finds_account`（文本表查中）、`test_slice_database_skips_comment_lines`（坏行跳过不影响好行）、`test_identify_maps_missing_user` 与 `test_identify_rejects_empty_name`（判定两规则）、`test_trait_objects_are_interchangeable`（接口统一）。
+
+尚未覆盖、随后续阶段补齐的：口令哈希验证（依赖认证后端，即进程管理阶段）、会话布设与 shell 启动（依赖进程管理原语与 shell 就绪）、`vipw` 加锁语义的并发测试（依赖文件锁原语）。解析与判定层是全覆盖的，执行层是显式留白的。
+
+---
+
+## 6. 过渡：有人登录之后，设备与名字从哪里来
+
+本篇走完了交付因果链的第三步：终端值守程序等人、登录验证程序验人、口令数据库认人，会话环境铺好，shell 接管终端。
+
+但登录链与启动链都依赖一批"名字"与"设备"事先存在：`/dev` 下的设备节点（否则终端设备文件都不存在）、组与主机等系统数据库（否则名字解析无从谈起）、目录层次规范（否则模板复制不知对错）。这些"地基中的地基"是 `04-device-database.md` 的职责。按因果链它其实更早，但按理解顺序放在登录之后恰好：先看到"谁在用这些名字"，再看"这些名字从哪来"，动机最清楚。
+
+---
+
+## 7. 参见
+
+- `01-init-rc-scripts.md`——启动脚本链（终端会话由谁派生）
+- `02-service-scheduler.md`——服务管理（值守关系的服务视角）
+- `04-device-database.md`——设备节点与系统数据库（下一步：名字与设备的来源）
+- `05-shell-family.md`——shell 家族（登录链交棒的下一站）
+- `minix3/usr.bin/login/login.c:116-117`——重试与退避常量
+- `minix3/usr.bin/login/login.c:424`——口令比对行
+- `minix3/usr.bin/login/login.c:604-724`——会话布设与 shell 启动段
+- `minix3/libexec/getty/main.c:190-270`——终端认领段
+- `minix3/etc/ttys`——终端表实例（`test_console_line_from_etc_ttys` 的真实输入来源）
+- `minix3/etc/master.passwd`——口令文本脸实例（前三行即三种登录许可形态）
+
+---
+
+## 附：验证记录（评审用，可跳过）
+
+- `wc -l minix3/libexec/getty/main.c minix3/libexec/getty/init.c minix3/libexec/getty/subr.c minix3/usr.bin/login/login.c` → 711、147、742、789 行，与正文引用一致。
+- `head -3 minix3/etc/master.passwd` → 三行样本已读（空口令、星号口令、拒绝 shell），与正文"三种许可形态"一致。
+- `ls minix3/etc/skel/` → `dot.cshrc dot.login dot.logout dot.profile dot.shrc` 加构建文件，与正文"用户模板"一致。
+- `cargo test -p minix-login` → 27 通过、0 失败；`cargo clippy` 无警告。
+- 本文档引用的 `file:line` 均来自正文写作前实际执行的 `rg -n` 与 `sed -n` 输出，非凭记忆书写。

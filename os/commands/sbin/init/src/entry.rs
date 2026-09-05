@@ -182,6 +182,37 @@ impl DeviceProbe for FakeDeviceProbe {
     }
 }
 
+/// Filesystem backed probe for the live boot path.
+///
+/// Behaviour differs from the fake on purpose: answers come from the
+/// machine instead of canned values. The console counts as present when its
+/// device path exists; device assurance succeeds when the device directory
+/// itself is reachable, otherwise the entry decision falls back to
+/// single-user mode exactly as the C boot path does when the console is
+/// missing. Only standard file metadata queries are used, so the probe
+/// behaves identically on any host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FsDeviceProbe {
+    /// Device path treated as the console, usually `/dev/console`.
+    pub console_path: &'static str,
+    /// Directory whose reachability gates device assurance, usually `/dev`.
+    pub device_dir: &'static str,
+}
+
+impl DeviceProbe for FsDeviceProbe {
+    fn console_present(&self) -> bool {
+        std::fs::metadata(self.console_path).is_ok()
+    }
+
+    fn ensure_devices(&self) -> DeviceEnsureOutcome {
+        if std::fs::metadata(self.device_dir).is_ok() {
+            DeviceEnsureOutcome::Ok
+        } else {
+            DeviceEnsureOutcome::Failed
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +321,38 @@ mod tests {
             EntryError::AlreadyRunning.to_errno(),
             Errno::from_i32(EEXIST)
         );
+    }
+
+    #[test]
+    fn test_fs_probe_sees_live_filesystem() {
+        // The test host always has a root directory; a sibling path that
+        // cannot exist stands in for the missing console.
+        let present = FsDeviceProbe {
+            console_path: "/",
+            device_dir: "/",
+        };
+        assert!(present.console_present());
+        assert_eq!(present.ensure_devices(), DeviceEnsureOutcome::Ok);
+        let missing = FsDeviceProbe {
+            console_path: "/no-such-console-device",
+            device_dir: "/no-such-device-dir",
+        };
+        assert!(!missing.console_present());
+        assert_eq!(missing.ensure_devices(), DeviceEnsureOutcome::Failed);
+    }
+
+    #[test]
+    fn test_probes_are_interchangeable_as_trait_objects() {
+        let fake = FakeDeviceProbe {
+            present: true,
+            ensure_outcome: DeviceEnsureOutcome::Ok,
+        };
+        let live = FsDeviceProbe {
+            console_path: "/",
+            device_dir: "/",
+        };
+        let probes: [&dyn DeviceProbe; 2] = [&fake, &live];
+        assert!(probes.iter().all(|probe| probe.console_present()));
     }
 }
 

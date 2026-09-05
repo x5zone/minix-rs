@@ -19,7 +19,7 @@ mod sysctl;
 mod ttys;
 mod utmp;
 
-use entry::{DeviceEnsureOutcome, DeviceProbe, FakeDeviceProbe, InitialState, decide_entry, parse_boot_args};
+use entry::{DeviceEnsureOutcome, DeviceProbe, FsDeviceProbe, InitialState, decide_entry, parse_boot_args};
 
 fn main() {
     minix_rt::init();
@@ -28,11 +28,12 @@ fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let (boot_args, _warnings) = parse_boot_args(&argv);
 
-    // S4: device probe. Live probe lands with minix_sys syscalls;
-    // assume console present until then (normal boot path).
-    let probe = FakeDeviceProbe {
-        present: true,
-        ensure_outcome: DeviceEnsureOutcome::Ok,
+    // S4: device probe against the live filesystem. A missing console or
+    // device directory falls back to single-user mode, matching the C boot
+    // path (init.c:229-367); tests keep using FakeDeviceProbe.
+    let probe = FsDeviceProbe {
+        console_path: "/dev/console",
+        device_dir: "/dev",
     };
     let console_ok = match probe.ensure_devices() {
         DeviceEnsureOutcome::Ok => true,

@@ -1,0 +1,10 @@
+[package]
+name = "minix-svcsched"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_svcsched"
+path = "src/lib.rs"

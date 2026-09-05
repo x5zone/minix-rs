@@ -1,0 +1,10 @@
+[package]
+name = "minix-login"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_login"
+path = "src/lib.rs"

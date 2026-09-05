@@ -1,0 +1,10 @@
+[package]
+name = "minix-devdb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_devdb"
+path = "src/lib.rs"
