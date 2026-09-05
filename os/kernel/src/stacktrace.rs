@@ -134,6 +134,66 @@ pub fn proc_stacktrace(rp: &KProcess) {
     Console::write_str("\n");
 }
 
+/// Read a 64-bit word from the kernel Direct Map (fault-free path: the
+/// Direct Map aliases all physical RAM, so any mapped kernel address
+/// reads; the walker treats `Some` as authoritative).
+///
+/// Shared by [`proc_stacktrace`]'s kernel branch (via
+/// [`make_read_word`]) and [`util_stacktrace`]'s self-walk (D-47).
+fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
+    move |vaddr: u64| -> Option<u64> {
+        // SAFETY: The kernel Direct Map aliases all physical RAM with
+        // the supervisor privileges needed to read it. The target stack
+        // was live in this map when the process ran; reading through the
+        // alias is observationally equivalent to the C PRCOPY memcpy
+        // branch.
+        let phys = CurrentDirectMap::virt_to_phys(VirBytes(vaddr));
+        let mapped = CurrentDirectMap::kernel_phys_to_virt(phys);
+        // SAFETY: `mapped.0` is a valid kernel Direct Map address for
+        // the physical page backing `vaddr`. The page was live in
+        // the Direct Map at the time we entered the panic path, and
+        // we hold BKL so no concurrent unmapping.
+        let bytes: [u8; 8] = unsafe {
+            core::ptr::read_volatile(mapped.0 as *const [u8; 8])
+        };
+        Some(u64::from_le_bytes(bytes))
+    }
+}
+
+/// Kernel self-backtrace: walk the CURRENT kernel stack's frame-pointer
+/// chain and emit each return address (D-47).
+///
+/// C: `util_stacktrace()` — `minix3/minix/lib/libsys/stacktrace.c:17-37`
+/// (`USE_SYSDEBUG` gated; kernel call sites: utility.c:39 panic path,
+/// proc.c:1132, arch_system.c:559). Unlike [`proc_stacktrace`] (a saved
+/// process context), this needs no process: it reads the current frame
+/// pointer via [`CurrentStacktraceArch::current_frame_pointer`] and
+/// walks kernel memory through the Direct Map.
+///
+/// # Scope
+///
+/// x86_64 only (C ships it for i386 only). On architectures without a
+/// `current_frame_pointer` override the function prints a placeholder
+/// and stops — the diagnostic must not become the second fault.
+///
+/// # BKL Requirement
+///
+/// Same as [`proc_stacktrace`]: caller holds the BKL.
+pub fn util_stacktrace() {
+    use minix_plat::CurrentEarlyConsole as Console;
+    // The walk helpers write through EarlyConsole; hosted tests must not
+    // invoke this function (same gate as proc_stacktrace's tests).
+    let Some(fp) = CurrentStacktraceArch::current_frame_pointer() else {
+        Console::write_str("(stacktrace unavailable on this arch)\n");
+        return;
+    };
+    CurrentStacktraceArch::walk_frames_from(kernel_direct_read_word(), |pc| {
+        Console::write_hex(pc);
+        Console::write_str(" ");
+    }, fp, 0);
+    Console::write_str("\n");
+}
+
 /// Build the `read_word: Fn(u64) -> Option<u64>` closure for
 /// [`proc_stacktrace`].
 ///
@@ -175,28 +235,7 @@ fn make_read_word(
     move |vaddr: u64| -> Option<u64> {
         if is_kernel {
             // ── kernel task: read straight from Direct Map ──
-            //
-            // The stack virtual address belongs to the target process's
-            // address space but, for kernel tasks, that space *is* the
-            // kernel Direct Map. `DirectMapArch::virt_to_phys` returns
-            // the physical backing; mapping it back gives us a stable
-            // pointer to read.
-            //
-            // SAFETY: The kernel Direct Map aliases all physical RAM with
-            // the supervisor privileges needed to read it. The target
-            // stack was live in this map when the process ran; reading
-            // through the alias is observationally equivalent to the C
-            // PRCOPY memcpy branch.
-            let phys = CurrentDirectMap::virt_to_phys(VirBytes(vaddr));
-            let mapped = CurrentDirectMap::kernel_phys_to_virt(phys);
-            // SAFETY: `mapped.0` is a valid kernel Direct Map address for
-            // the physical page backing `vaddr`. The page was live in
-            // the Direct Map at the time we entered the panic path, and
-            // we hold BKL so no concurrent unmapping.
-            let bytes: [u8; 8] = unsafe {
-                core::ptr::read_volatile(mapped.0 as *const [u8; 8])
-            };
-            return Some(u64::from_le_bytes(bytes));
+            return kernel_direct_read_word()(vaddr);
         }
 
         // ── user process: cross the page table ──
@@ -236,6 +275,21 @@ fn make_read_word(
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod util_stacktrace_tests {
+    /// D-47 end-to-end: util_stacktrace walks the CURRENT kernel stack
+    /// (hosted this is the TEST process stack through mock DirectMap,
+    /// whose phys→virt mapping produces unmapped host addresses — the
+    /// same reason `proc_stacktrace_empty_chain_does_not_panic` is
+    /// ignored). Run on real hardware/QEMU: prints the return-address
+    /// chain and a trailing newline without panicking.
+    #[test]
+    #[ignore = "requires real kernel Direct Map; mock arch maps host stack walks to unmapped addresses"]
+    fn util_stacktrace_walks_current_stack_without_panic() {
+        super::util_stacktrace();
     }
 }
 

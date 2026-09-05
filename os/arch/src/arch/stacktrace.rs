@@ -66,14 +66,33 @@ pub trait StacktraceArch: CpuContextArch {
         // Default frame-pointer walk: fp → [saved_fp, return_addr]
         // Works for x86_64 (rbp), aarch64 (x29), riscv64 (s0) when
         // frame pointers are enabled.
-        let mut fp = Self::frame_pointer(cpu_context);
         let pc = Self::program_counter(cpu_context);
-        let mut count = 0;
-
-        // Emit the current PC first (top of stack).
         emit(pc);
-        count += 1;
+        // The leading pc counts toward MAX_STACK_FRAMES (total-emit cap,
+        // preserved by test_stacktrace_walk_frames_caps_at_max).
+        Self::walk_frames_from(read_word, emit, Self::frame_pointer(cpu_context), 1);
+    }
 
+    /// Walk the frame-pointer chain starting at `fp` (without emitting a
+    /// leading current-PC). Shared by [`Self::walk_frames`] (saved
+    /// context) and the kernel self-trace `util_stacktrace` (D-47, C
+    /// libsys/stacktrace.c:17-37 — `bp = get_bp()` then walk `bp[1]`).
+    ///
+    /// `already_emitted` counts frames already emitted by the caller so
+    /// the MAX_STACK_FRAMES total-emit cap holds across the shared loop.
+    ///
+    /// Frame layout: `[saved_fp, return_addr]` — x86_64 (rbp) and
+    /// aarch64 (x29) share it; riscv64 stores `ra` at `fp-8` and its
+    /// impl overrides `walk_frames` accordingly.
+    fn walk_frames_from<F>(
+        read_word: impl Fn(u64) -> Option<u64>,
+        mut emit: F,
+        mut fp: u64,
+        already_emitted: usize,
+    ) where
+        F: FnMut(u64),
+    {
+        let mut count = already_emitted;
         while fp != 0 && count < MAX_STACK_FRAMES {
             // Frame layout: [saved_fp, return_addr]
             // saved_fp at fp+0, return_addr at fp+8
@@ -99,6 +118,20 @@ pub trait StacktraceArch: CpuContextArch {
             }
             fp = saved_fp;
         }
+    }
+
+    /// Read the CURRENT frame pointer for a kernel self-backtrace
+    /// (`util_stacktrace` — no process context; C libsys/stacktrace.c
+    /// `get_bp()`). Requires arch asm and frame pointers enabled at
+    /// compile time.
+    ///
+    /// Default: unsupported (`None`) — the diagnostic caller prints a
+    /// placeholder and stops. C ships this utility for i386 only; the
+    /// x86_64 implementation overrides it. `[ARCH: scope]` — aarch64
+    /// (`x29`) / riscv64 (`s0`) can be added with one `asm!` each when
+    /// their kernel self-trace is needed.
+    fn current_frame_pointer() -> Option<u64> {
+        None
     }
 
     /// Extract the frame pointer register from a CpuContext.

@@ -362,6 +362,18 @@ impl StacktraceArch for X86_64CpuContextArch {
         // C: whichproc->p_reg.pc — x86-64 stores RIP as a named field.
         cpu_context.rip
     }
+
+    fn current_frame_pointer() -> Option<u64> {
+        // C: get_bp() (libsys/stacktrace.c) — `mov eax, ebp; ret`.
+        // SAFETY: reads the rbp register. rbp is callee-saved, so the
+        // compiler preserves it across the asm; the kernel is built with
+        // frame pointers (the same assumption the saved-context walker
+        // makes). Inside this function's prologue, rbp points at the
+        // current frame: [rbp] = saved rbp, [rbp+8] = return address.
+        let fp: u64;
+        unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp) };
+        Some(fp)
+    }
 }
 #[cfg(test)]
 mod stacktrace_tests {
@@ -376,6 +388,43 @@ mod stacktrace_tests {
     }
 
     /// C: proc_stacktrace_execute — chain walk emits pc + each return address.
+    /// D-47: current_frame_pointer reads the host (or kernel) rbp via
+    /// asm — plausible on any x86_64 with frame pointers: non-zero and
+    /// 8-aligned. Safe on hosted Linux (a plain register read).
+    #[test]
+    fn test_current_frame_pointer_plausible() {
+        let fp = X86_64CpuContextArch::current_frame_pointer().expect("x86_64 must support current_frame_pointer");
+        assert_ne!(fp, 0, "rbp must be non-zero inside a live frame");
+        assert_eq!(fp % 8, 0, "rbp must be 8-aligned");
+    }
+
+    /// D-47: the shared `walk_frames_from` loop (used by util_stacktrace
+    /// without a saved context) walks the same [saved_fp, ret] layout.
+    /// Fake chain hosted on local arrays.
+    #[test]
+    fn test_walk_frames_from_shared_loop() {
+        // Synthetic chain (the walker only reads through `read_word`, so
+        // the addresses need not be real pointers):
+        //   fp 0x1000 -> [saved 0x2000, ret 0xA]; fp 0x2000 -> [0, 0xB]
+        let stack = [
+            (0x1000u64, 0x2000u64),
+            (0x1008, 0xA),
+            (0x2000, 0),
+            (0x2008, 0xB),
+        ];
+        let read_from = |addr: u64| stack.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v);
+        let mut emitted: Vec<u64> = Vec::new();
+        X86_64CpuContextArch::walk_frames_from(read_from, |pc| emitted.push(pc), 0x1000, 0);
+        assert_eq!(emitted, vec![0xA, 0xB]);
+        // Non-advancing frame (saved_fp <= fp) terminates the walk —
+        // the corruption sentinel, same as the walk_frames cycle test.
+        let stack2 = [(0x1000u64, 0x900u64), (0x1008, 0xA)];
+        let read_from2 = |addr: u64| stack2.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v);
+        let mut emitted2: Vec<u64> = Vec::new();
+        X86_64CpuContextArch::walk_frames_from(read_from2, |pc| emitted2.push(pc), 0x1000, 0);
+        assert_eq!(emitted2, vec![0xA]);
+    }
+
     #[test]
     fn test_stacktrace_walk_frames_emits_pc_and_chain() {
         let mut ctx = X86_64CpuContext::new();

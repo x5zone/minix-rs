@@ -192,7 +192,7 @@ void _exit(int e)
 **演进 rationale**：
 - C 需要手动实现 `va_start`/`vprintf` 格式化 + 重入保护 + stacktrace——Rust `panic!` 宏由编译器内建，自动处理格式化与调用点信息
 - C 的 `ARE_PANICING` 重入保护由 halt-loop 实现天然保证——handler 内是 `loop { spin_loop }`，不经过格式化/打印路径，重入只是再次进入同一个循环，不会无限递归（C 的 `reset()` 等价物由架构复位替代）
-- C 的 `util_stacktrace()` 在 Rust 中由 `#[panic_handler]` 的 `PanicInfo` 提供 location 信息（`file:line`）
+- C 的 `util_stacktrace()` 已实现为 `os/kernel/src/stacktrace.rs::util_stacktrace`（D-47，2026-09-06：x86_64 `current_frame_pointer` asm 原语 + `StacktraceArch::walk_frames_from` 共享循环 + 内核 Direct Map 直读）；panic 路径接线见 D-48
 - C 的 `minix_shutdown(0)` 在 Rust 中由 `#[panic_handler]` 的 halt-loop 替代（见 §4.1）
 
 ### 3.2 kputc: `EarlyConsole::write_str` + `log` crate 替代
@@ -282,7 +282,7 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 **与 C `panic` 的差异**：
 - C `panic` 打印 `kernel panic:` 前缀 + stacktrace + `minix_shutdown`——Rust `panic!` 由 `#[panic_handler]` 处理，当前只 halt-loop（无消息打印）
 - C `ARE_PANICING` 重入保护由 halt-loop 实现天然保证（见 §3.1）
-- C `util_stacktrace()` 在 Rust 中未实现——`PanicInfo` 提供 location 但不展开栈
+- C `util_stacktrace()` 已实现（D-47，`util_stacktrace()` 内核自回溯）；`PanicInfo` location 与栈展开的**接线**在 panic handler 侧（D-48）
 
 ### 4.2 Rust kputc / log 接入
 
@@ -381,7 +381,7 @@ fn init(&mut self) {
 | C 行为 | Rust 当前状态 | 未来计划 |
 |--------|-------------|---------|
 | `printf("kernel panic: " + fmt)` | ❌ 不打印消息 | `minix_sys::write(STDERR, buf)`（见 `minix-rt` 文档注释） |
-| `util_stacktrace()` | ❌ 不展开栈 | 待 arch stack walker |
+| `util_stacktrace()` | ✅ 已实现（D-47：`StacktraceArch::current_frame_pointer` + `walk_frames_from` + 内核 Direct Map 直读；x86_64 only，C 同为 i386 only） | panic handler 接线（D-48） |
 | `minix_shutdown(0)` | ❌ halt-loop | 待 shutdown 协议 |
 | `printf("kernel on CPU %d: ")` | ❌ 不打印 | 随 panic 消息一起实现 |
 

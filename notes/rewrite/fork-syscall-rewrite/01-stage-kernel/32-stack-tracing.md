@@ -265,6 +265,8 @@ C 的 `KTS_SYSENTER/SYSCALL` 分支 + `usermapped_glo_ipc.S` sp+16 布局耦合�
 
 ### 4.1 `StacktraceArch` trait 定义（os/arch/src/arch/stacktrace.rs:41-113，`MAX_STACK_FRAMES` 在 :30）
 
+> **2026-09-06 增补（D-47）**：trait 新增两个成员——(a) `walk_frames_from(read_word, emit, fp, already_emitted)`：帧链循环从 `walk_frames` 抽出共享（`already_emitted` 使 `walk_frames` 的前导 pc 计入 `MAX_STACK_FRAMES` 总发射上限的契约跨共享循环保持）；(b) `current_frame_pointer() -> Option<u64>`：内核自回溯读**当前**帧指针（C libsys `get_bp()` 等价，x86_64 `asm!("mov {}, rbp")` 覆写，aarch64/riscv64 默认 `None`——C 同为 i386 only，`[ARCH: scope]` 已标注）。消费方 `util_stacktrace()`（os/kernel/src/stacktrace.rs，D-47）+ 内核 Direct Map 直读 helper `kernel_direct_read_word`（自 `make_read_word` 内核分支抽取共享）。行号以 `rg` 实时为准。
+
 ```rust
 pub const MAX_STACK_FRAMES: usize = 32;
 
