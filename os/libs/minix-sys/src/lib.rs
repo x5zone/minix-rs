@@ -39,6 +39,10 @@ pub mod vm;
 pub mod misc;
 /// Reincarnation server queries: lookup and endpoint questions (document 12).
 pub mod rs;
+/// User-space socket call policy: call list, flag handling, fallback rule
+/// (17-stage-net/23-libc-socket.md). Traps stay with the callers; the legacy
+/// device fallback is documented but never taken ([ARCH] N-2).
+pub mod socket;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).

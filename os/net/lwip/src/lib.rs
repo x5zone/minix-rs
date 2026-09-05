@@ -25,6 +25,7 @@ pub mod ifconf;
 pub mod ifdev;
 pub mod ipsock;
 pub mod lnksock;
+pub mod lwip_port;
 pub mod mcast;
 pub mod mempool;
 pub mod ndev;
