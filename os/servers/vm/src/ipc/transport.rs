@@ -17,11 +17,11 @@
 //! [`IpcTransport`] is a strategy trait that abstracts the IPC backend.
 //! Two impls are provided:
 //!
-//! - [`KernelIpcTransport`] — production impl that calls `sys_ipc_*`.
-//!   Currently `unimplemented!()` because the kernel IPC primitive is
-//!   not yet ready (depends on kernel IPC core). Selecting this impl in non-test
-//!   builds will still panic at runtime, but now with a clear "wiring
-//!   pending" message instead of a misleading `Err(())`.
+//! - [`KernelIpcTransport`] — production impl delegating to the minix-sys
+//!   trap backend (`DirectTrapTransport`). The call shape is final; until
+//!   the 64-bit trap wiring lands (edge E1, stage plan A-6) the backend
+//!   answers `EIO` and the main loop's dropped-message path handles it —
+//!   no panic, no `unimplemented!()` (V11/T9).
 //! - [`TestIpcTransport`] — mock impl that buffers/returns test data.
 //!   `#[cfg(test)]`-only; injected through `VmServer::new_for_test`
 //!   (V10-P0-2). Lets unit tests drive the main loop without a live
@@ -34,6 +34,9 @@
 //! - Minix3 `lib/syslib/sys_ipc_receive.c` — kernel IPC primitive
 
 use minix_types::{Endpoint, Message};
+// 匿名导入 minix-sys 的同名 trait：方法解析需要它，且不与本文件的
+// `IpcTransport` 冲突（VM 侧策略 trait 才是对外语义）。
+use minix_sys::ipc::IpcTransport as _;
 
 /// IPC receive status word, mirroring the `rcv_sts` output parameter of
 /// Minix3's `sef_receive_status()`. The kernel fills in the flags describing
@@ -111,7 +114,7 @@ impl core::fmt::Display for IpcError {
 ///
 /// Rust: The kernel IPC is not yet available (kernel IPC core). Using a trait
 ///    allows us to substitute a mock in `#[cfg(test)]` builds and a
-///    real (currently `unimplemented!()`) impl otherwise. Two distinct
+///    real (trap-backed, V11/T9) impl otherwise. Two distinct
 ///    implementations (kernel vs. test) justify the trait abstraction
 ///    per the "trait quality" guideline.
 pub trait IpcTransport {
@@ -133,27 +136,34 @@ pub trait IpcTransport {
 
 // ── Production impl: kernel IPC ──
 
-/// Production IPC transport. Calls into `minix-syscall` (or equivalent)
-/// to invoke the kernel's IPC primitives.
+/// Production IPC transport. Delegates to the minix-sys user-space trap
+/// backend to invoke the kernel's IPC primitives.
 ///
-/// **Status (2026-06-13)**: The `sys_ipc_*` primitives are not yet
-/// available because the kernel IPC engine (kernel IPC core) is pending. This
-/// impl is wired into `vm_server.rs` via a static instance and panics
-/// with a clear "wiring pending" message — *not* the previous opaque
-/// `Err(())` — so the failure mode is self-documenting.
-///
-/// Once kernel IPC core lands, the body of `receive`/`send` should be replaced
-/// with the real syscall invocations. The trait surface is stable.
+/// **Status (2026-09-06, V11/T9)**: the delegation shape is final —
+/// `receive` is `sef_receive_status(ANY, …)` and `send` is `ipc_send`,
+/// both through `DirectTrapTransport`. The kernel-side IPC core is real
+/// (`os/kernel/src/ipc.rs`); what is pending is the user-space trap
+/// instruction sequences themselves (edge E1). Until E1 lands the backend
+/// answers `EIO`, which flows through `IpcError::Kernel` into the main
+/// loop's dropped-message accounting — the failure mode is observable,
+/// graceful, and identical to a slow/broken kernel link.
 pub struct KernelIpcTransport {
     /// Tracks whether the transport has been initialized. The C side
     /// does this implicitly via SEF startup; we expose it explicitly
     /// so tests can assert against it.
     initialized: bool,
+    /// 用户态 trap 后端（minix-sys）。`DirectTrapTransport` 的方法体在
+    /// 64 位 trap wiring 落地（edge E1，stage plan A-6）前返回 EIO——
+    /// 本类型已经按真实调用形态委托，E1 落地时无需再改这里。
+    inner: minix_sys::ipc::DirectTrapTransport,
 }
 
 impl KernelIpcTransport {
     pub const fn new() -> Self {
-        Self { initialized: false }
+        Self {
+            initialized: false,
+            inner: minix_sys::ipc::DirectTrapTransport,
+        }
     }
 }
 
@@ -171,32 +181,32 @@ impl IpcTransport for KernelIpcTransport {
     }
 
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
-        // C: sef_receive_status(ANY, &msg, &rcv_sts) — libsys.so
-        // Rust: blocked on kernel IPC core. The `initialized`
-        // flag is checked to give a more informative error than a
-        // bare `unimplemented!()`.
+        // C: sef_receive_status(ANY, &msg, &rcv_sts) — libsys.so.
+        // Delegates to the minix-sys trap backend (V11/T9): the call shape
+        // is final; until edge E1 lands the backend answers EIO and the
+        // main loop's dropped-message path handles it (no panic).
         if !self.initialized {
             return Err(IpcError::Unimplemented);
         }
-        // Once the kernel IPC primitive is available, replace this
-        // body with the syscall call. The signature is stable.
-        unimplemented!(
-            "KernelIpcTransport::receive — wiring pending kernel IPC core"
-        );
+        let mut msg = Message::default();
+        match self.inner.receive(Endpoint::ANY, &mut msg) {
+            // minix-sys `IpcStatus(u32)` is the raw kernel status word —
+            // identical to the `flags` this type models (V10-P1-1 bit
+            // decoding: NOTIFY = low 6 bits, FROM_KERNEL = bit 16).
+            Ok(sts) => Ok((msg, IpcStatus { flags: sts.0 })),
+            Err(trap) => Err(IpcError::Kernel(trap.0)),
+        }
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
         if dest == Endpoint::NONE {
             return Err(IpcError::InvalidEndpoint);
         }
-        // C: ipc_send(dest, &msg) — libsys.so
+        // C: ipc_send(dest, &msg) — libsys.so (same delegation as receive).
         if !self.initialized {
             return Err(IpcError::Unimplemented);
         }
-        let _ = msg;
-        unimplemented!(
-            "KernelIpcTransport::send — wiring pending kernel IPC core"
-        );
+        self.inner.send(dest, msg).map_err(|trap| IpcError::Kernel(trap.0))
     }
 }
 

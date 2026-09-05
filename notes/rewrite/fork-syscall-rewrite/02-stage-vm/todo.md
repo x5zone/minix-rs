@@ -1174,6 +1174,13 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **466 / 465 / 450 / 449 passed**（+1 结构对账测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 15-ipc-dispatch.md（§4.1 查表描述 + wrapper 示例 + §5.1 新测试行）；minix-types 侧全量 per-call decode 函数下移为可选后续（现 wrapper 已使解码知识局部化）
 
+### ✅ Fix #28: T9 step 1 — KernelIpcTransport 从 `unimplemented!()` 改为委托 minix-sys trap 后端（P1-3 半边闭环）
+
+- **Files**: `os/servers/vm/src/ipc/transport.rs`（`KernelIpcTransport` 增 `inner: DirectTrapTransport` 字段；`receive` 按 `sef_receive_status(ANY,…)` 委托、`send` 按 `ipc_send` 委托——调用形态定稿；`IpcStatus{flags}` 与 minix-sys `IpcStatus(u32)` 原始字直通；`TrapStatus → IpcError::Kernel` 映射；模块头/类型头文档重写）、minix-sys 依赖从闲置转为实际使用
+- **语义**：主循环不再存在任何 `unimplemented!()`——E1（trap 指令序列）落地前，后端回答 `EIO` 并流入 dropped_messages 记账（V9-P0-1 路径），失败模式可观测且优雅；`receive` 的 `ANY` 语义与状态字位定义（NOTIFY 低 6 位 / FROM_KERNEL bit16，V10-P1-1）保持不变
+- **Verified**: `rg "unimplemented!" os/servers/vm/src` → 0；`cargo test -p minix-vm --lib` → 450 passed；clippy 默认 0
+- **Docs**: transport.rs 模块头与类型头重写（V11/T9 状态标注）
+
 ### ✅ Fix #27: T8（V10-P2-3 + P2-2）— 错误枚举收敛**判定闭合**：现有 From 集中表即 errno 映射总表，收敛重构判为损失
 
 - **性质**：本条为设计判定（无代码改动）。V10-P2-3 的启动条件（kernel IPC 落地）已满足（V11-P1-1 核实），故按计划深审全部错误映射后做出最终判定。
