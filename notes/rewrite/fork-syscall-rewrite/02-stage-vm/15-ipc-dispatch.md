@@ -312,7 +312,7 @@ match call_nr {
     _c if _c == VM_MMAP as usize - vm_rq_base =>
         Self::dispatch_mmap(table, page_alloc, frames, VmMmapIn::decode(m1)).into(),
     _c if _c == VM_FORK as usize - vm_rq_base =>
-        Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(m1)).into(),
+        Self::dispatch_fork(ctx, VmForkIn::decode(m1)).into(),
     // … 全部分支 …
     _ => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
 }
@@ -572,7 +572,7 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 ### 4.4 dispatch_by_number 全分支（dispatcher.rs:1032-1232）
 
-`dispatch_by_number` 顶部以 VmContext 解构取出四个可变组件（V9-P1-3 step 1：字段级 disjoint `&mut`，取代旧 `parts_mut()` 4 元组），逐分支 decode 后委托：
+`dispatch_by_number` 顶部取 `ctx = &mut server.ctx`（V9-P1-3 step 2），逐分支 decode 后把 `&mut VmContext` 交给 handler——各 handler 自行解构所需字段（字段级 disjoint `&mut`，取代旧 `parts_mut()` 4 元组）：
 
 | 请求码 | decode | 委托 | 状态 |
 |--------|--------|------|------|

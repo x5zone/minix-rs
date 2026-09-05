@@ -64,6 +64,7 @@ const FREE_CACHE_BATCH: usize = 1024;
 /// / `phys_blocks` / `cache_list` / VFS request state, glo.h + region.h);
 /// minix-rs groups them so ownership is explicit in one place.
 pub(crate) struct VmContext {
+    pub(crate) proc_table: &'static VmProcTable,
     pub(crate) page_alloc: VmPageAllocator,
     pub(crate) page_frames: Option<PageFrames>,
     pub(crate) page_cache: PageCache,
@@ -73,6 +74,7 @@ pub(crate) struct VmContext {
 impl VmContext {
     fn new(page_alloc: VmPageAllocator) -> Self {
         Self {
+            proc_table: VmProcTable::get_global(),
             page_alloc,
             page_frames: None,
             page_cache: PageCache::new(),
@@ -1025,15 +1027,13 @@ impl VmServer {
         // C: main.c:143 — msg.m_source == VFS_PROC_NR is the gate.
         let caller = VFS_PROC_NR;
 
-        let table = VmProcTable::get_global();
-        let frames = match self.ctx.page_frames.as_mut() {
-            Some(f) => f,
-            None => return VmReply::Error(VmError::InternalError),
-        };
+        // Pre-init defense (unreachable past run()): preserve the old
+        // graceful InternalError instead of the handler's expect() panic.
+        if self.ctx.page_frames.is_none() {
+            return VmReply::Error(VmError::InternalError);
+        }
 
-        MessageDispatcher::dispatch_procctl(
-            table, &mut self.ctx.page_alloc, frames, caller, request,
-        )
+        MessageDispatcher::dispatch_procctl(&mut self.ctx, caller, request)
     }
 
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
@@ -1060,7 +1060,7 @@ impl VmServer {
         };
         // V9-P1-3 step 1: destructure the memory context into disjoint
         // &mut fields instead of the former parts_mut() 4-tuple.
-        let VmContext { page_alloc, page_frames, page_cache, vfs_queue } = &mut self.ctx;
+        let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         match crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
@@ -1490,31 +1490,6 @@ impl VmServer {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn vfs_queue_mut(&mut self) -> &mut VfsRequestQueue {
         &mut self.ctx.vfs_queue
-    }
-}
-
-// V10-P2-1: `handle_fork`/`handle_brk`/`handle_exit` are thin test
-// wrappers over `MessageDispatcher` (the main loop routes via
-// `dispatch_on_msg` → `dispatch_by_number` directly). They are kept under
-// `cfg(test)` for the server-level dispatch tests.
-#[cfg(test)]
-impl VmServer {
-    pub(crate) fn handle_fork(&mut self, req: VmForkIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_fork(table, &mut self.ctx.page_alloc, frames, req)
-    }
-
-    pub(crate) fn handle_brk(&mut self, req: VmBrkIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_brk(table, &mut self.ctx.page_alloc, frames, req)
-    }
-
-    pub(crate) fn handle_exit(&mut self, req: VmExitIn) -> VmReply {
-        let table = VmProcTable::get_global();
-        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_exit(table, &mut self.ctx.page_alloc, frames, req)
     }
 }
 
@@ -1998,7 +1973,7 @@ mod tests {
                 child_slot: UserSlot::new(1),
             };
 
-            let reply = server.handle_fork(request);
+            let reply = MessageDispatcher::dispatch_fork(&mut server.ctx, request);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
         });
     }
@@ -2031,7 +2006,7 @@ mod tests {
                 child_slot: UserSlot::new(minix_types::NR_PROCS), // exec temp slot
             };
 
-            let reply = server.handle_fork(request);
+            let reply = MessageDispatcher::dispatch_fork(&mut server.ctx, request);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
 
             // Cleanup: `init()` marked the VM slot as a VM instance (bumping
@@ -2051,7 +2026,7 @@ mod tests {
                 new_addr: VirBytes(0x5000_0000),
             };
 
-            let reply = server.handle_brk(request);
+            let reply = MessageDispatcher::dispatch_brk(&mut server.ctx, request);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
         });
     }
@@ -2126,7 +2101,7 @@ mod tests {
                 endpoint: Endpoint::NONE,
             };
 
-            let reply = server.handle_exit(request);
+            let reply = MessageDispatcher::dispatch_exit(&mut server.ctx, request);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
         });
     }

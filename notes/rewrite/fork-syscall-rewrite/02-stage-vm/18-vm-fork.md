@@ -342,7 +342,7 @@ if child_slot.get() >= NR_PROCS {
 ```
 主循环（dispatcher.rs:1036-1037）
   VM_FORK as usize - vm_rq_base =>
-    Self::dispatch_fork(table, page_alloc, frames, VmForkIn::decode(m1))
+    Self::dispatch_fork(ctx, VmForkIn::decode(m1))
       → fork::do_fork(table, frames, page_alloc, parent_endpoint, child_slot)   :111
       → Ok(child_endpoint) → VmReply::Fork(VmForkOut { child_endpoint })        :115-116
       → Err(e) → VmReply::Error(e.into())                                       :117

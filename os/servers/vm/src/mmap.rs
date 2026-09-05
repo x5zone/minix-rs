@@ -559,7 +559,7 @@ pub(crate) fn mmap_file_cont(
 
     let table = VmProcTable::get_global();
     // V9-P1-3 step 1: disjoint &mut fields via VmContext destructuring.
-    let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: _, vfs_queue } =
+    let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: _, vfs_queue, .. } =
         &mut server.ctx;
     let frames = page_frames.as_mut().expect("page_frames not initialized");
 

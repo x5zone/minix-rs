@@ -885,7 +885,7 @@ Coverage Summary for vm:
 
 **验证**：`rg "unimplemented!" os/servers/vm/src/ipc/transport.rs` 归零；`rg "minix_sys::" os/servers/vm/src` 非零；新增 TestIpcTransport 之外的"真实 trap 路径"集成测试（可先在 `minix-sys` 的 `CannedTransport` 语义上做半实物回放）。
 
-#### ✅ V11-P1-2 【解封】VmContext 状态收敛（原 P1-2 / V9-P1-3，阻塞已解除）——step 1 已修复 2026-09-06（§15 Fix #23）；step 2（dispatcher 签名迁移）随 T6 推进
+#### ✅ V11-P1-2 【解封】VmContext 状态收敛（原 P1-2 / V9-P1-3，阻塞已解除）——已全部完成 2026-09-06（step 1 见 §15 Fix #23；step 2 见 §15 Fix #24）
 
 **问题**：P1-2（全局可变状态散落 4 处 static + 实例字段）当年搁置的理由是"需专项规划 + 主循环不可测"。现在后半条已不成立：Fix #12 之后 transport 构造器注入，`TestIpcTransport` 可逐轮驱动 `run_once`。重构可以在每一步都有测试兜底的情况下进行。
 
@@ -1155,3 +1155,11 @@ Coverage Summary for vm:
 - **After**: 调用点 `let VmContext { page_alloc, page_frames, page_cache: cache, vfs_queue } = &mut server.ctx;` —— 字段级 disjoint `&mut` 由编译器强制，四组件"同生共死"的不变式结构化（V9-P1-3 step 1）；step 2（dispatcher 签名收 `&mut VmContext` + proc_table/fdref 收敛）随 T6
 - **Verified**: 四 feature 组合 clippy `^servers/` 警告全部 **0**；四矩阵测试 **449 / 465 / 464 / 449 passed**；`cargo check --all-features` 通过；`rg "parts_mut" os/servers/vm/src` → 0
 - **Docs**: 15-ipc-dispatch.md（§3.2 借用表述、§4.1 解构描述）、26-vm-queries.md（§4.1）、23-vfs-interaction.md（模块清单行号）
+
+### ✅ Fix #24: V11-P1-2 step 2 — dispatcher 全部 handler 签名收敛 `&mut VmContext`，handle_xxx 测试包装删除
+
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（26 个 `dispatch_*` 签名统一为 `(ctx: &mut VmContext, …)`：`proc_table: &'static VmProcTable` 收进 VmContext，各 handler 以 `let VmContext { proc_table, .. } = ctx;` 惯用法自取所需字段——字段级 disjoint `&mut`；`dispatch_by_number` 干线瘦身为 `let ctx = &mut server.ctx` 透传；`dispatch_info` 内化 `cached_pages`（删 `too_many_arguments` allow，9 参→5 参））、`os/servers/vm/src/vm_server.rs`（VmContext 增 `proc_table` 字段；transid 路径改 `dispatch_procctl(&mut self.ctx, …)` 并保留 pre-init 防御性 InternalError；删 `handle_fork/brk/exit` 三个 cfg(test) 包装，5 个测试直呼 dispatcher）、`os/servers/vm/src/mmap.rs`/`cow_exec_pf.rs`（解构补 `..`）、29 个 dispatcher 测试调用点迁移（局部变量 move 进 VmContext 字面量）
+- **Before**: handler 签名异构（`(table, page_alloc, frames, [cache,] [vfs_queue,] …)` 4-7 参），新增组件即全线改签名；vm_server 的 3 个同构测试包装（V9-P1-3 症状）
+- **After**: 单一 `&mut VmContext` + 语义参数；主干线不再解构；`fdref` 收敛随 T10（VFS_FDCLOSE 触碰 fdref 时）处理
+- **Verified**: 四 feature 组合 clippy `^servers/` **0 警告**；四矩阵 **449 / 465 / 464 / 449 passed**；`cargo check --all-features` 通过
+- **Docs**: 15-ipc-dispatch.md（§4.1 干线描述与 arm 示例）、18-vm-fork.md（arm 示例）
