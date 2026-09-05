@@ -1,0 +1,10 @@
+[package]
+name = "minix-mountinfo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_mountinfo"
+path = "src/lib.rs"

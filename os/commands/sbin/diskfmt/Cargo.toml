@@ -1,0 +1,10 @@
+[package]
+name = "minix-diskfmt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_diskfmt"
+path = "src/lib.rs"

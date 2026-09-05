@@ -1,0 +1,10 @@
+[package]
+name = "minix-termctl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_termctl"
+path = "src/lib.rs"

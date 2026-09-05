@@ -62,8 +62,11 @@ members = [
     "commands/bin/rm",
     "commands/bin/sh",
     "commands/bin/shell",
+    "commands/bin/fileops",
     "commands/bin/editor",
     "commands/bin/proctools",
+    "commands/bin/termctl",
+    "commands/bin/diskimg",
     
     # 用户态命令 - sbin
     "commands/sbin/init",
@@ -71,6 +74,8 @@ members = [
     "commands/sbin/mkfs",
     "commands/sbin/reboot",
     "commands/sbin/devdb",
+    "commands/sbin/mountinfo",
+    "commands/sbin/diskfmt",
 
     # 用户态命令 - usr.bin / usr.sbin（命令安装分层，见 18-stage-commands/99）
     "commands/usr-bin/login",

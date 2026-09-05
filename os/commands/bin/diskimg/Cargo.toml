@@ -1,0 +1,10 @@
+[package]
+name = "minix-diskimg"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_diskimg"
+path = "src/lib.rs"
