@@ -148,7 +148,6 @@ pub fn decode_proc_event_reply(msg: &Message) -> Option<(Endpoint, ProcEvent)> {
 }
 
 /// 构造 `PROCEVENTMASK` 订阅更新消息（订阅者 → PM）。
-
 /// C: `event.c:179` 的 `m_in.m_lsys_pm_proceventmask.mask`。
 pub fn proceventmask_msg(mask: ProcEventMask) -> Message {
     let payload = MessLsysPmProceventmask {

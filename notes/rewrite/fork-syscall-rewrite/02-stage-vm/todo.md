@@ -944,7 +944,7 @@ Coverage Summary for vm:
 
 **验证**：`cargo test -p minix-vm --lib memtype` 与 `allocator_tests` 用例数增加；`rg "fn test_.*contiguous" os/servers/vm/src/memtype.rs` 非零。
 
-#### V11-P2-3 clippy 回归收敛 + 死代码增量（V10-P2-1 的增量复盘）
+#### ✅ V11-P2-3 clippy 回归收敛 + 死代码增量（V10-P2-1 的增量复盘）——已修复 2026-09-06（见 §15 Fix #21）
 
 **问题**：V10 收敛时 `cargo clippy -p minix-vm --lib` 为 0 warnings；2026-09-06 实测默认 feature **1 条**、`--all-features` **7 条**。全部来自 08-17 之后的增量代码：
 
@@ -1041,7 +1041,7 @@ Coverage Summary for vm:
 
 **验证**：`rg "fn free" os/arch/src/pt_alloc.rs`（或对应文件）非零；新增"destroy 后中间页归还"测试；长跑测试退出 N 进程后 `available_regions` 可用页不下降异常量。
 
-#### V11-P3-1 卫生项批次（一次清掉）
+#### ✅ V11-P3-1 卫生项批次（一次清掉）——已修复 2026-09-06（见 §15 Fix #21）
 
 - `NR_VM_CALLS` 双重定义：`minix-types/src/ipc/vm.rs:149`（`pub const u32`）与 `vm_server.rs:1173`（私有 `usize`）并存——VM 侧改用 minix-types 常量做 `as usize` 转换，删除私有副本。
 - `minix-types/src/ipc/event.rs:150`：doc 注释后空行（clippy `empty line after doc comment`）——相邻 crate 顺手修。
@@ -1132,3 +1132,11 @@ Coverage Summary for vm:
 - **After**: 按真实依赖理由改写——测试桩的存在原因是"宿主单元测试无 VM direct-map 窗口、未注册 pt_alloc"；`vmproc.rs` 的 destroy 跳过原因是"测试桩无真实页表可清零"；`region/mod.rs` 说明测试调用方传 `None` 的机制与生产传 `pt` 的对照；三处测试桩注释统一指向退出条件（可注入 Paging，V11-P2-1）；`alloc_cycle` 注释改为"回收半边已实现（有界批回收），重试半边仍 DEFERRED 归 24-page-cache"
 - **Verified**: `rg "todo!\(\)" os/servers/vm/src` → 0；`rg "not yet implemented" region/ brk.rs vmproc/` → 0；`cargo test -p minix-vm --lib` → 448 passed；clippy 默认/all-features 警告数与改动前持平（1/7，无新增）
 - **Docs**: 注释即文档载体；NN-*.md 无引用这些注释文本（grep 核实），无需同步
+
+### ✅ Fix #21: V11-P2-3 + V11-P3-1 — clippy 回归收敛（默认 1→0）+ 死代码/卫生批次
+
+- **Files**: `os/servers/vm/src/vmproc/vmproc_handle.rs`（删 `page_table()` 只读访问器，:431-440，全仓零调用）、`os/servers/vm/src/phys_mem/buddy_alloc.rs`（删 `MAX_ORDER` 死常量 :38；`metadata_size` 改标 `#[cfg_attr(not(test), allow(dead_code))]`——测试 `make_test_metadata` 在用，与生产权威 `PhysAllocType::Buddy::metadata_size` 公式有别；`total_memory`/`free_memory`/`is_under_pressure` 补 DEFERRED 标注）、`os/servers/vm/src/phys_mem/segment_tree_alloc.rs`（删零调用的 `metadata_size` 与私有死助手 `pull_up`；`total_memory`/`free_memory` 补 DEFERRED 标注；identity op `(1*1024*1024)`→`(1024*1024)`；删失效 import `METADATA_ALIGN_PADDING`）、`os/servers/vm/src/phys_mem/mod.rs`（`as_buddy`/`as_buddy_mut` 补 DEFERRED 标注，对称于 `is_bitmap` 惯例）、`os/servers/vm/src/vm_server.rs`（`NR_VM_CALLS` 改为 `minix_types::NR_VM_CALLS as usize` 派生，消除双真相源）、`os/libs/minix-types/src/ipc/event.rs`（doc 注释空行）
+- **Before**: clippy 默认 1 / all-features 7（vm_server.rs:301 unreachable、page_table 死方法、as_buddy 对、buddy/segtree 各 4-5 项、identity op）；NR_VM_CALLS 在 minix-types 与 vm_server 各一份
+- **After**: clippy 默认 **0 warnings**；all-features 仅剩 `vm_server.rs:301` unreachable（属 V11-P1-3 双真相源条目，下一迭代清除）；NR_VM_CALLS 单一来源派生
+- **Verified**: `cargo test -p minix-vm --lib` 三矩阵 **448 / 463 / 448 passed**；`cargo check -p minix-vm --all-features` 通过；clippy 两档实测如上
+- **Docs**: 死代码删除项中 `metadata_size` 的公式差异已在代码注释说明单一权威归属；文档无引用被删项，无需同步

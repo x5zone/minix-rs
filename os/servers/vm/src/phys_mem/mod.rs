@@ -192,7 +192,12 @@ impl PhysAlloc {
         matches!(self, PhysAlloc::Bitmap(_))
     }
 
+    // V11-P2-3 (DEFERRED): buddy accessors, symmetric with `as_bitmap` —
+    // zero callers today because `relocate()` constructs the buddy backend
+    // directly and nothing else needs to reach into the enum variant. Kept
+    // as the enum's documented accessor surface for the buddy runtime path.
     #[cfg(feature = "buddy_alloc")]
+    #[allow(dead_code)]
     pub(crate) fn as_buddy(&self) -> Option<&BuddyAllocator> {
         match self {
             PhysAlloc::Buddy(b) => Some(b),
@@ -201,6 +206,7 @@ impl PhysAlloc {
     }
 
     #[cfg(feature = "buddy_alloc")]
+    #[allow(dead_code)]
     pub(crate) fn as_buddy_mut(&mut self) -> Option<&mut BuddyAllocator> {
         match self {
             PhysAlloc::Buddy(b) => Some(b),

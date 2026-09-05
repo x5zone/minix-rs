@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | T1 | 0 | 文档测试名 4 处 + §5.4 计数刷新 | V11-P2-6 | ✅ 2026-09-06（todo.md §15 Fix #19） |
 | T2 | 0 | 过时注释 4 处（X86_64Paging 已实现） | V11-P2-4 | ✅ 2026-09-06（todo.md §15 Fix #20） |
-| T3 | 0 | clippy 回归收敛 + 卫生批次 | V11-P2-3 + V11-P3-1 | ⬜ |
+| T3 | 0 | clippy 回归收敛 + 卫生批次 | V11-P2-3 + V11-P3-1 | ✅ 2026-09-06（todo.md §15 Fix #21；all-features 剩 :301 归 T4） |
 | T4 | 0 | 删 DefaultAllocator 双真相源 + 组合语义测试 | V11-P1-3 | ⬜ |
 | T5 | 1 | VmContext 第一步：parts_mut 消灭 | V11-P1-2（1/2） | ⬜ |
 | T6 | 1 | VmContext 第二步：dispatcher 收 &mut VmContext + fdref/table 收敛 | V11-P1-2（2/2） | ⬜ |

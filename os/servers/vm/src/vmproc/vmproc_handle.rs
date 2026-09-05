@@ -428,18 +428,6 @@ impl<'a> ActiveProc<'a> {
         self.inner.vm_regions_initialized = true;
     }
 
-    /// Returns reference to the page table.
-    ///
-    /// # Panics
-    /// Panics in debug mode if vm_pt has not been initialized.
-    #[inline]
-    pub(crate) fn page_table(&self) -> &PageTable {
-        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
-        // SAFETY: vm_pt_initialized is true (checked by debug_assert above).
-        // Single-threaded VM ensures no concurrent mutation.
-        unsafe { self.inner.vm_pt.assume_init_ref() }
-    }
-
     /// Returns mutable reference to the page table.
     ///
     /// # Panics

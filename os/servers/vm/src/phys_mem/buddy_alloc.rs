@@ -35,7 +35,6 @@ use super::{BumpBuf, CLICK_SIZE, BootMemRegion, METADATA_ALIGN_PADDING};
 const FLAG_ALLOCATED: u8 = 0x80;
 const ORDER_MASK: u8 = 0x7F;
 const ORDER_INVALID: u8 = 0xFF;
-const MAX_ORDER: usize = 30;
 const FREE_LIST_SENTINEL: u32 = u32::MAX;
 
 pub(crate) struct BuddyAllocator {
@@ -91,6 +90,10 @@ impl BuddyAllocator {
         alloc
     }
 
+    // V11-P2-3: test-only — `make_test_metadata` sizes its buffer slice with
+    // this (padding-inclusive) formula. The production relocation path uses
+    // the page-aligned `PhysAllocType::Buddy::metadata_size` (phys_mem/mod.rs).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn metadata_size(total_pages: usize) -> usize {
         let max_order = compute_max_order(total_pages);
         let heads_size = (max_order + 1) * core::mem::size_of::<u32>();
@@ -99,14 +102,21 @@ impl BuddyAllocator {
         heads_size + next_size + orders_size + METADATA_ALIGN_PADDING
     }
 
+    // V11-P2-3 (DEFERRED): fine-grained pressure/usage queries on the buddy
+    // backend. Mirrors `BitmapAllocator::is_under_pressure` (tested there);
+    // production wiring lands with the 24-page-cache reclaim path, which is
+    // when the buddy runtime-selection path picks its first callers.
+    #[allow(dead_code)]
     pub fn total_memory(&self) -> usize {
         self.total_pages * CLICK_SIZE
     }
 
+    #[allow(dead_code)]
     pub fn free_memory(&self) -> usize {
         self.free_pages * CLICK_SIZE
     }
 
+    #[allow(dead_code)]
     pub fn is_under_pressure(&self) -> bool {
         self.free_pages * 10 < self.total_pages
     }

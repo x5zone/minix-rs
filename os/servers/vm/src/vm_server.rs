@@ -1171,8 +1171,9 @@ const RS_PROC_NR: Endpoint = Endpoint::RS;
 const RS_INIT: u32 = 0x714;
 const VM_PAGEFAULT: u32 = 0xCFF;
 // C: com.h:769 — NR_VM_CALLS 49. The highest call is VM_RS_PREPARE
-// (VM_RQ_BASE + 48), so relative indices are 0..=48.
-const NR_VM_CALLS: usize = 49;
+// (VM_RQ_BASE + 48), so relative indices are 0..=48. Derived from the
+// minix-types constant so the two cannot drift (V11-P3-1).
+const NR_VM_CALLS: usize = minix_types::NR_VM_CALLS as usize;
 
 // ==========================================================================
 // Helpers

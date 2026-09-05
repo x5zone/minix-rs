@@ -29,7 +29,7 @@ use super::stats::MemStats;
 use super::types::{AllocError, PageAllocFlags, AlignedPhysBytes};
 use super::BootMemRegion;
 #[cfg(feature = "segment_tree_alloc")]
-use super::{BumpBuf, CLICK_SIZE, METADATA_ALIGN_PADDING};
+use super::{BumpBuf, CLICK_SIZE};
 
 #[cfg(feature = "segment_tree_alloc")]
 #[derive(Debug, Clone, Copy)]
@@ -132,20 +132,19 @@ impl SegmentTreeAllocator {
         alloc
     }
 
-    pub fn metadata_size(total_pages: usize) -> usize {
-        let offset = if total_pages == 0 {
-            1
-        } else {
-            total_pages.next_power_of_two()
-        };
-        let tree_size = if total_pages > 0 { 2 * offset } else { 2 };
-        tree_size * core::mem::size_of::<SegmentNode>() + METADATA_ALIGN_PADDING
-    }
+    // V11-P2-3: `metadata_size` removed — `PhysAllocType::SegmentTree::metadata_size`
+    // (phys_mem/mod.rs) is the single authority the relocation path consumes;
+    // the two formulas had drifted (this one used SegmentNode + padding).
 
+    // V11-P2-3 (DEFERRED): fine-grained usage queries, same disposition as
+    // the buddy backend — production callers arrive with the 24-page-cache
+    // reclaim path.
+    #[allow(dead_code)]
     pub fn total_memory(&self) -> usize {
         self.total_pages * CLICK_SIZE
     }
 
+    #[allow(dead_code)]
     pub fn free_memory(&self) -> usize {
         self.free_pages * CLICK_SIZE
     }
@@ -159,13 +158,6 @@ impl SegmentTreeAllocator {
             return false;
         }
         self.tree[self.offset + page].max_free > 0
-    }
-
-    fn pull_up(&mut self, mut idx: usize) {
-        while idx > 1 {
-            idx /= 2;
-            self.tree[idx] = merge(self.tree[idx * 2], self.tree[idx * 2 + 1]);
-        }
     }
 
     fn set_range(&mut self, start: usize, count: usize, free: bool) {
@@ -260,7 +252,7 @@ impl PhysAllocator for SegmentTreeAllocator {
         }
 
         let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1 * 1024 * 1024) / CLICK_SIZE
+            (1024 * 1024) / CLICK_SIZE
         } else if flags.contains(PageAllocFlags::LOWER16MB) {
             (16 * 1024 * 1024) / CLICK_SIZE
         } else {
