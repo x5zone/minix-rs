@@ -231,7 +231,11 @@ impl PhysAlloc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-#[cfg_attr(not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")), allow(dead_code))]
+// Each variant is constructed only in the feature combinations where its
+// backend is selectable (choose_allocator_type, vm_server.rs); the enum is
+// complete by design across the whole feature matrix, so allow — not
+// narrower cfg gates — is the honest annotation here.
+#[allow(dead_code)]
 pub(crate) enum PhysAllocType {
     Bitmap,
     Buddy,
@@ -277,7 +281,10 @@ impl PhysAllocType {
 pub(crate) const CLICK_SIZE: usize = 4096;
 pub(crate) const CLICK_SHIFT: usize = 12;
 pub(super) const METADATA_ALIGN_PADDING: usize = 2 * CLICK_SIZE;
-#[cfg_attr(not(feature = "buddy_alloc"), allow(dead_code))]
+// Referenced only where the buddy threshold is meaningful — the buddy branch
+// of `choose_allocator_type` and its threshold tests — so it is dead in the
+// other feature combinations by construction.
+#[allow(dead_code)]
 pub(crate) const BUDDY_THRESHOLD_PAGES: usize = 1 << 20;
 
 #[inline]

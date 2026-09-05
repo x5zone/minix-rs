@@ -1040,7 +1040,11 @@ impl MessageDispatcher {
         let usage_sources = server.usage_sources();
         let dropped_messages = server.dropped_messages();
         let pagefault_errors = server.pagefault_errors();
-        let (page_alloc, frames, cache, vfs_queue) = server.parts_mut();
+        // V9-P1-3 step 1: disjoint &mut fields via VmContext destructuring
+        // (replaces the former parts_mut() 4-tuple).
+        let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: cache, vfs_queue } =
+            &mut server.ctx;
+        let frames = page_frames.as_mut().expect("page_frames not initialized");
 
         let vm_rq_base = VM_RQ_BASE as usize;
 

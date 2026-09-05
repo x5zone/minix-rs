@@ -23,7 +23,9 @@ use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
 #[cfg(feature = "buddy_alloc")]
-use crate::phys_mem::{BuddyAllocator, BUDDY_THRESHOLD_PAGES};
+use crate::phys_mem::BuddyAllocator;
+#[cfg(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc")))]
+use crate::phys_mem::BUDDY_THRESHOLD_PAGES;
 #[cfg(feature = "segment_tree_alloc")]
 use crate::phys_mem::SegmentTreeAllocator;
 use crate::boot::{BootParams, KernelAllocated, VM_PROC_NR};
@@ -46,11 +48,41 @@ use minix_types::PhysBytes;
 /// (alloc.c:242-279); the same batch is used here.
 const FREE_CACHE_BATCH: usize = 1024;
 
+/// The memory subsystem state the server drives: the physical-page
+/// allocator, the frame table, the page cache, and the pending VFS request
+/// queue. These four live and die with the server and are needed together
+/// at every dispatch site.
+///
+/// V9-P1-3 step 1 (02-stage-vm todo): grouping them makes that invariant
+/// structural — callers destructure `&mut VmContext` into disjoint `&mut`
+/// fields (the borrow checker enforces the split) — and retires the
+/// former `parts_mut()` 4-tuple, whose existence was a borrow-checker
+/// workaround rather than a design statement. Later steps extend this
+/// type toward the full server context (proc table, boot parameters).
+///
+/// C has no counterpart: the four roles are globals in C (`vm_pagetable`
+/// / `phys_blocks` / `cache_list` / VFS request state, glo.h + region.h);
+/// minix-rs groups them so ownership is explicit in one place.
+pub(crate) struct VmContext {
+    pub(crate) page_alloc: VmPageAllocator,
+    pub(crate) page_frames: Option<PageFrames>,
+    pub(crate) page_cache: PageCache,
+    pub(crate) vfs_queue: VfsRequestQueue,
+}
+
+impl VmContext {
+    fn new(page_alloc: VmPageAllocator) -> Self {
+        Self {
+            page_alloc,
+            page_frames: None,
+            page_cache: PageCache::new(),
+            vfs_queue: VfsRequestQueue::new(),
+        }
+    }
+}
+
 pub struct VmServer {
-    page_alloc: VmPageAllocator,
-    page_cache: PageCache,
-    page_frames: Option<PageFrames>,
-    vfs_queue: VfsRequestQueue,
+    pub(crate) ctx: VmContext,
     initialized: bool,
     /// Allocation-pressure counter surfaced to the main loop.
     ///
@@ -215,10 +247,7 @@ impl VmServer {
         }
 
         Self {
-            page_alloc,
-            page_cache: PageCache::new(),
-            page_frames: None,
-            vfs_queue: VfsRequestQueue::new(),
+            ctx: VmContext::new(page_alloc),
             initialized: false,
             missing_spares: 0,
             pagefault_errors: 0,
@@ -290,11 +319,16 @@ impl VmServer {
     /// The `cfg` blocks are structured so every feature combination compiles
     /// to a body without unreachable code: the segment-tree check comes first
     /// and the buddy check is compiled only when segment-tree is absent.
-    #[cfg_attr(not(feature = "buddy_alloc"), allow(unused_variables))]
+    /// `total_pages` is consumed only in the buddy-threshold branch, hence
+    /// the mirrored `allow` condition.
+    #[cfg_attr(
+        not(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc"))),
+        allow(unused_variables)
+    )]
     fn choose_allocator_type(total_pages: usize) -> PhysAllocType {
         #[cfg(feature = "segment_tree_alloc")]
         {
-            return PhysAllocType::SegmentTree;
+            PhysAllocType::SegmentTree
         }
         #[cfg(not(feature = "segment_tree_alloc"))]
         {
@@ -310,7 +344,7 @@ impl VmServer {
 
     fn relocate(&mut self) {
         let (total_pages, old_pa_base, old_pa_pages) = {
-            let phys_alloc = self.page_alloc.phys_alloc();
+            let phys_alloc = self.ctx.page_alloc.phys_alloc();
             let bitmap = phys_alloc.as_bitmap().expect("relocate: bootstrap allocator must be Bitmap");
             let (pa_base, pa_pages) = bitmap.metadata_pa_range();
             assert!(pa_pages > 0, "relocate: no BumpBuf metadata to relocate (already relocated?)");
@@ -321,7 +355,7 @@ impl VmServer {
 
         let meta_size = alloc_type.metadata_size(total_pages);
         let pages = bytes_to_clicks(meta_size);
-        let new_va = crate::global::heap_arena_grow(pages, &mut self.page_alloc)
+        let new_va = crate::global::heap_arena_grow(pages, &mut self.ctx.page_alloc)
             .expect("relocate: failed to allocate new metadata via HeapArena");
         // SAFETY: new_va points to a valid heap-arena region of meta_size bytes;
         // no aliasing references exist.
@@ -331,7 +365,7 @@ impl VmServer {
 
         let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec![];
         {
-            let phys_alloc = self.page_alloc.phys_alloc();
+            let phys_alloc = self.ctx.page_alloc.phys_alloc();
             phys_alloc.available_regions(&mut |base_page, num_pages| {
                 free_regions.push(BootMemRegion {
                     base: base_page * CLICK_SIZE,
@@ -371,7 +405,7 @@ impl VmServer {
         };
 
         {
-            let phys_alloc = self.page_alloc.phys_alloc_mut();
+            let phys_alloc = self.ctx.page_alloc.phys_alloc_mut();
             *phys_alloc = new_alloc;
             let old_pa = AlignedPhysBytes::new(old_pa_base);
             phys_alloc.free_mem(old_pa, old_pa_pages);
@@ -413,8 +447,8 @@ impl VmServer {
         self.mark_vm_instance();
 
         // Phase 3: PageFrames after total_pages is known.
-        let total_phys = PhysBytes(self.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
-        self.page_frames = Some(PageFrames::new(total_phys));
+        let total_phys = PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
+        self.ctx.page_frames = Some(PageFrames::new(total_phys));
 
         // C: __minix_init() (main.c:480) — SEF startup makes the IPC
         // channel ready before the main loop. V10-P0-2: without this, a
@@ -429,7 +463,7 @@ impl VmServer {
     fn init_global_state(&mut self) {
         // SAFETY: init() must be called exactly once during VM startup.
         unsafe {
-            crate::global::init(self.page_alloc.total_pages());
+            crate::global::init(self.ctx.page_alloc.total_pages());
         }
 
         // Initialize the kernel memory layout used by `init_page_table()`.
@@ -585,8 +619,8 @@ impl VmServer {
         // C: alloc_mem → cache_freepages(1024) 重试（alloc.c:242-279，main.c:118-119）。
         // plan.md §7.3：补充体 DEFERRED 归 24-page-cache —— 回收页缓存后再清压力计数；
         // 若回收后压力仍在，下一次分配失败会重新武装计数（每压力片段一次回收机会）。
-        if let Some(frames) = self.page_frames.as_mut() {
-            let _freed = self.page_cache.free_pages(FREE_CACHE_BATCH, frames, &mut self.page_alloc);
+        if let Some(frames) = self.ctx.page_frames.as_mut() {
+            let _freed = self.ctx.page_cache.free_pages(FREE_CACHE_BATCH, frames, &mut self.ctx.page_alloc);
         }
         self.missing_spares = 0;
     }
@@ -992,13 +1026,13 @@ impl VmServer {
         let caller = VFS_PROC_NR;
 
         let table = VmProcTable::get_global();
-        let frames = match self.page_frames.as_mut() {
+        let frames = match self.ctx.page_frames.as_mut() {
             Some(f) => f,
             None => return VmReply::Error(VmError::InternalError),
         };
 
         MessageDispatcher::dispatch_procctl(
-            table, &mut self.page_alloc, frames, caller, request,
+            table, &mut self.ctx.page_alloc, frames, caller, request,
         )
     }
 
@@ -1024,10 +1058,13 @@ impl VmServer {
             Some(r) => r,
             None => return VmReply::Error(VmError::InvalidAddress),
         };
-        let (page_alloc, frames, cache, vfs_queue) = self.parts_mut();
+        // V9-P1-3 step 1: destructure the memory context into disjoint
+        // &mut fields instead of the former parts_mut() 4-tuple.
+        let VmContext { page_alloc, page_frames, page_cache, vfs_queue } = &mut self.ctx;
+        let frames = page_frames.as_mut().expect("page_frames not initialized");
         match crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
-            fault_addr, request.write, table, cache, vfs_queue,
+            fault_addr, request.write, table, page_cache, vfs_queue,
         ) {
             Ok(_action) => VmReply::Ok,
             Err(_e) => {
@@ -1056,20 +1093,10 @@ impl VmServer {
                 .saturating_add(self.kernel_allocated.dynamic_bytes),
             vm_self_bytes: self.vm_allocated_bytes
                 .saturating_add(
-                    (self.page_alloc.self_page_count() as u64)
+                    (self.ctx.page_alloc.self_page_count() as u64)
                         * crate::region::page_state::PAGE_SIZE,
                 ),
         }
-    }
-
-    pub(crate) fn parts_mut(
-        &mut self,
-    ) -> (&mut VmPageAllocator, &mut PageFrames, &mut PageCache, &mut VfsRequestQueue) {
-        let page_alloc = &mut self.page_alloc;
-        let page_frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        let page_cache = &mut self.page_cache;
-        let vfs_queue = &mut self.vfs_queue;
-        (page_alloc, page_frames, page_cache, vfs_queue)
     }
 
     #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessor
@@ -1447,22 +1474,22 @@ impl VmServer {
     // directly); they had zero callers and are removed.
 
     pub fn has_pending_vfs_requests(&self) -> bool {
-        !self.vfs_queue.is_empty()
+        !self.ctx.vfs_queue.is_empty()
     }
 
     #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only accessors
     pub(crate) fn page_cache(&self) -> &PageCache {
-        &self.page_cache
+        &self.ctx.page_cache
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn vfs_queue(&self) -> &VfsRequestQueue {
-        &self.vfs_queue
+        &self.ctx.vfs_queue
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn vfs_queue_mut(&mut self) -> &mut VfsRequestQueue {
-        &mut self.vfs_queue
+        &mut self.ctx.vfs_queue
     }
 }
 
@@ -1474,20 +1501,20 @@ impl VmServer {
 impl VmServer {
     pub(crate) fn handle_fork(&mut self, req: VmForkIn) -> VmReply {
         let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_fork(table, &mut self.page_alloc, frames, req)
+        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
+        MessageDispatcher::dispatch_fork(table, &mut self.ctx.page_alloc, frames, req)
     }
 
     pub(crate) fn handle_brk(&mut self, req: VmBrkIn) -> VmReply {
         let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_brk(table, &mut self.page_alloc, frames, req)
+        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
+        MessageDispatcher::dispatch_brk(table, &mut self.ctx.page_alloc, frames, req)
     }
 
     pub(crate) fn handle_exit(&mut self, req: VmExitIn) -> VmReply {
         let table = VmProcTable::get_global();
-        let frames = self.page_frames.as_mut().expect("page_frames not initialized");
-        MessageDispatcher::dispatch_exit(table, &mut self.page_alloc, frames, req)
+        let frames = self.ctx.page_frames.as_mut().expect("page_frames not initialized");
+        MessageDispatcher::dispatch_exit(table, &mut self.ctx.page_alloc, frames, req)
     }
 }
 

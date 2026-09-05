@@ -529,7 +529,7 @@ C 的非 PM 返回 OK、端点错 ESRCH、children 为 TODO 且假定 PM 先清�
 VmReply → encode_reply_data（vm_server.rs:1280-1420）→ 传输层
 ```
 
-`dispatch_by_number` 顶部先以 `&self` 取 `usage_sources = server.usage_sources()`（dispatcher.rs:1029，Copy 值），再 `parts_mut()` 借可变部分——规避双借用。
+`dispatch_by_number` 顶部先以 `&self` 取 `usage_sources = server.usage_sources()`（dispatcher.rs:1035，Copy 值），再以 VmContext 解构借可变部分（V9-P1-3 step 1）——字段级 disjoint `&mut` 天然规避双借用。
 
 ### 4.2 handle_get_phys（query.rs:203-226）
 

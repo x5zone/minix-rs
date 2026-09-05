@@ -378,7 +378,7 @@ impl VmReplyForIpc {
 
 **C 方案**：`do_vfs_reply`（vfs.c:109）内联调用 `req_callback`。
 
-**Rust 方案**：借位检查器不允许同时持有 `&mut VfsRequestQueue`（`parts_mut` 已借出）和 `&mut VmServer` 调回调。`dispatch_vfs_reply` 返回 `VfsReplyResult { reply, callback }`，主循环在 dispatch 返回后、借用释放时执行：
+**Rust 方案**：借位检查器不允许在持有 `&mut VfsRequestQueue` 等组件的同时再借 `&mut VmServer` 调回调。`dispatch_vfs_reply` 返回 `VfsReplyResult { reply, callback }`，主循环在 dispatch 返回后、借用释放时执行：
 
 ```rust
 if let Some((callback, reply, state)) = result.vfs_callback {
@@ -572,7 +572,7 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 
 ### 4.4 dispatch_by_number 全分支（dispatcher.rs:1032-1232）
 
-`dispatch_by_number` 用 `server.parts_mut()` 一次性取出四个可变组件，逐分支 decode 后委托：
+`dispatch_by_number` 顶部以 VmContext 解构取出四个可变组件（V9-P1-3 step 1：字段级 disjoint `&mut`，取代旧 `parts_mut()` 4 元组），逐分支 decode 后委托：
 
 | 请求码 | decode | 委托 | 状态 |
 |--------|--------|------|------|

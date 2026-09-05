@@ -163,15 +163,14 @@ heap 对象（region Vec、page_cache 条目、临时消息）全部泄漏到进
    消除各模块各自维护映射表。
 3. no_std 下可用手写 derive 宏（thiserror 风格），避免依赖 proc-macro crate 时再评估。
 
-### P2-3 `parts_mut()` 4 元组 + deferred VFS callback
+### ✅ P2-3 `parts_mut()` 4 元组 + deferred VFS callback——已解决 2026-09-06（VFS 回调半边由 VfsReplyResult 设计落地，见 15:381；元组半边随 VmContext 删除，见 §15 Fix #23）
 
-**现状**：`parts_mut()`（vm_server.rs:825）返回 `(page_alloc, frames, cache, vfs_queue)` 4 元组；
-mmap 文件路径通过 deferred VFS 请求（`mmap_file` → `vfs_queue`）跨字段协作，借用检查被迫散装。
+**现状**：~~`parts_mut()`（vm_server.rs:825）返回 `(page_alloc, frames, cache, vfs_queue)` 4 元组~~ 已删除——四组件收进 `VmContext`（vm_server.rs:66），dispatch 调用点以结构体解构获得字段级 disjoint `&mut`。
+mmap 文件路径的 deferred VFS 回调已由 `VfsReplyResult { reply, callback }` 模式承载（dispatcher 返回回调、主循环在借用释放后执行，15-ipc-dispatch.md §3.2）。
 
-**建议**：
-1. VFS 请求完成改为事件入队：结果回到主循环再处理，避免跨字段借用的持久性约束。
-2. `VmServer` 提供组合方法（如 `with_page_state(|frames, cache| ...)`）封装借用子集，
-   替代调用方手工解构 4 元组。
+**原建议的最终归宿**：
+1. VFS 回调半边：由 `VfsReplyResult { reply, callback }` 承载（回调由主循环在借用释放后执行，未采用事件入队——现有模式已满足同一约束）。
+2. 元组半边：未采用 `with_page_state` 组合方法，而是更彻底的 `VmContext` 结构体解构（字段级 disjoint `&mut`）——见 §15 Fix #23 与 V11-P1-2。
 
 ### P2-4 测试环境污染
 
@@ -886,7 +885,7 @@ Coverage Summary for vm:
 
 **验证**：`rg "unimplemented!" os/servers/vm/src/ipc/transport.rs` 归零；`rg "minix_sys::" os/servers/vm/src` 非零；新增 TestIpcTransport 之外的"真实 trap 路径"集成测试（可先在 `minix-sys` 的 `CannedTransport` 语义上做半实物回放）。
 
-#### V11-P1-2 【解封】VmContext 状态收敛（原 P1-2 / V9-P1-3，阻塞已解除）
+#### ✅ V11-P1-2 【解封】VmContext 状态收敛（原 P1-2 / V9-P1-3，阻塞已解除）——step 1 已修复 2026-09-06（§15 Fix #23）；step 2（dispatcher 签名迁移）随 T6 推进
 
 **问题**：P1-2（全局可变状态散落 4 处 static + 实例字段）当年搁置的理由是"需专项规划 + 主循环不可测"。现在后半条已不成立：Fix #12 之后 transport 构造器注入，`TestIpcTransport` 可逐轮驱动 `run_once`。重构可以在每一步都有测试兜底的情况下进行。
 
@@ -1148,3 +1147,11 @@ Coverage Summary for vm:
 - **After**: 后端选择单一真相源 = `choose_allocator_type`（文档显式声明组合语义）+ 05 §3.3；三组合测试定格语义（无 feature→Bitmap / 仅 buddy→阈值判定 / segment-tree→直接胜出含双 feature 场景）
 - **Verified**: `rg "DefaultAllocator" os/servers/vm/src` → 0；`cargo test -p minix-vm --lib` 四矩阵 **449 / 464 / 449 / 465 passed**（每矩阵 +1 个新门控测试）；clippy minix-vm 默认与 all-features 均 **0 warnings**；`cargo check -p minix-vm --all-features` 通过
 - **Docs**: 05-physical-memory.md §3.3（选择路径段）；todo.md §0 验证块保持 V11 审查时点快照，当前数字以本 Fix 为准
+
+### ✅ Fix #23: V11-P1-2 step 1（同时闭环 P2-3）— VmContext 数据结构落地，parts_mut() 4 元组删除
+
+- **Files**: `os/servers/vm/src/vm_server.rs`（新增 `VmContext` 结构体 :66——page_alloc/page_frames/page_cache/vfs_queue 四组件收编，`VmServer` 持 `pub(crate) ctx`；构造器/init/alloc_cycle/usage_sources/test accessors 全部字段访问迁移；删 `parts_mut()`；`BUDDY_THRESHOLD_PAGES` 导入按使用组合门控）、`os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_by_number` :1044 改 VmContext 解构）、`os/servers/vm/src/cow_exec_pf.rs`（:138 同）、`os/servers/vm/src/mmap.rs`（:561 同）、`os/servers/vm/src/phys_mem/mod.rs`（`PhysAllocType`/`BUDDY_THRESHOLD_PAGES` 的组合级死代码标注改为无条件 allow + 真实注释——变体仅在其后端可选的组合中被构造）
+- **Before**: `parts_mut()` 返回 4 元组，是借用检查战斗残留（P2-3/V9-P1-3 症状）；4 个调用点（主分发干线、pagefault、VFS resume×2）
+- **After**: 调用点 `let VmContext { page_alloc, page_frames, page_cache: cache, vfs_queue } = &mut server.ctx;` —— 字段级 disjoint `&mut` 由编译器强制，四组件"同生共死"的不变式结构化（V9-P1-3 step 1）；step 2（dispatcher 签名收 `&mut VmContext` + proc_table/fdref 收敛）随 T6
+- **Verified**: 四 feature 组合 clippy `^servers/` 警告全部 **0**；四矩阵测试 **449 / 465 / 464 / 449 passed**；`cargo check --all-features` 通过；`rg "parts_mut" os/servers/vm/src` → 0
+- **Docs**: 15-ipc-dispatch.md（§3.2 借用表述、§4.1 解构描述）、26-vm-queries.md（§4.1）、23-vfs-interaction.md（模块清单行号）
