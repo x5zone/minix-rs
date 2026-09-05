@@ -117,6 +117,48 @@ pub trait KernelApi {
         vm_call_mask: CallMask,
         allow: bool,
     ) -> Result<(), Errno>;
+
+    /// Execs a freshly forked child service process.
+    ///
+    /// C: `srv_execve(child_proc_nr_e, rp->r_exec, rp->r_exec_len,
+    /// rpub->proc_name, rp->r_argv, environ)` — manager.c:634. The libsys
+    /// call packs `argv` into the message, so the wire shape is the flat
+    /// NUL-separated argument buffer plus the count (`args`/`argc` — the
+    /// `rebuild_args` layout). Wired 19. ARCH: C also passes RS's own
+    /// `environ`; this rewrite models no environment inheritance (deviation
+    /// recorded in 10-rs-service-create.md §3).
+    fn srv_execve(
+        &mut self,
+        proc: Endpoint,
+        exec: &[u8],
+        progname: &crate::service_slot::Label,
+        args: &[u8],
+        argc: usize,
+    ) -> Result<(), Errno>;
+
+    /// Asks PM to signal a service process.
+    ///
+    /// C: `srv_kill(rp->r_pid, SIGKILL)` — manager.c:469 (cleanup_service).
+    /// Wired 19.
+    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno>;
+
+    /// Tells the scheduler a process is finished.
+    ///
+    /// C: `sched_stop(rp->r_scheduler, rpub->endpoint)` — manager.c:462.
+    /// Wired 19.
+    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno>;
+
+    /// Sets RS's own uid — the VFS non-blocking-fork workaround.
+    ///
+    /// C: `setuid(0)` — manager.c:656; the C comment marks it removable once
+    /// VFS is fixed. Retained verbatim (kernel-boundary call, wired 19).
+    fn setuid(&mut self, uid: u32) -> Result<(), Errno>;
+
+    /// Sends a reply message to a service.
+    ///
+    /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
+    /// `late_reply` (utility.c:332) and the main loop reply path.
+    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
 }
 
 /// VM RS-memory-control requests.
@@ -201,6 +243,28 @@ impl KernelApi for UnimplementedKernelApi {
         _vm_call_mask: CallMask,
         _allow: bool,
     ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn srv_execve(
+        &mut self,
+        _proc: Endpoint,
+        _exec: &[u8],
+        _progname: &crate::service_slot::Label,
+        _args: &[u8],
+        _argc: usize,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn srv_kill(&mut self, _pid: Pid, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn setuid(&mut self, _uid: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn reply(&mut self, _target: Endpoint, _result: i32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }
@@ -761,10 +825,26 @@ mod tests {
         );
 
         // Step 1: every slot's priv_ is the kernel-synced version returned by
-        // sys_getpriv — 03-rs-privilege.md §1.3 (mock returns vacant).
+        // sys_getpriv — 03-rs-privilege.md §1.3. The mock echoes back the
+        // structure RS pushed with SetSys **for that endpoint** (R22a:
+        // per-endpoint echo storage); RS/VM skip SetSys (main.c:285-291), so
+        // their slots hold the vacant fallback.
         for ep in image.iter().map(|ip| ip.endpoint) {
             let id = boot.table.endpoint_slot(ep).expect("boot slot indexed");
-            assert_eq!(boot.table.get(id).priv_, Privilege::vacant());
+            match sys
+                .set_privs
+                .iter()
+                .rev()
+                .find(|(e, _)| *e == ep)
+                .map(|(_, p)| p.clone())
+            {
+                Some(pushed) => assert_eq!(boot.table.get(id).priv_, pushed),
+                None => assert_eq!(
+                    boot.table.get(id).priv_,
+                    Privilege::vacant(),
+                    "RS/VM skip SetSys — vacant echo expected"
+                ),
+            }
         }
 
         // Step 4 (getnpid ×12 + setalarm(system_hz)) must NOT have run: the

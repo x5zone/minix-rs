@@ -171,11 +171,20 @@ VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要�
 - `rebuild_args` —— `build_cmd_dep` 的槽位版本（r_cmd → r_args/r_argc）
 - `clone_slot` / `link_replica` / `activate_service` / `swap_slot` —— 被 13/15/16 复用的原语
 
-**create_service 的编排本身 DEFERRED（19）**：当 `KernelApi` 面全部落地后，11 步序列按本文档 §2 的顺序组装；每步失败的错误码与回滚挂接点已在 §2 固化，组装时直接套用。
+**create_service 编排已实现（R22a，2026-09-06，todo §18 Fix #51）**：
+`service_create.rs::create_service(table, rp, kernel, ticks, read_exec)` 按 §2 的 11 步序列组装——
+前置三闸门（失败即 `free_slot`，兑现 `check_create_preconditions` 的"调用方清理"契约）、
+`srv_fork`（失败即释放）、`getprocnr`（C panic 语义保留为 `expect`）、`mark_child_created` 表登记、
+priv 设置+回读、调度（`sched_decision` 纯决策 + 内核调用）、`read_exec`（注入缝，文件 I/O 归 19）、
+`srv_execve`、无条件 RS 重-pin、`setuid(0)` hack、RS/VM pin + RS 实例逐个重-pin、`vm_set_priv`。
+每步失败路径 = `cleanup_service`（两相执行体，15 §3）+ RS 重-pin + 对应 errno，与 C 的对称清理一致。
+**ARCH 偏差**：C 向 `srv_execve` 传递 RS 自身的 `environ`；本重写不建模环境继承
+（`srv_execve(endpoint, exec, progname, args, argc)`——线格式为平铺参数+计数）。
 
 ### 3.2 KernelApi 扩展（ARCH A-1）
 
-`boot.rs` 的 `KernelApi` trait 新增 4 个方法（默认 fail-closed `unimplemented!`，19 接线）：
+`boot.rs` 的 `KernelApi` trait 方法（生产实现 fail-closed `ENOSYS`，19 接线；mock 可配置成功
+并记录调用序）：
 
 | 方法 | C 面 | 语义 |
 |------|------|------|
@@ -183,6 +192,11 @@ VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要�
 | `getprocnr(pid) -> Result<Endpoint, i32>` | `getprocnr` → PM_GETEPINFO | pid → endpoint |
 | `vm_memctl(ep, VmRsMemReq, a, b)` | `vm_memctl`（VM_RS_MEMCTL） | `VmRsMemReq` 枚举映射 `VM_RS_MEM_*`（com.h:741-745） |
 | `vm_set_priv(ep, CallMask, allow)` | `vm_set_priv` | VM 调用掩码（`CallMask`，03） |
+| `srv_execve(ep, exec, progname, args, argc)`（R22a） | `srv_execve`（manager.c:634） | exec 平铺参数 + 计数（线格式）；不建模 `environ`（ARCH 偏差） |
+| `srv_kill(pid, signo)`（R22a） | `srv_kill`（manager.c:469） | cleanup 第二相的 SIGKILL |
+| `sched_stop(scheduler, proc)`（R22a） | `sched_stop`（manager.c:462） | cleanup 第二相的调度器注销 |
+| `setuid(uid)`（R22a） | `setuid(0)`（manager.c:656） | VFS 非阻塞 fork workaround（C 注释标注可移除，保留） |
+| `reply(target, result)`（R22a） | `reply`（utility.c:309） | 通用回复原语（`late_reply` 与主循环共用，06） |
 
 ### 3.3 clone_slot 的值语义（ARCH A-3）
 

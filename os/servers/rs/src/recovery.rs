@@ -12,7 +12,11 @@
 //! helpers: backoff computation, script reason, late-reply result and the
 //! two-phase cleanup classification.
 
-use crate::service_slot::{RFlags, SlotMutations, SysFlags};
+use crate::boot::KernelApi;
+use crate::privilege::PrivCtlOp;
+use crate::process_table::RProcTable;
+use crate::service_slot::{Label, RFlags, ServiceSlot, SlotId, SlotMutations, SysFlags};
+use minix_types::Errno;
 
 /// C: `MAX_DET_RESTART` — const.h:25 (maximum number of detached restarts).
 pub const MAX_DET_RESTART: i32 = 10;
@@ -488,5 +492,136 @@ mod tests {
                 detach: false
             }
         );
+    }
+}
+
+// ── cleanup_service execution (R22a — manager.c:405-495) ────────────────────
+
+/// SIGKILL for the phase-2 PM kill. C: `srv_kill(rp->r_pid, SIGKILL)` —
+/// manager.c:469; SIGKILL = 9 (minix/include/signal.h:55).
+pub const SIGKILL: i32 = 9;
+
+/// Executes `cleanup_service` — the phase-aware slot teardown.
+///
+/// C: `cleanup_service` — manager.c:405-495, two phases keyed on `RS_DEAD`:
+///
+/// * **Phase 1** (first call): unlink the four instance chains (clearing the
+///   neighbour's back-link), mark `RS_DEAD`, revoke the right to run
+///   (`SYS_PRIV_DISALLOW`) and unblock IPC callers (`SYS_PRIV_CLEAR_IPC_REFS`),
+///   clear `RS_ACTIVE`, send the pending late reply (`late_reply(rp, OK)`).
+/// * **Phase 2** (second call, `RS_DEAD` set): unless detaching, stop the
+///   scheduler and SIGKILL the process (both failures are warnings in C, not
+///   fatal); run the cleanup script when `RS_CLEANUP_SCRIPT` asks (the bit is
+///   consumed first); finally detach or free the slot — a reincarnating slot
+///   is kept for reuse (manager.c:487-494).
+///
+/// Kernel effects go through `kernel`; `run_script` is the fork+execle seam
+/// (ARCH A-1, 19). The detach branch keeps the slot alive under its detached
+/// identity — the label republish (`detach_service`, manager.c:497-528) is
+/// wired with 13; until then the branch consumes the flag and leaves the slot
+/// in use, matching C's "not freed" outcome.
+pub fn cleanup_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+) {
+    #[cfg(test)]
+    std::eprintln!("DBG enter flags={:?}", table.get(rp).flags);
+    if !table.get(rp).flags.contains(RFlags::DEAD) {
+        // ── Phase 1 (manager.c:411-440) ──
+        let (next, prev, new, old) = {
+            let s = table.get(rp);
+            (s.next_rp, s.prev_rp, s.new_rp, s.old_rp)
+        };
+        if let Some(n) = next {
+            table.get_mut(n).prev_rp = None; // manager.c:423-425
+        }
+        if let Some(p) = prev {
+            table.get_mut(p).next_rp = None; // manager.c:426-428
+        }
+        if let Some(n) = new {
+            table.get_mut(n).old_rp = None; // manager.c:429-431
+        }
+        if let Some(o) = old {
+            table.get_mut(o).new_rp = None; // manager.c:432-434
+        }
+        let endpoint = {
+            let slot = table.get_mut(rp);
+            if next.is_some() {
+                slot.next_rp = None;
+            }
+            if prev.is_some() {
+                slot.prev_rp = None;
+            }
+            if new.is_some() {
+                slot.new_rp = None;
+            }
+            if old.is_some() {
+                slot.old_rp = None;
+            }
+            slot.flags.insert(RFlags::DEAD); // manager.c:436
+            slot.flags.remove(RFlags::ACTIVE); // manager.c:439
+            slot.pub_.endpoint
+        };
+        // The service can no longer run; IPC callers are unblocked
+        // (manager.c:438-439). C ignores both results (best effort).
+        let _ = kernel.privctl(endpoint, PrivCtlOp::Disallow, None);
+        let _ = kernel.privctl(endpoint, PrivCtlOp::ClearIpcRefs, None);
+
+        #[cfg(test)]
+        std::eprintln!(
+            "DBG inside phase1: flags={:?} late={}",
+            table.get(rp).flags,
+            table.get(rp).flags.contains(RFlags::LATEREPLY)
+        );
+        // Send a late reply if there is any pending (manager.c:441,
+        // late_reply → OK).
+        if table.get(rp).flags.contains(RFlags::LATEREPLY) {
+            let _ = kernel.reply(endpoint, 0);
+            table.get_mut(rp).flags.remove(RFlags::LATEREPLY);
+        }
+        return;
+    }
+
+    // ── Phase 2 (manager.c:441-495) ──
+    let cleanup_script = table.get(rp).flags.contains(RFlags::CLEANUP_SCRIPT);
+    let detach = table.get(rp).flags.contains(RFlags::CLEANUP_DETACH);
+    let reincarnate = table.get(rp).flags.contains(RFlags::REINCARNATE);
+
+    // Cleanup the service when not detaching (manager.c:446-474).
+    if !detach {
+        // Tell the scheduler this process is finished — a failure is a
+        // warning in C, not fatal (manager.c:461-465).
+        let (scheduler, endpoint) = {
+            let s = table.get(rp);
+            (s.scheduler, s.pub_.endpoint)
+        };
+        let _ = kernel.sched_stop(scheduler, endpoint);
+
+        // Ask PM to exit the service; pid -1 is warned about in C
+        // (manager.c:466-473) — both "no pid" shapes skip the kill.
+        let pid = table.get(rp).pid;
+        if let Some(p) = pid.filter(|p| *p != -1) {
+            let _ = kernel.srv_kill(p, SIGKILL);
+        }
+    }
+
+    // Run the cleanup script when asked; the bit is consumed first
+    // (manager.c:476-483). A script failure is a warning, not fatal.
+    if cleanup_script {
+        table.get_mut(rp).flags.remove(RFlags::CLEANUP_SCRIPT);
+        let _ = run_script(&mut table.get_mut(rp));
+    }
+
+    if detach {
+        // Detach service when asked (manager.c:485-486): the slot stays
+        // alive under its detached identity. The label republish
+        // (`detach_service`, manager.c:497-528) is wired with 13.
+        table.get_mut(rp).flags.remove(RFlags::CLEANUP_DETACH);
+    } else if !reincarnate {
+        // Free the slot otherwise, unless we're about to reuse it
+        // (manager.c:488-494).
+        table.free_slot(rp);
     }
 }

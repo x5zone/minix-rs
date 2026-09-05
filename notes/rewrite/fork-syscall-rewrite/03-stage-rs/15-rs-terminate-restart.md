@@ -164,9 +164,13 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
 
 ## 3. Rust 设计决策
 
-### 3.1 recovery.rs 纯决策切片
+### 3.1 recovery.rs 决策与执行体
 
-与 13/14 同款：IPC/动作面（`sys_kill`/`sched_stop`/`srv_kill`/`sys_privctl`/`vm_*`/`ds_publish_label`/fork）归 19，`unpublish_service` 归 11，`clone_service`/`update_service` 归 10，`run_service` 归 12，`late_reply` 归 06，`end_update`/`abort_update_proc` 归 16；`recovery.rs` 拥有**决策树与纯计算**：
+与 13/14 同款：IPC/动作面（`sys_kill`/`sched_stop`/`srv_kill`/`sys_privctl`/`vm_*`/`ds_publish_label`/fork）归 19，`unpublish_service` 归 11，`clone_service`/`update_service` 归 10，`run_service` 归 12，`late_reply` 归 06，`end_update`/`abort_update_proc` 归 16；`recovery.rs` 拥有**决策树、纯计算与两相清理执行体**：
+
+| 函数 | C 对应 | 语义 |
+|------|--------|------|
+| `cleanup_service(table, rp, kernel, run_script)`（R22a，2026-09-06） | manager.c:405-495 | **两相执行体**：`RS_DEAD` 未置 → 第一相（解链四指针+清邻居回链、置 `RS_DEAD`、`SYS_PRIV_DISALLOW`/`CLEAR_IPC_REFS`、清 `RS_ACTIVE`、补发 pending late reply）；已置 → 第二相（`sched_stop`+`srv_kill(SIGKILL)`——失败仅告警，与 C 一致；`RS_CLEANUP_SCRIPT` 先清位再跑脚本钩子；detach 分支保槽（`detach_service` 编排归 13）；reincarnate 不释放槽） |
 
 | 函数 | C 对应 | 语义 |
 |------|--------|------|

@@ -12,11 +12,13 @@
 //! module owns the pure, testable slice (doc §3.1): preconditions, slot
 //! updates, chain linking, clone resets and the swap redirections.
 
-use crate::privilege::PrivFlags;
+use crate::boot::{KernelApi, VmRsMemReq};
+use crate::privilege::{PrivCtlOp, PrivFlags};
 use crate::process_table::RProcTable;
 use crate::service_slot::{
     DSRV_SF, NR_DOMAIN, RFlags, RS_NR_PCI_CLASS, RS_NR_PCI_DEVICE, ServiceSlot, SlotId, SysFlags,
 };
+use alloc::vec::Vec;
 use minix_types::{Clock, ERESTART, Endpoint, Errno, Pid};
 
 /// Checks `create_service`'s dependency preconditions.
@@ -823,5 +825,438 @@ mod tests {
         assert_eq!(table.get(rp).next_rp, Some(replica));
         unlink_replica(&mut table, rp, PrivFlags::RST_SYS_PROC);
         assert_eq!(table.get(rp).next_rp, None);
+    }
+}
+
+// ── create_service orchestration (R22a — manager.c:531-708) ─────────────────
+
+/// No-op script hook: the create_service failure paths carry no cleanup
+/// script (RS_CLEANUP_SCRIPT is unset), so the cleanup script callback never
+/// fires — a plain fn item satisfies the HRTB `FnMut` bound.
+fn no_script(_slot: &mut ServiceSlot) -> Result<(), Errno> {
+    Ok(())
+}
+
+/// Creates the given system service: fork, table refresh, privilege synch,
+/// scheduling, exec, and the VM registration tail — with the C failure path
+/// (`cleanup_service` + RS re-pin) after every effectful step.
+///
+/// C: `create_service` — manager.c:531-708. Kernel effects go through
+/// `kernel` (wired 19; mock in tests); `read_exec` is the binary-loading
+/// seam (file I/O, 19) mirroring `edit_slot`'s shape. `ticks` is
+/// `getticks()` for the `r_alive_tm` refresh (manager.c:593).
+///
+/// ARCH: C passes its own `environ` to `srv_execve`; this rewrite models no
+/// environment inheritance (10-rs-service-create.md §3).
+pub fn create_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn crate::boot::KernelApi,
+    ticks: Clock,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    // Preconditions (manager.c:542-568): NEED_REPL / NEED_COPY / cmd — each
+    // C branch `free_slot`s inline; the caller-owned cleanup contract
+    // (check_create_preconditions) is fulfilled here, by the orchestrator.
+    if let Err(e) = check_create_preconditions(table, rp) {
+        table.free_slot(rp);
+        return Err(e);
+    }
+    let use_copy = table.get(rp).pub_.sys_flags.contains(SysFlags::USE_COPY);
+    let uid = table.get(rp).uid;
+
+    // Fork the child (manager.c:576-583); failure → free_slot + errno.
+    let child_pid = match kernel.srv_fork(uid, 0) {
+        Ok(pid) => pid,
+        Err(e) => {
+            table.free_slot(rp);
+            return Err(e);
+        }
+    };
+
+    // Resolve the child's endpoint (manager.c:584-587). C panics
+    // ("unable to get child endpoint") — after a successful fork this is an
+    // internal invariant, not a protocol error.
+    let child_ep = kernel
+        .getprocnr(child_pid)
+        .expect("unable to get child endpoint (manager.c:586)");
+
+    // There is now a child process: refresh the table (manager.c:589-597).
+    mark_child_created(table, rp, child_ep, child_pid, ticks);
+
+    // Set and synchronise the privilege structure (manager.c:600-606):
+    // SYS_PRIV_SET_SYS pushes the prepared structure, SYS_GETPRV reads the
+    // kernel-allocated view back. Failure → cleanup + ENOMEM.
+    {
+        let snapshot = table.get(rp);
+        if kernel
+            .privctl(child_ep, PrivCtlOp::SetSys, Some(&snapshot.priv_))
+            .is_err()
+        {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+            return Err(Errno::ENOMEM);
+        }
+    }
+    match kernel.getpriv(child_ep) {
+        Ok(synced) => table.get_mut(rp).priv_ = synced,
+        Err(_) => {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+            return Err(Errno::ENOMEM);
+        }
+    }
+
+    // Start scheduling (manager.c:609-614 → utility.c:364-382): the pure
+    // decision (sched.rs) decides skip vs kernel call. Failure → cleanup.
+    let (cfg, is_sys) = {
+        let s = table.get(rp);
+        (
+            crate::sched::SchedulerConfig::from_slot(
+                s.scheduler,
+                s.pub_.endpoint,
+                s.priority,
+                s.quantum,
+                s.cpu,
+            ),
+            s.priv_.flags.contains(PrivFlags::SYS_PROC),
+        )
+    };
+    if let crate::sched::SchedAction::Start(cfg) = crate::sched::sched_decision(&cfg, is_sys) {
+        if let Err(e) = kernel.sched_init_proc(cfg) {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+            return Err(e);
+        }
+    }
+
+    // Copy the executable image if there is no in-memory copy
+    // (manager.c:625-633). Failure → cleanup + errno.
+    if !use_copy {
+        let slot = table.get_mut(rp);
+        if let Err(e) = read_exec(slot) {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+            return Err(e);
+        }
+    }
+
+    // Exec the child (manager.c:634-642); the RS re-pin runs unconditionally
+    // afterwards (manager.c:637 — "pin RS memory again or pagefaults").
+    let execve_result = {
+        let s = table.get(rp);
+        kernel.srv_execve(
+            child_ep,
+            s.exec.as_deref().unwrap_or(&[]),
+            &s.pub_.proc_name,
+            &s.args,
+            s.argc as usize,
+        )
+    };
+    let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+    if let Err(e) = execve_result {
+        crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+        return Err(e);
+    }
+    if !use_copy {
+        crate::exec::free_exec(table, rp); // manager.c:643-644
+    }
+
+    // The VFS non-blocking-fork workaround (manager.c:646-656) — retained
+    // verbatim; the C comment marks it removable once VFS is fixed.
+    let _ = kernel.setuid(0);
+
+    // RS instance: pin the child's memory (manager.c:659-669).
+    if table.get(rp).priv_.flags.contains(PrivFlags::ROOT_SYS_PROC)
+        && kernel
+            .vm_memctl(child_ep, crate::boot::VmRsMemReq::Pin, 0, 0)
+            .is_err()
+    {
+        crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+        return Err(Errno::ENOMEM);
+    }
+
+    // VM instance: register with VM, then re-pin every RS instance
+    // (manager.c:672-695) — the re-pin results are ignored in C.
+    if table.get(rp).priv_.flags.contains(PrivFlags::VM_SYS_PROC) {
+        if kernel
+            .vm_memctl(child_ep, crate::boot::VmRsMemReq::MakeVm, 0, 0)
+            .is_err()
+        {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            return Err(Errno::ENOMEM);
+        }
+        let endpoints: Vec<Endpoint> = table
+            .endpoint_slot(Endpoint::RS)
+            .map(|rs| {
+                table
+                    .instances_of(rs)
+                    .map(|id| table.get(id).pub_.endpoint)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for ep in endpoints {
+            let _ = kernel.vm_memctl(ep, crate::boot::VmRsMemReq::Pin, 0, 0);
+        }
+    }
+
+    // Tell VM about allowed calls (manager.c:698-703). Failure → cleanup.
+    {
+        let mask = table.get(rp).pub_.vm_call_mask;
+        if kernel.vm_set_priv(child_ep, mask, true).is_err() {
+            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            return Err(Errno::ENOMEM);
+        }
+    }
+
+    Ok(())
+}
+
+// Tests appended for R22a (create_service orchestration + cleanup phases).
+#[cfg(test)]
+mod r22a_tests {
+    use super::*;
+    use crate::boot::{KernelApi, VmRsMemReq};
+    use crate::privilege::PrivFlags;
+    use crate::process_table::RProcTable;
+    use crate::service_slot::{Label, RFlags};
+    use crate::testutil::{Call, MockKernelApi};
+    use minix_types::Endpoint;
+
+    /// No-op script hook (HRTB-safe fn item; capturing closures fail the
+    /// `for<'a> FnMut(&'a mut ServiceSlot)` bound).
+    fn no_script(_slot: &mut ServiceSlot) -> Result<(), Errno> {
+        Ok(())
+    }
+
+    /// Script-run flag for [`script_hook`].
+    fn script_ran_flag() -> &'static core::sync::atomic::AtomicBool {
+        use core::sync::atomic::AtomicBool;
+        static SCRIPT_RAN: AtomicBool = AtomicBool::new(false);
+        &SCRIPT_RAN
+    }
+
+    /// Script hook recording execution in a static (closures fail the HRTB
+    /// `FnMut` bound when they capture).
+    fn script_hook(_slot: &mut ServiceSlot) -> Result<(), Errno> {
+        use core::sync::atomic::Ordering;
+        script_ran_flag().store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn script_ran() -> bool {
+        use core::sync::atomic::Ordering;
+        script_ran_flag().load(Ordering::SeqCst)
+    }
+
+    fn script_ran_reset() {
+        script_ran_flag().store(false, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Prepares an initialized slot in the table (init_slot on a standalone
+    /// slot, then moved into row `rp`).
+    fn prepared(table: &mut RProcTable, rp: SlotId) {
+        let mut s = ServiceSlot::vacant();
+        let mut r = crate::slot::RsStart::default();
+        r.ipclen = 8;
+        r.ipc_list[..8].copy_from_slice(b"IPC_ALL\0");
+        r.cmdlen = 9;
+        r.cmd[..9].copy_from_slice(b"/sbin/tty");
+        r.progname = Label::from_bytes(b"tty");
+        init_slot(&mut s, &r, table, &mut no_script).unwrap();
+        *table.get_mut(rp) = s;
+    }
+
+    fn working_mock() -> MockKernelApi {
+        let mut k = MockKernelApi::new(60);
+        k.fork_pid = Some(500);
+        k.child_endpoint = Some(Endpoint::from_generation_slot(0, 20));
+        k.vm_ok = true;
+        k.execve_ok = true;
+        k.kill_ok = true;
+        k
+    }
+
+    #[test]
+    fn test_create_service_happy_path() {
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        prepared(&mut table, rp);
+        let mut k = working_mock();
+        let mut loaded = false;
+        {
+            let mut read_exec = |slot: &mut ServiceSlot| {
+                loaded = true;
+                slot.exec = Some(alloc::sync::Arc::from(&b"elf"[..]));
+                Ok(())
+            };
+            assert!(create_service(&mut table, rp, &mut k, 100, &mut read_exec).is_ok());
+        }
+        let _ = &mut loaded;
+        // Table refresh landed (manager.c:589-597).
+        assert_eq!(table.get(rp).pid, Some(500));
+        assert_eq!(table.get(rp).alive_tm, 100);
+        // The kernel face saw fork/exec/setuid/vm-set-priv.
+        assert!(
+            k.calls
+                .contains(&Call::SrvExecve(table.get(rp).pub_.endpoint))
+        );
+        assert!(k.calls.contains(&Call::SetUid(0)));
+        assert!(k.calls.contains(&Call::PrivCtl(
+            table.get(rp).pub_.endpoint,
+            PrivCtlOp::SetSys
+        )));
+        // Without USE_COPY the exec image is loaded then freed (manager.c:625/
+        // 643): the load ran, and free_exec dropped the image afterwards.
+        assert!(loaded);
+        assert_eq!(table.get(rp).exec, None);
+    }
+
+    #[test]
+    fn test_create_service_precondition_frees_slot() {
+        // C: manager.c:543-552 — NEED_REPL without a replica → EPERM and the
+        // slot is freed inline.
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(rp);
+            s.pub_.sys_flags.insert(SysFlags::NEED_REPL);
+            s.pub_.label = Label::from_bytes(b"lone");
+        }
+        let mut k = working_mock();
+        let mut no_load = |_slot: &mut ServiceSlot| Ok(());
+        assert_eq!(
+            create_service(&mut table, rp, &mut k, 0, &mut no_load),
+            Err(Errno::EPERM)
+        );
+        assert!(!table.get(rp).flags.contains(RFlags::IN_USE));
+        assert!(k.calls.is_empty()); // no fork happened
+    }
+
+    #[test]
+    fn test_create_service_fork_failure_frees_slot() {
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        prepared(&mut table, rp);
+        let mut k = MockKernelApi::new(60); // fork_pid None → ENOSYS
+        let mut no_load = |_slot: &mut ServiceSlot| Ok(());
+        assert!(create_service(&mut table, rp, &mut k, 0, &mut no_load).is_err());
+        assert!(!table.get(rp).flags.contains(RFlags::IN_USE));
+    }
+
+    #[test]
+    fn test_create_service_exec_failure_cleans_up() {
+        // C: manager.c:634-642 — execve failure → cleanup_service (phase 1:
+        // RS_DEAD, chains unlinked, DISALLOW/CLEAR_IPC_REFS, RS_ACTIVE off).
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        prepared(&mut table, rp);
+        let mut k = working_mock();
+        k.execve_ok = false;
+        let mut no_load = |_slot: &mut ServiceSlot| Ok(());
+        assert!(create_service(&mut table, rp, &mut k, 0, &mut no_load).is_err());
+        let s = table.get(rp);
+        assert!(s.flags.contains(RFlags::DEAD));
+        assert!(!s.flags.contains(RFlags::ACTIVE));
+        // Phase 1 keeps `pub_.in_use` set (C only clears RS_ACTIVE here;
+        // the slot leaves the table at phase 2 / free_slot).
+        assert!(s.pub_.in_use);
+        assert!(
+            k.calls
+                .contains(&Call::PrivCtl(s.pub_.endpoint, PrivCtlOp::Disallow))
+        );
+        assert!(
+            k.calls
+                .contains(&Call::PrivCtl(s.pub_.endpoint, PrivCtlOp::ClearIpcRefs))
+        );
+    }
+
+    #[test]
+    fn test_cleanup_service_two_phase() {
+        // C: manager.c:405-495 — phase 1 marks + revokes + late-replies;
+        // phase 2 stops + kills + frees. A pending cleanup script runs at
+        // phase 2 and is consumed.
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(a);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::LATEREPLY | RFlags::CLEANUP_SCRIPT;
+            s.pub_.endpoint = Endpoint::from_generation_slot(0, 30);
+            s.pid = Some(700);
+        }
+        // b is allocated only after a is marked in use — alloc_slot is a
+        // find-only primitive (manager.c:2067-2083), so two consecutive calls
+        // without an intervening IN_USE mark return the same row.
+        let b = table.alloc_slot().unwrap();
+        #[allow(clippy::dbg_macro)]
+        eprintln!("DBG1 a={:?} b={:?} aflags={:?}", a, b, table.get(a).flags);
+        {
+            let t = table.get_mut(b);
+            t.flags = RFlags::IN_USE;
+            t.prev_rp = Some(a);
+        }
+        table.get_mut(a).next_rp = Some(b);
+        #[allow(clippy::dbg_macro)]
+        eprintln!("DBG2 aflags={:?}", table.get(a).flags);
+        let mut k = MockKernelApi::new(60);
+        k.kill_ok = true;
+        script_ran_reset();
+        // Phase 2's expected SchedStop targets are captured BEFORE the free
+        // (free_slot clears the slot's scheduler/endpoint fields).
+        let sched = table.get(a).scheduler;
+        let ep = table.get(a).pub_.endpoint;
+        {
+            let mut script = script_hook;
+            // Phase 1: chains unlinked both ways, DEAD, late reply sent.
+            crate::recovery::cleanup_service(&mut table, a, &mut k, &mut script);
+            assert!(table.get(a).flags.contains(RFlags::DEAD));
+            assert!(!table.get(a).flags.contains(RFlags::ACTIVE));
+            assert_eq!(table.get(a).next_rp, None);
+            assert_eq!(table.get(b).prev_rp, None);
+            assert!(
+                k.calls
+                    .contains(&Call::Reply(table.get(a).pub_.endpoint, 0))
+            );
+            assert!(!script_ran()); // scripts run at phase 2
+            // Phase 2: scheduler stop + SIGKILL + script + free.
+            crate::recovery::cleanup_service(&mut table, a, &mut k, &mut script);
+        }
+        assert!(script_ran());
+        assert!(k.calls.contains(&Call::SchedStop(sched, ep)));
+        assert!(
+            k.calls
+                .contains(&Call::SrvKill(700, crate::recovery::SIGKILL))
+        );
+        assert!(!table.get(a).flags.contains(RFlags::IN_USE));
+    }
+
+    #[test]
+    fn test_cleanup_phase2_reincarnate_keeps_slot() {
+        // C: manager.c:488-494 — a reincarnating slot is NOT freed (it is
+        // about to be reused by the new instance).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(a);
+            s.flags = RFlags::IN_USE | RFlags::DEAD | RFlags::REINCARNATE;
+            s.pub_.endpoint = Endpoint::from_generation_slot(0, 31);
+            s.pid = Some(701);
+        }
+        let mut k = MockKernelApi::new(60);
+        k.kill_ok = true;
+        crate::recovery::cleanup_service(&mut table, a, &mut k, &mut no_script);
+        assert!(
+            k.calls
+                .contains(&Call::SrvKill(701, crate::recovery::SIGKILL))
+        );
+        assert!(table.get(a).flags.contains(RFlags::IN_USE)); // kept for reuse
+    }
+
+    #[test]
+    fn test_kernel_api_injection_satisfies_trait() {
+        // T5/boundary sanity: the orchestration is drivable against the
+        // shared mock — no production kernel face needed (19).
+        let mut k = working_mock();
+        let _: &mut dyn KernelApi = &mut k;
     }
 }

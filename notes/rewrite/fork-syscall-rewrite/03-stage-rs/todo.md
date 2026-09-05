@@ -1977,7 +1977,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 |----|------|--------|------|------|
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
-| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
+| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | 🔶 | create 编排+cleanup 两相已落地（Fix #51）；start/run/restart/kill 等编排=轮 12 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
@@ -2286,3 +2286,30 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   已覆盖备份信号管理器分支的决策面——轮 11 的 create/backup 编排直接消费这三件。
 - **Verified**：`cargo test -p minix-rs` = **239 passed**（+2：门真值表 + 双向解链含副本
   回链保留断言）；clippy/fmt 零输出；T7 PASS。
+
+### ✅ Fix #51 — R22a（P1-design-missing 主体）：`create_service` 编排 + `cleanup_service` 两相执行体
+- **File**：`os/servers/rs/src/service_create.rs`（create_service 编排 + 测试）、
+  `recovery.rs`（cleanup_service 两相执行体）、`boot.rs`（KernelApi 新增 5 方法）、
+  `testutil.rs`（mock 可配置 + 按端点 priv 回显）、`lib.rs`；文档 10 §3.1/§3.2、15 §3.1
+- **Before**：`create_service`（manager.c:531-708）15 步管线只有第 1、4 步有 Rust；
+  `cleanup_service`（manager.c:405-495）只有第二相分类、第一阶段（解链/RS_DEAD/DISALLOW/
+  CLEAR_IPC_REFS/late_reply）连决策都没有；`check_create_preconditions` 的"调用方清理"契约
+  无人履行。
+- **After**：`create_service(table, rp, kernel, ticks, read_exec)`——前置三闸门（失败即
+  free_slot，兑现清理契约）→ `srv_fork`（失败即释放）→ `getprocnr`（C panic 语义保留）→
+  `mark_child_created` → priv 设置+回读 → 调度 → `read_exec`（注入缝）→ `srv_execve` →
+  无条件 RS 重-pin → `setuid(0)` → RS/VM pin + RS 实例重-pin → `vm_set_priv`；每步失败 =
+  cleanup 两相 + RS 重-pin + errno。**KernelApi 扩展 5 方法**（生产 ENOSYS、mock 可配置 +
+  记录）：`srv_execve`（线格式平铺参数；ARCH 偏差：不建模 environ）、`srv_kill`、
+  `sched_stop`、`setuid`（VFS hack 保留）、`reply`（late_reply 与主循环共用）。
+  `cleanup_service(table, rp, kernel, run_script)`：`RS_DEAD` 门控的两相——第一相解链四指针
+  +清邻居回链+DEAD+DISALLOW/CLEAR_IPC_REFS+清 ACTIVE+补发 late reply；第二相
+  sched_stop+SIGKILL（失败仅告警，与 C 一致）+脚本钩子+detach/自由释放（reincarnate 保槽）。
+  **mock 保真度升级**：`getpriv` 按端点回显 `SetSys` 推入的结构（C 语义：sys_getpriv 读回
+  内核侧副本）——旧 mock 恒返回 vacant，boot 测试的"vacant 断言"实为锁死 mock 伪行为，
+  已随测试修正。
+- **Verified**：`cargo test -p minix-rs` = **246 passed**（+7：编排 happy path/
+  前置失败释放/fork 失败释放/exec 失败清理链/reincarnate 保槽/两相 cleanup/边界 sanity）；
+  测试自查抓出并修正 4 处测试自身错误（in_use 断言、时点断言、setup 遗漏）；
+  clippy/fmt 零输出；T7 PASS。文档同步：10 §3.1/§3.2（编排落地 + KernelApi 扩展表）、
+  15 §3.1（两相执行体行）、boot §5（mock 回显语义）。

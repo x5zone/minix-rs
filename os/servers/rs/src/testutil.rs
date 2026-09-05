@@ -9,6 +9,7 @@
 use crate::boot::{KernelApi, Machine, VmRsMemReq};
 use crate::privilege::{CallMask, PrivCtlOp, Privilege};
 use crate::sched::SchedulerConfig;
+use crate::service_slot::Label;
 use alloc::vec::Vec;
 use minix_types::{Clock, Endpoint, Errno, Pid};
 
@@ -24,6 +25,11 @@ pub enum Call {
     GetNuid(Endpoint),
     GetNpid(Endpoint),
     SetAlarm(u32),
+    SrvExecve(Endpoint),
+    SrvKill(Pid, i32),
+    SchedStop(Endpoint, Endpoint),
+    SetUid(u32),
+    Reply(Endpoint, i32),
 }
 
 /// Recording `KernelApi` mock with configurable canned results.
@@ -40,6 +46,22 @@ pub struct MockKernelApi {
     pub ticks: Clock,
     /// Stack of `getnpid` results (LIFO); defaults to 100 when empty.
     pub pids: Vec<i32>,
+    /// `srv_fork` result: `None` → `ENOSYS` (fail-closed default).
+    pub fork_pid: Option<Pid>,
+    /// `getprocnr` result: `None` → `ENOSYS`.
+    pub child_endpoint: Option<Endpoint>,
+    /// `vm_memctl`/`vm_set_priv` success switch (create_service paths).
+    pub vm_ok: bool,
+    /// `srv_execve` success switch.
+    pub execve_ok: bool,
+    /// `srv_kill`/`sched_stop` success switch (cleanup phase 2).
+    pub kill_ok: bool,
+    /// Privilege structures pushed by `privctl(SetSys)`, per endpoint.
+    /// `getpriv` echoes them back — mirroring C, where `sys_getpriv` reads
+    /// the kernel copy of what RS just set for that process
+    /// (manager.c:604-605). Per-endpoint storage because boot Step 1 pushes
+    /// 12 different structures in sequence.
+    pub set_privs: Vec<(Endpoint, Privilege)>,
 }
 
 impl MockKernelApi {
@@ -50,6 +72,12 @@ impl MockKernelApi {
             hz,
             ticks: 0,
             pids: Vec::new(),
+            fork_pid: None,
+            child_endpoint: None,
+            vm_ok: false,
+            execve_ok: false,
+            kill_ok: false,
+            set_privs: Vec::new(),
         }
     }
 }
@@ -71,14 +99,28 @@ impl KernelApi for MockKernelApi {
         &mut self,
         proc: Endpoint,
         op: PrivCtlOp,
-        _priv_: Option<&Privilege>,
+        priv_: Option<&Privilege>,
     ) -> Result<(), Errno> {
         self.calls.push(Call::PrivCtl(proc, op));
+        if op == PrivCtlOp::SetSys {
+            if let Some(p) = priv_ {
+                // Per-endpoint echo storage: the last push per endpoint wins
+                // (matches the kernel's one-priv-structure-per-process).
+                self.set_privs.retain(|(e, _)| *e != proc);
+                self.set_privs.push((proc, p.clone()));
+            }
+        }
         Ok(())
     }
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno> {
         self.calls.push(Call::GetPriv(proc));
-        Ok(Privilege::vacant())
+        Ok(self
+            .set_privs
+            .iter()
+            .rev()
+            .find(|(e, _)| *e == proc)
+            .map(|(_, p)| p.clone())
+            .unwrap_or_else(Privilege::vacant))
     }
     fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
         self.calls.push(Call::SchedInitProc(cfg.endpoint));
@@ -97,14 +139,18 @@ impl KernelApi for MockKernelApi {
         Ok(())
     }
     fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, Errno> {
-        // Fail-closed (matches the production `UnimplementedKernelApi`): the
-        // 19 wiring shell may stub canned results here once it lands.
-        Err(Errno::ENOSYS)
+        match self.fork_pid {
+            Some(pid) => Ok(pid),
+            // Fail-closed default: the 19 wiring shell may stub canned
+            // results here once it lands.
+            None => Err(Errno::ENOSYS),
+        }
     }
     fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
-        // Fail-closed (matches the production `UnimplementedKernelApi`): the
-        // 19 wiring shell may stub canned results here once it lands.
-        Err(Errno::ENOSYS)
+        match self.child_endpoint {
+            Some(ep) => Ok(ep),
+            None => Err(Errno::ENOSYS),
+        }
     }
     fn vm_memctl(
         &mut self,
@@ -113,9 +159,11 @@ impl KernelApi for MockKernelApi {
         _a: usize,
         _b: usize,
     ) -> Result<(), Errno> {
-        // Fail-closed (matches the production `UnimplementedKernelApi`): the
-        // 19 wiring shell may stub canned results here once it lands.
-        Err(Errno::ENOSYS)
+        if self.vm_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
     }
     fn vm_set_priv(
         &mut self,
@@ -123,8 +171,50 @@ impl KernelApi for MockKernelApi {
         _vm_call_mask: CallMask,
         _allow: bool,
     ) -> Result<(), Errno> {
-        // Fail-closed (matches the production `UnimplementedKernelApi`): the
-        // 19 wiring shell may stub canned results here once it lands.
-        Err(Errno::ENOSYS)
+        // Configurable (create_service paths): `vm_ok` gates the result.
+        if self.vm_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+    fn srv_execve(
+        &mut self,
+        proc: Endpoint,
+        _exec: &[u8],
+        _progname: &Label,
+        _args: &[u8],
+        _argc: usize,
+    ) -> Result<(), Errno> {
+        self.calls.push(Call::SrvExecve(proc));
+        if self.execve_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno> {
+        self.calls.push(Call::SrvKill(pid, signo));
+        if self.kill_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {
+        self.calls.push(Call::SchedStop(scheduler, proc));
+        if self.kill_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+    fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.calls.push(Call::SetUid(uid));
+        Ok(())
+    }
+    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno> {
+        self.calls.push(Call::Reply(target, result));
+        Ok(())
     }
 }
