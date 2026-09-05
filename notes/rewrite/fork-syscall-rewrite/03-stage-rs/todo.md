@@ -1983,7 +1983,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
 | R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
-| R28 | clone_service 两分支漏标 DEFERRED | P2 | ☐ | 可立即 todo-fix |
+| R28 | clone_service 两分支漏标 DEFERRED | P2 | ✅ | 已修（Fix #50，2026-09-06） |
 | R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ✅ | 已修（Fix #47，2026-09-06，OQ-2=全宽） |
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
@@ -2271,3 +2271,18 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `test_init_slot_domain_pci_gates`——四道 EINVAL 门、
   `test_inherit_service_defaults_immutable_only`——不可变位继承 + 自有位保留 +
   非不可变位不继承）；clippy/fmt 零输出；T7 PASS。文档同步：08 §3.4 收尾。
+
+### ✅ Fix #50 — R28（P2 漏标缺口）：clone_service 两分支决策原语落地
+- **File**：`os/servers/rs/src/service_create.rs`（`vm_replica_preclean_needed` +
+  `unlink_replica` + 2 测试）、`lib.rs`（导出）
+- **Before**：clone_service 的 VM 单 replica 预清理（manager.c:730-737）与失败回滚解链
+  （manager.c:759-763/:779-780）在 Rust 既无实现也无 DEFERRED 标注——13 号接线时会被当作
+  已完整对照。
+- **After**：两个纯决策原语 + 与既有切片的衔接说明。`vm_replica_preclean_needed(endpoint,
+  instance_flag, has_next)` = 预清理门（VM + LU 实例 + 已有 next 副本；清理执行体归
+  R22a 的 cleanup executor）；`unlink_replica(table, rp, instance_flag)` = 失败回滚解链
+  （instance_flag 选 new_rp/next_rp 链方向，与 link_replica 同一规则；副本回链按 C 留给
+  cleanup）。既有 `is_rs_restart_replica`（:766-767 门）+ `sig_mgr_updates`（:771-773 配对）
+  已覆盖备份信号管理器分支的决策面——轮 11 的 create/backup 编排直接消费这三件。
+- **Verified**：`cargo test -p minix-rs` = **239 passed**（+2：门真值表 + 双向解链含副本
+  回链保留断言）；clippy/fmt 零输出；T7 PASS。

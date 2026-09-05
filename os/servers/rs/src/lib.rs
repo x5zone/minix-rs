@@ -96,7 +96,8 @@ pub use self_lifecycle::{
 };
 pub use service_create::{
     activate_service, check_create_preconditions, clone_slot, inherit_service_defaults, init_slot,
-    link_replica, mark_child_created, rebuild_args, swap_index, swap_slot,
+    link_replica, mark_child_created, rebuild_args, swap_index, swap_slot, unlink_replica,
+    vm_replica_preclean_needed,
 };
 pub use service_slot::{
     ARGV_ELEMENTS, IMM_SF, Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_NR_ARGS, MAX_SCRIPT_LEN,

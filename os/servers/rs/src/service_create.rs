@@ -141,6 +141,38 @@ pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, Errno> 
     Ok(clone)
 }
 
+/// Whether an old replica must be dropped before cloning a new one.
+///
+/// C: `clone_service` — manager.c:730-737: VM can reliably support only one
+/// replica, so re-cloning VM as a live-update instance (`LU_SYS_PROC`) with
+/// an existing `r_next_rp` first runs `cleanup_service_now` on it and clears
+/// the link. The predicate is the pure half (R28); the cleanup execution is
+/// the cleanup-service executor (R22a — manager.c:405-495), invoked by the
+/// 13 orchestration with this gate.
+pub fn vm_replica_preclean_needed(
+    endpoint: Endpoint,
+    instance_flag: PrivFlags,
+    has_next_replica: bool,
+) -> bool {
+    endpoint == Endpoint::VM && instance_flag.contains(PrivFlags::LU_SYS_PROC) && has_next_replica
+}
+
+/// Clears the parent's clone link after a failed create/backup step.
+///
+/// C: `clone_service` — manager.c:759-763 (`*rp_link = NULL` when
+/// `create_service` fails) and manager.c:779-780 (same clear when the backup
+/// signal-manager setup fails, before `kill_service`). `instance_flag`
+/// selects which link was made — the same rule as [`link_replica`]. The
+/// replica's back-link (old/prev) is left as C leaves it: the failed replica
+/// slot is dead and its cleanup owns the rest.
+pub fn unlink_replica(table: &mut RProcTable, rp: SlotId, instance_flag: PrivFlags) {
+    if instance_flag.contains(PrivFlags::LU_SYS_PROC) {
+        table.get_mut(rp).new_rp = None; // manager.c:760
+    } else {
+        table.get_mut(rp).next_rp = None; // manager.c:779-780
+    }
+}
+
 /// Links a cloned replica into the source's instance chain.
 ///
 /// C: `clone_service` — manager.c:736-752. `instance_flag` selects the chain
@@ -743,5 +775,53 @@ mod tests {
         assert!(!s.priv_.flags.contains(PrivFlags::CHECK_IRQ)); // non-immutable not inherited
         assert!(s.priv_.flags.contains(crate::privilege::IMM_F)); // immutable inherited
         assert_eq!(s.priv_.trap_mask, crate::privilege::TrapMask::SENDNB);
+    }
+
+    #[test]
+    fn test_vm_replica_preclean_gate() {
+        // C: manager.c:730-737 — VM + LU instance + existing next replica.
+        assert!(vm_replica_preclean_needed(
+            Endpoint::VM,
+            PrivFlags::LU_SYS_PROC,
+            true
+        ));
+        // Any leg missing → no pre-clean.
+        assert!(!vm_replica_preclean_needed(
+            Endpoint::VM,
+            PrivFlags::LU_SYS_PROC,
+            false
+        ));
+        assert!(!vm_replica_preclean_needed(
+            Endpoint::VM,
+            PrivFlags::RST_SYS_PROC,
+            true
+        ));
+        assert!(!vm_replica_preclean_needed(
+            Endpoint::PM,
+            PrivFlags::LU_SYS_PROC,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_unlink_replica_selects_chain_direction() {
+        // C: manager.c:759-763/:779-780 — the parent's clone link (new_rp for
+        // a LU instance, next_rp for a restart replica) is cleared when
+        // create_service or the backup-sigmgr step fails.
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        let replica = table.alloc_slot().unwrap();
+
+        link_replica(&mut table, rp, replica, PrivFlags::LU_SYS_PROC, 0);
+        assert_eq!(table.get(rp).new_rp, Some(replica));
+        unlink_replica(&mut table, rp, PrivFlags::LU_SYS_PROC);
+        assert_eq!(table.get(rp).new_rp, None);
+        // The replica's back-link is left as C leaves it (cleanup's job).
+        assert_eq!(table.get(replica).old_rp, Some(rp));
+
+        link_replica(&mut table, rp, replica, PrivFlags::RST_SYS_PROC, 0);
+        assert_eq!(table.get(rp).next_rp, Some(replica));
+        unlink_replica(&mut table, rp, PrivFlags::RST_SYS_PROC);
+        assert_eq!(table.get(rp).next_rp, None);
     }
 }
