@@ -863,7 +863,7 @@ Coverage Summary for vm:
 | P1-4 KERNEL_LAYOUT mock | "boot-info 接缝未闭环" | `boot.rs:46-53` 已建模 `KernelAllocated { static_bytes, dynamic_bytes }`（对齐 main.c:492-495），但只有**字节总数**，无 kernel text/data 的基址与页数；`vm_server.rs:437-450` 的 mock 值（含 `:450` 的 `0xFFFF_FFFF_8000_0000`）仍在 | 依据部分成立：需 `VmBootHandoff` 补 span 字段，见 V11-P2-7 |
 | V10-P2-3 错误枚举收敛 | "需 kernel IPC 落地后统一对外出口" | kernel IPC 已落地（见 P1-3 行） | 可启动专项；维持 DEFERRED 但依据更新，宜随 V11-P1-1 的 transport 落地一并做 |
 | 过时注释（非 DEFERRED，staleness） | — | `brk.rs:236`、`vmproc/vmproc.rs:188`、`vmproc/vmproc_handle.rs:352-354`、`region/mod.rs:21-22` 四处仍声称 `X86_64Paging::new()`/方法"是 todo!() / 未实现"，实际 `os/arch/src/x86_64/paging.rs:464-497` 已实现 new/destroy（全文件 grep `todo!` 零命中） | 见 V11-P2-4 |
-| 其余存量 DEFERRED | 各自依赖未变 | 逐条 grep 核实仍成立：`dispatch_exec_newmem` stub 且未路由（dispatcher.rs:820-833）；`sys_fork` 假端点 stub（fork.rs:398-408，调用点 :321）；`cow_resolve_region`/`cow_copy_page` 仅测试驱动（cow_exec_pf.rs:327-330）；VFS_FDCLOSE 丢弃（exit.rs:140-147）；RS_UPDATE 步骤 4-7（rs.rs:328-330）与 PREPARE `map_proc_dyn_data`（rs.rs:250-251）；DMA 三条不入 match（dispatcher.rs:1223-1229）；`ipc_call_rs_init` 返回空表（vm_server.rs:1124-1157）；sanity/alloc_stats 无生产入口（sanity.rs:58-59、alloc_stats.rs:46/:57-58）；bitmap `cache_freepages` 三步路径（bitmap_alloc.rs:309-351）；region close 入队（region/mod.rs:56-82）；audit syslog 未接线（audit.rs:16-19）；arch `destroy()` 只清零不回收中间页表页（paging.rs:487-497） | 维持 DEFERRED，锚点已刷新 |
+| 其余存量 DEFERRED | 各自依赖未变 | 逐条 grep 核实仍成立：`dispatch_exec_newmem` stub 及 DMA 三条 **已按 parity 处置闭环**（C 的 CALLMAP 同样不注册 → 两侧 ENOSYS 一致，孤儿 stub 已删除，见 §15 Fix #25）；`sys_fork` 假端点 stub（fork.rs:398-408，调用点 :321）；`cow_resolve_region`/`cow_copy_page` 仅测试驱动（cow_exec_pf.rs:327-330）；VFS_FDCLOSE 丢弃（exit.rs:140-147）；RS_UPDATE 步骤 4-7（rs.rs:328-330）与 PREPARE `map_proc_dyn_data`（rs.rs:250-251）；DMA 三条不入 match（dispatcher.rs:1223-1229）；`ipc_call_rs_init` 返回空表（vm_server.rs:1124-1157）；sanity/alloc_stats 无生产入口（sanity.rs:58-59、alloc_stats.rs:46/:57-58）；bitmap `cache_freepages` 三步路径（bitmap_alloc.rs:309-351）；region close 入队（region/mod.rs:56-82）；audit syslog 未接线（audit.rs:16-19）；arch `destroy()` 只清零不回收中间页表页（paging.rs:487-497） | 维持 DEFERRED，锚点已刷新 |
 
 ### 14.3 V11 条目
 
@@ -1163,3 +1163,10 @@ Coverage Summary for vm:
 - **After**: 单一 `&mut VmContext` + 语义参数；主干线不再解构；`fdref` 收敛随 T10（VFS_FDCLOSE 触碰 fdref 时）处理
 - **Verified**: 四 feature 组合 clippy `^servers/` **0 警告**；四矩阵 **449 / 465 / 464 / 449 passed**；`cargo check --all-features` 通过
 - **Docs**: 15-ipc-dispatch.md（§4.1 干线描述与 arm 示例）、18-vm-fork.md（arm 示例）
+
+### ✅ Fix #25: T19 — exec_newmem / DMA 三条 parity 处置（删孤儿 stub，不实现）
+
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（删 `dispatch_exec_newmem` 孤儿 stub 及 60 行架构注记，代之 10 行 parity 定论注记；干线 DMA 注释改为 parity 措辞；`VmExecNewmemIn` 导入移除）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§4.1 表两行合并 + §4.5 重写）
+- **Ground Truth 判定**：C 的 com.h 定义了 VM_EXEC_NEWMEM(+3) 与 VM_ADDDMA/DELDMA/GETDMA(+12/13/14) 号值，但 main.c:508-538 的 CALLMAP **均未注册** handler——`vmc_func == NULL` → main.c:139/165 回 ENOSYS。minix-rs 同样不路由 → `_` 臂 ENOSYS：**可观察行为一致，属 parity 而非缺口**。V10-P2-1/V14.2 中"DEFERRED 待接线"的定性据此更正为"已核实 parity，处置完毕"
+- **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
+- **Docs**: 15-ipc-dispatch.md §4.1/§4.5

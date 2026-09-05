@@ -19,7 +19,7 @@
 use minix_types::{
     Endpoint, VirBytes,
     VmForkIn, VmBrkIn, VmMunmapIn, VmUnmapPhysIn, VmShmUnmapIn,
-    VmExitIn, VmWillexitIn, VmExecNewmemIn,
+    VmExitIn, VmWillexitIn,
     VmMmapIn, VmMapPhysIn, VmVfsMmapIn, VmCacheIn,
     VmProcctlIn, VmRemapIn, VmVfsReplyIn,
     VmForkOut, VmBrkOut, VmMmapOut, VmMapPhysOut,
@@ -739,46 +739,16 @@ impl MessageDispatcher {
     // to page_alloc + frames + regions, which the Dispatcher (taking &VmProcTable)
     // cannot provide. Do not add a duplicate stub here.
 
-    // -- exec_newmem --
+    // -- exec_newmem / DMA (parity-verified, 2026-09-06 V11/T19) --
     //
-    // ARCHITECTURE NOTE (exec-newmem stub, 2026-06-14, amended 2026-08-16):
-    //
-    // `dispatch_exec_newmem` is a stub that returns `NotImplemented`.
-    // **Current wiring (2026-08-16)**: this stub is NOT reachable —
-    // `dispatch_by_number` has no `VM_EXEC_NEWMEM` branch, so the request
-    // falls to the `_` arm and returns `NotImplemented` there. The stub is
-    // currently an orphaned API kept for the future dispatch surface.
-    //
-    // Planned wiring (once exec-newmem is implemented):
-    //
-    // 1. The top-level handler should live in `VmServer` (a future
-    //    `VmServer::exec_newmem()`), owning the `&mut self` access to
-    //    `page_alloc`, `frames`, and per-process state. The Dispatcher
-    //    cannot provide this because it takes `&VmProcTable` and
-    //    `&mut VmPageAllocator` separately, which precludes the
-    //    cross-cutting access exec-newmem needs (fork + region
-    //    replacement + CoW resolution).
-    //
-    // 2. Either add a `VM_EXEC_NEWMEM` branch to `dispatch_by_number`
-    //    (routing to this stub until the real handler lands) or intercept
-    //    `VM_EXEC_NEWMEM` in `VmServer::dispatch_on_msg` before the
-    //    CALLMAP path, mirroring the `VM_PAGEFAULT` handling. Whichever
-    //    lands, the other must be removed so there is exactly one route.
-    //
-    // 3. **Do not** implement exec-newmem logic here. The Dispatcher
-    //    layer is intentionally read-mostly (`&VmProcTable` +
-    //    `&mut Allocator`) so that adding a `dispatch_*` cannot
-    //    silently widen the access surface to per-process state.
-    //
-    // TODO (exec-newmem follow-up, deferred): wire the request into one
-    // of the two routes above; until then the `_` arm returns
-    // `NotImplemented` (fail-closed).
-    #[allow(dead_code)] // V10-P2-1 (DEFERRED): see ARCHITECTURE NOTE above
-    pub(crate) fn dispatch_exec_newmem(_ctx: &mut VmContext, _request: VmExecNewmemIn) -> VmReply {
-        // Stub: real handler is `VmServer::exec_newmem` in vm_server.rs.
-        // See ARCHITECTURE NOTE above.
-        VmReply::Error(VmError::NotImplemented)
-    }
+    // VM_EXEC_NEWMEM and VM_ADDDMA/VM_DELDMA/VM_GETDMA exist in C's
+    // com.h call-number list but are NOT registered in main.c's CALLMAP
+    // (main.c:508-538) — a request reaches `vm_calls[c].vmc_func == NULL`
+    // and main.c:139/165 answers ENOSYS. minix-rs mirrors that exactly:
+    // no dispatch branch exists, so the `_` arm returns
+    // NotImplemented(ENOSYS). This is behavioral parity, not a missing
+    // feature; do not "wire these up" without first finding a Minix3
+    // revision that actually registers handlers for them.
 
     // -- rs_set_priv --
     pub(crate) fn dispatch_rs_set_priv(ctx: &mut VmContext, caller: minix_types::Endpoint, target: minix_types::Endpoint, mask: Option<crate::acl::AclMask>, is_sys_proc: bool) -> VmReply {
@@ -1135,12 +1105,10 @@ impl MessageDispatcher {
                 let request = VmVfsReplyIn::decode_message(msg);
                 Self::dispatch_vfs_reply(ctx, request).into()
             }
-            // C has: VM_ADDDMA, VM_DELDMA, VM_GETDMA.
-            // These are DMA-related and DEFERRED (require the DMA buffer
-            // table, not yet implemented). They are explicitly NOT
-            // caught by `_` so a future caller can distinguish a typo'd
-            // call number from a "not yet supported" reply. The current
-            // `_` arm returns NotImplemented as a catch-all safety net.
+            // C has the call numbers VM_ADDDMA, VM_DELDMA, VM_GETDMA but
+            // does not register handlers for them in CALLMAP — C answers
+            // ENOSYS (main.c:139/165). minix-rs matches via this `_` arm
+            // (parity-verified, see the exec_newmem/DMA note above).
             _ => DispatchResult::from_reply(VmReply::Error(VmError::NotImplemented)),
         }
     }

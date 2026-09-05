@@ -593,12 +593,11 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 | `VM_REMAP` / `VM_REMAP_RO` | `VmRemapIn::decode(m1)` | `dispatch_remap/remap_ro` | 已连接（部分实现） |
 | `VM_PROCCTL` | `VmProcctlIn::decode(m1)` | `dispatch_procctl` | 已连接（VFS transid 路径） |
 | `VM_VFS_REPLY` | `VmVfsReplyIn::decode(m1)` | `dispatch_vfs_reply` | 已连接（返回 Suspend + 延迟回调） |
-| `VM_EXEC_NEWMEM` | — | `_` 兜底（`dispatch_exec_newmem` stub 未接线） | 占位（孤儿 stub，见 §4.5） |
-| `VM_ADDDMA` / `VM_DELDMA` / `VM_GETDMA` | — | `_` 兜底 | 显式排除（DMA 表未实现） |
+| `VM_EXEC_NEWMEM` / `VM_ADDDMA` / `VM_DELDMA` / `VM_GETDMA` | — | `_` 兜底 → ENOSYS | **parity 已核实**（V11/T19）：C 同样未在 CALLMAP 注册这四条（main.c:508-538），`vmc_func == NULL` → ENOSYS（main.c:139/165）——两侧可观察行为一致，孤儿 stub 已删除 |
 
 ### 4.5 特殊路径：exec_newmem 与 pagefault 不进 dispatch_by_number
 
-- **`VM_EXEC_NEWMEM`**：`dispatch_by_number` **无**该分支——请求落到 `_` 兜底返回 NotImplemented（fail-closed）。`dispatch_exec_newmem`（dispatcher.rs:821）是**孤儿 stub**（V10-P2-1 DEAD/DEFERRED 标注）：架构注释说明真实 handler 未来应放 `VmServer` 层（exec-newmem 需要 `&mut self` 全组件访问、跨进程态），接线方案（dispatch_by_number 分支 vs 主循环截获）待定。
+- **`VM_EXEC_NEWMEM`**：`dispatch_by_number` **无**该分支——请求落到 `_` 兜底返回 NotImplemented。**V11/T19 parity 核实**：C 的 CALLMAP 同样不注册这条调用（`vm_calls[c].vmc_func == NULL` → main.c:139/165 ENOSYS），两侧可观察行为一致；孤儿 stub 及其 60 行架构注记已删除（dispatcher.rs 的 exec_newmem/DMA parity 注记处）。若未来某 Minix3 修订真正注册了 handler，再按『VmServer 层持有全组件访问』的方向立项。
 - **`VM_PAGEFAULT`**：`callnr()` 对 `0xCFF` 返回 None（越界，`const VM_PAGEFAULT: u32 = 0xCFF` 在 vm_server.rs:1158），根本进不了 dispatch_by_number——P3 分支先截获。`dispatch_pagefault`（vm_server.rs:986-1057）在 `VmServer` 层持有 `&mut self`，委托 `cow_exec_pf::handle_pagefault`（16 详述）。
 
 ### 4.6 reply 编码（vm_server.rs:1233-1420）
