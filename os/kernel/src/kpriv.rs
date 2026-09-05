@@ -1215,6 +1215,15 @@ impl PrivTable {
             priv_.ipc.s_k_call_mask = template.kcall_mask();
             priv_.signals.s_sig_mgr = sig_mgr;
         }
+
+        // D-58 (C main.c:244): route the seed template mask through the
+        // whole-table fill. The fill guards clear the process's own bit
+        // (C boot terminal state: a process never holds its own IPC bit —
+        // self-send is meaningless and the reciprocity invariant is
+        // maintained symmetrically across the table). The template itself
+        // stays correct-by-construction (ALL for services); the fill
+        // produces C's terminal state.
+        self.fill_sendto_mask(priv_id, template.ipc_mask());
         Ok(priv_id)
     }
 }
@@ -1501,7 +1510,12 @@ mod tests {
         assert!(p.flags.s_flags.contains(ProcessCapability::VM_SYS_PROC));
         // VM is a system service: SRV_T = ~0 (C: main.c:204-209), ALL IPC + ALL kcalls
         assert_eq!(p.ipc.s_trap_mask, TrapMask::ALL);
-        assert_eq!(p.ipc.s_ipc_to, IpcMask::ALL);
+        // D-58 (2026-09-06): fill_sendto_mask clears the process's own
+        // bit (C boot terminal state, main.c:244 + set_sendto_bit guard)
+        // — ALL except the self bit.
+        // D-58: 全新表中其余槽位未关联 → 位被 fill 守卫清除（回执位随后续
+        // 服务授权而来，见 test_grant_capability_vm_self_bit_cleared）。
+        assert_eq!(p.ipc.s_ipc_to, IpcMask::NONE);
         assert_eq!(p.ipc.s_k_call_mask, KCallMask::ALL);
     }
 
@@ -1514,8 +1528,28 @@ mod tests {
         assert!(p.flags.s_flags.contains(ProcessCapability::PREEMPTIBLE));
         // Root service: SRV_T = ~0 (C: main.c:214-217), ALL IPC + ALL kcalls
         assert_eq!(p.ipc.s_trap_mask, TrapMask::ALL);
-        assert_eq!(p.ipc.s_ipc_to, IpcMask::ALL);
+        // D-58: 全新表中其余槽位未关联 → 位被 fill 守卫清除（回执位随后续
+        // 服务授权而来，见 test_grant_capability_vm_self_bit_cleared）。
+        assert_eq!(p.ipc.s_ipc_to, IpcMask::NONE);
         assert_eq!(p.ipc.s_k_call_mask, KCallMask::ALL);
+    }
+
+    /// D-58 acceptance (C main.c:244 + set_sendto_bit self guard,
+    /// system.c:307-330): the VM's own bit is cleared by the fill, and a
+    /// LATER service grant reciprocates a bit into the VM's mask —
+    /// a VM SEND to its own endpoint is denied at the mask layer.
+    #[test]
+    fn test_grant_capability_vm_self_bit_cleared() {
+        let mut table = crate::test_helpers::test_priv_table();
+        let vm = table.grant_capability(ProcNr(8), CapabilityTemplate::Vm).unwrap();
+        assert!(!table.get(vm).unwrap().ipc.s_ipc_to.has_bit(vm as usize),
+            "self bit must be cleared by the fill guard");
+        // A later grant (RS) reciprocates: RS's fill grants VM→RS.
+        let rs = table.grant_capability(ProcNr(1), CapabilityTemplate::RootService).unwrap();
+        assert!(!table.get(rs).unwrap().ipc.s_ipc_to.has_bit(rs as usize));
+        assert!(table.get(vm).unwrap().ipc.s_ipc_to.has_bit(rs as usize),
+            "RS grant must reciprocate a bit into VM's mask");
+        assert!(!table.get(vm).unwrap().ipc.s_ipc_to.has_bit(vm as usize));
     }
 
     #[test]
