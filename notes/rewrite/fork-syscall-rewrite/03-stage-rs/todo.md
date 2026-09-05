@@ -1991,7 +1991,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | D1 同轮 |
 | R34 | 测试盲区清单 24 条 | P2 | ☐ | 1-13 可立即补；14-17 随 13/14；18-23=E3 具体化 |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
-| A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ☐ | 16 落地期 |
+| A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ☐ | 18 落地期 |
 | A4 | 控制请求域统一决策载荷模式 | 建议 | ☐ | 13 落地期 |
 | A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ☐ | 全局 |
@@ -2340,3 +2340,22 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - **Verified**：`cargo test -p minix-rs` = **250 passed**（+4：crash/kill 语义、detach 重标签
   与降级、run_service ALLOW+RS 早退、start 全管线）；clippy/fmt 零输出；T7 PASS。
   文档同步：13 §2.1b（A4 决策化）。
+
+### ✅ Fix #53 — A2（架构建议落地）：`UpdateState` 单点持有 + per-slot `r_upd` 载体
+- **File**：`os/servers/rs/src/live_update.rs`（`UpdateState` + 相位写入口 +
+  `RupdateFlags` 迁入 + `UpdateEntry` 补 4 字段）、`lib.rs`（ServerState.update 挂载 +
+  导出迁移）、`boot.rs`（into_state 初始化）、`service_slot.rs`（`upd` 载体）、
+  `process_table.rs`（RupdateFlags 移出）；文档 16 §3.1、02 §3.5
+- **Before**：rupdate 全局（type.h:43-52）碎片化——`RupdateFlags` 无处挂载、
+  `num_init_ready_pending` 退化为入参、per-slot `r_upd` 整体缺席、`UpdateEntry` 缺
+  prepare 计时/grant 字段；相位只能"解码"不能"驱动"。
+- **After**：`UpdateState { flags, chain, num_init_ready_pending }`（live_update.rs）挂进
+  `ServerState`；相位写入口 `begin_updating()`/`begin_initializing()`（C 仅有的两个全局
+  写点 update.c:510/:548）；`ServiceSlot.upd: Option<UpdateEntry>`（C `r_upd` 内嵌副本，
+  type.h:62）；`UpdateEntry` 补 `prepare_tm`/`prepare_maxtime`/`prepare_state_data`
+  （`RsStateData`）/`prepare_state_data_gid`（type.h:35-39）；`RupdateFlags` 迁至
+  live_update.rs（LU 域单一权威，self_lifecycle/lib.rs 导入同步改道）。
+- **Verified**：`cargo test -p minix-rs` = **250 passed**（`test_update_phase_flags`
+  扩展相位写断言：begin_updating → 仅 UPDATING，begin_initializing → UPDATING|
+  INITIALIZING 并存——与 C 的 flags |= 语义一致）；clippy/fmt 零输出；T7 PASS。
+  文档同步：16 §3.1 表（UpdateState/UpdateEntry 两行）、02 §3.5（per-slot 更新描述符）。

@@ -22,21 +22,6 @@ use crate::table::{BootImageDev, BootImagePriv, BootImageSys};
 
 // ── Global update descriptor (C: type.h:43-54) ─────────────────────────────
 
-bitflags::bitflags! {
-    /// Flags of the global update descriptor.
-    ///
-    /// C: `rupdate.flags` — type.h:44. Bit values reuse the `r_flags` macros
-    /// (const.h:35/34: `RS_UPDATING`/`RS_INITIALIZING`); the update state
-    /// machine that writes them is 16-rs-live-update.md.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct RupdateFlags: u16 {
-        /// Update in progress. C: `RS_UPDATING` — const.h:35.
-        const UPDATING = 0x080;
-        /// Init after update in progress. C: `RS_INITIALIZING` — const.h:34.
-        const INITIALIZING = 0x040;
-    }
-}
-
 // ── ServiceInstances (C: manager.c:1334-1352, ARCH A-3) ─────────────────────
 
 /// Iterator over the instances of a service (itself + prev/next/old/new).

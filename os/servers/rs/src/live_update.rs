@@ -18,9 +18,55 @@
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno};
 
-use crate::process_table::RupdateFlags;
 use crate::service_slot::SlotId;
 use crate::slot::RssFlags;
+use minix_types::Clock;
+
+bitflags::bitflags! {
+    /// Flags of the global update descriptor.
+    ///
+    /// C: `rupdate.flags` — type.h:44. Bit values reuse the `r_flags` macros
+    /// (const.h:35/34: `RS_UPDATING`/`RS_INITIALIZING`); the update state
+    /// machine that writes them is 16-rs-live-update.md.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct RupdateFlags: u16 {
+        /// Update in progress. C: `RS_UPDATING` — const.h:35.
+        const UPDATING = 0x080;
+        /// Init after update in progress. C: `RS_INITIALIZING` — const.h:34.
+        const INITIALIZING = 0x040;
+    }
+}
+
+/// The global live-update state (A2, todo §18 — single holder).
+///
+/// C: `struct rupdate` — type.h:43-52: one global贯穿 do_update →
+/// do_upd_ready → do_init_ready → do_period → do_sigchld. Rust 收敛为单一
+/// 结构挂进 `ServerState`（T1 的运行态容器）——相位写入口收敛为
+/// [`UpdateState::begin_updating`]/[`UpdateState::begin_initializing`]
+/// （C 仅有的两个全局写点：update.c:510/:548）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateState {
+    /// Status flags. C: `rupdate.flags` — type.h:44.
+    pub flags: RupdateFlags,
+    /// Scheduled-update chain. C: `first/curr/last/vm/rs_rpupd` — type.h:46-51.
+    pub chain: UpdateChain,
+    /// Pending init-ready messages. C: `num_init_ready_pending` — type.h:45.
+    pub num_init_ready_pending: usize,
+}
+
+impl UpdateState {
+    /// Marks the update as running. C: `rupdate.flags |= RS_UPDATING` —
+    /// update.c:510 (`start_update_prepare_next`).
+    pub fn begin_updating(&mut self) {
+        self.flags.insert(RupdateFlags::UPDATING);
+    }
+
+    /// Marks the init phase of the update as running.
+    /// C: `rupdate.flags |= RS_INITIALIZING` — update.c:548 (`start_update`).
+    pub fn begin_initializing(&mut self) {
+        self.flags.insert(RupdateFlags::INITIALIZING);
+    }
+}
 
 // ── SEF_LU_* flags (sef.h:235-242) ─────────────────────────────────────────
 
@@ -261,6 +307,17 @@ pub struct UpdateEntry {
     pub prepare_state: i32,
     /// C: `state_endpoint` — type.h:34.
     pub state_endpoint: Endpoint,
+    /// Timestamp of when the update was scheduled. C: `prepare_tm` —
+    /// type.h:35 (A2 carrier completion).
+    pub prepare_tm: Clock,
+    /// Max time to wait for the process to be ready. C: `prepare_maxtime` —
+    /// type.h:36 (A2 carrier completion; consumed by `upd_init_maxtime`).
+    pub prepare_maxtime: Clock,
+    /// State data for the update. C: `prepare_state_data` — type.h:37
+    /// (A2 carrier completion; consumed by 17-rs-state-data.md).
+    pub prepare_state_data: crate::slot::RsStateData,
+    /// State data grant. C: `prepare_state_data_gid` — type.h:38 (A2).
+    pub prepare_state_data_gid: Option<u32>,
     /// Previous descriptor in the chain (ARCH A-3). C: `prev_rpupd` — type.h:40.
     pub prev: Option<usize>,
     /// Next descriptor in the chain (ARCH A-3). C: `next_rpupd` — type.h:41.
@@ -277,6 +334,10 @@ impl UpdateEntry {
             init_flags: 0,
             prepare_state: SEF_LU_STATE_NULL,
             state_endpoint: Endpoint::NONE,
+            prepare_tm: 0,
+            prepare_maxtime: 0,
+            prepare_state_data: Default::default(),
+            prepare_state_data_gid: None,
             prev: None,
             next: None,
         }
@@ -568,6 +629,18 @@ mod tests {
     #[test]
     fn test_update_phase_decode() {
         // C: const.h:105,111 — INITIALIZING wins; num_rpupds>0 → Scheduled.
+        // A2: the phase write entries mutate UpdateState.flags only.
+        let mut st = UpdateState::default();
+        assert_eq!(st.flags, RupdateFlags::empty());
+        st.begin_updating();
+        assert!(st.flags.contains(RupdateFlags::UPDATING));
+        assert!(!st.flags.contains(RupdateFlags::INITIALIZING));
+        st.begin_initializing();
+        assert!(
+            st.flags
+                .contains(RupdateFlags::UPDATING | RupdateFlags::INITIALIZING)
+        );
+
         assert_eq!(update_phase(RupdateFlags::empty(), 0), UpdatePhase::Idle);
         assert_eq!(
             update_phase(RupdateFlags::empty(), 2),

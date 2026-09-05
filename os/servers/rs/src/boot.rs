@@ -514,6 +514,7 @@ impl<'a> BootInit<'a> {
             shutting_down: self.shutting_down,
             system_hz: self.system_hz,
             nr_uncaught_init_srvs: self.nr_uncaught_init_srvs,
+            update: Default::default(),
         }
     }
 

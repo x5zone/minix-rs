@@ -14,8 +14,8 @@
 
 use minix_types::Endpoint;
 
+use crate::live_update::RupdateFlags;
 use crate::privilege::PrivFlags;
-use crate::process_table::RupdateFlags;
 use crate::service_slot::SysFlags;
 
 /// Whether an update swaps kernel/VM slots before the in-RS swap.

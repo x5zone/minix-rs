@@ -486,6 +486,11 @@ pub struct ServiceSlot {
     /// Preallocated mmap length. C: `r_map_prealloc_len` — type.h:97 (16).
     pub map_prealloc_len: usize,
 
+    /// Live-update descriptor copy. C: `r_upd` — type.h:62 (`struct
+    /// rprocupd`, embedded; A2 carrier completion — `SRV_IS_UPD_SCHEDULED`/
+    /// `SRV_IS_PREPARING_ONLY` (const.h:119-120) read it directly instead of
+    /// requiring injected booleans).
+    pub upd: Option<crate::live_update::UpdateEntry>,
     /// Allowed I/O port ranges (priv backup). C: `r_io_tab` — type.h:100 (03).
     pub io_tab: [IoRange; NR_IO_RANGE],
     /// Number of I/O ranges. C: `r_nr_io_range` — type.h:101 (03).
@@ -542,6 +547,7 @@ impl ServiceSlot {
             map_prealloc_addr: 0,
             map_prealloc_len: 0,
             io_tab: [IoRange::default(); NR_IO_RANGE],
+            upd: None,
             nr_io_range: 0,
             irq_tab: [0; NR_IRQ],
             nr_irq: 0,

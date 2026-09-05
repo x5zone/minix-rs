@@ -60,17 +60,17 @@ pub use boot::{BootInit, BootTables, KernelApi, Machine};
 pub use exec::{free_exec, has_shared_exec, share_exec, validate_image};
 pub use ipc_mask::{IpcListIterator, add_backward_ipc, add_forward_ipc, init_privs};
 pub use live_update::{
-    AbortAction, EndUpdateRole, LuFlags, RS_CANCEL, RS_REPLY, SEF_INIT_ST, SEF_LU_STATE_NULL,
-    SEF_LU_STATE_UNREACHABLE, UpdateChain, UpdateEntry, UpdatePhase, abort_action,
-    end_srv_reply_flag, end_update_role, lu_flags_from_rss, resolve_prepare_maxtime, update_phase,
-    validate_update_request, vm_default_prealloc,
+    AbortAction, EndUpdateRole, LuFlags, RS_CANCEL, RS_REPLY, RupdateFlags, SEF_INIT_ST,
+    SEF_LU_STATE_NULL, SEF_LU_STATE_UNREACHABLE, UpdateChain, UpdateEntry, UpdatePhase,
+    UpdateState, abort_action, end_srv_reply_flag, end_update_role, lu_flags_from_rss,
+    resolve_prepare_maxtime, update_phase, validate_update_request, vm_default_prealloc,
 };
 pub use monitor::{
     PeriodAction, PeriodDecision, delta_t, effective_period, has_update_timed_out, init_timeout,
     period_decision, sigchld_cleanup,
 };
 pub use privilege::{DSRV_I, PrivCtlOp, Privilege, TrapMask};
-pub use process_table::{RProcTable, RupdateFlags, ServiceInstances};
+pub use process_table::{RProcTable, ServiceInstances};
 pub use publish::{should_bind_devman, should_map_driver, should_set_pci_acl, unpublish_result};
 pub use query::{
     GetsysinfoTable, SysctlAction, classify_sysctl, getsysinfo_table, lookup_name_len,
@@ -157,6 +157,10 @@ pub struct ServerState<'a> {
     pub system_hz: u32,
     /// C: `nr_uncaught_init_srvs` — main.c:349-406 (consumed by 12).
     pub nr_uncaught_init_srvs: usize,
+    /// Live-update state. C: the `rupdate` global — type.h:43-52 (16; A2
+    /// single-holder convergence — one structure instead of scattered
+    /// flags/counters/chain).
+    pub update: live_update::UpdateState,
 }
 
 impl RsServer {

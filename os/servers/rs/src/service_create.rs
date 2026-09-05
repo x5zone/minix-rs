@@ -12,7 +12,7 @@
 //! module owns the pure, testable slice (doc §3.1): preconditions, slot
 //! updates, chain linking, clone resets and the swap redirections.
 
-use crate::boot::{KernelApi, VmRsMemReq};
+use crate::boot::KernelApi;
 use crate::privilege::{PrivCtlOp, PrivFlags};
 use crate::process_table::RProcTable;
 use crate::service_slot::{
@@ -1017,7 +1017,7 @@ pub fn create_service(
 #[cfg(test)]
 mod r22a_tests {
     use super::*;
-    use crate::boot::{KernelApi, VmRsMemReq};
+    use crate::boot::KernelApi;
     use crate::privilege::PrivFlags;
     use crate::process_table::RProcTable;
     use crate::service_slot::{Label, RFlags};
