@@ -20,6 +20,14 @@
 //! - [`driver`] — the driver trait, routing rules, and the server state
 //!   machine (document sections 3 and 4).
 //!
+//! Socket-device (SDEV) side, owned by stage 17-stage-net:
+//!
+//! - [`sdev`] — socket-device request and reply numbers, guards, and the
+//!   suspendability rule (documents `01-sockdriver-framework.md`
+//!   sections 1 and 2).
+//! - [`sockevent`] — socket event masks, flags, and hash slots
+//!   (document `02-sockevent-framework.md` sections 1 and 2).
+//!
 //! All drivers built on this framework are single-threaded event loops: one
 //! message at a time, no shared mutable state across threads.
 
@@ -30,3 +38,5 @@ extern crate alloc;
 pub mod driver;
 pub mod portio;
 pub mod protocol;
+pub mod sdev;
+pub mod sockevent;
