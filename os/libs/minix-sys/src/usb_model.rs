@@ -14,9 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno};
 
-use super::devman_client::{
-    add_device, del_device, ClientDevice, ClientError, ClientTransport,
-};
+use super::devman_client::{ClientDevice, ClientError, ClientTransport, add_device, del_device};
 
 /// C: `struct devman_usb_bind_cb_data` (`devman.h:23-26`, lib side) —
 /// `{ dev_id, interface }`, `interface == -1` for the device itself.
@@ -113,8 +111,14 @@ pub fn device_attributes(dev: &UsbDevice) -> Vec<(String, String)> {
         s
     };
     out.push((String::from("bDeviceClass"), hex2(dev.desc.device_class)));
-    out.push((String::from("bDeviceSubClass"), hex2(dev.desc.device_subclass)));
-    out.push((String::from("bDeviceProtocol"), hex2(dev.desc.device_protocol)));
+    out.push((
+        String::from("bDeviceSubClass"),
+        hex2(dev.desc.device_subclass),
+    ));
+    out.push((
+        String::from("bDeviceProtocol"),
+        hex2(dev.desc.device_protocol),
+    ));
     out.push((String::from("idVendor"), hex4(dev.desc.vendor)));
     out.push((String::from("idProduct"), hex4(dev.desc.product)));
     // C: only when non-NULL (usb.c:83-88).
@@ -151,7 +155,7 @@ pub fn interface_attributes(intf: &UsbInterfaceDesc) -> Vec<(String, String)> {
     out
 }
 
-/// Driver callback registry (C: static `bind_cb`/`unbind_cb` + 
+/// Driver callback registry (C: static `bind_cb`/`unbind_cb` +
 /// `devman_usb_init`, usb.c:19-20/293-301).
 /// The per-device shims (C: `devman_usb_bind_cb`, usb.c:280-293 —
 /// missing callback → `ENODEV`) resolve through the stack registry here.
@@ -220,8 +224,7 @@ pub fn add_usb(
     usb.server_id = Some(server_id);
     usb.intf_server_ids.clear();
     // Clone the small Copy descs first: adding borrows usb mutably below.
-    let descs: Vec<UsbInterfaceDesc> =
-        usb.interfaces.iter().map(|intf| intf.desc).collect();
+    let descs: Vec<UsbInterfaceDesc> = usb.interfaces.iter().map(|intf| intf.desc).collect();
     for (i, desc) in descs.iter().enumerate() {
         let mut idev = ClientDevice::new(&intf_name(i), server_id);
         idev.attrs = interface_attributes(desc);
@@ -271,7 +274,7 @@ mod tests {
     extern crate std;
     use super::super::devman_client::{ClientError, ClientTransport, HandledDevice};
     use super::*;
-    use minix_types::{Message, MessageM4, MessageUnion, DEVMAN_REPLY};
+    use minix_types::{DEVMAN_REPLY, Message, MessageM4, MessageUnion};
     use std::vec::Vec;
 
     fn desc() -> UsbDeviceDesc {
@@ -363,9 +366,13 @@ mod tests {
             desc: intf_desc(),
             server_id: None,
         });
-        let mut t = FakeTransport { next_id: 40, calls: 0 };
+        let mut t = FakeTransport {
+            next_id: 40,
+            calls: 0,
+        };
         add_usb(&mut t, Endpoint(2), &mut usb).unwrap();
-        assert_eq!(usb.server_id, Some(41));        assert_eq!(usb.intf_server_ids, std::vec![Some(42), Some(43)]);
+        assert_eq!(usb.server_id, Some(41));
+        assert_eq!(usb.intf_server_ids, std::vec![Some(42), Some(43)]);
         assert_eq!(t.calls, 3);
         // Interface parent linkage is by server id (usb.c: ~device_add).
         remove_usb(&mut t, Endpoint(2), &usb).unwrap();

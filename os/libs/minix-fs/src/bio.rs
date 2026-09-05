@@ -255,22 +255,23 @@ fn staging_at<S: BlockSource, V: SecondLevelCache>(
 /// acquires, stopping at the first cached block or the readahead cap, then
 /// read the collected uncached run into the cache. Strictly best effort:
 /// every failure is ignored, because the demand path re-reads anyway.
-fn prefetch_run<S: BlockSource, V: SecondLevelCache>(
+/// Warm an explicit run of device blocks into the cache.
+///
+/// Probe each block with a peek acquire, stopping at the first cached one,
+/// then read the collected uncached run. Strictly best effort: every
+/// failure is ignored, because the demand path re-reads anyway. The
+/// contiguous prefetch inside transfers uses [`prefetch_run`] semantics;
+/// this entry point serves callers (like file readahead) that already
+/// mapped their own block numbers.
+pub fn prefetch_blocks<S: BlockSource, V: SecondLevelCache>(
     cache: &mut BlockCache<S, V>,
     device: DevId,
-    start_block: u64,
-    blocks_left: usize,
+    blocks: &[u64],
 ) {
-    let limit = cache.readahead_limit().min(blocks_left);
-    if limit == 0 {
-        return;
-    }
+    let limit = cache.readahead_limit().min(blocks.len());
     let mut run = 0usize;
     for offset in 0..limit {
-        match cache.acquire(
-            BlockKey::new(device, start_block + offset as u64),
-            AcquireMode::Peek,
-        ) {
+        match cache.acquire(BlockKey::new(device, blocks[offset]), AcquireMode::Peek) {
             Ok(slot) => {
                 let _ = cache.release(slot);
                 break;
@@ -281,9 +282,7 @@ fn prefetch_run<S: BlockSource, V: SecondLevelCache>(
         }
     }
     for offset in 0..run {
-        let key = BlockKey::new(device, start_block + offset as u64);
-        // Skip blocks that arrived while probing; ignore all errors: the
-        // demand path re-reads anyway.
+        let key = BlockKey::new(device, blocks[offset]);
         match cache.acquire(key, AcquireMode::Peek) {
             Ok(slot) => {
                 let _ = cache.release(slot);
@@ -295,6 +294,24 @@ fn prefetch_run<S: BlockSource, V: SecondLevelCache>(
             }
         }
     }
+}
+
+fn prefetch_run<S: BlockSource, V: SecondLevelCache>(
+    cache: &mut BlockCache<S, V>,
+    device: DevId,
+    start_block: u64,
+    blocks_left: usize,
+) {
+    let limit = cache.readahead_limit().min(blocks_left);
+    if limit == 0 {
+        return;
+    }
+    let mut contiguous = [0u64; crate::cache::MAX_PREFETCH];
+    let take = limit.min(contiguous.len());
+    for (slot, value) in contiguous.iter_mut().enumerate().take(take) {
+        *value = start_block + slot as u64;
+    }
+    prefetch_blocks(cache, device, &contiguous[..take]);
 }
 
 /// Bind a driver label to a device.

@@ -851,7 +851,12 @@ mod tests {
         // C: sys/sys/sysctl.h:677-680 (requests), minix/sysctl.h:61-88
         // (flags and layouts). 19 pins the walk, 20 pins the rows.
         assert_eq!(
-            (KERN_PROC_ARGV, KERN_PROC_NARGV, KERN_PROC_ENV, KERN_PROC_NENV),
+            (
+                KERN_PROC_ARGV,
+                KERN_PROC_NARGV,
+                KERN_PROC_ENV,
+                KERN_PROC_NENV
+            ),
             (1, 2, 3, 4)
         );
         assert_eq!((MPLF_IN_USE, MPLF_ZOMBIE), (0x01, 0x02));

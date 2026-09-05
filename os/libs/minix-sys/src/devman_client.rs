@@ -14,8 +14,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_types::{
-    Endpoint, Errno, Message, MessageM4, MessageUnion, DEVMAN_ADD_DEV, DEVMAN_BIND,
-    DEVMAN_DEL_DEV, DEVMAN_REPLY, DEVMAN_UNBIND,
+    DEVMAN_ADD_DEV, DEVMAN_BIND, DEVMAN_DEL_DEV, DEVMAN_REPLY, DEVMAN_UNBIND, Endpoint, Errno,
+    Message, MessageM4, MessageUnion,
 };
 
 /// C: `DEVMAN_DEV_NAME_LEN 32` (`local.h:7`) — client name array.

@@ -41,6 +41,9 @@ pub enum DirentType {
     Directory = 4,
     /// Block device. C: `DT_BLK` (6).
     Block = 6,
+    /// Regular file. C: `DT_REG` (8). Added when the disk read path needed
+    /// faithful type reporting (`IFTODT` yields eight for regular files).
+    Regular = 8,
     /// Symbolic link. C: `DT_LNK` (10).
     Symlink = 10,
     /// Socket. C: `DT_SOCK` (12).
@@ -58,6 +61,7 @@ impl DirentType {
             2 => Self::Character,
             4 => Self::Directory,
             6 => Self::Block,
+            8 => Self::Regular,
             10 => Self::Symlink,
             12 => Self::Socket,
             _ => Self::Other,
@@ -346,6 +350,7 @@ mod tests {
     #[test]
     fn test_dirent_type_roundtrip() {
         assert_eq!(DirentType::from_raw(4), DirentType::Directory);
+        assert_eq!(DirentType::from_raw(8), DirentType::Regular);
         assert_eq!(DirentType::from_raw(10), DirentType::Symlink);
         assert_eq!(DirentType::from_raw(99), DirentType::Other);
     }
