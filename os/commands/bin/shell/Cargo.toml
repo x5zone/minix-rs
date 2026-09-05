@@ -1,0 +1,10 @@
+[package]
+name = "minix-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_shell"
+path = "src/lib.rs"

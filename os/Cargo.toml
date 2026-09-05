@@ -56,10 +56,12 @@ members = [
     "commands/bin/cat",
     "commands/bin/cp",
     "commands/bin/echo",
+    "commands/bin/fileops",
     "commands/bin/ls",
     "commands/bin/mv",
     "commands/bin/rm",
     "commands/bin/sh",
+    "commands/bin/shell",
     
     # 用户态命令 - sbin
     "commands/sbin/init",
@@ -70,6 +72,8 @@ members = [
 
     # 用户态命令 - usr.bin / usr.sbin（命令安装分层，见 18-stage-commands/99）
     "commands/usr-bin/login",
+    "commands/usr-bin/regex",
+    "commands/usr-bin/textfilter",
     "commands/usr-sbin/svcsched",
     
     # 用户态命令 - games

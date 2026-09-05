@@ -1,0 +1,10 @@
+[package]
+name = "minix-fileops"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_fileops"
+path = "src/lib.rs"

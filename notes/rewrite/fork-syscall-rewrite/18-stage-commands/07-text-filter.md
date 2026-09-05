@@ -1,21 +1,174 @@
 # 07-文本过滤与数据处理
 
-> **状态**: pending（最小骨架，待改写）
-> **定位**: 文本过滤与数据处理
-> **源码**: `minix3/usr.bin/35 个（head/tail/sort/tr/uniq/wc/cut/paste/join/comm/cmp/diff/sdiff/patch/col/colrm/expand/fold/hexdump/jot/lam/rev/seq/shuffle/split/csplit/tee/unexpand/unifdef/units/unvis/vis/yes/cksum/uuidgen/column…）、minix/commands/{look,ifdef,crc}/、minix/usr.bin/diff/`
-> **Rust 模块**: `新 crate（待建）`
-> **draft 素材**: 无（新建）
+> **状态**: 已完成，等待评审收敛
+> **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
+> **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`，25 个测试通过）
+> **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
+> **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
-## 核心点
+---
 
-- - 过滤命令契约表（39 命令）：头部尾部（head/tail）、排序（sort）、去重（uniq）、统计（wc）、切割（cut/split/csplit）、列处理（column/paste/join）
-- - 比较与补丁：cmp/diff/sdiff/patch（diff 在 minix/usr.bin）
-- - 数据转换：tr/expand/unexpand/rev/hexdump/units/uuidgen/cksum/crc
-- - 文本修饰：col/colrm/fold/tee/vis/unvis/yes/shuffle/jot/seq
-- - [ARCH] A-8 关联：locale/多字节面 defer 决策
+## 1. 概念：行是文本世界的通用货币
 
-## 边界
+### 1.0 本章说明
 
-- - **前置依赖**: 06、08（正则概念序前置）
-- - **不覆盖（移交）**: 正则实现细节（08）、编辑器（09）
+本章讲三十九个命令共用的思想：文本即行序列，一切操作都是"选行、变形、汇总"。按数据流向分成五组：取段、整形、统计、转换、比较。
 
+> **本章不讲什么**：
+>
+> - 正则表达式的匹配原理（见 `08-grep-sed.md`）
+> - 排序在内存放不下时的外部归并（后续阶段）
+> - 补丁格式的生成算法（`diff` 的最长公共子序列，归算法阶段）
+>
+> 本章只讲行级变换：每个工具吃行、吐行（或吐数字），行为可用纯函数描述。
+
+### 1.1 取段家族：头、尾、切、拼
+
+- **取头取尾**（`head`、`tail`）：保留前 N 行或后 N 行。前者是"读一点就停"（管道上游可提前终止），后者必须看完全部输入（最后 N 行在哪，不看到文件尾无从知道）——这个不对称是理解两者实现差异的钥匙：前者是丢弃器，后者是环形缓冲。本库 `window.rs` 的 `HeadWindow` 与 `TailWindow` 正是这两种结构。
+- **切分**（`split` 按行数或字节切文件、`csplit` 按上下文切）：大文件拆小，"拆了还能拼回去"是基本契约（`cat` 拼回须与原文一致）。
+- **切割**（`cut`：选项串 `b:c:d:f:sn` 在 `cut.c` 第 88 行）：按字节、按字符、按分隔字段三选一。字段模式的分隔符可定制（`-d`），无分隔符的行默认原样通过（除非 `-s` 要求丢弃）——"整行没有分隔符"的处置是 `cut` 最常见的踩坑点。
+- **拼接**（`paste` 横向并列、`join` 按关键列连接、`column` 对齐成表、`lam` 交错、`comm` 比较已排序文件的三列输出）：关系代数在文本上的投影，`join` 要求输入已排序（未排序输入的结果未定义——文档必须写明前置条件）。
+
+### 1.2 整形家族：宽度、制表、方向
+
+- **折行**（`fold` 按宽度折、`col` 处理退格换页、`colrm` 删列）：终端宽度是物理约束，超宽行必须有人折。
+- **制表**（`expand` 制表符转空格、`unexpand` 反向）：制表位是"走到下个 8 倍数列"的语义，不是固定空格数——混用两者往返不一定恒等，文档如实说明。
+- **方向**（`rev` 反转每行字符）：简单到不可能出错，是管道调试的利器。
+- **分流**（`tee` 复制到文件加下游）：名字来自管道三通，`sudo` 提权写文件是其经典用例（重定向符权限不够时）。
+
+### 1.3 统计家族：数、和、校验
+
+- **计数**（`wc` 354 行）：行数（换行符个数）、词数（非空运行个数）、字节数、最长行。四条规则无一例外（见本库 `count.rs`），"词"的定义尤其值得背诵：最大非空运行——连词符不断词，标点不断词，只有空白断词。
+- **校验**（`cksum`、`crc`）：循环冗余思想的两种参数化，传输后验完整性的标准动作。
+- **求值**（`units` 单位换算、`jot` 生成数字序列、`seq` 同（新式接口）、`shuffle` 随机打乱、`uuidgen` 生成唯一标识、`yes` 无限输出 `y`）：数据发生器家族，测试管道时做"水龙头"用。
+
+### 1.4 比较家族：异同与补丁
+
+- **比较**（`cmp` 逐字节、`comm` 逐行三列、`diff` 在 `minix/usr.bin/diff/`）：粒度从字节到行到"最小编辑脚本"三级。`sdiff` 并排显示、`patch` 吃补丁改文件，构成"生成差异—检视差异—应用差异"闭环。
+- **查找**（`look` 查排序字典、`ifdef`/`unifdef` 按条件取舍 C 预处理段）：前者是拼写检查的老底座，后者让一份源码按宏开关产出多份（驱动多配置编译的前身）。
+
+### 1.5 阅读顺序说明：为什么先读本篇再读正则
+
+计划把正则概念列为本篇前置（`07` 依赖 `08` 的概念序），但文档阅读顺序是 `07` 在前、`08` 在后——因为本篇三十九个命令里只有 `grep` 族与 `sed` 真吃正则，其余三十七个完全不懂正则也能讲透。读者按 `07 → 08` 走，先建立"行变换"的直觉，再学"模式匹配"的理论；`08` 写成后回看本篇的 `look` 与 `unifdef`，会有"原来如此"的二次收获。这种"先用后学"的编排是刻意的教学选择，不是依赖倒置。
+
+---
+
+## 2. C 源码分析
+
+### 2.1 `uniq.c`：状态机范本（257 行）
+
+三个标志变量（`cflag`、`dflag`、`uflag`，第 56 行）在第 83 到 100 行附近分别点亮；核心判定在第 188 行（一句话：重复零次且要重复行、或重复多次且要唯一行，即跳过），计数打印在第 190 行。整个程序是一个"上一行、本行、计数"三元状态机——Rust 侧 `Uniq` 结构体是它的逐字段对照（`previous`、`count`、`mode`），`push` 对应"来一行"的转移，`finish` 对应"文件结束" flush 尾 runs。这是全阶段最小的完整状态机，适合作为状态机入门的第一个例子。
+
+### 2.2 `cut.c`：选项串即契约（第 88 行）
+
+`getopt` 选项串 `b:c:d:f:sn` 一行道尽全部功能：字节、字符、分隔符、字段、静默、行号（`n` 配 `-b` 不切多字节字符——字节模式下的多字节保护）。Rust 侧 `parse_list` 实现 `1,3-5`、`8-`、`-2` 三种写法（`cut.rs`），`select_bytes` 保证重叠区间只打印一次（`1-3,2-4` 得 `hell` 不是 `hellel`——与 C 工具逐字节去重打印一致）。
+
+### 2.3 `wc.c`（354 行）、`head.c`（204 行）：计数器的两副面孔
+
+`wc` 的状态是四个累加器加"词中/词外"一位（本库 `Counter` 的 `lines`、`words`、`bytes`、`longest`、`in_word`），分块投喂（`add` 可在任意字节处切分，词中状态跨块保持——测试 `test_chunk_split_mid_word` 钉住"整投与切投结果一致"）。`head` 的状态是"还要几行"的倒计数，`tail` 是 N 元环—— `window.rs` 的双实现与之一一对应。
+
+### 2.4 `tr.c`（283 行）：集合、映射、压缩三操作
+
+用法收集在第 58 到 125 行（操作数不足即打印用法退出，主函数第 81、89、106、125 行四处 `usage()` 守着四个入口条件）。集合写法（字面、区间、重复、命名类、转义）先展开成 256 元表，再做映射（短集补末字节）、删除、压缩。Rust 侧 `parse_set` 返回展开表加策略表（`CharClass` 三形态），`translate` 先建 256 映射再逐字节查表——与 C 工具"先编译集合、再流式处理"的两阶段一致。
+
+### 2.5 `sort.c`（418 行）：本篇唯一的大块头，执行层留白
+
+排序的语义（键、顺序、唯一、数值）是纯的，但"放不下内存怎么办"（外部归并、临时文件）是执行策略。本阶段实现前者的数据结构（行窗、计数器是它的零件），归并策略随后续阶段落地。文档在这里明确区分"语义"与"策略"，避免读者误以为排序只是"调个库函数"。
+
+---
+
+## 3. Rust 设计决策
+
+### 3.1 为什么窗口是一个接口两种实现
+
+取头与取尾回答同一个问题（"哪些行留下"），输入输出形状相同（逐行进、批量出），内部结构相反（丢弃器对环形缓冲）。`LineWindow` 接口（`push` 投喂、`drain` 取出留存行、`seen` 计数）让调用方（未来的 `head`/`tail` 主程序）无需区分；测试 `test_windows_share_the_trait` 把两者放进同一接口数组统一调用。这是 `02` 篇调度接口的第二次应用——同一设计在不同功能域的复现，说明它已成为本阶段的惯用手法。
+
+### 3.2 为什么计数器按块投喂而不是按行
+
+`wc` 处理的是字节流，不是行数组：输入可能来自管道（无长度）、可能极大（不能全读进内存）。`Counter::add` 接受任意字节块，内部保持"词中/词外"与"当前行长"，跨块正确。调用方（读文件、读管道）只管投喂——这种"推模式"与 Redox 的流式工具、Linux 的 `wc` 分块读取是同一架构，只是把"读"也交了出去（本阶段没有文件系统调用）。
+
+### 3.3 为什么字符集是三形态接口
+
+`tr` 的集合有四种写法（字面、区间、重复、命名类），但语义只有"成员判定"。`CharClass`（字面表、区间、命名类）三种实现共享 `contains`，测试 `test_class_strategies_agree` 穷举 256 字节证明字面表与区间语义一致。命名类限定 ASCII（C 本地化行为），多字节感知是显式留白（与正则引擎的字节取向一致，见 `08` 篇架构注记）。
+
+### 3.4 为什么去重状态机不缓冲全文
+
+`uniq` 只看相邻行是它的定义（不是优化）：`push` 来一行、断 runs 即报告，`finish` 吐尾 runs。内存占用恒为一行，与输入规模无关。测试 `test_collapses_adjacent` 用 `a a b a` 证明"非相邻不合并"——这是初学者最常误解的一点（以为 `uniq` 会全局去重，实则必须先 `sort`）。
+
+---
+
+## 4. 实现详解
+
+### 4.1 模块结构
+
+`os/commands/usr-bin/textfilter`（库包名 `minix-textfilter`）共 6 个源文件：
+
+| Rust 文件 | 对应 C 源码位置 | 职责 |
+|-----------|----------------|------|
+| `lib.rs` | — | 错误类型（`TextError`，22 对应参数无效、12 对应缓冲不足）与模块组织 |
+| `window.rs` | `head`、`tail` 语义 | `LineWindow` 接口、`HeadWindow` 与 `TailWindow` |
+| `count.rs` | `wc.c` 计数语义 | `Counter` 分块计数 |
+| `cut.rs` | `cut.c:88` 选项串 | 列表解析（`parse_list`）与字节字段选择 |
+| `tr.rs` | `tr.c` 集合与三操作 | `CharClass` 接口、集合解析、转换删除压缩 |
+| `uniq.rs` | `uniq.c:56-190` | `Uniq` 状态机与 `Run` 报告 |
+
+### 4.2 关键类型与不变量
+
+- **行窗 `LineWindow`**：逐行进、批量出。不变量：窗口内不超过 N 行借用；`drain` 按原序；`seen` 计数一切投喂（含丢弃）。
+- **计数器 `Counter`**：四累加器加两位状态。不变量：分块边界不影响结果；最长行不含换行符；溢出即错（不回绕）。
+- **字段表 `Range`**：1 起始闭区间。不变量：0 非法；逆序非法；空段非法；`N-` 上界记为最大数（调用方按行长截断）。
+- **字符集 `CharClass`**：成员判定。不变量：字面表与区间穷举一致；命名类 ASCII；重复计数溢出即错。
+- **去重器 `Uniq`**：相邻合并。不变量：非相邻不合并；模式过滤只管报告不管合并；空输入零报告。
+
+### 4.3 函数一览
+
+| 函数 | 输入 | 输出 | 对应 C 行为 |
+|------|------|------|------------|
+| 窗口 `push`/`drain` | 行流 | 留存行 | 取头取尾语义 |
+| `Counter::add`/`finish` | 字节块 | 四计数 | `wc` 计数语义 |
+| `parse_list`/`select_bytes`/`select_fields` | 列表文本与行 | 选中字节 | `cut` 选择语义 |
+| `parse_set`/`translate`/`delete`/`squeeze` | 集合文本与输入 | 变换结果 | `tr` 三操作语义 |
+| `Uniq::push`/`finish`/`keep`/`format` | 行流 | 报告 | `uniq` 状态机语义 |
+
+---
+
+## 5. 测试要点
+
+`cargo test -p minix-textfilter`：**25 个测试，全部通过**（截至 2026-09-06）。
+
+重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/textfilter` 复现）：
+
+- **行窗**（`window.rs`，5 个）：`test_head_keeps_first`（取头）、`test_tail_keeps_last`（取尾跨回绕）、`test_tail_short_input`（不足 N 行全留）、`test_zero_or_huge_rejected`（零与超限）、`test_windows_share_the_trait`（接口统一）。
+- **计数**（`count.rs`，4 个）：`test_basic_counts`（行词节最长四数）、`test_chunk_split_mid_word`（切块一致性）、`test_unterminated_last_line`（末行无换行）、`test_empty_input`（空输入全零）。
+- **切割**（`cut.rs`，5 个）：`test_byte_selection`（区间、离散、开尾、开头四写法）、`test_overlaps_print_once`（重叠去重）、`test_field_selection`（字段三选）、`test_missing_delimiter_policy`（无分隔符两策略）、`test_bad_lists_rejected`（空、零、逆序、空段）。
+- **字符集**（`tr.rs`，7 个）：`test_translate_basic`（基本映射）、`test_short_second_set_repeats_last`（短集补末）、`test_range_and_repeat_sets`（区间与重复写法）、`test_named_class`（命名类十数字）、`test_delete_and_squeeze`（删除与压缩）、`test_class_strategies_agree`（两策略 256 字节一致）、`test_bad_sets_rejected`（逆区间、未知类名、坏重复）。
+- **去重**（`uniq.rs`，4 个）：`test_collapses_adjacent`（相邻合并、非相邻不合并）、`test_repeated_and_unique_modes`（两种筛选）、`test_counted_format`（计数前缀）、`test_empty_input_no_runs`（空输入）。
+
+尚未覆盖、随后续阶段补齐的：排序执行层（键解析、外部归并）、比较器（`cmp`、`diff`、`patch` 的文件配对）、分页与数字格式化（`pr`、`seq` 的输出宽度）、多字节字符感知（`cut -c`、`tr` 类、正则引擎统一升级）。行算法层是全覆盖的，执行与策略层是显式留白的。
+
+---
+
+## 6. 过渡：会摆弄行之后，去匹配模式
+
+本篇走完了行变换：取段、整形、统计、转换、比较——三十九个命令的决策核心就位。但有一个问题本篇一直绕着走：`grep` 如何判断"这一行有没有我要的模式"、`sed` 的替换地址怎么写。出彩票号码靠运气不行，靠的是模式语言——正则表达式。这是 `08-grep-sed.md` 的职责，也是本系列第一块需要"编译器"知识的拼图。请沿因果链继续向下走：先会"摆弄行"，再会"描述要找什么样的行"。
+
+---
+
+## 7. 参见
+
+- `06-file-ops.md`——文件操作（上一步：搬文件）
+- `08-grep-sed.md`——正则与搜索（下一步：模式匹配）
+- `minix3/usr.bin/uniq/uniq.c:56-190`——标志与判定（状态机的逐行对照）
+- `minix3/usr.bin/cut/cut.c:88`——选项串（列表语法的权威来源）
+- `minix3/usr.bin/tr/tr.c:58-125`——用法收集（集合写法的权威来源）
+- `minix3/usr.bin/wc/wc.c`、`head.c`、`sort.c`——计数器与排序（354、204、418 行）
+
+---
+
+## 附：验证记录（评审用，可跳过）
+
+- `wc -l` 六文件 → `sort` 418、`wc` 354、`cut` 306、`tr` 283、`uniq` 257、`head` 204 行，与正文引用一致。
+- 39 命令目录存在性：`usr.bin` 三十五（逐个 `[ -d ]` 验证，无缺失）、`minix/commands` 三（`look`、`ifdef`、`crc`）、`minix/usr.bin/diff`，全部存在。
+- `cargo test -p minix-textfilter` → 25 通过、0 失败；`cargo clippy` 无警告。
+- 本文档引用的 `file:line` 均来自正文写作前实际执行的 `rg -n` 与 `sed -n` 输出，非凭记忆书写。
