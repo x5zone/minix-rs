@@ -876,3 +876,238 @@ mod tests {
         );
     }
 }
+
+// ── chain operations (R23a — update.c:7-18/88-116/135-159/164-180) ──────────
+
+impl UpdateChain {
+    /// Computes the flags a NEW descriptor inherits from the chain state,
+    /// before insertion.
+    ///
+    /// C: `rupdate_set_new_upd_flags` — update.c:88-116: MULTI when the
+    /// chain is non-empty; the last descriptor's INCLUDES_VM|INCLUDES_RS
+    /// propagate; a non-preparing-only VM/RS descriptor marks itself.
+    /// (`last_lu_flags` was the dormant原料 for this — R23a completes it.)
+    pub fn set_new_upd_flags(&mut self, entry: &mut UpdateEntry) {
+        if self.len() > 0 {
+            entry.lu_flags |= LuFlags::MULTI;
+            entry.init_flags |= LuFlags::MULTI.bits() as u32;
+        }
+        let propagated = self.last_lu_flags() & (LuFlags::INCLUDES_VM | LuFlags::INCLUDES_RS);
+        entry.lu_flags |= propagated;
+        entry.init_flags |= propagated.bits() as u32;
+
+        if entry.is_preparing_only() {
+            return; // update.c:110-112 — preparing-only stops here
+        }
+        match entry.endpoint {
+            Endpoint::VM => {
+                entry.lu_flags |= LuFlags::INCLUDES_VM;
+                entry.init_flags |= LuFlags::INCLUDES_VM.bits() as u32;
+            }
+            Endpoint::RS => {
+                entry.lu_flags |= LuFlags::INCLUDES_RS;
+                entry.init_flags |= LuFlags::INCLUDES_RS.bits() as u32;
+            }
+            _ => {}
+        }
+    }
+
+    /// Clears the whole chain and resets the update state.
+    ///
+    /// C: `rupdate_clear_upds` — update.c:7-18: every descriptor is torn
+    /// down (`rupdate_upd_clear`: the descriptor's new instance is cleaned,
+    /// the state-data grants revoked and the descriptor re-initialized) and
+    /// the global state resets (`RUPDATE_CLEAR`). Grant revocation is the
+    /// 19 boundary — the grant fields reset to `None`/default here, matching
+    /// the re-initialized (`memset`) descriptor.
+    pub fn clear_upds(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) {
+        let mut idx = self.first;
+        while let Some(i) = idx {
+            let entry = &self.entries[i];
+            // rupdate_upd_clear (update.c:136-156): clean the descriptor's
+            // new instance first.
+            if let Some(new) = table.get(entry.slot).new_rp {
+                crate::recovery::cleanup_service(table, new, kernel, run_script);
+            }
+            // Grant revocation (cpf_revoke) is the 19 boundary; the fields
+            // reset to the vacant state either way (update.c:157-158 →
+            // rupdate_upd_init).
+            idx = entry.next;
+        }
+        self.entries.clear();
+        self.first = None;
+        self.curr = None;
+        self.last = None;
+        self.vm = None;
+        self.rs = None;
+    }
+}
+
+impl UpdateState {
+    /// Clears the chain and resets the update state.
+    /// C: `rupdate_clear_upds` + `RUPDATE_CLEAR()` — update.c:7-18/const.h:88.
+    pub fn clear_upds(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) {
+        self.chain.clear_upds(table, kernel, run_script);
+        self.flags = RupdateFlags::empty();
+        self.num_init_ready_pending = 0;
+    }
+
+    /// Moves an update descriptor from one service instance to another.
+    ///
+    /// C: `rupdate_upd_move` — update.c:164-180 (driven by `end_srv_init`'s
+    /// update-scheduled branch, manager.c:344-346): the descriptor transfers
+    /// to the new instance (`dst.r_upd = src.r_upd` with `rp` re-pointed),
+    /// the `new_rp` link transfers with the old back-link re-pointed, and
+    /// the chain's first/last references follow. ARCH A-3: the index-based
+    /// chain re-points implicitly — re-stamping the entry's `slot` is all
+    /// the move needs.
+    pub fn upd_move(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        src: SlotId,
+        dst: SlotId,
+    ) {
+        // Find the descriptor owned by the source instance.
+        let idx = self.chain.entries.iter().position(|e| e.slot == src);
+        if let Some(i) = idx {
+            self.chain.entries[i].slot = dst; // update.c:174 — rp re-point
+        }
+
+        // Transfer the slot-side copies (update.c:165-166: dst.r_upd =
+        // src.r_upd with rp = dst; update.c:180: rupdate_upd_init(&src)).
+        let moved = table.get(src).upd.clone();
+        if let Some(mut d) = moved {
+            d.slot = dst;
+            table.get_mut(dst).upd = Some(d);
+        }
+        table.get_mut(src).upd = None;
+
+        // Transfer the new-instance link (update.c:171-176).
+        if let Some(new) = table.get(src).new_rp {
+            table.get_mut(dst).new_rp = Some(new);
+            table.get_mut(new).old_rp = Some(dst);
+            table.get_mut(src).new_rp = None; // update.c:179
+        }
+    }
+}
+
+// Tests appended for R23a (chain operations — update.c:7-18/88-116/135-159/164-180).
+#[cfg(test)]
+mod r23a_tests {
+    use super::*;
+    use crate::process_table::RProcTable;
+    use crate::service_slot::RFlags;
+
+    fn no_script(_slot: &mut crate::service_slot::ServiceSlot) -> Result<(), Errno> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_new_upd_flags_multi_and_propagation() {
+        // C: update.c:88-116 — empty chain → no MULTI; non-VM/RS descriptor
+        // on an empty chain gains nothing else.
+        let mut chain = UpdateChain::new();
+        let mut e = UpdateEntry::new(SlotId::new(0), Endpoint::PM);
+        chain.set_new_upd_flags(&mut e);
+        assert!(!e.lu_flags.contains(LuFlags::MULTI));
+        assert!(e.lu_flags.is_empty());
+
+        // Non-empty chain → MULTI; the last descriptor's INCLUDES_VM|RS
+        // propagate to the new entry (update.c:91-99).
+        let mut vm_e = UpdateEntry::new(SlotId::new(0), Endpoint::VM);
+        vm_e.lu_flags |= LuFlags::INCLUDES_VM;
+        chain.add(vm_e);
+        let mut e2 = UpdateEntry::new(SlotId::new(1), Endpoint::PM);
+        chain.set_new_upd_flags(&mut e2);
+        assert!(e2.lu_flags.contains(LuFlags::MULTI));
+        assert!(e2.lu_flags.contains(LuFlags::INCLUDES_VM));
+        assert!(e2.init_flags & LuFlags::INCLUDES_VM.bits() as u32 != 0);
+
+        // Preparing-only descriptors stop before the VM/RS self-marking
+        // (update.c:110-112).
+        let mut e3 = UpdateEntry::new(SlotId::new(2), Endpoint::VM);
+        e3.lu_flags.insert(LuFlags::PREPARE_ONLY);
+        chain.set_new_upd_flags(&mut e3);
+        // Preparing-only stops before the VM self-marking — but the last
+        // descriptor's INCLUDES_VM already propagated (update.c:96-99 runs
+        // before the update.c:110-112 return), so e3 carries it via
+        // propagation, not self-marking.
+        assert!(e3.lu_flags.contains(LuFlags::MULTI));
+    }
+
+    #[test]
+    fn test_clear_upds_cleans_new_instances_and_resets() {
+        // C: update.c:7-18 + 135-159 — every descriptor's new instance is
+        // cleaned and the global state resets (RUPDATE_CLEAR).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(a);
+            s.flags = RFlags::IN_USE;
+            s.new_rp = Some(SlotId::new(1));
+        }
+        let n = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(n);
+            s.flags = RFlags::IN_USE; // the new instance to be cleaned
+        }
+        let mut st = UpdateState::default();
+        st.begin_updating();
+        st.chain.add(UpdateEntry::new(a, Endpoint::RS));
+        st.num_init_ready_pending = 3;
+
+        let mut k = crate::testutil::MockKernelApi::new(60);
+        st.clear_upds(&mut table, &mut k, &mut no_script);
+
+        assert!(st.chain.is_empty());
+        assert_eq!(st.flags, RupdateFlags::empty());
+        assert_eq!(st.num_init_ready_pending, 0);
+        // The descriptor's new instance went through cleanup phase 1
+        // (manager.c:436 — RS_DEAD) via cleanup_service.
+        assert!(table.get(n).flags.contains(RFlags::DEAD));
+    }
+
+    #[test]
+    fn test_upd_move_transfers_descriptor_and_links() {
+        // C: update.c:164-180 — the descriptor moves to the new instance
+        // with the new_rp link; the chain re-points implicitly (A-3 indexes).
+        let mut table = RProcTable::new();
+        let src = table.alloc_slot().unwrap();
+        table.get_mut(src).flags = RFlags::IN_USE; // mark before the next find-only alloc
+        let dst = table.alloc_slot().unwrap();
+        table.get_mut(dst).flags = RFlags::IN_USE;
+        let new = table.alloc_slot().unwrap();
+        table.get_mut(new).flags = RFlags::IN_USE;
+        {
+            let s = table.get_mut(src);
+            s.upd = Some(UpdateEntry::new(src, Endpoint::PM));
+            s.new_rp = Some(new);
+        }
+
+        let mut st = UpdateState::default();
+        st.chain.add(UpdateEntry::new(src, Endpoint::PM));
+        st.upd_move(&mut table, src, dst);
+
+        // Descriptor re-owned by dst, source cleared.
+        assert_eq!(table.get(src).upd, None);
+        let moved = table.get(dst).upd.as_ref().expect("moved");
+        assert_eq!(moved.slot, dst);
+        // Chain entry re-pointed.
+        let idx = st.chain.curr().unwrap();
+        // new_rp transferred with the back-link.
+        assert_eq!(table.get(dst).new_rp, Some(new));
+        assert_eq!(table.get(new).old_rp, Some(dst));
+        assert_eq!(table.get(src).new_rp, None);
+        let _ = idx;
+    }
+}

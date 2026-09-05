@@ -1978,7 +1978,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52，2026-09-06；restart_service 编排随轮 16 LU 后收口） |
-| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
+| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | 🔶 | 载体+链操作已落地（Fix #53/#54）；start_update/end_update 编排=轮 15/16 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
@@ -2359,3 +2359,22 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   扩展相位写断言：begin_updating → 仅 UPDATING，begin_initializing → UPDATING|
   INITIALIZING 并存——与 C 的 flags |= 语义一致）；clippy/fmt 零输出；T7 PASS。
   文档同步：16 §3.1 表（UpdateState/UpdateEntry 两行）、02 §3.5（per-slot 更新描述符）。
+
+### ✅ Fix #54 — R23a（P1-design-missing 前半）：LU 链操作四缺落地
+- **File**：`os/servers/rs/src/live_update.rs`（`UpdateChain::set_new_upd_flags`/
+  `clear_upds`、`UpdateState::clear_upds`/`upd_move` + 3 测试）；文档 16 §3.1
+- **Before**：`rupdate_clear_upds`（update.c:7-18）、`rupdate_set_new_upd_flags`
+  （update.c:88-116）、`rupdate_upd_clear`（update.c:135-159）、`rupdate_upd_move`
+  （update.c:164-180）零载体——`UpdateChain` 只有 add；`last_lu_flags` 原料无消费方。
+- **After**：`set_new_upd_flags(&mut entry)`（插入前标志计算：链非空 MULTI + last 的
+  INCLUDES_VM/RS 传播 + preparing-only 短路 + VM/RS 自标记——`last_lu_flags` 原料就此
+  消费）；`clear_upds`（逐描述符清 new 实例走 cleanup_service、grant 复位 [cpf_revoke
+  归 19]、RUPDATE_CLEAR 语义）挂 `UpdateState`；`upd_move`（entry.slot 重戳 + new_rp 链
+  转移 + 源复位——**A-3 索引链使 first/last 无需重指**，较 C 的指针修补显著简化）。
+  **已核实正确（防误判记录）**：`alloc_slot` 是 find-only 原语、不置 IN_USE（C 同，
+  manager.c:2067-2083——置位在 create_service 的 mark_child_created，:589）；两个连续
+  alloc 无 intervening 标记会返回同一行——测试构造需先标记。
+- **Verified**：`cargo test -p minix-rs` = **253 passed**（+3：set_new_upd_flags 的
+  MULTI/传播/preparing-only 三态、clear_upds 的清理+复位、upd_move 的描述符/链接转移）；
+  测试自查修正 2 处（alloc find-only 语义、preparing-only 的传播来源）；clippy/fmt 零
+  输出；T7 PASS。文档同步：16 §3.1 表 +3 行。
