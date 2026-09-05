@@ -18,7 +18,7 @@
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno};
 
-use crate::service_slot::SlotId;
+use crate::service_slot::{RFlags, SlotId, SysFlags};
 use crate::slot::RssFlags;
 use minix_types::Clock;
 
@@ -1109,5 +1109,389 @@ mod r23a_tests {
         assert_eq!(table.get(new).old_rp, Some(dst));
         assert_eq!(table.get(src).new_rp, None);
         let _ = idx;
+    }
+}
+
+// ── LU mid-section orchestration (R23b — update.c:401-652) ──────────────────
+
+impl UpdateState {
+    /// Whether a multi-component update includes VM.
+    /// C: `RUPDATE_IS_UPD_VM_MULTI()` — const.h:113.
+    pub fn is_upd_vm_multi(&self) -> bool {
+        self.chain.vm.is_some() && self.chain.len() > 1
+    }
+
+    /// Requests the next service in the update chain to prepare.
+    ///
+    /// C: `start_update_prepare_next` — update.c:467-527. Walks `curr →
+    /// next` (or `first` before the update started), runs the VM-multi
+    /// pre-stage (`vm_prepare` for every non-prepare-only service except VM
+    /// itself — update.c:489-515), sets `RS_UPDATING` (update.c:510 — the
+    /// phase write), then dispatches `request_prepare_update_service` per
+    /// descriptor, skipping prepare-only ones (update.c:516-525). Returns
+    /// the slot whose prepare was requested, or `None` when the chain is
+    /// exhausted.
+    pub fn start_update_prepare_next(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        vm_prepare: &mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
+    ) -> Option<SlotId> {
+        let updating = self.flags.contains(RupdateFlags::UPDATING);
+        let mut idx = if !updating {
+            self.chain.first
+        } else {
+            self.chain.curr.and_then(|c| self.chain.entries[c].next)
+        }?;
+
+        // VM-multi pre-stage (update.c:489-515): all services except VM (and
+        // prepare-only ones) ask VM to prepare their new instances.
+        if self.is_upd_vm_multi() && Some(idx) == self.chain.vm {
+            let mut walk = self.chain.first;
+            while let Some(i) = walk {
+                let e = &self.chain.entries[i];
+                let skip = e.is_preparing_only() || Some(i) == self.chain.vm;
+                walk = e.next;
+                if skip {
+                    continue;
+                }
+                let (old_new_ep, old_sys_flags, new_ep) = {
+                    let old = table.get(e.slot);
+                    let new_ep = old.new_rp.map(|n| table.get(n).pub_.endpoint);
+                    (old.pub_.new_endpoint, old.pub_.sys_flags, new_ep)
+                };
+                if let Some(new_ep) = new_ep {
+                    vm_prepare(old_new_ep.unwrap_or(new_ep), new_ep, old_sys_flags);
+                }
+            }
+        }
+
+        self.flags.insert(RupdateFlags::UPDATING); // update.c:510
+
+        // Dispatch prepare requests, skipping prepare-only descriptors
+        // (update.c:516-525).
+        loop {
+            self.chain.curr = Some(idx);
+            let e = &self.chain.entries[idx];
+            let slot = e.slot;
+            let prepare_state = e.prepare_state;
+            let preparing_only = e.is_preparing_only();
+            let has_next = e.next.is_some();
+            request_prepare(&table.get(slot), prepare_state); // update.c:521
+            if !preparing_only {
+                break;
+            }
+            if !has_next {
+                break;
+            }
+            idx = e.next.unwrap();
+        }
+        let cur = self.chain.curr?;
+        Some(self.chain.entries[cur].slot)
+    }
+}
+
+impl UpdateState {
+    /// Starts the preparation phase of the update process.
+    ///
+    /// C: `start_update_prepare` — update.c:401-464: `EINVAL` when nothing is
+    /// scheduled; `EAGAIN` (with `abort_update_proc` when retries are not
+    /// allowed) when RS is not idle; fills old/new endpoints and the VM
+    /// policy flags for multi-component updates including VM (update.c:442-
+    /// 454); `ESRCH` (with `end_update(OK, RS_REPLY)`) when the chain is
+    /// already exhausted.
+    pub fn start_update_prepare(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        is_idle: bool,
+        allow_retries: bool,
+        abort: &mut dyn FnMut(i32),
+        end: &mut dyn FnMut(i32),
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        vm_prepare: &mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
+    ) -> Result<SlotId, Errno> {
+        // C: update.c:403-406 — UPD_SCHEDULED = descriptors exist and the
+        // update has not started.
+        if self.chain.is_empty() || self.flags.contains(RupdateFlags::UPDATING) {
+            return Err(Errno::EINVAL);
+        }
+        if !is_idle {
+            if !allow_retries {
+                abort(minix_types::EAGAIN); // update.c:411-417
+            }
+            return Err(Errno::from_i32(minix_types::EAGAIN));
+        }
+
+        // Multi-component including VM: fill old/new endpoints and the VM
+        // policy flags per descriptor (update.c:442-454).
+        if self.is_upd_vm_multi() {
+            let mut walk = self.chain.first;
+            while let Some(i) = walk {
+                let (next, is_vm, is_rs, preparing_only, state_endpoint, slot) = {
+                    let e = &self.chain.entries[i];
+                    (
+                        e.next,
+                        Some(i) == self.chain.vm,
+                        Some(i) == self.chain.rs,
+                        e.is_preparing_only(),
+                        e.state_endpoint,
+                        e.slot,
+                    )
+                };
+                walk = next;
+                if preparing_only {
+                    continue;
+                }
+                let ep = table.get(slot).pub_.endpoint;
+                {
+                    let old = table.get_mut(slot);
+                    old.pub_.old_endpoint = Some(state_endpoint);
+                    old.pub_.new_endpoint = Some(ep);
+                    if !is_vm && !is_rs {
+                        old.pub_.sys_flags.insert(SysFlags::VM_UPDATE);
+                        if {
+                            let e = &self.chain.entries[i];
+                            e.lu_flags.contains(LuFlags::NOMMAP)
+                        } {
+                            old.pub_.sys_flags.insert(SysFlags::VM_NOMMAP);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Request the first service to prepare (manager.c:455-462). Done
+        // already → end the update now with ESRCH.
+        match self.start_update_prepare_next(table, request_prepare, vm_prepare) {
+            None => {
+                end(0); // end_update(OK, RS_REPLY) — OK = 0
+                Err(Errno::ESRCH)
+            }
+            Some(slot) => Ok(slot),
+        }
+    }
+
+    /// Starts updating a single service given its update descriptor.
+    ///
+    /// C: `start_srv_update` — update.c:621-652: the pending counter
+    /// increments, the new instance takes `RS_INITIALIZING|RS_INIT_PENDING`,
+    /// the NOMMAP policy flag propagates, and `update_service` swaps the
+    /// instances (skipped for RS itself). Failure → `end_update(r, RS_REPLY)`.
+    pub fn start_srv_update(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        entry_idx: usize,
+        update_service: &mut dyn FnMut(
+            SlotId,
+            SlotId,
+            crate::service_slot::SysFlags,
+        ) -> Result<(), Errno>,
+        end_update: &mut dyn FnMut(i32),
+    ) -> Result<(), Errno> {
+        let (old, nommap) = {
+            let e = &self.chain.entries[entry_idx];
+            (e.slot, e.lu_flags.contains(LuFlags::NOMMAP))
+        };
+        let new = table
+            .get(old)
+            .new_rp
+            .expect("start_srv_update: replica must exist (update.c:631)");
+
+        self.num_init_ready_pending += 1; // update.c:636
+        {
+            let n = table.get_mut(new);
+            n.flags.insert(RFlags::INITIALIZING | RFlags::INIT_PENDING); // update.c:637-638
+        }
+        let sys_upd_flags = if nommap {
+            crate::service_slot::SysFlags::VM_NOMMAP
+        } else {
+            SysFlags::empty()
+        };
+
+        // Perform the update, skipped for RS itself (update.c:642-650).
+        if table.get(old).pub_.endpoint != Endpoint::RS {
+            if let Err(r) = update_service(old, new, sys_upd_flags) {
+                end_update(r.to_i32()); // update.c:645 — end_update(r, RS_REPLY)
+                return Err(r);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl UpdateState {
+    /// Starts the update phase of the update process.
+    ///
+    /// C: `start_update` — update.c:532-652. Seams: `request_prepare` (the
+    /// prepare-only cancel, update.c:551-555), `update_service` (the
+    /// per-instance swap, via `start_srv_update`), `complete_srv` (= the
+    /// `complete_srv_update` orchestration, manager.c:657-702) and
+    /// `receive_vm_init` (the VM wait + `do_init_ready` + reply block,
+    /// update.c:600-640 — 06/12/19). `vm_rpupd`/`last` feed the
+    /// `UPD_INIT_MAXTIME` wait window (const.h:116).
+    pub fn start_update(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        update_service: &mut dyn FnMut(SlotId, SlotId, SysFlags) -> Result<(), Errno>,
+        end_update: &mut dyn FnMut(i32),
+        complete_srv: &mut dyn FnMut(usize) -> Result<(), Errno>,
+        receive_vm_init: &mut dyn FnMut(Clock) -> i32,
+        read_exec: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        // `kernel`/`read_exec` seams stay unused until the complete_srv deep
+        // path (manager.c:657-702) lands; keeping them in the signature
+        // avoids a breaking change for the wiring layer.
+        let _ = (kernel, read_exec);
+        debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:539
+        debug_assert!(self.chain.len() > 0); // update.c:540
+        debug_assert!(self.num_init_ready_pending == 0); // update.c:541
+        self.flags.insert(RupdateFlags::INITIALIZING); // update.c:548
+
+        // Cancel the update for the prepare-only services now
+        // (update.c:551-555): a NULL prepare-state "prepare" completes them.
+        let mut walk = self.chain.first;
+        while let Some(i) = walk {
+            let (next, preparing_only, slot) = {
+                let e = &self.chain.entries[i];
+                (e.next, e.is_preparing_only(), e.slot)
+            };
+            walk = next;
+            if preparing_only {
+                request_prepare(&table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
+            }
+        }
+
+        // Iterate over all scheduled processes: swap + initialize each
+        // non-prepare-only service (update.c:557-576). VM within a
+        // multi-component update completes last (after its init wait).
+        let mut init_ready_pending = false;
+        let mut walk = self.chain.first;
+        while let Some(i) = walk {
+            let (next, preparing_only, is_vm) = {
+                let e = &self.chain.entries[i];
+                (e.next, e.is_preparing_only(), Some(i) == self.chain.vm)
+            };
+            self.chain.curr = Some(i);
+            walk = next;
+            if !preparing_only {
+                init_ready_pending = true;
+                self.start_srv_update(table, i, update_service, end_update)?;
+                if !self.is_upd_vm_multi() || is_vm {
+                    complete_srv(i)?;
+                }
+            }
+        }
+
+        // Nothing more to do → end the update now (update.c:579-582).
+        if !init_ready_pending {
+            end_update(0); // end_update(OK, 0)
+            return Ok(());
+        }
+
+        // Multi-component including VM: wait for VM's initialization, then
+        // complete the remaining services (update.c:585-640). The wait +
+        // do_init_ready + reply sequence is the receive_vm_init seam.
+        if self.is_upd_vm_multi() {
+            let maxtime = self
+                .chain
+                .vm
+                .and_then(|v| self.chain.entries.get(v))
+                .map(|e| e.prepare_maxtime)
+                .unwrap_or(0);
+            let vm_result = receive_vm_init(maxtime);
+            if vm_result == 0 {
+                for i in 0..self.chain.entries.len() {
+                    let (preparing_only, is_vm) = {
+                        let e = &self.chain.entries[i];
+                        (e.is_preparing_only(), Some(i) == self.chain.vm)
+                    };
+                    if !preparing_only && !is_vm {
+                        complete_srv(i)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Tests appended for R23b (start_update_prepare_next walk — update.c:467-527).
+#[cfg(test)]
+mod r23b_tests {
+    use super::*;
+    use crate::process_table::RProcTable;
+
+    fn in_use(table: &mut RProcTable, id: SlotId) {
+        table.get_mut(id).flags = RFlags::IN_USE;
+    }
+
+    #[test]
+    fn test_prepare_next_walks_chain_and_sets_phase() {
+        // C: update.c:467-527 — first walk takes the head and sets
+        // RS_UPDATING; subsequent walks advance via next; exhaustion → None.
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        table.get_mut(a).flags = RFlags::IN_USE;
+        let b = table.alloc_slot().unwrap();
+        table.get_mut(b).flags = RFlags::IN_USE;
+
+        let mut st = UpdateState::default();
+        let e1 = UpdateEntry::new(a, Endpoint::PM);
+        let mut e2 = UpdateEntry::new(b, Endpoint::VFS);
+        e2.lu_flags |= LuFlags::INCLUDES_VM;
+        st.chain.add(e1);
+        st.chain.add(e2);
+
+        let requested: Vec<SlotId> = Vec::new();
+        let mut req = |_slot: &crate::service_slot::ServiceSlot, _ps: i32| {};
+        let mut vm_prep = |_old: Endpoint, _new: Endpoint, _f: SysFlags| {};
+
+        let first = st
+            .start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
+            .expect("first walk");
+        assert_eq!(first, a);
+        assert!(st.flags.contains(RupdateFlags::UPDATING)); // update.c:510
+
+        let second = st
+            .start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
+            .expect("second walk");
+        assert_eq!(second, b);
+        assert!(
+            st.start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
+                .is_none()
+        );
+        let _ = requested;
+    }
+
+    #[test]
+    fn test_prepare_next_skips_prepare_only_chain_tail() {
+        // C: update.c:516-525 — prepare-only descriptors dispatch their
+        // prepare and immediately continue to the next descriptor.
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        table.get_mut(a).flags = RFlags::IN_USE;
+        let b = table.alloc_slot().unwrap();
+        table.get_mut(b).flags = RFlags::IN_USE;
+
+        let mut st = UpdateState::default();
+        let mut e1 = UpdateEntry::new(a, Endpoint::PM);
+        e1.lu_flags.insert(LuFlags::PREPARE_ONLY); // prepare-only head
+        let e2 = UpdateEntry::new(b, Endpoint::VFS);
+        st.chain.add(e1);
+        st.chain.add(e2);
+
+        let mut dispatched: Vec<Endpoint> = Vec::new();
+        {
+            let mut req = |slot: &crate::service_slot::ServiceSlot, _ps: i32| {
+                dispatched.push(slot.pub_.endpoint);
+            };
+            let _ = st.start_update_prepare_next(&mut table, &mut req, &mut |_o, _n, _f| {});
+        }
+        // The walk continued past the prepare-only head in one call.
+        assert_eq!(st.chain.curr, Some(1));
+        let _ = dispatched;
     }
 }

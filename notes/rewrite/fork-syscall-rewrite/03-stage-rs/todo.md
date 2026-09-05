@@ -1978,7 +1978,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52，2026-09-06；restart_service 编排随轮 16 LU 后收口） |
-| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | 🔶 | 载体+链操作已落地（Fix #53/#54）；start_update/end_update 编排=轮 15/16 |
+| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | 🔶 | 载体/链操作/prepare 系列已落地（Fix #53/#54/#55）；complete_srv/end_update 深路径=轮 16 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
@@ -2378,3 +2378,25 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   MULTI/传播/preparing-only 三态、clear_upds 的清理+复位、upd_move 的描述符/链接转移）；
   测试自查修正 2 处（alloc find-only 语义、preparing-only 的传播来源）；clippy/fmt 零
   输出；T7 PASS。文档同步：16 §3.1 表 +3 行。
+
+### ✅ Fix #55 — R23b（P1-design-missing）：LU 中段编排三函数 + prepare-only 取消
+- **File**：`os/servers/rs/src/live_update.rs`（`start_update_prepare_next`/
+  `start_update_prepare`/`start_srv_update`/`start_update` + 2 走链测试）；文档 16 §3.1 +4 行
+- **After**（C 锚点）：
+  - `start_update_prepare_next`（update.c:467-527）：首走取头、后续走 next；VM-multi
+    预置段（update.c:489-515——`vm_prepare` 注入缝）；置 `RS_UPDATING`（update.c:510 相位
+    写入口消费）；prepare-only 跳过循环（update.c:516-525）；耗尽返回 None。
+  - `start_update_prepare`（update.c:401-464）：UPD_SCHEDULED 门（EINVAL）→ 非 idle +
+    `!allow_retries` → `abort(EAGAIN)` 钩子 → VM-multi 老新端点与 VM_UPDATE/NOMMAP 策略
+    标志填充（update.c:442-454）→ 链耗尽 `end(OK)`+ESRCH。
+  - `start_srv_update`（update.c:621-652）：pending 计数++（UpdateState 持有）、新实例
+    `INITIALIZING|INIT_PENDING`、NOMMAP 传播、`update_service` 缝（RS 跳过），
+    失败 → `end_update(r)`。
+  - `start_update`（update.c:532-652）：置 `RS_INITIALIZING`（:548）、prepare-only 取消
+    （:551-555 NULL prepare-state）、逐描述符 `start_srv_update`+`complete_srv` 缝
+    （VM-multi 最后完成，:566-572）、无事 `end_update(OK)`（:579-582）、VM 等待缝
+    （`receive_vm_init(maxtime)`，:585-640——do_init_ready/reply 归 06/12/19）。
+    kernel/read_exec 缝参数保留位（complete_srv 深路径 16 落地时消费）。
+- **Verified**：`cargo test -p minix-rs` = **255 passed**（+2：走链次序+相位写入+
+  prepare-only 连跳、耗尽 None）；clippy/fmt 零输出；T7 PASS。文档同步：16 §3.1 表 +4 行
+  （prepare/prepare_next/start_srv_update/start_update）。
