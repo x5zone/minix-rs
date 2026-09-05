@@ -62,6 +62,8 @@ members = [
     "commands/bin/rm",
     "commands/bin/sh",
     "commands/bin/shell",
+    "commands/bin/editor",
+    "commands/bin/proctools",
     
     # 用户态命令 - sbin
     "commands/sbin/init",
@@ -74,6 +76,8 @@ members = [
     "commands/usr-bin/login",
     "commands/usr-bin/regex",
     "commands/usr-bin/textfilter",
+    "commands/usr-bin/doctools",
+    "commands/usr-bin/compress",
     "commands/usr-sbin/svcsched",
     
     # 用户态命令 - games

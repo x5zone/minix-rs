@@ -1,0 +1,10 @@
+[package]
+name = "minix-proctools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_proctools"
+path = "src/lib.rs"

@@ -1,0 +1,10 @@
+[package]
+name = "minix-compress"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_compress"
+path = "src/lib.rs"
