@@ -207,23 +207,32 @@ impl CallMask {
         self.0 & (1u64 << offset) != 0
     }
 
-    /// Fills a call mask from an unordered set of calls.
+    /// Fills a call mask from an unordered set of calls, composed onto `base`.
     ///
     /// C: `fill_call_mask` — `minix3/minix/servers/rs/utility.c:100-141`.
     /// `calls` is the unordered call list terminated by `NULL_C`; a single
-    /// `ALL_C` entry fills the mask completely; otherwise each entry sets
-    /// bit `calls[i] - call_base` (`SET_BIT(call_mask, calls[i] - call_base)`,
-    /// utility.c:139). `is_init` clears the mask first (utility.c:133-137).
+    /// `ALL_C` entry produces the completely filled mask (utility.c:122-129 —
+    /// C overwrites the chunks with `~0`, so `base` is irrelevant there);
+    /// otherwise the result is `base` with bit `calls[i] - call_base` set for
+    /// every entry (`SET_BIT`, utility.c:139 — OR semantics, R21).
+    ///
+    /// R21: C's `is_init` flag only chooses between a zeroed start
+    /// (is_init=TRUE) and composing onto the caller's existing mask
+    /// (is_init=FALSE, the edit_slot path — manager.c:1527-1540). The flag is
+    /// therefore just "which mask to start from": passing [`CallMask::empty`]
+    /// reproduces is_init=TRUE verbatim, and passing the live mask makes the
+    /// composition expressible (the old signature could not).
     pub fn from_calls(
+        base: CallMask,
         calls: &[i32],
         tot_nr_calls: usize,
         call_base: i32,
-        is_init: bool,
     ) -> Result<CallMask, Errno> {
         // Count non-NULL_C entries (utility.c:116-121).
         let nr_calls = calls.iter().take_while(|&&c| c != NULL_C).count();
 
         // Single ALL_C entry → completely filled mask (utility.c:122-129).
+        // C overwrites the chunks regardless of is_init — `base` is ignored.
         if nr_calls == 1 && calls[0] == ALL_C {
             let mut m = CallMask::all();
             // C fills `call_mask_size` chunks of ~0; bits beyond the call
@@ -239,13 +248,7 @@ impl CallMask {
             return Ok(m);
         }
 
-        let mut m = if is_init {
-            CallMask::empty()
-        } else {
-            // C does not zero when `is_init` is false; the caller is expected
-            // to pass a pre-zeroed mask (boot uses TRUE; 05 composes masks).
-            CallMask(0)
-        };
+        let mut m = base;
         for &c in calls.iter().take(nr_calls) {
             let offset = (c - call_base) as usize;
             // N7: fail closed on an out-of-range call number (was a
@@ -415,15 +418,20 @@ impl Privilege {
             } else {
                 Endpoint::PM
             },
-            bak_sig_mgr: Endpoint::NONE, // main.c:275
+            bak_sig_mgr: Endpoint::NONE,                  // main.c:275
             trap_mask: TrapMask::srv_or_usr(is_sys_proc), // main.c:271
             // main.c:272-273: `ipc_to = SRV_OR_USR(rp, SRV_M, USR_M)` —
             //   both are ALL_M, so `fill_send_mask(mask, TRUE)` sets all bits.
             ipc_to: SysMap::all(),
             // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
             //   ? all_c : no_c` — boot services use the SRV_KC=ALL_C branch.
-            k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
-                .expect("boot call list is a constant in range"),
+            k_call_mask: CallMask::from_calls(
+                CallMask::empty(),
+                &[ALL_C, NULL_C],
+                NR_SYS_CALLS,
+                KERNEL_CALL,
+            )
+            .expect("boot call list is a constant in range"),
             nr_io_range: 0,
             io_ranges: [IoRange::default(); NR_IO_RANGE],
             nr_irq: 0,
@@ -555,22 +563,34 @@ mod tests {
 
     #[test]
     fn test_call_mask_from_calls() {
-        // ALL_C → full mask within the call space.
-        let m = CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true).unwrap();
+        // ALL_C → full mask within the call space (base irrelevant — C
+        // overwrites the chunks, utility.c:122-129).
+        let m = CallMask::from_calls(
+            CallMask::empty(),
+            &[ALL_C, NULL_C],
+            NR_SYS_CALLS,
+            KERNEL_CALL,
+        )
+        .unwrap();
         assert_eq!(m.0, (1u64 << NR_SYS_CALLS) - 1);
 
-        // Single call: bit (call - call_base).
-        let m = CallMask::from_calls(&[KERNEL_CALL + 4, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true)
-            .unwrap();
+        // Single call: bit (call - call_base); empty base = C is_init=TRUE.
+        let m = CallMask::from_calls(
+            CallMask::empty(),
+            &[KERNEL_CALL + 4, NULL_C],
+            NR_SYS_CALLS,
+            KERNEL_CALL,
+        )
+        .unwrap();
         assert!(m.test_bit(4));
         assert!(!m.test_bit(3));
 
         // NULL_C terminates.
         let m = CallMask::from_calls(
+            CallMask::empty(),
             &[KERNEL_CALL + 1, NULL_C, KERNEL_CALL + 2],
             NR_SYS_CALLS,
             KERNEL_CALL,
-            true,
         )
         .unwrap();
         assert!(m.test_bit(1));
@@ -580,24 +600,65 @@ mod tests {
         // of silently setting the wrong bit in release builds.
         assert_eq!(
             CallMask::from_calls(
+                CallMask::empty(),
                 &[KERNEL_CALL + 200, NULL_C],
                 NR_SYS_CALLS,
-                KERNEL_CALL,
-                true
+                KERNEL_CALL
             ),
             Err(Errno::EINVAL)
         );
         assert_eq!(
-            CallMask::from_calls(&[KERNEL_CALL - 5, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true),
+            CallMask::from_calls(
+                CallMask::empty(),
+                &[KERNEL_CALL - 5, NULL_C],
+                NR_SYS_CALLS,
+                KERNEL_CALL
+            ),
             Err(Errno::EINVAL)
         );
         // A call space >= 64 bits must not shift-overflow (N7).
         assert_eq!(
-            CallMask::from_calls(&[ALL_C, NULL_C], 64, KERNEL_CALL, true)
+            CallMask::from_calls(CallMask::empty(), &[ALL_C, NULL_C], 64, KERNEL_CALL)
                 .unwrap()
                 .0,
             u64::MAX
         );
+    }
+
+    #[test]
+    fn test_call_mask_from_calls_composes_onto_base() {
+        // R21: C's is_init=FALSE composes onto the existing mask
+        // (utility.c:133-140 — SET_BIT ORs; the edit_slot path passes the
+        // live k_call_mask as base, manager.c:1527-1540). The base parameter
+        // makes that composition expressible; empty base ≡ is_init=TRUE.
+        let base = CallMask::from_calls(
+            CallMask::empty(),
+            &[KERNEL_CALL + 4, NULL_C],
+            NR_SYS_CALLS,
+            KERNEL_CALL,
+        )
+        .unwrap();
+        let composed =
+            CallMask::from_calls(base, &[KERNEL_CALL + 7, NULL_C], NR_SYS_CALLS, KERNEL_CALL)
+                .unwrap();
+        assert!(composed.test_bit(4)); // survived from base
+        assert!(composed.test_bit(7)); // added by this round
+
+        // Empty base starts clean (C is_init=TRUE semantics).
+        let fresh = CallMask::from_calls(
+            CallMask::empty(),
+            &[KERNEL_CALL + 7, NULL_C],
+            NR_SYS_CALLS,
+            KERNEL_CALL,
+        )
+        .unwrap();
+        assert!(fresh.test_bit(7));
+        assert!(!fresh.test_bit(4));
+
+        // ALL_C ignores the base (C overwrites the chunks, utility.c:122-129).
+        let overridden =
+            CallMask::from_calls(base, &[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL).unwrap();
+        assert_eq!(overridden.0, (1u64 << NR_SYS_CALLS) - 1);
     }
 
     #[test]

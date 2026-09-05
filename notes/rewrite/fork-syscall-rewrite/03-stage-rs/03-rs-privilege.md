@@ -432,13 +432,13 @@ pub fn srv_or_usr<T: Copy>(is_sys_proc: bool, srv: T, usr: T) -> T {
 pub struct CallMask(pub u64);   // 64 位：kernel 58 调用 / VM 49 调用都装得下
 
 impl CallMask {
-    pub fn from_calls(calls: &[i32], tot_nr_calls: usize, call_base: i32, is_init: bool)
+    pub fn from_calls(base: CallMask, calls: &[i32], tot_nr_calls: usize, call_base: i32)
         -> Result<CallMask, Errno>   // N7：越界调用号 → Err(EINVAL)，fail-closed
 }
 ```
 
-- `calls == [ALL_C]` → `u64::MAX` 截断到 `tot_nr_calls` 位（`tot_nr_calls >= 64` 时不再移位，N7）
-- 否则逐项 `set_bit(calls[i] - call_base)`；`is_init` 时先清零
+- `calls == [ALL_C]` → `u64::MAX` 截断到 `tot_nr_calls` 位（`tot_nr_calls >= 64` 时不再移位，N7）；**与 `base` 无关**——C 的 ALL_C 分支无条件把 chunk 覆写为 `~0`（utility.c:122-129）
+- 否则结果 = `base` 逐项 `set_bit(calls[i] - call_base)`（OR 组合，R21）；`base = CallMask::empty()` 精确复现 C 的 `is_init=TRUE`
 - 哨兵常量 `ALL_C=-2`/`NO_C=-1`/`NULL_C=-3`（priv.h:28-30）用显式 const
 - **理由**：C 的 `bitchunk_t[2]`（2×u32）在 Rust 里合并为 u64 更简单，位语义完全一致（58/49 位都不跨 64 位边界）；序列化边界归 19
 
@@ -448,6 +448,14 @@ impl CallMask {
 > （release 构建下 `1u64 << offset` 按 x86 shl 语义 mask 成 `offset & 63`，静默设错位 =
 > "允许了错误的系统调用"）。`CallMask::set_bit/test_bit`、`SysMap::set/test` 增加
 > `offset/priv_id < 64` 的全构建 `assert!`（调用方先校验：from_calls / 内核 priv id 契约）。
+
+> **R21 修复（2026-09-06，todo §18）——is_init 组合语义可表达**：原签名用
+> `is_init: bool` 二选一起点掩码，但 is_init=FALSE 分支只是"调用方应已预置掩码"的注释
+> 约定——参数表里根本没有传既有掩码的入口，edit_slot 的 basic 位叠加路径
+> （manager.c:1527-1540）在 API 上不可表达。现删掉布尔、改为前导 `base: CallMask` 参数：
+> 结果 = base ∪ bits(calls)；`empty()` ≡ C is_init=TRUE，传活掩码 ≡ is_init=FALSE；
+> ALL_C 分支忽略 base（与 C 覆写语义一致）。测试：
+> `test_call_mask_from_calls_composes_onto_base`。
 
 `SysMap`（s_ipc_to，64 位）同样用 `u64` newtype，位 i = priv id i 可发。`TrapMask` 用 bitflags(u16)——`SRV_T=~0` 在 u16 里是 `0xFFFF`。
 
@@ -537,8 +545,12 @@ pub fn boot_priv(flags: PrivFlags, endpoint_slot: i32) -> Privilege {
         bak_sig_mgr: Endpoint::NONE,                       // main.c:275
         trap_mask: TrapMask::srv_or_usr(is_sys_proc),      // main.c:271
         ipc_to: SysMap::all(),                             // fill_send_mask(ALL_M)，main.c:272-273
-        k_call_mask: CallMask::from_calls(&[ALL_C, NULL_C], NR_SYS_CALLS, KERNEL_CALL, true),
-                                                           // main.c:278-280
+        k_call_mask: CallMask::from_calls(
+            CallMask::empty(),
+            &[ALL_C, NULL_C],
+            NR_SYS_CALLS,
+            KERNEL_CALL,
+        ), // main.c:278-280（R21：empty base ≡ is_init=TRUE）
         nr_io_range: 0,
         io_ranges: [IoRange::default(); NR_IO_RANGE],
         nr_irq: 0,
@@ -581,7 +593,7 @@ pub struct PublicSlot {
 }
 ```
 
-`vm_call_mask` 的填充（main.c:317）放 `boot.rs` Step 1（`CallMask::from_calls(ALL_C, NR_VM_CALLS, VM_RQ_BASE, true)`），语义组合归 05。
+`vm_call_mask` 的填充（main.c:317）放 `boot.rs` Step 1（`CallMask::from_calls(CallMask::empty(), ALL_C, NR_VM_CALLS, VM_RQ_BASE)`），语义组合归 05。
 
 ### 4.4 sched.rs 模块结构
 
@@ -629,9 +641,9 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 
 ### 5.3 CallMask::from_calls
 
-- `[ALL_C]` → 全 1（58 位内全 1，59 位以上为 0）
+- `[ALL_C]` → 全 1（58 位内全 1，59 位以上为 0）；与 `base` 无关（C 覆写 chunk，utility.c:122-129）
 - 单调用 `[KERNEL_CALL + 4]` → 仅位 4 置位
-- `is_init=true` 先清零；`is_init=false` 时 C 不预清零（调用方须传预清零缓冲，utility.c:126-131），Rust 值类型恒新恒 0，等价于预清零（无独立测试，语义 N/A）
+- **组合语义（R21）**：结果 = `base` ∪ bits(calls)；`base = empty()` ≡ C `is_init=TRUE`（先清零），传活掩码 ≡ `is_init=FALSE`（basic 位叠加，manager.c:1527-1540 的 edit_slot 路径）——`test_call_mask_from_calls_composes_onto_base` 锁定三态（base 位保留、新位加入、ALL_C 覆写 base）
 - N7：越界调用号（`KERNEL_CALL+200` / `KERNEL_CALL-5`）→ `Err(EINVAL)`；`tot_nr_calls=64` 全 1 不溢出
 - `NULL_C` 截断（calls 数组含 NULL_C 停止计数）
 - `test_validate_range_counts`：`nr_io_range`/`nr_mem_range`/`nr_irq` 负数或超表限 → `Err(EINVAL)`（do_privctl.c:308-331；C int 语义负数拒绝，不包绕）

@@ -1976,7 +1976,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | ID | 主题 | 严重度 | 状态 | 归属 |
 |----|------|--------|------|------|
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ☐ | 08 落地期 |
-| R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ☐ | 08 落地期（可先改 API） |
+| R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ☐ | 13 落地期 |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ☐ | 16 落地期 |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
@@ -2129,3 +2129,24 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `SlotMutations::default()`）；clippy/fmt 触碰文件零输出；`tools/check-rs-unwired.sh` PASS。
   文档同步：12 §2.4 加 Rust 映射段（置位位置语义）、§3.1 表行更新、§5 清单 15→16 项 +
   全局 208→214。
+
+### ✅ Fix #44 — R21（P1 API 形状缺口）：`from_calls` 改 base 参数，is_init 组合语义可表达
+- **File**：`os/servers/rs/src/privilege.rs`（签名 + boot_priv 调用点 + 测试）、
+  文档 03 §3.5/§4/§5.3
+- **Before**：`from_calls(calls, tot_nr_calls, call_base, is_init)` 的 is_init=FALSE 分支
+  返回 `CallMask(0)` 起步，注释自认"调用方应传预置掩码"——参数表没有传既有掩码的入口，
+  C 的 fill_call_mask is_init=FALSE 组合语义（utility.c:133-140，edit_slot 的
+  RSS_SYS_BASIC_CALLS 叠加路径，manager.c:1527-1540）在 API 上不可表达；08 接线照现签名
+  直填会把 basic 位叠加静默变成清零重填。
+- **After**：`from_calls(base: CallMask, calls, tot_nr_calls, call_base)`——删除 is_init
+  布尔，结果 = base ∪ bits(calls)。方案对比：a) base 参数替代布尔（选定）vs b) 保留
+  is_init 再加 base（两个旋钮一个死的）vs c) 另加 `from_calls_or`（D4 式双 API）。语义
+  映射：`empty()` ≡ C is_init=TRUE；传活掩码 ≡ is_init=FALSE；ALL_C 分支忽略 base——
+  C 的 ALL_C 分支无条件覆写 chunk 为 `~0`（utility.c:122-129），与 is_init 无关，故
+  base 无关正是忠实翻译。`set_bit` 的 N7 EINVAL 门保持不变（base 上的越界调用号同样拒绝）。
+- **Verified**：`cargo test -p minix-rs` = **217 passed**（`test_call_mask_from_calls` 全部
+  调用点迁移到新签名；新增 `test_call_mask_from_calls_composes_onto_base`：base 位保留 +
+  新位加入 + `empty()` 等价 is_init=TRUE + ALL_C 覆写 base）；clippy/fmt 零输出
+  （cargo fmt 顺带收敛了同 impl 块内本就存在的注释对齐遗留）；`tools/check-rs-unwired.sh`
+  PASS。文档同步：03 §3.5 签名/语义清单 + R21 修复注、§4 boot_priv 代码块、§4 vm_call_mask
+  调用签名、§5.3 测试要点（删除"is_init=false 语义 N/A"过时表述）。
