@@ -865,6 +865,8 @@ impl MessageDispatcher {
                 // extension; not on C's vm_stats_info wire layout).
                 dropped_messages,
                 pagefault_errors,
+                // V11/T18 ([ARCH: A-16]): page-allocation failures.
+                alloc_failures: s.alloc_failures,
             },
             Ok(query::InfoResult::Usage(u)) => VmReply::InfoUsage {
                 total: u.total,

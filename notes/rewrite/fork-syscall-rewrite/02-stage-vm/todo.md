@@ -1181,6 +1181,13 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **452 / 467 / 466 / 452 passed**（+2 gateway wire 测试）；四组合 clippy `^servers/` **0 警告**；`rg "unimplemented!|Endpoint::from_generation_slot(1" os/servers/vm/src/fork.rs` → 0
 - **Docs**: 18-vm-fork.md（模块清单 + 偏差表）；kernel_gateway.rs 模块文档（wire 约定与 E1/E2 依赖）
 
+### ✅ Fix #30: T18 — 分配失败计数接入 InfoStats 可观测面（[ARCH: A-16]），check_leak"周期接线"判定关闭
+
+- **Files**: `os/servers/vm/src/alloc_stats.rs`（`allocation_failures()` 访问器；V10-P2-1 的 DEFERRED 注记替换为 T18 判定注释——不设周期循环：C 无对应物且 active_pages 已由 `self_page_count()` 进入 VM_INFO Usage）、`os/servers/vm/src/alloc_page.rs`（`alloc_failures()` 访问器）、`os/servers/vm/src/query.rs`（`StatsInfo.alloc_failures` + handle_info 填充 + 可观测性测试）、`libs/minix-types/src/ipc/vm.rs`（`VmReply::InfoStats.alloc_failures: u32`，[ARCH: A-16]，wire 布局不变）、`os/servers/vm/src/ipc/dispatcher.rs`（透传）
+- **设计判定（反无脑加码）**：原条目的"周期 check_leak 接线"不采纳——`check_leak` 的现语义（active>0 即 Some）在长跑服务器上恒真，周期输出是噪声而非泄漏检测；C 无对应物；且 pre-E1 audit 通道无出口。诚实完成 = 把真实信号（分配失败 = 内存压力）接入既有可观测面（V10-P2-4 模式）
+- **Verified**: 四矩阵 **453 / 468 / 467 / 453 passed**（+1 可观测性测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 26-vm-queries.md（§3.4 扩展字段段、§4.8 encode 表、§5.1 测试行）
+
 ### ✅ Fix #28: T9 step 1 — KernelIpcTransport 从 `unimplemented!()` 改为委托 minix-sys trap 后端（P1-3 半边闭环）
 
 - **Files**: `os/servers/vm/src/ipc/transport.rs`（`KernelIpcTransport` 增 `inner: DirectTrapTransport` 字段；`receive` 按 `sef_receive_status(ANY,…)` 委托、`send` 按 `ipc_send` 委托——调用形态定稿；`IpcStatus{flags}` 与 minix-sys `IpcStatus(u32)` 原始字直通；`TrapStatus → IpcError::Kernel` 映射；模块头/类型头文档重写）、minix-sys 依赖从闲置转为实际使用

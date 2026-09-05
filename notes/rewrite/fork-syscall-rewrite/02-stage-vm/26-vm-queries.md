@@ -422,7 +422,7 @@ C 用裸整数 `what` + switch；Rust 用 `InfoQuery { Stats, Usage { target }, 
 
 **Rust 设计**：`StatsInfo` 补上 `cached_pages: u64`（query.rs:99-107），数据来自 `PageCache::total_cached()`（page_cache.rs:421），经 `dispatch_info` 新参数 `cached_pages: u64` 传入（dispatcher.rs:948-955）。**旧实现丢 vsi_cached**——这是本轮 P1 级缺口：C 提供的数据在 Rust 侧被静默丢弃，MIB 读不到缓存页数。
 
-**V10-P2-4 扩展**：`VmReply::InfoStats`（minix-types vm.rs:661-678）在 5 个 C wire 字段之外携带两个 minix-rs 可观测性计数——`dropped_messages: u64`（主循环丢弃消息数，[ARCH: A-14]）与 `pagefault_errors: u64`（页错误处理失败数，[ARCH: A-15]，V9-P1-1）。它们**不在 C 的 `struct vm_stats_info` wire 布局上**（dispatcher.rs:1041-1042 从 `server.dropped_messages()/pagefault_errors()` 取值，encode 时丢弃，见 §4.8）——进程内可观测（测试 + 未来 syslog 槽位），对外 wire 保持 C 兼容。
+**V10-P2-4 扩展**：`VmReply::InfoStats`（minix-types vm.rs:661-678）在 5 个 C wire 字段之外携带两个 minix-rs 可观测性计数——`dropped_messages: u64`（主循环丢弃消息数，[ARCH: A-14]）与 `pagefault_errors: u64`（页错误处理失败数，[ARCH: A-15]，V9-P1-1）。**V11/T18 追加第三个**：`alloc_failures: u32`（页分配失败数——内存压力信号，[ARCH: A-16]，取自 `VmPageAllocator::alloc_failures()`）。三者**均不在 C 的 `struct vm_stats_info` wire 布局上**（encode 时丢弃，见 §4.8）——进程内可观测（测试 + 未来 syslog 槽位），对外 wire 保持 C 兼容。
 
 ### 3.5 UsageInfo 八字段完整 + 内核/VM 自身特判（D5）
 
@@ -656,7 +656,7 @@ pub(crate) fn handle_getrusage(
 |------|---------|------|
 | GetPhys | m1p1 = phys | `ret_addr` 语义（C: mmap.c:456） |
 | GetRefcount | m1i1 = count | `retc`（C: mmap.c:481） |
-| InfoStats | p1=pagesize, i1=total, i2=free, i3=largest, **p2=cached** | 5 字段全编码；`dropped_messages`/`pagefault_errors`（V10-P2-4 扩展）**无 C wire 槽位**，encode 丢弃（vm_server.rs:1299-1314） |
+| InfoStats | p1=pagesize, i1=total, i2=free, i3=largest, **p2=cached** | 5 字段全编码；`dropped_messages`/`pagefault_errors`（V10-P2-4）与 `alloc_failures`（V11/T18，[ARCH: A-16]）扩展字段**无 C wire 槽位**，encode 丢弃 |
 | InfoUsage | p1=total, p2=common, p3=shared, i1=virtual(页数), i2=mvirtual(页数), **i3=maxrss(KB)** | minflt/majflt 无槽位，DEFERRED |
 | InfoRegion | p1=源长度, i1=count, i2=next | 数组负载 DEFERRED（VMI-2） |
 | Getrusage | p1=maxrss, i1=minflt, i2=majflt | 3 字段 |
@@ -688,6 +688,7 @@ pub(crate) fn handle_getrusage(
 | test_getrusage_non_pm / test_getrusage_pm_invalid_endpoint | 非 PM → Ok；PM+无效端点 → ProcessNotFound | utility.c:437-442 |
 | test_handle_info_stats_cached_pages | Stats 五字段 + cached=123 | cache.c:328-331 |
 | test_dropped_messages_observable_via_info_stats（vm_server.rs:1792） | **V10-P2-4**：3 次 receive 失败 → `dropped_messages==3`，经 VMIW_STATS 的 `VmReply::InfoStats` 扩展字段可观测（`pagefault_errors==0`） | minix-rs 扩展（[ARCH: A-14]；C wire 无槽位） |
+| test_handle_info_stats_alloc_failures_observable（query.rs，V11/T18） | 耗尽 2 页微型分配器（8 次尝试）→ `InfoStats.alloc_failures` 精确等于失败次数 | minix-rs 扩展（[ARCH: A-16]；C wire 无槽位） |
 | test_handle_info_usage_kernel_target | ep=KERNEL → kernel_bytes，virtual=mvirtual=total | region.c:1357-1364 |
 | test_handle_info_usage_vm_self_target | ep=VM → vm_self_bytes | region.c:1366-1373 |
 | test_handle_info_usage_invalid_endpoint | 无效端点 → ProcessNotFound | utility.c:133-136 |

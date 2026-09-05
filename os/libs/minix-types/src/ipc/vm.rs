@@ -697,6 +697,11 @@ pub enum VmReply {
         /// C: `vsi_cached` — `cached_pages` reported by `get_stats_info`
         /// (cache.c:328-331).
         cached_pages: u64,
+        /// minix-rs extension (V11/T18): page-allocation failures seen —
+        /// memory-pressure signal ([ARCH: A-16]). Not part of C's
+        /// `struct vm_stats_info` wire layout (dropped at encode; observable
+        /// in-process only).
+        alloc_failures: u32,
         /// minix-rs extension (V10-P2-4): main-loop dropped-message count
         /// (receive failures + invalid callers, [ARCH: A-14]). Not part of
         /// C's `struct vm_stats_info` wire layout — observable in-process

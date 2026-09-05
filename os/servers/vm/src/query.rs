@@ -104,6 +104,9 @@ pub(crate) struct StatsInfo {
     /// C: `vsi_cached` — pages cached for file systems (`get_stats_info`,
     /// cache.c:328-331).
     pub cached_pages: u64,
+    /// minix-rs extension ([ARCH: A-16]): page-allocation failures seen —
+    /// memory-pressure signal; not part of C's `struct vm_stats_info`.
+    pub alloc_failures: u32,
 }
 
 /// Per-process memory usage, aligned with Minix3's `struct vm_usage_info`
@@ -301,6 +304,8 @@ pub(crate) fn handle_info(
                 largest_contiguous: stats.largest_free as u32,
                 // C: get_stats_info() — vsi_cached = cached_pages (cache.c:328-331)
                 cached_pages,
+                // minix-rs extension ([ARCH: A-16]): allocation failures.
+                alloc_failures: page_alloc.alloc_failures() as u32,
             }))
         }
         InfoQuery::Usage { target } => {
@@ -717,9 +722,11 @@ mod tests {
             free_pages: 0,
             largest_contiguous: 0,
             cached_pages: 0,
+            alloc_failures: 0,
         };
         assert_eq!(info.page_size, PAGE_SIZE as u64);
         assert_eq!(info.cached_pages, 0);
+        assert_eq!(info.alloc_failures, 0);
     }
 
     #[test]
@@ -824,6 +831,39 @@ mod tests {
             InfoResult::Stats(s) => {
                 assert_eq!(s.page_size, PAGE_SIZE as u64);
                 assert_eq!(s.cached_pages, 123);
+            }
+            _ => panic!("expected Stats"),
+        }
+    }
+
+    /// V11/T18 ([ARCH: A-16]): allocation failures surface through
+    /// InfoStats — a memory-pressure signal observable without syslog.
+    #[test]
+    fn test_handle_info_stats_alloc_failures_observable() {
+        let table = VmProcTable::get_global();
+        // Exhaust a tiny allocator: each failed alloc_phys records a failure.
+        let mut tiny = VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(2)));
+        let mut exhausted = 0;
+        for _ in 0..8 {
+            if tiny.alloc_pages(1, crate::phys_mem::types::PageAllocFlags::empty()).is_none() {
+                exhausted += 1;
+            }
+        }
+        assert!(exhausted > 0, "tiny allocator must run out within 8 tries");
+
+        let result = handle_info(
+            table,
+            &tiny,
+            &make_frames(),
+            empty_sources(),
+            0,
+            InfoQuery::Stats,
+        )
+        .unwrap();
+        match result {
+            InfoResult::Stats(s) => {
+                assert_eq!(s.alloc_failures as usize, exhausted,
+                    "allocation failures must be observable via InfoStats");
             }
             _ => panic!("expected Stats"),
         }

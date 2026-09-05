@@ -109,6 +109,11 @@ impl VmPageAllocator {
         self.stats.active_pages()
     }
 
+    /// Page-allocation failures recorded (V11/T18, [ARCH: A-16]).
+    pub(crate) fn alloc_failures(&self) -> usize {
+        self.stats.allocation_failures()
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stats(&self) -> &VmAllocStats {
         &self.stats

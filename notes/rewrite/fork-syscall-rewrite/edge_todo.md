@@ -31,7 +31,7 @@
 | T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ⬜ |
 | T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ⬜ |
 | T17 | 2 | bitmap cache_freepages 三步路径 | bitmap_alloc.rs:347 DEFERRED | ⬜ |
-| T18 | 2 | alloc_stats 周期 check_leak 接线 | alloc_stats.rs:46 DEFERRED | ⬜ |
+| T18 | 2 | alloc 失败计数接入 InfoStats（周期循环判定不采纳） | alloc_stats.rs:46 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #30） |
 | T19 | 2 | exec_newmem / DMA 三条 parity 处置（删 dead stub，不实现） | dispatcher.rs:820/:1223 | ✅ 2026-09-06（todo.md §15 Fix #25） |
 | T20 | 2 | 大匿名映射懒分配落地（Reserved → fault 实化） | V9-P3-2 | ⬜ |
 | T21 | 3 | 页表可注入化 + VM 内 SimPaging | V11-P2-1（QEMU 冒烟→E5） | ⬜ |
