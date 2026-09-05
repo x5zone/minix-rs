@@ -1,0 +1,10 @@
+[package]
+name = "minix-maint"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_maint"
+path = "src/lib.rs"

@@ -67,6 +67,7 @@ members = [
     "commands/bin/proctools",
     "commands/bin/termctl",
     "commands/bin/diskimg",
+    "commands/bin/sysinfo",
     
     # 用户态命令 - sbin
     "commands/sbin/init",
@@ -76,6 +77,7 @@ members = [
     "commands/sbin/devdb",
     "commands/sbin/mountinfo",
     "commands/sbin/diskfmt",
+    "commands/sbin/maint",
 
     # 用户态命令 - usr.bin / usr.sbin（命令安装分层，见 18-stage-commands/99）
     "commands/usr-bin/login",
@@ -84,6 +86,8 @@ members = [
     "commands/usr-bin/doctools",
     "commands/usr-bin/compress",
     "commands/usr-sbin/svcsched",
+    "commands/usr-sbin/netconfig",
+    "commands/usr-sbin/netservices",
     
     # 用户态命令 - games
     "commands/games/tetris",

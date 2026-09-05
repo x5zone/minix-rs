@@ -1,0 +1,10 @@
+[package]
+name = "minix-sysinfo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_sysinfo"
+path = "src/lib.rs"
