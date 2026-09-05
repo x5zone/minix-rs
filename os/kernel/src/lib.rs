@@ -78,6 +78,7 @@ pub mod page_fault;
 pub mod pte_walk;
 pub mod grant;
 pub mod krandom;
+pub mod stacktrace;
 
 /// Test-only serialization for tests that touch process-global boot state.
 ///

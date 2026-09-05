@@ -2213,22 +2213,10 @@ fn dispatch_diagctl(
                 None => return KcallResult::Ok(EINVAL),
             };
 
-            let target = match proc_table.get(target_nr) {
-                Some(p) => p,
-                None => return KcallResult::Ok(EINVAL),
-            };
-
-            // Capture target state needed for the stack walk before releasing
-            // the immutable borrow (the read_word closure needs phys_root +
-            // endpoint, not a &KProcess reference).
-            let target_endpt = target.p_endpoint;
-            let target_cr3 = target.p_seg.phys_root;
-            let target_name = target.p_name.as_str();
-            let target_ctx = target.cpu_context;
-
-            // C: proc_stacktrace(proc_addr(proc_nr))
-            // Walks the target process's user-space stack and prints each
-            // frame's PC to the early console.
+            // Delegate to the shared `proc_stacktrace` helper. This is the
+            // same function the `cause_signal` fatal SELF panic path uses
+            // (system.c:429), so DIAGCTL and the panic output share the
+            // exact same walk + output formatting — no drift.
             //
             // # Implementation notes
             //
@@ -2244,65 +2232,14 @@ fn dispatch_diagctl(
             // # Page fault handling
             //
             // C uses `data_copy` (not `data_copy_vmcheck`) and treats any
-            // failure as "stop walking". We use `cross_space_copy` directly
-            // (without the VMSUSPEND side effect) and treat both
-            // `Completed(Err(_))` and `Suspended(_)` as read failures.
-            {
-                use minix_arch::{
-                    CurrentDirectMap, CurrentStacktraceArch, DirectMapArch, StacktraceArch,
-                };
-                use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
-                use crate::vm::{cross_space_copy, AddressRef, CrossSpaceResult};
-                use minix_types::VirBytes;
-
-                // Print header: "name  endpoint  pc"
-                // C: printf("%-8.8s %6d 0x%lx ", ...)
-                Console::write_str(target_name);
-                Console::write_str(" ");
-                Console::write_hex(target_endpt.0 as u64);
-                Console::write_str(" ");
-
-                // read_word closure: reads 8 bytes from the target process's
-                // virtual address space. Returns None on any failure.
-                let read_word = |vaddr: u64| -> Option<u64> {
-                    // Kernel stack buffer for the 8-byte word.
-                    let mut buf = [0u8; 8];
-                    let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                        buf.as_mut_ptr() as u64,
-                    ));
-
-                    let proc_cr3 = |ep: Endpoint| {
-                        if ep == target_endpt { Some(target_cr3) } else { None }
-                    };
-
-                    let src = AddressRef::Process {
-                        endpoint: target_endpt,
-                        offset: VirBytes(vaddr),
-                    };
-                    let dst = AddressRef::Physical(dst_phys);
-
-                    match cross_space_copy::<CurrentDirectMap>(
-                        &src, &dst, 8, proc_cr3,
-                    ) {
-                        CrossSpaceResult::Completed(Ok(())) => {
-                            Some(u64::from_le_bytes(buf))
-                        }
-                        _ => None,
-                    }
-                };
-
-                // Walk frames and print each PC.
-                CurrentStacktraceArch::walk_frames(
-                    &target_ctx,
-                    read_word,
-                    |pc| {
-                        Console::write_hex(pc);
-                        Console::write_str(" ");
-                    },
-                );
-
-                Console::write_str("\n");
-            }
+            // failure as "stop walking". The shared helper maps both
+            // `Completed(Err(_))` and `Suspended(_)` to `None` so the walk
+            // stops with the C-equivalent placeholder.
+            let target = match proc_table.get(target_nr) {
+                Some(p) => p,
+                None => return KcallResult::Ok(EINVAL),
+            };
+            crate::stacktrace::proc_stacktrace(target);
 
             KcallResult::Ok(OK)
         }

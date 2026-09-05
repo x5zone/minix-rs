@@ -568,8 +568,7 @@ pub(crate) fn cause_signal(
    （`is_lethal`：SIGILL/ABRT/EMT/FPE/BUS/SEGV）→ 查 `s_bak_sig_mgr`：
    - 有 backup 且 endpoint 有效 → 提升 backup 为 primary（清 `s_bak_sig_mgr`）+ 
      `RTS_UNSET(backup, RTS_NO_PRIV)` + **递归 cause_signal 走外部路径**（让新 manager 收割）；
-   - 无 backup → `panic!`（自管理服务无人收割 = 系统不可恢复；Rust 省略 C 的 `proc_stacktrace`，
-     见 §4.7 差异表）。
+   - 无 backup → **`proc_stacktrace(rp)`**（C: system.c:429，对齐 C 语义，DIAGCTL 与 panic 共用助手 `crate::stacktrace::proc_stacktrace`，详 §4.7 与 [32-stack-tracing.md](32-stack-tracing.md) §4.5）+ `panic!`（自管理服务无人收割 = 系统不可恢复）。
 
 `is_lethal`（syscall_signal.rs:101-103）精确匹配 C `SIGS_IS_LETHAL`（signal.h:280-282）的六个信号。
 
@@ -756,7 +755,7 @@ pub trait SignalContext: Sized + Send + Sync {
 | SIGKSIG 通知（mini_notify） | system.c:445-446（send_sig 内 system.c:381） | syscall_signal.rs:300-325 | ✅ 已实现: SM 的 `s_sig_pending.add(SIGKSIG)`（>64 → no-op）+ `mini_notify_core` 唤醒 **SM 自身**（源 = SYSTEM） |
 | cause_sig SELF 路径 | system.c:416,433-434 | syscall_signal.rs:258-278 | ✅ 已实现: 目标自身 `s_sig_pending.add(sig_nr)` + `mini_notify_core` 唤醒目标自身（SIGKSIGSM=73 >64 位宽无法编码，唤醒即 C 的全部内核动作） |
 | cause_sig 去重检查 | system.c:439-441 | syscall_signal.rs:285-286 | ✅ 已实现: 以 `RTS_SIGNALED` 判定 was_signaled（等价于 C 的 sigismember 门控——sigaddset 幂等）；未置 SIGNALED 时不再重复通知 |
-| **cause_sig 致命 SELF 路径（backup 切换 / panic）** | system.c:417-432 | syscall_signal.rs:210-256（`is_lethal` 101-103） | ✅ **已实现（2026-09-05，todo D-11）**: `is_lethal` 判定 → 查 `s_bak_sig_mgr`；有效则提升（`s_sig_mgr`←backup、`s_bak_sig_mgr`←NONE、`RTS_UNSET(NO_PRIV)`）并**递归走外部路径**；无 backup → `panic!("cause_sig: sig manager …")`。差异：C 在 panic 前调 `proc_stacktrace(rp)`（system.c:429）打印进程用户栈，Rust 省略——完整栈展开需 `cross_space_copy` + `StacktraceArch::walk_frames`（DIAGCTL_CODE_STACKTRACE 路径已实现，syscall.rs:2295），在致命 panic 的 BKL 临界区引入跨空间读风险大于收益；panic 消息保留 endpoint + 信号号。测试：`test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` |
+| **cause_sig 致命 SELF 路径（backup 切换 / proc_stacktrace / panic）** | system.c:417-432 | syscall_signal.rs:210-256（`is_lethal` 101-103）+ syscall_signal.rs:251-260（panic 前 proc_stacktrace 调用，`#[cfg(not(test))]`） | ✅ **完整已实现（2026-09-05，todo D-11 + D-57）**: `is_lethal` 判定 → 查 `s_bak_sig_mgr`；有效则提升（`s_sig_mgr`←backup、`s_bak_sig_mgr`←NONE、`RTS_UNSET(NO_PRIV)`）并**递归走外部路径**；无 backup → **`proc_stacktrace(rp)`**（C: system.c:429）→ `panic!("cause_sig: sig manager …")`。proc_stacktrace 与 SYS_DIAGCTL_CODE_STACKTRACE 共用 `crate::stacktrace::proc_stacktrace`（32-stack-tracing.md §4.5），保证两路径的栈回溯输出格式完全一致。`#[cfg(not(test))]` 守门仅在测试模式下禁用 proc_stacktrace（因为 x86_64 hosted test 进程无 `iopl` 权限，写 COM1 UART 会 SIGSEGV）；生产内核 BKL 临界区调用栈回溯受 `is_lethal` 失败容错保护（`PRCOPY` 失败→ `None` → 占位符 → 终止，最坏情况是丢失一帧但不会二次崩溃）。测试：`test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` |
 | dispatch_sigsend 完整流程 | do_sigsend.c:19-162 | syscall_signal.rs:516-689 | ✅ 已实现: data_copy_vmcheck + SignalContext |
 | dispatch_sigreturn 完整流程 | do_sigreturn.c:19-95 | syscall_signal.rs:690-776 | ✅ 已实现: data_copy_vmcheck + SignalContext |
 | sigframe 构建（架构相关） | do_sigsend.c:50-118 | arch/{x86_64,arm64,riscv64}/signal.rs | ✅ 已实现: SignalContext::build_sigframe |

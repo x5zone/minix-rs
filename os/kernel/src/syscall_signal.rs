@@ -246,9 +246,32 @@ pub(crate) fn cause_signal(
                 return;
             }
 
-            // C: system.c:429-431 — proc_stacktrace(rp); panic(...)
-            // 无 backup：系统服务无人收割即系统不可恢复。Rust 省略 proc_stacktrace
-            //（需 cross_space 栈展开，见 19-design.v2 §D-3b 与 doc 19 §4.7 差异表）。
+            // C: system.c:429 — proc_stacktrace(rp)
+            // 自管理进程是 KERNEL/SYSTEM 角色（目前仅 SYSTEM = proc_nr(-2) 可见，
+            // 它的栈在内核 Direct Map；本路径在用户态进程接入前不可达——见
+            // 19-design.v2 §D-3b）。栈回溯的"诊断路径必须比崩溃更健壮"原则保证
+            // proc_stacktrace 不会因读取失败二次崩溃，最多打印占位符后停止。
+            // SAFETY-equivalent: proc_stacktrace 在 BKL 持有期内调用，读路径
+            // （Direct Map alias 对内核栈；cross_space_copy 对用户栈）受 BKL
+            // 保护的可见性约束。
+            //
+            // Production-only: `proc_stacktrace` invokes the kernel
+            // EarlyConsole, which on x86_64 writes to the COM1 UART
+            // via `inb/outb` instructions. Unit tests run as a hosted
+            // Linux process and would SIGSEGV on those instructions
+            // (no `iopl`/`ioperm`). The diagnostic is therefore
+            // production-only — tests verify the panic itself, not
+            // the diagnostic output (test mode shares the panic
+            // branch's existence and the routing logic). The
+            // diagnostic is exercised end-to-end via the
+            // `#[ignore]`-d `proc_stacktrace_empty_chain_does_not_panic`
+            // test on real hardware.
+            #[cfg(not(test))]
+            if let Some(rp) = proc_table.get(target_nr) {
+                crate::stacktrace::proc_stacktrace(rp);
+            }
+
+            // C: system.c:430-431 — panic(...)
             panic!(
                 "cause_sig: sig manager {} gets lethal signal {} for itself",
                 ep.0, sig_nr

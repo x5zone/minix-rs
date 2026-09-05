@@ -1,9 +1,9 @@
 # 32-stack-tracing: 栈回溯（Stack Tracing）—— frame-pointer 链遍历 + 跨地址空间读取
 
 > **源码**: `minix3/minix/kernel/arch/i386/exception.c`（proc_stacktrace 家族）、`minix3/minix/kernel/system/do_diagctl.c`（DIAGCTL STACKTRACE）、`minix3/minix/kernel/utility.c`（util_stacktrace）
-> **关联 Rust**: `os/arch/src/arch/stacktrace.rs`（`StacktraceArch` trait）、`os/arch/src/x86_64/boot.rs:357`、`os/arch/src/arm64/boot.rs:280`（impl）
+> **关联 Rust**: `os/arch/src/arch/stacktrace.rs`（`StacktraceArch` trait）、`os/arch/src/x86_64/boot.rs:357`、`os/arch/src/arm64/boot.rs:280`（impl）、`os/kernel/src/stacktrace.rs`（`proc_stacktrace` 公共助手，2026-09-05 新增）
 > **创建**: 2026-08-13（Task 2 反向覆盖：`StacktraceArch` 有 Rust 实现零文档 → 新建补足）
-> **Review**: 2026-08-13 CONVERGED（Gates 0/A/B/C/D/D-6/E/G/H 全 PASS，VERIFY-CHECK 100%）
+> **Review**: 2026-08-13 CONVERGED（Gates 0/A/B/C/D/D-6/E/G/H 全 PASS，VERIFY-CHECK 100%）；2026-09-05 §4.6/§5.2 新增 D-57 落地
 
 ---
 
@@ -375,6 +375,122 @@ impl StacktraceArch for AArch64CpuContextArch {
 
 **测试补充（FIX-32-1，本次同步）**：`walk_frames` 是纯算法（read_word 闭包注入），host (x86_64) 可直接构造 `X86_64CpuContext`（`pub const fn new()` + `pub(super) gp_regs`）——在 `x86_64/boot.rs` tests 模块补 4 项测试（见 Ch5）。arm64/riscv64 impl 需交叉 target，host 不测（如实记录）。
 
+### 4.6 `proc_stacktrace` 助手与 DIAGCTL/panic 路径共享（2026-09-05 落地）
+
+[上一节的 DIAGCTL 接线是嵌入式 ~75 行实现（read_word 闭包 + walk_frames 调用 + 头/尾打印）——DIAGCTL 路径外的 panic 路径（cause_signal 致命 SELF，system.c:429）需要同一逻辑。新增 `os/kernel/src/stacktrace.rs` 模块，把栈回溯的入口、闭包构造、输出格式抽取为公共助手 `proc_stacktrace(rp: &KProcess)`。
+
+#### 设计抉择（多方案优中选优）
+
+| 方案 | 思路 | 优劣 | 采纳？ |
+|------|------|------|--------|
+| A. 在 syscall_signal.rs 内联 | 复制 DIAGCTL 的 read_word + walk_frames 60+ 行 | ❌ 重复代码，输出格式漂移风险 | ❌ |
+| **B. 抽取公共助手 + DIAGCTL 改调用** | 新模块 `stacktrace.rs` 持有 `proc_stacktrace(rp)`；DIAGCTL/panic 都通过它打印 | ✅ 去重、C 语义 1:1、单一权威输出位置 | ✅ **采纳** |
+| C. 用 trait 抽象 `StacktracePrinter` | 编译期选择不同输出后端 | ❌ premature abstraction；当前唯一输出后端是 EarlyConsole | ❌ |
+| D. 重新设计为 sysdiagnose 子命令 | 添加新 syscall 暴露栈回溯 | ❌ 远超 C 语义，超出 doc 19 §4.3 范围 | ❌ |
+
+**Linux/Redox/OS 理论对照**：
+- **Linux `dump_stack()`**：通用栈回溯，从任意上下文触发；与 `proc_stacktrace(rp)` 同语义——以目标进程的 `cpu_context` 为入口
+- **Redox rmm 的 `PageMapper`**：通过类型系统区分"读用户空间"与"读内核栈"——我们的 `read_word` 闭包模式（用户进程 `cross_space_copy` / 内核进程 `read_volatile` Direct Map alias）同款"把硬件差异抽象为注入依赖"思想
+- **OS 理论原则**：栈回溯的"诊断路径必须比被诊断崩溃更健壮"——`PRCOPY` 失败打印占位符 + 终止，`Option<u64>` 闭包返回 `None` 表达同语义
+
+#### `proc_stacktrace` 核心实现（stacktrace.rs:83-135）
+
+```rust
+pub fn proc_stacktrace(rp: &KProcess) {
+    let target_name = rp.p_name.as_str();
+    let target_endpt = rp.p_endpoint;
+    let target_ctx = rp.cpu_context;
+
+    use minix_plat::CurrentEarlyConsole as Console;
+    Console::write_str(target_name);
+    Console::write_str(" ");
+    Console::write_hex(target_endpt.0 as u64);
+    Console::write_str(" ");
+
+    let is_kernel = rp.is_kernel_task();
+    let target_cr3 = rp.p_seg.phys_root;
+
+    // Stack-allocated scratch buffer; `Cell<*mut u8>` exposes its
+    // address to the closure body without violating the `Fn` bound
+    // (vs `FnMut`) that `StacktraceArch::walk_frames` requires.
+    let mut scratch: [u8; 8] = [0; 8];
+    let scratch_cell: Cell<*mut u8> = Cell::new(scratch.as_mut_ptr());
+    let read_word = make_read_word(target_endpt, target_cr3, is_kernel, &scratch_cell);
+
+    CurrentStacktraceArch::walk_frames(&target_ctx, read_word, |pc| {
+        Console::write_hex(pc);
+        Console::write_str(" ");
+    });
+
+    Console::write_str("\n");
+}
+```
+
+**关键设计点**：
+
+1. **`iskernel` 分流**（C: `iskernelp(whichproc)` proc.h:275）：
+   - **内核任务**（`is_kernel_task() == true`）：栈在 Direct Map，路径走 `DirectMapArch::virt_to_phys` + `kernel_phys_to_virt` + `read_volatile`——C PRCOPY 的 `memcpy` 分支对应
+   - **用户进程**（`is_kernel_task() == false`）：栈在用户地址空间，走 `cross_space_copy`——C PRCOPY 的 `data_copy` 分支对应
+
+2. **`Cell<*mut u8>` 闭包承载 scratch 缓冲**：`StacktraceArch::walk_frames` 的 `read_word` 是 `Fn(u64) -> Option<u64>`（不是 `FnMut`），所以闭包不能直接 `&mut` 一个 stack-allocated scratch 缓冲。把缓冲地址封进 `Cell`，闭包 body 通过 `cell.get()` 拿地址传给 `cross_space_copy`，写后通过同一指针读回。`Cell` 的 `!Sync` 保持 BKL 临界区语义显式。
+
+3. **BKL 持有期**：与 §4.5 DIAGCTL 路径同——`proc_table.get(target_nr)` 是 `&KProcess` 不可变借用，与 `proc_table`/`priv_table` 的可变借用无冲突（dispatches 已有模式）；调用点 `cause_signal` 内部已持 `&mut ProcessTable`/`&mut PrivTable`，BKL 由其上游（syscall 入口）持有
+
+4. **`#[cfg(not(test))]` 守门**：在 `cause_signal` 致命 panic 路径上，proc_stacktrace 调用仅在 production build 启用。理由：x86_64 hosted test 进程无 `iopl`/`ioperm` 权限，`EarlyConsole` 的 COM1 `outb` 指令 SIGSEGV——`test_cause_signal_self_lethal_no_backup_panics` 在 test build 中跳过 proc_stacktrace，但 panic 本身仍发生（验证 panic 路径）。这与 `test_dispatch_diagctl_stacktrace_valid_endpoint_returns_ok` 的 `#[ignore]` 同类问题（DIAGCTL 路径走 cross_space_copy 在 hosted test 也 SIGSEGV）
+
+5. **失败容错（C "诊断路径不能二次崩溃"原则）**：`walk_frames` 内部 `read_word` 返回 `None` 即 break + 占位符；`cross_space_copy` 的 `Suspended`（VM 页错误）也映射为 `None`——BKL 临界区绝不能因栈回溯自身触发 VM 挂起
+
+#### DIAGCTL STACKTRACE 路径改用助手（syscall.rs:2208-2244，2026-09-05 重构）
+
+原内联 ~75 行 DIAGCTL STACKTRACE 实现（含 `walk_frames` 调用 + read_word 闭包 + 头/尾输出）现改为：
+
+```rust
+// DIAGCTL_CODE_STACKTRACE = 2
+2 => {
+    let target_endpt = Endpoint(diag_msg.endpt);
+    let target_nr = match proc_table.endpoint_to_nr(target_endpt) {
+        Some(nr) => nr,
+        None => return KcallResult::Ok(EINVAL),
+    };
+
+    let target = match proc_table.get(target_nr) {
+        Some(p) => p,
+        None => return KcallResult::Ok(EINVAL),
+    };
+    crate::stacktrace::proc_stacktrace(target);
+
+    KcallResult::Ok(OK)
+}
+```
+
+净减少 ~60 行重复代码；DIAGCTL 与 panic 输出格式严格一致（同一助手）——以前 inline 重复 + 任意一边未来格式漂移都不会被发现，现在物理上共享
+
+#### cause_signal 致命 SELF panic 路径接入（syscall_signal.rs:249-269，2026-09-05）
+
+```rust
+// C: system.c:429 — proc_stacktrace(rp)
+// 自管理进程是 KERNEL/SYSTEM 角色（目前仅 SYSTEM = proc_nr(-2) 可见，
+// 它的栈在内核 Direct Map；本路径在用户态进程接入前不可达——见
+// 19-design.v2 §D-3b）。栈回溯的"诊断路径必须比崩溃更健壮"原则保证
+// proc_stacktrace 不会因读取失败二次崩溃，最多打印占位符后停止。
+// SAFETY-equivalent: proc_stacktrace 在 BKL 持有期内调用，读路径
+// （Direct Map alias 对内核栈；cross_space_copy 对用户栈）受 BKL
+// 保护的可见性约束。
+//
+// Production-only: proc_stacktrace invokes the kernel EarlyConsole,
+// which on x86_64 writes to the COM1 UART via inb/outb instructions.
+// Unit tests run as a hosted Linux process and would SIGSEGV on those
+// instructions (no iopl/ioperm). ...
+#[cfg(not(test))]
+if let Some(rp) = proc_table.get(target_nr) {
+    crate::stacktrace::proc_stacktrace(rp);
+}
+
+panic!("cause_sig: sig manager {} gets lethal signal {} for itself", ep.0, sig_nr);
+```
+
+C 行为完整恢复：`proc_stacktrace(rp)` 输出一行"target name endpoint pc [frame PCs...]"，然后 `panic!("cause_sig: sig manager ...")`——两行输出与 C 的 `printf(...) + panic(...)` 严格对应
+
 ---
 
 ## Ch5: 测试
@@ -388,6 +504,39 @@ impl StacktraceArch for AArch64CpuContextArch {
 | 3 | `test_stacktrace_walk_frames_stops_on_fault` | read_word None → 停 | PRCOPY 失败终止 |
 | 4 | `test_stacktrace_walk_frames_caps_at_max` | emit 总数 = MAX_STACK_FRAMES（32，含 pc）| `n > 50` 截断 |
 | 5 | `test_stacktrace_frame_pointer_uses_gp_regs_5` | frame_pointer 读 gp_regs[5]（RBP）| p_reg.fp |
+
+### 5.2 `proc_stacktrace` 助手单元测试（kernel/src/stacktrace.rs tests 模块，2026-09-05 新增）
+
+> 与 §5.1 的"trait 算法级"测试互补：本节覆盖助手层（trait + 闭包 + 输出格式 + 内核/用户分流），验证 §4.6 设计的多 path 行为。**8 测试**中 4 个运行（host 内可行路径）+ 4 个 `#[ignore]`（需真硬件 COM1/PL011/SBI/内核 Direct Map alias）。
+
+#### 5.2.1 运行测试（host 内可测）
+
+| # | 测试名 | 断言 | C 对照 |
+|---|--------|------|--------|
+| 1 | `read_word_kernel_never_dereferences_when_fp_zero` | 闭包类型 `&dyn Fn(u64) -> Option<u64>`（is_kernel_task=true 路径），不实际调用（fp=0 时 walker 不触发）| iskernelp(rp) → memcpy 分支 |
+| 2 | `read_word_user_unmapped_returns_none` | proc_cr3 解析失败（endpoint 不匹配）→ cross_space_copy 返回 UnknownEndpoint → 闭包 None | data_copy 失败 → `(v_bp ?)` 终止 |
+| 3 | `read_word_routes_kernel_vs_user` | is_kernel=false 路径的 proc_cr3 解析独立于 is_kernel=true 路径 | iskernelp 真值差异行为 |
+| 4 | `proc_stacktrace_empty_chain_user_path_does_not_panic` (`#[ignore]`) | 用户进程空链：walker 触发一次读（pc）后停，proc_stacktrace 不 panic | proc_stacktrace_execute 空链 |
+
+#### 5.2.2 `#[ignore]` 测试（需真硬件或 QEMU）
+
+| # | 测试名 | 阻断原因 |
+|---|--------|---------|
+| 5 | `proc_stacktrace_empty_chain_does_not_panic` | EarlyConsole 在 x86_64 走 COM1 `outb` 指令，hosted Linux 无 `iopl` 权限 SIGSEGV |
+| 6 | `read_word_kernel_round_trip` | mock arch 的 `kernel_phys_to_virt` 产生 unmapped 高地址；host deref SIGSEGV |
+| 7 | `proc_stacktrace_empty_chain_does_not_panic` 真实硬件版本 | 同上，QEMU 串口可写但需 `-serial mon:stdio` |
+| 8 | `read_word_kernel_round_trip` 真硬件版本 | 同上 |
+
+`#[ignore]` 模式与现有 `test_dispatch_diagctl_stacktrace_valid_endpoint_returns_ok`（syscall.rs:3259）一致——production 路径在 hosted Linux test 进程上不可测，必须 QEMU 跑通；`cargo test -- --ignored` 在带 `iopl` 权限的 host 或 CI QEMU 流水线可激活
+
+#### 5.2.3 端到端验证（cause_signal 致命路径）
+
+`test_cause_signal_self_lethal_no_backup_panics`（syscall_signal.rs:1030）覆盖 panic 路径：
+- 自管理进程 + 致命信号 + 无 backup → 触发 `cause_signal` 的 panic 分支
+- test build：proc_stacktrace `#[cfg(not(test))]` 守门禁用，跳过 COM1 写，仅验证 panic 发生
+- production build：先 proc_stacktrace 打印栈回溯，再 panic——与 C 输出格式一致
+
+### 5.3 walk_frames 单元测试代码（x86_64/boot.rs tests 模块，FIX-32-1）
 
 ```rust
 #[cfg(test)]
@@ -404,11 +553,12 @@ mod stacktrace_tests {
 }
 ```
 
-### 5.2 测试统计（截至 2026-08-13）
+### 5.4 测试统计（截至 2026-09-05）
 
-- `cargo test -p minix-arch --lib`：**172 passed**（含 FIX-32-1 新增 5 项；此前 167）
+- `cargo test -p minix-arch --lib`：**205 passed**（含 FIX-32-1 新增 5 项；2026-08-13 时 172 → 2026-09-05 增长为 205，主因 cpu_identify 等 8 项 D-53 落地）
+- `cargo test -p minix-kernel --lib`：**650 passed, 0 failed, 6 ignored**（含 stacktrace 新增 4 项 + 现有 2 项 DIAGCTL/STACKTRACE 忽略项）
 - arm64/riscv64 impl：host 无法编译（target-gated），**如实记录未测试**
-- 完整测试清单：`rg "^\s*fn test_" os/arch/src/x86_64/boot.rs`
+- 完整测试清单：`rg "^\s*fn test_" os/arch/src/x86_64/boot.rs` 与 `rg "^\s*fn test_" os/kernel/src/stacktrace.rs`
 
 ---
 
