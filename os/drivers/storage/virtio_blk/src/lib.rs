@@ -1,8 +1,22 @@
-//! Minix-RS driver (storage/virtio_blk) — 占位 crate。
+//! Virtio block driver: the framework's first full consumer.
 //!
-//! C 对应: `minix3/minix/drivers/storage/virtio_blk/`
-//! 状态: 占位（stub），待实装。
+//! C correspondence:
+//! `minix3/minix/drivers/storage/virtio_blk/virtio_blk.c` (754 lines).
+//! This crate owns the request shape (three-segment chains, sector
+//! math, status mapping) and the drive geometry; the service binary
+//! owns the queue, the maps, and the sleep. See document
+//! `15-virtio-blk-driver.md` in
+//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//!
+//! Single-threaded event loop: one message at a time, no shared mutable
+//! state across threads.
+
 #![no_std]
 
-/// 服务初始化入口（占位）。
+extern crate alloc;
+
+pub mod geometry;
+pub mod request;
+
+/// Service initialization entry (wires the drive; transport stays out).
 pub fn init() {}
