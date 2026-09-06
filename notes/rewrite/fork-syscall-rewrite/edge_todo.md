@@ -39,6 +39,19 @@
 | T21 | 3 | 页表可注入化 + VM 内 SimPaging | V11-P2-1（QEMU 冒烟→E5） | ✅ 2026-09-06（todo.md §15 Fix #39） |
 | T22 | 3 | MemType / PhysAllocator 方法级补测 + buddy reserve 语义修正 | V11-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #36） |
 | T23 | 3 | rs_handshake/init pin 测试 + run_once 分支补测 + CI 矩阵 | V11-P2-5 | ✅ 2026-09-06（todo.md §15 Fix #37；rs_init pin 已随 Fix #34） |
+| T24 | 4 | 残留标注清理 + parity/死代码判定批次 + 新缺口登记（G-V12-1..4） | todo.md §16 | 🔄 pre ✅（Fix #43 测试基线恢复 472/489/472）；清理批次进行中 |
+| T25 | 4 | pt=None → SimPaging 翻转 ×6（munmap×4/brk×2） | V11-P2-1 收尾 | ⬜ |
+| T26 | 4 | MOCK_BASE_MUTEX + extend_to_static_lifetime 归零 | V11-P1-2/V9-P2-4 验收锚点 | ⬜ |
+| T27 | 4 | dispatcher 4 函数 happy-path 补测 | G-V12-3 | ⬜ |
+| T28 | 5 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 | G-V12-1 | ⬜ |
+| T29 | 5 | SIGKMEM 信号处理 seam + do_memory（通电挂 E1） | G-V12-2 + G-V11-1 | ⬜ |
+| T30 | 5 | alloc_cycle 回收后重试（C alloc.c do-while 语义） | "24-page-cache" 停泊项 | ⬜ |
+| T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定 | vmproc_handle.rs:305 | ⬜ |
+| T32 | 6 | do_procctl multi-call | vm_server.rs:1227 | ⬜ |
+| T33 | 6 | fork eager CoW（msgaddr 若缺 kernel 对端 → 登记 E-FORKMSG） | T11 收尾 | ⬜ |
+| T34 | 6 | MemType 收敛设计与实施 | V9-P2-3 | ⬜ |
+| T35 | 7 | 剩余判定批次（WouldBlock/heap shrink/vm_self_query/force_clear/VmProcIter/as_buddy/用量查询/bitmap perf/cow_resolve_region/acl mask/G-V12-4） | todo.md §16 | ⬜ |
+| T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ⬜ |
 
 ---
 

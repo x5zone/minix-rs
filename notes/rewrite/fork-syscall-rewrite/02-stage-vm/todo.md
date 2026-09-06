@@ -1313,3 +1313,33 @@ Coverage Summary for vm:
 - **发送半 → edge**：VFS_VMCALL 消息构造与主循环排水追加为 edge **E-VFSWIRE**——vfs 服务器（09/13-stage 并行工作流）已有决策原语（`VmVfsReq::from_raw` 101/102/103、`VM_VFS_REPLY=0xC1E`）但消息级解码未建，wire 格式属跨 stage 未定契约，按并发纪律不写代码
 - **Verified**: 四矩阵 **456 / 472 / 471 / 456 passed**（+1 入队测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 23-vfs-interaction.md（模块清单）；行为变化：fdref 归零时 close 从"丢弃"变为"排队待发"——VFS 侧 fd 泄漏窗口收窄
+
+---
+
+## 16. 第六轮修复记录（2026-09-07 起，T24+ 收尾 campaign）
+
+> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0（T24-T36）。
+> 本轮范围：V11 后残留的 open 项收尾——残留标注清理、判定闭合批次、以及本轮盘点新登记的 3 个缺口（T27/T28/T29，见 §16.1）。
+> 新基线（2026-09-07 实测）：默认 **472 passed** / segment_tree **489 passed** / buddy **472 passed**，全部 0 failed。
+
+### 16.1 T24 盘点新登记的缺口（执行前登记，随 campaign 逐条闭环）
+
+| 编号 | 缺口 | C 锚点 | Rust 现状 | 批次 |
+|---|---|---|---|---|
+| G-V12-1 | CacheMemory::ev_pagefault 恒 NeedNewPage——无缓存索引查找 | mem_cache.c:181 `cache_pagefault`（真实查找实现） | memtype.rs:912 恒 `NeedNewPage`；连带 `VrParam::PbCache` test-only（vir_region.rs:57）、MAPCACHE 区域 param 落 `Direct{0}` 的疑点（V10-P2-1 表遗留行） | T28 |
+| G-V12-2 | SIGKMEM 信号处理入口缺失（与 G-V11-1 sef_cb_signal_handler 同簇） | main.c:731 注册 signal handler、:736-737 `SIGKMEM → do_memory()`；do_memory 定义于 pagefaults.c:294 | VM 侧零对应物（grep `sef_cb_signal_handler|signal_handler|SEF` 仅注释命中）；信号接收依赖 E1，处理体（收缩缓存）可 stage 内 seam + mock 落地 | T29 |
+| G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | T27 |
+| G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
+
+### ✅ Fix #43: T24-pre — 恢复测试基线：rs.rs 测试对齐 RsUpdateCtx + clippy 回归归零
+
+- **背景**：T13（ed3a08d86 / 4cc613945 两次提交）把 `handle_rs_update` 收敛为 `RsUpdateCtx`（6 字段：table/frames/gateway/src/dst/flags）并删除 `RsError::UpdateNotImplemented`，但测试未跟上——HEAD（e14ffd37d）上 `cargo test -p minix-vm` 编译失败（7 个 error：struct 字段不存在 ×2、8 参位置调用 ×2、变体缺失 ×1，修复过程中又暴露 deref 层级 ×2）；lib profile 另有 4 条 clippy 回归。
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_rs_update` 解构去掉未用的 `page_alloc`/`vfs_queue`，删除与结构体字面量重复的死绑定 `let frames`——3 条 unused 警告归零）、`os/servers/vm/src/rs.rs`（:391 删除不可达匹配臂——`GatewayError` 是单变体 enum，`_ => HeapExtendFailed` 臂不可达且语义错误；测试模块：`update_gateway()` 改包具体类型 `MockGateway`（dyn 包装下无法配置 `update_reply` 字段）；4 个 update 测试对齐 `RsUpdateCtx` 6 字段）
+- **测试自身正确性修正（test-audit 维度 2）**：原 `test_update_flags_rollback/nommap_bypasses_prealloc_check` 用无效端点 Endpoint(2)——`handle_rs_update` 的步骤序是端点校验（step 1）先于 flag 检查（step 2，rs.c:164-169），ProcessNotFound 在 flag 被解析之前就返回，**flag 从未被测到**（注释声称"fires after the flag check"与代码序相反）。重写为三件套：`setup_prealloc_conflict_pair`（dst 带 PREALLOC_MAP region 的活槽位对 70/71）+ `test_update_prealloc_conflict_when_no_flag`（无 flag → PreallocMapConflict，证明检查生效）+ rollback/nommap 两测试（flag 旁路检查 → 到达 sys_update，mock gateway 应答 -EIO → `UpdateKernelFailed(-5)`，证明流程越过 step 2 且内核错误正确传播）
+- **Verified**: `cargo test -p minix-vm --lib` → **472 passed / 0 failed**（+1：flags 测试 2 → 3）；segment_tree **489** / buddy **472**；`cargo clippy -p minix-vm --lib` 对 `servers/vm` 代码 **0 警告**（minix-sys/arch 的存量警告属并行会话/edge 域，不在本轮范围）；`rg "UpdateNotImplemented" os/servers/vm/src` → 0
+- **Docs**: 模块头与 `RsUpdateResult` 的过时 pin 注释归 T24 清理批次（Fix #44）；G-V12-4（errno 坍缩保真缺口）随本条登记于 §16.1
+
+### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
+
+T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。
+

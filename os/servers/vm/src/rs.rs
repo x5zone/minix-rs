@@ -388,7 +388,6 @@ pub(crate) fn handle_rs_update(ctx: &mut RsUpdateCtx) -> Result<RsUpdateResult, 
             crate::kernel_gateway::GatewayError::Kernel(code) => {
                 RsError::UpdateKernelFailed(code)
             }
-            _ => RsError::HeapExtendFailed,
         })?;
 
     // Steps 5-6: VM-side swap (C rs.c:180-186 → utility.c swap_proc_slot +
@@ -664,11 +663,13 @@ mod tests {
     }
 
     fn update_gateway() -> alloc::rc::Rc<core::cell::RefCell<
-        alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>>
+        crate::kernel_gateway::MockGateway>>
     {
-        alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+        // Concrete MockGateway (not the dyn wrapper) so tests can configure
+        // `update_reply` before handing `&mut dyn KernelGateway` to the ctx.
+        alloc::rc::Rc::new(core::cell::RefCell::new(
             crate::kernel_gateway::MockGateway::new(),
-        )))
+        ))
     }
 
     fn make_page_alloc() -> VmPageAllocator {
@@ -1044,82 +1045,114 @@ mod tests {
     #[test]
     fn test_update_invalid_endpoint() {
         let table = VmProcTable::get_global();
-        let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
-        // Invalid dst (Endpoint(2) — slot 2 not in the test table)
-        // returns ProcessNotFound before reaching the NotImplemented stub.
+        // An invalid dst (Endpoint(2) — slot 2 not in the test table) fails
+        // the vm_isokendpt lookup at step 1, before the kernel call or any
+        // slot swap happens.
         let mut gateway = update_gateway();
-                let result = handle_rs_update(&mut RsUpdateCtx {
-                        table,
-                        page_alloc: &mut page_alloc,
-                        frames: &mut frames,
-                        vfs_queue: &mut crate::vfs_queue::VfsRequestQueue::new(),
-                        gateway: &mut **gateway.borrow_mut(),
-                        src: Endpoint(1),
-                        dst: Endpoint(2),
-                        flags: 0,
-                        });
+        let result = handle_rs_update(&mut RsUpdateCtx {
+            table,
+            frames: &mut frames,
+            gateway: &mut *gateway.borrow_mut(),
+            src: Endpoint(1),
+            dst: Endpoint(2),
+            flags: 0,
+        });
         assert_eq!(result, Err(RsError::ProcessNotFound));
+    }
+
+    /// Two live slots (61/62 — outside the ranges other test modules use)
+    /// whose destination carries a PREALLOC_MAP region — the step-2
+    /// conflict precondition of C rs.c:164-169.
+    fn setup_prealloc_conflict_pair() -> (Endpoint, Endpoint) {
+        let table = VmProcTable::get_global();
+        let src_slot = UserSlot::new(61);
+        let dst_slot = UserSlot::new(62);
+        let src = init_test_process(src_slot);
+        let dst = init_test_process(dst_slot);
+        let mut proc = table.get_active(dst_slot).unwrap();
+        proc.regions_mut().insert(crate::region::VirRegion::new(
+            VirBytes(0x3000_0000),
+            VirBytes(0x1000_0000),
+            VrFlags::WRITABLE | VrFlags::ANON | VrFlags::PREALLOC_MAP,
+        )).unwrap();
+        (src, dst)
+    }
+
+    #[test]
+    fn test_update_prealloc_conflict_when_no_flag() {
+        // With neither ROLLBACK nor NOMMAP set, a PREALLOC_MAP region in
+        // the destination aborts the update (C rs.c:164-169).
+        let (src, dst) = setup_prealloc_conflict_pair();
+        let table = VmProcTable::get_global();
+        let mut frames = make_frames();
+        let mut gateway = update_gateway();
+        let result = handle_rs_update(&mut RsUpdateCtx {
+            table,
+            frames: &mut frames,
+            gateway: &mut *gateway.borrow_mut(),
+            src,
+            dst,
+            flags: 0,
+        });
+        assert_eq!(result, Err(RsError::PreallocMapConflict));
     }
 
     #[test]
     fn test_update_flags_rollback_bypasses_prealloc_check() {
-        // When ROLLBACK flag is set, the PREALLOC_MAP check is skipped.
-        // This tests the flag parsing logic without needing a populated
-        // VmProcTable (the ProcessNotFound error fires after the flag
-        // check, proving the flag was parsed).
+        // ROLLBACK skips the step-2 conflict check; the flow then reaches
+        // sys_update. The mock gateway answers -EIO, and the surfaced
+        // UpdateKernelFailed proves the flow got past the conflict check.
+        let (src, dst) = setup_prealloc_conflict_pair();
         let table = VmProcTable::get_global();
-        let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
         let mut gateway = update_gateway();
-                let result = handle_rs_update(
-                        table,
-            &mut page_alloc,
-            &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
-            &mut **gateway.borrow_mut(),
-            
-            Endpoint(1),
-            Endpoint(2),
-            RsUpdateFlags::ROLLBACK.bits(),
-        );
-        // ROLLBACK flag bypasses PREALLOC_MAP check, but dst=2 is
-        // still invalid, so we get ProcessNotFound (not PreallocMapConflict).
-        assert_eq!(result, Err(RsError::ProcessNotFound));
+        gateway.borrow_mut().update_reply.set(-5); // -EIO from the kernel
+        let result = handle_rs_update(&mut RsUpdateCtx {
+            table,
+            frames: &mut frames,
+            gateway: &mut *gateway.borrow_mut(),
+            src,
+            dst,
+            flags: RsUpdateFlags::ROLLBACK.bits(),
+        });
+        assert_eq!(result, Err(RsError::UpdateKernelFailed(-5)));
     }
 
     #[test]
     fn test_update_flags_nommap_bypasses_prealloc_check() {
-        // When NOMMAP flag is set, the PREALLOC_MAP check is skipped.
+        // NOMMAP skips the step-2 conflict check exactly like ROLLBACK
+        // (C rs.c:164-169 guards on both flags).
+        let (src, dst) = setup_prealloc_conflict_pair();
         let table = VmProcTable::get_global();
-        let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
         let mut gateway = update_gateway();
-                let result = handle_rs_update(
-                        table,
-            &mut page_alloc,
-            &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
-            &mut **gateway.borrow_mut(),
-            
-            Endpoint(1),
-            Endpoint(2),
-            RsUpdateFlags::NOMMAP.bits(),
-        );
-        assert_eq!(result, Err(RsError::ProcessNotFound));
+        gateway.borrow_mut().update_reply.set(-5); // -EIO from the kernel
+        let result = handle_rs_update(&mut RsUpdateCtx {
+            table,
+            frames: &mut frames,
+            gateway: &mut *gateway.borrow_mut(),
+            src,
+            dst,
+            flags: RsUpdateFlags::NOMMAP.bits(),
+        });
+        assert_eq!(result, Err(RsError::UpdateKernelFailed(-5)));
     }
 
     #[test]
     fn test_error_errno_mapping() {
         // Tests the full error path: RsError → From<RsError> for VmError → VmError::to_errno()
-        use minix_types::{VmError, EINVAL, ENOSYS, EPERM, ENOMEM};
+        use minix_types::{VmError, EIO, EINVAL, ENOSYS, EPERM, ENOMEM};
         assert_eq!(VmError::from(RsError::ProcessNotFound).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::SysProcNoMask).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::PinFailed).to_errno(), ENOSYS);
         // C: real_brk() returns ENOMEM on failure (break.c:63-68).
         assert_eq!(VmError::from(RsError::HeapExtendFailed).to_errno(), ENOMEM);
         assert_eq!(VmError::from(RsError::PreallocMapConflict).to_errno(), ENOSYS);
-        assert_eq!(VmError::from(RsError::UpdateNotImplemented).to_errno(), ENOSYS);
+        // The kernel errno is preserved in the variant but collapsed to
+        // InternalError/EIO at the VmError boundary — C rs.c:177 passes it
+        // through verbatim, a fidelity gap registered in 02-stage-vm todo.
+        assert_eq!(VmError::from(RsError::UpdateKernelFailed(-5)).to_errno(), EIO);
         // C: rs.c:386-388 — do_rs_memctl default arm returns EINVAL.
         assert_eq!(VmError::from(RsError::InvalidRequest).to_errno(), EINVAL);
         assert_eq!(VmError::from(RsError::MakeVmFailed).to_errno(), EPERM);

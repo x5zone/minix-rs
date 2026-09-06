@@ -775,9 +775,8 @@ impl MessageDispatcher {
 
     // -- rs_update --
     pub(crate) fn dispatch_rs_update(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, gateway, .. } = ctx;
+        let VmContext { proc_table, page_frames, gateway, .. } = ctx;
         let table: &VmProcTable = proc_table;
-        let frames = page_frames.as_mut().expect("page_frames not initialized");
         let update_ctx = &mut rs::RsUpdateCtx {
             table,
             frames: page_frames.as_mut().expect("page_frames not initialized"),
