@@ -343,8 +343,215 @@ impl RsServer {
             minix_types::RS_FI => self.do_fi(msg),
             minix_types::RS_GETSYSINFO => self.do_getsysinfo(msg),
             minix_types::RS_SYSCTL => self.do_sysctl(msg),
+            minix_types::RS_REFRESH => self.do_refresh(msg),
+            minix_types::RS_RESTART => self.do_restart(msg),
+            minix_types::RS_CLONE => self.do_clone(msg),
+            minix_types::RS_UNCLONE => self.do_unclone(msg),
             n => Ok(dispatch::dispatch_request(n).0),
         }
+    }
+
+    /// The shared label-request preamble (13/14 arms): copy the 16-byte
+    /// label (`copy_label` — request.c:121-123 shape), resolve the slot
+    /// (`ESRCH`), and run the permission gate with the target's updating
+    /// flag (manager.c:103-110). Returns the resolved slot.
+    fn resolve_by_label(
+        &mut self,
+        m: &minix_types::Message,
+        call: i32,
+    ) -> Result<crate::service_slot::SlotId, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let Some((addr, len)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+        let mut label_buf = [0u8; crate::service_slot::RS_MAX_LABEL_LEN];
+        let n = (len as usize).min(label_buf.len() - 1);
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut label_buf[..n])?;
+        label_buf[n] = 0;
+        let label = crate::service_slot::Label::from_bytes(&label_buf[..n]);
+
+        let Some(id) = state.table.lookup_by_label(&label) else {
+            return Err(Errno::ESRCH);
+        };
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            call,
+            Some(state.table.get(id)),
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+        Ok(id)
+    }
+
+    /// The stop half of the label arms: `stop_service(rp, how)` — decision
+    /// (manager.c:988-1008), slot mutations, late-reply bookkeeping, and
+    /// the friendly signal via the PM face (`srv_kill`). Returns the
+    /// handler result — the caller answers `EDONTREPLY`.
+    fn stop_with_late_reply(
+        &mut self,
+        id: crate::service_slot::SlotId,
+        how: crate::service_slot::RFlags,
+        caller: Endpoint,
+        request: i32,
+    ) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let decision = crate::request::stop_decision(state.table.get(id), how, ticks);
+        decision.mutations.apply(state.table.get_mut(id));
+        crate::request::mark_late_reply(state.table.get_mut(id), caller, request);
+        let pid = state.table.get(id).pid.unwrap_or(0);
+        match decision.signal {
+            crate::request::StopSignal::Hangup => {
+                // RS itself (manager.c:1003) — SIGHUP via the PM face.
+                let _ = self.kernel.srv_kill(pid, 1);
+            }
+            crate::request::StopSignal::Term => {
+                let _ = self.kernel.srv_kill(pid, 15);
+            }
+        }
+        Ok(minix_types::EDONTREPLY)
+    }
+
+    /// C: `do_refresh` — request.c:390-419: label resolve, permission, then
+    /// `stop_service(rp, RS_REFRESHING)` with the late reply armed — the
+    /// caller is unblocked when the refresh completes (cleanup path).
+    fn do_refresh(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let caller = m.m_source;
+        let id = self.resolve_by_label(m, minix_types::RS_REFRESH)?;
+        self.stop_with_late_reply(
+            id,
+            crate::service_slot::RFlags::REFRESHING,
+            caller,
+            minix_types::RS_REFRESH,
+        )
+    }
+
+    /// C: `do_restart` — request.c:160-203: only a TERMINATED service can
+    /// be restarted (EBUSY otherwise); the recovery script is suppressed
+    /// for this one restart (saved, cleared, restored around
+    /// `restart_service`).
+    fn do_restart(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let id = self.resolve_by_label(m, minix_types::RS_RESTART)?;
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        if !state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::TERMINATED)
+        {
+            return Err(Errno::EBUSY);
+        }
+        // Restart the service, but make sure we don't call the script again
+        // (request.c:191-196): save, clear, restart, restore.
+        let script = state.table.get(id).script;
+        state.table.get_mut(id).script[0] = 0;
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let kernel = self.kernel.as_mut();
+        let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+        let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+        let mut noop_publish =
+            |_: &crate::process_table::RProcTable, _: crate::service_slot::SlotId| Ok(());
+        let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
+        crate::service_create::restart_service(
+            &mut state.table,
+            id,
+            kernel,
+            ticks,
+            &mut noop_exec,
+            &mut noop_script,
+            &mut noop_publish,
+            &mut noop_asynsend,
+        );
+        state.table.get_mut(id).script = script;
+        Ok(0)
+    }
+
+    /// C: `do_clone` — request.c:208-249: an existing replica → `EEXIST`;
+    /// arm `SF_USE_REPL` and clone the service as an `RST_SYS_PROC`
+    /// instance (the exec-read callback is the 19 seam).
+    fn do_clone(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let id = self.resolve_by_label(m, minix_types::RS_CLONE)?;
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        if state.table.get(id).next_rp.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        state
+            .table
+            .get_mut(id)
+            .pub_
+            .sys_flags
+            .insert(crate::service_slot::SysFlags::USE_REPL);
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+        match crate::service_create::clone_service(
+            &mut state.table,
+            id,
+            self.kernel.as_mut(),
+            crate::privilege::PrivFlags::RST_SYS_PROC,
+            0,
+            ticks,
+            &mut noop_read_exec,
+        ) {
+            Ok(_) => Ok(0),
+            Err(e) => {
+                state
+                    .table
+                    .get_mut(id)
+                    .pub_
+                    .sys_flags
+                    .remove(crate::service_slot::SysFlags::USE_REPL);
+                Err(e)
+            }
+        }
+    }
+
+    /// C: `do_unclone` — request.c:253-293: no replica → `ENOENT`; clear
+    /// `SF_USE_REPL` and clean up the replica immediately
+    /// (`cleanup_service_now` = both cleanup phases back-to-back,
+    /// proto.h:53-55).
+    fn do_unclone(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let id = self.resolve_by_label(m, minix_types::RS_UNCLONE)?;
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        if !state
+            .table
+            .get(id)
+            .pub_
+            .sys_flags
+            .contains(crate::service_slot::SysFlags::USE_REPL)
+        {
+            return Err(Errno::ENOENT);
+        }
+        state
+            .table
+            .get_mut(id)
+            .pub_
+            .sys_flags
+            .remove(crate::service_slot::SysFlags::USE_REPL);
+        if let Some(next) = state.table.get(id).next_rp {
+            let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+            crate::recovery::cleanup_service(
+                &mut state.table,
+                next,
+                self.kernel.as_mut(),
+                &mut noop_script,
+            );
+            crate::recovery::cleanup_service(
+                &mut state.table,
+                next,
+                self.kernel.as_mut(),
+                &mut noop_script,
+            );
+            state.table.get_mut(id).next_rp = None;
+        }
+        Ok(0)
     }
 
     /// C: `do_getsysinfo` — request.c:1095-1142. The permission gate and
@@ -1357,6 +1564,13 @@ mod signal_handler_tests {
     fn booted_vfs_labeled(label: &'static [u8], payload: &'static [u8]) -> RsServer {
         let mut mock = crate::testutil::MockKernelApi::new(60);
         mock.payload = Some(payload.to_vec());
+        mock.ticks = 500;
+        // create_service's VM, exec and fork faces succeed (13 label arms
+        // clone through them); the boot-level default is fail-closed.
+        mock.vm_ok = true;
+        mock.execve_ok = true;
+        mock.fork_pid = Some(701);
+        mock.child_endpoint = Some(Endpoint::MEM);
         let mut server = booted_with(alloc::boxed::Box::new(mock));
         {
             let state = server.state.as_mut().unwrap();
@@ -1368,6 +1582,9 @@ mod signal_handler_tests {
             s.pub_.in_use = true;
             s.pub_.endpoint = Endpoint::VFS;
             s.pub_.label = crate::service_slot::Label::from_bytes(label);
+            // A launch command: create_service's preconditions
+            // (manager.c:540-560) require SF_USE_COPY or a command.
+            s.cmd[..8].copy_from_slice(b"/bin/vfs");
         }
         server
     }
@@ -1543,6 +1760,146 @@ mod signal_handler_tests {
         // (update.c:403-406) — reached as UPD_START on the same chain.
         m.m_u.m_rs_req.subtype = minix_types::sysctl::UPD_START;
         assert_eq!(server.do_sysctl(&m), Err(Errno::EINVAL));
+    }
+
+    /// A booted server with the VFS slot labeled and marked a system
+    /// process — the 13 label-arm fixture.
+    fn booted_vfs_sysproc() -> RsServer {
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+            // A system process carries a scheduler (utility.c:370 — the
+            // sched_decision assertion fires on NONE).
+            s.scheduler = Endpoint::KERNEL;
+        }
+        server
+    }
+
+    fn label_message(m_type: i32) -> minix_types::Message {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.len = 3;
+        m
+    }
+
+    #[test]
+    fn test_do_refresh_stops_and_arms_late_reply() {
+        // 13 wiring: RS_REFRESH (request.c:390-419) — permission, then
+        // stop_service(RS_REFRESHING) with the late reply armed; the caller
+        // is unblocked when the refresh completes → EDONTREPLY.
+        let mut server = booted_vfs_sysproc();
+        let mut m = label_message(minix_types::RS_REFRESH);
+        assert_eq!(
+            server.do_refresh(&mut m),
+            Ok(minix_types::EDONTREPLY),
+            "refresh defers its reply to cleanup"
+        );
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert!(
+            s.flags.contains(RFlags::REFRESHING),
+            "the REFRESHING stop flag is applied"
+        );
+        assert!(s.flags.contains(RFlags::LATEREPLY));
+        assert_eq!(s.caller, Endpoint::PM);
+        assert_eq!(s.caller_request, minix_types::RS_REFRESH);
+        assert_eq!(s.stop_tm, 500, "stop_service records stop_tm = getticks");
+    }
+
+    #[test]
+    fn test_do_restart_requires_terminated_service() {
+        // 13 wiring: RS_RESTART (request.c:160-203) — a running service is
+        // EBUSY (request.c:184-188); a TERMINATED service restarts with the
+        // recovery script suppressed for this round (save/clear/restore).
+        let mut server = booted_vfs_sysproc();
+        let mut m = label_message(minix_types::RS_RESTART);
+        assert_eq!(
+            server.do_restart(&mut m),
+            Err(Errno::EBUSY),
+            "a live service cannot be restarted on request"
+        );
+
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags.insert(RFlags::TERMINATED);
+            // A recovery script exists for this service.
+            s.script[..10].copy_from_slice(b"recover.sh");
+        }
+        assert_eq!(server.do_restart(&mut m), Ok(0));
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert_eq!(
+            &s.script[..10],
+            b"recover.sh",
+            "the script is restored after the restart"
+        );
+    }
+
+    #[test]
+    fn test_do_clone_and_unclone_replica_lifecycle() {
+        // 13 wiring: RS_CLONE (request.c:208-249) arms SF_USE_REPL and
+        // links a replica (second clone → EEXIST, request.c:231-234);
+        // RS_UNCLONE (request.c:253-293) without a replica → ENOENT
+        // (request.c:274-277), with one → cleanup now + flag cleared.
+        let mut server = booted_vfs_sysproc();
+        let mut clone_msg = label_message(minix_types::RS_CLONE);
+        let mut unclone_msg = label_message(minix_types::RS_UNCLONE);
+
+        // Unclone before any clone → ENOENT.
+        assert_eq!(server.do_unclone(&mut unclone_msg), Err(Errno::ENOENT));
+
+        assert_eq!(server.do_clone(&mut clone_msg), Ok(0));
+        let id = crate::service_slot::SlotId::new(0);
+        {
+            let state = server.state.as_ref().unwrap();
+            assert!(
+                state
+                    .table
+                    .get(id)
+                    .pub_
+                    .sys_flags
+                    .contains(crate::service_slot::SysFlags::USE_REPL),
+                "the source carries SF_USE_REPL"
+            );
+            assert!(
+                state.table.get(id).next_rp.is_some(),
+                "the replica is linked as next"
+            );
+        }
+
+        // A replica already available → EEXIST.
+        assert_eq!(server.do_clone(&mut clone_msg), Err(Errno::EEXIST));
+
+        assert_eq!(server.do_unclone(&mut unclone_msg), Ok(0));
+        let state = server.state.as_ref().unwrap();
+        assert!(
+            !state
+                .table
+                .get(id)
+                .pub_
+                .sys_flags
+                .contains(crate::service_slot::SysFlags::USE_REPL),
+            "SF_USE_REPL is cleared"
+        );
+        assert!(
+            state.table.get(id).next_rp.is_none(),
+            "the replica is cleaned up now (cleanup_service_now)"
+        );
     }
 
     #[test]

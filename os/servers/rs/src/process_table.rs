@@ -224,21 +224,6 @@ impl RProcTable {
             .map(|(i, rp)| (SlotId::new(i), rp))
     }
 
-    /// Sets the endpoint → slot mapping (ARCH A-4).
-    ///
-    /// C: `rproc_ptr[_ENDPOINT_P(endpoint)] = rp` — manager.c:599
-    /// (create_service's child bookkeeping). Panics on kernel-task endpoints
-    /// (negative slots are never services) and out-of-range slots.
-    pub fn set_endpoint_mapping(&mut self, endpoint: Endpoint, id: SlotId) {
-        let idx = endpoint.slot();
-        assert!(
-            idx >= 0 && (idx as usize) < NR_PROCS,
-            "endpoint out of range"
-        );
-        assert!(id.0 < self.slots.len(), "slot id out of range");
-        self.by_endpoint[idx as usize] = Some(id);
-    }
-
     /// Looks up a service slot by pid.
     ///
     /// C: `lookup_slot_by_pid` — manager.c:1959-1980. `pid < 0` → `None`

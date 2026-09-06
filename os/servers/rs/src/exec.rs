@@ -24,6 +24,10 @@ use minix_types::Errno;
 /// (lib/libexec/exec_elf.c). ARCH A-8: full parsing (`parse_ehdr`,
 /// `segment_iter`) lives in the `minix-elf` crate and is wired when
 /// `srv_execve`/`do_exec` land (19).
+///
+/// awaiting-wiring: 19-rs-external-interfaces.md — the image arrival face
+/// (`read_exec`) is a kernel-call seam; until then this validator has no
+/// production caller.
 pub fn validate_image(image: &[u8]) -> Result<(), Errno> {
     // Elf64_Ehdr is 64 bytes; shorter images cannot hold a valid header.
     if image.len() < 64 {
@@ -54,6 +58,10 @@ pub fn share_exec(dst: &mut ServiceSlot, src: &ServiceSlot) {
 /// (`other_rp->r_exec == rp->r_exec`). Rust uses `Arc::ptr_eq` on the same
 /// scan (ARCH A-5); an O(1) `Arc::strong_count > 1` alternative exists but
 /// counts clones outside the table too, so the scan is the faithful default.
+///
+/// awaiting-wiring: 13-rs-control-requests.md — the C consumer checks the
+/// donor's image sharing in the `RSS_REUSE` path (`edit_slot`/`up` refresh);
+/// until that arm goes live this predicate has no production caller.
 pub fn has_shared_exec(rp: &ServiceSlot, table: &RProcTable) -> bool {
     let Some(img) = &rp.exec else {
         return false;

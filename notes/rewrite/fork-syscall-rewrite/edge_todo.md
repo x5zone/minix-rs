@@ -119,6 +119,21 @@
 
 ---
 
+## E-RSSTART rs_start_t 字节 ABI pinning + copy_rs_start 解码（03-stage-rs RS_UP/RS_EDIT 臂，2026-09-07 登记）
+
+**问题**：RS 的 `RS_UP`（do_up，request.c:15-106）与 `RS_EDIT`（do_edit，request.c:298-385）第一步都是 `copy_rs_start`——把调用方内存里的完整 `struct rs_start`（rs.h:107-166，约 230 字节：rss_flags/rss_cmd/rss_uid/位图数组/irq·io·pci 表/rss_label/…）按 C ABI 整结构拷入 RS。该结构含 `bitchunk_t rss_system[SYS_CALL_MASK_SIZE]`、`bitchunk_t rss_vm[VM_CALL_MASK_SIZE]` 与 `uid_t rss_uid`，而 `bitchunk_t` 在本 minix3 子树**只有使用没有 typedef**（bitmap.h:12 引用 `sizeof(bitchunk_t)`，全树 grep 无定义），`uid_t` 亦属 sys/types.h 外部类型——字节偏移无法从本树 pinning，猜偏移违反 Ground Truth 链（同 E-RSWIRE 判据）。
+
+**影响**：13-rs-control-requests 的 `do_up`/`do_edit` 两臂停在缝上：权限/查槽/编排（create_service/edit_slot/run_service——决策与编排已全就绪，Fix #46-#52）就等这条解码；RS 侧其余 label 型控制臂（down/refresh/restart/clone/unclone/lookup/fi/getsysinfo/sysctl）已全部 live（Fix #71/#74/#75/#76），不依赖本条。
+
+**解锁后工作（约一个完整迭代）**：
+1. 从完整 Minix3 源码树 pin `bitchunk_t`/`uid_t` 尺寸 → 计算 `rs_start_t` 偏移表（逐字段断言测试锚定字节布局，风格同 E-RSWIRE 的 RprocpubWire）；
+2. minix-types 增 `RsStartWire`（repr(C)）+ `decode` + 偏移断言；
+3. rs 侧 `RsServer::do_up`/`do_edit` 接线：label 改取 rs_start 内的 rss_label，编排消费 `check_create_preconditions`/`create_service`/`edit_slot`/`run_service` 全链（sched_stop→edit_slot→privctl(UpdateSys)→sched_init 序列含 E-7 的类型化锚）。
+
+**依赖**：完整 Minix3 C 源码参照（或补全本树头文件中 `bitchunk_t`/`uid_t` 的定义链）；无 E1/E2 依赖（解码纯单测可验证）。
+
+---
+
 ## E-RSWIRE rprocpub 字节 ABI pinning + rproctab 解码（T9 step3 的余件）
 
 **背景**：RS_INIT 握手的 grant 贯通与 fail-closed 已落地（Fix #34）；`ipc_call_rs_init` 目前诚实返回 `NotImplemented`（pin 测试 `test_run_once_rs_init_fails_closed_until_erswire` 定格），假成功 `Ok(RprocTab::empty())` 已消灭。

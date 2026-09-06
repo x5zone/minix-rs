@@ -14,12 +14,12 @@
 //! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
 
 mod address;
-mod diagnostic;
 mod bitmap;
 mod boot;
 mod cell;
 mod clock;
 mod com;
+mod diagnostic;
 mod endpoint;
 mod errno;
 mod id;
@@ -33,10 +33,10 @@ pub use boot::*;
 pub use cell::*;
 pub use clock::*;
 pub use com::*;
+pub use diagnostic::*;
 pub use endpoint::*;
 pub use errno::*;
 pub use id::*;
 pub use pid::*;
 pub use signal::*;
 pub use sysctl::*;
-pub use diagnostic::*;

@@ -168,6 +168,9 @@ pub enum StopOutcome {
 /// Zero (OK) continues on both roads — success needs no decision.
 /// Nonzero continues at cleanup (warn and go on: nothing to go back to)
 /// but aborts an edit (the slot is untouched, so stopping keeps it so).
+///
+/// awaiting-wiring: 13-rs-control-requests.md — consumed by the `do_edit`
+/// stop/edit/restart sequence when that arm goes live.
 pub const fn on_stop_result(site: StopSite, result: i32) -> StopOutcome {
     if result == 0 {
         return StopOutcome::Continue;
@@ -202,6 +205,9 @@ pub struct SigMgrCommit<'a> {
 ///
 /// `SELF` expansion (`sig_mgr == SELF ? endpoint : sig_mgr`,
 /// utility.c:397-398) happens at the call site (12/16).
+///
+/// awaiting-wiring: 13-rs-control-requests.md — consumed by `do_edit`'s
+/// signal-manager update when that arm goes live.
 pub fn set_sig_mgrs(
     priv_: &mut Privilege,
     synced: Privilege,

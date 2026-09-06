@@ -39,7 +39,10 @@
 //! - All referenced tables (XSDT, MADT) remain valid for the duration of `parse`.
 //! - No other CPU is concurrently writing to the ACPI table memory.
 
+#[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::{ApicDesc, IsaSerialDesc, PitDesc};
+#[cfg(target_arch = "aarch64")]
+use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc};
 use crate::desc::*;
 use core::fmt;
 
@@ -56,6 +59,15 @@ const MADT_SIGNATURE: [u8; 4] = *b"APIC";
 
 /// IOAPIC structure type in MADT.
 const MADT_TYPE_IOAPIC: u8 = 1;
+
+/// GICC (Generic Interrupt Controller CPU interface) structure type — aarch64.
+/// ACPI 6.x §5.2.12.5: 80-byte record, MPIDR at offset 56, GICR base at 48,
+/// Flags at offset 12 (bit 0 = Processor Enabled).
+const MADT_TYPE_GICC: u8 = 11;
+
+/// GIC Distributor structure type — aarch64. ACPI 6.x §5.2.12.14 (24 bytes,
+/// distributor base at offset 12).
+const MADT_TYPE_GICD: u8 = 12;
 
 /// LAPIC (processor local APIC) structure type in MADT.
 const MADT_TYPE_LAPIC: u8 = 0;
@@ -109,8 +121,15 @@ struct MadtEntryHeader {
 /// sub-descriptor traits.
 #[derive(Clone, Copy)]
 pub struct AcpiDesc {
+    #[cfg(target_arch = "x86_64")]
     ic: ApicDesc,
+    #[cfg(target_arch = "aarch64")]
+    ic: Gicv3Desc,
+    #[cfg(target_arch = "x86_64")]
     timer: PitDesc,
+    #[cfg(target_arch = "aarch64")]
+    timer: ArmGenericTimerDesc,
+    #[cfg(target_arch = "x86_64")]
     console: Option<IsaSerialDesc>,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
@@ -118,12 +137,16 @@ pub struct AcpiDesc {
 
 impl fmt::Debug for AcpiDesc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AcpiDesc")
-            .field("ic", &self.ic)
-            .field("timer", &self.timer)
-            .field("console", &self.console)
-            .field("cpu_topology", &self.cpu_topology)
-            .finish_non_exhaustive()
+        let mut dbg = f.debug_struct("AcpiDesc");
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            dbg.field("ic", &self.ic).field("timer", &self.timer);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            dbg.field("console", &self.console);
+        }
+        dbg.field("cpu_topology", &self.cpu_topology).finish_non_exhaustive()
     }
 }
 
@@ -178,35 +201,17 @@ impl AcpiDesc {
             .ok_or(AcpiParseError::MadtNotFound)?;
 
         // SAFETY: madt_phys was validated by find_madt to point to a valid MADT.
-        let (lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id) =
-            unsafe { parse_madt(madt_phys) }?;
+        let entries = unsafe { parse_madt(madt_phys) }?;
 
-        // Build the interrupt controller descriptor (concrete x86-64 type).
-        let ic = ApicDesc {
-            lapic_base,
-            ioapic_base,
-            nr_irqs,
-        };
-
-        // x86-64 timer: PIT (boot) + LAPIC Timer (runtime).
-        // PIT base frequency is a fixed hardware constant (1193182 Hz).
-        let timer = PitDesc {
-            pit_base_freq: 1_193_182,
-            lapic_base,
-        };
-
-        // Early console: COM1 (0x3F8) — standard PC AT serial port.
-        let console = Some(IsaSerialDesc { port_base: 0x3F8 });
-
-        // CPU topology.
+        // CPU topology (shared accumulator: LAPIC on x86, GICC on aarch64).
         let mut cpu_topology = CpuTopology {
-            nr_cpus,
-            bsp_id,
+            nr_cpus: entries.nr_cpus,
+            bsp_id: entries.bsp_id,
             ..Default::default()
         };
         // Copy parsed CPU info into the topology array.
-        let copy_count = (nr_cpus as usize).min(MAX_CPUS);
-        cpu_topology.cpus[..copy_count].copy_from_slice(&cpus[..copy_count]);
+        let copy_count = (entries.nr_cpus as usize).min(MAX_CPUS);
+        cpu_topology.cpus[..copy_count].copy_from_slice(&entries.cpus[..copy_count]);
 
         // Arch misc: store the ACPI tables physical address for debugging.
         let arch_misc = ArchMiscDesc {
@@ -214,7 +219,50 @@ impl AcpiDesc {
             pmu_cycle_counter: false,
         };
 
-        Ok(Self { ic, timer, console, cpu_topology, arch_misc })
+        // ── Per-architecture descriptor assembly ──
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Build the interrupt controller descriptor (concrete x86-64 type).
+            let ic = ApicDesc {
+                lapic_base: entries.lapic_base,
+                ioapic_base: entries.ioapic_base,
+                nr_irqs: entries.nr_irqs,
+            };
+
+            // x86-64 timer: PIT (boot) + LAPIC Timer (runtime).
+            // PIT base frequency is a fixed hardware constant (1193182 Hz).
+            let timer = PitDesc {
+                pit_base_freq: 1_193_182,
+                lapic_base: entries.lapic_base,
+            };
+
+            // Early console: COM1 (0x3F8) — standard PC AT serial port.
+            let console = Some(IsaSerialDesc { port_base: 0x3F8 });
+
+            Ok(Self { ic, timer, console, cpu_topology, arch_misc })
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // GICv3: distributor from the GICD entry; redistributor base from
+            // the first GICC's GICR field; stride/nr_irqs mirror the DTB path
+            // (device_tree.rs parse_gic) so both discovery routes produce
+            // identical descriptor values on the same machine.
+            let ic = Gicv3Desc {
+                gicd_base: entries.gicd_base,
+                gicr_base: entries.gicr_base,
+                gicr_stride: 0x2_0000,
+                nr_irqs: 64,
+            };
+
+            // ARM Generic Timer: frequency read from CNTFRQ_EL0 at runtime
+            // (same rationale as the DTB path).
+            let timer = ArmGenericTimerDesc;
+
+            // aarch64 early console is a hardcoded PL011 in minix-plat; the
+            // descriptor carries no console (see PlatformDesc::early_console).
+
+            Ok(Self { ic, timer, cpu_topology, arch_misc })
+        }
     }
 
     /// Construct from pre-parsed values (for tests).
@@ -235,8 +283,16 @@ impl PlatformDesc for AcpiDesc {
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
     }
+    #[cfg(target_arch = "x86_64")]
     fn early_console(&self) -> Option<&dyn ConsoleDesc> {
         self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
+    }
+    #[cfg(target_arch = "aarch64")]
+    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
+        // aarch64: early console is a hardcoded PL011 in `minix-plat`
+        // (0x0900_0000); it does not depend on platform discovery, so the
+        // ACPI descriptor carries no console.
+        None
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -306,7 +362,31 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
 }
 
 /// MADT parse result: `(lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id)`.
-type MadtResult = (usize, usize, u32, [CpuInfo; MAX_CPUS], u32, u32);
+/// MADT parse result — fields are per-architecture (the entry walk is shared;
+/// x86 fills LAPIC/IOAPIC, aarch64 fills GICC/GICD).
+struct MadtResult {
+    /// x86: Local APIC base from the MADT header's `Local APIC Address` field.
+    #[cfg(target_arch = "x86_64")]
+    lapic_base: usize,
+    /// x86: first IOAPIC base from the `IOAPIC` entry (default 0xFEC0_0000).
+    #[cfg(target_arch = "x86_64")]
+    ioapic_base: usize,
+    /// Discovered CPU list (LAPIC on x86, GICC on aarch64) — shared accumulator.
+    cpus: [CpuInfo; MAX_CPUS],
+    nr_cpus: u32,
+    /// First discovered CPU's hardware ID (x86 APIC ID / aarch64 MPIDR).
+    /// Arm ACPI does not encode the boot CPU; see the aarch64 note in parse().
+    bsp_id: u32,
+    /// x86: GSI count (QEMU/PC constant 64).
+    #[cfg(target_arch = "x86_64")]
+    nr_irqs: u32,
+    /// aarch64: GICD base from the `GIC Distributor` entry (0 = absent).
+    #[cfg(target_arch = "aarch64")]
+    gicd_base: usize,
+    /// aarch64: GICR base from the first `GICC` entry (redistributor region).
+    #[cfg(target_arch = "aarch64")]
+    gicr_base: usize,
+}
 
 /// Parse the MADT (APIC) table.
 ///
@@ -342,7 +422,12 @@ unsafe fn parse_madt(
     let lapic_base = u32_le_from_slice(lapic_addr_bytes) as usize;
 
     // Iterate over interrupt controller structures.
+    #[cfg(target_arch = "x86_64")]
     let mut ioapic_base = 0xFEC0_0000usize; // Default IOAPIC base (QEMU/PC).
+    #[cfg(target_arch = "aarch64")]
+    let mut gicd_base = 0usize; // Filled by the GICD entry (0 = absent).
+    #[cfg(target_arch = "aarch64")]
+    let mut gicr_base = 0usize; // Filled by the first GICC entry.
     let mut nr_cpus = 0u32;
     let mut bsp_id = 0u32;
     let mut cpus = [CpuInfo::default(); MAX_CPUS];
@@ -434,6 +519,53 @@ unsafe fn parse_madt(
                     }
                 }
             }
+            #[cfg(target_arch = "aarch64")]
+            MADT_TYPE_GICC => {
+                // GICC (80 bytes): MPIDR at offset 56, GICR base at 48, Flags
+                // at offset 12 (bit 0 = Processor Enabled). Layout per ACPI
+                // 6.x §5.2.12.5.
+                if entry_len >= 64 {
+                    let base = (madt_phys + offset) as *const u8;
+                    // SAFETY: entry_len >= 64, bounds checked.
+                    let read_u64 = |off: usize| -> u64 {
+                        let bytes = unsafe {
+                            core::slice::from_raw_parts(base.add(off), 8)
+                        };
+                        u64::from_le_bytes(bytes.try_into().unwrap())
+                    };
+                    let flags_bytes = unsafe {
+                        core::slice::from_raw_parts(base.add(12), 4)
+                    };
+                    let flags = u32_le_from_slice(flags_bytes);
+                    let enabled = (flags & 1) != 0;
+                    if enabled && (nr_cpus as usize) < MAX_CPUS {
+                        let hw_id = read_u64(56); // MPIDR
+                        let cpu_gicr = read_u64(48);
+                        if nr_cpus == 0 {
+                            bsp_id = hw_id as u32;
+                            gicr_base = cpu_gicr as usize;
+                        }
+                        cpus[nr_cpus as usize] = CpuInfo {
+                            hw_id,
+                            gicr_base: Some(cpu_gicr as usize),
+                            mtimecmp_addr: None,
+                        };
+                        nr_cpus += 1;
+                    }
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            MADT_TYPE_GICD => {
+                // GIC Distributor (24 bytes): base at offset 12.
+                if entry_len >= 20 {
+                    let base = (madt_phys + offset) as *const u8;
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(base.add(12), 8)
+                    };
+                    gicd_base =
+                        u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
+                }
+            }
             _ => {
                 // Other entry types (Interrupt Source Override, etc.) skipped.
             }
@@ -442,16 +574,34 @@ unsafe fn parse_madt(
         offset += entry_len;
     }
 
+    // aarch64: a MADT with CPUs but no GICD entry is unusable — the
+    // interrupt controller base would be missing for every consumer.
+    #[cfg(target_arch = "aarch64")]
+    if nr_cpus > 0 && gicd_base == 0 {
+        return Err(AcpiParseError::GicdNotFound);
+    }
+
     // If no CPUs were found in the MADT, default to single-core.
     if nr_cpus == 0 {
         cpus[0] = CpuInfo { hw_id: 0, gicr_base: None, mtimecmp_addr: None };
         nr_cpus = 1;
     }
 
-    // QEMU virt default: 24 GSI IRQs (16 ISA + 8 PCI). Real hardware varies.
-    let nr_irqs = 64u32;
-
-    Ok((lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id))
+    Ok(MadtResult {
+        #[cfg(target_arch = "x86_64")]
+        lapic_base,
+        #[cfg(target_arch = "x86_64")]
+        ioapic_base,
+        cpus,
+        nr_cpus,
+        bsp_id,
+        #[cfg(target_arch = "x86_64")]
+        nr_irqs: 64, // QEMU/PC GSI count (16 ISA + 8 PCI); real HW varies.
+        #[cfg(target_arch = "aarch64")]
+        gicd_base,
+        #[cfg(target_arch = "aarch64")]
+        gicr_base,
+    })
 }
 
 // ── Little-endian byte helpers ──

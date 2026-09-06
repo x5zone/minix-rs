@@ -11,6 +11,10 @@
 //! `end_update` — 16, `init_service` — 12, `clone_slot`/`swap_slot`/
 //! `activate_service`/`cleanup_service` — 10/15) are stated as call sites.
 //! This module owns the role split, branch decisions and assertions.
+//!
+//! awaiting-wiring: 18-rs-self-lifecycle.md — the process-creation face
+//! (RS self-upgrade fork + YIELD chain) presses on edge E9's `srv_fork`
+//! seam; the exports here stay pure slices until that wiring round.
 
 use minix_types::Endpoint;
 

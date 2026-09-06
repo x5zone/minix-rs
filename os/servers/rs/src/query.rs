@@ -10,7 +10,7 @@
 //! module owns the pure classification: which table a `SI_*` request names,
 //! the `do_lookup` name-length gate, and the `RS_SYSCTL_*` sub-type mapping.
 
-use minix_types::Errno;
+use minix_types::{Errno, sysctl};
 
 /// C: `SI_PROC_TAB` — sysinfo.h:11.
 pub const SI_PROC_TAB: i32 = 2;
@@ -67,22 +67,13 @@ pub fn lookup_name_len(len: usize) -> Result<(), Errno> {
     }
 }
 
-/// C: `RS_SYSCTL_SRV_STATUS` — com.h:485.
-pub const RS_SYSCTL_SRV_STATUS: i32 = 1;
-/// C: `RS_SYSCTL_UPD_START` — com.h:486.
-pub const RS_SYSCTL_UPD_START: i32 = 2;
-/// C: `RS_SYSCTL_UPD_RUN` — com.h:487.
-pub const RS_SYSCTL_UPD_RUN: i32 = 3;
-/// C: `RS_SYSCTL_UPD_STOP` — com.h:488.
-pub const RS_SYSCTL_UPD_STOP: i32 = 4;
-/// C: `RS_SYSCTL_UPD_STATUS` — com.h:489.
-pub const RS_SYSCTL_UPD_STATUS: i32 = 5;
-
 /// The `RS_SYSCTL_*` sub-request kind.
 ///
 /// C: `do_sysctl` — request.c:1181-1228. The `UPD_*` actions are
 /// 16-rs-live-update.md mechanisms (`start_update_prepare`,
-/// `abort_update_proc`); only the classification is pure.
+/// `abort_update_proc`); only the classification is pure. The sub-type
+/// numbers live in `minix_types::sysctl` (com.h:485-489, the single
+/// authority for RS message constants).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysctlAction {
     /// Print the service table. C: `RS_SYSCTL_SRV_STATUS` — request.c:1186-1188.
@@ -102,17 +93,14 @@ pub enum SysctlAction {
 /// C: `do_sysctl` — request.c:1183-1222; unknown sub-type → `EINVAL`.
 pub fn classify_sysctl(request_type: i32) -> Result<SysctlAction, Errno> {
     match request_type {
-        RS_SYSCTL_SRV_STATUS => Ok(SysctlAction::PrintServices),
-        RS_SYSCTL_UPD_START => Ok(SysctlAction::UpdateStart),
-        RS_SYSCTL_UPD_RUN => Ok(SysctlAction::UpdateRun),
-        RS_SYSCTL_UPD_STOP => Ok(SysctlAction::UpdateStop),
-        RS_SYSCTL_UPD_STATUS => Ok(SysctlAction::UpdateStatus),
+        sysctl::SRV_STATUS => Ok(SysctlAction::PrintServices),
+        sysctl::UPD_START => Ok(SysctlAction::UpdateStart),
+        sysctl::UPD_RUN => Ok(SysctlAction::UpdateRun),
+        sysctl::UPD_STOP => Ok(SysctlAction::UpdateStop),
+        sysctl::UPD_STATUS => Ok(SysctlAction::UpdateStatus),
         _ => Err(Errno::EINVAL),
     }
 }
-
-/// C: `RS_FI_CRASH` — com.h:492 (fault-injection sub-type).
-pub const RS_FI_CRASH: i32 = 1;
 
 #[cfg(test)]
 mod tests {
@@ -147,33 +135,28 @@ mod tests {
     #[test]
     fn test_classify_sysctl() {
         // C: request.c:1183-1222 — 5 sub-types + default EINVAL.
+        // Constants come from minix_types::sysctl (com.h:485-489).
         assert_eq!(
-            classify_sysctl(RS_SYSCTL_SRV_STATUS),
+            classify_sysctl(sysctl::SRV_STATUS),
             Ok(SysctlAction::PrintServices)
         );
         assert_eq!(
-            classify_sysctl(RS_SYSCTL_UPD_START),
+            classify_sysctl(sysctl::UPD_START),
             Ok(SysctlAction::UpdateStart)
         );
         assert_eq!(
-            classify_sysctl(RS_SYSCTL_UPD_RUN),
+            classify_sysctl(sysctl::UPD_RUN),
             Ok(SysctlAction::UpdateRun)
         );
         assert_eq!(
-            classify_sysctl(RS_SYSCTL_UPD_STOP),
+            classify_sysctl(sysctl::UPD_STOP),
             Ok(SysctlAction::UpdateStop)
         );
         assert_eq!(
-            classify_sysctl(RS_SYSCTL_UPD_STATUS),
+            classify_sysctl(sysctl::UPD_STATUS),
             Ok(SysctlAction::UpdateStatus)
         );
         assert_eq!(classify_sysctl(0), Err(Errno::EINVAL));
         assert_eq!(classify_sysctl(6), Err(Errno::EINVAL));
-    }
-
-    #[test]
-    fn test_fi_crash_constant() {
-        // C: com.h:492 — RS_FI_CRASH = 1.
-        assert_eq!(RS_FI_CRASH, 1);
     }
 }

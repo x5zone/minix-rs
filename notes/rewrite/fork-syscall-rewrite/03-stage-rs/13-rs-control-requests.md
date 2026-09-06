@@ -189,12 +189,20 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 
 ---
 
-> **接线落地（2026-09-07，Fix #71）**：`do_down` 已 live——`MessRsReq`（ipc.h:1886-1895）
-> 解码经 `Message::rs_req_payload()`（minix-types，三调用号标签守卫），label 拷贝经
+> **接线落地（2026-09-07，Fix #71/#74/#76）**：`do_down`、`do_refresh`、`do_restart`、
+> `do_clone`、`do_unclone`、`do_lookup`、`do_fi`、`do_getsysinfo`、`do_sysctl` 已 live——
+> `MessRsReq`（ipc.h:1886-1895）解码经 `Message::rs_req_payload()`/`rs_req_name()`/
+> `rs_req_subtype()`（minix-types，全族标签守卫），label 拷贝经
 > `KernelApi::safecopy_from`（sys_datacopy 缝，19 接线），stop 流程消费 `stop_decision`
-> （A4 载荷模式）并经 PM 面 srv_kill 发信号；恒 EDONTREPLY（迟回复由 cleanup 路径发出，
-> request.c:142-146）。RS_UP 臂的 `rs_start` 结构解码需 RsStartWire ABI（rs.h:104-151），
-> 待独立迭代；signal_manager 六分支待 18 号编排轮。
+> （A4 载荷模式）并经 PM 面 srv_kill 发信号；迟回复由 cleanup 路径发出。共享前奏
+> `RsServer::resolve_by_label`（拷 label → 查槽 → 权限门）+ `stop_with_late_reply`
+> （stop_decision + 变异 + LATEREPLY + srv_kill）承载全部 label 臂。do_refresh 的
+> 拒绝回复 EDONTREPLY（request.c:419）；do_restart 的 script 保护是
+> 存/清/重启/恢复（request.c:191-196）；do_unclone 的 `cleanup_service_now` 是
+> 两遍 `cleanup_service`（proto.h:53-55）。**RS_UP/RS_EDIT 两臂压 `rs_start_t`
+> 字节 ABI**——`bitchunk_t`（rss_system/rss_vm 位图数组）与 `uid_t` 在本 C 树无
+> typedef，偏移不可 pinning（edge E-RSSTART，同 E-RSWIRE 判据）；signal_manager
+> 六分支待 18 号编排轮（I8）。
 ## 5. 测试要点
 
 `request.rs` 内 6 项测试（`cargo test -p minix-rs --lib request` 过滤子串会命中其他模块的 `*request` 测试，共 15 通过；以 `request::tests` 6 项为准）：

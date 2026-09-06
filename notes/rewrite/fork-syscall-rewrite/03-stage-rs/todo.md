@@ -2855,6 +2855,30 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   清链/UPD_RUN LATEREPLY+EDONTREPLY/已 UPDATING 再 prepare EINVAL））；clippy
   触碰文件零告警；fmt 干净；T7 PASS。14 号四臂至此全部脱离 dispatch 死表。
 
+### ✅ Fix #76 — I4 13 号 label 型四臂接线（REFRESH/RESTART/CLONE/UNCLONE）+ E-RSSTART 登记
+- **File**：`lib.rs`（`resolve_by_label`/`stop_with_late_reply` 共享前奏 +
+  `do_refresh`/`do_restart`/`do_clone`/`do_unclone` + 3 接线测试）；文档
+  13 号接线落地注记改写；**edge_todo.md 新增 E-RSSTART**（rs_start_t 字节 ABI）
+- **Before**：四个 label 型控制臂落在 dispatch 死表；E-7 的 `do_edit` 序列与
+  RS_UP 一样压在 `rs_start_t` 解码上。
+- **After**：四臂统一走 `resolve_by_label`（copy_label→查槽→权限门，含 updating
+  标志）+ 臂专属动作——`do_refresh`：`stop_with_late_reply`(REFRESHING) →
+  EDONTREPLY（request.c:390-419）；`do_restart`：TERMINATED 门（EBUSY，
+  request.c:184-188）+ script 存/清/重启/恢复（request.c:191-196）；`do_clone`：
+  next_rp 已存在→EEXIST、SF_USE_REPL 置位 + `clone_service`(RST_SYS_PROC)、
+  失败回滚旗标（request.c:231-243）；`do_unclone`：无旗标→ENOENT、清理旗标 +
+  两遍 `cleanup_service`（=cleanup_service_now，proto.h:53-55）。**E-7/E-5 判定
+  变更**：`do_edit`/`do_up` 的 `copy_rs_start` 压 `rs_start_t` 字节 ABI——
+  `bitchunk_t`/`uid_t` 本树无定义（bitmap.h:12 引用无 typedef），偏移不可 pinning，
+  登记 edge **E-RSSTART**（同 E-RSWIRE 判据），两臂在此期间保持死表 ENOSYS。
+- **Verified**：`cargo test -p minix-rs` = **304 passed**（+3：
+  `test_do_refresh_stops_and_arms_late_reply`（REFRESHING/stop_tm=LATEREPLY 三件）、
+  `test_do_restart_requires_terminated_service`（EBUSY + TERMINATED 重启 + script
+  往返）、`test_do_clone_and_unclone_replica_lifecycle`（ENOENT/clone/EEXIST/
+  unclone 清理））；clippy 触碰文件零告警；fmt 干净；T7 PASS。测试自查修正 3 处
+  夹具缺陷（mock ticks/child_endpoint 缺失、clone 前置条件缺 cmd——均测试侧
+  建设不足，非产品缺陷）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
