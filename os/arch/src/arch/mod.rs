@@ -20,6 +20,7 @@ pub mod clock;
 pub mod cpu_identity;
 pub mod fpu_arch;
 pub mod signal_context;
+pub mod trap_style;
 pub mod smp;
 pub mod arch_init;
 pub mod timer_irq_gate;

@@ -72,6 +72,10 @@ switch_to_user()（Rust 版本，永不返回）
       ├─ 释放 BKL（大内核锁）——从此处直到下一次陷入内核
       ├─ FPU 所有权：非持有者置 CR0.TS（下次浮点指令陷入内核）
       ├─ 清除 MF_CONTEXT_SET
+      ├─ 读取并清除 trap_style（入口方式），按它分流恢复序列
+      │   NoEntry → panic（C: arch_system.c:597-598）
+      │   Syscall → panic 直至 S-8 落地快速返回（19-syscall-signal.md §4.6.1）
+      │   其余   → 全上下文恢复（C: restore_user_context_int）
       └─ 从 cpu_context 重建 trap frame → restore_to_user() ← 永不返回
 ```
 

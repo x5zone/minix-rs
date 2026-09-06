@@ -41,7 +41,7 @@ use minix_arch::paging::PageFlags;
 // import would be an unused-import error in mock builds.
 #[cfg(not(feature = "mock"))]
 use minix_arch::arch::frame::PhysAccess;
-use minix_arch::{DirectMapArch, pt_alloc};
+use minix_arch::{DirectMapArch, ReturnSequence, TrapStyle, pt_alloc};
 
 /// End of identity-mapped region during boot (4 GB).
 /// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
@@ -2842,13 +2842,33 @@ fn finish_and_restore(
     // 6. restart_local_timer — no-op on auto-reloading sources.
     restart_local_timer();
 
-    // 7. Rebuild the frame from the arch-private context, then restore.
-    let idx = crate::proc_table::nr_to_idx(picked)
-        .expect("finish_and_restore: picked ProcNr out of table range");
-    let ctx = table
-        .get_by_index(idx)
-        .expect("finish_and_restore: picked ProcNr resolved but slot missing")
-        .cpu_context;
+    // 7. Dispatch on the recorded entry style, then rebuild the frame from
+    // the arch-private context and restore.
+    // C: restore_user_context (arch_system.c:577-610) — read the recorded
+    // trap style, clear it (C:585), and select the register restore sequence.
+    let (ctx, return_seq) = {
+        let p = table
+            .get_mut(picked)
+            .expect("finish_and_restore: picked ProcNr out of table range");
+        let style = p.trap_style;
+        // Consume the record so the next dispatch cannot reuse this entry's
+        // style (C:585 — p_kern_trap_style = KTS_NONE before branching).
+        p.trap_style = TrapStyle::NoEntry;
+        (p.cpu_context, style.return_sequence())
+    };
+    match return_seq {
+        Some(ReturnSequence::FullContext) => {}
+        // Fast-syscall entries save a skinny frame; returning through the
+        // full-context path would feed the mode switch user-influenced
+        // garbage. The pairing fast return lands with the asm entry work
+        // (smp_todo S-8) — until then no entry path records Syscall, so
+        // this arm converts silent corruption into a loud stop.
+        Some(ReturnSequence::FastSyscall) => {
+            panic!("restore_user_context: fast-syscall return sequence lands with S-8")
+        }
+        // C: arch_system.c:597-598 — panic("no entry trap style known").
+        None => panic!("no entry trap style known"),
+    }
     let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
     <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(&ctx, &mut frame);
 
@@ -3909,6 +3929,51 @@ mod tests {
         let mut smp = SmpState::new_single_cpu();
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
+        // Simulate a prior kernel entry: the return gate refuses to dispatch
+        // on NoEntry (C: arch_system.c:597-598), so the fixture records the
+        // full-context style the entry path would stamp (smp_todo S-8).
+        table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::IntHard;
+
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "no entry trap style known")]
+    fn test_finish_and_restore_refuses_dispatch_without_entry_style() {
+        // C: arch_system.c:597-598 — restore_user_context panics on a
+        // process with no recorded entry style: dispatching would restore
+        // an arbitrary register file. A fresh slot has never entered the
+        // kernel, so trap_style stays NoEntry and the gate must fire before
+        // the mock restore (whose panic is the success signal of
+        // test_finish_and_restore_reaches_mock_restore).
+        bkl_acquire_for_test();
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
+        // trap_style intentionally left NoEntry.
+
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "fast-syscall return sequence lands with S-8")]
+    fn test_finish_and_restore_fast_syscall_style_is_loud_placeholder() {
+        // A skinny-frame fast entry pairs a sysret-class return; taking the
+        // full-context path with a mismatched frame would be silent
+        // corruption. The pairing return lands with the asm entry work
+        // (smp_todo S-8) — until then the recorded Syscall style must stop
+        // loudly, which this pins.
+        bkl_acquire_for_test();
+        reset_root_mirrors_for_test();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut smp = SmpState::new_single_cpu();
+        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
+        table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::Syscall;
 
         super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
     }
@@ -3936,6 +4001,9 @@ mod tests {
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
             make_runnable_billable(table, priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
             table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x6000);
+            // Simulate a prior kernel entry (see test_finish_and_restore_
+            // reaches_mock_restore): the return gate refuses NoEntry.
+            table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::IntHard;
             // make_runnable_billable only clears SLOT_FREE; the run queue
             // must be populated explicitly (C's boot path reaches the same
             // state via RTS_UNSET(PROC_STOP) auto-enqueue — proc.h:216-224).

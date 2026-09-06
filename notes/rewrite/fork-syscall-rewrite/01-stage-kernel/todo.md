@@ -2261,6 +2261,25 @@ C 语义的后半段——按 trap_style 选择返回路径（中断返回与快
 设计时对比 Linux（`thread_info` 的系统调用返回路径标记）与 Redox（上下文恢复的
 显式状态机），优中选优。`todo-fix` 单条实施，同步更新 doc 31 与 doc 19 §4。
 
+**✅ 已修复（2026-09-07，§22 Phase 1 迭代 1）**：方案取"等价的返回路径枚举"分支并修正字段落点——
+`TrapStyle` 枚举落 `os/arch/src/arch/trap_style.rs`（判别值保留 C `KTS_*` 编号；不建模
+INT_UM=4/SYSENTER=6，64 位无入口可产生），字段落 `KProcess.trap_style` 而非 CpuContext
+（C 的 ground truth 即放在 p_seg 与 p_reg 并列而非寄存器结构内部；塞 CpuContext 会被
+restore_sigcontext 用户输入覆写、且需在 build_sigcontext 捕获时排除——两处皆为自造风险）。
+全 no-op 的 `arch_setcontext` trait 方法（4 处实现）删除，职责拆为 sigsend 侧
+`set_trap_style` + sigreturn 侧内核直录；sigsend 前置"未保存进程 EINVAL"校验
+（do_sigsend.c:79-82，先于一切拷贝）；sigreturn 校验先行（**MINIX3 BUG 修复**：C 的
+用户可控 `sc.trap_style` 在返回路径 panic，arch_system.c:597-605——Rust 未知/NoEntry
+值在触碰状态前 EINVAL）；`finish_and_restore` 返回闸门按 `TrapStyle::return_sequence()`
+分流（NoEntry → panic 对齐 C:597；Syscall → panic 指向 S-8；其余全上下文路径），
+读后即清对齐 C:585。既有 `KernTrapStyle`（exception_dispatcher 内部粗分类，无外部
+调用者）并入 `TrapStyle` 消灭双表示。测试 +8：arch 5（编号/往返/拒绝未知/分流分类/默认）
++ kernel 3（sigsend 未保存 EINVAL 端到端、闸门 NoEntry/Syscall 两臂 should_panic）；
+sigreturn 合法样式端到端记录测试依赖跨空间拷贝基建（同 T-8 类，登记于 §4.6.1）。
+文档同步：doc 19 §1.2 步骤表 / §2 契约表 / 调用树 / §4.5 / §4.6 trait 清单 / 新 §4.6.1 /
+§4.7 表行，doc 10 阶段 5 列表。三架构 production-target 构建门全过；clippy 零新增。
+`cargo test -p minix-kernel` → 694 passed / 0 failed；`-p minix-arch` → 212 passed。
+
 #### V12-A2 生产路径绕过公开包装：`caller_q_find` 与 `el_match` 只剩测试调用 [P2]
 
 **问题**：两处出现“公开函数只被测试调用，生产走内部复刻”的分叉。
@@ -2482,7 +2501,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
   U-1/U-2 登记；D-14 勘误 + syscall.rs:2412 注释修正；本节建立。
 
 **Phase 1 — V12 正确性/卫生批（§21，P1→P2→P3）**
-- ⬜ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）
+- ✅ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）→ **落地为 `KProcess.trap_style: TrapStyle`（arch 公共枚举）+ 双端信号往返 + finish 闸门 + MINIX3 BUG 校验先行修复；694+212 测试全绿（2026-09-07）**
 - ⬜ V12-B1 [P1] proc_table.rs ~20 处 panic 审计（内部不变量留 panic+契约注释 / 用户可达改 errno）
 - ⬜ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源
 - ⬜ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并

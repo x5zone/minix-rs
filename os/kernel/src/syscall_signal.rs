@@ -25,7 +25,7 @@ use crate::cross_space::data_copy_vmcheck;
 use crate::vm::{AddressRef, CrossSpaceResult};
 
 use minix_arch::{
-    CurrentSignalContext, CurrentDirectMap, DirectMapArch, SignalContext, SignalInfo,
+    CurrentSignalContext, CurrentDirectMap, DirectMapArch, SignalContext, SignalInfo, TrapStyle,
 };
 
 // ── Minix3 error codes ──
@@ -583,6 +583,19 @@ pub fn dispatch_sigsend(
         return KcallResult::Ok(EPERM);
     }
 
+    // C: do_sigsend.c:79-82 — sigsend of an unsaved process is EINVAL.
+    // A process with no recorded kernel entry has no return path to resume
+    // after the handler finishes, so delivery is rejected before any state
+    // is captured or copied. (C checks after filling the in-register frame
+    // at :77 but before its copy at :120; rejecting here is the same
+    // observable contract with no wasted work.)
+    if proc_table
+        .get(target_nr)
+        .is_none_or(|p| p.trap_style == TrapStyle::NoEntry)
+    {
+        return KcallResult::Ok(EINVAL);
+    }
+
     // ── Step 1: Copy sigmsg from caller's user space ──
     // C: do_sigsend.c:36-39 — data_copy_vmcheck(caller, caller_ep, sigctx, KERNEL, &smsg, sizeof)
     let smsg: SigMsg = SigMsg::default();
@@ -635,7 +648,12 @@ pub fn dispatch_sigsend(
             sigreturn: smsg.sigreturn,
             stkptr: smsg.stkptr,
         };
-        let sctx = CurrentSignalContext::build_sigcontext(&target.cpu_context, &mut info);
+        let mut sctx = CurrentSignalContext::build_sigcontext(&target.cpu_context, &mut info);
+        // C: do_sigsend.c:77 — fr.sf_sc.trap_style = rp->p_seg.p_kern_trap_style.
+        // The NoEntry case was rejected above; stamp before build_sigframe
+        // copies the sigcontext into the frame.
+        let entry_style = target.trap_style;
+        CurrentSignalContext::set_trap_style(&mut sctx, entry_style);
         // C: do_sigsend.c:47 — frp = (struct sigframe_sigcontext *) smsg.sm_stkptr - 1
         let frame_addr = info
             .stkptr
@@ -732,8 +750,10 @@ pub fn dispatch_sigsend(
 ///
 /// 1. Validate endpoint (C: do_sigreturn.c:28-29)
 /// 2. Copy `SigContext` from target's user space (C: do_sigreturn.c:33-35)
-/// 3. Restore target's `CpuContext` from `SigContext` (C: do_sigreturn.c:42-80)
-/// 4. `arch_setcontext` with trap_style (C: do_sigreturn.c:81)
+/// 3. Validate the sigcontext's trap style (MINIX3 BUG fix — C records it
+///    unchecked at do_sigreturn.c:81 and panics at return on bad values)
+/// 4. Restore target's `CpuContext` from `SigContext` (C: do_sigreturn.c:42-80)
+///    and re-record the validated style (C: arch_system.c:563)
 /// 5. Check magic integrity (C: do_sigreturn.c:83)
 pub fn dispatch_sigreturn(
     caller: &mut KProcess,
@@ -794,14 +814,27 @@ pub fn dispatch_sigreturn(
     // ── Step 2: Restore target's registers from sigcontext ──
     // C: do_sigreturn.c:42-80 — arch-specific register restore
     // C: do_sigreturn.c:81 — arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)
+    //
+    // MINIX3 BUG: C copies the user-controlled `sc.trap_style` unchecked
+    // into `p_kern_trap_style`; the return path later panics on unknown
+    // values ("unknown trap style recorded" / "no entry trap style known",
+    // arch_system.c:597-605) — both arms are reachable from a crafted
+    // sigframe, i.e. a user process can panic the kernel. Rust validates
+    // before touching the context: unknown or entry-less styles are
+    // rejected with EINVAL and the target's register state is left
+    // untouched. Valid styles behave exactly as in C.
     {
+        let style = match TrapStyle::from_raw(CurrentSignalContext::get_trap_style(&sctx)) {
+            Some(s) if s != TrapStyle::NoEntry => s,
+            _ => return KcallResult::Ok(EINVAL),
+        };
         let target = match proc_table.get_mut(target_nr) {
             Some(p) => p,
             None => return KcallResult::Ok(EINVAL),
         };
         CurrentSignalContext::restore_sigcontext(&mut target.cpu_context, &sctx);
-        let trap_style = CurrentSignalContext::get_trap_style(&sctx);
-        CurrentSignalContext::arch_setcontext(&mut target.cpu_context, trap_style);
+        // C: arch_system.c:563 — p->p_seg.p_kern_trap_style = trap_style
+        target.trap_style = style;
     }
 
     // C: do_sigreturn.c:83 — warn on corrupt magic (still return OK)
@@ -889,6 +922,30 @@ mod tests {
         msg.m_type = Syscall::Sigreturn as i32;
         let mut proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_sigreturn(&mut caller, &msg, &mut proc_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    /// C: do_sigsend.c:79-82 — sigsend of an unsaved process (no recorded
+    /// kernel entry) is EINVAL. The check sits before every memory copy, so
+    /// it is reachable hosted: the result is EINVAL, not VmSuspend.
+    #[test]
+    fn test_sigsend_unsaved_process_returns_einval() {
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        let target_endpoint = proc_table.get(ProcNr(0)).unwrap().p_endpoint;
+        // Fresh process: trap_style is NoEntry — it has never entered.
+
+        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Sigsend as i32;
+        msg.m_u.m_sigcalls.endpt = target_endpoint.0;
+        msg.m_u.m_sigcalls.sigctx = 0x7000;
+
+        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 

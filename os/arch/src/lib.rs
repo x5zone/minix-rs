@@ -76,7 +76,7 @@ pub use trap_return::TrapReturnArch;
 pub use trap_return::MockTrapReturn;
 pub use exception::{ExceptionArch, FaultContext, RecoveryPoint};
 pub use exception_dispatcher::{
-    ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal, KernTrapStyle,
+    ExceptionDispatcher, ExceptionOutcome, ExceptionClass, ExceptionSignal,
 };
 pub use clock::{ClockArch, DEFAULT_HZ};
 pub use timer_irq_gate::TimerIrqGate;
@@ -87,8 +87,9 @@ pub use signal_context::{
     SignalContext, SignalInfo, MockSignalContext,
     MockSigContext, MockSigFrame, MockSigCpuContext,
     SC_MAGIC, MF_FPU_INITIALIZED, MF_CONTEXT_SET, X86_FLAGS_USER,
-    KTS_NONE, KTS_INT_HARD, KTS_INT_ORIG, KTS_INT_UM, KTS_FULLCONTEXT, KTS_SYSENTER,
+    KTS_NONE, KTS_INT_HARD, KTS_INT_ORIG, KTS_FULLCONTEXT, KTS_SYSCALL,
 };
+pub use arch::trap_style::{ReturnSequence, TrapStyle};
 pub use smp::SmpArch;
 pub use arch_init::ArchInit;
 pub use boot::{

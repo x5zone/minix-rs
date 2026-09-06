@@ -26,6 +26,7 @@
 //! - `sp` = adjusted to sigframe
 
 use crate::signal_context::{SignalContext, SignalInfo};
+use crate::arch::trap_style::TrapStyle;
 use crate::arch::signal_context::SC_MAGIC;
 
 use super::boot::Riscv64CpuContext;
@@ -405,8 +406,9 @@ impl SignalContext for Riscv64SignalContext {
         ctx.gp_regs[GP_T6] = sctx.sc_t6;
     }
 
-    fn arch_setcontext(_ctx: &mut Self::CpuContext, _trap_style: i32) {
-        // riscv64: no-op (registers restored directly into CpuContext)
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle) {
+        // C: do_sigsend.c:77 — fr.sf_sc.trap_style = rp->p_seg.p_kern_trap_style
+        sctx.trap_style = style.raw();
     }
 
     fn get_sp(ctx: &Self::CpuContext) -> u64 {

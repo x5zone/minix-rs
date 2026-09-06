@@ -20,7 +20,9 @@
 use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicU8, Ordering};
 
-use minix_arch::{CurrentCpuContext, CurrentCpuContextArch, CpuContextArch, CurrentFpuState};
+use minix_arch::{
+    CurrentCpuContext, CurrentCpuContextArch, CpuContextArch, CurrentFpuState, TrapStyle,
+};
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
 
@@ -997,6 +999,19 @@ pub struct KProcess {
     /// pre-fill all slots via `const fn`.
     pub cpu_context: CurrentCpuContext,
 
+    /// How the process most recently entered the kernel. Recorded by the
+    /// trap-entry path (asm bridge, smp_todo S-8), consumed and cleared by
+    /// the return-to-user dispatch (`finish_and_restore`), and carried
+    /// through the signal round-trip: sigsend stamps it into the sigframe,
+    /// sigreturn validates and re-records it.
+    ///
+    /// C: `p_seg.p_kern_trap_style` — i386 archtypes.h:36. Rust keeps it on
+    /// `KProcess` rather than inside `cpu_context`: it is kernel bookkeeping
+    /// about the entry, not user register state (C likewise keeps it outside
+    /// `stackframe_s`), and a user-writable restore path must never be able
+    /// to clobber it as a side effect of a register bulk copy.
+    pub trap_style: TrapStyle,
+
     /// FPU / extended-register state buffer.
     ///
     /// C: `p_seg.fpu_state` — a `char *` pointer (i386 archtypes.h:35) into
@@ -1326,6 +1341,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::default(),
+            trap_style: TrapStyle::NoEntry,
             fpu_state: CurrentFpuState::default(),
         }
     }
@@ -1372,6 +1388,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::new(),
+            trap_style: TrapStyle::NoEntry,
             fpu_state: CurrentFpuState::new(),
         }
     }
@@ -1645,6 +1662,7 @@ impl KProcess {
             p_next_requestor: None,
             p_vm_suspend: None,
             cpu_context: CurrentCpuContext::default(),
+            trap_style: TrapStyle::NoEntry,
             fpu_state: CurrentFpuState::default(),
         };
 

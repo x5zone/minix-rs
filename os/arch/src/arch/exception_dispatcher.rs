@@ -19,6 +19,7 @@
 
 use crate::exception::{ExceptionArch, FaultContext, RecoveryPoint};
 use crate::protection::InterruptVector;
+use crate::arch::trap_style::TrapStyle;
 use minix_types::ipc::VmPagefaultIn;
 use minix_types::VirBytes;
 
@@ -67,19 +68,6 @@ pub enum ExceptionOutcome {
     ClearTrapFlag,
 }
 
-/// Kernel trap style — how the process entered the kernel.
-///
-/// C: KTS_* — archconst.h:167-173
-/// 64-bit: SYSENTER is removed; only KTS_NONE, KTS_SYSCALL, and
-/// KTS_INT_HARD remain relevant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KernTrapStyle {
-    None,
-    IntHard,
-    Syscall,
-    Other,
-}
-
 /// Architecture-independent exception dispatcher.
 ///
 /// Dispatches exceptions based on vector number and fault context.
@@ -108,7 +96,7 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
         is_vm: bool,
         fault_ctx: FaultContext,
         is_traced: bool,
-        kern_trap_style: KernTrapStyle,
+        kern_trap_style: TrapStyle,
     ) -> ExceptionOutcome {
         let vector = EA::vector(frame);
         let is_user = EA::is_user_mode(frame);
@@ -151,7 +139,7 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
         vector: InterruptVector,
         fault_ctx: FaultContext,
         is_traced: bool,
-        kern_trap_style: KernTrapStyle,
+        kern_trap_style: TrapStyle,
     ) -> ExceptionOutcome {
         if fault_ctx == FaultContext::UserCopyMsg {
             let is_pf_or_gpf = vector.get() == 14 || vector.get() == 13;
@@ -171,7 +159,7 @@ impl<EA: ExceptionArch> ExceptionDispatcher<EA> {
         // C: exception.c:231-234 — debug exception in kernel is legitimate
         // only if the process is traced and entered via SYSENTER/SYSCALL
         // (trap style is still KTS_NONE at the first kernel entry).
-        if vector.get() == 1 && is_traced && kern_trap_style == KernTrapStyle::None {
+        if vector.get() == 1 && is_traced && kern_trap_style == TrapStyle::NoEntry {
             return ExceptionOutcome::ClearTrapFlag;
         }
 
@@ -299,7 +287,7 @@ mod tests {
     fn spurious_nmi() {
         let mut frame = MockFrame { vector: 2, errcode: 0, rip: 0, cs: 0 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert_eq!(outcome, ExceptionOutcome::SpuriousNmi);
     }
@@ -308,7 +296,7 @@ mod tests {
     fn user_divide_error() {
         let mut frame = MockFrame { vector: 0, errcode: 0, rip: 0, cs: 0x1B };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert!(matches!(outcome, ExceptionOutcome::Signal(ExceptionSignal::Fpe)));
     }
@@ -317,7 +305,7 @@ mod tests {
     fn user_page_fault() {
         let mut frame = MockFrame { vector: 14, errcode: 2, rip: 0x1000, cs: 0x1B };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert!(matches!(outcome, ExceptionOutcome::ForwardToVm(_)));
     }
@@ -327,7 +315,7 @@ mod tests {
         // User-mode #NM → FpuTrap (lazy-FPU restore path).
         let mut frame = MockFrame { vector: 7, errcode: 0, rip: 0, cs: 0x1B };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert_eq!(outcome, ExceptionOutcome::FpuTrap);
     }
@@ -340,7 +328,7 @@ mod tests {
         // nested_fpu_restore().
         let mut frame = MockFrame { vector: 7, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert!(matches!(outcome, ExceptionOutcome::KernelPanic(_)));
     }
@@ -349,7 +337,7 @@ mod tests {
     fn vm_page_fault() {
         let mut frame = MockFrame { vector: 14, errcode: 0, rip: 0x1000, cs: 0x1B };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, true, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, true, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert_eq!(outcome, ExceptionOutcome::VmPageFault);
     }
@@ -358,7 +346,7 @@ mod tests {
     fn kernel_panic() {
         let mut frame = MockFrame { vector: 13, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, false, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, false, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert!(matches!(outcome, ExceptionOutcome::KernelPanic(_)));
     }
@@ -367,7 +355,7 @@ mod tests {
     fn nested_user_copy_msg() {
         let mut frame = MockFrame { vector: 14, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::UserCopyMsg, false, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::UserCopyMsg, false, TrapStyle::NoEntry,
         );
         assert_eq!(
             outcome,
@@ -379,7 +367,7 @@ mod tests {
     fn nested_phys_copy() {
         let mut frame = MockFrame { vector: 14, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::PhysCopy, false, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::PhysCopy, false, TrapStyle::NoEntry,
         );
         assert_eq!(
             outcome,
@@ -391,7 +379,7 @@ mod tests {
     fn nested_fpu_restore() {
         let mut frame = MockFrame { vector: 7, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::FpuRestore, false, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::FpuRestore, false, TrapStyle::NoEntry,
         );
         assert_eq!(
             outcome,
@@ -403,7 +391,7 @@ mod tests {
     fn nested_debug_clear_tf() {
         let mut frame = MockFrame { vector: 1, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::Normal, true, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::Normal, true, TrapStyle::NoEntry,
         );
         assert_eq!(outcome, ExceptionOutcome::ClearTrapFlag);
     }
@@ -412,7 +400,7 @@ mod tests {
     fn nested_debug_not_traced() {
         let mut frame = MockFrame { vector: 1, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::Normal, false, KernTrapStyle::None,
+            &mut frame, true, false, FaultContext::Normal, false, TrapStyle::NoEntry,
         );
         assert!(matches!(outcome, ExceptionOutcome::KernelPanic(_)));
     }
@@ -421,7 +409,7 @@ mod tests {
     fn nested_debug_traced_not_kts_none() {
         let mut frame = MockFrame { vector: 1, errcode: 0, rip: 0, cs: 0x08 };
         let outcome = ExceptionDispatcher::<MockFrame>::handle(
-            &mut frame, true, false, FaultContext::Normal, true, KernTrapStyle::Syscall,
+            &mut frame, true, false, FaultContext::Normal, true, TrapStyle::Syscall,
         );
         assert!(matches!(outcome, ExceptionOutcome::KernelPanic(_)));
     }

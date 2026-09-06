@@ -78,23 +78,28 @@ pub const X86_FLAGS_USER: u64 = 0x0000_0CD7;
 
 // ── Trap style constants (C: archconst.h:167-172) ──
 
+use super::trap_style::TrapStyle;
+//
+// These are the raw sigcontext ABI values; the typed form lives in
+// [`crate::arch::trap_style::TrapStyle`], which is the single source of
+// truth for the numbering. `KTS_INT_UM` (4) and `KTS_SYSENTER` (6) have no
+// constant here because no 64-bit entry path can produce them (see the
+// TrapStyle docs) — parse them via `TrapStyle::from_raw` and you get `None`.
+
 /// Trap style: invalid / not yet saved.
-pub const KTS_NONE: i32 = 1;
+pub const KTS_NONE: i32 = TrapStyle::NoEntry as i32;
 
 /// Trap style: exception or hard interrupt.
-pub const KTS_INT_HARD: i32 = 2;
+pub const KTS_INT_HARD: i32 = TrapStyle::IntHard as i32;
 
 /// Trap style: soft interrupt from libc.
-pub const KTS_INT_ORIG: i32 = 3;
-
-/// Trap style: soft interrupt from usermapped code.
-pub const KTS_INT_UM: i32 = 4;
+pub const KTS_INT_ORIG: i32 = TrapStyle::IntOrig as i32;
 
 /// Trap style: must restore full context.
-pub const KTS_FULLCONTEXT: i32 = 5;
+pub const KTS_FULLCONTEXT: i32 = TrapStyle::FullContext as i32;
 
-/// Trap style: SYSENTER instruction.
-pub const KTS_SYSENTER: i32 = 6;
+/// Trap style: fast syscall entry (sysret-class return).
+pub const KTS_SYSCALL: i32 = TrapStyle::Syscall as i32;
 
 // ── SignalInfo ──
 
@@ -205,13 +210,15 @@ pub trait SignalContext: Sized + Send + Sync {
     /// C: `do_sigreturn.c:42-80`
     fn restore_sigcontext(ctx: &mut Self::CpuContext, sctx: &Self::SigContext);
 
-    /// Architecture-specific post-restore hook.
+    /// Stamp the trap style into a sigcontext (sigsend side).
     ///
-    /// Called after `restore_sigcontext`. Sets the trap-style flag so
-    /// the return-to-user path knows how to restore registers.
+    /// The kernel validated the process's recorded entry style before
+    /// calling; the impl only knows the field layout. The value rides the
+    /// sigframe so `sigreturn` can re-record it and the handler returns
+    /// through the entry path it interrupted.
     ///
-    /// C: `do_sigreturn.c:81` — `arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)`
-    fn arch_setcontext(ctx: &mut Self::CpuContext, trap_style: i32);
+    /// C: `do_sigsend.c:77` — `fr.sf_sc.trap_style = rp->p_seg.p_kern_trap_style`
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle);
 
     /// Get the current stack pointer of the process.
     ///
@@ -228,11 +235,12 @@ pub trait SignalContext: Sized + Send + Sync {
     /// C: `do_sigreturn.c:83` — `if(sc.sc_magic != SC_MAGIC)`
     fn check_magic(sctx: &Self::SigContext) -> bool;
 
-    /// Extract the trap-style field from a sigcontext.
+    /// Extract the raw trap-style field from a sigcontext.
     ///
-    /// The kernel dispatch layer needs `trap_style` to pass to
-    /// `arch_setcontext`. Since `SigContext` is arch-specific, only
-    /// the arch implementation can read this field.
+    /// Returns the raw sigcontext ABI value; the kernel validates it via
+    /// [`TrapStyle::from_raw`] before recording it on the process. Since
+    /// `SigContext` is arch-specific, only the arch implementation can
+    /// read this field.
     ///
     /// C: `do_sigreturn.c:81` — `sc.trap_style`
     fn get_trap_style(sctx: &Self::SigContext) -> i32;
@@ -248,9 +256,19 @@ pub trait SignalContext: Sized + Send + Sync {
 
 // ── Mock SignalContext (for tests) ──
 
-/// Mock sigcontext — zero-sized, no real register state.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MockSigContext;
+/// Mock sigcontext — carries only the trap-style field, the one value the
+/// kernel reads/writes through the trait outside register bulk copy.
+/// Defaults to `KTS_NONE` like the real arches' freshly built sigcontexts.
+#[derive(Debug, Clone, Copy)]
+pub struct MockSigContext {
+    pub trap_style: i32,
+}
+
+impl Default for MockSigContext {
+    fn default() -> Self {
+        Self { trap_style: KTS_NONE }
+    }
+}
 
 /// Mock sigframe — zero-sized.
 #[derive(Debug, Clone, Copy, Default)]
@@ -277,7 +295,7 @@ impl SignalContext for MockSignalContext {
     type Mcontext = MockMcontext;
 
     fn build_sigcontext(_ctx: &Self::CpuContext, _info: &mut SignalInfo) -> Self::SigContext {
-        MockSigContext
+        MockSigContext { trap_style: KTS_NONE }
     }
 
     fn build_sigframe(
@@ -293,7 +311,9 @@ impl SignalContext for MockSignalContext {
 
     fn restore_sigcontext(_ctx: &mut Self::CpuContext, _sctx: &Self::SigContext) {}
 
-    fn arch_setcontext(_ctx: &mut Self::CpuContext, _trap_style: i32) {}
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle) {
+        sctx.trap_style = style.raw();
+    }
 
     fn get_sp(_ctx: &Self::CpuContext) -> u64 { 0 }
 
@@ -301,7 +321,7 @@ impl SignalContext for MockSignalContext {
 
     fn check_magic(_sctx: &Self::SigContext) -> bool { true }
 
-    fn get_trap_style(_sctx: &Self::SigContext) -> i32 { KTS_NONE }
+    fn get_trap_style(sctx: &Self::SigContext) -> i32 { sctx.trap_style }
 
     fn mcontext_clear_flags(_mc: &mut Self::Mcontext) {}
 }
@@ -336,6 +356,7 @@ mod tests {
         assert_eq!(KTS_NONE, 1);
         assert_eq!(KTS_INT_HARD, 2);
         assert_eq!(KTS_FULLCONTEXT, 5);
+        assert_eq!(KTS_SYSCALL, 7);
     }
 
     #[test]
@@ -358,7 +379,9 @@ mod tests {
         let mut ctx2 = ctx;
         MockSignalContext::setup_handler_entry(&mut ctx2, &info, 0x7000);
         MockSignalContext::restore_sigcontext(&mut ctx2, &sctx);
-        MockSignalContext::arch_setcontext(&mut ctx2, KTS_INT_HARD);
+        let mut sctx2 = sctx;
+        MockSignalContext::set_trap_style(&mut sctx2, TrapStyle::IntHard);
+        assert_eq!(MockSignalContext::get_trap_style(&sctx2), KTS_INT_HARD);
         assert_eq!(MockSignalContext::get_sp(&ctx2), 0);
         assert_eq!(MockSignalContext::sigframe_size(), 0);
         assert!(MockSignalContext::check_magic(&sctx));

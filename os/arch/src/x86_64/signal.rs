@@ -17,6 +17,7 @@
 //! matching what FXSAVE/RXRSTOR expect.
 
 use crate::signal_context::{SignalContext, SignalInfo};
+use crate::arch::trap_style::TrapStyle;
 use crate::arch::signal_context::{
     SC_MAGIC, X86_FLAGS_USER,
     KTS_NONE,
@@ -336,19 +337,9 @@ impl SignalContext for X86_64SignalContext {
         ctx.gp_regs[GP_R15] = sctx.sc_r15;
     }
 
-    fn arch_setcontext(ctx: &mut Self::CpuContext, trap_style: i32) {
-        // C: do_sigreturn.c:81 — arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)
-        //
-        // On x86-64, arch_proc_setcontext updates p_kern_trap_style and
-        // potentially switches return path (iret vs sysret). The arch
-        // layer stores trap_style in a CpuContext-adjacent field; for
-        // now we store it in gp_regs[GP_R15] as a temporary (the trap
-        // entry path will overwrite R15 on next entry anyway).
-        //
-        // DEFERRED: proper trap_style field in CpuContext.
-        // The kernel layer's p_misc_flags / p_kern_trap_style tracking
-        // is not yet wired to CpuContext.
-        let _ = (ctx, trap_style);
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle) {
+        // C: do_sigsend.c:77 — fr.sf_sc.trap_style = rp->p_seg.p_kern_trap_style
+        sctx.trap_style = style.raw();
     }
 
     fn get_sp(ctx: &Self::CpuContext) -> u64 {

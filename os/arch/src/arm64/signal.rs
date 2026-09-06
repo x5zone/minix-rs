@@ -17,6 +17,7 @@
 //! saved X0-X12; 64-bit extends to all 31 GP registers).
 
 use crate::signal_context::{SignalContext, SignalInfo};
+use crate::arch::trap_style::TrapStyle;
 use crate::arch::signal_context::{SC_MAGIC, MF_CONTEXT_SET};
 
 use super::boot::AArch64CpuContext;
@@ -378,10 +379,9 @@ impl SignalContext for AArch64SignalContext {
         ctx.gp_regs[GP_X28] = sctx.sc_r28;
     }
 
-    fn arch_setcontext(_ctx: &mut Self::CpuContext, _trap_style: i32) {
-        // C: do_sigreturn.c:81 — arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)
-        // aarch64: no-op (registers are restored directly into CpuContext;
-        // the return-to-user path reads from CpuContext on next dispatch).
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle) {
+        // C: do_sigsend.c:77 — fr.sf_sc.trap_style = rp->p_seg.p_kern_trap_style
+        sctx.trap_style = style.raw();
     }
 
     fn get_sp(ctx: &Self::CpuContext) -> u64 {

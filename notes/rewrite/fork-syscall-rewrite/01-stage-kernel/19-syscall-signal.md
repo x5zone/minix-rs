@@ -55,20 +55,22 @@
 
 **SIGSEND 关键步骤**:
 
-1. 从用户空间拷贝 `sigmsg` 结构（含 sighandler / mask / signo / sigreturn / stkptr）
-2. 计算用户栈指针（`arch_get_sp`），向下留出 sigframe 空间
-3. 构建 sigcontext（保存当前寄存器）`(架构相关)`
-4. 构建 sigframe（sigcontext + 处理器参数 + 返回地址）
-5. 拷贝 sigframe 到用户栈（可能 VMSUSPEND）
-6. 修改进程寄存器：SP→sigframe, PC→sighandler **（必须最后，见 §1.3）**
+1. 校验目标已保存：`p_kern_trap_style != KTS_NONE`，否则 EINVAL（do_sigsend.c:79-82）——从未进入内核的进程没有可恢复的返回路径，处理器结束后无处可去
+2. 从用户空间拷贝 `sigmsg` 结构（含 sighandler / mask / signo / sigreturn / stkptr）
+3. 计算用户栈指针（`arch_get_sp`），向下留出 sigframe 空间
+4. 构建 sigcontext（保存当前寄存器）`(架构相关)`；写入 `sigcontext.trap_style ← p_kern_trap_style`（do_sigsend.c:77）
+5. 构建 sigframe（sigcontext + 处理器参数 + 返回地址）
+6. 拷贝 sigframe 到用户栈（可能 VMSUSPEND）
+7. 修改进程寄存器：SP→sigframe, PC→sighandler **（必须最后，见 §1.3）**
 
 **SIGRETURN 关键步骤**:
 
 1. 从用户栈拷贝 sigcontext（用 `data_copy`，不会 VMSUSPEND）
-2. 恢复寄存器 `(架构相关)`；x86 需保留 psw 系统位（IF 等），只合并用户位
-3. 调用 `arch_proc_setcontext` 加载上下文
-4. 校验 `sc_magic`（仅警告，不返回错误）
-5. 恢复 FPU 状态（x86 only）`(架构相关)`
+2. 校验 `sc.trap_style` 合法（Rust 增补：先于一切状态修改；C 无此步并在返回路径 panic，见 §4.6 的 MINIX3 BUG 注）
+3. 恢复寄存器 `(架构相关)`；x86 需保留 psw 系统位（IF 等），只合并用户位
+4. 记录入口方式 `p_kern_trap_style = sc.trap_style`（C: arch_proc_setcontext，arch_system.c:563）
+5. 校验 `sc_magic`（仅警告，不返回错误）
+6. 恢复 FPU 状态（x86 only）`(架构相关)`
 
 **与内核信号路径的关系**: GETKSIG 是分叉点——SM 拉取信号后决定走 SIGSEND（安装 POSIX 处理器）还是直接处理（如 SIGKILL 默认终止，无需 SIGSEND）。
 
@@ -273,9 +275,9 @@
 |------|------|
 | 输入 | `caller`, `m_ptr`（含 `m_sigcalls.endpt` + `m_sigcalls.sigctx`） |
 | 输出 | 返回 OK / EINVAL / EPERM / 数据拷贝错误 |
-| 副作用 | 修改目标 `p_reg`（恢复寄存器）+ `p_misc_flags`（恢复 `MF_FPU_INITIALIZED` do_sigreturn.c:89） |
-| 错误码 | EINVAL（无效 endpoint do_sigreturn.c:28）/ EPERM（内核任务 do_sigreturn.c:29）/ `data_copy` 错误 |
-| 时序 | 校验 → sigcontext 拷贝 (do_sigreturn.c:33-36) → psw 用户位合并 (do_sigreturn.c:40-41，x86) → 恢复寄存器 (do_sigreturn.c:44-78，架构相关) → `arch_proc_setcontext` (do_sigreturn.c:81) → `sc_magic` 校验 (do_sigreturn.c:83) → FPU 恢复 (do_sigreturn.c:85-93，x86) |
+| 副作用 | 修改目标 `p_reg`（恢复寄存器）+ `p_seg.p_kern_trap_style`（记录入口方式，arch_system.c:563）+ `p_misc_flags`（恢复 `MF_FPU_INITIALIZED` do_sigreturn.c:89） |
+| 错误码 | EINVAL（无效 endpoint do_sigreturn.c:28）/ EPERM（内核任务 do_sigreturn.c:29）/ `data_copy` 错误；Rust 增补：`sc.trap_style` 非法或 KTS_NONE → EINVAL（MINIX3 BUG 修复，见 §4.6） |
+| 时序 | 校验 → sigcontext 拷贝 (do_sigreturn.c:33-36) → **trap_style 校验（Rust 增补，先于一切状态修改）** → psw 用户位合并 (do_sigreturn.c:40-41，x86) → 恢复寄存器 (do_sigreturn.c:44-78，架构相关) → 记录 trap_style (arch_system.c:563) → `sc_magic` 校验 (do_sigreturn.c:83) → FPU 恢复 (do_sigreturn.c:85-93，x86) |
 | 状态前置 | 调用者持 BKL；目标从信号处理器返回 |
 | 状态后置 | 目标 `p_reg` 恢复到 SIGSEND 之前；FPU 状态恢复 |
 | 竞争条件 | 用 `data_copy`（非 `data_copy_vmcheck`）不会 VMSUSPEND；sigreturn 不可重入 |
@@ -329,9 +331,10 @@
 
 [处理器返回] SYS_SIGRETURN                    do_sigreturn.c:19
   ├─ data_copy(sigcontext)                   do_sigreturn.c:33-36
+  ├─ trap_style 校验（Rust 增补）            ← C 缺此步，坏值在返回路径 panic
   ├─ psw 用户位合并（x86）                   do_sigreturn.c:40-41
   ├─ 恢复寄存器                              do_sigreturn.c:44-78 ← 架构相关
-  ├─ arch_proc_setcontext                    do_sigreturn.c:81
+  ├─ 记录 p_kern_trap_style                  arch_system.c:563
   └─ FPU 恢复（x86）                         do_sigreturn.c:85-93
 ```
 
@@ -703,9 +706,10 @@ pub fn dispatch_sigsend(
 `dispatch_sigreturn`（`syscall_signal.rs:690-776`）同样已接入完整流程：
 
 1. **拷贝 sigcontext**：用 `data_copy_vmcheck` 从目标用户栈拷贝 `SigContext`（C 用 `data_copy` 无 vmcheck；Rust 统一用 `data_copy_vmcheck`，因为用户栈页可能未映射）
-2. **恢复寄存器**：`CurrentSignalContext::restore_sigcontext` + `arch_setcontext(trap_style)`
-3. **校验 magic**：`check_magic(&sctx)`（仅警告，不返回错误，对齐 C: do_sigreturn.c:83）
-4. **FPU 状态恢复**：64-bit 不恢复 FPU 状态（对齐 C: do_sigreturn.c:85-93 的 `#if defined(__i386__)` gating）。64-bit 信号投递路径（`do_sigsend.c:154`）清除 `MF_FPU_INITIALIZED`，信号处理器通过 lazy trap-on-first-FP-instruction 机制获得干净 FPU；sigreturn 不恢复 pre-signal FPU 状态。`KProcess.fpu_state` 缓冲区由 SMP 迁移 SAVE_CTX 路径（`smp.rs:497-527`）使用，不参与 64-bit 信号投递/返回（与 C 行为一致）
+2. **校验 trap_style**：`TrapStyle::from_raw(get_trap_style(&sctx))`——未知值或 KTS_NONE 直接 EINVAL，寄存器保持原样（MINIX3 BUG 修复，见下方 trait 块后的设计说明）
+3. **恢复寄存器并记录入口方式**：`CurrentSignalContext::restore_sigcontext` + `target.trap_style = style`（C: arch_system.c:563）
+4. **校验 magic**：`check_magic(&sctx)`（仅警告，不返回错误，对齐 C: do_sigreturn.c:83）
+5. **FPU 状态恢复**：64-bit 不恢复 FPU 状态（对齐 C: do_sigreturn.c:85-93 的 `#if defined(__i386__)` gating）。64-bit 信号投递路径（`do_sigsend.c:154`）清除 `MF_FPU_INITIALIZED`，信号处理器通过 lazy trap-on-first-FP-instruction 机制获得干净 FPU；sigreturn 不恢复 pre-signal FPU 状态。`KProcess.fpu_state` 缓冲区由 SMP 迁移 SAVE_CTX 路径（`smp.rs:497-527`）使用，不参与 64-bit 信号投递/返回（与 C 行为一致）
 
 ### 4.6 SignalContext trait（已实现：三架构 arch impl）
 
@@ -736,17 +740,31 @@ pub trait SignalContext: Sized + Send + Sync {
     /// 从 sigcontext 恢复寄存器。C: do_sigreturn.c:44-78。
     /// x86_64: 合并 RFLAGS 用户位（保留系统位 IF 等）；aarch64: 恢复完整 SPSR。
     fn restore_sigcontext(ctx: &mut Self::CpuContext, sctx: &Self::SigContext);
-    fn arch_setcontext(ctx: &mut Self::CpuContext, trap_style: i32); // C: do_sigreturn.c:81
+    /// 把入口方式写入 sigcontext（sigsend 侧）。C: do_sigsend.c:77。
+    /// 内核先校验进程的记录再调用；实现只负责字段布局。
+    fn set_trap_style(sctx: &mut Self::SigContext, style: TrapStyle);
     /// 取进程当前栈指针。C: `arch_get_sp(rp)` — do_sigsend.c:46
     fn get_sp(ctx: &Self::CpuContext) -> u64;
     fn sigframe_size() -> usize;                                     // C: sizeof(sigframe_sigcontext)
     fn check_magic(sctx: &Self::SigContext) -> bool;                 // C: do_sigreturn.c:83
-    fn get_trap_style(sctx: &Self::SigContext) -> i32;               // C: do_sigreturn.c:81
+    /// 读 sigcontext 的原始 trap_style 值。C: do_sigreturn.c:81。
+    /// 返回 wire 原值（可能是任意用户输入）；内核用 `TrapStyle::from_raw` 校验。
+    fn get_trap_style(sctx: &Self::SigContext) -> i32;
     /// mcontext 结构（SYS_GETMCONTEXT / SYS_SETMCONTEXT 用，C ABI 兼容）。
     type Mcontext: Copy + core::fmt::Debug + Default + Send + Sync;
     fn mcontext_clear_flags(mc: &mut Self::Mcontext);                // C: mc.mc_flags = 0 — do_mcontext.c:47
 }
 ```
+
+#### 4.6.1 trap_style：入口方式的记录、往返与返回分流（2026-09-07 落地，V12-A1）
+
+**机制是什么**：C 给每个进程记一个 `p_kern_trap_style`（i386 archtypes.h:36，`KTS_*` 编号 archconst.h:167-172），回答"这个进程上次是怎么进内核的"。它的消费方有三处：返回路径 `restore_user_context` 按它选择寄存器恢复序列（arch_system.c:577-610——中断入口保存了完整帧走 iret 类返回，SYSCALL 快速入口只存了瘦帧、必须配 sysret 类返回）；`proc_stacktrace` 按它决定栈回溯策略（exception.c:337-341）；嵌套调试异常按它判定合法性（exception.c:231-234）。信号往返是这个机制最精巧的使用：SIGSEND 把当时的入口方式盖进 sigframe（do_sigsend.c:77），SIGRETURN 再写回去（do_sigreturn.c:81），于是"从信号处理器返回"走的和"被打断那次进入"是同一条路。
+
+**为什么字段在 KProcess 而不在 CpuContext**：C 把 `p_kern_trap_style` 放在 `p_seg`（保存帧）里、与寄存器结构 `p_reg` 并列而非其内部——它是"关于这次陷入的内核簿记"，不是用户寄存器状态。Rust 若把它塞进 `CpuContext` 会制造两个问题：`restore_sigcontext` 用用户输入整体覆写 `CpuContext`，内核簿记可能被顺带清掉（正确性依赖调用顺序）；`build_sigcontext` 捕获寄存器快照时又得小心排除它（泄漏面）。所以 Rust 把它放成 `KProcess.trap_style: TrapStyle`（`os/kernel/src/proc.rs`，紧邻 `cpu_context`），与 C 的分层完全同构。
+
+**类型化与 MINIX3 BUG 修复**：Rust 用 `TrapStyle` 枚举（`os/arch/src/arch/trap_style.rs`）替代 C 的裸 `int` 全程透传——判别值保留 C 的 `KTS_*` 编号（1/2/3/5/7，sigcontext 是用户可见 ABI）；`KTS_INT_UM`（4，usermapped 入口）与 `KTS_SYSENTER`（6，i386 专属机制）不建模，因为 64 位重写里没有入口路径能产生它们。原 `arch_setcontext` 占位方法（四处全 no-op）删除，职责拆到两端：sigsend 侧 `set_trap_style`（内核校验后写 sigcontext 字段），sigreturn 侧内核直接记录 `target.trap_style`。顺带修一个真实 C bug：C 把用户可控的 `sc.trap_style` 原样记录，坏值在返回路径 `panic("unknown trap style recorded")`（arch_system.c:597-605）——**用户进程可借此 panic 内核**。Rust 在触碰任何状态之前用 `TrapStyle::from_raw` 校验，未知或 KTS_NONE 直接 EINVAL、寄存器保持原样（`syscall_signal.rs` dispatch_sigreturn 的 `// MINIX3 BUG:` 注）。返回闸门在 `finish_and_restore`（对齐 C:585 的"读后即清"与 C:597 的 KTS_NONE panic）：`NoEntry` → panic（无入口记录就派发等于恢复任意寄存器文件）；`Syscall` → panic 指向 S-8（快速返回序列随 asm 入口落地，在此之前没有任何入口能产生该值，响亮停止优于静默走错路径）。既有 `KernTrapStyle` 枚举（exception_dispatcher 内部粗分类）并入 `TrapStyle`，避免同一概念两套表示。
+
+Linux/Redox 对照：Linux 的返回路径标记（`TIF_*`）挂 `thread_info`——同样是"进程级内核簿记、不进 `pt_regs`"的站位；Redox 的上下文恢复是全量显式恢复、无用户可控的路径分派——与"校验先行"取向一致。测试现状：arch 层 `TrapStyle` 五测（编号/往返/拒绝未知值/分流分类/默认值）+ 内核三测（sigsend 未保存进程 EINVAL、返回闸门 NoEntry 与 Syscall 两臂）；sigreturn 合法样式的端到端记录测试依赖真实跨空间拷贝基建（同 T-8 类，QEMU/mock 页表基建落地后补）。
 
 **实现状态**：三架构均已实现：
 
@@ -781,7 +799,7 @@ pub trait SignalContext: Sized + Send + Sync {
 | **delivermsg Segfault → SIGSEGV（接收缓冲区致命失败）** | proc.c:271-278（delivermsg 内联） | proc_table.rs `process_misc_flags` `DeliverResult::Segfault` 分支 | ✅ **已实现（2026-09-05，todo D-45）**：`ipc::delivermsg` 保持无表访问（FIX-20 契约），`Segfault` 结果由消费侧 `process_misc_flags` 路由 `cause_signal(SIGSEGV)`；C 的 WARNING printf 以 `#[cfg(not(test))]` EarlyConsole 输出保留（同 proc_stacktrace gate）。首错 `PageFault` 分支（vm_suspend，todo D-44）仍 DEFERRED |
 | DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | do_diagctl.c:49-56 | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
 | FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:670（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
-| trap_style 校验 | do_sigsend.c:79-82 | arch/signal_context.rs `get_trap_style` | ✅ 已实现: `SignalContext::get_trap_style` + `arch_setcontext` |
+| trap_style 校验 | do_sigsend.c:79-82 | syscall_signal.rs `dispatch_sigsend` 前置校验 + `KProcess.trap_style` + arch `TrapStyle`（trap_style.rs） | ✅ **已实现（2026-09-07，todo V12-A1）**：sigsend 未保存进程 EINVAL（前置、先于拷贝）；sigreturn 校验先行（MINIX3 BUG 修复）；返回闸门 `finish_and_restore` 按 `TrapStyle` 分流（详 §4.6.1） |
 
 ### 4.8 sig_delay_done 实现：停止延迟的"何时结束"与"谁来通知"
 
