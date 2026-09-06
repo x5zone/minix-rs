@@ -35,7 +35,7 @@
 | T6 | Step 2/3 计数语义偏差（VM 不计入、无视 SF_SYNCH_BOOT、Step 3 fail-open） | P1 |✅ |
 | T7 | 20 处 `unimplemented!()`/`todo!()` 无编译期/CI 门禁，19 接线遗漏即系统级故障 | P1 |✅ |
 | D1 | `ServiceSlot` god struct（~35 全公开字段）无封装、无不变式 | P2 | ☐ | EDGE（见 §18.10） |
-| D2 | `SlotId` 无世代/代数，free→reuse 后旧索引悬垂；`get()` 越界 panic | P2 | ☐ | EDGE（见 §18.10） |
+| D2 | `SlotId` 无世代/代数，free→reuse 后旧索引悬垂；`get()` 越界 panic | P2 | 🔶 | 判定闭合：世代不采纳 + assert_consistent 落地（Fix #67，2026-09-07）；越界 panic 已随 Fix #29 |
 | D3 | 公共函数 totality：`caller_can_control`/`lookup_by_domain` 对越界计数可 panic | P1 |✅ |
 | D4 | 常量双定义（`RS_MAX_LABEL_LEN` 两处等） | P2 |✅ |
 | D5 | `RsStart::default` 与 C 调用方默认不一致（sigmgr=SELF/scheduler=KERNEL/quantum=1 vs RS/SCHED/200） | P2 |✅ |
@@ -2645,6 +2645,26 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   触碰 crate 零告警（ELAST 不可达臂被 clippy 抓出后删除——生成式代码也过门）；
   fmt 干净；T7 PASS。
 
+### ✅ Fix #67 — E-3/D2/R8（P2 结构性，判定闭合）：世代计数不采纳 + `assert_consistent` 落地
+- **File**：`os/servers/rs/src/process_table.rs`（`assert_consistent` + 正/负两测）、
+  `service_create.rs`（golden 测试接线 + 夹具双标志修正 + 2 处调试输出清除）、
+  `boot.rs`（handover 接线）、`recovery.rs`（2 处调试输出清除）；文档 02 §3.5
+  （settled-state 表级不变量条）、todo.md（D2 行 / E-3 判定 / §14 R8 关联）
+- **Before**：E-3/D2/R8 挂账"SlotId 无世代，free→reuse 后旧索引悬垂"，拟世代计数
+  全量迁移；R8 断言"C 中 rproc 数组行从不复用"。
+- **判定过程（Ground Truth 先行）**：`sed -n '2067,2083p' manager.c` 证伪该断言——
+  C 的 `alloc_slot` 就是首个非 IN_USE 行扫描，复用是 C 的原生语义；悬垂指针风险
+  在 C 同样存在，由协议纪律（不跨 free/reuse 持指针）而非语言机制约束。Rust 的
+  索引式 SlotId 忠实映射该语义；世代校验会把 C 能跟的悬垂链变成编译/运行期拒绝，
+  偏离被测试锁定的忠实行为（Fix #43 同型教训）。方案对比：a) 世代句柄全量迁移
+  （不采纳——(1)(2)）vs b) 内部链接收进表 + 私有化（归 E-4 结构轮）vs c) debug-only
+  settled-state 不变式校验器（选定——零语义变化、抓自由→reuse 悬垂形态、成本最低）。
+- **Verified**：`cargo test -p minix-rs` = **282 passed**（+3：accepts_settled_table、
+  catches_stale_index `#[should_panic]`、既有测试接线断言）；校验器首跑抓出 cleanup
+  夹具的 `pub_.in_use` 漏写（真实双标志不同步）并修正；clippy 触碰文件零告警；
+  fmt 干净；T7 PASS。附带清除 R22a 轮 4 处 `eprintln!` 调试残留（回归 review 疏漏，
+  本轮披露）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2673,9 +2693,24 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - ~~依赖：无硬依赖，但建议在 19 接线前做，避免接线后双倍迁移。~~（已在 19 前完成）
 
 **E-3 D2/R8 SlotId 世代计数**
-- `SlotId(u16)` → `(generation: u8/u16, index: u16)` 或全局世代表；
-  free→reuse 后旧 id 失效（R8 的 ABA 防护）。影响所有持 id 的结构
-  （链/endpoint 索引/决策载荷）。建议独立分支 + 全测试迁移。
+- ❌→✅ **判定闭合（2026-09-07，Fix #67）：世代计数不采纳；改为落地 R7 提议的
+  `RProcTable::assert_consistent()` settled-state 不变式校验器**。理由三点：
+  (1) **R8 的前提是错的**——C `alloc_slot`（manager.c:2067-2083）扫描第一个非
+  `RS_IN_USE` 行，**C 确实复用已释放行**；free_slot 清行后 alloc 就地重新发放
+  （02 §2.3 已按此实现）。"C 行从不复用、Rust vacant() 复用是设计选择"不成立，
+  复用语义是忠实的，悬垂风险是 C 语义自身的性质而非 Rust 引入的偏差。
+  (2) **Fix #43 的教训直接适用**：对内部链/索引做世代校验会拒绝 C 会跟的悬垂链
+  （swap 的第三方原始索引项、clone 的 in-use+NONE 中间态都是被测试锁定的忠实
+  语义）——把 C 没有的"智能句柄"发明出来，正是当初被证伪的 translate 式全局化。
+  (3) RS 单线程且流程全测；"放大后果"的担忧由校验器直接断言不变量来兜底，
+  结构性根治归 E-4（god struct 拆分后链接所有权收进表内部，悬垂句柄在构造上
+  不可表达）。
+- **落地内容**：`RProcTable::assert_consistent()`（debug-only，三条不变量：
+  in_use 双标志同步 / in-use 行端点索引双向往返 / 四链界内）；黄金路径测试接线
+  （create happy path、两相 cleanup、boot handover）；正/负两测锁定校验器自身
+  （负测抓"标了 in-use 没写索引"的自由→reuse 悬垂形态——首跑即抓出 cleanup
+  夹具漏写 `pub_.in_use` 的真实不同步并修正）。**附带卫生**：清除 R22a 轮遗留的
+  4 处 `eprintln!` 调试输出（recovery.rs 2、service_create.rs 2）。
 
 **E-4 D1/R33/R7 god struct 收敛**
 - `ServiceSlot` 45 叶子字段按域拆分（身份/策略/监控/LU 四组）+

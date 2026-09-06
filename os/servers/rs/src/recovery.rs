@@ -557,8 +557,6 @@ pub fn cleanup_service(
     kernel: &mut dyn KernelApi,
     run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
 ) {
-    #[cfg(test)]
-    std::eprintln!("DBG enter flags={:?}", table.get(rp).flags);
     if !table.get(rp).flags.contains(RFlags::DEAD) {
         // ── Phase 1 (manager.c:411-440) ──
         let (next, prev, new, old) = {
@@ -600,12 +598,6 @@ pub fn cleanup_service(
         let _ = kernel.privctl(endpoint, PrivCtlOp::Disallow, None);
         let _ = kernel.privctl(endpoint, PrivCtlOp::ClearIpcRefs, None);
 
-        #[cfg(test)]
-        std::eprintln!(
-            "DBG inside phase1: flags={:?} late={}",
-            table.get(rp).flags,
-            table.get(rp).flags.contains(RFlags::LATEREPLY)
-        );
         // Send a late reply if there is any pending (manager.c:441,
         // late_reply → OK).
         if table.get(rp).flags.contains(RFlags::LATEREPLY) {

@@ -691,6 +691,11 @@ service_slot.rs
 2. `pub_.endpoint` 非 `NONE` 时，`pid` 可能为 `None`（Step 1 后、Step 4 前）。
 3. `vacant()` 构造的槽：`flags` 空、`pub_.in_use == false`、`pub_.endpoint == Endpoint::NONE`、`pid == None`、四链全 `None`、定长数组全零。
 4. `Label` 恒为 16 字节；`as_str()` 只返回 NUL 终止且 UTF-8 合法的视图。
+5. ** settled-state 表级不变量（E-3，`RProcTable::assert_consistent`）**：任一 in-use 行
+   （有有效端点者）必被索引在自己的端点上（A-4 双向往返）；四链只指向存在行。检查器是
+   debug-only 的 settled-state 断言——swap 的第三方原始索引项（Fix #43）与 clone 的
+   "in-use + endpoint=NONE"中间态（manager.c:1824-1846）合法地豁免，故只在流程结束的
+   黄金路径测试中调用，不在流程中途调用。
 
 ### 4.2 process_table.rs：RProcTable 槽位管理
 

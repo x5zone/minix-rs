@@ -1154,6 +1154,8 @@ mod r22a_tests {
         // 643): the load ran, and free_exec dropped the image afterwards.
         assert!(loaded);
         assert_eq!(table.get(rp).exec, None);
+        // E-3: settled-state table invariants hold after the full pipeline.
+        table.assert_consistent();
     }
 
     #[test]
@@ -1233,15 +1235,16 @@ mod r22a_tests {
         // without an intervening IN_USE mark return the same row.
         let b = table.alloc_slot().unwrap();
 
-        eprintln!("DBG1 a={:?} b={:?} aflags={:?}", a, b, table.get(a).flags);
         {
             let t = table.get_mut(b);
             t.flags = RFlags::IN_USE;
+            // The in_use dual flag must move together (02 §3.5) — the
+            // E-3 checker caught this fixture missing the pub_ half.
+            t.pub_.in_use = true;
             t.prev_rp = Some(a);
         }
         table.get_mut(a).next_rp = Some(b);
 
-        eprintln!("DBG2 aflags={:?}", table.get(a).flags);
         let mut k = MockKernelApi::new(60);
         k.kill_ok = true;
         script_ran_reset();
@@ -1272,6 +1275,9 @@ mod r22a_tests {
                 .contains(&Call::SrvKill(700, crate::recovery::SIGKILL))
         );
         assert!(!table.get(a).flags.contains(RFlags::IN_USE));
+        // E-3: the freed row plus its (unlinked) replica neighbour are
+        // settled-consistent after both cleanup phases.
+        table.assert_consistent();
     }
 
     #[test]

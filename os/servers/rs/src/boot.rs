@@ -1567,6 +1567,9 @@ mod tests {
         );
         // The boot machine is consumed by the handover (no double ownership).
         assert!(server.boot.is_none());
+        // E-3: the post-boot table is settled-consistent (all 12 boot rows
+        // indexed at their own endpoints).
+        state.table.assert_consistent();
     }
 
     #[test]

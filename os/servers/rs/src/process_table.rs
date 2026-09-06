@@ -354,6 +354,51 @@ impl RProcTable {
         }
     }
 
+    /// Debug-only settled-state invariant check (E-3/R7 resolution).
+    ///
+    /// What generation counting was proposed to enforce, asserted directly
+    /// instead of carried in every handle:
+    ///
+    /// 1. the in_use dual flag is in sync — `pub_.in_use` ⟺ `RS_IN_USE`
+    ///    (02-rs-process-table.md §3.5);
+    /// 2. every in-use row with a live endpoint is indexed at *its own*
+    ///    endpoint (`by_endpoint` round-trip, ARCH A-4);
+    /// 3. every chain link (`old_rp`/`new_rp`/`prev_rp`/`next_rp`) points
+    ///    at an existing row.
+    ///
+    /// Mid-restructure states may violate (2) legitimately — swap's raw
+    /// third-party index entries stay visible by design (Fix #43), and a
+    /// fresh clone is in-use with `Endpoint::NONE` (manager.c:1824-1846).
+    /// This is therefore a *settled-state* check: call it at the end of
+    /// golden-path tests once the flow completes, never mid-flow.
+    #[cfg(test)]
+    pub(crate) fn assert_consistent(&self) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            let id = SlotId::new(i);
+            assert_eq!(
+                slot.pub_.in_use,
+                slot.flags.contains(RFlags::IN_USE),
+                "row {i}: in_use dual flag out of sync"
+            );
+            let slot_nr = slot.pub_.endpoint.slot();
+            if slot.pub_.in_use && slot_nr >= 0 && (slot_nr as usize) < self.by_endpoint.len() {
+                assert_eq!(
+                    self.by_endpoint[slot_nr as usize],
+                    Some(id),
+                    "row {i}: in-use row not indexed at its own endpoint"
+                );
+            }
+            for link in [slot.old_rp, slot.new_rp, slot.prev_rp, slot.next_rp] {
+                if let Some(l) = link {
+                    assert!(
+                        l.get() < self.slots.len(),
+                        "row {i}: chain link out of range"
+                    );
+                }
+            }
+        }
+    }
+
     /// Activates a boot slot (Step 1 of `sef_cb_init_fresh`).
     ///
     /// C: main.c:255-345 — `rp = &rproc[boot_image_priv - boot_image_priv_table]`
@@ -813,6 +858,51 @@ mod tests {
     fn test_get_rejects_out_of_range_id() {
         let table = RProcTable::new();
         let _ = table.get(SlotId::new(table.len() + 1));
+    }
+
+    #[test]
+    fn test_assert_consistent_accepts_settled_table() {
+        // E-3: the two legal settled shapes pass — an activated row (in-use,
+        // indexed at its own endpoint) and a clone-style row (in-use with
+        // `Endpoint::NONE`, legitimately unindexed — manager.c:1824-1846).
+        let mut table = RProcTable::new();
+        let ep = Endpoint::from_generation_slot(0, 30);
+        let a = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(a);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = ep;
+        }
+        table.set_endpoint_index(ep, Some(a));
+        table.assert_consistent();
+
+        let b = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(b);
+            s.flags = RFlags::IN_USE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::NONE;
+        }
+        table.assert_consistent();
+    }
+
+    #[test]
+    #[should_panic(expected = "in-use row not indexed")]
+    fn test_assert_consistent_catches_stale_index() {
+        // E-3: the checker must catch the hazard it exists for — an in-use
+        // row whose endpoint is not indexed (the free→reuse staleness shape;
+        // the row was marked without the matching index write).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(a);
+            s.flags = RFlags::IN_USE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::from_generation_slot(0, 30);
+        }
+        // Deliberately no set_endpoint_index — settled state is stale.
+        table.assert_consistent();
     }
 
     #[test]
