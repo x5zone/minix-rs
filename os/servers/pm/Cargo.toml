@@ -13,6 +13,17 @@ path = "src/main.rs"
 name = "minix_pm"
 path = "src/lib.rs"
 
+# 可选编译特性（对齐 C 的编译宏，plan.md §5.4）：
+# - `syscall_stats` — C `ENABLE_SYSCALL_STATS`（misc.c:64/131-132）：SI_CALL_STATS
+#   的 getsysinfo 分支与调用统计（20-misc-queries.md §D7，默认关）。
+# - `sprofile` — C `SPROFILE`（profile.c）：统计 profile，默认 ENOSYS 语义
+#   保留（20-misc-queries.md §2.8，默认关）。
+# 二者当前均为空特性（门控代码无额外依赖）；CI 校验：
+# `cargo check -p minix-pm --features syscall_stats,sprofile`。
+[features]
+syscall_stats = []
+sprofile = []
+
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }

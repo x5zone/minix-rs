@@ -279,7 +279,7 @@ PM_FORK 到达（主循环 dispatch，04）
 
 | 项 | 说明 | 处置 |
 |----|------|------|
-| `ENABLE_SYSCALL_STATS` 的 `calls_stats` / `SI_CALL_STATS` | 编译宏可选（`misc.c:64/131-132`、`main.c:35/96`） | 20 标注为 cfg feature（A-7 sanity 模式），WONTFIX 文档化 |
+| `ENABLE_SYSCALL_STATS` 的 `calls_stats` / `SI_CALL_STATS` | 编译宏可选（`misc.c:64/131-132`、`main.c:35/96`） | 20 标注为 cfg feature（A-7 sanity 模式），WONTFIX 文档化；2026-09-06 features 已声明于 Cargo.toml（todo.md P2-1/Fix #17） |
 | `SPROFILE` 的 `do_sprofile` | `#if SPROFILE`，默认 `ENOSYS`（`profile.c`） | 20 标注，默认 ENOSYS 语义保留 |
 | `uts_val` "COMPATIBILITY BLOCK" | 已废弃 uname 兼容块（`misc.c:33-70`） | 20 标注为兼容层，64 位下重新定义 |
 | 内核侧 `sys_*` 接口实现 | `sys_times/sys_stop/sys_clear/sys_trace/sys_sigsend/...` | 交叉引用 `../01-stage-kernel/`，不在 PM 文档展开 |

@@ -13,7 +13,7 @@
 **目标读者**：已理解 `ProcTable` 的 `NR_PROCS 256` 固定表与 `find_proc` 的 `IN_USE` 扫描（03）、`call_vec[47]` 的 `PmCall` 枚举分发（04）、`monitor_params` 的 `MULTIBOOT_PARAM_BUF_SIZE` 链路（01）的开发者；知道 `utsname { sysname,nodename,release,version,machine }` 与 `SI_PROC_TAB` 全表拷贝的“信息泄露”语义。
 
 > **本章不讲什么**：
-> - `ENABLE_SYSCALL_STATS` 的 `calls_stats[NR_PM_CALLS]` 计数增量（`main.c:96` `calls_stats[call_nr]++` 的条件编译 `main.c:35`）—— 本章仅 `20` 的 `SI_CALL_STATS` 查询侧标注为 `cfg(feature="syscall_stats")` 的缺口契约（`A-7` sanity，`WONTFIX` 文档化）
+> - `ENABLE_SYSCALL_STATS` 的 `calls_stats[NR_PM_CALLS]` 计数增量（`main.c:96` `calls_stats[call_nr]++` 的条件编译 `main.c:35`）—— 本章仅 `20` 的 `SI_CALL_STATS` 查询侧标注为 `cfg(feature="syscall_stats")` 的缺口契约（`A-7` sanity；2026-09-06 特性已声明，见 §D7）
 > - `uts_val` 的 `COMPATIBILITY BLOCK` 已废弃兼容语义（`misc.c:31-44` 的 `i386/evbarm` 双 arch 分支在 64 位下 `x86_64` 重定义，`A-11` 64 位扩展）
 > - `find_param` 的 `monitor_params` 的 `KVP` 线性扫描细节（`utility.c:57-71` 的 `NUL` 分隔遍历，`search_key[keylen-1]=0` 置零终结）
 > - 内核 `sys_times/sys_stop/set_mcontext` 的 `p_user_time/p_sys_time` 落点（`01-stage-kernel/21-syscall-clock.md` 等）
@@ -382,7 +382,7 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 ### D7：`sprofile` 条件收敛到 `cfg` 缺口契约（ARCH A-7）
 
 - **C**：`profile.c:24` `#if SPROFILE` + `43` `ENOSYS` 默认。
-- **Rust**：`#[cfg(feature="sprofile")] fn do_sprofile(...)` vs `#[cfg(not)] → Err(ENOSYS)` 的 `cfg` 缺口契约（`WONTFIX` 文档化）。
+- **Rust**：`#[cfg(feature="sprofile")] fn do_sprofile(...)` vs `#[cfg(not)] → Err(ENOSYS)` 的 `cfg` 契约。**2026-09-06**：`sprofile`/`syscall_stats` 已在 `Cargo.toml [features]` 声明（默认关，与 C 的编译宏默认一致），被门控代码恢复可编译与可测（此前特性未声明、门控代码永久编译排除）——验证 `cargo check -p minix-pm --features syscall_stats,sprofile`。
 
 ### D8：`mcontext` 透传收敛到 `McontextCtl` trait（ARCH A-3）
 

@@ -21,7 +21,7 @@
 | P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
 | P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位（**✅ 已修复** 2026-09-06，见 §10 Fix #3） |
 | P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性（**✅ 已修复** 2026-09-06，见 §10 Fix #4） |
-| P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除 |
+| P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除（**✅ 已修复** 2026-09-06，见 §10 Fix #17） |
 | P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
 | P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
 | P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆 |
@@ -197,7 +197,7 @@ C 的对应语义是"vm_fork 失败直接返回错误码，成功后才进入不
 
 ## 4. P2：结构性改进（正确性 gate 通过后规划）
 
-### P2-1 虚构的 cfg 特性门：`syscall_stats` 与 `sprofile`
+### P2-1 虚构的 cfg 特性门：`syscall_stats` 与 `sprofile`（✅ 已修复 2026-09-06，见 §10 Fix #17）
 
 **问题**：`misc.rs` 用 `#[cfg(feature = "syscall_stats")]` 门控 `SysInfoWhat::CallStats` 变体与 `SysInfoCtl::call_stats`（`os/servers/pm/src/misc.rs:108/117/127/319`），用 `#[cfg(feature = "sprofile")]` 门控 sprofile（`misc.rs:461`），但 `os/servers/pm/Cargo.toml` **没有任何 `[features]` 段**。后果：(a) 这些代码在任何构建下都不会被编译，静默失效；(b) `cargo check -p minix-pm --features syscall_stats` 会直接报错（特性不存在），门控代码的编译正确性无法验证，会随时间腐烂；(c) clippy 已经在报 `unexpected cfg condition value`（4 条 syscall_stats + 2 条 sprofile）。
 
@@ -647,3 +647,18 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Verified**：`cargo test -p minix-pm`：**341 lib + 6 integration passed**（纯注释/文档轮，零代码语义变化）。
 
 **未做（DEFERRED 论证）**：即本轮登记的全部内容——每条的解除条件与 edge 归属见 §6/§9。
+
+### ✅ Fix #17: P2-1 — cfg 特性声明恢复门控代码可编译性（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/Cargo.toml`（`[features] syscall_stats = [] sprofile = []`，带 C 宏对齐与验证命令的文档注释）
+- `20-misc-queries.md` §D7/边界行、`plan.md` §5.4 状态刷新
+
+**Before/After**：`misc.rs` 的 `#[cfg(feature = …)]` 门此前引用了不存在的特性——门控代码在任何构建下都被排除（静默死代码），且 `cargo check --features syscall_stats` 直接报错，正确性无法验证。声明后：默认关（与 C 的 `ENABLE_SYSCALL_STATS`/`SPROFILE` 默认一致），`--features syscall_stats,sprofile` 构建可编译，门控代码恢复"可开启的可选项"语义（plan.md §5.4 的原意）。
+
+**Verified**：
+- `cargo check -p minix-pm --features syscall_stats,sprofile`：通过
+- `cargo check -p minix-pm`（默认）：通过
+- clippy 的 6 条 `unexpected cfg condition value` 告警随之消除
+
+**Docs**：`20-misc-queries.md`、`plan.md` §5.4、本文件 §0/标题。
