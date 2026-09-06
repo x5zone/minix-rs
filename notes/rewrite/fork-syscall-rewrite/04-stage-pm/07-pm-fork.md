@@ -80,9 +80,9 @@ Rust 改写不是照抄 `*rmc=*rmp`，而是在吸收工业级 OS 的成熟模�
 
 **Redox `Scheme` 的进程创建。** Redox 的进程创建与 `Scheme::open` 解耦：`exec` 由 `acquire` 新 Scheme 承载，fork 的资源复制更多在 `Scheme` 侧。PM 的三表协同与 Redox 解耦同向，但 Redox 因 `Scheme` 统一文件与进程抽象而可"先创 Scheme 再映射"，PM 需先占 `slot` 再调 VM（VM 需 `child_slot` 知道目标槽位）——顺序差异源于"谁持有目标槽位"的权威归属不同。
 
-**seL4 的 `TCB` + `CNode` 手动装配。** seL4 无 `fork` 原语，创建新线程需手动 `retype` `TCB`、`CNode`、`VSpace` 并装配。Minix3 的 `fork` 原语一次性完成装配（PM 负责身份、VM 负责页表、VFS 负责 fd），`sys_fork` 的内核 `proc` 复制是 seL4 手动装配的自动化。Rust 侧 `handle_fork` 的跨服务编排（`vm_fork → copy_mproc → tell_vfs`）与 seL4 的手动装配同为"显式装配"，差异在于 Minix3 由 PM 统一编排而非调用者自行。
+**seL4 的 `TCB` + `CNode` 手动装配。** seL4 无 `fork` 原语，创建新线程需手动 `retype` `TCB`、`CNode`、`VSpace` 并装配。Minix3 的 `fork` 原语一次性完成装配（PM 负责身份、VM 负责页表、VFS 负责 fd），`sys_fork` 的内核 `proc` 复制是 seL4 手动装配的自动化。Rust 侧 `do_fork` 的跨服务编排（`vm_fork → copy_mproc → tell_vfs`）与 seL4 的手动装配同为"显式装配"，差异在于 Minix3 由 PM 统一编排而非调用者自行。
 
-**结论（本章的设计基线）。** 把 C 的"半途检查 + 整槽复制 + 裸 `tell_vfs` + 隐式 SUSPEND"改写为"显式协调器 `handle_fork`（跨服务编排）+ 显式构造 `Process::fork_from`（字段级复制）+ 类型化投递 `VfsCall::Fork` + 显式延续 `ReplyLater`"。PM 先占槽→VM 先复制→VFS 后投递的顺序与 `forkexit.c:60-139` 逐行对齐，又因 Rust 显式构造而使 `make impossible to forget a field`（新增字段需更新 `fork_from`，编译器强制）。
+**结论（本章的设计基线）。** 把 C 的"半途检查 + 整槽复制 + 裸 `tell_vfs` + 隐式 SUSPEND"改写为"显式协调器 `do_fork`（跨服务编排）+ 显式构造 `Process::fork_from`（字段级复制）+ 类型化投递 `VfsCall::Fork` + 显式延续 `ReplyLater`"。PM 先占槽→VM 先复制→VFS 后投递的顺序与 `forkexit.c:60-139` 逐行对齐，又因 Rust 显式构造而使 `make impossible to forget a field`（新增字段需更新 `fork_from`，编译器强制）。
 
 ### 1.7 小结
 
@@ -261,11 +261,11 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 ### D1：容量检查收敛到 `ProcTable::can_alloc_for_user`（ARCH A-3）
 
-`ProcTable::can_alloc_for_user(is_root)`（`mproc/table.rs:114`，`NR_PROCS - LAST_FEW` 阈值与 `is_root` 由 `Credentials::is_superuser` 即 `effuid==0` 判定，`Cell` 单线程）消除 `forkexit.c:60-65` 的分散阈值算术；`handle_fork` 不再重复 `EAGAIN` 逻辑，直接 `if !can_alloc { return Err(EAGAIN) }`，与 `PmContext::do_fork_prepare` 单一真相。
+`ProcTable::can_alloc_for_user(is_root)`（`mproc/table.rs:114`，`NR_PROCS - LAST_FEW` 阈值与 `is_root` 由 `Credentials::is_superuser` 即 `effuid==0` 判定，`Cell` 单线程）消除 `forkexit.c:60-65` 的分散阈值算术；`do_fork` 不再重复 `EAGAIN` 逻辑，直接 `if !can_alloc { return Err(EAGAIN) }`，与 `PmContext::do_fork_prepare` 单一真相。
 
 ### D2：槽位轮转收敛到 `ProcTable::alloc_slot`（ARCH A-2/A-3）
 
-`alloc_slot`（`mproc/table.rs:138`，`next_child` `Cell` 先递增后检查，与 `forkexit.c:69` 同序）在 `vm_fork` 前占位，满表 `None → EAGAIN`（`panic` 不可达路径在 Rust 侧为 `Option`）；`handle_fork` 不再手写 `next_child` 循环，直接 `alloc_slot().ok_or(ProcTableFull)`。
+`alloc_slot`（`mproc/table.rs:138`，`next_child` `Cell` 先递增后检查，与 `forkexit.c:69` 同序）在 `vm_fork` 前占位，满表 `None → EAGAIN`（`panic` 不可达路径在 Rust 侧为 `Option`）；`do_fork` 不再手写 `next_child` 循环，直接 `alloc_slot().ok_or(ProcTableFull)`。
 
 ### D3：`vm_fork` 真实任务调用——`sendrec(VM, VM_FORK)` 而非假成功（ARCH A-4）
 
@@ -297,7 +297,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 ### 4.1 跨服务编排层（`os/servers/pm/src/fork.rs`）
 
-`handle_fork(table, parent_ep, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:22`，`PmError → EAGAIN/ENOMEM/ENOSYS` 映射见 `fork.rs:197`）与 C 同序的 8 步：
+`do_fork(table, parent_ep, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:22`，`PmError → EAGAIN/ENOMEM/ENOSYS` 映射见 `fork.rs:197`）与 C 同序的 8 步：
 
 1. `find_parent_slot`（`fork.rs:28` 扫描 `endpoint==parent_ep && IN_USE`，`table.c:23` 的 `call_vec` 前置 `pm_isokendpt` 已保证父进程 `IN_USE`，此处二次校验为防御）；
 2. `can_alloc_for_user(is_root)`（`fork.rs:36`，D2，`LAST_FEW` 非 root 预留 → `EAGAIN`）；
@@ -310,7 +310,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 > 注意 C 的 `do_fork` **没有**独立的"内核 fork 请求"步骤——`proc` 复制由 VM 在 `vm_fork` 内经 `sys_fork` 完成（`kernel/system/do_fork.c:69-72`）。旧占位实现中的 `send_kernel_request(KernelRequest::Fork{...})` 步骤是与 C 不符的原型残留，已随假成功接缝一并删除。
 
-> **与 `mproc/fork.rs` 的职责正交**：`mproc/fork.rs` 的 `PmContext::do_fork_prepare` / `Process::fork_from` 只负责表层预检与显式构造（不触 `transport`），`fork.rs` 的 `handle_fork` 负责跨服务编排（触 `transport`），两者通过 `ProcTable` 共享状态（`cell.rs:23` 的 `Cell` 在单线程下安全）。
+> **与 `mproc/fork.rs` 的职责正交**：`mproc/fork.rs` 的 `PmContext::do_fork_prepare` / `Process::fork_from` 只负责表层预检与显式构造（不触 `transport`），`fork.rs` 的 `do_fork` 负责跨服务编排（触 `transport`），两者通过 `ProcTable` 共享状态（`cell.rs:23` 的 `Cell` 在单线程下安全）。
 
 ### 4.2 进程复制层（`os/servers/pm/src/mproc/fork.rs`）
 
@@ -365,12 +365,12 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 共 **15** 项（`mproc/fork.rs:322`）。
 
-### 5.2 `fork.rs`（跨服务编排，`handle_fork`）
+### 5.2 `fork.rs`（跨服务编排，`do_fork`）
 
 - `test_find_parent_slot_success`：`find_parent_slot(EP 1,0) → Ok(0)`
 - `test_find_parent_slot_not_found`：`find_parent_slot(EP 1,0) → Err(InvalidEndpoint)`
-- `test_handle_fork_success`：`handle_fork(EP 1,0) → Ok(child_pid>0)`（含 `VFS_CALL` 置于子槽断言，`05` 的 `tell_vfs` 三段式）
-- `test_handle_fork_parent_not_found`：`handle_fork(EP 1,0) → Err(InvalidEndpoint)`
+- `test_do_fork_success`：`do_fork(EP 1,0) → Ok(child_pid>0)`（含 `VFS_CALL` 置于子槽断言，`05` 的 `tell_vfs` 三段式）
+- `test_do_fork_parent_not_found`：`do_fork(EP 1,0) → Err(InvalidEndpoint)`
 
 共 **4** 项（`fork.rs:213`）。**与 `mproc/fork.rs` 的 15 项正交**：`fork.rs` 测跨服务编排（`transport` 参与），`mproc/fork.rs` 测表层与显式构造（无 `transport`）。
 
@@ -403,4 +403,4 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 - PM 阶段文档：03-mproc-table.md（`can_alloc`/`find_free_slot`/`get_free_pid`）、04-ipc-dispatch.md（`ReplyLater` 契约与 `PmCall::Fork` 分发）、05-vfs-interaction.md（`tell_vfs` 三段式与 `handle_vfs_reply` FORK 双分支）、02-mproc-struct.md（`RemainingFlags::TAINTED` / `mpsigact`）、06-event-subscription.md（`NO_EVENTSUB`）、16-scheduling.md（`sched_start_user`）、11-signal-core.md（`sig_proc` SIGSTOP）、08-pm-srv-fork.md（`PRIV_PROC` 差异）
 - 对端实现：`02-stage-vm/18-vm-fork.md`（`vm_fork` 对端）、`05-stage-vfs`（`VFS_PM_FORK` 对端）
 - 内核接口：`01-stage-kernel/06-proc-init-boot-proc.md`（`boot_image` 启动）、`01-stage-kernel/19-syscall-signal.md`（`sig_proc` 内核路径）、`01-stage-kernel`（`sys_fork` 代数递增）
-- Rust 实现：`os/servers/pm/src/fork.rs`（`handle_fork` 协调器）、`os/servers/pm/src/mproc/fork.rs`（`PmContext::do_fork_prepare` / `Process::fork_from`）、`os/libs/minix-types/src/ipc/vfs.rs`（`VfsCall::Fork`）、`os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn`）
+- Rust 实现：`os/servers/pm/src/fork.rs`（`do_fork` 协调器）、`os/servers/pm/src/mproc/fork.rs`（`PmContext::do_fork_prepare` / `Process::fork_from`）、`os/libs/minix-types/src/ipc/vfs.rs`（`VfsCall::Fork`）、`os/libs/minix-types/src/ipc/vm.rs`（`VmForkIn`）

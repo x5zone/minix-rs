@@ -35,7 +35,7 @@ pub enum WaitOutcome {
 /// `rusage_addr` is `VirBytes` for `sys_datacopy`.
 /// Returns `ReplyIntent` for `init.rs` dispatcher: `Replied(pid)` → `Reply(pid)`,
 /// `WouldBlock` → `Reply(0)`, `NoChild` → `Reply(ECHILD)`, `Suspended` → `ReplyLater`.
-pub fn handle_wait4<T: crate::ipc::IpcTransport + ?Sized>(
+pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     caller: UserSlot,
     mut pidarg: Pid,
@@ -105,7 +105,7 @@ pub fn handle_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             // For test we pick SIGTRAP (5) as placeholder if no specific pending
             let status = w_stopcode(5); // placeholder
             // In C: mp->mp_reply.m_pm_lc_wait4.status = W_STOPCODE(i); return pid
-            // For Rust, we need to set reply payload on caller; but handle_wait4's return will be Reply(pid) with status in caller's reply message
+            // For Rust, we need to set reply payload on caller; but do_wait4's return will be Reply(pid) with status in caller's reply message
             // We store status in caller's reply buffer (like C's mp_reply)
             table.procs[caller.get()].ipc.reply = Some(minix_types::Message {
                 m_type: status,
@@ -191,7 +191,7 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].state.guardianship = Guardianship::Normal { parent: UserSlot::new(11) };
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = handle_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
         assert_eq!(intent, ReplyIntent::Reply(ECHILD));
     }
 
@@ -203,7 +203,7 @@ mod tests {
         running_child(&mut table, 5, 100, 0);
         // child is Running, not Zombie, so children>0 but no exited child
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = handle_wait4(&mut table, UserSlot::new(0), -1, 0x01, VirBytes(0), &mut transport); // WNOHANG=1
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0x01, VirBytes(0), &mut transport); // WNOHANG=1
         assert_eq!(intent, ReplyIntent::Reply(0));
     }
 
@@ -214,7 +214,7 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         running_child(&mut table, 5, 100, 0);
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = handle_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert!(table.procs[0].state.wait.waiting);
     }
@@ -231,7 +231,7 @@ mod tests {
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = handle_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // After tell_parent, child should be ToldParent and parent WAITING cleared if it was waiting
         // In this test parent was not WAITING, so tell_parent was via zombify path? Actually wait4's ZOMBIE branch calls tell_parent directly

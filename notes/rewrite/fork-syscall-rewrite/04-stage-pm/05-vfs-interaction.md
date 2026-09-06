@@ -281,7 +281,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 
 - `init.rs::run_once`：在 `dispatch_message` **之前**拦截 VFS 回复（D8），构造 `PmServices` 调用 `handle_vfs_reply`；`Ok` → `RunStep::Handled`（不回复 VFS），`Err` → `panic!` 与 C 文本等价。`PmServer` 新增 `abort_flag: i32` 字段（映射 C 全局 `abort_flag`，见 A-3）。
 - `dispatcher.rs`：删除旧 `send_vfs_request` 占位（双 API 漂移来源），仅保留事件回复与 PM 调用两路，无死分支。
-- `fork.rs`：`handle_fork` 改用 `tell_vfs` 发送 `VfsCall::Fork`，不再使用旧 `VfsRequest` 占位。
+- `fork.rs`：`do_fork` 改用 `tell_vfs` 发送 `VfsCall::Fork`，不再使用旧 `VfsRequest` 占位。
 
 ### 4.4 不变量表
 
@@ -322,7 +322,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 - 不变式：`BadEndpoint`（坏 endpoint → `Err`）；入口 `UNPAUSED` panic；`take_vfs_call` "reply without request" panic。
 - NEW_PARENT：置位后 FORK 回复抑制父进程回复、仍回复子进程。
 - `run_once` 集成：`test_run_once_vfs_reply_no_sync_reply` 验证 VFS 回复被状态机收口、向被回复进程发 `OK`、清除 `VFS_CALL`、不向 VFS 同步回复。
-- `fork.rs`：`handle_fork` 经 `tell_vfs` 发送 `VfsCall::Fork`，子进程置 `VFS_CALL`。
+- `fork.rs`：`do_fork` 经 `tell_vfs` 发送 `VfsCall::Fork`，子进程置 `VFS_CALL`。
 
 共 **~25** 项状态机/集成测试。
 

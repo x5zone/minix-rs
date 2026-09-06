@@ -19,7 +19,7 @@ use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 /// # Returns
 /// * `Ok(child_pid)` - Child process PID (returned in parent)
 /// * `Err(e)` - Error
-pub fn handle_fork<T: IpcTransport>(
+pub fn do_fork<T: IpcTransport>(
     table: &mut ProcTable,
     parent_endpoint: Endpoint,
     transport: &mut T,
@@ -101,13 +101,13 @@ pub fn handle_fork<T: IpcTransport>(
 
 /// Handles `PM_SRV_FORK` (RS → PM, `forkexit.c:142-240`).
 ///
-/// Differences vs `handle_fork` (see 08-pm-srv-fork.md §1.5):
+/// Differences vs `do_fork` (see 08-pm-srv-fork.md §1.5):
 /// - `parent_ep != RS → EPERM` (159-160)
 /// - `IN_USE|PRIV_PROC|DELAY_CALL` (199-200, retain PRIV_PROC) vs `IN_USE|DELAY_CALL|TAINTED`
 /// - Credentials injected from `params` (206-211) vs inherited
 /// - `VFS_PM_SRV_FORK` `REUID/REGID = uid/gid` (227-228) vs `-1`
 /// - Immediate `reply(child, OK)` + `Ok(pid)` (237/239) vs `SUSPEND`
-pub fn handle_srv_fork<T: IpcTransport>(
+pub fn do_srv_fork<T: IpcTransport>(
     table: &mut ProcTable,
     parent_endpoint: Endpoint,
     params: SrvForkParams,
@@ -132,7 +132,7 @@ pub fn handle_srv_fork<T: IpcTransport>(
     // 3. Find slot (174-181, private static next_child per srv_fork — shared Cell in Rust)
     let child_slot = table.find_free_slot().ok_or(ForkCoordError::ProcTableFull)?;
 
-    // 4. VM fork (183-185) — 同 handle_fork 步骤 4：真实 sendrec(VM, VM_FORK)
+    // 4. VM fork (183-185) — 同 do_fork 步骤 4：真实 sendrec(VM, VM_FORK)
     let child_endpoint = vm_fork(transport, parent_endpoint, UserSlot::new(child_slot))?;
     debug_assert_eq!(child_endpoint.slot() as usize, child_slot);
 
@@ -376,14 +376,14 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_fork_success() {
+    fn test_do_fork_success() {
         let mut table = create_test_table_with_parent();
         let mut transport = crate::ipc::TestIpcTransport::default();
         // 脚本化 VM_FORK 应答：空表 + 游标 0 → 首个空闲槽为 1；
         // 子 endpoint 代际 = 父(1) + 1（VM sys_fork 的代际递增契约）。
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
 
-        let result = handle_fork(
+        let result = do_fork(
             &mut table,
             Endpoint::from_generation_slot(1, 0),
             &mut transport,
@@ -398,11 +398,11 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_fork_parent_not_found() {
+    fn test_do_fork_parent_not_found() {
         let mut table = ProcTable::new();
         let mut transport = crate::ipc::TestIpcTransport::default();
 
-        let result = handle_fork(
+        let result = do_fork(
             &mut table,
             Endpoint::from_generation_slot(1, 0),
             &mut transport,
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_srv_fork_eperm() {
+    fn test_do_srv_fork_eperm() {
         // Non-RS parent → EPERM
         let mut table = ProcTable::new();
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
@@ -420,7 +420,7 @@ mod tests {
         table.procs[5].state.lifecycle = Lifecycle::Running;
         let mut transport = crate::ipc::TestIpcTransport::default();
         let params = crate::mproc::SrvForkParams { uid: 0, gid: 0 };
-        let result = handle_srv_fork(
+        let result = do_srv_fork(
             &mut table,
             Endpoint::from_generation_slot(1, 5),
             params,
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_srv_fork_success() {
+    fn test_do_srv_fork_success() {
         let mut table = ProcTable::new();
         // RS at slot 2
         table.procs[2].identity.endpoint = Endpoint::RS;
@@ -442,7 +442,7 @@ mod tests {
         let mut transport = crate::ipc::TestIpcTransport::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 1000, gid: 100 };
-        let result = handle_srv_fork(&mut table, Endpoint::RS, params, &mut transport);
+        let result = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport);
         assert!(result.is_ok());
         let child_pid = result.unwrap();
         assert!(child_pid > 0);
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_srv_fork_vfs_call() {
+    fn test_do_srv_fork_vfs_call() {
         let mut table = ProcTable::new();
         table.procs[2].identity.endpoint = Endpoint::RS;
         table.procs[2].identity.id.pid = 2;
@@ -468,7 +468,7 @@ mod tests {
         let mut transport = crate::ipc::TestIpcTransport::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 42, gid: 43 };
-        let _ = handle_srv_fork(&mut table, Endpoint::RS, params, &mut transport).unwrap();
+        let _ = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport).unwrap();
         // VFS call should carry real uid/gid, not -1
         let vfs_msg = transport
             .sent()

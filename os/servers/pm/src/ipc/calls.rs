@@ -216,7 +216,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // 05 的 VFS_PM_FORK_REPLY（handle_vfs_reply，main.c:369-394）
         // 异步完成。失败（表满/内存不足/VM 拒绝）同步回复 errno
         //（forkexit.c:60-79 的 `return EAGAIN/ENOMEM/s`）。
-        PmCall::Fork => match crate::fork::handle_fork(table, msg.m_source, transport) {
+        PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport) {
             Ok(_child_pid) => ReplyIntent::ReplyLater,
             Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
         },
@@ -230,7 +230,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     gid: pl.gid,
                 }
             };
-            match crate::fork::handle_srv_fork(table, msg.m_source, params, transport) {
+            match crate::fork::do_srv_fork(table, msg.m_source, params, transport) {
                 Ok(child_pid) => ReplyIntent::Reply(child_pid),
                 Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
             }
@@ -239,7 +239,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
             let status = unsafe { msg.m_u.m_lc_pm_exit.status };
-            let _ = crate::exit::handle_exit(table, caller, status, transport);
+            let _ = crate::exit::do_exit(table, caller, status, transport);
             ReplyIntent::NoReply
         }
         // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/
@@ -250,7 +250,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 let pl = msg.m_u.m_lc_pm_wait4;
                 (pl.pid, pl.options, pl.addr)
             };
-            crate::wait::handle_wait4(
+            crate::wait::do_wait4(
                 table,
                 caller,
                 pidarg,
@@ -267,7 +267,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 let pl = msg.m_u.m_lc_pm_kill;
                 (pl.pid, pl.signo)
             };
-            match crate::signal::handle_kill(table, caller, pid, signo, transport) {
+            match crate::signal::do_kill(table, caller, pid, signo, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
                         ReplyIntent::ReplyLater
@@ -284,7 +284,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 let pl = msg.m_u.m_rs_pm_srv_kill;
                 (pl.pid, pl.signo)
             };
-            match crate::signal::handle_srv_kill(table, caller, pid, signo, transport) {
+            match crate::signal::do_srv_kill(table, caller, pid, signo, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
                         ReplyIntent::ReplyLater
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn test_dispatch_fork_success_is_reply_later() {
         // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复；
-        // 父进程已注册时 handle_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
+        // 父进程已注册时 do_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let mut vm_reply = Message::default();

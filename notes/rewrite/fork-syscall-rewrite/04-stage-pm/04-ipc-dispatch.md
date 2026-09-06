@@ -452,7 +452,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
     match call {
         // C: do_fork（forkexit.c:139 return SUSPEND）——Ok → ReplyLater，
         //    Err（表满/父不存在/VM 拒绝）→ Reply(errno)。
-        PmCall::Fork => match crate::fork::handle_fork(table, msg.m_source, transport) { ... },
+        PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport) { ... },
         // C: do_srv_fork（forkexit.c:237/239）——Reply(child_pid)。
         PmCall::SrvFork => { ... }
         // C: do_exit（forkexit.c:246-266）——永不回复（NoReply 子情形）。

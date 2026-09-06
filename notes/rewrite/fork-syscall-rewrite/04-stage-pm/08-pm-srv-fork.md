@@ -81,7 +81,7 @@ Rust 改写不是照抄 `do_srv_fork` 的裸分支，而是在吸收工业级 OS
 
 **Fuchsia 的 `Component` 孵化。** Fuchsia 以 `Component Manager` 集中孵化 `Component` 并注入 `capability`，`RS` 的 `srv_fork` 孵化系统服务并注入 `PRIV_PROC` + `uid/gid` 同为"能力+身份"集中分发，PM 的 `EPERM` 门与 `CNode` 的能力检查同源。
 
-**结论（本章的设计基线）。** 把 `do_srv_fork` 的"权限门→特权保留→凭证注入→真实 `REUID`→同步双回复"改写为"显式协调器 `handle_srv_fork(table, parent_ep, SrvForkParams{uid,gid}, transport)` + 显式构造 `Process::srv_fork_from` + 类型化投递 `VfsCall::SrvFork{reuid,regid}` + 显式双回复 `send(child,OK)`+`Ok(pid)`"，与 `do_fork` 的 `handle_fork` 共享 70% 编排，仅 `fork_from`/`SrvFork`/`Reply` 三处分歧显式化。
+**结论（本章的设计基线）。** 把 `do_srv_fork` 的"权限门→特权保留→凭证注入→真实 `REUID`→同步双回复"改写为"显式协调器 `do_srv_fork(table, parent_ep, SrvForkParams{uid,gid}, transport)` + 显式构造 `Process::srv_fork_from` + 类型化投递 `VfsCall::SrvFork{reuid,regid}` + 显式双回复 `send(child,OK)`+`Ok(pid)`"，与 `do_fork` 的 `do_fork` 共享 70% 编排，仅 `fork_from`/`SrvFork`/`Reply` 三处分歧显式化。
 
 ### 1.7 小结
 
@@ -207,7 +207,7 @@ Rust 改写遵循"显式协调器 + 显式构造 + 类型化凭证"的 5 处差�
 
 ### D1：权限门 `RS → EPERM`（ARCH A-3）
 
-`Endpoint::RS`（`minix-types/src/types/endpoint.rs` 单一真相，`RS_PROC_NR`）在 `handle_srv_fork` 首检 `if parent_ep != Endpoint::RS { return Err(EPERM) }`（`forkexit.c:159-160`），与 `Endpoint::PM`/`VFS` 等同源；`PmError::PermissionDenied → EPERM` 映射（`sys/errno.h:1`）。
+`Endpoint::RS`（`minix-types/src/types/endpoint.rs` 单一真相，`RS_PROC_NR`）在 `do_srv_fork` 首检 `if parent_ep != Endpoint::RS { return Err(EPERM) }`（`forkexit.c:159-160`），与 `Endpoint::PM`/`VFS` 等同源；`PmError::PermissionDenied → EPERM` 映射（`sys/errno.h:1`）。
 
 ### D2：标志继承 `IN_USE|PRIV_PROC|DELAY_CALL`（ARCH A-2）
 
@@ -223,7 +223,7 @@ Rust 改写遵循"显式协调器 + 显式构造 + 类型化凭证"的 5 处差�
 
 ### D5：立即双回复 vs `SUSPEND`（ARCH A-6）
 
-`handle_srv_fork` 成功路径 `tell_vfs` 后 `transport.send(child_ep, OK)` 立即唤醒子（`forkexit.c:237` `reply(rmc-mproc, OK)`），`Ok(pid)` 由 `init.rs:PM_SRV_FORK` 拦截映射 `Reply(pid)` 同步返父；`PmCall::SrvFork=41` 的 `dispatch_pm_call` 在 `init.rs` 拦截前为 `Reply(ENOSYS)` 占位，本章拦截后 `Reply(pid)`；`VFS_PM_SRV_FORK_REPLY 0x988` 空分支由 `ipc/vfs.rs:298` 已实现 `SrvFork → {}`，不 `sched_start_user`。
+`do_srv_fork` 成功路径 `tell_vfs` 后 `transport.send(child_ep, OK)` 立即唤醒子（`forkexit.c:237` `reply(rmc-mproc, OK)`），`Ok(pid)` 由 `init.rs:PM_SRV_FORK` 拦截映射 `Reply(pid)` 同步返父；`PmCall::SrvFork=41` 的 `dispatch_pm_call` 在 `init.rs` 拦截前为 `Reply(ENOSYS)` 占位，本章拦截后 `Reply(pid)`；`VFS_PM_SRV_FORK_REPLY 0x988` 空分支由 `ipc/vfs.rs:298` 已实现 `SrvFork → {}`，不 `sched_start_user`。
 
 ### D6：`next_child` 共享轮转的合理性
 
@@ -231,7 +231,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### D7：5 步同构（容量→槽位→`vm_fork`→复制→`get_free_pid`→`tell_vfs`→`SIGSTOP`）
 
-`handle_srv_fork` 复用 `handle_fork` 的 8 步编排（07 §4.1），仅 `fork_from` 改 `srv_fork_from`、`VfsCall::Fork` 改 `SrvFork`、`ReplyLater` 改 `Reply(pid)` + `send(child,OK)`，其余 `can_alloc`/`find_free_slot`/`vm_fork`（07 D3 的真实 `sendrec`）/`get_free_pid`/`SIGSTOP` 同序。
+`do_srv_fork` 复用 `do_fork` 的 8 步编排（07 §4.1），仅 `fork_from` 改 `srv_fork_from`、`VfsCall::Fork` 改 `SrvFork`、`ReplyLater` 改 `Reply(pid)` + `send(child,OK)`，其余 `can_alloc`/`find_free_slot`/`vm_fork`（07 D3 的真实 `sendrec`）/`get_free_pid`/`SIGSTOP` 同序。
 
 ### D8：`VFS_PM_SRV_FORK_REPLY` 空分支对照
 
@@ -243,7 +243,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 4.1 跨服务编排层（`os/servers/pm/src/fork.rs`）
 
-`handle_srv_fork(table, parent_ep, params: SrvForkParams{uid,gid}, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:320`，`PmError → EPERM/EAGAIN`）9 步：
+`do_srv_fork(table, parent_ep, params: SrvForkParams{uid,gid}, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:320`，`PmError → EPERM/EAGAIN`）9 步：
 
 1. `if parent_ep != Endpoint::RS { return Err(EPERM) }`（`D1`）；
 2. `can_alloc_for_user(is_root)`（`D1`，`effuid==0` 即 `is_root`，`LAST_FEW=2`）；
@@ -267,7 +267,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 ### 4.4 分发与 `run_once` 接线（`os/servers/pm/src/ipc/calls.rs` + `init.rs`）
 
 - `PmCall::SrvFork=41`（`calls.rs:175`）`from_call_nr` 与 `table.c:23` 同注册；
-- `init.rs:PM_SRV_FORK` 拦截 `if m_type==41 { if parent_ep != RS → EPERM else handle_srv_fork → Ok(pid)→Reply(pid) / Err→Reply(errno) }`（与 `PM_FORK` 的 `ReplyLater` 分支正交，`init.rs:332` 新增）；
+- `init.rs:PM_SRV_FORK` 拦截 `if m_type==41 { if parent_ep != RS → EPERM else do_srv_fork → Ok(pid)→Reply(pid) / Err→Reply(errno) }`（与 `PM_FORK` 的 `ReplyLater` 分支正交，`init.rs:332` 新增）；
 - `ipc/vfs.rs:298` 空分支 `SrvFork → {}` 已对齐 `main.c:398-401`。
 
 ### 4.5 不变量表
@@ -294,14 +294,14 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 - `test_srv_fork_intervals_cleared`：`intervals` 清零
 - `test_srv_fork_ipc_reset`：`reply/event_subscriber` 清零（`NO_EVENTSUB`）
 
-### 5.2 `fork.rs`（`handle_srv_fork` 编排）
+### 5.2 `fork.rs`（`do_srv_fork` 编排）
 
 - `test_srv_fork_eperm`：`parent_ep != RS → Err(EPERM)`（`find_parent` 前即拦）
 - `test_srv_fork_success`：`RS → Ok(pid)` 且子 `PRIV_PROC` 且 `VFS_CALL` 且 `transport` 含 `VFS_PM_SRV_FORK` 且 `tracer` 分支
 - `test_srv_fork_parent_not_found`：`InvalidEndpoint`（`find_parent_slot` 失败）
 - `test_srv_fork_table_full`：`can_alloc` 满表 → `EAGAIN`
 - `test_srv_fork_vfs_call`：`VfsCall::SrvFork` 的 `reuid/regid` 真实 vs `Fork` 的 `-1`（`m7i4/m7i5`）
-- `test_srv_fork_immediate_reply`：`handle_srv_fork` 后 `transport` 含 `send(child,OK)` 立即唤醒子（`VFS_CALL` 同时置于子进程）
+- `test_srv_fork_immediate_reply`：`do_srv_fork` 后 `transport` 含 `send(child,OK)` 立即唤醒子（`VFS_CALL` 同时置于子进程）
 
 ### 5.3 集成与跨文档
 
@@ -331,4 +331,4 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 - PM 阶段文档：07-pm-fork.md（`do_fork` 全链路，差异对照主）、03-mproc-table.md（`can_alloc`/`find_free_slot`/`get_free_pid`）、04-ipc-dispatch.md（`Reply(pid)` vs `ReplyLater`）、05-vfs-interaction.md（`tell_vfs` 与 `handle_vfs_reply` 的 `SRV_FORK` 空分支）、02-mproc-struct.md（`PRIV_PROC` 与 `Credentials`）、`minix/ipc.h:1422`（`mess_lsys_pm_srv_fork`）、16-scheduling.md（`scheduler==NONE`）、11-signal-core.md（`sig_proc`）、08-pm-srv-fork.md（`PRIV_PROC` 差异）
 - 对端实现：`02-stage-vm/18-vm-fork.md`（`vm_fork` 对端）、`05-stage-vfs`（`VFS_PM_SRV_FORK` 对端）
 - 内核接口：`01-stage-kernel/06-proc-init-boot-proc.md`（`boot_image`）、`01-stage-kernel/19-syscall-signal.md`（`sig_proc` 内核路径）
-- Rust 实现：`os/servers/pm/src/fork.rs`（`handle_srv_fork` 协调器）、`os/servers/pm/src/mproc/fork.rs`（`Process::srv_fork_from`）、`os/libs/minix-types/src/ipc/vfs.rs`（`VfsCall::SrvFork`）、`os/libs/minix-types/src/ipc/message.rs`（`MessLsysPmSrvFork`）
+- Rust 实现：`os/servers/pm/src/fork.rs`（`do_srv_fork` 协调器）、`os/servers/pm/src/mproc/fork.rs`（`Process::srv_fork_from`）、`os/libs/minix-types/src/ipc/vfs.rs`（`VfsCall::SrvFork`）、`os/libs/minix-types/src/ipc/message.rs`（`MessLsysPmSrvFork`）

@@ -36,7 +36,7 @@ impl KillError {
 /// Handles `PM_KILL` (`do_kill`, `signal.c:197-202`).
 ///
 /// `ksig = false` — user `kill(2)`, `PRIV_PROC` lethal protection applies.
-pub fn handle_kill(
+pub fn do_kill(
     table: &mut ProcTable,
     caller: UserSlot,
     pid: Pid,
@@ -49,7 +49,7 @@ pub fn handle_kill(
 /// Handles `PM_SRV_KILL` (`do_srv_kill`, `204-221`).
 ///
 /// Only `RS` may call; `ksig = true` so `PRIV_PROC` can be killed.
-pub fn handle_srv_kill(
+pub fn do_srv_kill(
     table: &mut ProcTable,
     caller: UserSlot,
     pid: Pid,

@@ -20,7 +20,7 @@
 | P1 | P1-3 | 内核边界整体未实现：transport 三个方法 `unimplemented!()`，PM 二进制在第一条真实消息上 panic |
 | P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
 | P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位（**✅ 已修复** 2026-09-06，见 §10 Fix #3） |
-| P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性 |
+| P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性（**✅ 已修复** 2026-09-06，见 §10 Fix #4） |
 | P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除 |
 | P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
 | P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
@@ -71,8 +71,8 @@ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 04-stage-pm
 
 | 调用群 | 调用号 | 逻辑模块（有/无） | 消息循环可达 | 说明 |
 |--------|--------|------------------|--------------|------|
-| 生命周期 | 1 Exit, 2 Fork, 3 Wait4, 41 SrvFork | 有：`exit.rs:24`（handle_exit）、`fork.rs:22`（handle_fork）、`wait.rs:38`（handle_wait4）、`fork.rs:112`（handle_srv_fork） | 可达，但走 `init.rs` 内联拦截 | `init.rs:386/399/429/437` 用裸魔数 `msg.m_type == 2/41/1/3` 拦截，不经过 `PmCall` 枚举 |
-| 信号发送 | 11 Kill, 42 SrvKill | 有：`signal.rs:39`（handle_kill）、`signal.rs:52`（handle_srv_kill） | 可达，同样内联拦截 | `init.rs:458/479` |
+| 生命周期 | 1 Exit, 2 Fork, 3 Wait4, 41 SrvFork | 有：`exit.rs:24`（do_exit）、`fork.rs:22`（do_fork）、`wait.rs:38`（do_wait4）、`fork.rs:112`（do_srv_fork） | 可达，但走 `init.rs` 内联拦截 | `init.rs:386/399/429/437` 用裸魔数 `msg.m_type == 2/41/1/3` 拦截，不经过 `PmCall` 枚举 |
+| 信号发送 | 11 Kill, 42 SrvKill | 有：`signal.rs:39`（do_kill）、`signal.rs:52`（do_srv_kill） | 可达，同样内联拦截 | `init.rs:458/479` |
 | 事件 | 40 ProcEventMask | 有：`event.rs:363`（do_proceventmask_mut）、`event.rs:412`（do_proc_event_reply） | 可达 | `init.rs:368` 拦截；这是唯一用 `minix_types::PM_PROCEVENTMASK` 常量而非裸数字的拦截点 |
 | 凭证 | 4-6, 9-10, 12-13, 15-16, 29-32（共 13 个） | 有：`credentials.rs:87`（do_get）、`credentials.rs:148`（do_set） | 不可达（ENOSYS） | 逻辑与测试齐备，等待接线 |
 | 信号控制 | 20-24（sigaction/sigsuspend/sigpending/sigprocmask/sigreturn） | 有：`signal_handlers.rs` | 不可达 | 同上 |
@@ -90,7 +90,7 @@ Gate A 工具（`coverage-extract.py`）报告 109 个 C 符号中 Rust 名称�
 
 | C 符号 | 核实结论 | 证据 |
 |--------|----------|------|
-| `do_exit` / `do_wait4` / `do_kill` / `do_srv_kill` | Rust 语义存在，入口改名（见 P1-6） | `exit.rs:24`（handle_exit）、`wait.rs:38`（handle_wait4）、`signal.rs:39/52` |
+| `do_exit` / `do_wait4` / `do_kill` / `do_srv_kill` | Rust 语义存在，入口改名（见 P1-6） | `exit.rs:24`（do_exit）、`wait.rs:38`（do_wait4）、`signal.rs:39/52` |
 | `is_sane_timeval` | 存在，成为 `Timeval` 方法 | `timer.rs:53`（`is_sane`） |
 | `NO_EVENTSUB` | 存在，表达为 `None` 与 `NO_EVENTSUB_RAW = -1` | `event.rs:30-32` |
 | `SEND_PRIORITY` / `SEND_TIME_SLICE`（const.h:19-20） | **真缺口**：调度协议消息常量未建模 | 全库 grep 零命中；属 A-8（`plan.md:202`）范围 |
@@ -131,7 +131,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 ### P1-2 服务间请求的"假成功"接缝（✅ 已修复 2026-09-06，见 §10 Fix #1）
 
-**问题**：`send_vm_fork`（`os/servers/pm/src/ipc/dispatcher.rs:139-155`）不发送任何消息，直接构造一个 `child_endpoint = from_generation_slot(1, child_slot)` 的 `VmForkOut` 返回 `Ok`；`send_kernel_request`（`dispatcher.rs:159-165`）同样直接返回 `Ok(KernelResponse::ForkOk)`。生产 fork 路径 `handle_fork`（`fork.rs:53`）与 `handle_srv_fork`（`fork.rs:142`）都调用 `send_vm_fork` 并把这个捏造的 endpoint 写入子进程表项（`fork.rs:64`），随后向 VFS 发送 `VFS_PM_FORK`。
+**问题**：`send_vm_fork`（`os/servers/pm/src/ipc/dispatcher.rs:139-155`）不发送任何消息，直接构造一个 `child_endpoint = from_generation_slot(1, child_slot)` 的 `VmForkOut` 返回 `Ok`；`send_kernel_request`（`dispatcher.rs:159-165`）同样直接返回 `Ok(KernelResponse::ForkOk)`。生产 fork 路径 `do_fork`（`fork.rs:53`）与 `do_srv_fork`（`fork.rs:142`）都调用 `send_vm_fork` 并把这个捏造的 endpoint 写入子进程表项（`fork.rs:64`），随后向 VFS 发送 `VFS_PM_FORK`。
 
 C 的对应语义是"vm_fork 失败直接返回错误码，成功后才进入不可失败窗口"（`forkexit.c:78-82`），即 PM 依赖 VM 的真实应答来保证"fork 之后不会回滚"。Rust 当前把这一步变成了无条件成功：`debug_assert_eq!`（`fork.rs:58-61`）检查的 endpoint slot 一致性是和自己的捏造值比较，永远成立。这违反了 plan.md §4 对缺口项"fail-closed（失败时显式关断）"的契约方向（A-9/A-10 标注原则，`plan.md:203-204`）——缺口可以存在，但不应该伪装成成功。
 
@@ -182,9 +182,9 @@ C 的对应语义是"vm_fork 失败直接返回错误码，成功后才进入不
 2. **次选**：给 `dispatch_pm_call` 迁移（P1-1）配表驱动测试：47 个调用号各发一条最小消息，断言"已接线的臂到达 handler、未接线的臂返回 ENOSYS"，让接线进度本身成为被测对象。
 3. 参考 Redox：redox-rt 与 kernel 的集成靠 qemu 测试与 userspace 测试双层；本项目 `qemu-tests` 已存在但只间接触及 PM（bootshim 侧），近期可先落方案 1 的纯 Rust 层，qemu 层留到内核 IPC 落地后。
 
-### P1-6 入口函数命名约定分裂，损害 C↔Rust 可追溯性
+### P1-6 入口函数命名约定分裂，损害 C↔Rust 可追溯性（✅ 已修复 2026-09-06，见 §10 Fix #4）
 
-**问题**：同一 crate 内两种命名并存：4 个入口把 C 名 `do_*` 改成 `handle_*`（`do_exit`→`handle_exit`，`exit.rs:24`；`do_wait4`→`handle_wait4`，`wait.rs:38`；`do_kill`→`handle_kill`，`signal.rs:39`；`do_srv_kill`→`handle_srv_kill`，`signal.rs:52`），大量内部函数保留 C 名（`exit_proc`/`exit_restart`/`zombify`/`cleanup`/`check_parent`/`tell_parent`/`check_sig`/`sig_proc`/`process_ksig`…）。后果已经显现：Gate A 覆盖率工具的名称匹配把 4 个入口报成"有文档无 Rust"（§1.2），每次 review 都要人工排除这批误报。
+**问题**：同一 crate 内两种命名并存：6 个入口把 C 名 `do_*` 改成 `handle_*`（`do_exit`→`handle_exit`，`exit.rs:24`；`do_wait4`→`handle_wait4`，`wait.rs:38`；`do_kill`→`handle_kill` 与 `do_srv_kill`→`handle_srv_kill`，`signal.rs:39/52`；`do_fork`→`handle_fork` 与 `do_srv_fork`→`handle_srv_fork`，`fork.rs:22/112`），大量内部函数保留 C 名（`exit_proc`/`exit_restart`/`zombify`/`cleanup`/`check_parent`/`tell_parent`/`check_sig`/`sig_proc`/`process_ksig`…）。后果已经显现：Gate A 覆盖率工具的名称匹配把这些入口报成"有文档无 Rust"（§1.2），每次 review 都要人工排除这批误报。
 
 **影响**：review-code-checklist 维度 7 要求命名与 Minix3 对齐以便 grep 反查；现状是"半对齐"，反查 `do_exit` 会失败，反查 `exit_proc` 会成功，认知成本落在每个后续审查者头上。
 
@@ -367,7 +367,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **File(s)**：
 - `os/servers/pm/src/ipc/dispatcher.rs`（假成功占位 → 真实 `vm_fork` 自由函数，:105-155）
 - `os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport` 增加脚本化 sendrec 回复队列）
-- `os/servers/pm/src/fork.rs`（`handle_fork`/`handle_srv_fork` 接线；新增 `queue_vm_fork_reply` 测试 helper）
+- `os/servers/pm/src/fork.rs`（`do_fork`/`do_srv_fork` 接线；新增 `queue_vm_fork_reply` 测试 helper）
 
 **Before**：`send_vm_fork(request)` 不发送任何消息，直接返回 `Ok(VmForkOut { child_endpoint: from_generation_slot(1, child_slot) })`——fork 链路建立在捏造的 VM 应答上；`send_kernel_request(_request)` 同样假成功，且全仓零调用。
 
@@ -375,7 +375,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 1. **设计选型**（三案对比）：(a) 沿用 crate 内惯例——`IpcTransport` seam 上的自由函数 `vm_fork`（与 `tell_vfs` 同构）；(b) 仿 VM 侧 KernelGateway 建独立 `VmGateway` trait；(c) `IpcTransport` 加 provided method。选 (a)：PM 已有 transport seam，`tell_vfs` 先例证明自由函数足够；KernelGateway 存在的原因是 VM 当时缺 seam，再加 trait 是重复抽象；(c) 把 VM 协议知识泄漏进通用传输 trait。**C 依据**：`vm_fork` 是 `_taskcall(VM_PROC_NR, VM_FORK)`（libsys vm_fork.c:16-25）——普通任务调用而非内核调用，`send_kernel_request` 步骤本身与 C 不符（`proc` 复制由 VM 的 `sys_fork` 完成，PM 无独立内核 fork 请求），随假成功一并删除（D-04 处置）。
 2. **wire 实现**：请求 m1i1=VMF_ENDPOINT / m1i2=VMF_SLOTNO，回复校验 `m_type == OK` 后读 m1i3=VMF_CHILD_ENDPOINT；传输失败或 VM 拒绝（非 OK）一律 `ForkCoordError::VmError`，fail-closed。errno 细粒度传播依赖 `PmError` 载荷变体（共享层，挂 edge E7）。
 3. **测试脚本化**：`TestIpcTransport::queue_sendrec_reply`（VecDeque 整条回复出队，退回旧行为仅覆盖 m_type）；4 个依赖假应答的测试改脚本化（预期失败→通过），新增 3 个 `vm_fork` 单元测试（编码/解码、VM 拒绝、传输失败）。
-4. **顺带对齐**：`handle_fork` 的顺序注释修正为 C 同序（`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后）——旧的"alloc_slot 在前需回滚"说法与代码不符。
+4. **顺带对齐**：`do_fork` 的顺序注释修正为 C 同序（`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后）——旧的"alloc_slot 在前需回滚"说法与代码不符。
 
 **Verified**：
 - `cargo test -p minix-pm --lib`：319 → **322 passed / 0 failed**（4 个假应答测试改造为脚本化 +3 个 vm_fork 新增）
@@ -435,3 +435,21 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`04-ipc-dispatch.md` §5.1（行 9-18 测试名对账刷新 + 新增 14a 行）、§5.2 统计更新（325 lib + 6 integration）；本文件 §0 表与标题标注。
 
 **未做（DEFERRED 论证）**：跨服务器联调（PM↔VM fork 全链路双活）挂 `edge_todo.md` E5(a)——本条目标是 crate 内端到端（消息面），与 E5(a)（多进程通电）分层不重叠。
+
+### ✅ Fix #4: P1-6 — 入口命名统一回 C 名（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/{fork,exit,wait,signal,ipc/calls}.rs`（6 个协调器重命名：`handle_fork→do_fork`、`handle_srv_fork→do_srv_fork`、`handle_exit→do_exit`、`handle_wait4→do_wait4`、`handle_kill→do_kill`、`handle_srv_kill→do_srv_kill`；含测试名与注释同步）
+- `tools/coverage-extract/pm-semantic-map.json`（补 `is_sane_timeval → Timeval::is_sane` 方法化改名映射）
+- 文档 05/07/08/09/10/11/12/04 + 本文件的散文引用同步
+
+**Before/After**：重命名比 P1-6 原清单（4 个）多收编 2 个——`do_fork`/`do_srv_fork` 的 C 名同样被 `handle_*` 遮蔽，属同构问题一并统一；`handle_vfs_reply`/`handle_clock_notify` 保留（前者本身就是 C 函数名 main.c:295）。P1-6 原方案 1 的理由全部兑现：同文件已保留 C 名的内部函数一致、覆盖率工具零误报、改名未换来语义信息。
+
+**Verified**：
+- `cargo test -p minix-pm`：**325 lib + 6 integration passed**（纯重命名零语义变化）
+- Gate A 复测（coverage-extract.py）：Rust 名称匹配 **89.0% → 93.6%**，文档覆盖 **98.2% → 100%**；剩余 7 个未匹配均已核实为非缺口（SEND_* 挂 E7、ESCRIPT 是 C 死代码、EXTERN/_SYSTEM/_TABLE 是 C 编译宏）
+- `grep -rn "fn handle_" os/servers/pm/src/`：仅剩 `handle_vfs_reply`/`handle_clock_notify`
+
+**Docs**：`07-pm-fork.md` §4.1/§5 测试表（`test_do_fork_success` 等新名）、`08-pm-srv-fork.md` D7、`09/10/11/12` 散文、`05-vfs-interaction.md` §接线记录、`04-ipc-dispatch.md` §4.2、本文件 §1.1/§1.2 矩阵。
+
+**未做（DEFERRED 论证）**：无——本条为纯机械重命名，无外部依赖。

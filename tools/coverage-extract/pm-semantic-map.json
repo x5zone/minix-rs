@@ -136,7 +136,7 @@
     "Guardianship"
   ],
   "mp_tracer": [
-    "Guardianship"
+    "Guardianship::tracer"
   ],
   "mp_flags": [
     "Lifecycle",
@@ -340,7 +340,7 @@
     "timer::TicksConv::timeval_from_ticks"
   ],
   "is_sane_timeval": [
-    "timer::Timeval::is_sane"
+    "Timeval::is_sane"
   ],
   "getset_vtimer": [
     "timer::getset_vtimer",
@@ -448,9 +448,6 @@
   "trace_stop": [
     "trace::trace_stop",
     "TraceState::stopped"
-  ],
-  "mp_tracer": [
-    "Guardianship::tracer"
   ],
   "mp_trace_flags": [
     "Guardianship::trace_options"

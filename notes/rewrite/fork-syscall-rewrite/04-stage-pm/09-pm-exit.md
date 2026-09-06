@@ -63,7 +63,7 @@ Rust 改写不是照抄 `mp_flags &= (IN_USE|VFS_CALL|...)`，而是在吸收工
 
 **`seL4` `TCB` 回收。** `seL4` 需手动 `retype` `TCB`/`CNode` 回收，Minix3 的两阶段 `sys_clear`/`vm_exit` 在 `exit_proc`（`PRIV_PROC` 直毁）与 `exit_restart`（`!PRIV_PROC`）的互斥分属，与 `seL4` 手动回收同为显式解绑，Rust 侧 `ExitOrchestrator::first_half`/`second_half` 使两阶段显式化。
 
-**结论（本章的设计基线）。** 把 `do_exit` 的 `PRIV_PROC→SIGKILL` 门、`exit_proc` 的 9 步（含 `VFS_CALL` 保留与 `EXITING` 进入）、`exit_restart` 的 5 步（`sched_stop`→`sys_clear`→`vm_exit`）、`zombify` 的两级僵尸与 `disinherit` 的 `INIT` 收养+`NEW_PARENT`，改写为"显式协调器 `handle_exit`→`exit_proc`→`zombify`→`disinherit` + 状态机 `Lifecycle`/`Guardianship`/`BlockState` + 事件 `publish` + `VFS_CALL` 延续"。
+**结论（本章的设计基线）。** 把 `do_exit` 的 `PRIV_PROC→SIGKILL` 门、`exit_proc` 的 9 步（含 `VFS_CALL` 保留与 `EXITING` 进入）、`exit_restart` 的 5 步（`sched_stop`→`sys_clear`→`vm_exit`）、`zombify` 的两级僵尸与 `disinherit` 的 `INIT` 收养+`NEW_PARENT`，改写为"显式协调器 `do_exit`→`exit_proc`→`zombify`→`disinherit` + 状态机 `Lifecycle`/`Guardianship`/`BlockState` + 事件 `publish` + `VFS_CALL` 延续"。
 
 ### 1.7 小结
 
@@ -244,7 +244,7 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 ### D1：`do_exit` 的 `PRIV_PROC → SIGKILL` 门
 
-`Privilege::is_kernel()` 首检 `sig_proc(SIGKILL)`（`forkexit.c:253-256`），`handle_exit` 返 `NoReply`（`dispatcher.rs:45` `SUSPEND` 的永不回复子类，`main.c:106` 的 `ReplyLater` 区分 `do_fork` 的异步回复 vs `do_exit` 的永不回复）。
+`Privilege::is_kernel()` 首检 `sig_proc(SIGKILL)`（`forkexit.c:253-256`），`do_exit` 返 `NoReply`（`dispatcher.rs:45` `SUSPEND` 的永不回复子类，`main.c:106` 的 `ReplyLater` 区分 `do_fork` 的异步回复 vs `do_exit` 的永不回复）。
 
 ### D2：`exit_proc` 的 9 步
 
@@ -280,7 +280,7 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 ### 4.1 `os/servers/pm/src/exit.rs`
 
-`handle_exit(caller, status, table, transport, event) -> ReplyIntent` 首检 `PRIV_PROC→SIGKILL`，`exit_proc` 9 步（`ALARM_ON` 熄灭→`sys_times` 累计→`PROC_STOPPED` 强制→`vm_willexit`→`INIT/VFS` 特例→`VfsCall::Exit/DumpCore`+`tell_vfs`→`sys_clear` 直毁→`EXITING`+`zombify`→`disinherit`+`SIGHUP`），`exit_restart` 5 步（`sched_stop`→`NOME`→`zombify`→`sys_clear`→`vm_exit`→`TRACE_EXIT`→`cleanup`），`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup` 与 `SIGHUP`。
+`do_exit(caller, status, table, transport, event) -> ReplyIntent` 首检 `PRIV_PROC→SIGKILL`，`exit_proc` 9 步（`ALARM_ON` 熄灭→`sys_times` 累计→`PROC_STOPPED` 强制→`vm_willexit`→`INIT/VFS` 特例→`VfsCall::Exit/DumpCore`+`tell_vfs`→`sys_clear` 直毁→`EXITING`+`zombify`→`disinherit`+`SIGHUP`），`exit_restart` 5 步（`sched_stop`→`NOME`→`zombify`→`sys_clear`→`vm_exit`→`TRACE_EXIT`→`cleanup`），`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup` 与 `SIGHUP`。
 
 ### 4.2 `os/servers/pm/src/mproc/{lifecycle,guardianship,block,wait}.rs`
 

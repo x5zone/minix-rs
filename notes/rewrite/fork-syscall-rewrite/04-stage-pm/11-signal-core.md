@@ -123,7 +123,7 @@ if (proc_id == INIT_PID && signo == SIGKILL) return(EINVAL); // 585 INIT_PID 1 �
 if (proc_id == -1 && signo == SIGTERM) sys_kill(RS_PROC_NR, signo); // 588-589 全系统 SIGTERM 先杀 RS（RS 清理服务）
 ```
 
-`signo` 越界 `EINVAL`（`sys/errno.h:22`），`INIT_PID + SIGKILL → EINVAL` 使 `INIT` 永活（`main.c:194` `INIT` 父为自身，`exit.c:336` `INIT` 死亡仅 `stacktrace`），`RS` 先杀时序在 `handle_kill` 首行显式 `if target==All && signo==SIGTERM { sig_proc(RS) }`（D7）。
+`signo` 越界 `EINVAL`（`sys/errno.h:22`），`INIT_PID + SIGKILL → EINVAL` 使 `INIT` 永活（`main.c:194` `INIT` 父为自身，`exit.c:336` `INIT` 死亡仅 `stacktrace`），`RS` 先杀时序在 `do_kill` 首行显式 `if target==All && signo==SIGTERM { sig_proc(RS) }`（D7）。
 
 ### 2.3 `check_sig` 主扫描：逆序 `NR_PROCS-1..0` + `count` + `SUSPEND` 自杀
 
@@ -298,7 +298,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ### 4.1 `os/servers/pm/src/signal.rs`
 
-`handle_kill`/`check_sig` 逆序扫描 + `sig_proc` 9 链 + `sig_proc_exit` + `process_ksig` 双检 + `SIGVTALRM` 重启 + `SIGSNDELAY` 恢复。
+`do_kill`/`check_sig` 逆序扫描 + `sig_proc` 9 链 + `sig_proc_exit` + `process_ksig` 双检 + `SIGVTALRM` 重启 + `SIGSNDELAY` 恢复。
 
 ### 4.2 `os/servers/pm/src/mproc/signal.rs`
 

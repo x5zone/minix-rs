@@ -21,7 +21,7 @@ fn trunc_status(status: i32) -> i8 {
 ///
 /// - `PRIV_PROC` (system service) → `SIGKILL` (signal 9) via `crate::signal` (deferred) + `NoReply`
 /// - otherwise → `exit_proc` + `NoReply` (beyond the grave, `SUSPEND` 永不回复类)
-pub fn handle_exit<T: crate::ipc::IpcTransport + ?Sized>(
+pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     caller: UserSlot,
     status: i32,
@@ -46,7 +46,7 @@ pub fn handle_exit<T: crate::ipc::IpcTransport + ?Sized>(
 
 /// First half of exit: 9 steps (`forkexit.c:267-413`).
 ///
-/// Caller must be `!PRIV_PROC` (system case handled in `handle_exit`).
+/// Caller must be `!PRIV_PROC` (system case handled in `do_exit`).
 /// Sets `VFS_CALL` on exiting slot via `tell_vfs`, marks `EXITING`, `zombify` if
 /// `!dump_core`, `disinherit` loop (INIT adoption + `NEW_PARENT`), `SIGHUP` for
 /// session leader. Leaves `procs_in_use` unchanged (still counted).
@@ -486,7 +486,7 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::Kernel;
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = handle_exit(&mut table, UserSlot::new(0), 0, &mut transport);
+        let intent = do_exit(&mut table, UserSlot::new(0), 0, &mut transport);
         assert_eq!(intent, ReplyIntent::NoReply);
         // Priv proc should not become Exiting via exit_proc
         assert!(matches!(table.procs[0].state.lifecycle, Lifecycle::Running));

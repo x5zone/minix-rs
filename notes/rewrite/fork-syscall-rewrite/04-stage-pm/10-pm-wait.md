@@ -283,7 +283,7 @@ Rust 改写遵循"显式扫描器 + `WaitState` 同生同灭 + `Lifecycle` 互�
 
 ### 4.1 `os/servers/pm/src/wait.rs`
 
-`handle_wait4(caller, pidarg, options, rusage_addr, table, transport) -> WaitOutcome`（`do_wait4` 主扫描 + 三环 + `WNOHANG`/`ECHILD`）+ `wait_test` + `tell_parent` + `tell_tracer` + `cleanup` + `set_rusage_times` 的 `rusage` 填充（`W_EXITCODE`/`W_STOPCODE` 宏 + `sys_datacopy` 占位）。
+`do_wait4(caller, pidarg, options, rusage_addr, table, transport) -> WaitOutcome`（`do_wait4` 主扫描 + 三环 + `WNOHANG`/`ECHILD`）+ `wait_test` + `tell_parent` + `tell_tracer` + `cleanup` + `set_rusage_times` 的 `rusage` 填充（`W_EXITCODE`/`W_STOPCODE` 宏 + `sys_datacopy` 占位）。
 
 ### 4.2 `os/servers/pm/src/mproc/wait.rs`
 
@@ -303,7 +303,7 @@ Rust 改写遵循"显式扫描器 + `WaitState` 同生同灭 + `Lifecycle` 互�
 |---|--------|--------|-----------|
 | 1 | `pidarg==0 → -procgrp` | `forkexit.c:493` | `WaitTarget::from_pidarg` |
 | 2 | `IN_USE|TOLD_PARENT != IN_USE` 过滤 | `forkexit.c:502` | `Lifecycle::ToldParent` 不计 |
-| 3 | `TRACE_ZOMBIE` 优先 | `forkexit.c:512-517` | `handle_wait4` 三环顺序 |
+| 3 | `TRACE_ZOMBIE` 优先 | `forkexit.c:512-517` | `do_wait4` 三环顺序 |
 | 4 | `WNOHANG → 0` | `forkexit.c:553-554` | `WaitOutcome::WouldBlock` |
 | 5 | `ECHILD` | `forkexit.c:560-562` | `WaitOutcome::NotChild` |
 | 6 | `TOLD_PARENT` 防重 | `forkexit.c:689-690` | `Lifecycle::ToldParent` 互斥 `panic` |
@@ -320,7 +320,7 @@ Rust 改写遵循"显式扫描器 + `WaitState` 同生同灭 + `Lifecycle` 互�
 - `test_waiting_for_specific_child`：`SpecificChild(1234)` 精确匹配
 - `test_waiting_for_group`：`Group(-100)` 匹配 `procgrp==100`
 
-### 5.2 `wait.rs`（`handle_wait4` 三环与 `WNOHANG`/`ECHILD`）
+### 5.2 `wait.rs`（`do_wait4` 三环与 `WNOHANG`/`ECHILD`）
 
 - `test_wait4_trace_zombie`：`TRACE_ZOMBIE`→`tell_tracer`+`SUSPEND`（`TRACE_ZOMBIE→ZOMBIE` 转换）
 - `test_wait4_zombie`：`ZOMBIE`→`tell_parent`+`SUSPEND`（`W_EXITCODE` + `TOLD_PARENT`）
