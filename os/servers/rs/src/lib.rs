@@ -341,7 +341,136 @@ impl RsServer {
             minix_types::RS_DOWN => self.do_down(msg),
             minix_types::RS_LOOKUP => self.do_lookup(msg),
             minix_types::RS_FI => self.do_fi(msg),
+            minix_types::RS_GETSYSINFO => self.do_getsysinfo(msg),
+            minix_types::RS_SYSCTL => self.do_sysctl(msg),
             n => Ok(dispatch::dispatch_request(n).0),
+        }
+    }
+
+    /// C: `do_getsysinfo` — request.c:1095-1142. The permission gate and
+    /// the `SI_*` classification run live; the copy-out half is gated on
+    /// the rproctab byte ABI (edge E-RSWIRE: `sizeof(struct rproc)` cannot
+    /// be pinned from this source tree, and the size gates
+    /// `len > size`/`len != size` — request.c:1120-1121/:1135-1136 — need
+    /// it), so it stays fail-closed until that landing.
+    fn do_getsysinfo(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:1099-1101 — caller-only permission (no target slot).
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            0,
+            None,
+            &state.table,
+            false,
+            caller_euid,
+        )?;
+
+        // C: request.c:1102-1105 + 1107-1133 — decode the request triple and
+        // classify the table; unknown `what` → EINVAL (request.c:1131-1132).
+        let Some((what, _where, _size)) = m.getsysinfo_req() else {
+            return Err(Errno::EINVAL);
+        };
+        crate::query::getsysinfo_table(what)?;
+
+        // The raw-memory copy (`sys_datacopy` of the C-ABI table plus the
+        // exact-size gates) is edge E-RSWIRE/E9 territory — fail closed.
+        Err(Errno::ENOSYS)
+    }
+
+    /// C: `do_sysctl` — request.c:1181-1228. Sub-type classification lives
+    /// in query.rs; this shell owns the action dispatch. The console dump
+    /// face (`print_services_status`/`print_update_status` — utility.c:
+    /// 485-546) is the IS-stage assignment (todo §18.10 E-8); the request
+    /// results below are RS's observable behavior.
+    fn do_sysctl(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let subtype = m.rs_req_subtype().ok_or(Errno::EINVAL)?;
+        match crate::query::classify_sysctl(subtype)? {
+            crate::query::SysctlAction::PrintServices => Ok(0),
+            crate::query::SysctlAction::UpdateStatus => Ok(0),
+            crate::query::SysctlAction::UpdateStart | crate::query::SysctlAction::UpdateRun => {
+                // C: request.c:1189-1211 — start_update_prepare(1): one
+                // retry on a busy RS (request.c:1190 allow_retries = 1);
+                // the prepare request/VM callbacks are the 19 asynsend seam
+                // (noop here, same convention as do_period's restart).
+                let is_idle = state.table.iter_in_use().all(|(_, s)| s.flags.is_idle());
+                let mut noop_abort = |_: i32| {};
+                let mut noop_end = |_: i32| {};
+                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+                match state.update.start_update_prepare(
+                    &mut state.table,
+                    is_idle,
+                    true,
+                    &mut noop_abort,
+                    &mut noop_end,
+                    &mut noop_req,
+                    &mut noop_vm,
+                ) {
+                    // C: request.c:1194-1198 — ESRCH means "done already" → OK.
+                    Err(Errno::ESRCH) => Ok(0),
+                    Err(e) => Err(e),
+                    Ok(last) => {
+                        if subtype == minix_types::sysctl::UPD_RUN {
+                            // C: request.c:1202-1207 — the reply comes when
+                            // the update completes (LATEREPLY + caller +
+                            // RS_UPDATE) → EDONTREPLY.
+                            crate::request::mark_late_reply(
+                                state.table.get_mut(last),
+                                m.m_source,
+                                minix_types::RS_UPDATE,
+                            );
+                            Ok(minix_types::EDONTREPLY)
+                        } else {
+                            Ok(0) // UPD_START: prepare only, reply OK now.
+                        }
+                    }
+                }
+            }
+            crate::query::SysctlAction::UpdateStop => {
+                // C: request.c:1212-1215 — abort_update_proc(EINTR) composed
+                // from the phase dispatch (live_update::abort_action,
+                // update.c:707-743).
+                let phase =
+                    crate::live_update::update_phase(state.update.flags, state.update.chain.len());
+                match crate::live_update::abort_action(phase) {
+                    crate::live_update::AbortAction::Nothing => Err(Errno::EINVAL),
+                    crate::live_update::AbortAction::ClearScheduled => {
+                        let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                        state.update.clear_upds(
+                            &mut state.table,
+                            self.kernel.as_mut(),
+                            &mut noop_script,
+                        );
+                        Ok(0)
+                    }
+                    crate::live_update::AbortAction::EndWithReply
+                    | crate::live_update::AbortAction::EndWithCancel => {
+                        // update.c:727-733 — pretend the current service
+                        // failed to initialize (RS_REPLY) / prepare
+                        // (RS_CANCEL); end_update owns the walk.
+                        let reply_flag = if phase == crate::live_update::UpdatePhase::Initializing {
+                            crate::live_update::RS_REPLY
+                        } else {
+                            crate::live_update::RS_CANCEL
+                        };
+                        let ticks = self.kernel.get_ticks().unwrap_or(0);
+                        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                        let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                        state.update.end_update(
+                            &mut state.table,
+                            self.kernel.as_mut(),
+                            minix_types::EINTR,
+                            reply_flag,
+                            ticks,
+                            &mut noop_req,
+                            &mut noop_script,
+                        );
+                        Ok(0)
+                    }
+                }
+            }
         }
     }
 
@@ -1324,6 +1453,96 @@ mod signal_handler_tests {
         miss.m_u.m_rs_req.addr = 0x4000;
         miss.m_u.m_rs_req.len = 3;
         assert_eq!(miss_server.do_fi(&miss), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn test_do_getsysinfo_permission_and_classification() {
+        // 14 wiring: RS_GETSYSINFO — the permission gate (request.c:1099)
+        // and the SI_* classification (request.c:1107-1133) run live; an
+        // unknown table → EINVAL, a known table reaches the copy-out half,
+        // which is edge E-RSWIRE-gated → ENOSYS (fail-closed, not fake OK).
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_GETSYSINFO,
+            m_u: Default::default(),
+        };
+        m.m_u.m_lsys_getsysinfo.what = 99;
+        assert_eq!(server.do_getsysinfo(&m), Err(Errno::EINVAL));
+
+        m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
+        assert_eq!(
+            server.do_getsysinfo(&m),
+            Err(Errno::ENOSYS),
+            "the copy-out half stays fail-closed until E-RSWIRE"
+        );
+    }
+
+    #[test]
+    fn test_do_sysctl_dispatch_and_update_arms() {
+        // 14 wiring: RS_SYSCTL — sub-type classification (query.rs) plus the
+        // live action shapes: print → OK (dump face per E-8), UPD_STOP on a
+        // scheduled state → chain cleared + OK (update.c:722-724),
+        // UPD_START → prepare + OK now (request.c:1199-1201), UPD_RUN →
+        // LATEREPLY + EDONTREPLY (request.c:1202-1207). UPD_START and
+        // UPD_RUN each need a fresh scheduled chain: a prepared chain is
+        // UPDATING, and a second prepare is EINVAL (update.c:403-406) —
+        // which is its own assertion below.
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+
+        // Unknown sub-type → EINVAL (request.c:1216-1219).
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_SYSCTL,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.subtype = 9;
+        assert_eq!(server.do_sysctl(&m), Err(Errno::EINVAL));
+
+        // Print services → OK (the dump face is the IS-stage assignment).
+        m.m_u.m_rs_req.subtype = minix_types::sysctl::SRV_STATUS;
+        assert_eq!(server.do_sysctl(&m), Ok(0));
+
+        // UPD_STOP while only scheduled (not updating) → clears the chain
+        // and returns OK (update.c:722-724).
+        m.m_u.m_rs_req.subtype = minix_types::sysctl::UPD_STOP;
+        let state = server.state.as_mut().unwrap();
+        let id = crate::service_slot::SlotId::new(0);
+        state
+            .update
+            .chain
+            .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
+        assert_eq!(server.do_sysctl(&m), Ok(0));
+        assert!(server.state.as_ref().unwrap().update.chain.is_empty());
+
+        // UPD_RUN over a scheduled chain: prepares, arms LATEREPLY on the
+        // chain tail, and answers EDONTREPLY (request.c:1202-1207).
+        m.m_u.m_rs_req.subtype = minix_types::sysctl::UPD_RUN;
+        let state = server.state.as_mut().unwrap();
+        let id = crate::service_slot::SlotId::new(0);
+        state
+            .update
+            .chain
+            .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
+        assert_eq!(
+            server.do_sysctl(&m),
+            Ok(minix_types::EDONTREPLY),
+            "UPD_RUN defers its reply to update completion"
+        );
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert!(s.flags.contains(RFlags::LATEREPLY), "late reply armed");
+        assert_eq!(s.caller, Endpoint::PM);
+        assert_eq!(s.caller_request, minix_types::RS_UPDATE);
+
+        // A second prepare on the now-UPDATING state is EINVAL
+        // (update.c:403-406) — reached as UPD_START on the same chain.
+        m.m_u.m_rs_req.subtype = minix_types::sysctl::UPD_START;
+        assert_eq!(server.do_sysctl(&m), Err(Errno::EINVAL));
     }
 
     #[test]

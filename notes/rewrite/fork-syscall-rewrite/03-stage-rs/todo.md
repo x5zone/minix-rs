@@ -2833,6 +2833,28 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   clippy 触碰 crate 零告警；fmt 干净；T7 PASS。RS_GETSYSINFO/RS_SYSCTL 两臂
   留 I3b（前者拷出半压 edge E-RSWIRE 字节 ABI，后者 UPD_* 编排在 16 号链上）。
 
+### ✅ Fix #75 — I3b 14 号 GETSYSINFO/SYSCTL 两臂接线（14 号死表清零）
+- **File**：`lib.rs`（`do_getsysinfo`/`do_sysctl` handler + 2 接线测试）、
+  minix-types `message.rs`（`MessLsysGetsysinfo` 臂 + `getsysinfo_req`/
+  `rs_req_subtype` 访问器）；文档 14 号 §4.1/§5
+- **Before**：RS_GETSYSINFO/RS_SYSCTL 落在 dispatch 死表；`classify_sysctl`
+  与 `start_update_prepare`/`abort_action`/`clear_upds`/`end_update` 决策与编排
+  在 crate 内就绪却无调用方（A4 死表 + 18.4 第三档"预期零调用"）。
+- **After**：`do_getsysinfo` = 权限门（request.c:1099 caller-only）+ `SI_*` 分类
+  live，拷出半（尺寸门 request.c:1120-1136 + 表拷贝）压 edge E-RSWIRE 字节 ABI，
+  在缝上 ENOSYS fail-closed（不假成功）。`do_sysctl` = 分类分派：打印臂 OK
+  （dump 面归 IS，§18.10 E-8）；`UPD_START` → `start_update_prepare`（is_idle 用
+  `RFlags::is_idle` 全表扫描，utility.c:424-437；allow_retries=true）+ OK；
+  `UPD_RUN` → 链尾 `mark_late_reply`(caller, RS_UPDATE) + EDONTREPLY
+  （request.c:1202-1207）；ESRCH→OK 归一（request.c:1194-1198）；`UPD_STOP` →
+  `abort_action` 相位分派：Scheduled→`clear_upds`、Initializing/Updating→
+  `end_update(EINTR, RS_REPLY/RS_CANCEL)`、Idle→EINVAL（update.c:707-743）。
+- **Verified**：`cargo test -p minix-rs` = **301 passed**（+2：
+  `test_do_getsysinfo_permission_and_classification`（分类 EINVAL + E-RSWIRE 门
+  ENOSYS）、`test_do_sysctl_dispatch_and_update_arms`（EINVAL/打印 OK/UPD_STOP
+  清链/UPD_RUN LATEREPLY+EDONTREPLY/已 UPDATING 再 prepare EINVAL））；clippy
+  触碰文件零告警；fmt 干净；T7 PASS。14 号四臂至此全部脱离 dispatch 死表。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18

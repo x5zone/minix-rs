@@ -174,8 +174,8 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 |----|------|------|
 | `RS_LOOKUP` | ✅ 已接线（I3a） | `lib.rs::do_lookup`——`lookup_name_len` 门 → `safecopy_from` 拷名 → `lookup_by_label` → `set_rs_req_endpoint` 把端点写进请求载荷，主循环的 reply（m_type=OK）把它带回调用方（request.c:1174） |
 | `RS_FI` | ✅ 已接线（I3a） | `lib.rs::do_fi`——`copy_label` 同款拷贝 → 查槽 → `check_call_permission(RS_FI)` → `asynsend(COMMON_REQ_FI_CTL + RS_FI_CRASH)`（utility.c:69-77；消息编解码在 minix-types `LsysFiCtl`） |
-| `RS_GETSYSINFO` | ⏳ I3b | 权限门 + 分类已可用；拷出半压在 rproctab 字节 ABI（edge E-RSWIRE，见 §3.2） |
-| `RS_SYSCTL` | ⏳ I3b | `classify_sysctl` 已可用；`UPD_*` 子臂的编排组合在 16 号链上 |
+| `RS_GETSYSINFO` | ✅ 已接线，拷出半压 edge（I3b） | `lib.rs::do_getsysinfo`——权限门（request.c:1099）+ `SI_*` 分类（request.c:1107-1133）live；拷出半（尺寸门 + `sys_datacopy`）压 rproctab 字节 ABI（edge E-RSWIRE，见 §3.2），在缝上 ENOSYS fail-closed |
+| `RS_SYSCTL` | ✅ 已接线（I3b） | `lib.rs::do_sysctl`——`classify_sysctl` 分派：打印臂 → OK（dump 面归 IS，E-8）；`UPD_START` → `start_update_prepare` + OK；`UPD_RUN` → 链尾 LATEREPLY + EDONTREPLY（request.c:1202-1207）；`UPD_STOP` → `abort_action` 分派（`clear_upds`/`end_update`，update.c:707-743）；ESRCH→OK 归一（request.c:1194-1198） |
 
 ### 4.2 关键不变量
 
@@ -199,16 +199,18 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 2. `lookup_name_len`：`0`/`1`/`100`/`101` → `EINVAL`；`2`/`99` → `Ok`。
 3. `classify_sysctl`：5 子功能映射到 `SysctlAction` 五个变体；`0`/`6` → `EINVAL`。
 
-lib.rs 接线测试（I3a）：
+lib.rs 接线测试（I3a/I3b）：
 
 1. `test_do_lookup_resolves_label_into_reply_payload`：已知 label → `Ok(0)` 且载荷中端点 = VFS；未知 label → `ESRCH`；`len=1` → `EINVAL`（request.c:1151-1174 三分支）。
 2. `test_do_fi_injects_crash_request`：已知 label → `Ok(0)`（asynsend 缝接受发送）；未知 label → `ESRCH`。目标槽须 `SYS_PROC`（manager.c:103-105 门）。
+3. `test_do_getsysinfo_permission_and_classification`：未知 `what` → `EINVAL`；已知 `what` → `ENOSYS`（E-RSWIRE 门的诚实 fail-closed）。
+4. `test_do_sysctl_dispatch_and_update_arms`：未知子型 → `EINVAL`；打印臂 → `OK`；`UPD_STOP` 清链 → `OK`；`UPD_RUN` → 链尾 `LATEREPLY`+caller+`RS_UPDATE` 且应答 `EDONTREPLY`；已 UPDATING 再 prepare → `EINVAL`。
 
 minix-types（`cargo test -p minix-types`）：
 
 1. `test_lsys_fi_ctl_encode_roundtrip`：`LsysFiCtl` 编码 → 解码往返，m_type = `COMMON_REQ_FI_CTL`、subtype = `RS_FI_CRASH`（=1，com.h:492）。
 
-测试总数声明：本文档直接范围为 `query` 模块测试数（3 项）+ lib.rs 接线测试 2 项 + minix-types 1 项。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
+测试总数声明：本文档直接范围为 `query` 模块测试数（3 项）+ lib.rs 接线测试 4 项 + minix-types 1 项。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
 
 ---
 

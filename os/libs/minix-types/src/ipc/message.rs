@@ -73,6 +73,8 @@ pub union MessageUnion {
     pub m_rs_init: MessRsInit,
     /// RS generic control request (RS_UP/RS_DOWN/RS_EDIT/...).
     pub m_rs_req: MessRsReq,
+    /// Sysinfo table export (GETSYSINFO family) — C ipc.h:2529.
+    pub m_lsys_getsysinfo: MessLsysGetsysinfo,
     /// Fault injection (RS → service): COMMON_REQ_FI_CTL — C ipc.h:2536.
     pub m_lsys_fi_ctl: MessLsysFiCtl,
     /// Kernel: SYS_MEMSET.
@@ -392,6 +394,33 @@ impl Message {
         // plain-old-data, so the read is sound.
         let req = unsafe { &self.m_u.m_rs_req };
         Some(Endpoint(req.endpoint))
+    }
+
+    /// The `RS_SYSCTL` sub-type (`m_rs_req.subtype` — request.c:1184).
+    /// `None` when `m_type` is not an `m_rs_req` message.
+    #[inline]
+    pub fn rs_req_subtype(&self) -> Option<i32> {
+        if !Self::is_rs_req_arm(self.m_type) {
+            return None;
+        }
+        // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
+        // plain-old-data, so the read is sound.
+        let req = unsafe { &self.m_u.m_rs_req };
+        Some(req.subtype)
+    }
+
+    /// The GETSYSINFO request triple (what, where, size) — C reads
+    /// `m_lsys_getsysinfo.{what,where,size}` at request.c:1102-1105.
+    /// `None` when `m_type` is not `RS_GETSYSINFO`.
+    #[inline]
+    pub fn getsysinfo_req(&self) -> Option<(i32, u64, u64)> {
+        if self.m_type != crate::RS_GETSYSINFO {
+            return None;
+        }
+        // SAFETY: `m_type` tags the `m_lsys_getsysinfo` arm in use; the arm
+        // is plain-old-data, so the read is sound.
+        let g = unsafe { &self.m_u.m_lsys_getsysinfo };
+        Some((g.what, g.where_, g.size))
     }
 
     #[inline]
@@ -2749,6 +2778,35 @@ pub struct MessRsReq {
     /// C: `int subtype`.
     pub subtype: i32,
     _pad2: [u8; 20],
+}
+
+/// Sysinfo table export request — C: `mess_lsys_getsysinfo` —
+/// ipc.h:1064-1072 (x86-64 layout: what@0, where@8, size@16, padding to 56
+/// bytes). GETSYSINFO-family callers name a table (`what`) and a
+/// caller-space destination (`where`) with an expected byte `size`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysGetsysinfo {
+    /// C: `int what` — `SI_*` table selector.
+    pub what: i32,
+    _pad: [u8; 4],
+    /// C: `vir_bytes where` — caller-space destination address.
+    pub where_: u64,
+    /// C: `size_t size` — expected byte size.
+    pub size: u64,
+    _pad2: [u8; 44],
+}
+
+impl Default for MessLsysGetsysinfo {
+    fn default() -> Self {
+        Self {
+            what: 0,
+            _pad: [0; 4],
+            where_: 0,
+            size: 0,
+            _pad2: [0; 44],
+        }
+    }
 }
 
 /// Fault injection request — C: `mess_lsys_fi_ctl` — ipc.h:1048-1056
