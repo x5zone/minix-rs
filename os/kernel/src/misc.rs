@@ -1642,6 +1642,11 @@ pub fn dispatch_update(
     //   m1i1 = SYS_UPD_SRC_ENDPT
     //   m1i2 = SYS_UPD_DST_ENDPT
     //   m1i3 = SYS_UPD_FLAGS
+    // SAFETY: union member read. `msg` is the kernel's own stack copy
+    // (kernel_call TOCTOU discipline — copied from user before dispatch,
+    // D-8), and the dispatch table routed here on `m_type == SYS_UPDATE`,
+    // which selects the `m_m1` member; reading m1i1/m1i2/m1i3 therefore
+    // touches initialized bytes of the active variant.
     let (src_e, dst_e, flags): (i32, i32, i32) = unsafe {
         (
             msg.m_u.m_m1.m1i1,

@@ -152,6 +152,43 @@ struct PvLongPair {
     value: u32,
 }
 
+/// I/O batch buffer with `align(8)` — the widest alignment any view cast
+/// onto it needs (`PvLongPair` align 4, `u16` align 2).
+///
+/// # SAFETY (why this type exists — V12-B2 audit)
+///
+/// `slice::from_raw_parts` on a `*const PvLongPair` requires a 4-aligned
+/// pointer, but a bare `[u8; N]` only guarantees alignment 1 — the
+/// compiler places it on an aligned address in practice, yet nothing in
+/// the language promises it, so every pair/word cast in `do_vdevio` /
+/// `do_sdevio` was a latent misalignment UB. Declaring the buffer with
+/// `align(8)` makes the alignment precondition true by construction;
+/// validity and length remain per-cast obligations (see the SAFETY notes
+/// at the cast sites: both syscall paths bound `total_bytes` against the
+/// buffer capacity — `E2BIG` at do_vdevio.c:65, `SDEVIO_BUF_MAX` in
+/// `do_sdevio` — before any cast).
+#[repr(C, align(8))]
+struct IoBatchBuf<const N: usize>([u8; N]);
+
+impl<const N: usize> IoBatchBuf<N> {
+    const fn zeroed() -> Self {
+        Self([0u8; N])
+    }
+}
+
+impl<const N: usize> core::ops::Deref for IoBatchBuf<N> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl<const N: usize> core::ops::DerefMut for IoBatchBuf<N> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
 // ── Helper ──
 
 fn msg_m1(msg: &Message) -> MessageM1 {
@@ -541,7 +578,11 @@ pub fn dispatch_vdevio<PI: PortIo>(
     use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_types::{Endpoint, VirBytes};
 
-    let mut buf = [0u8; VDEVIO_BUF_SIZE];
+    // SAFETY (applies to every pair/word cast below): `IoBatchBuf` is
+    // `align(8)` so the pointer is aligned for PvBytePair/PvWordPair/
+    // PvLongPair/u16; the `bytes > VDEVIO_BUF_SIZE → E2BIG` check above
+    // bounds every cast's `vec_size * size` within the buffer.
+    let mut buf = IoBatchBuf::<VDEVIO_BUF_SIZE>::zeroed();
     let caller_endpt = caller.p_endpoint;
     let caller_cr3 = caller.p_seg.phys_root;
 
@@ -958,7 +999,11 @@ pub fn dispatch_sdevio<PI: PortIo>(
         let granter = grant_result.effective_granter;
         let granter_vaddr = grant_result.offset;
 
-        let mut buf = [0u8; SDEVIO_BUF_MAX];
+        // SAFETY (applies to every word cast below): `IoBatchBuf` is
+        // `align(8)` so the pointer is aligned for u16; the
+        // `total_bytes > SDEVIO_BUF_MAX → E2BIG` check above bounds the
+        // cast's `vec_size * 2` within the buffer.
+        let mut buf = IoBatchBuf::<SDEVIO_BUF_MAX>::zeroed();
         let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             buf.as_mut_ptr() as u64,
         ));
@@ -1036,7 +1081,11 @@ pub fn dispatch_sdevio<PI: PortIo>(
         return KcallResult::Ok(E2BIG);
     }
 
-    let mut buf = [0u8; SDEVIO_BUF_MAX];
+    // SAFETY (applies to every pair/word cast below): `IoBatchBuf` is
+    // `align(8)` so the pointer is aligned for PvBytePair/PvWordPair/
+    // PvLongPair/u16; the `total_bytes > SDEVIO_BUF_MAX → E2BIG` check above
+    // bounds every cast's `vec_size * size` within the buffer.
+    let mut buf = IoBatchBuf::<SDEVIO_BUF_MAX>::zeroed();
 
     // For output: copy user buffer → kernel, then write to I/O port.
     // For input: read from I/O port → kernel buffer, then copy to user.

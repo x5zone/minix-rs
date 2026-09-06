@@ -2451,6 +2451,27 @@ SAFETY 论证（前置条件＋ наруш hậu quả＋单线程/BKL 归属）
 并修 paging 两处形态（补内层块／删冗余块）。对标 Redox 对 MMIO 原语的
 SAFETY 段风格。机械＋论证各半，可拆两条 `todo-fix`。
 
+**✅ 已审计（2026-09-07，§22 Phase 1 迭代 6）——审计发现一处真 UB 并修复**：
+
+- **paging.rs 两处形态修复**：`:868` 补 `unsafe` 块 + SAFETY（E0133，
+  `unsafe_op_in_unsafe_fn`——2024 edition 下 unsafe fn 体默认安全上下文）；
+  `:977` 删冗余内层块（整体已在外层块内）。clippy minix-arch 2 → 0。
+- **真发现（超出原登记范围）**：`do_vdevio`/`do_sdevio` 的批量 I/O 缓冲是裸
+  `[u8; N]`（对齐 1），而 `slice::from_raw_parts` 转型目标 `PvLongPair` 对齐 4、
+  `PvWordPair`/`u16` 对齐 2——对齐前置**不成立**，12 处 cast 全部是潜在失配 UB
+  （实践中编译器常放置在偶数地址所以"碰巧能跑"，正是 SAFETY 审计要抓的形态）。
+  修复：新增 `IoBatchBuf`（`#[repr(C, align(8))]`，Deref 到 `[u8]`）替换三处
+  缓冲声明，对齐前置改为构造性成立；三处声明附总 SAFETY（对齐来源 + 长度上界
+  的 E2BIG/SDEVIO_BUF_MAX 校验锚点）。
+- **覆盖率机检**（每处 `unsafe {` 上 3 行含 SAFETY）：misc.rs 32/37——5 处"未覆盖"
+  中 4 处是 sprof 整体 unsafe fn 的假阴性（fn 级 `# Safety` 文档 + 块内首行
+  SAFETY 已备），真实缺口 1 处：`:1645` SYS_UPDATE 的 m_m1 union 读取，已补
+  （论证链：kernel_call TOCTOU 内核栈副本 + m_type 分发选定活动成员）；
+  syscall_device.rs 22 处中 2 处是测试断言、其余 12 处 cast 见上；
+  lib.rs 访问器族 fn 级 `# Safety` + 行内 SAFETY 双层齐备（抽样 proc_table/
+  priv_table/boot_unchecked 三处核实）。
+- 测试 694 passed / 0 failed；kernel clippy 13 不变、arch 2 → 0。
+
 #### V12-B3 内核消息体尺寸与内核栈拷贝审计 [P3]
 
 **问题**：共享层 clippy 报 `minix-types/src/ipc/vm.rs:667`
@@ -2563,7 +2584,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源 → **caller_q_find 泛型化（accept 插入 C CANRECEIVE 位）+ el_match 归一；clippy -2（2026-09-07）**
 - ✅ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并 → **单一布尔表达式 + C 锚点；顺带清 A2 引入的 needless_borrow；clippy 13（2026-09-07）**
 - ✅ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释 → **接线本已落地（lib.rs:495-510），旧表 5 行 + 2 断言全部改写；注释修正（2026-09-07）**
-- ⬜ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs:868/:977 形态修复
+- ✅ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs 两处形态修复 → **paging 修复（arch clippy 2→0）+ 真发现 IoBatchBuf 对齐 UB（12 cast）以 align(8) 包装修复 + misc:1645 union 读取补论证（2026-09-07）**
 - ⬜ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）
 - ⬜ V12-B4 [P3] clippy 卫生批（kernel 16 + arch 2 + platform 2 + types 1；两误报不修已记录）
 

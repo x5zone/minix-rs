@@ -865,7 +865,11 @@ impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
             phys.0
         } else if present3 {
             let existing = e3 & ADDR_MASK;
-            if vm_window && is_identity_table(existing, i3, vaddr.0) {
+            // SAFETY: `is_identity_table` requires its `pdpt` to be
+            // identity-mapped and readable in boot context — holds here by
+            // `dm_install_leaf`'s own safety precondition (all table pages
+            // are DM-visible and boot is single-threaded).
+            if vm_window && unsafe { is_identity_table(existing, i3, vaddr.0) } {
                 // Fallback-granularity identity (2 MiB leaves) built PDPTE[2]
                 // as a *table*: wholesale supersession — replace it with an
                 // empty lower table that keeps only what subsequent DM units
@@ -974,7 +978,9 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
     let region_base = (vaddr & !((1 << 39) - 1)) + ((i3 as u64) << 30);
     let tbl = phys_to_ptr(pdpt);
     for j in 0..512usize {
-        let e = unsafe { read_entry(tbl, j) };
+        // Already inside this function's single unsafe block (edition 2024
+        // makes the unsafe fn body safe by default) — no inner block needed.
+        let e = read_entry(tbl, j);
         if e & X64PteFlags::PRESENT.bits() != 0 {
             return e & ADDR_MASK == region_base + ((j as u64) << 21);
         }
