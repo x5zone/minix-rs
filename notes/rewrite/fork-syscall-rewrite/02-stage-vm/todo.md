@@ -1326,7 +1326,7 @@ Coverage Summary for vm:
 
 | 编号 | 缺口 | C 锚点 | Rust 现状 | 批次 |
 |---|---|---|---|---|
-| G-V12-1 | CacheMemory::ev_pagefault 恒 NeedNewPage——无缓存索引查找 | mem_cache.c:181 `cache_pagefault`（真实查找实现） | memtype.rs:912 恒 `NeedNewPage`；连带 `VrParam::PbCache` test-only（vir_region.rs:57）、MAPCACHE 区域 param 落 `Direct{0}` 的疑点（V10-P2-1 表遗留行） | T28 |
+| G-V12-1 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 | mem_cache.c:181 `cache_pagefault` | **盘点前提修正**：ev_pagefault 早已实现 PbCache 邮箱语义（非恒 NeedNewPage），且 dispatch_mapcache 是急切映射（命中即 map_page），两者互不连接。判定：C 邮箱是 do_mapcache 内部管道，Rust 已内联——删 PbCache 变体，ev_pagefault 固定 fail-closed 契约 | ✅ T28（Fix #48） |
 | G-V12-2 | SIGKMEM 信号处理入口缺失（与 G-V11-1 sef_cb_signal_handler 同簇） | main.c:731 注册 signal handler、:736-737 `SIGKMEM → do_memory()`；do_memory 定义于 pagefaults.c:294 | VM 侧零对应物（grep `sef_cb_signal_handler|signal_handler|SEF` 仅注释命中）；信号接收依赖 E1，处理体（收缩缓存）可 stage 内 seam + mock 落地 | T29 |
 | G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | ✅ T27（Fix #47） |
 | G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
@@ -1374,6 +1374,14 @@ Coverage Summary for vm:
 - **测试自身正确性**：id 采用"先快照后对账"避免虚构访问器；`VrParam` 无 `PartialEq` 用 match 解构断言（同时校验形状）；`#[should_panic]` 风格断言均带失败消息
 - **Verified**: `cargo test -p minix-vm --lib ipc::dispatcher` → **34 passed**；三矩阵 **476 / 493 / 476 passed**（+4）；clippy `servers/vm` 0 警告；文档表新行 4 个测试名逐一 `grep` 命中（Gate E）
 - **Docs**: 15-ipc-dispatch.md §5.1 新增 V11/T27 行（含 G-V12-3 闭环标注）
+
+### ✅ Fix #48: T28 — 删除 PbCache 邮箱机制，CacheMemory 契约收敛（G-V12-1 判定闭合）
+
+- **盘点前提修正**：G-V12-1 的原始陈述（"ev_pagefault 恒 NeedNewPage，无缓存查找"）经实读证伪——`CacheMemory::ev_pagefault` 早已实现 C 的 `param.pb_cache` 邮箱语义（提取 PFN→map_page→清零），而生产创建者 `dispatch_mapcache` 是**急切映射**（按页命中即 `map_page`，未命中整区回滚），两条半边互不连接。checklist §8 #15 的同源前提一并修正。
+- **Ground Truth 判定**：C 的 `param.pb_cache` 是 `do_mapcache` 循环体与 `cache_pagefault` 之间的**一次性邮箱**——同一系统调用内先 `vr->param.pb_cache = hb->page` 再 `map_pf(...)` 触发链接（mem_cache.c:156-163），循环结束即清空；它不是跨调用的状态，而是 C 区域/PF 结构下"按页驱动故障链接"的内部管道。minix-rs 的急切路径把该管道内联掉了（命中 PFN 直接进 `PageSlot::Mapped`）。保留邮箱 = 保留一套没有驱动程序的机制，正是 V9-P2-1/V10-P2-1 反复清理的漂移源。
+- **Files**: `os/servers/vm/src/region/vir_region.rs`（删 `VrParam::PbCache { pfn }` 变体 + 判定注释）、`os/servers/vm/src/memtype.rs`（`ev_pagefault` 收敛为：Mapped→`Handled`（防御性）；未映射槽→`Err(InvalidParam)`——C `assert(region->param.pb_cache)`（mem_cache.c:188）的 fail-closed 等价物，杜绝缺页静默制造非缓存页；`ev_delete` 覆盖删除→默认 no-op，对齐 C 的 NULL；测试：删 `maps_cached_pfn`/`zero_pfn` 两个邮箱语义测试，新增 `test_cache_pagefault_unmapped_slot_fails_closed`（含"失败故障不得伪造槽位"断言），`already_mapped` 去 PbCache 参数化，ev_delete 表第 5 行改 no-op）
+- **Verified**: `rg "PbCache" os/servers/vm/src` → 仅剩 3 处判定注释文本（无代码标识符）；三矩阵 **475 / 492 / 475 passed**（-1：4 个邮箱测试合并为 3 个契约测试）；clippy `servers/vm` 0 警告；`VrParam` 穷尽匹配无残余臂（唯一消费方已删）
+- **Docs**: 无 NN-*.md 声称旧语义（24/12 篇 grep 零命中）；本条即判定记录；V10-P2-1 表的"cached PFN 记录位置疑点"随之闭合（答案：`PageSlot::Mapped`，无需 PbCache）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
