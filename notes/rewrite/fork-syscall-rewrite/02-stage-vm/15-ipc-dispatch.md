@@ -639,7 +639,7 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 | test_dispatch_setcache_rejects_zero_pages / fails_closed_without_valid_caller / rejects_unaligned_dev_offset / rejects_invalid_caller | :1934/:1956/:1981/:2002 | setcache 校验（zero dev/ino 守卫由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复） |
 | test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :2026/:2048/:2071/:2094 | mapcache 校验 + ENOENT |
 | test_decode_rs_memctl_unknown_req_einval / all_valid_codes | :2121/:2131 | RS_MEMCTL 解码 |
-| test_dispatch_rs_update_pins_not_implemented | :1561 | **V10-P1-2**：`dispatch_rs_update` 恒 `Error(NotImplemented)`（live-update 骨架 pin，落地时翻转） |
+| test_dispatch_rs_update_completes_with_gateway（原 pin 翻转，V11/T13） | dispatcher.rs（原 :1561） | **V11/T13**：live update 落地——Gateway.sys_update mock OK + 步骤 5-7 → `Ok`；真实 wire→E2 |
 | test_callmap_registration_matches_c | dispatcher.rs（V11/T7） | **V11**：CALLMAP 恰好注册 26 条（= C CALLMAP 数量）；exec_newmem/DMA 四条 parity 未注册槽位为 `None`；表长 49、+48（RS_PREPARE）为最高注册项 |
 
 **transport.rs**（7 个，含 V10-P1-1 状态位测试）：

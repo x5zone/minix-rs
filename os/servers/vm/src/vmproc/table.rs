@@ -133,6 +133,52 @@ impl VmProcTable {
         Some(unsafe { &mut *self.slots[index].get() })
     }
 
+    // ---- Live-update slot swap (C utility.c:188-216 swap_proc_slot, V11/T13) ----
+
+    /// Swap the entire `VmProc` state of two slots, then restore each
+    /// slot's original endpoint (C utility.c:206-209 — contents swap,
+    /// endpoints stay with their slots). Used by RS live update after the
+    /// kernel's `sys_update` has switched the scheduling identities.
+    ///
+    /// Both slots must be active (RS only swaps live-update pairs; the
+    /// typestate views enforce this at the call sites).
+    ///
+    /// # SAFETY
+    ///
+    /// Two distinct slots are mutably aliased through the `UnsafeCell`s —
+    /// sound only under the single-threaded VM event loop (lib.rs), same
+    /// argument as `get_slot_mut`.
+    pub(crate) fn swap_slots(&self, a: UserSlot, b: UserSlot) {
+        // SAFETY: distinct indices; single-threaded event loop (see above).
+        unsafe {
+            let pa = &mut *self.slots[a.get()].get();
+            let pb = &mut *self.slots[b.get()].get();
+            let ep_a = pa.vm_endpoint;
+            let ep_b = pb.vm_endpoint;
+            core::mem::swap(pa, pb);
+            // C utility.c:206-209 — endpoints stay with their slots.
+            pa.vm_endpoint = ep_a;
+            pb.vm_endpoint = ep_b;
+        }
+    }
+
+    /// C: `map_setparent(vmp)` — after a live-update slot swap the regions
+    /// travel with the swapped contents; re-point every region's parent at
+    /// the slot it now lives in.
+    pub(crate) fn set_region_parent(&self, slot: UserSlot) {
+        // SAFETY: single-threaded event loop (see swap_slots).
+        unsafe {
+            let proc = &mut *self.slots[slot.get()].get();
+            if proc.vm_regions_initialized {
+                // SAFETY: guarded by vm_regions_initialized.
+                let map = proc.vm_regions.assume_init_mut();
+                for vr in map.iter_mut() {
+                    vr.parent_slot = Some(slot);
+                }
+            }
+        }
+    }
+
     // ---- Typestate View API ----
 
     /// Returns an `EmptySlot` view for the given slot if it's free.

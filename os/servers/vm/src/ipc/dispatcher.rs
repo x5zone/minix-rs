@@ -775,10 +775,11 @@ impl MessageDispatcher {
 
     // -- rs_update --
     pub(crate) fn dispatch_rs_update(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, gateway, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match rs::handle_rs_update(table, page_alloc, frames, vfs_queue, src, dst, flags) {
+        let mut gateway = gateway.borrow_mut();
+        match rs::handle_rs_update(table, page_alloc, frames, vfs_queue, gateway.as_mut(), src, dst, flags) {
             Ok(rs::RsUpdateResult::Ok) => VmReply::Ok,
             Ok(rs::RsUpdateResult::Suspend) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
@@ -1286,6 +1287,8 @@ impl From<rs::RsError> for VmError {
             rs::RsError::HeapExtendFailed => VmError::OutOfMemory,
             rs::RsError::PreallocMapConflict => VmError::NotImplemented,
             rs::RsError::UpdateNotImplemented => VmError::NotImplemented,
+            // V11/T13: kernel sys_update errno passed through (C rs.c:177).
+            rs::RsError::UpdateKernelFailed(_) => VmError::InternalError,
             // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.
             rs::RsError::InvalidRequest => VmError::InvalidParam,
             rs::RsError::MakeVmFailed => VmError::PermissionDenied,
@@ -1530,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_rs_update_pins_not_implemented() {
+    fn test_dispatch_rs_update_completes_with_gateway() {
         use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
 
         let table = VmProcTable::get_global();
@@ -1568,9 +1571,12 @@ mod tests {
             dst,
             0,
         );
+        // V11/T13 flip (Fix #40): live update is implemented — the gateway
+        // sys_update succeeds (mock replies OK) and steps 5-7 complete, so
+        // the reply is Ok. The kernel-side real wire is edge E2.
         assert!(
-            matches!(reply, VmReply::Error(VmError::NotImplemented)),
-            "V10-P1-2: live update must stay NotImplemented until sys_update lands: {:?}",
+            matches!(reply, VmReply::Ok),
+            "live update with a succeeding gateway must complete: {:?}",
             reply
         );
     }

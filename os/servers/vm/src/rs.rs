@@ -45,6 +45,9 @@ pub(crate) enum RsError {
     // ── UPDATE specific ──
     PreallocMapConflict,
     UpdateNotImplemented,
+    /// Kernel `sys_update` answered a negative errno (V11/T13; C rs.c:177
+    /// passes `r` straight through).
+    UpdateKernelFailed(i32),
 
     // ── MEMCTL specific ──
     InvalidRequest,
@@ -336,26 +339,26 @@ fn map_proc_dyn_data(
 pub(crate) fn handle_rs_update(
     table: &VmProcTable,
     _page_alloc: &mut VmPageAllocator,
-    _frames: &mut PageFrames,
+    frames: &mut PageFrames,
     _vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
+    gateway: &mut dyn crate::kernel_gateway::KernelGateway,
     src: Endpoint,
     dst: Endpoint,
     flags: u32,
 ) -> Result<RsUpdateResult, RsError> {
+    use crate::region::VrFlags;
+
     // Step 1: Validate source and destination endpoints.
     // C: vm_isokendpt(src_e, &src_p) / vm_isokendpt(dst_e, &dst_p)
     if src == Endpoint::NONE {
         return Err(RsError::InvalidRequest);
     }
-    let _src_slot = table.vm_isokendpt(src)?;
+    let src_slot = table.vm_isokendpt(src)?;
     let dst_slot = table.vm_isokendpt(dst)?;
 
     // Step 2: Check flags — if neither ROLLBACK nor NOMMAP is set,
     // the destination process must not have any PREALLOC_MAP regions.
-    // C: if((sys_upd_flags & (SF_VM_ROLLBACK|SF_VM_NOMMAP)) == 0) {
-    //         if(map_region_lookup_type(dst_vmp, VR_PREALLOC_MAP))
-    //             return ENOSYS;
-    //     }
+    // C: rs.c:164-169.
     let update_flags = RsUpdateFlags::from_bits_truncate(flags);
     if !update_flags.contains(RsUpdateFlags::ROLLBACK)
         && !update_flags.contains(RsUpdateFlags::NOMMAP)
@@ -371,9 +374,89 @@ pub(crate) fn handle_rs_update(
         }
     }
 
-    // Steps 3-7: DEFERRED — requires kernel sys_update syscall,
-    // swap_proc_slot typestate extension, and swap_proc_dyn_data.
-    Err(RsError::UpdateNotImplemented)
+    // Step 4: kernel swap first (C rs.c:171-176 — sys_update(src_e, dst_e,
+    // SYS_UPD_ROLLBACK-or-0); kernel do_update performs the 12-step swap).
+    // Wire (M1): m1i1=src, m1i2=dst, m1i3=flags (kernel dispatch_update).
+    let rollback = update_flags.contains(RsUpdateFlags::ROLLBACK);
+    gateway.sys_update(src, dst, if rollback { 0x080 } else { 0 })
+        .map_err(|e| match e {
+            crate::kernel_gateway::GatewayError::Kernel(code) => {
+                RsError::UpdateKernelFailed(code)
+            }
+            _ => RsError::HeapExtendFailed,
+        })?;
+
+    // Steps 5-6: VM-side swap (C rs.c:180-186 → utility.c swap_proc_slot +
+    // swap_proc_dyn_data). After the kernel swap the slots carry the OTHER
+    // process's scheduling identity; VM mirrors the swap of its own
+    // bookkeeping, then re-points region parents.
+    table.swap_slots(src_slot, dst_slot);
+    table.set_region_parent(src_slot);
+    table.set_region_parent(dst_slot);
+
+    // Step 6 (continued): swap_proc_dyn_data (C utility.c:300-345) —
+    // the new VM instance shares the old one's mappings in place; other
+    // processes take the reverse CoW transfer of their dyn data.
+    let dst_is_vm = dst == Endpoint::VM;
+    if dst_is_vm {
+        // C utility.c:305-316 — pt_map_in_range over the two VM-owned
+        // windows (heap + stack-above). RegionMap-level sharing.
+        share_mappings(table, frames, src_slot, dst_slot)?;
+    }
+    if !(dst_is_vm || rollback || update_flags.contains(RsUpdateFlags::NOMMAP)) {
+        // C utility.c:330-334 — "source and destination are intentionally
+        // swapped here": the OLD process receives the NEW process's
+        // mmap regions as CoW.
+        map_proc_dyn_data(table, dst_slot, src_slot)?;
+    }
+
+    // Step 7 (C rs.c:204-206): pt_bind — in minix-rs the page tables live
+    // inside the swapped VmProc slots and the kernel's sys_update has
+    // already switched the scheduling identities, so no rebinding call is
+    // needed (documented deviation: kernel owns CR3 bookkeeping here).
+
+    Ok(RsUpdateResult::Ok)
+}
+
+/// V11/T13: share src's materialized pages into dst's regions without
+/// copying (C: `pt_map_in_range` — the VM-instance branch of
+/// `swap_proc_dyn_data`, utility.c:305-316). Regions are matched by
+/// vaddr; only materialized src pages can be shared.
+fn share_mappings(
+    table: &VmProcTable,
+    frames: &mut PageFrames,
+    src_slot: UserSlot,
+    dst_slot: UserSlot,
+) -> Result<(), RsError> {
+    let src_proc = table.get_active(src_slot).ok_or(RsError::ProcessNotFound)?;
+    // Snapshot (vaddr, pfn, memtype) of every materialized src page.
+    let mut shared: alloc::vec::Vec<(VirBytes, u32, &'static dyn crate::memtype::MemType)> =
+        alloc::vec::Vec::new();
+    for vr in src_proc.regions().iter() {
+        for slot in vr.physblocks.iter() {
+            if let (Some(pfn), Some(mt)) = (slot.pfn(), slot.memtype()) {
+                shared.push((minix_types::VirBytes(vr.vaddr.0 + slot.offset().0), pfn, mt));
+            }
+        }
+    }
+    drop(src_proc);
+
+    let mut dst_proc = table.get_active(dst_slot).ok_or(RsError::ProcessNotFound)?;
+    let dst_regions = dst_proc.regions_mut();
+    for (vaddr, pfn, mt) in shared {
+        // Only pages whose virtual page falls inside an existing dst region
+        // can be shared; others are skipped (C pt_map_in_range walks the
+        // dst address space, not free-form addresses).
+        if dst_regions.find_mut(vaddr).is_none() {
+            continue;
+        }
+        // C: pt_map_in_range shares the mapping (no copy, refcount +1).
+        if let Some(dst_vr) = dst_regions.find_mut(vaddr) {
+            let offset = VirBytes(vaddr.0 - dst_vr.vaddr.0);
+            dst_vr.map_page(frames, offset, pfn, mt);
+        }
+    }
+    Ok(())
 }
 
 // ── Handler: MEMCTL ──────────────────────────────────────────────────
@@ -574,6 +657,14 @@ mod tests {
             "idempotent transfer must not duplicate the region"
         );
         drop(queue);
+    }
+
+    fn update_gateway() -> alloc::rc::Rc<core::cell::RefCell<
+        alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>>
+    {
+        alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+            crate::kernel_gateway::MockGateway::new(),
+        )))
     }
 
     fn make_page_alloc() -> VmPageAllocator {
@@ -953,11 +1044,14 @@ mod tests {
         let mut frames = make_frames();
         // Invalid dst (Endpoint(2) — slot 2 not in the test table)
         // returns ProcessNotFound before reaching the NotImplemented stub.
-        let result = handle_rs_update(
-            table,
+        let mut gateway = update_gateway();
+                let result = handle_rs_update(
+                        table,
             &mut page_alloc,
             &mut frames,
             &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &mut **gateway.borrow_mut(),
+            
             Endpoint(1),
             Endpoint(2),
             0,
@@ -974,11 +1068,14 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
-        let result = handle_rs_update(
-            table,
+        let mut gateway = update_gateway();
+                let result = handle_rs_update(
+                        table,
             &mut page_alloc,
             &mut frames,
             &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &mut **gateway.borrow_mut(),
+            
             Endpoint(1),
             Endpoint(2),
             RsUpdateFlags::ROLLBACK.bits(),
@@ -994,11 +1091,14 @@ mod tests {
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
-        let result = handle_rs_update(
-            table,
+        let mut gateway = update_gateway();
+                let result = handle_rs_update(
+                        table,
             &mut page_alloc,
             &mut frames,
             &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &mut **gateway.borrow_mut(),
+            
             Endpoint(1),
             Endpoint(2),
             RsUpdateFlags::NOMMAP.bits(),

@@ -71,6 +71,16 @@ pub(crate) trait KernelGateway {
         ps_str: u64,
     ) -> Result<(), GatewayError>;
 
+    /// Ask the kernel to swap the scheduling identity of two processes
+    /// (live-update step 4; VM-side bookkeeping follows).
+    ///
+    /// C: `sys_update(src_e, dst_e, flags)` (libsys) → kernel `do_update`
+    /// (kernel/src/misc.rs dispatch_update — 12-step swap, all implemented).
+    /// Wire (M1): `m1i1` = src endpoint, `m1i2` = dst endpoint, `m1i3` =
+    /// flags (SYS_UPD_ROLLBACK bit). Reply: OK(0) or negative errno.
+    fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
+        -> Result<(), GatewayError>;
+
     /// Write a diagnostic string through SYS_DIAGCTL code 1 (C:
     /// do_diagctl.c:28-44 — the kernel data_copy's up to DIAGBUFSIZE=128
     /// bytes from the caller's buffer and kputc's them to the console;
@@ -168,10 +178,31 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         }
         Ok(())
     }
+
+    fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
+        -> Result<(), GatewayError>
+    {
+        let mut msg = Message::default();
+        {
+            // SAFETY: documented SYS_UPDATE wire — the kernel dispatch
+            // reads m1i1/m1i2/m1i3 (kernel/src/misc.rs dispatch_update).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = src.get();
+            m1.m1i2 = dst.get();
+            m1.m1i3 = flags as i32;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_UPDATE_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
 }
 
 /// C: SYS_DIAGCTL is kernel call 44 (kernel/src/syscall.rs:106).
 const SYS_DIAGCTL_CALL: i32 = 44;
+/// C: SYS_UPDATE is kernel call 52 (kernel/src/syscall.rs:112 `Update = 52`).
+const SYS_UPDATE_CALL: i32 = 52;
 /// C: SYS_EXEC kernel call number — kernel/src/syscall.rs `Syscall::Exec`
 /// (decoded by `Syscall::try_from`; grep the enum for the current value).
 const SYS_EXEC_CALL: i32 = 1;
@@ -188,6 +219,10 @@ pub(crate) struct MockGateway {
     pub diag_log: RefCell<alloc::string::String>,
     /// Last `sys_exec` seen: (endpt, ip, stack, ps_str) (V11/T14).
     pub last_exec: Cell<Option<(Endpoint, u64, u64, u64)>>,
+    /// Reply m_type for the next `sys_update` (0 = OK) (V11/T13).
+    pub update_reply: Cell<i32>,
+    /// Last (src, dst, flags) seen by `sys_update` (V11/T13).
+    pub last_update: Cell<Option<(Endpoint, Endpoint, u32)>>,
 }
 
 #[cfg(test)]
@@ -198,6 +233,8 @@ impl MockGateway {
             last_fork: core::cell::Cell::new(None),
             diag_log: RefCell::new(alloc::string::String::new()),
             last_exec: Cell::new(None),
+            update_reply: Cell::new(0),
+            last_update: Cell::new(None),
         }
     }
 }
@@ -229,6 +266,18 @@ impl KernelGateway for MockGateway {
     ) -> Result<(), GatewayError> {
         self.last_exec.set(Some((endpt, ip, stack, ps_str)));
         Ok(())
+    }
+
+    fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
+        -> Result<(), GatewayError>
+    {
+        self.last_update.set(Some((src, dst, flags)));
+        let r = self.update_reply.get();
+        if r < 0 {
+            Err(GatewayError::Kernel(r))
+        } else {
+            Ok(())
+        }
     }
 }
 

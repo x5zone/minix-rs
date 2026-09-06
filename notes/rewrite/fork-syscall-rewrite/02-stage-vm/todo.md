@@ -1267,6 +1267,14 @@ Coverage Summary for vm:
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
 
+### ✅ Fix #42: T13（V10-P1-2 翻转）— RS_UPDATE 步骤 4-7 落地（kernel sys_update + VM 侧 swap/dyn_data）
+
+- **Files**: `servers/vm/src/kernel_gateway.rs`（trait 增 `sys_update(src,dst,flags)`：SYS_UPDATE=52、M1 wire m1i1=src/m1i2=dst/m1i3=flags（kernel dispatch_update 读取，misc.rs）；TrapKernelGateway 实现 + MockGateway `update_reply`/`last_update` 记录）、`servers/vm/src/vmproc/table.rs`（`swap_slots(a,b)`——整体互换 + endpoint 归还各自槽（C utility.c:206-209）；`set_region_parent(slot)`——C map_setparent 等价）、`servers/vm/src/rs.rs`（`handle_rs_update` 重写：步骤 4 走 Gateway.sys_update；步骤 5 `swap_slots`；步骤 6 `swap_proc_dyn_data`——is_vm 分支 `share_mappings` 共享映射（对齐 C pt_map_in_range）+ 非 VM/ROLLBACK/NOMMAP 反向 `map_proc_dyn_data`；新 `RsError::UpdateKernelFailed(i32)`；dispatcher From → InternalError）、`ipc/dispatcher.rs`（dispatch_rs_update 传 gateway）、pin 测试翻转
+- **C 对照**：do_rs_update（rs.c:150-213）步骤 4-7 全链：sys_update（kernel 12 步全实现，misc.rs:1635）→ swap_proc_slot（utility.c:188-216）→ swap_proc_dyn_data（utility.c:300-345，is_vm 分支 pt_map_in_range + 反向 map_proc_dyn_data）→ pt_bind（minix-rs 无需：kernel sys_update 已切 CR3，vm_pt 跟槽内容走）
+- **判定记录**：步骤 7 pt_bind 在 minix-rs 无对应物——kernel `dispatch_update` 的槽互换已覆盖 CR3 语义，Rust 侧 vm_pt 存于槽内随 swap 走（偏差已文档化）
+- **Verified**: 四矩阵 **471 / 489 / 488 / 470 passed**；`test_dispatch_rs_update_completes_with_gateway` 替换原 pin；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 15-ipc-dispatch.md §5.1 pin 行翻转；V10-P1-2 的"落地时翻转"条件已满足
+
 ### ✅ Fix #39: T21（V11-P2-1）— SimPaging 软件页表 + cfg(test) PageTable 别名切换
 
 - **Files**: `servers/vm/src/pagetable/sim.rs`（新，cfg(test)：`SimPaging` 全 `Paging` trait 实现——BTreeMap 软件页表，map/remap/unmap/update_flags/query 真实分派、enable/switch/flush 计数器可观测）、`servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 cfg(test) 切换为 SimPaging；生产别名 `CurrentPaging` 不变）、`servers/vm/src/region/mod.rs`（+1 测试：free_region_pages 携 SimPaging 做真实 unmap，query 清空 + refcount 归零双断言）
