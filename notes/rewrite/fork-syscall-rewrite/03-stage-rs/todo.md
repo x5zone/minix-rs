@@ -1992,7 +1992,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13 随各轮已补；18-23=E3（见 §18.10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
-| A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ☐ | EDGE（见 §18.10） |
+| A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
 | A4 | 控制请求域统一决策载荷模式 | 建议 | ☐ | 13 落地期 |
 | A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ✅ | 1-4/6 步已按此执行 |
 
@@ -2573,6 +2573,26 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   + CHECK 标志不清除——自查抓出本测试初版断言"sentinel 清除标志"违反 C 语义并修正，
   Gate E/测试自查记录）；clippy/fmt 触碰文件零输出。文档同步：02 §2.3（两处事实修正）、
   03 §3.2（权威声明 + 类型修正）、08 §5（+1 行）。
+
+### ✅ Fix #63 — A3（建议落地）：SEF restart 回调重绑建模——`RestartCb` 枚举
+- **File**：`os/servers/rs/src/sef.rs`（`RestartCb` 枚举 + 测试）、`lib.rs`（字段 +
+  init_restart 分派 + init_lu 重绑 + 导出）；文档 18 §2.9b（重绑建模段）、01 §3.3（trait
+  清单补充）
+- **Before**：C 的重启回调表项是运行期状态——启动注册 RS 自有 handler（main.c:140），
+  `sef_cb_init_lu` 在 LU 开始时重绑为 stateful 通用体（main.c:558）；Rust 的 `init_lu`
+  只有注释挂账（Fix #59 记"由 A3 定案"），重绑不可表达，LU 后再重启会错误地走 Rs 全链。
+- **After**：`sef::RestartCb { Rs, Stateful }`（Default = Rs，即 main.c:140 注册态），
+  `RsServer.restart_cb` 字段承载；`init_lu` 第一语句置 `Stateful`（对齐 main.c:553-556
+  "先重绑后流程"，且 C 在 LU 失败时不回滚重绑——Rust 同）；`init_restart` 以
+  `match self.restart_cb` 分派：`Rs` 臂 = main.c:499-544 全链（原实现），`Stateful` 臂 =
+  `sef_cb_init_restart_generic`（libsys/sef_init.c:317-330，检查点/同一性转移——机制归
+  16/17，落地前 fail-closed `Err(ENOSYS)`）。方案对比（A3 原案）：a) trait 保持静态 +
+  单枚举字段承载重绑（选定——重绑只有一个点，一个字段即同构）vs b) 整个回调集合 enum 化
+  （`SefCbSet::Fresh/LuStateful`——7 个方法整体切换，C 只换一个表项，过度建模）。
+- **Verified**：`cargo test -p minix-rs` = **266 passed**（+1
+  `test_init_lu_rebinds_restart_cb`：重绑先于流程、LU 失败不回滚、分派走 Stateful 臂）；
+  clippy/fmt 触碰文件零输出；`tools/check-rs-unwired.sh` PASS。文档同步：18 §2.9b 重绑段、
+  01 §3.3 补条目。
 
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 

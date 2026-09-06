@@ -88,7 +88,7 @@ pub use request::{
     StopDecision, StopSignal, check_duplicates, mark_late_reply, shutdown_apply, stop_decision,
     up_init_flags,
 };
-pub use sef::{SefCallbacks, SefInitInfo, SefInitType};
+pub use sef::{RestartCb, SefCallbacks, SefInitInfo, SefInitType};
 pub use self_lifecycle::{
     SelfUpgradeRole, SigMgrUpdate, SrvUpdateAction, SwapFlag, is_rs_restart_replica,
     lu_init_invariants, rollback_needs_vm_update, rollback_swap_flag, self_update_sig_mgr_update,
@@ -136,6 +136,11 @@ pub struct RsServer {
     /// so the fatal-boot report (main.rs panic) reads the diagnostic here
     /// instead of re-deriving it from the errno.
     boot_diagnostic: Option<boot::BootError>,
+    /// The restart dispatch target — C's restart table entry is runtime
+    /// state: startup registers RS's own handler (main.c:140), and
+    /// `sef_cb_init_lu` rebinds it to the stateful transfer generic
+    /// (main.c:558, A3). See [`sef::RestartCb`].
+    restart_cb: sef::RestartCb,
 }
 
 /// Runtime server state handed over by the boot (T1).
@@ -191,6 +196,7 @@ impl RsServer {
             state: None,
             kernel,
             boot_diagnostic: None,
+            restart_cb: sef::RestartCb::Rs, // C: main.c:140 registration
         }
     }
 
@@ -284,70 +290,91 @@ impl SefCallbacks for RsServer {
     /// (RS self-init sends nothing — utility.c:29-31), and the
     /// `sys_setalarm(RS_DELTA_T)` re-arm (main.c:540-541, panic on failure
     /// kept as `expect`).
+    ///
+    /// A3: the *dispatch target* for restart is runtime state
+    /// ([`RestartCb`]) — after a live update the entry points at the
+    /// stateful transfer generic instead of this handler, so the match
+    /// below is the faithful shape of the C callback table.
     fn init_restart(&mut self, _init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno> {
-        let kernel = self.kernel.as_mut();
-        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
-        let old_rs = state
-            .table
-            .endpoint_slot(Endpoint::RS)
-            .ok_or(Errno::ENOSYS)?;
-        let new_rs = state
-            .table
-            .endpoint_slot(Endpoint(info.old_endpoint))
-            .ok_or(Errno::ENOSYS)?;
+        match self.restart_cb {
+            RestartCb::Stateful => {
+                // C: `sef_cb_init_restart_generic` — libsys/sef_init.c:317-330
+                // (identity transfer for a self LU, checkpoint-restart
+                // otherwise). The state-transfer machinery is 17/18 号;
+                // until it lands, fail closed.
+                Err(Errno::ENOSYS)
+            }
+            RestartCb::Rs => {
+                let kernel = self.kernel.as_mut();
+                let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+                let old_rs = state
+                    .table
+                    .endpoint_slot(Endpoint::RS)
+                    .ok_or(Errno::ENOSYS)?;
+                let new_rs = state
+                    .table
+                    .endpoint_slot(Endpoint(info.old_endpoint))
+                    .ok_or(Errno::ENOSYS)?;
 
-        // If an update was in progress, end it (manager.c:527-529).
-        if state.table.get(old_rs).flags.contains(RFlags::UPDATING) {
-            let ticks = kernel.get_ticks().unwrap_or(0);
-            state.update.end_update(
-                &mut state.table,
-                kernel,
-                minix_types::ERESTART,
-                1,
-                ticks,
-                &mut |_s, _ps| {},
-                &mut |_s| Ok(()),
-            );
+                // If an update was in progress, end it (manager.c:527-529).
+                if state.table.get(old_rs).flags.contains(RFlags::UPDATING) {
+                    let ticks = kernel.get_ticks().unwrap_or(0);
+                    state.update.end_update(
+                        &mut state.table,
+                        kernel,
+                        minix_types::ERESTART,
+                        1,
+                        ticks,
+                        &mut |_s, _ps| {},
+                        &mut |_s| Ok(()),
+                    );
+                }
+
+                // Update the service into the replica (manager.c:531-537,
+                // RS_DONTSWAP = 0).
+                state.update.update_service(
+                    &mut state.table,
+                    kernel,
+                    old_rs,
+                    new_rs,
+                    0,
+                    SysFlags::empty(),
+                )?;
+
+                // Initialize the new RS instance (manager.c:538-540) — sends no
+                // message (utility.c:29-31).
+                let ticks = kernel.get_ticks().unwrap_or(0);
+                crate::service_create::init_service(
+                    state.table.get_mut(new_rs),
+                    None,
+                    crate::sef::SefInitType::Restart,
+                    0,
+                    None,
+                    crate::live_update::SEF_LU_STATE_NULL,
+                    ticks,
+                    &mut |_ep, _msg| Ok(()),
+                )?;
+
+                // Reschedule a synchronous alarm (manager.c:540-541); C panics on
+                // failure (main.c:542).
+                self.kernel
+                    .setalarm(crate::monitor::delta_t(state.system_hz) as u32)
+                    .expect("couldn't set alarm (main.c:542)");
+                Ok(0)
+            }
         }
-
-        // Update the service into the replica (manager.c:531-537,
-        // RS_DONTSWAP = 0).
-        state.update.update_service(
-            &mut state.table,
-            kernel,
-            old_rs,
-            new_rs,
-            0,
-            SysFlags::empty(),
-        )?;
-
-        // Initialize the new RS instance (manager.c:538-540) — sends no
-        // message (utility.c:29-31).
-        let ticks = kernel.get_ticks().unwrap_or(0);
-        crate::service_create::init_service(
-            state.table.get_mut(new_rs),
-            None,
-            crate::sef::SefInitType::Restart,
-            0,
-            None,
-            crate::live_update::SEF_LU_STATE_NULL,
-            ticks,
-            &mut |_ep, _msg| Ok(()),
-        )?;
-
-        // Reschedule a synchronous alarm (manager.c:540-541); C panics on
-        // failure (main.c:542).
-        self.kernel
-            .setalarm(crate::monitor::delta_t(state.system_hz) as u32)
-            .expect("couldn't set alarm (main.c:542)");
-        Ok(0)
     }
 
-    /// C: `sef_cb_init_lu` — main.c:549-586: `update_service(RS_DONTSWAP)`
-    /// into the new instance, then `init_service(SEF_INIT_LU)` (the
-    /// callback-table rebind of main.c:558 pairs with A3's restart_cb note
-    /// in 18). RS self-init sends no message.
+    /// C: `sef_cb_init_lu` — main.c:549-586: the restart-callback rebind
+    /// (main.c:558, A3), then `update_service(RS_DONTSWAP)` into the new
+    /// instance and `init_service(SEF_INIT_LU)`. RS self-init sends no
+    /// message.
     fn init_lu(&mut self, _init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno> {
+        // A3: the rebind precedes the LU flow itself (main.c:553-556) —
+        // the *next* restart dispatches the stateful transfer instead of
+        // RS's own chain. C does not un-rebind if the LU subsequently
+        // fails, so neither does this.
+        self.restart_cb = RestartCb::Stateful;
         let kernel = self.kernel.as_mut();
         let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
         let old_rs = state

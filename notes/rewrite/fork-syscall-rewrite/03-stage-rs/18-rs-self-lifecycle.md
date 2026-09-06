@@ -147,6 +147,16 @@ utility.c:29-31）→ `sys_setalarm(RS_DELTA_T)` 重挂（init_restart，main.c:
 语义保留）。alarm 重挂与 LU 后回调重绑（main.c:558）——重绑由 A3 的 restart_cb 形态在
 18 文档落地时定案；`kernel`/`read_exec` 缝参数在 start_update 保留位（Fix #55 注记）。
 
+**重绑建模（Fix #63，2026-09-06，A3）**：重启回调的分派目标是**运行期状态**——C 的表项
+在启动时注册 RS 自有 handler（main.c:140），`sef_cb_init_lu` 在 LU 流程开始前把它重绑为
+stateful 转移通用体（main.c:558，sef.h:85）。Rust 用 `sef::RestartCb` 枚举（`Rs`/`Stateful`，
+`RsServer.restart_cb` 字段）承载：`init_lu` 第一件事即置 `Stateful`（对齐 main.c:553-556
+的"先重绑后流程"写序；C 在 LU 失败时**不回滚重绑**，Rust 同）；`init_restart` 按
+`match self.restart_cb` 分派——`Rs` 臂执行 main.c:499-544 全链，`Stateful` 臂对应
+`sef_cb_init_restart_generic`（libsys/sef_init.c:317-330，检查点/同一性状态转移），转移
+机制归 16/17 号，落地前 fail-closed `Err(ENOSYS)`。测试 `test_init_lu_rebinds_restart_cb`
+锁定"重绑先于流程、失败不回滚"两点。
+
 ## 3. Rust 设计决策
 
 ### 3.1 self_lifecycle.rs 纯切片

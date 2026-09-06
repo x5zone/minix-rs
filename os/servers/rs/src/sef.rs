@@ -57,6 +57,30 @@ pub struct SefInitInfo {
     pub old_endpoint: i32,
 }
 
+/// Which handler the restart callback dispatches to (A3).
+///
+/// C's restart *table entry* is runtime state: `sef_local_startup()`
+/// registers RS's own handler (main.c:140 `sef_setcb_init_restart(
+/// sef_cb_init_restart)` — the full takeover chain), and
+/// `sef_cb_init_lu` rebinds the entry to the stateful transfer generic
+/// (main.c:558 `sef_setcb_init_restart(SEF_CB_INIT_RESTART_STATEFUL)`,
+/// sef.h:85) *before* the LU default runs, so a later restart takes the
+/// stateful path (libsys/sef_init.c:317-330) instead of RS's full chain.
+/// A static trait cannot express this — the rebind target is a field of
+/// the server (A3 方案 a: the rebind is a single point, so one enum field
+/// beats reifying the whole callback set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestartCb {
+    /// RS's own restart handler — the startup registration (main.c:140;
+    /// body main.c:499-544).
+    #[default]
+    Rs,
+    /// The stateful transfer generic (libsys/sef_init.c:317-330) — set by
+    /// the LU rebind (main.c:558). The transfer itself (checkpoint/identity
+    /// state data) is 17/18 号; until then this arm fails closed.
+    Stateful,
+}
+
 /// The 7-method SEF callback set (ARCH A-7, N5).
 ///
 /// C: `sef_local_startup()` — main.c:136-152. Modeled as a trait instead of
@@ -131,6 +155,28 @@ mod tests {
         assert_eq!(
             s.boot_diagnostic(),
             Some(crate::boot::BootError::Kernel(Errno::ENOSYS))
+        );
+    }
+
+    #[test]
+    fn test_init_lu_rebinds_restart_cb() {
+        // A3 (main.c:553-556): sef_cb_init_lu rebinds the restart table
+        // entry to the stateful generic BEFORE the LU flow runs — the
+        // rebind survives even when the LU fails (C never un-rebinds), and
+        // the next restart dispatches the stateful arm, not RS's chain.
+        let mut s = server();
+        assert_eq!(s.restart_cb, crate::sef::RestartCb::Rs); // main.c:140
+        let info = SefInitInfo::default();
+        // The LU fails closed (no runtime state yet) — the rebind already
+        // happened.
+        assert_eq!(s.init_lu(SefInitType::Lu, &info), Err(Errno::ENOSYS));
+        assert_eq!(s.restart_cb, crate::sef::RestartCb::Stateful);
+        // The rebound entry dispatches the stateful transfer (fail-closed
+        // until the 17/18 state machinery lands); the wire face is a bare
+        // errno either way, the typed field carries the distinction.
+        assert_eq!(
+            s.init_restart(SefInitType::Restart, &info),
+            Err(Errno::ENOSYS)
         );
     }
 }

@@ -676,6 +676,11 @@ pub trait SefCallbacks {
   回调体经 `&mut self` 拿到 `RsServer` 状态。12/18/06 未落地的 5 个方法在 `RsServer` 上
   fail-closed（`Err(ENOSYS)`），`signal_handler` 保留 `unimplemented!`
   （无 Result 通道，T7 门禁带 06 契约）。
+- **restart 回调的分派目标是运行期状态（A3，Fix #63）**：C 在启动时注册 RS 自有 restart
+  handler（main.c:140），`sef_cb_init_lu` 在 LU 开始时把它重绑为 stateful 转移通用体
+  （main.c:558）。trait 保持静态，重绑由 `RsServer.restart_cb: sef::RestartCb`（`Rs`/`Stateful`）
+  承载、`init_restart` 内 match 分派——单点重绑用一个枚举字段表达，比把整个回调集合 enum 化
+  更贴近 C 的"只换一个表项"。详见 18 §2.9b。
 - **与 VM 01 §3.4 的简化对齐**：VM 用 `rs_handshake()` 替代 SEF 框架（`02-stage-vm/01-vm-init-main.md` §3.4）；RS 是 SEF 的**提供方**（其余服务的 init 协议由 RS 实现），必须保留完整的回调集语义；trait 化去掉 C 的全局函数指针且不引入"注册值 + 回调体无法触达状态"的中间形态。
 
 ### 3.4 四步 boot 类型化：BootInit 状态机（对应 §2.3）
