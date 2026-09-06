@@ -409,10 +409,8 @@ pub fn edit_slot(
     if check_irq {
         slot.priv_.flags.insert(PrivFlags::CHECK_IRQ);
     }
-    slot.nr_irq = nr_irq;
     slot.priv_.nr_irq = nr_irq;
     for i in 0..nr_irq as usize {
-        slot.irq_tab[i] = rs_start.irq[i];
         slot.priv_.irqs[i] = rs_start.irq[i];
     }
 
@@ -428,12 +426,15 @@ pub fn edit_slot(
     if check_io {
         slot.priv_.flags.insert(PrivFlags::CHECK_IO_PORT);
     }
-    slot.nr_io_range = nr_io;
     slot.priv_.nr_io_range = nr_io;
     for i in 0..nr_io as usize {
-        slot.io_tab[i] = rs_start.io[i];
         slot.priv_.io_ranges[i] = rs_start.io[i];
     }
+    // D6/E-5: the published I/O/IRQ backup derives from the privilege
+    // structure in one refresh — C writes the two tables side by side here
+    // (manager.c:1498 dual assignment; :1519 `r_io_tab[i] =
+    // r_priv.s_io_tab[i]` copy-back) and never reads the backup back.
+    slot.refresh_priv_backup();
 
     // Update kernel call mask; inherit basic kernel calls when asked to
     // (manager.c:1527-1532). memcpy → plain assignment; the basic-calls
@@ -959,6 +960,43 @@ mod tests {
                 len: 8
             }
         );
+    }
+
+    #[test]
+    fn test_priv_backup_is_derived_snapshot() {
+        // D6/E-5: the slot's I/O/IRQ backup fields derive from the privilege
+        // structure (C type.h:99 "Backup values from the privilege
+        // structure"; C writes the two tables side by side, manager.c:1498/
+        // :1519, and never reads the backup back). The Rust write path is
+        // one refresh from `r_priv` — the two views cannot drift.
+        let mut s = service_slot();
+        let mut r = edit_request();
+        r.nr_irq = 2;
+        r.irq[0] = 4;
+        r.irq[1] = 9;
+        r.nr_io = 1;
+        r.io[0] = IoRange {
+            base: 0x3f8,
+            len: 8,
+        };
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.nr_irq, s.priv_.nr_irq);
+        assert_eq!(s.irq_tab[..2], s.priv_.irqs[..2]);
+        assert_eq!(s.nr_io_range, s.priv_.nr_io_range);
+        assert_eq!(s.io_tab[..1], s.priv_.io_ranges[..1]);
+
+        // Sentinel path: counts zeroed on both sides (manager.c:1489/1506).
+        // The CHECK flags are only ever set here, never cleared — after the
+        // explicit-list edit above they remain set (C has no clear branch).
+        r.nr_irq = RSS_IRQ_ALL;
+        r.nr_io = RSS_IO_ALL;
+        assert!(edit_slot(&mut s, &r, &RProcTable::new(), &mut no_exec).is_ok());
+        assert_eq!(s.nr_irq, 0);
+        assert_eq!(s.priv_.nr_irq, 0);
+        assert_eq!(s.nr_io_range, 0);
+        assert_eq!(s.priv_.nr_io_range, 0);
+        assert!(s.priv_.flags.contains(PrivFlags::CHECK_IRQ));
+        assert!(s.priv_.flags.contains(PrivFlags::CHECK_IO_PORT));
     }
 
     #[test]

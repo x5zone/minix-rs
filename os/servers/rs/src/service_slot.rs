@@ -491,13 +491,20 @@ pub struct ServiceSlot {
     /// `SRV_IS_PREPARING_ONLY` (const.h:119-120) read it directly instead of
     /// requiring injected booleans).
     pub upd: Option<crate::live_update::UpdateEntry>,
-    /// Allowed I/O port ranges (priv backup). C: `r_io_tab` — type.h:100 (03).
+    /// Allowed I/O port ranges. C: `r_io_tab` — type.h:100 ("Backup values
+    /// from the privilege structure"). **Derived snapshot** (D6/E-5): the
+    /// single write path is [`ServiceSlot::refresh_priv_backup`] — the
+    /// embedded privilege structure is the authority (the kernel-enforcement
+    /// view); like C, nothing reads the backup back.
     pub io_tab: [IoRange; NR_IO_RANGE],
-    /// Number of I/O ranges. C: `r_nr_io_range` — type.h:101 (03).
+    /// Number of I/O ranges. C: `r_nr_io_range` — type.h:101. Derived
+    /// snapshot, see [`ServiceSlot::refresh_priv_backup`] (D6/E-5).
     pub nr_io_range: i32,
-    /// Allowed IRQ lines (priv backup). C: `r_irq_tab` — type.h:102 (03).
+    /// Allowed IRQ lines. C: `r_irq_tab` — type.h:102. Derived snapshot,
+    /// see [`ServiceSlot::refresh_priv_backup`] (D6/E-5).
     pub irq_tab: [i32; NR_IRQ],
-    /// Number of IRQ lines. C: `r_nr_irq` — type.h:103 (03).
+    /// Number of IRQ lines. C: `r_nr_irq` — type.h:103. Derived snapshot,
+    /// see [`ServiceSlot::refresh_priv_backup`] (D6/E-5).
     pub nr_irq: i32,
 
     /// IPC target-process-name list. C: `r_ipc_list` — type.h:105 (05).
@@ -555,6 +562,26 @@ impl ServiceSlot {
             nr_control: 0,
             control: [Label::empty(); RS_NR_CONTROL],
         }
+    }
+
+    /// Refreshes the published I/O/IRQ backup from the slot's own privilege
+    /// structure — the single write path for [`ServiceSlot::io_tab`],
+    /// [`ServiceSlot::irq_tab`] and the two counts (D6/E-5).
+    ///
+    /// C writes the two tables side by side in `edit_slot` — IRQs in one
+    /// dual assignment (`rp->r_irq_tab[i] = rp->r_priv.s_irq_tab[i] =
+    /// rss_irq[i]`, manager.c:1498) and I/O ranges as a copy-back from the
+    /// priv structure (`r_io_tab[i] = r_priv.s_io_tab[i]`, :1519) — and
+    /// never reads the backup back (zero RS-side readers). The backup exists
+    /// because it is part of the slot's published face (type.h:99 "Backup
+    /// values from the privilege structure"), so deriving it from `r_priv`
+    /// in one place makes the dual-write drift C could only avoid by
+    /// discipline structurally impossible here.
+    pub fn refresh_priv_backup(&mut self) {
+        self.io_tab = self.priv_.io_ranges;
+        self.nr_io_range = self.priv_.nr_io_range;
+        self.irq_tab = self.priv_.irqs;
+        self.nr_irq = self.priv_.nr_irq;
     }
 }
 

@@ -189,7 +189,7 @@ struct rproc {
 | 权限 | `r_priv`（`ixfer_priv_s` = 内核 `struct priv` 的可传输视图） | 03 |
 | 身份/调度 | `r_uid`/`r_scheduler`/`r_priority`/`r_quantum`/`r_cpu` | 03（调度参数）+ 10（启动） |
 | 更新预分配 | `r_map_prealloc_addr`/`r_map_prealloc_len` | 16（VM multi-component） |
-| IO/IRQ 备份 | `r_io_tab`/`r_nr_io_range`/`r_irq_tab`/`r_nr_irq` | 03（priv 备份，`edit_slot` 重建用） |
+| IO/IRQ 备份 | `r_io_tab`/`r_nr_io_range`/`r_irq_tab`/`r_nr_irq` | 03（priv 的随行快照，D6/E-5 派生写入） |
 | IPC 列表 | `r_ipc_list` | 05（`add_forward_ipc`/`add_backward_ipc`） |
 | 控制列表 | `r_nr_control`/`r_control` | 08（`RS_UP` 的 `rss_control`） |
 
@@ -197,7 +197,7 @@ struct rproc {
 
 1. **`r_argv` 是指向 `r_args` 内部的指针数组**（type.h:81 + 注释）：`r_args` 是 NUL 分隔的参数字符串，`r_argv[0..r_argc]` 指向其中每个参数的起始位置。这是"指针进缓冲"模式——Rust 移动/复制结构时这些指针会悬垂（§3.8 的演进决策）。
 2. **`r_pid` 的 -1 语义**：`free_slot`（manager.c:2106）把 `r_pid` 重置为 -1，`lookup_slot_by_pid`（manager.c:1965-1967）对 `pid < 0` 直接返回 NULL。
-3. **`r_io_tab`/`r_irq_tab` 是 priv 结构的备份**：`edit_slot`（08）用它们重建 `r_priv`（`io_range` 定义在 `minix3/minix/include/minix/type.h:133-137`，含 `ior_base`/`ior_limit`）。
+3. **`r_io_tab`/`r_irq_tab` 是 priv 结构的随行快照**（type.h:99 注释 "Backup values from the privilege structure"）：C 在 `edit_slot` 里把两张表并排写（IRQ 一句双赋值，manager.c:1498；I/O 从 priv 逐项拷回，:1519），**全树零读者**——RS 从不读备份，`r_priv` 的刷新走 `sys_getpriv` 内核回读（main.c:294、manager.c:601/1819、update.c:308-310），与备份无关。字段存在的原因是它们属于槽位结构的发布面；Rust 侧（D6/E-5）把写路径收敛为从 `r_priv` 的一次派生（`ServiceSlot::refresh_priv_backup`），杜绝双写漂移。
 
 ### 2.4 struct rprocpub 全字段（rs.h:165-183）
 

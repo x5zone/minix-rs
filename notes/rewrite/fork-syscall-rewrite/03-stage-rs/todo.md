@@ -39,7 +39,7 @@
 | D3 | 公共函数 totality：`caller_can_control`/`lookup_by_domain` 对越界计数可 panic | P1 |✅ |
 | D4 | 常量双定义（`RS_MAX_LABEL_LEN` 两处等） | P2 |✅ |
 | D5 | `RsStart::default` 与 C 调用方默认不一致（sigmgr=SELF/scheduler=KERNEL/quantum=1 vs RS/SCHED/200） | P2 |✅ |
-| D6 | `Privilege`/`ServiceSlot` 双份 io/irq 表（C 同构，可改进为单一权威） | P2 | ☐ | EDGE（见 §18.10） |
+| D6 | `Privilege`/`ServiceSlot` 双份 io/irq 表（C 同构，可改进为单一权威） | P2 | ✅ | 已修（Fix #62，2026-09-06，单一权威+派生快照） |
 | S1 | `build_cmd_dep` 不遇 NUL 停止 + `Label` 16 字节截断参数（潜在代码缺陷） | P1 |✅ |
 | S2 | `activate_boot_slot` 缺失 cmd/script/argc/vm_call_mask/scheduler/priority/quantum/alive_tm | P1 |✅ |
 | S3 | `sched_init_proc` 对 `NONE` 调度器不跳过（C sched_start.c:57-58） | P1 |✅ |
@@ -2549,6 +2549,31 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `tools/check-rs-unwired.sh` PASS。文档同步：01 §3.4 后 E-6 注记块、init_fresh 签名、
   §5.2 表 4 行更新 + 2 行新增、§5.3 一行扩展、§5.4 计数 262→264（boot.rs 21，01 范围 33 项）。
 
+### ✅ Fix #62 — E-5/D6（P2 结构性）：io/irq 双表收敛——`Privilege` 单一权威 + 派生快照
+- **File**：`os/servers/rs/src/service_slot.rs`（字段文档 + `refresh_priv_backup`）、
+  `slot.rs`（edit_slot 删独立备份写语句 + 新测试）；文档 02（§2.3 两处修正）、03（§3.2 权威
+  声明 + irqs 类型漂移修正 u32→i32）、08（§5 测试表 +1 行）
+- **Before**：`ServiceSlot.io_tab/irq_tab/nr_io_range/nr_irq`（备份）与
+  `Privilege.io_ranges/irqs/nr_*`（内核强制面）由 edit_slot 的**两条独立写语句**分别维护
+  （`slot.irq_tab[i] = rs_start.irq[i]` 与 `slot.priv_.irqs[i] = ...` 分立）——比 C 的"同语句
+  双写"（manager.c:1498）更易漂移，且无任何一致性保证（D6 原始发现）。
+- **After**：ground truth 先行——全树 grep 证实备份表零读者（RS 不读回；`r_priv` 刷新走
+  `sys_getpriv` 回读：main.c:294、manager.c:601/1819、update.c:308-310），故权威 = `r_priv`
+  （内核强制面镜像），备份 = 随行快照。`refresh_priv_backup(&mut self)` 从自身 `r_priv` 一次
+  派生四字段；edit_slot 的 IRQ/IO 分支只写 priv，分支后一次 refresh（与 C 的写序锚点
+  manager.c:1498/:1519 对齐）。方案对比：a) 权威+派生快照（选定）vs b) 删除备份字段
+  （违背 C 结构发布面保真——字段在 `struct rproc` 内部而非 rprocpub，序列化不受影响但
+  字段保真是 A-2 契约）vs c) 保持双写（Rust 现状比 C 更差，不成立）。boot 路径不写备份
+  （C 同——boot 激活只整结构拷 priv，备份保持零值），无需处理。
+- **顺带修正（文档 P2-fact）**：02 文档 §2.3 第 3 点与字段归属表声称"edit_slot 用备份表
+  重建 r_priv"——C 无此机制（备份零读者），重建实为 sys_getpriv 内核回读；一并改正。
+  03 文档 §3.2 代码块的 `irqs: [u32; ...]` 显示漂移改为 `i32`（Fix #48 已改代码，文档漏同步）。
+- **Verified**：`cargo test -p minix-rs` = **265 passed**（+1
+  `test_priv_backup_is_derived_snapshot`：显式表后备份与 priv 双侧一致 + sentinel 双侧清零
+  + CHECK 标志不清除——自查抓出本测试初版断言"sentinel 清除标志"违反 C 语义并修正，
+  Gate E/测试自查记录）；clippy/fmt 触碰文件零输出。文档同步：02 §2.3（两处事实修正）、
+  03 §3.2（权威声明 + 类型修正）、08 §5（+1 行）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2587,9 +2612,13 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - 与 D6（双表收敛）联动：拆分时一次性归并 io/irq 表到 `Privilege` 单一权威。
 
 **E-5 D6 io/irq 双表收敛**
-- `ServiceSlot.io_tab/irq_tab`（C r_io_tab/r_irq_tab 备份对）与
-  `Privilege.io_ranges/irqs` 收敛为单一权威 + 派生视图。注意 C 的 limit/len
-  两种形态（IoRange 已按 base+len 统一，N9/Fix #39）。
+- ✅ **已修（Fix #62，2026-09-06）**：C ground truth 先行核实——备份表（type.h:99
+  "Backup values from the privilege structure"）全树**零读者**（写点仅 manager.c:1498 双赋值
+  与 :1519 拷回；`r_priv` 的刷新走 sys_getpriv 内核回读，与备份无关）。收敛形态 =
+  `Privilege` 为单一权威（内核强制面镜像）+ `ServiceSlot::refresh_priv_backup()` 从自身
+  `r_priv` 一次派生（edit_slot 删除独立备份写语句，对应 C 写序）；02 文档两处"备份重建
+  r_priv"的错误声称（P2-fact）一并修正，03 文档加权威声明。
+- ~~注意 C 的 limit/len 两种形态（IoRange 已按 base+len 统一，N9/Fix #39）。~~（此前已收敛）
 
 **E-6 T3 BootError 区分**
 - ✅ **已修（Fix #61，2026-09-06）**：`BootError` 枚举贯穿 `BootInit`（validate_tables/

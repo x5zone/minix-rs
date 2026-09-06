@@ -410,8 +410,9 @@ slot.rs
 | `test_rs_start_resource_counts_are_i32_like_c_int` | 计数域 i32：哨兵 17 与负值可表示（C `int` 校验前语义） |
 | `test_rs_start_r20a_field_defaults`（R20a） | rs.h 新字段默认值 = 调用方 memset（parse.c:1160） |
 | `test_edit_slot_ipc_list_gate`（R20b） | IPC 表空/超长 EINVAL；合法拷入 + NUL 终止 |
-| `test_edit_slot_irq_sentinel_bound_and_flag`（R20b） | `RSS_IRQ_ALL` → 0+无 CHECK_IRQ；显式表 → CHECK_IRQ+双表；越界 EINVAL |
+| `test_edit_slot_irq_sentinel_bound_and_flag`（R20b） | `RSS_IRQ_ALL` → 0+无 CHECK_IRQ；显式表 → CHECK_IRQ+priv 写入；越界 EINVAL |
 | `test_edit_slot_io_sentinel_and_entries`（R20b） | IO 同构（CHECK_IO_PORT/base+len 保留） |
+| `test_priv_backup_is_derived_snapshot`（E-5） | 备份表（`io_tab`/`irq_tab`/双计数）从 `r_priv` 一次派生（D6 单一权威）；sentinel 双侧清零、CHECK 标志不清除（C 无清除分支） |
 | `test_edit_slot_call_masks_overlay_basic_calls`（R20b） | 掩码 memcpy + basic 位叠加（R21 base）；无 VM 标志 → 恰为 rss_vm |
 | `test_edit_slot_cmd_and_label_fallback`（R20b） | E2BIG/绝对路径；label 空时回退 proc_name、已置则粘住、首次自定义优先 |
 | `test_edit_slot_script_rules`（R20b） | 核心服务不带脚本；非核心 → 字节+SF_USE_SCRIPT；E2BIG |

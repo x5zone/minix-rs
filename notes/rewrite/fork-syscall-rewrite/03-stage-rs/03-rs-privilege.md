@@ -386,13 +386,21 @@ pub struct Privilege {
     pub nr_io_range: i32,        // C s_nr_io_range（:53，int）
     pub io_ranges: [IoRange; NR_IO_RANGE],   // C s_io_tab（:54）—— 透传
     pub nr_irq: i32,             // C s_nr_irq（:59，int）
-    pub irqs: [u32; NR_IRQ],     // C s_irq_tab（:60）
+    pub irqs: [i32; NR_IRQ],     // C s_irq_tab（:60）—— R20b 起 i32
     pub nr_mem_range: i32,       // C s_nr_mem_range（:56，int）
     pub mem_ranges: [MemRange; NR_MEM_RANGE], // C s_mem_tab（:57）
 }
 ```
 
 **字段序镜像内核 `PrivUpdateRequest`**（[kpriv.rs](file:///os/kernel/src/kpriv.rs)，KPriv 8 子结构序去掉内核私有字段）：id → flags → init → 信号管理器 → IPC 掩码 → I/O → IRQ → 内存，资源组计数在表前——与 C `struct priv`（`s_nr_io_range` 在 `s_io_tab` 前，priv.h:53-54）同惯例。填写端与内核定义端逐字段可对照，`data_copy` 布局漂移目检可见（契约边界 → 01-stage-kernel/06 §3.10）。
+
+**I/O/IRQ 资源表的单一权威（D6/E-5，2026-09-06）**：`Privilege` 的 `io_ranges`/`irqs` 是
+I/O 与 IRQ 白名单的**权威副本**（内核强制面的镜像）；`ServiceSlot` 上的
+`r_io_tab`/`r_irq_tab`（type.h:99-103，"Backup values from the privilege structure"）是随行
+快照——C 全树对备份零读者，`r_priv` 的刷新走 `sys_getpriv` 内核回读（main.c:294 等），
+与备份无关。Rust 把快照的写路径收敛为 `ServiceSlot::refresh_priv_backup()`（从 `r_priv`
+一次派生，对应 C manager.c:1498 的双赋值与 :1519 的拷回写序），两条视图不可能漂移。
+slot 表的字段语义与 `edit_slot` 的写入细节归 02/08 号文档。
 
 **计数域为 `i32`（R2，2026-08-16）**：C 是 `int`（priv.h:53/56/59），且 `sys_privctl` 拒绝负值
 （do_privctl.c:308-309/319-320/330-331）——`u16` 会丢失"校验前可负"状态。`Privilege::validate()`
