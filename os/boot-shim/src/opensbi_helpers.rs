@@ -624,8 +624,9 @@ mod tests {
     /// 区域。boot-shim 负责报告"全部 DRAM 是 free"；内核侧的 `cut_memmap()`
     /// （C：`pre_init.c:cut_memmap`）在 handover 后切除 module 区域。这与 C
     /// 版语义一致——boot-shim 不感知 module 地址。`cut_memmap` 的 Rust 实现
-    /// 是内核侧 TODO（见 `todo.md §1` boot module 内存回收），不在 boot-shim
-    /// 范围内。
+    /// 已落地（`os/kernel/src/memmap.rs:174`，pg_utils.c:86-125 语义）并在
+    /// VM handoff 分类中真实接线（`os/kernel/src/vm_handoff.rs:188`），不在
+    /// boot-shim 范围内。
     #[test]
     fn test_build_memmap_default_region() {
         let memmap = build_memmap();

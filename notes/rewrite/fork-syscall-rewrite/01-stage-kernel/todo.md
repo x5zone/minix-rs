@@ -692,17 +692,17 @@ trait 的 `Send + Sync` 是引用层面的类型证明，不蕴含实例字段�
 
 **背景**：Minix3 的 boot module 物理内存生命周期是：`cut_memmap()` 临时切掉 → `protect.c` 解析 ELF 复制到进程空间 → `add_memmap()` 回收。C 源码已在 01 文档 §2.5 讲解完毕。
 
-**Rust 实现待办**：
+**Rust 实现现状（2026-09-07 V12-A4 重验：原"❌ 缺失"5 行全部过时，改两栏口径——函数存在性 / 启动链接线状态）**：
 
-| 环节 | Minix3 C | Rust minix-rs | 状态 |
-|------|----------|---------------|------|
-| boot module 加载 | GRUB 传入 `module_list[]` | `boot_modules: &[]` 始终为空 | ❌ 缺失 |
-| 从 memmap 切掉 module 内存 | `cut_memmap()` (pre_init.c:211) | 无等价实现 | ❌ 缺失 |
-| ELF 解析 + 复制到进程空间 | `protect.c` 解析 ELF | `kmain()` 是 `loop {}` | ❌ 缺失 |
-| 回收 module 物理内存 | `add_memmap()` (protect.c:450) | 无等价实现 | ❌ 缺失 |
-| 回收 bootstrap 代码内存 | `add_memmap()` (main.c:301) | 无等价实现 | ❌ 缺失 |
+| 环节 | Minix3 C | 函数存在性 | 启动链接线状态 |
+|------|----------|-----------|----------------|
+| boot module 加载 | GRUB 传入 `module_list[]` | ✅ `BootModule`（minix-boot/kernel_info.rs）+ boot-shim `load_boot_modules`（uefi_helpers.rs:393，通用 loader：ELF 解析/段拷贝/页分配，mock loader 测试覆盖） | ✅ `KernelInfo.boot_modules` 传入 kmain 并被消费（lib.rs:918 读长度建 boot 进程；内核任务仍编译期内置，lib.rs:922——C 同为 table.c image[] 硬编码） |
+| 从 memmap 切掉 module 内存 | `cut_memmap()` (pre_init.c:211) | ✅ memmap.rs:174（pg_utils.c 语义 + 单测） | ✅ vm_handoff.rs:188-189（VM handoff A2 分类切 module 区域，`.expect` 失败即停） |
+| ELF 解析 + 复制到进程空间 | protect.c 解析 ELF | ✅ minix-elf crate + boot-shim loader | ✅ VM 经 handoff ELF 装载（02-stage-vm T14 装载半）；"kmain 是 `loop {}`"陈述早已过时——kmain 为分相函数（lib.rs:369 起 Phase A…） |
+| 回收 module 物理内存 | `add_memmap()` (protect.c:450) | ✅ memmap.rs:98 | ✅ VM 自身 blob 在 A2 分类中保持 free（vm_handoff.rs:101-104 自注对照 C protect.c:450-451） |
+| 回收 bootstrap 代码内存 | `add_memmap()` (main.c:301) | ✅ memmap.rs:98 | ✅ lib.rs:495-510——`bootstrap_len > 0` 守卫 + Result 处理；higher-half 设计下 boot-shim 恒传 0（TODO-01-1 防 over-reclaim），守卫跳过 = C 的 len=0 no-op 等价 |
 
-`BootModule` 结构体已定义（`minix-types/src/kernel_info.rs`）但从未被填充使用。不仅在回收逻辑缺失，整个 boot module 生命周期（加载→ELF解析→复制→回收）都尚未实现。
+原"BootModule 结构体已定义但从未被填充使用"的断言同样过时：boot-shim 侧 `load_boot_modules` 真实装载（uefi_helpers.rs:393-395）。下方 ExitBootServices 小节（最终映射丢弃 / bump region 归还方向）是独立关注点，不在本条范围、维持原状。历史扫描记录行（§T8/T9 grep 记录）保留原样——它们记录的是扫描当时的观察。
 
 ---
 
@@ -2369,6 +2369,16 @@ handoff 路径已接，kmain 启动主链（Phase F 归还 bootstrap 区，
 在 Rust 启动序列中有名有姓的对应（或显式 no-op 论证如 D-34 体例）。本条是文档
 准确性任务，不碰生产代码。
 
+**✅ 已重验（2026-09-07，§22 Phase 1 迭代 5）——比预想更进一步**：不存在的不是
+"接线"而是两个断言本身。①kmain 链的 add_memmap 对应**有名有姓且已落地**：
+lib.rs:495-510（`bootstrap_len > 0` 守卫 + Result 处理 + TODO-01-1 防 over-reclaim
+论证）——即判定标准的"有名有姓的对应"已满足，无需 D-34 体例的 no-op 论证；
+②opensbi_helpers.rs:624-627 注释已修正指向（memmap.rs:174 实现 + vm_handoff.rs:188
+接线）；③旧表 5 行"❌ 缺失"全部改写为两栏现状（含 `boot_modules 始终为空`与
+"BootModule 从未填充"两断言被 uefi_helpers.rs:393 `load_boot_modules` 推翻，
+及"kmain 是 loop {}"被 lib.rs:369 分相 kmain 推翻）。文档准确性任务，生产代码零改动
+（仅 boot-shim 测试注释修正）。
+
 ### 21.2 架构类（Phase B：整体 → 分层的优化）
 
 #### V12-B1 生产路径 `expect`/`unwrap` 的 panic 与 errno 边界审计 [P1]
@@ -2552,7 +2562,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-B1 [P1] proc_table.rs ~20 处 panic 审计 → **17 处实测：16 内部不变量维持 panic（C assert parity）、1 补契约注释、1 分类纠偏（notify 吞错改 C-parity panic）；无用户可达 panic（2026-09-07）**
 - ✅ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源 → **caller_q_find 泛型化（accept 插入 C CANRECEIVE 位）+ el_match 归一；clippy -2（2026-09-07）**
 - ✅ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并 → **单一布尔表达式 + C 锚点；顺带清 A2 引入的 needless_borrow；clippy 13（2026-09-07）**
-- ⬜ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释
+- ✅ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释 → **接线本已落地（lib.rs:495-510），旧表 5 行 + 2 断言全部改写；注释修正（2026-09-07）**
 - ⬜ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs:868/:977 形态修复
 - ⬜ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）
 - ⬜ V12-B4 [P3] clippy 卫生批（kernel 16 + arch 2 + platform 2 + types 1；两误报不修已记录）
