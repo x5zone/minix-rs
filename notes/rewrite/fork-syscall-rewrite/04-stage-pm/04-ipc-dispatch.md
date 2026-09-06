@@ -599,23 +599,24 @@ fn reply(&mut self, slot: UserSlot, result: i32) {
 | 8 | `test_run_panics_after_consecutive_receive_failures` | receive 失败 fail-fast（64 次） | init.rs |
 | 9 | `test_is_vfs_pm_rs_matches_c` | com.h:517 掩码语义 | dispatcher.rs |
 | 10 | `test_is_pm_call_matches_c` | callnr.h:11 掩码语义 | dispatcher.rs |
-| 11 | `test_vfs_pm_rs_reply_routes_to_reply_later` | main.c:84-87 + 非 VFS 来源兜底 | dispatcher.rs |
-| 12 | `test_proc_event_reply_routes_to_reply_later` | main.c:88-89 | dispatcher.rs |
-| 13 | `test_pm_call_routes_to_dispatch_pm_call` | main.c:90-101（未实现 → ENOSYS；fork → SUSPEND） | dispatcher.rs |
+| 11 | `test_vfs_pm_rs_from_non_vfs_source_is_enosys` | main.c:84-87 + 非 VFS 来源兜底 | dispatcher.rs |
+| 12 | `test_proc_event_reply_routes_to_reply_later` + `test_proc_event_reply_from_user_process_is_enosys` | main.c:88-89（内核 SUSPEND / 用户 ENOSYS，2026-09-06 接真实 registry 后） | dispatcher.rs |
+| 13 | `test_pm_call_routes_to_dispatch_pm_call` | main.c:90-101 单一分发表路由 | dispatcher.rs |
 | 14 | `test_unknown_type_returns_enosys` | main.c:102-103 | dispatcher.rs |
+| 14a | `test_vm_fork_encodes_request_and_decodes_reply` / `test_vm_fork_vm_refusal_is_error` / `test_vm_fork_transport_failure_is_error` | libsys vm_fork.c wire + fail-closed（2026-09-06，07 D3） | dispatcher.rs |
 | 15 | `test_call_nr_roundtrip_all_registered` | callnr.h:14-60 47 项全注册 | calls.rs |
 | 16 | `test_call_nr_rejects_unregistered` | callnr.h:62 越界/NULL → ENOSYS | calls.rs |
-| 17 | `test_dispatch_fork_is_reply_later` | forkexit.c:139 | calls.rs |
-| 18 | `test_dispatch_unimplemented_call_is_enosys` | 未实现 handler ENOSYS 占位 | calls.rs |
+| 17 | `test_dispatch_fork_success_is_reply_later` / `test_dispatch_fork_parent_unknown_is_error_reply` / `test_dispatch_exit_is_no_reply` | forkexit.c:139 SUSPEND / 同步可失败 errno / 246 NoReply（2026-09-06 分发收敛后） | calls.rs |
+| 18 | `test_dispatch_unimplemented_call_is_enosys` | 未实现 handler ENOSYS 占位（GetPid） | calls.rs |
 | 19 | `test_mock_receive_returns_queued_message` | receive 队列单次消费 | transport.rs |
 | 20 | `ipc_status_notify_bit_matches_minix3` | ipcconst.h:10/16/22-24 NOTIFY=4 | transport.rs |
 
-### 5.2 测试统计（截至 2026-08-17）
+### 5.2 测试统计（截至 2026-09-06）
 
-- `cargo test -p minix-pm --lib`：**120 passed / 0 failed**（基线 101 → 本档 +19）
+- `cargo test -p minix-pm --lib`：**325 passed / 0 failed**（分发收敛轮后；含 §5.1 各项的当代演化版——fork 分发臂已接真实 handler，`test_dispatch_fork_success_is_reply_later`/`test_dispatch_fork_parent_unknown_is_error_reply`/`test_dispatch_exit_is_no_reply` 覆盖 Ok/SUSPEND、错误回复、NoReply 三种意图）
+- `cargo test -p minix-pm --test run_once_integration`：**6 passed / 0 failed**（2026-09-06 新增的 crate 外端到端层，`tests/run_once_integration.rs`——从消息面驱动 `run_once` 全链路：fork 的 VM→VFS wire 序列 + SUSPEND、exit 永不回复 + 僵尸化、wait4 无子 ECHILD、kill 无目标 ESRCH、未接线 ENOSYS、损坏 VFS 回复 fail-fast panic）
 - `cargo test -p minix-types --lib`：**94 passed / 0 failed**（本档未改动 minix-types）
-- 完整测试清单：`rg "^\s*fn test_" os/servers/pm/src/`
-- 本档直接相关模块：`init.rs` 主循环 8（§5.1 列 1-8）、`ipc/dispatcher.rs` 6（列 9-14）、`ipc/calls.rs` 4（列 15-18）、`ipc/transport.rs` 5（列 19-20 为本档新增 2，另 3 为 03 档既有 send/sendrec 测试）——§5.1 共 20 项
+- 完整测试清单：`rg "^\s*fn test_" os/servers/pm/src/` + `rg "#\[test\]" os/servers/pm/tests/`
 
 ---
 

@@ -221,6 +221,26 @@ impl<T: IpcTransport> PmServer<T> {
         &self.table
     }
 
+    /// 进程表可变引用（harness/集成测试的进程播种用）。
+    ///
+    /// C 中 `mproc` 是文件级全局，boot image 之外的测试进程在 main 循环前
+    /// 直接填表；Rust 侧集成测试（`tests/run_once_integration.rs`）经此
+    /// 播种 caller/parent——生产路径（`init_fresh`/`fill_boot_procs`）
+    /// 不经过本访问器。
+    pub fn table_mut(&mut self) -> &mut ProcTable {
+        &mut self.table
+    }
+
+    /// 传输引用（wire 断言用）。
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    /// 传输可变引用（集成测试的消息预置/应答脚本用）。
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
     /// 执行启动初始化。
     ///
     /// C: `sef_cb_init_fresh` — main.c:131-243。步骤顺序与 C 一一对应：
@@ -292,7 +312,10 @@ impl<T: IpcTransport> PmServer<T> {
     ///
     /// [ARCH: A-3] C 全局 `m_in`/`who_p`/`who_e`/`call_nr` 隐式上下文 →
     /// Rust 显式参数（`msg`/`rcv_sts`）+ `UserSlot` 槽位（详见 04 文档 §3.5）。
-    fn run_once(&mut self) -> RunStep {
+    ///
+    /// 公开为单步驱动接口：`run()` 循环调用它；harness/集成测试
+    /// （`tests/run_once_integration.rs`）用它从外部驱动完整消息循环。
+    pub fn run_once(&mut self) -> RunStep {
         // C: main.c:61 — sef_receive_status(ANY, &m_in, &ipc_status)。
         let (msg, rcv_sts) = match self.transport.receive() {
             Ok(v) => v,

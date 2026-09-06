@@ -19,7 +19,7 @@
 | P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 返回捏造的成功值，fail-closed 契约被反转成 fake-ok（**✅ 已修复** 2026-09-06，见 §10 Fix #1） |
 | P1 | P1-3 | 内核边界整体未实现：transport 三个方法 `unimplemented!()`，PM 二进制在第一条真实消息上 panic |
 | P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
-| P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位 |
+| P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位（**✅ 已修复** 2026-09-06，见 §10 Fix #3） |
 | P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性 |
 | P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除 |
 | P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
@@ -171,7 +171,7 @@ C 的对应语义是"vm_fork 失败直接返回错误码，成功后才进入不
 
 **跨阶段拆分**：wire 结构体系统化、死代码处置与调用号收敛的本体在 minix-types（共享契约层），归 `edge_todo.md` E7；本条目 stage 内只做消费端接线（2026-09-06 增补）。
 
-### P1-5 测试验证的是"测试分发路径"，生产分发路径无端到端覆盖
+### P1-5 测试验证的是"测试分发路径"，生产分发路径无端到端覆盖（✅ 已修复 2026-09-06，见 §10 Fix #3）
 
 **问题**：319 个单元测试全部针对逻辑模块；分发层的 4 个测试（`ipc/calls.rs:222-273`）验证 `dispatch_pm_call`，而生产 7 个调用的接线在 `init.rs` 内联块中，仅由 `init.rs` 的 15 个测试部分覆盖（`init.rs:982` 附近的注释描述了 fork 的回复时序，但这些测试不经过完整 `run_once` 消息循环）。跨 crate 集成测试 `os/tests/pm_vm_fork.rs` 已整体停用（文件头 `DEPRECATED` 注释，理由成立：VM 类型对外部 crate 不可见），且没有替代品。也就是说：**从"收到 Message"到"发出 Reply"的完整链路，没有任何测试走通过。**
 
@@ -414,3 +414,24 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - 本文件：§0 表 P1-1 行、P1-1 标题
 
 **未做（DEFERRED 论证）**：40 个未接线调用的点亮依赖各自归属文档（07~20）与 E7 wire 类型，不在本条范围。
+
+### ✅ Fix #3: P1-5 — crate 外端到端集成测试层（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/tests/run_once_integration.rs`（新增，6 个端到端场景）
+- `os/servers/pm/src/init.rs`（`run_once` 改 pub 单步驱动接口；新增 `table_mut`/`transport`/`transport_mut` 访问器）
+
+**Before**：319 个单元测试全部针对逻辑模块；分发测试验证 `dispatch_message`/`dispatch_pm_call` 而生产走 `init.rs` 内联路径（Fix #2 后已同路）；跨 crate 集成测试 `os/tests/pm_vm_fork.rs` 整体停用且无替代——"从收到 Message 到发出 Reply"的完整链路零覆盖。
+
+**After**（设计选型）：测试位置两案——(a) crate 外 `tests/` 目录（已选）：真外部视角，只能走公共 API，防止测试绕过封装（旧 pm_vm_fork 之死正是内部类型耦合）；(b) crate 内 `#[cfg(test)]` 模块：可触私有状态但等于仍是"内部视角"。选 (a)，配套最小公共面：`run_once` pub（单步驱动接口，`run()` 循环体即调它）+ `table_mut`/`transport_mut` 访问器（对应 C 在 main 循环前直接填 `mproc`/预置消息的 harness 播种，生产路径不经过）。
+- 六场景：① fork 全链路 wire 序列（VM_FORK → VFS_PM_FORK + SUSPEND 零 caller 回复 + 子槽 VFS_CALL）；② exit 永不回复 + 父 wait 中 → ToldParent；③ wait4 无子 → ECHILD；④ kill 无目标 → ESRCH；⑤ 未接线调用 → ENOSYS；⑥ 损坏 VFS 回复 → fail-fast panic（非 ENOSYS 兜底）。
+- 播种用 `BootParams::placeholder()`（空 boot image，不产生进程）+ `table_mut` 手工填表——对应 C 语义，不依赖 init 流程。
+
+**Verified**：
+- `cargo test -p minix-pm --lib`：**325 passed**（无回归）
+- `cargo test -p minix-pm --test run_once_integration`：**6 passed / 0 failed**
+- 测试名对账：§5.1 表行 9-18 按当代测试名刷新（旧 `test_dispatch_fork_is_reply_later` 等已演化名全部 grep 命中）
+
+**Docs**：`04-ipc-dispatch.md` §5.1（行 9-18 测试名对账刷新 + 新增 14a 行）、§5.2 统计更新（325 lib + 6 integration）；本文件 §0 表与标题标注。
+
+**未做（DEFERRED 论证）**：跨服务器联调（PM↔VM fork 全链路双活）挂 `edge_todo.md` E5(a)——本条目标是 crate 内端到端（消息面），与 E5(a)（多进程通电）分层不重叠。
