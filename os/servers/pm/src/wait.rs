@@ -124,7 +124,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             let child_slot = UserSlot::new(idx);
             let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap_or((0, 0));
             let child_pid = table.procs[child_slot.get()].identity.id.pid;
-            // Simulate sys_datacopy(rusage) — stubbed as success
+            // [DEFERRED: D-21] sys_datacopy(rusage)——内核 CPU 时间读取需 SYS_TIMES（edge E6）+ E1；C 侧自身仅填 utime/stime（utility.c:92 TODO），范围跟随 C
             let _ = (rusage_addr, ss);
             // W_EXITCODE + reply(parent, pid) + WAITING clear + ZOMBIE→TOLD_PARENT + time accumulate
             // 组合按字节语义（C: W_EXITCODE(status,sig) = status<<8|sig）：

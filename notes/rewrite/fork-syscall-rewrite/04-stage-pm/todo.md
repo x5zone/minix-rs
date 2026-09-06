@@ -25,7 +25,7 @@
 | P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
 | P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
 | P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆（**✅ 已修复** 2026-09-06，见 §10 Fix #18） |
-| P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约 |
+| P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约（**✅ 已修复** 2026-09-06，见 §10 Fix #19） |
 | P2 | P2-6 | 文档 00/99 仍是最小骨架，且 `.design/` 缺这两篇的 outline/outline-review/design 快照（模式 69） |
 | P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表 |
 | P3 | P3-1 | clippy 约 50 条告警未清理（文档缩进 17、可折叠 if 11、可派生 impl 6 等） |
@@ -227,7 +227,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 **建议**：移除两个 glob，改为显式逐项 re-export（只导出确实属于公共 API 的类型，如 `ProcTable`、`PmCall`、`ReplyIntent`、`PmServer`），logic/state 两层各自保持 `pm::signal` 与 `pm::mproc::signal` 的完整路径。这同时服务 P1-1：分发迁移时的符号冲突会先在显式 re-export 处暴露。
 
-### P2-5 exit/wait 路径的行为 stub 应升级为显式 DEFERRED 契约
+### P2-5 exit/wait 路径的行为 stub 应升级为显式 DEFERRED 契约（✅ 已修复 2026-09-06，见 §10 Fix #19）
 
 **问题**：exit 与 wait 的关键协作点当前以"注释说 stub 了"的形式存在：`sys_kill`（`exit.rs:33`）、自身 times 计账（`exit.rs:101`）、`vm_willexit`（`exit.rs:116`）、core name 指针（`exit.rs:142`）、`sched_stop`（`exit.rs:192`）、`sys_clear`（`exit.rs:215`）、`vm_exit`（`exit.rs:219`）、wait 的 trace-stop 返回码模拟（`wait.rs:101`）、rusage 跨地址空间拷贝假装成功（`wait.rs:124`）。这些是合法的过渡态（多数依赖内核/VM 落地），但表达形式是散落注释 + 静默成功返回，与 `unimplemented!("DEFERRED: ...")`（`ipc/vfs.rs:401-488` 的做法，且已通过 check-rs-unwired 检查）不一致。`wait.rs:124` 的 rusage 拷贝尤其值得注意：C 侧本身是 TODO（`utility.c:92`，只填 ru_utime/ru_stime），Rust 侧假装拷贝成功，两边叠加后这个语义点存在三层叠加的不完整性。
 
@@ -675,3 +675,16 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - `grep -rn "pub use .*\*" os/servers/pm/src/lib.rs`：零命中
 
 **Docs**：lib.rs 模块注释（压平问题与决策记录）；本文件 §0/标题。
+
+### ✅ Fix #19: P2-5 — stub 注释统一为 `[DEFERRED: D-XX]` 显式契约（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/exit.rs`（8 处注释升级）、`os/servers/pm/src/wait.rs`（1 处）
+
+**Before/After**：campaign 中 D-15/D-19/D-20 等已实现后，剩余 stub 的存在形式从"散落的 `stubbed as Ok`/`simulate` 注释"统一为 `[DEFERRED: D-XX] <语义> —— <依赖未解除论证> <edge 引用>` 格式（与 `ipc/vfs.rs` 的 unimplemented 惯例、`§6` 登记表、`§9.2` 对照表三处一致）。任何一处 stub 的存在性、归属、解除条件现在都能被 `grep -rn "DEFERRED" os/servers/pm/src/` 一条命令审计（模式 60 诚实显式 TODO）。
+
+**Verified**：
+- `cargo test -p minix-pm`：**341 lib passed**（纯注释轮，零语义变化）
+- `grep -rn "stubbed\|stub " os/servers/pm/src/{exit,wait}.rs | grep -v DEFERRED`：零命中
+
+**Docs**：本文件 §0/标题。

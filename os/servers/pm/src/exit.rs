@@ -30,7 +30,7 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
     let proc = &table.procs[caller.get()];
     if proc.is_kernel_process() {
         // System process tries to exit → SIGKILL (forkexit.c:253-256)
-        // `sys_kill` is signal path (11-signal-core.md), here stubbed as no-op
+        // [DEFERRED: D-13] `sys_kill`（11-signal-core.md）——内核 SYS_KILL wrapper（edge E6）未落地，暂 no-op
         // but we record intent via `sig_pending` for testability
         let _ = (proc.endpoint(), status);
         // In real C: `sys_kill(mp->mp_endpoint, SIGKILL)` → `process_ksig` → `sig_proc`
@@ -94,11 +94,11 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 
     // ---- 4. sys_times accounting (306-309) ----
     // POSIX: accumulate at parent only after wait, but child saves its own times here.
-    // In Rust we simulate with dummy 0 ticks (real Clock via `time` crate is 14)
+    // [DEFERRED: D-14] `sys_times` 计账——内核 uptime 面挂 edge E6
     {
         let proc = &mut table.procs[proc_nr];
         // `sys_times` would fetch user/sys ticks; here we just keep existing child_utime/stime
-        // plus 0 for exiting proc's own times (stub)
+        // [DEFERRED: D-14] 自身 times 增量为 0（依赖同上）
         let _ = proc_ep;
     }
 
@@ -158,7 +158,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 9. PRIV_PROC immediate sys_clear (361-369) ----
     // System process (driver) destroyed without waiting for VFS (deadlock avoidance)
     if table.procs[proc_nr].is_kernel_process() {
-        // `sys_clear` → free kernel proc; stubbed as no-op for test, but we keep flag
+        // [DEFERRED: D-18] `sys_clear`（内核侧进程回收，kernel 对端已实现 syscall_process.rs:366）——缺 SYS_CLEAR wrapper（edge E6）+ trap（E1），暂 no-op
         let _ = proc_ep;
     }
 
@@ -183,7 +183,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 13. SIGHUP for session leader (412) ----
     if procgrp != 0 {
         // `check_sig(-procgrp, SIGHUP)` → signal.c:568 broadcast to procgrp
-        // Stubbed as no-op, but we record via `signal` pending for test (deferred to 11)
+        // [DEFERRED: D-13] 同上：sys_kill 依赖 edge E6；pending 记录仅供测试观察
         let _ = procgrp;
     }
 }
@@ -196,7 +196,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 /// `Exit` termination calls `exit_restart`.
 pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable, slot: UserSlot, transport: &mut T) {
     let scheduler = table.procs[slot.get()].resources.scheduler;
-    // 1. sched_stop (425, 16-scheduling.md) — stubbed as Ok, failure only printf
+    // 1. sched_stop (425, 16-scheduling.md) — [DEFERRED: D-17] SCHED 服务器（16-stage，A-8）不存在，无对端可通话；C 对失败仅 printf，no-op 与 C 可观测行为一致
     let _ = scheduler;
     // 2. scheduler = NONE (441)
     table.procs[slot.get()].resources.scheduler = Endpoint::NONE;
@@ -219,7 +219,7 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable,
 
     // 4. sys_clear for !PRIV_PROC (447-452) — user process destroyed after VFS
     if !table.procs[slot.get()].is_kernel_process() {
-        // `sys_clear` → kernel proc free; stubbed
+        // [DEFERRED: D-18] 同上：SYS_CLEAR wrapper（edge E6）+ trap（E1）
         let _ = slot;
     }
 
@@ -477,7 +477,7 @@ fn disinherit(table: &mut ProcTable, exiting_slot: UserSlot) {
     }
     // SIGHUP for session leader (procgrp !=0)
     // In C: procgrp = (mp_pid == mp_procgrp) ? mp_procgrp : 0; check_sig(-procgrp, SIGHUP)
-    // For 09 we stub as no-op (signal path deferred to 11)
+    // [DEFERRED: D-13] signal path deferred to 11（sys_kill 依赖 edge E6）
 }
 
 #[cfg(test)]
