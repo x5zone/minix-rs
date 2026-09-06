@@ -62,6 +62,7 @@ pub(crate) fn handle_brk(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     request: &BrkRequest,
 ) -> Result<BrkResponse, BrkError> {
     let slot = table.vm_isokendpt(request.endpoint)?;
@@ -73,7 +74,7 @@ pub(crate) fn handle_brk(
     let requested = request.new_brk_addr;
 
     if requested.0 < current_brk.0 {
-        shrink_heap(&mut active, page_alloc, frames, requested)
+        shrink_heap(&mut active, page_alloc, frames, vfs_queue, requested)
     } else if requested.0 > current_brk.0 {
         grow_heap(&mut active, page_alloc, frames, requested)
     } else {
@@ -128,8 +129,10 @@ fn shrink_heap(
     active: &mut ActiveProc<'_>,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     new_brk: VirBytes,
 ) -> Result<BrkResponse, BrkError> {
+    let owner = active.endpoint();
     let current_top = active.region_top();
 
     if new_brk.0 >= current_top.0 {
@@ -164,7 +167,7 @@ fn shrink_heap(
                             let pt = Some(active.page_table_mut());
                             #[cfg(test)]
                             let pt: Option<&mut crate::pagetable::PageTable> = None;
-                            crate::region::free_region_pages(right, pt, frames, page_alloc);
+                            crate::region::free_region_pages(right, pt, frames, page_alloc, vfs_queue, owner);
                         }
                         active.sub_total(VirBytes(freed_len.0));
                         active.regions_mut().insert(left)
@@ -191,7 +194,7 @@ fn shrink_heap(
                 let pt = Some(active.page_table_mut());
                 #[cfg(test)]
                 let pt: Option<&mut crate::pagetable::PageTable> = None;
-                crate::region::free_region_pages(region, pt, frames, page_alloc);
+                crate::region::free_region_pages(region, pt, frames, page_alloc, vfs_queue, owner);
             }
             active.sub_total(VirBytes(freed_len.0));
         }
@@ -265,7 +268,8 @@ mod tests {
             new_brk_addr: VirBytes(0x4000_1000),
         };
 
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &request);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().new_brk_addr, VirBytes(0x4000_1000));
     }
@@ -283,13 +287,15 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_1000),
         };
-        handle_brk(table, &mut page_alloc, &mut frames, &request1).unwrap();
+        handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request1).unwrap();
 
         let request2 = BrkRequest {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_2000),
         };
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &request2);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request2);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().new_brk_addr, VirBytes(0x4000_2000));
     }
@@ -308,7 +314,8 @@ mod tests {
             new_brk_addr: VirBytes(0x4000_0000),
         };
 
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &request);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().new_brk_addr, VirBytes(0x4000_0000));
     }
@@ -324,7 +331,8 @@ mod tests {
             new_brk_addr: VirBytes(0x4000_1000),
         };
 
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &request);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request);
         assert!(matches!(result, Err(BrkError::ProcessNotFound)));
     }
 
@@ -341,13 +349,15 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_3000),
         };
-        handle_brk(table, &mut page_alloc, &mut frames, &grow).unwrap();
+        handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &grow).unwrap();
 
         let shrink = BrkRequest {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_1000),
         };
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &shrink);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &shrink);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().new_brk_addr, VirBytes(0x4000_1000));
     }
@@ -365,7 +375,8 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_1000),
         };
-        handle_brk(table, &mut page_alloc, &mut frames, &request1).unwrap();
+        handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request1).unwrap();
 
         let slot_data = table.vm_isokendpt(ep).unwrap();
         let active = table.get_active(slot_data).unwrap();
@@ -376,7 +387,8 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_2000),
         };
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &request2);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &request2);
         assert!(result.is_ok());
 
         let active = table.get_active(slot_data).unwrap();
@@ -402,7 +414,8 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_1000),
         };
-        handle_brk(table, &mut page_alloc, &mut frames, &grow).unwrap();
+        handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &grow).unwrap();
 
         // Manually insert a region at 0x4000_2000 to block further growth
         let slot_data = table.vm_isokendpt(ep).unwrap();
@@ -421,7 +434,8 @@ mod tests {
             endpoint: ep,
             new_brk_addr: VirBytes(0x4000_3000),
         };
-        let result = handle_brk(table, &mut page_alloc, &mut frames, &overlap_grow);
+        let result = handle_brk(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &overlap_grow);
         assert!(matches!(result, Err(BrkError::OutOfMemory)),
             "brk must reject growth that would overlap an existing region");
     }

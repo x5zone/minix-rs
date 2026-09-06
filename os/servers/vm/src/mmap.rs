@@ -227,6 +227,7 @@ fn mmap_region(
     active: &mut ActiveProc<'_>,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     addr: VirBytes,
     vmm_flags: MmapFlags,
     len: VirBytes,
@@ -241,7 +242,7 @@ fn mmap_region(
             return Err(MmapError::BadAddress);
         }
         // C mmap.c:60-68 — unmap whatever occupies [addr, addr+len).
-        crate::munmap::unmap_range(active, page_alloc, frames, addr, len)
+        crate::munmap::unmap_range(active, page_alloc, frames, vfs_queue, addr, len)
             .map_err(|_| MmapError::OutOfMemory)?;
         return Ok(addr);
     }
@@ -335,6 +336,7 @@ pub(crate) fn handle_mmap(
             &mut active,
             page_alloc,
             frames,
+            vfs_queue,
             request.addr,
             flags,
             aligned_len,
@@ -435,6 +437,7 @@ fn mmap_file(
         active,
         page_alloc,
         frames,
+        vfs_queue,
         params.addr,
         params.flags,
         len,

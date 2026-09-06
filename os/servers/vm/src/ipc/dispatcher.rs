@@ -123,14 +123,14 @@ impl MessageDispatcher {
 
     /// Dispatch VM_BRK request. C: `do_brk()` in break.c.
     pub(crate) fn dispatch_brk(ctx: &mut VmContext, request: VmBrkIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = brk::BrkRequest {
             endpoint: request.endpoint,
             new_brk_addr: request.new_addr,
         };
-        match brk::handle_brk(table, page_alloc, frames, &req) {
+        match brk::handle_brk(table, page_alloc, frames, vfs_queue, &req) {
             Ok(response) => VmReply::Brk(VmBrkOut { new_addr: response.new_brk_addr }),
             Err(e) => VmReply::Error(e.into()),
         }
@@ -140,7 +140,7 @@ impl MessageDispatcher {
 
     /// Dispatch VM_MUNMAP request. C: `do_munmap()` in mmap.c.
     pub(crate) fn dispatch_munmap(ctx: &mut VmContext, request: VmMunmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -149,7 +149,7 @@ impl MessageDispatcher {
             length: request.length,
             lookup_region_length: false,
         };
-        match munmap::handle_munmap(table, page_alloc, frames, &req) {
+        match munmap::handle_munmap(table, page_alloc, frames, vfs_queue, &req) {
             Ok(munmap::MunmapOutcome::Replied) => VmReply::Munmap,
             // VM self-munmap: handled synchronously, no reply (C: SUSPEND).
             Ok(munmap::MunmapOutcome::Suspended) => VmReply::Suspend,
@@ -160,7 +160,7 @@ impl MessageDispatcher {
     // -- unmap_phys --
     // VM_UNMAP_PHYS: unmap a VR_DIRECT region. Length is the full region length.
     pub(crate) fn dispatch_unmap_phys(ctx: &mut VmContext, request: VmUnmapPhysIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -169,7 +169,7 @@ impl MessageDispatcher {
             length: VirBytes(0),
             lookup_region_length: true,
         };
-        match munmap::handle_munmap(table, page_alloc, frames, &req) {
+        match munmap::handle_munmap(table, page_alloc, frames, vfs_queue, &req) {
             Ok(munmap::MunmapOutcome::Replied) => VmReply::Munmap,
             // VM self-munmap: handled synchronously, no reply (C: SUSPEND).
             Ok(munmap::MunmapOutcome::Suspended) => VmReply::Suspend,
@@ -180,7 +180,7 @@ impl MessageDispatcher {
     // -- shm_unmap --
     // VM_SHM_UNMAP: unmap a shared memory region. Length is the full region length.
     pub(crate) fn dispatch_shm_unmap(ctx: &mut VmContext, request: VmShmUnmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -189,7 +189,7 @@ impl MessageDispatcher {
             length: VirBytes(0),
             lookup_region_length: true,
         };
-        match munmap::handle_munmap(table, page_alloc, frames, &req) {
+        match munmap::handle_munmap(table, page_alloc, frames, vfs_queue, &req) {
             Ok(munmap::MunmapOutcome::Replied) => VmReply::Munmap,
             // VM self-munmap: handled synchronously, no reply (C: SUSPEND).
             Ok(munmap::MunmapOutcome::Suspended) => VmReply::Suspend,
@@ -211,7 +211,7 @@ impl MessageDispatcher {
     ///
     /// Unknown param values return EINVAL (C: exit.c:149 default case).
     pub(crate) fn dispatch_procctl(ctx: &mut VmContext, caller: Endpoint, request: VmProcctlIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         // 1. `who` must be a valid endpoint.
@@ -237,7 +237,7 @@ impl MessageDispatcher {
                 if caller != Endpoint::RS && caller != Endpoint::VFS {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
-                match exit::handle_procctl_clear(table, page_alloc, frames, request.who) {
+                match exit::handle_procctl_clear(table, page_alloc, frames, vfs_queue, request.who) {
                     Ok(()) => VmReply::Ok,
                     Err(e) => VmReply::Error(VmError::from(e)),
                 }
@@ -717,10 +717,10 @@ impl MessageDispatcher {
 
     /// Dispatch VM_EXIT request. C: `do_vm_exit()` in exit.c.
     pub(crate) fn dispatch_exit(ctx: &mut VmContext, request: VmExitIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match exit::handle_vm_exit(table, page_alloc, frames, request.endpoint) {
+        match exit::handle_vm_exit(table, page_alloc, frames, vfs_queue, request.endpoint) {
             Ok(()) => VmReply::Exit,
             Err(e) => VmReply::Error(e.into()),
         }
@@ -764,10 +764,10 @@ impl MessageDispatcher {
 
     // -- rs_prepare --
     pub(crate) fn dispatch_rs_prepare(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match rs::handle_rs_prepare(table, page_alloc, frames, src, dst, flags) {
+        match rs::handle_rs_prepare(table, page_alloc, frames, vfs_queue, src, dst, flags) {
             Ok(()) => VmReply::Ok,
             Err(e) => VmReply::Error(e.into()),
         }
@@ -775,10 +775,10 @@ impl MessageDispatcher {
 
     // -- rs_update --
     pub(crate) fn dispatch_rs_update(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match rs::handle_rs_update(table, page_alloc, frames, src, dst, flags) {
+        match rs::handle_rs_update(table, page_alloc, frames, vfs_queue, src, dst, flags) {
             Ok(rs::RsUpdateResult::Ok) => VmReply::Ok,
             Ok(rs::RsUpdateResult::Suspend) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),

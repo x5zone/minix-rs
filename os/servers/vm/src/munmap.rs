@@ -103,6 +103,7 @@ pub(crate) fn handle_munmap(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     request: &MunmapRequest,
 ) -> Result<MunmapOutcome, MunmapError> {
     if !request.addr.0.is_multiple_of(PAGE_SIZE) {
@@ -131,7 +132,7 @@ pub(crate) fn handle_munmap(
             if !request.length.0.is_multiple_of(PAGE_SIZE) {
                 return Err(MunmapError::InvalidLength);
             }
-            unmap_range(&mut active, page_alloc, frames, request.addr, request.length)?;
+            unmap_range(&mut active, page_alloc, frames, vfs_queue, request.addr, request.length)?;
         }
         return Ok(MunmapOutcome::Suspended);
     }
@@ -153,7 +154,7 @@ pub(crate) fn handle_munmap(
         roundup_page(request.length)
     };
 
-    unmap_range(&mut active, page_alloc, frames, request.addr, length)?;
+    unmap_range(&mut active, page_alloc, frames, vfs_queue, request.addr, length)?;
     Ok(MunmapOutcome::Replied)
 }
 
@@ -174,9 +175,11 @@ pub(crate) fn unmap_range(
     active: &mut ActiveProc<'_>,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     addr: VirBytes,
     length: VirBytes,
 ) -> Result<(), MunmapError> {
+    let owner = active.endpoint();
     let unmap_start = addr;
     let unmap_end = VirBytes(addr.0 + length.0);
     // C: map_unmap_range rejects a wrapping range (region.c:1234
@@ -214,7 +217,7 @@ pub(crate) fn unmap_range(
                     let pt = Some(active.page_table_mut());
                     #[cfg(test)]
                     let pt: Option<&mut crate::pagetable::PageTable> = None;
-                    crate::region::free_region_pages(region, pt, frames, page_alloc);
+                    crate::region::free_region_pages(region, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
             } else if unmap_start > reg_start && unmap_end < reg_end {
@@ -239,7 +242,7 @@ pub(crate) fn unmap_range(
                     let pt = Some(active.page_table_mut());
                     #[cfg(test)]
                     let pt: Option<&mut crate::pagetable::PageTable> = None;
-                    crate::region::free_region_pages(middle, pt, frames, page_alloc);
+                    crate::region::free_region_pages(middle, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(length.0));
 
@@ -265,7 +268,7 @@ pub(crate) fn unmap_range(
                     let pt = Some(active.page_table_mut());
                     #[cfg(test)]
                     let pt: Option<&mut crate::pagetable::PageTable> = None;
-                    crate::region::free_region_pages(head, pt, frames, page_alloc);
+                    crate::region::free_region_pages(head, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
 
@@ -283,7 +286,7 @@ pub(crate) fn unmap_range(
                     let pt = Some(active.page_table_mut());
                     #[cfg(test)]
                     let pt: Option<&mut crate::pagetable::PageTable> = None;
-                    crate::region::free_region_pages(tail, pt, frames, page_alloc);
+                    crate::region::free_region_pages(tail, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
 
@@ -384,7 +387,8 @@ mod tests {
             lookup_region_length: false,
         };
 
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(result, Err(MunmapError::BadAddress)));
     }
 
@@ -403,7 +407,8 @@ mod tests {
             lookup_region_length: false,
         };
 
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(result, Err(MunmapError::InvalidLength)));
     }
 
@@ -422,7 +427,8 @@ mod tests {
             lookup_region_length: false,
         };
 
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
     }
 
@@ -444,7 +450,8 @@ mod tests {
             lookup_region_length: false,
         };
 
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 0);
         // The mapped page's refcount was released back to the allocator.
@@ -465,7 +472,8 @@ mod tests {
             length: VirBytes(0x3000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 0);
     }
@@ -486,7 +494,8 @@ mod tests {
             length: VirBytes(0x1000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 1);
 
@@ -514,7 +523,8 @@ mod tests {
             length: VirBytes(0x2000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 1);
 
@@ -542,7 +552,8 @@ mod tests {
             length: VirBytes(0x1000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 2);
 
@@ -570,7 +581,8 @@ mod tests {
             length: VirBytes(0x2800),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 0);
     }
@@ -592,7 +604,8 @@ mod tests {
             length: VirBytes(0), // ignored: region length is used
             lookup_region_length: true,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 0);
     }
@@ -612,7 +625,8 @@ mod tests {
             length: VirBytes(0),
             lookup_region_length: true,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(result, Err(MunmapError::NotMapped)));
     }
 
@@ -641,7 +655,8 @@ mod tests {
             length: VirBytes(0x1000),
             lookup_region_length: false,
         };
-        let r = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let r = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(r, Ok(MunmapOutcome::Suspended)));
         assert_eq!(active_regions(Endpoint::VM), 0);
 
@@ -667,7 +682,7 @@ mod tests {
         region.map_page(&mut frames, VirBytes(0), pfn, &MEM_TYPE_ANON);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
 
-        crate::region::free_region_pages(region, None, &mut frames, &mut page_alloc);
+        crate::region::free_region_pages(region, None, &mut frames, &mut page_alloc, &mut crate::vfs_queue::VfsRequestQueue::new(), minix_types::Endpoint(1));
 
         assert_eq!(frames.get(pfn).unwrap().refcount, 0);
     }
@@ -697,11 +712,11 @@ mod tests {
         r2.map_page(&mut frames, VirBytes(0), pfn, &MEM_TYPE_ANON);
         assert_eq!(frames.get(pfn).unwrap().refcount, 2);
 
-        crate::region::free_region_pages(r1, None, &mut frames, &mut page_alloc);
+        crate::region::free_region_pages(r1, None, &mut frames, &mut page_alloc, &mut crate::vfs_queue::VfsRequestQueue::new(), minix_types::Endpoint(1));
         // refcount 2→1: the page stays allocated for r2.
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
 
-        crate::region::free_region_pages(r2, None, &mut frames, &mut page_alloc);
+        crate::region::free_region_pages(r2, None, &mut frames, &mut page_alloc, &mut crate::vfs_queue::VfsRequestQueue::new(), minix_types::Endpoint(1));
         // refcount 1→0: the page is released back to the allocator.
         assert_eq!(frames.get(pfn).unwrap().refcount, 0);
     }
@@ -723,7 +738,8 @@ mod tests {
             length: VirBytes(0x1000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(result, Err(MunmapError::MemTypeNotSupported)));
     }
 
@@ -744,7 +760,8 @@ mod tests {
             length: VirBytes(0x1000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert!(matches!(result, Err(MunmapError::MemTypeNotSupported)));
     }
 
@@ -766,7 +783,8 @@ mod tests {
             length: VirBytes(0x3000),
             lookup_region_length: false,
         };
-        let result = handle_munmap(table, &mut page_alloc, &mut frames, &req);
+        let result = handle_munmap(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+            &req);
         assert_eq!(result, Ok(MunmapOutcome::Replied));
         assert_eq!(active_regions(ep), 1);
 
@@ -809,11 +827,11 @@ mod tests {
 
         // Head cut: split then free the head half.
         let (head, tail) = region.split(VirBytes(0x1000)).expect("file split");
-        crate::region::free_region_pages(head, None, &mut frames, &mut page_alloc);
+        crate::region::free_region_pages(head, None, &mut frames, &mut page_alloc, &mut crate::vfs_queue::VfsRequestQueue::new(), minix_types::Endpoint(1));
         // Only the tail region remains → exactly one reference.
         assert_eq!(table.get(id).unwrap().refcount, 1);
 
-        crate::region::free_region_pages(tail, None, &mut frames, &mut page_alloc);
+        crate::region::free_region_pages(tail, None, &mut frames, &mut page_alloc, &mut crate::vfs_queue::VfsRequestQueue::new(), minix_types::Endpoint(1));
         // Count reaches zero → entry removed (VFS_FDCLOSE would be sent).
         assert!(table.get(id).is_none());
     }

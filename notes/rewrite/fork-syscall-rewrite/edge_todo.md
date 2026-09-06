@@ -24,7 +24,7 @@
 | T7 | 1 | per-call codec 注册表 + dispatch 表驱动化 | V9-P2-1 + V9-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #26） |
 | T8 | 1 | 错误枚举收敛 → **判定闭合：现有 From 集中表即最优** | V10-P2-3 + P2-2 | ✅ 2026-09-06（todo.md §15 Fix #27，WONTFIX 级设计判定） |
 | T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | 🔄 step1 ✅（Fix #28）step2 ✅（Fix #29：Gateway + SYS_FORK wire + fork 迁移）；step3（safecopy wire + rs_handshake/ipc_call_rs_init 逻辑完备）随 T10/T13 |
-| T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | ⬜ |
+| T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | 🔄 入队半 ✅（Fix #33）；发送半 → **E-VFSWIRE** |
 | T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ⬜ |
 | T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ⬜ |
 | T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ⬜ |
@@ -87,6 +87,21 @@
 **跨 stage 文件**：`os/arch/src/arch/pt_alloc.rs`（加 free 注册槽）、`os/arch/src/x86_64/paging.rs`（destroy 四级遍历回收）、需核查 aarch64/riscv64 的同型 destroy 是否同样只清零（UNVERIFIED）。
 
 **建议**：pt_alloc 注册槽从单函数指针扩为 `{ alloc, free }`（或 trait）；destroy 逐级回收中间页并归还注册来源的分配器，保持"先清零根防 UAF"语义与 `exit.rs:188-189` 的 SAFETY 前提不变；补"destroy 后中间页归还"测试。
+
+---
+
+## E-VFSWIRE VFS_VMCALL 消息 wire 定稿 + VM 发送排水（T10 发送半）
+
+**背景**：T10 入队半已落地——fdref 归零/进程退出的 FdClose、以及 mmap 的 FDLOOKUP/FDIO 均入 `VfsRequestQueue`（callback-less 或带回调）。但"把队首请求构造成 `VFS_VMCALL` 消息经 transport 发给 VFS"的发送排水未实现（历史上 transport-gated，见 doc 23 的 transport 缺口）。
+
+**阻塞点（跨 stage）**：wire 格式属 VM↔VFS 共享契约，而 vfs 服务器（并行工作流）目前只有**决策原语**——`VmVfsReq::from_raw`（servers/vfs/src/misc.rs:266-281，101/102/103）与 `VM_VFS_REPLY=0xC1E`（:305），消息级解码（`do_vm_call` 的 union 成员/字段映射，C vfs.c:60-104 `VFS_VMCALL_REQ/FD/REQID/ENDPOINT/OFFSET/LENGTH`）尚未建。VM 侧先行编码会与 vfs 侧未来的解码漂移。
+
+**解锁后 VM 侧工作（约半迭代）**：
+1. `VfsRequestQueue::take_pending_vfs_call()`——从 active 请求构造 `VFS_VMCALL` 消息（字段映射 C vfs.c:70-78，req_id/endpoint/fd/offset/length）并标记已发送；
+2. `VmServer::run_once` 排水步——`transport.send(VFS_PROC_NR, msg)`，失败保留请求下轮重试（pre-E1 每轮 -EIO，行为同今日的"永不发送"，无回归）；
+3. 测试：Canned transport 上断言 VFS_VMCALL 字段逐项正确。
+
+**依赖**：E1（trap 层）落地后发送才真实可达；vfs 侧 do_vm_call 消息面定稿（09/13-stage 工作流）后定 wire。
 
 ---
 

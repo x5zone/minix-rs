@@ -135,6 +135,17 @@ impl VfsRequestQueue {
         }
     }
 
+    #[cfg(test)]
+    /// V11/T10: test inspection of the active request (the send half is
+    /// edge E-VFSWIRE; this asserts the enqueue half).
+    pub(crate) fn active_fd_close(&self) -> Option<(VfsRequestType, i32, Endpoint)> {
+        let req = self.active.as_ref()?;
+        if req.request_type != VfsRequestType::FdClose {
+            return None;
+        }
+        Some((req.request_type, req.fd, req.caller_endpoint))
+    }
+
     pub(crate) fn handle_reply(
         &mut self,
         reply: VfsReply,

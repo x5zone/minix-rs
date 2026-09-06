@@ -1228,3 +1228,10 @@ Coverage Summary for vm:
 - **Ground Truth 判定**：C 的 com.h 定义了 VM_EXEC_NEWMEM(+3) 与 VM_ADDDMA/DELDMA/GETDMA(+12/13/14) 号值，但 main.c:508-538 的 CALLMAP **均未注册** handler——`vmc_func == NULL` → main.c:139/165 回 ENOSYS。minix-rs 同样不路由 → `_` 臂 ENOSYS：**可观察行为一致，属 parity 而非缺口**。V10-P2-1/V14.2 中"DEFERRED 待接线"的定性据此更正为"已核实 parity，处置完毕"
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
+
+### ✅ Fix #33: T10 part 1 — fdref 归零的 FdClose 入队 VfsRequestQueue（原静默丢弃/类型化局部 → 真实入队）
+
+- **Files**: `os/servers/vm/src/region/mod.rs`（`free_region_pages` 增 `vfs_queue`/`owner` 参数；drop 点构造 `VfsRequest{FdClose, callback:None}` 入队；队列满 → audit + fail-closed 丢弃（C 在 SLABALLOC 失败时 panic，本仓不 panic 于边界——V9-P0-1）；陈旧 20 行 TODO 注记删除）、`os/servers/vm/src/exit.rs`（`free_process_phys` 同构入队；`handle_vm_exit`/`handle_procctl_clear` 穿参）、`os/servers/vm/src/munmap.rs`（`handle_munmap`/`unmap_range` 穿参，4 个内部调用点 owner=active.endpoint()）、`os/servers/vm/src/brk.rs`（`handle_brk`/`shrink_heap` 穿参）、`os/servers/vm/src/ipc/dispatcher.rs`（6 处 handler 解构补 vfs_queue 并透传）、`os/servers/vm/src/vfs_queue.rs`（cfg(test) `active_fd_close()` 检视访问器）、新增 `test_free_region_pages_enqueues_fdclose`
+- **发送半 → edge**：VFS_VMCALL 消息构造与主循环排水追加为 edge **E-VFSWIRE**——vfs 服务器（09/13-stage 并行工作流）已有决策原语（`VmVfsReq::from_raw` 101/102/103、`VM_VFS_REPLY=0xC1E`）但消息级解码未建，wire 格式属跨 stage 未定契约，按并发纪律不写代码
+- **Verified**: 四矩阵 **456 / 472 / 471 / 456 passed**（+1 入队测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 23-vfs-interaction.md（模块清单）；行为变化：fdref 归零时 close 从"丢弃"变为"排队待发"——VFS 侧 fd 泄漏窗口收窄

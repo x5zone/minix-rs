@@ -13,7 +13,7 @@ pub(crate) use region_map::RegionMap;
 
 use crate::alloc_page::VmPageAllocator;
 use crate::pagetable::Paging;
-use minix_types::VirBytes;
+use minix_types::{Endpoint, VirBytes};
 
 /// Free all pages in a region, unmapping them from the page table and
 /// releasing physical frames.
@@ -27,6 +27,8 @@ pub(crate) fn free_region_pages(
     page_table: Option<&mut crate::pagetable::PageTable>,
     frames: &mut PageFrames,
     page_alloc: &mut VmPageAllocator,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
+    owner: Endpoint,
 ) {
     let page_count = (region.length.0 / PAGE_SIZE) as usize;
     if let Some(pt) = page_table {
@@ -55,30 +57,32 @@ pub(crate) fn free_region_pages(
     if let Some(id) = fdref_id {
         let pending_close = crate::fdref::FdRefTable::get_global().deref_entry(id);
         if let Some(close) = pending_close {
-            // TODO: capture the close in the VFS
-            // request queue instead of dropping it.
-            //
-            // Minix3 sends a `VFS_FDCLOSE` IPC message to VFS in this
-            // branch (region.c, `map_region_deref` → `vfs_request`).
-            // The Rust rewrite is blocked on IpcTransport
-            // (see IpcTransport TODO) and on the VFS request dispatcher path
-            // (ipc/dispatcher.rs:484 "TODO: add missing imports and
-            // decode helpers"). Until both land, we enqueue the close
-            // locally so the FdRefTable's refcount semantics are
-            // correct, and the VFS IPC send is DEFERRED.
-            //
-            // Before: `let _ = close;` silently dropped the
-            // `PendingFdClose { fd, dev, ino }` value. This was
-            // review-patterns-skill §模式31 (返回值完整性) — a
-            // discarding let _ is acceptable only with a comment
-            // explaining why. The fix moves the close to a typed
-            // local so a future VFS-send implementation has the
-            // value ready to consume.
-            let _close: crate::fdref::PendingFdClose = close;
-            // Future (DEFERRED): enqueue to VfsRequestQueue
-            //   self.vfs_queue.enqueue(VfsRequestType::FdClose { fd, dev, ino });
-            // which is drained by the VM main loop's VFS-FDCLOSE
-            // send path. See IpcTransport TODO for the dependency.
+            // Minix3 sends an async VFS request to close the borrowed fd in
+            // this branch (C fdref.c:150 — `vfs_request(VMVFSREQ_FDCLOSE, …)`
+            // with no callback: a failed close is VFS's diagnostic, not
+            // VM's). V11/T10: the close is enqueued into the VfsRequestQueue;
+            // the send half (VFS_VMCALL wire) is edge E-VFSWIRE — the vfs
+            // server's message-level decode is still being built by the
+            // 09/13-stage workflows.
+            let vreq = crate::vfs_queue::VfsRequest {
+                request_type: crate::vfs_queue::VfsRequestType::FdClose,
+                req_id: 0, // assigned by the queue
+                caller_endpoint: owner,
+                fd: close.fd,
+                offset: 0,
+                length: 0,
+                callback: None,
+                state: None,
+            };
+            if vfs_queue.request(vreq).is_err() {
+                // Queue full → the close is lost and the fd leaks in VFS.
+                // Fail-closed drop + audit (C panics on SLABALLOC failure;
+                // this codebase never panics at the IPC boundary, V9-P0-1).
+                audit_log!(
+                    "[VM VFS] fdclose queue full — fd {} close dropped (fd leak)",
+                    close.fd
+                );
+            }
         }
     }
 }
@@ -171,6 +175,49 @@ mod tests {
 
     fn make_page_alloc() -> VmPageAllocator {
         VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)))
+    }
+
+    /// V11/T10: freeing a file-backed region whose fdref reaches zero must
+    /// enqueue an FdClose request into the VfsRequestQueue (the send half
+    /// is edge E-VFSWIRE — the vfs server's VFS_VMCALL message decode).
+    #[test]
+    fn test_free_region_pages_enqueues_fdclose() {
+        let mut frames = make_frames();
+        let mut page_alloc = make_page_alloc();
+        let table = crate::fdref::FdRefTable::get_global();
+        let id = table.create(9, 0xAA, 0xBB);
+        table.ref_entry(id);
+
+        let mut region = VirRegion::with_memtype(
+            VirBytes(0x1000),
+            VirBytes(0x1000),
+            VrFlags::WRITABLE,
+            &crate::memtype::MEM_TYPE_MAPPED_FILE,
+        );
+        region.param = VrParam::File {
+            inited: true,
+            fdref_id: Some(id),
+            offset: 0,
+            clearend: 0,
+        };
+
+        let mut queue = crate::vfs_queue::VfsRequestQueue::new();
+        free_region_pages(
+            region,
+            None,
+            &mut frames,
+            &mut page_alloc,
+            &mut queue,
+            Endpoint(42),
+        );
+
+        // fdref fully deref'd …
+        assert!(table.get(id).is_none());
+        // … and the FdClose request is queued for the main loop's send.
+        let (ty, fd, ep) = queue.active_fd_close().expect("fdclose must be enqueued");
+        assert_eq!(ty, crate::vfs_queue::VfsRequestType::FdClose);
+        assert_eq!(fd, 9);
+        assert_eq!(ep, Endpoint(42));
     }
 
     /// Test that pinning an empty region map succeeds trivially.

@@ -18,7 +18,7 @@
 
 use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, EncodeToM1};
 #[cfg(test)]
-use minix_types::{VmForkIn, VmBrkIn, VmExitIn, VmMmapIn, VmMapPhysIn, VmCacheIn};
+use minix_types::{VmForkIn, VmBrkIn, VmExitIn};
 use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
 use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};

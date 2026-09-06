@@ -43,6 +43,7 @@ pub(crate) fn handle_vm_exit(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     endpoint: Endpoint,
 ) -> Result<(), VmExitError> {
     let slot = table.vm_isokendpt(endpoint)?;
@@ -50,7 +51,7 @@ pub(crate) fn handle_vm_exit(
     let mut exiting = table.get_exiting(slot)
         .ok_or(VmExitError::NotExiting)?;
 
-    free_process_phys(exiting.regions_mut(), frames, page_alloc);
+    free_process_phys(exiting.regions_mut(), frames, page_alloc, vfs_queue, endpoint);
 
     // SAFETY: Single-threaded VM ensures no concurrent access to this slot.
     // reap() restores the VmProc slot to vacant state (empty typestate).
@@ -99,6 +100,8 @@ fn free_process_phys(
     regions: &mut RegionMap,
     frames: &mut PageFrames,
     page_alloc: &mut VmPageAllocator,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
+    owner: Endpoint,
 ) {
     for region in regions.iter_mut() {
         // Capture the fdref id before ev_delete clears it, mirroring the
@@ -142,7 +145,25 @@ fn free_process_phys(
         if let Some(id) = fdref_id
             && let Some(close) = crate::fdref::FdRefTable::get_global().deref_entry(id)
         {
-            let _close: crate::fdref::PendingFdClose = close;
+            // V11/T10: the close is enqueued into the VfsRequestQueue; the
+            // send half (VFS_VMCALL wire) is edge E-VFSWIRE — the vfs
+            // server's message-level decode is still being built.
+            let vreq = crate::vfs_queue::VfsRequest {
+                request_type: crate::vfs_queue::VfsRequestType::FdClose,
+                req_id: 0,
+                caller_endpoint: owner,
+                fd: close.fd,
+                offset: 0,
+                length: 0,
+                callback: None,
+                state: None,
+            };
+            if vfs_queue.request(vreq).is_err() {
+                audit_log!(
+                    "[VM VFS] fdclose queue full — fd {} close dropped (fd leak)",
+                    close.fd
+                );
+            }
         }
     }
 }
@@ -165,6 +186,7 @@ pub(crate) fn handle_procctl_clear(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     endpoint: Endpoint,
 ) -> Result<(), VmProcctlError> {
     let slot = table.vm_isokendpt(endpoint).map_err(|_| VmProcctlError::InvalidEndpoint)?;
@@ -174,7 +196,7 @@ pub(crate) fn handle_procctl_clear(
 
     // Step 1: Free physical pages for all regions.
     // C: free_proc(vmp) → map_free_proc(vmp)
-    free_process_phys(proc.regions_mut(), frames, page_alloc);
+    free_process_phys(proc.regions_mut(), frames, page_alloc, vfs_queue, endpoint);
 
     // Step 2: Clear region map + reset usage stats.
     // C: free_proc → region_init(&vmp->vm_regions_avl) +
@@ -422,7 +444,7 @@ mod tests {
         // Invalid endpoint → EINVAL (C exit.c:122-125). Does not reach the
         // page-table path (which needs real paging, B4 backlog).
         let result = handle_procctl_clear(
-            table, &mut page_alloc, &mut frames, Endpoint::NONE,
+            table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(), Endpoint::NONE,
         );
         assert!(matches!(result, Err(VmProcctlError::InvalidEndpoint)));
     }
@@ -465,7 +487,8 @@ mod tests {
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
 
-        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, Endpoint::NONE);
+        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+                Endpoint::NONE);
         assert!(matches!(result, Err(VmExitError::ProcessNotFound)));
     }
 
@@ -477,7 +500,8 @@ mod tests {
         let slot = UserSlot::new(50);
         let ep = init_test_process(slot);
 
-        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, ep);
+        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+                ep);
         assert!(matches!(result, Err(VmExitError::NotExiting)));
     }
 
@@ -490,7 +514,8 @@ mod tests {
         let ep = init_test_process(slot);
 
         handle_vm_willexit(table, ep).unwrap();
-        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, ep);
+        let result = handle_vm_exit(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+                ep);
         assert!(result.is_ok());
     }
 
@@ -503,7 +528,8 @@ mod tests {
         let ep = init_test_process(slot);
 
         handle_vm_willexit(table, ep).unwrap();
-        handle_vm_exit(table, &mut page_alloc, &mut frames, ep).unwrap();
+        handle_vm_exit(table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(),
+                ep).unwrap();
 
         let empty = table.get_empty(slot);
         assert!(empty.is_some(), "slot should be empty after exit");
